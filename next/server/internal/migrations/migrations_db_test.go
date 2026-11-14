@@ -392,6 +392,41 @@ func TestAccountSPMWindowMigration(t *testing.T) {
 	require.Error(t, exec(`UPDATE accounts SET spm_window_seconds = 86401 WHERE name='window'`))
 }
 
+// 0099 gives permissions a risk level (docs/plugin-permissions ch.2):
+// sensitive rows start sensitive, the others low, scope_type takes "plugin:"
+// and a 30-character resource, a re-run keeps a level a sync wrote since,
+// and only the three levels are accepted.
+func TestPluginPermissionMetaMigration(t *testing.T) {
+	db := testutil.DBThrough(t, "0098_plugin_staged_grants.sql")
+	ctx := t.Context()
+	exec := func(sql string) error {
+		_, err := db.Pool.Exec(ctx, sql)
+		return err
+	}
+	risks := func() (v string) {
+		t.Helper()
+		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT string_agg(key || '=' || risk, ' ' ORDER BY key) FROM permissions`).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	const forget = `DELETE FROM schema_migrations WHERE id='0099_plugin_permission_meta.sql'`
+	require.NoError(t, exec(`INSERT INTO permissions (key, module, label, source, sensitive) VALUES
+		('a:read','a','{}','core',false), ('a:secret','a','{}','core',true), ('b:secret','b','{}','core',true)`))
+	require.Equal(t, []string{"0099_plugin_permission_meta.sql"}, migrate())
+	require.Equal(t, "a:read=low a:secret=sensitive b:secret=sensitive", risks())
+
+	require.NoError(t, exec(`UPDATE permissions SET risk = 'critical' WHERE key = 'a:secret';
+		UPDATE permissions SET scope_type = 'plugin:' || repeat('r', 30) WHERE key = 'a:read'; `+forget))
+	require.Equal(t, []string{"0099_plugin_permission_meta.sql"}, migrate())
+	require.Equal(t, "a:read=low a:secret=critical b:secret=sensitive", risks(), "a rerun reset a level set after the migration")
+	require.Error(t, exec(`UPDATE permissions SET risk = 'high' WHERE key = 'a:read'`))
+}
+
 // 0064 and 0068 sum an account's usage (CONTRACTS §73): existing rows are
 // backfilled once, then the trigger journals settlement, reconcile, refunds
 // and a moved account, and account_usage_fold sums the journal; deleting

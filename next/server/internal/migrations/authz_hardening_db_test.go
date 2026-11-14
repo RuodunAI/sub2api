@@ -154,13 +154,22 @@ func (h *hardeningDB) schema() string {
 	h.t.Helper()
 	return h.text(`SELECT string_agg(d, E'\n' ORDER BY d) FROM (
     SELECT 'table ' || relname || ' ' || relkind::text AS d FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'v', 'm', 'S', 'p')
-    UNION ALL SELECT 'column ' || table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || COALESCE(column_default, '')
+    UNION ALL SELECT 'column ' || table_name || '.' || column_name || ' ' || data_type || COALESCE('(' || character_maximum_length || ')', '') || ' ' || is_nullable || ' ' || COALESCE(column_default, '')
         FROM information_schema.columns WHERE table_schema = 'public'
     UNION ALL SELECT 'index ' || indexdef FROM pg_indexes WHERE schemaname = 'public'
     UNION ALL SELECT 'constraint ' || conrelid::regclass || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint WHERE connamespace = 'public'::regnamespace
     UNION ALL SELECT 'trigger ' || pg_get_triggerdef(oid) FROM pg_trigger WHERE NOT tgisinternal
     UNION ALL SELECT 'function ' || oid::regprocedure || ' ' || md5(pg_get_functiondef(oid)) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND prokind IN ('f', 'p')
 ) s`)
+}
+
+// down runs the rollback script deploy/rollback/<name>.
+func (h *hardeningDB) down(name string) error {
+	h.t.Helper()
+	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "rollback", name))
+	require.NoError(h.t, err)
+	_, err = h.db.Pool.Exec(h.ctx, string(sql))
+	return err
 }
 
 func (h *hardeningDB) syncCore() {
@@ -320,9 +329,9 @@ func TestAuthzHardeningRollback(t *testing.T) {
         VALUES ('stg', '1.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved'), ('stg', '2.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved')`)
 	h.exec(`INSERT INTO plugin_staged_grants (plugin_key, version, permission, status, manifest_hash) VALUES ('stg', '2.0.0', 'lock', 'granted', 'h')`)
 
-	down, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "rollback", "0.1.286-authz-down.sql"))
-	require.NoError(t, err)
-	h.exec(string(down))
+	// The upgrade went on through 0099: 0.1.289 is rolled back first.
+	require.NoError(t, h.down("0.1.289-plugin-perm-down.sql"))
+	require.NoError(t, h.down("0.1.286-authz-down.sql"))
 
 	require.Equal(t, schema, h.schema())
 	// 0.1.285 grants nothing for the permissions only 0.1.286 has (its sync
@@ -336,12 +345,55 @@ func TestAuthzHardeningRollback(t *testing.T) {
 	require.Equal(t, "1.0.0 approved, 2.0.0 awaiting_consent", h.text(`SELECT string_agg(version || ' ' || consent_status, ', ' ORDER BY version) FROM plugin_versions WHERE plugin_key = 'stg'`))
 	require.Equal(t, `["lock"]`, h.text(`SELECT (detail->'permissions')::text FROM audit_logs WHERE action = 'plugin.grants.withdraw' AND target_id = 'stg' AND detail->>'version' = '2.0.0'`))
 
-	_, err = h.db.Pool.Exec(h.ctx, string(down))
-	require.ErrorContains(t, err, "nothing to roll back")
+	require.ErrorContains(t, h.down("0.1.286-authz-down.sql"), "nothing to roll back")
 
 	require.NoError(t, h.migrate())
 	h.syncCore()
 	require.Equal(t, upgraded, h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater"))
+}
+
+// The 0.1.289 rollback script puts the database back in the shape 0.1.288
+// runs on: the schema of a database migrated through 0098, without the
+// plugin permissions no longer declared (0.1.288 would make them active
+// again) and the scoped grants of plugin permissions (0.1.288 cannot parse
+// them), every grant that goes audited. Core scoped grants and the declared
+// plugin permissions with their unscoped grants stay; upgrading again works.
+func TestPluginPermissionMetaRollback(t *testing.T) {
+	h := &hardeningDB{t: t, db: testutil.DBThrough(t, "0098_plugin_staged_grants.sql"), ctx: context.Background()}
+	h.exec(`
+INSERT INTO roles (key, name) VALUES ('editor', '{}');
+INSERT INTO plugins (key, name, status, active_version) VALUES ('pm', '{}', 'enabled', '1.0.0');
+INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
+    ('account:read', 'account', '{}', 'core', NULL), ('plugin.pm:flow:manage', 'plugin.pm', '{}', 'plugin', 'pm'), ('plugin.pm:old', 'plugin.pm', '{}', 'plugin', 'pm')`)
+	const statusComment = `SELECT COALESCE(col_description(attrelid, attnum), '') FROM pg_attribute WHERE attrelid = 'permissions'::regclass AND attname = 'status'`
+	schema, comment := h.schema(), h.text(statusComment)
+	require.NoError(t, h.migrate())
+
+	// What 0.1.289 writes: a key its plugin no longer declares, kept with its
+	// grants, and a plugin scope with a resource longer than 0.1.288 allows.
+	h.exec(`
+UPDATE permissions SET status = 'removed' WHERE key = 'plugin.pm:old';
+UPDATE permissions SET scope_type = 'plugin:workflowdefinition', risk = 'sensitive' WHERE key = 'plugin.pm:flow:manage';
+INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.key = 'editor' AND p.key IN ('plugin.pm:flow:manage', 'plugin.pm:old');
+INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, s.scope FROM roles r, permissions p
+JOIN (VALUES ('account:read', 'own'), ('plugin.pm:flow:manage', 'flow/3'), ('plugin.pm:old', 'flow/1')) s(key, scope) ON s.key = p.key
+WHERE r.key = 'editor'`)
+	version := h.text(`SELECT version::text FROM authz_meta`)
+
+	require.NoError(t, h.down("0.1.289-plugin-perm-down.sql"))
+
+	require.Equal(t, schema, h.schema())
+	require.Equal(t, comment, h.text(statusComment))
+	require.Equal(t, "editor account:read:own, editor plugin.pm:flow:manage", h.grants())
+	require.Equal(t, "account:read=, plugin.pm:flow:manage=", h.text(`SELECT string_agg(key || '=' || scope_type, ', ' ORDER BY key) FROM permissions`))
+	require.Equal(t, "plugin.pm:flow:manage:flow/3, plugin.pm:old, plugin.pm:old:flow/1", h.text(`SELECT string_agg(detail->>'dropped', ', ' ORDER BY detail->>'dropped')
+        FROM audit_logs a JOIN roles r ON r.id = a.target_id::bigint
+        WHERE a.user_id IS NULL AND a.action = 'authz.grant.migrate' AND a.detail->>'via' = 'rollback 0.1.289' AND r.key = 'editor'`))
+	require.Equal(t, version, h.text(`SELECT (version - 1)::text FROM authz_meta`), "the version moves once")
+
+	require.ErrorContains(t, h.down("0.1.289-plugin-perm-down.sql"), "nothing to roll back")
+	require.NoError(t, h.migrate())
 }
 
 // filterGrants keeps the grants of got whose permission appears in want: the
