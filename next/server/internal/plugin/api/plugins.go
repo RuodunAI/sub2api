@@ -602,6 +602,23 @@ func (a *API) listGrants(c *gin.Context) {
 	httpapi.OK(c, install.SortedGrants(g))
 }
 
+// setGrant narrows or grants again one host permission; body {scope?}
+// (omitted: the scope the manifest requests). It returns the grant.
+func (a *API) setGrant(c *gin.Context) {
+	var in struct {
+		Scope map[string]any `json:"scope"`
+	}
+	if c.Request.ContentLength > 0 && !httpapi.BindJSON(c, &in) {
+		return
+	}
+	g, err := a.d.Install.SetGrant(ctx(c), c.Param("key"), c.Param("permission"), in.Scope, actor(c))
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.OK(c, g)
+}
+
 func (a *API) revokeGrant(c *gin.Context) {
 	if err := a.d.Install.RevokeGrant(ctx(c), c.Param("key"), c.Param("permission"), actor(c)); err != nil {
 		httpapi.Fail(c, err)

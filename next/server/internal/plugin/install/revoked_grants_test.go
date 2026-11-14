@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -15,16 +17,21 @@ import (
 )
 
 // revokedEnv runs one plugin ("mini") through versions that ask for the
-// low-risk kv (required) and, when withLog, log (optional).
+// low-risk kv (required), when withLog, log (optional), and the high-risk
+// net (optional) for the domains net names for the version.
 type revokedEnv struct {
 	*env
-	t *testing.T
+	t   *testing.T
+	net map[string][]any
 }
 
 func (e revokedEnv) manifest(version string, withLog bool) *manifest.Manifest {
 	m := pkgtest.Minimal("mini", version, "sub2api")
 	if withLog {
 		m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "log", Optional: true})
+	}
+	if d, ok := e.net[version]; ok {
+		m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "net", Scope: map[string]any{"domains": d}, Optional: true})
 	}
 	return m
 }
@@ -278,4 +285,82 @@ func TestRevocationDuringAStagedUpgradeOutlivesItsActivation(t *testing.T) {
 	if s := e.statuses("0.3.0"); s["kv"] != GrantGranted || s["log"] != GrantRevoked {
 		t.Fatalf("staged grants of 0.3.0: %v", s)
 	}
+}
+
+// SetGrant narrows a host permission grant with plugin:manage alone, and
+// grants a revoked one again as a consent does (grant rights by risk),
+// never wider than the active version requests. Staged sets follow:
+// narrowed where wider, a revocation lifted where the version requests at
+// least the scope; a set granting a scope neither wider nor within it, or a
+// version requesting less, keeps its own decision.
+func TestSetGrantNarrowsAndRegrants(t *testing.T) {
+	const a, b, c = "a.example.com", "b.example.com", "c.example.com"
+	e := revokedEnv{env: newEnv(t), t: t, net: map[string][]any{"0.1.0": {a, b}, "0.2.0": {a, b}, "0.3.0": {b}}}
+	ctx := context.Background()
+	domains := func(d ...any) map[string]any { return map[string]any{"domains": d} }
+	grant := func(version string) Grant {
+		t.Helper()
+		g, err := LoadVersionGrants(ctx, e.db.Pool, "mini", version)
+		require.NoError(t, err)
+		return g["net"]
+	}
+	audited := func(action string) int {
+		var n int
+		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_id = 'mini'`, action).Scan(&n))
+		return n
+	}
+
+	e.upload("0.1.0", true)
+	require.NoError(t, e.consent("0.1.0", ConsentRequest{Grants: []GrantInput{{Permission: "net"}}}))
+	e.activate("0.1.0", true)
+	// Both upgrades are carried over on upload and staged.
+	for _, v := range []string{"0.2.0", "0.3.0"} {
+		require.Equal(t, ConsentApproved, e.upload(v, true).ConsentStatus, v)
+	}
+	require.Equal(t, domains(b), grant("0.3.0").Scope)
+
+	// Narrowing takes no grant right; 0.2.0 (wider) follows, 0.3.0 ([b],
+	// neither wider nor within [a]) keeps its own grant.
+	e.authz.perms[e.limited] = map[string]bool{}
+	g, err := e.svc.SetGrant(ctx, "mini", "net", domains(a), e.limited)
+	require.NoError(t, err)
+	assert.Equal(t, GrantGranted, g.Status)
+	assert.Equal(t, domains(a), g.Scope)
+	assert.Equal(t, domains(a), grant("0.2.0").Scope)
+	assert.Equal(t, GrantGranted, grant("0.3.0").Status)
+	assert.Equal(t, domains(b), grant("0.3.0").Scope)
+	assert.Equal(t, 1, audited("plugin.grant.narrow"))
+
+	// Wider than requested: 400; not requested: 404; back to the requested
+	// scope is a high-risk grant: plugin:grant:high.
+	_, err = e.svc.SetGrant(ctx, "mini", "net", domains(a, c), e.admin)
+	assert.Equal(t, "scope_too_wide", fieldCode(err, "scope"))
+	_, err = e.svc.SetGrant(ctx, "mini", "users.read", nil, e.admin)
+	assert.Equal(t, "not_found", core.AsError(err).Code)
+	_, err = e.svc.SetGrant(ctx, "mini", "net", nil, e.limited)
+	assert.Equal(t, "permission_denied", core.AsError(err).Code)
+	assert.Equal(t, PermGrantHigh, core.AsError(err).Details["permission"])
+
+	// A revocation reaches every staged set; granting again lifts it where
+	// the version requests [a] (0.2.0), not where it requests less (0.3.0).
+	require.NoError(t, e.svc.RevokeGrant(ctx, "mini", "net", e.admin))
+	e.authz.perms[e.limited] = map[string]bool{PermGrantHigh: true}
+	g, err = e.svc.SetGrant(ctx, "mini", "net", domains(a), e.limited)
+	require.NoError(t, err)
+	assert.Equal(t, GrantGranted, g.Status)
+	assert.Equal(t, domains(a), g.Scope)
+	assert.Equal(t, GrantGranted, grant("0.2.0").Status)
+	assert.Equal(t, domains(a), grant("0.2.0").Scope)
+	assert.Equal(t, GrantRevoked, grant("0.3.0").Status)
+	revoked, err := grants.Revoked(ctx, e.db.Pool, "mini")
+	require.NoError(t, err)
+	assert.False(t, revoked["net"])
+	assert.Equal(t, 1, audited("plugin.grant.regrant"))
+
+	// A low-risk one is granted again without any grant right.
+	require.NoError(t, e.svc.RevokeGrant(ctx, "mini", "log", e.admin))
+	e.authz.perms[e.limited] = map[string]bool{}
+	g, err = e.svc.SetGrant(ctx, "mini", "log", nil, e.limited)
+	require.NoError(t, err)
+	assert.Equal(t, GrantGranted, g.Status)
 }
