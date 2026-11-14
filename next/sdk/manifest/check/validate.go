@@ -3,6 +3,7 @@ package check
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -518,6 +519,10 @@ func (v *validator) form(field string, f manifest.Form, settings bool) {
 		v.add(field+".permission", "unsupported", "only ui.settings takes a permission")
 	} else if f.Permission != "" && !v.userPerm(f.Permission) {
 		v.add(field+".permission", "unknown", "permission %q is not declared in userPermissions", f.Permission)
+	} else if f.Permission != "" && v.m.UserPermissionScope(f.Permission) != nil {
+		// The core authorizes the settings form on the permission as a
+		// whole, so a scope would mean nothing there.
+		v.add(field+".permission", "unsupported", "permission %q declares a scope; settings take an unscoped permission", f.Permission)
 	}
 	if settings {
 		v.maskableSecrets(field+".schema", f.Schema)
@@ -776,7 +781,16 @@ func validUserPermKey(k string) bool {
 	return userPermKeyRe.MatchString(k) && !strings.HasSuffix(k, ":own")
 }
 
+// maxScopeValues bounds a values scope: the role editor lists every value.
+const maxScopeValues = 50
+
+var (
+	scopeResourceRe = regexp.MustCompile(manifest.ScopeResourcePattern)
+	scopeValueRe    = regexp.MustCompile(manifest.ScopeValuePattern)
+)
+
 func (v *validator) userPermissions() {
+	groups := v.permissionGroups()
 	seen := map[string]bool{}
 	for i, up := range v.m.UserPermissions {
 		f := fmt.Sprintf("userPermissions[%d]", i)
@@ -789,27 +803,155 @@ func (v *validator) userPermissions() {
 		if firstText(up.Label) == "" {
 			v.add(f+".label", "required", "label is required")
 		}
+		if up.Group != "" && !groups[up.Group] {
+			v.add(f+".group", "unknown", "group %q is not declared in permissionGroups", up.Group)
+		}
+		if up.Risk != "" && !slices.Contains(manifest.UserPermissionRisks, up.Risk) {
+			v.add(f+".risk", "invalid_value", "risk must be one of %v", manifest.UserPermissionRisks)
+		}
+		for j, r := range up.Requires {
+			if r == up.Key || !v.userPerm(r) {
+				v.add(fmt.Sprintf("%s.requires[%d]", f, j), "unknown", "requires %q must be another permission declared here", r)
+			}
+		}
 		for j, r := range up.DefaultRoles {
 			if !slices.Contains(manifest.BuiltinRoleKeys, r) {
 				v.add(fmt.Sprintf("%s.defaultRoles[%d]", f, j), "invalid_value", "role %q is not one of %v", r, manifest.BuiltinRoleKeys)
 			}
 		}
-		// Old keys are usually no longer declared (a rename or a split).
-		for j, from := range up.InheritFrom {
-			if from == up.Key || !validUserPermKey(from) {
-				v.add(fmt.Sprintf("%s.inheritFrom[%d]", f, j), "invalid_value", "inheritFrom %q must be a local permission key other than the permission's own", from)
+		v.inheritFrom(f, up)
+		v.permissionScope(f+".scope", up.Scope)
+		v.permissionDefaults(f+".defaults", up)
+	}
+}
+
+// permissionGroups validates permissionGroups and returns the declared keys.
+func (v *validator) permissionGroups() map[string]bool {
+	groups := map[string]bool{}
+	for i, g := range v.m.PermissionGroups {
+		f := fmt.Sprintf("permissionGroups[%d]", i)
+		if !keyRe.MatchString(g.Key) {
+			v.add(f+".key", "invalid_format", "group key %q must match %s", g.Key, keyRe.String())
+		} else if groups[g.Key] {
+			v.add(f+".key", "duplicate", "group %q declared twice", g.Key)
+		}
+		groups[g.Key] = true
+		if firstText(g.Label) == "" {
+			v.add(f+".label", "required", "label is required")
+		}
+	}
+	return groups
+}
+
+// inheritFrom validates a user permission's inheritFrom: local keys other
+// than its own, usually no longer declared (a rename or a split). A critical
+// permission inherits from no key declared here as less than critical, which
+// would hand a super-admin-only permission to that key's holders; the risk
+// of an undeclared old key is checked at consent against the catalog.
+func (v *validator) inheritFrom(f string, up manifest.UserPermission) {
+	critical := up.RiskLevel() == manifest.RiskCritical
+	for j, from := range up.InheritFrom {
+		ff := fmt.Sprintf("%s.inheritFrom[%d]", f, j)
+		switch old, declared := v.m.FindUserPermission(from); {
+		case from == up.Key || !validUserPermKey(from):
+			v.add(ff, "invalid_value", "inheritFrom %q must be a local permission key other than the permission's own", from)
+		case critical && declared && old.RiskLevel() != manifest.RiskCritical:
+			v.add(ff, "invalid_value", "a critical permission inherits from critical permissions only; %q is %s", from, old.RiskLevel())
+		}
+	}
+}
+
+// permissionScope validates a user permission's scope: either a values list
+// or a resource of the plugin's own offering options, own or both (a
+// resource granted only whole needs no scope).
+func (v *validator) permissionScope(f string, s *manifest.PermissionScope) {
+	if s == nil {
+		return
+	}
+	if len(s.Values) > 0 {
+		if s.Resource != "" || s.Options != "" || s.Own {
+			v.add(f, "mutually_exclusive", "values excludes resource, options and own")
+		}
+		v.scopeValues(f+".values", s.Values)
+		return
+	}
+	switch {
+	case s.Resource == "":
+		v.add(f, "required", "scope declares a resource or values")
+		return
+	case !scopeResourceRe.MatchString(s.Resource):
+		v.add(f+".resource", "invalid_format", "resource %q must match %s", s.Resource, manifest.ScopeResourcePattern)
+	case slices.Contains(manifest.ReservedScopeResources, s.Resource):
+		v.add(f+".resource", "reserved", "resource %q is reserved (%v); accounts are scoped by routes[].accounts", s.Resource, manifest.ReservedScopeResources)
+	}
+	if s.Options == "" {
+		if !s.Own {
+			v.add(f, "required", "a resource scope offers options, own or both")
+		}
+		return
+	}
+	// The core calls the options route itself, with nothing to fill a path
+	// parameter with.
+	r := v.routeRef(f+".options", s.Options, "GET")
+	if r != nil && (strings.ToUpper(r.Method) != "GET" || r.Scope != "admin" || hasPathParam(r.Path)) {
+		v.add(f+".options", "invalid", "options route %s %s must be a GET admin route without path parameters", r.Method, r.Path)
+	}
+}
+
+// scopeValues validates the values of a values scope.
+func (v *validator) scopeValues(f string, values []manifest.ScopeValue) {
+	if len(values) > maxScopeValues {
+		v.add(f, "too_many", "at most %d values", maxScopeValues)
+	}
+	seen := map[string]bool{}
+	for j, sv := range values {
+		ff := fmt.Sprintf("%s[%d]", f, j)
+		if !scopeValueRe.MatchString(sv.Key) {
+			v.add(ff+".key", "invalid_format", "value key %q must match %s", sv.Key, manifest.ScopeValuePattern)
+		} else if seen[sv.Key] {
+			v.add(ff+".key", "duplicate", "value %q declared twice", sv.Key)
+		}
+		seen[sv.Key] = true
+		if firstText(sv.Label) == "" {
+			v.add(ff+".label", "required", "label is required")
+		}
+	}
+}
+
+// permissionDefaults validates a user permission's defaults; roles are
+// visited in sorted order so the errors are stable.
+func (v *validator) permissionDefaults(f string, up manifest.UserPermission) {
+	if len(up.Defaults) == 0 {
+		return
+	}
+	if up.RiskLevel() == manifest.RiskCritical {
+		v.add(f, "unsupported", "critical permissions take no defaults; only the super admin grants them")
+		return
+	}
+	for _, role := range slices.Sorted(maps.Keys(up.Defaults)) {
+		d, ff := up.Defaults[role], f+"."+role
+		switch {
+		case !slices.Contains(manifest.BuiltinRoleKeys, role):
+			v.add(ff, "invalid_value", "role %q is not one of %v", role, manifest.BuiltinRoleKeys)
+		case !d.Unscoped && len(d.Scopes) == 0:
+			v.add(ff, "invalid_value", "leave the role out instead of false or []")
+		case up.Scope == nil && !d.Unscoped:
+			v.add(ff, "invalid_value", "an unscoped permission's default is true")
+		case up.Scope != nil && d.Unscoped:
+			v.add(ff, "invalid_value", `a scoped permission's default is a list of scopes, e.g. ["*"]`)
+		default:
+			for j, s := range d.Scopes {
+				if _, ok := up.Scope.GrantSuffix(s); !ok {
+					v.add(fmt.Sprintf("%s[%d]", ff, j), "invalid_value", `scope %q is not "*", an allowed "own" or a declared value`, s)
+				}
 			}
 		}
 	}
 }
 
 func (v *validator) userPerm(p string) bool {
-	for _, up := range v.m.UserPermissions {
-		if up.Key == p {
-			return true
-		}
-	}
-	return false
+	_, ok := v.m.FindUserPermission(p)
+	return ok
 }
 
 func (v *validator) resources() {

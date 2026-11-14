@@ -425,6 +425,10 @@ func (v *validator) uiAccountActions(u *manifest.UI) {
 			v.add(f+".permission", "required", "permission is required")
 		} else if !v.userPerm(act.Permission) {
 			v.add(f+".permission", "unknown", "permission %q is not declared in userPermissions", act.Permission)
+		} else if v.m.UserPermissionScope(act.Permission) != nil {
+			// The core checks an account action on routes[].accounts and
+			// account:* alone, so a plugin scope would mean nothing there.
+			v.add(f+".permission", "unsupported", "permission %q declares a scope; account actions take an unscoped permission", act.Permission)
 		}
 		switch act.VisibleFor {
 		case "", "editable", "all":
@@ -444,9 +448,7 @@ func (v *validator) uiAccountActions(u *manifest.UI) {
 		case r.Permission != act.Permission:
 			v.add(f+".route", "permission_mismatch", "route %s %s requires permission %q, the action %q",
 				r.Method, r.Path, r.Permission, act.Permission)
-		case slices.ContainsFunc(strings.Split(r.Path, "/"), func(s string) bool {
-			return strings.HasPrefix(s, ":") || strings.HasPrefix(s, "*")
-		}):
+		case hasPathParam(r.Path):
 			// The console posts {"account_ids": [...]} to the path as
 			// declared; it has nothing to fill a :param or *wildcard with.
 			v.add(f+".route", "parameterized_route", "route %s %s has a path parameter; the console posts {\"account_ids\":[...]} and cannot fill it", r.Method, r.Path)
@@ -456,6 +458,13 @@ func (v *validator) uiAccountActions(u *manifest.UI) {
 			v.add(f+".route", "accounts_mismatch", "route %s %s declares accounts without %q, which the console posts", r.Method, r.Path, manifest.AccountActionIDs)
 		}
 	}
+}
+
+// hasPathParam reports a :param or *wildcard segment in a route path.
+func hasPathParam(path string) bool {
+	return slices.ContainsFunc(strings.Split(path, "/"), func(s string) bool {
+		return strings.HasPrefix(s, ":") || strings.HasPrefix(s, "*")
+	})
 }
 
 // uiNative validates ui.native and hostUICompat.
@@ -499,13 +508,18 @@ type uiFloor struct {
 // 3.10 (3.11 starts at 0.1.279); 0.1.279 is the last with UI 3.11 (3.12
 // starts at 0.1.280); 0.1.280 is the last with UI 3.12 (3.13 starts at
 // 0.1.281); 0.1.283 is the last with UI 3.13 (3.14 starts at 0.1.284);
-// 0.1.285 is the last with UI 3.14 (3.15 starts at 0.1.286).
+// 0.1.285 is the last with UI 3.14 (3.15 starts at 0.1.286); 0.1.288 is the
+// last with UI 3.15 (3.16 starts at PluginPermissionsFirstCore).
 // 3.10 to 3.13 add components and props, no manifest declaration, so only
 // hostUICompat asks for them. 3.14 adds ui.pages.<page>.nav, but it needs
 // no floor of its own either: an older console ignores nav and the page
 // keeps its in-page section switcher, so the plugin still works there.
 // 3.15 adds the optional permissions.hasAction and scope (resource scopes).
+// 3.16 adds the permission model; its declarations live outside ui and are
+// floored by coreFloors (PluginPermissionsFirstCore), so its entry only
+// answers hostUICompat ^3.16.
 var uiFloors = []uiFloor{
+	{minor: 16, lastUI: "3.15.0", lastCore: "0.1.288", firstCore: PluginPermissionsFirstCore},
 	{minor: 15, lastUI: "3.14.0", lastCore: "0.1.285", firstCore: "0.1.286"},
 	{minor: 14, lastUI: "3.13.0", lastCore: "0.1.283", firstCore: "0.1.284"},
 	{minor: 13, lastUI: "3.12.0", lastCore: "0.1.280", firstCore: "0.1.281"},

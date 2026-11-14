@@ -340,6 +340,13 @@ func TestSettingsPermission(t *testing.T) {
 	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); c["ui.settings.permission"] != "unknown" {
 		t.Fatalf("an undeclared permission must be rejected: %v", c)
 	}
+	// The settings form is authorized on the permission as a whole.
+	m.UI.Settings.Permission = "assets:read"
+	m.UserPermissions[0].Scope = &manifest.PermissionScope{Resource: "asset", Own: true}
+	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); c["ui.settings.permission"] != "unsupported" {
+		t.Fatalf("a scoped permission must be rejected: %v", c)
+	}
+	m.UserPermissions[0].Scope = nil
 	m.UI.Settings.Permission = ""
 	m.AccountTypes = []manifest.AccountType{{Form: manifest.Form{Permission: "assets:read"}}}
 	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); c["accountTypes[0].form.permission"] != "unsupported" {
@@ -673,6 +680,13 @@ func TestAccountActions(t *testing.T) {
 		if c := uiCodes(withAccountAction(">=0.1.256 <0.2.0", act)); c["ui.accountActions[0]."+tc.field] != tc.code {
 			t.Errorf("%s: want %s = %s, got %v", tc.name, tc.field, tc.code, c)
 		}
+	}
+	// The core checks an action on accounts alone, so a plugin scope on its
+	// permission would mean nothing.
+	m = withAccountAction(">=0.1.289 <0.2.0", good)
+	m.UserPermissions[1].Scope = &manifest.PermissionScope{Resource: "asset", Own: true}
+	if c := uiCodes(m); c["ui.accountActions[0].permission"] != "unsupported" {
+		t.Errorf("an action over a scoped permission must be rejected: %v", c)
 	}
 	// Like a form submit, the method may be left out and means POST.
 	act := good

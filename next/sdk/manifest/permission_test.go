@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPermissionKey(t *testing.T) {
@@ -77,4 +80,94 @@ func TestUserPermissionRoles(t *testing.T) {
 	if slices.Contains(BuiltinRoleKeys, "super_admin") {
 		t.Fatal("super_admin is never a default role")
 	}
+}
+
+// true and arrays survive a round trip, false decodes to the zero value
+// (check reports it per field) and any other JSON type fails to decode.
+func TestRoleDefaultJSON(t *testing.T) {
+	for _, raw := range []string{`true`, `["*","own"]`, `[]`} {
+		var d RoleDefault
+		require.NoError(t, json.Unmarshal([]byte(raw), &d), raw)
+		again, err := json.Marshal(d)
+		require.NoError(t, err)
+		assert.JSONEq(t, raw, string(again))
+	}
+	var d RoleDefault
+	require.NoError(t, json.Unmarshal([]byte(`false`), &d))
+	assert.Equal(t, RoleDefault{}, d)
+	for _, raw := range []string{`"x"`, `{}`, `[1]`} {
+		assert.Error(t, json.Unmarshal([]byte(raw), &d), raw)
+	}
+	var up UserPermission
+	require.NoError(t, json.Unmarshal([]byte(`{"key":"a:b","defaults":{"admin":true,"user":["own"]}}`), &up))
+	assert.Equal(t, map[string]RoleDefault{"admin": {Unscoped: true}, "user": {Scopes: []string{"own"}}}, up.Defaults)
+}
+
+func TestDefaultGrants(t *testing.T) {
+	resource := &PermissionScope{Resource: "flow", Options: "/scopes/flow", Own: true}
+	values := &PermissionScope{Values: []ScopeValue{{Key: "input"}, {Key: "output"}}}
+	cases := []struct {
+		name string
+		up   UserPermission
+		want map[string][]string
+	}{
+		{"unscoped", UserPermission{Defaults: map[string]RoleDefault{"admin": {Unscoped: true}}}, map[string][]string{"admin": {""}}},
+		{"every row implies the rest", UserPermission{Scope: resource, Defaults: map[string]RoleDefault{"admin": {Scopes: []string{"own", "*"}}}}, map[string][]string{"admin": {""}}},
+		{"own", UserPermission{Scope: resource, Defaults: map[string]RoleDefault{"operator": {Scopes: []string{"own"}}}}, map[string][]string{"operator": {"own"}}},
+		{"values sorted and deduplicated", UserPermission{Scope: values, Defaults: map[string]RoleDefault{"admin": {Scopes: []string{"output", "input", "input"}}}}, map[string][]string{"admin": {"value/input", "value/output"}}},
+		{"invalid entries skipped", UserPermission{Scope: values, Defaults: map[string]RoleDefault{"admin": {Scopes: []string{"other"}}, "user": {Scopes: []string{"input", "own"}}}}, map[string][]string{"user": {"value/input"}}},
+		{"critical", UserPermission{Risk: RiskCritical, Defaults: map[string]RoleDefault{"admin": {Unscoped: true}}}, nil},
+		{"no defaults", UserPermission{}, nil},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, c.up.DefaultGrants(), c.name)
+	}
+}
+
+func TestGrantSuffix(t *testing.T) {
+	resource := PermissionScope{Resource: "flow", Options: "/scopes/flow"}
+	values := PermissionScope{Values: []ScopeValue{{Key: "input"}, {Key: "own"}}}
+	cases := []struct {
+		name  string
+		scope PermissionScope
+		in    string
+		want  string
+		ok    bool
+	}{
+		{"every row", resource, "*", "", true},
+		{"own not allowed", resource, "own", "", false},
+		{"own allowed", PermissionScope{Resource: "flow", Own: true}, "own", "own", true},
+		{"an id is runtime data", resource, "flow/3", "", false},
+		{"values key", values, "input", "value/input", true},
+		{"values key named own", values, "own", "value/own", true},
+		{"undeclared value", values, "output", "", false},
+		{"values every row", values, "*", "", true},
+	}
+	for _, c := range cases {
+		got, ok := c.scope.GrantSuffix(c.in)
+		assert.Equal(t, c.ok, ok, c.name)
+		if ok {
+			assert.Equal(t, c.want, got, c.name)
+		}
+	}
+}
+
+func TestUserPermissionScopeLookup(t *testing.T) {
+	scope := &PermissionScope{Resource: "flow", Own: true}
+	m := &Manifest{UserPermissions: []UserPermission{{Key: "flow:read"}, {Key: "flow:manage", Scope: scope}}}
+	up, ok := m.FindUserPermission("flow:manage")
+	require.True(t, ok)
+	assert.Equal(t, scope, up.Scope)
+	assert.Same(t, scope, m.UserPermissionScope("flow:manage"))
+	assert.Nil(t, m.UserPermissionScope("flow:read"))
+	assert.Nil(t, m.UserPermissionScope("flow:missing"))
+	_, ok = m.FindUserPermission("flow:missing")
+	assert.False(t, ok)
+}
+
+func TestScopeResourceName(t *testing.T) {
+	assert.Equal(t, "flow", PermissionScope{Resource: "flow", Own: true}.ResourceName())
+	assert.Equal(t, ScopeValueResource, PermissionScope{Values: []ScopeValue{{Key: "input"}}}.ResourceName())
+	assert.Equal(t, RiskLow, UserPermission{}.RiskLevel())
+	assert.Equal(t, RiskSensitive, UserPermission{Risk: RiskSensitive}.RiskLevel())
 }
