@@ -47,6 +47,14 @@ const SPMWindowFirstCore = "0.1.276"
 // to look for; such a plugin keeps older cores out by its own hostCompat.
 const RouteAccountsFirstCore = "0.1.286"
 
+// PluginPermissionsFirstCore is the first core that honours
+// userPermissions[].group/risk/requires/scope/defaults, permissionGroups and
+// routes[].scopeFrom, and ships UI 3.16 (the permission matrix, plugin
+// resource scopes). An older core ignores them: it would grant a permission
+// without defaultRoles to admin (critical ones included), treat every risk
+// as not sensitive and forward scopeFrom routes unchecked.
+const PluginPermissionsFirstCore = "0.1.289"
+
 // ConvertMatrixFirstCore is the first core of the protocol conversion
 // matrix (CONTRACTS §88), which adds the openai.responses -> openai.chat
 // conversion within the openai platform.
@@ -97,6 +105,19 @@ var coreFloors = []coreFloor{
 	{field: "accountTypes[].commonControls (new controls or visible, locked, required)", firstCore: CommonControlsFirstCore,
 		uses: (*validator).usesNewCommonControls},
 	{field: "accountTypes[].commonControls (session windows)", firstCore: SPMWindowFirstCore, uses: (*validator).usesSPMWindows},
+	{field: "userPermissions (group, risk, requires, scope, defaults), permissionGroups, routes[].scopeFrom",
+		firstCore: PluginPermissionsFirstCore, uses: (*validator).usesPluginPermissions},
+}
+
+// usesPluginPermissions reports a declaration of the UI 3.16 permission
+// model. A permission with none of the new fields means the same on every
+// core but for the old admin default, which its own hostCompat answers.
+func (v *validator) usesPluginPermissions() bool {
+	return len(v.m.PermissionGroups) > 0 ||
+		slices.ContainsFunc(v.m.UserPermissions, func(up manifest.UserPermission) bool {
+			return up.Group != "" || up.Risk != "" || len(up.Requires) > 0 || up.Scope != nil || len(up.Defaults) > 0
+		}) ||
+		slices.ContainsFunc(v.m.Routes, func(r manifest.Route) bool { return r.ScopeFrom != "" })
 }
 
 // usesNewCommonControls reports a common control an older core does not

@@ -46,10 +46,13 @@ type Manifest struct {
 	// Notifications declares the notification channels the plugin delivers.
 	Notifications *Notifications `json:"notifications,omitempty"`
 
-	UserPermissions []UserPermission `json:"userPermissions,omitempty"`
-	Routes          []Route          `json:"routes,omitempty"`
-	UI              *UI              `json:"ui,omitempty"`
-	Resources       *Resources       `json:"resources,omitempty"`
+	// PermissionGroups are the groups userPermissions[].group names; the role
+	// editor shows plugin, group, permission in this order (UI 3.16).
+	PermissionGroups []PermissionGroup `json:"permissionGroups,omitempty"`
+	UserPermissions  []UserPermission  `json:"userPermissions,omitempty"`
+	Routes           []Route           `json:"routes,omitempty"`
+	UI               *UI               `json:"ui,omitempty"`
+	Resources        *Resources        `json:"resources,omitempty"`
 
 	HostPermissions  []HostPermission `json:"hostPermissions,omitempty"`
 	ExternalServices []string         `json:"externalServices,omitempty"` // shown at review; the hosts SendAccountRequest may reach (CONTRACTS §91)
@@ -873,13 +876,35 @@ type Database struct {
 
 // ---------------------------------------------------------------- permissions, routes, ui
 
+// PermissionGroup is one group of a plugin's permissions; its position in
+// permissionGroups is its order.
+type PermissionGroup struct {
+	Key   string        `json:"key"`
+	Label LocalizedText `json:"label"`
+}
+
 // UserPermission is registered into the RBAC catalog as
 // "plugin.<key>:<Key>".
 type UserPermission struct {
-	Key         string        `json:"key"` // ^[a-z0-9_]+(:[a-z0-9_]+)+$
+	Key         string        `json:"key"` // ^[a-z0-9_]+(:[a-z0-9_]+)+$, not ending in :own
 	Label       LocalizedText `json:"label"`
 	Description LocalizedText `json:"description,omitempty"`
 	Sensitive   bool          `json:"sensitive,omitempty"`
+	Group       string        `json:"group,omitempty"` // a permissionGroups key
+	// Risk is RiskLow (the default), RiskSensitive or RiskCritical. A
+	// critical permission is super-admin only: no defaults, and only a
+	// holder may grant it (initially only the super admin).
+	Risk string `json:"risk,omitempty"`
+	// Requires are local keys of this manifest the permission is of little
+	// use without; the role editor hints at them, authorization ignores them.
+	Requires []string `json:"requires,omitempty"`
+	// Scope lets a grant reach part of the plugin's data; nil is unscoped.
+	Scope *PermissionScope `json:"scope,omitempty"`
+	// Defaults are the built-in roles (BuiltinRoleKeys) the permission is
+	// suggested for when the catalog first creates it: true for an unscoped
+	// permission, a list of scopes ("*", "own" or a values key) for a scoped
+	// one. A role left out gets nothing; the super admin is never listed.
+	Defaults map[string]RoleDefault `json:"defaults,omitempty"`
 	// DefaultRoles are the built-in roles (BuiltinRoleKeys) the permission
 	// is granted to when the catalog first creates it: omitted (or null)
 	// means DefaultPermissionRoles, an empty list none. The core skips them
@@ -896,6 +921,23 @@ type UserPermission struct {
 	InheritFrom []string `json:"inheritFrom,omitempty"`
 }
 
+// PermissionScope is where the scopes of a permission come from: the
+// plugin's own resource (Resource, with candidate ids from the Options route
+// and/or Own), or a fixed list of Values. Never a core resource: a plugin
+// scopes accounts through routes[].accounts.
+type PermissionScope struct {
+	Resource string       `json:"resource,omitempty"` // ScopeResourcePattern, not reserved
+	Options  string       `json:"options,omitempty"`  // "/path" of a declared GET admin route
+	Own      bool         `json:"own,omitempty"`      // "own" (created by the holder) may be granted
+	Values   []ScopeValue `json:"values,omitempty"`
+}
+
+// ScopeValue is one value of a values scope.
+type ScopeValue struct {
+	Key   string        `json:"key"` // ScopeValuePattern
+	Label LocalizedText `json:"label"`
+}
+
 // Route is a plugin-owned console endpoint under /api/v1/p/<key>.
 type Route struct {
 	Method     string `json:"method"`
@@ -906,6 +948,12 @@ type Route struct {
 	// act on the accounts the request names (admin/user routes only; see
 	// EffectiveRouteAccounts for the routes account actions post to).
 	Accounts *RouteAccounts `json:"accounts,omitempty"`
+	// ScopeFrom names where the request carries the id the core checks
+	// against the caller's scope of Permission before forwarding:
+	// "path:<param>", "query:<name>" or "body:<field>" (the accounts.from
+	// DSL, ParseAccountsFrom). Admin/user routes whose permission declares a
+	// scope only (UI 3.16).
+	ScopeFrom string `json:"scopeFrom,omitempty"`
 }
 
 type UI struct {
@@ -1134,6 +1182,9 @@ const (
 	RiskMedium   = "medium"
 	RiskHigh     = "high"
 	RiskCritical = "critical"
+	// RiskSensitive is a userPermissions risk only (UserPermissionRisks);
+	// host permissions keep the four levels above.
+	RiskSensitive = "sensitive"
 )
 
 var HostPermissionRisk = map[string]string{
