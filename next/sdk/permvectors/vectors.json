@@ -170,7 +170,7 @@
   },
   {
    "in": "plugin.x:y:own",
-   "invalid": true
+   "out": "plugin.x:y:own"
   },
   {
    "in": "account:create:group/12/account/*",
@@ -214,6 +214,54 @@
   },
   {
    "in": "proxy:manage:group/*",
+   "invalid": true
+  },
+  {
+   "in": "plugin.x:y:*",
+   "out": "plugin.x:y"
+  },
+  {
+   "in": "plugin.moderation:flow:manage:flow/3",
+   "out": "plugin.moderation:flow:manage:flow/3"
+  },
+  {
+   "in": "plugin.x:rule:apply:value/input",
+   "out": "plugin.x:rule:apply:value/input"
+  },
+  {
+   "in": "plugin.x:y:flow/a.b-C_9",
+   "out": "plugin.x:y:flow/a.b-C_9"
+  },
+  {
+   "in": "plugin.x:y:flow/*",
+   "invalid": true
+  },
+  {
+   "in": "plugin.x:y:Flow/3",
+   "invalid": true
+  },
+  {
+   "in": "plugin.x:y:flow/",
+   "invalid": true
+  },
+  {
+   "in": "plugin.x:y:/3",
+   "invalid": true
+  },
+  {
+   "in": "plugin.x:y:flow/3/4",
+   "invalid": true
+  },
+  {
+   "in": "plugin.x:y:flow/a b",
+   "invalid": true
+  },
+  {
+   "in": "plugin.x:y:flow/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "invalid": true
+  },
+  {
+   "in": "x:y:own",
    "invalid": true
   }
  ],
@@ -586,6 +634,56 @@
   {
    "have": "role:manage",
    "want": "role:define",
+   "ok": false
+  },
+  {
+   "have": "plugin.m:f:m",
+   "want": "plugin.m:f:m:flow/3",
+   "ok": true
+  },
+  {
+   "have": "plugin.m:f:m",
+   "want": "plugin.m:f:m:own",
+   "ok": true
+  },
+  {
+   "have": "plugin.m:f:m:flow/3",
+   "want": "plugin.m:f:m",
+   "ok": false
+  },
+  {
+   "have": "plugin.m:f:m:flow/3",
+   "want": "plugin.m:f:m:flow/3",
+   "ok": true
+  },
+  {
+   "have": "plugin.m:f:m:flow/3",
+   "want": "plugin.m:f:m:flow/4",
+   "ok": false
+  },
+  {
+   "have": "plugin.m:f:m:flow/3",
+   "want": "plugin.m:f:m:record/3",
+   "ok": false
+  },
+  {
+   "have": "plugin.m:f:m:own",
+   "want": "plugin.m:f:m:flow/3",
+   "ok": false
+  },
+  {
+   "have": "plugin.m:f:m:flow/3",
+   "want": "plugin.m:f:m:own",
+   "ok": false
+  },
+  {
+   "have": "plugin.m:f:m:own",
+   "want": "plugin.m:f:m:own",
+   "ok": true
+  },
+  {
+   "have": "plugin.m:f:m:flow/3",
+   "want": "plugin.n:f:m:flow/3",
    "ok": false
   }
  ],

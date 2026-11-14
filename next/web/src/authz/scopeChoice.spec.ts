@@ -31,18 +31,37 @@ describe('granted keys', () => {
 describe('offerOf', () => {
   it('offers everything to a holder of every row', () => {
     const o = offerOf([s('')])
-    expect(o).toEqual({ all: true, own: true, groups: 'any', ids: 'any' })
+    expect(o).toEqual({ all: true, own: true, groups: 'any', ids: 'any', refs: 'any' })
     expect(keys(defaultScopes(o))).toEqual(['account:update'])
   })
 
   it('offers no more than the holder\'s own scopes', () => {
     const o = offerOf([s('own'), s('group/12'), s('group/13'), s('account/5'), s('group/3/account/9')])
-    expect(o).toEqual({ all: false, own: true, groups: [12, 13], ids: [5] })
+    expect(o).toEqual({ all: false, own: true, groups: [12, 13], ids: [5], refs: null })
     expect(keys(defaultScopes(o))).toEqual(['account:update:own'])
-    expect(offerOf([s('group/*')])).toEqual({ all: false, own: false, groups: 'any', ids: null })
+    expect(offerOf([s('group/*')])).toEqual({ all: false, own: false, groups: 'any', ids: null, refs: null })
     expect(defaultScopes(offerOf([s('group/12')]))).toEqual([])
-    expect(offerOf([])).toEqual({ all: false, own: false, groups: null, ids: null })
+    expect(offerOf([])).toEqual({ all: false, own: false, groups: null, ids: null, refs: null })
     // account:create names no rows.
-    expect(offerOf([s('')], 'account:create')).toEqual({ all: true, own: true, groups: 'any', ids: null })
+    expect(offerOf([s('')], 'account:create')).toEqual({ all: true, own: true, groups: 'any', ids: null, refs: 'any' })
+  })
+})
+
+describe('plugin scopes', () => {
+  const action = 'plugin.m:flow:manage'
+  const p = (suffix: string): Scope => parsePermission(suffix ? `${action}:${suffix}` : action)!.scope
+  const pkeys = (scopes: Scope[]) => scopes.map((scope) => patternKey({ action, scope }))
+
+  it('choiceOf / scopesOf round-trip refs', () => {
+    const c = choiceOf([p('own'), p('flow/3'), p('flow/5')])
+    expect(c).toMatchObject({ all: false, own: true, groups: [], ids: [], refs: ['flow/3', 'flow/5'], other: [] })
+    expect(pkeys(scopesOf(c))).toEqual([`${action}:own`, `${action}:flow/3`, `${action}:flow/5`])
+    expect(pkeys(scopesOf({ ...c, all: true }))).toEqual([action])
+  })
+
+  it('offerOf offers refs any for all, held refs otherwise', () => {
+    expect(offerOf([p('')], action).refs).toBe('any')
+    expect(offerOf([p('own'), p('flow/3'), p('flow/5')], action)).toEqual({ all: false, own: true, groups: null, ids: null, refs: ['flow/3', 'flow/5'] })
+    expect(offerOf([p('own')], action).refs).toBeNull()
   })
 })

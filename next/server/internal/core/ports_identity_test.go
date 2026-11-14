@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+	"github.com/stretchr/testify/assert"
 	"reflect"
 	"slices"
 	"testing"
@@ -210,6 +211,24 @@ func TestRestrictScoped(t *testing.T) {
 	if got := super.Restrict([]string{"account:update:group/3"}); got.Superuser || !slices.Equal(got.KeyList(), []string{"account:update:group/3"}) {
 		t.Fatalf("superuser restrict = %+v", got)
 	}
+}
+
+// A plugin key carries its scope by syntax alone: held, implied, listed,
+// restricted and missing like a core scoped key, and never an account
+// data scope.
+func TestPermissionSetPluginScopes(t *testing.T) {
+	t.Parallel()
+	const action = "plugin.m:f:m"
+	set := PermissionSetOf(action + ":flow/2")
+	assert.True(t, set.Has(action+":flow/2"))
+	assert.False(t, set.Has(action+":flow/3"))
+	assert.False(t, set.Has(action))
+	assert.True(t, set.HasAction(action))
+	assert.Equal(t, []string{action + ":flow/2"}, set.KeyList())
+	assert.Equal(t, []string{action + ":flow/2"}, set.Restrict([]string{action}).KeyList())
+	assert.Equal(t, []string{action + ":flow/3"}, set.Missing(PermissionSetOf(action+":flow/3")).Keys)
+	assert.Empty(t, PermissionSetOf(action, action+":own").Missing(set).Keys)
+	assert.Equal(t, DataScope{}, set.DataScope(7, action))
 }
 
 // ScopeGroups lists the groups named by group scopes of any action, once,
