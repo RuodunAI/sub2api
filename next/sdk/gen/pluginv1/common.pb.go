@@ -1341,6 +1341,85 @@ func (x *UsageTokens) GetCacheCreation_1HTokens() int64 {
 	return 0
 }
 
+// ActionScope is a console user's scope of one scoped plugin permission
+// (CONTRACTS §21.0, plugin resources): what the core decided, for the plugin
+// to filter by. Unset fields mean nothing is reached.
+type ActionScope struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	// Fully qualified action key without a scope: "plugin.moderation:flow:manage".
+	Permission string `protobuf:"bytes,1,opt,name=permission,proto3" json:"permission,omitempty"`
+	// Every row of the resource.
+	All bool `protobuf:"varint,2,opt,name=all,proto3" json:"all,omitempty"`
+	// The rows the user created. Only the plugin knows its rows' creator: it
+	// MUST check its own created_by (Caller.user_id) for any value not in values.
+	Own bool `protobuf:"varint,3,opt,name=own,proto3" json:"own,omitempty"`
+	// The <value> of the user's "<resource>/<value>" grants, sorted, once each.
+	Values []string `protobuf:"bytes,4,rep,name=values,proto3" json:"values,omitempty"`
+}
+
+func (x *ActionScope) Reset() {
+	*x = ActionScope{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_sub2api_plugin_v1_common_proto_msgTypes[14]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *ActionScope) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActionScope) ProtoMessage() {}
+
+func (x *ActionScope) ProtoReflect() protoreflect.Message {
+	mi := &file_sub2api_plugin_v1_common_proto_msgTypes[14]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActionScope.ProtoReflect.Descriptor instead.
+func (*ActionScope) Descriptor() ([]byte, []int) {
+	return file_sub2api_plugin_v1_common_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ActionScope) GetPermission() string {
+	if x != nil {
+		return x.Permission
+	}
+	return ""
+}
+
+func (x *ActionScope) GetAll() bool {
+	if x != nil {
+		return x.All
+	}
+	return false
+}
+
+func (x *ActionScope) GetOwn() bool {
+	if x != nil {
+		return x.Own
+	}
+	return false
+}
+
+func (x *ActionScope) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
 var File_sub2api_plugin_v1_common_proto protoreflect.FileDescriptor
 
 var file_sub2api_plugin_v1_common_proto_rawDesc = []byte{
@@ -1585,11 +1664,18 @@ var file_sub2api_plugin_v1_common_proto_rawDesc = []byte{
 	0x65, 0x5f, 0x63, 0x72, 0x65, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x5f, 0x31, 0x68, 0x5f, 0x74, 0x6f,
 	0x6b, 0x65, 0x6e, 0x73, 0x18, 0x05, 0x20, 0x01, 0x28, 0x03, 0x52, 0x15, 0x63, 0x61, 0x63, 0x68,
 	0x65, 0x43, 0x72, 0x65, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x31, 0x68, 0x54, 0x6f, 0x6b, 0x65, 0x6e,
-	0x73, 0x42, 0x40, 0x5a, 0x3e, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f,
-	0x53, 0x75, 0x62, 0x32, 0x41, 0x50, 0x49, 0x2d, 0x44, 0x65, 0x76, 0x73, 0x2f, 0x73, 0x75, 0x70,
-	0x32, 0x61, 0x70, 0x69, 0x2f, 0x6e, 0x65, 0x78, 0x74, 0x2f, 0x73, 0x64, 0x6b, 0x2f, 0x67, 0x65,
-	0x6e, 0x2f, 0x70, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x76, 0x31, 0x3b, 0x70, 0x6c, 0x75, 0x67, 0x69,
-	0x6e, 0x76, 0x31, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x73, 0x22, 0x69, 0x0a, 0x0b, 0x41, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x53, 0x63, 0x6f, 0x70, 0x65,
+	0x12, 0x1e, 0x0a, 0x0a, 0x70, 0x65, 0x72, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x18, 0x01,
+	0x20, 0x01, 0x28, 0x09, 0x52, 0x0a, 0x70, 0x65, 0x72, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6f, 0x6e,
+	0x12, 0x10, 0x0a, 0x03, 0x61, 0x6c, 0x6c, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x52, 0x03, 0x61,
+	0x6c, 0x6c, 0x12, 0x10, 0x0a, 0x03, 0x6f, 0x77, 0x6e, 0x18, 0x03, 0x20, 0x01, 0x28, 0x08, 0x52,
+	0x03, 0x6f, 0x77, 0x6e, 0x12, 0x16, 0x0a, 0x06, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x73, 0x18, 0x04,
+	0x20, 0x03, 0x28, 0x09, 0x52, 0x06, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x73, 0x42, 0x40, 0x5a, 0x3e,
+	0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x53, 0x75, 0x62, 0x32, 0x41,
+	0x50, 0x49, 0x2d, 0x44, 0x65, 0x76, 0x73, 0x2f, 0x73, 0x75, 0x70, 0x32, 0x61, 0x70, 0x69, 0x2f,
+	0x6e, 0x65, 0x78, 0x74, 0x2f, 0x73, 0x64, 0x6b, 0x2f, 0x67, 0x65, 0x6e, 0x2f, 0x70, 0x6c, 0x75,
+	0x67, 0x69, 0x6e, 0x76, 0x31, 0x3b, 0x70, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x76, 0x31, 0x62, 0x06,
+	0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -1605,7 +1691,7 @@ func file_sub2api_plugin_v1_common_proto_rawDescGZIP() []byte {
 }
 
 var file_sub2api_plugin_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_sub2api_plugin_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
+var file_sub2api_plugin_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_sub2api_plugin_v1_common_proto_goTypes = []interface{}{
 	(BodyPatch_Op)(0),                // 0: sub2api.plugin.v1.BodyPatch.Op
 	(*BodyPatch)(nil),                // 1: sub2api.plugin.v1.BodyPatch
@@ -1622,16 +1708,17 @@ var file_sub2api_plugin_v1_common_proto_goTypes = []interface{}{
 	(*RequestMeta)(nil),              // 12: sub2api.plugin.v1.RequestMeta
 	(*FieldError)(nil),               // 13: sub2api.plugin.v1.FieldError
 	(*UsageTokens)(nil),              // 14: sub2api.plugin.v1.UsageTokens
-	nil,                              // 15: sub2api.plugin.v1.AccountProperties.ModelMappingEntry
-	nil,                              // 16: sub2api.plugin.v1.ModelMappingValue.EntriesEntry
-	nil,                              // 17: sub2api.plugin.v1.RequestMeta.PathParamsEntry
-	nil,                              // 18: sub2api.plugin.v1.RequestMeta.QueryEntry
-	nil,                              // 19: sub2api.plugin.v1.RequestMeta.EnvironmentEntry
+	(*ActionScope)(nil),              // 15: sub2api.plugin.v1.ActionScope
+	nil,                              // 16: sub2api.plugin.v1.AccountProperties.ModelMappingEntry
+	nil,                              // 17: sub2api.plugin.v1.ModelMappingValue.EntriesEntry
+	nil,                              // 18: sub2api.plugin.v1.RequestMeta.PathParamsEntry
+	nil,                              // 19: sub2api.plugin.v1.RequestMeta.QueryEntry
+	nil,                              // 20: sub2api.plugin.v1.RequestMeta.EnvironmentEntry
 }
 var file_sub2api_plugin_v1_common_proto_depIdxs = []int32{
 	0,  // 0: sub2api.plugin.v1.BodyPatch.op:type_name -> sub2api.plugin.v1.BodyPatch.Op
 	3,  // 1: sub2api.plugin.v1.Account.properties:type_name -> sub2api.plugin.v1.AccountProperties
-	15, // 2: sub2api.plugin.v1.AccountProperties.model_mapping:type_name -> sub2api.plugin.v1.AccountProperties.ModelMappingEntry
+	16, // 2: sub2api.plugin.v1.AccountProperties.model_mapping:type_name -> sub2api.plugin.v1.AccountProperties.ModelMappingEntry
 	4,  // 3: sub2api.plugin.v1.AccountProperties.model_limits:type_name -> sub2api.plugin.v1.ModelLimit
 	4,  // 4: sub2api.plugin.v1.ModelLimitList.items:type_name -> sub2api.plugin.v1.ModelLimit
 	2,  // 5: sub2api.plugin.v1.AccountLifecycleRequest.account:type_name -> sub2api.plugin.v1.Account
@@ -1641,10 +1728,10 @@ var file_sub2api_plugin_v1_common_proto_depIdxs = []int32{
 	9,  // 9: sub2api.plugin.v1.AccountPatch.models:type_name -> sub2api.plugin.v1.ModelList
 	10, // 10: sub2api.plugin.v1.AccountPatch.model_mapping:type_name -> sub2api.plugin.v1.ModelMappingValue
 	5,  // 11: sub2api.plugin.v1.AccountPatch.model_limits:type_name -> sub2api.plugin.v1.ModelLimitList
-	16, // 12: sub2api.plugin.v1.ModelMappingValue.entries:type_name -> sub2api.plugin.v1.ModelMappingValue.EntriesEntry
-	17, // 13: sub2api.plugin.v1.RequestMeta.path_params:type_name -> sub2api.plugin.v1.RequestMeta.PathParamsEntry
-	18, // 14: sub2api.plugin.v1.RequestMeta.query:type_name -> sub2api.plugin.v1.RequestMeta.QueryEntry
-	19, // 15: sub2api.plugin.v1.RequestMeta.environment:type_name -> sub2api.plugin.v1.RequestMeta.EnvironmentEntry
+	17, // 12: sub2api.plugin.v1.ModelMappingValue.entries:type_name -> sub2api.plugin.v1.ModelMappingValue.EntriesEntry
+	18, // 13: sub2api.plugin.v1.RequestMeta.path_params:type_name -> sub2api.plugin.v1.RequestMeta.PathParamsEntry
+	19, // 14: sub2api.plugin.v1.RequestMeta.query:type_name -> sub2api.plugin.v1.RequestMeta.QueryEntry
+	20, // 15: sub2api.plugin.v1.RequestMeta.environment:type_name -> sub2api.plugin.v1.RequestMeta.EnvironmentEntry
 	16, // [16:16] is the sub-list for method output_type
 	16, // [16:16] is the sub-list for method input_type
 	16, // [16:16] is the sub-list for extension type_name
@@ -1826,6 +1913,18 @@ func file_sub2api_plugin_v1_common_proto_init() {
 				return nil
 			}
 		}
+		file_sub2api_plugin_v1_common_proto_msgTypes[14].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*ActionScope); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
 	}
 	file_sub2api_plugin_v1_common_proto_msgTypes[2].OneofWrappers = []interface{}{}
 	file_sub2api_plugin_v1_common_proto_msgTypes[7].OneofWrappers = []interface{}{}
@@ -1835,7 +1934,7 @@ func file_sub2api_plugin_v1_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_sub2api_plugin_v1_common_proto_rawDesc,
 			NumEnums:      1,
-			NumMessages:   19,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

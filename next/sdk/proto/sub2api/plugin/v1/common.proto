@@ -223,3 +223,18 @@ message UsageTokens {
   int64 cache_creation_tokens = 4;
   int64 cache_creation_1h_tokens = 5;
 }
+
+// ActionScope is a console user's scope of one scoped plugin permission
+// (CONTRACTS §21.0, plugin resources): what the core decided, for the plugin
+// to filter by. Unset fields mean nothing is reached.
+message ActionScope {
+  // Fully qualified action key without a scope: "plugin.moderation:flow:manage".
+  string permission = 1;
+  // Every row of the resource.
+  bool all = 2;
+  // The rows the user created. Only the plugin knows its rows' creator: it
+  // MUST check its own created_by (Caller.user_id) for any value not in values.
+  bool own = 3;
+  // The <value> of the user's "<resource>/<value>" grants, sorted, once each.
+  repeated string values = 4;
+}

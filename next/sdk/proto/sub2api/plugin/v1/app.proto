@@ -93,6 +93,13 @@ message HTTPRequest {
   map<string, HeaderValues> query = 6;
   map<string, HeaderValues> headers = 7;
   bytes body = 8;                      // capped by the host (1 MiB)
+  // Set when the route's permission declares a scope (manifest
+  // userPermissions[].scope): the caller's scope of that permission, already
+  // narrowed by an access key. With scopeFrom the core has checked the named
+  // values, except those only own may reach (own: the plugin checks). Absent
+  // on routes whose permission has no scope (a manifest declaring one needs
+  // core >= PluginPermissionsFirstCore, which always sets it).
+  ActionScope action_scope = 9;
 }
 
 message HTTPResponse {
