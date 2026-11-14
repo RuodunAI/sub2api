@@ -624,7 +624,8 @@ message GetDSNResponse {
 message AuthzCheckRequest {
   int64 user_id = 1;
   // Plugin-local key ("rules:manage") or fully qualified key. The plugin's
-  // own keys need no grant; a core key or another plugin's key needs
+  // own keys need no grant, with or without a scope ("flow:manage:own",
+  // "flow:manage:flow/3"); a core key or another plugin's key needs
   // "authz.read".
   string permission = 2;
 }
