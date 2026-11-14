@@ -1,0 +1,111 @@
+package install
+
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+)
+
+// SetGrant sets the active version's grant of one host permission (nil
+// scope: what the manifest requests). A scope within the current grant
+// narrows it (plugin:manage, the route's, is enough); anything else (a
+// revoked or denied permission, a wider scope) is a grant decision, checked
+// like a consent's (checkGrantRights), never wider than the active manifest
+// requests. Staged sets get the same narrowing (grants.Narrow), and a staged
+// revocation of the permission is lifted when its version requests at least
+// the scope (grants.Reinstate). Audited plugin.grant.narrow /
+// plugin.grant.regrant.
+func (s *Service) SetGrant(ctx context.Context, key, permission string, scope map[string]any, actorID int64) (*Grant, error) {
+	var out Grant
+	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+		// The plugin row first, as RevokeGrant, consent and the rollout
+		// commit lock it before the grant rows (no lock-order deadlock).
+		var (
+			status, trust string
+			hasPub        bool
+		)
+		err := tx.QueryRow(ctx, `UPDATE plugins p SET row_version = row_version + 1, updated_at = now() WHERE key = $1
+			RETURNING status, publisher_id IS NOT NULL, COALESCE((SELECT trust_level FROM publishers WHERE id = p.publisher_id), $2)`,
+			key, pkg.TrustUnsigned).Scan(&status, &hasPub, &trust)
+		if store.IsNoRows(err) {
+			return core.ErrNotFound.WithMessage("plugin not found")
+		}
+		if err != nil {
+			return err
+		}
+		if status == StatusAwaitingConsent {
+			return core.ErrConflict.WithMessage("the plugin is awaiting consent")
+		}
+		version, err := CurrentVersion(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		m, err := LoadManifest(ctx, tx, key, version)
+		if err != nil {
+			return err
+		}
+		i := slices.IndexFunc(m.HostPermissions, func(hp manifest.HostPermission) bool { return hp.ID == permission })
+		if i < 0 {
+			return core.ErrNotFound.WithMessage(fmt.Sprintf("permission %q is not requested by version %s", permission, version))
+		}
+		requested := pkg.NormalizeScope(m.HostPermissions[i].Scope)
+		if scope == nil {
+			scope = requested
+		}
+		scope = pkg.NormalizeScope(scope)
+		if !pkg.ScopeWithin(scope, requested) {
+			return core.InvalidFields(core.FieldError{Field: "scope", Code: "scope_too_wide",
+				Message: fmt.Sprintf("scope of %q is wider than requested", permission)}).WithMessage("the scope is wider than requested")
+		}
+		current, err := LoadGrants(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		prev, held := current[permission]
+		by := nullID(actorID)
+		d := decision{permission: permission, scope: scope, status: GrantGranted}
+		action := "plugin.grant.narrow"
+		if held && prev.Status == GrantGranted && pkg.ScopeWithin(scope, prev.Scope) {
+			err = grants.Narrow(ctx, tx, key, permission, scope, by)
+		} else {
+			action = "plugin.grant.regrant"
+			if err := s.checkGrantRights(ctx, actorID, []decision{d}, trust, hasPub); err != nil {
+				return err
+			}
+			err = grants.Reinstate(ctx, tx, key, permission, scope, by)
+		}
+		if err != nil {
+			return err
+		}
+		var hash string
+		if err := tx.QueryRow(ctx, `SELECT manifest_hash FROM plugin_versions WHERE plugin_key = $1 AND version = $2`, key, version).Scan(&hash); err != nil {
+			return err
+		}
+		if err := grants.Record(ctx, tx, key, version, hash, by, false, grantDecisions([]decision{d})); err != nil {
+			return err
+		}
+		if current, err = LoadGrants(ctx, tx, key); err != nil {
+			return err
+		}
+		out = current[permission]
+		detail := map[string]any{"permission": permission, "version": version, "scope": scope}
+		if held {
+			detail["previous"] = map[string]any{"status": prev.Status, "scope": prev.Scope}
+		}
+		return audit.Audit(ctx, tx, actorID, action, "plugin", key, detail)
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.Notify(ctx, key)
+	return &out, nil
+}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
@@ -156,6 +157,68 @@ func Revoke(ctx context.Context, tx pgx.Tx, key, permission string, by *int64) (
 			WHERE plugin_key = $1 AND permission = $2 AND status = 'granted' RETURNING 1)
 		SELECT (SELECT count(*) FROM active) + (SELECT count(*) FROM staged)`, key, permission, by).Scan(&n)
 	return n > 0, err
+}
+
+// Narrow narrows permission to scope in every staged set of key that grants
+// it a wider scope, as an administrator narrows the plugin's grant (the
+// caller records that one): activating the version must not widen it again.
+// A set granting a scope neither wider nor within scope keeps it: it is that
+// version's own decision, on another request.
+func Narrow(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64) error {
+	return grantStaged(ctx, tx, key, permission, scope, by, `SELECT version, scope FROM plugin_staged_grants
+		WHERE plugin_key = $1 AND permission = $2 AND status = 'granted' FOR UPDATE`,
+		func(granted map[string]any) bool {
+			return pkg.ScopeWithin(scope, granted) && !pkg.ScopeWithin(granted, scope)
+		})
+}
+
+// Reinstate lifts the revocation of permission, granting it scope, in every
+// staged set of key whose version requests at least scope: an
+// administrator's grant, the counterpart of Revoke. A set whose version
+// requests less stays revoked, so that version still runs without it.
+func Reinstate(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64) error {
+	return grantStaged(ctx, tx, key, permission, scope, by, `SELECT s.version, hp->'scope'
+		FROM plugin_staged_grants s
+		JOIN plugin_versions v ON v.plugin_key = s.plugin_key AND v.version = s.version
+		CROSS JOIN LATERAL jsonb_array_elements(v.manifest->'hostPermissions') hp
+		WHERE s.plugin_key = $1 AND s.permission = $2 AND s.status = 'revoked' AND hp->>'id' = $2 FOR UPDATE OF s`,
+		func(requested map[string]any) bool { return pkg.ScopeWithin(scope, requested) })
+}
+
+// grantStaged grants permission with scope in the staged sets of key that
+// sel ((version, scope) rows, locked) returns and pick accepts by that scope.
+func grantStaged(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64, sel string, pick func(map[string]any) bool) error {
+	rows, err := tx.Query(ctx, sel, key, permission)
+	if err != nil {
+		return err
+	}
+	var versions []string
+	for rows.Next() {
+		var (
+			version string
+			raw     []byte
+		)
+		if err := rows.Scan(&version, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var s map[string]any
+		_ = json.Unmarshal(raw, &s)
+		if pick(s) {
+			versions = append(versions, version)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(versions) == 0 {
+		return err
+	}
+	b, err := json.Marshal(scope)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE plugin_staged_grants SET status = 'granted', scope = $4, granted_by = $5, granted_at = now()
+		WHERE plugin_key = $1 AND permission = $2 AND version = ANY($3)`, key, permission, versions, b, by)
+	return err
 }
 
 // Revoked reports the host permissions of key whose latest decision, over

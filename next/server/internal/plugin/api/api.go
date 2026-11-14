@@ -95,6 +95,10 @@ func (a *API) RegisterRoutes(r *httpapi.Router) {
 	r.Self(http.MethodPut, "/plugins/:key/settings", PermSelfUI, a.putSettings).Uses(PermManage).UsesPluginKeys()
 	r.Perm(http.MethodGet, "/plugins/:key/grants", PermRead, a.listGrants)
 	r.Perm(http.MethodDelete, "/plugins/:key/grants/:permission", PermManage, a.revokeGrant)
+	// Narrowing takes plugin:manage only, granting again the grant rights
+	// (install.SetGrant); one route, so both spend the consent's step-up.
+	grant.Perm(http.MethodPut, "/plugins/:key/grants/:permission", PermManage, a.setGrant).
+		Uses(perm.PluginGrantHigh, perm.PluginGrantCritical, perm.PluginGrantDBSchemaUnconfined)
 	r.Perm(http.MethodPut, "/plugins/:key/resources", PermManage, a.putResources)
 	r.Perm(http.MethodPut, "/plugins/:key/egress-policy", PermManage, a.putEgressPolicy)
 	r.Perm(http.MethodGet, "/plugins/:key/egress", PermEgressRead, a.egress)

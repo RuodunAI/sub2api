@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
@@ -784,4 +786,49 @@ INSERT INTO audit_logs (action, target_type, target_id, detail) VALUES ('plugin.
 	if code, _ := h.do("POST", "/plugins/guard/versions/0.1.0/role-grants/confirm", "admin", nil); code != http.StatusNotFound {
 		t.Fatalf("confirm with nothing pending = %d", code)
 	}
+}
+
+// PUT /plugins/:key/grants/:permission spends the consent's step-up and
+// registers the grant rights its handler checks (install.SetGrant).
+func TestSetGrantRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := httpapi.NewRouter(gin.New(), tokens{}, authz{})
+	New(Deps{}).RegisterRoutes(r)
+	i := slices.IndexFunc(r.Routes(), func(s httpapi.RouteSpec) bool { return s.ID() == "PUT /plugins/:key/grants/:permission" })
+	require.GreaterOrEqual(t, i, 0)
+	spec := r.Routes()[i]
+	assert.Equal(t, core.StepUpPluginGrant, spec.StepUp)
+	assert.Equal(t, []perm.Key{PermManage}, spec.Keys)
+	assert.ElementsMatch(t, []perm.Key{perm.PluginGrantHigh, perm.PluginGrantCritical, perm.PluginGrantDBSchemaUnconfined}, spec.Extra)
+}
+
+// plugin:manage narrows a grant; granting a denied high-risk permission
+// takes plugin:grant:high; an empty body grants the requested scope.
+func TestAPISetGrant(t *testing.T) {
+	h, root := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO users (email, password_hash) VALUES ('nobody@x', 'x'), ('manager@x', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgtest.Build(pkgtest.Guard("guard", "0.1.0", "sub2api"), root))); code != 200 {
+		t.Fatalf("upload = %d %v", code, out)
+	}
+	consent := install.ConsentRequest{Grants: []install.GrantInput{{Permission: "db.schema"}, {Permission: "gateway.hook"},
+		{Permission: "events"}, {Permission: "jobs"}, {Permission: "routes.admin"}, {Permission: "ui.menu"}, {Permission: "ui.native"}}}
+	if code, out := h.do("POST", "/plugins/guard/versions/0.1.0/consent", "admin", consent); code != 200 {
+		t.Fatalf("consent = %d %v", code, out)
+	}
+
+	narrower := map[string]any{"scope": map[string]any{"points": []any{"gateway.request"}, "fields": []any{"model"}}}
+	code, out := h.do("PUT", "/plugins/guard/grants/gateway.hook", "manager", narrower)
+	require.Equal(t, 200, code, out)
+	assert.Equal(t, "granted", data(out)["status"])
+	assert.Equal(t, narrower["scope"], data(out)["scope"])
+
+	code, out = h.do("PUT", "/plugins/guard/grants/net", "manager", nil)
+	require.Equal(t, http.StatusForbidden, code, out)
+	code, out = h.do("PUT", "/plugins/guard/grants/net", "admin", nil)
+	require.Equal(t, 200, code, out)
+	assert.Equal(t, "granted", data(out)["status"])
+	assert.Equal(t, map[string]any{"domains": []any{"hooks.example.com"}}, data(out)["scope"])
 }
