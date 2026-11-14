@@ -1,9 +1,9 @@
 // The scopes of one scoped action as the permission editors show them
 // (CONTRACTS §21): every row, the caller's own, chosen groups, chosen rows,
-// rows within a chosen group; scopes the editors do not offer (group/*,
-// group/*/account/X) are kept as they are. Pure; PermissionTree / ScopePicker
-// render it.
-import { ALL_SCOPE, OWN_SCOPE, WILDCARD, parsePermission, patternKey, reduceScopes, scopeImplies, takesRowIds, type Scope } from './implies'
+// rows within a chosen group, chosen plugin scopes; scopes the editors do
+// not offer (group/*, group/*/account/X) are kept as they are. Pure;
+// PermissionTree / ScopePicker render it.
+import { ALL_SCOPE, OWN_SCOPE, WILDCARD, parsePermission, patternKey, reduceScopes, refScope, scopeImplies, takesRowIds, type Scope } from './implies'
 
 export interface ScopeChoice {
   all: boolean
@@ -14,6 +14,8 @@ export interface ScopeChoice {
   ids: number[]
   /** group/<g>/account/<id> as [g, id] */
   pairs: Array<[number, number]>
+  /** Plugin scopes "<resource>/<value>". */
+  refs: string[]
   /** Anything else held (group/*, group/X/account/*...): shown, removable, not offered. */
   other: Scope[]
 }
@@ -22,10 +24,11 @@ const scope = (group: number, id: number): Scope => ({ all: false, own: false, g
 
 /** The choice the scopes make. */
 export function choiceOf(scopes: readonly Scope[]): ScopeChoice {
-  const c: ScopeChoice = { all: false, own: false, groups: [], ids: [], pairs: [], other: [] }
+  const c: ScopeChoice = { all: false, own: false, groups: [], ids: [], pairs: [], refs: [], other: [] }
   for (const s of scopes) {
     if (s.all) c.all = true
     else if (s.own) c.own = true
+    else if (s.ref) c.refs.push(s.ref)
     else if (s.group === WILDCARD) c.other.push(s)
     else if (s.group && s.id) c.pairs.push([s.group, s.id])
     else if (s.group) c.groups.push(s.group)
@@ -42,6 +45,7 @@ export function scopesOf(c: ScopeChoice): Scope[] {
     ...c.groups.map((g) => scope(g, 0)),
     ...c.ids.map((id) => scope(0, id)),
     ...c.pairs.map(([g, id]) => scope(g, id)),
+    ...c.refs.map(refScope),
     ...c.other
   ])
 }
@@ -54,7 +58,10 @@ export function withScopes(keys: ReadonlySet<string>, action: string, scopes: re
 }
 
 /** What the editor may offer from a list: every id ('any'), these ids, or none (null). */
-export type Offer = 'any' | number[] | null
+export type Offer<T = number> = 'any' | T[] | null
+
+/** Plugin scopes "<resource>/<value>" the editor may offer. */
+export type RefOffer = Offer<string>
 
 /**
  * The options a caller holding `limit` (its scopes of the action) may grant:
@@ -69,6 +76,8 @@ export interface ScopeOffer {
   groups: Offer
   /** account/<id> or proxy/<id>. */
   ids: Offer
+  /** Plugin scopes "<resource>/<value>". */
+  refs: RefOffer
 }
 
 export function offerOf(limit: readonly Scope[], action = ''): ScopeOffer {
@@ -76,13 +85,15 @@ export function offerOf(limit: readonly Scope[], action = ''): ScopeOffer {
   const all = implied(ALL_SCOPE)
   const anyGroup = implied(scope(WILDCARD, 0))
   const groups = limit.filter((l) => l.group > 0 && !l.id).map((l) => l.group)
-  const ids = limit.filter((l) => !l.all && !l.own && !l.group).map((l) => l.id)
-  const listed = (ok: boolean, list: number[]): Offer => (ok ? 'any' : list.length ? list : null)
+  const ids = limit.filter((l) => !l.all && !l.own && !l.group && !l.ref).map((l) => l.id)
+  const refs = limit.flatMap((l) => (l.ref ? [l.ref] : []))
+  const listed = <T>(ok: boolean, list: T[]): Offer<T> => (ok ? 'any' : list.length ? list : null)
   return {
     all,
     own: implied(OWN_SCOPE),
     groups: listed(anyGroup, groups),
-    ids: takesRowIds(action) ? listed(all, ids) : null
+    ids: takesRowIds(action) ? listed(all, ids) : null,
+    refs: listed(all, refs)
   }
 }
 

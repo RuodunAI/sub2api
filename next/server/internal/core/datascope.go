@@ -38,6 +38,10 @@ func Compile(uid int64, scopes []perm.Scope) DataScope {
 			return AllScope
 		case sc.Own:
 			s.Owner = uid
+		case sc.Res != "":
+			// A plugin scope reaches no account or proxy row; the plugin
+			// judges its own rows.
+			continue
 		case sc.Group != 0 && sc.ID != 0:
 			pairs = append(pairs, pair{max(sc.Group, 0), sc.ID})
 		case sc.Group != 0:
