@@ -126,4 +126,6 @@ func TestParsePluginScope(t *testing.T) {
 func TestScopePatternsMatchManifest(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, PluginPrefix+"k", manifest.PermissionModule("k"))
+	assert.Equal(t, manifest.ScopeResourcePattern, scopeResourceRe.String())
+	assert.Equal(t, manifest.ScopeValuePattern, scopeValueRe.String())
 }
