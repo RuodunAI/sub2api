@@ -1,0 +1,3 @@
+-- sql
+SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE status IN ('running','paused'))
+-- vars

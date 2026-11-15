@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -54,10 +56,22 @@ func (g *PluginMutations) Begin(ctx context.Context) (context.Context, func(), e
 // Callers must fail closed on errors. The mutation gate still rechecks under
 // the shared lock: this preflight alone does not authorize a plugin change.
 func CoreUpdateBusy(ctx context.Context, q store.Querier) (bool, error) {
+	db := store.G(ctx, q)
 	var installed, busy bool
-	if err := q.QueryRow(ctx, `SELECT to_regclass('updater.upgrades') IS NOT NULL`).Scan(&installed); err != nil || !installed {
+	if err := updaterInstalled(db, &installed).Error; err != nil || !installed {
 		return false, err
 	}
-	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE status IN ('running','paused'))`).Scan(&busy)
+	err := upgradeActive(db, &busy).Error
 	return busy, err
+}
+
+// updaterInstalled reads into installed whether the managed shell's
+// updater schema is there; the table is not part of the core schema.
+func updaterInstalled(db *gorm.DB, installed *bool) *gorm.DB {
+	return db.Raw(`SELECT to_regclass('updater.upgrades') IS NOT NULL`).Scan(installed)
+}
+
+// upgradeActive reads into busy whether a core update is running or paused.
+func upgradeActive(db *gorm.DB, busy *bool) *gorm.DB {
+	return db.Raw(`SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE status IN ('running','paused'))`).Scan(busy)
 }
