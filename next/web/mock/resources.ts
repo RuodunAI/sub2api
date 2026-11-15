@@ -1,8 +1,8 @@
 // Mock handlers: users, roles, permissions, API keys, groups, proxies, nodes,
 // publishers. (Accounts and account types live in their own mock module.)
-import { SCOPABLE, canonicalPermission, parsePermission } from '../src/authz/implies'
+import { SCOPABLE, canonicalPermission, parsePermission, permissionIndex } from '../src/authz/implies'
 import { fail, nextId, noContent, now, on, paginate, type MockRequest } from './router'
-import { ALL_PERMISSIONS, caller, filterOwned, hasPerm, inScope, moderatorUser, ownerScope, pricerUser, readonlyUser, stepUp, userEmail, vendorUser } from './core'
+import { ALL_PERMISSIONS, MANAGER_PLUGIN_KEYS, SUPER_ONLY_KEYS, caller, filterOwned, hasPerm, inScope, moderatorUser, ownerScope, pricerUser, readonlyUser, stepUp, stepUpRequired, userEmail, vendorUser, type Identity } from './core'
 import { accounts, groupAccountCount, groupPlatforms, proxyAccountCount } from './accounts'
 import { pricedModels } from './billing'
 import { accessOf, findSegment, forgetGroup, forgetUser, groupAccess, moveUser, rateOf, rulesWhere, segmentOfUser, segmentRef, type RuleRow } from './pricingStore'
@@ -115,6 +115,8 @@ const MODULES: ModuleDef[] = [
       { key: 'plugin.guard:rules:manage', label: L('Manage rules', '管理规则'), risk: 'sensitive', group: 'rules', requires: ['plugin.guard:rules:read'],
         scope: { resource: 'ruleset', own: true, options: '/scopes/ruleset' },
         defaults: { admin: ['plugin.guard:rules:manage'], operator: ['plugin.guard:rules:manage:own'] } },
+      // No longer declared by the running version (0.2.0 brings it back): kept on the roles holding it until taken off.
+      { key: 'plugin.guard:rules:test', label: L('Dry-run rules', '试运行规则'), group: 'rules', status: 'removed' },
       { key: 'plugin.guard:stats:read', label: L('View stats', '查看统计'), group: 'ops',
         defaults: { admin: ['plugin.guard:stats:read'], operator: ['plugin.guard:stats:read'], supplier: ['plugin.guard:stats:read'] } },
       { key: 'plugin.guard:alerts:mute', label: L('Mute alerts', '静音告警'), group: 'ops',
@@ -124,9 +126,6 @@ const MODULES: ModuleDef[] = [
   { module: 'plugin.foo', label: L('Foo Platform', 'Foo 平台'), source: 'plugin', plugin_key: 'foo', status: 'disabled', permissions: [
     { key: 'plugin.foo:dashboard:read', label: L('View dashboard', '查看面板'), status: 'disabled' }] }
 ]
-
-/** The core's super-only keys (authz/catalog.go): critical, and not among admin's defaults. */
-const SUPER_ONLY_KEYS = new Set(['balance:adjust:any', 'plugin:grant:critical', 'plugin:grant:db_schema_unconfined', 'publisher:manage', 'system:update:execute', 'system:update:recover'])
 
 function moduleOut(m: ModuleDef) {
   return {
@@ -209,9 +208,10 @@ const canonicalSet = (keys: string[]) => [...new Set(keys.map(canonicalPermissio
 const custom = (id: number, key: string, name: L, description: string, keys: string[]): MockRole => ({ id, key, name, description, builtin: false, superuser: false, permission_keys: canonicalSet(keys), assignable_role_keys: [], assign_custom: false, created_at: at(5), updated_at: at(1) })
 const roles: MockRole[] = [
   { id: 1, key: 'super_admin', name: L('Super admin', '超级管理员'), description: 'Has every permission', builtin: true, superuser: true, permission_keys: [], assignable_role_keys: [], assign_custom: false, created_at: at(90), updated_at: at(90) },
-  builtin(2, 'admin'),
+  // The manager's role: some guard keys (rules:manage at the own scope) and the disabled foo plugin's key.
+  builtin(2, 'admin', [...MANAGER_PLUGIN_KEYS, 'plugin.foo:dashboard:read']),
   builtin(3, 'user'),
-  builtin(4, 'operator', ['plugin.anthropic:model_catalog:read', 'plugin.guard:stats:read']),
+  builtin(4, 'operator', ['plugin.anthropic:model_catalog:read', 'plugin.guard:stats:read', 'plugin.guard:rules:test']),
   builtin(9, 'supplier'),
   // CONTRACTS §21.1 typical roles: vendor (own-level only, no settings:custom) and read-only.
   custom(5, 'vendor', L('Vendor', '供应商（自定义）'), 'Maintains only the accounts and proxies it created', vendorUser.permissions),
@@ -226,11 +226,59 @@ const roles: MockRole[] = [
   ])
 ]
 
+/**
+ * The global authz version (authz_meta, C1): every role or grant write bumps
+ * it; roles and the plugin matrix carry it, and their PUTs given another one
+ * fail with 409 version_conflict (without one they are not checked).
+ */
+let authzVersion = 1
+export function bumpAuthz() {
+  authzVersion++
+}
+function versionConflict(req: MockRequest) {
+  const v = req.body?.version
+  if (v === undefined || v === authzVersion) return null
+  return fail(409, 'version_conflict', 'the roles changed since they were read', { version: authzVersion })
+}
+
+/** The roles the caller manages (CONTRACTS §43.6): all but super_admin for the super admin; else what its roles may assign, the custom ones with assign_custom. */
+function managedRoles(who: Identity): MockRole[] {
+  if (who.superuser) return roles.filter((r) => !r.superuser)
+  const mine = roles.filter((r) => who.roles.includes(r.key))
+  const keys = new Set(mine.flatMap((r) => r.assignable_role_keys))
+  const anyCustom = mine.some((r) => r.assign_custom)
+  return roles.filter((r) => !r.superuser && (keys.has(r.key) || (anyCustom && !r.builtin)))
+}
+export const managesRole = (who: Identity, key: string) => managedRoles(who).some((r) => r.key === key)
+
+const removedAction = (key: string) => {
+  const action = parsePermission(key)?.action
+  return MODULES.some((m) => m.permissions.some((p) => p.key === action && (p.status || m.status) === 'removed'))
+}
+/**
+ * What the caller may grant (the grant view): its own keys and its roles'
+ * keys, a disabled plugin's included, a removed permission's left out.
+ */
+export function mayGrant(who: Identity, key: string): boolean {
+  if (who.superuser) return true
+  const keys = [...who.permissions, ...roles.filter((r) => who.roles.includes(r.key)).flatMap((r) => r.permission_keys)].filter((k) => !removedAction(k))
+  return permissionIndex(keys).has(key)
+}
+/** The keys of next that newly grant a critical plugin permission: a write with one asks for step-up (C3). */
+function newCritical(held: string[], next: string[]): string[] {
+  const had = permissionIndex(held)
+  return next.filter((k) => k.startsWith('plugin.') && permDef(k)?.risk === 'critical' && !had.has(k))
+}
+
 function roleOut(r: MockRole) {
-  return { ...r, user_count: users.filter((u) => u.roles.includes(r.key)).length }
+  return { ...r, user_count: users.filter((u) => u.roles.includes(r.key)).length, version: authzVersion }
 }
 
 on('GET', '/roles', (req) => paginate(roles.map(roleOut), req.query))
+on('GET', '/roles/:id', (req) => {
+  const r = roles.find((x) => x.id === Number(req.params.id))
+  return r ? roleOut(r) : fail(404, 'not_found', 'role not found')
+})
 on('POST', '/roles', (req) => {
   const b = req.body || {}
   if (!/^[a-z][a-z0-9_]{1,49}$/.test(b.key || '')) return invalid('key', 'invalid role key')
@@ -238,6 +286,7 @@ on('POST', '/roles', (req) => {
   if (roles.some((r) => r.key === b.key)) return fail(409, 'conflict', 'role key already exists')
   const r: MockRole = { id: nextId(), key: b.key, name: b.name || L(b.key, b.key), description: b.description || '', builtin: false, superuser: false, permission_keys: [], assignable_role_keys: [], assign_custom: false, created_at: now(), updated_at: now() }
   roles.push(r)
+  bumpAuthz()
   return roleOut(r)
 })
 on('PATCH', '/roles/:id', (req) => {
@@ -247,6 +296,7 @@ on('PATCH', '/roles/:id', (req) => {
   if (req.body?.name) r.name = req.body.name
   if (req.body?.description !== undefined) r.description = req.body.description
   r.updated_at = now()
+  bumpAuthz()
   return roleOut(r)
 })
 on('DELETE', '/roles/:id', (req) => {
@@ -255,22 +305,32 @@ on('DELETE', '/roles/:id', (req) => {
   if (r.builtin) return fail(409, 'conflict', 'built-in roles cannot be deleted')
   roles.splice(roles.indexOf(r), 1)
   users.forEach((u) => (u.roles = u.roles.filter((k) => k !== r.key)))
+  bumpAuthz()
   return noContent()
 })
 on('PUT', '/roles/:id/permissions', (req) => {
   const r = roles.find((x) => x.id === Number(req.params.id))
   if (!r) return fail(404, 'not_found', 'role not found')
   if (r.superuser) return fail(403, 'permission_denied', 'superuser role cannot be edited')
+  const who = caller(req)
+  if (!managesRole(who, r.key)) return fail(403, 'permission_denied', 'you cannot change this role', { role: r.key })
+  const conflict = versionConflict(req)
+  if (conflict) return conflict
   const keys: string[] = Array.isArray(req.body?.permission_keys) ? req.body.permission_keys : []
   // Any spelling (aliases, trailing /*) is taken and stored canonical; the actions must be in the catalog, at a scope they take.
   const bad = keys.find((k) => !scopeFits(k))
   if (bad) return invalid('permission_keys', `invalid permission key ${bad}`)
   const canonical = canonicalSet(keys)
-  // Only keys the editor's own imply can be granted (Missing: the canonical keys refused).
-  const missing = canonical.filter((k) => !hasPerm(caller(req), k))
+  // Only keys the editor's grant view implies can be added (Missing: the canonical keys refused); kept ones need not be.
+  const missing = canonical.filter((k) => !r.permission_keys.includes(k) && !mayGrant(who, k))
   if (missing.length) return fail(403, 'permission_denied', 'you can only grant permissions you hold', { missing })
+  if (newCritical(r.permission_keys, canonical).length) {
+    const verify = stepUpRequired(req, 'plugin.grant')
+    if (verify) return verify
+  }
   r.permission_keys = canonical
   r.updated_at = now()
+  bumpAuthz()
   return roleOut(r)
 })
 on('PUT', '/roles/:id/assignable', (req) => {
@@ -283,26 +343,32 @@ on('PUT', '/roles/:id/assignable', (req) => {
   r.assignable_role_keys = [...new Set(keys)].sort()
   r.assign_custom = !!req.body?.assign_custom
   r.updated_at = now()
+  bumpAuthz()
   return roleOut(r)
 })
-// A plugin's permissions × roles (GET/PUT /permissions/plugins/:plugin, UI 3.16). Only
-// the super admin manages roles in the mock, so the other identities see every role read-only.
+// A plugin's permissions × roles (GET/PUT /permissions/plugins/:plugin, UI 3.16):
+// the roles the caller manages are editable, the others read-only; with the
+// global version the PUT checks (C1).
 function pluginRoleMatrix(req: MockRequest, m: ModuleDef) {
   const prefix = `${m.module}:`
-  const superuser = caller(req).superuser
+  const who = caller(req)
   return {
     plugin_key: m.plugin_key,
+    version: authzVersion,
     module: moduleOut(m),
-    roles: roles.map((r) => ({
-      id: r.id,
-      key: r.key,
-      name: r.name,
-      builtin: r.builtin,
-      superuser: r.superuser,
-      editable: superuser && !r.superuser,
-      denied: r.superuser ? 'superuser_role' : superuser ? undefined : 'not_assignable',
-      permission_keys: r.permission_keys.filter((k) => k.startsWith(prefix))
-    }))
+    roles: roles.map((r) => {
+      const editable = !r.superuser && managesRole(who, r.key)
+      return {
+        id: r.id,
+        key: r.key,
+        name: r.name,
+        builtin: r.builtin,
+        superuser: r.superuser,
+        editable,
+        denied: r.superuser ? 'superuser_role' : editable ? undefined : 'not_assignable',
+        permission_keys: r.permission_keys.filter((k) => k.startsWith(prefix))
+      }
+    })
   }
 }
 const pluginModule = (plugin: string) => MODULES.find((m) => m.source === 'plugin' && m.plugin_key === plugin)
@@ -315,14 +381,17 @@ on('PUT', '/permissions/plugins/:plugin', (req) => {
   const m = pluginModule(req.params.plugin)
   if (!m) return fail(404, 'not_found', 'plugin not found')
   const who = caller(req)
+  const conflict = versionConflict(req)
+  if (conflict) return conflict
   const removed = new Set(m.permissions.filter((p) => (p.status || m.status) === 'removed').map((p) => p.key))
   const body: Record<string, string[]> = req.body?.roles ?? {}
   // Every role is checked before any is written: one refusal leaves them all as they were.
   const writes: Array<[MockRole, string[]]> = []
+  let critical = false
   for (const key of Object.keys(body).sort()) {
     const r = roles.find((x) => x.key === key)
     if (!r) return invalid(`roles.${key}`, `unknown role ${key}`, 'unknown')
-    if (r.superuser || !who.superuser) return fail(403, 'permission_denied', 'you cannot change this role', { role: key })
+    if (r.superuser || !managesRole(who, key)) return fail(403, 'permission_denied', 'you cannot change this role', { role: key })
     const keys = Array.isArray(body[key]) ? body[key] : []
     const foreign = keys.find((k) => !k.startsWith(`${m.module}:`))
     if (foreign) return invalid(`roles.${key}`, `${foreign} is not a permission of ${m.plugin_key}`, 'foreign')
@@ -331,14 +400,20 @@ on('PUT', '/permissions/plugins/:plugin', (req) => {
     const held = r.permission_keys.filter((k) => k.startsWith(`${m.module}:`))
     // A removed key stays while kept and goes when left out; a new one is dropped.
     const next = canonicalSet(keys).filter((k) => held.includes(k) || !removed.has(parsePermission(k)!.action))
-    const missing = next.filter((k) => !held.includes(k) && !hasPerm(who, k))
+    const missing = next.filter((k) => !held.includes(k) && !mayGrant(who, k))
     if (missing.length) return fail(403, 'permission_denied', 'you can only grant permissions you hold', { missing, role: key })
+    critical ||= newCritical(held, next).length > 0
     writes.push([r, next])
+  }
+  if (critical) {
+    const verify = stepUpRequired(req, 'plugin.grant')
+    if (verify) return verify
   }
   for (const [r, next] of writes) {
     r.permission_keys = [...r.permission_keys.filter((k) => !k.startsWith(`${m.module}:`)), ...next].sort()
     r.updated_at = now()
   }
+  if (writes.length) bumpAuthz()
   return pluginRoleMatrix(req, m)
 })
 
@@ -372,13 +447,16 @@ on('GET', '/plugins/:key/scope-options', (req) => {
   return { items: found.slice(0, limit), more: found.length > limit }
 })
 
-// The caller's managed roles (CONTRACTS §43.6): every role but super_admin for the super admin, none for the other mock identities.
-on('GET', '/me/assignable-roles', (req) =>
-  (caller(req).superuser ? roles : [])
-    .filter((r) => !r.superuser)
+// The caller's managed roles (CONTRACTS §43.6), each saying what of it the caller could not grant.
+on('GET', '/me/assignable-roles', (req) => {
+  const who = caller(req)
+  return managedRoles(who)
     .sort((a, b) => Number(b.builtin) - Number(a.builtin))
-    .map((r) => ({ key: r.key, name: r.name, builtin: r.builtin, grantable: true, missing: [], missing_assignable: [], missing_assign_custom: false }))
-)
+    .map((r) => {
+      const missing = r.permission_keys.filter((k) => !removedAction(k) && !mayGrant(who, k))
+      return { key: r.key, name: r.name, builtin: r.builtin, grantable: !missing.length, missing, missing_assignable: [], missing_assign_custom: false }
+    })
+})
 on('POST', '/roles/:id/reset', (req) => {
   const r = roles.find((x) => x.id === Number(req.params.id))
   if (!r) return fail(404, 'not_found', 'role not found')
@@ -393,6 +471,7 @@ on('POST', '/roles/:id/reset', (req) => {
     r.description = d.description
   }
   r.updated_at = now()
+  bumpAuthz()
   return roleOut(r)
 })
 

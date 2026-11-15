@@ -2,7 +2,8 @@
 // grants, settings, resources, egress, jobs, events) and the plugin market.
 // /ui/plugins and /p/<key>/... live in pluginui.ts; publishers are not here.
 import { fail, noContent, now, on, paginate } from './router'
-import { caller, stepUp, type Identity } from './core'
+import { caller, hasPerm, stepUp, type Identity } from './core'
+import { bumpAuthz, managesRole } from './resources'
 import { pluginPlatforms } from './platforms'
 import { pluginAccountCount, uninstallPluginAccounts } from './accounts'
 import { invalid } from './resources'
@@ -356,7 +357,7 @@ const GUARD_GROUPS = [{ key: 'rules', label: { en: 'Rules', zh: '拦截规则' }
  * The user permission part of a guard review: a first install creates every
  * permission; an upgrade keeps them, adds two (one sensitive, one suggested
  * to a custom role: both need confirmation), brings rules:test back with its
- * grants (D6) and no longer declares alerts:mute.
+ * grants (D6) and renames alerts:mute to alerts:silence (inherit_from).
  */
 function guardUserPermissions(upgrade: boolean): Any {
   if (!upgrade) return { user_permissions: GUARD_PERMISSIONS.map((p) => ({ ...p, new: true })), permission_groups: GUARD_GROUPS }
@@ -366,7 +367,13 @@ function guardUserPermissions(upgrade: boolean): Any {
       ...kept,
       { key: 'rules:publish', label: { en: 'Publish rules', zh: '发布规则' }, risk: 'sensitive', group: 'rules', requires: ['rules:manage'], defaults: { admin: [''] }, new: true },
       { key: 'reports:export', label: { en: 'Export reports', zh: '导出报表' }, risk: 'low', group: 'ops', defaults: { admin: [''], readonly: [''] }, new: true },
-      { key: 'rules:test', label: { en: 'Dry-run rules', zh: '试运行规则' }, risk: 'low', group: 'rules', defaults: { operator: [''] }, revived: true }
+      { key: 'rules:test', label: { en: 'Dry-run rules', zh: '试运行规则' }, risk: 'low', group: 'rules', defaults: { operator: [''] }, revived: true },
+      // alerts:mute renamed: it starts at the old key's holders, with their scopes (C2).
+      {
+        key: 'alerts:silence', label: { en: 'Silence alerts', zh: '屏蔽告警' }, risk: 'low', group: 'ops',
+        scope: { resource: 'value', values: [{ key: 'webhook', label: { en: 'Webhook', zh: 'Webhook' } }, { key: 'email', label: { en: 'Email', zh: '邮件' } }] },
+        new: true, renamed: true, inherit_from: ['alerts:mute'], inherited: { admin: ['value/webhook', 'value/email'] }
+      }
     ],
     permission_groups: GUARD_GROUPS,
     removed_user_permissions: [{ key: 'alerts:mute', label: { en: 'Mute alerts', zh: '静音告警' }, holders: ['admin'] }]
@@ -540,45 +547,54 @@ const AUTO_GRANT_ROLES = new Set(['admin', 'operator', 'supplier'])
 
 /**
  * Why the viewer may not name a role for a permission of the risk; '' when it
- * may. The mock lets a non-super caller (manager@example.com) name no role,
- * whatever it holds, so its install's suggestions go to review (D2); a
- * critical row says so (D3).
+ * may. A non-super caller (manager@example.com) names the roles it manages,
+ * whether or not it holds the new permission, but not its own admin role, so
+ * those suggestions go to review (D2); a critical row says so (D3).
  */
 function denial(who: Identity, role: Any, risk: string): string {
   if (role.superuser) return 'superuser_role'
   if (who.superuser) return ''
-  return risk === 'critical' ? 'critical' : 'role_define'
+  if (risk === 'critical') return 'critical'
+  return managesRole(who, role.key) ? '' : 'not_assignable'
 }
 
 /**
  * A review as the viewer sees it (install Review(actorID)): the matrix
  * columns and cells, and the role grants of the permissions the consent
- * creates. A cell the viewer may not name keeps its suggestion and goes to
- * review (D2).
+ * creates. A cell starts at the suggestion, a renamed row's at the old key's
+ * holders; one the viewer may not name keeps it and goes to review (D2, C2).
+ * Who holds the old keys is left out for a viewer without role:read (C4):
+ * the removed rows' holders, the revived and renamed rows' cell grants and
+ * the inherited role grants.
  */
 function forViewer(r: Any, who: Identity): Any {
   const perms: Any[] = r.user_permissions ?? []
   if (!perms.length) return r
   const upgrade = !!r.diff
+  const seesHolders = hasPerm(who, 'role:read')
   const created = (p: Any) => p.new && !p.revived
   const cellOf = (p: Any, role: Any) => {
     const reason = denial(who, role, p.risk)
-    const grant: string[] = created(p) && !role.superuser ? (p.defaults?.[role.key] ?? []) : []
-    return { grant, nameable: !reason, ...(reason ? { reason } : {}), withheld: !!reason && grant.length > 0 }
+    const grant: string[] = created(p) && !role.superuser ? ((p.renamed ? p.inherited : p.defaults)?.[role.key] ?? []) : []
+    const cell = { grant, nameable: !reason, ...(reason ? { reason } : {}), withheld: !!reason && grant.length > 0 }
+    if ((p.renamed || p.revived) && !seesHolders) delete (cell as Any).grant
+    return cell
   }
-  const user_permissions: Any[] = perms.map((p) => ({ ...p, cells: Object.fromEntries(REVIEW_ROLES.map((role) => [role.key, cellOf(p, role)])) }))
+  const user_permissions: Any[] = perms.map(({ inherited, ...p }) => ({ ...p, cells: Object.fromEntries(REVIEW_ROLES.map((role) => [role.key, cellOf({ ...p, inherited }, role)])) }))
   const new_role_grants = user_permissions.filter(created).flatMap((p) =>
     REVIEW_ROLES.flatMap((role) => {
       const c = p.cells[role.key]
       const needs = upgrade && (p.risk !== 'low' || !AUTO_GRANT_ROLES.has(role.key))
-      return c.grant.map((scope: string) => ({ permission: `plugin.${r.plugin_key}:${p.key}`, role: role.key, scope, risk: p.risk, via: 'default', needs_consent: needs, nameable: c.nameable, withheld: c.withheld }))
+      if (p.renamed && !seesHolders) return []
+      return (c.grant ?? []).map((scope: string) => ({ permission: `plugin.${r.plugin_key}:${p.key}`, role: role.key, scope, risk: p.risk, via: p.renamed ? 'inherit' : 'default', needs_consent: needs, nameable: c.nameable, withheld: c.withheld }))
     })
   )
   const role_columns = REVIEW_ROLES.map((role) => {
     const reason = denial(who, role, 'low')
     return { ...role, nameable: !reason, ...(reason ? { reason } : {}) }
   })
-  return { ...r, user_permissions, role_columns, new_role_grants, role_grants_need_consent: new_role_grants.some((g) => g.needs_consent) }
+  const removed_user_permissions = seesHolders ? r.removed_user_permissions : r.removed_user_permissions?.map(({ holders: _, ...x }: Any) => x)
+  return { ...r, user_permissions, removed_user_permissions, role_columns, new_role_grants, role_grants_need_consent: new_role_grants.some((g) => g.needs_consent) }
 }
 
 /**
@@ -964,6 +980,7 @@ on('POST', '/plugins/:key/versions/:version/consent', stepUp('plugin.grant', (re
   if ('error' in settled) return settled.error
   v.consent_status = 'approved'
   p.grants = grants.map((g) => grant(g.permission, g.scope ?? null, req.params.version))
+  bumpAuthz()
   if (p.status === 'awaiting_consent') p.status = 'installed'
   if (!p.active_version) p.desired_version = req.params.version
   return { ok: true, withheld: settled.withheld }
