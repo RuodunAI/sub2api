@@ -80,7 +80,7 @@ func TestRealCoreCPUOffloadMovesNewRequests(t *testing.T) {
 	}
 	marked := func(n *realNode) bool {
 		var v bool
-		_ = c.db.QueryRow(ctx, `SELECT offloading FROM updater.nodes WHERE node_id=$1`, n.id).Scan(&v)
+		_ = c.db.WithContext(ctx).Raw(`SELECT offloading FROM updater.nodes WHERE node_id=?`, n.id).Row().Scan(&v)
 		return v
 	}
 	offloading := func(n *realNode, want bool) func() bool {

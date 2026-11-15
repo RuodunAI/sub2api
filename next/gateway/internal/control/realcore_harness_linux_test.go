@@ -37,9 +37,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/supervisor"
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 )
 
 // The real-core harness runs every shell in this test process but with its
@@ -83,7 +82,7 @@ type realCluster struct {
 	t              *testing.T
 	ctx            context.Context
 	store          *Store
-	db             *pgxpool.Pool
+	db             *gorm.DB
 	rdb            *redis.Client // through the proxy, like every shell and core
 	direct         *redis.Client // test observation only, bypasses the proxy
 	redis          *tcpProxy
@@ -145,24 +144,16 @@ func newRealCluster(t *testing.T, ctx context.Context, options realOptions) *rea
 	if c.s1 == "" || c.s2 == "" {
 		t.Fatal("both releases require non-empty embedded schema contracts")
 	}
-	dbcfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	admin, err := pgxpool.NewWithConfig(ctx, dbcfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(admin.Close)
+	admin := openTestDB(t, dsn)
 	c.dbname = fmt.Sprintf("shell_real_%d", time.Now().UnixNano())
-	quoted := pgx.Identifier{c.dbname}.Sanitize()
-	if _, err = admin.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
+	quoted := quoteIdent(c.dbname)
+	if err = admin.WithContext(ctx).Exec("CREATE DATABASE " + quoted).Error; err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		cleanup, done := context.WithTimeout(context.Background(), 20*time.Second)
 		defer done()
-		_, _ = admin.Exec(cleanup, "DROP DATABASE "+quoted+" WITH (FORCE)")
+		admin.WithContext(cleanup).Exec("DROP DATABASE " + quoted + " WITH (FORCE)")
 	})
 	c.coreDSN = dsn + " dbname=" + c.dbname
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
@@ -173,10 +164,7 @@ func newRealCluster(t *testing.T, ctx context.Context, options realOptions) *rea
 		u.Path = "/" + c.dbname
 		c.coreDSN = u.String()
 	}
-	if c.db, err = pgxpool.New(ctx, c.coreDSN); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(c.db.Close)
+	c.db = openTestDB(t, c.coreDSN)
 	// Every shell and core reaches Redis through one proxy the test can cut.
 	ru, err := url.Parse(redisURL)
 	if err != nil {

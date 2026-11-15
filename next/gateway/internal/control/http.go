@@ -2,12 +2,9 @@ package control
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // Handler is for the mode-0600 local Unix socket ONLY, behind
@@ -19,7 +16,7 @@ func (s *Store) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
 			status := http.StatusConflict
-			if errors.Is(err, pgx.ErrNoRows) {
+			if isNoRows(err) {
 				status = http.StatusNotFound
 			}
 			w.WriteHeader(status)

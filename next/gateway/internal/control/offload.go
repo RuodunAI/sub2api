@@ -26,7 +26,7 @@ const (
 )
 
 func (s *Store) Offload(ctx context.Context) (o Offload, err error) {
-	err = s.DB.QueryRow(ctx, `SELECT offload_enabled,offload_cpu_percent FROM updater.clusters WHERE cluster_id=$1`, s.Cluster).Scan(&o.Enabled, &o.CPUPercent)
+	err = s.clusterRow(s.db(ctx)).Select("offload_enabled,offload_cpu_percent").Row().Scan(&o.Enabled, &o.CPUPercent)
 	return
 }
 
@@ -42,8 +42,8 @@ func (s *Store) SetOffload(ctx context.Context, p OffloadPatch) (o Offload, err 
 	if p.CPUPercent != nil && (*p.CPUPercent < OffloadMinPercent || *p.CPUPercent > OffloadMaxPercent) {
 		return o, errOffloadRange
 	}
-	err = s.DB.QueryRow(ctx, `UPDATE updater.clusters SET offload_enabled=COALESCE($2,offload_enabled),offload_cpu_percent=COALESCE($3,offload_cpu_percent)
- WHERE cluster_id=$1 RETURNING offload_enabled,offload_cpu_percent`, s.Cluster, p.Enabled, p.CPUPercent).Scan(&o.Enabled, &o.CPUPercent)
+	err = s.db(ctx).Raw(`UPDATE updater.clusters SET offload_enabled=COALESCE(?,offload_enabled),offload_cpu_percent=COALESCE(?,offload_cpu_percent)
+ WHERE cluster_id=? RETURNING offload_enabled,offload_cpu_percent`, p.Enabled, p.CPUPercent, s.Cluster).Row().Scan(&o.Enabled, &o.CPUPercent)
 	return
 }
 

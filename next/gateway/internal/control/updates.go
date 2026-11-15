@@ -14,7 +14,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 const updateManifestAsset = "next-core-manifest.json"
@@ -86,7 +86,7 @@ func NewUpdateService(m *release.Manager) *UpdateService {
 }
 
 func (s *Store) updateSource(ctx context.Context) (out updateSource, err error) {
-	err = s.DB.QueryRow(ctx, `SELECT update_repository,update_source_revision FROM updater.clusters WHERE cluster_id=$1`, s.Cluster).Scan(&out.Repository, &out.Revision)
+	err = s.clusterRow(s.db(ctx)).Select("update_repository,update_source_revision").Row().Scan(&out.Repository, &out.Revision)
 	return
 }
 func (s *Store) setUpdateSource(ctx context.Context, raw string) (updateSource, error) {
@@ -94,7 +94,7 @@ func (s *Store) setUpdateSource(ctx context.Context, raw string) (updateSource, 
 	if err != nil {
 		return updateSource{}, err
 	}
-	_, err = s.DB.Exec(ctx, `UPDATE updater.clusters SET update_repository=$2,update_source_revision=update_source_revision+1 WHERE cluster_id=$1`, s.Cluster, repo)
+	err = s.clusterRow(s.db(ctx)).Updates(map[string]any{"update_repository": repo, "update_source_revision": gorm.Expr("update_source_revision+1")}).Error
 	// Revision-keyed caches invalidate across all nodes without waiting for a
 	// network check's mutex or retaining stale data after switching away/back.
 	return updateSource{Repository: repo}, err
@@ -343,10 +343,10 @@ func (s *Store) importGitHub(ctx context.Context, repository, tag string) (Relea
 	if err != nil {
 		return out, err
 	}
-	if err = s.withTx(ctx, func(tx pgx.Tx) error {
+	if err = s.withTx(ctx, func(tx *gorm.DB) error {
 		var actual string
 		var revision int64
-		if err := tx.QueryRow(ctx, `SELECT update_repository,update_source_revision FROM updater.clusters WHERE cluster_id=$1 FOR SHARE`, s.Cluster).Scan(&actual, &revision); err != nil {
+		if err := tx.Raw(`SELECT update_repository,update_source_revision FROM updater.clusters WHERE cluster_id=? FOR SHARE`, s.Cluster).Row().Scan(&actual, &revision); err != nil {
 			return err
 		}
 		if actual != repository || revision != source.Revision {
@@ -354,11 +354,11 @@ func (s *Store) importGitHub(ctx context.Context, repository, tag string) (Relea
 		}
 		manifest, _ := json.Marshal(out.Manifest)
 		signed, _ := json.Marshal(out.Signed)
-		if _, err := tx.Exec(ctx, `INSERT INTO updater.releases(digest,release_id,manifest,signed_manifest,bundle_base) VALUES($1,$2,$3,$4,$5) ON CONFLICT(digest) DO NOTHING`, out.Digest, out.Manifest.ReleaseID, manifest, signed, out.BundleBase); err != nil {
+		if err := tx.Exec(`INSERT INTO updater.releases(digest,release_id,manifest,signed_manifest,bundle_base) VALUES(?,?,?,?,?) ON CONFLICT(digest) DO NOTHING`, out.Digest, out.Manifest.ReleaseID, manifest, signed, out.BundleBase).Error; err != nil {
 			return err
 		}
 		var storedBase string
-		if err := tx.QueryRow(ctx, `SELECT bundle_base FROM updater.releases WHERE digest=$1`, out.Digest).Scan(&storedBase); err != nil {
+		if err := releaseRow(tx, out.Digest).Select("bundle_base").Row().Scan(&storedBase); err != nil {
 			return err
 		}
 		if storedBase != out.BundleBase {

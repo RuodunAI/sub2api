@@ -324,3 +324,26 @@ func TestRedisPasswordIsEnforced(t *testing.T) {
 		t.Fatal("wrong password accepted")
 	}
 }
+
+// The DSN shared with the core may carry pgxpool's pool_* parameters, which
+// are no PostgreSQL settings: they leave the gateway's DSN, and
+// pool_max_conns still sizes its pool.
+func TestTakePoolParams(t *testing.T) {
+	for raw, want := range map[string]struct {
+		dsn      string
+		maxConns int
+	}{
+		"postgres://u:p%40w@db:5432/app?sslmode=require&pool_max_conns=20&pool_min_conns=4": {"postgres://u:p%40w@db:5432/app?sslmode=require", 20},
+		"postgresql://db/app?pool_max_conn_idle_time=1m":                                    {"postgresql://db/app", 0},
+		"postgres://db/app?sslmode=disable":                                                 {"postgres://db/app?sslmode=disable", 0},
+		"host=db dbname=app":                                                                {"host=db dbname=app", 0},
+	} {
+		dsn, maxConns, err := takePoolParams(raw)
+		if err != nil || dsn != want.dsn || maxConns != want.maxConns {
+			t.Errorf("%q: dsn=%q max_conns=%d err=%v", raw, dsn, maxConns, err)
+		}
+	}
+	if _, _, err := takePoolParams("postgres://db/app?pool_max_conns=0"); err == nil {
+		t.Error("pool_max_conns=0 was accepted")
+	}
+}

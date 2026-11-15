@@ -96,7 +96,7 @@ func (r *rollingRuntime) SetOffload(nodes []Node) error {
 }
 func (r *rollingRuntime) DrainStop(ctx context.Context, op string) error {
 	var marked bool
-	_ = r.store.DB.QueryRow(ctx, `SELECT offloading FROM updater.nodes WHERE node_id=$1`, r.node).Scan(&marked)
+	_ = r.store.db(ctx).Raw(`SELECT offloading FROM updater.nodes WHERE node_id=?`, r.node).Row().Scan(&marked)
 	r.mu.Lock()
 	r.log = append(r.log, "stop(marked="+boolString(marked)+")")
 	r.mu.Unlock()
@@ -194,7 +194,7 @@ func TestPostgresRollingPlanRestartsOneNodeWhileTheOtherServes(t *testing.T) {
 		t.Fatalf("each node yields to the other: a=%v b=%v", ar.log, br.log)
 	}
 	var baseline string
-	if err = s.DB.QueryRow(ctx, `SELECT baseline FROM updater.clusters WHERE cluster_id=$1`, s.Cluster).Scan(&baseline); err != nil || baseline != target.Digest {
+	if err = s.db(ctx).Raw(`SELECT baseline FROM updater.clusters WHERE cluster_id=?`, s.Cluster).Row().Scan(&baseline); err != nil || baseline != target.Digest {
 		t.Fatalf("baseline %s %v", baseline, err)
 	}
 	for _, e := range []*Engine{a, b} {
@@ -277,7 +277,7 @@ func TestPostgresYieldHandlersHandOverAndTakeBack(t *testing.T) {
 		t.Fatalf("new requests must go to the primary: %+v", br.offload)
 	}
 	var marked bool
-	if err := s.DB.QueryRow(ctx, `SELECT offloading FROM updater.nodes WHERE node_id=$1`, b.Node.ID).Scan(&marked); err != nil || !marked {
+	if err := s.db(ctx).Raw(`SELECT offloading FROM updater.nodes WHERE node_id=?`, b.Node.ID).Row().Scan(&marked); err != nil || !marked {
 		t.Fatalf("yield must be stored before forwarding: %v %v", marked, err)
 	}
 	if err := s.AuthorizePeer(ctx, b.Node.ID, "boot", a.Node.ID, "forward", ""); err != nil {
@@ -293,7 +293,7 @@ func TestPostgresYieldHandlersHandOverAndTakeBack(t *testing.T) {
 	if len(br.offload) != 0 {
 		t.Fatalf("resume must serve locally again: %+v", br.offload)
 	}
-	if err := s.DB.QueryRow(ctx, `SELECT offloading FROM updater.nodes WHERE node_id=$1`, b.Node.ID).Scan(&marked); err != nil || marked {
+	if err := s.db(ctx).Raw(`SELECT offloading FROM updater.nodes WHERE node_id=?`, b.Node.ID).Row().Scan(&marked); err != nil || marked {
 		t.Fatalf("resume must clear the stored mark: %v %v", marked, err)
 	}
 	// A single serving node has nobody to yield to.
@@ -335,7 +335,7 @@ func TestPostgresHeartbeatRewritesUnchangedSnapshotOnlyPeriodically(t *testing.T
 		t.Fatalf("a changed snapshot must be written at once: %v", err)
 	}
 	var ready bool
-	if err := a.Store.DB.QueryRow(ctx, `SELECT ready FROM updater.nodes WHERE node_id=$1`, a.Node.ID).Scan(&ready); err != nil || ready {
+	if err := a.Store.db(ctx).Raw(`SELECT ready FROM updater.nodes WHERE node_id=?`, a.Node.ID).Row().Scan(&ready); err != nil || ready {
 		t.Fatalf("change not persisted: ready=%v %v", ready, err)
 	}
 	_ = rc.Protocol

@@ -51,7 +51,7 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 	}
 	pluginSnapshot := func() string {
 		var raw string
-		if e := testDB.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(jsonb_build_object('key',key,'version',active_version,'status',status) ORDER BY key),'[]'::jsonb)::text FROM plugins`).Scan(&raw); e != nil {
+		if e := testDB.WithContext(ctx).Raw(`SELECT COALESCE(jsonb_agg(jsonb_build_object('key',key,'version',active_version,'status',status) ORDER BY key),'[]'::jsonb)::text FROM plugins`).Row().Scan(&raw); e != nil {
 			t.Fatal(e)
 		}
 		return raw
@@ -61,7 +61,7 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 		t.Fatal("bundled signed plugins did not bootstrap")
 	}
 	appliedMigrations := func() map[string]string {
-		rows, e := testDB.Query(ctx, `SELECT id,checksum FROM schema_migrations`)
+		rows, e := testDB.WithContext(ctx).Raw(`SELECT id,checksum FROM schema_migrations`).Rows()
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -298,11 +298,11 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 			var status, active string
 			var running, migrations int
 			var busy bool
-			_ = testDB.QueryRow(ctx, `SELECT status, coalesce(active_version,''),
-				(SELECT count(*) FROM plugin_runtime_nodes r JOIN updater.nodes n ON n.core_boot_id=r.boot_id AND n.cluster_id=$1 WHERE r.plugin_key='anthropic' AND NOT r.stopped AND n.ready),
+			_ = testDB.WithContext(ctx).Raw(`SELECT status, coalesce(active_version,''),
+				(SELECT count(*) FROM plugin_runtime_nodes r JOIN updater.nodes n ON n.core_boot_id=r.boot_id AND n.cluster_id=? WHERE r.plugin_key='anthropic' AND NOT r.stopped AND n.ready),
 				(SELECT count(*) FROM plugin_migrations WHERE plugin_key='anthropic' AND migration_id='0002_add_family.sql'),
 				EXISTS(SELECT 1 FROM plugin_rollouts WHERE plugin_key='anthropic' AND phase IN ('preparing','activating')) OR EXISTS(SELECT 1 FROM plugin_rollout_cleanup WHERE state='cleanup_pending')
-				FROM plugins WHERE key='anthropic'`, dbname).Scan(&status, &active, &running, &migrations, &busy)
+				FROM plugins WHERE key='anthropic'`, dbname).Row().Scan(&status, &active, &running, &migrations, &busy)
 			if status == "enabled" && active == nextVersion && migrations == 1 && running >= len(nodes) && !busy {
 				t.Logf("bundled anthropic upgraded to %s with the core on all %d nodes; its migration ran once", nextVersion, len(nodes))
 				break
@@ -314,10 +314,10 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 		}
 		pluginsBefore = pluginSnapshot()
 		var stages, historyNodes, audits int
-		if err := testDB.QueryRow(ctx, `SELECT
-			(SELECT count(*) FROM plugin_history WHERE plugin_key='anthropic' AND node_id='' AND state='active' AND version=$1),
+		if err := testDB.WithContext(ctx).Raw(`SELECT
+			(SELECT count(*) FROM plugin_history WHERE plugin_key='anthropic' AND node_id='' AND state='active' AND version=?),
 			(SELECT count(DISTINCT node_id) FROM plugin_history WHERE plugin_key='anthropic' AND node_id<>''),
-			(SELECT count(*) FROM audit_logs WHERE action='plugin.upgrade' AND target_id='anthropic' AND detail->>'source'='builtin' AND detail->>'version'=$1)`, nextVersion).Scan(&stages, &historyNodes, &audits); err != nil || stages < 1 || historyNodes < len(nodes) || audits != 1 {
+			(SELECT count(*) FROM audit_logs WHERE action='plugin.upgrade' AND target_id='anthropic' AND detail->>'source'='builtin' AND detail->>'version'=?)`, nextVersion, nextVersion).Row().Scan(&stages, &historyNodes, &audits); err != nil || stages < 1 || historyNodes < len(nodes) || audits != 1 {
 			t.Fatalf("missing durable builtin history: stages=%d nodes=%d audits=%d err=%v", stages, historyNodes, audits, err)
 		}
 	}
@@ -340,7 +340,7 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 	// source copy, which creates managed_upgrade_probe with exactly one row.
 	if probe := os.Getenv("TEST_EXPECT_MIGRATION"); probe != "" {
 		var rows int
-		if err = testDB.QueryRow(ctx, `SELECT count(*) FROM managed_upgrade_probe`).Scan(&rows); err != nil || len(added) != 1 || added[0] != probe || rows != 1 {
+		if err = testDB.WithContext(ctx).Raw(`SELECT count(*) FROM managed_upgrade_probe`).Row().Scan(&rows); err != nil || len(added) != 1 || added[0] != probe || rows != 1 {
 			t.Fatalf("expected one real migration %s applied once: added=%v rows=%d err=%v", probe, added, rows, err)
 		}
 	}
@@ -391,7 +391,7 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 			t.Fatalf("credential loss disturbed core %s: %+v %s %v", id, current, mode, e)
 		}
 		var ready bool
-		if e = testDB.QueryRow(ctx, `SELECT ready FROM updater.nodes WHERE cluster_id=$1 AND node_id=$2`, dbname, id).Scan(&ready); e != nil || !ready {
+		if e = testDB.WithContext(ctx).Raw(`SELECT ready FROM updater.nodes WHERE cluster_id=? AND node_id=?`, dbname, id).Row().Scan(&ready); e != nil || !ready {
 			t.Fatalf("credential loss cleared persisted readiness of %s: %v", id, e)
 		}
 		t.Logf("node %s re-registered after Redis loss; key reused=%v; core boot unchanged", id, after.Key == before.Key)

@@ -10,14 +10,14 @@ import (
 func TestPostgresMixedTelemetryKeepsLegacyCoordinatorFresh(t *testing.T) {
 	s, a, b, _ := setupEngines(t)
 	ctx := context.Background()
-	if _, err := s.DB.Exec(ctx, `UPDATE updater.nodes SET telemetry_boot_id='' WHERE node_id=$1`, a.Node.ID); err != nil {
+	if err := s.db(ctx).Exec(`UPDATE updater.nodes SET telemetry_boot_id='' WHERE node_id=?`, a.Node.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	b.CPU = func() (float64, bool) { return 23, true }
 	if err := b.Heartbeat(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(ctx, `UPDATE updater.nodes SET last_seen=now()-interval '1 minute' WHERE node_id=$1`, b.Node.ID); err != nil {
+	if err := s.db(ctx).Exec(`UPDATE updater.nodes SET last_seen=now()-interval '1 minute' WHERE node_id=?`, b.Node.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Heartbeat(ctx); err != nil {
@@ -25,7 +25,7 @@ func TestPostgresMixedTelemetryKeepsLegacyCoordinatorFresh(t *testing.T) {
 	}
 	var fresh bool
 	var cpu *float64
-	if err := s.DB.QueryRow(ctx, `SELECT ready AND mode='local' AND last_seen>now()-interval '20 seconds',cpu_percent FROM updater.nodes WHERE node_id=$1`, b.Node.ID).Scan(&fresh, &cpu); err != nil {
+	if err := s.db(ctx).Raw(`SELECT ready AND mode='local' AND last_seen>now()-interval '20 seconds',cpu_percent FROM updater.nodes WHERE node_id=?`, b.Node.ID).Row().Scan(&fresh, &cpu); err != nil {
 		t.Fatal(err)
 	}
 	if !fresh || cpu == nil || *cpu != 23 {
@@ -42,7 +42,7 @@ func TestPostgresMixedTelemetryDowngradedBootUsesLegacyReport(t *testing.T) {
 	if err := b.Heartbeat(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(ctx, `UPDATE updater.nodes SET shell_boot_id='legacy-reboot',ready=true,mode='local',last_seen=now(),cpu_percent=67 WHERE node_id=$1`, b.Node.ID); err != nil {
+	if err := s.db(ctx).Exec(`UPDATE updater.nodes SET shell_boot_id='legacy-reboot',ready=true,mode='local',last_seen=now(),cpu_percent=67 WHERE node_id=?`, b.Node.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	nodes, err := s.Nodes(ctx)
@@ -102,7 +102,7 @@ func TestPostgresTelemetryCannotReplaceStopConfirmation(t *testing.T) {
 	if err := a.followersStopped(ctx); err != nil {
 		t.Fatalf("valid stop confirmation rejected: %v", err)
 	}
-	if _, err := s.DB.Exec(ctx, `DELETE FROM updater.stop_confirmations WHERE cluster_id=$1 AND node_id=$2`, s.Cluster, b.Node.ID); err != nil {
+	if err := s.db(ctx).Exec(`DELETE FROM updater.stop_confirmations WHERE cluster_id=? AND node_id=?`, s.Cluster, b.Node.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := b.Heartbeat(ctx); err != nil {

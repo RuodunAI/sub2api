@@ -35,7 +35,7 @@ func TestPostgresRemoveNodeSetPrimaryAndPackageFallback(t *testing.T) {
 	if err := s.DisableNode(ctx, b.Node.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(ctx, `UPDATE updater.nodes SET stopped=true, last_seen=now()-interval '10 minutes' WHERE cluster_id=$1 AND node_id=$2`, s.Cluster, b.Node.ID); err != nil {
+	if err := s.db(ctx).Exec(`UPDATE updater.nodes SET stopped=true, last_seen=now()-interval '10 minutes' WHERE cluster_id=? AND node_id=?`, s.Cluster, b.Node.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetPrimary(ctx, b.Node.ID); err == nil {
@@ -48,7 +48,7 @@ func TestPostgresRemoveNodeSetPrimaryAndPackageFallback(t *testing.T) {
 		t.Fatalf("remove-node: %v", err)
 	}
 	var left int
-	if err := s.DB.QueryRow(ctx, `SELECT (SELECT count(*) FROM updater.nodes WHERE cluster_id=$1 AND node_id=$2) + (SELECT count(*) FROM updater.node_admissions WHERE cluster_id=$1 AND node_id=$2)`, s.Cluster, b.Node.ID).Scan(&left); err != nil || left != 0 {
+	if err := s.db(ctx).Raw(`SELECT (SELECT count(*) FROM updater.nodes WHERE cluster_id=? AND node_id=?) + (SELECT count(*) FROM updater.node_admissions WHERE cluster_id=? AND node_id=?)`, s.Cluster, b.Node.ID, s.Cluster, b.Node.ID).Row().Scan(&left); err != nil || left != 0 {
 		t.Fatalf("rows left %d %v", left, err)
 	}
 	if err := s.RemoveNode(ctx, a.Node.ID); err == nil {

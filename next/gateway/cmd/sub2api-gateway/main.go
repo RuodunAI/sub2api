@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -34,8 +35,10 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/proxy"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/supervisor"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 type config struct {
@@ -212,7 +215,7 @@ func runCommand(opts cliOptions) error {
 // the release manager, plus the closers for what has been opened so far.
 type shell struct {
 	c        config
-	db       *pgxpool.Pool
+	db       *gorm.DB
 	store    *control.Store
 	releases *release.Manager
 	closers  []func()
@@ -226,27 +229,78 @@ func (s *shell) close() {
 	s.closers = nil
 }
 
-// openPool connects to PG with the env-overridable pool size.
-func openPool(ctx context.Context, c config) (*pgxpool.Pool, error) {
-	dbcfg, err := pgxpool.ParseConfig(c.DatabaseURL)
+// openPool opens the PG pool with the env-overridable size. Like pgxpool
+// before, it connects lazily: the first statement dials.
+func openPool(c config) (*gorm.DB, error) {
+	dsn, maxConns, err := takePoolParams(c.DatabaseURL)
 	if err != nil {
 		return nil, err
 	}
-	// Allow environment override for tuning; default to 4-8 per gateway.
-	if maxConns := os.Getenv("SUB2API_GATEWAY_POOL_MAX_CONNS"); maxConns != "" {
-		var n int32
-		if _, err := fmt.Sscanf(maxConns, "%d", &n); err == nil && n > 0 {
-			dbcfg.MaxConns = n
+	// Allow environment override for tuning; default to 8 per gateway.
+	if v := os.Getenv("SUB2API_GATEWAY_POOL_MAX_CONNS"); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			maxConns = n
 		}
 	}
-	if dbcfg.MaxConns == 0 {
-		dbcfg.MaxConns = 8
+	if maxConns == 0 {
+		maxConns = 8
 	}
-	db, err := pgxpool.NewWithConfig(ctx, dbcfg)
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		SkipDefaultTransaction: true, // the store opens the transactions it needs
+		DisableAutomaticPing:   true,
+		// Errors go back to the caller; logged SQL could carry values.
+		Logger: logger.Discard,
+	})
 	if err != nil {
 		return nil, err
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	// database/sql keeps two idle connections by default; keep them all
+	// warm and recycle them on pgxpool's default schedule, as before.
+	sqlDB.SetMaxOpenConns(maxConns)
+	sqlDB.SetMaxIdleConns(maxConns)
+	sqlDB.SetConnMaxLifetime(time.Hour)
+	sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 	return db, nil
+}
+
+// closePool closes the pool's connections.
+func closePool(db *gorm.DB) {
+	if sqlDB, err := db.DB(); err == nil {
+		_ = sqlDB.Close()
+	}
+}
+
+// takePoolParams removes pgxpool's pool_* parameters from a URL DSN. The DSN
+// is shared with the core, whose pgxpool reads them; pgx's connection parser
+// would send them to PostgreSQL as settings, which it rejects.
+// pool_max_conns still sizes this pool, as it did under pgxpool.
+func takePoolParams(dsn string) (string, int, error) {
+	if !strings.Contains(dsn, "pool_") || (!strings.HasPrefix(dsn, "postgres://") && !strings.HasPrefix(dsn, "postgresql://")) {
+		return dsn, 0, nil
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", 0, errors.New("database URL is invalid") // the URL carries the password
+	}
+	q := u.Query()
+	maxConns := 0
+	if v := q.Get("pool_max_conns"); v != "" {
+		if maxConns, err = strconv.Atoi(v); err != nil || maxConns < 1 {
+			return "", 0, fmt.Errorf("pool_max_conns %q must be a positive integer", v)
+		}
+	}
+	for k := range q {
+		if strings.HasPrefix(k, "pool_") {
+			q.Del(k)
+		}
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), maxConns, nil
 }
 
 // openRedis connects to the cache.
@@ -262,13 +316,15 @@ func openRedis(c config) (*redis.Client, error) {
 // the command serves or initializes a cluster.
 func newShell(ctx context.Context, c config, command string) (*shell, error) {
 	s := &shell{c: c}
-	db, err := openPool(ctx, c)
+	db, err := openPool(c)
 	if err != nil {
 		return nil, err
 	}
 	s.db = db
-	s.closers = append(s.closers, db.Close)
-	slog.Info("gateway database pool", "max_conns", db.Config().MaxConns)
+	s.closers = append(s.closers, func() { closePool(db) })
+	if sqlDB, err := db.DB(); err == nil {
+		slog.Info("gateway database pool", "max_conns", sqlDB.Stats().MaxOpenConnections)
+	}
 	s.store = &control.Store{DB: db, Cluster: c.ClusterID}
 	keys := map[string]ed25519.PublicKey{}
 	for id, b64 := range c.TrustedKeys {
@@ -874,11 +930,11 @@ func localCommand(command, socket, tokenFile, id string) error {
 func clusterCommand(command string, c config, node string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	db, err := openPool(ctx, c)
+	db, err := openPool(c)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer closePool(db)
 	redisClient, err := openRedis(c)
 	if err != nil {
 		return err
