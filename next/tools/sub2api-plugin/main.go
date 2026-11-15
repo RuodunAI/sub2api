@@ -18,7 +18,8 @@ Usage:
   sub2api-plugin keygen --key-id <id> --out <dir>
   sub2api-plugin build  --dir <plugin dir> [--out <dir>] [--dev] [--tags a,b] [--overlay <dir>] [--platforms linux/amd64,...]
   sub2api-plugin pack   --dir <plugin dir> (--out <file.s2plugin> | --out-dir <dir>) [--runtimes <dir>] [--overlay <dir>] [--allow-missing-ui]
-                        [--skip-db-check]   (pack runs db check when the plugin has internal/model)
+                        [--skip-db-check]   (pack runs db check, overlay included, when the plugin has internal/model
+                                             and a database; see db below for the PostgreSQL it needs)
                         [--images <dir> [--image-roles a,b,...]]   (bundle container images, see images.go)
   sub2api-plugin sign   --key <private key file> --key-id <id> [--publisher <name>] <file.s2plugin>
   sub2api-plugin verify --pub <public key file|base64> <file.s2plugin>
@@ -27,7 +28,10 @@ Usage:
   sub2api-plugin dev    [--dir <plugin dir>] [--with <dir|file.s2plugin>]... [--addr 127.0.0.1:8080] [--core <sub2api>] [--reset] [--no-watch]
                         (run a local core with the plugin installed; rebuild on change)
   sub2api-plugin db diff  --dir <plugin dir> [--name <name>]   (write migrations/NNNN_<name>.sql from the GORM models)
-  sub2api-plugin db check --dir <plugin dir>                   (fail while the GORM models and migrations/ disagree)
+  sub2api-plugin db check --dir <plugin dir> [--overlay <dir>] (fail while the GORM models and migrations/ disagree)
+                        db diff, db check and pack compare on TEST_DATABASE_URL (a superuser DSN). Unset, they start a
+                        local PostgreSQL 16 (embedded-postgres: about 25 MB downloaded once from Maven Central and
+                        cached) and stop it when done, unless it was running already; SUB2API_TESTPG=off refuses to.
 
 Run "sub2api-plugin <command> -h" for the flags of one command.
 `

@@ -73,8 +73,10 @@ func TestAnthropicReleaseAndUpgradeFixtureRemainDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fixture's migration has no model on purpose: db check, which
+	// includes the overlay's migrations, does not apply to it.
 	fixture := strings.TrimSpace(runOK(t, "pack", "--dir", dir, "--runtimes", runtimes,
-		"--overlay", "testdata/upgrade", "--out-dir", market))
+		"--overlay", "testdata/upgrade", "--skip-db-check", "--out-dir", market))
 	var shipped struct {
 		Version string `json:"version"`
 	}

@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -72,8 +71,10 @@ func cmdPack(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if !*skipDBCheck {
-		// A plugin not on GORM models (no internal/model) has nothing to check.
-		if err := dbCheck(*dir, stderr); err != nil && !errors.Is(err, errNoModels) {
+		// A plugin without GORM models (no internal/model) or without a
+		// database has nothing to check. The overlay's migrations are packed,
+		// so they are checked too.
+		if err := dbCheck(*dir, ov, stderr); err != nil && !nothingToCheck(err) {
 			return fmt.Errorf("db check: %w", err)
 		}
 	}
