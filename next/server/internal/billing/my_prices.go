@@ -62,16 +62,13 @@ func (s *Service) myPrices(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// usableBy selects the active groups a user may use; user is the placeholder
-// of the user's id.
-func usableBy(user string) string {
-	return ` WHERE ` + segment.UsableGroupSQL("g", user)
-}
+// usableBy selects the active groups a user may use; it takes the user's id.
+var usableBy = segment.UsableGroupSQL("g", "?")
 
 // pricesOfGroups lists every model with a global price, at that price, with
 // the groups of the user that provide it.
 func (s *Service) pricesOfGroups(ctx context.Context, uid int64) (*MyPrices, error) {
-	groups, err := loadGroups(ctx, s.db.Pool, usableBy("$1")+` ORDER BY g.id`, uid)
+	groups, err := loadGroups(ctx, s.db.Pool, usableBy, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +96,7 @@ func (s *Service) pricesOfGroups(ctx context.Context, uid int64) (*MyPrices, err
 // pricesInGroup lists the models one of the user's groups provides and can
 // bill, at the list price and the rate the user gets there.
 func (s *Service) pricesInGroup(ctx context.Context, uid, groupID int64) (*MyPrices, error) {
-	gp, err := loadGroupPrices(ctx, s.db.Pool, usableBy("$1")+` AND g.id = $2`, uid, groupID)
+	gp, err := loadGroupPrices(ctx, s.db.Pool, usableBy+" AND g.id = ?", uid, groupID)
 	if err != nil {
 		return nil, err
 	}

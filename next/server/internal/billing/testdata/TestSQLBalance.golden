@@ -1,0 +1,6 @@
+-- sql
+SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = $1), 0),
+		       COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = $2), 0)
+-- vars
+$1 int64 7
+$2 int64 7

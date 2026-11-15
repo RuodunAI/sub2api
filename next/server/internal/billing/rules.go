@@ -9,10 +9,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Rule is a model price of a group, or of a segment in a group, as the API
@@ -114,29 +116,47 @@ func (rs ruleSet) levels(q core.PriceQuery) ruleLevels {
 	return l
 }
 
-// rulesFor selects the rules that may price the models of a group ($1) for a
-// segment ($2): the segment's own and the group's.
-const rulesFor = ` WHERE group_id = $1 AND COALESCE(segment_id, $2) = $2`
+// rulesFor selects the rules that may price the models of a group for a
+// segment: the segment's own and the group's. It takes the group's id, then
+// the segment's twice.
+const rulesFor = `group_id = ? AND COALESCE(segment_id, ?) = ?`
 
-// loadRules reads the price rules cond selects.
+// ruleRow is a row of priceRules.
+type ruleRow struct {
+	GroupID    int64
+	SegmentID  int64
+	Model      string
+	Kind       string
+	Multiplier *decimal.Decimal
+	Mode       string
+	Config     store.JSON[map[string]*float64]
+	Expression string
+	ExprHash   string
+}
+
+// priceRules selects the price rules cond selects; "" selects all of them.
+func priceRules(db *gorm.DB, cond string, args ...any) *gorm.DB {
+	db = db.Model(&model.PriceRule{}).Select(`group_id, COALESCE(segment_id, 0) AS segment_id, model, kind, multiplier,
+		COALESCE(mode, '') AS mode, config, expression, expr_hash`)
+	if cond == "" {
+		return db
+	}
+	return db.Where(cond, args...)
+}
+
+// loadRules reads the price rules cond selects ("" for all of them).
 func loadRules(ctx context.Context, q store.Querier, cond string, args ...any) (ruleSet, error) {
-	rows, err := q.Query(ctx, `SELECT group_id, COALESCE(segment_id, 0), model, kind, multiplier, COALESCE(mode, ''),
-		config, expression, expr_hash FROM price_rules`+cond, args...)
-	if err != nil {
+	var rows []ruleRow
+	if err := priceRules(store.G(ctx, q), cond, args...).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := ruleSet{}
-	for rows.Next() {
-		var on core.PriceQuery
-		var multiplier decimal.NullDecimal
-		r := &storedRule{}
-		if err := rows.Scan(&on.GroupID, &on.SegmentID, &on.Model, &r.Kind, &multiplier, &r.Mode,
-			&r.Config, &r.expression, &r.exprHash); err != nil {
-			return nil, err
-		}
-		if multiplier.Valid {
-			r.setScale(multiplier.Decimal)
+	out := make(ruleSet, len(rows))
+	for _, row := range rows {
+		on := core.PriceQuery{GroupID: row.GroupID, SegmentID: row.SegmentID, Model: row.Model}
+		r := &storedRule{Rule: Rule{Kind: row.Kind, Mode: row.Mode, Config: row.Config.V},
+			expression: row.Expression, exprHash: row.ExprHash}
+		if row.Multiplier != nil {
+			r.setScale(*row.Multiplier)
 		}
 		out[on] = r
 		// Only a custom price has an expression of its own.
@@ -147,7 +167,7 @@ func loadRules(ctx context.Context, q store.Querier, cond string, args ...any) (
 			r.exprVersion = prog.Version()
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // customPrices are the prices a custom rule may set per mode; the first

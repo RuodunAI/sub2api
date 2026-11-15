@@ -1,0 +1,5 @@
+-- sql
+UPDATE "price_sync_sources" SET "last_error"=$1,"last_synced_at"=now() WHERE id = $2
+-- vars
+$1 string ""
+$2 int64 4

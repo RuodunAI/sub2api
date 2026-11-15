@@ -1,0 +1,9 @@
+-- sql
+SELECT mp.id, mp.model, mp.mode, mp.config, mp.expression, mp.expr_version, mp.expr_hash,
+	mp.source, mp.sync_source_id, ps.name AS sync_source_name, mp.synced_at, mp.enabled, mp.note, mp.updated_by, mp.updated_at FROM model_prices mp LEFT JOIN price_sync_sources ps ON ps.id = mp.sync_source_id WHERE mp.enabled = $1 AND ((mp.model ILIKE $2 OR mp.note ILIKE $3)) ORDER BY mp.model, mp.id LIMIT $4 OFFSET $5
+-- vars
+$1 bool false
+$2 string "%claude%"
+$3 string "%claude%"
+$4 int 25
+$5 int 25

@@ -1,0 +1,8 @@
+-- sql
+SELECT g.id, g.name, g.rate_multiplier, g.model_allowlist, g.model_filter_mode,
+		g.visibility = 'public' AS public FROM groups g WHERE g.status = 'active' AND (g.visibility = 'public' OR EXISTS (SELECT 1 FROM segment_groups sg
+		JOIN users su ON su.segment_id = sg.segment_id
+		WHERE sg.group_id = g.id AND sg.granted AND su.id = $1)) AND g.id = $2 ORDER BY g.id
+-- vars
+$1 int64 7
+$2 int64 3

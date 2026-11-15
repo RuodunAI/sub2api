@@ -9,6 +9,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Price sources: administrators type prices in (manual) or import them from
@@ -38,19 +40,18 @@ func (s *Service) snapshot(ctx context.Context) (*priceSnapshot, error) {
 	if snap != nil && time.Since(snap.at) < s.cacheTTL {
 		return snap, nil
 	}
-	rows, err := s.db.Pool.Query(ctx, `
-		SELECT id, model, mode, expression, expr_version, expr_hash, config FROM model_prices WHERE enabled`)
+	// A snapshot lives for cacheTTL: requests read it, not the table.
+	var rows []model.ModelPrice
+	err := enabledPrices(store.G(ctx, s.db.Pool), "id", "model", "mode", "expression", "expr_version", "expr_hash", "config").
+		Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	snap = &priceSnapshot{at: time.Now(), byModel: map[string]core.PriceRule{}, bases: catalog{}}
-	for rows.Next() {
-		var r core.PriceRule
-		var config json.RawMessage
-		if err := rows.Scan(&r.ID, &r.Model, &r.Mode, &r.Expression, &r.ExprVersion, &r.ExprHash, &config); err != nil {
-			return nil, err
-		}
+	for _, row := range rows {
+		r := core.PriceRule{ID: row.ID, Model: row.Model, Mode: row.Mode, Expression: row.Expression,
+			ExprVersion: core.ValueOr(row.ExprVersion, 0), ExprHash: row.ExprHash}
+		config := row.Config
 		var visual expr.ExpressionConfig
 		r.VideoOnly = r.Mode == expr.ModeExpression && json.Unmarshal(config, &visual) == nil && visual.Video != nil
 		// Switching a video template to source mode must not bypass admission.
@@ -64,9 +65,6 @@ func (s *Service) snapshot(ctx context.Context) (*priceSnapshot, error) {
 		}
 		snap.byModel[r.Model] = r
 		snap.bases[r.Model] = PriceDef{Mode: r.Mode, Config: config, Expression: r.Expression}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	if snap.rules, err = loadRules(ctx, s.db.Pool, ""); err != nil {
 		return nil, err

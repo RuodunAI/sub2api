@@ -1,0 +1,5 @@
+-- sql
+SELECT "value" FROM "settings" WHERE key = $1 LIMIT $2
+-- vars
+$1 string "billing"
+$2 int 1

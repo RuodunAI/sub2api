@@ -1,0 +1,3 @@
+-- sql
+SELECT "model","mode","config","expression" FROM "model_prices" WHERE enabled
+-- vars

@@ -8,8 +8,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func (s *Service) PreConsumeTokens(ctx context.Context) (int64, error) {
@@ -209,6 +212,7 @@ SELECT COALESCE((SELECT id FROM applied), 0),
 // means the request had no reservation.
 func (s *Service) ReleasePrechargeTx(ctx context.Context, tx pgx.Tx, userID int64, requestID string) (*core.LedgerResult, error) {
 	key := releaseKey(requestID)
+	//gormguard:allow-pgx every free request the settler records runs it; GORM takes 2.2-2.5x the allocations (BASELINE.md, Batch 4c)
 	res, amount, err := scanRelease(ctx, tx, tx.QueryRow(ctx, releaseSQL, requestID, userID, key, "release request precharge"), key)
 	if err != nil || res == nil || res.Duplicate || s.events == nil {
 		return res, err
@@ -220,27 +224,8 @@ func (s *Service) ReleasePrechargeTx(ctx context.Context, tx pgx.Tx, userID int6
 }
 
 func (s *Service) ReleaseExpiredPrecharges(ctx context.Context) error {
-	// Pending usage is retried by settlement and must keep its reservation.
-	rows, err := s.db.Pool.Query(ctx, `SELECT p.request_id,p.user_id FROM request_precharges p WHERE p.expires_at < now() AND NOT EXISTS (SELECT 1 FROM usage_logs u WHERE u.request_id=p.request_id AND u.billing_status IN ('pending','failed')) ORDER BY p.expires_at LIMIT 100`)
-	if err != nil {
-		return err
-	}
-	type entry struct {
-		id   string
-		user int64
-	}
-	var entries []entry
-	for rows.Next() {
-		var e entry
-		if err := rows.Scan(&e.id, &e.user); err != nil {
-			rows.Close()
-			return err
-		}
-		entries = append(entries, e)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+	var entries []model.RequestPrecharge
+	if err := expiredPrecharges(store.G(ctx, s.db.Pool)).Scan(&entries).Error; err != nil {
 		return err
 	}
 	var failedCount int
@@ -248,22 +233,32 @@ func (s *Service) ReleaseExpiredPrecharges(ctx context.Context) error {
 		var lr *core.LedgerResult
 		err := s.db.Tx(ctx, func(tx pgx.Tx) error {
 			var err error
-			lr, err = s.ReleasePrechargeTx(ctx, tx, e.user, e.id)
+			lr, err = s.ReleasePrechargeTx(ctx, tx, e.UserID, e.RequestID)
 			return err
 		})
 		if err != nil {
-			slog.WarnContext(ctx, "billing: release expired precharge failed", "request_id", e.id, "user_id", e.user, "err", err)
+			slog.WarnContext(ctx, "billing: release expired precharge failed", "request_id", e.RequestID, "user_id", e.UserID, "err", err)
 			failedCount++
 			continue
 		}
 		if lr != nil {
-			s.CacheBalance(ctx, e.user, lr.LedgerID, lr.BalanceAfter)
+			s.CacheBalance(ctx, e.UserID, lr.LedgerID, lr.BalanceAfter)
 		}
 	}
 	if failedCount > 0 {
 		slog.ErrorContext(ctx, "billing: some expired precharges failed to release", "failed", failedCount, "total", len(entries))
 	}
 	return nil
+}
+
+// expiredPrecharges selects the request and user of the oldest expired
+// reservations, 100 at a time. Pending usage is retried by settlement and
+// must keep its reservation.
+func expiredPrecharges(db *gorm.DB) *gorm.DB {
+	return db.Table("request_precharges p").Select("p.request_id, p.user_id").
+		Where(`p.expires_at < now() AND NOT EXISTS (SELECT 1 FROM usage_logs u
+			WHERE u.request_id = p.request_id AND u.billing_status IN ('pending', 'failed'))`).
+		Order("p.expires_at").Limit(100)
 }
 
 // prechargeLockTimeout bounds how long one precharge waits for the user's

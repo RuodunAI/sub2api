@@ -175,6 +175,55 @@ recovery and retention, the monitor receipts, the helper usage receipts and
 the console (usage lists, details, export, summary, overview, realtime,
 manual reconcile and refund) are on GORM.
 
+## Batch 4c: billing
+
+The ledger writes of the request path are pgx batches and stay so (a
+`pgx.Batch` is outside the migration): `prechargeTx` (← `Precharge`, every
+billable request), `SettleTx` (settler, every billable request) and
+`ApplyTx`. Their SQL (`prechargeSQL`, `releaseSQL`, `applySQL`,
+`ensureBalanceSQL`), transaction boundaries, `FOR UPDATE` locks, lock
+order and idempotency keys with `ON CONFLICT` are unchanged; amounts stay
+`numeric` / `decimal.Decimal` throughout. The one direct statement of the
+request path is `ReleasePrechargeTx` (`releaseSQL` on its own), which the
+settler runs for every free request it records (usage `insertAtomic`; most
+hold no reservation) and the expiry sweeper for every reservation it
+returns. Its benchmark measures the pgx statement next to the GORM form of
+the same statement (`Raw` with `?` placeholders, the arguments repeated),
+for a request without a reservation (miss) and with one (hit):
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/billing/
+```
+
+Recorded 2026-11-15 on gorm-4c, same machine; the server was shared with
+other test runs, so ns/op is noisy. Medians of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotReleasePrecharge/miss/pgx | 102 700 | 1 213 | 30 |
+| BenchmarkHotReleasePrecharge/miss/gorm | 115 185 | 8 437 | 76 |
+| BenchmarkHotReleasePrecharge/hit/pgx | 551 849 | 1 342 | 37 |
+| BenchmarkHotReleasePrecharge/hit/gorm | 497 944 | 8 535 | 81 |
+| BenchmarkHotPrecharge (cdcc117c, before) | 728 823 | 8 755 | 277 |
+| BenchmarkHotPrecharge (gorm-4c, after) | 966 492 | 8 833 | 277 |
+
+GORM takes 2.5 and 2.2 times the allocations (the limit is 1.5), so
+`ReleasePrechargeTx` stays on pgx under `//gormguard:allow-pgx`. Precharge
+allocates the same before and after: its batch did not change.
+
+On GORM, because they do not run for every request:
+
+- `findLedger` (the ledger row of an idempotency key): only after an
+  insert lost a race on the key, or for a duplicate settlement refund;
+- `Balance` (← `CheckBalance`): behind the Redis balance cache, a miss only;
+- `loadSettings` (← `Settings`) and the price snapshot (`snapshot`:
+  `model_prices` and `loadRules`, ← `Resolve`): cached for `cacheTTL`
+  (1 min) and dropped on change, a miss only;
+- the expiry sweep's select, the console (prices, group and segment price
+  rules, price sources and their sync, ledger lists, `/me/balance`,
+  `/me/prices`, `/key/prices`, quotes).
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

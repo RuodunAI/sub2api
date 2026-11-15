@@ -145,7 +145,7 @@ func quoteTerms(ctx context.Context, q store.Querier, in QuoteRequest) (segment.
 }
 
 func (s *Service) quote(ctx context.Context, in QuoteRequest) (*PricingQuote, error) {
-	gp, err := loadGroupPrices(ctx, s.db.Pool, ` WHERE g.id = $1`, in.GroupID)
+	gp, err := loadGroupPrices(ctx, s.db.Pool, "g.id = ?", in.GroupID)
 	if err != nil {
 		return nil, err
 	}
