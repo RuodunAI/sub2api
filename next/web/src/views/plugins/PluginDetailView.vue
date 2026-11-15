@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SChoiceCards, SDropdown, SEmpty, SHint, SFormModal, SPageHeader, SSpinner, STabs, confirm, type ChoiceOption, type MenuAction, type TabItem } from '@sub2api/ui'
@@ -9,13 +9,14 @@ import type { Rollout } from '@/api/types'
 import { lt } from '@/i18n'
 import { errorMessage, notifyError } from '@/utils/errors'
 import { useAuthStore } from '@/stores/auth'
+import { confirmDiscard } from '@/composables/confirmDiscard'
 import { refreshShell } from '@/stores/app'
 import { consentPath } from './reviewCache'
 import RoleGrantsReview from './parts/RoleGrantsReview.vue'
 import { compareVersions, conflictLines, consoleSettings, hasCoreSettings, isPendingConsent, shownStatus, type PluginDetail, type PluginSettings } from './pluginUtil'
 import TrustBadge from './parts/TrustBadge.vue'
 import OverviewTab from './detail/OverviewTab.vue'
-import GrantsTab from './detail/GrantsTab.vue'
+import PermissionsTab from './detail/PermissionsTab.vue'
 import NodesTab from './detail/NodesTab.vue'
 import HooksTab from './detail/HooksTab.vue'
 import JobsTab from './detail/JobsTab.vue'
@@ -39,7 +40,12 @@ const settings = ref<PluginSettings | null>(null)
 const loading = ref(true)
 const loadError = ref('')
 const notFound = ref(false)
-const tab = ref(typeof route.query.tab === 'string' ? route.query.tab : 'overview')
+/** Tabs merged into another; old links still open them (the grants are the permissions tab's first part). */
+const TAB_ALIASES: Record<string, string> = { grants: 'permissions' }
+const tabOf = (q: unknown) => (typeof q === 'string' ? (TAB_ALIASES[q] ?? q) : 'overview')
+const tab = ref(tabOf(route.query.tab))
+/** The permissions tab holds unsaved role grants: leaving it asks first. */
+const permissionsDirty = ref(false)
 const acting = ref('')
 const uninstallOpen = ref(false)
 const upgradeOpen = ref(false)
@@ -71,7 +77,7 @@ const tabs = computed<TabItem[]>(() => {
   const d = detail.value
   const list: TabItem[] = [
     { key: 'overview', label: t('plugins.detail.tabs.overview') },
-    { key: 'grants', label: t('plugins.detail.tabs.grants'), badge: d?.grants?.length },
+    { key: 'permissions', label: t('plugins.detail.tabs.permissions'), badge: d?.grants?.length },
     { key: 'nodes', label: t('plugins.detail.tabs.nodes'), badge: d?.nodes?.length },
     { key: 'hooks', label: t('plugins.detail.tabs.hooks'), badge: d?.hooks?.length },
     { key: 'jobs', label: t('plugins.detail.tabs.jobs'), badge: d?.jobs?.length },
@@ -87,7 +93,17 @@ const tabs = computed<TabItem[]>(() => {
 watch(tab, (v) => {
   if (route.query.tab !== v) router.replace({ query: { ...route.query, tab: v } })
 })
-watch(() => route.query.tab, (v) => { tab.value = typeof v === 'string' ? v : 'overview' })
+watch(() => route.query.tab, (v) => { tab.value = tabOf(v) })
+// An old link (?tab=grants) shows the tab it now opens in the address bar.
+if (route.query.tab !== undefined && route.query.tab !== tab.value) router.replace({ query: { ...route.query, tab: tab.value } })
+
+/** Asked before the tab changes, while the permissions tab and its edits are still there. */
+async function switchTab(v: string) {
+  if (tab.value === 'permissions' && !(await confirmDiscard(permissionsDirty.value))) return
+  permissionsDirty.value = false
+  tab.value = v
+}
+onBeforeRouteLeave(() => confirmDiscard(permissionsDirty.value))
 
 const moreActions = computed<MenuAction[]>(() => [
   { key: 'refresh', label: t('common.refresh') },
@@ -269,10 +285,10 @@ onMounted(load)
         </template>
       </SAlert>
 
-      <STabs v-model="tab" :tabs="tabs">
+      <STabs :model-value="tab" :tabs="tabs" @update:model-value="switchTab">
 
         <OverviewTab v-if="tab === 'overview'" :detail="detail" />
-        <GrantsTab v-else-if="tab === 'grants'" :detail="detail" @changed="load" />
+        <PermissionsTab v-else-if="tab === 'permissions'" :detail="detail" @changed="load" @dirty="permissionsDirty = $event" />
         <NodesTab v-else-if="tab === 'nodes'" :detail="detail" />
         <HooksTab v-else-if="tab === 'hooks'" :detail="detail" />
         <JobsTab v-else-if="tab === 'jobs'" :detail="detail" />

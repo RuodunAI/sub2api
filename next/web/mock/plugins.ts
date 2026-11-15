@@ -1068,7 +1068,7 @@ on('PUT', '/plugins/:key/grants/:permission', stepUp('plugin.grant', (req) => {
   if (!requestedScopes.has(g)) requestedScopes.set(g, g.scope)
   const requested = requestedScopes.get(g) ?? null
   const scope = req.body?.scope ?? requested
-  if (!scopeWithin(scope, requested)) return fail(400, 'scope_too_wide', 'the scope is wider than the manifest requests')
+  if (!scopeWithin(scope, requested)) return invalid('scope', 'the scope is wider than the manifest requests', 'scope_too_wide')
   Object.assign(g, { scope, status: 'active', granted_at: now() })
   return g
 }))

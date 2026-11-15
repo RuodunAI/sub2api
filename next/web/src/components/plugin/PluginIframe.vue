@@ -6,6 +6,7 @@ import { toast } from '@sub2api/ui'
 import { i18n } from '@/i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import { actionOf } from '@/authz/pluginGrants'
 
 // Sandboxed plugin iframe (sandbox="allow-scripts": opaque origin, no
 // cookies/storage of the console, no session). All communication goes
@@ -72,14 +73,19 @@ function pluginPath(raw: unknown): string | null {
 /**
  * A local permission key of this plugin ("stats:read") the caller holds; a
  * qualified key ("plugin.<key>:...") is false, so the frame learns nothing
- * about other plugins or the core. Membership in the /me list (auth.holds),
- * not auth.has: a superuser's shortcut would answer true for keys the plugin
- * never declared and tell the frame the caller is the super admin.
+ * about other plugins or the core. An unscoped key is held at any scope
+ * ("flow:manage" by "plugin.<key>:flow:manage:own"), as the server shows
+ * menus and buttons (HasSome); a scoped one ("flow:manage:own") only as it
+ * is. Membership in the /me list, not auth.has: a superuser's shortcut would
+ * answer true for keys the plugin never declared and tell the frame the
+ * caller is the super admin.
  */
 function localAllowed(k: string): boolean {
   if (k === '' || k.startsWith('plugin.')) return false
   const key = pluginPermissionKey(props.pluginKey, k)
-  return key !== '' && auth.holds(key)
+  if (key === '') return false
+  if (auth.holds(key)) return true
+  return actionOf(key) === key && (auth.me?.permissions ?? []).some((p) => actionOf(p) === key)
 }
 
 async function handleRequest(id: string, method: string, params: any) {
