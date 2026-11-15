@@ -130,9 +130,8 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	}
 }
 
-// Inheritance follows the holders before the consent only (a key created
-// by the same consent is no source), keeps scoped grants of the same
-// scope_type only, and a critical permission inherits from critical keys
+// Inheritance keeps scoped grants of the same scope_type only (a key the
+// manifest still declares is no source: the manifest check refuses it), and a critical permission inherits from critical keys
 // only; every source left out is audited (inherit_skipped). Critical to
 // critical inherits, withheld when the consenter is no superuser.
 func TestConsentInheritRules(t *testing.T) {
@@ -154,9 +153,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	flow := newPerm("flow:edit", "")
 	flow.Scope = &manifest.PermissionScope{Resource: "flow", Own: true}
 	flow.InheritFrom = []string{"old:flow"} // ticket scopes: skipped
-	chained := newPerm("rules:chained", "")
-	chained.InheritFrom = []string{"rules:exempt"} // created by this consent: no source
-	_, err = e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", exempt, strict, flow, chained), e.root), e.admin, UploadOptions{})
+	_, err = e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", exempt, strict, flow), e.root), e.admin, UploadOptions{})
 	require.NoError(t, err)
 	res, err := e.svc.Consent(ctx, "guard", "0.1.1", ConsentRequest{Grants: explicitGuardGrants()}, e.admin)
 	require.NoError(t, err)
@@ -166,7 +163,6 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:exempt").GrantRoles)
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:strict").GrantRoles)
 	assert.Equal(t, map[string][]string{"auditor": {""}}, lastDef(t, e, "plugin.guard:flow:edit").GrantRoles)
-	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:chained").GrantRoles)
 	var skipped string
 	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail->>'inherit_skipped' FROM audit_logs WHERE action = $1 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&skipped))
 	assert.JSONEq(t, `[{"permission":"plugin.guard:rules:strict","from":"plugin.guard:old:low","reason":"risk"},
