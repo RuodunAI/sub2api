@@ -1,0 +1,5 @@
+-- sql
+DELETE FROM "login_sessions" WHERE user_id = $1 AND last_used_at < $2
+-- vars
+$1 int64 7
+$2 time.Time 2026-11-15 08:00:00 +0000 UTC

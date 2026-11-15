@@ -1,0 +1,5 @@
+-- sql
+DELETE FROM "user_access_keys" WHERE id = $1 AND user_id = $2
+-- vars
+$1 int64 5
+$2 int64 7

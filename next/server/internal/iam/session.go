@@ -10,9 +10,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // How a login session started.
@@ -60,18 +63,27 @@ func withLoginMethod(ctx context.Context, method string) context.Context {
 // that have outlived any refresh token.
 func (s *Service) touchLoginSession(ctx context.Context, tx pgx.Tx, userID int64, familyID string, isNew bool) error {
 	meta, _ := ctx.Value(sessionMetaKey{}).(sessionMeta)
+	g := store.G(ctx, tx)
 	if isNew {
-		if _, err := tx.Exec(ctx, `DELETE FROM login_sessions WHERE user_id = $1 AND last_used_at < $2`, userID, time.Now().Add(-s.cfg.RefreshTokenTTL)); err != nil {
+		if err := deleteStaleSessions(g, userID, time.Now().Add(-s.cfg.RefreshTokenTTL)).Error; err != nil {
 			return err
 		}
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO login_sessions (family_id, user_id, method, ip, user_agent) VALUES ($1, $2, $3, $4, $5)
+	return g.Exec(upsertLoginSession, familyID, userID, meta.method, meta.ip, meta.userAgent).Error
+}
+
+// deleteStaleSessions removes the login sessions of userID last used before
+// before.
+func deleteStaleSessions(db *gorm.DB, userID int64, before time.Time) *gorm.DB {
+	return db.Where("user_id = ? AND last_used_at < ?", userID, before).Delete(&model.LoginSession{})
+}
+
+// upsertLoginSession records a login session, or that one was used again:
+// an empty address or user agent keeps the one known.
+const upsertLoginSession = `INSERT INTO login_sessions (family_id, user_id, method, ip, user_agent) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (family_id) DO UPDATE SET last_used_at = now(),
 			ip = CASE WHEN EXCLUDED.ip = '' THEN login_sessions.ip ELSE EXCLUDED.ip END,
-			user_agent = CASE WHEN EXCLUDED.user_agent = '' THEN login_sessions.user_agent ELSE EXCLUDED.user_agent END`,
-		familyID, userID, meta.method, meta.ip, meta.userAgent)
-	return err
-}
+			user_agent = CASE WHEN EXCLUDED.user_agent = '' THEN login_sessions.user_agent ELSE EXCLUDED.user_agent END`
 
 // auditSuperuserLogin records a new login of a superuser in tx, with how it
 // started and from where, and logs a warning.
@@ -92,27 +104,38 @@ func (s *Service) auditSuperuserLogin(ctx context.Context, tx pgx.Tx, userID int
 // Sessions lists the user's live login sessions, most recently used first.
 // currentFamily marks the caller's own.
 func (s *Service) Sessions(ctx context.Context, userID int64, currentFamily string) ([]LoginSession, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT t.family_id, COALESCE(l.method, ''), COALESCE(l.ip, ''), COALESCE(l.user_agent, ''),
-			COALESCE(l.created_at, t.created_at), COALESCE(l.last_used_at, t.created_at)
+	var rows []sessionRow
+	if err := liveSessions(store.G(ctx, s.db.Pool), userID).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]LoginSession, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, LoginSession{ID: r.ID, Method: r.Method, IP: r.IP, UserAgent: r.UserAgent,
+			CreatedAt: r.CreatedAt, LastUsedAt: r.LastUsedAt, Current: r.ID == currentFamily})
+	}
+	return out, nil
+}
+
+// sessionRow is a row of liveSessions.
+type sessionRow struct {
+	ID         string    `gorm:"column:id"`
+	Method     string    `gorm:"column:method"`
+	IP         string    `gorm:"column:ip"`
+	UserAgent  string    `gorm:"column:user_agent"`
+	CreatedAt  time.Time `gorm:"column:created_at"`
+	LastUsedAt time.Time `gorm:"column:last_used_at"`
+}
+
+// liveSessions are the refresh token families of userID with a live token,
+// with what their login_sessions row knows, most recently used first.
+func liveSessions(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Raw(`SELECT t.family_id AS id, COALESCE(l.method, '') AS method, COALESCE(l.ip, '') AS ip, COALESCE(l.user_agent, '') AS user_agent,
+			COALESCE(l.created_at, t.created_at) AS created_at, COALESCE(l.last_used_at, t.created_at) AS last_used_at
 		FROM (SELECT family_id, min(created_at) AS created_at FROM refresh_tokens
-			WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() AND family_id <> ''
+			WHERE user_id = ? AND revoked_at IS NULL AND expires_at > now() AND family_id <> ''
 			GROUP BY family_id) t
 		LEFT JOIN login_sessions l ON l.family_id = t.family_id
 		ORDER BY 6 DESC`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []LoginSession{}
-	for rows.Next() {
-		var v LoginSession
-		if err := rows.Scan(&v.ID, &v.Method, &v.IP, &v.UserAgent, &v.CreatedAt, &v.LastUsedAt); err != nil {
-			return nil, err
-		}
-		v.Current = v.ID == currentFamily
-		out = append(out, v)
-	}
-	return out, rows.Err()
 }
 
 // RevokeSession ends one of the user's login sessions at once: its refresh
@@ -120,9 +143,9 @@ func (s *Service) Sessions(ctx context.Context, userID int64, currentFamily stri
 // their next 401.
 func (s *Service) RevokeSession(ctx context.Context, userID int64, familyID string) error {
 	return s.changeSessions(ctx, userID, oneSession(familyID), func(tx pgx.Tx) error {
-		var live bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM refresh_tokens WHERE user_id = $1 AND family_id = $2 AND revoked_at IS NULL)`,
-			userID, familyID).Scan(&live); err != nil {
+		g := store.G(ctx, tx)
+		live, err := store.Exists(g, userFamily(g, userID, familyID))
+		if err != nil {
 			return err
 		}
 		if !live {
@@ -130,6 +153,11 @@ func (s *Service) RevokeSession(ctx context.Context, userID int64, familyID stri
 		}
 		return audit.Audit(ctx, tx, userID, "user.session.revoke", "user", strconv.FormatInt(userID, 10), nil)
 	})
+}
+
+// userFamily are the unrevoked tokens of the refresh token family of userID.
+func userFamily(db *gorm.DB, userID int64, familyID string) *gorm.DB {
+	return refreshTokens(db).Where("user_id = ? AND family_id = ? AND revoked_at IS NULL", userID, familyID)
 }
 
 // RevokeOtherSessions ends every login session of the user but keepFamily.
@@ -155,19 +183,40 @@ func oneSession(family string) sessionsToEnd { return sessionsToEnd{only: family
 // renews on its next 401. Callers lock the user row first and call
 // sessionsChanged after commit.
 func invalidateSessions(ctx context.Context, tx pgx.Tx, userID int64, which sessionsToEnd) (revoked int64, err error) {
-	if _, err := tx.Exec(ctx, `UPDATE users SET token_version = token_version + 1 WHERE id = $1`, userID); err != nil {
+	g := store.G(ctx, tx)
+	if err := bumpTokenVersion(g, userID).Error; err != nil {
 		return 0, err
 	}
-	const families = `($2 = '' OR family_id = $2) AND ($3 = '' OR family_id IS DISTINCT FROM $3)`
-	tag, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND `+families,
-		userID, which.only, which.keep)
-	if err != nil {
+	res := revokeSessions(g, userID, which)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	if err := deleteSessions(g, userID, which).Error; err != nil {
 		return 0, err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM login_sessions WHERE user_id = $1 AND `+families, userID, which.only, which.keep); err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	return res.RowsAffected, nil
+}
+
+// revokeSessions revokes the live refresh tokens of the families of userID
+// that `which` selects.
+func revokeSessions(db *gorm.DB, userID int64, which sessionsToEnd) *gorm.DB {
+	return revokeRefresh(which.of(refreshTokens(db).Where("user_id = ? AND revoked_at IS NULL", userID)))
+}
+
+// deleteSessions removes the login sessions of userID that `which` selects.
+func deleteSessions(db *gorm.DB, userID int64, which sessionsToEnd) *gorm.DB {
+	return which.of(db.Where("user_id = ?", userID)).Delete(&model.LoginSession{})
+}
+
+// of narrows db to the families `which` selects. Each value is bound twice:
+// an empty one selects every family.
+func (which sessionsToEnd) of(db *gorm.DB) *gorm.DB {
+	return db.Where("(? = '' OR family_id = ?) AND (? = '' OR family_id IS DISTINCT FROM ?)", which.only, which.only, which.keep, which.keep)
+}
+
+// bumpTokenVersion stops every access token of userID.
+func bumpTokenVersion(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.User{}).Where("id = ?", userID).Update("token_version", gorm.Expr("token_version + 1"))
 }
 
 // changeSessions runs fn (optional) and invalidateSessions in one transaction
@@ -221,9 +270,15 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, displayName s
 		return core.InvalidFields(core.FieldError{Field: "display_name", Code: "too_long", Message: "at most 100 characters"})
 	}
 	return s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE users SET display_name = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`, userID, displayName); err != nil {
+		if err := setLiveProfile(store.G(ctx, tx), userID, displayName).Error; err != nil {
 			return err
 		}
 		return audit.Audit(ctx, tx, userID, "user.profile.update", "user", strconv.FormatInt(userID, 10), map[string]any{"display_name": displayName})
 	})
+}
+
+// setLiveProfile changes the display name of the undeleted user userID.
+func setLiveProfile(db *gorm.DB, userID int64, displayName string) *gorm.DB {
+	return db.Model(&model.User{}).Where("id = ? AND deleted_at IS NULL", userID).
+		Updates(map[string]any{"display_name": displayName, "updated_at": gorm.Expr("now()")})
 }

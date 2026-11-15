@@ -1,0 +1,11 @@
+-- sql
+INSERT INTO login_sessions (family_id, user_id, method, ip, user_agent) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (family_id) DO UPDATE SET last_used_at = now(),
+			ip = CASE WHEN EXCLUDED.ip = '' THEN login_sessions.ip ELSE EXCLUDED.ip END,
+			user_agent = CASE WHEN EXCLUDED.user_agent = '' THEN login_sessions.user_agent ELSE EXCLUDED.user_agent END
+-- vars
+$1 string "family"
+$2 int64 7
+$3 string "password"
+$4 string "203.0.113.9"
+$5 string "Mozilla/5.0"

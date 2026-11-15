@@ -15,10 +15,12 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Passkey is the API view of a registered passkey.
@@ -114,48 +116,54 @@ func strOr(a, b string) string {
 func (s *Service) loadWebAuthnUser(ctx context.Context, userID int64) (*webAuthnUser, string, error) {
 	u := &webAuthnUser{id: userID}
 	var status string
-	err := s.db.Pool.QueryRow(ctx, `SELECT email, display_name, status FROM users WHERE id = $1 AND deleted_at IS NULL`, userID).Scan(&u.email, &u.displayName, &status)
+	g := store.G(ctx, s.db.Pool)
+	err := liveUser(g, userID, "email, display_name, status").Row().Scan(&u.email, &u.displayName, &status)
 	if store.IsNoRows(err) {
 		return nil, "", errPasskeyFailed
 	}
 	if err != nil {
 		return nil, "", err
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT credential FROM user_passkeys WHERE user_id = $1`, userID)
-	if err != nil {
+	var rows []model.UserPasskey
+	if err := passkeyCredentials(g, userID).Find(&rows).Error; err != nil {
 		return nil, "", err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw []byte
+	for _, r := range rows {
 		var c webauthn.Credential
-		if err := rows.Scan(&raw); err != nil {
-			return nil, "", err
-		}
-		if err := json.Unmarshal(raw, &c); err != nil {
+		if err := json.Unmarshal(r.Credential, &c); err != nil {
 			return nil, "", err
 		}
 		u.credentials = append(u.credentials, c)
 	}
-	return u, status, rows.Err()
+	return u, status, nil
+}
+
+// passkeysOf are the passkeys of userID.
+func passkeysOf(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.UserPasskey{}).Where("user_id = ?", userID)
+}
+
+// passkeyCredentials reads the WebAuthn credentials of userID.
+func passkeyCredentials(db *gorm.DB, userID int64) *gorm.DB {
+	return passkeysOf(db, userID).Select("credential")
 }
 
 // Passkeys lists the user's passkeys.
 func (s *Service) Passkeys(ctx context.Context, userID int64) ([]Passkey, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT id, name, rp_id, created_at, last_used_at FROM user_passkeys WHERE user_id = $1 ORDER BY created_at DESC`, userID)
-	if err != nil {
+	var rows []model.UserPasskey
+	if err := passkeyList(store.G(ctx, s.db.Pool), userID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Passkey{}
-	for rows.Next() {
-		var p Passkey
-		if err := rows.Scan(&p.ID, &p.Name, &p.RPID, &p.CreatedAt, &p.LastUsedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
+	out := make([]Passkey, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Passkey{ID: r.ID, Name: r.Name, RPID: r.RpID, CreatedAt: r.CreatedAt, LastUsedAt: r.LastUsedAt})
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// passkeyList is what Passkeys shows of the passkeys of userID, newest first.
+func passkeyList(db *gorm.DB, userID int64) *gorm.DB {
+	return passkeysOf(db, userID).Select("id, name, rp_id, created_at, last_used_at").Order("created_at DESC")
 }
 
 // normalizePasskeyName trims a passkey's name; empty means "Passkey".
@@ -228,8 +236,7 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, r *http.Request
 	}
 	p := &Passkey{Name: name, RPID: session.RelyingPartyID}
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `INSERT INTO user_passkeys (user_id, name, rp_id, credential_id, credential) VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (credential_id) DO NOTHING RETURNING id, created_at`, userID, name, session.RelyingPartyID, c.ID, raw).Scan(&p.ID, &p.CreatedAt)
+		err := store.G(ctx, tx).Raw(insertPasskey, userID, name, session.RelyingPartyID, c.ID, raw).Row().Scan(&p.ID, &p.CreatedAt)
 		if store.IsNoRows(err) {
 			return core.ErrConflict.WithMessage("this passkey is already registered")
 		}
@@ -244,21 +251,31 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, r *http.Request
 	return p, nil
 }
 
+// insertPasskey stores a new passkey; a credential stored before returns no
+// row. credential_id and credential are bytes: none of their ? follows a (.
+const insertPasskey = `INSERT INTO user_passkeys (user_id, name, rp_id, credential_id, credential) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (credential_id) DO NOTHING RETURNING id, created_at`
+
 // DeletePasskey removes one of the user's passkeys.
 func (s *Service) DeletePasskey(ctx context.Context, userID, id int64) error {
 	return s.db.Tx(ctx, func(tx pgx.Tx) error {
 		if err := s.keepLastFactor(ctx, tx, userID, core.StepUpSelfPasskeyDelete); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `DELETE FROM user_passkeys WHERE id = $1 AND user_id = $2`, id, userID)
-		if err != nil {
-			return err
+		res := deletePasskey(store.G(ctx, tx), id, userID)
+		if res.Error != nil {
+			return res.Error
 		}
-		if tag.RowsAffected() == 0 {
+		if res.RowsAffected == 0 {
 			return core.ErrNotFound
 		}
 		return audit.Audit(ctx, tx, userID, "user.passkey.delete", "user", strconv.FormatInt(userID, 10), map[string]any{"passkey_id": id})
 	})
+}
+
+// deletePasskey removes the passkey id of userID.
+func deletePasskey(db *gorm.DB, id, userID int64) *gorm.DB {
+	return db.Where("id = ? AND user_id = ?", id, userID).Delete(&model.UserPasskey{})
 }
 
 // BeginPasskeyLogin starts a discoverable login: the browser offers the
@@ -313,7 +330,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 	found, verified, err := wa.ValidatePasskeyLogin(func(rawID, handle []byte) (webauthn.User, error) {
 		var owner int64
 		var rpID string
-		err := s.db.Pool.QueryRow(ctx, `SELECT id, user_id, rp_id FROM user_passkeys WHERE credential_id = $1`, rawID).Scan(&passkeyID, &owner, &rpID)
+		err := passkeyByCredential(store.G(ctx, s.db.Pool), rawID).Row().Scan(&passkeyID, &owner, &rpID)
 		if err != nil {
 			return nil, err
 		}
@@ -339,8 +356,9 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 	}
 	var pair *TokenPair
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
 		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, user.id).Scan(&status); err != nil {
+		if err := liveUser(g, user.id, "status").Clauses(store.ForUpdate).Row().Scan(&status); err != nil {
 			if store.IsNoRows(err) {
 				return errPasskeyFailed
 			}
@@ -349,16 +367,17 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 		if status != StatusActive {
 			return errPasskeyFailed
 		}
-		tag, err := tx.Exec(ctx, `UPDATE user_passkeys SET credential = $2, last_used_at = now() WHERE id = $1 AND user_id = $3`, passkeyID, raw, user.id)
-		if err != nil {
-			return err
+		res := usePasskey(g.Where("id = ? AND user_id = ?", passkeyID, user.id), raw)
+		if res.Error != nil {
+			return res.Error
 		}
-		if tag.RowsAffected() == 0 {
+		if res.RowsAffected == 0 {
 			return errPasskeyFailed
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, user.id); err != nil {
+		if err := touchLastLogin(g, user.id).Error; err != nil {
 			return err
 		}
+		var err error
 		pair, err = s.issueTokens(withLoginMethod(ctx, loginMethodPasskey), tx, user.id, "")
 		return err
 	})
@@ -366,4 +385,15 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 		return nil, err
 	}
 	return pair, nil
+}
+
+// passkeyByCredential reads the passkey of a credential the browser names.
+func passkeyByCredential(db *gorm.DB, credentialID []byte) *gorm.DB {
+	return db.Model(&model.UserPasskey{}).Select("id, user_id, rp_id").Where("credential_id = ?", credentialID)
+}
+
+// usePasskey stores the credential of the passkey where selects as just
+// verified (its sign count) and when it was used.
+func usePasskey(where *gorm.DB, credential []byte) *gorm.DB {
+	return where.Model(&model.UserPasskey{}).Updates(map[string]any{"credential": credential, "last_used_at": gorm.Expr("now()")})
 }

@@ -1,0 +1,10 @@
+-- sql
+SELECT t.family_id AS id, COALESCE(l.method, '') AS method, COALESCE(l.ip, '') AS ip, COALESCE(l.user_agent, '') AS user_agent,
+			COALESCE(l.created_at, t.created_at) AS created_at, COALESCE(l.last_used_at, t.created_at) AS last_used_at
+		FROM (SELECT family_id, min(created_at) AS created_at FROM refresh_tokens
+			WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() AND family_id <> ''
+			GROUP BY family_id) t
+		LEFT JOIN login_sessions l ON l.family_id = t.family_id
+		ORDER BY 6 DESC
+-- vars
+$1 int64 7

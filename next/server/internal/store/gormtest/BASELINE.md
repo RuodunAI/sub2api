@@ -326,6 +326,49 @@ balance, quota, credential refresh and settings statements of package
 store, which the console, the refresh jobs and the debounced passive quota
 writer (`SaveAccountQuota`, at most every 30 s per account) run.
 
+## Batch 3a: console authentication (iam)
+
+From batch 3 on every statement moves to GORM, hot or not; the numbers are
+recorded, no longer a reason to stay on pgx. The console's request path
+reads three statements of package iam:
+
+- `isActiveWithVersion` (← `VerifySession`, every request with an access
+  token): the user's status and token_version, behind the per-node status
+  cache (`statusCacheTTL`, 30 s, dropped on change), so on a miss only;
+- `VerifyAccessKey` (every request with an access key, no cache): the key
+  by its hash (`accessKeyByHash`), and at most once a minute per key the
+  `last_used_at` write (`touchAccessKey`);
+- `getUser` (GET /me, and every login and refresh in `issueTokens`): the
+  user with roles, segment and balance (`userByID`).
+
+Each is `Raw(...).Row().Scan` into local variables, the form with the
+fewest allocations, with the SQL text of the pgx statement. The benchmark
+measures the pgx statement next to that GORM form, for a user with one
+role and one access key:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/iam/
+```
+
+Recorded 2026-11-15 on gorm-3a, same machine and server as above (shared
+with other test runs, so ns/op is noisy). Medians of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotUserStatus/pgx (before) | 57 350 | 469 | 6 |
+| BenchmarkHotUserStatus/gorm (after) | 63 208 | 3 525 | 43 |
+| BenchmarkHotAccessKey/pgx (before) | 54 281 | 981 | 24 |
+| BenchmarkHotAccessKey/gorm (after) | 57 158 | 4 221 | 66 |
+| BenchmarkHotGetUser/pgx (before) | 55 633 | 1 517 | 27 |
+| BenchmarkHotGetUser/gorm (after) | 53 565 | 7 173 | 94 |
+
+GORM takes 7.2, 2.8 and 3.5 times the allocations, about 3 to 6 KB more
+per statement; the round trip dominates the time either way. The other
+iam statements (logins, refresh rotation, sessions, two-factor, passkeys,
+step-up, users, access key management) run once per such action, not per
+request, and are on GORM without a benchmark.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

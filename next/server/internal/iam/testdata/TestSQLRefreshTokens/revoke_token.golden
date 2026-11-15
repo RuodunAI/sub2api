@@ -1,0 +1,4 @@
+-- sql
+UPDATE "refresh_tokens" SET "revoked_at"=now() WHERE id = $1 AND revoked_at IS NULL
+-- vars
+$1 int64 9

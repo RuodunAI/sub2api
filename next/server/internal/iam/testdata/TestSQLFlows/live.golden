@@ -1,0 +1,5 @@
+-- sql
+SELECT payload, user_id FROM "auth_flows" WHERE token_hash = $1 AND purpose = $2 AND expires_at > now()
+-- vars
+$1 string "3c469e9d6c5875d37a43f353d4f88e61fcf812c66eee3457465a40b0da4153e0"
+$2 string "login_2fa"

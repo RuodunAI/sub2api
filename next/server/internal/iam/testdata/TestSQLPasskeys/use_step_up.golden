@@ -1,0 +1,6 @@
+-- sql
+UPDATE "user_passkeys" SET "credential"=$1,"last_used_at"=now() WHERE user_id = $2 AND credential_id = $3
+-- vars
+$1 []uint8 [123 34 105 100 34 58 34 65 81 73 68 34 125]
+$2 int 7
+$3 []uint8 [1 2]

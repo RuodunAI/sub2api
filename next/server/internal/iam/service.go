@@ -20,12 +20,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // statusCacheTTL bounds how long a disabled user's access token keeps
@@ -215,7 +217,7 @@ func (s *Service) isActiveWithVersion(ctx context.Context, uid int64, seen int) 
 	}
 	var active bool
 	var version int
-	err := s.db.Pool.QueryRow(ctx, `SELECT status = 'active', token_version FROM users WHERE id = $1 AND deleted_at IS NULL`, uid).Scan(&active, &version)
+	err := store.G(ctx, s.db.Pool).Raw(userStatus, uid).Row().Scan(&active, &version)
 	if store.IsNoRows(err) {
 		active, version, err = false, math.MaxInt, nil
 	}
@@ -229,6 +231,10 @@ func (s *Service) isActiveWithVersion(ctx context.Context, uid int64, seen int) 
 	s.mu.Unlock()
 	return active, version, nil
 }
+
+// userStatus is the statement of isActiveWithVersion, raw (the fewest
+// allocations): a request reads it on a cache miss.
+const userStatus = `SELECT status = 'active', token_version FROM users WHERE id = ? AND deleted_at IS NULL`
 
 func randomToken() (string, error) {
 	var b [32]byte
@@ -245,6 +251,14 @@ func hashToken(t string) string {
 
 // ------------------------------------------------------------ bootstrap
 
+// bootstrapLock serializes the bootstraps of the nodes.
+const bootstrapLock = `SELECT pg_advisory_xact_lock(hashtext('sub2api:iam:bootstrap'))`
+
+// liveUsers are the users not deleted.
+func liveUsers(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.User{}).Where("deleted_at IS NULL")
+}
+
 // Bootstrap creates the first super admin from config when the database has
 // no users. Without configured credentials it only logs a warning.
 func (s *Service) Bootstrap(ctx context.Context) error {
@@ -252,11 +266,12 @@ func (s *Service) Bootstrap(ctx context.Context) error {
 	var created *User
 	var version int64
 	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('sub2api:iam:bootstrap'))`); err != nil {
+		g := store.G(ctx, tx)
+		if err := g.Exec(bootstrapLock).Error; err != nil {
 			return err
 		}
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE deleted_at IS NULL)`).Scan(&exists); err != nil {
+		exists, err := store.Exists(g, liveUsers(g))
+		if err != nil {
 			return err
 		}
 		if exists {

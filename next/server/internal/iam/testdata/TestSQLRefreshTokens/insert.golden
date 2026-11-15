@@ -1,0 +1,7 @@
+-- sql
+INSERT INTO refresh_tokens (user_id, token_hash, expires_at, family_id) VALUES ($1, $2, $3, $4)
+-- vars
+$1 int64 7
+$2 string "hash"
+$3 time.Time 2026-11-15 08:00:00 +0000 UTC
+$4 string "family"

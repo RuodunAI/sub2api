@@ -1,0 +1,8 @@
+-- sql
+UPDATE user_access_keys SET name = COALESCE($1, name), permissions = COALESCE($2, permissions)
+			WHERE id = $3 AND user_id = $4 RETURNING id, name, token_hint, permissions, expires_at, last_used_at, last_used_ip, created_at
+-- vars
+$1 *string nil
+$2 store.Strings [account:read:own]
+$3 int64 5
+$4 int64 7

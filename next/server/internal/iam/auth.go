@@ -13,9 +13,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // TokenPair is the response of login and refresh. When the account has
@@ -45,8 +47,7 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 	}
 	var id int64
 	var hash, status string
-	err := s.db.Pool.QueryRow(ctx, `SELECT id, password_hash, status FROM users WHERE lower(email) = lower($1) AND deleted_at IS NULL`,
-		strings.ToLower(strings.TrimSpace(email))).Scan(&id, &hash, &status)
+	err := userByEmail(store.G(ctx, s.db.Pool), strings.ToLower(strings.TrimSpace(email)), "id, password_hash, status").Row().Scan(&id, &hash, &status)
 	if store.IsNoRows(err) {
 		// Burn comparable time so response timing does not reveal accounts.
 		_ = bcrypt.CompareHashAndPassword(s.dummyHash, []byte(password))
@@ -64,8 +65,8 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 	if status != StatusActive {
 		return nil, errUserDisabled
 	}
-	var twoFactor bool
-	if err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1)`, id).Scan(&twoFactor); err != nil {
+	twoFactor, err := hasTwoFactor(store.G(ctx, s.db.Pool), id)
+	if err != nil {
 		return nil, err
 	}
 	if twoFactor {
@@ -80,8 +81,9 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		// The user row is the parent lock for every refresh-token family.
 		// Recheck the password snapshot after acquiring it: a password change
 		// may have committed while bcrypt was running above.
+		g := store.G(ctx, tx)
 		var currentHash, currentStatus string
-		if err := tx.QueryRow(ctx, `SELECT password_hash, status FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&currentHash, &currentStatus); err != nil {
+		if err := liveUser(g, id, "password_hash, status").Clauses(store.ForUpdate).Row().Scan(&currentHash, &currentStatus); err != nil {
 			if store.IsNoRows(err) {
 				return errBadCredentials
 			}
@@ -93,7 +95,7 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		if currentStatus != StatusActive {
 			return errUserDisabled
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, id); err != nil {
+		if err := touchLastLogin(g, id).Error; err != nil {
 			return err
 		}
 		pair, err = s.issueTokens(ctx, tx, id, "")
@@ -116,8 +118,7 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 	var payload login2FAPayload
 	var raw []byte
 	var userID int64
-	err := s.db.Pool.QueryRow(ctx, `SELECT payload, user_id FROM auth_flows WHERE token_hash = $1 AND purpose = $2 AND expires_at > now()`,
-		hashToken(flowToken), flowLogin2FA).Scan(&raw, &userID)
+	err := liveFlow(store.G(ctx, s.db.Pool), flowToken, flowLogin2FA, "payload, user_id").Row().Scan(&raw, &userID)
 	if store.IsNoRows(err) {
 		return nil, errFlowExpired
 	}
@@ -132,8 +133,9 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 	}
 	var pair *TokenPair
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
 		var hash, status string
-		if err := tx.QueryRow(ctx, `SELECT password_hash, status FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, userID).Scan(&hash, &status); err != nil {
+		if err := liveUser(g, userID, "password_hash, status").Clauses(store.ForUpdate).Row().Scan(&hash, &status); err != nil {
 			if store.IsNoRows(err) {
 				return errBadCredentials
 			}
@@ -152,7 +154,7 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 		if _, err := s.takeFlow(ctx, tx, flowToken, flowLogin2FA, userID, &used); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, userID); err != nil {
+		if err := touchLastLogin(g, userID).Error; err != nil {
 			return err
 		}
 		var err error
@@ -184,8 +186,9 @@ func newFamilyID() (string, error) {
 // issueTokens issues an access token and a refresh token in familyID (a new
 // family when empty, i.e. on login, which is audited for a superuser).
 func (s *Service) issueTokens(ctx context.Context, tx pgx.Tx, userID int64, familyID string) (*TokenPair, error) {
+	g := store.G(ctx, tx)
 	var tokenVersion int
-	if err := tx.QueryRow(ctx, `SELECT token_version FROM users WHERE id = $1`, userID).Scan(&tokenVersion); err != nil {
+	if err := userTokenVersion(g, userID).Row().Scan(&tokenVersion); err != nil {
 		return nil, err
 	}
 	refresh, err := randomToken()
@@ -208,8 +211,7 @@ func (s *Service) issueTokens(ctx context.Context, tx pgx.Tx, userID int64, fami
 	if err := s.touchLoginSession(ctx, tx, userID, familyID, newFamily); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO refresh_tokens (user_id, token_hash, expires_at, family_id) VALUES ($1, $2, $3, $4)`,
-		userID, hashToken(refresh), time.Now().Add(s.cfg.RefreshTokenTTL), familyID); err != nil {
+	if err := g.Exec(insertRefreshToken, userID, hashToken(refresh), time.Now().Add(s.cfg.RefreshTokenTTL), familyID).Error; err != nil {
 		return nil, err
 	}
 	u, err := s.getUser(ctx, tx, userID)
@@ -219,6 +221,49 @@ func (s *Service) issueTokens(ctx context.Context, tx pgx.Tx, userID int64, fami
 	u.Balance = nil
 	u.Segment = core.SegmentRef{}
 	return &TokenPair{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(s.cfg.AccessTokenTTL / time.Second), User: u}, nil
+}
+
+// insertRefreshToken stores a refresh token, raw: Create would add a
+// RETURNING of the defaulted columns.
+const insertRefreshToken = `INSERT INTO refresh_tokens (user_id, token_hash, expires_at, family_id) VALUES (?, ?, ?, ?)`
+
+// refreshTokens are the refresh_tokens rows.
+func refreshTokens(db *gorm.DB) *gorm.DB { return db.Model(&model.RefreshToken{}) }
+
+// userTokenVersion reads the token_version of userID, deleted or not.
+func userTokenVersion(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.User{}).Select("token_version").Where("id = ?", userID)
+}
+
+// refreshByHash is the refresh token whose hash is hash.
+func refreshByHash(db *gorm.DB, hash string) *gorm.DB {
+	return refreshTokens(db).Where("token_hash = ?", hash)
+}
+
+// lockRefreshToken reads the refresh token hash, locked until the
+// transaction ends.
+func lockRefreshToken(db *gorm.DB, hash string) *gorm.DB {
+	return refreshByHash(db, hash).Select("id, user_id, family_id, revoked_at, replaced_at, expires_at").Clauses(store.ForUpdate)
+}
+
+// liveFamily are the live tokens of a refresh token family.
+func liveFamily(db *gorm.DB, family string) *gorm.DB {
+	return refreshTokens(db).Where("family_id = ? AND revoked_at IS NULL AND expires_at > now()", family)
+}
+
+// revokeRefresh revokes the live tokens that where selects.
+func revokeRefresh(where *gorm.DB) *gorm.DB {
+	return where.Update("revoked_at", gorm.Expr("now()"))
+}
+
+// revokeToken revokes the refresh token id, unless it is.
+func revokeToken(db *gorm.DB, id int64) *gorm.DB {
+	return revokeRefresh(refreshTokens(db).Where("id = ? AND revoked_at IS NULL", id))
+}
+
+// revokeFamily revokes the tokens of a refresh token family not revoked yet.
+func revokeFamily(db *gorm.DB, family string) *gorm.DB {
+	return revokeRefresh(refreshTokens(db).Where("family_id = ? AND revoked_at IS NULL", family))
 }
 
 // refreshVerdict is the outcome of presenting a stored refresh token.
@@ -267,10 +312,11 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	var replayUser int64
 	var replayFamily string
 	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
 		var id, uid int64
 		// Discover the parent without locking a child first. All issuers and
 		// revokers serialize on the user, then read a fresh token snapshot.
-		if err := tx.QueryRow(ctx, `SELECT user_id FROM refresh_tokens WHERE token_hash=$1`, hashToken(refreshToken)).Scan(&uid); err != nil {
+		if err := refreshByHash(g, hashToken(refreshToken)).Select("user_id").Row().Scan(&uid); err != nil {
 			if store.IsNoRows(err) {
 				return errBadRefresh
 			}
@@ -282,9 +328,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		var family string
 		var revokedAt, replacedAt *time.Time
 		var expiresAt time.Time
-		err := tx.QueryRow(ctx, `SELECT id, user_id, family_id, revoked_at, replaced_at, expires_at
-			FROM refresh_tokens WHERE token_hash = $1 FOR UPDATE`, hashToken(refreshToken)).
-			Scan(&id, &uid, &family, &revokedAt, &replacedAt, &expiresAt)
+		err := lockRefreshToken(g, hashToken(refreshToken)).Row().Scan(&id, &uid, &family, &revokedAt, &replacedAt, &expiresAt)
 		if store.IsNoRows(err) {
 			return errBadRefresh
 		}
@@ -297,9 +341,8 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 			// (network, closed tab, two tabs without a shared lock): while
 			// the family is still alive, answer with another pair of the
 			// same family instead of signing the user out.
-			var live bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM refresh_tokens
-				WHERE family_id = $1 AND revoked_at IS NULL AND expires_at > now())`, family).Scan(&live); err != nil {
+			live, err := store.Exists(g, liveFamily(g, family))
+			if err != nil {
 				return err
 			}
 			if live {
@@ -313,10 +356,9 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 			// revokes itself.
 			if family == "" {
 				family = "token:" + strconv.FormatInt(id, 10)
-				_, err = tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, id)
+				err = revokeToken(g, id).Error
 			} else {
-				_, err = tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = now()
-					WHERE family_id = $1 AND revoked_at IS NULL`, family)
+				err = revokeFamily(g, family).Error
 			}
 			if err != nil {
 				return err
@@ -326,12 +368,11 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		case refreshExpired:
 			return errBadRefresh
 		}
-		if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = coalesce(revoked_at, now()),
-			replaced_at = coalesce(replaced_at, now()) WHERE id = $1`, id); err != nil {
+		if err := rotateRefresh(g, id).Error; err != nil {
 			return err
 		}
 		var status string
-		err = tx.QueryRow(ctx, `SELECT status FROM users WHERE id = $1 AND deleted_at IS NULL`, uid).Scan(&status)
+		err = liveUser(g, uid, "status").Row().Scan(&status)
 		if store.IsNoRows(err) {
 			return errBadRefresh
 		}
@@ -355,14 +396,22 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	return pair, nil
 }
 
+// rotateRefresh marks the refresh token id used, keeping the first time
+// it was.
+func rotateRefresh(db *gorm.DB, id int64) *gorm.DB {
+	return refreshTokens(db).Where("id = ?", id).Updates(map[string]any{
+		"revoked_at":  gorm.Expr("coalesce(revoked_at, now())"),
+		"replaced_at": gorm.Expr("coalesce(replaced_at, now())"),
+	})
+}
+
 // Logout ends the session refreshToken belongs to, if it is a live token of
 // userID; an empty token ends every session of the user.
 func (s *Service) Logout(ctx context.Context, userID int64, refreshToken string) error {
 	which := allSessions
 	if refreshToken != "" {
 		var family string
-		err := s.db.Pool.QueryRow(ctx, `SELECT family_id FROM refresh_tokens
-			WHERE token_hash = $1 AND user_id = $2 AND revoked_at IS NULL AND family_id <> ''`, hashToken(refreshToken), userID).Scan(&family)
+		err := liveFamilyOf(store.G(ctx, s.db.Pool), hashToken(refreshToken), userID).Row().Scan(&family)
 		if store.IsNoRows(err) {
 			return nil
 		}
@@ -372,6 +421,11 @@ func (s *Service) Logout(ctx context.Context, userID int64, refreshToken string)
 		which = oneSession(family)
 	}
 	return s.changeSessions(ctx, userID, which, nil)
+}
+
+// liveFamilyOf reads the family of the live refresh token hash of userID.
+func liveFamilyOf(db *gorm.DB, hash string, userID int64) *gorm.DB {
+	return refreshByHash(db, hash).Select("family_id").Where("user_id = ? AND revoked_at IS NULL AND family_id <> ''", userID)
 }
 
 // ChangePassword changes the caller's password and ends every other session
@@ -387,12 +441,18 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, keepFamily, 
 		return err
 	}
 	return s.changeSessions(ctx, userID, otherSessions(keepFamily), func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`, userID, string(newHash))
-		if err == nil && tag.RowsAffected() == 0 {
-			err = core.ErrUnauthenticated
+		res := setLivePassword(store.G(ctx, tx), userID, string(newHash))
+		if res.Error == nil && res.RowsAffected == 0 {
+			return core.ErrUnauthenticated
 		}
-		return err
+		return res.Error
 	})
+}
+
+// setLivePassword changes the password hash of the undeleted user userID.
+func setLivePassword(db *gorm.DB, userID int64, hash string) *gorm.DB {
+	return db.Model(&model.User{}).Where("id = ? AND deleted_at IS NULL", userID).
+		Updates(map[string]any{"password_hash": hash, "updated_at": gorm.Expr("now()")})
 }
 
 // Me is the response of GET /me.

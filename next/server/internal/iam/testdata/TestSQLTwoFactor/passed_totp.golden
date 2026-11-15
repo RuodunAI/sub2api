@@ -1,0 +1,7 @@
+-- sql
+UPDATE "user_totp" SET "failed_attempts"=$1,"last_step"=$2,"locked_until"=$3 WHERE user_id = $4
+-- vars
+$1 int 0
+$2 int64 59000000
+$3 nil
+$4 int64 7
