@@ -2,10 +2,12 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Kinds of rows a scoped grant names (ClearScopeGrants).
@@ -49,28 +51,38 @@ func ClearScopeGrants(ctx context.Context, tx pgx.Tx, actorID int64, kind string
 	// The authz lock first, as every authz write takes it (a role save in
 	// flight would otherwise deadlock with this delete), and only when
 	// there is something to clear, so that deletes do not queue behind it.
-	var found bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM role_permission_scopes WHERE scope ~ ANY($1))`, patterns).Scan(&found); err != nil || !found {
+	db := store.G(ctx, tx)
+	found, err := store.Exists(db, scopeGrants(db, patterns))
+	if err != nil || !found {
 		return 0, err
 	}
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM authz_meta WHERE id = 1 FOR UPDATE`); err != nil {
+	if err := db.Exec(`SELECT 1 FROM authz_meta WHERE id = 1 FOR UPDATE`).Error; err != nil {
 		return 0, err
 	}
+	// No row: cleared meanwhile, before the lock; the version stays 0.
 	var version int64
-	err := tx.QueryRow(ctx, `WITH cleared AS (
+	err = clearScopeGrants(db, patterns, actor, kind, ids).Scan(&version).Error
+	return version, err
+}
+
+// scopeGrants selects the scoped grants matching patterns.
+func scopeGrants(db *gorm.DB, patterns []string) *gorm.DB {
+	return db.Table("role_permission_scopes").Where("scope ~ ANY(?)", store.Strings(patterns))
+}
+
+// clearScopeGrants deletes the scoped grants matching patterns, audits them
+// per role and moves the authz version, returning it when any went.
+func clearScopeGrants(db *gorm.DB, patterns []string, actor *int64, kind string, ids []int64) *gorm.DB {
+	return db.Raw(`WITH cleared AS (
     DELETE FROM role_permission_scopes rs USING permissions p
-    WHERE p.id = rs.permission_id AND rs.scope ~ ANY($1)
+    WHERE p.id = rs.permission_id AND rs.scope ~ ANY(?)
     RETURNING rs.role_id, p.key || ':' || rs.scope AS key
 ), audited AS (
     INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
-    SELECT $2, 'authz.scope.clear', 'role', role_id::text,
-        jsonb_build_object('kind', $3::text, 'ids', to_jsonb($4::bigint[]), 'keys', to_jsonb(array_agg(key ORDER BY key)))
+    SELECT ?, 'authz.scope.clear', 'role', role_id::text,
+        jsonb_build_object('kind', ?::text, 'ids', to_jsonb(?::bigint[]), 'keys', to_jsonb(array_agg(key ORDER BY key)))
     FROM cleared GROUP BY role_id
 )
 UPDATE authz_meta SET version = version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM cleared)
-RETURNING version`, patterns, actor, kind, ids).Scan(&version)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil // cleared meanwhile, before the lock
-	}
-	return version, err
+RETURNING version`, store.Strings(patterns), actor, kind, store.Int64s(ids))
 }

@@ -1,0 +1,4 @@
+-- sql
+DELETE FROM "sticky_rules" WHERE source = 'builtin' AND NOT (name = ANY($1))
+-- vars
+$1 store.Strings [a b]

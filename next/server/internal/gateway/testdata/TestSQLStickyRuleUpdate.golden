@@ -1,0 +1,16 @@
+-- sql
+UPDATE "sticky_rules" SET "customized"=$1,"enabled"=$2,"key_includes"=$3,"key_sources"=$4,"match"=$5,"name"=$6,"on_failure"=$7,"pass_headers"=$8,"priority"=$9,"ttl_seconds"=$10,"updated_at"=now(),"updated_by"=$11,"value_regex"=$12 WHERE id = $13
+-- vars
+$1 bool true
+$2 bool false
+$3 jsontext.Value []
+$4 jsontext.Value [{"type":"header","name":"x-session"}]
+$5 jsontext.Value {"protocols":["anthropic"]}
+$6 string "r"
+$7 string "stick"
+$8 store.Strings []
+$9 int 0
+$10 int 0
+$11 *int64 nil
+$12 string ""
+$13 int64 5
