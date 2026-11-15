@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -9,8 +10,11 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/model"
 )
 
 // PromoService handles promotional code operations
@@ -53,21 +57,17 @@ func (s *PromoService) CreatePromoCode(ctx context.Context, req CreatePromoCodeR
 		return nil, fmt.Errorf("bonus amount must be positive")
 	}
 
-	var pc PromoCode
-	err = db.QueryRow(ctx, `
-		INSERT INTO promo_codes (code, bonus_amount, max_uses, status, expires_at, notes)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, code, bonus_amount, max_uses, used_count, status, expires_at, notes, created_at
-	`, code, req.BonusAmount, req.MaxUses, PromoStatusActive, req.ExpiresAt, req.Notes).Scan(
-		&pc.ID, &pc.Code, &pc.BonusAmount, &pc.MaxUses, &pc.UsedCount,
-		&pc.Status, &pc.ExpiresAt, &pc.Notes, &pc.CreatedAt,
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
+	// RETURNING * reads the row back as stored (the amount at the column's
+	// scale). The zero MaxUses GORM replaces with the column default is 0 too.
+	row := model.PromoCode{Code: code, BonusAmount: req.BonusAmount, MaxUses: req.MaxUses,
+		Status: PromoStatusActive, ExpiresAt: req.ExpiresAt, Notes: &req.Notes}
+	if err := db.Clauses(clause.Returning{}).Create(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return nil, fmt.Errorf("code already exists")
 		}
 		return nil, fmt.Errorf("insert promo code: %w", err)
 	}
+	pc := promoCodeOf(row)
 
 	slog.Info("promo code created", "id", pc.ID, "code", pc.Code, "bonus", pc.BonusAmount.String())
 	return &pc, nil
@@ -87,23 +87,14 @@ func (s *PromoService) ApplyPromoCode(ctx context.Context, userID int64, code st
 	var pc PromoCode
 	var ledgerID int64
 	var duplicate bool
-	err = withLockedRow(ctx, db, lockedRow{
-		query: `SELECT id, code, bonus_amount, max_uses, used_count, status, expires_at
-			FROM promo_codes
-			WHERE code = $1
-			FOR UPDATE`,
+	err = withLockedRow(db, lockedRow{
+		columns:   "id, code, bonus_amount, max_uses, used_count, status, expires_at",
+		where:     "code = ?",
 		arg:       code,
 		missing:   "invalid promo code",
 		queryFail: "query promo code",
-	}, func(row pgx.Row) (PromoCode, error) {
-		var pc PromoCode
-		err := row.Scan(
-			&pc.ID, &pc.Code, &pc.BonusAmount, &pc.MaxUses, &pc.UsedCount,
-			&pc.Status, &pc.ExpiresAt,
-		)
-		return pc, err
-	}, func(tx pgx.Tx, row PromoCode) error {
-		pc = row
+	}, func(tx *gorm.DB, row model.PromoCode) error {
+		pc = promoCodeOf(row)
 		// Validate promo code
 		if !pc.CanUse() {
 			if pc.Status != PromoStatusActive {
@@ -119,11 +110,9 @@ func (s *PromoService) ApplyPromoCode(ctx context.Context, userID int64, code st
 		}
 
 		// Check if user already used this code
-		var existingUsage int
-		if err := tx.QueryRow(ctx, `
-			SELECT COUNT(*) FROM promo_code_usage
-			WHERE promo_code_id = $1 AND user_id = $2
-		`, pc.ID, userID).Scan(&existingUsage); err != nil {
+		var existingUsage int64
+		if err := tx.Model(&model.PromoCodeUsage{}).Where("promo_code_id = ? AND user_id = ?", pc.ID, userID).
+			Count(&existingUsage).Error; err != nil {
 			return fmt.Errorf("check existing usage: %w", err)
 		}
 		if existingUsage > 0 {
@@ -146,19 +135,16 @@ func (s *PromoService) ApplyPromoCode(ctx context.Context, userID int64, code st
 
 		// Record usage
 		now := time.Now()
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO promo_code_usage (promo_code_id, user_id, bonus_amount, used_at)
-			VALUES ($1, $2, $3, $4)
-		`, pc.ID, userID, pc.BonusAmount, now); err != nil {
+		if err := tx.Create(&model.PromoCodeUsage{
+			PromoCodeID: pc.ID, UserID: userID, BonusAmount: pc.BonusAmount, UsedAt: now,
+		}).Error; err != nil {
 			return fmt.Errorf("insert usage record: %w", err)
 		}
 
 		// Increment used count
-		if _, err := tx.Exec(ctx, `
-			UPDATE promo_codes
-			SET used_count = used_count + 1, updated_at = $1
-			WHERE id = $2
-		`, now, pc.ID); err != nil {
+		if err := promoCodes(tx).Where("id = ?", pc.ID).Updates(map[string]any{
+			"used_count": gorm.Expr("used_count + 1"), "updated_at": now,
+		}).Error; err != nil {
 			return fmt.Errorf("increment used count: %w", err)
 		}
 		return nil
@@ -183,37 +169,41 @@ func (s *PromoService) ListPromoCodes(ctx context.Context, status string, limit,
 	if err != nil {
 		return nil, 0, err
 	}
-	// The status filter and the LIMIT/OFFSET numbering live in listPaged.
+	// The status filter applies to the count and the page alike (listPaged).
 	q := pagedQuery{
-		countSQL:   `SELECT COUNT(*) FROM promo_codes`,
-		listSQL:    selectPromoCodes,
+		columns:    selectPromoCodes,
 		orderBy:    "created_at DESC",
 		countLabel: "count promo codes",
 		queryLabel: "query promo codes",
-		scanLabel:  "scan promo code",
 	}
 	if status != "" {
-		q.where, q.args = "status = $1", []any{status}
+		q.where, q.args = "status = ?", []any{status}
 	}
-	codes, total, err := listPaged(ctx, db, q, limit, offset, func(row pgx.CollectableRow) (PromoCode, error) {
-		var pc PromoCode
-		err := row.Scan(
-			&pc.ID, &pc.Code, &pc.BonusAmount, &pc.MaxUses, &pc.UsedCount,
-			&pc.Status, &pc.ExpiresAt, &pc.Notes, &pc.CreatedAt,
-		)
-		return pc, err
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return codes, total, nil
+	return listPaged(db, q, limit, offset, promoCodeOf)
 }
 
 // selectPromoCodes is the column list shared by the admin list statements.
-const selectPromoCodes = `
-	SELECT id, code, bonus_amount, max_uses, used_count, status,
-		expires_at, notes, created_at
-	FROM promo_codes`
+const selectPromoCodes = `id, code, bonus_amount, max_uses, used_count, status,
+	expires_at, notes, created_at`
+
+// promoCodes selects from promo_codes.
+func promoCodes(db *gorm.DB) *gorm.DB { return db.Model(&model.PromoCode{}) }
+
+// promoCodeOf is the promo code of a row; NULL notes read as "".
+func promoCodeOf(r model.PromoCode) PromoCode {
+	return PromoCode{
+		ID:          r.ID,
+		Code:        r.Code,
+		BonusAmount: r.BonusAmount,
+		MaxUses:     r.MaxUses,
+		UsedCount:   r.UsedCount,
+		Status:      r.Status,
+		ExpiresAt:   r.ExpiresAt,
+		Notes:       deref(r.Notes),
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
+	}
+}
 
 // UpdatePromoCode updates a promo code
 func (s *PromoService) UpdatePromoCode(ctx context.Context, id int64, status string, maxUses int) error {
@@ -222,16 +212,14 @@ func (s *PromoService) UpdatePromoCode(ctx context.Context, id int64, status str
 		return err
 	}
 	now := time.Now()
-	result, err := db.Exec(ctx, `
-		UPDATE promo_codes
-		SET status = $1, max_uses = $2, updated_at = $3
-		WHERE id = $4
-	`, status, maxUses, now, id)
-	if err != nil {
+	result := promoCodes(db).Where("id = ?", id).Updates(map[string]any{
+		"status": status, "max_uses": maxUses, "updated_at": now,
+	})
+	if err := result.Error; err != nil {
 		return fmt.Errorf("update promo code: %w", err)
 	}
 
-	if result.RowsAffected() == 0 {
+	if result.RowsAffected == 0 {
 		return fmt.Errorf("promo code not found")
 	}
 
@@ -245,14 +233,12 @@ func (s *PromoService) DeletePromoCode(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	result, err := db.Exec(ctx, `
-		DELETE FROM promo_codes WHERE id = $1
-	`, id)
-	if err != nil {
+	result := db.Delete(&model.PromoCode{}, id)
+	if err := result.Error; err != nil {
 		return fmt.Errorf("delete promo code: %w", err)
 	}
 
-	if result.RowsAffected() == 0 {
+	if result.RowsAffected == 0 {
 		return fmt.Errorf("promo code not found")
 	}
 

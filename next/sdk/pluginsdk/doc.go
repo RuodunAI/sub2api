@@ -62,6 +62,51 @@
 //     record lost after a successful call means it runs again; both must
 //     be idempotent (CONTRACTS §11.7, §36). So must migrations/*.sql.
 //
+// # Database
+//
+// A plugin with a database (manifest "database", grant "db.schema") owns one
+// schema, plg_<key>. Host.DB returns a GORM handle on it (package pgdb:
+// search_path on the schema, the egress tunnel in strict network mode).
+// Plugin code does not import pgx. Errors wrap the driver's: duplicate keys
+// and other constraint violations also match gorm.ErrDuplicatedKey and its
+// siblings, and First/Take report a missing row as gorm.ErrRecordNotFound.
+//
+// The tables are described twice, and the two must agree:
+//
+//   - The GORM models of the plugin's internal/model package are the one
+//     description to edit. The package exports every model:
+//
+//     func All() []any { return []any{&Order{}, &Item{}} }
+//
+//     Each model names its table (TableName) and spells every column out
+//     as it is in the database: `gorm:"type:jsonb;not null;default:'{}'"`,
+//     a PostgreSQL array as a pgdb.Array[T] with its type (type:text[]),
+//     an index or check constraint by its name. Turn GORM's automatic
+//     created_at/updated_at off (autoCreateTime:false, autoUpdateTime:false)
+//     where the database default fills them.
+//
+//   - migrations/*.sql are what the host runs: in file name order, each in
+//     its own transaction with search_path on the schema, and idempotent.
+//     The plugin never runs AutoMigrate.
+//
+// The sub2api-plugin command keeps the two together:
+//
+//	sub2api-plugin db diff --dir <plugin> [--name add_score]  # writes migrations/NNNN_add_score.sql
+//	sub2api-plugin db check --dir <plugin>                    # fails while they disagree; pack runs it
+//
+// Both run migrations/ on a scratch schema of the test PostgreSQL
+// (TEST_DATABASE_URL, or the local server of package testpg), run GORM's
+// AutoMigrate for All() on it and look at the DDL it ran (pgdb.Drift). To
+// reach internal/model they generate a main package in the plugin module and
+// go run it (pgdb.DriftMain). diff writes that DDL, made idempotent, as the
+// next numbered migration, or says nothing is to do. It writes nothing when a
+// change can lose data (a column type, a drop) or the schema has a table,
+// column or index that no model maps (a field removed from the code): such a
+// migration is written by hand. check fails on any difference. AutoMigrate
+// knows indexes and constraints by name only: change one under a new name.
+//
+// Tests run the real migrations: pluginsdktest.NewSchema and ApplyMigrations.
+//
 // The pluginsdktest sub-package runs a plugin in-process over bufconn with a
 // fake host, for unit tests.
 package pluginsdk

@@ -17,6 +17,7 @@ package testpg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -29,7 +30,8 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
-	"github.com/jackc/pgx/v5"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 )
 
 // Version is the PostgreSQL major the production images run (postgres:16).
@@ -46,21 +48,34 @@ var (
 	localErr error
 )
 
+// ErrOff is Server's answer when SUB2API_TESTPG=off and TEST_DATABASE_URL
+// is unset.
+var ErrOff = errors.New("SUB2API_TESTPG=off and TEST_DATABASE_URL not set")
+
 // URL returns a superuser DSN of the server tests use, or skips the test
 // when SUB2API_TESTPG=off and TEST_DATABASE_URL is unset.
 func URL(t testing.TB) string {
 	t.Helper()
-	if u := os.Getenv("TEST_DATABASE_URL"); u != "" {
-		return u
+	once.Do(func() { localURL, localErr = Server(context.Background()) })
+	if errors.Is(localErr, ErrOff) {
+		t.Skip(localErr.Error())
 	}
-	if strings.EqualFold(os.Getenv("SUB2API_TESTPG"), "off") {
-		t.Skip("SUB2API_TESTPG=off and TEST_DATABASE_URL not set")
-	}
-	once.Do(func() { localURL, localErr = Ensure(context.Background()) })
 	if localErr != nil {
 		t.Fatalf("local test PostgreSQL: %v (set TEST_DATABASE_URL, or SUB2API_TESTPG=off to skip database tests)", localErr)
 	}
 	return localURL
+}
+
+// Server is URL for programs (sub2api-plugin db): TEST_DATABASE_URL when
+// set, else the local server, started unless it runs.
+func Server(ctx context.Context) (string, error) {
+	if u := os.Getenv("TEST_DATABASE_URL"); u != "" {
+		return u, nil
+	}
+	if strings.EqualFold(os.Getenv("SUB2API_TESTPG"), "off") {
+		return "", ErrOff
+	}
+	return Ensure(ctx)
 }
 
 // Dir is where the local server keeps its binaries, data and port.
@@ -171,14 +186,18 @@ func runningPort(ctx context.Context, dir string) (uint32, bool) {
 	if err != nil {
 		return 0, false
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	conn, err := pgx.Connect(ctx, dsn(uint32(n)))
+	db, err := pgdb.Open(dsn(uint32(n)), pgdb.Options{MaxConns: 1})
 	if err != nil {
 		return 0, false
 	}
-	_ = conn.Close(ctx)
-	return uint32(n), true
+	defer pgdb.Close(db) //nolint:errcheck // a probe
+	sqlDB, err := db.DB()
+	if err != nil {
+		return 0, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return uint32(n), sqlDB.PingContext(ctx) == nil
 }
 
 func freePort() (uint32, error) {

@@ -129,9 +129,11 @@ else
     ver=$(manifest_version "$dir/manifest.json")
     echo "==> packaging $name $ver"
     "$CLI" build --dir "$dir" --out "$TMP/$name"
-    extra=""
+    # No PostgreSQL in the image build: the GORM models are compared with
+    # migrations/ by the sub2api-plugin tests (TestDBCheck) in CI instead.
+    extra="--skip-db-check"
     if grep -q '"native"' "$dir/manifest.json" && [ ! -d "$dir/ui/native/dist" ]; then
-      extra="--allow-missing-ui"
+      extra="$extra --allow-missing-ui"
     fi
     if [ "$name" = ccgateway ] && [ -n "$ccg_images" ]; then
       extra="$extra --images $dir/images --image-roles $CCG_IMAGE_ROLES"

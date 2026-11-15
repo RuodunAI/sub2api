@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func (e *env) pendingClears() []pendingClear {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	rows, err := s.db.Query(context.Background(), `SELECT account_id, group_id, model, salt, percent, zero, attempts FROM sticky_pending ORDER BY account_id`)
+	rows, err := s.db.Raw(`SELECT account_id, group_id, model, salt, percent, zero, attempts FROM sticky_pending ORDER BY account_id`).Rows()
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -193,9 +194,11 @@ func TestSlowStickyClearKeepsEvents(t *testing.T) {
 		c.Notify = rules.Notify{Enabled: true, Channel: "email", Recipients: []string{"ops@example.com"}}
 		c.Strategies[0].Actions[1].Percent = 50 // the default clears 30%
 	})
-	stall := true
+	// Atomic: a clear the stalled run gave up on may still be arriving.
+	var stall atomic.Bool
+	stall.Store(true)
 	e.fh.ClearStickyBindingsFunc = func(ctx context.Context, in *pluginv1.ClearStickyBindingsRequest) (*pluginv1.ClearStickyBindingsResponse, error) {
-		if stall {
+		if stall.Load() {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		}
@@ -220,7 +223,7 @@ func TestSlowStickyClearKeepsEvents(t *testing.T) {
 	if pending := e.pendingClears(); len(pending) != 1 {
 		t.Fatalf("pending %+v", pending)
 	}
-	stall = false
+	stall.Store(false)
 	e.window(0, 0)
 	if len(e.pendingClears()) != 0 || len(e.events(map[string]string{"kind": rules.EventAffinityClear})) != 1 {
 		t.Fatalf("not cleared on the next run: %+v", e.pendingClears())
@@ -301,7 +304,7 @@ func TestMigrationMovesOldDefaults(t *testing.T) {
 	doc := `{"enabled":true,"window_seconds":60,"min_samples":10,"exempt_status_codes":"400","min_weight_mode":"base_percent","min_weight":0,` +
 		`"rules":` + rules020 + `,"strategies":` + strategies020 + `,` +
 		`"groups":{"5":{"window_seconds":30,"rules":` + rules020 + `},"6":{"rules":` + changed + `}},"notify":{"enabled":false,"channel":"","recipients":[],"language":"zh"},"log_events":true}`
-	if _, err := s.db.Exec(ctx, `INSERT INTO config (id, doc, version) VALUES (1, $1, 4)`, doc); err != nil {
+	if err := s.db.Exec(`INSERT INTO config (id, doc, version) VALUES (1, ?, 4)`, doc).Error; err != nil {
 		t.Fatal(err)
 	}
 	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0002_sticky_pending_defaults.sql"))
@@ -309,7 +312,7 @@ func TestMigrationMovesOldDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := s.db.Exec(ctx, string(migration)); err != nil {
+		if err := s.db.Exec(string(migration)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -359,7 +362,7 @@ func TestMigrationAddsDefaultClearing(t *testing.T) {
 	doc := `{"enabled":true,"window_seconds":60,"min_samples":10,"exempt_status_codes":"400","min_weight_mode":"base_percent","min_weight":0,` +
 		`"rules":` + rules020 + `,"strategies":` + strategies020 + `,` +
 		`"groups":{"5":{"window_seconds":30,"strategies":` + strategies020 + `},"6":{"strategies":` + changed + `}},"notify":{"enabled":false,"channel":"","recipients":[],"language":"zh"},"log_events":true}`
-	if _, err := s.db.Exec(ctx, `INSERT INTO config (id, doc, version) VALUES (1, $1, 4)`, doc); err != nil {
+	if err := s.db.Exec(`INSERT INTO config (id, doc, version) VALUES (1, ?, 4)`, doc).Error; err != nil {
 		t.Fatal(err)
 	}
 	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0003_default_affinity_clear.sql"))
@@ -367,7 +370,7 @@ func TestMigrationAddsDefaultClearing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := s.db.Exec(ctx, string(migration)); err != nil {
+		if err := s.db.Exec(string(migration)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}

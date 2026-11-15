@@ -42,9 +42,9 @@ func webhook(t *testing.T, p *Plugin, provider string) *pluginv1.HTTPResponse {
 func pendingOrder(t *testing.T, p *Plugin) *CreateOrderResponse {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := mustDB(t, p).Exec(ctx, `
-		INSERT INTO payment_provider_instances (provider_key, name) VALUES ($1, 'test')
-	`, ProviderAlipay); err != nil {
+	if err := mustDB(t, p).Exec(`
+		INSERT INTO payment_provider_instances (provider_key, name) VALUES (?, 'test')
+	`, ProviderAlipay).Error; err != nil {
 		t.Fatal(err)
 	}
 	order, err := p.orderService.CreateOrder(ctx, CreateOrderRequest{
@@ -60,8 +60,8 @@ func pendingOrder(t *testing.T, p *Plugin) *CreateOrderResponse {
 func orderStatus(t *testing.T, p *Plugin, id int64) string {
 	t.Helper()
 	var status string
-	if err := mustDB(t, p).QueryRow(context.Background(),
-		`SELECT status FROM payment_orders WHERE id = $1`, id).Scan(&status); err != nil {
+	if err := mustDB(t, p).Raw(
+		`SELECT status FROM payment_orders WHERE id = ?`, id).Row().Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	return status
@@ -137,9 +137,9 @@ func TestWebhookFailsClosed(t *testing.T) {
 // A disabled instance does not make its provider known.
 func TestWebhookDisabledInstanceIsUnknown(t *testing.T) {
 	p, _ := startDB(t)
-	if _, err := mustDB(t, p).Exec(context.Background(), `
-		INSERT INTO payment_provider_instances (provider_key, name, enabled) VALUES ($1, 'off', false)
-	`, ProviderStripe); err != nil {
+	if err := mustDB(t, p).Exec(`
+		INSERT INTO payment_provider_instances (provider_key, name, enabled) VALUES (?, 'off', false)
+	`, ProviderStripe).Error; err != nil {
 		t.Fatal(err)
 	}
 	v := &stubVerifier{}
@@ -170,9 +170,9 @@ func TestWebhookTriesEveryInstance(t *testing.T) {
 	p, _ := startDB(t)
 	order := pendingOrder(t, p)
 	var second int64
-	if err := mustDB(t, p).QueryRow(context.Background(), `
-		INSERT INTO payment_provider_instances (provider_key, name, sort_order) VALUES ($1, 'second', 1) RETURNING id
-	`, ProviderAlipay).Scan(&second); err != nil {
+	if err := mustDB(t, p).Raw(`
+		INSERT INTO payment_provider_instances (provider_key, name, sort_order) VALUES (?, 'second', 1) RETURNING id
+	`, ProviderAlipay).Row().Scan(&second); err != nil {
 		t.Fatal(err)
 	}
 	v := &perInstanceVerifier{accept: -1, n: &PaymentNotification{

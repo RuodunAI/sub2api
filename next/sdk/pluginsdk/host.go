@@ -5,15 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
@@ -57,10 +57,14 @@ type Host interface {
 
 	// DSN returns the restricted database DSN (grant "db.schema").
 	DSN(ctx context.Context) (*DSNInfo, error)
-	// DB returns a shared pgx pool for the plugin schema, created on first
-	// use from DSN. When the egress tunnel is installed (strict network mode)
-	// connections are dialled through it (DialFunc = egress.DialContext).
-	DB(ctx context.Context) (*pgxpool.Pool, error)
+	// DB returns the plugin's GORM handle on its schema, bound to ctx: use
+	// it for the call at hand and ask again for the next one (cheap: the
+	// connections are shared, opened on first use from DSN). search_path is
+	// the plugin schema, and with the egress tunnel installed (strict
+	// network mode) connections are dialled through it. The tables are
+	// those of migrations/*.sql, which the host runs: never AutoMigrate here
+	// (see "Database" in the package documentation).
+	DB(ctx context.Context) (*gorm.DB, error)
 
 	// AuthzCheck asks whether a console user holds a permission (plugin-local
 	// key like "rules:manage" or a fully qualified key). The plugin's own keys
@@ -231,8 +235,8 @@ type host struct {
 	// call: a host before core 0.1.273 (KVBatch).
 	kvNoBatch atomic.Bool
 
-	mu   sync.Mutex
-	pool *pgxpool.Pool
+	mu sync.Mutex
+	db *gorm.DB
 }
 
 func newHost(info HostInfo, c pluginv1.HostServiceClient, e pluginv1.EgressServiceClient, installed bool, poolSize int32) *host {
@@ -274,51 +278,32 @@ func (h *host) DSN(ctx context.Context) (*DSNInfo, error) {
 	return &DSNInfo{DSN: r.GetDsn(), Schema: r.GetSchema(), RoleIsolated: r.GetRoleIsolated()}, nil
 }
 
-func (h *host) DB(ctx context.Context) (*pgxpool.Pool, error) {
+func (h *host) DB(ctx context.Context) (*gorm.DB, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.pool != nil {
-		return h.pool, nil
-	}
-	info, err := h.DSN(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("pluginsdk: get dsn: %w", err)
-	}
-	cfg, err := pgxpool.ParseConfig(info.DSN)
-	if err != nil {
-		return nil, fmt.Errorf("pluginsdk: parse dsn: %w", err)
-	}
-	if h.poolSize > 0 {
-		cfg.MaxConns = h.poolSize
-	}
-	if h.installed {
-		// Let the host resolve the database host name: pass it through
-		// unresolved and dial via the tunnel.
-		cfg.ConnConfig.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
-		cfg.ConnConfig.DialFunc = egress.DialContext
-	} else {
-		d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-		cfg.ConnConfig.DialFunc = d.DialContext
-	}
-	if info.Schema != "" {
-		if _, ok := cfg.ConnConfig.RuntimeParams["search_path"]; !ok {
-			cfg.ConnConfig.RuntimeParams["search_path"] = info.Schema
+	if h.db == nil {
+		info, err := h.DSN(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("pluginsdk: get dsn: %w", err)
+		}
+		o := pgdb.Options{SearchPath: info.Schema, MaxConns: int(h.poolSize)}
+		if h.installed {
+			// The host resolves the database host name at the tunnel's end.
+			o.Dial, o.DialByName = egress.DialContext, true
+		}
+		if h.db, err = pgdb.Open(info.DSN, o); err != nil {
+			return nil, fmt.Errorf("pluginsdk: %w", err)
 		}
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("pluginsdk: open pool: %w", err)
-	}
-	h.pool = pool
-	return pool, nil
+	return h.db.WithContext(ctx), nil
 }
 
-func (h *host) closePool() {
+func (h *host) closeDB() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.pool != nil {
-		h.pool.Close()
-		h.pool = nil
+	if h.db != nil {
+		_ = pgdb.Close(h.db)
+		h.db = nil
 	}
 }
 

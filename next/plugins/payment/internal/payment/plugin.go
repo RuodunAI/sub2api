@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
@@ -68,22 +68,22 @@ func (p *Plugin) Configure(_ context.Context, cfg pluginsdk.Config) error {
 	return nil
 }
 
-// Shutdown implements pluginsdk.Shutdowner. The SDK closes the pool.
+// Shutdown implements pluginsdk.Shutdowner. The SDK closes the database handle.
 func (p *Plugin) Shutdown(context.Context) error {
 	slog.Info("payment plugin shutting down")
 	return nil
 }
 
-// db returns the shared pool of the plugin schema (grant "db.schema").
-func (p *Plugin) db(ctx context.Context) (*pgxpool.Pool, error) {
+// db returns the plugin schema's handle, bound to ctx (grant "db.schema").
+func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if p.host == nil {
 		return nil, errors.New("payment: host not initialized")
 	}
-	pool, err := p.host.DB(ctx)
+	db, err := p.host.DB(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("payment: database unavailable: %w", err)
 	}
-	return pool, nil
+	return db, nil
 }
 
 // ledger credits a user's balance (grant "ledger.credit").
@@ -96,6 +96,6 @@ func (p *Plugin) ledger(ctx context.Context, ch pluginsdk.LedgerChange) (*plugin
 
 // dbFunc and creditFunc decouple the services from the host for tests.
 type (
-	dbFunc     func(context.Context) (*pgxpool.Pool, error)
+	dbFunc     func(context.Context) (*gorm.DB, error)
 	creditFunc func(context.Context, pluginsdk.LedgerChange) (*pluginsdk.LedgerResult, error)
 )

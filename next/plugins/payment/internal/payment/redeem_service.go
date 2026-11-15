@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/model"
 )
 
 // RedeemService handles redeem code operations
@@ -60,53 +62,50 @@ func (s *RedeemService) GenerateCodes(ctx context.Context, req GenerateCodesRequ
 		return nil, fmt.Errorf("invalid value: must be positive")
 	}
 
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
 	var codes []RedeemCode
-	for i := 0; i < req.Count; i++ {
-		code, err := GenerateRedeemCode()
-		if err != nil {
-			return nil, fmt.Errorf("generate code: %w", err)
+	err = inTx(db, func(tx *gorm.DB) error {
+		for i := 0; i < req.Count; i++ {
+			code, err := GenerateRedeemCode()
+			if err != nil {
+				return fmt.Errorf("generate code: %w", err)
+			}
+
+			codeHash := HashRedeemCode(code)
+
+			// SQL rather than Create: GORM would store the column default
+			// for an empty type ('balance'), this stores ''.
+			var row model.RedeemCode
+			err = tx.Raw(`
+				INSERT INTO redeem_codes (
+					code, code_hash, type, value, group_id, validity_days,
+					status, expires_at, notes
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+				RETURNING id, created_at
+			`, code, codeHash, req.Type, req.Value, req.GroupID, req.ValidityDays,
+				RedeemStatusUnused, req.ExpiresAt, req.Notes).Scan(&row).Error
+			if err != nil {
+				return fmt.Errorf("insert code: %w", err)
+			}
+
+			rc := RedeemCode{
+				ID:           row.ID,
+				Code:         code,
+				CodeHash:     codeHash,
+				Type:         req.Type,
+				Value:        req.Value,
+				GroupID:      req.GroupID,
+				ValidityDays: req.ValidityDays,
+				Status:       RedeemStatusUnused,
+				ExpiresAt:    req.ExpiresAt,
+				Notes:        req.Notes,
+				CreatedAt:    row.CreatedAt,
+			}
+			codes = append(codes, rc)
 		}
-
-		codeHash := HashRedeemCode(code)
-
-		var id int64
-		var createdAt time.Time
-		err = tx.QueryRow(ctx, `
-			INSERT INTO redeem_codes (
-				code, code_hash, type, value, group_id, validity_days,
-				status, expires_at, notes
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			RETURNING id, created_at
-		`, code, codeHash, req.Type, req.Value, req.GroupID, req.ValidityDays,
-			RedeemStatusUnused, req.ExpiresAt, req.Notes).Scan(&id, &createdAt)
-		if err != nil {
-			return nil, fmt.Errorf("insert code: %w", err)
-		}
-
-		rc := RedeemCode{
-			ID:           id,
-			Code:         code,
-			CodeHash:     codeHash,
-			Type:         req.Type,
-			Value:        req.Value,
-			GroupID:      req.GroupID,
-			ValidityDays: req.ValidityDays,
-			Status:       RedeemStatusUnused,
-			ExpiresAt:    req.ExpiresAt,
-			Notes:        req.Notes,
-			CreatedAt:    createdAt,
-		}
-		codes = append(codes, rc)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	slog.Info("redeem codes generated", "count", len(codes), "type", req.Type)
@@ -126,24 +125,14 @@ func (s *RedeemService) RedeemCode(ctx context.Context, userID int64, code strin
 
 	var rc RedeemCode
 	var now time.Time
-	err = withLockedRow(ctx, db, lockedRow{
-		query: `SELECT id, code_hash, type, value, group_id, validity_days,
-				status, used_by, used_at, expires_at, notes, created_at
-			FROM redeem_codes
-			WHERE code_hash = $1
-			FOR UPDATE`,
+	err = withLockedRow(db, lockedRow{
+		columns:   selectRedeemCodes,
+		where:     "code_hash = ?",
 		arg:       HashRedeemCode(code),
 		missing:   "invalid code",
 		queryFail: "query code",
-	}, func(row pgx.Row) (RedeemCode, error) {
-		var rc RedeemCode
-		err := row.Scan(
-			&rc.ID, &rc.CodeHash, &rc.Type, &rc.Value, &rc.GroupID, &rc.ValidityDays,
-			&rc.Status, &rc.UsedBy, &rc.UsedAt, &rc.ExpiresAt, &rc.Notes, &rc.CreatedAt,
-		)
-		return rc, err
-	}, func(tx pgx.Tx, row RedeemCode) error {
-		rc = row
+	}, func(tx *gorm.DB, row model.RedeemCode) error {
+		rc = redeemCodeOf(row)
 		// Validate code
 		if !rc.CanUse() {
 			if rc.IsUsed() {
@@ -157,11 +146,9 @@ func (s *RedeemService) RedeemCode(ctx context.Context, userID int64, code strin
 
 		// Mark as used
 		now = time.Now()
-		if _, err := tx.Exec(ctx, `
-			UPDATE redeem_codes
-			SET status = $1, used_by = $2, used_at = $3, updated_at = $4
-			WHERE id = $5
-		`, RedeemStatusUsed, userID, now, now, rc.ID); err != nil {
+		if err := redeemCodes(tx).Where("id = ?", rc.ID).Updates(map[string]any{
+			"status": RedeemStatusUsed, "used_by": userID, "used_at": now, "updated_at": now,
+		}).Error; err != nil {
 			return fmt.Errorf("update code: %w", err)
 		}
 
@@ -206,37 +193,23 @@ func (s *RedeemService) ListCodes(ctx context.Context, status string, limit, off
 	if err != nil {
 		return nil, 0, err
 	}
-	// The status filter and the LIMIT/OFFSET numbering live in listPaged.
+	// The status filter applies to the count and the page alike (listPaged).
 	q := pagedQuery{
-		countSQL:   `SELECT COUNT(*) FROM redeem_codes`,
-		listSQL:    selectRedeemCodes,
+		columns:    selectRedeemCodes,
 		orderBy:    "created_at DESC",
 		countLabel: "count codes",
 		queryLabel: "query codes",
-		scanLabel:  "scan code",
 	}
 	if status != "" {
-		q.where, q.args = "status = $1", []any{status}
+		q.where, q.args = "status = ?", []any{status}
 	}
-	codes, total, err := listPaged(ctx, db, q, limit, offset, func(row pgx.CollectableRow) (RedeemCode, error) {
-		var rc RedeemCode
-		err := row.Scan(
-			&rc.ID, &rc.CodeHash, &rc.Type, &rc.Value, &rc.GroupID, &rc.ValidityDays,
-			&rc.Status, &rc.UsedBy, &rc.UsedAt, &rc.ExpiresAt, &rc.Notes, &rc.CreatedAt,
-		)
-		return rc, err
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return codes, total, nil
+	return listPaged(db, q, limit, offset, redeemCodeOf)
 }
 
-// selectRedeemCodes is the column list shared by the admin list statements.
-const selectRedeemCodes = `
-	SELECT id, code_hash, type, value, group_id, validity_days,
-		status, used_by, used_at, expires_at, notes, created_at
-	FROM redeem_codes`
+// selectRedeemCodes is the column list shared by the admin list statements
+// and the redemption.
+const selectRedeemCodes = `id, code_hash, type, value, group_id, validity_days,
+	status, used_by, used_at, expires_at, notes, created_at`
 
 // GetUserRedeemHistory returns user's redeem history
 func (s *RedeemService) GetUserRedeemHistory(ctx context.Context, userID int64, limit, offset int) ([]RedeemCode, int, error) {
@@ -244,35 +217,47 @@ func (s *RedeemService) GetUserRedeemHistory(ctx context.Context, userID int64, 
 	if err != nil {
 		return nil, 0, err
 	}
-	codes, total, err := listPaged(ctx, db, pagedQuery{
-		countSQL:   `SELECT COUNT(*) FROM redeem_codes`,
-		listSQL:    selectUserRedeemHistory,
-		where:      "used_by = $1",
+	return listPaged(db, pagedQuery{
+		columns:    selectUserRedeemHistory,
+		where:      "used_by = ?",
 		args:       []any{userID},
 		orderBy:    "used_at DESC",
 		countLabel: "count user codes",
 		queryLabel: "query user codes",
-		scanLabel:  "scan code",
-	}, limit, offset, func(row pgx.CollectableRow) (RedeemCode, error) {
-		var rc RedeemCode
-		err := row.Scan(
-			&rc.ID, &rc.CodeHash, &rc.Type, &rc.Value, &rc.Status,
-			&rc.UsedAt, &rc.Notes, &rc.CreatedAt,
-		)
+	}, limit, offset, func(row model.RedeemCode) RedeemCode {
+		rc := redeemCodeOf(row)
 		rc.UsedBy = &userID
-		return rc, err
+		return rc
 	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return codes, total, nil
 }
 
 // selectUserRedeemHistory is the column list of the user's own history: fewer
 // columns than the admin list, and no group/validity/expiry detail.
-const selectUserRedeemHistory = `
-	SELECT id, code_hash, type, value, status, used_at, notes, created_at
-	FROM redeem_codes`
+const selectUserRedeemHistory = `id, code_hash, type, value, status, used_at, notes, created_at`
+
+// redeemCodes selects from redeem_codes.
+func redeemCodes(db *gorm.DB) *gorm.DB { return db.Model(&model.RedeemCode{}) }
+
+// redeemCodeOf is the redeem code of a row; NULL validity and notes read as
+// zero values.
+func redeemCodeOf(r model.RedeemCode) RedeemCode {
+	return RedeemCode{
+		ID:           r.ID,
+		Code:         r.Code,
+		CodeHash:     r.CodeHash,
+		Type:         r.Type,
+		Value:        r.Value,
+		GroupID:      r.GroupID,
+		ValidityDays: deref(r.ValidityDays),
+		Status:       r.Status,
+		UsedBy:       r.UsedBy,
+		UsedAt:       r.UsedAt,
+		ExpiresAt:    r.ExpiresAt,
+		Notes:        deref(r.Notes),
+		CreatedAt:    r.CreatedAt,
+		UpdatedAt:    r.UpdatedAt,
+	}
+}
 
 // DeleteCode deletes (invalidates) a redeem code
 func (s *RedeemService) DeleteCode(ctx context.Context, codeID int64) error {
@@ -280,16 +265,14 @@ func (s *RedeemService) DeleteCode(ctx context.Context, codeID int64) error {
 	if err != nil {
 		return err
 	}
-	result, err := db.Exec(ctx, `
-		UPDATE redeem_codes
-		SET status = $1, updated_at = $2
-		WHERE id = $3 AND status = $4
-	`, RedeemStatusExpired, time.Now(), codeID, RedeemStatusUnused)
-	if err != nil {
+	result := redeemCodes(db).Where("id = ? AND status = ?", codeID, RedeemStatusUnused).Updates(map[string]any{
+		"status": RedeemStatusExpired, "updated_at": time.Now(),
+	})
+	if err := result.Error; err != nil {
 		return fmt.Errorf("update code: %w", err)
 	}
 
-	if result.RowsAffected() == 0 {
+	if result.RowsAffected == 0 {
 		return fmt.Errorf("code not found or already used")
 	}
 
