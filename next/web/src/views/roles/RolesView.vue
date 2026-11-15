@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, isApiError } from '@sub2api/host'
+import { api } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SChip, SDropdown, SEmpty, SField, SGrid, SHint, SIcon, SInput, SLink, SFormModal, SPageHeader, SSpinner, STextarea, confirm, toast } from '@sub2api/ui'
 import type { PermissionModule, User } from '@/api/types'
 import { roleMemberCount, type RoleRow } from '@/api/admin'
@@ -12,6 +12,7 @@ import { useAssignableRoles } from '@/composables/useAssignableRoles'
 import { inAllLocales, lt } from '@/i18n'
 import { fieldErrors, notifyError } from '@/utils/errors'
 import { applyFormError } from '@/utils/formErrors'
+import { missingText } from '@/utils/permErrors'
 import PermissionTree from './PermissionTree.vue'
 import RoleAssignable from './RoleAssignable.vue'
 import { ROLE_KEY_PATTERN } from '@/generated/permissions'
@@ -152,7 +153,7 @@ async function save() {
     }
     toast(t('common.saved'), 'success')
   } catch (e) {
-    missing = missingText(e)
+    missing = missingText(e, t)
     showSaveError(e)
   }
   // Something was written (all of it, or the parts before a refusal): show what the role now is.
@@ -190,20 +191,6 @@ function showSaveError(e: unknown) {
   const fields = Object.entries(fieldErrors(e, undefined, ROLE_FIELD_CODES)).filter(([k]) => EDITOR_FIELDS.includes(k))
   editErrors.value = Object.fromEntries(fields)
   if (!fields.length) notifyError(e)
-}
-
-/** The permissions and managed roles a refused save lacked, as one line. */
-function missingText(e: unknown): string {
-  if (!isApiError(e)) return ''
-  const d = e.details
-  const list = (v: unknown) => (Array.isArray(v) ? v.join(t('roles.listSep')) : '')
-  return [
-    list(d.missing) && t('roles.missingPermissions', { keys: list(d.missing) }),
-    list(d.missing_assignable) && t('roles.missingAssignable', { keys: list(d.missing_assignable) }),
-    d.missing_assign_custom ? t('roles.missingAssignCustom') : ''
-  ]
-    .filter(Boolean)
-    .join(' · ')
 }
 
 function resetEditor() {
@@ -356,7 +343,15 @@ async function restoreDefaults() {
             </SField>
           </SGrid>
 
-          <PermissionTree v-model:granted="perms" :modules="modules" :all-granted="selected.superuser" :read-only="readOnly" :scope-limit="auth.scopes" />
+          <PermissionTree
+            v-model:granted="perms"
+            :modules="modules"
+            :all-granted="selected.superuser"
+            :read-only="readOnly"
+            :scope-limit="auth.scopes"
+            :role-key="selected.key"
+            :grantable="auth.hasDynamic"
+          />
 
           <RoleAssignable v-if="!selected.superuser && Array.isArray(selected.assignable_role_keys)" v-model:keys="assignable" v-model:assign-custom="assignCustom" :roles="roles" :read-only="readOnly" />
 

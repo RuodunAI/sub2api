@@ -5,7 +5,8 @@ export default {
     api_key: 'API key',
     account: 'Account',
     model: 'Model',
-    proxy: 'Proxy'
+    proxy: 'Proxy',
+    pluginScope: 'Plugin data'
   },
   contains: 'Name contains “{text}”',
   containsHint: 'Partial match',
@@ -18,6 +19,7 @@ export default {
   moreUnlisted: 'More match than the list shows. Type to narrow the list.',
   none: 'No matching {name}',
   failed: 'Could not load the list',
+  failedTypeValue: 'Candidates are unavailable now; type a value instead',
   typeId: '{name} ID',
   typeIdOrName: '{name} ID or name',
   typeFor: '{label} ({what})',

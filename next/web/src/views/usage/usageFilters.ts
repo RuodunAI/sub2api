@@ -2,7 +2,7 @@ import { computed, type MaybeRefOrGetter, toValue } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { logRangeBounds, rangeBounds, type RangeKey } from '@sub2api/ui'
 import type { LocationQuery } from 'vue-router'
-import { ENTITIES, isEntityId, type EntityKind } from '@/components/entity/entities'
+import { entityOf, isEntityId, type EntityKind } from '@/components/entity/entities'
 import { lookupEntities, useEntityNames } from '@/components/entity/lookup'
 
 /**
@@ -75,7 +75,7 @@ export const ENTITY_FIELDS: Record<string, EntityField> = {
 /** The entity an id parameter names (group_id: a group), for showing its value by name. */
 const ID_PARAM_KINDS: Record<string, EntityKind> = Object.fromEntries(Object.values(ENTITY_FIELDS).map(e => [e.id, e.kind]))
 /** The id parameters whose value is a number (all but the model's, which is its name). */
-const NUMERIC_ID_PARAMS = new Set(Object.keys(ID_PARAM_KINDS).filter(param => ENTITIES[ID_PARAM_KINDS[param]].numeric))
+const NUMERIC_ID_PARAMS = new Set(Object.keys(ID_PARAM_KINDS).filter(param => entityOf(ID_PARAM_KINDS[param]).numeric))
 
 /** The query parameters a search field sets. */
 export function fieldParams(field: string): string[] {

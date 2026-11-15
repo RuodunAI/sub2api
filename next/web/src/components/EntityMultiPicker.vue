@@ -12,7 +12,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SChip } from '@sub2api/ui'
 import EntityPicker from './EntityPicker.vue'
-import { ENTITIES, isEntityId, type EntityKind } from './entity/entities'
+import { entityOf, takesId, type EntityKind } from './entity/entities'
 import { useEntityNames, type EntityItem } from './entity/lookup'
 
 const props = withDefaults(
@@ -35,7 +35,7 @@ const emit = defineEmits<{ 'update:ids': [ids: string[]]; change: [ids: string[]
 const { t } = useI18n()
 const names = useEntityNames({ mine: () => props.mine, extra: () => props.extra })
 
-const label = computed(() => props.placeholder ?? t('entity.add', { name: t(ENTITIES[props.kind].label) }))
+const label = computed(() => props.placeholder ?? t('entity.add', { name: t(entityOf(props.kind).label) }))
 const adds = computed(() => !props.disabled && (props.max === undefined || props.ids.length < props.max))
 
 function set(ids: string[]) {
@@ -55,7 +55,8 @@ function paste(e: ClipboardEvent) {
   const words = [...new Set((e.clipboardData?.getData('text') ?? '').split(/[\s,，;；]+/).filter(Boolean))]
   if (words.length < 2) return
   e.preventDefault()
-  const pickable = (id: string) => !ENTITIES[props.kind].numeric || isEntityId(id) || props.extra.some((x) => String(x.id) === id)
+  const entity = entityOf(props.kind)
+  const pickable = (id: string) => takesId(entity, id) || props.extra.some((x) => String(x.id) === id)
   const added = words.filter((id) => pickable(id) && !props.ids.includes(id)).slice(0, (props.max ?? Infinity) - props.ids.length)
   if (added.length) set([...props.ids, ...added])
 }

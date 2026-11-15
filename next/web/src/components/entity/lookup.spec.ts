@@ -3,6 +3,7 @@ import { computed, nextTick } from 'vue'
 import { flushPromises } from '@vue/test-utils'
 import { ApiError, session, type Query } from '@sub2api/host'
 import { forgetEntityNames, lookupEntities, lookupUnavailable, resetEntityLookups, useEntityNames } from './lookup'
+import { entityOf, pluginScopeKind } from './entities'
 
 const get = vi.hoisted(() => vi.fn())
 vi.mock('@sub2api/host', async (original) => ({ ...(await original<typeof import('@sub2api/host')>()), api: { get } }))
@@ -160,5 +161,38 @@ describe('lookupEntities', () => {
     get.mockResolvedValue({ items: [], more: false })
     expect(await lookupEntities('api_key', { ids: [5], scope: { user_id: 9 } })).toEqual({ items: [], more: false })
     expect(queries()).toEqual([['/lookup/api-keys', { ids: '5', user_id: 9 }]])
+  })
+})
+
+describe('plugin scope candidates', () => {
+  const kind = pluginScopeKind('guard', 'rules:manage')
+  const RULESETS = [{ id: 'r1', name: 'Default rules' }]
+  beforeEach(() => {
+    get.mockImplementation(async (_path: string, query: Query = {}) => {
+      const ids = typeof query.ids === 'string' ? query.ids.split(',') : null
+      return { items: RULESETS.filter((x) => !ids || ids.includes(x.id)), more: false }
+    })
+  })
+
+  it('asks GET /plugins/:key/scope-options for the permission', async () => {
+    expect(await lookupEntities(kind, { q: 'def' })).toEqual({ items: RULESETS, more: false })
+    expect(queries()).toEqual([['/plugins/guard/scope-options', { permission: 'rules:manage', q: 'def' }]])
+  })
+
+  it('names opaque ids through ids=, shows an unknown one as it is, and never asks for one no key can hold', async () => {
+    const { label, name } = useEntityNames()
+    const chip = computed(() => [label(kind, 'r1'), label(kind, 'gone'), label(kind, 'a,b')].join(' / '))
+    expect(chip.value).toBe('r1 / gone / a,b')
+    await flushPromises()
+    expect(queries()).toEqual([['/plugins/guard/scope-options', { permission: 'rules:manage', ids: 'r1,gone' }]])
+    expect(chip.value).toBe('Default rules / gone / a,b')
+    expect(name(kind, 'gone')).toBeUndefined()
+  })
+
+  it('does not remember a plugin that is not running (503) as unavailable', async () => {
+    get.mockRejectedValueOnce(new ApiError(503, { code: 'plugin_unavailable', message: 'not running' }))
+    await expect(lookupEntities(kind)).rejects.toThrow()
+    expect(lookupUnavailable(kind)).toBe(false)
+    expect(entityOf(kind)).toMatchObject({ numeric: false, opaqueIds: true, permissions: ['role:read', 'plugin:read'] })
   })
 })

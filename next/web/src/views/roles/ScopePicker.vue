@@ -5,37 +5,76 @@
 // what the editor's own scopes imply is offered (`offer`); granted scopes
 // beyond it can only be removed. Ids show by name through the lookup, a
 // deleted one as "#12 (deleted)".
+// A plugin action (`plugin`, resource '') has none of the core rows: its
+// scopes are own (when the manifest allows it) and "<resource>/<value>"
+// refs, a static enum's values as toggles, a plugin resource's picked from
+// its scope candidates (EntityPicker of the pscope kind), shown by name.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SCheckbox, SChip, SHint } from '@sub2api/ui'
 import EntityPicker from '@/components/EntityPicker.vue'
-import type { EntityKind } from '@/components/entity/entities'
+import { pluginScopeKind, type EntityKind } from '@/components/entity/entities'
+import { useEntityNames } from '@/components/entity/lookup'
+import type { PluginScopeDecl } from '@/api/types'
+import { lt } from '@/i18n'
 import { scopeSuffix, takesRowIds, type Scope, type ScopeResource } from '@/authz/implies'
-import { choiceOf, scopesOf, type Offer, type ScopeChoice, type ScopeOffer } from '@/authz/scopeChoice'
+import { choiceOf, scopesOf, type Offer, type RefOffer, type ScopeChoice, type ScopeOffer } from '@/authz/scopeChoice'
 import { useScopeLabels } from './scopeLabels'
 
-const props = defineProps<{ action: string; resource: ScopeResource; scopes: Scope[]; offer: ScopeOffer; disabled?: boolean }>()
+const props = defineProps<{
+  action: string
+  /** The core resource; '' for a plugin action. */
+  resource: ScopeResource | ''
+  scopes: Scope[]
+  offer: ScopeOffer
+  disabled?: boolean
+  /** A plugin action: the plugin, the local key and the manifest's scope. */
+  plugin?: { key: string; local: string; scope?: PluginScopeDecl }
+}>()
 const emit = defineEmits<{ (e: 'update:scopes', v: Scope[]): void }>()
 const { t } = useI18n()
 const { rowLabel: label } = useScopeLabels()
+const names = useEntityNames()
 
 const choice = computed(() => choiceOf(props.scopes))
 /** Everything but "all" waits while every row is chosen. */
 const narrowOff = computed(() => props.disabled || choice.value.all)
-const rowKind = computed<EntityKind>(() => props.resource)
+const rowKind = computed<EntityKind | ''>(() => props.resource)
 const grouped = computed(() => props.resource === 'account')
 /** Rows by id (account/X, proxy/X, group/G/account/X); not for account:create. */
 const rows = computed(() => takesRowIds(props.action))
+/** A plugin action offers own only where its manifest allows it. */
+const ownOffered = computed(() => props.offer.own && (!props.plugin || !!props.plugin.scope?.own))
 
 function set(patch: Partial<ScopeChoice>) {
   emit('update:scopes', scopesOf({ ...choice.value, ...patch }))
 }
 
 /** The ids a fixed offer lists, with those granted beyond it (removable only). */
-const listed = (offer: Offer, held: number[]) => (Array.isArray(offer) ? [...new Set([...offer, ...held])] : held)
-const offered = (offer: Offer, id: number) => offer === 'any' || (Array.isArray(offer) && offer.includes(id))
-const toggled = (list: number[], id: number) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id])
+const listed = <T,>(offer: Offer<T>, held: T[]) => (Array.isArray(offer) ? [...new Set([...offer, ...held])] : held)
+const offered = <T,>(offer: Offer<T>, id: T) => offer === 'any' || (Array.isArray(offer) && offer.includes(id))
+const toggled = <T,>(list: T[], id: T) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id])
 const added = (list: number[], id: string) => (id && !list.includes(Number(id)) ? [...list, Number(id)] : list)
+
+// <resource>/<value> of a plugin action.
+const resourceName = computed(() => props.plugin?.scope?.resource ?? '')
+const enumValues = computed(() => props.plugin?.scope?.values)
+const refKind = computed(() => pluginScopeKind(props.plugin?.key ?? '', props.plugin?.local ?? ''))
+const refOf = (value: string) => `${resourceName.value}/${value}`
+const valueOf = (ref: string) => ref.slice(resourceName.value.length + 1)
+/** What the refs row offers: an enum's values are a fixed list (all of them to a holder of every value). */
+const refOffer = computed<RefOffer>(() => {
+  const values = enumValues.value?.map((v) => refOf(v.key))
+  return values && props.offer.refs === 'any' ? values : props.offer.refs
+})
+function refLabel(ref: string): string {
+  const value = valueOf(ref)
+  const item = enumValues.value?.find((v) => v.key === value)
+  return item ? lt(item.label) || value : names.label(refKind.value, value)
+}
+function addRef(value: string) {
+  if (value && !choice.value.refs.includes(refOf(value))) set({ refs: [...choice.value.refs, refOf(value)] })
+}
 
 // group/<g>/account/<id>: the group is picked first, then an account preferring it.
 const pairGroup = ref('')
@@ -59,7 +98,7 @@ function addPair(account: string) {
         @update:model-value="set({ all: !!$event })"
       />
       <SCheckbox
-        v-if="offer.own || choice.own"
+        v-if="ownOffered || choice.own"
         size="xs"
         :model-value="choice.own || choice.all"
         :disabled="narrowOff"
@@ -89,7 +128,7 @@ function addPair(account: string) {
     </div>
 
     <!-- account/<id>, proxy/<id> -->
-    <div v-if="rows && (offer.ids || choice.ids.length)" class="flex flex-wrap items-center gap-1.5" :class="choice.all ? 'opacity-60' : ''" data-testid="scope-ids">
+    <div v-if="rowKind && rows && (offer.ids || choice.ids.length)" class="flex flex-wrap items-center gap-1.5" :class="choice.all ? 'opacity-60' : ''" data-testid="scope-ids">
       <SHint inline size="xs" class="w-28 shrink-0">{{ t(grouped ? 'roles.scope.accounts' : 'roles.scope.proxies') }}</SHint>
       <SChip
         v-for="id in listed(offer.ids, choice.ids)"
@@ -140,6 +179,32 @@ function addPair(account: string) {
           @update:id="addPair"
         />
       </template>
+    </div>
+
+    <!-- <resource>/<value>: a plugin resource or a static enum -->
+    <div v-if="plugin && (refOffer || choice.refs.length)" class="flex flex-wrap items-center gap-1.5" :class="choice.all ? 'opacity-60' : ''" data-testid="scope-refs">
+      <SHint inline size="xs" class="w-28 shrink-0">{{ t(enumValues ? 'roles.scope.values' : 'roles.scope.items') }}</SHint>
+      <SChip
+        v-for="r in listed(refOffer, choice.refs)"
+        :key="r"
+        size="xs"
+        :pressed="refOffer === 'any' ? undefined : choice.refs.includes(r)"
+        :tone="refOffer === 'any' ? 'primary' : 'neutral'"
+        :closable="refOffer === 'any' && !narrowOff"
+        :disabled="narrowOff || (!offered(refOffer, r) && !choice.refs.includes(r))"
+        :title="r"
+        @close="set({ refs: choice.refs.filter((x) => x !== r) })"
+        @update:pressed="set({ refs: toggled(choice.refs, r) })"
+      >{{ refLabel(r) }}</SChip>
+      <EntityPicker
+        v-if="refOffer === 'any' && !narrowOff"
+        class="min-w-40 flex-1"
+        :kind="refKind"
+        size="sm"
+        :exclude="choice.refs.map(valueOf)"
+        data-testid="scope-ref-picker"
+        @update:id="addRef"
+      />
     </div>
 
     <!-- held, not offered: group/*, group/*/account/<id> -->
