@@ -83,6 +83,27 @@ func TestGORMTimes(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
+// Bytes is one parameter right after "(", where GORM spreads a []byte into
+// one placeholder per byte, and keeps nil (NULL) apart from empty.
+func TestGORMBytes(t *testing.T) {
+	db, _ := bridgeDB(t)
+	g := store.G(context.Background(), db.Pool)
+	for _, c := range []struct {
+		in   store.Bytes
+		want []byte
+	}{{nil, []byte("stored")}, {store.Bytes{}, []byte{}}, {store.Bytes("ab"), []byte("ab")}} {
+		var got []byte
+		require.NoError(t, g.Raw(`SELECT COALESCE(?, 'stored'::bytea)`, c.in).Row().Scan(&got))
+		assert.Equal(t, c.want, got, "COALESCE(%#v, 'stored')", c.in)
+	}
+	var doc store.Bytes
+	require.NoError(t, g.Raw(`SELECT jsonb_build_object('a', 1)::text::bytea`).Row().Scan(&doc))
+	assert.Equal(t, `{"a": 1}`, string(doc))
+	var n int
+	require.NoError(t, g.Raw(`SELECT count(*) FROM jsonb_object_keys((?::jsonb))`, store.Bytes(`{"a":1,"b":2}`)).Row().Scan(&n))
+	assert.Equal(t, 2, n)
+}
+
 type loose struct {
 	ID  int64 `gorm:"column:id;primaryKey;default:(-)"`
 	Doc any   `gorm:"column:doc"`

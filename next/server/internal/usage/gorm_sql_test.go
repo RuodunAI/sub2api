@@ -53,6 +53,43 @@ func TestRawNumbered(t *testing.T) {
 	}
 }
 
+// A $ inside a literal stays text however the literal escapes its quote:
+// a doubled quote in either kind, \' in E'...' only (in '...' a backslash
+// is a byte).
+func TestRawNumberedQuotes(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{`SELECT 'it''s $1', $1`, `SELECT 'it''s $1', ?`},
+		{`SELECT E'it\'s $1', $1`, `SELECT E'it\'s $1', ?`},
+		{`SELECT e'it''s \' $1', $1`, `SELECT e'it''s \' $1', ?`},
+		{`SELECT E'a\\', $1`, `SELECT E'a\\', ?`},
+		{`SELECT E'a\\''$1', $1`, `SELECT E'a\\''$1', ?`},
+		{`SELECT 'a\', $1`, `SELECT 'a\', ?`},
+		{`SELECT TYPE'a\', $1`, `SELECT TYPE'a\', ?`},
+		{`SELECT E'\?', $1`, `SELECT E'\?', ?`},
+		{`SELECT ''$1`, `SELECT ''?`},
+	} {
+		sql, vars := numbered(c.in, []any{"v"})
+		require.Equal(t, c.want, sql, c.in)
+		require.Equal(t, "v", vars[len(vars)-1], c.in)
+	}
+}
+
+// A []byte or json.RawMessage argument stays one parameter right after "(",
+// where GORM spreads a slice into one placeholder per element and turns an
+// empty one into NULL.
+func TestRawNumberedBytes(t *testing.T) {
+	sql, vars, err := gormtest.Build(func(db *gorm.DB) *gorm.DB {
+		return execNumbered(db, `UPDATE t SET a = COALESCE($1, a), b = COALESCE($2, b), c = ($3::jsonb), d = $4 WHERE id = $5`,
+			[]any{[]byte("ab"), []byte{}, json.RawMessage(`{"k":1}`), json.RawMessage{}, 7})
+	})
+	require.NoError(t, err)
+	require.Equal(t, `UPDATE t SET a = COALESCE($1, a), b = COALESCE($2, b), c = ($3::jsonb), d = $4 WHERE id = $5`, sql)
+	require.Equal(t, []any{store.Bytes("ab"), store.Bytes{}, store.Bytes(`{"k":1}`), store.Bytes{}, 7}, vars)
+	empty, err := vars[1].(store.Bytes).Value()
+	require.NoError(t, err)
+	require.Equal(t, []byte{}, empty, "an empty slice is the empty value, not NULL")
+}
+
 func TestSQLUsageList(t *testing.T) {
 	f := sqlFilter(t, "model=claude&api_key_name=ci_%25&success=true&from=2026-11-01T00:00:00Z&to=2026-11-15T00:00:00Z", nil)
 	t.Run("count", func(t *testing.T) {
@@ -157,7 +194,7 @@ func TestSQLSettlementActions(t *testing.T) {
 		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return settlementOf(db, 5).Clauses(store.ForUpdate).Scan(&sqlSink) })
 	})
 	t.Run("retry_row", func(t *testing.T) {
-		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return markUsageRow(db, 5, "reserved", nil, "retrying") })
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return markUsageRow(db, 5, "reserved", nil, reconcileMarker("retrying")) })
 	})
 	t.Run("retry_entry", func(t *testing.T) {
 		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
@@ -174,7 +211,7 @@ func TestSQLSettlementActions(t *testing.T) {
 	})
 	t.Run("refund_row", func(t *testing.T) {
 		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-			return markUsageRow(db, 5, "free", map[string]any{"total_cost": decimal.Zero, "base_cost": decimal.Zero}, "refunded")
+			return markUsageRow(db, 5, "free", map[string]any{"total_cost": decimal.Zero, "base_cost": decimal.Zero}, reconcileMarker("refunded"))
 		})
 	})
 	t.Run("refund_task", func(t *testing.T) {

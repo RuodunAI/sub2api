@@ -1,6 +1,6 @@
 -- sql
 UPDATE async_tasks SET state=$1,observation_status=$2,
-		snapshot=COALESCE( $3,snapshot),snapshot_id_paths=CASE WHEN $4::bytea IS NULL THEN snapshot_id_paths ELSE $5::jsonb END,
+		snapshot=COALESCE($3,snapshot),snapshot_id_paths=CASE WHEN $4::bytea IS NULL THEN snapshot_id_paths ELSE $5::jsonb END,
 		claim_token='',lease_until=NULL,attempts=attempts+CASE WHEN $6='closed' THEN 1 ELSE 0 END,
 		failure_code=CASE WHEN $7='closed' THEN $8 ELSE failure_code END,
 		last_error=CASE WHEN $9='closed' THEN $10 ELSE last_error END,
@@ -9,8 +9,8 @@ UPDATE async_tasks SET state=$1,observation_status=$2,
 -- vars
 $1 string "succeeded"
 $2 string "closed"
-$3 []uint8 [123 34 105 100 34 58 34 115 50 116 97 115 107 95 49 34 125]
-$4 []uint8 [123 34 105 100 34 58 34 115 50 116 97 115 107 95 49 34 125]
+$3 store.Bytes [123 34 105 100 34 58 34 115 50 116 97 115 107 95 49 34 125]
+$4 store.Bytes [123 34 105 100 34 58 34 115 50 116 97 115 107 95 49 34 125]
 $5 []uint8 [91 34 105 100 34 93]
 $6 string "closed"
 $7 string "closed"

@@ -59,6 +59,42 @@ func (JSON[T]) GormDataType() string { return "jsonb" }
 func (j JSON[T]) MarshalJSON() ([]byte, error)  { return json.Marshal(j.V) }
 func (j *JSON[T]) UnmarshalJSON(b []byte) error { return json.Unmarshal(b, &j.V) }
 
+// Bytes is a bytea (or json/jsonb document) parameter for GORM that stays
+// one parameter wherever it stands. GORM spreads a []byte or
+// json.RawMessage written right after "(" (COALESCE(?, ...)) into one
+// placeholder per byte and turns an empty one into NULL there, and it
+// turns an empty json.RawMessage into NULL anywhere. Bytes is bound as is:
+// nil is NULL and an empty non-nil slice the empty value, as pgx binds a
+// []byte.
+type Bytes []byte
+
+// Value implements driver.Valuer.
+func (b Bytes) Value() (driver.Value, error) {
+	if b == nil {
+		return nil, nil
+	}
+	return []byte(b), nil
+}
+
+// Scan implements sql.Scanner: NULL reads as nil. The bytes are copied,
+// since database/sql may reuse the source buffer.
+func (b *Bytes) Scan(src any) error {
+	switch v := src.(type) {
+	case nil:
+		*b = nil
+	case []byte:
+		*b = append(Bytes{}, v...)
+	case string:
+		*b = Bytes(v)
+	default:
+		return fmt.Errorf("store: cannot scan %T into %T", src, b)
+	}
+	return nil
+}
+
+// GormDataType makes GORM map Bytes as a column.
+func (Bytes) GormDataType() string { return "bytea" }
+
 // Int64s is a bigint[] parameter or column for GORM. GORM expands a plain
 // []int64 argument into one placeholder per element, which breaks
 // "= ANY(?)" and turns an empty slice into NULL; Int64s is one parameter

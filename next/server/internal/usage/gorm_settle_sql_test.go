@@ -8,7 +8,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The SQL of the settlement and task statements built with GORM (see
@@ -80,32 +82,120 @@ func TestSQLTaskImportCounters(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return importTaskCounters(db, "s2task_1", 4) })
 }
 
-// The body is one bytea argument, not a list of its bytes.
-func TestSQLTaskReceive(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return receiveTask(db, "req-1", "received", 200, []byte(`{"id":"up-1"}`), "")
-	})
-}
-
-// An empty body stays an empty bytea, as pgx bound it, and does not become
-// NULL (which COALESCE would read as "keep the stored body"): right after
-// "(" GORM would have turned the empty slice into NULL.
-func TestSQLTaskReceiveEmptyBody(t *testing.T) {
+// An empty snapshot stays one empty bytea, as pgx bound it, and does not
+// become NULL (which COALESCE would read as "keep the stored snapshot"):
+// right after "(" GORM turns an empty []byte into NULL and spreads a longer
+// one into a list, a store.Bytes it binds as is (TestGORMBytes in package
+// store checks the values PostgreSQL receives).
+func TestSQLTaskReleaseClaimEmptySnapshot(t *testing.T) {
+	e := &settleEntry{task: &taskClaim{id: "s2task_1"}}
 	_, args, err := gormtest.Build(func(db *gorm.DB) *gorm.DB {
-		return receiveTask(db, "req-1", "received", 204, []byte{}, "")
+		return releaseTaskClaim(db, e, "succeeded", "closed", []byte{}, []byte(`[]`))
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body, ok := args[2].([]byte); !ok || body == nil {
-		t.Fatalf("body argument = %#v, want a non-nil empty []byte", args[2])
+	snapshot, ok := args[2].(store.Bytes)
+	if !ok || len(args) != 15 {
+		t.Fatalf("arguments = %#v, want fifteen with a store.Bytes snapshot", args)
+	}
+	if v, _ := snapshot.Value(); v == nil || len(v.([]byte)) != 0 {
+		t.Fatalf("snapshot value = %#v, want a non-nil empty []byte", v)
 	}
 }
 
-// The receipt writes the identity columns alone; the database fills the
-// state, expiry and timestamps.
-func TestSQLTaskInsertReceipt(t *testing.T) {
-	in := core.TaskIntent{RequestID: "req-1", PluginKey: "video", Kind: "generate", Model: "m", Protocol: "p",
-		UserID: 1, APIKeyID: 2, GroupID: 3, AccountID: 4}
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return insertReceipt(db, "s2task_1", in) })
+// The lazy import of a legacy task: the usage rows locked first, then the
+// settlement entries, then the imported task.
+func TestSQLTaskImportLegacy(t *testing.T) {
+	q := core.TaskQuery{PluginKey: "video", Kind: "generate", UserID: 1, GroupID: 3, ID: "up-1", SubmitProtocol: "p", IDPaths: []string{"id"}}
+	t.Run("owner", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return legacyTaskEntries(db, q, "u.id", "u").Scan(&sqlSink) })
+	})
+	t.Run("entries", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return legacyTaskEntries(db, q, legacyEntryColumns, "p").Scan(&sqlSink) })
+	})
+	t.Run("insert", func(t *testing.T) {
+		account := int64(4)
+		e := &legacyEntry{id: 9, usageLogID: 5, apiKeyID: 2, accountID: &account, model: "m",
+			next: settleSnapshotTime, deadline: settleSnapshotTime.Add(time.Hour), created: settleSnapshotTime.Add(-time.Hour)}
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return insertLegacyTask(db, "s2task_1", q, e) })
+	})
+}
+
+// The reconcile loop's statements (reconcile.go). pending_settlements and
+// usage_logs have no updated_at.
+func TestSQLReconcile(t *testing.T) {
+	e := &settleEntry{id: 9, usageLogID: 5, pollFailed: true}
+	t.Run("claim_due", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return claimDueEntries(db, 100).Scan(&sqlSink) })
+	})
+	t.Run("reschedule", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return rescheduleEntry(db, e, 1, settleSnapshotTime, "busy") })
+	})
+	t.Run("close", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+			return closeEntryRow(db, 9, SettleStateSettled, "usage row left the reserved state")
+		})
+	})
+	t.Run("settle_row", func(t *testing.T) {
+		p := &pending{Tokens: core.UsageTokens{Input: 10, Output: 20, CacheRead: 30, CacheCreation: 40, CacheCreation1h: 5},
+			Metrics: map[string]any{"seconds": 8}}
+		cost := amounts{base: decimal.RequireFromString("0.5"), total: decimal.RequireFromString("0.6")}
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+			return repriceUsageRow(db, 5, p, cost, BillingDetail{Tier: "default"}, "hash")
+		})
+	})
+	t.Run("settle_entry", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return settleEntryRow(db, 9) })
+	})
+	t.Run("refund_row", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return refundUsageRow(db, 5, "upstream failed") })
+	})
+	t.Run("refund_entry", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return failEntryRow(db, e, "upstream failed") })
+	})
+	// keepEstimate: the row is billed at its estimate with the marker merged
+	// into its anomalies (closeUnreconcilable writes the same statement).
+	t.Run("estimate_row", func(t *testing.T) {
+		marker := map[string]string{core.AnomalyReconcile: core.ReconcileAbandoned, core.AnomalyReconcileError: "deadline"}
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return markUsageRow(db, 5, StatusBilled, nil, marker) })
+	})
+	t.Run("estimate_entry", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return estimateEntryRow(db, 9, SettleStateAbandoned, "deadline", false) })
+	})
+	t.Run("estimate_entry_attempt", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return estimateEntryRow(db, 9, SettleStateEstimated, "no usage", true) })
+	})
+}
+
+// The hourly rollup's insert keeps jsonb's ? operator as text and binds
+// the two bounds by number.
+func TestSQLRollupInsert(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return rollupInsert(db, settleSnapshotTime, settleSnapshotTime.Add(time.Hour))
+	})
+}
+
+// The helper history outbox's persistence: the advisory lock, the locked
+// reads of the receipt and of the usage row, and the receipt.
+func TestSQLHelperUsage(t *testing.T) {
+	t.Run("lock", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return lockHelperUsage(db, "req-1") })
+	})
+	t.Run("receipt", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return helperUsageReceipt(db, "req-1").Scan(&sqlSink) })
+	})
+	t.Run("usage_row", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return lockedUsageID(db, "req-1").Scan(&sqlSink) })
+	})
+	t.Run("insert_receipt", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+			return db.Create(&model.ProviderHelperUsageReceipt{RequestID: "req-1", Digest: "d"})
+		})
+	})
+}
+
+// lockSettlement's first lock: the tasks of the usage row, before the row.
+func TestSQLLockTasksOfUsage(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return lockTasksOfUsage(db, 5) })
 }

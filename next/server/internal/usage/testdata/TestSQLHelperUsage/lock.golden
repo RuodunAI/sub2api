@@ -1,0 +1,4 @@
+-- sql
+SELECT pg_advisory_xact_lock(hashtextextended($1,0))
+-- vars
+$1 string "helper-usage:req-1"

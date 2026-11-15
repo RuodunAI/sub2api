@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -379,14 +380,19 @@ func rollupHours(ctx context.Context, tx pgx.Tx, from, to time.Time) (int, error
 	if err := store.G(ctx, tx).Where("created_at >= ? AND created_at < ?", from, to).Delete(&model.UsageHourly{}).Error; err != nil {
 		return 0, err
 	}
-	dims := strings.Join(rollupDims, ", ")
-	// The measures hold jsonb's ? operator (anomalousRow), so the statement
-	// keeps its $n placeholders and goes through execNumbered.
-	if err := execNumbered(store.G(ctx, tx), `INSERT INTO usage_hourly (created_at, `+dims+`, `+measureList(func(m statMeasure) string { return m.name })+`)
-		SELECT date_trunc('hour', u.created_at, 'UTC'), `+dims+`, `+measureList(func(m statMeasure) string { return `sum(` + m.row + `)` })+`
-		FROM usage_logs u WHERE u.created_at >= $1 AND u.created_at < $2
-		GROUP BY 1, `+dims, []any{from, to}).Error; err != nil {
+	if err := rollupInsert(store.G(ctx, tx), from, to).Error; err != nil {
 		return 0, err
 	}
 	return int(to.Sub(from) / time.Hour), nil
+}
+
+// rollupInsert writes the rollup rows of the hours [from, to). The measures
+// hold jsonb's ? operator (anomalousRow), so the statement keeps its $n
+// placeholders and goes through execNumbered.
+func rollupInsert(db *gorm.DB, from, to time.Time) *gorm.DB {
+	dims := strings.Join(rollupDims, ", ")
+	return execNumbered(db, `INSERT INTO usage_hourly (created_at, `+dims+`, `+measureList(func(m statMeasure) string { return m.name })+`)
+		SELECT date_trunc('hour', u.created_at, 'UTC'), `+dims+`, `+measureList(func(m statMeasure) string { return `sum(` + m.row + `)` })+`
+		FROM usage_logs u WHERE u.created_at >= $1 AND u.created_at < $2
+		GROUP BY 1, `+dims, []any{from, to})
 }

@@ -1,0 +1,4 @@
+-- sql
+SELECT "digest" FROM "provider_helper_usage_receipts" WHERE request_id = $1 FOR UPDATE
+-- vars
+$1 string "req-1"

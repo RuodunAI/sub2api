@@ -189,19 +189,17 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx pgx.Tx, e *settleEntry
 }
 
 // releaseTaskClaim writes a task's observation and gives up its claim.
-// Arguments are positional, repeated where the statement reuses one; the
-// space in "COALESCE( ?" keeps GORM from spreading the []byte into a list,
-// which it does to a slice right after "(".
+// Arguments are positional, repeated where the statement reuses one.
 func releaseTaskClaim(db *gorm.DB, e *settleEntry, state, observation string, snapshot, paths []byte) *gorm.DB {
 	t := e.task
 	return db.Exec(`UPDATE async_tasks SET state=?,observation_status=?,
-		snapshot=COALESCE( ?,snapshot),snapshot_id_paths=CASE WHEN ?::bytea IS NULL THEN snapshot_id_paths ELSE ?::jsonb END,
+		snapshot=COALESCE(?,snapshot),snapshot_id_paths=CASE WHEN ?::bytea IS NULL THEN snapshot_id_paths ELSE ?::jsonb END,
 		claim_token='',lease_until=NULL,attempts=attempts+CASE WHEN ?='closed' THEN 1 ELSE 0 END,
 		failure_code=CASE WHEN ?='closed' THEN ? ELSE failure_code END,
 		last_error=CASE WHEN ?='closed' THEN ? ELSE last_error END,
 		poll_failures=CASE WHEN ?='closed' AND ? THEN poll_failures+1 WHEN ?='closed' AND ? THEN 0 ELSE poll_failures END,
 		updated_at=now() WHERE public_id=?`,
-		state, observation, snapshot, snapshot, paths, observation, observation, t.failureCode, observation, t.failureReason,
+		state, observation, store.Bytes(snapshot), store.Bytes(snapshot), paths, observation, observation, t.failureCode, observation, t.failureReason,
 		observation, e.pollFailed, observation, e.pollObserved, t.id)
 }
 

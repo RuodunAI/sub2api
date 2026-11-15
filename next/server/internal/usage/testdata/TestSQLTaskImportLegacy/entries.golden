@@ -1,0 +1,10 @@
+-- sql
+SELECT p.id,p.usage_log_id,p.account_id,u.model,u.api_key_id,p.next_check_at,p.deadline_at,
+	p.created_at,p.task_public_id FROM pending_settlements p JOIN usage_logs u ON u.id=p.usage_log_id
+		WHERE p.plugin_key=$1 AND p.ref_id=$2 AND u.user_id=$3 AND u.group_id=$4 AND u.protocol=$5 FOR UPDATE OF p
+-- vars
+$1 string "video"
+$2 string "up-1"
+$3 int64 1
+$4 int64 3
+$5 string "p"

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -212,19 +213,7 @@ func (s *Service) reconcileSweep(ctx context.Context) int {
 // dies halfway through a sweep loses a lease rather than wedging an entry,
 // and a second node cannot pick up what this one is already holding.
 func (s *Service) claimDue(ctx context.Context, limit int) ([]*settleEntry, error) {
-	rows, err := store.G(ctx, s.db.Pool).Raw(`
-		UPDATE pending_settlements p
-		SET next_check_at = now() + make_interval(secs => ?)
-		FROM (
-			SELECT id FROM pending_settlements
-			WHERE state = 'pending' AND next_check_at <= now() AND task_public_id IS NULL
-			ORDER BY next_check_at
-			LIMIT ?
-			FOR UPDATE SKIP LOCKED
-		) due
-		WHERE p.id = due.id
-		RETURNING p.id, p.plugin_key, p.ref_id, p.usage_log_id, p.account_id, p.attempts, p.poll_failures, p.created_at, p.deadline_at`,
-		reconcileLease.Seconds(), limit).Rows()
+	rows, err := claimDueEntries(store.G(ctx, s.db.Pool), limit).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +228,24 @@ func (s *Service) claimDue(ctx context.Context, limit int) ([]*settleEntry, erro
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// claimDueEntries is claimDue's statement: it leases up to limit due
+// entries and returns them.
+func claimDueEntries(db *gorm.DB, limit int) *gorm.DB {
+	return db.Raw(`
+		UPDATE pending_settlements p
+		SET next_check_at = now() + make_interval(secs => ?)
+		FROM (
+			SELECT id FROM pending_settlements
+			WHERE state = 'pending' AND next_check_at <= now() AND task_public_id IS NULL
+			ORDER BY next_check_at
+			LIMIT ?
+			FOR UPDATE SKIP LOCKED
+		) due
+		WHERE p.id = due.id
+		RETURNING p.id, p.plugin_key, p.ref_id, p.usage_log_id, p.account_id, p.attempts, p.poll_failures, p.created_at, p.deadline_at`,
+		reconcileLease.Seconds(), limit)
 }
 
 // interleaveByPlugin round-robins the entries across their plugins. With
@@ -584,10 +591,7 @@ func (s *Service) rescheduleAttempt(ctx context.Context, e *settleEntry, cfg res
 		if err := lockLegacyOutcome(ctx, tx, e); err != nil {
 			return err
 		}
-		res := store.G(ctx, tx).Exec(`
-		UPDATE pending_settlements SET attempts = attempts + ?, next_check_at = ?, last_error = ?,
-		poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END
-		WHERE id = ? AND state = 'pending' AND task_public_id IS NULL`, increment, next, trunc(lastErr, 2000), e.pollFailed, e.pollObserved, e.id)
+		res := rescheduleEntry(store.G(ctx, tx), e, increment, next, lastErr)
 		if res.Error == nil && res.RowsAffected != 1 {
 			return errNotPending
 		}
@@ -603,15 +607,29 @@ func (s *Service) rescheduleAttempt(ctx context.Context, e *settleEntry, cfg res
 	}
 }
 
+// rescheduleEntry moves a pending legacy entry's next check to next, adding
+// increment to its attempts.
+func rescheduleEntry(db *gorm.DB, e *settleEntry, increment int, next time.Time, lastErr string) *gorm.DB {
+	return db.Exec(`
+		UPDATE pending_settlements SET attempts = attempts + ?, next_check_at = ?, last_error = ?,
+		poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END
+		WHERE id = ? AND state = 'pending' AND task_public_id IS NULL`, increment, next, trunc(lastErr, 2000), e.pollFailed, e.pollObserved, e.id)
+}
+
 // closeEntry marks an entry done without touching money.
 func (s *Service) closeEntry(ctx context.Context, e *settleEntry, state, note string) {
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err := store.G(ctx, s.db.Pool).Model(&model.PendingSettlement{}).Where("id = ? AND task_public_id IS NULL", e.id).
-		Updates(map[string]any{"state": state, "last_error": trunc(note, 2000)}).Error
-	if err != nil {
+	if err := closeEntryRow(store.G(ctx, s.db.Pool), e.id, state, note).Error; err != nil {
 		s.rec.log.Error("reconcile: close entry", "entry", e.id, "err", err)
 	}
+}
+
+// closeEntryRow is closeEntry's statement; an entry a task owns is the
+// task's to close.
+func closeEntryRow(db *gorm.DB, id int64, state, note string) *gorm.DB {
+	return db.Model(&model.PendingSettlement{}).Where("id = ? AND task_public_id IS NULL", id).
+		Updates(map[string]any{"state": state, "last_error": trunc(note, 2000)})
 }
 
 // settleReconciled replaces the estimate with the real usage: the row is
@@ -677,21 +695,11 @@ func (s *Service) settleReconciled(ctx context.Context, e *settleEntry, row *res
 		if ledgerRes != nil {
 			detail.LedgerID = &ledgerRes.LedgerID
 		}
-		tk := p.Tokens
 		g := store.G(ctx, tx)
-		if err := g.Exec(`
-			UPDATE usage_logs SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-				cache_creation_tokens = ?, cache_creation_1h_tokens = ?, metrics = ?,
-				total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?, expr_hash = ?,
-				base_cost = ?
-			WHERE id = ?`,
-			tk.Input, tk.Output, tk.CacheRead, tk.CacheCreation, tk.CacheCreation1h,
-			jsonOr(p.Metrics, "{}"), total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, cost.base,
-			e.usageLogID).Error; err != nil {
+		if err := repriceUsageRow(g, e.usageLogID, p, cost, detail, exprHash).Error; err != nil {
 			return err
 		}
-		if err := g.Exec(`UPDATE pending_settlements SET state = ?, attempts = attempts + 1, last_error = ''
-			WHERE id = ?`, SettleStateSettled, e.id).Error; err != nil {
+		if err := settleEntryRow(g, e.id).Error; err != nil {
 			return err
 		}
 		if s.events != nil {
@@ -709,6 +717,26 @@ func (s *Service) settleReconciled(ctx context.Context, e *settleEntry, row *res
 	s.cacheBalance(ctx, p.UserID, ledgerRes)
 	s.rec.log.Info("reconcile: settled", "entry", e.id, "request_id", p.RequestID, "plugin", e.pluginKey,
 		"ref_id", e.refID, "reserved", row.totalCost.String(), "final", total.String())
+}
+
+// repriceUsageRow writes the real usage of a reserved row and its price,
+// which makes it an ordinary billed row.
+func repriceUsageRow(db *gorm.DB, id int64, p *pending, cost amounts, detail BillingDetail, exprHash string) *gorm.DB {
+	tk := p.Tokens
+	return db.Exec(`
+			UPDATE usage_logs SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+				cache_creation_tokens = ?, cache_creation_1h_tokens = ?, metrics = ?,
+				total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?, expr_hash = ?,
+				base_cost = ?
+			WHERE id = ?`,
+		tk.Input, tk.Output, tk.CacheRead, tk.CacheCreation, tk.CacheCreation1h,
+		jsonOr(p.Metrics, "{}"), cost.total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, cost.base, id)
+}
+
+// settleEntryRow closes a reconciled entry.
+func settleEntryRow(db *gorm.DB, id int64) *gorm.DB {
+	return db.Exec(`UPDATE pending_settlements SET state = ?, attempts = attempts + 1, last_error = ''
+			WHERE id = ?`, SettleStateSettled, id)
 }
 
 // refundFailed gives the whole reservation back: the upstream says the work
@@ -747,15 +775,10 @@ func (s *Service) refundFailed(ctx context.Context, e *settleEntry, row *reserve
 		// owed. It is also not in usage_logs_billing_pending_idx, so the
 		// settlement retry loop will not pick the row up and bill it again.
 		g := store.G(ctx, tx)
-		if err := g.Exec(`
-			UPDATE usage_logs SET total_cost = 0, base_cost = 0, billing_status = 'free', success = false,
-				error_type = ?, error_message = ?
-			WHERE id = ?`, trunc(reason, 50), trunc(reason, 1000), e.usageLogID).Error; err != nil {
+		if err := refundUsageRow(g, e.usageLogID, reason).Error; err != nil {
 			return err
 		}
-		if err := g.Exec(`UPDATE pending_settlements SET state = ?, attempts = attempts + 1, last_error = ?,
-			poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END
-			WHERE id = ?`, SettleStateFailed, trunc(reason, 2000), e.pollFailed, e.pollObserved, e.id).Error; err != nil {
+		if err := failEntryRow(g, e, reason).Error; err != nil {
 			return err
 		}
 		p.Success, p.ErrorType = false, trunc(reason, 50)
@@ -774,6 +797,21 @@ func (s *Service) refundFailed(ctx context.Context, e *settleEntry, row *reserve
 	s.cacheBalance(ctx, p.UserID, ledgerRes)
 	s.rec.log.Info("reconcile: upstream work failed, reservation refunded", "entry", e.id,
 		"request_id", p.RequestID, "refunded", row.totalCost.String(), "reason", reason)
+}
+
+// refundUsageRow makes a reserved row a free, failed one.
+func refundUsageRow(db *gorm.DB, id int64, reason string) *gorm.DB {
+	return db.Exec(`
+			UPDATE usage_logs SET total_cost = 0, base_cost = 0, billing_status = 'free', success = false,
+				error_type = ?, error_message = ?
+			WHERE id = ?`, trunc(reason, 50), trunc(reason, 1000), id)
+}
+
+// failEntryRow closes an entry whose upstream work failed.
+func failEntryRow(db *gorm.DB, e *settleEntry, reason string) *gorm.DB {
+	return db.Exec(`UPDATE pending_settlements SET state = ?, attempts = attempts + 1, last_error = ?,
+			poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END
+			WHERE id = ?`, SettleStateFailed, trunc(reason, 2000), e.pollFailed, e.pollObserved, e.id)
 }
 
 // abandon stops asking. The reservation becomes the final charge: the call
@@ -859,7 +897,6 @@ func (s *Service) settleEstimate(ctx context.Context, e *settleEntry, row *reser
 func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reservedRowState, entryState string,
 	marker map[string]string, note string, countAttempt bool) bool {
 	p := row.p
-	mk, _ := json.Marshal(marker)
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
 	err := s.outcomeTx(ctx, e, func(tx pgx.Tx) error {
@@ -881,17 +918,10 @@ func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reserve
 			return err
 		}
 		g := store.G(ctx, tx)
-		if err := g.Exec(`
-			UPDATE usage_logs SET billing_status = 'billed', anomalies = anomalies || ?::jsonb
-			WHERE id = ?`, mk, e.usageLogID).Error; err != nil {
+		if err := markUsageRow(g, e.usageLogID, StatusBilled, nil, marker).Error; err != nil {
 			return err
 		}
-		attempts := "attempts"
-		if countAttempt {
-			attempts = "attempts + 1"
-		}
-		if err := g.Exec(`UPDATE pending_settlements SET state = ?, last_error = ?, attempts = `+attempts+`
-			WHERE id = ?`, entryState, trunc(note, 2000), e.id).Error; err != nil {
+		if err := estimateEntryRow(g, e.id, entryState, note, countAttempt).Error; err != nil {
 			return err
 		}
 		if s.events != nil {
@@ -908,6 +938,17 @@ func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reserve
 		return false
 	}
 	return true
+}
+
+// estimateEntryRow closes an entry billed at its estimate in entryState,
+// counting an attempt if countAttempt.
+func estimateEntryRow(db *gorm.DB, id int64, entryState, note string, countAttempt bool) *gorm.DB {
+	attempts := "attempts"
+	if countAttempt {
+		attempts = "attempts + 1"
+	}
+	return db.Exec(`UPDATE pending_settlements SET state = ?, last_error = ?, attempts = `+attempts+`
+			WHERE id = ?`, entryState, trunc(note, 2000), id)
 }
 
 // ---------------------------------------------------------------- helpers

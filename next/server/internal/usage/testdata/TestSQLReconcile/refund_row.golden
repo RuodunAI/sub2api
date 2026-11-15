@@ -1,0 +1,8 @@
+-- sql
+UPDATE usage_logs SET total_cost = 0, base_cost = 0, billing_status = 'free', success = false,
+				error_type = $1, error_message = $2
+			WHERE id = $3
+-- vars
+$1 string "upstream failed"
+$2 string "upstream failed"
+$3 int64 5
