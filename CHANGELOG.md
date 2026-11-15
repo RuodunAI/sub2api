@@ -13,7 +13,7 @@
 设计见 `next/docs/plugin-permissions/`，契约见 CONTRACTS §4“插件权限”、§5.2、§5.7、§5.8、§21.0“插件资源范围”。
 
 - **插件权限按“权限 × 角色”矩阵分配**：安装、升级确认页和插件详情新的“权限”标签用同一个矩阵。插件详情的“授权”标签改名“权限”（旧链接 `?tab=grants` 自动跳到 `?tab=permissions`），分两部分：插件申请的访问权限（原“授权”，新增“收窄”和“重新授予”），以及插件提供给用户的权限 × 角色，可以直接勾选保存（只提交改动的角色；有未保存的修改时切换标签或离开页面会先确认）。角色编辑页的插件权限按插件声明的分组显示，标出低 / 敏感 / 关键三级风险，内置角色上标出与插件建议不同的项，可以“恢复插件建议”（只改编辑框，保存才生效）。
-- **宿主权限收窄、重新授予**：`PUT /plugins/:key/grants/:permission`。收窄（列表型范围，每个列表至少留一项）只要 `plugin:manage`；已撤销、被拒的可以重新授予，按风险要 `plugin:grant:high`/`critical`。两者都要二次验证，超出插件申请的范围被拒（`scope_too_wide`）。
+- **宿主权限收窄、重新授予**：`PUT /plugins/:key/grants/:permission`。收窄（列表型范围，每个列表至少留一项）只要 `plugin:manage`；已撤销、被拒的可以重新授予，要 `plugin:install`（与安装同意相同），并按风险要 `plugin:grant:high`/`critical`。两者都要二次验证，超出插件申请的范围被拒（`scope_too_wide`）。
 - **插件资源范围**：插件可以给权限声明范围，角色可以只拿“全部”“自己创建的”或指定的几项（如某几个审核流程）；角色编辑页从 `GET /plugins/:key/scope-options` 选候选。核心转发插件路由时按范围放行、判 `scopeFrom` 指向的值，并把调用者的范围交给插件（`action_scope`）。本次的内置插件都还没有声明范围。
 - **风险等级取代敏感标记**：权限分 low / sensitive / critical 三级；critical 等同核心的超管专属，安装时只有超管能授给角色、不进任何默认值。内置插件：`moderation:exempt` 改为 critical（新部署只有超管持有，线上已有的持有者保留）；`claude_oauth:manage`、`codex:manage`、`moderation:read` 提为 sensitive（只影响以后新建 key 的自动授予与升级是否要确认，已有授权不变）；默认授予的角色不变。
 - 控制台 UI 3.16。
@@ -24,17 +24,24 @@
 - 默认或继承的授予给了同意者不能指定的角色时，不再 403，改为挂起待复核（插件详情顶部的待确认授予），首次安装也一样；显式指定不能指定的角色仍 403。
 - 插件新版本不再声明的权限标为“已移除”（以前直接删除）：授予保留但不生效，再次声明时原样恢复，不重新套默认值。标记和恢复各写一条审计（`authz.sync.remove` / `authz.sync.revive`，列出持有的角色）。插件升级收窄了权限范围（不再允许“自己创建的”、删掉某个可选值）时，不再接受的范围授予在新版本激活时删除；新版本只是同意、还没激活时，正在运行的旧版本的授予不受影响。角色编辑页可以取消勾选已移除的权限；通过 API 保存角色（`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin`）时不带上已移除的 key，会删掉这些授予。
 - 角色编辑页禁用编辑者自己没有的权限，核心权限也一样（以前能勾选，保存时才被拒）。
-- 插件菜单、页面、slot 按“任意范围持有”显示；iframe 桥 `permissions.check(本地 key)` 对不带范围的 key 只要持有任一范围即为 true，带范围的 key 须精确持有。
-- 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。
+- 插件菜单、页面、slot 按“任意范围持有”显示；iframe 桥 `permissions.check(本地 key)` 对不带范围的 key 只要持有任一范围即为 true，带范围的 key 按蕴含判断（持有全部范围也为 true，与服务端一致）。
+- 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。没有 `role:read` 的查看者看不到旧 key 由哪些角色持有（`removed_user_permissions[].holders`、复活和改名行的格子初值、继承来的 `new_role_grants` 都省略）。
+- **并发保存不再互相覆盖**：角色对象和插件权限矩阵带 `version`（全局授权版本）；`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin` 带上读到的 `version` 时，期间别人改过授权就返回 409 `version_conflict`（`details.version` 为当前版本），不写入；不带不检查。控制台收到后自动重读、合并本地改动，再提示保存。
+- 通过角色编辑（新建角色、改角色权限、插件权限矩阵）**新授出关键（critical）插件权限**要二次验证，与安装同意、复核确认一致；只保留或撤销不需要。
+- 角色权限保存的审计（`role.permissions`）记下删掉的权限（`removed`，含已移除的插件权限），插件矩阵保存另记该插件上的 `before`/`after`。
+- 同意请求的 `new_permission_roles` 列出的权限，对改名继承同样生效：列出的角色以覆盖为准，没列的角色不继承（以前继承一律照常）；确认页上继承来的格子可以逐格修改。
+- 暂存升级（另一个版本还在运行）的同意不再提前生效：新版本才有的权限建成停用，重新声明的已移除权限不恢复，都等激活时再处理；新旧都声明的权限风险取两者较高的，范围和默认值仍按运行版本。同意之后、激活之前旧 key 新增的持有者，激活时不自动继承，列为待复核授予（审计 `plugin.role_grants.carry`）。
+- 插件路由的 `scopeFrom` 与账号路由的 `accounts.from`：query 参数名不分大小写匹配，每个值都校验；JSON body 里同名字段（不分大小写）出现多次返回 400 `duplicate`。
+- 重新授予宿主权限（`PUT /plugins/:key/grants/:permission`）需要 `plugin:install`；请求体总是读取，不再依赖 `Content-Length`（以前分块传输的收窄请求会被当成“授予到清单申请的范围”）。
 - 清单的 `defaults` 省略时不授予任何角色（以前 `defaultRoles` 省略时给 `admin`）。
 
 **迁移 0099**（`0099_plugin_permission_meta.sql`，唯一的核心迁移，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填。`sensitive` 列保留一个版本给旧核心读（新核心照写、不读），下一个迁移删除。按 0.1.286 的主节点优先方式发布（短暂停服），不与旧核心滚动混跑；发布迁移前需要确认。
 
 **回滚**：网关不允许跨 schema 回退，线上出问题修复前进，或从数据库备份恢复。不经网关的部署可以按 `next/deploy/rollback/0.1.289-plugin-perm-down.md` 跑反向脚本：删除已移除的插件权限及其授予、删除插件范围授予（逐条审计 `via: "rollback 0.1.289"`，保留的授予因此丢失），拒绝仍待复核的带范围或关键授予（旧核心会把它们确认成整行授予），删掉新列，再把升级过的插件切回旧版本。
 
-**第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.289（`below_feature_core`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
+**第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.289（`below_feature_core`）。清单检查另要求：权限声明了 `scope` 的非 GET 路由必须写 `scopeFrom`（`required`）；`inheritFrom` 只能指向本清单已不再声明的 key（`invalid_value`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
 
-**内置插件**：9 个声明了用户权限的内置插件（anthropic、claude-oauth、codex、dynweight、growth、guard、moderation、payment、volcengine）的清单已改用 `risk`/`defaults`，`hostCompat` 升到 `>=0.1.289 <0.2.0`，所以需要核心 ≥0.1.289；回滚核心时内置插件集合也要回到旧版本。**版本号还没升，发布前必须升**（同一版本号、不同内容时会保留旧清单）；注意 codex 的 `plugin.go` 里的 `Version`、guard 的 0.2.9-test overlay 和 anthropic 的 0.3.3-test 测试夹具。当前分支上的版本：anthropic 0.3.2、claude-oauth 0.2.3、codex 0.1.4、dynweight 0.5.9、growth 0.2.0、guard 0.2.9、moderation 0.12.0、payment 0.1.1、volcengine 0.12.7。
+**内置插件**：9 个声明了用户权限的内置插件（anthropic、claude-oauth、codex、dynweight、growth、guard、moderation、payment、volcengine）的清单已改用 `risk`/`defaults`，`hostCompat` 升到 `>=0.1.289 <0.2.0`，所以需要核心 ≥0.1.289；回滚核心时内置插件集合也要回到旧版本。**版本号还没升，发布前必须升**（同一版本号、不同内容时会保留旧清单）；注意 codex 的 `plugin.go` 里的 `Version`、guard 的 0.2.9-test overlay 和 anthropic 的 0.3.3-test 测试夹具。当前分支上的版本：anthropic 0.3.2、claude-oauth 0.2.3、codex 0.1.4、dynweight 0.5.9、growth 0.2.0、guard 0.2.9、moderation 0.12.0、payment 0.1.1、volcengine 0.12.7。不升版本时存量库的目录停在迁移回填的状态（风险只按旧的 `sensitive` 回填，没有 `defaults` 和分组，`moderation:exempt` 仍是 low），与新部署不一致。升了版本之后，被管理员停用的内置插件不会自动升级（只升级已启用的），重新启用之前同样停在回填状态；已安装的旧格式版本再次同意或激活时风险按 low 写入，内置插件也一样（暂存同意取新旧较高的风险，不受影响）。
 
 ## 2026-11-14
 
