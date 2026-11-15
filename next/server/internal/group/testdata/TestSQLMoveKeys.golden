@@ -1,0 +1,5 @@
+-- sql
+UPDATE "api_keys" SET "group_id"=$1 WHERE group_id = $2 RETURNING "key_hash"
+-- vars
+$1 *int64 9
+$2 int64 4
