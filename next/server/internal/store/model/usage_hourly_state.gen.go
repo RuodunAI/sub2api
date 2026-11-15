@@ -8,7 +8,7 @@ import (
 
 // UsageHourlyState is a row of table usage_hourly_state.
 type UsageHourlyState struct {
-	ID   bool       `gorm:"column:id;primaryKey;default:(-)"` // boolean default true
+	ID   *bool      `gorm:"column:id;primaryKey;default:(-)"` // boolean default true
 	Low  *time.Time `gorm:"column:low"`                       // timestamp with time zone
 	High *time.Time `gorm:"column:high"`                      // timestamp with time zone
 }

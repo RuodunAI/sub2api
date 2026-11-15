@@ -11,18 +11,18 @@ import (
 
 // Group is a row of table groups.
 type Group struct {
-	ID                   int64           `gorm:"column:id;primaryKey;default:(-)"`                   // bigint default nextval('groups_id_seq'::regclass)
-	Name                 string          `gorm:"column:name"`                                        // character varying(100)
-	Description          string          `gorm:"column:description;default:(-)"`                     // text default ''::text
-	Status               string          `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
-	RateMultiplier       decimal.Decimal `gorm:"column:rate_multiplier;default:(-)"`                 // numeric(10,4) default 1
-	Visibility           string          `gorm:"column:visibility;default:(-)"`                      // character varying(20) default 'public'::character varying
-	ModelAllowlist       json.RawMessage `gorm:"column:model_allowlist;default:(-)"`                 // jsonb default '[]'::jsonb
-	CreatedAt            time.Time       `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
-	UpdatedAt            time.Time       `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()
-	ModelFilterMode      string          `gorm:"column:model_filter_mode;default:(-)"`               // text default 'blacklist'::text
-	Environment          json.RawMessage `gorm:"column:environment;default:(-)"`                     // jsonb default '{}'::jsonb
-	ConversionLossPolicy *string         `gorm:"column:conversion_loss_policy"`                      // character varying(10)
+	ID                   int64            `gorm:"column:id;primaryKey;default:(-)"`                   // bigint default nextval('groups_id_seq'::regclass)
+	Name                 string           `gorm:"column:name"`                                        // character varying(100)
+	Description          string           `gorm:"column:description;default:(-)"`                     // text default ''::text
+	Status               *string          `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
+	RateMultiplier       *decimal.Decimal `gorm:"column:rate_multiplier;default:(-)"`                 // numeric(10,4) default 1
+	Visibility           *string          `gorm:"column:visibility;default:(-)"`                      // character varying(20) default 'public'::character varying
+	ModelAllowlist       json.RawMessage  `gorm:"column:model_allowlist;default:(-)"`                 // jsonb default '[]'::jsonb
+	CreatedAt            time.Time        `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
+	UpdatedAt            time.Time        `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()
+	ModelFilterMode      *string          `gorm:"column:model_filter_mode;default:(-)"`               // text default 'blacklist'::text
+	Environment          json.RawMessage  `gorm:"column:environment;default:(-)"`                     // jsonb default '{}'::jsonb
+	ConversionLossPolicy *string          `gorm:"column:conversion_loss_policy"`                      // character varying(10)
 }
 
 // TableName implements gorm's schema.Tabler.

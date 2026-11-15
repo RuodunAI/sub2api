@@ -17,13 +17,13 @@ type APIKey struct {
 	Name           string          `gorm:"column:name"`                                        // character varying(100)
 	KeyPrefix      string          `gorm:"column:key_prefix"`                                  // character varying(16)
 	KeyHash        string          `gorm:"column:key_hash"`                                    // character varying(64)
-	Status         string          `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
+	Status         *string         `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
 	ExpiresAt      *time.Time      `gorm:"column:expires_at"`                                  // timestamp with time zone
 	LastUsedAt     *time.Time      `gorm:"column:last_used_at"`                                // timestamp with time zone
 	CreatedAt      time.Time       `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
 	DeletedAt      *time.Time      `gorm:"column:deleted_at"`                                  // timestamp with time zone
 	KeyCipher      []byte          `gorm:"column:key_cipher"`                                  // bytea
-	AllowedIPs     store.Strings   `gorm:"column:allowed_ips;type:text[];default:(-)"`         // text[] default '{}'::text[]
+	AllowedIPs     store.Strings   `gorm:"column:allowed_ips;default:(-)"`                     // text[] default '{}'::text[]
 	RpmLimit       int             `gorm:"column:rpm_limit;default:(-)"`                       // integer default 0
 	TpmLimit       int64           `gorm:"column:tpm_limit;default:(-)"`                       // bigint default 0
 	MaxConcurrency int             `gorm:"column:max_concurrency;default:(-)"`                 // integer default 0

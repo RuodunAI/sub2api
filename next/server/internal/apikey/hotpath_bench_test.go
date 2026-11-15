@@ -16,13 +16,8 @@ import (
 func BenchmarkHotKeyLookup(b *testing.B) {
 	ctx := context.Background()
 	db := testutil.DB(b)
-	var user, group int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ('bench@test.invalid', 'x') RETURNING id`).Scan(&user); err != nil {
-		b.Fatal(err)
-	}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO groups (name) VALUES ('bench') RETURNING id`).Scan(&group); err != nil {
-		b.Fatal(err)
-	}
+	user := testutil.InsertUser(b, db, "bench@test.invalid")
+	group := testutil.InsertGroup(b, db, "bench")
 	raw, err := generateKey()
 	if err != nil {
 		b.Fatal(err)

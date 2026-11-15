@@ -2,10 +2,62 @@ package store
 
 import (
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+// JSON is a jsonb column or parameter decoded into a T, such as
+// JSON[[]string] or JSON[map[string]int]. pgx decodes jsonb into Go values
+// itself, but the database/sql path that GORM takes hands over the raw
+// document; JSON does the json.Unmarshal that each caller would otherwise
+// write. NULL reads as the zero T. The value is written as T's JSON, so a
+// nil slice or map is the JSON null, not SQL NULL: a nullable column that
+// should hold NULL takes a *JSON[T].
+type JSON[T any] struct {
+	V T `gorm:"-"` // GORM parses a Scan destination; V is no column of it
+}
+
+// Value implements driver.Valuer. The text form lets PostgreSQL type the
+// parameter by its use (jsonb or json) instead of pgx sending bytea.
+func (j JSON[T]) Value() (driver.Value, error) {
+	b, err := json.Marshal(j.V)
+	if err != nil {
+		return nil, fmt.Errorf("store: encode JSON[%T]: %w", j.V, err)
+	}
+	return string(b), nil
+}
+
+// Scan implements sql.Scanner.
+func (j *JSON[T]) Scan(src any) error {
+	var zero T
+	j.V = zero
+	var doc []byte
+	switch v := src.(type) {
+	case nil:
+		return nil
+	case []byte:
+		doc = v
+	case string:
+		doc = []byte(v)
+	default:
+		return fmt.Errorf("store: cannot scan %T into %T", src, j)
+	}
+	if err := json.Unmarshal(doc, &j.V); err != nil {
+		return fmt.Errorf("store: decode %T: %w", j, err)
+	}
+	return nil
+}
+
+// GormDataType makes GORM map JSON as a column rather than a relation.
+func (JSON[T]) GormDataType() string { return "jsonb" }
+
+// MarshalJSON and UnmarshalJSON make JSON[T] encode as its T, so a model
+// that carries one serializes without a {"V": ...} wrapper.
+func (j JSON[T]) MarshalJSON() ([]byte, error)  { return json.Marshal(j.V) }
+func (j *JSON[T]) UnmarshalJSON(b []byte) error { return json.Unmarshal(b, &j.V) }
 
 // Int64s is a bigint[] parameter or column for GORM. GORM expands a plain
 // []int64 argument into one placeholder per element, which breaks
@@ -79,6 +131,34 @@ func (a *Strings) SetDimensions(d []pgtype.ArrayDimension) error {
 }
 func (a Strings) ScanIndex(i int) any { return &a[i] }
 func (Strings) ScanIndexType() any    { return new(string) }
+
+// Times is the timestamptz[] counterpart of Int64s.
+type Times []time.Time
+
+// Value implements driver.Valuer.
+func (a Times) Value() (driver.Value, error) {
+	if a == nil {
+		return []time.Time{}, nil
+	}
+	return []time.Time(a), nil
+}
+
+// GormDataType is that of Int64s.
+func (Times) GormDataType() string { return "timestamptz[]" }
+
+// Scan implements sql.Scanner.
+func (a *Times) Scan(src any) error {
+	return scanArray(src, pgtype.TimestamptzArrayOID, (*pgtype.FlatArray[time.Time])(a), func(e any) (time.Time, bool) {
+		t, ok := e.(time.Time)
+		return t, ok
+	})
+}
+
+func (a *Times) SetDimensions(d []pgtype.ArrayDimension) error {
+	return (*pgtype.FlatArray[time.Time])(a).SetDimensions(d)
+}
+func (a Times) ScanIndex(i int) any { return &a[i] }
+func (Times) ScanIndexType() any    { return new(time.Time) }
 
 // scanArray stores src, a database/sql value of an array of E, into dst.
 func scanArray[E any](src any, oid uint32, dst *pgtype.FlatArray[E], elem func(any) (E, bool)) error {

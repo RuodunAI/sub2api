@@ -1,0 +1,6 @@
+-- sql
+INSERT INTO "stamp_rows" ("name","created_at") VALUES ($1,now()),($2,$3) RETURNING "id","updated_at","created_at"
+-- vars
+$1 string "a"
+$2 string "b"
+$3 time.Time 2026-01-02 03:04:05 +0000 UTC

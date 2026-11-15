@@ -12,8 +12,8 @@ type User struct {
 	Email          string     `gorm:"column:email"`                                       // character varying(255)
 	DisplayName    string     `gorm:"column:display_name;default:(-)"`                    // character varying(100) default ''::character varying
 	PasswordHash   string     `gorm:"column:password_hash"`                               // character varying(255)
-	Status         string     `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
-	MaxConcurrency int        `gorm:"column:max_concurrency;default:(-)"`                 // integer default 5
+	Status         *string    `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
+	MaxConcurrency *int       `gorm:"column:max_concurrency;default:(-)"`                 // integer default 5
 	LastLoginAt    *time.Time `gorm:"column:last_login_at"`                               // timestamp with time zone
 	CreatedAt      time.Time  `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
 	UpdatedAt      time.Time  `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()

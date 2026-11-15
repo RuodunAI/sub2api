@@ -17,7 +17,7 @@ type Plugin struct {
 	ActiveVersion  *string         `gorm:"column:active_version"`                              // character varying(50)
 	DesiredVersion *string         `gorm:"column:desired_version"`                             // character varying(50)
 	ConfigEnc      []byte          `gorm:"column:config_enc"`                                  // bytea
-	EgressPolicy   string          `gorm:"column:egress_policy;default:(-)"`                   // character varying(20) default 'allow_all'::character varying
+	EgressPolicy   *string         `gorm:"column:egress_policy;default:(-)"`                   // character varying(20) default 'allow_all'::character varying
 	ResourceLimits json.RawMessage `gorm:"column:resource_limits;default:(-)"`                 // jsonb default '{}'::jsonb
 	InstalledBy    *int64          `gorm:"column:installed_by"`                                // bigint
 	InstalledAt    time.Time       `gorm:"column:installed_at;default:(-)"`                    // timestamp with time zone default now()

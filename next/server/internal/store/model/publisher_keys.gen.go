@@ -11,7 +11,7 @@ type PublisherKey struct {
 	KeyID       string     `gorm:"column:key_id;primaryKey"`                           // character varying(100)
 	PublisherID int64      `gorm:"column:publisher_id"`                                // bigint
 	PublicKey   string     `gorm:"column:public_key"`                                  // text
-	Status      string     `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
+	Status      *string    `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
 	NotBefore   *time.Time `gorm:"column:not_before"`                                  // timestamp with time zone
 	NotAfter    *time.Time `gorm:"column:not_after"`                                   // timestamp with time zone
 	CreatedAt   time.Time  `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()

@@ -18,7 +18,7 @@ type TaskSubmissionReceipt struct {
 	AccountID      int64     `gorm:"column:account_id"`                                  // bigint
 	Model          string    `gorm:"column:model"`                                       // text
 	Protocol       string    `gorm:"column:protocol"`                                    // text
-	State          string    `gorm:"column:state;default:(-)"`                           // text default 'dispatching'::text
+	State          *string   `gorm:"column:state;default:(-)"`                           // text default 'dispatching'::text
 	ResponseStatus int       `gorm:"column:response_status;default:(-)"`                 // integer default 0
 	ResponseBody   []byte    `gorm:"column:response_body"`                               // bytea
 	LastError      string    `gorm:"column:last_error;default:(-)"`                      // text default ''::text

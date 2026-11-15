@@ -15,7 +15,7 @@ type UserAccessKey struct {
 	Name        string        `gorm:"column:name"`                                        // text
 	TokenHash   string        `gorm:"column:token_hash"`                                  // character varying(64)
 	TokenHint   string        `gorm:"column:token_hint"`                                  // text
-	Permissions store.Strings `gorm:"column:permissions;type:text[]"`                     // text[]
+	Permissions store.Strings `gorm:"column:permissions"`                                 // text[]
 	ExpiresAt   *time.Time    `gorm:"column:expires_at"`                                  // timestamp with time zone
 	LastUsedAt  *time.Time    `gorm:"column:last_used_at"`                                // timestamp with time zone
 	LastUsedIP  string        `gorm:"column:last_used_ip;default:(-)"`                    // text default ''::text

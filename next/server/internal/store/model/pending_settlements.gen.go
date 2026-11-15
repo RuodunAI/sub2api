@@ -16,7 +16,7 @@ type PendingSettlement struct {
 	Attempts     int       `gorm:"column:attempts;default:(-)"`                        // integer default 0
 	NextCheckAt  time.Time `gorm:"column:next_check_at"`                               // timestamp with time zone
 	DeadlineAt   time.Time `gorm:"column:deadline_at"`                                 // timestamp with time zone
-	State        string    `gorm:"column:state;default:(-)"`                           // character varying(20) default 'pending'::character varying
+	State        *string   `gorm:"column:state;default:(-)"`                           // character varying(20) default 'pending'::character varying
 	LastError    string    `gorm:"column:last_error;default:(-)"`                      // text default ''::text
 	CreatedAt    time.Time `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
 	TaskPublicID *string   `gorm:"column:task_public_id"`                              // text

@@ -124,7 +124,18 @@ func TestGORMRefusals(t *testing.T) {
 	assert.ErrorIs(t, g.Transaction(func(*gorm.DB) error { return nil }), store.ErrGORMTx)
 	assert.ErrorIs(t, g.Begin().Error, store.ErrGORMTx)
 	assert.ErrorIs(t, g.AutoMigrate(&widget{}), store.ErrGORMMigrate)
-	assert.ErrorIs(t, g.Migrator().CreateTable(&widget{}), store.ErrGORMMigrate)
+	m := g.Migrator()
+	assert.ErrorIs(t, m.CreateTable(&widget{}), store.ErrGORMMigrate)
+	assert.ErrorIs(t, m.DropTable(&widget{}), store.ErrGORMMigrate)
+	assert.ErrorIs(t, m.AddColumn(&widget{}, "Name"), store.ErrGORMMigrate)
+	assert.ErrorIs(t, m.CreateIndex(&widget{}, "x"), store.ErrGORMMigrate)
+	assert.ErrorIs(t, m.RenameTable("widgets", "w"), store.ErrGORMMigrate)
+	_, err := m.ColumnTypes(&widget{})
+	assert.ErrorIs(t, err, store.ErrGORMMigrate)
+	assert.PanicsWithValue(t, store.ErrGORMMigrate, func() { m.HasTable(&widget{}) })
+	var tables int
+	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_tables WHERE tablename = 'widgets'`).Scan(&tables))
+	assert.Equal(t, 1, tables, "nothing was dropped")
 
 	// A statement whose context lost its Querier runs nowhere.
 	assert.ErrorIs(t, g.WithContext(ctx).Exec(`SELECT 1`).Error, store.ErrNoQuerier)

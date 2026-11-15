@@ -1,7 +1,6 @@
 package gormtest
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -22,8 +21,8 @@ type usageRow struct {
 }
 
 type userBalance struct {
-	UserID    int64 `gorm:"primaryKey;autoIncrement:false"`
-	UpdatedAt time.Time
+	UserID    int64     `gorm:"primaryKey;autoIncrement:false"`
+	UpdatedAt time.Time `gorm:"default:(-);autoUpdateTime:false"` // as generated: default now()
 }
 
 func (userBalance) TableName() string { return "user_balances" }
@@ -82,6 +81,34 @@ func TestPlainSliceIsExpanded(t *testing.T) {
 	}
 }
 
+// How GORM expands slices, as package gormguard documents it: a []any like
+// any slice, and empty lists into conditions that differ by form.
+func TestExpansionTraps(t *testing.T) {
+	for want, cond := range map[string]func(*gorm.DB) *gorm.DB{
+		`WHERE id IN ($1,$2)`: func(tx *gorm.DB) *gorm.DB { return tx.Where("id IN ?", []any{1, 2}) },
+		// An empty list: no row, as "in the empty list" means.
+		`WHERE "usage_logs"."id" IN (NULL)`: func(tx *gorm.DB) *gorm.DB { return tx.Where(map[string]any{"id": []int64{}}) },
+		// Not of an empty list in a map: every row whose id is not NULL.
+		`WHERE "usage_logs"."id" IS NOT NULL`: func(tx *gorm.DB) *gorm.DB { return tx.Not(map[string]any{"id": []int64{}}) },
+		// Not of an empty list as a parameter: no row at all, the opposite
+		// of "not in the empty list".
+		`WHERE NOT id IN (NULL)`: func(tx *gorm.DB) *gorm.DB { return tx.Not("id IN ?", []int64{}) },
+		// Not of an empty list for a column: invalid SQL.
+		`WHERE "id" NOT IN ()`: func(tx *gorm.DB) *gorm.DB { return tx.Not("id", []int64{}) },
+	} {
+		query, _, err := Build(func(tx *gorm.DB) *gorm.DB {
+			var rows []usageRow
+			return cond(tx.Table("usage_logs")).Find(&rows)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasSuffix(query, want) {
+			t.Errorf("got %q, want it to end in %q", query, want)
+		}
+	}
+}
+
 func TestBuildNeedsFinisher(t *testing.T) {
 	_, _, err := Build(func(tx *gorm.DB) *gorm.DB { return tx.Table("usage_logs").Where("id = ?", 1) })
 	if err == nil || !strings.Contains(err.Error(), "finisher") {
@@ -89,16 +116,13 @@ func TestBuildNeedsFinisher(t *testing.T) {
 	}
 }
 
-// Anything that reaches the instance's connection pool gets the refusing
-// connector, never a server.
+// A statement that escaped DryRun has no Querier to run on, so it never
+// reaches a server.
 func TestDBNeverConnects(t *testing.T) {
-	db, err := DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.ConnPool.ExecContext(context.Background(), "SELECT 1")
-	if !errors.Is(err, errNoConnect) {
-		t.Fatalf("err = %v, want %v", err, errNoConnect)
+	db := DB()
+	_, err := db.ConnPool.ExecContext(db.Statement.Context, "SELECT 1")
+	if !errors.Is(err, store.ErrNoQuerier) {
+		t.Fatalf("err = %v, want %v", err, store.ErrNoQuerier)
 	}
 }
 

@@ -10,11 +10,11 @@ import (
 
 // PluginUninstall is a row of table plugin_uninstalls.
 type PluginUninstall struct {
-	PluginKey      string        `gorm:"column:plugin_key;primaryKey"`                    // character varying(30)
-	Epoch          int64         `gorm:"column:epoch"`                                    // bigint
-	TargetBootIDs  store.Strings `gorm:"column:target_boot_ids;type:text[];default:(-)"`  // text[] default '{}'::text[]
-	StoppedBootIDs store.Strings `gorm:"column:stopped_boot_ids;type:text[];default:(-)"` // text[] default '{}'::text[]
-	RequestedAt    time.Time     `gorm:"column:requested_at;default:(-)"`                 // timestamp with time zone default now()
+	PluginKey      string        `gorm:"column:plugin_key;primaryKey"`        // character varying(30)
+	Epoch          int64         `gorm:"column:epoch"`                        // bigint
+	TargetBootIDs  store.Strings `gorm:"column:target_boot_ids;default:(-)"`  // text[] default '{}'::text[]
+	StoppedBootIDs store.Strings `gorm:"column:stopped_boot_ids;default:(-)"` // text[] default '{}'::text[]
+	RequestedAt    time.Time     `gorm:"column:requested_at;default:(-)"`     // timestamp with time zone default now()
 }
 
 // TableName implements gorm's schema.Tabler.

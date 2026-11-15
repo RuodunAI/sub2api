@@ -10,8 +10,6 @@ package gormtest
 
 import (
 	"context"
-	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,55 +17,31 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // update is registered by this package, so a test package that imports it
 // gets -update without declaring it (and must not declare its own).
 var update = flag.Bool("update", false, "rewrite the SQL snapshots under testdata")
 
-var (
-	dryOnce sync.Once
-	dry     *gorm.DB
-	dryErr  error
-)
-
-// errNoConnect is what a statement that escaped DryRun would get: the
-// instance has no server behind it, by construction.
-var errNoConnect = errors.New("gormtest: the DryRun instance never connects")
-
-type refuseConnector struct{}
-
-func (refuseConnector) Connect(context.Context) (driver.Conn, error) { return nil, errNoConnect }
-func (refuseConnector) Driver() driver.Driver                        { return nil }
-
-// DB returns a shared GORM instance in DryRun mode with the postgres
-// dialect and store.GormConfig, so the snapshots describe the statements
-// store.G builds in production.
-func DB() (*gorm.DB, error) {
-	dryOnce.Do(func() {
-		cfg := store.GormConfig()
-		cfg.DryRun = true
-		dry, dryErr = gorm.Open(postgres.New(postgres.Config{Conn: sql.OpenDB(refuseConnector{})}), cfg)
-	})
-	return dry, dryErr
+// DB returns a DryRun session of store.G's instance without a Querier. The
+// snapshots therefore describe the statements store.G builds in production
+// (same configuration, callbacks and clause builders), and a statement that
+// escaped DryRun would fail with store.ErrNoQuerier, never reach a server.
+func DB() *gorm.DB {
+	return store.G(context.Background(), nil).Session(&gorm.Session{DryRun: true})
 }
 
-// Build runs build against the DryRun instance and returns the statement it
+// Build runs build against a DryRun session and returns the statement it
 // produced: SQL with $n placeholders and the arguments in order. build must
 // end in a finisher (Find, First, Create, Updates, Delete, Exec ...), since
 // GORM renders SQL only there.
 func Build(build func(*gorm.DB) *gorm.DB) (string, []any, error) {
-	db, err := DB()
-	if err != nil {
-		return "", nil, err
-	}
-	tx := build(db.Session(&gorm.Session{NewDB: true}))
+	tx := build(DB().Session(&gorm.Session{NewDB: true}))
 	if tx == nil {
 		return "", nil, errors.New("gormtest: build returned nil")
 	}

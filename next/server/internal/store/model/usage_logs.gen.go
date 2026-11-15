@@ -29,7 +29,7 @@ type UsageLog struct {
 	Success               bool             `gorm:"column:success"`                                     // boolean
 	ErrorType             string           `gorm:"column:error_type;default:(-)"`                      // character varying(50) default ''::character varying
 	ErrorMessage          string           `gorm:"column:error_message;default:(-)"`                   // text default ''::text
-	Attempts              int              `gorm:"column:attempts;default:(-)"`                        // integer default 1
+	Attempts              *int             `gorm:"column:attempts;default:(-)"`                        // integer default 1
 	InputTokens           int64            `gorm:"column:input_tokens;default:(-)"`                    // bigint default 0
 	OutputTokens          int64            `gorm:"column:output_tokens;default:(-)"`                   // bigint default 0
 	CacheReadTokens       int64            `gorm:"column:cache_read_tokens;default:(-)"`               // bigint default 0
@@ -39,14 +39,14 @@ type UsageLog struct {
 	StickyRule            string           `gorm:"column:sticky_rule;default:(-)"`                     // character varying(100) default ''::character varying
 	StickyHit             bool             `gorm:"column:sticky_hit;default:(-)"`                      // boolean default false
 	HookDecisions         json.RawMessage  `gorm:"column:hook_decisions;default:(-)"`                  // jsonb default '[]'::jsonb
-	RateMultiplier        decimal.Decimal  `gorm:"column:rate_multiplier;default:(-)"`                 // numeric(10,4) default 1
+	RateMultiplier        *decimal.Decimal `gorm:"column:rate_multiplier;default:(-)"`                 // numeric(10,4) default 1
 	PriceID               *int64           `gorm:"column:price_id"`                                    // bigint
 	ExprHash              string           `gorm:"column:expr_hash;default:(-)"`                       // character varying(64) default ''::character varying
 	BillingMode           string           `gorm:"column:billing_mode;default:(-)"`                    // character varying(20) default ''::character varying
 	MatchedTier           string           `gorm:"column:matched_tier;default:(-)"`                    // character varying(100) default ''::character varying
 	BillingDetail         json.RawMessage  `gorm:"column:billing_detail;default:(-)"`                  // jsonb default '{}'::jsonb
 	TotalCost             decimal.Decimal  `gorm:"column:total_cost;default:(-)"`                      // numeric(20,8) default 0
-	BillingStatus         string           `gorm:"column:billing_status;default:(-)"`                  // character varying(20) default 'pending'::character varying
+	BillingStatus         *string          `gorm:"column:billing_status;default:(-)"`                  // character varying(20) default 'pending'::character varying
 	LatencyMs             int              `gorm:"column:latency_ms;default:(-)"`                      // integer default 0
 	FirstTokenMs          int              `gorm:"column:first_token_ms;default:(-)"`                  // integer default 0
 	ClientIP              string           `gorm:"column:client_ip;default:(-)"`                       // character varying(64) default ''::character varying

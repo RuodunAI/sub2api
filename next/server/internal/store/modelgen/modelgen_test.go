@@ -28,27 +28,88 @@ func TestGenerateColumnShapes(t *testing.T) {
 
 	files, err := modelgen.Generate(ctx, db.Pool, modelgen.Config{Package: "m", Schema: "gen", Exclude: []string{"skip_*"}})
 	require.NoError(t, err)
-	require.Len(t, files, 2) // doc.go and widgets
+	require.Len(t, files, 3) // doc.go, the model list and widgets
 	src := string(files["widgets.gen.go"])
 	for _, want := range []string{
 		"type Widget struct {",
 		"ID       int64          `gorm:\"column:id;primaryKey;default:(-)\"` // bigint identity",
-		"OwnerIDs store.Int64s   `gorm:\"column:owner_ids;type:bigint[]\"`",
-		"Tags     *store.Strings `gorm:\"column:tags;type:varchar[]\"`",
+		"OwnerIDs store.Int64s   `gorm:\"column:owner_ids\"`",
+		"Tags     *store.Strings `gorm:\"column:tags\"`",
 		"Doubled  *int64         `gorm:\"column:doubled;->\"`",
 		"\t// free text\n\tNote *string",
 		`func (Widget) TableName() string { return "widgets" }`,
 	} {
 		require.Contains(t, src, want)
 	}
+	require.Contains(t, string(files[modelgen.AllFile]), "func All() []any {\n\treturn []any{\n\t\t&Widget{},\n\t}\n}")
 }
 
-// A type without a deliberate mapping fails generation instead of guessing.
+// A default that a zero field may stand for keeps the plain type; any
+// other literal default makes the field a pointer, so that an explicit
+// false or 0 is written instead of the default.
+func TestGenerateDefaults(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := t.Context()
+	_, err := db.Pool.Exec(ctx, `
+		CREATE SCHEMA gen;
+		CREATE TABLE gen.knobs (
+			id bigserial PRIMARY KEY,
+			on_true boolean NOT NULL DEFAULT true,
+			on_false boolean NOT NULL DEFAULT false,
+			ten int NOT NULL DEFAULT 10,
+			minus int NOT NULL DEFAULT -1,
+			zero bigint NOT NULL DEFAULT 0,
+			rate numeric(10,4) NOT NULL DEFAULT 1,
+			nought numeric(10,4) NOT NULL DEFAULT 0.0,
+			state varchar(20) NOT NULL DEFAULT 'active',
+			quote text NOT NULL DEFAULT 'it''s',
+			blank text NOT NULL DEFAULT '',
+			doc jsonb NOT NULL DEFAULT '["a"]',
+			names text[] NOT NULL DEFAULT '{a}',
+			at timestamptz NOT NULL DEFAULT now(),
+			fixed timestamptz NOT NULL DEFAULT '2020-01-01 00:00:00+00',
+			never timestamptz NOT NULL DEFAULT '-infinity',
+			until timestamptz DEFAULT 'infinity',
+			seg bigint NOT NULL DEFAULT (1 + 1)
+		);`)
+	require.NoError(t, err)
+
+	files, err := modelgen.Generate(ctx, db.Pool, modelgen.Config{Package: "m", Schema: "gen"})
+	require.NoError(t, err)
+	src := string(files["knobs.gen.go"])
+	for _, want := range []string{
+		"ID      int64              `gorm:\"column:id;primaryKey;default:(-)\"`",
+		"OnTrue  *bool              `gorm:\"column:on_true;default:(-)\"`",
+		"OnFalse bool               `gorm:\"column:on_false;default:(-)\"`",
+		"Ten     *int               `gorm:\"column:ten;default:(-)\"`",
+		"Minus   *int               `gorm:\"column:minus;default:(-)\"`",
+		"Zero    int64              `gorm:\"column:zero;default:(-)\"`",
+		"Rate    *decimal.Decimal   `gorm:\"column:rate;default:(-)\"`",
+		"Nought  decimal.Decimal    `gorm:\"column:nought;default:(-)\"`",
+		"State   *string            `gorm:\"column:state;default:(-)\"`",
+		"Quote   *string            `gorm:\"column:quote;default:(-)\"`",
+		"Blank   string             `gorm:\"column:blank;default:(-)\"`",
+		"Doc     json.RawMessage    `gorm:\"column:doc;default:(-)\"`",
+		"Names   store.Strings      `gorm:\"column:names;default:(-)\"`",
+		"At      time.Time          `gorm:\"column:at;default:(-)\"`",
+		"Fixed   time.Time          `gorm:\"column:fixed;default:(-)\"`",
+		"Never   pgtype.Timestamptz `gorm:\"column:never;default:(-)\"`",
+		"Until   pgtype.Timestamptz `gorm:\"column:until;default:(-)\"`",
+		"Seg     int64              `gorm:\"column:seg;default:(-)\"`",
+		`"github.com/jackc/pgx/v5/pgtype"`,
+	} {
+		require.Contains(t, src, want)
+	}
+}
+
+// A type without a deliberate mapping fails generation instead of guessing;
+// enums are no exception.
 func TestGenerateRejectsUnmappedTypes(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	_, err := db.Pool.Exec(ctx, `CREATE SCHEMA gen; CREATE TABLE gen.t (at timestamp, n int)`)
+	_, err := db.Pool.Exec(ctx, `CREATE SCHEMA gen; CREATE TYPE gen.mood AS ENUM ('ok');
+		CREATE TABLE gen.t (at timestamp, n int, m gen.mood)`)
 	require.NoError(t, err)
 	_, err = modelgen.Generate(ctx, db.Pool, modelgen.Config{Package: "m", Schema: "gen"})
-	require.ErrorContains(t, err, "t.at (timestamp without time zone)")
+	require.ErrorContains(t, err, "t.at (timestamp without time zone), t.m (gen.mood)")
 }

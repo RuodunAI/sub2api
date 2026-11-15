@@ -16,10 +16,12 @@ import (
 	"fmt"
 	"go/format"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/jinzhu/inflection"
+	"github.com/shopspring/decimal"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -55,37 +57,72 @@ const storePkg = "github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 type goType struct {
 	name string
 	pkg  string // import path, "" for builtins
-	// nilable types already represent NULL as nil, so a nullable column
-	// does not get a pointer.
-	nilable bool
-	// dbType goes into the type: tag where GORM cannot infer a data type:
-	// it takes an untyped slice field for a has-many relation.
-	dbType string
+	// nullZero types write their zero value (nil, Valid=false) as NULL, so
+	// a nullable column does not get a pointer.
+	nullZero bool
+	// zeroLiteral is set for the types whose zero value is a real value
+	// (false, 0, ""): it reports whether a literal default is that value.
+	// GORM writes the default in place of a zero field (default:(-)), which
+	// is harmless only then; a column with any other literal default gets a
+	// pointer, nil for the default. For the other types the zero value is
+	// no value one writes (a nil slice, the zero time), so it stays the
+	// default's stand-in.
+	zeroLiteral func(string) bool
 }
 
+var (
+	isFalse      = func(v string) bool { return v == "false" }
+	isEmpty      = func(v string) bool { return v == "" }
+	isZeroNumber = func(v string) bool { d, err := decimal.NewFromString(v); return err == nil && d.IsZero() }
+)
+
 // goTypes maps pg_type.typname (the base type for a domain) to the field
-// type. A column of any other type fails generation, so a new type gets a
-// deliberate mapping instead of a silent guess (timestamp without time zone,
-// for one, needs a decision about zones).
+// type. A column of any other type, enums included, fails generation, so a
+// new type gets a deliberate mapping instead of a silent guess (timestamp
+// without time zone, for one, needs a decision about zones).
 var goTypes = map[string]goType{
-	"int8":        {name: "int64"},
-	"int4":        {name: "int"}, // the repo holds integer columns in int
-	"int2":        {name: "int"},
-	"float8":      {name: "float64"},
-	"float4":      {name: "float32"},
-	"bool":        {name: "bool"},
-	"text":        {name: "string"},
-	"varchar":     {name: "string"},
-	"bpchar":      {name: "string"},
-	"uuid":        {name: "string"},
-	"numeric":     {name: "decimal.Decimal", pkg: "github.com/shopspring/decimal"},
+	"int8":        {name: "int64", zeroLiteral: isZeroNumber},
+	"int4":        {name: "int", zeroLiteral: isZeroNumber}, // the repo holds integer columns in int
+	"int2":        {name: "int", zeroLiteral: isZeroNumber},
+	"float8":      {name: "float64", zeroLiteral: isZeroNumber},
+	"float4":      {name: "float32", zeroLiteral: isZeroNumber},
+	"bool":        {name: "bool", zeroLiteral: isFalse},
+	"text":        {name: "string", zeroLiteral: isEmpty},
+	"varchar":     {name: "string", zeroLiteral: isEmpty},
+	"bpchar":      {name: "string", zeroLiteral: isEmpty},
+	"uuid":        {name: "string", zeroLiteral: isEmpty},
+	"numeric":     {name: "decimal.Decimal", pkg: "github.com/shopspring/decimal", zeroLiteral: isZeroNumber},
 	"timestamptz": {name: "time.Time", pkg: "time"},
-	"bytea":       {name: "[]byte", nilable: true},
-	"json":        {name: "json.RawMessage", pkg: "encoding/json", nilable: true},
-	"jsonb":       {name: "json.RawMessage", pkg: "encoding/json", nilable: true},
-	"_int8":       {name: "store.Int64s", pkg: storePkg, dbType: "bigint[]"},
-	"_text":       {name: "store.Strings", pkg: storePkg, dbType: "text[]"},
-	"_varchar":    {name: "store.Strings", pkg: storePkg, dbType: "varchar[]"},
+	"bytea":       {name: "[]byte", nullZero: true},
+	"json":        {name: "json.RawMessage", pkg: "encoding/json", nullZero: true},
+	"jsonb":       {name: "json.RawMessage", pkg: "encoding/json", nullZero: true},
+	// GORM maps these through their GormDataType; a nil one is written as
+	// the empty array, so a nullable column needs the pointer for NULL.
+	"_int8":        {name: "store.Int64s", pkg: storePkg},
+	"_text":        {name: "store.Strings", pkg: storePkg},
+	"_varchar":     {name: "store.Strings", pkg: storePkg},
+	"_timestamptz": {name: "store.Times", pkg: storePkg},
+}
+
+// infiniteTime is the type of a timestamptz column whose default is
+// ±infinity, which time.Time cannot hold.
+var infiniteTime = goType{name: "pgtype.Timestamptz", pkg: "github.com/jackc/pgx/v5/pgtype", nullZero: true}
+
+// literalDefault matches a default that is a constant as pg_get_expr prints
+// one: true, false, a number, or a quoted value with its cast. Anything
+// else (nextval(...), now(), a function call) is an expression.
+var literalDefault = regexp.MustCompile(`^(?:(true|false|-?[0-9]+(?:\.[0-9]+)?)|'((?:[^']|'')*)'::[a-z][a-z0-9_ ]*(?:\([0-9, ]+\))?(?:\[\])?)$`)
+
+// literal returns the value of a constant default.
+func literal(def string) (string, bool) {
+	m := literalDefault.FindStringSubmatch(def)
+	switch {
+	case m == nil:
+		return "", false
+	case m[1] != "":
+		return m[1], true
+	}
+	return strings.ReplaceAll(m[2], "''", "'"), true
 }
 
 type table struct {
@@ -97,7 +134,6 @@ type table struct {
 type column struct {
 	name      string
 	typName   string
-	enum      bool
 	sqlType   string
 	notNull   bool
 	def       string
@@ -116,17 +152,19 @@ func Generate(ctx context.Context, q store.Querier, cfg Config) (map[string][]by
 	}
 	files := map[string][]byte{"doc.go": docFile(cfg)}
 	structs := map[string]string{}
-	var unmapped []string
+	var names, unmapped []string
 	for _, t := range tables {
 		name := structName(cfg, t.name)
 		if prev, dup := structs[name]; dup {
 			return nil, fmt.Errorf("tables %s and %s both map to struct %s; add a Config.Names entry", prev, t.name, name)
 		}
 		structs[name] = t.name
+		names = append(names, name)
 		src, bad := render(cfg, name, t)
 		unmapped = append(unmapped, bad...)
 		files[t.name+".gen.go"] = src
 	}
+	files[AllFile] = allFile(cfg, names)
 	if len(unmapped) > 0 {
 		return nil, fmt.Errorf("columns without a Go type mapping (add them to goTypes): %s", strings.Join(unmapped, ", "))
 	}
@@ -145,7 +183,6 @@ SELECT c.relname,
        coalesce(obj_description(c.oid, 'pg_class'), ''),
        a.attname,
        CASE WHEN t.typtype = 'd' THEN bt.typname ELSE t.typname END,
-       t.typtype = 'e',
        format_type(a.atttypid, a.atttypmod),
        a.attnotnull,
        coalesce(pg_get_expr(d.adbin, d.adrelid), ''),
@@ -173,7 +210,7 @@ func readTables(ctx context.Context, q store.Querier, cfg Config) ([]table, erro
 	for rows.Next() {
 		var tname, tcomment string
 		var c column
-		if err := rows.Scan(&tname, &tcomment, &c.name, &c.typName, &c.enum, &c.sqlType, &c.notNull,
+		if err := rows.Scan(&tname, &tcomment, &c.name, &c.typName, &c.sqlType, &c.notNull,
 			&c.def, &c.identity, &c.generated, &c.pk, &c.comment); err != nil {
 			return nil, err
 		}
@@ -215,12 +252,46 @@ func docFile(cfg Config) []byte {
 //
 // A column with a database default (serial ids, now(), literals) is tagged
 // default:(-): GORM leaves it out of an INSERT while the field holds its zero
-// value and reads the database's value back with RETURNING, as an INSERT
-// that omits the column would. GORM skips such a zero field even when it is
-// selected, so writing an explicit zero (false into a default-true column)
-// takes a map insert, Create(map[string]any{...}). Nullable columns are
-// pointers, except []byte and json.RawMessage, where nil already is NULL.
+// value, even when selected, and reads the database's value back with
+// RETURNING, as an INSERT that omits the column would. So the zero value
+// must never be a value one means to write:
+//
+//   - a default that is an expression (a sequence, now()) or the Go zero
+//     value itself (false, 0, the empty text, '{}', '[]'::jsonb) keeps the
+//     plain type: writing the zero and taking the default come to the same
+//     row;
+//   - a NOT NULL column whose default is any other literal (true, 5,
+//     'active') is a pointer: nil takes the default, a non-nil value is
+//     written as is, false and 0 included;
+//   - []byte, json.RawMessage and the store array types stay values: nil
+//     takes the default and an empty non-nil value is written; time.Time
+//     stays a value too, the zero time being no time one writes;
+//   - a timestamptz defaulting to ±infinity is a pgtype.Timestamptz, which
+//     holds infinity (time.Time cannot): Valid false takes the default.
+//
+// Nullable columns are pointers, except []byte, json.RawMessage and
+// pgtype.Timestamptz, whose zero value already is NULL.
+//
+// created_at and updated_at are stamped from the database clock by store.G,
+// not by GORM (see store/gorm_timestamps.go).
 package ` + cfg.Package + "\n")
+}
+
+// AllFile is the generated test file listing every model.
+const AllFile = "all_test.go"
+
+// allFile lists the models for the tests that walk every table. It is a
+// test file of the package, so the list is not part of the package's API;
+// the external tests of package model see it too.
+func allFile(cfg Config, names []string) []byte {
+	var b bytes.Buffer
+	b.WriteString(Header + "\npackage " + cfg.Package + "\n\n")
+	b.WriteString("// All returns a new zero value of every model, in table name order.\nfunc All() []any {\n\treturn []any{\n")
+	for _, n := range names {
+		fmt.Fprintf(&b, "\t\t&%s{},\n", n)
+	}
+	b.WriteString("\t}\n}\n")
+	return b.Bytes()
 }
 
 // render returns the source of one table's file and the columns it could
@@ -244,7 +315,7 @@ func render(cfg Config, name string, t table) ([]byte, []string) {
 		}
 		field := goName(c.name)
 		writeComment(&body, c.comment, "\t")
-		fmt.Fprintf(&body, "\t%s %s `gorm:\"%s\"` // %s\n", field, typ.name, tag(field, typ, c), describe(c))
+		fmt.Fprintf(&body, "\t%s %s `gorm:\"%s\"` // %s\n", field, typ.name, tag(field, c), describe(c))
 	}
 	body.WriteString("}\n\n")
 	fmt.Fprintf(&body, "// TableName implements gorm's schema.Tabler.\nfunc (%s) TableName() string { return %q }\n", name, t.name)
@@ -256,25 +327,35 @@ func render(cfg Config, name string, t table) ([]byte, []string) {
 	return src.Bytes(), unmapped
 }
 
+// fieldType is the Go type of column c: its goTypes entry, a pointer where
+// the zero value can stand neither for NULL nor for the default.
 func fieldType(c column) (goType, bool) {
-	if c.enum {
-		return goType{name: "string"}, true
-	}
 	typ, ok := goTypes[c.typName]
-	if ok && !c.notNull && !typ.nilable {
+	if c.typName == "timestamptz" && strings.Contains(c.def, "infinity") {
+		typ = infiniteTime
+	}
+	if ok && (!c.notNull && !typ.nullZero || hidesValue(typ, c)) {
 		typ.name = "*" + typ.name
 	}
 	return typ, ok
 }
 
+// hidesValue reports a literal default that a zero field would stand for
+// although the zero value is a real value of the column: with default:(-)
+// alone, GORM would write true for an explicit false.
+func hidesValue(typ goType, c column) bool {
+	if typ.zeroLiteral == nil || c.generated {
+		return false
+	}
+	v, ok := literal(c.def)
+	return ok && !typ.zeroLiteral(v)
+}
+
 // tag is the gorm struct tag of a column. GORM infers behavior from names
 // and types that the database already defines; the tag turns each inference
 // off or states the database's rule instead.
-func tag(field string, typ goType, c column) string {
+func tag(field string, c column) string {
 	parts := []string{"column:" + c.name}
-	if typ.dbType != "" {
-		parts = append(parts, "type:"+typ.dbType)
-	}
 	if c.pk {
 		parts = append(parts, "primaryKey")
 	}
@@ -283,8 +364,9 @@ func tag(field string, typ goType, c column) string {
 		parts = append(parts, "->") // the database computes it; never written
 	case c.def != "" || c.identity:
 		// A parenthesized value keeps GORM from parsing the default into a
-		// Go value it would substitute for a zero field: the zero value is
-		// omitted and the database's default comes back through RETURNING.
+		// Go value it would substitute for a zero field: the zero value (nil
+		// for the pointers of fieldType) is omitted and the database's
+		// default comes back through RETURNING.
 		parts = append(parts, "default:(-)")
 	case c.pk && strings.HasPrefix(c.typName, "int"):
 		// GORM treats a sole integer primary key as auto-increment and drops
@@ -292,7 +374,8 @@ func tag(field string, typ goType, c column) string {
 		parts = append(parts, "autoIncrement:false")
 	}
 	// GORM stamps fields with these names from the Go clock on create and
-	// update; the database's defaults and triggers own them.
+	// update. No trigger maintains them: the column defaults and G's
+	// instance write the database clock instead (store/gorm_timestamps.go).
 	switch field {
 	case "CreatedAt":
 		parts = append(parts, "autoCreateTime:false")
