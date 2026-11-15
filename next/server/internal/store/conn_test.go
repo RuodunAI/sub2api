@@ -45,7 +45,9 @@ func TestPoolExecDoesNotWaitForRowLocks(t *testing.T) {
 
 	// B takes it and waits for T's lock.
 	waiter := make(chan error, 1)
-	go func() { waiter <- store.G(ctx, pool.Gorm).Exec(`UPDATE widgets SET tag = 'b' WHERE name = 'locked'`).Error }()
+	go func() {
+		waiter <- store.G(ctx, pool.Gorm).Exec(`UPDATE widgets SET tag = 'b' WHERE name = 'locked'`).Error
+	}()
 	require.Eventually(t, func() bool {
 		var n int
 		err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity
