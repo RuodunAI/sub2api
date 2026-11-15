@@ -45,4 +45,4 @@ END $$;
 UPDATE permissions SET risk = 'sensitive' WHERE sensitive AND risk = 'low';
 
 COMMENT ON COLUMN permissions.status IS
-    'active | disabled (owning plugin disabled) | removed (dropped from code or no longer declared by its plugin; grants kept, granting nothing)';
+    'active | disabled (owning plugin disabled) | removed (dropped from code or no longer declared by its plugin; grants kept, granting nothing) | staged (declared only by a staged plugin version; grants nothing until that version activates)';

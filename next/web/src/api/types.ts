@@ -149,7 +149,7 @@ export interface PermissionItem {
   requires?: string[]
   /** The plugin's suggestion (plugin keys only, never critical ones): built-in role → full canonical keys, comparable with permission_keys as is. */
   defaults?: Partial<Record<'admin' | 'operator' | 'supplier' | 'user', string[]>>
-  status: string // active | disabled | removed
+  status: string // active | disabled | removed | staged
 }
 
 export interface PermissionModule {
