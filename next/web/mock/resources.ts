@@ -131,7 +131,8 @@ function moduleOut(m: ModuleDef) {
   return {
     ...m,
     plugin_key: m.plugin_key ?? null,
-    permissions: m.permissions.map((p) => ({
+    // A staged key (a version approved, not running yet) is no editor's business.
+    permissions: m.permissions.filter((p) => p.status !== 'staged').map((p) => ({
       ...p,
       risk: SUPER_ONLY_KEYS.has(p.key) ? 'critical' : (p.risk ?? 'low'),
       // The account and proxy actions take a scope (CONTRACTS §21); a plugin's scoped key ranges over "plugin:<resource>".
@@ -264,10 +265,22 @@ export function mayGrant(who: Identity, key: string): boolean {
   const keys = [...who.permissions, ...roles.filter((r) => who.roles.includes(r.key)).flatMap((r) => r.permission_keys)].filter((k) => !removedAction(k))
   return permissionIndex(keys).has(key)
 }
+/** Whether the caller may change the role (editableRole): managed, and nothing it holds beyond the caller (§43.6). */
+function editableBy(who: Identity, r: MockRole): boolean {
+  return managesRole(who, r.key) && r.permission_keys.every((k) => removedAction(k) || mayGrant(who, k))
+}
 /** The keys of next that newly grant a critical plugin permission: a write with one asks for step-up (C3). */
 function newCritical(held: string[], next: string[]): string[] {
   const had = permissionIndex(held)
   return next.filter((k) => k.startsWith('plugin.') && permDef(k)?.risk === 'critical' && !had.has(k))
+}
+
+/** Adds keys to a role (a confirmed review of held role grants). */
+export function addRoleKeys(roleKey: string, keys: string[]) {
+  const r = roles.find((x) => x.key === roleKey)
+  if (!r) return
+  r.permission_keys = canonicalSet([...r.permission_keys, ...keys])
+  r.updated_at = now()
 }
 
 function roleOut(r: MockRole) {
@@ -313,7 +326,7 @@ on('PUT', '/roles/:id/permissions', (req) => {
   if (!r) return fail(404, 'not_found', 'role not found')
   if (r.superuser) return fail(403, 'permission_denied', 'superuser role cannot be edited')
   const who = caller(req)
-  if (!managesRole(who, r.key)) return fail(403, 'permission_denied', 'you cannot change this role', { role: r.key })
+  if (!editableBy(who, r)) return fail(403, 'permission_denied', 'you cannot change this role', { role: r.key })
   const conflict = versionConflict(req)
   if (conflict) return conflict
   const keys: string[] = Array.isArray(req.body?.permission_keys) ? req.body.permission_keys : []
@@ -321,8 +334,9 @@ on('PUT', '/roles/:id/permissions', (req) => {
   const bad = keys.find((k) => !scopeFits(k))
   if (bad) return invalid('permission_keys', `invalid permission key ${bad}`)
   const canonical = canonicalSet(keys)
-  // Only keys the editor's grant view implies can be added (Missing: the canonical keys refused); kept ones need not be.
-  const missing = canonical.filter((k) => !r.permission_keys.includes(k) && !mayGrant(who, k))
+  // Only keys the editor's grant view implies can be added (Missing: the canonical keys refused); what the role's own keys imply is no addition (notImplied).
+  const had = permissionIndex(r.permission_keys)
+  const missing = canonical.filter((k) => !had.has(k) && !mayGrant(who, k))
   if (missing.length) return fail(403, 'permission_denied', 'you can only grant permissions you hold', { missing })
   if (newCritical(r.permission_keys, canonical).length) {
     const verify = stepUpRequired(req, 'plugin.grant')
@@ -357,8 +371,7 @@ function pluginRoleMatrix(req: MockRequest, m: ModuleDef) {
     version: authzVersion,
     module: moduleOut(m),
     roles: roles.map((r) => {
-      // Managed, and nothing it holds beyond the caller (§43.6).
-      const editable = !r.superuser && managesRole(who, r.key) && r.permission_keys.every((k) => removedAction(k) || mayGrant(who, k))
+      const editable = !r.superuser && editableBy(who, r)
       return {
         id: r.id,
         key: r.key,
@@ -392,7 +405,7 @@ on('PUT', '/permissions/plugins/:plugin', (req) => {
   for (const key of Object.keys(body).sort()) {
     const r = roles.find((x) => x.key === key)
     if (!r) return invalid(`roles.${key}`, `unknown role ${key}`, 'unknown')
-    if (r.superuser || !managesRole(who, key)) return fail(403, 'permission_denied', 'you cannot change this role', { role: key })
+    if (r.superuser || !editableBy(who, r)) return fail(403, 'permission_denied', 'you cannot change this role', { role: key })
     const keys = Array.isArray(body[key]) ? body[key] : []
     const foreign = keys.find((k) => !k.startsWith(`${m.module}:`))
     if (foreign) return invalid(`roles.${key}`, `${foreign} is not a permission of ${m.plugin_key}`, 'foreign')
@@ -401,7 +414,8 @@ on('PUT', '/permissions/plugins/:plugin', (req) => {
     const held = r.permission_keys.filter((k) => k.startsWith(`${m.module}:`))
     // A removed key stays while kept and goes when left out; a new one is dropped.
     const next = canonicalSet(keys).filter((k) => held.includes(k) || !removed.has(parsePermission(k)!.action))
-    const missing = next.filter((k) => !held.includes(k) && !mayGrant(who, k))
+    const had = permissionIndex(held)
+    const missing = next.filter((k) => !had.has(k) && !mayGrant(who, k))
     if (missing.length) return fail(403, 'permission_denied', 'you can only grant permissions you hold', { missing, role: key })
     critical ||= newCritical(held, next).length > 0
     writes.push([r, next])

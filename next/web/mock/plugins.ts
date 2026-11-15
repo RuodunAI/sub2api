@@ -1,9 +1,9 @@
 // Mock handlers: plugins (list, detail, review/consent, lifecycle, rollouts,
 // grants, settings, resources, egress, jobs, events) and the plugin market.
 // /ui/plugins and /p/<key>/... live in pluginui.ts; publishers are not here.
-import { fail, noContent, now, on, paginate } from './router'
+import { fail, noContent, now, on, paginate, type MockRequest } from './router'
 import { caller, hasPerm, stepUp, type Identity } from './core'
-import { bumpAuthz, managesRole } from './resources'
+import { addRoleKeys, bumpAuthz, managesRole } from './resources'
 import { pluginPlatforms } from './platforms'
 import { pluginAccountCount, uninstallPluginAccounts } from './accounts'
 import { invalid } from './resources'
@@ -576,8 +576,10 @@ function forViewer(r: Any, who: Identity): Any {
   const cellOf = (p: Any, role: Any) => {
     const reason = denial(who, role, p.risk)
     const grant: string[] = created(p) && !role.superuser ? ((p.renamed ? p.inherited : p.defaults)?.[role.key] ?? []) : []
-    const cell = { grant, nameable: !reason, ...(reason ? { reason } : {}), withheld: !!reason && grant.length > 0 }
-    if ((p.renamed || p.revived) && !seesHolders) delete (cell as Any).grant
+    const hidden = (p.renamed || p.revived) && !seesHolders
+    // Held for review all the same, but not told to a viewer the holders are hidden from (N10).
+    const cell = { grant, nameable: !reason, ...(reason ? { reason } : {}), withheld: !hidden && !!reason && grant.length > 0 }
+    if (hidden) delete (cell as Any).grant
     return cell
   }
   const user_permissions: Any[] = perms.map(({ inherited, ...p }) => ({ ...p, cells: Object.fromEntries(REVIEW_ROLES.map((role) => [role.key, cellOf({ ...p, inherited }, role)])) }))
@@ -823,6 +825,9 @@ function startRollout(p: MockPlugin, action: MockRollout['action'], target: stri
 
 // ------------------------------------------------------------------ views
 
+/** The role grants a consent held back for a super admin's review (D2), by plugin, each with its version. */
+const reviewQueue = new Map<string, Any[]>()
+
 function summary(p: MockPlugin): Any {
   const running = p.status === 'enabled' || p.status === 'upgrading'
   return {
@@ -833,6 +838,7 @@ function summary(p: MockPlugin): Any {
     status: p.status,
     status_reason: p.status_reason,
     resource_conflicts: p.resource_conflicts || [],
+    role_grants_to_review: reviewQueue.get(p.key) ?? [],
     builtin: !!p.builtin,
     active_version: p.active_version,
     desired_version: p.desired_version,
@@ -980,11 +986,33 @@ on('POST', '/plugins/:key/versions/:version/consent', stepUp('plugin.grant', (re
   if ('error' in settled) return settled.error
   v.consent_status = 'approved'
   p.grants = grants.map((g) => grant(g.permission, g.scope ?? null, req.params.version))
+  // What the consent held back waits on the plugin for a super admin (role_grants_to_review).
+  const queued = (reviewQueue.get(p.key) ?? []).filter((g) => g.version !== v.version)
+  const held = settled.withheld.map((g: Any) => ({ ...g, version: v.version }))
+  if (queued.length || held.length) reviewQueue.set(p.key, [...queued, ...held])
+  else reviewQueue.delete(p.key)
   bumpAuthz()
   if (p.status === 'awaiting_consent') p.status = 'installed'
   if (!p.active_version) p.desired_version = req.params.version
   return { ok: true, withheld: settled.withheld }
 }))
+
+/** The review queue of a version: confirmed (written to the roles, step-up) or rejected whole. */
+function settleQueue(req: MockRequest, confirm: boolean) {
+  const who = caller(req)
+  if (!who.superuser && !hasPerm(who, ['plugin:install', 'role:define'])) return fail(403, 'permission_denied', 'plugin:install and role:define required')
+  const all = reviewQueue.get(req.params.key) ?? []
+  const mine = all.filter((g) => g.version === req.params.version)
+  if (!mine.length) return fail(404, 'not_found', 'nothing to review for this version')
+  if (confirm) for (const g of mine) addRoleKeys(g.role, [g.scope ? `${g.permission}:${g.scope}` : g.permission])
+  const rest = all.filter((g) => g.version !== req.params.version)
+  if (rest.length) reviewQueue.set(req.params.key, rest)
+  else reviewQueue.delete(req.params.key)
+  bumpAuthz()
+  return { grants: mine, confirmed: confirm }
+}
+on('POST', '/plugins/:key/versions/:version/role-grants/confirm', stepUp('plugin.grant', (req) => settleQueue(req, true)))
+on('POST', '/plugins/:key/versions/:version/role-grants/reject', (req) => settleQueue(req, false))
 
 on('POST', '/plugins/:key/versions/:version/reject', (req) => {
   const p = find(req.params.key)
@@ -1087,6 +1115,10 @@ on('PUT', '/plugins/:key/grants/:permission', stepUp('plugin.grant', (req) => {
   if (!p) return notFound(req.params.key)
   const g = p.grants.find((x) => x.permission === req.params.permission)
   if (!g) return fail(404, 'not_found', 'the active version does not request this permission')
+  // Granting again is an install's right; narrowing is not.
+  if ((g.status === 'revoked' || g.status === 'denied') && !hasPerm(caller(req), 'plugin:install')) {
+    return fail(403, 'permission_denied', 'plugin:install required to grant again', { permission: 'plugin:install' })
+  }
   if (!requestedScopes.has(g)) requestedScopes.set(g, g.scope)
   const requested = requestedScopes.get(g) ?? null
   const scope = req.body?.scope ?? requested
