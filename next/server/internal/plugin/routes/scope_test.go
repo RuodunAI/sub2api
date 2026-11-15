@@ -47,9 +47,11 @@ func scopeManifest() *manifest.Manifest {
 }
 
 // A route of a scoped permission admits any scope and forwards the
-// caller's scope; scopeFrom values must be in it (404) or named at all
-// (403) unless the scope is all, own deferring to the plugin. An access key
-// narrows the scope; a route of an unscoped permission forwards none.
+// caller's scope; the values its scopeFrom names on a path, a query or a
+// body reach core.AuthorizePluginScope (whose rules are tested in core). An
+// access key narrows the scope; a route of an unscoped permission forwards
+// none. Query and body names match in any case; a body naming the field
+// twice is refused, a field nested deeper counts for nothing.
 func TestPluginRouteScopeFrom(t *testing.T) {
 	e, h, _, _ := setupManifest(t, scopeManifest())
 	all := &pluginv1.ActionScope{Permission: flowManage, All: true}
@@ -67,19 +69,21 @@ func TestPluginRouteScopeFrom(t *testing.T) {
 		{"list, own", "GET", "/flows", "flow-own", "", 201, own},
 		{"list, all", "GET", "/flows", "flow-all", "", 201, all},
 		{"list, nothing held", "GET", "/flows", "nobody", "", 403, nil},
-		{"path, all", "PUT", "/flows/3", "flow-all", "", 201, all},
 		{"path, listed", "PUT", "/flows/3", "flow-3", "", 201, only3},
 		{"path, unlisted", "PUT", "/flows/3", "flow-5", "", 404, nil},
-		{"path, own", "PUT", "/flows/3", "flow-own", "", 201, own},
-		{"path, own and unlisted value", "PUT", "/flows/3", "flow-own-5", "", 201,
-			&pluginv1.ActionScope{Permission: flowManage, Own: true, Values: []string{"5"}}},
-		{"path, nothing held", "PUT", "/flows/3", "nobody", "", 403, nil},
 		{"query, comma-separated", "GET", "/pick?flow=3,%203", "flow-3", "", 201, only3},
 		{"query, every value", "GET", "/pick?flow=3&flow=5", "flow-3", "", 404, nil},
+		{"query, other case", "GET", "/pick?FLOW=3", "flow-3", "", 201, only3},
+		{"query, every case", "GET", "/pick?flow=3&FLOW=5", "flow-3", "", 404, nil},
 		{"query, none named", "GET", "/pick", "flow-own", "", 403, nil},
 		{"body, number array", "POST", "/pick", "flow-3", `{"flow_ids":[3]}`, 201, only3},
 		{"body, string in other case", "POST", "/pick", "flow-3", `{"FLOW_IDS":"3"}`, 201, only3},
 		{"body, mixed array", "POST", "/pick", "flow-3", `{"flow_ids":[3,"5"]}`, 404, nil},
+		{"body, duplicate field", "POST", "/pick", "flow-3", `{"flow_ids":[5],"flow_ids":[3]}`, 400, nil},
+		{"body, duplicate in other case", "POST", "/pick", "flow-3", `{"flow_ids":[3],"Flow_Ids":[3]}`, 400, nil},
+		{"body, nested fields ignored", "POST", "/pick", "flow-3",
+			`{"meta":{"flow_ids":[5],"x":[{"flow_ids":5}]},"flow_ids":[3],"list":[{"flow_ids":[5]}]}`, 201, only3},
+		{"body, trailing data", "POST", "/pick", "flow-3", `{"flow_ids":[3]} {"flow_ids":[5]}`, 403, nil},
 		{"body, none named", "POST", "/pick", "flow-own", `{}`, 403, nil},
 		{"invalid query value", "GET", "/pick?flow=a/b", "flow-all", "", 400, nil},
 		{"invalid body value", "POST", "/pick", "flow-all", `{"flow_ids":[true]}`, 400, nil},
@@ -102,7 +106,10 @@ func TestPluginRouteScopeFrom(t *testing.T) {
 			assert.True(t, proto.Equal(tt.scope, got), "%s: %v", tt.name, got)
 		}
 	}
-	// A scopeFrom naming no value is denied naming the permission.
+	// A scopeFrom naming no value is denied naming the permission; a
+	// duplicate body field is named.
 	w := do(e, "GET", "/api/v1/p/demo/pick", "flow-own", "")
 	assert.Contains(t, w.Body.String(), `"permission":"`+flowManage+`"`)
+	w = do(e, "POST", "/api/v1/p/demo/pick", "flow-all", `{"flow_ids":[3],"flow_ids":[3]}`)
+	assert.Contains(t, w.Body.String(), `"code":"duplicate"`)
 }
