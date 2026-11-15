@@ -214,6 +214,15 @@ func mapsObject(s *schema.Schema, typ, name, column string) bool {
 // driftDialector is the postgres dialect with driftMigrator.
 type driftDialector struct{ gorm.Dialector }
 
+// Apply passes gorm.Open's options on to the postgres dialector (its
+// identifier length truncates long index names as the host's does).
+func (d driftDialector) Apply(c *gorm.Config) error {
+	if a, ok := d.Dialector.(interface{ Apply(*gorm.Config) error }); ok {
+		return a.Apply(c)
+	}
+	return nil
+}
+
 func (d driftDialector) Migrator(db *gorm.DB) gorm.Migrator {
 	return driftMigrator{d.Dialector.Migrator(db).(postgres.Migrator)}
 }

@@ -22,7 +22,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/growth/internal/model"
@@ -96,7 +95,7 @@ func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("growth: database unavailable: %w", err)
 	}
-	return pgdb.DriverErrors(db), nil
+	return db, nil
 }
 
 // exists reports whether the query q selects any row (SELECT EXISTS).

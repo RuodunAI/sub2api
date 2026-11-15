@@ -44,8 +44,18 @@ type Options struct {
 
 // Open returns a GORM handle on dsn. It does no I/O: connections are opened
 // on first use, like the pgx pool it replaces, so a database that is down
-// at Init does not fail the plugin's start.
-func Open(dsn string, o Options) (*gorm.DB, error) { return open(dsn, o, nil) }
+// at Init does not fail the plugin's start. Its errors have the driver's
+// text (driverWording).
+func Open(dsn string, o Options) (*gorm.DB, error) {
+	db, err := open(dsn, o, nil)
+	if err != nil {
+		return nil, err
+	}
+	// After gorm.Open, which applied the postgres dialector's own options
+	// (identifier length): a wrapper would hide them.
+	db.Dialector = driverWording{db.Dialector}
+	return db, nil
+}
 
 // open is Open with the dialector wrapped (drift.go swaps the migrator).
 func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gorm.DB, error) {

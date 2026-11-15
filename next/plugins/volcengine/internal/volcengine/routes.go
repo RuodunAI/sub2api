@@ -26,7 +26,6 @@ import (
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/volcengine/internal/model"
@@ -225,7 +224,7 @@ func (p *Plugin) db(ctx context.Context) (*gorm.DB, *pluginv1.HTTPResponse) {
 	if err != nil {
 		return nil, unavailable("database unavailable: " + err.Error())
 	}
-	return pgdb.DriverErrors(d), nil
+	return d, nil
 }
 
 // ---------------------------------------------------------------- accounts

@@ -11,7 +11,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
@@ -84,7 +83,7 @@ func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("payment: database unavailable: %w", err)
 	}
-	return pgdb.DriverErrors(db), nil
+	return db, nil
 }
 
 // ledger credits a user's balance (grant "ledger.credit").

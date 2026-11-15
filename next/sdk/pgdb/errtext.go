@@ -6,34 +6,20 @@ import (
 	"gorm.io/gorm"
 )
 
-// DriverErrors returns db with its database errors worded as the driver
-// words them. A handle Open returns translates unique, foreign key and check
-// violations and unknown columns to the gorm errors errors.Is tells apart
-// (gorm.ErrDuplicatedKey, ...), and GORM puts their text in front of the
-// driver's: "duplicated key not allowed: ERROR: duplicate key value ...".
+// driverWording is the dialector of the handles Open returns: their
+// translated errors keep the driver's text. GORM translates unique, foreign
+// key and check violations and unknown columns to the gorm errors errors.Is
+// tells apart (gorm.ErrDuplicatedKey, ...) and puts their text in front of
+// the driver's: "duplicated key not allowed: ERROR: duplicate key value ...".
 // Plugins show error texts to administrators (an endpoint's message, a job's
 // result, an event delivery's last error) and showed the driver's before
-// they were on GORM. On the handle DriverErrors returns, and every handle
-// made from it, such an error is still gorm.ErrDuplicatedKey and friends for
-// errors.Is, and still the driver's error for errors.As, but its text is the
-// driver's alone.
-func DriverErrors(db *gorm.DB) *gorm.DB {
-	if _, done := db.Dialector.(driverWording); done {
-		return db
-	}
-	// A session has a copy of the configuration: the handle db was made
-	// from keeps its dialector.
-	tx := db.Session(&gorm.Session{})
-	tx.Dialector = driverWording{tx.Dialector}
-	return tx
-}
-
+// they were on GORM. Such an error is still gorm.ErrDuplicatedKey and
+// friends for errors.Is, and still the driver's error for errors.As, but its
+// text is the driver's alone.
 // translations are the errors GORM's postgres dialector translates a driver
 // error to, wrapping both ("%w: %w").
 var translations = []error{gorm.ErrDuplicatedKey, gorm.ErrForeignKeyViolated, gorm.ErrInvalidField, gorm.ErrCheckConstraintViolated}
 
-// driverWording is a dialector whose translated errors keep the driver's
-// text.
 type driverWording struct{ gorm.Dialector }
 
 // Translate implements gorm.ErrorTranslator.

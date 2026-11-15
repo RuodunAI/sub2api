@@ -19,7 +19,6 @@ import (
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/batch"
 )
@@ -199,7 +198,7 @@ func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("guard: database unavailable: %w", err)
 	}
-	return pgdb.DriverErrors(db), nil
+	return db, nil
 }
 
 func (p *Plugin) refreshLoop(ctx context.Context) {

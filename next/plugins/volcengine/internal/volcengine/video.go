@@ -39,7 +39,6 @@ import (
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/volcengine/internal/model"
@@ -530,5 +529,5 @@ func (p *Plugin) pool(ctx context.Context) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return pgdb.DriverErrors(db), nil
+	return db, nil
 }

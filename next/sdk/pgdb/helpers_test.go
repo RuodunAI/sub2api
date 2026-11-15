@@ -142,22 +142,14 @@ func TestList(t *testing.T) {
 	}
 }
 
-// On a DriverErrors handle a translated error has the driver's text and is
-// still the gorm error; the handle it was made from is left alone.
+// On a handle Open returns a translated error has the driver's text and is
+// still the gorm error, in transactions and savepoints too.
 func TestDriverErrors(t *testing.T) {
-	base := tempDB(t)
-	db := pgdb.DriverErrors(base)
-	if pgdb.DriverErrors(db) != db {
-		t.Error("DriverErrors of its own handle made another one")
-	}
+	db := tempDB(t)
 	if err := db.Create(&entry{Seq: 1, Name: "dup"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	translated := base.Create(&entry{Seq: 2, Name: "dup"}).Error
-	driver, ok := strings.CutPrefix(translated.Error(), gorm.ErrDuplicatedKey.Error()+": ")
-	if !ok || !strings.HasPrefix(driver, "ERROR: duplicate key value violates unique constraint") {
-		t.Fatalf("base handle: %v", translated)
-	}
+	const driver = `ERROR: duplicate key value violates unique constraint "entry_name_key" (SQLSTATE 23505)`
 	for name, err := range map[string]error{
 		"create": db.Create(&entry{Seq: 2, Name: "dup"}).Error,
 		"exec":   db.Exec(`INSERT INTO entry (seq, name) VALUES (2, 'dup')`).Error,
