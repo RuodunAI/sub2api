@@ -290,3 +290,8 @@ func parseOffset(s string) (int, error) {
 	}
 	return sign * secs, nil
 }
+
+// isBlank reports the blanks PostgreSQL skips around array elements.
+func isBlank(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
+}

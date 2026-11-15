@@ -16,6 +16,8 @@ import (
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/pgdsn"
 )
 
 // DB is the core's connection pool.
@@ -30,19 +32,21 @@ type DB struct {
 }
 
 // Open connects to dsn. The pool is sized by SUB2API_PG_MAX_CONNS, else the
-// DSN's pool_* parameters (see poolConfig), else the defaults.
+// DSN's pool_* parameters (see pool.go), else the defaults.
 func Open(ctx context.Context, dsn string) (*DB, error) {
-	dsn, pc, err := takePoolParams(dsn)
+	dsn, pool, err := pgdsn.Split(dsn)
 	if err != nil {
 		return nil, err
 	}
-	pc.maxConns = poolMaxConns(os.Getenv("SUB2API_PG_MAX_CONNS"), pc.maxConns)
-	db, err := open(ctx, dsn, pc)
+	maxConns := poolMaxConns(os.Getenv("SUB2API_PG_MAX_CONNS"), pool.MaxConns)
+	pool.MaxConns = &maxConns
+	db, err := open(ctx, dsn, pool)
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("database pool opened", "max_conns", pc.maxConns, "min_conns", pc.minConns,
-		"max_conn_lifetime", pc.maxLifetime, "max_conn_idle_time", pc.maxIdleTime)
+	slog.Info("database pool opened", "max_conns", maxConns, "min_conns", valueOr(pool.MinConns, 0),
+		"max_conn_lifetime", valueOr(pool.MaxConnLifetime, poolDefaults.MaxConnLifetime),
+		"max_conn_idle_time", valueOr(pool.MaxConnIdleTime, poolDefaults.MaxConnIdleTime))
 	return db, nil
 }
 
@@ -50,15 +54,17 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 // whatever the DSN or the environment say: a pool for one job, such as
 // running a plugin's migrations as its own role.
 func OpenSized(ctx context.Context, dsn string, maxConns int) (*DB, error) {
-	dsn, pc, err := takePoolParams(dsn)
+	dsn, pool, err := pgdsn.Split(dsn)
 	if err != nil {
 		return nil, err
 	}
-	pc.maxConns = maxConns
-	return open(ctx, dsn, pc)
+	pool.MaxConns = &maxConns
+	return open(ctx, dsn, pool)
 }
 
-func open(ctx context.Context, dsn string, pc poolConfig) (*DB, error) {
+// open connects to dsn, which holds no pool_* parameter, and sizes the pool
+// from pool over poolDefaults.
+func open(ctx context.Context, dsn string, pool pgdsn.Pool) (*DB, error) {
 	g, err := gorm.Open(postgres.New(postgres.Config{DSN: dsn}), gormConfig())
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -70,7 +76,7 @@ func open(ctx context.Context, dsn string, pc poolConfig) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	pc.apply(sqlDB)
+	pool.Apply(sqlDB, poolDefaults, nil)
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
