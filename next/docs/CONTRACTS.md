@@ -8541,8 +8541,8 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 
 - 旧角色表（`role_permissions`、`role_permission_scopes`、`user_roles`、`roles.superuser`）仍是写入的真相，Go 写路径不变。`casbin_rule`（gorm-adapter 的列布局 `id, ptype, v0..v5`，`v1`、`v2` 加宽）是它们的投影，由数据库触发器在**写入方的同一事务**里维护：任何版本的核心、迁移脚本、FK 级联、`core.ClearScopeGrants` 都覆盖到。
 - 映射只写在视图 `authz_casbin_expected` 一处：`p, r:<角色 key>, <权限 key>, *`（整行授予）、`p, r:<角色 key>, <权限 key>, <范围>`（范围授予）、超管角色 `p, r:<角色 key>, *, *`、`g, u:<用户 id>, r:<角色 key>`。已移除、已停用权限的授予照常映射，加载时按 `permissions.status` 过滤。self 权限不落库，加载时注入虚拟角色 `r:_self`。
-- `authz_casbin_drift` 是两个方向的差（多出的行、缺少的行）；`authz_casbin_repair()` 按 `authz_casbin_expected` 修正 `casbin_rule` 并返回改动行数。
-- 触发器的覆盖范围、改 `roles.key` / `permissions.key` 被拒、TRUNCATE 的处理见迁移 `0100_casbin_rule.sql` 的注释。迁移回填 `casbin_rule` 并升 authz 版本。
+- `authz_casbin_drift` 是两个方向的差，列 `kind`：`missing`（应有而没有）、`extra`（多出来的）；`authz_casbin_repair()` 按 `authz_casbin_expected` 修正 `casbin_rule` 并返回改动行数，它自己不拿锁，调用方先在同一事务里 `Bump`（§99.6）。
+- 触发器的覆盖范围、改 `roles.key` / `permissions.key` 被拒、TRUNCATE（语句级触发器按视图整表重建）的处理见迁移 `0100_casbin_rule.sql` 的注释。迁移回填 `casbin_rule` 并升 authz 版本。`testutil.DB` 的库在测试结束时断言漂移为 0。
 
 ### 99.2 解析（`internal/authz/casbinx`）
 
