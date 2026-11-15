@@ -2,7 +2,6 @@ package providerresources
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -10,6 +9,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func queryFilter(owner core.ResourceOwner, q core.ResourceQuery) (string, []any, error) {
@@ -26,8 +28,8 @@ func queryFilter(owner core.ResourceOwner, q core.ResourceQuery) (string, []any,
 			return "", nil, core.ErrInvalidArgument
 		}
 	}
-	args := []any{owner.UserID, owner.GroupID, q.PluginKey, q.Kind, q.AccountIDs}
-	where := `user_id=$1 AND group_id=$2 AND plugin_key=$3 AND kind=$4 AND account_id=ANY($5::bigint[])`
+	args := []any{owner.UserID, owner.GroupID, q.PluginKey, q.Kind, store.Int64s(q.AccountIDs)}
+	where := `user_id=? AND group_id=? AND plugin_key=? AND kind=? AND account_id=ANY(?::bigint[])`
 	if q.ExpiredWithin < 0 || q.ExpiredWithin > 365*24*time.Hour || (q.UnexpiredOnly && q.ExpiredWithin > 0) {
 		return "", nil, core.ErrInvalidArgument
 	}
@@ -39,11 +41,11 @@ func queryFilter(owner core.ResourceOwner, q core.ResourceQuery) (string, []any,
 	}
 	if q.ExpiredWithin > 0 {
 		args = append(args, q.ExpiredWithin.Seconds())
-		where += fmt.Sprintf(` AND (expires_at IS NULL OR expires_at>now()-($%d * interval '1 second'))`, len(args))
+		where += ` AND (expires_at IS NULL OR expires_at>now()-(? * interval '1 second'))`
 	}
 	if len(q.IDs) > 0 {
-		args = append(args, q.IDs)
-		where += fmt.Sprintf(` AND public_id=ANY($%d::text[])`, len(args))
+		args = append(args, store.Strings(q.IDs))
+		where += ` AND public_id=ANY(?::text[])`
 	}
 	return where, args, nil
 }
@@ -71,13 +73,13 @@ func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.Re
 		return out, err
 	}
 	defer tx.Rollback(ctx)
+	g := store.G(ctx, tx)
 	cursor := q.AfterID
 	if q.BeforeID != "" {
 		cursor = q.BeforeID
 	}
 	if cursor != "" {
-		cursorArgs := append(slices.Clone(args), cursor)
-		r, _, e := read(ctx, tx, where+fmt.Sprintf(` AND public_id=$%d`, len(cursorArgs)), cursorArgs...)
+		r, _, e := read(g, where+` AND public_id=?`, append(slices.Clone(args), cursor)...)
 		if store.IsNoRows(e) {
 			return out, core.ErrNotFound
 		}
@@ -89,31 +91,17 @@ func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.Re
 			op = ">"
 		}
 		args = append(args, r.CreatedAt, r.PublicID)
-		where += fmt.Sprintf(` AND (created_at,public_id)%s($%d,$%d)`, op, len(args)-1, len(args))
+		where += ` AND (created_at,public_id)` + op + `(?,?)`
 	}
 	direction := "DESC"
 	if q.BeforeID != "" {
 		direction = "ASC"
 	}
-	args = append(args, q.Limit+1)
-	sql := `SELECT ` + columns + ` FROM provider_resources WHERE ` + where + ` ORDER BY created_at ` + direction + `,public_id ` + direction + fmt.Sprintf(` LIMIT $%d`, len(args))
-	rows, e := tx.Query(ctx, sql, args...)
-	if e != nil {
-		return out, e
-	}
-	for rows.Next() {
-		r, _, e := scan(rows)
-		if e != nil {
-			rows.Close()
-			return out, e
-		}
-		out.Items = append(out.Items, r)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+	var rows []model.ProviderResource
+	if err = page(g, where, args, direction, q.Limit+1).Find(&rows).Error; err != nil {
 		return out, err
 	}
+	out.Items = resourceList(rows)
 	out.HasMore = len(out.Items) > q.Limit
 	if out.HasMore {
 		out.Items = out.Items[:q.Limit]
@@ -123,4 +111,10 @@ func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.Re
 	}
 	err = tx.Commit(ctx)
 	return out, err
+}
+
+// page selects up to limit resources that where (with args) keeps, in
+// creation order by direction (ASC or DESC), public IDs breaking ties.
+func page(db *gorm.DB, where string, args []any, direction string, limit int) *gorm.DB {
+	return resources(db).Where(where, args...).Order("created_at " + direction + ",public_id " + direction).Limit(limit)
 }

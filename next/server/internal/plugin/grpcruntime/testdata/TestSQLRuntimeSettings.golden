@@ -1,0 +1,5 @@
+-- sql
+SELECT "config_enc","egress_policy","resource_limits" FROM "plugins" WHERE key = $1 LIMIT $2
+-- vars
+$1 string "demo"
+$2 int 1

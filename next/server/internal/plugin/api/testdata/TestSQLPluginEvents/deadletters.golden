@@ -1,0 +1,5 @@
+-- sql
+SELECT id, first_event_id, last_event_id, error, created_at FROM "plugin_event_deadletters" WHERE plugin_key = $1 ORDER BY id DESC LIMIT $2
+-- vars
+$1 string "demo"
+$2 int 50

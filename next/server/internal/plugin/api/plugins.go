@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // PluginSummary is one row of GET /plugins.
@@ -99,8 +101,8 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 	if v != "" {
 		var sig string
 		var pub string
-		if err := a.d.DB.Pool.QueryRow(ctx, `SELECT signature_status, manifest->>'publisher', COALESCE(manifest->'ui'->'settings'->>'mode' = 'schema', false) FROM plugin_versions
-			WHERE plugin_key = $1 AND version = $2`, s.Key, v).Scan(&sig, &pub, &s.HasSettings); err != nil {
+		if err := store.G(ctx, a.d.DB.Pool).Raw(`SELECT signature_status, manifest->>'publisher', COALESCE(manifest->'ui'->'settings'->>'mode' = 'schema', false) FROM plugin_versions
+			WHERE plugin_key = ? AND version = ?`, s.Key, v).Row().Scan(&sig, &pub, &s.HasSettings); err != nil {
 			return err
 		}
 		s.SignatureStatus = sig
@@ -114,12 +116,13 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 func (a *API) listPlugins(c *gin.Context) {
 	rc := c.Request.Context()
 	page, size := httpapi.Pagination(c)
+	g := store.G(rc, a.d.DB.Pool)
 	var total int64
-	if err := a.d.DB.Pool.QueryRow(rc, `SELECT count(*) FROM plugins`).Scan(&total); err != nil {
+	if err := g.Model(&model.Plugin{}).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := a.d.DB.Pool.Query(rc, pluginSelect+` ORDER BY p.key LIMIT $1 OFFSET $2`, size, (page-1)*size)
+	rows, err := g.Raw(pluginSelect+` ORDER BY p.key LIMIT ? OFFSET ?`, size, (page-1)*size).Rows()
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -216,7 +219,7 @@ type VersionInfo struct {
 func (a *API) getPlugin(c *gin.Context) {
 	rc := c.Request.Context()
 	key := c.Param("key")
-	s, err := scanSummary(a.d.DB.Pool.QueryRow(rc, pluginSelect+` WHERE p.key = $1`, key))
+	s, err := scanSummary(store.G(rc, a.d.DB.Pool).Raw(pluginSelect+` WHERE p.key = ?`, key).Row())
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin not found"))
 		return
@@ -303,21 +306,22 @@ func (a *API) getPlugin(c *gin.Context) {
 }
 
 func (a *API) versions(ctx context.Context, key string) ([]VersionInfo, error) {
-	rows, err := a.d.DB.Pool.Query(ctx, `SELECT version, consent_status, signature_status, package_sha256, package_size, uploaded_at
-		FROM plugin_versions WHERE plugin_key = $1 ORDER BY uploaded_at DESC`, key)
-	if err != nil {
+	var rows []model.PluginVersion
+	if err := versionRows(store.G(ctx, a.d.DB.Pool), key).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []VersionInfo{}
-	for rows.Next() {
-		var v VersionInfo
-		if err := rows.Scan(&v.Version, &v.ConsentStatus, &v.SignatureStatus, &v.PackageSHA256, &v.PackageSize, &v.UploadedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
+	out := make([]VersionInfo, len(rows))
+	for i, v := range rows {
+		out[i] = VersionInfo{Version: v.Version, ConsentStatus: core.ValueOr(v.ConsentStatus, ""), SignatureStatus: v.SignatureStatus,
+			PackageSHA256: v.PackageSha256, PackageSize: v.PackageSize, UploadedAt: v.UploadedAt}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// versionRows selects the plugin_versions rows of key, newest first.
+func versionRows(db *gorm.DB, key string) *gorm.DB {
+	return db.Select("version", "consent_status", "signature_status", "package_sha256", "package_size", "uploaded_at").
+		Where("plugin_key = ?", key).Order("uploaded_at DESC")
 }
 
 // ---------------------------------------------------------------- install flow
@@ -511,9 +515,10 @@ func (a *API) upgrade(c *gin.Context) {
 		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "version", Code: "required", Message: "version is required"}))
 		return
 	}
-	var consent, sig string
-	err := a.d.DB.Pool.QueryRow(c.Request.Context(), `SELECT consent_status, signature_status FROM plugin_versions
-		WHERE plugin_key = $1 AND version = $2`, key, in.Version).Scan(&consent, &sig)
+	var row model.PluginVersion
+	err := store.G(c.Request.Context(), a.d.DB.Pool).Select("consent_status", "signature_status").
+		Where("plugin_key = ? AND version = ?", key, in.Version).Take(&row).Error
+	consent, sig := core.ValueOr(row.ConsentStatus, ""), row.SignatureStatus
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin version not found"))
 		return

@@ -1,0 +1,14 @@
+-- sql
+INSERT INTO "plugin_versions" ("plugin_key","version","manifest","manifest_hash","package_sha256","package_size","publisher_id","key_id","signature_status","uploaded_by","consent_status") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING "consent_status","uploaded_at","package_url"
+-- vars
+$1 string "demo"
+$2 string "1.2.0"
+$3 jsontext.Value {}
+$4 string "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+$5 string "e0ce1a7f3f76d7bfda0ffdae6e0226aa63b3009c4c4a770c321876aecad0a6c1"
+$6 int64 3
+$7 *int64 nil
+$8 *string nil
+$9 string "unsigned"
+$10 *int64 nil
+$11 *string "approved"

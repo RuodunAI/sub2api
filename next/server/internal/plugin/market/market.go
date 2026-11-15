@@ -19,12 +19,15 @@ import (
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pkgsig"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // IndexSignaturePrefix is prepended to sha256hex(index.json) before signing.
@@ -141,38 +144,38 @@ func (s *Service) SeedSources(ctx context.Context, sourcesJSON string) error {
 		if _, err := pkgsig.ParsePublicKey(src.PublicKey); err != nil {
 			return fmt.Errorf("market source %q: %w", src.Name, err)
 		}
-		if _, err := s.db.Pool.Exec(ctx, `
-			INSERT INTO market_sources (name, url, public_key) VALUES ($1, $2, $3)
-			ON CONFLICT (name) DO UPDATE SET url = EXCLUDED.url, public_key = EXCLUDED.public_key`,
-			src.Name, src.URL, strings.TrimSpace(src.PublicKey)); err != nil {
+		if err := seedSource(store.G(ctx, s.db.Pool), src.Name, src.URL, strings.TrimSpace(src.PublicKey)).Error; err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// seedSource upserts the source name: an existing one takes addr and
+// publicKey.
+func seedSource(db *gorm.DB, name, addr, publicKey string) *gorm.DB {
+	return db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "name"}}, DoUpdates: clause.AssignmentColumns([]string{"url", "public_key"})}).
+		Create(&model.MarketSource{Name: name, URL: addr, PublicKey: publicKey})
+}
+
+// sources selects market_sources rows as Source, whose fields are its
+// columns.
+func sources(db *gorm.DB) *gorm.DB {
+	return db.Table("market_sources").Select("id, name, url, public_key, enabled, created_at")
+}
+
 // ListSources returns all sources.
 func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT id, name, url, public_key, enabled, created_at FROM market_sources ORDER BY id`)
-	if err != nil {
+	out := []Source{}
+	if err := sources(store.G(ctx, s.db.Pool)).Order("id").Find(&out).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Source{}
-	for rows.Next() {
-		var src Source
-		if err := rows.Scan(&src.ID, &src.Name, &src.URL, &src.PublicKey, &src.Enabled, &src.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, src)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Service) source(ctx context.Context, id int64) (*Source, error) {
 	var src Source
-	err := s.db.Pool.QueryRow(ctx, `SELECT id, name, url, public_key, enabled, created_at FROM market_sources WHERE id = $1`, id).
-		Scan(&src.ID, &src.Name, &src.URL, &src.PublicKey, &src.Enabled, &src.CreatedAt)
+	err := sources(store.G(ctx, s.db.Pool)).Where("id = ?", id).Take(&src).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("market source not found")
 	}
@@ -412,52 +415,35 @@ func sortedVersions(vs []IndexVersion) []IndexVersion {
 
 // installed maps plugin key -> [current version, status].
 func (s *Service) installed(ctx context.Context) (map[string][2]string, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT key, status FROM plugins`)
-	if err != nil {
-		return nil, err
-	}
-	var keys, statuses []string
-	for rows.Next() {
-		var k, st string
-		if err := rows.Scan(&k, &st); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		keys, statuses = append(keys, k), append(statuses, st)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	var plugins []model.Plugin
+	if err := store.G(ctx, s.db.Pool).Select("key", "status").Find(&plugins).Error; err != nil {
 		return nil, err
 	}
 	out := map[string][2]string{}
-	for i, k := range keys {
-		v, err := install.CurrentVersion(ctx, s.db.Pool, k)
+	for _, p := range plugins {
+		v, err := install.CurrentVersion(ctx, s.db.Pool, p.Key)
 		if err != nil {
 			return nil, err
 		}
-		out[k] = [2]string{v, statuses[i]}
+		out[p.Key] = [2]string{v, p.Status}
 	}
 	return out, nil
 }
 
 func (s *Service) trustLevels(ctx context.Context) (map[string]string, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT name, trust_level, status FROM publishers`)
-	if err != nil {
+	var publishers []model.Publisher
+	if err := store.G(ctx, s.db.Pool).Select("name", "trust_level", "status").Find(&publishers).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := map[string]string{}
-	for rows.Next() {
-		var n, t, st string
-		if err := rows.Scan(&n, &t, &st); err != nil {
-			return nil, err
-		}
-		if st != "active" {
+	for _, p := range publishers {
+		t := p.TrustLevel
+		if core.ValueOr(p.Status, "") != "active" {
 			t = "revoked"
 		}
-		out[n] = t
+		out[p.Name] = t
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Install downloads a version, checks size and sha256, and hands the

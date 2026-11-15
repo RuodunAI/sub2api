@@ -1,0 +1,6 @@
+-- sql
+UPDATE "provider_resources" SET "operation_id"=$1,"state"=$2,"updated_at"=now() WHERE public_id = $3
+-- vars
+$1 string "op"
+$2 string "deleting"
+$3 string "s2res_1"

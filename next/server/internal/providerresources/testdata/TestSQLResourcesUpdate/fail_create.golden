@@ -1,0 +1,6 @@
+-- sql
+UPDATE "provider_resources" SET "failure_code"=$1,"state"=$2,"updated_at"=now() WHERE public_id = $3
+-- vars
+$1 string "permission_error"
+$2 string "failed"
+$3 string "s2res_1"

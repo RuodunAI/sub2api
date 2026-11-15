@@ -7,6 +7,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func validResourceContext(in core.ResourceContext) bool {
@@ -16,11 +19,18 @@ func contextArgs(in core.ResourceContext) []any {
 	return []any{in.Owner.UserID, in.Owner.GroupID, in.Binding.AccountID, in.Binding.PrincipalID, in.Binding.Generation, in.PluginKey, in.Kind, in.ParentID}
 }
 
-const contextPredicate = `user_id=$1 AND group_id=$2 AND account_id=$3 AND principal_id=$4 AND generation=$5 AND plugin_key=$6 AND kind=$7 AND parent_id=$8`
+const contextPredicate = `user_id=? AND group_id=? AND account_id=? AND principal_id=? AND generation=? AND plugin_key=? AND kind=? AND parent_id=?`
+
+// liveContexts keeps the contexts of owner bound to a ready container that
+// is unexpired at at, or is renewID.
+func liveContexts(db *gorm.DB, owner core.ResourceOwner, at time.Time, renewID string) *gorm.DB {
+	return db.Table("provider_resource_contexts c").Joins("JOIN provider_resources r ON r.public_id=c.resource_id").
+		Where(`c.user_id=? AND c.group_id=? AND r.kind='container' AND r.state='ready' AND (r.expires_at>? OR r.public_id=?)`, owner.UserID, owner.GroupID, at, renewID)
+}
 
 func (s *Service) contextQuota(ctx context.Context, tx pgx.Tx, owner core.ResourceOwner, extra int, at time.Time, renewID string) error {
 	var count int64
-	err := tx.QueryRow(ctx, `SELECT count(*) FROM provider_resource_contexts c JOIN provider_resources r ON r.public_id=c.resource_id WHERE c.user_id=$1 AND c.group_id=$2 AND r.kind='container' AND r.state='ready' AND (r.expires_at>$3 OR r.public_id=$4)`, owner.UserID, owner.GroupID, at, renewID).Scan(&count)
+	err := liveContexts(store.G(ctx, tx), owner, at, renewID).Count(&count).Error
 	if err != nil {
 		return err
 	}
@@ -31,7 +41,7 @@ func (s *Service) contextQuota(ctx context.Context, tx pgx.Tx, owner core.Resour
 }
 
 func contextTarget(ctx context.Context, q store.Querier, in core.ResourceContext, id string) (core.ProviderResource, error) {
-	r, _, err := read(ctx, q, `user_id=$1 AND group_id=$2 AND public_id=$3`, in.Owner.UserID, in.Owner.GroupID, id)
+	r, _, err := read(store.G(ctx, q), `user_id=? AND group_id=? AND public_id=?`, in.Owner.UserID, in.Owner.GroupID, id)
 	if store.IsNoRows(err) {
 		return r, core.ErrNotFound
 	}
@@ -60,11 +70,14 @@ func (s *Service) BindContext(ctx context.Context, in core.ResourceContext) erro
 		if _, err := contextTarget(ctx, tx, in, in.ResourceID); err != nil {
 			return err
 		}
-		var existing string
-		var owner core.ResourceOwner
-		err := tx.QueryRow(ctx, `SELECT resource_id,user_id,group_id FROM provider_resource_contexts WHERE account_id=$1 AND principal_id=$2 AND generation=$3 AND plugin_key=$4 AND kind=$5 AND parent_id=$6`, in.Binding.AccountID, in.Binding.PrincipalID, in.Binding.Generation, in.PluginKey, in.Kind, in.ParentID).Scan(&existing, &owner.UserID, &owner.GroupID)
+		g := store.G(ctx, tx)
+		var existing model.ProviderResourceContext
+		err := g.Select("resource_id", "user_id", "group_id").
+			Where(`account_id=? AND principal_id=? AND generation=? AND plugin_key=? AND kind=? AND parent_id=?`, in.Binding.AccountID, in.Binding.PrincipalID, in.Binding.Generation, in.PluginKey, in.Kind, in.ParentID).
+			Take(&existing).Error
 		if err == nil {
-			if existing != in.ResourceID || owner != in.Owner {
+			owner := core.ResourceOwner{UserID: existing.UserID, GroupID: existing.GroupID}
+			if existing.ResourceID != in.ResourceID || owner != in.Owner {
 				return core.ErrConflict.WithMessage("parent call is already bound to another resource")
 			}
 			return nil
@@ -75,8 +88,10 @@ func (s *Service) BindContext(ctx context.Context, in core.ResourceContext) erro
 		if err = s.contextQuota(ctx, tx, in.Owner, 1, time.Now(), ""); err != nil {
 			return err
 		}
-		args := append(contextArgs(in), in.ResourceID)
-		_, err = tx.Exec(ctx, `INSERT INTO provider_resource_contexts(user_id,group_id,account_id,principal_id,generation,plugin_key,kind,parent_id,resource_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, args...)
+		err = g.Create(&model.ProviderResourceContext{
+			UserID: in.Owner.UserID, GroupID: in.Owner.GroupID, AccountID: in.Binding.AccountID, PrincipalID: in.Binding.PrincipalID,
+			Generation: in.Binding.Generation, PluginKey: in.PluginKey, Kind: in.Kind, ParentID: in.ParentID, ResourceID: in.ResourceID,
+		}).Error
 		if store.IsUniqueViolation(err, "") {
 			return core.ErrConflict
 		}
@@ -91,15 +106,15 @@ func (s *Service) ResolveContext(ctx context.Context, in core.ResourceContext) (
 		if err := lockOwner(ctx, tx, in.Owner); err != nil {
 			return err
 		}
-		var id string
-		err := tx.QueryRow(ctx, `SELECT resource_id FROM provider_resource_contexts WHERE `+contextPredicate, contextArgs(in)...).Scan(&id)
+		var bound model.ProviderResourceContext
+		err := store.G(ctx, tx).Select("resource_id").Where(contextPredicate, contextArgs(in)...).Take(&bound).Error
 		if store.IsNoRows(err) {
 			return core.ErrNotFound
 		}
 		if err != nil {
 			return err
 		}
-		out, err = contextTarget(ctx, tx, in, id)
+		out, err = contextTarget(ctx, tx, in, bound.ResourceID)
 		return err
 	})
 	return

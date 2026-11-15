@@ -1,0 +1,38 @@
+package grants
+
+import (
+	"context"
+	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
+)
+
+// VersionGrantsQuery reads the set staged for a version when there is one,
+// else the plugin's grants, as VersionRows does on pgx.
+func TestVersionGrantsQueryPicksStagedSet(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.DB(t)
+	for _, sql := range []string{
+		`INSERT INTO plugins (key, name, status) VALUES ('demo', '{"en":"demo"}', 'enabled')`,
+		`INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash)
+			VALUES ('demo', 'kv', '{}', 'granted', '1.0.0', 'x')`,
+		`INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status)
+			VALUES ('demo', '2.0.0', '{}', 'y', 'z', 1, 'unsigned')`,
+		`INSERT INTO plugin_staged_grants (plugin_key, version, permission, scope, status, manifest_hash)
+			VALUES ('demo', '2.0.0', 'lock', '{}', 'revoked', 'y')`,
+	} {
+		if _, err := db.Pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for version, want := range map[string]string{"1.0.0": "kv/granted/1.0.0", "2.0.0": "lock/revoked/2.0.0"} {
+		var rows []struct{ Permission, Status, PluginVersion string }
+		if err := VersionGrantsQuery(store.G(ctx, db.Pool), "demo", version).Scan(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].Permission+"/"+rows[0].Status+"/"+rows[0].PluginVersion != want {
+			t.Errorf("%s: got %+v, want %s", version, rows, want)
+		}
+	}
+}

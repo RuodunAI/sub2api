@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	pluginpkg "github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -19,10 +21,7 @@ import (
 // version, in which case the package is fetched like any other.
 func (s *Packages) ReadVersionAsset(ctx context.Context, key, vh, name string) (core.PluginInfo, []byte, string, error) {
 	var version, sum, url string
-	err := s.db.Pool.QueryRow(ctx, `SELECT v.version,v.package_sha256,v.package_url FROM plugin_versions v JOIN plugins p ON p.key=v.plugin_key
-		WHERE p.key=$1 AND v.version || '-' || left(v.package_sha256,8)=$2
-		AND p.status IN ('enabled','enabling','upgrading') AND v.consent_status='approved' AND v.signature_status<>'revoked'
-		AND NOT EXISTS(SELECT 1 FROM plugin_uninstalls u WHERE u.plugin_key=p.key)`, key, vh).Scan(&version, &sum, &url)
+	err := servedVersion(store.G(ctx, s.db.Pool), key, vh).Row().Scan(&version, &sum, &url)
 	if store.IsNoRows(err) {
 		return core.PluginInfo{}, nil, "", ErrAssetNotFound
 	}
@@ -64,4 +63,13 @@ func (s *Packages) ReadVersionAsset(ctx context.Context, key, vh, name string) (
 		return core.PluginInfo{}, nil, "", ErrAssetNotFound
 	}
 	return core.PluginInfo{Key: key, Version: version, Manifest: p.Manifest, AssetBase: "/plugin-ui/" + key + "/" + vh}, data, ContentType(name), nil
+}
+
+// servedVersion reads the version, package sha256 and package URL of the
+// version of key whose version hash is vh, if its assets may be served.
+func servedVersion(db *gorm.DB, key, vh string) *gorm.DB {
+	return db.Raw(`SELECT v.version,v.package_sha256,v.package_url FROM plugin_versions v JOIN plugins p ON p.key=v.plugin_key
+		WHERE p.key=? AND v.version || '-' || left(v.package_sha256,8)=?
+		AND p.status IN ('enabled','enabling','upgrading') AND v.consent_status='approved' AND v.signature_status<>'revoked'
+		AND NOT EXISTS(SELECT 1 FROM plugin_uninstalls u WHERE u.plugin_key=p.key)`, key, vh)
 }

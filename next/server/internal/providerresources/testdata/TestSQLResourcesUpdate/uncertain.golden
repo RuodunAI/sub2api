@@ -1,0 +1,5 @@
+-- sql
+UPDATE "provider_resources" SET "state"=$1,"updated_at"=now() WHERE public_id = $2
+-- vars
+$1 string "uncertain"
+$2 string "s2res_1"

@@ -26,6 +26,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/blobs"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 var (
@@ -188,18 +189,23 @@ func Package(t testing.TB, m *manifest.Manifest, bin []byte, extra map[string][]
 // Install inserts the plugins row (status) and an approved version with grants.
 func Install(t testing.TB, db *store.DB, m *manifest.Manifest, pkg []byte, grants map[string]string, status string) {
 	t.Helper()
-	ctx := context.Background()
+	g := store.G(context.Background(), db.Pool)
 	name, _ := json.Marshal(m.Name)
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, $2, $3)`, m.Key, name, status); err != nil {
+	if err := g.Create(&model.Plugin{Key: m.Key, Name: name, Status: status}).Error; err != nil {
 		t.Fatal(err)
 	}
 	AddVersion(t, db, m, pkg)
 	for perm, scope := range grants {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash)
-			VALUES ($1, $2, $3, 'granted', $4, 'x')`, m.Key, perm, scope, m.Version); err != nil {
+		if err := g.Create(grantRow(m, perm, scope)).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// grantRow is the grant of perm with scope to the version of m.
+func grantRow(m *manifest.Manifest, perm, scope string) *model.PluginPermissionGrant {
+	return &model.PluginPermissionGrant{PluginKey: m.Key, Permission: perm, Scope: json.RawMessage(scope),
+		Status: "granted", PluginVersion: m.Version, ManifestHash: "x"}
 }
 
 // AddVersion inserts an approved plugin_versions row.
@@ -211,12 +217,17 @@ func AddVersion(t testing.TB, db *store.DB, m *manifest.Manifest, pkg []byte) {
 	if err := Source().Store.Put(context.Background(), hex.EncodeToString(sum[:]), pkg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(context.Background(), `INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash,
-			package_sha256, package_size, signature_status, consent_status)
-		VALUES ($1, $2, $3, $4, $5, $6, 'unsigned', 'approved')`,
-		m.Key, m.Version, mj, hex.EncodeToString(msum[:]), hex.EncodeToString(sum[:]), len(pkg)); err != nil {
+	if err := store.G(context.Background(), db.Pool).Create(versionRow(m, mj, msum, sum, len(pkg))).Error; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// versionRow is the approved, unsigned plugin_versions row of m, whose
+// manifest is mj.
+func versionRow(m *manifest.Manifest, mj []byte, manifestSum, pkgSum [sha256.Size]byte, size int) *model.PluginVersion {
+	return &model.PluginVersion{PluginKey: m.Key, Version: m.Version, Manifest: mj,
+		ManifestHash: hex.EncodeToString(manifestSum[:]), PackageSha256: hex.EncodeToString(pkgSum[:]), PackageSize: int64(size),
+		SignatureStatus: "unsigned", ConsentStatus: new("approved")}
 }
 
 // ------------------------------------------------------------------ launcher

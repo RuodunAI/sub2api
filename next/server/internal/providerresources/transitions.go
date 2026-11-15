@@ -5,6 +5,7 @@ import (
 	"context"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"time"
@@ -18,7 +19,7 @@ func (s *Service) mutate(ctx context.Context, owner core.ResourceOwner, id strin
 		if err := lockOwner(ctx, tx, owner); err != nil {
 			return err
 		}
-		r, _, err := read(ctx, tx, `user_id=$1 AND group_id=$2 AND public_id=$3 FOR UPDATE`, owner.UserID, owner.GroupID, id)
+		r, _, err := read(store.G(ctx, tx).Clauses(forUpdate), `user_id=? AND group_id=? AND public_id=?`, owner.UserID, owner.GroupID, id)
 		if store.IsNoRows(err) {
 			return core.ErrNotFound
 		}
@@ -78,14 +79,17 @@ func (s *Service) Finalize(ctx context.Context, in core.ResourceCompletion) (out
 		if !expires.IsZero() {
 			storedExpiry = &expires
 		}
-		_, err := tx.Exec(ctx, `UPDATE provider_resources SET state='ready',remote_id=$2,bytes=$3,metadata=$4,expires_at=$5,updated_at=now() WHERE public_id=$1`, r.PublicID, in.RemoteID, in.Bytes, meta, storedExpiry)
+		g := store.G(ctx, tx)
+		err := update(g, resourcesTable, r.PublicID, map[string]any{
+			"state": "ready", "remote_id": in.RemoteID, "bytes": in.Bytes, "metadata": meta, "expires_at": storedExpiry,
+		}).Error
 		if store.IsUniqueViolation(err, "") {
 			return core.ErrConflict.WithMessage("remote resource already registered")
 		}
 		if err != nil {
 			return err
 		}
-		out, _, err = read(ctx, tx, `public_id=$1`, r.PublicID)
+		out, _, err = read(g, `public_id=?`, r.PublicID)
 		return err
 	})
 	return out, err
@@ -96,8 +100,7 @@ func (s *Service) MarkUncertain(ctx context.Context, owner core.ResourceOwner, i
 		if r.OperationID != op || (r.State != "pending" && r.State != "uncertain") {
 			return core.ErrConflict
 		}
-		_, err := tx.Exec(ctx, `UPDATE provider_resources SET state='uncertain',updated_at=now() WHERE public_id=$1`, id)
-		return err
+		return update(store.G(ctx, tx), resourcesTable, id, map[string]any{"state": "uncertain"}).Error
 	})
 }
 
@@ -114,18 +117,18 @@ func (s *Service) FailCreate(ctx context.Context, owner core.ResourceOwner, id, 
 		if r.OperationID != op || (r.State != "pending" && r.State != "uncertain" && r.State != "failed") {
 			return core.ErrConflict
 		}
+		g := store.G(ctx, tx)
 		if r.State == "failed" {
-			var old string
-			if err := tx.QueryRow(ctx, `SELECT failure_code FROM provider_resources WHERE public_id=$1`, id).Scan(&old); err != nil {
+			var old model.ProviderResource
+			if err := g.Select("failure_code").Where("public_id = ?", id).Take(&old).Error; err != nil {
 				return err
 			}
-			if old != evidenceCode {
+			if old.FailureCode != evidenceCode {
 				return core.ErrConflict
 			}
 			return nil
 		}
-		_, err := tx.Exec(ctx, `UPDATE provider_resources SET state='failed',failure_code=$2,updated_at=now() WHERE public_id=$1`, id, evidenceCode)
-		return err
+		return update(g, resourcesTable, id, map[string]any{"state": "failed", "failure_code": evidenceCode}).Error
 	})
 }
 
@@ -139,8 +142,7 @@ func (s *Service) BeginDelete(ctx context.Context, owner core.ResourceOwner, id 
 			return nil
 		}
 		op := uuid.NewString()
-		_, e := tx.Exec(ctx, `UPDATE provider_resources SET state='deleting',operation_id=$2,updated_at=now() WHERE public_id=$1`, id, op)
-		if e != nil {
+		if e := update(store.G(ctx, tx), resourcesTable, id, map[string]any{"state": "deleting", "operation_id": op}).Error; e != nil {
 			return e
 		}
 		out.Resource.State = "deleting"
@@ -168,7 +170,6 @@ func (s *Service) FinishDelete(ctx context.Context, owner core.ResourceOwner, id
 		if confirmed {
 			state = "deleted"
 		}
-		_, err := tx.Exec(ctx, `UPDATE provider_resources SET state=$2,updated_at=now() WHERE public_id=$1`, id, state)
-		return err
+		return update(store.G(ctx, tx), resourcesTable, id, map[string]any{"state": state}).Error
 	})
 }

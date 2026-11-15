@@ -1,0 +1,7 @@
+-- sql
+SELECT public_id,plugin_key,kind,remote_id,state,operation_id,user_id,group_id,account_id,principal_id,generation,bytes,metadata,created_at,expires_at,intent_hash FROM "provider_resources" WHERE user_id=$1 AND group_id=$2 AND public_id=$3 LIMIT $4 FOR UPDATE
+-- vars
+$1 int 7
+$2 int 3
+$3 string "s2res_1"
+$4 int 1

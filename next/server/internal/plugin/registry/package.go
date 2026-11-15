@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/blobs"
 	pluginpkg "github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
@@ -266,6 +268,17 @@ func (s *Packages) Open(ctx context.Context, key, version string) (*Package, err
 	return p, nil
 }
 
+// versionRecord reads what loading key@version needs: its manifest, package
+// sha256 and URL, signature status, publisher name and trust level, and
+// when the plugin was installed.
+func versionRecord(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Raw(`
+		SELECT v.manifest, v.package_sha256, v.package_url, v.signature_status, p.name, p.trust_level,
+		       (SELECT installed_at FROM plugins WHERE key = v.plugin_key)
+		FROM plugin_versions v LEFT JOIN publishers p ON p.id = v.publisher_id
+		WHERE v.plugin_key = ? AND v.version = ?`, key, version)
+}
+
 func (s *Packages) load(ctx context.Context, key, version string) (*Package, error) {
 	var (
 		manifestJSON []byte
@@ -276,12 +289,8 @@ func (s *Packages) load(ctx context.Context, key, version string) (*Package, err
 		trust        *string
 		claimedAt    *time.Time
 	)
-	err := s.db.Pool.QueryRow(ctx, `
-		SELECT v.manifest, v.package_sha256, v.package_url, v.signature_status, p.name, p.trust_level,
-		       (SELECT installed_at FROM plugins WHERE key = v.plugin_key)
-		FROM plugin_versions v LEFT JOIN publishers p ON p.id = v.publisher_id
-		WHERE v.plugin_key = $1 AND v.version = $2`, key, version).
-		Scan(&manifestJSON, &sum, &url, &sigStatus, &publisher, &trust, &claimedAt)
+	err := versionRecord(store.G(ctx, s.db.Pool), key, version).
+		Row().Scan(&manifestJSON, &sum, &url, &sigStatus, &publisher, &trust, &claimedAt)
 	if err != nil {
 		if store.IsNoRows(err) {
 			return nil, fmt.Errorf("plugin %s@%s: version not found", key, version)

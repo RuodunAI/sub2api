@@ -1,0 +1,14 @@
+-- sql
+INSERT INTO plugin_staged_grants (plugin_key, version, manifest_hash, granted_by, permission, scope, status, granted_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+			ON CONFLICT (plugin_key, version, permission) DO UPDATE SET
+			  scope = EXCLUDED.scope, status = EXCLUDED.status, manifest_hash = EXCLUDED.manifest_hash,
+			  granted_by = EXCLUDED.granted_by, granted_at = now()
+-- vars
+$1 string "demo"
+$2 string "1.2.0"
+$3 string "hash"
+$4 *int64 7
+$5 string "kv"
+$6 []uint8 [123 34 112 114 101 102 105 120 34 58 34 97 34 125]
+$7 string "granted"

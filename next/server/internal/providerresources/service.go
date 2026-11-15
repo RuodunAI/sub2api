@@ -15,6 +15,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type Options struct {
@@ -92,8 +95,12 @@ func (s *Service) normalize(in core.ResourceIntent) (core.ResourceIntent, string
 func lockOwner(ctx context.Context, tx pgx.Tx, owner core.ResourceOwner) error {
 	// A transaction-scoped lock serializes reservations/finalization for this quota.
 	raw, _ := json.Marshal(owner)
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "provider-resources:"+string(raw))
-	return err
+	return advisoryLock(store.G(ctx, tx), "provider-resources:"+string(raw)).Error
+}
+
+// advisoryLock takes the transaction-scoped advisory lock of key.
+func advisoryLock(db *gorm.DB, key string) *gorm.DB {
+	return db.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, key)
 }
 
 func (s *Service) quota(ctx context.Context, tx pgx.Tx, owner core.ResourceOwner, extraCount int, extraBytes int64) error {
@@ -106,10 +113,7 @@ func resourceOccupiesQuota(r core.ProviderResource, at time.Time) bool {
 
 func (s *Service) quotaAt(ctx context.Context, tx pgx.Tx, owner core.ResourceOwner, extraCount int, extraBytes int64, at time.Time) error {
 	var count, bytes int64
-	err := tx.QueryRow(ctx, `SELECT count(*),COALESCE(sum(bytes),0) FROM (
- SELECT bytes FROM provider_resources WHERE user_id=$1 AND group_id=$2 AND state NOT IN ('deleted','failed') AND NOT(kind='container' AND expires_at IS NOT NULL AND expires_at<=$3)
- UNION ALL SELECT v.bytes FROM provider_skill_versions v JOIN provider_resources p ON p.public_id=v.parent_id WHERE p.user_id=$1 AND p.group_id=$2 AND p.state NOT IN ('deleted','failed') AND v.state NOT IN ('deleted','failed')
- ) occupied`, owner.UserID, owner.GroupID, at).Scan(&count, &bytes)
+	err := occupied(store.G(ctx, tx), owner, at).Row().Scan(&count, &bytes)
 	if err != nil {
 		return err
 	}
@@ -117,6 +121,15 @@ func (s *Service) quotaAt(ctx context.Context, tx pgx.Tx, owner core.ResourceOwn
 		return core.ErrRateLimited.WithMessage("provider resource quota exceeded")
 	}
 	return nil
+}
+
+// occupied counts the resources and skill versions of owner that occupy its
+// quota at at, and sums their bytes.
+func occupied(db *gorm.DB, owner core.ResourceOwner, at time.Time) *gorm.DB {
+	return db.Raw(`SELECT count(*),COALESCE(sum(bytes),0) FROM (
+ SELECT bytes FROM provider_resources WHERE user_id=@user AND group_id=@group AND state NOT IN ('deleted','failed') AND NOT(kind='container' AND expires_at IS NOT NULL AND expires_at<=@at)
+ UNION ALL SELECT v.bytes FROM provider_skill_versions v JOIN provider_resources p ON p.public_id=v.parent_id WHERE p.user_id=@user AND p.group_id=@group AND p.state NOT IN ('deleted','failed') AND v.state NOT IN ('deleted','failed')
+ ) occupied`, map[string]any{"user": owner.UserID, "group": owner.GroupID, "at": at})
 }
 
 func (s *Service) Reserve(ctx context.Context, input core.ResourceIntent) (out core.ResourceReservation, err error) {
@@ -128,7 +141,8 @@ func (s *Service) Reserve(ctx context.Context, input core.ResourceIntent) (out c
 		if err := lockOwner(ctx, tx, in.Owner); err != nil {
 			return err
 		}
-		existing, oldHash, e := read(ctx, tx, `user_id=$1 AND group_id=$2 AND request_id=$3`, in.Owner.UserID, in.Owner.GroupID, in.RequestID)
+		g := store.G(ctx, tx)
+		existing, oldHash, e := read(g, `user_id=? AND group_id=? AND request_id=?`, in.Owner.UserID, in.Owner.GroupID, in.RequestID)
 		if e == nil {
 			if oldHash != hash {
 				return core.ErrConflict.WithMessage("resource request ID already has a different intent")
@@ -152,11 +166,12 @@ func (s *Service) Reserve(ctx context.Context, input core.ResourceIntent) (out c
 			expiry = &v
 		}
 		id, op := "s2res_"+uuid.NewString(), uuid.NewString()
-		_, e = tx.Exec(ctx, `INSERT INTO provider_resources(public_id,user_id,group_id,request_id,plugin_key,kind,account_id,principal_id,generation,state,operation_id,bytes,metadata,intent_hash,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14)`, id, in.Owner.UserID, in.Owner.GroupID, in.RequestID, in.PluginKey, in.Kind, in.Binding.AccountID, in.Binding.PrincipalID, in.Binding.Generation, op, in.Bytes, in.Metadata, hash, expiry)
-		if e != nil {
+		row := newRow(id, op, in, "pending")
+		row.IntentHash, row.ExpiresAt = hash, expiry
+		if e = g.Create(&row).Error; e != nil {
 			return e
 		}
-		out.Resource, _, e = read(ctx, tx, `public_id=$1`, id)
+		out.Resource, _, e = read(g, `public_id=?`, id)
 		out.Dispatch = e == nil
 		return e
 	})
@@ -167,11 +182,22 @@ func (s *Service) Get(ctx context.Context, owner core.ResourceOwner, id string) 
 	if !validOwner(owner) || !bounded(id) {
 		return core.ProviderResource{}, core.ErrInvalidArgument
 	}
-	r, _, err := read(ctx, s.db.Pool, `user_id=$1 AND group_id=$2 AND public_id=$3`, owner.UserID, owner.GroupID, id)
+	r, _, err := read(store.G(ctx, s.db.Pool), `user_id=? AND group_id=? AND public_id=?`, owner.UserID, owner.GroupID, id)
 	if store.IsNoRows(err) {
 		err = core.ErrNotFound
 	}
 	return r, err
+}
+
+// newRow is the provider_resources row of intent in, created in state by
+// operation op under the public ID id; the caller sets what in does not
+// say (remote ID, intent hash, expiry).
+func newRow(id, op string, in core.ResourceIntent, state string) model.ProviderResource {
+	return model.ProviderResource{
+		PublicID: id, UserID: in.Owner.UserID, GroupID: in.Owner.GroupID, RequestID: in.RequestID, PluginKey: in.PluginKey, Kind: in.Kind,
+		AccountID: in.Binding.AccountID, PrincipalID: in.Binding.PrincipalID, Generation: in.Binding.Generation,
+		State: state, OperationID: op, Bytes: in.Bytes, Metadata: in.Metadata,
+	}
 }
 
 // List includes pending/uncertain states for reconciliation. Public file lists
@@ -180,18 +206,19 @@ func (s *Service) List(ctx context.Context, owner core.ResourceOwner, after stri
 	if !validOwner(owner) || limit < 1 || limit > 100 || len(after) > 256 {
 		return nil, core.ErrInvalidArgument
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+columns+` FROM provider_resources WHERE user_id=$1 AND group_id=$2 AND public_id>$3 ORDER BY public_id LIMIT $4`, owner.UserID, owner.GroupID, after, limit)
-	if err != nil {
+	var rows []model.ProviderResource
+	if err := resources(store.G(ctx, s.db.Pool)).Where(`user_id=? AND group_id=? AND public_id>?`, owner.UserID, owner.GroupID, after).
+		Order("public_id").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := make([]core.ProviderResource, 0)
-	for rows.Next() {
-		r, _, e := scan(rows)
-		if e != nil {
-			return nil, e
-		}
-		out = append(out, r)
+	return resourceList(rows), nil
+}
+
+// resourceList is the ProviderResources rows hold, never nil.
+func resourceList(rows []model.ProviderResource) []core.ProviderResource {
+	out := make([]core.ProviderResource, len(rows))
+	for i, row := range rows {
+		out[i] = resource(row)
 	}
-	return out, rows.Err()
+	return out
 }

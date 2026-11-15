@@ -7,6 +7,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func (s *Service) BeginSkillDelete(ctx context.Context, owner core.ResourceOwner, parentID, selector string) (out core.SkillDeleteIntent, err error) {
@@ -17,30 +20,32 @@ func (s *Service) BeginSkillDelete(ctx context.Context, owner core.ResourceOwner
 		if e := lockOwner(ctx, tx, owner); e != nil {
 			return e
 		}
+		g := store.G(ctx, tx)
 		p, e := skillParent(ctx, tx, owner, parentID, true)
 		if e != nil {
 			return e
 		}
 		out.Parent = p
 		op := uuid.NewString()
+		deleting := map[string]any{"state": "deleting", "operation_id": op}
 		if selector == "" {
 			var busy bool
-			if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM provider_skill_versions WHERE parent_id=$1 AND state IN('pending','uncertain','deleting','delete_uncertain'))`, p.PublicID).Scan(&busy); e != nil {
+			if e = busyVersions(g, p.PublicID).Row().Scan(&busy); e != nil {
 				return e
 			}
 			if busy {
 				return core.ErrConflict.WithMessage("skill has an unfinished version mutation")
 			}
-			_, e = tx.Exec(ctx, `UPDATE provider_resources SET state='deleting',operation_id=$2,updated_at=now() WHERE public_id=$1`, p.PublicID, op)
+			e = update(g, resourcesTable, p.PublicID, deleting).Error
 		} else {
-			v, x := readSkillVersion(ctx, tx, p, `parent_id=$1 AND (public_id=$2 OR legacy_epoch=$2) AND state='ready'`, p.PublicID, selector)
+			v, x := readSkillVersion(g, p, `parent_id=? AND (public_id=? OR legacy_epoch=?) AND state='ready'`, p.PublicID, selector, selector)
 			if store.IsNoRows(x) {
 				return core.ErrNotFound
 			}
 			if x != nil {
 				return x
 			}
-			_, e = tx.Exec(ctx, `UPDATE provider_skill_versions SET state='deleting',operation_id=$2,updated_at=now() WHERE public_id=$1`, v.PublicVersionID, op)
+			e = update(g, versionsTable, v.PublicVersionID, deleting).Error
 			v.State = "deleting"
 			v.OperationID = op
 			out.Version = &v
@@ -54,6 +59,13 @@ func (s *Service) BeginSkillDelete(ctx context.Context, owner core.ResourceOwner
 	})
 	return
 }
+
+// busyVersions reads whether a version of the skill parentID has an
+// unfinished mutation.
+func busyVersions(db *gorm.DB, parentID string) *gorm.DB {
+	return db.Raw(`SELECT EXISTS(SELECT 1 FROM provider_skill_versions WHERE parent_id=? AND state IN('pending','uncertain','deleting','delete_uncertain'))`, parentID)
+}
+
 func (s *Service) FinishSkillDelete(ctx context.Context, in core.SkillDeleteCompletion) error {
 	if !validOwner(in.Owner) || !bounded(in.ParentID) || !bounded(in.OperationID) || (in.Outcome != "deleted" && in.Outcome != "uncertain" && (in.Outcome != "rejected" || !confirmedSkillRejection(in.EvidenceCode))) {
 		return core.ErrInvalidArgument
@@ -62,17 +74,18 @@ func (s *Service) FinishSkillDelete(ctx context.Context, in core.SkillDeleteComp
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}
+		g := store.G(ctx, tx)
 		p, e := skillParent(ctx, tx, in.Owner, in.ParentID, false)
 		if e != nil {
 			return e
 		}
-		table, id, state, op := "provider_resources", p.PublicID, p.State, p.OperationID
+		table, id, state, op := resourcesTable, p.PublicID, p.State, p.OperationID
 		if in.PublicVersionID != "" {
-			v, x := readSkillVersion(ctx, tx, p, `parent_id=$1 AND public_id=$2`, p.PublicID, in.PublicVersionID)
+			v, x := readSkillVersion(g, p, `parent_id=? AND public_id=?`, p.PublicID, in.PublicVersionID)
 			if x != nil {
 				return x
 			}
-			table, id, state, op = "provider_skill_versions", v.PublicVersionID, v.State, v.OperationID
+			table, id, state, op = versionsTable, v.PublicVersionID, v.State, v.OperationID
 		}
 		if op != in.OperationID {
 			return core.ErrConflict
@@ -90,12 +103,18 @@ func (s *Service) FinishSkillDelete(ctx context.Context, in core.SkillDeleteComp
 		if state != "deleting" && state != "delete_uncertain" {
 			return core.ErrConflict
 		}
-		if _, e = tx.Exec(ctx, `UPDATE `+table+` SET state=$2,updated_at=now() WHERE public_id=$1`, id, target); e != nil {
+		if e = update(g, table, id, map[string]any{"state": target}).Error; e != nil {
 			return e
 		}
 		if in.PublicVersionID == "" && target == "deleted" {
-			_, e = tx.Exec(ctx, `UPDATE provider_skill_versions SET state='deleted',updated_at=now() WHERE parent_id=$1`, p.PublicID)
+			e = deleteVersions(g, p.PublicID).Error
 		}
 		return e
 	})
+}
+
+// deleteVersions marks every version of the skill parentID deleted.
+func deleteVersions(db *gorm.DB, parentID string) *gorm.DB {
+	return db.Model(&model.ProviderSkillVersion{}).Where("parent_id = ?", parentID).
+		Updates(map[string]any{"state": "deleted", "updated_at": gorm.Expr("now()")})
 }

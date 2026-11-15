@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -19,6 +20,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Mask replaces secret setting values in responses; sending it back in a
@@ -241,17 +243,18 @@ func mergeSettings(fields []manifest.SecretField, old, in map[string]any, manage
 }
 
 func (a *API) loadValues(c *gin.Context, q store.Querier, key string, forUpdate bool) (map[string]any, error) {
-	sql := `SELECT config_enc FROM plugins WHERE key = $1`
+	db := store.G(c.Request.Context(), q).Select("config_enc").Where("key = ?", key)
 	if forUpdate {
-		sql += ` FOR UPDATE`
+		db = db.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})
 	}
-	var enc []byte
-	if err := q.QueryRow(c.Request.Context(), sql, key).Scan(&enc); err != nil {
+	var row model.Plugin
+	if err := db.Take(&row).Error; err != nil {
 		if isNoRows(err) {
 			return nil, core.ErrNotFound.WithMessage("plugin not found")
 		}
 		return nil, err
 	}
+	enc := row.ConfigEnc
 	values := map[string]any{}
 	if len(enc) == 0 {
 		return values, nil
@@ -336,8 +339,7 @@ func (a *API) putSettings(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(c.Request.Context(), `UPDATE plugins SET config_enc = $2, updated_at = now(),
-			row_version = row_version + 1 WHERE key = $1`, key, enc); err != nil {
+		if err := updatePlugin(store.G(c.Request.Context(), tx), key, "config_enc", enc).Error; err != nil {
 			return err
 		}
 		// Only key names are audited; values may be secret.

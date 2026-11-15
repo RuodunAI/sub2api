@@ -20,6 +20,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
@@ -27,6 +28,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // SchemaDSN hands out restricted plugin DSNs (implemented by dbschema.Manager).
@@ -231,18 +233,13 @@ func ConfigAAD(pluginKey string) []byte { return []byte("plugin-config:" + plugi
 // are those of its own version (grants.Granted).
 func (r *Runtime) loadSettings(ctx context.Context, pkg *registry.Package) (*settings, error) {
 	key := pkg.Key
-	var (
-		enc    []byte
-		egress string
-		limits []byte
-	)
-	err := r.o.DB.Pool.QueryRow(ctx,
-		`SELECT config_enc, egress_policy, resource_limits FROM plugins WHERE key = $1`, key).
-		Scan(&enc, &egress, &limits)
+	var row model.Plugin
+	err := pluginSettings(store.G(ctx, r.o.DB.Pool), key).Take(&row).Error
 	if err != nil {
 		return nil, err
 	}
-	st := &settings{configJSON: "{}", egress: egress}
+	enc, limits := row.ConfigEnc, []byte(row.ResourceLimits)
+	st := &settings{configJSON: "{}", egress: core.ValueOr(row.EgressPolicy, "")}
 	if len(enc) > 0 {
 		plain, err := r.o.Cipher.Decrypt(enc, ConfigAAD(key))
 		if err != nil {
@@ -274,4 +271,9 @@ func (r *Runtime) loadSettings(ctx context.Context, pkg *registry.Package) (*set
 	}
 	st.fingerprint = hex.EncodeToString(h.Sum(nil))
 	return st, nil
+}
+
+// pluginSettings reads the settings columns of plugin key.
+func pluginSettings(db *gorm.DB, key string) *gorm.DB {
+	return db.Select("config_enc", "egress_policy", "resource_limits").Where("key = ?", key)
 }
