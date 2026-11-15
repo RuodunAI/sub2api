@@ -7,9 +7,12 @@
 //
 // The matrix reloads with the detail (an upgrade or a confirmed review may
 // have granted new keys), its unsaved cells kept on top of what it reads
-// (useGrantMatrix). The save carries the version it read (C1): when the
-// grants changed meanwhile (409 version_conflict) it reads them again the
-// same way and asks to save once more. A save granting sensitive or critical
+// (useGrantMatrix), an edit a new lock refuses dropped and told. The save
+// carries the version it read (C1): when the grants changed meanwhile (409
+// version_conflict) it reads them again the same way; if the roles it saves
+// are as they were (the version moved for something else) it sends again at
+// once, else it asks to save once more, naming the cells edited on both
+// sides. A failed read keeps the edits for another try. A save granting sensitive or critical
 // permissions asks first; a critical one may also ask the server's step-up
 // (handled by the API client). Leaving the tab, the plugin or the page with
 // unsaved cells asks first.
@@ -24,7 +27,7 @@ import { useAuthStore } from '@/stores/auth'
 import { notifyError } from '@/utils/errors'
 import { isVersionConflict, missingText } from '@/utils/permErrors'
 import { confirmDiscard } from '@/composables/confirmDiscard'
-import { cellSummary, localOf, newRiskyGrants, type CellChange, type RoleKeys } from '@/authz/pluginGrants'
+import { cellSummary, localOf, newRiskyGrants, sameKeys, type CellChange, type RoleKeys } from '@/authz/pluginGrants'
 import PermissionMatrix from '@/components/permission/PermissionMatrix.vue'
 import PermRiskBadge from '@/components/permission/PermRiskBadge.vue'
 import { useGrantMatrix, type CellLock, type MatrixPerm, type MatrixRole } from '@/components/permission/useGrantMatrix'
@@ -94,25 +97,43 @@ const changeText = (c: CellChange & { perm: MatrixPerm }) =>
 
 // ------------------------------------------------------------------ load / save
 
-async function load() {
+/** Reads the matrix; false when that failed. A failed read again keeps what is shown, unsaved cells included. */
+async function load(): Promise<boolean> {
   loading.value = true
   loadFailed.value = false
   try {
     data.value = await api.get<PluginRoleMatrix>(`/permissions/plugins/${encodeURIComponent(props.detail.key)}`)
+    return true
   } catch (e) {
-    data.value = null
-    loadFailed.value = !isApiError(e) || e.status !== 404
-    if (loadFailed.value) notifyError(e)
+    const gone = isApiError(e) && e.status === 404
+    if (gone || !data.value) data.value = null
+    loadFailed.value = !gone && !data.value
+    if (!gone) notifyError(e)
+    return false
   } finally {
     loading.value = false
   }
 }
 
-/** Sends the changed roles only, each with all its keys of the plugin (the PUT replaces just the roles listed). */
-async function save() {
+/** "Operator · Edit flows, Admin · View rules": the cells of a merge to tell. */
+const cellList = (cells: CellChange[]) => cells.map((c) => `${roleName(c.role)} · ${lt(permOf(c.action)?.label) || localOf(c.action)}`).join(t('roles.listSep'))
+// A reload that a new lock refused some edits on says which.
+watch(
+  () => matrix.replayed.value,
+  (r) => {
+    if (r?.dropped.length) toast(t('plugins.matrix.editsDropped', { n: r.dropped.length, list: cellList(r.dropped) }, r.dropped.length), 'warning')
+  }
+)
+
+/**
+ * Sends the changed roles only, each with all its keys of the plugin (the
+ * PUT replaces just the roles listed). resent: the same save again after a
+ * 409 that left these roles as they were (asked about already, not again).
+ */
+async function save(resent = false) {
   const changed = [...new Set(matrix.changes.value.map((c) => c.role))]
-  const risky = newRiskyGrants(baseline.value, matrix.value.value, perms.value)
-  if (!(await confirmRiskyGrants(risky, (a) => permOf(a)?.label, roleName))) return
+  if (!changed.length) return
+  if (!resent && !(await confirmRiskyGrants(newRiskyGrants(baseline.value, matrix.value.value, perms.value), (a) => permOf(a)?.label, roleName))) return
   saving.value = true
   saveMissing.value = ''
   try {
@@ -123,9 +144,7 @@ async function save() {
     if (changed.some((k) => auth.me?.roles.includes(k))) auth.refreshPermissions().catch(() => undefined)
   } catch (e) {
     if (isVersionConflict(e)) {
-      // The cells changed here stay on top of what is read now.
-      await load()
-      toast(t('roles.conflictMerged'), 'info')
+      await conflict(changed, resent)
       return
     }
     saveMissing.value = missingText(e, t, roleName)
@@ -133,6 +152,17 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+/** A 409: reads again (the edits stay on top); sends again at once when the roles saved are as they were. */
+async function conflict(changed: string[], resent: boolean) {
+  const before = baseline.value
+  if (!(await load())) return
+  const merged = matrix.replayed.value
+  const untouched = changed.every((k) => sameKeys(before[k] ?? [], baseline.value[k] ?? []))
+  if (!resent && untouched && !merged?.dropped.length) return save(true)
+  const clashes = merged?.clashes ?? []
+  toast(clashes.length ? t('roles.conflictClashes', { list: cellList(clashes) }) : t('roles.conflictMerged'), 'info')
 }
 
 function reset() {
@@ -185,7 +215,7 @@ onBeforeRouteLeave(() => confirmDiscard(matrix.dirty.value))
               </li>
             </ul>
           </SDisclosure>
-          <template #actions><SettingsSaveBar :dirty="true" :saving="saving" @save="save" @reset="reset" /></template>
+          <template #actions><SettingsSaveBar :dirty="true" :saving="saving" @save="save()" @reset="reset" /></template>
         </StickyActionBar>
       </div>
     </SCard>

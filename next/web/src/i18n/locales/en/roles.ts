@@ -39,6 +39,7 @@ export default {
   groupSelectAll: 'Whole group',
   groupSkipsCritical: 'Security-critical permissions are not ticked with the whole group or Select all: tick them one by one',
   conflictMerged: 'The grants changed while you were editing: the latest are loaded with your changes on top. Check them and save again.',
+  conflictClashes: 'The grants changed while you were editing. You and someone else both changed {list}: yours are kept on top. Check them and save again.',
   permsNotLoaded: 'The permissions currently granted to this role could not be loaded. Saving will replace them with the selection below.',
   overwriteUnknown: 'The current permissions of this role are unknown. Replace them with the selection shown?',
   discardChanges: 'Discard unsaved changes to this role?',

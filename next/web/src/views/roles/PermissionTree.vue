@@ -10,7 +10,7 @@ import { defaultScopes, offerOf, withScopes } from '@/authz/scopeChoice'
 import { cellKeys, isSuggestedRole, localOf, restoreCell, suggestionState, withCell, type SuggestedRole } from '@/authz/pluginGrants'
 import PermRiskBadge from '@/components/permission/PermRiskBadge.vue'
 import { groupSections, permHint } from '@/components/permission/permRows'
-import ScopePicker, { type ScopeTarget } from './ScopePicker.vue'
+import ScopePicker, { type ScopeTarget } from '@/components/permission/ScopePicker.vue'
 
 // Permission checkboxes of a role, one collapsible block per module (core
 // modules first, then plugin modules). `allGranted` (superuser) ticks
@@ -94,6 +94,8 @@ const notHeld = (p: PermissionItem) => !props.allGranted && !props.readOnly && p
 
 /** What a module's or group's checkbox ticks: the selectable permissions but the critical ones (D1), ticked one by one. */
 const bulk = (perms: PermissionItem[]) => perms.filter((p) => selectable(p) && p.risk !== 'critical')
+/** Only a group holding a critical permission says the bulk tick leaves it. */
+const hasCritical = (perms: PermissionItem[]) => perms.some((p) => p.risk === 'critical')
 // "All" means every one the checkbox ticks.
 function stateOf(perms: PermissionItem[]): 'all' | 'some' | 'none' {
   const rows = bulk(perms)
@@ -192,7 +194,7 @@ function restoreSuggested(m: PermissionModule) {
               :indeterminate="stateOf(m.permissions) === 'some'"
               :disabled="readOnly || !bulk(m.permissions).length"
               :label="t('roles.selectAll')"
-              :title="t('roles.groupSkipsCritical')"
+              :title="hasCritical(m.permissions) ? t('roles.groupSkipsCritical') : undefined"
               @update:model-value="toggleAll(m.permissions)"
             />
           </div>
@@ -212,7 +214,7 @@ function restoreSuggested(m: PermissionModule) {
                   :indeterminate="stateOf(s.perms) === 'some'"
                   :disabled="readOnly || !bulk(s.perms).length"
                   :label="t('roles.groupSelectAll')"
-                  :title="t('roles.groupSkipsCritical')"
+                  :title="hasCritical(s.perms) ? t('roles.groupSkipsCritical') : undefined"
                   data-testid="group-select-all"
                   @update:model-value="toggleAll(s.perms)"
                 />

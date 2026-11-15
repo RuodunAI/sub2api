@@ -39,6 +39,7 @@ export default {
   groupSelectAll: '整组',
   groupSkipsCritical: '关键权限不随整组或全选勾上，需要单独勾选',
   conflictMerged: '授权在你编辑期间被改过：已读取最新数据，并保留了你改动的权限，请检查后再保存。',
+  conflictClashes: '授权在你编辑期间被改过，你和别人都改了：{list}。已以你的改动为准，请检查后再保存。',
   permsNotLoaded: '无法加载该角色当前拥有的权限。保存后将以下方的勾选结果替换现有权限。',
   overwriteUnknown: '该角色当前的权限未知，确定用当前勾选的结果替换吗？',
   discardChanges: '放弃对该角色未保存的修改？',

@@ -3,6 +3,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { i18n } from '@/i18n'
 import { ApiError } from '@sub2api/host'
+import { toastState } from '@sub2api/ui'
 import RolesView from './RolesView.vue'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(async (_path: string): Promise<unknown> => []), post: vi.fn(async (_path: string) => ({ id: 1 })), put: vi.fn(async () => ({})), patch: vi.fn(async () => ({})), list: vi.fn(async () => ({ items: [], page: { total: 0 } })) }))
@@ -372,6 +373,21 @@ describe('RolesView saving permissions', () => {
     await w.get('[data-testid="role-save"]').trigger('click')
     await flushPromises()
     expect(mocks.put).toHaveBeenCalledWith('/roles/2/permissions', { permission_keys: ['plugin.g:bypass', 'plugin.g:read', 'user:delete', 'user:read'], version: 7 })
+  })
+
+  it('a version conflict that left the role as it was saves again at once with the new version (N2)', async () => {
+    mocks.put.mockClear()
+    toastState.items.splice(0)
+    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { version: 9 } }))
+    const w = await open([role({})])
+    // Meanwhile another role changed: this one reads the same, at a new version.
+    lookups.roles = [role({ version: 9 })]
+    await grant(w, ['user:delete'])
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenCalledTimes(2)
+    expect(mocks.put).toHaveBeenLastCalledWith('/roles/2/permissions', expect.objectContaining({ version: 9 }))
+    expect(toastState.items.map((x) => x.message)).not.toContain(i18n.global.t('roles.conflictMerged'))
   })
 
   it('a version conflict reads the role again and keeps the edited cells on top', async () => {

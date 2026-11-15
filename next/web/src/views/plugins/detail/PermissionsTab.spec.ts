@@ -183,23 +183,79 @@ describe('plugin permissions tab', () => {
     expect(w.get('[data-testid="matrix-save-all"]').text()).toContain('Admin · Read flows: Granted → Not granted')
   })
 
-  it('a version conflict reads the matrix again with the local cells on top, to save once more', async () => {
-    const w = await render({}, { ...MATRIX, version: 41 })
-    await box(w, EXPORT, 'operator').setValue(true)
-    // Meanwhile someone granted the lead's read.
+  /** The matrix as read again after a 409, version 42, changed by over. */
+  function readAgain(over: (m: PluginRoleMatrix) => void) {
     const fresh = structuredClone({ ...MATRIX, version: 42 })
-    fresh.roles[1].permission_keys = [READ]
+    over(fresh)
     mocks.get.mockImplementation(async (path: string) => (path.startsWith('/permissions/plugins/') ? structuredClone(fresh) : []))
     mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { version: 42 } }))
+    return fresh
+  }
+
+  it('a version conflict that left the saved roles as they were sends again at once with the new version (N2)', async () => {
+    const w = await render({}, { ...MATRIX, version: 41 })
+    await box(w, EXPORT, 'operator').setValue(true)
+    // Meanwhile someone granted the lead's read: not a role this save touches.
+    const fresh = readAgain((m) => (m.roles[3].permission_keys = [READ]))
+    mocks.put.mockResolvedValueOnce(fresh)
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
+    expect(mocks.put).toHaveBeenCalledTimes(2)
+    expect(mocks.put).toHaveBeenLastCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] }, version: 42 })
+    // Asked about once only, and nothing to tell but the save.
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(mocks.toast).not.toHaveBeenCalledWith(i18n.global.t('roles.conflictMerged'), 'info')
+    expect(mocks.toast).toHaveBeenCalledWith(i18n.global.t('plugins.matrix.saved'), 'success')
+  })
+
+  it('a version conflict on a saved role reads it again with the local cells on top, naming a cell both changed, to save once more (N2)', async () => {
+    const w = await render({}, { ...MATRIX, version: 41 })
+    await box(w, EXPORT, 'operator').setValue(true)
+    await box(w, EXPORT, 'admin').setValue(false)
+    // Meanwhile someone dropped the operator's read and gave the admin's export a second thought too (took it away).
+    const fresh = readAgain((m) => {
+      m.roles[2].permission_keys = [OLD]
+      m.roles[1].permission_keys = [READ]
+    })
+    await w.get('[data-testid="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenCalledTimes(1)
     expect(mocks.toast).toHaveBeenCalledWith(i18n.global.t('roles.conflictMerged'), 'info')
-    expect(box(w, EXPORT, 'admin').element.checked).toBe(false)
+    expect(box(w, READ, 'operator').element.checked).toBe(false)
     expect(box(w, EXPORT, 'operator').element.checked).toBe(true)
     mocks.put.mockResolvedValueOnce(fresh)
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
-    expect(mocks.put).toHaveBeenLastCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] }, version: 42 })
+    expect(mocks.put).toHaveBeenLastCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, EXPORT] }, version: 42 })
+  })
+
+  it('an edit a new lock refuses on reading again is dropped and told (N4)', async () => {
+    const w = await render({}, { ...MATRIX, version: 41 })
+    await box(w, EXPORT, 'operator').setValue(true)
+    // Meanwhile the operator stopped being the editor's to change.
+    readAgain((m) => {
+      m.roles[2] = { ...m.roles[2], editable: false, denied: 'not_assignable', permission_keys: [OLD, READ, 'plugin.guard:x'] }
+    })
+    await w.get('[data-testid="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenCalledTimes(1)
+    expect(mocks.toast).toHaveBeenCalledWith(i18n.global.t('plugins.matrix.editsDropped', { n: 1, list: 'Operator · Export records' }, 1), 'warning')
+    expect(w.find('[data-testid="matrix-save"]').exists()).toBe(false)
+  })
+
+  it('a failed read after a conflict keeps the edits to save again (N4)', async () => {
+    const w = await render({}, { ...MATRIX, version: 41 })
+    await box(w, EXPORT, 'operator').setValue(true)
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/permissions/plugins/')) throw new ApiError(503, { code: 'unavailable', message: 'down' })
+      return []
+    })
+    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { version: 42 } }))
+    await w.get('[data-testid="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(box(w, EXPORT, 'operator').element.checked).toBe(true)
+    expect(w.find('[data-testid="matrix-load-failed"]').exists()).toBe(false)
+    expect(w.get('[data-testid="matrix-save"]').text()).toContain('1 unsaved change')
   })
 
   it('without role:define the matrix is read-only', async () => {

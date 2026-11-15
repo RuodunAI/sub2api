@@ -169,6 +169,7 @@ describe('PermissionMatrix', () => {
     expect(matrix.value.value.cs).toEqual([`${MANAGE}:own`, READ])
     expect(matrix.value.value.cs.some((k) => k.endsWith(':*'))).toBe(false)
     expect(w.get<HTMLInputElement>('tr[data-group="flow"] input[data-group-role="cs"]').element.checked).toBe(true)
+    expect(w.get('tr[data-group="flow"] input[data-group-role="cs"]').attributes('title')).toBeUndefined()
 
     await w.get('tr[data-group="flow"] input[data-group-role="cs"]').setValue(false)
     expect(matrix.value.value.cs).toEqual([])
@@ -222,6 +223,8 @@ describe('PermissionMatrix', () => {
     const perms = [perm(READ, { group: 'flow' }), perm(EXEMPT, { group: 'flow', risk: 'critical' })]
     const { w, matrix } = render({ baseline: {}, perms })
     const group = () => w.get<HTMLInputElement>('tr[data-group="flow"] input[data-group-role="admin"]')
+    // Its title says so, as no group without a critical row does (N5).
+    expect(group().attributes('title')).toBe(i18n.global.t('roles.groupSkipsCritical'))
     await group().setValue(true)
     expect(matrix.value.value.admin).toEqual([READ])
     expect(group().element.checked).toBe(true)

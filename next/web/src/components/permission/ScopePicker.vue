@@ -81,6 +81,16 @@ function addRef(value: string) {
 
 // group/<g>/account/<id>: the group is picked first, then an account preferring it.
 const pairGroup = ref('')
+/** A pair as one chip value, "<group>/<account>". */
+const pairKeys = computed(() => choice.value.pairs.map(([g, id]) => `${g}/${id}`))
+const pairOf = (key: string): [number, number] => {
+  const [g, id] = key.split('/').map(Number)
+  return [g, id]
+}
+const pairLabel = (key: string) => {
+  const [g, id] = pairOf(key)
+  return `${label('group', g)} / ${label('account', id)}`
+}
 function addPair(account: string) {
   const g = Number(pairGroup.value)
   if (!g || !account || choice.value.pairs.some(([pg, id]) => pg === g && id === Number(account))) return
@@ -143,42 +153,46 @@ function addPair(account: string) {
       @pick="set({ ids: added(choice.ids, $event) })"
     />
 
-    <!-- group/<g>/account/<id> -->
-    <div v-if="grouped && rows && (offer.groups || choice.pairs.length)" class="flex flex-wrap items-center gap-1.5" :class="choice.all ? 'opacity-60' : ''" data-testid="scope-pairs">
-      <SHint inline size="xs" class="w-28 shrink-0">{{ t('roles.scope.pairs') }}</SHint>
-      <SChip
-        v-for="[g, id] in choice.pairs"
-        :key="`${g}/${id}`"
-        size="xs"
-        tone="primary"
-        :closable="!narrowOff"
-        @close="set({ pairs: choice.pairs.filter(([pg, pid]) => pg !== g || pid !== id) })"
-      >{{ label('group', g) }} / {{ label('account', id) }}</SChip>
-      <template v-if="offer.groups && !narrowOff">
-        <EntityPicker
-          v-if="offer.groups === 'any'"
-          v-model:id="pairGroup"
-          class="min-w-36"
-          kind="group"
-          size="sm"
-          :placeholder="t('roles.scope.pairGroup')"
-          data-testid="scope-pair-group"
-        />
-        <template v-else>
-          <SChip v-for="g in offer.groups" :key="g" size="xs" :pressed="pairGroup === String(g)" @update:pressed="pairGroup = $event ? String(g) : ''">{{ label('group', g) }}</SChip>
+    <!-- group/<g>/account/<id>: the group is picked first, then an account preferring it -->
+    <ScopeChipRow
+      v-if="grouped && rows && (offer.groups || choice.pairs.length)"
+      :label="t('roles.scope.pairs')"
+      offer="any"
+      :held="pairKeys"
+      :label-of="pairLabel"
+      kind="account"
+      :disabled="narrowOff"
+      :dimmed="choice.all"
+      data-testid="scope-pairs"
+      @update="set({ pairs: $event.map(pairOf) })"
+    >
+      <template #picker>
+        <template v-if="offer.groups">
+          <EntityPicker
+            v-if="offer.groups === 'any'"
+            v-model:id="pairGroup"
+            class="min-w-36"
+            kind="group"
+            size="sm"
+            :placeholder="t('roles.scope.pairGroup')"
+            data-testid="scope-pair-group"
+          />
+          <template v-else>
+            <SChip v-for="g in offer.groups" :key="g" size="xs" :pressed="pairGroup === String(g)" @update:pressed="pairGroup = $event ? String(g) : ''">{{ label('group', g) }}</SChip>
+          </template>
+          <EntityPicker
+            v-if="pairGroup"
+            class="min-w-36 flex-1"
+            kind="account"
+            size="sm"
+            :placeholder="t('roles.scope.pairAccount')"
+            :scope="{ prefer_group_id: pairGroup }"
+            data-testid="scope-pair-account"
+            @update:id="addPair"
+          />
         </template>
-        <EntityPicker
-          v-if="pairGroup"
-          class="min-w-36 flex-1"
-          kind="account"
-          size="sm"
-          :placeholder="t('roles.scope.pairAccount')"
-          :scope="{ prefer_group_id: pairGroup }"
-          data-testid="scope-pair-account"
-          @update:id="addPair"
-        />
       </template>
-    </div>
+    </ScopeChipRow>
 
     <!-- <resource>/<value>: a plugin resource or a static enum -->
     <ScopeChipRow

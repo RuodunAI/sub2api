@@ -44,7 +44,7 @@ import UserCreateDialog from './UserCreateDialog.vue'
 import UserPricingDrawer from './UserPricingDrawer.vue'
 import UserSegmentMoveDialog from './UserSegmentMoveDialog.vue'
 import { segmentFilterOptions, useNamedSegments } from './userSegments'
-import { useScopeLabels } from '@/views/roles/scopeLabels'
+import { useScopeLabels } from '@/components/permission/scopeLabels'
 import type { PermRef } from '@/generated/permissions'
 
 const { t } = useI18n()

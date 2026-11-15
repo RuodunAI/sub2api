@@ -63,6 +63,14 @@ describe('ScopePicker', () => {
     expect(emitted(w, 'account:read')).toEqual(['account:read:group/3/account/9'])
   })
 
+  it('a chosen account within a group is a chip of the same row kind, closed to take it away', async () => {
+    const w = render('account:read', ['group/3/account/9', 'own'], [''])
+    const chip = w.get('[data-testid="scope-pairs"]')
+    expect(chip.text()).toContain('/')
+    await chip.get('button[aria-label]').trigger('click')
+    expect(emitted(w, 'account:read')).toEqual(['account:read:own'])
+  })
+
   it('offers proxies by id, without groups', () => {
     const w = render('proxy:manage', ['proxy/8'], ['own', 'proxy/8', 'proxy/9'], 'proxy')
     expect(w.find('[data-testid="scope-groups"]').exists()).toBe(false)

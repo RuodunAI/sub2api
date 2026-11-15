@@ -11,7 +11,7 @@
 // (`differs`, the mark shown on all entries; the role editor answers alike
 // through pluginGrants.suggestionState) and "not saved" (`changes` against
 // `baseline`: the detail page's save bar, the consent page's payload rows).
-import { computed, ref, watch, type Ref } from 'vue'
+import { computed, ref, shallowRef, watch, type Ref } from 'vue'
 import type { LText, PermissionItem } from '@/api/types'
 import { lt } from '@/i18n'
 import { ALL_SCOPE, type Scope } from '@/authz/implies'
@@ -23,10 +23,12 @@ import {
   grantableWithin,
   isSuggestedRole,
   narrows,
+  replayCells,
   sameKeys,
   suggestedOf,
   suggestionState,
   withCell,
+  type Replay,
   type RoleKeys,
   type SuggestionState
 } from '@/authz/pluginGrants'
@@ -123,10 +125,10 @@ export function useGrantMatrix(opts: GrantMatrixOptions) {
   const suggested = computed(() => suggestedOf(perms.value))
   const cell = (p: MatrixPerm, r: MatrixRole) => cellKeys(value.value[r.key] ?? [], p.action)
 
-  /** A locked cell takes nothing, or (shrink-only) only less than it holds. */
-  const allows = (p: MatrixPerm, r: MatrixRole, next: readonly string[]) => {
+  /** A locked cell takes nothing, or (shrink-only) only less than it holds (from: what it holds, its current keys by default). */
+  const allows = (p: MatrixPerm, r: MatrixRole, next: readonly string[], from: readonly string[] = cell(p, r)) => {
     const lock = lockOf(p, r)
-    return !readOnly.value && (lock === null || (isShrinkOnly(lock) && narrows(cell(p, r), next, p.action)))
+    return !readOnly.value && (lock === null || (isShrinkOnly(lock) && narrows(from, next, p.action)))
   }
   /** Writes cells of one role at once; the ones their lock refuses are skipped. */
   function write(r: MatrixRole, cells: ReadonlyArray<readonly [MatrixPerm, readonly string[]]>) {
@@ -143,17 +145,30 @@ export function useGrantMatrix(opts: GrantMatrixOptions) {
       perms.value.map((p) => p.action),
       roles.value.map((r) => r.key)
     )
+
+  /**
+   * The last merge of the unsaved cells onto a new baseline (a reload, or a
+   * 409 read again): what was kept, dropped by a lock that came in, or kept
+   * over someone else's change of the same cell. Null until a baseline is
+   * replaced while cells are unsaved.
+   */
+  const replayed = shallowRef<Replay | null>(null)
   watch(
     opts.baseline,
     (next, prev) => {
-      const kept = prev ? diffFrom(prev) : []
+      const edited = value.value
       reset()
-      for (const r of roles.value) {
-        write(r, kept.filter((c) => c.role === r.key).flatMap((c) => {
-          const p = perms.value.find((x) => x.action === c.action)
-          return p ? [[p, c.to] as const] : []
-        }))
-      }
+      if (!prev) return
+      const roleOf = new Map(roles.value.map((r) => [r.key, r]))
+      const permOf = new Map(perms.value.map((p) => [p.action, p]))
+      const actions = perms.value.map((p) => p.action)
+      const r = replayCells(prev, edited, value.value, actions, [...roleOf.keys()], (c, now) => {
+        const p = permOf.get(c.action)
+        const role = roleOf.get(c.role)
+        return !!p && !!role && allows(p, role, c.to, now)
+      })
+      value.value = r.value
+      replayed.value = r.kept.length || r.dropped.length ? r : null
     },
     { immediate: true }
   )
@@ -254,6 +269,7 @@ export function useGrantMatrix(opts: GrantMatrixOptions) {
     readOnly,
     offerFor,
     value,
+    replayed,
     cell,
     state,
     setCell,

@@ -3,8 +3,10 @@
 // to add more. A holder of every value (`offer` 'any') sees the chosen ones
 // as closable chips and picks others (EntityPicker of `kind`, emitting
 // `pick` with the picked id); a restricted one toggles the values it may
-// offer, with those held beyond them shown to take away only. Attrs (the
-// row's data-testid) go to the row.
+// offer, with those held beyond them shown to take away only. A row whose
+// values are picked in steps (group, then account) puts its own controls in
+// the `picker` slot instead of the one EntityPicker. Attrs (the row's
+// data-testid) go to the row.
 import { SChip, SHint } from '@sub2api/ui'
 import EntityPicker from '@/components/EntityPicker.vue'
 import type { EntityKind } from '@/components/entity/entities'
@@ -49,8 +51,9 @@ const toggled = (id: T) => (props.held.includes(id) ? props.held.filter((x) => x
       @close="emit('update', held.filter((x) => x !== id))"
       @update:pressed="emit('update', toggled(id))"
     >{{ labelOf(id) }}</SChip>
+    <slot v-if="offer === 'any' && !disabled && $slots.picker" name="picker" />
     <EntityPicker
-      v-if="offer === 'any' && !disabled"
+      v-else-if="offer === 'any' && !disabled"
       class="min-w-40 flex-1"
       :kind="kind"
       size="sm"

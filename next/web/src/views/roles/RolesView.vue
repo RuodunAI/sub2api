@@ -13,7 +13,7 @@ import { inAllLocales, lt } from '@/i18n'
 import { fieldErrors, notifyError } from '@/utils/errors'
 import { applyFormError } from '@/utils/formErrors'
 import { isVersionConflict, missingText } from '@/utils/permErrors'
-import { actionOf, diffCells, newRiskyGrants, withCell } from '@/authz/pluginGrants'
+import { actionOf, newRiskyGrants, replayCells, sameKeys } from '@/authz/pluginGrants'
 import { useEditorGrants } from '@/components/permission/useEditorGrants'
 import { confirmRiskyGrants } from '@/components/permission/confirmRiskyGrants'
 import PermissionTree from './PermissionTree.vue'
@@ -134,7 +134,12 @@ async function loadMembers(r: RoleRow) {
 
 // ------------------------------------------------------------------ save
 
-async function save() {
+function save() {
+  return persist(false)
+}
+
+/** Saves the changed parts; resent: the same save again after a 409 that left the role as it was (asked about already). */
+async function persist(resent: boolean): Promise<void> {
   const r = selected.value
   if (!r || readOnly.value) return
   editErrors.value = {}
@@ -142,8 +147,8 @@ async function save() {
     editErrors.value.name = t('common.required')
     return
   }
-  if (permsDirty.value && permsMissing.value && !(await confirm({ message: t('roles.overwriteUnknown'), danger: true }))) return
-  if (permsDirty.value && !(await confirmRisky(r))) return
+  if (!resent && permsDirty.value && permsMissing.value && !(await confirm({ message: t('roles.overwriteUnknown'), danger: true }))) return
+  if (!resent && permsDirty.value && !(await confirmRisky(r))) return
   // Each changed part has its own endpoint; they run in order and stop at the
   // first refusal. The permissions go first: they carry the version read with
   // the role, which any other write would move on (C1).
@@ -165,7 +170,7 @@ async function save() {
   } catch (e) {
     if (isVersionConflict(e)) {
       saving.value = false
-      return rebase(r).catch(notifyError)
+      return rebase(r, resent).catch(notifyError)
     }
     missing = missingText(e, t)
     showSaveError(e)
@@ -184,22 +189,27 @@ function confirmRisky(r: RoleRow) {
 }
 
 /**
- * The role's permissions changed since they were read (409 version_conflict):
- * reads them again and puts the edited cells (one action each, as the matrix
- * keeps them) on top, to be saved once more. The other fields stay as edited.
+ * A 409 version_conflict: reads the roles again (a failed read keeps the
+ * edits for another try). The role as it was (the version moved for
+ * something else): saved again at once. Else the edited cells (one action
+ * each, as the matrix keeps them) go on top of what is read (replayCells),
+ * to be saved once more, naming the cells someone else changed too. The
+ * other fields stay as edited.
  */
-async function rebase(r: RoleRow) {
+async function rebase(r: RoleRow, resent: boolean): Promise<void> {
   const before = original.value.perms
   const edited = [...perms.value]
   await loadRoles()
   const fresh = roles.value.find((x) => x.id === r.id)
   if (!fresh) return
   const keys = [...(fresh.permission_keys ?? [])].sort()
-  const actions = [...new Set([...before, ...edited].map(actionOf))]
-  const cells = diffCells({ [r.key]: before }, { [r.key]: edited }, actions, [r.key])
+  if (!resent && sameKeys(keys, before)) return persist(true)
+  const actions = [...new Set([...before, ...edited, ...keys].map(actionOf))]
+  const merged = replayCells({ [r.key]: before }, { [r.key]: edited }, { [r.key]: keys }, actions, [r.key])
   original.value = { ...original.value, perms: keys }
-  perms.value = new Set(cells.reduce((acc, c) => withCell(acc, c.action, c.to), keys))
-  toast(t('roles.conflictMerged'), 'info')
+  perms.value = new Set(merged.value[r.key])
+  const list = merged.clashes.map((c) => lt(catalog.value.get(c.action)?.label) || c.action).join(t('roles.listSep'))
+  toast(list ? t('roles.conflictClashes', { list }) : t('roles.conflictMerged'), 'info')
 }
 
 /**

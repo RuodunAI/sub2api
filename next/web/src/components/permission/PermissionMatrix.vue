@@ -24,7 +24,7 @@ import { SBadge, SButton, SCheckbox, SHint, SIcon, toast, useScrollClip } from '
 import type { PermissionGroup } from '@/api/types'
 import { lt } from '@/i18n'
 import { cellOfScopes, scopesOfCell } from '@/authz/pluginGrants'
-import ScopePicker from '@/views/roles/ScopePicker.vue'
+import ScopePicker from './ScopePicker.vue'
 import PermRiskBadge from './PermRiskBadge.vue'
 import MatrixScopeCell from './MatrixScopeCell.vue'
 import { groupSections, permHint } from './permRows'
@@ -83,7 +83,10 @@ const sections = computed(() => groupSections(folded.value ? perms.value.slice(0
 const readonlyColumns = computed(() => new Set(roles.value.filter((r) => perms.value.length > 0 && perms.value.every((p) => state(p, r).lock === 'role_readonly')).map((r) => r.key)))
 const anyPending = computed(() => perms.value.some((p) => roles.value.some((r) => state(p, r).lock === 'pending_review')))
 /** A lock icon in the cell: frozen by the cell itself, not by its column (whose heading shows it) nor marked otherwise. */
-const lockIcon = (r: MatrixRole, v: CellState) => isFixed(v.lock) && v.lock !== 'superuser' && v.lock !== 'pending_review' && !readonlyColumns.value.has(r.key)
+const lockIcon = (r: MatrixRole, v: CellState) => isFixed(v.lock) && v.lock !== 'superuser' && v.lock !== 'pending_review' && v.lock !== 'holders_hidden' && !readonlyColumns.value.has(r.key)
+/** An inherited cell whose holders the viewer may not see: a badge in place of a control that would read "not granted". */
+const anyHoldersHidden = computed(() => perms.value.some((p) => shownRoles.value.some((r) => state(p, r).lock === 'holders_hidden')))
+const hasCritical = (rows: readonly MatrixPerm[]) => rows.some((p) => p.risk === 'critical')
 const anyLock = computed(() => readonlyColumns.value.size > 0 || perms.value.some((p) => shownRoles.value.some((r) => lockIcon(r, state(p, r)))))
 const rowDiffers = (p: MatrixPerm) => roles.value.some((r) => props.matrix.differs(p, r))
 
@@ -169,7 +172,7 @@ async function openScope(p: MatrixPerm, r: MatrixRole) {
                   :indeterminate="matrix.groupState(s.perms, r) === 'some'"
                   :disabled="!groupOpen(s.perms, r)"
                   :aria-label="`${t('roles.groupSelectAll')} · ${s.label} · ${roleName(r)}`"
-                  :title="t('roles.groupSkipsCritical')"
+                  :title="hasCritical(s.perms) ? t('roles.groupSkipsCritical') : undefined"
                   :data-group-role="r.key"
                   @update:model-value="matrix.toggleGroup(s.perms, r)"
                 />
@@ -188,7 +191,7 @@ async function openScope(p: MatrixPerm, r: MatrixRole) {
                     variant="ghost"
                     icon="refresh"
                     icon-only
-                    class="ml-auto shrink-0"
+                    class="ml-auto hidden shrink-0 md:inline-flex"
                     :aria-label="t('roles.restoreSuggested')"
                     :title="t('roles.restoreSuggested')"
                     data-testid="matrix-restore-row"
@@ -211,8 +214,9 @@ async function openScope(p: MatrixPerm, r: MatrixRole) {
                 :data-role="r.key"
                 :data-lock="state(p, r).lock ?? undefined"
               >
+                <SBadge v-if="state(p, r).lock === 'holders_hidden'" size="xs" tone="gray" data-testid="cell-by-inheritance">{{ t('plugins.matrix.byInheritance') }}</SBadge>
                 <!-- The mark sits on the control's corner, so it reads as this cell's whatever the row's height. -->
-                <span class="relative inline-flex max-w-full" :class="p.scope ? 'w-full' : ''">
+                <span v-else class="relative inline-flex max-w-full" :class="p.scope ? 'w-full' : ''">
                   <SCheckbox
                     v-if="!p.scope"
                     bare
@@ -277,6 +281,7 @@ async function openScope(p: MatrixPerm, r: MatrixRole) {
       <span class="inline-flex items-center gap-1"><span class="h-1.5 w-1.5 rounded-full bg-gray-400 dark:bg-gray-500" />{{ t('roles.differs') }}</span>
       <span v-if="anyPending" class="inline-flex items-center gap-1"><SBadge size="xs" tone="warning">{{ t('plugins.matrix.pendingReview') }}</SBadge>{{ t('plugins.matrix.pendingReviewHint') }}</span>
       <span v-if="anyLock" class="inline-flex items-center gap-1" data-testid="matrix-lock-legend"><SIcon name="lock" class="h-3 w-3" />{{ t('plugins.matrix.lockLegend') }}</span>
+      <span v-if="anyHoldersHidden" class="inline-flex items-center gap-1" data-testid="matrix-inherit-legend"><SBadge size="xs" tone="gray">{{ t('plugins.matrix.byInheritance') }}</SBadge>{{ t('plugins.matrix.holdersHidden') }}</span>
     </SHint>
   </div>
 </template>

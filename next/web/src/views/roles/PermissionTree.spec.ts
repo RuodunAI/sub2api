@@ -5,7 +5,7 @@ import type { PermissionItem, PermissionModule } from '@/api/types'
 import { parsePermission, permissionIndex } from '@/authz/implies'
 import { RESTORE_ACTION, RESTORE_CASES } from '@/authz/testing/restoreCases'
 import PermissionTree from './PermissionTree.vue'
-import ScopePicker from './ScopePicker.vue'
+import ScopePicker from '@/components/permission/ScopePicker.vue'
 
 enableAutoUnmount(afterEach)
 vi.mock('@/components/entity/lookup', () => ({ useEntityNames: () => ({ label: (_kind: string, id: number) => `#${id}`, gone: () => false }) }))

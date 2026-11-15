@@ -233,8 +233,11 @@ describe('plugin consent page', () => {
     })
     const w = render(withMatrix({ user_permissions: [renamed, perm('demo.read')] }))
     await flushPromises()
-    expect(roleBox(w, 'flow:edit', 'operator').element.disabled).toBe(true)
+    // Not an empty box reading "not granted": a badge, explained in the legend.
+    expect(td(w, 'flow:edit', 'operator').find('input').exists()).toBe(false)
+    expect(td(w, 'flow:edit', 'operator').get('[data-testid="cell-by-inheritance"]').text()).toBe(i18n.global.t('plugins.matrix.byInheritance'))
     expect(td(w, 'flow:edit', 'operator').attributes('title')).toBe(i18n.global.t('plugins.matrix.holdersHidden'))
+    expect(w.get('[data-testid="matrix-inherit-legend"]').text()).toContain(i18n.global.t('plugins.matrix.holdersHidden'))
     await roleBox(w, 'demo.read', 'operator').setValue(true)
     expect(Object.keys((await approve(w)).new_permission_roles)).toEqual(['demo.read'])
   })
