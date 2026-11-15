@@ -15,10 +15,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Limits of one notification.
@@ -122,39 +124,54 @@ func (s *Service) Notify(ctx context.Context, source string, n core.Notification
 	}
 	var out core.NotifyResult
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+		db := store.G(ctx, tx)
 		// One sender at a time per source, so the dedupe and rate checks
 		// below see each other's rows.
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('notify:' || $1))`, source); err != nil {
+		if err := db.Exec(`SELECT pg_advisory_xact_lock(hashtext('notify:' || ?))`, source).Error; err != nil {
 			return err
 		}
 		if n.DedupeKey != "" {
-			// A failed notification does not hold its key: the next one may get through.
-			err := tx.QueryRow(ctx, `SELECT id FROM notifications WHERE source = $1 AND dedupe_key = $2 AND status <> 'failed'
-				AND created_at > now() - make_interval(secs => $3) ORDER BY id DESC LIMIT 1`, source, n.DedupeKey, n.DedupeSeconds).Scan(&out.ID)
+			var held model.Notification
+			err := heldDedupeKey(db, source, n.DedupeKey, n.DedupeSeconds, &held).Error
 			if err == nil {
-				out.Deduplicated = true
+				out.ID, out.Deduplicated = held.ID, true
 				return nil
 			}
 			if !store.IsNoRows(err) {
 				return err
 			}
 		}
-		var recent int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM notifications WHERE source = $1 AND created_at > now() - make_interval(secs => $2)`,
-			source, s.opts.RateWindow.Seconds()).Scan(&recent); err != nil {
+		var recent int64
+		if err := db.Model(&model.Notification{}).Where("source = ? AND created_at > now() - make_interval(secs => ?)",
+			source, s.opts.RateWindow.Seconds()).Count(&recent).Error; err != nil {
 			return err
 		}
-		if recent >= s.opts.RateLimit {
+		if recent >= int64(s.opts.RateLimit) {
 			return core.ErrRateLimited.WithMessage("notification rate limit exceeded")
 		}
-		return tx.QueryRow(ctx, `INSERT INTO notifications (source, channel, recipients, subject, body, severity, dedupe_key, provider)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
-			source, n.Channel, n.Recipients, n.Subject, n.Body, n.Severity, n.DedupeKey, provider).Scan(&out.ID)
+		// An empty dedupe key is the column's default, so GORM leaving the
+		// zero value out of the INSERT (default:(-)) stores the same ''.
+		row := model.Notification{Source: source, Channel: n.Channel, Recipients: store.Strings(n.Recipients), Subject: n.Subject,
+			Body: n.Body, Severity: n.Severity, DedupeKey: n.DedupeKey, Provider: &provider}
+		if err := db.Create(&row).Error; err != nil {
+			return err
+		}
+		out.ID = row.ID
+		return nil
 	})
 	if err == nil && !out.Deduplicated {
 		s.poke()
 	}
 	return out, err
+}
+
+// heldDedupeKey reads into dst the id of the newest notification of source
+// holding key within the last secs seconds. A failed notification does not
+// hold its key: the next one may get through.
+func heldDedupeKey(db *gorm.DB, source, key string, secs int, dst *model.Notification) *gorm.DB {
+	return db.Select("id").Where(`source = ? AND dedupe_key = ? AND status <> 'failed'
+		AND created_at > now() - make_interval(secs => ?)`, source, key, secs).
+		Order("id DESC").Take(dst)
 }
 
 // Field error codes of a notification (details.fields[].code), stable for

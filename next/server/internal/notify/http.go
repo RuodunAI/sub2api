@@ -4,10 +4,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func (s *Service) RegisterRoutes(r *httpapi.Router) {
@@ -57,34 +60,46 @@ func (s *Service) list(c *gin.Context) {
 	ctx := c.Request.Context()
 	page, size := httpapi.Pagination(c)
 	status, source := c.Query("status"), c.Query("source")
-	const where = `WHERE ($1 = '' OR status = $1) AND ($2 = '' OR source = $2)`
+	db := store.G(ctx, s.db.Pool)
 	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM notifications `+where, status, source).Scan(&total); err != nil {
+	if err := db.Model(&model.Notification{}).Scopes(filterRecords(status, source)).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT id, source, channel, recipients, subject, body, severity, status, attempts, last_error,
-		next_attempt_at, created_at, sent_at FROM notifications `+where+` ORDER BY id DESC LIMIT $3 OFFSET $4`, status, source, size, (page-1)*size)
-	if err != nil {
+	var rows []model.Notification
+	if err := recordPage(db, status, source, size, (page-1)*size, &rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	defer rows.Close()
-	items := []Record{}
-	for rows.Next() {
-		var r Record
-		if err := rows.Scan(&r.ID, &r.Source, &r.Channel, &r.Recipients, &r.Subject, &r.Body, &r.Severity, &r.Status, &r.Attempts,
-			&r.LastError, &r.NextAttemptAt, &r.CreatedAt, &r.SentAt); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, r)
-	}
-	if err := rows.Err(); err != nil {
-		httpapi.Fail(c, err)
-		return
+	items := make([]Record, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, Record{ID: r.ID, Source: r.Source, Channel: r.Channel, Recipients: r.Recipients, Subject: r.Subject,
+			Body: r.Body, Severity: r.Severity, Status: r.Status, Attempts: r.Attempts, LastError: r.LastError,
+			NextAttemptAt: r.NextAttemptAt, CreatedAt: r.CreatedAt, SentAt: r.SentAt})
 	}
 	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
+}
+
+// recordColumns are the columns of a Record.
+const recordColumns = "id, source, channel, recipients, subject, body, severity, status, attempts, last_error, next_attempt_at, created_at, sent_at"
+
+// filterRecords keeps the rows of status and source; an empty value does
+// not filter.
+func filterRecords(status, source string) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		if status != "" {
+			db = db.Where("status = ?", status)
+		}
+		if source != "" {
+			db = db.Where("source = ?", source)
+		}
+		return db
+	}
+}
+
+// recordPage reads one page of the filtered rows into dst, newest first.
+func recordPage(db *gorm.DB, status, source string, limit, offset int, dst *[]model.Notification) *gorm.DB {
+	return db.Select(recordColumns).Scopes(filterRecords(status, source)).Order("id DESC").Limit(limit).Offset(offset).Find(dst)
 }
 
 // sourceTest is the source of console tests, so they do not count toward

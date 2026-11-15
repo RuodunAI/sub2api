@@ -1,0 +1,7 @@
+-- sql
+UPDATE "notifications" SET "attempts"=attempts + 1,"next_attempt_at"=now() + make_interval(secs => $1),"status"=$2 WHERE id = (SELECT "id" FROM "notifications" WHERE status IN ('pending', 'sending') AND next_attempt_at <= now() AND attempts < $3 ORDER BY next_attempt_at, id LIMIT $4 FOR UPDATE SKIP LOCKED) RETURNING "id","source","channel","provider","recipients","subject","body","severity","attempts"
+-- vars
+$1 float64 120
+$2 string "sending"
+$3 int 8
+$4 int 1

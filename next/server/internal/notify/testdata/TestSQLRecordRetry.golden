@@ -1,0 +1,8 @@
+-- sql
+UPDATE "notifications" SET "last_error"=$1,"next_attempt_at"=now() + make_interval(secs => $2),"status"=$3 WHERE id = $4 AND status = 'sending' AND attempts = $5
+-- vars
+$1 string "smtp: 451"
+$2 float64 60
+$3 string "pending"
+$4 int64 9
+$5 int32 2
