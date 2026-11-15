@@ -1,0 +1,5 @@
+-- sql
+SELECT "scope_type","scope" FROM "permissions" WHERE key = $1 AND source = 'plugin' LIMIT $2
+-- vars
+$1 string "plugin:demo:read"
+$2 int 1

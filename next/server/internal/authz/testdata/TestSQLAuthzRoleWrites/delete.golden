@@ -1,0 +1,4 @@
+-- sql
+DELETE FROM "roles" WHERE "roles"."id" = $1
+-- vars
+$1 int64 3

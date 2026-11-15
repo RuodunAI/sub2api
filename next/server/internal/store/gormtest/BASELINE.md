@@ -374,6 +374,41 @@ balance, quota, credential refresh and settings statements of package
 store, which the console, the refresh jobs and the debounced passive quota
 writer (`SaveAccountQuota`, at most every 30 s per account) run.
 
+## Batch 3b: the authorization reads
+
+Every authorization check (`Can`, `PermissionSet`) answers from the
+node's cache while the user's set and the catalog are at the current
+authz version; any authz change drops them, and the next request of each
+user reloads them: `loadPermissionSet` (a read-only repeatable-read
+transaction: `SELECT version FROM authz_meta` and one row per grant of each
+of the user's roles) and `ensureCatalog` (the same transaction around
+`SELECT key, status FROM permissions`). `currentVersion` is the version
+poll's and `committedLater`'s read. From batch 3 the statements move to
+GORM whatever the numbers (`Raw(...).Rows()` read by position, the
+version with `Row().Scan`), so the table records the cost only. Before
+is bddebe3a (pgx) with the benchmark added, after is gorm-3b:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/authz/
+```
+
+Recorded 2026-11-15, same machine; the server was shared with other test
+runs, so ns/op is noisy. Medians of 5. The user holds the built-in admin
+role; the catalog is the core one.
+
+| Benchmark | before ns/op | B/op | allocs/op | after ns/op | B/op | allocs/op |
+|---|---:|---:|---:|---:|---:|---:|
+| BenchmarkHotAuthz/permission_set | 320 354 | 9 081 | 283 | 362 696 | 13 640 | 201 |
+| BenchmarkHotAuthz/catalog | 154 157 | 15 362 | 312 | 256 559 | 21 027 | 435 |
+| BenchmarkHotAuthz/version | 16 968 | 413 | 6 | 42 156 | 3 213 | 38 |
+
+The permission set allocates less than on pgx: pgx read the nullable
+grant key into a `*string`, one allocation per row, where the GORM form
+reads it into a `sql.NullString`. The catalog (1.4 times) and the version
+(6.3 times, about 30 allocations of fixed cost per GORM statement) cost
+more.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

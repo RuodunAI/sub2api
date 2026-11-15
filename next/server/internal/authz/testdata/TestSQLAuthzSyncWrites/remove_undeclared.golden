@@ -1,0 +1,5 @@
+-- sql
+UPDATE "permissions" SET "status"=$1 WHERE source = 'core' AND status <> 'removed' AND key <> ALL($2)
+-- vars
+$1 string "removed"
+$2 store.Strings [account:read]

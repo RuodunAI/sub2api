@@ -1,0 +1,12 @@
+-- sql
+SELECT p.key, r.key, '' FROM role_permissions rp
+  JOIN permissions p ON p.id = rp.permission_id JOIN roles r ON r.id = rp.role_id
+ WHERE p.key = ANY($1) AND NOT r.superuser
+UNION ALL
+SELECT p.key, r.key, rs.scope FROM role_permission_scopes rs
+  JOIN permissions p ON p.id = rs.permission_id JOIN roles r ON r.id = rs.role_id
+ WHERE p.key = ANY($2) AND NOT r.superuser
+ORDER BY 1, 2, 3
+-- vars
+$1 store.Strings [plugin:demo:read]
+$2 store.Strings [plugin:demo:read]

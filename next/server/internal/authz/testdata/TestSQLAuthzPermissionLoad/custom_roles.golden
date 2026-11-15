@@ -1,0 +1,3 @@
+-- sql
+SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin
+-- vars

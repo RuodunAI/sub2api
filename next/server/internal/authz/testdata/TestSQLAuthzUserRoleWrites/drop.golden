@@ -1,0 +1,5 @@
+-- sql
+DELETE FROM "user_roles" WHERE user_id = $1 AND role_id <> ALL($2)
+-- vars
+$1 int64 7
+$2 store.Int64s []

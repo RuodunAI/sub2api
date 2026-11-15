@@ -1,0 +1,6 @@
+-- sql
+SELECT r.key, ar.key FROM role_assignable_roles ra
+JOIN roles r ON r.id = ra.role_id AND r.key = ANY($1)
+JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser
+-- vars
+$1 store.Strings [admin]

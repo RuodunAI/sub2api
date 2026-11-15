@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -48,15 +49,15 @@ func (s *Service) TransferSuperAdmin(ctx context.Context, tx pgx.Tx, actorID, ta
 	}
 	// Delete before insert, so a one-holder constraint never sees two.
 	demoted := slices.DeleteFunc(slices.Clone(holders), func(id int64) bool { return id == targetID })
-	if _, err := tx.Exec(ctx, `DELETE FROM user_roles ur USING roles r WHERE r.id = ur.role_id AND r.superuser AND ur.user_id = ANY($1)`, demoted); err != nil {
+	db := store.G(ctx, tx)
+	if err := revokeSuperuser(db, demoted).Error; err != nil {
 		return 0, nil, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r
-		WHERE u.id = ANY($1) AND u.deleted_at IS NULL AND r.key = $2 ON CONFLICT DO NOTHING`, demoted, RoleAdmin); err != nil {
+	if err := grantAdmin(db, demoted).Error; err != nil {
 		return 0, nil, err
 	}
 	if !slices.Contains(holders, targetID) {
-		if _, err := tx.Exec(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE superuser`, targetID); err != nil {
+		if err := grantSuperuser(db, targetID).Error; err != nil {
 			return 0, nil, err
 		}
 	}
@@ -67,14 +68,36 @@ func (s *Service) TransferSuperAdmin(ctx context.Context, tx pgx.Tx, actorID, ta
 	return v, demoted, s.audit(ctx, tx, actorID, "superadmin.transfer", "user", targetID, map[string]any{"from": holders, "to": targetID, "via": via})
 }
 
-// superAdmins locks the rows of superuser roles and returns their holders.
+// revokeSuperuser revokes the superuser roles of userIDs.
+func revokeSuperuser(db *gorm.DB, userIDs []int64) *gorm.DB {
+	return db.Exec(`DELETE FROM user_roles ur USING roles r WHERE r.id = ur.role_id AND r.superuser AND ur.user_id = ANY(?)`, store.Int64s(userIDs))
+}
+
+// grantAdmin assigns the admin role to the undeleted users of userIDs.
+func grantAdmin(db *gorm.DB, userIDs []int64) *gorm.DB {
+	return db.Exec(`INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r
+		WHERE u.id = ANY(?) AND u.deleted_at IS NULL AND r.key = ? ON CONFLICT DO NOTHING`, store.Int64s(userIDs), RoleAdmin)
+}
+
+// grantSuperuser assigns the superuser roles to userID.
+func grantSuperuser(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Exec(`INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE superuser`, userID)
+}
+
+// superAdmins locks the rows of superuser roles and returns their holders
+// (never nil).
 func superAdmins(ctx context.Context, tx pgx.Tx) ([]int64, error) {
-	rows, err := tx.Query(ctx, `SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.superuser ORDER BY 1 FOR UPDATE OF ur`)
-	if err != nil {
+	ids := []int64{}
+	if err := lockSuperAdmins(store.G(ctx, tx)).Scan(&ids).Error; err != nil {
 		return nil, err
 	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	return slices.Compact(ids), err
+	return slices.Compact(ids), nil
+}
+
+// lockSuperAdmins selects the holders of superuser roles, by id, and locks
+// their user_roles rows.
+func lockSuperAdmins(db *gorm.DB) *gorm.DB {
+	return db.Raw(`SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.superuser ORDER BY 1 FOR UPDATE OF ur`)
 }
 
 // checkTransferTarget fails unless targetID is an active, undeleted user
@@ -84,7 +107,7 @@ func checkTransferTarget(ctx context.Context, tx pgx.Tx, actorID, targetID int64
 		return errTransferToSelf
 	}
 	var active bool
-	err := tx.QueryRow(ctx, `SELECT status = 'active' FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, targetID).Scan(&active)
+	err := lockTransferTarget(store.G(ctx, tx), targetID).Row().Scan(&active)
 	switch {
 	case store.IsNoRows(err):
 		return errTransferTargetNotFound
@@ -94,4 +117,10 @@ func checkTransferTarget(ctx context.Context, tx pgx.Tx, actorID, targetID int64
 		return errTransferTargetInactive
 	}
 	return nil
+}
+
+// lockTransferTarget selects whether the undeleted user userID is active
+// and locks its row.
+func lockTransferTarget(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Raw(`SELECT status = 'active' FROM users WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, userID)
 }

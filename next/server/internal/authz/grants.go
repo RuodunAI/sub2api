@@ -2,14 +2,17 @@ package authz
 
 import (
 	"context"
+	"database/sql"
 	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Grants of a role (CONTRACTS §21): an unscoped key is a role_permissions
@@ -57,24 +60,17 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 	found := map[string]row{}
 	// A staged permission (core.PermissionDef.Staged) is unknown here: it
 	// belongs to a version not activated yet, whose consent alone grants it.
-	rows, err := tx.Query(ctx, `SELECT key, id, status = 'removed', risk, scope_type, scope FROM permissions
-WHERE key = ANY($1) AND status <> 'staged'`, actions)
-	if err != nil {
-		return nil, nil, err
-	}
-	for rows.Next() {
+	if err := eachRow(grantablePermissions(store.G(ctx, tx), actions), func(rows *sql.Rows) error {
 		var k, scopeType string
-		var scope manifest.PermissionScope
+		var scope store.JSON[manifest.PermissionScope]
 		var r row
 		if err := rows.Scan(&k, &r.id, &r.removed, &r.risk, &scopeType, &scope); err != nil {
-			rows.Close()
-			return nil, nil, err
+			return err
 		}
-		r.scope = core.ReadPluginScope(scopeType, &scope)
+		r.scope = core.ReadPluginScope(scopeType, &scope.V)
 		found[k] = r
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
 	live := make([]string, 0, len(pats))
@@ -101,6 +97,13 @@ WHERE key = ANY($1) AND status <> 'staged'`, actions)
 		return nil, nil, core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "unknown", Message: "unknown permissions: " + strings.Join(unknown, ", ")})
 	}
 	return live, grants, nil
+}
+
+// grantablePermissions selects the key, id, whether removed, risk, scope
+// type and scope of the permissions keys names, staged ones aside.
+func grantablePermissions(db *gorm.DB, keys []string) *gorm.DB {
+	return db.Raw(`SELECT key, id, status = 'removed', risk, scope_type, scope FROM permissions
+WHERE key = ANY(?) AND status <> 'staged'`, store.Strings(keys))
 }
 
 // invalidKeys is the refusal of keys that do not parse or name a scope
@@ -134,20 +137,21 @@ func (part grantPart) of(keys []string) []string {
 }
 
 // grantsInPart is the SQL condition on p, a granted permission, of the
-// grants a write of part $2 (coreOnly) and $3 (plugin) replaces. A reset
-// keeps the grants of removed permissions, to come back with the key; any
-// other write drops them unless listed, so an editor can untick them. No
-// write touches the grants of a staged permission, which no editor sees:
-// its version's consent made them.
-const grantsInPart = `p.status <> 'staged' AND (NOT $2::bool OR (p.source = 'core' AND p.status <> 'removed')) AND ($3::text = '' OR p.plugin_key = $3::text)`
+// grants a write of part replaces; its placeholders take part.coreOnly and
+// part.plugin twice. A reset keeps the grants of removed permissions, to
+// come back with the key; any other write drops them unless listed, so an
+// editor can untick them. No write touches the grants of a staged
+// permission, which no editor sees: its version's consent made them.
+const grantsInPart = `p.status <> 'staged' AND (NOT ?::bool OR (p.source = 'core' AND p.status <> 'removed')) AND (?::text = '' OR p.plugin_key = ?::text)`
 
 // writeGrants makes grants the role's grants within part. It never adds a
 // grant of a removed permission: listing one keeps it when the role holds
 // it, and is ignored when not (it can only be unticked). Nor of a staged
 // one (resolvePermissions refuses it as unknown first).
 func writeGrants(ctx context.Context, tx pgx.Tx, roleID int64, grants []grant, part grantPart) error {
-	// Never nil: a NULL array would make "<> ALL" delete nothing.
-	ids, scopedIDs, scopes := []int64{}, []int64{}, []string{}
+	// Never nil: a NULL array would make "<> ALL" delete nothing (Int64s and
+	// Strings are never NULL either).
+	ids, scopedIDs, scopes := store.Int64s{}, store.Int64s{}, store.Strings{}
 	for _, g := range grants {
 		if g.scope == "" {
 			ids = append(ids, g.id)
@@ -155,25 +159,49 @@ func writeGrants(ctx context.Context, tx pgx.Tx, roleID int64, grants []grant, p
 			scopedIDs, scopes = append(scopedIDs, g.id), append(scopes, g.scope)
 		}
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM role_permissions rp USING permissions p
-WHERE rp.role_id = $1 AND p.id = rp.permission_id AND `+grantsInPart+` AND rp.permission_id <> ALL($4)`,
-		roleID, part.coreOnly, part.plugin, ids); err != nil {
+	db := store.G(ctx, tx)
+	if err := dropGrants(db, roleID, part, ids).Error; err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id)
-SELECT $1, id FROM permissions WHERE id = ANY($2) AND status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING`, roleID, ids); err != nil {
+	if err := addGrants(db, roleID, ids).Error; err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM role_permission_scopes rs USING permissions p
-WHERE rs.role_id = $1 AND p.id = rs.permission_id AND `+grantsInPart+`
-  AND (rs.permission_id, rs.scope) NOT IN (SELECT * FROM unnest($4::bigint[], $5::text[]))`,
-		roleID, part.coreOnly, part.plugin, scopedIDs, scopes); err != nil {
+	if err := dropScopedGrants(db, roleID, part, scopedIDs, scopes).Error; err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-SELECT $1, g.id, g.scope FROM unnest($2::bigint[], $3::text[]) g (id, scope)
-JOIN permissions p ON p.id = g.id AND p.status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING`, roleID, scopedIDs, scopes)
-	return err
+	return addScopedGrants(db, roleID, scopedIDs, scopes).Error
+}
+
+// dropGrants deletes the role's unscoped grants within part but those of
+// ids.
+func dropGrants(db *gorm.DB, roleID int64, part grantPart, ids store.Int64s) *gorm.DB {
+	return db.Exec(`DELETE FROM role_permissions rp USING permissions p
+WHERE rp.role_id = ? AND p.id = rp.permission_id AND `+grantsInPart+` AND rp.permission_id <> ALL(?)`,
+		roleID, part.coreOnly, part.plugin, part.plugin, ids)
+}
+
+// addGrants grants the role the permissions ids, removed and staged ones
+// aside.
+func addGrants(db *gorm.DB, roleID int64, ids store.Int64s) *gorm.DB {
+	return db.Exec(`INSERT INTO role_permissions (role_id, permission_id)
+SELECT ?, id FROM permissions WHERE id = ANY(?) AND status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING`, roleID, ids)
+}
+
+// dropScopedGrants deletes the role's scoped grants within part but the
+// (permission, scope) pairs of ids and scopes.
+func dropScopedGrants(db *gorm.DB, roleID int64, part grantPart, ids store.Int64s, scopes store.Strings) *gorm.DB {
+	return db.Exec(`DELETE FROM role_permission_scopes rs USING permissions p
+WHERE rs.role_id = ? AND p.id = rs.permission_id AND `+grantsInPart+`
+  AND (rs.permission_id, rs.scope) NOT IN (SELECT * FROM unnest(?::bigint[], ?::text[]))`,
+		roleID, part.coreOnly, part.plugin, part.plugin, ids, scopes)
+}
+
+// addScopedGrants grants the role the (permission, scope) pairs of ids and
+// scopes, removed and staged permissions aside.
+func addScopedGrants(db *gorm.DB, roleID int64, ids store.Int64s, scopes store.Strings) *gorm.DB {
+	return db.Exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope)
+SELECT ?, g.id, g.scope FROM unnest(?::bigint[], ?::text[]) g (id, scope)
+JOIN permissions p ON p.id = g.id AND p.status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING`, roleID, ids, scopes)
 }
 
 // roleGrantsJoin joins, to each role r, g.key: the canonical grants of r

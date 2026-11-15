@@ -1,0 +1,4 @@
+-- sql
+DELETE FROM user_roles ur USING roles r WHERE r.id = ur.role_id AND r.superuser AND ur.user_id = ANY($1)
+-- vars
+$1 store.Int64s [7]

@@ -1,0 +1,8 @@
+-- sql
+INSERT INTO role_permission_scopes (role_id, permission_id, scope)
+SELECT $1, g.id, g.scope FROM unnest($2::bigint[], $3::text[]) g (id, scope)
+JOIN permissions p ON p.id = g.id AND p.status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING
+-- vars
+$1 int64 3
+$2 store.Int64s [13]
+$3 store.Strings [own]

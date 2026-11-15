@@ -1,0 +1,6 @@
+-- sql
+INSERT INTO roles (key, name, description) VALUES ($1, $2, $3) RETURNING id
+-- vars
+$1 string "custom"
+$2 core.LocalizedText map[en:Custom]
+$3 core.LocalizedText map[]
