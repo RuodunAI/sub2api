@@ -2,8 +2,11 @@ package e2e
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 // AC 2: the super admin creates a role "ops" with only account and proxy
@@ -115,5 +118,74 @@ func TestAC02_CustomRoleMenusAndForbidden(t *testing.T) {
 	if r := admin.API(t, http.MethodPut, "/roles/"+itoa(roleID)+"/permissions",
 		map[string]any{"permission_keys": perms}); r.Status != 200 {
 		t.Errorf("role:define without confirmation: %s", r)
+	}
+}
+
+// AC 2 (plugin permissions): the per-plugin role matrix grants a plugin's
+// permissions to a custom role; an upgrade that no longer declares one keeps
+// the grant without effect (removed), and a later version declaring it again
+// brings the grant back as it was, without applying the defaults again.
+func TestAC02_PluginRoleMatrixRemovedAndRevived(t *testing.T) {
+	e := Setup(t)
+	admin := e.Admin()
+	dp := e.NewDerivedPlugin(admin, "e2emx")
+	read, manage := "plugin."+dp.Key+":rules:read", "plugin."+dp.Key+":rules:manage"
+	version := func(v string) func(map[string]any) { return func(m map[string]any) { m["version"] = v } }
+
+	// rules:manage defaults to admin; the consent grants it to nobody.
+	e.InstallVersion(admin, dp.Package(e, version("1.0.0")), map[string]any{"rules:manage": map[string]any{}})
+	roleKey := e.RoleKey("mx")
+	_, u := e.NewUserWithRoles(admin, roleKey, []string{})
+	matrix := admin.OK(t, http.MethodPut, "/permissions/plugins/"+dp.Key,
+		map[string]any{"roles": map[string]any{roleKey: []string{read, manage}}})
+	rowKeys := func(m gjson.Result, role string) []string {
+		row, ok := Find(m.Get("roles").Array(), "key", role)
+		if !ok {
+			t.Fatalf("matrix lacks role %s: %s", role, m.Raw)
+		}
+		keys := Strings(row.Get("permission_keys"))
+		slices.Sort(keys)
+		return keys
+	}
+	if got := rowKeys(matrix, roleKey); !slices.Equal(got, []string{manage, read}) {
+		t.Fatalf("matrix row after PUT: %v", got)
+	}
+	if p := u.Permissions(t); !p[read] || !p[manage] {
+		t.Fatalf("/me after the matrix PUT: %v", p)
+	}
+
+	// 1.0.1 drops rules:manage (and PUT /rules, which needs it).
+	rev := e.InstallVersion(admin, dp.Package(e, version("1.0.1"), func(m map[string]any) {
+		m["userPermissions"] = slices.DeleteFunc(m["userPermissions"].([]any), func(p any) bool { return p.(map[string]any)["key"] == "rules:manage" })
+		m["routes"] = slices.DeleteFunc(m["routes"].([]any), func(r any) bool { return r.(map[string]any)["permission"] == "rules:manage" })
+	}), nil)
+	if gone, ok := Find(rev.Get("removed_user_permissions").Array(), "key", "rules:manage"); !ok || !slices.Contains(Strings(gone.Get("holders")), roleKey) {
+		t.Errorf("1.0.1 review removed_user_permissions: %s", rev.Get("removed_user_permissions").Raw)
+	}
+	mod, _ := e.PluginPermissions(admin, dp.Key)
+	if p, _ := Find(mod.Get("permissions").Array(), "key", manage); p.Get("status").String() != "removed" {
+		t.Errorf("rules:manage after 1.0.1: %s", p.Raw)
+	}
+	if p := u.Permissions(t); !p[read] || p[manage] {
+		t.Errorf("/me after 1.0.1: want %s without %s, got %v", read, manage, p)
+	}
+	matrix = admin.OK(t, http.MethodGet, "/permissions/plugins/"+dp.Key, nil)
+	if got := rowKeys(matrix, roleKey); !slices.Equal(got, []string{manage, read}) {
+		t.Errorf("removed grant not kept: %v", got)
+	}
+
+	// 1.0.2 declares it again: the role holds it as before, admin still not.
+	rev = e.InstallVersion(admin, dp.Package(e, version("1.0.2")), nil)
+	up, _ := Find(rev.Get("user_permissions").Array(), "key", "rules:manage")
+	if !up.Get("revived").Bool() || up.Get("new").Bool() ||
+		!slices.Equal(Strings(up.Get("cells."+roleKey+".grant")), []string{""}) || len(up.Get("cells.admin.grant").Array()) != 0 {
+		t.Errorf("1.0.2 review of rules:manage: %s", up.Raw)
+	}
+	if p := u.Permissions(t); !p[read] || !p[manage] {
+		t.Errorf("/me after 1.0.2: %v", p)
+	}
+	matrix = admin.OK(t, http.MethodGet, "/permissions/plugins/"+dp.Key, nil)
+	if got := rowKeys(matrix, "admin"); slices.Contains(got, manage) {
+		t.Errorf("revived rules:manage defaulted to admin again: %v", got)
 	}
 }

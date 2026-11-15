@@ -66,6 +66,16 @@ func (s *Session) Me(t testing.TB) gjson.Result {
 	return s.OK(t, http.MethodGet, "/me", nil)
 }
 
+// Permissions returns the permission keys of GET /me as a set.
+func (s *Session) Permissions(t testing.TB) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for _, p := range s.Me(t).Get("permissions").Array() {
+		out[p.String()] = true
+	}
+	return out
+}
+
 // Menus returns GET /me/menus flattened to items (each with its section).
 func (s *Session) Menus(t testing.TB) []gjson.Result {
 	t.Helper()

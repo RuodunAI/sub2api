@@ -191,5 +191,14 @@ func Find(items []gjson.Result, field string, value any) (gjson.Result, bool) {
 	return gjson.Result{}, false
 }
 
+// Strings returns the elements of a JSON array as strings.
+func Strings(r gjson.Result) []string {
+	out := []string{}
+	for _, v := range r.Array() {
+		out = append(out, v.String())
+	}
+	return out
+}
+
 // PathEscape escapes one path segment.
 func PathEscape(s string) string { return url.PathEscape(s) }

@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// AC 5: upgrade anthropic from 0.2.1 to the 0.3.3-test fixture: the migration runs once, old rows are
+// AC 5: upgrade anthropic from the market's base version to the 0.3.3-test fixture: the migration runs once, old rows are
 // backfilled and requests keep succeeding on both nodes during the switch.
 func TestAC05_UpgradeAnthropicWithoutDowntime(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
-	e.EnsurePlugin(admin, "anthropic", "0.2.1")
+	e.EnsurePlugin(admin, "anthropic", e.defaultVersion("anthropic"))
 	tn := e.NewTenant(admin, TenantOpts{Accounts: 2, Balance: "50"})
 
 	before := admin.OK(t, http.MethodGet, "/p/anthropic/models", nil).Array()
@@ -27,7 +27,7 @@ func TestAC05_UpgradeAnthropicWithoutDowntime(t *testing.T) {
 	if d := rev.Get("diff"); d.Exists() {
 		t.Logf("permission diff: %s", d.Raw)
 	}
-	if len(rev.Get("diff.added").Array())+len(rev.Get("diff.widened").Array()) > 0 {
+	if rev.Get("consent_status").String() == "awaiting_consent" {
 		e.ConsentAll(admin, rev, []string{"admin"})
 	}
 
