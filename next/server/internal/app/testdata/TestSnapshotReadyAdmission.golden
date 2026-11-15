@@ -1,0 +1,12 @@
+-- sql
+SELECT EXISTS(SELECT 1 FROM updater.node_admissions
+	WHERE node_id=$1 AND core_boot_id=$2 AND release_digest=$3 AND revision=$4
+	AND serve_http=$5 AND claim_background=$6 AND coordinate_plugins=$7)
+-- vars
+$1 string "node-1"
+$2 string "boot-1"
+$3 string "sha256:abc"
+$4 int64 4
+$5 bool true
+$6 bool false
+$7 bool true
