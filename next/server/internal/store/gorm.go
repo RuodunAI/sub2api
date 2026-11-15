@@ -19,13 +19,31 @@
 //     Session{Context: ...}).
 //   - Transactions start only with DB.Tx; GORM's Begin and Transaction fail
 //     (ErrGORMTx).
-//   - Array parameters and columns are Int64s / Strings; a plain slice is
-//     expanded by GORM into one placeholder per element.
-//   - The schema belongs to Migrate and the .sql files: AutoMigrate and
-//     CreateTable fail (ErrGORMMigrate).
+//   - Array parameters and columns are Int64s / Strings / Times; GORM
+//     expands a plain slice into one placeholder per element.
+//   - A jsonb column read into a Go value (a []string, a struct) is a
+//     JSON[T], e.g. JSON[[]string]: GORM hands the raw document over where
+//     pgx used to decode it. json.RawMessage keeps the document as is.
+//   - Give model and result fields concrete types: GORM refuses a struct
+//     with a field of type any or another interface ("unsupported data
+//     type"); a document is a JSON[T] or json.RawMessage.
+//   - The schema belongs to Migrate and the .sql files: every Migrator
+//     operation fails (ErrGORMMigrate), AutoMigrate included.
 //   - Errors stay pgx's: IsUniqueViolation and friends work as with pgx;
 //     test "not found" with IsNoRows (GORM reports it as
 //     gorm.ErrRecordNotFound).
+//   - updated_at, and created_at where no database default fills it, come
+//     from the database clock as in the raw SQL (gorm_timestamps.go). Save
+//     writes every field as the struct holds it, updated_at included.
+//   - Call a function that returns void (pg_advisory_xact_lock and the
+//     other advisory locks) with Exec, not Raw(...).Scan: there is no value
+//     to scan, and the bridge does not read the void type.
+//   - numeric NaN and ±Infinity do not fit decimal.Decimal, so scanning one
+//     fails; filter or cast them in SQL where a column can hold them.
+//   - Raw(...).Scan reads rows by its destination: a slice gets every row, a
+//     struct the first, a scalar each row in turn (the last one stays). Give
+//     a scalar a query of one row. Int64s, Strings and Times are slices
+//     too: read one array value with Row().Scan or into a struct field.
 
 package store
 
@@ -38,6 +56,7 @@ import (
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 )
@@ -51,6 +70,7 @@ var (
 	// ErrGORMMigrate is a schema change GORM tried to make itself.
 	ErrGORMMigrate = errors.New("store: GORM does not change the schema; add a migration under internal/migrations")
 	errGORMPrepare = errors.New("store: the GORM bridge does not prepare statements")
+	errNilRows     = errors.New("store: the Querier's Query returned neither rows nor an error")
 )
 
 type querierKey struct{}
@@ -64,20 +84,32 @@ func G(ctx context.Context, q Querier) *gorm.DB {
 // *sql.DB only forwards, so there is no pool to size or close.
 var gormDB = sync.OnceValue(func() *gorm.DB {
 	sqlDB := sql.OpenDB(bridgeConnector{})
-	// Connections are stateless values; keeping a few idle only spares
-	// database/sql from re-wrapping one per statement under concurrency.
-	sqlDB.SetMaxIdleConns(64)
-	g, err := gorm.Open(bridgeDialector{postgres.Dialector{Config: &postgres.Config{Conn: sqlDB}}}, GormConfig())
+	// No idle connections: database/sql reads RowsAffected of an Exec under
+	// the mutex of the driverConn it ran on, after handing that connection
+	// back to the pool. A pooled connection taken meanwhile by a statement
+	// that waits on a row lock of the first caller's transaction holds that
+	// mutex, and both goroutines wait forever (PostgreSQL sees no deadlock;
+	// TestGORMExecDoesNotDeadlockOnRowLocks). A closed connection is never
+	// shared, and opening one costs nothing: it is a stateless value.
+	// The other limits stay at their defaults, which do not block: no cap
+	// on open connections (a cap would make statements queue for a
+	// driverConn while their transactions hold row locks, the same wait in
+	// another form; pgxpool already bounds the real connections), and no
+	// lifetimes, which only apply to idle or reused connections.
+	sqlDB.SetMaxIdleConns(0)
+	g, err := gorm.Open(bridgeDialector{postgres.Dialector{Config: &postgres.Config{Conn: sqlDB}}}, gormConfig())
+	if err == nil {
+		err = registerTimestamps(g)
+	}
 	if err != nil {
 		panic("store: open GORM: " + err.Error()) // no I/O: only a programming error gets here
 	}
 	return g
 })
 
-// GormConfig is the configuration of G's GORM instance, a new value on
-// each call (gorm.Open keeps state in it). Tools that build SQL with GORM
-// outside G, such as DryRun snapshots, use it so their SQL is G's.
-func GormConfig() *gorm.Config {
+// gormConfig is the configuration of G's GORM instance. DryRun snapshots
+// (package gormtest) take a session of G, so they build the same SQL.
+func gormConfig() *gorm.Config {
 	return &gorm.Config{
 		NamingStrategy:         schema.NamingStrategy{}, // snake_case, plural table names
 		SkipDefaultTransaction: true,                    // the caller owns the transaction
@@ -94,18 +126,51 @@ func GormConfig() *gorm.Config {
 	}
 }
 
-// bridgeDialector is GORM's postgres dialect with the schema changes
-// switched off.
+// bridgeDialector is GORM's postgres dialect without its migrator.
 type bridgeDialector struct{ postgres.Dialector }
 
-func (d bridgeDialector) Migrator(db *gorm.DB) gorm.Migrator {
-	return bridgeMigrator{d.Dialector.Migrator(db)}
+func (bridgeDialector) Migrator(*gorm.DB) gorm.Migrator { return bridgeMigrator{} }
+
+// bridgeMigrator refuses every operation, the reads as well: the schema is
+// the migrations', and no code should plan against GORM's view of it. The
+// methods without an error result panic with ErrGORMMigrate instead; only
+// a Migrator() call, which gormguard rejects, reaches them.
+type bridgeMigrator struct{}
+
+var _ gorm.Migrator = bridgeMigrator{}
+
+func (bridgeMigrator) AutoMigrate(...any) error                   { return ErrGORMMigrate }
+func (bridgeMigrator) CurrentDatabase() string                    { panic(ErrGORMMigrate) }
+func (bridgeMigrator) FullDataTypeOf(*schema.Field) clause.Expr   { panic(ErrGORMMigrate) }
+func (bridgeMigrator) GetTypeAliases(string) []string             { panic(ErrGORMMigrate) }
+func (bridgeMigrator) CreateTable(...any) error                   { return ErrGORMMigrate }
+func (bridgeMigrator) DropTable(...any) error                     { return ErrGORMMigrate }
+func (bridgeMigrator) HasTable(any) bool                          { panic(ErrGORMMigrate) }
+func (bridgeMigrator) RenameTable(any, any) error                 { return ErrGORMMigrate }
+func (bridgeMigrator) GetTables() ([]string, error)               { return nil, ErrGORMMigrate }
+func (bridgeMigrator) TableType(any) (gorm.TableType, error)      { return nil, ErrGORMMigrate }
+func (bridgeMigrator) AddColumn(any, string) error                { return ErrGORMMigrate }
+func (bridgeMigrator) DropColumn(any, string) error               { return ErrGORMMigrate }
+func (bridgeMigrator) AlterColumn(any, string) error              { return ErrGORMMigrate }
+func (bridgeMigrator) HasColumn(any, string) bool                 { panic(ErrGORMMigrate) }
+func (bridgeMigrator) RenameColumn(any, string, string) error     { return ErrGORMMigrate }
+func (bridgeMigrator) ColumnTypes(any) ([]gorm.ColumnType, error) { return nil, ErrGORMMigrate }
+func (bridgeMigrator) CreateView(string, gorm.ViewOption) error   { return ErrGORMMigrate }
+func (bridgeMigrator) DropView(string) error                      { return ErrGORMMigrate }
+func (bridgeMigrator) CreateConstraint(any, string) error         { return ErrGORMMigrate }
+func (bridgeMigrator) DropConstraint(any, string) error           { return ErrGORMMigrate }
+func (bridgeMigrator) HasConstraint(any, string) bool             { panic(ErrGORMMigrate) }
+func (bridgeMigrator) CreateIndex(any, string) error              { return ErrGORMMigrate }
+func (bridgeMigrator) DropIndex(any, string) error                { return ErrGORMMigrate }
+func (bridgeMigrator) HasIndex(any, string) bool                  { panic(ErrGORMMigrate) }
+func (bridgeMigrator) RenameIndex(any, string, string) error      { return ErrGORMMigrate }
+func (bridgeMigrator) GetIndexes(any) ([]gorm.Index, error)       { return nil, ErrGORMMigrate }
+func (bridgeMigrator) MigrateColumn(any, *schema.Field, gorm.ColumnType) error {
+	return ErrGORMMigrate
 }
-
-type bridgeMigrator struct{ gorm.Migrator }
-
-func (bridgeMigrator) AutoMigrate(...any) error { return ErrGORMMigrate }
-func (bridgeMigrator) CreateTable(...any) error { return ErrGORMMigrate }
+func (bridgeMigrator) MigrateColumnUnique(any, *schema.Field, gorm.ColumnType) error {
+	return ErrGORMMigrate
+}
 
 type bridgeConnector struct{}
 
@@ -157,8 +222,11 @@ func (bridgeConn) QueryContext(ctx context.Context, query string, nv []driver.Na
 	}
 	// The first argument is a pgx query option, not a parameter.
 	r, err := q.Query(ctx, query, plainArgs([]any{resultFormats}, nv)...)
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, err
+	case r == nil:
+		return nil, errNilRows // a broken (fake) Querier; pgx never does this
 	}
 	return newBridgeRows(r)
 }

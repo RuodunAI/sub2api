@@ -14,12 +14,12 @@ type AccountUsageLimit struct {
 	RawCost      bool            `gorm:"column:raw_cost;default:(-)"`                        // boolean default false
 	Enabled      bool            `gorm:"column:enabled;default:(-)"`                         // boolean default false
 	Amount       decimal.Decimal `gorm:"column:amount;default:(-)"`                          // numeric(20,8) default 0
-	Period       string          `gorm:"column:period;default:(-)"`                          // character varying(10) default 'month'::character varying
-	PeriodCount  int             `gorm:"column:period_count;default:(-)"`                    // integer default 1
+	Period       *string         `gorm:"column:period;default:(-)"`                          // character varying(10) default 'month'::character varying
+	PeriodCount  *int            `gorm:"column:period_count;default:(-)"`                    // integer default 1
 	Anchor       *time.Time      `gorm:"column:anchor"`                                      // timestamp with time zone
 	WaivedWindow *time.Time      `gorm:"column:waived_window"`                               // timestamp with time zone
 	UpdatedAt    time.Time       `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()
-	Timezone     string          `gorm:"column:timezone;default:(-)"`                        // character varying(64) default 'UTC'::character varying
+	Timezone     *string         `gorm:"column:timezone;default:(-)"`                        // character varying(64) default 'UTC'::character varying
 }
 
 // TableName implements gorm's schema.Tabler.

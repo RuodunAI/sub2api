@@ -11,7 +11,7 @@ type Publisher struct {
 	ID         int64      `gorm:"column:id;primaryKey;default:(-)"`                   // bigint default nextval('publishers_id_seq'::regclass)
 	Name       string     `gorm:"column:name"`                                        // character varying(100)
 	TrustLevel string     `gorm:"column:trust_level"`                                 // character varying(20)
-	Status     string     `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
+	Status     *string    `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
 	CreatedAt  time.Time  `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
 	RevokedAt  *time.Time `gorm:"column:revoked_at"`                                  // timestamp with time zone
 }

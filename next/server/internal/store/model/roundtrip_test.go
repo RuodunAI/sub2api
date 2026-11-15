@@ -6,11 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -22,7 +24,7 @@ func openGorm(t *testing.T) *gorm.DB {
 	return store.G(context.Background(), testutil.DB(t).Pool)
 }
 
-func dryRun(g *gorm.DB) *gorm.DB { return g.Session(&gorm.Session{DryRun: true}) }
+func ptr[T any](v T) *T { return &v }
 
 // A serial id and every defaulted column are left to the database and read
 // back on insert; nullable columns round-trip nil and values.
@@ -31,8 +33,8 @@ func TestUserRoundTrip(t *testing.T) {
 	u := model.User{Email: "a@example.com", PasswordHash: "h"}
 	require.NoError(t, g.Create(&u).Error)
 	require.NotZero(t, u.ID)
-	require.Equal(t, "active", u.Status)
-	require.Equal(t, 5, u.MaxConcurrency)
+	require.Equal(t, ptr("active"), u.Status)
+	require.Equal(t, ptr(5), u.MaxConcurrency)
 	require.NotZero(t, u.SegmentID) // default_segment_id()
 	require.WithinDuration(t, time.Now(), u.CreatedAt, time.Minute)
 	require.Equal(t, u.CreatedAt, u.UpdatedAt)
@@ -48,36 +50,32 @@ func TestUserRoundTrip(t *testing.T) {
 	require.NoError(t, g.First(&again, u.ID).Error)
 	require.NotNil(t, again.LastLoginAt)
 	require.True(t, login.Equal(*again.LastLoginAt))
-	require.Equal(t, u.UpdatedAt, again.UpdatedAt, "GORM must not stamp updated_at")
+	require.True(t, again.UpdatedAt.After(u.UpdatedAt), "the update stamps updated_at from the database clock")
 
-	// A zero value in a defaulted column means "database default", even when
-	// selected; a map insert writes the zero.
-	z := model.User{Email: "z@example.com", PasswordHash: "h"}
-	require.NoError(t, g.Select("Email", "PasswordHash", "MaxConcurrency").Create(&z).Error)
-	require.Equal(t, 5, z.MaxConcurrency)
-	require.NoError(t, g.Model(&model.User{}).Create(map[string]any{
-		"email": "m@example.com", "password_hash": "h", "max_concurrency": 0,
-	}).Error)
-	var m model.User
-	require.NoError(t, g.First(&m, "email = ?", "m@example.com").Error)
-	require.Equal(t, 0, m.MaxConcurrency)
+	// A nil pointer takes the default; a pointer to the zero value writes
+	// it, even where the default is not zero.
+	z := model.User{Email: "z@example.com", PasswordHash: "h", MaxConcurrency: ptr(0), Status: ptr("")}
+	require.NoError(t, g.Create(&z).Error)
+	var zr model.User
+	require.NoError(t, g.First(&zr, z.ID).Error)
+	require.Equal(t, ptr(0), zr.MaxConcurrency)
+	require.Equal(t, ptr(""), zr.Status)
 }
 
-// numeric keeps every digit, jsonb round-trips as raw JSON, and GORM adds
-// no updated_at of its own to an update.
+// numeric keeps every digit, jsonb round-trips as raw JSON, and an update
+// assigns updated_at from the database clock.
 func TestGroupRoundTrip(t *testing.T) {
 	g := openGorm(t)
-	policy := "strict"
 	grp := model.Group{
 		Name:                 "g1",
-		RateMultiplier:       decimal.RequireFromString("1.2345"),
+		RateMultiplier:       ptr(decimal.RequireFromString("1.2345")),
 		ModelAllowlist:       json.RawMessage(`["claude-x", "gpt-y"]`),
-		ConversionLossPolicy: &policy,
+		ConversionLossPolicy: ptr("strict"),
 	}
 	require.NoError(t, g.Create(&grp).Error)
 	require.Equal(t, "1.2345", grp.RateMultiplier.String())
 	require.JSONEq(t, `{}`, string(grp.Environment))
-	require.Equal(t, "blacklist", grp.ModelFilterMode)
+	require.Equal(t, ptr("blacklist"), grp.ModelFilterMode)
 
 	var got model.Group
 	require.NoError(t, g.First(&got, grp.ID).Error)
@@ -90,8 +88,11 @@ func TestGroupRoundTrip(t *testing.T) {
 	require.JSONEq(t, `[]`, string(plain.ModelAllowlist))
 	require.Nil(t, plain.ConversionLossPolicy)
 
-	stmt := dryRun(g).Model(&model.Group{ID: grp.ID}).Update("description", "x").Statement
-	require.Equal(t, `UPDATE "groups" SET "description"=$1 WHERE "id" = $2`, stmt.SQL.String())
+	query, _, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB {
+		return tx.Model(&model.Group{ID: grp.ID}).Update("description", "x")
+	})
+	require.NoError(t, err)
+	require.Equal(t, `UPDATE "groups" SET "description"=$1,"updated_at"=now() WHERE "id" = $2`, query)
 }
 
 // Nullable numeric and jsonb columns hold NULL as nil and values exactly.
@@ -106,7 +107,7 @@ func TestUsageLogRoundTrip(t *testing.T) {
 		BillingDetail: json.RawMessage(`{"cost": "0.00000001"}`),
 	}
 	require.NoError(t, g.Create(&log).Error)
-	require.Equal(t, 1, log.Attempts)
+	require.Equal(t, ptr(1), log.Attempts)
 	require.Nil(t, log.AccountID)
 	require.Nil(t, log.Conversion)
 
@@ -125,8 +126,9 @@ func TestUsageLogRoundTrip(t *testing.T) {
 // instead of being treated as auto-increment.
 func TestUserBalanceKeyIsWritten(t *testing.T) {
 	g := openGorm(t)
-	stmt := dryRun(g).Create(&model.UserBalance{}).Statement
-	require.Contains(t, stmt.SQL.String(), `"user_id"`)
+	query, _, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB { return tx.Create(&model.UserBalance{}) })
+	require.NoError(t, err)
+	require.Contains(t, query, `"user_id"`)
 
 	u := model.User{Email: "b@example.com", PasswordHash: "h"}
 	require.NoError(t, g.Create(&u).Error)
@@ -137,7 +139,8 @@ func TestUserBalanceKeyIsWritten(t *testing.T) {
 	require.Equal(t, bal, got)
 }
 
-// Arrays and bytea round-trip through store.Strings and []byte.
+// Arrays and bytea round-trip through store.Strings and []byte; explicit
+// false and 0 reach columns that default to true and 10.
 func TestAccountRoundTrip(t *testing.T) {
 	g := openGorm(t)
 	acc := model.Account{
@@ -146,7 +149,8 @@ func TestAccountRoundTrip(t *testing.T) {
 		Models:         store.Strings{"m1", "m2"},
 	}
 	require.NoError(t, g.Create(&acc).Error)
-	require.True(t, acc.Schedulable)
+	require.Equal(t, ptr(true), acc.Schedulable)
+	require.Equal(t, ptr(10), acc.Priority)
 	require.Equal(t, store.Strings{}, acc.HeaderPassthrough)
 
 	var got model.Account
@@ -154,4 +158,49 @@ func TestAccountRoundTrip(t *testing.T) {
 	require.Equal(t, acc.CredentialsEnc, got.CredentialsEnc)
 	require.Equal(t, store.Strings{"m1", "m2"}, got.Models)
 	require.Nil(t, got.ParamOverride)
+
+	off := model.Account{Name: "a2", PluginKey: "p", Type: "t", CredentialsEnc: []byte{0},
+		Schedulable: ptr(false), Priority: ptr(0), AutoDisable: ptr(false)}
+	require.NoError(t, g.Create(&off).Error)
+	var back model.Account
+	require.NoError(t, g.First(&back, off.ID).Error)
+	require.Equal(t, ptr(false), back.Schedulable)
+	require.Equal(t, ptr(0), back.Priority)
+	require.Equal(t, ptr(false), back.AutoDisable)
+}
+
+// A -infinity default reads back as such, and created_at, which has no
+// default, is stamped from the database clock.
+func TestOutboxInfinityDefault(t *testing.T) {
+	g := openGorm(t)
+	row := model.ProviderHelperUsageOutbox{RequestID: "r1", AttemptID: "a", UserID: 1, GroupID: 1, Digest: "d", Payload: []byte("x")}
+	require.NoError(t, g.Create(&row).Error)
+	require.Equal(t, pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}, row.NextAttemptAt)
+	require.WithinDuration(t, time.Now(), row.CreatedAt, time.Minute)
+
+	var got []model.ProviderHelperUsageOutbox
+	require.NoError(t, g.Find(&got).Error)
+	require.Len(t, got, 1)
+	require.Equal(t, pgtype.NegativeInfinity, got[0].NextAttemptAt.InfinityModifier)
+	require.True(t, row.CreatedAt.Equal(got[0].CreatedAt))
+}
+
+// The INSERT of a pointer to a zero value carries the column; a nil
+// pointer leaves it to the default and reads it back.
+func TestSnapshotPointerDefaults(t *testing.T) {
+	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
+		return tx.Create(&model.Account{Name: "a", PluginKey: "p", Type: "t", CredentialsEnc: []byte{0},
+			Schedulable: ptr(false), Priority: ptr(0)})
+	})
+}
+
+// In a batch, a row whose pointer is nil gets DEFAULT where another row
+// sets the column.
+func TestSnapshotPointerDefaultsBatch(t *testing.T) {
+	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
+		return tx.Create(&[]model.Account{
+			{Name: "a", PluginKey: "p", Type: "t", CredentialsEnc: []byte{0}, Schedulable: ptr(false)},
+			{Name: "b", PluginKey: "p", Type: "t", CredentialsEnc: []byte{0}},
+		})
+	})
 }

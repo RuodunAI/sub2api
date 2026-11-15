@@ -15,7 +15,7 @@ type Proxy struct {
 	Port         int       `gorm:"column:port"`                                        // integer
 	Username     string    `gorm:"column:username;default:(-)"`                        // character varying(255) default ''::character varying
 	PasswordEnc  []byte    `gorm:"column:password_enc"`                                // bytea
-	Status       string    `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
+	Status       *string   `gorm:"column:status;default:(-)"`                          // character varying(20) default 'active'::character varying
 	CreatedAt    time.Time `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
 	UpdatedAt    time.Time `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()
 	CreatedBy    *int64    `gorm:"column:created_by"`                                  // bigint

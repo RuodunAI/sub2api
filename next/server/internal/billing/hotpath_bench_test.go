@@ -25,18 +25,11 @@ import (
 // balance no benchmark can exhaust.
 func benchBilling(b *testing.B) (*Service, int64) {
 	b.Helper()
-	ctx := context.Background()
 	db := testutil.DB(b)
 	svc := New(db, nil, nil, event.NewPublisher(db), nil)
 	b.Cleanup(svc.Close)
-	var uid int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ('bench@test.invalid', 'x') RETURNING id`).Scan(&uid); err != nil {
-		b.Fatal(err)
-	}
-	if _, err := svc.Apply(ctx, core.LedgerChange{UserID: uid, Amount: decimal.NewFromInt(1_000_000_000), Credit: true,
-		Kind: KindAdminAdjust, IdempotencyKey: "bench-seed"}); err != nil {
-		b.Fatal(err)
-	}
+	uid := testutil.InsertUser(b, db, "bench@test.invalid")
+	testutil.FundUser(b, svc, uid)
 	return svc, uid
 }
 

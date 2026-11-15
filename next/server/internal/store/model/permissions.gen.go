@@ -20,12 +20,12 @@ type Permission struct {
 	PluginKey   *string         `gorm:"column:plugin_key"`                // character varying(30)
 	Sensitive   bool            `gorm:"column:sensitive;default:(-)"`     // boolean default false
 	// active | disabled (owning plugin disabled) | removed (dropped from code or no longer declared by its plugin; grants kept, granting nothing) | staged (declared only by a staged plugin version; grants nothing until that version activates)
-	Status     string          `gorm:"column:status;default:(-)"`                          // character varying(10) default 'active'::character varying
+	Status     *string         `gorm:"column:status;default:(-)"`                          // character varying(10) default 'active'::character varying
 	Sort       int             `gorm:"column:sort;default:(-)"`                            // integer default 0
 	CreatedAt  time.Time       `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
 	ScopeType  string          `gorm:"column:scope_type;default:(-)"`                      // character varying(40) default ''::character varying
-	Risk       string          `gorm:"column:risk;default:(-)"`                            // character varying(10) default 'low'::character varying
-	Requires   store.Strings   `gorm:"column:requires;type:text[];default:(-)"`            // text[] default '{}'::text[]
+	Risk       *string         `gorm:"column:risk;default:(-)"`                            // character varying(10) default 'low'::character varying
+	Requires   store.Strings   `gorm:"column:requires;default:(-)"`                        // text[] default '{}'::text[]
 	GroupKey   string          `gorm:"column:group_key;default:(-)"`                       // character varying(50) default ''::character varying
 	GroupLabel json.RawMessage `gorm:"column:group_label;default:(-)"`                     // jsonb default '{}'::jsonb
 	GroupSort  int             `gorm:"column:group_sort;default:(-)"`                      // integer default 0

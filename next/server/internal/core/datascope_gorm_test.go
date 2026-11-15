@@ -11,25 +11,25 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestScopeTableScopeSQL(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping database test in short mode")
-	}
-	g := store.G(context.Background(), testutil.DB(t).Pool).Session(&gorm.Session{DryRun: true})
 	s := core.DataScope{Owner: 7, Groups: []int64{0, 3}, IDs: []int64{5}, PairG: []int64{2}, PairID: []int64{9}}
 	for _, c := range []struct {
 		t     core.ScopeTable
 		table string
 	}{{core.AccountRows, "accounts a"}, {core.ProxyRows, "proxies p"}} {
-		var ids []int64
-		stmt := g.Table(c.table).Select(c.t.ID).Scopes(c.t.Scope(s)).Find(&ids).Statement
-		assert.Equal(t, "SELECT "+c.t.ID+" FROM "+c.table+" WHERE "+c.t.SQL(1), stmt.SQL.String())
+		query, vars, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB {
+			var ids []int64
+			return tx.Table(c.table).Select(c.t.ID).Scopes(c.t.Scope(s)).Find(&ids)
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "SELECT "+c.t.ID+" FROM "+c.table+" WHERE "+c.t.SQL(1), query)
 		want := c.t.Args(s)
-		require.Len(t, stmt.Vars, len(want))
-		for i, v := range stmt.Vars {
+		require.Len(t, vars, len(want))
+		for i, v := range vars {
 			if ids, ok := want[i].([]int64); ok {
 				assert.Equal(t, store.Int64s(ids), v, "arg %d is one array parameter", i)
 			} else {

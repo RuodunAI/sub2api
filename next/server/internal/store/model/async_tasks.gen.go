@@ -22,8 +22,8 @@ type AsyncTask struct {
 	UsageLogID        int64           `gorm:"column:usage_log_id"`                                // bigint
 	Snapshot          []byte          `gorm:"column:snapshot"`                                    // bytea
 	SnapshotIDPaths   json.RawMessage `gorm:"column:snapshot_id_paths"`                           // jsonb
-	State             string          `gorm:"column:state;default:(-)"`                           // text default 'pending'::text
-	ObservationStatus string          `gorm:"column:observation_status;default:(-)"`              // text default 'pending'::text
+	State             *string         `gorm:"column:state;default:(-)"`                           // text default 'pending'::text
+	ObservationStatus *string         `gorm:"column:observation_status;default:(-)"`              // text default 'pending'::text
 	LegacyImported    bool            `gorm:"column:legacy_imported;default:(-)"`                 // boolean default false
 	Attempts          int             `gorm:"column:attempts;default:(-)"`                        // integer default 0
 	NextCheckAt       time.Time       `gorm:"column:next_check_at"`                               // timestamp with time zone

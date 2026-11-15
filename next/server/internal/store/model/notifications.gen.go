@@ -13,12 +13,12 @@ type Notification struct {
 	ID            int64         `gorm:"column:id;primaryKey;default:(-)"`                   // bigint default nextval('notifications_id_seq'::regclass)
 	Source        string        `gorm:"column:source"`                                      // character varying(64)
 	Channel       string        `gorm:"column:channel"`                                     // character varying(30)
-	Recipients    store.Strings `gorm:"column:recipients;type:text[]"`                      // text[]
+	Recipients    store.Strings `gorm:"column:recipients"`                                  // text[]
 	Subject       string        `gorm:"column:subject"`                                     // text
 	Body          string        `gorm:"column:body"`                                        // text
-	Severity      string        `gorm:"column:severity;default:(-)"`                        // character varying(10) default 'info'::character varying
+	Severity      *string       `gorm:"column:severity;default:(-)"`                        // character varying(10) default 'info'::character varying
 	DedupeKey     string        `gorm:"column:dedupe_key;default:(-)"`                      // character varying(200) default ''::character varying
-	Status        string        `gorm:"column:status;default:(-)"`                          // character varying(10) default 'pending'::character varying
+	Status        *string       `gorm:"column:status;default:(-)"`                          // character varying(10) default 'pending'::character varying
 	Attempts      int           `gorm:"column:attempts;default:(-)"`                        // integer default 0
 	NextAttemptAt time.Time     `gorm:"column:next_attempt_at;default:(-)"`                 // timestamp with time zone default now()
 	LastError     string        `gorm:"column:last_error;default:(-)"`                      // text default ''::text

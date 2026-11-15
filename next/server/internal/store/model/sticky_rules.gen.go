@@ -15,18 +15,18 @@ type StickyRule struct {
 	Name        string          `gorm:"column:name"`                                        // character varying(100)
 	Source      string          `gorm:"column:source"`                                      // character varying(20)
 	PluginKey   *string         `gorm:"column:plugin_key"`                                  // character varying(30)
-	Enabled     bool            `gorm:"column:enabled;default:(-)"`                         // boolean default true
-	Priority    int             `gorm:"column:priority;default:(-)"`                        // integer default 100
+	Enabled     *bool           `gorm:"column:enabled;default:(-)"`                         // boolean default true
+	Priority    *int            `gorm:"column:priority;default:(-)"`                        // integer default 100
 	Match       json.RawMessage `gorm:"column:match;default:(-)"`                           // jsonb default '{}'::jsonb
 	KeySources  json.RawMessage `gorm:"column:key_sources"`                                 // jsonb
 	ValueRegex  string          `gorm:"column:value_regex;default:(-)"`                     // text default ''::text
-	TTLSeconds  int             `gorm:"column:ttl_seconds;default:(-)"`                     // integer default 3600
+	TTLSeconds  *int            `gorm:"column:ttl_seconds;default:(-)"`                     // integer default 3600
 	KeyIncludes json.RawMessage `gorm:"column:key_includes;default:(-)"`                    // jsonb default '["group", "model", "rule"]'::jsonb
-	OnFailure   string          `gorm:"column:on_failure;default:(-)"`                      // character varying(20) default 'failover'::character varying
+	OnFailure   *string         `gorm:"column:on_failure;default:(-)"`                      // character varying(20) default 'failover'::character varying
 	UpdatedBy   *int64          `gorm:"column:updated_by"`                                  // bigint
 	UpdatedAt   time.Time       `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()
 	Customized  bool            `gorm:"column:customized;default:(-)"`                      // boolean default false
-	PassHeaders store.Strings   `gorm:"column:pass_headers;type:text[];default:(-)"`        // text[] default '{}'::text[]
+	PassHeaders store.Strings   `gorm:"column:pass_headers;default:(-)"`                    // text[] default '{}'::text[]
 }
 
 // TableName implements gorm's schema.Tabler.

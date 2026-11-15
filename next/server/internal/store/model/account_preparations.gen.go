@@ -17,7 +17,7 @@ type AccountPreparation struct {
 	CreatedBy      int64           `gorm:"column:created_by"`                                  // bigint
 	IdempotencyKey *string         `gorm:"column:idempotency_key"`                             // character varying(128)
 	AccountID      *int64          `gorm:"column:account_id"`                                  // bigint
-	State          string          `gorm:"column:state;default:(-)"`                           // character varying(16) default 'pending'::character varying
+	State          *string         `gorm:"column:state;default:(-)"`                           // character varying(16) default 'pending'::character varying
 	CreatedAt      time.Time       `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
 	LastSeenAt     time.Time       `gorm:"column:last_seen_at;default:(-)"`                    // timestamp with time zone default now()
 	ExpiresAt      time.Time       `gorm:"column:expires_at;default:(-)"`                      // timestamp with time zone default (now() + '02:00:00'::interval)

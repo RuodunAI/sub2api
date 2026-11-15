@@ -13,12 +13,7 @@ import (
 // The checked-in models must be exactly what the generator makes from the
 // current migrations, so a migration never lands without its models.
 func TestModelsMatchMigrations(t *testing.T) {
-	files, err := modelgen.FromMigrations(t.Context(), testpg.URL(t), modelgen.Default)
-	require.NoError(t, err)
-	dir := t.TempDir()
-	require.NoError(t, modelgen.Write(dir, files))
-
-	want, err := modelgen.ReadGenerated(dir)
+	want, err := modelgen.FromMigrations(t.Context(), testpg.URL(t), modelgen.Default)
 	require.NoError(t, err)
 	have, err := modelgen.ReadGenerated(".")
 	require.NoError(t, err)

@@ -12,7 +12,7 @@ type MarketSource struct {
 	Name      string    `gorm:"column:name"`                                        // character varying(100)
 	URL       string    `gorm:"column:url"`                                         // text
 	PublicKey string    `gorm:"column:public_key"`                                  // text
-	Enabled   bool      `gorm:"column:enabled;default:(-)"`                         // boolean default true
+	Enabled   *bool     `gorm:"column:enabled;default:(-)"`                         // boolean default true
 	CreatedAt time.Time `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()
 }
 

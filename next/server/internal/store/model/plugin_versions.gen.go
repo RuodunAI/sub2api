@@ -18,7 +18,7 @@ type PluginVersion struct {
 	PublisherID     *int64          `gorm:"column:publisher_id"`               // bigint
 	KeyID           *string         `gorm:"column:key_id"`                     // character varying(100)
 	SignatureStatus string          `gorm:"column:signature_status"`           // character varying(20)
-	ConsentStatus   string          `gorm:"column:consent_status;default:(-)"` // character varying(20) default 'awaiting_consent'::character varying
+	ConsentStatus   *string         `gorm:"column:consent_status;default:(-)"` // character varying(20) default 'awaiting_consent'::character varying
 	UploadedBy      *int64          `gorm:"column:uploaded_by"`                // bigint
 	UploadedAt      time.Time       `gorm:"column:uploaded_at;default:(-)"`    // timestamp with time zone default now()
 	PackageURL      string          `gorm:"column:package_url;default:(-)"`    // text default ''::text

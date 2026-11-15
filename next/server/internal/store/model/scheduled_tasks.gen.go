@@ -16,7 +16,7 @@ type ScheduledTask struct {
 	TimeoutMs           int             `gorm:"column:timeout_ms"`                                  // integer
 	MaxAttempts         int             `gorm:"column:max_attempts;default:(-)"`                    // integer default 0
 	Args                json.RawMessage `gorm:"column:args"`                                        // jsonb
-	Enabled             bool            `gorm:"column:enabled;default:(-)"`                         // boolean default true
+	Enabled             *bool           `gorm:"column:enabled;default:(-)"`                         // boolean default true
 	SeenVersion         string          `gorm:"column:seen_version;default:(-)"`                    // text default ''::text
 	SeenAt              time.Time       `gorm:"column:seen_at;default:(-)"`                         // timestamp with time zone default now()
 	LeaseJobID          *int64          `gorm:"column:lease_job_id"`                                // bigint

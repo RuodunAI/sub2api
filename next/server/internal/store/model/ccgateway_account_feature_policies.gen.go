@@ -12,7 +12,7 @@ type CcgatewayAccountFeaturePolicy struct {
 	AccountID int64           `gorm:"column:account_id;primaryKey;autoIncrement:false"`   // bigint
 	Mode      string          `gorm:"column:mode"`                                        // text
 	Overrides json.RawMessage `gorm:"column:overrides;default:(-)"`                       // jsonb default '{}'::jsonb
-	Revision  int64           `gorm:"column:revision;default:(-)"`                        // bigint default 1
+	Revision  *int64          `gorm:"column:revision;default:(-)"`                        // bigint default 1
 	UpdatedAt time.Time       `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()
 }
 

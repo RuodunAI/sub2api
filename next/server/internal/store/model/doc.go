@@ -7,9 +7,26 @@
 //
 // A column with a database default (serial ids, now(), literals) is tagged
 // default:(-): GORM leaves it out of an INSERT while the field holds its zero
-// value and reads the database's value back with RETURNING, as an INSERT
-// that omits the column would. GORM skips such a zero field even when it is
-// selected, so writing an explicit zero (false into a default-true column)
-// takes a map insert, Create(map[string]any{...}). Nullable columns are
-// pointers, except []byte and json.RawMessage, where nil already is NULL.
+// value, even when selected, and reads the database's value back with
+// RETURNING, as an INSERT that omits the column would. So the zero value
+// must never be a value one means to write:
+//
+//   - a default that is an expression (a sequence, now()) or the Go zero
+//     value itself (false, 0, the empty text, '{}', '[]'::jsonb) keeps the
+//     plain type: writing the zero and taking the default come to the same
+//     row;
+//   - a NOT NULL column whose default is any other literal (true, 5,
+//     'active') is a pointer: nil takes the default, a non-nil value is
+//     written as is, false and 0 included;
+//   - []byte, json.RawMessage and the store array types stay values: nil
+//     takes the default and an empty non-nil value is written; time.Time
+//     stays a value too, the zero time being no time one writes;
+//   - a timestamptz defaulting to ±infinity is a pgtype.Timestamptz, which
+//     holds infinity (time.Time cannot): Valid false takes the default.
+//
+// Nullable columns are pointers, except []byte, json.RawMessage and
+// pgtype.Timestamptz, whose zero value already is NULL.
+//
+// created_at and updated_at are stamped from the database clock by store.G,
+// not by GORM (see store/gorm_timestamps.go).
 package model

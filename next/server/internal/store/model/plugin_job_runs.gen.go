@@ -18,7 +18,7 @@ type PluginJobRun struct {
 	Status      string     `gorm:"column:status"`                    // character varying(20)
 	Manual      bool       `gorm:"column:manual;default:(-)"`        // boolean default false
 	Message     string     `gorm:"column:message;default:(-)"`       // text default ''::text
-	Scope       string     `gorm:"column:scope;default:(-)"`         // text default 'cluster'::text
+	Scope       *string    `gorm:"column:scope;default:(-)"`         // text default 'cluster'::text
 }
 
 // TableName implements gorm's schema.Tabler.

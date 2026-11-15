@@ -14,10 +14,10 @@ type ModelPrice struct {
 	Mode         string          `gorm:"column:mode"`                                        // character varying(20)
 	Config       json.RawMessage `gorm:"column:config;default:(-)"`                          // jsonb default '{}'::jsonb
 	Expression   string          `gorm:"column:expression"`                                  // text
-	ExprVersion  int             `gorm:"column:expr_version;default:(-)"`                    // integer default 1
+	ExprVersion  *int            `gorm:"column:expr_version;default:(-)"`                    // integer default 1
 	ExprHash     string          `gorm:"column:expr_hash"`                                   // character varying(64)
 	Source       string          `gorm:"column:source"`                                      // character varying(20)
-	Enabled      bool            `gorm:"column:enabled;default:(-)"`                         // boolean default true
+	Enabled      *bool           `gorm:"column:enabled;default:(-)"`                         // boolean default true
 	Note         string          `gorm:"column:note;default:(-)"`                            // text default ''::text
 	UpdatedBy    *int64          `gorm:"column:updated_by"`                                  // bigint
 	UpdatedAt    time.Time       `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()

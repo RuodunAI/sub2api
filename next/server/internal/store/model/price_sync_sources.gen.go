@@ -15,7 +15,7 @@ type PriceSyncSource struct {
 	URL          string          `gorm:"column:url"`                                         // text
 	APIKeyEnc    []byte          `gorm:"column:api_key_enc"`                                 // bytea
 	Options      json.RawMessage `gorm:"column:options;default:(-)"`                         // jsonb default '{}'::jsonb
-	Enabled      bool            `gorm:"column:enabled;default:(-)"`                         // boolean default true
+	Enabled      *bool           `gorm:"column:enabled;default:(-)"`                         // boolean default true
 	LastSyncedAt *time.Time      `gorm:"column:last_synced_at"`                              // timestamp with time zone
 	LastError    string          `gorm:"column:last_error;default:(-)"`                      // text default ''::text
 	CreatedAt    time.Time       `gorm:"column:created_at;default:(-);autoCreateTime:false"` // timestamp with time zone default now()

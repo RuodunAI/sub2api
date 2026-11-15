@@ -15,7 +15,7 @@ type PluginExecution struct {
 	AccountID   int64           `gorm:"column:account_id"`                                  // bigint
 	Attempt     int             `gorm:"column:attempt"`                                     // integer
 	TaskSubmit  bool            `gorm:"column:task_submit;default:(-)"`                     // boolean default false
-	State       string          `gorm:"column:state;default:(-)"`                           // text default 'intent'::text
+	State       *string         `gorm:"column:state;default:(-)"`                           // text default 'intent'::text
 	Record      json.RawMessage `gorm:"column:record"`                                      // jsonb
 	Observation []byte          `gorm:"column:observation"`                                 // bytea
 	Operation   string          `gorm:"column:operation;default:(-)"`                       // text default ''::text

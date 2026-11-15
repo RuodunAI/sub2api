@@ -39,17 +39,9 @@ func newBenchSettler(b *testing.B) *benchSettler {
 	pub := event.NewPublisher(db)
 	bill := billing.New(db, nil, nil, pub, nil)
 	b.Cleanup(bill.Close)
-	s := &benchSettler{svc: New(db, bill, bill, pub, Options{}), bill: bill}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ('bench@test.invalid', 'x') RETURNING id`).Scan(&s.user); err != nil {
-		b.Fatal(err)
-	}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO groups (name) VALUES ('bench') RETURNING id`).Scan(&s.group); err != nil {
-		b.Fatal(err)
-	}
-	if _, err := bill.Apply(ctx, core.LedgerChange{UserID: s.user, Amount: decimal.NewFromInt(1_000_000_000), Credit: true,
-		Kind: billing.KindAdminAdjust, IdempotencyKey: "bench-seed"}); err != nil {
-		b.Fatal(err)
-	}
+	s := &benchSettler{svc: New(db, bill, bill, pub, Options{}), bill: bill,
+		user: testutil.InsertUser(b, db, "bench@test.invalid"), group: testutil.InsertGroup(b, db, "bench")}
+	testutil.FundUser(b, bill, s.user)
 	prog, err := expr.Compile(a6Expr)
 	if err != nil {
 		b.Fatal(err)
@@ -79,6 +71,7 @@ func (s *benchSettler) record(i int, billable bool) *core.UsageRecord {
 }
 
 func (s *benchSettler) insert(b *testing.B, rec *core.UsageRecord) {
+	b.Helper()
 	if _, err := s.svc.insert(context.Background(), []*core.UsageRecord{rec}); err != nil {
 		b.Fatal(err)
 	}

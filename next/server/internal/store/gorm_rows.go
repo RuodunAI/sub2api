@@ -30,50 +30,59 @@ type resultType struct {
 	plan   func(m *pgtype.Map, oid uint32, format int16) columnDecoder
 }
 
+// bin reads a type in binary, txt in text.
+func bin(plan func(*pgtype.Map, uint32, int16) columnDecoder) resultType {
+	return resultType{binary: true, plan: plan}
+}
+
+func txt(plan func(*pgtype.Map, uint32, int16) columnDecoder) resultType {
+	return resultType{plan: plan}
+}
+
 // resultTypes are the types the bridge reads: every column type of the
 // migrated schema (TestGORMReadsEverySchemaColumn) and what expressions
 // commonly yield. Scalars follow pgx's database/sql driver, so scanners
 // written for it work unchanged; arrays come as Go slices (Int64s and
 // Strings read them). Anything else is an error, never a guess.
 var resultTypes = map[uint32]resultType{
-	pgtype.BoolOID:        {true, decodeAs(func(v bool) (driver.Value, error) { return v, nil })},
-	pgtype.Int2OID:        {true, decodeAs(func(v int16) (driver.Value, error) { return int64(v), nil })},
-	pgtype.Int4OID:        {true, decodeAs(func(v int32) (driver.Value, error) { return int64(v), nil })},
-	pgtype.Int8OID:        {true, decodeAs(func(v int64) (driver.Value, error) { return v, nil })},
-	pgtype.Float4OID:      {true, decodeAs(func(v float32) (driver.Value, error) { return float64(v), nil })},
-	pgtype.Float8OID:      {true, decodeAs(func(v float64) (driver.Value, error) { return v, nil })},
-	pgtype.NumericOID:     {false, decodeText},
-	pgtype.TextOID:        {false, decodeText},
-	pgtype.VarcharOID:     {false, decodeText},
-	pgtype.BPCharOID:      {false, decodeText},
-	pgtype.NameOID:        {false, decodeText},
-	pgtype.ByteaOID:       {true, decodeBytes},
-	pgtype.JSONOID:        {false, decodeBytes},
-	pgtype.JSONBOID:       {false, decodeBytes},
-	pgtype.DateOID:        {true, decodeAs(pgtype.Date.Value)},
-	pgtype.TimestampOID:   {true, decodeAs(pgtype.Timestamp.Value)},
-	pgtype.TimestamptzOID: {true, decodeAs(pgtype.Timestamptz.Value)},
-	pgtype.IntervalOID:    {false, decodeText},
-	pgtype.UUIDOID:        {false, decodeText},
-	pgtype.InetOID:        {false, decodeText},
-	pgtype.CIDROID:        {false, decodeText},
-	pgtype.BitOID:         {false, decodeText},
-	pgtype.VarbitOID:      {false, decodeText},
+	pgtype.BoolOID:        bin(decodeAs(func(v bool) (driver.Value, error) { return v, nil })),
+	pgtype.Int2OID:        bin(decodeAs(func(v int16) (driver.Value, error) { return int64(v), nil })),
+	pgtype.Int4OID:        bin(decodeAs(func(v int32) (driver.Value, error) { return int64(v), nil })),
+	pgtype.Int8OID:        bin(decodeAs(func(v int64) (driver.Value, error) { return v, nil })),
+	pgtype.Float4OID:      bin(decodeAs(func(v float32) (driver.Value, error) { return float64(v), nil })),
+	pgtype.Float8OID:      bin(decodeAs(func(v float64) (driver.Value, error) { return v, nil })),
+	pgtype.NumericOID:     txt(decodeText),
+	pgtype.TextOID:        txt(decodeText),
+	pgtype.VarcharOID:     txt(decodeText),
+	pgtype.BPCharOID:      txt(decodeText),
+	pgtype.NameOID:        txt(decodeText),
+	pgtype.ByteaOID:       bin(decodeBytes),
+	pgtype.JSONOID:        txt(decodeBytes),
+	pgtype.JSONBOID:       txt(decodeBytes),
+	pgtype.DateOID:        bin(decodeAs(pgtype.Date.Value)),
+	pgtype.TimestampOID:   bin(decodeAs(pgtype.Timestamp.Value)),
+	pgtype.TimestamptzOID: bin(decodeAs(pgtype.Timestamptz.Value)),
+	pgtype.IntervalOID:    txt(decodeText),
+	pgtype.UUIDOID:        txt(decodeText),
+	pgtype.InetOID:        txt(decodeText),
+	pgtype.CIDROID:        txt(decodeText),
+	pgtype.BitOID:         txt(decodeText),
+	pgtype.VarbitOID:      txt(decodeText),
 
-	pgtype.Int2ArrayOID:        {true, decodeSlice[int64]},
-	pgtype.Int4ArrayOID:        {true, decodeSlice[int64]},
-	pgtype.Int8ArrayOID:        {true, decodeSlice[int64]},
-	pgtype.Float4ArrayOID:      {true, decodeSlice[float64]},
-	pgtype.Float8ArrayOID:      {true, decodeSlice[float64]},
-	pgtype.BoolArrayOID:        {true, decodeSlice[bool]},
-	pgtype.TextArrayOID:        {true, decodeSlice[string]},
-	pgtype.VarcharArrayOID:     {true, decodeSlice[string]},
-	pgtype.BPCharArrayOID:      {true, decodeSlice[string]},
-	pgtype.NumericArrayOID:     {false, decodeSlice[string]},
-	pgtype.UUIDArrayOID:        {false, decodeSlice[string]},
-	pgtype.JSONArrayOID:        {false, decodeSlice[[]byte]},
-	pgtype.JSONBArrayOID:       {false, decodeSlice[[]byte]},
-	pgtype.TimestamptzArrayOID: {true, decodeSlice[time.Time]},
+	pgtype.Int2ArrayOID:        bin(decodeSlice[int64]),
+	pgtype.Int4ArrayOID:        bin(decodeSlice[int64]),
+	pgtype.Int8ArrayOID:        bin(decodeSlice[int64]),
+	pgtype.Float4ArrayOID:      bin(decodeSlice[float64]),
+	pgtype.Float8ArrayOID:      bin(decodeSlice[float64]),
+	pgtype.BoolArrayOID:        bin(decodeSlice[bool]),
+	pgtype.TextArrayOID:        bin(decodeSlice[string]),
+	pgtype.VarcharArrayOID:     bin(decodeSlice[string]),
+	pgtype.BPCharArrayOID:      bin(decodeSlice[string]),
+	pgtype.NumericArrayOID:     txt(decodeSlice[string]),
+	pgtype.UUIDArrayOID:        txt(decodeSlice[string]),
+	pgtype.JSONArrayOID:        txt(decodeSlice[[]byte]),
+	pgtype.JSONBArrayOID:       txt(decodeSlice[[]byte]),
+	pgtype.TimestamptzArrayOID: bin(decodeSlice[time.Time]),
 }
 
 // resultFormats asks the server for the binary form of the resultTypes that

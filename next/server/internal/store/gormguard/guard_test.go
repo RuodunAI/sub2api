@@ -21,166 +21,25 @@ import (
 
 const (
 	gormPkg   = "gorm.io/gorm"
+	clausePkg = "gorm.io/gorm/clause"
 	pgxPrefix = "github.com/jackc/pgx/v5"
+	// allowPgx starts the comment that keeps one pgx statement in a
+	// migrated package: //gormguard:allow-pgx <reason>, on the line of the
+	// call or the line above.
+	allowPgx = "//gormguard:allow-pgx"
 )
 
-// openAllowed lists the packages, relative to the module, that may call
-// gorm.Open, with the reason.
-var openAllowed = map[string]string{
-	"internal/store":          "store.G's instance over the forwarding driver",
-	"internal/store/gormtest": "the DryRun instance of the SQL snapshots; it never connects",
+// instanceOwners lists the packages, relative to the module, that own the
+// shared GORM instance, with the reason: they may gorm.Open, register
+// callbacks and plugins, reach its *sql.DB and set its configuration.
+var instanceOwners = map[string]string{
+	"internal/store": "store.G's instance over the forwarding driver, with its timestamp hooks",
 }
 
 // migratedPackages lists the packages, relative to the module, whose
 // statements are built with store.G: they must not go back to pgx Exec,
 // Query or QueryRow. A package is added here in the batch that migrates it.
 var migratedPackages = map[string]string{}
-
-// Rule tags, at the start of every finding.
-const (
-	ruleTx    = "[gorm-tx]"
-	ruleOpen  = "[gorm-open]"
-	ruleSlice = "[gorm-slice]"
-	rulePgx   = "[pgx-direct]"
-)
-
-// bannedMethods are the gorm (*DB) methods that would let GORM own a
-// transaction or the schema.
-var bannedMethods = map[string]bool{"Transaction": true, "Begin": true, "AutoMigrate": true, "Migrator": true}
-
-// conditionMethods are the gorm (*DB) methods whose arguments become SQL
-// parameters (for Find, First, Take, Last and Delete: the inline
-// conditions).
-var conditionMethods = map[string]bool{
-	"Where": true, "Or": true, "Not": true, "Having": true, "Raw": true, "Exec": true, "Joins": true,
-	"Find": true, "First": true, "Take": true, "Last": true, "Delete": true,
-}
-
-// pgxMethods are the direct statement calls of a pgx querier.
-var pgxMethods = map[string]bool{"Exec": true, "Query": true, "QueryRow": true}
-
-type rules struct {
-	module   string
-	openAt   map[string]string
-	migrated map[string]string
-}
-
-// check returns the findings of one type-checked package as
-// "file:line:col: [rule] message".
-func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, info *types.Info) []string {
-	rel := strings.TrimPrefix(pkgPath, r.module+"/")
-	_, mayOpen := r.openAt[rel]
-	_, migrated := r.migrated[rel]
-	var out []string
-	report := func(n ast.Node, format string, args ...any) {
-		out = append(out, fmt.Sprintf("%s: %s", fset.Position(n.Pos()), fmt.Sprintf(format, args...)))
-	}
-	for _, f := range files {
-		ast.Inspect(f, func(n ast.Node) bool {
-			switch n := n.(type) {
-			case *ast.SelectorExpr:
-				// Selectors, not calls: a method value (f := db.Begin) is
-				// caught as well.
-				fn := funcOf(info, n)
-				switch {
-				case fn == nil:
-				case isGormMethod(fn) && bannedMethods[fn.Name()]:
-					report(n, "%s gorm (*DB).%s: transactions start in store.DB.Tx and the schema comes from the SQL migrations", ruleTx, fn.Name())
-				case isGormFunc(fn, "Open") && !mayOpen:
-					report(n, "%s gorm.Open outside package store: take a handle from store.G", ruleOpen)
-				case migrated && isPgxStatement(fn):
-					report(n, "%s pgx %s in a migrated package: build the statement with store.G (Batch and CopyFrom stay on pgx)", rulePgx, fn.Name())
-				}
-			case *ast.CallExpr:
-				sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				fn := funcOf(info, sel)
-				if fn == nil || !(isGormMethod(fn) && conditionMethods[fn.Name()] || isGormFunc(fn, "Expr")) {
-					return true
-				}
-				for _, arg := range n.Args {
-					if t := info.TypeOf(arg); expandedSlice(t) {
-						report(arg, "%s %s argument to gorm %s: GORM expands it into a list; pass store.Int64s or store.Strings", ruleSlice, t, fn.Name())
-					}
-				}
-			}
-			return true
-		})
-	}
-	return out
-}
-
-// funcOf is the function or method a selector names, if any.
-func funcOf(info *types.Info, sel *ast.SelectorExpr) *types.Func {
-	if s := info.Selections[sel]; s != nil {
-		fn, _ := s.Obj().(*types.Func)
-		return fn
-	}
-	fn, _ := info.Uses[sel.Sel].(*types.Func) // a qualified identifier: gorm.Open
-	return fn
-}
-
-func isNamed(t types.Type, pkg, name string) bool {
-	if p, ok := types.Unalias(t).(*types.Pointer); ok {
-		t = p.Elem()
-	}
-	n, ok := types.Unalias(t).(*types.Named)
-	return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == pkg && n.Obj().Name() == name
-}
-
-// isGormMethod reports a method of gorm.DB, including one promoted through
-// an embedded *gorm.DB.
-func isGormMethod(fn *types.Func) bool {
-	recv := fn.Type().(*types.Signature).Recv()
-	return recv != nil && isNamed(recv.Type(), gormPkg, "DB")
-}
-
-func isGormFunc(fn *types.Func, name string) bool {
-	return fn.Pkg() != nil && fn.Pkg().Path() == gormPkg && fn.Name() == name && fn.Type().(*types.Signature).Recv() == nil
-}
-
-// isPgxStatement recognises Exec, Query and QueryRow by shape (a context
-// first, a pgx or pgconn result first), so it covers *pgxpool.Pool, pgx.Tx,
-// *pgx.Conn and store.Querier alike, and leaves out pgx.BatchResults (no
-// context) and gorm's Exec (no context).
-func isPgxStatement(fn *types.Func) bool {
-	if !pgxMethods[fn.Name()] {
-		return false
-	}
-	sig := fn.Type().(*types.Signature)
-	if sig.Recv() == nil || sig.Params().Len() == 0 || sig.Results().Len() == 0 || !isNamed(sig.Params().At(0).Type(), "context", "Context") {
-		return false
-	}
-	n, ok := types.Unalias(sig.Results().At(0).Type()).(*types.Named)
-	return ok && n.Obj().Pkg() != nil && strings.HasPrefix(n.Obj().Pkg().Path(), pgxPrefix)
-}
-
-// expandedSlice reports a slice of int, int32, int64 or string (named or
-// not) that is no driver.Valuer: GORM expands exactly those. []byte is a
-// bytea value and store.Int64s and store.Strings are Valuers.
-func expandedSlice(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	s, ok := t.Underlying().(*types.Slice)
-	if !ok {
-		return false
-	}
-	b, ok := s.Elem().Underlying().(*types.Basic)
-	if !ok {
-		return false
-	}
-	switch b.Kind() {
-	case types.Int, types.Int32, types.Int64, types.String:
-	default:
-		return false
-	}
-	obj, _, _ := types.LookupFieldOrMethod(t, false, nil, "Value")
-	_, valuer := obj.(*types.Func)
-	return !valuer
-}
 
 // --- loading -------------------------------------------------------------
 
@@ -265,7 +124,7 @@ func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*as
 // the rules can apply to: those that depend on GORM, and the migrated ones.
 func TestRepositoryFollowsGORMRules(t *testing.T) {
 	root, module := moduleRoot(t)
-	r := rules{module: module, openAt: openAllowed, migrated: migratedPackages}
+	r := rules{module: module, owners: instanceOwners, migrated: migratedPackages}
 	known := map[string]bool{}
 	var targets []listed
 	for _, p := range goList(t, root, "./...") {
@@ -275,7 +134,7 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 			targets = append(targets, p)
 		}
 	}
-	for _, list := range []map[string]string{openAllowed, migratedPackages} {
+	for _, list := range []map[string]string{instanceOwners, migratedPackages} {
 		for rel := range list {
 			if !known[rel] {
 				t.Errorf("%s is listed but is no package of %s; drop its entry", rel, module)
@@ -294,7 +153,7 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 	for _, p := range targets {
 		var files []*ast.File
 		for _, name := range p.GoFiles {
-			f, err := parser.ParseFile(fset, filepath.Join(p.Dir, name), nil, parser.SkipObjectResolution)
+			f, err := parser.ParseFile(fset, filepath.Join(p.Dir, name), nil, parser.SkipObjectResolution|parser.ParseComments)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -321,6 +180,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -332,6 +192,7 @@ var (
 	_ pgx.Tx
 	_ *pgxpool.Pool
 	_ *gorm.DB
+	_ clause.Expr
 	_ store.Querier
 )
 `
@@ -340,10 +201,10 @@ func TestRules(t *testing.T) {
 	root, _ := moduleRoot(t)
 	fset := token.NewFileSet()
 	imp := exportImporter(fset, goList(t, root, "-export", "-deps",
-		gormPkg, pgxPrefix, pgxPrefix+"/pgxpool", fixtureModule+"/internal/store"))
+		gormPkg, clausePkg, pgxPrefix, pgxPrefix+"/pgxpool", fixtureModule+"/internal/store"))
 	r := rules{
 		module:   fixtureModule,
-		openAt:   map[string]string{"internal/store": "test"},
+		owners:   map[string]string{"internal/store": "test"},
 		migrated: map[string]string{"internal/usage": "test"},
 	}
 	cases := []struct {
@@ -422,12 +283,58 @@ func f(ctx context.Context) {
 `,
 		},
 		{
+			name: "instance/outside store: the sql.DB, callbacks, plugins and configuration",
+			pkg:  "internal/billing",
+			src: `
+func f(db *gorm.DB) {
+	_, _ = db.DB()
+	_ = db.Callback()
+	_ = db.Use(nil)
+	cb := db.Callback
+	_ = cb
+	db.Config = &gorm.Config{}
+	*db.Config = gorm.Config{}
+	db.ConnPool = nil
+	db.DryRun = true
+	db.ClauseBuilders["SET"] = nil
+	db.Statement.ConnPool = nil
+	cfg := &gorm.Config{}
+	cfg.Logger = nil
+}
+`,
+			want: []string{ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance,
+				ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance},
+		},
+		{
+			name: "instance/inside store, and statement state elsewhere",
+			pkg:  "internal/store",
+			src: `
+func f(db *gorm.DB) {
+	_ = db.Callback()
+	db.ClauseBuilders["SET"] = nil
+	db.Error = nil
+	db.Statement.Table = "t"
+}
+`,
+		},
+		{
+			name: "instance/statement state outside store passes",
+			pkg:  "internal/billing",
+			src: `
+func f(db *gorm.DB) {
+	db.Error = nil
+	db.Statement.Table = "t"
+	db.Statement.Vars = nil
+}
+`,
+		},
+		{
 			name: "slice/every parameter position and type",
 			pkg:  "internal/billing",
 			src: `
 type ids []int64
 
-func f(db *gorm.DB, a []int64, b []string, c []int32, d []int, e ids) {
+func f(db *gorm.DB, a []int64, b []string, c []int32, d []int, e ids, arr [2]int64, anys []any) {
 	var rows []struct{ ID int64 }
 	db.Where("id = ANY(?)", a).Find(&rows)
 	db.Where("name = ANY(?)", b)
@@ -441,32 +348,83 @@ func f(db *gorm.DB, a []int64, b []string, c []int32, d []int, e ids) {
 	db.Delete(&rows, a)
 	_ = gorm.Expr("x = ANY(?)", a)
 	db.Where(a)
+	db.Where("id = ANY(?)", arr)
+	db.Where("x IN ?", anys)
+	db.Where("x IN ?", []struct{ A int }{{1}})
+	db.Select("id = ANY(?) AS hit", a).Find(&rows)
+	db.Model(&rows).Update("ids", a)
+	db.Model(&rows).UpdateColumn("ids", a)
+	db.Assign(a).Attrs(a)
+	db.FirstOrInit(&rows, a)
+	db.FirstOrCreate(&rows, a)
+	db.Where(clause.Expr{SQL: "id = ANY(?)", Vars: []any{a}})
+	db.Where(clause.Expr{"id = ANY(?)", []any{1, a}, false})
+	db.Where(clause.NamedExpr{SQL: "id = ANY(@ids)", Vars: []any{a}})
 }
 `,
 			want: []string{ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice,
-				ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice},
+				ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice,
+				ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice,
+				ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice},
 		},
 		{
-			name: "slice/array types, bytes, scalars and column lists pass",
+			name: "slice/Valuers, bytes, scalars, spreads, destinations and column lists pass",
 			pkg:  "internal/billing",
+			imports: `import (
+	"encoding/json"
+	"time"
+)`,
 			src: `
 type builder struct{}
 
 func (builder) Where(string, ...any) {}
 
-func f(db *gorm.DB, a []int64, raw []byte, b builder) {
+func f(db *gorm.DB, a []int64, raw []byte, doc json.RawMessage, at []time.Time, b builder, args []any) {
 	var rows []struct{ ID int64 }
 	db.Where("id = ANY(?)", store.Int64s(a)).Find(&rows)
 	db.Where("id = ANY(?)", store.Int64s(nil))
 	db.Where("name = ANY(?)", store.Strings{"x"})
+	db.Where("at = ANY(?)", store.Times(at))
 	db.Where("blob = ?", raw)
+	db.Where("doc = ?", doc)
 	db.Where("id = ?", a[0])
 	db.Where(map[string]any{"id": 1})
+	db.Where("x = ? AND y = ?", args...)
 	db.Select([]string{"id", "name"}).Find(&rows)
+	db.Select("id", "name").Find(&rows)
 	db.Pluck("id", &a)
+	db.Delete(rows)
+	db.Model(&rows).Update("name", "x")
+	db.Where(clause.Expr{SQL: "id = ANY(?)", Vars: []any{store.Int64s(a)}})
+	db.Where(clause.Expr{SQL: "x = ?", Vars: args})
 	b.Where("x", []int64{1})
 }
 `,
+		},
+		{
+			name: "pgx/allow comments with a reason, on the line or the line above",
+			pkg:  "internal/usage",
+			src: `
+func f(ctx context.Context, q store.Querier) {
+	_, _ = q.Exec(ctx, "x") //gormguard:allow-pgx hot path, 1.7x the allocations on GORM
+	//gormguard:allow-pgx hot path, see BASELINE.md
+	_ = q.QueryRow(ctx, "x")
+}
+`,
+		},
+		{
+			name: "pgx/allow comments without a reason, too far or misspelt",
+			pkg:  "internal/usage",
+			src: `
+func f(ctx context.Context, q store.Querier) {
+	_, _ = q.Exec(ctx, "x") //gormguard:allow-pgx
+	//gormguard:allow-pgx far away
+
+	_ = q.QueryRow(ctx, "x")
+	_ = q.QueryRow(ctx, "x") //gormguard:allow-pgxx typo
+}
+`,
+			want: []string{rulePgx, rulePgx, rulePgx},
 		},
 		{
 			name: "pgx/direct statements in a migrated package",
@@ -514,7 +472,7 @@ func f(ctx context.Context, q store.Querier, pool *pgxpool.Pool) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			src := "package p\n" + fixtureImports + c.imports + "\n" + c.src + fixtureUses
-			f, err := parser.ParseFile(fset, c.name+".go", src, parser.SkipObjectResolution)
+			f, err := parser.ParseFile(fset, c.name+".go", src, parser.SkipObjectResolution|parser.ParseComments)
 			if err != nil {
 				t.Fatal(err)
 			}

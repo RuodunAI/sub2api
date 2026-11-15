@@ -21,7 +21,7 @@ type AccountQuotaSnapshot struct {
 	PluginRevision string          `gorm:"column:plugin_revision;default:(-)"`               // text default ''::text
 	AutoRefresh    bool            `gorm:"column:auto_refresh;default:(-)"`                  // boolean default false
 	NextCheckAt    *time.Time      `gorm:"column:next_check_at"`                             // timestamp with time zone
-	RefreshStatus  string          `gorm:"column:refresh_status;default:(-)"`                // text default 'pending'::text
+	RefreshStatus  *string         `gorm:"column:refresh_status;default:(-)"`                // text default 'pending'::text
 	Failures       int             `gorm:"column:failures;default:(-)"`                      // integer default 0
 	LeaseToken     int64           `gorm:"column:lease_token;default:(-)"`                   // bigint default 0
 	LeaseUntil     *time.Time      `gorm:"column:lease_until"`                               // timestamp with time zone
