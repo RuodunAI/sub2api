@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -82,7 +81,7 @@ type logStore interface {
 	prune(ctx context.Context, before time.Time) error
 	// upsertDomains adds connection counts per host. onNew is called in the
 	// same transaction with the deltas whose row was created.
-	upsertDomains(ctx context.Context, ds []domainDelta, onNew func(ctx context.Context, tx pgx.Tx, news []domainDelta) error) error
+	upsertDomains(ctx context.Context, ds []domainDelta, onNew func(ctx context.Context, tx *gorm.DB, news []domainDelta) error) error
 }
 
 // logWriter batches log rows and domain updates on one goroutine.
@@ -363,7 +362,7 @@ func (w *logWriter) flushDomains(force bool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err := w.st.upsertDomains(ctx, ds, func(ctx context.Context, tx pgx.Tx, news []domainDelta) error {
+	err := w.st.upsertDomains(ctx, ds, func(ctx context.Context, tx *gorm.DB, news []domainDelta) error {
 		evs := make([]core.Event, 0, len(news))
 		for _, d := range news {
 			w.log.Warn("plugin connected to a new external host",
@@ -445,7 +444,7 @@ type LogRecord struct {
 }
 
 // Summary groups a plugin's egress in [from, to) by host (busiest first).
-func Summary(ctx context.Context, q store.Querier, pluginKey string, from, to time.Time) ([]HostSummary, error) {
+func Summary(ctx context.Context, q *gorm.DB, pluginKey string, from, to time.Time) ([]HostSummary, error) {
 	out := []HostSummary{}
 	if err := summaryQuery(store.G(ctx, q), pluginKey, from, to).Scan(&out).Error; err != nil {
 		return nil, err
@@ -469,7 +468,7 @@ ORDER BY count(*) DESC, host`, pluginKey, from, to)
 }
 
 // List returns a plugin's most recent egress rows in [from, to).
-func List(ctx context.Context, q store.Querier, pluginKey string, from, to time.Time, limit int) ([]LogRecord, error) {
+func List(ctx context.Context, q *gorm.DB, pluginKey string, from, to time.Time, limit int) ([]LogRecord, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}

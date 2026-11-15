@@ -12,7 +12,6 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -122,7 +121,7 @@ func (s *Service) StepUpMethods(ctx context.Context, userID int64, scope, operat
 	}
 	var totp bool
 	var passkeys int
-	err := userFactors(store.G(ctx, s.db.Pool), userID).Row().Scan(&totp, &passkeys)
+	err := userFactors(store.G(ctx, s.db.Gorm), userID).Row().Scan(&totp, &passkeys)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +174,7 @@ func (s *Service) lastSuperFactor(ctx context.Context, userID int64, scope, oper
 	if !last {
 		return false, nil
 	}
-	return s.authz.IsSuperuser(ctx, s.db.Pool, userID)
+	return s.authz.IsSuperuser(ctx, s.db.Gorm, userID)
 }
 
 // resetTarget is the user a DELETE /users/:id/security operation acts on,
@@ -271,7 +270,7 @@ func (s *Service) VerifyStepUp(ctx context.Context, r *http.Request, userID int6
 	if k, ok := core.AccessKey(ctx); ok {
 		detail["via"], detail["access_key_id"] = "access_key", k.KeyID
 	}
-	if err := audit.Audit(ctx, s.db.Pool, userID, "user.security_verify", "user", strconv.FormatInt(userID, 10), detail); err != nil {
+	if err := audit.Audit(ctx, s.db.Gorm, userID, "user.security_verify", "user", strconv.FormatInt(userID, 10), detail); err != nil {
 		return nil, err
 	}
 	return &StepUpProof{Proof: token, ExpiresAt: time.Now().Add(flowTTL), Method: in.Method, Scope: in.Scope, Context: in.Context}, nil
@@ -283,7 +282,7 @@ func (s *Service) confirmCode(ctx context.Context, userID int64, code string) er
 	if strings.TrimSpace(code) == "" {
 		return errSecondFactorRequired
 	}
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockRefreshUser(ctx, tx, userID); err != nil {
 			return err
 		}
@@ -346,7 +345,7 @@ func (s *Service) finishStepUpPasskey(ctx context.Context, r *http.Request, user
 		return rateLimitedError(ctx, wait)
 	}
 	var session webauthn.SessionData
-	if _, err := s.takeFlow(ctx, s.db.Pool, flowToken, flowStepUpPasskey, userID, &session); err != nil {
+	if _, err := s.takeFlow(ctx, s.db.Gorm, flowToken, flowStepUpPasskey, userID, &session); err != nil {
 		return err
 	}
 	wa, err := s.webAuthnFor(r, session.RelyingPartyID)
@@ -370,7 +369,7 @@ func (s *Service) finishStepUpPasskey(ctx context.Context, r *http.Request, user
 	if err != nil {
 		return err
 	}
-	return usePasskey(userPasskeyByCredential(store.G(ctx, s.db.Pool), userID, used.ID), raw).Error
+	return usePasskey(userPasskeyByCredential(store.G(ctx, s.db.Gorm), userID, used.ID), raw).Error
 }
 
 // ConsumeStepUp implements core.StepUpVerifier.
@@ -385,7 +384,7 @@ func (s *Service) ConsumeStepUp(ctx context.Context, scope string) error {
 	}
 	if proof != "" {
 		var p proofPayload
-		_, err := s.takeFlow(ctx, s.db.Pool, proof, flowStepUpProof, uid, &p)
+		_, err := s.takeFlow(ctx, s.db.Gorm, proof, flowStepUpProof, uid, &p)
 		if err != nil && !errors.Is(err, errFlowExpired) {
 			return err
 		}
@@ -422,7 +421,7 @@ func (s *Service) OpenStepUpSession(ctx context.Context, scope, session string) 
 	if err != nil {
 		return err
 	}
-	return openStepUpSession(store.G(ctx, s.db.Pool), hashToken(stepUpSessionToken(ctx, uid, scope, session)), uid, payload,
+	return openStepUpSession(store.G(ctx, s.db.Gorm), hashToken(stepUpSessionToken(ctx, uid, scope, session)), uid, payload,
 		time.Now().Add(core.StepUpSessionIdle)).Error
 }
 
@@ -439,7 +438,7 @@ func (s *Service) ContinueStepUpSession(ctx context.Context, scope, session stri
 	uid, _ := core.UserID(ctx)
 	continued := false
 	if uid != 0 && session != "" {
-		res := continueStepUpSession(store.G(ctx, s.db.Pool), hashToken(stepUpSessionToken(ctx, uid, scope, session)),
+		res := continueStepUpSession(store.G(ctx, s.db.Gorm), hashToken(stepUpSessionToken(ctx, uid, scope, session)),
 			time.Now().Add(core.StepUpSessionIdle), core.StepUpSessionMax.Seconds())
 		if res.Error != nil {
 			return res.Error
@@ -490,7 +489,7 @@ func passwordChecked(p proofPayload) bool {
 // once, each leaving the other's factor, cannot both pass the check made
 // when their proofs were spent. A request whose proof was issued with the
 // password passes; so do calls outside a console request.
-func (s *Service) keepLastFactor(ctx context.Context, tx pgx.Tx, userID int64, scope string) error {
+func (s *Service) keepLastFactor(ctx context.Context, tx *gorm.DB, userID int64, scope string) error {
 	_, operation, ok := core.StepUpRequest(ctx)
 	if !ok || core.StepUpPassword(ctx) {
 		return nil
@@ -538,7 +537,7 @@ func (s *Service) RenamePasskey(ctx context.Context, userID, id int64, name stri
 		return nil, err
 	}
 	p := &Passkey{ID: id}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		err := renamePasskey(store.G(ctx, tx), id, userID, name).Row().Scan(&p.Name, &p.RPID, &p.CreatedAt, &p.LastUsedAt)
 		if store.IsNoRows(err) {
 			return core.ErrNotFound

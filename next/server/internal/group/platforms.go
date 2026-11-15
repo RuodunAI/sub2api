@@ -12,7 +12,7 @@ import (
 
 // groupTypes returns the distinct account types (plugin key + type id) of the
 // live accounts in each of the groups, in one query.
-func groupTypes(ctx context.Context, q store.Querier, ids []int64) (map[int64][]core.AccountTypeKey, error) {
+func groupTypes(ctx context.Context, q *gorm.DB, ids []int64) (map[int64][]core.AccountTypeKey, error) {
 	out := map[int64][]core.AccountTypeKey{}
 	if len(ids) == 0 {
 		return out, nil
@@ -101,7 +101,7 @@ func (s *Service) Platforms(ctx context.Context, ids []int64) (map[int64][]strin
 		}
 		return out, nil
 	}
-	types, err := groupTypes(ctx, s.db.Pool, ids)
+	types, err := groupTypes(ctx, s.db.Gorm, ids)
 	if err != nil {
 		return nil, err
 	}

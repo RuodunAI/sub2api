@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -25,9 +26,9 @@ func TestPluginWritesDoNotBlockTheCaller(t *testing.T) {
 		return time.Since(start)
 	}
 
-	tx, err := db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, db)
 	require.NoError(t, err)
-	_, err = tx.Exec(ctx, `LOCK TABLE audit_logs IN ACCESS EXCLUSIVE MODE`)
+	_, err = store.SQLTx(tx).ExecContext(ctx, `LOCK TABLE audit_logs IN ACCESS EXCLUSIVE MODE`)
 	require.NoError(t, err)
 
 	assert.Less(t, write("/1"), time.Second)
@@ -40,13 +41,13 @@ func TestPluginWritesDoNotBlockTheCaller(t *testing.T) {
 	fctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	assert.False(t, w.Flush(fctx), "flush cannot finish while the table is locked")
 	cancel()
-	require.NoError(t, tx.Rollback(ctx))
+	require.NoError(t, tx.Rollback().Error)
 	fctx, cancel = context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	require.True(t, w.Flush(fctx))
 
 	var paths []string
-	rows, err := db.Pool.Query(ctx, `SELECT detail->>'path' FROM audit_logs WHERE action = $1 ORDER BY id`, ActionPluginWrite)
+	rows, err := db.SQL.QueryContext(ctx, `SELECT detail->>'path' FROM audit_logs WHERE action = $1 ORDER BY id`, ActionPluginWrite)
 	require.NoError(t, err)
 	for rows.Next() {
 		var p string
@@ -75,6 +76,6 @@ func TestPluginWritesRunDrainsOnStop(t *testing.T) {
 		t.Fatal("Run did not return")
 	}
 	var n int
-	require.NoError(t, db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action = $1`, ActionPluginWrite).Scan(&n))
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action = $1`, ActionPluginWrite).Scan(&n))
 	assert.Equal(t, 1, n)
 }

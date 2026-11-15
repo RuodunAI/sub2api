@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 func TestRefreshTokenAction(t *testing.T) {
@@ -53,7 +54,7 @@ func TestRefreshTokenAction(t *testing.T) {
 	}
 
 	before := calls.Load()
-	_, err = f.db.Pool.Exec(t.Context(), `UPDATE accounts SET type='apikey' WHERE id=$1`, id)
+	_, err = f.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET type='apikey' WHERE id=$1`, id)
 	require.NoError(t, err)
 	_, err = f.s.AccountAction(t.Context(), id, "refresh_token")
 	var e *core.Error

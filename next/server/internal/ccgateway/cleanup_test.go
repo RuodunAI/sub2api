@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 func TestDeletedRuntimePurgesDataAndRetriesFailure(t *testing.T) {
@@ -35,11 +36,11 @@ func TestDeletedRuntimePurgesDataAndRetriesFailure(t *testing.T) {
 			key := strconv.FormatInt(id, 10)
 			if adopted {
 				key = newDraftKey()
-				if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES($1,$2,now())`, key, id); err != nil {
+				if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES($1,$2,now())`, key, id); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if _, err := f.db.Pool.Exec(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id); err != nil {
+			if _, err := f.db.SQL.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.s.Reconcile(ctx, strconv.FormatInt(id, 10)); err != nil {
@@ -48,7 +49,7 @@ func TestDeletedRuntimePurgesDataAndRetriesFailure(t *testing.T) {
 			if len(purgeHeaders) != 0 {
 				t.Fatal("disabled account deleted")
 			}
-			if _, err := f.db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id); err != nil {
+			if _, err := f.db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id); err != nil {
 				t.Fatal(err)
 			}
 			if err := f.s.Reconcile(ctx, key); err != nil {
@@ -57,7 +58,7 @@ func TestDeletedRuntimePurgesDataAndRetriesFailure(t *testing.T) {
 			if len(purgeHeaders) != 0 {
 				t.Fatal("historical deletion purged without an explicit cleanup job")
 			}
-			if err := f.db.Tx(ctx, func(tx pgx.Tx) error {
+			if err := f.db.Tx(ctx, func(tx *gorm.DB) error {
 				_, err := f.s.MarkAccountDeleted(ctx, tx, id, core.AccountDeletionOptions{})
 				return err
 			}); err != nil {
@@ -93,7 +94,7 @@ func TestDeletedRuntimePurgesDataAndRetriesFailure(t *testing.T) {
 func (f *runtimeFixture) purged(key string) bool {
 	f.t.Helper()
 	var purged bool
-	if err := f.db.Pool.QueryRow(context.Background(), `SELECT purged_at IS NOT NULL FROM ccgateway_runtimes WHERE key=$1`, key).Scan(&purged); err != nil {
+	if err := f.db.SQL.QueryRowContext(context.Background(), `SELECT purged_at IS NOT NULL FROM ccgateway_runtimes WHERE key=$1`, key).Scan(&purged); err != nil {
 		f.t.Fatal(err)
 	}
 	return purged
@@ -104,8 +105,8 @@ func (f *runtimeFixture) purged(key string) bool {
 func (f *runtimeFixture) markDeleted(id int64, retainDays int) {
 	f.t.Helper()
 	ctx := context.Background()
-	if err := f.db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id); err != nil {
+	if err := f.db.Tx(ctx, func(tx *gorm.DB) error {
+		if _, err := store.SQLTx(tx).ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id); err != nil {
 			return err
 		}
 		_, err := f.s.MarkAccountDeleted(ctx, tx, id, core.AccountDeletionOptions{RetainDays: retainDays})
@@ -184,7 +185,7 @@ func TestRetainedDeletedRuntimeBlocksThenPurgesOnce(t *testing.T) {
 
 	// The retention ends (the blocked mark of this node does not delay it).
 	// While the controller refuses, the runtime stays listed as due.
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE ccgateway_runtimes SET purge_after=now()-interval '1 second' WHERE key=$1`, key); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE ccgateway_runtimes SET purge_after=now()-interval '1 second' WHERE key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
 	code, body = http.StatusConflict, `{"error":"resource_in_use"}`
@@ -223,12 +224,12 @@ func TestDeletedRuntimePurgedDespiteUnusableProxyAndLegacyMark(t *testing.T) {
 	f := newRuntimeFixture(t, cleanupController(ctl, &code, &body))
 	ctx := context.Background()
 	unusable, legacy := f.account(true), f.account(false)
-	if _, err := f.db.Pool.Exec(ctx, `DELETE FROM proxies WHERE id=(SELECT proxy_id FROM accounts WHERE id=$1)`, unusable); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `DELETE FROM proxies WHERE id=(SELECT proxy_id FROM accounts WHERE id=$1)`, unusable); err != nil {
 		t.Fatal(err)
 	}
 	f.markDeleted(unusable, 0)
 	f.markDeleted(legacy, 0)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE ccgateway_runtimes SET purge_after=NULL WHERE account_id=$1`, legacy); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE ccgateway_runtimes SET purge_after=NULL WHERE account_id=$1`, legacy); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []int64{unusable, legacy} {
@@ -267,10 +268,10 @@ func TestPurgeConflictNamesResourceInUse(t *testing.T) {
 	}
 	code, body = http.StatusConflict, `{"error":"resource_in_use"}`
 	retired := strconv.FormatInt(f.account(false), 10)
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key,retired_at) VALUES($1,now()-interval '2 hours')`, retired); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key,retired_at) VALUES($1,now()-interval '2 hours')`, retired); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES($1,$2,now())`, newDraftKey(), retired); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES($1,$2,now())`, newDraftKey(), retired); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.s.sweepRetired(ctx); reasonOf(core.AsError(err)) != reasonResourceInUse {
@@ -315,7 +316,7 @@ func TestRuntimePurgeEndsRetention(t *testing.T) {
 	if status, out := f.request(1, "POST", path(activeKey), ""); status != 404 {
 		t.Fatalf("no runtime row: %d %v", status, out)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES($1,$2,now())`, activeKey, active); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES($1,$2,now())`, activeKey, active); err != nil {
 		t.Fatal(err)
 	}
 	if status, out := f.request(1, "POST", path(activeKey), ""); status != 409 || reason(out) != "runtime_not_retained" {
@@ -324,12 +325,12 @@ func TestRuntimePurgeEndsRetention(t *testing.T) {
 	// A due purge (deleted without retention) is retried; its time stays.
 	immediateKey := strconv.FormatInt(immediate, 10)
 	var before, after time.Time
-	_ = f.db.Pool.QueryRow(ctx, `SELECT purge_after FROM ccgateway_runtimes WHERE key=$1`, immediateKey).Scan(&before)
+	_ = f.db.SQL.QueryRowContext(ctx, `SELECT purge_after FROM ccgateway_runtimes WHERE key=$1`, immediateKey).Scan(&before)
 	if status, out := f.request(1, "POST", path(immediateKey), ""); status != 202 {
 		t.Fatalf("retry due purge: %d %v", status, out)
 	}
 	kicked(immediateKey)
-	if err := f.db.Pool.QueryRow(ctx, `SELECT purge_after FROM ccgateway_runtimes WHERE key=$1`, immediateKey).Scan(&after); err != nil || !after.Equal(before) {
+	if err := f.db.SQL.QueryRowContext(ctx, `SELECT purge_after FROM ccgateway_runtimes WHERE key=$1`, immediateKey).Scan(&after); err != nil || !after.Equal(before) {
 		t.Fatalf("due purge time moved: %v -> %v (%v)", before, after, err)
 	}
 	if status, _ := f.request(1, "POST", path("999999"), ""); status != 404 {
@@ -344,10 +345,10 @@ func TestRuntimePurgeEndsRetention(t *testing.T) {
 	}
 	var due bool
 	var audits int
-	if err := f.db.Pool.QueryRow(ctx, `SELECT purge_after <= now() FROM ccgateway_runtimes WHERE key=$1`, key).Scan(&due); err != nil || !due {
+	if err := f.db.SQL.QueryRowContext(ctx, `SELECT purge_after <= now() FROM ccgateway_runtimes WHERE key=$1`, key).Scan(&due); err != nil || !due {
 		t.Fatalf("retention not ended: %v", err)
 	}
-	if err := f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.purge' AND detail->>'key'=$1`, key).Scan(&audits); err != nil || audits != 1 {
+	if err := f.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.purge' AND detail->>'key'=$1`, key).Scan(&audits); err != nil || audits != 1 {
 		t.Fatalf("audit: %d %v", audits, err)
 	}
 	kicked(key)
@@ -392,23 +393,23 @@ func TestCleanupUsesCompleteAuthoritativeKeepList(t *testing.T) {
 	})
 	ctx := context.Background()
 	active, disabled, deleted := f.account(false), f.account(false), f.account(false)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, disabled); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, disabled); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, deleted); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, deleted); err != nil {
 		t.Fatal(err)
 	}
 	adopted, preparation, expired := newDraftKey(), newDraftKey(), newDraftKey()
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES($1,$2,now())`, adopted, active); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES($1,$2,now())`, adopted, active); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key) VALUES($1),($2)`, preparation, expired); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key) VALUES($1),($2)`, preparation, expired); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE ccgateway_runtimes SET last_seen_at=now()-interval '1 day' WHERE key=$1`, expired); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE ccgateway_runtimes SET last_seen_at=now()-interval '1 day' WHERE key=$1`, expired); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) SELECT 'bulk-'||n,'ccgateway','managed',''::bytea FROM generate_series(1,205) n`); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) SELECT 'bulk-'||n,'ccgateway','managed',''::bytea FROM generate_series(1,205) n`); err != nil {
 		t.Fatal(err)
 	}
 	f.auth.keys[2] = []string{"settings:read"}

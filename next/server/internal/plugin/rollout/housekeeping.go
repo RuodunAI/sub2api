@@ -124,7 +124,7 @@ func (c *Controller) pruneOrphans(ctx context.Context) {
 // named by plugins.active_version/desired_version or an open rollout.
 func (c *Controller) referencedPackages(ctx context.Context) (map[string]bool, error) {
 	var rows []model.PluginVersion
-	if err := referencedVersions(store.G(ctx, c.o.DB.Pool)).Scan(&rows).Error; err != nil {
+	if err := referencedVersions(store.G(ctx, c.o.DB.Gorm)).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := map[string]bool{}

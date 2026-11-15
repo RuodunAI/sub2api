@@ -38,13 +38,13 @@ func newHardeningDB(t *testing.T) *hardeningDB {
 
 func (h *hardeningDB) exec(sql string, args ...any) {
 	h.t.Helper()
-	_, err := h.db.Pool.Exec(h.ctx, sql, args...)
+	_, err := h.db.SQL.ExecContext(h.ctx, sql, args...)
 	require.NoError(h.t, err)
 }
 
 func (h *hardeningDB) text(sql string, args ...any) (v string) {
 	h.t.Helper()
-	require.NoError(h.t, h.db.Pool.QueryRow(h.ctx, sql, args...).Scan(&v))
+	require.NoError(h.t, h.db.SQL.QueryRowContext(h.ctx, sql, args...).Scan(&v))
 	return v
 }
 
@@ -168,7 +168,7 @@ func (h *hardeningDB) down(name string) error {
 	h.t.Helper()
 	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "rollback", name))
 	require.NoError(h.t, err)
-	_, err = h.db.Pool.Exec(h.ctx, string(sql))
+	_, err = h.db.SQL.ExecContext(h.ctx, string(sql))
 	return err
 }
 

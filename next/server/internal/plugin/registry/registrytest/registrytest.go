@@ -189,7 +189,7 @@ func Package(t testing.TB, m *manifest.Manifest, bin []byte, extra map[string][]
 // Install inserts the plugins row (status) and an approved version with grants.
 func Install(t testing.TB, db *store.DB, m *manifest.Manifest, pkg []byte, grants map[string]string, status string) {
 	t.Helper()
-	g := store.G(context.Background(), db.Pool)
+	g := store.G(context.Background(), db.Gorm)
 	name, _ := json.Marshal(m.Name)
 	if err := g.Create(&model.Plugin{Key: m.Key, Name: name, Status: status}).Error; err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func AddVersion(t testing.TB, db *store.DB, m *manifest.Manifest, pkg []byte) {
 	if err := Source().Store.Put(context.Background(), hex.EncodeToString(sum[:]), pkg); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.G(context.Background(), db.Pool).Create(versionRow(m, mj, msum, sum, len(pkg))).Error; err != nil {
+	if err := store.G(context.Background(), db.Gorm).Create(versionRow(m, mj, msum, sum, len(pkg))).Error; err != nil {
 		t.Fatal(err)
 	}
 }

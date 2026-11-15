@@ -51,7 +51,7 @@ var ErrBuiltin = core.ErrPermissionDenied.WithMessage("built-in plugins cannot b
 	WithDetails(map[string]any{"reason": "builtin"})
 
 // IsBuiltin reports whether key is a built-in plugin.
-func IsBuiltin(ctx context.Context, q store.Querier, key string) (bool, error) {
+func IsBuiltin(ctx context.Context, q *gorm.DB, key string) (bool, error) {
 	var b bool
 	err := pluginRow(store.G(ctx, q), key).Select("builtin").Take(&b).Error
 	if store.IsNoRows(err) {
@@ -158,13 +158,13 @@ func (s *Service) ensureBuiltin(ctx context.Context, b *builtinPkg, installOnly 
 		return fmt.Errorf("upload %s: %w", filepath.Base(b.path), err)
 	}
 
-	g := store.G(ctx, s.d.DB.Pool)
+	g := store.G(ctx, s.d.DB.Gorm)
 	var consent string
 	if err := versionRow(g, b.key, version).Select("consent_status").Take(&consent).Error; err != nil {
 		return err
 	}
 	if consent == ConsentAwaiting {
-		m, err := LoadManifest(ctx, s.d.DB.Pool, b.key, version)
+		m, err := LoadManifest(ctx, s.d.DB.Gorm, b.key, version)
 		if err != nil {
 			return err
 		}

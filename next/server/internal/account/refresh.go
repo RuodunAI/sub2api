@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -136,7 +135,7 @@ func (s *Service) refreshCredentials(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountUpdate), false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountUpdate), false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -175,7 +174,7 @@ func (s *Service) refreshAccount(ctx context.Context, id int64, force bool) (*Re
 
 	// Re-read under the lock: another node may have just renewed it, and the
 	// refresh token in hand may already be spent.
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, core.AllScope, false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, core.AllScope, false)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +219,7 @@ func (s *Service) refreshAccount(ctx context.Context, id int64, force bool) (*Re
 			state.RejectedCredHash = credHash[:]
 		}
 		slog.WarnContext(ctx, "account: credential refresh failed", "account", id, "type", a.Type, "error_type", errType, "error", state.Error)
-		if err := store.RecordAccountRefresh(ctx, s.d.DB.Pool, state); err != nil {
+		if err := store.RecordAccountRefresh(ctx, s.d.DB.Gorm, state); err != nil {
 			return nil, err
 		}
 		return s.refreshOutcome(ctx, id, &RefreshOutcome{ErrorType: state.ErrorType, Error: state.Error})
@@ -252,7 +251,7 @@ func (s *Service) refreshAccount(ctx context.Context, id int64, force bool) (*Re
 		state.ExpiresAt = &e
 	}
 	saved := false
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		// Only over the credentials this renewal started from: an
 		// administrator who saved new ones meanwhile wins.
 		res := renewCredentials(store.G(ctx, tx), id, a.CredEnc, enc)
@@ -439,7 +438,7 @@ func (s *Service) SweepRefresh(ctx context.Context) (int, error) {
 // many rows were read.
 func (s *Service) dueAccounts(ctx context.Context, keys []string, after int64) (due []int64, last int64, n int, err error) {
 	var page []model.Account
-	if err := accountsOfTypes(store.G(ctx, s.d.DB.Pool), keys, after, refreshPage).Select("id, plugin_key, type, credentials_enc").
+	if err := accountsOfTypes(store.G(ctx, s.d.DB.Gorm), keys, after, refreshPage).Select("id, plugin_key, type, credentials_enc").
 		Find(&page).Error; err != nil {
 		return nil, 0, 0, err
 	}

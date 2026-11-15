@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
-	"github.com/gin-gonic/gin"
 )
 
 // Recovery needs the uninstall permission and an explicit retry; there is no
@@ -53,7 +55,7 @@ func TestUninstallRecoveryRequiresPermissionAndExplicitRetry(t *testing.T) {
 		t.Fatal(code, out)
 	}
 	var present bool
-	if err := h.db.Pool.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM plugins WHERE key='guard')`).Scan(&present); err != nil || !present {
+	if err := h.db.SQL.QueryRowContext(context.Background(), `SELECT EXISTS(SELECT 1 FROM plugins WHERE key='guard')`).Scan(&present); err != nil || !present {
 		t.Fatal("confirmation purged plugin", present, err)
 	}
 	if code, out := do("DELETE", "/plugins/guard", "admin", nil); code != 200 {

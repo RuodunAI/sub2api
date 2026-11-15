@@ -12,7 +12,9 @@ import (
 // pgx encodes each element as it encodes a T parameter, so a nil pointer or
 // a nil Bytes is a NULL element, and an Array[Bytes] cast to jsonb[] holds
 // each document as its text. The SQL casts the parameter to its array type
-// (?::jsonb[]), from which pgx takes the element type.
+// (?::jsonb[]), from which pgx takes the element type. Like Int64s, its
+// Value is the plain slice and relies on pgx's database/sql driver taking
+// it (TestArrayParametersRelyOnPgxStdlib).
 type Array[T any] []T
 
 // Value implements driver.Valuer.

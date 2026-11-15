@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestResourceIntentValidation(t *testing.T) {
@@ -34,10 +35,10 @@ func TestProviderResourceDBLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := New(db, Options{MaxResources: 1, MaxBytes: 100})
 	var owner core.ResourceOwner
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('resources@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('resources@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('resources') RETURNING id`).Scan(&owner.GroupID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('resources') RETURNING id`).Scan(&owner.GroupID); e != nil {
 		t.Fatal(e)
 	}
 	in := core.ResourceIntent{RequestID: "first", PluginKey: "ccgateway", Kind: "file", Owner: owner, Binding: core.ResourceBinding{AccountID: 21, PrincipalID: "digest", Generation: "issuer1"}, Bytes: 10}

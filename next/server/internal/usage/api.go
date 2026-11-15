@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -553,7 +552,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 			}
 			f.And("(u.created_at, u.id) < (?, ?)", at, id)
 		}
-	} else if err := store.RawNumbered(store.G(ctx, s.db.Pool), `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()...).Row().Scan(&total); err != nil {
+	} else if err := store.RawNumbered(store.G(ctx, s.db.Gorm), `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()...).Row().Scan(&total); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -563,7 +562,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 	}
 	n := f.Len()
 	args := append(f.Args(), limit, offset)
-	rows, err := recordQuery(store.G(ctx, s.db.Pool), f.Cond(), args,
+	rows, err := recordQuery(store.G(ctx, s.db.Gorm), f.Cond(), args,
 		` ORDER BY u.created_at DESC, u.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2)).Rows()
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -632,7 +631,7 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 	var d Detail
 	targets := append(d.Record.scanTargets(), &d.PluginVersion, nullRaw{&d.Metrics}, &d.StickyRule, nullRaw{&d.HookDecisions},
 		&d.PriceID, &d.ExprHash, nullRaw{&d.BillingDetail}, &d.UserAgent, &d.NodeID, nullRaw{&d.PluginDetail}, nullRaw{&d.Anomalies})
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	err := detailQuery(g, id).Row().Scan(targets...)
 	if store.IsNoRows(err) || (err == nil && self != nil && d.UserID != *self) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("usage record not found"))
@@ -665,7 +664,7 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 		if d.PluginKey == requestLogPlugin && d.AccountID != nil && (accounts || core.Can(ctx, s.Authz, "settings:read")) {
 			d.RequestLogAccountID = d.AccountID
 		}
-		if e, err := s.loadSettlement(ctx, s.db.Pool, d.ID); err == nil {
+		if e, err := s.loadSettlement(ctx, s.db.Gorm, d.ID); err == nil {
 			d.Settlement = e
 		}
 		if !accounts {
@@ -817,7 +816,7 @@ func (s *Service) accountNames(ctx context.Context, ids []int64) (map[int64]stri
 	if len(ids) == 0 {
 		return names, true
 	}
-	rows, err := store.G(ctx, s.db.Pool).Model(&model.Account{}).Select("id, name").Where("id = ANY(?)", store.Int64s(ids)).Rows()
+	rows, err := store.G(ctx, s.db.Gorm).Model(&model.Account{}).Select("id, name").Where("id = ANY(?)", store.Int64s(ids)).Rows()
 	if err != nil {
 		return nil, false
 	}
@@ -1037,7 +1036,7 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	rankOrder, rankLimit := c.Query("order"), c.Query("limit")
 	load := func(ctx context.Context) ([]SummaryRow, error) {
 		out := []SummaryRow{}
-		err := s.statsTx(ctx, statsLimitsFor(self), func(tx pgx.Tx) error {
+		err := s.statsTx(ctx, statsLimitsFor(self), func(tx *gorm.DB) error {
 			args := slices.Clone(args)
 			var span *hourSpan
 			if rollable {

@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -24,7 +25,7 @@ func (s *Service) ReserveSkillUpload(ctx context.Context, input core.SkillUpload
 	if in.PluginKey != "ccgateway" || in.Kind != "skill" || in.TTL != 0 || !in.ExpiresAt.IsZero() {
 		return out, core.ErrInvalidArgument
 	}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}
@@ -130,7 +131,7 @@ func (s *Service) CompleteSkillUpload(ctx context.Context, in core.SkillUploadCo
 	if err != nil {
 		return out, err
 	}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}
@@ -215,7 +216,7 @@ func (s *Service) MarkSkillUpload(ctx context.Context, in core.SkillUploadFailur
 	if in.Outcome != "uncertain" && (in.Outcome != "rejected" || !confirmedSkillRejection(in.EvidenceCode)) {
 		return core.ErrInvalidArgument
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}

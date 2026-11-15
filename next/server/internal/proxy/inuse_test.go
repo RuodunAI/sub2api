@@ -34,7 +34,7 @@ func TestUpdateInUseByOthers(t *testing.T) {
 	path := fmt.Sprintf("/proxies/%d", id)
 	account := func(name string, owner int64) {
 		t.Helper()
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id, created_by)
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id, created_by)
 			VALUES ($1, 'p', 't', '\x00', $2, $3)`, name, id, owner); err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +49,7 @@ func TestUpdateInUseByOthers(t *testing.T) {
 
 	// The administrator puts the supplier's proxy on two accounts.
 	account("admin's", admin)
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id) VALUES ('legacy', 'p', 't', '\x00', $1)`, id); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id) VALUES ('legacy', 'p', 't', '\x00', $1)`, id); err != nil {
 		t.Fatal(err)
 	}
 	for field, value := range map[string]any{"protocol": "socks5", "host": "h3.example", "port": 9, "username": "v", "password": "other"} {
@@ -90,7 +90,7 @@ func TestUpdateInUseByOthers(t *testing.T) {
 		t.Fatalf("delete in use: %d %v", code, out)
 	}
 	// Soft-deleted foreign accounts no longer hold the connection.
-	if _, err := db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at = now() WHERE created_by IS DISTINCT FROM $1`, alice); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at = now() WHERE created_by IS DISTINCT FROM $1`, alice); err != nil {
 		t.Fatal(err)
 	}
 	if code, out = do(t, engine, alice, "PATCH", path, map[string]any{"port": 9}); code != 200 {

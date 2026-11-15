@@ -34,12 +34,12 @@ func TestTerminalRolloutCleanupRequiresCurrentGenerationAndFinishedDrain(t *test
 	ctx := context.Background()
 	c := newTestController(t, &stubRuntime{}, nil, t.TempDir())
 	c.o.DB = db
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status,row_version) VALUES('cleanup','{}','enabling',4);
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status,row_version) VALUES('cleanup','{}','enabling',4);
 		INSERT INTO plugin_runtime_nodes(plugin_key,boot_id)VALUES('cleanup','boot-self'),('cleanup','disconnected')`); err != nil {
 		t.Fatal(err)
 	}
 	var id int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO plugin_rollouts(plugin_key,action,phase)VALUES('cleanup','enable','preparing')RETURNING id`).Scan(&id); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO plugin_rollouts(plugin_key,action,phase)VALUES('cleanup','enable','preparing')RETURNING id`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	r := &rolloutRow{id: id, key: "cleanup", action: "enable"}
@@ -48,7 +48,7 @@ func TestTerminalRolloutCleanupRequiresCurrentGenerationAndFinishedDrain(t *test
 	}
 	count := func() int {
 		var n int
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*)FROM plugin_rollout_cleanup WHERE state='cleanup_pending'`).Scan(&n); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT count(*)FROM plugin_rollout_cleanup WHERE state='cleanup_pending'`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -83,18 +83,18 @@ func TestCleanupMigrationKeepsOutcomeAndMovesDevelopmentBarrier(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Rewind to the development layout, where the barrier overwrote outcomes.
-	if _, err = db.Pool.Exec(ctx, `DROP TABLE plugin_rollout_cleanup;
+	if _, err = db.SQL.ExecContext(ctx, `DROP TABLE plugin_rollout_cleanup;
 		INSERT INTO plugins(key,name,status) VALUES('moved','{}','enabled');
 		INSERT INTO plugin_rollouts(id,plugin_key,action,phase) VALUES(9001,'moved','enable','active');
 		INSERT INTO plugin_rollout_nodes(rollout_id,node_id,boot_id,state) VALUES
 			(9001,'node-a','boot-a','active'),(9001,'','boot-b','cleanup_pending'),(9001,'','boot-c','cleaned')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Pool.Exec(ctx, string(migration)); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, string(migration)); err != nil {
 		t.Fatal(err)
 	}
 	var outcomes, remaining, pending int
-	if err = db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM plugin_rollout_nodes WHERE rollout_id=9001 AND state='active'),
+	if err = db.SQL.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM plugin_rollout_nodes WHERE rollout_id=9001 AND state='active'),
 		(SELECT count(*) FROM plugin_rollout_nodes WHERE rollout_id=9001),
 		(SELECT count(*) FROM plugin_rollout_cleanup WHERE rollout_id=9001 AND state='cleanup_pending')`).Scan(&outcomes, &remaining, &pending); err != nil {
 		t.Fatal(err)

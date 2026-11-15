@@ -145,7 +145,7 @@ func priceRules(db *gorm.DB, cond string, args ...any) *gorm.DB {
 }
 
 // loadRules reads the price rules cond selects ("" for all of them).
-func loadRules(ctx context.Context, q store.Querier, cond string, args ...any) (ruleSet, error) {
+func loadRules(ctx context.Context, q *gorm.DB, cond string, args ...any) (ruleSet, error) {
 	var rows []ruleRow
 	if err := priceRules(store.G(ctx, q), cond, args...).Scan(&rows).Error; err != nil {
 		return nil, err

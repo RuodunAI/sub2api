@@ -394,7 +394,7 @@ func TestFailurePolicyAPI(t *testing.T) {
 	require.Equal(t, 200, code)
 	require.Equal(t, int64(1), v.Get("data.policies.0.revision").Int())
 	require.False(t, e.gw.settings.get(t.Context()).failurePolicy.RetryEnabled)
-	_, err := e.db.Pool.Exec(t.Context(), `UPDATE settings SET value='{"revision":3,"schema_version":99}' WHERE key='failure_policy'`)
+	_, err := e.db.SQL.ExecContext(t.Context(), `UPDATE settings SET value='{"revision":3,"schema_version":99}' WHERE key='failure_policy'`)
 	require.NoError(t, err)
 	e.gw.settings.invalidate()
 	require.Error(t, e.gw.settings.get(t.Context()).failurePolicyErr)

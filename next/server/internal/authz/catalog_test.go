@@ -180,7 +180,7 @@ func TestCatalogRisk(t *testing.T) {
 		var risk string
 		var sensitive bool
 		var requires []string
-		if err := db.Pool.QueryRow(context.Background(), `SELECT risk, sensitive, requires FROM permissions WHERE key = $1`, key).Scan(&risk, &sensitive, &requires); err != nil {
+		if err := db.SQL.QueryRowContext(context.Background(), `SELECT risk, sensitive, requires FROM permissions WHERE key = $1`, key).Scan(&risk, &sensitive, &requires); err != nil {
 			t.Fatal(err)
 		}
 		if risk != want.risk || sensitive != want.sensitive || !slices.Equal(requires, want.requires) {
@@ -198,7 +198,7 @@ func TestSyncCoreAuditsGrants(t *testing.T) {
 	ctx := context.Background()
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -218,7 +218,7 @@ func TestSyncCoreAuditsGrants(t *testing.T) {
 	}
 	audited := func() map[grant]int {
 		t.Helper()
-		rows, err := db.Pool.Query(ctx, `SELECT target_id::bigint, detail->>'via' FROM audit_logs
+		rows, err := db.SQL.QueryContext(ctx, `SELECT target_id::bigint, detail->>'via' FROM audit_logs
 WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL AND detail->>'key' = 'role:probe'`)
 		if err != nil {
 			t.Fatal(err)
@@ -259,7 +259,7 @@ WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL A
 		}
 	}
 	var held bool
-	if err := db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1 AND p.key = 'role:probe')`, custom).Scan(&held); err != nil || held {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1 AND p.key = 'role:probe')`, custom).Scan(&held); err != nil || held {
 		t.Fatalf("a custom role got a new core permission: %v, %v", held, err)
 	}
 
@@ -288,7 +288,7 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	const key = RoleSupplier
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}')`, key); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}')`, key); err != nil {
 		t.Fatal(err)
 	}
 	s := New(Deps{DB: db})
@@ -304,24 +304,24 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 		t.Fatalf("start with a custom role on a built-in key: %v", err)
 	}
 	var builtin bool
-	if err := db.Pool.QueryRow(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
 		t.Fatalf("custom role became built-in: %v, %v", builtin, err)
 	}
 	if v2, err := s.currentVersion(ctx); err != nil || v2 != v1 {
 		t.Fatalf("a refused sync bumped the version: %d -> %d", v1, v2)
 	}
 
-	if _, err := db.Pool.Exec(ctx, fix); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, fix); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var keys []string
-	if err := db.Pool.QueryRow(ctx, `SELECT array_agg(key ORDER BY key) FROM roles WHERE key LIKE 'supplier%' AND builtin`).Scan(&keys); err != nil || !slices.Equal(keys, []string{key}) {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT array_agg(key ORDER BY key) FROM roles WHERE key LIKE 'supplier%' AND builtin`).Scan(&keys); err != nil || !slices.Equal(keys, []string{key}) {
 		t.Fatalf("built-in roles after the rename: %v, %v", keys, err)
 	}
-	if err := db.Pool.QueryRow(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
 		t.Fatalf("renamed custom role: built-in %v, %v", builtin, err)
 	}
 }
@@ -400,7 +400,7 @@ func TestSyncCoreWritesDescriptions(t *testing.T) {
 	ctx := context.Background()
 	s := newService(t, db, newMemBus(), nil) // Start runs the first sync.
 	// A database synced by a core without descriptions.
-	if _, err := db.Pool.Exec(ctx, `UPDATE permissions SET description = '{}' WHERE source = 'core'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE permissions SET description = '{}' WHERE source = 'core'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
@@ -409,7 +409,7 @@ func TestSyncCoreWritesDescriptions(t *testing.T) {
 	// Synced once, the descriptions change nothing more.
 	version := func() (v int64) {
 		t.Helper()
-		if err := db.Pool.QueryRow(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
 		return v

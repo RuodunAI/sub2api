@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -34,7 +33,7 @@ func (s *Service) addMembers(c *gin.Context) {
 	}
 	var moved int
 	var dropped bool
-	err := s.tx(ctx, func(tx pgx.Tx) error {
+	err := s.tx(ctx, func(tx *gorm.DB) error {
 		// The lock keeps the segment from being deleted under the move.
 		kind, _, err := segmentKind(ctx, tx, id, store.LockingStrengthKeyShare)
 		if err != nil {
@@ -61,7 +60,7 @@ func (s *Service) addMembers(c *gin.Context) {
 
 // requireUsers fails with the field error of the first id that is not a
 // user; a deleted user is none.
-func requireUsers(ctx context.Context, q store.Querier, ids []int64) error {
+func requireUsers(ctx context.Context, q *gorm.DB, ids []int64) error {
 	var unknown int64
 	err := store.G(ctx, q).Raw(`SELECT i.id FROM unnest(?::bigint[]) WITH ORDINALITY AS i(id, n)
 		WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = i.id AND u.deleted_at IS NULL)
@@ -81,7 +80,7 @@ func requireUsers(ctx context.Context, q store.Querier, ids []int64) error {
 // segment kind, only users in a segment of that kind move. It returns how
 // many moved (a user already there does not) and whether a personal segment
 // went: its price rules went with it.
-func moveUsers(ctx context.Context, tx pgx.Tx, to int64, userIDs []int64, from string) (moved int, dropped bool, err error) {
+func moveUsers(ctx context.Context, tx *gorm.DB, to int64, userIDs []int64, from string) (moved int, dropped bool, err error) {
 	ids, err := lockUsers(ctx, tx, movingUsers, store.Int64s(userIDs), to, from, from)
 	if err != nil {
 		return 0, false, err
@@ -105,7 +104,7 @@ const movingUsers = `id = ANY(?) AND deleted_at IS NULL AND segment_id <> ?
 // locks starts from the row versions of that statement's snapshot and, where
 // another writer replaced one meanwhile, queues on it behind the key-share
 // holders (inserts that refer to the user), which can close a cycle.
-func lockUsers(ctx context.Context, tx pgx.Tx, cond string, args ...any) ([]int64, error) {
+func lockUsers(ctx context.Context, tx *gorm.DB, cond string, args ...any) ([]int64, error) {
 	var ids []int64
 	err := lockUsersQuery(store.G(ctx, tx), cond, args...).Pluck("id", &ids).Error
 	return ids, err
@@ -127,7 +126,7 @@ func setUserSegment(db *gorm.DB, segment any, cond string, args ...any) *gorm.DB
 // them, with their grants, rates and model prices. It reports whether one
 // went: the cached price rules are then stale, and the caller drops them
 // after the transaction (Deps.PriceRulesChanged).
-func DropPersonal(ctx context.Context, tx pgx.Tx, userIDs ...int64) (bool, error) {
+func DropPersonal(ctx context.Context, tx *gorm.DB, userIDs ...int64) (bool, error) {
 	res := store.G(ctx, tx).Where("kind = 'personal' AND user_id = ANY(?)", store.Int64s(userIDs)).Delete(&model.Segment{})
 	return res.RowsAffected > 0, res.Error
 }

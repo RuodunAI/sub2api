@@ -7,7 +7,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -271,7 +270,7 @@ func riskOf(id string) string {
 
 // LoadGrants reads all grant rows of a plugin: what its active version is
 // granted.
-func LoadGrants(ctx context.Context, q store.Querier, key string) (map[string]Grant, error) {
+func LoadGrants(ctx context.Context, q *gorm.DB, key string) (map[string]Grant, error) {
 	return loadGrants(pluginGrants(store.G(ctx, q), key))
 }
 
@@ -285,7 +284,7 @@ func pluginGrants(db *gorm.DB, key string) *gorm.DB {
 
 // loadPriorGrants reads what an upgrade is reviewed and decided against:
 // the plugin's grants and its revoked host permissions (grants.Revoked).
-func loadPriorGrants(ctx context.Context, q store.Querier, key string) (map[string]Grant, map[string]bool, error) {
+func loadPriorGrants(ctx context.Context, q *gorm.DB, key string) (map[string]Grant, map[string]bool, error) {
 	current, err := LoadGrants(ctx, q, key)
 	if err != nil {
 		return nil, nil, err
@@ -296,7 +295,7 @@ func loadPriorGrants(ctx context.Context, q store.Querier, key string) (map[stri
 
 // LoadVersionGrants reads the grant rows key@version runs with: the set
 // staged for it while it is not active, else the plugin's grants.
-func LoadVersionGrants(ctx context.Context, q store.Querier, key, version string) (map[string]Grant, error) {
+func LoadVersionGrants(ctx context.Context, q *gorm.DB, key, version string) (map[string]Grant, error) {
 	return loadGrants(grants.VersionGrantsQuery(store.G(ctx, q), key, version))
 }
 
@@ -493,7 +492,7 @@ func (s *Service) resolveRoleGrants(ctx context.Context, r *Review, m *manifest.
 	if err != nil {
 		return err
 	}
-	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	return s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		cat, err := s.catalog()
 		if err != nil {
 			return err
@@ -595,7 +594,7 @@ func (x *consentMatrix) cell(key string, up *ReviewUserPerm, col ReviewRoleColum
 // admins first (they hold every permission, so nothing is written to them),
 // then built-in ones, as the viewer actorID may name them for a permission
 // of low risk. It returns what it read of the viewer (grantees).
-func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, actorID int64, mode consentMode) (core.PluginGrantees, bool, error) {
+func (s *Service) noteRoleColumns(ctx context.Context, tx *gorm.DB, r *Review, actorID int64, mode consentMode) (core.PluginGrantees, bool, error) {
 	var roles []roleColumnRow
 	if err := roleColumns(store.G(ctx, tx)).Find(&roles).Error; err != nil {
 		return core.PluginGrantees{}, false, err
@@ -629,7 +628,7 @@ func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, act
 // noteRemovedPerms lists the permissions of the plugin the catalog has but
 // m no longer declares (still active or disabled: SyncPlugin's removal
 // rule), with the roles holding them when seeHolders.
-func (s *Service) noteRemovedPerms(ctx context.Context, tx pgx.Tx, r *Review, m *manifest.Manifest, seeHolders bool) error {
+func (s *Service) noteRemovedPerms(ctx context.Context, tx *gorm.DB, r *Review, m *manifest.Manifest, seeHolders bool) error {
 	cat, err := s.catalog()
 	if err != nil {
 		return err
@@ -690,7 +689,7 @@ func (s *Service) Review(ctx context.Context, key, version string, actorID int64
 		sha                        string
 		uploadedAt                 time.Time
 	)
-	err := reviewedVersion(store.G(ctx, s.d.DB.Pool), key, version).
+	err := reviewedVersion(store.G(ctx, s.d.DB.Gorm), key, version).
 		Row().Scan(&status, &consent, &sigStatus, &keyID, &pubName, &trust, &size, &sha, &uploadedAt)
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
@@ -715,10 +714,10 @@ func (s *Service) Review(ctx context.Context, key, version string, actorID int64
 	)
 	upgradeFrom := ""
 	if status != StatusAwaitingConsent {
-		if current, revoked, err = loadPriorGrants(ctx, s.d.DB.Pool, key); err != nil {
+		if current, revoked, err = loadPriorGrants(ctx, s.d.DB.Gorm, key); err != nil {
 			return nil, err
 		}
-		upgradeFrom, _ = s.runningVersion(ctx, s.d.DB.Pool, key, version)
+		upgradeFrom, _ = s.runningVersion(ctx, s.d.DB.Gorm, key, version)
 	}
 	r := buildReview(p.Manifest, p.Files, ver, s.opt.HostVersion, current)
 	r.noteRevoked(revoked)
@@ -734,7 +733,7 @@ func (s *Service) Review(ctx context.Context, key, version string, actorID int64
 
 // runningVersion is the version an upgrade to target replaces: the active
 // version, else the newest approved version other than target.
-func (s *Service) runningVersion(ctx context.Context, q store.Querier, key, target string) (string, error) {
+func (s *Service) runningVersion(ctx context.Context, q *gorm.DB, key, target string) (string, error) {
 	var v string
 	err := runningVersion(store.G(ctx, q), key, target).Row().Scan(&v)
 	return v, err

@@ -8,13 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 var _ core.AsyncTasks = (*Service)(nil)
@@ -27,12 +27,12 @@ var _ core.AsyncTasks = (*Service)(nil)
 
 func (s *Service) BeginTask(ctx context.Context, in core.TaskIntent) (string, error) {
 	id := "s2task_" + uuid.NewString()
-	return id, insertReceipt(ctx, s.db.Pool, id, in)
+	return id, insertReceipt(ctx, s.db.Gorm, id, in)
 }
 
 // insertReceipt writes the dispatch identity of a task submission; the
 // database fills its state, expiry and timestamps.
-func insertReceipt(ctx context.Context, q store.Querier, publicID string, in core.TaskIntent) error {
+func insertReceipt(ctx context.Context, q *gorm.DB, publicID string, in core.TaskIntent) error {
 	return store.G(ctx, q).Exec(`INSERT INTO task_submission_receipts
 		(request_id, public_id, plugin_key, kind, user_id, api_key_id, group_id, account_id, model, protocol)
 		VALUES (?,?,?,?,?,?,?,?,?,?)`, in.RequestID, publicID, in.PluginKey, in.Kind,
@@ -48,12 +48,12 @@ func (s *Service) ReceiveTask(ctx context.Context, requestID string, status int,
 	if reason != "" {
 		state = "uncertain"
 	}
-	return receiveTask(ctx, s.db.Pool, requestID, state, status, body, reason)
+	return receiveTask(ctx, s.db.Gorm, requestID, state, status, body, reason)
 }
 
 // receiveTask records the upstream's answer to a submission not yet
 // registered. A nil body keeps the stored one; an empty one is stored.
-func receiveTask(ctx context.Context, q store.Querier, requestID, state string, status int, body []byte, reason string) error {
+func receiveTask(ctx context.Context, q *gorm.DB, requestID, state string, status int, body []byte, reason string) error {
 	return store.G(ctx, q).Exec(`UPDATE task_submission_receipts SET state=?, response_status=?,
 		response_body=COALESCE(?,response_body), last_error=? WHERE request_id=? AND state <> 'registered'`,
 		state, status, store.Bytes(body), trunc(reason, 2000), requestID).Error
@@ -65,7 +65,7 @@ func (s *Service) RegisterTask(ctx context.Context, in core.TaskRegistration) er
 	return s.registerTask(ctx, in, nil, nil, false)
 }
 
-func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, before func(pgx.Tx) error, after func(pgx.Tx) error, strict bool) error {
+func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, before func(*gorm.DB) error, after func(*gorm.DB) error, strict bool) error {
 	r := in.Record
 	if r == nil || r.AccountID == nil || in.PublicID == "" || in.UpstreamID == "" {
 		return errors.New("invalid task registration")
@@ -83,7 +83,7 @@ func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, be
 	if r.Reservation != nil {
 		r.Reservation.RefID = in.PublicID
 	}
-	_, err := s.insertAtomic(ctx, []*core.UsageRecord{r}, before, func(tx pgx.Tx, ids map[string]int64) error {
+	_, err := s.insertAtomic(ctx, []*core.UsageRecord{r}, before, func(tx *gorm.DB, ids map[string]int64) error {
 		uid, ok := ids[r.RequestID]
 		if !ok {
 			return errors.New("task request ID already registered")
@@ -113,7 +113,7 @@ func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, be
 // recordTask writes a submitted task in the transaction of its usage row
 // uid: it checks the receipt, inserts the task, links the row's
 // settlement entry and closes the receipt.
-func recordTask(ctx context.Context, tx pgx.Tx, in core.TaskRegistration, uid int64, next, deadline time.Time) error {
+func recordTask(ctx context.Context, tx *gorm.DB, in core.TaskRegistration, uid int64, next, deadline time.Time) error {
 	r := in.Record
 	// The receipt is the trusted dispatch identity; parsing cannot substitute it.
 	g := store.G(ctx, tx)
@@ -143,10 +143,10 @@ func recordTask(ctx context.Context, tx pgx.Tx, in core.TaskRegistration, uid in
 }
 
 func (s *Service) FindTask(ctx context.Context, q core.TaskQuery) (*core.TaskSnapshot, error) {
-	out, err := readTask(ctx, s.db.Pool, q)
+	out, err := readTask(ctx, s.db.Gorm, q)
 	if store.IsNoRows(err) && !strings.HasPrefix(q.ID, "s2task_") {
 		if err = s.importLegacyTask(ctx, q); err == nil {
-			out, err = readTask(ctx, s.db.Pool, q)
+			out, err = readTask(ctx, s.db.Gorm, q)
 		}
 	}
 	if store.IsNoRows(err) {
@@ -157,7 +157,7 @@ func (s *Service) FindTask(ctx context.Context, q core.TaskQuery) (*core.TaskSna
 
 // readTask reads the task q names: by its public ID, or by the upstream ID
 // of an imported legacy task. Two matches are no match.
-func readTask(ctx context.Context, db store.Querier, q core.TaskQuery) (*core.TaskSnapshot, error) {
+func readTask(ctx context.Context, db *gorm.DB, q core.TaskQuery) (*core.TaskSnapshot, error) {
 	rows, err := taskByID(store.G(ctx, db), q).Rows()
 	if err != nil {
 		return nil, err
@@ -207,7 +207,7 @@ func scanTask(rows interface {
 // Only core billing history establishes legacy ownership. Plugin tables may
 // contain colliding upstream IDs and are deliberately never consulted.
 func (s *Service) importLegacyTask(ctx context.Context, q core.TaskQuery) error {
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		// Lock the usage parent before its settlement, matching the legacy
 		// financial path. An imported row cannot be settled by an old claim.
 		g := store.G(ctx, tx)
@@ -294,7 +294,7 @@ func importTaskCounters(db *gorm.DB, publicID string, entryID int64) *gorm.DB {
 }
 
 func (s *Service) cleanTaskReceipts(ctx context.Context) {
-	err := store.G(ctx, s.db.Pool).Exec(`DELETE FROM task_submission_receipts WHERE request_id IN
+	err := store.G(ctx, s.db.Gorm).Exec(`DELETE FROM task_submission_receipts WHERE request_id IN
 		(SELECT request_id FROM task_submission_receipts WHERE expires_at <= now() ORDER BY expires_at LIMIT 200)`).Error
 	if err != nil {
 		s.rec.log.Warn("task receipt cleanup failed", "err", err)

@@ -60,23 +60,23 @@ func BenchmarkHotPrecharge(b *testing.B) {
 // ReleasePrechargeTx runs for every free request the settler records
 // (usage insertAtomic), most of which hold no reservation, and for every
 // reservation the expiry sweeper returns. Its statement (releaseSQL) runs
-// on GORM (releaseStmt); it is measured next to the pgx form it had before,
+// on GORM (releaseStmt); it is measured next to its raw database/sql form (pgx before batch 6),
 // for a request without a reservation (miss) and with one (hit).
 func BenchmarkHotReleasePrecharge(b *testing.B) {
 	// releaseSQL as pgx ran it, its named parameters numbered.
 	releasePgxSQL := strings.NewReplacer("$request", "$1", "$user", "$2", "$refund_key", "$3", "$refund_note", "$4").Replace(releaseSQL)
 	svc, uid := benchBilling(b)
 	ctx := context.Background()
-	pool := svc.db.Pool
+	pool, raw := svc.db.Gorm, svc.db.SQL
 	paths := []struct {
 		name string
 		run  func(requestID string) error
 	}{
-		{"pgx", func(requestID string) error {
+		{"sql", func(requestID string) error {
 			var got core.LedgerResult
 			var released bool
 			var amount decimal.Decimal
-			return pool.QueryRow(ctx, releasePgxSQL, requestID, uid, releaseKey(requestID), "release request precharge").
+			return raw.QueryRowContext(ctx, releasePgxSQL, requestID, uid, releaseKey(requestID), "release request precharge").
 				Scan(&got.LedgerID, &got.BalanceAfter, &released, &amount)
 		}},
 		{"gorm", func(requestID string) error {
@@ -89,7 +89,7 @@ func BenchmarkHotReleasePrecharge(b *testing.B) {
 	}
 	reserve := func(b *testing.B, requestID string) {
 		b.StopTimer()
-		if _, err := pool.Exec(ctx, `INSERT INTO request_precharges (request_id, user_id, amount) VALUES ($1, $2, 0.5)`, requestID, uid); err != nil {
+		if _, err := raw.ExecContext(ctx, `INSERT INTO request_precharges (request_id, user_id, amount) VALUES ($1, $2, 0.5)`, requestID, uid); err != nil {
 			b.Fatal(err)
 		}
 		b.StartTimer()

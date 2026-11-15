@@ -12,13 +12,14 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/gin-gonic/gin"
 )
 
 // Worker updates in place (CONTRACTS §53.7): the controller copies the
@@ -215,7 +216,7 @@ func (s *Service) runtimeAccounts(ctx context.Context, keys []string) map[string
 		return out
 	}
 	var rows []model.CcgatewayRuntime
-	e := runtimes(store.G(ctx, s.DB.Pool)).Select("key", "account_id").
+	e := runtimes(store.G(ctx, s.DB.Gorm)).Select("key", "account_id").
 		Where("key = ANY(?) AND account_id IS NOT NULL", store.Strings(drafts)).Find(&rows).Error
 	if e != nil {
 		slog.WarnContext(ctx, "CCGateway: reading the accounts of draft runtimes failed", "err", e)
@@ -504,7 +505,7 @@ func (s *Service) auditWorkers(ctx context.Context, report workersReport) {
 	if report.CLIVersion != "" {
 		detail["cli_version"] = report.CLIVersion
 	}
-	if e := audit.Audit(ctx, s.DB.Pool, uid, "ccgateway.runtime.workers", "system", "ccgateway", detail); e != nil {
+	if e := audit.Audit(ctx, s.DB.Gorm, uid, "ccgateway.runtime.workers", "system", "ccgateway", detail); e != nil {
 		slog.Error("CCGateway audit failed", "action", "runtime.workers")
 	}
 }

@@ -22,13 +22,13 @@ func TestVersionGrantsQueryPicksStagedSet(t *testing.T) {
 		`INSERT INTO plugin_staged_grants (plugin_key, version, permission, scope, status, manifest_hash)
 			VALUES ('demo', '2.0.0', 'lock', '{}', 'revoked', 'y')`,
 	} {
-		if _, err := db.Pool.Exec(ctx, sql); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, sql); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for version, want := range map[string]string{"1.0.0": "kv/granted/1.0.0", "2.0.0": "lock/revoked/2.0.0"} {
 		var rows []struct{ Permission, Status, PluginVersion string }
-		if err := VersionGrantsQuery(store.G(ctx, db.Pool), "demo", version).Scan(&rows).Error; err != nil {
+		if err := VersionGrantsQuery(store.G(ctx, db.Gorm), "demo", version).Scan(&rows).Error; err != nil {
 			t.Fatal(err)
 		}
 		if len(rows) != 1 || rows[0].Permission+"/"+rows[0].Status+"/"+rows[0].PluginVersion != want {
@@ -52,7 +52,7 @@ func TestHoldsReadsTheVersionSet(t *testing.T) {
 		`INSERT INTO plugin_staged_grants (plugin_key, version, permission, scope, status, manifest_hash)
 			VALUES ('demo', '2.0.0', 'lock', '{}', 'granted', 'y')`,
 	} {
-		if _, err := db.Pool.Exec(ctx, sql); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, sql); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -69,7 +69,7 @@ func TestHoldsReadsTheVersionSet(t *testing.T) {
 		{"2.0.0", "kv", nil, false}, // the staged set is complete
 		{"3.0.0", "kv", nil, true},  // no staged set: the plugin's grants
 	} {
-		got, err := Holds(ctx, db.Pool, "demo", c.version, c.permission, c.scope)
+		got, err := Holds(ctx, db.Gorm, "demo", c.version, c.permission, c.scope)
 		if err != nil {
 			t.Fatal(err)
 		}

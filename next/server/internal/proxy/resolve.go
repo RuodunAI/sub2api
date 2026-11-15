@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -26,7 +25,7 @@ var _ core.ProxyResolver = (*Service)(nil)
 // then each stored password is decrypted and compared in constant time.
 // Several matches (possible for rows created before this resolver existed)
 // resolve to the smallest id.
-func (s *Service) FindOrCreate(ctx context.Context, tx pgx.Tx, spec Spec, ownerID int64, scope core.DataScope) (int64, bool, error) {
+func (s *Service) FindOrCreate(ctx context.Context, tx *gorm.DB, spec Spec, ownerID int64, scope core.DataScope) (int64, bool, error) {
 	if err := checkSpec(spec); err != nil {
 		return 0, false, err
 	}
@@ -105,7 +104,7 @@ func autoName(spec Spec) string {
 // on config:changed. The broadcast may precede the commit: no node can have
 // cached a proxy that did not exist a moment ago, so listeners only drop
 // nothing.
-func (s *Service) AuditAutoCreate(ctx context.Context, tx pgx.Tx, proxyID, ownerID, accountID int64) error {
+func (s *Service) AuditAutoCreate(ctx context.Context, tx *gorm.DB, proxyID, ownerID, accountID int64) error {
 	if err := audit.Audit(ctx, tx, ownerID, "proxy.create", "proxy", strconv.FormatInt(proxyID, 10),
 		map[string]any{"auto": true, "account_id": accountID}); err != nil {
 		return err

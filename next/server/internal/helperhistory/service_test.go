@@ -29,10 +29,10 @@ func fixture(t testing.TB) (*Service, core.HelperHistoryReservation) {
 	s := New(db, c, Options{MaxRecords: 100})
 	r := core.HelperHistoryReservation{RequestID: "request_one", RequestDigest: strings.Repeat("a", 64), Namespace: "wire-v1", Binding: core.ResourceBinding{AccountID: 22, PrincipalID: "issuer", Generation: "one"}, ReserveBytes: 4096}
 	ctx := context.Background()
-	if e = db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('helper@example.com','x') RETURNING id`).Scan(&r.Owner.UserID); e != nil {
+	if e = db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('helper@example.com','x') RETURNING id`).Scan(&r.Owner.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e = db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('helper') RETURNING id`).Scan(&r.Owner.GroupID); e != nil {
+	if e = db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('helper') RETURNING id`).Scan(&r.Owner.GroupID); e != nil {
 		t.Fatal(e)
 	}
 	return s, r
@@ -86,7 +86,7 @@ func TestHelperHistoryDBChainColdIntegrity(t *testing.T) {
 	if _, e = cold.Reserve(ctx, r); e == nil {
 		t.Fatal("issuer changed")
 	}
-	if _, e = s.db.Pool.Exec(ctx, `UPDATE provider_helper_records SET payload=decode('00','hex') WHERE receipt=$1`, two.Receipt); e != nil {
+	if _, e = s.db.SQL.ExecContext(ctx, `UPDATE provider_helper_records SET payload=decode('00','hex') WHERE receipt=$1`, two.Receipt); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = cold.Resolve(ctx, r.Owner, []string{p1, p2}, r.Namespace); e == nil {
@@ -130,7 +130,7 @@ func TestHelperHistoryDBAmbiguityConcurrent(t *testing.T) {
 		t.Fatal("ambiguous prefix selected")
 	}
 	var n int
-	if e := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM provider_helper_records`).Scan(&n); e != nil || n != 2 {
+	if e := s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM provider_helper_records`).Scan(&n); e != nil || n != 2 {
 		t.Fatal("conflict evidence rolled back", n, e)
 	}
 	pending, e := s.PendingUsage(ctx, 100)
@@ -190,7 +190,7 @@ func TestHelperHistoryDBExpiryQuotaAndOutbox(t *testing.T) {
 		t.Fatal(e)
 	}
 	var retained bool
-	if e = s.db.Pool.QueryRow(ctx, `SELECT payload IS NOT NULL FROM provider_helper_records WHERE receipt=$1`, out.Receipt).Scan(&retained); e != nil || retained {
+	if e = s.db.SQL.QueryRowContext(ctx, `SELECT payload IS NOT NULL FROM provider_helper_records WHERE receipt=$1`, out.Receipt).Scan(&retained); e != nil || retained {
 		t.Fatal("expired ciphertext retained", e)
 	}
 	r.RequestID = "new_root"
@@ -198,7 +198,7 @@ func TestHelperHistoryDBExpiryQuotaAndOutbox(t *testing.T) {
 		t.Fatal("identity tombstone quota released")
 	}
 	var n int
-	if e = s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM provider_helper_records`).Scan(&n); e != nil || n != 1 {
+	if e = s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM provider_helper_records`).Scan(&n); e != nil || n != 1 {
 		t.Fatal("tombstone removed", e)
 	}
 }
@@ -268,7 +268,7 @@ func TestHelperHistoryDBInvalidCompletionKeepsUncertainUsage(t *testing.T) {
 		t.Fatal("wrong usage owner accepted")
 	}
 	var n int
-	if e = s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM provider_helper_records`).Scan(&n); e != nil || n != 0 {
+	if e = s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM provider_helper_records`).Scan(&n); e != nil || n != 0 {
 		t.Fatal("partial receipt committed", e)
 	}
 	u := usage(r)

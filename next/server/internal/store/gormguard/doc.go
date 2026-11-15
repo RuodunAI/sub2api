@@ -1,19 +1,23 @@
-// Package gormguard holds the source checks that keep GORM in the role the
-// migration gives it: building SQL and mapping columns, never owning a
-// connection, a transaction or the schema. The checks are tests (in the
-// style of the ticker and permission guards), type-checked so that they see
-// through aliases, embedding and variables:
+// Package gormguard holds the source checks that keep the core's database
+// access in one shape: package store owns the pool, its GORM instance and
+// the transactions, every statement is built and run by GORM, and pgx is
+// only the driver under database/sql. The checks are tests (in the style of
+// the ticker and permission guards), type-checked so that they see through
+// aliases, embedding and variables. Package store is the owner below;
+// internal/testutil, test infrastructure, is one as well (instanceOwners in
+// guard_test.go gives the reasons).
 //
-//   - [gorm-tx] no gorm (*DB).Transaction, Begin, AutoMigrate or Migrator:
-//     transactions start in store.DB.Tx and the schema comes from the SQL
-//     migrations;
-//   - [gorm-open] no gorm.Open outside package store: handles come from
-//     store.G;
-//   - [gorm-instance] outside package store, no (*DB).DB, Callback or Use
-//     and no assignment to the instance's configuration (any gorm.Config
+//   - [gorm-tx] outside the owners, no gorm (*DB).Transaction, Begin,
+//     AutoMigrate or Migrator: transactions start in store.DB.Tx, TxOptions
+//     or WithConn (a connection's own transactions, the migrator's), and
+//     the schema comes from the SQL migrations;
+//   - [gorm-open] no gorm.Open outside the owners: handles come from
+//     store.DB.Gorm and store.G;
+//   - [gorm-instance] outside the owners, no (*DB).DB, Callback or Use and
+//     no assignment to the instance's configuration (any gorm.Config
 //     field, promoted into gorm.DB or not, DB.Config itself, a ConnPool):
-//     every handle shares store.G's one instance, so such a change would
-//     reach every statement of the process;
+//     every handle shares store.Open's one instance, so such a change
+//     would reach every statement of the process;
 //   - [gorm-slice] no slice or array argument that GORM expands into a
 //     list: any element type but byte, unless the type is a driver.Valuer
 //     (store.Int64s, store.Strings and store.Times are one array parameter
@@ -50,17 +54,16 @@
 //     return. It does not follow branches or loops (the last assignment
 //     before the read is the last one in the text), struct fields, package
 //     variables, or functions of other packages;
-//   - [pgx-direct] in a package listed as migrated (migratedPackages), or
-//     in a file listed as migrated (migratedFiles: the repository files of
-//     package store, which itself keeps pgx for its bridge, pool and
-//     migrations), no direct pgx Exec, Query or QueryRow (a pgx.Batch and
-//     CopyFrom stay on pgx), except a statement with an allow-pgx comment.
-//
-// A statement that a benchmark shows must stay on pgx (a hot path, such as
-// the API key lookup) carries this comment on its line or the line above;
-// the reason is required:
-//
-//	//gormguard:allow-pgx <reason>
+//   - [sql-handle] store.DB.SQL, the pool as a database/sql handle, only in
+//     package store, internal/task (River's riverdatabasesql driver takes
+//     it), internal/testutil and the test files (sqlOwners): production
+//     statements run on store.DB.Gorm. Selectors (db.SQL, promoted ones
+//     included) and store.DB literal keys are checked;
+//   - [pgx-import] no Go file of the module, test files and files left out
+//     by build constraints included, imports pgx (any package of its
+//     module) but internal/store/pgerror.go (pgxFiles), which reads the
+//     SQLSTATE and constraint name of the *pgconn.PgError that GORM's
+//     driver returns.
 //
 // Why empty lists matter (gorm v1.31; gormtest's TestExpansionTraps keeps
 // the shapes): GORM turns an expanded empty list into NULL, and the result

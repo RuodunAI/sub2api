@@ -29,7 +29,7 @@ func TestHelperHistoryDBOutboxCorruptPageDoesNotStarve(t *testing.T) {
 		if i < 64 {
 			ciphertext = []byte{0}
 		}
-		_, err = s.db.Pool.Exec(ctx, `INSERT INTO provider_helper_usage_outbox(request_id,attempt_id,user_id,group_id,digest,payload,created_at) VALUES($1,$1,$2,$3,$4,$5,$6)`, id, r.Owner.UserID, r.Owner.GroupID, digest, ciphertext, now.Add(time.Duration(i)*time.Millisecond))
+		_, err = s.db.SQL.ExecContext(ctx, `INSERT INTO provider_helper_usage_outbox(request_id,attempt_id,user_id,group_id,digest,payload,created_at) VALUES($1,$1,$2,$3,$4,$5,$6)`, id, r.Owner.UserID, r.Owner.GroupID, digest, ciphertext, now.Add(time.Duration(i)*time.Millisecond))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -49,7 +49,7 @@ func TestHelperHistoryDBOutboxCorruptPageDoesNotStarve(t *testing.T) {
 		t.Fatal("deferred delivery immediately retried", err)
 	}
 	var retained, failures int
-	if err = s.db.Pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE failure_code='integrity' AND retry_count=1) FROM provider_helper_usage_outbox`).Scan(&retained, &failures); err != nil || retained != 65 || failures != 64 {
+	if err = s.db.SQL.QueryRowContext(ctx, `SELECT count(*),count(*) FILTER(WHERE failure_code='integrity' AND retry_count=1) FROM provider_helper_usage_outbox`).Scan(&retained, &failures); err != nil || retained != 65 || failures != 64 {
 		t.Fatal("evidence lost or error not recorded", retained, failures, err)
 	}
 	now = now.Add(2 * time.Minute)

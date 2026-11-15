@@ -3,7 +3,6 @@ package usage
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -12,8 +11,6 @@ import (
 	_ "time/tzdata" // tz= accepts IANA names on minimal images
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
@@ -74,27 +71,21 @@ func parseTZ(c *gin.Context) (string, *time.Location, error) {
 }
 
 // statsTx runs fn in a read-only transaction under lim.
-func (s *Service) statsTx(ctx context.Context, lim statsLimits, fn func(pgx.Tx) error) error {
-	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+func (s *Service) statsTx(ctx context.Context, lim statsLimits, fn func(*gorm.DB) error) error {
 	set := `SET LOCAL statement_timeout = '` + lim.timeout + `'`
 	if lim.workMem != "" {
 		set += `; SET LOCAL work_mem = '` + lim.workMem + `'`
 	}
-	if err := store.G(ctx, tx).Exec(set).Error; err != nil {
-		return err
-	}
-	if err := fn(tx); err != nil {
-		var pe *pgconn.PgError
-		if errors.As(err, &pe) && pe.Code == "57014" { // query_canceled
+	return s.db.TxOptions(ctx, store.ReadOnly, func(tx *gorm.DB) error {
+		if err := store.G(ctx, tx).Exec(set).Error; err != nil {
+			return err
+		}
+		err := fn(tx)
+		if store.SQLState(err) == "57014" { // query_canceled
 			return core.ErrUnavailable.WithMessage("statistics query timed out; narrow the time range or filters")
 		}
 		return err
-	}
-	return tx.Commit(ctx)
+	})
 }
 
 // promptTokens matches expr.Normalize's inclusive/exclusive input
@@ -219,7 +210,7 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 	w := overviewWindows(overviewNow(), loc)
 	out := Overview{TZ: tz}
 	var activeToday int64
-	err := s.statsTx(ctx, statsLimitsFor(self), func(tx pgx.Tx) error {
+	err := s.statsTx(ctx, statsLimitsFor(self), func(tx *gorm.DB) error {
 		var f store.Filter
 		f.And("u.created_at >= ?", w.last30d)
 		if self != nil {
@@ -344,7 +335,7 @@ func (s *Service) realtime(c *gin.Context, self *int64) {
 	// Token counting is free and takes no part in rate limits (§18).
 	f.And("u.protocol NOT LIKE '%.count_tokens'")
 	var out Realtime
-	err = s.statsTx(ctx, directStats, func(tx pgx.Tx) error {
+	err = s.statsTx(ctx, directStats, func(tx *gorm.DB) error {
 		return realtimeQuery(store.G(ctx, tx), f).Row().Scan(&out.RPM, &out.TPM, &out.RecentFailures)
 	})
 	if err != nil {

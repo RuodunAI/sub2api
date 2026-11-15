@@ -45,7 +45,7 @@ func TestTransportDialGuard(t *testing.T) {
 
 func allowPrivate(t *testing.T, svc *Service, id int64) (v bool) {
 	t.Helper()
-	if err := svc.db.Pool.QueryRow(context.Background(), `SELECT allow_private FROM proxies WHERE id = $1`, id).Scan(&v); err != nil {
+	if err := svc.db.SQL.QueryRowContext(context.Background(), `SELECT allow_private FROM proxies WHERE id = $1`, id).Scan(&v); err != nil {
 		t.Fatal(err)
 	}
 	return v
@@ -166,7 +166,7 @@ func TestProbeSaveWriteScope(t *testing.T) {
 
 	u, _ := url.Parse(fp.URL)
 	var bobs int64
-	if err := db.Pool.QueryRow(context.Background(), `INSERT INTO proxies (name, protocol, host, port, username, created_by)
+	if err := db.SQL.QueryRowContext(context.Background(), `INSERT INTO proxies (name, protocol, host, port, username, created_by)
 		VALUES ('bob''s', 'http', $1, $2::int, 'bob', $3) RETURNING id`, u.Hostname(), u.Port(), bob).Scan(&bobs); err != nil {
 		t.Fatal(err)
 	}

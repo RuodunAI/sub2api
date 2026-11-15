@@ -12,7 +12,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/environment"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -116,7 +115,7 @@ func (s *Service) ccgReauthAccount(c *gin.Context, ctx context.Context) (id int6
 		return 0, scope, false
 	}
 	scope = s.scopeOf(ctx, perm.AccountUpdate)
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, scope, false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return 0, scope, false
@@ -163,7 +162,7 @@ func (s *Service) reauthorizeCCGateway(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if err := audit.Audit(ctx, s.d.DB.Pool, uid, "account.ccgateway_reauthorize_start", "account", itoa(id),
+	if err := audit.Audit(ctx, s.d.DB.Gorm, uid, "account.ccgateway_reauthorize_start", "account", itoa(id),
 		map[string]any{"runtime": key, "authorization_mode": "in_place"}); err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -186,7 +185,7 @@ func (s *Service) commitCCGatewayReauth(c *gin.Context) {
 	uid, _ := core.UserID(ctx)
 	tctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	_, err := s.d.CCGateway.CommitReauth(tctx, id, key, func(tx pgx.Tx, retired string) error {
+	_, err := s.d.CCGateway.CommitReauth(tctx, id, key, func(tx *gorm.DB, retired string) error {
 		a, err := s.loadRow(tctx, tx, id, scope, true)
 		if err != nil {
 			return err
@@ -239,7 +238,7 @@ func (s *Service) commitCCGatewayReauth(c *gin.Context) {
 // other (§73.3). It
 // reports whether the status changed. The quota and balance caches are
 // evicted outside this transaction.
-func (s *Service) resetForReauth(ctx context.Context, tx pgx.Tx, a *row) (bool, error) {
+func (s *Service) resetForReauth(ctx context.Context, tx *gorm.DB, a *row) (bool, error) {
 	release := a.Status == "error" || a.Status == "auto_disabled" && !limitDisabled(a.Status, a.AutoDisabledSource)
 	g := store.G(ctx, tx)
 	if err := resetAccountState(g, a.ID, release).Error; err != nil {

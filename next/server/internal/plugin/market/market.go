@@ -144,7 +144,7 @@ func (s *Service) SeedSources(ctx context.Context, sourcesJSON string) error {
 		if _, err := pkgsig.ParsePublicKey(src.PublicKey); err != nil {
 			return fmt.Errorf("market source %q: %w", src.Name, err)
 		}
-		if err := seedSource(store.G(ctx, s.db.Pool), src.Name, src.URL, strings.TrimSpace(src.PublicKey)).Error; err != nil {
+		if err := seedSource(store.G(ctx, s.db.Gorm), src.Name, src.URL, strings.TrimSpace(src.PublicKey)).Error; err != nil {
 			return err
 		}
 	}
@@ -167,7 +167,7 @@ func sources(db *gorm.DB) *gorm.DB {
 // ListSources returns all sources.
 func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
 	out := []Source{}
-	if err := sources(store.G(ctx, s.db.Pool)).Order("id").Find(&out).Error; err != nil {
+	if err := sources(store.G(ctx, s.db.Gorm)).Order("id").Find(&out).Error; err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -175,7 +175,7 @@ func (s *Service) ListSources(ctx context.Context) ([]Source, error) {
 
 func (s *Service) source(ctx context.Context, id int64) (*Source, error) {
 	var src Source
-	err := sources(store.G(ctx, s.db.Pool)).Where("id = ?", id).Take(&src).Error
+	err := sources(store.G(ctx, s.db.Gorm)).Where("id = ?", id).Take(&src).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("market source not found")
 	}
@@ -416,12 +416,12 @@ func sortedVersions(vs []IndexVersion) []IndexVersion {
 // installed maps plugin key -> [current version, status].
 func (s *Service) installed(ctx context.Context) (map[string][2]string, error) {
 	var plugins []model.Plugin
-	if err := store.G(ctx, s.db.Pool).Select("key", "status").Find(&plugins).Error; err != nil {
+	if err := store.G(ctx, s.db.Gorm).Select("key", "status").Find(&plugins).Error; err != nil {
 		return nil, err
 	}
 	out := map[string][2]string{}
 	for _, p := range plugins {
-		v, err := install.CurrentVersion(ctx, s.db.Pool, p.Key)
+		v, err := install.CurrentVersion(ctx, s.db.Gorm, p.Key)
 		if err != nil {
 			return nil, err
 		}
@@ -432,7 +432,7 @@ func (s *Service) installed(ctx context.Context) (map[string][2]string, error) {
 
 func (s *Service) trustLevels(ctx context.Context) (map[string]string, error) {
 	var publishers []model.Publisher
-	if err := store.G(ctx, s.db.Pool).Select("name", "trust_level", "status").Find(&publishers).Error; err != nil {
+	if err := store.G(ctx, s.db.Gorm).Select("name", "trust_level", "status").Find(&publishers).Error; err != nil {
 		return nil, err
 	}
 	out := map[string]string{}

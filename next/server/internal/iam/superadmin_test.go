@@ -61,7 +61,7 @@ func TestTransferSuperAdminHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, disabled.ID); err != nil {
+	if _, err := s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, disabled.ID); err != nil {
 		t.Fatal(err)
 	}
 	both := func() map[string]any {
@@ -89,7 +89,7 @@ func TestTransferSuperAdminHTTP(t *testing.T) {
 	renews(t, s, rootLogin, false)
 	renews(t, s, targetLogin, false)
 	var n int
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'superadmin.transfer' AND user_id = $1 AND target_id = $2`,
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'superadmin.transfer' AND user_id = $1 AND target_id = $2`,
 		root, strconv.FormatInt(target, 10)).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("audit rows: %d %v", n, err)
 	}
@@ -114,7 +114,7 @@ func TestRecoverSuperAdmin(t *testing.T) {
 			case 2:
 				setSuperAdmin(t, s, other, true)
 			}
-			if _, err := s.db.Pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, target); err != nil {
+			if _, err := s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, target); err != nil {
 				t.Fatal(err)
 			}
 
@@ -146,7 +146,7 @@ func TestRecoverSuperAdmin(t *testing.T) {
 				t.Fatal("the old password still signs in")
 			}
 			var enrolled bool
-			if err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1)`, target).Scan(&enrolled); err != nil || enrolled {
+			if err := s.db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1)`, target).Scan(&enrolled); err != nil || enrolled {
 				t.Fatalf("two-factor kept: %v %v", enrolled, err)
 			}
 			mustLogin(t, s, "target@example.com", password)
@@ -191,7 +191,7 @@ func TestStatusCacheKeepsADeletedUser(t *testing.T) {
 	uid := mustCreateUser(t, s, "gone@example.com")
 	exec := func(q string) {
 		t.Helper()
-		if _, err := s.db.Pool.Exec(ctx, q, uid); err != nil {
+		if _, err := s.db.SQL.ExecContext(ctx, q, uid); err != nil {
 			t.Fatal(err)
 		}
 	}

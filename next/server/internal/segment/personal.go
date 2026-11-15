@@ -6,7 +6,6 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -35,7 +34,7 @@ func (s *Service) makePersonal(c *gin.Context) {
 		return
 	}
 	var id int64
-	err := s.tx(ctx, func(tx pgx.Tx) (err error) {
+	err := s.tx(ctx, func(tx *gorm.DB) (err error) {
 		id, err = createPersonal(ctx, tx, uid, in.Copy)
 		return err
 	})
@@ -51,7 +50,7 @@ func (s *Service) makePersonal(c *gin.Context) {
 
 // userSegmentKind returns the kind of the segment the user is in; a deleted
 // user is not found.
-func userSegmentKind(ctx context.Context, q store.Querier, userID int64) (string, error) {
+func userSegmentKind(ctx context.Context, q *gorm.DB, userID int64) (string, error) {
 	var kind string
 	err := store.G(ctx, q).Table("users u").Select("s.kind").Joins("JOIN segments s ON s.id = u.segment_id").
 		Where("u.id = ? AND u.deleted_at IS NULL", userID).Take(&kind).Error
@@ -64,7 +63,7 @@ func userSegmentKind(ctx context.Context, q store.Querier, userID int64) (string
 // createPersonal makes the personal segment of a user in a named segment and
 // moves the user into it. Two requests for one user are settled by
 // segments_user_uq.
-func createPersonal(ctx context.Context, tx pgx.Tx, userID int64, copyFrom bool) (int64, error) {
+func createPersonal(ctx context.Context, tx *gorm.DB, userID int64, copyFrom bool) (int64, error) {
 	kind, err := userSegmentKind(ctx, tx, userID)
 	if err != nil {
 		return 0, err
@@ -107,7 +106,7 @@ func createPersonal(ctx context.Context, tx pgx.Tx, userID int64, copyFrom bool)
 
 // copySettings gives segment to what segment from has in every group: its
 // grants, rate overrides and model prices. The two are unrelated afterwards.
-func copySettings(ctx context.Context, tx pgx.Tx, from, to int64) error {
+func copySettings(ctx context.Context, tx *gorm.DB, from, to int64) error {
 	g := store.G(ctx, tx)
 	if err := g.Exec(`INSERT INTO segment_groups (segment_id, group_id, granted, rate_override)
 		SELECT ?::bigint, group_id, granted, rate_override FROM segment_groups WHERE segment_id = ?`, to, from).Error; err != nil {
@@ -131,7 +130,7 @@ func (s *Service) removePersonal(c *gin.Context) {
 		return
 	}
 	var dropped bool
-	err := s.tx(ctx, func(tx pgx.Tx) error {
+	err := s.tx(ctx, func(tx *gorm.DB) error {
 		notPersonal := core.ErrNotFound.WithMessage(t(ctx, "the user has no personal user group", "该用户不是个人专属"))
 		kind, err := userSegmentKind(ctx, tx, uid)
 		if err != nil {
@@ -164,7 +163,7 @@ func (s *Service) removePersonal(c *gin.Context) {
 
 // moveTarget returns the named segment to names, the default one when to is
 // empty, locked against deletion until the transaction ends.
-func moveTarget(ctx context.Context, tx pgx.Tx, to string) (int64, error) {
+func moveTarget(ctx context.Context, tx *gorm.DB, to string) (int64, error) {
 	unknown := core.InvalidFields(fieldError(ctx, "to", "invalid", "pick a user group", "请选择一个用户组"))
 	var want *int64
 	if to != "" {
@@ -185,7 +184,7 @@ func moveTarget(ctx context.Context, tx pgx.Tx, to string) (int64, error) {
 // nil, locked against deletion until the transaction ends, so a user about
 // to join it cannot be left pointing at nothing. It is core.ErrNotFound when
 // id names no named segment.
-func LockNamed(ctx context.Context, tx pgx.Tx, id *int64) (int64, error) {
+func LockNamed(ctx context.Context, tx *gorm.DB, id *int64) (int64, error) {
 	var found int64
 	err := lockNamedQuery(store.G(ctx, tx), id).Take(&found).Error
 	if store.IsNoRows(err) {

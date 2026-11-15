@@ -30,7 +30,7 @@ func taskBoot(t *testing.T, canWork func() bool) *boot {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	b := &boot{ctx: ctx, cfg: &config.Config{NodeID: "tasks-test"}, version: "test", log: log, stopper: newTeardown(),
 		db: db, rdb: rdb, reg: registry.New(), canWork: canWork,
-		cl:   cluster.New(rdb, db.Pool, cluster.Options{NodeID: "tasks-test", Logger: log}),
+		cl:   cluster.New(rdb, db, cluster.Options{NodeID: "tasks-test", Logger: log}),
 		work: background.New(2)}
 	b.work.Admitted = canWork
 	t.Cleanup(func() {

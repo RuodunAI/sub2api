@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -147,19 +146,19 @@ func scanRole(rows *sql.Rows) (*Role, error) {
 
 // ListRoles returns all roles, built-in first.
 func (s *Service) ListRoles(ctx context.Context) ([]*Role, error) {
-	return listRoles(ctx, s.db.Pool)
+	return listRoles(ctx, s.db.Gorm)
 }
 
-func listRoles(ctx context.Context, q store.Querier) ([]*Role, error) {
+func listRoles(ctx context.Context, q *gorm.DB) ([]*Role, error) {
 	return readRoles(listedRoles(store.G(ctx, q)))
 }
 
 // GetRole returns one role or ErrNotFound.
 func (s *Service) GetRole(ctx context.Context, id int64) (*Role, error) {
-	return s.getRole(ctx, s.db.Pool, id)
+	return s.getRole(ctx, s.db.Gorm, id)
 }
 
-func (s *Service) getRole(ctx context.Context, q store.Querier, id int64) (*Role, error) {
+func (s *Service) getRole(ctx context.Context, q *gorm.DB, id int64) (*Role, error) {
 	r, err := readRole(roleByID(store.G(ctx, q), id))
 	if store.IsNoRows(err) {
 		return nil, errRoleNotFound
@@ -178,7 +177,7 @@ func (s *Service) getRole(ctx context.Context, q store.Querier, id int64) (*Role
 // assign_custom never covers the actor's own roles). With the default lists
 // an admin thus changes operator, supplier and user but not admin. The
 // system (actor 0) passes. Every role write goes through it.
-func (s *Service) editableRole(ctx context.Context, tx pgx.Tx, actorID, id int64) (*Role, error) {
+func (s *Service) editableRole(ctx context.Context, tx *gorm.DB, actorID, id int64) (*Role, error) {
 	r, err := readRole(lockRole(store.G(ctx, tx), id))
 	switch {
 	case store.IsNoRows(err):
@@ -262,7 +261,7 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 		in.Description = core.LocalizedText{}
 	}
 	var id int64
-	err := s.mutate(ctx, func(tx pgx.Tx) error {
+	err := s.mutate(ctx, func(tx *gorm.DB) error {
 		keys, grants, err := resolvePermissions(ctx, tx, in.PermissionKeys)
 		if err != nil {
 			return err
@@ -325,7 +324,7 @@ func (s *Service) UpdateRole(ctx context.Context, actorID, id int64, in UpdateRo
 	if in.Name != nil && in.Name.Get("en") == "" {
 		return nil, core.InvalidFields(core.FieldError{Field: "name", Code: "required", Message: "name is required"})
 	}
-	err := s.mutate(ctx, func(tx pgx.Tx) error {
+	err := s.mutate(ctx, func(tx *gorm.DB) error {
 		r, err := s.editableRole(ctx, tx, actorID, id)
 		if err != nil {
 			return err
@@ -365,7 +364,7 @@ func nilIfEmpty(t core.LocalizedText) any {
 // has holders, deleting it revokes it, and the role must be on the actor's
 // assignable list); its assignments cascade.
 func (s *Service) DeleteRole(ctx context.Context, actorID, id int64) error {
-	return s.mutate(ctx, func(tx pgx.Tx) error {
+	return s.mutate(ctx, func(tx *gorm.DB) error {
 		r, err := s.editableRole(ctx, tx, actorID, id)
 		if err != nil {
 			return err
@@ -392,7 +391,7 @@ func deleteRole(db *gorm.DB, id int64) *gorm.DB {
 // SetRoleAssignable; what the reset drops is within the actor already
 // (editableRole), so it cannot weaken a role above the actor (C-L2).
 func (s *Service) ResetRole(ctx context.Context, actorID, id int64) (*Role, error) {
-	err := s.mutate(ctx, func(tx pgx.Tx) error {
+	err := s.mutate(ctx, func(tx *gorm.DB) error {
 		r, err := s.editableRole(ctx, tx, actorID, id)
 		if err != nil {
 			return err
@@ -427,7 +426,7 @@ func resetRoleText(db *gorm.DB, id int64, def builtinRole) *gorm.DB {
 // granted per plugin at consent time. Defaults naming a built-in role not
 // created yet are skipped, as SyncCore does. ResetRole and SyncCore (a
 // role nobody holds, behind its rev) both reset through it.
-func (s *Service) resetDefaults(ctx context.Context, tx pgx.Tx, actorID int64, r *Role, def builtinRole, detail map[string]any) error {
+func (s *Service) resetDefaults(ctx context.Context, tx *gorm.DB, actorID int64, r *Role, def builtinRole, detail map[string]any) error {
 	keys, grants, err := resolvePermissions(ctx, tx, def.defaultPermissions())
 	if err != nil {
 		return err
@@ -475,7 +474,7 @@ func roleDetail(r *Role) map[string]any {
 // (editableRole), as setRolePart does. version, when set, must be the authz
 // version the editor read (Role.Version), else version_conflict.
 func (s *Service) SetRolePermissions(ctx context.Context, actorID, id int64, keys []string, version *int64) (*Role, error) {
-	err := s.mutateAt(ctx, version, func(tx pgx.Tx) error {
+	err := s.mutateAt(ctx, version, func(tx *gorm.DB) error {
 		r, err := s.editableRole(ctx, tx, actorID, id)
 		if err != nil {
 			return err
@@ -498,7 +497,7 @@ func (s *Service) SetRolePermissions(ctx context.Context, actorID, id int64, key
 // was added and what was dropped (removed permissions included); a write of
 // one plugin's part adds that part before and after, its permission_keys
 // being that part only.
-func (s *Service) setRolePart(ctx context.Context, tx pgx.Tx, actorID int64, r *Role, keys []string, part grantPart, detail map[string]any) error {
+func (s *Service) setRolePart(ctx context.Context, tx *gorm.DB, actorID int64, r *Role, keys []string, part grantPart, detail map[string]any) error {
 	live, grants, err := resolvePermissions(ctx, tx, keys)
 	if err != nil {
 		return err
@@ -559,7 +558,7 @@ type AssignableInput struct {
 // "every custom role" flag included); what the role keeps is within it
 // already.
 func (s *Service) SetRoleAssignable(ctx context.Context, actorID, id int64, in AssignableInput) (*Role, error) {
-	err := s.mutate(ctx, func(tx pgx.Tx) error {
+	err := s.mutate(ctx, func(tx *gorm.DB) error {
 		r, err := s.editableRole(ctx, tx, actorID, id)
 		if err != nil {
 			return err
@@ -590,7 +589,7 @@ func (s *Service) SetRoleAssignable(ctx context.Context, actorID, id int64, in A
 
 // assignableRoles resolves keys for an assignable list: each must exist and
 // none may be a superuser role, which is only ever transferred.
-func assignableRoles(ctx context.Context, q store.Querier, keys []string) ([]roleRef, error) {
+func assignableRoles(ctx context.Context, q *gorm.DB, keys []string) ([]roleRef, error) {
 	roles, err := resolveRoles(ctx, q, dedupe(keys))
 	if err != nil {
 		return nil, err
@@ -608,7 +607,7 @@ func assignableRoles(ctx context.Context, q store.Querier, keys []string) ([]rol
 // roles: a wildcard never covers the actor's own role (§43.6), so a holder
 // of a custom role with assign_custom cannot hand out, through another role,
 // a wildcard that manages its own role's holders.
-func grantOf(ctx context.Context, q store.Querier, roleKey string, perms, roles []string, custom bool) (core.PermissionSet, error) {
+func grantOf(ctx context.Context, q *gorm.DB, roleKey string, perms, roles []string, custom bool) (core.PermissionSet, error) {
 	set := core.PermissionSetOf(perms...)
 	set.Assignable = core.PermissionSetOf(roles...).Keys
 	set.AssignCustom = custom
@@ -627,7 +626,7 @@ func grantOf(ctx context.Context, q store.Querier, roleKey string, perms, roles 
 
 // setRoleAssignable makes roles, plus every custom role when custom, the
 // role's assignable list.
-func setRoleAssignable(ctx context.Context, tx pgx.Tx, roleID int64, roles []roleRef, custom bool) error {
+func setRoleAssignable(ctx context.Context, tx *gorm.DB, roleID int64, roles []roleRef, custom bool) error {
 	ids := roleIDsOf(roles)
 	db := store.G(ctx, tx)
 	if err := dropAssignable(db, roleID, ids).Error; err != nil {
@@ -662,7 +661,7 @@ func setAssignCustom(db *gorm.DB, id int64, custom bool) *gorm.DB {
 // (call Committed with the returned version after commit). actorID is the
 // acting user (0 = system); checkAssignment judges what the change adds and
 // removes, and a change is audited as user.roles.
-func (s *Service) SetUserRoles(ctx context.Context, tx pgx.Tx, actorID, userID int64, roleKeys []string) (int64, error) {
+func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID int64, roleKeys []string) (int64, error) {
 	v, err := s.Bump(ctx, tx)
 	if err != nil {
 		return 0, err
@@ -695,7 +694,7 @@ func (s *Service) SetUserRoles(ctx context.Context, tx pgx.Tx, actorID, userID i
 // be able to act on the user; and the added roles, with what they may assign
 // in turn, must be within the actor's grantSet. The system (actor 0) may
 // grant the initial super admin, never revoke one.
-func (s *Service) checkAssignment(ctx context.Context, q store.Querier, actorID, userID int64, roleless bool, added, removed []roleRef) error {
+func (s *Service) checkAssignment(ctx context.Context, q *gorm.DB, actorID, userID int64, roleless bool, added, removed []roleRef) error {
 	if actorID == 0 {
 		if slices.ContainsFunc(removed, func(r roleRef) bool { return r.superuser }) {
 			return superAdminTransferOnly(ctx)
@@ -766,7 +765,7 @@ func assignableBuiltinRefs(db *gorm.DB, keys []string) *gorm.DB {
 }
 
 // resolveRoles returns the roles of keys, failing on unknown ones.
-func resolveRoles(ctx context.Context, q store.Querier, keys []string) ([]roleRef, error) {
+func resolveRoles(ctx context.Context, q *gorm.DB, keys []string) ([]roleRef, error) {
 	roles, err := queryRoles(roleRefsByKeys(store.G(ctx, q), keys))
 	if err != nil {
 		return nil, err
@@ -801,7 +800,7 @@ func roleIDsOf(roles []roleRef) []int64 {
 }
 
 // writeUserRoles makes roles the user's roles.
-func writeUserRoles(ctx context.Context, tx pgx.Tx, userID int64, roles []roleRef) error {
+func writeUserRoles(ctx context.Context, tx *gorm.DB, userID int64, roles []roleRef) error {
 	ids := roleIDsOf(roles)
 	db := store.G(ctx, tx)
 	if err := dropUserRoles(db, userID, ids).Error; err != nil {
@@ -823,7 +822,7 @@ func addUserRoles(db *gorm.DB, userID int64, ids store.Int64s) *gorm.DB {
 // EnsureNotLastSuperAdmin fails with conflict when userID is a superuser and
 // no other active superuser exists. iam calls it inside the transaction that
 // disables or deletes a user, after Bump (which serializes the check).
-func (s *Service) EnsureNotLastSuperAdmin(ctx context.Context, tx pgx.Tx, userID int64) error {
+func (s *Service) EnsureNotLastSuperAdmin(ctx context.Context, tx *gorm.DB, userID int64) error {
 	su, err := s.IsSuperuser(ctx, tx, userID)
 	if err != nil || !su {
 		return err
@@ -831,7 +830,7 @@ func (s *Service) EnsureNotLastSuperAdmin(ctx context.Context, tx pgx.Tx, userID
 	return s.ensureOtherSuperuser(ctx, tx, userID)
 }
 
-func (s *Service) ensureOtherSuperuser(ctx context.Context, tx pgx.Tx, userID int64) error {
+func (s *Service) ensureOtherSuperuser(ctx context.Context, tx *gorm.DB, userID int64) error {
 	var n int64
 	if err := otherSuperusers(store.G(ctx, tx), userID).Row().Scan(&n); err != nil {
 		return err
@@ -867,7 +866,7 @@ type AssignableRole struct {
 // grantSet, so none under an access key), built-in first, never a superuser
 // role, each with whether the actor may grant it.
 func (s *Service) AssignableRoles(ctx context.Context, actorID int64) ([]AssignableRole, error) {
-	q := s.db.Pool
+	q := s.db.Gorm
 	actor, err := s.grantSet(ctx, q, actorID)
 	if err != nil {
 		return nil, err
@@ -961,12 +960,12 @@ type PermissionGroup struct {
 // Staged permissions, of a version not activated yet, are left out: no
 // editor may grant them (the review lists them).
 func (s *Service) ListPermissions(ctx context.Context) ([]*PermissionModule, error) {
-	return listPermissions(ctx, s.db.Pool, "")
+	return listPermissions(ctx, s.db.Gorm, "")
 }
 
 // listPermissions is ListPermissions of the plugin pluginKey only, of the
 // whole catalog for "", read through q.
-func listPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]*PermissionModule, error) {
+func listPermissions(ctx context.Context, q *gorm.DB, pluginKey string) ([]*PermissionModule, error) {
 	byModule := map[string]*PermissionModule{}
 	var order []*PermissionModule
 	if err := store.EachRow(permissionRows(store.G(ctx, q), pluginKey), func(rows *sql.Rows) error {
@@ -1112,7 +1111,7 @@ func (s *Service) PluginRoleGrants(ctx context.Context, actorID int64, pluginKey
 		return nil, errPluginNotFound
 	}
 	var out *PluginRoleMatrix
-	v, err := s.readSnapshot(ctx, func(tx pgx.Tx) error {
+	v, err := s.readSnapshot(ctx, func(tx *gorm.DB) error {
 		var err error
 		out, err = s.pluginRoleGrants(ctx, tx, actorID, pluginKey)
 		return err
@@ -1124,7 +1123,7 @@ func (s *Service) PluginRoleGrants(ctx context.Context, actorID int64, pluginKey
 	return out, nil
 }
 
-func (s *Service) pluginRoleGrants(ctx context.Context, q store.Querier, actorID int64, pluginKey string) (*PluginRoleMatrix, error) {
+func (s *Service) pluginRoleGrants(ctx context.Context, q *gorm.DB, actorID int64, pluginKey string) (*PluginRoleMatrix, error) {
 	mods, err := listPermissions(ctx, q, pluginKey)
 	if err != nil {
 		return nil, err
@@ -1166,7 +1165,7 @@ func (s *Service) pluginRoleGrants(ctx context.Context, q store.Querier, actorID
 // when set, must be the matrix's (PluginRoleMatrix.Version), else
 // version_conflict.
 func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, pluginKey string, roles map[string][]string, version *int64) (*PluginRoleMatrix, error) {
-	err := s.mutateAt(ctx, version, func(tx pgx.Tx) error {
+	err := s.mutateAt(ctx, version, func(tx *gorm.DB) error {
 		db := store.G(ctx, tx)
 		found, err := store.Exists(db, permissionsOfPlugin(db, pluginKey))
 		if err != nil {
@@ -1203,7 +1202,7 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 
 // setPluginRole makes keys, which must all be permissions of plugin
 // pluginKey, the grants of role id of that plugin's permissions.
-func (s *Service) setPluginRole(ctx context.Context, tx pgx.Tx, actorID, id int64, pluginKey string, keys []string) error {
+func (s *Service) setPluginRole(ctx context.Context, tx *gorm.DB, actorID, id int64, pluginKey string, keys []string) error {
 	r, err := s.editableRole(ctx, tx, actorID, id)
 	if err != nil {
 		return err
@@ -1242,7 +1241,7 @@ func dedupe(keys []string) []string {
 
 // IsSuperuser reports whether userID holds a superuser role, regardless of
 // the user's status.
-func (s *Service) IsSuperuser(ctx context.Context, q store.Querier, userID int64) (bool, error) {
+func (s *Service) IsSuperuser(ctx context.Context, q *gorm.DB, userID int64) (bool, error) {
 	db := store.G(ctx, q)
 	return store.Exists(db, superuserGrants(db, userID))
 }

@@ -12,7 +12,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-func markLifecyclePending(ctx context.Context, q store.Querier, id int64) error {
+func markLifecyclePending(ctx context.Context, q *gorm.DB, id int64) error {
 	g := store.G(ctx, q)
 	if err := lifecyclePending(g, id).Error; err != nil {
 		return err
@@ -29,7 +29,7 @@ func lifecyclePending(db *gorm.DB, id int64) *gorm.DB {
 }
 
 func (s *Service) saveLifecycleStatus(ctx context.Context, id int64, version time.Time, generation int64, state core.AccountSynchronization) error {
-	return saveLifecycle(store.G(ctx, s.d.DB.Pool), id, version, generation, state).Error
+	return saveLifecycle(store.G(ctx, s.d.DB.Gorm), id, version, generation, state).Error
 }
 
 // saveLifecycle records state for the account version and generation that
@@ -53,7 +53,7 @@ func (s *Service) fillLifecycleStatus(ctx context.Context, views []*View) error 
 		return nil
 	}
 	var states []model.AccountLifecycleSync
-	if err := store.G(ctx, s.d.DB.Pool).Select("account_id, status, code").Where("account_id = ANY(?)", store.Int64s(ids)).
+	if err := store.G(ctx, s.d.DB.Gorm).Select("account_id, status, code").Where("account_id = ANY(?)", store.Int64s(ids)).
 		Find(&states).Error; err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ const (
 // every page; a read that fails leaves the row as it is.
 func (s *Service) sweepLifecycleStatus(ctx context.Context) (int, error) {
 	var accounts []staleLifecycle
-	if err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT a.id,a.plugin_key,a.type,a.updated_at,l.generation,l.status,l.code FROM account_lifecycle_sync l JOIN accounts a ON a.id=l.account_id
+	if err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT a.id,a.plugin_key,a.type,a.updated_at,l.generation,l.status,l.code FROM account_lifecycle_sync l JOIN accounts a ON a.id=l.account_id
   WHERE l.status<>'applied' AND l.updated_at<=now()-make_interval(secs=>?::float8) AND a.deleted_at IS NULL
   ORDER BY l.updated_at,a.id LIMIT ?`, lifecycleStatusSettle.Seconds(), lifecycleStatusSweepPage).Scan(&accounts).Error; err != nil {
 		return 0, err

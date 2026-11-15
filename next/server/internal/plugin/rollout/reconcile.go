@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/jackc/pgx/v5"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -94,7 +94,7 @@ func selectPlugins(g *gorm.DB) *gorm.DB {
 }
 
 func (c *Controller) loadPlugins(ctx context.Context) ([]*pluginRow, error) {
-	g := store.G(ctx, c.o.DB.Pool)
+	g := store.G(ctx, c.o.DB.Gorm)
 	var recs []pluginRecord
 	if err := selectPlugins(g).Scan(&recs).Error; err != nil {
 		return nil, err
@@ -182,7 +182,7 @@ func (c *Controller) Reconcile(ctx context.Context) {
 
 	for idx, p := range rows {
 		c.acknowledgeCleanup(ctx, p)
-		g, boot := store.G(ctx, c.o.DB.Pool), c.o.Node.BootID()
+		g, boot := store.G(ctx, c.o.DB.Gorm), c.o.Node.BootID()
 		if reports[idx].State == "stopped" {
 			_ = stopRuntime(g, p.key, boot).Error
 		}
@@ -506,7 +506,7 @@ type pVersionEpoch struct {
 var errStaleGeneration = core.ErrConflict.WithMessage("plugin generation changed before instance start")
 
 func (c *Controller) registerRuntime(ctx context.Context, key string, expected ...pVersionEpoch) error {
-	return c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
+	return c.o.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var p model.Plugin
 		if err := selectEpochForShare(g, key).Take(&p).Error; err != nil {
@@ -560,7 +560,7 @@ func (c *Controller) acknowledgeCleanup(ctx context.Context, p *pluginRow) {
 			return
 		}
 	}
-	if err := ackCleanup(store.G(ctx, c.o.DB.Pool), p.key, c.o.Node.BootID(), p.rowVersion).Error; err != nil {
+	if err := ackCleanup(store.G(ctx, c.o.DB.Gorm), p.key, c.o.Node.BootID(), p.rowVersion).Error; err != nil {
 		c.log.Warn("acknowledge rollout cleanup failed", "plugin", p.key, "err", err)
 	}
 }

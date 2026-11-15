@@ -9,14 +9,14 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 // Request log levels (REQUEST-LOG-LEVELS-DESIGN §2/§4,
@@ -115,7 +115,7 @@ func effectiveRequestLog(c Config, a AccountRequestLog, now time.Time) string {
 }
 
 // LoadAccountRequestLog reads account id's own level; no row follows.
-func LoadAccountRequestLog(ctx context.Context, q store.Querier, id int64) (AccountRequestLog, error) {
+func LoadAccountRequestLog(ctx context.Context, q *gorm.DB, id int64) (AccountRequestLog, error) {
 	var row model.CcgatewayAccountRequestLog
 	err := store.G(ctx, q).Select("level", "full_until").Where("account_id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
@@ -134,7 +134,7 @@ func (s *Service) requestLogLevel(ctx context.Context, c Config, id int64) (stri
 	if id <= 0 {
 		return c.DefaultRequestLog(), nil
 	}
-	a, _, err := readThrough(&s.cache, &s.cache.requestLogs, id, func() (AccountRequestLog, error) { return LoadAccountRequestLog(ctx, s.DB.Pool, id) })
+	a, _, err := readThrough(&s.cache, &s.cache.requestLogs, id, func() (AccountRequestLog, error) { return LoadAccountRequestLog(ctx, s.DB.Gorm, id) })
 	if err != nil {
 		return "", err
 	}
@@ -224,7 +224,7 @@ func (s *Service) serveRequestLogs(c *gin.Context, ctx context.Context, d accoun
 			return
 		}
 	}
-	a, err := LoadAccountRequestLog(ctx, s.DB.Pool, d.AccountID)
+	a, err := LoadAccountRequestLog(ctx, s.DB.Gorm, d.AccountID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -282,7 +282,7 @@ func (s *Service) saveAccountRequestLog(c *gin.Context, ctx context.Context, id 
 		detail["full_for_hours"] = change.FullForHours
 		detail["full_until"] = t.Format(time.RFC3339)
 	}
-	err := s.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		old, err := LoadAccountRequestLog(ctx, tx, id)
 		if err != nil {
 			return err

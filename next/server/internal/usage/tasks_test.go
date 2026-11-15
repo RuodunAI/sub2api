@@ -22,7 +22,7 @@ func TestTaskReceiveEmptyBody(t *testing.T) {
 	body := func() *string {
 		t.Helper()
 		var b *string
-		if err := s.db.Pool.QueryRow(ctx, `SELECT encode(response_body, 'escape') FROM task_submission_receipts WHERE request_id = $1`, in.RequestID).Scan(&b); err != nil {
+		if err := s.db.SQL.QueryRowContext(ctx, `SELECT encode(response_body, 'escape') FROM task_submission_receipts WHERE request_id = $1`, in.RequestID).Scan(&b); err != nil {
 			t.Fatal(err)
 		}
 		return b

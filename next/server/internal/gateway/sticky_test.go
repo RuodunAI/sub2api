@@ -308,7 +308,7 @@ func TestStickyRuleProtocolValidation(t *testing.T) {
 	// A rule whose platform went away stays editable: a full-body PATCH may
 	// resubmit the protocols it already had, only added ones are checked.
 	var id int64
-	if err := e.db.Pool.QueryRow(context.Background(), `
+	if err := e.db.SQL.QueryRowContext(context.Background(), `
 		INSERT INTO sticky_rules (name, source, enabled, priority, match, key_sources, value_regex, ttl_seconds,
 			key_includes, on_failure, updated_at)
 		VALUES ('stale-protocol', 'admin', true, 100, $1, $2, '', 0, $3, 'failover', now()) RETURNING id`,
@@ -372,13 +372,13 @@ func TestRequestMetaEndpointAndSessionFingerprint(t *testing.T) {
 func TestRuleCacheHoldsLoadFailure(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, `INSERT INTO sticky_rules (name, source, key_sources) VALUES ('r', 'admin', '[]')`)
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO sticky_rules (name, source, key_sources) VALUES ('r', 'admin', '[]')`)
 	require.NoError(t, err)
 	c := newRuleCache(db)
-	_, err = db.Pool.Exec(ctx, `ALTER TABLE sticky_rules RENAME TO sticky_rules_off`)
+	_, err = db.SQL.ExecContext(ctx, `ALTER TABLE sticky_rules RENAME TO sticky_rules_off`)
 	require.NoError(t, err)
 	require.Empty(t, c.get(ctx))
-	_, err = db.Pool.Exec(ctx, `ALTER TABLE sticky_rules_off RENAME TO sticky_rules`)
+	_, err = db.SQL.ExecContext(ctx, `ALTER TABLE sticky_rules_off RENAME TO sticky_rules`)
 	require.NoError(t, err)
 	require.Empty(t, c.get(ctx), "the failure is served from the cache")
 	c.invalidate()

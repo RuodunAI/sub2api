@@ -96,7 +96,7 @@ func (s *Service) deliverAccountLifecycle(ctx context.Context, id int64, pluginK
 	if event == core.EventAccountDeleted {
 		phase = "deleted"
 	}
-	g := store.G(ctx, s.d.DB.Pool)
+	g := store.G(ctx, s.d.DB.Gorm)
 	account, err := scanRow(selectRows(g).Where("a.id = ? AND a.plugin_key = ?", id, pluginKey).Row())
 	if store.IsNoRows(err) {
 		return nil

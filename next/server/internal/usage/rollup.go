@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -107,7 +106,7 @@ type hourSpan struct{ from, to time.Time }
 
 // readRollupState reads the hours [low, high) the rollup holds (nil before
 // the first refresh).
-func readRollupState(ctx context.Context, tx pgx.Tx) (low, high *time.Time, err error) {
+func readRollupState(ctx context.Context, tx *gorm.DB) (low, high *time.Time, err error) {
 	err = store.G(ctx, tx).Model(&model.UsageHourlyState{}).Select("low, high").Row().Scan(&low, &high)
 	return low, high, err
 }
@@ -116,7 +115,7 @@ func readRollupState(ctx context.Context, tx pgx.Tx) (low, high *time.Time, err 
 // holds none of it. With a time zone (day and hour buckets, the overview's
 // days) it is nil unless the zone is whole hours from UTC all along the
 // range, so that its buckets are made of whole UTC hours.
-func rollupSpan(ctx context.Context, tx pgx.Tx, from, end time.Time, loc *time.Location) (*hourSpan, error) {
+func rollupSpan(ctx context.Context, tx *gorm.DB, from, end time.Time, loc *time.Location) (*hourSpan, error) {
 	if loc != nil && !hourAligned(loc, from, end) {
 		return nil, nil
 	}
@@ -244,7 +243,7 @@ type rollupState struct{ low, high *time.Time }
 
 // rollupStep does one transaction's share of a refresh stage and says
 // whether more is left.
-type rollupStep func(context.Context, pgx.Tx, *rollupState) (hours int, more bool, err error)
+type rollupStep func(context.Context, *gorm.DB, *rollupState) (hours int, more bool, err error)
 
 // refreshRollup brings the rollup up to date: it rolls up the sealed hours,
 // recomputes the marked ones, then fills in one chunk of the history. Each
@@ -256,7 +255,7 @@ func (s *Service) refreshRollup(ctx context.Context) (int, error) {
 		for {
 			var n int
 			var more bool
-			err := s.rollupTx(ctx, func(tx pgx.Tx, st *rollupState) (err error) {
+			err := s.rollupTx(ctx, func(tx *gorm.DB, st *rollupState) (err error) {
 				n, more, err = step(ctx, tx, st)
 				return err
 			})
@@ -276,8 +275,8 @@ func (s *Service) refreshRollup(ctx context.Context) (int, error) {
 }
 
 // rollupTx runs fn under the rollup's lock with its state, saved after fn.
-func (s *Service) rollupTx(ctx context.Context, fn func(pgx.Tx, *rollupState) error) error {
-	return pgx.BeginFunc(ctx, s.db.Pool, func(tx pgx.Tx) error {
+func (s *Service) rollupTx(ctx context.Context, fn func(*gorm.DB, *rollupState) error) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		// No arguments: pgx sends the two statements in one simple-protocol
 		// round trip, as before.
 		if err := store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtext('usage_hourly')); SET LOCAL statement_timeout = '` + rollupStatementTimeout + `'`).Error; err != nil {
@@ -306,7 +305,7 @@ var sealedSQL = `SELECT date_trunc('hour', LEAST(now() - interval '` + strconv.I
 		AND backend_xid IS NOT NULL AND pid <> pg_backend_pid()), 'infinity') - interval '15 minutes'), 'UTC')`
 
 // rollupForward rolls up a chunk of the sealed hours after the held ones.
-func rollupForward(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, error) {
+func rollupForward(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool, error) {
 	var sealed time.Time
 	if err := store.G(ctx, tx).Raw(sealedSQL).Row().Scan(&sealed); err != nil {
 		return 0, false, err
@@ -329,7 +328,7 @@ func rollupForward(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, 
 // rollupDirty recomputes the first marked hours and clears the marks read
 // for them; marks outside the held hours are cleared alone, those hours
 // being rolled up from scratch when they are reached.
-func rollupDirty(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, error) {
+func rollupDirty(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool, error) {
 	var ids store.Int64s
 	var hours store.Times
 	if err := store.G(ctx, tx).Raw(`WITH h AS (SELECT DISTINCT hour FROM usage_hourly_dirty ORDER BY hour LIMIT ?)
@@ -354,7 +353,7 @@ func rollupDirty(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, er
 
 // rollupBackfill rolls up the chunk of history below the held hours, down to
 // the hour of the oldest usage row.
-func rollupBackfill(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, error) {
+func rollupBackfill(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool, error) {
 	if st.low == nil {
 		return 0, false, nil
 	}
@@ -376,7 +375,7 @@ func rollupBackfill(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool,
 
 // rollupHours recomputes the rollup of the hours [from, to) from usage_logs
 // and returns how many hours that was.
-func rollupHours(ctx context.Context, tx pgx.Tx, from, to time.Time) (int, error) {
+func rollupHours(ctx context.Context, tx *gorm.DB, from, to time.Time) (int, error) {
 	if err := store.G(ctx, tx).Where("created_at >= ? AND created_at < ?", from, to).Delete(&model.UsageHourly{}).Error; err != nil {
 		return 0, err
 	}

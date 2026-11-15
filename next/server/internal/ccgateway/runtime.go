@@ -12,13 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/remotedocker"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 )
 
 // Runtime installation and upgrade (CONTRACTS §49.16): the core pulls the
@@ -436,7 +437,7 @@ func (s *Service) ensureControllerKey(ctx context.Context, cfg Config, uid int64
 	if uid > 0 {
 		updatedBy = &uid
 	}
-	e = s.DB.Tx(ctx, func(tx pgx.Tx) error {
+	e = s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		_, e := store.UpdateSettingJSONTx(ctx, tx, settingKey, updatedBy, func(raw json.RawMessage) (json.RawMessage, error) {
 			cur, e := s.decode(raw)
 			if e != nil {

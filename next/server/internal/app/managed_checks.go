@@ -10,14 +10,14 @@ import (
 	"sort"
 	"strings"
 
+	"gorm.io/gorm"
+
 	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5/pgconn"
-	"gorm.io/gorm"
 )
 
 type coreMigration struct {
@@ -111,7 +111,7 @@ type permittedCoreTracker struct {
 	permit    runtimecontract.PrepareRequest
 }
 
-func (t permittedCoreTracker) Applied(ctx context.Context, q store.Querier) (map[string]string, error) {
+func (t permittedCoreTracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, error) {
 	applied, err := t.CoreTracker.Applied(ctx, q)
 	if err != nil {
 		return nil, err
@@ -135,10 +135,9 @@ func prepareCoreSchema(ctx context.Context, db *store.DB, p runtimecontract.Prep
 	if !p.AllowMigration {
 		return nil, verifyCoreSchema(ctx, db)
 	}
-	applied, err := (store.CoreTracker{}).Applied(ctx, db.Pool)
+	applied, err := (store.CoreTracker{}).Applied(ctx, db.Gorm)
 	if err != nil {
-		var pgerr *pgconn.PgError
-		if !p.Bootstrap || !errors.As(err, &pgerr) || pgerr.Code != "42P01" {
+		if !p.Bootstrap || store.SQLState(err) != "42P01" { // undefined_table
 			return nil, err
 		}
 		applied = map[string]string{}
@@ -168,7 +167,7 @@ func SchemaContract() (string, error) {
 // candidate requires exactly its known migrations. Once a maintenance upgrade
 // changes the database, an older binary cannot safely infer compatibility.
 func verifyCoreSchema(ctx context.Context, db *store.DB) error {
-	applied, err := (store.CoreTracker{}).Applied(ctx, db.Pool)
+	applied, err := (store.CoreTracker{}).Applied(ctx, db.Gorm)
 	if err != nil {
 		return err
 	}
@@ -198,7 +197,7 @@ const admissionSQL = `SELECT EXISTS(SELECT 1 FROM updater.node_admissions
 
 func verifyAdmission(ctx context.Context, db *store.DB, node string, a runtimecontract.Admission) error {
 	var approved bool
-	err := store.G(ctx, db.Pool).Raw(admissionSQL, node, a.BootID, a.ReleaseDigest, a.Revision, a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins).
+	err := store.G(ctx, db.Gorm).Raw(admissionSQL, node, a.BootID, a.ReleaseDigest, a.Revision, a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins).
 		Scan(&approved).Error
 	if err != nil {
 		return err
@@ -236,7 +235,7 @@ func pluginStates(db *gorm.DB) *gorm.DB {
 // During a live rollout either approved generation is allowed to keep serving.
 func approvedPluginsReady(ctx context.Context, db *store.DB, reg core.PluginRegistry, hostVersion string) (string, error) {
 	gen := reg.Current()
-	g := store.G(ctx, db.Pool)
+	g := store.G(ctx, db.Gorm)
 	var plugins []pluginState
 	if err := pluginStates(g).Find(&plugins).Error; err != nil {
 		return "", err
@@ -264,7 +263,7 @@ func approvedPluginsReady(ctx context.Context, db *store.DB, reg core.PluginRegi
 		if local.Manifest == nil {
 			return "", fmt.Errorf("plugin %s manifest is missing", p.Key)
 		}
-		granted, err := grants.Granted(ctx, db.Pool, p.Key, local.Version, local.Manifest.HostPermissions)
+		granted, err := grants.Granted(ctx, db.Gorm, p.Key, local.Version, local.Manifest.HostPermissions)
 		if err != nil {
 			return "", err
 		}

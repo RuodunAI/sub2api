@@ -74,7 +74,7 @@ func TestScopedGrantsAndManagement(t *testing.T) {
 	spelled, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "spelled", Name: lt("s", "s"), PermissionKeys: []string{"account:read:own", "account:update:group/12/account/*"}})
 	require.NoError(t, err)
 	var detail string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT detail->>'permission_keys' FROM audit_logs WHERE action = 'role.create' AND target_id = $1`, fmt.Sprint(spelled.ID)).Scan(&detail))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT detail->>'permission_keys' FROM audit_logs WHERE action = 'role.create' AND target_id = $1`, fmt.Sprint(spelled.ID)).Scan(&detail))
 	require.JSONEq(t, `["account:read:own", "account:update:group/12"]`, detail)
 
 	// Defining a role: the same rule.

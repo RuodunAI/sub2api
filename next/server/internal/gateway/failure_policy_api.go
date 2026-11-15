@@ -6,14 +6,14 @@ import (
 	"fmt"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-func loadFailurePolicy(ctx context.Context, q store.Querier) (*FailurePolicy, error) {
+func loadFailurePolicy(ctx context.Context, q *gorm.DB) (*FailurePolicy, error) {
 	raw, err := settingValue(ctx, q, failurePolicyKey)
 	if err != nil || raw == nil {
 		return nil, err
@@ -32,7 +32,7 @@ func loadFailurePolicy(ctx context.Context, q store.Querier) (*FailurePolicy, er
 }
 
 // Serialize legacy settings and policy publication, including the first insert.
-func lockFailureSettings(ctx context.Context, tx pgx.Tx) error {
+func lockFailureSettings(ctx context.Context, tx *gorm.DB) error {
 	return store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtext('gateway.failure_policy'))`).Error
 }
 
@@ -43,19 +43,19 @@ func (g *Gateway) getFailurePolicy(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	p, err := loadFailurePolicy(ctx, db.Pool)
+	p, err := loadFailurePolicy(ctx, db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	configured := p != nil
 	if p == nil {
-		gw, err := loadGatewaySettings(ctx, db.Pool)
+		gw, err := loadGatewaySettings(ctx, db.Gorm)
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		ad, err := loadAutoDisableSettings(ctx, db.Pool)
+		ad, err := loadAutoDisableSettings(ctx, db.Gorm)
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
@@ -96,7 +96,7 @@ func (g *Gateway) putFailurePolicy(c *gin.Context) {
 	httpapi.OK(c, gin.H{"configured": true, "policy": in.Policy})
 }
 
-func archiveFailurePolicy(ctx context.Context, tx pgx.Tx, uid int64, old *FailurePolicy) error {
+func archiveFailurePolicy(ctx context.Context, tx *gorm.DB, uid int64, old *FailurePolicy) error {
 	if old == nil {
 		return nil
 	}
@@ -117,7 +117,7 @@ func archiveFailurePolicy(ctx context.Context, tx pgx.Tx, uid int64, old *Failur
 }
 
 func publishPolicy(ctx context.Context, db *store.DB, uid int64, in *publishFailurePolicy) error {
-	return db.Tx(ctx, func(tx pgx.Tx) error {
+	return db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockFailureSettings(ctx, tx); err != nil {
 			return err
 		}
@@ -150,7 +150,7 @@ func (g *Gateway) failurePolicyHistory(c *gin.Context) {
 	v := struct {
 		Policies []FailurePolicy `json:"policies"`
 	}{Policies: []FailurePolicy{}}
-	if err := loadSettingsRow(c.Request.Context(), db.Pool, failurePolicyKey+"_history", &v); err != nil {
+	if err := loadSettingsRow(c.Request.Context(), db.Gorm, failurePolicyKey+"_history", &v); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -172,7 +172,7 @@ func (g *Gateway) previewFailurePolicy(c *gin.Context) {
 	httpapi.OK(c, gin.H{"decision": in.Policy.decide(in.Facts), "text_truncated": len(in.Facts.Text) > classifyPrefix})
 }
 
-func legacyFailureSettingGuard(ctx context.Context, tx pgx.Tx) error {
+func legacyFailureSettingGuard(ctx context.Context, tx *gorm.DB) error {
 	if err := lockFailureSettings(ctx, tx); err != nil {
 		return err
 	}

@@ -106,7 +106,7 @@ func (b *boot) openStorage() error {
 
 // startCluster joins the node registry and heartbeat.
 func (b *boot) startCluster() error {
-	b.cl = cluster.New(b.rdb, b.db.Pool, cluster.Options{NodeID: b.cfg.NodeID, Addr: b.cfg.PublicURL, HostVersion: b.version, Logger: b.log, Managed: b.cfg.Managed.Enabled, CoreBootID: b.cfg.Managed.BootID})
+	b.cl = cluster.New(b.rdb, b.db, cluster.Options{NodeID: b.cfg.NodeID, Addr: b.cfg.PublicURL, HostVersion: b.version, Logger: b.log, Managed: b.cfg.Managed.Enabled, CoreBootID: b.cfg.Managed.BootID})
 	if err := b.cl.Start(b.ctx); err != nil {
 		return fmt.Errorf("cluster: %w", err)
 	}
@@ -148,7 +148,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	// Nodes re-verify package signatures before unpacking, so revoked keys
 	// and publishers stop loading everywhere.
 	pkgs := registry.NewPackages(b.db, cfg.Plugins.DataDir, registry.WithSource(b.packageSrc), registry.WithVerifier(
-		registry.TrustVerifier(trust, b.db.Pool, pkg.Limits{MaxPackageBytes: cfg.Plugins.MaxPackageBytes})))
+		registry.TrustVerifier(trust, b.db.Gorm, pkg.Limits{MaxPackageBytes: cfg.Plugins.MaxPackageBytes})))
 	b.pkgs = pkgs
 	b.stopper.add("packages", func(context.Context) { pkgs.Close() })
 
@@ -412,7 +412,7 @@ func (b *boot) startBuiltins() error {
 			}
 			check, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 			defer cancel()
-			busy, err := cluster.CoreUpdateBusy(check, b.db.Pool)
+			busy, err := cluster.CoreUpdateBusy(check, b.db.Gorm)
 			return err == nil && !busy
 		}
 		b.stopper.add("builtin", startBuiltinUpgrade(b.ctx, b.inst, b.cl.Locker, cfg.Plugins.BuiltinDir, allowed, log))

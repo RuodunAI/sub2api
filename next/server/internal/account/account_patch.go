@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -146,7 +145,7 @@ func (s *Service) FactsObserved(ctx context.Context, id int64, observed core.Acc
 // refreshFromFacts asks the plugin's before_update for the account under its
 // current subscription type and the observed facts, and saves what it changed.
 func (s *Service) refreshFromFacts(ctx context.Context, id int64, observed core.AccountPreparationFacts, subscriptionChanged bool) error {
-	cur, err := s.loadRow(ctx, s.d.DB.Pool, id, core.AllScope, false)
+	cur, err := s.loadRow(ctx, s.d.DB.Gorm, id, core.AllScope, false)
 	if err != nil {
 		return err
 	}
@@ -202,7 +201,7 @@ func (s *Service) refreshFromFacts(ctx context.Context, id int64, observed core.
 		settingsJSON = &value
 	}
 	saved := false
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		// Only over the row the plugin saw: a concurrent save ran its own
 		// before_update, and switching to manual mode wins.
 		res := saveFacts(store.G(ctx, tx), id, cur.UpdatedAt, modelsChanged, models, mapping, settingsJSON)

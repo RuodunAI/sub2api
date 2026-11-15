@@ -95,7 +95,7 @@ func revokedError(msg string) error {
 // Verify checks the package signature and resolves publisher trust. Run it
 // inside the upload transaction: packages signed by an official root key
 // auto-register their publisher (trust official) and key.
-func (t *TrustStore) Verify(ctx context.Context, q store.Querier, p *Package) (*Verification, error) {
+func (t *TrustStore) Verify(ctx context.Context, q *gorm.DB, p *Package) (*Verification, error) {
 	return t.verify(ctx, q, p, true)
 }
 
@@ -104,11 +104,11 @@ func (t *TrustStore) Verify(ctx context.Context, q store.Querier, p *Package) (*
 // may be revoked, but the key's validity window is not checked again (the
 // key was valid when the package was uploaded; expiry must not stop plugins
 // that are already installed).
-func (t *TrustStore) VerifyInstalled(ctx context.Context, q store.Querier, p *Package) (*Verification, error) {
+func (t *TrustStore) VerifyInstalled(ctx context.Context, q *gorm.DB, p *Package) (*Verification, error) {
 	return t.verify(ctx, q, p, false)
 }
 
-func (t *TrustStore) verify(ctx context.Context, q store.Querier, p *Package, checkValidity bool) (*Verification, error) {
+func (t *TrustStore) verify(ctx context.Context, q *gorm.DB, p *Package, checkValidity bool) (*Verification, error) {
 	sig := p.Signature
 	if sig == nil {
 		if !t.allowUnsigned {
@@ -188,7 +188,7 @@ func (t *TrustStore) check(p *Package, sig *pkgsig.Signature, pub ed25519.Public
 // key so it can be revoked like any other key. Both inserts tolerate a
 // concurrent first registration (several plugins verifying at once on a
 // fresh database): the loser's insert does nothing and the row is read back.
-func (t *TrustStore) registerOfficial(ctx context.Context, q store.Querier, name, keyID, b64 string) (int64, error) {
+func (t *TrustStore) registerOfficial(ctx context.Context, q *gorm.DB, name, keyID, b64 string) (int64, error) {
 	g := store.G(ctx, q)
 	if err := g.Clauses(onConflictNothing("name")).Create(&model.Publisher{Name: name, TrustLevel: TrustOfficial}).Error; err != nil {
 		return 0, err

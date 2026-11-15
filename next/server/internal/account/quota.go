@@ -190,7 +190,7 @@ func (s *Service) getQuota(c *gin.Context) {
 		return
 	}
 	force, _ := strconv.ParseBool(c.Query("force"))
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountRead), false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountRead), false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -3,9 +3,9 @@ package install
 import (
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
@@ -27,7 +27,7 @@ func TestUpgradeConsentNeedsRightsOverTheRoles(t *testing.T) {
 		e.perms.canGrant = cat.CanGrantToRoles
 		e.perms.grantees = cat.PluginGrantees
 		for id, role := range map[int64]string{e.admin: authz.RoleSuperAdmin, e.limited: authz.RoleAdmin} {
-			require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
+			require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) error {
 				_, err := cat.SetUserRoles(ctx, tx, 0, id, []string{role})
 				return err
 			}))

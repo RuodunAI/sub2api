@@ -67,7 +67,7 @@ func TestAuthenticateSegmentTerms(t *testing.T) {
 			p, err := e.svc.Authenticate(t.Context(), e.addKey(e.user, group))
 			// Authentication and the key endpoints tell alike whether the
 			// owner may use the group: by the one rule, segment.OpenToUserSQL.
-			open, qerr := groupAvailable(t.Context(), e.db.Pool, e.user, group)
+			open, qerr := groupAvailable(t.Context(), e.db.Gorm, e.user, group)
 			require.NoError(t, qerr)
 			require.Equal(t, c.rate != "", open)
 			if c.rate == "" {

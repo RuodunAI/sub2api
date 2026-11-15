@@ -78,7 +78,7 @@ type termsRow struct {
 
 // UserTerms returns the terms of the user's segment in each of the groups
 // that exist, by group id. A deleted user has none.
-func UserTerms(ctx context.Context, q store.Querier, userID int64, groupIDs []int64) (map[int64]Terms, error) {
+func UserTerms(ctx context.Context, q *gorm.DB, userID int64, groupIDs []int64) (map[int64]Terms, error) {
 	return queryTerms(ctx, q, byGroup, groupIDs, userSegment, userID)
 }
 
@@ -87,13 +87,13 @@ const userSegment = `(SELECT u.segment_id FROM users u WHERE u.id = ? AND u.dele
 
 // SegmentTerms returns the terms of the segment in each of the groups that
 // exist, by group id.
-func SegmentTerms(ctx context.Context, q store.Querier, segmentID int64, groupIDs []int64) (map[int64]Terms, error) {
+func SegmentTerms(ctx context.Context, q *gorm.DB, segmentID int64, groupIDs []int64) (map[int64]Terms, error) {
 	return queryTerms(ctx, q, byGroup, groupIDs, `?`, segmentID)
 }
 
 // GroupTerms returns the terms each of the segments that exist gets in the
 // group, by segment id.
-func GroupTerms(ctx context.Context, q store.Querier, groupID int64, segmentIDs []int64) (map[int64]Terms, error) {
+func GroupTerms(ctx context.Context, q *gorm.DB, groupID int64, segmentIDs []int64) (map[int64]Terms, error) {
 	return queryTerms(ctx, q, bySegment, []int64{groupID}, `ANY(?)`, store.Int64s(segmentIDs))
 }
 
@@ -111,7 +111,7 @@ func termsQuery(db *gorm.DB, groupIDs []int64, segment string, arg any) *gorm.DB
 }
 
 // queryTerms runs a termsQuery and files each row under what key picks.
-func queryTerms(ctx context.Context, q store.Querier, key func(groupID int64, t Terms) int64, groupIDs []int64, segment string, arg any) (map[int64]Terms, error) {
+func queryTerms(ctx context.Context, q *gorm.DB, key func(groupID int64, t Terms) int64, groupIDs []int64, segment string, arg any) (map[int64]Terms, error) {
 	var rows []termsRow
 	if err := termsQuery(store.G(ctx, q), groupIDs, segment, arg).Scan(&rows).Error; err != nil {
 		return nil, err
@@ -147,7 +147,7 @@ const RefColumns = `s.id, s.kind, CASE WHEN s.user_id IS NULL THEN s.name ELSE u
 // that may not read users (showUsers false) get "#<user id>" instead, so a
 // role that only reads groups or prices cannot list users through it. A
 // segment that does not exist is NotFound.
-func Ref(ctx context.Context, q store.Querier, id int64, showUsers bool) (core.SegmentRef, error) {
+func Ref(ctx context.Context, q *gorm.DB, id int64, showUsers bool) (core.SegmentRef, error) {
 	var ref core.SegmentRef
 	err := fromSegments(store.G(ctx, q)).Select(RefColumns).Where("s.id = ?", id).Take(&ref).Error
 	if store.IsNoRows(err) {

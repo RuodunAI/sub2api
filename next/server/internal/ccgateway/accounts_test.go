@@ -22,10 +22,10 @@ func TestAccountProxyReconcileAndRequestIsolation(t *testing.T) {
 	s := New(db, cipher)
 	password, _ := cipher.Encrypt([]byte("private-proxy-password"), []byte("proxy"))
 	var pid, id int64
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO proxies(name,protocol,host,port,password_enc) VALUES('test','http','proxy.example',3128,$1) RETURNING id`, password).Scan(&pid); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies(name,protocol,host,port,password_enc) VALUES('test','http','proxy.example',3128,$1) RETURNING id`, password).Scan(&pid); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('ccg','ccgateway','managed',''::bytea,$1) RETURNING id`, pid).Scan(&id); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('ccg','ccgateway','managed',''::bytea,$1) RETURNING id`, pid).Scan(&id); e != nil {
 		t.Fatal(e)
 	}
 	var mu sync.Mutex
@@ -91,7 +91,7 @@ func TestAccountProxyReconcileAndRequestIsolation(t *testing.T) {
 	cfg, _ := json.Marshal(Config{Mode: "local", AccountRuntimes: true, AdminKey: "controller-secret", RequestPolicy: &RequestPolicy{SchemaVersion: 1, UnknownField: "reject", CLIVersion: "2.1.302"}})
 	encrypted, _ := cipher.Encrypt(cfg, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, e := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
 		t.Fatal(e)
 	}
 	if e := s.Reconcile(ctx, strconv.FormatInt(id, 10)); e != nil {
@@ -117,7 +117,7 @@ func TestAccountProxyReconcileAndRequestIsolation(t *testing.T) {
 			t.Fatal("ready account rejected")
 		}
 	}
-	if _, e := db.Pool.Exec(ctx, `UPDATE proxies SET port=3129,updated_at=clock_timestamp() WHERE id=$1`, pid); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `UPDATE proxies SET port=3129,updated_at=clock_timestamp() WHERE id=$1`, pid); e != nil {
 		t.Fatal(e)
 	}
 	// The proxy service publishes the change; the account is read again.
@@ -157,7 +157,7 @@ func TestAPIKeyDesiredRotation(t *testing.T) {
 	cipher, _ := secret.New(make([]byte, 32))
 	service := New(db, cipher)
 	var pid, id int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('api-key-test','http','proxy.example',3128) RETURNING id`).Scan(&pid); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('api-key-test','http','proxy.example',3128) RETURNING id`).Scan(&pid); err != nil {
 		t.Fatal(err)
 	}
 	encrypt := func(key string) []byte {
@@ -168,7 +168,7 @@ func TestAPIKeyDesiredRotation(t *testing.T) {
 		}
 		return enc
 	}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('ccg-api','ccgateway','apikey',$1,$2) RETURNING id`, encrypt("first-test-key"), pid).Scan(&id); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('ccg-api','ccgateway','apikey',$1,$2) RETURNING id`, encrypt("first-test-key"), pid).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	d, err := service.desired(ctx, id, true)
@@ -185,7 +185,7 @@ func TestAPIKeyDesiredRotation(t *testing.T) {
 	if requestState.Auth != nil || requestState.Proxy != nil || requestState.Revision != d.Revision {
 		t.Fatal("request path disclosed credentials")
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE accounts SET credentials_enc=$1 WHERE id=$2`, encrypt("second-test-key"), id); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE accounts SET credentials_enc=$1 WHERE id=$2`, encrypt("second-test-key"), id); err != nil {
 		t.Fatal(err)
 	}
 	rotated, err := service.desired(ctx, id, true)
@@ -228,11 +228,11 @@ func TestAccountLocaleAndTimezone(t *testing.T) {
 	cipher, _ := secret.New(make([]byte, 32))
 	service := New(db, cipher)
 	var pid, id int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('test','http','proxy.example',3128) RETURNING id`).Scan(&pid); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('test','http','proxy.example',3128) RETURNING id`).Scan(&pid); err != nil {
 		t.Fatal(err)
 	}
 	settings := `{"locale":"zh-CN","timezone":"Asia/Shanghai"}`
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id,settings) VALUES('ccg','ccgateway','managed',''::bytea,$1,$2::jsonb) RETURNING id`, pid, settings).Scan(&id); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id,settings) VALUES('ccg','ccgateway','managed',''::bytea,$1,$2::jsonb) RETURNING id`, pid, settings).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	d, err := service.desired(ctx, id, true)
@@ -249,7 +249,7 @@ func TestAccountLocaleAndTimezone(t *testing.T) {
 		t.Fatalf("container authentication is missing environment settings: %v", d.Auth)
 	}
 	// Test empty settings
-	if _, err := db.Pool.Exec(ctx, `UPDATE accounts SET settings='{}'::jsonb WHERE id=$1`, id); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE accounts SET settings='{}'::jsonb WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	d2, err := service.desired(ctx, id, true)

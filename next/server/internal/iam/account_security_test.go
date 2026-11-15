@@ -78,7 +78,7 @@ func enableTwoFactor(t *testing.T, s *Service, userID int64) (string, []string) 
 func lastStepTime(t *testing.T, s *Service, userID int64) time.Time {
 	t.Helper()
 	var step int64
-	if err := s.db.Pool.QueryRow(context.Background(), `SELECT last_step FROM user_totp WHERE user_id = $1`, userID).Scan(&step); err != nil {
+	if err := s.db.SQL.QueryRowContext(context.Background(), `SELECT last_step FROM user_totp WHERE user_id = $1`, userID).Scan(&step); err != nil {
 		t.Fatal(err)
 	}
 	return time.Unix(step*totpPeriod, 0)
@@ -86,7 +86,7 @@ func lastStepTime(t *testing.T, s *Service, userID int64) time.Time {
 
 func clearLastStep(t *testing.T, s *Service, userID int64) {
 	t.Helper()
-	if _, err := s.db.Pool.Exec(context.Background(), `UPDATE user_totp SET last_step = 0 WHERE user_id = $1`, userID); err != nil {
+	if _, err := s.db.SQL.ExecContext(context.Background(), `UPDATE user_totp SET last_step = 0 WHERE user_id = $1`, userID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -118,7 +118,7 @@ func TestTwoFactorEnrolmentNeedsACode(t *testing.T) {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
 	var sealed []byte
-	if err := s.db.Pool.QueryRow(ctx, `SELECT secret_enc FROM user_totp WHERE user_id = $1`, id).Scan(&sealed); err != nil {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT secret_enc FROM user_totp WHERE user_id = $1`, id).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(sealed), setupOut.Secret) {
@@ -714,7 +714,7 @@ func TestPasskeyRegistrationAndLogin(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 	var method string
-	if err := s.db.Pool.QueryRow(ctx, `SELECT method FROM login_sessions ORDER BY created_at DESC LIMIT 1`).Scan(&method); err != nil || method != loginMethodPasskey {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT method FROM login_sessions ORDER BY created_at DESC LIMIT 1`).Scan(&method); err != nil || method != loginMethodPasskey {
 		t.Fatalf("method = %q, %v", method, err)
 	}
 
@@ -766,11 +766,11 @@ func TestPasskeyLoginRejects(t *testing.T) {
 		}
 	})
 	t.Run("a disabled user", func(t *testing.T) {
-		if _, err := s.db.Pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, id); err != nil {
+		if _, err := s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, id); err != nil {
 			t.Fatal(err)
 		}
 		defer func() {
-			if _, err := s.db.Pool.Exec(ctx, `UPDATE users SET status = 'active' WHERE id = $1`, id); err != nil {
+			if _, err := s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'active' WHERE id = $1`, id); err != nil {
 				t.Fatal(err)
 			}
 		}()
@@ -932,7 +932,7 @@ func (k *keyEnv) grantRole(t *testing.T, userID int64, key string, perms ...stri
 	t.Helper()
 	ctx := context.Background()
 	var id int64
-	if err := k.s.db.Pool.QueryRow(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}') RETURNING id`, key).Scan(&id); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}') RETURNING id`, key).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range perms {
@@ -946,11 +946,11 @@ func (k *keyEnv) grantRole(t *testing.T, userID int64, key string, perms ...stri
 			sql = `INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT $1, id, $3 FROM permissions WHERE key = $2`
 			args = append(args, scope)
 		}
-		if _, err := k.s.db.Pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := k.s.db.SQL.ExecContext(ctx, sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, userID, id); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, userID, id); err != nil {
 		t.Fatal(err)
 	}
 	k.bump(t)
@@ -962,7 +962,7 @@ func (k *keyEnv) bump(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	var v int64
-	if err := k.s.db.Pool.QueryRow(ctx, `UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
 		t.Fatal(err)
 	}
 	k.authz.Committed(ctx, v)
@@ -989,7 +989,7 @@ func TestAccessKeyIsASubsetOfItsUser(t *testing.T) {
 		t.Fatalf("key = %q", key.Key)
 	}
 	var stored string
-	if err := k.s.db.Pool.QueryRow(ctx, `SELECT token_hash FROM user_access_keys WHERE id = $1`, key.ID).Scan(&stored); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT token_hash FROM user_access_keys WHERE id = $1`, key.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored == key.Key || strings.Contains(stored, key.Key) {
@@ -1009,7 +1009,7 @@ func TestAccessKeyIsASubsetOfItsUser(t *testing.T) {
 	}
 
 	// When the user loses a permission, so does the key, at once, and it says so.
-	if _, err := k.s.db.Pool.Exec(ctx, `DELETE FROM role_permissions WHERE permission_id = (SELECT id FROM permissions WHERE key = 'user:read')`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `DELETE FROM role_permissions WHERE permission_id = (SELECT id FROM permissions WHERE key = 'user:read')`); err != nil {
 		t.Fatal(err)
 	}
 	k.bump(t)
@@ -1078,11 +1078,11 @@ func TestSuperuserKeyCannotGrantSuperAdmin(t *testing.T) {
 	ctx := context.Background()
 	login := mustLogin(t, k.s, adminEmail, adminPassword)
 	key := k.createKey(t, login.User.ID, "user:create")
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE user_access_keys SET permissions = array_append(permissions, 'role:assign') WHERE id = $1`, key.ID); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE user_access_keys SET permissions = array_append(permissions, 'role:assign') WHERE id = $1`, key.ID); err != nil {
 		t.Fatal(err)
 	}
 	// A target without roles, so acting on it needs nothing.
-	if _, err := k.s.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, k.userID); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = $1`, k.userID); err != nil {
 		t.Fatal(err)
 	}
 	k.bump(t)
@@ -1162,10 +1162,10 @@ func TestRoleRoutesSplitDefineAndAssign(t *testing.T) {
 	k.grantRole(t, newUser("assigner@example.com"), "assigner", "role:assign", "user:create")
 	target := newUser("target@example.com")
 	// The assigner may assign every custom role; the definer none.
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE roles SET assign_custom = true WHERE key = 'assigner'`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE roles SET assign_custom = true WHERE key = 'assigner'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.s.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, target); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = $1`, target); err != nil {
 		t.Fatal(err)
 	}
 	k.bump(t)
@@ -1235,7 +1235,7 @@ func TestAccessKeyLifecycle(t *testing.T) {
 		t.Fatalf("too soon: %v", err)
 	}
 	expiring := k.createKey(t, root, "user:read")
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE user_access_keys SET expires_at = now() - interval '1 second' WHERE id = $1`, expiring.ID); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE user_access_keys SET expires_at = now() - interval '1 second' WHERE id = $1`, expiring.ID); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := k.call(expiring.Key, "GET", "/users", nil); code != 401 {
@@ -1270,7 +1270,7 @@ func TestAccessKeyLifecycle(t *testing.T) {
 		t.Fatalf("another user's: %v", err)
 	}
 	limited := k.createKey(t, k.userID, "apikey:self:manage")
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, k.userID); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, k.userID); err != nil {
 		t.Fatal(err)
 	}
 	k.s.forgetStatus(k.userID)
@@ -1305,10 +1305,10 @@ func TestAccessKeyCatalogHasOnlyWhatTheUserHolds(t *testing.T) {
 		t.Fatalf("catalog = %v", seen)
 	}
 	// A plugin permission the user holds can be chosen (§80, 期 4 S4).
-	if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('demo', '{"en":"x"}', 'enabled')`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('demo', '{"en":"x"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO permissions (key, module, label, source, plugin_key, status) VALUES ('plugin.demo:read', 'plugin.demo', '{"en":"x"}', 'plugin', 'demo', 'active')`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO permissions (key, module, label, source, plugin_key, status) VALUES ('plugin.demo:read', 'plugin.demo', '{"en":"x"}', 'plugin', 'demo', 'active')`); err != nil {
 		t.Fatal(err)
 	}
 	k.grantRole(t, k.userID, "demo_reader", "plugin.demo:read")
@@ -1327,7 +1327,7 @@ func TestAccessKeyCatalogHasOnlyWhatTheUserHolds(t *testing.T) {
 		t.Fatalf("verified permissions = %v, %v", id.Permissions, err)
 	}
 	// Disabled with its plugin, it is lost until the plugin is back.
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE permissions SET status = 'disabled' WHERE key = 'plugin.demo:read'`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE permissions SET status = 'disabled' WHERE key = 'plugin.demo:read'`); err != nil {
 		t.Fatal(err)
 	}
 	k.bump(t)
@@ -1451,25 +1451,25 @@ func TestStepUpSessions(t *testing.T) {
 	refused(keyB.Key, "/x/uploads/1", "verification_expired")
 	refused(login.AccessToken, "/x/uploads/1", "verification_expired")
 	var idle bool
-	if err := k.s.db.Pool.QueryRow(ctx, `SELECT expires_at > now() + interval '59 minutes' FROM auth_flows WHERE purpose = 'step_up_session'`).Scan(&idle); err != nil || !idle {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT expires_at > now() + interval '59 minutes' FROM auth_flows WHERE purpose = 'step_up_session'`).Scan(&idle); err != nil || !idle {
 		t.Fatalf("the session is not kept open an hour from its last request: %v %v", idle, err)
 	}
 	// However busy, a session ends a day after its proof.
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE auth_flows SET created_at = now() - interval '23 hours 30 minutes' WHERE purpose = 'step_up_session'`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE auth_flows SET created_at = now() - interval '23 hours 30 minutes' WHERE purpose = 'step_up_session'`); err != nil {
 		t.Fatal(err)
 	}
 	if code, out := k.call(keyA.Key, "PUT", "/x/uploads/1", nil); code != 204 {
 		t.Fatalf("continued within the day: %d %v", code, out)
 	}
 	var capped bool
-	if err := k.s.db.Pool.QueryRow(ctx, `SELECT expires_at <= created_at + interval '24 hours' FROM auth_flows WHERE purpose = 'step_up_session'`).Scan(&capped); err != nil || !capped {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT expires_at <= created_at + interval '24 hours' FROM auth_flows WHERE purpose = 'step_up_session'`).Scan(&capped); err != nil || !capped {
 		t.Fatalf("the session is kept open past a day from its proof: %v %v", capped, err)
 	}
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE auth_flows SET created_at = now() - interval '25 hours' WHERE purpose = 'step_up_session'`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE auth_flows SET created_at = now() - interval '25 hours' WHERE purpose = 'step_up_session'`); err != nil {
 		t.Fatal(err)
 	}
 	refused(keyA.Key, "/x/uploads/1", "verification_expired")
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE auth_flows SET created_at = now(), expires_at = now() - interval '1 second' WHERE purpose = 'step_up_session'`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE auth_flows SET created_at = now(), expires_at = now() - interval '1 second' WHERE purpose = 'step_up_session'`); err != nil {
 		t.Fatal(err)
 	}
 	refused(keyA.Key, "/x/uploads/1", "verification_expired")
@@ -1502,7 +1502,7 @@ func TestAccessKeyScopes(t *testing.T) {
 		t.Fatalf("listed = %v", key.Permissions)
 	}
 	var stored []string
-	if err := k.s.db.Pool.QueryRow(ctx, `SELECT permissions FROM user_access_keys WHERE id = $1`, key.ID).Scan(&stored); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT permissions FROM user_access_keys WHERE id = $1`, key.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if fmt.Sprint(stored) != "[account:read:own proxy:manage:own]" {
@@ -1510,7 +1510,7 @@ func TestAccessKeyScopes(t *testing.T) {
 	}
 	// A group-range user's key takes a subset of its groups.
 	k.grantRole(t, k.userID, "grouped", "user:read")
-	if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
+	if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
 		SELECT r.id, p.id, 'group/12' FROM roles r, permissions p WHERE r.key = 'grouped' AND p.key = 'account:test'`); err != nil {
 		t.Fatal(err)
 	}

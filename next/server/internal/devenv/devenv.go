@@ -24,9 +24,9 @@ import (
 	"path/filepath"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Database is the database of the dev core with the default state directory
@@ -198,23 +198,24 @@ func localDatabase(ctx context.Context, database string, reset bool) (string, er
 	if err != nil {
 		return "", fmt.Errorf("local PostgreSQL: %w", err)
 	}
-	conn, err := pgx.Connect(ctx, base)
+	admin, err := store.OpenSized(ctx, base, 1)
 	if err != nil {
 		return "", fmt.Errorf("local PostgreSQL: %w", err)
 	}
-	defer conn.Close(ctx)
-	name := pgx.Identifier{database}.Sanitize()
+	defer admin.Close()
+	conn := store.G(ctx, admin.Gorm)
+	name := store.QuoteIdent(database)
 	if reset {
-		if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
+		if err := conn.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)").Error; err != nil {
 			return "", fmt.Errorf("drop %s: %w", database, err)
 		}
 	}
 	var exists bool
-	if err := conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, database).Scan(&exists); err != nil {
+	if err := conn.Raw(`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = ?)`, database).Row().Scan(&exists); err != nil {
 		return "", err
 	}
 	if !exists {
-		if _, err := conn.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+		if err := conn.Exec("CREATE DATABASE " + name).Error; err != nil {
 			return "", fmt.Errorf("create %s: %w", database, err)
 		}
 	}

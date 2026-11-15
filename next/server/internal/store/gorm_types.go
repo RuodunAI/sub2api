@@ -4,14 +4,12 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // JSON is a jsonb column or parameter decoded into a T, such as
-// JSON[[]string] or JSON[map[string]int]. pgx decodes jsonb into Go values
-// itself, but the database/sql path that GORM takes hands over the raw
+// JSON[[]string] or JSON[map[string]int]. database/sql hands over the raw
 // document; JSON does the json.Unmarshal that each caller would otherwise
 // write. NULL reads as the zero T. The value is written as T's JSON, so a
 // nil slice or map is the JSON null, not SQL NULL: a nullable column that
@@ -21,7 +19,7 @@ type JSON[T any] struct {
 }
 
 // Value implements driver.Valuer. The text form lets PostgreSQL type the
-// parameter by its use (jsonb or json) instead of pgx sending bytea.
+// parameter by its use (jsonb or json) instead of the driver sending bytea.
 func (j JSON[T]) Value() (driver.Value, error) {
 	b, err := json.Marshal(j.V)
 	if err != nil {
@@ -64,8 +62,8 @@ func (j *JSON[T]) UnmarshalJSON(b []byte) error { return json.Unmarshal(b, &j.V)
 // json.RawMessage written right after "(" (COALESCE(?, ...)) into one
 // placeholder per byte and turns an empty one into NULL there, and it
 // turns an empty json.RawMessage into NULL anywhere. Bytes is bound as is:
-// nil is NULL and an empty non-nil slice the empty value, as pgx binds a
-// []byte.
+// nil is NULL and an empty non-nil slice the empty value, as the driver
+// binds a []byte.
 type Bytes []byte
 
 // Value implements driver.Valuer.
@@ -99,13 +97,8 @@ func (Bytes) GormDataType() string { return "bytea" }
 // into a list (see Int64s); nil is the empty array.
 type Bools []bool
 
-// Value implements driver.Valuer.
-func (a Bools) Value() (driver.Value, error) {
-	if a == nil {
-		return []bool{}, nil
-	}
-	return []bool(a), nil
-}
+// Value implements driver.Valuer with the plain slice (see Int64s).
+func (a Bools) Value() (driver.Value, error) { return orEmpty([]bool(a)), nil }
 
 // GormDataType is that of Int64s.
 func (Bools) GormDataType() string { return "boolean[]" }
@@ -113,21 +106,31 @@ func (Bools) GormDataType() string { return "boolean[]" }
 // Int64s is a bigint[] parameter or column for GORM. GORM expands a plain
 // []int64 argument into one placeholder per element, which breaks
 // "= ANY(?)" and turns an empty slice into NULL; Int64s is one parameter
-// that pgx encodes as an array, and nil is the empty array.
+// (GORM binds a driver.Valuer as is), and nil is the empty array.
 //
-// It reads a column through database/sql (Scan: the slice the GORM bridge
-// returns, pgx's []any, or the array's text form) and through pgx directly
-// (the pgtype.ArraySetter methods, which pgx prefers to Scan, so it never
-// hands Scan the binary wire form). A NULL array reads as nil; a NULL
-// element is an error.
+// Value returns the plain []int64, which is no driver.Value of
+// database/sql's: the parameter relies on pgx's database/sql driver, whose
+// CheckNamedValue accepts any argument and hands it to pgx, which calls
+// Value and encodes the slice as the parameter's array type, in binary, as
+// it encodes a []int64. (Writing the array's text instead made pgx parse
+// it again: up to 1.7 times the allocations of a statement with array
+// parameters.) Strings, Times, Bools and Array do the same;
+// TestArrayParametersRelyOnPgxStdlib keeps it.
+//
+// It reads a column from the array's text form, which database/sql gives
+// every array. A NULL array reads as nil, the empty one as an empty slice;
+// a NULL element is an error.
 type Int64s []int64
 
-// Value implements driver.Valuer.
-func (a Int64s) Value() (driver.Value, error) {
+// Value implements driver.Valuer with the plain slice (see above).
+func (a Int64s) Value() (driver.Value, error) { return orEmpty([]int64(a)), nil }
+
+// orEmpty is a, or an empty slice for nil, which pgx would bind as NULL.
+func orEmpty[T any](a []T) []T {
 	if a == nil {
-		return []int64{}, nil
+		return []T{}
 	}
-	return []int64(a), nil
+	return a
 }
 
 // GormDataType makes GORM map Int64s as a column: a slice type without it
@@ -135,36 +138,16 @@ func (a Int64s) Value() (driver.Value, error) {
 func (Int64s) GormDataType() string { return "bigint[]" }
 
 // Scan implements sql.Scanner.
-func (a *Int64s) Scan(src any) error {
-	return scanArray(src, pgtype.Int8ArrayOID, (*pgtype.FlatArray[int64])(a), func(e any) (int64, bool) {
-		switch n := e.(type) {
-		case int64:
-			return n, true
-		case int32:
-			return int64(n), true
-		case int16:
-			return int64(n), true
-		}
-		return 0, false
-	})
+func (a *Int64s) Scan(src any) (err error) {
+	*a, err = scanArray(src, func(s string) (int64, error) { return strconv.ParseInt(s, 10, 64) })
+	return err
 }
-
-func (a *Int64s) SetDimensions(d []pgtype.ArrayDimension) error {
-	return (*pgtype.FlatArray[int64])(a).SetDimensions(d)
-}
-func (a Int64s) ScanIndex(i int) any { return &a[i] }
-func (Int64s) ScanIndexType() any    { return new(int64) }
 
 // Strings is the text[] counterpart of Int64s.
 type Strings []string
 
-// Value implements driver.Valuer.
-func (a Strings) Value() (driver.Value, error) {
-	if a == nil {
-		return []string{}, nil
-	}
-	return []string(a), nil
-}
+// Value implements driver.Valuer with the plain slice (see Int64s).
+func (a Strings) Value() (driver.Value, error) { return orEmpty([]string(a)), nil }
 
 // GormDataType is that of Int64s.
 func (Strings) GormDataType() string { return "text[]" }
@@ -180,77 +163,90 @@ func NullStrings(a []string) any {
 }
 
 // Scan implements sql.Scanner.
-func (a *Strings) Scan(src any) error {
-	return scanArray(src, pgtype.TextArrayOID, (*pgtype.FlatArray[string])(a), func(e any) (string, bool) {
-		s, ok := e.(string)
-		return s, ok
-	})
+func (a *Strings) Scan(src any) (err error) {
+	*a, err = scanArray(src, func(s string) (string, error) { return s, nil })
+	return err
 }
 
-func (a *Strings) SetDimensions(d []pgtype.ArrayDimension) error {
-	return (*pgtype.FlatArray[string])(a).SetDimensions(d)
-}
-func (a Strings) ScanIndex(i int) any { return &a[i] }
-func (Strings) ScanIndexType() any    { return new(string) }
-
-// Times is the timestamptz[] counterpart of Int64s.
+// Times is the timestamptz[] counterpart of Int64s. Its elements read in
+// time.Local; ±infinity is an error, as no time.Time holds it.
 type Times []time.Time
 
-// Value implements driver.Valuer.
-func (a Times) Value() (driver.Value, error) {
-	if a == nil {
-		return []time.Time{}, nil
-	}
-	return []time.Time(a), nil
-}
+// Value implements driver.Valuer with the plain slice (see Int64s); pgx
+// drops the sub-microsecond part.
+func (a Times) Value() (driver.Value, error) { return orEmpty([]time.Time(a)), nil }
 
 // GormDataType is that of Int64s.
 func (Times) GormDataType() string { return "timestamptz[]" }
 
 // Scan implements sql.Scanner.
-func (a *Times) Scan(src any) error {
-	return scanArray(src, pgtype.TimestamptzArrayOID, (*pgtype.FlatArray[time.Time])(a), func(e any) (time.Time, bool) {
-		t, ok := e.(time.Time)
-		return t, ok
-	})
+func (a *Times) Scan(src any) (err error) {
+	*a, err = scanArray(src, parseTimestamptz)
+	return err
 }
 
-func (a *Times) SetDimensions(d []pgtype.ArrayDimension) error {
-	return (*pgtype.FlatArray[time.Time])(a).SetDimensions(d)
-}
-func (a Times) ScanIndex(i int) any { return &a[i] }
-func (Times) ScanIndexType() any    { return new(time.Time) }
+// Infinity tells a finite InfTime from PostgreSQL's ±infinity.
+type Infinity int8
 
-// scanArray stores src, a database/sql value of an array of E, into dst.
-func scanArray[E any](src any, oid uint32, dst *pgtype.FlatArray[E], elem func(any) (E, bool)) error {
+// The values of Infinity.
+const (
+	Finite           Infinity = 0
+	PositiveInfinity Infinity = 1
+	NegativeInfinity Infinity = -1
+)
+
+// InfTime is a timestamptz that may be ±infinity, which time.Time cannot
+// hold: a column defaulting to '-infinity' ("due since ever") reads as
+// {Infinity: NegativeInfinity, Valid: true}. Valid false is NULL, so the
+// zero value takes a default:(-) column's default on INSERT.
+type InfTime struct {
+	Time     time.Time
+	Infinity Infinity
+	Valid    bool
+}
+
+// Value implements driver.Valuer: NULL, the time, or the infinity's text.
+func (t InfTime) Value() (driver.Value, error) {
+	switch {
+	case !t.Valid:
+		return nil, nil
+	case t.Infinity == PositiveInfinity:
+		return "infinity", nil
+	case t.Infinity == NegativeInfinity:
+		return "-infinity", nil
+	}
+	return t.Time, nil
+}
+
+// Scan implements sql.Scanner. pgx's driver gives a finite value as a
+// time.Time and an infinite one as its text.
+func (t *InfTime) Scan(src any) error {
+	*t = InfTime{Valid: src != nil}
 	switch v := src.(type) {
 	case nil:
-		*dst = nil
-	case []E:
-		*dst = v
-	case []any:
-		out := make([]E, len(v))
-		for i, x := range v {
-			e, ok := elem(x)
-			if !ok {
-				return fmt.Errorf("store: array element %d is %T, want %T", i, x, e)
-			}
-			out[i] = e
-		}
-		*dst = out
+	case time.Time:
+		t.Time = v
 	case string:
-		return scanArrayText(oid, []byte(v), dst)
+		return t.scanText(v)
 	case []byte:
-		return scanArrayText(oid, v, dst)
+		return t.scanText(string(v))
 	default:
-		return fmt.Errorf("store: cannot scan %T into %T", src, dst)
+		return fmt.Errorf("store: cannot scan %T into %T", src, t)
 	}
 	return nil
 }
 
-// scanArrayText parses the text form ("{1,2}"). A pgtype.Map is not safe
-// for concurrent use, so each call takes its own; this is the uncommon
-// path, the bridge and pgx hand over decoded arrays.
-func scanArrayText[E any](oid uint32, src []byte, dst *pgtype.FlatArray[E]) error {
-	return pgtype.NewMap().Scan(oid, pgtype.TextFormatCode, src, dst)
+func (t *InfTime) scanText(s string) (err error) {
+	switch s {
+	case "infinity":
+		t.Infinity = PositiveInfinity
+	case "-infinity":
+		t.Infinity = NegativeInfinity
+	default:
+		t.Time, err = parseTimestamptz(s)
+	}
+	return err
 }
+
+// GormDataType makes GORM map InfTime as a column.
+func (InfTime) GormDataType() string { return "timestamptz" }

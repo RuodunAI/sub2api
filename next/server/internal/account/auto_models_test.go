@@ -30,7 +30,7 @@ func autoModelsPatch(in *pluginv1.AccountLifecycleRequest) *pluginv1.AccountPatc
 
 func savedModels(t *testing.T, e *env, id int64) ([]string, *bool) {
 	t.Helper()
-	row, err := e.svc.loadRow(t.Context(), e.db.Pool, id, core.AllScope, false)
+	row, err := e.svc.loadRow(t.Context(), e.db.Gorm, id, core.AllScope, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestBeforeUpdateAccountPatchAndAutoModels(t *testing.T) {
 		t.Fatalf("automatic account after update %v", got)
 	}
 	var detail string
-	if err := e.db.Pool.QueryRow(t.Context(), `SELECT detail::text FROM audit_logs WHERE action='account.update' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil {
+	if err := e.db.SQL.QueryRowContext(t.Context(), `SELECT detail::text FROM audit_logs WHERE action='account.update' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(detail, `"plugin_changed": ["models"]`) {
@@ -148,14 +148,14 @@ func TestSubscriptionChangedRecomputesAutomaticModels(t *testing.T) {
 		t.Fatalf("audit rows %d", n)
 	}
 	var detail string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT detail::text FROM audit_logs WHERE action='account.models.auto' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT detail::text FROM audit_logs WHERE action='account.models.auto' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(detail, `"subscription_type": "max"`) || !strings.Contains(detail, `"plugin_changed": ["models"]`) {
 		t.Fatalf("audit detail %s", detail)
 	}
 	var state string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT status FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state); err != nil || state != "pending" {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT status FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state); err != nil || state != "pending" {
 		t.Fatalf("lifecycle state %q %v", state, err)
 	}
 

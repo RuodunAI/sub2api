@@ -175,7 +175,7 @@ func (e *stagedEnv) served(version string, perm string) func() bool {
 
 func (e *stagedEnv) consentStatus(version string) (status string) {
 	e.h.t.Helper()
-	if err := e.h.db.Pool.QueryRow(context.Background(), `SELECT consent_status FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
+	if err := e.h.db.SQL.QueryRowContext(context.Background(), `SELECT consent_status FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
 		e.h.key, version).Scan(&status); err != nil {
 		e.h.t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestAbandonedUpgradeWithdrawsItsConsent(t *testing.T) {
 			t.Fatalf("%s: 0.2.0 is %s", what, s)
 		}
 		var n int
-		if err := e.h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'plugin.grants.withdraw'
+		if err := e.h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'plugin.grants.withdraw'
 			AND target_id = $1 AND detail->>'version' = '0.2.0' AND detail->'permissions' ? 'lock'`, e.h.key).Scan(&n); err != nil || n != want {
 			t.Fatalf("%s: withdrawal audits = %d, %v", what, n, err)
 		}

@@ -22,7 +22,7 @@ func TestAccountZeroValuesAreWritten(t *testing.T) {
 	read := func(id int64) columns {
 		t.Helper()
 		var c columns
-		require.NoError(t, e.db.Pool.QueryRow(context.Background(),
+		require.NoError(t, e.db.SQL.QueryRowContext(context.Background(),
 			`SELECT schedulable, auto_disable, priority, max_concurrency, status FROM accounts WHERE id = $1`, id).
 			Scan(&c.schedulable, &c.autoDisable, &c.priority, &c.maxConcurrency, &c.status))
 		return c

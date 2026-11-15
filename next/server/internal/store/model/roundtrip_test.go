@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -21,7 +20,7 @@ import (
 // store.G, the path production code takes.
 func openGorm(t *testing.T) *gorm.DB {
 	t.Helper()
-	return store.G(context.Background(), testutil.DB(t).Pool)
+	return store.G(context.Background(), testutil.DB(t).Gorm)
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -175,13 +174,13 @@ func TestOutboxInfinityDefault(t *testing.T) {
 	g := openGorm(t)
 	row := model.ProviderHelperUsageOutbox{RequestID: "r1", AttemptID: "a", UserID: 1, GroupID: 1, Digest: "d", Payload: []byte("x")}
 	require.NoError(t, g.Create(&row).Error)
-	require.Equal(t, pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true}, row.NextAttemptAt)
+	require.Equal(t, store.InfTime{Infinity: store.NegativeInfinity, Valid: true}, row.NextAttemptAt)
 	require.WithinDuration(t, time.Now(), row.CreatedAt, time.Minute)
 
 	var got []model.ProviderHelperUsageOutbox
 	require.NoError(t, g.Find(&got).Error)
 	require.Len(t, got, 1)
-	require.Equal(t, pgtype.NegativeInfinity, got[0].NextAttemptAt.InfinityModifier)
+	require.Equal(t, store.NegativeInfinity, got[0].NextAttemptAt.Infinity)
 	require.True(t, row.CreatedAt.Equal(got[0].CreatedAt))
 }
 

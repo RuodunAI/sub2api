@@ -57,7 +57,7 @@ func TestMigrationPermitOnlyAllowsApprovedAppendOnlyHistory(t *testing.T) {
 func TestManagedSchemaRejectsUnknownFutureMigration(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO schema_migrations(id,checksum) VALUES('9999_future.sql','unknown')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO schema_migrations(id,checksum) VALUES('9999_future.sql','unknown')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := verifyCoreSchema(ctx, db); err == nil || !strings.Contains(err.Error(), "unknown") {

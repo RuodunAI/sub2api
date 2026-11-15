@@ -5,11 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -22,13 +19,9 @@ import (
 // order.
 func storedEvents(t *testing.T, db *store.DB, after int64) []string {
 	t.Helper()
-	rows, err := db.Pool.Query(context.Background(), `SELECT type, payload::text FROM events WHERE id > $1 ORDER BY id`, after)
+	rows, err := db.SQL.QueryContext(context.Background(), `SELECT type || ' ' || payload::text FROM events WHERE id > $1 ORDER BY id`, after)
 	require.NoError(t, err)
-	got, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (string, error) {
-		var typ, payload string
-		err := r.Scan(&typ, &payload)
-		return typ + " " + payload, err
-	})
+	got, err := testutil.Column[string](rows)
 	require.NoError(t, err)
 	return got
 }
@@ -36,7 +29,7 @@ func storedEvents(t *testing.T, db *store.DB, after int64) []string {
 func lastEventID(t *testing.T, db *store.DB) int64 {
 	t.Helper()
 	var id int64
-	require.NoError(t, db.Pool.QueryRow(context.Background(), `SELECT COALESCE(max(id), 0) FROM events`).Scan(&id))
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(max(id), 0) FROM events`).Scan(&id))
 	return id
 }
 
@@ -102,40 +95,13 @@ func TestEmitPastParameterLimit(t *testing.T) {
 	}
 }
 
-// prepares counts the statements a connection prepares, by text.
-type prepares struct {
-	mu    sync.Mutex
-	texts map[string]int
-}
-
-func (p *prepares) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
-	return ctx
-}
-func (p *prepares) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (p *prepares) TracePrepareStart(ctx context.Context, _ *pgx.Conn, data pgx.TracePrepareStartData) context.Context {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.texts[data.SQL]++
-	return ctx
-}
-func (p *prepares) TracePrepareEnd(context.Context, *pgx.Conn, pgx.TracePrepareEndData) {}
-
 // Every count of events is one of two texts, so a connection prepares the
-// insert at most twice, however many counts it sees: a Prepare is a round
-// trip, run in the caller's transaction.
+// insert at most twice, however many counts it sees (pgx prepares each
+// text once per connection): a Prepare is a round trip, run in the caller's
+// transaction.
 func TestEmitPreparesTwoTexts(t *testing.T) {
-	base := testutil.DB(t)
+	db, trace := testutil.Traced(testutil.DB(t))
 	ctx := context.Background()
-	trace := &prepares{texts: map[string]int{}}
-	cfg, err := pgxpool.ParseConfig(base.Pool.Config().ConnString())
-	require.NoError(t, err)
-	cfg.ConnConfig.Tracer = trace
-	cfg.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-	db := &store.DB{Pool: pool}
 	pub := event.NewPublisher(db)
 	for n := 1; n <= 12; n++ {
 		events := make([]core.Event, n)
@@ -144,12 +110,11 @@ func TestEmitPreparesTwoTexts(t *testing.T) {
 		}
 		require.NoError(t, pub.Emit(ctx, nil, events...))
 	}
-	inserts := 0
-	for text, times := range trace.texts {
+	inserts := map[string]bool{}
+	for _, text := range trace.Take() {
 		if strings.Contains(text, "INSERT INTO events") {
-			inserts++
-			require.Equal(t, 1, times, text)
+			inserts[text] = true
 		}
 	}
-	require.Equal(t, 2, inserts, "%v", trace.texts)
+	require.Len(t, inserts, 2, "%v", inserts)
 }

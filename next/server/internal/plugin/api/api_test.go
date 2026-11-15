@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -16,8 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
+
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -96,41 +98,43 @@ func (authz) CanGrant(context.Context, int64, []string) error { return nil }
 
 type noopPerms struct{}
 
-func (noopPerms) SyncPlugin(context.Context, pgx.Tx, string, []core.PermissionDef) error {
+func (noopPerms) SyncPlugin(context.Context, *gorm.DB, string, []core.PermissionDef) error {
 	return nil
 }
-func (noopPerms) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, string) error { return nil }
+func (noopPerms) CanGrantToRoles(context.Context, *gorm.DB, int64, []string, string) error {
+	return nil
+}
 
 // The catalog's reads come from the tables the tests fill.
-func (noopPerms) PluginPermissions(ctx context.Context, q store.Querier, key string) ([]core.PluginPermission, error) {
+func (noopPerms) PluginPermissions(ctx context.Context, q *gorm.DB, key string) ([]core.PluginPermission, error) {
 	return authzsvc.New(authzsvc.Deps{}).PluginPermissions(ctx, q, key)
 }
-func (noopPerms) PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]core.PermissionHolder, error) {
+func (noopPerms) PermissionHolders(ctx context.Context, q *gorm.DB, keys []string) (map[string][]core.PermissionHolder, error) {
 	return authzsvc.New(authzsvc.Deps{}).PermissionHolders(ctx, q, keys)
 }
-func (noopPerms) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+func (noopPerms) PluginGrantees(context.Context, *gorm.DB, int64, []string) (core.PluginGrantees, error) {
 	return core.PluginGrantees{}, nil
 }
-func (noopPerms) GrantPluginPermission(context.Context, pgx.Tx, string, map[string][]string) error {
+func (noopPerms) GrantPluginPermission(context.Context, *gorm.DB, string, map[string][]string) error {
 	return nil
 }
-func (noopPerms) SetPluginActive(context.Context, pgx.Tx, string, bool) error { return nil }
-func (noopPerms) DiscardStaged(context.Context, pgx.Tx, string) error         { return nil }
-func (noopPerms) DeletePlugin(context.Context, pgx.Tx, string) error          { return nil }
+func (noopPerms) SetPluginActive(context.Context, *gorm.DB, string, bool) error { return nil }
+func (noopPerms) DiscardStaged(context.Context, *gorm.DB, string) error         { return nil }
+func (noopPerms) DeletePlugin(context.Context, *gorm.DB, string) error          { return nil }
 
 type rollout struct {
 	db *store.DB
 }
 
 func (r rollout) Enable(ctx context.Context, key string, _ int64) (*core.Rollout, error) {
-	_, err := r.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = '0.1.0' WHERE key = $1`, key)
+	_, err := r.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'enabled', active_version = '0.1.0' WHERE key = $1`, key)
 	return &core.Rollout{ID: 7, PluginKey: key, Action: "enable", Phase: "active", TargetVersion: "0.1.0"}, err
 }
 func (r rollout) Upgrade(_ context.Context, key, v string, _ int64) (*core.Rollout, error) {
 	return &core.Rollout{ID: 8, PluginKey: key, Action: "upgrade", Phase: "preparing", TargetVersion: v}, nil
 }
 func (r rollout) Disable(ctx context.Context, key string, _ int64, _ string) (*core.Rollout, error) {
-	_, err := r.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = $1`, key)
+	_, err := r.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = $1`, key)
 	return &core.Rollout{ID: 9, PluginKey: key, Action: "disable", Phase: "active"}, err
 }
 func (r rollout) Current(context.Context, string) (*core.Rollout, error) { return nil, nil }
@@ -262,7 +266,7 @@ func newHarness(t *testing.T, guardConflicts ...core.ResourceConflict) (*harness
 	db := testutil.DB(t)
 	ctx := context.Background()
 	for _, email := range []string{"admin@x", "viewer@x"} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO users (email, password_hash) VALUES ($1, 'x')`, email); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO users (email, password_hash) VALUES ($1, 'x')`, email); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -390,11 +394,11 @@ func TestAPIFlow(t *testing.T) {
 	code, out = h.do("PUT", "/plugins/guard/settings", "viewer", map[string]any{"values": map[string]any{"threshold": 4, "webhook_secret": "s3cret"}})
 	require.Equal(t, http.StatusOK, code, out)
 	var who int64
-	if err := h.db.Pool.QueryRow(ctx, `SELECT user_id FROM audit_logs WHERE action = 'plugin.settings.update' ORDER BY id DESC LIMIT 1`).Scan(&who); err != nil || who != 2 {
+	if err := h.db.SQL.QueryRowContext(ctx, `SELECT user_id FROM audit_logs WHERE action = 'plugin.settings.update' ORDER BY id DESC LIMIT 1`).Scan(&who); err != nil || who != 2 {
 		t.Fatalf("settings audit by %d: %v", who, err)
 	}
 	var enc []byte
-	_ = h.db.Pool.QueryRow(ctx, `SELECT config_enc FROM plugins WHERE key = 'guard'`).Scan(&enc)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT config_enc FROM plugins WHERE key = 'guard'`).Scan(&enc)
 	cipher, _ := secret.New(bytes.Repeat([]byte{7}, 32))
 	plain, err := cipher.Decrypt(enc, ConfigAAD("guard"))
 	if err != nil || !bytes.Contains(plain, []byte(`"webhook_secret":"s3cret"`)) || !bytes.Contains(plain, []byte(`"threshold":4`)) {
@@ -483,7 +487,7 @@ func TestAPIFlow(t *testing.T) {
 		t.Fatalf("run job with task:run = %d %v", code, out)
 	}
 	var auditAction string
-	_ = h.db.Pool.QueryRow(ctx, `SELECT action FROM audit_logs WHERE user_id = 5 ORDER BY id DESC LIMIT 1`).Scan(&auditAction)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT action FROM audit_logs WHERE user_id = 5 ORDER BY id DESC LIMIT 1`).Scan(&auditAction)
 	if len(runs) != 1 || runs[0] != "guard/rollup by 5" || auditAction != "plugin.job.run" {
 		t.Fatalf("job runs = %v, audit action = %q", runs, auditAction)
 	}
@@ -520,7 +524,7 @@ func TestAPIFlow(t *testing.T) {
 		t.Fatalf("after uninstall = %d", code)
 	}
 	var n int
-	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action LIKE 'plugin.%'`).Scan(&n)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action LIKE 'plugin.%'`).Scan(&n)
 	if n < 7 {
 		t.Fatalf("audit rows = %d", n)
 	}
@@ -631,7 +635,7 @@ func TestUIPluginsScopedPermission(t *testing.T) {
 
 func mustExec(t *testing.T, db *store.DB, sql string, args ...any) {
 	t.Helper()
-	if _, err := db.Pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := db.SQL.ExecContext(context.Background(), sql, args...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -669,12 +673,12 @@ func TestEnableAndUpgradeRecheckResources(t *testing.T) {
 		}
 	}
 	var approved int
-	if err := h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_versions WHERE plugin_key = 'video' AND consent_status = 'approved'`).Scan(&approved); err != nil || approved != 2 {
+	if err := h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_versions WHERE plugin_key = 'video' AND consent_status = 'approved'`).Scan(&approved); err != nil || approved != 2 {
 		t.Fatalf("approved versions = %d %v", approved, err)
 	}
 	// What a newer core reserving the path of the status endpoint looks like
 	// to the stored manifests.
-	if _, err := h.db.Pool.Exec(ctx, `UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{platforms,0,endpoints,1,path}', '"/dashboard/video"')
+	if _, err := h.db.SQL.ExecContext(ctx, `UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{platforms,0,endpoints,1,path}', '"/dashboard/video"')
 		WHERE plugin_key = 'video'`); err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +776,7 @@ func TestSettingsWithoutSchemaAreAllMasked(t *testing.T) {
 	require.Equal(t, http.StatusOK, code, out)
 	assert.Equal(t, map[string]any{"api_key": Mask, "upstream": Mask, "note": Mask}, data(out)["values"])
 	var enc []byte
-	require.NoError(t, h.db.Pool.QueryRow(context.Background(), `SELECT config_enc FROM plugins WHERE key = 'guard'`).Scan(&enc))
+	require.NoError(t, h.db.SQL.QueryRowContext(context.Background(), `SELECT config_enc FROM plugins WHERE key = 'guard'`).Scan(&enc))
 	cipher, _ := secret.New(bytes.Repeat([]byte{7}, 32))
 	plain, err := cipher.Decrypt(enc, ConfigAAD("guard"))
 	require.NoError(t, err)
@@ -788,7 +792,7 @@ func TestAPIRoleGrantsToReview(t *testing.T) {
 	if code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgtest.Build(pkgtest.Guard("guard", "0.1.0", "sub2api"), root))); code != 200 {
 		t.Fatalf("upload = %d %v", code, out)
 	}
-	if _, err := h.db.Pool.Exec(ctx, `
+	if _, err := h.db.SQL.ExecContext(ctx, `
 INSERT INTO roles (key, name, builtin) VALUES ('user', '{}', true) ON CONFLICT (key) DO NOTHING;
 INSERT INTO permissions (key, module, label, source, plugin_key, status) VALUES ('plugin.guard:rules:export', 'plugin.guard', '{}', 'plugin', 'guard', 'active');
 INSERT INTO audit_logs (action, target_type, target_id, detail) VALUES ('plugin.consent.auto', 'plugin', 'guard',
@@ -842,7 +846,7 @@ func TestSetGrantRoute(t *testing.T) {
 func TestAPISetGrant(t *testing.T) {
 	h, root := newHarness(t)
 	ctx := context.Background()
-	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO users (email, password_hash) VALUES ('nobody@x', 'x'), ('manager@x', 'x')`); err != nil {
+	if _, err := h.db.SQL.ExecContext(ctx, `INSERT INTO users (email, password_hash) VALUES ('nobody@x', 'x'), ('manager@x', 'x')`); err != nil {
 		t.Fatal(err)
 	}
 	if code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgtest.Build(pkgtest.Guard("guard", "0.1.0", "sub2api"), root))); code != 200 {

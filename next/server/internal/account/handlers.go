@@ -15,7 +15,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -108,10 +107,10 @@ func selectRows(db *gorm.DB) *gorm.DB {
 	return db.Table("accounts a").Select(rowColumns).Joins("LEFT JOIN users u ON u.id = a.created_by")
 }
 
-// scanRow reads one row of rowColumns, from GORM's Row() or Rows(). The
-// arrays and the environment go through store types: database/sql hands
-// jsonb over as its document.
-func scanRow(r pgx.Row) (*row, error) {
+// scanRow reads one row of rowColumns, from GORM's Row() or Rows() (a
+// *sql.Row or *sql.Rows). The arrays and the environment go through store
+// types: database/sql hands arrays over as text and jsonb as its document.
+func scanRow(r interface{ Scan(dest ...any) error }) (*row, error) {
 	var a row
 	var env store.JSON[core.EnvironmentValues]
 	err := r.Scan(&a.ID, &a.Name, &a.PluginKey, &a.Type, &a.CredEnc, &a.Settings, &a.ProxyID,
@@ -179,7 +178,7 @@ func (s *Service) scopeOf(ctx context.Context, action perm.Key) core.DataScope {
 
 // inScope reports whether account id is in scope now, its groups as they
 // are in q (a transaction's included).
-func inScope(ctx context.Context, q store.Querier, id int64, scope core.DataScope) (bool, error) {
+func inScope(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope) (bool, error) {
 	if scope.All {
 		return true, nil
 	}
@@ -206,7 +205,7 @@ func rowQuery(db *gorm.DB, id int64, scope core.DataScope, lock bool) *gorm.DB {
 
 // loadRow returns one live account in scope; rows outside the scope are
 // 404 like missing ones.
-func (s *Service) loadRow(ctx context.Context, q store.Querier, id int64, scope core.DataScope, lock bool) (*row, error) {
+func (s *Service) loadRow(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope, lock bool) (*row, error) {
 	a, err := scanRow(rowQuery(store.G(ctx, q), id, scope, lock).Row())
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
@@ -433,7 +432,7 @@ var errViewPanicked = errors.New("account: list read failed")
 // fillGroups sets GroupIDs and Groups (ordered by group id).
 func (s *Service) fillGroups(ctx context.Context, ids []int64, byID map[int64]*View) error {
 	var refs []accountGroupRef
-	if err := store.G(ctx, s.d.DB.Pool).Table("account_groups ag").Select("ag.account_id, g.id, g.name").
+	if err := store.G(ctx, s.d.DB.Gorm).Table("account_groups ag").Select("ag.account_id, g.id, g.name").
 		Joins("JOIN groups g ON g.id = ag.group_id").Where("ag.account_id = ANY(?)", store.Int64s(ids)).
 		Order("g.id").Scan(&refs).Error; err != nil {
 		return err
@@ -526,7 +525,7 @@ func (s *Service) credentialView(a *row) (json.RawMessage, error) {
 // fullView is the single-account view (with credentials) of an account
 // visible in scope.
 func (s *Service) fullView(ctx context.Context, id int64, scope core.DataScope) (*View, error) {
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, scope, false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
 	if err != nil {
 		return nil, err
 	}
@@ -538,7 +537,7 @@ func (s *Service) fullView(ctx context.Context, id int64, scope core.DataScope) 
 		return nil, err
 	}
 	if a.PluginKey == "ccgateway" && (a.Type == "managed" || a.Type == "apikey") {
-		p, err := ccgateway.LoadAccountFeaturePolicy(ctx, s.d.DB.Pool, id)
+		p, err := ccgateway.LoadAccountFeaturePolicy(ctx, s.d.DB.Gorm, id)
 		if err != nil {
 			return nil, err
 		}
@@ -664,7 +663,7 @@ var listRowColumns = strings.Replace(rowColumns, "a.credentials_enc", "NULL::byt
 // priority or weight never moves a row, so the console's auto-refresh
 // keeps every account in place.
 func (s *Service) listPage(ctx context.Context, conds store.Conds, page, size int) (int64, []*row, error) {
-	db := store.G(ctx, s.d.DB.Pool)
+	db := store.G(ctx, s.d.DB.Gorm)
 	var total int64
 	rows, err := store.CollectRows(listRows(db, conds, page, size), func(rs *sql.Rows) (*row, error) {
 		return scanRow(withTotal{rs, &total})
@@ -1084,7 +1083,7 @@ func normalizeMapping(ctx context.Context, in map[string]string) (map[string]str
 
 // checkRefs verifies that the proxy exists within the caller's proxy range.
 // A proxy outside the range is reported as not found, like a missing one.
-func checkRefs(ctx context.Context, q store.Querier, proxyID *int64, refs core.DataScope) error {
+func checkRefs(ctx context.Context, q *gorm.DB, proxyID *int64, refs core.DataScope) error {
 	if proxyID == nil {
 		return nil
 	}
@@ -1142,7 +1141,7 @@ var errWouldLeaveScope = core.NewError(403, "would_leave_scope", "")
 
 // stillInScope fails, inside the update's transaction, when the account
 // left the caller's scope.
-func stillInScope(ctx context.Context, tx pgx.Tx, id int64, scope core.DataScope) error {
+func stillInScope(ctx context.Context, tx *gorm.DB, id int64, scope core.DataScope) error {
 	ok, err := inScope(ctx, tx, id, scope)
 	if err == nil && !ok {
 		err = errWouldLeaveScope.WithMessage(t(ctx, "the change would move the account out of your range", "修改后账号将不在你的管理范围内"))
@@ -1154,7 +1153,7 @@ func stillInScope(ctx context.Context, tx pgx.Tx, id int64, scope core.DataScope
 // of accountID (0 on create) and marks the added groups uid may not bind
 // (segment.UsableGroupSQL). Groups of want that do not exist fail group_ids
 // not_found.
-func loadGroupDiff(ctx context.Context, q store.Querier, accountID int64, want []int64, uid int64) (groupDiff, error) {
+func loadGroupDiff(ctx context.Context, q *gorm.DB, accountID int64, want []int64, uid int64) (groupDiff, error) {
 	var d groupDiff
 	if want == nil {
 		return d, nil
@@ -1297,7 +1296,7 @@ func (s *Service) checkCustomUpstream(ctx context.Context, scope core.DataScope,
 
 func uniqueIDs(in []int64) []int64 { return x.Unique(in) }
 
-func setGroups(ctx context.Context, tx pgx.Tx, id int64, groupIDs []int64) error {
+func setGroups(ctx context.Context, tx *gorm.DB, id int64, groupIDs []int64) error {
 	g := store.G(ctx, tx)
 	if err := g.Where("account_id = ? AND NOT (group_id = ANY(?))", id, store.Int64s(groupIDs)).
 		Delete(&model.AccountGroup{}).Error; err != nil {
@@ -1391,7 +1390,7 @@ func (s *Service) parseProxyURL(ctx context.Context, raw string) (*proxyByURL, e
 
 // resolveProxy runs FindOrCreate for a proxy_url inside the account's
 // transaction; the returned id becomes the account's proxy_id.
-func (s *Service) resolveProxy(ctx context.Context, tx pgx.Tx, p *proxyByURL, uid int64) (id int64, created bool, err error) {
+func (s *Service) resolveProxy(ctx context.Context, tx *gorm.DB, p *proxyByURL, uid int64) (id int64, created bool, err error) {
 	return s.d.Resolver.FindOrCreate(ctx, tx, p.spec, uid, p.scope)
 }
 
@@ -1399,7 +1398,7 @@ func (s *Service) resolveProxy(ctx context.Context, tx pgx.Tx, p *proxyByURL, ui
 // (same transaction). AuditAutoCreate also broadcasts config:changed for the
 // new proxy; nothing else is needed after the commit (no node can have
 // cached a proxy that did not exist before this request).
-func (s *Service) auditProxy(ctx context.Context, tx pgx.Tx, created bool, proxyID, uid, accountID int64) error {
+func (s *Service) auditProxy(ctx context.Context, tx *gorm.DB, created bool, proxyID, uid, accountID int64) error {
 	if !created {
 		return nil
 	}
@@ -1418,7 +1417,7 @@ func (s *Service) resolveWriteRefs(ctx context.Context, in *input, action perm.K
 		proxyID = &in.ProxyID.V
 	}
 	// A restricted caller references only proxies it can see (§21.2).
-	if err = checkRefs(ctx, s.d.DB.Pool, proxyID, s.proxyRefs(ctx, action)); err != nil {
+	if err = checkRefs(ctx, s.d.DB.Gorm, proxyID, s.proxyRefs(ctx, action)); err != nil {
 		return nil, nil, nil, err
 	}
 	if in.ProxyURL != nil {
@@ -1464,7 +1463,7 @@ func (s *Service) create(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	groups, err := loadGroupDiff(ctx, s.d.DB.Pool, 0, groupIDs, uid)
+	groups, err := loadGroupDiff(ctx, s.d.DB.Gorm, 0, groupIDs, uid)
 	if err == nil {
 		err = createInScope(ctx, scope, groupIDs)
 	}
@@ -1538,7 +1537,7 @@ func (s *Service) create(c *gin.Context) {
 	}
 	var id int64
 	proxyCreated := false
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		if byURL != nil {
 			// The proxy row must exist before the account references it.
 			pid, created, err := s.resolveProxy(ctx, tx, byURL, uid)
@@ -1634,7 +1633,7 @@ func (s *Service) update(c *gin.Context) {
 		in.Schedulable = &enabled
 	}
 	scope := s.scopeOf(ctx, perm.AccountUpdate)
-	cur, err := s.loadRow(ctx, s.d.DB.Pool, id, scope, false)
+	cur, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -1762,7 +1761,7 @@ func (s *Service) update(c *gin.Context) {
 	}
 	uid, _ := core.UserID(ctx)
 	setProxy, proxyCreated, usageLimitConverged := in.ProxyID.Set, false, false
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		locked, err := s.loadRow(ctx, tx, id, scope, true)
 		if err != nil {
 			return err
@@ -1933,7 +1932,7 @@ func (s *Service) resetStatus(c *gin.Context) {
 	scope := s.scopeOf(ctx, perm.AccountUpdate)
 	uid, _ := core.UserID(ctx)
 	var a *row
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		loaded, err := s.loadRow(ctx, tx, id, scope, true)
 		if err != nil {
 			return err
@@ -2032,7 +2031,7 @@ func (s *Service) delete(c *gin.Context) {
 	scope := s.scopeOf(ctx, perm.AccountDelete)
 	uid, _ := core.UserID(ctx)
 	var authzVersion int64
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var deleted model.Account
 		res := softDelete(store.G(ctx, tx), &deleted, id, scope)
 		if res.Error != nil {
@@ -2099,7 +2098,7 @@ func (s *Service) reveal(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountCredentialView), false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountCredentialView), false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -2115,7 +2114,7 @@ func (s *Service) reveal(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := audit.Audit(ctx, s.d.DB.Pool, uid, "account.credentials.reveal", "account", itoa(id), nil); err != nil {
+	if err := audit.Audit(ctx, s.d.DB.Gorm, uid, "account.credentials.reveal", "account", itoa(id), nil); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

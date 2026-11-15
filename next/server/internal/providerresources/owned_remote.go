@@ -14,7 +14,7 @@ func (s *Service) FindOwnedRemote(ctx context.Context, owner core.ResourceOwner,
 	if !validOwner(owner) || !validBinding(binding) || !bounded(kind) || !bounded(id) {
 		return core.ProviderResource{}, core.ErrInvalidArgument
 	}
-	r, _, err := read(store.G(ctx, s.db.Pool), ownedRemote, owner.UserID, owner.GroupID, kind, binding.AccountID, binding.PrincipalID, binding.Generation, id)
+	r, _, err := read(store.G(ctx, s.db.Gorm), ownedRemote, owner.UserID, owner.GroupID, kind, binding.AccountID, binding.PrincipalID, binding.Generation, id)
 	if store.IsNoRows(err) {
 		err = core.ErrNotFound
 	}

@@ -28,7 +28,7 @@ func TestReviewHelperHistoryDBDeferredRecordSurvivesRestartAndCancel(t *testing.
 	}
 	var ciphertext []byte
 	var retry int
-	if err := s.db.Pool.QueryRow(ctx, `SELECT payload,retry_count FROM provider_helper_usage_outbox WHERE request_id=$1`, r.RequestID).Scan(&ciphertext, &retry); err != nil || retry != 1 {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT payload,retry_count FROM provider_helper_usage_outbox WHERE request_id=$1`, r.RequestID).Scan(&ciphertext, &retry); err != nil || retry != 1 {
 		t.Fatal("delay not persisted", err)
 	}
 	cancelled, cancel := context.WithCancel(ctx)
@@ -42,7 +42,7 @@ func TestReviewHelperHistoryDBDeferredRecordSurvivesRestartAndCancel(t *testing.
 		t.Fatal("frozen evidence changed", err)
 	}
 	var final []byte
-	if err := s.db.Pool.QueryRow(ctx, `SELECT payload,retry_count FROM provider_helper_usage_outbox WHERE request_id=$1`, r.RequestID).Scan(&final, &retry); err != nil || retry != 1 || !bytes.Equal(ciphertext, final) {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT payload,retry_count FROM provider_helper_usage_outbox WHERE request_id=$1`, r.RequestID).Scan(&final, &retry); err != nil || retry != 1 || !bytes.Equal(ciphertext, final) {
 		t.Fatal("cancel modified evidence", err)
 	}
 }

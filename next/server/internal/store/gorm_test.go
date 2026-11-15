@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -28,16 +27,16 @@ type widget struct {
 	Refs  store.Int64s
 }
 
-// bridgeDB is a migrated database with a widgets table for the bridge
-// contract, plus one user id to refer to.
-func bridgeDB(t testing.TB) (*store.DB, int64) {
+// widgetDB is a migrated database with a widgets table, plus one user id to
+// refer to.
+func widgetDB(t testing.TB) (*store.DB, int64) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping database test in short mode")
 	}
 	ctx := context.Background()
 	db := testutil.DB(t)
-	_, err := db.Pool.Exec(ctx, `CREATE TABLE widgets (
+	_, err := db.SQL.ExecContext(ctx, `CREATE TABLE widgets (
 		id bigserial PRIMARY KEY,
 		name text NOT NULL UNIQUE,
 		owner bigint REFERENCES users(id),
@@ -46,41 +45,45 @@ func bridgeDB(t testing.TB) (*store.DB, int64) {
 		refs bigint[] NOT NULL DEFAULT '{}')`)
 	require.NoError(t, err)
 	var uid int64
-	require.NoError(t, db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ('bridge@test', 'x') RETURNING id`).Scan(&uid))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, password_hash) VALUES ('widget@test', 'x') RETURNING id`).Scan(&uid))
 	return db, uid
 }
 
 var errRollback = errors.New("rollback on purpose")
 
-func countWidgets(t *testing.T, ctx context.Context, q store.Querier) (viaPgx, viaGORM int64) {
+// countWidgets counts the widgets q sees, through a model and through raw
+// SQL.
+func countWidgets(t *testing.T, ctx context.Context, q *gorm.DB) (viaRaw, viaModel int64) {
 	t.Helper()
-	require.NoError(t, q.QueryRow(ctx, `SELECT count(*) FROM widgets`).Scan(&viaPgx))
-	require.NoError(t, store.G(ctx, q).Model(&widget{}).Count(&viaGORM).Error)
-	return viaPgx, viaGORM
+	require.NoError(t, store.G(ctx, q).Raw(`SELECT count(*) FROM widgets`).Row().Scan(&viaRaw))
+	require.NoError(t, store.G(ctx, q).Model(&widget{}).Count(&viaModel).Error)
+	return viaRaw, viaModel
 }
 
-func TestGORMSharesThePgxTransaction(t *testing.T) {
-	db, uid := bridgeDB(t)
+// GORM statements and database/sql statements on the transaction's
+// *sql.Tx (SQLTx, as River's InsertTx uses it) share one transaction.
+func TestGORMAndSQLTxShareTheTransaction(t *testing.T) {
+	db, uid := widgetDB(t)
 	ctx := context.Background()
 
 	// A transaction rolled back by defer, unlike DB.Tx, also when a require
 	// below ends the test with runtime.Goexit.
-	tx, err := db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, db)
 	require.NoError(t, err)
 	func() {
-		defer tx.Rollback(ctx) //nolint:errcheck
+		defer tx.Rollback() //nolint:errcheck
 		g := store.G(ctx, tx)
 		w := widget{Name: "a", Owner: &uid, Tags: store.Strings{"x", "y"}, Refs: store.Int64s{3, 4}}
 		require.NoError(t, g.Create(&w).Error)
 		require.NotZero(t, w.ID, "RETURNING id scanned back")
 
-		// GORM -> pgx.
+		// GORM -> database/sql.
 		var name string
-		require.NoError(t, tx.QueryRow(ctx, `SELECT name FROM widgets WHERE id = $1`, w.ID).Scan(&name))
+		require.NoError(t, store.SQLTx(tx).QueryRowContext(ctx, `SELECT name FROM widgets WHERE id = $1`, w.ID).Scan(&name))
 		assert.Equal(t, "a", name)
 
-		// pgx -> GORM.
-		_, err = tx.Exec(ctx, `INSERT INTO widgets (name, tag) VALUES ('b', 'k'), ('c', 'k')`)
+		// database/sql -> GORM.
+		_, err = store.SQLTx(tx).ExecContext(ctx, `INSERT INTO widgets (name, tag) VALUES ('b', 'k'), ('c', 'k')`)
 		require.NoError(t, err)
 		var got []widget
 		require.NoError(t, g.Where("tag = ?", "k").Order("id").Find(&got).Error)
@@ -103,56 +106,31 @@ func TestGORMSharesThePgxTransaction(t *testing.T) {
 		assert.EqualValues(t, 0, res.RowsAffected)
 
 		// One transaction, not two connections that happen to agree.
-		var pgxTx, gormTx int64
-		require.NoError(t, tx.QueryRow(ctx, `SELECT txid_current()`).Scan(&pgxTx))
+		var sqlTx, gormTx int64
+		require.NoError(t, store.SQLTx(tx).QueryRowContext(ctx, `SELECT txid_current()`).Scan(&sqlTx))
 		require.NoError(t, g.Raw(`SELECT txid_current()`).Scan(&gormTx).Error)
-		assert.Equal(t, pgxTx, gormTx)
+		assert.Equal(t, sqlTx, gormTx)
 
-		p, gm := countWidgets(t, ctx, tx)
-		assert.Equal(t, [2]int64{3, 3}, [2]int64{p, gm})
+		r, m := countWidgets(t, ctx, tx)
+		assert.Equal(t, [2]int64{3, 3}, [2]int64{r, m})
 	}()
 
-	p, gm := countWidgets(t, ctx, db.Pool)
-	assert.Equal(t, [2]int64{0, 0}, [2]int64{p, gm}, "rollback undoes the writes of both sides")
+	r, m := countWidgets(t, ctx, db.Gorm)
+	assert.Equal(t, [2]int64{0, 0}, [2]int64{r, m}, "rollback undoes the writes of both sides")
+	assert.Nil(t, store.SQLTx(db.Gorm), "the pool's handle is no transaction")
 }
 
-func TestGORMRefusals(t *testing.T) {
-	db, _ := bridgeDB(t)
+func TestGORMErrors(t *testing.T) {
+	db, uid := widgetDB(t)
 	ctx := context.Background()
-	g := store.G(ctx, db.Pool)
-
-	assert.ErrorIs(t, g.Transaction(func(*gorm.DB) error { return nil }), store.ErrGORMTx)
-	assert.ErrorIs(t, g.Begin().Error, store.ErrGORMTx)
-	assert.ErrorIs(t, g.AutoMigrate(&widget{}), store.ErrGORMMigrate)
-	m := g.Migrator()
-	assert.ErrorIs(t, m.CreateTable(&widget{}), store.ErrGORMMigrate)
-	assert.ErrorIs(t, m.DropTable(&widget{}), store.ErrGORMMigrate)
-	assert.ErrorIs(t, m.AddColumn(&widget{}, "Name"), store.ErrGORMMigrate)
-	assert.ErrorIs(t, m.CreateIndex(&widget{}, "x"), store.ErrGORMMigrate)
-	assert.ErrorIs(t, m.RenameTable("widgets", "w"), store.ErrGORMMigrate)
-	_, err := m.ColumnTypes(&widget{})
-	assert.ErrorIs(t, err, store.ErrGORMMigrate)
-	assert.PanicsWithValue(t, store.ErrGORMMigrate, func() { m.HasTable(&widget{}) })
-	var tables int
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_tables WHERE tablename = 'widgets'`).Scan(&tables))
-	assert.Equal(t, 1, tables, "nothing was dropped")
-
-	// A statement whose context lost its Querier runs nowhere.
-	assert.ErrorIs(t, g.WithContext(ctx).Exec(`SELECT 1`).Error, store.ErrNoQuerier)
-	var n int
-	assert.ErrorIs(t, g.WithContext(ctx).Raw(`SELECT 1`).Scan(&n).Error, store.ErrNoQuerier)
-	assert.ErrorIs(t, store.G(ctx, nil).Exec(`SELECT 1`).Error, store.ErrNoQuerier)
-}
-
-func TestGORMErrorsStayPgx(t *testing.T) {
-	db, uid := bridgeDB(t)
-	ctx := context.Background()
-	g := store.G(ctx, db.Pool)
+	g := store.G(ctx, db.Gorm)
 
 	require.NoError(t, g.Create(&widget{Name: "dup"}).Error)
 	err := g.Create(&widget{Name: "dup"}).Error
 	assert.True(t, store.IsUniqueViolation(err, "widgets_name_key"), "%v", err)
 	assert.False(t, store.IsUniqueViolation(err, "other"))
+	assert.Equal(t, "23505", store.SQLState(err))
+	assert.Equal(t, "widgets_name_key", store.ConstraintName(err))
 	err = g.Model(&widget{}).Where("name = ?", "dup").Update("name", "dup").Error
 	assert.NoError(t, err)
 
@@ -161,6 +139,8 @@ func TestGORMErrorsStayPgx(t *testing.T) {
 	assert.True(t, store.IsForeignKeyViolation(err), "%v", err)
 	err = g.Exec(`UPDATE widgets SET owner = ? WHERE name = 'dup'`, missing).Error
 	assert.True(t, store.IsForeignKeyViolation(err), "%v", err)
+	assert.Empty(t, store.SQLState(errRollback))
+	assert.Empty(t, store.ConstraintName(nil))
 
 	var w widget
 	err = g.Where("name = ?", "absent").First(&w).Error
@@ -173,12 +153,12 @@ func TestGORMErrorsStayPgx(t *testing.T) {
 	assert.True(t, store.IsNoRows(err), "%v", err)
 	var ws []widget
 	assert.NoError(t, g.Where("name = ?", "absent").Find(&ws).Error, "Find of nothing is no error")
-	assert.True(t, store.IsNoRows(db.Pool.QueryRow(ctx, `SELECT 1 WHERE false`).Scan(&id)), "pgx path unchanged")
+	assert.True(t, store.IsNoRows(db.SQL.QueryRowContext(ctx, `SELECT 1 WHERE false`).Scan(&id)), "database/sql's own")
 	assert.False(t, store.IsNoRows(errRollback))
 }
 
 func TestGORMConcurrentTransactions(t *testing.T) {
-	db, _ := bridgeDB(t)
+	db, _ := widgetDB(t)
 	ctx := context.Background()
 	const workers, perWorker = 16, 5
 
@@ -187,14 +167,14 @@ func TestGORMConcurrentTransactions(t *testing.T) {
 	for i := range workers {
 		wg.Go(func() {
 			tag := fmt.Sprint("w", i)
-			errs[i] = db.Tx(ctx, func(tx pgx.Tx) error {
+			errs[i] = db.Tx(ctx, func(tx *gorm.DB) error {
 				g := store.G(ctx, tx)
 				for j := range perWorker {
 					if err := g.Create(&widget{Name: fmt.Sprint(tag, "-", j), Tag: tag}).Error; err != nil {
 						return err
 					}
 				}
-				if _, err := tx.Exec(ctx, `INSERT INTO widgets (name, tag) VALUES ($1, $2)`, tag+"-pgx", tag); err != nil {
+				if err := g.Exec(`INSERT INTO widgets (name, tag) VALUES (?, ?)`, tag+"-raw", tag).Error; err != nil {
 					return err
 				}
 				// Only this transaction's rows are visible: the others are
@@ -203,11 +183,11 @@ func TestGORMConcurrentTransactions(t *testing.T) {
 				if err := g.Model(&widget{}).Where("tag = ?", tag).Count(&mine).Error; err != nil {
 					return err
 				}
-				if err := tx.QueryRow(ctx, `SELECT count(*) FROM widgets WHERE tag = $1`, tag).Scan(&total); err != nil {
+				if err := store.SQLTx(tx).QueryRowContext(ctx, `SELECT count(*) FROM widgets WHERE tag = $1`, tag).Scan(&total); err != nil {
 					return err
 				}
 				if mine != perWorker+1 || total != mine {
-					return fmt.Errorf("%s sees %d via GORM, %d via pgx", tag, mine, total)
+					return fmt.Errorf("%s sees %d via GORM, %d via database/sql", tag, mine, total)
 				}
 				if i%2 == 1 {
 					return errRollback
@@ -226,19 +206,19 @@ func TestGORMConcurrentTransactions(t *testing.T) {
 		}
 	}
 	var tags []string
-	require.NoError(t, store.G(ctx, db.Pool).Model(&widget{}).Distinct("tag").Order("tag").Pluck("tag", &tags).Error)
+	require.NoError(t, store.G(ctx, db.Gorm).Model(&widget{}).Distinct("tag").Order("tag").Pluck("tag", &tags).Error)
 	var want []string
 	for i := 0; i < workers; i += 2 {
 		want = append(want, fmt.Sprint("w", i))
 	}
 	slices.Sort(want)
 	assert.Equal(t, want, tags)
-	p, gm := countWidgets(t, ctx, db.Pool)
-	assert.Equal(t, [2]int64{workers / 2 * (perWorker + 1), workers / 2 * (perWorker + 1)}, [2]int64{p, gm})
+	r, m := countWidgets(t, ctx, db.Gorm)
+	assert.Equal(t, [2]int64{workers / 2 * (perWorker + 1), workers / 2 * (perWorker + 1)}, [2]int64{r, m})
 }
 
 func TestGORMContextCancel(t *testing.T) {
-	db, _ := bridgeDB(t)
+	db, _ := widgetDB(t)
 	run := func(name string, f func(ctx context.Context) error) {
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -250,25 +230,25 @@ func TestGORMContextCancel(t *testing.T) {
 		})
 	}
 	run("exec", func(ctx context.Context) error {
-		return store.G(ctx, db.Pool).Exec(`SELECT pg_sleep(10)`).Error
+		return store.G(ctx, db.Gorm).Exec(`SELECT pg_sleep(10)`).Error
 	})
 	run("query", func(ctx context.Context) error {
 		var s string
-		return store.G(ctx, db.Pool).Raw(`SELECT pg_sleep(10)::text`).Scan(&s).Error
+		return store.G(ctx, db.Gorm).Raw(`SELECT pg_sleep(10)::text`).Scan(&s).Error
 	})
 	run("in tx", func(ctx context.Context) error {
-		return db.Tx(ctx, func(tx pgx.Tx) error {
+		return db.Tx(ctx, func(tx *gorm.DB) error {
 			return store.G(ctx, tx).Exec(`SELECT pg_sleep(10)`).Error
 		})
 	})
 }
 
-// TestGORMResultTypes reads each type through the bridge into an any (what
-// database/sql receives) and checks the value.
+// TestGORMResultTypes reads each type into an any, which is what pgx's
+// database/sql driver hands over and what a store type's Scan receives.
 func TestGORMResultTypes(t *testing.T) {
-	db, _ := bridgeDB(t)
+	db, _ := widgetDB(t)
 	ctx := context.Background()
-	g := store.G(ctx, db.Pool)
+	g := store.G(ctx, db.Gorm)
 	ts := time.Date(2024, 1, 2, 3, 4, 5, 123456000, time.UTC)
 
 	cases := []struct {
@@ -292,51 +272,44 @@ func TestGORMResultTypes(t *testing.T) {
 		{`'2024-01-02 03:04:05.123456+00'::timestamptz`, ts},
 		{`'2024-01-02 03:04:05.123456'::timestamp`, ts},
 		{`'2024-01-02'::date`, time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)},
+		{`'infinity'::timestamptz`, "infinity"},
+		{`'-infinity'::timestamptz`, "-infinity"},
 		{`'1 day 02:03:04'::interval`, "1 day 02:03:04"},
 		{`'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'::uuid`, "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"},
 		{`'10.0.0.1/8'::inet`, "10.0.0.1/8"},
-		{`'10.0.0.0/8'::cidr`, "10.0.0.0/8"},
 		{`B'1010'::bit(4)`, "1010"},
-		{`B'101'::varbit`, "101"},
-		{`'{1,2}'::int2[]`, []int64{1, 2}},
-		{`'{3}'::int4[]`, []int64{3}},
-		{`'{4,5}'::int8[]`, []int64{4, 5}},
-		{`'{}'::int8[]`, []int64{}},
-		{`'{1.5}'::float4[]`, []float64{1.5}},
-		{`'{2.5}'::float8[]`, []float64{2.5}},
-		{`'{t,f}'::bool[]`, []bool{true, false}},
-		{`'{a,"b,c"}'::text[]`, []string{"a", "b,c"}},
-		{`'{v}'::varchar[]`, []string{"v"}},
-		{`'{x}'::char(2)[]`, []string{"x "}},
-		{`'{1.50}'::numeric[]`, []string{"1.50"}},
-		{`'{a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11}'::uuid[]`, []string{"a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"}},
-		{`ARRAY['{"a":1}'::json]`, [][]byte{[]byte(`{"a":1}`)}},
-		{`ARRAY['{"a":1}'::jsonb]`, [][]byte{[]byte(`{"a": 1}`)}},
-		{`ARRAY['2024-01-02 03:04:05.123456+00'::timestamptz]`, []time.Time{ts}},
+		{`'pending'::text::river_job_state`, "pending"},
+		// Arrays come as their text, which Int64s, Strings and Times parse.
+		{`'{1,2}'::int2[]`, "{1,2}"},
+		{`'{}'::int8[]`, "{}"},
+		{`'{a,"b,c",NULL}'::text[]`, `{a,"b,c",NULL}`},
+		{`ARRAY['2024-01-02 03:04:05.123456+00'::timestamptz]`, `{"2024-01-02 03:04:05.123456+00"}`},
 		{`NULL::int8`, nil},
 		{`NULL::text`, nil},
 		{`NULL::jsonb`, nil},
 		{`NULL::int8[]`, nil},
 		{`NULL::timestamptz`, nil},
 	}
-	for _, c := range cases {
-		t.Run(c.expr, func(t *testing.T) {
-			var got any
-			require.NoError(t, g.Raw(`SELECT `+c.expr).Row().Scan(&got))
-			if want, ok := c.want.(time.Time); ok {
-				require.IsType(t, want, got)
-				assert.True(t, want.Equal(got.(time.Time)), "%v != %v", got, want)
-				return
-			}
-			if want, ok := c.want.([]time.Time); ok {
-				require.IsType(t, want, got)
-				require.Len(t, got, 1)
-				assert.True(t, want[0].Equal(got.([]time.Time)[0]))
-				return
-			}
-			assert.Equal(t, c.want, got)
-		})
-	}
+	// The session's zone decides how timestamps print as text.
+	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
+		if err := g.Exec(`SET LOCAL TimeZone = 'UTC'`).Error; err != nil {
+			return err
+		}
+		for _, c := range cases {
+			t.Run(c.expr, func(t *testing.T) {
+				var got any
+				require.NoError(t, g.Raw(`SELECT `+c.expr).Row().Scan(&got))
+				if want, ok := c.want.(time.Time); ok {
+					require.IsType(t, want, got)
+					assert.True(t, want.Equal(got.(time.Time)), "%v != %v", got, want)
+					return
+				}
+				assert.Equal(t, c.want, got)
+			})
+		}
+		return nil
+	}))
 
 	t.Run("typed destinations", func(t *testing.T) {
 		var r struct {
@@ -352,10 +325,14 @@ func TestGORMResultTypes(t *testing.T) {
 			Refs   store.Int64s
 			Tags   store.Strings
 			NoTags store.Strings
+			Times  store.Times
+			Due    store.InfTime
+			Never  store.InfTime
 		}
 		require.NoError(t, g.Raw(`SELECT 3::int2 AS small, 4::int4 AS count, 1.25::numeric AS cost, 1.25::numeric(10,4) AS cost_s,
 			true AS flag, '\x01'::bytea AS raw, '{"k":"v"}'::jsonb AS doc, now() AS at, NULL::timestamptz AS opt,
-			'{1,2}'::int8[] AS refs, '{a}'::varchar[] AS tags, NULL::text[] AS no_tags`).Scan(&r).Error)
+			'{1,2}'::int8[] AS refs, '{a}'::varchar[] AS tags, NULL::text[] AS no_tags,
+			ARRAY[?::timestamptz] AS times, '-infinity'::timestamptz AS due, NULL::timestamptz AS never`, ts).Scan(&r).Error)
 		assert.Equal(t, int16(3), r.Small)
 		assert.Equal(t, 4, r.Count)
 		assert.Equal(t, 1.25, r.Cost)
@@ -368,35 +345,30 @@ func TestGORMResultTypes(t *testing.T) {
 		assert.Equal(t, store.Int64s{1, 2}, r.Refs)
 		assert.Equal(t, store.Strings{"a"}, r.Tags)
 		assert.Nil(t, r.NoTags)
+		require.Len(t, r.Times, 1)
+		assert.True(t, ts.Equal(r.Times[0]))
+		assert.Equal(t, store.InfTime{Infinity: store.NegativeInfinity, Valid: true}, r.Due)
+		assert.Equal(t, store.InfTime{}, r.Never)
 	})
 
-	t.Run("refused", func(t *testing.T) {
-		for _, expr := range []string{`point(1, 2)`, `'1'::money`, `'a'::tsvector`, `ROW(1, 2)`, `'{"[1,2)"}'::int4range[]`} {
-			var got any
-			err := g.Raw(`SELECT ` + expr + ` AS v`).Row().Scan(&got)
-			require.Error(t, err, expr)
-			assert.Contains(t, err.Error(), `column "v" has type`, expr)
-			assert.Contains(t, err.Error(), "does not read", expr)
-		}
-		var got any
-		err := g.Raw(`SELECT ARRAY[1, NULL]::int8[] AS v`).Row().Scan(&got)
+	t.Run("NULL elements", func(t *testing.T) {
+		var ids store.Int64s
+		err := g.Raw(`SELECT ARRAY[1, NULL]::int8[]`).Row().Scan(&ids)
 		assert.ErrorContains(t, err, "NULL", "a NULL element has no slice form")
 	})
 }
 
 // TestGORMReadsEverySchemaColumn selects every column of every table the
-// migrations create through the bridge, so a migration that brings a type
-// the bridge does not read fails here rather than in production.
+// migrations create, so a migration that brings a type the driver cannot
+// hand over fails here rather than in production.
 func TestGORMReadsEverySchemaColumn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping database test in short mode")
 	}
 	ctx := context.Background()
 	db := testutil.DB(t)
-	// River's own enum; River reads that table, the services never do.
-	unread := map[string]bool{"river_job.state": true}
 
-	rows, err := db.Pool.Query(ctx, `SELECT c.table_name, c.column_name, c.udt_name
+	rows, err := db.SQL.QueryContext(ctx, `SELECT c.table_name, c.column_name, c.udt_name
 		FROM information_schema.columns c
 		JOIN information_schema.tables t USING (table_schema, table_name)
 		WHERE c.table_schema = 'public' AND t.table_type = 'BASE TABLE'
@@ -408,9 +380,7 @@ func TestGORMReadsEverySchemaColumn(t *testing.T) {
 		var table, col, udt string
 		require.NoError(t, rows.Scan(&table, &col, &udt))
 		udts[udt] = true
-		if !unread[table+"."+col] {
-			cols[table] = append(cols[table], pgx.Identifier{col}.Sanitize())
-		}
+		cols[table] = append(cols[table], store.QuoteIdent(col))
 	}
 	require.NoError(t, rows.Err())
 	require.NotEmpty(t, cols)
@@ -422,34 +392,107 @@ func TestGORMReadsEverySchemaColumn(t *testing.T) {
 		}
 	}))
 
-	g := store.G(ctx, db.Pool)
+	g := store.G(ctx, db.Gorm)
 	for table, list := range cols {
-		q := `SELECT ` + strings.Join(list, ", ") + ` FROM ` + pgx.Identifier{table}.Sanitize() + ` LIMIT 0`
+		q := `SELECT ` + strings.Join(list, ", ") + ` FROM ` + store.QuoteIdent(table) + ` LIMIT 0`
 		var out []map[string]any
 		assert.NoError(t, g.Raw(q).Scan(&out).Error, table)
 	}
-	var out []map[string]any
-	err = g.Raw(`SELECT state FROM river_job LIMIT 0`).Scan(&out).Error
-	assert.ErrorContains(t, err, "does not read", "an enum is refused, even with no rows")
-	assert.NoError(t, g.Raw(`SELECT state::text FROM river_job LIMIT 0`).Scan(&out).Error)
 }
 
-// TestArraysThroughPgx checks that Int64s and Strings still read through
-// pgx itself, in both wire formats, now that they implement sql.Scanner.
-func TestArraysThroughPgx(t *testing.T) {
-	db, _ := bridgeDB(t)
+// Array and InfTime parameters: arrays as plain slices for pgx to encode,
+// InfTime as a time.Time or "±infinity", in both of pgx's ways of sending a
+// statement.
+func TestStoreTypesAsParameters(t *testing.T) {
+	db, _ := widgetDB(t)
 	ctx := context.Background()
-	for _, mode := range []pgx.QueryExecMode{pgx.QueryExecModeCacheStatement, pgx.QueryExecModeSimpleProtocol} {
-		var ids store.Int64s
-		var tags, none store.Strings
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT '{1,2}'::int8[], '{a,"b c"}'::text[], NULL::text[]`, mode).Scan(&ids, &tags, &none))
-		assert.Equal(t, store.Int64s{1, 2}, ids, mode)
-		assert.Equal(t, store.Strings{"a", "b c"}, tags, mode)
-		assert.Nil(t, none, mode)
-		var empty store.Int64s
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT $1::int8[]`, mode, store.Int64s(nil)).Scan(&empty))
-		assert.Equal(t, store.Int64s{}, empty, mode)
+	at := time.Date(2024, 1, 2, 3, 4, 5, 123456789, time.UTC)
+	simple, err := store.OpenSized(ctx, testutil.DSN(db)+"&default_query_exec_mode=simple_protocol", 1)
+	require.NoError(t, err)
+	defer simple.Close()
+	for name, pool := range map[string]*store.DB{"extended": db, "simple": simple} {
+		t.Run(name, func(t *testing.T) {
+			g := store.G(ctx, pool.Gorm)
+			var r struct {
+				Ids   store.Int64s
+				Tags  store.Strings
+				Flags string
+				Times store.Times
+				Due   store.InfTime
+				Late  store.InfTime
+				Nil   store.InfTime
+			}
+			require.NoError(t, g.Raw(`SELECT ?::int8[] AS ids, ?::text[] AS tags, ?::bool[]::text AS flags, ?::timestamptz[] AS times,
+				?::timestamptz AS due, ?::timestamptz AS late, ?::timestamptz AS nil`,
+				store.Int64s{-1, 0, 9007199254740993}, store.Strings{"", "a b", `q"uote`, `back\slash`, "NULL", "{,}"},
+				store.Bools{true, false}, store.Times{at}, store.InfTime{Infinity: store.PositiveInfinity, Valid: true},
+				store.InfTime{Time: at, Valid: true}, store.InfTime{}).Scan(&r).Error)
+			assert.Equal(t, store.Int64s{-1, 0, 9007199254740993}, r.Ids)
+			assert.Equal(t, store.Strings{"", "a b", `q"uote`, `back\slash`, "NULL", "{,}"}, r.Tags)
+			assert.Equal(t, "{t,f}", r.Flags)
+			require.Len(t, r.Times, 1)
+			assert.True(t, at.Truncate(time.Microsecond).Equal(r.Times[0]), "%v", r.Times[0])
+			assert.Equal(t, store.InfTime{Infinity: store.PositiveInfinity, Valid: true}, r.Due)
+			assert.True(t, r.Late.Valid && at.Truncate(time.Microsecond).Equal(r.Late.Time), "%+v", r.Late)
+			assert.Equal(t, store.InfTime{}, r.Nil)
+
+			var n int64
+			require.NoError(t, g.Raw(`SELECT count(*) FROM unnest(?::int8[]) x WHERE x = ANY(?)`,
+				store.Int64s(nil), store.Int64s{1}).Row().Scan(&n))
+			assert.Zero(t, n, "nil is the empty array")
+		})
 	}
+}
+
+// The array types hand pgx their plain slice as the value (see
+// store.Int64s), which database/sql itself would refuse: this keeps that
+// pgx's driver takes it and encodes it as the parameter's array type, with
+// or without a cast, and that GORM binds each as one parameter rather than
+// expanding it into a list.
+func TestArrayParametersRelyOnPgxStdlib(t *testing.T) {
+	db, _ := widgetDB(t)
+	ctx := context.Background()
+	at := time.Date(2024, 1, 2, 3, 4, 5, 123456789, time.UTC)
+	one := int64(1)
+	params := []any{
+		store.Int64s{3, 1}, store.Strings{"a", `"b"`}, store.Times{at}, store.Bools{true, false},
+		store.NullStrings([]string{"x"}), store.Array[*int64]{&one, nil}, store.Int64s(nil),
+	}
+
+	// GORM: one placeholder each, the value itself in the statement's Vars.
+	q := store.DryRun().Exec(`SELECT ?::int8[], ?::text[], ?::timestamptz[], ?::bool[], ?::text[], ?::int8[], ?::int8[]`, params...)
+	require.NoError(t, q.Error)
+	require.Equal(t, `SELECT $1::int8[], $2::text[], $3::timestamptz[], $4::bool[], $5::text[], $6::int8[], $7::int8[]`, q.Statement.SQL.String())
+	require.Equal(t, params, q.Statement.Vars)
+
+	// pgx: the same values come back, through database/sql's text form.
+	var r struct {
+		Ids   store.Int64s
+		Tags  store.Strings
+		Times store.Times
+		Flags string
+		Only  store.Strings
+		Ptrs  string
+		Empty store.Int64s
+	}
+	g := store.G(ctx, db.Gorm)
+	require.NoError(t, g.Raw(`SELECT ?::int8[] AS ids, ?::text[] AS tags, ?::timestamptz[] AS times, ?::bool[]::text AS flags,
+		?::text[] AS only, ?::int8[]::text AS ptrs, ?::int8[] AS empty`, params...).Scan(&r).Error)
+	assert.Equal(t, store.Int64s{3, 1}, r.Ids)
+	assert.Equal(t, store.Strings{"a", `"b"`}, r.Tags)
+	require.Len(t, r.Times, 1)
+	assert.True(t, at.Truncate(time.Microsecond).Equal(r.Times[0]), "%v", r.Times[0])
+	assert.Equal(t, "{t,f}", r.Flags)
+	assert.Equal(t, store.Strings{"x"}, r.Only)
+	assert.Equal(t, "{1,NULL}", r.Ptrs)
+	assert.Equal(t, store.Int64s{}, r.Empty, "nil is the empty array, not NULL")
+
+	// Without a cast the parameter takes its type from its use.
+	var n int64
+	require.NoError(t, g.Raw(`SELECT count(*) FROM generate_series(1, 5) x WHERE x = ANY(?)`, store.Int64s{2, 4, 9}).Row().Scan(&n))
+	assert.EqualValues(t, 2, n)
+	require.NoError(t, g.Raw(`SELECT count(*) FROM (VALUES ('a'), ('b'), ('c')) v(s) WHERE s = ANY(?)`, store.Strings{"c", "a"}).Row().Scan(&n))
+	assert.EqualValues(t, 2, n)
 }
 
 // account is a hand-written model of a real table with text[] columns and
@@ -468,9 +511,9 @@ type account struct {
 func (account) TableName() string { return "accounts" }
 
 func TestGORMArrayColumnsOnARealTable(t *testing.T) {
-	db, uid := bridgeDB(t)
+	db, uid := widgetDB(t)
 	ctx := context.Background()
-	g := store.G(ctx, db.Pool)
+	g := store.G(ctx, db.Gorm)
 
 	a := account{Name: "arr", PluginKey: "p", Type: "t", CredentialsEnc: []byte{1}, Models: store.Strings{"m1", "m 2"}, CreatedBy: &uid}
 	require.NoError(t, g.Create(&a).Error)
@@ -484,9 +527,9 @@ func TestGORMArrayColumnsOnARealTable(t *testing.T) {
 	res := g.Model(&account{}).Where("id = ?", a.ID).Update("header_passthrough", store.Strings{"x-a"})
 	require.NoError(t, res.Error)
 	assert.EqualValues(t, 1, res.RowsAffected)
-	var hp []string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT header_passthrough FROM accounts WHERE id = $1`, a.ID).Scan(&hp))
-	assert.Equal(t, []string{"x-a"}, hp)
+	var hp store.Strings
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT header_passthrough FROM accounts WHERE id = $1`, a.ID).Scan(&hp))
+	assert.Equal(t, store.Strings{"x-a"}, hp)
 
 	// Row().Scan: GORM's Scan reads a slice destination as one row per
 	// element.

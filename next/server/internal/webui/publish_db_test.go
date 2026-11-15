@@ -7,7 +7,6 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -32,7 +31,7 @@ func TestPublishStoresEveryFile(t *testing.T) {
 	require.NoError(t, err)
 	for range 2 {
 		require.NoError(t, s.Publish(ctx))
-		rows, err := db.Pool.Query(ctx, `SELECT a.path, a.sha256, a.body, a.size, f.build_id
+		rows, err := db.SQL.QueryContext(ctx, `SELECT a.path, a.sha256, a.body, a.size, f.build_id
 			FROM web_assets a JOIN web_asset_build_files f ON f.path = a.path ORDER BY a.path`)
 		require.NoError(t, err)
 		type stored struct {
@@ -41,12 +40,14 @@ func TestPublishStoresEveryFile(t *testing.T) {
 			size       int64
 			build      string
 		}
-		got, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (stored, error) {
+		var got []stored
+		for rows.Next() {
 			var st stored
-			err := r.Scan(&st.path, &st.hash, &st.body, &st.size, &st.build)
-			return st, err
-		})
-		require.NoError(t, err)
+			require.NoError(t, rows.Scan(&st.path, &st.hash, &st.body, &st.size, &st.build))
+			got = append(got, st)
+		}
+		require.NoError(t, rows.Err())
+		rows.Close()
 		require.Len(t, got, len(files))
 		for _, st := range got {
 			body, ok := files[st.path]

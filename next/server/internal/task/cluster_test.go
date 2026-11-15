@@ -94,7 +94,7 @@ type jobRow struct {
 
 func jobRows(t *testing.T, db *store.DB, name string) []jobRow {
 	t.Helper()
-	rows, err := db.Pool.Query(context.Background(), `SELECT state::text, attempt, metadata->'output'
+	rows, err := db.SQL.QueryContext(context.Background(), `SELECT state::text, attempt, metadata->'output'
 		FROM river_job WHERE kind = 'sup2api.task' AND args->>'name' = $1 ORDER BY id`, name)
 	require.NoError(t, err)
 	defer rows.Close()
@@ -127,7 +127,7 @@ type taskRow struct {
 func readTaskRow(t *testing.T, db *store.DB, name string) taskRow {
 	t.Helper()
 	var r taskRow
-	require.NoError(t, db.Pool.QueryRow(context.Background(), `SELECT last_status, last_count, consecutive_failures,
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `SELECT last_status, last_count, consecutive_failures,
 		last_node, lease_job_id, schedule, max_attempts, last_success_at FROM scheduled_tasks WHERE name = $1`, name).
 		Scan(&r.Status, &r.Count, &r.Failures, &r.LastNode, &r.LeaseJob, &r.Schedule, &r.MaxAttempts, &r.LastSuccess))
 	return r
@@ -239,7 +239,7 @@ func TestClusterLease(t *testing.T) {
 	ctx := context.Background()
 
 	// Another run holds the lease: a manual run waits for it.
-	_, err := env.db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET lease_job_id = -1, lease_node = 'elsewhere',
+	_, err := env.db.SQL.ExecContext(ctx, `UPDATE scheduled_tasks SET lease_job_id = -1, lease_node = 'elsewhere',
 		lease_until = now() + interval '1 hour' WHERE name = 'core.test.lease'`)
 	require.NoError(t, err)
 	require.NoError(t, s.Trigger(ctx, "core.test.lease"))
@@ -247,7 +247,7 @@ func TestClusterLease(t *testing.T) {
 	require.Zero(t, log.len())
 
 	// The lease expired (its holder died): the run takes it over.
-	_, err = env.db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET lease_until = now() - interval '1 second'
+	_, err = env.db.SQL.ExecContext(ctx, `UPDATE scheduled_tasks SET lease_until = now() - interval '1 second'
 		WHERE name = 'core.test.lease'`)
 	require.NoError(t, err)
 	waitLong(t, "the manual run", 10*time.Second, func() bool { return log.len() == 1 })
@@ -330,14 +330,14 @@ func TestClusterEnqueue(t *testing.T) {
 	require.False(t, run.Manual)
 
 	// Rolled back: nothing is submitted; committed: it runs.
-	tx, err := env.db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, env.db)
 	require.NoError(t, err)
 	require.NoError(t, s.EnqueueTx(ctx, tx, "core.test.enqueue", args{Account: 8}, core.EnqueueOpts{}))
-	require.NoError(t, tx.Rollback(ctx))
-	tx, err = env.db.Pool.Begin(ctx)
+	require.NoError(t, tx.Rollback().Error)
+	tx, err = testutil.Begin(ctx, env.db)
 	require.NoError(t, err)
 	require.NoError(t, s.EnqueueTx(ctx, tx, "core.test.enqueue", args{Account: 9}, core.EnqueueOpts{}))
-	require.NoError(t, tx.Commit(ctx))
+	require.NoError(t, tx.Commit().Error)
 	waitLong(t, "the committed run", 10*time.Second, func() bool { return log.len() == 2 })
 	require.JSONEq(t, `{"account":9}`, string(log.list()[1].Args))
 
@@ -474,11 +474,11 @@ func TestClusterRegisterAfterStartAndHousekeeping(t *testing.T) {
 	waitLong(t, "the late task's run", 10*time.Second, func() bool { return log.len() == 1 })
 
 	// A core task no node registers any more, a fresh one and an expired lease.
-	_, err := env.db.Pool.Exec(ctx, `INSERT INTO scheduled_tasks (name, source, schedule, timeout_ms, max_attempts, seen_at)
+	_, err := env.db.SQL.ExecContext(ctx, `INSERT INTO scheduled_tasks (name, source, schedule, timeout_ms, max_attempts, seen_at)
 		VALUES ('core.test.removed', 'core', '@every 1h0m0s', 1000, 5, now() - interval '8 days'),
 		       ('core.test.recent', 'core', '@every 1h0m0s', 1000, 5, now() - interval '1 day')`)
 	require.NoError(t, err)
-	_, err = env.db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET seen_at = now() - interval '30 days',
+	_, err = env.db.SQL.ExecContext(ctx, `UPDATE scheduled_tasks SET seen_at = now() - interval '30 days',
 		lease_job_id = -1, lease_node = 'dead', lease_until = now() - interval '1 minute' WHERE name = 'core.test.late'`)
 	require.NoError(t, err)
 
@@ -488,7 +488,7 @@ func TestClusterRegisterAfterStartAndHousekeeping(t *testing.T) {
 		return r.Status != nil && *r.Status == StatusSucceeded
 	})
 	var names []string
-	rows, err := env.db.Pool.Query(ctx, `SELECT name FROM scheduled_tasks ORDER BY name`)
+	rows, err := env.db.SQL.QueryContext(ctx, `SELECT name FROM scheduled_tasks ORDER BY name`)
 	require.NoError(t, err)
 	for rows.Next() {
 		var n string

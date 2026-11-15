@@ -17,10 +17,10 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -281,13 +281,13 @@ func (r *fakeRegistry) OnChange(func(core.Generation)) func() { return func() {}
 // dbEvents writes events into the outbox table inside the caller's tx.
 type dbEvents struct{}
 
-func (dbEvents) Emit(ctx context.Context, tx pgx.Tx, evs ...core.Event) error {
+func (dbEvents) Emit(ctx context.Context, tx *gorm.DB, evs ...core.Event) error {
 	for _, e := range evs {
 		b, err := json.Marshal(e.Payload)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO events (type, payload) VALUES ($1, $2::jsonb)`, e.Type, string(b)); err != nil {
+		if _, err := store.SQLTx(tx).ExecContext(ctx, `INSERT INTO events (type, payload) VALUES ($1, $2::jsonb)`, e.Type, string(b)); err != nil {
 			return err
 		}
 	}
@@ -766,7 +766,7 @@ func (e *env) addUser(email string) int64 {
 func (e *env) exec1(sql string, args ...any) int64 {
 	e.t.Helper()
 	var id int64
-	if err := e.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id); err != nil {
+	if err := e.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id); err != nil {
 		e.t.Fatal(err)
 	}
 	return id
@@ -819,11 +819,11 @@ func fieldsOf(out map[string]any) []string {
 }
 
 func (e *env) eventTypes() []string {
-	rows, err := e.db.Pool.Query(context.Background(), `SELECT type FROM events ORDER BY id`)
+	rows, err := e.db.SQL.QueryContext(context.Background(), `SELECT type FROM events ORDER BY id`)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	ts, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	ts, err := testutil.Column[string](rows)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -943,7 +943,7 @@ func TestAccountLifecycle(t *testing.T) {
 		t.Fatalf("create view: %v", acc)
 	}
 	var enc, settings []byte
-	_ = e.db.Pool.QueryRow(ctx, `SELECT credentials_enc, settings FROM accounts WHERE id = $1`, id).Scan(&enc, &settings)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT credentials_enc, settings FROM accounts WHERE id = $1`, id).Scan(&enc, &settings)
 	if bytes.Contains(enc, []byte("sk-good")) || bytes.Contains(settings, []byte("api_key")) {
 		t.Fatal("secret leaked into plain columns")
 	}
@@ -981,19 +981,19 @@ func TestAccountLifecycle(t *testing.T) {
 		t.Fatalf("access key reveal: %d %s", code, raw)
 	}
 	var audits int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'account.credentials.reveal'`).Scan(&audits)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'account.credentials.reveal'`).Scan(&audits)
 	if audits != 2 {
 		t.Fatal("reveal not audited")
 	}
 	// Resubmitting the same credentials keeps the stored ciphertext; a real
 	// change re-encrypts it.
-	_ = e.db.Pool.QueryRow(ctx, `SELECT credentials_enc FROM accounts WHERE id = $1`, id).Scan(&enc)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT credentials_enc FROM accounts WHERE id = $1`, id).Scan(&enc)
 	same := map[string]any{"credentials": map[string]any{"api_key": Mask, "base_url": "https://b.example.com", "org": "acme2"}, "name": "same credentials"}
 	if code, out = e.do("PATCH", fmt.Sprintf("/accounts/%d", id), same); code != 200 {
 		t.Fatalf("patch same credentials: %d %v", code, out)
 	}
 	var after []byte
-	_ = e.db.Pool.QueryRow(ctx, `SELECT credentials_enc FROM accounts WHERE id = $1`, id).Scan(&after)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT credentials_enc FROM accounts WHERE id = $1`, id).Scan(&after)
 	if !bytes.Equal(enc, after) {
 		t.Fatal("unchanged credentials were re-encrypted")
 	}
@@ -1001,7 +1001,7 @@ func TestAccountLifecycle(t *testing.T) {
 	if code, out = e.do("PATCH", fmt.Sprintf("/accounts/%d", id), same); code != 200 {
 		t.Fatalf("patch changed credentials: %d %v", code, out)
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT credentials_enc FROM accounts WHERE id = $1`, id).Scan(&after)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT credentials_enc FROM accounts WHERE id = $1`, id).Scan(&after)
 	if bytes.Equal(enc, after) {
 		t.Fatal("changed credentials kept the old ciphertext")
 	}
@@ -1091,7 +1091,7 @@ func TestAccountLifecycle(t *testing.T) {
 		t.Fatalf("events:\n got %s\nwant %s", got, want)
 	}
 	var payload string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT payload::text FROM events WHERE type = 'account.created'`).Scan(&payload)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT payload::text FROM events WHERE type = 'account.created'`).Scan(&payload)
 	if gjson.Get(payload, "plugin_key").String() != "anthropic" || gjson.Get(payload, "account_id").Int() != id ||
 		gjson.Get(payload, "type").String() != "apikey" || gjson.Get(payload, "platform").Exists() {
 		t.Fatalf("payload: %s", payload)
@@ -1176,7 +1176,7 @@ func TestDirectory(t *testing.T) {
 		t.Fatalf("all types: %d", len(refs))
 	}
 	// GroupHasType: any account of the types, whatever its status.
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET status = 'disabled' WHERE id = $1`, a3); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status = 'disabled' WHERE id = $1`, a3); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
@@ -1212,16 +1212,16 @@ func TestDirectory(t *testing.T) {
 		}
 	}
 	e.mr.Del(cooling)
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET status = 'active' WHERE id = $1`, a3); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status = 'active' WHERE id = $1`, a3); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET schedulable = false WHERE id = $1`, a1); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET schedulable = false WHERE id = $1`, a1); err != nil {
 		t.Fatal(err)
 	}
 	if off, err := e.svc.Unschedulable(ctx, g); err != nil || len(off) != 1 || off[0].ID != a1 || off[0].Reason != "unschedulable" {
 		t.Fatalf("Unschedulable after re-enabling: %+v %v", off, err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET schedulable = true WHERE id = $1`, a1); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET schedulable = true WHERE id = $1`, a1); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1249,7 +1249,7 @@ func TestDirectory(t *testing.T) {
 	}
 
 	// Snapshot is cached: a direct DB change is invisible until invalidated.
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET schedulable = false WHERE id = $1`, a1); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET schedulable = false WHERE id = $1`, a1); err != nil {
 		t.Fatal(err)
 	}
 	if refs, _ = e.svc.Candidates(ctx, g, apikey); len(refs) != 2 {
@@ -1287,12 +1287,12 @@ func TestDirectory(t *testing.T) {
 		t.Fatalf("load after disable: %s", acc.Status)
 	}
 	var n int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type = 'account.status_changed'`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE type = 'account.status_changed'`).Scan(&n)
 	if n != 2 { // one cooldown + one disable
 		t.Fatalf("status events: %d", n)
 	}
 	var payload string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT payload::text FROM events WHERE type = 'account.status_changed' ORDER BY id LIMIT 1`).Scan(&payload)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT payload::text FROM events WHERE type = 'account.status_changed' ORDER BY id LIMIT 1`).Scan(&payload)
 	if gjson.Get(payload, "status").String() != "cooldown" || !gjson.Get(payload, "cooldown_until").Exists() ||
 		gjson.Get(payload, "plugin_key").String() != "anthropic" || gjson.Get(payload, "type").String() != "apikey" ||
 		gjson.Get(payload, "name").String() != "a2" || gjson.Get(payload, "platform").Exists() {
@@ -1301,14 +1301,14 @@ func TestDirectory(t *testing.T) {
 
 	// An account that opted out of automatic disabling is left alone
 	// (CONTRACTS §42.3).
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET auto_disable = false WHERE id = $1`, a1); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET auto_disable = false WHERE id = $1`, a1); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := e.svc.AutoDisable(ctx, a1, "401 invalid credentials"); err != nil || ok {
 		t.Fatalf("opted-out account disabled: %v %v", ok, err)
 	}
 	var a1Status string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT status FROM accounts WHERE id = $1`, a1).Scan(&a1Status)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT status FROM accounts WHERE id = $1`, a1).Scan(&a1Status)
 	if a1Status != "active" {
 		t.Fatalf("opted-out account status %q", a1Status)
 	}
@@ -1319,7 +1319,7 @@ func TestDirectory(t *testing.T) {
 	if err := e.svc.FlushLastUsed(ctx); err != nil {
 		t.Fatal(err)
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM accounts WHERE last_used_at IS NOT NULL`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE last_used_at IS NOT NULL`).Scan(&n)
 	if n != 2 {
 		t.Fatalf("last_used_at rows: %d", n)
 	}

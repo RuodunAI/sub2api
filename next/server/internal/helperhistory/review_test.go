@@ -78,7 +78,7 @@ func TestReviewHelperHistoryDBSameOwnerCiphertextSwapRejected(t *testing.T) {
 	one := finish(t, s, r, prefixA, "one")
 	r.RequestID = "two"
 	two := finish(t, s, r, prefixB, "two")
-	_, err := s.db.Pool.Exec(ctx, `UPDATE provider_helper_records SET payload=(SELECT payload FROM provider_helper_records WHERE receipt=$1) WHERE receipt=$2`, one.Receipt, two.Receipt)
+	_, err := s.db.SQL.ExecContext(ctx, `UPDATE provider_helper_records SET payload=(SELECT payload FROM provider_helper_records WHERE receipt=$1) WHERE receipt=$2`, one.Receipt, two.Receipt)
 	if err != nil {
 		t.Fatal(err)
 	}

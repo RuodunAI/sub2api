@@ -156,7 +156,7 @@ const NewDomainWindow = 24 * time.Hour
 
 // Domains lists the hosts a plugin has connected to (most recent first),
 // for GET /plugins/:key/egress (CONTRACTS §14.2).
-func Domains(ctx context.Context, q store.Querier, pluginKey string) ([]DomainRecord, error) {
+func Domains(ctx context.Context, q *gorm.DB, pluginKey string) ([]DomainRecord, error) {
 	out := []DomainRecord{}
 	if err := domainsQuery(store.G(ctx, q), pluginKey).Scan(&out).Error; err != nil {
 		return nil, err

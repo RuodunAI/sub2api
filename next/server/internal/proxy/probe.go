@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -169,7 +169,7 @@ func (s *Service) probeURL(c *gin.Context) {
 		uid, _ := core.UserID(ctx)
 		var id int64
 		var created bool
-		err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+		err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 			var err error
 			if id, created, err = s.FindOrCreate(ctx, tx, spec, uid, scope); err != nil || !created {
 				return err

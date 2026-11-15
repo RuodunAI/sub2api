@@ -25,11 +25,11 @@ func BenchmarkHotEmit(b *testing.B) {
 			events[i] = core.Event{Type: core.EventBalanceChanged, Payload: map[string]any{"user_id": 7, "ledger_id": i, "kind": "usage"}}
 		}
 		b.Run(strconv.Itoa(n), func(b *testing.B) {
-			tx, err := db.Pool.Begin(ctx)
+			tx, err := testutil.Begin(ctx, db)
 			if err != nil {
 				b.Fatal(err)
 			}
-			defer func() { _ = tx.Rollback(ctx) }()
+			defer tx.Rollback()
 			if err := pub.Emit(ctx, tx, events...); err != nil {
 				b.Fatal(err)
 			}

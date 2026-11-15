@@ -31,7 +31,7 @@ func TestRetiredRuntimesAreLeftAloneThenDeleted(t *testing.T) {
 		// Inconsistent on purpose: the account has no other runtime.
 		{`INSERT INTO ccgateway_runtimes(key, retired_at) VALUES($1, now() - interval '1 hour')`, []any{fallbackID}},
 	} {
-		if _, err := f.db.Pool.Exec(ctx, q.sql, q.args...); err != nil {
+		if _, err := f.db.SQL.ExecContext(ctx, q.sql, q.args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -65,7 +65,7 @@ func TestRetiredRuntimesAreLeftAloneThenDeleted(t *testing.T) {
 	if n, err := f.s.SweepDrafts(ctx); err != nil || n != 0 || len(ctl.seen("DELETE")) != 0 {
 		t.Fatalf("early sweep: %d %v %v", n, err, ctl.seen("DELETE"))
 	}
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE ccgateway_runtimes SET retired_at = now() - interval '71 minutes' WHERE key = ANY($1)`,
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE ccgateway_runtimes SET retired_at = now() - interval '71 minutes' WHERE key = ANY($1)`,
 		[]string{retiredDraft, retiredID}); err != nil {
 		t.Fatal(err)
 	}

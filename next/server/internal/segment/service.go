@@ -3,7 +3,7 @@ package segment
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -91,7 +91,7 @@ func errOwnSegment(ctx context.Context) *core.Error {
 // prices, as price:manage and group:manage do, not one's own; dropping the
 // is_default condition tightens it. q is the writer's transaction or the
 // pool.
-func GuardOwnSegments(ctx context.Context, q store.Querier, users core.UserGuard, segmentIDs []int64) error {
+func GuardOwnSegments(ctx context.Context, q *gorm.DB, users core.UserGuard, segmentIDs []int64) error {
 	actor, _ := core.UserID(ctx)
 	if actor == 0 || len(segmentIDs) == 0 {
 		return nil
@@ -131,7 +131,7 @@ func UserNotFound(ctx context.Context) error {
 // tx runs fn in a transaction. A row the writes refer to that was deleted
 // meanwhile (a foreign key violation) is a conflict, not a failure, and so is
 // a deadlock with another writer, should the lock order leave one possible.
-func (s *Service) tx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+func (s *Service) tx(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	err := s.db.Tx(ctx, fn)
 	if store.IsForeignKeyViolation(err) || store.IsDeadlock(err) {
 		return core.ErrConflict.WithMessage(t(ctx, "the data changed meanwhile, try again", "数据已被其他操作修改，请重试")).WithCause(err)
@@ -141,7 +141,7 @@ func (s *Service) tx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 
 // segmentKind returns the kind of a segment and whether it is the default
 // one, locking the row with the lock strength ("" = not at all).
-func segmentKind(ctx context.Context, q store.Querier, id int64, lock string) (kind string, isDefault bool, err error) {
+func segmentKind(ctx context.Context, q *gorm.DB, id int64, lock string) (kind string, isDefault bool, err error) {
 	db := store.G(ctx, q).Model(&model.Segment{}).Select("kind", "is_default").Where("id = ?", id)
 	if lock != "" {
 		db = db.Clauses(clause.Locking{Strength: lock})

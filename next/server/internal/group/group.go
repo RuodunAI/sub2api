@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -169,7 +168,7 @@ func (s *Service) list(c *gin.Context) {
 			return
 		}
 	}
-	g, filter := store.G(ctx, s.db.Pool), listFilter(q, status, providing)
+	g, filter := store.G(ctx, s.db.Gorm), listFilter(q, status, providing)
 	var total int64
 	if err := g.Table("groups g").Scopes(filter).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
@@ -219,7 +218,7 @@ func (s *Service) fillPlatforms(ctx context.Context, gs []*Group) error {
 // loadRow reads the row of a group, without what fill adds.
 func (s *Service) loadRow(ctx context.Context, id int64) (*Group, error) {
 	var row groupRow
-	err := selectGroups(store.G(ctx, s.db.Pool), core.ActivePluginKeys(s.reg)).Where("g.id = ?", id).Take(&row).Error
+	err := selectGroups(store.G(ctx, s.db.Gorm), core.ActivePluginKeys(s.reg)).Where("g.id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage(t(ctx, "group not found", "分组不存在"))
 	}
@@ -388,7 +387,7 @@ func (s *Service) create(c *gin.Context) {
 		return
 	}
 	row := newGroup(&in)
-	err := store.G(ctx, s.db.Pool).Create(row).Error
+	err := store.G(ctx, s.db.Gorm).Create(row).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, dupName(ctx))
 		return
@@ -420,7 +419,7 @@ func (s *Service) update(c *gin.Context) {
 		return
 	}
 	// A field left out keeps its value.
-	res := updateGroup(store.G(ctx, s.db.Pool), id, &in)
+	res := updateGroup(store.G(ctx, s.db.Gorm), id, &in)
 	err := res.Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, dupName(ctx))
@@ -465,7 +464,7 @@ func (s *Service) delete(c *gin.Context) {
 	}
 	var hashes []string
 	var authzVersion int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		// Lock the group and the move target in id order, so two deletes
 		// moving keys into each other's group cannot deadlock.
 		ids := []int64{id}
@@ -535,7 +534,7 @@ func (s *Service) myGroups(c *gin.Context) {
 	ctx := c.Request.Context()
 	uid, _ := core.UserID(ctx)
 	var rows []myGroupRow
-	if err := store.G(ctx, s.db.Pool).Table("groups g").
+	if err := store.G(ctx, s.db.Gorm).Table("groups g").
 		Select("g.id, g.name, g.description, g.rate_multiplier, g.model_allowlist, g.model_filter_mode, g.visibility = 'restricted' AS exclusive").
 		Where(segment.UsableGroupSQL("g", "?"), uid).Order("g.id").Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
@@ -555,7 +554,7 @@ func (s *Service) myGroups(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	terms, err := segment.UserTerms(ctx, s.db.Pool, uid, ids)
+	terms, err := segment.UserTerms(ctx, s.db.Gorm, uid, ids)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -582,7 +581,7 @@ func (s *Service) dropKeyCache(ctx context.Context, groupID int64) {
 		return
 	}
 	var hashes []string
-	if err := store.G(ctx, s.db.Pool).Model(&model.APIKey{}).Where("group_id = ?", groupID).Pluck("key_hash", &hashes).Error; err != nil {
+	if err := store.G(ctx, s.db.Gorm).Model(&model.APIKey{}).Where("group_id = ?", groupID).Pluck("key_hash", &hashes).Error; err != nil {
 		slog.WarnContext(ctx, "group: list api keys for cache drop", "err", err)
 		return
 	}

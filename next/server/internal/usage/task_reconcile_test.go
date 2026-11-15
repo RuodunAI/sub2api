@@ -54,7 +54,7 @@ func TestManagedTaskFencingFreePollingAndLegacyTransfer(t *testing.T) {
 	}
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := f.db.Pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := f.db.SQL.ExecContext(ctx, sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}

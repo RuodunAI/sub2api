@@ -5,8 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestLocalCredentialStatusSafeFacts(t *testing.T) {
@@ -62,28 +63,28 @@ func TestRecordRateLimitTier(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	var id int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('tier','ccgateway','managed','\x00') RETURNING id`).Scan(&id); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('tier','ccgateway','managed','\x00') RETURNING id`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	read := func() *string {
 		var v *string
-		if err := db.Pool.QueryRow(ctx, `SELECT rate_limit_tier FROM accounts WHERE id=$1`, id).Scan(&v); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT rate_limit_tier FROM accounts WHERE id=$1`, id).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
 		return v
 	}
 	for _, value := range []string{"", "Max 20x"} {
-		if err := recordRateLimitTier(ctx, db.Pool, id, value); err != nil || read() != nil {
+		if err := recordRateLimitTier(ctx, db.Gorm, id, value); err != nil || read() != nil {
 			t.Fatalf("%q: %v %v", value, err, read())
 		}
 	}
-	if err := recordRateLimitTier(ctx, db.Pool, id, "default_claude_max_20x"); err != nil {
+	if err := recordRateLimitTier(ctx, db.Gorm, id, "default_claude_max_20x"); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(); got == nil || *got != "default_claude_max_20x" {
 		t.Fatalf("recorded %v", got)
 	}
-	if err := recordRateLimitTier(ctx, db.Pool, id, ""); err != nil {
+	if err := recordRateLimitTier(ctx, db.Gorm, id, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(); got == nil || *got != "default_claude_max_20x" {

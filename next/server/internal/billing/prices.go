@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -79,7 +78,7 @@ func priceByID(db *gorm.DB, id int64, lock bool) *gorm.DB {
 	return db
 }
 
-func (s *Service) getPrice(ctx context.Context, q store.Querier, id int64, lock bool) (*Price, error) {
+func (s *Service) getPrice(ctx context.Context, q *gorm.DB, id int64, lock bool) (*Price, error) {
 	var row priceRow
 	err := priceByID(store.G(ctx, q), id, lock).Take(&row).Error
 	if store.IsNoRows(err) {
@@ -128,7 +127,7 @@ func (s *Service) listPrices(c *gin.Context) {
 		pattern := "%" + store.Like(v) + "%"
 		f.And("(mp.model ILIKE ? OR mp.note ILIKE ?)", pattern, pattern)
 	}
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	var total int64
 	if err := pricesWithSource(g).Scopes(f.Scope()).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
@@ -156,7 +155,7 @@ func (s *Service) showPrice(c *gin.Context) {
 	if !ok {
 		return
 	}
-	p, err := s.getPrice(c.Request.Context(), s.db.Pool, id, false)
+	p, err := s.getPrice(c.Request.Context(), s.db.Gorm, id, false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -262,7 +261,7 @@ func (s *Service) createPrice(c *gin.Context) {
 	enabled := in.Enabled == nil || *in.Enabled
 	uid, _ := core.UserID(ctx)
 	var p *Price
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		row := manualPrice(model, ck, enabled, deref(in.Note), nullID(uid))
 		if err := store.G(ctx, tx).Create(row).Error; err != nil {
 			return err
@@ -297,7 +296,7 @@ func (s *Service) updatePrice(c *gin.Context) {
 	}
 	uid, _ := core.UserID(ctx)
 	var out *Price
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		cur, err := s.getPrice(ctx, tx, id, true)
 		if err != nil {
 			return err
@@ -374,11 +373,11 @@ func (s *Service) deletePrice(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := s.getPrice(ctx, s.db.Pool, id, false); err != nil {
+	if _, err := s.getPrice(ctx, s.db.Gorm, id, false); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	if err := store.G(ctx, s.db.Pool).Where("id = ?", id).Delete(&model.ModelPrice{}).Error; err != nil {
+	if err := store.G(ctx, s.db.Gorm).Where("id = ?", id).Delete(&model.ModelPrice{}).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -408,7 +407,7 @@ func (s *Service) priceHistory(c *gin.Context) {
 	ctx := c.Request.Context()
 	hash := c.Param("expr_hash")
 	var row model.ModelPriceHistory
-	err := store.G(ctx, s.db.Pool).Where("expr_hash = ?", hash).Take(&row).Error
+	err := store.G(ctx, s.db.Gorm).Where("expr_hash = ?", hash).Take(&row).Error
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("expression not found"))
 		return
@@ -502,7 +501,7 @@ func (s *Service) previewPrice(c *gin.Context) {
 	}
 	src := in.Expression
 	if in.PriceID != nil {
-		p, err := s.getPrice(ctx, s.db.Pool, *in.PriceID, false)
+		p, err := s.getPrice(ctx, s.db.Gorm, *in.PriceID, false)
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
@@ -558,7 +557,7 @@ func (s *Service) previewPrice(c *gin.Context) {
 	mult := decimal.NewFromInt(1)
 	if in.GroupID != nil {
 		var g model.Group
-		err := store.G(ctx, s.db.Pool).Select("rate_multiplier").Where("id = ?", *in.GroupID).Take(&g).Error
+		err := store.G(ctx, s.db.Gorm).Select("rate_multiplier").Where("id = ?", *in.GroupID).Take(&g).Error
 		if store.IsNoRows(err) {
 			httpapi.Fail(c, core.ErrNotFound.WithMessage("group not found"))
 			return
@@ -616,7 +615,7 @@ func expressionFor(mode string, config json.RawMessage, expression string) (stri
 
 // recordHistory keeps an expression (hash, canonical text, version) on q
 // where a settlement retry reads it back.
-func recordHistory(ctx context.Context, q store.Querier, p *expr.Program) error {
+func recordHistory(ctx context.Context, q *gorm.DB, p *expr.Program) error {
 	return insertHistory(store.G(ctx, q), p).Error
 }
 

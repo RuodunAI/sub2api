@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 type Options struct {
@@ -58,14 +58,14 @@ func bounded(s string) bool                { return s != "" && len(s) <= 256 && 
 func validBinding(b core.ResourceBinding) bool {
 	return b.AccountID > 0 && bounded(b.PrincipalID) && bounded(b.Generation)
 }
-func lock(ctx context.Context, q store.Querier, o core.ResourceOwner) error {
+func lock(ctx context.Context, q *gorm.DB, o core.ResourceOwner) error {
 	return store.G(ctx, q).Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, fmt.Sprintf("helper-history:%d:%d", o.UserID, o.GroupID)).Error
 }
-func (s *Service) transaction(ctx context.Context, o core.ResourceOwner, fn func(pgx.Tx) error) error {
+func (s *Service) transaction(ctx context.Context, o core.ResourceOwner, fn func(*gorm.DB) error) error {
 	if !validOwner(o) || s.db == nil || s.cipher == nil {
 		return core.ErrInvalidArgument
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if e := lock(ctx, tx, o); e != nil {
 			return e
 		}
@@ -80,7 +80,7 @@ func chainDigest(parent string, b core.ResourceBinding, namespace, prefix, paylo
 	raw, _ := json.Marshal([]any{wire.Version, parent, b, namespace, prefix, payloadDigest})
 	return wire.Digest(raw)
 }
-func (s *Service) clean(ctx context.Context, q store.Querier, o core.ResourceOwner, now time.Time) error {
+func (s *Service) clean(ctx context.Context, q *gorm.DB, o core.ResourceOwner, now time.Time) error {
 	// Identity tombstones are never automatically evicted: a later identical
 	// public prefix must not resurrect an old client with a different hidden chain.
 	db := store.G(ctx, q)
@@ -115,7 +115,7 @@ func holdingsQuery(db *gorm.DB, o core.ResourceOwner, now time.Time, dst *holdin
 		Scan(dst)
 }
 
-func (s *Service) quota(ctx context.Context, q store.Querier, o core.ResourceOwner, now time.Time, bytes int64) error {
+func (s *Service) quota(ctx context.Context, q *gorm.DB, o core.ResourceOwner, now time.Time, bytes int64) error {
 	var h holdings
 	if e := holdingsQuery(store.G(ctx, q), o, now, &h).Error; e != nil {
 		return e
@@ -132,6 +132,6 @@ func (s *Service) ExpirePayloads(ctx context.Context) error {
 	if s.db == nil {
 		return core.ErrInvalidArgument
 	}
-	return store.G(ctx, s.db.Pool).Model(&model.ProviderHelperRecord{}).Where("expires_at <= ? AND payload IS NOT NULL", s.now()).
+	return store.G(ctx, s.db.Gorm).Model(&model.ProviderHelperRecord{}).Where("expires_at <= ? AND payload IS NOT NULL", s.now()).
 		Update("payload", nil).Error
 }

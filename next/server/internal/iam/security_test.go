@@ -233,7 +233,7 @@ func TestLoginRateLimitDB(t *testing.T) {
 // ageRotation moves the rotation of token past the reuse grace.
 func ageRotation(t *testing.T, s *Service, token string) {
 	t.Helper()
-	if _, err := s.db.Pool.Exec(context.Background(), `UPDATE refresh_tokens
+	if _, err := s.db.SQL.ExecContext(context.Background(), `UPDATE refresh_tokens
 		SET replaced_at = replaced_at - interval '2 minutes', revoked_at = revoked_at - interval '2 minutes'
 		WHERE token_hash = $1`, hashToken(token)); err != nil {
 		t.Fatal(err)
@@ -270,7 +270,7 @@ func TestRefreshReuseGraceAndSlidingExpiry(t *testing.T) {
 	// Every rotation slides the expiry: the newest token lives a full TTL.
 	var left time.Duration
 	var exp time.Time
-	if err := s.db.Pool.QueryRow(ctx, `SELECT max(expires_at) FROM refresh_tokens WHERE user_id = $1`, a1.User.ID).Scan(&exp); err != nil {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT max(expires_at) FROM refresh_tokens WHERE user_id = $1`, a1.User.ID).Scan(&exp); err != nil {
 		t.Fatal(err)
 	}
 	if left = time.Until(exp); left < s.cfg.RefreshTokenTTL-time.Minute {
@@ -313,11 +313,11 @@ func TestRefreshReuseRevokesFamily(t *testing.T) {
 	}
 	var fam1, fam3 string
 	var replaced bool
-	if err := s.db.Pool.QueryRow(ctx, `SELECT family_id, replaced_at IS NOT NULL FROM refresh_tokens WHERE token_hash = $1`,
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT family_id, replaced_at IS NOT NULL FROM refresh_tokens WHERE token_hash = $1`,
 		hashToken(a1.RefreshToken)).Scan(&fam1, &replaced); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.db.Pool.QueryRow(ctx, `SELECT family_id FROM refresh_tokens WHERE token_hash = $1`,
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT family_id FROM refresh_tokens WHERE token_hash = $1`,
 		hashToken(a3.RefreshToken)).Scan(&fam3); err != nil {
 		t.Fatal(err)
 	}

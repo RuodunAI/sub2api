@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // familyOf reads the login session id out of an access token.
@@ -180,12 +180,12 @@ func TestChangePasswordAndStatusUpdateDoNotDeadlock(t *testing.T) {
 // and ip.
 func superadminLogins(t *testing.T, s *Service) []string {
 	t.Helper()
-	rows, err := s.db.Pool.Query(context.Background(), `SELECT user_id || ' ' || (detail->>'method') || ' ' || (detail->>'ip') || ' ' || ip
+	rows, err := s.db.SQL.QueryContext(context.Background(), `SELECT user_id || ' ' || (detail->>'method') || ' ' || (detail->>'ip') || ' ' || ip
 		FROM audit_logs WHERE action = 'auth.superadmin_login' ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	out, err := testutil.Column[string](rows)
 	if err != nil {
 		t.Fatal(err)
 	}

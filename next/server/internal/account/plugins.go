@@ -61,7 +61,7 @@ func (s *Service) ListPluginAccounts(ctx context.Context, pluginKey string, q co
 		limit = PluginAccountsDefaultLimit
 	}
 	var rows []pluginAccount
-	if err := pluginAccountsPage(store.G(ctx, s.d.DB.Pool), pluginKey, q, limit).Find(&rows).Error; err != nil {
+	if err := pluginAccountsPage(store.G(ctx, s.d.DB.Gorm), pluginKey, q, limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]core.PluginAccountSummary, len(rows))
@@ -112,7 +112,7 @@ func (s *Service) ReadPluginAccountCredentials(ctx context.Context, pluginKey st
 		enc      []byte
 		settings []byte
 	)
-	err := pluginAccountByID(store.G(ctx, s.d.DB.Pool), id, pluginKey).Select("id, name, type, status, schedulable, settings, credentials_enc").Row().
+	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("id, name, type, status, schedulable, settings, credentials_enc").Row().
 		Scan(&out.ID, &out.Name, &out.Type, &out.Status, &out.Schedulable, &settings, &enc)
 	if store.IsNoRows(err) {
 		// Deliberately the same answer for "no such account" and "an account
@@ -128,7 +128,7 @@ func (s *Service) ReadPluginAccountCredentials(ctx context.Context, pluginKey st
 	if err != nil {
 		return nil, err
 	}
-	if err := audit.Audit(ctx, s.d.DB.Pool, 0, AuditPluginCredentialsRead, "account", itoa(id), map[string]any{
+	if err := audit.Audit(ctx, s.d.DB.Gorm, 0, AuditPluginCredentialsRead, "account", itoa(id), map[string]any{
 		// No console user is in this chain: the plugin process asks the host
 		// directly, so the actor is the plugin, recorded here.
 		"plugin_key":   pluginKey,
@@ -158,7 +158,7 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 	}
 	id := in.GetAccountId()
 	var proxyID *int64
-	err := pluginAccountByID(store.G(ctx, s.d.DB.Pool), id, pluginKey).Select("proxy_id").Row().Scan(&proxyID)
+	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("proxy_id").Row().Scan(&proxyID)
 	if store.IsNoRows(err) {
 		// The same answer as for a missing id (ReadPluginAccountCredentials).
 		return nil, notFound(ctx)
@@ -177,7 +177,7 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 		// the request sent without its row.
 		detail["host"], detail["path"] = u.Host, u.EscapedPath()
 	}
-	if err := audit.Audit(context.WithoutCancel(ctx), s.d.DB.Pool, 0, AuditPluginAccountRequest, "account", itoa(id), detail); err != nil {
+	if err := audit.Audit(context.WithoutCancel(ctx), s.d.DB.Gorm, 0, AuditPluginAccountRequest, "account", itoa(id), detail); err != nil {
 		slog.WarnContext(ctx, "account: audit plugin account request", "plugin", pluginKey, "account", id, "err", err)
 	}
 	return &pluginv1.ExecutionHTTPResponse{Status: ans.status, Headers: ans.headers, Body: ans.body,

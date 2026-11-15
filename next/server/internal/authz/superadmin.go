@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -32,7 +31,7 @@ func transferTargetError(code, message string) *core.Error {
 // holders. It returns the bumped version (call Committed after
 // commit) and the demoted users. Only roles, user_roles and users are read
 // and written, so the CLI runs on any schema it may meet.
-func (s *Service) TransferSuperAdmin(ctx context.Context, tx pgx.Tx, actorID, targetID int64) (int64, []int64, error) {
+func (s *Service) TransferSuperAdmin(ctx context.Context, tx *gorm.DB, actorID, targetID int64) (int64, []int64, error) {
 	v, err := s.Bump(ctx, tx)
 	if err != nil {
 		return 0, nil, err
@@ -86,7 +85,7 @@ func grantSuperuser(db *gorm.DB, userID int64) *gorm.DB {
 
 // superAdmins locks the rows of superuser roles and returns their holders
 // (never nil).
-func superAdmins(ctx context.Context, tx pgx.Tx) ([]int64, error) {
+func superAdmins(ctx context.Context, tx *gorm.DB) ([]int64, error) {
 	ids := []int64{}
 	if err := lockSuperAdmins(store.G(ctx, tx)).Scan(&ids).Error; err != nil {
 		return nil, err
@@ -102,7 +101,7 @@ func lockSuperAdmins(db *gorm.DB) *gorm.DB {
 
 // checkTransferTarget fails unless targetID is an active, undeleted user
 // other than the acting super admin, and locks its row.
-func checkTransferTarget(ctx context.Context, tx pgx.Tx, actorID, targetID int64) error {
+func checkTransferTarget(ctx context.Context, tx *gorm.DB, actorID, targetID int64) error {
 	if actorID != 0 && targetID == actorID {
 		return errTransferToSelf
 	}

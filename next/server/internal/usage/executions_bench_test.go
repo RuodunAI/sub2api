@@ -6,9 +6,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -44,7 +45,7 @@ func BenchmarkHotExecution(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-	inTx := func(fn func(pgx.Tx) error) error { return db.Tx(ctx, fn) }
+	inTx := func(fn func(*gorm.DB) error) error { return db.Tx(ctx, fn) }
 	cases := []struct {
 		name    string
 		prepare func(*testing.B, string)
@@ -52,7 +53,7 @@ func BenchmarkHotExecution(b *testing.B) {
 	}{
 		{"begin/pgx", nil, func(id string) error {
 			rec.RequestID = id
-			_, err := db.Pool.Exec(ctx, `INSERT INTO plugin_executions(id,request_id,plugin_key,account_id,attempt,record,task_submit)
+			_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugin_executions(id,request_id,plugin_key,account_id,attempt,record,task_submit)
  VALUES($1,$2,$3,$4,$5,$6,$7)`, id, id, rec.PluginKey, account, 1, jsonOr(rec, "{}"), false)
 			return err
 		}},
@@ -65,24 +66,24 @@ func BenchmarkHotExecution(b *testing.B) {
 			if err != nil {
 				return err
 			}
-			_, err = db.Pool.Exec(ctx, `UPDATE plugin_executions SET state='observed',record=$2,observation=$3,updated_at=clock_timestamp()
+			_, err = db.SQL.ExecContext(ctx, `UPDATE plugin_executions SET state='observed',record=$2,observation=$3,updated_at=clock_timestamp()
  WHERE id=$1 AND state='intent' AND request_id=$4 AND account_id=$5`, id, raw, observation, rec.RequestID, rec.AccountID)
 			return err
 		}},
 		{"observe/gorm", intent, func(id string) error { return s.ObserveExecution(ctx, id, rec, observation) }},
 		{"commit/pgx", observed, func(id string) error {
-			return inTx(func(tx pgx.Tx) error {
+			return inTx(func(tx *gorm.DB) error {
 				var x lockedExecution
-				if err := tx.QueryRow(ctx, `SELECT state,operation,digest,task_id,request_id,plugin_key,account_id FROM plugin_executions WHERE id=$1 FOR UPDATE`, id).
+				if err := store.SQLTx(tx).QueryRowContext(ctx, `SELECT state,operation,digest,task_id,request_id,plugin_key,account_id FROM plugin_executions WHERE id=$1 FOR UPDATE`, id).
 					Scan(&x.state, &x.op, &x.digest, &x.taskID, &x.requestID, &x.pluginKey, &x.accountID); err != nil {
 					return err
 				}
-				_, err := tx.Exec(ctx, `UPDATE plugin_executions SET state='committed',operation=$2,digest=$3,task_id=$4,record=NULL,observation=NULL,updated_at=clock_timestamp() WHERE id=$1`, id, "usage", "digest", "")
+				_, err := store.SQLTx(tx).ExecContext(ctx, `UPDATE plugin_executions SET state='committed',operation=$2,digest=$3,task_id=$4,record=NULL,observation=NULL,updated_at=clock_timestamp() WHERE id=$1`, id, "usage", "digest", "")
 				return err
 			})
 		}},
 		{"commit/gorm", observed, func(id string) error {
-			return inTx(func(tx pgx.Tx) error {
+			return inTx(func(tx *gorm.DB) error {
 				if _, err := lockExecution(ctx, tx, id); err != nil {
 					return err
 				}

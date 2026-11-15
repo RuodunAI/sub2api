@@ -235,7 +235,7 @@ func (f *runtimeFixture) writeConfig(cfg Config) {
 	plain, _ := json.Marshal(cfg)
 	encrypted, _ := f.cipher.Encrypt(plain, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, e := f.db.Pool.Exec(context.Background(), `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
+	if _, e := f.db.SQL.ExecContext(context.Background(), `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
 		f.t.Fatal(e)
 	}
 }
@@ -280,7 +280,7 @@ func TestRuntimeInstallGeneratesTheKeyAndSendsItOnlyOnStdin(t *testing.T) {
 		t.Fatalf("installed: %v", inst)
 	}
 	var n int
-	if err := f.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.install'`).Scan(&n); err != nil || n != 1 {
+	if err := f.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.install'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("audit: %d %v", n, err)
 	}
 	// A configured key is reused, not replaced.

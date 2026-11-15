@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -182,7 +183,7 @@ func (s *Service) reconcileSettings(ctx context.Context) resolved {
 	if snap != nil && time.Since(at) < reconcileSettingsTTL {
 		return *snap
 	}
-	v, err := loadReconcileSettings(ctx, s.db.Pool)
+	v, err := loadReconcileSettings(ctx, s.db.Gorm)
 	if err != nil {
 		return DefaultReconcileSettings().resolve()
 	}
@@ -197,7 +198,7 @@ func (s *Service) reconcileSettings(ctx context.Context) resolved {
 
 const reconcileSettingsTTL = 10 * time.Second
 
-func loadReconcileSettings(ctx context.Context, q store.Querier) (ReconcileSettings, error) {
+func loadReconcileSettings(ctx context.Context, q *gorm.DB) (ReconcileSettings, error) {
 	v := DefaultReconcileSettings()
 	raw, err := store.SettingValue(store.G(ctx, q), settingsKeyReconcile)
 	if store.IsNoRows(err) {
@@ -232,7 +233,7 @@ func loadReconcileSettings(ctx context.Context, q store.Querier) (ReconcileSetti
 }
 
 func (s *Service) getReconcileSettings(c *gin.Context) {
-	v, err := loadReconcileSettings(c.Request.Context(), s.db.Pool)
+	v, err := loadReconcileSettings(c.Request.Context(), s.db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -159,11 +159,11 @@ func TestAdjustBalanceManagedUsers(t *testing.T) {
 	}
 	// Refused adjustments moved no money.
 	var n int
-	if err := e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM balance_ledger`).Scan(&n); err != nil || n != adjusted {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM balance_ledger`).Scan(&n); err != nil || n != adjusted {
 		t.Fatalf("ledger rows: %d %v", n, err)
 	}
 	// Two actions on oneself went through, both the super admin's.
-	rows, err := e.db.Pool.Query(ctx, `SELECT user_id, target_id, detail FROM audit_logs WHERE action = 'user.act_on_self' ORDER BY id`)
+	rows, err := e.db.SQL.QueryContext(ctx, `SELECT user_id, target_id, detail FROM audit_logs WHERE action = 'user.act_on_self' ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}

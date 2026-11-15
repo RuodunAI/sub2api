@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"testing"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"testing"
 )
 
 func TestSkillsReviewUploadEvidenceImmutableAndBound(t *testing.T) {
@@ -46,10 +47,10 @@ func TestSkillsReviewUploadEvidenceDB(t *testing.T) {
 	ctx := context.Background()
 	s := New(db, Options{MaxResources: 4, MaxBytes: 100})
 	var owner core.ResourceOwner
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('skill-evidence@example.com','x') RETURNING id`).Scan(&owner.UserID); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('skill-evidence@example.com','x') RETURNING id`).Scan(&owner.UserID); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('skill-evidence') RETURNING id`).Scan(&owner.GroupID); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('skill-evidence') RETURNING id`).Scan(&owner.GroupID); err != nil {
 		t.Fatal(err)
 	}
 	binding := core.ResourceBinding{AccountID: 22, PrincipalID: "issuer", Generation: "generation"}
@@ -68,7 +69,7 @@ func TestSkillsReviewUploadEvidenceDB(t *testing.T) {
 	}
 	var state string
 	var meta []byte
-	if err = db.Pool.QueryRow(ctx, `SELECT state,metadata FROM provider_skill_versions WHERE public_id=$1`, reserved.Version.PublicVersionID).Scan(&state, &meta); err != nil {
+	if err = db.SQL.QueryRowContext(ctx, `SELECT state,metadata FROM provider_skill_versions WHERE public_id=$1`, reserved.Version.PublicVersionID).Scan(&state, &meta); err != nil {
 		t.Fatal(err)
 	}
 	if state != "uncertain" || !bytes.Contains(meta, []byte("remote_observed")) {

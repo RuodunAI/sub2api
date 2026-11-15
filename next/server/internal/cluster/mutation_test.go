@@ -33,11 +33,11 @@ func TestPluginMutationsPersistedPlansAndSharedLock(t *testing.T) {
 		t.Fatal("parallel mutation accepted")
 	}
 	done()
-	if _, err = db.Pool.Exec(ctx, `CREATE SCHEMA updater;CREATE TABLE updater.upgrades(status text);INSERT INTO updater.upgrades VALUES('paused')`); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, `CREATE SCHEMA updater;CREATE TABLE updater.upgrades(status text);INSERT INTO updater.upgrades VALUES('paused')`); err != nil {
 		t.Fatal(err)
 	}
 	for _, phase := range []string{"paused", "running"} {
-		if _, err = db.Pool.Exec(ctx, `UPDATE updater.upgrades SET status=$1`, phase); err != nil {
+		if _, err = db.SQL.ExecContext(ctx, `UPDATE updater.upgrades SET status=$1`, phase); err != nil {
 			t.Fatal(err)
 		}
 		if _, release, err := g.Begin(ctx); err == nil {
@@ -56,7 +56,7 @@ func TestPluginMutationsPersistedPlansAndSharedLock(t *testing.T) {
 		release()
 		t.Fatal("bootstrap bypass outlived preparation")
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE updater.upgrades SET status='complete'`); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, `UPDATE updater.upgrades SET status='complete'`); err != nil {
 		t.Fatal(err)
 	}
 	lk, ok, err := g.Locker.TryLock(ctx, rc.ClusterChangeLock, time.Second)

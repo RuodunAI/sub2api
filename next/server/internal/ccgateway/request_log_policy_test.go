@@ -13,10 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	resourcecontract "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/resources"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"github.com/stretchr/testify/require"
 )
 
 // CONTRACTS §65: the default rule is part of the configuration, off, summary
@@ -145,7 +146,7 @@ func TestRequestLogLevelOnTheRequestPath(t *testing.T) {
 	bus := &recordingBus{}
 	s.Bus = bus
 	var id int64
-	require.NoError(t, db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id))
 	var mu sync.Mutex
 	policies := map[string]string{}
 	account := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +171,7 @@ func TestRequestLogLevelOnTheRequestPath(t *testing.T) {
 		plain, _ := json.Marshal(cfg)
 		encrypted, _ := cipher.Encrypt(plain, configAAD)
 		envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-		_, err := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope)
+		_, err := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope)
 		require.NoError(t, err)
 	}
 	saveConfig(nil)
@@ -214,7 +215,7 @@ func TestRequestLogLevelOnTheRequestPath(t *testing.T) {
 	require.Contains(t, bus.published, `config:changed {"account_id":`+strconv.FormatInt(id, 10)+`,"type":"ccgateway_request_log"}`)
 
 	// Written by another node: kept until its message arrives.
-	_, err = db.Pool.Exec(ctx, `UPDATE ccgateway_account_request_logs SET level='full', full_until=now()+interval '1 hour' WHERE account_id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE ccgateway_account_request_logs SET level='full', full_until=now()+interval '1 hour' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	require.Equal(t, "off", level(), "cached")
 	s.onConfigChanged([]byte(`{"type":"ccgateway_request_log","account_id":` + strconv.FormatInt(id, 10) + `}`))
@@ -303,7 +304,7 @@ func TestRequestLogsPermissions(t *testing.T) {
 	settings := f.user("settings@test")
 	f.auth.keys[settings] = []string{"settings:read", "settings:manage"}
 	id := f.account(false)
-	_, err := f.db.Pool.Exec(context.Background(), "UPDATE accounts SET created_by=$1 WHERE id=$2", owner, id)
+	_, err := f.db.SQL.ExecContext(context.Background(), "UPDATE accounts SET created_by=$1 WHERE id=$2", owner, id)
 	require.NoError(t, err)
 	for _, method := range []string{"GET", "PUT"} {
 		code, out := f.callAs(settings, method, id, "request-logs", `{"level":"off"}`)
@@ -325,6 +326,6 @@ func TestRequestLogsPermissions(t *testing.T) {
 	require.Equal(t, 200, code, out)
 	require.Equal(t, map[string]any{"level": "off", "full_until": nil}, data(out)["setting"])
 	var by int64
-	require.NoError(t, f.db.Pool.QueryRow(context.Background(), `SELECT updated_by FROM ccgateway_account_request_logs WHERE account_id=$1`, id).Scan(&by))
+	require.NoError(t, f.db.SQL.QueryRowContext(context.Background(), `SELECT updated_by FROM ccgateway_account_request_logs WHERE account_id=$1`, id).Scan(&by))
 	require.Equal(t, updater, by)
 }

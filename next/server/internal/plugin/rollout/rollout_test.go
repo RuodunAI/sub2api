@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -117,39 +117,39 @@ type recorder struct {
 	events   []string
 }
 
-func (r *recorder) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, string) error {
+func (r *recorder) CanGrantToRoles(context.Context, *gorm.DB, int64, []string, string) error {
 	return nil
 }
-func (r *recorder) PluginPermissions(context.Context, store.Querier, string) ([]core.PluginPermission, error) {
+func (r *recorder) PluginPermissions(context.Context, *gorm.DB, string) ([]core.PluginPermission, error) {
 	return nil, nil
 }
-func (r *recorder) PermissionHolders(context.Context, store.Querier, []string) (map[string][]core.PermissionHolder, error) {
+func (r *recorder) PermissionHolders(context.Context, *gorm.DB, []string) (map[string][]core.PermissionHolder, error) {
 	return nil, nil
 }
-func (r *recorder) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+func (r *recorder) PluginGrantees(context.Context, *gorm.DB, int64, []string) (core.PluginGrantees, error) {
 	return core.PluginGrantees{}, nil
 }
-func (r *recorder) GrantPluginPermission(context.Context, pgx.Tx, string, map[string][]string) error {
+func (r *recorder) GrantPluginPermission(context.Context, *gorm.DB, string, map[string][]string) error {
 	return nil
 }
-func (r *recorder) SyncPlugin(context.Context, pgx.Tx, string, []core.PermissionDef) error {
+func (r *recorder) SyncPlugin(context.Context, *gorm.DB, string, []core.PermissionDef) error {
 	return nil
 }
-func (r *recorder) SetPluginActive(_ context.Context, _ pgx.Tx, _ string, active bool) error {
+func (r *recorder) SetPluginActive(_ context.Context, _ *gorm.DB, _ string, active bool) error {
 	r.mu.Lock()
 	r.active = append(r.active, active)
 	r.mu.Unlock()
 	return nil
 }
-func (r *recorder) DeletePlugin(context.Context, pgx.Tx, string) error  { return nil }
-func (r *recorder) DiscardStaged(context.Context, pgx.Tx, string) error { return nil }
-func (r *recorder) ApplyDefaults(_ context.Context, _ pgx.Tx, m *manifest.Manifest, _ map[string]map[string][]string) error {
+func (r *recorder) DeletePlugin(context.Context, *gorm.DB, string) error  { return nil }
+func (r *recorder) DiscardStaged(context.Context, *gorm.DB, string) error { return nil }
+func (r *recorder) ApplyDefaults(_ context.Context, _ *gorm.DB, m *manifest.Manifest, _ map[string]map[string][]string) error {
 	r.mu.Lock()
 	r.defaults = append(r.defaults, m.Version)
 	r.mu.Unlock()
 	return nil
 }
-func (r *recorder) Emit(_ context.Context, _ pgx.Tx, evs ...core.Event) error {
+func (r *recorder) Emit(_ context.Context, _ *gorm.DB, evs ...core.Event) error {
 	r.mu.Lock()
 	for _, e := range evs {
 		p := e.Payload.(map[string]any)
@@ -225,7 +225,7 @@ func (h *harness) node(name, boot string, adjust ...func(*rollout.Options)) *nod
 	nd.Heartbeat(context.Background())
 	opts := rollout.Options{
 		DB: h.db, Node: nd, Bus: registrytest.Bus{RDB: h.rdb}, Packages: pkgs, Registry: reg, Runtime: rt,
-		Schemas:  dbschema.New(h.db, h.db.Pool.Config().ConnString(), make([]byte, 32), false),
+		Schemas:  dbschema.New(h.db, testutil.DSN(h.db), make([]byte, 32), false),
 		Defaults: h.rec, Perms: h.rec, Events: h.rec,
 		ReconcileInterval: 150 * time.Millisecond,
 		LeaseTTL:          8 * time.Second,
@@ -250,7 +250,7 @@ func (h *harness) node(name, boot string, adjust ...func(*rollout.Options)) *nod
 
 func (h *harness) plugin() (status, active, desired string) {
 	var a, d *string
-	if err := h.db.Pool.QueryRow(context.Background(), `SELECT status, active_version, desired_version FROM plugins WHERE key = $1`, h.key).
+	if err := h.db.SQL.QueryRowContext(context.Background(), `SELECT status, active_version, desired_version FROM plugins WHERE key = $1`, h.key).
 		Scan(&status, &a, &d); err != nil {
 		h.t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func (h *harness) plugin() (status, active, desired string) {
 }
 
 func (h *harness) rolloutRow(id int64) (phase, coordBoot, errMsg string) {
-	if err := h.db.Pool.QueryRow(context.Background(), `SELECT phase, COALESCE(coordinator_boot_id, ''), error FROM plugin_rollouts WHERE id = $1`, id).
+	if err := h.db.SQL.QueryRowContext(context.Background(), `SELECT phase, COALESCE(coordinator_boot_id, ''), error FROM plugin_rollouts WHERE id = $1`, id).
 		Scan(&phase, &coordBoot, &errMsg); err != nil {
 		h.t.Fatal(err)
 	}
@@ -325,13 +325,13 @@ func TestTwoNodeRollout(t *testing.T) {
 	// The per-node outcome survives completion; the cleanup barrier for every
 	// boot that may still hold an instance is tracked separately.
 	var nodesActive, nodesTracked int
-	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_rollout_nodes WHERE rollout_id = $1 AND state = 'active'`, r.ID).Scan(&nodesActive)
-	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_rollout_cleanup WHERE rollout_id = $1`, r.ID).Scan(&nodesTracked)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_rollout_nodes WHERE rollout_id = $1 AND state = 'active'`, r.ID).Scan(&nodesActive)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_rollout_cleanup WHERE rollout_id = $1`, r.ID).Scan(&nodesTracked)
 	if nodesActive != 2 || nodesTracked != 2 {
 		t.Fatalf("rollout nodes active = %d, tracked for cleanup = %d", nodesActive, nodesTracked)
 	}
 	var mig int
-	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id LIKE '%.sql'`, h.key).Scan(&mig)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id LIKE '%.sql'`, h.key).Scan(&mig)
 	if mig != 1 {
 		t.Fatalf("migrations applied = %d", mig)
 	}
@@ -398,14 +398,14 @@ func TestTwoNodeRollout(t *testing.T) {
 	if _, defs, _ := h.rec.snapshot(); len(defs) != 1 || defs[0] != "2.0.0" {
 		t.Fatalf("ApplyDefaults calls = %v", defs)
 	}
-	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id LIKE '%.sql'`, h.key).Scan(&mig)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id LIKE '%.sql'`, h.key).Scan(&mig)
 	if mig != 2 {
 		t.Fatalf("migrations applied = %d", mig)
 	}
 
 	// The data migration ran once and is recorded, so a takeover skips it.
 	var data int
-	_ = h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id LIKE 'data:%'`, h.key).Scan(&data)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id LIKE 'data:%'`, h.key).Scan(&data)
 	if data != 2 {
 		t.Fatalf("recorded data migrations = %d, want enable and upgrade", data)
 	}
@@ -431,7 +431,7 @@ func TestTwoNodeRollout(t *testing.T) {
 		t.Fatalf("node B must keep serving its old version, serves %q", b.version(h.key))
 	}
 	var bState string
-	_ = h.db.Pool.QueryRow(ctx, `SELECT state FROM plugin_rollout_nodes WHERE rollout_id = $1 AND boot_id = 'boot-b'`, r.ID).Scan(&bState)
+	_ = h.db.SQL.QueryRowContext(ctx, `SELECT state FROM plugin_rollout_nodes WHERE rollout_id = $1 AND boot_id = 'boot-b'`, r.ID).Scan(&bState)
 	if bState != rollout.NodeFailed {
 		t.Fatalf("node B outcome = %q", bState)
 	}

@@ -6,11 +6,11 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 var _ core.AccountLifecycleResource = (*Service)(nil)
@@ -25,7 +25,7 @@ func (s *Service) PrepareAccount(ctx context.Context, p core.AccountPreparation)
 	if err := s.checkProxy(ctx, p.ProxyID); err != nil {
 		return err
 	}
-	g := store.G(ctx, s.DB.Pool)
+	g := store.G(ctx, s.DB.Gorm)
 	res := insertPreparation(g, p)
 	if res.Error != nil {
 		return res.Error
@@ -99,7 +99,7 @@ func (s *Service) AccountPreparationAction(ctx context.Context, p core.AccountPr
 	return out, nil
 }
 
-func (s *Service) UpdateAccountPreparation(ctx context.Context, tx pgx.Tx, p core.AccountPreparation) error {
+func (s *Service) UpdateAccountPreparation(ctx context.Context, tx *gorm.DB, p core.AccountPreparation) error {
 	res := setDraftProxy(store.G(ctx, tx), p.Key, &p.CreatedBy, p.ProxyID)
 	if res.Error != nil {
 		return res.Error
@@ -111,7 +111,7 @@ func (s *Service) UpdateAccountPreparation(ctx context.Context, tx pgx.Tx, p cor
 }
 
 func (s *Service) CheckAccountPreparation(ctx context.Context, p core.AccountPreparation) (core.AccountPreparationFacts, error) {
-	matches, err := preparationMatches(store.G(ctx, s.DB.Pool), p)
+	matches, err := preparationMatches(store.G(ctx, s.DB.Gorm), p)
 	if err != nil {
 		return core.AccountPreparationFacts{}, err
 	}
@@ -121,7 +121,7 @@ func (s *Service) CheckAccountPreparation(ctx context.Context, p core.AccountPre
 	return s.CheckDraft(ctx, p.Key, &p.CreatedBy)
 }
 
-func (s *Service) AdoptAccountPreparation(ctx context.Context, tx pgx.Tx, p core.AccountPreparation, id int64) error {
+func (s *Service) AdoptAccountPreparation(ctx context.Context, tx *gorm.DB, p core.AccountPreparation, id int64) error {
 	return AdoptDraft(ctx, tx, p.Key, id, &p.CreatedBy)
 }
 

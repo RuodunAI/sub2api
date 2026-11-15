@@ -76,7 +76,7 @@ func TestRuntimePairedWorkersExplicitAndAudited(t *testing.T) {
 	require.Equal(t, "rollback_unhealthy", results["22"]["reason"])
 	require.Empty(t, f.s.kick)
 	var n int
-	require.NoError(t, f.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.workers' AND detail->>'cli_version'='2.1.304' AND detail->'components'='["worker","cli"]'::jsonb`).Scan(&n))
+	require.NoError(t, f.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.workers' AND detail->>'cli_version'='2.1.304' AND detail->'components'='["worker","cli"]'::jsonb`).Scan(&n))
 	require.Equal(t, 1, n)
 	for _, bad := range []string{`{"components":[]}`, `{"components":["cli"]}`, `{"components":["cli","worker"],"cli_version":"2.1.304"}`, `{"components":["worker","cli"],"cli_version":"latest"}`, `{"components":["worker","cli"],"cli_version":"2.1"}`, `{"cli_version":"2.1.304"}`, `{"path":"/tmp/evil"}`, `{"components":["worker","cli"],"cli_version":"2.1.304","target":"/etc"}`} {
 		code, out = f.request(admin, "POST", path, bad)
@@ -210,10 +210,10 @@ func TestRuntimeWorkersUpdatesEachRuntimeInTurn(t *testing.T) {
 	ctx := context.Background()
 	adopted, unadopted := "d00000000000000a1", "d00000000000000b2"
 	owner := f.account(true)
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, account_id) VALUES($1, $2, $3)`, adopted, f.proxy(nil), owner); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, account_id) VALUES($1, $2, $3)`, adopted, f.proxy(nil), owner); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id) VALUES($1, $2)`, unadopted, f.proxy(nil)); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id) VALUES($1, $2)`, unadopted, f.proxy(nil)); err != nil {
 		t.Fatal(err)
 	}
 	ctl.keys = []string{"21", "22", "23", "24", "25", "26", "27", "28", "29", adopted, unadopted, "../etc", "21"}
@@ -265,7 +265,7 @@ func TestRuntimeWorkersUpdatesEachRuntimeInTurn(t *testing.T) {
 	check(adopted, "updated", "", strings.Repeat("b", 64), strings.Repeat("a", 64), float64(owner))
 	check(unadopted, "unchanged", "", strings.Repeat("c", 64), "", nil)
 	var n int
-	_ = f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.workers'
+	_ = f.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.workers'
 	  AND detail->>'image'=$1 AND (detail->'statuses'->>'failed')::int=4`, AppImage).Scan(&n)
 	if n != 1 {
 		t.Fatalf("audit rows: %d", n)
@@ -404,7 +404,7 @@ func TestRuntimeWorkerUpdatesOneRuntime(t *testing.T) {
 	admin := f.user("admin@x")
 	ctx := context.Background()
 	draft, owner := "d00000000000000a1", f.account(true)
-	_, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, account_id) VALUES($1, $2, $3)`, draft, f.proxy(nil), owner)
+	_, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, account_id) VALUES($1, $2, $3)`, draft, f.proxy(nil), owner)
 	require.NoError(t, err)
 
 	code, out := f.request(admin, "POST", "/system/ccgateway/runtimes/22/worker", ``)
@@ -424,7 +424,7 @@ func TestRuntimeWorkerUpdatesOneRuntime(t *testing.T) {
 	require.Equal(t, 200, code, "%v", out)
 	require.Equal(t, float64(owner), workerResults(t, out)[draft]["account_id"])
 	var n int
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.workers'
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.workers'
 	  AND detail->>'key'=$1 AND detail->>'image'='ccgateway:22cfdb5'`, draft).Scan(&n))
 	require.Equal(t, 1, n)
 

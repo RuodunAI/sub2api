@@ -18,7 +18,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -118,7 +117,7 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		ids = append(ids, id)
 		ts = append(ts, at)
 	}
-	err := store.G(ctx, s.db.Pool).Exec(flushLastUsedSQL, store.Int64s(ids), store.Times(ts)).Error
+	err := store.G(ctx, s.db.Gorm).Exec(flushLastUsedSQL, store.Int64s(ids), store.Times(ts)).Error
 	if err != nil {
 		// Put them back so the next tick retries.
 		s.mu.Lock()
@@ -297,7 +296,7 @@ func (s *Service) lookup(ctx context.Context, hash string) (*cached, error) {
 	// database/sql hands jsonb over as its document: JSON decodes it.
 	var allow store.JSON[[]string]
 	var env store.JSON[core.EnvironmentValues]
-	err := lookupQuery(store.G(ctx, s.db.Pool), hash).Row().Scan(
+	err := lookupQuery(store.G(ctx, s.db.Gorm), hash).Row().Scan(
 		&e.KeyID, &e.UserID, &e.KeyStatus, &e.ExpiresAt, &e.UserActive,
 		&e.GroupID, &e.GroupName, &e.GroupStatus, &groupRate, &allow, &e.ModelFilterMode, &env, &e.GroupAvailable, (*store.Strings)(&e.AllowedIPs),
 		&e.KeyLimits.RPM, &e.KeyLimits.TPM, &e.KeyLimits.Concurrency, &e.KeyQuota.Limit, &e.KeyQuota.Used, &e.GroupLossPolicy,
@@ -439,7 +438,7 @@ func notFound(ctx context.Context) error {
 func (s *Service) query(c *gin.Context, filter func(*gorm.DB) *gorm.DB, hideEmail bool) {
 	ctx := c.Request.Context()
 	page, size := httpapi.Pagination(c)
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	var total int64
 	if err := keysWithOwner(g).Scopes(filter).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
@@ -539,7 +538,7 @@ func searchedPrefix(q string) string {
 
 func (s *Service) loadKey(ctx context.Context, id, ownerID int64) (*APIKey, error) {
 	var r keyRow
-	err := keyView(store.G(ctx, s.db.Pool)).Where("k.id = ? AND k.user_id = ? AND k.deleted_at IS NULL", id, ownerID).Take(&r).Error
+	err := keyView(store.G(ctx, s.db.Gorm)).Where("k.id = ? AND k.user_id = ? AND k.deleted_at IS NULL", id, ownerID).Take(&r).Error
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
@@ -557,7 +556,7 @@ func (s *Service) loadKey(ctx context.Context, id, ownerID int64) (*APIKey, erro
 // transaction the row stays key-share locked, so a concurrent group delete
 // waits for the key write (and then unbinds it) instead of turning it into a
 // foreign key violation.
-func groupAvailable(ctx context.Context, q store.Querier, userID, groupID int64) (bool, error) {
+func groupAvailable(ctx context.Context, q *gorm.DB, userID, groupID int64) (bool, error) {
 	var ok bool
 	err := usableGroup(store.G(ctx, q), userID, groupID).Take(&ok).Error
 	if store.IsNoRows(err) {
@@ -576,7 +575,7 @@ func usableGroup(db *gorm.DB, userID, groupID int64) *gorm.DB {
 }
 
 // requireGroup fails with a group_id field error unless the group is usable by user.
-func requireGroup(ctx context.Context, q store.Querier, userID, groupID int64) error {
+func requireGroup(ctx context.Context, q *gorm.DB, userID, groupID int64) error {
 	ok, err := groupAvailable(ctx, q, userID, groupID)
 	if err != nil || ok {
 		return err
@@ -642,7 +641,7 @@ func (s *Service) createMine(c *gin.Context) {
 	}
 	hash := HashKey(raw)
 	var id int64
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := requireGroup(ctx, tx, uid, in.GroupID); err != nil {
 			return err
 		}
@@ -703,7 +702,7 @@ func (s *Service) updateMine(c *gin.Context) {
 		return
 	}
 	var hash string
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if in.GroupID != nil {
 			if err := requireGroup(ctx, tx, uid, *in.GroupID); err != nil {
 				return err
@@ -772,7 +771,7 @@ func (u *keyUpdate) changes() map[string]any {
 
 // updateOwned writes set to the owner's live key id and returns the key's
 // hash; notFound when there is no such key.
-func updateOwned(ctx context.Context, q store.Querier, id, ownerID int64, set map[string]any) (string, error) {
+func updateOwned(ctx context.Context, q *gorm.DB, id, ownerID int64, set map[string]any) (string, error) {
 	var k model.APIKey
 	res := ownedUpdate(store.G(ctx, q), &k, id, ownerID, set)
 	switch {
@@ -899,7 +898,7 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 		return
 	}
 	var oldHash string
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if err := owned(g, id, ownerID).Select("key_hash").Clauses(store.ForUpdate).Take(&oldHash).Error; err != nil {
 			if store.IsNoRows(err) {
@@ -943,7 +942,7 @@ func (s *Service) reveal(c *gin.Context, ownerID int64) {
 	}
 	ctx := audit.Context(c)
 	var k model.APIKey
-	err := owned(store.G(ctx, s.db.Pool), id, ownerID).Select("key_cipher").Take(&k).Error
+	err := owned(store.G(ctx, s.db.Gorm), id, ownerID).Select("key_cipher").Take(&k).Error
 	sealed := k.KeyCipher
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, notFound(ctx))
@@ -963,7 +962,7 @@ func (s *Service) reveal(c *gin.Context, ownerID int64) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := audit.Audit(ctx, s.db.Pool, uid, "apikey.reveal", "apikey", strconv.FormatInt(id, 10), nil); err != nil {
+	if err := audit.Audit(ctx, s.db.Gorm, uid, "apikey.reveal", "apikey", strconv.FormatInt(id, 10), nil); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -971,7 +970,7 @@ func (s *Service) reveal(c *gin.Context, ownerID int64) {
 }
 
 func (s *Service) softDelete(ctx context.Context, id int64, ownerID int64) error {
-	hash, err := updateOwned(ctx, s.db.Pool, id, ownerID, map[string]any{"deleted_at": gorm.Expr("now()")})
+	hash, err := updateOwned(ctx, s.db.Gorm, id, ownerID, map[string]any{"deleted_at": gorm.Expr("now()")})
 	if err != nil {
 		return err
 	}

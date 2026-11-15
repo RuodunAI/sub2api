@@ -4,10 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // The interleavings of settleSQL with another transaction that commits
@@ -18,20 +19,19 @@ import (
 
 // begin opens a transaction the test commits; the cleanup rolls back one
 // that is still open.
-func (e *env) begin() pgx.Tx {
+func (e *env) begin() *gorm.DB {
 	e.t.Helper()
-	ctx := context.Background()
-	tx, err := e.db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(context.Background(), e.db)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	e.t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	e.t.Cleanup(func() { tx.Rollback() })
 	return tx
 }
 
 // settleBehind starts e.settle in the background, waits until it queues for
 // a lock, commits first and returns the settlement's result.
-func (e *env) settleBehind(first pgx.Tx, uid int64, requestID, total string) (*core.LedgerResult, error) {
+func (e *env) settleBehind(first *gorm.DB, uid int64, requestID, total string) (*core.LedgerResult, error) {
 	e.t.Helper()
 	type result struct {
 		res *core.LedgerResult
@@ -43,7 +43,7 @@ func (e *env) settleBehind(first pgx.Tx, uid int64, requestID, total string) (*c
 		done <- result{res, err}
 	}()
 	e.waitForLockWaiters(1)
-	if err := first.Commit(context.Background()); err != nil {
+	if err := first.Commit().Error; err != nil {
 		e.t.Fatal(err)
 	}
 	r := <-done
@@ -113,7 +113,7 @@ func TestFirstPrechargeAndSettlementOfNewUser(t *testing.T) {
 		done := make(chan error, 1)
 		go func() { done <- e.svc.Precharge(ctx, usageRecord(uid, "p1", "flat(1)")) }()
 		e.waitForLockWaiters(1)
-		if err := first.Commit(ctx); err != nil {
+		if err := first.Commit().Error; err != nil {
 			t.Fatal(err)
 		}
 		if err := <-done; err != nil {
@@ -205,7 +205,7 @@ func TestApplyWaitsBehindSameKey(t *testing.T) {
 		done <- err
 	}()
 	e.waitForLockWaiters(1)
-	if err := first.Commit(ctx); err != nil {
+	if err := first.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := <-done; err != nil || replay == nil || !replay.Duplicate || replay.LedgerID != applied.LedgerID {

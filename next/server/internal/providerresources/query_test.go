@@ -3,10 +3,11 @@ package providerresources
 import (
 	"context"
 	"fmt"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 	"testing"
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestResourceQueryValidation(t *testing.T) {
@@ -28,10 +29,10 @@ func TestProviderResourceDBFilteredPagination(t *testing.T) {
 	ctx := context.Background()
 	s := New(db, Options{})
 	var owner core.ResourceOwner
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('pages@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('pages@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('pages') RETURNING id`).Scan(&owner.GroupID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('pages') RETURNING id`).Scan(&owner.GroupID); e != nil {
 		t.Fatal(e)
 	}
 	ids := make([]string, 8)
@@ -58,7 +59,7 @@ func TestProviderResourceDBFilteredPagination(t *testing.T) {
 				t.Fatal(e)
 			}
 		}
-		if _, e = db.Pool.Exec(ctx, `UPDATE provider_resources SET created_at=$2 WHERE public_id=$1`, ids[i], time.Unix(int64(100+i), 0)); e != nil {
+		if _, e = db.SQL.ExecContext(ctx, `UPDATE provider_resources SET created_at=$2 WHERE public_id=$1`, ids[i], time.Unix(int64(100+i), 0)); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -93,7 +94,7 @@ func TestProviderResourceDBFilteredPagination(t *testing.T) {
 	q.UnexpiredOnly = false
 	q.ExpiredWithin = 30 * 24 * time.Hour
 	assert(q, []int{7, 6, 5, 2, 0}, false)
-	if _, e := db.Pool.Exec(ctx, `UPDATE provider_resources SET expires_at=now()-interval '31 days' WHERE public_id=$1`, ids[5]); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `UPDATE provider_resources SET expires_at=now()-interval '31 days' WHERE public_id=$1`, ids[5]); e != nil {
 		t.Fatal(e)
 	}
 	assert(q, []int{7, 6, 2, 0}, false)

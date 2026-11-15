@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/event"
@@ -17,7 +17,7 @@ func TestEmit(t *testing.T) {
 	ctx := context.Background()
 	pub := event.NewPublisher(db)
 
-	err := db.Tx(ctx, func(tx pgx.Tx) error {
+	err := db.Tx(ctx, func(tx *gorm.DB) error {
 		return pub.Emit(ctx, tx,
 			core.Event{Type: core.EventBalanceChanged, Payload: map[string]any{"user_id": 7}},
 			core.Event{Type: core.EventUserUpdated, Payload: json.RawMessage(`{"user_id":8}`)},
@@ -27,7 +27,7 @@ func TestEmit(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Rolled back work leaves no events.
-	_ = db.Tx(ctx, func(tx pgx.Tx) error {
+	_ = db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := pub.Emit(ctx, tx, core.Event{Type: "x.y", Payload: 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -41,7 +41,7 @@ func TestEmit(t *testing.T) {
 		t.Fatal("invalid raw JSON accepted")
 	}
 
-	rows, err := db.Pool.Query(ctx, `SELECT type, payload::text FROM events ORDER BY id`)
+	rows, err := db.SQL.QueryContext(ctx, `SELECT type, payload::text FROM events ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}

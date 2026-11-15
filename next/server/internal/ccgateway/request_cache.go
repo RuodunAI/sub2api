@@ -290,7 +290,7 @@ func (s *Service) openRoute(ctx context.Context, cfg Config, r *accountRoute) (*
 // said forwarding no longer reads the database, the account policy was the
 // exception).
 func (s *Service) requestAccountFeatures(ctx context.Context, id int64) (AccountFeaturePolicy, error) {
-	p, _, err := readThrough(&s.cache, &s.cache.features, id, func() (AccountFeaturePolicy, error) { return LoadAccountFeaturePolicy(ctx, s.DB.Pool, id) })
+	p, _, err := readThrough(&s.cache, &s.cache.features, id, func() (AccountFeaturePolicy, error) { return LoadAccountFeaturePolicy(ctx, s.DB.Gorm, id) })
 	return p, err
 }
 

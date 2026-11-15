@@ -40,7 +40,7 @@ func (s *Service) RetentionTaskSpec() core.TaskSpec {
 func (s *Service) PurgeEvents(ctx context.Context) (int64, error) {
 	var total int64
 	for {
-		res := purgeChunk(store.G(ctx, s.db.Pool), s.opts.RetentionAge)
+		res := purgeChunk(store.G(ctx, s.db.Gorm), s.opts.RetentionAge)
 		if res.Error != nil {
 			return total, res.Error
 		}

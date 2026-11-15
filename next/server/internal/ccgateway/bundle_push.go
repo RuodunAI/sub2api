@@ -11,10 +11,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
-	"github.com/gin-gonic/gin"
 )
 
 // Pushing the bundled runtime images to a connected controller (CONTRACTS
@@ -249,7 +250,7 @@ func (s *Service) runtimeBundled(c *gin.Context) {
 	if switched {
 		s.kickAll(tail)
 	}
-	if e := audit.Audit(tail, s.DB.Pool, uid, "ccgateway.runtime.bundled", "system", "ccgateway", map[string]any{"version": b.version, "results": results, "update_existing": in.updateExisting}); e != nil {
+	if e := audit.Audit(tail, s.DB.Gorm, uid, "ccgateway.runtime.bundled", "system", "ccgateway", map[string]any{"version": b.version, "results": results, "update_existing": in.updateExisting}); e != nil {
 		slog.Error("CCGateway audit failed", "action", "runtime.bundled")
 	}
 	out := gin.H{"results": results, "runtime": s.runtimeState(tail, cfg)}

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // ============================================================ scheduled tasks (TASK-FRAMEWORK-DESIGN §4)
@@ -107,7 +107,7 @@ type Tasks interface {
 	// Enqueue submits one run of a cluster task; EnqueueTx does so inside
 	// the caller's transaction, so a rollback submits nothing.
 	Enqueue(ctx context.Context, name string, args any, opts EnqueueOpts) error
-	EnqueueTx(ctx context.Context, tx pgx.Tx, name string, args any, opts EnqueueOpts) error
+	EnqueueTx(ctx context.Context, tx *gorm.DB, name string, args any, opts EnqueueOpts) error
 }
 
 // EnqueueOpts tunes one Enqueue.

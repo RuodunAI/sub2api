@@ -87,10 +87,10 @@ func runHelperHistoryABCRealDBCLI(t *testing.T, inline bool, options ...abcHelpe
 			ctx := context.Background()
 			e, _, _ := resourceTestEnv(t)
 			var userID, groupID int64
-			if err := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES($1,'fixture') RETURNING id`, fmt.Sprintf("abc-%v@example.invalid", stream)).Scan(&userID); err != nil {
+			if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES($1,'fixture') RETURNING id`, fmt.Sprintf("abc-%v@example.invalid", stream)).Scan(&userID); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES($1) RETURNING id`, fmt.Sprintf("abc-%v", stream)).Scan(&groupID); err != nil {
+			if err := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES($1) RETURNING id`, fmt.Sprintf("abc-%v", stream)).Scan(&groupID); err != nil {
 				t.Fatal(err)
 			}
 			e.auth.keys[testKey].UserID = userID
@@ -357,10 +357,10 @@ func runHelperHistoryABCRealDBCLI(t *testing.T, inline bool, options ...abcHelpe
 				t.Fatalf("calls=%d actual cumulative usage %d/%d cache1h=%d (expected %d/%d cache1h=%d)", calls, sumIn, sumOut, sumCache1h, wantIn, wantOut, wantCache1h)
 			}
 			var rows, receipts int
-			if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM usage_logs WHERE user_id=$1`, userID).Scan(&rows); err != nil {
+			if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM usage_logs WHERE user_id=$1`, userID).Scan(&rows); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM provider_helper_usage_receipts p JOIN usage_logs u USING(request_id) WHERE u.user_id=$1`, userID).Scan(&receipts); err != nil {
+			if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM provider_helper_usage_receipts p JOIN usage_logs u USING(request_id) WHERE u.user_id=$1`, userID).Scan(&receipts); err != nil {
 				t.Fatal(err)
 			}
 			if rows != wantRequests || receipts != wantRequests {

@@ -5,8 +5,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 func TestFailurePolicyTracePersistsWithoutAnomaly(t *testing.T) {
@@ -40,8 +41,8 @@ func TestAvailabilityTraceDetailAndRedaction(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	var a1, a2 int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Fable One','ccgateway','oauth','') RETURNING id`).Scan(&a1))
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Fable Two','ccgateway','oauth','') RETURNING id`).Scan(&a2))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Fable One','ccgateway','oauth','') RETURNING id`).Scan(&a1))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Fable Two','ccgateway','oauth','') RETURNING id`).Scan(&a2))
 	r := f.record("availability-trace", true)
 	r.AccountID = &a2
 	r.Availability = &core.AvailabilityTrace{V: 1, Outcome: core.AvailabilityPartial, Candidates: 3, Admitted: 2,

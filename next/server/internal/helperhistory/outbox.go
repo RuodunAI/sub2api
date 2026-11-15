@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"time"
 
+	"gorm.io/gorm"
+
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 const maxUsageBytes = 2 << 20
@@ -29,7 +29,7 @@ func freezeUsage(a attempt, r *core.UsageRecord) ([]byte, string, error) {
 	}
 	return raw, digest, nil
 }
-func (s *Service) saveUsage(ctx context.Context, q store.Querier, a attempt, r *core.UsageRecord) error {
+func (s *Service) saveUsage(ctx context.Context, q *gorm.DB, a attempt, r *core.UsageRecord) error {
 	raw, digest, e := freezeUsage(a, r)
 	if e != nil {
 		return e
@@ -70,7 +70,7 @@ func outboxDigest(db *gorm.DB, requestID string) *gorm.DB {
 	return db.Model(&model.ProviderHelperUsageOutbox{}).Select("digest").Where("request_id = ?", requestID)
 }
 func (s *Service) PersistUncertainUsage(ctx context.Context, o core.ResourceOwner, id string, r *core.UsageRecord) error {
-	return s.transaction(ctx, o, func(tx pgx.Tx) error {
+	return s.transaction(ctx, o, func(tx *gorm.DB) error {
 		a, e := readAttempt(ctx, tx, o, id)
 		if e != nil {
 			return e
@@ -102,7 +102,7 @@ func (s *Service) PendingUsage(ctx context.Context, limit int) ([]core.HelperHis
 		return nil, core.ErrInvalidArgument
 	}
 	var rows []model.ProviderHelperUsageOutbox
-	if e := pendingOutbox(store.G(ctx, s.db.Pool), s.now(), limit, &rows).Error; e != nil {
+	if e := pendingOutbox(store.G(ctx, s.db.Gorm), s.now(), limit, &rows).Error; e != nil {
 		return nil, e
 	}
 	out := []core.HelperHistoryUsage{}
@@ -147,7 +147,7 @@ func (s *Service) deferUsage(ctx context.Context, requestID, digest, code string
 	if s.db == nil {
 		return core.ErrInvalidArgument
 	}
-	return deferOutbox(store.G(ctx, s.db.Pool), requestID, digest, code, s.now().Add(time.Minute)).Error
+	return deferOutbox(store.G(ctx, s.db.Gorm), requestID, digest, code, s.now().Add(time.Minute)).Error
 }
 
 // deferOutbox holds the outbox entry back until at least until and counts
@@ -164,7 +164,7 @@ func (s *Service) AckUsage(ctx context.Context, requestID, digest string) error 
 	if !bounded(requestID) || !wire.ValidDigest(digest) {
 		return core.ErrInvalidArgument
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		db := store.G(ctx, tx)
 		var old model.ProviderHelperUsageOutbox
 		e := outboxDigest(db, requestID).Clauses(store.ForUpdate).Take(&old).Error

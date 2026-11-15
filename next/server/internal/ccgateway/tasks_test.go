@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -46,7 +46,7 @@ func (f *fakeTasks) Trigger(_ context.Context, name string) error {
 
 func (f *fakeTasks) Enqueue(context.Context, string, any, core.EnqueueOpts) error { return nil }
 
-func (f *fakeTasks) EnqueueTx(context.Context, pgx.Tx, string, any, core.EnqueueOpts) error {
+func (f *fakeTasks) EnqueueTx(context.Context, *gorm.DB, string, any, core.EnqueueOpts) error {
 	return nil
 }
 
@@ -126,7 +126,7 @@ func TestRuntimeSyncOffWithoutAccountRuntimes(t *testing.T) {
 	cfg, _ := json.Marshal(Config{Mode: "local", AccountRuntimes: false, AdminKey: "controller-secret"})
 	encrypted, _ := e.s.Cipher.Encrypt(cfg, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, err := e.db.Pool.Exec(e.ctx, `UPDATE settings SET value = $2 WHERE key = $1`, settingKey, envelope); err != nil {
+	if _, err := e.db.SQL.ExecContext(e.ctx, `UPDATE settings SET value = $2 WHERE key = $1`, settingKey, envelope); err != nil {
 		t.Fatal(err)
 	}
 	res, err := e.s.syncRuntimes(e.ctx, core.TaskRun{Name: RuntimeSyncTask})
@@ -167,7 +167,7 @@ func TestBlockedOnceAcrossNodes(t *testing.T) {
 	}
 	var revision *int64
 	var at *time.Time
-	if err := e.db.Pool.QueryRow(e.ctx, `SELECT blocked_revision, blocked_at FROM ccgateway_runtimes WHERE key = $1`, key).Scan(&revision, &at); err != nil {
+	if err := e.db.SQL.QueryRowContext(e.ctx, `SELECT blocked_revision, blocked_at FROM ccgateway_runtimes WHERE key = $1`, key).Scan(&revision, &at); err != nil {
 		t.Fatal(err)
 	}
 	if revision == nil || *revision == 0 || at == nil {
@@ -184,7 +184,7 @@ func TestBlockedOnceAcrossNodes(t *testing.T) {
 		t.Fatalf("blocked %d times after a change, want 2", got)
 	}
 	// A mark older than blockedFor: a node that did not send it blocks again.
-	if _, err := e.db.Pool.Exec(e.ctx, `UPDATE ccgateway_runtimes SET blocked_at = now() - interval '11 minutes' WHERE key = $1`, key); err != nil {
+	if _, err := e.db.SQL.ExecContext(e.ctx, `UPDATE ccgateway_runtimes SET blocked_at = now() - interval '11 minutes' WHERE key = $1`, key); err != nil {
 		t.Fatal(err)
 	}
 	if err := New(e.db, e.s.Cipher).Reconcile(e.ctx, key); err != nil {

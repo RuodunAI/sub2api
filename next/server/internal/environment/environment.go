@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 
@@ -68,7 +67,7 @@ type Service struct {
 // New wires the service; bus may be nil (single node, tests).
 func New(db *store.DB, bus core.Bus, process core.EnvironmentValues) *Service {
 	s := &Service{db: db, bus: bus, process: process}
-	s.load = func(ctx context.Context) (core.EnvironmentValues, error) { return loadGlobal(ctx, s.db.Pool) }
+	s.load = func(ctx context.Context) (core.EnvironmentValues, error) { return loadGlobal(ctx, s.db.Gorm) }
 	if bus != nil {
 		s.unsubscribe = bus.Subscribe(core.ChannelConfigChanged, func(payload []byte) {
 			var msg struct{ Key string }
@@ -177,7 +176,7 @@ func (s *Service) fallback(last core.EnvironmentValues) core.EnvironmentValues {
 // the global one. accountID 0 resolves the group alone.
 func (s *Service) ResolveEnvironment(ctx context.Context, groupID, accountID int64) (core.Environment, error) {
 	var row layerRows
-	if err := layersQuery(store.G(ctx, s.db.Pool), groupID, accountID, &row).Error; err != nil {
+	if err := layersQuery(store.G(ctx, s.db.Gorm), groupID, accountID, &row).Error; err != nil {
 		return nil, err
 	}
 	return core.ResolveEnvironment(s.GlobalEnvironment(ctx), row.GroupEnv.V, row.AccountEnv.V), nil
@@ -196,7 +195,7 @@ func layersQuery(db *gorm.DB, groupID, accountID int64, dst *layerRows) *gorm.DB
 		COALESCE((SELECT environment FROM accounts WHERE id = ? AND deleted_at IS NULL), '{}') AS account_env`, groupID, accountID).Scan(dst)
 }
 
-func loadGlobal(ctx context.Context, q store.Querier) (core.EnvironmentValues, error) {
+func loadGlobal(ctx context.Context, q *gorm.DB) (core.EnvironmentValues, error) {
 	values := core.EnvironmentValues{}
 	raw, err := store.SettingValue(store.G(ctx, q), SettingsKey)
 	if store.IsNoRows(err) {
@@ -223,7 +222,7 @@ func (s *Service) variables(c *gin.Context) {
 }
 
 func (s *Service) get(c *gin.Context) {
-	values, err := loadGlobal(c.Request.Context(), s.db.Pool)
+	values, err := loadGlobal(c.Request.Context(), s.db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -250,7 +249,7 @@ func (s *Service) put(c *gin.Context) {
 	if uid > 0 {
 		by = &uid
 	}
-	if err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := store.UpdateSettingJSONTx(ctx, tx, SettingsKey, by, func(json.RawMessage) (json.RawMessage, error) {
 			return json.Marshal(values)
 		})

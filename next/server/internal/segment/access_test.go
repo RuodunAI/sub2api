@@ -27,7 +27,7 @@ func newAccessFixture(t *testing.T) accessFixture {
 	f := accessFixture{db: testutil.DB(t)}
 	one := func(dst *int64, sql string, args ...any) {
 		t.Helper()
-		require.NoError(t, f.db.Pool.QueryRow(ctx, sql, args...).Scan(dst))
+		require.NoError(t, f.db.SQL.QueryRowContext(ctx, sql, args...).Scan(dst))
 	}
 	one(&f.vip, `INSERT INTO segments (name, discount) VALUES ('vip', 0.8) RETURNING id`)
 	one(&f.user, `INSERT INTO users (email, password_hash, segment_id) VALUES ('vip@test', 'x', $1) RETURNING id`, f.vip)
@@ -35,7 +35,7 @@ func newAccessFixture(t *testing.T) accessFixture {
 	one(&f.public, `INSERT INTO groups (name, rate_multiplier) VALUES ('public', 1.5) RETURNING id`)
 	one(&f.granted, `INSERT INTO groups (name, visibility, rate_multiplier) VALUES ('granted', 'restricted', 2) RETURNING id`)
 	one(&f.restricted, `INSERT INTO groups (name, visibility) VALUES ('restricted', 'restricted') RETURNING id`)
-	_, err := f.db.Pool.Exec(ctx, `INSERT INTO segment_groups (segment_id, group_id, granted, rate_override) VALUES ($1, $2, true, 0.5)`, f.vip, f.granted)
+	_, err := f.db.SQL.ExecContext(ctx, `INSERT INTO segment_groups (segment_id, group_id, granted, rate_override) VALUES ($1, $2, true, 0.5)`, f.vip, f.granted)
 	require.NoError(t, err)
 	return f
 }
@@ -43,7 +43,7 @@ func newAccessFixture(t *testing.T) accessFixture {
 // groups returns the ids of the groups cond (with "$1" for user) holds for.
 func (f accessFixture) groups(t *testing.T, cond string, user int64) []int64 {
 	t.Helper()
-	rows, err := f.db.Pool.Query(context.Background(), `SELECT g.id FROM groups g WHERE `+cond+` ORDER BY g.id`, user)
+	rows, err := f.db.SQL.QueryContext(context.Background(), `SELECT g.id FROM groups g WHERE `+cond+` ORDER BY g.id`, user)
 	require.NoError(t, err)
 	defer rows.Close()
 	var ids []int64
@@ -65,7 +65,7 @@ func TestOpenToUserSQL(t *testing.T) {
 // A disabled group is open to its users still, but not usable.
 func TestUsableGroupSQL(t *testing.T) {
 	f := newAccessFixture(t)
-	_, err := f.db.Pool.Exec(context.Background(), `UPDATE groups SET status = 'disabled' WHERE id = $1`, f.public)
+	_, err := f.db.SQL.ExecContext(context.Background(), `UPDATE groups SET status = 'disabled' WHERE id = $1`, f.public)
 	require.NoError(t, err)
 	require.Equal(t, []int64{f.granted}, f.groups(t, UsableGroupSQL("g", "$1"), f.user))
 	require.Empty(t, f.groups(t, UsableGroupSQL("g", "$1"), f.other))
@@ -77,7 +77,7 @@ func TestTerms(t *testing.T) {
 	ctx := context.Background()
 	groups := []int64{f.public, f.granted, f.restricted, 0}
 
-	got, err := UserTerms(ctx, f.db.Pool, f.user, groups)
+	got, err := UserTerms(ctx, f.db.Gorm, f.user, groups)
 	require.NoError(t, err)
 	require.Len(t, got, 3, "a group that does not exist has no terms")
 	for _, tc := range []struct {
@@ -98,13 +98,13 @@ func TestTerms(t *testing.T) {
 		require.Equal(t, tc.source, terms.RateSource, tc.name)
 	}
 
-	bySegment, err := SegmentTerms(ctx, f.db.Pool, f.vip, groups)
+	bySegment, err := SegmentTerms(ctx, f.db.Gorm, f.vip, groups)
 	require.NoError(t, err)
 	require.Equal(t, got, bySegment)
 
 	var def int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `SELECT default_segment_id()`).Scan(&def))
-	byGroup, err := GroupTerms(ctx, f.db.Pool, f.granted, []int64{f.vip, def, 0})
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `SELECT default_segment_id()`).Scan(&def))
+	byGroup, err := GroupTerms(ctx, f.db.Gorm, f.granted, []int64{f.vip, def, 0})
 	require.NoError(t, err)
 	require.Len(t, byGroup, 2, "a segment that does not exist has no terms")
 	require.Equal(t, got[f.granted], byGroup[f.vip])
@@ -116,7 +116,7 @@ func TestTerms(t *testing.T) {
 	require.Equal(t, "0.5", got[f.granted].Override.String())
 	require.Nil(t, got[f.public].Override)
 
-	other, err := UserTerms(ctx, f.db.Pool, f.other, groups)
+	other, err := UserTerms(ctx, f.db.Gorm, f.other, groups)
 	require.NoError(t, err)
 	require.Equal(t, "2", other[f.granted].Rate.String())
 	require.Equal(t, core.RateSourceGroup, other[f.granted].RateSource)
@@ -127,21 +127,21 @@ func TestRef(t *testing.T) {
 	f := newAccessFixture(t)
 	ctx := context.Background()
 	var personal int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO segments (kind, user_id) VALUES ('personal', $1) RETURNING id`, f.other).Scan(&personal))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO segments (kind, user_id) VALUES ('personal', $1) RETURNING id`, f.other).Scan(&personal))
 
-	named, err := Ref(ctx, f.db.Pool, f.vip, false)
+	named, err := Ref(ctx, f.db.Gorm, f.vip, false)
 	require.NoError(t, err)
 	require.Equal(t, core.SegmentRef{ID: f.vip, Kind: core.SegmentNamed, Name: "vip"}, named)
 
-	shown, err := Ref(ctx, f.db.Pool, personal, true)
+	shown, err := Ref(ctx, f.db.Gorm, personal, true)
 	require.NoError(t, err)
 	require.Equal(t, core.SegmentRef{ID: personal, Kind: core.SegmentPersonal, Name: "default@test", UserID: &f.other}, shown)
 
-	masked, err := Ref(ctx, f.db.Pool, personal, false)
+	masked, err := Ref(ctx, f.db.Gorm, personal, false)
 	require.NoError(t, err)
 	require.Equal(t, "#"+strconv.FormatInt(f.other, 10), masked.Name)
 	require.Equal(t, &f.other, masked.UserID)
 
-	_, err = Ref(ctx, f.db.Pool, 0, true)
+	_, err = Ref(ctx, f.db.Gorm, 0, true)
 	require.ErrorIs(t, err, core.ErrNotFound)
 }

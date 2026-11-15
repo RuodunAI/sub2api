@@ -10,11 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"github.com/jackc/pgx/v5"
 )
 
 type preparationPlugin struct {
@@ -56,7 +57,7 @@ func (r *preparationResource) PrepareAccount(_ context.Context, p core.AccountPr
 	r.prepared[p.Key] = true
 	return nil
 }
-func (r *preparationResource) UpdateAccountPreparation(context.Context, pgx.Tx, core.AccountPreparation) error {
+func (r *preparationResource) UpdateAccountPreparation(context.Context, *gorm.DB, core.AccountPreparation) error {
 	return nil
 }
 func (r *preparationResource) AccountPreparationAction(context.Context, core.AccountPreparation, string, string, json.RawMessage) (any, error) {
@@ -68,7 +69,7 @@ func (r *preparationResource) CheckAccountPreparation(context.Context, core.Acco
 	}
 	return core.AccountPreparationFacts{SubscriptionType: r.subscription, AccountEmail: r.email}, nil
 }
-func (r *preparationResource) AdoptAccountPreparation(_ context.Context, _ pgx.Tx, _ core.AccountPreparation, id int64) error {
+func (r *preparationResource) AdoptAccountPreparation(_ context.Context, _ *gorm.DB, _ core.AccountPreparation, id int64) error {
 	r.adopted = id
 	return nil
 }
@@ -94,7 +95,7 @@ func preparationPluginFixture(t *testing.T) (*env, *preparationResource, int64, 
 func preparationFixtureWith(t *testing.T, authz fakeAuthz) (*env, *preparationResource, int64, *preparationPlugin) {
 	t.Helper()
 	e := setupWith(t, authz)
-	if _, err := e.db.Pool.Exec(t.Context(), `INSERT INTO plugins(key,name,status) VALUES('fixture','{"en":"Fixture"}','enabled')`); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO plugins(key,name,status) VALUES('fixture','{"en":"Fixture"}','enabled')`); err != nil {
 		t.Fatal(err)
 	}
 	e.svc.d.Locker = testutil.NewMemLocker()
@@ -161,7 +162,7 @@ func TestAccountPreparationCleanupHonorsRenewal(t *testing.T) {
 	if err := e.svc.disposePreparation(ctx, preparation, disposeExpired); err != nil || resource.cancelled != 0 || cancels() != 0 {
 		t.Fatalf("active preparation was swept: %v, plugin told %d times", err, cancels())
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE account_preparations SET expires_at=now()-interval '1 minute' WHERE key=$1`, key); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE account_preparations SET expires_at=now()-interval '1 minute' WHERE key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
 	tasks := registerTasks(t, e.svc)
@@ -188,7 +189,7 @@ func TestLifecycleEventsUseCurrentOwnedAccount(t *testing.T) {
 			t.Fatalf("event delivery: %v %v", response, err)
 		}
 	}
-	row, err := e.svc.loadRow(t.Context(), e.db.Pool, id, core.AllScope, false)
+	row, err := e.svc.loadRow(t.Context(), e.db.Gorm, id, core.AllScope, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,12 +208,12 @@ func TestLifecycleSynchronizationCannotOverwriteNewerGeneration(t *testing.T) {
 	e, _, _ := preparationFixture(t)
 	ctx := t.Context()
 	id := e.exec1(`INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('sync','fixture','managed',''::bytea) RETURNING id`)
-	row, err := e.svc.loadRow(ctx, e.db.Pool, id, core.AllScope, false)
+	row, err := e.svc.loadRow(ctx, e.db.Gorm, id, core.AllScope, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := markLifecyclePending(ctx, e.db.Pool, id); err != nil {
+		if err := markLifecyclePending(ctx, e.db.Gorm, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -220,13 +221,13 @@ func TestLifecycleSynchronizationCannotOverwriteNewerGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var state string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT status FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state); err != nil || state != "pending" {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT status FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state); err != nil || state != "pending" {
 		t.Fatalf("stale synchronization replaced the current state: %s %v", state, err)
 	}
 	if err := e.svc.saveLifecycleStatus(ctx, id, row.UpdatedAt, 2, core.AccountSynchronization{Status: "applied"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.db.Pool.QueryRow(ctx, `SELECT status FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state); err != nil || state != "applied" {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT status FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state); err != nil || state != "applied" {
 		t.Fatalf("current synchronization did not apply: %s %v", state, err)
 	}
 }
@@ -258,7 +259,7 @@ func TestLifecycleStatusSweepRereadsStaleStates(t *testing.T) {
 	id := e.exec1(`INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('stale','fixture','managed',''::bytea) RETURNING id`)
 	e.exec1(`INSERT INTO account_lifecycle_sync(account_id,status,code,updated_at) VALUES($1,'failed','runtime_sync_failed',now()-interval '1 minute') RETURNING account_id`, id)
 	backdate := func() {
-		if _, err := e.db.Pool.Exec(ctx, `UPDATE account_lifecycle_sync SET updated_at=now()-interval '1 minute' WHERE account_id=$1`, id); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE account_lifecycle_sync SET updated_at=now()-interval '1 minute' WHERE account_id=$1`, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -269,7 +270,7 @@ func TestLifecycleStatusSweepRereadsStaleStates(t *testing.T) {
 		got := res.Count
 		var state core.AccountSynchronization
 		if err == nil {
-			err = e.db.Pool.QueryRow(ctx, `SELECT status,code FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state.Status, &state.Code)
+			err = e.db.SQL.QueryRowContext(ctx, `SELECT status,code FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state.Status, &state.Code)
 		}
 		if err != nil || got != want || state.Status != status || state.Code != code {
 			t.Fatalf("sweep: %d %+v %v, want %d %s/%s", got, state, err, want, status, code)
@@ -293,11 +294,11 @@ func TestLifecycleStatusSweepRereadsStaleStates(t *testing.T) {
 		t.Fatalf("applied state read again: %d", reader.reads-reads)
 	}
 	// A change while the state is read keeps its own state.
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE account_lifecycle_sync SET status='failed',code='runtime_sync_failed',updated_at=now()-interval '1 minute' WHERE account_id=$1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE account_lifecycle_sync SET status='failed',code='runtime_sync_failed',updated_at=now()-interval '1 minute' WHERE account_id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	reader.during = func() {
-		if err := markLifecyclePending(ctx, e.db.Pool, id); err != nil {
+		if err := markLifecyclePending(ctx, e.db.Gorm, id); err != nil {
 			t.Error(err)
 		}
 	}
@@ -363,7 +364,7 @@ func TestBeforeCreateFactsAndAccountPatch(t *testing.T) {
 		t.Fatalf("saved account %v", got)
 	}
 	var detail string
-	if err := e.db.Pool.QueryRow(t.Context(), `SELECT detail::text FROM audit_logs WHERE action='account.create' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil {
+	if err := e.db.SQL.QueryRowContext(t.Context(), `SELECT detail::text FROM audit_logs WHERE action='account.create' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(detail, `"plugin_changed": ["models"]`) || !strings.Contains(detail, `"subscription_type": "pro"`) {

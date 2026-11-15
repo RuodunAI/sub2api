@@ -104,7 +104,7 @@ func TestRetiredKeyStaysWithPublisher(t *testing.T) {
 		t.Fatalf("upload after release: %v", err)
 	}
 	var audits int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'plugin.key.release' AND target_id = 'acme_tool'`).Scan(&audits)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'plugin.key.release' AND target_id = 'acme_tool'`).Scan(&audits)
 	if audits != 1 {
 		t.Fatalf("release audit rows = %d", audits)
 	}
@@ -114,7 +114,7 @@ func TestRetiredKeyStaysWithPublisher(t *testing.T) {
 func TestBuiltinTakesBackRetiredKey(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO plugin_key_retirements (plugin_key, publisher_id) VALUES ('acme_tool', NULL)`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO plugin_key_retirements (plugin_key, publisher_id) VALUES ('acme_tool', NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	data := pkgtest.Build(pkgtest.Minimal("acme_tool", "1.0.0", "sub2api"), e.root)
@@ -125,7 +125,7 @@ func TestBuiltinTakesBackRetiredKey(t *testing.T) {
 		t.Fatalf("builtin upload: %v", err)
 	}
 	var n int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_key_retirements`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_key_retirements`).Scan(&n)
 	if n != 0 {
 		t.Fatal("retirement kept after the builtin took the key")
 	}

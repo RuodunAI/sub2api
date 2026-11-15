@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -19,17 +17,17 @@ import (
 // role allowed to CREATE DATABASE), applies every core migration with the
 // store's own migrator, generates the models from it and drops it.
 func FromMigrations(ctx context.Context, adminDSN string, cfg Config) (map[string][]byte, error) {
-	admin, err := pgx.Connect(ctx, adminDSN)
+	admin, err := store.OpenSized(ctx, adminDSN, 1)
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
-	defer admin.Close(context.WithoutCancel(ctx))
+	defer admin.Close()
 
 	name := fmt.Sprintf("modelgen_%d_%d", os.Getpid(), time.Now().UnixNano())
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+name); err != nil {
+	if err := store.G(ctx, admin.Gorm).Exec("CREATE DATABASE " + name).Error; err != nil {
 		return nil, err
 	}
-	defer admin.Exec(context.WithoutCancel(ctx), "DROP DATABASE IF EXISTS "+name+" WITH (FORCE)") //nolint:errcheck
+	defer store.G(context.WithoutCancel(ctx), admin.Gorm).Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)")
 
 	u, err := url.Parse(adminDSN)
 	if err != nil {
@@ -45,7 +43,7 @@ func FromMigrations(ctx context.Context, adminDSN string, cfg Config) (map[strin
 		store.MigrateOptions{LockKey: store.CoreMigrationLockKey}); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	return Generate(ctx, db.Pool, cfg)
+	return Generate(ctx, db.Gorm, cfg)
 }
 
 // Write replaces the generated files in dir with files, removing generated

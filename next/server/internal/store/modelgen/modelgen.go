@@ -22,8 +22,7 @@ import (
 
 	"github.com/jinzhu/inflection"
 	"github.com/shopspring/decimal"
-
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"gorm.io/gorm"
 )
 
 // Header starts every generated file; it is how Write and ReadGenerated
@@ -106,7 +105,7 @@ var goTypes = map[string]goType{
 
 // infiniteTime is the type of a timestamptz column whose default is
 // ±infinity, which time.Time cannot hold.
-var infiniteTime = goType{name: "pgtype.Timestamptz", pkg: "github.com/jackc/pgx/v5/pgtype", nullZero: true}
+var infiniteTime = goType{name: "store.InfTime", pkg: storePkg, nullZero: true}
 
 // literalDefault matches a default that is a constant as pg_get_expr prints
 // one: true, false, a number, or a quoted value with its cast. Anything
@@ -145,7 +144,7 @@ type column struct {
 
 // Generate reads the tables of cfg.Schema through q and returns the model
 // files by name.
-func Generate(ctx context.Context, q store.Querier, cfg Config) (map[string][]byte, error) {
+func Generate(ctx context.Context, q *gorm.DB, cfg Config) (map[string][]byte, error) {
 	tables, err := readTables(ctx, q, cfg)
 	if err != nil {
 		return nil, err
@@ -197,11 +196,11 @@ JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdroppe
 JOIN pg_type t ON t.oid = a.atttypid
 LEFT JOIN pg_type bt ON bt.oid = t.typbasetype
 LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
-WHERE n.nspname = $1 AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+WHERE n.nspname = ? AND c.relkind IN ('r', 'p') AND NOT c.relispartition
 ORDER BY c.relname, a.attnum`
 
-func readTables(ctx context.Context, q store.Querier, cfg Config) ([]table, error) {
-	rows, err := q.Query(ctx, catalogSQL, cfg.Schema)
+func readTables(ctx context.Context, q *gorm.DB, cfg Config) ([]table, error) {
+	rows, err := q.WithContext(ctx).Raw(catalogSQL, cfg.Schema).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -266,11 +265,11 @@ func docFile(cfg Config) []byte {
 //   - []byte, json.RawMessage and the store array types stay values: nil
 //     takes the default and an empty non-nil value is written; time.Time
 //     stays a value too, the zero time being no time one writes;
-//   - a timestamptz defaulting to ±infinity is a pgtype.Timestamptz, which
+//   - a timestamptz defaulting to ±infinity is a store.InfTime, which
 //     holds infinity (time.Time cannot): Valid false takes the default.
 //
 // Nullable columns are pointers, except []byte, json.RawMessage and
-// pgtype.Timestamptz, whose zero value already is NULL.
+// store.InfTime, whose zero value already is NULL.
 //
 // GORM's own timestamping is off: store.G fills a zero created_at or
 // updated_at without a database default with now() on INSERT, and an

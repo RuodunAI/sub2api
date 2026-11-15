@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func auditBillingWaitLocks(t *testing.T, ctx context.Context, db *store.DB, want int) {
 	t.Helper()
 	for {
 		var n int
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&n); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n >= want {
@@ -40,16 +41,16 @@ func TestAuditConcurrentSettingsPatchesKeepBothFields(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(background, 60*time.Second)
 			defer cancel()
-			barrier, err := e.db.Pool.Begin(ctx)
+			barrier, err := testutil.Begin(ctx, e.db)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer barrier.Rollback(background)
+			defer barrier.Rollback()
 			if existing {
 				var key string
-				err = barrier.QueryRow(ctx, `SELECT key FROM settings WHERE key='billing' FOR UPDATE`).Scan(&key)
+				err = store.SQLTx(barrier).QueryRowContext(ctx, `SELECT key FROM settings WHERE key='billing' FOR UPDATE`).Scan(&key)
 			} else {
-				_, err = barrier.Exec(ctx, `SELECT pg_advisory_xact_lock(78190002)`)
+				_, err = store.SQLTx(barrier).ExecContext(ctx, `SELECT pg_advisory_xact_lock(78190002)`)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -67,7 +68,7 @@ func TestAuditConcurrentSettingsPatchesKeepBothFields(t *testing.T) {
 			auditBillingWaitLocks(t, ctx, e.db, 1)
 			go put(map[string]any{"big_cost_warning_usd": "2"})
 			auditBillingWaitLocks(t, ctx, e.db, 2)
-			if err := barrier.Commit(ctx); err != nil {
+			if err := barrier.Commit().Error; err != nil {
 				t.Fatal(err)
 			}
 			for range 2 {
@@ -77,7 +78,7 @@ func TestAuditConcurrentSettingsPatchesKeepBothFields(t *testing.T) {
 				}
 			}
 			var min, warning string
-			if err := e.db.Pool.QueryRow(ctx, `SELECT value->>'min_balance',value->>'big_cost_warning_usd' FROM settings WHERE key='billing'`).Scan(&min, &warning); err != nil {
+			if err := e.db.SQL.QueryRowContext(ctx, `SELECT value->>'min_balance',value->>'big_cost_warning_usd' FROM settings WHERE key='billing'`).Scan(&min, &warning); err != nil {
 				t.Fatal(err)
 			}
 			if min != "1.5" || warning != "2" {
@@ -99,12 +100,12 @@ func TestAuditInvalidatedSettingsCannotBeRefilledByOldQuery(t *testing.T) {
 	CREATE VIEW settings AS SELECT key,audit_setting_read_barrier(value) AS value,updated_by,updated_at FROM audit_settings_source`)
 	ctx, cancel := context.WithTimeout(background, 60*time.Second)
 	defer cancel()
-	barrier, err := e.db.Pool.Begin(ctx)
+	barrier, err := testutil.Begin(ctx, e.db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer barrier.Rollback(background)
-	if _, err := barrier.Exec(ctx, `SELECT pg_advisory_xact_lock(78190003)`); err != nil {
+	defer barrier.Rollback()
+	if _, err := store.SQLTx(barrier).ExecContext(ctx, `SELECT pg_advisory_xact_lock(78190003)`); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -112,7 +113,7 @@ func TestAuditInvalidatedSettingsCannotBeRefilledByOldQuery(t *testing.T) {
 	auditBillingWaitLocks(t, ctx, e.db, 1)
 	e.exec(`UPDATE audit_settings_source SET value='{"missing_price_policy":"free"}' WHERE key='billing'`)
 	e.svc.invalidate()
-	if err := barrier.Commit(ctx); err != nil {
+	if err := barrier.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := <-done; err != nil {

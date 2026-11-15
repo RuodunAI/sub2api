@@ -34,7 +34,7 @@ func TestUsageOverviewMatchesItsReads(t *testing.T) {
 	since := time.Now().UTC().Truncate(time.Hour).Add(-3 * time.Hour)
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		_, err := e.db.Pool.Exec(ctx, sql, args...)
+		_, err := e.db.SQL.ExecContext(ctx, sql, args...)
 		require.NoError(t, err)
 	}
 	// Hourly rows arrive through usage_logs and the fold; the overview only
@@ -48,18 +48,18 @@ func TestUsageOverviewMatchesItsReads(t *testing.T) {
 		       ($2, false, false, 0, 'month', 1, NULL, 'UTC', NULL)`, a, b)
 
 	ids := []int64{c, a, b, 999999}
-	totals, windows, limits, err := usageOverview(ctx, e.db.Pool, ids, since)
+	totals, windows, limits, err := usageOverview(ctx, e.db.Gorm, ids, since)
 	require.NoError(t, err)
 
-	wantTotals, err := usageTotals(ctx, e.db.Pool, ids)
+	wantTotals, err := usageTotals(ctx, e.db.Gorm, ids)
 	require.NoError(t, err)
 	wantWindows := make([]usageWindow, len(ids))
 	for i, id := range ids {
 		wantWindows[i] = usageWindow{account: id, since: since}
 	}
-	want, err := usageIn(ctx, e.db.Pool, wantWindows)
+	want, err := usageIn(ctx, e.db.Gorm, wantWindows)
 	require.NoError(t, err)
-	wantLimits, err := usageLimits(ctx, e.db.Pool, ids)
+	wantLimits, err := usageLimits(ctx, e.db.Gorm, ids)
 	require.NoError(t, err)
 
 	require.Equal(t, wantTotals, totals)

@@ -35,7 +35,7 @@ func rate(value, source, groupDefault, discount string) map[string]any {
 func (f settingsFixture) pairOf(segment, group int64) string {
 	f.t.Helper()
 	var out string
-	err := f.db.Pool.QueryRow(f.t.Context(), `SELECT COALESCE((SELECT granted::text || ' ' || COALESCE(rate_override::text, 'null')
+	err := f.db.SQL.QueryRowContext(f.t.Context(), `SELECT COALESCE((SELECT granted::text || ' ' || COALESCE(rate_override::text, 'null')
 		FROM segment_groups WHERE segment_id = $1 AND group_id = $2), 'none')`, segment, group).Scan(&out)
 	require.NoError(f.t, err)
 	return out

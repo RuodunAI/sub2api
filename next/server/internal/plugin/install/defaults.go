@@ -7,7 +7,6 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -39,7 +38,7 @@ func NewDefaultsApplier(perms core.PermissionCatalog) *DefaultsApplier {
 // the consent would inherit (carryRenamedHolders). It runs inside the
 // caller's transaction.
 // Plugins bring no sticky rules (CONTRACTS §5.6).
-func (a *DefaultsApplier) ApplyDefaults(ctx context.Context, tx pgx.Tx, m *manifest.Manifest, grants map[string]map[string][]string) error {
+func (a *DefaultsApplier) ApplyDefaults(ctx context.Context, tx *gorm.DB, m *manifest.Manifest, grants map[string]map[string][]string) error {
 	if a.perms != nil {
 		before, err := loadCatalogPerms(ctx, a.perms, tx, m.Key)
 		if err != nil {

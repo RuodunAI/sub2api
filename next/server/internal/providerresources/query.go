@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -68,37 +68,35 @@ func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.Re
 	if len(q.AccountIDs) == 0 {
 		return out, nil
 	}
-	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return out, err
-	}
-	defer tx.Rollback(ctx)
-	g := store.G(ctx, tx)
-	cursor := q.AfterID
-	if q.BeforeID != "" {
-		cursor = q.BeforeID
-	}
-	if cursor != "" {
-		r, _, e := read(g, where+` AND public_id=?`, append(slices.Clone(args), cursor)...)
-		if store.IsNoRows(e) {
-			return out, core.ErrNotFound
-		}
-		if e != nil {
-			return out, e
-		}
-		op := "<"
-		if q.BeforeID != "" {
-			op = ">"
-		}
-		args = append(args, r.CreatedAt, r.PublicID)
-		where += ` AND (created_at,public_id)` + op + `(?,?)`
-	}
 	direction := "DESC"
 	if q.BeforeID != "" {
 		direction = "ASC"
 	}
 	var rows []model.ProviderResource
-	if err = page(g, where, args, direction, q.Limit+1).Find(&rows).Error; err != nil {
+	err = s.db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
+		cursor := q.AfterID
+		if q.BeforeID != "" {
+			cursor = q.BeforeID
+		}
+		if cursor != "" {
+			r, _, e := read(g, where+` AND public_id=?`, append(slices.Clone(args), cursor)...)
+			if store.IsNoRows(e) {
+				return core.ErrNotFound
+			}
+			if e != nil {
+				return e
+			}
+			op := "<"
+			if q.BeforeID != "" {
+				op = ">"
+			}
+			args = append(args, r.CreatedAt, r.PublicID)
+			where += ` AND (created_at,public_id)` + op + `(?,?)`
+		}
+		return page(g, where, args, direction, q.Limit+1).Find(&rows).Error
+	})
+	if err != nil {
 		return out, err
 	}
 	out.Items = resourceList(rows)
@@ -109,8 +107,7 @@ func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.Re
 	if strings.EqualFold(direction, "ASC") {
 		slices.Reverse(out.Items)
 	}
-	err = tx.Commit(ctx)
-	return out, err
+	return out, nil
 }
 
 // page selects up to limit resources that where (with args) keeps, in

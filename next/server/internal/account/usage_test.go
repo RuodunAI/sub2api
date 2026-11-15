@@ -67,11 +67,11 @@ func TestUsageLimitDisablesAndRecovers(t *testing.T) {
 	e := setup(t)
 	ctx := t.Context()
 	id := e.mkRawAccount("anthropic", "apikey", "usage", "sk-good-key-123", true)
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
 		total_cost, billing_status, billing_detail, rate_multiplier, input_tokens, output_tokens)
 		VALUES ('u1', 1, 1, 1, $1, 'anthropic.messages', '/v1/messages', 200, true, 6, 'billed', '{"cost":"5"}', 1.2, 100, 20)`, id)
 	require.NoError(t, err)
-	require.NoError(t, foldUsage(ctx, e.db.Pool), "the trigger journals, the sweep folds")
+	require.NoError(t, foldUsage(ctx, e.db.Gorm), "the trigger journals, the sweep folds")
 	account := func() map[string]any {
 		t.Helper()
 		code, body := e.do("GET", "/accounts/"+itoa(id), nil)
@@ -162,7 +162,7 @@ func TestUsageLimitDisablesAndRecovers(t *testing.T) {
 	code, out = e.do("PUT", "/accounts/"+itoa(id)+"/usage-limit", map[string]any{"enabled": false, "amount": "5.000000000", "period": "day", "period_count": 1, "timezone": "UTC"})
 	assert.Equal(t, 200, code, "trailing zeros are not decimals: %s", out)
 
-	_, err = e.db.Pool.Exec(ctx, `UPDATE accounts SET status = 'auto_disabled', status_reason = 'upstream says no' WHERE id = $1`, id)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status = 'auto_disabled', status_reason = 'upstream says no' WHERE id = $1`, id)
 	require.NoError(t, err)
 	require.NoError(t, e.svc.EnforceUsageLimits(ctx, nil))
 	assert.Equal(t, "upstream says no", account()["status_reason"], "never touches another auto-disable")
@@ -176,11 +176,11 @@ func TestUsageLimitOwnsItsDisable(t *testing.T) {
 	e := setup(t)
 	ctx := t.Context()
 	id := e.mkRawAccount("anthropic", "apikey", "usage-source", "sk-good-key-123", true)
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
 		total_cost, billing_status, billing_detail, rate_multiplier, input_tokens, output_tokens)
 		VALUES ('s1', 1, 1, 1, $1, 'anthropic.messages', '/v1/messages', 200, true, 6, 'billed', '{"cost":"-3"}', 1.2, 100, 20)`, id)
 	require.NoError(t, err)
-	require.NoError(t, foldUsage(ctx, e.db.Pool))
+	require.NoError(t, foldUsage(ctx, e.db.Gorm))
 	account := func() map[string]any {
 		t.Helper()
 		code, body := e.do("GET", "/accounts/"+itoa(id), nil)
@@ -238,7 +238,7 @@ func TestUsageLimitOwnsItsDisable(t *testing.T) {
 
 	// Released after its period ended (the sweep had not run yet): the
 	// waiver covers the period that disabled it, not the current one.
-	_, err = e.db.Pool.Exec(ctx, `UPDATE accounts SET auto_disabled_until = auto_disabled_until - interval '1 day' WHERE id = $1`, id)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE accounts SET auto_disabled_until = auto_disabled_until - interval '1 day' WHERE id = $1`, id)
 	require.NoError(t, err)
 	code, out := e.do("POST", "/accounts/"+itoa(id)+"/reset-status", nil)
 	require.Equal(t, 200, code, out)

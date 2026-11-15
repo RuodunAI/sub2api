@@ -143,7 +143,7 @@ func (s *Service) DB() *store.DB { return s.d.DB }
 // (outside the core) is fetched again, which fails with ErrPackageGone
 // unless a market download serves it (CONTRACTS §5.7).
 func (s *Service) Package(ctx context.Context, key, version string) (*pkg.Package, error) {
-	sha, url, err := packageRef(ctx, s.d.DB.Pool, key, version)
+	sha, url, err := packageRef(ctx, s.d.DB.Gorm, key, version)
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
@@ -184,7 +184,7 @@ func (s *Service) Package(ctx context.Context, key, version string) (*pkg.Packag
 // longer be had, as Package would: a consent must not approve a package no
 // node holds. A version that does not exist passes (the caller reports it).
 func (s *Service) checkPackage(ctx context.Context, key, version string) error {
-	sha, _, err := packageRef(ctx, s.d.DB.Pool, key, version)
+	sha, _, err := packageRef(ctx, s.d.DB.Gorm, key, version)
 	if store.IsNoRows(err) {
 		return nil
 	}
@@ -199,7 +199,7 @@ func (s *Service) checkPackage(ctx context.Context, key, version string) error {
 }
 
 // packageRef reads the sha256 and market URL of key@version's package.
-func packageRef(ctx context.Context, q store.Querier, key, version string) (sha, url string, err error) {
+func packageRef(ctx context.Context, q *gorm.DB, key, version string) (sha, url string, err error) {
 	var v model.PluginVersion
 	err = versionRow(store.G(ctx, q), key, version).Select("package_sha256, package_url").Take(&v).Error
 	return v.PackageSha256, v.PackageURL, err
@@ -259,7 +259,7 @@ func (s *Service) uncache(key, version string) []cachedPkg {
 // CurrentVersion returns the version that represents the plugin today:
 // active_version, else desired_version, else the newest approved version,
 // else the newest uploaded one. Empty when the plugin has no versions.
-func CurrentVersion(ctx context.Context, q store.Querier, key string) (string, error) {
+func CurrentVersion(ctx context.Context, q *gorm.DB, key string) (string, error) {
 	var v string
 	err := currentVersion(store.G(ctx, q), key).Row().Scan(&v)
 	if store.IsNoRows(err) {
@@ -280,7 +280,7 @@ func currentVersion(db *gorm.DB, key string) *gorm.DB {
 }
 
 // LoadManifest reads plugin_versions.manifest.
-func LoadManifest(ctx context.Context, q store.Querier, key, version string) (*manifest.Manifest, error) {
+func LoadManifest(ctx context.Context, q *gorm.DB, key, version string) (*manifest.Manifest, error) {
 	var v model.PluginVersion
 	err := versionRow(store.G(ctx, q), key, version).Select("manifest").Take(&v).Error
 	if store.IsNoRows(err) {

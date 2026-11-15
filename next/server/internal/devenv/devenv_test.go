@@ -8,11 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // clearEnv unsets the variables Prepare fills in (restored after the test).
@@ -38,9 +39,9 @@ func TestPrepare(t *testing.T) {
 		t.Fatalf("database of a custom state dir = %q", db)
 	}
 	t.Cleanup(func() {
-		if c, err := pgx.Connect(ctx, base); err == nil {
-			_, _ = c.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{db}.Sanitize()+" WITH (FORCE)")
-			_ = c.Close(ctx)
+		if c, done, err := testutil.Connect(ctx, base); err == nil {
+			_, _ = c.ExecContext(ctx, "DROP DATABASE IF EXISTS "+store.QuoteIdent(db)+" WITH (FORCE)")
+			done()
 		}
 	})
 
@@ -65,18 +66,18 @@ func TestPrepare(t *testing.T) {
 		}
 	}
 	checkLoads(t, env)
-	conn, err := pgx.Connect(ctx, env.DatabaseURL)
+	conn, done, err := testutil.Connect(ctx, env.DatabaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var name string
-	if err := conn.QueryRow(ctx, `SELECT current_database()`).Scan(&name); err != nil || name != db {
+	if err := conn.QueryRowContext(ctx, `SELECT current_database()`).Scan(&name); err != nil || name != db {
 		t.Fatalf("connected to %q (%v), want %q", name, err, db)
 	}
-	if _, err := conn.Exec(ctx, `CREATE TABLE marker (id int)`); err != nil {
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE marker (id int)`); err != nil {
 		t.Fatal(err)
 	}
-	_ = conn.Close(ctx)
+	done()
 	opt, _ := redis.ParseURL(env.RedisURL)
 	rdb := redis.NewClient(opt)
 	if err := rdb.Ping(ctx).Err(); err != nil {
@@ -151,13 +152,13 @@ func TestPrepareCallerServers(t *testing.T) {
 func hasMarker(t *testing.T, dsn string) bool {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, done, err := testutil.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer done()
 	var ok bool
-	if err := conn.QueryRow(ctx, `SELECT to_regclass('marker') IS NOT NULL`).Scan(&ok); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT to_regclass('marker') IS NOT NULL`).Scan(&ok); err != nil {
 		t.Fatal(err)
 	}
 	return ok

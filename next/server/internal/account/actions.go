@@ -4,13 +4,14 @@ import (
 	"context"
 	"slices"
 
+	"github.com/gin-gonic/gin"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
-	"github.com/gin-gonic/gin"
 )
 
 // AccountAction is a plugin-registered custom action on an account (CONTRACTS §52).
@@ -47,7 +48,7 @@ func (s *Service) executeAccountAction(c *gin.Context) {
 	}
 
 	scope := s.scopeOf(ctx, perm.AccountUpdate)
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, scope, false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -77,7 +78,7 @@ func (s *Service) executeAccountAction(c *gin.Context) {
 			httpapi.Fail(c, core.ErrUnsupported)
 			return
 		}
-		if err := audit.Audit(audit.Context(c), s.d.DB.Pool, actorID, "account.action", "account", itoa(id), map[string]any{"plugin_key": pluginKey, "action": actionID}); err != nil {
+		if err := audit.Audit(audit.Context(c), s.d.DB.Gorm, actorID, "account.action", "account", itoa(id), map[string]any{"plugin_key": pluginKey, "action": actionID}); err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
@@ -176,12 +177,12 @@ func (s *Service) getAccountActions(c *gin.Context) {
 		return
 	}
 
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountRead), false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountRead), false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	mayUpdate, err := inScope(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountUpdate))
+	mayUpdate, err := inScope(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountUpdate))
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

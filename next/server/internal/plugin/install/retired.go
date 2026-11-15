@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -34,7 +33,7 @@ type PluginKVPurger interface {
 
 // retireKey records the plugin's key and publisher; the caller holds the
 // plugin row in tx and deletes it afterwards.
-func retireKey(ctx context.Context, tx pgx.Tx, key string, actorID int64) error {
+func retireKey(ctx context.Context, tx *gorm.DB, key string, actorID int64) error {
 	return retire(store.G(ctx, tx), key, actorID).Error
 }
 
@@ -55,7 +54,7 @@ func retirement(db *gorm.DB, key string) *gorm.DB {
 // was never retired or was retired by the same publisher. A built-in plugin
 // takes its key back: the image decides (the reservation list keeps other
 // publishers off first-party keys).
-func claimRetiredKey(ctx context.Context, tx pgx.Tx, key string, publisher *int64, source string) error {
+func claimRetiredKey(ctx context.Context, tx *gorm.DB, key string, publisher *int64, source string) error {
 	g := store.G(ctx, tx)
 	var r model.PluginKeyRetirement
 	err := retirement(g, key).Select("publisher_id").Clauses(store.ForUpdate).Take(&r).Error
@@ -90,7 +89,7 @@ type RetiredKey struct {
 // ListRetiredKeys lists the retired keys.
 func (s *Service) ListRetiredKeys(ctx context.Context) ([]RetiredKey, error) {
 	var rows []retiredKeyRow
-	if err := retiredKeys(store.G(ctx, s.d.DB.Pool)).Scan(&rows).Error; err != nil {
+	if err := retiredKeys(store.G(ctx, s.d.DB.Gorm)).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]RetiredKey, len(rows))
@@ -148,7 +147,7 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 		return res, guardErr
 	}
 	defer release()
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var one int
 		err := retirement(g, key).Select("1").Clauses(store.ForUpdate).Take(&one).Error

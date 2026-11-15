@@ -40,10 +40,10 @@ func TestFallbackCreditDBOwnershipExpiryAndRetries(t *testing.T) {
 	ctx := context.Background()
 	s := New(db, 1)
 	record := fixtureCredit()
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('fallback-credit@example.com','x') RETURNING id`).Scan(&record.Owner.UserID); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('fallback-credit@example.com','x') RETURNING id`).Scan(&record.Owner.UserID); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('fallback-credit') RETURNING id`).Scan(&record.Owner.GroupID); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('fallback-credit') RETURNING id`).Scan(&record.Owner.GroupID); err != nil {
 		t.Fatal(err)
 	}
 	var wg sync.WaitGroup
@@ -94,7 +94,7 @@ func TestFallbackCreditDBOwnershipExpiryAndRetries(t *testing.T) {
 	if s.Record(ctx, changed) == nil {
 		t.Fatal("tracking capacity ignored")
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE provider_fallback_credits SET observed_at=now()-interval '6 minutes',expires_at=now()-interval '1 minute' WHERE token_hash=$1`, record.TokenHash); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, `UPDATE provider_fallback_credits SET observed_at=now()-interval '6 minutes',expires_at=now()-interval '1 minute' WHERE token_hash=$1`, record.TokenHash); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.Resolve(ctx, lookup); err == nil {

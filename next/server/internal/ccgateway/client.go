@@ -311,7 +311,7 @@ func (a *attempt) resolveShared() *outcome {
 // GORM allocates for one value (BenchmarkHotSharedAccountType).
 func (s *Service) sharedAccountType(ctx context.Context, id int64) (string, error) {
 	var kind string
-	err := sharedAccountTypeQuery(store.G(ctx, s.DB.Pool), id).Row().Scan(&kind)
+	err := sharedAccountTypeQuery(store.G(ctx, s.DB.Gorm), id).Row().Scan(&kind)
 	return kind, err
 }
 

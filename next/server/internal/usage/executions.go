@@ -8,12 +8,12 @@ import (
 	"log/slog"
 	"time"
 
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 var errExecutionDone = errors.New("execution already committed")
@@ -22,7 +22,7 @@ func (s *Service) BeginExecution(ctx context.Context, in core.ExecutionIntent) e
 	if in.ID == "" || in.RequestID == "" || in.AccountID == 0 {
 		return errors.New("invalid execution identity")
 	}
-	return store.G(ctx, s.db.Pool).Exec(`INSERT INTO plugin_executions(id,request_id,plugin_key,account_id,attempt,record,task_submit)
+	return store.G(ctx, s.db.Gorm).Exec(`INSERT INTO plugin_executions(id,request_id,plugin_key,account_id,attempt,record,task_submit)
  VALUES(?,?,?,?,?,?,?)`, in.ID, in.RequestID, in.PluginKey, in.AccountID, in.Attempt, store.Bytes(jsonOr(in.Record, "{}")), in.TaskSubmit).Error
 }
 
@@ -37,7 +37,7 @@ func (s *Service) ObserveExecution(ctx context.Context, id string, rec *core.Usa
 	if len(raw) > 512<<10 {
 		return errors.New("execution facts exceed limit")
 	}
-	res := store.G(ctx, s.db.Pool).Exec(`UPDATE plugin_executions SET state='observed',record=?,observation=?,updated_at=clock_timestamp()
+	res := store.G(ctx, s.db.Gorm).Exec(`UPDATE plugin_executions SET state='observed',record=?,observation=?,updated_at=clock_timestamp()
  WHERE id=? AND state='intent' AND request_id=? AND account_id=?`, store.Bytes(raw), store.Bytes(observation), id, rec.RequestID, rec.AccountID)
 	if res.Error == nil && res.RowsAffected != 1 {
 		return errors.New("execution identity or state mismatch")
@@ -50,7 +50,7 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 		return nil, errors.New("invalid execution commit")
 	}
 	out := &pluginv1.ExecutionReceipt{}
-	before := func(tx pgx.Tx) error {
+	before := func(tx *gorm.DB) error {
 		x, err := lockExecution(ctx, tx, in.ID)
 		if err != nil {
 			return err
@@ -70,7 +70,7 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 		}
 		return nil
 	}
-	after := func(tx pgx.Tx) error {
+	after := func(tx *gorm.DB) error {
 		if in.Task != nil {
 			out.TaskId = in.Task.PublicID
 		}
@@ -87,7 +87,7 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 		if in.Operation != "usage" {
 			return nil, errors.New("task registration required")
 		}
-		_, err = s.insertAtomic(ctx, []*core.UsageRecord{in.Record}, before, func(tx pgx.Tx, ids map[string]int64) error {
+		_, err = s.insertAtomic(ctx, []*core.UsageRecord{in.Record}, before, func(tx *gorm.DB, ids map[string]int64) error {
 			if _, ok := ids[in.Record.RequestID]; !ok {
 				return errors.New("usage identity already recorded")
 			}
@@ -111,7 +111,7 @@ type lockedExecution struct {
 
 // lockExecution locks and reads the execution id. It runs for every request
 // of an Execute plugin (BenchmarkHotExecution, gormtest/BASELINE.md).
-func lockExecution(ctx context.Context, tx pgx.Tx, id string) (lockedExecution, error) {
+func lockExecution(ctx context.Context, tx *gorm.DB, id string) (lockedExecution, error) {
 	var x lockedExecution
 	err := store.G(ctx, tx).Raw(`SELECT state,operation,digest,task_id,request_id,plugin_key,account_id FROM plugin_executions WHERE id=? FOR UPDATE`, id).
 		Row().Scan(&x.state, &x.op, &x.digest, &x.taskID, &x.requestID, &x.pluginKey, &x.accountID)
@@ -120,14 +120,14 @@ func lockExecution(ctx context.Context, tx pgx.Tx, id string) (lockedExecution, 
 
 // markExecutionCommitted records the commit of the execution id and drops its
 // facts, for every request of an Execute plugin.
-func markExecutionCommitted(ctx context.Context, tx pgx.Tx, id, op, digest, taskID string) error {
+func markExecutionCommitted(ctx context.Context, tx *gorm.DB, id, op, digest, taskID string) error {
 	return store.G(ctx, tx).Exec(`UPDATE plugin_executions SET state='committed',operation=?,digest=?,task_id=?,record=NULL,observation=NULL,updated_at=clock_timestamp() WHERE id=?`, op, digest, taskID, id).Error
 }
 
 // Recovery never replays network I/O. Only completed host observations may
 // fall back to declarative facts; unobserved intents remain uncertain.
 func (s *Service) recoverExecutions(ctx context.Context) error {
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	var list []stalledExecution
 	if err := stalledExecutions(g).Scan(&list).Error; err != nil {
 		return err
@@ -171,7 +171,7 @@ func (s *Service) deferExecutionRecovery(ctx context.Context, id string, cause e
 	slog.ErrorContext(ctx, "usage: execution recovery deferred", "execution_id", id, "err", cause)
 	// Rotate failures behind other observations. A permanently unpriceable
 	// record must not monopolize the oldest LIMIT batch on every sweep.
-	_ = rotateExecution(store.G(ctx, s.db.Pool), id).Error
+	_ = rotateExecution(store.G(ctx, s.db.Gorm), id).Error
 }
 
 // rotateExecution moves an observed execution to the back of the recovery
@@ -192,7 +192,7 @@ func (s *Service) cleanupExecutionReceipts(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			res := expireReceipts(store.G(ctx, s.db.Pool), table)
+			res := expireReceipts(store.G(ctx, s.db.Gorm), table)
 			if err := res.Error; err != nil {
 				if ctx.Err() != nil {
 					return nil

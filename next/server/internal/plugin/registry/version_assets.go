@@ -21,7 +21,7 @@ import (
 // version, in which case the package is fetched like any other.
 func (s *Packages) ReadVersionAsset(ctx context.Context, key, vh, name string) (core.PluginInfo, []byte, string, error) {
 	var version, sum, url string
-	err := servedVersion(store.G(ctx, s.db.Pool), key, vh).Row().Scan(&version, &sum, &url)
+	err := servedVersion(store.G(ctx, s.db.Gorm), key, vh).Row().Scan(&version, &sum, &url)
 	if store.IsNoRows(err) {
 		return core.PluginInfo{}, nil, "", ErrAssetNotFound
 	}

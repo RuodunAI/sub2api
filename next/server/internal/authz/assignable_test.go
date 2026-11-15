@@ -16,7 +16,7 @@ import (
 // it, without any check.
 func letAssign(t *testing.T, s *Service, roleKey string, roles ...string) {
 	t.Helper()
-	if _, err := s.db.Pool.Exec(context.Background(), `INSERT INTO role_assignable_roles (role_id, assignable_role_id)
+	if _, err := s.db.SQL.ExecContext(context.Background(), `INSERT INTO role_assignable_roles (role_id, assignable_role_id)
 		SELECT r.id, a.id FROM roles r, roles a WHERE r.key = $1 AND a.key = ANY($2)`, roleKey, roles); err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func letAssign(t *testing.T, s *Service, roleKey string, roles ...string) {
 // their assign-custom flag.
 func assignableOf(t *testing.T, s *Service, roleKeys ...string) ([]string, bool) {
 	t.Helper()
-	set, err := s.RolesPermissions(context.Background(), s.db.Pool, roleKeys)
+	set, err := s.RolesPermissions(context.Background(), s.db.Gorm, roleKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestBuiltinAssignableDefaults(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name) VALUES ('helper', '{"en":"x"}')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ('helper', '{"en":"x"}')`); err != nil {
 		t.Fatal(err)
 	}
 	tests := []struct {
@@ -63,7 +63,7 @@ func TestBuiltinAssignableDefaults(t *testing.T) {
 		}
 	}
 	var audited, created int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE detail->>'role_created' = 'true') FROM audit_logs
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE detail->>'role_created' = 'true') FROM audit_logs
 WHERE action = 'authz.sync.grant' AND user_id IS NULL AND detail->>'via' = 'assignable'`).Scan(&audited, &created); err != nil || audited != 5 || created != 5 {
 		t.Fatalf("seeding audited %d rows (%d as created): %v", audited, created, err)
 	}
@@ -92,7 +92,7 @@ func TestSyncCoreAppendsNewBuiltinRole(t *testing.T) {
 			t.Fatal(err)
 		}
 		var audited []int64
-		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(target_id::bigint), '{}') FROM audit_logs
+		if err := db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(target_id::bigint), '{}') FROM audit_logs
 WHERE action = 'authz.sync.grant' AND user_id IS NULL AND detail->>'via' = 'assignable' AND detail->>'key' = 'probe'`).Scan(&audited); err != nil {
 			t.Fatal(err)
 		}
@@ -122,7 +122,7 @@ func TestSyncCoreAddsSupplierToExistingRoles(t *testing.T) {
 	ctx := context.Background()
 	// The database before the supplier role existed (and without the audit
 	// of the first sync, which created every built-in role).
-	if _, err := db.Pool.Exec(ctx, `DELETE FROM roles WHERE key = 'supplier';
+	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM roles WHERE key = 'supplier';
 DELETE FROM audit_logs;
 UPDATE roles SET assign_custom = true WHERE key = 'operator';
 INSERT INTO role_assignable_roles (role_id, assignable_role_id) SELECT r.id, r.id FROM roles r WHERE r.key = 'operator'`); err != nil {
@@ -143,7 +143,7 @@ INSERT INTO role_assignable_roles (role_id, assignable_role_id) SELECT r.id, r.i
 		t.Fatalf("supplier %+v, %v", r, err)
 	}
 	var audited []int64
-	if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(target_id::bigint ORDER BY target_id::bigint), '{}') FROM audit_logs
+	if err := db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(target_id::bigint ORDER BY target_id::bigint), '{}') FROM audit_logs
 WHERE action = 'authz.sync.grant' AND user_id IS NULL AND detail->>'via' = 'assignable' AND detail->>'key' = 'supplier'`).Scan(&audited); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND detail->>'via' = 'assi
 	}
 	// The supplier role's own defaults are audited too, once (P4F3).
 	var keys []string
-	if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(detail->>'key' ORDER BY detail->>'key'), '{}') FROM audit_logs
+	if err := db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(detail->>'key' ORDER BY detail->>'key'), '{}') FROM audit_logs
 WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_type = 'role' AND target_id = $1
   AND detail->>'via' = 'default' AND detail->>'role_created' = 'true'`, strconv.FormatInt(roleID(t, s, RoleSupplier), 10)).Scan(&keys); err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestSyncCoreFillsDefaultsOnce(t *testing.T) {
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	addUser(t, s, "op@x.com", RoleOperator)
 	gone := addUser(t, s, "gone@x.com", RoleAdmin)
-	if _, err := db.Pool.Exec(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, gone); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, gone); err != nil {
 		t.Fatal(err)
 	}
 	opID, adminID := roleID(t, s, RoleOperator), roleID(t, s, RoleAdmin)
@@ -203,7 +203,7 @@ func TestSyncCoreFillsDefaultsOnce(t *testing.T) {
 	if _, err := s.SetRoleAssignable(ctx, root, adminID, AssignableInput{RoleKeys: []string{RoleOperator, RoleSupplier, RoleUser}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE roles SET defaults_rev = 0 WHERE builtin; DELETE FROM audit_logs`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE roles SET defaults_rev = 0 WHERE builtin; DELETE FROM audit_logs`); err != nil {
 		t.Fatal(err)
 	}
 	sync := func() {
@@ -215,7 +215,7 @@ func TestSyncCoreFillsDefaultsOnce(t *testing.T) {
 	filled := func(id int64) []string {
 		t.Helper()
 		var keys []string
-		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(COALESCE(detail->>'key', 'assign_custom') ORDER BY COALESCE(detail->>'key', 'assign_custom')), '{}') FROM audit_logs
+		if err := db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(COALESCE(detail->>'key', 'assign_custom') ORDER BY COALESCE(detail->>'key', 'assign_custom')), '{}') FROM audit_logs
 WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_id = $1 AND detail ? 'defaults_rev'`, strconv.FormatInt(id, 10)).Scan(&keys); err != nil {
 			t.Fatal(err)
 		}
@@ -226,7 +226,7 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_id = $1 AND det
 	resets := func() []string {
 		t.Helper()
 		var out []string
-		if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(x ORDER BY x), '{}') FROM (
+		if err := db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(x ORDER BY x), '{}') FROM (
     SELECT (detail->>'key') || ' ' || (detail->>'defaults_rev') || ' ' || concat_ws(',',
         CASE WHEN detail->'before'->'permission_keys' ? 'balance:adjust:any' THEN 'before:balance:adjust:any' END,
         CASE WHEN detail->'before'->'permission_keys' ? 'role:define' THEN 'before:role:define' END,
@@ -268,7 +268,7 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_id = $1 AND det
 		t.Fatalf("resets audited: %q", got)
 	}
 	var behind int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM roles WHERE builtin AND defaults_rev <> 1`).Scan(&behind); err != nil || behind != 0 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM roles WHERE builtin AND defaults_rev <> 1`).Scan(&behind); err != nil || behind != 0 {
 		t.Fatalf("built-in roles left behind: %d %v", behind, err)
 	}
 
@@ -309,7 +309,7 @@ func TestCanActOnUsersComparesAssignable(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name) VALUES ('admin_maker', '{"en":"x"}'), ('user_maker', '{"en":"x"}');
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ('admin_maker', '{"en":"x"}'), ('user_maker', '{"en":"x"}');
 INSERT INTO role_assignable_roles (role_id, assignable_role_id)
 SELECT r.id, a.id FROM roles r JOIN roles a ON (r.key, a.key) IN (('admin_maker', 'admin'), ('user_maker', 'user'))`); err != nil {
 		t.Fatal(err)
@@ -472,7 +472,7 @@ func TestAssignmentRules(t *testing.T) {
 
 	// A custom role that may assign admin is beyond the admin, who may
 	// assign every custom role but not admin.
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name) VALUES ('admin_maker', '{"en":"x"}')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ('admin_maker', '{"en":"x"}')`); err != nil {
 		t.Fatal(err)
 	}
 	letAssign(t, s, "admin_maker", RoleAdmin)
@@ -489,7 +489,7 @@ func TestAssignmentRules(t *testing.T) {
 
 	// The default role for a user without any needs no list, only the
 	// permissions it carries: user:create plus those creates the user.
-	user, err := s.RolesPermissions(ctx, db.Pool, []string{RoleUser})
+	user, err := s.RolesPermissions(ctx, db.Gorm, []string{RoleUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +514,7 @@ func TestAssignmentRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	var details []string
-	if err := db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(detail::text), '{}') FROM audit_logs
+	if err := db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(detail::text), '{}') FROM audit_logs
 WHERE action = 'user.roles' AND user_id = $1 AND target_type = 'user' AND target_id = $2`, admin, fmt.Sprint(alice)).Scan(&details); err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +645,7 @@ func TestSetRoleAssignable(t *testing.T) {
 		t.Fatalf("root sets team: %+v %v", r, err)
 	}
 	var audited string
-	if err := db.Pool.QueryRow(ctx, `SELECT detail::text FROM audit_logs WHERE action = 'role.assignable' AND user_id = $1 AND target_id = $2`,
+	if err := db.SQL.QueryRowContext(ctx, `SELECT detail::text FROM audit_logs WHERE action = 'role.assignable' AND user_id = $1 AND target_id = $2`,
 		root, fmt.Sprint(teamID)).Scan(&audited); err != nil || audited != `{"added": ["operator", "user"], "role_keys": ["operator", "user"], "assign_custom": false}` {
 		t.Fatalf("audit %s: %v", audited, err)
 	}
@@ -723,7 +723,7 @@ func TestAssignableRoles(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name) VALUES ('admin_maker', '{"en":"x"}')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ('admin_maker', '{"en":"x"}')`); err != nil {
 		t.Fatal(err)
 	}
 	letAssign(t, s, "admin_maker", RoleAdmin)

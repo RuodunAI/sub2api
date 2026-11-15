@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -185,17 +185,17 @@ func binding(key string, app core.AppPlugin, batch int, subscribe ...string) cor
 
 func addPlugin(t *testing.T, db *store.DB, key string) {
 	t.Helper()
-	if _, err := db.Pool.Exec(context.Background(),
+	if _, err := db.SQL.ExecContext(context.Background(),
 		`INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func emit(t *testing.T, q store.Querier, typ string) int64 {
+func emit(t *testing.T, q *gorm.DB, typ string) int64 {
 	t.Helper()
 	var id int64
-	if err := q.QueryRow(context.Background(),
-		`INSERT INTO events (type, payload) VALUES ($1, '{"k":1}') RETURNING id`, typ).Scan(&id); err != nil {
+	if err := q.WithContext(context.Background()).Raw(
+		`INSERT INTO events (type, payload) VALUES ($1, '{"k":1}') RETURNING id`, typ).Row().Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -237,7 +237,7 @@ type cursorRow struct {
 func readCursor(t *testing.T, db *store.DB, key string) cursorRow {
 	t.Helper()
 	var c cursorRow
-	err := db.Pool.QueryRow(context.Background(), `SELECT last_event_id, consecutive_failures, next_retry_at, last_error
+	err := db.SQL.QueryRowContext(context.Background(), `SELECT last_event_id, consecutive_failures, next_retry_at, last_error
 		FROM plugin_event_cursors WHERE plugin_key = $1`, key).Scan(&c.last, &c.failures, &c.retry, &c.lastErr)
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func readCursor(t *testing.T, db *store.DB, key string) cursorRow {
 
 func cursorExists(db *store.DB, key string) bool {
 	var ok bool
-	_ = db.Pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM plugin_event_cursors WHERE plugin_key = $1)`, key).Scan(&ok)
+	_ = db.SQL.QueryRowContext(context.Background(), `SELECT EXISTS (SELECT 1 FROM plugin_event_cursors WHERE plugin_key = $1)`, key).Scan(&ok)
 	return ok
 }
 
@@ -335,15 +335,15 @@ func TestNewSubscriptionSkipsHistory(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	addPlugin(t, db, "guard")
-	emit(t, db.Pool, "usage.recorded")
-	emit(t, db.Pool, "usage.recorded")
+	emit(t, db.Gorm, "usage.recorded")
+	emit(t, db.Gorm, "usage.recorded")
 
 	app := &fakeApp{}
 	startNode(t, db, newMemLocker(), nil, newRegistry(binding("guard", app, 0, "usage.recorded")), "n1", testOpts())
 	eventually(t, 20*time.Second, "cursor created", func() bool { return cursorExists(db, "guard") })
 
-	want := emit(t, db.Pool, "usage.recorded")
-	emit(t, db.Pool, "user.created") // not subscribed
+	want := emit(t, db.Gorm, "usage.recorded")
+	emit(t, db.Gorm, "user.created") // not subscribed
 	eventually(t, 20*time.Second, "delivery", func() bool { return len(app.delivered()) > 0 })
 	eventually(t, 20*time.Second, "cursor past non-matching event", func() bool { return readCursor(t, db, "guard").last == want+1 })
 	if got := app.delivered(); !equalIDs(got, []int64{want}) {
@@ -366,7 +366,7 @@ func TestTwoNodesDeliverEachEventOnce(t *testing.T) {
 	var want []int64
 	types := []string{"usage.recorded", "balance.changed", "user.updated"}
 	for i := range 90 {
-		id := emit(t, db.Pool, types[i%3])
+		id := emit(t, db.Gorm, types[i%3])
 		if i%3 != 2 {
 			want = append(want, id)
 		}
@@ -414,7 +414,7 @@ func TestHolderKeepsItsTokenPastLockTTL(t *testing.T) {
 	}
 	var want []int64
 	for end := time.Now().Add(o.LockTTL + 2*time.Second); time.Now().Before(end); {
-		want = append(want, emit(t, db.Pool, "usage.recorded"))
+		want = append(want, emit(t, db.Gorm, "usage.recorded"))
 		if h := locker.Holder(key); h != token {
 			t.Fatalf("lock holder changed from %q to %q while delivering", token, h)
 		}
@@ -439,14 +439,14 @@ func TestPartialAckRedelivers(t *testing.T) {
 	eventually(t, 20*time.Second, "cursor created", func() bool { return cursorExists(db, "guard") })
 
 	var ids []int64
-	tx, err := db.Pool.Begin(context.Background())
+	tx, err := testutil.Begin(context.Background(), db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 5 {
 		ids = append(ids, emit(t, tx, "usage.recorded"))
 	}
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 20*time.Second, "cursor at last event", func() bool { return readCursor(t, db, "guard").last == ids[4] })
@@ -487,13 +487,13 @@ func TestBackoffThenDeadLetter(t *testing.T) {
 	startNode(t, db, newMemLocker(), nil, newRegistry(binding("guard", app, 0, "usage.recorded")), "n1", o)
 	eventually(t, 20*time.Second, "cursor created", func() bool { return cursorExists(db, "guard") })
 
-	tx, _ := db.Pool.Begin(context.Background())
+	tx, _ := testutil.Begin(context.Background(), db)
 	a := emit(t, tx, "usage.recorded")
 	b := emit(t, tx, "usage.recorded")
 	mu.Lock()
 	poison = b
 	mu.Unlock()
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -518,7 +518,7 @@ func TestBackoffThenDeadLetter(t *testing.T) {
 	}
 	var first, last int64
 	var msg string
-	if err := db.Pool.QueryRow(context.Background(),
+	if err := db.SQL.QueryRowContext(context.Background(),
 		`SELECT first_event_id, last_event_id, error FROM plugin_event_deadletters WHERE plugin_key = 'guard'`).Scan(&first, &last, &msg); err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +527,7 @@ func TestBackoffThenDeadLetter(t *testing.T) {
 	}
 
 	// Delivery continues after the dead-lettered batch.
-	next := emit(t, db.Pool, "usage.recorded")
+	next := emit(t, db.Gorm, "usage.recorded")
 	eventually(t, 20*time.Second, "next event", func() bool { return readCursor(t, db, "guard").last == next })
 }
 
@@ -538,7 +538,7 @@ func TestZeroAckIsFailure(t *testing.T) {
 	app := &fakeApp{handle: func([]int64) (int64, error) { return 0, nil }}
 	startNode(t, db, newMemLocker(), nil, newRegistry(binding("guard", app, 0, "usage.recorded")), "n1", testOpts())
 	eventually(t, 20*time.Second, "cursor created", func() bool { return cursorExists(db, "guard") })
-	emit(t, db.Pool, "usage.recorded")
+	emit(t, db.Gorm, "usage.recorded")
 	eventually(t, 20*time.Second, "failure recorded", func() bool { return readCursor(t, db, "guard").failures >= 1 })
 }
 
@@ -552,13 +552,13 @@ func TestDisableResumesFromCursor(t *testing.T) {
 	startNode(t, db, newMemLocker(), nil, reg, "n1", testOpts())
 	eventually(t, 20*time.Second, "cursor created", func() bool { return cursorExists(db, "guard") })
 
-	e1 := emit(t, db.Pool, "usage.recorded")
+	e1 := emit(t, db.Gorm, "usage.recorded")
 	eventually(t, 20*time.Second, "e1", func() bool { return readCursor(t, db, "guard").last == e1 })
 
 	reg.set() // plugin disabled
 	time.Sleep(100 * time.Millisecond)
-	e2 := emit(t, db.Pool, "usage.recorded")
-	e3 := emit(t, db.Pool, "usage.recorded")
+	e2 := emit(t, db.Gorm, "usage.recorded")
+	e3 := emit(t, db.Gorm, "usage.recorded")
 	time.Sleep(2 * time.Second)
 	if got := app.delivered(); !equalIDs(got, []int64{e1}) {
 		t.Fatalf("delivered while disabled: %v", got)
@@ -584,17 +584,17 @@ func TestGapWaitsForUncommittedEvent(t *testing.T) {
 	ctx := context.Background()
 
 	// Committed later than a higher id.
-	tx, err := db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	slow := emit(t, tx, "usage.recorded")
-	fast := emit(t, db.Pool, "usage.recorded")
+	fast := emit(t, db.Gorm, "usage.recorded")
 	time.Sleep(2 * time.Second)
 	if got := app.delivered(); len(got) != 0 {
 		t.Fatalf("delivered past an uncommitted event: %v", got)
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, 20*time.Second, "both delivered", func() bool { return len(app.delivered()) >= 2 })
@@ -603,14 +603,14 @@ func TestGapWaitsForUncommittedEvent(t *testing.T) {
 	}
 
 	// Rolled back: the hole is skipped once the transaction is gone.
-	tx, err = db.Pool.Begin(ctx)
+	tx, err = testutil.Begin(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	emit(t, tx, "usage.recorded")
-	after := emit(t, db.Pool, "usage.recorded")
+	after := emit(t, db.Gorm, "usage.recorded")
 	time.Sleep(100 * time.Millisecond)
-	_ = tx.Rollback(ctx)
+	_ = tx.Rollback().Error
 	eventually(t, 30*time.Second, "event after rolled-back hole", func() bool { return len(app.delivered()) == 3 })
 	if got := app.delivered(); got[2] != after {
 		t.Fatalf("delivered %v", got)
@@ -627,7 +627,7 @@ func TestBusWakeUp(t *testing.T) {
 	o.PollInterval = time.Hour
 	startNode(t, db, newMemLocker(), bus, newRegistry(binding("guard", app, 0, "usage.recorded")), "n1", o)
 	eventually(t, 20*time.Second, "cursor created", func() bool { return cursorExists(db, "guard") })
-	id := emit(t, db.Pool, "usage.recorded")
+	id := emit(t, db.Gorm, "usage.recorded")
 	_ = bus.Publish(context.Background(), ChannelEventsAppended, nil)
 	eventually(t, 20*time.Second, "woken delivery", func() bool { return equalIDs(app.delivered(), []int64{id}) })
 }
@@ -645,14 +645,14 @@ func TestPurgeEvents(t *testing.T) {
 			age = "1 day"
 		}
 		var id int64
-		if err := db.Pool.QueryRow(ctx, `INSERT INTO events (type, occurred_at, payload)
+		if err := db.SQL.QueryRowContext(ctx, `INSERT INTO events (type, occurred_at, payload)
 			VALUES ('usage.recorded', now() - $1::interval, '{}') RETURNING id`, age).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, id)
 	}
 	// Cursors: guard passed everything, other only the first two events.
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugin_event_cursors (plugin_key, last_event_id) VALUES ('guard', $1), ('other', $2)`,
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugin_event_cursors (plugin_key, last_event_id) VALUES ('guard', $1), ('other', $2)`,
 		ids[5], ids[1]); err != nil {
 		t.Fatal(err)
 	}
@@ -661,15 +661,15 @@ func TestPurgeEvents(t *testing.T) {
 	if err != nil || n != 2 {
 		t.Fatalf("purged %d, %v; want 2", n, err)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE plugin_event_cursors SET last_event_id = $1 WHERE plugin_key = 'other'`, ids[5]); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE plugin_event_cursors SET last_event_id = $1 WHERE plugin_key = 'other'`, ids[5]); err != nil {
 		t.Fatal(err)
 	}
 	if n, err = s.PurgeEvents(ctx); err != nil || n != 2 {
 		t.Fatalf("purged %d, %v; want 2 (recent events kept)", n, err)
 	}
 	var left []int64
-	rows, _ := db.Pool.Query(ctx, `SELECT id FROM events ORDER BY id`)
-	left, _ = pgx.CollectRows(rows, pgx.RowTo[int64])
+	rows, _ := db.SQL.QueryContext(ctx, `SELECT id FROM events ORDER BY id`)
+	left, _ = testutil.Column[int64](rows)
 	sort.Slice(left, func(i, j int) bool { return left[i] < left[j] })
 	if !equalIDs(left, ids[4:]) {
 		t.Fatalf("left %v, want %v", left, ids[4:])

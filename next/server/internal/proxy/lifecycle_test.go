@@ -14,10 +14,10 @@ func TestObservedIPNotifiesAccountsOnlyOnChange(t *testing.T) {
 	ctx := t.Context()
 	var proxyID int64
 	var version time.Time
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('lifecycle','http','proxy.invalid',3128) RETURNING id, updated_at`).Scan(&proxyID, &version); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('lifecycle','http','proxy.invalid',3128) RETURNING id, updated_at`).Scan(&proxyID, &version); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('first','first','managed',''::bytea,$1),('second','second','managed',''::bytea,$1)`, proxyID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('first','first','managed',''::bytea,$1),('second','second','managed',''::bytea,$1)`, proxyID); err != nil {
 		t.Fatal(err)
 	}
 	for _, ip := range []string{"192.0.2.1", "192.0.2.1", "192.0.2.2"} {
@@ -26,7 +26,7 @@ func TestObservedIPNotifiesAccountsOnlyOnChange(t *testing.T) {
 		}
 	}
 	var events, unexpected int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE payload->'changed_fields'->>0 <> 'proxy.real_ip' OR payload->>'plugin_key' NOT IN ('first','second')) FROM events WHERE type='account.updated'`).Scan(&events, &unexpected); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*),count(*) FILTER (WHERE payload->'changed_fields'->>0 <> 'proxy.real_ip' OR payload->>'plugin_key' NOT IN ('first','second')) FROM events WHERE type='account.updated'`).Scan(&events, &unexpected); err != nil {
 		t.Fatal(err)
 	}
 	if events != 4 || unexpected != 0 {
@@ -34,7 +34,7 @@ func TestObservedIPNotifiesAccountsOnlyOnChange(t *testing.T) {
 	}
 	// updated_at versions the cached client: a probe must not rebuild it.
 	var after time.Time
-	if err := db.Pool.QueryRow(ctx, `SELECT updated_at FROM proxies WHERE id=$1`, proxyID).Scan(&after); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT updated_at FROM proxies WHERE id=$1`, proxyID).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
 	if !after.Equal(version) {

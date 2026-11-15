@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -32,7 +31,7 @@ var scopeRefPatterns = map[string]string{
 // readable and a reused id from being reached. It returns the new authz
 // version, 0 when nothing went: the caller announces it after commit
 // (AnnounceAuthzChanged), as every authz write does.
-func ClearScopeGrants(ctx context.Context, tx pgx.Tx, actorID int64, kind string, ids []int64) (int64, error) {
+func ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind string, ids []int64) (int64, error) {
 	pattern, ok := scopeRefPatterns[kind]
 	if !ok {
 		return 0, fmt.Errorf("core: unknown scope reference kind %q", kind)

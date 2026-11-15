@@ -299,7 +299,7 @@ func TestPriceSourcesSync(t *testing.T) {
 		t.Fatalf("source: %v", src)
 	}
 	var enc []byte
-	_ = e.db.Pool.QueryRow(ctx, `SELECT api_key_enc FROM price_sync_sources WHERE name = 'up'`).Scan(&enc)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT api_key_enc FROM price_sync_sources WHERE name = 'up'`).Scan(&enc)
 	if strings.Contains(string(enc), "sk-good") {
 		t.Fatal("API key stored in clear")
 	}
@@ -321,7 +321,7 @@ func TestPriceSourcesSync(t *testing.T) {
 		t.Fatalf("bad upstream key: %v", resp)
 	}
 	var lastErr string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT last_error FROM price_sync_sources WHERE name = 'up'`).Scan(&lastErr)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT last_error FROM price_sync_sources WHERE name = 'up'`).Scan(&lastErr)
 	if !strings.Contains(lastErr, "401") {
 		t.Fatalf("last_error = %q", lastErr)
 	}
@@ -329,7 +329,7 @@ func TestPriceSourcesSync(t *testing.T) {
 	// Deleting a source keeps its prices.
 	e.mustCall(admin, 204, "DELETE", "/price-sources/"+itoa(litellmID), nil)
 	var n int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM model_prices WHERE source = 'sync' AND sync_source_id IS NULL`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM model_prices WHERE source = 'sync' AND sync_source_id IS NULL`).Scan(&n)
 	if n != 3 {
 		t.Fatalf("orphaned synced prices: %d", n)
 	}
@@ -373,7 +373,7 @@ func TestMyPrices(t *testing.T) {
 		{"restricted", "restricted", "3", []string{}, &restricted},
 		{"mine", "restricted", "0.5", []string{}, &mine},
 	} {
-		if err := e.db.Pool.QueryRow(ctx, `INSERT INTO groups (name, visibility, rate_multiplier, model_allowlist, model_filter_mode) VALUES ($1, $2, $3, $4, 'whitelist') RETURNING id`,
+		if err := e.db.SQL.QueryRowContext(ctx, `INSERT INTO groups (name, visibility, rate_multiplier, model_allowlist, model_filter_mode) VALUES ($1, $2, $3, $4, 'whitelist') RETURNING id`,
 			g.name, g.visibility, g.rate, g.allow).Scan(g.id); err != nil {
 			t.Fatal(err)
 		}

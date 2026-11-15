@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/credits"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -73,7 +73,7 @@ func readQuery(db *gorm.DB, tokenHash string, dst *creditRow) *gorm.DB {
 	return db.Take(dst, "token_hash = ?", tokenHash)
 }
 
-func read(ctx context.Context, q store.Querier, tokenHash string) (core.FallbackCredit, error) {
+func read(ctx context.Context, q *gorm.DB, tokenHash string) (core.FallbackCredit, error) {
 	var r creditRow
 	if err := readQuery(store.G(ctx, q), tokenHash, &r).Error; err != nil {
 		return core.FallbackCredit{}, err
@@ -91,7 +91,7 @@ func read(ctx context.Context, q store.Querier, tokenHash string) (core.Fallback
 }
 
 // lockKey takes the transaction-scoped advisory lock of key.
-func lockKey(ctx context.Context, tx pgx.Tx, key string) error {
+func lockKey(ctx context.Context, tx *gorm.DB, key string) error {
 	return store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, key).Error
 }
 
@@ -100,7 +100,7 @@ func (s *Service) Record(ctx context.Context, input core.FallbackCredit) error {
 	if err != nil {
 		return err
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		owner, _ := json.Marshal(in.Owner)
 		if err := lockKey(ctx, tx, "fallback-credit-owner:"+string(owner)); err != nil {
 			return err
@@ -178,7 +178,7 @@ func (s *Service) LookupOwned(ctx context.Context, owner core.ResourceOwner, tok
 	if !validOwner(owner) || !hash(tokenHash) {
 		return core.FallbackCredit{}, core.ErrInvalidArgument
 	}
-	record, err := read(ctx, s.db.Pool, tokenHash)
+	record, err := read(ctx, s.db.Gorm, tokenHash)
 	if store.IsNoRows(err) || err == nil && (record.Owner != owner || record.ExpiresAt.Before(time.Now().Add(-24*time.Hour))) {
 		return core.FallbackCredit{}, core.ErrNotFound
 	}

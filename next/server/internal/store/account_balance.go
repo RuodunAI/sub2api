@@ -39,7 +39,7 @@ func scanBalance(r interface{ Scan(...any) error }) (*BalanceSnapshot, error) {
 
 // AccountBalance returns the snapshot of one account, nil when it has none.
 func (d *DB) AccountBalance(ctx context.Context, accountID int64) (*BalanceSnapshot, error) {
-	b, err := scanBalance(G(ctx, d.Pool).Raw(selectBalance+` WHERE account_id = ?`, accountID).Row())
+	b, err := scanBalance(G(ctx, d.Gorm).Raw(selectBalance+` WHERE account_id = ?`, accountID).Row())
 	if IsNoRows(err) {
 		return nil, nil
 	}
@@ -53,7 +53,7 @@ func (d *DB) AccountBalances(ctx context.Context, accountIDs []int64) (map[int64
 	if len(accountIDs) == 0 {
 		return out, nil
 	}
-	rows, err := G(ctx, d.Pool).Raw(selectBalance+` WHERE account_id = ANY(?)`, Int64s(accountIDs)).Rows()
+	rows, err := G(ctx, d.Gorm).Raw(selectBalance+` WHERE account_id = ANY(?)`, Int64s(accountIDs)).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func (d *DB) AccountBalances(ctx context.Context, accountIDs []int64) (map[int64
 
 // UpsertBalance writes one balance snapshot.
 func (d *DB) UpsertBalance(ctx context.Context, b *BalanceSnapshot) error {
-	return upsertBalance(G(ctx, d.Pool), b).Error
+	return upsertBalance(G(ctx, d.Gorm), b).Error
 }
 
 func upsertBalance(db *gorm.DB, b *BalanceSnapshot) *gorm.DB {
@@ -89,5 +89,5 @@ func upsertBalance(db *gorm.DB, b *BalanceSnapshot) *gorm.DB {
 
 // DeleteBalance removes the balance snapshot of one account.
 func (d *DB) DeleteBalance(ctx context.Context, accountID int64) error {
-	return G(ctx, d.Pool).Exec(`DELETE FROM account_balances WHERE account_id = ?`, accountID).Error
+	return G(ctx, d.Gorm).Exec(`DELETE FROM account_balances WHERE account_id = ?`, accountID).Error
 }

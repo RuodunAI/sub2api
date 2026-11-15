@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // pricingEnv is two groups whose accounts declare four models, and three
@@ -38,7 +40,7 @@ type pricingEnv struct {
 func (e *env) one(sql string, args ...any) int64 {
 	e.t.Helper()
 	var id int64
-	require.NoError(e.t, e.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id))
+	require.NoError(e.t, e.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id))
 	return id
 }
 
@@ -165,7 +167,7 @@ func TestGroupModelPrices(t *testing.T) {
 	// The expression of a custom price is in the history, where a settlement
 	// retry reads it by its hash.
 	var stored, inHistory int
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*), count(h.expr_hash) FROM price_rules r
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*), count(h.expr_hash) FROM price_rules r
 		LEFT JOIN model_price_history h ON h.expr_hash = r.expr_hash AND h.expression = 'v1:' || r.expression
 		WHERE r.kind = 'custom'`).Scan(&stored, &inHistory))
 	require.Equal(t, 2, stored)
@@ -276,10 +278,10 @@ func TestGroupModelPricesConflict(t *testing.T) {
 	e := newPricingEnv(t, allowAll{})
 	ctx := context.Background()
 	leaving := e.one(`INSERT INTO segments (name) VALUES ('leaving') RETURNING id`)
-	tx, err := e.db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, e.db)
 	require.NoError(t, err)
-	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `DELETE FROM segments WHERE id = $1`, leaving)
+	defer tx.Rollback()
+	_, err = store.SQLTx(tx).ExecContext(ctx, `DELETE FROM segments WHERE id = $1`, leaving)
 	require.NoError(t, err)
 
 	type answer struct {
@@ -295,11 +297,11 @@ func TestGroupModelPricesConflict(t *testing.T) {
 	// The write is there once it waits for the lock the delete holds.
 	require.Eventually(t, func() bool {
 		var waiting int
-		err := e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+		err := e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity
 			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
 		return err == nil && waiting > 0
 	}, 10*time.Second, 5*time.Millisecond)
-	require.NoError(t, tx.Commit(ctx))
+	require.NoError(t, tx.Commit().Error)
 
 	got := <-saved
 	require.Equal(t, 409, got.code, "%v", got.body)
@@ -386,7 +388,7 @@ func TestResolveFollowsRules(t *testing.T) {
 	// price, field for field what Resolve gave before there were rules.
 	global := resolve(core.PriceQuery{Model: q.Model})
 	var want core.PriceRule
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT id, model, mode, expression, expr_version, expr_hash FROM model_prices WHERE model = $1`, q.Model).
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT id, model, mode, expression, expr_version, expr_hash FROM model_prices WHERE model = $1`, q.Model).
 		Scan(&want.ID, &want.Model, &want.Mode, &want.Expression, &want.ExprVersion, &want.ExprHash))
 	require.Equal(t, &want, global)
 	require.Equal(t, global, resolve(q))
@@ -409,7 +411,7 @@ func TestResolveFollowsRules(t *testing.T) {
 	require.Equal(t, `tier("base", p*0.8 + c*4)`, r.Expression)
 	require.Equal(t, []any{global.ID, "per_token", 1}, []any{r.ID, r.Mode, r.ExprVersion})
 	var frozen string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT expression FROM model_price_history WHERE expr_hash = $1`, r.ExprHash).Scan(&frozen))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT expression FROM model_price_history WHERE expr_hash = $1`, r.ExprHash).Scan(&frozen))
 	require.Contains(t, frozen, r.Expression)
 	// Another segment of the group still gets the group's rule.
 	require.Equal(t, core.PriceSourceGroup, resolve(core.PriceQuery{Model: q.Model, GroupID: e.open, SegmentID: e.personal}).Source)

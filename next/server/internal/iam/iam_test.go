@@ -15,9 +15,9 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
@@ -59,7 +59,7 @@ type fakeEvents struct {
 	events []core.Event
 }
 
-func (f *fakeEvents) Emit(_ context.Context, tx pgx.Tx, events ...core.Event) error {
+func (f *fakeEvents) Emit(_ context.Context, tx *gorm.DB, events ...core.Event) error {
 	if tx == nil {
 		return errors.New("Emit needs a transaction")
 	}
@@ -542,7 +542,7 @@ func sectionKeys(data any) string {
 func TestListUsersPageBounds(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
-	if _, err := e.svc.db.Pool.Exec(ctx, `INSERT INTO users (email, password_hash)
+	if _, err := e.svc.db.SQL.ExecContext(ctx, `INSERT INTO users (email, password_hash)
 		SELECT 'user' || n || '@example.com', 'x' FROM generate_series(1, 25) n`); err != nil {
 		t.Fatal(err)
 	}

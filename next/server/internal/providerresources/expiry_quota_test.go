@@ -2,10 +2,11 @@ package providerresources
 
 import (
 	"context"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 	"testing"
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestResourceQuotaExpiryClassification(t *testing.T) {
@@ -33,10 +34,10 @@ func TestObservedResourcesDBExpiredCapacityAndRenewal(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	var owner core.ResourceOwner
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('expiryquota@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('expiryquota@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('expiryquota') RETURNING id`).Scan(&owner.GroupID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('expiryquota') RETURNING id`).Scan(&owner.GroupID); e != nil {
 		t.Fatal(e)
 	}
 	s := New(db, Options{MaxResources: 1, MaxBytes: 100, MaxContexts: 1})
@@ -51,7 +52,7 @@ func TestObservedResourcesDBExpiredCapacityAndRenewal(t *testing.T) {
 	if e = s.BindContext(ctx, contextA); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = db.Pool.Exec(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 minute' WHERE public_id=$1`, a.PublicID); e != nil {
+	if _, e = db.SQL.ExecContext(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 minute' WHERE public_id=$1`, a.PublicID); e != nil {
 		t.Fatal(e)
 	}
 	second := first
@@ -80,7 +81,7 @@ func TestObservedResourcesDBExpiredCapacityAndRenewal(t *testing.T) {
 		t.Fatal("renewed original context lost", e)
 	}
 	var count int
-	if e = db.Pool.QueryRow(ctx, `SELECT count(*) FROM provider_resources`).Scan(&count); e != nil || count != 2 {
+	if e = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM provider_resources`).Scan(&count); e != nil || count != 2 {
 		t.Fatal("expiry deleted tombstones or allocated duplicate", count, e)
 	}
 }

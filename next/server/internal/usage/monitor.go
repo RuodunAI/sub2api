@@ -9,15 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"google.golang.org/protobuf/proto"
-	"gorm.io/gorm"
 )
 
 type monitorOutcome struct {
@@ -29,7 +29,7 @@ type monitorOutcome struct {
 
 // outcomeTx adds the result receipt to the existing financial transaction.
 // Its advisory lock serializes retries of this claim, before task→usage→pending.
-func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(pgx.Tx) error) error {
+func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(*gorm.DB) error) error {
 	m := e.monitor
 	if m == nil {
 		return s.db.Tx(ctx, fn)
@@ -39,7 +39,7 @@ func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(pgx.Tx)
 		m.err = err
 		return err
 	}
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if err := g.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, "plugin-monitor:"+m.id).Error; err != nil {
 			return err
@@ -159,7 +159,7 @@ func (s *Service) applyMonitorResult(ctx context.Context, e *settleEntry, row *r
 		if next.After(e.deadlineAt) {
 			next = e.deadlineAt
 		}
-		return s.outcomeTx(ctx, e, func(tx pgx.Tx) error {
+		return s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
 			// Match legacy finance lock order and reject a row transferred to the
 			// managed task table while this callback was running.
 			status, err := lockUsageRow(ctx, tx, e.usageLogID)

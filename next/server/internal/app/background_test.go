@@ -39,7 +39,7 @@ func TestBackgroundBuiltOnceForAdmission(t *testing.T) {
 		db:      db,
 		rdb:     rdb,
 		reg:     registry.New(),
-		cl:      cluster.New(rdb, db.Pool, cluster.Options{NodeID: "background-test", Logger: log}),
+		cl:      cluster.New(rdb, db, cluster.Options{NodeID: "background-test", Logger: log}),
 		work:    background.New(2),
 	}
 	t.Cleanup(func() {

@@ -10,8 +10,8 @@ import (
 	"sort"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -241,7 +241,7 @@ func mergeSettings(fields []manifest.SecretField, old, in map[string]any, manage
 	return changed, nil
 }
 
-func (a *API) loadValues(c *gin.Context, q store.Querier, key string, forUpdate bool) (map[string]any, error) {
+func (a *API) loadValues(c *gin.Context, q *gorm.DB, key string, forUpdate bool) (map[string]any, error) {
 	db := store.G(c.Request.Context(), q).Select("config_enc").Where("key = ?", key)
 	if forUpdate {
 		db = db.Clauses(store.ForUpdate)
@@ -282,7 +282,7 @@ func (a *API) getSettings(c *gin.Context) {
 
 // renderSettings answers the form v with the stored values, secrets masked.
 func (a *API) renderSettings(c *gin.Context, key string, v *SettingsView) {
-	values, err := a.loadValues(c, a.d.DB.Pool, key, false)
+	values, err := a.loadValues(c, a.d.DB.Gorm, key, false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -318,7 +318,7 @@ func (a *API) putSettings(c *gin.Context) {
 	}
 	manager := core.HasGranted(c.Request.Context(), PermManage)
 	var changed []string
-	err := a.d.DB.Tx(c.Request.Context(), func(tx pgx.Tx) error {
+	err := a.d.DB.Tx(c.Request.Context(), func(tx *gorm.DB) error {
 		old, err := a.loadValues(c, tx, key, true)
 		if err != nil {
 			return err

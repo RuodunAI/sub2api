@@ -8,7 +8,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -154,7 +153,7 @@ func accessKeyList(db *gorm.DB, userID int64) *gorm.DB {
 // AccessKeys lists the user's keys.
 func (s *Service) AccessKeys(ctx context.Context, userID int64) ([]*AccessKey, error) {
 	var rows []accessKeyRow
-	if err := accessKeyList(store.G(ctx, s.db.Pool), userID).Find(&rows).Error; err != nil {
+	if err := accessKeyList(store.G(ctx, s.db.Gorm), userID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]*AccessKey, 0, len(rows))
@@ -184,7 +183,7 @@ func (s *Service) CreateAccessKey(ctx context.Context, userID int64, in CreateAc
 	}
 	raw := core.AccessKeyPrefix + secret
 	var key *AccessKey
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockRefreshUser(ctx, tx, userID); err != nil {
 			return err
 		}
@@ -237,7 +236,7 @@ func (s *Service) UpdateAccessKey(ctx context.Context, userID, id int64, in Upda
 		}
 	}
 	var key *AccessKey
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var row accessKeyRow
 		res := updateAccessKey(store.G(ctx, tx), id, userID, name, perms).Scan(&row)
 		if res.Error != nil {
@@ -265,7 +264,7 @@ func updateAccessKey(db *gorm.DB, id, userID int64, name *string, perms []string
 
 // DeleteAccessKey revokes a key at once.
 func (s *Service) DeleteAccessKey(ctx context.Context, userID, id int64) error {
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		res := deleteAccessKey(store.G(ctx, tx), id, userID)
 		if res.Error != nil {
 			return res.Error
@@ -318,7 +317,7 @@ func (s *Service) AccessKeyPermissions(ctx context.Context, userID int64) ([]*au
 func (s *Service) VerifyAccessKey(ctx context.Context, raw, ip string) (core.AccessKeyIdentity, error) {
 	var id core.AccessKeyIdentity
 	var expiresAt, lastUsed *time.Time
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	err := accessKeyByHash(g, hashToken(raw)).Row().
 		Scan(&id.KeyID, &id.UserID, (*store.Strings)(&id.Permissions), &expiresAt, &lastUsed)
 	if store.IsNoRows(err) {

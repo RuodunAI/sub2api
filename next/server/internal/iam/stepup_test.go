@@ -103,7 +103,7 @@ func TestVerifyStepUpRefusesThePasswordWithTwoFactor(t *testing.T) {
 		t.Fatalf("wrong code: %v", err)
 	}
 	var failed int
-	if err := s.db.Pool.QueryRow(ctx, `SELECT failed_attempts FROM user_totp WHERE user_id = $1`, id).Scan(&failed); err != nil || failed != 1 {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT failed_attempts FROM user_totp WHERE user_id = $1`, id).Scan(&failed); err != nil || failed != 1 {
 		t.Fatalf("a wrong code is not counted towards the lockout: %d %v", failed, err)
 	}
 	// The password-too scopes refuse a code without the password.
@@ -114,11 +114,11 @@ func TestVerifyStepUpRefusesThePasswordWithTwoFactor(t *testing.T) {
 	if err != nil || p.Proof == "" || p.Scope != in.Scope || p.Context != in.Context || p.Method != methodTOTP || time.Until(p.ExpiresAt) > flowTTL {
 		t.Fatalf("code: %+v %v", p, err)
 	}
-	if err := s.db.Pool.QueryRow(ctx, `SELECT failed_attempts FROM user_totp WHERE user_id = $1`, id).Scan(&failed); err != nil || failed != 0 {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT failed_attempts FROM user_totp WHERE user_id = $1`, id).Scan(&failed); err != nil || failed != 0 {
 		t.Fatalf("failed attempts after a good code: %d %v", failed, err)
 	}
 	var n int
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'user.security_verify' AND user_id = $1 AND detail->>'scope' = $2`, id, in.Scope).Scan(&n); err != nil || n != 2 {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'user.security_verify' AND user_id = $1 AND detail->>'scope' = $2`, id, in.Scope).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("audit rows: %d %v", n, err)
 	}
 }
@@ -182,7 +182,7 @@ func TestConsumeStepUpBindings(t *testing.T) {
 	}
 	// Expired.
 	proof = issue(session, id, core.StepUpUserDelete)
-	if _, err := s.db.Pool.Exec(base, `UPDATE auth_flows SET expires_at = now() - interval '1 second' WHERE purpose = $1`, flowStepUpProof); err != nil {
+	if _, err := s.db.SQL.ExecContext(base, `UPDATE auth_flows SET expires_at = now() - interval '1 second' WHERE purpose = $1`, flowStepUpProof); err != nil {
 		t.Fatal(err)
 	}
 	if err := consume(session, id, proof, testOperation, core.StepUpUserDelete); !isVerificationRequired(err) {
@@ -401,7 +401,7 @@ func TestSuperAdminLastFactorTakesThePassword(t *testing.T) {
 	e := setupAdmin(t)
 	s, ctx := e.svc, context.Background()
 	root := mustLogin(t, s, adminEmail, adminPassword).User.ID
-	if su, err := s.authz.IsSuperuser(ctx, s.db.Pool, root); err != nil || !su {
+	if su, err := s.authz.IsSuperuser(ctx, s.db.Gorm, root); err != nil || !su {
 		t.Fatalf("the bootstrap admin is not the super admin: %v", err)
 	}
 	plain, err := s.CreateUser(ctx, 0, CreateUserInput{Email: "plain@example.com", Password: adminPassword})
@@ -450,7 +450,7 @@ func TestSuperAdminLastFactorTakesThePassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Pool.Exec(ctx, `DELETE FROM user_passkeys WHERE user_id = $1`, root); err != nil {
+	if _, err := s.db.SQL.ExecContext(ctx, `DELETE FROM user_passkeys WHERE user_id = $1`, root); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.ConsumeStepUp(core.WithStepUp(core.WithUserID(ctx, root), p.Proof, disable), core.StepUpSelf2FADisable); !isVerificationRequired(err) {
@@ -460,7 +460,7 @@ func TestSuperAdminLastFactorTakesThePassword(t *testing.T) {
 	check(root, core.StepUpSelfPasskeyDelete, "DELETE /api/v1/me/passkeys/1", false)
 	check(root, core.StepUpUserSecurityReset, reset(root), true)
 	// The only passkey, without two-factor.
-	if _, err := s.db.Pool.Exec(ctx, `DELETE FROM user_totp WHERE user_id = $1`, root); err != nil {
+	if _, err := s.db.SQL.ExecContext(ctx, `DELETE FROM user_totp WHERE user_id = $1`, root); err != nil {
 		t.Fatal(err)
 	}
 	check(root, core.StepUpSelfPasskeyDelete, "DELETE /api/v1/me/passkeys/1", true)

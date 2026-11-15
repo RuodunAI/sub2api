@@ -17,7 +17,7 @@ func TestVersion(t *testing.T) {
 	stored := func() int64 {
 		t.Helper()
 		var v int64
-		if err := db.Pool.QueryRow(context.Background(), `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
+		if err := db.SQL.QueryRowContext(context.Background(), `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
 		return v

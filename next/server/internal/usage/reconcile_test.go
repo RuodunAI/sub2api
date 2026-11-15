@@ -264,7 +264,7 @@ func (f *fixture) reserved(id, refID string, tokens core.UsageTokens) *core.Usag
 // minReconcileDelay out, by design.
 func (f *fixture) due() {
 	f.t.Helper()
-	if _, err := f.db.Pool.Exec(context.Background(),
+	if _, err := f.db.SQL.ExecContext(context.Background(),
 		`UPDATE pending_settlements SET next_check_at = now() WHERE state = 'pending'`); err != nil {
 		f.t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func (f *fixture) due() {
 
 func (f *fixture) cost(requestID string) decimal.Decimal {
 	var d decimal.Decimal
-	if err := f.db.Pool.QueryRow(context.Background(),
+	if err := f.db.SQL.QueryRowContext(context.Background(),
 		`SELECT total_cost FROM usage_logs WHERE request_id = $1`, requestID).Scan(&d); err != nil {
 		f.t.Fatal(err)
 	}
@@ -601,7 +601,7 @@ func TestSummaryCountsAnomaliesAndEstimatedRevenue(t *testing.T) {
 	rf.plugin.parse = func(in *pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
 		return answers[in.GetEntry().GetRefId()], nil
 	}
-	if _, err := rf.db.Pool.Exec(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute' WHERE ref_id = 'task-s-aband'`); err != nil {
+	if _, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute' WHERE ref_id = 'task-s-aband'`); err != nil {
 		t.Fatal(err)
 	}
 	rf.due()
@@ -697,7 +697,7 @@ func TestAbandonKeepsTheChargeAndStaysOutOfTheRetryLoop(t *testing.T) {
 	afterReserve := rf.balance()
 
 	// Past its deadline: the upstream cannot be asked any more.
-	if _, err := rf.db.Pool.Exec(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute'`); err != nil {
+	if _, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute'`); err != nil {
 		t.Fatal(err)
 	}
 	rf.due()
@@ -762,7 +762,7 @@ func TestAbandonOnAttempts(t *testing.T) {
 	rf := reconcileFixture(t)
 	ctx := context.Background()
 	rf.svc.process(ctx, []*core.UsageRecord{rf.reserved("req-att", "task-att", core.UsageTokens{Input: 10, Output: 1})})
-	if _, err := rf.db.Pool.Exec(ctx, `UPDATE pending_settlements SET attempts = 100`); err != nil {
+	if _, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET attempts = 100`); err != nil {
 		t.Fatal(err)
 	}
 	rf.due()
@@ -784,7 +784,7 @@ func TestManualRefundAndRetryOfAnAbandonedEntry(t *testing.T) {
 	ctx := context.Background()
 	before := rf.balance()
 	rf.svc.process(ctx, []*core.UsageRecord{rf.reserved("req-man", "task-man", core.UsageTokens{Input: 2000, Output: 200})})
-	if _, err := rf.db.Pool.Exec(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute'`); err != nil {
+	if _, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute'`); err != nil {
 		t.Fatal(err)
 	}
 	rf.due()
@@ -814,7 +814,7 @@ func TestManualRefundAndRetryOfAnAbandonedEntry(t *testing.T) {
 	}
 
 	// Now abandon it again and refund it by hand.
-	if _, err := rf.db.Pool.Exec(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute', next_check_at = now()`); err != nil {
+	if _, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute', next_check_at = now()`); err != nil {
 		t.Fatal(err)
 	}
 	rf.svc.ReconcileDue(ctx)
@@ -1058,7 +1058,7 @@ func TestSettlementHidesAccountWithoutAccountRead(t *testing.T) {
 	require.Nil(t, d["settlement"].(map[string]any)["account_id"])
 	require.NotContains(t, d, "request_log_account_id") // not a ccgateway row
 
-	if _, err := rf.db.Pool.Exec(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute'`); err != nil {
+	if _, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute'`); err != nil {
 		t.Fatal(err)
 	}
 	rf.due()

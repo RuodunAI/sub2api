@@ -125,14 +125,14 @@ func TestUsageSearchListSummaryAndPrivacy(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	var keyID, accountID int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash) VALUES($1,$2,'Team_100%','masked','never-return-secret') RETURNING id`, f.user, f.group).Scan(&keyID))
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Search Account','anthropic','apikey','') RETURNING id`).Scan(&accountID))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash) VALUES($1,$2,'Team_100%','masked','never-return-secret') RETURNING id`, f.user, f.group).Scan(&keyID))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Search Account','anthropic','apikey','') RETURNING id`).Scan(&accountID))
 	mine := f.record("search-mine", false)
 	mine.APIKeyID, mine.AccountID, mine.ClientIP, mine.UserAgent, mine.NodeID = keyID, &accountID, "192.0.2.9", "test-client", "node-search"
 	mine.Stream, mine.Model = true, "model_100%"
 	other := f.record("search-other", false)
 	other.UserID, other.ClientIP, other.Model = f.other, "192.0.2.10", "modelX100Y"
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash) VALUES($1,$2,'TeamX100Y','masked','other-hash') RETURNING id`, f.other, f.group).Scan(&other.APIKeyID))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash) VALUES($1,$2,'TeamX100Y','masked','other-hash') RETURNING id`, f.other, f.group).Scan(&other.APIKeyID))
 	f.svc.process(ctx, []*core.UsageRecord{mine, other})
 	queries := []string{"api_key_name=team_100%25", "client_ip=192.0.2.9", "model_contains=_100%25", "stream=true", "account_name=Search", "user_email=u%40example.com", "node_id=node-search"}
 	for _, query := range queries {
@@ -243,7 +243,7 @@ func TestUsageSummaryPromptTokens(t *testing.T) {
 		r.PriceHeaders = map[string]string{"test-header": "private"}
 		f.svc.process(t.Context(), []*core.UsageRecord{r})
 		if tc.legacy {
-			_, err := f.db.Pool.Exec(t.Context(), `UPDATE usage_logs SET billing_detail = '{}' WHERE request_id = $1`, tc.id)
+			_, err := f.db.SQL.ExecContext(t.Context(), `UPDATE usage_logs SET billing_detail = '{}' WHERE request_id = $1`, tc.id)
 			require.NoError(t, err)
 		} else if !tc.billable {
 			detail := f.scalar(`SELECT billing_detail::text FROM usage_logs WHERE request_id = $1`, tc.id)
@@ -261,7 +261,7 @@ func TestUsageSummaryPromptTokens(t *testing.T) {
 	// must not silently disappear from the denominator of the entire group.
 	all := f.get(f.user, "/usage/summary?from=2026-09-01T00:00:00Z", 200)["data"].([]any)
 	require.Nil(t, all[0].(map[string]any)["prompt_tokens"])
-	_, err := f.db.Pool.Exec(t.Context(), `DELETE FROM usage_logs WHERE request_id = 'legacy-cached'`)
+	_, err := f.db.SQL.ExecContext(t.Context(), `DELETE FROM usage_logs WHERE request_id = 'legacy-cached'`)
 	require.NoError(t, err)
 	all = f.get(f.user, "/usage/summary?from=2026-09-01T00:00:00Z", 200)["data"].([]any)
 	require.Equal(t, float64(3200), all[0].(map[string]any)["prompt_tokens"])
@@ -286,7 +286,7 @@ func TestRequestLogAccountWithoutAccountRead(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	var accountID int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('CCG Account','ccgateway','oauth','') RETURNING id`).Scan(&accountID))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('CCG Account','ccgateway','oauth','') RETURNING id`).Scan(&accountID))
 	rec := f.record("ccg-log", false)
 	rec.PluginKey, rec.AccountID = "ccgateway", &accountID
 	f.svc.process(ctx, []*core.UsageRecord{rec})
@@ -371,8 +371,8 @@ func TestUsageAttemptTrail(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	var a1, a2 int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Trail One','anthropic','apikey','') RETURNING id`).Scan(&a1))
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Trail Two','anthropic','apikey','') RETURNING id`).Scan(&a2))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Trail One','anthropic','apikey','') RETURNING id`).Scan(&a1))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Trail Two','anthropic','apikey','') RETURNING id`).Scan(&a2))
 	retried := f.record("trail-retried", false)
 	retried.Attempts, retried.AccountID = 3, &a2
 	retried.AttemptTrail = &core.AttemptTrail{V: 1, Steps: []core.AttemptStep{

@@ -137,7 +137,7 @@ func actor(c *gin.Context) int64 {
 
 // audit writes an audit row outside a transaction (after controller calls).
 func (a *API) audit(c *gin.Context, action, key string, detail any) {
-	_ = audit.Audit(ctx(c), a.d.DB.Pool, actor(c), action, "plugin", key, detail)
+	_ = audit.Audit(ctx(c), a.d.DB.Gorm, actor(c), action, "plugin", key, detail)
 }
 
 // pluginExists returns the plugin status or renders not_found.

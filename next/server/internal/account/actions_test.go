@@ -27,13 +27,13 @@ func TestAccountActionsFollowRowOwnership(t *testing.T) {
 			t.Fatalf("create %s: %d %v", name, code, out)
 		}
 		id := int64(data(out)["id"].(float64))
-		if _, err := e.db.Pool.Exec(context.Background(), `UPDATE accounts SET created_by = $2 WHERE id = $1`, id, owner); err != nil {
+		if _, err := e.db.SQL.ExecContext(context.Background(), `UPDATE accounts SET created_by = $2 WHERE id = $1`, id, owner); err != nil {
 			t.Fatal(err)
 		}
 		return id
 	}
 	mine, theirs, legacy := create("mine", mixed), create("theirs", admin), create("legacy", admin)
-	if _, err := e.db.Pool.Exec(context.Background(), `UPDATE accounts SET created_by = NULL WHERE id = $1`, legacy); err != nil {
+	if _, err := e.db.SQL.ExecContext(context.Background(), `UPDATE accounts SET created_by = NULL WHERE id = $1`, legacy); err != nil {
 		t.Fatal(err)
 	}
 

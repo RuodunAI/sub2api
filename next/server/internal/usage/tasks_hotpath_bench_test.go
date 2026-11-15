@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // The statements of the async task endpoints, which the gateway runs for
@@ -36,7 +37,7 @@ func newTaskFixture(b *testing.B) *taskFixture {
 	f := &taskFixture{benchSettler: newBenchSettler(b)}
 	ctx := context.Background()
 	reg := f.submission(b)
-	if err := f.svc.db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := f.svc.db.Tx(ctx, func(tx *gorm.DB) error {
 		return recordTask(ctx, tx, reg.TaskRegistration, reg.usageID, time.Now().Add(time.Hour), time.Now().Add(24*time.Hour))
 	}); err != nil {
 		b.Fatal(err)
@@ -68,29 +69,29 @@ func (f *taskFixture) submission(b *testing.B) taskSubmission {
 		intent: core.TaskIntent{RequestID: rec.RequestID, PluginKey: rec.PluginKey, Kind: "video", UserID: rec.UserID,
 			APIKeyID: rec.APIKeyID, GroupID: rec.GroupID, AccountID: account, Model: rec.Model, Protocol: rec.Protocol},
 	}
-	if err := f.svc.db.Pool.QueryRow(ctx, `SELECT id FROM usage_logs WHERE request_id = $1`, rec.RequestID).Scan(&s.usageID); err != nil {
+	if err := f.svc.db.SQL.QueryRowContext(ctx, `SELECT id FROM usage_logs WHERE request_id = $1`, rec.RequestID).Scan(&s.usageID); err != nil {
 		b.Fatal(err)
 	}
-	if err := insertReceipt(ctx, f.svc.db.Pool, publicID, s.intent); err != nil {
+	if err := insertReceipt(ctx, f.svc.db.Gorm, publicID, s.intent); err != nil {
 		b.Fatal(err)
 	}
-	if err := receiveTask(ctx, f.svc.db.Pool, rec.RequestID, "received", 200, s.Snapshot, ""); err != nil {
+	if err := receiveTask(ctx, f.svc.db.Gorm, rec.RequestID, "received", 200, s.Snapshot, ""); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := f.svc.db.Pool.Exec(ctx, `INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
+	if _, err := f.svc.db.SQL.ExecContext(ctx, `INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
 		VALUES ($1, $2, $3, $4, now(), now() + interval '1 day')`, rec.PluginKey, publicID, s.usageID, account); err != nil {
 		b.Fatal(err)
 	}
 	return s
 }
 
-// benchTask runs the pgx and the GORM form of one statement; prepare, if
+// benchTask runs the raw database/sql (formerly pgx) and the GORM form of one statement; prepare, if
 // set, runs untimed before each call and returns what the call takes.
-func benchTask[T any](b *testing.B, prepare func(*testing.B) T, pgxPath, gormPath func(T) error) {
+func benchTask[T any](b *testing.B, prepare func(*testing.B) T, sqlPath, gormPath func(T) error) {
 	for _, p := range []struct {
 		name string
 		run  func(T) error
-	}{{"pgx", pgxPath}, {"gorm", gormPath}} {
+	}{{"sql", sqlPath}, {"gorm", gormPath}} {
 		b.Run(p.name, func(b *testing.B) {
 			step := func() {
 				var arg T
@@ -117,9 +118,9 @@ func benchTask[T any](b *testing.B, prepare func(*testing.B) T, pgxPath, gormPat
 func BenchmarkHotTaskFind(b *testing.B) {
 	f := newTaskFixture(b)
 	ctx := context.Background()
-	q, pool := f.query, f.svc.db.Pool
+	q, pool, raw := f.query, f.svc.db.Gorm, f.svc.db.SQL
 	benchTask(b, nil, func(struct{}) error {
-		rows, err := pool.Query(ctx, `SELECT public_id,upstream_ref_id,model,state,
+		rows, err := raw.QueryContext(ctx, `SELECT public_id,upstream_ref_id,model,state,
 			CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
 			snapshot,snapshot_id_paths,failure_code,last_error
 			FROM async_tasks WHERE plugin_key=$1 AND kind=$2 AND user_id=$3 AND group_id=$4
@@ -141,7 +142,7 @@ func BenchmarkHotTaskFind(b *testing.B) {
 func BenchmarkHotTaskBegin(b *testing.B) {
 	f := newTaskFixture(b)
 	ctx := context.Background()
-	pool := f.svc.db.Pool
+	pool, raw := f.svc.db.Gorm, f.svc.db.SQL
 	next := func(*testing.B) core.TaskIntent {
 		f.n++
 		in := f.intent
@@ -149,7 +150,7 @@ func BenchmarkHotTaskBegin(b *testing.B) {
 		return in
 	}
 	benchTask(b, next, func(in core.TaskIntent) error {
-		_, err := pool.Exec(ctx, `INSERT INTO task_submission_receipts
+		_, err := raw.ExecContext(ctx, `INSERT INTO task_submission_receipts
 		(request_id, public_id, plugin_key, kind, user_id, api_key_id, group_id, account_id, model, protocol)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, in.RequestID, "s2task_"+in.RequestID, in.PluginKey, in.Kind,
 			in.UserID, in.APIKeyID, in.GroupID, in.AccountID, in.Model, in.Protocol)
@@ -164,7 +165,7 @@ func BenchmarkHotTaskBegin(b *testing.B) {
 func BenchmarkHotTaskReceive(b *testing.B) {
 	f := newTaskFixture(b)
 	ctx := context.Background()
-	pool := f.svc.db.Pool
+	pool, raw := f.svc.db.Gorm, f.svc.db.SQL
 	body := []byte(`{"id":"up-bench","status":"queued"}`)
 	dispatched := func(b *testing.B) string {
 		f.n++
@@ -176,7 +177,7 @@ func BenchmarkHotTaskReceive(b *testing.B) {
 		return in.RequestID
 	}
 	benchTask(b, dispatched, func(id string) error {
-		_, err := pool.Exec(ctx, `UPDATE task_submission_receipts SET state=$2, response_status=$3,
+		_, err := raw.ExecContext(ctx, `UPDATE task_submission_receipts SET state=$2, response_status=$3,
 		response_body=COALESCE($4,response_body), last_error=$5 WHERE request_id=$1 AND state <> 'registered'`,
 			id, "received", 200, body, "")
 		return err
@@ -192,17 +193,17 @@ func BenchmarkHotTaskRegister(b *testing.B) {
 	ctx := context.Background()
 	next, deadline := time.Now().Add(time.Hour), time.Now().Add(24*time.Hour)
 	benchTask(b, f.submission, func(s taskSubmission) error {
-		return f.svc.db.Tx(ctx, func(tx pgx.Tx) error { return recordTaskPGX(ctx, tx, s.TaskRegistration, s.usageID, next, deadline) })
+		return f.svc.db.Tx(ctx, func(tx *gorm.DB) error { return recordTaskPGX(ctx, tx, s.TaskRegistration, s.usageID, next, deadline) })
 	}, func(s taskSubmission) error {
-		return f.svc.db.Tx(ctx, func(tx pgx.Tx) error { return recordTask(ctx, tx, s.TaskRegistration, s.usageID, next, deadline) })
+		return f.svc.db.Tx(ctx, func(tx *gorm.DB) error { return recordTask(ctx, tx, s.TaskRegistration, s.usageID, next, deadline) })
 	})
 }
 
 // recordTaskPGX is recordTask's statements in the pgx form they had before.
-func recordTaskPGX(ctx context.Context, tx pgx.Tx, in core.TaskRegistration, uid int64, next, deadline time.Time) error {
+func recordTaskPGX(ctx context.Context, tx *gorm.DB, in core.TaskRegistration, uid int64, next, deadline time.Time) error {
 	r := in.Record
 	var valid bool
-	if err := tx.QueryRow(ctx, `SELECT public_id=$2 AND plugin_key=$3 AND kind=$4 AND user_id=$5
+	if err := store.SQLTx(tx).QueryRowContext(ctx, `SELECT public_id=$2 AND plugin_key=$3 AND kind=$4 AND user_id=$5
 		AND api_key_id=$6 AND group_id=$7 AND account_id=$8 AND model=$9 AND protocol=$10
 		FROM task_submission_receipts WHERE request_id=$1 AND state='received' FOR UPDATE`,
 		r.RequestID, in.PublicID, r.PluginKey, in.Kind, r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol).Scan(&valid); err != nil {
@@ -211,17 +212,17 @@ func recordTaskPGX(ctx context.Context, tx pgx.Tx, in core.TaskRegistration, uid
 	if !valid {
 		return errors.New("task receipt identity mismatch")
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,
+	_, err := store.SQLTx(tx).ExecContext(ctx, `INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,
 		group_id,account_id,model,protocol,usage_log_id,snapshot,snapshot_id_paths,next_check_at,deadline_at)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, in.PublicID, r.PluginKey, in.Kind, in.UpstreamID,
 		r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, uid, in.Snapshot, jsonOr(in.IDPaths, "[]"), next, deadline)
 	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE pending_settlements SET task_public_id=$2 WHERE usage_log_id=$1`, uid, in.PublicID); err != nil {
+	if _, err = store.SQLTx(tx).ExecContext(ctx, `UPDATE pending_settlements SET task_public_id=$2 WHERE usage_log_id=$1`, uid, in.PublicID); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `UPDATE task_submission_receipts SET state='registered',response_body=NULL,last_error='',
+	_, err = store.SQLTx(tx).ExecContext(ctx, `UPDATE task_submission_receipts SET state='registered',response_body=NULL,last_error='',
 		expires_at=LEAST(expires_at,$2) WHERE request_id=$1`, r.RequestID, deadline)
 	return err
 }

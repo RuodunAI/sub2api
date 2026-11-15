@@ -15,13 +15,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/remotedocker"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 )
 
 // Controller installation (CONTRACTS §53.3 / §53.9): an optional step before
@@ -662,7 +663,7 @@ func (s *Service) updateConfigAt(ctx context.Context, uid int64, fields []string
 		updatedBy = &uid
 	}
 	var saved Config
-	e := s.DB.Tx(ctx, func(tx pgx.Tx) error {
+	e := s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		_, e := store.UpdateSettingJSONTx(ctx, tx, settingKey, updatedBy, func(raw json.RawMessage) (json.RawMessage, error) {
 			if version != nil && !bytes.Equal(raw, version) {
 				return nil, errConfigChanged

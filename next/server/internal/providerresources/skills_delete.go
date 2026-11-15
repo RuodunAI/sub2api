@@ -3,11 +3,11 @@ package providerresources
 import (
 	"context"
 
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -16,7 +16,7 @@ func (s *Service) BeginSkillDelete(ctx context.Context, owner core.ResourceOwner
 	if !validOwner(owner) || !bounded(parentID) || selector == "latest" {
 		return out, core.ErrInvalidArgument
 	}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if e := lockOwner(ctx, tx, owner); e != nil {
 			return e
 		}
@@ -70,7 +70,7 @@ func (s *Service) FinishSkillDelete(ctx context.Context, in core.SkillDeleteComp
 	if !validOwner(in.Owner) || !bounded(in.ParentID) || !bounded(in.OperationID) || (in.Outcome != "deleted" && in.Outcome != "uncertain" && (in.Outcome != "rejected" || !confirmedSkillRejection(in.EvidenceCode))) {
 		return core.ErrInvalidArgument
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}

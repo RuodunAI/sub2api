@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -56,7 +55,7 @@ type scopeRow struct {
 // Granted returns permission -> scope of what an instance of key@version is
 // granted, limited to the host permissions its manifest declares: a grant
 // made for another version never reaches it.
-func Granted(ctx context.Context, q store.Querier, key, version string, declared []manifest.HostPermission) (map[string]json.RawMessage, error) {
+func Granted(ctx context.Context, q *gorm.DB, key, version string, declared []manifest.HostPermission) (map[string]json.RawMessage, error) {
 	out := map[string]json.RawMessage{}
 	if len(declared) == 0 {
 		return out, nil
@@ -92,7 +91,7 @@ func grantedRows(db *gorm.DB, key, version string, ids []string) *gorm.DB {
 // HostService call that needs a permission runs it, so it is positional Raw
 // SQL scanned through Row, the GORM form that allocates least
 // (BenchmarkHotGrantHolds, gormtest/BASELINE.md).
-func Holds(ctx context.Context, q store.Querier, key, version, permission string, scope []byte) (bool, error) {
+func Holds(ctx context.Context, q *gorm.DB, key, version, permission string, scope []byte) (bool, error) {
 	var ok bool
 	err := holdsQuery(store.G(ctx, q), key, version, permission, scope).Row().Scan(&ok)
 	return ok, err
@@ -122,7 +121,7 @@ type Decision struct {
 
 // Record writes the decisions of a consent to key@version: staged while
 // another version runs, else as the plugin's grants.
-func Record(ctx context.Context, tx pgx.Tx, key, version, manifestHash string, by *int64, staged bool, ds []Decision) error {
+func Record(ctx context.Context, tx *gorm.DB, key, version, manifestHash string, by *int64, staged bool, ds []Decision) error {
 	sql := recordSQL(staged)
 	g := store.G(ctx, tx)
 	for _, d := range ds {
@@ -153,7 +152,7 @@ func recordSQL(staged bool) string {
 
 // Promote makes the set staged for version the plugin's grants; the rollout
 // commit calls it when version becomes active (nothing staged: no-op).
-func Promote(ctx context.Context, tx pgx.Tx, key, version string) error {
+func Promote(ctx context.Context, tx *gorm.DB, key, version string) error {
 	return store.G(ctx, tx).Exec(promoteSQL, key, version).Error
 }
 
@@ -173,7 +172,7 @@ const promoteSQL = `
 // plugin grant row unless the plugin has one for that permission (it was
 // revoked with it, or decided since), so it still stands (Revoked).
 // Nothing staged: no-op.
-func Withdraw(ctx context.Context, tx pgx.Tx, key, version, reason string) error {
+func Withdraw(ctx context.Context, tx *gorm.DB, key, version, reason string) error {
 	var (
 		n       int
 		granted store.Strings
@@ -213,7 +212,7 @@ func awaitConsent(db *gorm.DB, key, version string) *gorm.DB {
 // Revoke marks permission revoked wherever key grants it: the plugin's
 // grants and every staged set (an emergency revocation must not come back
 // with the next activation). It reports whether a grant was revoked.
-func Revoke(ctx context.Context, tx pgx.Tx, key, permission string, by *int64) (bool, error) {
+func Revoke(ctx context.Context, tx *gorm.DB, key, permission string, by *int64) (bool, error) {
 	var n int
 	err := revoke(store.G(ctx, tx), key, permission, by).Row().Scan(&n)
 	return n > 0, err
@@ -236,7 +235,7 @@ func revoke(db *gorm.DB, key, permission string, by *int64) *gorm.DB {
 // caller records that one): activating the version must not widen it again.
 // A set granting a scope neither wider nor within scope keeps it: it is that
 // version's own decision, on another request.
-func Narrow(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64) error {
+func Narrow(ctx context.Context, tx *gorm.DB, key, permission string, scope map[string]any, by *int64) error {
 	granted, err := stagedScopes(ctx, tx, narrowedSQL, key, permission)
 	if err != nil {
 		return err
@@ -259,7 +258,7 @@ const narrowedSQL = `SELECT version, scope FROM plugin_staged_grants
 // staged set of key whose version requests at least scope: an
 // administrator's grant, the counterpart of Revoke. A set whose version
 // requests less stays revoked, so that version still runs without it.
-func Reinstate(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64) error {
+func Reinstate(ctx context.Context, tx *gorm.DB, key, permission string, scope map[string]any, by *int64) error {
 	requested, err := stagedScopes(ctx, tx, reinstatedSQL, key, permission)
 	if err != nil {
 		return err
@@ -284,7 +283,7 @@ const reinstatedSQL = `SELECT s.version, hp->'scope' AS scope
 // stagedScopes reads version -> scope from sel's (version, scope) rows for
 // key and permission (@key, @permission); a NULL scope (a host permission
 // requesting none) is nil, a scope that is no JSON object an error.
-func stagedScopes(ctx context.Context, tx pgx.Tx, sel, key, permission string) (map[string]map[string]any, error) {
+func stagedScopes(ctx context.Context, tx *gorm.DB, sel, key, permission string) (map[string]map[string]any, error) {
 	var rows []struct {
 		Version string
 		Scope   []byte
@@ -307,7 +306,7 @@ func stagedScopes(ctx context.Context, tx pgx.Tx, sel, key, permission string) (
 
 // grantVersions grants permission with scope in the staged sets of key for
 // versions.
-func grantVersions(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64, versions []string) error {
+func grantVersions(ctx context.Context, tx *gorm.DB, key, permission string, scope map[string]any, by *int64, versions []string) error {
 	if len(versions) == 0 {
 		return nil
 	}
@@ -330,7 +329,7 @@ func grantStaged(db *gorm.DB, key, permission string, versions []string, scope [
 // the plugin's grants and every staged set, is a revocation: an
 // administrator revoked them and no consent has granted them since. A
 // consent grants them only when it names them (CONTRACTS §5.7).
-func Revoked(ctx context.Context, q store.Querier, key string) (map[string]bool, error) {
+func Revoked(ctx context.Context, q *gorm.DB, key string) (map[string]bool, error) {
 	var perms []string
 	if err := revoked(store.G(ctx, q), key).Scan(&perms).Error; err != nil {
 		return nil, err

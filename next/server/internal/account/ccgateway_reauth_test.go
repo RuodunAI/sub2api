@@ -135,7 +135,7 @@ func TestCCGatewayReauthorize(t *testing.T) {
 			t.Fatalf("create: %d %v", code, out)
 		}
 		id := int64(out["data"].(map[string]any)["id"].(float64))
-		if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET created_by=$2,status='error',status_reason='expired',last_test_at=now(),last_test_ok=false WHERE id=$1`, id, owner); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET created_by=$2,status='error',status_reason='expired',last_test_at=now(),last_test_ok=false WHERE id=$1`, id, owner); err != nil {
 			t.Fatal(err)
 		}
 		return id
@@ -145,7 +145,7 @@ func TestCCGatewayReauthorize(t *testing.T) {
 		key := itoa(id)
 		if adopted {
 			key = "d00000000000000ab"
-			if _, err := e.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,created_by) VALUES($1,$2,now(),$3)`, key, id, owner); err != nil {
+			if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,created_by) VALUES($1,$2,now(),$3)`, key, id, owner); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -202,17 +202,17 @@ func TestCCGatewayReauthorize(t *testing.T) {
 			t.Fatalf("state not reset: %v", v)
 		}
 		var current string
-		if err := e.db.Pool.QueryRow(ctx, `SELECT COALESCE(r.key,a.id::text) FROM accounts a LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id WHERE a.id=$1`, id).Scan(&current); err != nil || current != key {
+		if err := e.db.SQL.QueryRowContext(ctx, `SELECT COALESCE(r.key,a.id::text) FROM accounts a LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id WHERE a.id=$1`, id).Scan(&current); err != nil || current != key {
 			t.Fatalf("mapping changed: %s %v", current, err)
 		}
 		var n int
-		if err := e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM ccgateway_runtimes WHERE for_account=$1 OR (account_id=$1 AND retired_at IS NOT NULL)`, id).Scan(&n); err != nil || n != 0 {
+		if err := e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM ccgateway_runtimes WHERE for_account=$1 OR (account_id=$1 AND retired_at IS NOT NULL)`, id).Scan(&n); err != nil || n != 0 {
 			t.Fatalf("replacement records created: %d %v", n, err)
 		}
 		if len(ctl.seen("PUT")) != beforeWrites || len(ctl.seen("DELETE")) != 0 {
 			t.Fatalf("reauth changed runtime: %v", ctl.seen(""))
 		}
-		if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id); err != nil {
 			t.Fatal(err)
 		}
 		// A disabled account keeps its runtime: re-authorization still works.
@@ -223,7 +223,7 @@ func TestCCGatewayReauthorize(t *testing.T) {
 			t.Fatalf("delete: %d %v", code, out)
 		}
 		var cleanupPending bool
-		if err := e.db.Pool.QueryRow(ctx, `SELECT retired_at IS NOT NULL FROM ccgateway_runtimes WHERE account_id=$1 AND key=$2`, id, key).Scan(&cleanupPending); err != nil || !cleanupPending {
+		if err := e.db.SQL.QueryRowContext(ctx, `SELECT retired_at IS NOT NULL FROM ccgateway_runtimes WHERE account_id=$1 AND key=$2`, id, key).Scan(&cleanupPending); err != nil || !cleanupPending {
 			t.Fatalf("delete did not persist cleanup intent: %v %v", cleanupPending, err)
 		}
 	}

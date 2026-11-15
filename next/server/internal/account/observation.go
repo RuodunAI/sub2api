@@ -106,7 +106,7 @@ func (s *Service) ReadPluginObservationMetrics(ctx context.Context, key string, 
 		return nil, core.ErrInvalidArgument
 	}
 	ids := make([]int64, 0, len(in.AccountIds))
-	if err := store.G(ctx, s.d.DB.Pool).Model(&model.Account{}).
+	if err := store.G(ctx, s.d.DB.Gorm).Model(&model.Account{}).
 		Where("id = ANY(?) AND deleted_at IS NULL AND (?::boolean OR plugin_key = ?)", store.Int64s(in.AccountIds), all, key).
 		Order("id").Pluck("id", &ids).Error; err != nil {
 		return nil, err

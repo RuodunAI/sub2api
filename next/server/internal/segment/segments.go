@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -113,7 +112,7 @@ func (s *Service) load(ctx context.Context, id int64) (*Segment, error) {
 		return nil, err
 	}
 	var row segmentRow
-	err = selectSegments(store.G(ctx, s.db.Pool)).Where("s.id = ?", id).Take(&row).Error
+	err = selectSegments(store.G(ctx, s.db.Gorm)).Where("s.id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, NotFound(ctx)
 	}
@@ -189,7 +188,7 @@ func (s *Service) list(c *gin.Context) {
 	if c.Query("kind") == core.SegmentPersonal {
 		kind = core.SegmentPersonal
 	}
-	g, filter := store.G(ctx, s.db.Pool), listFilter(kind, strings.TrimSpace(c.Query("q")), show)
+	g, filter := store.G(ctx, s.db.Gorm), listFilter(kind, strings.TrimSpace(c.Query("q")), show)
 	var total int64
 	if err := fromSegments(g).Scopes(filter).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
@@ -293,7 +292,7 @@ func (s *Service) create(c *gin.Context) {
 	}
 	discount := decimal.RequireFromString(core.ValueOr(in.Discount, "1"))
 	row := model.Segment{Name: *in.Name, Description: core.ValueOr(in.Description, ""), Discount: &discount}
-	if err := store.G(ctx, s.db.Pool).Create(&row).Error; err != nil {
+	if err := store.G(ctx, s.db.Gorm).Create(&row).Error; err != nil {
 		httpapi.Fail(c, nameTaken(ctx, err))
 		return
 	}
@@ -310,18 +309,18 @@ func (s *Service) update(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	kind, _, err := segmentKind(ctx, s.db.Pool, id, "")
+	kind, _, err := segmentKind(ctx, s.db.Gorm, id, "")
 	if err == nil {
 		err = in.validate(ctx, kind, false)
 	}
 	if err == nil && in.Discount != nil {
-		err = GuardOwnSegments(ctx, s.db.Pool, s.users, []int64{id})
+		err = GuardOwnSegments(ctx, s.db.Gorm, s.users, []int64{id})
 	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	if err = updateSegment(store.G(ctx, s.db.Pool), id, &in).Error; err != nil {
+	if err = updateSegment(store.G(ctx, s.db.Gorm), id, &in).Error; err != nil {
 		httpapi.Fail(c, nameTaken(ctx, err))
 		return
 	}
@@ -342,7 +341,7 @@ func (s *Service) delete(c *gin.Context) {
 	if !ok {
 		return
 	}
-	err := s.tx(ctx, func(tx pgx.Tx) error {
+	err := s.tx(ctx, func(tx *gorm.DB) error {
 		// The lock keeps new members out until the segment is gone.
 		kind, isDefault, err := segmentKind(ctx, tx, id, clause.LockingStrengthUpdate)
 		switch {
@@ -383,7 +382,7 @@ func (s *Service) delete(c *gin.Context) {
 // personal segment goes when its user leaves it; one a deleted user is still
 // in was left by a node of the version before segments, which deletes a user
 // without the user's segment, and can only be deleted itself.
-func requireOrphan(ctx context.Context, q store.Querier, id int64) error {
+func requireOrphan(ctx context.Context, q *gorm.DB, id int64) error {
 	var live bool
 	err := store.G(ctx, q).Table("segments s").Select("u.deleted_at IS NULL").Joins("JOIN users u ON u.id = s.user_id").
 		Where("s.id = ?", id).Take(&live).Error

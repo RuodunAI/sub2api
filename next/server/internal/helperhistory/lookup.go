@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 
+	"gorm.io/gorm"
+
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 // Lookup intentionally ignores the currently proposed account and namespace.
@@ -42,7 +42,7 @@ func (s *Service) Lookup(ctx context.Context, owner core.ResourceOwner, prefixes
 		}
 		return out, err
 	}
-	err = s.transaction(ctx, owner, func(tx pgx.Tx) error {
+	err = s.transaction(ctx, owner, func(tx *gorm.DB) error {
 		namespaces, found, e := discoverPrefixes(ctx, tx, owner, prefixes)
 		if e != nil {
 			return e
@@ -83,7 +83,7 @@ func (s *Service) Lookup(ctx context.Context, owner core.ResourceOwner, prefixes
 // gormtest/BASELINE.md).
 func (s *Service) anyPrefix(ctx context.Context, o core.ResourceOwner, prefixes []string) (bool, error) {
 	var found bool
-	err := prefixProbe(store.G(ctx, s.db.Pool), o, prefixes).Row().Scan(&found)
+	err := prefixProbe(store.G(ctx, s.db.Gorm), o, prefixes).Row().Scan(&found)
 	return found, err
 }
 
@@ -98,7 +98,7 @@ func withPrefixes(db *gorm.DB, o core.ResourceOwner, prefixes []string) *gorm.DB
 	return db.Model(&model.ProviderHelperRecord{}).Scopes(owned(o)).Where("public_prefix_digest = ANY(?)", store.Strings(prefixes))
 }
 
-func discoverPrefixes(ctx context.Context, q store.Querier, o core.ResourceOwner, prefixes []string) (map[string]bool, map[string]bool, error) {
+func discoverPrefixes(ctx context.Context, q *gorm.DB, o core.ResourceOwner, prefixes []string) (map[string]bool, map[string]bool, error) {
 	var rows []struct{ Namespace, PublicPrefixDigest string }
 	if e := withPrefixes(store.G(ctx, q), o, prefixes).Distinct("namespace", "public_prefix_digest").Scan(&rows).Error; e != nil {
 		return nil, nil, e

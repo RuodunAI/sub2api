@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
 
 // ============================================================ billing (owner: B billing)
@@ -150,7 +150,7 @@ type Ledger interface {
 	Apply(ctx context.Context, ch LedgerChange) (*LedgerResult, error)
 	// ApplyTx applies the change inside the caller's transaction (used by
 	// settlement so the usage row and the ledger row commit together).
-	ApplyTx(ctx context.Context, tx pgx.Tx, ch LedgerChange) (*LedgerResult, error)
+	ApplyTx(ctx context.Context, tx *gorm.DB, ch LedgerChange) (*LedgerResult, error)
 }
 
 // UsageTokens are normalized token counts (see ARCHITECTURE 7.3).
@@ -708,7 +708,7 @@ type Event struct {
 // EventPublisher writes to the events outbox. Use Emit inside the business
 // transaction so events are never lost or emitted for rolled-back work.
 type EventPublisher interface {
-	Emit(ctx context.Context, tx pgx.Tx, events ...Event) error
+	Emit(ctx context.Context, tx *gorm.DB, events ...Event) error
 }
 
 // RawJSON is a helper alias for pre-encoded payloads.

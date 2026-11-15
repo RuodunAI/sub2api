@@ -11,13 +11,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type optionalQuotaPlugin struct {
@@ -77,7 +78,7 @@ func TestQuotaOptionalReaderAbsentPreservesObservations(t *testing.T) {
 					require.True(t, after.NextCheckAt.After(time.Now().Add(quotaFresh-5*time.Second)))
 					var lease *time.Time
 					var failures int
-					require.NoError(t, e.db.Pool.QueryRow(t.Context(), `SELECT lease_until,failures FROM account_quota_snapshots WHERE account_id=$1`, id).Scan(&lease, &failures))
+					require.NoError(t, e.db.SQL.QueryRowContext(t.Context(), `SELECT lease_until,failures FROM account_quota_snapshots WHERE account_id=$1`, id).Scan(&lease, &failures))
 					require.Nil(t, lease)
 					require.Zero(t, failures)
 					e.do("GET", path+"?force=true", nil)
@@ -87,7 +88,7 @@ func TestQuotaOptionalReaderAbsentPreservesObservations(t *testing.T) {
 					require.Equal(t, after.Windows, retried.Windows)
 					require.Equal(t, after.UpdatedAt, retried.UpdatedAt)
 					require.Equal(t, after.Error, retried.Error)
-					_, err = e.db.Pool.Exec(t.Context(), `UPDATE account_quota_snapshots SET last_active_at=now()-interval '31 minutes' WHERE account_id=$1`, id)
+					_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET last_active_at=now()-interval '31 minutes' WHERE account_id=$1`, id)
 					require.NoError(t, err)
 					e.do("GET", path, nil)
 					require.NoError(t, e.svc.sweepQuotas(t.Context()))
@@ -133,7 +134,7 @@ func TestQuotaAutomaticRecordingLifecycleAndRenewal(t *testing.T) {
 	up.pct.Store(100)
 	e.plat.quotaURL = up.srv.URL
 	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
-	_, err := e.db.Pool.Exec(t.Context(), `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Fixture"}','enabled')`)
+	_, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Fixture"}','enabled')`)
 	require.NoError(t, err)
 	e.gen.types[0].Type.Lifecycle = &manifest.AccountLifecycle{}
 	e.gen.types[0].Client = &preparationPlugin{fakePlatform: e.plat}
@@ -165,11 +166,11 @@ func TestQuotaAutomaticRecordingLifecycleAndRenewal(t *testing.T) {
 	require.EqualValues(t, 1, up.calls.Load())
 	// Existing schedules (including plugin hints) cannot pull an automatic
 	// query forward into the floor.
-	_, err = e.db.Pool.Exec(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '50 seconds' WHERE account_id=$1`, id)
+	_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '50 seconds' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.EqualValues(t, 1, up.calls.Load())
-	_, err = e.db.Pool.Exec(t.Context(), `UPDATE account_quota_snapshots SET last_active_at=now()-interval '61 seconds' WHERE account_id=$1`, id)
+	_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET last_active_at=now()-interval '61 seconds' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	up.failStatus.Store(503)
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
@@ -186,7 +187,7 @@ func TestQuotaAutomaticRecordingLifecycleAndRenewal(t *testing.T) {
 	require.EqualValues(t, 2, up.calls.Load())
 	var state string
 	var schedulable bool
-	require.NoError(t, e.db.Pool.QueryRow(t.Context(), `SELECT status,schedulable FROM accounts WHERE id=$1`, id).Scan(&state, &schedulable))
+	require.NoError(t, e.db.SQL.QueryRowContext(t.Context(), `SELECT status,schedulable FROM accounts WHERE id=$1`, id).Scan(&state, &schedulable))
 	require.Equal(t, "active", state)
 	require.True(t, schedulable)
 }
@@ -201,7 +202,7 @@ func TestQuotaLifecycleEnvironmentPendingIsReady(t *testing.T) {
 	up := newQuotaUpstream(t)
 	e.plat.quotaURL = up.srv.URL
 	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Fixture"}','enabled')`)
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Fixture"}','enabled')`)
 	require.NoError(t, err)
 	e.gen.types[0].Type.Lifecycle = &manifest.AccountLifecycle{}
 	e.gen.types[0].Client = &preparationPlugin{fakePlatform: e.plat}
@@ -212,13 +213,15 @@ func TestQuotaLifecycleEnvironmentPendingIsReady(t *testing.T) {
 	path := fmt.Sprintf("/accounts/%d/quota?force=true", id)
 	setSync := func(status, code string) {
 		t.Helper()
-		tag, err := e.db.Pool.Exec(ctx, `UPDATE account_lifecycle_sync SET status=$2,code=$3 WHERE account_id=$1`, id, status, code)
+		tag, err := e.db.SQL.ExecContext(ctx, `UPDATE account_lifecycle_sync SET status=$2,code=$3 WHERE account_id=$1`, id, status, code)
 		require.NoError(t, err)
-		require.EqualValues(t, 1, tag.RowsAffected())
+		n, err := tag.RowsAffected()
+		require.NoError(t, err)
+		require.EqualValues(t, 1, n)
 	}
 	blocked := func() string {
 		t.Helper()
-		a, err := e.svc.loadRow(ctx, e.db.Pool, id, core.AllScope, false)
+		a, err := e.svc.loadRow(ctx, e.db.Gorm, id, core.AllScope, false)
 		require.NoError(t, err)
 		reason, err := e.svc.quotaBlocked(ctx, a, e.gen.types[0])
 		require.NoError(t, err)
@@ -257,7 +260,7 @@ func TestQuotaLifecycleEnvironmentPendingIsReady(t *testing.T) {
 	require.EqualValues(t, 2, up.calls.Load())
 
 	// A disabled account is only kept out of scheduling; its quota is queried.
-	_, err = e.db.Pool.Exec(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id)
 	require.NoError(t, err)
 	code, out = e.do("GET", path, nil)
 	require.Equal(t, 200, code, fmt.Sprint(out))
@@ -270,7 +273,7 @@ func TestQuotaInitialRecordingWithSchedulingOff(t *testing.T) {
 	up.failStatus.Store(503)
 	e.plat.quotaURL = up.srv.URL
 	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
-	_, err := e.db.Pool.Exec(t.Context(), `INSERT INTO plugins(key,name,status,active_version) VALUES('anthropic','{"en":"Fixture"}','enabled','0.1.0')`)
+	_, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO plugins(key,name,status,active_version) VALUES('anthropic','{"en":"Fixture"}','enabled','0.1.0')`)
 	require.NoError(t, err)
 	e.gen.types[0].Type.Lifecycle = &manifest.AccountLifecycle{}
 	e.gen.types[0].Client = &preparationPlugin{fakePlatform: e.plat}
@@ -289,18 +292,18 @@ func TestQuotaInitialRecordingWithSchedulingOff(t *testing.T) {
 	require.Nil(t, snap.UpdatedAt)
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.EqualValues(t, 1, up.calls.Load())
-	_, err = e.db.Pool.Exec(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '31 minutes' WHERE account_id=$1`, id)
+	_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '31 minutes' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	up.failStatus.Store(0)
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.EqualValues(t, 2, up.calls.Load())
-	_, err = e.db.Pool.Exec(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '31 minutes' WHERE account_id=$1`, id)
+	_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '31 minutes' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.EqualValues(t, 2, up.calls.Load())
 	var state string
 	var schedulable bool
-	require.NoError(t, e.db.Pool.QueryRow(t.Context(), `SELECT status,schedulable FROM accounts WHERE id=$1`, id).Scan(&state, &schedulable))
+	require.NoError(t, e.db.SQL.QueryRowContext(t.Context(), `SELECT status,schedulable FROM accounts WHERE id=$1`, id).Scan(&state, &schedulable))
 	require.Equal(t, "active", state)
 	require.False(t, schedulable)
 }
@@ -325,7 +328,7 @@ func TestQuotaAutomaticInactiveAndAdmission(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, snapshots[id])
 	require.NotNil(t, snapshots[off])
-	_, err = e.db.Pool.Exec(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '31 minutes'`)
+	_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '31 minutes'`)
 	require.NoError(t, err)
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.EqualValues(t, 3, up.calls.Load(), "only the schedulable account is refreshed again")
@@ -354,7 +357,7 @@ func TestQuotaInitialFailureAndStaleAuthResult(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- e.svc.sweepQuotas(t.Context()) }()
 	<-p.started
-	_, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET credentials_enc=$2 WHERE id=$1`, id, []byte("changed"))
+	_, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET credentials_enc=$2 WHERE id=$1`, id, []byte("changed"))
 	require.NoError(t, err)
 	close(p.release)
 	require.NoError(t, <-done)
@@ -363,7 +366,7 @@ func TestQuotaInitialFailureAndStaleAuthResult(t *testing.T) {
 	require.Empty(t, snap.Windows)
 	require.Nil(t, snap.UpdatedAt)
 	require.Equal(t, "pending", snap.RefreshStatus)
-	_, err = e.db.Pool.Exec(t.Context(), `UPDATE account_quota_snapshots SET last_active_at=now()-interval '31 minutes' WHERE account_id=$1`, id)
+	_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET last_active_at=now()-interval '31 minutes' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	snap, err = e.db.AccountQuota(t.Context(), id)
@@ -371,7 +374,7 @@ func TestQuotaInitialFailureAndStaleAuthResult(t *testing.T) {
 	require.Equal(t, "error", snap.RefreshStatus)
 	require.Nil(t, snap.UpdatedAt)
 	var schedulable bool
-	require.NoError(t, e.db.Pool.QueryRow(t.Context(), `SELECT schedulable FROM accounts WHERE id=$1`, id).Scan(&schedulable))
+	require.NoError(t, e.db.SQL.QueryRowContext(t.Context(), `SELECT schedulable FROM accounts WHERE id=$1`, id).Scan(&schedulable))
 	require.True(t, schedulable)
 }
 
@@ -379,7 +382,7 @@ func quotaObservationGeneration(t *testing.T, e *env, id int64) int64 {
 	t.Helper()
 	e.withQuota(&manifest.AccountQuota{Query: true})
 	binding := e.gen.types[0]
-	_, err := e.db.Pool.Exec(t.Context(), `INSERT INTO plugins(key,name,status,active_version) VALUES($1,'{"en":"Fixture"}','enabled',$2) ON CONFLICT(key) DO NOTHING`, binding.Plugin.Key, binding.Plugin.Version)
+	_, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO plugins(key,name,status,active_version) VALUES($1,'{"en":"Fixture"}','enabled',$2) ON CONFLICT(key) DO NOTHING`, binding.Plugin.Key, binding.Plugin.Version)
 	require.NoError(t, err)
 	e.ensureQuotaRow(id, quotaPluginRevision(binding), false)
 	snapshot, err := e.svc.AccountQuotaSnapshots(t.Context(), []int64{id})
@@ -462,7 +465,7 @@ func TestQuotaUnknownScopedObservationRoundTrip(t *testing.T) {
 		}
 		require.Equal(t, expectedStatus, scoped.Status)
 		var storedUnknown bool
-		require.NoError(t, e.db.Pool.QueryRow(t.Context(), `SELECT COALESCE((windows->'scoped'->>'utilization_unknown')::boolean,false) FROM account_quota_snapshots WHERE account_id=$1`, id).Scan(&storedUnknown))
+		require.NoError(t, e.db.SQL.QueryRowContext(t.Context(), `SELECT COALESCE((windows->'scoped'->>'utilization_unknown')::boolean,false) FROM account_quota_snapshots WHERE account_id=$1`, id).Scan(&storedUnknown))
 		require.Equal(t, !known, storedUnknown)
 		code, out := e.do("GET", fmt.Sprintf("/accounts/%d", id), nil)
 		require.Equal(t, 200, code)
@@ -515,7 +518,7 @@ func TestQuotaSourceGenerationAndReadFailures(t *testing.T) {
 	id := e.mkRawAccount("anthropic", "apikey", "source-generation", "sk-good-key-123", true)
 	generation := quotaObservationGeneration(t, e, id)
 	require.NoError(t, e.db.SaveAccountQuota(t.Context(), id, store.QuotaActive, map[string]store.QuotaWindow{"daily": {Utilization: 70, Status: "allowed"}}))
-	require.NoError(t, store.ResetAccountQuota(t.Context(), e.db.Pool, id))
+	require.NoError(t, store.ResetAccountQuota(t.Context(), e.db.Gorm, id))
 	require.NoError(t, e.db.SaveAccountQuota(t.Context(), id, store.QuotaActive, map[string]store.QuotaWindow{"daily": {Utilization: 40, Status: "allowed"}}))
 	cached, err := e.svc.AccountQuotaSnapshots(t.Context(), []int64{id})
 	require.NoError(t, err)
@@ -549,7 +552,7 @@ func TestQuotaSourceGenerationAndReadFailures(t *testing.T) {
 	waitUntil(t, "background read", func() bool { has, _ := entryState(e.svc.quotas(), other); return has })
 
 	for _, raw := range []string{`{"daily":"invalid"}`, `null`} {
-		_, err = e.db.Pool.Exec(t.Context(), `UPDATE account_quota_snapshots SET windows=$2::jsonb WHERE account_id=$1`, id, raw)
+		_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET windows=$2::jsonb WHERE account_id=$1`, id, raw)
 		require.NoError(t, err)
 		e.svc.invalidateQuota(0)
 		snapshots, err := e.svc.AccountQuotaSnapshots(t.Context(), []int64{id, other})
@@ -639,7 +642,7 @@ func TestQuotaSweepCancellation(t *testing.T) {
 			e := setup(t)
 			e.svc.d.CanWork = func() bool { return false }
 			e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
-			_, err := e.db.Pool.Exec(t.Context(), `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Test"}','enabled')`)
+			_, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Test"}','enabled')`)
 			require.NoError(t, err)
 			p := &cancellableQuotaPlugin{runtimeQuotaPlugin: &runtimeQuotaPlugin{fakePlatform: e.plat}, started: make(chan struct{})}
 			e.gen.types[0].Client = p
@@ -657,9 +660,9 @@ func TestQuotaSweepCancellation(t *testing.T) {
 			case "shutdown":
 				cancel()
 			case "deleted":
-				_, err = e.db.Pool.Exec(t.Context(), `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id)
+				_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id)
 			case "plugin_disabled":
-				_, err = e.db.Pool.Exec(t.Context(), `UPDATE plugins SET status='disabled' WHERE key='anthropic'`)
+				_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE plugins SET status='disabled' WHERE key='anthropic'`)
 			}
 			require.NoError(t, err)
 			select {

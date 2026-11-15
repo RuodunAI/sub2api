@@ -60,7 +60,7 @@ func TestSaveNamesTheProblemAndPrunesDeletedGroups(t *testing.T) {
 	f.auth.keys[uid] = []string{"settings:manage", "settings:read"}
 	ctx := context.Background()
 	var gid int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('cc-'||clock_timestamp()::text) RETURNING id`).Scan(&gid))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('cc-'||clock_timestamp()::text) RETURNING id`).Scan(&gid))
 	key := strconv.FormatInt(gid, 10)
 	code, out := f.request(uid, "PUT", "/system/ccgateway/remote-config", `{"mode":"disabled","request_policy":{"schema_version":1,"relay_mode":"native"}}`)
 	require.Equal(t, 400, code, out)
@@ -75,7 +75,7 @@ func TestSaveNamesTheProblemAndPrunesDeletedGroups(t *testing.T) {
 	cfg, err := f.s.Load(ctx)
 	require.NoError(t, err)
 	require.Contains(t, cfg.CCFeatureGroups, key)
-	_, err = f.db.Pool.Exec(ctx, `DELETE FROM groups WHERE id=$1`, gid)
+	_, err = f.db.SQL.ExecContext(ctx, `DELETE FROM groups WHERE id=$1`, gid)
 	require.NoError(t, err)
 	// The orphan is still stored; the next save (not naming it) drops it.
 	cfg, err = f.s.Load(ctx)

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
@@ -65,7 +64,7 @@ func (s *Service) Precharge(ctx context.Context, r *core.UsageRecord) error {
 	}
 	defer release()
 	var lr *core.LedgerResult
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		if lr, err = s.prechargeTx(ctx, tx, ch, st.MinBalance); err != nil {
 			if isLockTimeout(err) {
@@ -100,7 +99,7 @@ func (s *Service) Precharge(ctx context.Context, r *core.UsageRecord) error {
 // before anything else touches the user's money, the idempotency key is
 // still the ledger key, and a duplicate still charges nothing and reports
 // no error.
-func (s *Service) prechargeTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange, min decimal.Decimal) (*core.LedgerResult, error) {
+func (s *Service) prechargeTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange, min decimal.Decimal) (*core.LedgerResult, error) {
 	g := store.G(ctx, tx)
 	p, err := runPrecharge(g, ch, min)
 	if err == nil && !p.locked {
@@ -148,7 +147,7 @@ func (s *Service) prechargeTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChan
 // the key for. It did not, and the balance row changed after the snapshot
 // (prechargeRow.fresh false): a transaction holding the lock committed in
 // between, maybe with this key.
-func resolvePrecharge(ctx context.Context, tx pgx.Tx, ch core.LedgerChange, sufficient bool) (*core.LedgerResult, error) {
+func resolvePrecharge(ctx context.Context, tx *gorm.DB, ch core.LedgerChange, sufficient bool) (*core.LedgerResult, error) {
 	dup, err := findLedger(ctx, tx, ch.IdempotencyKey)
 	switch {
 	case err != nil:
@@ -273,7 +272,7 @@ var prechargeStmt = store.NewNumbered(prechargeSQL)
 // ReleasePrechargeTx deletes the request's reservation and refunds it, in one
 // statement under the user's balance lock (releaseSQL) plus the event. nil
 // means the request had no reservation.
-func (s *Service) ReleasePrechargeTx(ctx context.Context, tx pgx.Tx, userID int64, requestID string) (*core.LedgerResult, error) {
+func (s *Service) ReleasePrechargeTx(ctx context.Context, tx *gorm.DB, userID int64, requestID string) (*core.LedgerResult, error) {
 	res, amount, err := releasePrecharge(ctx, tx, userID, requestID)
 	if err != nil || res == nil || res.Duplicate || s.events == nil {
 		return res, err
@@ -286,13 +285,13 @@ func (s *Service) ReleasePrechargeTx(ctx context.Context, tx pgx.Tx, userID int6
 
 func (s *Service) ReleaseExpiredPrecharges(ctx context.Context) error {
 	var entries []model.RequestPrecharge
-	if err := expiredPrecharges(store.G(ctx, s.db.Pool)).Scan(&entries).Error; err != nil {
+	if err := expiredPrecharges(store.G(ctx, s.db.Gorm)).Scan(&entries).Error; err != nil {
 		return err
 	}
 	var failedCount int
 	for _, e := range entries {
 		var lr *core.LedgerResult
-		err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+		err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 			var err error
 			lr, err = s.ReleasePrechargeTx(ctx, tx, e.UserID, e.RequestID)
 			return err
@@ -337,10 +336,8 @@ const prechargeSlotWait = 3 * time.Second
 func (s *Service) acquirePrechargeSlot(ctx context.Context) (func(), error) {
 	s.slotsOnce.Do(func() {
 		n := 4
-		if s.db != nil && s.db.Pool != nil {
-			if half := int(s.db.Pool.Config().MaxConns) / 2; half > n {
-				n = half
-			}
+		if half := s.db.MaxConns() / 2; half > n {
+			n = half
 		}
 		s.prechargeSlots = make(chan struct{}, n)
 	})

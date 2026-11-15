@@ -7,10 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // The ledger's concurrency and idempotency contracts against a real
@@ -43,7 +45,7 @@ func concurrently(n int, fn func(i int) error) []error {
 func (e *env) assertLedgerBalanced(uid int64, want string) {
 	e.t.Helper()
 	var sum decimal.Decimal
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT COALESCE(sum(delta), 0) FROM balance_ledger WHERE user_id = $1`, uid).Scan(&sum); err != nil {
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(sum(delta), 0) FROM balance_ledger WHERE user_id = $1`, uid).Scan(&sum); err != nil {
 		e.t.Fatal(err)
 	}
 	bal := e.balance(uid)
@@ -73,14 +75,14 @@ func (e *env) waitForLockWaiters(n int) {
 
 // openPrecharge precharges 1 for the request in a transaction it leaves
 // open (the caller commits it), holding the user's balance lock.
-func (e *env) openPrecharge(uid int64, requestID string) pgx.Tx {
+func (e *env) openPrecharge(uid int64, requestID string) *gorm.DB {
 	e.t.Helper()
 	ctx := context.Background()
-	tx, err := e.db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, e.db)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	e.t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	e.t.Cleanup(func() { _ = tx.Rollback().Error })
 	ch := core.LedgerChange{UserID: uid, Amount: decimal.NewFromInt(1), Kind: KindUsage, RefType: "precharge",
 		RefID: requestID, IdempotencyKey: "precharge:" + requestID, Note: "request precharge"}
 	if lr, err := e.svc.prechargeTx(ctx, tx, ch, decimal.Zero); err != nil || lr == nil {
@@ -107,7 +109,7 @@ func TestPrechargeReplayAfterLockWait(t *testing.T) {
 			done := make(chan error, 1)
 			go func() { done <- e.svc.Precharge(ctx, usageRecord(uid, "replayed", "flat(1)")) }()
 			e.waitForLockWaiters(1)
-			if err := first.Commit(ctx); err != nil {
+			if err := first.Commit().Error; err != nil {
 				t.Fatal(err)
 			}
 			if err := <-done; err != nil {
@@ -142,7 +144,7 @@ func TestPrechargeKeyOfAnotherUser(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- e.svc.Precharge(ctx, usageRecord(other, "shared", "flat(1)")) }()
 	e.waitForLockWaiters(1)
-	if err := first.Commit(ctx); err != nil {
+	if err := first.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := <-done; core.AsError(err).Code != core.ErrConflict.Code {
@@ -178,12 +180,12 @@ func TestPrechargeCreatesBalanceRow(t *testing.T) {
 	t.Run("busy", func(t *testing.T) {
 		e := newEnv(t)
 		uid := e.user("precharge-busy-row@test.invalid")
-		tx, err := e.db.Pool.Begin(ctx)
+		tx, err := testutil.Begin(ctx, e.db)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback(ctx)
-		if _, err := tx.Exec(ctx, `INSERT INTO user_balances (user_id) VALUES ($1)`, uid); err != nil {
+		defer tx.Rollback()
+		if _, err := store.SQLTx(tx).ExecContext(ctx, `INSERT INTO user_balances (user_id) VALUES ($1)`, uid); err != nil {
 			t.Fatal(err)
 		}
 		start := time.Now()

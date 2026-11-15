@@ -32,7 +32,7 @@ func TestReviewConsentFlags(t *testing.T) {
 		t.Fatal("official plugin flagged")
 	}
 	// The catalog has one of the two permissions already: only the other is new.
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO permissions (key, module, label, source, plugin_key, status)
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO permissions (key, module, label, source, plugin_key, status)
 VALUES ('plugin.guard:`+m.UserPermissions[0].Key+`', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'active')`); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ VALUES ('plugin.guard:`+m.UserPermissions[0].Key+`', 'plugin.guard', '{"en":"x"}
 
 	// A verified (not official) publisher without role isolation: flagged,
 	// and the consent of a caller without the override is refused.
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE publishers SET trust_level = 'verified'`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE publishers SET trust_level = 'verified'`); err != nil {
 		t.Fatal(err)
 	}
 	if r := review(); !r.NeedsDBSchemaUnconfined {

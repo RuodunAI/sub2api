@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -29,7 +28,7 @@ import (
 // plugin.grant.regrant.
 func (s *Service) SetGrant(ctx context.Context, key, permission string, scope map[string]any, actorID int64) (*Grant, error) {
 	var out Grant
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		// The plugin row first, as RevokeGrant, consent and the rollout
 		// commit lock it before the grant rows (no lock-order deadlock).
 		g := store.G(ctx, tx)

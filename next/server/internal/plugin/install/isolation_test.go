@@ -32,7 +32,7 @@ func TestConsentRefusesDBSchemaWithoutIsolation(t *testing.T) {
 		t.Fatalf("consent: %v", err)
 	}
 	var n int
-	if err := e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_permission_grants WHERE plugin_key = 'guard' AND status = 'granted'`).Scan(&n); err != nil || n != 0 {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_permission_grants WHERE plugin_key = 'guard' AND status = 'granted'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("grants recorded: %d %v", n, err)
 	}
 	// Built-in plugins are not exempt.

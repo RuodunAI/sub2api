@@ -9,7 +9,6 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -74,7 +73,7 @@ func (s *Service) SyncCore(ctx context.Context) error {
 
 	var changed bool
 	var v int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		changed = false
 		db := store.G(ctx, tx)
 		if err := lockVersion(db).Error; err != nil {
@@ -243,7 +242,7 @@ func removeUndeclaredCore(db *gorm.DB, keys store.Strings) *gorm.DB {
 // keys: the role is never turned into the built-in one, which would hand its
 // holders that role's defaults, and never skipped, which would leave the
 // built-in role missing. The error stops startup and says how to rename it.
-func builtinKeyConflict(ctx context.Context, q store.Querier, builtinKeys []string) error {
+func builtinKeyConflict(ctx context.Context, q *gorm.DB, builtinKeys []string) error {
 	roles, err := queryRoles(customRoleRefsByKeys(store.G(ctx, q), builtinKeys))
 	if err != nil || len(roles) == 0 {
 		return err
@@ -266,7 +265,7 @@ func customRoleRefsByKeys(db *gorm.DB, keys []string) *gorm.DB {
 // reset, counts as held): SyncCore then grants a held role the defaults it
 // lacks, turned assign_custom on here where its defaults have it (custom;
 // audited), and resets one nobody holds (resetUnheld).
-func (s *Service) advanceDefaults(ctx context.Context, tx pgx.Tx, keys store.Strings, revs store.Int64s, custom store.Bools, behind func(key string, rev int32, held bool)) error {
+func (s *Service) advanceDefaults(ctx context.Context, tx *gorm.DB, keys store.Strings, revs store.Int64s, custom store.Bools, behind func(key string, rev int32, held bool)) error {
 	type moved struct {
 		id     int64
 		key    string
@@ -313,7 +312,7 @@ RETURNING r.id, r.key, b.rev, b.held, b.held AND b.custom`, keys, revs, custom)
 // holding it, to its defaults as ResetRole does (resetDefaults, by the
 // system, audited with via sync and the rev): no user's rights change, and
 // whoever is given the role next gets what its defaults say.
-func (s *Service) resetUnheld(ctx context.Context, tx pgx.Tx, def builtinRole) error {
+func (s *Service) resetUnheld(ctx context.Context, tx *gorm.DB, def builtinRole) error {
 	r, err := readRole(roleByKey(store.G(ctx, tx), def.key))
 	if err != nil {
 		return err
@@ -327,7 +326,7 @@ func (s *Service) resetUnheld(ctx context.Context, tx pgx.Tx, def builtinRole) e
 // grant is audited with via and the fill's detail (role_created or
 // defaults_rev), so a role the sync creates or fills in on an upgrade shows
 // what it was given.
-func (s *Service) grantDefaults(ctx context.Context, tx pgx.Tx, roleKey string, fill map[string]any, defaults []string, created func(string) bool, via string,
+func (s *Service) grantDefaults(ctx context.Context, tx *gorm.DB, roleKey string, fill map[string]any, defaults []string, created func(string) bool, via string,
 	grant func(db *gorm.DB, roleKey string, keys []string) *gorm.DB) error {
 	if fill == nil {
 		defaults = slices.DeleteFunc(slices.Clone(defaults), func(k string) bool { return !created(k) })
@@ -352,7 +351,7 @@ func withVia(fill map[string]any, via string) map[string]any {
 // (canonical keys) it lacks, each audited as authz.sync.grant (via default
 // and the fill's detail). One the role's unscoped grant of the same action
 // implies is left out, as migration 0097 leaves out a redundant own scope.
-func (s *Service) grantScopedDefaults(ctx context.Context, tx pgx.Tx, roleKey string, keys []string, fill map[string]any) error {
+func (s *Service) grantScopedDefaults(ctx context.Context, tx *gorm.DB, roleKey string, keys []string, fill map[string]any) error {
 	return s.syncGrant(ctx, tx, withVia(fill, "default"), grantScopedDefaultsTo(store.G(ctx, tx), roleKey, keys))
 }
 
@@ -377,7 +376,7 @@ SELECT ins.role_id, p.key || ':' || ins.scope FROM ins JOIN permissions p ON p.i
 // granted key (a permission, or an assignable role) of each row it adds,
 // and audits each row as authz.sync.grant by the system with via plus the
 // key as detail.
-func (s *Service) syncGrant(ctx context.Context, tx pgx.Tx, via map[string]any, q *gorm.DB) error {
+func (s *Service) syncGrant(ctx context.Context, tx *gorm.DB, via map[string]any, q *gorm.DB) error {
 	type grant struct {
 		role int64
 		key  string

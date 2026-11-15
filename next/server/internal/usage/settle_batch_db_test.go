@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // The usage_logs insert of a settler batch is one statement (insertUsageSQL,
@@ -52,7 +52,7 @@ func TestInsertBatchChunksAndDuplicates(t *testing.T) {
 		t.Fatalf("batch of %d", len(batch))
 	}
 	var ids map[string]int64
-	inserted, err := f.svc.insertAtomic(ctx, batch, nil, func(_ pgx.Tx, got map[string]int64) error {
+	inserted, err := f.svc.insertAtomic(ctx, batch, nil, func(_ *gorm.DB, got map[string]int64) error {
 		ids = got
 		return nil
 	}, false)
@@ -230,7 +230,7 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	var batch []*core.UsageRecord
 	for name, build := range variants {
 		var id int64
-		if err := f.db.Pool.QueryRow(ctx, pgxValuesSQL, pgxValues(build("values-"+name))...).Scan(&id); err != nil {
+		if err := f.db.SQL.QueryRowContext(ctx, pgxValuesSQL, pgxValues(build("values-"+name))...).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		batch = append(batch, build("unnest-"+name))
@@ -253,27 +253,6 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	}
 }
 
-// countingQuerier counts the statements run through it.
-type countingQuerier struct {
-	store.Querier
-	n *int
-}
-
-func (c countingQuerier) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	*c.n++
-	return c.Querier.Exec(ctx, sql, args...)
-}
-
-func (c countingQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	*c.n++
-	return c.Querier.Query(ctx, sql, args...)
-}
-
-func (c countingQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	*c.n++
-	return c.Querier.QueryRow(ctx, sql, args...)
-}
-
 // Any batch is one statement, one round trip, as the pgx batch was (batch
 // 5a took one per power-of-two chunk: 300 is 128, 128, 32, 8 and 4).
 func TestInsertBatchOneStatement(t *testing.T) {
@@ -283,9 +262,12 @@ func TestInsertBatchOneStatement(t *testing.T) {
 	for i := range batch {
 		batch[i] = f.record(fmt.Sprintf("one-%03d", i), i%2 == 0)
 	}
-	var statements int
-	err := f.db.Tx(ctx, func(tx pgx.Tx) error {
-		ids, err := insertUsageRows(store.G(ctx, countingQuerier{Querier: tx, n: &statements}), batch)
+	db, trace := testutil.Traced(f.db)
+	var statements []string
+	err := db.Tx(ctx, func(tx *gorm.DB) error {
+		trace.Take() // BEGIN
+		ids, err := insertUsageRows(store.G(ctx, tx), batch)
+		statements = trace.Take()
 		for i, id := range ids {
 			if id == 0 {
 				t.Errorf("record %d not inserted", i)
@@ -296,7 +278,7 @@ func TestInsertBatchOneStatement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if statements != 1 {
-		t.Fatalf("%d statements for a batch of %d", statements, len(batch))
+	if len(statements) != 1 {
+		t.Fatalf("%d statements for a batch of %d", len(statements), len(batch))
 	}
 }

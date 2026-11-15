@@ -6,7 +6,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -26,7 +26,7 @@ func TestCoreMigrationsApplyAndAreIdempotent(t *testing.T) {
 	}
 
 	var n int
-	if err := db.Pool.QueryRow(ctx,
+	if err := db.SQL.QueryRowContext(ctx,
 		`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
@@ -77,15 +77,15 @@ func TestLegacyProxyRealIPCompatibilityIsCoreOnly(t *testing.T) {
 // memTracker keeps the applied set in memory.
 type memTracker map[string]string
 
-func (memTracker) Ensure(context.Context, store.Querier) error { return nil }
-func (m memTracker) Applied(context.Context, store.Querier) (map[string]string, error) {
+func (memTracker) Ensure(context.Context, *gorm.DB) error { return nil }
+func (m memTracker) Applied(context.Context, *gorm.DB) (map[string]string, error) {
 	out := map[string]string{}
 	for k, v := range m {
 		out[k] = v
 	}
 	return out, nil
 }
-func (m memTracker) Record(_ context.Context, _ pgx.Tx, id, checksum string) error {
+func (m memTracker) Record(_ context.Context, _ *gorm.DB, id, checksum string) error {
 	m[id] = checksum
 	return nil
 }
@@ -97,14 +97,14 @@ func TestRenamedCoreMigrationIsKnownUnderItsNewID(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	const old, cur = "0073_failure_policy_split_auto_disable_any_position.sql", "0074_failure_policy_split_auto_disable_any_position.sql"
-	if _, err := db.Pool.Exec(ctx, `UPDATE schema_migrations SET id = $1 WHERE id = $2`, old, cur); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE schema_migrations SET id = $1 WHERE id = $2`, old, cur); err != nil {
 		t.Fatal(err)
 	}
 	again, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 	if err != nil || len(again) != 0 {
 		t.Fatalf("run after the rename applied %v, %v; want nothing", again, err)
 	}
-	applied, err := (store.CoreTracker{}).Applied(ctx, db.Pool)
+	applied, err := (store.CoreTracker{}).Applied(ctx, db.Gorm)
 	if err != nil {
 		t.Fatal(err)
 	}

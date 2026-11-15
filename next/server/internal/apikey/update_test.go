@@ -50,7 +50,7 @@ func TestAPIKeyStatusAndGroupUpdate(t *testing.T) {
 	require.Equal(t, second, p.Group.ID)
 
 	var audits int
-	require.NoError(t, e.db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_logs WHERE action='apikey.update' AND user_id=$1`, e.user).Scan(&audits))
+	require.NoError(t, e.db.SQL.QueryRowContext(t.Context(), `SELECT count(*) FROM audit_logs WHERE action='apikey.update' AND user_id=$1`, e.user).Scan(&audits))
 	require.Equal(t, 2, audits)
 }
 

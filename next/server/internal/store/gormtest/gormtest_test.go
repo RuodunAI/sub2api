@@ -116,13 +116,13 @@ func TestBuildNeedsFinisher(t *testing.T) {
 	}
 }
 
-// A statement that escaped DryRun has no Querier to run on, so it never
+// A statement that escaped DryRun has no database to run on, so it never
 // reaches a server.
 func TestDBNeverConnects(t *testing.T) {
 	db := DB()
 	_, err := db.ConnPool.ExecContext(db.Statement.Context, "SELECT 1")
-	if !errors.Is(err, store.ErrNoQuerier) {
-		t.Fatalf("err = %v, want %v", err, store.ErrNoQuerier)
+	if !errors.Is(err, store.ErrOffline) {
+		t.Fatalf("err = %v, want %v", err, store.ErrOffline)
 	}
 }
 

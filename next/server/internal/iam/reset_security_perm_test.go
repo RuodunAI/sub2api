@@ -29,14 +29,14 @@ func TestResetSecurityNeedsPasswordReset(t *testing.T) {
 	target := "/users/" + strconv.FormatInt(k.userID, 10) + "/security"
 	enroll := func() {
 		t.Helper()
-		if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO user_totp (user_id, secret_enc, last_step) VALUES ($1, 'x', 0)`, k.userID); err != nil {
+		if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO user_totp (user_id, secret_enc, last_step) VALUES ($1, 'x', 0)`, k.userID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	enrolled := func() bool {
 		t.Helper()
 		var on bool
-		if err := k.s.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1)`, k.userID).Scan(&on); err != nil {
+		if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1)`, k.userID).Scan(&on); err != nil {
 			t.Fatal(err)
 		}
 		return on
