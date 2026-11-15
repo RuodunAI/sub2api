@@ -1,0 +1,7 @@
+-- sql
+INSERT INTO plugin_rollout_cleanup(rollout_id,boot_id,state)
+		SELECT $1,boot_id,'cleanup_pending' FROM plugin_runtime_nodes WHERE plugin_key=$2 AND NOT stopped
+		ON CONFLICT(rollout_id,boot_id) DO UPDATE SET state='cleanup_pending',updated_at=now()
+-- vars
+$1 int64 42
+$2 string "demo"

@@ -1,0 +1,5 @@
+-- sql
+SELECT "row_version" FROM "plugins" WHERE key = $1 LIMIT $2 FOR SHARE
+-- vars
+$1 string "demo"
+$2 int 1

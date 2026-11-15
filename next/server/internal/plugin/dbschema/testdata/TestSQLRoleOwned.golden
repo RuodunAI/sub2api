@@ -1,0 +1,8 @@
+-- sql
+SELECT COALESCE(shobj_description(r.oid, 'pg_authid') = $1, false)
+    OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = $2 AND n.nspowner = r.oid)
+FROM pg_roles r WHERE r.rolname = $3
+-- vars
+$1 string "sub2api plugin role; database=app; plugin=demo"
+$2 string "plg_demo"
+$3 string "plg_demo"

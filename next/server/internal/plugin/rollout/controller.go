@@ -10,12 +10,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Options wires the controller. DB, Node, Packages, Registry and Runtime are
@@ -198,13 +201,33 @@ func (c *Controller) Stop(ctx context.Context) {
 		case <-done:
 			// Persist stop acknowledgement before Redis liveness disappears.
 			// Uninstall can then distinguish a clean shutdown from a partition.
-			_, _ = c.o.DB.Pool.Exec(ctx, `UPDATE plugin_runtime_nodes SET stopped=true,updated_at=now() WHERE boot_id=$1`, c.o.Node.BootID())
-			_, _ = c.o.DB.Pool.Exec(ctx, `UPDATE plugin_rollout_cleanup SET state='cleaned',updated_at=now() WHERE boot_id=$1 AND state='cleanup_pending'`, c.o.Node.BootID())
-			_, _ = c.o.DB.Pool.Exec(ctx, `UPDATE plugin_uninstalls SET stopped_boot_ids=array_append(stopped_boot_ids,$1)
-				WHERE $1=ANY(target_boot_ids) AND NOT($1=ANY(stopped_boot_ids))`, c.o.Node.BootID())
+			g, boot := store.G(ctx, c.o.DB.Pool), c.o.Node.BootID()
+			_ = stopBootRuntimes(g, boot).Error
+			_ = cleanBootCleanup(g, boot).Error
+			_ = ackBootUninstalls(g, boot).Error
 		case <-ctx.Done():
 		}
 	})
+}
+
+// stopBootRuntimes marks every plugin runtime of this boot stopped.
+func stopBootRuntimes(g *gorm.DB, bootID string) *gorm.DB {
+	return g.Model(&model.PluginRuntimeNode{}).Where("boot_id = ?", bootID).
+		Updates(map[string]any{"stopped": true, "updated_at": sqlNow})
+}
+
+// cleanBootCleanup acknowledges every pending rollout cleanup of this boot:
+// nothing of it runs any more.
+func cleanBootCleanup(g *gorm.DB, bootID string) *gorm.DB {
+	return g.Model(&model.PluginRolloutCleanup{}).Where("boot_id = ? AND state = 'cleanup_pending'", bootID).
+		Updates(map[string]any{"state": "cleaned", "updated_at": sqlNow})
+}
+
+// ackBootUninstalls adds this boot to the stopped boots of every uninstall
+// that waits for it.
+func ackBootUninstalls(g *gorm.DB, bootID string) *gorm.DB {
+	return g.Model(&model.PluginUninstall{}).Where("? = ANY(target_boot_ids) AND NOT (? = ANY(stopped_boot_ids))", bootID, bootID).
+		Update("stopped_boot_ids", gorm.Expr("array_append(stopped_boot_ids, ?)", bootID))
 }
 
 // onPluginEvent handles core.ChannelPluginEvents: "resources" restarts the
@@ -263,36 +286,42 @@ type pluginLock struct {
 }
 
 func lockPlugin(ctx context.Context, tx pgx.Tx, key string) (*pluginLock, error) {
-	var p pluginLock
-	err := tx.QueryRow(ctx, `SELECT status, active_version, row_version FROM plugins WHERE key = $1 FOR UPDATE`, key).
-		Scan(&p.status, &p.active, &p.rowVersion)
+	g := store.G(ctx, tx)
+	var p model.Plugin
+	err := selectPluginForUpdate(g, key, "status, active_version, row_version").Take(&p).Error
 	if store.IsNoRows(err) {
 		return nil, errNoPlugin
 	}
 	if err != nil {
 		return nil, err
 	}
-	var uninstalling bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_uninstalls WHERE plugin_key = $1)`, key).Scan(&uninstalling); err != nil {
+	uninstalling, err := exists(g, uninstallPending(g, key))
+	if err != nil {
 		return nil, err
 	}
 	if uninstalling {
 		return nil, core.ErrConflict.WithMessage("plugin uninstall is waiting for nodes to stop")
 	}
-	var open bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_rollouts WHERE plugin_key = $1 AND phase IN ('preparing','activating'))`, key).Scan(&open); err != nil {
+	open, err := exists(g, openRollouts(g, key).Select("1"))
+	if err != nil {
 		return nil, err
 	}
 	if open {
 		return nil, errOpen
 	}
-	return &p, nil
+	return &pluginLock{status: p.Status, active: p.ActiveVersion, rowVersion: p.RowVersion}, nil
+}
+
+// selectPluginForUpdate selects cols of the plugin row and locks it.
+func selectPluginForUpdate(g *gorm.DB, key, cols string) *gorm.DB {
+	return g.Model(&model.Plugin{}).Select(cols).Where("key = ?", key).
+		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})
 }
 
 func approved(ctx context.Context, tx pgx.Tx, key, version string) (bool, error) {
-	var ok bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_versions WHERE plugin_key = $1 AND version = $2 AND consent_status = 'approved')`, key, version).Scan(&ok)
-	return ok, err
+	g := store.G(ctx, tx)
+	return exists(g, g.Model(&model.PluginVersion{}).Select("1").
+		Where("plugin_key = ? AND version = ? AND consent_status = 'approved'", key, version))
 }
 
 func actor(id int64) *int64 {
@@ -303,24 +332,31 @@ func actor(id int64) *int64 {
 }
 
 func (c *Controller) insertRollout(ctx context.Context, tx pgx.Tx, key, action string, from, target *string, phase string, actorID int64) (int64, error) {
+	g := store.G(ctx, tx)
 	var id int64
-	err := tx.QueryRow(ctx, `
+	err := g.Raw(`
 		INSERT INTO plugin_rollouts (plugin_key, action, from_version, target_version, phase,
 			coordinator_node_id, coordinator_boot_id, coordinator_lease_until, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + $8 * interval '1 millisecond', $9)
+		VALUES (?, ?, ?, ?, ?, ?, ?, `+leaseFromNow+`, ?)
 		RETURNING id`,
-		key, action, from, target, phase, c.o.Node.NodeID(), c.o.Node.BootID(), c.o.LeaseTTL.Milliseconds(), actor(actorID)).Scan(&id)
+		key, action, from, target, phase, c.o.Node.NodeID(), c.o.Node.BootID(), c.o.LeaseTTL.Milliseconds(), actor(actorID)).Scan(&id).Error
 	if store.IsUniqueViolation(err, "") {
 		return 0, errOpen
 	}
 	if err == nil && audit.Source(ctx) == "builtin" {
 		err = audit.Audit(ctx, tx, actorID, "plugin."+action, "plugin", key, map[string]any{"source": "builtin", "from": from, "version": target, "rollout_id": id})
 		if err == nil {
-			_, err = tx.Exec(ctx, `UPDATE plugin_history SET message=(message::jsonb || '{"source":"builtin"}'::jsonb)::text
-				WHERE rollout_id=$1 AND node_id='' AND state='created'`, id)
+			err = markBuiltinHistory(g, id).Error
 		}
 	}
 	return id, err
+}
+
+// markBuiltinHistory tags the "created" history row of a rollout that a
+// builtin plugin source started.
+func markBuiltinHistory(g *gorm.DB, rolloutID int64) *gorm.DB {
+	return g.Model(&model.PluginHistory{}).Where("rollout_id = ? AND node_id = '' AND state = 'created'", rolloutID).
+		Update("message", gorm.Expr(`(message::jsonb || '{"source":"builtin"}'::jsonb)::text`))
 }
 
 // Enable starts a rollout of the plugin's active (or newest approved) version.
@@ -353,8 +389,8 @@ func (c *Controller) Enable(ctx context.Context, pluginKey string, actorID int64
 			}
 		}
 		if target == "" {
-			err := tx.QueryRow(ctx, `SELECT version FROM plugin_versions WHERE plugin_key = $1 AND consent_status = 'approved'
-				ORDER BY uploaded_at DESC LIMIT 1`, pluginKey).Scan(&target)
+			err := store.G(ctx, tx).Model(&model.PluginVersion{}).Select("version").
+				Where("plugin_key = ? AND consent_status = 'approved'", pluginKey).Order("uploaded_at DESC").Take(&target).Error
 			if store.IsNoRows(err) {
 				return core.ErrConflict.WithMessage("plugin has no approved version")
 			}
@@ -365,9 +401,9 @@ func (c *Controller) Enable(ctx context.Context, pluginKey string, actorID int64
 		if id, err = c.insertRollout(ctx, tx, pluginKey, "enable", nil, &target, PhasePreparing, actorID); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE plugins SET status = 'enabling', status_reason = '', desired_version = $2,
-			updated_at = now(), row_version = row_version + 1 WHERE key = $1`, pluginKey, target)
-		return err
+		return updatePlugin(store.G(ctx, tx), pluginKey, map[string]any{
+			"status": "enabling", "status_reason": "", "desired_version": target,
+		}).Error
 	})
 	if err != nil {
 		return nil, err
@@ -405,9 +441,7 @@ func (c *Controller) Upgrade(ctx context.Context, pluginKey, version string, act
 		if id, err = c.insertRollout(ctx, tx, pluginKey, "upgrade", p.active, &version, PhasePreparing, actorID); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE plugins SET status = 'upgrading', desired_version = $2,
-			updated_at = now(), row_version = row_version + 1 WHERE key = $1`, pluginKey, version)
-		return err
+		return updatePlugin(store.G(ctx, tx), pluginKey, map[string]any{"status": "upgrading", "desired_version": version}).Error
 	})
 	if err != nil {
 		return nil, err
@@ -441,8 +475,9 @@ func (c *Controller) Disable(ctx context.Context, pluginKey string, actorID int6
 		if id, err = c.insertRollout(ctx, tx, pluginKey, "disable", p.active, nil, PhaseActivating, actorID); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET status = 'disabled', status_reason = $2, desired_version = NULL,
-			updated_at = now(), row_version = row_version + 1 WHERE key = $1`, pluginKey, reason); err != nil {
+		if err := updatePlugin(store.G(ctx, tx), pluginKey, map[string]any{
+			"status": "disabled", "status_reason": reason, "desired_version": nil,
+		}).Error; err != nil {
 			return err
 		}
 		if c.o.Perms != nil {
@@ -476,7 +511,7 @@ func (c *Controller) started(ctx context.Context, key string, id int64) (*core.R
 // Current returns the open rollout of a plugin with live node states.
 func (c *Controller) Current(ctx context.Context, pluginKey string) (*core.Rollout, error) {
 	var id int64
-	err := c.o.DB.Pool.QueryRow(ctx, `SELECT id FROM plugin_rollouts WHERE plugin_key = $1 AND phase IN ('preparing','activating')`, pluginKey).Scan(&id)
+	err := openRollouts(store.G(ctx, c.o.DB.Pool), pluginKey).Select("id").Take(&id).Error
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
@@ -501,19 +536,9 @@ func (c *Controller) get(ctx context.Context, key string, id int64) (*core.Rollo
 	if r.phase == PhasePreparing || r.phase == PhaseActivating {
 		states, _, _ := c.nodeStates(ctx, r)
 		out.Nodes = states
-	} else {
-		rows, err := c.o.DB.Pool.Query(ctx, `SELECT node_id, boot_id, state, error FROM plugin_rollout_nodes WHERE rollout_id = $1 ORDER BY node_id, boot_id`, id)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var n core.RolloutNodeState
-			if err := rows.Scan(&n.NodeID, &n.BootID, &n.State, &n.Error); err != nil {
-				return nil, err
-			}
-			out.Nodes = append(out.Nodes, n)
-		}
+	} else if err := store.G(ctx, c.o.DB.Pool).Model(&model.PluginRolloutNode{}).Select("node_id, boot_id, state, error").
+		Where("rollout_id = ?", id).Order("node_id, boot_id").Scan(&out.Nodes).Error; err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -560,24 +585,16 @@ type rolloutRow struct {
 	phaseAgeSec float64 // since updated_at (last phase change)
 }
 
-const rolloutCols = `id, plugin_key, action, from_version, target_version, phase,
-	COALESCE(coordinator_node_id, ''), COALESCE(coordinator_boot_id, ''),
-	(coordinator_lease_until IS NULL OR coordinator_lease_until < clock_timestamp()),
-	error, row_version,
-	EXTRACT(EPOCH FROM now() - created_at)::float8, EXTRACT(EPOCH FROM now() - updated_at)::float8`
-
-func scanRollout(row pgx.Row) (*rolloutRow, error) {
-	var r rolloutRow
-	err := row.Scan(&r.id, &r.key, &r.action, &r.from, &r.target, &r.phase, &r.coordNode, &r.coordBoot,
-		&r.leaseExpire, &r.err, &r.rowVersion, &r.ageSec, &r.phaseAgeSec)
+func (c *Controller) loadRollout(ctx context.Context, id int64) (*rolloutRow, error) {
+	var rec rolloutRecord
+	err := selectRollouts(store.G(ctx, c.o.DB.Pool)).Where("id = ?", id).Take(&rec).Error
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
-	return &r, err
-}
-
-func (c *Controller) loadRollout(ctx context.Context, id int64) (*rolloutRow, error) {
-	return scanRollout(c.o.DB.Pool.QueryRow(ctx, `SELECT `+rolloutCols+` FROM plugin_rollouts WHERE id = $1`, id))
+	if err != nil {
+		return nil, err
+	}
+	return rec.row(), nil
 }
 
 // finishFailed moves a preparing rollout to failed/cancelled and reverts the
@@ -587,25 +604,25 @@ func (c *Controller) loadRollout(ctx context.Context, id int64) (*rolloutRow, er
 func (c *Controller) finishFailed(ctx context.Context, r *rolloutRow, phase, msg string, fenced bool) (bool, error) {
 	ok := false
 	err := c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE plugin_rollouts SET phase = $2, error = $3, updated_at = now(), row_version = row_version + 1
-			WHERE id = $1 AND phase = 'preparing'
-			AND (NOT $4::boolean OR (row_version = $5 AND coordinator_boot_id = $6
-				AND coordinator_lease_until > clock_timestamp()))`, r.id, phase, msg, fenced, r.rowVersion, c.o.Node.BootID())
-		if err != nil || tag.RowsAffected() == 0 {
-			return err
+		g := store.G(ctx, tx)
+		res := failRollout(g, r, phase, msg, fenced, c.o.Node.BootID())
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error
 		}
 		ok = true
+		var err error
 		if r.action == "upgrade" {
 			// The permission catalog is left alone: keys the target version
 			// registered at consent stay until another version is activated
 			// (commit syncs the catalog with the manifest which then runs).
 			// Nothing of the running version checks them, and role grants
 			// chosen at consent survive the new consent a retry needs (grants.Withdraw).
-			_, err = tx.Exec(ctx, `UPDATE plugins SET status = 'enabled', desired_version = active_version,
-				updated_at = now(), row_version = row_version + 1 WHERE key = $1`, r.key)
+			err = updatePlugin(g, r.key, map[string]any{"status": "enabled", "desired_version": gorm.Expr("active_version")}).Error
 		} else {
-			_, err = tx.Exec(ctx, `UPDATE plugins SET status = CASE WHEN active_version IS NULL THEN 'installed' ELSE 'disabled' END,
-				desired_version = NULL, status_reason = $2, updated_at = now(), row_version = row_version + 1 WHERE key = $1`, r.key, msg)
+			err = updatePlugin(g, r.key, map[string]any{
+				"status":          gorm.Expr("CASE WHEN active_version IS NULL THEN 'installed' ELSE 'disabled' END"),
+				"desired_version": nil, "status_reason": msg,
+			}).Error
 		}
 		if err != nil {
 			return err
@@ -623,13 +640,29 @@ func (c *Controller) finishFailed(ctx context.Context, r *rolloutRow, phase, msg
 	return ok, err
 }
 
+// failRollout moves a preparing rollout to phase. fenced also requires the
+// coordinator's view of it to be current: the row version it read and a
+// lease this boot still holds.
+func failRollout(g *gorm.DB, r *rolloutRow, phase, msg string, fenced bool, bootID string) *gorm.DB {
+	return g.Model(&model.PluginRollout{}).
+		Where(`id = ? AND phase = 'preparing'
+			AND (NOT ?::boolean OR (row_version = ? AND coordinator_boot_id = ?
+				AND coordinator_lease_until > clock_timestamp()))`, r.id, fenced, r.rowVersion, bootID).
+		Updates(map[string]any{"phase": phase, "error": msg, "updated_at": sqlNow, "row_version": bumpRowVersion})
+}
+
 // Mark every boot which could own an instance, including disconnected boots.
 // Liveness expiry is not evidence that an old version has stopped.
 func (c *Controller) markCleanup(ctx context.Context, tx pgx.Tx, r *rolloutRow) error {
-	_, err := tx.Exec(ctx, `INSERT INTO plugin_rollout_cleanup(rollout_id,boot_id,state)
-		SELECT $1,boot_id,'cleanup_pending' FROM plugin_runtime_nodes WHERE plugin_key=$2 AND NOT stopped
+	return markCleanupRows(store.G(ctx, tx), r).Error
+}
+
+// markCleanupRows is markCleanup's statement. Raw SQL: an INSERT from a
+// SELECT with an upsert.
+func markCleanupRows(g *gorm.DB, r *rolloutRow) *gorm.DB {
+	return g.Exec(`INSERT INTO plugin_rollout_cleanup(rollout_id,boot_id,state)
+		SELECT ?,boot_id,'cleanup_pending' FROM plugin_runtime_nodes WHERE plugin_key=? AND NOT stopped
 		ON CONFLICT(rollout_id,boot_id) DO UPDATE SET state='cleanup_pending',updated_at=now()`, r.id, r.key)
-	return err
 }
 
 // writeNodes records the per-node outcome from the live node reports.
@@ -639,6 +672,7 @@ func (c *Controller) writeNodes(ctx context.Context, tx pgx.Tx, r *rolloutRow) e
 		c.log.Warn("read node states failed", "err", err)
 		return nil
 	}
+	g := store.G(ctx, tx)
 	for _, n := range states {
 		st := n.State
 		if st == NodePending {
@@ -647,14 +681,20 @@ func (c *Controller) writeNodes(ctx context.Context, tx pgx.Tx, r *rolloutRow) e
 				n.Error = "not ready"
 			}
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO plugin_rollout_nodes (rollout_id, node_id, boot_id, state, error)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (rollout_id, boot_id) DO UPDATE SET state = EXCLUDED.state, error = EXCLUDED.error, updated_at = now()`,
-			r.id, n.NodeID, n.BootID, st, n.Error); err != nil {
+		if err := upsertRolloutNode(g, r.id, n.NodeID, n.BootID, st, n.Error).Error; err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// upsertRolloutNode records one node's outcome. Raw SQL: an upsert whose
+// update reads EXCLUDED.
+func upsertRolloutNode(g *gorm.DB, rolloutID int64, nodeID, bootID, state, msg string) *gorm.DB {
+	return g.Exec(`INSERT INTO plugin_rollout_nodes (rollout_id, node_id, boot_id, state, error)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT (rollout_id, boot_id) DO UPDATE SET state = EXCLUDED.state, error = EXCLUDED.error, updated_at = now()`,
+		rolloutID, nodeID, bootID, state, msg)
 }
 
 // nodeStates reads every live node's report for the rollout. selfSeen

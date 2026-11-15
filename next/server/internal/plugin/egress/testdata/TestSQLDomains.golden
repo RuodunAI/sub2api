@@ -1,0 +1,6 @@
+-- sql
+SELECT host, first_seen_at, last_seen_at, connections, first_seen_at > now() - $1 * interval '1 second' AS "new" FROM "plugin_egress_domains" WHERE plugin_key = $2 ORDER BY last_seen_at DESC, host LIMIT $3
+-- vars
+$1 int64 86400
+$2 string "demo"
+$3 int 1000

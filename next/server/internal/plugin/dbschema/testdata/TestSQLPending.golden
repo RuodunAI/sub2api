@@ -1,0 +1,5 @@
+-- sql
+SELECT count(*) FROM "plugin_migrations" WHERE plugin_key = $1 AND migration_id = ANY($2)
+-- vars
+$1 string "demo"
+$2 store.Strings [0001_init.sql]

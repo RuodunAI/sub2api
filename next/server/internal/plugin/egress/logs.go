@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // ResultOpen marks a connection that is still open (its row is updated
@@ -444,24 +446,26 @@ type LogRecord struct {
 
 // Summary groups a plugin's egress in [from, to) by host (busiest first).
 func Summary(ctx context.Context, q store.Querier, pluginKey string, from, to time.Time) ([]HostSummary, error) {
-	rows, err := q.Query(ctx, `
-SELECT host, count(*),
-       count(*) FILTER (WHERE result = 'denied'),
-       count(*) FILTER (WHERE result IN ('dial_error', 'reset')),
-       coalesce(sum(bytes_in), 0)::bigint, coalesce(sum(bytes_out), 0)::bigint,
-       min(started_at), max(started_at)
-FROM plugin_egress_logs
-WHERE plugin_key = $1 AND started_at >= $2 AND started_at < $3
-GROUP BY host
-ORDER BY count(*) DESC, host`, pluginKey, from, to)
-	if err != nil {
+	var out []HostSummary
+	if err := summaryQuery(store.G(ctx, q), pluginKey, from, to).Scan(&out).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (HostSummary, error) {
-		var s HostSummary
-		err := r.Scan(&s.Host, &s.Connections, &s.Denied, &s.Errors, &s.BytesIn, &s.BytesOut, &s.FirstSeen, &s.LastSeen)
-		return s, err
-	})
+	return out, nil
+}
+
+// summaryQuery aggregates the rows by host into HostSummary columns. Raw
+// SQL: the counts are FILTER aggregates.
+func summaryQuery(g *gorm.DB, pluginKey string, from, to time.Time) *gorm.DB {
+	return g.Raw(`
+SELECT host, count(*) AS connections,
+       count(*) FILTER (WHERE result = 'denied') AS denied,
+       count(*) FILTER (WHERE result IN ('dial_error', 'reset')) AS errors,
+       coalesce(sum(bytes_in), 0)::bigint AS bytes_in, coalesce(sum(bytes_out), 0)::bigint AS bytes_out,
+       min(started_at) AS first_seen, max(started_at) AS last_seen
+FROM plugin_egress_logs
+WHERE plugin_key = ? AND started_at >= ? AND started_at < ?
+GROUP BY host
+ORDER BY count(*) DESC, host`, pluginKey, from, to)
 }
 
 // List returns a plugin's most recent egress rows in [from, to).
@@ -469,19 +473,26 @@ func List(ctx context.Context, q store.Querier, pluginKey string, from, to time.
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := q.Query(ctx, `
-SELECT id, node_id, network, host, port, started_at, closed_at, duration_ms, bytes_in, bytes_out, result, error
-FROM plugin_egress_logs
-WHERE plugin_key = $1 AND started_at >= $2 AND started_at < $3
-ORDER BY started_at DESC, id DESC
-LIMIT $4`, pluginKey, from, to, limit)
-	if err != nil {
+	var rows []model.PluginEgressLog
+	if err := listQuery(store.G(ctx, q), pluginKey, from, to, limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (LogRecord, error) {
-		var l LogRecord
-		err := r.Scan(&l.ID, &l.NodeID, &l.Network, &l.Host, &l.Port, &l.StartedAt, &l.ClosedAt, &l.DurationMS,
-			&l.BytesIn, &l.BytesOut, &l.Result, &l.Error)
-		return l, err
-	})
+	out := make([]LogRecord, len(rows))
+	for i, r := range rows {
+		out[i] = LogRecord{
+			ID: r.ID, NodeID: r.NodeID, Network: r.Network, Host: r.Host, Port: r.Port,
+			StartedAt: r.StartedAt, ClosedAt: r.ClosedAt, DurationMS: r.DurationMs,
+			BytesIn: r.BytesIn, BytesOut: r.BytesOut, Result: r.Result, Error: r.Error,
+		}
+	}
+	return out, nil
+}
+
+// listQuery selects the LogRecord columns of a plugin's rows, newest first.
+func listQuery(g *gorm.DB, pluginKey string, from, to time.Time, limit int) *gorm.DB {
+	return g.Model(&model.PluginEgressLog{}).
+		Select("id, node_id, network, host, port, started_at, closed_at, duration_ms, bytes_in, bytes_out, result, error").
+		Where("plugin_key = ? AND started_at >= ? AND started_at < ?", pluginKey, from, to).
+		Order("started_at DESC, id DESC").
+		Limit(limit)
 }

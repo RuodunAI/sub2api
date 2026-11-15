@@ -6,9 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // DefaultDomainUpdateInterval is how often the counters of a known host
@@ -156,18 +157,19 @@ const NewDomainWindow = 24 * time.Hour
 // Domains lists the hosts a plugin has connected to (most recent first),
 // for GET /plugins/:key/egress (CONTRACTS §14.2).
 func Domains(ctx context.Context, q store.Querier, pluginKey string) ([]DomainRecord, error) {
-	rows, err := q.Query(ctx, `
-SELECT host, first_seen_at, last_seen_at, connections, first_seen_at > now() - $2 * interval '1 second'
-FROM plugin_egress_domains
-WHERE plugin_key = $1
-ORDER BY last_seen_at DESC, host
-LIMIT 1000`, pluginKey, int64(NewDomainWindow/time.Second))
-	if err != nil {
+	var out []DomainRecord
+	if err := domainsQuery(store.G(ctx, q), pluginKey).Scan(&out).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (DomainRecord, error) {
-		var d DomainRecord
-		err := r.Scan(&d.Host, &d.FirstSeenAt, &d.LastSeenAt, &d.Connections, &d.New)
-		return d, err
-	})
+	return out, nil
+}
+
+// domainsQuery selects the DomainRecord columns of a plugin's hosts.
+func domainsQuery(g *gorm.DB, pluginKey string) *gorm.DB {
+	return g.Model(&model.PluginEgressDomain{}).
+		Select(`host, first_seen_at, last_seen_at, connections, first_seen_at > now() - ? * interval '1 second' AS "new"`,
+			int64(NewDomainWindow/time.Second)).
+		Where("plugin_key = ?", pluginKey).
+		Order("last_seen_at DESC, host").
+		Limit(1000)
 }

@@ -1,0 +1,14 @@
+-- sql
+SELECT host, count(*) AS connections,
+       count(*) FILTER (WHERE result = 'denied') AS denied,
+       count(*) FILTER (WHERE result IN ('dial_error', 'reset')) AS errors,
+       coalesce(sum(bytes_in), 0)::bigint AS bytes_in, coalesce(sum(bytes_out), 0)::bigint AS bytes_out,
+       min(started_at) AS first_seen, max(started_at) AS last_seen
+FROM plugin_egress_logs
+WHERE plugin_key = $1 AND started_at >= $2 AND started_at < $3
+GROUP BY host
+ORDER BY count(*) DESC, host
+-- vars
+$1 string "demo"
+$2 time.Time 2026-11-15 08:00:00 +0000 UTC
+$3 time.Time 2026-11-15 09:00:00 +0000 UTC

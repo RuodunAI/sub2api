@@ -1,0 +1,7 @@
+-- sql
+SELECT v.plugin_key, v.version, v.package_sha256 FROM plugin_versions v WHERE EXISTS (SELECT 1 FROM plugins p WHERE p.key = v.plugin_key
+				AND (v.version = p.active_version OR v.version = p.desired_version))
+			OR EXISTS (SELECT 1 FROM plugin_rollouts r WHERE r.plugin_key = v.plugin_key
+				AND r.phase IN ('preparing','activating')
+				AND (v.version = r.from_version OR v.version = r.target_version))
+-- vars

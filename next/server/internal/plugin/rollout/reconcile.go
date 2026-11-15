@@ -12,7 +12,12 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -72,42 +77,46 @@ func (c *Controller) localInstance(key, version string) Instance {
 	return nil
 }
 
+// pluginRecord is the scan target of loadPlugins' plugins statement.
+type pluginRecord struct {
+	Key            string  `gorm:"column:key"`
+	Status         string  `gorm:"column:status"`
+	ActiveVersion  *string `gorm:"column:active_version"`
+	DesiredVersion *string `gorm:"column:desired_version"`
+	RowVersion     int64   `gorm:"column:row_version"`
+	Uninstalling   bool    `gorm:"column:uninstalling"`
+}
+
+// selectPlugins selects every plugin with its uninstall marker, by key.
+func selectPlugins(g *gorm.DB) *gorm.DB {
+	return g.Model(&model.Plugin{}).Select(`key, status, active_version, desired_version, row_version,
+		EXISTS (SELECT 1 FROM plugin_uninstalls u WHERE u.plugin_key = plugins.key) AS uninstalling`).Order("key")
+}
+
 func (c *Controller) loadPlugins(ctx context.Context) ([]*pluginRow, error) {
-	rows, err := c.o.DB.Pool.Query(ctx, `SELECT key, status, active_version, desired_version, row_version,
-		EXISTS (SELECT 1 FROM plugin_uninstalls u WHERE u.plugin_key = plugins.key) FROM plugins ORDER BY key`)
-	if err != nil {
+	g := store.G(ctx, c.o.DB.Pool)
+	var recs []pluginRecord
+	if err := selectPlugins(g).Scan(&recs).Error; err != nil {
 		return nil, err
 	}
 	var out []*pluginRow
 	byKey := map[string]*pluginRow{}
-	for rows.Next() {
-		p := &pluginRow{}
-		if err := rows.Scan(&p.key, &p.status, &p.active, &p.desired, &p.rowVersion, &p.uninstalling); err != nil {
-			rows.Close()
-			return nil, err
-		}
+	for _, r := range recs {
+		p := &pluginRow{key: r.Key, status: r.Status, active: r.ActiveVersion, desired: r.DesiredVersion,
+			rowVersion: r.RowVersion, uninstalling: r.Uninstalling}
 		out = append(out, p)
 		byKey[p.key] = p
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	var open []rolloutRecord
+	if err := selectRollouts(g).Where("phase IN ('preparing','activating')").Scan(&open).Error; err != nil {
 		return nil, err
 	}
-	rrows, err := c.o.DB.Pool.Query(ctx, `SELECT `+rolloutCols+` FROM plugin_rollouts WHERE phase IN ('preparing','activating')`)
-	if err != nil {
-		return nil, err
-	}
-	defer rrows.Close()
-	for rrows.Next() {
-		r, err := scanRollout(rrows)
-		if err != nil {
-			return nil, err
-		}
-		if p := byKey[r.key]; p != nil {
-			p.ro = r
+	for i := range open {
+		if p := byKey[open[i].PluginKey]; p != nil {
+			p.ro = open[i].row()
 		}
 	}
-	return out, rrows.Err()
+	return out, nil
 }
 
 // Reconcile runs one pass: take over orphaned rollouts, bring local
@@ -173,13 +182,12 @@ func (c *Controller) Reconcile(ctx context.Context) {
 
 	for idx, p := range rows {
 		c.acknowledgeCleanup(ctx, p)
+		g, boot := store.G(ctx, c.o.DB.Pool), c.o.Node.BootID()
 		if reports[idx].State == "stopped" {
-			_, _ = c.o.DB.Pool.Exec(ctx, `UPDATE plugin_runtime_nodes SET stopped=true, updated_at=now() WHERE plugin_key=$1 AND boot_id=$2`, p.key, c.o.Node.BootID())
+			_ = stopRuntime(g, p.key, boot).Error
 		}
 		if p.uninstalling && reports[idx].State == "stopped" {
-			if _, err := c.o.DB.Pool.Exec(ctx, `UPDATE plugin_uninstalls SET stopped_boot_ids = array_append(stopped_boot_ids, $2)
-				WHERE plugin_key = $1 AND epoch <= $3 AND NOT ($2 = ANY(stopped_boot_ids))`,
-				p.key, c.o.Node.BootID(), p.rowVersion); err != nil {
+			if err := ackUninstallStop(g, p.key, boot, p.rowVersion).Error; err != nil {
 				c.log.Warn("acknowledge plugin stop failed", "plugin", p.key, "err", err)
 			}
 		}
@@ -190,6 +198,20 @@ func (c *Controller) Reconcile(ctx context.Context) {
 		}
 	}
 	c.cleanHistory(ctx)
+}
+
+// stopRuntime marks the plugin's runtime on this boot stopped.
+func stopRuntime(g *gorm.DB, key, bootID string) *gorm.DB {
+	return g.Model(&model.PluginRuntimeNode{}).Where("plugin_key = ? AND boot_id = ?", key, bootID).
+		Updates(map[string]any{"stopped": true, "updated_at": sqlNow})
+}
+
+// ackUninstallStop adds this boot to the stopped boots of an uninstall that
+// the plugin generation epoch already covers.
+func ackUninstallStop(g *gorm.DB, key, bootID string, epoch int64) *gorm.DB {
+	return g.Model(&model.PluginUninstall{}).
+		Where("plugin_key = ? AND epoch <= ? AND NOT (? = ANY(stopped_boot_ids))", key, epoch, bootID).
+		Update("stopped_boot_ids", gorm.Expr("array_append(stopped_boot_ids, ?)", bootID))
 }
 
 // desiredVersions is the rollout's answer to "which versions should this node
@@ -485,24 +507,37 @@ var errStaleGeneration = core.ErrConflict.WithMessage("plugin generation changed
 
 func (c *Controller) registerRuntime(ctx context.Context, key string, expected ...pVersionEpoch) error {
 	return c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
-		var epoch int64
-		if err := tx.QueryRow(ctx, `SELECT row_version FROM plugins WHERE key=$1 FOR SHARE`, key).Scan(&epoch); err != nil {
+		g := store.G(ctx, tx)
+		var p model.Plugin
+		if err := selectEpochForShare(g, key).Take(&p).Error; err != nil {
 			return err
 		}
-		if len(expected) > 0 && epoch != expected[0].epoch {
+		if len(expected) > 0 && p.RowVersion != expected[0].epoch {
 			return errStaleGeneration
 		}
-		var pending bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_uninstalls WHERE plugin_key=$1)`, key).Scan(&pending); err != nil {
+		pending, err := exists(g, uninstallPending(g, key))
+		if err != nil {
 			return err
 		}
 		if pending {
 			return core.ErrConflict.WithMessage("plugin is uninstalling")
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO plugin_runtime_nodes(plugin_key,boot_id) VALUES($1,$2)
-			ON CONFLICT(plugin_key,boot_id) DO UPDATE SET stopped=false,updated_at=now()`, key, c.o.Node.BootID())
-		return err
+		return upsertRuntimeNode(g, key, c.o.Node.BootID()).Error
 	})
+}
+
+// selectEpochForShare reads the plugin's row_version under a share lock, so
+// no rollout or uninstall moves it until the registration commits.
+func selectEpochForShare(g *gorm.DB, key string) *gorm.DB {
+	return g.Model(&model.Plugin{}).Select("row_version").Where("key = ?", key).
+		Clauses(clause.Locking{Strength: clause.LockingStrengthShare})
+}
+
+// upsertRuntimeNode records that this boot runs the plugin. Raw SQL: the
+// upsert turns a stopped row back on.
+func upsertRuntimeNode(g *gorm.DB, key, bootID string) *gorm.DB {
+	return g.Exec(`INSERT INTO plugin_runtime_nodes(plugin_key,boot_id) VALUES(?,?)
+			ON CONFLICT(plugin_key,boot_id) DO UPDATE SET stopped=false,updated_at=now()`, key, bootID)
 }
 
 // Only a reconciliation of the current PG generation may acknowledge cleanup.
@@ -525,13 +560,19 @@ func (c *Controller) acknowledgeCleanup(ctx context.Context, p *pluginRow) {
 			return
 		}
 	}
-	_, err := c.o.DB.Pool.Exec(ctx, `UPDATE plugin_rollout_cleanup n SET state='cleaned',updated_at=now()
-		FROM plugin_rollouts r,plugins p WHERE n.rollout_id=r.id AND r.plugin_key=p.key
-		AND p.key=$1 AND p.row_version=$3 AND n.boot_id=$2 AND n.state='cleanup_pending'
-		AND r.phase NOT IN ('preparing','activating')`, p.key, c.o.Node.BootID(), p.rowVersion)
-	if err != nil {
+	if err := ackCleanup(store.G(ctx, c.o.DB.Pool), p.key, c.o.Node.BootID(), p.rowVersion).Error; err != nil {
 		c.log.Warn("acknowledge rollout cleanup failed", "plugin", p.key, "err", err)
 	}
+}
+
+// ackCleanup marks this boot's cleanup of the plugin's finished rollouts
+// done, while the plugin is still at generation epoch. Raw SQL: an UPDATE
+// joined with FROM.
+func ackCleanup(g *gorm.DB, key, bootID string, epoch int64) *gorm.DB {
+	return g.Exec(`UPDATE plugin_rollout_cleanup n SET state='cleaned',updated_at=now()
+		FROM plugin_rollouts r,plugins p WHERE n.rollout_id=r.id AND r.plugin_key=p.key
+		AND p.key=? AND p.row_version=? AND n.boot_id=? AND n.state='cleanup_pending'
+		AND r.phase NOT IN ('preparing','activating')`, key, epoch, bootID)
 }
 
 // republish switches the registry when the serving set (instances

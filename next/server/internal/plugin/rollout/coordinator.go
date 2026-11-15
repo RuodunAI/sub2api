@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // startCoordinator runs the coordinator loop for a rollout this node leads
@@ -66,17 +69,28 @@ func (c *Controller) takeOver(ctx context.Context, r *rolloutRow) {
 	if !r.leaseExpire {
 		return
 	}
-	var id int64
-	err := c.o.DB.Pool.QueryRow(ctx, `UPDATE plugin_rollouts SET coordinator_node_id = $2, coordinator_boot_id = $3,
-			coordinator_lease_until = clock_timestamp() + $4 * interval '1 millisecond', row_version = row_version + 1
-		WHERE id = $1 AND phase IN ('preparing','activating')
-			AND (coordinator_lease_until IS NULL OR coordinator_lease_until < clock_timestamp())
-		RETURNING id`, r.id, c.o.Node.NodeID(), c.o.Node.BootID(), c.o.LeaseTTL.Milliseconds()).Scan(&id)
-	if err != nil {
+	res := claimLease(store.G(ctx, c.o.DB.Pool), r.id, c.o.Node.NodeID(), c.o.Node.BootID(), c.o.LeaseTTL)
+	if res.Error != nil || res.RowsAffected == 0 {
 		return // lost the race or DB error; the next reconcile retries
 	}
 	c.log.Info("took over plugin rollout", "rollout_id", r.id, "plugin", r.key, "previous", r.coordBoot)
 	c.startCoordinator(r.id)
+}
+
+// claimLease makes this boot the coordinator of an open rollout whose lease
+// expired.
+func claimLease(g *gorm.DB, id int64, nodeID, bootID string, ttl time.Duration) *gorm.DB {
+	return openRollout(g, id).
+		Where("coordinator_lease_until IS NULL OR coordinator_lease_until < clock_timestamp()").
+		Updates(map[string]any{
+			"coordinator_node_id": nodeID, "coordinator_boot_id": bootID,
+			"coordinator_lease_until": gorm.Expr(leaseFromNow, ttl.Milliseconds()), "row_version": bumpRowVersion,
+		})
+}
+
+// openRollout filters the rollout id while it has not finished.
+func openRollout(g *gorm.DB, id int64) *gorm.DB {
+	return g.Model(&model.PluginRollout{}).Where("id = ? AND phase IN ('preparing','activating')", id)
 }
 
 type coordState struct {
@@ -123,11 +137,10 @@ func (c *Controller) keepLease(ctx context.Context, cancel context.CancelFunc, i
 			return
 		case <-t.C:
 		}
-		tag, err := c.o.DB.Pool.Exec(ctx, `UPDATE plugin_rollouts SET coordinator_lease_until = clock_timestamp() + $3 * interval '1 millisecond'
-			WHERE id = $1 AND coordinator_boot_id = $2 AND phase IN ('preparing','activating')`,
-			id, c.o.Node.BootID(), c.o.LeaseTTL.Milliseconds())
+		res := renewLease(store.G(ctx, c.o.DB.Pool), id, c.o.Node.BootID(), c.o.LeaseTTL)
+		err := res.Error
 		switch {
-		case err == nil && tag.RowsAffected() == 0:
+		case err == nil && res.RowsAffected == 0:
 			cancel() // lost the lease or the rollout finished
 			return
 		case err == nil:
@@ -142,6 +155,13 @@ func (c *Controller) keepLease(ctx context.Context, cancel context.CancelFunc, i
 			}
 		}
 	}
+}
+
+// renewLease extends the lease this boot holds on an open rollout. The
+// row version stays: a renewal is no state change.
+func renewLease(g *gorm.DB, id int64, bootID string, ttl time.Duration) *gorm.DB {
+	return openRollout(g, id).Where("coordinator_boot_id = ?", bootID).
+		Update("coordinator_lease_until", gorm.Expr(leaseFromNow, ttl.Milliseconds()))
 }
 
 // coordinateStep advances one rollout; done=true ends the loop.
@@ -167,9 +187,9 @@ func (c *Controller) coordinateStep(ctx context.Context, id int64, st *coordStat
 				return c.fail(ctx, r, "migration failed: "+err.Error())
 			}
 			st.migrated = true
-			var from *string
-			_ = c.o.DB.Pool.QueryRow(ctx, `SELECT active_version FROM plugins WHERE key = $1`, r.key).Scan(&from)
-			st.dataFrom = deref(from)
+			var p model.Plugin
+			_ = store.G(ctx, c.o.DB.Pool).Model(&model.Plugin{}).Select("active_version").Where("key = ?", r.key).Take(&p).Error
+			st.dataFrom = deref(p.ActiveVersion)
 			c.publish(ctx, r.key, r.id)
 			c.kick()
 		}
@@ -358,37 +378,40 @@ func (c *Controller) migrateData(ctx context.Context, r *rolloutRow, from string
 	// run it again. Recording can still be lost after a successful call, so
 	// MigrateData must stay idempotent.
 	id := fmt.Sprintf("data:rollout-%d:%s->%s", r.id, from, *r.target)
-	var done bool
-	if err := c.o.DB.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_migrations WHERE plugin_key = $1 AND migration_id = $2)`,
-		r.key, id).Scan(&done); err != nil || done {
+	g := store.G(ctx, c.o.DB.Pool)
+	done, err := exists(g, g.Table("plugin_migrations").Select("1").Where("plugin_key = ? AND migration_id = ?", r.key, id))
+	if err != nil || done {
 		return done, err
 	}
 	if err := inst.MigrateData(ctx, from, *r.target); err != nil {
 		return false, err
 	}
-	_, err = c.o.DB.Pool.Exec(ctx, `INSERT INTO plugin_migrations (plugin_key, migration_id, checksum) VALUES ($1, $2, 'data')
-		ON CONFLICT DO NOTHING`, r.key, id)
+	err = recordDataMigration(g, r.key, id).Error
 	return err == nil, err
+}
+
+// recordDataMigration records a data migration beside the SQL ones
+// (plugin_migrations belongs to store's migration runner, so it has no
+// model here).
+func recordDataMigration(g *gorm.DB, key, id string) *gorm.DB {
+	return g.Exec(`INSERT INTO plugin_migrations (plugin_key, migration_id, checksum) VALUES (?, ?, 'data')
+		ON CONFLICT DO NOTHING`, key, id)
 }
 
 // commit is the commit point: preparing -> activating.
 func (c *Controller) commit(ctx context.Context, r *rolloutRow) error {
 	return c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE plugin_rollouts SET phase = 'activating', updated_at = now(), row_version = row_version + 1
-			WHERE id = $1 AND row_version = $2 AND phase = 'preparing' AND coordinator_boot_id = $3`, r.id, r.rowVersion, c.o.Node.BootID())
-		if err != nil {
+		g := store.G(ctx, tx)
+		if err := advancePhase(g, r, PhasePreparing, PhaseActivating, c.o.Node.BootID()); err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("rollout %d changed concurrently", r.id)
-		}
-		var prevActive *string
-		if err := tx.QueryRow(ctx, `SELECT active_version FROM plugins WHERE key = $1 FOR UPDATE`, r.key).Scan(&prevActive); err != nil {
+		var p model.Plugin
+		if err := selectPluginForUpdate(g, r.key, "active_version").Take(&p).Error; err != nil {
 			return err
 		}
+		prevActive := p.ActiveVersion
 		target := deref(r.target)
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET active_version = $2, desired_version = $2,
-			updated_at = now(), row_version = row_version + 1 WHERE key = $1`, r.key, target); err != nil {
+		if err := updatePlugin(g, r.key, map[string]any{"active_version": target, "desired_version": target}).Error; err != nil {
 			return err
 		}
 		if err := grants.Promote(ctx, tx, r.key, target); err != nil {
@@ -427,20 +450,15 @@ func (c *Controller) commit(ctx context.Context, r *rolloutRow) error {
 // complete ends an activating rollout: activating -> active.
 func (c *Controller) complete(ctx context.Context, r *rolloutRow) error {
 	return c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE plugin_rollouts SET phase = 'active', updated_at = now(), row_version = row_version + 1
-			WHERE id = $1 AND row_version = $2 AND phase = 'activating' AND coordinator_boot_id = $3`, r.id, r.rowVersion, c.o.Node.BootID())
-		if err != nil {
+		g := store.G(ctx, tx)
+		if err := advancePhase(g, r, PhaseActivating, PhaseActive, c.o.Node.BootID()); err != nil {
 			return err
-		}
-		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("rollout %d changed concurrently", r.id)
 		}
 		status := "enabled"
 		if r.action == "disable" {
 			status = "disabled"
 		}
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET status = $2, updated_at = now(), row_version = row_version + 1
-			WHERE key = $1`, r.key, status); err != nil {
+		if err := updatePlugin(g, r.key, map[string]any{"status": status}).Error; err != nil {
 			return err
 		}
 		c.log.Info("plugin rollout completed", "rollout_id", r.id, "plugin", r.key, "action", r.action)
@@ -449,6 +467,25 @@ func (c *Controller) complete(ctx context.Context, r *rolloutRow) error {
 		}
 		return c.markCleanup(ctx, tx, r)
 	})
+}
+
+// advancePhase moves the rollout from phase from to phase to, provided this
+// boot coordinates it and nobody changed it since r was read.
+func advancePhase(g *gorm.DB, r *rolloutRow, from, to, bootID string) error {
+	res := advancePhaseQuery(g, r, from, to, bootID)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("rollout %d changed concurrently", r.id)
+	}
+	return nil
+}
+
+func advancePhaseQuery(g *gorm.DB, r *rolloutRow, from, to, bootID string) *gorm.DB {
+	return g.Model(&model.PluginRollout{}).
+		Where("id = ? AND row_version = ? AND phase = ? AND coordinator_boot_id = ?", r.id, r.rowVersion, from, bootID).
+		Updates(map[string]any{"phase": to, "updated_at": sqlNow, "row_version": bumpRowVersion})
 }
 
 // localStandbyError: the coordinator's own new instance failed, so it cannot
@@ -479,11 +516,15 @@ func (c *Controller) handOff(ctx context.Context, r *rolloutRow) (bool, error) {
 	c.coordMu.Lock()
 	c.handedOff[r.id] = true
 	c.coordMu.Unlock()
-	_, err := c.o.DB.Pool.Exec(ctx, `UPDATE plugin_rollouts SET coordinator_lease_until = clock_timestamp(), row_version = row_version + 1
-		WHERE id = $1 AND coordinator_boot_id = $2 AND phase = 'preparing'`, r.id, c.o.Node.BootID())
-	if err != nil {
+	if err := releaseLease(store.G(ctx, c.o.DB.Pool), r.id, c.o.Node.BootID()).Error; err != nil {
 		return false, err
 	}
 	c.log.Warn("handing plugin rollout to a ready node", "rollout_id", r.id, "plugin", r.key)
 	return true, nil
+}
+
+// releaseLease ends this boot's lease on a preparing rollout now.
+func releaseLease(g *gorm.DB, id int64, bootID string) *gorm.DB {
+	return g.Model(&model.PluginRollout{}).Where("id = ? AND coordinator_boot_id = ? AND phase = 'preparing'", id, bootID).
+		Updates(map[string]any{"coordinator_lease_until": gorm.Expr("clock_timestamp()"), "row_version": bumpRowVersion})
 }
