@@ -152,5 +152,5 @@ func segmentKind(ctx context.Context, q store.Querier, id int64, lock string) (k
 	if store.IsNoRows(err) {
 		return "", false, NotFound(ctx)
 	}
-	return row.Kind, row.IsDefault, err
+	return core.ValueOr(row.Kind, ""), row.IsDefault, err
 }

@@ -57,7 +57,7 @@ func TestSnapshotKeyGroupAvailable(t *testing.T) {
 func TestSnapshotKeyFlushLastUsed(t *testing.T) {
 	at := time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return db.Exec(flushLastUsedSQL, store.Int64s{1, 2}, timestamps{at, at.Add(time.Second)})
+		return db.Exec(flushLastUsedSQL, store.Int64s{1, 2}, store.Times{at, at.Add(time.Second)})
 	})
 }
 

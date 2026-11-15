@@ -118,7 +118,7 @@ func (s *Service) step(ctx context.Context) bool {
 		return false
 	}
 	q := queued{id: row.ID, source: row.Source, channel: row.Channel, provider: row.Provider, recipients: row.Recipients,
-		subject: row.Subject, body: row.Body, severity: row.Severity, attempt: int32(row.Attempts)}
+		subject: row.Subject, body: row.Body, severity: core.ValueOr(row.Severity, ""), attempt: int32(row.Attempts)}
 	s.finish(ctx, q, s.deliver(ctx, q))
 	return true
 }

@@ -9,4 +9,4 @@ $5 []uint8 []
 $6 *int64 7
 $7 *string nil
 $8 *time.Time nil
-$9 string "active"
+$9 *string "active"

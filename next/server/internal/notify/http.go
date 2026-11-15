@@ -74,7 +74,7 @@ func (s *Service) list(c *gin.Context) {
 	items := make([]Record, 0, len(rows))
 	for _, r := range rows {
 		items = append(items, Record{ID: r.ID, Source: r.Source, Channel: r.Channel, Recipients: r.Recipients, Subject: r.Subject,
-			Body: r.Body, Severity: r.Severity, Status: r.Status, Attempts: r.Attempts, LastError: r.LastError,
+			Body: r.Body, Severity: core.ValueOr(r.Severity, ""), Status: core.ValueOr(r.Status, ""), Attempts: r.Attempts, LastError: r.LastError,
 			NextAttemptAt: r.NextAttemptAt, CreatedAt: r.CreatedAt, SentAt: r.SentAt})
 	}
 	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})

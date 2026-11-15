@@ -151,7 +151,7 @@ func (s *Service) groupsProviding(ctx context.Context, name string) ([]int64, er
 		if err != nil {
 			return nil, err
 		}
-		groups[i] = core.GroupInfo{ID: r.ID, ModelAllowlist: allow, ModelFilterMode: r.ModelFilterMode}
+		groups[i] = core.GroupInfo{ID: r.ID, ModelAllowlist: allow, ModelFilterMode: core.ValueOr(r.ModelFilterMode, "")}
 	}
 	provided, err := providedModels(ctx, s.db.Pool, groups)
 	if err != nil {

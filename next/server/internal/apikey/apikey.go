@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
@@ -118,7 +117,7 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		ids = append(ids, id)
 		ts = append(ts, at)
 	}
-	err := store.G(ctx, s.db.Pool).Exec(flushLastUsedSQL, store.Int64s(ids), timestamps(ts)).Error
+	err := store.G(ctx, s.db.Pool).Exec(flushLastUsedSQL, store.Int64s(ids), store.Times(ts)).Error
 	if err != nil {
 		// Put them back so the next tick retries.
 		s.mu.Lock()
@@ -137,13 +136,6 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 const flushLastUsedSQL = `UPDATE api_keys k SET last_used_at = v.t
 	FROM (SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v
 	WHERE k.id = v.id AND (k.last_used_at IS NULL OR k.last_used_at < v.t)`
-
-// timestamps is a timestamptz[] parameter for GORM, which expands a plain
-// slice into one placeholder per element (see store.Int64s).
-type timestamps []time.Time
-
-// Value implements driver.Valuer.
-func (t timestamps) Value() (driver.Value, error) { return []time.Time(t), nil }
 
 func (s *Service) touch(id int64) {
 	s.mu.Lock()
@@ -298,6 +290,7 @@ func (s *Service) lookup(ctx context.Context, hash string) (*cached, error) {
 	// the group (NULL = none).
 	var groupRate, discount decimal.Decimal
 	var override *decimal.Decimal
+	//gormguard:allow-pgx per-request key lookup; GORM costs 1.7-2.1x the allocations (lookupSQL)
 	err := s.db.Pool.QueryRow(ctx, lookupSQL, hash).Scan(
 		&e.KeyID, &e.UserID, &e.KeyStatus, &e.ExpiresAt, &e.UserActive,
 		&e.GroupID, &e.GroupName, &e.GroupStatus, &groupRate, &e.ModelAllowlist, &e.ModelFilterMode, &e.GroupEnvironment, &e.GroupAvailable, &e.AllowedIPs,

@@ -715,7 +715,7 @@ func (s *Service) create(c *gin.Context) {
 // is as given.
 func newProxy(name, protocol, host string, port int, username string, enc []byte, status string, allowPrivate bool, owner int64) *model.Proxy {
 	return &model.Proxy{Name: name, Protocol: protocol, Host: host, Port: port, Username: username,
-		PasswordEnc: enc, Status: status, AllowPrivate: allowPrivate, CreatedBy: &owner}
+		PasswordEnc: enc, Status: &status, AllowPrivate: allowPrivate, CreatedBy: &owner}
 }
 
 func (s *Service) update(c *gin.Context) {

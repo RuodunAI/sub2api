@@ -4,4 +4,4 @@ UPDATE api_keys k SET last_used_at = v.t
 	WHERE k.id = v.id AND (k.last_used_at IS NULL OR k.last_used_at < v.t)
 -- vars
 $1 store.Int64s [1 2]
-$2 apikey.timestamps [2026-11-15 08:00:00 +0000 UTC 2026-11-15 08:00:01 +0000 UTC]
+$2 store.Times [2026-11-15 08:00:00 +0000 UTC 2026-11-15 08:00:01 +0000 UTC]

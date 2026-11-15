@@ -425,7 +425,7 @@ func (b *Bridge) loadRows(ctx context.Context) ([]taskRow, error) {
 	out := make([]taskRow, len(rows))
 	for i, r := range rows {
 		out[i] = taskRow{name: r.Name, source: r.Source, pluginKey: *r.PluginKey, schedule: r.Schedule,
-			timeoutMS: int64(r.TimeoutMs), maxAttempts: r.MaxAttempts, enabled: r.Enabled, args: r.Args}
+			timeoutMS: int64(r.TimeoutMs), maxAttempts: r.MaxAttempts, enabled: core.ValueOr(r.Enabled, false), args: r.Args}
 	}
 	return out, nil
 }

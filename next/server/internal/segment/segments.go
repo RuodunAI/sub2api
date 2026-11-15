@@ -305,10 +305,8 @@ func (s *Service) create(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	// validate left a positive discount, so the model writes every field
-	// given: only a zero would be left to the column default.
-	row := model.Segment{Name: *in.Name, Description: core.ValueOr(in.Description, ""),
-		Discount: decimal.RequireFromString(core.ValueOr(in.Discount, "1"))}
+	discount := decimal.RequireFromString(core.ValueOr(in.Discount, "1"))
+	row := model.Segment{Name: *in.Name, Description: core.ValueOr(in.Description, ""), Discount: &discount}
 	if err := store.G(ctx, s.db.Pool).Create(&row).Error; err != nil {
 		httpapi.Fail(c, nameTaken(ctx, err))
 		return

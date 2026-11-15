@@ -142,8 +142,8 @@ func listFilter(q, status string, providing []int64) func(*gorm.DB) *gorm.DB {
 
 // group is the API view of the row, without what fill adds.
 func (r *groupRow) group() (*Group, error) {
-	g := &Group{ID: r.ID, Name: r.Name, Description: r.Description, Status: r.Status, RateMultiplier: r.RateMultiplier.String(),
-		Visibility: r.Visibility, ModelFilterMode: r.ModelFilterMode, ConversionLossPolicy: r.ConversionLossPolicy,
+	g := &Group{ID: r.ID, Name: r.Name, Description: r.Description, Status: core.ValueOr(r.Status, ""), RateMultiplier: r.RateMultiplier.String(),
+		Visibility: core.ValueOr(r.Visibility, ""), ModelFilterMode: core.ValueOr(r.ModelFilterMode, ""), ConversionLossPolicy: r.ConversionLossPolicy,
 		AccountCount: r.AccountCount, APIKeyCount: r.APIKeyCount, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 	var err error
 	if g.ModelAllowlist, err = allowlist(r.ModelAllowlist); err != nil {
@@ -564,7 +564,7 @@ func (s *Service) myGroups(c *gin.Context) {
 			return
 		}
 		out = append(out, MyGroup{ID: r.ID, Name: r.Name, Description: r.Description, RateMultiplier: r.RateMultiplier.String(),
-			ModelAllowlist: allow, ModelFilterMode: r.ModelFilterMode, Exclusive: r.Exclusive})
+			ModelAllowlist: allow, ModelFilterMode: core.ValueOr(r.ModelFilterMode, ""), Exclusive: r.Exclusive})
 	}
 	ids := make([]int64, len(out))
 	for i, g := range out {

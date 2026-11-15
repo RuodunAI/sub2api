@@ -40,8 +40,23 @@ var instanceOwners = map[string]string{
 // statements are built with store.G: they must not go back to pgx Exec,
 // Query or QueryRow. A package is added here in the batch that migrates it.
 var migratedPackages = map[string]string{
-	"internal/group":   "batch 1a",
-	"internal/segment": "batch 1a",
+	"internal/apikey":          "batch 1d",
+	"internal/app":             "batch 1d",
+	"internal/audit":           "batch 1b",
+	"internal/cluster":         "batch 1b",
+	"internal/environment":     "batch 1b",
+	"internal/event":           "batch 1c",
+	"internal/event/delivery":  "batch 1c",
+	"internal/fallbackcredits": "batch 1d",
+	"internal/group":           "batch 1a",
+	"internal/helperhistory":   "batch 1b",
+	"internal/job":             "batch 1c",
+	"internal/lookup":          "batch 1b",
+	"internal/notify":          "batch 1b",
+	"internal/proxy":           "batch 1d",
+	"internal/segment":         "batch 1a",
+	"internal/task":            "batch 1c",
+	"internal/webui":           "batch 1d",
 }
 
 // --- loading -------------------------------------------------------------

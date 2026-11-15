@@ -152,7 +152,7 @@ func (s *Service) Notify(ctx context.Context, source string, n core.Notification
 		// An empty dedupe key is the column's default, so GORM leaving the
 		// zero value out of the INSERT (default:(-)) stores the same ''.
 		row := model.Notification{Source: source, Channel: n.Channel, Recipients: store.Strings(n.Recipients), Subject: n.Subject,
-			Body: n.Body, Severity: n.Severity, DedupeKey: n.DedupeKey, Provider: &provider}
+			Body: n.Body, Severity: &n.Severity, DedupeKey: n.DedupeKey, Provider: &provider}
 		if err := db.Create(&row).Error; err != nil {
 			return err
 		}

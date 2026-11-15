@@ -268,7 +268,7 @@ func readRuntime(ctx context.Context, q store.Querier, key string) (map[string]r
 	for _, r := range rows {
 		// args arrive in jsonb's text form, as args::text gave them; NULL is "".
 		out[r.Name] = runtimeRow{schedule: r.Schedule, timeoutMS: int64(r.TimeoutMs), attempts: r.MaxAttempts,
-			args: string(r.Args), enabled: r.Enabled}
+			args: string(r.Args), enabled: core.ValueOr(r.Enabled, false)}
 	}
 	return out, nil
 }
