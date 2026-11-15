@@ -89,31 +89,21 @@ func (s *Service) Apply(ctx context.Context, ch core.LedgerChange) (*core.Ledger
 // settlement to update the usage row atomically). The caller must call
 // CacheBalance after committing when the result is not a duplicate.
 //
-// One batch (create the balance row, then applySQL: find the key or lock the
-// row, write the ledger row and the balance) and one event: two round trips
-// under the user's balance lock instead of six (CONTRACTS §63.7).
+// Two statements (create the balance row, then applySQL: find the key or
+// lock the row, write the ledger row and the balance) and one event: two
+// round trips under the user's balance lock instead of six (CONTRACTS
+// §63.7).
 func (s *Service) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error) {
 	if err := validateChange(&ch); err != nil {
 		return nil, err
 	}
 	ch.Amount = ch.Amount.Round(8)
-	b := &pgx.Batch{}
-	b.Queue(ensureBalanceSQL, ch.UserID)
-	queueApply(b, ch)
-	br := tx.SendBatch(ctx, b)
-	if _, err := br.Exec(); err != nil {
-		_ = br.Close()
-		if store.IsForeignKeyViolation(err) {
-			return nil, core.ErrNotFound.WithMessage("user not found").WithCause(err)
-		}
+	g := store.G(ctx, tx)
+	if err := ensureBalance(g, ch.UserID); err != nil {
 		return nil, err
 	}
-	res, raced, err := scanApply(br.QueryRow(), ch)
+	res, raced, err := applyChange(g, ch)
 	if err != nil {
-		_ = br.Close()
-		return nil, err
-	}
-	if err := br.Close(); err != nil {
 		return nil, err
 	}
 	if res, err = resolveApply(ctx, tx, res, raced, ch); err != nil || res.Duplicate {

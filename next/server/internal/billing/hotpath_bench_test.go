@@ -3,7 +3,6 @@ package billing
 import (
 	"context"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -36,8 +35,8 @@ func benchBilling(b *testing.B) (*Service, int64) {
 }
 
 // Precharge runs for every billable request before it is forwarded:
-// BEGIN, one batch (lock_timeout, ensure the balance row, lock it, the
-// reservation and its ledger row), the balance.changed event, COMMIT.
+// BEGIN, lock_timeout, ensure the balance row, lock it, the reservation and
+// its ledger row (prechargeSQL), the balance.changed event, COMMIT.
 func BenchmarkHotPrecharge(b *testing.B) {
 	svc, uid := benchBilling(b)
 	ctx := context.Background()
@@ -59,14 +58,13 @@ func BenchmarkHotPrecharge(b *testing.B) {
 
 // ReleasePrechargeTx runs for every free request the settler records
 // (usage insertAtomic), most of which hold no reservation, and for every
-// reservation the expiry sweeper returns. Its statement (releaseSQL) stays
-// on pgx; it is measured next to the GORM form of the same statement, for a
-// request without a reservation (miss) and with one (hit).
+// reservation the expiry sweeper returns. Its statement (releaseSQL) runs
+// on GORM (releaseStmt); it is measured next to the pgx form it had before,
+// for a request without a reservation (miss) and with one (hit).
 func BenchmarkHotReleasePrecharge(b *testing.B) {
 	svc, uid := benchBilling(b)
 	ctx := context.Background()
 	pool := svc.db.Pool
-	gormSQL, order := positional(releaseSQL)
 	paths := []struct {
 		name string
 		run  func(requestID string) error
@@ -82,12 +80,7 @@ func BenchmarkHotReleasePrecharge(b *testing.B) {
 			var got core.LedgerResult
 			var released bool
 			var amount decimal.Decimal
-			params := [...]any{requestID, uid, releaseKey(requestID), "release request precharge"}
-			args := make([]any, len(order))
-			for i, n := range order {
-				args[i] = params[n]
-			}
-			return store.G(ctx, pool).Raw(gormSQL, args...).Row().
+			return releaseStmt.row(store.G(ctx, pool), requestID, uid, releaseKey(requestID), "release request precharge").
 				Scan(&got.LedgerID, &got.BalanceAfter, &released, &amount)
 		}},
 	}
@@ -127,26 +120,4 @@ func BenchmarkHotReleasePrecharge(b *testing.B) {
 			}
 		})
 	}
-}
-
-// positional rewrites the $n placeholders of a pgx statement as GORM's ?
-// and returns, for each ?, the index of the pgx argument it takes.
-func positional(sql string) (string, []int) {
-	var b strings.Builder
-	var order []int
-	for i := 0; i < len(sql); i++ {
-		j := i + 1
-		for sql[i] == '$' && j < len(sql) && sql[j] >= '0' && sql[j] <= '9' {
-			j++
-		}
-		if j == i+1 {
-			b.WriteByte(sql[i])
-			continue
-		}
-		n, _ := strconv.Atoi(sql[i+1 : j])
-		order = append(order, n-1)
-		b.WriteByte('?')
-		i = j - 1
-	}
-	return b.String(), order
 }

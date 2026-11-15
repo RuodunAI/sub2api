@@ -422,23 +422,25 @@ func segmentsOf(changes []ruleChange) []int64 {
 	return ids
 }
 
-// applyChanges writes the changes in one round trip. They go in the order of
-// what they are on, whatever order the request gave them in: two requests
-// that change the same rules then lock them in the same order, and neither
-// waits for the other in a circle.
+// applyChanges writes the changes in tx. They go in the order of what they
+// are on, whatever order the request gave them in: two requests that change
+// the same rules then lock them in the same order, and neither waits for the
+// other in a circle.
 func applyChanges(ctx context.Context, tx pgx.Tx, changes []ruleChange, updatedBy int64) error {
 	slices.SortStableFunc(changes, func(a, b ruleChange) int {
 		return cmp.Or(cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
 	})
-	b := &pgx.Batch{}
+	g := store.G(ctx, tx)
 	for _, ch := range changes {
+		var err error
 		if ch.rule == nil {
-			queueDelete(b, ch.on)
-			continue
+			err = deleteRule(g, ch.on).Error
+		} else {
+			err = saveRule(g, ch.on, ch.rule, updatedBy)
 		}
-		if err := queueSave(b, ch.on, ch.rule, updatedBy); err != nil {
+		if err != nil {
 			return err
 		}
 	}
-	return tx.SendBatch(ctx, b).Close()
+	return nil
 }

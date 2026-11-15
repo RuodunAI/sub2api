@@ -8,19 +8,16 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The statements of the async task endpoints, which the gateway runs for
 // every task submission (BeginTask, ReceiveTask, RegisterTask) and every
-// poll of a client (FindTask). Each production statement, on pgx, is
-// measured next to its GORM form against a real PostgreSQL
-// (TEST_DATABASE_URL), as recorded in internal/store/gormtest/BASELINE.md
-// (Batch 4b):
+// poll of a client (FindTask). Each production statement, on GORM (gorm),
+// is measured next to the pgx form it had before (pgx) against a real
+// PostgreSQL (TEST_DATABASE_URL), as recorded in
+// internal/store/gormtest/BASELINE.md (Batch 4b):
 //
 //	go test -run '^$' -bench HotTask -benchmem -benchtime 1000x -count 5 ./internal/usage/
 //
@@ -122,20 +119,20 @@ func BenchmarkHotTaskFind(b *testing.B) {
 	ctx := context.Background()
 	q, pool := f.query, f.svc.db.Pool
 	benchTask(b, nil, func(struct{}) error {
-		_, err := readTask(ctx, pool, q)
-		return err
-	}, func(struct{}) error {
-		rows, err := store.G(ctx, pool).Raw(`SELECT public_id,upstream_ref_id,model,state,
+		rows, err := pool.Query(ctx, `SELECT public_id,upstream_ref_id,model,state,
 			CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
 			snapshot,snapshot_id_paths,failure_code,last_error
-			FROM async_tasks WHERE plugin_key=? AND kind=? AND user_id=? AND group_id=?
-			AND (public_id=? OR (legacy_imported AND upstream_ref_id=? AND NOT starts_with(?,'s2task_')))
-			ORDER BY public_id LIMIT 2`, q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID, q.ID, q.ID).Rows()
+			FROM async_tasks WHERE plugin_key=$1 AND kind=$2 AND user_id=$3 AND group_id=$4
+			AND (public_id=$5 OR (legacy_imported AND upstream_ref_id=$5 AND NOT starts_with($5,'s2task_')))
+			ORDER BY public_id LIMIT 2`, q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		_, err = scanTask(rows)
+		return err
+	}, func(struct{}) error {
+		_, err := readTask(ctx, pool, q)
 		return err
 	})
 }
@@ -152,13 +149,13 @@ func BenchmarkHotTaskBegin(b *testing.B) {
 		return in
 	}
 	benchTask(b, next, func(in core.TaskIntent) error {
-		return insertReceipt(ctx, pool, "s2task_"+in.RequestID, in)
+		_, err := pool.Exec(ctx, `INSERT INTO task_submission_receipts
+		(request_id, public_id, plugin_key, kind, user_id, api_key_id, group_id, account_id, model, protocol)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, in.RequestID, "s2task_"+in.RequestID, in.PluginKey, in.Kind,
+			in.UserID, in.APIKeyID, in.GroupID, in.AccountID, in.Model, in.Protocol)
+		return err
 	}, func(in core.TaskIntent) error {
-		return store.G(ctx, pool).Model(&model.TaskSubmissionReceipt{}).Create(map[string]any{
-			"request_id": in.RequestID, "public_id": "s2task_" + in.RequestID, "plugin_key": in.PluginKey, "kind": in.Kind,
-			"user_id": in.UserID, "api_key_id": in.APIKeyID, "group_id": in.GroupID, "account_id": in.AccountID,
-			"model": in.Model, "protocol": in.Protocol,
-		}).Error
+		return insertReceipt(ctx, pool, "s2task_"+in.RequestID, in)
 	})
 }
 
@@ -179,11 +176,12 @@ func BenchmarkHotTaskReceive(b *testing.B) {
 		return in.RequestID
 	}
 	benchTask(b, dispatched, func(id string) error {
-		return receiveTask(ctx, pool, id, "received", 200, body, "")
+		_, err := pool.Exec(ctx, `UPDATE task_submission_receipts SET state=$2, response_status=$3,
+		response_body=COALESCE($4,response_body), last_error=$5 WHERE request_id=$1 AND state <> 'registered'`,
+			id, "received", 200, body, "")
+		return err
 	}, func(id string) error {
-		return store.G(ctx, pool).Exec(`UPDATE task_submission_receipts SET state=?, response_status=?,
-			response_body=COALESCE(?,response_body), last_error=? WHERE request_id=? AND state <> 'registered'`,
-			"received", 200, store.Bytes(body), "", id).Error
+		return receiveTask(ctx, pool, id, "received", 200, body, "")
 	})
 }
 
@@ -194,37 +192,36 @@ func BenchmarkHotTaskRegister(b *testing.B) {
 	ctx := context.Background()
 	next, deadline := time.Now().Add(time.Hour), time.Now().Add(24*time.Hour)
 	benchTask(b, f.submission, func(s taskSubmission) error {
-		return f.svc.db.Tx(ctx, func(tx pgx.Tx) error { return recordTask(ctx, tx, s.TaskRegistration, s.usageID, next, deadline) })
+		return f.svc.db.Tx(ctx, func(tx pgx.Tx) error { return recordTaskPGX(ctx, tx, s.TaskRegistration, s.usageID, next, deadline) })
 	}, func(s taskSubmission) error {
-		return f.svc.db.Tx(ctx, func(tx pgx.Tx) error {
-			return recordTaskGORM(store.G(ctx, tx), s.TaskRegistration, s.usageID, next, deadline)
-		})
+		return f.svc.db.Tx(ctx, func(tx pgx.Tx) error { return recordTask(ctx, tx, s.TaskRegistration, s.usageID, next, deadline) })
 	})
 }
 
-// recordTaskGORM is recordTask's statements in their GORM form.
-func recordTaskGORM(g *gorm.DB, in core.TaskRegistration, uid int64, next, deadline time.Time) error {
+// recordTaskPGX is recordTask's statements in the pgx form they had before.
+func recordTaskPGX(ctx context.Context, tx pgx.Tx, in core.TaskRegistration, uid int64, next, deadline time.Time) error {
 	r := in.Record
 	var valid bool
-	if err := g.Raw(`SELECT public_id=? AND plugin_key=? AND kind=? AND user_id=?
-		AND api_key_id=? AND group_id=? AND account_id=? AND model=? AND protocol=?
-		FROM task_submission_receipts WHERE request_id=? AND state='received' FOR UPDATE`,
-		in.PublicID, r.PluginKey, in.Kind, r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, r.RequestID).Row().Scan(&valid); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT public_id=$2 AND plugin_key=$3 AND kind=$4 AND user_id=$5
+		AND api_key_id=$6 AND group_id=$7 AND account_id=$8 AND model=$9 AND protocol=$10
+		FROM task_submission_receipts WHERE request_id=$1 AND state='received' FOR UPDATE`,
+		r.RequestID, in.PublicID, r.PluginKey, in.Kind, r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol).Scan(&valid); err != nil {
 		return err
 	}
 	if !valid {
 		return errors.New("task receipt identity mismatch")
 	}
-	err := g.Exec(`INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,
+	_, err := tx.Exec(ctx, `INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,
 		group_id,account_id,model,protocol,usage_log_id,snapshot,snapshot_id_paths,next_check_at,deadline_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, in.PublicID, r.PluginKey, in.Kind, in.UpstreamID,
-		r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, uid, in.Snapshot, jsonOr(in.IDPaths, "[]"), next, deadline).Error
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, in.PublicID, r.PluginKey, in.Kind, in.UpstreamID,
+		r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, uid, in.Snapshot, jsonOr(in.IDPaths, "[]"), next, deadline)
 	if err != nil {
 		return err
 	}
-	if err = g.Model(&model.PendingSettlement{}).Where("usage_log_id = ?", uid).Update("task_public_id", in.PublicID).Error; err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE pending_settlements SET task_public_id=$2 WHERE usage_log_id=$1`, uid, in.PublicID); err != nil {
 		return err
 	}
-	return g.Exec(`UPDATE task_submission_receipts SET state='registered',response_body=NULL,last_error='',
-		expires_at=LEAST(expires_at,?) WHERE request_id=?`, deadline, r.RequestID).Error
+	_, err = tx.Exec(ctx, `UPDATE task_submission_receipts SET state='registered',response_body=NULL,last_error='',
+		expires_at=LEAST(expires_at,$2) WHERE request_id=$1`, r.RequestID, deadline)
+	return err
 }

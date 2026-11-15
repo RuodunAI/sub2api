@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -18,10 +19,11 @@ import (
 
 var _ core.AsyncTasks = (*Service)(nil)
 
-// The statements of the task endpoints stay on pgx: BeginTask, ReceiveTask
-// and registerTask run for every task submission, FindTask for every poll
-// of a client, and their GORM forms take 4 to 13 times the allocations
-// (BenchmarkHotTask*, internal/store/gormtest/BASELINE.md, Batch 4b).
+// The statements of the task endpoints are on the request path: BeginTask,
+// ReceiveTask and registerTask run for every task submission, FindTask for
+// every poll of a client. They are Raw/Exec with the SQL they had on pgx,
+// the GORM form that allocates least (BenchmarkHotTask*,
+// internal/store/gormtest/BASELINE.md, Batch 4b).
 
 func (s *Service) BeginTask(ctx context.Context, in core.TaskIntent) (string, error) {
 	id := "s2task_" + uuid.NewString()
@@ -31,12 +33,10 @@ func (s *Service) BeginTask(ctx context.Context, in core.TaskIntent) (string, er
 // insertReceipt writes the dispatch identity of a task submission; the
 // database fills its state, expiry and timestamps.
 func insertReceipt(ctx context.Context, q store.Querier, publicID string, in core.TaskIntent) error {
-	//gormguard:allow-pgx every task submission; GORM takes 13x the allocations (gormtest/BASELINE.md, Batch 4b)
-	_, err := q.Exec(ctx, `INSERT INTO task_submission_receipts
+	return store.G(ctx, q).Exec(`INSERT INTO task_submission_receipts
 		(request_id, public_id, plugin_key, kind, user_id, api_key_id, group_id, account_id, model, protocol)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, in.RequestID, publicID, in.PluginKey, in.Kind,
-		in.UserID, in.APIKeyID, in.GroupID, in.AccountID, in.Model, in.Protocol)
-	return err
+		VALUES (?,?,?,?,?,?,?,?,?,?)`, in.RequestID, publicID, in.PluginKey, in.Kind,
+		in.UserID, in.APIKeyID, in.GroupID, in.AccountID, in.Model, in.Protocol).Error
 }
 
 func (s *Service) ReceiveTask(ctx context.Context, requestID string, status int, body []byte, reason string) error {
@@ -54,11 +54,9 @@ func (s *Service) ReceiveTask(ctx context.Context, requestID string, status int,
 // receiveTask records the upstream's answer to a submission not yet
 // registered. A nil body keeps the stored one; an empty one is stored.
 func receiveTask(ctx context.Context, q store.Querier, requestID, state string, status int, body []byte, reason string) error {
-	//gormguard:allow-pgx every task submission; GORM takes 6.5x the allocations (gormtest/BASELINE.md, Batch 4b)
-	_, err := q.Exec(ctx, `UPDATE task_submission_receipts SET state=$2, response_status=$3,
-		response_body=COALESCE($4,response_body), last_error=$5 WHERE request_id=$1 AND state <> 'registered'`,
-		requestID, state, status, body, trunc(reason, 2000))
-	return err
+	return store.G(ctx, q).Exec(`UPDATE task_submission_receipts SET state=?, response_status=?,
+		response_body=COALESCE(?,response_body), last_error=? WHERE request_id=? AND state <> 'registered'`,
+		state, status, store.Bytes(body), trunc(reason, 2000), requestID).Error
 }
 
 // RegisterTask commits identity, initial observation, usage and optional debit
@@ -118,33 +116,30 @@ func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, be
 func recordTask(ctx context.Context, tx pgx.Tx, in core.TaskRegistration, uid int64, next, deadline time.Time) error {
 	r := in.Record
 	// The receipt is the trusted dispatch identity; parsing cannot substitute it.
+	g := store.G(ctx, tx)
 	var valid bool
-	//gormguard:allow-pgx every task submission; recordTask on GORM takes 4.3x the allocations (gormtest/BASELINE.md, Batch 4b)
-	if err := tx.QueryRow(ctx, `SELECT public_id=$2 AND plugin_key=$3 AND kind=$4 AND user_id=$5
-		AND api_key_id=$6 AND group_id=$7 AND account_id=$8 AND model=$9 AND protocol=$10
-		FROM task_submission_receipts WHERE request_id=$1 AND state='received' FOR UPDATE`,
-		r.RequestID, in.PublicID, r.PluginKey, in.Kind, r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol).Scan(&valid); err != nil {
+	if err := g.Raw(`SELECT public_id=? AND plugin_key=? AND kind=? AND user_id=?
+		AND api_key_id=? AND group_id=? AND account_id=? AND model=? AND protocol=?
+		FROM task_submission_receipts WHERE request_id=? AND state='received' FOR UPDATE`,
+		in.PublicID, r.PluginKey, in.Kind, r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, r.RequestID).Row().Scan(&valid); err != nil {
 		return err
 	}
 	if !valid {
 		return errors.New("task receipt identity mismatch")
 	}
-	//gormguard:allow-pgx every task submission; recordTask on GORM takes 4.3x the allocations (gormtest/BASELINE.md, Batch 4b)
-	_, err := tx.Exec(ctx, `INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,
+	err := g.Exec(`INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,
 		group_id,account_id,model,protocol,usage_log_id,snapshot,snapshot_id_paths,next_check_at,deadline_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, in.PublicID, r.PluginKey, in.Kind, in.UpstreamID,
-		r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, uid, in.Snapshot, jsonOr(in.IDPaths, "[]"), next, deadline)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, in.PublicID, r.PluginKey, in.Kind, in.UpstreamID,
+		r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, uid, store.Bytes(in.Snapshot),
+		store.Bytes(jsonOr(in.IDPaths, "[]")), next, deadline).Error
 	if err != nil {
 		return err
 	} // Identity collisions must never overwrite ownership.
-	//gormguard:allow-pgx every task submission; recordTask on GORM takes 4.3x the allocations (gormtest/BASELINE.md, Batch 4b)
-	if _, err = tx.Exec(ctx, `UPDATE pending_settlements SET task_public_id=$2 WHERE usage_log_id=$1`, uid, in.PublicID); err != nil {
+	if err = g.Exec(`UPDATE pending_settlements SET task_public_id=? WHERE usage_log_id=?`, in.PublicID, uid).Error; err != nil {
 		return err
 	}
-	//gormguard:allow-pgx every task submission; recordTask on GORM takes 4.3x the allocations (gormtest/BASELINE.md, Batch 4b)
-	_, err = tx.Exec(ctx, `UPDATE task_submission_receipts SET state='registered',response_body=NULL,last_error='',
-		expires_at=LEAST(expires_at,$2) WHERE request_id=$1`, r.RequestID, deadline)
-	return err
+	return g.Exec(`UPDATE task_submission_receipts SET state='registered',response_body=NULL,last_error='',
+		expires_at=LEAST(expires_at,?) WHERE request_id=?`, deadline, r.RequestID).Error
 }
 
 func (s *Service) FindTask(ctx context.Context, q core.TaskQuery) (*core.TaskSnapshot, error) {
@@ -163,13 +158,7 @@ func (s *Service) FindTask(ctx context.Context, q core.TaskQuery) (*core.TaskSna
 // readTask reads the task q names: by its public ID, or by the upstream ID
 // of an imported legacy task. Two matches are no match.
 func readTask(ctx context.Context, db store.Querier, q core.TaskQuery) (*core.TaskSnapshot, error) {
-	//gormguard:allow-pgx every task poll; GORM takes 4.8x the allocations (gormtest/BASELINE.md, Batch 4b)
-	rows, err := db.Query(ctx, `SELECT public_id,upstream_ref_id,model,state,
-		CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
-		snapshot,snapshot_id_paths,failure_code,last_error
-		FROM async_tasks WHERE plugin_key=$1 AND kind=$2 AND user_id=$3 AND group_id=$4
-		AND (public_id=$5 OR (legacy_imported AND upstream_ref_id=$5 AND NOT starts_with($5,'s2task_')))
-		ORDER BY public_id LIMIT 2`, q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID)
+	rows, err := taskByID(store.G(ctx, db), q).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -177,8 +166,18 @@ func readTask(ctx context.Context, db store.Querier, q core.TaskQuery) (*core.Ta
 	return scanTask(rows)
 }
 
+// taskByID selects the task q names, readTask's statement.
+func taskByID(db *gorm.DB, q core.TaskQuery) *gorm.DB {
+	return db.Raw(`SELECT public_id,upstream_ref_id,model,state,
+		CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
+		snapshot,snapshot_id_paths,failure_code,last_error
+		FROM async_tasks WHERE plugin_key=? AND kind=? AND user_id=? AND group_id=?
+		AND (public_id=? OR (legacy_imported AND upstream_ref_id=? AND NOT starts_with(?,'s2task_')))
+		ORDER BY public_id LIMIT 2`, q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID, q.ID, q.ID)
+}
+
 // scanTask reads the one row of readTask's statement from rows, which the
-// caller closes: pgx.ErrNoRows without one, not found with two.
+// caller closes: sql.ErrNoRows without one, not found with two.
 func scanTask(rows interface {
 	Next() bool
 	Scan(...any) error
@@ -188,7 +187,7 @@ func scanTask(rows interface {
 		if rows.Err() != nil {
 			return nil, rows.Err()
 		}
-		return nil, pgx.ErrNoRows
+		return nil, sql.ErrNoRows
 	}
 	out := &core.TaskSnapshot{}
 	var paths []byte

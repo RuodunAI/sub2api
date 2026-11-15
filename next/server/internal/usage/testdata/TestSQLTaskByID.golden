@@ -1,0 +1,15 @@
+-- sql
+SELECT public_id,upstream_ref_id,model,state,
+		CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
+		snapshot,snapshot_id_paths,failure_code,last_error
+		FROM async_tasks WHERE plugin_key=$1 AND kind=$2 AND user_id=$3 AND group_id=$4
+		AND (public_id=$5 OR (legacy_imported AND upstream_ref_id=$6 AND NOT starts_with($7,'s2task_')))
+		ORDER BY public_id LIMIT 2
+-- vars
+$1 string "video"
+$2 string "video"
+$3 int64 3
+$4 int64 5
+$5 string "s2task_1"
+$6 string "s2task_1"
+$7 string "s2task_1"

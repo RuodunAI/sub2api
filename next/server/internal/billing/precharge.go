@@ -88,46 +88,38 @@ func (s *Service) Precharge(ctx context.Context, r *core.UsageRecord) error {
 	return err
 }
 
-// prechargeTx reserves the precharge and writes its ledger entry in four
-// round trips: BEGIN (s.db.Tx), one pipelined batch (create the balance row,
-// lock it, then reserve and charge under that lock), the caller's
-// balance.changed event, and COMMIT. The statements are the ones Precharge
-// used to run one by one, minus the ones ApplyTx repeated (the balance row
-// insert, its FOR UPDATE lock and the idempotency lookup), and with the
-// sufficiency check expressed in SQL so the batch needs no client round trip
-// in the middle. The row lock is still taken before anything else touches the
+// prechargeTx reserves the precharge and writes its ledger entry: set the
+// lock timeout, create the balance row, lock it, then reserve and charge
+// under that lock (prechargeSQL), followed by the caller's balance.changed
+// event and COMMIT. The statements are the ones Precharge used to run one by
+// one, minus the ones ApplyTx repeated (the balance row insert, its FOR
+// UPDATE lock and the idempotency lookup), and with the sufficiency check
+// expressed in SQL so that one statement under the lock does the whole
+// reservation. The row lock is still taken before anything else touches the
 // user's money, the idempotency key is still the ledger key, and a duplicate
 // still charges nothing and reports no error.
 func (s *Service) prechargeTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange, min decimal.Decimal) (*core.LedgerResult, error) {
-	batch := &pgx.Batch{}
+	g := store.G(ctx, tx)
 	// The request path must not queue behind a long settlement: past
 	// prechargeLockTimeout the lock wait fails (55P03) and Precharge answers
 	// 503 instead of holding a pool connection.
-	batch.Queue(`SET LOCAL lock_timeout = '` + prechargeLockTimeout + `'`)
-	batch.Queue(ensureBalanceSQL, ch.UserID)
-	batch.Queue(`SELECT user_id FROM user_balances WHERE user_id = $1 FOR UPDATE`, ch.UserID)
-	batch.Queue(prechargeSQL, ch.UserID, ch.RefID, ch.Amount, ch.Kind, ch.RefType, ch.RefID, ch.IdempotencyKey, ch.Note, min)
-	br := tx.SendBatch(ctx, batch)
+	if err := g.Exec(`SET LOCAL lock_timeout = '` + prechargeLockTimeout + `'`).Error; err != nil {
+		return nil, err
+	}
+	// Unlike ApplyTx, Precharge returns an unknown user's foreign key
+	// violation as it is.
+	if err := g.Exec(ensureBalanceSQL, ch.UserID).Error; err != nil {
+		return nil, err
+	}
 	var lockedUser, ledgerID int64
+	if err := g.Raw(`SELECT user_id FROM user_balances WHERE user_id = ? FOR UPDATE`, ch.UserID).Row().Scan(&lockedUser); err != nil {
+		return nil, err
+	}
 	var after decimal.Decimal
 	var duplicate, sufficient bool
-	if _, err := br.Exec(); err != nil {
-		_ = br.Close()
-		return nil, err
-	}
-	if _, err := br.Exec(); err != nil {
-		_ = br.Close()
-		return nil, err
-	}
-	if err := br.QueryRow().Scan(&lockedUser); err != nil {
-		_ = br.Close()
-		return nil, err
-	}
-	if err := br.QueryRow().Scan(&ledgerID, &after, &duplicate, &sufficient); err != nil {
-		_ = br.Close()
-		return nil, err
-	}
-	if err := br.Close(); err != nil {
+	err := prechargeStmt.row(g, ch.UserID, ch.RefID, ch.Amount, ch.Kind, ch.RefType, ch.RefID, ch.IdempotencyKey, ch.Note, min).
+		Scan(&ledgerID, &after, &duplicate, &sufficient)
+	if err != nil {
 		return nil, err
 	}
 	switch {
@@ -176,10 +168,10 @@ func (s *Service) prechargeTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChan
 // already rejected a different rounding), balance_after balance - that, kind,
 // ref and note unchanged. The update reads the inserted row through RETURNING,
 // which is how data-modifying CTEs communicate. Every parameter carries its
-// type: the pipeline prepares the batch, and a bare $n that Postgres sees in
-// two contexts is an "inconsistent types deduced" error. Parameters: 1 user,
-// 2 request id, 3 amount, 4 kind, 5 ref_type, 6 ref_id, 7 idempotency key,
-// 8 note, 9 min_balance.
+// type: a bare $n that Postgres sees in two contexts is an "inconsistent
+// types deduced" error, and ledgerStmt binds each use of $n as a parameter
+// of its own. Parameters: 1 user, 2 request id, 3 amount, 4 kind,
+// 5 ref_type, 6 ref_id, 7 idempotency key, 8 note, 9 min_balance.
 const prechargeSQL = `
 WITH ledger AS (
     INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
@@ -207,13 +199,13 @@ SELECT COALESCE((SELECT id FROM applied), 0),
        EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $7::varchar),
        COALESCE((SELECT balance - $3::numeric > $9::numeric FROM user_balances WHERE user_id = $1::bigint), false)`
 
+var prechargeStmt = newLedgerStmt(prechargeSQL)
+
 // ReleasePrechargeTx deletes the request's reservation and refunds it, in one
 // statement under the user's balance lock (releaseSQL) plus the event. nil
 // means the request had no reservation.
 func (s *Service) ReleasePrechargeTx(ctx context.Context, tx pgx.Tx, userID int64, requestID string) (*core.LedgerResult, error) {
-	key := releaseKey(requestID)
-	//gormguard:allow-pgx every free request the settler records runs it; GORM takes 2.2-2.5x the allocations (BASELINE.md, Batch 4c)
-	res, amount, err := scanRelease(ctx, tx, tx.QueryRow(ctx, releaseSQL, requestID, userID, key, "release request precharge"), key)
+	res, amount, err := releasePrecharge(ctx, tx, userID, requestID)
 	if err != nil || res == nil || res.Duplicate || s.events == nil {
 		return res, err
 	}
