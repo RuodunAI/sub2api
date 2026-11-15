@@ -416,6 +416,9 @@ func conversionJSON(t *core.ConversionTrace) []byte {
 // its billing status. Every settlement path takes this lock first, so the
 // SQL and the lock order live here once.
 func lockUsageRow(ctx context.Context, tx *gorm.DB, id int64) (string, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return "", err
+	}
 	var status string
 	err := store.G(ctx, tx).Model(&model.UsageLog{}).Select("billing_status").Where("id = ?", id).
 		Clauses(store.ForUpdate).Row().Scan(&status)
@@ -774,7 +777,7 @@ func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*c
 		return nil, err
 	}
 	rv := rec.Reservation
-	rs := s.reconcileSettings(ctx)
+	rs := s.reconcileSettingsIn(ctx, tx)
 	now := time.Now()
 	deadlineAt := now.Add(rs.clampDeadline(rv.Deadline))
 	nextAt := now.Add(rs.clampDelay(rv.NextCheckAfter, 0))

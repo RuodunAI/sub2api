@@ -95,6 +95,9 @@ func (s *Service) Apply(ctx context.Context, ch core.LedgerChange) (*core.Ledger
 // ensureBalanceSQL then creates the row and the statement runs again
 // (runLedger).
 func (s *Service) ApplyTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange) (*core.LedgerResult, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	if err := validateChange(&ch); err != nil {
 		return nil, err
 	}

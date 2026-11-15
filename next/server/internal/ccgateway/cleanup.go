@@ -92,8 +92,8 @@ type cleanupReport struct {
 	Failed  int             `json:"failed"`
 }
 
-func (s *Service) cleanupConfig(ctx context.Context) (Config, error) {
-	cfg, err := s.Load(ctx)
+func (s *Service) cleanupConfig(ctx context.Context, q *gorm.DB) (Config, error) {
+	cfg, err := s.configIn(ctx, q)
 	if err != nil {
 		return cfg, err
 	}
@@ -114,17 +114,17 @@ func (s *Service) cleanupConfig(ctx context.Context) (Config, error) {
 // containers, networks and data. Failed calls stay eligible for reconciliation.
 // The controller must declare runtime cleanup (an older one would keep the
 // data); a 404 is a failure, the controller knows every account runtime.
-func (s *Service) purgeRuntime(ctx context.Context, key string) error {
-	if _, err := s.cleanupConfig(ctx); err != nil {
+func (s *Service) purgeRuntime(ctx context.Context, q *gorm.DB, key string) error {
+	if _, err := s.cleanupConfig(ctx, q); err != nil {
 		return err
 	}
-	return s.deleteRuntime(ctx, key, false, "X-CCG-Delete-Account", key, "X-CCG-Delete-Data", "1")
+	return s.deleteRuntime(ctx, q, key, false, "X-CCG-Delete-Account", key, "X-CCG-Delete-Data", "1")
 }
 
 // deleteRuntime sends DELETE /accounts/<key> with the extra header pairs;
 // notFoundRemoved counts a 404 as removed. A refusal is deleteFailure.
-func (s *Service) deleteRuntime(ctx context.Context, key string, notFoundRemoved bool, header ...string) error {
-	res, close, err := s.runtimeRequest(ctx, key, http.MethodDelete, "", nil, "", header...)
+func (s *Service) deleteRuntime(ctx context.Context, q *gorm.DB, key string, notFoundRemoved bool, header ...string) error {
+	res, close, err := s.runtimeRequestIn(ctx, q, key, http.MethodDelete, "", nil, "", header...)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func deleteFailure(status int, raw []byte, fallback string) *core.Error {
 // purges it again. A failure leaves the row for the next pass and is logged
 // with its reason.
 func (s *Service) purgeDeleted(ctx context.Context, tx *gorm.DB, key string, d accountDesired) error {
-	if err := s.purgeRuntime(ctx, key); err != nil {
+	if err := s.purgeRuntime(ctx, tx, key); err != nil {
 		slog.WarnContext(ctx, "CCGateway: deleted account runtime not purged", "key", key, "account", d.AccountID, "reason", reasonOf(core.AsError(err)), "err", err)
 		return err
 	}
@@ -202,7 +202,7 @@ func (s *Service) runtimeCleanup(c *gin.Context) {
 	}
 	ctx, cancel := detached(c, 5*time.Minute)
 	defer cancel()
-	cfg, err := s.cleanupConfig(ctx)
+	cfg, err := s.cleanupConfig(ctx, nil)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -20,11 +20,27 @@ const (
 	ruleUnrun    = "[gorm-raw-unrun]"
 	rulePgx      = "[pgx-import]"
 	ruleSQL      = "[sql-handle]"
+	ruleTestutil = "[testutil-import]"
+	ruleTxPool   = "[tx-pool]"
 )
 
 // bannedMethods are the gorm (*DB) methods that would let GORM own a
-// transaction or the schema.
-var bannedMethods = map[string]bool{"Transaction": true, "Begin": true, "AutoMigrate": true, "Migrator": true}
+// transaction, a connection or the schema: start one (Transaction, Begin),
+// end the transaction a handle runs in (Commit, Rollback) or part of it
+// (SavePoint, RollbackTo), take a connection of the pool (Connection), or
+// change the schema (AutoMigrate, Migrator).
+var bannedMethods = map[string]bool{
+	"Transaction": true, "Begin": true, "Commit": true, "Rollback": true, "SavePoint": true, "RollbackTo": true,
+	"Connection": true, "AutoMigrate": true, "Migrator": true,
+}
+
+// storeTxMethods are the store.DB methods whose function argument runs on
+// one transaction or connection of the pool; gormTxMethods are gorm's own
+// (in the owners).
+var (
+	storeTxMethods = map[string]bool{"Tx": true, "TxOptions": true, "WithConn": true}
+	gormTxMethods  = map[string]bool{"Transaction": true, "Connection": true}
+)
 
 // instanceMethods are the gorm (*DB) methods that reach or change the
 // shared instance behind every handle: its *sql.DB, callbacks and plugins.
@@ -77,19 +93,32 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 // rel (relative to the module): pgx is imported by the files of pgxFiles
 // only, test files included.
 func (r rules) imports(fset *token.FileSet, rel string, f *ast.File) []string {
-	if _, ok := r.pgxFiles[rel+"/"+filepath.Base(fset.Position(f.Package).Filename)]; ok {
-		return nil
-	}
+	name := filepath.Base(fset.Position(f.Package).Filename)
+	_, pgxFile := r.pgxFiles[rel+"/"+name]
+	// [testutil-import]: internal/testutil owns the instance as test
+	// infrastructure, so only test files (and its own) may import it.
+	production := !strings.HasSuffix(name, "_test.go") && !within(rel, testutilPkg)
 	var out []string
 	for _, imp := range f.Imports {
 		path, err := strconv.Unquote(imp.Path.Value)
-		if err == nil && (path == pgxModule || strings.HasPrefix(path, pgxModule+"/")) {
+		switch {
+		case err != nil:
+		case !pgxFile && within(path, pgxModule):
 			out = append(out, fmt.Sprintf("%s: %s import of %s: statements go through GORM and PostgreSQL errors through store (pgerror.go is the one file that reads pgconn's errors)",
 				fset.Position(imp.Pos()), rulePgx, path))
+		case production && within(path, r.module+"/"+testutilPkg):
+			out = append(out, fmt.Sprintf("%s: %s import of %s outside the test files: it owns the GORM instance and the pool as test infrastructure only",
+				fset.Position(imp.Pos()), ruleTestutil, path))
 		}
 	}
 	return out
 }
+
+// testutilPkg is the test infrastructure package, relative to the module.
+const testutilPkg = "internal/testutil"
+
+// within reports whether path is pkg or a package under it.
+func within(path, pkg string) bool { return path == pkg || strings.HasPrefix(path, pkg+"/") }
 
 type checker struct {
 	fset            *token.FileSet
@@ -204,6 +233,7 @@ func (c *checker) visit(n ast.Node) bool {
 		c.unrun(n)
 		if sel := c.info.Selections[n]; sel != nil && sel.Kind() == types.FieldVal {
 			c.sqlHandle(n.Sel, sel.Obj())
+			c.connPool(n, sel.Obj())
 		}
 	case *ast.KeyValueExpr:
 		if key, ok := n.Key.(*ast.Ident); ok {
@@ -226,11 +256,58 @@ func (c *checker) selector(n *ast.SelectorExpr) {
 	switch {
 	case fn == nil:
 	case isGormMethod(fn) && bannedMethods[fn.Name()] && !c.owner:
-		c.report(n, "%s gorm (*DB).%s outside package store: transactions start in store.DB.Tx, TxOptions or WithConn and the schema comes from the SQL migrations", ruleTx, fn.Name())
+		c.report(n, "%s gorm (*DB).%s outside package store: transactions start and end in store.DB.Tx or TxOptions, connections come from WithConn, and the schema comes from the SQL migrations", ruleTx, fn.Name())
 	case isGormMethod(fn) && instanceMethods[fn.Name()] && !c.owner:
 		c.report(n, "%s gorm (*DB).%s outside package store: every handle shares store.G's instance", ruleInstance, fn.Name())
 	case isGormFunc(fn, "Open") && !c.owner:
 		c.report(n, "%s gorm.Open outside package store: take a handle from store.G", ruleOpen)
+	case fn.Name() == "SQLTx" && fn.Pkg() != nil && fn.Pkg().Path() == c.storePkg && !c.sqlOwner:
+		c.report(n, "%s store.SQLTx outside package store, River (internal/task) and the tests: run the statement on the transaction's GORM handle", ruleSQL)
+	}
+}
+
+// connPool reports a ConnPool of gorm (a Statement's, or the instance
+// configuration's) outside the owners, read or written ([gorm-instance]):
+// it is the pool, transaction or connection under a handle, and what runs
+// on it bypasses GORM and the transaction rules.
+func (c *checker) connPool(n *ast.SelectorExpr, obj types.Object) {
+	if c.owner || obj.Name() != "ConnPool" || obj.Pkg() == nil || obj.Pkg().Path() != gormPkg {
+		return
+	}
+	c.report(n, "%s gorm ConnPool outside package store: run statements through the handle (store.G), not the connection under it", ruleInstance)
+}
+
+// txCallbacks reports, in the function literals passed to store.DB's Tx,
+// TxOptions and WithConn and to gorm's Transaction and Connection, every
+// expression that is a store.DB ([tx-pool]): the pool, which the callback
+// must not use while it holds a transaction or connection of it. A
+// statement there takes a second connection while holding one (a pool
+// that runs out waits forever), and does not see the transaction's writes
+// or locks. Each reference is reported once, at the store.DB itself (s.db
+// in s.db.Gorm); what other functions do with the pool is not followed.
+func (c *checker) txCallbacks(fn *types.Func, n *ast.CallExpr) {
+	if !(isMethodOf(fn, c.storePkg, "DB") && storeTxMethods[fn.Name()]) && !(isGormMethod(fn) && gormTxMethods[fn.Name()]) {
+		return
+	}
+	for _, arg := range n.Args {
+		lit, ok := ast.Unparen(arg).(*ast.FuncLit)
+		if !ok {
+			continue
+		}
+		ast.Inspect(lit.Body, func(m ast.Node) bool {
+			e, ok := m.(ast.Expr)
+			if !ok {
+				return true
+			}
+			// Types holds expressions only: no declared name, selector Sel
+			// or struct literal key, so each reference is seen once.
+			tv, ok := c.info.Types[e]
+			if !ok || tv.IsType() || !isNamed(tv.Type, c.storePkg, "DB") {
+				return true
+			}
+			c.report(e, "%s the pool (store.DB) inside the %s callback: run the statement on the callback's handle", ruleTxPool, fn.Name())
+			return false
+		})
 	}
 }
 
@@ -377,6 +454,7 @@ func (c *checker) call(n *ast.CallExpr) {
 	if fn == nil {
 		return
 	}
+	c.txCallbacks(fn, n)
 	for _, arg := range c.parameterArgs(fn, n) {
 		c.checkParam(arg, "gorm "+fn.Name())
 	}
@@ -534,13 +612,16 @@ func assignedField(info *types.Info, e ast.Expr) *types.Var {
 }
 
 // instanceField reports a field of gorm.Config (promoted into gorm.DB or
-// not), gorm.DB's Config itself, or a ConnPool.
+// not) or gorm.DB's Config itself. A ConnPool is connPool's, on any use.
 func instanceField(v *types.Var) bool {
 	if v.Pkg() == nil || v.Pkg().Path() != gormPkg {
 		return false
 	}
-	if v.Name() == "Config" || v.Name() == "ConnPool" {
+	switch v.Name() {
+	case "Config":
 		return true
+	case "ConnPool":
+		return false
 	}
 	tn, _ := v.Pkg().Scope().Lookup("Config").(*types.TypeName)
 	if tn == nil {

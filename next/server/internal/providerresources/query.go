@@ -73,7 +73,7 @@ func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.Re
 		direction = "ASC"
 	}
 	var rows []model.ProviderResource
-	err = s.db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+	err = s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		cursor := q.AfterID
 		if q.BeforeID != "" {

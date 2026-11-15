@@ -52,7 +52,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 		return res, err
 	}
 	purge := opt.Purge
-	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+	err := s.purgeTx(ctx, opt.PurgeAccounts, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var st string
 		err := lockedPlugin(g, key).Select("status").Take(&st).Error
@@ -76,6 +76,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 			// Keep the plugin row and uninstall barrier locked until account
 			// cleanup ends: another uninstall/reinstall cannot create a new
 			// lifecycle whose accounts would be swept by this old request.
+			// The purge commits a transaction of its own (purgeTx).
 			n, err := s.d.Accounts.PurgePluginAccounts(ctx, key)
 			res.AccountsDeleted = n
 			if err != nil {

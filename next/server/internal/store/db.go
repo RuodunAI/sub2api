@@ -44,7 +44,9 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("database pool opened", "max_conns", maxConns, "min_conns", valueOr(pool.MinConns, 0),
+	// No min_conns: database/sql keeps no minimum, and Apply logs a
+	// pool_min_conns of the DSN as ignored.
+	slog.Info("database pool opened", "max_conns", maxConns,
 		"max_conn_lifetime", valueOr(pool.MaxConnLifetime, poolDefaults.MaxConnLifetime),
 		"max_conn_idle_time", valueOr(pool.MaxConnIdleTime, poolDefaults.MaxConnIdleTime))
 	return db, nil
@@ -105,23 +107,28 @@ func (db *DB) Tx(ctx context.Context, fn func(tx *gorm.DB) error) error {
 }
 
 // TxOptions is Tx with an isolation level or read-only access, such as
-// ReadOnly or Snapshot.
+// ReadOnly() or Snapshot().
 func (db *DB) TxOptions(ctx context.Context, opts sql.TxOptions, fn func(tx *gorm.DB) error) error {
 	return db.Gorm.WithContext(ctx).Transaction(fn, &opts)
 }
 
-var (
-	// ReadOnly is a read-only transaction at the default isolation level.
-	ReadOnly = sql.TxOptions{ReadOnly: true}
-	// Snapshot is a read-only repeatable-read transaction: all its reads see
-	// one snapshot of the database.
-	Snapshot = sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
-)
+// ReadOnly is a read-only transaction at the default isolation level. A
+// function, not a variable: no package can change what every other one
+// gets.
+func ReadOnly() sql.TxOptions { return sql.TxOptions{ReadOnly: true} }
+
+// Snapshot is a read-only repeatable-read transaction: all its reads see one
+// snapshot of the database.
+func Snapshot() sql.TxOptions {
+	return sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
+}
 
 // WithConn runs fn on one connection taken from the pool, for state that
 // lives on a session rather than a transaction (a session advisory lock).
-// conn's statements all run on that connection; conn.Transaction opens a
-// transaction on it. The connection goes back to the pool when fn returns.
+// conn's statements all run on that connection. GORM's Transaction on conn
+// is package store's own (the migrator's): gormguard [gorm-tx] refuses it
+// elsewhere, so code outside store that needs a transaction takes Tx or
+// TxOptions instead. The connection goes back to the pool when fn returns.
 func (db *DB) WithConn(ctx context.Context, fn func(conn *gorm.DB) error) error {
 	c, err := db.SQL.Conn(ctx)
 	if err != nil {

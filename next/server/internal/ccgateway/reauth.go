@@ -100,7 +100,7 @@ func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string,
 		if reason := d.unavailable(); reason != "" {
 			return reasonError(core.ErrInvalidArgument, reason)
 		}
-		res, close, err := s.runtimeRequest(ctx, key, http.MethodGet, "admin/status", nil, d.Revision)
+		res, close, err := s.runtimeRequestIn(ctx, tx, key, http.MethodGet, "admin/status", nil, d.Revision)
 		if err != nil {
 			return transportError(err)
 		}

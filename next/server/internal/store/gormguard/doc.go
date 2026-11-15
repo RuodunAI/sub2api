@@ -8,16 +8,20 @@
 // guard_test.go gives the reasons).
 //
 //   - [gorm-tx] outside the owners, no gorm (*DB).Transaction, Begin,
-//     AutoMigrate or Migrator: transactions start in store.DB.Tx, TxOptions
-//     or WithConn (a connection's own transactions, the migrator's), and
-//     the schema comes from the SQL migrations;
+//     Commit, Rollback, SavePoint, RollbackTo, Connection, AutoMigrate or
+//     Migrator: transactions start and end in store.DB.Tx and TxOptions,
+//     connections come from WithConn (on which only package store opens a
+//     transaction, the migrator's), and the schema comes from the SQL
+//     migrations;
 //   - [gorm-open] no gorm.Open outside the owners: handles come from
 //     store.DB.Gorm and store.G;
-//   - [gorm-instance] outside the owners, no (*DB).DB, Callback or Use and
-//     no assignment to the instance's configuration (any gorm.Config
-//     field, promoted into gorm.DB or not, DB.Config itself, a ConnPool):
+//   - [gorm-instance] outside the owners, no (*DB).DB, Callback or Use, no
+//     assignment to the instance's configuration (any gorm.Config field,
+//     promoted into gorm.DB or not, DB.Config itself) and no use at all of
+//     a ConnPool (a Statement's or the configuration's, read or written):
 //     every handle shares store.Open's one instance, so such a change
-//     would reach every statement of the process;
+//     would reach every statement of the process, and a statement run on
+//     the ConnPool under a handle bypasses GORM and the rules here;
 //   - [gorm-slice] no slice or array argument that GORM expands into a
 //     list: any element type but byte, unless the type is a driver.Valuer
 //     (store.Int64s, store.Strings and store.Times are one array parameter
@@ -58,7 +62,22 @@
 //     package store, internal/task (River's riverdatabasesql driver takes
 //     it), internal/testutil and the test files (sqlOwners): production
 //     statements run on store.DB.Gorm. Selectors (db.SQL, promoted ones
-//     included) and store.DB literal keys are checked;
+//     included) and store.DB literal keys are checked, and so is
+//     store.SQLTx, the database/sql transaction under a handle (River's
+//     InsertTx takes it);
+//   - [tx-pool] no store.DB in a function literal passed to store.DB's Tx,
+//     TxOptions or WithConn or to gorm's Transaction or Connection: the
+//     callback holds a transaction or connection of the pool and runs its
+//     statements on the handle it is given. A statement on the pool (s.db,
+//     s.db.Gorm, a store.DB in a local variable) takes a second connection
+//     while holding one, so a pool that runs out waits forever, and does
+//     not see the transaction's writes. Each reference is reported once;
+//     what a called function does with the pool is not followed, so a
+//     function that may run inside a transaction takes the handle (q
+//     *gorm.DB) instead of reading s.db itself;
+//   - [testutil-import] no Go file but the test files and internal/testutil
+//     itself imports internal/testutil: it is an owner because it is test
+//     infrastructure, which production code never reaches;
 //   - [pgx-import] no Go file of the module, test files and files left out
 //     by build constraints included, imports pgx (any package of its
 //     module) but internal/store/pgerror.go (pgxFiles), which reads the

@@ -92,6 +92,9 @@ func read(ctx context.Context, q *gorm.DB, tokenHash string) (core.FallbackCredi
 
 // lockKey takes the transaction-scoped advisory lock of key.
 func lockKey(ctx context.Context, tx *gorm.DB, key string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	return store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, key).Error
 }
 

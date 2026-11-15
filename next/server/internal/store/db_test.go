@@ -53,18 +53,18 @@ func TestTxOptions(t *testing.T) {
 	db, _ := widgetDB(t)
 	ctx := context.Background()
 	var iso, ro string
-	require.NoError(t, db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+	require.NoError(t, db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		return store.G(ctx, tx).Raw(`SELECT current_setting('transaction_isolation'), current_setting('transaction_read_only')`).Row().Scan(&iso, &ro)
 	}))
 	assert.Equal(t, [2]string{"repeatable read", "on"}, [2]string{iso, ro})
 
-	err := db.TxOptions(ctx, store.ReadOnly, func(tx *gorm.DB) error {
+	err := db.TxOptions(ctx, store.ReadOnly(), func(tx *gorm.DB) error {
 		return store.G(ctx, tx).Create(&widget{Name: "ro"}).Error
 	})
 	assert.Equal(t, "25006", store.SQLState(err), "read_only_sql_transaction: %v", err)
 
 	// A snapshot does not see what commits after its first read.
-	err = db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+	err = db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		before, _ := countWidgets(t, ctx, tx)
 		require.NoError(t, store.G(ctx, db.Gorm).Create(&widget{Name: "later"}).Error)
 		after, _ := countWidgets(t, ctx, tx)

@@ -181,7 +181,7 @@ func (s *Service) sweepRetiredKey(ctx context.Context, tx *gorm.DB, key string) 
 	if res.Error != nil || res.RowsAffected == 0 {
 		return false, res.Error
 	}
-	if err := s.deleteRemote(ctx, key, true); err != nil {
+	if err := s.deleteRemote(ctx, tx, key, true); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -279,7 +279,7 @@ func (s *Service) sweepOrphans(ctx context.Context) (int, error) {
 			if found, e := store.Exists(g, runtimes(g).Where("key = ?", key)); e != nil || found {
 				return e
 			}
-			if e := s.deleteRemote(c, key, false); e != nil {
+			if e := s.deleteRemote(c, tx, key, false); e != nil {
 				return e
 			}
 			removed++

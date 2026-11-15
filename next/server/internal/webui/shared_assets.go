@@ -160,6 +160,9 @@ const collectAssetsSQL = `DELETE FROM web_assets a WHERE NOT EXISTS(SELECT 1 FRO
 
 // lockAssets takes assetLockKey for the rest of the transaction.
 func lockAssets(g *gorm.DB) error {
+	if err := store.RequireTx(g); err != nil {
+		return err
+	}
 	return g.Exec(`SELECT pg_advisory_xact_lock(?)`, assetLockKey).Error
 }
 

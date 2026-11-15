@@ -451,6 +451,9 @@ func settleLedger(db *gorm.DB, userID int64, requestID string, charge *core.Ledg
 // no charge (nil when nothing moved). The caller refreshes the balance cache
 // after committing, as for ApplyTx.
 func (s *Service) SettleTx(ctx context.Context, tx *gorm.DB, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	if charge != nil {
 		if err := validateChange(charge); err != nil {
 			return nil, err

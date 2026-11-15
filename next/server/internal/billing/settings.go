@@ -70,6 +70,13 @@ type settingsSnapshot struct {
 
 // Settings returns the cached billing settings.
 func (s *Service) Settings(ctx context.Context) (Settings, error) {
+	return s.settingsIn(ctx, s.db.Gorm)
+}
+
+// settingsIn is Settings with a cache miss read through q: a caller in a
+// transaction passes it, so that the read takes no second connection. The
+// transaction does not write the settings, so it reads what the pool would.
+func (s *Service) settingsIn(ctx context.Context, q *gorm.DB) (Settings, error) {
 	s.mu.Lock()
 	snap := s.settings
 	epoch := s.epoch
@@ -77,7 +84,7 @@ func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	if snap != nil && time.Since(snap.at) < s.cacheTTL {
 		return snap.v, nil
 	}
-	v, err := loadSettings(ctx, s.db.Gorm)
+	v, err := loadSettings(ctx, q)
 	if err != nil {
 		return DefaultSettings(), err
 	}

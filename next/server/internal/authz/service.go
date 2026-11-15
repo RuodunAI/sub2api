@@ -148,6 +148,9 @@ func (s *Service) OnChange(fn func()) {
 // cached before it are dropped: checks made inside tx never trust a cache
 // that missed a broadcast.
 func (s *Service) Bump(ctx context.Context, tx *gorm.DB) (int64, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return 0, err
+	}
 	var v int64
 	if err := bumpVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
 		return 0, err
@@ -327,7 +330,7 @@ func (s *Service) userPermissionSet(ctx context.Context, userID int64) (core.Per
 // the authz version seen by that snapshot.
 func (s *Service) readSnapshot(ctx context.Context, fn func(tx *gorm.DB) error) (int64, error) {
 	var v int64
-	err := s.db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+	err := s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		if err := readVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
 			return err
 		}

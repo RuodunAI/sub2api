@@ -305,7 +305,7 @@ func (s *Service) removeDraft(ctx context.Context, key string, wait bool) (remov
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error
 		}
-		if e := s.deleteRemote(ctx, key, false); e != nil {
+		if e := s.deleteRemote(ctx, tx, key, false); e != nil {
 			return e
 		}
 		removed = true
@@ -337,7 +337,7 @@ func (s *Service) lockedTx(ctx context.Context, key string, wait bool, fn func(*
 // its data volume and recovery backup (a draft's volume always goes, and a
 // draft has no backup). 404 counts as removed: a controller without the
 // endpoint predates draft keys and cannot have created the runtime.
-func (s *Service) deleteRemote(ctx context.Context, key string, retired bool) error {
+func (s *Service) deleteRemote(ctx context.Context, q *gorm.DB, key string, retired bool) error {
 	var header []string
 	switch {
 	case isDraftKey(key):
@@ -346,7 +346,7 @@ func (s *Service) deleteRemote(ctx context.Context, key string, retired bool) er
 	default:
 		return errors.New("only draft and retired runtimes are deleted")
 	}
-	return s.deleteRuntime(ctx, key, true, header...)
+	return s.deleteRuntime(ctx, q, key, true, header...)
 }
 
 // CheckDraft is the POST /accounts check of "ccgateway_runtime" (CONTRACTS

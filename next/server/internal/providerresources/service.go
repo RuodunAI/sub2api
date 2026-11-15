@@ -93,6 +93,9 @@ func (s *Service) normalize(in core.ResourceIntent) (core.ResourceIntent, string
 }
 
 func lockOwner(ctx context.Context, tx *gorm.DB, owner core.ResourceOwner) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	// A transaction-scoped lock serializes reservations/finalization for this quota.
 	raw, _ := json.Marshal(owner)
 	return advisoryLock(store.G(ctx, tx), "provider-resources:"+string(raw)).Error

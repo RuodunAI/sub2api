@@ -76,7 +76,7 @@ func (s *Service) statsTx(ctx context.Context, lim statsLimits, fn func(*gorm.DB
 	if lim.workMem != "" {
 		set += `; SET LOCAL work_mem = '` + lim.workMem + `'`
 	}
-	return s.db.TxOptions(ctx, store.ReadOnly, func(tx *gorm.DB) error {
+	return s.db.TxOptions(ctx, store.ReadOnly(), func(tx *gorm.DB) error {
 		if err := store.G(ctx, tx).Exec(set).Error; err != nil {
 			return err
 		}

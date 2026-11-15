@@ -361,6 +361,35 @@ func TestClusterEnqueue(t *testing.T) {
 	require.Error(t, s.Enqueue(ctx, "core.test.enqueue", string(big), core.EnqueueOpts{}))
 }
 
+// An Insert outside a transaction waits for a client.Start in progress, but
+// only as long as its context allows: Start may take seconds (ProducerInit),
+// and Enqueue and Trigger serve requests.
+func TestClusterInsertWaitsForStartWithinItsContext(t *testing.T) {
+	t.Parallel()
+	env := newClusterEnv(t)
+	var log runLog
+	s := env.service(t, "node-a", func() bool { return false }, clusterSpec("core.test.starting", log.handler()))
+	c := s.clusterBackend()
+	// Hold what client.Start holds, as a Start that hangs would.
+	require.NoError(t, c.starting.Acquire(context.Background(), startShares))
+	expire := func(call func(context.Context) error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		started := time.Now()
+		require.ErrorIs(t, call(ctx), context.DeadlineExceeded)
+		require.Less(t, time.Since(started), 5*time.Second, "returned when its context expired")
+	}
+	expire(func(ctx context.Context) error { return s.Enqueue(ctx, "core.test.starting", nil, core.EnqueueOpts{}) })
+	expire(func(ctx context.Context) error { return s.Trigger(ctx, "core.test.starting") })
+	require.Empty(t, jobRows(t, env.db, "core.test.starting"))
+
+	// Start done: inserts go through again.
+	c.starting.Release(startShares)
+	require.NoError(t, s.Enqueue(context.Background(), "core.test.starting", nil, core.EnqueueOpts{}))
+	require.NoError(t, s.Trigger(context.Background(), "core.test.starting"))
+	require.Len(t, jobRows(t, env.db, "core.test.starting"), 2)
+}
+
 func TestClusterRetries(t *testing.T) {
 	t.Parallel()
 	env := newClusterEnv(t)

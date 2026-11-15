@@ -59,6 +59,9 @@ func validBinding(b core.ResourceBinding) bool {
 	return b.AccountID > 0 && bounded(b.PrincipalID) && bounded(b.Generation)
 }
 func lock(ctx context.Context, q *gorm.DB, o core.ResourceOwner) error {
+	if err := store.RequireTx(q); err != nil {
+		return err
+	}
 	return store.G(ctx, q).Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, fmt.Sprintf("helper-history:%d:%d", o.UserID, o.GroupID)).Error
 }
 func (s *Service) transaction(ctx context.Context, o core.ResourceOwner, fn func(*gorm.DB) error) error {

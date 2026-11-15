@@ -13,10 +13,12 @@
 //	})
 //
 // Rules:
-//   - Transactions start only with DB.Tx, DB.TxOptions and the
-//     Transaction of a WithConn connection; elsewhere GORM's Begin,
-//     Transaction and Migrator are refused by gormguard, and so is a handle
-//     of another instance (gorm.Open).
+//   - Transactions start only with DB.Tx and DB.TxOptions (inside package
+//     store, the migrator also opens them on a WithConn connection); GORM's
+//     Begin, Transaction, Commit and the other transaction methods, and the
+//     Migrator, are refused by gormguard elsewhere, and so is a handle of
+//     another instance (gorm.Open). A function that needs the transaction
+//     it is handed checks it with RequireTx.
 //   - Array parameters and columns are Int64s / Strings / Times; GORM
 //     expands a plain slice into one placeholder per element. A bytea or
 //     document parameter ([]byte, json.RawMessage) right after "(" is a
