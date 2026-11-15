@@ -117,7 +117,8 @@
 // order), after running it twice on a scratch schema and finding nothing
 // left to change; or says nothing is to do. It writes nothing when a change
 // can lose data or fail on the rows of a live table (a column type, a drop,
-// SET NOT NULL, a NOT NULL column without a default: marked "!") or the
+// SET NOT NULL, a NOT NULL column without a default, a CHECK, UNIQUE or
+// foreign key on a table that already exists: marked "!") or the
 // schema has what no model maps - a table, column, index, check, foreign
 // key or unique constraint (a field removed from the code), a view,
 // sequence or function: such a migration is written by hand. check fails on

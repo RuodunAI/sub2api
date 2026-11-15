@@ -341,25 +341,52 @@ var (
 	// without a DEFAULT it fails on a table with rows.
 	addNotNull = regexp.MustCompile(`(?i)^ALTER TABLE \S+ ADD "[^"]*" .*\bNOT NULL\b`)
 	hasDefault = regexp.MustCompile(`(?i)\bDEFAULT\b`)
+	// createTable and newRule name the table a statement creates, or the
+	// table a new constraint or unique index checks: a CHECK, UNIQUE or
+	// FOREIGN KEY added to a table that already has rows fails on a row
+	// that breaks it.
+	createTable = regexp.MustCompile(`(?i)^CREATE TABLE (?:IF NOT EXISTS )?("[^"]+"|\S+)`)
+	newRule     = regexp.MustCompile(`(?i)^(?:ALTER TABLE ("[^"]+"|\S+) ADD CONSTRAINT\b|CREATE UNIQUE INDEX .*? ON ("[^"]+"|\S+))`)
 )
 
 // errManual is a diff that needs a hand-written migration.
 var errManual = errors.New("not generated: write this migration by hand")
 
-// isManual reports whether stmt can lose data, rewrite a table or fail on
-// the rows of a production table: a person writes that migration (backfill
-// first, then SET NOT NULL; a column type with its USING; ...).
+// manual reports, for each of stmts, whether it can lose data, rewrite a
+// table or fail on the rows of a production table: a person writes that
+// migration (backfill first, then SET NOT NULL; a column type with its
+// USING; clean the rows before a new CHECK or UNIQUE; ...). A constraint or
+// unique index on a table stmts create themselves has no rows to fail on.
+func manual(stmts []string) []bool {
+	created := map[string]bool{}
+	for _, s := range stmts {
+		if m := createTable.FindStringSubmatch(s); m != nil {
+			created[m[1]] = true
+		}
+	}
+	out := make([]bool, len(stmts))
+	for i, s := range stmts {
+		out[i] = isManual(s)
+		if m := newRule.FindStringSubmatch(s); m != nil && !created[m[1]+m[2]] {
+			out[i] = true
+		}
+	}
+	return out
+}
+
+// isManual reports a statement that is manual whatever else the migration
+// does (see manual).
 func isManual(stmt string) bool {
 	return destructiveDDL.MatchString(stmt) || setNotNull.MatchString(stmt) ||
 		(addNotNull.MatchString(stmt) && !hasDefault.MatchString(stmt))
 }
 
-// markManual prefixes the statements isManual flags with "! ".
+// markManual prefixes the statements manual flags with "! ".
 func markManual(stmts []string) []string {
 	out := slices.Clone(stmts)
-	for i, s := range out {
-		if isManual(s) {
-			out[i] = "! " + s
+	for i, m := range manual(stmts) {
+		if m {
+			out[i] = "! " + out[i]
 		}
 	}
 	return out
@@ -376,7 +403,7 @@ type migration struct {
 // when a statement needs a person or something is unmapped: a partial file
 // would hide what is left.
 func newMigration(dir, schema, name string, report *pgdb.DriftReport) (*migration, error) {
-	if slices.ContainsFunc(report.Statements, isManual) || len(report.Unmapped) > 0 {
+	if slices.Contains(manual(report.Statements), true) || len(report.Unmapped) > 0 {
 		return nil, errManual
 	}
 	if len(report.Statements) == 0 {

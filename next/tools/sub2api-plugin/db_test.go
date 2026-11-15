@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -63,6 +64,22 @@ func TestIsManual(t *testing.T) {
 		if got := isManual(stmt); got != want {
 			t.Errorf("isManual(%s) = %v", stmt, got)
 		}
+	}
+}
+
+func TestManualRules(t *testing.T) {
+	stmts := []string{
+		`CREATE TABLE "n" ("id" bigserial,"code" text,PRIMARY KEY ("id"))`,
+		`ALTER TABLE "n" ADD CONSTRAINT "uni_n_code" UNIQUE ("code")`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS "idx_n_code" ON "n" ("code")`,
+		`ALTER TABLE "old" ADD CONSTRAINT "chk_old_n" CHECK (n >= 0)`,
+		`ALTER TABLE "old" ADD CONSTRAINT "fk_old_p" FOREIGN KEY ("p") REFERENCES "n"("id")`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS "idx_old_code" ON "old" ("code")`,
+		`CREATE INDEX IF NOT EXISTS "idx_old_n" ON "old" ("n")`,
+	}
+	want := []bool{false, false, false, true, true, true, false}
+	if got := manual(stmts); !slices.Equal(got, want) {
+		t.Fatalf("manual = %v, want %v", got, want)
 	}
 }
 
@@ -185,7 +202,7 @@ func demoModel(extra string) string {
 type T struct {
 	ID   int64  ` + "`gorm:\"primaryKey\"`" + `
 	N    int64  ` + "`gorm:\"not null;default:0\"`" + `
-	Code string ` + "`gorm:\"not null;default:'';unique\"`" + `
+	Code string ` + "`gorm:\"not null;default:''\"`" + `
 	` + extra + `
 }
 
@@ -207,7 +224,7 @@ func TestDBDiff(t *testing.T) {
 	runFail(t, "db", "check", "--dir", dir)
 	path := strings.TrimSpace(runOK(t, "db", "diff", "--dir", dir, "--name", "add_n"))
 	b, err := os.ReadFile(path)
-	if err != nil || filepath.Base(path) != "0002_add_n.sql" || !strings.Contains(string(b), "duplicate_table") {
+	if err != nil || filepath.Base(path) != "0002_add_n.sql" || !strings.Contains(string(b), `ADD COLUMN IF NOT EXISTS "code" text NOT NULL DEFAULT ''`) {
 		t.Fatalf("%s: %s %v", path, b, err)
 	}
 	runOK(t, "db", "check", "--dir", dir)
@@ -230,6 +247,11 @@ func TestDBDiff(t *testing.T) {
 	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"), demoModel("M int64 `gorm:\"not null\"`"))
 	if msg := runFail(t, "db", "diff", "--dir", dir); !strings.Contains(msg, `! ALTER TABLE "t" ADD "m" bigint NOT NULL`) {
 		t.Fatalf("diff with a NOT NULL column: %s", msg)
+	}
+	// A UNIQUE on a table that has rows fails on duplicates: left to a person.
+	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"), demoModel("U string `gorm:\"unique\"`"))
+	if msg := runFail(t, "db", "diff", "--dir", dir); !strings.Contains(msg, `! ALTER TABLE "t" ADD CONSTRAINT "uni_t_u" UNIQUE ("u")`) {
+		t.Fatalf("diff with a new UNIQUE on an existing table: %s", msg)
 	}
 }
 
