@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SChoiceCards, SDropdown, SEmpty, SHint, SFormModal, SPageHeader, SSpinner, STabs, confirm, type ChoiceOption, type MenuAction, type TabItem } from '@sub2api/ui'
@@ -9,11 +9,10 @@ import type { Rollout } from '@/api/types'
 import { lt } from '@/i18n'
 import { errorMessage, notifyError } from '@/utils/errors'
 import { useAuthStore } from '@/stores/auth'
-import { confirmDiscard } from '@/composables/confirmDiscard'
 import { refreshShell } from '@/stores/app'
 import { consentPath } from './reviewCache'
 import RoleGrantsReview from './parts/RoleGrantsReview.vue'
-import { compareVersions, conflictLines, consoleSettings, hasCoreSettings, isPendingConsent, shownStatus, type PluginDetail, type PluginSettings } from './pluginUtil'
+import { compareVersions, conflictLines, consoleSettings, hasCoreSettings, isPendingConsent, shownStatus, tabOf, type PluginDetail, type PluginSettings } from './pluginUtil'
 import TrustBadge from './parts/TrustBadge.vue'
 import OverviewTab from './detail/OverviewTab.vue'
 import PermissionsTab from './detail/PermissionsTab.vue'
@@ -40,12 +39,6 @@ const settings = ref<PluginSettings | null>(null)
 const loading = ref(true)
 const loadError = ref('')
 const notFound = ref(false)
-/** Tabs merged into another; old links still open them (the grants are the permissions tab's first part). */
-const TAB_ALIASES: Record<string, string> = { grants: 'permissions' }
-const tabOf = (q: unknown) => (typeof q === 'string' ? (TAB_ALIASES[q] ?? q) : 'overview')
-const tab = ref(tabOf(route.query.tab))
-/** The permissions tab holds unsaved role grants: leaving it asks first. */
-const permissionsDirty = ref(false)
 const acting = ref('')
 const uninstallOpen = ref(false)
 const upgradeOpen = ref(false)
@@ -77,7 +70,8 @@ const tabs = computed<TabItem[]>(() => {
   const d = detail.value
   const list: TabItem[] = [
     { key: 'overview', label: t('plugins.detail.tabs.overview') },
-    { key: 'permissions', label: t('plugins.detail.tabs.permissions'), badge: d?.grants?.length },
+    // The host permissions in force: the user permissions below them are counted per role, not here.
+    { key: 'permissions', label: t('plugins.detail.tabs.permissions'), badge: d?.grants?.filter((g) => g.status === 'active').length },
     { key: 'nodes', label: t('plugins.detail.tabs.nodes'), badge: d?.nodes?.length },
     { key: 'hooks', label: t('plugins.detail.tabs.hooks'), badge: d?.hooks?.length },
     { key: 'jobs', label: t('plugins.detail.tabs.jobs'), badge: d?.jobs?.length },
@@ -90,26 +84,13 @@ const tabs = computed<TabItem[]>(() => {
   return list
 })
 
-watch(tab, (v) => {
-  if (route.query.tab !== v) router.replace({ query: { ...route.query, tab: v } })
-})
-watch(() => route.query.tab, (v) => { tab.value = tabOf(v) })
-// An old link (?tab=grants) shows the tab it now opens in the address bar.
-if (route.query.tab !== undefined && route.query.tab !== tab.value) router.replace({ query: { ...route.query, tab: tab.value } })
-
-/** A tab is opened through the address (?tab=), so a click, a link and the history all pass the guard below. */
+/** The tab is the address's (?tab=): a click, a link and the history alike pass the tabs' own leave guards (PermissionsTab). */
+const tab = computed(() => tabOf(route.query.tab))
 function switchTab(v: string) {
   router.replace({ query: { ...route.query, tab: v } })
 }
-// The permissions tab and its edits go away when the page leaves it: another
-// tab, another plugin (the same component), or another page; asked first.
-onBeforeRouteUpdate(async (to, from) => {
-  if (to.params.key === from.params.key && tabOf(to.query.tab) === 'permissions') return true
-  if (!(await confirmDiscard(permissionsDirty.value))) return false
-  permissionsDirty.value = false
-  return true
-})
-onBeforeRouteLeave(() => confirmDiscard(permissionsDirty.value))
+// An old link (?tab=grants) shows the tab it now opens in the address bar.
+if (route.query.tab !== undefined && route.query.tab !== tab.value) switchTab(tab.value)
 
 const moreActions = computed<MenuAction[]>(() => [
   { key: 'refresh', label: t('common.refresh') },
@@ -146,7 +127,7 @@ async function load() {
   }
   if (detail.value) {
     await loadSettings()
-    if (!tabs.value.some((x) => x.key === tab.value)) tab.value = 'overview'
+    if (!tabs.value.some((x) => x.key === tab.value)) switchTab('overview')
   }
 }
 
@@ -294,7 +275,7 @@ onMounted(load)
       <STabs :model-value="tab" :tabs="tabs" @update:model-value="switchTab">
 
         <OverviewTab v-if="tab === 'overview'" :detail="detail" />
-        <PermissionsTab v-else-if="tab === 'permissions'" :key="detail.key" :detail="detail" @changed="load" @dirty="permissionsDirty = $event" />
+        <PermissionsTab v-else-if="tab === 'permissions'" :key="detail.key" :detail="detail" @changed="load" />
         <NodesTab v-else-if="tab === 'nodes'" :detail="detail" />
         <HooksTab v-else-if="tab === 'hooks'" :detail="detail" />
         <JobsTab v-else-if="tab === 'jobs'" :detail="detail" />

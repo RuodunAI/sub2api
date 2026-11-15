@@ -1,13 +1,13 @@
 <script setup lang="ts">
 // "What the plugin provides" of the consent page: platforms, gateway endpoints,
-// account types, hooks, events, jobs, routes, menus, user permissions, the
+// account types, hooks, events, jobs, routes, menus, how many user
+// permissions (listed in the matrix and the upgrade's changes), the
 // database, resources and external services. Each entry renders only when the
 // review declares it; the whole card only when at least one is present.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SBadge, SCard, SDisclosure, SHint } from '@sub2api/ui'
 import type { PluginReview } from '@/api/types'
-import PermRiskBadge from '@/components/permission/PermRiskBadge.vue'
 import { lt } from '@/i18n'
 import { formatBytes } from '@/utils/format'
 import { useOptionalT } from '@/composables/optionalText'
@@ -188,17 +188,10 @@ const hasProvides = computed(() => {
         <span class="text-xs">{{ review.menus.map(menuText).join(listSep) }}</span>
       </li>
 
-      <li v-if="review.user_permissions?.length">
-        <div class="font-medium">{{ t('plugins.consent.userPermissions') }}</div>
-        <ul class="mt-1 space-y-1 pl-4">
-          <li v-for="p in review.user_permissions" :key="p.key" class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs" :data-permission="p.key">
-            <span :title="lt(p.description)">{{ lt(p.label) || p.key }}</span>
-            <PermRiskBadge :risk="p.risk" />
-            <span class="font-mono text-gray-500 dark:text-dark-400">{{ p.key }}</span>
-            <SHint v-if="!p.new && !p.revived" inline size="xs">{{ t('plugins.consent.permissionExists') }}</SHint>
-            <SHint v-if="p.inherit_from?.length" inline size="xs">{{ t('plugins.consent.inheritFrom', { keys: p.inherit_from.join(listSep) }) }}</SHint>
-          </li>
-        </ul>
+      <!-- The permissions themselves are the matrix's and the upgrade changes' below: listed once, there. -->
+      <li v-if="review.user_permissions?.length" data-testid="provides-user-permissions">
+        <span class="font-medium">{{ t('plugins.permissions.userTitle') }}{{ colon }}</span>
+        <span class="text-xs">{{ t('plugins.consent.userPermissionsBelow', { n: review.user_permissions.length }, review.user_permissions.length) }}</span>
       </li>
 
       <li v-if="review.database">

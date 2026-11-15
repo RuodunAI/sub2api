@@ -474,3 +474,9 @@ export function nativeSettingsPath(key: string, s: PluginSettings | null | undef
   if (!s || s.mode !== 'native' || !s.page) return null
   return `/p/${encodeURIComponent(key)}/${encodeURIComponent(s.page)}?tab=settings`
 }
+
+/** Plugin detail tabs merged into another; old links still open them (the grants are the permissions tab's first part). */
+const TAB_ALIASES: Record<string, string> = { grants: 'permissions' }
+
+/** The plugin detail tab a ?tab= value opens (overview when none). */
+export const tabOf = (q: unknown) => (typeof q === 'string' ? (TAB_ALIASES[q] ?? q) : 'overview')

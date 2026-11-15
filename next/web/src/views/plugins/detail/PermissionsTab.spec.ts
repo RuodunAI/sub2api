@@ -6,16 +6,15 @@ import type { PluginRoleMatrix } from '@/api/types'
 import PermissionsTab from './PermissionsTab.vue'
 import type { PluginDetail } from '../pluginUtil'
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), toast: vi.fn(), refresh: vi.fn(async () => undefined) }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), toast: vi.fn(), confirm: vi.fn(async (_o: { message: string }) => true), refresh: vi.fn(async () => undefined) }))
 vi.mock('@sub2api/host', async (original) => ({ ...await original<typeof import('@sub2api/host')>(), api: { get: mocks.get, put: mocks.put } }))
-vi.mock('@sub2api/ui', async (original) => ({ ...await original<object>(), toast: mocks.toast }))
-const auth = vi.hoisted(() => ({ denied: new Set<string>(), roles: [] as string[] }))
+vi.mock('@sub2api/ui', async (original) => ({ ...await original<object>(), toast: mocks.toast, confirm: (o: { message: string }) => mocks.confirm(o) }))
+// The editor: the super admin unless `held` lists its /me keys; `roles` the roles it holds.
+const auth = vi.hoisted(() => ({ denied: new Set<string>(), roles: [] as string[], held: null as string[] | null }))
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
-    me: { roles: auth.roles },
+    me: { roles: auth.roles, superuser: !auth.held, permissions: auth.held ?? [] },
     has: (k: string) => !auth.denied.has(k),
-    hasAction: (a: string) => !auth.denied.has(a),
-    scopes: () => [{ all: true }],
     refreshPermissions: mocks.refresh
   })
 }))
@@ -47,8 +46,8 @@ const MATRIX: PluginRoleMatrix = {
   ]
 }
 
-async function render(detail: Partial<PluginDetail> = {}) {
-  mocks.get.mockImplementation(async (path: string) => (path.startsWith('/permissions/plugins/') ? structuredClone(MATRIX) : []))
+async function render(detail: Partial<PluginDetail> = {}, matrix: PluginRoleMatrix = MATRIX) {
+  mocks.get.mockImplementation(async (path: string) => (path.startsWith('/permissions/plugins/') ? structuredClone(matrix) : []))
   const w = mount(PermissionsTab, { props: { detail: { key: 'guard', status: 'enabled', grants: [], ...detail } as unknown as PluginDetail }, global: { plugins: [i18n] } })
   await flushPromises()
   return w
@@ -61,6 +60,7 @@ describe('plugin permissions tab', () => {
     vi.clearAllMocks()
     auth.denied.clear()
     auth.roles = []
+    auth.held = null
     i18n.global.locale.value = 'en'
   })
 
@@ -74,13 +74,11 @@ describe('plugin permissions tab', () => {
     expect(w.find('[data-testid="matrix-save"]').exists()).toBe(false)
   })
 
-  it('saves only changed roles with PUT /permissions/plugins/:plugin', async () => {
-    const w = await render()
-    const dirty = () => w.emitted('dirty')?.at(-1)
+  it('saves only changed roles with PUT /permissions/plugins/:plugin, carrying the version read', async () => {
+    const w = await render({}, { ...MATRIX, version: 41 })
     await box(w, EXPORT, 'operator').setValue(true)
-    expect(dirty()).toEqual([true])
-    expect(w.get('[data-testid="matrix-save"]').text()).toContain('1 unsaved changes')
-    expect(w.get('[data-testid="matrix-save"]').text()).toContain('Operator · Export records')
+    expect(w.get('[data-testid="matrix-save"]').text()).toContain('1 unsaved change')
+    expect(w.get('[data-testid="matrix-save-first"]').text()).toBe('Operator · Export records: Not granted → Granted')
 
     const saved = structuredClone(MATRIX)
     saved.roles[2].permission_keys = [OLD, READ, EXPORT]
@@ -88,9 +86,9 @@ describe('plugin permissions tab', () => {
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
     // The role's every key of the plugin, the removed one it keeps included; other roles left out.
-    expect(mocks.put).toHaveBeenCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] } })
+    expect(mocks.put).toHaveBeenCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] }, version: 41 })
     expect(mocks.toast).toHaveBeenCalledWith('Role grants saved', 'success')
-    expect(dirty()).toEqual([false])
+    expect(w.find('[data-testid="matrix-save"]').exists()).toBe(false)
     expect(mocks.refresh).not.toHaveBeenCalled()
   })
 
@@ -136,10 +134,72 @@ describe('plugin permissions tab', () => {
   })
 
   it('a permission the editor does not hold can only be taken away', async () => {
-    auth.denied.add(EXPORT)
+    auth.held = [READ]
     const w = await render()
     expect(box(w, EXPORT, 'operator').element.disabled).toBe(true)
     expect(box(w, EXPORT, 'admin').element.disabled).toBe(false)
+  })
+
+  it('a disabled plugin\'s permission held through the editor\'s role stays grantable, though /me leaves it out', async () => {
+    // /me lists keys in force only; the server checks the editor's roles with a disabled plugin's keys (grant view).
+    auth.held = [READ]
+    auth.roles = ['admin']
+    const w = await render({ status: 'disabled' })
+    expect(box(w, EXPORT, 'operator').element.disabled).toBe(false)
+  })
+
+  it('an editor holding part of a scope offers only that, and leaves a cell it cannot restore whole', async () => {
+    const MANAGE = 'plugin.guard:flow:manage'
+    const scoped: PluginRoleMatrix = {
+      ...MATRIX,
+      module: { ...MATRIX.module, permissions: [{ key: MANAGE, label: 'Manage flows', risk: 'sensitive', status: 'active', scope: { resource: 'flow', own: true }, scope_type: 'plugin:flow', defaults: { operator: [MANAGE] } }] },
+      roles: [row('operator', 'Operator', { permission_keys: [`${MANAGE}:own`] })]
+    }
+    auth.held = [`${MANAGE}:own`]
+    const w = await render({}, scoped)
+    const select = w.get<HTMLSelectElement>(`tr[data-permission="${MANAGE}"] td[data-role="operator"] select`)
+    expect(select.findAll('option').map((o) => o.text())).toEqual(['Not granted', 'Created by them'])
+    // The suggestion (every row) is out of reach: no mark, nothing to restore.
+    expect(w.find('[data-testid="cell-differs"]').exists()).toBe(false)
+    expect(w.find('[data-testid="matrix-restore"]').exists()).toBe(false)
+  })
+
+  it('asks before granting sensitive or critical permissions, naming the role', async () => {
+    const w = await render()
+    await box(w, EXPORT, 'operator').setValue(true)
+    mocks.confirm.mockResolvedValueOnce(false)
+    await w.get('[data-testid="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.confirm.mock.calls[0][0].message).toContain('Export records (Sensitive) → Operator')
+    expect(mocks.put).not.toHaveBeenCalled()
+  })
+
+  it('lists every unsaved change, sensitive ones first, each from → to', async () => {
+    const w = await render()
+    await box(w, READ, 'admin').setValue(false)
+    await box(w, EXPORT, 'operator').setValue(true)
+    expect(w.get('[data-testid="matrix-save-first"]').text()).toBe('Operator · Export records: Not granted → Granted')
+    await w.get('[data-testid="matrix-save-all"] button').trigger('click')
+    expect(w.get('[data-testid="matrix-save-all"]').text()).toContain('Admin · Read flows: Granted → Not granted')
+  })
+
+  it('a version conflict reads the matrix again with the local cells on top, to save once more', async () => {
+    const w = await render({}, { ...MATRIX, version: 41 })
+    await box(w, EXPORT, 'operator').setValue(true)
+    // Meanwhile someone granted the lead's read.
+    const fresh = structuredClone({ ...MATRIX, version: 42 })
+    fresh.roles[1].permission_keys = [READ]
+    mocks.get.mockImplementation(async (path: string) => (path.startsWith('/permissions/plugins/') ? structuredClone(fresh) : []))
+    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { version: 42 } }))
+    await w.get('[data-testid="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.toast).toHaveBeenCalledWith(i18n.global.t('roles.conflictMerged'), 'info')
+    expect(box(w, EXPORT, 'admin').element.checked).toBe(false)
+    expect(box(w, EXPORT, 'operator').element.checked).toBe(true)
+    mocks.put.mockResolvedValueOnce(fresh)
+    await w.get('[data-testid="settings-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenLastCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] }, version: 42 })
   })
 
   it('without role:define the matrix is read-only', async () => {
@@ -186,19 +246,23 @@ describe('plugin permissions tab', () => {
     expect(box(w, READ, 'operator').element.checked).toBe(true)
   })
 
-  it('reloads the matrix with the detail unless it holds unsaved edits', async () => {
+  it('reloads the matrix with the detail (a confirmed review), unsaved edits kept on top', async () => {
     const w = await render()
     const reads = () => mocks.get.mock.calls.filter(([path]) => path === '/permissions/plugins/guard').length
     expect(reads()).toBe(1)
-    await w.setProps({ detail: { key: 'guard', status: 'enabled', grants: [] } as unknown as PluginDetail })
-    await flushPromises()
-    expect(reads()).toBe(2)
-
     await box(w, EXPORT, 'operator').setValue(true)
+    const fresh = structuredClone(MATRIX)
+    fresh.roles[2].permission_keys = [OLD, READ, 'plugin.guard:flow:extra']
+    mocks.get.mockImplementation(async (path: string) => (path.startsWith('/permissions/plugins/') ? structuredClone(fresh) : []))
     await w.setProps({ detail: { key: 'guard', status: 'enabled', grants: [] } as unknown as PluginDetail })
     await flushPromises()
     expect(reads()).toBe(2)
     expect(box(w, EXPORT, 'operator').element.checked).toBe(true)
+    mocks.put.mockResolvedValueOnce(fresh)
+    await w.get('[data-testid="settings-save"]').trigger('click')
+    await flushPromises()
+    // The key granted meanwhile is not dropped by the save.
+    expect(mocks.put.mock.calls[0][1]).toEqual({ roles: { operator: [OLD, READ, 'plugin.guard:flow:extra', EXPORT].sort() } })
   })
 
   it('disabled plugin shows grants kept', async () => {
