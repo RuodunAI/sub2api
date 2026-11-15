@@ -99,7 +99,7 @@ const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.set
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
 	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.rate_limit_tier,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
 
-// selectRow is the raw SQL form of selectRows, for the list batch.
+// selectRow is the raw SQL form of selectRows, for loadLive.
 const selectRow = `SELECT ` + rowColumns + ` FROM accounts a LEFT JOIN users u ON u.id = a.created_by`
 
 // selectRows reads rowColumns, for scanRow over its Row().
@@ -107,9 +107,9 @@ func selectRows(db *gorm.DB) *gorm.DB {
 	return db.Table("accounts a").Select(rowColumns).Joins("LEFT JOIN users u ON u.id = a.created_by")
 }
 
-// scanRow reads one row of rowColumns, from pgx (the list batch) or from
-// GORM's Row(). The arrays and the environment go through store types,
-// which both paths decode: database/sql hands jsonb over as its document.
+// scanRow reads one row of rowColumns, from GORM's Row() or Rows(). The
+// arrays and the environment go through store types: database/sql hands
+// jsonb over as its document.
 func scanRow(r pgx.Row) (*row, error) {
 	var a row
 	var env store.JSON[core.EnvironmentValues]
@@ -551,15 +551,15 @@ func (s *Service) fullView(ctx context.Context, id int64, scope core.DataScope) 
 func (s *Service) list(c *gin.Context) {
 	ctx := c.Request.Context()
 	page, size := httpapi.Pagination(c)
-	var filter store.Filter
-	filter.And("a.deleted_at IS NULL")
+	var conds store.Conds
+	conds.And("a.deleted_at IS NULL")
 	// Visible range: the caller's account:read scope (CONTRACTS §21);
 	// mine=true narrows to own rows and created_by=<id> to that creator's,
 	// both within it.
-	filter.And(core.AccountRows.Cond(), core.AccountRows.Args(s.scopeOf(ctx, perm.AccountRead))...)
+	conds = append(conds, core.AccountRows.Scope(s.scopeOf(ctx, perm.AccountRead)))
 	if mine, _ := strconv.ParseBool(c.Query("mine")); mine {
 		uid, _ := core.UserID(ctx)
-		filter.And("a.created_by = ?", uid)
+		conds.And("a.created_by = ?", uid)
 	}
 	if v := c.Query("created_by"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
@@ -568,17 +568,17 @@ func (s *Service) list(c *gin.Context) {
 				Message: t(ctx, "created_by must be a user id", "created_by 必须是用户 ID")}))
 			return
 		}
-		filter.And("a.created_by = ?", id)
+		conds.And("a.created_by = ?", id)
 	}
 	// Accounts of a disabled or uninstalled plugin are hidden by default
 	// (their rows stay); orphaned=true lists only them, orphaned=all both.
 	if keys := s.activePluginKeys(); keys != nil {
 		switch c.Query("orphaned") {
 		case "true":
-			filter.And("NOT (a.plugin_key = ANY(?))", keys)
+			conds.And("NOT (a.plugin_key = ANY(?))", store.Strings(keys))
 		case "all":
 		default:
-			filter.And("a.plugin_key = ANY(?)", keys)
+			conds.And("a.plugin_key = ANY(?)", store.Strings(keys))
 		}
 	}
 	// An account type is identified by (plugin key, type id): two plugins
@@ -589,19 +589,19 @@ func (s *Service) list(c *gin.Context) {
 		return
 	}
 	if v := c.Query("plugin_key"); v != "" {
-		filter.And("a.plugin_key = ?", v)
+		conds.And("a.plugin_key = ?", v)
 	}
 	if v := c.Query("type"); v != "" {
-		filter.And("a.type = ?", v)
+		conds.And("a.type = ?", v)
 	}
 	if v := c.Query("status"); v != "" {
 		switch v {
 		case "active":
-			filter.And("(a.status = ? AND a.schedulable)", v)
+			conds.And("(a.status = ? AND a.schedulable)", v)
 		case "auto_disabled": // the console's three statuses: a legacy "error" reads as auto-disabled
-			filter.And("(a.status IN (?, 'error') OR (a.status = 'active' AND NOT a.schedulable))", v)
+			conds.And("(a.status IN (?, 'error') OR (a.status = 'active' AND NOT a.schedulable))", v)
 		default:
-			filter.And("a.status = ?", v)
+			conds.And("a.status = ?", v)
 		}
 	}
 	if v := c.Query("group_id"); v != "" {
@@ -610,7 +610,7 @@ func (s *Service) list(c *gin.Context) {
 			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("invalid group_id"))
 			return
 		}
-		filter.And("EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = ?)", gid)
+		conds.And("EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = ?)", gid)
 	}
 	// ids=1,2,3 narrows to the given accounts (a plugin toolbar slot hands
 	// the console a set to show); at most as many as one bulk request takes.
@@ -629,16 +629,15 @@ func (s *Service) list(c *gin.Context) {
 			}
 			ids = append(ids, id)
 		}
-		filter.And("a.id = ANY(?)", ids)
+		conds.And("a.id = ANY(?)", store.Int64s(ids))
 	}
 	if v := strings.TrimSpace(c.Query("q")); v != "" {
-		filter.And("a.name ILIKE '%' || ? || '%'", v)
+		conds.And("a.name ILIKE '%' || ? || '%'", v)
 	}
 	if v := strings.TrimSpace(c.Query("model")); v != "" {
-		filter.And("(a.models = '{}' OR ? = ANY(a.models))", v)
+		conds.And("(a.models = '{}' OR ? = ANY(a.models))", v)
 	}
-	where, args := filter.Cond(), filter.Args()
-	total, rows, err := s.listPage(ctx, where, args, page, size)
+	total, rows, err := s.listPage(ctx, conds, page, size)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -651,36 +650,47 @@ func (s *Service) list(c *gin.Context) {
 	httpapi.List(c, vs, httpapi.Page{Page: page, PageSize: size, Total: total})
 }
 
-// listSelectRow is selectRow without the encrypted credentials, which no list
-// column needs: CredEnc stays nil on rows read with it, so such rows must not
-// be decrypted or written back (fullView and every write path use loadRow).
-var listSelectRow = strings.Replace(selectRow, "a.credentials_enc", "NULL::bytea", 1)
+// listRowColumns are rowColumns without the encrypted credentials, which no
+// list column needs: CredEnc stays nil on rows read with them, so such rows
+// must not be decrypted or written back (fullView and every write path use
+// loadRow).
+var listRowColumns = strings.Replace(rowColumns, "a.credentials_enc", "NULL::bytea", 1)
 
-// listPage reads the total and one page of the filtered accounts in a single
-// round trip (one batch, two statements, unchanged SQL). Newest accounts
-// come first; editing priority or weight never moves a row, so the console's
-// auto-refresh keeps every account in place.
-func (s *Service) listPage(ctx context.Context, where string, args []any, page, size int) (int64, []*row, error) {
-	n := len(args)
-	batch := &pgx.Batch{}
-	batch.Queue(`SELECT count(*) FROM accounts a`+where, args...)
-	batch.Queue(listSelectRow+where+fmt.Sprintf(` ORDER BY a.created_at DESC, a.id DESC LIMIT $%d OFFSET $%d`, n+1, n+2),
-		append(slices.Clip(args), size, (page-1)*size)...)
-	br := s.d.DB.Pool.SendBatch(ctx, batch)
-	defer br.Close()
+// listPage reads the total and one page of the accounts conds keep, one
+// statement each. Newest accounts come first; editing priority or weight
+// never moves a row, so the console's auto-refresh keeps every account in
+// place.
+func (s *Service) listPage(ctx context.Context, conds store.Conds, page, size int) (int64, []*row, error) {
+	db := store.G(ctx, s.d.DB.Pool)
 	var total int64
-	if err := br.QueryRow().Scan(&total); err != nil {
+	if err := listCount(db, conds).Count(&total).Error; err != nil {
 		return 0, nil, err
 	}
-	rs, err := br.Query()
+	rs, err := listRows(db, conds, page, size).Rows()
 	if err != nil {
 		return 0, nil, err
 	}
-	rows, err := pgx.CollectRows(rs, func(r pgx.CollectableRow) (*row, error) { return scanRow(r) })
-	if err != nil {
-		return 0, nil, err
+	defer rs.Close()
+	rows := []*row{}
+	for rs.Next() {
+		a, err := scanRow(rs)
+		if err != nil {
+			return 0, nil, err
+		}
+		rows = append(rows, a)
 	}
-	return total, rows, br.Close()
+	return total, rows, rs.Err()
+}
+
+// listCount counts the accounts conds keep.
+func listCount(db *gorm.DB, conds store.Conds) *gorm.DB {
+	return db.Table("accounts a").Scopes(conds.Scope())
+}
+
+// listRows selects one page of the accounts conds keep, in listRowColumns.
+func listRows(db *gorm.DB, conds store.Conds, page, size int) *gorm.DB {
+	return db.Table("accounts a").Select(listRowColumns).Joins("LEFT JOIN users u ON u.id = a.created_by").
+		Scopes(conds.Scope()).Order("a.created_at DESC, a.id DESC").Limit(size).Offset((page - 1) * size)
 }
 
 func (s *Service) get(c *gin.Context) {

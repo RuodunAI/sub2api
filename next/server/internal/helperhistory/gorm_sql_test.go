@@ -22,6 +22,14 @@ func TestSQLHoldings(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return holdingsQuery(db, sqlOwner, sqlNow, &holdings{}) })
 }
 
+// The unlocked probe of every request with helper prefixes (anyPrefix).
+func TestSQLPrefixProbe(t *testing.T) {
+	var found bool
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return prefixProbe(db, sqlOwner, []string{"p1", "p2"}).Scan(&found)
+	})
+}
+
 func TestSQLPrefixRows(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return prefixRows(db, sqlOwner, "ns", "prefix", &[]prefixRow{}) })
 }

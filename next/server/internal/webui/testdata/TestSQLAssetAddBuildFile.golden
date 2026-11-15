@@ -1,0 +1,5 @@
+-- sql
+INSERT INTO web_asset_build_files(build_id,path) VALUES($1,$2) ON CONFLICT DO NOTHING
+-- vars
+$1 string "b1"
+$2 string "assets/a.js"

@@ -17,6 +17,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -276,7 +277,7 @@ func scanRule(row interface{ Scan(...any) error }) (*stickyRule, error) {
 	var r stickyRule
 	var match, sources, includes []byte
 	if err := row.Scan(&r.ID, &r.Name, &r.Source, &r.Enabled, &r.Priority, &match, &sources,
-		&r.ValueRegex, &r.TTLSeconds, &includes, &r.OnFailure, &r.UpdatedBy, &r.UpdatedAt, &r.Customized, &r.PassHeaders); err != nil {
+		&r.ValueRegex, &r.TTLSeconds, &includes, &r.OnFailure, &r.UpdatedBy, &r.UpdatedAt, &r.Customized, (*store.Strings)(&r.PassHeaders)); err != nil {
 		return nil, err
 	}
 	r.decodeDocuments(match, sources, includes)
@@ -297,9 +298,11 @@ func (r *stickyRule) decodeDocuments(match, sources, includes []byte) {
 	}
 }
 
+// listRules reads every rule. The rules cache reloads it on the request
+// path, so it is Raw SQL scanned row by row (scanRule), the form that
+// allocates least (BenchmarkHotStickyRules).
 func listRules(ctx context.Context, q store.Querier) ([]*stickyRule, error) {
-	//gormguard:allow-pgx cached request-path read (rulesTTL); GORM takes 4.0x the allocations (BASELINE.md, batch 4d)
-	rows, err := q.Query(ctx, `SELECT `+ruleColumns+` FROM sticky_rules ORDER BY priority, id`)
+	rows, err := rulesQuery(store.G(ctx, q)).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -313,6 +316,11 @@ func listRules(ctx context.Context, q store.Querier) ([]*stickyRule, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// rulesQuery selects ruleColumns of every rule, in rank order.
+func rulesQuery(db *gorm.DB) *gorm.DB {
+	return db.Raw(`SELECT ` + ruleColumns + ` FROM sticky_rules ORDER BY priority, id`)
 }
 
 // ---------------------------------------------------------------- per-request state

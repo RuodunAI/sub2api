@@ -30,58 +30,65 @@ difference before and after the migration means anything.
 
 `helperhistory.(*Service).anyPrefix` runs for every gateway request that
 carries helper prefixes (`Lookup`, before any lock), most of which it
-answers Unknown. Its benchmark measures the pgx statement next to the GORM
-form of the same statement (`Raw("SELECT EXISTS(?)", withPrefixes(...))`),
-on a miss for an owner that holds one chain:
+answers Unknown. It stayed on pgx under `//gormguard:allow-pgx` until batch
+5b (the GORM form of batch 1, `Raw("SELECT EXISTS(?)", withPrefixes(...))`,
+took 130 allocs/op against 12). It is on GORM now: the same SQL through
+`store.G(...).Raw(...).Row().Scan` (`prefixProbe`), measured on a miss for
+an owner that holds one chain:
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
 go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/helperhistory/
 ```
 
-Recorded 2026-11-15 on gorm-1-fix (after 2579303e), same machine and
-server as above. Medians of 5.
+Recorded 2026-11-15 on gorm-5b, same machine and server as above (shared
+with other test runs; ns/op is noise). Medians of 5. The pgx row is the
+statement as it ran before batch 5b, kept in the benchmark for the
+comparison; the gorm row is the production code.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotHelperPrefix/pgx | 54 952 | 549 | 12 |
-| BenchmarkHotHelperPrefix/gorm | 75 165 | 12 102 | 130 |
+| BenchmarkHotHelperPrefix/pgx (before) | 30 667 | 549 | 12 |
+| BenchmarkHotHelperPrefix/gorm (after) | 32 036 | 3 789 | 52 |
 
-GORM takes 10.8 times the allocations (the limit is 1.5), so anyPrefix
-stays on pgx under `//gormguard:allow-pgx`. The locked reads of the same
-records inside Lookup's transaction (`discoverPrefixes`, only for a
-request that hits) are on GORM.
+4.3 times the allocations (batch 1's form: 10.8). The locked reads of the
+same records inside Lookup's transaction (`discoverPrefixes`, only for a
+request that hits) were already on GORM.
 
 ## Batch 2a: the account reads of the request path
 
 The gateway reaches two account reads, both behind a 30 s cache
-(`snapshotTTL`), so a request runs them on a miss only: `groupSnapshot`
+(`snapshotTTL`), so a request runs them on a miss only: the group snapshot
 (← `Candidates`, the schedulable accounts of the group) and the row of
-`Load` (`loadLive`). Their benchmark measures each pgx statement next to
-the GORM form of the same statement, on a group of ten accounts:
+`Load` (`loadLive`). They stayed on pgx under `//gormguard:allow-pgx` until
+batch 5b (batch 2a's GORM forms, a `Table(...).Select(...)` chain scanned
+into a struct, took 610 and 206 allocs/op against 250 and 63). They are on
+GORM now as Raw SQL scanned into local variables: `readGroupSnap` over
+`groupMembersQuery`'s `Rows()`, and `scanRow` over `liveRowQuery`'s
+`Row()`. Measured on a group of ten accounts:
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
 go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/account/
 ```
 
-Recorded 2026-11-15 on gorm-2a, same machine and server as above. Medians
-of 5.
+Recorded 2026-11-15 on gorm-5b, same machine and server as above (shared
+with other test runs; ns/op is noise). Medians of 5. The pgx row is the
+statement as it ran before batch 5b, kept in the benchmark for the
+comparison; the gorm row is the production code.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotGroupSnapshot/pgx | 161 496 | 22 250 | 250 |
-| BenchmarkHotGroupSnapshot/gorm | 248 970 | 37 865 | 610 |
-| BenchmarkHotLoadRow/pgx | 100 952 | 6 432 | 63 |
-| BenchmarkHotLoadRow/gorm | 136 736 | 16 629 | 206 |
+| BenchmarkHotGroupSnapshot/pgx (before) | 126 994 | 22 247 | 250 |
+| BenchmarkHotGroupSnapshot/gorm (after) | 131 832 | 27 192 | 419 |
+| BenchmarkHotLoadRow/pgx (before) | 51 376 | 6 435 | 63 |
+| BenchmarkHotLoadRow/gorm (after) | 108 560 | 13 994 | 186 |
 
-GORM takes 2.4 and 3.3 times the allocations (the limit is 1.5), so both
-stay on pgx under `//gormguard:allow-pgx`. `Load` reads its row with a
-statement of its own (`loadLive`: any live account, no scope condition);
-`loadRow`, which the console and the background jobs use, is on GORM. The
-other account calls of the gateway (`GroupHasType` and `Unschedulable`
-after a failed dispatch, the name read of `SetCooldown`, the automatic
-disables) run on GORM: none of them runs for every request.
+1.7 and 3.0 times the allocations. The account list's page and total (a
+pgx.Batch of two statements until batch 5b) are two GORM statements now,
+and the list's usage overview (a pgx.Batch of `usageTotals`, `usageIn` and
+`usageLimits`) runs those three GORM reads one after the other: both serve
+the console, not the request path.
 
 ## Batch 2b: the CCGateway shared-runtime account read
 
@@ -91,50 +98,61 @@ runtimes; `attempt.resolveShared`), with no cache in front. With per-account
 runtimes the request path reads the configuration, the account state, its
 feature policy and request log level through the request cache
 (`requestCacheTTL`, dropped on change), so those statements only run on a
-miss and are on GORM. The benchmark measures the pgx statement next to the
-GORM form (`Model(&model.Account{}).Select("type").Where(...).Take`):
+miss and are on GORM. sharedAccountType stayed on pgx under
+`//gormguard:allow-pgx` until batch 5b (batch 2b's form,
+`Model(&model.Account{}).Select("type").Where(...).Take`, took 65 allocs/op
+against 8); it is on GORM now as `Raw(...).Row().Scan`
+(`sharedAccountTypeQuery`):
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
 go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/ccgateway/
 ```
 
-Recorded 2026-11-15 on gorm-2b, same machine and server as above. Medians
-of 5.
+Recorded 2026-11-15 on gorm-5b, same machine and server as above (shared
+with other test runs; ns/op is noise). Medians of 5. The pgx row is the
+statement as it ran before batch 5b, kept in the benchmark for the
+comparison; the gorm row is the production code.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotSharedAccountType/pgx | 52 824 | 445 | 8 |
-| BenchmarkHotSharedAccountType/gorm | 64 007 | 5 805 | 65 |
-
-GORM takes 8.1 times the allocations, so sharedAccountType stays on pgx
-under `//gormguard:allow-pgx`.
+| BenchmarkHotSharedAccountType/pgx (before) | 29 218 | 445 | 8 |
+| BenchmarkHotSharedAccountType/gorm (after) | 48 485 | 3 349 | 43 |
 
 ## Batch 2c: the plugin grant check
 
 `grants.Holds` runs for every HostService call of a plugin instance that
 needs a host permission (`hostServer.require`), so for every plugin-backed
 gateway request that calls the host (account credentials, KV, locks,
-prices ...). Its benchmark measures the pgx statement next to the GORM form
-of the same statement (`Raw` over the named-parameter `versionRows`), on a
-granted permission with a scope:
+prices ...). It stayed on pgx under `//gormguard:allow-pgx` until batch 5b
+(batch 2c's form, `Raw` over the named-parameter `versionRows`, took 60
+allocs/op against 11). It is on GORM now as `Raw(...).Row().Scan`
+(`holdsQuery`) with positional parameters, which spare the map and the
+named-parameter parsing: the key and version follow VersionRows's
+placeholder order (`TestVersionRowsPlaceholderOrder`) and each repeated
+argument is boxed once. Measured on a granted permission with a scope:
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
 go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/plugin/grants/
 ```
 
-Recorded 2026-11-15 on gorm-2c, same machine and server as above. Medians
-of 5.
+Recorded 2026-11-15 on gorm-5b, same machine and server as above (shared
+with other test runs; ns/op is noise). Medians of 5. The pgx row is the
+statement as it ran before batch 5b, kept in the benchmark for the
+comparison; the gorm row is the production code. The pgx row binds constant strings, which box
+without allocating; batch 2c measured 11 allocs/op for the same statement
+called through Holds.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotGrantHolds/pgx | 79 491 | 549 | 11 |
-| BenchmarkHotGrantHolds/gorm | 109 006 | 6 765 | 60 |
+| BenchmarkHotGrantHolds/pgx (before) | 24 360 | 501 | 8 |
+| BenchmarkHotGrantHolds/gorm (after) | 56 611 | 5 045 | 60 |
 
-GORM takes 5.5 times the allocations (the limit is 1.5), so Holds stays on
-pgx under `//gormguard:allow-pgx`. The other grant statements (instance
-start, consent, rollout commit, revocation) are on GORM.
+With the arguments of the pgx row (constants), the named form took 61
+allocs/op and the positional one 58; boxing each use of a repeated
+argument apart cost 4 more. The other grant statements (instance start, consent, rollout
+commit, revocation) were already on GORM.
 
 The provider resource statements (`internal/providerresources`) run only
 for requests that carry or return provider files, containers or skills,
@@ -329,50 +347,97 @@ The gateway package runs no statement of its own for each request (forward,
 pipeline and hooks run none at all). The request path reaches its settings
 rows (`loadSettingsRow`, `loadFailurePolicy`) through the settings cache
 (`settingsTTL`, 10 s) and the sticky rules (`listRules`) through the rules
-cache (`rulesTTL`, 30 s), so a request runs them on a miss only. As in
-batch 2a, the benchmark compares each pgx statement with the GORM form of
-the same statement (a `model.Setting` `Take`; a `model.StickyRule` `Find`
-plus the conversion), the gateway settings row and the built-in rules:
+cache (`rulesTTL`, 30 s), so a request runs them on a miss only.
+
+In package store, `ApplyAccountQuotaObservation` runs for every upstream
+answer that carries a quota observation (gateway `applyQuotaObservation`),
+with no cache in front, and `ReadAccountQuotas` follows each one that
+applied (the quota mirror reloads the account). `AccountBalances` was
+listed as hot, but only the console's account list reads it, behind Redis
+(`cachedAccountBalances`); it is measured for the record.
+
+The settings read (`settingValue`), `listRules`,
+`ApplyAccountQuotaObservation` and `ReadAccountQuotas` stayed on pgx under
+`//gormguard:allow-pgx` until batch 5b (batch 4d measured their GORM forms,
+a `model.Setting` `Take`, a `model.StickyRule` `Find` plus the conversion,
+and the same SQL through `store.G`, at 69, 210, 47 and 104 allocs/op). They
+are on GORM now as Raw SQL scanned into local variables (`settingValueQuery`
+and `rulesQuery` with `scanRule`; `quotasAt` with `readQuotaRows`) and
+`Exec` (`applyQuotaObservation`); package store cannot use the models:
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
 go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/gateway/ ./internal/store/
 ```
 
-In package store, `ApplyAccountQuotaObservation` runs for every upstream
-answer that carries a quota observation (gateway `applyQuotaObservation`),
-with no cache in front, and `ReadAccountQuotas` follows each one that
-applied (the quota mirror reloads the account). Their GORM form is the same
-SQL through `store.G(...).Exec` / `Raw(...).Rows()`: package store cannot
-use the models. `AccountBalances` was listed as hot, but only the console's
-account list reads it, behind Redis (`cachedAccountBalances`); it is
-measured for the record.
-
-Recorded 2026-11-15 on gorm-4d, same machine and server as above. Medians
-of 5.
+Recorded 2026-11-15 on gorm-5b, same machine and server as above (shared
+with other test runs; ns/op is noise). Medians of 5. The pgx row is the
+statement as it ran before batch 5b, kept in the benchmark for the
+comparison; the gorm row is the production code. AccountBalances was on GORM before batch 5b; its
+pgx row is the statement it had before batch 4d.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| `gateway` BenchmarkHotSettingsRow/pgx | 56 013 | 909 | 10 |
-| `gateway` BenchmarkHotSettingsRow/gorm | 72 454 | 6 191 | 69 |
-| `gateway` BenchmarkHotStickyRules/pgx | 78 480 | 3 234 | 52 |
-| `gateway` BenchmarkHotStickyRules/gorm | 110 444 | 19 991 | 210 |
-| `store` BenchmarkHotQuotaObservation/pgx | 456 373 | 466 | 12 |
-| `store` BenchmarkHotQuotaObservation/gorm | 483 965 | 5 149 | 47 |
-| `store` BenchmarkHotReadAccountQuotas/pgx | 47 262 | 2 854 | 45 |
-| `store` BenchmarkHotReadAccountQuotas/gorm | 74 536 | 7 599 | 104 |
-| `store` BenchmarkHotAccountBalances/pgx | 103 089 | 997 | 19 |
-| `store` BenchmarkHotAccountBalances/gorm | 69 130 | 4 901 | 70 |
+| `gateway` BenchmarkHotSettingsRow/pgx (before) | 33 006 | 893 | 9 |
+| `gateway` BenchmarkHotSettingsRow/gorm (after) | 42 181 | 4 181 | 46 |
+| `gateway` BenchmarkHotStickyRules/pgx (before) | 56 996 | 3 224 | 51 |
+| `gateway` BenchmarkHotStickyRules/gorm (after) | 68 348 | 8 054 | 141 |
+| `store` BenchmarkHotQuotaObservation/pgx (before) | 392 403 | 418 | 9 |
+| `store` BenchmarkHotQuotaObservation/gorm (after) | 544 045 | 5 197 | 50 |
+| `store` BenchmarkHotReadAccountQuotas/pgx (before) | 44 118 | 2 861 | 46 |
+| `store` BenchmarkHotReadAccountQuotas/gorm (after) | 56 928 | 7 604 | 105 |
+| `store` BenchmarkHotAccountBalances/pgx | 33 832 | 997 | 19 |
+| `store` BenchmarkHotAccountBalances/gorm | 50 366 | 4 901 | 70 |
 
-GORM takes 6.9, 4.0, 3.9 and 2.3 times the allocations (the limit is 1.5),
-so the settings reads, `listRules`, `ApplyAccountQuotaObservation` and
-`ReadAccountQuotas` stay on pgx under `//gormguard:allow-pgx`. The other
-statements are on GORM: the sticky rule console writes, the start-up sync
-of the built-in rules and the failure policy lock in the gateway;
-`AccountBalances` (3.7 times, not on the request path) and the other
-balance, quota, credential refresh and settings statements of package
-store, which the console, the refresh jobs and the debounced passive quota
-writer (`SaveAccountQuota`, at most every 30 s per account) run.
+The other statements of both packages were already on GORM: the sticky
+rule console writes, the start-up sync of the built-in rules and the
+failure policy lock in the gateway; the other balance, quota, credential
+refresh and settings statements of package store, which the console, the
+refresh jobs and the debounced passive quota writer (`SaveAccountQuota`, at
+most every 30 s per account) run.
+
+## Batch 5b: the API key lookup and the remaining batches
+
+`apikey.(*Service).lookup` (`lookupSQL`) is the first statement of every
+gateway request and is not cached. It stayed on pgx under
+`//gormguard:allow-pgx` until batch 5b; it is on GORM now as
+`Raw(...).Row().Scan` into local variables (`lookupQuery`; the jsonb
+columns through `store.JSON`, the IP list through `store.Strings`):
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/apikey/
+```
+
+Recorded 2026-11-15 on gorm-5b, same machine and server as above (shared
+with other test runs; ns/op is noise). Medians of 5. The pgx row is the
+statement as it ran before batch 5b, kept in the benchmark for the
+comparison; the gorm row is the production code.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotKeyLookup/pgx (before) | 100 239 | 4 543 | 88 |
+| BenchmarkHotKeyLookup/gorm (after) | 128 383 | 11 162 | 150 |
+
+1.7 times the allocations. Most of the difference is the GORM bridge
+(store's `bridgeRows`): one decoded value per column handed to
+database/sql (a string for each text and numeric column, a boxed int64 or
+time), and GORM's statement (clone, SQL builder, Row's database/sql
+connection). Those are store-wide costs, not the lookup's.
+
+Batch 5b also replaced the pgx.Batch and CopyFrom writes outside billing
+and usage, statement for statement and in the same transaction:
+
+- `event.Publisher.Emit`: one multi-row `INSERT INTO events` in the
+  caller's transaction (ids in event order), one round trip as before;
+- `plugin/egress` `insertOpen` (a batch of `INSERT ... RETURNING id`) and
+  `insertDone` (CopyFrom): multi-row `Create` of `model.PluginEgressLog`
+  with `RETURNING id`, at most 5461 rows (65535 / 12 parameters) per
+  statement, several statements in one transaction; a failed write returns
+  no ids, as the batch's implicit transaction had written none;
+- `webui` `Publish`: the two writes of each file, in file order, in the
+  publishing transaction;
+- `account` list page and usage overview (above, batch 2a).
 
 ## Batch 3a: console authentication (iam)
 

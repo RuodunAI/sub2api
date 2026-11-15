@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -255,16 +257,21 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 }
 
 // settingValue reads the document of settings row key, nil when there is no
-// row (the column is NOT NULL). It stays on pgx, unlike store.SettingValue:
-// the settings cache reloads it on the request path.
+// row (the column is NOT NULL). The settings cache reloads it on the request
+// path, so it is Raw SQL scanned through Row, the form that allocates least
+// (BenchmarkHotSettingsRow).
 func settingValue(ctx context.Context, q store.Querier, key string) ([]byte, error) {
 	var raw []byte
-	//gormguard:allow-pgx cached request-path read (settingsTTL); GORM takes 6.9x the allocations (BASELINE.md, batch 4d)
-	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&raw)
+	err := settingValueQuery(store.G(ctx, q), key).Row().Scan(&raw)
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
 	return raw, err
+}
+
+// settingValueQuery selects the document of settings row key.
+func settingValueQuery(db *gorm.DB, key string) *gorm.DB {
+	return db.Raw(`SELECT value FROM settings WHERE key = ?`, key)
 }
 
 func loadSettingsRow(ctx context.Context, q store.Querier, key string, into any) error {

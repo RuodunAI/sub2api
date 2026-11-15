@@ -9,7 +9,19 @@ import (
 )
 
 // The SQL of the shared asset statements built with GORM (see package
-// gormtest). The per-file writes of Publish stay one pgx.Batch.
+// gormtest).
+
+// The per-file writes of Publish: the blob, then its place in the build.
+func TestSQLAssetPut(t *testing.T) {
+	var path string
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return putAsset(db, publicFile{name: "assets/a.js", hash: "h", body: []byte("x")}).Scan(&path)
+	})
+}
+
+func TestSQLAssetAddBuildFile(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return db.Exec(addBuildFileSQL, "b1", "assets/a.js") })
+}
 
 func TestSQLAssetRenewBuild(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {

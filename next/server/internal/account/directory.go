@@ -150,36 +150,7 @@ func (s *Service) groupSnapshot(ctx context.Context, groupID int64) (groupSnap, 
 	}
 	v, err, _ := s.sf.Do("g:"+itoa(groupID), func() (any, error) {
 		// A miss of the snapshot cache runs this read on a gateway request.
-		//gormguard:allow-pgx request path on a cache miss: GORM takes 2.4x the allocations (gormtest/BASELINE.md)
-		rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
-				a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
-				COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END
-			FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
-			WHERE ag.group_id = $1 AND a.deleted_at IS NULL AND a.schedulable
-				AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)
-			ORDER BY a.priority DESC, a.id`, groupID)
-		if err != nil {
-			return nil, err
-		}
-		snap := groupSnap{at: now}
-		snap.refs, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (core.AccountRef, error) {
-			var a core.AccountRef
-			var mapping, limits []byte
-			var until *time.Time
-			err := r.Scan(&a.ID, &a.Name, &a.PluginKey, &a.Type, &a.Priority, &a.Weight, &a.MaxConcurrency, &a.ProxyID,
-				&a.Models, &mapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &limits, &a.Environment, &a.ConversionLossPolicy, &until)
-			if err == nil && len(mapping) > 0 {
-				_ = json.Unmarshal(mapping, &a.ModelMapping)
-			}
-			if until != nil {
-				if snap.releases == nil {
-					snap.releases = map[int64]time.Time{}
-				}
-				snap.releases[a.ID] = *until
-			}
-			a.ModelLimits = parseModelLimits(limits)
-			return a, err
-		})
+		snap, err := readGroupSnap(store.G(ctx, s.d.DB.Pool), groupID, now)
 		if err != nil {
 			return nil, err
 		}
@@ -194,6 +165,54 @@ func (s *Service) groupSnapshot(ctx context.Context, groupID int64) (groupSnap, 
 		return groupSnap{}, err
 	}
 	return v.(groupSnap), nil
+}
+
+// groupMembersQuery selects the group's schedulable accounts, in
+// scheduling order, as readGroupSnap scans them: the active ones and those
+// under a timed automatic disable, with its release time (else NULL).
+func groupMembersQuery(db *gorm.DB, groupID int64) *gorm.DB {
+	return db.Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
+			a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
+			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END
+		FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
+		WHERE ag.group_id = ? AND a.deleted_at IS NULL AND a.schedulable
+			AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)
+		ORDER BY a.priority DESC, a.id`, groupID)
+}
+
+// readGroupSnap reads the group's snapshot taken at now. It runs on a
+// gateway request when the snapshot cache misses, so it scans the rows of
+// the Raw statement into local variables, the GORM form that allocates
+// least (BenchmarkHotGroupSnapshot).
+func readGroupSnap(db *gorm.DB, groupID int64, now time.Time) (groupSnap, error) {
+	snap := groupSnap{at: now, refs: []core.AccountRef{}}
+	rows, err := groupMembersQuery(db, groupID).Rows()
+	if err != nil {
+		return snap, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a core.AccountRef
+		var mapping, limits []byte
+		var env store.JSON[core.EnvironmentValues]
+		var until *time.Time
+		if err := rows.Scan(&a.ID, &a.Name, &a.PluginKey, &a.Type, &a.Priority, &a.Weight, &a.MaxConcurrency, &a.ProxyID,
+			(*store.Strings)(&a.Models), &mapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &limits, &env, &a.ConversionLossPolicy, &until); err != nil {
+			return snap, err
+		}
+		if len(mapping) > 0 {
+			_ = json.Unmarshal(mapping, &a.ModelMapping)
+		}
+		if until != nil {
+			if snap.releases == nil {
+				snap.releases = map[int64]time.Time{}
+			}
+			snap.releases[a.ID] = *until
+		}
+		a.ModelLimits, a.Environment = parseModelLimits(limits), env.V
+		snap.refs = append(snap.refs, a)
+	}
+	return snap, rows.Err()
 }
 
 // Load returns one account with decrypted credentials (not deleted; any status).
@@ -241,14 +260,19 @@ func (s *Service) Load(ctx context.Context, id int64) (*core.Account, error) {
 }
 
 // loadLive is loadRow of any live account, unlocked, for Load: a miss of
-// its cache runs it on a gateway request.
+// its cache runs it on a gateway request, so it is Raw SQL scanned through
+// Row, the GORM form that allocates least (BenchmarkHotLoadRow).
 func (s *Service) loadLive(ctx context.Context, id int64) (*row, error) {
-	//gormguard:allow-pgx request path on a cache miss: GORM takes 3.3x the allocations (gormtest/BASELINE.md)
-	a, err := scanRow(s.d.DB.Pool.QueryRow(ctx, selectRow+` WHERE a.id = $1 AND a.deleted_at IS NULL`, id))
+	a, err := scanRow(liveRowQuery(store.G(ctx, s.d.DB.Pool), id).Row())
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
 	return a, err
+}
+
+// liveRowQuery selects rowColumns of live account id.
+func liveRowQuery(db *gorm.DB, id int64) *gorm.DB {
+	return db.Raw(selectRow+` WHERE a.id = ? AND a.deleted_at IS NULL`, id)
 }
 
 // IsCoolingDown reports whether the account has an active cooldown.

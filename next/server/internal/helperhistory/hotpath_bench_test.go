@@ -4,14 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // anyPrefix is the unlocked probe Lookup runs for every request that carries
-// helper prefixes, most of which it answers Unknown. It stays on pgx; the
-// GORM form of the same statement is measured next to it, against a real
-// PostgreSQL (TEST_DATABASE_URL), as recorded in
+// helper prefixes, most of which it answers Unknown. Its GORM statement
+// (gorm) is measured next to the pgx statement it replaced (pgx), against a
+// real PostgreSQL (TEST_DATABASE_URL), as recorded in
 // internal/store/gormtest/BASELINE.md:
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/helperhistory/
@@ -24,13 +22,13 @@ func BenchmarkHotHelperPrefix(b *testing.B) {
 		name  string
 		probe func() (bool, error)
 	}{
-		{"pgx", func() (bool, error) { return s.anyPrefix(ctx, r.Owner, miss) }},
-		{"gorm", func() (bool, error) {
+		{"pgx", func() (bool, error) {
 			var found bool
-			db := store.G(ctx, s.db.Pool)
-			err := db.Raw("SELECT EXISTS(?)", withPrefixes(db, r.Owner, miss).Select("1")).Scan(&found).Error
+			err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND public_prefix_digest=ANY($3))`,
+				r.Owner.UserID, r.Owner.GroupID, miss).Scan(&found)
 			return found, err
 		}},
+		{"gorm", func() (bool, error) { return s.anyPrefix(ctx, r.Owner, miss) }},
 	} {
 		b.Run(bc.name, func(b *testing.B) {
 			if found, err := bc.probe(); err != nil || found {

@@ -1,0 +1,8 @@
+-- sql
+INSERT INTO web_assets(path,sha256,body,size) VALUES($1,$2,$3,$4)
+		ON CONFLICT(path) DO UPDATE SET sha256=web_assets.sha256 WHERE web_assets.sha256=EXCLUDED.sha256 RETURNING path
+-- vars
+$1 string "assets/a.js"
+$2 string "h"
+$3 store.Bytes [120]
+$4 int 1

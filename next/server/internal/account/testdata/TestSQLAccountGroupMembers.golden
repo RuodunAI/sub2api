@@ -1,0 +1,10 @@
+-- sql
+SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
+			a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
+			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END
+		FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
+		WHERE ag.group_id = $1 AND a.deleted_at IS NULL AND a.schedulable
+			AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)
+		ORDER BY a.priority DESC, a.id
+-- vars
+$1 int64 9

@@ -53,6 +53,35 @@ func TestSQLAccountLoadRow(t *testing.T) {
 	})
 }
 
+// The rows of Load (loadLive) and of the group snapshot (Candidates), read
+// on a gateway request when their caches miss.
+func TestSQLAccountLoadLive(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return liveRowQuery(db, 5).Scan(&struct{}{}) })
+}
+
+func TestSQLAccountGroupMembers(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return groupMembersQuery(db, 9).Scan(&struct{}{}) })
+}
+
+// The account list: the total and one page, under the same conditions
+// (the caller's scope among them).
+func TestSQLAccountList(t *testing.T) {
+	var conds store.Conds
+	conds.And("a.deleted_at IS NULL")
+	conds = append(conds, core.AccountRows.Scope(snapshotScope))
+	conds.And("a.plugin_key = ANY(?)", store.Strings{"anthropic", "openai"})
+	conds.And("(a.status IN (?, 'error') OR (a.status = 'active' AND NOT a.schedulable))", "auto_disabled")
+	conds.And("a.id = ANY(?)", store.Int64s{3, 4})
+	conds.And("a.name ILIKE '%' || ? || '%'", "prod")
+	t.Run("count", func(t *testing.T) {
+		var n int64
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return listCount(db, conds).Count(&n) })
+	})
+	t.Run("page", func(t *testing.T) {
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return listRows(db, conds, 3, 20).Scan(&struct{}{}) })
+	})
+}
+
 func TestSQLAccountSoftDelete(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return softDelete(db, &model.Account{}, 5, snapshotScope) })
 }

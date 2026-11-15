@@ -263,13 +263,13 @@ func (s *Service) Authenticate(ctx context.Context, rawKey string) (*core.APIKey
 	}, nil
 }
 
-// lookupSQL reads what authenticating a key ($1, its hash) needs in one
+// lookupSQL reads what authenticating a key (its hash) needs in one
 // statement: the key, its owner and the owner's segment, the key's group and
 // what the segment gets there. Whether the owner may use the group is
 // segment.OpenToUserSQL, as for the key endpoints and /me/groups.
 //
-// It runs on every gateway request and stays on pgx: through GORM it took
-// 149 to 186 allocations per lookup instead of 88 (BenchmarkHotKeyLookup;
+// It runs on every gateway request: Raw SQL scanned through Row into local
+// variables, the GORM form that allocates least (BenchmarkHotKeyLookup;
 // internal/store/gormtest/BASELINE.md).
 var lookupSQL = `SELECT k.id, k.user_id, k.status, k.expires_at,
 		(u.status = 'active' AND u.deleted_at IS NULL),
@@ -283,7 +283,10 @@ var lookupSQL = `SELECT k.id, k.user_id, k.status, k.expires_at,
 	JOIN segments s ON s.id = u.segment_id
 	LEFT JOIN groups g ON g.id = k.group_id
 	LEFT JOIN segment_groups sg ON sg.segment_id = s.id AND sg.group_id = g.id
-	WHERE k.key_hash = $1 AND k.deleted_at IS NULL`
+	WHERE k.key_hash = ? AND k.deleted_at IS NULL`
+
+// lookupQuery is the statement of lookup.
+func lookupQuery(db *gorm.DB, hash string) *gorm.DB { return db.Raw(lookupSQL, hash) }
 
 func (s *Service) lookup(ctx context.Context, hash string) (*cached, error) {
 	e := &cached{}
@@ -291,12 +294,15 @@ func (s *Service) lookup(ctx context.Context, hash string) (*cached, error) {
 	// the group (NULL = none).
 	var groupRate, discount decimal.Decimal
 	var override *decimal.Decimal
-	//gormguard:allow-pgx per-request key lookup; GORM costs 1.7-2.1x the allocations (lookupSQL)
-	err := s.db.Pool.QueryRow(ctx, lookupSQL, hash).Scan(
+	// database/sql hands jsonb over as its document: JSON decodes it.
+	var allow store.JSON[[]string]
+	var env store.JSON[core.EnvironmentValues]
+	err := lookupQuery(store.G(ctx, s.db.Pool), hash).Row().Scan(
 		&e.KeyID, &e.UserID, &e.KeyStatus, &e.ExpiresAt, &e.UserActive,
-		&e.GroupID, &e.GroupName, &e.GroupStatus, &groupRate, &e.ModelAllowlist, &e.ModelFilterMode, &e.GroupEnvironment, &e.GroupAvailable, &e.AllowedIPs,
+		&e.GroupID, &e.GroupName, &e.GroupStatus, &groupRate, &allow, &e.ModelFilterMode, &env, &e.GroupAvailable, (*store.Strings)(&e.AllowedIPs),
 		&e.KeyLimits.RPM, &e.KeyLimits.TPM, &e.KeyLimits.Concurrency, &e.KeyQuota.Limit, &e.KeyQuota.Used, &e.GroupLossPolicy,
 		&e.SegmentID, &discount, &override)
+	e.ModelAllowlist, e.GroupEnvironment = allow.V, env.V
 	switch {
 	case store.IsNoRows(err):
 		e = &cached{Found: false}

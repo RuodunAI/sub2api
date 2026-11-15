@@ -13,7 +13,15 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
+
+// liveAccounts keeps the accounts that are not deleted, as every list does.
+func liveAccounts() store.Conds {
+	var c store.Conds
+	c.And("a.deleted_at IS NULL")
+	return c
+}
 
 // slowSlots answers every kind (fakeSlots refuses model-list kinds, so the
 // list never exercised fillModelInUse) after a random delay, so the
@@ -88,7 +96,7 @@ func TestListViewsConcurrentReads(t *testing.T) {
 	svc := e.listService(slots)
 
 	for range 5 {
-		total, rows, err := svc.listPage(ctx, ` WHERE a.deleted_at IS NULL`, nil, 1, 50)
+		total, rows, err := svc.listPage(ctx, liveAccounts(), 1, 50)
 		if err != nil || total != int64(len(ids)) || len(rows) != len(ids) {
 			t.Fatalf("list page: %d %d %v", total, len(rows), err)
 		}
@@ -136,7 +144,9 @@ func TestListViewsConcurrentReads(t *testing.T) {
 	}
 
 	// An empty page past the end still reports the total.
-	total, rows, err := svc.listPage(ctx, ` WHERE a.deleted_at IS NULL AND a.name LIKE $1`, []any{"sk-list-%"}, 3, 10)
+	conds := liveAccounts()
+	conds.And("a.name LIKE ?", "sk-list-%")
+	total, rows, err := svc.listPage(ctx, conds, 3, 10)
 	if err != nil || total != int64(len(ids)) || len(rows) != 0 {
 		t.Fatalf("page past the end: %d %d %v", total, len(rows), err)
 	}
@@ -147,7 +157,7 @@ func TestListViewsSurvivePanickingRead(t *testing.T) {
 	ctx := context.Background()
 	e.mkAccount("sk-panic-0001")
 	svc := e.listService(&slowSlots{calls: map[string]int{}, panic: true})
-	_, rows, err := svc.listPage(ctx, ` WHERE a.deleted_at IS NULL`, nil, 1, 20)
+	_, rows, err := svc.listPage(ctx, liveAccounts(), 1, 20)
 	if err != nil {
 		t.Fatal(err)
 	}

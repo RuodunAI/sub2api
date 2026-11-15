@@ -175,6 +175,18 @@ func renewBuild(g *gorm.DB, build string, secs float64) *gorm.DB {
 		})
 }
 
+// putAsset stores the blob of f, or keeps the stored one when it has the
+// same hash, and returns its path; a retained immutable path is never
+// replaced with different bytes, so for those it returns no row.
+func putAsset(g *gorm.DB, f publicFile) *gorm.DB {
+	return g.Raw(`INSERT INTO web_assets(path,sha256,body,size) VALUES(?,?,?,?)
+		ON CONFLICT(path) DO UPDATE SET sha256=web_assets.sha256 WHERE web_assets.sha256=EXCLUDED.sha256 RETURNING path`,
+		f.name, f.hash, store.Bytes(f.body), len(f.body))
+}
+
+// addBuildFileSQL lists a path among the files of a build.
+const addBuildFileSQL = `INSERT INTO web_asset_build_files(build_id,path) VALUES(?,?) ON CONFLICT DO NOTHING`
+
 // storeUsage selects the bytes and files of the shared assets and the
 // number of builds.
 func storeUsage(g *gorm.DB) *gorm.DB {
@@ -196,27 +208,14 @@ func (s *SharedAssets) Publish(ctx context.Context) error {
 		if err := g.Exec(publishBuildSQL, s.buildID, s.opts.Lease.Seconds()).Error; err != nil {
 			return err
 		}
-		batch := &pgx.Batch{}
-		for _, f := range s.files {
-			// Never replace a retained immutable path with different bytes.
-			batch.Queue(`INSERT INTO web_assets(path,sha256,body,size) VALUES($1,$2,$3,$4)
-				ON CONFLICT(path) DO UPDATE SET sha256=web_assets.sha256 WHERE web_assets.sha256=EXCLUDED.sha256 RETURNING path`, f.name, f.hash, f.body, len(f.body))
-			batch.Queue(`INSERT INTO web_asset_build_files(build_id,path) VALUES($1,$2) ON CONFLICT DO NOTHING`, s.buildID, f.name)
-		}
-		br := tx.SendBatch(ctx, batch)
 		for _, f := range s.files {
 			var name string
-			if err := br.QueryRow().Scan(&name); err != nil {
-				_ = br.Close()
+			if err := putAsset(g, f).Row().Scan(&name); err != nil {
 				return fmt.Errorf("immutable console asset collision or write failure (%s): %w", f.name, err)
 			}
-			if _, err := br.Exec(); err != nil {
-				_ = br.Close()
+			if err := g.Exec(addBuildFileSQL, s.buildID, f.name).Error; err != nil {
 				return err
 			}
-		}
-		if err := br.Close(); err != nil {
-			return err
 		}
 		var size int64
 		var files, builds int

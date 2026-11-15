@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -16,8 +15,8 @@ import (
 
 // The account reads of the gateway's request path: the group snapshot of
 // Candidates and the row of Load. Both are cached for snapshotTTL, so a
-// request runs them on a miss only; they stay on pgx. Each is measured next
-// to the GORM form of the same statement, against a real PostgreSQL
+// request runs them on a miss only. Each GORM read (gorm) is measured next
+// to the pgx statement it replaced (pgx), against a real PostgreSQL
 // (TEST_DATABASE_URL), as recorded in internal/store/gormtest/BASELINE.md:
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/account/
@@ -47,7 +46,7 @@ func hotFixture(b *testing.B) (*Service, int64, int64) {
 	return New(Deps{DB: db}), group, first
 }
 
-// benchPaths runs the pgx and the GORM form of one read.
+// benchPaths runs the former pgx and the GORM form of one read.
 func benchPaths(b *testing.B, pgxPath, gormPath func() error) {
 	for _, p := range []struct {
 		name string
@@ -72,17 +71,11 @@ func BenchmarkHotGroupSnapshot(b *testing.B) {
 	s, group, _ := hotFixture(b)
 	ctx := context.Background()
 	benchPaths(b, func() error {
-		_, err := pgxGroupMembers(ctx, s.d.DB, group)
+		_, err := pgxGroupSnap(ctx, s.d.DB, group, time.Now())
 		return err
 	}, func() error {
-		var members []schedulable
-		if err := schedulableMembers(store.G(ctx, s.d.DB.Pool), group).Scan(&members).Error; err != nil {
-			return err
-		}
-		for _, m := range members {
-			_ = m.ref()
-		}
-		return nil
+		_, err := readGroupSnap(store.G(ctx, s.d.DB.Pool), group, time.Now())
+		return err
 	})
 }
 
@@ -90,16 +83,16 @@ func BenchmarkHotLoadRow(b *testing.B) {
 	s, _, id := hotFixture(b)
 	ctx := context.Background()
 	benchPaths(b, func() error {
-		_, err := s.loadLive(ctx, id)
+		_, err := scanRow(s.d.DB.Pool.QueryRow(ctx, selectRow+` WHERE a.id = $1 AND a.deleted_at IS NULL`, id))
 		return err
 	}, func() error {
-		_, err := scanRow(selectRows(store.G(ctx, s.d.DB.Pool)).Where("a.id = ? AND a.deleted_at IS NULL", id).Row())
+		_, err := s.loadLive(ctx, id)
 		return err
 	})
 }
 
-// pgxGroupMembers is the statement of groupSnapshot.
-func pgxGroupMembers(ctx context.Context, db *store.DB, groupID int64) ([]core.AccountRef, error) {
+// pgxGroupSnap is readGroupSnap as it ran on pgx.
+func pgxGroupSnap(ctx context.Context, db *store.DB, groupID int64, now time.Time) (groupSnap, error) {
 	rows, err := db.Pool.Query(ctx, `SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
 			a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
 			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END
@@ -108,9 +101,10 @@ func pgxGroupMembers(ctx context.Context, db *store.DB, groupID int64) ([]core.A
 			AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)
 		ORDER BY a.priority DESC, a.id`, groupID)
 	if err != nil {
-		return nil, err
+		return groupSnap{}, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (core.AccountRef, error) {
+	snap := groupSnap{at: now}
+	snap.refs, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (core.AccountRef, error) {
 		var a core.AccountRef
 		var mapping, limits []byte
 		var until *time.Time
@@ -119,51 +113,14 @@ func pgxGroupMembers(ctx context.Context, db *store.DB, groupID int64) ([]core.A
 		if err == nil && len(mapping) > 0 {
 			_ = json.Unmarshal(mapping, &a.ModelMapping)
 		}
+		if until != nil {
+			if snap.releases == nil {
+				snap.releases = map[int64]time.Time{}
+			}
+			snap.releases[a.ID] = *until
+		}
 		a.ModelLimits = parseModelLimits(limits)
 		return a, err
 	})
-}
-
-// schedulableMembers is the GORM form of groupSnapshot's statement.
-func schedulableMembers(db *gorm.DB, groupID int64) *gorm.DB {
-	return db.Table("accounts a").Select(`a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
-			a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
-			COALESCE(a.conversion_loss_policy, '') AS conversion_loss_policy, CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END AS release`).
-		Joins("JOIN account_groups ag ON ag.account_id = a.id").
-		Where(`ag.group_id = ? AND a.deleted_at IS NULL AND a.schedulable
-			AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)`, groupID).
-		Order("a.priority DESC, a.id")
-}
-
-// schedulable is a row of schedulableMembers.
-type schedulable struct {
-	ID                   int64
-	Name                 string
-	PluginKey            string
-	Type                 string
-	Priority             int
-	Weight               int
-	MaxConcurrency       int
-	ProxyID              *int64
-	Models               store.Strings
-	ModelMapping         []byte
-	RPMLimit             int   `gorm:"column:rpm_limit"`
-	TPMLimit             int64 `gorm:"column:tpm_limit"`
-	SPMLimit             int   `gorm:"column:spm_limit"`
-	SPMWindowSeconds     int   `gorm:"column:spm_window_seconds"`
-	ModelLimits          []byte
-	Environment          store.JSON[core.EnvironmentValues]
-	ConversionLossPolicy string
-	Release              *time.Time
-}
-
-func (m schedulable) ref() core.AccountRef {
-	a := core.AccountRef{ID: m.ID, Name: m.Name, PluginKey: m.PluginKey, Type: m.Type, Priority: m.Priority, Weight: m.Weight,
-		MaxConcurrency: m.MaxConcurrency, ProxyID: m.ProxyID, Models: m.Models, RPMLimit: m.RPMLimit, TPMLimit: m.TPMLimit,
-		SPMLimit: m.SPMLimit, SPMWindowSeconds: m.SPMWindowSeconds, ModelLimits: parseModelLimits(m.ModelLimits),
-		Environment: m.Environment.V, ConversionLossPolicy: m.ConversionLossPolicy}
-	if len(m.ModelMapping) > 0 {
-		_ = json.Unmarshal(m.ModelMapping, &a.ModelMapping)
-	}
-	return a
+	return snap, err
 }

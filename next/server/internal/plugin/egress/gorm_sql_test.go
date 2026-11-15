@@ -21,6 +21,19 @@ func TestSQLResetOpenLogs(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return resetOpenLogs(tx, "node-1", sqlFrom) })
 }
 
+// The log rows go in as one multi-row INSERT that returns their ids: an
+// open row and a finished one, whose zero bytes and error take the column
+// defaults (0 and the empty string).
+func TestSQLInsertLogRows(t *testing.T) {
+	closed := sqlTo
+	logs := []model.PluginEgressLog{
+		{PluginKey: "demo", NodeID: "node-1", Network: "tcp", Host: "api.example.com", Port: 443, StartedAt: sqlFrom, Result: "open"},
+		{PluginKey: "demo", NodeID: "node-1", Network: "tcp", Host: "api.example.com", Port: 443, StartedAt: sqlFrom,
+			DurationMs: 1500, BytesIn: 10, Result: ResultOK, ClosedAt: &closed},
+	}
+	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return insertLogRows(tx, logs) })
+}
+
 // The int32 wrap of a duration happens in Go, before the array is built.
 func TestSQLCloseLogRows(t *testing.T) {
 	rows := []closedRow{
