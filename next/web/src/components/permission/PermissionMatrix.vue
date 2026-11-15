@@ -21,7 +21,7 @@ import { useI18n } from 'vue-i18n'
 import { SBadge, SButton, SCheckbox, SHint, SIcon, SSelect } from '@sub2api/ui'
 import type { PermissionGroup } from '@/api/types'
 import { lt } from '@/i18n'
-import type { Scope, ScopeResource } from '@/authz/implies'
+import type { Scope } from '@/authz/implies'
 import { offerOf } from '@/authz/scopeChoice'
 import { cellKeys, cellOfScopes, scopesOfCell } from '@/authz/pluginGrants'
 import ScopePicker from '@/views/roles/ScopePicker.vue'
@@ -47,8 +47,6 @@ const props = withDefaults(
 )
 const { t } = useI18n()
 
-/** ScopePicker's resource for a plugin action: none of the core rows, the plugin prop instead. */
-const PLUGIN_RESOURCE = '' as ScopeResource
 /** Locks that freeze a cell outright; the others (not_held, removed) only take away. */
 const FIXED = new Set<CellLock>(['superuser', 'pending_review', 'critical', 'role_readonly'])
 const LOCK_HINT: Record<Exclude<CellLock, null>, string> = {
@@ -293,7 +291,7 @@ function choose(p: MatrixPerm, r: MatrixRole, c: Choice) {
       </div>
       <ScopePicker
         :action="expandedCell.perm.action"
-        :resource="PLUGIN_RESOURCE"
+        resource=""
         :plugin="{ key: pluginKey, local: expandedCell.perm.local, scope: expandedCell.perm.scope }"
         :scopes="scopesOfCell(matrix.cell(expandedCell.perm, expandedCell.role), expandedCell.perm.action)"
         :offer="offerFor(expandedCell.perm.action)"

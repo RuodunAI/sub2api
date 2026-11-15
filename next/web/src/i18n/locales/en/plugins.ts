@@ -298,13 +298,25 @@ export default {
     revivedTitle: '{n} declared again',
     revivedHint: 'Removed in the version before and declared again: they come back with their grants, without the plugin’s suggestion applied again.',
     removedTitle: '{n} removed in this version',
-    removedHint: 'The grants of the {m} roles holding them are kept but not in force; a later version declaring them again restores them as they were.'
+    removedHint: 'The grants of the {m} roles holding them are kept but not in force; a later version declaring them again restores them as they were.',
+    unsaved: '{n} unsaved changes',
+    none: 'This plugin declares no permissions for users.',
+    saved: 'Role grants saved'
+  },
+
+  permissions: {
+    hostTitle: 'Access the plugin requests',
+    hostHint: 'What the plugin itself may reach in the system; approved at install.',
+    userTitle: 'Permissions the plugin provides to users',
+    userHint: 'Which roles get them. The same data as the Roles page: a change here changes those roles.',
+    disabledKept: 'The plugin is disabled: grants are kept, not in force while it is disabled, and back as they were when it is enabled again.'
   },
 
   detail: {
     tabs: {
       overview: 'Overview',
       grants: 'Grants',
+      permissions: 'Permissions',
       nodes: 'Nodes',
       hooks: 'Hooks',
       jobs: 'Jobs',
@@ -344,7 +356,16 @@ export default {
     revoke: 'Revoke',
     revokeTitle: 'Revoke permission',
     revokeConfirm: 'Revoke "{perm}"? Plugin calls that need it will be denied.',
-    revoked: 'Permission revoked'
+    revoked: 'Permission revoked',
+    narrow: 'Narrow',
+    narrowTitle: 'Narrow the scope of "{perm}"',
+    narrowHint: 'Remove the items no longer needed; keep at least one in each list.',
+    narrowed: 'Scope narrowed',
+    regrant: 'Grant again',
+    regrantConfirm: 'Grant "{perm}" again with the scope the plugin requests?',
+    regranted: 'Permission granted again',
+    scopeTooWide: 'The scope is wider than the plugin requests',
+    needsPermission: 'Needs the {permission} permission'
   },
 
   nodes: {

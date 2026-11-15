@@ -298,13 +298,25 @@ export default {
     revivedTitle: '重新声明 {n} 项',
     revivedHint: '上一版移除、本版重新声明的权限，带着原授权恢复，不重新套用插件建议。',
     removedTitle: '本版移除 {n} 项',
-    removedHint: '持有它的 {m} 个角色的授权会保留但不生效；以后版本再声明时按原样恢复。'
+    removedHint: '持有它的 {m} 个角色的授权会保留但不生效；以后版本再声明时按原样恢复。',
+    unsaved: '未保存的修改 {n} 处',
+    none: '这个插件没有声明给用户的权限。',
+    saved: '已保存角色授权'
+  },
+
+  permissions: {
+    hostTitle: '插件申请的访问权限',
+    hostHint: '插件自己访问系统资源用，安装时批准。',
+    userTitle: '插件提供给用户的权限',
+    userHint: '分给哪些角色。与角色页同步，改这里等于改对应角色。',
+    disabledKept: '插件已停用：授权保留，停用期间不生效，重新启用后原样恢复。'
   },
 
   detail: {
     tabs: {
       overview: '概览',
       grants: '授权',
+      permissions: '权限',
       nodes: '节点',
       hooks: '钩子',
       jobs: '任务',
@@ -344,7 +356,16 @@ export default {
     revoke: '撤销',
     revokeTitle: '撤销授权',
     revokeConfirm: '确定撤销"{perm}"？插件需要该权限的调用将被拒绝。',
-    revoked: '已撤销授权'
+    revoked: '已撤销授权',
+    narrow: '收窄',
+    narrowTitle: '收窄「{perm}」的范围',
+    narrowHint: '去掉不再需要的项，至少保留一项。',
+    narrowed: '已收窄',
+    regrant: '重新授予',
+    regrantConfirm: '按插件申请的范围重新授予「{perm}」？',
+    regranted: '已重新授予',
+    scopeTooWide: '范围超出了插件申请的范围',
+    needsPermission: '需要 {permission} 权限'
   },
 
   nodes: {
