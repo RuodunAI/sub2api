@@ -790,6 +790,42 @@ implements sql.Scanner (as the store types must, to be GORM columns)
 still gets database/sql's text, so the cheaper read would take pgx's own
 types in the models. Batch 6 keeps the text read.
 
+### Pool Exec on a connection of its own (gorm-b6fix-conn)
+
+database/sql's DB.ExecContext gives the connection back before GORM reads
+RowsAffected, which then waits for that connection's mutex: behind a
+statement that took the connection and waits for a row lock, possibly one
+the reader's own transaction holds. runtime-contract/sqlpool (installed by
+store.open) runs a pool Exec on a sql.Conn and reads the result before
+giving it back. Queries, transactions and WithConn are unchanged.
+
+Same command as above, the "before" tree 9470873e and the "after" tree
+the fix, test binaries built once and run interleaved package by package,
+two rounds of `-count 3` (medians of 6), recorded 2026-11-15 on the same
+machine. Only the GORM forms that run an Exec on the pool move:
+
+| Benchmark | before ns/op | B/op | allocs/op | after ns/op | B/op | allocs/op |
+|---|---:|---:|---:|---:|---:|---:|
+| `usage` HotExecution/begin/gorm | 340 677 | 8 085 | 49 | 432 593 | 8 185 | 51 |
+| `usage` HotExecution/observe/gorm | 367 258 | 8 226 | 50 | 491 714 | 8 330 | 52 |
+| `usage` HotTaskBegin/gorm | 326 118 | 3 616 | 44 | 398 097 | 3 712 | 46 |
+| `usage` HotTaskReceive/gorm | 462 526 | 2 942 | 35 | 367 758 | 3 034 | 37 |
+| `usage` HotStmtSettleUpdate/gorm | 397 614 | 7 814 | 164 | 523 986 | 7 912 | 166 |
+| `usage` HotStmtReserveUpdate/gorm | 403 016 | 6 388 | 127 | 546 510 | 6 485 | 129 |
+| `store` HotQuotaObservation/gorm | 340 753 | 4 723 | 45 | 270 875 | 4 819 | 47 |
+
+Each pool Exec costs 2 allocations and about 96 bytes more (the sql.Conn
+and its release); the result itself boxes without one. HotStmtSettleUpdate
+and HotStmtReserveUpdate time the statement alone on the pool; on the
+request path it runs in the settler's transaction and costs nothing more.
+ns/op moved with load in both directions and on the untouched raw forms as
+much (the usage package's /pgx and /sql rows ran -2% to +66% in the after
+column, with no code change on their path), so the table shows no time
+cost beyond noise. Reads and transactions are unchanged to the allocation:
+HotKeyLookup/gorm 141, HotLoadRow/gorm 172, HotSettle 1 026,
+HotPrecharge 468, HotStmtSettleLock/gorm 39, HotGroupSnapshot/gorm 399,
+HotAuthz/catalog 455 allocs/op before and after.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no
