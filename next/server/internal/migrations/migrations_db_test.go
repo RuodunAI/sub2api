@@ -3,6 +3,8 @@ package migrations_test
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"slices"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -421,7 +423,7 @@ func TestPluginPermissionMetaMigration(t *testing.T) {
 	const forget = `DELETE FROM schema_migrations WHERE id='0099_plugin_permission_meta.sql'`
 	require.NoError(t, exec(`INSERT INTO permissions (key, module, label, source, sensitive) VALUES
 		('a:read','a','{}','core',false), ('a:secret','a','{}','core',true), ('b:secret','b','{}','core',true)`))
-	require.Equal(t, "0099_plugin_permission_meta.sql", migrate()[0])
+	require.Equal(t, migrationsAfter(t, "0098_plugin_staged_grants.sql"), migrate())
 	require.Equal(t, "a:read=low a:secret=sensitive b:secret=sensitive", risks())
 
 	require.NoError(t, exec(`UPDATE permissions SET risk = 'critical' WHERE key = 'a:secret';
@@ -652,4 +654,16 @@ func TestOneSuperAdminConcurrentCommits(t *testing.T) {
 	}
 	require.NoError(t, first)
 	require.True(t, store.IsUniqueViolation(second, "user_roles_one_superuser"), "the second holder: %v", second)
+}
+
+// migrationsAfter lists the core migrations after id, in the order
+// store.Migrate applies them: what migrating a database through id runs.
+func migrationsAfter(t *testing.T, id string) []string {
+	t.Helper()
+	names, err := fs.Glob(migrations.FS, "*.sql")
+	require.NoError(t, err)
+	slices.Sort(names)
+	i, found := slices.BinarySearch(names, id)
+	require.True(t, found, "no migration %s", id)
+	return names[i+1:]
 }

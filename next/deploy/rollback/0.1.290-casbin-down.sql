@@ -7,8 +7,9 @@
 --
 -- The migration only added things and never rewrote the role tables, which
 -- stay the source of truth, so nothing is lost: the triggers, functions,
--- views and casbin_rule go, and so does the schema_migrations row. The authz
--- version moves.
+-- views and casbin_rule go, 0097's user_roles_one_superuser gets its
+-- search_path back, the authz.engine setting goes, and so does the
+-- schema_migrations row. The authz version moves.
 
 BEGIN;
 
@@ -26,34 +27,45 @@ BEGIN
     END IF;
 END $$;
 
+DROP TRIGGER IF EXISTS casbin_sync ON permissions;
+DROP TRIGGER IF EXISTS casbin_sync ON roles;
 DROP TRIGGER IF EXISTS casbin_sync ON role_permissions;
 DROP TRIGGER IF EXISTS casbin_sync ON role_permission_scopes;
 DROP TRIGGER IF EXISTS casbin_sync ON user_roles;
-DROP TRIGGER IF EXISTS casbin_sync ON roles;
-DROP TRIGGER IF EXISTS casbin_sync ON permissions;
-DROP TRIGGER IF EXISTS casbin_sync ON users;
+DROP TRIGGER IF EXISTS casbin_sync_truncate ON permissions;
+DROP TRIGGER IF EXISTS casbin_sync_truncate ON roles;
 DROP TRIGGER IF EXISTS casbin_sync_truncate ON role_permissions;
 DROP TRIGGER IF EXISTS casbin_sync_truncate ON role_permission_scopes;
 DROP TRIGGER IF EXISTS casbin_sync_truncate ON user_roles;
-DROP TRIGGER IF EXISTS casbin_sync_truncate ON roles;
-DROP TRIGGER IF EXISTS casbin_sync_truncate ON permissions;
-DROP TRIGGER IF EXISTS casbin_sync_truncate ON users;
 DROP TRIGGER IF EXISTS casbin_sync_truncate ON casbin_rule;
 
 DROP FUNCTION IF EXISTS authz_casbin_on_grant();
 DROP FUNCTION IF EXISTS authz_casbin_on_user_role();
 DROP FUNCTION IF EXISTS authz_casbin_on_role();
 DROP FUNCTION IF EXISTS authz_casbin_on_permission();
-DROP FUNCTION IF EXISTS authz_casbin_on_user();
 DROP FUNCTION IF EXISTS authz_casbin_on_truncate();
 DROP FUNCTION IF EXISTS authz_casbin_sync_grant(bigint, bigint, text);
 DROP FUNCTION IF EXISTS authz_casbin_sync_user_role(bigint, bigint);
 DROP FUNCTION IF EXISTS authz_casbin_set(text, text, text, text, boolean);
+DROP FUNCTION IF EXISTS authz_casbin_check_role_key(text);
+DROP FUNCTION IF EXISTS authz_casbin_check_permission_key(text);
 DROP FUNCTION IF EXISTS authz_casbin_repair();
+
+ALTER FUNCTION user_roles_one_superuser() RESET search_path;
 
 DROP VIEW IF EXISTS authz_casbin_drift;
 DROP VIEW IF EXISTS authz_casbin_expected;
 DROP TABLE IF EXISTS casbin_rule;
+-- The mapping's functions, once nothing that calls them is left.
+DROP FUNCTION IF EXISTS authz_casbin_user_sub(bigint);
+DROP FUNCTION IF EXISTS authz_casbin_role_sub(text);
+DROP FUNCTION IF EXISTS authz_casbin_super_key();
+DROP FUNCTION IF EXISTS authz_casbin_all_rows();
+
+-- The authz.engine setting (CONTRACTS §99.3): 0.1.289 does not read it, and
+-- left behind it would start a later upgrade on the engine chosen before,
+-- casbin perhaps, without the shadow period of §99.5.
+DELETE FROM settings WHERE key = 'authz';
 
 DELETE FROM schema_migrations WHERE id = '0100_casbin_rule.sql';
 
