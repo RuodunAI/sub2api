@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type ipKey struct{}
@@ -57,8 +58,10 @@ func Audit(ctx context.Context, q store.Querier, actorID int64, action, targetTy
 	if len(ip) > 64 {
 		ip = ip[:64]
 	}
-	_, err = q.Exec(ctx, `
-		INSERT INTO audit_logs (user_id, action, target_type, target_id, detail, ip)
-		VALUES ($1, $2, $3, $4, $5, $6)`, uid, action, targetType, targetID, b, ip)
-	return err
+	// A map on the bare table: every column is written as given, and with
+	// no model GORM adds no RETURNING, so the INSERT stays one Exec (nothing
+	// is read back).
+	return store.G(ctx, q).Table(model.AuditLog{}.TableName()).Create(map[string]any{
+		"user_id": uid, "action": action, "target_type": targetType, "target_id": targetID, "detail": b, "ip": ip,
+	}).Error
 }

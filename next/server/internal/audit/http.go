@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -18,10 +19,10 @@ import (
 // system).
 func RegisterRoutes(r *httpapi.Router, db *store.DB) {
 	r.Perm("GET", "/audit-logs", "audit:read", func(c *gin.Context) {
-		var f store.Filter
+		var f logFilter
 		for _, x := range []struct{ q, cond string }{{"action", "a.action = ?"}, {"target_type", "a.target_type = ?"}, {"target_id", "a.target_id = ?"}} {
 			if v := c.Query(x.q); v != "" {
-				f.And(x.cond, v)
+				f = append(f, logCond{x.cond, v})
 			}
 		}
 		if v := c.Query("user_id"); v != "" {
@@ -30,7 +31,7 @@ func RegisterRoutes(r *httpapi.Router, db *store.DB) {
 				httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("invalid user_id"))
 				return
 			}
-			f.And("a.user_id = ?", id)
+			f = append(f, logCond{"a.user_id = ?", id})
 		}
 		for _, x := range []struct{ q, cond string }{{"from", "a.created_at >= ?"}, {"to", "a.created_at < ?"}} {
 			v := c.Query(x.q)
@@ -42,38 +43,45 @@ func RegisterRoutes(r *httpapi.Router, db *store.DB) {
 				httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("invalid "+x.q+" (RFC 3339)"))
 				return
 			}
-			f.And(x.cond, t)
+			f = append(f, logCond{x.cond, t})
 		}
 		page, size := httpapi.Pagination(c)
-		ctx := c.Request.Context()
-		where, args := f.Cond(), f.Args()
+		g := store.G(c.Request.Context(), db.Pool)
 		var total int64
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs a`+where, args...).Scan(&total); err != nil {
+		if err := f.logs(g).Count(&total).Error; err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		n := len(args)
-		rows, err := db.Pool.Query(ctx, `SELECT to_jsonb(a) || jsonb_build_object('user_email', u.email, 'user_name', u.display_name)
-			FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id`+where+
-			` ORDER BY a.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2), append(args, size, (page-1)*size)...)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		defer rows.Close()
 		items := []json.RawMessage{}
-		for rows.Next() {
-			var item json.RawMessage
-			if err := rows.Scan(&item); err != nil {
-				httpapi.Fail(c, err)
-				return
-			}
-			items = append(items, item)
-		}
-		if err := rows.Err(); err != nil {
+		if err := logPage(g, f, size, (page-1)*size, &items).Error; err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
 		httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
 	})
+}
+
+// logCond is one condition on audit_logs a with its argument.
+type logCond struct {
+	cond string
+	arg  any
+}
+
+// logFilter is the conditions of a listing, ANDed.
+type logFilter []logCond
+
+// logs is the rows of audit_logs a that f keeps.
+func (f logFilter) logs(db *gorm.DB) *gorm.DB {
+	db = db.Table("audit_logs a")
+	for _, c := range f {
+		db = db.Where(c.cond, c.arg)
+	}
+	return db
+}
+
+// logPage reads into dst one page of the rows f keeps, newest first, each
+// row as JSON with the e-mail and name of its actor.
+func logPage(db *gorm.DB, f logFilter, limit, offset int, dst *[]json.RawMessage) *gorm.DB {
+	return f.logs(db).Joins("LEFT JOIN users u ON u.id = a.user_id").Order("a.id DESC").
+		Limit(limit).Offset(offset).Pluck("to_jsonb(a) || jsonb_build_object('user_email', u.email, 'user_name', u.display_name)", dst)
 }
