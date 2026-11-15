@@ -39,11 +39,12 @@ var instanceOwners = map[string]string{
 }
 
 // sqlOwners lists the packages, relative to the module, besides the test
-// files, that may use store.DB.SQL, the pool as a database/sql handle.
+// files, that may use store.DB.SQL, the pool as a database/sql handle, and
+// store.SQLTx, a transaction as one.
 var sqlOwners = map[string]string{
 	"internal/store":    "the pool itself: Close, Ping, MaxConns, WithConn's connection",
-	"internal/task":     "River's driver (riverdatabasesql) takes the *sql.DB",
-	"internal/testutil": "test infrastructure: seeding, Connect's single connection",
+	"internal/task":     "River's driver (riverdatabasesql) takes the *sql.DB, its InsertTx the *sql.Tx",
+	"internal/testutil": "test infrastructure: seeding, Connect's single connection, ExecWithoutTrigger",
 }
 
 // pgxFiles lists the files, relative to the module, that may import pgx:
@@ -247,7 +248,7 @@ func TestRules(t *testing.T) {
 	root, _ := moduleRoot(t)
 	fset := token.NewFileSet()
 	imp := exportImporter(fset, goList(t, root, "-export", "-deps",
-		gormPkg, clausePkg, pgxModule+"/v5", pgxModule+"/v5/pgconn", fixtureModule+"/internal/store"))
+		gormPkg, clausePkg, pgxModule+"/v5", pgxModule+"/v5/pgconn", fixtureModule+"/internal/store", fixtureModule+"/"+testutilPkg))
 	r := rules{
 		module:    fixtureModule,
 		owners:    map[string]string{"internal/store": "test"},
@@ -682,6 +683,190 @@ func f(ctx context.Context, db *store.DB, g *gorm.DB) {
 	_ = db.Gorm
 	_ = db.Ping(ctx)
 	_ = db.MaxConns()
+}
+`,
+		},
+		{
+			name: "tx/ending a transaction, savepoints and connections",
+			pkg:  "internal/billing",
+			src: `
+func f(db *gorm.DB) {
+	db.Commit()
+	db.Rollback()
+	db.SavePoint("s")
+	db.RollbackTo("s")
+	_ = db.Connection(func(*gorm.DB) error { return nil })
+	commit := db.Commit
+	_ = commit
+}
+`,
+			want: []string{ruleTx, ruleTx, ruleTx, ruleTx, ruleTx, ruleTx},
+		},
+		{
+			name:    "tx/database/sql transactions and look-alikes of the new methods pass",
+			pkg:     "internal/billing",
+			imports: `import "database/sql"`,
+			src: `
+type fake struct{}
+
+func (fake) Commit() error     { return nil }
+func (fake) Connection()       {}
+func (fake) SavePoint(string)  {}
+
+func f(tx *sql.Tx, x fake) {
+	_ = tx.Commit()
+	_ = tx.Rollback()
+	_ = x.Commit()
+	x.Connection()
+	x.SavePoint("s")
+}
+`,
+		},
+		{
+			name: "tx/ending one inside store",
+			pkg:  "internal/store",
+			src: `
+func f(db *gorm.DB) {
+	db.Commit()
+	db.SavePoint("s")
+	_ = db.Connection(func(*gorm.DB) error { return nil })
+}
+`,
+		},
+		{
+			name:    "instance/reading a ConnPool outside store",
+			pkg:     "internal/billing",
+			imports: `import "database/sql"`,
+			src: `
+func f(ctx context.Context, db *gorm.DB, s *store.DB) {
+	_, _ = db.Statement.ConnPool.ExecContext(ctx, "UPDATE t SET a = 1")
+	_, _ = s.Gorm.Statement.ConnPool.(*sql.DB)
+	pool := db.ConnPool
+	_ = pool
+	_ = db.Config.ConnPool
+}
+`,
+			want: []string{ruleInstance, ruleInstance, ruleInstance, ruleInstance},
+		},
+		{
+			name: "instance/reading a ConnPool inside store",
+			pkg:  "internal/store",
+			src: `
+func f(ctx context.Context, db *gorm.DB) {
+	_, _ = db.Statement.ConnPool.ExecContext(ctx, "UPDATE t SET a = 1")
+	db.Statement.ConnPool = db.ConnPool
+}
+`,
+		},
+		{
+			name: "sql-handle/store.SQLTx outside the owners, called or as a value",
+			pkg:  "internal/billing",
+			src: `
+func f(ctx context.Context, tx *gorm.DB) {
+	_, _ = store.SQLTx(tx).ExecContext(ctx, "UPDATE t SET a = 1")
+	sqlTx := store.SQLTx
+	_ = sqlTx
+}
+`,
+			want: []string{ruleSQL, ruleSQL},
+		},
+		{
+			name: "sql-handle/store.SQLTx in River's package",
+			pkg:  "internal/task",
+			src:  `func f(tx *gorm.DB) { _ = store.SQLTx(tx) }`,
+		},
+		{
+			name: "sql-handle/store.SQLTx in a test file",
+			pkg:  "internal/billing",
+			file: "billing_test.go",
+			src:  `func f(tx *gorm.DB) { _ = store.SQLTx(tx) }`,
+		},
+		{
+			name:    "testutil-import/a production file",
+			pkg:     "internal/billing",
+			imports: `import "github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"`,
+			src:     `var _ = testutil.DB`,
+			want:    []string{ruleTestutil},
+		},
+		{
+			name:    "testutil-import/a test file",
+			pkg:     "internal/billing",
+			file:    "billing_test.go",
+			imports: `import "github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"`,
+			src:     `var _ = testutil.DB`,
+		},
+		{
+			name:    "testutil-import/a package of testutil",
+			pkg:     "internal/testutil/fixtures",
+			imports: `import "github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"`,
+			src:     `var _ = testutil.DB`,
+		},
+		{
+			name: "tx-pool/the pool inside transaction and connection callbacks",
+			pkg:  "internal/billing",
+			src: `
+type svc struct{ db *store.DB }
+
+type deps struct{ DB *store.DB }
+
+func f(ctx context.Context, s *svc, d deps, db *store.DB) error {
+	_ = db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := store.G(ctx, s.db.Gorm).Exec("UPDATE t SET a = 1").Error; err != nil {
+			return err
+		}
+		_ = d.DB.MaxConns()
+		go func() { _ = (db).Ping(ctx) }()
+		return store.G(ctx, tx).Exec("UPDATE t SET b = 1").Error
+	})
+	_ = db.TxOptions(ctx, store.ReadOnly(), func(*gorm.DB) error { return s.db.Ping(ctx) })
+	return s.db.WithConn(ctx, func(conn *gorm.DB) error {
+		pool := s.db
+		_ = pool
+		return nil
+	})
+}
+`,
+			want: []string{ruleTxPool, ruleTxPool, ruleTxPool, ruleTxPool, ruleTxPool, ruleTxPool},
+		},
+		{
+			name: "tx-pool/gorm's own transactions in store",
+			pkg:  "internal/store",
+			src: `
+func f(ctx context.Context, db *store.DB) error {
+	return db.WithConn(ctx, func(conn *gorm.DB) error {
+		return conn.Transaction(func(tx *gorm.DB) error { return db.Ping(ctx) })
+	})
+}
+`,
+			// Reported in both callbacks: Transaction's runs inside WithConn's.
+			want: []string{ruleTxPool, ruleTxPool},
+		},
+		{
+			name: "tx-pool/the callback's handle, the pool outside, unchecked callbacks and look-alikes pass",
+			pkg:  "internal/billing",
+			src: `
+type svc struct{ db *store.DB }
+
+func (s *svc) work(tx *gorm.DB) error { return store.G(context.Background(), s.db.Gorm).Error }
+
+type fake struct{ db *store.DB }
+
+func (fake) Tx(ctx context.Context, fn func(*gorm.DB) error) error { return nil }
+
+func run(fn func(*gorm.DB) error) error { return nil }
+
+func f(ctx context.Context, s *svc, db *store.DB, x fake) error {
+	if err := db.Ping(ctx); err != nil {
+		return err
+	}
+	_ = db.Tx(ctx, func(tx *gorm.DB) error {
+		type pools []*store.DB
+		_ = pools(nil)
+		return store.G(ctx, tx).Exec("UPDATE t SET a = 1").Error
+	})
+	_ = db.Tx(ctx, s.work)
+	_ = x.Tx(ctx, func(*gorm.DB) error { return x.db.Ping(ctx) })
+	return run(func(*gorm.DB) error { return db.Ping(ctx) })
 }
 `,
 		},
