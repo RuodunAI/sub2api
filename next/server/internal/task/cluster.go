@@ -15,6 +15,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 	"github.com/riverqueue/river/rivertype"
+	"golang.org/x/sync/semaphore"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/background"
@@ -40,8 +41,12 @@ const (
 	executorQueue     = 16
 	// fetchPoll is how often a node polls for runs (River's default; snooze
 	// spreads put-offs over it). River runs poll-only on database/sql (no
-	// LISTEN): a run inserted on this node is fetched at once, one inserted
-	// on another node waits up to fetchPoll.
+	// LISTEN). A run inserted outside a transaction (Enqueue without one,
+	// Trigger, a continuation) on a node whose River client is started wakes
+	// that node's producer and is fetched at once; every other run - inserted
+	// in a transaction (EnqueueTx: InsertTx wakes nothing), on another node,
+	// or on a node that has not started River - waits up to fetchPoll for a
+	// node that runs River to poll.
 	fetchPoll = time.Second
 )
 
@@ -122,12 +127,15 @@ type clusterBackend struct {
 	pluginGroup *background.Group
 
 	client *river.Client[*sql.Tx]
-	// startMu keeps an Insert outside a transaction from overlapping
+	// starting keeps an Insert outside a transaction from overlapping
 	// client.Start. Without a listener (database/sql), River has such an
 	// Insert wake the producer of its queue, which reads state that Start
 	// writes without a lock (river v0.49.0, producer.fetchLimiter): Start
-	// holds it, Insert shares it. InsertTx wakes nothing.
-	startMu sync.RWMutex
+	// holds all of it, Insert one share. InsertTx wakes nothing. A
+	// semaphore rather than a sync.RWMutex: Start can take a while (each
+	// producer's ProducerInit has 10 seconds), and an Insert on a request
+	// path waits for it only as long as its context allows.
+	starting *semaphore.Weighted
 
 	mu       sync.Mutex
 	periodic map[string]bool
@@ -142,7 +150,7 @@ type clusterBackend struct {
 func newClusterBackend(ctx context.Context, log *slog.Logger, db *store.DB, reg *Registry, nodeID, clientID, version string,
 	canWork func() bool, exec *background.Executor) (*clusterBackend, error) {
 	b := &clusterBackend{log: log, db: db, reg: reg, nodeID: nodeID, clientID: clientID, version: version, canWork: canWork,
-		periodic: map[string]bool{}, stop: make(chan struct{}), done: make(chan struct{})}
+		starting: semaphore.NewWeighted(startShares), periodic: map[string]bool{}, stop: make(chan struct{}), done: make(chan struct{})}
 	b.runCtx, b.cancel = context.WithCancel(context.WithoutCancel(ctx))
 	if exec != nil {
 		b.group = exec.Group(b.runCtx, executorGroupSize, executorQueue)
@@ -285,9 +293,11 @@ func (b *clusterBackend) converge() {
 	case stopped || want == running:
 		return
 	case want:
-		b.startMu.Lock()
-		err := b.client.Start(b.runCtx)
-		b.startMu.Unlock()
+		err := b.starting.Acquire(b.runCtx, startShares)
+		if err == nil {
+			err = b.client.Start(b.runCtx)
+			b.starting.Release(startShares)
+		}
 		if err != nil {
 			b.log.Warn("task: start River", "err", err)
 			return
@@ -328,18 +338,29 @@ func (b *clusterBackend) enqueue(ctx context.Context, tx *gorm.DB, name string, 
 		insert.UniqueOpts = river.UniqueOpts{ByArgs: true, ByState: unfinishedStates}
 	}
 	job := taskArgs{Name: name, Key: opts.UniqueKey, Args: raw}
-	var err error
-	if tx != nil {
-		sqlTx := store.SQLTx(tx)
-		if sqlTx == nil {
-			return fmt.Errorf("task %s: enqueue in a handle that is no transaction", name)
-		}
-		_, err = b.client.InsertTx(ctx, sqlTx, job, insert)
-	} else {
-		b.startMu.RLock()
-		_, err = b.client.Insert(ctx, job, insert)
-		b.startMu.RUnlock()
+	if tx == nil {
+		return b.insert(ctx, job, insert)
 	}
+	sqlTx := store.SQLTx(tx)
+	if sqlTx == nil {
+		return fmt.Errorf("task %s: enqueue in a handle that is no transaction", name)
+	}
+	_, err := b.client.InsertTx(ctx, sqlTx, job, insert)
+	return err
+}
+
+// startShares is the weight of starting that client.Start takes: all of
+// it. Each Insert takes one, so this many can run at once.
+const startShares = 1 << 30
+
+// insert inserts a run outside a transaction once no client.Start is
+// running (see starting), or fails with ctx's error.
+func (b *clusterBackend) insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) error {
+	if err := b.starting.Acquire(ctx, 1); err != nil {
+		return err
+	}
+	defer b.starting.Release(1)
+	_, err := b.client.Insert(ctx, args, opts)
 	return err
 }
 
@@ -349,11 +370,8 @@ func (b *clusterBackend) trigger(ctx context.Context, name string) error {
 	if !ok || t.Scope != core.TaskCluster {
 		return core.ErrTaskUnknown
 	}
-	b.startMu.RLock()
-	defer b.startMu.RUnlock()
-	_, err := b.client.Insert(ctx, taskArgs{Name: name, Key: manualKey, Manual: true}, &river.InsertOpts{
+	return b.insert(ctx, taskArgs{Name: name, Key: manualKey, Manual: true}, &river.InsertOpts{
 		Queue: t.queue(), MaxAttempts: 1, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: unfinishedStates}})
-	return err
 }
 
 // shutdown stops the admission watcher and River (soft stop, then cancel).
@@ -511,9 +529,7 @@ func (b *clusterBackend) work(ctx context.Context, t *Task, job *river.Job[taskA
 // not make two; the lease keeps it from overlapping a scheduled run. A
 // failed insert leaves the work to the next scheduled run.
 func (b *clusterBackend) continueRun(ctx context.Context, t *Task, job *river.Job[taskArgs], delay time.Duration) {
-	b.startMu.RLock()
-	defer b.startMu.RUnlock()
-	_, err := b.client.Insert(ctx, taskArgs{Name: t.Name, Key: continueKey + strconv.FormatInt(job.ID, 10), Args: job.Args.Args},
+	err := b.insert(ctx, taskArgs{Name: t.Name, Key: continueKey + strconv.FormatInt(job.ID, 10), Args: job.Args.Args},
 		&river.InsertOpts{Queue: t.queue(), MaxAttempts: t.Attempts(), ScheduledAt: time.Now().Add(delay),
 			UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: unfinishedStates}})
 	if err != nil {
