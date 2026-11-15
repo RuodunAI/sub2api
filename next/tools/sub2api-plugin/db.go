@@ -1,0 +1,312 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+
+	"golang.org/x/mod/modfile"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
+)
+
+// modelDir is where a plugin keeps its GORM models: a package that exports
+// `func All() []any` (the convention of pgdb.DriftMain).
+const modelDir = "internal/model"
+
+// errNoModels is a plugin without a model package, i.e. not on GORM yet.
+var errNoModels = errors.New("no " + modelDir + " package")
+
+// errDrift is a db check that found the models and migrations apart.
+var errDrift = errors.New("the GORM models and migrations/ disagree; run `sub2api-plugin db diff`")
+
+// cmdDB runs `db diff` and `db check`.
+func cmdDB(args []string, stdout, stderr io.Writer) error {
+	sub := ""
+	if len(args) > 0 {
+		sub, args = args[0], args[1:]
+	}
+	switch sub {
+	case "diff":
+		return cmdDBDiff(args, stdout, stderr)
+	case "check":
+		return cmdDBCheck(args, stdout, stderr)
+	}
+	return fmt.Errorf("usage: sub2api-plugin db diff|check --dir <plugin dir>")
+}
+
+// cmdDBCheck fails while AutoMigrate would still change the migrated schema
+// or the schema has what no model maps.
+func cmdDBCheck(args []string, stdout, stderr io.Writer) error {
+	fs := newFlagSet("db check", stderr)
+	dir := fs.String("dir", ".", "plugin directory")
+	if _, err := parseInterspersed(fs, args); err != nil {
+		return err
+	}
+	if err := dbCheck(*dir, stderr); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, "the GORM models match migrations/")
+	return nil
+}
+
+// dbCheck is db check without its output on success (pack calls it).
+func dbCheck(dir string, stderr io.Writer) error {
+	p, err := loadDBPlugin(dir)
+	if err != nil {
+		return err
+	}
+	report, err := p.drift(stderr)
+	if err != nil {
+		return err
+	}
+	if report.Clean() {
+		return nil
+	}
+	printStatements(stderr, "DDL the models still need:", report.Statements)
+	printStatements(stderr, "in the schema, in no model:", report.Unmapped)
+	return errDrift
+}
+
+// cmdDBDiff writes the DDL the models need on top of migrations/ as the next
+// migration file. Changes that can lose data are only printed.
+func cmdDBDiff(args []string, stdout, stderr io.Writer) error {
+	fs := newFlagSet("db diff", stderr)
+	dir := fs.String("dir", ".", "plugin directory")
+	name := fs.String("name", "models", "migration name: the file is NNNN_<name>.sql")
+	if _, err := parseInterspersed(fs, args); err != nil {
+		return err
+	}
+	if !migrationName.MatchString(*name) {
+		return fmt.Errorf("--name %q: use lower case letters, digits and _", *name)
+	}
+	p, err := loadDBPlugin(*dir)
+	if err != nil {
+		return err
+	}
+	// A new plugin's first migration may be the one written here.
+	if err := os.MkdirAll(p.migrations, 0o755); err != nil {
+		return err
+	}
+	report, err := p.drift(stderr)
+	if err != nil {
+		return err
+	}
+	path, err := writeMigration(p.migrations, p.schema, *name, report)
+	switch {
+	case errors.Is(err, errManual):
+		printStatements(stderr, "DDL the models need (! can lose data or rewrite a table):", markDestructive(report.Statements))
+		printStatements(stderr, "in the schema, in no model (drop it, or map it again):", report.Unmapped)
+		return err
+	case err != nil:
+		return err
+	case path == "":
+		fmt.Fprintln(stderr, "no changes: migrations/ already matches the models")
+		return nil
+	}
+	fmt.Fprintln(stderr, "review the new migration before committing it")
+	fmt.Fprintln(stdout, path)
+	return nil
+}
+
+func printStatements(w io.Writer, title string, lines []string) {
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintln(w, title)
+	for _, l := range lines {
+		fmt.Fprintln(w, "  "+l)
+	}
+}
+
+// dbPlugin is what db diff and check need of a plugin.
+type dbPlugin struct {
+	dir        string // absolute
+	module     string // Go module path
+	schema     string // plg_<key>
+	migrations string // absolute migrations directory
+}
+
+func loadDBPlugin(dir string) (*dbPlugin, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if st, err := os.Stat(filepath.Join(abs, filepath.FromSlash(modelDir))); err != nil || !st.IsDir() {
+		return nil, fmt.Errorf("%s: %w", abs, errNoModels)
+	}
+	_, m, err := effectiveManifest(abs, "")
+	if err != nil {
+		return nil, err
+	}
+	if m.Database == nil {
+		return nil, fmt.Errorf("%s: the manifest declares no database", abs)
+	}
+	gomod, err := os.ReadFile(filepath.Join(abs, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	module := modfile.ModulePath(gomod)
+	if module == "" {
+		return nil, fmt.Errorf("%s/go.mod: no module path", abs)
+	}
+	return &dbPlugin{dir: abs, module: module, schema: m.Database.Schema,
+		migrations: filepath.Join(abs, filepath.FromSlash(m.Database.Migrations))}, nil
+}
+
+// driftMain is the program run inside the plugin module: only code of that
+// module may import its internal/model package.
+const driftMain = `// Code generated by sub2api-plugin db; DO NOT EDIT.
+package main
+
+import (
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
+
+	model %q
+)
+
+func main() { pgdb.DriftMain(model.All()) }
+`
+
+// drift runs pgdb.Drift on the plugin's models and migrations, on the test
+// PostgreSQL (TEST_DATABASE_URL or the local testpg server).
+func (p *dbPlugin) drift(stderr io.Writer) (*pgdb.DriftReport, error) {
+	dsn, err := testpg.Server(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("a PostgreSQL to compare on: %w", err)
+	}
+	// "_" keeps ./... and the packaging away from it while it exists.
+	tmp, err := os.MkdirTemp(p.dir, "_dbdrift")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	src := fmt.Sprintf(driftMain, p.module+"/"+modelDir)
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte(src), 0o600); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	cmd := exec.Command("go", "run", "./"+filepath.Base(tmp), p.migrations)
+	cmd.Dir = p.dir
+	cmd.Env = append(os.Environ(), pgdb.DriftDSNEnv+"="+dsn)
+	cmd.Stdout, cmd.Stderr = &out, stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("compare the models with migrations/: %w", err)
+	}
+	var report pgdb.DriftReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		return nil, fmt.Errorf("read the comparison: %w", err)
+	}
+	return &report, nil
+}
+
+var (
+	migrationName = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	// migrationFile is a migration's file name; the number orders them.
+	migrationFile = regexp.MustCompile(`^(\d+)_.*\.sql$`)
+	// destructiveDDL changes a column's type or drops something: data can be
+	// lost or a table rewritten, so a person writes that migration.
+	destructiveDDL = regexp.MustCompile(`(?i)\bALTER COLUMN \S+ TYPE\b|\bDROP (TABLE|COLUMN|CONSTRAINT|INDEX|SEQUENCE)\b`)
+)
+
+// errManual is a diff that needs a hand-written migration.
+var errManual = errors.New("not generated: write this migration by hand")
+
+func isDestructive(stmt string) bool { return destructiveDDL.MatchString(stmt) }
+
+// markDestructive prefixes the destructive statements with "! ".
+func markDestructive(stmts []string) []string {
+	out := slices.Clone(stmts)
+	for i, s := range out {
+		if isDestructive(s) {
+			out[i] = "! " + s
+		}
+	}
+	return out
+}
+
+// writeMigration writes report's statements to the next migration file of
+// dir and returns its path; "" when there is nothing to write. It writes
+// nothing (errManual) when a statement is destructive or something is
+// unmapped: a partial file would hide what is left.
+func writeMigration(dir, schema, name string, report *pgdb.DriftReport) (string, error) {
+	if slices.ContainsFunc(report.Statements, isDestructive) || len(report.Unmapped) > 0 {
+		return "", errManual
+	}
+	if len(report.Statements) == 0 {
+		return "", nil
+	}
+	next, err := nextMigrationNumber(dir)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "-- %s %04d: written by `sub2api-plugin db diff` from the GORM models (%s).\n", schema, next, modelDir)
+	fmt.Fprintf(&b, "-- Runs with search_path pinned to the plugin schema (%s).\n", schema)
+	b.WriteString("-- Idempotent: every statement can run again.\n\n")
+	for _, s := range report.Statements {
+		b.WriteString(idempotent(s) + ";\n")
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%04d_%s.sql", next, name))
+	// O_EXCL: never overwrite a migration, even one written meanwhile.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.WriteString(b.String()); err != nil {
+		f.Close()
+		return "", err
+	}
+	return path, f.Close()
+}
+
+// nextMigrationNumber is one more than the highest migration number in dir.
+func nextMigrationNumber(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	highest := 0
+	for _, e := range entries {
+		if m := migrationFile.FindStringSubmatch(e.Name()); m != nil && !e.IsDir() {
+			if n, err := strconv.Atoi(m[1]); err == nil && n > highest {
+				highest = n
+			}
+		}
+	}
+	return highest + 1, nil
+}
+
+// idempotentDDL rewrites GORM's DDL so that it can run again: plugin
+// migrations must be idempotent (the host may retry one), and GORM only
+// writes IF NOT EXISTS for indexes.
+var idempotentDDL = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`^CREATE TABLE `), "CREATE TABLE IF NOT EXISTS "},
+	// GORM writes ADD "column"; ADD CONSTRAINT is wrapped below.
+	{regexp.MustCompile(`^(ALTER TABLE \S+ ADD) (")`), "$1 COLUMN IF NOT EXISTS $2"},
+	// PostgreSQL has no IF NOT EXISTS for constraints.
+	{regexp.MustCompile(`^(ALTER TABLE \S+ ADD CONSTRAINT .*)$`), "DO $$$$ BEGIN $1; EXCEPTION WHEN duplicate_object THEN NULL; END $$$$"},
+}
+
+func idempotent(stmt string) string {
+	for _, r := range idempotentDDL {
+		if r.re.MatchString(stmt) {
+			return r.re.ReplaceAllString(stmt, r.repl)
+		}
+	}
+	return stmt
+}

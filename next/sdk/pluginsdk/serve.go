@@ -74,7 +74,7 @@ func WithInfo(key, version string) Option {
 // WithStrictNetwork overrides when the egress tunnel is installed.
 func WithStrictNetwork(m StrictMode) Option { return func(o *options) { o.strict = m } }
 
-// WithDBPoolSize sets the maximum size of the Host.DB pool (default 4).
+// WithDBPoolSize sets the maximum number of Host.DB connections (default 4).
 func WithDBPoolSize(n int32) Option { return func(o *options) { o.poolSize = n } }
 
 // WithMaxRecvMsgSize raises the largest host call the plugin accepts (gRPC
@@ -421,7 +421,7 @@ func (rt *runtime) InitHost(ctx context.Context, in *pluginv1.InitHostRequest) (
 	}, hc, ec, installed, rt.opts.poolSize)
 	if init, ok := rt.p.(Initializer); ok {
 		if err := init.Init(ctx, h); err != nil {
-			h.closePool()
+			h.closeDB()
 			_ = conn.Close()
 			return &pluginv1.InitHostResponse{Ready: false, Message: err.Error()}, nil
 		}
@@ -464,7 +464,7 @@ func (rt *runtime) Shutdown(ctx context.Context, _ *pluginv1.ShutdownRequest) (*
 	}
 	rt.mu.Lock()
 	if rt.host != nil {
-		rt.host.closePool()
+		rt.host.closeDB()
 	}
 	rt.mu.Unlock()
 	if err != nil {

@@ -32,6 +32,7 @@
 - 下载依赖：`GOPROXY=https://goproxy.cn,direct`（只在命令里临时设置）；整理依赖用 `GOWORK=off go mod tidy`
 - 重新生成 proto：`cd sdk && buf generate`（工具在 `go env GOBIN`）
 - 每个模块完成时必须通过：`go vet ./...`、`GOOS=linux go build ./...`、本模块的 `go test ./...`
+- **插件数据库**（2026-11-15）：插件用 `Host.DB` 返回的 `*gorm.DB`（`sdk/pgdb`），插件代码不 import pgx；SDK 里只有 `sdk/pgdb/pgdb.go` 用 pgx（拨号钩子、数组解析）。表结构以插件 `internal/model` 包的 GORM 模型为唯一描述（导出 `func All() []any`），宿主仍只执行 `migrations/*.sql`，运行时不跑 AutoMigrate。`sub2api-plugin db diff --dir <插件> [--name <名称>]` 在临时 schema 上执行现有迁移后对模型跑 AutoMigrate，把它执行的 DDL（改写成可重复执行）写成下一个编号的迁移，无变化时提示；改列类型、删除，以及库里有而模型里没有的表、列、索引只打印、不生成。`db check` 有任何差异就失败，`pack` 自动执行（插件没有 `internal/model` 时跳过；`--skip-db-check` 关闭，镜像构建用它，CI 由 `tools/sub2api-plugin` 的 `TestDBCheck` 检查所有带模型的内置插件）。说明见 `sdk/pluginsdk/doc.go` 的 Database 一节
 - **数据库测试**：核心用 `testutil.DB(t)`，插件用 `pluginsdktest.NewSchema(t, …)`，两者都从 `sdk/testpg` 拿库：
   - 设置了 `TEST_DATABASE_URL`（超级用户 DSN，如 CI）就用它；
   - 没设置时由 Go 启动本机的真实 PostgreSQL 16（embedded-postgres）。首次运行从 Maven Central 下载约 25 MB（需要代理时设 `HTTPS_PROXY`），之后使用缓存。
@@ -395,7 +396,7 @@ func Install(client pluginv1.EgressServiceClient) error
 func DialContext(ctx context.Context, network, address string) (net.Conn, error)
 ```
 
-插件的 PostgreSQL 连接（受限 DSN）必须使用 `DialContext`（pgx: `cfg.DialFunc = egress.DialContext`）。
+插件的 PostgreSQL 连接（受限 DSN）必须使用 `DialContext`。`Host.DB` 返回的 GORM 句柄已经这样拨号（`sdk/pgdb`，2026-11-15 起；此前的 pgx 版 `Host.DB` 已删除），插件不要自己连库。
 
 ### 11.3 插件主进程启动（C2 调 D）
 
@@ -6343,6 +6344,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - **0.5.6（2026-11-11）**：线上有人改了配置没保存，以为"改了不生效"。事件和配置接口多了字段，好让事件一眼看出按哪一版配置、执行了哪些动作：评估写的权重事件带 `detail.steps`（每个改变了有效权重的策略一步）和 `detail.config_version`，`GET /config`、`PUT /config` 返回 `updated_at`，见下文"接口"；控制台的改动见 §74.6。旧前端忽略新字段照常工作。`hostCompat`、`hostUICompat`、能力、授权、配置文档格式都不变，没有新迁移，可以单独升级插件。
 - **0.5.7（2026-11-12）**：只改原生界面。自写的 `IdPicker` 删除，账号、分组、模型筛选和批量重置、分组配置、账号覆盖弹窗都改用宿主的 `EntityPicker`（§96.6）；模型是精确匹配，候选是价格表里的模型加当前页出现过的模型，不在其中的名称可以按输入原样使用。新建分组配置 / 账号覆盖时，已有配置的分组 / 账号仍会列出，选中就报错并禁止保存（原来是不列出）；非规范写法的 id（`013`）不接受。**`hostUICompat` 改为 `^3.11`，`hostCompat` 抬到 `>=0.1.279 <0.2.0`**。接口、能力、授权、配置文档格式都不变，没有新迁移。
 - **0.5.8（2026-11-13）**：线上把“首字 p95 过慢”调整项关掉后，状态表“命中规则”列仍显示它命中，被当成关掉的规则还在生效。调整项的开关只关策略，规则本身仍启用、照常判定（`last_rules`、位图照写；不再有启用的降权策略引用它，所以按宽松模式，样本不足也判定，比开着时更容易显示命中），但没有启用的策略引用它，命中不降权、不清粘性（线上核对：配置第 9 版以来 7876 条事件的 `steps` 和清粘性都不含它）。`GET /status` 的规则加 `used`（`rules.Resolved.UsedRules`，与 `FiredRules` 共用同一份引用标记）；控制台“命中规则”列只列被使用的规则，展开明细里未被使用的规则标“只观察”并说明、本窗结果用中性色；接口没有 `used`（旧节点）时按被使用处理。接口只加字段，能力、授权、配置文档格式都不变，没有新迁移，`hostCompat`、`hostUICompat` 不变。
+- **0.5.10（2026-11-15）**：插件 SDK 改用 GORM 的试点，功能不变。表结构以 `internal/model` 的 GORM 模型为唯一描述（`model.All()`），与 `migrations/0001`–`0003` 建出的表完全一致（`sub2api-plugin db check` 通过）；`store.go` 的 pgx 代码全部改为 GORM（`Host.DB` 返回 `*gorm.DB`），语句语义不变，原来 `pgx.Batch` 的批量写入（计数、基准权重、事件）和重置标记改为一个事务里的多行 `INSERT … ON CONFLICT`（每条至多 1000 行，仍按键排序，全成或全不成）。能力、授权、接口、配置文档格式都不变，没有新迁移，`hostCompat`、`hostUICompat` 不变，可以单独升级插件。
 - **只安装不启用**（`BUILTIN_PLUGINS_INSTALL_ONLY`）：启用后每次调度都会调用它，所以要由管理员有意打开。
 
 #### 计数

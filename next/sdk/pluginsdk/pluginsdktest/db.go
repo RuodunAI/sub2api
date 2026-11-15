@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"sync/atomic"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 )
 
@@ -29,23 +27,12 @@ func NewSchema(t testing.TB, prefix string) (dsn, schema string) {
 		prefix = "plg_test"
 	}
 	schema = fmt.Sprintf("%s_%d_%d", prefix, os.Getpid(), schemaSeq.Add(1))
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, base)
-	if err != nil {
-		t.Fatalf("pluginsdktest: connect TEST_DATABASE_URL: %v", err)
-	}
-	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+	db := open(t, base)
+	if err := pgdb.CreateSchema(context.Background(), db, schema); err != nil {
 		t.Fatalf("pluginsdktest: create schema: %v", err)
 	}
-	t.Cleanup(func() {
-		c, err := pgx.Connect(context.Background(), base)
-		if err != nil {
-			return
-		}
-		defer c.Close(context.Background())
-		_, _ = c.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
-	})
+	// Cleanups run last in, first out: db is still open here.
+	t.Cleanup(func() { _ = pgdb.DropSchema(context.Background(), db, schema) })
 	u, err := url.Parse(base)
 	if err != nil {
 		t.Fatalf("pluginsdktest: parse TEST_DATABASE_URL: %v", err)
@@ -61,49 +48,27 @@ func NewSchema(t testing.TB, prefix string) (dsn, schema string) {
 // host migration runner (ARCHITECTURE 5.6). Returns the applied file names.
 func ApplyMigrations(t testing.TB, dsn, schema string, dirs ...string) []string {
 	t.Helper()
-	files := map[string]string{}
-	for _, d := range dirs {
-		entries, err := os.ReadDir(d)
-		if err != nil {
-			t.Fatalf("pluginsdktest: read migrations %s: %v", d, err)
-		}
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
-				files[e.Name()] = filepath.Join(d, e.Name())
-			}
-		}
-	}
-	names := make([]string, 0, len(files))
-	for n := range files {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
+	migrations, err := pgdb.ReadMigrations(dirs...)
 	if err != nil {
-		t.Fatalf("pluginsdktest: connect: %v", err)
+		t.Fatalf("pluginsdktest: %v", err)
 	}
-	defer conn.Close(ctx)
-	for _, n := range names {
-		sqlText, err := os.ReadFile(files[n])
-		if err != nil {
-			t.Fatalf("pluginsdktest: read %s: %v", n, err)
-		}
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			t.Fatalf("pluginsdktest: begin: %v", err)
-		}
-		if _, err := tx.Exec(ctx, "SET LOCAL search_path TO "+pgx.Identifier{schema}.Sanitize()); err != nil {
-			_ = tx.Rollback(ctx)
-			t.Fatalf("pluginsdktest: set search_path: %v", err)
-		}
-		if _, err := tx.Exec(ctx, string(sqlText)); err != nil {
-			_ = tx.Rollback(ctx)
-			t.Fatalf("pluginsdktest: migration %s: %v", n, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("pluginsdktest: commit %s: %v", n, err)
-		}
+	if err := pgdb.ApplyMigrations(context.Background(), open(t, dsn), schema, migrations); err != nil {
+		t.Fatalf("pluginsdktest: %v", err)
+	}
+	names := make([]string, len(migrations))
+	for i, m := range migrations {
+		names[i] = m.Name
 	}
 	return names
+}
+
+// open returns a one-connection handle on dsn, closed when t ends.
+func open(t testing.TB, dsn string) *gorm.DB {
+	t.Helper()
+	db, err := pgdb.Open(dsn, pgdb.Options{MaxConns: 1})
+	if err != nil {
+		t.Fatalf("pluginsdktest: %v", err)
+	}
+	t.Cleanup(func() { _ = pgdb.Close(db) })
+	return db
 }
