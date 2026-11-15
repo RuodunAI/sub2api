@@ -8540,9 +8540,15 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 ### 99.1 投影与触发器（Mode P）
 
 - 旧角色表（`role_permissions`、`role_permission_scopes`、`user_roles`、`roles.superuser`）仍是写入的真相，Go 写路径不变。`casbin_rule`（gorm-adapter 的列布局 `id, ptype, v0..v5`，`v1`、`v2` 加宽）是它们的投影，由数据库触发器在**写入方的同一事务**里维护：任何版本的核心、迁移脚本、FK 级联、`core.ClearScopeGrants` 都覆盖到。
-- 映射只写在视图 `authz_casbin_expected` 一处：`p, r:<角色 key>, <权限 key>, *`（整行授予）、`p, r:<角色 key>, <权限 key>, <范围>`（范围授予）、超管角色 `p, r:<角色 key>, *, *`、`g, u:<用户 id>, r:<角色 key>`。已移除、已停用权限的授予照常映射，加载时按 `permissions.status` 过滤。self 权限不落库，加载时注入虚拟角色 `r:_self`。
+- 映射：`p, r:<角色 key>, <权限 key>, *`（整行授予）、`p, r:<角色 key>, <权限 key>, <范围>`（范围授予）、超管角色 `p, r:<角色 key>, *, *`、`g, u:<用户 id>, r:<角色 key>`。已移除、已停用权限的授予照常映射，加载时按 `permissions.status` 过滤。self 权限不落库，加载时注入虚拟角色 `r:_self`。
+- 映射的值只在四个 `IMMUTABLE` SQL 函数里拼：`authz_casbin_user_sub(bigint)`、`authz_casbin_role_sub(text)`、`authz_casbin_super_key()`（超管行的动作 `*`）、`authz_casbin_all_rows()`（整行授予的范围 `*`），与 `casbinx` 的 `UserSub`、`RoleSub`、`SuperKey`、`AllRows` 一一对应，改一边必须同时改另一边。视图 `authz_casbin_expected` 和所有触发器都只用这四个函数拼行，行的种类（哪张表映射成哪种行）写在视图里，触发器按同样的种类逐行维护；改映射要同时改视图和对应的触发器，`testutil.DB` 的漂移断言会发现两边不一致。
+- 保留值：角色 key 不能让主体等于 `r:_self`（即 key `_self`），权限 key 不能是 `*`（会被当成超管行）。API 本来不会写出这两种 key；数据库里由触发器拒绝（`check_violation`），迁移遇到已有的这类行会报错并停止升级，提示改名或删除。
+- `permissions.key` 不能改（触发器拒绝；同 key 的 upsert 不算改）：投影按权限 key 存授予，key 也是目录、访问密钥、插件 manifest 里的标识。以后的迁移确实要改 key 时，在迁移的同一事务里：先 `SELECT 1 FROM authz_meta WHERE id = 1 FOR UPDATE`，`ALTER TABLE permissions DISABLE TRIGGER casbin_sync`，改 `permissions.key` 以及引用它的地方（如 `user_access_keys.permissions`），`ALTER TABLE permissions ENABLE TRIGGER casbin_sync`，`SELECT authz_casbin_repair()` 修正投影，再升 authz 版本（触发器关着时不检查保留值，新 key 不能是 `*`）。也可以新建权限、把授予挪过去、删除旧权限，触发器全程照常工作。`roles.key` 允许改（SyncCore 启动报错时提示运维改名），触发器按新 key 重写该角色的行。
 - `authz_casbin_drift` 是两个方向的差，列 `kind`：`missing`（应有而没有）、`extra`（多出来的）；`authz_casbin_repair()` 按 `authz_casbin_expected` 修正 `casbin_rule` 并返回改动行数，它自己不拿锁，调用方先在同一事务里 `Bump`（§99.6）。
-- 触发器的覆盖范围、改 `roles.key` / `permissions.key` 被拒、TRUNCATE（语句级触发器按视图整表重建）的处理见迁移 `0100_casbin_rule.sql` 的注释。迁移回填 `casbin_rule` 并升 authz 版本。`testutil.DB` 的库在测试结束时断言漂移为 0。
+- 触发器挂在 `permissions`、`roles`、`role_permissions`、`role_permission_scopes`、`user_roles` 上（行级，加上语句级 TRUNCATE 触发器按视图整表重建，`casbin_rule` 自己被截断也重建）。`users` 上没有触发器：硬删用户时 `user_roles` 级联删除，由它的触发器清掉 g 行；`TRUNCATE users` 必须带 `CASCADE`，会连带截断 `user_roles`。子表触发器发现父行已被级联删除时跳过，由父表触发器清理。细节见迁移 `0100_casbin_rule.sql` 的注释。
+- 迁移里的 plpgsql 函数（触发器函数、它们调用的辅助函数和 `authz_casbin_repair()`）都固定 `SET search_path = public, pg_temp`，插件连接（search_path 是插件 schema）写核心表时照常工作、不会读到插件的同名表；0097 的 `user_roles_one_superuser` 一并固定（反向脚本恢复）。四个映射函数不设（设了就不能内联，视图和触发器的查询就用不上索引），它们只用 pg_catalog 里的运算符，pg_catalog 总是最先查找。
+- 迁移加锁顺序：先 `authz_meta` 行锁，再按父表在前（`permissions`、`roles`、授予与指派表）给这五张表建触发器，和所有写入方一致（authz 写入先 `Bump`，FK 级联从父表往下）；不碰 `users`，所以与先插 `users`、后 `Bump` 的建用户事务和登录写入都不冲突（`TestCasbinRuleMigrationConcurrentWriters`）。重跑用 `CREATE OR REPLACE TRIGGER`，只拿 SHARE ROW EXCLUSIVE，不挡读。迁移回填 `casbin_rule` 并升 authz 版本。`testutil.DB` 的库在测试结束时断言漂移为 0。
+- 代价（实测 PG 16，20 万用户各一个角色，约 20 万行投影）：批量写 `user_roles` 每行多约 20 µs（20 万行 1.6 s → 6.1 s）；回填和修正随 `user_roles` 行数线性增长（补 20 万行 0.5 s，迁移持锁期间完成）；`authz_casbin_drift` 两边全量 `EXCEPT`，`count(*)` 约 0.8 s，排序会溢出到磁盘。用户量大到漂移任务明显变慢时，再把 p 行与 g 行分开检查、g 行改用 `NOT EXISTS` 走唯一索引。
 
 ### 99.2 解析（`internal/authz/casbinx`）
 
@@ -8599,7 +8605,7 @@ sub2api admin authz-verify [--keys] [--max-diffs N]
 
 - 运行时：`PUT /settings/authz {"engine":"legacy"}`（或在节点上设 `SUP2API_AUTHZ_ENGINE=legacy` 重启），立即生效，不需要发版。旧表从未被改写，`legacy` 与接入前完全一样。
 - 托管部署（经网关）不能跨 schema 回退：迁移 0100 只做加法，旧二进制照常运行（触发器继续维护 `casbin_rule`，没有害处），出问题修复前进加开关。
-- 非托管部署可以按 `next/deploy/rollback/0.1.290-casbin-down.md` 跑反向脚本：删触发器、函数、两个视图、`casbin_rule` 和 `schema_migrations` 的 0100 一行，不丢任何授予。
+- 非托管部署可以按 `next/deploy/rollback/0.1.290-casbin-down.md` 跑反向脚本：删触发器、函数、两个视图、`casbin_rule` 和 `schema_migrations` 的 0100 一行，恢复 `user_roles_one_superuser` 的 `search_path`，删 `settings` 里的 `authz` 行（否则再升级会直接用回滚前选的引擎、跳过 §99.5 的影子期），不丢任何授予。
 
 ### 99.9 禁止事项
 
