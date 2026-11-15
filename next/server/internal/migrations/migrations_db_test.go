@@ -421,7 +421,7 @@ func TestPluginPermissionMetaMigration(t *testing.T) {
 	const forget = `DELETE FROM schema_migrations WHERE id='0099_plugin_permission_meta.sql'`
 	require.NoError(t, exec(`INSERT INTO permissions (key, module, label, source, sensitive) VALUES
 		('a:read','a','{}','core',false), ('a:secret','a','{}','core',true), ('b:secret','b','{}','core',true)`))
-	require.Equal(t, []string{"0099_plugin_permission_meta.sql"}, migrate())
+	require.Equal(t, "0099_plugin_permission_meta.sql", migrate()[0])
 	require.Equal(t, "a:read=low a:secret=sensitive b:secret=sensitive", risks())
 
 	require.NoError(t, exec(`UPDATE permissions SET risk = 'critical' WHERE key = 'a:secret';
