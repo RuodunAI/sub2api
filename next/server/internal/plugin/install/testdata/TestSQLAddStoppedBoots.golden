@@ -1,0 +1,5 @@
+-- sql
+UPDATE "plugin_uninstalls" SET "stopped_boot_ids"=ARRAY(SELECT DISTINCT unnest(stopped_boot_ids||$1::text[])) WHERE plugin_key = $2
+-- vars
+$1 store.Strings [boot-a]
+$2 string "demo"

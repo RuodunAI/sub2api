@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -17,6 +18,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // ConsentRequest is the body of POST /plugins/:key/versions/:version/consent.
@@ -233,30 +235,30 @@ func grantDecisions(ds []decision) []grants.Decision {
 // barrier an approval must pass: uninstall in progress, consent status,
 // signature revocation, publisher revocation and exclusive resources.
 func (s *Service) loadConsentable(ctx context.Context, tx pgx.Tx, key, version string) (*consentable, error) {
-	c := &consentable{}
-	// live is the version instances run or prepare: the active one, else
-	// the one an enable rollout is preparing.
-	var live *string
-	err := tx.QueryRow(ctx, `SELECT status, active_version, COALESCE(active_version, desired_version), publisher_id FROM plugins WHERE key = $1 FOR UPDATE`, key).
-		Scan(&c.pluginStatus, &c.activeVersion, &live, &c.publisherID)
+	g := store.G(ctx, tx)
+	var p consentablePlugin
+	err := lockedPlugin(g, key).Select(consentablePluginColumns).Take(&p).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin not found")
 	}
 	if err != nil {
 		return nil, err
 	}
-	var consent, sigStatus string
+	c := &consentable{pluginStatus: p.Status, activeVersion: p.ActiveVersion, publisherID: p.PublisherID}
+	live := p.Live
 	if err := checkUninstall(ctx, tx, key); err != nil {
 		return nil, err
 	}
-	err = tx.QueryRow(ctx, `SELECT consent_status, signature_status, manifest_hash FROM plugin_versions
-		WHERE plugin_key = $1 AND version = $2 FOR UPDATE`, key, version).Scan(&consent, &sigStatus, &c.manifestHash)
+	var v model.PluginVersion
+	err = versionRow(g, key, version).Select("consent_status, signature_status, manifest_hash").Clauses(forUpdate).Take(&v).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
 	if err != nil {
 		return nil, err
 	}
+	c.manifestHash = v.ManifestHash
+	consent, sigStatus := core.ValueOr(v.ConsentStatus, ""), v.SignatureStatus
 	if consent != ConsentAwaiting {
 		return nil, core.ErrConflict.WithMessage(fmt.Sprintf("version %s is %s", version, consent))
 	}
@@ -265,11 +267,12 @@ func (s *Service) loadConsentable(ctx context.Context, tx pgx.Tx, key, version s
 	}
 	c.trust = pkg.TrustUnsigned
 	if c.publisherID != nil {
-		var pubStatus string
-		if err := tx.QueryRow(ctx, `SELECT trust_level, status FROM publishers WHERE id = $1`, *c.publisherID).Scan(&c.trust, &pubStatus); err != nil {
+		var pub model.Publisher
+		if err := g.Model(&model.Publisher{}).Select("trust_level, status").Where("id = ?", *c.publisherID).Take(&pub).Error; err != nil {
 			return nil, err
 		}
-		if pubStatus != "active" {
+		c.trust = pub.TrustLevel
+		if core.ValueOr(pub.Status, "") != "active" {
 			return nil, core.ErrPermissionDenied.WithMessage("the publisher has been revoked")
 		}
 	} else if !s.d.Trust.AllowUnsigned() {
@@ -341,7 +344,7 @@ func (s *Service) decideAndApply(ctx context.Context, tx pgx.Tx, key, version st
 	if err := grants.Record(ctx, tx, key, version, c.manifestHash, nullID(actorID), c.staged(), grantDecisions(decisions)); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE plugin_versions SET consent_status = 'approved' WHERE plugin_key = $1 AND version = $2`, key, version); err != nil {
+	if err := versionRow(store.G(ctx, tx), key, version).Update("consent_status", ConsentApproved).Error; err != nil {
 		return nil, err
 	}
 
@@ -352,9 +355,7 @@ func (s *Service) decideAndApply(ctx context.Context, tx pgx.Tx, key, version st
 			return nil, err
 		}
 		name, _ := json.Marshal(m.Name)
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET status = $2, name = $3, installed_by = COALESCE(installed_by, $4),
-				installed_at = now(), updated_at = now(), row_version = row_version + 1 WHERE key = $1`,
-			key, StatusInstalled, name, nullID(actorID)); err != nil {
+		if err := markInstalled(store.G(ctx, tx), key, name, actorID).Error; err != nil {
 			return nil, err
 		}
 		status = StatusInstalled
@@ -738,7 +739,7 @@ func checkNamedRolesExist(ctx context.Context, q store.Querier, named map[string
 		return nil
 	}
 	var found []string
-	if err := q.QueryRow(ctx, `SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE key = ANY($1)`, roles).Scan(&found); err != nil {
+	if err := store.G(ctx, q).Model(&model.Role{}).Where("key = ANY(?)", store.Strings(roles)).Pluck("key", &found).Error; err != nil {
 		return err
 	}
 	var errs []core.FieldError
@@ -803,30 +804,30 @@ func (s *Service) Reject(ctx context.Context, key, version string, actorID int64
 	defer release()
 
 	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
 		var status string
-		err := tx.QueryRow(ctx, `SELECT status FROM plugins WHERE key = $1 FOR UPDATE`, key).Scan(&status)
+		err := lockedPlugin(g, key).Select("status").Take(&status).Error
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("plugin not found")
 		}
 		if err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `UPDATE plugin_versions SET consent_status = 'rejected'
-			WHERE plugin_key = $1 AND version = $2 AND consent_status = 'awaiting_consent'`, key, version)
-		if err != nil {
-			return err
+		res := versionRow(g, key, version).Where("consent_status = ?", ConsentAwaiting).Update("consent_status", ConsentRejected)
+		if res.Error != nil {
+			return res.Error
 		}
-		if tag.RowsAffected() == 0 {
+		if res.RowsAffected == 0 {
 			return core.ErrConflict.WithMessage("version is not awaiting consent")
 		}
 		removed := false
 		if status == StatusAwaitingConsent {
-			var pending int
-			if err := tx.QueryRow(ctx, `SELECT count(*) FROM plugin_versions WHERE plugin_key = $1 AND consent_status <> 'rejected'`, key).Scan(&pending); err != nil {
+			var pending int64
+			if err := g.Model(&model.PluginVersion{}).Where("plugin_key = ? AND consent_status <> ?", key, ConsentRejected).Count(&pending).Error; err != nil {
 				return err
 			}
 			if pending == 0 {
-				if _, err := tx.Exec(ctx, `DELETE FROM plugins WHERE key = $1`, key); err != nil {
+				if err := g.Where("key = ?", key).Delete(&model.Plugin{}).Error; err != nil {
 					return err
 				}
 				removed = true
@@ -841,7 +842,7 @@ func (s *Service) RevokeGrant(ctx context.Context, key, permission string, actor
 	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		// The plugin row first, as consent and the rollout commit lock it
 		// before the grant rows they write (no lock-order deadlock).
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET row_version=row_version+1,updated_at=now() WHERE key=$1`, key); err != nil {
+		if err := bumpPlugin(store.G(ctx, tx), key).Error; err != nil {
 			return err
 		}
 		revoked, err := grants.Revoke(ctx, tx, key, permission, nullID(actorID))
@@ -857,4 +858,35 @@ func (s *Service) RevokeGrant(ctx context.Context, key, permission string, actor
 		s.Notify(ctx, key)
 	}
 	return err
+}
+
+// consentablePlugin is what loadConsentable reads of the plugin row. Live
+// is the version instances run or prepare: the active one, else the one an
+// enable rollout is preparing.
+type consentablePlugin struct {
+	Status        string  `gorm:"column:status"`
+	ActiveVersion *string `gorm:"column:active_version"`
+	Live          *string `gorm:"column:live"`
+	PublisherID   *int64  `gorm:"column:publisher_id"`
+}
+
+const consentablePluginColumns = "status, active_version, COALESCE(active_version, desired_version) AS live, publisher_id"
+
+// markInstalled moves a first install's plugin row to installed, recording
+// its name and who installed it (unless already recorded).
+func markInstalled(db *gorm.DB, key string, name []byte, actorID int64) *gorm.DB {
+	return pluginRow(db, key).Updates(map[string]any{
+		"status":       StatusInstalled,
+		"name":         name,
+		"installed_by": gorm.Expr("COALESCE(installed_by, ?)", nullID(actorID)),
+		"installed_at": gorm.Expr("now()"),
+		"updated_at":   gorm.Expr("now()"),
+		"row_version":  gorm.Expr("row_version + 1"),
+	})
+}
+
+// bumpPlugin moves the plugin row's version, which also locks it: the
+// first write of a grant change.
+func bumpPlugin(db *gorm.DB, key string) *gorm.DB {
+	return pluginRow(db, key).Updates(map[string]any{"row_version": gorm.Expr("row_version + 1"), "updated_at": gorm.Expr("now()")})
 }

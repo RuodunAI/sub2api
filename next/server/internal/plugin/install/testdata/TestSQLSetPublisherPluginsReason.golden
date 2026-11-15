@@ -1,0 +1,5 @@
+-- sql
+UPDATE "plugins" SET "status_reason"=$1,"updated_at"=now() WHERE publisher_id = $2
+-- vars
+$1 string "publisher revoked: leaked key"
+$2 int64 3

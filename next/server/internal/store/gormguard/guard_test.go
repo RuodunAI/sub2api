@@ -53,6 +53,7 @@ var migratedPackages = map[string]string{
 	"internal/job":             "batch 1c",
 	"internal/lookup":          "batch 1b",
 	"internal/notify":          "batch 1b",
+	"internal/plugin/install":  "batch 2d",
 	"internal/proxy":           "batch 1d",
 	"internal/segment":         "batch 1a",
 	"internal/task":            "batch 1c",

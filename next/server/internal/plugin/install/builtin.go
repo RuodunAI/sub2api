@@ -13,11 +13,14 @@ import (
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Built-in plugins ship inside the image (config Plugins.BuiltinDir). The
@@ -50,7 +53,7 @@ var ErrBuiltin = core.ErrPermissionDenied.WithMessage("built-in plugins cannot b
 // IsBuiltin reports whether key is a built-in plugin.
 func IsBuiltin(ctx context.Context, q store.Querier, key string) (bool, error) {
 	var b bool
-	err := q.QueryRow(ctx, `SELECT builtin FROM plugins WHERE key = $1`, key).Scan(&b)
+	err := pluginRow(store.G(ctx, q), key).Select("builtin").Take(&b).Error
 	if store.IsNoRows(err) {
 		return false, nil
 	}
@@ -155,9 +158,9 @@ func (s *Service) ensureBuiltin(ctx context.Context, b *builtinPkg, installOnly 
 		return fmt.Errorf("upload %s: %w", filepath.Base(b.path), err)
 	}
 
+	g := store.G(ctx, s.d.DB.Pool)
 	var consent string
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT consent_status FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
-		b.key, version).Scan(&consent); err != nil {
+	if err := versionRow(g, b.key, version).Select("consent_status").Take(&consent).Error; err != nil {
 		return err
 	}
 	if consent == ConsentAwaiting {
@@ -174,7 +177,7 @@ func (s *Service) ensureBuiltin(ctx context.Context, b *builtinPkg, installOnly 
 		}
 		log.Info("builtin plugin approved", "plugin", b.key, "version", version)
 	}
-	if _, err := s.d.DB.Pool.Exec(ctx, `UPDATE plugins SET builtin = true, updated_at = now() WHERE key = $1 AND NOT builtin`, b.key); err != nil {
+	if err := markBuiltin(g, b.key).Error; err != nil {
 		return err
 	}
 
@@ -184,11 +187,11 @@ func (s *Service) ensureBuiltin(ctx context.Context, b *builtinPkg, installOnly 
 	if ro, err := s.d.Rollout.Current(ctx, b.key); err != nil || ro != nil {
 		return err // a rollout is already running; the next start re-checks
 	}
-	var status string
-	var active *string
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT status, active_version FROM plugins WHERE key = $1`, b.key).Scan(&status, &active); err != nil {
+	var p model.Plugin
+	if err := pluginRow(g, b.key).Select("status, active_version").Take(&p).Error; err != nil {
 		return err
 	}
+	status, active := p.Status, p.ActiveVersion
 	switch {
 	case status == StatusInstalled && active == nil && installOnly:
 		// Never enabled and install-only: an operator enables it once it is
@@ -211,4 +214,10 @@ func (s *Service) ensureBuiltin(ctx context.Context, b *builtinPkg, installOnly 
 		}
 	}
 	return nil
+}
+
+// markBuiltin marks key built-in, moving updated_at only when it was not.
+func markBuiltin(db *gorm.DB, key string) *gorm.DB {
+	return pluginRow(db, key).Where("NOT builtin").
+		Updates(map[string]any{"builtin": true, "updated_at": gorm.Expr("now()")})
 }

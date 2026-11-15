@@ -1,0 +1,11 @@
+-- sql
+INSERT INTO "plugins" ("key","name","publisher_id","status","active_version","desired_version","config_enc","installed_by") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING "status_reason","egress_policy","resource_limits","installed_at","updated_at","row_version","builtin"
+-- vars
+$1 string "demo"
+$2 jsontext.Value {"en":"Demo"}
+$3 *int64 3
+$4 string "awaiting_consent"
+$5 *string nil
+$6 *string nil
+$7 []uint8 []
+$8 *int64 7

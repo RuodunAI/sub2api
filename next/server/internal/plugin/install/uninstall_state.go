@@ -6,10 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type UninstallState struct {
@@ -21,18 +24,15 @@ type UninstallState struct {
 }
 
 func readUninstallState(ctx context.Context, q store.Querier, key string, lock bool) (*UninstallState, error) {
-	sql := `SELECT epoch,target_boot_ids,stopped_boot_ids,requested_at FROM plugin_uninstalls WHERE plugin_key=$1`
-	if lock {
-		sql += " FOR UPDATE"
-	}
-	out := &UninstallState{}
-	err := q.QueryRow(ctx, sql, key).Scan(&out.Epoch, &out.TargetBootIDs, &out.StoppedBootIDs, &out.RequestedAt)
+	var row model.PluginUninstall
+	err := uninstallState(store.G(ctx, q), key, lock).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("no uninstall is pending for this plugin")
 	}
 	if err != nil {
 		return nil, err
 	}
+	out := &UninstallState{Epoch: row.Epoch, TargetBootIDs: row.TargetBootIDs, StoppedBootIDs: row.StoppedBootIDs, RequestedAt: row.RequestedAt}
 	set := map[string]bool{}
 	for _, id := range out.StoppedBootIDs {
 		set[id] = true
@@ -47,6 +47,15 @@ func readUninstallState(ctx context.Context, q store.Querier, key string, lock b
 	sort.Strings(out.StoppedBootIDs)
 	sort.Strings(out.PendingBootIDs)
 	return out, nil
+}
+
+// uninstallState selects the uninstall barrier of key, FOR UPDATE when lock.
+func uninstallState(db *gorm.DB, key string, lock bool) *gorm.DB {
+	db = uninstallRow(db, key).Select("epoch, target_boot_ids, stopped_boot_ids, requested_at")
+	if lock {
+		db = db.Clauses(forUpdate)
+	}
+	return db
 }
 
 func (s *Service) UninstallState(ctx context.Context, key string) (*UninstallState, error) {
@@ -79,8 +88,9 @@ func (s *Service) ConfirmUninstallStopped(ctx context.Context, key string, in Co
 	}
 	var out *UninstallState
 	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
 		var keyLocked string
-		if err := tx.QueryRow(ctx, `SELECT key FROM plugins WHERE key=$1 FOR UPDATE`, key).Scan(&keyLocked); err != nil {
+		if err := lockedPlugin(g, key).Select("key").Take(&keyLocked).Error; err != nil {
 			if store.IsNoRows(err) {
 				return core.ErrNotFound.WithMessage("plugin not found")
 			}
@@ -116,13 +126,14 @@ func (s *Service) ConfirmUninstallStopped(ctx context.Context, key string, in Co
 			confirmed = append(confirmed, id)
 		}
 		sort.Strings(confirmed)
-		if _, err = tx.Exec(ctx, `UPDATE plugin_uninstalls SET stopped_boot_ids=ARRAY(SELECT DISTINCT unnest(stopped_boot_ids||$2::text[])) WHERE plugin_key=$1`, key, confirmed); err != nil {
+		boots := store.Strings(confirmed)
+		if err = addStoppedBoots(g, key, boots).Error; err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE plugin_runtime_nodes SET stopped=true,updated_at=now() WHERE plugin_key=$1 AND boot_id=ANY($2::text[])`, key, confirmed); err != nil {
+		if err = markNodesStopped(g, key, boots).Error; err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE plugin_rollout_cleanup n SET state='cleaned',updated_at=now() FROM plugin_rollouts r WHERE r.id=n.rollout_id AND r.plugin_key=$1 AND n.boot_id=ANY($2::text[]) AND n.state='cleanup_pending'`, key, confirmed); err != nil {
+		if err = markCleanupsCleaned(g, key, boots).Error; err != nil {
 			return err
 		}
 		if err = audit.Audit(ctx, tx, actorID, "plugin.uninstall.confirm_stopped", "plugin", key, map[string]any{
@@ -134,4 +145,22 @@ func (s *Service) ConfirmUninstallStopped(ctx context.Context, key string, in Co
 		return err
 	})
 	return out, err
+}
+
+// addStoppedBoots adds boots to the stopped boots of key's uninstall.
+func addStoppedBoots(db *gorm.DB, key string, boots store.Strings) *gorm.DB {
+	return uninstallRow(db, key).
+		Update("stopped_boot_ids", gorm.Expr("ARRAY(SELECT DISTINCT unnest(stopped_boot_ids||?::text[]))", boots))
+}
+
+// markNodesStopped marks key's runtime nodes of boots stopped.
+func markNodesStopped(db *gorm.DB, key string, boots store.Strings) *gorm.DB {
+	return db.Model(&model.PluginRuntimeNode{}).Where("plugin_key = ? AND boot_id = ANY(?::text[])", key, boots).
+		Updates(map[string]any{"stopped": true, "updated_at": gorm.Expr("now()")})
+}
+
+// markCleanupsCleaned marks the pending cleanups of key's rollouts on boots
+// done: the boots stopped, so nothing is left to clean there.
+func markCleanupsCleaned(db *gorm.DB, key string, boots store.Strings) *gorm.DB {
+	return db.Exec(`UPDATE plugin_rollout_cleanup n SET state='cleaned',updated_at=now() FROM plugin_rollouts r WHERE r.id=n.rollout_id AND r.plugin_key=? AND n.boot_id=ANY(?::text[]) AND n.state='cleanup_pending'`, key, boots)
 }

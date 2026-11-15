@@ -1,0 +1,5 @@
+-- sql
+UPDATE "plugins" SET "builtin"=$1,"updated_at"=now() WHERE key = $2 AND NOT builtin
+-- vars
+$1 bool true
+$2 string "demo"

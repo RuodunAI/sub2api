@@ -1,0 +1,8 @@
+-- sql
+SELECT r.plugin_key AS key, COALESCE(pub.name, '') AS publisher, r.retired_at,
+		  EXISTS (SELECT 1 FROM plugins p WHERE p.key = r.plugin_key) AS installed,
+		  (SELECT count(*) FROM accounts a WHERE a.plugin_key = r.plugin_key AND a.deleted_at IS NULL) AS accounts,
+		  EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = 'plg_' || r.plugin_key) AS schema
+		FROM plugin_key_retirements r LEFT JOIN publishers pub ON pub.id = r.publisher_id
+		ORDER BY r.retired_at DESC
+-- vars

@@ -8,9 +8,12 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // DefaultsApplier implements core.PluginDefaultsApplier. It has no
@@ -55,11 +58,17 @@ func (a *DefaultsApplier) ApplyDefaults(ctx context.Context, tx pgx.Tx, m *manif
 	for _, hp := range m.HostPermissions {
 		ids = append(ids, hp.ID)
 	}
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM plugin_permission_grants WHERE plugin_key = $1 AND NOT (permission = ANY($2)) AND status <> 'revoked'`, m.Key, ids); err != nil {
+	if err := pruneGrants(store.G(ctx, tx), m.Key, ids).Error; err != nil {
 		return fmt.Errorf("prune grants: %w", err)
 	}
 	return nil
+}
+
+// pruneGrants deletes the grants of plugin key to host permissions other
+// than requested, revocations aside.
+func pruneGrants(db *gorm.DB, key string, requested []string) *gorm.DB {
+	return db.Where("plugin_key = ? AND NOT (permission = ANY(?)) AND status <> 'revoked'", key, store.Strings(requested)).
+		Delete(&model.PluginPermissionGrant{})
 }
 
 // PermissionDefs converts manifest userPermissions into catalog entries,
