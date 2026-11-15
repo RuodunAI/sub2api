@@ -15,8 +15,10 @@ import (
 
 const staffTTL = time.Minute
 
-// PermExempt is the plugin permission that makes a user staff. It was split
-// from moderation:read, whose holders inherit it (manifest inheritFrom).
+// PermExempt is the plugin permission that makes a user staff. It is
+// critical: no role gets it by default and only its holders (initially the
+// super admin) may grant it. It was split from moderation:read in 0.12.0,
+// whose holders then inherited it; those grants are kept.
 const PermExempt = "moderation:exempt"
 
 type staffEntry struct {

@@ -18,7 +18,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// The roles a plugin permission may name in defaultRoles are exactly the
+// The roles a plugin permission may name in defaults are exactly the
 // built-in roles but the super admin.
 func TestManifestBuiltinRoleKeysMatchBuiltinRoles(t *testing.T) {
 	var keys []string

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -96,15 +97,16 @@ func TestManifestValid(t *testing.T) {
 		t.Fatalf("routes = %d", len(m.Routes))
 	}
 	// growth:use (renamed from growth:read) guards the /me routes and the
-	// user menus, growth:stats:read (renamed from growth:manage) the admin
-	// side; both inherit the old key's holders.
+	// user menus, growth:stats:read (renamed from growth:manage) the
+	// sensitive admin side; both inherit the old key's holders.
 	perms := map[string]manifest.UserPermission{}
 	for _, up := range m.UserPermissions {
 		perms[up.Key] = up
 	}
 	use, stats := perms["growth:use"], perms["growth:stats:read"]
-	if len(perms) != 2 || !slices.Equal(use.InheritFrom, []string{"growth:read"}) || !slices.Equal(use.DefaultRoles, []string{"user", "supplier", "operator", "admin"}) ||
-		!slices.Equal(stats.InheritFrom, []string{"growth:manage"}) || !stats.Sensitive || !slices.Equal(stats.Roles(), []string{"admin"}) {
+	everyone := map[string][]string{"user": {""}, "supplier": {""}, "operator": {""}, "admin": {""}}
+	if len(perms) != 2 || !slices.Equal(use.InheritFrom, []string{"growth:read"}) || use.RiskLevel() != manifest.RiskLow || !reflect.DeepEqual(use.DefaultGrants(), everyone) ||
+		!slices.Equal(stats.InheritFrom, []string{"growth:manage"}) || stats.RiskLevel() != manifest.RiskSensitive || !reflect.DeepEqual(stats.DefaultGrants(), map[string][]string{"admin": {""}}) {
 		t.Fatalf("user permissions = %+v", perms)
 	}
 	for _, r := range m.Routes {

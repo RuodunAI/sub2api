@@ -18,7 +18,7 @@
       "binaries": "runtimes/{os}-{arch}/plugin"
     }
   },
-  "hostCompat": ">=0.1.286 <0.2.0",
+  "hostCompat": ">=0.1.289 <0.2.0",
   "capabilities": [
     {
       "id": "platform.adapter.v1"
@@ -543,7 +543,7 @@
   "userPermissions": [
     {
       "key": "assets:read",
-      "defaultRoles": ["admin"],
+      "defaults": { "admin": true },
       "label": {
         "en": "View the Ark asset library",
         "zh": "查看方舟素材库"
@@ -555,7 +555,7 @@
     },
     {
       "key": "assets:manage",
-      "defaultRoles": ["admin"],
+      "defaults": { "admin": true },
       "label": {
         "en": "Manage the Ark asset library",
         "zh": "管理方舟素材库"
