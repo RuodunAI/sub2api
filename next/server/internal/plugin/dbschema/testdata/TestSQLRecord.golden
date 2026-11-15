@@ -1,0 +1,7 @@
+-- sql
+INSERT INTO public.plugin_migrations (plugin_key, migration_id, checksum) VALUES ($1, $2, $3)
+		ON CONFLICT (plugin_key, migration_id) DO UPDATE SET checksum = EXCLUDED.checksum, applied_at = now()
+-- vars
+$1 string "demo"
+$2 string "0001_init.sql"
+$3 string "abc"

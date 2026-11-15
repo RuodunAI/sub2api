@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -66,9 +67,23 @@ func (m *Manager) RolePassword(pluginKey string) string {
 // canCreateRole reports whether the current connection may create roles.
 func (m *Manager) canCreateRole(ctx context.Context) (bool, error) {
 	var ok bool
-	err := m.db.Pool.QueryRow(ctx,
-		`SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&ok)
+	err := store.G(ctx, m.db.Pool).Raw(`SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname = current_user`).Row().Scan(&ok)
 	return ok, err
+}
+
+// The statements below read the system catalogs and change roles and
+// schemas, which no model maps: they are raw SQL on store.G. A one-value
+// read uses Row().Scan, which, like pgx's QueryRow, fails on no row.
+//
+// DDL takes no parameters, so identifiers are quoted with pgx.Identifier
+// and literals with quoteLiteral, as before. GORM passes the text of a
+// statement without arguments through unchanged: a "?" or "@name" in a
+// literal stays text.
+
+// xactLock takes a transaction-scoped advisory lock. It returns void, so it
+// runs with Exec (see package store).
+func xactLock(g *gorm.DB, key int64) error {
+	return g.Exec(`SELECT pg_advisory_xact_lock(?)`, key).Error
 }
 
 // Error codes of the database isolation (audit 2026-10-09 P1-7). Role
@@ -109,7 +124,7 @@ func (m *Manager) CheckIsolation(ctx context.Context) error {
 // does not own the role.
 func roleMarker(ctx context.Context, q store.Querier, pluginKey string) (string, error) {
 	var dbname string
-	if err := q.QueryRow(ctx, `SELECT current_database()`).Scan(&dbname); err != nil {
+	if err := store.G(ctx, q).Raw(`SELECT current_database()`).Row().Scan(&dbname); err != nil {
 		return "", err
 	}
 	return "sub2api plugin role; database=" + dbname + "; plugin=" + pluginKey, nil
@@ -120,14 +135,18 @@ func roleMarker(ctx context.Context, q store.Querier, pluginKey string) (string,
 // owns the plugin's schema here.
 func roleOwned(ctx context.Context, q store.Querier, role, schema, marker string) (bool, error) {
 	var owned bool
-	err := q.QueryRow(ctx, `
-SELECT COALESCE(shobj_description(r.oid, 'pg_authid') = $2, false)
-    OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = $3 AND n.nspowner = r.oid)
-FROM pg_roles r WHERE r.rolname = $1`, role, marker, schema).Scan(&owned)
+	err := roleOwnedQuery(store.G(ctx, q), role, schema, marker).Row().Scan(&owned)
 	if store.IsNoRows(err) {
 		return false, nil
 	}
 	return owned, err
+}
+
+func roleOwnedQuery(g *gorm.DB, role, schema, marker string) *gorm.DB {
+	return g.Raw(`
+SELECT COALESCE(shobj_description(r.oid, 'pg_authid') = ?, false)
+    OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = ? AND n.nspowner = r.oid)
+FROM pg_roles r WHERE r.rolname = ?`, marker, schema, role)
 }
 
 // migrationFuncs are the core functions a plugin role runs for its own
@@ -144,23 +163,24 @@ var sharedACLLockKey = store.PluginMigrationLockKey("*shared-migration-function-
 // grantMigrationFuncs lets role run migrationFuncs. Most Ensure calls find
 // the grant in place and write nothing.
 func grantMigrationFuncs(ctx context.Context, tx pgx.Tx, role string) error {
+	g := store.G(ctx, tx)
 	granted := func() (bool, error) {
 		var ok bool
-		err := tx.QueryRow(ctx, `SELECT has_function_privilege($1, 'public.plugin_migrations_applied(varchar)', 'EXECUTE')
-			AND has_function_privilege($1, 'public.plugin_migration_record(varchar, varchar, varchar)', 'EXECUTE')`, role).Scan(&ok)
+		err := g.Raw(`SELECT has_function_privilege(?, 'public.plugin_migrations_applied(varchar)', 'EXECUTE')
+			AND has_function_privilege(?, 'public.plugin_migration_record(varchar, varchar, varchar)', 'EXECUTE')`, role, role).Row().Scan(&ok)
 		return ok, err
 	}
 	if ok, err := granted(); err != nil || ok {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, sharedACLLockKey); err != nil {
+	if err := xactLock(g, sharedACLLockKey); err != nil {
 		return err
 	}
 	if ok, err := granted(); err != nil || ok {
 		return err
 	}
 	s := "GRANT EXECUTE ON FUNCTION " + migrationFuncs + " TO " + pgx.Identifier{role}.Sanitize()
-	if _, err := tx.Exec(ctx, s); err != nil {
+	if err := g.Exec(s).Error; err != nil {
 		return fmt.Errorf("%s: %w", s, err)
 	}
 	return nil
@@ -184,13 +204,13 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 	sid := pgx.Identifier{schema}.Sanitize()
 	lockKey := store.PluginMigrationLockKey(pluginKey)
 	err := m.db.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
 		// Serialize with migrations and other nodes ensuring the same schema.
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey^0x5a5a); err != nil {
+		if err := xactLock(g, lockKey^0x5a5a); err != nil {
 			return err
 		}
 		if !isolate {
-			_, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+sid)
-			return err
+			return g.Exec("CREATE SCHEMA IF NOT EXISTS " + sid).Error
 		}
 		role := schema
 		rid := pgx.Identifier{role}.Sanitize()
@@ -200,7 +220,7 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			return err
 		}
 		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, role).Scan(&exists); err != nil {
+		if err := g.Raw(`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ?)`, role).Row().Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -212,7 +232,7 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 				return ErrRoleConflict
 			}
 		}
-		if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+sid); err != nil {
+		if err := g.Exec("CREATE SCHEMA IF NOT EXISTS " + sid).Error; err != nil {
 			return err
 		}
 		if exists {
@@ -221,8 +241,8 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			// may not mention SUPERUSER, REPLICATION or BYPASSRLS at all,
 			// not even to restate NO.
 			var super, repl, bypass, createdb, createrole bool
-			if err := tx.QueryRow(ctx, `SELECT rolsuper, rolreplication, rolbypassrls, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = $1`, role).
-				Scan(&super, &repl, &bypass, &createdb, &createrole); err != nil {
+			if err := g.Raw(`SELECT rolsuper, rolreplication, rolbypassrls, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = ?`, role).
+				Row().Scan(&super, &repl, &bypass, &createdb, &createrole); err != nil {
 				return err
 			}
 			attrs := "LOGIN"
@@ -234,22 +254,22 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 					attrs += " " + a.name
 				}
 			}
-			if _, err := tx.Exec(ctx, "ALTER ROLE "+rid+" WITH "+attrs+" CONNECTION LIMIT 20 PASSWORD "+pw); err != nil {
+			if err := g.Exec("ALTER ROLE " + rid + " WITH " + attrs + " CONNECTION LIMIT 20 PASSWORD " + pw).Error; err != nil {
 				return fmt.Errorf("alter role %s: %w", role, err)
 			}
 		} else {
-			if _, err := tx.Exec(ctx, "CREATE ROLE "+rid+" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 20 PASSWORD "+pw); err != nil {
+			if err := g.Exec("CREATE ROLE " + rid + " WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 20 PASSWORD " + pw).Error; err != nil {
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, "COMMENT ON ROLE "+rid+" IS "+quoteLiteral(marker)); err != nil {
+		if err := g.Exec("COMMENT ON ROLE " + rid + " IS " + quoteLiteral(marker)).Error; err != nil {
 			return err
 		}
 		// Host membership lets a non-superuser host hand the schema to the role
 		// and DROP OWNED BY it on purge (PG16+ does not grant SET on created
 		// roles by default). Migrations never use SET ROLE.
 		var verNum int
-		if err := tx.QueryRow(ctx, `SELECT current_setting('server_version_num')::int`).Scan(&verNum); err != nil {
+		if err := g.Raw(`SELECT current_setting('server_version_num')::int`).Row().Scan(&verNum); err != nil {
 			return err
 		}
 		priv := "MEMBER"
@@ -257,11 +277,11 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			priv = "SET"
 		}
 		var member bool
-		if err := tx.QueryRow(ctx, `SELECT pg_has_role(current_user, $1, '`+priv+`')`, role).Scan(&member); err != nil {
+		if err := g.Raw(`SELECT pg_has_role(current_user, ?, '`+priv+`')`, role).Row().Scan(&member); err != nil {
 			return err
 		}
 		if !member {
-			if _, err := tx.Exec(ctx, "GRANT "+rid+" TO CURRENT_USER"); err != nil {
+			if err := g.Exec("GRANT " + rid + " TO CURRENT_USER").Error; err != nil {
 				return err
 			}
 		}
@@ -272,7 +292,7 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			"ALTER ROLE " + rid + " SET search_path TO " + sid,
 		}
 		for _, s := range stmts {
-			if _, err := tx.Exec(ctx, s); err != nil {
+			if err := g.Exec(s).Error; err != nil {
 				return fmt.Errorf("%s: %w", s, err)
 			}
 		}
@@ -348,11 +368,19 @@ func (m *Manager) Pending(ctx context.Context, pluginKey string, ids []string) (
 	if len(ids) == 0 {
 		return false, nil
 	}
-	var n int
-	err := m.db.Pool.QueryRow(ctx,
-		`SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id = ANY($2)`,
-		pluginKey, ids).Scan(&n)
-	return n < len(ids), err
+	var n int64
+	err := pluginMigrations(store.G(ctx, m.db.Pool), pluginKey).Where("migration_id = ANY(?)", store.Strings(ids)).Count(&n).Error
+	return n < int64(len(ids)), err
+}
+
+// pluginMigrations filters the migration records of a plugin.
+// plugin_migrations belongs to store's migration runner and has no model.
+func pluginMigrations(g *gorm.DB, pluginKey string) *gorm.DB {
+	return g.Table("plugin_migrations").Where("plugin_key = ?", pluginKey)
+}
+
+func dropMigrationRecords(g *gorm.DB, pluginKey string) *gorm.DB {
+	return pluginMigrations(g, pluginKey).Delete(nil)
 }
 
 // DSN returns the connection string a plugin should use for its schema.
@@ -382,11 +410,12 @@ func (m *Manager) DropTx(ctx context.Context, tx pgx.Tx, pluginKey string) error
 	}
 	schema := SchemaName(pluginKey)
 	sid := pgx.Identifier{schema}.Sanitize()
+	g := store.G(ctx, tx)
 	err := func() error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, store.PluginMigrationLockKey(pluginKey)^0x5a5a); err != nil {
+		if err := xactLock(g, store.PluginMigrationLockKey(pluginKey)^0x5a5a); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, store.PluginMigrationLockKey(pluginKey)); err != nil {
+		if err := xactLock(g, store.PluginMigrationLockKey(pluginKey)); err != nil {
 			return err
 		}
 		// Decide before the schema goes: a role that owns it is ours.
@@ -398,10 +427,10 @@ func (m *Manager) DropTx(ctx context.Context, tx pgx.Tx, pluginKey string) error
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, "DROP SCHEMA IF EXISTS "+sid+" CASCADE"); err != nil {
+		if err := g.Exec("DROP SCHEMA IF EXISTS " + sid + " CASCADE").Error; err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM plugin_migrations WHERE plugin_key = $1`, pluginKey); err != nil {
+		if err := dropMigrationRecords(g, pluginKey).Error; err != nil {
 			return err
 		}
 		// A same-named role this core did not create (another database of
@@ -409,13 +438,13 @@ func (m *Manager) DropTx(ctx context.Context, tx pgx.Tx, pluginKey string) error
 		if owned {
 			rid := pgx.Identifier{schema}.Sanitize()
 			// DROP OWNED revokes the role's grant on migrationFuncs.
-			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, sharedACLLockKey); err != nil {
+			if err := xactLock(g, sharedACLLockKey); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, "DROP OWNED BY "+rid); err != nil {
+			if err := g.Exec("DROP OWNED BY " + rid).Error; err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, "DROP ROLE "+rid); err != nil {
+			if err := g.Exec("DROP ROLE " + rid).Error; err != nil {
 				return err
 			}
 		}
@@ -440,37 +469,47 @@ type Tracker struct {
 
 func (Tracker) Ensure(context.Context, store.Querier) error { return nil }
 
+// migrationRecord is a row Tracker.Applied reads.
+type migrationRecord struct {
+	MigrationID string `gorm:"column:migration_id"`
+	Checksum    string `gorm:"column:checksum"`
+}
+
 func (t Tracker) Applied(ctx context.Context, q store.Querier) (map[string]string, error) {
-	query := `SELECT migration_id, checksum FROM public.plugin_migrations WHERE plugin_key = $1`
-	if t.AsPluginRole {
-		query = `SELECT migration_id, checksum FROM public.plugin_migrations_applied($1)`
-	}
-	rows, err := q.Query(ctx, query, t.PluginKey)
-	if err != nil {
+	var rows []migrationRecord
+	if err := t.appliedQuery(store.G(ctx, q)).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var id, sum string
-		if err := rows.Scan(&id, &sum); err != nil {
-			return nil, err
-		}
-		out[id] = sum
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.MigrationID] = r.Checksum
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// appliedQuery reads the plugin's records, schema-qualified: the
+// connection's search_path is the plugin schema. The plugin role may only
+// read them through the definer function.
+func (t Tracker) appliedQuery(g *gorm.DB) *gorm.DB {
+	if t.AsPluginRole {
+		return g.Raw(`SELECT migration_id, checksum FROM public.plugin_migrations_applied(?)`, t.PluginKey)
+	}
+	return g.Raw(`SELECT migration_id, checksum FROM public.plugin_migrations WHERE plugin_key = ?`, t.PluginKey)
 }
 
 func (t Tracker) Record(ctx context.Context, tx pgx.Tx, id, checksum string) error {
+	return t.recordQuery(store.G(ctx, tx), id, checksum).Error
+}
+
+// recordQuery records an applied migration: as the plugin role through the
+// definer function (void, hence Exec), else an upsert.
+func (t Tracker) recordQuery(g *gorm.DB, id, checksum string) *gorm.DB {
 	if t.AsPluginRole {
-		_, err := tx.Exec(ctx, `SELECT public.plugin_migration_record($1, $2, $3)`, t.PluginKey, id, checksum)
-		return err
+		return g.Exec(`SELECT public.plugin_migration_record(?, ?, ?)`, t.PluginKey, id, checksum)
 	}
-	_, err := tx.Exec(ctx,
-		`INSERT INTO public.plugin_migrations (plugin_key, migration_id, checksum) VALUES ($1, $2, $3)
+	return g.Exec(`INSERT INTO public.plugin_migrations (plugin_key, migration_id, checksum) VALUES (?, ?, ?)
 		ON CONFLICT (plugin_key, migration_id) DO UPDATE SET checksum = EXCLUDED.checksum, applied_at = now()`,
 		t.PluginKey, id, checksum)
-	return err
 }
 
 // rewriteDSN replaces the credentials of dsn (URL or key=value form) and pins

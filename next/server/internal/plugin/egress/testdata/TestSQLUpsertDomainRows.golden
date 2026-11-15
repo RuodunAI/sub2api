@@ -1,0 +1,13 @@
+-- sql
+INSERT INTO plugin_egress_domains AS d (plugin_key, host, first_seen_at, last_seen_at, connections)
+			SELECT * FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::timestamptz[], $5::bigint[])
+			ON CONFLICT (plugin_key, host) DO UPDATE SET
+				last_seen_at = GREATEST(d.last_seen_at, EXCLUDED.last_seen_at),
+				connections = d.connections + EXCLUDED.connections
+			RETURNING d.plugin_key, d.host, d.first_seen_at, (xmax = 0) AS inserted
+-- vars
+$1 store.Strings [demo]
+$2 store.Strings [api.example.com]
+$3 store.Times [2026-11-15 08:00:00 +0000 UTC]
+$4 store.Times [2026-11-15 09:00:00 +0000 UTC]
+$5 store.Int64s [3]

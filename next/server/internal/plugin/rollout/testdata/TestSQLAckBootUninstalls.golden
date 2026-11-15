@@ -1,0 +1,6 @@
+-- sql
+UPDATE "plugin_uninstalls" SET "stopped_boot_ids"=array_append(stopped_boot_ids, $1) WHERE $2 = ANY(target_boot_ids) AND NOT ($3 = ANY(stopped_boot_ids))
+-- vars
+$1 string "boot-a"
+$2 string "boot-a"
+$3 string "boot-a"

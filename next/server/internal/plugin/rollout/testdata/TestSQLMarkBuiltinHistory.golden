@@ -1,0 +1,4 @@
+-- sql
+UPDATE "plugin_history" SET "message"=(message::jsonb || '{"source":"builtin"}'::jsonb)::text WHERE rollout_id = $1 AND node_id = '' AND state = 'created'
+-- vars
+$1 int64 42

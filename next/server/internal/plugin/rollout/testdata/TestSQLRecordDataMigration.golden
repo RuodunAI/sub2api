@@ -1,0 +1,6 @@
+-- sql
+INSERT INTO plugin_migrations (plugin_key, migration_id, checksum) VALUES ($1, $2, 'data')
+		ON CONFLICT DO NOTHING
+-- vars
+$1 string "demo"
+$2 string "data:rollout-42:1.0.0->1.1.0"

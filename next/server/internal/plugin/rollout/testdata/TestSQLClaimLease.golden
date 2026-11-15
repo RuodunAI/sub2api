@@ -1,0 +1,7 @@
+-- sql
+UPDATE "plugin_rollouts" SET "coordinator_boot_id"=$1,"coordinator_lease_until"=clock_timestamp() + $2 * interval '1 millisecond',"coordinator_node_id"=$3,"row_version"=row_version + 1 WHERE (id = $4 AND phase IN ('preparing','activating')) AND (coordinator_lease_until IS NULL OR coordinator_lease_until < clock_timestamp())
+-- vars
+$1 string "boot-a"
+$2 int64 30000
+$3 string "node-a"
+$4 int64 42

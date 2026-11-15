@@ -1,0 +1,6 @@
+-- sql
+INSERT INTO plugin_runtime_nodes(plugin_key,boot_id) VALUES($1,$2)
+			ON CONFLICT(plugin_key,boot_id) DO UPDATE SET stopped=false,updated_at=now()
+-- vars
+$1 string "demo"
+$2 string "boot-a"

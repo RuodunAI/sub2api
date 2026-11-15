@@ -1,0 +1,4 @@
+-- sql
+SELECT migration_id, checksum FROM public.plugin_migrations_applied($1)
+-- vars
+$1 string "demo"
