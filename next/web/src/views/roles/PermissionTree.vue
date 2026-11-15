@@ -7,8 +7,9 @@ import type { PermissionItem, PermissionModule } from '@/api/types'
 import { lt } from '@/i18n'
 import { ALL_SCOPE, parsePermission, reduceScopes, type Scope, type ScopeResource } from '@/authz/implies'
 import { defaultScopes, offerOf, withScopes } from '@/authz/scopeChoice'
-import { cellKeys, sameKeys, withCell } from '@/authz/pluginGrants'
+import { cellKeys, isSuggestedRole, localOf, sameKeys, withCell, type SuggestedRole } from '@/authz/pluginGrants'
 import PermRiskBadge from '@/components/permission/PermRiskBadge.vue'
+import { groupSections, permHint } from '@/components/permission/permRows'
 import ScopePicker from './ScopePicker.vue'
 
 // Permission checkboxes of a role, one collapsible block per module (core
@@ -39,10 +40,6 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'update:granted', v: Set<string>): void }>()
 const { t } = useI18n()
 
-type SuggestedRole = keyof NonNullable<PermissionItem['defaults']>
-/** The roles plugins suggest grants for (manifest defaults). */
-const SUGGESTED_ROLES: readonly string[] = ['admin', 'operator', 'supplier', 'user'] satisfies SuggestedRole[]
-
 const anyStepUp = computed(() => props.modules.some((m) => m.permissions.some((p) => p.step_up)))
 const groups = computed(() => [props.modules.filter((m) => m.source !== 'plugin'), props.modules.filter((m) => m.source === 'plugin')])
 const collapsed = ref(new Set<string>())
@@ -68,7 +65,7 @@ const showScopes = (p: PermissionItem) => scoped(p) && !props.allGranted && (isC
 /** A plugin action ranges over its own resource: none of the core rows, its manifest scope instead. */
 const pickerResource = (p: PermissionItem) => (p.scope_type?.startsWith('plugin:') ? '' : (p.scope_type as ScopeResource))
 const pickerPlugin = (m: PermissionModule, p: PermissionItem) =>
-  m.plugin_key && p.scope ? { key: m.plugin_key, local: p.key.slice(p.key.indexOf(':') + 1), scope: p.scope } : undefined
+  m.plugin_key && p.scope ? { key: m.plugin_key, local: localOf(p.key), scope: p.scope } : undefined
 
 /** granted with p on or off; a scoped action goes on at its widest offered scope. */
 function withItem(granted: Set<string>, p: PermissionItem, on: boolean): Set<string> {
@@ -82,8 +79,6 @@ const grantedCount = (perms: PermissionItem[]) => perms.filter((p) => isChecked(
 const inactive = (status: string) => status !== 'active' && status !== ''
 const moduleInactive = (m: PermissionModule) => inactive(m.status)
 const permInactive = (m: PermissionModule, p: PermissionItem) => moduleInactive(m) || inactive(p.status)
-// The hover hint: the key, then what it allows.
-const hint = (p: PermissionItem) => [p.key, p.description && lt(p.description)].filter(Boolean).join('\n')
 /** The editor may grant p: holds it, or (a scoped action) holds some scope of it, which ScopePicker offers. */
 const mayGrant = (p: PermissionItem) => !props.grantable || props.grantable(p.key) || (scoped(p) && !!props.scopeLimit?.(p.key).length)
 // A ticked permission can always be unticked. A removed one can only be
@@ -117,22 +112,13 @@ function setScopes(p: PermissionItem, scopes: Scope[]) {
   emit('update:granted', withScopes(props.granted, p.key, scopes))
 }
 
-/** A plugin module's permissions under its groups, in their order; those of no listed group last, without a heading. */
-function sectionsOf(m: PermissionModule) {
-  const listed = m.groups ?? []
-  const known = new Set(listed.map((g) => g.key))
-  const out = listed.map((g) => ({ key: g.key, label: lt(g.label) || g.key, perms: m.permissions.filter((p) => p.group === g.key) }))
-  out.push({ key: '', label: '', perms: m.permissions.filter((p) => !p.group || !known.has(p.group)) })
-  return out.filter((s) => s.perms.length)
-}
-
 /** Permission names by key, for the requires hints. */
 const labels = computed(() => new Map(props.modules.flatMap((m) => m.permissions.map((p) => [p.key, lt(p.label) || p.key]))))
 /** Ticked, the keys it needs that are not ticked, by name. */
 const unmet = (p: PermissionItem) => (isChecked(p.key) ? (p.requires ?? []).filter((k) => !isChecked(k)).map((k) => labels.value.get(k) ?? k) : [])
 
 // The plugins' suggestions for the edited built-in role.
-const suggestedRole = computed(() => (!props.allGranted && props.roleKey && SUGGESTED_ROLES.includes(props.roleKey) ? (props.roleKey as SuggestedRole) : null))
+const suggestedRole = computed<SuggestedRole | null>(() => (!props.allGranted && props.roleKey && isSuggestedRole(props.roleKey) ? props.roleKey : null))
 const grantedKeys = computed(() => [...props.granted])
 /** Rows with a suggestion: not critical (none suggested) nor removed (no new grants). */
 const suggests = (p: PermissionItem) => !!p.defaults && p.status !== 'removed'
@@ -204,7 +190,7 @@ function restoreSuggested(m: PermissionModule) {
             <SButton v-if="!readOnly" size="xs" variant="secondary" icon="refresh" data-testid="module-restore" @click="restoreSuggested(m)">{{ t('roles.restoreSuggested') }}</SButton>
           </div>
           <template v-if="!collapsed.has(m.module)">
-            <div v-for="s in sectionsOf(m)" :key="s.key" class="border-t border-line px-3 py-3" :data-group="s.key || undefined" data-testid="permission-section">
+            <div v-for="s in groupSections(m.permissions, m.groups)" :key="s.key" class="border-t border-line px-3 py-3" :data-group="s.key || undefined" data-testid="permission-section">
               <div v-if="s.label" class="mb-2 flex items-center gap-3">
                 <span class="min-w-0 truncate text-xs font-medium text-fg-subtle">{{ s.label }}</span>
                 <span class="h-px flex-1 bg-line" />
@@ -219,7 +205,9 @@ function restoreSuggested(m: PermissionModule) {
                   @update:model-value="toggleAll(s.perms)"
                 />
               </div>
-              <div class="grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+              <!-- grid-cols-1 (minmax(0, 1fr)) and min-w-0 keep a scope picker from widening the
+                   single phone column past the screen. -->
+              <div class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
                 <!-- SCheckbox's own text span fixes the colour, so the inactive tone goes on the
                      slot content; [&>span]:min-w-0 lets the truncate inside shrink. -->
                 <template v-for="p in s.perms" :key="p.key">
@@ -230,7 +218,7 @@ function restoreSuggested(m: PermissionModule) {
                     :data-permission="p.key"
                     @update:model-value="toggle(p)"
                   >
-                    <span class="block min-w-0" :class="permInactive(m, p) ? 'text-fg-subtle' : ''" :title="hint(p)">
+                    <span class="block min-w-0" :class="permInactive(m, p) ? 'text-fg-subtle' : ''" :title="permHint(p.key, p.description)">
                       <span class="flex min-w-0 items-center gap-2">
                         <span class="truncate">{{ lt(p.label) || p.key }}</span>
                         <PermRiskBadge v-if="p.risk !== 'low' || m.source === 'plugin'" :risk="p.risk" class="shrink-0" />
@@ -249,7 +237,7 @@ function restoreSuggested(m: PermissionModule) {
                   </SCheckbox>
                   <ScopePicker
                     v-if="showScopes(p)"
-                    class="sm:col-span-2 xl:col-span-3"
+                    class="min-w-0 sm:col-span-2 xl:col-span-3"
                     :action="p.key"
                     :resource="pickerResource(p)"
                     :plugin="pickerPlugin(m, p)"

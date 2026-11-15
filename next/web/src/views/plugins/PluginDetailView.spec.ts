@@ -14,7 +14,10 @@ enableAutoUnmount(afterEach)
 const PermissionsTab = { name: 'PermissionsTab', emits: ['dirty'], template: '<button data-testid="perm-tab" @click="$emit(\'dirty\', true)" />' }
 
 async function render(query = '') {
-  mocks.get.mockImplementation(async (path: string) => (path === '/plugins/guard' ? { key: 'guard', name: 'Guard', status: 'enabled', grants: [], versions: [] } : null))
+  mocks.get.mockImplementation(async (path: string) => {
+    const key = path.match(/^\/plugins\/(\w+)$/)?.[1]
+    return key ? { key, name: key, status: 'enabled', grants: [], versions: [] } : null
+  })
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -62,5 +65,39 @@ describe('plugin detail view', () => {
     await flushPromises()
     expect(w.find('[data-testid="perm-tab"]').exists()).toBe(false)
     expect(router.currentRoute.value.query.tab).toBe('nodes')
+  })
+
+  it('a ?tab= change from a link or the history asks first too', async () => {
+    const { w, router } = await render('?tab=permissions')
+    await w.get('[data-testid="perm-tab"]').trigger('click')
+    await router.push('/plugins/guard?tab=nodes')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.query.tab).toBe('permissions')
+    expect(w.find('[data-testid="perm-tab"]').exists()).toBe(true)
+
+    // Other query changes keep the tab without asking.
+    await router.push('/plugins/guard?tab=permissions&consented=0.2.0')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('opening another plugin on the same page asks first, and drops the edits once given up', async () => {
+    const { w, router } = await render('?tab=permissions')
+    await w.get('[data-testid="perm-tab"]').trigger('click')
+    await router.push('/plugins/other?tab=permissions')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.path).toBe('/plugins/guard')
+
+    mocks.confirm.mockResolvedValueOnce(true)
+    await router.push('/plugins/other?tab=permissions')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/plugins/other')
+    // Given up: leaving again does not ask.
+    await router.push('/plugins')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(2)
+    expect(router.currentRoute.value.path).toBe('/plugins')
   })
 })

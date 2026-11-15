@@ -4,10 +4,10 @@ import { isApiError } from '@sub2api/host'
  * What a refused role write lacked (403 details: missing permissions, missing
  * managed roles, "all custom roles"), as one line; prefixed with the role it
  * was refused for when the refusal names one (details.role: the plugin matrix
- * writes several roles at once). '' for any other error. Shared by the role
- * editor and the plugin permission matrix.
+ * writes several roles at once), by `roleName` when given. '' for any other
+ * error. Shared by the role editor and the plugin permission matrix.
  */
-export function missingText(e: unknown, t: (key: string, values?: Record<string, unknown>) => string): string {
+export function missingText(e: unknown, t: (key: string, values?: Record<string, unknown>) => string, roleName: (key: string) => string = (k) => k): string {
   if (!isApiError(e)) return ''
   const d = e.details
   const list = (v: unknown) => (Array.isArray(v) ? v.join(t('roles.listSep')) : '')
@@ -18,5 +18,5 @@ export function missingText(e: unknown, t: (key: string, values?: Record<string,
   ]
     .filter(Boolean)
     .join(' · ')
-  return text && typeof d.role === 'string' && d.role ? t('roles.missingFor', { role: d.role, text }) : text
+  return text && typeof d.role === 'string' && d.role ? t('roles.missingFor', { role: roleName(d.role), text }) : text
 }

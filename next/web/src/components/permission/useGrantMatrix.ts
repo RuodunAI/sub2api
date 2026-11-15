@@ -1,7 +1,7 @@
 // The state of a permission × role matrix of one plugin, shared by the
 // matrix component and the page that owns it (consent page, plugin detail
 // "Permissions" tab): the page reads `value`, `changes` and `dirty` to save,
-// the component edits through `setCell`, `setGroup` and `restore`. Built on
+// the component edits through `setCell`, `toggleGroup` and `restore`. Built on
 // authz/pluginGrants: `value` is role → full canonical keys of the plugin, the
 // shape of the matrix PUT body and of roles[].permission_keys.
 //
@@ -10,39 +10,37 @@
 // (`changes` against `baseline`: the detail page's save bar, the consent
 // page's payload rows).
 import { computed, ref, watch, type Ref } from 'vue'
-import type { LText, PermRisk, PluginScopeDecl } from '@/api/types'
+import type { LText, PermissionItem } from '@/api/types'
 import { defaultScopes, type ScopeOffer } from '@/authz/scopeChoice'
-import { cellKeys, cellOfScopes, diffCells, narrows, sameKeys, suggestedOf, withCell, type RoleKeys } from '@/authz/pluginGrants'
+import { cellKeys, cellOfScopes, diffCells, isSuggestedRole, narrows, sameKeys, suggestedOf, withCell, type RoleKeys } from '@/authz/pluginGrants'
 
 /**
  * Why a cell cannot be edited freely; null when it can.
  * - superuser: the super admin column, fixed at everything.
- * - pending_review: install / upgrade, the installer may not name the role: a super admin reviews it (D2).
+ * - pending_review: install / upgrade, the installer may not name the role and the cell's grant waits for a super admin's review (D2).
  * - critical: install / upgrade, a critical row for a non-super installer (D3).
+ * - inherited: install / upgrade, a renamed row: the server grants the old key's holders whatever the consent says (inheritFrom).
  * - not_held: plugin detail, the editor does not hold the action: may only take away.
- * - role_readonly: plugin detail, the role is not editable (roles[].editable false).
+ * - role_readonly: the editor may not change the role (detail: roles[].editable false; consent: a role it may not name, nothing held).
  * - removed: the permission was removed: may only take away.
  */
-export type CellLock = null | 'superuser' | 'pending_review' | 'critical' | 'not_held' | 'role_readonly' | 'removed'
+export type CellLock = null | 'superuser' | 'pending_review' | 'critical' | 'inherited' | 'not_held' | 'role_readonly' | 'removed'
 
-/** Locks under which a cell may still be narrowed or cleared. */
 const SHRINK_ONLY: ReadonlySet<CellLock> = new Set<CellLock>(['not_held', 'removed'])
+/** Under the lock a cell may still be narrowed or cleared. */
+export const isShrinkOnly = (lock: CellLock) => SHRINK_ONLY.has(lock)
+/** The lock freezes a cell outright. */
+export const isFixed = (lock: CellLock) => lock !== null && !SHRINK_ONLY.has(lock)
 
 /** One matrix row: a permission of the plugin, its keys full. */
-export interface MatrixPerm {
+export type MatrixPerm = Pick<PermissionItem, 'label' | 'description' | 'risk' | 'group' | 'requires' | 'scope' | 'status'> & {
   /** The full action key: plugin.<p>:<local>. */
   action: string
   local: string
-  label: LText
-  description?: LText
-  risk: PermRisk
-  group?: string
-  /** Full keys. */
-  requires?: string[]
-  scope?: PluginScopeDecl
   /** The plugin's suggestion: role → full canonical keys; none (a renamed or critical row) suggests nothing. */
   defaults?: Readonly<Record<string, readonly string[] | undefined>>
-  status: string
+  /** A renamed row (consent): the local keys whose holders it is granted to. */
+  inheritFrom?: string[]
 }
 
 /** One matrix column. */
@@ -71,13 +69,13 @@ export function useGrantMatrix(opts: GrantMatrixOptions) {
   const suggested = computed(() => suggestedOf(opts.perms.value))
   const cell = (p: MatrixPerm, r: MatrixRole) => cellKeys(value.value[r.key] ?? [], p.action)
 
-  /** A locked cell takes nothing, or (SHRINK_ONLY) only less than it holds. */
+  /** A locked cell takes nothing, or (shrink-only) only less than it holds. */
   const allows = (p: MatrixPerm, r: MatrixRole, next: readonly string[]) => {
     const lock = opts.lockOf(p, r)
-    return lock === null || (SHRINK_ONLY.has(lock) && narrows(cell(p, r), next, p.action))
+    return lock === null || (isShrinkOnly(lock) && narrows(cell(p, r), next, p.action))
   }
   /** Writes cells of one role at once; the ones their lock refuses are skipped. */
-  function write(r: MatrixRole, cells: Array<[MatrixPerm, string[]]>) {
+  function write(r: MatrixRole, cells: ReadonlyArray<readonly [MatrixPerm, string[]]>) {
     const held = value.value[r.key] ?? []
     const keys = cells.reduce((acc, [p, next]) => (allows(p, r, next) ? withCell(acc, p.action, next) : acc), held)
     if (!sameKeys(keys, held)) value.value = { ...value.value, [r.key]: keys }
@@ -88,29 +86,48 @@ export function useGrantMatrix(opts: GrantMatrixOptions) {
   }
 
   /**
-   * Ticks (or clears) every row of a group for one role (D1: a group is a
-   * shortcut, the keys stored are concrete). An unscoped row gets its key, a
-   * scoped one the widest scope `offer` gives it; a row already granted is
-   * left as it is, removed and locked rows are skipped.
+   * The rows of perms a group checkbox covers for one role, each with what
+   * ticking gives it: the rows the role's cell may take freely (no lock, not
+   * removed), an unscoped one its key, a scoped one the widest scope `offer`
+   * gives (none offered: left out). The checkbox's state and its action both
+   * go by these rows only.
    */
-  function setGroup(group: string, r: MatrixRole, on: boolean, offer: (action: string) => ScopeOffer) {
-    const rows = opts.perms.value.filter((p) => (p.group ?? '') === group && (!on || (p.status !== 'removed' && !cell(p, r).length)))
-    write(r, rows.map((p) => [p, on ? (p.scope ? cellOfScopes(p.action, defaultScopes(offer(p.action))) : [p.action]) : []]))
+  function groupRows(perms: readonly MatrixPerm[], r: MatrixRole, offer: (action: string) => ScopeOffer) {
+    return perms
+      .filter((p) => p.status !== 'removed' && opts.lockOf(p, r) === null)
+      .map((p) => [p, p.scope ? cellOfScopes(p.action, defaultScopes(offer(p.action))) : [p.action]] as const)
+      .filter(([, on]) => on.length)
+  }
+  function groupState(perms: readonly MatrixPerm[], r: MatrixRole, offer: (action: string) => ScopeOffer): 'all' | 'some' | 'none' {
+    const rows = groupRows(perms, r, offer)
+    const n = rows.filter(([p]) => cell(p, r).length).length
+    if (n === 0) return 'none'
+    return n === rows.length ? 'all' : 'some'
+  }
+  /**
+   * Ticks the group's rows for one role, or clears them once all are ticked
+   * (D1: a group is a shortcut, the keys stored are concrete); ticking leaves
+   * a row already granted as it is.
+   */
+  function toggleGroup(perms: readonly MatrixPerm[], r: MatrixRole, offer: (action: string) => ScopeOffer) {
+    const on = groupState(perms, r, offer) !== 'all'
+    const rows = groupRows(perms, r, offer).filter(([p]) => !on || !cell(p, r).length)
+    write(r, rows.map(([p, keys]) => [p, on ? [...keys] : []]))
   }
 
-  /** Puts one row (or every row) back to the plugin's suggestion; locked cells and rows without one are left alone. */
+  /** The cell has a suggestion to compare with and restore: a row with defaults, a role they speak for (built-in), no lock. */
+  const suggests = (p: MatrixPerm, r: MatrixRole) => !!p.defaults && isSuggestedRole(r.key) && opts.lockOf(p, r) === null
+  const suggestedCell = (p: MatrixPerm, r: MatrixRole) => cellKeys(suggested.value[r.key] ?? [], p.action)
+
+  /** Puts one row (or every row) back to the plugin's suggestion, in the cells that have one (suggests). */
   function restore(p?: MatrixPerm) {
-    const rows = (p ? [p] : opts.perms.value).filter((x) => x.defaults)
-    for (const r of opts.roles.value) {
-      const editable = rows.filter((x) => opts.lockOf(x, r) === null)
-      write(r, editable.map((x) => [x, cellKeys(suggested.value[r.key] ?? [], x.action)]))
-    }
+    const rows = p ? [p] : opts.perms.value
+    for (const r of opts.roles.value) write(r, rows.filter((x) => suggests(x, r)).map((x) => [x, suggestedCell(x, r)]))
   }
 
-  /** The cell differs from the plugin's suggestion; locked cells and rows without a suggestion never do (restore leaves them). */
+  /** The cell differs from the plugin's suggestion; a cell without one (suggests) never does, restore leaving it alone. */
   function differsFromSuggested(p: MatrixPerm, r: MatrixRole): boolean {
-    if (!p.defaults || opts.lockOf(p, r) !== null) return false
-    return !sameKeys(cell(p, r), cellKeys(suggested.value[r.key] ?? [], p.action))
+    return suggests(p, r) && !sameKeys(cell(p, r), suggestedCell(p, r))
   }
 
   const changes = computed(() =>
@@ -123,5 +140,5 @@ export function useGrantMatrix(opts: GrantMatrixOptions) {
   )
   const dirty = computed(() => changes.value.length > 0)
 
-  return { value, suggested, cell, setCell, setGroup, restore, differsFromSuggested, changes, dirty, reset }
+  return { value, cell, setCell, groupRows, groupState, toggleGroup, restore, differsFromSuggested, changes, dirty, reset }
 }

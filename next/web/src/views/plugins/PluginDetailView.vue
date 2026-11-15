@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SChoiceCards, SDropdown, SEmpty, SHint, SFormModal, SPageHeader, SSpinner, STabs, confirm, type ChoiceOption, type MenuAction, type TabItem } from '@sub2api/ui'
@@ -97,12 +97,18 @@ watch(() => route.query.tab, (v) => { tab.value = tabOf(v) })
 // An old link (?tab=grants) shows the tab it now opens in the address bar.
 if (route.query.tab !== undefined && route.query.tab !== tab.value) router.replace({ query: { ...route.query, tab: tab.value } })
 
-/** Asked before the tab changes, while the permissions tab and its edits are still there. */
-async function switchTab(v: string) {
-  if (tab.value === 'permissions' && !(await confirmDiscard(permissionsDirty.value))) return
-  permissionsDirty.value = false
-  tab.value = v
+/** A tab is opened through the address (?tab=), so a click, a link and the history all pass the guard below. */
+function switchTab(v: string) {
+  router.replace({ query: { ...route.query, tab: v } })
 }
+// The permissions tab and its edits go away when the page leaves it: another
+// tab, another plugin (the same component), or another page; asked first.
+onBeforeRouteUpdate(async (to, from) => {
+  if (to.params.key === from.params.key && tabOf(to.query.tab) === 'permissions') return true
+  if (!(await confirmDiscard(permissionsDirty.value))) return false
+  permissionsDirty.value = false
+  return true
+})
 onBeforeRouteLeave(() => confirmDiscard(permissionsDirty.value))
 
 const moreActions = computed<MenuAction[]>(() => [
@@ -288,7 +294,7 @@ onMounted(load)
       <STabs :model-value="tab" :tabs="tabs" @update:model-value="switchTab">
 
         <OverviewTab v-if="tab === 'overview'" :detail="detail" />
-        <PermissionsTab v-else-if="tab === 'permissions'" :detail="detail" @changed="load" @dirty="permissionsDirty = $event" />
+        <PermissionsTab v-else-if="tab === 'permissions'" :key="detail.key" :detail="detail" @changed="load" @dirty="permissionsDirty = $event" />
         <NodesTab v-else-if="tab === 'nodes'" :detail="detail" />
         <HooksTab v-else-if="tab === 'hooks'" :detail="detail" />
         <JobsTab v-else-if="tab === 'jobs'" :detail="detail" />

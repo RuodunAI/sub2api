@@ -538,7 +538,12 @@ const REVIEW_ROLES: Any[] = [
 /** Roles an upgrade grants a low-risk permission without asking (install autoGrantRoles). */
 const AUTO_GRANT_ROLES = new Set(['admin', 'operator', 'supplier'])
 
-/** Why the viewer may not name a role for a permission of the risk; '' when it may. The mock knows no non-super caller with role:define. */
+/**
+ * Why the viewer may not name a role for a permission of the risk; '' when it
+ * may. The mock lets a non-super caller (manager@example.com) name no role,
+ * whatever it holds, so its install's suggestions go to review (D2); a
+ * critical row says so (D3).
+ */
 function denial(who: Identity, role: Any, risk: string): string {
   if (role.superuser) return 'superuser_role'
   if (who.superuser) return ''

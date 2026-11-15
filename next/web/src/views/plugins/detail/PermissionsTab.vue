@@ -5,17 +5,18 @@
 // plugin: GET/PUT /permissions/plugins/:plugin, the shared PermissionMatrix).
 // A plugin declaring none has no module there (404): the matrix says so.
 // Unsaved matrix changes are reported up (`dirty`) for the page to confirm
-// before they are lost.
+// before they are lost; while there are none, the matrix reloads with the
+// detail (an upgrade may have granted new keys a stale PUT would drop).
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
-import { SAlert, SCard, SEmpty, SHint, toast } from '@sub2api/ui'
-import type { PermissionItem, PluginRoleMatrix } from '@/api/types'
+import { SAlert, SButton, SCard, SEmpty, SHint, toast } from '@sub2api/ui'
+import type { PluginRoleMatrix } from '@/api/types'
 import { lt } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
 import { notifyError } from '@/utils/errors'
 import { missingText } from '@/utils/permErrors'
-import type { RoleKeys } from '@/authz/pluginGrants'
+import { localOf, type RoleKeys } from '@/authz/pluginGrants'
 import PermissionMatrix from '@/components/permission/PermissionMatrix.vue'
 import { useGrantMatrix, type CellLock, type MatrixPerm, type MatrixRole } from '@/components/permission/useGrantMatrix'
 import SettingsSaveBar from '@/components/SettingsSaveBar.vue'
@@ -29,23 +30,13 @@ const auth = useAuthStore()
 
 const data = ref<PluginRoleMatrix | null>(null)
 const loading = ref(false)
+/** The matrix could not be read (not a 404): an error to retry, not "declares none". */
+const loadFailed = ref(false)
 const saving = ref(false)
 const saveMissing = ref('')
 
-/** A catalog item as a matrix row: its key and defaults are full already. */
-const toMatrixPerm = (p: PermissionItem): MatrixPerm => ({
-  action: p.key,
-  local: p.key.slice(p.key.indexOf(':') + 1),
-  label: p.label,
-  description: p.description,
-  risk: p.risk,
-  group: p.group,
-  requires: p.requires,
-  scope: p.scope,
-  defaults: p.defaults,
-  status: p.status
-})
-const perms = computed(() => (data.value?.module.permissions ?? []).map(toMatrixPerm))
+/** The catalog's items as matrix rows: their keys and defaults are full already. */
+const perms = computed<MatrixPerm[]>(() => (data.value?.module.permissions ?? []).map((p) => ({ ...p, action: p.key, local: localOf(p.key) })))
 const roles = computed(() => data.value?.roles ?? [])
 const baseline = computed<RoleKeys>(() => Object.fromEntries(roles.value.map((r) => [r.key, r.permission_keys])))
 const editable = computed(() => new Set(roles.value.filter((r) => r.editable).map((r) => r.key)))
@@ -58,21 +49,26 @@ const lockOf = (p: MatrixPerm, r: MatrixRole): CellLock => {
 const matrix = useGrantMatrix({ perms, roles, baseline, lockOf })
 watch(matrix.dirty, (v) => emit('dirty', v))
 
+const roleName = (key: string) => {
+  const r = roles.value.find((x) => x.key === key)
+  return r ? lt(r.name) || key : key
+}
 /** The first unsaved change, "Operator · Edit flows", next to the count. */
 const firstChange = computed(() => {
   const c = matrix.changes.value[0]
-  const role = c && roles.value.find((r) => r.key === c.role)
   const perm = c && perms.value.find((p) => p.action === c.action)
-  return role && perm ? `${lt(role.name) || role.key} · ${lt(perm.label) || perm.local}` : ''
+  return perm ? `${roleName(c.role)} · ${lt(perm.label) || perm.local}` : ''
 })
 
 async function load() {
   loading.value = true
+  loadFailed.value = false
   try {
     data.value = await api.get<PluginRoleMatrix>(`/permissions/plugins/${encodeURIComponent(props.detail.key)}`)
   } catch (e) {
     data.value = null
-    if (!isApiError(e) || e.status !== 404) notifyError(e)
+    loadFailed.value = !isApiError(e) || e.status !== 404
+    if (loadFailed.value) notifyError(e)
   } finally {
     loading.value = false
   }
@@ -89,7 +85,7 @@ async function save() {
     toast(t('plugins.matrix.saved'), 'success')
     if (changed.some((k) => auth.me?.roles.includes(k))) auth.refreshPermissions().catch(() => undefined)
   } catch (e) {
-    saveMissing.value = missingText(e, t)
+    saveMissing.value = missingText(e, t, roleName)
     if (!saveMissing.value) notifyError(e)
   } finally {
     saving.value = false
@@ -104,6 +100,12 @@ function reset() {
 onMounted(() => {
   if (auth.has('role:read')) load()
 })
+watch(
+  () => props.detail,
+  () => {
+    if (auth.has('role:read') && !matrix.dirty.value) load()
+  }
+)
 </script>
 
 <template>
@@ -115,7 +117,10 @@ onMounted(() => {
     <SCard v-if="auth.has('role:read')" :title="t('plugins.permissions.userTitle')" :subtitle="t('plugins.permissions.userHint')" data-testid="plugin-user-permissions">
       <div class="space-y-3">
         <SAlert v-if="detail.status === 'disabled'" tone="info" dense>{{ t('plugins.permissions.disabledKept') }}</SAlert>
-        <SEmpty v-if="!loading && !perms.length" size="sm" :text="t('plugins.matrix.none')" />
+        <SEmpty v-if="loadFailed" size="sm" icon="warning" :text="t('common.loadFailed')" data-testid="matrix-load-failed">
+          <SButton size="sm" @click="load">{{ t('common.refresh') }}</SButton>
+        </SEmpty>
+        <SEmpty v-else-if="!loading && !perms.length" size="sm" :text="t('plugins.matrix.none')" />
         <PermissionMatrix
           v-else-if="perms.length"
           :matrix="matrix"

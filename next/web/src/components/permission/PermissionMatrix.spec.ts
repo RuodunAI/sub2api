@@ -90,13 +90,40 @@ describe('PermissionMatrix', () => {
     expect(select(w, MANAGE, 'super_admin').element.selectedOptions[0].text).toBe('All')
   })
 
-  it('pending_review cells show the suggestion read-only with the badge', () => {
+  it('pending_review cells show what is held (the baseline) read-only with the badge', () => {
     const lockOf = (_p: MatrixPerm, r: MatrixRole): CellLock => (r.superuser ? 'superuser' : r.key === 'admin' ? 'pending_review' : null)
-    const { w } = render({ baseline: { admin: [], operator: [] }, lockOf })
-    expect(box(w, READ, 'admin').element.checked).toBe(true)
+    const { w } = render({ baseline: { admin: [`${MANAGE}:own`], operator: [] }, lockOf })
+    // Held is what the cell shows, not the plugin's suggestion (admin: all).
+    expect(select(w, MANAGE, 'admin').element.selectedOptions[0].text).toBe('Created by them')
+    expect(box(w, READ, 'admin').element.checked).toBe(false)
     expect(box(w, READ, 'admin').element.disabled).toBe(true)
     expect(cell(w, READ, 'admin').text()).toContain('Awaiting super admin')
     expect(cell(w, READ, 'admin').find('[data-testid="cell-differs"]').exists()).toBe(false)
+  })
+
+  it('a locked control carries its reason in its label; the differs dot is labelled', async () => {
+    const lockOf = (p: MatrixPerm, r: MatrixRole): CellLock => (r.superuser ? 'superuser' : p.risk === 'critical' ? 'critical' : null)
+    const { w } = render({ lockOf })
+    expect(box(w, EXEMPT, 'admin').attributes('aria-label')).toBe(`${EXEMPT} · admin · Only a super admin can grant this`)
+    expect(box(w, READ, 'admin').attributes('aria-label')).toBe(`${READ} · admin`)
+    await box(w, READ, 'admin').setValue(false)
+    const dot = cell(w, READ, 'admin').get('[data-testid="cell-differs"]')
+    expect(dot.attributes('role')).toBe('img')
+    expect(dot.attributes('aria-label')).toBe(i18n.global.t('plugins.matrix.differs'))
+  })
+
+  it('the suggestion speaks for built-in roles only: custom roles never differ and restore keeps their grants', async () => {
+    const { w, matrix } = render({ baseline: { ...SUGGESTED, cs: [READ] } })
+    expect(cell(w, READ, 'cs').find('[data-testid="cell-differs"]').exists()).toBe(false)
+    expect(w.find('[data-testid="matrix-differs"]').exists()).toBe(false)
+
+    await box(w, READ, 'admin').setValue(false)
+    expect(w.get('[data-testid="matrix-differs"]').text()).toContain('1')
+    await w.get('[data-testid="matrix-restore"]').trigger('click')
+    expect(matrix.value.value.admin).toEqual([MANAGE, READ])
+    expect(matrix.value.value.cs).toEqual([READ])
+    await w.get(`tr[data-permission="${READ}"] td[data-role="cs"] input`).setValue(false)
+    expect(w.find(`tr[data-permission="${READ}"] [data-testid="matrix-restore-row"]`).exists()).toBe(false)
   })
 
   it('critical row is disabled for a non-super editor', () => {
@@ -134,6 +161,35 @@ describe('PermissionMatrix', () => {
 
     await w.get('tr[data-group="flow"] input[data-group-role="cs"]').setValue(false)
     expect(matrix.value.value.cs).toEqual([])
+  })
+
+  it('group checkbox goes by the shown rows only: folded rows are neither counted nor cleared', async () => {
+    const { w, matrix } = render({ baseline: { cs: [READ] }, props: { foldAfter: 1 } })
+    const group = () => w.get<HTMLInputElement>('tr[data-group="flow"] input[data-group-role="cs"]')
+    // READ (shown) is granted, MANAGE (folded) is not: the shown rows are all ticked.
+    expect(group().element.checked).toBe(true)
+    await group().setValue(false)
+    expect(matrix.value.value.cs).toEqual([])
+    matrix.setCell(PERMS[1], ROLES[3], [MANAGE])
+    await group().setValue(true)
+    expect(matrix.value.value.cs).toEqual([MANAGE, READ])
+  })
+
+  it('group checkbox leaves rows the editor may not tick alone (not held, no scope to offer)', async () => {
+    // The editor holds READ only: MANAGE is not_held, granted to cs by someone else.
+    const lockOf = (p: MatrixPerm, r: MatrixRole): CellLock => (r.superuser ? 'superuser' : p.action === MANAGE ? 'not_held' : null)
+    const { w, matrix } = render({ baseline: { cs: [READ, MANAGE] }, lockOf })
+    const group = () => w.get<HTMLInputElement>('tr[data-group="flow"] input[data-group-role="cs"]')
+    expect(group().element.checked).toBe(true)
+    await group().setValue(false)
+    expect(matrix.value.value.cs).toEqual([MANAGE])
+
+    // A scoped row with no scope the editor can offer is not counted either: the group can still be cleared.
+    const { w: w2, matrix: m2 } = render({ baseline: { cs: [READ, `${MANAGE}:flow/3`] }, scopeLimit: (a) => (a === MANAGE ? [refScope('flow/3')] : [ALL_SCOPE]) })
+    const group2 = w2.get<HTMLInputElement>('tr[data-group="flow"] input[data-group-role="cs"]')
+    expect(group2.element.checked).toBe(true)
+    await group2.setValue(false)
+    expect(m2.value.value.cs).toEqual([`${MANAGE}:flow/3`])
   })
 
   it('custom roles fold under "more roles" when collapseCustom', async () => {

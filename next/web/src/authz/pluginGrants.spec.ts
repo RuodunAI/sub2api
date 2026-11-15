@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import { ALL_SCOPE, OWN_SCOPE, refScope } from './implies'
-import { cellKeys, cellOfScopes, diffCells, keysFromSuffixes, narrows, riskSummary, sameKeys, scopesOfCell, suggestedOf, toManifestGrant, withCell } from './pluginGrants'
+import { cellKeys, cellOfScopes, diffCells, isSuggestedRole, keysFromSuffixes, localOf, narrows, riskSummary, sameKeys, scopesOfCell, suggestedOf, toManifestGrant, withCell } from './pluginGrants'
 
 const A = 'plugin.m:flow:manage'
 const B = 'plugin.m:flow:read'
 
 describe('plugin grants', () => {
+  it('the suggestion speaks for the built-in roles but the super admin', () => {
+    expect(['admin', 'operator', 'supplier', 'user'].every(isSuggestedRole)).toBe(true)
+    expect(isSuggestedRole('super_admin')).toBe(false)
+    expect(isSuggestedRole('auditor')).toBe(false)
+  })
+
+  it('localOf takes the plugin-local part of a full key', () => {
+    expect(localOf(A)).toBe('flow:manage')
+    expect(localOf(`${A}:own`)).toBe('flow:manage:own')
+  })
+
   it('cellKeys/withCell replace one action only, canonical and sorted', () => {
     const keys = [B, `${A}:own`, `${A}:flow/3`]
     expect(cellKeys(keys, A)).toEqual([`${A}:own`, `${A}:flow/3`])
