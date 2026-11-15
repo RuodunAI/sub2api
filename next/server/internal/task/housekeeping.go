@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // HousekeepingTask is the framework's own cluster task (TASK-FRAMEWORK-DESIGN
@@ -36,22 +40,29 @@ func (s *Service) housekeeping(ctx context.Context, _ core.TaskRun) (core.TaskRe
 			names = append(names, t.Name)
 		}
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET seen_at = now(), seen_version = $2
-		WHERE source = 'core' AND name = ANY($1)`, names, s.opts.Version); err != nil {
+	g := store.G(ctx, db.Pool)
+	if err := g.Model(&model.ScheduledTask{}).Where("source = 'core' AND name = ANY(?)", store.Strings(names)).
+		Updates(map[string]any{"seen_at": gorm.Expr("now()"), "seen_version": s.opts.Version}).Error; err != nil {
 		return core.TaskResult{}, fmt.Errorf("refresh registered tasks: %w", err)
 	}
-	removed, err := db.Pool.Exec(ctx, `DELETE FROM scheduled_tasks
-		WHERE source = 'core' AND seen_at < now() - $1::interval AND NOT (name = ANY($2))
-			AND (lease_until IS NULL OR lease_until < now())`, staleCoreTask.String(), names)
-	if err != nil {
-		return core.TaskResult{}, fmt.Errorf("remove stale tasks: %w", err)
+	removed := removeStaleCoreTasks(g, names)
+	if removed.Error != nil {
+		return core.TaskResult{}, fmt.Errorf("remove stale tasks: %w", removed.Error)
 	}
-	cleared, err := db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET lease_job_id = NULL, lease_node = NULL, lease_until = NULL,
-		updated_at = now() WHERE lease_until < now()`)
-	if err != nil {
-		return core.TaskResult{}, fmt.Errorf("clear expired leases: %w", err)
+	cleared := g.Model(&model.ScheduledTask{}).Where("lease_until < now()").Updates(releasedLease("now()"))
+	if cleared.Error != nil {
+		return core.TaskResult{}, fmt.Errorf("clear expired leases: %w", cleared.Error)
 	}
-	n := int(removed.RowsAffected() + cleared.RowsAffected())
+	n := int(removed.RowsAffected + cleared.RowsAffected)
 	return core.TaskResult{Count: n, Message: fmt.Sprintf("removed %d stale tasks, cleared %d expired leases",
-		removed.RowsAffected(), cleared.RowsAffected())}, nil
+		removed.RowsAffected, cleared.RowsAffected)}, nil
+}
+
+// removeStaleCoreTasks deletes the rows of core tasks that no node has
+// registered for staleCoreTask, other than registered, and that no run
+// holds.
+func removeStaleCoreTasks(g *gorm.DB, registered []string) *gorm.DB {
+	return g.Where(`source = 'core' AND seen_at < now() - ?::interval AND NOT (name = ANY(?))
+			AND (lease_until IS NULL OR lease_until < now())`, staleCoreTask.String(), store.Strings(registered)).
+		Delete(&model.ScheduledTask{})
 }

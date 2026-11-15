@@ -1,0 +1,9 @@
+-- sql
+UPDATE "plugin_event_cursors" SET "consecutive_failures"=$1,"last_error"=$2,"last_event_id"=$3,"next_retry_at"=$4,"updated_at"=now() WHERE plugin_key = $5 AND last_event_id = $6
+-- vars
+$1 int 0
+$2 string ""
+$3 int64 50
+$4 nil
+$5 string "demo"
+$6 int64 41

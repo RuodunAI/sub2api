@@ -1,0 +1,7 @@
+-- sql
+UPDATE "scheduled_tasks" SET "enabled"=$1,"updated_at"=now() WHERE name = $2 AND source IN ($3, $4) RETURNING "source"
+-- vars
+$1 bool false
+$2 string "plugin.demo.sync"
+$3 string "plugin_manifest"
+$4 string "plugin_runtime"

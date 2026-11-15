@@ -15,10 +15,12 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/background"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // River settings (TASK-FRAMEWORK-DESIGN §7).
@@ -221,13 +223,27 @@ func (b *clusterBackend) upsert(ctx context.Context, t *Task) error {
 	if t.PluginKey != "" {
 		pluginKey = &t.PluginKey
 	}
-	_, err := b.db.Pool.Exec(ctx, `INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+	// Raw SQL: schedule, max_attempts and seen_version have defaults that a
+	// model insert would take for an explicit zero, and seen_at is now().
+	return store.G(ctx, b.db.Pool).Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, now())
 		ON CONFLICT (name) DO UPDATE SET source = EXCLUDED.source, plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
 			timeout_ms = EXCLUDED.timeout_ms, max_attempts = EXCLUDED.max_attempts, seen_version = EXCLUDED.seen_version,
 			seen_at = now(), updated_at = now()`,
-		t.Name, string(t.Source), pluginKey, t.ScheduleText, t.Timeout.Milliseconds(), t.Attempts(), b.version)
-	return err
+		t.Name, string(t.Source), pluginKey, t.ScheduleText, t.Timeout.Milliseconds(), t.Attempts(), b.version).Error
+}
+
+// taskRowExists reports whether name has a scheduled_tasks row.
+func taskRowExists(ctx context.Context, q store.Querier, name string) (bool, error) {
+	var n int64
+	err := store.G(ctx, q).Model(&model.ScheduledTask{}).Where("name = ?", name).Count(&n).Error
+	return n > 0, err
+}
+
+// releasedLease is the SET list that frees a task's lease, stamped with at
+// (now() or clock_timestamp()).
+func releasedLease(at string) map[string]any {
+	return map[string]any{"lease_job_id": nil, "lease_node": nil, "lease_until": nil, "updated_at": gorm.Expr(at)}
 }
 
 // watchAdmission starts River while this node may do background work and
@@ -484,20 +500,22 @@ var errTaskRemoved = errors.New("task: removed")
 // takeLease claims the task's lease for job (§7.4); false when another run
 // holds it.
 func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (bool, error) {
-	tag, err := b.db.Pool.Exec(ctx, `UPDATE scheduled_tasks
-		SET lease_job_id = $2, lease_node = $3, lease_until = clock_timestamp() + $4::interval,
+	// Raw SQL: the lease is a compare-and-set on the row, timed by
+	// clock_timestamp() and an interval parameter.
+	res := store.G(ctx, b.db.Pool).Exec(`UPDATE scheduled_tasks
+		SET lease_job_id = ?, lease_node = ?, lease_until = clock_timestamp() + ?::interval,
 			last_started_at = clock_timestamp(), updated_at = clock_timestamp()
-		WHERE name = $1 AND (lease_until IS NULL OR lease_until < clock_timestamp() OR lease_job_id = $2)`,
-		t.Name, jobID, b.nodeID, (t.Timeout + leaseGrace).String())
-	if err != nil {
-		return false, err
+		WHERE name = ? AND (lease_until IS NULL OR lease_until < clock_timestamp() OR lease_job_id = ?)`,
+		jobID, b.nodeID, (t.Timeout + leaseGrace).String(), t.Name, jobID)
+	if res.Error != nil {
+		return false, res.Error
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		// A task registered on this node but missing its row: a core task's
 		// row was pruned, record it and try once more; a plugin task's row
 		// is gone because the task was removed.
-		var exists bool
-		if err := b.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM scheduled_tasks WHERE name = $1)`, t.Name).Scan(&exists); err != nil {
+		exists, err := taskRowExists(ctx, b.db.Pool, t.Name)
+		if err != nil {
 			return false, err
 		}
 		if !exists && t.Source != SourceCore {
@@ -517,10 +535,10 @@ func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (b
 // finish releases the lease of job and, unless the run was only put off,
 // records it as the task's latest run.
 func (b *clusterBackend) finish(ctx context.Context, t *Task, jobID int64, o runOutput, putOff bool) error {
+	g := store.G(ctx, b.db.Pool)
 	if putOff {
-		_, err := b.db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET lease_job_id = NULL, lease_node = NULL, lease_until = NULL,
-			updated_at = clock_timestamp() WHERE name = $1 AND lease_job_id = $2`, t.Name, jobID)
-		return err
+		return g.Model(&model.ScheduledTask{}).Where("name = ? AND lease_job_id = ?", t.Name, jobID).
+			Updates(releasedLease("clock_timestamp()")).Error
 	}
 	// scheduled_tasks.last_status keeps the 0.1.235 values (its CHECK
 	// constraint): a continued run is a success there; its run record keeps
@@ -529,16 +547,25 @@ func (b *clusterBackend) finish(ctx context.Context, t *Task, jobID int64, o run
 	if status == StatusContinued {
 		status = StatusSucceeded
 	}
-	_, err := b.db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET
-			lease_job_id = CASE WHEN lease_job_id = $2 THEN NULL ELSE lease_job_id END,
-			lease_node = CASE WHEN lease_job_id = $2 THEN NULL ELSE lease_node END,
-			lease_until = CASE WHEN lease_job_id = $2 THEN NULL ELSE lease_until END,
-			last_job_id = $2, last_node = $3, last_finished_at = clock_timestamp(), last_status = $4,
-			last_count = $5, last_message = NULLIF($6, ''), last_error = NULLIF($7, ''),
-			last_success_at = CASE WHEN $4 = 'succeeded' THEN clock_timestamp() ELSE last_success_at END,
-			consecutive_failures = CASE WHEN $4 = 'succeeded' THEN 0 WHEN $4 = 'skipped' THEN consecutive_failures
+	return recordRun(g, t.Name, jobID, b.nodeID, status, o).Error
+}
+
+// recordRun makes job the task's latest run, recorded with status (a
+// last_status value) and o, and releases the lease if job still holds it.
+// Raw SQL: the release is conditional and the counters move by the status,
+// all in one statement; the named parameters stand for values the SQL uses
+// more than once.
+func recordRun(g *gorm.DB, name string, jobID int64, nodeID, status string, o runOutput) *gorm.DB {
+	return g.Exec(`UPDATE scheduled_tasks SET
+			lease_job_id = CASE WHEN lease_job_id = @job THEN NULL ELSE lease_job_id END,
+			lease_node = CASE WHEN lease_job_id = @job THEN NULL ELSE lease_node END,
+			lease_until = CASE WHEN lease_job_id = @job THEN NULL ELSE lease_until END,
+			last_job_id = @job, last_node = @node, last_finished_at = clock_timestamp(), last_status = @status,
+			last_count = @count, last_message = NULLIF(@message, ''), last_error = NULLIF(@error, ''),
+			last_success_at = CASE WHEN @status = 'succeeded' THEN clock_timestamp() ELSE last_success_at END,
+			consecutive_failures = CASE WHEN @status = 'succeeded' THEN 0 WHEN @status = 'skipped' THEN consecutive_failures
 				ELSE consecutive_failures + 1 END,
 			updated_at = clock_timestamp()
-		WHERE name = $1`, t.Name, jobID, b.nodeID, status, o.Count, o.Message, o.Error)
-	return err
+		WHERE name = @name`, map[string]any{"name": name, "job": jobID, "node": nodeID, "status": status,
+		"count": o.Count, "message": o.Message, "error": o.Error})
 }
