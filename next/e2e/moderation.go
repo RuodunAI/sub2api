@@ -35,7 +35,7 @@ func (e *Env) SetModerationSettings(admin *Session, values map[string]any) {
 	hashes := func() []string {
 		var out []string
 		for _, u := range e.NodeURLs {
-			r := e.PluginRoute(admin, u, http.MethodGet, moderationKey, "/overview?range=24h", nil)
+			r := e.PluginRoute(admin, u, http.MethodGet, moderationKey, "/status", nil)
 			out = append(out, r.Data().Get("runtime.settings_hash").String())
 		}
 		return out
@@ -64,7 +64,7 @@ func (e *Env) WaitModerationConfig(admin *Session) {
 	Eventually(e.T, 30*time.Second, 500*time.Millisecond, "moderation config on every node", func() bool {
 		first := int64(-2)
 		for _, u := range e.NodeURLs {
-			v := e.PluginRoute(admin, u, http.MethodGet, moderationKey, "/overview?range=24h", nil).Data().Get("runtime.config_version").Int()
+			v := e.PluginRoute(admin, u, http.MethodGet, moderationKey, "/status", nil).Data().Get("runtime.config_version").Int()
 			if first == -2 {
 				first = v
 			} else if v != first {
