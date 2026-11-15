@@ -1,0 +1,4 @@
+-- sql
+SELECT id, plugin_key, ref_id, account_id, attempts, next_check_at, deadline_at, state, last_error, created_at FROM "pending_settlements" WHERE usage_log_id = $1 FOR UPDATE
+-- vars
+$1 int64 5

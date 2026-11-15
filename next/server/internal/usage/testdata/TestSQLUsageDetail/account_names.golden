@@ -1,0 +1,4 @@
+-- sql
+SELECT id, name FROM "accounts" WHERE id = ANY($1)
+-- vars
+$1 store.Int64s [1 2]

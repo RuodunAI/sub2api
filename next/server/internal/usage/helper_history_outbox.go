@@ -8,6 +8,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -33,11 +34,13 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 	known := false
 	before := func(tx pgx.Tx) error {
 		known = false
-		if _, e := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "helper-usage:"+rec.RequestID); e != nil {
+		g := store.G(ctx, tx)
+		if e := g.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, "helper-usage:"+rec.RequestID).Error; e != nil {
 			return e
 		}
 		var old string
-		e := tx.QueryRow(ctx, `SELECT digest FROM provider_helper_usage_receipts WHERE request_id=$1 FOR UPDATE`, rec.RequestID).Scan(&old)
+		e := g.Model(&model.ProviderHelperUsageReceipt{}).Select("digest").Where("request_id = ?", rec.RequestID).
+			Clauses(store.ForUpdate).Row().Scan(&old)
 		if e != nil && !store.IsNoRows(e) {
 			return e
 		}
@@ -46,7 +49,7 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 			return fmt.Errorf("durable usage receipt conflict")
 		}
 		var usageID int64
-		e = tx.QueryRow(ctx, `SELECT id FROM usage_logs WHERE request_id=$1 FOR UPDATE`, rec.RequestID).Scan(&usageID)
+		e = g.Model(&model.UsageLog{}).Select("id").Where("request_id = ?", rec.RequestID).Clauses(store.ForUpdate).Row().Scan(&usageID)
 		if e != nil && !store.IsNoRows(e) {
 			return e
 		}
@@ -62,8 +65,7 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 		if inserted[rec.RequestID] == 0 {
 			return fmt.Errorf("durable usage raced with another source")
 		}
-		_, e := tx.Exec(ctx, `INSERT INTO provider_helper_usage_receipts(request_id,digest) VALUES($1,$2)`, rec.RequestID, digest)
-		return e
+		return store.G(ctx, tx).Create(&model.ProviderHelperUsageReceipt{RequestID: rec.RequestID, Digest: digest}).Error
 	}
 	_, err = s.insertAtomic(ctx, []*core.UsageRecord{rec}, before, after, false)
 	return err

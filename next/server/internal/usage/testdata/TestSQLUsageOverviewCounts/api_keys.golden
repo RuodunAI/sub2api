@@ -1,0 +1,4 @@
+-- sql
+SELECT count(*), count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now())) FROM "api_keys" WHERE user_id = $1 AND deleted_at IS NULL
+-- vars
+$1 int64 7
