@@ -112,7 +112,7 @@ func (s *Service) retryReconcile(c *gin.Context) {
 		// way - the settlement retry loop must never see a row whose money
 		// has already moved.
 		g := store.G(ctx, tx)
-		if err := markUsageRow(g, id, "reserved", nil, "retrying").Error; err != nil {
+		if err := markUsageRow(g, id, "reserved", nil, reconcileMarker("retrying")).Error; err != nil {
 			return err
 		}
 		now := time.Now()
@@ -210,7 +210,7 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 			return err
 		}
 		g := store.G(ctx, tx)
-		if err := markUsageRow(g, id, "free", map[string]any{"total_cost": decimal.Zero, "base_cost": decimal.Zero}, "refunded").Error; err != nil {
+		if err := markUsageRow(g, id, "free", map[string]any{"total_cost": decimal.Zero, "base_cost": decimal.Zero}, reconcileMarker("refunded")).Error; err != nil {
 			return err
 		}
 		if err = tasksOfUsage(g, id).Updates(map[string]any{"claim_token": "", "lease_until": nil}).Error; err != nil {
@@ -231,7 +231,7 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 func lockSettlement(ctx context.Context, tx pgx.Tx, usageLogID int64) (*reservedRowState, *Settlement, error) {
 	// Shared lock order with managed reconciliation: task, usage, settlement.
 	g := store.G(ctx, tx)
-	if err := g.Exec(`SELECT public_id FROM async_tasks WHERE usage_log_id=? FOR UPDATE`, usageLogID).Error; err != nil {
+	if err := lockTasksOfUsage(g, usageLogID).Error; err != nil {
 		return nil, nil, err
 	}
 	p := &pending{}
@@ -255,13 +255,26 @@ func lockSettlement(ctx context.Context, tx pgx.Tx, usageLogID int64) (*reserved
 	return st, e, nil
 }
 
-// markUsageRow moves a usage row billed at its estimate to status, with the
-// other columns of set, and adds a reconcile marker to its anomalies.
-func markUsageRow(db *gorm.DB, id int64, status string, set map[string]any, marker string) *gorm.DB {
-	raw, _ := json.Marshal(map[string]string{core.AnomalyReconcile: marker})
+// lockTasksOfUsage locks the async_tasks of a usage row. Exec: the rows are
+// locked, not read.
+func lockTasksOfUsage(db *gorm.DB, usageLogID int64) *gorm.DB {
+	return db.Exec(`SELECT public_id FROM async_tasks WHERE usage_log_id=? FOR UPDATE`, usageLogID)
+}
+
+// markUsageRow moves a usage row to status, with the other columns of set,
+// and merges marker into its anomalies (core.AnomalyReconcile and its
+// error): the one write of a reserved or estimated row whose anomalies say
+// why it moved.
+func markUsageRow(db *gorm.DB, id int64, status string, set map[string]any, marker map[string]string) *gorm.DB {
+	raw, _ := json.Marshal(marker)
 	cols := map[string]any{"billing_status": status, "anomalies": gorm.Expr("anomalies || ?::jsonb", raw)}
 	maps.Copy(cols, set)
 	return db.Model(&model.UsageLog{}).Where("id = ?", id).Updates(cols)
+}
+
+// reconcileMarker is the anomalies marker of a row an administrator moved.
+func reconcileMarker(state string) map[string]string {
+	return map[string]string{core.AnomalyReconcile: state}
 }
 
 // settlementByID is the pending_settlements entry id, for an UPDATE.

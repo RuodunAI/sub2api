@@ -1093,9 +1093,9 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 type summaryShape struct{ outKey, key, extra, join, lastAt, groupBy, order string }
 
 // summaryQuery selects the summary rows of where (store.Filter's numbered
-// conditions over args) through statRows, which reads span from the rollup.
+// conditions over args) through statRows, which reads span from the rollup
+// and appends its bounds to args: the caller passes a slice of its own.
 func summaryQuery(db *gorm.DB, sh summaryShape, where string, span *hourSpan, args []any) *gorm.DB {
-	args = slices.Clip(args) // statRows appends the span's bounds
 	from := statRows(sh.key+` AS k, `+sh.extra+` AS e, u.created_at AS at`, sh.join, where, span, &args)
 	return rawNumbered(db, `
 				SELECT `+sh.outKey+` AS k, COALESCE(max(u.e), ''), `+totalsColumns("", true)+`,

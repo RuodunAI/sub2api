@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql/driver"
 	"reflect"
 	"strings"
 	"testing"
@@ -68,6 +69,36 @@ func TestJSONScanValue(t *testing.T) {
 	}
 	if _, err := (JSON[func()]{}).Value(); err == nil {
 		t.Error("Value of a func: no error")
+	}
+}
+
+func TestBytesValueScan(t *testing.T) {
+	for _, c := range []struct {
+		in   Bytes
+		want driver.Value
+	}{{nil, nil}, {Bytes{}, []byte{}}, {Bytes("ab"), []byte("ab")}} {
+		v, err := c.in.Value()
+		if err != nil || !reflect.DeepEqual(v, c.want) {
+			t.Errorf("Bytes(%#v).Value() = %#v, %v; want %#v", c.in, v, err, c.want)
+		}
+	}
+	src := []byte("ab")
+	var b Bytes
+	if err := b.Scan(src); err != nil || string(b) != "ab" {
+		t.Fatalf("Scan = %#v, %v", b, err)
+	}
+	src[0] = 'x'
+	if string(b) != "ab" {
+		t.Error("Scan kept the source buffer")
+	}
+	if err := b.Scan("cd"); err != nil || string(b) != "cd" {
+		t.Errorf("Scan(string) = %#v, %v", b, err)
+	}
+	if err := b.Scan(nil); err != nil || b != nil {
+		t.Errorf("Scan(nil) = %#v, %v; want nil", b, err)
+	}
+	if err := b.Scan(1); err == nil {
+		t.Error("Scan(1): no error")
 	}
 }
 

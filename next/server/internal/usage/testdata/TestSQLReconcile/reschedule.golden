@@ -1,0 +1,11 @@
+-- sql
+UPDATE pending_settlements SET attempts = attempts + $1, next_check_at = $2, last_error = $3,
+		poll_failures=CASE WHEN $4 THEN poll_failures+1 WHEN $5 THEN 0 ELSE poll_failures END
+		WHERE id = $6 AND state = 'pending' AND task_public_id IS NULL
+-- vars
+$1 int 1
+$2 time.Time 2026-11-15 12:00:00 +0000 UTC
+$3 string "busy"
+$4 bool true
+$5 bool false
+$6 int64 9

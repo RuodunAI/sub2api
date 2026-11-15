@@ -1,0 +1,6 @@
+-- sql
+UPDATE pending_settlements SET state = $1, attempts = attempts + 1, last_error = ''
+			WHERE id = $2
+-- vars
+$1 string "settled"
+$2 int64 9

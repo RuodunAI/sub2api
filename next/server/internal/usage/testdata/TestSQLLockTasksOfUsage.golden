@@ -1,0 +1,4 @@
+-- sql
+SELECT public_id FROM async_tasks WHERE usage_log_id=$1 FOR UPDATE
+-- vars
+$1 int64 5

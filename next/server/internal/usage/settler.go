@@ -624,9 +624,7 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 	if total.Sign() > 0 {
 		detail.LedgerID = &res.LedgerID
 	}
-	if err := store.G(ctx, tx).Exec(`
-		UPDATE usage_logs SET total_cost = ?, base_cost = ?, billing_detail = ?, matched_tier = ?
-		WHERE id = ?`, total, cost.base, jsonOr(detail, "{}"), trunc(detail.Tier, 100), r.id).Error; err != nil {
+	if err := reserveUsageRow(store.G(ctx, tx), r.id, cost, detail).Error; err != nil {
 		return nil, err
 	}
 	rv := rec.Reservation
@@ -660,6 +658,15 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 	return res, nil
 }
 
+// reserveUsageRow writes the estimate of a reserved row, once per reserved
+// request: BenchmarkHotStmtReserveUpdate measures this statement on GORM at
+// 1.35 times pgx's allocations, under the 1.5 limit (gormtest/BASELINE.md).
+func reserveUsageRow(db *gorm.DB, id int64, cost amounts, detail BillingDetail) *gorm.DB {
+	return db.Exec(`
+		UPDATE usage_logs SET total_cost = ?, base_cost = ?, billing_detail = ?, matched_tier = ?
+		WHERE id = ?`, cost.total, cost.base, jsonOr(detail, "{}"), trunc(detail.Tier, 100), id)
+}
+
 // closeUnreconcilable turns a reserved row into a final billed one: the
 // estimate stands, and usage_logs.anomalies says why nobody will ever
 // correct it. Same shape as the reconcile loop's abandon path, and for the
@@ -668,13 +675,9 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 func (s *Service) closeUnreconcilable(ctx context.Context, tx pgx.Tx, usageLogID int64, reason string) error {
 	slog.ErrorContext(ctx, "usage: a reserved row cannot be reconciled, billing the estimate",
 		"usage_log_id", usageLogID, "reason", reason)
-	marker, _ := json.Marshal(map[string]string{
+	return markUsageRow(store.G(ctx, tx), usageLogID, StatusBilled, nil, map[string]string{
 		core.AnomalyReconcile:      core.ReconcileAbandoned,
 		core.AnomalyReconcileError: trunc(reason, 500),
-	})
-	return store.G(ctx, tx).Model(&model.UsageLog{}).Where("id = ?", usageLogID).Updates(map[string]any{
-		"billing_status": StatusBilled,
-		"anomalies":      gorm.Expr("anomalies || ?::jsonb", marker),
 	}).Error
 }
 
@@ -1068,7 +1071,7 @@ func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocke
 
 // billUsageRow writes a settled row's billing fields, once per billable
 // request: BenchmarkHotStmtSettleUpdate measures this statement on GORM at
-// 1.4 times pgx's allocations, under the 1.5 limit (gormtest/BASELINE.md).
+// 1.31 times pgx's allocations, under the 1.5 limit (gormtest/BASELINE.md).
 func billUsageRow(db *gorm.DB, p *pending, cost amounts, detail BillingDetail, exprHash string) *gorm.DB {
 	var priceID *int64
 	if p.PriceID > 0 {

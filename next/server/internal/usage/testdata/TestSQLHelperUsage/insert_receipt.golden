@@ -1,0 +1,5 @@
+-- sql
+INSERT INTO "provider_helper_usage_receipts" ("request_id","digest") VALUES ($1,$2) RETURNING "created_at"
+-- vars
+$1 string "req-1"
+$2 string "d"

@@ -20,7 +20,9 @@
 //   - Transactions start only with DB.Tx; GORM's Begin and Transaction fail
 //     (ErrGORMTx).
 //   - Array parameters and columns are Int64s / Strings / Times; GORM
-//     expands a plain slice into one placeholder per element.
+//     expands a plain slice into one placeholder per element. A bytea or
+//     document parameter ([]byte, json.RawMessage) right after "(" is a
+//     Bytes, for the same reason.
 //   - A jsonb column read into a Go value (a []string, a struct) is a
 //     JSON[T], e.g. JSON[[]string]: GORM hands the raw document over where
 //     pgx used to decode it. json.RawMessage keeps the document as is.

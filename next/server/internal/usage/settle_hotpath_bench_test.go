@@ -20,6 +20,9 @@ import (
 //
 // settleTx locks the row and writes its billing fields; reserveTx (a plugin
 // reservation) writes the estimate and registers the reconcile entry. The
+// GORM writes are the production statements (billUsageRow,
+// reserveUsageRow); the lock and the entry stay on pgx, so their GORM form
+// is written out here. The
 // usage_logs insert is a pgx.Batch and the ledger statements belong to
 // package billing; neither is measured here.
 
@@ -74,46 +77,40 @@ func BenchmarkHotStmtSettleLock(b *testing.B) {
 	})
 }
 
-// settleTx's write of the billing fields.
+// settleTx's write of the billing fields (billUsageRow).
 func BenchmarkHotStmtSettleUpdate(b *testing.B) {
 	s, requestID, _ := stmtFixture(b)
 	ctx := context.Background()
 	pool := s.svc.db.Pool
 	total, rate, base := decimal.RequireFromString("0.012345"), decimal.NewFromInt(1), decimal.RequireFromString("0.012345")
-	detail := jsonOr(BillingDetail{Tier: "default", Cost: base, TotalCost: total, RateMultiplier: rate}, "{}")
-	priceID := s.price.ID
+	bd := BillingDetail{Tier: "default", Cost: base, TotalCost: total, RateMultiplier: rate}
+	p := &pending{RequestID: requestID, PriceID: s.price.ID, Mode: s.price.Mode, Rate: rate}
 	benchStmt(b, func(int) error {
 		_, err := pool.Exec(ctx, `
 			UPDATE usage_logs SET total_cost = $2, billing_status = 'billed', billing_detail = $3, matched_tier = $4,
 				expr_hash = $5, billing_mode = $6, price_id = $7, rate_multiplier = $8, base_cost = $9
 			WHERE request_id = $1`,
-			requestID, total, detail, "default", s.price.ExprHash, s.price.Mode, &priceID, rate, base)
+			requestID, total, jsonOr(bd, "{}"), trunc(bd.Tier, 100), s.price.ExprHash, p.Mode, &p.PriceID, rate, base)
 		return err
 	}, func(int) error {
-		return store.G(ctx, pool).Exec(`
-			UPDATE usage_logs SET total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?,
-				expr_hash = ?, billing_mode = ?, price_id = ?, rate_multiplier = ?, base_cost = ?
-			WHERE request_id = ?`,
-			total, detail, "default", s.price.ExprHash, s.price.Mode, &priceID, rate, base, requestID).Error
+		return billUsageRow(store.G(ctx, pool), p, amounts{total: total, base: base}, bd, s.price.ExprHash).Error
 	})
 }
 
-// reserveTx's write of the estimate.
+// reserveTx's write of the estimate (reserveUsageRow).
 func BenchmarkHotStmtReserveUpdate(b *testing.B) {
 	s, _, id := stmtFixture(b)
 	ctx := context.Background()
 	pool := s.svc.db.Pool
 	total, base := decimal.RequireFromString("0.5"), decimal.RequireFromString("0.5")
-	detail := jsonOr(BillingDetail{Tier: "default", Cost: base, TotalCost: total}, "{}")
+	bd := BillingDetail{Tier: "default", Cost: base, TotalCost: total}
 	benchStmt(b, func(int) error {
 		_, err := pool.Exec(ctx, `
 		UPDATE usage_logs SET total_cost = $2, base_cost = $5, billing_detail = $3, matched_tier = $4
-		WHERE id = $1`, id, total, detail, "default", base)
+		WHERE id = $1`, id, total, jsonOr(bd, "{}"), trunc(bd.Tier, 100), base)
 		return err
 	}, func(int) error {
-		return store.G(ctx, pool).Exec(`
-		UPDATE usage_logs SET total_cost = ?, base_cost = ?, billing_detail = ?, matched_tier = ?
-		WHERE id = ?`, total, base, detail, "default", id).Error
+		return reserveUsageRow(store.G(ctx, pool), id, amounts{total: total, base: base}, bd).Error
 	})
 }
 
