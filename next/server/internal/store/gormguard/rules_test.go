@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -16,8 +17,9 @@ const (
 	ruleOpen     = "[gorm-open]"
 	ruleInstance = "[gorm-instance]"
 	ruleSlice    = "[gorm-slice]"
-	rulePgx      = "[pgx-direct]"
 	ruleUnrun    = "[gorm-raw-unrun]"
+	rulePgx      = "[pgx-import]"
+	ruleSQL      = "[sql-handle]"
 )
 
 // bannedMethods are the gorm (*DB) methods that would let GORM own a
@@ -47,40 +49,53 @@ var runMethods = map[string]bool{
 	"UpdateColumn": true, "UpdateColumns": true, "Delete": true,
 }
 
-// pgxMethods are the direct statement calls of a pgx querier.
-var pgxMethods = map[string]bool{"Exec": true, "Query": true, "QueryRow": true}
-
 type rules struct {
-	module   string
-	owners   map[string]string
-	migrated map[string]string // packages, relative to the module
-	files    map[string]string // single migrated files, relative to the module
+	module    string
+	owners    map[string]string // packages that own the instance, relative to the module
+	sqlOwners map[string]string // packages that may use store.DB.SQL, relative to the module
+	pgxFiles  map[string]string // the files that may import pgx, relative to the module
 }
 
 // check returns the findings of one type-checked package as
-// "file:line:col: [rule] message". The files must be parsed with comments,
-// and info must hold Defs as well as Types, Uses and Selections.
+// "file:line:col: [rule] message", but for [pgx-import] (imports). The
+// files must be parsed with comments, and info must hold Defs as well as
+// Types, Uses and Selections.
 func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, info *types.Info) []string {
 	rel := strings.TrimPrefix(pkgPath, r.module+"/")
 	_, owner := r.owners[rel]
-	_, migrated := r.migrated[rel]
+	_, sqlOwner := r.sqlOwners[rel]
 	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/internal/store"}
 	c.index(files)
 	for _, f := range files {
-		c.allowed = allowComments(fset, f)
-		_, file := r.files[rel+"/"+filepath.Base(fset.Position(f.Package).Filename)]
-		c.migrated = migrated || file
+		c.sqlOwner = sqlOwner || strings.HasSuffix(fset.Position(f.Package).Filename, "_test.go")
 		ast.Inspect(f, c.visit)
 	}
 	return c.out
 }
 
+// imports returns the [pgx-import] findings of f, a file of the package
+// rel (relative to the module): pgx is imported by the files of pgxFiles
+// only, test files included.
+func (r rules) imports(fset *token.FileSet, rel string, f *ast.File) []string {
+	if _, ok := r.pgxFiles[rel+"/"+filepath.Base(fset.Position(f.Package).Filename)]; ok {
+		return nil
+	}
+	var out []string
+	for _, imp := range f.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err == nil && (path == pgxModule || strings.HasPrefix(path, pgxModule+"/")) {
+			out = append(out, fmt.Sprintf("%s: %s import of %s: statements go through GORM and PostgreSQL errors through store (pgerror.go is the one file that reads pgconn's errors)",
+				fset.Position(imp.Pos()), rulePgx, path))
+		}
+	}
+	return out
+}
+
 type checker struct {
 	fset            *token.FileSet
 	info            *types.Info
-	owner, migrated bool
-	storePkg        string         // import path of package store
-	allowed         map[int]string // line -> reason of an allow-pgx comment
+	owner, sqlOwner bool
+	storePkg        string // import path of package store
 	out             []string
 
 	// What [gorm-raw-unrun] follows a Raw statement through: the functions
@@ -187,6 +202,13 @@ func (c *checker) visit(n ast.Node) bool {
 	case *ast.SelectorExpr:
 		c.selector(n)
 		c.unrun(n)
+		if sel := c.info.Selections[n]; sel != nil && sel.Kind() == types.FieldVal {
+			c.sqlHandle(n.Sel, sel.Obj())
+		}
+	case *ast.KeyValueExpr:
+		if key, ok := n.Key.(*ast.Ident); ok {
+			c.sqlHandle(key, c.info.Uses[key])
+		}
 	case *ast.CallExpr:
 		c.call(n)
 	case *ast.AssignStmt:
@@ -203,15 +225,42 @@ func (c *checker) selector(n *ast.SelectorExpr) {
 	fn := funcOf(c.info, n)
 	switch {
 	case fn == nil:
-	case isGormMethod(fn) && bannedMethods[fn.Name()]:
-		c.report(n, "%s gorm (*DB).%s: transactions start in store.DB.Tx and the schema comes from the SQL migrations", ruleTx, fn.Name())
+	case isGormMethod(fn) && bannedMethods[fn.Name()] && !c.owner:
+		c.report(n, "%s gorm (*DB).%s outside package store: transactions start in store.DB.Tx, TxOptions or WithConn and the schema comes from the SQL migrations", ruleTx, fn.Name())
 	case isGormMethod(fn) && instanceMethods[fn.Name()] && !c.owner:
 		c.report(n, "%s gorm (*DB).%s outside package store: every handle shares store.G's instance", ruleInstance, fn.Name())
 	case isGormFunc(fn, "Open") && !c.owner:
 		c.report(n, "%s gorm.Open outside package store: take a handle from store.G", ruleOpen)
-	case c.migrated && isPgxStatement(fn):
-		c.pgx(n, fn)
 	}
+}
+
+// sqlHandle reports a use of the SQL field of store.DB (a selector, or a
+// key of a store.DB literal) outside the packages that may use it and the
+// test files: production statements go through Gorm.
+func (c *checker) sqlHandle(n ast.Node, obj types.Object) {
+	if c.sqlOwner || !c.isSQLField(obj) {
+		return
+	}
+	c.report(n, "%s store.DB.SQL outside package store, River (internal/task) and the tests: run the statement on store.DB.Gorm", ruleSQL)
+}
+
+// isSQLField reports whether obj is the SQL field of store.DB.
+func (c *checker) isSQLField(obj types.Object) bool {
+	v, ok := obj.(*types.Var)
+	if !ok || !v.IsField() || v.Name() != "SQL" || v.Pkg() == nil || v.Pkg().Path() != c.storePkg {
+		return false
+	}
+	tn, _ := v.Pkg().Scope().Lookup("DB").(*types.TypeName)
+	if tn == nil {
+		return false
+	}
+	st, _ := tn.Type().Underlying().(*types.Struct)
+	for i := 0; st != nil && i < st.NumFields(); i++ {
+		if st.Field(i) == v {
+			return true
+		}
+	}
+	return false
 }
 
 // unrun reports the Error or RowsAffected of a Raw statement that no
@@ -317,37 +366,6 @@ func (c *checker) returnsRaw(fn *types.Func) bool {
 	})
 	c.rawFns[fn] = found && all
 	return c.rawFns[fn]
-}
-
-func (c *checker) pgx(n *ast.SelectorExpr, fn *types.Func) {
-	line := c.fset.Position(n.Pos()).Line
-	reason, ok := c.allowed[line]
-	if !ok {
-		reason, ok = c.allowed[line-1]
-	}
-	switch {
-	case ok && reason != "":
-	case ok:
-		c.report(n, "%s %s without a reason: say why %s stays on pgx", rulePgx, allowPgx, fn.Name())
-	default:
-		c.report(n, "%s pgx %s in a migrated package or file: build the statement with store.G (Batch and CopyFrom stay on pgx; a measured hot path takes %s <reason>)",
-			rulePgx, fn.Name(), allowPgx)
-	}
-}
-
-// allowComments maps the lines of the allow-pgx comments of f to their
-// reasons.
-func allowComments(fset *token.FileSet, f *ast.File) map[int]string {
-	out := map[int]string{}
-	for _, g := range f.Comments {
-		for _, cm := range g.List {
-			rest, ok := strings.CutPrefix(cm.Text, allowPgx)
-			if ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
-				out[fset.Position(cm.Slash).Line] = strings.TrimSpace(rest)
-			}
-		}
-	}
-	return out
 }
 
 func (c *checker) call(n *ast.CallExpr) {
@@ -611,22 +629,6 @@ func calledFunc(info *types.Info, call *ast.CallExpr) *types.Func {
 
 func isGormFunc(fn *types.Func, name string) bool {
 	return fn.Pkg() != nil && fn.Pkg().Path() == gormPkg && fn.Name() == name && fn.Type().(*types.Signature).Recv() == nil
-}
-
-// isPgxStatement recognises Exec, Query and QueryRow by shape (a context
-// first, a pgx or pgconn result first), so it covers *pgxpool.Pool, pgx.Tx,
-// *pgx.Conn and store.Querier alike, and leaves out pgx.BatchResults (no
-// context) and gorm's Exec (no context).
-func isPgxStatement(fn *types.Func) bool {
-	if !pgxMethods[fn.Name()] {
-		return false
-	}
-	sig := fn.Type().(*types.Signature)
-	if sig.Recv() == nil || sig.Params().Len() == 0 || sig.Results().Len() == 0 || !isNamed(sig.Params().At(0).Type(), "context", "Context") {
-		return false
-	}
-	n, ok := types.Unalias(sig.Results().At(0).Type()).(*types.Named)
-	return ok && n.Obj().Pkg() != nil && strings.HasPrefix(n.Obj().Pkg().Path(), pgxPrefix)
 }
 
 // expandedSlice reports what GORM expands into a list wherever it is

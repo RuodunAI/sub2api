@@ -22,73 +22,35 @@ import (
 const (
 	gormPkg   = "gorm.io/gorm"
 	clausePkg = "gorm.io/gorm/clause"
-	pgxPrefix = "github.com/jackc/pgx/v5"
-	// allowPgx starts the comment that keeps one pgx statement in a
-	// migrated package: //gormguard:allow-pgx <reason>, on the line of the
-	// call or the line above.
-	allowPgx = "//gormguard:allow-pgx"
+	// pgxModule is pgx's module path, without its major version: every
+	// version's packages start with it. It is spelt in two pieces, and the
+	// fixtures write it {{pgx}}, so that a search of the module's sources
+	// for pgx imports finds pgerror.go alone.
+	pgxModule = "github.com/jackc/" + "pgx"
 )
 
 // instanceOwners lists the packages, relative to the module, that own the
 // shared GORM instance, with the reason: they may gorm.Open, register
-// callbacks and plugins, reach its *sql.DB and set its configuration.
+// callbacks and plugins, reach its *sql.DB, set its configuration and
+// start transactions with GORM's own Transaction and Begin.
 var instanceOwners = map[string]string{
-	"internal/store": "store.G's instance over the forwarding driver, with its timestamp hooks",
+	"internal/store":    "the pool and its GORM instance (Open, with its timestamp hooks), Tx, TxOptions, WithConn and the migrator",
+	"internal/testutil": "test infrastructure: Begin for a test that ends its transaction itself, Traced's logging connection pool",
 }
 
-// migratedPackages lists the packages, relative to the module, whose
-// statements are built with store.G: they must not go back to pgx Exec,
-// Query or QueryRow. A package is added here in the batch that migrates it.
-var migratedPackages = map[string]string{
-	"internal/account":                      "batch 2a",
-	"internal/apikey":                       "batch 1d",
-	"internal/app":                          "batch 1d",
-	"internal/audit":                        "batch 1b",
-	"internal/authz":                        "batch 3b",
-	"internal/billing":                      "batch 4c",
-	"internal/ccgateway":                    "batch 2b",
-	"internal/cluster":                      "batch 1b",
-	"internal/core":                         "batch 4d",
-	"internal/environment":                  "batch 1b",
-	"internal/event":                        "batch 1c",
-	"internal/event/delivery":               "batch 1c",
-	"internal/fallbackcredits":              "batch 1d",
-	"internal/gateway":                      "batch 4d",
-	"internal/group":                        "batch 1a",
-	"internal/helperhistory":                "batch 1b",
-	"internal/iam":                          "batch 3a",
-	"internal/job":                          "batch 1c",
-	"internal/lookup":                       "batch 1b",
-	"internal/notify":                       "batch 1b",
-	"internal/plugin/api":                   "batch 2c",
-	"internal/plugin/dbschema":              "batch 2e",
-	"internal/plugin/egress":                "batch 2e",
-	"internal/plugin/grants":                "batch 2c",
-	"internal/plugin/grpcruntime":           "batch 2c",
-	"internal/plugin/install":               "batch 2d",
-	"internal/plugin/market":                "batch 2c",
-	"internal/plugin/pkg":                   "batch 2c",
-	"internal/plugin/registry":              "batch 2c",
-	"internal/plugin/registry/registrytest": "batch 2c",
-	"internal/plugin/rollout":               "batch 2e",
-	"internal/providerresources":            "batch 2c",
-	"internal/proxy":                        "batch 1d",
-	"internal/segment":                      "batch 1a",
-	"internal/task":                         "batch 1c",
-	"internal/usage":                        "batch 4a/4b",
-	"internal/webui":                        "batch 1d",
+// sqlOwners lists the packages, relative to the module, besides the test
+// files, that may use store.DB.SQL, the pool as a database/sql handle.
+var sqlOwners = map[string]string{
+	"internal/store":    "the pool itself: Close, Ping, MaxConns, WithConn's connection",
+	"internal/task":     "River's driver (riverdatabasesql) takes the *sql.DB",
+	"internal/testutil": "test infrastructure: seeding, Connect's single connection",
 }
 
-// migratedFiles lists single files, relative to the module, that are held
-// to [pgx-direct] although their package is not in migratedPackages:
-// package store keeps pgx where it owns the connection (the GORM bridge in
-// gorm.go, the pool in db.go, the migrations in migrate.go), while its
-// repository files build their statements with store.G.
-var migratedFiles = map[string]string{
-	"internal/store/account_balance.go": "batch 4d",
-	"internal/store/account_quota.go":   "batch 4d",
-	"internal/store/account_refresh.go": "batch 4d",
-	"internal/store/settings.go":        "batch 4d",
+// pgxFiles lists the files, relative to the module, that may import pgx:
+// the PostgreSQL errors GORM's driver returns are pgconn's, and their
+// SQLSTATE and constraint name can only be read from that type.
+var pgxFiles = map[string]string{
+	"internal/store/pgerror.go": "reads *pgconn.PgError",
 }
 
 // --- loading -------------------------------------------------------------
@@ -172,27 +134,24 @@ func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*as
 // --- the repository ------------------------------------------------------
 
 // TestRepositoryFollowsGORMRules checks every non-test file of the packages
-// the rules can apply to: those that depend on GORM, the migrated ones and
-// those with a migrated file.
+// that depend on GORM, and the imports of every Go file of the module, test
+// files included ([pgx-import]).
 func TestRepositoryFollowsGORMRules(t *testing.T) {
 	root, module := moduleRoot(t)
-	r := rules{module: module, owners: instanceOwners, migrated: migratedPackages, files: migratedFiles}
+	r := rules{module: module, owners: instanceOwners, sqlOwners: sqlOwners, pgxFiles: pgxFiles}
 	known := map[string]bool{} // packages and their files, relative to the module
 	var targets []listed
 	for _, p := range goList(t, root, "./...") {
 		rel := strings.TrimPrefix(p.ImportPath, module+"/")
 		known[rel] = true
-		_, migrated := r.migrated[rel]
 		for _, name := range p.GoFiles {
 			known[rel+"/"+name] = true
-			_, file := r.files[rel+"/"+name]
-			migrated = migrated || file
 		}
-		if migrated || slices.Contains(p.Deps, gormPkg) {
+		if slices.Contains(p.Deps, gormPkg) {
 			targets = append(targets, p)
 		}
 	}
-	for _, list := range []map[string]string{instanceOwners, migratedPackages, migratedFiles} {
+	for _, list := range []map[string]string{instanceOwners, sqlOwners, pgxFiles} {
 		for rel := range list {
 			if !known[rel] {
 				t.Errorf("%s is listed but is no package or Go file of %s; drop its entry", rel, module)
@@ -208,6 +167,7 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 	}
 	fset := token.NewFileSet()
 	imp := exportImporter(fset, goList(t, root, append([]string{"-export", "-deps"}, paths...)...))
+	scanImports(t, root, r)
 	for _, p := range targets {
 		var files []*ast.File
 		for _, name := range p.GoFiles {
@@ -227,6 +187,38 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 	}
 }
 
+// scanImports checks the imports of every Go file under root, whatever its
+// package, build constraints or test status ([pgx-import]).
+func scanImports(t *testing.T, root string, r rules) {
+	t.Helper()
+	fset := token.NewFileSet()
+	seen := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			return err
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		seen++
+		for _, finding := range r.imports(fset, filepath.ToSlash(rel), f) {
+			t.Error(finding)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen == 0 {
+		t.Fatal("no Go file under " + root)
+	}
+}
+
 // --- the rules, on fixtures ----------------------------------------------
 
 const fixtureModule = "github.com/Sub2API-Devs/sup2api/next/server"
@@ -235,8 +227,6 @@ const fixtureImports = `
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -247,11 +237,9 @@ import (
 const fixtureUses = `
 var (
 	_ context.Context
-	_ pgx.Tx
-	_ *pgxpool.Pool
 	_ *gorm.DB
 	_ clause.Expr
-	_ store.Querier
+	_ store.DB
 )
 `
 
@@ -259,12 +247,12 @@ func TestRules(t *testing.T) {
 	root, _ := moduleRoot(t)
 	fset := token.NewFileSet()
 	imp := exportImporter(fset, goList(t, root, "-export", "-deps",
-		gormPkg, clausePkg, pgxPrefix, pgxPrefix+"/pgxpool", fixtureModule+"/internal/store"))
+		gormPkg, clausePkg, pgxModule+"/v5", pgxModule+"/v5/pgconn", fixtureModule+"/internal/store"))
 	r := rules{
-		module:   fixtureModule,
-		owners:   map[string]string{"internal/store": "test"},
-		migrated: map[string]string{"internal/usage": "test"},
-		files:    map[string]string{"internal/store/repo.go": "test"},
+		module:    fixtureModule,
+		owners:    map[string]string{"internal/store": "test"},
+		sqlOwners: map[string]string{"internal/store": "test", "internal/task": "test"},
+		pgxFiles:  map[string]string{"internal/store/pgerror.go": "test"},
 	}
 	cases := []struct {
 		name    string
@@ -294,20 +282,31 @@ func g(r repo) { r.Begin() }
 			want: []string{ruleTx, ruleTx, ruleTx, ruleTx, ruleTx, ruleTx},
 		},
 		{
-			name: "tx/queries, pgx transactions and look-alikes pass",
-			pkg:  "internal/billing",
+			name:    "tx/queries, database/sql transactions and look-alikes pass",
+			pkg:     "internal/billing",
+			imports: `import "database/sql"`,
 			src: `
 type fake struct{}
 
 func (fake) Begin()       {}
 func (fake) Transaction() {}
 
-func f(ctx context.Context, db *gorm.DB, pool *pgxpool.Pool, x fake) {
+func f(ctx context.Context, db *gorm.DB, pool *sql.DB, x fake) {
 	var rows []struct{ ID int64 }
 	db.Where("id = ?", 1).Find(&rows)
-	_, _ = pool.Begin(ctx)
+	_, _ = pool.BeginTx(ctx, nil)
 	x.Begin()
 	x.Transaction()
+}
+`,
+		},
+		{
+			name: "tx/inside store",
+			pkg:  "internal/store",
+			src: `
+func f(db *gorm.DB) {
+	_ = db.Transaction(func(*gorm.DB) error { return nil })
+	db.Begin()
 }
 `,
 		},
@@ -614,99 +613,82 @@ func f(db *gorm.DB, raw []byte, doc json.RawMessage, query string, args []any) {
 `,
 		},
 		{
-			name: "pgx/a migrated file of a package that is not",
-			pkg:  "internal/store",
-			file: "repo.go",
-			src: `
-func f(ctx context.Context, q store.Querier) {
-	_, _ = q.Exec(ctx, "x")
-	//gormguard:allow-pgx hot path, see BASELINE.md
-	_ = q.QueryRow(ctx, "x")
-}
-`,
-			want: []string{rulePgx},
-		},
-		{
-			name: "pgx/the other files of that package",
-			pkg:  "internal/store",
-			file: "migrate.go",
-			src: `
-func f(ctx context.Context, q store.Querier) {
-	_, _ = q.Exec(ctx, "x")
-}
-`,
-		},
-		{
-			name: "pgx/allow comments with a reason, on the line or the line above",
+			name: "pgx-import/any pgx package, test files included",
 			pkg:  "internal/usage",
+			file: "usage_test.go",
+			imports: `import (
+	"{{pgx}}/v5"
+	"{{pgx}}/v5/pgconn"
+)`,
 			src: `
-func f(ctx context.Context, q store.Querier) {
-	_, _ = q.Exec(ctx, "x") //gormguard:allow-pgx hot path, 1.7x the allocations on GORM
-	//gormguard:allow-pgx hot path, see BASELINE.md
-	_ = q.QueryRow(ctx, "x")
-}
+var (
+	_ pgx.Tx
+	_ *pgconn.PgError
+)
 `,
+			want: []string{rulePgx, rulePgx},
 		},
 		{
-			name: "pgx/allow comments without a reason, too far or misspelt",
-			pkg:  "internal/usage",
-			src: `
-func f(ctx context.Context, q store.Querier) {
-	_, _ = q.Exec(ctx, "x") //gormguard:allow-pgx
-	//gormguard:allow-pgx far away
-
-	_ = q.QueryRow(ctx, "x")
-	_ = q.QueryRow(ctx, "x") //gormguard:allow-pgxx typo
-}
-`,
-			want: []string{rulePgx, rulePgx, rulePgx},
+			name:    "pgx-import/the other files of package store",
+			pkg:     "internal/store",
+			file:    "db.go",
+			imports: `import "{{pgx}}/v5/pgconn"`,
+			src:     `var _ *pgconn.PgError`,
+			want:    []string{rulePgx},
 		},
 		{
-			name: "pgx/direct statements in a migrated package",
-			pkg:  "internal/usage",
-			src: `
-func f(ctx context.Context, q store.Querier, pool *pgxpool.Pool, tx pgx.Tx, conn *pgx.Conn) {
-	_, _ = q.Exec(ctx, "x")
-	_, _ = pool.Query(ctx, "x")
-	_ = tx.QueryRow(ctx, "x")
-	_, _ = conn.Exec(ctx, "x")
-	exec := q.Exec
-	_ = exec
-}
-`,
-			want: []string{rulePgx, rulePgx, rulePgx, rulePgx, rulePgx},
+			name:    "pgx-import/the error file",
+			pkg:     "internal/store",
+			file:    "pgerror.go",
+			imports: `import "{{pgx}}/v5/pgconn"`,
+			src:     `var _ *pgconn.PgError`,
 		},
 		{
-			name: "pgx/batches, CopyFrom and gorm Exec pass in a migrated package",
-			pkg:  "internal/usage",
-			src: `
-func f(ctx context.Context, tx pgx.Tx, db *gorm.DB) error {
-	b := &pgx.Batch{}
-	b.Queue("x")
-	br := tx.SendBatch(ctx, b)
-	_, _ = br.Exec()
-	_ = br.QueryRow()
-	_, _ = br.Query()
-	_, _ = tx.CopyFrom(ctx, pgx.Identifier{"t"}, []string{"a"}, pgx.CopyFromRows(nil))
-	db.Exec("SELECT 1")
-	return br.Close()
-}
-`,
-		},
-		{
-			name: "pgx/direct statements outside the migrated packages",
+			name: "sql-handle/selectors, values, literal keys and promotion",
 			pkg:  "internal/billing",
 			src: `
-func f(ctx context.Context, q store.Querier, pool *pgxpool.Pool) {
-	_, _ = q.Exec(ctx, "x")
-	_, _ = pool.Query(ctx, "x")
+type wrap struct{ *store.DB }
+
+func f(ctx context.Context, db *store.DB, w wrap) {
+	_ = db.SQL.PingContext(ctx)
+	pool := db.SQL
+	_ = pool
+	_ = store.DB{Gorm: db.Gorm, SQL: nil}
+	_ = w.SQL
+}
+`,
+			want: []string{ruleSQL, ruleSQL, ruleSQL, ruleSQL},
+		},
+		{
+			name: "sql-handle/the owners",
+			pkg:  "internal/task",
+			src:  `func f(ctx context.Context, db *store.DB) { _ = db.SQL.PingContext(ctx) }`,
+		},
+		{
+			name: "sql-handle/test files",
+			pkg:  "internal/billing",
+			file: "billing_test.go",
+			src:  `func f(ctx context.Context, db *store.DB) { _ = db.SQL.PingContext(ctx) }`,
+		},
+		{
+			name: "sql-handle/look-alikes and the rest of store.DB pass",
+			pkg:  "internal/billing",
+			src: `
+type q struct{ SQL string }
+
+func f(ctx context.Context, db *store.DB, g *gorm.DB) {
+	_ = q{SQL: "x"}.SQL
+	_ = g.Statement.SQL.String()
+	_ = db.Gorm
+	_ = db.Ping(ctx)
+	_ = db.MaxConns()
 }
 `,
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			src := "package p\n" + fixtureImports + c.imports + "\n" + c.src + fixtureUses
+			src := "package p\n" + fixtureImports + strings.ReplaceAll(c.imports, "{{pgx}}", pgxModule) + "\n" + c.src + fixtureUses
 			name := c.file
 			if name == "" {
 				name = c.name + ".go"
@@ -720,7 +702,7 @@ func f(ctx context.Context, q store.Querier, pool *pgxpool.Pool) {
 			if err != nil {
 				t.Fatalf("fixture does not type-check: %v", err)
 			}
-			findings := r.check(fset, path, []*ast.File{f}, info)
+			findings := append(r.imports(fset, c.pkg, f), r.check(fset, path, []*ast.File{f}, info)...)
 			var got []string
 			for _, finding := range findings {
 				got = append(got, strings.Fields(finding[strings.Index(finding, " [")+1:])[0])
