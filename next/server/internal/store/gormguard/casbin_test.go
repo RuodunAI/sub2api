@@ -29,8 +29,10 @@ var casbinOwners = map[string]string{
 	casbinxPkg: "the Casbin resolver: loads the p rows with gorm-adapter, read-only, and owns the enforcers",
 }
 
-// enforceOwners (packages or files) may call the Enforce of casbinx's
-// Resolver and Snapshot: the matcher path, never a request's answer.
+// enforceOwners (packages or files) may call casbinx.Enforce: the matcher
+// path, never a request's answer. casbinx has no Enforce method to take
+// over through an interface declared elsewhere (its Resolver's is
+// unexported), so naming the function is the only way to the matcher.
 var enforceOwners = map[string]string{
 	casbinxPkg:                 "the resolver itself and its tests of the matcher",
 	"internal/authz/shadow.go": "the shadow comparison samples the matcher path against PermissionSet.Has",
@@ -54,7 +56,22 @@ var (
 		`^(Begin|With)?Transaction$|^Commit$|^Rollback$|^StartAutoLoadPolicy$|^New(Synced|Transactional|Distributed)`)
 	// casbinEnforce matches Casbin's own matcher calls.
 	casbinEnforce = regexp.MustCompile(`^(Batch)?Enforce`)
+	// adapterPkg matches gorm-adapter's package.
+	adapterPkg = regexp.MustCompile(`^github\.com/casbin/gorm-adapter(/v\d+)?$`)
+	// adapterConstructor matches the gorm-adapter functions that make an
+	// adapter or a pool: all but NewAdapterByDBUseTableName (see
+	// adapterReadOnly) AutoMigrate the table to the adapter's own struct
+	// unless TurnOffAutoMigrate ran first on their handle (DDL that would
+	// narrow v1 and v2 back to varchar(100)), and those taking a driver and
+	// a DSN, or InitDbResolver, open pools of their own; the
+	// transactional ones exist to write.
+	adapterConstructor = regexp.MustCompile(`^(New|InitDbResolver$)`)
 )
+
+// adapterReadOnly is the one gorm-adapter constructor allowed: on a handle
+// TurnOffAutoMigrate ran on, it only scopes a session of it to the table
+// (casbinx.loadPolicyRows).
+const adapterReadOnly = "NewAdapterByDBUseTableName"
 
 // listedWithin reports whether rel is, or is under, an entry of list.
 func listedWithin(list map[string]string, rel string) bool {
@@ -93,6 +110,8 @@ func (c *checker) casbinSelector(n *ast.SelectorExpr, fn *types.Func) {
 		c.report(n, "%s Casbin %s: the policy is the role tables' projection, written by their triggers in the writer's transaction; Casbin and gorm-adapter only read it", ruleCasbin, fn.Name())
 	case casbinRootPkg.MatchString(pkg) && casbinEnforce.MatchString(fn.Name()) && !c.casbinOwner:
 		c.report(n, "%s Casbin %s outside %s: enforcers belong to the resolver", ruleCasbin, fn.Name(), casbinxPkg)
+	case adapterPkg.MatchString(pkg) && adapterConstructor.MatchString(fn.Name()) && fn.Name() != adapterReadOnly:
+		c.report(n, "%s gorm-adapter %s: only %s on a handle TurnOffAutoMigrate ran on; the others AutoMigrate the table, open pools of their own or write", ruleCasbin, fn.Name(), adapterReadOnly)
 	case fn.Name() == "Enforce" && within(pkg, c.casbinxPkg) && !c.enforceOwner:
 		c.report(n, "%s casbinx Enforce outside the shadow comparison, casbinx and authz-verify: it runs every policy through the matcher (8-230 µs); a request asks PermissionSet.Has", ruleCasbin)
 	}
@@ -112,34 +131,66 @@ func (c *checker) casbinCall(fn *types.Func, n *ast.CallExpr) {
 
 // --- the rule, on fixtures -------------------------------------------------
 
-// TestCasbinxEnforceRule needs no Casbin: casbinx's Resolver is the
-// module's own interface.
+// TestCasbinxEnforceRule needs no Casbin: casbinx.Enforce is the module's
+// own function.
 func TestCasbinxEnforceRule(t *testing.T) {
 	casbinFixtures(t, nil, []casbinCase{
 		{name: "outside the owners, called or as a value", pkg: "internal/httpapi", want: []string{ruleCasbin, ruleCasbin}, src: `
 func f(ctx context.Context, r casbinx.Resolver) {
-	_, _ = r.Enforce(ctx, 1, "x", 0)
-	e := r.Enforce
+	_, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0)
+	e := casbinx.Enforce
 	_ = e
 	_, _ = r.Grants(ctx, 1, 0)
 }`},
 		{name: "another file of authz", pkg: "internal/authz", file: "service.go", want: []string{ruleCasbin}, src: `
-func f(ctx context.Context, r casbinx.Resolver) { _, _ = r.Enforce(ctx, 1, "x", 0) }`},
+func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
 		{name: "the shadow comparison", pkg: "internal/authz", file: "shadow.go", src: `
-func f(ctx context.Context, r casbinx.Resolver) { _, _ = r.Enforce(ctx, 1, "x", 0) }`},
+func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
 		{name: "a package of casbinx", pkg: casbinxPkg + "/x", src: `
-func f(ctx context.Context, r casbinx.Resolver) { _, _ = r.Enforce(ctx, 1, "x", 0) }`},
+func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
 		{name: "authz-verify", pkg: "cmd/sub2api", src: `
-func f(ctx context.Context, r casbinx.Resolver) { _, _ = r.Enforce(ctx, 1, "x", 0) }`},
+func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
 		{name: "a test file", pkg: "internal/httpapi", file: "x_test.go", src: `
-func f(ctx context.Context, r casbinx.Resolver) { _, _ = r.Enforce(ctx, 1, "x", 0) }`},
+func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
 		{name: "look-alikes", pkg: "internal/httpapi", src: `
 type fake struct{}
 
-func (fake) Enforce(context.Context, int64, string, int64) (bool, error) { return false, nil }
+func (fake) Enforce(context.Context, int64, string, int64) (bool, int64, error) { return false, 0, nil }
 
-func f(ctx context.Context, x fake) { _, _ = x.Enforce(ctx, 1, "x", 0) }`},
+func Enforce(context.Context, casbinx.Resolver, int64, string, int64) (bool, int64, error) { return false, 0, nil }
+
+func f(ctx context.Context, x fake, r casbinx.Resolver) {
+	_, _, _ = x.Enforce(ctx, 1, "x", 0)
+	_, _, _ = Enforce(ctx, r, 1, "x", 0)
+}`},
 	})
+}
+
+// No interface declared outside casbinx takes the matcher path over: the
+// Resolver has no exported Enforce, and its unexported one is casbinx's
+// alone, so a Resolver does not satisfy an interface naming either.
+func TestCasbinxEnforceNotTakenOver(t *testing.T) {
+	for name, src := range map[string]string{
+		"exported": `
+type enforcer interface {
+	Enforce(context.Context, int64, string, int64) (bool, int64, error)
+}
+
+var _ enforcer = casbinx.Resolver(nil)`,
+		"unexported": `
+type enforcer interface {
+	enforce(context.Context, int64, string, int64) (bool, int64, error)
+}
+
+var _ enforcer = casbinx.Resolver(nil)`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := casbinFixture(t, nil, casbinCase{pkg: "internal/httpapi", src: src})
+			if err == nil || !strings.Contains(err.Error(), "does not implement") {
+				t.Fatalf("a local interface took casbinx's matcher path over: %v", err)
+			}
+		})
+	}
 }
 
 const (
@@ -198,6 +249,19 @@ func f(ctx context.Context, e *casbin.Enforcer, ie casbin.IEnforcer, a *gormadap
 	_, _ = e.Enforce("u:1", "a")
 }`, want: []string{ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin,
 			ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin}},
+		{name: "gorm-adapter constructors, in casbinx too", pkg: casbinxPkg + "/x", imports: imports, src: uses + `
+func f(db *gorm.DB) {
+	_, _ = gormadapter.NewAdapter("postgres", "dsn")
+	_, _ = gormadapter.NewAdapterByDB(db)
+	_, _ = gormadapter.NewFilteredAdapterByDB(db, "", "casbin_rule")
+	_, _ = gormadapter.NewAdapterByDBWithCustomTable(db, nil, "casbin_rule")
+	_, _ = gormadapter.NewTransactionalAdapterByDB(db)
+	_, _ = gormadapter.InitDbResolver(nil, nil)
+	newAdapter := gormadapter.NewAdapterByDB
+	_ = newAdapter
+	gormadapter.TurnOffAutoMigrate(db)
+	_, _ = gormadapter.NewAdapterByDBUseTableName(db, "", "casbin_rule")
+}`, want: []string{ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin}},
 		{name: "Casbin's Enforce outside casbinx", pkg: "internal/authz", file: "shadow.go", imports: imports, src: uses + `
 func f(e *casbin.Enforcer) {
 	_, _ = e.Enforce("u:1", "a")
@@ -217,30 +281,13 @@ type casbinCase struct {
 // a file of its package and compares the [casbin-api] findings.
 func casbinFixtures(t *testing.T, extra []string, cases []casbinCase) {
 	t.Helper()
-	root, _ := moduleRoot(t)
-	fset := token.NewFileSet()
-	imp := exportImporter(fset, goList(t, root, append([]string{"-export", "-deps",
-		gormPkg, clausePkg, fixtureModule + "/internal/store", fixtureModule + "/" + casbinxPkg}, extra...)...))
-	r := rules{module: fixtureModule, casbinOwners: casbinOwners, enforceOwners: enforceOwners}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			src := "package p\n" + fixtureImports + `import "` + fixtureModule + "/" + casbinxPkg + `"` + "\n" + c.imports + "\n" + c.src + fixtureUses +
-				"var _ casbinx.Resolver\n"
-			name := c.file
-			if name == "" {
-				name = "f.go"
-			}
-			f, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution|parser.ParseComments)
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := fixtureModule + "/" + c.pkg
-			info, err := typeCheck(fset, imp, path, []*ast.File{f})
+			findings, err := casbinFixture(t, extra, c)
 			if err != nil {
 				t.Fatalf("fixture does not type-check: %v", err)
 			}
 			var got []string
-			findings := append(r.imports(fset, c.pkg, f), r.check(fset, path, []*ast.File{f}, info)...)
 			for _, finding := range findings {
 				got = append(got, strings.Fields(finding[strings.Index(finding, " [")+1:])[0])
 			}
@@ -249,4 +296,31 @@ func casbinFixtures(t *testing.T, extra []string, cases []casbinCase) {
 			}
 		})
 	}
+}
+
+// casbinFixture type-checks c and returns its findings (imports, then the
+// checks).
+func casbinFixture(t *testing.T, extra []string, c casbinCase) ([]string, error) {
+	t.Helper()
+	root, _ := moduleRoot(t)
+	fset := token.NewFileSet()
+	imp := exportImporter(fset, goList(t, root, append([]string{"-export", "-deps",
+		gormPkg, clausePkg, fixtureModule + "/internal/store", fixtureModule + "/" + casbinxPkg}, extra...)...))
+	r := rules{module: fixtureModule, casbinOwners: casbinOwners, enforceOwners: enforceOwners}
+	src := "package p\n" + fixtureImports + `import "` + fixtureModule + "/" + casbinxPkg + `"` + "\n" + c.imports + "\n" + c.src + fixtureUses +
+		"var _ casbinx.Resolver\n"
+	name := c.file
+	if name == "" {
+		name = "f.go"
+	}
+	f, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution|parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fixtureModule + "/" + c.pkg
+	info, err := typeCheck(fset, imp, path, []*ast.File{f})
+	if err != nil {
+		return nil, err
+	}
+	return append(r.imports(fset, c.pkg, f), r.check(fset, path, []*ast.File{f}, info)...), nil
 }

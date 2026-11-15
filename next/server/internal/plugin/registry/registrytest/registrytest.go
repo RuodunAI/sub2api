@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -479,20 +478,17 @@ func Source() *blobs.Source {
 // sourceDir is the directory of Source, once made.
 var sourceDir string
 
-// Main runs a package's tests (TestMain) and then removes Source's
-// directory, about 125 MB that each test process would otherwise leave in
-// the temporary directory. A check's error then fails a run that passed
-// (testutil.Exit, which this package may not import: it is no test file).
-func Main(m *testing.M, checks ...func() error) {
+// Run runs a package's tests (m.Run) and then removes Source's directory,
+// about 125 MB that each test process would otherwise leave in the
+// temporary directory; it returns m.Run's code (for testutil.Exit, which
+// this package may not import: it is no test file).
+func Run(m *testing.M) int {
 	code := m.Run()
 	if sourceDir != "" {
 		_ = os.RemoveAll(sourceDir)
 	}
-	for _, check := range checks {
-		if err := check(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			code = max(code, 1)
-		}
-	}
-	os.Exit(code)
+	return code
 }
+
+// Main is a TestMain that only runs the tests (Run).
+func Main(m *testing.M) { os.Exit(Run(m)) }

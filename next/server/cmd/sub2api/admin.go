@@ -17,7 +17,7 @@ import (
 )
 
 const adminUsage = "usage: sub2api admin recover-superadmin --email <existing user> [--reset-password] [--reset-2fa]\n" +
-	"       sub2api admin authz-verify [--keys] [--max-diffs N]"
+	"       sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]"
 
 // runAdmin is `sub2api admin <command>`: repairs and checks run on the
 // server against the configured database while the core may be down. It

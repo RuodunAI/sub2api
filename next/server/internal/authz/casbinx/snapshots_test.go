@@ -52,18 +52,19 @@ func (f *fakeLoader) UserRoles(_ context.Context, uid int64) (UserRoles, error) 
 
 func fixed(v int64) func(int64) int64 { return func(int64) int64 { return v } }
 
-func testEngine(l *fakeLoader, o EngineOptions) *Engine {
-	return NewEngine(l, Options{Roles: newMapRoles()}, o)
+// testEngine holds the snapshots of l's policy.
+func testEngine(l Loader, o snapshotOptions) *snapshots {
+	return newResolver(l, nil, nil, o).snaps
 }
 
 // A snapshot at or past min is returned without a read.
 func TestEnsureHit(t *testing.T) {
 	t.Parallel()
 	l := &fakeLoader{next: fixed(5)}
-	eng := testEngine(l, EngineOptions{})
+	eng := testEngine(l, snapshotOptions{})
 	for _, min := range []int64{5, 1, 4, 5} {
 		s, err := eng.Ensure(context.Background(), min)
-		if err != nil || s.Version() != 5 {
+		if err != nil || s.version != 5 {
 			t.Fatalf("Ensure(%d) = %v, %v", min, s, err)
 		}
 	}
@@ -76,11 +77,11 @@ func TestEnsureHit(t *testing.T) {
 func TestEnsureSingleFlight(t *testing.T) {
 	t.Parallel()
 	l := &fakeLoader{next: fixed(7), delay: 20 * time.Millisecond}
-	eng := testEngine(l, EngineOptions{})
+	eng := testEngine(l, snapshotOptions{})
 	var wg sync.WaitGroup
 	for range 64 {
 		wg.Go(func() {
-			if s, err := eng.Ensure(context.Background(), 7); err != nil || s.Version() != 7 {
+			if s, err := eng.Ensure(context.Background(), 7); err != nil || s.version != 7 {
 				t.Error(s, err)
 			}
 		})
@@ -97,7 +98,11 @@ func TestEnsureDebounce(t *testing.T) {
 	t.Parallel()
 	const debounce = 80 * time.Millisecond
 	l := &fakeLoader{} // version n at the n-th read
-	eng := testEngine(l, EngineOptions{Debounce: debounce})
+	eng := testEngine(l, snapshotOptions{Debounce: debounce})
+	// Debounce spaces the starts the holder records, just before each read:
+	// the second read comes Debounce or more after the first started, so
+	// after this.
+	before := time.Now()
 	if _, err := eng.Ensure(context.Background(), 1); err != nil {
 		t.Fatal(err)
 	}
@@ -113,8 +118,8 @@ func TestEnsureDebounce(t *testing.T) {
 	if n := l.reads.Load(); n != 2 {
 		t.Fatalf("%d reads, want 2", n)
 	}
-	if gap := l.starts[1].Sub(l.starts[0]); gap < debounce {
-		t.Fatalf("rebuilds %v apart, debounce %v", gap, debounce)
+	if gap := l.starts[1].Sub(before); gap < debounce {
+		t.Fatalf("second rebuild %v after the first Ensure, debounce %v", gap, debounce)
 	}
 }
 
@@ -123,10 +128,9 @@ func TestEnsureDebounce(t *testing.T) {
 func TestEnsureTimeoutFailsClosed(t *testing.T) {
 	t.Parallel()
 	l := &fakeLoader{next: fixed(1)}
-	eng := testEngine(l, EngineOptions{Wait: 50 * time.Millisecond})
-	if _, err := eng.Ensure(context.Background(), 1); err != nil {
-		t.Fatal(err)
-	}
+	eng := testEngine(l, snapshotOptions{Wait: 50 * time.Millisecond})
+	// Version 1 in place without a rebuild, which Wait would bound too.
+	eng.swap(snapOf(t, Policy{Version: 1}))
 	l.block = make(chan struct{})
 	defer close(l.block)
 	start := time.Now()
@@ -149,8 +153,8 @@ func TestEnsureTimeoutFailsClosed(t *testing.T) {
 func TestEnsureRetriesOnceWhenBehind(t *testing.T) {
 	t.Parallel()
 	l := &fakeLoader{next: func(n int64) int64 { return []int64{1, 3}[min(n, 2)-1] }}
-	eng := testEngine(l, EngineOptions{Debounce: time.Millisecond})
-	if s, err := eng.Ensure(context.Background(), 3); err != nil || s.Version() != 3 {
+	eng := testEngine(l, snapshotOptions{Debounce: time.Millisecond})
+	if s, err := eng.Ensure(context.Background(), 3); err != nil || s.version != 3 {
 		t.Fatalf("Ensure = %v, %v", s, err)
 	}
 	if n := l.reads.Load(); n != 2 {
@@ -158,7 +162,7 @@ func TestEnsureRetriesOnceWhenBehind(t *testing.T) {
 	}
 
 	behind := &fakeLoader{next: fixed(1)}
-	eng = testEngine(behind, EngineOptions{Debounce: time.Millisecond})
+	eng = testEngine(behind, snapshotOptions{Debounce: time.Millisecond})
 	if _, err := eng.Ensure(context.Background(), 2); !errors.Is(err, ErrStale) {
 		t.Fatalf("Ensure = %v, want ErrStale", err)
 	}
@@ -172,15 +176,15 @@ func TestEnsureLoadError(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("boom")
 	l := &fakeLoader{next: fixed(1), err: boom}
-	eng := testEngine(l, EngineOptions{Debounce: time.Millisecond})
+	eng := testEngine(l, snapshotOptions{Debounce: time.Millisecond})
 	if _, err := eng.Ensure(context.Background(), 1); !errors.Is(err, boom) {
 		t.Fatalf("Ensure = %v", err)
 	}
-	if eng.Current() != nil {
+	if eng.cur.Load() != nil {
 		t.Fatal("a snapshot after a failed rebuild")
 	}
 	l.err = nil
-	if s, err := eng.Ensure(context.Background(), 1); err != nil || s.Version() != 1 {
+	if s, err := eng.Ensure(context.Background(), 1); err != nil || s.version != 1 {
 		t.Fatalf("Ensure = %v, %v", s, err)
 	}
 }
@@ -188,8 +192,32 @@ func TestEnsureLoadError(t *testing.T) {
 // A panic in a rebuild fails its callers instead of the process.
 func TestEnsureRebuildPanics(t *testing.T) {
 	t.Parallel()
-	eng := newEngine(func(context.Context) (*Snapshot, error) { panic("boom") }, EngineOptions{})
+	eng := newSnapshots(func(context.Context) (*snapshot, error) { panic("boom") }, snapshotOptions{})
 	if _, err := eng.Ensure(context.Background(), 1); err == nil {
 		t.Fatal("no error")
+	}
+}
+
+// prewarm builds the snapshot of a version the node learnt of without a
+// caller waiting for it, and reads nothing when the current one is as new.
+func TestPrewarm(t *testing.T) {
+	t.Parallel()
+	l := &fakeLoader{next: fixed(3)}
+	eng := testEngine(l, snapshotOptions{Debounce: time.Millisecond})
+	eng.prewarm(3)
+	deadline := time.Now().Add(5 * time.Second)
+	for s := eng.cur.Load(); s == nil || s.version != 3; s = eng.cur.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("prewarm built nothing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	eng.prewarm(2)
+	eng.prewarm(3)
+	if s, err := eng.Ensure(context.Background(), 3); err != nil || s.version != 3 {
+		t.Fatalf("Ensure after prewarm = %v, %v", s, err)
+	}
+	if n := l.reads.Load(); n != 1 {
+		t.Fatalf("%d reads, want 1", n)
 	}
 }

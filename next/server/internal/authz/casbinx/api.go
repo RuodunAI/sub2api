@@ -4,9 +4,10 @@
 // The legacy role tables stay the source of truth; casbin_rule is their
 // projection, kept in the same transaction by database triggers (migration
 // 0100). This package only reads it: one immutable enforcer per authz
-// version (Snapshot), built from the p rows of active permissions, with g
-// answered by a read-only role manager over the two-level user-role cache
-// (RoleCache). Nothing here writes policy, opens a transaction of its own or
+// version (snapshot), built from the p rows of active permissions and no g
+// row; a user's roles come from the two-level user-role cache (RoleCache)
+// at the snapshot's version, and the read-only role manager links each
+// role subject to itself only. Nothing here writes policy, opens a transaction of its own or
 // calls the gorm-adapter / Casbin management APIs (AddPolicy, SavePolicy,
 // Transaction, TransactionalEnforcer): gormguard rejects them.
 //
@@ -18,6 +19,7 @@ package casbinx
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -32,7 +34,8 @@ const (
 	// drops trailing empty columns when it loads a row).
 	AllRows = "*"
 	// SelfRole is the virtual role of every active user, holding the self
-	// permissions (authz.SelfPermissionKeys); it is never stored.
+	// permissions (authz.SelfPermissionKeys); it is never stored, and a
+	// stored row of it is not loaded (loadable).
 	SelfRole = "r:_self"
 )
 
@@ -74,32 +77,48 @@ type Loader interface {
 	UserRoles(ctx context.Context, uid int64) (UserRoles, error)
 }
 
-// RoleSource answers g from memory, without I/O: the roles of a user
-// subject, ok false when it holds no entry (the role manager then answers
-// false: fail closed).
-type RoleSource interface {
-	Roles(sub string) (roles []string, ok bool)
-}
-
-// RoleCache is the two-level user-role cache: the process (L1, read by the
-// role manager) and Valkey (L2, shared by the nodes; optional). Warm makes
-// sure L1 holds uid's roles read at a version >= min, from L1, L2 or the
-// Loader, and returns them. A Valkey error skips L2 (PostgreSQL is the
-// truth); an entry is only used at an exact or newer version than min.
+// RoleCache is the two-level user-role cache: the process (L1) and Valkey
+// (L2, shared by the nodes; optional). Warm returns uid's roles read at a
+// version >= min: from L1, from L2 when its entry is at exactly min, or
+// from the Loader. A Valkey error skips L2 (PostgreSQL is the truth).
+//
+// The snapshots never read the cache themselves: a resolution hands the
+// roles Warm returned to the snapshot of the same version, so the two
+// halves of a set cannot come from different versions.
 type RoleCache interface {
-	RoleSource
 	Warm(ctx context.Context, uid, min int64) (UserRoles, error)
 }
 
 // Resolver is what authz.Service calls. Grants is uid's effective
-// permission set as Casbin resolves it at a version >= min: it ensures the
-// snapshot (blocking, fail closed after a timeout) and warms the user's
-// roles first. The set's Version is the version both were read at; when
-// the snapshot and the roles disagree it is the lower of the two, so a
-// comparison against the legacy loader can tell a version skew.
+// permission set as Casbin resolves it at a version >= min: the policy
+// snapshot (built if needed, blocking, failing closed after a timeout) and
+// the user's roles, both read at the set's Version. When they cannot be
+// had at one version it fails with ErrSkew.
+//
+// Its matcher path is the package function Enforce, not a method: an
+// interface declared elsewhere cannot take it over, so gormguard
+// [casbin-api] sees every call.
 type Resolver interface {
 	Grants(ctx context.Context, uid, min int64) (core.PermissionSet, error)
-	// Enforce is the matcher path for one key (shadow sampling and
-	// diagnostics; never a hot path).
-	Enforce(ctx context.Context, uid int64, key string, min int64) (bool, error)
+	// Prewarm starts building the snapshot of version min, off the caller,
+	// when the current one is older: the node learnt of a new version, and
+	// the requests that follow should find it built.
+	Prewarm(min int64)
+
+	enforce(ctx context.Context, uid int64, key string, min int64) (bool, int64, error)
+}
+
+// ErrSkew is the error of a resolution whose snapshot and roles were read
+// at different versions, also after one more read of each at the newer of
+// the two: writes keep landing in between. The caller must not combine
+// them (casbin fails closed; the shadow comparison skips).
+var ErrSkew = errors.New("casbinx: the policy and the user's roles were read at different versions")
+
+// Enforce runs key through the matcher for uid, at version min or newer,
+// and returns the version it decided at (the same as Grants would label
+// its set). It runs every policy row through the matcher (8-230 µs at 400
+// rows): for the shadow comparison and diagnostics only; hot paths ask
+// Grants' PermissionSet.Has.
+func Enforce(ctx context.Context, r Resolver, uid int64, key string, min int64) (ok bool, version int64, err error) {
+	return r.enforce(ctx, uid, key, min)
 }

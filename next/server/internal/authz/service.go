@@ -53,10 +53,11 @@ type Service struct {
 	menuKeys map[string][]string
 
 	// casbin resolves permission sets with Casbin (nil without a database);
-	// engine says whether it answers (authz.engine), engineEnv that
-	// EngineEnv pinned it; shadow compares it with the legacy loader.
+	// engine says whether it answers (authz.engine; replaced under mu),
+	// engineEnv that EngineEnv pinned it; shadow compares it with the
+	// legacy loader.
 	casbin    casbinx.Resolver
-	engine    atomic.Pointer[Engine]
+	engine    atomic.Pointer[engineState]
 	engineEnv bool
 	shadow    *shadow
 }
@@ -84,11 +85,14 @@ func New(d Deps) *Service {
 	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, users: map[int64]core.PermissionSet{}, shadow: newShadow()}
 	if d.DB != nil {
 		loader := casbinx.NewLoader(d.DB)
-		s.casbin = casbinx.NewResolver(loader, casbinx.NewRoleCache(loader, d.Redis, casbinx.RoleCacheOptions{}), SelfPermissionKeys())
+		s.casbin = casbinx.NewResolver(loader, casbinx.NewRoleCache(loader, d.Redis), SelfPermissionKeys())
 	}
-	e := EngineShadow
+	e := engineState{mode: EngineShadow}
 	if env, ok := envEngine(); ok {
-		e, s.engineEnv = env, true
+		e.mode, s.engineEnv = env, true
+	}
+	if s.casbin == nil {
+		e.mode = EngineLegacy // no database: no Casbin side, nothing to switch
 	}
 	s.engine.Store(&e)
 	return s
@@ -104,6 +108,7 @@ func (s *Service) Start(ctx context.Context) error {
 	// Version answers from the first request on, not from the first change.
 	s.refreshVersion(ctx)
 	s.refreshEngine(ctx)
+	s.prewarm(s.Version())
 	if s.bus == nil {
 		return nil
 	}
@@ -196,11 +201,6 @@ func bumpVersion(db *gorm.DB) *gorm.DB {
 	return db.Raw(`UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`)
 }
 
-// readVersion selects the authz version.
-func readVersion(db *gorm.DB) *gorm.DB {
-	return db.Raw(`SELECT version FROM authz_meta WHERE id = 1`)
-}
-
 // Committed must be called after a transaction that called Bump has
 // committed: it invalidates local caches and broadcasts authz:changed.
 func (s *Service) Committed(ctx context.Context, version int64) {
@@ -268,9 +268,7 @@ func (s *Service) mutateAt(ctx context.Context, expected *int64, fn func(tx *gor
 }
 
 func (s *Service) currentVersion(ctx context.Context) (int64, error) {
-	var v int64
-	err := readVersion(store.G(ctx, s.db.Gorm)).Row().Scan(&v)
-	return v, err
+	return store.AuthzVersion(store.G(ctx, s.db.Gorm))
 }
 
 func (s *Service) refreshVersion(ctx context.Context) {
@@ -312,6 +310,16 @@ func (s *Service) invalidate(version int64) {
 	for _, fn := range listeners {
 		go fn()
 	}
+	s.prewarm(version)
+}
+
+// prewarm has Casbin build the snapshot of version off the request, when it
+// takes part (shadow or casbin): the first requests after a change then
+// find it built instead of waiting for it, or failing past its timeout.
+func (s *Service) prewarm(version int64) {
+	if s.EngineMode() != EngineLegacy {
+		s.casbin.Prewarm(version)
+	}
 }
 
 // ------------------------------------------------------------ core.Authorizer
@@ -342,16 +350,19 @@ func (s *Service) userPermissionSet(ctx context.Context, userID int64) (core.Per
 	s.mu.RLock()
 	set, ok := s.users[userID]
 	min := s.minVersion
+	eng := s.engine.Load()
 	s.mu.RUnlock()
 	if ok && set.Version >= min {
 		return set, nil
 	}
-	set, err := s.loadPermissionSet(ctx, userID)
+	set, err := s.loadPermissionSet(ctx, eng.mode, userID)
 	if err != nil {
 		return core.PermissionSet{}, err
 	}
 	s.mu.Lock()
-	if set.Version >= s.minVersion {
+	// Not when the engine switched meanwhile: the set is the answer of the
+	// engine left (engineState).
+	if set.Version >= s.minVersion && s.engine.Load().gen == eng.gen {
 		s.users[userID] = set
 	}
 	s.mu.Unlock()
@@ -362,8 +373,8 @@ func (s *Service) userPermissionSet(ctx context.Context, userID int64) (core.Per
 // the authz version seen by that snapshot.
 func (s *Service) readSnapshot(ctx context.Context, fn func(tx *gorm.DB) error) (int64, error) {
 	var v int64
-	err := s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
-		if err := readVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
+	err := s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) (err error) {
+		if v, err = store.AuthzVersion(store.G(ctx, tx)); err != nil {
 			return err
 		}
 		return fn(tx)
@@ -374,14 +385,14 @@ func (s *Service) readSnapshot(ctx context.Context, fn func(tx *gorm.DB) error) 
 	return v, nil
 }
 
-// loadPermissionSet resolves userID's set with the engine of authz.engine
-// (CONTRACTS §99): legacy alone; legacy answering, Casbin compared beside
-// it (shadow); or Casbin answering, failing closed, with the legacy loader
-// recomputing a sample (casbin).
-func (s *Service) loadPermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
-	switch s.Engine() {
+// loadPermissionSet resolves userID's set with engine (authz.engine,
+// CONTRACTS §99): legacy alone; legacy answering, Casbin compared beside
+// it off the request (shadow); or Casbin answering, failing closed, with
+// the legacy loader recomputing a sample off the request (casbin).
+func (s *Service) loadPermissionSet(ctx context.Context, engine EngineMode, userID int64) (core.PermissionSet, error) {
+	switch engine {
 	case EngineCasbin:
-		set, err := s.casbinPermissionSet(ctx, userID)
+		set, err := s.casbin.Grants(ctx, userID, s.Version())
 		if err == nil {
 			s.sampleLegacy(userID, set)
 		}
@@ -389,7 +400,7 @@ func (s *Service) loadPermissionSet(ctx context.Context, userID int64) (core.Per
 	case EngineShadow:
 		set, err := s.legacyPermissionSet(ctx, userID)
 		if err == nil {
-			s.shadowCompare(ctx, userID, set)
+			s.shadowCompare(userID, set)
 		}
 		return set, err
 	}

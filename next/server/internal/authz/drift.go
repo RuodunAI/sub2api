@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -44,27 +45,44 @@ func (s *Service) casbinDriftSpec() core.TaskSpec {
 	}
 }
 
+// errNoRepair rolls back a repair that found nothing to change once it
+// held the lock: the version stays where it was.
+var errNoRepair = errors.New("authz: no casbin_rule drift to repair")
+
 // RepairCasbinDrift counts the rows of authz_casbin_drift and, when there
 // are any, repairs casbin_rule (authz_casbin_repair) in an authz mutation:
 // the version moves on, so every node rebuilds its Casbin snapshot and drops
-// the sets it resolved from the drifted rows. It returns the drift and the
-// rows repaired.
+// the sets it resolved from the drifted rows. The first count takes no lock
+// (the task runs every 10 minutes, nearly always on no drift); the drift is
+// counted again under the authz_meta lock Bump takes, where no authz write
+// runs alongside, and a mutation that changes no row rolls back and
+// announces nothing (another node or a hand repair came first). It returns
+// the drift and the rows repaired.
 func (s *Service) RepairCasbinDrift(ctx context.Context) (drift, fixed int64, err error) {
-	if err := casbinDrift(store.G(ctx, s.db.Gorm)).Row().Scan(&drift); err != nil {
+	if err := casbinDrift(store.G(ctx, s.db.Gorm)).Row().Scan(&drift); err != nil || drift == 0 {
 		return 0, 0, err
 	}
-	if drift == 0 {
-		return 0, 0, nil
-	}
-	slog.WarnContext(ctx, "authz: casbin_rule drifted from the role tables; repairing", "rows", drift)
 	err = s.mutate(ctx, func(tx *gorm.DB) error {
-		var n sql.NullInt64
-		if err := casbinRepair(store.G(ctx, tx)).Row().Scan(&n); err != nil {
+		q := store.G(ctx, tx)
+		if err := casbinDrift(q).Row().Scan(&drift); err != nil {
 			return err
 		}
-		fixed = n.Int64
+		if drift == 0 {
+			return errNoRepair
+		}
+		slog.WarnContext(ctx, "authz: casbin_rule drifted from the role tables; repairing", "rows", drift)
+		var n sql.NullInt64
+		if err := casbinRepair(q).Row().Scan(&n); err != nil {
+			return err
+		}
+		if fixed = n.Int64; fixed == 0 {
+			return errNoRepair
+		}
 		return nil
 	})
+	if errors.Is(err, errNoRepair) {
+		return drift, 0, nil
+	}
 	return drift, fixed, err
 }
 

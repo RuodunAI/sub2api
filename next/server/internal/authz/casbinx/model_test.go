@@ -3,41 +3,12 @@ package casbinx
 import (
 	"encoding/json"
 	"strconv"
-	"sync"
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/permvectors"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
-
-// mapRoles is a RoleSource over a map, standing in for RoleCache's L1.
-type mapRoles struct {
-	mu sync.RWMutex
-	m  map[string][]string
-}
-
-func newMapRoles() *mapRoles { return &mapRoles{m: map[string][]string{}} }
-
-// set gives sub roles (none: an entry without roles, as an inactive user's).
-func (r *mapRoles) set(sub string, roles ...string) {
-	r.mu.Lock()
-	r.m[sub] = roles
-	r.mu.Unlock()
-}
-
-func (r *mapRoles) drop(sub string) {
-	r.mu.Lock()
-	delete(r.m, sub)
-	r.mu.Unlock()
-}
-
-func (r *mapRoles) Roles(sub string) ([]string, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	roles, ok := r.m[sub]
-	return roles, ok
-}
 
 // grant is the p row of role (a subject) granting key, in any spelling.
 func grant(role, key string) Rule {
@@ -59,40 +30,46 @@ func activeOf(rules []Rule) map[string]bool {
 	return out
 }
 
-// build is Build at version 1 with every action active.
-func build(t testing.TB, roles RoleSource, rules ...Rule) *Snapshot {
+// held is the roles of an active user holding roles.
+func held(roles ...string) UserRoles { return UserRoles{Active: true, Roles: roles} }
+
+// snap is build at version 1 with every action active.
+func snap(t testing.TB, rules ...Rule) *snapshot {
 	t.Helper()
-	s, err := Build(Policy{Version: 1, Active: activeOf(rules), Rules: rules}, Options{Roles: roles})
+	return snapOf(t, Policy{Version: 1, Active: activeOf(rules), Rules: rules})
+}
+
+func snapOf(t testing.TB, p Policy, self ...string) *snapshot {
+	t.Helper()
+	s, err := build(p, self)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return s
 }
 
-// single is the snapshot where user 1 holds one role, r:t, granting keys.
-func single(t testing.TB, keys ...string) *Snapshot {
+// single is the snapshot where role r:t grants keys (user: held("r:t")).
+func single(t testing.TB, keys ...string) *snapshot {
 	t.Helper()
-	roles := newMapRoles()
-	roles.set(UserSub(1), "r:t")
 	var rules []Rule
 	for _, k := range keys {
 		rules = append(rules, grant("r:t", k))
 	}
-	return build(t, roles, rules...)
+	return snap(t, rules...)
 }
 
-func grants(t testing.TB, s *Snapshot, uid int64) core.PermissionSet {
+func grants(t testing.TB, s *snapshot, ur UserRoles) core.PermissionSet {
 	t.Helper()
-	set, err := s.Grants(uid)
+	set, err := s.grants(ur)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return set
 }
 
-func enforce(t testing.TB, s *Snapshot, uid int64, key string) bool {
+func enforce(t testing.TB, s *snapshot, ur UserRoles, key string) bool {
 	t.Helper()
-	ok, err := s.Enforce(uid, key)
+	ok, err := s.enforce(ur, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,10 +111,10 @@ func TestImpliesVectorsViaCasbin(t *testing.T) {
 	v := loadVectors(t)
 	for _, c := range v.Implies {
 		s := single(t, c.Have)
-		if got := enforce(t, s, 1, c.Want); got != c.OK {
+		if got := enforce(t, s, held("r:t"), c.Want); got != c.OK {
 			t.Errorf("Enforce(have %q, want %q) = %v, want %v", c.Have, c.Want, got, c.OK)
 		}
-		if got := grants(t, s, 1).Has(c.Want); got != c.OK {
+		if got := grants(t, s, held("r:t")).Has(c.Want); got != c.OK {
 			t.Errorf("Grants(have %q).Has(%q) = %v, want %v", c.Have, c.Want, got, c.OK)
 		}
 	}
@@ -153,14 +130,14 @@ func TestPermMatchIsImplies(t *testing.T) {
 		if err != nil {
 			t.Fatal(c.Have, err)
 		}
-		if got := PermMatch(string(have.Action), scopeOf(have), c.Want); got != c.OK {
-			t.Errorf("PermMatch(%q, %q) = %v, want %v", c.Have, c.Want, got, c.OK)
+		if got := permMatch(string(have.Action), scopeOf(have), c.Want); got != c.OK {
+			t.Errorf("permMatch(%q, %q) = %v, want %v", c.Have, c.Want, got, c.OK)
 		}
 	}
-	if !PermMatch(SuperKey, AllRows, "plugin.later:x:y:flow/3") {
+	if !permMatch(SuperKey, AllRows, "plugin.later:x:y:flow/3") {
 		t.Fatal("SuperKey does not match a future key")
 	}
-	if PermMatch("account:read", AllRows, "account:read:bogus/") {
+	if permMatch("account:read", AllRows, "account:read:bogus/") {
 		t.Fatal("an unparsable key matched")
 	}
 	if _, err := permMatchFunc("a", "b"); err == nil {
@@ -188,7 +165,7 @@ func TestParseCacheBounded(t *testing.T) {
 func TestAllowsRowVectorsOnCasbinGrants(t *testing.T) {
 	t.Parallel()
 	for _, c := range loadVectors(t).Allows {
-		s := grants(t, single(t, c.Have...), 1).DataScope(c.Me, perm.Key(c.Action))
+		s := grants(t, single(t, c.Have...), held("r:t")).DataScope(c.Me, perm.Key(c.Action))
 		if got := s.AllowsRow(c.Row.ID, c.Row.CreatedBy, c.Row.GroupIDs); got != c.OK {
 			t.Errorf("%v %s by %d on %+v: %v, want %v", c.Have, c.Action, c.Me, c.Row, got, c.OK)
 		}

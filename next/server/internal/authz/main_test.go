@@ -8,4 +8,4 @@ import (
 
 // TestMain fails the run on a shadow mismatch no test caught itself (one a
 // test made without newService, or found after its test ended).
-func TestMain(m *testing.M) { testutil.Exit(m.Run(), ShadowMismatchError) }
+func TestMain(m *testing.M) { testutil.Exit(m.Run(), ShadowCheck) }

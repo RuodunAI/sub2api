@@ -41,6 +41,10 @@ const (
 	StepUpPluginGrant        = "plugin.grant"
 	StepUpPublisherManage    = "publisher.manage"
 	StepUpSystemUpdate       = "system.update"
+	// StepUpAuthzEngine: switching the authorization engine (PUT
+	// /settings/authz, CONTRACTS §99), which decides who answers every
+	// permission check of the site.
+	StepUpAuthzEngine = "authz.engine"
 	// StepUpHostInstall: installing or reaching code that runs on a host the
 	// core controls (the ccgateway controller and runtimes, SSH targets).
 	StepUpHostInstall = "host.install"

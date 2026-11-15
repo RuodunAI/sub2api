@@ -69,3 +69,69 @@ func TestCasbinDriftTaskRepairs(t *testing.T) {
 		t.Fatalf("the repair did not move the version (%d)", s.Version())
 	}
 }
+
+// The drift is counted again under the authz_meta lock: a repair made by
+// someone else while the task waited for the lock leaves nothing to do, and
+// the task then rolls back without moving the version.
+func TestCasbinDriftRecountedUnderLock(t *testing.T) {
+	ctx := context.Background()
+	db := testutil.DB(t)
+	requireProjection(t, db)
+	s := newService(t, db, nil, nil)
+	addUser(t, s, "u@x.com", RoleUser)
+	if err := db.Gorm.Exec(`DELETE FROM casbin_rule WHERE id = (SELECT min(id) FROM casbin_rule WHERE ptype = 'g')`).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// Another writer holds the lock and repairs the drift.
+	other, err := db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Rollback() }()
+	if _, err := other.ExecContext(ctx, `SELECT 1 FROM authz_meta WHERE id = 1 FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.ExecContext(ctx, `SELECT authz_casbin_repair()`); err != nil {
+		t.Fatal(err)
+	}
+	v := version(t, s)
+	type result struct{ drift, fixed int64 }
+	done := make(chan result, 1)
+	go func() {
+		drift, fixed, err := s.RepairCasbinDrift(ctx)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- result{drift, fixed}
+	}()
+	// The task counted the drift (not yet repaired for it) and waits for
+	// the lock.
+	eventually(t, func() bool {
+		var waiting int
+		_ = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
+		return waiting > 0
+	})
+	if err := other.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if r := <-done; r != (result{0, 0}) {
+		t.Fatalf("repair under the lock: %+v, want nothing", r)
+	}
+	if got := version(t, s); got != v {
+		t.Fatalf("version moved %d -> %d with nothing repaired", v, got)
+	}
+	if n := driftRows(t, db); n != 0 {
+		t.Fatalf("drift %d", n)
+	}
+}
+
+// version is the authz version in the database.
+func version(t *testing.T, s *Service) int64 {
+	t.Helper()
+	v, err := s.currentVersion(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}

@@ -2,92 +2,80 @@ package casbinx
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// ResolverOption tunes NewResolver's engine.
-type ResolverOption func(*EngineOptions)
-
-// WithWait bounds how long a resolution waits for the snapshot rebuild
-// (EngineOptions.Wait).
-func WithWait(d time.Duration) ResolverOption { return func(o *EngineOptions) { o.Wait = d } }
-
-// WithDebounce spaces snapshot rebuilds (EngineOptions.Debounce).
-func WithDebounce(d time.Duration) ResolverOption {
-	return func(o *EngineOptions) { o.Debounce = d }
-}
-
-// resolver is the Resolver: an Engine of snapshots built from l, whose role
-// manager reads rc.
+// resolver is the Resolver: snapshots built from l, and the users' roles
+// from rc.
 type resolver struct {
-	eng *Engine
-	rc  RoleCache
+	snaps *snapshots
+	rc    RoleCache
 }
 
 // NewResolver returns the Resolver over l and rc; self lists the self
 // permission keys (authz.SelfPermissionKeys).
-func NewResolver(l Loader, rc RoleCache, self []string, opts ...ResolverOption) Resolver {
-	var eo EngineOptions
-	for _, o := range opts {
-		o(&eo)
-	}
-	return &resolver{eng: NewEngine(l, Options{Roles: rc, Self: self}, eo), rc: rc}
+func NewResolver(l Loader, rc RoleCache, self []string) Resolver {
+	return newResolver(l, rc, self, snapshotOptions{})
 }
 
-// Grants is uid's effective set at version min or newer. Its Version is the
-// lower of the snapshot's and the roles' (both >= min).
-func (r *resolver) Grants(ctx context.Context, uid, min int64) (core.PermissionSet, error) {
-	var set core.PermissionSet
-	err := r.resolve(ctx, uid, min, func(s *Snapshot, roles int64) (err error) {
-		if set, err = s.Grants(uid); err == nil {
-			set.Version = lower(s.Version(), roles)
-		}
-		return err
-	})
-	return set, err
-}
-
-// Enforce is the matcher's answer for key, at version min or newer.
-func (r *resolver) Enforce(ctx context.Context, uid int64, key string, min int64) (bool, error) {
-	var ok bool
-	err := r.resolve(ctx, uid, min, func(s *Snapshot, _ int64) (err error) {
-		ok, err = s.Enforce(uid, key)
-		return err
-	})
-	return ok, err
-}
-
-// resolve ensures the snapshot, warms uid's roles and runs fn on them. The
-// role cache may evict uid between Warm and fn (ErrNotWarm): fn then runs
-// once more after another Warm. Roles read below min fail the resolution
-// (closed): min is committed, so no read should see an older version.
-func (r *resolver) resolve(ctx context.Context, uid, min int64, fn func(s *Snapshot, roles int64) error) error {
-	s, err := r.eng.Ensure(ctx, min)
-	if err != nil {
-		return err
-	}
-	for try := 0; ; try++ {
-		ur, err := r.rc.Warm(ctx, uid, min)
+func newResolver(l Loader, rc RoleCache, self []string, o snapshotOptions) *resolver {
+	return &resolver{snaps: newSnapshots(func(ctx context.Context) (*snapshot, error) {
+		p, err := l.Policy(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if ur.Version < min {
-			return fmt.Errorf("%w: roles of user %d read at version %d, below %d", ErrStale, uid, ur.Version, min)
-		}
-		err = fn(s, ur.Version)
-		if try > 0 || !errors.Is(err, ErrNotWarm) {
-			return err
-		}
-	}
+		return build(p, self)
+	}, o), rc: rc}
 }
 
-func lower(a, b int64) int64 {
-	if a < b {
-		return a
+// Grants is uid's effective set at version min or newer; its Version is the
+// one both the policy and the roles were read at.
+func (r *resolver) Grants(ctx context.Context, uid, min int64) (core.PermissionSet, error) {
+	s, ur, err := r.resolve(ctx, uid, min)
+	if err != nil {
+		return core.PermissionSet{}, err
 	}
-	return b
+	return s.grants(ur)
+}
+
+func (r *resolver) enforce(ctx context.Context, uid int64, key string, min int64) (bool, int64, error) {
+	s, ur, err := r.resolve(ctx, uid, min)
+	if err != nil {
+		return false, 0, err
+	}
+	ok, err := s.enforce(ur, key)
+	return ok, s.version, err
+}
+
+func (r *resolver) Prewarm(min int64) { r.snaps.prewarm(min) }
+
+// resolve returns a snapshot and uid's roles read at one version, min or
+// newer. The two reads may land on different versions: a write committed
+// between them, or the role cache holds a read newer than the snapshot.
+// Combining them would make a set no version ever held (a role revoked and
+// granted something new in one write: the old link with the new grant), so
+// both are read once more at the newer of the two; still apart, ErrSkew.
+func (r *resolver) resolve(ctx context.Context, uid, min int64) (*snapshot, UserRoles, error) {
+	s, ur, err := r.read(ctx, uid, min)
+	if err != nil || ur.Version == s.version {
+		return s, ur, err
+	}
+	s, ur, err = r.read(ctx, uid, max(s.version, ur.Version))
+	if err != nil || ur.Version == s.version {
+		return s, ur, err
+	}
+	return nil, UserRoles{}, fmt.Errorf("%w: user %d: policy at version %d, roles at %d", ErrSkew, uid, s.version, ur.Version)
+}
+
+// read ensures a snapshot of version min or newer and warms uid's roles at
+// its version.
+func (r *resolver) read(ctx context.Context, uid, min int64) (*snapshot, UserRoles, error) {
+	s, err := r.snaps.Ensure(ctx, min)
+	if err != nil {
+		return nil, UserRoles{}, err
+	}
+	ur, err := r.rc.Warm(ctx, uid, s.version)
+	return s, ur, err
 }

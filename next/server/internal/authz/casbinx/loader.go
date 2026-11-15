@@ -28,7 +28,7 @@ func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 	err := l.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		q := store.G(ctx, tx)
 		var err error
-		if p.Version, err = readVersion(q); err != nil {
+		if p.Version, err = store.AuthzVersion(q); err != nil {
 			return err
 		}
 		var active []string
@@ -96,7 +96,7 @@ func (l *pgLoader) UserRoles(ctx context.Context, uid int64) (UserRoles, error) 
 	err := l.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		q := store.G(ctx, tx)
 		var err error
-		if ur.Version, err = readVersion(q); err != nil {
+		if ur.Version, err = store.AuthzVersion(q); err != nil {
 			return err
 		}
 		if err := q.Raw(`SELECT EXISTS (SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL AND status = 'active')`,
@@ -112,12 +112,4 @@ func (l *pgLoader) UserRoles(ctx context.Context, uid int64) (UserRoles, error) 
 		return UserRoles{}, fmt.Errorf("casbinx: read the roles of user %d: %w", uid, err)
 	}
 	return ur, nil
-}
-
-// readVersion is the authz version (authz_meta, bumped by every authz
-// write and by migration 0100).
-func readVersion(q *gorm.DB) (int64, error) {
-	var v int64
-	err := q.Raw(`SELECT version FROM authz_meta WHERE id = 1`).Row().Scan(&v)
-	return v, err
 }

@@ -40,7 +40,7 @@ func BenchmarkHotAuthz(b *testing.B) {
 	}{
 		// An admin: one row per granted permission.
 		{"permission_set", func() error {
-			set, err := s.loadPermissionSet(ctx, uid)
+			set, err := s.loadPermissionSet(ctx, EngineLegacy, uid)
 			if err == nil && len(set.Keys) == 0 {
 				b.Fatal("empty permission set")
 			}

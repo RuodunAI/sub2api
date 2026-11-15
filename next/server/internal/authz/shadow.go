@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
@@ -18,25 +19,32 @@ import (
 )
 
 // The shadow comparison of the legacy loader and Casbin (CONTRACTS §99).
-// This is the one file of package authz that calls Resolver.Enforce
+// This is the one file of package authz that calls casbinx.Enforce
 // (gormguard [casbin-api]): Enforce runs every policy through the matcher
 // and is never a request's answer, only a sampled check of it.
+//
+// Nothing here runs on the request: the comparisons and samples run on
+// goroutines of their own, at most shadowConcurrency at once per node (one
+// more is dropped and counted), each bounded by shadowTimeout, a panic in
+// them counted as a Casbin error. The answer a request gets never waits for
+// the side that does not give it.
 
 // Sampling rates: in shadow, the share of Can calls whose answer the
 // matcher path checks; in casbin, the share of Casbin sets the legacy loader
-// recomputes.
+// recomputes. Test binaries take every one (newShadow).
 const (
 	enforceSampleRate = 0.01
 	legacySampleRate  = 0.05
 )
 
-// shadowTimeout bounds the Casbin side of a comparison on the request path
-// (shadow, cache miss): Casbin must not hold a request the legacy loader
-// already answered for longer. Sampled checks run off the request with
-// shadowAsyncTimeout.
 const (
-	shadowTimeout      = time.Second
-	shadowAsyncTimeout = 5 * time.Second
+	// shadowTimeout bounds one comparison or sample.
+	shadowTimeout = 5 * time.Second
+	// shadowConcurrency bounds the comparisons and samples in flight on a
+	// node: after a version bump every active user misses at once, and the
+	// side that does not answer must not take the database's connections
+	// from the side that does.
+	shadowConcurrency = 32
 )
 
 // dedupLimit bounds the mismatches remembered for deduplication; past it
@@ -65,42 +73,96 @@ type ShadowMismatch struct {
 // ShadowStats are this node's comparison counters since start.
 type ShadowStats struct {
 	// Compared sets, skipped ones (read at different versions), mismatched
-	// ones (deduplicated by user and version) and Casbin errors.
+	// ones (deduplicated by user and version), Casbin errors (panics
+	// included) and the comparisons and samples dropped while
+	// shadowConcurrency were running.
 	Compared   int64 `json:"compared"`
 	Skipped    int64 `json:"skipped_version_skew"`
 	Mismatches int64 `json:"mismatches"`
 	Errors     int64 `json:"errors"`
+	Dropped    int64 `json:"dropped"`
 	// Sampled Enforce checks (shadow) and their mismatches.
 	EnforceChecked    int64 `json:"enforce_checked"`
 	EnforceMismatches int64 `json:"enforce_mismatches"`
 }
 
-// shadowMismatchTotal counts the mismatches of every Service of the
-// process that no onMismatch handled, for ShadowMismatchError.
-var shadowMismatchTotal atomic.Int64
+// The process-wide side of the comparison, for ShadowCheck: the work in
+// flight on every Service, the mismatches no onMismatch handled, and the
+// set comparisons started and made.
+var (
+	shadowWork      inflight
+	shadowUnhandled atomic.Int64
+	shadowStarted   atomic.Int64
+	shadowCompared  atomic.Int64
+)
 
-// ShadowMismatchError reports the mismatches every Service of this process
-// found, nil without one. Test binaries check it after the run (TestMain)
-// so that every test resolving permissions in shadow, the default, also
-// checks Casbin against the legacy loader.
-func ShadowMismatchError() error {
-	if n := shadowMismatchTotal.Load(); n > 0 {
-		return fmt.Errorf("authz shadow: %d mismatches between the legacy loader and Casbin (see the \"authz: shadow mismatch\" warnings)", n)
+// inflight counts the work in flight. Unlike a sync.WaitGroup, starting
+// work while another goroutine waits is allowed: parallel tests each wait
+// for the process-wide count (wait) while the others start comparisons.
+type inflight struct {
+	mu   sync.Mutex
+	n    int
+	idle *sync.Cond
+}
+
+func (w *inflight) add() {
+	w.mu.Lock()
+	w.n++
+	w.mu.Unlock()
+}
+
+func (w *inflight) done() {
+	w.mu.Lock()
+	if w.n--; w.n == 0 && w.idle != nil {
+		w.idle.Broadcast()
 	}
-	return nil
+	w.mu.Unlock()
+}
+
+// wait returns once nothing is in flight.
+func (w *inflight) wait() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.idle == nil {
+		w.idle = sync.NewCond(&w.mu)
+	}
+	for w.n > 0 {
+		w.idle.Wait()
+	}
+}
+
+// ShadowCheck waits for the comparisons in flight on every Service of this
+// process and reports what they found: a mismatch no test handled, or set
+// comparisons started of which none could compare (all skipped as read at
+// different versions, failed or dropped: a run that verified nothing). Test
+// binaries call it after the run (TestMain), so that every test resolving
+// permissions also checks Casbin against the legacy loader; nil without a
+// finding.
+func ShadowCheck() error {
+	shadowWork.wait()
+	var errs []error
+	if n := shadowUnhandled.Load(); n > 0 {
+		errs = append(errs, fmt.Errorf("authz shadow: %d mismatches between the legacy loader and Casbin (see the \"authz: shadow mismatch\" warnings)", n))
+	}
+	if n := shadowStarted.Load(); n > 0 && shadowCompared.Load() == 0 {
+		errs = append(errs, fmt.Errorf("authz shadow: %d set comparisons started and none compared (version skew, errors or drops)", n))
+	}
+	return errors.Join(errs...)
 }
 
 // shadow holds the comparison state of a Service.
 type shadow struct {
-	compared, skipped, mismatches, errors atomic.Int64
-	enforceChecked, enforceMismatches     atomic.Int64
+	compared, skipped, mismatches, errors, dropped atomic.Int64
+	enforceChecked, enforceMismatches              atomic.Int64
 
 	// sample reports whether to check this call at rate (set before the
 	// service serves). onMismatch, when set, receives each new mismatch
 	// after it is logged and reports whether it handled it (a test failed
-	// or expected it); an unhandled one counts in ShadowMismatchError.
+	// or expected it); an unhandled one counts in ShadowCheck.
 	sample     func(rate float64) bool
 	onMismatch atomic.Pointer[func(ShadowMismatch) bool]
+	// slots holds one token per comparison or sample in flight.
+	slots chan struct{}
 
 	mu       sync.Mutex
 	seen     map[string]struct{}
@@ -108,12 +170,47 @@ type shadow struct {
 }
 
 func newShadow() *shadow {
-	return &shadow{sample: func(rate float64) bool { return rand.Float64() < rate }, seen: map[string]struct{}{}}
+	sample := func(rate float64) bool { return rand.Float64() < rate }
+	if testing.Testing() {
+		// A package's tests are what the comparison covers (ShadowCheck):
+		// in them every check runs.
+		sample = func(float64) bool { return true }
+	}
+	return &shadow{sample: sample, seen: map[string]struct{}{}, slots: make(chan struct{}, shadowConcurrency)}
 }
 
 func (sh *shadow) stats() ShadowStats {
 	return ShadowStats{Compared: sh.compared.Load(), Skipped: sh.skipped.Load(), Mismatches: sh.mismatches.Load(),
-		Errors: sh.errors.Load(), EnforceChecked: sh.enforceChecked.Load(), EnforceMismatches: sh.enforceMismatches.Load()}
+		Errors: sh.errors.Load(), Dropped: sh.dropped.Load(), EnforceChecked: sh.enforceChecked.Load(),
+		EnforceMismatches: sh.enforceMismatches.Load()}
+}
+
+// spawn runs fn for uid off the request: on a goroutine of its own, with a
+// context of shadowTimeout detached from any request, while a slot is free
+// (dropped and counted otherwise). Its error, or panic, counts as a Casbin
+// error.
+func (sh *shadow) spawn(uid int64, fn func(ctx context.Context) error) {
+	select {
+	case sh.slots <- struct{}{}:
+	default:
+		sh.dropped.Add(1)
+		return
+	}
+	shadowWork.add()
+	go func() {
+		defer shadowWork.done()
+		defer func() { <-sh.slots }()
+		ctx, cancel := context.WithTimeout(context.Background(), shadowTimeout)
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				sh.failed(ctx, uid, fmt.Errorf("panic: %v", r))
+			}
+		}()
+		if err := fn(ctx); err != nil {
+			sh.failed(ctx, uid, err)
+		}
+	}()
 }
 
 // failed counts a Casbin error, logged at most once a minute: a broken
@@ -130,15 +227,46 @@ func (sh *shadow) failed(ctx context.Context, uid int64, err error) {
 // compareSets compares two sets of uid. Sets read at different versions
 // are not compared (version skew): either may hold a change the other has
 // not seen.
-func (sh *shadow) compareSets(ctx context.Context, uid int64, legacy, casbin core.PermissionSet) {
+//
+// The two sets are read one after the other (one on the request, the other
+// off it), so a write the version does not record may land in between: the
+// service's own writes all bump it, a raw UPDATE in a test does not. When
+// they differ, again reads the side read first once more (after the other)
+// and the fresh pair decides: a Casbin difference holds against it, a stale
+// first read does not.
+func (sh *shadow) compareSets(ctx context.Context, uid int64, legacy, casbin core.PermissionSet, again func(context.Context) (legacy, casbin core.PermissionSet, err error)) error {
 	if legacy.Version != casbin.Version {
 		sh.skipped.Add(1)
-		return
+		return nil
+	}
+	m, ok := diffSets(uid, legacy, casbin)
+	if !ok && again != nil {
+		l, c, err := again(ctx)
+		if err != nil {
+			if sh.skew(err) {
+				return nil
+			}
+			return err
+		}
+		return sh.compareSets(ctx, uid, l, c, nil)
 	}
 	sh.compared.Add(1)
-	if m, ok := diffSets(uid, legacy, casbin); !ok {
+	shadowCompared.Add(1)
+	if !ok {
 		sh.report(ctx, m)
 	}
+	return nil
+}
+
+// skew counts err as a version skew when Casbin could not read the policy
+// and the roles at one version (casbinx.ErrSkew): nothing to compare, and
+// not a failure.
+func (sh *shadow) skew(err error) bool {
+	if !errors.Is(err, casbinx.ErrSkew) {
+		return false
+	}
+	sh.skipped.Add(1)
+	return true
 }
 
 // report logs and counts m once per kind, user, version and key.
@@ -164,7 +292,7 @@ func (sh *shadow) report(ctx context.Context, m ShadowMismatch) {
 	slog.WarnContext(ctx, "authz: shadow mismatch", "kind", m.Kind, "user_id", m.UserID, "version", m.Version,
 		"key", m.Key, "legacy_only", m.LegacyOnly, "casbin_only", m.CasbinOnly)
 	if fn := sh.onMismatch.Load(); fn == nil || !(*fn)(m) {
-		shadowMismatchTotal.Add(1)
+		shadowUnhandled.Add(1)
 	}
 }
 
@@ -209,25 +337,24 @@ func minus(a, b []string) []string {
 
 // ------------------------------------------------------------ Service side
 
-// casbinPermissionSet is uid's set as Casbin resolves it at this node's
-// version or later. An error is returned, never answered around: in casbin
-// the request fails closed.
-func (s *Service) casbinPermissionSet(ctx context.Context, uid int64) (core.PermissionSet, error) {
-	return s.casbin.Grants(ctx, uid, s.Version())
-}
-
 // shadowCompare resolves uid with Casbin at the version legacy was read at
-// and compares (shadow, on a cache miss). Nothing it finds changes the
-// answer, legacy.
-func (s *Service) shadowCompare(ctx context.Context, uid int64, legacy core.PermissionSet) {
-	ctx, cancel := context.WithTimeout(ctx, shadowTimeout)
-	defer cancel()
-	cs, err := s.casbin.Grants(ctx, uid, legacy.Version)
-	if err != nil {
-		s.shadow.failed(ctx, uid, err)
-		return
-	}
-	s.shadow.compareSets(ctx, uid, legacy, cs)
+// and compares (shadow, on a cache miss), off the request: nothing it finds
+// changes the answer, legacy.
+func (s *Service) shadowCompare(uid int64, legacy core.PermissionSet) {
+	shadowStarted.Add(1)
+	s.shadow.spawn(uid, func(ctx context.Context) error {
+		cs, err := s.casbin.Grants(ctx, uid, legacy.Version)
+		if err != nil {
+			if s.shadow.skew(err) {
+				return nil
+			}
+			return err
+		}
+		return s.shadow.compareSets(ctx, uid, legacy, cs, func(ctx context.Context) (core.PermissionSet, core.PermissionSet, error) {
+			fresh, err := s.legacyPermissionSet(ctx, uid)
+			return fresh, cs, err
+		})
+	})
 }
 
 // sampleLegacy recomputes a sampled Casbin set with the legacy loader
@@ -236,32 +363,27 @@ func (s *Service) sampleLegacy(uid int64, cs core.PermissionSet) {
 	if !s.shadow.sample(legacySampleRate) {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), shadowAsyncTimeout)
-		defer cancel()
+	shadowStarted.Add(1)
+	s.shadow.spawn(uid, func(ctx context.Context) error {
 		legacy, err := s.legacyPermissionSet(ctx, uid)
 		if err != nil {
-			slog.WarnContext(ctx, "authz: legacy sample failed", "user_id", uid, "err", err)
-			return
+			return fmt.Errorf("legacy sample: %w", err)
 		}
-		s.shadow.compareSets(ctx, uid, legacy, cs)
-	}()
+		return s.shadow.compareSets(ctx, uid, legacy, cs, func(ctx context.Context) (core.PermissionSet, core.PermissionSet, error) {
+			fresh, err := s.casbin.Grants(ctx, uid, legacy.Version)
+			return legacy, fresh, err
+		})
+	})
 }
 
 // sampleEnforce checks a sampled Can (shadow) on the matcher path, off the
 // request: Enforce for key against the user's own set (the request's may be
-// an access key's), when Casbin resolves the user at the same version.
+// an access key's), when Casbin decides at the set's version.
 func (s *Service) sampleEnforce(uid int64, key string) {
-	if s.Engine() != EngineShadow || !s.shadow.sample(enforceSampleRate) {
+	if s.EngineMode() != EngineShadow || !s.shadow.sample(enforceSampleRate) {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), shadowAsyncTimeout)
-		defer cancel()
-		if err := s.checkEnforce(ctx, uid, key); err != nil {
-			s.shadow.failed(ctx, uid, err)
-		}
-	}()
+	s.shadow.spawn(uid, func(ctx context.Context) error { return s.checkEnforce(ctx, uid, key) })
 }
 
 func (s *Service) checkEnforce(ctx context.Context, uid int64, key string) error {
@@ -269,29 +391,40 @@ func (s *Service) checkEnforce(ctx context.Context, uid int64, key string) error
 	if err != nil {
 		return err
 	}
-	cs, err := s.casbin.Grants(ctx, uid, set.Version)
-	if err != nil {
-		return err
-	}
-	if cs.Version != set.Version {
-		s.shadow.skipped.Add(1)
+	// Twice at most: a difference is checked again against a fresh legacy
+	// read, made after Casbin's (see compareSets: the first set may come from
+	// the cache, read before a write the version does not record).
+	for fresh := false; ; fresh = true {
+		got, v, err := casbinx.Enforce(ctx, s.casbin, uid, key, set.Version)
+		if err != nil {
+			if s.shadow.skew(err) {
+				return nil
+			}
+			return err
+		}
+		if v != set.Version {
+			s.shadow.skipped.Add(1)
+			return nil
+		}
+		want := set.Has(key)
+		if got != want && !fresh {
+			if set, err = s.legacyPermissionSet(ctx, uid); err != nil {
+				return err
+			}
+			continue
+		}
+		s.shadow.enforceChecked.Add(1)
+		if got != want {
+			m := ShadowMismatch{Kind: MismatchEnforce, UserID: uid, Version: set.Version, Key: key}
+			if want {
+				m.LegacyOnly = []string{key}
+			} else {
+				m.CasbinOnly = []string{key}
+			}
+			s.shadow.report(ctx, m)
+		}
 		return nil
 	}
-	got, err := s.casbin.Enforce(ctx, uid, key, set.Version)
-	if err != nil {
-		return err
-	}
-	s.shadow.enforceChecked.Add(1)
-	if want := set.Has(key); got != want {
-		m := ShadowMismatch{Kind: MismatchEnforce, UserID: uid, Version: set.Version, Key: key}
-		if want {
-			m.LegacyOnly = []string{key}
-		} else {
-			m.CasbinOnly = []string{key}
-		}
-		s.shadow.report(ctx, m)
-	}
-	return nil
 }
 
 // ------------------------------------------------------------ verification
@@ -318,10 +451,16 @@ func (s *Service) CompareEngines(ctx context.Context, uid int64) (EngineComparis
 		if c.Legacy, err = s.legacyPermissionSet(ctx, uid); err != nil {
 			return c, err
 		}
-		if c.Casbin, err = s.casbin.Grants(ctx, uid, c.Legacy.Version); err != nil {
+		c.Casbin, err = s.casbin.Grants(ctx, uid, c.Legacy.Version)
+		switch {
+		case errors.Is(err, casbinx.ErrSkew):
+			c.Skew = true
+		case err != nil:
 			return c, err
+		default:
+			c.Skew = c.Legacy.Version != c.Casbin.Version
 		}
-		if c.Skew = c.Legacy.Version != c.Casbin.Version; !c.Skew {
+		if !c.Skew {
 			break
 		}
 	}

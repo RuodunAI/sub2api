@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -55,8 +56,13 @@ func newTestRedis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
 	return mr, rdb
 }
 
-func readL2(t *testing.T, mr *miniredis.Miniredis, uid int64) roleWire {
+// inL1 is what the process holds for uid, at any version.
+func inL1(rc *roleCache, uid int64) (UserRoles, bool) { return rc.fresh(uid, 0) }
+
+// readL2 is uid's Valkey entry once rc's writes in flight are done.
+func readL2(t *testing.T, rc *roleCache, mr *miniredis.Miniredis, uid int64) roleWire {
 	t.Helper()
+	rc.writing.Wait()
 	raw, err := mr.Get(roleCacheKey(uid))
 	require.NoError(t, err)
 	var w roleWire
@@ -66,7 +72,7 @@ func readL2(t *testing.T, mr *miniredis.Miniredis, uid int64) roleWire {
 
 func TestRoleCacheL1Hit(t *testing.T) {
 	l := &fakeRoleLoader{fn: at(3, "r:user")}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{})
+	rc := newRoleCache(l, nil, roleCacheOptions{})
 	ctx := context.Background()
 
 	ur, err := rc.Warm(ctx, 7, 3)
@@ -77,19 +83,16 @@ func TestRoleCacheL1Hit(t *testing.T) {
 	require.EqualValues(t, 3, ur.Version)
 	require.EqualValues(t, 1, l.calls.Load(), "a version >= min is served from L1")
 
-	roles, ok := rc.Roles(UserSub(7))
-	require.True(t, ok)
-	require.Equal(t, []string{"r:user", SelfRole}, roles)
-	roles[0] = "r:mutated"
-	roles, _ = rc.Roles(UserSub(7))
-	require.Equal(t, []string{"r:user", SelfRole}, roles, "callers get a copy")
+	ur.Roles[0] = "r:mutated"
+	ur, _ = rc.Warm(ctx, 7, 3)
+	require.Equal(t, []string{"r:user"}, ur.Roles, "callers get a copy")
 }
 
 func TestRoleCacheL1StaleVersionReloads(t *testing.T) {
 	l := &fakeRoleLoader{fn: func(_ int64, n int64) (UserRoles, error) {
 		return UserRoles{Version: 2 + n, Active: true, Roles: []string{"r:user"}}, nil
 	}}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{})
+	rc := newRoleCache(l, nil, roleCacheOptions{})
 	ctx := context.Background()
 
 	ur, err := rc.Warm(ctx, 7, 3)
@@ -105,12 +108,12 @@ func TestRoleCacheOlderReadReturnedOnce(t *testing.T) {
 	// The Loader still reads version 3 while min is 5: the read is returned
 	// for the caller to judge, after one load, not retried in a loop.
 	l := &fakeRoleLoader{fn: at(3, "r:user")}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{})
+	rc := newRoleCache(l, nil, roleCacheOptions{})
 	ur, err := rc.Warm(context.Background(), 7, 5)
 	require.NoError(t, err)
 	require.EqualValues(t, 3, ur.Version)
 	require.EqualValues(t, 1, l.calls.Load())
-	_, ok := rc.Roles(UserSub(7))
+	_, ok := inL1(rc, 7)
 	require.True(t, ok, "the read is still the newest L1 knows")
 }
 
@@ -118,15 +121,15 @@ func TestRoleCacheL2HitFillsL1(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	require.NoError(t, mr.Set(roleCacheKey(7), `{"v":5,"a":true,"r":["r:user","r:supplier"]}`))
 	l := &fakeRoleLoader{fn: at(5, "r:wrong")}
-	rc := NewRoleCache(l, rdb, RoleCacheOptions{})
+	rc := newRoleCache(l, rdb, roleCacheOptions{})
 
 	ur, err := rc.Warm(context.Background(), 7, 5)
 	require.NoError(t, err)
 	require.Equal(t, UserRoles{Version: 5, Active: true, Roles: []string{"r:user", "r:supplier"}}, ur)
-	require.Zero(t, l.calls.Load(), "L2 at a version >= min spares the Loader")
-	roles, ok := rc.Roles(UserSub(7))
+	require.Zero(t, l.calls.Load(), "L2 at version min spares the Loader")
+	held, ok := inL1(rc, 7)
 	require.True(t, ok)
-	require.Equal(t, []string{"r:user", "r:supplier", SelfRole}, roles)
+	require.Equal(t, []string{"r:user", "r:supplier"}, held.Roles)
 
 	mr.FlushAll()
 	_, err = rc.Warm(context.Background(), 7, 5)
@@ -134,24 +137,29 @@ func TestRoleCacheL2HitFillsL1(t *testing.T) {
 	require.Zero(t, l.calls.Load(), "now served from L1")
 }
 
-func TestRoleCacheL2StaleVersionIgnored(t *testing.T) {
-	mr, rdb := newTestRedis(t)
-	require.NoError(t, mr.Set(roleCacheKey(7), `{"v":3,"a":true,"r":["r:old"]}`))
-	l := &fakeRoleLoader{fn: at(5, "r:user")}
-	rc := NewRoleCache(l, rdb, RoleCacheOptions{TTL: time.Minute})
+// An L2 entry is taken at exactly min only: an older one misses a write,
+// and a newer one may come from before a database restore took the
+// version back (the restored state at 9 is not the one Valkey holds).
+func TestRoleCacheL2OtherVersionIgnored(t *testing.T) {
+	for _, stored := range []int64{3, 9} {
+		mr, rdb := newTestRedis(t)
+		require.NoError(t, mr.Set(roleCacheKey(7), fmt.Sprintf(`{"v":%d,"a":true,"r":["r:other"]}`, stored)))
+		l := &fakeRoleLoader{fn: at(5, "r:user")}
+		rc := newRoleCache(l, rdb, roleCacheOptions{TTL: time.Minute})
 
-	ur, err := rc.Warm(context.Background(), 7, 5)
-	require.NoError(t, err)
-	require.Equal(t, []string{"r:user"}, ur.Roles)
-	require.EqualValues(t, 1, l.calls.Load())
-	require.Equal(t, roleWire{V: 5, A: true, R: []string{"r:user"}}, readL2(t, mr, 7), "the PostgreSQL read is written back")
-	require.Equal(t, time.Minute, mr.TTL(roleCacheKey(7)))
+		ur, err := rc.Warm(context.Background(), 7, 5)
+		require.NoError(t, err)
+		require.Equal(t, []string{"r:user"}, ur.Roles, "stored at v%d", stored)
+		require.EqualValues(t, 1, l.calls.Load())
+		require.Equal(t, roleWire{V: 5, A: true, R: []string{"r:user"}}, readL2(t, rc, mr, 7), "the PostgreSQL read replaces v%d", stored)
+		require.Equal(t, time.Minute, mr.TTL(roleCacheKey(7)))
+	}
 }
 
 func TestRoleCacheValkeyDownFallsBackToLoader(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	l := &fakeRoleLoader{fn: at(5, "r:user")}
-	rc := NewRoleCache(l, rdb, RoleCacheOptions{L2Timeout: 50 * time.Millisecond, L2Backoff: time.Hour})
+	rc := newRoleCache(l, rdb, roleCacheOptions{L2Timeout: 50 * time.Millisecond, L2Backoff: time.Hour})
 	mr.Close()
 
 	var logs atomic.Int64
@@ -167,13 +175,13 @@ func TestRoleCacheValkeyDownFallsBackToLoader(t *testing.T) {
 	}
 	require.EqualValues(t, 3, l.calls.Load())
 	require.EqualValues(t, 1, logs.Load(), "the warning is throttled")
-	require.False(t, rc.(*roleCache).l2(), "L2 backs off after an error")
+	require.False(t, rc.l2(), "L2 backs off after an error")
 }
 
 func TestRoleCacheValkeyBackOnline(t *testing.T) {
 	mr, rdb := newTestRedis(t)
 	l := &fakeRoleLoader{fn: at(5, "r:user")}
-	rc := NewRoleCache(l, rdb, RoleCacheOptions{L2Timeout: 50 * time.Millisecond, L2Backoff: time.Millisecond}).(*roleCache)
+	rc := newRoleCache(l, rdb, roleCacheOptions{L2Timeout: 50 * time.Millisecond, L2Backoff: time.Millisecond})
 	addr := mr.Addr()
 	mr.Close()
 	_, err := rc.Warm(context.Background(), 1, 5)
@@ -183,33 +191,51 @@ func TestRoleCacheValkeyBackOnline(t *testing.T) {
 	require.Eventually(t, rc.l2, time.Second, time.Millisecond)
 	_, err = rc.Warm(context.Background(), 2, 5)
 	require.NoError(t, err)
-	require.EqualValues(t, 5, readL2(t, mr, 2).V, "L2 is written again once the backoff ends")
+	require.EqualValues(t, 5, readL2(t, rc, mr, 2).V, "L2 is written again once the backoff ends")
 }
 
-func TestRoleCacheL2NeverOverwritesNewer(t *testing.T) {
+// A write replaces whatever L2 holds, a newer version included: with exact
+// matches a newer entry gains nothing, and keeping it would pin a restored
+// database's past.
+func TestRoleCacheL2WriteReplaces(t *testing.T) {
 	mr, rdb := newTestRedis(t)
-	rc := NewRoleCache(&fakeRoleLoader{}, rdb, RoleCacheOptions{}).(*roleCache)
-	ctx := context.Background()
+	rc := newRoleCache(&fakeRoleLoader{}, rdb, roleCacheOptions{})
 
-	require.NoError(t, mr.Set(roleCacheKey(7), `{"v":9,"a":true,"r":["r:new"]}`))
-	rc.setL2(ctx, 7, UserRoles{Version: 5, Active: true, Roles: []string{"r:old"}})
-	require.Equal(t, roleWire{V: 9, A: true, R: []string{"r:new"}}, readL2(t, mr, 7))
-
-	rc.setL2(ctx, 7, UserRoles{Version: 9, Active: true, Roles: []string{"r:same"}})
-	require.Equal(t, []string{"r:same"}, readL2(t, mr, 7).R, "the same version may refresh")
-
-	rc.setL2(ctx, 7, UserRoles{Version: 10, Active: true, Roles: []string{"r:newer"}})
-	require.Equal(t, roleWire{V: 10, A: true, R: []string{"r:newer"}}, readL2(t, mr, 7))
+	require.NoError(t, mr.Set(roleCacheKey(7), `{"v":9,"a":true,"r":["r:before_restore"]}`))
+	rc.setL2(7, UserRoles{Version: 5, Active: true, Roles: []string{"r:restored"}})
+	require.Equal(t, roleWire{V: 5, A: true, R: []string{"r:restored"}}, readL2(t, rc, mr, 7))
 
 	require.NoError(t, mr.Set(roleCacheKey(7), `not json`))
-	rc.setL2(ctx, 7, UserRoles{Version: 1, Active: true, Roles: []string{"r:x"}})
-	require.EqualValues(t, 1, readL2(t, mr, 7).V, "an unreadable value is replaced")
+	rc.setL2(7, UserRoles{Version: 6})
+	require.Equal(t, roleWire{V: 6, R: []string{}}, readL2(t, rc, mr, 7), "an unreadable value is replaced")
+}
+
+// L2 writes run off the caller and are dropped, not queued, while every
+// slot is taken (a slow Valkey).
+func TestRoleCacheL2WritesBounded(t *testing.T) {
+	mr, rdb := newTestRedis(t)
+	l := &fakeRoleLoader{fn: at(5, "r:user")}
+	rc := newRoleCache(l, rdb, roleCacheOptions{})
+	for range cap(rc.l2Writes) {
+		rc.l2Writes <- struct{}{}
+	}
+	_, err := rc.Warm(context.Background(), 7, 5)
+	require.NoError(t, err)
+	rc.writing.Wait()
+	require.False(t, mr.Exists(roleCacheKey(7)), "dropped while full")
+
+	for range cap(rc.l2Writes) {
+		<-rc.l2Writes
+	}
+	_, err = rc.Warm(context.Background(), 8, 5)
+	require.NoError(t, err)
+	require.EqualValues(t, 5, readL2(t, rc, mr, 8).V)
 }
 
 func TestRoleCacheConcurrentWarmLoadsOnce(t *testing.T) {
 	_, rdb := newTestRedis(t)
 	l := &fakeRoleLoader{fn: at(5, "r:user"), gate: make(chan struct{}), in: make(chan struct{}, 64)}
-	rc := NewRoleCache(l, rdb, RoleCacheOptions{})
+	rc := newRoleCache(l, rdb, roleCacheOptions{})
 
 	const n = 32
 	var wg sync.WaitGroup
@@ -221,10 +247,10 @@ func TestRoleCacheConcurrentWarmLoadsOnce(t *testing.T) {
 			results[i] = ur
 		})
 	}
-	// Readers of the role manager's side run alongside (-race).
+	// Readers of L1 run alongside (-race).
 	wg.Go(func() {
 		for range 1000 {
-			rc.Roles(UserSub(7))
+			inL1(rc, 7)
 		}
 	})
 	<-l.in
@@ -237,13 +263,13 @@ func TestRoleCacheConcurrentWarmLoadsOnce(t *testing.T) {
 	}
 }
 
-func TestRoleCacheJoinedLowerMinRetries(t *testing.T) {
-	// B (min 2) may join a load started for A (min 1) that reads version 1;
-	// B then loads once more on its own.
+func TestRoleCacheLoadsMergedPerMin(t *testing.T) {
+	// B (min 2) does not join the load A (min 1) started, which may take an
+	// entry of version 1: it loads on its own.
 	l := &fakeRoleLoader{fn: func(_ int64, n int64) (UserRoles, error) {
 		return UserRoles{Version: n, Active: true}, nil
 	}, gate: make(chan struct{}), in: make(chan struct{}, 4)}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{})
+	rc := newRoleCache(l, nil, roleCacheOptions{})
 
 	var a, b UserRoles
 	var wg sync.WaitGroup
@@ -253,14 +279,16 @@ func TestRoleCacheJoinedLowerMinRetries(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	close(l.gate)
 	wg.Wait()
-	require.EqualValues(t, 1, a.Version)
+	// A may take B's entry when B's load is stored first (store keeps the
+	// newer): version 1 or newer is what A asked for.
+	require.GreaterOrEqual(t, a.Version, int64(1))
 	require.EqualValues(t, 2, b.Version)
 	require.EqualValues(t, 2, l.calls.Load())
 }
 
 func TestRoleCacheCallerCancelDoesNotAbortLoad(t *testing.T) {
 	l := &fakeRoleLoader{fn: at(5, "r:user"), gate: make(chan struct{}), in: make(chan struct{}, 1)}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{})
+	rc := newRoleCache(l, nil, roleCacheOptions{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := rc.Warm(ctx, 7, 5); done <- err }()
@@ -268,17 +296,17 @@ func TestRoleCacheCallerCancelDoesNotAbortLoad(t *testing.T) {
 	cancel()
 	require.ErrorIs(t, <-done, context.Canceled)
 	close(l.gate)
-	require.Eventually(t, func() bool { _, ok := rc.Roles(UserSub(7)); return ok }, time.Second, time.Millisecond)
+	require.Eventually(t, func() bool { _, ok := inL1(rc, 7); return ok }, time.Second, time.Millisecond)
 }
 
 func TestRoleCacheLoaderErrorNotCached(t *testing.T) {
 	boom := errors.New("pg down")
 	l := &fakeRoleLoader{fn: func(int64, int64) (UserRoles, error) { return UserRoles{}, boom }}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{})
+	rc := newRoleCache(l, nil, roleCacheOptions{})
 	_, err := rc.Warm(context.Background(), 7, 1)
 	require.ErrorIs(t, err, boom)
-	_, ok := rc.Roles(UserSub(7))
-	require.False(t, ok, "fail closed")
+	_, ok := inL1(rc, 7)
+	require.False(t, ok, "nothing cached")
 }
 
 func TestRoleCacheEvictsOlderVersionsFirst(t *testing.T) {
@@ -287,7 +315,7 @@ func TestRoleCacheEvictsOlderVersionsFirst(t *testing.T) {
 	l := &fakeRoleLoader{fn: func(int64, int64) (UserRoles, error) {
 		return UserRoles{Version: v.Load(), Active: true, Roles: []string{"r:user"}}, nil
 	}}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{Capacity: 8}).(*roleCache)
+	rc := newRoleCache(l, nil, roleCacheOptions{Capacity: 8})
 	ctx := context.Background()
 	for uid := int64(1); uid <= 7; uid++ {
 		_, err := rc.Warm(ctx, uid, 1)
@@ -304,14 +332,14 @@ func TestRoleCacheEvictsOlderVersionsFirst(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rc.users, 3)
 	for _, uid := range []int64{1, 8, 9} {
-		_, ok := rc.Roles(UserSub(uid))
+		_, ok := inL1(rc, uid)
 		require.True(t, ok, "user %d at the newest version stays", uid)
 	}
 }
 
 func TestRoleCacheEvictsLeastRecentlyWarmed(t *testing.T) {
 	l := &fakeRoleLoader{fn: at(1, "r:user")}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{Capacity: 8}).(*roleCache)
+	rc := newRoleCache(l, nil, roleCacheOptions{Capacity: 8})
 	ctx := context.Background()
 	for uid := int64(1); uid <= 8; uid++ {
 		_, err := rc.Warm(ctx, uid, 1)
@@ -324,10 +352,10 @@ func TestRoleCacheEvictsLeastRecentlyWarmed(t *testing.T) {
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(rc.users), 8)
 	for _, uid := range []int64{1, 9} {
-		_, ok := rc.Roles(UserSub(uid))
+		_, ok := inL1(rc, uid)
 		require.True(t, ok, "recently warmed user %d stays", uid)
 	}
-	_, ok := rc.Roles(UserSub(2))
+	_, ok := inL1(rc, 2)
 	require.False(t, ok, "the least recently warmed user goes")
 }
 
@@ -336,43 +364,25 @@ func TestRoleCacheInactiveUser(t *testing.T) {
 	l := &fakeRoleLoader{fn: func(int64, int64) (UserRoles, error) {
 		return UserRoles{Version: 4, Active: false, Roles: []string{"r:admin"}}, nil
 	}}
-	rc := NewRoleCache(l, rdb, RoleCacheOptions{})
+	rc := newRoleCache(l, rdb, roleCacheOptions{})
 
 	ur, err := rc.Warm(context.Background(), 7, 4)
 	require.NoError(t, err)
 	require.Equal(t, UserRoles{Version: 4}, ur, "an inactive user holds nothing")
-	roles, ok := rc.Roles(UserSub(7))
-	require.True(t, ok, "known, so Casbin does not mistake it for a cold cache")
-	require.Nil(t, roles, "not even SelfRole")
+	held, ok := inL1(rc, 7)
+	require.True(t, ok)
+	require.Equal(t, UserRoles{Version: 4}, held)
+	rc.writing.Wait()
 	raw, err := mr.Get(roleCacheKey(7))
 	require.NoError(t, err)
 	require.JSONEq(t, `{"v":4,"a":false,"r":[]}`, raw)
 
 	// Another node reads the inactive entry from L2.
-	other := NewRoleCache(l, rdb, RoleCacheOptions{})
+	other := newRoleCache(l, rdb, roleCacheOptions{})
 	ur, err = other.Warm(context.Background(), 7, 4)
 	require.NoError(t, err)
 	require.False(t, ur.Active)
 	require.EqualValues(t, 1, l.calls.Load())
-	roles, ok = other.Roles(UserSub(7))
-	require.True(t, ok)
-	require.Nil(t, roles)
-}
-
-func TestRoleCacheRolesOnlyForUserSubjects(t *testing.T) {
-	l := &fakeRoleLoader{fn: at(1, "r:user")}
-	rc := NewRoleCache(l, nil, RoleCacheOptions{})
-	_, err := rc.Warm(context.Background(), 7, 1)
-	require.NoError(t, err)
-
-	for _, sub := range []string{"r:user", SelfRole, "7", "u:", "u:abc", "u:007", "u:+7", "U:7", "u:7 ", ""} {
-		_, ok := rc.Roles(sub)
-		require.False(t, ok, "%q", sub)
-	}
-	_, ok := rc.Roles(UserSub(8))
-	require.False(t, ok, "not warmed: fail closed")
-	_, ok = rc.Roles(UserSub(7))
-	require.True(t, ok)
 }
 
 // countHandler counts warning records.

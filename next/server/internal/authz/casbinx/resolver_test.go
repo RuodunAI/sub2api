@@ -4,50 +4,78 @@ import (
 	"context"
 	"errors"
 	"slices"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// fakeRoleCache is a RoleCache over a Loader without L2 (RoleCache proper is
-// rolecache.go's): Warm reads the loader each time, active users getting
-// SelfRole. evict drops the entry right after that many Warms, to stand for
-// an eviction between Warm and the resolution.
-type fakeRoleCache struct {
-	*mapRoles
-	l     Loader
-	warms atomic.Int64
-	evict int64
+// fakeDB is a policy store moving through versions: Policy and UserRoles
+// read the state of the version current at the call, as the Loader's
+// snapshot transactions read PostgreSQL. With churn, every read is followed
+// by a write (the version moves on after each read).
+type fakeDB struct {
+	mu     sync.Mutex
+	v      int64
+	states map[int64]dbState
+	churn  bool
 }
 
-func newFakeRoleCache(l Loader) *fakeRoleCache { return &fakeRoleCache{mapRoles: newMapRoles(), l: l} }
+// dbState is the policy and the users' roles at one version.
+type dbState struct {
+	rules []Rule
+	users map[int64]UserRoles
+}
 
-func (c *fakeRoleCache) Warm(ctx context.Context, uid, _ int64) (UserRoles, error) {
-	ur, err := c.l.UserRoles(ctx, uid)
-	if err != nil {
-		return UserRoles{}, err
+func (d *fakeDB) at(v int64) {
+	d.mu.Lock()
+	d.v = v
+	d.mu.Unlock()
+}
+
+// read returns the current version and its state (the newest one at or
+// below it), moving on when churning.
+func (d *fakeDB) read() (int64, dbState) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	v := d.v
+	if d.churn {
+		d.v++
 	}
-	roles := slices.Clone(ur.Roles)
-	if ur.Active {
-		roles = append(roles, SelfRole)
-	} else {
-		roles = nil
+	for at := v; at > 0; at-- {
+		if st, ok := d.states[at]; ok {
+			return v, st
+		}
 	}
-	c.set(UserSub(uid), roles...)
-	if c.warms.Add(1) <= c.evict {
-		c.drop(UserSub(uid))
-	}
+	return v, dbState{}
+}
+
+func (d *fakeDB) Policy(context.Context) (Policy, error) {
+	v, st := d.read()
+	return Policy{Version: v, Active: activeOf(st.rules), Rules: st.rules}, nil
+}
+
+func (d *fakeDB) UserRoles(_ context.Context, uid int64) (UserRoles, error) {
+	v, st := d.read()
+	ur := st.users[uid]
+	ur.Version = v
 	return ur, nil
+}
+
+// testResolver is the resolver over d with the real role cache (no L2).
+func testResolver(d *fakeDB, self ...string) (*resolver, *roleCache) {
+	rc := newRoleCache(d, nil, roleCacheOptions{})
+	return newResolver(d, rc, self, snapshotOptions{Wait: time.Second, Debounce: time.Millisecond}), rc
 }
 
 func TestResolverGrants(t *testing.T) {
 	t.Parallel()
-	l := &fakeLoader{next: fixed(4), users: map[int64]UserRoles{
-		1: {Version: 6, Active: true, Roles: []string{"r:t"}},
-		2: {Version: 6},
-		3: {Version: 3, Active: true, Roles: []string{"r:t"}},
-	}}
-	r := NewResolver(l, newFakeRoleCache(l), []string{"self:profile"}, WithWait(time.Second), WithDebounce(time.Millisecond))
+	d := &fakeDB{v: 4, states: map[int64]dbState{4: {
+		rules: []Rule{grant("r:t", "account:read")},
+		users: map[int64]UserRoles{1: held("r:t"), 2: {Roles: []string{"r:t"}}},
+	}}}
+	r, _ := testResolver(d, "self:profile")
 	ctx := context.Background()
 	set, err := r.Grants(ctx, 1, 3)
 	if err != nil {
@@ -59,42 +87,94 @@ func TestResolverGrants(t *testing.T) {
 	if set, err := r.Grants(ctx, 2, 3); err != nil || len(set.KeyList()) != 0 || set.Version != 4 {
 		t.Fatalf("inactive user: %+v, %v", set, err)
 	}
-	if ok, err := r.Enforce(ctx, 1, "account:read:own", 3); !ok || err != nil {
-		t.Fatalf("Enforce = %v, %v", ok, err)
+	if ok, v, err := Enforce(ctx, r, 1, "account:read:own", 3); !ok || v != 4 || err != nil {
+		t.Fatalf("Enforce = %v at %d, %v", ok, v, err)
 	}
-	if ok, err := r.Enforce(ctx, 2, "self:profile", 3); ok || err != nil {
+	if ok, _, err := Enforce(ctx, r, 2, "self:profile", 3); ok || err != nil {
 		t.Fatalf("Enforce of an inactive user = %v, %v", ok, err)
 	}
-	// Roles read below min: fail closed.
-	if _, err := r.Grants(ctx, 3, 4); !errors.Is(err, ErrStale) {
-		t.Fatalf("roles below min: %v", err)
-	}
-	// Snapshot below min, never reaching it: fail closed.
+	// A snapshot below min, never reaching it: fail closed.
 	if _, err := r.Grants(ctx, 1, 5); !errors.Is(err, ErrStale) {
 		t.Fatalf("snapshot below min: %v", err)
 	}
 }
 
-// An entry evicted between Warm and the resolution is warmed once more;
-// evicted again, the resolution fails with ErrNotWarm rather than answer an
-// empty set.
-func TestResolverRewarmsOnce(t *testing.T) {
+// One write at v6 revokes r:a from the user and grants r:a user:read. No
+// set may combine the v5 link with the v6 grant (user:read, held at
+// neither version), whichever half the caches hold from before the write.
+func TestResolverTornRead(t *testing.T) {
 	t.Parallel()
-	l := &fakeLoader{next: fixed(1), users: map[int64]UserRoles{1: {Version: 1, Active: true, Roles: []string{"r:t"}}}}
-	rc := newFakeRoleCache(l)
-	rc.evict = 1
-	r := NewResolver(l, rc, nil)
-	if set, err := r.Grants(context.Background(), 1, 1); err != nil || !set.Has("account:read") {
+	const uid = 7
+	d := &fakeDB{v: 5, states: map[int64]dbState{
+		5: {rules: []Rule{grant("r:a", "account:read")}, users: map[int64]UserRoles{uid: held("r:a")}},
+		6: {rules: []Rule{grant("r:a", "account:read"), grant("r:a", "user:read")}, users: map[int64]UserRoles{uid: held()}},
+	}}
+	ctx := context.Background()
+	check := func(name string, set setOrErr, wantV int64, want []string) {
+		t.Helper()
+		if set.err != nil {
+			t.Fatalf("%s: %v", name, set.err)
+		}
+		if got := set.s.KeyList(); set.s.Version != wantV || !slices.Equal(got, want) || set.s.Has("user:read") && set.s.Version == 5 {
+			t.Fatalf("%s: %v at v%d, want %v at v%d", name, got, set.s.Version, want, wantV)
+		}
+	}
+
+	// The roles cached at v5, the snapshot built after the write: the
+	// roles are read again at the snapshot's version.
+	r, rc := testResolver(d)
+	if _, err := rc.Warm(ctx, uid, 5); err != nil {
+		t.Fatal(err)
+	}
+	d.at(6)
+	check("roles older", grantsOf(ctx, r, uid, 5), 6, nil)
+
+	// The snapshot built at v5, the roles cached after the write (another
+	// request warmed them): the snapshot is rebuilt at the roles' version.
+	d.at(5)
+	r, rc = testResolver(d)
+	check("before the write", grantsOf(ctx, r, uid, 5), 5, []string{"account:read"})
+	d.at(6)
+	if _, err := rc.Warm(ctx, uid, 6); err != nil {
+		t.Fatal(err)
+	}
+	check("snapshot older", grantsOf(ctx, r, uid, 5), 6, nil)
+	if ok, v, err := Enforce(ctx, r, uid, "user:read", 5); ok || v != 6 || err != nil {
+		t.Fatalf("Enforce(user:read) = %v at v%d, %v", ok, v, err)
+	}
+}
+
+type setOrErr struct {
+	s   core.PermissionSet
+	err error
+}
+
+func grantsOf(ctx context.Context, r Resolver, uid, min int64) setOrErr {
+	s, err := r.Grants(ctx, uid, min)
+	return setOrErr{s, err}
+}
+
+// When writes keep landing between the two reads, also after the second
+// read of both, the resolution fails with ErrSkew rather than combine
+// them.
+func TestResolverSkewFailsClosed(t *testing.T) {
+	t.Parallel()
+	d := &fakeDB{v: 1, churn: true, states: map[int64]dbState{
+		1: {rules: []Rule{grant("r:t", "account:read")}, users: map[int64]UserRoles{1: held("r:t")}},
+	}}
+	r, _ := testResolver(d)
+	ctx := context.Background()
+	if _, err := r.Grants(ctx, 1, 1); !errors.Is(err, ErrSkew) {
+		t.Fatalf("Grants = %v, want ErrSkew", err)
+	}
+	if _, _, err := Enforce(ctx, r, 1, "account:read", 1); !errors.Is(err, ErrSkew) {
+		t.Fatalf("Enforce = %v, want ErrSkew", err)
+	}
+	// Quiet again: both reads meet.
+	d.mu.Lock()
+	d.churn = false
+	d.mu.Unlock()
+	if set, err := r.Grants(ctx, 1, 1); err != nil || !set.Has("account:read") {
 		t.Fatalf("Grants = %+v, %v", set, err)
-	}
-	if n := rc.warms.Load(); n != 2 {
-		t.Fatalf("%d warms, want 2", n)
-	}
-	rc.evict = 100
-	if _, err := r.Grants(context.Background(), 1, 1); !errors.Is(err, ErrNotWarm) {
-		t.Fatalf("Grants = %v, want ErrNotWarm", err)
-	}
-	if _, err := r.Enforce(context.Background(), 1, "account:read", 1); !errors.Is(err, ErrNotWarm) {
-		t.Fatalf("Enforce = %v, want ErrNotWarm", err)
 	}
 }

@@ -13,11 +13,11 @@
 契约见 CONTRACTS §99。用户可见的权限不变：默认 `authz.engine = shadow`，旧加载器照常说了算。
 
 - **新表 `casbin_rule`**：旧角色表的投影，由触发器在同一事务里维护，迁移时回填；旧表仍是真相，写路径不变。
-- **影子比较**：每个用户每个版本首次解析权限时，Casbin 同时算一遍并比较整个集合，`Can` 按 1% 抽样核对 matcher；不一致记 Warn `authz: shadow mismatch`。计数见新接口 `GET /settings/authz`（`settings:read`，本节点自启动以来）。
-- **开关**：`PUT /settings/authz {"engine": "legacy" | "shadow" | "casbin"}`（`settings:manage`），广播后各节点立即生效；环境变量 `SUP2API_AUTHZ_ENGINE` 优先。控制台没有页面。
-- **漂移任务** `core.authz.casbin_drift`（集群，每 10 分钟）：`casbin_rule` 与角色表不一致时告警、按角色表修正并升权限版本。
-- **离线核对** `sub2api admin authz-verify [--keys]`：逐个用户比较旧加载器与 Casbin，有不一致退出码 1。
-- 用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟），Valkey 出错时直接读 PG。
+- **影子比较**：每个用户每个版本首次解析权限时，Casbin 在请求外再算一遍并比较整个集合，`Can` 按 1% 抽样核对 matcher；请求不等 Casbin（每节点最多 32 个并发比较，满了丢弃计数）。不一致记 Warn `authz: shadow mismatch`。计数见新接口 `GET /settings/authz`（`settings:read`，本节点自启动以来）。
+- **开关**：`PUT /settings/authz {"engine": "legacy" | "shadow" | "casbin"}`（`settings:manage` + 二次验证 `authz.engine`，只有超管本人可以，写审计 `authz.engine.set`），广播后各节点立即生效；环境变量 `SUP2API_AUTHZ_ENGINE` 优先。控制台没有页面。
+- **漂移任务** `core.authz.casbin_drift`（集群，每 10 分钟）：`casbin_rule` 与角色表不一致时告警、在权限写锁内复核后按角色表修正并升权限版本（没有可修的就不升）。
+- **离线核对** `sub2api admin authz-verify [--keys] [--key-users N]`：逐个用户比较旧加载器与 Casbin，有不一致退出码 1，有跳过（读到写入中间）退出码 3；在静止的副本上运行。
+- 用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。
 
 **发布**：迁移 0100 只做加法，可以与 0.1.289 滚动混跑（旧核心的写入同样被触发器投影）。发布后检查 `SELECT count(*) FROM authz_casbin_drift` 为 0。切到 `casbin` 的门槛见 §99.5（`shadow` 至少 2 周、不一致与漂移都为 0）。
 

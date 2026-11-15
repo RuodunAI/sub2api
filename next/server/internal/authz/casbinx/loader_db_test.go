@@ -2,10 +2,11 @@ package casbinx_test
 
 import (
 	"context"
+	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
@@ -206,34 +207,24 @@ func TestLoaderAdapterReadOnly(t *testing.T) {
 	}
 }
 
-// roleCache is a RoleCache warming through the Loader on every call (no L2;
-// the real one is rolecache.go's).
-type roleCache struct {
-	l  casbinx.Loader
-	mu sync.RWMutex
-	m  map[string][]string
-}
-
-func (c *roleCache) Roles(sub string) ([]string, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	r, ok := c.m[sub]
-	return r, ok
-}
-
-func (c *roleCache) Warm(ctx context.Context, uid, _ int64) (casbinx.UserRoles, error) {
-	ur, err := c.l.UserRoles(ctx, uid)
-	if err != nil {
-		return ur, err
+// matchesLegacy compares every user's sets as both engines resolve them,
+// with the real role cache and the shadow comparison's own normal form
+// (authz.Service.CompareEngines: superuser flag, keys, and every scoped key,
+// those under an action held for every row included).
+func matchesLegacy(t *testing.T, db *store.DB, users map[string]int64) {
+	t.Helper()
+	az := authz.New(authz.Deps{DB: db})
+	for name, uid := range users {
+		c, err := az.CompareEngines(context.Background(), uid)
+		switch {
+		case err != nil:
+			t.Fatalf("%s: %v", name, err)
+		case c.Skew:
+			t.Fatalf("%s: read at v%d and v%d on a quiet database", name, c.Legacy.Version, c.Casbin.Version)
+		case c.Mismatch != nil:
+			t.Errorf("%s (v%d): legacy only %v, casbin only %v", name, c.Legacy.Version, c.Mismatch.LegacyOnly, c.Mismatch.CasbinOnly)
+		}
 	}
-	var roles []string
-	if ur.Active {
-		roles = append(slices.Clone(ur.Roles), casbinx.SelfRole)
-	}
-	c.mu.Lock()
-	c.m[casbinx.UserSub(uid)] = roles
-	c.mu.Unlock()
-	return ur, nil
 }
 
 // Through PostgreSQL, the Casbin resolution equals the legacy loader's set
@@ -242,25 +233,58 @@ func (c *roleCache) Warm(ctx context.Context, uid, _ int64) (casbinx.UserRoles, 
 func TestResolverMatchesLegacy(t *testing.T) {
 	t.Parallel()
 	db := policyDB(t)
-	s := seedPolicy(t, db)
-	ctx := context.Background()
-	l := casbinx.NewLoader(db)
-	r := casbinx.NewResolver(l, &roleCache{l: l, m: map[string][]string{}}, authz.SelfPermissionKeys())
-	legacy := authz.New(authz.Deps{DB: db})
-	v := version(t, db)
-	for name, uid := range s.users {
-		want, err := legacy.PermissionSet(ctx, uid)
-		if err != nil {
-			t.Fatal(err)
+	matchesLegacy(t, db, seedPolicy(t, db).users)
+}
+
+// The same on random roles over the legacy tables (the triggers project
+// them): grants of active, disabled and removed permissions, with and
+// without scopes (a scope under an action also held for every row
+// included), and users of random roles and status.
+func TestResolverMatchesLegacyRandom(t *testing.T) {
+	t.Parallel()
+	db := policyDB(t)
+	users := seedPolicy(t, db).users
+	exec(t, db, `INSERT INTO permissions (key, module, label, source, status) VALUES
+		('rnd:a', 'rnd', '{}', 'core', 'active'), ('rnd:b', 'rnd', '{}', 'core', 'active'),
+		('rnd:off', 'rnd', '{}', 'core', 'disabled'), ('rnd:gone', 'rnd', '{}', 'core', 'removed')
+		ON CONFLICT (key) DO UPDATE SET status = EXCLUDED.status`)
+	keys := []string{"rnd:a", "rnd:b", "rnd:off", "rnd:gone", "cxt:read", "account:read"}
+	scopes := []string{"own", "group/12", "group/12/account/5", "account/7", "group/*"}
+	r := rand.New(rand.NewPCG(7, 11))
+	for i := range 8 {
+		role := fmt.Sprintf("rnd_%d", i)
+		exec(t, db, `INSERT INTO roles (key, name) VALUES ($1, '{}')`, role)
+		for _, k := range keys {
+			if r.IntN(3) == 0 {
+				exec(t, db, `INSERT INTO role_permissions (role_id, permission_id)
+					SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = $1 AND p.key = $2`, role, k)
+			}
+			if k == "account:read" || k == "rnd:a" {
+				for _, sc := range scopes {
+					if r.IntN(4) == 0 {
+						exec(t, db, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
+							SELECT r.id, p.id, $3 FROM roles r, permissions p WHERE r.key = $1 AND p.key = $2`, role, k, sc)
+					}
+				}
+			}
 		}
-		got, err := r.Grants(ctx, uid, v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.Superuser != want.Superuser || !slices.Equal(got.KeyList(), want.KeyList()) || got.Version != want.Version {
-			t.Errorf("%s: casbin %v (super %v, v%d), legacy %v (super %v, v%d)", name,
-				got.KeyList(), got.Superuser, got.Version, want.KeyList(), want.Superuser, want.Version)
-		}
-		t.Log(name, got.Superuser, got.KeyList())
 	}
+	for i := range 24 {
+		name := fmt.Sprintf("rnd-%d", i)
+		id := testutil.InsertUser(t, db, name+"@example.com")
+		users[name] = id
+		for j := range 8 {
+			if r.IntN(3) == 0 {
+				exec(t, db, `INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, id, fmt.Sprintf("rnd_%d", j))
+			}
+		}
+		switch r.IntN(8) {
+		case 0:
+			exec(t, db, `UPDATE users SET status = 'disabled' WHERE id = $1`, id)
+		case 1:
+			exec(t, db, `UPDATE users SET deleted_at = now() WHERE id = $1`, id)
+		}
+	}
+	exec(t, db, `UPDATE authz_meta SET version = version + 1 WHERE id = 1`)
+	matchesLegacy(t, db, users)
 }

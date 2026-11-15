@@ -1,8 +1,8 @@
 package casbinx
 
 import (
-	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/casbin/casbin/v3"
 
@@ -10,48 +10,33 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
 
-// Options of Build.
-type Options struct {
-	// Roles answers g: the users' roles (the L1 of RoleCache). Required.
-	Roles RoleSource
-	// Self lists the self permission keys (authz.SelfPermissionKeys), held
-	// by SelfRole. They are not in the catalog, so authz hands them over:
-	// this package cannot import authz.
-	Self []string
-}
-
-// Snapshot is one immutable enforcer, built from one consistent read of the
-// policy. Nothing mutates it after Build, so concurrent Grants and Enforce
-// need no lock; a newer version replaces it whole (Engine).
-type Snapshot struct {
+// snapshot is one immutable enforcer, built from one consistent read of the
+// policy. Nothing mutates it after build, so concurrent grants and enforce
+// need no lock; a newer version replaces it whole (snapshots).
+type snapshot struct {
 	version int64
-	roles   RoleSource
 	e       *casbin.Enforcer
 }
 
-var errNoRoleSource = errors.New("casbinx: Build needs a RoleSource")
-
-// Build makes the snapshot of policy. It loads the p rows of active actions
-// and every SuperKey row, plus the self permissions as SelfRole's p rows,
-// and no g row: users' roles come from o.Roles.
-func Build(policy Policy, o Options) (*Snapshot, error) {
-	if o.Roles == nil {
-		return nil, errNoRoleSource
-	}
-	ps := make([][]string, 0, len(policy.Rules)+len(o.Self))
+// build makes the snapshot of policy. It loads the p rows of active actions
+// and every SuperKey row, plus the self permissions (self, the keys of
+// authz.SelfPermissionKeys: this package cannot import authz) as
+// SelfRole's p rows, and no g row: a user's roles come with each call.
+func build(policy Policy, self []string) (*snapshot, error) {
+	ps := make([][]string, 0, len(policy.Rules)+len(self))
 	for _, r := range policy.Rules {
 		if loadable(r, policy.Active) {
 			ps = append(ps, []string{r.V0, r.V1, r.V2})
 		}
 	}
-	for _, k := range o.Self {
+	for _, k := range self {
 		p, err := perm.Parse(k)
 		if err != nil {
 			return nil, fmt.Errorf("casbinx: self permission %q: %w", k, err)
 		}
 		ps = append(ps, []string{SelfRole, string(p.Action), scopeOf(p)})
 	}
-	e, err := newEnforcer(o.Roles)
+	e, err := newEnforcer()
 	if err != nil {
 		return nil, err
 	}
@@ -64,15 +49,20 @@ func Build(policy Policy, o Options) (*Snapshot, error) {
 	if err := e.BuildRoleLinks(); err != nil {
 		return nil, err
 	}
-	return &Snapshot{version: policy.Version, roles: o.Roles, e: e}, nil
+	return &snapshot{version: policy.Version, e: e}, nil
 }
 
 // loadable reports whether r is a p row the snapshot holds: a superuser row,
 // or a grant of an active action. Grants of disabled and removed actions
-// stay stored and come back with their action. A row with an empty column
-// is never loaded: an empty scope must not read as every row.
+// stay stored and come back with their action. Not loaded:
+//   - a row with an empty column: an empty scope must not read as every
+//     row;
+//   - a stored row of SelfRole (a role keyed "_self", which only hand
+//     written SQL can make): every active user holds SelfRole, so its
+//     grants would reach everyone, where the legacy loader gives them to
+//     the role's holders only.
 func loadable(r Rule, active map[string]bool) bool {
-	if r.Ptype != "p" || r.V0 == "" || r.V1 == "" || r.V2 == "" {
+	if r.Ptype != "p" || r.V0 == "" || r.V1 == "" || r.V2 == "" || r.V0 == SelfRole {
 		return false
 	}
 	return r.V1 == SuperKey || active[r.V1]
@@ -86,37 +76,43 @@ func scopeOf(p perm.Pattern) string {
 	return AllRows
 }
 
-// Version is the authz version the snapshot was read at.
-func (s *Snapshot) Version() int64 { return s.version }
-
-// Grants is uid's effective permission set as Casbin resolves it: the p rows
-// of the roles the RoleSource gives uid, SelfRole's included; a SuperKey row
-// sets Superuser. Version is the snapshot's. ErrNotWarm when the source
-// holds no entry for uid.
-func (s *Snapshot) Grants(uid int64) (core.PermissionSet, error) {
-	rows, err := s.e.GetImplicitPermissionsForUser(UserSub(uid))
-	if err != nil {
-		return core.PermissionSet{}, err
+// subjects are the policy subjects whose grants ur holds: its roles and
+// SelfRole when active, none when not.
+func subjects(ur UserRoles) []string {
+	if !ur.Active {
+		return nil
 	}
+	return append(slices.Clone(ur.Roles), SelfRole)
+}
+
+// grants is the effective permission set of a user holding ur (read at the
+// snapshot's version, which labels the set): the p rows of its subjects; a
+// SuperKey row sets Superuser.
+func (s *snapshot) grants(ur UserRoles) (core.PermissionSet, error) {
 	set := core.PermissionSet{Keys: map[string]struct{}{}, Version: s.version}
-	for _, r := range rows {
-		if r[1] == SuperKey {
-			set.Superuser = true
-			continue
+	for _, sub := range subjects(ur) {
+		rows, err := s.e.GetPermissionsForUser(sub)
+		if err != nil {
+			return core.PermissionSet{}, err
 		}
-		set.Add(GrantKey(r[1], r[2]))
+		for _, r := range rows {
+			if r[1] == SuperKey {
+				set.Superuser = true
+				continue
+			}
+			set.Add(grantKey(r[1], r[2]))
+		}
 	}
 	return set, nil
 }
 
-// Enforce runs key through the matcher for uid: every p row (8-230 µs at
-// 400 rows), so for the shadow comparison and diagnostics only; hot paths
-// use Grants' PermissionSet.Has. ErrNotWarm when the source holds no entry
-// for uid (g would deny everything).
-func (s *Snapshot) Enforce(uid int64, key string) (bool, error) {
-	sub := UserSub(uid)
-	if _, ok := s.roles.Roles(sub); !ok {
-		return false, ErrNotWarm
+// enforce runs key through the matcher for a user holding ur: allowed when
+// one of its subjects is (some(where p.eft == allow) over the union).
+func (s *snapshot) enforce(ur UserRoles, key string) (bool, error) {
+	for _, sub := range subjects(ur) {
+		if ok, err := s.e.Enforce(sub, key); ok || err != nil {
+			return ok, err
+		}
 	}
-	return s.e.Enforce(sub, key)
+	return false, nil
 }

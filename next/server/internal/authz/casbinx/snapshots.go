@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// EngineOptions tunes Engine. Zero fields take the defaults.
-type EngineOptions struct {
+// snapshotOptions tunes snapshots (tests shorten them). Zero fields take
+// the defaults.
+type snapshotOptions struct {
 	// Wait bounds how long Ensure waits for a rebuild (default 2s); past
 	// it Ensure fails (closed) rather than answer from an older snapshot.
 	Wait time.Duration
@@ -22,7 +23,7 @@ type EngineOptions struct {
 	LoadTimeout time.Duration
 }
 
-func (o EngineOptions) withDefaults() EngineOptions {
+func (o snapshotOptions) withDefaults() snapshotOptions {
 	if o.Wait <= 0 {
 		o.Wait = 2 * time.Second
 	}
@@ -39,13 +40,13 @@ func (o EngineOptions) withDefaults() EngineOptions {
 // could be had in time: the caller must not decide from an older one.
 var ErrStale = errors.New("casbinx: no policy snapshot of the required version")
 
-// Engine holds the current Snapshot and rebuilds it when a caller needs a
-// newer version: one rebuild at a time (single flight), its waiters sharing
-// it, and an older snapshot never replacing a newer one.
-type Engine struct {
-	build func(ctx context.Context) (*Snapshot, error)
-	o     EngineOptions
-	cur   atomic.Pointer[Snapshot]
+// snapshots holds the current snapshot and rebuilds it when a caller needs
+// a newer version: one rebuild at a time (single flight), its waiters
+// sharing it, and an older snapshot never replacing a newer one.
+type snapshots struct {
+	build func(ctx context.Context) (*snapshot, error)
+	o     snapshotOptions
+	cur   atomic.Pointer[snapshot]
 
 	mu        sync.Mutex
 	flight    *flight   // the rebuild in progress, nil when none
@@ -58,28 +59,22 @@ type flight struct {
 	err  error
 }
 
-// NewEngine returns an engine whose snapshots are built from l's policy
-// with o; it holds none until the first Ensure.
-func NewEngine(l Loader, o Options, eo EngineOptions) *Engine {
-	return newEngine(func(ctx context.Context) (*Snapshot, error) {
-		p, err := l.Policy(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return Build(p, o)
-	}, eo)
+// doneFlight is the rebuild a caller need not wait for.
+var doneFlight = func() *flight {
+	f := &flight{done: make(chan struct{})}
+	close(f.done)
+	return f
+}()
+
+// newSnapshots returns a holder of the snapshots build makes; it holds none
+// until the first Ensure or prewarm.
+func newSnapshots(build func(context.Context) (*snapshot, error), o snapshotOptions) *snapshots {
+	return &snapshots{build: build, o: o.withDefaults()}
 }
 
-func newEngine(build func(context.Context) (*Snapshot, error), o EngineOptions) *Engine {
-	return &Engine{build: build, o: o.withDefaults()}
-}
-
-// Current is the snapshot in place, nil before the first build.
-func (g *Engine) Current() *Snapshot { return g.cur.Load() }
-
-// Swap installs s unless a snapshot of the same or a newer version is in
+// swap installs s unless a snapshot of the same or a newer version is in
 // place: two rebuilds racing, the older one loses.
-func (g *Engine) Swap(s *Snapshot) bool {
+func (g *snapshots) swap(s *snapshot) bool {
 	for {
 		old := g.cur.Load()
 		if old != nil && old.version >= s.version {
@@ -97,14 +92,14 @@ func (g *Engine) Swap(s *Snapshot) bool {
 // already running may not, and Ensure then waits for one more. It fails
 // with ErrStale when that one is still older, the rebuild's error when it
 // fails, and ErrStale or ctx's error when Wait or ctx ends first.
-func (g *Engine) Ensure(ctx context.Context, min int64) (*Snapshot, error) {
+func (g *snapshots) Ensure(ctx context.Context, min int64) (*snapshot, error) {
 	if s := g.cur.Load(); s != nil && s.version >= min {
 		return s, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, g.o.Wait)
 	defer cancel()
 	for range 2 {
-		f := g.rebuild()
+		f := g.rebuild(min)
 		select {
 		case <-f.done:
 		case <-ctx.Done():
@@ -120,12 +115,31 @@ func (g *Engine) Ensure(ctx context.Context, min int64) (*Snapshot, error) {
 	return nil, fmt.Errorf("%w: version %d not reached", ErrStale, min)
 }
 
-// rebuild joins the rebuild in progress, or starts one.
-func (g *Engine) rebuild() *flight {
+// prewarm starts, off the caller, what Ensure(min) would wait for: the node
+// learnt of version min (its own write, a broadcast, the poll, start-up),
+// and the requests that follow should find the snapshot built rather than
+// wait for it. Ensure bounds the goroutine (Wait); its failure is left to
+// the request that needs the snapshot to report.
+func (g *snapshots) prewarm(min int64) {
+	if s := g.cur.Load(); s != nil && s.version >= min {
+		return
+	}
+	go func() { _, _ = g.Ensure(context.Background(), min) }()
+}
+
+// rebuild joins the rebuild in progress, or starts one unless a snapshot
+// of version min is in place by now: a caller that found none may reach
+// here only after a rebuild it could have joined has ended (run swaps
+// before it clears g.flight under mu), and must not read the policy again
+// for it.
+func (g *snapshots) rebuild(min int64) *flight {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.flight != nil {
 		return g.flight
+	}
+	if s := g.cur.Load(); s != nil && s.version >= min {
+		return doneFlight
 	}
 	f := &flight{done: make(chan struct{})}
 	g.flight = f
@@ -136,7 +150,7 @@ func (g *Engine) rebuild() *flight {
 
 // run is one rebuild: after delay (Debounce), read and build, and swap the
 // snapshot in. Callers arriving during the delay join it.
-func (g *Engine) run(f *flight, delay time.Duration) {
+func (g *snapshots) run(f *flight, delay time.Duration) {
 	defer func() {
 		// The rebuild runs on its own goroutine: a panic in it would end
 		// the process, not one request.
@@ -161,5 +175,5 @@ func (g *Engine) run(f *flight, delay time.Duration) {
 		f.err = fmt.Errorf("casbinx: rebuild the policy snapshot: %w", err)
 		return
 	}
-	g.Swap(s)
+	g.swap(s)
 }

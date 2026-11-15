@@ -8,9 +8,9 @@ import (
 
 // benchPolicy is a production-sized policy: 10 roles of 40 grants each
 // (core actions, scoped account and proxy keys, plugin keys) and a
-// superuser role, 401 p rows; users holds users subjects, each with role0,
-// one more role and SelfRole.
-func benchPolicy(users int) (Policy, *mapRoles) {
+// superuser role, 401 p rows; benchUser holds role0 and one more role (and
+// SelfRole, as active).
+func benchPolicy() Policy {
 	var rules []Rule
 	for r := range 10 {
 		role := RoleSub(fmt.Sprintf("role%d", r))
@@ -30,20 +30,19 @@ func benchPolicy(users int) (Policy, *mapRoles) {
 		}
 	}
 	rules = append(rules, superRow("r:super_admin"))
-	roles := newMapRoles()
-	for u := 1; u <= users; u++ {
-		roles.set(UserSub(int64(u)), "r:role0", RoleSub(fmt.Sprintf("role%d", 1+u%9)), SelfRole)
-	}
-	return Policy{Version: 1, Active: activeOf(rules), Rules: rules}, roles
+	return Policy{Version: 1, Active: activeOf(rules), Rules: rules}
 }
 
-var benchSelf = []string{"self:profile", "self:security", "self:plugin_ui"}
+var (
+	benchSelf = []string{"self:profile", "self:security", "self:plugin_ui"}
+	benchUser = held("r:role0", "r:role1")
+)
 
 func BenchmarkBuild400p(b *testing.B) {
-	p, roles := benchPolicy(0)
+	p := benchPolicy()
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := Build(p, Options{Roles: roles, Self: benchSelf}); err != nil {
+		if _, err := build(p, benchSelf); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -52,14 +51,13 @@ func BenchmarkBuild400p(b *testing.B) {
 // Grants is the cost of a PermissionSet cache miss (once per user and
 // version).
 func BenchmarkGrants(b *testing.B) {
-	p, roles := benchPolicy(1000)
-	s, err := Build(p, Options{Roles: roles, Self: benchSelf})
+	s, err := build(benchPolicy(), benchSelf)
 	if err != nil {
 		b.Fatal(err)
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := s.Grants(9); err != nil {
+		if _, err := s.grants(benchUser); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -67,13 +65,12 @@ func BenchmarkGrants(b *testing.B) {
 
 // EnsureHit is the per-miss check that the snapshot is current.
 func BenchmarkEnsureHit(b *testing.B) {
-	p, roles := benchPolicy(0)
-	s, err := Build(p, Options{Roles: roles})
+	s, err := build(benchPolicy(), nil)
 	if err != nil {
 		b.Fatal(err)
 	}
-	eng := newEngine(nil, EngineOptions{})
-	eng.Swap(s)
+	eng := newSnapshots(nil, snapshotOptions{})
+	eng.swap(s)
 	ctx := context.Background()
 	b.ReportAllocs()
 	for b.Loop() {
@@ -85,12 +82,11 @@ func BenchmarkEnsureHit(b *testing.B) {
 
 // Enforce against Has on the same set: why hot paths use the set.
 func BenchmarkEnforceVsHas(b *testing.B) {
-	p, roles := benchPolicy(1000)
-	s, err := Build(p, Options{Roles: roles, Self: benchSelf})
+	s, err := build(benchPolicy(), benchSelf)
 	if err != nil {
 		b.Fatal(err)
 	}
-	set, err := s.Grants(9)
+	set, err := s.grants(benchUser)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -102,7 +98,7 @@ func BenchmarkEnforceVsHas(b *testing.B) {
 		b.Run("Enforce/"+q.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, err := s.Enforce(9, q.key); err != nil {
+				if _, err := s.enforce(benchUser, q.key); err != nil {
 					b.Fatal(err)
 				}
 			}

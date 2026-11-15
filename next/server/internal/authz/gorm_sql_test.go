@@ -33,12 +33,11 @@ func scan(q *gorm.DB) *gorm.DB {
 	return q.Scan(&dest)
 }
 
-// The version: Bump locks and increments it (every authz write), the
-// readers select it, SyncCore locks it without a bump.
+// The version: Bump locks and increments it (every authz write), SyncCore
+// locks it without a bump; the readers select it with store.AuthzVersion.
 func TestSQLAuthzVersion(t *testing.T) {
 	assertCases(t, []sqlCase{
 		{"bump", func(db *gorm.DB) *gorm.DB { return scan(bumpVersion(db)) }},
-		{"read", func(db *gorm.DB) *gorm.DB { return scan(readVersion(db)) }},
 		{"lock", lockVersion},
 	})
 }
