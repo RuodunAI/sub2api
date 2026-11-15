@@ -141,6 +141,57 @@ for requests that carry or return provider files, containers or skills,
 each inside a transaction that already takes advisory locks; they are on
 GORM without a benchmark.
 
+## Batch 4b: the settler's statements
+
+Per billable request the settler runs, besides the `usage_logs` insert
+(a pgx.Batch, unchanged) and the ledger statements (package billing):
+`settleTx`'s row lock (`SELECT billing_status FROM usage_logs WHERE
+request_id = $1 FOR UPDATE`) and its write of the billing fields
+(`billUsageRow`). A request a plugin reserves runs `reserveTx` instead:
+the write of the estimate and the `pending_settlements` insert (`ON
+CONFLICT (plugin_key, ref_id) DO NOTHING RETURNING id`). The benchmark
+measures each pgx statement next to its GORM form (`Raw(...).Row().Scan`
+for the reads, `Exec` for the writes), against one pending row:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench HotStmt -benchmem -benchtime 1000x -count 5 ./internal/usage/
+```
+
+Recorded 2026-11-15 on gorm-4b, same machine and server as above. Medians
+of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotStmtSettleLock/pgx | 338 788 | 461 | 9 |
+| BenchmarkHotStmtSettleLock/gorm | 313 103 | 3 493 | 45 |
+| BenchmarkHotStmtSettleUpdate/pgx | 554 210 | 2 939 | 99 |
+| BenchmarkHotStmtSettleUpdate/gorm | 470 680 | 6 628 | 139 |
+| BenchmarkHotStmtReserveUpdate/pgx | 502 428 | 2 291 | 70 |
+| BenchmarkHotStmtReserveUpdate/gorm | 424 302 | 5 228 | 104 |
+| BenchmarkHotStmtReserveEntry/pgx | 349 366 | 645 | 14 |
+| BenchmarkHotStmtReserveEntry/gorm | 250 247 | 4 412 | 59 |
+
+The row lock (5.0 times the allocations) and the reservation entry (4.2
+times) stay on pgx under `//gormguard:allow-pgx`. The two writes (1.40 and
+1.49 times; most of their allocations are encoding the decimal and jsonb
+arguments, which both paths do) are on GORM. The whole settlement moves
+from 863 to 903 allocs/op (BenchmarkHotSettle, 1.05 times; the free and
+pending inserts are unchanged at 233 and 102):
+
+| Benchmark | before | after |
+|---|---:|---:|
+| BenchmarkHotSettlerInsertFree | 233 | 233 |
+| BenchmarkHotSettlerInsertPending | 102 | 102 |
+| BenchmarkHotSettle | 863 | 903 |
+
+The rest of the settler (`markFailed`, `RetryPending`,
+`closeUnreconcilable`, the reconcile loop, the task registry and the
+hourly rollup) runs off the request path or on failures only and is on
+GORM without a benchmark, but for one statement: the rollup's `INSERT INTO
+usage_hourly ... SELECT` keeps pgx, because its measures hold the jsonb `?`
+operator (`anomalousRow`), which GORM takes for a placeholder.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

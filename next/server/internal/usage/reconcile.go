@@ -16,6 +16,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/background"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/usagerules"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
@@ -210,19 +212,19 @@ func (s *Service) reconcileSweep(ctx context.Context) int {
 // dies halfway through a sweep loses a lease rather than wedging an entry,
 // and a second node cannot pick up what this one is already holding.
 func (s *Service) claimDue(ctx context.Context, limit int) ([]*settleEntry, error) {
-	rows, err := s.db.Pool.Query(ctx, `
+	rows, err := store.G(ctx, s.db.Pool).Raw(`
 		UPDATE pending_settlements p
-		SET next_check_at = now() + make_interval(secs => $2)
+		SET next_check_at = now() + make_interval(secs => ?)
 		FROM (
 			SELECT id FROM pending_settlements
 			WHERE state = 'pending' AND next_check_at <= now() AND task_public_id IS NULL
 			ORDER BY next_check_at
-			LIMIT $1
+			LIMIT ?
 			FOR UPDATE SKIP LOCKED
 		) due
 		WHERE p.id = due.id
 		RETURNING p.id, p.plugin_key, p.ref_id, p.usage_log_id, p.account_id, p.attempts, p.poll_failures, p.created_at, p.deadline_at`,
-		limit, reconcileLease.Seconds())
+		reconcileLease.Seconds(), limit).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -582,14 +584,14 @@ func (s *Service) rescheduleAttempt(ctx context.Context, e *settleEntry, cfg res
 		if err := lockLegacyOutcome(ctx, tx, e); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `
-		UPDATE pending_settlements SET attempts = attempts + $4, next_check_at = $2, last_error = $3,
-		poll_failures=CASE WHEN $5 THEN poll_failures+1 WHEN $6 THEN 0 ELSE poll_failures END
-		WHERE id = $1 AND state = 'pending' AND task_public_id IS NULL`, e.id, next, trunc(lastErr, 2000), increment, e.pollFailed, e.pollObserved)
-		if err == nil && tag.RowsAffected() != 1 {
+		res := store.G(ctx, tx).Exec(`
+		UPDATE pending_settlements SET attempts = attempts + ?, next_check_at = ?, last_error = ?,
+		poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END
+		WHERE id = ? AND state = 'pending' AND task_public_id IS NULL`, increment, next, trunc(lastErr, 2000), e.pollFailed, e.pollObserved, e.id)
+		if res.Error == nil && res.RowsAffected != 1 {
 			return errNotPending
 		}
-		return err
+		return res.Error
 	})
 	if err != nil {
 		s.rec.log.Error("reconcile: reschedule", "entry", e.id, "err", err)
@@ -605,8 +607,8 @@ func (s *Service) rescheduleAttempt(ctx context.Context, e *settleEntry, cfg res
 func (s *Service) closeEntry(ctx context.Context, e *settleEntry, state, note string) {
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	_, err := s.db.Pool.Exec(ctx, `UPDATE pending_settlements SET state = $2, last_error = $3 WHERE id = $1 AND task_public_id IS NULL`,
-		e.id, state, trunc(note, 2000))
+	err := store.G(ctx, s.db.Pool).Model(&model.PendingSettlement{}).Where("id = ? AND task_public_id IS NULL", e.id).
+		Updates(map[string]any{"state": state, "last_error": trunc(note, 2000)}).Error
 	if err != nil {
 		s.rec.log.Error("reconcile: close entry", "entry", e.id, "err", err)
 	}
@@ -676,18 +678,20 @@ func (s *Service) settleReconciled(ctx context.Context, e *settleEntry, row *res
 			detail.LedgerID = &ledgerRes.LedgerID
 		}
 		tk := p.Tokens
-		if _, err := tx.Exec(ctx, `
-			UPDATE usage_logs SET input_tokens = $2, output_tokens = $3, cache_read_tokens = $4,
-				cache_creation_tokens = $5, cache_creation_1h_tokens = $6, metrics = $7,
-				total_cost = $8, billing_status = 'billed', billing_detail = $9, matched_tier = $10, expr_hash = $11,
-				base_cost = $12
-			WHERE id = $1`,
-			e.usageLogID, tk.Input, tk.Output, tk.CacheRead, tk.CacheCreation, tk.CacheCreation1h,
-			jsonOr(p.Metrics, "{}"), total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, cost.base); err != nil {
+		g := store.G(ctx, tx)
+		if err := g.Exec(`
+			UPDATE usage_logs SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+				cache_creation_tokens = ?, cache_creation_1h_tokens = ?, metrics = ?,
+				total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?, expr_hash = ?,
+				base_cost = ?
+			WHERE id = ?`,
+			tk.Input, tk.Output, tk.CacheRead, tk.CacheCreation, tk.CacheCreation1h,
+			jsonOr(p.Metrics, "{}"), total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, cost.base,
+			e.usageLogID).Error; err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE pending_settlements SET state = $2, attempts = attempts + 1, last_error = ''
-			WHERE id = $1`, e.id, SettleStateSettled); err != nil {
+		if err := g.Exec(`UPDATE pending_settlements SET state = ?, attempts = attempts + 1, last_error = ''
+			WHERE id = ?`, SettleStateSettled, e.id).Error; err != nil {
 			return err
 		}
 		if s.events != nil {
@@ -742,15 +746,16 @@ func (s *Service) refundFailed(ctx context.Context, e *settleEntry, row *reserve
 		// 'free' is the honest status: nothing was delivered, nothing is
 		// owed. It is also not in usage_logs_billing_pending_idx, so the
 		// settlement retry loop will not pick the row up and bill it again.
-		if _, err := tx.Exec(ctx, `
+		g := store.G(ctx, tx)
+		if err := g.Exec(`
 			UPDATE usage_logs SET total_cost = 0, base_cost = 0, billing_status = 'free', success = false,
-				error_type = $2, error_message = $3
-			WHERE id = $1`, e.usageLogID, trunc(reason, 50), trunc(reason, 1000)); err != nil {
+				error_type = ?, error_message = ?
+			WHERE id = ?`, trunc(reason, 50), trunc(reason, 1000), e.usageLogID).Error; err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE pending_settlements SET state = $2, attempts = attempts + 1, last_error = $3,
-			poll_failures=CASE WHEN $4 THEN poll_failures+1 WHEN $5 THEN 0 ELSE poll_failures END
-			WHERE id = $1`, e.id, SettleStateFailed, trunc(reason, 2000), e.pollFailed, e.pollObserved); err != nil {
+		if err := g.Exec(`UPDATE pending_settlements SET state = ?, attempts = attempts + 1, last_error = ?,
+			poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END
+			WHERE id = ?`, SettleStateFailed, trunc(reason, 2000), e.pollFailed, e.pollObserved, e.id).Error; err != nil {
 			return err
 		}
 		p.Success, p.ErrorType = false, trunc(reason, 50)
@@ -875,17 +880,18 @@ func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reserve
 		if err := lockLegacyOutcome(ctx, tx, e); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE usage_logs SET billing_status = 'billed', anomalies = anomalies || $2::jsonb
-			WHERE id = $1`, e.usageLogID, mk); err != nil {
+		g := store.G(ctx, tx)
+		if err := g.Exec(`
+			UPDATE usage_logs SET billing_status = 'billed', anomalies = anomalies || ?::jsonb
+			WHERE id = ?`, mk, e.usageLogID).Error; err != nil {
 			return err
 		}
 		attempts := "attempts"
 		if countAttempt {
 			attempts = "attempts + 1"
 		}
-		if _, err := tx.Exec(ctx, `UPDATE pending_settlements SET state = $2, last_error = $3, attempts = `+attempts+`
-			WHERE id = $1`, e.id, entryState, trunc(note, 2000)); err != nil {
+		if err := g.Exec(`UPDATE pending_settlements SET state = ?, last_error = ?, attempts = `+attempts+`
+			WHERE id = ?`, entryState, trunc(note, 2000), e.id).Error; err != nil {
 			return err
 		}
 		if s.events != nil {
@@ -911,14 +917,14 @@ func (s *Service) loadReserved(ctx context.Context, usageLogID int64) (*reserved
 	p := &pending{}
 	st := &reservedRowState{p: p}
 	var metrics, detail []byte
-	err := s.db.Pool.QueryRow(ctx, `
+	err := store.G(ctx, s.db.Pool).Raw(`
 		SELECT u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
 		       u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
 		       u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens,
 		       u.cache_creation_1h_tokens, u.metrics, u.latency_ms, u.created_at, u.rate_multiplier,
 		       COALESCE(u.price_id, 0), u.billing_mode, u.billing_detail, u.billing_status, u.total_cost,
 		       COALESCE(h.expression, mp.expression, '')`+frozenPriceJoins+`
-		WHERE u.id = $1`, usageLogID).
+		WHERE u.id = ?`, usageLogID).Row().
 		Scan(&p.RequestID, &p.UserID, &p.APIKeyID, &p.GroupID, &p.AccountID, &p.PluginKey, &p.Platform,
 			&p.Protocol, &p.AccountType, &p.UpstreamProtocol, &p.Model, &p.Success, &p.StatusCode, &p.ErrorType,
 			&p.Tokens.Input, &p.Tokens.Output, &p.Tokens.CacheRead, &p.Tokens.CacheCreation,
