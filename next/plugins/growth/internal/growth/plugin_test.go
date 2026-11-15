@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -204,7 +205,7 @@ func TestBindReferralCode(t *testing.T) {
 	// Check binding.
 	db, _ := p.db(ctx)
 	var inviterID int64
-	db.QueryRow(ctx, `SELECT inviter_user_id FROM referral_codes WHERE user_id = 1`).Scan(&inviterID)
+	db.Raw(`SELECT inviter_user_id FROM referral_codes WHERE user_id = 1`).Row().Scan(&inviterID)
 	if inviterID != 100 {
 		t.Fatalf("inviter = %d", inviterID)
 	}
@@ -228,6 +229,64 @@ func TestBindWithoutOwnCode(t *testing.T) {
 	code11, _ := p.ensureCode(ctx, 11)
 	if err := p.bindInviter(ctx, 10, code11); err == nil {
 		t.Fatal("mutual referral accepted")
+	}
+}
+
+// TestEnsureCodeConcurrent: callers racing to create a user's code all get
+// the one stored, not the codes that lost the insert.
+func TestEnsureCodeConcurrent(t *testing.T) {
+	p, _, _ := startDB(t, nil)
+	ctx := context.Background()
+	const n = 8
+	codes := make([]string, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			<-start
+			codes[i], errs[i] = p.ensureCode(ctx, 42)
+		})
+	}
+	close(start)
+	wg.Wait()
+	db, _ := p.db(ctx)
+	stored, err := codeOf(db, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range n {
+		if errs[i] != nil || codes[i] != stored {
+			t.Errorf("call %d: %q, %v; stored %q", i, codes[i], errs[i], stored)
+		}
+	}
+}
+
+// TestCommissionWithoutBoundAt: an invitee row without bound_at fails the
+// event, which is delivered again, instead of acknowledging it unpaid (as
+// the zero time would, being long expired) or paying it.
+func TestCommissionWithoutBoundAt(t *testing.T) {
+	p, h, fh := startDB(t, Settings{
+		ReferralEnabled:      true,
+		ReferralRatePercent:  10,
+		ReferralDurationDays: 30,
+		CheckinTimezone:      "UTC",
+	})
+	ctx := context.Background()
+	code1, _ := p.ensureCode(ctx, 1)
+	if err := p.bindInviter(ctx, 2, code1); err != nil {
+		t.Fatal(err)
+	}
+	db, _ := p.db(ctx)
+	if err := db.Exec(`UPDATE referral_codes SET bound_at = NULL WHERE user_id = 2`).Error; err != nil {
+		t.Fatal(err)
+	}
+	usage := &pluginv1.Event{Id: 100, Type: "usage.recorded", PayloadJson: `{"user_id":2,"total_cost":"1.00","billing_status":"billed"}`}
+	if _, err := h.App.OnEvents(ctx, &pluginv1.OnEventsRequest{Events: []*pluginv1.Event{usage}}); err == nil {
+		t.Fatal("event without bound_at acknowledged")
+	}
+	if n := len(fh.Ledger()); n != 0 {
+		t.Fatalf("ledger = %d entries, want none", n)
 	}
 }
 
@@ -262,7 +321,7 @@ func TestCommissionOnUsage(t *testing.T) {
 	// Check commission record.
 	db, _ := p.db(ctx)
 	var commission decimal.Decimal
-	db.QueryRow(ctx, `SELECT commission FROM commissions WHERE inviter_user_id = 1 AND invitee_user_id = 2`).Scan(&commission)
+	db.Raw(`SELECT commission FROM commissions WHERE inviter_user_id = 1 AND invitee_user_id = 2`).Row().Scan(&commission)
 	if !commission.Equal(expected) {
 		t.Fatalf("db commission = %s", commission)
 	}
@@ -374,7 +433,7 @@ func TestDuplicateCreditIsRecorded(t *testing.T) {
 	}
 	db, _ := p.db(ctx)
 	var n int
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM commissions WHERE event_type = 'usage.recorded' AND event_id = 7`).Scan(&n); err != nil || n != 1 {
+	if err := db.Raw(`SELECT count(*) FROM commissions WHERE event_type = 'usage.recorded' AND event_id = 7`).Row().Scan(&n); err != nil || n != 1 {
 		t.Fatalf("commission rows = %d (%v), want 1", n, err)
 	}
 	if len(fh.Ledger()) != 1 {
@@ -436,7 +495,7 @@ func TestCheckinConsecutiveDays(t *testing.T) {
 	// Insert check-ins for yesterday and day before yesterday.
 	for i := 1; i <= 2; i++ {
 		date := now.AddDate(0, 0, -i).Format("2006-01-02")
-		db.Exec(ctx, `INSERT INTO checkins (user_id, checkin_date, quota_awarded, ledger_id) VALUES (1, $1, 0.01, $2)`, date, 1000+i)
+		db.Exec(`INSERT INTO checkins (user_id, checkin_date, quota_awarded, ledger_id) VALUES (1, ?, 0.01, ?)`, date, 1000+i)
 	}
 	// Get status.
 	resp := h.Do("GET", "/me/checkin/status", nil, nil)
@@ -455,7 +514,7 @@ func TestCleanupJob(t *testing.T) {
 	db, _ := p.db(ctx)
 	// Insert old check-in (100 days ago).
 	oldDate := time.Now().AddDate(0, 0, -100).Format("2006-01-02")
-	db.Exec(ctx, `INSERT INTO checkins (user_id, checkin_date, quota_awarded, ledger_id) VALUES (1, $1, 0.01, 9999)`, oldDate)
+	db.Exec(`INSERT INTO checkins (user_id, checkin_date, quota_awarded, ledger_id) VALUES (1, ?, 0.01, 9999)`, oldDate)
 	// Run cleanup job.
 	jobResp, err := h.App.RunJob(ctx, &pluginv1.RunJobRequest{JobId: JobCleanup})
 	if err != nil {
@@ -466,7 +525,7 @@ func TestCleanupJob(t *testing.T) {
 	}
 	// Check old record deleted.
 	var count int
-	db.QueryRow(ctx, `SELECT COUNT(*) FROM checkins WHERE checkin_date = $1`, oldDate).Scan(&count)
+	db.Raw(`SELECT COUNT(*) FROM checkins WHERE checkin_date = ?`, oldDate).Row().Scan(&count)
 	if count != 0 {
 		t.Fatalf("old record not deleted")
 	}
@@ -512,7 +571,7 @@ func TestAdminRoutesQueryFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(ctx, `DROP TABLE commissions`); err != nil {
+	if err := db.Exec(`DROP TABLE commissions`).Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{"/admin/stats", "/admin/commissions", "/me/referral"} {

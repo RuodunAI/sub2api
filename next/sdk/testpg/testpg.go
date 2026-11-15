@@ -17,6 +17,7 @@ package testpg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -29,7 +30,8 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
-	"github.com/jackc/pgx/v5"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 )
 
 // Version is the PostgreSQL major the production images run (postgres:16).
@@ -46,21 +48,29 @@ var (
 	localErr error
 )
 
+// ErrOff is Server's answer when SUB2API_TESTPG=off and TEST_DATABASE_URL
+// is unset.
+var ErrOff = errors.New("SUB2API_TESTPG=off and TEST_DATABASE_URL not set")
+
 // URL returns a superuser DSN of the server tests use, or skips the test
 // when SUB2API_TESTPG=off and TEST_DATABASE_URL is unset.
 func URL(t testing.TB) string {
 	t.Helper()
-	if u := os.Getenv("TEST_DATABASE_URL"); u != "" {
-		return u
+	once.Do(func() { localURL, localErr = Server(context.Background()) })
+	if errors.Is(localErr, ErrOff) {
+		t.Skip(localErr.Error())
 	}
-	if strings.EqualFold(os.Getenv("SUB2API_TESTPG"), "off") {
-		t.Skip("SUB2API_TESTPG=off and TEST_DATABASE_URL not set")
-	}
-	once.Do(func() { localURL, localErr = Ensure(context.Background()) })
 	if localErr != nil {
 		t.Fatalf("local test PostgreSQL: %v (set TEST_DATABASE_URL, or SUB2API_TESTPG=off to skip database tests)", localErr)
 	}
 	return localURL
+}
+
+// Server is URL for programs: TEST_DATABASE_URL when set, else the local
+// server, started unless it runs. It keeps running afterwards; see Acquire.
+func Server(ctx context.Context) (string, error) {
+	url, _, err := Acquire(ctx)
+	return url, err
 }
 
 // Dir is where the local server keeps its binaries, data and port.
@@ -72,44 +82,68 @@ func Dir() (string, error) {
 	return filepath.Join(base, "sub2api-testpg", string(Version)), nil
 }
 
+// Acquire is Server for a program that leaves no server behind
+// (sub2api-plugin pack and db): release stops the local server when Acquire
+// started it, and does nothing when TEST_DATABASE_URL is set or the server
+// was running already. Call release once the program is done with the DSN.
+func Acquire(ctx context.Context) (url string, release func(), err error) {
+	if u := os.Getenv("TEST_DATABASE_URL"); u != "" {
+		return u, func() {}, nil
+	}
+	if strings.EqualFold(os.Getenv("SUB2API_TESTPG"), "off") {
+		return "", func() {}, ErrOff
+	}
+	url, started, err := ensure(ctx)
+	if err != nil || !started {
+		return url, func() {}, err
+	}
+	return url, func() { _ = Stop() }, nil
+}
+
 // Ensure starts the local server unless one is already running and returns
 // its superuser DSN.
 func Ensure(ctx context.Context) (string, error) {
+	url, _, err := ensure(ctx)
+	return url, err
+}
+
+// ensure is Ensure, also reporting whether it started the server.
+func ensure(ctx context.Context) (url string, started bool, err error) {
 	dir, err := Dir()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
+		return "", false, err
 	}
 	unlock, err := lock(filepath.Join(dir, "lock"))
 	if err != nil {
-		return "", fmt.Errorf("lock %s: %w", dir, err)
+		return "", false, fmt.Errorf("lock %s: %w", dir, err)
 	}
 	defer unlock()
 
 	if port, ok := runningPort(ctx, dir); ok {
-		return dsn(port), nil
+		return dsn(port), false, nil
 	}
 	port, err := freePort()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	logf, err := os.OpenFile(filepath.Join(dir, "server.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer logf.Close()
 	pg := embeddedpostgres.NewDatabase(config(dir, port, logf))
 	// pg_ctl start -w returns once the server accepts connections and leaves
 	// it running in the background after this process exits.
 	if err := pg.Start(); err != nil {
-		return "", fmt.Errorf("start embedded PostgreSQL %s (log: %s): %w", Version, logf.Name(), err)
+		return "", false, fmt.Errorf("start embedded PostgreSQL %s (log: %s): %w", Version, logf.Name(), err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "port"), []byte(strconv.Itoa(int(port))), 0o600); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return dsn(port), nil
+	return dsn(port), true, nil
 }
 
 // Stop stops the local server if it is running.
@@ -171,14 +205,18 @@ func runningPort(ctx context.Context, dir string) (uint32, bool) {
 	if err != nil {
 		return 0, false
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	conn, err := pgx.Connect(ctx, dsn(uint32(n)))
+	db, err := pgdb.Open(dsn(uint32(n)), pgdb.Options{MaxConns: 1})
 	if err != nil {
 		return 0, false
 	}
-	_ = conn.Close(ctx)
-	return uint32(n), true
+	defer pgdb.Close(db) //nolint:errcheck // a probe
+	sqlDB, err := db.DB()
+	if err != nil {
+		return 0, false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return uint32(n), sqlDB.PingContext(ctx) == nil
 }
 
 func freePort() (uint32, error) {

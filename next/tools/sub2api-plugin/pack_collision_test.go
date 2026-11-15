@@ -73,8 +73,10 @@ func TestAnthropicReleaseAndUpgradeFixtureRemainDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The fixture's migration has no model on purpose: db check, which
+	// includes the overlay's migrations, does not apply to it.
 	fixture := strings.TrimSpace(runOK(t, "pack", "--dir", dir, "--runtimes", runtimes,
-		"--overlay", "testdata/upgrade", "--out-dir", market))
+		"--overlay", "testdata/upgrade", "--skip-db-check", "--out-dir", market))
 	var shipped struct {
 		Version string `json:"version"`
 	}
@@ -82,7 +84,7 @@ func TestAnthropicReleaseAndUpgradeFixtureRemainDistinct(t *testing.T) {
 	if err != nil || json.Unmarshal(raw, &shipped) != nil || shipped.Version == "" {
 		t.Fatal("cannot read the release manifest version", err)
 	}
-	if release == fixture || filepath.Base(release) != "anthropic-"+shipped.Version+".s2plugin" || filepath.Base(fixture) != "anthropic-0.3.3-test.s2plugin" {
+	if release == fixture || filepath.Base(release) != "anthropic-"+shipped.Version+".s2plugin" || filepath.Base(fixture) != "anthropic-0.3.4-test.s2plugin" {
 		t.Fatalf("release=%s fixture=%s", release, fixture)
 	}
 	after, _ := os.ReadFile(release)
@@ -105,7 +107,7 @@ func TestAnthropicReleaseAndUpgradeFixtureRemainDistinct(t *testing.T) {
 		if err := json.Unmarshal(files["manifest.json"], &m); err != nil {
 			t.Fatal(err)
 		}
-		if (m["version"] == "0.3.3-test") != tc.wantFixture {
+		if (m["version"] == "0.3.4-test") != tc.wantFixture {
 			t.Fatalf("unexpected packaged manifest: %s", files["manifest.json"])
 		}
 	}

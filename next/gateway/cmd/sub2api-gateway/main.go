@@ -35,6 +35,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/proxy"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/supervisor"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/pgdsn"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -229,22 +230,26 @@ func (s *shell) close() {
 	s.closers = nil
 }
 
-// openPool opens the PG pool with the env-overridable size. Like pgxpool
-// before, it connects lazily: the first statement dials.
+// gatewayPool is the gateway's pool when the DSN sets none. Under pgxpool
+// the default was max(4, NumCPU), which made a gateway on a large host hold
+// as many connections as the core; the gateway only serves the control
+// plane, so it keeps the fixed 4-8 connections it was meant to have. The
+// lifetimes are pgxpool's defaults.
+var gatewayPool = pgdsn.Defaults{MaxConns: 8, MaxConnLifetime: time.Hour, MaxConnIdleTime: 30 * time.Minute}
+
+// openPool opens the PG pool. The DSN is shared with the core, whose pgxpool
+// reads its pool_* parameters: they leave the DSN (PostgreSQL rejects them as
+// settings) and size this pool, SUB2API_GATEWAY_POOL_MAX_CONNS above them.
+// Like pgxpool before, it connects lazily: the first statement dials.
 func openPool(c config) (*gorm.DB, error) {
-	dsn, maxConns, err := takePoolParams(c.DatabaseURL)
+	dsn, pool, err := pgdsn.Split(c.DatabaseURL)
 	if err != nil {
 		return nil, err
 	}
-	// Allow environment override for tuning; default to 8 per gateway.
 	if v := os.Getenv("SUB2API_GATEWAY_POOL_MAX_CONNS"); v != "" {
-		var n int
-		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
-			maxConns = n
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			pool.MaxConns = &n
 		}
-	}
-	if maxConns == 0 {
-		maxConns = 8
 	}
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		SkipDefaultTransaction: true, // the store opens the transactions it needs
@@ -259,12 +264,7 @@ func openPool(c config) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	// database/sql keeps two idle connections by default; keep them all
-	// warm and recycle them on pgxpool's default schedule, as before.
-	sqlDB.SetMaxOpenConns(maxConns)
-	sqlDB.SetMaxIdleConns(maxConns)
-	sqlDB.SetConnMaxLifetime(time.Hour)
-	sqlDB.SetConnMaxIdleTime(30 * time.Minute)
+	pool.Apply(sqlDB, gatewayPool, nil)
 	return db, nil
 }
 
@@ -273,34 +273,6 @@ func closePool(db *gorm.DB) {
 	if sqlDB, err := db.DB(); err == nil {
 		_ = sqlDB.Close()
 	}
-}
-
-// takePoolParams removes pgxpool's pool_* parameters from a URL DSN. The DSN
-// is shared with the core, whose pgxpool reads them; pgx's connection parser
-// would send them to PostgreSQL as settings, which it rejects.
-// pool_max_conns still sizes this pool, as it did under pgxpool.
-func takePoolParams(dsn string) (string, int, error) {
-	if !strings.Contains(dsn, "pool_") || (!strings.HasPrefix(dsn, "postgres://") && !strings.HasPrefix(dsn, "postgresql://")) {
-		return dsn, 0, nil
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return "", 0, errors.New("database URL is invalid") // the URL carries the password
-	}
-	q := u.Query()
-	maxConns := 0
-	if v := q.Get("pool_max_conns"); v != "" {
-		if maxConns, err = strconv.Atoi(v); err != nil || maxConns < 1 {
-			return "", 0, fmt.Errorf("pool_max_conns %q must be a positive integer", v)
-		}
-	}
-	for k := range q {
-		if strings.HasPrefix(k, "pool_") {
-			q.Del(k)
-		}
-	}
-	u.RawQuery = q.Encode()
-	return u.String(), maxConns, nil
 }
 
 // openRedis connects to the cache.

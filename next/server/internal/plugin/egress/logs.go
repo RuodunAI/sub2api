@@ -73,7 +73,8 @@ type logStore interface {
 	// resetOpen marks rows of nodeID still 'open' and started before
 	// before as reset (left behind by an earlier run of this node).
 	resetOpen(ctx context.Context, nodeID string, before time.Time) (int64, error)
-	// insertOpen inserts result='open' rows and returns their ids in order.
+	// insertOpen inserts result='open' rows and returns their ids in order,
+	// all or none (no ids with an error).
 	insertOpen(ctx context.Context, rows []logEntry) ([]int64, error)
 	insertDone(ctx context.Context, rows []logEntry) error
 	closeRows(ctx context.Context, rows []closedRow) error
@@ -287,13 +288,12 @@ func (w *logWriter) write(ctx context.Context, items []logItem) error {
 		for i, c := range opens {
 			rows[i] = c.entry
 		}
-		ids, err := w.st.insertOpen(ctx, rows)
-		if err != nil {
+		// The rows are inserted all or none: after a failure no open row
+		// has an id, and their closes below write whole rows.
+		if ids, err := w.st.insertOpen(ctx, rows); err != nil {
 			firstErr = err
-		}
-		// On a partial failure the rows inserted so far keep their ids.
-		for i, c := range opens {
-			if i < len(ids) && ids[i] > 0 {
+		} else {
+			for i, c := range opens {
 				c.id = ids[i]
 				w.openIDs[c.id] = true
 			}

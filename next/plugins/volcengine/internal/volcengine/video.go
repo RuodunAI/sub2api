@@ -33,14 +33,15 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tidwall/gjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/volcengine/internal/model"
 )
 
 // Protocol ids of the two video endpoints declared in manifest.json.
@@ -149,11 +150,10 @@ type VideoTask struct {
 // lookupVideoTask reads one task by its upstream id. A missing row is
 // (nil, nil): the caller decides what that means (ResolveModel turns it into
 // an empty model, i.e. a 400).
-func lookupVideoTask(ctx context.Context, db *pgxpool.Pool, taskID string) (*VideoTask, error) {
+func lookupVideoTask(db *gorm.DB, taskID string) (*VideoTask, error) {
 	var t VideoTask
-	err := db.QueryRow(ctx, `SELECT model, state, user_id, account_id FROM video_tasks WHERE task_id = $1`, taskID).
-		Scan(&t.Model, &t.State, &t.UserID, &t.AccountID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := db.Model(&model.VideoTask{}).Select("model, state, user_id, account_id").Where("task_id = ?", taskID).Take(&t).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
 	}
 	if err != nil {
@@ -213,7 +213,7 @@ func (p *Plugin) ResolveModel(ctx context.Context, in *pluginv1.ResolveModelRequ
 		p.log.Warn("volcengine: ResolveModel cannot reach the database", "task_id", id, "error", err.Error())
 		return &pluginv1.ResolveModelResponse{}, nil
 	}
-	t, err := lookupVideoTask(ctx, db, id)
+	t, err := lookupVideoTask(db, id)
 	if err != nil {
 		p.log.Warn("volcengine: ResolveModel lookup failed", "task_id", id, "error", err.Error())
 		return &pluginv1.ResolveModelResponse{}, nil
@@ -520,10 +520,14 @@ func succeededFacts(body []byte) map[string]string {
 	return nil
 }
 
-// pool returns the plugin's database pool.
-func (p *Plugin) pool(ctx context.Context) (*pgxpool.Pool, error) {
+// pool returns the plugin's database handle, bound to ctx.
+func (p *Plugin) pool(ctx context.Context) (*gorm.DB, error) {
 	if p.host == nil {
 		return nil, errors.New("plugin not initialised")
 	}
-	return p.host.DB(ctx)
+	db, err := p.host.DB(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return db, nil
 }

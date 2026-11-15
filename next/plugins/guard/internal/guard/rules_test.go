@@ -108,12 +108,12 @@ func TestPutRulesConcurrent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx, err := db.Begin(ctx)
-	if err != nil {
+	tx := db.Begin()
+	if err := tx.Error; err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	if _, err := tx.Exec(ctx, `LOCK TABLE rules IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+	defer tx.Rollback() // a no-op once rolled back below
+	if err := tx.Exec(`LOCK TABLE rules IN SHARE ROW EXCLUSIVE MODE`).Error; err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan int32, 1)
@@ -131,7 +131,7 @@ func TestPutRulesConcurrent(t *testing.T) {
 	if got := rulePatterns(t, p2); len(got) != 2 {
 		t.Fatalf("read during lock = %v", got)
 	}
-	if err := tx.Rollback(ctx); err != nil {
+	if err := tx.Rollback().Error; err != nil {
 		t.Fatal(err)
 	}
 	select {

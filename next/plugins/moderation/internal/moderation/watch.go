@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -41,7 +41,7 @@ type Watch struct {
 
 const watchColumns = `user_id, level, source, since_at, expires_at, hit_count, violation_count, violation_epoch, last_hit_at, hits_since_seen, note, updated_at, locked`
 
-func scanWatch(r pgx.Row) (Watch, error) {
+func scanWatch(r row) (Watch, error) {
 	var w Watch
 	err := r.Scan(&w.UserID, &w.Level, &w.Source, &w.SinceAt, &w.ExpiresAt, &w.HitCount, &w.ViolationCount, &w.ViolationEpoch, &w.LastHitAt, &w.HitsSinceSeen, &w.Note, &w.UpdatedAt, &w.Locked)
 	w.SinceAt, w.UpdatedAt = w.SinceAt.UTC(), w.UpdatedAt.UTC()
@@ -60,9 +60,9 @@ func utcPtr(t *time.Time) *time.Time {
 
 // loadWatch reads (and locks) one entry; the caller holds the user's
 // block_subjects lock.
-func loadWatch(ctx context.Context, tx pgx.Tx, uid int64) (Watch, bool, error) {
-	w, err := scanWatch(tx.QueryRow(ctx, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = $1 FOR UPDATE`, uid))
-	if errors.Is(err, pgx.ErrNoRows) {
+func loadWatch(tx *gorm.DB, uid int64) (Watch, bool, error) {
+	w, err := scanWatch(queryRow(tx, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = ? FOR UPDATE`, uid))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Watch{}, false, nil
 	}
 	return w, err == nil, err
@@ -77,26 +77,25 @@ type watchChange struct {
 	operator         *int64
 }
 
-func watchEvent(ctx context.Context, tx pgx.Tx, c watchChange) error {
-	_, err := tx.Exec(ctx, `INSERT INTO watch_events (user_id, action, from_level, to_level, reason, operator_id) VALUES ($1,$2,$3,$4,$5,$6)`,
-		c.uid, c.action, c.from, c.to, truncateRunes(c.reason, 500), c.operator)
-	return err
+func watchEvent(tx *gorm.DB, c watchChange) error {
+	return tx.Exec(`INSERT INTO watch_events (user_id, action, from_level, to_level, reason, operator_id) VALUES (?,?,?,?,?,?)`,
+		c.uid, c.action, c.from, c.to, truncateRunes(c.reason, 500), c.operator).Error
 }
 
 // removeEntry deletes an entry and records c (c.from is the level it had).
-func removeEntry(ctx context.Context, tx pgx.Tx, c watchChange) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM watchlist WHERE user_id = $1`, c.uid); err != nil {
+func removeEntry(tx *gorm.DB, c watchChange) error {
+	if err := tx.Exec(`DELETE FROM watchlist WHERE user_id = ?`, c.uid).Error; err != nil {
 		return err
 	}
-	if err := watchEvent(ctx, tx, c); err != nil {
+	if err := watchEvent(tx, c); err != nil {
 		return err
 	}
-	return bumpWatch(ctx, tx)
+	return bumpWatch(tx)
 }
 
 // expireEntry removes an entry whose expiry has passed.
-func expireEntry(ctx context.Context, tx pgx.Tx, w Watch) error {
-	return removeEntry(ctx, tx, watchChange{uid: w.UserID, action: "expire", from: w.Level, reason: "expired"})
+func expireEntry(tx *gorm.DB, w Watch) error {
+	return removeEntry(tx, watchChange{uid: w.UserID, action: "expire", from: w.Level, reason: "expired"})
 }
 
 // WatchEvent is one row of the watch history.
@@ -243,7 +242,7 @@ func (p *Plugin) createWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if in.Level != nil {
 		level = *in.Level
 	}
-	return p.writeWatch(ctx, req, uid, func(tx pgx.Tx, w Watch, found bool, now time.Time) (Watch, error) {
+	return p.writeWatch(ctx, req, uid, func(tx *gorm.DB, w Watch, found bool, now time.Time) (Watch, error) {
 		if found {
 			return w, errConflict
 		}
@@ -257,11 +256,11 @@ func (p *Plugin) createWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if in.Note != nil {
 			w.Note = strings.TrimSpace(*in.Note)
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, note, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$4)`, uid, w.Level, w.Source, now, w.ExpiresAt, w.ViolationEpoch, w.Note); err != nil {
+		if err := tx.Exec(`INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, note, updated_at)
+			VALUES (?,?,?,?,?,?,?,?)`, uid, w.Level, w.Source, now, w.ExpiresAt, w.ViolationEpoch, w.Note, now).Error; err != nil {
 			return w, err
 		}
-		return w, watchEvent(ctx, tx, watchChange{uid: uid, action: "add", to: level, reason: in.historyReason(w.Note),
+		return w, watchEvent(tx, watchChange{uid: uid, action: "add", to: level, reason: in.historyReason(w.Note),
 			operator: callerID(req)})
 	})
 }
@@ -293,7 +292,7 @@ func (p *Plugin) updateWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if len(errs) > 0 {
 		return pluginsdk.FieldErrorResponse("invalid watch entry / 名单参数无效", errs), nil
 	}
-	return p.writeWatch(ctx, req, uid, func(tx pgx.Tx, w Watch, found bool, now time.Time) (Watch, error) {
+	return p.writeWatch(ctx, req, uid, func(tx *gorm.DB, w Watch, found bool, now time.Time) (Watch, error) {
 		if !found {
 			return w, errNotFound
 		}
@@ -321,13 +320,13 @@ func (p *Plugin) updateWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 			w.Note = strings.TrimSpace(*in.Note)
 		}
 		w.UpdatedAt = now
-		if _, err := tx.Exec(ctx, `UPDATE watchlist SET level = $2, expires_at = $3, note = $4, updated_at = $6,
-			source = CASE WHEN $5 THEN 'manual' ELSE source END,
-			since_at = CASE WHEN $5 THEN $6 ELSE since_at END,
-			violation_count = CASE WHEN $5 THEN 0 ELSE violation_count END,
-			violation_epoch = CASE WHEN $5 THEN $7 ELSE violation_epoch END,
-			hits_since_seen = CASE WHEN $5 THEN 0 ELSE hits_since_seen END
-			WHERE user_id = $1`, uid, w.Level, w.ExpiresAt, w.Note, changed, now, w.ViolationEpoch); err != nil {
+		if err := tx.Exec(`UPDATE watchlist SET level = ?, expires_at = ?, note = ?, updated_at = ?,
+			source = CASE WHEN ? THEN 'manual' ELSE source END,
+			since_at = CASE WHEN ? THEN ? ELSE since_at END,
+			violation_count = CASE WHEN ? THEN 0 ELSE violation_count END,
+			violation_epoch = CASE WHEN ? THEN ? ELSE violation_epoch END,
+			hits_since_seen = CASE WHEN ? THEN 0 ELSE hits_since_seen END
+			WHERE user_id = ?`, w.Level, w.ExpiresAt, w.Note, now, changed, changed, now, changed, changed, w.ViolationEpoch, changed, uid).Error; err != nil {
 			return w, err
 		}
 		action := "update"
@@ -336,7 +335,7 @@ func (p *Plugin) updateWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		} else if in.Note != nil && in.Level == nil && in.Days == nil && !v.hasExpires {
 			action = "note"
 		}
-		return w, watchEvent(ctx, tx, watchChange{uid: uid, action: action, from: from, to: w.Level, reason: in.historyReason(w.Note),
+		return w, watchEvent(tx, watchChange{uid: uid, action: action, from: from, to: w.Level, reason: in.historyReason(w.Note),
 			operator: callerID(req)})
 	})
 }
@@ -349,11 +348,11 @@ func (p *Plugin) deleteWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		return bad, nil
 	}
 	reason := strings.TrimSpace(pluginsdk.Query(req, "reason"))
-	return p.writeWatch(ctx, req, uid, func(tx pgx.Tx, w Watch, found bool, _ time.Time) (Watch, error) {
+	return p.writeWatch(ctx, req, uid, func(tx *gorm.DB, w Watch, found bool, _ time.Time) (Watch, error) {
 		if !found {
 			return w, errNotFound
 		}
-		return w, removeEntry(ctx, tx, watchChange{uid: uid, action: "remove", from: w.Level, reason: reason,
+		return w, removeEntry(tx, watchChange{uid: uid, action: "remove", from: w.Level, reason: reason,
 			operator: callerID(req)})
 	})
 }
@@ -368,13 +367,13 @@ var (
 )
 
 // watchChangeFn changes uid's live entry w (found = there is one) at now.
-type watchChangeFn func(tx pgx.Tx, w Watch, found bool, now time.Time) (Watch, error)
+type watchChangeFn func(tx *gorm.DB, w Watch, found bool, now time.Time) (Watch, error)
 
 // writeWatch runs one manual change of an entry that is not locked (a
 // locked entry is changed through the lock routes only, locks.go: the
 // change is refused).
 func (p *Plugin) writeWatch(ctx context.Context, req *pluginv1.HTTPRequest, uid int64, fn watchChangeFn) (*pluginv1.HTTPResponse, error) {
-	return p.changeWatch(ctx, req, uid, func(tx pgx.Tx, w Watch, found bool, now time.Time) (Watch, error) {
+	return p.changeWatch(ctx, req, uid, func(tx *gorm.DB, w Watch, found bool, now time.Time) (Watch, error) {
 		if found && w.Locked {
 			return w, errLocked
 		}
@@ -392,18 +391,18 @@ func (p *Plugin) changeWatch(ctx context.Context, req *pluginv1.HTTPRequest, uid
 	}
 	now := p.now().UTC()
 	var out Watch
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		if err := lockBlockSubject(ctx, tx, uid); err != nil {
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := lockBlockSubject(tx, uid); err != nil {
 			return err
 		}
-		w, found, _, err := liveWatchEntry(ctx, tx, uid, now)
+		w, found, _, err := liveWatchEntry(tx, uid, now)
 		if err != nil {
 			return err
 		}
 		if out, err = fn(tx, w, found, now); err != nil {
 			return err
 		}
-		return bumpWatch(ctx, tx)
+		return bumpWatch(tx)
 	})
 	switch {
 	case errors.Is(err, errUnchanged):
@@ -436,12 +435,8 @@ func (p *Plugin) listWatchEvents(ctx context.Context, req *pluginv1.HTTPRequest)
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	rows, err := db.Query(ctx, `SELECT id, user_id, action, from_level, to_level, reason, operator_id, created_at
-		FROM watch_events WHERE user_id = $1 ORDER BY id DESC LIMIT 200`, uid)
-	if err != nil {
-		return nil, err
-	}
-	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (WatchEvent, error) {
+	list, err := collect(db.Raw(`SELECT id, user_id, action, from_level, to_level, reason, operator_id, created_at
+		FROM watch_events WHERE user_id = ? ORDER BY id DESC LIMIT 200`, uid), func(r row) (WatchEvent, error) {
 		var e WatchEvent
 		err := r.Scan(&e.ID, &e.UserID, &e.Action, &e.FromLevel, &e.ToLevel, &e.Reason, &e.OperatorID, &e.CreatedAt)
 		e.CreatedAt = e.CreatedAt.UTC()

@@ -294,7 +294,7 @@ func TestWatchListFiltersAndSeen(t *testing.T) {
 	// A daily statistics row alone (every moderated user has one) does not
 	// make a user answerable: it would let a moderator list active users.
 	db, _ := p.db(context.Background())
-	if _, err := db.Exec(context.Background(), `INSERT INTO user_daily (day, user_id, audited) VALUES (current_date, 33, 1)`); err != nil {
+	if err := db.Exec(`INSERT INTO user_daily (day, user_id, audited) VALUES (current_date, 33, 1)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if us := decodeData[[]CoreUser](t, h.Do("GET", "/users", map[string]string{"ids": "33"}, nil)); len(us) != 0 {
@@ -591,7 +591,7 @@ func TestStaffCheckFailureKeepsDailyCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	suspicious := func() (n int64) {
-		if err := db.QueryRow(ctx, `SELECT coalesce(sum(suspicious), 0) FROM user_daily WHERE user_id = 61`).Scan(&n); err != nil {
+		if err := queryRow(db, `SELECT coalesce(sum(suspicious), 0) FROM user_daily WHERE user_id = 61`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -619,8 +619,8 @@ func TestCostDaysFollowCallerOffset(t *testing.T) {
 	// 15:00 and 17:00 UTC of yesterday: one UTC day, two days at UTC+8
 	// (whose midnight is 16:00 UTC).
 	y := time.Now().UTC().Truncate(24 * time.Hour).Add(-24 * time.Hour)
-	if _, err := db.Exec(ctx, `INSERT INTO costs (hour, channel_id, source, priced_calls, cost) VALUES ($1, 1, 'audit', 1, 1), ($2, 1, 'audit', 1, 2)`,
-		y.Add(15*time.Hour), y.Add(17*time.Hour)); err != nil {
+	if err := db.Exec(`INSERT INTO costs (hour, channel_id, source, priced_calls, cost) VALUES (?, 1, 'audit', 1, 1), (?, 1, 'audit', 1, 2)`,
+		y.Add(15*time.Hour), y.Add(17*time.Hour)).Error; err != nil {
 		t.Fatal(err)
 	}
 	days := func(offset string) map[time.Time]string {

@@ -393,13 +393,13 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 	q := s.d.DB.Gorm
 	now := time.Now()
 	midnight := dayStart(now, core.TimeZone(ctx))
-	ids, today := make([]int64, len(out)), make([]usageWindow, len(out))
+	ids := make([]int64, len(out))
 	for i, v := range out {
-		ids[i], today[i] = v.ID, usageWindow{account: v.ID, since: midnight}
+		ids[i] = v.ID
 	}
 	// The limit periods are computed in Go (time zones, DST, month ends)
 	// and read with another query when one is active.
-	totals, todays, limits, err := usageOverview(ctx, q, ids, today)
+	totals, todays, limits, err := usageOverview(ctx, q, ids, midnight)
 	if err != nil {
 		slog.WarnContext(ctx, "account: read usage", "err", err)
 		return
@@ -415,22 +415,55 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 	}
 }
 
-// usageOverview reads usageTotals, usageIn(today) and usageLimits of ids.
-func usageOverview(ctx context.Context, q *gorm.DB, ids []int64, today []usageWindow) (map[int64]UsageFigures, []UsageFigures, map[int64]UsageLimit, error) {
-	totals, err := usageTotals(ctx, q, ids)
+// usageOverview reads what usageTotals, usageIn (a window from since to now
+// for each account) and usageLimits read of ids, in one statement
+// (usageOverviewSQL): the totals and the limits by account, the windows in
+// the order of ids.
+func usageOverview(ctx context.Context, q *gorm.DB, ids []int64, since time.Time) (map[int64]UsageFigures, []UsageFigures, map[int64]UsageLimit, error) {
+	totals, limits := make(map[int64]UsageFigures, len(ids)), make(map[int64]UsageLimit, len(ids))
+	windows := make([]UsageFigures, 0, len(ids))
+	err := store.EachRow(store.G(ctx, q).Raw(usageOverviewSQL, store.Int64s(ids), since), func(rows *sql.Rows) error {
+		var id int64
+		var hasTotals, hasLimit bool
+		var total, window UsageFigures
+		var l UsageLimit
+		dest := append([]any{&id, &hasTotals, &total.Cost, &total.RawCost, &total.Requests, &total.Tokens,
+			&window.Cost, &window.RawCost, &window.Requests, &window.Tokens, &hasLimit}, l.scanTargets()...)
+		if err := rows.Scan(dest...); err != nil {
+			return err
+		}
+		windows = append(windows, window)
+		if hasTotals {
+			totals[id] = total
+		}
+		if hasLimit {
+			limits[id] = l
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("totals: %w", err)
+		return nil, nil, nil, err
 	}
-	todays, err := usageIn(ctx, q, today)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("today: %w", err)
-	}
-	limits, err := usageLimits(ctx, q, ids)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("limits: %w", err)
-	}
-	return totals, todays, limits, nil
+	return totals, windows, limits, nil
 }
+
+// usageOverviewSQL is usageTotalsSQL, usageInSQL and usageLimitsSQL of each
+// account of the array, as one statement: one row per account in the
+// array's order, its window starting at the second parameter. The totals
+// and the limit are LEFT JOINed, so the row says whether the account has
+// them (an absent one reads as zero values, which usageOverview drops); the
+// window is usageInSQL's sums, zero over no hour.
+const usageOverviewSQL = `SELECT w.id,
+		t.account_id IS NOT NULL, coalesce(t.cost, 0), coalesce(t.raw_cost, 0), coalesce(t.requests, 0), coalesce(t.tokens, 0),
+		d.cost, d.raw_cost, d.requests, d.tokens,
+		l.account_id IS NOT NULL, coalesce(l.raw_cost, false), coalesce(l.enabled, false), coalesce(l.amount, 0), coalesce(l.period, ''),
+		coalesce(l.period_count, 0), l.anchor, coalesce(l.timezone, ''), l.waived_window
+		FROM unnest(?::bigint[]) WITH ORDINALITY AS w(id, i)
+		LEFT JOIN account_usage_totals t ON t.account_id = w.id
+		LEFT JOIN account_usage_limits l ON l.account_id = w.id
+		CROSS JOIN LATERAL (SELECT coalesce(sum(h.cost),0), coalesce(sum(h.raw_cost),0), coalesce(sum(h.requests),0)::bigint, coalesce(sum(h.tokens),0)::bigint
+			FROM account_usage_hourly h WHERE h.account_id = w.id AND h.hour >= ?) AS d(cost, raw_cost, requests, tokens)
+		ORDER BY w.i`
 
 // getUsage is GET /accounts/:id/usage: today, the last 7 and 30 days, the
 // lifetime and the current limit period.

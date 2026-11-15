@@ -6,11 +6,14 @@ import (
 	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
 // sqlFilter accumulates a WHERE clause and its arguments from query
-// parameters; errs collects the invalid parameters.
+// parameters; errs collects the invalid parameters. The placeholders are
+// positional (?), so args follow the order of the conditions and a query
+// that repeats the clause repeats them.
 type sqlFilter struct {
 	conds []string
 	args  []any
@@ -19,12 +22,12 @@ type sqlFilter struct {
 
 func (f *sqlFilter) arg(v any) string {
 	f.args = append(f.args, v)
-	return "$" + strconv.Itoa(len(f.args))
+	return "?"
 }
 
 func (f *sqlFilter) where() string { return strings.Join(f.conds, " AND ") }
 
-// id adds "column = $n" for a non-negative integer parameter.
+// id adds "column = ?" for a non-negative integer parameter.
 func (f *sqlFilter) id(req *pluginv1.HTTPRequest, name, column string) {
 	if v, ok := f.queryID(req, name); ok {
 		f.cond(column+" = ", v)
@@ -94,7 +97,7 @@ func (f *sqlFilter) flag(req *pluginv1.HTTPRequest, name, cond string) {
 	}
 }
 
-// cond adds prefix followed by the placeholder of v ("group_id = $3").
+// cond adds prefix followed by the placeholder of v ("group_id = ?").
 func (f *sqlFilter) cond(prefix string, v any) {
 	f.conds = append(f.conds, prefix+f.arg(v))
 }
@@ -102,7 +105,7 @@ func (f *sqlFilter) cond(prefix string, v any) {
 // maxIDList caps the ids of a list parameter.
 const maxIDList = 500
 
-// idList adds "column = ANY($n)" for a comma list of user ids (the
+// idList adds "column = ANY(?)" for a comma list of user ids (the
 // console's username search resolved through the core). "0" matches
 // nobody: the search found no user.
 func (f *sqlFilter) idList(req *pluginv1.HTTPRequest, name, column string) {
@@ -115,7 +118,7 @@ func (f *sqlFilter) idList(req *pluginv1.HTTPRequest, name, column string) {
 		f.errs = f.errs.Add(name, "invalid", name+" is a comma list of up to 500 user ids (0 = none) / "+name+" 为逗号分隔的用户 id，最多 500 个（0 表示无匹配）")
 		return
 	}
-	f.conds = append(f.conds, column+" = ANY("+f.arg(ids)+")")
+	f.conds = append(f.conds, column+" = ANY("+f.arg(pgdb.Array[int64](ids))+")")
 }
 
 // parseIDList reads a comma list of at most maxIDList ids (>= 0).

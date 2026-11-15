@@ -41,7 +41,7 @@
 //     finds the argument each ? takes and reports a byte slice at a "(?";
 //     wrap it in store.Bytes, a driver.Valuer, or bind it through
 //     gorm.Expr("?", raw). A "( ?" is safe, and SQL built at run time
-//     (usage's rawNumbered, text joined with variables) is not checked;
+//     (store.Numbered, text joined with variables) is not checked;
 //   - [gorm-raw-unrun] no Error or RowsAffected read off a Raw statement
 //     that no method ran (Scan, Row, Rows, Find ...): Raw only builds the
 //     statement, so db.Raw("UPDATE ...").Error is nil and nothing is

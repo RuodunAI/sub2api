@@ -131,7 +131,10 @@ func (p *Plugin) store(ctx context.Context) (store, error) {
 		return store{}, pluginsdk.ErrHostNotReady
 	}
 	db, err := p.host.DB(ctx)
-	return store{db: db}, err
+	if err != nil {
+		return store{}, err
+	}
+	return store{db: db}, nil
 }
 
 func (p *Plugin) loop() {

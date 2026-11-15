@@ -12,6 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -145,10 +146,67 @@ func TestSettleConcurrentSameRow(t *testing.T) {
 	}
 }
 
+// pgxValuesSQL and pgxValues are the one-row VALUES insert of the pgx
+// batch that insertUsageSQL replaced, as f99d1a3a wrote it (settler.go
+// insertAtomic): the statement and its arguments, written out on their own,
+// not derived from usageLogColumns and appendUsageRow, which they check.
+const pgxValuesSQL = `
+	INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, plugin_key, plugin_version,
+		platform, protocol, endpoint, model, upstream_model, stream, status_code, success, error_type,
+		error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+		cache_creation_1h_tokens, metrics, sticky_rule, sticky_hit, hook_decisions, rate_multiplier,
+		price_id, expr_hash, billing_mode, billing_detail, billing_status, latency_ms, first_token_ms,
+		client_ip, user_agent, node_id, created_at, account_type, upstream_protocol, client_request_id,
+		sched_decisions, plugin_detail, anomalies, upload_ms, conversion)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+		$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)
+	ON CONFLICT (request_id) DO NOTHING
+	RETURNING id`
+
+func pgxValues(rec *core.UsageRecord) []any {
+	status := initialStatus(rec)
+	var priceID *int64
+	var exprHash, mode string
+	detail := jsonOr(pendingDetail{Inputs: pendingInputs{Semantics: rec.UsageSemantics}}, "{}")
+	if status == StatusPending || status == StatusReserved {
+		if rec.Price != nil {
+			exprHash, mode = rec.Price.ExprHash, rec.Price.Mode
+			if rec.Price.ID > 0 {
+				priceID = &rec.Price.ID
+			}
+			if exprHash == "" {
+				exprHash = expr.Hash(rec.Price.Expression)
+			}
+		}
+		detail = jsonOr(pendingDetail{Inputs: recordInputs(rec)}, "{}")
+	}
+	anomalies := jsonOr(rec.Anomalies(), "{}")
+	created := rec.CreatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
+	attempts := rec.Attempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	rate := rec.RateMultiplier
+	t := rec.Tokens
+	return []any{trunc(rec.RequestID, 64), rec.UserID, rec.APIKeyID, rec.GroupID, rec.AccountID,
+		trunc(rec.PluginKey, 30), trunc(rec.PluginVersion, 50), trunc(rec.Platform, 50),
+		trunc(rec.Protocol, 100), trunc(rec.Endpoint, 200), trunc(rec.Model, 200), trunc(rec.UpstreamModel, 200),
+		rec.Stream, rec.StatusCode, rec.Success, trunc(rec.ErrorType, 50), rec.ErrorMessage, attempts,
+		t.Input, t.Output, t.CacheRead, t.CacheCreation, t.CacheCreation1h,
+		jsonOr(rec.Metrics, "{}"), trunc(rec.StickyRule, 100), rec.StickyHit, jsonOr(rec.HookDecisions, "[]"),
+		rate, priceID, exprHash, mode, detail, status, rec.LatencyMs, rec.FirstTokenMs,
+		trunc(rec.ClientIP, 64), trunc(rec.UserAgent, 500), trunc(rec.NodeID, 100), created,
+		trunc(rec.AccountType, 50), trunc(rec.UpstreamProtocol, 100), trunc(rec.ClientRequestID, 128),
+		jsonOr(rec.SchedDecisions, "[]"), pluginDetailJSON(rec.PluginDetail), anomalies, rec.UploadMs, conversionJSON(rec.Conversion)}
+}
+
 // The batch insert stores each value as the one-row VALUES insert of the
-// pgx batch it replaced did, column by column: a nanosecond timestamp, a
-// rate past the column's scale, NULL and non-NULL account and conversion,
-// documents, free and billable records.
+// pgx batch it replaced did (pgxValues), column by column: a nanosecond
+// timestamp, a rate past the column's scale, NULL and non-NULL account and
+// conversion, documents, free and billable records.
 func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -169,17 +227,10 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 		"billable": func(id string) *core.UsageRecord { return full(f.record(id, true)) },
 		"free":     func(id string) *core.UsageRecord { return f.record(id, false) },
 	}
-	columns := make([]string, len(usageLogColumns))
-	params := make([]string, len(usageLogColumns))
-	for i, c := range usageLogColumns {
-		columns[i], params[i] = c[0], fmt.Sprintf("$%d", i+1)
-	}
-	valuesSQL := `INSERT INTO usage_logs (` + strings.Join(columns, ", ") + `) VALUES (` + strings.Join(params, ", ") + `)
-		ON CONFLICT (request_id) DO NOTHING RETURNING id`
 	var batch []*core.UsageRecord
 	for name, build := range variants {
 		var id int64
-		if err := f.db.SQL.QueryRowContext(ctx, valuesSQL, appendUsageRow(nil, build("values-"+name))...).Scan(&id); err != nil {
+		if err := f.db.SQL.QueryRowContext(ctx, pgxValuesSQL, pgxValues(build("values-"+name))...).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		batch = append(batch, build("unnest-"+name))

@@ -4,8 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 // parityReason is the history reason of an entry convertParityOnce changed.
@@ -53,7 +52,7 @@ func (p *Plugin) convertParityOnce(ctx context.Context) {
 	}
 	var done bool
 	var at *time.Time
-	if err := db.QueryRow(ctx, `SELECT parity_converted, parity_converted_at FROM config_state WHERE id = 1`).Scan(&done, &at); err != nil {
+	if err := queryRow(db, `SELECT parity_converted, parity_converted_at FROM config_state WHERE id = 1`).Scan(&done, &at); err != nil {
 		fail(err)
 		return
 	}
@@ -75,7 +74,7 @@ func (p *Plugin) convertParityOnce(ctx context.Context) {
 	}
 	converted := 0
 	if c.Mode == ModeEnforce {
-		converted, err = convertParityEntries(ctx, db, now, since)
+		converted, err = convertParityEntries(db, now, since)
 		if err != nil {
 			fail(err)
 			if converted > 0 {
@@ -87,11 +86,11 @@ func (p *Plugin) convertParityOnce(ctx context.Context) {
 	if !done {
 		// The first run is over; another node may have finished it first,
 		// then its time counts.
-		if _, err := db.Exec(ctx, `UPDATE config_state SET parity_converted = true, parity_converted_at = $1 WHERE id = 1 AND NOT parity_converted`, now); err != nil {
+		if err := db.Exec(`UPDATE config_state SET parity_converted = true, parity_converted_at = ? WHERE id = 1 AND NOT parity_converted`, now).Error; err != nil {
 			fail(err)
 			return
 		}
-		if err := db.QueryRow(ctx, `SELECT parity_converted_at FROM config_state WHERE id = 1`).Scan(&at); err != nil {
+		if err := queryRow(db, `SELECT parity_converted_at FROM config_state WHERE id = 1`).Scan(&at); err != nil {
 			fail(err)
 			return
 		}
@@ -106,23 +105,19 @@ func (p *Plugin) convertParityOnce(ctx context.Context) {
 }
 
 // parityLive selects the entries the conversion changes: the automatic
-// observe entries that are live at $1.
-const parityLive = `level = 'observe' AND source = 'auto' AND (expires_at IS NULL OR expires_at > $1)`
+// observe entries that are live at its one placeholder.
+const parityLive = `level = 'observe' AND source = 'auto' AND (expires_at IS NULL OR expires_at > ?)`
 
 // convertParityEntries makes enforce entries of the live automatic observe
 // entries added since the given time (nil = all of them), and returns how
 // many it changed - also when it stops at an error.
-func convertParityEntries(ctx context.Context, db *pgxpool.Pool, now time.Time, since *time.Time) (converted int, err error) {
-	rows, err := db.Query(ctx, `SELECT user_id FROM watchlist WHERE `+parityLive+` AND ($2::timestamptz IS NULL OR since_at >= $2) ORDER BY user_id`, now, since)
-	if err != nil {
-		return 0, err
-	}
-	users, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+func convertParityEntries(db *gorm.DB, now time.Time, since *time.Time) (converted int, err error) {
+	users, err := column[int64](db.Raw(`SELECT user_id FROM watchlist WHERE `+parityLive+` AND (?::timestamptz IS NULL OR since_at >= ?) ORDER BY user_id`, now, since, since))
 	if err != nil {
 		return 0, err
 	}
 	for _, uid := range users {
-		changed, err := convertParityEntry(ctx, db, now, uid)
+		changed, err := convertParityEntry(db, now, uid)
 		if err != nil {
 			return converted, err
 		}
@@ -136,20 +131,20 @@ func convertParityEntries(ctx context.Context, db *pgxpool.Pool, now time.Time, 
 // convertParityEntry changes one entry in its own transaction, with a
 // history row; false when the entry changed meanwhile or another node
 // converted it.
-func convertParityEntry(ctx context.Context, db *pgxpool.Pool, now time.Time, uid int64) (changed bool, err error) {
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		if err := lockBlockSubject(ctx, tx, uid); err != nil {
+func convertParityEntry(db *gorm.DB, now time.Time, uid int64) (changed bool, err error) {
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := lockBlockSubject(tx, uid); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `UPDATE watchlist SET level = 'enforce', updated_at = $1 WHERE user_id = $2 AND `+parityLive, now, uid)
-		if err != nil || tag.RowsAffected() == 0 {
+		n, err := affected(tx.Exec(`UPDATE watchlist SET level = 'enforce', updated_at = ? WHERE user_id = ? AND `+parityLive, now, uid, now))
+		if err != nil || n == 0 {
 			return err
 		}
-		if err := watchEvent(ctx, tx, watchChange{uid: uid, action: "set_level", from: LevelObserve, to: LevelEnforce, reason: parityReason}); err != nil {
+		if err := watchEvent(tx, watchChange{uid: uid, action: "set_level", from: LevelObserve, to: LevelEnforce, reason: parityReason}); err != nil {
 			return err
 		}
 		changed = true
-		return bumpWatch(ctx, tx)
+		return bumpWatch(tx)
 	})
 	return changed && err == nil, err
 }

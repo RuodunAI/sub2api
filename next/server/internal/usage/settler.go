@@ -4,7 +4,6 @@ package usage
 
 import (
 	"context"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -530,7 +529,7 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 // order of appendUsageRow's values, with the element type of the array
 // parameter that carries each: the column's type without its length or
 // scale, the type a VALUES parameter of the column took.
-var usageLogColumns = [usageLogValues][2]string{
+var usageLogColumns = [...][2]string{
 	{"request_id", "varchar"}, {"user_id", "bigint"}, {"api_key_id", "bigint"}, {"group_id", "bigint"},
 	{"account_id", "bigint"}, {"plugin_key", "varchar"}, {"plugin_version", "varchar"}, {"platform", "varchar"},
 	{"protocol", "varchar"}, {"endpoint", "varchar"}, {"model", "varchar"}, {"upstream_model", "varchar"},
@@ -556,7 +555,7 @@ var usageLogNames = func() string {
 }()
 
 // usageLogValues is the number of usageLogColumns.
-const usageLogValues = 47
+const usageLogValues = len(usageLogColumns)
 
 // insertUsageSQL inserts any number of usage rows in one statement and one
 // round trip, skipping a request id that is already there, and returns the
@@ -664,13 +663,13 @@ func usageArrays(vals []any, n int) []any {
 		case time.Time:
 			arrays[col] = store.Times(columnOf[time.Time](vals, col, n))
 		case int:
-			arrays[col] = array[int](columnOf[int](vals, col, n))
+			arrays[col] = store.Array[int](columnOf[int](vals, col, n))
 		case *int64:
-			arrays[col] = array[*int64](columnOf[*int64](vals, col, n))
+			arrays[col] = store.Array[*int64](columnOf[*int64](vals, col, n))
 		case decimal.Decimal:
-			arrays[col] = array[decimal.Decimal](columnOf[decimal.Decimal](vals, col, n))
+			arrays[col] = store.Array[decimal.Decimal](columnOf[decimal.Decimal](vals, col, n))
 		case store.Bytes:
-			arrays[col] = array[store.Bytes](columnOf[store.Bytes](vals, col, n))
+			arrays[col] = store.Array[store.Bytes](columnOf[store.Bytes](vals, col, n))
 		default:
 			panic(fmt.Sprintf("usage: no array for a %T usage_logs value", vals[col]))
 		}
@@ -685,45 +684,6 @@ func columnOf[T any](vals []any, col, n int) []T {
 		out[i] = vals[i*usageLogValues+col].(T)
 	}
 	return out
-}
-
-// array is one array parameter for GORM, which would expand a plain slice
-// into a list (store.Int64s and its kind, for the element types they do not
-// cover): pgx encodes each element as it encodes a T parameter, a nil
-// pointer or nil store.Bytes as NULL.
-type array[T any] []T
-
-// Value implements driver.Valuer.
-func (a array[T]) Value() (driver.Value, error) { return []T(a), nil }
-
-// String shows the values, a document as its text and a nil one as NULL
-// (gormtest snapshots).
-func (a array[T]) String() string {
-	var b strings.Builder
-	b.WriteByte('[')
-	for i, v := range a {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		switch x := any(v).(type) {
-		case *int64:
-			if x == nil {
-				b.WriteString("NULL")
-			} else {
-				fmt.Fprint(&b, *x)
-			}
-		case store.Bytes:
-			if x == nil {
-				b.WriteString("NULL")
-			} else {
-				b.Write(x)
-			}
-		default:
-			fmt.Fprint(&b, v)
-		}
-	}
-	b.WriteByte(']')
-	return b.String()
 }
 
 // appendUsageRow appends the usageLogColumns values of rec's new row.

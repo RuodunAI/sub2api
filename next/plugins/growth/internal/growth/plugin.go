@@ -18,11 +18,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/growth/internal/model"
 )
 
 const JobCleanup = "cleanup"
@@ -84,15 +86,23 @@ func (p *Plugin) Shutdown(context.Context) error {
 	return nil
 }
 
-func (p *Plugin) db(ctx context.Context) (*pgxpool.Pool, error) {
+// db returns the plugin schema's handle, bound to ctx (grant "db.schema").
+func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if p.host == nil {
 		return nil, errors.New("growth: host not initialized")
 	}
-	pool, err := p.host.DB(ctx)
+	db, err := p.host.DB(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("growth: database unavailable: %w", err)
 	}
-	return pool, nil
+	return db, nil
+}
+
+// exists reports whether the query q selects any row (SELECT EXISTS).
+func exists(db, q *gorm.DB) (bool, error) {
+	var ok bool
+	err := db.Raw("SELECT EXISTS(?)", q.Select("1")).Scan(&ok).Error
+	return ok, err
 }
 
 // ---------------------------------------------------------------- settings
@@ -184,12 +194,11 @@ func (p *Plugin) ensureCode(ctx context.Context, userID int64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var code string
-	err = db.QueryRow(ctx, `SELECT code FROM referral_codes WHERE user_id = $1`, userID).Scan(&code)
+	code, err := codeOf(db, userID)
 	if err == nil {
 		return code, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", err
 	}
 	// Generate code and insert (conflict: query again).
@@ -198,19 +207,35 @@ func (p *Plugin) ensureCode(ctx context.Context, userID int64) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		_, err = db.Exec(ctx, `INSERT INTO referral_codes (user_id, code) VALUES ($1, $2) ON CONFLICT (user_id) DO NOTHING`, userID, code)
-		if err == nil {
-			return code, nil
-		}
-		if strings.Contains(err.Error(), "referral_codes_code_key") {
+		res := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}}, DoNothing: true}).
+			Create(&model.ReferralCode{UserID: userID, Code: code})
+		// The user_id conflict is absorbed: a duplicate key is the code's.
+		if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
 			continue // collision, retry
 		}
-		return "", err
+		if res.Error != nil {
+			return "", res.Error
+		}
+		if res.RowsAffected == 0 {
+			// A concurrent call stored the user's code first: answer that
+			// one, not the code generated here.
+			return codeOf(db, userID)
+		}
+		return code, nil
 	}
 	// Fallback: query existing.
-	err = db.QueryRow(ctx, `SELECT code FROM referral_codes WHERE user_id = $1`, userID).Scan(&code)
-	return code, err
+	return codeOf(db, userID)
 }
+
+// codeOf reads the referral code of userID (gorm.ErrRecordNotFound: none).
+func codeOf(db *gorm.DB, userID int64) (string, error) {
+	var row model.ReferralCode
+	err := db.Select("code").Where("user_id = ?", userID).Take(&row).Error
+	return row.Code, err
+}
+
+// referralCodes selects from referral_codes.
+func referralCodes(db *gorm.DB) *gorm.DB { return db.Model(&model.ReferralCode{}) }
 
 // bindInviter sets the inviter for userID (idempotent, only works when inviter_user_id is NULL).
 func (p *Plugin) bindInviter(ctx context.Context, userID int64, code string) error {
@@ -222,15 +247,15 @@ func (p *Plugin) bindInviter(ctx context.Context, userID int64, code string) err
 	if err != nil {
 		return err
 	}
-	var inviterID int64
-	var inviterInviter *int64
-	err = db.QueryRow(ctx, `SELECT user_id, inviter_user_id FROM referral_codes WHERE code = $1`, code).Scan(&inviterID, &inviterInviter)
+	var inviter model.ReferralCode
+	err = db.Select("user_id, inviter_user_id").Where("code = ?", code).Take(&inviter).Error
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return errors.New("code not found")
 		}
 		return err
 	}
+	inviterID, inviterInviter := inviter.UserID, inviter.InviterUserID
 	if inviterID == userID {
 		return errors.New("cannot refer yourself")
 	}
@@ -243,11 +268,12 @@ func (p *Plugin) bindInviter(ctx context.Context, userID int64, code string) err
 	if _, err := p.ensureCode(ctx, userID); err != nil {
 		return err
 	}
-	tag, err := db.Exec(ctx, `UPDATE referral_codes SET inviter_user_id = $2, bound_at = now() WHERE user_id = $1 AND inviter_user_id IS NULL`, userID, inviterID)
-	if err != nil {
-		return err
+	res := referralCodes(db).Where("user_id = ? AND inviter_user_id IS NULL", userID).
+		Updates(map[string]any{"inviter_user_id": inviterID, "bound_at": gorm.Expr("now()")})
+	if res.Error != nil {
+		return res.Error
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return errors.New("already bound")
 	}
 	return nil
@@ -270,26 +296,31 @@ func (p *Plugin) recordCommission(ctx context.Context, inviteeUserID int64, even
 		return err
 	}
 	// Check if already processed.
-	var exists bool
-	err = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM commissions WHERE event_type = $1 AND event_id = $2)`, eventType, eventID).Scan(&exists)
+	done, err := exists(db, commissions(db).Where("event_type = ? AND event_id = ?", eventType, eventID))
 	if err != nil {
 		return err
 	}
-	if exists {
+	if done {
 		return nil
 	}
 	// Load inviter and check duration.
-	var inviterID int64
-	var boundAt time.Time
-	err = db.QueryRow(ctx, `SELECT inviter_user_id, bound_at FROM referral_codes WHERE user_id = $1 AND inviter_user_id IS NOT NULL`, inviteeUserID).Scan(&inviterID, &boundAt)
+	var invitee model.ReferralCode
+	err = db.Select("inviter_user_id, bound_at").Where("user_id = ? AND inviter_user_id IS NOT NULL", inviteeUserID).Take(&invitee).Error
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil // not invited
 		}
 		return err
 	}
+	inviterID := *invitee.InviterUserID // not NULL: the WHERE above
+	// bindInviter sets bound_at with the inviter. A row without one is
+	// broken: fail, so that the event is delivered again, rather than pay or
+	// refuse a commission on a binding time nobody knows.
+	if invitee.BoundAt == nil {
+		return fmt.Errorf("growth: referral of user %d has an inviter but no bound_at", inviteeUserID)
+	}
 	if cfg.ReferralDurationDays > 0 {
-		if time.Now().After(boundAt.AddDate(0, 0, cfg.ReferralDurationDays)) {
+		if time.Now().After(invitee.BoundAt.AddDate(0, 0, cfg.ReferralDurationDays)) {
 			return nil // expired
 		}
 	}
@@ -298,7 +329,8 @@ func (p *Plugin) recordCommission(ctx context.Context, inviteeUserID int64, even
 	var credited decimal.Decimal
 	capped := cfg.ReferralMaxPerInvitee.Sign() > 0
 	if capped {
-		err = db.QueryRow(ctx, `SELECT COALESCE(SUM(commission), 0) FROM commissions WHERE inviter_user_id = $1 AND invitee_user_id = $2`, inviterID, inviteeUserID).Scan(&credited)
+		err = commissions(db).Select("COALESCE(SUM(commission), 0)").
+			Where("inviter_user_id = ? AND invitee_user_id = ?", inviterID, inviteeUserID).Scan(&credited).Error
 		if err != nil {
 			return err
 		}
@@ -336,11 +368,14 @@ func (p *Plugin) recordCommission(ctx context.Context, inviteeUserID int64, even
 	// Record commission. A duplicate means an earlier attempt credited the
 	// ledger and failed before this insert: record it now, or the
 	// per-invitee cap would not count it.
-	_, err = db.Exec(ctx, `INSERT INTO commissions (inviter_user_id, invitee_user_id, event_type, event_id, base_amount, rate_percent, commission, ledger_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (ledger_id) DO NOTHING`,
-		inviterID, inviteeUserID, eventType, eventID, baseAmount, cfg.ReferralRatePercent, commission, res.LedgerID)
-	return err
+	return db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "ledger_id"}}, DoNothing: true}).Create(&model.Commission{
+		InviterUserID: inviterID, InviteeUserID: inviteeUserID, EventType: eventType, EventID: eventID,
+		BaseAmount: baseAmount, RatePercent: cfg.ReferralRatePercent, Commission: commission, LedgerID: res.LedgerID,
+	}).Error
 }
+
+// commissions selects from commissions.
+func commissions(db *gorm.DB) *gorm.DB { return db.Model(&model.Commission{}) }
 
 // ---------------------------------------------------------------- check-in
 
@@ -357,12 +392,11 @@ func (p *Plugin) doCheckin(ctx context.Context, userID int64) (*CheckinResult, e
 	now := time.Now().In(cfg.CheckinTimezone)
 	today := now.Format("2006-01-02")
 	// Check if already checked in today.
-	var exists bool
-	err = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM checkins WHERE user_id = $1 AND checkin_date = $2)`, userID, today).Scan(&exists)
+	done, err := checkedIn(db, userID, today)
 	if err != nil {
 		return nil, err
 	}
-	if exists {
+	if done {
 		return nil, errors.New("already checked in today")
 	}
 	// Random quota between min and max.
@@ -393,17 +427,33 @@ func (p *Plugin) doCheckin(ctx context.Context, userID int64) (*CheckinResult, e
 		return nil, errors.New("already checked in today")
 	}
 	// Record check-in.
-	var id int64
-	err = db.QueryRow(ctx, `INSERT INTO checkins (user_id, checkin_date, quota_awarded, ledger_id)
-		VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, checkin_date) DO NOTHING RETURNING id`,
-		userID, today, quota, res.LedgerID).Scan(&id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, errors.New("already checked in today")
-		}
-		return nil, err
+	ins := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}, {Name: "checkin_date"}}, DoNothing: true}).
+		Create(&model.Checkin{UserID: userID, CheckinDate: today, QuotaAwarded: quota, LedgerID: res.LedgerID})
+	if ins.Error != nil {
+		return nil, ins.Error
+	}
+	if ins.RowsAffected == 0 {
+		return nil, errors.New("already checked in today")
 	}
 	return &CheckinResult{QuotaAwarded: quota, CheckinDate: today}, nil
+}
+
+// checkins selects from checkins.
+func checkins(db *gorm.DB) *gorm.DB { return db.Model(&model.Checkin{}) }
+
+// checkedIn reports whether userID checked in on date (YYYY-MM-DD).
+func checkedIn(db *gorm.DB, userID int64, date string) (bool, error) {
+	return exists(db, checkins(db).Where("user_id = ? AND checkin_date = ?", userID, date))
+}
+
+// orNil keeps an empty list nil: these endpoints have always answered null,
+// not [], when there is nothing to show, and GORM reads an empty result as
+// an empty slice.
+func orNil[T any](s []T) []T {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
 }
 
 type CheckinResult struct {

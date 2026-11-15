@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,7 +164,6 @@ func TestPeerUploadsRequireIdentityLengthAndStoreRoom(t *testing.T) {
 func TestPeerUploadsPerNodeAreBounded(t *testing.T) {
 	primary := &Service{Store: &Store{Dir: t.TempDir()}, Primary: func(context.Context) (bool, string, error) { return true, "", nil }}
 	node := asNode("b", primary.Peer())
-	started := make(chan struct{}, uploadsPerNode)
 	finish := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < uploadsPerNode; i++ {
@@ -175,7 +175,6 @@ func TestPeerUploadsPerNodeAreBounded(t *testing.T) {
 			q := httptest.NewRequest(http.MethodPut, "/internal/plugin-blobs/"+digest(data), pr)
 			q.ContentLength = int64(len(data))
 			go func() {
-				started <- struct{}{}
 				<-finish
 				pw.Write(data)
 				pw.Close()
@@ -187,9 +186,9 @@ func TestPeerUploadsPerNodeAreBounded(t *testing.T) {
 			}
 		}(i)
 	}
-	for i := 0; i < uploadsPerNode; i++ {
-		<-started
-	}
+	// The slow uploads hold their slots once the handler has admitted them,
+	// not when their goroutines start.
+	waitUploading(t, primary, "b", uploadsPerNode)
 	extra := []byte("one more")
 	w := httptest.NewRecorder()
 	q := httptest.NewRequest(http.MethodPut, "/internal/plugin-blobs/"+digest(extra), bytes.NewReader(extra))
@@ -210,5 +209,20 @@ func TestPeerUploadsPerNodeAreBounded(t *testing.T) {
 	wg.Wait()
 	if _, ok := primary.admitUpload("b"); !ok {
 		t.Fatal("slots were not released")
+	}
+}
+
+// waitUploading waits until node has want peer uploads admitted.
+func waitUploading(t *testing.T, s *Service, node string, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if v, ok := s.uploading.Load(node); ok && atomic.LoadInt32(v.(*int32)) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("node %s never had %d uploads in flight", node, want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

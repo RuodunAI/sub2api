@@ -11,10 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/dynweight/internal/model"
 	"github.com/Sub2API-Devs/sup2api/next/plugins/dynweight/internal/rules"
 )
 
@@ -30,34 +32,39 @@ func compareKeys(a, b key) int {
 }
 
 // store is the plugin schema.
-type store struct{ db *pgxpool.Pool }
+type store struct{ db *gorm.DB }
+
+// with is the store's handle bound to ctx.
+func (s store) with(ctx context.Context) *gorm.DB { return s.db.WithContext(ctx) }
 
 var errVersionConflict = errors.New("the configuration was changed meanwhile")
+
+// keyColumns are the key of obs, state and sticky_pending.
+var keyColumns = []clause.Column{{Name: "account_id"}, {Name: "group_id"}, {Name: "model"}}
 
 // configStamp is the stored configuration's version (0: none stored, the
 // default) and when it was saved (unix seconds, 0 for none): the console
 // shows both, so an edit that was never saved is told apart from one in force.
 type configStamp struct{ version, updatedAt int64 }
 
-// configStampSQL reads a configStamp from the config row.
-const configStampSQL = `version, floor(extract(epoch FROM updated_at))::bigint`
+func stampOf(c model.Config) configStamp { return configStamp{c.Version, c.UpdatedAt.Unix()} }
 
 // loadConfig reads the configuration; version 0 means the default. The
 // stored one is read tolerantly (rules.LoadConfig); warnings say what was
 // raised, fell back or was dropped.
 func (s store) loadConfig(ctx context.Context) (c rules.Config, stamp configStamp, warnings []string, err error) {
-	var raw []byte
-	err = s.db.QueryRow(ctx, `SELECT doc, `+configStampSQL+` FROM config WHERE id = 1`).Scan(&raw, &stamp.version, &stamp.updatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	var row model.Config
+	err = s.with(ctx).Take(&row, model.ConfigID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return rules.DefaultConfig(), configStamp{}, nil, nil
 	}
 	if err != nil {
 		return rules.Config{}, configStamp{}, nil, err
 	}
-	if c, warnings, err = rules.LoadConfig(raw); err != nil {
+	if c, warnings, err = rules.LoadConfig(row.Doc); err != nil {
 		return rules.Config{}, configStamp{}, nil, fmt.Errorf("stored configuration: %w", err)
 	}
-	return c, stamp, warnings, nil
+	return c, stampOf(row), warnings, nil
 }
 
 // saveConfig stores a normalized configuration if version is still the
@@ -67,29 +74,31 @@ func (s store) saveConfig(ctx context.Context, c rules.Config, version, userID i
 	if err != nil {
 		return configStamp{}, err
 	}
-	var row pgx.Row
+	row := model.Config{ID: model.ConfigID, Doc: raw, Version: 1, UpdatedBy: userID}
+	var res *gorm.DB
 	if version == 0 {
-		row = s.db.QueryRow(ctx, `INSERT INTO config (id, doc, version, updated_by) VALUES (1, $1, 1, $2) ON CONFLICT (id) DO NOTHING
-			RETURNING `+configStampSQL, raw, userID)
+		res = s.with(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
 	} else {
-		row = s.db.QueryRow(ctx, `UPDATE config SET doc = $1, version = version + 1, updated_at = now(), updated_by = $2
-			WHERE id = 1 AND version = $3 RETURNING `+configStampSQL, raw, userID, version)
+		res = s.with(ctx).Model(&row).Clauses(clause.Returning{}).Where("version = ?", version).Updates(map[string]any{
+			"doc": raw, "version": gorm.Expr("version + 1"), "updated_at": gorm.Expr("now()"), "updated_by": userID,
+		})
 	}
-	var stamp configStamp
-	err = row.Scan(&stamp.version, &stamp.updatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if res.Error != nil {
+		return configStamp{}, res.Error
+	}
+	if res.RowsAffected == 0 {
 		return configStamp{}, errVersionConflict
 	}
-	return stamp, err
+	return stampOf(row), nil
 }
 
 func (s store) configVersion(ctx context.Context) (int64, error) {
-	var v int64
-	err := s.db.QueryRow(ctx, `SELECT version FROM config WHERE id = 1`).Scan(&v)
-	if errors.Is(err, pgx.ErrNoRows) {
+	var row model.Config
+	err := s.with(ctx).Select("version").Take(&row, model.ConfigID).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, nil
 	}
-	return v, err
+	return row.Version, err
 }
 
 // obsDelta is counters to add to a key's window.
@@ -99,44 +108,47 @@ type obsDelta struct {
 	counts rules.Counts
 }
 
-// addObs adds counters; every node adds its own, so the fields are summed.
+// sumCounts merges the counters of a conflicting row: every node adds its
+// own, so the fields are summed.
+const sumCounts = `(SELECT jsonb_object_agg(f, COALESCE((obs.counts->>f)::bigint, 0) + COALESCE((EXCLUDED.counts->>f)::bigint, 0))
+	FROM (SELECT jsonb_object_keys(obs.counts) UNION SELECT jsonb_object_keys(EXCLUDED.counts)) AS u(f))`
+
+// addObs adds counters (deltas come sorted, one per key and window).
 func (s store) addObs(ctx context.Context, deltas []obsDelta) error {
-	b := &pgx.Batch{}
-	for _, d := range deltas {
+	rows := make([]model.Obs, len(deltas))
+	for i, d := range deltas {
 		fields, err := json.Marshal(d.counts.Fields())
 		if err != nil {
 			return err
 		}
-		b.Queue(`INSERT INTO obs (account_id, group_id, model, window_start, counts) VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (account_id, group_id, model, window_start) DO UPDATE SET counts = (
-				SELECT jsonb_object_agg(f, COALESCE((obs.counts->>f)::bigint, 0) + COALESCE((EXCLUDED.counts->>f)::bigint, 0))
-				FROM (SELECT jsonb_object_keys(obs.counts) UNION SELECT jsonb_object_keys(EXCLUDED.counts)) AS u(f))`,
-			d.AccountID, d.GroupID, d.Model, d.window, fields)
+		rows[i] = model.Obs{AccountID: d.AccountID, GroupID: d.GroupID, Model: d.Model, WindowStart: d.window, Counts: fields}
 	}
-	return s.db.SendBatch(ctx, b).Close()
+	return pgdb.InsertAll(s.with(ctx), rows, clause.OnConflict{
+		Columns:   append(slices.Clone(keyColumns), clause.Column{Name: "window_start"}),
+		DoUpdates: clause.Set{{Column: clause.Column{Name: "counts"}, Value: gorm.Expr(sumCounts)}},
+	})
 }
 
 // loadObs reads the counters of the keys matching f in the windows from
 // since on, by key and window start.
 func (s store) loadObs(ctx context.Context, f filter, since int64) (map[key]map[int64]rules.Counts, error) {
-	where, args := f.where(cond{"window_start >= $%d", since})
-	rows, err := s.db.Query(ctx, `SELECT account_id, group_id, model, window_start, counts FROM obs`+where, args...)
-	if err != nil {
+	var rows []model.Obs
+	if err := s.with(ctx).Scopes(f.scope).Where("window_start >= ?", since).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := map[key]map[int64]rules.Counts{}
-	var k key
-	var window int64
-	var fields map[string]int64
-	_, err = pgx.ForEachRow(rows, []any{&k.AccountID, &k.GroupID, &k.Model, &window, &fields}, func() error {
+	for _, r := range rows {
+		var fields map[string]int64
+		if err := json.Unmarshal(r.Counts, &fields); err != nil {
+			return nil, fmt.Errorf("counters %d/%d/%s: %w", r.AccountID, r.GroupID, r.Model, err)
+		}
+		k := key{r.AccountID, r.GroupID, r.Model}
 		if out[k] == nil {
 			out[k] = map[int64]rules.Counts{}
 		}
-		out[k][window] = rules.CountsOf(fields)
-		fields = nil
-		return nil
-	})
-	return out, err
+		out[k][r.WindowStart] = rules.CountsOf(fields)
+	}
+	return out, nil
 }
 
 // stateRow is a stored state with the generation it was read at.
@@ -147,29 +159,26 @@ type stateRow struct {
 
 // loadStates reads states, all of them or those matching filter.
 func (s store) loadStates(ctx context.Context, f filter) (map[key]stateRow, error) {
-	where, args := f.where()
-	rows, err := s.db.Query(ctx, `SELECT account_id, group_id, model, data, gen FROM state`+where, args...)
-	if err != nil {
+	var rows []model.State
+	if err := s.with(ctx).Select("account_id, group_id, model, data, gen").Scopes(f.scope).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	out := map[key]stateRow{}
-	var k key
-	var raw []byte
-	var gen int64
-	_, err = pgx.ForEachRow(rows, []any{&k.AccountID, &k.GroupID, &k.Model, &raw, &gen}, func() error {
+	out := make(map[key]stateRow, len(rows))
+	for _, r := range rows {
+		k := key{r.AccountID, r.GroupID, r.Model}
 		var st rules.State
-		if err := json.Unmarshal(raw, &st); err != nil {
-			return fmt.Errorf("state %v: %w", k, err)
+		if err := json.Unmarshal(r.Data, &st); err != nil {
+			return nil, fmt.Errorf("state %v: %w", k, err)
 		}
-		out[k] = stateRow{State: st, gen: gen}
-		return nil
-	})
-	return out, err
+		out[k] = stateRow{State: st, gen: r.Gen}
+	}
+	return out, nil
 }
 
-// execer is the pool or a transaction.
-type execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+// stateOf is the row of a state.
+func stateOf(k key, st rules.State, raw []byte) model.State {
+	return model.State{AccountID: k.AccountID, GroupID: k.GroupID, Model: k.Model, Data: raw,
+		Base: st.WeightBase, Eff: st.WeightEff, Tombstone: st.Tombstone, EvalWindow: st.LastEvalWindow}
 }
 
 // writeState stores a state if the stored one is still at gen (0 = none
@@ -182,43 +191,35 @@ func (s store) writeState(ctx context.Context, k key, st rules.State, gen int64,
 		return false, err
 	}
 	if clear == nil {
-		return putState(ctx, s.db, k, st, raw, gen)
+		return putState(s.with(ctx), stateOf(k, st, raw), gen)
 	}
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // a no-op once committed
-	if written, err := putState(ctx, tx, k, st, raw, gen); err != nil || !written {
-		return false, err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO sticky_pending (account_id, group_id, model, salt, percent, strategies, zero, weight)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (account_id, group_id, model) DO UPDATE SET salt = EXCLUDED.salt,
-			percent = GREATEST(sticky_pending.percent, EXCLUDED.percent), strategies = EXCLUDED.strategies,
-			zero = sticky_pending.zero OR EXCLUDED.zero, weight = EXCLUDED.weight, attempts = 0, created_at = now(), claimed_until = '-infinity'`,
-		k.AccountID, k.GroupID, k.Model, clear.Salt, clear.Percent, clear.Strategies, clear.Zero, clear.Weight); err != nil {
-		return false, err
-	}
-	return true, tx.Commit(ctx)
+	written := false
+	err = s.with(ctx).Transaction(func(tx *gorm.DB) error {
+		if written, err = putState(tx, stateOf(k, st, raw), gen); err != nil || !written {
+			return err
+		}
+		return tx.Exec(`INSERT INTO sticky_pending (account_id, group_id, model, salt, percent, strategies, zero, weight)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT (account_id, group_id, model) DO UPDATE SET salt = EXCLUDED.salt,
+				percent = GREATEST(sticky_pending.percent, EXCLUDED.percent), strategies = EXCLUDED.strategies,
+				zero = sticky_pending.zero OR EXCLUDED.zero, weight = EXCLUDED.weight, attempts = 0, created_at = now(), claimed_until = '-infinity'`,
+			k.AccountID, k.GroupID, k.Model, clear.Salt, clear.Percent, clear.Strategies, clear.Zero, clear.Weight).Error
+	})
+	return written && err == nil, err
 }
 
-func putState(ctx context.Context, db execer, k key, st rules.State, raw []byte, gen int64) (bool, error) {
-	var tag pgconn.CommandTag
-	var err error
+// putState inserts row (gen 0) or updates the stored one still at gen.
+func putState(db *gorm.DB, row model.State, gen int64) (bool, error) {
+	var res *gorm.DB
 	if gen == 0 {
-		tag, err = db.Exec(ctx, `INSERT INTO state (account_id, group_id, model, data, base, eff, tombstone, eval_window)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`,
-			k.AccountID, k.GroupID, k.Model, raw, st.WeightBase, st.WeightEff, st.Tombstone, st.LastEvalWindow)
+		res = db.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
 	} else {
-		tag, err = db.Exec(ctx, `UPDATE state SET data = $4, base = $5, eff = $6, tombstone = $7, eval_window = $8, gen = gen + 1, updated_at = now()
-			WHERE account_id = $1 AND group_id = $2 AND model = $3 AND gen = $9`,
-			k.AccountID, k.GroupID, k.Model, raw, st.WeightBase, st.WeightEff, st.Tombstone, st.LastEvalWindow, gen)
+		res = db.Model(&model.State{}).
+			Where("account_id = ? AND group_id = ? AND model = ? AND gen = ?", row.AccountID, row.GroupID, row.Model, gen).
+			Updates(map[string]any{"data": row.Data, "base": row.Base, "eff": row.Eff, "tombstone": row.Tombstone,
+				"eval_window": row.EvalWindow, "gen": gorm.Expr("gen + 1"), "updated_at": gorm.Expr("now()")})
 	}
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() == 1, nil
+	return res.RowsAffected == 1, res.Error
 }
 
 // pendingClear is a sticky clear an evaluation decided (sticky_pending): the
@@ -239,60 +240,66 @@ type pendingClear struct {
 // claimClears leases up to limit pending clears no other run holds, oldest
 // first, counting the attempt.
 func (s store) claimClears(ctx context.Context, lease time.Duration, limit int) ([]pendingClear, error) {
-	rows, err := s.db.Query(ctx, `UPDATE sticky_pending p SET claimed_until = now() + make_interval(secs => $1), attempts = p.attempts + 1
+	// claimed_until is not read back: '-infinity' does not fit a time.Time.
+	var rows []model.StickyPending
+	err := s.with(ctx).Raw(`UPDATE sticky_pending p SET claimed_until = now() + make_interval(secs => ?), attempts = p.attempts + 1
 		FROM (SELECT account_id, group_id, model FROM sticky_pending WHERE claimed_until < now()
-			ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED) c
+			ORDER BY created_at LIMIT ? FOR UPDATE SKIP LOCKED) c
 		WHERE p.account_id = c.account_id AND p.group_id = c.group_id AND p.model = c.model
 		RETURNING p.account_id, p.group_id, p.model, p.salt, p.percent, p.strategies, p.zero, p.weight, p.attempts, p.created_at`,
-		lease.Seconds(), limit)
+		lease.Seconds(), limit).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (pendingClear, error) {
-		var c pendingClear
-		return c, r.Scan(&c.AccountID, &c.GroupID, &c.Model, &c.Salt, &c.Percent, &c.Strategies, &c.Zero, &c.Weight, &c.Attempts, &c.CreatedAt)
-	})
+	out := make([]pendingClear, len(rows))
+	for i, r := range rows {
+		out[i] = pendingClear{key: key{r.AccountID, r.GroupID, r.Model}, Salt: r.Salt, Percent: r.Percent,
+			Strategies: r.Strategies, Zero: r.Zero, Weight: r.Weight, Attempts: r.Attempts, CreatedAt: r.CreatedAt}
+	}
 	slices.SortFunc(out, func(a, b pendingClear) int {
 		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), compareKeys(a.key, b.key))
 	})
-	return out, err
+	return out, nil
+}
+
+// pending selects the pending clear c, unless a newer one replaced it.
+func (c pendingClear) pending(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.StickyPending{}).Where("account_id = ? AND group_id = ? AND model = ? AND salt = ?",
+		c.AccountID, c.GroupID, c.Model, c.Salt)
 }
 
 // finishClear drops a pending clear (done, or given up) unless a newer one
 // replaced it meanwhile.
 func (s store) finishClear(ctx context.Context, c pendingClear) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM sticky_pending WHERE account_id = $1 AND group_id = $2 AND model = $3 AND salt = $4`,
-		c.AccountID, c.GroupID, c.Model, c.Salt)
-	return err
+	return c.pending(s.with(ctx)).Delete(&model.StickyPending{}).Error
 }
 
 // releaseClear hands a pending clear back to the next run at once.
 func (s store) releaseClear(ctx context.Context, c pendingClear) error {
-	_, err := s.db.Exec(ctx, `UPDATE sticky_pending SET claimed_until = '-infinity' WHERE account_id = $1 AND group_id = $2 AND model = $3 AND salt = $4`,
-		c.AccountID, c.GroupID, c.Model, c.Salt)
-	return err
+	return c.pending(s.with(ctx)).Update("claimed_until", gorm.Expr("'-infinity'")).Error
 }
 
-// tombstone resets keys whatever their generation, in one statement: all of
-// them or none. window gives a key's reset window.
+// tombstone resets keys whatever their generation: all of them or none.
+// window gives a key's reset window.
 func (s store) tombstone(ctx context.Context, keys []key, window func(key) int64) error {
-	n := len(keys)
-	accounts, groups, models, docs, windows := make([]int64, n), make([]int64, n), make([]string, n), make([]string, n), make([]int64, n)
+	rows := make([]model.State, len(keys))
 	// In key order, like the counters, so concurrent resets do not deadlock.
 	for i, k := range slices.SortedFunc(slices.Values(keys), compareKeys) {
 		w := window(k)
-		raw, err := json.Marshal(rules.Tombstone(w))
+		st := rules.Tombstone(w)
+		raw, err := json.Marshal(st)
 		if err != nil {
 			return err
 		}
-		accounts[i], groups[i], models[i], docs[i], windows[i] = k.AccountID, k.GroupID, k.Model, string(raw), w
+		rows[i] = stateOf(k, st, raw)
+		// The reset columns, whatever the document says.
+		rows[i].Base, rows[i].Eff, rows[i].Tombstone, rows[i].EvalWindow = 0, 0, true, w
 	}
-	_, err := s.db.Exec(ctx, `INSERT INTO state (account_id, group_id, model, data, base, eff, tombstone, eval_window)
-		SELECT a, g, m, d::jsonb, 0, 0, true, w FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::bigint[]) AS t(a, g, m, d, w)
-		ON CONFLICT (account_id, group_id, model) DO UPDATE SET data = EXCLUDED.data, base = 0, eff = 0, tombstone = true,
-			eval_window = EXCLUDED.eval_window, gen = state.gen + 1, updated_at = now()`,
-		accounts, groups, models, docs, windows)
-	return err
+	return pgdb.InsertAll(s.with(ctx), rows, clause.OnConflict{
+		Columns: keyColumns,
+		DoUpdates: append(clause.AssignmentColumns([]string{"data", "base", "eff", "tombstone", "eval_window"}),
+			clause.Assignments(map[string]any{"gen": gorm.Expr("state.gen + 1"), "updated_at": gorm.Expr("now()")})...),
+	})
 }
 
 // weight is the effective weight of a key that is not at its base, and
@@ -307,39 +314,43 @@ type weight struct {
 // loadWeights reads the keys whose effective weight is not their base:
 // everything scheduling needs.
 func (s store) loadWeights(ctx context.Context) (map[key]weight, error) {
-	rows, err := s.db.Query(ctx, `SELECT s.account_id, s.group_id, s.model, s.base, s.eff, COALESCE(b.seen_at, 'epoch')
+	var rows []struct {
+		model.State
+		SeenAt time.Time
+	}
+	err := s.with(ctx).Raw(`SELECT s.account_id, s.group_id, s.model, s.base, s.eff, COALESCE(b.seen_at, 'epoch') AS seen_at
 		FROM state s LEFT JOIN bases b ON b.account_id = s.account_id AND b.group_id = s.group_id
-		WHERE NOT s.tombstone AND s.eff <> s.base`)
+		WHERE NOT s.tombstone AND s.eff <> s.base`).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	out := map[key]weight{}
-	var k key
-	var w weight
-	_, err = pgx.ForEachRow(rows, []any{&k.AccountID, &k.GroupID, &k.Model, &w.base, &w.eff, &w.seenAt}, func() error {
-		out[k] = w
-		return nil
-	})
-	return out, err
+	out := make(map[key]weight, len(rows))
+	for _, r := range rows {
+		out[key{r.AccountID, r.GroupID, r.Model}] = weight{base: r.Base, eff: r.Eff, seenAt: r.SeenAt}
+	}
+	return out, nil
 }
 
 // loadTrends reads what rules.Trend needs of the degraded keys of the
 // accounts, in one query (the partial index on eff <> base): GET /weights
 // asks for a page of the account list at once.
 func (s store) loadTrends(ctx context.Context, accountIDs []int64) (map[key]rules.State, error) {
-	rows, err := s.db.Query(ctx, `SELECT account_id, group_id, model, base, eff, COALESCE(data->>'last_change', ''), COALESCE((data->>'last_change_at')::bigint, 0)
-		FROM state WHERE account_id = ANY($1) AND NOT tombstone AND eff <> base`, accountIDs)
+	var rows []struct {
+		model.State
+		LastChange   string
+		LastChangeAt int64
+	}
+	err := s.with(ctx).Raw(`SELECT account_id, group_id, model, base, eff, COALESCE(data->>'last_change', '') AS last_change,
+		COALESCE((data->>'last_change_at')::bigint, 0) AS last_change_at
+		FROM state WHERE account_id = ANY(?) AND NOT tombstone AND eff <> base`, pgdb.Array[int64](accountIDs)).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	out := map[key]rules.State{}
-	var k key
-	var st rules.State
-	_, err = pgx.ForEachRow(rows, []any{&k.AccountID, &k.GroupID, &k.Model, &st.WeightBase, &st.WeightEff, &st.LastChange, &st.LastChangeAt}, func() error {
-		out[k] = st
-		return nil
-	})
-	return out, err
+	out := make(map[key]rules.State, len(rows))
+	for _, r := range rows {
+		out[key{r.AccountID, r.GroupID, r.Model}] = rules.State{WeightBase: r.Base, WeightEff: r.Eff, LastChange: r.LastChange, LastChangeAt: r.LastChangeAt}
+	}
+	return out, nil
 }
 
 // base is the weight an account has in a group, as scheduling saw it.
@@ -356,30 +367,28 @@ func comparePairs(a, b pair) int {
 }
 
 func (s store) loadBases(ctx context.Context) (map[pair]base, error) {
-	rows, err := s.db.Query(ctx, `SELECT account_id, group_id, weight, name, seen_at FROM bases`)
-	if err != nil {
+	var rows []model.Base
+	if err := s.with(ctx).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	out := map[pair]base{}
-	var p pair
-	var b base
-	_, err = pgx.ForEachRow(rows, []any{&p.AccountID, &p.GroupID, &b.Weight, &b.Name, &b.SeenAt}, func() error {
-		out[p] = b
-		return nil
-	})
-	return out, err
+	out := make(map[pair]base, len(rows))
+	for _, r := range rows {
+		out[pair{r.AccountID, r.GroupID}] = base{Weight: r.Weight, Name: r.Name, SeenAt: r.SeenAt}
+	}
+	return out, nil
 }
 
 func (s store) saveBases(ctx context.Context, bases map[pair]base) error {
-	b := &pgx.Batch{}
-	// In pair order, like the counters, so concurrent batches do not deadlock.
+	rows := make([]model.Base, 0, len(bases))
+	// In pair order, like the counters, so concurrent writers do not deadlock.
 	for _, p := range slices.SortedFunc(maps.Keys(bases), comparePairs) {
 		v := bases[p]
-		b.Queue(`INSERT INTO bases (account_id, group_id, weight, name, seen_at) VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (account_id, group_id) DO UPDATE SET weight = EXCLUDED.weight, name = EXCLUDED.name, seen_at = EXCLUDED.seen_at`,
-			p.AccountID, p.GroupID, v.Weight, v.Name, v.SeenAt)
+		rows = append(rows, model.Base{AccountID: p.AccountID, GroupID: p.GroupID, Weight: v.Weight, Name: v.Name, SeenAt: v.SeenAt})
 	}
-	return s.db.SendBatch(ctx, b).Close()
+	return pgdb.InsertAll(s.with(ctx), rows, clause.OnConflict{
+		Columns:   []clause.Column{{Name: "account_id"}, {Name: "group_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"weight", "name", "seen_at"}),
+	})
 }
 
 // eventRow is an event of a key. configVersion is the configuration
@@ -395,8 +404,8 @@ type eventRow struct {
 }
 
 func (s store) addEvents(ctx context.Context, events []eventRow) error {
-	b := &pgx.Batch{}
-	for _, e := range events {
+	rows := make([]model.Event, len(events))
+	for i, e := range events {
 		detail := maps.Clone(e.Detail)
 		if detail == nil {
 			detail = map[string]any{}
@@ -418,53 +427,64 @@ func (s store) addEvents(ctx context.Context, events []eventRow) error {
 		if names == nil {
 			names = []string{}
 		}
-		b.Queue(`INSERT INTO events (account_id, group_id, model, kind, reason, weight_from, weight_to, rules, detail)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			e.AccountID, e.GroupID, e.Model, e.Kind, e.Reason, e.From, e.To, names, raw)
+		rows[i] = model.Event{AccountID: e.AccountID, GroupID: e.GroupID, Model: e.Model, Kind: e.Kind, Reason: e.Reason,
+			WeightFrom: e.From, WeightTo: e.To, Rules: names, Detail: raw}
 	}
-	return s.db.SendBatch(ctx, b).Close()
+	return pgdb.InsertAll(s.with(ctx), rows)
 }
+
+// keyColumnList selects the key columns.
+const keyColumnList = "account_id, group_id, model"
 
 // keys lists the keys matching f with a state, or with counters from since on.
 func (s store) keys(ctx context.Context, f filter, since int64) ([]key, error) {
-	stateWhere, stateArgs := f.where()
-	obsWhere, obsArgs := f.whereFrom(len(stateArgs)+1, cond{"window_start >= $%d", since})
-	rows, err := s.db.Query(ctx, `SELECT account_id, group_id, model FROM state`+stateWhere+
-		` UNION SELECT account_id, group_id, model FROM obs`+obsWhere, append(stateArgs, obsArgs...)...)
-	if err != nil {
+	db := s.with(ctx)
+	states := db.Model(&model.State{}).Select(keyColumnList).Scopes(f.scope)
+	obs := db.Model(&model.Obs{}).Select(keyColumnList).Scopes(f.scope).Where("window_start >= ?", since)
+	var rows []model.State
+	if err := db.Raw("? UNION ?", states, obs).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (key, error) {
-		var k key
-		return k, r.Scan(&k.AccountID, &k.GroupID, &k.Model)
-	})
+	out := make([]key, len(rows))
+	for i, r := range rows {
+		out[i] = key{r.AccountID, r.GroupID, r.Model}
+	}
+	return out, nil
 }
 
 // listEvents pages the events matching f (and kind), newest first.
 func (s store) listEvents(ctx context.Context, f filter, kind string, limit, offset int) ([]eventItem, int64, error) {
-	var extra []cond
-	if kind != "" {
-		extra = append(extra, cond{"kind = $%d", kind})
+	match := func(db *gorm.DB) *gorm.DB {
+		db = db.Model(&model.Event{}).Scopes(f.scope)
+		if kind != "" {
+			db = db.Where("kind = ?", kind)
+		}
+		return db
 	}
-	where, args := f.where(extra...)
 	var total int64
-	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM events`+where, args...).Scan(&total); err != nil {
+	if err := s.with(ctx).Scopes(match).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	n := len(args)
+	var rows []struct {
+		model.Event
+		AccountName string
+	}
 	// The account's name as scheduling last saw it, in any group.
-	rows, err := s.db.Query(ctx, `SELECT id, created_at, account_id, COALESCE((SELECT b.name FROM bases b
-			WHERE b.account_id = events.account_id ORDER BY b.seen_at DESC LIMIT 1), ''),
-		group_id, model, kind, reason, weight_from, weight_to, rules, detail
-		FROM events`+where+fmt.Sprintf(" ORDER BY id DESC LIMIT $%d OFFSET $%d", n+1, n+2), append(args, limit, offset)...)
+	err := s.with(ctx).Scopes(match).Select(`events.*, COALESCE((SELECT b.name FROM bases b
+			WHERE b.account_id = events.account_id ORDER BY b.seen_at DESC LIMIT 1), '') AS account_name`).
+		Order("id DESC").Limit(limit).Offset(offset).Find(&rows).Error
 	if err != nil {
 		return nil, 0, err
 	}
-	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (eventItem, error) {
-		var e eventItem
-		return e, r.Scan(&e.ID, &e.CreatedAt, &e.AccountID, &e.AccountName, &e.GroupID, &e.Model, &e.Kind, &e.Reason, &e.From, &e.To, &e.Rules, &e.Detail)
-	})
-	return items, total, err
+	items := make([]eventItem, len(rows))
+	for i, r := range rows {
+		items[i] = eventItem{ID: r.ID, CreatedAt: r.CreatedAt, AccountID: r.AccountID, AccountName: r.AccountName,
+			GroupID: r.GroupID, Model: r.Model, Kind: r.Kind, Reason: r.Reason, From: r.WeightFrom, To: r.WeightTo, Rules: r.Rules}
+		if err := json.Unmarshal(r.Detail, &items[i].Detail); err != nil {
+			return nil, 0, fmt.Errorf("event %d: %w", r.ID, err)
+		}
+	}
+	return items, total, nil
 }
 
 // filter narrows states and events to accounts, a group and a model (zero
@@ -486,46 +506,29 @@ func (f filter) accounts() []int64 {
 	return slices.Compact(ids)
 }
 
-// cond is an SQL condition with one %d placeholder for its argument.
-type cond struct {
-	sql string
-	arg any
-}
-
-// where builds the WHERE clause of f and the extra conditions.
-func (f filter) where(extra ...cond) (string, []any) { return f.whereFrom(1, extra...) }
-
-// whereFrom is where with the placeholders numbered from first on.
-func (f filter) whereFrom(first int, extra ...cond) (string, []any) {
-	var conds []cond
+// scope narrows a query on a table with the key columns to f.
+func (f filter) scope(db *gorm.DB) *gorm.DB {
 	if ids := f.accounts(); len(ids) > 0 {
-		conds = append(conds, cond{"account_id = ANY($%d)", ids})
+		db = db.Where("account_id = ANY(?)", pgdb.Array[int64](ids))
 	}
 	if f.GroupID > 0 {
-		conds = append(conds, cond{"group_id = $%d", f.GroupID})
+		db = db.Where("group_id = ?", f.GroupID)
 	}
 	if f.Model != "" {
-		conds = append(conds, cond{"model = $%d", f.Model})
+		db = db.Where("model = ?", f.Model)
 	}
-	conds = append(conds, extra...)
-	if len(conds) == 0 {
-		return "", nil
-	}
-	parts, args := make([]string, len(conds)), make([]any, len(conds))
-	for i, c := range conds {
-		parts[i], args[i] = fmt.Sprintf(c.sql, first+i), c.arg
-	}
-	return " WHERE " + strings.Join(parts, " AND "), args
+	return db
 }
 
-// deleteOldObs drops the counters of the windows before $1.
-const deleteOldObs = `DELETE FROM obs WHERE window_start < $1`
+// oldObs selects the counters of the windows before since.
+func oldObs(db *gorm.DB, since int64) *gorm.DB {
+	return db.Model(&model.Obs{}).Where("window_start < ?", since)
+}
 
 // pruneObs drops the counters older than since (obsSince): the evaluate job
 // does it every run, the cleanup again with the rest.
 func (s store) pruneObs(ctx context.Context, since int64) error {
-	_, err := s.db.Exec(ctx, deleteOldObs, since)
-	return err
+	return oldObs(s.with(ctx), since).Delete(&model.Obs{}).Error
 }
 
 // prune deletes the counters older than since, the events older than
@@ -535,24 +538,25 @@ func (s store) pruneObs(ctx context.Context, since int64) error {
 // before clearsBefore (the evaluate job gives up on them much sooner; this
 // only catches what a crash left).
 func (s store) prune(ctx context.Context, since int64, eventsBefore, staleBefore, clearsBefore time.Time) (int64, error) {
+	db := s.with(ctx)
 	var n int64
 	for _, q := range []struct {
-		sql string
-		arg any
+		model any
+		where *gorm.DB
 	}{
-		{deleteOldObs, since},
-		{`DELETE FROM events WHERE created_at < $1`, eventsBefore},
-		{`DELETE FROM state s WHERE (tombstone OR eff = base) AND eval_window < $1 AND NOT EXISTS (
-			SELECT 1 FROM obs o WHERE o.account_id = s.account_id AND o.group_id = s.group_id AND o.model = s.model)`, since},
-		{`DELETE FROM state s WHERE NOT EXISTS (SELECT 1 FROM bases b WHERE b.account_id = s.account_id AND b.group_id = s.group_id AND b.seen_at >= $1)`, staleBefore},
-		{`DELETE FROM bases WHERE seen_at < $1`, staleBefore},
-		{`DELETE FROM sticky_pending WHERE created_at < $1`, clearsBefore},
+		{&model.Obs{}, oldObs(db, since)},
+		{&model.Event{}, db.Where("created_at < ?", eventsBefore)},
+		{&model.State{}, db.Where(`(tombstone OR eff = base) AND eval_window < ? AND NOT EXISTS (
+			SELECT 1 FROM obs o WHERE o.account_id = state.account_id AND o.group_id = state.group_id AND o.model = state.model)`, since)},
+		{&model.State{}, db.Where(`NOT EXISTS (SELECT 1 FROM bases b WHERE b.account_id = state.account_id AND b.group_id = state.group_id AND b.seen_at >= ?)`, staleBefore)},
+		{&model.Base{}, db.Where("seen_at < ?", staleBefore)},
+		{&model.StickyPending{}, db.Where("created_at < ?", clearsBefore)},
 	} {
-		tag, err := s.db.Exec(ctx, q.sql, q.arg)
-		if err != nil {
-			return n, err
+		res := q.where.Delete(q.model)
+		if res.Error != nil {
+			return n, res.Error
 		}
-		n += tag.RowsAffected()
+		n += res.RowsAffected
 	}
 	return n, nil
 }

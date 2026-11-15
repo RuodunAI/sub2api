@@ -2,3 +2,16 @@
 */runtimes/
 *.s2plugin
 */ui/native/dist/
+
+# `go build` in a plugin directory writes the binary there, named after it.
+/anthropic/anthropic
+/ccgateway/ccgateway
+/claude-oauth/claude-oauth
+/codex/codex
+/dynweight/dynweight
+/guard/guard
+/mailer/mailer
+/moderation/moderation
+/payment/payment
+/volcengine/volcengine
+/*/*.exe

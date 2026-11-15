@@ -5,8 +5,8 @@
 // After InitHost, call Install once: http.DefaultTransport and
 // net.DefaultResolver are replaced, so net/http clients built on the default
 // transport (or a Clone of it) and Go DNS lookups go through the tunnel.
-// Database, Redis and gRPC clients must use DialContext explicitly, e.g.
-// pgx: cfg.ConnConfig.DialFunc = egress.DialContext.
+// Redis and gRPC clients must use DialContext explicitly; Host.DB already
+// dials the plugin database through it.
 package egress
 
 import (

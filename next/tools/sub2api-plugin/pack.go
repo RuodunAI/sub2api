@@ -48,6 +48,7 @@ func cmdPack(args []string, stdout, stderr io.Writer) error {
 	allowMissingUI := fs.Bool("allow-missing-ui", false, "pack even when ui/native/dist is missing")
 	images := fs.String("images", "", "directory with images.json and the container image archives it lists (packed as images/, archives stored uncompressed)")
 	imageRoles := fs.String("image-roles", "", "comma separated roles images.json must list exactly (requires --images)")
+	skipDBCheck := fs.Bool("skip-db-check", false, "do not compare the GORM models with migrations/ (where no PostgreSQL is at hand)")
 	if _, err := parseInterspersed(fs, args); err != nil {
 		return err
 	}
@@ -68,6 +69,14 @@ func cmdPack(args []string, stdout, stderr io.Writer) error {
 	files, m, warnings, err := collectPackage(*dir, rt, ov, *allowMissingUI)
 	if err != nil {
 		return err
+	}
+	if !*skipDBCheck {
+		// A plugin without GORM models (no internal/model) or without a
+		// database has nothing to check. The overlay's migrations are packed,
+		// so they are checked too.
+		if err := dbCheck(*dir, ov, stderr); err != nil && !nothingToCheck(err) {
+			return fmt.Errorf("db check: %w", err)
+		}
 	}
 	for _, w := range warnings {
 		fmt.Fprintln(stderr, "warning:", w)

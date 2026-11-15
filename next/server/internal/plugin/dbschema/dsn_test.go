@@ -1,6 +1,9 @@
 package dbschema
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRewriteDSN(t *testing.T) {
 	got, err := rewriteDSN("postgres://host:pw@db:5432/app?sslmode=disable", "plg_x", "p/w+=", "plg_x")
@@ -19,5 +22,14 @@ func TestRewriteDSN(t *testing.T) {
 	got, _ = rewriteDSN("postgres://app:secret@db/app", "", "", "plg_x")
 	if got != "postgres://app:secret@db/app?options=-c%20search_path%3Dplg_x" {
 		t.Fatalf("host credentials: %s", got)
+	}
+	for _, host := range []string{
+		"postgres://app:secret@db/app?pool_max_conns=20&sslmode=disable&pool_max_conn_lifetime=1h",
+		"host=db pool_max_conns=20 dbname=app pool_min_conns='2'",
+	} {
+		got, err := rewriteDSN(host, "plg_x", "pw", "plg_x")
+		if err != nil || strings.Contains(got, "pool_") {
+			t.Errorf("plugin DSN keeps the host pool parameters: %s %v", got, err)
+		}
 	}
 }

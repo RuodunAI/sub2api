@@ -12,7 +12,7 @@
 #   <outdir>/<name>-<version>.s2plugin for every next/plugins/<name> that has a
 #     manifest.json -- the list is DISCOVERED, not enumerated here, so a new
 #     plugin lands in the market with no change to this script,
-#   <outdir>/anthropic-0.3.3-test.s2plugin  (upgrade test fixture),
+#   <outdir>/anthropic-0.3.4-test.s2plugin  (upgrade test fixture),
 #   <outdir>/index.json, index.json.sig,
 #   <outdir>/test/guard-<version>-test.s2plugin  (guardtest build, not indexed)
 #
@@ -34,6 +34,9 @@
 #                   plugin's package, requiring exactly these roles. Only
 #                   the plugin's own package; overlay fixtures never get
 #                   images. Set by deploy/docker/build-go.sh for ccgateway.
+#   SKIP_DB_CHECK=1 pack without comparing the GORM models with migrations/
+#                   (pack --skip-db-check), where no PostgreSQL can run: the
+#                   image build (root, no network). TestDBCheck covers it.
 set -eu
 
 if [ $# -lt 3 ]; then
@@ -83,6 +86,12 @@ package() {
   "$BIN" "$@" >/dev/null
 
   set -- pack --dir "$dir" --runtimes "$stage" --out-dir "$dest"
+  # An overlay fixture carries migrations ahead of the plugin's GORM models
+  # on purpose (anthropic's upgrade adds a column no model maps): db check,
+  # which compares the overlay's migrations too, does not apply to it.
+  if [ -n "$overlay" ] || [ "${SKIP_DB_CHECK:-0}" = "1" ]; then
+    set -- "$@" --skip-db-check
+  fi
   [ -n "$overlay" ] && set -- "$@" --overlay "$overlay"
   image_roles=
   for spec in ${PACK_IMAGES:-}; do

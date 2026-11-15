@@ -1,11 +1,10 @@
 package volcengine
 
 import (
-	"context"
+	"database/sql"
 	"errors"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
@@ -19,8 +18,8 @@ type indexResource[R any] struct {
 	// taking the row id as its only argument. Taking every lock before
 	// reading is what orders concurrent writers.
 	locks []string
-	// load reads the locked row; ErrNoRow or pgx.ErrNoRows means "gone".
-	load func(context.Context, indexDB, int64) (R, error)
+	// load reads the locked row; ErrNoRow means "gone".
+	load func(*gorm.DB, int64) (R, error)
 	// missing is the 404 body when the row is not in the index.
 	missing string
 }
@@ -33,25 +32,26 @@ type indexResource[R any] struct {
 // response cannot later commit over another node's index update. Upstream
 // success followed by DB failure still requires a later refresh, as it does
 // for every upstream-first operation.
-func withResource[R any](ctx context.Context, db *pgxpool.Pool, r indexResource[R], id int64,
-	fn func(pgx.Tx, R) (*pluginv1.HTTPResponse, error),
+func withResource[R any](db *gorm.DB, r indexResource[R], id int64,
+	fn func(*gorm.DB, R) (*pluginv1.HTTPResponse, error),
 ) (*pluginv1.HTTPResponse, error) {
 	var resp *pluginv1.HTTPResponse
-	err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		for _, q := range r.locks {
 			var locked int64
-			if err := tx.QueryRow(ctx, q, id).Scan(&locked); err != nil {
+			// Row reports a lock that found no row as sql.ErrNoRows.
+			if err := tx.Raw(q, id).Row().Scan(&locked); err != nil {
 				return err
 			}
 		}
-		row, err := r.load(ctx, tx, id)
+		row, err := r.load(tx, id)
 		if err != nil {
 			return err
 		}
 		resp, err = fn(tx, row)
 		return err
 	})
-	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, ErrNoRow) {
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNoRow) {
 		return notFound(r.missing), nil
 	}
 	return resp, err
@@ -59,7 +59,7 @@ func withResource[R any](ctx context.Context, db *pgxpool.Pool, r indexResource[
 
 // groupResource locks an asset group row.
 var groupResource = indexResource[*groupRow]{
-	locks:   []string{`SELECT id FROM asset_groups WHERE id = $1 FOR UPDATE`},
+	locks:   []string{`SELECT id FROM asset_groups WHERE id = ? FOR UPDATE`},
 	load:    loadGroup,
 	missing: "no such asset group in the index / 索引里没有这个素材组",
 }
@@ -70,8 +70,8 @@ var groupResource = indexResource[*groupRow]{
 var assetResource = indexResource[*assetRow]{
 	locks: []string{
 		`SELECT g.id FROM asset_groups g JOIN assets a ON a.group_id = g.id
-			WHERE a.id = $1 FOR KEY SHARE OF g`,
-		`SELECT id FROM assets WHERE id = $1 FOR UPDATE`,
+			WHERE a.id = ? FOR KEY SHARE OF g`,
+		`SELECT id FROM assets WHERE id = ? FOR UPDATE`,
 	},
 	load:    loadAsset,
 	missing: "no such asset in the index / 索引里没有这个素材",
