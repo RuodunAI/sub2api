@@ -117,8 +117,13 @@ type recorder struct {
 	events   []string
 }
 
-func (r *recorder) CanGrantToRoles(context.Context, pgx.Tx, int64, []string) error        { return nil }
-func (r *recorder) GrantPluginPermission(context.Context, pgx.Tx, string, []string) error { return nil }
+func (r *recorder) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, bool) error { return nil }
+func (r *recorder) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+	return core.PluginGrantees{}, nil
+}
+func (r *recorder) GrantPluginPermission(context.Context, pgx.Tx, string, map[string][]string) error {
+	return nil
+}
 func (r *recorder) SyncPlugin(context.Context, pgx.Tx, string, []core.PermissionDef) error {
 	return nil
 }

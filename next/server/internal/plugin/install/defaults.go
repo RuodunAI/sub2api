@@ -67,13 +67,26 @@ func PermissionDefs(m *manifest.Manifest, grants map[string][]string) []core.Per
 			Module:      manifest.PermissionModule(m.Key),
 			Label:       core.LocalizedText(up.Label),
 			Description: core.LocalizedText(up.Description),
-			Sensitive:   up.Sensitive,
+			Risk:        up.RiskLevel(),
 			Sort:        (i + 1) * 10,
-			GrantRoles:  grants[up.Key],
+			GrantRoles:  unscopedGrants(grants[up.Key]),
 			InheritFrom: inherit,
 		})
 	}
 	return defs
+}
+
+// unscopedGrants grants each of roles every row, as the catalog's
+// GrantRoles and GrantPluginPermission take them; nil for nil.
+func unscopedGrants(roles []string) map[string][]string {
+	if roles == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(roles))
+	for _, r := range roles {
+		out[r] = []string{""}
+	}
+	return out
 }
 
 // unionDefs merges b into a (b wins on key collisions), preserving order.

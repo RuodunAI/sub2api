@@ -103,11 +103,12 @@ func TestPermissionCatalogFollowsRollouts(t *testing.T) {
 		t.Fatalf("after failed upgrade: audit:read %q, want it kept", got)
 	}
 
-	// Activating another version syncs the catalog with its manifest.
+	// Activating another version syncs the catalog with its manifest: the
+	// key it no longer declares is removed.
 	m3, p3 := version("3.0.0", "rules:read")
 	registrytest.AddVersion(t, h.db, m3, p3)
 	upgrade(n, "3.0.0", rollout.PhaseActive)
-	if a, r := status("audit:read"), status("rules:read"); a != "" || r != "active" {
+	if a, r := status("audit:read"), status("rules:read"); a != "removed" || r != "active" {
 		t.Fatalf("after the next activation: audit:read %q, rules:read %q", a, r)
 	}
 

@@ -146,13 +146,35 @@ func (s *Service) editableRole(ctx context.Context, tx pgx.Tx, actorID, id int64
 	if err != nil {
 		return nil, err
 	}
-	if err := within(actor, cur, cannotActOnRole(ctx)); err != nil {
-		return nil, err
-	}
-	if (r.Builtin || r.UserCount > 0) && !actor.CanAssign(r.Key) {
+	switch editDenial(actor, cur, r) {
+	case denyNotEditable:
+		return nil, within(actor, cur, cannotActOnRole(ctx))
+	case denyNotAssignable:
 		return nil, notAssignable(ctx, r.Key)
 	}
 	return r, nil
+}
+
+// Why an actor may not change a role (editDenial).
+const (
+	denySuperuserRole = "superuser_role"
+	denyNotEditable   = "not_editable"
+	denyNotAssignable = "not_assignable"
+)
+
+// editDenial is why actor (its grantSet) may not change role r, whose
+// grants are cur, "" when it may: editableRole's rule, a superuser role
+// being frozen for everyone.
+func editDenial(actor, cur core.PermissionSet, r *Role) string {
+	switch {
+	case r.Superuser:
+		return denySuperuserRole
+	case !actor.Missing(cur).Empty():
+		return denyNotEditable
+	case (r.Builtin || r.UserCount > 0) && !actor.CanAssign(r.Key):
+		return denyNotAssignable
+	}
+	return ""
 }
 
 // CreateRoleInput is the body of POST /roles.

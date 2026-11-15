@@ -49,7 +49,7 @@ func TestUpgradeConsentNeedsRightsOverTheRoles(t *testing.T) {
 		t.Fatalf("super admin consent: %v", err)
 	}
 	defs := e.perms.syncs[len(e.perms.syncs)-1].defs
-	if i := slices.IndexFunc(defs, func(d core.PermissionDef) bool { return d.Key == "plugin.guard:rules:export" }); i < 0 || !slices.Equal(defs[i].GrantRoles, []string{"admin"}) {
+	if i := slices.IndexFunc(defs, func(d core.PermissionDef) bool { return d.Key == "plugin.guard:rules:export" }); i < 0 || !slices.Equal(grantRoleKeys(defs[i].GrantRoles), []string{"admin"}) {
 		t.Fatalf("synced defs %+v", defs)
 	}
 }

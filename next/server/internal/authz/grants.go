@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
@@ -24,8 +25,9 @@ type grant struct {
 
 // resolvePermissions canonicalizes keys, without duplicates or keys another
 // implies (canonicalKeys), and resolves them to grants, dropping removed
-// permissions. A key that does not parse, or names
-// no permission, is invalid.
+// permissions. A key that does not parse, or names a plugin permission with
+// a scope it does not take (pluginScope.fits), is invalid; one naming no
+// permission is unknown.
 func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string, []grant, error) {
 	var invalid, unknown []string
 	pats := make([]perm.Pattern, 0, len(keys))
@@ -36,7 +38,7 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 		}
 	}
 	if len(invalid) > 0 {
-		return nil, nil, core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "invalid", Message: "invalid permission keys: " + strings.Join(invalid, ", ")})
+		return nil, nil, invalidKeys(invalid)
 	}
 	for _, k := range canonicalKeys(keys) {
 		p, _ := perm.Parse(k)
@@ -46,19 +48,22 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 	type row struct {
 		id      int64
 		removed bool
+		scope   pluginScope
 	}
 	found := map[string]row{}
-	rows, err := tx.Query(ctx, `SELECT key, id, status = 'removed' FROM permissions WHERE key = ANY($1)`, actions)
+	rows, err := tx.Query(ctx, `SELECT key, id, status = 'removed', scope_type, scope FROM permissions WHERE key = ANY($1)`, actions)
 	if err != nil {
 		return nil, nil, err
 	}
 	for rows.Next() {
-		var k string
+		var k, scopeType string
+		var scope manifest.PermissionScope
 		var r row
-		if err := rows.Scan(&k, &r.id, &r.removed); err != nil {
+		if err := rows.Scan(&k, &r.id, &r.removed, &scopeType, &scope); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
+		r.scope = readPluginScope(scopeType, &scope)
 		found[k] = r
 	}
 	rows.Close()
@@ -72,16 +77,71 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 		switch {
 		case !ok:
 			unknown = append(unknown, string(p.Key()))
+		case isPluginAction(p.Action) && !r.scope.fits(p):
+			invalid = append(invalid, string(p.Key()))
 		case !r.removed:
 			kept = append(kept, string(p.Key()))
 			grants = append(grants, grant{key: string(p.Key()), id: r.id, scope: p.Suffix()})
 		}
+	}
+	if len(invalid) > 0 {
+		return nil, nil, invalidKeys(invalid)
 	}
 	if len(unknown) > 0 {
 		return nil, nil, core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "unknown", Message: "unknown permissions: " + strings.Join(unknown, ", ")})
 	}
 	return kept, grants, nil
 }
+
+// invalidKeys is the refusal of keys that do not parse or name a scope
+// their permission does not take.
+func invalidKeys(keys []string) error {
+	return core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "invalid", Message: "invalid permission keys: " + strings.Join(keys, ", ")})
+}
+
+// pluginScope is a plugin permission's scope as the catalog stores it
+// (scope_type "plugin:<resource>", scope): the scopes a grant may name.
+type pluginScope struct {
+	resource string   // "" when the permission takes no scope
+	own      bool     // "own" may be granted
+	values   []string // enum keys; nil for an options or id resource
+}
+
+// readPluginScope reads a plugin permission's scope_type and scope (nil or
+// zero for an unscoped one).
+func readPluginScope(scopeType string, scope *manifest.PermissionScope) pluginScope {
+	res, ok := strings.CutPrefix(scopeType, core.PluginScopeTypePrefix)
+	if !ok {
+		return pluginScope{}
+	}
+	ps := pluginScope{resource: res}
+	if scope != nil {
+		ps.own = scope.Own
+		for _, v := range scope.Values {
+			ps.values = append(ps.values, v.Key)
+		}
+	}
+	return ps
+}
+
+// fits reports whether p's scope is one the permission takes: every row
+// always; own when allowed; <resource>/<value> of its resource, and of its
+// values when it lists them. A core-style scope never fits.
+func (ps pluginScope) fits(p perm.Pattern) bool {
+	switch s := p.Scope; {
+	case s.All:
+		return true
+	case s.Own:
+		return ps.own
+	case s.Res == "" || s.Res != ps.resource:
+		return false
+	}
+	return ps.values == nil || slices.Contains(ps.values, p.Scope.Value)
+}
+
+// isPluginAction reports whether a is a plugin permission's action, whose
+// scopes the catalog checks (pluginScope) rather than perm.
+func isPluginAction(a perm.Key) bool { return strings.HasPrefix(string(a), perm.PluginPrefix) }
 
 // writeGrants makes grants the role's live grants, its core ones only when
 // coreOnly (a reset leaves plugin permissions alone). Grants of removed

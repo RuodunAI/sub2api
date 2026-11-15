@@ -51,7 +51,7 @@ func TestConsentRoleGrantRights(t *testing.T) {
 		t.Fatalf("manifest defaults without role:define: %v", err)
 	}
 	last := e.perms.syncs[len(e.perms.syncs)-1]
-	if len(e.perms.checked) != 1 || last.defs[0].GrantRoles == nil || len(last.defs[0].GrantRoles) != 0 || !slices.Equal(last.defs[1].GrantRoles, []string{"admin"}) {
+	if len(e.perms.checked) != 1 || last.defs[0].GrantRoles == nil || len(last.defs[0].GrantRoles) != 0 || !slices.Equal(grantRoleKeys(last.defs[1].GrantRoles), []string{"admin"}) {
 		t.Fatalf("checked %v, defs %+v", e.perms.checked, last.defs)
 	}
 	e.perms.mu.Lock()
@@ -93,7 +93,7 @@ SELECT 'plugin.guard:' || k, 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'd
 		t.Fatalf("checked %v", e.perms.checked)
 	}
 	last = e.perms.syncs[len(e.perms.syncs)-1]
-	if d := last.defs[len(last.defs)-1]; d.Key != "plugin.guard:rules:export" || !slices.Equal(d.GrantRoles, []string{"auditor"}) {
+	if d := last.defs[len(last.defs)-1]; d.Key != "plugin.guard:rules:export" || !slices.Equal(grantRoleKeys(d.GrantRoles), []string{"auditor"}) {
 		t.Fatalf("new def %+v", d)
 	}
 }
@@ -130,7 +130,7 @@ VALUES ('plugin.guard:rules:view', 'plugin.guard', '{"en":"x"}', 'plugin', 'guar
 			t.Fatal(err)
 		}
 		defs := e.perms.syncs[len(e.perms.syncs)-1].defs
-		if !slices.Equal(defs[0].GrantRoles, want) || !slices.Equal(defs[0].InheritFrom, []string{"rules:view"}) || !slices.Equal(defs[1].GrantRoles, []string{"admin"}) {
+		if !slices.Equal(grantRoleKeys(defs[0].GrantRoles), want) || !slices.Equal(defs[0].InheritFrom, []string{"rules:view"}) || !slices.Equal(grantRoleKeys(defs[1].GrantRoles), []string{"admin"}) {
 			t.Fatalf("old key %v: defs %+v", old, defs)
 		}
 	}

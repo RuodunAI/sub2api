@@ -11,7 +11,7 @@ import (
 // PermissionsTS renders the core permission catalog as the console's
 // next/web/src/generated/permissions.ts (`sub2api permissions-ts`;
 // TestGeneratedPermissionsTS keeps the checked-in file in step): a constant
-// per key, the scopable actions, each key's flags, soft dependencies and description, the key types and the
+// per key, the scopable actions, each key's risk and flags, soft dependencies and description, the key types and the
 // role key pattern. The output is already in the console's prettier style.
 func PermissionsTS() string {
 	var b strings.Builder
@@ -55,8 +55,8 @@ func PermissionsTS() string {
 	w("")
 	w("export interface PermMeta {")
 	w("  module: string")
-	w("  /** Flagged in the role editor: credentials, money, trust roots, code execution, identity. */")
-	w("  sensitive: boolean")
+	w("  /** Role editor badge: sensitive for credentials, money, trust roots, code execution, identity; critical for super admin only ones. */")
+	w("  risk: 'low' | 'sensitive' | 'critical'")
 	w("  /** Some of its routes need a step-up proof each time (CONTRACTS §80.2). */")
 	w("  stepUp: boolean")
 	w("  /** Soft dependencies, of the same scope for a scopable action; editor hints only. */")
@@ -68,7 +68,7 @@ func PermissionsTS() string {
 	for i, p := range perms {
 		w("  %s: {", tsString(string(p.key)))
 		w("    module: %s,", tsString(p.module))
-		w("    sensitive: %t,", p.sensitive)
+		w("    risk: %s,", tsString(p.risk()))
 		w("    stepUp: %t,", p.stepUp)
 		req := make([]string, len(p.requires))
 		for j, k := range p.requires {
