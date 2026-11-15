@@ -1,0 +1,10 @@
+-- sql
+SELECT count(*) FROM proxies p WHERE ((p.name ILIKE $1 OR p.host ILIKE $2)) AND p.status = $3 AND p.created_by = $4 AND (($5::boolean OR COALESCE(p.created_by = $6::bigint, false) OR p.id = ANY($7::bigint[])))
+-- vars
+$1 string "%eu%"
+$2 string "%eu%"
+$3 string "active"
+$4 int64 9
+$5 bool false
+$6 int64 7
+$7 store.Int64s [3 4]

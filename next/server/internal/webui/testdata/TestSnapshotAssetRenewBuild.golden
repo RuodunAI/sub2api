@@ -1,0 +1,5 @@
+-- sql
+UPDATE "web_asset_builds" SET "last_seen"=clock_timestamp(),"lease_until"=clock_timestamp()+make_interval(secs=>$1) WHERE build_id = $2
+-- vars
+$1 float64 90
+$2 string "b1"

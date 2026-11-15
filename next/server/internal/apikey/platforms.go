@@ -4,6 +4,8 @@ import (
 	"context"
 	"sort"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -18,22 +20,28 @@ func groupTypes(ctx context.Context, q store.Querier, ids []int64) (map[int64][]
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := q.Query(ctx, `SELECT DISTINCT ag.group_id, a.plugin_key, a.type
-		FROM account_groups ag JOIN accounts a ON a.id = ag.account_id
-		WHERE ag.group_id = ANY($1) AND a.deleted_at IS NULL`, ids)
-	if err != nil {
+	var rows []groupTypeRow
+	if err := groupTypesQuery(store.G(ctx, q), ids).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		var k core.AccountTypeKey
-		if err := rows.Scan(&id, &k.PluginKey, &k.Type); err != nil {
-			return nil, err
-		}
-		out[id] = append(out[id], k)
+	for _, r := range rows {
+		out[r.GroupID] = append(out[r.GroupID], core.AccountTypeKey{PluginKey: r.PluginKey, Type: r.Type})
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// groupTypeRow is a row of groupTypesQuery.
+type groupTypeRow struct {
+	GroupID         int64
+	PluginKey, Type string
+}
+
+// groupTypesQuery selects the distinct account types of the live accounts in
+// the groups ids.
+func groupTypesQuery(db *gorm.DB, ids []int64) *gorm.DB {
+	return db.Table("account_groups ag").Distinct("ag.group_id, a.plugin_key, a.type").
+		Joins("JOIN accounts a ON a.id = ag.account_id").
+		Where("ag.group_id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids))
 }
 
 // platformsOf returns the sorted, distinct platforms of the generation that

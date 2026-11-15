@@ -1,0 +1,5 @@
+-- sql
+SELECT "provider_fallback_credits"."token_hash","provider_fallback_credits"."user_id","provider_fallback_credits"."group_id","provider_fallback_credits"."account_id","provider_fallback_credits"."principal_id","provider_fallback_credits"."generation","provider_fallback_credits"."plugin_key","provider_fallback_credits"."source_model","provider_fallback_credits"."prompt_digests","provider_fallback_credits"."observed_at","provider_fallback_credits"."expires_at" FROM "provider_fallback_credits" WHERE token_hash = $1 LIMIT $2
+-- vars
+$1 string "t"
+$2 int 1

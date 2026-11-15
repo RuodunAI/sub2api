@@ -14,7 +14,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/credits"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 type Service struct {
@@ -58,15 +60,27 @@ func normalize(in core.FallbackCredit, now time.Time) (core.FallbackCredit, erro
 	return in, nil
 }
 
-const columns = `token_hash,user_id,group_id,account_id,principal_id,generation,plugin_key,source_model,prompt_digests,observed_at,expires_at`
-
 func read(ctx context.Context, q store.Querier, tokenHash string) (out core.FallbackCredit, err error) {
-	var digests []byte
-	err = q.QueryRow(ctx, `SELECT `+columns+` FROM provider_fallback_credits WHERE token_hash=$1`, tokenHash).Scan(&out.TokenHash, &out.Owner.UserID, &out.Owner.GroupID, &out.Binding.AccountID, &out.Binding.PrincipalID, &out.Binding.Generation, &out.PluginKey, &out.SourceModel, &digests, &out.ObservedAt, &out.ExpiresAt)
-	if err == nil {
-		err = json.Unmarshal(digests, &out.PromptDigests)
+	var r model.ProviderFallbackCredit
+	if err = store.G(ctx, q).Take(&r, "token_hash = ?", tokenHash).Error; err != nil {
+		return out, err
 	}
-	return
+	out = core.FallbackCredit{
+		TokenHash:   r.TokenHash,
+		Owner:       core.ResourceOwner{UserID: r.UserID, GroupID: r.GroupID},
+		Binding:     core.ResourceBinding{AccountID: r.AccountID, PrincipalID: r.PrincipalID, Generation: r.Generation},
+		PluginKey:   r.PluginKey,
+		SourceModel: r.SourceModel,
+		ObservedAt:  r.ObservedAt,
+		ExpiresAt:   r.ExpiresAt,
+	}
+	err = json.Unmarshal(r.PromptDigests, &out.PromptDigests)
+	return out, err
+}
+
+// lockKey takes the transaction-scoped advisory lock of key.
+func lockKey(ctx context.Context, tx pgx.Tx, key string) error {
+	return store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, key).Error
 }
 
 func (s *Service) Record(ctx context.Context, input core.FallbackCredit) error {
@@ -76,10 +90,10 @@ func (s *Service) Record(ctx context.Context, input core.FallbackCredit) error {
 	}
 	return s.db.Tx(ctx, func(tx pgx.Tx) error {
 		owner, _ := json.Marshal(in.Owner)
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "fallback-credit-owner:"+string(owner)); err != nil {
+		if err := lockKey(ctx, tx, "fallback-credit-owner:"+string(owner)); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "fallback-credit-token:"+in.TokenHash); err != nil {
+		if err := lockKey(ctx, tx, "fallback-credit-token:"+in.TokenHash); err != nil {
 			return err
 		}
 		if !in.ExpiresAt.After(time.Now()) {
@@ -98,20 +112,36 @@ func (s *Service) Record(ctx context.Context, input core.FallbackCredit) error {
 		}
 		// Keep expired hashes briefly as anti-revival tombstones, but bound all
 		// retained records rather than only active five-minute entries.
-		if _, err = tx.Exec(ctx, `DELETE FROM provider_fallback_credits WHERE user_id=$1 AND group_id=$2 AND expires_at<now()-interval '24 hours'`, in.Owner.UserID, in.Owner.GroupID); err != nil {
+		g := store.G(ctx, tx)
+		if err = ownerCredits(g, in.Owner).Where("expires_at < now()-interval '24 hours'").
+			Delete(&model.ProviderFallbackCredit{}).Error; err != nil {
 			return err
 		}
-		var retained int
-		if err = tx.QueryRow(ctx, `SELECT count(*) FROM provider_fallback_credits WHERE user_id=$1 AND group_id=$2`, in.Owner.UserID, in.Owner.GroupID).Scan(&retained); err != nil {
+		var retained int64
+		if err = ownerCredits(g, in.Owner).Count(&retained).Error; err != nil {
 			return err
 		}
-		if retained >= s.maxRetained {
+		if retained >= int64(s.maxRetained) {
 			return core.ErrRateLimited.WithMessage("fallback credit tracking capacity exceeded")
 		}
-		digests, _ := json.Marshal(in.PromptDigests)
-		_, err = tx.Exec(ctx, `INSERT INTO provider_fallback_credits(`+columns+`) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, in.TokenHash, in.Owner.UserID, in.Owner.GroupID, in.Binding.AccountID, in.Binding.PrincipalID, in.Binding.Generation, in.PluginKey, in.SourceModel, digests, in.ObservedAt, in.ExpiresAt)
-		return err
+		return g.Create(newRow(in)).Error
 	})
+}
+
+// ownerCredits narrows provider_fallback_credits to owner's records.
+func ownerCredits(db *gorm.DB, owner core.ResourceOwner) *gorm.DB {
+	return db.Model(&model.ProviderFallbackCredit{}).Where("user_id = ? AND group_id = ?", owner.UserID, owner.GroupID)
+}
+
+// newRow is the stored form of a normalized credit.
+func newRow(in core.FallbackCredit) *model.ProviderFallbackCredit {
+	digests, _ := json.Marshal(in.PromptDigests)
+	return &model.ProviderFallbackCredit{
+		TokenHash: in.TokenHash, UserID: in.Owner.UserID, GroupID: in.Owner.GroupID,
+		AccountID: in.Binding.AccountID, PrincipalID: in.Binding.PrincipalID, Generation: in.Binding.Generation,
+		PluginKey: in.PluginKey, SourceModel: in.SourceModel, PromptDigests: digests,
+		ObservedAt: in.ObservedAt, ExpiresAt: in.ExpiresAt,
+	}
 }
 
 func (s *Service) Resolve(ctx context.Context, in core.FallbackCreditLookup) (core.FallbackCredit, error) {

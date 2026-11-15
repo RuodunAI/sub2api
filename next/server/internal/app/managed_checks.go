@@ -17,6 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/jackc/pgx/v5/pgconn"
+	"gorm.io/gorm"
 )
 
 type coreMigration struct {
@@ -189,11 +190,16 @@ func verifyCoreSchema(ctx context.Context, db *store.DB) error {
 // serve, as opposed to a query error.
 var errAdmissionRevoked = errors.New("node admission revoked")
 
+// admissionSQL reports whether the updater approved this boot of node with
+// these roles.
+const admissionSQL = `SELECT EXISTS(SELECT 1 FROM updater.node_admissions
+	WHERE node_id=? AND core_boot_id=? AND release_digest=? AND revision=?
+	AND serve_http=? AND claim_background=? AND coordinate_plugins=?)`
+
 func verifyAdmission(ctx context.Context, db *store.DB, node string, a runtimecontract.Admission) error {
 	var approved bool
-	err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM updater.node_admissions
-		WHERE node_id=$1 AND core_boot_id=$2 AND release_digest=$3 AND revision=$4
-		AND serve_http=$5 AND claim_background=$6 AND coordinate_plugins=$7)`, node, a.BootID, a.ReleaseDigest, a.Revision, a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins).Scan(&approved)
+	err := store.G(ctx, db.Pool).Raw(admissionSQL, node, a.BootID, a.ReleaseDigest, a.Revision, a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins).
+		Scan(&approved).Error
 	if err != nil {
 		return err
 	}
@@ -203,75 +209,78 @@ func verifyAdmission(ctx context.Context, db *store.DB, node string, a runtimeco
 	return nil
 }
 
+// versionApprovedSQL reports whether a plugin version has the operator's
+// approval.
+const versionApprovedSQL = `SELECT EXISTS(SELECT 1 FROM plugin_versions WHERE plugin_key=? AND version=? AND consent_status='approved')`
+
+// pluginState is a plugin row with the versions of a live rollout ("" when
+// none).
+type pluginState struct {
+	Key, Status string
+	Active      string `gorm:"column:active"`
+	From        string `gorm:"column:from_version"`
+	Target      string `gorm:"column:target_version"`
+	Revision    int64  `gorm:"column:row_version"`
+}
+
+// pluginStates selects every plugin as a pluginState, by key.
+func pluginStates(db *gorm.DB) *gorm.DB {
+	return db.Table("plugins p").
+		Select("p.key, p.status, COALESCE(p.active_version,'') AS active, p.row_version, COALESCE(r.from_version,'') AS from_version, COALESCE(r.target_version,'') AS target_version").
+		Joins("LEFT JOIN plugin_rollouts r ON r.plugin_key=p.key AND r.phase IN ('preparing','activating')").
+		Order("p.key")
+}
+
 // Readiness follows the actual approved plugin catalog, including third-party
 // plugins. Bundled versions do not impose a minimum or resurrect removed rows.
 // During a live rollout either approved generation is allowed to keep serving.
 func approvedPluginsReady(ctx context.Context, db *store.DB, reg core.PluginRegistry, hostVersion string) (string, error) {
 	gen := reg.Current()
-	rows, err := db.Pool.Query(ctx, `SELECT p.key,p.status,COALESCE(p.active_version,''),p.row_version,
-		COALESCE(r.from_version,''),COALESCE(r.target_version,'')
-		FROM plugins p LEFT JOIN plugin_rollouts r ON r.plugin_key=p.key AND r.phase IN ('preparing','activating') ORDER BY p.key`)
-	if err != nil {
-		return "", err
-	}
-	type row struct {
-		key, status, active, from, target string
-		revision                          int64
-	}
-	var plugins []row
-	for rows.Next() {
-		var p row
-		if err = rows.Scan(&p.key, &p.status, &p.active, &p.revision, &p.from, &p.target); err != nil {
-			rows.Close()
-			return "", err
-		}
-		plugins = append(plugins, p)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+	g := store.G(ctx, db.Pool)
+	var plugins []pluginState
+	if err := pluginStates(g).Find(&plugins).Error; err != nil {
 		return "", err
 	}
 	var evidence []string
 	for _, p := range plugins {
-		evidence = append(evidence, fmt.Sprintf("%s:%d", p.key, p.revision))
-		if p.status != "enabled" && p.status != "upgrading" {
+		evidence = append(evidence, fmt.Sprintf("%s:%d", p.Key, p.Revision))
+		if p.Status != "enabled" && p.Status != "upgrading" {
 			continue
 		}
 		if gen == nil {
-			return "", fmt.Errorf("plugin %s has not loaded", p.key)
+			return "", fmt.Errorf("plugin %s has not loaded", p.Key)
 		}
-		local, ok := gen.Plugin(p.key)
-		if !ok || (local.Version != p.active && local.Version != p.from && local.Version != p.target) {
-			return "", fmt.Errorf("plugin %s has not converged to an approved version", p.key)
+		local, ok := gen.Plugin(p.Key)
+		if !ok || (local.Version != p.Active && local.Version != p.From && local.Version != p.Target) {
+			return "", fmt.Errorf("plugin %s has not converged to an approved version", p.Key)
 		}
 		var approved bool
-		if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_versions WHERE plugin_key=$1 AND version=$2 AND consent_status='approved')`, p.key, local.Version).Scan(&approved); err != nil {
+		if err := g.Raw(versionApprovedSQL, p.Key, local.Version).Scan(&approved).Error; err != nil {
 			return "", err
 		}
 		if !approved {
-			return "", fmt.Errorf("plugin %s approval is missing", p.key)
+			return "", fmt.Errorf("plugin %s approval is missing", p.Key)
 		}
 		if local.Manifest == nil {
-			return "", fmt.Errorf("plugin %s manifest is missing", p.key)
+			return "", fmt.Errorf("plugin %s manifest is missing", p.Key)
 		}
-		granted, err := grants.Granted(ctx, db.Pool, p.key, local.Version, local.Manifest.HostPermissions)
+		granted, err := grants.Granted(ctx, db.Pool, p.Key, local.Version, local.Manifest.HostPermissions)
 		if err != nil {
 			return "", err
 		}
 		for _, permission := range local.GrantedPermissions {
 			if _, ok := granted[permission]; !ok {
-				return "", fmt.Errorf("plugin %s permission revocation has not converged", p.key)
+				return "", fmt.Errorf("plugin %s permission revocation has not converged", p.Key)
 			}
 		}
 		for _, permission := range local.Manifest.HostPermissions {
 			if _, ok := granted[permission.ID]; !ok && !permission.Optional {
-				return "", fmt.Errorf("plugin %s required permission %s is not granted", p.key, permission.ID)
+				return "", fmt.Errorf("plugin %s required permission %s is not granted", p.Key, permission.ID)
 			}
 		}
 		compatible, err := check.HostCompatible(local.Manifest.HostCompat, hostVersion)
 		if err != nil || !compatible {
-			return "", fmt.Errorf("plugin %s is incompatible with core %s", p.key, hostVersion)
+			return "", fmt.Errorf("plugin %s is incompatible with core %s", p.Key, hostVersion)
 		}
 	}
 	sort.Strings(evidence)

@@ -1,0 +1,3 @@
+-- sql
+SELECT p.key, p.status, COALESCE(p.active_version,'') AS active, p.row_version, COALESCE(r.from_version,'') AS from_version, COALESCE(r.target_version,'') AS target_version FROM plugins p LEFT JOIN plugin_rollouts r ON r.plugin_key=p.key AND r.phase IN ('preparing','activating') ORDER BY p.key
+-- vars
