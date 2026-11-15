@@ -1,0 +1,13 @@
+-- sql
+WITH behind AS (
+    SELECT r.id, t.rev, r.superuser OR (SELECT count(*) FROM user_roles ur JOIN users u ON u.id = ur.user_id
+        WHERE ur.role_id = r.id AND u.deleted_at IS NULL) > 0 AS held, t.ac AND NOT r.assign_custom AS custom
+    FROM roles r JOIN unnest($1::text[], $2::int[], $3::bool[]) AS t(k, rev, ac) ON t.k = r.key
+    WHERE r.builtin AND r.defaults_rev < t.rev)
+UPDATE roles r SET defaults_rev = b.rev, assign_custom = r.assign_custom OR (b.held AND b.custom)
+FROM behind b WHERE r.id = b.id
+RETURNING r.id, r.key, b.rev, b.held, b.held AND b.custom
+-- vars
+$1 store.Strings [admin]
+$2 store.Int64s [2]
+$3 authz.bools [true]

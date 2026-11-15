@@ -1,0 +1,6 @@
+-- sql
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT $1, id FROM permissions WHERE id = ANY($2) AND status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING
+-- vars
+$1 int64 3
+$2 store.Int64s [11 12]

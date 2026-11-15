@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -40,12 +42,19 @@ func (s *Service) usersRoles(ctx context.Context, q store.Querier, userIDs []int
 	if s.db == nil {
 		return s.cachedUnion(userIDs), nil, nil
 	}
-	var keys []string
-	if err := q.QueryRow(ctx, `SELECT COALESCE(array_agg(DISTINCT r.key ORDER BY r.key), '{}') FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ANY($1)`, userIDs).Scan(&keys); err != nil {
+	var keys store.Strings
+	if err := usersRoleKeys(store.G(ctx, q), userIDs).Row().Scan(&keys); err != nil {
 		return core.PermissionSet{}, nil, err
 	}
 	set, err := s.RolesPermissions(ctx, q, keys)
 	return set, keys, err
+}
+
+// usersRoleKeys selects the keys of the roles userIDs hold, sorted, as one
+// array.
+func usersRoleKeys(db *gorm.DB, userIDs []int64) *gorm.DB {
+	return db.Raw(`SELECT COALESCE(array_agg(DISTINCT r.key ORDER BY r.key), '{}') FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ANY(?)`,
+		store.Int64s(userIDs))
 }
 
 // cachedUnion is usersRoleSet for tests without a database.

@@ -1,0 +1,11 @@
+-- sql
+DELETE FROM role_permission_scopes rs USING permissions p
+WHERE rs.role_id = $1 AND p.id = rs.permission_id AND p.status <> 'staged' AND (NOT $2::bool OR (p.source = 'core' AND p.status <> 'removed')) AND ($3::text = '' OR p.plugin_key = $4::text)
+  AND (rs.permission_id, rs.scope) NOT IN (SELECT * FROM unnest($5::bigint[], $6::text[]))
+-- vars
+$1 int64 3
+$2 bool false
+$3 string ""
+$4 string ""
+$5 store.Int64s [13]
+$6 store.Strings [own]

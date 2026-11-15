@@ -1,0 +1,9 @@
+-- sql
+WITH ins AS (
+    INSERT INTO role_assignable_roles (role_id, assignable_role_id)
+    SELECT r.id, a.id FROM roles r, roles a WHERE r.key = $1 AND a.key = ANY($2) AND a.builtin AND NOT a.superuser
+    ON CONFLICT DO NOTHING RETURNING role_id, assignable_role_id)
+SELECT ins.role_id, a.key FROM ins JOIN roles a ON a.id = ins.assignable_role_id
+-- vars
+$1 string "admin"
+$2 store.Strings [user]

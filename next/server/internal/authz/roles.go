@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"maps"
 	"regexp"
@@ -11,10 +12,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Role is the API view of a role.
@@ -79,13 +82,48 @@ FROM roles r`
 const roleHolders = `(SELECT count(*) FROM user_roles ur JOIN users u ON u.id = ur.user_id
         WHERE ur.role_id = r.id AND u.deleted_at IS NULL)`
 
-func scanRole(row pgx.Row) (*Role, error) {
+// selectRoles selects roleSelect followed by tail (conditions, order,
+// lock), whose placeholders take args.
+func selectRoles(db *gorm.DB, tail string, args ...any) *gorm.DB {
+	return db.Raw(roleSelect+tail, args...)
+}
+
+// readRoles reads the roles q, a selectRoles query, returns (never nil).
+func readRoles(q *gorm.DB) ([]*Role, error) {
+	out := []*Role{}
+	err := eachRow(q, func(rows *sql.Rows) error {
+		r, err := scanRole(rows)
+		if err == nil {
+			out = append(out, r)
+		}
+		return err
+	})
+	return out, err
+}
+
+// readRole is readRoles of a query of one role, failing with sql.ErrNoRows
+// (store.IsNoRows) when there is none.
+func readRole(q *gorm.DB) (*Role, error) {
+	roles, err := readRoles(q)
+	switch {
+	case err != nil:
+		return nil, err
+	case len(roles) == 0:
+		return nil, sql.ErrNoRows
+	}
+	return roles[0], nil
+}
+
+func scanRole(rows *sql.Rows) (*Role, error) {
 	var r Role
-	err := row.Scan(&r.ID, &r.Key, &r.Name, &r.Description, &r.Builtin, &r.Superuser, &r.CreatedAt, &r.UpdatedAt, &r.PermissionKeys, &r.AssignableRoleKeys, &r.AssignCustom, &r.UserCount, &r.Version)
+	var name, desc store.JSON[core.LocalizedText]
+	var perms, assignable store.Strings
+	err := rows.Scan(&r.ID, &r.Key, &name, &desc, &r.Builtin, &r.Superuser, &r.CreatedAt, &r.UpdatedAt, &perms, &assignable, &r.AssignCustom, &r.UserCount, &r.Version)
 	if err != nil {
 		return nil, err
 	}
-	r.PermissionKeys = canonicalKeys(r.PermissionKeys)
+	r.Name, r.Description, r.AssignableRoleKeys = name.V, desc.V, assignable
+	r.PermissionKeys = canonicalKeys(perms)
 	if r.Name == nil {
 		r.Name = core.LocalizedText{}
 	}
@@ -101,15 +139,7 @@ func (s *Service) ListRoles(ctx context.Context) ([]*Role, error) {
 }
 
 func listRoles(ctx context.Context, q store.Querier) ([]*Role, error) {
-	rows, err := q.Query(ctx, roleSelect+` ORDER BY r.builtin DESC, r.id`)
-	if err != nil {
-		return nil, err
-	}
-	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (*Role, error) { return scanRole(row) })
-	if out == nil {
-		out = []*Role{}
-	}
-	return out, err
+	return readRoles(selectRoles(store.G(ctx, q), ` ORDER BY r.builtin DESC, r.id`))
 }
 
 // GetRole returns one role or ErrNotFound.
@@ -118,7 +148,7 @@ func (s *Service) GetRole(ctx context.Context, id int64) (*Role, error) {
 }
 
 func (s *Service) getRole(ctx context.Context, q store.Querier, id int64) (*Role, error) {
-	r, err := scanRole(q.QueryRow(ctx, roleSelect+` WHERE r.id = $1`, id))
+	r, err := readRole(selectRoles(store.G(ctx, q), ` WHERE r.id = ?`, id))
 	if store.IsNoRows(err) {
 		return nil, errRoleNotFound
 	}
@@ -137,7 +167,7 @@ func (s *Service) getRole(ctx context.Context, q store.Querier, id int64) (*Role
 // an admin thus changes operator, supplier and user but not admin. The
 // system (actor 0) passes. Every role write goes through it.
 func (s *Service) editableRole(ctx context.Context, tx pgx.Tx, actorID, id int64) (*Role, error) {
-	r, err := scanRole(tx.QueryRow(ctx, roleSelect+` WHERE r.id = $1 FOR UPDATE OF r`, id))
+	r, err := readRole(lockRole(store.G(ctx, tx), id))
 	switch {
 	case store.IsNoRows(err):
 		return nil, errRoleNotFound
@@ -163,6 +193,11 @@ func (s *Service) editableRole(ctx context.Context, tx pgx.Tx, actorID, id int64
 		return nil, notAssignable(ctx, r.Key)
 	}
 	return r, nil
+}
+
+// lockRole selects role id and locks its roles row.
+func lockRole(db *gorm.DB, id int64) *gorm.DB {
+	return selectRoles(db, ` WHERE r.id = ? FOR UPDATE OF r`, id)
 }
 
 // editDenial is why actor (its grantSet) may not change role r, whose
@@ -234,8 +269,7 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 		if err := s.stepUpCritical(ctx, grants, keys); err != nil {
 			return err
 		}
-		err = tx.QueryRow(ctx, `INSERT INTO roles (key, name, description) VALUES ($1, $2, $3) RETURNING id`,
-			in.Key, in.Name, in.Description).Scan(&id)
+		err = insertRole(store.G(ctx, tx), in).Row().Scan(&id)
 		if store.IsUniqueViolation(err, "") {
 			return core.ErrConflict.WithMessage("role key already exists")
 		}
@@ -255,6 +289,12 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 		return nil, err
 	}
 	return s.GetRole(ctx, id)
+}
+
+// insertRole inserts the custom role of in (its key, name and
+// description) and returns its id.
+func insertRole(db *gorm.DB, in CreateRoleInput) *gorm.DB {
+	return db.Raw(`INSERT INTO roles (key, name, description) VALUES (?, ?, ?) RETURNING id`, in.Key, in.Name, in.Description)
 }
 
 // UpdateRoleInput is the body of PATCH /roles/:id.
@@ -281,8 +321,7 @@ func (s *Service) UpdateRole(ctx context.Context, actorID, id int64, in UpdateRo
 		if in.Key != nil && *in.Key != r.Key {
 			return errRoleKeyImmutable(ctx)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE roles SET name = COALESCE($2, name), description = COALESCE($3, description), updated_at = now() WHERE id = $1`,
-			id, nilIfEmpty(in.Name), nilIfEmpty(in.Description)); err != nil {
+		if err := updateRole(store.G(ctx, tx), id, in).Error; err != nil {
 			return err
 		}
 		return s.audit(ctx, tx, actorID, "role.update", "role", id, in)
@@ -291,6 +330,16 @@ func (s *Service) UpdateRole(ctx context.Context, actorID, id int64, in UpdateRo
 		return nil, err
 	}
 	return s.GetRole(ctx, id)
+}
+
+// updateRole writes the name and description of in to role id, each kept
+// when not sent, and touches updated_at.
+func updateRole(db *gorm.DB, id int64, in UpdateRoleInput) *gorm.DB {
+	return db.Model(&model.Role{}).Where("id = ?", id).Updates(map[string]any{
+		"name":        gorm.Expr("COALESCE(?, name)", nilIfEmpty(in.Name)),
+		"description": gorm.Expr("COALESCE(?, description)", nilIfEmpty(in.Description)),
+		"updated_at":  gorm.Expr("now()"),
+	})
 }
 
 func nilIfEmpty(t core.LocalizedText) any {
@@ -312,11 +361,17 @@ func (s *Service) DeleteRole(ctx context.Context, actorID, id int64) error {
 		if r.Builtin {
 			return errBuiltinRole
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM roles WHERE id = $1`, id); err != nil {
+		if err := deleteRole(store.G(ctx, tx), id).Error; err != nil {
 			return err
 		}
 		return s.audit(ctx, tx, actorID, "role.delete", "role", id, map[string]any{"key": r.Key})
 	})
+}
+
+// deleteRole deletes role id; its grants, assignable lists and assignments
+// cascade.
+func deleteRole(db *gorm.DB, id int64) *gorm.DB {
+	return db.Delete(&model.Role{}, id)
 }
 
 // ResetRole restores a built-in role actorID may edit (editableRole) to its
@@ -334,7 +389,7 @@ func (s *Service) ResetRole(ctx context.Context, actorID, id int64) (*Role, erro
 		if !r.Builtin || !ok {
 			return errNotBuiltinRole
 		}
-		if _, err := tx.Exec(ctx, `UPDATE roles SET name = $2, description = $3 WHERE id = $1`, id, def.name, def.description); err != nil {
+		if err := resetRoleText(store.G(ctx, tx), id, def).Error; err != nil {
 			return err
 		}
 		return s.resetDefaults(ctx, tx, actorID, r, def, map[string]any{})
@@ -343,6 +398,12 @@ func (s *Service) ResetRole(ctx context.Context, actorID, id int64) (*Role, erro
 		return nil, err
 	}
 	return s.GetRole(ctx, id)
+}
+
+// resetRoleText writes the name and description of def to role id;
+// updated_at stays, as it always has for a reset.
+func resetRoleText(db *gorm.DB, id int64, def builtinRole) *gorm.DB {
+	return db.Model(&model.Role{}).Where("id = ?", id).Updates(map[string]any{"name": def.name, "description": def.description})
 }
 
 // resetDefaults makes def, the defaults of built-in role r, its core
@@ -359,7 +420,7 @@ func (s *Service) resetDefaults(ctx context.Context, tx pgx.Tx, actorID int64, r
 	if err != nil {
 		return err
 	}
-	assign, err := queryRoles(ctx, tx, `SELECT id, key, superuser FROM roles WHERE key = ANY($1) AND builtin AND NOT superuser ORDER BY key`, def.assignable)
+	assign, err := queryRoles(ctx, tx, `SELECT id, key, superuser FROM roles WHERE key = ANY(?) AND builtin AND NOT superuser ORDER BY key`, store.Strings(def.assignable))
 	if err != nil {
 		return err
 	}
@@ -373,7 +434,7 @@ func (s *Service) resetDefaults(ctx context.Context, tx pgx.Tx, actorID int64, r
 	if err := setRoleAssignable(ctx, tx, r.ID, assign, def.assignCustom); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE roles SET defaults_rev = $2 WHERE id = $1`, r.ID, def.rev); err != nil {
+	if err := setDefaultsRev(store.G(ctx, tx), r.ID, def.rev).Error; err != nil {
 		return err
 	}
 	if err := writeGrants(ctx, tx, r.ID, grants, grantPart{coreOnly: true}); err != nil {
@@ -385,6 +446,12 @@ func (s *Service) resetDefaults(ctx context.Context, tx pgx.Tx, actorID int64, r
 	}
 	detail["key"], detail["before"], detail["after"] = r.Key, roleDetail(r), roleDetail(after)
 	return s.audit(ctx, tx, actorID, "role.reset", "role", r.ID, detail)
+}
+
+// setDefaultsRev marks the defaults of rev applied to role id; updated_at
+// stays.
+func setDefaultsRev(db *gorm.DB, id int64, rev int32) *gorm.DB {
+	return db.Model(&model.Role{}).Where("id = ?", id).Update("defaults_rev", rev)
 }
 
 // roleDetail is what a role grants, for an audit's before and after.
@@ -434,7 +501,7 @@ func (s *Service) setRolePart(ctx context.Context, tx pgx.Tx, actorID int64, r *
 	if err := writeGrants(ctx, tx, r.ID, grants, part); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE roles SET updated_at = now() WHERE id = $1`, r.ID); err != nil {
+	if err := touchRole(store.G(ctx, tx), r.ID).Error; err != nil {
 		return err
 	}
 	// What r holds within part now (writeGrants): the live keys and the
@@ -451,6 +518,11 @@ func (s *Service) setRolePart(ctx context.Context, tx pgx.Tx, actorID int64, r *
 		detail["before"], detail["after"] = before, now
 	}
 	return s.audit(ctx, tx, actorID, "role.permissions", "role", r.ID, detail)
+}
+
+// touchRole sets the updated_at of role id to now.
+func touchRole(db *gorm.DB, id int64) *gorm.DB {
+	return db.Model(&model.Role{}).Where("id = ?", id).Update("updated_at", gorm.Expr("now()"))
 }
 
 // stepUpCritical asks the request for a step-up proof (plugin.grant) when
@@ -531,8 +603,8 @@ func grantOf(ctx context.Context, q store.Querier, roleKey string, perms, roles 
 	if !custom {
 		return set, nil
 	}
-	var keys []string
-	if err := q.QueryRow(ctx, `SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin AND key <> $1`, roleKey).Scan(&keys); err != nil {
+	var keys store.Strings
+	if err := customRoleKeys(store.G(ctx, q), roleKey).Row().Scan(&keys); err != nil {
 		return core.PermissionSet{}, err
 	}
 	for _, k := range keys {
@@ -545,14 +617,31 @@ func grantOf(ctx context.Context, q store.Querier, roleKey string, perms, roles 
 // role's assignable list.
 func setRoleAssignable(ctx context.Context, tx pgx.Tx, roleID int64, roles []roleRef, custom bool) error {
 	ids := roleIDsOf(roles)
-	if _, err := tx.Exec(ctx, `DELETE FROM role_assignable_roles WHERE role_id = $1 AND assignable_role_id <> ALL($2)`, roleID, ids); err != nil {
+	db := store.G(ctx, tx)
+	if err := dropAssignable(db, roleID, ids).Error; err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO role_assignable_roles (role_id, assignable_role_id) SELECT $1, unnest($2::bigint[]) ON CONFLICT DO NOTHING`, roleID, ids); err != nil {
+	if err := addAssignable(db, roleID, ids).Error; err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `UPDATE roles SET assign_custom = $2, updated_at = now() WHERE id = $1`, roleID, custom)
-	return err
+	return setAssignCustom(db, roleID, custom).Error
+}
+
+// dropAssignable deletes the roles but ids from role roleID's assignable
+// list.
+func dropAssignable(db *gorm.DB, roleID int64, ids store.Int64s) *gorm.DB {
+	return db.Where("role_id = ? AND assignable_role_id <> ALL(?)", roleID, ids).Delete(&model.RoleAssignableRole{})
+}
+
+// addAssignable adds the roles ids to role roleID's assignable list.
+func addAssignable(db *gorm.DB, roleID int64, ids store.Int64s) *gorm.DB {
+	return db.Exec(`INSERT INTO role_assignable_roles (role_id, assignable_role_id) SELECT ?, unnest(?::bigint[]) ON CONFLICT DO NOTHING`, roleID, ids)
+}
+
+// setAssignCustom sets the assign_custom flag of role id and touches its
+// updated_at.
+func setAssignCustom(db *gorm.DB, id int64, custom bool) *gorm.DB {
+	return db.Model(&model.Role{}).Where("id = ?", id).Updates(map[string]any{"assign_custom": custom, "updated_at": gorm.Expr("now()")})
 }
 
 // ------------------------------------------------------------ user roles (used by iam)
@@ -570,7 +659,7 @@ func (s *Service) SetUserRoles(ctx context.Context, tx pgx.Tx, actorID, userID i
 	if err != nil {
 		return 0, err
 	}
-	cur, err := queryRoles(ctx, tx, `SELECT r.id, r.key, r.superuser FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 ORDER BY r.key`, userID)
+	cur, err := queryRoles(ctx, tx, userRolesSQL, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -638,22 +727,30 @@ type roleRef struct {
 	superuser bool
 }
 
-// queryRoles runs sql, which selects id, key and superuser of roles.
-func queryRoles(ctx context.Context, q store.Querier, sql string, args ...any) ([]roleRef, error) {
-	rows, err := q.Query(ctx, sql, args...)
+// userRolesSQL selects the roles a user holds, by key.
+const userRolesSQL = `SELECT r.id, r.key, r.superuser FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? ORDER BY r.key`
+
+// queryRoles runs query, which selects id, key and superuser of roles and
+// whose placeholders take args.
+func queryRoles(ctx context.Context, q store.Querier, query string, args ...any) ([]roleRef, error) {
+	out := []roleRef{}
+	err := eachRow(store.G(ctx, q).Raw(query, args...), func(rows *sql.Rows) error {
+		var r roleRef
+		if err := rows.Scan(&r.id, &r.key, &r.superuser); err != nil {
+			return err
+		}
+		out = append(out, r)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (roleRef, error) {
-		var r roleRef
-		err := row.Scan(&r.id, &r.key, &r.superuser)
-		return r, err
-	})
+	return out, nil
 }
 
 // resolveRoles returns the roles of keys, failing on unknown ones.
 func resolveRoles(ctx context.Context, q store.Querier, keys []string) ([]roleRef, error) {
-	roles, err := queryRoles(ctx, q, `SELECT id, key, superuser FROM roles WHERE key = ANY($1) ORDER BY key`, keys)
+	roles, err := queryRoles(ctx, q, `SELECT id, key, superuser FROM roles WHERE key = ANY(?) ORDER BY key`, store.Strings(keys))
 	if err != nil {
 		return nil, err
 	}
@@ -689,39 +786,51 @@ func roleIDsOf(roles []roleRef) []int64 {
 // writeUserRoles makes roles the user's roles.
 func writeUserRoles(ctx context.Context, tx pgx.Tx, userID int64, roles []roleRef) error {
 	ids := roleIDsOf(roles)
-	if _, err := tx.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1 AND role_id <> ALL($2)`, userID, ids); err != nil {
+	db := store.G(ctx, tx)
+	if err := dropUserRoles(db, userID, ids).Error; err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT $1, unnest($2::bigint[]) ON CONFLICT DO NOTHING`, userID, ids)
-	return err
+	return addUserRoles(db, userID, ids).Error
+}
+
+// dropUserRoles revokes the user's roles but ids.
+func dropUserRoles(db *gorm.DB, userID int64, ids store.Int64s) *gorm.DB {
+	return db.Where("user_id = ? AND role_id <> ALL(?)", userID, ids).Delete(&model.UserRole{})
+}
+
+// addUserRoles assigns the user the roles ids.
+func addUserRoles(db *gorm.DB, userID int64, ids store.Int64s) *gorm.DB {
+	return db.Exec(`INSERT INTO user_roles (user_id, role_id) SELECT ?, unnest(?::bigint[]) ON CONFLICT DO NOTHING`, userID, ids)
 }
 
 // EnsureNotLastSuperAdmin fails with conflict when userID is a superuser and
 // no other active superuser exists. iam calls it inside the transaction that
 // disables or deletes a user, after Bump (which serializes the check).
 func (s *Service) EnsureNotLastSuperAdmin(ctx context.Context, tx pgx.Tx, userID int64) error {
-	var su bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 AND r.superuser)`, userID).Scan(&su); err != nil {
+	su, err := s.IsSuperuser(ctx, tx, userID)
+	if err != nil || !su {
 		return err
-	}
-	if !su {
-		return nil
 	}
 	return s.ensureOtherSuperuser(ctx, tx, userID)
 }
 
 func (s *Service) ensureOtherSuperuser(ctx context.Context, tx pgx.Tx, userID int64) error {
 	var n int64
-	err := tx.QueryRow(ctx, `SELECT count(DISTINCT u.id) FROM users u
-        JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
-        WHERE r.superuser AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> $1`, userID).Scan(&n)
-	if err != nil {
+	if err := otherSuperusers(store.G(ctx, tx), userID).Row().Scan(&n); err != nil {
 		return err
 	}
 	if n == 0 {
 		return errLastSuperAdmin
 	}
 	return nil
+}
+
+// otherSuperusers counts the active, undeleted users but userID holding a
+// superuser role.
+func otherSuperusers(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Raw(`SELECT count(DISTINCT u.id) FROM users u
+        JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
+        WHERE r.superuser AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> ?`, userID)
 }
 
 // AssignableRole is one role in GET /me/assignable-roles.
@@ -746,20 +855,13 @@ func (s *Service) AssignableRoles(ctx context.Context, actorID int64) ([]Assigna
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.Query(ctx, `SELECT key, name, builtin FROM roles WHERE NOT superuser ORDER BY builtin DESC, id`)
-	if err != nil {
-		return nil, err
-	}
-	roles, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (AssignableRole, error) {
-		var r AssignableRole
-		err := row.Scan(&r.Key, &r.Name, &r.Builtin)
-		return r, err
-	})
-	if err != nil {
+	var rows []assignableRoleRow
+	if err := assignableRoleRows(store.G(ctx, q)).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := []AssignableRole{}
-	for _, r := range roles {
+	for _, row := range rows {
+		r := AssignableRole{Key: row.Key, Name: row.Name.V, Builtin: row.Builtin}
 		if !actor.CanAssign(r.Key) {
 			continue
 		}
@@ -775,6 +877,19 @@ func (s *Service) AssignableRoles(ctx context.Context, actorID int64) ([]Assigna
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// assignableRoleRow is a role as AssignableRoles reads it.
+type assignableRoleRow struct {
+	Key     string
+	Name    store.JSON[core.LocalizedText]
+	Builtin bool
+}
+
+// assignableRoleRows selects every role but superuser ones, built-in
+// first.
+func assignableRoleRows(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.Role{}).Select("key", "name", "builtin").Where("NOT superuser").Order("builtin DESC, id")
 }
 
 // ------------------------------------------------------------ permission listing
@@ -835,48 +950,40 @@ func (s *Service) ListPermissions(ctx context.Context) ([]*PermissionModule, err
 // listPermissions is ListPermissions of the plugin pluginKey only, of the
 // whole catalog for "", read through q.
 func listPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]*PermissionModule, error) {
-	rows, err := q.Query(ctx, `
-SELECT p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.risk, p.requires, p.status, p.scope_type, p.scope,
-    p.group_key, p.group_label, p.group_sort, p.defaults, pl.name
-FROM permissions p LEFT JOIN plugins pl ON pl.key = p.plugin_key
-WHERE p.status <> 'staged' AND ($1 = '' OR p.plugin_key = $1)
-ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`, pluginKey)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	byModule := map[string]*PermissionModule{}
 	var order []*PermissionModule
-	for rows.Next() {
+	if err := eachRow(permissionRows(store.G(ctx, q), pluginKey), func(rows *sql.Rows) error {
 		var it PermissionItem
 		var module, source string
 		var pluginKey *string
-		var scope manifest.PermissionScope
+		var label, desc, groupLabel, pluginName store.JSON[core.LocalizedText]
+		var requires store.Strings
+		var scope store.JSON[manifest.PermissionScope]
 		var group PermissionGroup
-		var defaults map[string][]string
-		var pluginName core.LocalizedText
-		if err := rows.Scan(&it.Key, &module, &it.Label, &it.Description, &source, &pluginKey, &it.Risk, &it.Requires, &it.Status,
-			&it.ScopeType, &scope, &group.Key, &group.Label, &group.Sort, &defaults, &pluginName); err != nil {
-			return nil, err
+		var defaults store.JSON[map[string][]string]
+		if err := rows.Scan(&it.Key, &module, &label, &desc, &source, &pluginKey, &it.Risk, &requires, &it.Status,
+			&it.ScopeType, &scope, &group.Key, &groupLabel, &group.Sort, &defaults, &pluginName); err != nil {
+			return err
 		}
+		it.Label, it.Description, it.Requires, group.Label = label.V, desc.V, requires, groupLabel.V
 		if it.Description == nil {
 			it.Description = core.LocalizedText{}
 		}
 		if p, ok := corePermByKey(it.Key); ok {
 			it.StepUp = p.stepUp
 		}
-		if ps := core.ReadPluginScope(it.ScopeType, &scope); ps.Resource != "" {
+		if ps := core.ReadPluginScope(it.ScopeType, &scope.V); ps.Resource != "" {
 			it.Scope = &ps
 		}
 		it.Group = group.Key
-		it.Defaults = qualifyDefaults(it.Key, defaults)
+		it.Defaults = qualifyDefaults(it.Key, defaults.V)
 		m := byModule[module]
 		if m == nil {
 			m = &PermissionModule{Module: module, Source: source, PluginKey: pluginKey, Permissions: []PermissionItem{}}
 			if source == "core" {
 				m.Label = coreModuleLabels[module]
 			} else {
-				m.Label = pluginName
+				m.Label = pluginName.V
 			}
 			if m.Label == nil {
 				m.Label = core.LocalizedText{"en": module}
@@ -888,8 +995,8 @@ ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`, pluginKey)
 			m.Groups = append(m.Groups, group)
 		}
 		m.Permissions = append(m.Permissions, it)
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	for _, m := range order {
@@ -919,6 +1026,17 @@ ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`, pluginKey)
 		return a.Module < b.Module
 	})
 	return order, nil
+}
+
+// permissionRows selects the catalog as listPermissions reads it, staged
+// permissions aside, of the plugin pluginKey only unless it is "".
+func permissionRows(db *gorm.DB, pluginKey string) *gorm.DB {
+	return db.Raw(`
+SELECT p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.risk, p.requires, p.status, p.scope_type, p.scope,
+    p.group_key, p.group_label, p.group_sort, p.defaults, pl.name
+FROM permissions p LEFT JOIN plugins pl ON pl.key = p.plugin_key
+WHERE p.status <> 'staged' AND (? = '' OR p.plugin_key = ?)
+ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`, pluginKey, pluginKey)
 }
 
 // qualifyDefaults is a plugin permission's stored defaults (role ->
@@ -1032,15 +1150,16 @@ func (s *Service) pluginRoleGrants(ctx context.Context, q store.Querier, actorID
 // version_conflict.
 func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, pluginKey string, roles map[string][]string, version *int64) (*PluginRoleMatrix, error) {
 	err := s.mutateAt(ctx, version, func(tx pgx.Tx) error {
-		var found bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM permissions WHERE plugin_key = $1)`, pluginKey).Scan(&found); err != nil {
+		db := store.G(ctx, tx)
+		found, err := store.Exists(db, db.Model(&model.Permission{}).Where("plugin_key = ?", pluginKey))
+		if err != nil {
 			return err
 		}
 		if !found {
 			return errPluginNotFound
 		}
 		keys := slices.Sorted(maps.Keys(roles))
-		refs, err := queryRoles(ctx, tx, `SELECT id, key, superuser FROM roles WHERE key = ANY($1)`, keys)
+		refs, err := queryRoles(ctx, tx, `SELECT id, key, superuser FROM roles WHERE key = ANY(?)`, store.Strings(keys))
 		if err != nil {
 			return err
 		}
@@ -1107,7 +1226,11 @@ func dedupe(keys []string) []string {
 // IsSuperuser reports whether userID holds a superuser role, regardless of
 // the user's status.
 func (s *Service) IsSuperuser(ctx context.Context, q store.Querier, userID int64) (bool, error) {
-	var su bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 AND r.superuser)`, userID).Scan(&su)
-	return su, err
+	db := store.G(ctx, q)
+	return store.Exists(db, superuserGrants(db, userID))
+}
+
+// superuserGrants selects the assignments of a superuser role to userID.
+func superuserGrants(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Table("user_roles ur").Joins("JOIN roles r ON r.id = ur.role_id").Where("ur.user_id = ? AND r.superuser", userID)
 }

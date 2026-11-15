@@ -1,0 +1,4 @@
+-- sql
+INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE superuser
+-- vars
+$1 int64 9

@@ -2,6 +2,8 @@ package authz
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,8 +11,10 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // SyncCore upserts the core permission catalog, marks core permissions no
@@ -27,8 +31,9 @@ import (
 func (s *Service) SyncCore(ctx context.Context) error {
 	defs := CorePermissions()
 	var (
-		keys, modules, labels, descs, scopeTypes, risks, requires []string
-		sorts                                                     []int32
+		keys, modules, labels, descs, scopeTypes, risks, requires store.Strings
+		// int32 values, as the int columns; ::int[] narrows the array.
+		sorts store.Int64s
 	)
 	for _, d := range defs {
 		lb, err := json.Marshal(d.Label)
@@ -51,12 +56,12 @@ func (s *Service) SyncCore(ctx context.Context) error {
 		descs = append(descs, string(dj))
 		risks = append(risks, d.Risk)
 		requires = append(requires, string(rq))
-		sorts = append(sorts, int32(d.Sort))
+		sorts = append(sorts, int64(d.Sort))
 		scopeTypes = append(scopeTypes, d.ScopeType)
 	}
-	var rKeys, rNames, rDescs []string
-	var rSuper, rCustom []bool
-	var rRevs []int32
+	var rKeys, rNames, rDescs store.Strings
+	var rSuper, rCustom bools
+	var rRevs store.Int64s // int32 values, as defaults_rev
 	for _, r := range builtinRoles {
 		n, _ := json.Marshal(r.name)
 		d, _ := json.Marshal(r.description)
@@ -65,14 +70,15 @@ func (s *Service) SyncCore(ctx context.Context) error {
 		rDescs = append(rDescs, string(d))
 		rSuper = append(rSuper, r.superuser)
 		rCustom = append(rCustom, r.assignCustom)
-		rRevs = append(rRevs, r.rev)
+		rRevs = append(rRevs, int64(r.rev))
 	}
 
 	var changed bool
 	var v int64
 	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
 		changed = false
-		if _, err := tx.Exec(ctx, `SELECT version FROM authz_meta WHERE id = 1 FOR UPDATE`); err != nil {
+		db := store.G(ctx, tx)
+		if err := lockVersion(db).Error; err != nil {
 			return err
 		}
 		if err := builtinKeyConflict(ctx, tx, rKeys); err != nil {
@@ -80,15 +86,10 @@ func (s *Service) SyncCore(ctx context.Context) error {
 		}
 		// Built-in roles: returns only rows created or fixed now.
 		newRoles := map[string]bool{}
-		err := scanKeyFlags(ctx, tx, func(k string, inserted bool) {
+		err := scanKeyFlags(db.Raw(syncRolesSQL, rKeys, rNames, rDescs, rSuper, rCustom, rRevs), func(k string, inserted bool) {
 			newRoles[k] = inserted
 			changed = true
-		}, `
-INSERT INTO roles (key, name, description, builtin, superuser, assign_custom, defaults_rev)
-SELECT k, n::jsonb, d::jsonb, true, su, ac, rev FROM unnest($1::text[], $2::text[], $3::text[], $4::bool[], $5::bool[], $6::int[]) AS t(k, n, d, su, ac, rev)
-ON CONFLICT (key) DO UPDATE SET superuser = EXCLUDED.superuser
-    WHERE roles.superuser IS DISTINCT FROM EXCLUDED.superuser
-RETURNING key, (xmax = 0)`, rKeys, rNames, rDescs, rSuper, rCustom, rRevs)
+		})
 		if err != nil {
 			return err
 		}
@@ -115,21 +116,12 @@ RETURNING key, (xmax = 0)`, rKeys, rNames, rDescs, rSuper, rCustom, rRevs)
 
 		// Permissions: returns only inserted or modified rows.
 		var inserted []string
-		err = scanKeyFlags(ctx, tx, func(k string, ins bool) {
+		err = scanKeyFlags(db.Raw(syncPermissionsSQL, keys, modules, labels, descs, risks, requires, sorts, scopeTypes), func(k string, ins bool) {
 			if ins {
 				inserted = append(inserted, k)
 			}
 			changed = true
-		}, `
-INSERT INTO permissions (key, module, label, description, source, risk, sensitive, requires, status, sort, scope_type)
-SELECT k, m, l::jsonb, d::jsonb, 'core', ri, ri <> 'low', ARRAY(SELECT jsonb_array_elements_text(rq::jsonb)), 'active', so, st
-FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int[], $8::text[]) AS t(k, m, l, d, ri, rq, so, st)
-ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label, description = EXCLUDED.description,
-    risk = EXCLUDED.risk, sensitive = EXCLUDED.sensitive, requires = EXCLUDED.requires, status = 'active', sort = EXCLUDED.sort,
-    scope_type = EXCLUDED.scope_type
-    WHERE (permissions.module, permissions.label, permissions.description, permissions.risk, permissions.requires, permissions.status, permissions.sort, permissions.scope_type)
-        IS DISTINCT FROM (EXCLUDED.module, EXCLUDED.label, EXCLUDED.description, EXCLUDED.risk, EXCLUDED.requires, 'active'::varchar, EXCLUDED.sort, EXCLUDED.scope_type)
-RETURNING key, (xmax = 0)`, keys, modules, labels, descs, risks, requires, sorts, scopeTypes)
+		})
 		if err != nil {
 			return err
 		}
@@ -153,30 +145,20 @@ RETURNING key, (xmax = 0)`, keys, modules, labels, descs, risks, requires, sorts
 				}
 			}
 			if err := s.grantDefaults(ctx, tx, r.key, fill, r.unscopedDefaults(),
-				func(k string) bool { return slices.Contains(inserted, k) }, "default", `
-WITH ins AS (
-    INSERT INTO role_permissions (role_id, permission_id)
-    SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = $1 AND p.key = ANY($2)
-    ON CONFLICT DO NOTHING RETURNING role_id, permission_id)
-SELECT ins.role_id, p.key FROM ins JOIN permissions p ON p.id = ins.permission_id`); err != nil {
+				func(k string) bool { return slices.Contains(inserted, k) }, "default", grantDefaultPermissionsSQL); err != nil {
 				return err
 			}
 			if err := s.grantDefaults(ctx, tx, r.key, fill, r.assignable,
-				func(k string) bool { return newRoles[k] }, "assignable", `
-WITH ins AS (
-    INSERT INTO role_assignable_roles (role_id, assignable_role_id)
-    SELECT r.id, a.id FROM roles r, roles a WHERE r.key = $1 AND a.key = ANY($2) AND a.builtin AND NOT a.superuser
-    ON CONFLICT DO NOTHING RETURNING role_id, assignable_role_id)
-SELECT ins.role_id, a.key FROM ins JOIN roles a ON a.id = ins.assignable_role_id`); err != nil {
+				func(k string) bool { return newRoles[k] }, "assignable", grantDefaultAssignableSQL); err != nil {
 				return err
 			}
 		}
 
-		tag, err := tx.Exec(ctx, `UPDATE permissions SET status = 'removed' WHERE source = 'core' AND status <> 'removed' AND key <> ALL($1)`, keys)
-		if err != nil {
-			return err
+		removed := removeUndeclaredCore(db, keys)
+		if removed.Error != nil {
+			return removed.Error
 		}
-		changed = changed || tag.RowsAffected() > 0
+		changed = changed || removed.RowsAffected > 0
 		if changed {
 			if v, err = s.Bump(ctx, tx); err != nil {
 				return err
@@ -193,12 +175,81 @@ SELECT ins.role_id, a.key FROM ins JOIN roles a ON a.id = ins.assignable_role_id
 	return nil
 }
 
+// lockVersion locks the authz_meta row without bumping it: SyncCore
+// serializes with every authz write and bumps only when it changed
+// something.
+func lockVersion(db *gorm.DB) *gorm.DB {
+	return db.Exec(`SELECT version FROM authz_meta WHERE id = 1 FOR UPDATE`)
+}
+
+// syncRolesSQL creates the built-in roles of its arrays (key, name and
+// description JSON, superuser, assign_custom, defaults_rev) and fixes the
+// superuser flag of existing ones, returning the key of each row created
+// or fixed and whether it was created.
+const syncRolesSQL = `
+INSERT INTO roles (key, name, description, builtin, superuser, assign_custom, defaults_rev)
+SELECT k, n::jsonb, d::jsonb, true, su, ac, rev FROM unnest(?::text[], ?::text[], ?::text[], ?::bool[], ?::bool[], ?::int[]) AS t(k, n, d, su, ac, rev)
+ON CONFLICT (key) DO UPDATE SET superuser = EXCLUDED.superuser
+    WHERE roles.superuser IS DISTINCT FROM EXCLUDED.superuser
+RETURNING key, (xmax = 0)`
+
+// syncPermissionsSQL upserts the core permissions of its arrays (key,
+// module, label and description JSON, risk, requires as a JSON array, sort,
+// scope type) as active, returning the key of each row inserted or changed
+// and whether it was inserted.
+const syncPermissionsSQL = `
+INSERT INTO permissions (key, module, label, description, source, risk, sensitive, requires, status, sort, scope_type)
+SELECT k, m, l::jsonb, d::jsonb, 'core', ri, ri <> 'low', ARRAY(SELECT jsonb_array_elements_text(rq::jsonb)), 'active', so, st
+FROM unnest(?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::int[], ?::text[]) AS t(k, m, l, d, ri, rq, so, st)
+ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label, description = EXCLUDED.description,
+    risk = EXCLUDED.risk, sensitive = EXCLUDED.sensitive, requires = EXCLUDED.requires, status = 'active', sort = EXCLUDED.sort,
+    scope_type = EXCLUDED.scope_type
+    WHERE (permissions.module, permissions.label, permissions.description, permissions.risk, permissions.requires, permissions.status, permissions.sort, permissions.scope_type)
+        IS DISTINCT FROM (EXCLUDED.module, EXCLUDED.label, EXCLUDED.description, EXCLUDED.risk, EXCLUDED.requires, 'active'::varchar, EXCLUDED.sort, EXCLUDED.scope_type)
+RETURNING key, (xmax = 0)`
+
+// grantDefaultPermissionsSQL grants a role (its key, then the permission
+// keys) the permissions it lacks, returning what syncGrant reads.
+const grantDefaultPermissionsSQL = `
+WITH ins AS (
+    INSERT INTO role_permissions (role_id, permission_id)
+    SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = ? AND p.key = ANY(?)
+    ON CONFLICT DO NOTHING RETURNING role_id, permission_id)
+SELECT ins.role_id, p.key FROM ins JOIN permissions p ON p.id = ins.permission_id`
+
+// grantDefaultAssignableSQL adds to the assignable list of a role (its key,
+// then the role keys) the built-in, non-superuser roles it lacks, returning
+// what syncGrant reads.
+const grantDefaultAssignableSQL = `
+WITH ins AS (
+    INSERT INTO role_assignable_roles (role_id, assignable_role_id)
+    SELECT r.id, a.id FROM roles r, roles a WHERE r.key = ? AND a.key = ANY(?) AND a.builtin AND NOT a.superuser
+    ON CONFLICT DO NOTHING RETURNING role_id, assignable_role_id)
+SELECT ins.role_id, a.key FROM ins JOIN roles a ON a.id = ins.assignable_role_id`
+
+// removeUndeclaredCore marks removed the core permissions but keys.
+func removeUndeclaredCore(db *gorm.DB, keys store.Strings) *gorm.DB {
+	return db.Model(&model.Permission{}).Where("source = 'core' AND status <> 'removed' AND key <> ALL(?)", keys).Update("status", "removed")
+}
+
+// bools is a bool[] parameter: GORM expands a plain []bool into a list
+// (see store.Int64s); nil is the empty array.
+type bools []bool
+
+// Value implements driver.Valuer.
+func (a bools) Value() (driver.Value, error) {
+	if a == nil {
+		return []bool{}, nil
+	}
+	return []bool(a), nil
+}
+
 // builtinKeyConflict fails when a custom role holds one of the built-in role
 // keys: the role is never turned into the built-in one, which would hand its
 // holders that role's defaults, and never skipped, which would leave the
 // built-in role missing. The error stops startup and says how to rename it.
 func builtinKeyConflict(ctx context.Context, q store.Querier, builtinKeys []string) error {
-	roles, err := queryRoles(ctx, q, `SELECT id, key, superuser FROM roles WHERE key = ANY($1) AND NOT builtin ORDER BY id`, builtinKeys)
+	roles, err := queryRoles(ctx, q, `SELECT id, key, superuser FROM roles WHERE key = ANY(?) AND NOT builtin ORDER BY id`, store.Strings(builtinKeys))
 	if err != nil || len(roles) == 0 {
 		return err
 	}
@@ -215,7 +266,7 @@ func builtinKeyConflict(ctx context.Context, q store.Querier, builtinKeys []stri
 // reset, counts as held): SyncCore then grants a held role the defaults it
 // lacks, turned assign_custom on here where its defaults have it (custom;
 // audited), and resets one nobody holds (resetUnheld).
-func (s *Service) advanceDefaults(ctx context.Context, tx pgx.Tx, keys []string, revs []int32, custom []bool, behind func(key string, rev int32, held bool)) error {
+func (s *Service) advanceDefaults(ctx context.Context, tx pgx.Tx, keys store.Strings, revs store.Int64s, custom bools, behind func(key string, rev int32, held bool)) error {
 	type moved struct {
 		id     int64
 		key    string
@@ -223,22 +274,15 @@ func (s *Service) advanceDefaults(ctx context.Context, tx pgx.Tx, keys []string,
 		held   bool
 		custom bool
 	}
-	rows, err := tx.Query(ctx, `
-WITH behind AS (
-    SELECT r.id, t.rev, r.superuser OR `+roleHolders+` > 0 AS held, t.ac AND NOT r.assign_custom AS custom
-    FROM roles r JOIN unnest($1::text[], $2::int[], $3::bool[]) AS t(k, rev, ac) ON t.k = r.key
-    WHERE r.builtin AND r.defaults_rev < t.rev)
-UPDATE roles r SET defaults_rev = b.rev, assign_custom = r.assign_custom OR (b.held AND b.custom)
-FROM behind b WHERE r.id = b.id
-RETURNING r.id, r.key, b.rev, b.held, b.held AND b.custom`, keys, revs, custom)
-	if err != nil {
-		return err
-	}
-	roles, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (moved, error) {
+	var roles []moved
+	if err := eachRow(advanceRoles(store.G(ctx, tx), keys, revs, custom), func(rows *sql.Rows) error {
 		var m moved
-		return m, r.Scan(&m.id, &m.key, &m.rev, &m.held, &m.custom)
-	})
-	if err != nil {
+		if err := rows.Scan(&m.id, &m.key, &m.rev, &m.held, &m.custom); err != nil {
+			return err
+		}
+		roles = append(roles, m)
+		return nil
+	}); err != nil {
 		return err
 	}
 	for _, m := range roles {
@@ -253,32 +297,48 @@ RETURNING r.id, r.key, b.rev, b.held, b.held AND b.custom`, keys, revs, custom)
 	return nil
 }
 
+// advanceRoles moves the built-in roles of keys behind their rev (revs) to
+// it, turning assign_custom on (custom) for the held ones, and returns the
+// id, key, rev, whether held and whether assign_custom was turned on of
+// each.
+func advanceRoles(db *gorm.DB, keys store.Strings, revs store.Int64s, custom bools) *gorm.DB {
+	return db.Raw(`
+WITH behind AS (
+    SELECT r.id, t.rev, r.superuser OR `+roleHolders+` > 0 AS held, t.ac AND NOT r.assign_custom AS custom
+    FROM roles r JOIN unnest(?::text[], ?::int[], ?::bool[]) AS t(k, rev, ac) ON t.k = r.key
+    WHERE r.builtin AND r.defaults_rev < t.rev)
+UPDATE roles r SET defaults_rev = b.rev, assign_custom = r.assign_custom OR (b.held AND b.custom)
+FROM behind b WHERE r.id = b.id
+RETURNING r.id, r.key, b.rev, b.held, b.held AND b.custom`, keys, revs, custom)
+}
+
 // resetUnheld resets the built-in role def, behind its rev with nobody
 // holding it, to its defaults as ResetRole does (resetDefaults, by the
 // system, audited with via sync and the rev): no user's rights change, and
 // whoever is given the role next gets what its defaults say.
 func (s *Service) resetUnheld(ctx context.Context, tx pgx.Tx, def builtinRole) error {
-	r, err := scanRole(tx.QueryRow(ctx, roleSelect+` WHERE r.key = $1`, def.key))
+	r, err := readRole(selectRoles(store.G(ctx, tx), ` WHERE r.key = ?`, def.key))
 	if err != nil {
 		return err
 	}
 	return s.resetDefaults(ctx, tx, 0, r, def, map[string]any{"via": "sync", "defaults_rev": def.rev})
 }
 
-// grantDefaults grants the built-in role roleKey its defaults through sql
-// ($1 the role key, $2 the defaults; returning what syncGrant reads). On a
-// fill (a role created now, or behind its rev) it gets every one it lacks,
-// otherwise only the defaults created now; every grant is audited with via
-// and the fill's detail (role_created or defaults_rev), so a role the sync
-// creates or fills in on an upgrade shows what it was given.
-func (s *Service) grantDefaults(ctx context.Context, tx pgx.Tx, roleKey string, fill map[string]any, defaults []string, created func(string) bool, via, sql string) error {
+// grantDefaults grants the built-in role roleKey its defaults through query
+// (its placeholders the role key, then the defaults; returning what
+// syncGrant reads). On a fill (a role created now, or behind its rev) it
+// gets every one it lacks, otherwise only the defaults created now; every
+// grant is audited with via and the fill's detail (role_created or
+// defaults_rev), so a role the sync creates or fills in on an upgrade shows
+// what it was given.
+func (s *Service) grantDefaults(ctx context.Context, tx pgx.Tx, roleKey string, fill map[string]any, defaults []string, created func(string) bool, via, query string) error {
 	if fill == nil {
 		defaults = slices.DeleteFunc(slices.Clone(defaults), func(k string) bool { return !created(k) })
 	}
 	if len(defaults) == 0 {
 		return nil
 	}
-	return s.syncGrant(ctx, tx, withVia(fill, via), sql, roleKey, defaults)
+	return s.syncGrant(ctx, tx, withVia(fill, via), query, roleKey, store.Strings(defaults))
 }
 
 // withVia is the audit detail of a sync grant: via plus the fill's detail.
@@ -296,36 +356,43 @@ func withVia(fill map[string]any, via string) map[string]any {
 // and the fill's detail). One the role's unscoped grant of the same action
 // implies is left out, as migration 0097 leaves out a redundant own scope.
 func (s *Service) grantScopedDefaults(ctx context.Context, tx pgx.Tx, roleKey string, keys []string, fill map[string]any) error {
-	return s.syncGrant(ctx, tx, withVia(fill, "default"), `
+	// The keys come first in the text, the role key second.
+	return s.syncGrant(ctx, tx, withVia(fill, "default"), grantScopedDefaultsSQL, store.Strings(keys), roleKey)
+}
+
+// grantScopedDefaultsSQL grants a role the scoped defaults (canonical keys,
+// the first parameter) it lacks, those its unscoped grant of the action
+// implies aside; the role key is the second parameter. It returns what
+// syncGrant reads.
+const grantScopedDefaultsSQL = `
 WITH ins AS (
     INSERT INTO role_permission_scopes (role_id, permission_id, scope)
     SELECT r.id, p.id, d.scope FROM roles r,
-        (SELECT substring(k FROM '^(.*):[^:]*$') AS action, substring(k FROM '[^:]*$') AS scope FROM unnest($2::text[]) k) d
+        (SELECT substring(k FROM '^(.*):[^:]*$') AS action, substring(k FROM '[^:]*$') AS scope FROM unnest(?::text[]) k) d
     JOIN permissions p ON p.key = d.action AND p.source = 'core'
-    WHERE r.key = $1
+    WHERE r.key = ?
       AND NOT EXISTS (SELECT 1 FROM role_permissions f WHERE f.role_id = r.id AND f.permission_id = p.id)
     ON CONFLICT DO NOTHING RETURNING role_id, permission_id, scope)
-SELECT ins.role_id, p.key || ':' || ins.scope FROM ins JOIN permissions p ON p.id = ins.permission_id`, roleKey, keys)
-}
+SELECT ins.role_id, p.key || ':' || ins.scope FROM ins JOIN permissions p ON p.id = ins.permission_id`
 
-// syncGrant runs sql, an automatic grant returning the role id and the
+// syncGrant runs query, an automatic grant returning the role id and the
 // granted key (a permission, or an assignable role) of each row it adds,
 // and audits each row as authz.sync.grant by the system with via plus the
 // key as detail.
-func (s *Service) syncGrant(ctx context.Context, tx pgx.Tx, via map[string]any, sql string, args ...any) error {
+func (s *Service) syncGrant(ctx context.Context, tx pgx.Tx, via map[string]any, query string, args ...any) error {
 	type grant struct {
 		role int64
 		key  string
 	}
-	rows, err := tx.Query(ctx, sql, args...)
-	if err != nil {
-		return err
-	}
-	grants, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (grant, error) {
+	var grants []grant
+	if err := eachRow(store.G(ctx, tx).Raw(query, args...), func(rows *sql.Rows) error {
 		var g grant
-		return g, r.Scan(&g.role, &g.key)
-	})
-	if err != nil {
+		if err := rows.Scan(&g.role, &g.key); err != nil {
+			return err
+		}
+		grants = append(grants, g)
+		return nil
+	}); err != nil {
 		return err
 	}
 	for _, g := range grants {
@@ -338,19 +405,15 @@ func (s *Service) syncGrant(ctx context.Context, tx pgx.Tx, via map[string]any, 
 	return nil
 }
 
-func scanKeyFlags(ctx context.Context, tx pgx.Tx, fn func(key string, flag bool), sql string, args ...any) error {
-	rows, err := tx.Query(ctx, sql, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
+// scanKeyFlags calls fn with each (key, flag) row of q.
+func scanKeyFlags(q *gorm.DB, fn func(key string, flag bool)) error {
+	return eachRow(q, func(rows *sql.Rows) error {
 		var k string
 		var f bool
 		if err := rows.Scan(&k, &f); err != nil {
 			return err
 		}
 		fn(k, f)
-	}
-	return rows.Err()
+		return nil
+	})
 }

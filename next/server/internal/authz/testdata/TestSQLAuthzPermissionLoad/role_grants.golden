@@ -1,0 +1,12 @@
+-- sql
+SELECT r.key, r.superuser, r.assign_custom, g.key
+FROM roles r
+LEFT JOIN LATERAL (
+    SELECT p.key FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id AND p.status NOT IN ('removed', 'staged') WHERE rp.role_id = r.id
+    UNION ALL
+    SELECT p.key || ':' || rs.scope FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id AND p.status NOT IN ('removed', 'staged')
+    WHERE rs.role_id = r.id
+) g ON true
+WHERE r.key = ANY($1)
+-- vars
+$1 store.Strings [admin custom]

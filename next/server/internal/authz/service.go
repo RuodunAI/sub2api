@@ -5,6 +5,7 @@ package authz
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -148,11 +150,22 @@ func (s *Service) OnChange(fn func()) {
 // that missed a broadcast.
 func (s *Service) Bump(ctx context.Context, tx pgx.Tx) (int64, error) {
 	var v int64
-	if err := tx.QueryRow(ctx, `UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
+	if err := bumpVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
 		return 0, err
 	}
 	s.invalidate(v - 1)
 	return v, nil
+}
+
+// bumpVersion increments the authz version, locking its row, and returns
+// the new value.
+func bumpVersion(db *gorm.DB) *gorm.DB {
+	return db.Raw(`UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`)
+}
+
+// readVersion selects the authz version.
+func readVersion(db *gorm.DB) *gorm.DB {
+	return db.Raw(`SELECT version FROM authz_meta WHERE id = 1`)
 }
 
 // Committed must be called after a transaction that called Bump has
@@ -223,7 +236,7 @@ func (s *Service) mutateAt(ctx context.Context, expected *int64, fn func(tx pgx.
 
 func (s *Service) currentVersion(ctx context.Context) (int64, error) {
 	var v int64
-	err := s.db.Pool.QueryRow(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v)
+	err := readVersion(store.G(ctx, s.db.Pool)).Row().Scan(&v)
 	return v, err
 }
 
@@ -320,7 +333,7 @@ func (s *Service) readSnapshot(ctx context.Context, fn func(tx pgx.Tx) error) (i
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var v int64
-	if err := tx.QueryRow(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
+	if err := readVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
 		return 0, err
 	}
 	if err := fn(tx); err != nil {
@@ -334,20 +347,10 @@ func (s *Service) loadPermissionSet(ctx context.Context, userID int64) (core.Per
 	v, err := s.readSnapshot(ctx, func(tx pgx.Tx) error {
 		// One row at least for an active user, roles or not: a signed-in
 		// user holds the self permissions (withSelf).
-		rows, err := tx.Query(ctx, `
-SELECT COALESCE(r.superuser, false), g.key
-FROM users u
-LEFT JOIN user_roles ur ON ur.user_id = u.id
-LEFT JOIN roles r ON r.id = ur.role_id`+roleGrantsJoin(`p.status = 'active'`)+`
-WHERE u.id = $1 AND u.deleted_at IS NULL AND u.status = 'active'`, userID)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
 		active := false
-		for rows.Next() {
-			var su bool
-			var key *string
+		var su bool
+		var key sql.NullString
+		if err := eachRow(userGrants(store.G(ctx, tx), userID), func(rows *sql.Rows) error {
 			if err := rows.Scan(&su, &key); err != nil {
 				return err
 			}
@@ -355,20 +358,55 @@ WHERE u.id = $1 AND u.deleted_at IS NULL AND u.status = 'active'`, userID)
 			if su {
 				set.Superuser = true
 			}
-			if key != nil {
-				set.Add(*key)
+			if key.Valid {
+				set.Add(key.String)
 			}
+			return nil
+		}); err != nil {
+			return err
 		}
 		if active {
 			set = withSelf(set)
 		}
-		return rows.Err()
+		return nil
 	})
 	if err != nil {
 		return core.PermissionSet{}, err
 	}
 	set.Version = v
 	return set, nil
+}
+
+// userGrantsSQL selects a row for each grant of each role of an active
+// user (canonical keys of active permissions) with whether the role is a
+// superuser one: one row of NULLs, superuser false, for a user without
+// roles, none for a user who is not active.
+var userGrantsSQL = `
+SELECT COALESCE(r.superuser, false), g.key
+FROM users u
+LEFT JOIN user_roles ur ON ur.user_id = u.id
+LEFT JOIN roles r ON r.id = ur.role_id` + roleGrantsJoin(`p.status = 'active'`) + `
+WHERE u.id = ? AND u.deleted_at IS NULL AND u.status = 'active'`
+
+func userGrants(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Raw(userGrantsSQL, userID)
+}
+
+// eachRow runs db, a query, and calls scan on each row it returns: rows
+// read by position (columns without names of their own, or the same name
+// twice) and folded as they come, never collected.
+func eachRow(db *gorm.DB, scan func(*sql.Rows) error) error {
+	rows, err := db.Rows()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		if err := scan(rows); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 // RolesPermissions returns the union of all permissions granted by the given
@@ -441,39 +479,32 @@ type roleGrantRow struct {
 // differ only in whom the assign_custom wildcard leaves out (addCustoms).
 func readRoleGrants(ctx context.Context, q store.Querier, roleKeys []string) (map[string]*roleGrantRow, []string, error) {
 	out := map[string]*roleGrantRow{}
-	rows, err := q.Query(ctx, `
-SELECT r.key, r.superuser, r.assign_custom, g.key
-FROM roles r`+roleGrantsJoin(`p.status NOT IN ('removed', 'staged')`)+`
-WHERE r.key = ANY($1)`, roleKeys)
-	if err != nil {
-		return nil, nil, err
-	}
+	db := store.G(ctx, q)
 	var role string
 	var su, custom, anyCustom bool
-	var key *string
-	if _, err := pgx.ForEachRow(rows, []any{&role, &su, &custom, &key}, func() error {
+	var key sql.NullString
+	if err := eachRow(roleGrants(db, roleKeys), func(rows *sql.Rows) error {
+		if err := rows.Scan(&role, &su, &custom, &key); err != nil {
+			return err
+		}
 		r := out[role]
 		if r == nil {
 			r = &roleGrantRow{superuser: su, assignCustom: custom}
 			out[role] = r
 			anyCustom = anyCustom || custom
 		}
-		if key != nil {
-			r.keys = append(r.keys, *key)
+		if key.Valid {
+			r.keys = append(r.keys, key.String)
 		}
 		return nil
 	}); err != nil {
 		return nil, nil, err
 	}
-	rows, err = q.Query(ctx, `
-SELECT r.key, ar.key FROM role_assignable_roles ra
-JOIN roles r ON r.id = ra.role_id AND r.key = ANY($1)
-JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser`, roleKeys)
-	if err != nil {
-		return nil, nil, err
-	}
 	var assignable string
-	if _, err := pgx.ForEachRow(rows, []any{&role, &assignable}, func() error {
+	if err := eachRow(roleAssignables(db, roleKeys), func(rows *sql.Rows) error {
+		if err := rows.Scan(&role, &assignable); err != nil {
+			return err
+		}
 		out[role].assignable = append(out[role].assignable, assignable)
 		return nil
 	}); err != nil {
@@ -482,11 +513,39 @@ JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser`, roleKeys)
 	if !anyCustom {
 		return out, nil, nil
 	}
-	var customs []string
-	if err := q.QueryRow(ctx, `SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin`).Scan(&customs); err != nil {
+	var customs store.Strings
+	if err := customRoleKeys(db, "").Row().Scan(&customs); err != nil {
 		return nil, nil, err
 	}
 	return out, customs, nil
+}
+
+// roleGrants selects a row for each grant of each role of roleKeys (its
+// key, flags and a canonical key of the grant view: removed and staged
+// permissions aside), one of NULL grant for a role without any.
+func roleGrants(db *gorm.DB, roleKeys []string) *gorm.DB {
+	return db.Raw(`
+SELECT r.key, r.superuser, r.assign_custom, g.key
+FROM roles r`+roleGrantsJoin(`p.status NOT IN ('removed', 'staged')`)+`
+WHERE r.key = ANY(?)`, store.Strings(roleKeys))
+}
+
+// roleAssignables selects the (role, assignable role) pairs of the
+// assignable lists of roleKeys, superuser roles aside.
+func roleAssignables(db *gorm.DB, roleKeys []string) *gorm.DB {
+	return db.Raw(`
+SELECT r.key, ar.key FROM role_assignable_roles ra
+JOIN roles r ON r.id = ra.role_id AND r.key = ANY(?)
+JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser`, store.Strings(roleKeys))
+}
+
+// customRoleKeys selects the keys of the custom roles as one array, leaving
+// out except unless it is "".
+func customRoleKeys(db *gorm.DB, except string) *gorm.DB {
+	if except == "" {
+		return db.Raw(`SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin`)
+	}
+	return db.Raw(`SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin AND key <> ?`, except)
 }
 
 // addCustoms adds to assignable every custom role but those of except: what
@@ -525,20 +584,15 @@ func (s *Service) ensureCatalog(ctx context.Context) error {
 	}
 	snap := &catalogSnapshot{perms: map[string]permMeta{}}
 	v, err := s.readSnapshot(ctx, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT key, status FROM permissions`)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
+		return eachRow(catalogRows(store.G(ctx, tx)), func(rows *sql.Rows) error {
 			var k string
 			var m permMeta
 			if err := rows.Scan(&k, &m.status); err != nil {
 				return err
 			}
 			snap.perms[k] = m
-		}
-		return rows.Err()
+			return nil
+		})
 	})
 	if err != nil {
 		return err
@@ -550,4 +604,9 @@ func (s *Service) ensureCatalog(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+// catalogRows selects the key and status of every permission.
+func catalogRows(db *gorm.DB) *gorm.DB {
+	return db.Raw(`SELECT key, status FROM permissions`)
 }

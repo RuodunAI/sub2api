@@ -1,0 +1,4 @@
+-- sql
+SELECT "key" FROM "permissions" WHERE plugin_key = $1 AND status = 'staged' ORDER BY key FOR UPDATE
+-- vars
+$1 string "demo"

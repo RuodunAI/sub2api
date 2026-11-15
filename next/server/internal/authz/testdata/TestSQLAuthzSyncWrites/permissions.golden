@@ -1,0 +1,19 @@
+-- sql
+INSERT INTO permissions (key, module, label, description, source, risk, sensitive, requires, status, sort, scope_type)
+SELECT k, m, l::jsonb, d::jsonb, 'core', ri, ri <> 'low', ARRAY(SELECT jsonb_array_elements_text(rq::jsonb)), 'active', so, st
+FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int[], $8::text[]) AS t(k, m, l, d, ri, rq, so, st)
+ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label, description = EXCLUDED.description,
+    risk = EXCLUDED.risk, sensitive = EXCLUDED.sensitive, requires = EXCLUDED.requires, status = 'active', sort = EXCLUDED.sort,
+    scope_type = EXCLUDED.scope_type
+    WHERE (permissions.module, permissions.label, permissions.description, permissions.risk, permissions.requires, permissions.status, permissions.sort, permissions.scope_type)
+        IS DISTINCT FROM (EXCLUDED.module, EXCLUDED.label, EXCLUDED.description, EXCLUDED.risk, EXCLUDED.requires, 'active'::varchar, EXCLUDED.sort, EXCLUDED.scope_type)
+RETURNING key, (xmax = 0)
+-- vars
+$1 store.Strings [account:read]
+$2 store.Strings [account]
+$3 store.Strings [{"en":"Read"}]
+$4 store.Strings [{}]
+$5 store.Strings [low]
+$6 store.Strings [[]]
+$7 store.Int64s [1]
+$8 store.Strings [account]

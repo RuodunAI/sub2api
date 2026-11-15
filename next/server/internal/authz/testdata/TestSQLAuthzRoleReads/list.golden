@@ -1,0 +1,16 @@
+-- sql
+SELECT r.id, r.key, r.name, r.description, r.builtin, r.superuser, r.created_at, r.updated_at,
+    COALESCE((SELECT array_agg(g.key ORDER BY g.sort, g.key) FROM (
+        SELECT p.key, p.sort FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id AND p.status <> 'staged'
+        WHERE rp.role_id = r.id
+        UNION ALL
+        SELECT p.key || ':' || rs.scope, p.sort FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id AND p.status <> 'staged'
+        WHERE rs.role_id = r.id) g), '{}'),
+    COALESCE((SELECT array_agg(ar.key ORDER BY ar.key) FROM role_assignable_roles ra
+        JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser WHERE ra.role_id = r.id), '{}'),
+    r.assign_custom,
+    (SELECT count(*) FROM user_roles ur JOIN users u ON u.id = ur.user_id
+        WHERE ur.role_id = r.id AND u.deleted_at IS NULL),
+    (SELECT version FROM authz_meta WHERE id = 1)
+FROM roles r ORDER BY r.builtin DESC, r.id
+-- vars

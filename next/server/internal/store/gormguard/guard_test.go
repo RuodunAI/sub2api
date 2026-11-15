@@ -44,6 +44,7 @@ var migratedPackages = map[string]string{
 	"internal/apikey":                       "batch 1d",
 	"internal/app":                          "batch 1d",
 	"internal/audit":                        "batch 1b",
+	"internal/authz":                        "batch 3b",
 	"internal/billing":                      "batch 4c",
 	"internal/ccgateway":                    "batch 2b",
 	"internal/cluster":                      "batch 1b",

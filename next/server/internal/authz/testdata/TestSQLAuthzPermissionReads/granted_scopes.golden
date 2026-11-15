@@ -1,0 +1,5 @@
+-- sql
+SELECT COALESCE(array_agg(DISTINCT rs.scope), '{}') FROM role_permission_scopes rs
+JOIN permissions p ON p.id = rs.permission_id WHERE p.key = $1
+-- vars
+$1 string "plugin:demo:read"

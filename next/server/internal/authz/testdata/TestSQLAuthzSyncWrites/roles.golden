@@ -1,0 +1,13 @@
+-- sql
+INSERT INTO roles (key, name, description, builtin, superuser, assign_custom, defaults_rev)
+SELECT k, n::jsonb, d::jsonb, true, su, ac, rev FROM unnest($1::text[], $2::text[], $3::text[], $4::bool[], $5::bool[], $6::int[]) AS t(k, n, d, su, ac, rev)
+ON CONFLICT (key) DO UPDATE SET superuser = EXCLUDED.superuser
+    WHERE roles.superuser IS DISTINCT FROM EXCLUDED.superuser
+RETURNING key, (xmax = 0)
+-- vars
+$1 store.Strings [admin]
+$2 store.Strings [{"en":"Admin"}]
+$3 store.Strings [{}]
+$4 authz.bools [false]
+$5 authz.bools [true]
+$6 store.Int64s [2]

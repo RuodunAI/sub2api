@@ -1,0 +1,6 @@
+-- sql
+UPDATE permissions SET status = 'removed'
+WHERE plugin_key = $1 AND status NOT IN ('removed', 'staged') AND key <> ALL($2) RETURNING key
+-- vars
+$1 string "demo"
+$2 store.Strings [plugin:demo:read]

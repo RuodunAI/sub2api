@@ -1,0 +1,6 @@
+-- sql
+UPDATE "roles" SET "description"=$1,"name"=$2 WHERE id = $3
+-- vars
+$1 core.LocalizedText map[]
+$2 core.LocalizedText map[en:Admin]
+$3 int64 3

@@ -1,0 +1,14 @@
+-- sql
+SELECT COALESCE(r.superuser, false), g.key
+FROM users u
+LEFT JOIN user_roles ur ON ur.user_id = u.id
+LEFT JOIN roles r ON r.id = ur.role_id
+LEFT JOIN LATERAL (
+    SELECT p.key FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id AND p.status = 'active' WHERE rp.role_id = r.id
+    UNION ALL
+    SELECT p.key || ':' || rs.scope FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id AND p.status = 'active'
+    WHERE rs.role_id = r.id
+) g ON true
+WHERE u.id = $1 AND u.deleted_at IS NULL AND u.status = 'active'
+-- vars
+$1 int64 7

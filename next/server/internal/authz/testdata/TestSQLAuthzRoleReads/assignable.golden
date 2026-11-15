@@ -1,0 +1,3 @@
+-- sql
+SELECT "key","name","builtin" FROM "roles" WHERE NOT superuser ORDER BY builtin DESC, id
+-- vars
