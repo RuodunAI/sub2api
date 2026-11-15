@@ -685,7 +685,7 @@ async function save() {
 
 - **①复用 GrantsTab**，不复用 HostPermissionTable。HostPermissionTable 是“同意前勾选”的形态（`checked`、`showMissing`、`toggle`）；GrantsTab 才是“已授予、可撤销”的形态，接口也已经接好。GrantsTab 加一个 `embedded` prop，去掉外层 `SCard`（由 PermissionsTab 包）。
 - **原型 D 的“收窄 / 重新授予”（已定采纳）**：接第 3 章新增的 `PUT /plugins/:key/grants/:permission`（body `{scope?}`，省略时为清单请求的范围；返回更新后的 `PluginGrant`）。GrantsTab 操作列在“撤销”旁加两个按钮，写法照 `revoke()`（`GrantsTab.vue:47-65`）：
-  - 已授予且范围里有数组项（`{domains:[…]}`、`{fields:[…]}` 这类）时显示“收窄”：新组件 `detail/NarrowGrantDialog.vue`（约 50 行）用 `scopeEntries`（`pluginUtil.ts`，`ScopeChips` 已在用）把范围列成可取消的标签，每个数组至少留一项，提交 `{scope}`；服务端用 `ScopeWithin` 拒绝更宽的范围（400 `scope_too_wide`）。确认页现在没有宿主权限范围的编辑控件（`HostPermissionTable` 只用 `ScopeChips` 展示），所以这里不复用它；非数组形状（如 `limits`）首版不提供收窄按钮，只能撤销。
+  - 已授予且范围里有数组项（`{domains:[…]}`、`{fields:[…]}` 这类）时显示“收窄”：新组件 `detail/NarrowGrantDialog.vue`（约 50 行）用 `scopeEntries`（`pluginUtil.ts`，`ScopeChips` 已在用）把范围列成可取消的标签，每个数组至少留一项，提交 `{scope}`；服务端用 `ScopeWithin` 拒绝更宽的范围（400 `scope_too_wide`）。确认页现在没有访问权限范围的编辑控件（`HostPermissionTable` 只用 `ScopeChips` 展示），所以这里不复用它；非数组形状（如 `limits`）首版不提供收窄按钮，只能撤销。
   - `status === 'revoked'`（或被拒）时显示“重新授予”：确认后提交 `{}`（按清单请求的范围）。
   - 两者都需要 `plugin:manage`；重新授予还需要 `plugin:install`（403 `details.permission=plugin:install`，没有时按钮置灰并在 title 说明），高 / 关键风险另需 `plugin:grant:high/critical`；路由挂在 grant step-up 下，HTTP 客户端遇到 step-up 会自动弹验证框（`components/stepUp/stepUp.ts:2`），GrantsTab 不需要自己处理。成功后 `load()` 并 `emit('changed')`，与撤销相同。
 - **保存**只发有变更的角色，body 是这些角色在该插件上的完整 key（第 2 章：只替换列出的角色）。成功后用响应替换 `data`，baseline 随之重置。若编辑者自己持有被改的角色，调用 `auth.refreshPermissions()`，与 `RolesView.vue:183` 相同。
@@ -696,13 +696,14 @@ async function save() {
 
 ### 4.9 修复轮的前端变更（review2 / FIX.md）
 
-- **术语**：两类权限处处同名——“插件可使用的宿主权限”（`plugins.permissions.hostTitle`）与“插件提供给用户的权限”（`userTitle`）；“与建议不同”一个名字、一个中性灰色；挂起统一叫“待超管复核”；英文风险等级分开（宿主 `Very high`，用户权限 `Security-critical`）。
-- **批量跳过 critical**：矩阵的组勾选框与角色编辑页的模块 / 组全选都不勾 critical 项（`groupRows` / `bulk`），title 说明要逐项勾。
+- **术语**：两类权限处处同名——“插件申请的访问权限”（`plugins.permissions.hostTitle`）与“插件提供给用户的权限”（`userTitle`）；“与建议不同”一个名字、一个中性灰色；挂起统一叫“待超管复核”；英文风险等级分开（宿主 `Very high`，用户权限 `Security-critical`）。
+- **批量跳过 critical**：矩阵的组勾选框与角色编辑页的模块 / 组全选都不勾 critical 项（`groupRows` / `bulk`）；只有组内含 critical 时复选框的 title 才说明要逐项勾，图例另写一次。
+- **组件位置**：`ScopePicker`、`ScopeChipRow`、`scopeLabels` 移到 `components/permission/`（矩阵与角色页共用，不再由 components 反向依赖 views/roles）；“分组内账号”一行也用 `ScopeChipRow`，两步选择放进它的 `picker` 插槽。手机宽度下行内“恢复”图标隐藏，用工具栏的整表恢复。
 - **保存前确认**：角色编辑页与详情页保存时，用 `newRiskyGrants(baseline, next, perms)` 列出新授出的 sensitive / critical 项（收窄不算），`confirmRiskyGrants` 弹确认（含 critical 时为 danger）。critical 插件 key 新授出时服务端还要 `plugin.grant` step-up（C3），由 HTTP 客户端的现有验证框处理。
-- **版本与合并（C1）**：`GET /permissions/plugins/:plugin` 与角色对象带 `version`，矩阵 PUT 与 `PUT /roles/:id/permissions` 带上读到的版本。409 `version_conflict` 时自动重读：矩阵由 `useGrantMatrix` 在 baseline 变化时把本地按格的改动重放到新数据上（同一机制也让详情页在确认待复核后刷新 baseline）；角色编辑页按动作对比原值与编辑值，`withCell` 套到新 key 上。随后提示“已载入最新数据并保留你的改动，请检查后再保存”。
+- **版本与合并（C1）**：`GET /permissions/plugins/:plugin` 与角色对象带 `version`，矩阵 PUT 与 `PUT /roles/:id/permissions` 带上读到的版本。409 `version_conflict` 时自动重读，两处都用纯函数 `pluginGrants.replayCells(base, edited, fresh, …)` 把本地按格的改动重放到新数据上（矩阵在 `useGrantMatrix` 的 baseline watch 里调用，并过一遍锁；同一机制也让详情页在确认待复核后刷新 baseline）。全局版本号会因无关写入推进：重读后本次要保存的角色（详情页：本插件上的这些角色；角色页：本角色）与读到时相同，就带新版本自动重发一次，不再打扰；否则提示再保存，两边都改过的格子在提示里点名（以本地为准）。重读失败时保留已显示的数据与本地改动，可以再点保存。重放时被新锁拒绝的改动（角色不再可编辑、编辑者失去该动作）如实提示“N 处改动未能保留：…”。
 - **授出视图（逻辑 #3）**：编辑者能授出的 = `/me` 的 key ∪ 自己角色的 `permission_keys`（排除 removed 动作），见 `useEditorGrants`。停用插件的 key 不在 `/me` 里但仍在角色上，所以不会被锁成“未持有”。`scopeLimit` 由组合函数内部使用，不再经 props 传。
-- **恢复建议的共用规则（H1）**：`pluginGrants.restoreCell / suggestionState`；编辑者不能整格恢复的格子不动并计入“跳过 N 项”（toast），矩阵与角色编辑页同一函数，测试用例表共用（`authz/testing/restoreCases.ts`）。只读角色不显示“不能授出”。
-- **继承行（C2 / C4）**：改名行可逐格编辑，初值取 Review 的 `cells.grant`，格上标“继承自 {旧 key}”；改过的行按普通行发送（可命名角色缺省或 `[]` = 不授予，不可命名的仍挂起）。查看者无 role:read 时服务端省略 `cells.<role>.grant` / `holders` / `via: inherit` 条目：继承格无初值时锁定为只读（`holders_hidden`），说明看不到持有者、提交时保持原授权；`holders` 缺省时“已移除”只说移除不列角色。
+- **恢复建议的共用规则（H1）**：`pluginGrants.restoreCell / suggestionState`，与服务端同口径按蕴含判断新授（格子已有的 key 蕴含的不算新授，所以把 `A` 收窄成建议的 `A:own` 不需要持有 A）；编辑者不能整格恢复的格子不动并计入“跳过 N 项”（toast），矩阵与角色编辑页同一函数，测试用例表共用（`authz/testing/restoreCases.ts`）。只读角色不显示“不能授出”。
+- **继承行（C2 / C4）**：改名行可逐格编辑，初值取 Review 的 `cells.grant`，格上标“继承自 {旧 key}”；改过的行按普通行发送（可命名角色缺省或 `[]` = 不授予，不可命名的仍挂起）。查看者无 role:read 时服务端省略 `cells.<role>.grant` / `holders` / `via: inherit` 条目：继承格无初值时锁定为只读（`holders_hidden`），格内显示中性徽标“按继承”而不是空框，锁图例说明看不到持有者、提交时保持原授权（此时服务端也不返回该格的 `withheld`）；`holders` 缺省时“已移除”只说移除不列角色。
 - **页面**：确认页自定义角色列在含授予或待复核格时自动展开（按钮带数量）；升级页用户权限只在变更卡里一行汇总，矩阵只列新建项，重新声明 / 移除项单列；未保存栏显示“角色 · 权限：原 → 新”，多条可展开；“指定…”保持选中，范围面板滚入视野并取得焦点，面板标题用资源名、权限名作提示；手机宽度下超管列收起为一行说明，锁原因有图例；依赖提示从全部声明的权限取名字。
 
 ---

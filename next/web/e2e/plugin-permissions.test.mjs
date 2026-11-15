@@ -20,8 +20,9 @@
 // - the plugin detail "Permissions" tab: a cell changed shows the unsaved
 //   bar and saves to the same role data the Roles page edits; a group ticked
 //   leaves the critical row; granting a critical permission asks first and
-//   then for step-up; a save after someone else's (409 version_conflict)
-//   reloads with the edits kept and saves again; a non-super editor offers
+//   then for step-up; a save after someone else's (409 version_conflict) is
+//   sent again at once when the roles it saves are as they were, else
+//   reloads with the edits kept to save again; a non-super editor offers
 //   only the scopes it holds; a host permission grant narrowed, revoked and
 //   granted again; the old ?tab=grants link lands on it;
 // - in the dark theme the matrix's pinned first column is opaque, so cells
@@ -294,40 +295,70 @@ describe('plugin detail permissions tab', () => {
     await page.context().close()
   })
 
-  test('a save after someone else\'s reloads with the edits kept, and saves again', async () => {
+  /** Another admin's save on the guard matrix: role gets the key ticked. */
+  async function otherSave(action, role) {
+    const other = await signIn()
+    await other.goto(`${BASE}/plugins/guard?tab=permissions`)
+    const theirs = other.locator('[data-testid="plugin-user-permissions"]')
+    await cell(theirs, action, role).check()
+    await nextCall(other, 'PUT', '/permissions/plugins/guard', () => theirs.locator('[data-testid="matrix-save"] [data-testid="settings-save"]').click())
+    await other.context().close()
+  }
+  const matrixPut = (r) => r.request().method() === 'PUT' && new URL(r.url()).pathname === '/api/v1/permissions/plugins/guard'
+
+  test('a save after someone else\'s on another role is sent again at once with the new version', async () => {
     const page = await signIn()
     await page.goto(`${BASE}/plugins/guard?tab=permissions`)
     const matrix = page.locator('[data-testid="plugin-user-permissions"]')
     const mine = cell(matrix, `${GUARD}:stats:read`, 'supplier')
     await mine.check()
-
-    // Meanwhile another admin grants the operator rules:read.
-    const other = await signIn()
-    await other.goto(`${BASE}/plugins/guard?tab=permissions`)
-    const theirs = other.locator('[data-testid="plugin-user-permissions"]')
-    await cell(theirs, `${GUARD}:rules:read`, 'operator').check()
-    await nextCall(other, 'PUT', '/permissions/plugins/guard', () => theirs.locator('[data-testid="matrix-save"] [data-testid="settings-save"]').click())
+    // Meanwhile another admin grants the operator rules:read: the version moves, the supplier does not.
+    await otherSave(`${GUARD}:rules:read`, 'operator')
 
     const bar = matrix.locator('[data-testid="matrix-save"]')
-    const [conflict] = await Promise.all([
-      page.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname === '/api/v1/permissions/plugins/guard'),
-      bar.locator('[data-testid="settings-save"]').click()
-    ])
-    assert.equal(conflict.status(), 409)
-    await page.getByText('The grants changed while you were editing').waitFor()
-    // The other save shows, the edit is still there and still unsaved.
-    await page.waitForFunction((el) => el.checked, await cell(matrix, `${GUARD}:rules:read`, 'operator').elementHandle())
-    assert.equal(await checked(mine), true)
-    assert.match(await bar.textContent(), /1 unsaved change\s*Supplier · View stats/)
-    const saved = await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
-    assert.deepEqual(saved.body.roles, { supplier: [`${GUARD}:stats:read`] })
+    const statuses = []
+    const bodies = []
+    page.on('response', (r) => matrixPut(r) && (statuses.push(r.status()), bodies.push(r.request().postDataJSON())))
+    await bar.locator('[data-testid="settings-save"]').click()
     await bar.waitFor({ state: 'detached' })
+    assert.deepEqual(statuses, [409, 200])
+    assert.deepEqual(bodies[1].roles, { supplier: [`${GUARD}:stats:read`] })
+    assert.ok(bodies[1].version > bodies[0].version, 'sent again with the version read again')
+    assert.equal(await page.getByText('The grants changed while you were editing').count(), 0)
+    await page.waitForFunction((el) => el.checked, await cell(matrix, `${GUARD}:rules:read`, 'operator').elementHandle())
 
     // Back to the fixture.
     await mine.uncheck()
     await cell(matrix, `${GUARD}:rules:read`, 'operator').uncheck()
     await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
-    await other.context().close()
+    await page.context().close()
+  })
+
+  test('a save after someone else\'s on the same role reloads with the edits kept, and saves again', async () => {
+    const page = await signIn()
+    await page.goto(`${BASE}/plugins/guard?tab=permissions`)
+    const matrix = page.locator('[data-testid="plugin-user-permissions"]')
+    const mine = cell(matrix, `${GUARD}:stats:read`, 'supplier')
+    await mine.check()
+    // Meanwhile another admin grants the supplier rules:read.
+    await otherSave(`${GUARD}:rules:read`, 'supplier')
+
+    const bar = matrix.locator('[data-testid="matrix-save"]')
+    const [conflict] = await Promise.all([page.waitForResponse(matrixPut), bar.locator('[data-testid="settings-save"]').click()])
+    assert.equal(conflict.status(), 409)
+    await page.getByText('The grants changed while you were editing').waitFor()
+    // The other save shows, the edit is still there and still unsaved.
+    await page.waitForFunction((el) => el.checked, await cell(matrix, `${GUARD}:rules:read`, 'supplier').elementHandle())
+    assert.equal(await checked(mine), true)
+    assert.match(await bar.textContent(), /1 unsaved change\s*Supplier · View stats/)
+    const saved = await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
+    assert.deepEqual(saved.body.roles, { supplier: [`${GUARD}:rules:read`, `${GUARD}:stats:read`] })
+    await bar.waitFor({ state: 'detached' })
+
+    // Back to the fixture.
+    await mine.uncheck()
+    await cell(matrix, `${GUARD}:rules:read`, 'supplier').uncheck()
+    await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
     await page.context().close()
   })
 

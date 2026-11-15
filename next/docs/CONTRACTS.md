@@ -1484,6 +1484,8 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 
 控制台账号列表用它做批量操作：勾选在翻页后保留，改筛选条件清空；「选择全部 N 项」按当前筛选以每页 200 条拉取全部账号。批量编辑（优先级、权重、并发、TPM、RPM、分组〔替换／追加／移除〕、代理、允许自动禁用，只改勾选的字段）、启用／停用、重置状态、删除、测试都对每个账号调用现有单条接口（`PATCH /accounts/:id`、`POST /accounts/:id/reset-status`、`DELETE /accounts/:id`、`POST /accounts/:id/test`），最多 4 个（测试 3 个）同时进行，可中途停止；权限、插件生命周期钩子、审计与单条操作完全相同，没有新增服务端接口。每项操作只作用于所选账号中适用的那部分（按钮显示数量）；与账号现值相同的字段不发送，没有变化的账号不发请求；类型固定了「自动禁用」的账号跳过该项；删除时「保留资源」只对声明了保留天数的类型生效。
 
+**UI 3.16 插件权限范围（0.1.289 候选）。** 新导出 `useScrollClip(scroller, content): Ref<boolean>`：`scroller` 是 `overflow-x: auto` 的容器、`content` 是其中的表格（都是 `Ref<HTMLElement | undefined>`），内容被裁到右侧之外时为 `true`（随尺寸变化与滚动更新，挂载前为 `false`），用来在可横向滚动的表格右缘画渐隐或“还有列”的提示；核心的 `STable` 与权限矩阵用的就是它（`web/packages/ui/README.md`“插件权限的范围（UI SDK 3.16）”，`ui-contract.spec.ts` 锁定导出）。用到它的插件声明 `hostUICompat: "^3.16"`。
+
 ### 23.4 约定
 
 - 用 `@sub2api/ui` 组件，不手写 `.input` `.btn` `.card` `.muted` `.table` `.badge` `.kv` `.code-block` `.switch` `.checkbox` 等控制台全局类：提示块用 `SAlert`，键值展示用 `SDescriptions`，复制用 `SCopyButton`，进度用 `SProgress`，开关用 `SSwitch`（不要 `<input class="switch">`）。也不要依赖控制台的 Tailwind 工具类（`flex` `gap-2` `text-sm` …）——控制台的 Tailwind 构建不扫描插件源码，这些类只在控制台恰好用到时才存在。布局和间距写在插件自己的 CSS 里（或用 `SStack` / `SGrid`）。
