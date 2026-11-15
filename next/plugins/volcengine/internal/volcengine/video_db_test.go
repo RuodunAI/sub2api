@@ -44,7 +44,7 @@ func TestVideoSubmissionDoesNotWritePluginLedger(t *testing.T) {
 	// an identity row: the host assigns independent public task IDs to them.
 	submitTask(t, p, 2, 99, "doubao-seedance-1-0-pro-250528", "same-upstream-id", requested(Res720, Ratio169, 4))
 	var n int
-	if err := h.pool.QueryRow(context.Background(), `SELECT count(*) FROM video_tasks`).Scan(&n); err != nil || n != 0 {
+	if err := h.db.Raw(`SELECT count(*) FROM video_tasks`).Scan(&n).Error; err != nil || n != 0 {
 		t.Fatalf("task parser wrote a second identity ledger: rows=%d err=%v", n, err)
 	}
 }
@@ -55,8 +55,8 @@ func TestVideoSubmissionDoesNotWritePluginLedger(t *testing.T) {
 func TestLegacyVideoResolveModelChecksOwner(t *testing.T) {
 	p, h, _ := startRoutes(t)
 	ctx := context.Background()
-	if _, err := h.pool.Exec(ctx, `INSERT INTO video_tasks(task_id,account_id,model,user_id,state,est_tokens)
-  VALUES ('cgt-legacy',1,'doubao-seedance-1-5-pro-251215',42,'running',123)`); err != nil {
+	if err := h.db.Exec(`INSERT INTO video_tasks(task_id,account_id,model,user_id,state,est_tokens)
+  VALUES ('cgt-legacy',1,'doubao-seedance-1-5-pro-251215',42,'running',123)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -84,12 +84,12 @@ func TestVideoReconcileEstimateFallback(t *testing.T) {
 	if rv.GetTokens().GetOutputTokens() <= 0 {
 		t.Fatal("no estimate to retain")
 	}
-	if _, err := h.pool.Exec(ctx, `INSERT INTO video_tasks(task_id,account_id,model,user_id,state,est_tokens)
-  VALUES ('cgt-nousage',1,'m',1,'running',999999)`); err != nil {
+	if err := h.db.Exec(`INSERT INTO video_tasks(task_id,account_id,model,user_id,state,est_tokens)
+  VALUES ('cgt-nousage',1,'m',1,'running',999999)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, estimate := range []int64{999999, 0} {
-		if _, err := h.pool.Exec(ctx, `UPDATE video_tasks SET est_tokens=$1 WHERE task_id='cgt-nousage'`, estimate); err != nil {
+		if err := h.db.Exec(`UPDATE video_tasks SET est_tokens=? WHERE task_id='cgt-nousage'`, estimate).Error; err != nil {
 			t.Fatal(err)
 		}
 		r, err := p.ParseReconcileResponse(ctx, &pluginv1.ParseReconcileResponseRequest{
@@ -101,7 +101,7 @@ func TestVideoReconcileEstimateFallback(t *testing.T) {
 		}
 	}
 	var state string
-	if err := h.pool.QueryRow(ctx, `SELECT state FROM video_tasks WHERE task_id='cgt-nousage'`).Scan(&state); err != nil || state != "running" {
+	if err := h.db.Raw(`SELECT state FROM video_tasks WHERE task_id='cgt-nousage'`).Scan(&state).Error; err != nil || state != "running" {
 		t.Fatalf("parser mutated the legacy mirror: %q %v", state, err)
 	}
 	r, err := p.ParseReconcileResponse(ctx, &pluginv1.ParseReconcileResponseRequest{

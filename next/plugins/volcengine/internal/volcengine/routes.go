@@ -21,13 +21,14 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/volcengine/internal/model"
 )
 
 // User permission keys declared in manifest.json.
@@ -214,8 +215,8 @@ func grpcNotFound(err error) bool {
 	return status.Code(err) == codes.NotFound
 }
 
-// db returns the pool or an HTTP error.
-func (p *Plugin) db(ctx context.Context) (*pgxpool.Pool, *pluginv1.HTTPResponse) {
+// db returns the database handle, bound to ctx, or an HTTP error.
+func (p *Plugin) db(ctx context.Context) (*gorm.DB, *pluginv1.HTTPResponse) {
 	if p.host == nil {
 		return nil, unavailable("plugin not initialised")
 	}
@@ -343,7 +344,7 @@ func (p *Plugin) listGroupIndex(ctx context.Context, req *pluginv1.HTTPRequest) 
 		return bad, nil
 	}
 	page, size := pluginsdk.Pagination(req, 50)
-	res, err := listGroups(ctx, db, queryID(req, "account_id"), indexStatusQuery(req), searchQuery(req), size, (page-1)*size)
+	res, err := listGroups(db, queryID(req, "account_id"), indexStatusQuery(req), searchQuery(req), size, (page-1)*size)
 	if err != nil {
 		return nil, err
 	}
@@ -442,7 +443,7 @@ func (p *Plugin) createGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if g.GroupType == "" {
 		g.GroupType = groupType
 	}
-	id, err := insertGroup(ctx, db, in.AccountID, g)
+	id, err := insertGroup(db, in.AccountID, g)
 	if err != nil {
 		// The group EXISTS upstream but is not indexed. Compensate by
 		// deleting it again, so a failed create does not leave an invisible
@@ -484,7 +485,7 @@ func (p *Plugin) getGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	if bad != nil {
 		return bad, nil
 	}
-	return withResource(ctx, db, groupResource, id, func(tx pgx.Tx, row *groupRow) (*pluginv1.HTTPResponse, error) {
+	return withResource(db, groupResource, id, func(tx *gorm.DB, row *groupRow) (*pluginv1.HTTPResponse, error) {
 		cfg, bad := p.newCreds().config(ctx, row.AccountID)
 		if bad != nil {
 			return bad, nil
@@ -493,7 +494,7 @@ func (p *Plugin) getGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 		if callErr != nil {
 			if callErr.NotFound() {
 				// Upstream is the truth: the index is stale, and it says so.
-				if err := markMissing(ctx, tx, "asset_groups", id); err != nil {
+				if err := markMissing(tx, &model.AssetGroup{}, id); err != nil {
 					p.log.Warn("volcengine: cannot mark an asset group missing", "id", id, "error", err.Error())
 				}
 				return pluginsdk.ErrorResponse(http.StatusNotFound, "upstream_not_found",
@@ -503,7 +504,7 @@ func (p *Plugin) getGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 			return upstreamFail(callErr), nil
 		}
 		g := groupFromResult(result)
-		if err := refreshGroup(ctx, tx, id, g); err != nil {
+		if err := refreshGroup(tx, id, g); err != nil {
 			p.log.Warn("volcengine: cannot refresh an asset group row", "id", id, "error", err.Error())
 		}
 		return pluginsdk.DataResponse(map[string]any{
@@ -536,7 +537,7 @@ func (p *Plugin) updateGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if bad != nil {
 		return bad, nil
 	}
-	return withResource(ctx, db, groupResource, id, func(tx pgx.Tx, row *groupRow) (*pluginv1.HTTPResponse, error) {
+	return withResource(db, groupResource, id, func(tx *gorm.DB, row *groupRow) (*pluginv1.HTTPResponse, error) {
 		cfg, bad := p.newCreds().config(ctx, row.AccountID)
 		if bad != nil {
 			return bad, nil
@@ -547,13 +548,13 @@ func (p *Plugin) updateGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		putPtr(body, "Description", in.Description)
 		if _, callErr := p.ark.call(ctx, cfg, ActionUpdateAssetGroup, body); callErr != nil {
 			if callErr.NotFound() {
-				if err := markMissing(ctx, tx, "asset_groups", id); err != nil {
+				if err := markMissing(tx, &model.AssetGroup{}, id); err != nil {
 					p.log.Warn("volcengine: cannot mark an asset group missing", "id", id, "error", err.Error())
 				}
 			}
 			return upstreamFail(callErr), nil
 		}
-		if err := applyGroupUpdate(ctx, tx, id, in.Name, in.Title, in.Description); err != nil {
+		if err := applyGroupUpdate(tx, id, in.Name, in.Title, in.Description); err != nil {
 			return nil, err
 		}
 		return pluginsdk.DataResponse(map[string]any{"id": id, "upstream_id": row.UpstreamID}), nil
@@ -569,7 +570,7 @@ func (p *Plugin) deleteGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if bad != nil {
 		return bad, nil
 	}
-	return withResource(ctx, db, groupResource, id, func(tx pgx.Tx, row *groupRow) (*pluginv1.HTTPResponse, error) {
+	return withResource(db, groupResource, id, func(tx *gorm.DB, row *groupRow) (*pluginv1.HTTPResponse, error) {
 		cfg, bad := p.newCreds().config(ctx, row.AccountID)
 		if bad != nil {
 			return bad, nil
@@ -580,7 +581,7 @@ func (p *Plugin) deleteGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if _, callErr := p.ark.call(ctx, cfg, ActionDeleteAssetGroup, map[string]any{"Id": row.UpstreamID}); callErr != nil && !callErr.NotFound() {
 			return upstreamFail(callErr), nil
 		}
-		if err := deleteRow(ctx, tx, "asset_groups", id); err != nil {
+		if err := deleteRow(tx, &model.AssetGroup{}, id); err != nil {
 			return nil, err
 		}
 		return pluginsdk.DataResponse(map[string]any{"id": id, "deleted": true}), nil
@@ -595,7 +596,7 @@ func (p *Plugin) listAssetIndex(ctx context.Context, req *pluginv1.HTTPRequest) 
 		return bad, nil
 	}
 	page, size := pluginsdk.Pagination(req, 50)
-	res, err := listAssets(ctx, db, queryID(req, "account_id"), queryID(req, "group_id"), indexStatusQuery(req),
+	res, err := listAssets(db, queryID(req, "account_id"), queryID(req, "group_id"), indexStatusQuery(req),
 		searchQuery(req), size, (page-1)*size)
 	if err != nil {
 		return nil, err
@@ -631,7 +632,7 @@ func (p *Plugin) createAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	}
 	var createdID string
 	var createdWith *AssetConfig
-	resp, err := withResource(ctx, db, groupResource, in.GroupID, func(tx pgx.Tx, group *groupRow) (*pluginv1.HTTPResponse, error) {
+	resp, err := withResource(db, groupResource, in.GroupID, func(tx *gorm.DB, group *groupRow) (*pluginv1.HTTPResponse, error) {
 		cfg, bad := p.newCreds().config(ctx, group.AccountID)
 		if bad != nil {
 			return bad, nil
@@ -659,7 +660,7 @@ func (p *Plugin) createAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if a.URL == "" {
 			a.URL = in.URL
 		}
-		id, err := insertAsset(ctx, tx, group.AccountID, group.ID, a)
+		id, err := insertAsset(tx, group.AccountID, group.ID, a)
 		if err != nil {
 			return nil, err
 		}
@@ -690,7 +691,7 @@ func (p *Plugin) getAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	if bad != nil {
 		return bad, nil
 	}
-	return withResource(ctx, db, assetResource, id, func(tx pgx.Tx, row *assetRow) (*pluginv1.HTTPResponse, error) {
+	return withResource(db, assetResource, id, func(tx *gorm.DB, row *assetRow) (*pluginv1.HTTPResponse, error) {
 		cfg, bad := p.newCreds().config(ctx, row.AccountID)
 		if bad != nil {
 			return bad, nil
@@ -698,7 +699,7 @@ func (p *Plugin) getAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 		result, callErr := p.ark.call(ctx, cfg, ActionGetAsset, map[string]any{"Id": row.UpstreamID})
 		if callErr != nil {
 			if callErr.NotFound() {
-				if err := markMissing(ctx, tx, "assets", id); err != nil {
+				if err := markMissing(tx, &model.Asset{}, id); err != nil {
 					p.log.Warn("volcengine: cannot mark an asset missing", "id", id, "error", err.Error())
 				}
 				return pluginsdk.ErrorResponse(http.StatusNotFound, "upstream_not_found",
@@ -707,7 +708,7 @@ func (p *Plugin) getAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 			}
 			return upstreamFail(callErr), nil
 		}
-		if err := refreshAsset(ctx, tx, id, assetFromResult(result)); err != nil {
+		if err := refreshAsset(tx, id, assetFromResult(result)); err != nil {
 			p.log.Warn("volcengine: cannot refresh an asset row", "id", id, "error", err.Error())
 		}
 		return pluginsdk.DataResponse(map[string]any{
@@ -733,7 +734,7 @@ func (p *Plugin) updateAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if bad != nil {
 		return bad, nil
 	}
-	return withResource(ctx, db, assetResource, id, func(tx pgx.Tx, row *assetRow) (*pluginv1.HTTPResponse, error) {
+	return withResource(db, assetResource, id, func(tx *gorm.DB, row *assetRow) (*pluginv1.HTTPResponse, error) {
 		cfg, bad := p.newCreds().config(ctx, row.AccountID)
 		if bad != nil {
 			return bad, nil
@@ -743,13 +744,13 @@ func (p *Plugin) updateAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		putPtr(body, "Description", in.Description)
 		if _, callErr := p.ark.call(ctx, cfg, ActionUpdateAsset, body); callErr != nil {
 			if callErr.NotFound() {
-				if err := markMissing(ctx, tx, "assets", id); err != nil {
+				if err := markMissing(tx, &model.Asset{}, id); err != nil {
 					p.log.Warn("volcengine: cannot mark an asset missing", "id", id, "error", err.Error())
 				}
 			}
 			return upstreamFail(callErr), nil
 		}
-		if err := applyAssetUpdate(ctx, tx, id, in.Name); err != nil {
+		if err := applyAssetUpdate(tx, id, in.Name); err != nil {
 			return nil, err
 		}
 		return pluginsdk.DataResponse(map[string]any{"id": id, "upstream_id": row.UpstreamID}), nil
@@ -765,7 +766,7 @@ func (p *Plugin) deleteAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if bad != nil {
 		return bad, nil
 	}
-	return withResource(ctx, db, assetResource, id, func(tx pgx.Tx, row *assetRow) (*pluginv1.HTTPResponse, error) {
+	return withResource(db, assetResource, id, func(tx *gorm.DB, row *assetRow) (*pluginv1.HTTPResponse, error) {
 		cfg, bad := p.newCreds().config(ctx, row.AccountID)
 		if bad != nil {
 			return bad, nil
@@ -773,7 +774,7 @@ func (p *Plugin) deleteAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if _, callErr := p.ark.call(ctx, cfg, ActionDeleteAsset, map[string]any{"Id": row.UpstreamID}); callErr != nil && !callErr.NotFound() {
 			return upstreamFail(callErr), nil
 		}
-		if err := deleteRow(ctx, tx, "assets", id); err != nil {
+		if err := deleteRow(tx, &model.Asset{}, id); err != nil {
 			return nil, err
 		}
 		return pluginsdk.DataResponse(map[string]any{"id": id, "deleted": true}), nil
