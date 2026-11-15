@@ -1,0 +1,8 @@
+-- sql
+DELETE FROM plugin_job_runs WHERE id IN (
+		SELECT id FROM (
+			SELECT id, row_number() OVER (PARTITION BY plugin_key, job_id ORDER BY id DESC) AS rn
+			FROM plugin_job_runs) r
+		WHERE rn > $1)
+-- vars
+$1 int 1000

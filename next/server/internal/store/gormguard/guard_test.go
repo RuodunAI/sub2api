@@ -34,7 +34,12 @@ var openAllowed = map[string]string{
 // migratedPackages lists the packages, relative to the module, whose
 // statements are built with store.G: they must not go back to pgx Exec,
 // Query or QueryRow. A package is added here in the batch that migrates it.
-var migratedPackages = map[string]string{}
+var migratedPackages = map[string]string{
+	"internal/event":          "batch 1c (the outbox insert stays a pgx.Batch)",
+	"internal/event/delivery": "batch 1c",
+	"internal/job":            "batch 1c",
+	"internal/task":           "batch 1c (River's client keeps its own pgx driver)",
+}
 
 // Rule tags, at the start of every finding.
 const (

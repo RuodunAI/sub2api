@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const maxErrorLen = 2000
@@ -273,20 +275,13 @@ func (w *worker) fail(ctx context.Context, cur cursor, first, last, horizon int6
 	if failures >= o.MaxFailures {
 		w.s.log.Error("event batch dead-lettered", "plugin", w.key, "first_event_id", first, "last_event_id", last, "err", msg)
 		err := w.s.db.Tx(ctx, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, `INSERT INTO plugin_event_deadletters (plugin_key, first_event_id, last_event_id, error)
-				VALUES ($1, $2, $3, $4)`, w.key, first, last, msg); err != nil {
+			dead := model.PluginEventDeadletter{PluginKey: w.key, FirstEventID: first, LastEventID: last, Error: msg}
+			if err := store.G(ctx, tx).Create(&dead).Error; err != nil {
 				return err
 			}
-			tag, err := tx.Exec(ctx, `UPDATE plugin_event_cursors
-				SET last_event_id = $3, consecutive_failures = 0, next_retry_at = NULL, last_error = $4, updated_at = now()
-				WHERE plugin_key = $1 AND last_event_id = $2`, w.key, cur.last, horizon, msg)
-			if err != nil {
-				return err
-			}
-			if tag.RowsAffected() == 0 {
-				return errCursorMoved
-			}
-			return nil
+			return moveCursor(store.G(ctx, tx), w.key, cur.last, map[string]any{
+				"last_event_id": horizon, "consecutive_failures": 0, "next_retry_at": nil, "last_error": msg,
+			})
 		})
 		if err != nil {
 			return 0, err
@@ -296,9 +291,9 @@ func (w *worker) fail(ctx context.Context, cur cursor, first, last, horizon int6
 	delay := backoff(failures, o.BackoffMin, o.BackoffMax)
 	w.s.log.Warn("event delivery failed", "plugin", w.key, "failures", failures, "retry_in", delay, "err", msg)
 	next := time.Now().Add(delay)
-	_, err := w.s.db.Pool.Exec(ctx, `UPDATE plugin_event_cursors
-		SET consecutive_failures = $3, next_retry_at = $4, last_error = $5, updated_at = now()
-		WHERE plugin_key = $1 AND last_event_id = $2`, w.key, cur.last, failures, next, msg)
+	err := updateCursor(store.G(ctx, w.s.db.Pool), w.key, cur.last, map[string]any{
+		"consecutive_failures": failures, "next_retry_at": next, "last_error": msg,
+	}).Error
 	if err != nil {
 		return 0, err
 	}
@@ -311,13 +306,27 @@ var errCursorMoved = errors.New("cursor moved concurrently")
 // is conditional on the cursor we read, so a node that lost its lease
 // mid-step can never move the cursor backwards.
 func (w *worker) advance(ctx context.Context, from, to int64) error {
-	tag, err := w.s.db.Pool.Exec(ctx, `UPDATE plugin_event_cursors
-		SET last_event_id = $3, consecutive_failures = 0, next_retry_at = NULL, last_error = '', updated_at = now()
-		WHERE plugin_key = $1 AND last_event_id = $2`, w.key, from, to)
-	if err != nil {
-		return err
+	return moveCursor(store.G(ctx, w.s.db.Pool), w.key, from, map[string]any{
+		"last_event_id": to, "consecutive_failures": 0, "next_retry_at": nil, "last_error": "",
+	})
+}
+
+// updateCursor writes set, and updated_at, to the cursor of key if it still
+// stands at from. set is a map because a struct would drop its zero values
+// (0, NULL, the empty string), which are exactly what a reset writes.
+func updateCursor(g *gorm.DB, key string, from int64, set map[string]any) *gorm.DB {
+	set["updated_at"] = gorm.Expr("now()")
+	return g.Model(&model.PluginEventCursor{}).Where("plugin_key = ? AND last_event_id = ?", key, from).Updates(set)
+}
+
+// moveCursor is updateCursor for a write that must land: errCursorMoved
+// when the cursor is no longer at from.
+func moveCursor(g *gorm.DB, key string, from int64, set map[string]any) error {
+	res := updateCursor(g, key, from, set)
+	if res.Error != nil {
+		return res.Error
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return errCursorMoved
 	}
 	return nil
@@ -326,45 +335,60 @@ func (w *worker) advance(ctx context.Context, from, to int64) error {
 // loadCursor reads the cursor, creating it at the current max event id for
 // a new subscription (history is not replayed).
 func (w *worker) loadCursor(ctx context.Context) (cursor, error) {
-	var c cursor
-	q := `SELECT last_event_id, consecutive_failures, next_retry_at FROM plugin_event_cursors WHERE plugin_key = $1`
-	err := w.s.db.Pool.QueryRow(ctx, q, w.key).Scan(&c.last, &c.failures, &c.nextRetry)
+	c, err := w.readCursor(ctx)
 	if store.IsNoRows(err) {
-		if _, err := w.s.db.Pool.Exec(ctx, `INSERT INTO plugin_event_cursors (plugin_key, last_event_id)
-			SELECT $1, COALESCE(max(id), 0) FROM events ON CONFLICT (plugin_key) DO NOTHING`, w.key); err != nil {
+		if err := createCursor(store.G(ctx, w.s.db.Pool), w.key).Error; err != nil {
 			return c, fmt.Errorf("create cursor: %w", err)
 		}
-		err = w.s.db.Pool.QueryRow(ctx, q, w.key).Scan(&c.last, &c.failures, &c.nextRetry)
+		c, err = w.readCursor(ctx)
 	}
 	return c, err
 }
 
+// createCursor inserts the cursor of key at the newest event, unless another
+// node just did.
+func createCursor(g *gorm.DB, key string) *gorm.DB {
+	return g.Exec(`INSERT INTO plugin_event_cursors (plugin_key, last_event_id)
+		SELECT ?, COALESCE(max(id), 0) FROM events ON CONFLICT (plugin_key) DO NOTHING`, key)
+}
+
+// readCursor reads the cursor row; a missing row is a no-rows error.
+func (w *worker) readCursor(ctx context.Context) (cursor, error) {
+	var row model.PluginEventCursor
+	err := store.G(ctx, w.s.db.Pool).Select("last_event_id", "consecutive_failures", "next_retry_at").
+		Where("plugin_key = ?", w.key).Take(&row).Error
+	return cursor{last: row.LastEventID, failures: row.ConsecutiveFailures, nextRetry: row.NextRetryAt}, err
+}
+
 func (w *worker) scan(ctx context.Context, after int64, limit int) ([]outboxRow, error) {
-	rows, err := w.s.db.Pool.Query(ctx, `SELECT id, type FROM events WHERE id > $1 ORDER BY id LIMIT $2`, after, limit)
-	if err != nil {
+	var rows []model.Event
+	if err := store.G(ctx, w.s.db.Pool).Select("id", "type").Where("id > ?", after).
+		Order("id").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (outboxRow, error) {
-		var o outboxRow
-		err := r.Scan(&o.id, &o.typ)
-		return o, err
-	})
+	out := make([]outboxRow, len(rows))
+	for i, r := range rows {
+		out[i] = outboxRow{id: r.ID, typ: r.Type}
+	}
+	return out, nil
 }
 
 func (w *worker) load(ctx context.Context, ids []int64) ([]*pluginv1.Event, error) {
-	rows, err := w.s.db.Pool.Query(ctx, `SELECT id, type, occurred_at, payload::text FROM events WHERE id = ANY($1) ORDER BY id`, ids)
-	if err != nil {
+	var rows []model.Event
+	if err := loadEvents(store.G(ctx, w.s.db.Pool), ids, &rows).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (*pluginv1.Event, error) {
-		var (
-			ev pluginv1.Event
-			at time.Time
-		)
-		err := r.Scan(&ev.Id, &ev.Type, &at, &ev.PayloadJson)
-		ev.OccurredAtUnixMs = at.UnixMilli()
-		return &ev, err
-	})
+	out := make([]*pluginv1.Event, len(rows))
+	for i, r := range rows {
+		// The bridge reads jsonb in its text form: the text payload::text gave.
+		out[i] = &pluginv1.Event{Id: r.ID, Type: r.Type, OccurredAtUnixMs: r.OccurredAt.UnixMilli(), PayloadJson: string(r.Payload)}
+	}
+	return out, nil
+}
+
+// loadEvents reads the events ids, in id order.
+func loadEvents(g *gorm.DB, ids []int64, rows *[]model.Event) *gorm.DB {
+	return g.Where("id = ANY(?)", store.Int64s(ids)).Order("id").Find(rows)
 }
 
 // gapPassable reports whether the hole starting at id start may be skipped.
@@ -408,7 +432,7 @@ func (w *worker) checkGap(ctx context.Context) error {
 
 func (w *worker) snapshot(ctx context.Context) (xmin, xmax uint64, err error) {
 	var a, b string
-	if err = w.s.db.Pool.QueryRow(ctx, `SELECT pg_snapshot_xmin(s)::text, pg_snapshot_xmax(s)::text FROM pg_current_snapshot() s`).Scan(&a, &b); err != nil {
+	if err = store.G(ctx, w.s.db.Pool).Raw(`SELECT pg_snapshot_xmin(s)::text, pg_snapshot_xmax(s)::text FROM pg_current_snapshot() s`).Row().Scan(&a, &b); err != nil {
 		return 0, 0, err
 	}
 	if xmin, err = strconv.ParseUint(a, 10, 64); err != nil {

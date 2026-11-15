@@ -1,0 +1,4 @@
+-- sql
+SELECT "events"."id","events"."type","events"."occurred_at","events"."payload" FROM "events" WHERE id = ANY($1) ORDER BY id
+-- vars
+$1 store.Int64s [7 9 12]

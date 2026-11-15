@@ -1,0 +1,6 @@
+-- sql
+DELETE FROM "scheduled_tasks" WHERE source = 'core' AND seen_at < now() - $1::interval AND NOT (name = ANY($2))
+			AND (lease_until IS NULL OR lease_until < now())
+-- vars
+$1 string "168h0m0s"
+$2 store.Strings [core.a core.b]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -12,11 +13,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Console permissions (TASK-FRAMEWORK-DESIGN §10.1).
@@ -232,12 +236,12 @@ const runStatusSQL = `CASE j.state
 
 // clusterViews reads the cluster tasks (only one when name is set).
 func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskView, error) {
-	pool := s.opts.DB.Pool
-	rows, err := pool.Query(ctx, `SELECT name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
+	g := store.G(ctx, s.opts.DB.Pool)
+	rows, err := g.Raw(`SELECT name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
 			lease_node, lease_until > now() AND lease_job_id IS NOT NULL,
 			last_node, last_started_at, last_finished_at, last_status, COALESCE(last_count, 0), COALESCE(last_message, ''),
 			COALESCE(last_error, ''), last_success_at, consecutive_failures
-		FROM scheduled_tasks WHERE $1 = '' OR name = $1 ORDER BY name`, name)
+		FROM scheduled_tasks WHERE ? = '' OR name = ? ORDER BY name`, name, name).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -293,17 +297,17 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		names[i], index[v.Name] = v.Name, i
 	}
 
-	recent, err := pool.Query(ctx, `SELECT t.name, r.statuses FROM unnest($1::text[]) AS t(name)
+	recent, err := g.Raw(`SELECT t.name, r.statuses FROM unnest(?::text[]) AS t(name)
 		CROSS JOIN LATERAL (SELECT COALESCE(array_agg(st ORDER BY id DESC), '{}') AS statuses FROM (
 			SELECT j.id, `+runStatusSQL+` AS st FROM river_job j
-			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = t.name ORDER BY j.id DESC LIMIT $2) x) r`,
-		names, recentRuns)
+			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = t.name ORDER BY j.id DESC LIMIT ?) x) r`,
+		store.Strings(names), recentRuns).Rows()
 	if err != nil {
 		return nil, err
 	}
 	for recent.Next() {
 		var n string
-		var sts []string
+		var sts store.Strings
 		if err := recent.Scan(&n, &sts); err != nil {
 			recent.Close()
 			return nil, err
@@ -315,16 +319,16 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		return nil, err
 	}
 
-	stats, err := pool.Query(ctx, `SELECT name,
+	stats, err := g.Raw(`SELECT name,
 			count(*) FILTER (WHERE st IN ('succeeded', 'continued', 'failed', 'timeout', 'skipped')),
 			count(*) FILTER (WHERE st IN ('failed', 'timeout')),
 			count(*) FILTER (WHERE st = 'skipped'),
 			COALESCE(avg(ms) FILTER (WHERE st <> 'skipped'), 0)::bigint, COALESCE(max(ms), 0),
 			count(*) FILTER (WHERE st IN ('queued', 'retrying'))
 		FROM (SELECT j.args->>'name' AS name, `+runStatusSQL+` AS st, (j.metadata->'output'->>'duration_ms')::bigint AS ms
-			FROM river_job j WHERE j.kind = 'sup2api.task' AND j.args->>'name' = ANY($1)
+			FROM river_job j WHERE j.kind = 'sup2api.task' AND j.args->>'name' = ANY(?)
 				AND (j.created_at > now() - interval '24 hours' OR j.state IN ('available', 'scheduled', 'pending', 'retryable'))) x
-		GROUP BY name`, names)
+		GROUP BY name`, store.Strings(names)).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +427,7 @@ func readHistories(ctx context.Context, rdb redis.UniversalClient, nodeID string
 // leader is the node whose River client leads now ("" when none does).
 func (s *Service) leader(ctx context.Context, live map[string]core.NodeStatus) string {
 	var id string
-	err := s.opts.DB.Pool.QueryRow(ctx, `SELECT leader_id FROM river_leader WHERE expires_at > now() LIMIT 1`).Scan(&id)
+	err := store.G(ctx, s.opts.DB.Pool).Raw(`SELECT leader_id FROM river_leader WHERE expires_at > now() LIMIT 1`).Row().Scan(&id)
 	if err != nil {
 		return ""
 	}
@@ -636,8 +640,7 @@ func (s *Service) scopeOf(ctx context.Context, name string) (core.TaskScope, boo
 	if s.opts.DB == nil {
 		return "", false
 	}
-	var exists bool
-	if err := s.opts.DB.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM scheduled_tasks WHERE name = $1)`, name).Scan(&exists); err == nil && exists {
+	if exists, err := taskRowExists(ctx, s.opts.DB.Pool, name); err == nil && exists {
 		return core.TaskCluster, true
 	}
 	return "", false
@@ -656,13 +659,32 @@ type riverError struct {
 	Error   string    `json:"error"`
 }
 
+// riverErrors reads river_job.errors (jsonb[]), which the GORM bridge hands
+// over as one JSON text per element; NULL is nil.
+type riverErrors []riverError
+
+// Scan implements sql.Scanner.
+func (e *riverErrors) Scan(src any) error {
+	if src == nil {
+		*e = nil
+		return nil
+	}
+	elems, ok := src.([][]byte)
+	if !ok {
+		return fmt.Errorf("task: cannot scan %T into river errors", src)
+	}
+	out := make(riverErrors, len(elems))
+	for i, b := range elems {
+		if err := json.Unmarshal(b, &out[i]); err != nil {
+			return err
+		}
+	}
+	*e = out
+	return nil
+}
+
 func (s *Service) clusterRuns(ctx context.Context, name string, statuses []string, before int64, limit int) (RunsPage, error) {
-	rows, err := s.opts.DB.Pool.Query(ctx, `SELECT id, st, scheduled_at, attempted_at, finalized_at, attempt, max_attempts,
-			COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by
-		FROM (SELECT j.*, `+runStatusSQL+` AS st FROM river_job j
-			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = $1 AND ($2 = 0 OR j.id < $2) ORDER BY j.id DESC) x
-		WHERE cardinality($3::text[]) = 0 OR st = ANY($3)
-		ORDER BY id DESC LIMIT $4`, name, before, statuses, limit+1)
+	rows, err := runsQuery(store.G(ctx, s.opts.DB.Pool), name, statuses, before, limit+1).Rows()
 	if err != nil {
 		return RunsPage{}, err
 	}
@@ -674,12 +696,19 @@ func (s *Service) clusterRuns(ctx context.Context, name string, statuses []strin
 		var id int64
 		var scheduled time.Time
 		var attempted, finalized *time.Time
-		var output *runOutput
-		var errs []riverError
-		var attemptedBy []string
+		var outputJSON []byte
+		var errs riverErrors
+		var attemptedBy store.Strings
 		if err := rows.Scan(&id, &v.Status, &scheduled, &attempted, &finalized, &v.Attempt, &v.MaxAttempts, &v.Manual,
-			&output, &errs, &attemptedBy); err != nil {
+			&outputJSON, &errs, &attemptedBy); err != nil {
 			return RunsPage{}, err
+		}
+		// A missing output (SQL NULL) and a JSON null both leave output nil.
+		var output *runOutput
+		if outputJSON != nil {
+			if err := json.Unmarshal(outputJSON, &output); err != nil {
+				return RunsPage{}, err
+			}
 		}
 		if len(out.Runs) == limit {
 			out.NextBeforeID = &lastID
@@ -703,6 +732,19 @@ func (s *Service) clusterRuns(ctx context.Context, name string, statuses []strin
 		out.Runs = append(out.Runs, v)
 	}
 	return out, rows.Err()
+}
+
+// runsQuery selects up to limit runs of the cluster task name from
+// river_job, newest first: those before the id before (0: from the newest),
+// with one of statuses (none: any). Raw SQL over River's table; it is only
+// read here, River's client writes it.
+func runsQuery(g *gorm.DB, name string, statuses []string, before int64, limit int) *gorm.DB {
+	return g.Raw(`SELECT id, st, scheduled_at, attempted_at, finalized_at, attempt, max_attempts,
+			COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by
+		FROM (SELECT j.*, `+runStatusSQL+` AS st FROM river_job j
+			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = ? AND (? = 0 OR j.id < ?) ORDER BY j.id DESC) x
+		WHERE cardinality(?::text[]) = 0 OR st = ANY(?)
+		ORDER BY id DESC LIMIT ?`, name, before, before, store.Strings(statuses), store.Strings(statuses), limit)
 }
 
 // ---------------------------------------------------------------- run
@@ -804,11 +846,10 @@ func (h *handlers) patch(c *gin.Context) {
 		httpapi.Fail(c, errTaskNotReady)
 		return
 	}
-	var source string
-	err := h.s.opts.DB.Pool.QueryRow(ctx, `UPDATE scheduled_tasks SET enabled = $2, updated_at = now()
-		WHERE name = $1 AND source IN ($3, $4) RETURNING source`, name, *body.Enabled,
-		string(SourcePluginManifest), string(SourcePluginRuntime)).Scan(&source)
-	if store.IsNoRows(err) {
+	var row model.ScheduledTask
+	res := setPluginTaskEnabled(store.G(ctx, h.s.opts.DB.Pool), name, *body.Enabled, &row)
+	err, source := res.Error, row.Source
+	if err == nil && res.RowsAffected == 0 {
 		if _, known := h.s.scopeOf(ctx, name); known {
 			httpapi.Fail(c, errNotEditable)
 			return
@@ -831,4 +872,12 @@ func (h *handlers) patch(c *gin.Context) {
 		h.s.log.Warn("task: audit task switch", "task", name, "err", aerr)
 	}
 	httpapi.OK(c, gin.H{"name": name, "enabled": *body.Enabled})
+}
+
+// setPluginTaskEnabled switches the plugin task name on or off and returns
+// its source into row; no row is affected when name is no plugin task.
+func setPluginTaskEnabled(g *gorm.DB, name string, enabled bool, row *model.ScheduledTask) *gorm.DB {
+	return g.Model(row).Clauses(clause.Returning{Columns: []clause.Column{{Name: "source"}}}).
+		Where("name = ? AND source IN (?, ?)", name, string(SourcePluginManifest), string(SourcePluginRuntime)).
+		Updates(map[string]any{"enabled": enabled, "updated_at": gorm.Expr("now()")})
 }

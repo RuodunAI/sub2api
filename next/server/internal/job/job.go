@@ -31,11 +31,14 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/task"
 )
 
@@ -178,9 +181,12 @@ func (b *Bridge) Start(ctx context.Context, tasks Tasks) error {
 		b.mu.Unlock()
 		return errors.New("job bridge needs the task service")
 	}
-	if _, err := b.db.Pool.Exec(ctx, `UPDATE plugin_job_runs
-		SET status = $2, finished_at = now(), message = 'abandoned: node restarted before the run finished'
-		WHERE node_id = $1 AND status = $3`, b.nodeID, StatusFailed, StatusRunning); err != nil {
+	if err := store.G(ctx, b.db.Pool).Model(&model.PluginJobRun{}).
+		Where("node_id = ? AND status = ?", b.nodeID, StatusRunning).
+		Updates(map[string]any{
+			"status": StatusFailed, "finished_at": gorm.Expr("now()"),
+			"message": "abandoned: node restarted before the run finished",
+		}).Error; err != nil {
 		b.mu.Unlock()
 		return fmt.Errorf("jobs: recover abandoned runs: %w", err)
 	}
@@ -266,6 +272,26 @@ func (b *Bridge) loop() {
 type pluginState struct {
 	status string
 	active string
+}
+
+// pluginStateOf reads the columns pluginColumns selected; a NULL
+// active_version is "".
+func pluginStateOf(p model.Plugin) pluginState {
+	s := pluginState{status: p.Status}
+	if p.ActiveVersion != nil {
+		s.active = *p.ActiveVersion
+	}
+	return s
+}
+
+// pluginColumns are the plugins columns a pluginState is read from.
+var pluginColumns = []string{"key", "status", "active_version"}
+
+// readPlugin reads one plugin's state; an unknown plugin is a no-rows error.
+func readPlugin(ctx context.Context, q store.Querier, key string) (pluginState, error) {
+	var p model.Plugin
+	err := store.G(ctx, q).Select(pluginColumns).Where("key = ?", key).Take(&p).Error
+	return pluginStateOf(p), err
 }
 
 // serving reports whether the plugin's jobs should run: it is enabled (or
@@ -377,40 +403,36 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 }
 
 func (b *Bridge) loadPlugins(ctx context.Context) (map[string]pluginState, error) {
-	rows, err := b.db.Pool.Query(ctx, `SELECT key, status, COALESCE(active_version, '') FROM plugins`)
-	if err != nil {
+	var rows []model.Plugin
+	if err := store.G(ctx, b.db.Pool).Select(pluginColumns).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("jobs: read plugins: %w", err)
 	}
-	defer rows.Close()
-	out := map[string]pluginState{}
-	for rows.Next() {
-		var key string
-		var p pluginState
-		if err := rows.Scan(&key, &p.status, &p.active); err != nil {
-			return nil, err
-		}
-		out[key] = p
+	out := make(map[string]pluginState, len(rows))
+	for _, p := range rows {
+		out[p.Key] = pluginStateOf(p)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (b *Bridge) loadRows(ctx context.Context) ([]taskRow, error) {
-	rows, err := b.db.Pool.Query(ctx, `SELECT name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled, args
-		FROM scheduled_tasks WHERE source IN ($1, $2) AND plugin_key IS NOT NULL ORDER BY name`,
-		string(task.SourcePluginManifest), string(task.SourcePluginRuntime))
-	if err != nil {
+	var rows []model.ScheduledTask
+	if err := store.G(ctx, b.db.Pool).
+		Select("name", "source", "plugin_key", "schedule", "timeout_ms", "max_attempts", "enabled", "args").
+		Where("source IN (?, ?) AND plugin_key IS NOT NULL", string(task.SourcePluginManifest), string(task.SourcePluginRuntime)).
+		Order("name").Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("jobs: read plugin tasks: %w", err)
 	}
-	defer rows.Close()
-	var out []taskRow
-	for rows.Next() {
-		var r taskRow
-		if err := rows.Scan(&r.name, &r.source, &r.pluginKey, &r.schedule, &r.timeoutMS, &r.maxAttempts, &r.enabled, &r.args); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
+	out := make([]taskRow, len(rows))
+	for i, r := range rows {
+		out[i] = taskRow{name: r.Name, source: r.Source, pluginKey: *r.PluginKey, schedule: r.Schedule,
+			timeoutMS: int64(r.TimeoutMs), maxAttempts: r.MaxAttempts, enabled: r.Enabled, args: r.Args}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// deleteTaskRow removes the scheduled_tasks row of name if it has source.
+func deleteTaskRow(ctx context.Context, q store.Querier, name string, source task.Source) error {
+	return store.G(ctx, q).Where("name = ? AND source = ?", name, string(source)).Delete(&model.ScheduledTask{}).Error
 }
 
 // writeManifestRows makes the plugin_manifest rows match: for every plugin
@@ -441,9 +463,9 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 			want[t.Name] = t
 		}
 	}
-	rows, err := b.db.Pool.Query(ctx, `SELECT name, plugin_key, schedule, timeout_ms, max_attempts
-		FROM scheduled_tasks WHERE source = $1`, string(task.SourcePluginManifest))
-	if err != nil {
+	var rows []model.ScheduledTask
+	if err := store.G(ctx, b.db.Pool).Select("name", "plugin_key", "schedule", "timeout_ms", "max_attempts").
+		Where("source = ?", string(task.SourcePluginManifest)).Find(&rows).Error; err != nil {
 		return false, fmt.Errorf("jobs: read plugin job rows: %w", err)
 	}
 	type row struct {
@@ -451,23 +473,13 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 		timeoutMS     int64
 		attempts      int
 	}
-	have := map[string]row{}
-	for rows.Next() {
-		var name string
-		var r row
-		var key *string
-		if err := rows.Scan(&name, &key, &r.schedule, &r.timeoutMS, &r.attempts); err != nil {
-			rows.Close()
-			return false, err
+	have := make(map[string]row, len(rows))
+	for _, tr := range rows {
+		r := row{schedule: tr.Schedule, timeoutMS: int64(tr.TimeoutMs), attempts: tr.MaxAttempts}
+		if tr.PluginKey != nil {
+			r.key = *tr.PluginKey
 		}
-		if key != nil {
-			r.key = *key
-		}
-		have[name] = r
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return false, err
+		have[tr.Name] = r
 	}
 
 	changed := false
@@ -477,19 +489,18 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 	}
 	// The runtime tasks of an uninstalled plugin go with it; a disabled one
 	// keeps them for when it is enabled again.
-	tag, err := b.db.Pool.Exec(ctx, `DELETE FROM scheduled_tasks WHERE source = $1 AND NOT (plugin_key = ANY($2))`,
-		string(task.SourcePluginRuntime), keys)
-	if err != nil {
-		return false, fmt.Errorf("jobs: remove the runtime tasks of uninstalled plugins: %w", err)
+	res := store.G(ctx, b.db.Pool).Where("source = ? AND NOT (plugin_key = ANY(?))", string(task.SourcePluginRuntime), store.Strings(keys)).
+		Delete(&model.ScheduledTask{})
+	if res.Error != nil {
+		return false, fmt.Errorf("jobs: remove the runtime tasks of uninstalled plugins: %w", res.Error)
 	}
-	changed = tag.RowsAffected() > 0
+	changed = res.RowsAffected > 0
 	for name, r := range have {
 		_, wanted := want[name]
 		if plugins[r.key].serving() && (!own[r.key] || wanted) {
 			continue
 		}
-		if _, err := b.db.Pool.Exec(ctx, `DELETE FROM scheduled_tasks WHERE name = $1 AND source = $2`,
-			name, string(task.SourcePluginManifest)); err != nil {
+		if err := deleteTaskRow(ctx, b.db.Pool, name, task.SourcePluginManifest); err != nil {
 			return changed, fmt.Errorf("jobs: remove plugin job row %s: %w", name, err)
 		}
 		changed = true
@@ -498,20 +509,27 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 		if r, ok := have[name]; ok && r.schedule == t.ScheduleText && r.timeoutMS == t.Timeout.Milliseconds() && r.attempts == t.Attempts() {
 			continue
 		}
-		// A runtime task of the same name keeps its row.
-		tag, err := b.db.Pool.Exec(ctx, `INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, now())
-			ON CONFLICT (name) DO UPDATE SET plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
-				timeout_ms = EXCLUDED.timeout_ms, max_attempts = EXCLUDED.max_attempts, seen_version = EXCLUDED.seen_version,
-				seen_at = now(), updated_at = now()
-			WHERE scheduled_tasks.source = EXCLUDED.source`,
-			name, string(task.SourcePluginManifest), t.PluginKey, t.ScheduleText, t.Timeout.Milliseconds(), t.Attempts(), b.opts.Version)
-		if err != nil {
-			return changed, fmt.Errorf("jobs: record plugin job %s: %w", name, err)
+		res := upsertManifestTask(store.G(ctx, b.db.Pool), t, b.opts.Version)
+		if res.Error != nil {
+			return changed, fmt.Errorf("jobs: record plugin job %s: %w", name, res.Error)
 		}
-		changed = changed || tag.RowsAffected() > 0
+		changed = changed || res.RowsAffected > 0
 	}
 	return changed, nil
+}
+
+// upsertManifestTask records the plugin_manifest row of t; a runtime task
+// of the same name keeps its row. Raw SQL: the upsert is conditional, and
+// schedule, max_attempts and seen_version have defaults that a model insert
+// would take for an explicit zero.
+func upsertManifestTask(g *gorm.DB, t *task.Task, version string) *gorm.DB {
+	return g.Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, now())
+		ON CONFLICT (name) DO UPDATE SET plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
+			timeout_ms = EXCLUDED.timeout_ms, max_attempts = EXCLUDED.max_attempts, seen_version = EXCLUDED.seen_version,
+			seen_at = now(), updated_at = now()
+		WHERE scheduled_tasks.source = EXCLUDED.source`,
+		t.Name, string(task.SourcePluginManifest), t.PluginKey, t.ScheduleText, t.Timeout.Milliseconds(), t.Attempts(), version)
 }
 
 // manifestFor returns the manifest of a plugin version: the generation's
@@ -787,8 +805,7 @@ func (b *Bridge) notHere(ctx context.Context, key string, scope core.TaskScope, 
 	if scope == core.TaskNode {
 		return core.TaskSkipped("the plugin is not running on this node")
 	}
-	var p pluginState
-	err := b.db.Pool.QueryRow(ctx, `SELECT status, COALESCE(active_version, '') FROM plugins WHERE key = $1`, key).Scan(&p.status, &p.active)
+	p, err := readPlugin(ctx, b.db.Pool, key)
 	if store.IsNoRows(err) || (err == nil && !p.serving()) {
 		return core.TaskSkipped("the plugin is not enabled")
 	}
@@ -806,21 +823,21 @@ var errSlotTaken = errors.New("jobs: slot already ran")
 // insertRun records the start of a run. A scheduled cluster run claims its
 // slot: errSlotTaken when the slot already has a run.
 func (b *Bridge) insertRun(ctx context.Context, key, jobID string, scope core.TaskScope, run core.TaskRun) (int64, error) {
+	// Raw SQL: started_at is the server's now(), and scope has a default a
+	// model insert would take for "". Row().Scan keeps the no-row answer of
+	// a taken slot.
 	var id int64
+	g := store.G(ctx, b.db.Pool)
 	if scope == core.TaskCluster && !run.Manual {
-		err := b.db.Pool.QueryRow(ctx, `INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual, scope)
-			SELECT $1::varchar, $2::varchar, $3::varchar, $4::timestamptz, now(), $5::varchar, false, $6
-			WHERE NOT EXISTS (SELECT 1 FROM plugin_job_runs
-				WHERE plugin_key = $1 AND job_id = $2 AND scheduled_at = $4 AND NOT manual)
-			RETURNING id`, key, jobID, b.nodeID, run.ScheduledAt, StatusRunning, string(scope)).Scan(&id)
+		err := claimSlot(g, key, jobID, b.nodeID, scope, run.ScheduledAt).Row().Scan(&id)
 		if store.IsNoRows(err) || store.IsUniqueViolation(err, slotUniqueIndex) {
 			return 0, errSlotTaken
 		}
 		return id, err
 	}
-	err := b.db.Pool.QueryRow(ctx, `INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual, scope)
-		VALUES ($1, $2, $3, $4, now(), $5, $6, $7) RETURNING id`,
-		key, jobID, b.nodeID, run.ScheduledAt, StatusRunning, run.Manual, string(scope)).Scan(&id)
+	err := g.Raw(`INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual, scope)
+		VALUES (?, ?, ?, ?, now(), ?, ?, ?) RETURNING id`,
+		key, jobID, b.nodeID, run.ScheduledAt, StatusRunning, run.Manual, string(scope)).Row().Scan(&id)
 	if store.IsUniqueViolation(err, slotUniqueIndex) {
 		// Two nodes started the same node job in the same microsecond: the
 		// run goes ahead without a row of its own.
@@ -829,14 +846,24 @@ func (b *Bridge) insertRun(ctx context.Context, key, jobID string, scope core.Ta
 	return id, err
 }
 
+// claimSlot inserts the running row of a scheduled run unless its slot
+// already has one, and returns its id (no row when the slot is taken).
+func claimSlot(g *gorm.DB, key, jobID, nodeID string, scope core.TaskScope, slot time.Time) *gorm.DB {
+	return g.Raw(`INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual, scope)
+		SELECT ?::varchar, ?::varchar, ?::varchar, ?::timestamptz, now(), ?::varchar, false, ?
+		WHERE NOT EXISTS (SELECT 1 FROM plugin_job_runs
+			WHERE plugin_key = ? AND job_id = ? AND scheduled_at = ? AND NOT manual)
+		RETURNING id`, key, jobID, nodeID, slot, StatusRunning, string(scope), key, jobID, slot)
+}
+
 func (b *Bridge) finishRun(id int64, status, msg string) {
 	if id == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := b.db.Pool.Exec(ctx, `UPDATE plugin_job_runs SET status = $2, message = $3, finished_at = now() WHERE id = $1`,
-		id, status, msg); err != nil {
+	if err := store.G(ctx, b.db.Pool).Model(&model.PluginJobRun{}).Where("id = ?", id).
+		Updates(map[string]any{"status": status, "message": msg, "finished_at": gorm.Expr("now()")}).Error; err != nil {
 		b.log.Warn("job run update failed", "run_id", id, "err", err)
 	}
 }
@@ -901,12 +928,12 @@ func (b *Bridge) missing(ctx context.Context, pluginKey, jobID string) error {
 			return core.ErrNotFound.WithMessage("job not found")
 		}
 	}
-	var exists bool
-	if err := b.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugins WHERE key = $1)`, pluginKey).Scan(&exists); err != nil {
+	_, err := readPlugin(ctx, b.db.Pool, pluginKey)
+	switch {
+	case store.IsNoRows(err):
+		return core.ErrNotFound.WithMessage("plugin not found")
+	case err != nil:
 		return err
 	}
-	if exists {
-		return core.ErrPluginUnavailable
-	}
-	return core.ErrNotFound.WithMessage("plugin not found")
+	return core.ErrPluginUnavailable
 }

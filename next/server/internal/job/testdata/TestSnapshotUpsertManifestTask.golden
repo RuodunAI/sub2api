@@ -1,0 +1,15 @@
+-- sql
+INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+		ON CONFLICT (name) DO UPDATE SET plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
+			timeout_ms = EXCLUDED.timeout_ms, max_attempts = EXCLUDED.max_attempts, seen_version = EXCLUDED.seen_version,
+			seen_at = now(), updated_at = now()
+		WHERE scheduled_tasks.source = EXCLUDED.source
+-- vars
+$1 string "plugin.demo.sync"
+$2 string "plugin_manifest"
+$3 string "demo"
+$4 string "@every 5m"
+$5 int64 90000
+$6 int 3
+$7 string ""
