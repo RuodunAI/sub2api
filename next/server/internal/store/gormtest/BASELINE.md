@@ -616,6 +616,94 @@ reads it into a `sql.NullString`. The catalog (1.4 times) and the version
 (6.3 times, about 30 allocations of fixed cost per GORM statement) cost
 more.
 
+## Batch 6: GORM-owned connections
+
+Batch 6 removed the forwarding driver: GORM (gorm.io/driver/postgres, pgx's
+database/sql driver underneath) owns the pool and the transactions, and
+store's array types are written and read as PostgreSQL's array text
+instead of through pgtype. Every hot-path benchmark ran on the base of the
+batch (72d1ab3f, GORM over the forwarding driver) and on the batch,
+package by package, base first:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -skip HotSettlerInsertBatch -benchmem -benchtime 1000x -count 5 \
+  ./internal/apikey/ ./internal/billing/ ./internal/usage/ ./internal/account/ \
+  ./internal/helperhistory/ ./internal/iam/ ./internal/store/ ./internal/gateway/ \
+  ./internal/ccgateway/ ./internal/plugin/grants/ ./internal/authz/
+# and HotSettlerInsertBatch with -benchtime 100x
+```
+
+Recorded 2026-11-15, same machine and server as above. Medians of 5.
+allocs/op is stable to the unit; ns/op is not: the "pgx"/"sql" variants,
+the same SQL on pgx before and on database/sql after, moved by -54% to
++194% between the two runs, and a second pass over the read paths
+(interleaved, 6 runs each, at two to three times the absolute times)
+put the GORM forms of the single-row reads within 20% of their base. The
+table holds the production (GORM) forms; the raw variants stay in the
+benchmarks for comparison.
+
+| Benchmark | base ns/op | B/op | allocs/op | batch 6 ns/op | B/op | allocs/op | allocs |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `apikey` HotKeyLookup/gorm | 69 068 | 11 162 | 150 | 79 898 | 9 812 | 141 | -6% |
+| `billing` HotPrecharge | 960 183 | 23 255 | 451 | 1 427 114 | 25 552 | 468 | +4% |
+| `billing` HotReleasePrecharge/miss/gorm | 113 239 | 8 437 | 76 | 96 275 | 7 808 | 70 | -8% |
+| `billing` HotReleasePrecharge/hit/gorm | 508 232 | 8 536 | 81 | 976 806 | 7 888 | 75 | -7% |
+| `usage` HotExecution/begin/gorm | 424 495 | 8 563 | 54 | 713 657 | 8 079 | 49 | -9% |
+| `usage` HotExecution/observe/gorm | 648 947 | 8 724 | 55 | 566 341 | 8 228 | 50 | -9% |
+| `usage` HotExecution/commit/gorm | 647 935 | 7 493 | 104 | 686 440 | 9 692 | 121 | +16% |
+| `usage` HotSettlerInsertFree | 1 585 039 | 32 272 | 381 | 1 582 580 | 34 216 | 396 | +4% |
+| `usage` HotSettlerInsertPending | 986 123 | 17 417 | 192 | 1 496 907 | 20 213 | 214 | +11% |
+| `usage` HotSettle | 1 882 817 | 60 705 | 1 013 | 1 641 709 | 61 414 | 1 020 | +1% |
+| `usage` HotStmtSettleLock/gorm | 351 718 | 3 493 | 45 | 266 536 | 2 960 | 39 | -13% |
+| `usage` HotStmtSettleUpdate/gorm | 334 208 | 8 288 | 169 | 412 487 | 7 814 | 164 | -3% |
+| `usage` HotStmtReserveUpdate/gorm | 393 025 | 6 862 | 132 | 423 456 | 6 390 | 127 | -4% |
+| `usage` HotStmtReserveEntry/gorm | 275 849 | 4 428 | 60 | 309 603 | 3 896 | 54 | -10% |
+| `usage` HotTaskFind/gorm | 76 382 | 6 458 | 92 | 48 861 | 5 658 | 86 | -7% |
+| `usage` HotTaskBegin/gorm | 226 171 | 4 090 | 49 | 303 276 | 3 616 | 44 | -10% |
+| `usage` HotTaskReceive/gorm | 267 247 | 3 429 | 40 | 304 976 | 2 938 | 35 | -12% |
+| `usage` HotTaskRegister/gorm | 836 999 | 12 229 | 176 | 1 837 374 | 13 852 | 188 | +7% |
+| `usage` HotSettlerInsertBatch | 21 356 895 | 3 492 361 | 37 704 | 25 216 213 | 4 967 922 | 55 220 | +46% |
+| `account` HotGroupSnapshot/gorm | 156 987 | 27 197 | 419 | 182 352 | 26 096 | 399 | -5% |
+| `account` HotLoadRow/gorm | 86 034 | 13 988 | 186 | 76 944 | 11 819 | 172 | -8% |
+| `helperhistory` HotHelperPrefix/gorm | 38 550 | 3 789 | 52 | 59 929 | 5 966 | 90 | +73% |
+| `iam` HotUserStatus/gorm | 21 410 | 3 525 | 43 | 22 206 | 2 960 | 37 | -14% |
+| `iam` HotAccessKey/gorm | 38 796 | 4 221 | 66 | 43 580 | 3 456 | 55 | -17% |
+| `iam` HotGetUser/gorm | 60 613 | 7 173 | 94 | 89 640 | 6 128 | 83 | -12% |
+| `store` HotQuotaObservation/gorm | 652 542 | 5 197 | 50 | 789 608 | 4 723 | 45 | -10% |
+| `store` HotReadAccountQuotas/gorm | 59 106 | 7 615 | 105 | 123 010 | 7 467 | 130 | +24% |
+| `store` HotAccountBalances/gorm | 47 664 | 4 901 | 70 | 72 745 | 4 939 | 95 | +36% |
+| `gateway` HotSettingsRow/gorm | 19 315 | 4 181 | 46 | 28 333 | 3 649 | 40 | -13% |
+| `gateway` HotStickyRules/gorm | 46 777 | 8 054 | 141 | 62 568 | 7 131 | 130 | -8% |
+| `ccgateway` HotSharedAccountType/gorm | 46 907 | 3 349 | 43 | 19 783 | 2 816 | 37 | -14% |
+| `plugin/grants` HotGrantHolds/gorm | 45 270 | 5 045 | 60 | 59 058 | 4 512 | 54 | -10% |
+| `authz` HotAuthz/permission_set | 257 189 | 13 640 | 201 | 350 702 | 16 166 | 221 | +10% |
+| `authz` HotAuthz/catalog | 184 519 | 21 027 | 435 | 260 602 | 23 561 | 455 | +5% |
+| `authz` HotAuthz/version | 51 359 | 3 213 | 38 | 48 263 | 2 680 | 32 | -16% |
+
+Without the forwarding driver a statement costs 5 to 17% fewer
+allocations: the bridge's per-column decoding into driver values and its
+rows wrapper are gone. What costs more is an array:
+
+- An array parameter (store.Int64s, Strings, Times, Bools) is now its
+  text form ("{1,2}"), which pgx parses again into the parameter's binary
+  form. The array-parameter reads went up: HotHelperPrefix (`= ANY($3)`
+  with a text[]) +73% allocations, HotReadAccountQuotas +24%,
+  HotAccountBalances +36%, and the settler's batch insert (`unnest` of 47
+  array parameters) +46% allocations and +42% bytes. In the interleaved
+  pass HotHelperPrefix was 28% and HotReadAccountQuotas 34% slower than
+  base, HotGroupSnapshot (a text[] column read through store.Strings)
+  27%. These are the paths above 20%.
+- The write transactions (HotPrecharge, HotSettlerInsertPending,
+  HotTaskRegister, HotExecution/begin) also show +49% to +120% ns/op in
+  the table, with allocations within +11%; their raw variants moved the
+  same way between the runs (HotTaskRegister/sql +157%), which puts it on
+  the server's commit fsyncs rather than on the code.
+
+A Value that handed pgx the plain slice instead of its text would remove
+the array cost (pgx encodes a []int64 natively), at the price of a Value
+that is not a database/sql driver.Value; batch 6 keeps the text form.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no
