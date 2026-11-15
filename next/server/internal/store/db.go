@@ -1,9 +1,11 @@
 // Package store owns the PostgreSQL pool, transactions and the migration
 // runner shared by the core schema and plugin schemas.
+// G runs GORM statements on the same pool or transaction (see gorm.go).
 package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
 // Querier is satisfied by *pgxpool.Pool and pgx.Tx, so repositories can run
@@ -93,8 +96,12 @@ func IsDeadlock(err error) bool {
 	return errors.As(err, &pg) && pg.Code == "40P01"
 }
 
-// IsNoRows reports pgx.ErrNoRows.
-func IsNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
+// IsNoRows reports a read that found no row: pgx.ErrNoRows, or GORM's
+// gorm.ErrRecordNotFound (First, Take, Last) and database/sql's
+// sql.ErrNoRows (Row().Scan) on the GORM path.
+func IsNoRows(err error) bool {
+	return errors.Is(err, pgx.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, sql.ErrNoRows)
+}
 
 // defaultPoolMaxConns is the pool size when neither SUB2API_PG_MAX_CONNS nor
 // the DSN's pool_max_conns sets one.
