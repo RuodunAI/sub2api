@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // Broadcast topics: the other nodes reload at once (best effort; every
@@ -335,14 +335,11 @@ func (p *Plugin) loadSnapshot(ctx context.Context) (*snapshot, error) {
 		return nil, err
 	}
 	s := emptySnapshot()
-	if err := db.QueryRow(ctx, `SELECT config_version, cache_epoch FROM config_state WHERE id = 1`).Scan(&s.version, &s.cacheEpoch); err != nil {
+	if err := queryRow(db, `SELECT config_version, cache_epoch FROM config_state WHERE id = 1`).Scan(&s.version, &s.cacheEpoch); err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `SELECT id, type, protocol, name, base_url, api_key_enc, proxy_enc, model, billing_model, timeout_ms FROM channels
+	q := db.Raw(`SELECT id, type, protocol, name, base_url, api_key_enc, proxy_enc, model, billing_model, timeout_ms FROM channels
 		WHERE deleted_at IS NULL AND enabled`)
-	if err != nil {
-		return nil, err
-	}
 	type chRow struct {
 		id                         int64
 		typ, protocol, base, model string
@@ -352,7 +349,7 @@ func (p *Plugin) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	}
 	var chRows []chRow
 	var r chRow
-	if _, err := pgx.ForEachRow(rows, []any{&r.id, &r.typ, &r.protocol, &r.name, &r.base, &r.keyEnc, &r.proxyEnc, &r.model, &r.billing, &r.timeout}, func() error {
+	if err := eachRow(q, []any{&r.id, &r.typ, &r.protocol, &r.name, &r.base, &r.keyEnc, &r.proxyEnc, &r.model, &r.billing, &r.timeout}, func() error {
 		chRows = append(chRows, r)
 		return nil
 	}); err != nil {
@@ -386,17 +383,14 @@ func (p *Plugin) loadSnapshot(ctx context.Context) (*snapshot, error) {
 		s.channels[ch.ID] = ch
 	}
 	c := p.cfg.Load()
-	rows, err = db.Query(ctx, `SELECT id, name, type, channel_id, config FROM auditors WHERE deleted_at IS NULL`)
-	if err != nil {
-		return nil, err
-	}
+	q = db.Raw(`SELECT id, name, type, channel_id, config FROM auditors WHERE deleted_at IS NULL`)
 	var (
 		aid, chID int64
 		name, typ string
 		cfgJSON   []byte
 	)
 	stored := map[int64]storedAuditor{}
-	if _, err := pgx.ForEachRow(rows, []any{&aid, &name, &typ, &chID, &cfgJSON}, func() error {
+	if err := eachRow(q, []any{&aid, &name, &typ, &chID, &cfgJSON}, func() error {
 		row := storedAuditor{typ: typ, channel: chID, config: slices.Clone(cfgJSON)}
 		defer func() { stored[aid] = row }()
 		var cfg AuditorConfig
@@ -417,10 +411,7 @@ func (p *Plugin) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	}
 	// Every flow: the live ones run, the others are why a binding does not
 	// apply (dead).
-	rows, err = db.Query(ctx, `SELECT id, name, version, published, scope, deleted_at IS NOT NULL, enabled FROM flows`)
-	if err != nil {
-		return nil, err
-	}
+	q = db.Raw(`SELECT id, name, version, published, scope, deleted_at IS NOT NULL, enabled FROM flows`)
 	var (
 		fid              int64
 		fname            string
@@ -429,7 +420,7 @@ func (p *Plugin) loadSnapshot(ctx context.Context) (*snapshot, error) {
 		scope            *string
 		deleted, enabled bool
 	)
-	if _, err := pgx.ForEachRow(rows, []any{&fid, &fname, &version, &pub, &scope, &deleted, &enabled}, func() error {
+	if err := eachRow(q, []any{&fid, &fname, &version, &pub, &scope, &deleted, &enabled}, func() error {
 		switch {
 		case deleted:
 			s.dead[fid] = FallbackDeleted
@@ -461,23 +452,17 @@ func (p *Plugin) loadSnapshot(ctx context.Context) (*snapshot, error) {
 	for _, f := range s.flows {
 		f.fp = fingerprint(f.Spec, f.scope, stored, s.channels, defaultSet)
 	}
-	rows, err = db.Query(ctx, `SELECT group_id, flow_id FROM flow_groups ORDER BY group_id`)
-	if err != nil {
-		return nil, err
-	}
+	q = db.Raw(`SELECT group_id, flow_id FROM flow_groups ORDER BY group_id`)
 	var gid int64
-	if _, err := pgx.ForEachRow(rows, []any{&gid, &fid}, func() error {
+	if err := eachRow(q, []any{&gid, &fid}, func() error {
 		s.bindGroup(gid, fid)
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-	rows, err = db.Query(ctx, `SELECT group_id, account_id, flow_id FROM flow_accounts`)
-	if err != nil {
-		return nil, err
-	}
+	q = db.Raw(`SELECT group_id, account_id, flow_id FROM flow_accounts`)
 	var acct int64
-	if _, err := pgx.ForEachRow(rows, []any{&gid, &acct, &fid}, func() error {
+	if err := eachRow(q, []any{&gid, &acct, &fid}, func() error {
 		s.bindAccount(accountKey{gid, acct}, fid)
 		return nil
 	}); err != nil {
@@ -586,13 +571,10 @@ func (p *Plugin) reloadWatch(ctx context.Context) error {
 		return err
 	}
 	var version int64
-	if err := db.QueryRow(ctx, `SELECT watch_version FROM config_state WHERE id = 1`).Scan(&version); err != nil {
+	if err := queryRow(db, `SELECT watch_version FROM config_state WHERE id = 1`).Scan(&version); err != nil {
 		return err
 	}
-	rows, err := db.Query(ctx, `SELECT user_id, level, expires_at, locked FROM watchlist WHERE expires_at IS NULL OR expires_at > $1`, p.now().UTC())
-	if err != nil {
-		return err
-	}
+	q := db.Raw(`SELECT user_id, level, expires_at, locked FROM watchlist WHERE expires_at IS NULL OR expires_at > ?`, p.now().UTC())
 	m := map[int64]watchEntry{}
 	var (
 		uid    int64
@@ -600,7 +582,7 @@ func (p *Plugin) reloadWatch(ctx context.Context) error {
 		exp    *time.Time
 		locked bool
 	)
-	if _, err := pgx.ForEachRow(rows, []any{&uid, &level, &exp, &locked}, func() error {
+	if err := eachRow(q, []any{&uid, &level, &exp, &locked}, func() error {
 		e := watchEntry{Level: level, Locked: locked}
 		if exp != nil {
 			e.Expires = *exp
@@ -638,7 +620,7 @@ func (p *Plugin) pollVersions(ctx context.Context) error {
 		return err
 	}
 	var cv, wv int64
-	if err := db.QueryRow(ctx, `SELECT config_version, watch_version FROM config_state WHERE id = 1`).Scan(&cv, &wv); err != nil {
+	if err := queryRow(db, `SELECT config_version, watch_version FROM config_state WHERE id = 1`).Scan(&cv, &wv); err != nil {
 		return err
 	}
 	var errs []error
@@ -652,15 +634,13 @@ func (p *Plugin) pollVersions(ctx context.Context) error {
 }
 
 // bumpConfig increments config_version inside tx (every configuration write).
-func bumpConfig(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `UPDATE config_state SET config_version = config_version + 1 WHERE id = 1`)
-	return err
+func bumpConfig(tx *gorm.DB) error {
+	return tx.Exec(`UPDATE config_state SET config_version = config_version + 1 WHERE id = 1`).Error
 }
 
 // bumpWatch increments watch_version inside tx (every watch list write).
-func bumpWatch(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `UPDATE config_state SET watch_version = watch_version + 1 WHERE id = 1`)
-	return err
+func bumpWatch(tx *gorm.DB) error {
+	return tx.Exec(`UPDATE config_state SET watch_version = watch_version + 1 WHERE id = 1`).Error
 }
 
 // configChanged reloads this node and tells the others.

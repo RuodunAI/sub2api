@@ -5342,6 +5342,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - **0.9.3（2026-11-12）**：`block_message` 的默认值改为英文 `Your request was blocked by content moderation. Please revise your input and try again.`（`settings.go` 的 `DefaultBlockMessage`，`forms/settings.schema.json` 的 `default` 与它一致，有测试比对）。只影响没有保存过 `block_message` 的安装；已保存的值（包括以前的中文默认）原样使用，不做迁移。`hostCompat`、`hostUICompat`、接口、能力、宿主权限、迁移都不变。
 - **0.11.1**：版本 0.11.1，无迁移。没设范围的流程按 `input` 审、LLM 理由上限 2000 字（超出以“…”结尾）、逐级审核的理由整段显示，见 72 节开头"0.11.1"。封禁用户表的原因从单元格展开行，用到 UI 3.13，**`hostUICompat` 改为 `^3.13`，`hostCompat` 抬到 `>=0.1.281 <0.2.0`**。接口、能力、宿主权限、设置 schema 都不变，升级不需要管理员重新批准。
 - **0.11.2**：版本 0.11.2，无迁移。审核器编辑直接显示默认内容并可查看、恢复，内置 Jev 题集换成线上 9 题，失败调用的 trace 带脱敏错误摘要 `err_detail`，连接阶段网络错误重试一次，见 72 节开头"0.11.2"。没有用到新的平台能力，`hostCompat`、`hostUICompat`、接口、能力、宿主权限、设置 schema 都不变，升级不需要管理员重新批准。
+- **0.12.1（2026-11-15）**：插件 SDK 改用 GORM，功能不变。表结构以 `internal/model` 的 GORM 模型为唯一描述（`model.All()`，16 张表），与 `migrations/0001`–`0013` 建出的表完全一致（`sub2api-plugin db check` 通过）；全部 pgx 调用改为 GORM（`Host.DB` 返回 `*gorm.DB`），语句的条件、锁、`ON CONFLICT`、`RETURNING` 都不变：占位符从 `$n` 换成 `?`，重复的参数按出现次数传（只在类型推断会变的地方加 `::bigint`），引用审核器的 JSON path 改为参数传入（GORM 会把其中的 `?`、`@` 当占位符），数组参数按 `pgdb.Array` 传。原来 `pgx.Batch` 的两处批量写入改为一个事务里的多行 `INSERT`（每条至多 1000 行，仍按键排序，全成或全不成）：审核记录按模型写入并只 `RETURNING id`，统计（`stats_hourly`、`costs`、`user_daily`）的累加改为 `INSERT … ON CONFLICT DO UPDATE` 的同一组累加表达式；保留期清理的 advisory 锁仍是事务级的 `pg_try_advisory_xact_lock`。能力、授权、接口、设置 schema 都不变，没有新迁移，`hostCompat`、`hostUICompat` 不变，可以单独升级插件。
 
 ### 72.4 抽取
 

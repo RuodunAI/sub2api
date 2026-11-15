@@ -5,8 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -80,7 +79,7 @@ func (p *Plugin) getUserDetail(ctx context.Context, req *pluginv1.HTTPRequest) (
 	if d.UserState, err = p.userState(ctx, db, uid); err != nil {
 		return nil, err
 	}
-	for _, load := range []func(context.Context, *pgxpool.Pool, *UserDetail, time.Time) error{
+	for _, load := range []func(context.Context, *gorm.DB, *UserDetail, time.Time) error{
 		loadUserSummary, p.loadUserContext, p.loadUserDaily,
 	} {
 		if err := load(ctx, db, d, now); err != nil {
@@ -90,32 +89,32 @@ func (p *Plugin) getUserDetail(ctx context.Context, req *pluginv1.HTTPRequest) (
 	return pluginsdk.DataResponse(d), nil
 }
 
-func loadUserSummary(ctx context.Context, db *pgxpool.Pool, d *UserDetail, _ time.Time) error {
+func loadUserSummary(ctx context.Context, db *gorm.DB, d *UserDetail, _ time.Time) error {
 	s := &d.Summary
-	return db.QueryRow(ctx, `SELECT `+severityCounts+`, count(*) FILTER (WHERE review_status = 'pending'),
+	return queryRow(db, `SELECT `+severityCounts+`, count(*) FILTER (WHERE review_status = 'pending'),
 			count(*) FILTER (WHERE review_status = 'confirmed'), count(*) FILTER (WHERE review_status = 'false_positive')
-		FROM events WHERE user_id = $1 AND `+suspiciousResult, d.UserID).
+		FROM events WHERE user_id = ? AND `+suspiciousResult, d.UserID).
 		Scan(&s.Total, &s.BySeverity.High, &s.BySeverity.Medium, &s.BySeverity.Low, &s.Pending, &s.Confirmed, &s.FalsePositive)
 }
 
 // loadUserContext: the group of the latest record (the plugin cannot read
 // the user's group from the core), its flow now, and the suspicious records
 // of the last recentDays by group, flow and version.
-func (p *Plugin) loadUserContext(ctx context.Context, db *pgxpool.Pool, d *UserDetail, now time.Time) error {
+func (p *Plugin) loadUserContext(ctx context.Context, db *gorm.DB, d *UserDetail, now time.Time) error {
 	uc := &d.Context
 	var group int64
-	err := db.QueryRow(ctx, `SELECT group_id FROM events WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`, d.UserID).Scan(&group)
+	err := queryRow(db, `SELECT group_id FROM events WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`, d.UserID).Scan(&group)
 	switch {
 	case err == nil:
 		uc.GroupID = &group
-	case !errors.Is(err, pgx.ErrNoRows):
+	case !errors.Is(err, gorm.ErrRecordNotFound):
 		return err
 	}
 	snap := p.snap.Load()
 	if f, _ := snap.flowFor(group); uc.GroupID != nil && f != nil {
 		uc.Flow = &FlowRef{FlowID: f.ID, Name: f.Name, Version: f.Version}
 	}
-	uc.Sources, err = p.loadSources(ctx, db, d.UserID, now.Add(-recentDays*24*time.Hour), uc.GroupID, uc.Flow)
+	uc.Sources, err = p.loadSources(db, d.UserID, now.Add(-recentDays*24*time.Hour), uc.GroupID, uc.Flow)
 	return err
 }
 
@@ -123,20 +122,17 @@ func (p *Plugin) loadUserContext(ctx context.Context, db *pgxpool.Pool, d *UserD
 // flow and version ("group → flow@version"), latest first, at most 50.
 // current marks the source of group through flow, the
 // flow bound to that group now (both may be nil).
-func (p *Plugin) loadSources(ctx context.Context, db *pgxpool.Pool, uid int64, since time.Time, group *int64, flow *FlowRef) ([]ContextSource, error) {
-	names, err := p.flowNames(ctx, db)
+func (p *Plugin) loadSources(db *gorm.DB, uid int64, since time.Time, group *int64, flow *FlowRef) ([]ContextSource, error) {
+	names, err := p.flowNames(db)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `SELECT group_id, flow_id, flow_version, count(*)
-		FROM events WHERE user_id = $1 AND created_at >= $2 AND `+suspiciousResult+`
+	q := db.Raw(`SELECT group_id, flow_id, flow_version, count(*)
+		FROM events WHERE user_id = ? AND created_at >= ? AND `+suspiciousResult+`
 		GROUP BY group_id, flow_id, flow_version ORDER BY max(created_at) DESC LIMIT 50`, uid, since)
-	if err != nil {
-		return nil, err
-	}
 	sources := []ContextSource{}
 	var s ContextSource
-	_, err = pgx.ForEachRow(rows, []any{&s.GroupID, &s.FlowID, &s.Version, &s.Count}, func() error {
+	err = eachRow(q, []any{&s.GroupID, &s.FlowID, &s.Version, &s.Count}, func() error {
 		src := s
 		src.FlowName = names[s.FlowID]
 		src.Current = group != nil && flow != nil && s.GroupID == *group && s.FlowID == flow.FlowID && s.Version == flow.Version
@@ -148,14 +144,11 @@ func (p *Plugin) loadSources(ctx context.Context, db *pgxpool.Pool, uid int64, s
 
 // loadUserDaily reads the user's user_daily rows, this node's pending
 // counts included.
-func (p *Plugin) loadUserDaily(ctx context.Context, db *pgxpool.Pool, d *UserDetail, now time.Time) error {
+func (p *Plugin) loadUserDaily(ctx context.Context, db *gorm.DB, d *UserDetail, now time.Time) error {
 	p.flushStats(ctx)
-	rows, err := db.Query(ctx, `SELECT day, group_id, audited, suspicious, high, errors, last_hit_at FROM user_daily
-		WHERE user_id = $1 AND day >= $2 ORDER BY day`, d.UserID, now.Add(-recentDays*24*time.Hour).Truncate(24*time.Hour))
-	if err != nil {
-		return err
-	}
-	d.Daily, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (UserDay, error) {
+	var err error
+	d.Daily, err = collect(db.Raw(`SELECT day, group_id, audited, suspicious, high, errors, last_hit_at FROM user_daily
+		WHERE user_id = ? AND day >= ? ORDER BY day`, d.UserID, now.Add(-recentDays*24*time.Hour).Truncate(24*time.Hour)), func(r row) (UserDay, error) {
 		var u UserDay
 		var day time.Time
 		err := r.Scan(&day, &u.GroupID, &u.Audited, &u.Suspicious, &u.High, &u.Errors, &u.LastHitAt)

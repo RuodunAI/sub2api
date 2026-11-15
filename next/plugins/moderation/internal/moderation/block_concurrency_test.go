@@ -27,39 +27,40 @@ func TestUnblockCannotBeOvertakenByAnOldAutoBan(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if _, err := db.Exec(ctx, `INSERT INTO blocks(user_id,source,created_at) VALUES (3,'manual',$1)`, now.Add(-time.Hour)); err != nil {
+	if err := db.Exec(`INSERT INTO blocks(user_id,source,created_at) VALUES (3,'manual',?)`, now.Add(-time.Hour)).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(ctx, `INSERT INTO events(user_id,mode,verdict,action,result,created_at)
-		VALUES (3,'observe','block','allow','hit',$1),(3,'observe','block','allow','hit',$1)`, now.Add(-time.Minute)); err != nil {
+	if err := db.Exec(`INSERT INTO events(user_id,mode,verdict,action,result,created_at)
+		VALUES (3,'observe','block','allow','hit',?),(3,'observe','block','allow','hit',?)`, now.Add(-time.Minute), now.Add(-time.Minute)).Error; err != nil {
 		t.Fatal(err)
 	}
-	barrier, err := db.Acquire(ctx)
-	if err != nil {
-		t.Fatal(err)
+	// A transaction holds one connection, the session of the barrier lock.
+	barrier := db.Begin()
+	if barrier.Error != nil {
+		t.Fatal(barrier.Error)
 	}
-	defer barrier.Release()
+	defer barrier.Rollback()
 	var key int64
-	if err := barrier.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&key); err != nil {
+	if err := queryRow(barrier, `SELECT pg_backend_pid()`).Scan(&key); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := barrier.Exec(ctx, `SELECT pg_advisory_lock($1)`, key); err != nil {
+	if err := barrier.Exec(`SELECT pg_advisory_lock(?)`, key).Error; err != nil {
 		t.Fatal(err)
 	}
 	var releaseOnce sync.Once
 	unpause := func() {
 		releaseOnce.Do(func() {
-			if _, err := barrier.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, key); err != nil {
+			if err := barrier.Exec(`SELECT pg_advisory_unlock(?)`, key).Error; err != nil {
 				t.Errorf("release test barrier: %v", err)
 			}
 		})
 	}
 	defer unpause()
 	// The advisory lock exists only in this test trigger, not production code.
-	if _, err := db.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION pause_auto_ban() RETURNS trigger LANGUAGE plpgsql AS $$
+	if err := db.Exec(fmt.Sprintf(`CREATE FUNCTION pause_auto_ban() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN PERFORM pg_advisory_xact_lock(%d); RETURN NEW; END $$;
 		CREATE TRIGGER pause_auto_ban BEFORE INSERT ON blocks FOR EACH ROW
-		WHEN (NEW.source = 'auto') EXECUTE FUNCTION pause_auto_ban()`, key)); err != nil {
+		WHEN (NEW.source = 'auto') EXECUTE FUNCTION pause_auto_ban()`, key)).Error; err != nil {
 		t.Fatal(err)
 	}
 	autoDone := make(chan struct{})
@@ -69,8 +70,8 @@ func TestUnblockCannotBeOvertakenByAnOldAutoBan(t *testing.T) {
 	}()
 	var autoPID int
 	for autoPID == 0 {
-		if err := db.QueryRow(ctx, `SELECT coalesce((SELECT pid FROM pg_locks
-			WHERE locktype='advisory' AND objid=$1 AND NOT granted LIMIT 1),0)`, key).Scan(&autoPID); err != nil {
+		if err := queryRow(db, `SELECT coalesce((SELECT pid FROM pg_locks
+			WHERE locktype='advisory' AND objid=? AND NOT granted LIMIT 1),0)`, key).Scan(&autoPID); err != nil {
 			t.Fatal(err)
 		}
 		if autoPID == 0 {
@@ -89,8 +90,8 @@ func TestUnblockCannotBeOvertakenByAnOldAutoBan(t *testing.T) {
 	var unblock *result
 	for unblock == nil {
 		var waiting bool
-		if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks
-			WHERE relation='block_subjects'::regclass AND pid<>$1 AND cardinality(pg_blocking_pids(pid))>0)`, autoPID).Scan(&waiting); err != nil {
+		if err := queryRow(db, `SELECT EXISTS(SELECT 1 FROM pg_locks
+			WHERE relation='block_subjects'::regclass AND pid<>? AND cardinality(pg_blocking_pids(pid))>0)`, autoPID).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {
@@ -118,12 +119,12 @@ func TestUnblockCannotBeOvertakenByAnOldAutoBan(t *testing.T) {
 		t.Fatalf("unblock: %v %v", unblock.resp, unblock.err)
 	}
 	var blocked bool
-	if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM blocks WHERE user_id=3)`).Scan(&blocked); err != nil || blocked {
+	if err := queryRow(db, `SELECT EXISTS(SELECT 1 FROM blocks WHERE user_id=3)`).Scan(&blocked); err != nil || blocked {
 		t.Fatalf("completed unblock was undone: blocked=%v err=%v", blocked, err)
 	}
 	// A late event batch from another node must also observe the new baseline.
 	p.applyBans(ctx, map[int64]bool{3: true})
-	if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM blocks WHERE user_id=3)`).Scan(&blocked); err != nil || blocked {
+	if err := queryRow(db, `SELECT EXISTS(SELECT 1 FROM blocks WHERE user_id=3)`).Scan(&blocked); err != nil || blocked {
 		t.Fatalf("old events re-banned the user: blocked=%v err=%v", blocked, err)
 	}
 }

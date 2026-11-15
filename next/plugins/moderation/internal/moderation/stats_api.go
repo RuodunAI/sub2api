@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
@@ -75,7 +75,7 @@ type statFilter struct {
 func costUnits(col string) string { return `round(` + col + ` * 100000000)::bigint` }
 
 // loadStats reads stats_hourly rows, this node's pending counters included.
-func (p *Plugin) loadStats(ctx context.Context, db *pgxpool.Pool, sf statFilter) ([]statRow, error) {
+func (p *Plugin) loadStats(ctx context.Context, db *gorm.DB, sf statFilter) ([]statRow, error) {
 	p.flushStats(ctx)
 	f := &sqlFilter{}
 	f.cond("hour >= ", sf.from)
@@ -86,16 +86,12 @@ func (p *Plugin) loadStats(ctx context.Context, db *pgxpool.Pool, sf statFilter)
 	if sf.flow != 0 {
 		f.cond("flow_id = ", sf.flow)
 	}
-	rows, err := db.Query(ctx, `SELECT hour, group_id, flow_id, stage, auditor_id, timing, audited, hit, blocked, overturned, errors, cache_skipped,
+	return collect(db.Raw(`SELECT hour, group_id, flow_id, stage, auditor_id, timing, audited, hit, blocked, overturned, errors, cache_skipped,
 			calls, tokens_in, tokens_out, latency_ms_sum, lat, `+costUnits("cost")+`, priced_calls, unpriced_calls, unpriced_tokens, free_calls,
 			replayed
-		FROM stats_hourly WHERE `+f.where(), f.args...)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (statRow, error) {
+		FROM stats_hourly WHERE `+f.where(), f.args...), func(r row) (statRow, error) {
 		var s statRow
-		var lat []int64
+		var lat pgdb.Array[int64]
 		err := r.Scan(&s.hour, &s.group, &s.flow, &s.stage, &s.auditor, &s.timing, &s.audited, &s.hit, &s.blocked, &s.overturned,
 			&s.errors, &s.cacheSkipped, &s.calls, &s.tokensIn, &s.tokensOut, &s.latSum, &lat, &s.units, &s.priced, &s.unpriced,
 			&s.unpricedTokens, &s.free, &s.replayed)
@@ -126,21 +122,17 @@ func addSummary[K comparable](m map[K]CostSummary, k K, s CostSummary) {
 
 // loadChannelStats reads the costs rows since from of the channels (nil =
 // all), this node's pending counters included.
-func (p *Plugin) loadChannelStats(ctx context.Context, db *pgxpool.Pool, from time.Time, channels []int64) ([]channelStat, error) {
+func (p *Plugin) loadChannelStats(ctx context.Context, db *gorm.DB, from time.Time, channels []int64) ([]channelStat, error) {
 	p.flushStats(ctx)
 	f := &sqlFilter{}
 	f.cond("hour >= ", from)
 	if channels != nil {
-		f.conds = append(f.conds, "channel_id = ANY("+f.arg(channels)+")")
+		f.conds = append(f.conds, "channel_id = ANY("+f.arg(pgdb.Array[int64](channels))+")")
 	}
-	rows, err := db.Query(ctx, `SELECT hour, channel_id, source, calls, errors, latency_ms_sum, lat, priced_calls, unpriced_calls,
-			unpriced_tokens, free_calls, tokens_in, tokens_out, `+costUnits("cost")+` FROM costs WHERE `+f.where(), f.args...)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (channelStat, error) {
+	return collect(db.Raw(`SELECT hour, channel_id, source, calls, errors, latency_ms_sum, lat, priced_calls, unpriced_calls,
+			unpriced_tokens, free_calls, tokens_in, tokens_out, `+costUnits("cost")+` FROM costs WHERE `+f.where(), f.args...), func(r row) (channelStat, error) {
 		var s channelStat
-		var lat []int64
+		var lat pgdb.Array[int64]
 		err := r.Scan(&s.hour, &s.channel, &s.source, &s.calls, &s.errors, &s.latSum, &lat, &s.priced, &s.unpriced,
 			&s.unpricedTokens, &s.free, &s.in, &s.out, &s.units)
 		s.hour = s.hour.UTC()
@@ -348,7 +340,7 @@ func (p *Plugin) getStatus(ctx context.Context, req *pluginv1.HTTPRequest) (*plu
 	return pluginsdk.DataResponse(out), nil
 }
 
-func (p *Plugin) status(ctx context.Context, db *pgxpool.Pool, ck clock) (*Status, error) {
+func (p *Plugin) status(ctx context.Context, db *gorm.DB, ck clock) (*Status, error) {
 	c := p.cfg.Load()
 	today, lastHour := ck.today(), ck.lastHour()
 	from := earliest(today, lastHour)
@@ -356,7 +348,7 @@ func (p *Plugin) status(ctx context.Context, db *pgxpool.Pool, ck clock) (*Statu
 	if err != nil {
 		return nil, err
 	}
-	names, err := p.flowNames(ctx, db)
+	names, err := p.flowNames(db)
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +359,7 @@ func (p *Plugin) status(ctx context.Context, db *pgxpool.Pool, ck clock) (*Statu
 	if err := p.addChannelStatus(ctx, db, out, from, today, lastHour, c.ErrorRateAlertPercent); err != nil {
 		return nil, err
 	}
-	bindings, err := loadBindings(ctx, db, p.snap.Load())
+	bindings, err := loadBindings(db, p.snap.Load())
 	if err != nil {
 		return nil, err
 	}
@@ -376,10 +368,10 @@ func (p *Plugin) status(ctx context.Context, db *pgxpool.Pool, ck clock) (*Statu
 			out.StaleBindings++
 		}
 	}
-	if err := db.QueryRow(ctx, `SELECT lists_imported FROM config_state WHERE id = 1`).Scan(&out.ListsImported); err != nil {
+	if err := queryRow(db, `SELECT lists_imported FROM config_state WHERE id = 1`).Scan(&out.ListsImported); err != nil {
 		return nil, err
 	}
-	out.Watch, err = p.watchCounts(ctx, db)
+	out.Watch, err = p.watchCounts(db)
 	return out, err
 }
 
@@ -463,7 +455,7 @@ func costRefs(m map[int64]CostSummary) []CostRef {
 }
 
 // addChannelStatus adds the last-hour channel health and today's costs.
-func (p *Plugin) addChannelStatus(ctx context.Context, db *pgxpool.Pool, out *Status, from, today, lastHour time.Time, alert int) error {
+func (p *Plugin) addChannelStatus(ctx context.Context, db *gorm.DB, out *Status, from, today, lastHour time.Time, alert int) error {
 	rows, err := p.loadChannelStats(ctx, db, from, nil)
 	if err != nil {
 		return err
@@ -508,24 +500,21 @@ func (r *channelStat) health() bool { return r.source == SourceAudit }
 // blocking the enforce level (new-api GetModerationWatchCounts);
 // blocking_with_new is the plugin's own, the enforce-level entries with new
 // hits.
-func (p *Plugin) watchCounts(ctx context.Context, db *pgxpool.Pool) (WatchCounts, error) {
+func (p *Plugin) watchCounts(db *gorm.DB) (WatchCounts, error) {
 	var w WatchCounts
-	err := db.QueryRow(ctx, `SELECT count(*) FILTER (WHERE level = 'observe'), count(*) FILTER (WHERE level = 'observe' AND hits_since_seen > 0),
+	err := queryRow(db, `SELECT count(*) FILTER (WHERE level = 'observe'), count(*) FILTER (WHERE level = 'observe' AND hits_since_seen > 0),
 			count(*) FILTER (WHERE level = 'enforce'), count(*) FILTER (WHERE level = 'enforce' AND hits_since_seen > 0), count(*) FILTER (WHERE locked)
-		FROM watchlist WHERE expires_at IS NULL OR expires_at > $1`, p.now().UTC()).Scan(&w.Watching, &w.WatchingWithNew, &w.Blocking, &w.BlockingWithNew, &w.Locked)
+		FROM watchlist WHERE expires_at IS NULL OR expires_at > ?`, p.now().UTC()).Scan(&w.Watching, &w.WatchingWithNew, &w.Blocking, &w.BlockingWithNew, &w.Locked)
 	return w, err
 }
 
 // flowNames maps flow ids (deleted ones too) to their names.
-func (p *Plugin) flowNames(ctx context.Context, db *pgxpool.Pool) (map[int64]string, error) {
-	rows, err := db.Query(ctx, `SELECT id, name FROM flows`)
-	if err != nil {
-		return nil, err
-	}
+func (p *Plugin) flowNames(db *gorm.DB) (map[int64]string, error) {
+	q := db.Raw(`SELECT id, name FROM flows`)
 	out := map[int64]string{}
 	var id int64
 	var name string
-	_, err = pgx.ForEachRow(rows, []any{&id, &name}, func() error {
+	err := eachRow(q, []any{&id, &name}, func() error {
 		out[id] = name
 		return nil
 	})
@@ -664,7 +653,7 @@ func (p *Plugin) getTrend(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	if err != nil {
 		return nil, err
 	}
-	names, err := p.flowNames(ctx, db)
+	names, err := p.flowNames(db)
 	if err != nil {
 		return nil, err
 	}
@@ -880,7 +869,7 @@ func (p *Plugin) getCategories(ctx context.Context, req *pluginv1.HTTPRequest) (
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
 	v, err, _ := p.sf.Do("categories:"+from.Format(time.RFC3339), func() (any, error) {
-		data, err := p.categoryStats(context.WithoutCancel(ctx), db, from)
+		data, err := p.categoryStats(db.WithContext(context.WithoutCancel(ctx)), from)
 		if err == nil {
 			p.categories.put(from, p.now(), data)
 		}
@@ -892,18 +881,15 @@ func (p *Plugin) getCategories(ctx context.Context, req *pluginv1.HTTPRequest) (
 	return pluginsdk.DataResponse(v), nil
 }
 
-func (p *Plugin) categoryStats(ctx context.Context, db *pgxpool.Pool, from time.Time) (*CategoryStats, error) {
-	rows, err := db.Query(ctx, `SELECT id, request_id, hit_categories FROM events
-		WHERE created_at >= $1 AND `+suspiciousResult+` ORDER BY created_at DESC LIMIT $2`, from, maxCategoryScan)
-	if err != nil {
-		return nil, err
-	}
+func (p *Plugin) categoryStats(db *gorm.DB, from time.Time) (*CategoryStats, error) {
+	q := db.Raw(`SELECT id, request_id, hit_categories FROM events
+		WHERE created_at >= ? AND `+suspiciousResult+` ORDER BY created_at DESC LIMIT ?`, from, maxCategoryScan)
 	requests := map[string]map[string]bool{}
 	n := 0
 	var id int64
 	var rid string
-	var cats []string
-	if _, err := pgx.ForEachRow(rows, []any{&id, &rid, &cats}, func() error {
+	var cats pgdb.Array[string]
+	if err := eachRow(q, []any{&id, &rid, &cats}, func() error {
 		n++
 		key := cmp.Or(rid, "#"+strconv.FormatInt(id, 10))
 		if requests[key] == nil {
@@ -944,7 +930,7 @@ type FlowStats struct {
 	PreAvgMs       float64 `json:"pre_avg_ms"`
 }
 
-func (p *Plugin) flowStats24h(ctx context.Context, db *pgxpool.Pool) (map[int64]FlowStats, error) {
+func (p *Plugin) flowStats24h(ctx context.Context, db *gorm.DB) (map[int64]FlowStats, error) {
 	now := p.now().UTC()
 	rows, err := p.loadStats(ctx, db, statFilter{from: now.Add(-24 * time.Hour).Truncate(time.Hour), to: now.Add(time.Hour)})
 	if err != nil {
@@ -969,7 +955,7 @@ type AuditorToday struct {
 	Cost  CostSummary `json:"cost"`
 }
 
-func (p *Plugin) auditorsToday(ctx context.Context, db *pgxpool.Pool, ck clock) (map[int64]AuditorToday, error) {
+func (p *Plugin) auditorsToday(ctx context.Context, db *gorm.DB, ck clock) (map[int64]AuditorToday, error) {
 	rows, err := p.loadStats(ctx, db, statFilter{from: ck.today(), to: ck.now.Add(time.Hour)})
 	if err != nil {
 		return nil, err
@@ -1001,7 +987,7 @@ type ChannelStat struct {
 
 func newChannelStat() *ChannelStat { return &ChannelStat{CostTodaySources: map[string]CostSummary{}} }
 
-func (p *Plugin) channelStats(ctx context.Context, db *pgxpool.Pool, ck clock, channels []int64) (map[int64]*ChannelStat, error) {
+func (p *Plugin) channelStats(ctx context.Context, db *gorm.DB, ck clock, channels []int64) (map[int64]*ChannelStat, error) {
 	today, lastHour := ck.today(), ck.lastHour()
 	rows, err := p.loadChannelStats(ctx, db, earliest(today, lastHour), channels)
 	if err != nil {
@@ -1034,14 +1020,14 @@ func (p *Plugin) channelStats(ctx context.Context, db *pgxpool.Pool, ck clock, c
 // ---------------------------------------------------------------- cleanup
 
 // cleanupStats deletes statistics and costs older than stats_retention_days, in batches.
-func (p *Plugin) cleanupStats(ctx context.Context, db *pgxpool.Pool, now time.Time) error {
+func (p *Plugin) cleanupStats(ctx context.Context, db *gorm.DB, now time.Time) error {
 	cut := now.Add(-time.Duration(p.cfg.Load().StatsRetentionDays) * 24 * time.Hour)
-	if _, err := deleteBatches(ctx, db, "stats_hourly", `SELECT ctid FROM stats_hourly WHERE hour < $1`, cut); err != nil {
+	if _, err := deleteBatches(ctx, db, "stats_hourly", `SELECT ctid FROM stats_hourly WHERE hour < ?`, cut); err != nil {
 		return err
 	}
-	if _, err := deleteBatches(ctx, db, "costs", `SELECT ctid FROM costs WHERE hour < $1`, cut); err != nil {
+	if _, err := deleteBatches(ctx, db, "costs", `SELECT ctid FROM costs WHERE hour < ?`, cut); err != nil {
 		return err
 	}
-	_, err := deleteBatches(ctx, db, "user_daily", `SELECT ctid FROM user_daily WHERE day < $1`, cut.Truncate(24*time.Hour))
+	_, err := deleteBatches(ctx, db, "user_daily", `SELECT ctid FROM user_daily WHERE day < ?`, cut.Truncate(24*time.Hour))
 	return err
 }

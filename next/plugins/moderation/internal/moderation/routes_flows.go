@@ -11,9 +11,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
@@ -46,37 +47,25 @@ type FlowView struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
-// querier is a pool or a transaction.
-type querier interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-}
-
-func (p *Plugin) flowViews(ctx context.Context, q querier, where string, args ...any) ([]FlowView, error) {
-	rows, err := q.Query(ctx, `SELECT f.id, f.name, f.enabled, f.draft, f.published, f.version, f.published_at, f.published_by, f.scope,
+func (p *Plugin) flowViews(db *gorm.DB, where string, args ...any) ([]FlowView, error) {
+	list, err := collect(db.Raw(`SELECT f.id, f.name, f.enabled, f.draft, f.published, f.version, f.published_at, f.published_by, f.scope,
 			coalesce((SELECT array_agg(group_id ORDER BY group_id) FROM flow_groups g WHERE g.flow_id = f.id), '{}'),
 			coalesce((SELECT jsonb_agg(jsonb_build_object('group_id', a.group_id, 'account_id', a.account_id) ORDER BY a.account_id, a.group_id)
 				FROM flow_accounts a WHERE a.flow_id = f.id), '[]'),
 			coalesce((SELECT v.auto_timeout FROM flow_versions v WHERE v.flow_id = f.id AND v.version = f.version), false),
 			f.created_at, f.updated_at
-		FROM flows f WHERE f.deleted_at IS NULL `+where+` ORDER BY f.id`, args...)
-	if err != nil {
-		return nil, err
-	}
-	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (FlowView, error) {
+		FROM flows f WHERE f.deleted_at IS NULL `+where+` ORDER BY f.id`, args...), func(r row) (FlowView, error) {
 		var f FlowView
-		err := r.Scan(&f.ID, &f.Name, &f.Enabled, &f.Draft, &f.Published, &f.Version, &f.PublishedAt, &f.PublishedBy, &f.Scope,
-			&f.Groups, &f.Accounts, &f.PublishedAutoTimeout, &f.CreatedAt, &f.UpdatedAt)
+		err := r.Scan(&f.ID, &f.Name, &f.Enabled, (*[]byte)(&f.Draft), (*[]byte)(&f.Published), &f.Version, &f.PublishedAt, &f.PublishedBy, &f.Scope,
+			(*pgdb.Array[int64])(&f.Groups), jsonOf(&f.Accounts), &f.PublishedAutoTimeout, &f.CreatedAt, &f.UpdatedAt)
 		f.CreatedAt, f.UpdatedAt, f.PublishedAt = f.CreatedAt.UTC(), f.UpdatedAt.UTC(), utcPtr(f.PublishedAt)
 		f.Dirty = draftChanged(f.Draft, f.Published)
 		return f, err
 	})
-	if err != nil {
-		return nil, err
+	if err != nil || len(list) == 0 {
+		return list, err
 	}
-	if list == nil {
-		return []FlowView{}, nil
-	}
-	timeouts, err := auditorTimeouts(ctx, q)
+	timeouts, err := auditorTimeouts(db)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +101,7 @@ func (p *Plugin) listFlows(ctx context.Context, _ *pluginv1.HTTPRequest) (*plugi
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	list, err := p.flowViews(ctx, db, "")
+	list, err := p.flowViews(db, "")
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +125,7 @@ func (p *Plugin) getFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*plugi
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	list, err := p.flowViews(ctx, db, "AND f.id = $1", id)
+	list, err := p.flowViews(db, "AND f.id = ?", id)
 	if err != nil {
 		return nil, err
 	}
@@ -166,16 +155,12 @@ func (in *flowInput) check() (string, pluginsdk.FieldErrors) {
 }
 
 // checkDraft parses and validates a draft against the live auditors.
-func checkDraft(ctx context.Context, tx pgx.Tx, raw json.RawMessage) (*Spec, error) {
+func checkDraft(tx *gorm.DB, raw json.RawMessage) (*Spec, error) {
 	spec, err := ParseSpec(raw)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id FROM auditors WHERE deleted_at IS NULL`)
-	if err != nil {
-		return nil, err
-	}
-	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	ids, err := column[int64](tx.Raw(`SELECT id FROM auditors WHERE deleted_at IS NULL`))
 	if err != nil {
 		return nil, err
 	}
@@ -208,16 +193,15 @@ func (p *Plugin) createFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 	}
 	var id int64
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
-		spec, err := checkDraft(ctx, tx, in.Draft)
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
+		spec, err := checkDraft(tx, in.Draft)
 		if err != nil {
 			resp = pluginsdk.FieldErrorResponse("invalid flow / 流程参数无效", pluginsdk.FieldErrors{}.Add("draft", "invalid", err.Error()))
 			return errRollback
 		}
 		raw, _ := json.Marshal(spec)
 		now := p.now().UTC()
-		return tx.QueryRow(ctx, `INSERT INTO flows (name, draft, scope, created_at, updated_at) VALUES ($1,$2,$3,$4,$4) RETURNING id`,
-			name, raw, in.Scope, now).Scan(&id)
+		return queryRow(tx, `INSERT INTO flows (name, draft, scope, created_at, updated_at) VALUES (?,?,?,?,?) RETURNING id`, name, raw, in.Scope, now, now).Scan(&id)
 	})
 	if resp != nil {
 		return resp, nil
@@ -244,16 +228,15 @@ func (p *Plugin) updateFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 		return pluginsdk.FieldErrorResponse("invalid flow / 流程参数无效", errs), nil
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
-		spec, err := checkDraft(ctx, tx, in.Draft)
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
+		spec, err := checkDraft(tx, in.Draft)
 		if err != nil {
 			resp = pluginsdk.FieldErrorResponse("invalid flow / 流程参数无效", pluginsdk.FieldErrors{}.Add("draft", "invalid", err.Error()))
 			return errRollback
 		}
 		raw, _ := json.Marshal(spec)
-		tag, err := tx.Exec(ctx, `UPDATE flows SET name=$2, draft=$3, scope=coalesce($5, scope), updated_at=$4 WHERE id=$1 AND deleted_at IS NULL`,
-			id, name, raw, p.now().UTC(), in.Scope)
-		if err == nil && tag.RowsAffected() == 0 {
+		n, err := affected(tx.Exec(`UPDATE flows SET name=?, draft=?, scope=coalesce(?, scope), updated_at=? WHERE id=? AND deleted_at IS NULL`, name, raw, in.Scope, p.now().UTC(), id))
+		if err == nil && n == 0 {
 			resp = notFound("flow")
 			return errRollback
 		}
@@ -274,30 +257,29 @@ func (p *Plugin) deleteFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 		return bad, nil
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		var inUse bool
-		if err := tx.QueryRow(ctx, `SELECT f.enabled AND (EXISTS(SELECT 1 FROM flow_groups g WHERE g.flow_id = f.id)
+		if err := queryRow(tx, `SELECT f.enabled AND (EXISTS(SELECT 1 FROM flow_groups g WHERE g.flow_id = f.id)
 				OR EXISTS(SELECT 1 FROM flow_accounts a WHERE a.flow_id = f.id))
-			FROM flows f WHERE f.id = $1 AND f.deleted_at IS NULL FOR UPDATE`, id).Scan(&inUse); err == nil && inUse {
+			FROM flows f WHERE f.id = ? AND f.deleted_at IS NULL FOR UPDATE`, id).Scan(&inUse); err == nil && inUse {
 			resp = pluginsdk.ErrorResponse(http.StatusConflict, "flow_in_use",
 				"an enabled flow bound to groups or accounts cannot be deleted; disable it or unbind it first / 启用且已绑定分组或账号的流程不能删除，请先停用或解绑")
 			return errRollback
-		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `UPDATE flows SET deleted_at = $2 WHERE id = $1 AND deleted_at IS NULL`, id, p.now().UTC())
-		if err == nil && tag.RowsAffected() == 0 {
+		n, err := affected(tx.Exec(`UPDATE flows SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, p.now().UTC(), id))
+		if err == nil && n == 0 {
 			resp = notFound("flow")
 			return errRollback
 		}
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `DELETE FROM flow_groups WHERE flow_id = $1`, id); err != nil {
+		if err = tx.Exec(`DELETE FROM flow_groups WHERE flow_id = ?`, id).Error; err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `DELETE FROM flow_accounts WHERE flow_id = $1`, id)
-		return err
+		return tx.Exec(`DELETE FROM flow_accounts WHERE flow_id = ?`, id).Error
 	})
 	if resp != nil {
 		return resp, nil
@@ -328,24 +310,21 @@ func (p *Plugin) setFlowGroups(ctx context.Context, req *pluginv1.HTTPRequest) (
 		}
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM flows WHERE id = $1 AND deleted_at IS NULL)`, id).Scan(&exists); err != nil {
+		if err := queryRow(tx, `SELECT EXISTS(SELECT 1 FROM flows WHERE id = ? AND deleted_at IS NULL)`, id).Scan(&exists); err != nil {
 			return err
 		}
 		if !exists {
 			resp = notFound("flow")
 			return errRollback
 		}
-		rows, err := tx.Query(ctx, `SELECT g.group_id, g.flow_id FROM flow_groups g WHERE g.group_id = ANY($1) AND g.flow_id <> $2 ORDER BY g.group_id`, in.Groups, id)
-		if err != nil {
-			return err
-		}
 		type conflict struct {
 			GroupID int64 `json:"group_id"`
 			FlowID  int64 `json:"flow_id"`
 		}
-		conflicts, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (conflict, error) {
+		groups := pgdb.Array[int64](in.Groups)
+		conflicts, err := collect(tx.Raw(`SELECT g.group_id, g.flow_id FROM flow_groups g WHERE g.group_id = ANY(?) AND g.flow_id <> ? ORDER BY g.group_id`, groups, id), func(r row) (conflict, error) {
 			var c conflict
 			return c, r.Scan(&c.GroupID, &c.FlowID)
 		})
@@ -356,11 +335,11 @@ func (p *Plugin) setFlowGroups(ctx context.Context, req *pluginv1.HTTPRequest) (
 			resp = errorWithDetails(http.StatusConflict, "group_conflict", "groups are bound to other flows / 分组已绑定其他流程", map[string]any{"conflicts": conflicts})
 			return errRollback
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM flow_groups WHERE flow_id = $1 OR group_id = ANY($2)`, id, in.Groups); err != nil {
+		if err := tx.Exec(`DELETE FROM flow_groups WHERE flow_id = ? OR group_id = ANY(?)`, id, groups).Error; err != nil {
 			return err
 		}
 		for _, g := range in.Groups {
-			if _, err := tx.Exec(ctx, `INSERT INTO flow_groups (group_id, flow_id) VALUES ($1, $2) ON CONFLICT (group_id) DO UPDATE SET flow_id = EXCLUDED.flow_id`, g, id); err != nil {
+			if err := tx.Exec(`INSERT INTO flow_groups (group_id, flow_id) VALUES (?, ?) ON CONFLICT (group_id) DO UPDATE SET flow_id = EXCLUDED.flow_id`, g, id).Error; err != nil {
 				return err
 			}
 		}
@@ -389,11 +368,11 @@ func (p *Plugin) publishFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 			pluginsdk.FieldErrors{}.Add("expected_version", "required", "expected_version is required / 请带上当前版本号")), nil
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		var version int
 		var draft []byte
-		err := tx.QueryRow(ctx, `SELECT version, draft FROM flows WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&version, &draft)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err := queryRow(tx, `SELECT version, draft FROM flows WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, id).Scan(&version, &draft)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			resp = notFound("flow")
 			return errRollback
 		}
@@ -405,12 +384,12 @@ func (p *Plugin) publishFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 				fmt.Sprintf("the flow is at version %d / 流程已被他人发布到版本 %d，请刷新", version, version))
 			return errRollback
 		}
-		spec, err := checkDraft(ctx, tx, draft)
+		spec, err := checkDraft(tx, draft)
 		if err != nil {
 			resp = pluginsdk.FieldErrorResponse("invalid flow / 流程参数无效", pluginsdk.FieldErrors{}.Add("draft", "invalid", err.Error()))
 			return errRollback
 		}
-		return publishSpec(ctx, tx, id, version+1, spec, p.now().UTC(), callerID(req))
+		return publishSpec(tx, id, version+1, spec, p.now().UTC(), callerID(req))
 	})
 	if resp != nil {
 		return resp, nil
@@ -426,29 +405,27 @@ func (p *Plugin) publishFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 // is resolved from the channel timeouts in the published spec only, so the
 // draft keeps following its auditors; the version row remembers it
 // (auto_timeout) for a rollback or a discard.
-func publishSpec(ctx context.Context, tx pgx.Tx, id int64, version int, spec *Spec, now time.Time, by *int64) error {
+func publishSpec(tx *gorm.DB, id int64, version int, spec *Spec, now time.Time, by *int64) error {
 	draft, _ := json.Marshal(spec)
 	auto := spec.TotalTimeoutMs == 0
-	if err := fillAutoTimeout(ctx, tx, spec); err != nil {
+	if err := fillAutoTimeout(tx, spec); err != nil {
 		return err
 	}
 	raw, _ := json.Marshal(spec)
-	if _, err := tx.Exec(ctx, `UPDATE flows SET draft=$2, published=$3, version=$4, published_at=$5, published_by=$6, updated_at=$5 WHERE id=$1`,
-		id, draft, raw, version, now, by); err != nil {
+	if err := tx.Exec(`UPDATE flows SET draft=?, published=?, version=?, published_at=?, published_by=?, updated_at=? WHERE id=?`, draft, raw, version, now, by, now, id).Error; err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO flow_versions (flow_id, version, spec, published_at, published_by, auto_timeout) VALUES ($1,$2,$3,$4,$5,$6)`,
-		id, version, raw, now, by, auto)
-	return err
+	return tx.Exec(`INSERT INTO flow_versions (flow_id, version, spec, published_at, published_by, auto_timeout) VALUES (?,?,?,?,?,?)`,
+		id, version, raw, now, by, auto).Error
 }
 
 // fillAutoTimeout gives a spec without a total timeout the automatic one
 // (the sum of each stage's slowest channel).
-func fillAutoTimeout(ctx context.Context, q querier, spec *Spec) error {
+func fillAutoTimeout(db *gorm.DB, spec *Spec) error {
 	if spec.TotalTimeoutMs > 0 {
 		return nil
 	}
-	timeouts, err := auditorTimeouts(ctx, q)
+	timeouts, err := auditorTimeouts(db)
 	if err != nil {
 		return err
 	}
@@ -457,16 +434,12 @@ func fillAutoTimeout(ctx context.Context, q querier, spec *Spec) error {
 }
 
 // auditorTimeouts maps live auditors to their channel timeout.
-func auditorTimeouts(ctx context.Context, q querier) (map[int64]int, error) {
-	rows, err := q.Query(ctx, `SELECT a.id, c.type, c.timeout_ms FROM auditors a JOIN channels c ON c.id = a.channel_id WHERE a.deleted_at IS NULL`)
-	if err != nil {
-		return nil, err
-	}
+func auditorTimeouts(db *gorm.DB) (map[int64]int, error) {
 	out := map[int64]int{}
 	var id int64
 	var typ string
 	var ms int
-	_, err = pgx.ForEachRow(rows, []any{&id, &typ, &ms}, func() error {
+	err := eachRow(db.Raw(`SELECT a.id, c.type, c.timeout_ms FROM auditors a JOIN channels c ON c.id = a.channel_id WHERE a.deleted_at IS NULL`), []any{&id, &typ, &ms}, func() error {
 		if ms <= 0 {
 			ms = defaultChannelTimeoutMs[typ]
 		}
@@ -505,9 +478,9 @@ func (p *Plugin) setFlowColumn(ctx context.Context, req *pluginv1.HTTPRequest, c
 		return bad, nil
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE flows SET `+column+`=$2, updated_at=$3 WHERE id=$1 AND deleted_at IS NULL`, id, v, p.now().UTC())
-		if err == nil && tag.RowsAffected() == 0 {
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
+		n, err := affected(tx.Exec(`UPDATE flows SET `+column+`=?, updated_at=? WHERE id=? AND deleted_at IS NULL`, v, p.now().UTC(), id))
+		if err == nil && n == 0 {
 			resp = notFound("flow")
 			return errRollback
 		}
