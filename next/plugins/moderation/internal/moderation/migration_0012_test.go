@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -60,26 +58,23 @@ func TestMigration0012Rolling(t *testing.T) {
 	dsn, schema := pluginsdktest.NewSchema(t, "plg_moderation_t")
 	pluginsdktest.ApplyMigrations(t, dsn, schema, migrationDir(t, func(n string) bool { return n < "0011" }))
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(ctx)
+	db := connect(t, dsn)
+	conn := sqlOf(t, db) // the 0.9.3 statements, verbatim
 	now := time.Now().UTC().Truncate(time.Second)
 	write093 := func(uid int64) int64 {
 		t.Helper()
 		exp := now.Add(time.Hour)
-		if _, err := conn.Exec(ctx, insertAutoWatch093, uid, LevelObserve, "auto", now, exp, int64(7)); err != nil {
+		if _, err := conn.ExecContext(ctx, insertAutoWatch093, uid, LevelObserve, "auto", now, exp, int64(7)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := conn.Exec(ctx, insertManualWatch093, uid+1, LevelEnforce, "manual", now, nil, int64(8), "n"); err != nil {
+		if _, err := conn.ExecContext(ctx, insertManualWatch093, uid+1, LevelEnforce, "manual", now, nil, int64(8), "n"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := conn.Exec(ctx, updateWatch093, uid, LevelEnforce, nil, "x", true, now, int64(9)); err != nil {
+		if _, err := conn.ExecContext(ctx, updateWatch093, uid, LevelEnforce, nil, "x", true, now, int64(9)); err != nil {
 			t.Fatal(err)
 		}
 		var id int64
-		if err := conn.QueryRow(ctx, insertEvent093, now, "r", uid, int64(1), int64(2), "m", "openai", ModeObserve,
+		if err := conn.QueryRowContext(ctx, insertEvent093, now, "r", uid, int64(1), int64(2), "m", "openai", ModeObserve,
 			VerdictFlag, ActionAllow, []string{"violence"}, "high", nil, 0, "h", 5,
 			ResultHit, TimingPost, int64(3), 1, "violence", 0.9, []string{"violence"}, []byte(`{}`),
 			"openai", nil, 0, 0, now.Add(time.Hour), 0, "/v1/x", "", false).Scan(&id); err != nil {
@@ -89,26 +84,16 @@ func TestMigration0012Rolling(t *testing.T) {
 	}
 	read093 := func() {
 		t.Helper()
-		rows, err := conn.Query(ctx, `SELECT `+watchColumns093+` FROM watchlist`)
-		if err != nil {
+		if err := drain(conn.QueryContext(ctx, `SELECT `+watchColumns093+` FROM watchlist`)); err != nil {
 			t.Fatal(err)
-		}
-		rows.Close()
-		if rows.Err() != nil {
-			t.Fatal(rows.Err())
 		}
 		for _, q := range []string{`SELECT ` + eventColumns093 + ` FROM events`, reloadWatch093} {
 			args := []any{}
 			if q == reloadWatch093 {
 				args = append(args, now)
 			}
-			rows, err := conn.Query(ctx, q, args...)
-			if err != nil {
-				t.Fatal(err)
-			}
-			rows.Close()
-			if rows.Err() != nil {
-				t.Fatalf("%.40s: %v", q, rows.Err())
+			if err := drain(conn.QueryContext(ctx, q, args...)); err != nil {
+				t.Fatalf("%.40s: %v", q, err)
 			}
 		}
 	}
@@ -122,14 +107,14 @@ func TestMigration0012Rolling(t *testing.T) {
 	// A 0.10.0 node runs with every migration applied.
 	pluginsdktest.ApplyMigrations(t, dsn, schema, filepath.Join("..", "..", "migrations"))
 	for _, uid := range []int64{10, 11, 20, 21} {
-		w, err := scanWatch(conn.QueryRow(ctx, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = $1`, uid))
+		w, err := scanWatch(queryRow(db, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = ?`, uid))
 		if err != nil || w.Locked || w.UserID != uid {
 			t.Fatalf("user %d: %+v (%v)", uid, w, err)
 		}
 	}
 	for _, id := range []int64{before, after} {
 		var e Event
-		if err := conn.QueryRow(ctx, `SELECT `+eventColumns+` FROM events WHERE id = $1`, id).Scan(e.scanTargets()...); err != nil {
+		if err := queryRow(db, `SELECT `+eventColumns+` FROM events WHERE id = ?`, id).Scan(e.scanTargets()...); err != nil {
 			t.Fatal(err)
 		}
 		if e.Level != nil || e.LevelSource != nil || e.Result != ResultHit {

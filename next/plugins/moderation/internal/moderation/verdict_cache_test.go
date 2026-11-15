@@ -158,10 +158,10 @@ func TestReplayIsNotAViolation(t *testing.T) {
 	read := func() (s state) {
 		t.Helper()
 		p.flushStats(ctx)
-		if err := db.QueryRow(ctx, `SELECT hit_count, violation_count, expires_at FROM watchlist WHERE user_id = 3`).Scan(&s.hits, &s.violations, &s.expires); err != nil {
+		if err := queryRow(db, `SELECT hit_count, violation_count, expires_at FROM watchlist WHERE user_id = 3`).Scan(&s.hits, &s.violations, &s.expires); err != nil {
 			t.Fatal(err)
 		}
-		if err := db.QueryRow(ctx, `SELECT coalesce(sum(audited), 0), coalesce(sum(suspicious), 0) FROM user_daily WHERE user_id = 3`).Scan(&s.audited, &s.suspcious); err != nil {
+		if err := queryRow(db, `SELECT coalesce(sum(audited), 0), coalesce(sum(suspicious), 0) FROM user_daily WHERE user_id = 3`).Scan(&s.audited, &s.suspcious); err != nil {
 			t.Fatal(err)
 		}
 		return s
@@ -169,8 +169,8 @@ func TestReplayIsNotAViolation(t *testing.T) {
 	flowRow := func() (audited, hit, rep int64) {
 		t.Helper()
 		p.flushStats(ctx)
-		if err := db.QueryRow(ctx, `SELECT coalesce(sum(audited), 0), coalesce(sum(hit), 0), coalesce(sum(replayed), 0) FROM stats_hourly
-			WHERE flow_id = $1 AND stage = 0`, flow).Scan(&audited, &hit, &rep); err != nil {
+		if err := queryRow(db, `SELECT coalesce(sum(audited), 0), coalesce(sum(hit), 0), coalesce(sum(replayed), 0) FROM stats_hourly
+			WHERE flow_id = ? AND stage = 0`, flow).Scan(&audited, &hit, &rep); err != nil {
 			t.Fatal(err)
 		}
 		return
@@ -198,7 +198,7 @@ func TestReplayIsNotAViolation(t *testing.T) {
 		t.Fatalf("flow row after the replay = %d %d %d", a, hit, rep)
 	}
 	// Two suspicious records, one violation: the ban threshold is not reached.
-	if n, err := countViolations(ctx, db, 3, p.now().Add(-24*time.Hour)); err != nil || n != 1 {
+	if n, err := countViolations(db, 3, p.now().Add(-24*time.Hour)); err != nil || n != 1 {
 		t.Fatalf("violations = %d %v", n, err)
 	}
 	if p.isBlocked(3) || len(decodeData[[]Block](t, h.Do("GET", "/blocks", nil, nil))) != 0 {
@@ -213,13 +213,13 @@ func TestReplayIsNotAViolation(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	p.flushStats(ctx)
 	var watched, days int
-	if err := db.QueryRow(ctx, `SELECT (SELECT count(*) FROM watchlist WHERE user_id = 4), (SELECT count(*) FROM user_daily WHERE user_id = 4)`).Scan(&watched, &days); err != nil {
+	if err := queryRow(db, `SELECT (SELECT count(*) FROM watchlist WHERE user_id = 4), (SELECT count(*) FROM user_daily WHERE user_id = 4)`).Scan(&watched, &days); err != nil {
 		t.Fatal(err)
 	}
 	if watched != 0 || days != 0 || p.watchLevel(4) != "" {
 		t.Fatalf("user 4 after a replay: watched %d, daily rows %d", watched, days)
 	}
-	if n, err := countViolations(ctx, db, 4, p.now().Add(-24*time.Hour)); err != nil || n != 0 {
+	if n, err := countViolations(db, 4, p.now().Add(-24*time.Hour)); err != nil || n != 0 {
 		t.Fatalf("violations of user 4 = %d %v", n, err)
 	}
 	if n := mod.count("/v1/moderations"); n != calls {
