@@ -22,10 +22,8 @@ func (s *Service) BeginExecution(ctx context.Context, in core.ExecutionIntent) e
 	if in.ID == "" || in.RequestID == "" || in.AccountID == 0 {
 		return errors.New("invalid execution identity")
 	}
-	//gormguard:allow-pgx per-attempt intent of an Execute plugin: 19 allocs/op on pgx, 121 on GORM (BenchmarkHotExecution)
-	_, err := s.db.Pool.Exec(ctx, `INSERT INTO plugin_executions(id,request_id,plugin_key,account_id,attempt,record,task_submit)
- VALUES($1,$2,$3,$4,$5,$6,$7)`, in.ID, in.RequestID, in.PluginKey, in.AccountID, in.Attempt, jsonOr(in.Record, "{}"), in.TaskSubmit)
-	return err
+	return store.G(ctx, s.db.Pool).Exec(`INSERT INTO plugin_executions(id,request_id,plugin_key,account_id,attempt,record,task_submit)
+ VALUES(?,?,?,?,?,?,?)`, in.ID, in.RequestID, in.PluginKey, in.AccountID, in.Attempt, store.Bytes(jsonOr(in.Record, "{}")), in.TaskSubmit).Error
 }
 
 func (s *Service) ObserveExecution(ctx context.Context, id string, rec *core.UsageRecord, observation []byte) error {
@@ -39,13 +37,12 @@ func (s *Service) ObserveExecution(ctx context.Context, id string, rec *core.Usa
 	if len(raw) > 512<<10 {
 		return errors.New("execution facts exceed limit")
 	}
-	//gormguard:allow-pgx per-attempt observation of an Execute plugin: 20 allocs/op on pgx, 86 on GORM (BenchmarkHotExecution)
-	tag, err := s.db.Pool.Exec(ctx, `UPDATE plugin_executions SET state='observed',record=$2,observation=$3,updated_at=clock_timestamp()
- WHERE id=$1 AND state='intent' AND request_id=$4 AND account_id=$5`, id, raw, observation, rec.RequestID, rec.AccountID)
-	if err == nil && tag.RowsAffected() != 1 {
+	res := store.G(ctx, s.db.Pool).Exec(`UPDATE plugin_executions SET state='observed',record=?,observation=?,updated_at=clock_timestamp()
+ WHERE id=? AND state='intent' AND request_id=? AND account_id=?`, store.Bytes(raw), store.Bytes(observation), id, rec.RequestID, rec.AccountID)
+	if res.Error == nil && res.RowsAffected != 1 {
 		return errors.New("execution identity or state mismatch")
 	}
-	return err
+	return res.Error
 }
 
 func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) (*pluginv1.ExecutionReceipt, error) {
@@ -113,21 +110,18 @@ type lockedExecution struct {
 }
 
 // lockExecution locks and reads the execution id. It runs for every request
-// of an Execute plugin and stays on pgx (gormtest/BASELINE.md).
+// of an Execute plugin (BenchmarkHotExecution, gormtest/BASELINE.md).
 func lockExecution(ctx context.Context, tx pgx.Tx, id string) (lockedExecution, error) {
 	var x lockedExecution
-	//gormguard:allow-pgx per-request commit of an Execute plugin: with the mark, 21 allocs/op on pgx, 161 on GORM (BenchmarkHotExecution)
-	err := tx.QueryRow(ctx, `SELECT state,operation,digest,task_id,request_id,plugin_key,account_id FROM plugin_executions WHERE id=$1 FOR UPDATE`, id).
-		Scan(&x.state, &x.op, &x.digest, &x.taskID, &x.requestID, &x.pluginKey, &x.accountID)
+	err := store.G(ctx, tx).Raw(`SELECT state,operation,digest,task_id,request_id,plugin_key,account_id FROM plugin_executions WHERE id=? FOR UPDATE`, id).
+		Row().Scan(&x.state, &x.op, &x.digest, &x.taskID, &x.requestID, &x.pluginKey, &x.accountID)
 	return x, err
 }
 
 // markExecutionCommitted records the commit of the execution id and drops its
-// facts. It runs for every request of an Execute plugin and stays on pgx.
+// facts, for every request of an Execute plugin.
 func markExecutionCommitted(ctx context.Context, tx pgx.Tx, id, op, digest, taskID string) error {
-	//gormguard:allow-pgx per-request commit of an Execute plugin: with the lock, 21 allocs/op on pgx, 161 on GORM (BenchmarkHotExecution)
-	_, err := tx.Exec(ctx, `UPDATE plugin_executions SET state='committed',operation=$2,digest=$3,task_id=$4,record=NULL,observation=NULL,updated_at=clock_timestamp() WHERE id=$1`, id, op, digest, taskID)
-	return err
+	return store.G(ctx, tx).Exec(`UPDATE plugin_executions SET state='committed',operation=?,digest=?,task_id=?,record=NULL,observation=NULL,updated_at=clock_timestamp() WHERE id=?`, op, digest, taskID, id).Error
 }
 
 // Recovery never replays network I/O. Only completed host observations may

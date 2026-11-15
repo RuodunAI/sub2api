@@ -2,21 +2,22 @@ package billing
 
 import (
 	"encoding/json"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// The SQL of the billing statements built with GORM (see package gormtest).
-// The ledger's own writes (precharge, settlement, ApplyTx) are pgx batches
-// and releaseSQL stays on pgx (BASELINE.md, Batch 4c); none of them is here.
+// The SQL of the billing statements built with GORM (see package gormtest),
+// the ledger's writes of the request path among them (TestSQLLedger).
 
 var snapshotAt = time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
 
@@ -157,13 +158,88 @@ func TestSQLUpdatePriceRow(t *testing.T) {
 	})
 }
 
-// The history insert runs on GORM, and queueSave batches the same text with
-// the placeholders numbered for pgx.
+// The history insert, on its own and before a custom group price.
 func TestSQLInsertHistory(t *testing.T) {
 	prog := testProgram(t)
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return insertHistory(db, prog) })
-	if !strings.Contains(recordHistoryBatchSQL, "VALUES ($1, $2, $3)") || strings.Contains(recordHistoryBatchSQL, "?") {
-		t.Fatalf("batch text %q", recordHistoryBatchSQL)
+}
+
+// A group price and a segment price take the partial unique index of their
+// level as the conflict target; the update moves updated_at by now(). A
+// multiplier has no config (NULL) and no mode (NULLIF to NULL). The custom
+// price's config holds no number, whose pointer the snapshot would print.
+func TestSQLUpsertRule(t *testing.T) {
+	mult := "1.25"
+	cases := map[string]struct {
+		on core.PriceQuery
+		r  *storedRule
+	}{
+		"group_multiplier": {core.PriceQuery{GroupID: 3, Model: "claude-sonnet-4-5"},
+			&storedRule{Rule: Rule{Kind: core.PriceRuleMultiplier, Multiplier: &mult}}},
+		"segment_custom": {core.PriceQuery{GroupID: 3, SegmentID: 5, Model: "claude-sonnet-4-5"},
+			&storedRule{Rule: Rule{Kind: core.PriceRuleCustom, Mode: "per_request", Config: map[string]*float64{"price": nil}},
+				expression: "flat(0.5)", exprHash: "h"}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return upsertRule(db, c.on, c.r, 2) })
+		})
+	}
+}
+
+// A group price is deleted where segment_id is NULL, a segment's where it
+// is the segment (IS NOT DISTINCT FROM).
+func TestSQLDeleteRule(t *testing.T) {
+	for name, on := range map[string]core.PriceQuery{
+		"group":   {GroupID: 3, Model: "claude-sonnet-4-5"},
+		"segment": {GroupID: 3, SegmentID: 5, Model: "claude-sonnet-4-5"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return deleteRule(db, on) })
+		})
+	}
+}
+
+// The ledger statements of the request path: the CTEs bind each use of a
+// numbered parameter on its own, with its cast, so the arguments repeat in
+// the order the text uses them.
+func TestSQLLedger(t *testing.T) {
+	operator := int64(9)
+	amount, min := decimal.RequireFromString("0.5"), decimal.RequireFromString("0")
+	var row struct{ ID int64 }
+	cases := map[string]func(*gorm.DB) *gorm.DB{
+		"ensure_balance": func(db *gorm.DB) *gorm.DB { return db.Exec(ensureBalanceSQL, int64(7)) },
+		"apply": func(db *gorm.DB) *gorm.DB {
+			return applyStmt.raw(db, int64(7), amount.Neg(), KindAdminAdjust, "manual", "ref-1", "adjust:1", &operator, "", "note").Scan(&row)
+		},
+		"release": func(db *gorm.DB) *gorm.DB {
+			return releaseStmt.raw(db, "req-1", int64(7), releaseKey("req-1"), "release request precharge").Scan(&row)
+		},
+		"precharge": func(db *gorm.DB) *gorm.DB {
+			return prechargeStmt.raw(db, int64(7), "req-1", amount, KindUsage, "precharge", "req-1", "precharge:req-1", "request precharge", min).Scan(&row)
+		},
+	}
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) { gormtest.Assert(t, build) })
+	}
+}
+
+// newLedgerStmt numbers the arguments as the text names them and refuses a
+// text GORM would misread.
+func TestLedgerStmt(t *testing.T) {
+	st := newLedgerStmt(`SELECT $2::int, $1::text, $2::int, $10`)
+	if st.sql != `SELECT ?::int, ?::text, ?::int, ?` || !slices.Equal(st.args, []int{1, 0, 1, 9}) {
+		t.Fatalf("%q %v", st.sql, st.args)
+	}
+	for _, bad := range []string{`SELECT ? FROM t`, `SELECT @x`, `SELECT $0`} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%q: no panic", bad)
+				}
+			}()
+			newLedgerStmt(bad)
+		}()
 	}
 }
 

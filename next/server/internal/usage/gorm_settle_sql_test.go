@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -198,4 +199,46 @@ func TestSQLHelperUsage(t *testing.T) {
 // lockSettlement's first lock: the tasks of the usage row, before the row.
 func TestSQLLockTasksOfUsage(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return lockTasksOfUsage(db, 5) })
+}
+
+// The usage_logs insert of one record (insertUsageSQL[0]): each value goes
+// to its column, the documents are one bytea parameter each, and a native
+// request's conversion is NULL. A chunk of 2^k rows repeats the row.
+func TestSQLInsertUsageRow(t *testing.T) {
+	account := int64(7)
+	rec := &core.UsageRecord{RequestID: "req-1", UserID: 3, APIKeyID: 4, GroupID: 5, AccountID: &account, PluginKey: "anthropic",
+		Platform: "anthropic", Protocol: "anthropic.messages", Endpoint: "/v1/messages", Model: "claude-sonnet-4-5",
+		StatusCode: 200, Success: true, Attempts: 1, UsageSemantics: "exclusive", Billable: true,
+		Tokens: core.UsageTokens{Input: 1200, Output: 800}, RateMultiplier: decimal.NewFromInt(1),
+		Price: &core.PriceRule{ID: 9, Mode: "expression", ExprHash: "hash"}, CreatedAt: settleSnapshotTime}
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return db.Raw(insertUsageSQL[0], appendUsageRow(nil, rec)...).Scan(&sqlSink)
+	})
+	if n := strings.Count(insertUsageSQL[7], "?"); n != 128*usageLogValues || len(appendUsageRow(nil, rec)) != usageLogValues {
+		t.Fatalf("%d placeholders in the 128-row insert", n)
+	}
+}
+
+// settleTx's lock of the usage row; the retry loop skips a locked row.
+func TestSQLLockPendingRow(t *testing.T) {
+	for name, skip := range map[string]bool{"lock": false, "skip_locked": true} {
+		t.Run(name, func(t *testing.T) {
+			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return lockPendingRow(db, "req-1", skip).Scan(&sqlSink) })
+		})
+	}
+}
+
+// A reservation's reconcile entry: ON CONFLICT on the plugin's ref_id
+// returns no row, which closes the usage row.
+func TestSQLInsertSettlementEntry(t *testing.T) {
+	rv := &core.UsageReservation{PluginKey: "video", RefID: "job-1"}
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return insertSettlementEntry(db, rv, 5, nil, settleSnapshotTime, settleSnapshotTime.Add(time.Hour)).Scan(&sqlSink)
+	})
+}
+
+// A client's poll: the task id binds three times, as $5 did on pgx.
+func TestSQLTaskByID(t *testing.T) {
+	q := core.TaskQuery{PluginKey: "video", Kind: "video", UserID: 3, GroupID: 5, ID: "s2task_1"}
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return taskByID(db, q).Scan(&sqlSink) })
 }

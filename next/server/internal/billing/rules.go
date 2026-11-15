@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
@@ -242,33 +241,39 @@ func checkCustom(ctx context.Context, in Rule, mode string) (*storedRule, error)
 		expression: src, exprHash: prog.Hash(), exprVersion: prog.Version()}, nil
 }
 
-// queueSave queues storing the rule on on, replacing the one there. The
-// expression of a custom price also goes to model_price_history, as a global
-// price's does: a settlement retry reads it back by expr_hash on any node.
-func queueSave(b *pgx.Batch, on core.PriceQuery, r *storedRule, updatedBy int64) error {
+// saveRule stores the rule on on, replacing the one there. The expression of
+// a custom price also goes to model_price_history, as a global price's does:
+// a settlement retry reads it back by expr_hash on any node.
+func saveRule(db *gorm.DB, on core.PriceQuery, r *storedRule, updatedBy int64) error {
 	if r.Kind == core.PriceRuleCustom {
 		prog, err := expr.CompileCached(r.expression)
 		if err != nil {
 			return err
 		}
-		b.Queue(recordHistoryBatchSQL, historyArgs(prog)...)
+		if err := insertHistory(db, prog).Error; err != nil {
+			return err
+		}
 	}
+	return upsertRule(db, on, r, updatedBy).Error
+}
+
+// upsertRule writes the rule on on over the one there, if any.
+func upsertRule(db *gorm.DB, on core.PriceQuery, r *storedRule, updatedBy int64) *gorm.DB {
 	target := `(group_id, model) WHERE segment_id IS NULL`
 	if on.SegmentID != 0 {
 		target = `(group_id, segment_id, model) WHERE segment_id IS NOT NULL`
 	}
-	b.Queue(`
+	return db.Exec(`
 		INSERT INTO price_rules (group_id, segment_id, model, kind, multiplier, mode, config, expression, expr_hash, updated_by)
-		VALUES ($1, $2, $3, $4, $5::numeric, NULLIF($6, ''), $7, $8, $9, $10)
+		VALUES (?, ?, ?, ?, ?::numeric, NULLIF(?, ''), ?, ?, ?, ?)
 		ON CONFLICT `+target+` DO UPDATE SET kind = EXCLUDED.kind, multiplier = EXCLUDED.multiplier,
 			mode = EXCLUDED.mode, config = EXCLUDED.config, expression = EXCLUDED.expression,
 			expr_hash = EXCLUDED.expr_hash, updated_by = EXCLUDED.updated_by, updated_at = now()`,
 		on.GroupID, nullID(on.SegmentID), on.Model, r.Kind, r.Multiplier, r.Mode, r.Config, r.expression, r.exprHash, nullID(updatedBy))
-	return nil
 }
 
-// queueDelete queues removing the rule on on, if there is one.
-func queueDelete(b *pgx.Batch, on core.PriceQuery) {
-	b.Queue(`DELETE FROM price_rules WHERE group_id = $1 AND model = $2
-		AND segment_id IS NOT DISTINCT FROM $3`, on.GroupID, on.Model, nullID(on.SegmentID))
+// deleteRule removes the rule on on, if there is one.
+func deleteRule(db *gorm.DB, on core.PriceQuery) *gorm.DB {
+	return db.Exec(`DELETE FROM price_rules WHERE group_id = ? AND model = ?
+		AND segment_id IS NOT DISTINCT FROM ?`, on.GroupID, on.Model, nullID(on.SegmentID))
 }

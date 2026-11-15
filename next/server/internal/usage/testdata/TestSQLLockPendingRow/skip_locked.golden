@@ -1,0 +1,4 @@
+-- sql
+SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE SKIP LOCKED
+-- vars
+$1 string "req-1"

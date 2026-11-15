@@ -102,9 +102,37 @@ func BenchmarkHotSettlerInsertPending(b *testing.B) {
 	}
 }
 
+// A busy node's batch: 200 rows (the default BatchSize), half free and
+// half pending, in one transaction. Per op is per batch.
+func BenchmarkHotSettlerInsertBatch(b *testing.B) {
+	s := newBenchSettler(b)
+	batch := func(n int) []*core.UsageRecord {
+		recs := make([]*core.UsageRecord, 200)
+		for i := range recs {
+			recs[i] = s.record(n*len(recs)+i, i%2 == 0)
+		}
+		return recs
+	}
+	ctx := context.Background()
+	if _, err := s.svc.insert(ctx, batch(1_000_000)); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		b.StopTimer()
+		recs := batch(i)
+		b.StartTimer()
+		if _, err := s.svc.insert(ctx, recs); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // Settlement of a pending row whose request was precharged: one
-// transaction locking the row (SELECT ... FOR UPDATE), the ledger batch
-// (ensure the balance row, release the precharge, apply the charge), the
+// transaction locking the row (SELECT ... FOR UPDATE), the ledger
+// statements (ensure the balance row, release the precharge, apply the
+// charge), the
 // usage_logs update and the usage.recorded event. The precharge and the
 // insert before it are not timed.
 func BenchmarkHotSettle(b *testing.B) {

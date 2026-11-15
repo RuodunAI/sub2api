@@ -165,81 +165,88 @@ A request served through an Execute plugin (`gateway` `canExecute`) writes
 its plugin_executions row on every attempt (`usage.BeginExecution`, the
 intent, and `ObserveExecution`, the observation) and commits it inside the
 usage transaction (`CommitExecution`: `lockExecution`, the row locked FOR
-UPDATE, and `markExecutionCommitted`). The benchmark measures each pgx
-statement next to the GORM form of the same statement (`Create` of
-`model.PluginExecution`, `Updates` with a map, and the locked `Row().Scan`
-plus `Updates` in one transaction):
+UPDATE, and `markExecutionCommitted`).
+
+**Migrated to GORM in batch 5a.** The four statements are `store.G`
+`Exec` / `Raw(...).Row().Scan` with the SQL they had on pgx (placeholders
+`?`, the documents bound as `store.Bytes`), the form that allocates least;
+the `//gormguard:allow-pgx` comments are gone. The benchmark measures the
+production function (gorm) next to the pgx statement it replaced (pgx):
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
 go test -run '^$' -bench HotExecution -benchmem -benchtime 1000x -count 5 ./internal/usage/
 ```
 
-Recorded 2026-11-15 on gorm-4a, same machine and server as above (shared
+Recorded 2026-11-15 on gorm-5a, same machine and server as above (shared
 with other test runs; ns/op is noise). Medians of 5.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotExecution/begin/pgx | 526 111 | 5 522 | 19 |
-| BenchmarkHotExecution/begin/gorm | 2 734 771 | 14 868 | 121 |
-| BenchmarkHotExecution/observe/pgx | 1 261 612 | 5 529 | 20 |
-| BenchmarkHotExecution/observe/gorm | 511 548 | 11 869 | 86 |
-| BenchmarkHotExecution/commit/pgx | 652 199 | 1 114 | 21 |
-| BenchmarkHotExecution/commit/gorm | 687 708 | 13 194 | 161 |
+| BenchmarkHotExecution/begin/pgx (before) | 328 471 | 5 525 | 19 |
+| BenchmarkHotExecution/begin/gorm (after) | 349 961 | 8 556 | 54 |
+| BenchmarkHotExecution/observe/pgx (before) | 369 706 | 5 532 | 20 |
+| BenchmarkHotExecution/observe/gorm (after) | 347 069 | 8 721 | 55 |
+| BenchmarkHotExecution/commit/pgx (before) | 476 277 | 1 114 | 21 |
+| BenchmarkHotExecution/commit/gorm (after) | 1 631 682 | 7 495 | 104 |
 
-GORM takes 6.4, 4.3 and 7.7 times the allocations (the limit is 1.5), so
-the four statements stay on pgx under `//gormguard:allow-pgx`. Execution
-recovery and retention, the monitor receipts, the helper usage receipts and
-the console (usage lists, details, export, summary, overview, realtime,
-manual reconcile and refund) are on GORM.
+The gorm-4a GORM forms (`Create` of the model, `Updates` with a map) took
+121, 86 and 161 allocs/op; Raw with the pgx SQL takes 54, 55 and 104.
 
 ## Batch 4b: the settler's statements
 
-Per billable request the settler runs, besides the `usage_logs` insert
-(a pgx.Batch, unchanged) and the ledger statements (package billing):
-`settleTx`'s row lock (`SELECT billing_status FROM usage_logs WHERE
-request_id = $1 FOR UPDATE`) and its write of the billing fields
-(`billUsageRow`). A request a plugin reserves runs `reserveTx` instead:
-the write of the estimate and the `pending_settlements` insert (`ON
-CONFLICT (plugin_key, ref_id) DO NOTHING RETURNING id`). The benchmark
-measures each pgx statement next to its GORM form, against one pending
-row. For the two writes the GORM form is the production constructor
-(`billUsageRow`, `reserveUsageRow`) and both forms encode the jsonb detail
-in the loop; the lock and the entry stay on pgx, so their GORM form
-(`Raw(...).Row().Scan`) is written out in the benchmark:
+Per billable request the settler runs the `usage_logs` insert
+(`insertAtomic`), `settleTx`'s row lock (`lockPendingRow`: `SELECT
+billing_status FROM usage_logs WHERE request_id = ? FOR UPDATE [SKIP
+LOCKED]`), the ledger statements (package billing, Batch 4c) and its write
+of the billing fields (`billUsageRow`). A request a plugin reserves runs
+`reserveTx` instead: the write of the estimate (`reserveUsageRow`) and the
+`pending_settlements` insert (`insertSettlementEntry`, `ON CONFLICT
+(plugin_key, ref_id) DO NOTHING RETURNING id`).
+
+**Migrated to GORM in batch 5a.** The row lock and the reconcile entry
+(allow-pgx until then) are `Raw(...).Row().Scan`. The `usage_logs` insert
+was a pgx.Batch of one `INSERT ... ON CONFLICT (request_id) DO NOTHING
+RETURNING id` per record; it is now one multi-row INSERT per power-of-two
+chunk of the batch (`insertUsageSQL[k]`, 2^k rows, k ≤ 7; RETURNING `id,
+request_id`), in batch order, inside the same transaction. A request id
+already stored, or taken by an earlier record of the batch (in the same
+statement or an earlier chunk), is skipped as before and the first record
+of an id keeps its row (TestInsertBatchChunksAndDuplicates). The chunk
+sizes bound the statement texts a connection prepares to eight; a batch
+of n records takes one round trip per bit set in n (200: 128 + 64 + 8)
+where the pgx batch took one.
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
-go test -run '^$' -bench HotStmt -benchmem -benchtime 1000x -count 5 ./internal/usage/
+go test -run '^$' -bench 'HotStmt|HotSettle' -benchmem -benchtime 1000x -count 5 ./internal/usage/
+go test -run '^$' -bench HotSettlerInsertBatch -benchmem -benchtime 100x -count 5 ./internal/usage/
 ```
 
-Recorded 2026-11-15 on gorm-4fix-a (first on gorm-4b, where the write
-benchmarks bound a pre-encoded detail: 99/139 and 70/104 allocs/op, 1.40
-and 1.49 times), same machine and server as above. Medians of 5.
+Recorded 2026-11-15 on gorm-5a (before: f99d1a3a, same machine, same
+day). Medians of 5. The statement benchmarks run the production function
+(gorm) next to the pgx statement it had (pgx):
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotStmtSettleLock/pgx | 237 292 | 461 | 9 |
-| BenchmarkHotStmtSettleLock/gorm | 286 528 | 3 493 | 45 |
-| BenchmarkHotStmtSettleUpdate/pgx | 370 680 | 4 599 | 129 |
-| BenchmarkHotStmtSettleUpdate/gorm | 364 507 | 8 290 | 169 |
-| BenchmarkHotStmtReserveUpdate/pgx | 337 561 | 3 925 | 98 |
-| BenchmarkHotStmtReserveUpdate/gorm | 334 492 | 6 862 | 132 |
-| BenchmarkHotStmtReserveEntry/pgx | 291 730 | 645 | 14 |
-| BenchmarkHotStmtReserveEntry/gorm | 287 017 | 4 412 | 59 |
+| BenchmarkHotStmtSettleLock/pgx (before) | 217 138 | 461 | 9 |
+| BenchmarkHotStmtSettleLock/gorm (after) | 236 966 | 3 493 | 45 |
+| BenchmarkHotStmtSettleUpdate/pgx | 382 972 | 4 600 | 129 |
+| BenchmarkHotStmtSettleUpdate/gorm (on GORM since 4b) | 447 916 | 8 288 | 169 |
+| BenchmarkHotStmtReserveUpdate/pgx | 357 775 | 3 925 | 98 |
+| BenchmarkHotStmtReserveUpdate/gorm (on GORM since 4b) | 338 052 | 6 862 | 132 |
+| BenchmarkHotStmtReserveEntry/pgx (before) | 228 760 | 645 | 14 |
+| BenchmarkHotStmtReserveEntry/gorm (after) | 252 477 | 4 428 | 60 |
 
-The row lock (5.0 times the allocations) and the reservation entry (4.2
-times) stay on pgx under `//gormguard:allow-pgx`. The two writes (1.31 and
-1.35 times; most of their allocations are encoding the decimal and jsonb
-arguments, which both paths do) are on GORM. The whole settlement moves
-from 863 to 903 allocs/op (BenchmarkHotSettle, 1.05 times; the free and
-pending inserts are unchanged at 233 and 102):
+The whole chain, at f99d1a3a (before) and on gorm-5a (after); the ledger
+statements of BenchmarkHotSettle moved too (Batch 4c):
 
-| Benchmark | before | after |
-|---|---:|---:|
-| BenchmarkHotSettlerInsertFree | 233 | 233 |
-| BenchmarkHotSettlerInsertPending | 102 | 102 |
-| BenchmarkHotSettle | 863 | 903 |
+| Benchmark | before ns/op | before B/op | before allocs/op | after ns/op | after B/op | after allocs/op |
+|---|---:|---:|---:|---:|---:|---:|
+| BenchmarkHotSettlerInsertFree | 968 400 | 11 088 | 233 | 1 107 144 | 30 228 | 369 |
+| BenchmarkHotSettlerInsertPending | 497 070 | 5 525 | 102 | 477 084 | 17 411 | 192 |
+| BenchmarkHotSettlerInsertBatch (200 rows) | 22 279 814 | 2 315 887 | 29 001 | 24 890 346 | 5 483 727 | 51 014 |
+| BenchmarkHotSettle | 1 598 464 | 38 783 | 903 | 1 606 078 | 57 296 | 1 046 |
 
 ### Async tasks
 
@@ -253,36 +260,36 @@ Execute plugin) when it comes back, and `RegisterTask` (or
 FOR UPDATE`), inserts the `async_tasks` row, links the settlement entry
 (`UPDATE pending_settlements`) and closes the receipt (`UPDATE
 task_submission_receipts`). Every poll of a client runs `FindTask`
-(`readTask`), the most frequent of them. The benchmark measures each
-production statement (pgx) next to the GORM form it had on gorm-4b
-(`readTask`'s `Raw(...).Rows()`, the receipt's `Model(...).Create(map)`,
-`Exec` for the rest), `recordTask` as its four statements in a
-transaction of their own:
+(`readTask`), the most frequent of them.
+
+**Migrated to GORM in batch 5a**, as `Raw` / `Exec` with the SQL they had
+on pgx (`readTask`'s `taskByID`, `$5` bound three times; the receipt body
+and the snapshot as `store.Bytes`). The benchmark measures each production
+function (gorm) next to the pgx statements it replaced (pgx), `recordTask`
+as its four statements in a transaction of their own:
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
 go test -run '^$' -bench HotTask -benchmem -benchtime 1000x -count 5 ./internal/usage/
 ```
 
-Recorded 2026-11-15 on gorm-4fix-a, same machine. Medians of 5.
+Recorded 2026-11-15 on gorm-5a, same machine. Medians of 5.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotTaskFind/pgx | 75 298 | 1 258 | 19 |
-| BenchmarkHotTaskFind/gorm | 92 941 | 6 453 | 92 |
-| BenchmarkHotTaskBegin/pgx | 233 794 | 394 | 10 |
-| BenchmarkHotTaskBegin/gorm | 338 304 | 12 157 | 129 |
-| BenchmarkHotTaskReceive/pgx | 225 962 | 268 | 6 |
-| BenchmarkHotTaskReceive/gorm | 307 978 | 3 413 | 39 |
-| BenchmarkHotTaskRegister/pgx | 699 972 | 1 699 | 47 |
-| BenchmarkHotTaskRegister/gorm | 786 958 | 14 670 | 201 |
+| BenchmarkHotTaskFind/pgx (before) | 71 007 | 1 263 | 19 |
+| BenchmarkHotTaskFind/gorm (after) | 96 019 | 6 448 | 92 |
+| BenchmarkHotTaskBegin/pgx (before) | 294 587 | 394 | 10 |
+| BenchmarkHotTaskBegin/gorm (after) | 423 335 | 4 090 | 49 |
+| BenchmarkHotTaskReceive/pgx (before) | 220 572 | 252 | 5 |
+| BenchmarkHotTaskReceive/gorm (after) | 249 450 | 3 429 | 40 |
+| BenchmarkHotTaskRegister/pgx (before) | 664 958 | 1 705 | 47 |
+| BenchmarkHotTaskRegister/gorm (after) | 891 045 | 12 230 | 176 |
 
-GORM takes 4.8 (`readTask`), 12.9 (the receipt insert), 6.5
-(`receiveTask`) and 4.3 (`recordTask`) times the allocations, so all of
-them stay on pgx under `//gormguard:allow-pgx`, with the SQL they had
-before the migration. The lazy import of a legacy task (`importLegacyTask`,
-once per legacy upstream ID that a poll names) and the receipt cleanup are
-on GORM.
+The receipt insert takes 49 allocs/op as `Exec` where the gorm-4b
+`Model(...).Create(map)` took 129. The lazy import of a legacy task
+(`importLegacyTask`, once per legacy upstream ID that a poll names) and
+the receipt cleanup were on GORM before.
 
 The rest of the settler (`markFailed`, `RetryPending`,
 `closeUnreconcilable`, the reconcile loop, the task reconciler and the
@@ -294,42 +301,56 @@ GORM takes for a placeholder.
 
 ## Batch 4c: billing
 
-The ledger writes of the request path are pgx batches and stay so (a
-`pgx.Batch` is outside the migration): `prechargeTx` (← `Precharge`, every
-billable request), `SettleTx` (settler, every billable request) and
-`ApplyTx`. Their SQL (`prechargeSQL`, `releaseSQL`, `applySQL`,
-`ensureBalanceSQL`), transaction boundaries, `FOR UPDATE` locks, lock
-order and idempotency keys with `ON CONFLICT` are unchanged; amounts stay
-`numeric` / `decimal.Decimal` throughout. The one direct statement of the
-request path is `ReleasePrechargeTx` (`releaseSQL` on its own), which the
-settler runs for every free request it records (usage `insertAtomic`; most
-hold no reservation) and the expiry sweeper for every reservation it
-returns. Its benchmark measures the pgx statement next to the GORM form of
-the same statement (`Raw` with `?` placeholders, the arguments repeated),
-for a request without a reservation (miss) and with one (hit):
+The ledger writes of the request path: `prechargeTx` (← `Precharge`, every
+billable request), `SettleTx` (settler, every billable request),
+`ReleasePrechargeTx` (settler, every free request it records, most of
+which hold no reservation; and the expiry sweeper) and `ApplyTx`.
+
+**Migrated to GORM in batch 5a.** They were pgx batches (and
+`ReleasePrechargeTx` a pgx statement under allow-pgx); every statement now
+runs through `store.G` on the caller's transaction, in the order the batch
+sent them, so the lock order is unchanged: precharge `SET LOCAL
+lock_timeout`, `ensureBalanceSQL`, `SELECT user_id FROM user_balances ...
+FOR UPDATE`, `prechargeSQL`; settlement `ensureBalanceSQL`, `releaseSQL`,
+`applySQL`; ApplyTx `ensureBalanceSQL`, `applySQL`. The CTE statements
+keep their SQL and their `$n` numbering; `ledgerStmt` rewrites each `$n`
+into a `?` once at start-up and binds the argument again wherever the
+number repeats (snapshots: TestSQLLedger). Transaction boundaries, FOR
+UPDATE, idempotency keys, ON CONFLICT, RETURNING and the
+numeric / `decimal.Decimal` amounts are unchanged; the console's price
+rule writes (`applyChanges`, a batch before) run one statement each in
+the same order. New real-PostgreSQL tests cover concurrent replays of a
+settlement, of an idempotency key and of a precharge
+(ledger_concurrency_test.go, usage TestSettleConcurrentSameRow).
+
+What a batch saved is now a round trip per statement: Precharge is 7
+flushes (BEGIN, lock_timeout, balance row, lock, reservation, event,
+COMMIT) where it was 4, a settlement's ledger part 3 where it was 1, ApplyTx
+2 where it was 1 (TestPrechargeRoundTrips, TestSettleRoundTrips). Under the
+user's balance lock a settlement now waits for the charge statement after
+the release; a precharge's lock is held from its lock statement through
+prechargeSQL, the event and COMMIT, as before.
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
 go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/billing/
 ```
 
-Recorded 2026-11-15 on gorm-4c, same machine; the server was shared with
-other test runs, so ns/op is noisy. Medians of 5.
+Recorded 2026-11-15 on gorm-5a (before: f99d1a3a, same machine, same day;
+the server was shared with other test runs, so ns/op is noisy). Medians of
+5. BenchmarkHotReleasePrecharge runs the production statement (gorm,
+`releaseStmt`) next to the pgx statement it replaced (pgx):
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotReleasePrecharge/miss/pgx | 102 700 | 1 213 | 30 |
-| BenchmarkHotReleasePrecharge/miss/gorm | 115 185 | 8 437 | 76 |
-| BenchmarkHotReleasePrecharge/hit/pgx | 551 849 | 1 342 | 37 |
-| BenchmarkHotReleasePrecharge/hit/gorm | 497 944 | 8 535 | 81 |
-| BenchmarkHotPrecharge (cdcc117c, before) | 728 823 | 8 755 | 277 |
-| BenchmarkHotPrecharge (gorm-4c, after) | 966 492 | 8 833 | 277 |
+| BenchmarkHotReleasePrecharge/miss/pgx (before) | 80 832 | 1 213 | 30 |
+| BenchmarkHotReleasePrecharge/miss/gorm (after) | 106 727 | 8 437 | 76 |
+| BenchmarkHotReleasePrecharge/hit/pgx (before) | 276 307 | 1 343 | 37 |
+| BenchmarkHotReleasePrecharge/hit/gorm (after) | 451 656 | 8 535 | 81 |
+| BenchmarkHotPrecharge (f99d1a3a, before) | 790 831 | 8 684 | 277 |
+| BenchmarkHotPrecharge (gorm-5a, after) | 881 849 | 24 017 | 502 |
 
-GORM takes 2.5 and 2.2 times the allocations (the limit is 1.5), so
-`ReleasePrechargeTx` stays on pgx under `//gormguard:allow-pgx`. Precharge
-allocates the same before and after: its batch did not change.
-
-On GORM, because they do not run for every request:
+On GORM since batch 4c, because they do not run for every request:
 
 - `findLedger` (the ledger row of an idempotency key): only after an
   insert lost a race on the key, or for a duplicate settlement refund;
@@ -525,10 +546,10 @@ statement per request; it reaches the database through the services below.
 | When | Function | SQL |
 |---|---|---|
 | every request, synchronous | `apikey.(*Service).lookup` ← `Authenticate` ← gateway `call.run` | `lookupSQL`: `SELECT k.id, … FROM api_keys k JOIN users u … JOIN segments s … LEFT JOIN groups g … LEFT JOIN segment_groups sg … WHERE k.key_hash = $1 AND k.deleted_at IS NULL` (not cached, on purpose) |
-| billable request, synchronous | `billing.(*Service).Precharge` → `prechargeTx` ← gateway `call.precharge` | BEGIN; batch: `SET LOCAL lock_timeout`, `INSERT INTO user_balances (user_id) … ON CONFLICT DO NOTHING`, `SELECT user_id FROM user_balances WHERE user_id = $1 FOR UPDATE`, `prechargeSQL` (CTE: insert `balance_ledger` ON CONFLICT DO NOTHING RETURNING, insert `request_precharges`, update `user_balances`); `INSERT INTO events`; COMMIT |
+| billable request, synchronous | `billing.(*Service).Precharge` → `prechargeTx` ← gateway `call.precharge` | BEGIN; one statement each (a pgx batch until batch 5a): `SET LOCAL lock_timeout`, `INSERT INTO user_balances (user_id) … ON CONFLICT DO NOTHING`, `SELECT user_id FROM user_balances WHERE user_id = $1 FOR UPDATE`, `prechargeSQL` (CTE: insert `balance_ledger` ON CONFLICT DO NOTHING RETURNING, insert `request_precharges`, update `user_balances`); `INSERT INTO events`; COMMIT |
 | billable request, Redis miss only | `billing.(*Service).Balance` ← `CheckBalance` | `SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = $1), 0), COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = $1), 0)` |
-| every request, settler (async) | `usage.(*Service).insertAtomic` ← `insert` ← `process` / `Submit` | BEGIN; batch `INSERT INTO usage_logs (47 columns) … ON CONFLICT (request_id) DO NOTHING RETURNING id`; free rows: `releaseSQL` (`ReleasePrechargeTx`) and `INSERT INTO events`; COMMIT |
-| billable request, settler (async) | `usage.(*Service).settle` → `settleTx` | BEGIN; `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`; `billing.SettleTx` batch: `ensureBalanceSQL`, `releaseSQL`, `applySQL`; `UPDATE usage_logs SET total_cost = …, billing_status = 'billed', … WHERE request_id = $1`; `INSERT INTO events`; COMMIT |
+| every request, settler (async) | `usage.(*Service).insertAtomic` ← `insert` ← `process` / `Submit` | BEGIN; `INSERT INTO usage_logs (47 columns) VALUES (…), … ON CONFLICT (request_id) DO NOTHING RETURNING id, request_id`, one per power-of-two chunk of the batch (a pgx batch of one INSERT per row until batch 5a); free rows: `releaseSQL` (`ReleasePrechargeTx`) and `INSERT INTO events`; COMMIT |
+| billable request, settler (async) | `usage.(*Service).settle` → `settleTx` | BEGIN; `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`; `billing.SettleTx`: `ensureBalanceSQL`, `releaseSQL`, `applySQL` (one statement each; a pgx batch until batch 5a); `UPDATE usage_logs SET total_cost = …, billing_status = 'billed', … WHERE request_id = $1`; `INSERT INTO events`; COMMIT |
 | async task submission, synchronous (added with batch 4b) | `usage.(*Service).BeginTask`, `ReceiveTask`, `RegisterTask` → `recordTask` ← gateway `tasks.go`, `execute.go` | `INSERT INTO task_submission_receipts`; `UPDATE task_submission_receipts SET state = $2, … response_body = COALESCE($4, response_body)`; in the usage transaction: `SELECT … FROM task_submission_receipts WHERE request_id = $1 AND state = 'received' FOR UPDATE`, `INSERT INTO async_tasks`, `UPDATE pending_settlements SET task_public_id`, `UPDATE task_submission_receipts SET state = 'registered'` |
 | every async task poll, synchronous | `usage.(*Service).FindTask` → `readTask` ← gateway `tasks.go` | `SELECT public_id, … FROM async_tasks WHERE plugin_key = $1 AND kind = $2 AND user_id = $3 AND group_id = $4 AND (public_id = $5 OR …) ORDER BY public_id LIMIT 2` |
 

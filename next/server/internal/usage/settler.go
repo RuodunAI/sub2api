@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/bits"
+	"strings"
 	"sync"
 	"time"
 
@@ -449,75 +451,15 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 		ids := make(map[string]int64, len(batch))
 		inserted = inserted[:0]
 		reserved, cached = reserved[:0], cached[:0]
-		b := &pgx.Batch{}
-		for _, rec := range batch {
-			status := initialStatus(rec)
-			var priceID *int64
-			var exprHash, mode string
-			// Free requests also need their token semantics for usage summaries.
-			// Only billable requests retain pricing headers and parameters below.
-			detail := jsonOr(pendingDetail{Inputs: pendingInputs{Semantics: rec.UsageSemantics}}, "{}")
-			if status == StatusPending || status == StatusReserved {
-				if rec.Price != nil {
-					exprHash, mode = rec.Price.ExprHash, rec.Price.Mode
-					if rec.Price.ID > 0 {
-						priceID = &rec.Price.ID
-					}
-					if exprHash == "" {
-						exprHash = expr.Hash(rec.Price.Expression)
-					}
-				}
-				detail = jsonOr(pendingDetail{Inputs: recordInputs(rec)}, "{}")
-			}
-			// The observability markers have their own column, so they are
-			// written once here and never touched again: settle() rewrites
-			// billing_detail wholesale, and used to have to carry them
-			// through the unbilled phase to put them back.
-			anomalies := jsonOr(rec.Anomalies(), "{}")
-			created := rec.CreatedAt
-			if created.IsZero() {
-				created = time.Now()
-			}
-			attempts := rec.Attempts
-			if attempts <= 0 {
-				attempts = 1
-			}
-			rate := rec.RateMultiplier
-			t := rec.Tokens
-			b.Queue(`
-				INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, plugin_key, plugin_version,
-					platform, protocol, endpoint, model, upstream_model, stream, status_code, success, error_type,
-					error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-					cache_creation_1h_tokens, metrics, sticky_rule, sticky_hit, hook_decisions, rate_multiplier,
-					price_id, expr_hash, billing_mode, billing_detail, billing_status, latency_ms, first_token_ms,
-					client_ip, user_agent, node_id, created_at, account_type, upstream_protocol, client_request_id,
-					sched_decisions, plugin_detail, anomalies, upload_ms, conversion)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
-					$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)
-				ON CONFLICT (request_id) DO NOTHING
-				RETURNING id`,
-				trunc(rec.RequestID, 64), rec.UserID, rec.APIKeyID, rec.GroupID, rec.AccountID,
-				trunc(rec.PluginKey, 30), trunc(rec.PluginVersion, 50), trunc(rec.Platform, 50),
-				trunc(rec.Protocol, 100), trunc(rec.Endpoint, 200), trunc(rec.Model, 200), trunc(rec.UpstreamModel, 200),
-				rec.Stream, rec.StatusCode, rec.Success, trunc(rec.ErrorType, 50), rec.ErrorMessage, attempts,
-				t.Input, t.Output, t.CacheRead, t.CacheCreation, t.CacheCreation1h,
-				jsonOr(rec.Metrics, "{}"), trunc(rec.StickyRule, 100), rec.StickyHit, jsonOr(rec.HookDecisions, "[]"),
-				rate, priceID, exprHash, mode, detail, status, rec.LatencyMs, rec.FirstTokenMs,
-				trunc(rec.ClientIP, 64), trunc(rec.UserAgent, 500), trunc(rec.NodeID, 100), created,
-				trunc(rec.AccountType, 50), trunc(rec.UpstreamProtocol, 100), trunc(rec.ClientRequestID, 128),
-				jsonOr(rec.SchedDecisions, "[]"), pluginDetailJSON(rec.PluginDetail), anomalies, rec.UploadMs, conversionJSON(rec.Conversion))
+		added, err := insertUsageRows(store.G(ctx, tx), batch)
+		if err != nil {
+			return err
 		}
-		br := tx.SendBatch(ctx, b)
 		var free []core.Event
-		for _, rec := range batch {
-			var id int64
-			err := br.QueryRow().Scan(&id)
-			if store.IsNoRows(err) {
+		for i, rec := range batch {
+			id := added[i]
+			if id == 0 {
 				continue // duplicate request id
-			}
-			if err != nil {
-				_ = br.Close()
-				return err
 			}
 			inserted = append(inserted, rec)
 			ids[rec.RequestID] = id
@@ -527,9 +469,6 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 			case StatusReserved:
 				reserved = append(reserved, reservedRow{rec: rec, id: id})
 			}
-		}
-		if err := br.Close(); err != nil {
-			return err
 		}
 		for _, rec := range inserted {
 			if initialStatus(rec) != StatusFree {
@@ -588,6 +527,135 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 	return inserted, err
 }
 
+// usageLogColumns are the usage_logs columns insertUsageRows writes, in the
+// order of appendUsageRow's values.
+const usageLogColumns = `request_id, user_id, api_key_id, group_id, account_id, plugin_key, plugin_version,
+	platform, protocol, endpoint, model, upstream_model, stream, status_code, success, error_type,
+	error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+	cache_creation_1h_tokens, metrics, sticky_rule, sticky_hit, hook_decisions, rate_multiplier,
+	price_id, expr_hash, billing_mode, billing_detail, billing_status, latency_ms, first_token_ms,
+	client_ip, user_agent, node_id, created_at, account_type, upstream_protocol, client_request_id,
+	sched_decisions, plugin_detail, anomalies, upload_ms, conversion`
+
+// usageLogValues is the number of usageLogColumns.
+const usageLogValues = 47
+
+// insertUsageSQL[k] inserts 1<<k usage rows (up to 128, 6016 parameters,
+// far below PostgreSQL's 65535), skipping a request id that is already
+// there, and returns the id and request id of each row it inserted.
+// insertUsageRows splits a batch into chunks of these sizes, so that a pool
+// connection prepares at most eight texts whatever the batch sizes.
+var insertUsageSQL = func() (out [8]string) {
+	row := "(" + strings.Repeat("?,", usageLogValues-1) + "?)"
+	for k := range out {
+		out[k] = `INSERT INTO usage_logs (` + usageLogColumns + `) VALUES ` +
+			strings.Repeat(row+",", 1<<k-1) + row + `
+			ON CONFLICT (request_id) DO NOTHING
+			RETURNING id, request_id`
+	}
+	return out
+}()
+
+// insertUsageRows inserts the rows of batch on db, in batch order, and
+// returns the id of each record's new row: 0 where its request id was
+// already there, or taken by an earlier record of the batch. Each chunk is
+// one statement and one round trip, so a batch takes one per bit set in its
+// size (200: 128 + 64 + 8) where the pgx batch before took one in all; the
+// rows go in batch order, as the batch's statements did.
+func insertUsageRows(db *gorm.DB, batch []*core.UsageRecord) ([]int64, error) {
+	ids := make([]int64, len(batch))
+	for start := 0; start < len(batch); {
+		k := min(bits.Len(uint(len(batch)-start)), len(insertUsageSQL)) - 1
+		chunk := batch[start : start+1<<k]
+		vars := make([]any, 0, len(chunk)*usageLogValues)
+		for _, rec := range chunk {
+			vars = appendUsageRow(vars, rec)
+		}
+		got, err := insertedUsageRows(db.Raw(insertUsageSQL[k], vars...))
+		if err != nil {
+			return nil, err
+		}
+		for i, rec := range chunk {
+			// The first record of a request id is the one its row holds.
+			key := trunc(rec.RequestID, 64)
+			if id, ok := got[key]; ok {
+				ids[start+i] = id
+				delete(got, key)
+			}
+		}
+		start += len(chunk)
+	}
+	return ids, nil
+}
+
+// insertedUsageRows runs an insertUsageSQL statement and reads its rows:
+// the id of each inserted row by its request id.
+func insertedUsageRows(stmt *gorm.DB) (map[string]int64, error) {
+	rows, err := stmt.Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	got := make(map[string]int64)
+	for rows.Next() {
+		var id int64
+		var requestID string
+		if err := rows.Scan(&id, &requestID); err != nil {
+			return nil, err
+		}
+		got[requestID] = id
+	}
+	return got, rows.Err()
+}
+
+// appendUsageRow appends the usageLogColumns values of rec's new row.
+func appendUsageRow(vars []any, rec *core.UsageRecord) []any {
+	status := initialStatus(rec)
+	var priceID *int64
+	var exprHash, mode string
+	// Free requests also need their token semantics for usage summaries.
+	// Only billable requests retain pricing headers and parameters below.
+	detail := jsonOr(pendingDetail{Inputs: pendingInputs{Semantics: rec.UsageSemantics}}, "{}")
+	if status == StatusPending || status == StatusReserved {
+		if rec.Price != nil {
+			exprHash, mode = rec.Price.ExprHash, rec.Price.Mode
+			if rec.Price.ID > 0 {
+				priceID = &rec.Price.ID
+			}
+			if exprHash == "" {
+				exprHash = expr.Hash(rec.Price.Expression)
+			}
+		}
+		detail = jsonOr(pendingDetail{Inputs: recordInputs(rec)}, "{}")
+	}
+	// The observability markers have their own column, so they are
+	// written once here and never touched again: settle() rewrites
+	// billing_detail wholesale, and used to have to carry them
+	// through the unbilled phase to put them back.
+	anomalies := jsonOr(rec.Anomalies(), "{}")
+	created := rec.CreatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
+	attempts := rec.Attempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	t := rec.Tokens
+	return append(vars,
+		trunc(rec.RequestID, 64), rec.UserID, rec.APIKeyID, rec.GroupID, rec.AccountID,
+		trunc(rec.PluginKey, 30), trunc(rec.PluginVersion, 50), trunc(rec.Platform, 50),
+		trunc(rec.Protocol, 100), trunc(rec.Endpoint, 200), trunc(rec.Model, 200), trunc(rec.UpstreamModel, 200),
+		rec.Stream, rec.StatusCode, rec.Success, trunc(rec.ErrorType, 50), rec.ErrorMessage, attempts,
+		t.Input, t.Output, t.CacheRead, t.CacheCreation, t.CacheCreation1h,
+		store.Bytes(jsonOr(rec.Metrics, "{}")), trunc(rec.StickyRule, 100), rec.StickyHit, store.Bytes(jsonOr(rec.HookDecisions, "[]")),
+		rec.RateMultiplier, priceID, exprHash, mode, store.Bytes(detail), status, rec.LatencyMs, rec.FirstTokenMs,
+		trunc(rec.ClientIP, 64), trunc(rec.UserAgent, 500), trunc(rec.NodeID, 100), created,
+		trunc(rec.AccountType, 50), trunc(rec.UpstreamProtocol, 100), trunc(rec.ClientRequestID, 128),
+		store.Bytes(jsonOr(rec.SchedDecisions, "[]")), store.Bytes(pluginDetailJSON(rec.PluginDetail)), store.Bytes(anomalies),
+		rec.UploadMs, store.Bytes(conversionJSON(rec.Conversion)))
+}
+
 // reservedRow is one inserted usage row whose cost was estimated by a plugin.
 type reservedRow struct {
 	rec *core.UsageRecord
@@ -636,13 +704,7 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 		nextAt = deadlineAt
 	}
 	var entryID int64
-	//gormguard:allow-pgx per reserved request; GORM takes 4.2x the allocations (gormtest/BASELINE.md, Batch 4b)
-	err = tx.QueryRow(ctx, `
-		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (plugin_key, ref_id) DO NOTHING
-		RETURNING id`,
-		trunc(rv.PluginKey, 30), trunc(rv.RefID, 200), r.id, rec.AccountID, nextAt, deadlineAt).Scan(&entryID)
+	err = insertSettlementEntry(store.G(ctx, tx), rv, r.id, rec.AccountID, nextAt, deadlineAt).Row().Scan(&entryID)
 	if store.IsNoRows(err) {
 		// The plugin reused a ref_id that is already being reconciled, so
 		// this row would never be looked at again: it would sit "reserved"
@@ -658,9 +720,20 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 	return res, nil
 }
 
+// insertSettlementEntry registers the reconcile entry of the reserved usage
+// row usageLogID and returns its id, or no row when the plugin's ref_id is
+// already registered (ON CONFLICT DO NOTHING).
+func insertSettlementEntry(db *gorm.DB, rv *core.UsageReservation, usageLogID int64, accountID *int64, nextAt, deadlineAt time.Time) *gorm.DB {
+	return db.Raw(`
+		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (plugin_key, ref_id) DO NOTHING
+		RETURNING id`,
+		trunc(rv.PluginKey, 30), trunc(rv.RefID, 200), usageLogID, accountID, nextAt, deadlineAt)
+}
+
 // reserveUsageRow writes the estimate of a reserved row, once per reserved
-// request: BenchmarkHotStmtReserveUpdate measures this statement on GORM at
-// 1.35 times pgx's allocations, under the 1.5 limit (gormtest/BASELINE.md).
+// request (BenchmarkHotStmtReserveUpdate, gormtest/BASELINE.md).
 func reserveUsageRow(db *gorm.DB, id int64, cost amounts, detail BillingDetail) *gorm.DB {
 	return db.Exec(`
 		UPDATE usage_logs SET total_cost = ?, base_cost = ?, billing_detail = ?, matched_tier = ?
@@ -1037,13 +1110,8 @@ func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocke
 	}
 	total := cost.total
 	var ledgerRes *core.LedgerResult
-	lock := `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`
-	if skipLocked {
-		lock += ` SKIP LOCKED`
-	}
 	var status string
-	//gormguard:allow-pgx every billable request; GORM takes 5x the allocations (gormtest/BASELINE.md, Batch 4b)
-	if err := tx.QueryRow(ctx, lock, p.RequestID).Scan(&status); err != nil {
+	if err := lockPendingRow(store.G(ctx, tx), p.RequestID, skipLocked).Row().Scan(&status); err != nil {
 		if store.IsNoRows(err) {
 			return nil, errNotPending
 		}
@@ -1069,9 +1137,18 @@ func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocke
 	return ledgerRes, nil
 }
 
+// lockPendingRow locks the usage row of requestID for settlement and reads
+// its billing status; skipLocked passes over a row another settlement
+// holds (no row).
+func lockPendingRow(db *gorm.DB, requestID string, skipLocked bool) *gorm.DB {
+	if skipLocked {
+		return db.Raw(`SELECT billing_status FROM usage_logs WHERE request_id = ? FOR UPDATE SKIP LOCKED`, requestID)
+	}
+	return db.Raw(`SELECT billing_status FROM usage_logs WHERE request_id = ? FOR UPDATE`, requestID)
+}
+
 // billUsageRow writes a settled row's billing fields, once per billable
-// request: BenchmarkHotStmtSettleUpdate measures this statement on GORM at
-// 1.31 times pgx's allocations, under the 1.5 limit (gormtest/BASELINE.md).
+// request (BenchmarkHotStmtSettleUpdate, gormtest/BASELINE.md).
 func billUsageRow(db *gorm.DB, p *pending, cost amounts, detail BillingDetail, exprHash string) *gorm.DB {
 	var priceID *int64
 	if p.PriceID > 0 {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
@@ -20,11 +21,10 @@ import (
 //
 // settleTx locks the row and writes its billing fields; reserveTx (a plugin
 // reservation) writes the estimate and registers the reconcile entry. The
-// GORM writes are the production statements (billUsageRow,
-// reserveUsageRow); the lock and the entry stay on pgx, so their GORM form
-// is written out here. The
-// usage_logs insert is a pgx.Batch and the ledger statements belong to
-// package billing; neither is measured here.
+// GORM forms are the production statements (lockPendingRow, billUsageRow,
+// reserveUsageRow, insertSettlementEntry); the pgx forms are the ones they
+// had before. The usage_logs insert is BenchmarkHotSettlerInsert* and the
+// ledger statements belong to package billing; neither is measured here.
 
 // stmtFixture is one pending usage row and its id.
 func stmtFixture(b *testing.B) (*benchSettler, string, int64) {
@@ -73,7 +73,7 @@ func BenchmarkHotStmtSettleLock(b *testing.B) {
 		return pool.QueryRow(ctx, `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`, requestID).Scan(&status)
 	}, func(int) error {
 		var status string
-		return store.G(ctx, pool).Raw(`SELECT billing_status FROM usage_logs WHERE request_id = ? FOR UPDATE`, requestID).Row().Scan(&status)
+		return lockPendingRow(store.G(ctx, pool), requestID, false).Row().Scan(&status)
 	})
 }
 
@@ -130,11 +130,7 @@ func BenchmarkHotStmtReserveEntry(b *testing.B) {
 			"bench", "pgx-"+strconv.Itoa(i), id, (*int64)(nil), at, at).Scan(&entryID)
 	}, func(i int) error {
 		var entryID int64
-		return store.G(ctx, pool).Raw(`
-		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (plugin_key, ref_id) DO NOTHING
-		RETURNING id`,
-			"bench", "gorm-"+strconv.Itoa(i), id, (*int64)(nil), at, at).Row().Scan(&entryID)
+		rv := &core.UsageReservation{PluginKey: "bench", RefID: "gorm-" + strconv.Itoa(i)}
+		return insertSettlementEntry(store.G(ctx, pool), rv, id, nil, at, at).Row().Scan(&entryID)
 	})
 }

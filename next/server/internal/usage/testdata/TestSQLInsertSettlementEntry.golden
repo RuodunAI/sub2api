@@ -1,0 +1,12 @@
+-- sql
+INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (plugin_key, ref_id) DO NOTHING
+		RETURNING id
+-- vars
+$1 string "video"
+$2 string "job-1"
+$3 int64 5
+$4 *int64 nil
+$5 time.Time 2026-11-15 12:00:00 +0000 UTC
+$6 time.Time 2026-11-15 13:00:00 +0000 UTC

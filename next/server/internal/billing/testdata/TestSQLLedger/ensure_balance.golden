@@ -1,0 +1,4 @@
+-- sql
+INSERT INTO user_balances (user_id) VALUES ($1::bigint) ON CONFLICT DO NOTHING
+-- vars
+$1 int64 7
