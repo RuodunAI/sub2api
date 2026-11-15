@@ -24,7 +24,10 @@
 //   the first card stays where it was, the fab hides and the end of the page
 //   scrolls clear of the dock;
 // - docked actions that do not fit fade at the edge hiding them, and a tap on
-//   a button only partly in view brings it into view without pressing it.
+//   a button only partly in view brings it into view without pressing it;
+// - a plugin permission matrix scrolls inside itself, its first column pinned,
+//   and the scope panel of a cell fits the screen; the role editor's plugin
+//   module, a scope open, fits it too.
 import { createRequire } from 'node:module'
 import { after, before, describe, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -70,6 +73,11 @@ const FIRST_SCREEN_PAGES = [
 /** List pages with a bulk bar: ticking a card docks it at the bottom of the screen. */
 const BULK_PAGES = ['/accounts', '/me/api-keys']
 
+/** The plugin permission screens only other pages link to: the plugin's permissions tab, its install and upgrade consent. */
+const PERMISSION_PAGES = ['/plugins/guard?tab=permissions', '/plugins/guard/versions/0.1.0/consent', '/plugins/guard/versions/0.2.0/consent']
+/** Pages with a permission matrix wider than a phone (the permissions tab lists every role). */
+const MATRIX_PAGES = ['/plugins/guard?tab=permissions', '/plugins/guard/versions/0.1.0/consent']
+
 /** A page whose tab bar is wider than a phone, opened on its last tabs. */
 const TABS_PAGE = '/plugins/guard?tab=settings'
 
@@ -114,7 +122,7 @@ for (const name of DEVICES) {
       // The submenus (core directories and plugin sections) start folded; open them all to list every page.
       await page.$$eval('aside nav [aria-expanded="false"]', buttons => buttons.forEach(b => b.click()))
       const sidebar = await page.$$eval('aside nav a[href]', links => links.map(a => a.getAttribute('href')))
-      pages = [...new Set([...sidebar, ...(await settingsPages(page)), ...(await pluginSettingsPages(page))])]
+      pages = [...new Set([...sidebar, ...(await settingsPages(page)), ...(await pluginSettingsPages(page)), ...PERMISSION_PAGES])]
     })
     after(() => browser?.close())
 
@@ -122,6 +130,7 @@ for (const name of DEVICES) {
       assert.ok(pages.length > 10, `pages: ${pages.join(', ')}`)
       for (const path of CARD_PAGES) assert.ok(pages.includes(path), `${path} is not in the menu`)
       assert.ok(pages.includes('/plugins/guard?tab=settings'), 'the installed plugins list opens no settings form')
+      assert.ok(pages.includes('/roles'), 'the role editor is not in the menu')
     })
 
     test('no page scrolls sideways; list pages show cards, the main ones within the first screen', async t => {
@@ -254,6 +263,59 @@ for (const name of DEVICES) {
         })
       }
       assert.ok(overflowing, 'the actions fit the screen on every page: the check needs a wider row')
+    })
+
+    test('a permission matrix scrolls inside itself, its first column pinned', async t => {
+      for (const path of MATRIX_PAGES) {
+        await t.test(path, async () => {
+          await page.goto(`${BASE}${path}`)
+          await page.locator('[data-testid="perm-matrix"] tr[data-permission]').first().waitFor()
+          const m = await page.evaluate(() => {
+            const table = document.querySelector('[data-testid="perm-matrix"] table')
+            const scroller = table.parentElement
+            const pinned = () => table.querySelector('tr[data-permission] th').getBoundingClientRect().left
+            const before = pinned()
+            scroller.scrollLeft = scroller.scrollWidth
+            const box = scroller.getBoundingClientRect()
+            return {
+              hidden: scroller.scrollWidth - scroller.clientWidth,
+              scrolled: scroller.scrollLeft,
+              moved: pinned() - before,
+              lastRight: Array.from(table.querySelectorAll('thead th')).pop().getBoundingClientRect().right - box.right,
+              scrollWidth: document.documentElement.scrollWidth
+            }
+          })
+          assert.ok(m.hidden > 0, `${path}: the matrix fits the screen, the check needs more roles`)
+          assert.ok(m.scrolled > 0, `${path}: the matrix does not scroll`)
+          assert.ok(Math.abs(m.moved) <= 1, `${path}: the first column moved ${m.moved}px`)
+          assert.ok(m.lastRight <= 1, `${path}: the last column stays ${m.lastRight}px out of reach`)
+          assert.ok(m.scrollWidth <= device.viewport.width, `${path} is ${m.scrollWidth}px wide on a ${device.viewport.width}px screen`)
+        })
+      }
+    })
+
+    test("a cell's scope panel fits the screen", async () => {
+      await page.goto(`${BASE}/plugins/guard?tab=permissions`)
+      // "Chosen…" only opens the panel: nothing changes, nothing to save.
+      await page.locator('tr[data-permission="plugin.guard:rules:manage"] td[data-role="operator"] select').selectOption({ label: 'Chosen…' })
+      const panel = page.locator('[data-testid="matrix-scope-panel"]')
+      await panel.locator('[data-testid="scope-refs"]').waitFor()
+      const m = await panel.evaluate(el => ({ ...el.getBoundingClientRect().toJSON(), scrollWidth: document.documentElement.scrollWidth }))
+      assert.ok(m.left >= 0 && m.right <= device.viewport.width, `the panel spans ${m.left}px to ${m.right}px`)
+      assert.ok(m.scrollWidth <= device.viewport.width, `the page is ${m.scrollWidth}px wide on a ${device.viewport.width}px screen`)
+    })
+
+    test("the role editor's plugin module fits the screen, a scope open", async () => {
+      await page.goto(`${BASE}/roles`)
+      // The moderator holds no scoped core action, whose scopes would open here too.
+      await page.locator('main button', { has: page.locator('.font-mono', { hasText: /^moderator$/ }) }).click()
+      const guard = page.locator('[data-module="plugin.guard"]')
+      // Ticked, rules:manage opens its scopes with the plugin's rule set picker. Not saved.
+      await guard.locator('input[data-permission="plugin.guard:rules:manage"]').check()
+      await guard.locator('[data-testid="scope-refs"]').waitFor()
+      const m = await guard.evaluate(el => ({ right: el.getBoundingClientRect().right, scrollWidth: document.documentElement.scrollWidth }))
+      assert.ok(m.right <= device.viewport.width, `the module reaches ${m.right}px`)
+      assert.ok(m.scrollWidth <= device.viewport.width, `/roles is ${m.scrollWidth}px wide on a ${device.viewport.width}px screen`)
     })
   })
 }
