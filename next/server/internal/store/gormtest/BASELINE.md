@@ -326,7 +326,6 @@ balance, quota, credential refresh and settings statements of package
 store, which the console, the refresh jobs and the debounced passive quota
 writer (`SaveAccountQuota`, at most every 30 s per account) run.
 
-
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no
