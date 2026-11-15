@@ -9,10 +9,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Candidates returns active, schedulable accounts of the group whose account
@@ -71,9 +73,9 @@ func (s *Service) GroupHasType(ctx context.Context, groupID int64, types []core.
 		plugins[i], kinds[i] = t.PluginKey, t.Type
 	}
 	var ok bool
-	err := s.d.DB.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
-		JOIN unnest($2::text[], $3::text[]) AS t(plugin_key, type) ON t.plugin_key = a.plugin_key AND t.type = a.type
-		WHERE ag.group_id = $1 AND a.deleted_at IS NULL)`, groupID, plugins, kinds).Scan(&ok)
+	err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT EXISTS(SELECT 1 FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
+		JOIN unnest(?::text[], ?::text[]) AS t(plugin_key, type) ON t.plugin_key = a.plugin_key AND t.type = a.type
+		WHERE ag.group_id = ? AND a.deleted_at IS NULL)`, store.Strings(plugins), store.Strings(kinds), groupID).Row().Scan(&ok)
 	return ok, err
 }
 
@@ -81,23 +83,10 @@ func (s *Service) GroupHasType(ctx context.Context, groupID int64, types []core.
 // with why. Not cached: only a dispatch that found no account asks, to record
 // what the group holds (CONTRACTS §24.6).
 func (s *Service) Unschedulable(ctx context.Context, groupID int64) ([]core.UnschedulableAccount, error) {
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id, a.status, a.schedulable, a.auto_disabled_until
-		FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
-		WHERE ag.group_id = $1 AND a.deleted_at IS NULL ORDER BY a.id LIMIT 200`, groupID)
-	if err != nil {
-		return nil, err
-	}
-	type row struct {
-		id          int64
-		status      string
-		schedulable bool
-		until       *time.Time
-	}
-	all, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (row, error) {
-		var a row
-		return a, r.Scan(&a.id, &a.status, &a.schedulable, &a.until)
-	})
-	if err != nil {
+	var all []groupMember
+	if err := store.G(ctx, s.d.DB.Pool).Table("accounts a").Select("a.id, a.status, a.schedulable, a.auto_disabled_until").
+		Joins("JOIN account_groups ag ON ag.account_id = a.id").Where("ag.group_id = ? AND a.deleted_at IS NULL", groupID).
+		Order("a.id").Limit(200).Scan(&all).Error; err != nil {
 		return nil, err
 	}
 	now := time.Now()
@@ -105,20 +94,20 @@ func (s *Service) Unschedulable(ctx context.Context, groupID int64) ([]core.Unsc
 	var offered []int64
 	for _, a := range all {
 		switch {
-		case a.status == "auto_disabled" && a.schedulable && a.until != nil && !now.Before(*a.until):
-			offered = append(offered, a.id) // lazily expired: served again
-		case a.status == "auto_disabled":
-			u := core.UnschedulableAccount{ID: a.id, Reason: "auto_disabled"}
-			if a.until != nil {
-				u.Until = *a.until
+		case a.Status == "auto_disabled" && a.Schedulable && a.AutoDisabledUntil != nil && !now.Before(*a.AutoDisabledUntil):
+			offered = append(offered, a.ID) // lazily expired: served again
+		case a.Status == "auto_disabled":
+			u := core.UnschedulableAccount{ID: a.ID, Reason: "auto_disabled"}
+			if a.AutoDisabledUntil != nil {
+				u.Until = *a.AutoDisabledUntil
 			}
 			out = append(out, u)
-		case a.status != "active":
-			out = append(out, core.UnschedulableAccount{ID: a.id, Reason: "disabled"})
-		case !a.schedulable:
-			out = append(out, core.UnschedulableAccount{ID: a.id, Reason: "unschedulable"})
+		case a.Status != "active":
+			out = append(out, core.UnschedulableAccount{ID: a.ID, Reason: "disabled"})
+		case !a.Schedulable:
+			out = append(out, core.UnschedulableAccount{ID: a.ID, Reason: "unschedulable"})
 		default:
-			offered = append(offered, a.id)
+			offered = append(offered, a.ID)
 		}
 	}
 	if len(offered) == 0 || s.d.Redis == nil {
@@ -140,6 +129,14 @@ func (s *Service) Unschedulable(ctx context.Context, groupID int64) ([]core.Unsc
 	return out, nil
 }
 
+// groupMember is an account of a group, as Unschedulable reads it.
+type groupMember struct {
+	ID                int64
+	Status            string
+	Schedulable       bool
+	AutoDisabledUntil *time.Time
+}
+
 // groupSnapshot returns the group's schedulable accounts: active ones and
 // those under a timed automatic disable, whose release times it lists.
 func (s *Service) groupSnapshot(ctx context.Context, groupID int64) (groupSnap, error) {
@@ -152,6 +149,8 @@ func (s *Service) groupSnapshot(ctx context.Context, groupID int64) (groupSnap, 
 		return snap, nil
 	}
 	v, err, _ := s.sf.Do("g:"+itoa(groupID), func() (any, error) {
+		// A miss of the snapshot cache runs this read on a gateway request.
+		//gormguard:allow-pgx request path on a cache miss: GORM takes 2.4x the allocations (gormtest/BASELINE.md)
 		rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
 				a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
 				COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END
@@ -208,7 +207,7 @@ func (s *Service) Load(ctx context.Context, id int64) (*core.Account, error) {
 		acc := snap.acc
 		return &acc, nil
 	}
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, core.AllScope, false)
+	a, err := s.loadLive(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +238,17 @@ func (s *Service) Load(ctx context.Context, id int64) (*core.Account, error) {
 	}
 	s.cacheMu.Unlock()
 	return &acc, nil
+}
+
+// loadLive is loadRow of any live account, unlocked, for Load: a miss of
+// its cache runs it on a gateway request.
+func (s *Service) loadLive(ctx context.Context, id int64) (*row, error) {
+	//gormguard:allow-pgx request path on a cache miss: GORM takes 3.3x the allocations (gormtest/BASELINE.md)
+	a, err := scanRow(s.d.DB.Pool.QueryRow(ctx, selectRow+` WHERE a.id = $1 AND a.deleted_at IS NULL`, id))
+	if store.IsNoRows(err) {
+		return nil, notFound(ctx)
+	}
+	return a, err
 }
 
 // IsCoolingDown reports whether the account has an active cooldown.
@@ -276,9 +286,8 @@ func (s *Service) SetCooldown(ctx context.Context, id int64, until time.Time, re
 	if s.d.DB == nil || s.d.Events == nil {
 		return nil
 	}
-	var pluginKey, typ, name string
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT plugin_key, type, name FROM accounts WHERE id = $1`, id).
-		Scan(&pluginKey, &typ, &name); err != nil {
+	var a model.Account
+	if err := store.G(ctx, s.d.DB.Pool).Select("plugin_key, type, name").Where("id = ?", id).Take(&a).Error; err != nil {
 		if store.IsNoRows(err) {
 			return nil
 		}
@@ -286,7 +295,7 @@ func (s *Service) SetCooldown(ctx context.Context, id int64, until time.Time, re
 	}
 	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountStatusChanged,
-			Payload: statusPayload(id, pluginKey, typ, name, "cooldown", reason, &until)})
+			Payload: statusPayload(id, a.PluginKey, a.Type, a.Name, "cooldown", reason, &until)})
 	})
 }
 
@@ -350,9 +359,7 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		ids = append(ids, id)
 		ts = append(ts, at)
 	}
-	_, err := s.d.DB.Pool.Exec(ctx, `UPDATE accounts a SET last_used_at = v.t
-		FROM (SELECT unnest($1::bigint[]) AS id, unnest($2::timestamptz[]) AS t) v
-		WHERE a.id = v.id AND (a.last_used_at IS NULL OR a.last_used_at < v.t)`, ids, ts)
+	err := flushLastUsed(store.G(ctx, s.d.DB.Pool), ids, ts).Error
 	if err != nil {
 		s.touchMu.Lock()
 		for id, at := range pending {
@@ -363,4 +370,12 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		s.touchMu.Unlock()
 	}
 	return err
+}
+
+// flushLastUsed moves last_used_at of each account ids[i] forward to ts[i],
+// leaving updated_at alone.
+func flushLastUsed(db *gorm.DB, ids []int64, ts []time.Time) *gorm.DB {
+	return db.Exec(`UPDATE accounts a SET last_used_at = v.t
+		FROM (SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v
+		WHERE a.id = v.id AND (a.last_used_at IS NULL OR a.last_used_at < v.t)`, store.Int64s(ids), store.Times(ts))
 }

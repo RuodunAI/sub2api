@@ -101,27 +101,14 @@ func (s *Service) getAccountStats(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	scope := s.scopeOf(ctx, perm.AccountRead)
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id FROM accounts a WHERE a.id=ANY($1) AND a.deleted_at IS NULL AND `+core.AccountRows.SQL(2),
-		append([]any{ids}, core.AccountRows.Args(scope)...)...)
-	if err != nil {
+	var found []int64
+	if err := liveInScope(store.G(ctx, s.d.DB.Pool), ids, scope).Pluck("a.id", &found).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	visible := make(map[int64]bool, len(ids))
-	for rows.Next() {
-		var id int64
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			httpapi.Fail(c, err)
-			return
-		}
+	for _, id := range found {
 		visible[id] = true
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
 	}
 	filtered := ids[:0]
 	for _, id := range ids {

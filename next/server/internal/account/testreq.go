@@ -16,6 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/httpfacts"
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/requestfailure"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -25,6 +27,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/usagerules"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
@@ -188,12 +192,18 @@ func (s *Service) recordTest(ctx context.Context, id int64, res TestResult) {
 	}
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTestTimeout)
 	defer cancel()
-	if _, err := s.d.DB.Pool.Exec(wctx, `UPDATE accounts SET last_test_at = now(), last_test_ok = $2,
-		last_test_latency_ms = $3, last_test_model = $4, last_test_message = $5,
-		last_test_status = $6, last_test_error_code = $7, last_test_error_source = $8 WHERE id = $1`,
-		id, res.OK, min(res.LatencyMs, math.MaxInt32), res.Model, msg, res.Status, cutBytes(res.ErrorCode, 128), res.ErrorSource); err != nil {
+	if err := writeLastTest(store.G(wctx, s.d.DB.Pool), id, res, msg).Error; err != nil {
 		slog.WarnContext(ctx, "account: record last test", "account_id", id, "err", err)
 	}
+}
+
+// writeLastTest writes the last test of account id, leaving updated_at alone.
+func writeLastTest(db *gorm.DB, id int64, res TestResult, msg string) *gorm.DB {
+	return db.Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{
+		"last_test_at": gorm.Expr("now()"), "last_test_ok": res.OK, "last_test_latency_ms": min(res.LatencyMs, math.MaxInt32),
+		"last_test_model": res.Model, "last_test_message": msg, "last_test_status": res.Status,
+		"last_test_error_code": cutBytes(res.ErrorCode, 128), "last_test_error_source": res.ErrorSource,
+	})
 }
 
 // cutBytes returns at most n bytes of s, cut at a rune boundary.

@@ -96,7 +96,8 @@ func (s *Service) deliverAccountLifecycle(ctx context.Context, id int64, pluginK
 	if event == core.EventAccountDeleted {
 		phase = "deleted"
 	}
-	account, err := scanRow(s.d.DB.Pool.QueryRow(ctx, selectRow+` WHERE a.id=$1 AND a.plugin_key=$2`, id, pluginKey))
+	g := store.G(ctx, s.d.DB.Pool)
+	account, err := scanRow(selectRows(g).Where("a.id = ? AND a.plugin_key = ?", id, pluginKey).Row())
 	if store.IsNoRows(err) {
 		return nil
 	}
@@ -108,7 +109,7 @@ func (s *Service) deliverAccountLifecycle(ctx context.Context, id int64, pluginK
 		return nil
 	}
 	var generation int64
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT generation FROM account_lifecycle_sync WHERE account_id=$1),0)`, id).Scan(&generation); err != nil {
+	if err := g.Raw(`SELECT COALESCE((SELECT generation FROM account_lifecycle_sync WHERE account_id=?),0)`, id).Row().Scan(&generation); err != nil {
 		return err
 	}
 	result, err := s.accountLifecycle(ctx, binding, &pluginv1.AccountLifecycleRequest{Phase: phase, Account: account.lifecycleSnapshot(), ChangedFields: changed})

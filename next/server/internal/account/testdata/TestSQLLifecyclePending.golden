@@ -1,0 +1,7 @@
+-- sql
+INSERT INTO "account_lifecycle_sync" ("account_id","status") VALUES ($1,$2) ON CONFLICT ("account_id") DO UPDATE SET "code"=$3,"generation"=account_lifecycle_sync.generation+1,"status"=$4,"updated_at"=now() RETURNING "generation","code","updated_at"
+-- vars
+$1 int64 5
+$2 string "pending"
+$3 string ""
+$4 string "pending"

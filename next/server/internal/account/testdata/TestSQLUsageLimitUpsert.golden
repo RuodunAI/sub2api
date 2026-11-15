@@ -1,0 +1,15 @@
+-- sql
+INSERT INTO account_usage_limits (account_id, raw_cost, enabled, amount, period, period_count, anchor, timezone, waived_window, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, clock_timestamp())
+		ON CONFLICT (account_id) DO UPDATE SET raw_cost = EXCLUDED.raw_cost, enabled = EXCLUDED.enabled, amount = EXCLUDED.amount,
+			period = EXCLUDED.period, period_count = EXCLUDED.period_count, anchor = EXCLUDED.anchor, timezone = EXCLUDED.timezone,
+			waived_window = NULL, updated_at = clock_timestamp()
+-- vars
+$1 int64 5
+$2 bool false
+$3 bool true
+$4 decimal.Decimal 10
+$5 string "day"
+$6 int 1
+$7 *time.Time nil
+$8 string "UTC"

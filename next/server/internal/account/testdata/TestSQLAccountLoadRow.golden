@@ -1,0 +1,16 @@
+-- sql
+SELECT a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.settings, a.proxy_id,
+	a.status, a.status_reason, a.schedulable, a.auto_disable, a.priority, a.weight, a.max_concurrency,
+	a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment, a.last_used_at,
+	a.created_by, u.email, a.created_at, a.updated_at,
+	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
+	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.rate_limit_tier,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked FROM accounts a LEFT JOIN users u ON u.id = a.created_by WHERE (a.id = $1 AND a.deleted_at IS NULL) AND (($2::boolean OR COALESCE(a.created_by = $3::bigint, false) OR a.id = ANY($4::bigint[]) OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ($5::boolean OR ag.group_id = ANY($6::bigint[]))) OR EXISTS (SELECT 1 FROM account_groups ag JOIN unnest($7::bigint[], $8::bigint[]) sp(g, x) ON sp.x = ag.account_id AND (sp.g = 0 OR sp.g = ag.group_id) WHERE ag.account_id = a.id))) FOR UPDATE OF "a"
+-- vars
+$1 int64 5
+$2 bool false
+$3 int64 7
+$4 store.Int64s [3 4]
+$5 bool false
+$6 store.Int64s [9]
+$7 store.Int64s []
+$8 store.Int64s []

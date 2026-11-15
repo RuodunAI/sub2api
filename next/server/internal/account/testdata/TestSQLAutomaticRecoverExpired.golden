@@ -1,0 +1,6 @@
+-- sql
+UPDATE accounts a SET status='active',status_reason='',auto_disabled_until=NULL,updated_at=clock_timestamp()
+			FROM (SELECT id FROM accounts WHERE deleted_at IS NULL AND status='auto_disabled' AND auto_disabled_until<=clock_timestamp()
+				ORDER BY auto_disabled_until,id LIMIT 200 FOR UPDATE SKIP LOCKED) due
+			WHERE a.id=due.id RETURNING a.id,a.name,a.plugin_key,a.type
+-- vars

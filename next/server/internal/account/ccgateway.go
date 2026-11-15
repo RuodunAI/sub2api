@@ -11,13 +11,16 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/environment"
 
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func containerSettingKeys(plugin string) []string {
@@ -238,15 +241,8 @@ func (s *Service) commitCCGatewayReauth(c *gin.Context) {
 // evicted outside this transaction.
 func (s *Service) resetForReauth(ctx context.Context, tx pgx.Tx, a *row) (bool, error) {
 	release := a.Status == "error" || a.Status == "auto_disabled" && !limitDisabled(a.Status, a.AutoDisabledSource)
-	if _, err := tx.Exec(ctx, `UPDATE accounts SET
-		status = CASE WHEN $2 THEN 'active' ELSE status END,
-		status_reason = CASE WHEN $2 THEN '' ELSE status_reason END,
-		auto_disabled_until = CASE WHEN NOT $2 AND status = 'auto_disabled' THEN auto_disabled_until END,
-		deferred_auto_disable = false, deferred_auto_disable_reason = '', deferred_auto_disabled_until = NULL,
-		last_test_at = NULL, last_test_ok = NULL, last_test_latency_ms = NULL, last_test_model = NULL, last_test_message = NULL,
-		last_test_status = NULL, last_test_error_code = NULL, last_test_error_source = NULL,
-		updated_at = clock_timestamp()
-		WHERE id = $1`, a.ID, release); err != nil {
+	g := store.G(ctx, tx)
+	if err := resetAccountState(g, a.ID, release).Error; err != nil {
 		return false, err
 	}
 	if err := store.ResetAccountQuota(ctx, tx, a.ID); err != nil {
@@ -257,13 +253,28 @@ func (s *Service) resetForReauth(ctx context.Context, tx pgx.Tx, a *row) (bool, 
 			return false, err
 		}
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM account_balances WHERE account_id = $1`, a.ID); err != nil {
+	if err := g.Where("account_id = ?", a.ID).Delete(&model.AccountBalance{}).Error; err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM account_credential_refresh WHERE account_id = $1`, a.ID); err != nil {
+	if err := g.Where("account_id = ?", a.ID).Delete(&model.AccountCredentialRefresh{}).Error; err != nil {
 		return false, err
 	}
 	return release, nil
+}
+
+// resetAccountState is the accounts part of resetForReauth: release brings
+// an error or automatic disable back to active; the deferred disable and
+// the last test go either way.
+func resetAccountState(db *gorm.DB, id int64, release bool) *gorm.DB {
+	return db.Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{
+		"status":                gorm.Expr("CASE WHEN ? THEN 'active' ELSE status END", release),
+		"status_reason":         gorm.Expr("CASE WHEN ? THEN '' ELSE status_reason END", release),
+		"auto_disabled_until":   gorm.Expr("CASE WHEN NOT ? AND status = 'auto_disabled' THEN auto_disabled_until END", release),
+		"deferred_auto_disable": false, "deferred_auto_disable_reason": "", "deferred_auto_disabled_until": nil,
+		"last_test_at": nil, "last_test_ok": nil, "last_test_latency_ms": nil, "last_test_model": nil, "last_test_message": nil,
+		"last_test_status": nil, "last_test_error_code": nil, "last_test_error_source": nil,
+		"updated_at": gorm.Expr("clock_timestamp()"),
+	})
 }
 
 // fillRuntimeParked sets runtime_parked on the CCGateway accounts of views
