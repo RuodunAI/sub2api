@@ -519,9 +519,11 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 }
 
 // upsertManifestTask records the plugin_manifest row of t; a runtime task
-// of the same name keeps its row. Raw SQL: the upsert is conditional, and
-// schedule, max_attempts and seen_version have defaults that a model insert
-// would take for an explicit zero.
+// of the same name keeps its row. Raw SQL: the conflict branch only
+// overwrites a row of the same source (ON CONFLICT ... DO UPDATE ... WHERE),
+// and VALUES and the branch set seen_at, and the branch updated_at, to
+// now(), which a model's time.Time cannot carry; the clause.OnConflict tree
+// of EXCLUDED columns and expressions would only restate this statement.
 func upsertManifestTask(g *gorm.DB, t *task.Task, version string) *gorm.DB {
 	return g.Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, now())
@@ -823,9 +825,9 @@ var errSlotTaken = errors.New("jobs: slot already ran")
 // insertRun records the start of a run. A scheduled cluster run claims its
 // slot: errSlotTaken when the slot already has a run.
 func (b *Bridge) insertRun(ctx context.Context, key, jobID string, scope core.TaskScope, run core.TaskRun) (int64, error) {
-	// Raw SQL: started_at is the server's now(), and scope has a default a
-	// model insert would take for "". Row().Scan keeps the no-row answer of
-	// a taken slot.
+	// Raw SQL: started_at is the database's now(), which a model's time.Time
+	// cannot carry (store stamps only created_at and updated_at).
+	// Row().Scan keeps the no-row answer of a taken slot (claimSlot).
 	var id int64
 	g := store.G(ctx, b.db.Pool)
 	if scope == core.TaskCluster && !run.Manual {

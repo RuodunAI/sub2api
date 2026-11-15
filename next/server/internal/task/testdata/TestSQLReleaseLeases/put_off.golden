@@ -1,0 +1,8 @@
+-- sql
+UPDATE "scheduled_tasks" SET "lease_job_id"=$1,"lease_node"=$2,"lease_until"=$3,"updated_at"=clock_timestamp() WHERE name = $4 AND lease_job_id = $5
+-- vars
+$1 nil
+$2 nil
+$3 nil
+$4 string "core.test"
+$5 int64 42

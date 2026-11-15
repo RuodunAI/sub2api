@@ -696,19 +696,12 @@ func (s *Service) clusterRuns(ctx context.Context, name string, statuses []strin
 		var id int64
 		var scheduled time.Time
 		var attempted, finalized *time.Time
-		var outputJSON []byte
+		var output store.JSON[*runOutput]
 		var errs riverErrors
 		var attemptedBy store.Strings
 		if err := rows.Scan(&id, &v.Status, &scheduled, &attempted, &finalized, &v.Attempt, &v.MaxAttempts, &v.Manual,
-			&outputJSON, &errs, &attemptedBy); err != nil {
+			&output, &errs, &attemptedBy); err != nil {
 			return RunsPage{}, err
-		}
-		// A missing output (SQL NULL) and a JSON null both leave output nil.
-		var output *runOutput
-		if outputJSON != nil {
-			if err := json.Unmarshal(outputJSON, &output); err != nil {
-				return RunsPage{}, err
-			}
 		}
 		if len(out.Runs) == limit {
 			out.NextBeforeID = &lastID
@@ -717,9 +710,10 @@ func (s *Service) clusterRuns(ctx context.Context, name string, statuses []strin
 		lastID = id
 		v.ID = strconv.FormatInt(id, 10)
 		v.ScheduledAt, v.StartedAt, v.FinishedAt = &scheduled, attempted, finalized
-		if output != nil {
-			v.Node, v.DurationMS, v.Count = output.Node, output.DurationMS, output.Count
-			v.Message, v.Error = output.Message, output.Error
+		// A missing output (SQL NULL) and a JSON null both leave it nil.
+		if o := output.V; o != nil {
+			v.Node, v.DurationMS, v.Count = o.Node, o.DurationMS, o.Count
+			v.Message, v.Error = o.Message, o.Error
 		} else if len(attemptedBy) > 0 {
 			v.Node = attemptedBy[len(attemptedBy)-1]
 		}

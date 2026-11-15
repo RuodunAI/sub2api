@@ -223,8 +223,11 @@ func (b *clusterBackend) upsert(ctx context.Context, t *Task) error {
 	if t.PluginKey != "" {
 		pluginKey = &t.PluginKey
 	}
-	// Raw SQL: schedule, max_attempts and seen_version have defaults that a
-	// model insert would take for an explicit zero, and seen_at is now().
+	// Raw SQL: VALUES and the conflict branch set seen_at, and the branch
+	// updated_at, to now(), which a model's time.Time cannot carry (store
+	// stamps only created_at and updated_at, and only on INSERT); the
+	// clause.OnConflict tree of EXCLUDED columns and expressions would only
+	// restate this statement.
 	return store.G(ctx, b.db.Pool).Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, now())
 		ON CONFLICT (name) DO UPDATE SET source = EXCLUDED.source, plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
@@ -240,10 +243,12 @@ func taskRowExists(ctx context.Context, q store.Querier, name string) (bool, err
 	return n > 0, err
 }
 
-// releasedLease is the SET list that frees a task's lease, stamped with at
-// (now() or clock_timestamp()).
-func releasedLease(at string) map[string]any {
-	return map[string]any{"lease_job_id": nil, "lease_node": nil, "lease_until": nil, "updated_at": gorm.Expr(at)}
+// releaseLeases frees the leases of the tasks cond picks and sets
+// updated_at to at, now() or clock_timestamp() as the raw statement each
+// caller replaced had it.
+func releaseLeases(db *gorm.DB, at, cond string, args ...any) *gorm.DB {
+	return db.Model(&model.ScheduledTask{}).Where(cond, args...).
+		Updates(map[string]any{"lease_job_id": nil, "lease_node": nil, "lease_until": nil, "updated_at": gorm.Expr(at)})
 }
 
 // watchAdmission starts River while this node may do background work and
@@ -537,8 +542,7 @@ func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (b
 func (b *clusterBackend) finish(ctx context.Context, t *Task, jobID int64, o runOutput, putOff bool) error {
 	g := store.G(ctx, b.db.Pool)
 	if putOff {
-		return g.Model(&model.ScheduledTask{}).Where("name = ? AND lease_job_id = ?", t.Name, jobID).
-			Updates(releasedLease("clock_timestamp()")).Error
+		return releaseLeases(g, "clock_timestamp()", "name = ? AND lease_job_id = ?", t.Name, jobID).Error
 	}
 	// scheduled_tasks.last_status keeps the 0.1.235 values (its CHECK
 	// constraint): a continued run is a success there; its run record keeps

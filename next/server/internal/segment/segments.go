@@ -2,7 +2,6 @@ package segment
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -11,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -76,28 +76,25 @@ func selectSegments(db *gorm.DB) *gorm.DB {
 // segmentRow is a row of segmentColumns.
 type segmentRow struct {
 	core.SegmentRef
-	Description       string          `gorm:"column:description"`
-	Discount          decimal.Decimal `gorm:"column:discount"`
-	IsDefault         bool            `gorm:"column:is_default"`
-	CreatedAt         time.Time       `gorm:"column:created_at"`
-	MemberCount       int64           `gorm:"column:member_count"`
-	GrantedGroups     json.RawMessage `gorm:"column:granted_groups"`
-	RateOverrideCount int64           `gorm:"column:rate_override_count"`
-	DisplayName       string          `gorm:"column:display_name"`
-	OriginID          *int64          `gorm:"column:origin_id"`
-	OriginKind        *string         `gorm:"column:origin_kind"`
-	OriginName        *string         `gorm:"column:origin_name"`
+	Description       string                      `gorm:"column:description"`
+	Discount          decimal.Decimal             `gorm:"column:discount"`
+	IsDefault         bool                        `gorm:"column:is_default"`
+	CreatedAt         time.Time                   `gorm:"column:created_at"`
+	MemberCount       int64                       `gorm:"column:member_count"`
+	GrantedGroups     store.JSON[[]core.GroupRef] `gorm:"column:granted_groups"`
+	RateOverrideCount int64                       `gorm:"column:rate_override_count"`
+	DisplayName       string                      `gorm:"column:display_name"`
+	OriginID          *int64                      `gorm:"column:origin_id"`
+	OriginKind        *string                     `gorm:"column:origin_kind"`
+	OriginName        *string                     `gorm:"column:origin_name"`
 }
 
 // segment is the row as a caller may see it (Masked).
-func (r *segmentRow) segment(showUsers bool) (*Segment, error) {
+func (r *segmentRow) segment(showUsers bool) *Segment {
 	sg := Segment{SegmentRef: r.SegmentRef, Description: r.Description, Discount: r.Discount, IsDefault: r.IsDefault,
-		MemberCount: r.MemberCount, RateOverrideCount: r.RateOverrideCount, CreatedAt: r.CreatedAt}
-	if err := json.Unmarshal(r.GrantedGroups, &sg.GrantedGroups); err != nil {
-		return nil, err
-	}
+		MemberCount: r.MemberCount, GrantedGroups: r.GrantedGroups.V, RateOverrideCount: r.RateOverrideCount, CreatedAt: r.CreatedAt}
 	if sg.UserID == nil {
-		return &sg, nil
+		return &sg
 	}
 	sg.Personal = &Personal{}
 	if showUsers {
@@ -107,7 +104,7 @@ func (r *segmentRow) segment(showUsers bool) (*Segment, error) {
 		sg.Origin = &core.SegmentRef{ID: *r.OriginID, Kind: *r.OriginKind, Name: *r.OriginName}
 	}
 	sg.SegmentRef = Masked(sg.SegmentRef, showUsers)
-	return &sg, nil
+	return &sg
 }
 
 func (s *Service) load(ctx context.Context, id int64) (*Segment, error) {
@@ -123,10 +120,7 @@ func (s *Service) load(ctx context.Context, id int64) (*Segment, error) {
 	if err != nil {
 		return nil, err
 	}
-	sg, err := row.segment(show)
-	if err != nil {
-		return nil, err
-	}
+	sg := row.segment(show)
 	return sg, s.countRules(ctx, sg)
 }
 
@@ -159,28 +153,27 @@ func (s *Service) render(c *gin.Context, id int64, respond func(*gin.Context, an
 	respond(c, sg)
 }
 
-// searchSegments narrows db to the segments matching q. Users are only
-// searched for callers that may read them: a match would tell an email apart
-// from the others.
-func searchSegments(db *gorm.DB, q string, showUsers bool) *gorm.DB {
+// searchSegments adds to f the condition of the segments matching q. Users
+// are only searched for callers that may read them: a match would tell an
+// email apart from the others.
+func searchSegments(f *store.Conds, q string, showUsers bool) {
 	pattern := "%" + store.Like(q) + "%"
 	cond, args := `s.name ILIKE ? OR s.description ILIKE ?`, []any{pattern, pattern}
 	if showUsers {
 		cond, args = cond+` OR u.email ILIKE ? OR u.display_name ILIKE ?`, append(args, pattern, pattern)
 	}
-	return db.Where(`(`+cond+`)`, args...)
+	f.And(`(`+cond+`)`, args...)
 }
 
 // listFilter narrows the segments s to those of the kind that match q ("" =
 // any).
 func listFilter(kind, q string, showUsers bool) func(*gorm.DB) *gorm.DB {
-	return func(db *gorm.DB) *gorm.DB {
-		db = db.Where("s.kind = ?", kind)
-		if q != "" {
-			db = searchSegments(db, q, showUsers)
-		}
-		return db
+	var f store.Conds
+	f.And("s.kind = ?", kind)
+	if q != "" {
+		searchSegments(&f, q, showUsers)
 	}
+	return f.Scope()
 }
 
 // list returns a page of the named segments, the default one first, or with
@@ -211,12 +204,7 @@ func (s *Service) list(c *gin.Context) {
 	}
 	items := make([]*Segment, 0, len(rows))
 	for i := range rows {
-		sg, err := rows[i].segment(show)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, sg)
+		items = append(items, rows[i].segment(show))
 	}
 	if err := s.countRules(ctx, items...); err != nil {
 		httpapi.Fail(c, err)
@@ -278,11 +266,9 @@ func (in *segmentInput) validate(ctx context.Context, kind string, create bool) 
 // others keep their value.
 func (in *segmentInput) columns() map[string]any {
 	set := map[string]any{"updated_at": gorm.Expr("now()")}
-	for column, v := range map[string]*string{"name": in.Name, "description": in.Description, "discount": in.Discount} {
-		if v != nil {
-			set[column] = *v
-		}
-	}
+	store.SetIf(set, "name", in.Name)
+	store.SetIf(set, "description", in.Description)
+	store.SetIf(set, "discount", in.Discount)
 	return set
 }
 
@@ -335,11 +321,16 @@ func (s *Service) update(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if err = store.G(ctx, s.db.Pool).Model(&model.Segment{}).Where("id = ?", id).Updates(in.columns()).Error; err != nil {
+	if err = updateSegment(store.G(ctx, s.db.Pool), id, &in).Error; err != nil {
 		httpapi.Fail(c, nameTaken(ctx, err))
 		return
 	}
 	s.render(c, id, httpapi.OK)
+}
+
+// updateSegment writes the fields of in present to segment id.
+func updateSegment(db *gorm.DB, id int64, in *segmentInput) *gorm.DB {
+	return db.Model(&model.Segment{}).Where("id = ?", id).Updates(in.columns())
 }
 
 // delete removes a named segment with its grants, rates and model prices
@@ -353,7 +344,7 @@ func (s *Service) delete(c *gin.Context) {
 	}
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		// The lock keeps new members out until the segment is gone.
-		kind, isDefault, err := segmentKind(ctx, tx, id, "UPDATE")
+		kind, isDefault, err := segmentKind(ctx, tx, id, clause.LockingStrengthUpdate)
 		switch {
 		case err != nil:
 			return err
@@ -375,8 +366,7 @@ func (s *Service) delete(c *gin.Context) {
 			return err
 		}
 		g := store.G(ctx, tx)
-		if err := g.Model(&model.User{}).Where("id = ANY(?)", store.Int64s(members)).
-			Update("segment_id", gorm.Expr("default_segment_id()")).Error; err != nil {
+		if err := setUserSegment(g, gorm.Expr("default_segment_id()"), "id = ANY(?)", store.Int64s(members)).Error; err != nil {
 			return err
 		}
 		return g.Delete(&model.Segment{}, id).Error

@@ -24,6 +24,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
@@ -482,7 +483,7 @@ var keyStatusFilters = map[string]string{
 // group_id.
 func mineFilter(c *gin.Context, userID int64) (func(*gorm.DB) *gorm.DB, error) {
 	ctx := c.Request.Context()
-	var f filter
+	var f store.Conds
 	f.And("k.deleted_at IS NULL AND k.user_id = ?", userID)
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
 		// PostgreSQL takes neither as text.
@@ -512,18 +513,8 @@ func mineFilter(c *gin.Context, userID int64) (func(*gorm.DB) *gorm.DB, error) {
 		}
 		f.And("k.group_id = ?", id)
 	}
-	return f.scope, nil
+	return f.Scope(), nil
 }
-
-// filter collects conditions joined with AND, as a GORM scope.
-type filter []func(*gorm.DB) *gorm.DB
-
-// And appends cond with its arguments (? placeholders).
-func (f *filter) And(cond string, args ...any) {
-	*f = append(*f, func(db *gorm.DB) *gorm.DB { return db.Where(cond, args...) })
-}
-
-func (f filter) scope(db *gorm.DB) *gorm.DB { return db.Scopes(f...) }
 
 // searchedPrefix is the key prefix the search text q asks for, or "" when q
 // is not the start of a key: KeyPrefix or less starts every key, so it would
@@ -575,7 +566,7 @@ func usableGroup(db *gorm.DB, userID, groupID int64) *gorm.DB {
 	return db.Table("groups g").Select("true").
 		Where("g.id = ?", groupID).
 		Where(segment.UsableGroupSQL("g", "?"), userID).
-		Clauses(clause.Locking{Strength: "KEY SHARE", Table: clause.Table{Name: "g"}})
+		Clauses(clause.Locking{Strength: store.LockingStrengthKeyShare, Table: clause.Table{Name: "g"}})
 }
 
 // requireGroup fails with a group_id field error unless the group is usable by user.
@@ -691,7 +682,7 @@ func (s *Service) createMine(c *gin.Context) {
 // and resets the quota it used. Authentication
 // reads them on every request, so the next call already sees the change.
 func (s *Service) updateMine(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := audit.Context(c)
 	uid, _ := core.UserID(ctx)
 	id, ok := httpapi.PathID(c, "id")
 	if !ok {
@@ -716,11 +707,7 @@ func (s *Service) updateMine(c *gin.Context) {
 		if hash, err = updateOwned(ctx, tx, id, uid, in.changes()); err != nil {
 			return err
 		}
-		detail, err := json.Marshal(in)
-		if err != nil {
-			return err
-		}
-		return auditKey(ctx, tx, uid, id, "apikey.update", c.ClientIP(), detail)
+		return audit.Audit(ctx, tx, uid, "apikey.update", "apikey", strconv.FormatInt(id, 10), in)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -758,21 +745,22 @@ type keyUpdate struct {
 // back to 0 on ResetQuota, and expires_at (NULL included) when given.
 func (u *keyUpdate) changes() map[string]any {
 	set := map[string]any{}
-	put := func(column string, present bool, v func() any) {
-		if present {
-			set[column] = v()
-		}
+	store.SetIf(set, "status", u.Status)
+	store.SetIf(set, "group_id", u.GroupID)
+	store.SetIf(set, "rpm_limit", u.RPM)
+	store.SetIf(set, "tpm_limit", u.TPM)
+	store.SetIf(set, "max_concurrency", u.Concurrency)
+	store.SetIf(set, "quota_limit", u.QuotaLimit)
+	if u.ResetQuota {
+		set["quota_used"] = decimal.Zero
 	}
-	put("status", u.Status != nil, func() any { return *u.Status })
-	put("group_id", u.GroupID != nil, func() any { return *u.GroupID })
-	put("rpm_limit", u.RPM != nil, func() any { return *u.RPM })
-	put("tpm_limit", u.TPM != nil, func() any { return *u.TPM })
-	put("max_concurrency", u.Concurrency != nil, func() any { return *u.Concurrency })
-	put("quota_limit", u.QuotaLimit != nil, func() any { return *u.QuotaLimit })
-	put("quota_used", u.ResetQuota, func() any { return decimal.Zero })
-	put("name", u.Name != nil, func() any { return *u.Name })
-	put("allowed_ips", u.AllowedIPs != nil, func() any { return store.Strings(*u.AllowedIPs) })
-	put("expires_at", u.ExpiresAt != nil, func() any { return u.expiry })
+	store.SetIf(set, "name", u.Name)
+	if u.AllowedIPs != nil {
+		set["allowed_ips"] = store.Strings(*u.AllowedIPs)
+	}
+	if u.ExpiresAt != nil {
+		set["expires_at"] = u.expiry
+	}
 	return set
 }
 
@@ -795,13 +783,6 @@ func updateOwned(ctx context.Context, q store.Querier, id, ownerID int64, set ma
 func ownedUpdate(db *gorm.DB, k *model.APIKey, id, ownerID int64, set map[string]any) *gorm.DB {
 	return db.Model(k).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).
 		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, ownerID).Updates(set)
-}
-
-// auditKey records action on key id by uid from ip; a nil detail leaves the
-// column's default.
-func auditKey(ctx context.Context, q store.Querier, uid, id int64, action, ip string, detail json.RawMessage) error {
-	return store.G(ctx, q).Create(&model.AuditLog{UserID: &uid, Action: action, TargetType: "apikey",
-		TargetID: strconv.FormatInt(id, 10), Detail: detail, IP: ip}).Error
 }
 
 // normalize checks the fields given and puts the name and allowlist in their
@@ -896,7 +877,7 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 	if !ok {
 		return
 	}
-	ctx := c.Request.Context()
+	ctx := audit.Context(c)
 	if s.Cipher == nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return
@@ -914,7 +895,7 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 	var oldHash string
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
 		g := store.G(ctx, tx)
-		if err := owned(g, id, ownerID).Select("key_hash").Clauses(clause.Locking{Strength: "UPDATE"}).Take(&oldHash).Error; err != nil {
+		if err := owned(g, id, ownerID).Select("key_hash").Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Take(&oldHash).Error; err != nil {
 			if store.IsNoRows(err) {
 				return notFound(ctx)
 			}
@@ -925,7 +906,7 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 			return err
 		}
 		uid, _ := core.UserID(ctx)
-		return auditKey(ctx, tx, uid, id, "apikey.rotate", c.ClientIP(), nil)
+		return audit.Audit(ctx, tx, uid, "apikey.rotate", "apikey", strconv.FormatInt(id, 10), nil)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -954,7 +935,7 @@ func (s *Service) reveal(c *gin.Context, ownerID int64) {
 	if !ok {
 		return
 	}
-	ctx := c.Request.Context()
+	ctx := audit.Context(c)
 	var k model.APIKey
 	err := owned(store.G(ctx, s.db.Pool), id, ownerID).Select("key_cipher").Take(&k).Error
 	sealed := k.KeyCipher
@@ -976,7 +957,7 @@ func (s *Service) reveal(c *gin.Context, ownerID int64) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := auditKey(ctx, s.db.Pool, uid, id, "apikey.reveal", c.ClientIP(), nil); err != nil {
+	if err := audit.Audit(ctx, s.db.Pool, uid, "apikey.reveal", "apikey", strconv.FormatInt(id, 10), nil); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

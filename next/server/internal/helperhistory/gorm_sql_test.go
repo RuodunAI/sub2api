@@ -26,11 +26,6 @@ func TestSQLPrefixRows(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return prefixRows(db, sqlOwner, "ns", "prefix", &[]prefixRow{}) })
 }
 
-func TestSQLAnyPrefix(t *testing.T) {
-	var found bool
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return anyPrefixQuery(db, sqlOwner, []string{"p1", "p2"}, &found) })
-}
-
 func TestSQLPendingOutbox(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		return pendingOutbox(db, sqlNow, 50, &[]model.ProviderHelperUsageOutbox{})

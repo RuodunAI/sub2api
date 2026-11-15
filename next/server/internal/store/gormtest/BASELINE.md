@@ -26,6 +26,32 @@ runs shared the server, so ns/op is noisy. Values are medians of 5.
 HotSettle also prices the record with the expression engine; only its
 difference before and after the migration means anything.
 
+## Batch 1: the helper history prefix probe
+
+`helperhistory.(*Service).anyPrefix` runs for every gateway request that
+carries helper prefixes (`Lookup`, before any lock), most of which it
+answers Unknown. Its benchmark measures the pgx statement next to the GORM
+form of the same statement (`Raw("SELECT EXISTS(?)", withPrefixes(...))`),
+on a miss for an owner that holds one chain:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/helperhistory/
+```
+
+Recorded 2026-11-15 on gorm-1-fix (after 2579303e), same machine and
+server as above. Medians of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotHelperPrefix/pgx | 54 952 | 549 | 12 |
+| BenchmarkHotHelperPrefix/gorm | 75 165 | 12 102 | 130 |
+
+GORM takes 10.8 times the allocations (the limit is 1.5), so anyPrefix
+stays on pgx under `//gormguard:allow-pgx`. The locked reads of the same
+records inside Lookup's transaction (`discoverPrefixes`, only for a
+request that hits) are on GORM.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

@@ -61,7 +61,7 @@ func TestSnapshotForUpdateSkipLocked(t *testing.T) {
 		return tx.Table("request_precharges").Select("request_id", "user_id").
 			Where("expires_at < now()").
 			Order("expires_at").Limit(100).
-			Clauses(clause.Locking{Strength: "UPDATE", Options: "SKIP LOCKED"}).
+			Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: "SKIP LOCKED"}).
 			Find(&rows)
 	})
 }

@@ -1,0 +1,6 @@
+-- sql
+UPDATE "scheduled_tasks" SET "lease_job_id"=$1,"lease_node"=$2,"lease_until"=$3,"updated_at"=now() WHERE lease_until < now()
+-- vars
+$1 nil
+$2 nil
+$3 nil

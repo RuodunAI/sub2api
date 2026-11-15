@@ -33,6 +33,24 @@ func TestSQLRunsQuery(t *testing.T) {
 	})
 }
 
+// The refresh of the registered core tasks leaves updated_at alone.
+func TestSQLMarkSeen(t *testing.T) {
+	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return markSeen(tx, []string{"core.a", "core.b"}, "1.2.3") })
+}
+
+// A put-off run frees its own lease by the statement clock; housekeeping
+// frees the expired ones by the transaction's.
+func TestSQLReleaseLeases(t *testing.T) {
+	t.Run("put off", func(t *testing.T) {
+		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
+			return releaseLeases(tx, "clock_timestamp()", "name = ? AND lease_job_id = ?", "core.test", int64(42))
+		})
+	})
+	t.Run("expired", func(t *testing.T) {
+		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return releaseLeases(tx, "now()", "lease_until < now()") })
+	})
+}
+
 // false is written (a map, not a struct) and only the source comes back.
 func TestSQLSetPluginTaskEnabled(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {

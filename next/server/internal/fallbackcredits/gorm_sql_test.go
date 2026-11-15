@@ -41,7 +41,6 @@ func TestSQLCreditRecord(t *testing.T) {
 
 func TestSQLCreditRead(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		var r model.ProviderFallbackCredit
-		return db.Take(&r, "token_hash = ?", "t")
+		return readQuery(db, "t", &creditRow{})
 	})
 }

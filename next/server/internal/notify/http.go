@@ -86,15 +86,14 @@ const recordColumns = "id, source, channel, recipients, subject, body, severity,
 // filterRecords keeps the rows of status and source; an empty value does
 // not filter.
 func filterRecords(status, source string) func(*gorm.DB) *gorm.DB {
-	return func(db *gorm.DB) *gorm.DB {
-		if status != "" {
-			db = db.Where("status = ?", status)
-		}
-		if source != "" {
-			db = db.Where("source = ?", source)
-		}
-		return db
+	var f store.Conds
+	if status != "" {
+		f.And("status = ?", status)
 	}
+	if source != "" {
+		f.And("source = ?", source)
+	}
+	return f.Scope()
 }
 
 // recordPage reads one page of the filtered rows into dst, newest first.

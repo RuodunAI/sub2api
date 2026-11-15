@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -78,7 +80,7 @@ func ipAllowed(client string, entries []string) bool {
 }
 
 func (s *Service) updateIPAllowlist(c *gin.Context) {
-	ctx := c.Request.Context()
+	ctx := audit.Context(c)
 	uid, _ := core.UserID(ctx)
 	id, ok := httpapi.PathID(c, "id")
 	if !ok {
@@ -105,7 +107,7 @@ func (s *Service) updateIPAllowlist(c *gin.Context) {
 		if hash, err = updateOwned(ctx, tx, id, uid, map[string]any{"allowed_ips": store.Strings(entries)}); err != nil {
 			return err
 		}
-		return auditKey(ctx, tx, uid, id, "apikey.ip_allowlist", c.ClientIP(), nil)
+		return audit.Audit(ctx, tx, uid, "apikey.ip_allowlist", "apikey", strconv.FormatInt(id, 10), nil)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)

@@ -2,7 +2,6 @@ package group
 
 import (
 	"context"
-	"encoding/json"
 	"maps"
 	"slices"
 
@@ -123,11 +122,11 @@ type ruleOn struct {
 // from it are read.
 func offeredRules(ctx context.Context, q store.Querier, offered map[int64][]string, cond string, args ...any) ([]ruleOn, error) {
 	var rows []struct {
-		GroupID         int64           `gorm:"column:group_id"`
-		SegmentID       int64           `gorm:"column:segment_id"`
-		Model           string          `gorm:"column:model"`
-		ModelAllowlist  json.RawMessage `gorm:"column:model_allowlist"`
-		ModelFilterMode string          `gorm:"column:model_filter_mode"`
+		GroupID         int64                `gorm:"column:group_id"`
+		SegmentID       int64                `gorm:"column:segment_id"`
+		Model           string               `gorm:"column:model"`
+		ModelAllowlist  store.JSON[[]string] `gorm:"column:model_allowlist"`
+		ModelFilterMode string               `gorm:"column:model_filter_mode"`
 	}
 	if err := store.G(ctx, q).Table("price_rules pr").
 		Select("pr.group_id, COALESCE(pr.segment_id, 0) AS segment_id, pr.model, g.model_allowlist, g.model_filter_mode").
@@ -142,12 +141,8 @@ func offeredRules(ctx context.Context, q store.Querier, offered map[int64][]stri
 		if _, ok := offered[r.GroupID]; ok || seen[r.GroupID] {
 			continue
 		}
-		allow, err := allowlist(r.ModelAllowlist)
-		if err != nil {
-			return nil, err
-		}
 		seen[r.GroupID] = true
-		missing = append(missing, core.GroupInfo{ID: r.GroupID, ModelAllowlist: allow, ModelFilterMode: r.ModelFilterMode})
+		missing = append(missing, core.GroupInfo{ID: r.GroupID, ModelAllowlist: r.ModelAllowlist.V, ModelFilterMode: r.ModelFilterMode})
 	}
 	if len(missing) > 0 {
 		more, err := offeredModels(ctx, q, missing)

@@ -5,6 +5,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -29,6 +30,23 @@ func TestSQLGroupListWithoutRegistry(t *testing.T) {
 		var rows []groupRow
 		return selectGroups(db, nil).Scopes(listFilter("", "", nil)).Order("g.id").Limit(20).Scan(&rows)
 	})
+}
+
+// POST /groups writes the fields given, a zero rate included, and leaves
+// the others to their column defaults.
+func TestSQLGroupCreate(t *testing.T) {
+	name, rate, vis := "vip", "0", "restricted"
+	allow := []string{"claude-*"}
+	in := groupInput{Name: &name, RateMultiplier: &rate, Visibility: &vis, ModelAllowlist: &allow}
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return db.Create(newGroup(&in)) })
+}
+
+// PATCH /groups/:id writes the fields given and updated_at = now(), as the
+// raw SQL did.
+func TestSQLGroupUpdate(t *testing.T) {
+	desc, env := "", core.EnvironmentValues{"x": 1}
+	in := groupInput{Description: &desc, Environment: &env, ConversionLossPolicy: core.LossPolicyInput{Set: true}}
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return updateGroup(db, 7, &in) })
 }
 
 func TestSQLGroupAccess(t *testing.T) {

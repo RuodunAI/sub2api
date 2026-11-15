@@ -18,7 +18,7 @@ var snapshotScope = core.DataScope{Owner: 7, IDs: []int64{3, 4}}
 func TestSQLProxyLoad(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var p Proxy
-		return proxyView(scoped(db, 5, snapshotScope), store.Strings{"openai"}).Take(&p)
+		return proxyView(scoped(db, 5, snapshotScope), []string{"openai"}).Take(&p)
 	})
 }
 
@@ -60,13 +60,20 @@ func TestSQLProxyLockForUpdate(t *testing.T) {
 	})
 }
 
-// A PATCH writes the fields present only, including a cleared password.
+// A PATCH writes the fields present only, including a cleared password,
+// and moves updated_at by clock_timestamp().
 func TestSQLProxyUpdate(t *testing.T) {
 	name, port, allow := "eu-1", 8080, false
 	in := input{Name: &name, Port: &port, Password: new(string)}
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		return db.Model(&model.Proxy{}).Where("id = ?", 5).Updates(in.changes(nil, &allow))
 	})
+}
+
+// A probe writes the address it saw and leaves updated_at, the version of
+// the cached client, alone.
+func TestSQLProxyObserveIP(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return observeIP(db, 5, "203.0.113.7") })
 }
 
 func TestSQLProxyCreate(t *testing.T) {

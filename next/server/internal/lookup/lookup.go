@@ -35,7 +35,7 @@ const (
 )
 
 // Entity describes one kind of row. Columns and conditions are SQL over the
-// aliases of From; conditions take "?" placeholders (Conds).
+// aliases of From; conditions take "?" placeholders (store.Conds).
 type Entity struct {
 	Kind string // path segment: /lookup/<kind>
 	From string // FROM clause
@@ -72,18 +72,9 @@ type Mine struct {
 	// Perms allow mine=true, any one of them; none means every signed-in user.
 	Perms []string
 	// Scope adds the conditions that leave only the caller's rows.
-	Scope func(ctx context.Context, q store.Querier, uid int64, f *Conds) error
+	Scope func(ctx context.Context, q store.Querier, uid int64, f *store.Conds) error
 	// Hint replaces Entity.Hint when set.
 	Hint string
-}
-
-// Conds are the conditions of one lookup, ANDed, as GORM scopes.
-type Conds []func(*gorm.DB) *gorm.DB
-
-// And adds cond, whose "?" placeholders take args in order. An array
-// argument is a store.Int64s or store.Strings.
-func (c *Conds) And(cond string, args ...any) {
-	*c = append(*c, func(db *gorm.DB) *gorm.DB { return db.Where(cond, args...) })
 }
 
 // Ref is a query parameter holding the id of another entity.
@@ -169,7 +160,7 @@ func (s *Service) lookup(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	var f Conds
+	var f store.Conds
 	if e.Live != "" {
 		f.And(e.Live)
 	}
@@ -380,7 +371,7 @@ func parseIDs(v string, numeric bool) (any, error) {
 // search adds the condition of q to f: the name or a Search column contains
 // it, or it is the id. It returns the order that lists the row of that id
 // first, with its argument.
-func (e *Entity) search(p *params, f *Conds) (string, []any) {
+func (e *Entity) search(p *params, f *store.Conds) (string, []any) {
 	pattern := "%" + store.Like(p.text) + "%"
 	var conds []string
 	var args []any
@@ -399,7 +390,7 @@ func (e *Entity) search(p *params, f *Conds) (string, []any) {
 // query reads into dst the rows of one request on top of f, which holds the
 // conditions of the caller's range. Order: the row whose id is q, the rows a
 // Prefer parameter selects, then by name and id.
-func (e *Entity) query(db *gorm.DB, p *params, f Conds, hint string, dst *[]itemRow) *gorm.DB {
+func (e *Entity) query(db *gorm.DB, p *params, f store.Conds, hint string, dst *[]itemRow) *gorm.DB {
 	for _, r := range e.Narrow {
 		if id, ok := p.refs[r.Param]; ok {
 			f.And(r.Cond, id)
@@ -427,7 +418,7 @@ func (e *Entity) query(db *gorm.DB, p *params, f Conds, hint string, dst *[]item
 	}
 	// The aliases are the columns of itemRow.
 	db = db.Table(e.From).Select(e.key() + " AS id, " + e.Name + " AS name, " + orEmpty(hint) + " AS hint, " + orEmpty(e.Status) + " AS status").
-		Scopes(f...).
+		Scopes(f.Scope()).
 		// One expression for the whole order: GORM renders an ORDER BY
 		// expression in place of the columns of other Order calls.
 		Order(clause.OrderBy{Expression: clause.Expr{SQL: strings.Join(order, ", "), Vars: orderArgs, WithoutParentheses: true}})
