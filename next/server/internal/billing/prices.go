@@ -11,12 +11,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Price is the API view of a model_prices row. Prices are global per model
@@ -42,33 +45,50 @@ type Price struct {
 }
 
 const priceColumns = `mp.id, mp.model, mp.mode, mp.config, mp.expression, mp.expr_version, mp.expr_hash,
-	mp.source, mp.sync_source_id, ps.name, mp.synced_at, mp.enabled, mp.note, mp.updated_by, mp.updated_at`
+	mp.source, mp.sync_source_id, ps.name AS sync_source_name, mp.synced_at, mp.enabled, mp.note, mp.updated_by, mp.updated_at`
 
-const priceFrom = ` FROM model_prices mp LEFT JOIN price_sync_sources ps ON ps.id = mp.sync_source_id`
+// pricesWithSource is the model_prices rows (alias mp) with their sync source (ps).
+func pricesWithSource(db *gorm.DB) *gorm.DB {
+	return db.Table("model_prices mp").Joins("LEFT JOIN price_sync_sources ps ON ps.id = mp.sync_source_id")
+}
 
-func scanPrice(row pgx.Row) (*Price, error) {
-	p := &Price{}
-	err := row.Scan(&p.ID, &p.Model, &p.Mode, &p.Config, &p.Expression, &p.ExprVersion,
-		&p.ExprHash, &p.Source, &p.SyncSourceID, &p.SyncSourceName, &p.SyncedAt, &p.Enabled, &p.Note, &p.UpdatedBy, &p.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
+// priceRow is a row of pricesWithSource read as priceColumns.
+type priceRow struct {
+	model.ModelPrice
+	SyncSourceName *string
+}
+
+func (r *priceRow) price() *Price {
+	p := &Price{ID: r.ID, Model: r.Model, Mode: r.Mode, Config: r.Config, Expression: r.Expression,
+		ExprVersion: core.ValueOr(r.ExprVersion, 0), ExprHash: r.ExprHash, Source: r.Source, SyncSourceID: r.SyncSourceID,
+		SyncSourceName: r.SyncSourceName, SyncedAt: r.SyncedAt, Enabled: core.ValueOr(r.Enabled, false), Note: r.Note,
+		UpdatedBy: r.UpdatedBy, UpdatedAt: r.UpdatedAt}
 	if prog, err := expr.CompileCached(p.Expression); err == nil {
 		p.Analysis = prog.Analyze()
 	}
-	return p, nil
+	return p
+}
+
+// priceByID selects the price id, locking its model_prices row when lock is
+// set.
+func priceByID(db *gorm.DB, id int64, lock bool) *gorm.DB {
+	db = pricesWithSource(db).Select(priceColumns).Where("mp.id = ?", id)
+	if lock {
+		db = db.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "mp"}})
+	}
+	return db
 }
 
 func (s *Service) getPrice(ctx context.Context, q store.Querier, id int64, lock bool) (*Price, error) {
-	sql := `SELECT ` + priceColumns + priceFrom + ` WHERE mp.id = $1`
-	if lock {
-		sql += ` FOR UPDATE OF mp`
-	}
-	p, err := scanPrice(q.QueryRow(ctx, sql, id))
+	var row priceRow
+	err := priceByID(store.G(ctx, q), id, lock).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("price not found")
 	}
-	return p, err
+	if err != nil {
+		return nil, err
+	}
+	return row.price(), nil
 }
 
 func (s *Service) registerPriceRoutes(r *httpapi.Router) {
@@ -86,7 +106,7 @@ func (s *Service) registerPriceRoutes(r *httpapi.Router) {
 func (s *Service) listPrices(c *gin.Context) {
 	ctx := c.Request.Context()
 	page, size := httpapi.Pagination(c)
-	var f store.Filter
+	var f store.Conds
 	if v := c.Query("mode"); v != "" {
 		f.And("mp.mode = ?", v)
 	}
@@ -108,35 +128,27 @@ func (s *Service) listPrices(c *gin.Context) {
 		pattern := "%" + store.Like(v) + "%"
 		f.And("(mp.model ILIKE ? OR mp.note ILIKE ?)", pattern, pattern)
 	}
-	cond := f.Cond()
+	g := store.G(ctx, s.db.Pool)
 	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*)`+priceFrom+cond, f.Args()...).Scan(&total); err != nil {
+	if err := pricesWithSource(g).Scopes(f.Scope()).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	n := f.Len()
-	args := append(f.Args(), size, (page-1)*size)
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+priceColumns+priceFrom+cond+
-		` ORDER BY mp.model, mp.id LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2), args...)
-	if err != nil {
+	var rows []priceRow
+	if err := pricePage(g, f, page, size).Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	defer rows.Close()
-	items := []*Price{}
-	for rows.Next() {
-		p, err := scanPrice(rows)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, p)
-	}
-	if err := rows.Err(); err != nil {
-		httpapi.Fail(c, err)
-		return
+	items := make([]*Price, 0, len(rows))
+	for i := range rows {
+		items = append(items, rows[i].price())
 	}
 	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
+}
+
+// pricePage is one page of the prices f selects, by model.
+func pricePage(db *gorm.DB, f store.Conds, page, size int) *gorm.DB {
+	return pricesWithSource(db).Select(priceColumns).Scopes(f.Scope()).Order("mp.model, mp.id").Limit(size).Offset((page - 1) * size)
 }
 
 func (s *Service) showPrice(c *gin.Context) {
@@ -251,18 +263,12 @@ func (s *Service) createPrice(c *gin.Context) {
 	uid, _ := core.UserID(ctx)
 	var p *Price
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		var id int64
-		if err := tx.QueryRow(ctx, `
-			INSERT INTO model_prices (model, mode, config, expression, expr_version, expr_hash,
-				source, enabled, note, updated_by)
-			VALUES ($1, $2, $3, $4, $5, $6, 'manual', $7, $8, $9)
-			RETURNING id`,
-			model, ck.mode, ck.config, ck.src, ck.prog.Version(), ck.prog.Hash(),
-			enabled, deref(in.Note), nullID(uid)).Scan(&id); err != nil {
+		row := manualPrice(model, ck, enabled, deref(in.Note), nullID(uid))
+		if err := store.G(ctx, tx).Create(row).Error; err != nil {
 			return err
 		}
 		var err error
-		if p, err = s.getPrice(ctx, tx, id, false); err != nil {
+		if p, err = s.getPrice(ctx, tx, row.ID, false); err != nil {
 			return err
 		}
 		return recordHistory(ctx, tx, ck.prog)
@@ -340,12 +346,11 @@ func (s *Service) updatePrice(c *gin.Context) {
 		if pricing || in.Model != nil {
 			source, syncID = SourceManual, nil
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE model_prices SET model = $2, mode = $3, config = $4, expression = $5,
-				expr_version = $6, expr_hash = $7, enabled = $8, note = $9, updated_by = $10,
-				source = $11, sync_source_id = $12, updated_at = now()
-			WHERE id = $1`,
-			id, model, mode, config, src, version, hash, enabled, note, nullID(uid), source, syncID); err != nil {
+		if err := updatePriceRow(store.G(ctx, tx), id, map[string]any{
+			"model": model, "mode": mode, "config": config, "expression": src, "expr_version": version,
+			"expr_hash": hash, "enabled": enabled, "note": note, "updated_by": nullID(uid),
+			"source": source, "sync_source_id": syncID,
+		}).Error; err != nil {
 			return err
 		}
 		out, err = s.getPrice(ctx, tx, id, false)
@@ -373,7 +378,7 @@ func (s *Service) deletePrice(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if _, err := s.db.Pool.Exec(ctx, `DELETE FROM model_prices WHERE id = $1`, id); err != nil {
+	if err := store.G(ctx, s.db.Pool).Where("id = ?", id).Delete(&model.ModelPrice{}).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -381,19 +386,29 @@ func (s *Service) deletePrice(c *gin.Context) {
 	httpapi.NoContent(c)
 }
 
+// manualPrice is a price an administrator typed in, as created. Every
+// column is written, enabled and expr_version included; updated_at is the
+// default.
+func manualPrice(name string, ck *checked, enabled bool, note string, by *int64) *model.ModelPrice {
+	version := ck.prog.Version()
+	return &model.ModelPrice{Model: name, Mode: ck.mode, Config: ck.config, Expression: ck.src, ExprVersion: &version,
+		ExprHash: ck.prog.Hash(), Source: SourceManual, Enabled: &enabled, Note: note, UpdatedBy: by}
+}
+
+// updatePriceRow writes the columns of set to the price id and moves its
+// updated_at, as every edit of a price does.
+func updatePriceRow(db *gorm.DB, id int64, set map[string]any) *gorm.DB {
+	set["updated_at"] = gorm.Expr("now()")
+	return db.Model(&model.ModelPrice{}).Where("id = ?", id).Updates(set)
+}
+
 var errPriceExists = core.ErrConflict.WithMessage("a price for this model already exists")
 
 func (s *Service) priceHistory(c *gin.Context) {
 	ctx := c.Request.Context()
 	hash := c.Param("expr_hash")
-	var out struct {
-		ExprHash    string    `json:"expr_hash"`
-		Expression  string    `json:"expression"`
-		ExprVersion int       `json:"expr_version"`
-		CreatedAt   time.Time `json:"created_at"`
-	}
-	err := s.db.Pool.QueryRow(ctx, `SELECT expr_hash, expression, expr_version, created_at FROM model_price_history WHERE expr_hash = $1`, hash).
-		Scan(&out.ExprHash, &out.Expression, &out.ExprVersion, &out.CreatedAt)
+	var row model.ModelPriceHistory
+	err := store.G(ctx, s.db.Pool).Where("expr_hash = ?", hash).Take(&row).Error
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("expression not found"))
 		return
@@ -402,7 +417,12 @@ func (s *Service) priceHistory(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	httpapi.OK(c, out)
+	httpapi.OK(c, struct {
+		ExprHash    string    `json:"expr_hash"`
+		Expression  string    `json:"expression"`
+		ExprVersion int       `json:"expr_version"`
+		CreatedAt   time.Time `json:"created_at"`
+	}{row.ExprHash, row.Expression, row.ExprVersion, row.CreatedAt})
 }
 
 // POST /prices/validate {mode, config?, expression?}
@@ -537,7 +557,8 @@ func (s *Service) previewPrice(c *gin.Context) {
 	}
 	mult := decimal.NewFromInt(1)
 	if in.GroupID != nil {
-		err := s.db.Pool.QueryRow(ctx, `SELECT rate_multiplier FROM groups WHERE id = $1`, *in.GroupID).Scan(&mult)
+		var g model.Group
+		err := store.G(ctx, s.db.Pool).Select("rate_multiplier").Where("id = ?", *in.GroupID).Take(&g).Error
 		if store.IsNoRows(err) {
 			httpapi.Fail(c, core.ErrNotFound.WithMessage("group not found"))
 			return
@@ -546,6 +567,7 @@ func (s *Service) previewPrice(c *gin.Context) {
 			httpapi.Fail(c, err)
 			return
 		}
+		mult = core.ValueOr(g.RateMultiplier, mult) // NOT NULL: always read
 	}
 	httpapi.OK(c, &PreviewResult{
 		Cost:           FinalCost(res.Cost, mult),
@@ -593,12 +615,20 @@ func expressionFor(mode string, config json.RawMessage, expression string) (stri
 }
 
 // recordHistorySQL keeps an expression (hash, canonical text, version) where
-// a settlement retry reads it back.
+// a settlement retry reads it back; queueSave batches it.
 const recordHistorySQL = `
 		INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES ($1, $2, $3)
 		ON CONFLICT (expr_hash) DO NOTHING`
 
+// recordHistory runs recordHistorySQL on q.
 func recordHistory(ctx context.Context, q store.Querier, p *expr.Program) error {
-	_, err := q.Exec(ctx, recordHistorySQL, p.Hash(), p.Expression(), p.Version())
-	return err
+	return insertHistory(store.G(ctx, q), p).Error
+}
+
+// insertHistory is recordHistorySQL on GORM: a map on the bare table, so
+// nothing is read back.
+func insertHistory(db *gorm.DB, p *expr.Program) *gorm.DB {
+	return db.Table(model.ModelPriceHistory{}.TableName()).
+		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "expr_hash"}}, DoNothing: true}).
+		Create(map[string]any{"expr_hash": p.Hash(), "expression": p.Expression(), "expr_version": p.Version()})
 }

@@ -1,0 +1,10 @@
+-- sql
+UPDATE "price_sync_sources" SET "api_key_enc"=$1,"enabled"=$2,"kind"=$3,"name"=$4,"options"=$5,"updated_at"=now(),"url"=$6 WHERE id = $7
+-- vars
+$1 []uint8 []
+$2 bool false
+$3 string "litellm"
+$4 string "litellm"
+$5 jsontext.Value {}
+$6 string "https://example.invalid/prices.json"
+$7 int64 4

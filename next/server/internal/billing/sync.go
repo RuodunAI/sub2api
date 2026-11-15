@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
@@ -25,6 +26,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -95,25 +97,35 @@ type sourceOptions struct {
 
 const sourceColumns = `ps.id, ps.name, ps.kind, ps.url, ps.api_key_enc, ps.options, ps.enabled,
 	ps.last_synced_at, ps.last_error, ps.created_at, ps.updated_at,
-	(SELECT count(*) FROM model_prices mp WHERE mp.sync_source_id = ps.id)`
+	(SELECT count(*) FROM model_prices mp WHERE mp.sync_source_id = ps.id) AS price_count`
 
-func scanSource(row pgx.Row) (*PriceSource, error) {
-	p := &PriceSource{}
-	err := row.Scan(&p.ID, &p.Name, &p.Kind, &p.URL, &p.apiKeyEnc, &p.Options, &p.Enabled,
-		&p.LastSyncedAt, &p.LastError, &p.CreatedAt, &p.UpdatedAt, &p.PriceCount)
-	if err != nil {
-		return nil, err
-	}
-	p.HasAPIKey = len(p.apiKeyEnc) > 0
-	return p, nil
+// sources selects sourceColumns of the price sources (alias ps).
+func sources(db *gorm.DB) *gorm.DB {
+	return db.Table("price_sync_sources ps").Select(sourceColumns)
+}
+
+// sourceRow is a row of sources.
+type sourceRow struct {
+	model.PriceSyncSource
+	PriceCount int64
+}
+
+func (r *sourceRow) source() *PriceSource {
+	return &PriceSource{ID: r.ID, Name: r.Name, Kind: r.Kind, URL: r.URL, HasAPIKey: len(r.APIKeyEnc) > 0,
+		Options: r.Options, Enabled: core.ValueOr(r.Enabled, false), LastSyncedAt: r.LastSyncedAt, LastError: r.LastError,
+		PriceCount: r.PriceCount, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, apiKeyEnc: r.APIKeyEnc}
 }
 
 func (s *Service) getSource(ctx context.Context, q store.Querier, id int64) (*PriceSource, error) {
-	p, err := scanSource(q.QueryRow(ctx, `SELECT `+sourceColumns+` FROM price_sync_sources ps WHERE ps.id = $1`, id))
+	var row sourceRow
+	err := sources(store.G(ctx, q)).Where("ps.id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("price source not found")
 	}
-	return p, err
+	if err != nil {
+		return nil, err
+	}
+	return row.source(), nil
 }
 
 func (s *Service) registerSyncRoutes(r *httpapi.Router) {
@@ -130,24 +142,14 @@ func (s *Service) registerSyncRoutes(r *httpapi.Router) {
 
 func (s *Service) listSources(c *gin.Context) {
 	ctx := c.Request.Context()
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+sourceColumns+` FROM price_sync_sources ps ORDER BY ps.id`)
-	if err != nil {
+	var rows []sourceRow
+	if err := sources(store.G(ctx, s.db.Pool)).Order("ps.id").Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	defer rows.Close()
-	out := []*PriceSource{}
-	for rows.Next() {
-		p, err := scanSource(rows)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		httpapi.Fail(c, err)
-		return
+	out := make([]*PriceSource, 0, len(rows))
+	for i := range rows {
+		out = append(out, rows[i].source())
 	}
 	httpapi.OK(c, out)
 }
@@ -242,11 +244,11 @@ func (s *Service) createSource(c *gin.Context) {
 		}
 	}
 	enabled := in.Enabled == nil || *in.Enabled
-	var id int64
-	err = s.db.Pool.QueryRow(ctx, `
-		INSERT INTO price_sync_sources (name, kind, url, api_key_enc, options, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		strings.TrimSpace(*in.Name), *in.Kind, strings.TrimSpace(*in.URL), enc, opts, enabled).Scan(&id)
+	// Every column the INSERT names is written: a nil key is NULL, enabled
+	// false is false.
+	row := model.PriceSyncSource{Name: strings.TrimSpace(*in.Name), Kind: *in.Kind, URL: strings.TrimSpace(*in.URL),
+		APIKeyEnc: enc, Options: opts, Enabled: &enabled}
+	err = store.G(ctx, s.db.Pool).Create(&row).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("a price source with this name already exists"))
 		return
@@ -255,7 +257,7 @@ func (s *Service) createSource(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	p, err := s.getSource(ctx, s.db.Pool, id)
+	p, err := s.getSource(ctx, s.db.Pool, row.ID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -307,9 +309,9 @@ func (s *Service) updateSource(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	_, err = s.db.Pool.Exec(ctx, `
-		UPDATE price_sync_sources SET name = $2, kind = $3, url = $4, api_key_enc = $5, options = $6,
-			enabled = $7, updated_at = now() WHERE id = $1`, id, name, kind, u, enc, opts, enabled)
+	err = updateSourceRow(store.G(ctx, s.db.Pool), id, map[string]any{
+		"name": name, "kind": kind, "url": u, "api_key_enc": enc, "options": opts, "enabled": enabled,
+	}).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("a price source with this name already exists"))
 		return
@@ -334,17 +336,30 @@ func (s *Service) deleteSource(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tag, err := s.db.Pool.Exec(ctx, `DELETE FROM price_sync_sources WHERE id = $1`, id)
-	if err != nil {
-		httpapi.Fail(c, err)
+	res := store.G(ctx, s.db.Pool).Where("id = ?", id).Delete(&model.PriceSyncSource{})
+	if res.Error != nil {
+		httpapi.Fail(c, res.Error)
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("price source not found"))
 		return
 	}
 	s.changed(ctx, "prices")
 	httpapi.NoContent(c)
+}
+
+// updateSourceRow writes the columns of set to the source id and moves its
+// updated_at, as an edit of the source does.
+func updateSourceRow(db *gorm.DB, id int64, set map[string]any) *gorm.DB {
+	set["updated_at"] = gorm.Expr("now()")
+	return db.Model(&model.PriceSyncSource{}).Where("id = ?", id).Updates(set)
+}
+
+// setSourceStatus records the outcome of a fetch or an import on the source
+// id; its updated_at stays, an edit is not.
+func setSourceStatus(db *gorm.DB, id int64, set map[string]any) *gorm.DB {
+	return db.Model(&model.PriceSyncSource{}).Where("id = ?", id).Updates(set)
 }
 
 // ---------------------------------------------------------------- fetch and parse
@@ -891,28 +906,44 @@ func (s *Service) loadAndFetch(ctx context.Context, id int64) (*PriceSource, *fe
 	f, err := s.fetchSource(ctx, src)
 	if err != nil {
 		msg := truncate(err.Error(), 500)
-		_, _ = s.db.Pool.Exec(context.WithoutCancel(ctx), `UPDATE price_sync_sources SET last_error = $2 WHERE id = $1`, id, msg)
+		_ = setSourceStatus(store.G(context.WithoutCancel(ctx), s.db.Pool), id, map[string]any{"last_error": msg}).Error
 		return src, nil, core.ErrUnavailable.WithMessage("fetch price source: " + msg)
 	}
 	return src, f, nil
 }
 
 func (s *Service) currentPrices(ctx context.Context, q store.Querier) (map[string]*SyncCurrent, error) {
-	rows, err := q.Query(ctx, `SELECT id, model, mode, config, expression, expr_hash, source, sync_source_id, enabled FROM model_prices`)
+	var rows []model.ModelPrice
+	err := store.G(ctx, q).Select("id", "model", "mode", "config", "expression", "expr_hash", "source", "sync_source_id", "enabled").
+		Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]*SyncCurrent{}
-	for rows.Next() {
-		var c SyncCurrent
-		var model string
-		if err := rows.Scan(&c.ID, &model, &c.Mode, &c.Config, &c.Expression, &c.hash, &c.Source, &c.SyncSourceID, &c.Enabled); err != nil {
-			return nil, err
-		}
-		out[model] = &c
+	out := make(map[string]*SyncCurrent, len(rows))
+	for _, r := range rows {
+		out[r.Model] = &SyncCurrent{ID: r.ID, Mode: r.Mode, Config: r.Config, Expression: r.Expression, Source: r.Source,
+			SyncSourceID: r.SyncSourceID, Enabled: core.ValueOr(r.Enabled, false), hash: r.ExprHash}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// insertSyncedPrice creates the price of name imported from the source:
+// a map on the bare table writes every column as the INSERT named it and
+// reads nothing back.
+func insertSyncedPrice(db *gorm.DB, name string, p *syncPrice, sourceID int64, by *int64) *gorm.DB {
+	return db.Table(model.ModelPrice{}.TableName()).Create(map[string]any{
+		"model": name, "mode": p.Mode, "config": p.Config, "expression": p.Expression, "expr_version": p.version,
+		"expr_hash": p.hash, "source": SourceSync, "sync_source_id": sourceID, "synced_at": gorm.Expr("now()"),
+		"enabled": true, "note": "", "updated_by": by,
+	})
+}
+
+// auditSync writes the audit row of an import by user (0 = none).
+func auditSync(db *gorm.DB, user, sourceID int64, detail []byte) *gorm.DB {
+	return db.Table(model.AuditLog{}.TableName()).Create(map[string]any{
+		"user_id": gorm.Expr("NULLIF(?::bigint, 0)", user), "action": "price.sync", "target_type": "price_source",
+		"target_id": fmt.Sprint(sourceID), "detail": detail,
+	})
 }
 
 func syncAction(in *syncPrice, cur *SyncCurrent) string {
@@ -1019,34 +1050,29 @@ func (s *Service) applySync(c *gin.Context) {
 			if err := recordHistory(ctx, tx, prog); err != nil {
 				return err
 			}
+			g := store.G(ctx, tx)
 			if c == nil {
-				_, err = tx.Exec(ctx, `
-					INSERT INTO model_prices (model, mode, config, expression, expr_version, expr_hash,
-						source, sync_source_id, synced_at, enabled, note, updated_by)
-					VALUES ($1, $2, $3, $4, $5, $6, 'sync', $7, now(), true, '', $8)`,
-					model, p.Mode, p.Config, p.Expression, p.version, p.hash, id, nullID(uid))
+				err = insertSyncedPrice(g, model, p, id, nullID(uid)).Error
 				res.Created++
 			} else {
-				_, err = tx.Exec(ctx, `
-					UPDATE model_prices SET mode = $2, config = $3, expression = $4, expr_version = $5,
-						expr_hash = $6, source = 'sync', sync_source_id = $7, synced_at = now(),
-						updated_by = $8, updated_at = now()
-					WHERE id = $1`,
-					c.ID, p.Mode, p.Config, p.Expression, p.version, p.hash, id, nullID(uid))
+				err = updatePriceRow(g, c.ID, map[string]any{
+					"mode": p.Mode, "config": p.Config, "expression": p.Expression, "expr_version": p.version,
+					"expr_hash": p.hash, "source": SourceSync, "sync_source_id": id, "synced_at": gorm.Expr("now()"),
+					"updated_by": nullID(uid),
+				}).Error
 				res.Updated++
 			}
 			if err != nil {
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, `UPDATE price_sync_sources SET last_synced_at = now(), last_error = '' WHERE id = $1`, id); err != nil {
+		g := store.G(ctx, tx)
+		if err := setSourceStatus(g, id, map[string]any{"last_synced_at": gorm.Expr("now()"), "last_error": ""}).Error; err != nil {
 			return err
 		}
 		detail, _ := json.Marshal(map[string]any{"created": res.Created, "updated": res.Updated,
 			"unchanged": res.Unchanged, "skipped": len(res.Skipped)})
-		_, err = tx.Exec(ctx, `INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
-			VALUES (NULLIF($1::bigint, 0), 'price.sync', 'price_source', $2, $3)`, uid, fmt.Sprint(id), detail)
-		return err
+		return auditSync(g, uid, id, detail).Error
 	})
 	if err != nil {
 		httpapi.Fail(c, err)

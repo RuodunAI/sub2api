@@ -1,0 +1,5 @@
+-- sql
+SELECT "id","balance_after","user_id","delta","kind" FROM "balance_ledger" WHERE idempotency_key = $1 LIMIT $2
+-- vars
+$1 string "precharge:req-1"
+$2 int 1

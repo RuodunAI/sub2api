@@ -1,0 +1,7 @@
+-- sql
+SELECT group_id, COALESCE(segment_id, 0) AS segment_id, model, kind, multiplier,
+		COALESCE(mode, '') AS mode, config, expression, expr_hash FROM "price_rules" WHERE group_id = $1 AND COALESCE(segment_id, $2) = $3
+-- vars
+$1 int64 3
+$2 int64 5
+$3 int64 5

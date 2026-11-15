@@ -10,9 +10,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -130,22 +132,23 @@ func (s *Service) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) 
 }
 
 func findLedger(ctx context.Context, q store.Querier, key string) (*core.LedgerResult, error) {
-	r := &core.LedgerResult{Duplicate: true}
-	var userID int64
-	var delta decimal.Decimal
-	var kind string
-	err := q.QueryRow(ctx, `SELECT id, balance_after, user_id, delta, kind FROM balance_ledger WHERE idempotency_key = $1`,
-		key).Scan(&r.LedgerID, &r.BalanceAfter, &userID, &delta, &kind)
+	var row model.BalanceLedger
+	err := ledgerByKey(store.G(ctx, q), key).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	r.UserID = userID
-	r.Delta = delta
-	r.Kind = kind
-	return r, nil
+	return &core.LedgerResult{Duplicate: true, LedgerID: row.ID, BalanceAfter: row.BalanceAfter,
+		UserID: row.UserID, Delta: row.Delta, Kind: row.Kind}, nil
+}
+
+// ledgerByKey is the ledger row of an idempotency key, as far as a
+// duplicate is compared and reported.
+func ledgerByKey(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.BalanceLedger{}).Select("id", "balance_after", "user_id", "delta", "kind").
+		Where("idempotency_key = ?", key)
 }
 
 // CacheBalance stores a balance observed at ledgerID in Redis (best effort;
@@ -163,6 +166,12 @@ func (s *Service) CacheBalance(ctx context.Context, userID, ledgerID int64, bala
 	}
 }
 
+// balanceSQL reads a user's balance and the ledger id it was observed at
+// (the user id twice).
+const balanceSQL = `
+		SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = ?), 0),
+		       COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = ?), 0)`
+
 // Balance returns a user's balance, served from Redis when cached.
 func (s *Service) Balance(ctx context.Context, userID int64) (decimal.Decimal, error) {
 	if s.rdb != nil {
@@ -179,9 +188,8 @@ func (s *Service) Balance(ctx context.Context, userID int64) (decimal.Decimal, e
 	}
 	var bal decimal.Decimal
 	var lastID int64
-	err := s.db.Pool.QueryRow(ctx, `
-		SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = $1), 0),
-		       COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = $1), 0)`, userID).Scan(&bal, &lastID)
+	// Behind the Redis cache: only a miss reads PostgreSQL.
+	err := store.G(ctx, s.db.Pool).Raw(balanceSQL, userID, userID).Row().Scan(&bal, &lastID)
 	if err != nil {
 		return decimal.Zero, err
 	}

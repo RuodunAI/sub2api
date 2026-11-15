@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -55,7 +56,7 @@ func (s *Service) myBalance(c *gin.Context) {
 	ctx := c.Request.Context()
 	uid, _ := core.UserID(ctx)
 	var bal decimal.Decimal
-	err := s.db.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = $1), 0)`, uid).Scan(&bal)
+	err := store.G(ctx, s.db.Pool).Raw(`SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = ?), 0)`, uid).Row().Scan(&bal)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -67,7 +68,7 @@ func (s *Service) myLedger(c *gin.Context) {
 	ctx := c.Request.Context()
 	uid, _ := core.UserID(ctx)
 	page, size := httpapi.Pagination(c)
-	var f store.Filter
+	var f store.Conds
 	f.And("l.user_id = ?", uid)
 	if v := c.Query("kind"); v != "" {
 		f.And("l.kind = ?", v)
@@ -82,37 +83,39 @@ func (s *Service) myLedger(c *gin.Context) {
 			f.And(x.cond, t)
 		}
 	}
-	cond := f.Cond()
+	g := store.G(ctx, s.db.Pool)
 	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM balance_ledger l`+cond, f.Args()...).Scan(&total); err != nil {
+	if err := ledgerRows(g, f).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	n := f.Len()
-	args := append(f.Args(), size, (page-1)*size)
-	rows, err := s.db.Pool.Query(ctx, `
-		SELECT l.id, l.delta, l.balance_after, l.kind, l.note, l.created_at
-		FROM balance_ledger l`+cond+`
-		ORDER BY l.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2), args...)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	defer rows.Close()
 	items := []LedgerEntrySelf{}
-	for rows.Next() {
-		var e LedgerEntrySelf
-		if err := rows.Scan(&e.ID, &e.Delta, &e.BalanceAfter, &e.Kind, &e.Note, &e.CreatedAt); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, e)
-	}
-	if err := rows.Err(); err != nil {
+	if err := myLedgerPage(g, f, page, size).Scan(&items).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
+}
+
+// ledgerRows is the balance_ledger rows (alias l) f selects.
+func ledgerRows(db *gorm.DB, f store.Conds) *gorm.DB {
+	return db.Table("balance_ledger l").Scopes(f.Scope())
+}
+
+// myLedgerPage is one page of ledgerRows as the owner sees them, newest
+// first.
+func myLedgerPage(db *gorm.DB, f store.Conds, page, size int) *gorm.DB {
+	return ledgerRows(db, f).Select("l.id, l.delta, l.balance_after, l.kind, l.note, l.created_at").
+		Order("l.id DESC").Limit(size).Offset((page - 1) * size)
+}
+
+// ledgerPage is one page of ledgerRows with the owner of each row, newest
+// first.
+func ledgerPage(db *gorm.DB, f store.Conds, page, size int) *gorm.DB {
+	return ledgerRows(db, f).Select(`l.id, l.user_id, COALESCE(u.email, '') AS user_email,
+		COALESCE(u.display_name, '') AS user_name, l.delta, l.balance_after, l.kind, l.ref_type, l.ref_id,
+		l.idempotency_key, l.operator_id, l.plugin_key, l.note, l.created_at`).
+		Joins("LEFT JOIN users u ON u.id = l.user_id").Order("l.id DESC").Limit(size).Offset((page - 1) * size)
 }
 
 func (s *Service) allLedger(c *gin.Context) {
@@ -132,7 +135,7 @@ func (s *Service) allLedger(c *gin.Context) {
 func (s *Service) listLedger(c *gin.Context, userID *int64) {
 	ctx := c.Request.Context()
 	page, size := httpapi.Pagination(c)
-	var f store.Filter
+	var f store.Conds
 	if userID != nil {
 		f.And("l.user_id = ?", *userID)
 	}
@@ -149,35 +152,14 @@ func (s *Service) listLedger(c *gin.Context, userID *int64) {
 			f.And(x.cond, t)
 		}
 	}
-	cond := f.Cond()
+	g := store.G(ctx, s.db.Pool)
 	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM balance_ledger l`+cond, f.Args()...).Scan(&total); err != nil {
+	if err := ledgerRows(g, f).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	n := f.Len()
-	args := append(f.Args(), size, (page-1)*size)
-	rows, err := s.db.Pool.Query(ctx, `
-		SELECT l.id, l.user_id, COALESCE(u.email, ''), COALESCE(u.display_name, ''), l.delta, l.balance_after, l.kind,
-		       l.ref_type, l.ref_id, l.idempotency_key, l.operator_id, l.plugin_key, l.note, l.created_at
-		FROM balance_ledger l LEFT JOIN users u ON u.id = l.user_id`+cond+`
-		ORDER BY l.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2), args...)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	defer rows.Close()
 	items := []LedgerEntry{}
-	for rows.Next() {
-		var e LedgerEntry
-		if err := rows.Scan(&e.ID, &e.UserID, &e.UserEmail, &e.UserName, &e.Delta, &e.BalanceAfter, &e.Kind,
-			&e.RefType, &e.RefID, &e.IdempotencyKey, &e.OperatorID, &e.PluginKey, &e.Note, &e.CreatedAt); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, e)
-	}
-	if err := rows.Err(); err != nil {
+	if err := ledgerPage(g, f, page, size).Scan(&items).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

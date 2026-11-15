@@ -1,0 +1,7 @@
+-- sql
+SELECT ps.id, ps.name, ps.kind, ps.url, ps.api_key_enc, ps.options, ps.enabled,
+	ps.last_synced_at, ps.last_error, ps.created_at, ps.updated_at,
+	(SELECT count(*) FROM model_prices mp WHERE mp.sync_source_id = ps.id) AS price_count FROM price_sync_sources ps WHERE ps.id = $1 LIMIT $2
+-- vars
+$1 int 4
+$2 int 1

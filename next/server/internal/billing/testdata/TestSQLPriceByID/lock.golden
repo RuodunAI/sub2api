@@ -1,0 +1,6 @@
+-- sql
+SELECT mp.id, mp.model, mp.mode, mp.config, mp.expression, mp.expr_version, mp.expr_hash,
+	mp.source, mp.sync_source_id, ps.name AS sync_source_name, mp.synced_at, mp.enabled, mp.note, mp.updated_by, mp.updated_at FROM model_prices mp LEFT JOIN price_sync_sources ps ON ps.id = mp.sync_source_id WHERE mp.id = $1 LIMIT $2 FOR UPDATE OF "mp"
+-- vars
+$1 int64 9
+$2 int 1
