@@ -56,12 +56,15 @@ func errRoleKeyImmutable(ctx context.Context) error {
 	return core.InvalidFields(core.FieldError{Field: "key", Code: "immutable", Message: msg}).WithMessage(msg)
 }
 
+// roleSelect reads roles as the console shows and edits them; a grant of a
+// staged permission (core.PermissionDef.Staged) is no editor's to see.
 var roleSelect = `
 SELECT r.id, r.key, r.name, r.description, r.builtin, r.superuser, r.created_at, r.updated_at,
     COALESCE((SELECT array_agg(g.key ORDER BY g.sort, g.key) FROM (
-        SELECT p.key, p.sort FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = r.id
+        SELECT p.key, p.sort FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id AND p.status <> 'staged'
+        WHERE rp.role_id = r.id
         UNION ALL
-        SELECT p.key || ':' || rs.scope, p.sort FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id
+        SELECT p.key || ':' || rs.scope, p.sort FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id AND p.status <> 'staged'
         WHERE rs.role_id = r.id) g), '{}'),
     COALESCE((SELECT array_agg(ar.key ORDER BY ar.key) FROM role_assignable_roles ra
         JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser WHERE ra.role_id = r.id), '{}'),
@@ -823,6 +826,8 @@ type PermissionGroup struct {
 
 // ListPermissions returns the catalog grouped by module: core modules in
 // catalog order, then plugin modules by plugin key, each plugin's by group.
+// Staged permissions, of a version not activated yet, are left out: no
+// editor may grant them (the review lists them).
 func (s *Service) ListPermissions(ctx context.Context) ([]*PermissionModule, error) {
 	return listPermissions(ctx, s.db.Pool, "")
 }
@@ -834,7 +839,7 @@ func listPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]
 SELECT p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.risk, p.requires, p.status, p.scope_type, p.scope,
     p.group_key, p.group_label, p.group_sort, p.defaults, pl.name
 FROM permissions p LEFT JOIN plugins pl ON pl.key = p.plugin_key
-WHERE $1 = '' OR p.plugin_key = $1
+WHERE p.status <> 'staged' AND ($1 = '' OR p.plugin_key = $1)
 ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`, pluginKey)
 	if err != nil {
 		return nil, err

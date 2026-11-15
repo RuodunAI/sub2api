@@ -729,3 +729,51 @@ ORDER BY id DESC LIMIT 1`, op).Scan(&raw))
 	assert.Equal(t, keys[:1], detail.Removed)
 	assert.Nil(t, detail.Before, "a whole role write lists no part")
 }
+
+// A staged permission belongs to a version not activated yet (N3): no
+// editor sees it or grants it, and no role write drops what that version's
+// consent granted; nor does the grant keep anyone from editing the role.
+func TestStagedPermissionsAreNoEditorsToSee(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
+	admin := addUser(t, s, "admin@x.com", RoleAdmin)
+	const next = "plugin.m:flow:next"
+	require.NoError(t, syncer(t, s, "m")(core.PermissionDef{Key: "flow:read"},
+		core.PermissionDef{Key: "flow:next", Staged: true, GrantRoles: map[string][]string{RoleOperator: {""}}}))
+	op := roleID(t, s, RoleOperator)
+	require.Equal(t, []string{RoleOperator}, permissionHolders(t, db, next))
+
+	mods, err := s.ListPermissions(ctx)
+	require.NoError(t, err)
+	for _, m := range mods {
+		for _, p := range m.Permissions {
+			assert.NotEqual(t, next, p.Key)
+		}
+	}
+	r, err := s.GetRole(ctx, op)
+	require.NoError(t, err)
+	assert.NotContains(t, r.PermissionKeys, next)
+	m, err := s.PluginRoleGrants(ctx, admin, "m")
+	require.NoError(t, err)
+	require.Len(t, m.Module.Permissions, 1)
+	for _, row := range m.Roles {
+		assert.NotContains(t, row.PermissionKeys, next, row.Key)
+		if row.Key == RoleOperator {
+			assert.True(t, row.Editable, "the staged grant is outside what editing compares")
+		}
+	}
+
+	_, err = s.SetRolePermissions(ctx, root, op, append(slices.Clone(r.PermissionKeys), next), nil)
+	assert.Equal(t, "unknown", fieldCode(err, "permission_keys"), "%v", err)
+	_, err = s.SetPluginRoleGrants(ctx, root, "m", map[string][]string{RoleUser: {next}}, nil)
+	assert.Equal(t, "unknown", fieldCode(err, "permission_keys"), "%v", err)
+
+	_, err = s.SetRolePermissions(ctx, root, op, r.PermissionKeys, nil)
+	require.NoError(t, err)
+	_, err = s.SetPluginRoleGrants(ctx, root, "m", map[string][]string{RoleOperator: {"plugin.m:flow:read"}}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{RoleOperator}, permissionHolders(t, db, next), "the consent's grant stands")
+}
