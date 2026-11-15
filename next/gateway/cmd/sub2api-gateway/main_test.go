@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -325,25 +327,67 @@ func TestRedisPasswordIsEnforced(t *testing.T) {
 	}
 }
 
-// The DSN shared with the core may carry pgxpool's pool_* parameters, which
-// are no PostgreSQL settings: they leave the gateway's DSN, and
-// pool_max_conns still sizes its pool.
-func TestTakePoolParams(t *testing.T) {
-	for raw, want := range map[string]struct {
-		dsn      string
-		maxConns int
-	}{
-		"postgres://u:p%40w@db:5432/app?sslmode=require&pool_max_conns=20&pool_min_conns=4": {"postgres://u:p%40w@db:5432/app?sslmode=require", 20},
-		"postgresql://db/app?pool_max_conn_idle_time=1m":                                    {"postgresql://db/app", 0},
-		"postgres://db/app?sslmode=disable":                                                 {"postgres://db/app?sslmode=disable", 0},
-		"host=db dbname=app":                                                                {"host=db dbname=app", 0},
+// The DSN shared with the core may carry pgxpool's pool_* parameters, in
+// either DSN form: they leave the gateway's DSN and size its pool.
+func TestOpenPoolTakesPoolParams(t *testing.T) {
+	for raw, maxConns := range map[string]int{
+		"postgres://u:p%40w@db:5432/app?sslmode=require&pool_max_conns=20&pool_min_conns=4": 20,
+		"postgresql://db/app?pool_max_conn_idle_time=1m":                                    gatewayPool.MaxConns,
+		"host=db dbname=app pool_max_conns=5 pool_max_conn_lifetime=10m":                    5,
+		"host=db dbname=app": gatewayPool.MaxConns,
 	} {
-		dsn, maxConns, err := takePoolParams(raw)
-		if err != nil || dsn != want.dsn || maxConns != want.maxConns {
-			t.Errorf("%q: dsn=%q max_conns=%d err=%v", raw, dsn, maxConns, err)
+		db, err := openPool(config{DatabaseURL: raw})
+		if err != nil {
+			t.Errorf("%q: %v", raw, err)
+			continue
 		}
+		sqlDB, _ := db.DB()
+		if got := sqlDB.Stats().MaxOpenConnections; got != maxConns {
+			t.Errorf("%q: max_conns=%d, want %d", raw, got, maxConns)
+		}
+		closePool(db)
 	}
-	if _, _, err := takePoolParams("postgres://db/app?pool_max_conns=0"); err == nil {
+	t.Setenv("SUB2API_GATEWAY_POOL_MAX_CONNS", "3")
+	db, err := openPool(config{DatabaseURL: "host=db pool_max_conns=5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closePool(db)
+	if sqlDB, _ := db.DB(); sqlDB.Stats().MaxOpenConnections != 3 {
+		t.Error("SUB2API_GATEWAY_POOL_MAX_CONNS does not override pool_max_conns")
+	}
+	if _, err := openPool(config{DatabaseURL: "postgres://db/app?pool_max_conns=0"}); err == nil {
 		t.Error("pool_max_conns=0 was accepted")
+	}
+}
+
+// A keyword=value DSN with pool parameters reaches the server: they used to
+// be sent as settings, which PostgreSQL rejects.
+func TestOpenPoolConnectsWithPoolParams(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not configured")
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pass, _ := u.User.Password()
+	kv := fmt.Sprintf("host=%s port=%s user=%s password='%s' dbname=%s sslmode=disable pool_max_conns=2 pool_max_conn_lifetime=5m pool_health_check_period=1m",
+		u.Hostname(), u.Port(), u.User.Username(), pass, strings.TrimPrefix(u.Path, "/"))
+	sep := "?"
+	if u.RawQuery != "" {
+		sep = "&"
+	}
+	for _, raw := range []string{dsn + sep + "pool_max_conns=2&pool_max_conn_idle_time=1m", kv} {
+		db, err := openPool(config{DatabaseURL: raw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var one int
+		if err := db.Raw("SELECT 1").Scan(&one).Error; err != nil || one != 1 {
+			t.Errorf("select through a DSN with pool params: %v", err)
+		}
+		closePool(db)
 	}
 }
