@@ -1,0 +1,4 @@
+-- sql
+SELECT EXISTS (SELECT 1 FROM "permissions" WHERE plugin_key = $1)
+-- vars
+$1 string "demo"

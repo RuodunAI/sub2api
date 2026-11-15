@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -261,46 +262,25 @@ func (l *UsageLimit) scanTargets() []any {
 // The usage reads below are written with ? placeholders and read through
 // GORM.
 
-// rowScanner is what the usage scans need of *sql.Rows; the caller closes
-// the rows.
-type rowScanner interface {
-	Next() bool
-	Scan(dest ...any) error
-	Err() error
-}
-
-// readRows runs the GORM statement db and scans its rows.
-func readRows[T any](db *gorm.DB, scan func(rowScanner) (T, error)) (T, error) {
-	rows, err := db.Rows()
-	if err != nil {
-		var zero T
-		return zero, err
-	}
-	defer rows.Close()
-	return scan(rows)
-}
-
 // usageLimits loads the configured limits of the given accounts.
 func usageLimits(ctx context.Context, q store.Querier, ids []int64) (map[int64]UsageLimit, error) {
-	return readRows(store.G(ctx, q).Raw(usageLimitsSQL, store.Int64s(ids)), func(r rowScanner) (map[int64]UsageLimit, error) {
-		return scanUsageLimits(r, len(ids))
-	})
-}
-
-const usageLimitsSQL = `SELECT account_id, ` + usageLimitColumns + ` FROM account_usage_limits WHERE account_id = ANY(?)`
-
-func scanUsageLimits(rows rowScanner, n int) (map[int64]UsageLimit, error) {
-	out := make(map[int64]UsageLimit, n)
-	for rows.Next() {
+	out := make(map[int64]UsageLimit, len(ids))
+	err := store.EachRow(store.G(ctx, q).Raw(usageLimitsSQL, store.Int64s(ids)), func(rows *sql.Rows) error {
 		var id int64
 		var l UsageLimit
 		if err := rows.Scan(append([]any{&id}, l.scanTargets()...)...); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = l
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
+
+const usageLimitsSQL = `SELECT account_id, ` + usageLimitColumns + ` FROM account_usage_limits WHERE account_id = ANY(?)`
 
 // usageWindow is the usage of one account from since up to until (nil = now).
 type usageWindow struct {
@@ -315,9 +295,20 @@ func usageIn(ctx context.Context, q store.Querier, windows []usageWindow) ([]Usa
 	if len(windows) == 0 {
 		return make([]UsageFigures, 0), nil
 	}
-	return readRows(store.G(ctx, q).Raw(usageInSQL, usageInArgs(windows)...), func(r rowScanner) ([]UsageFigures, error) {
-		return scanUsageIn(r, len(windows))
+	out := make([]UsageFigures, len(windows))
+	err := store.EachRow(store.G(ctx, q).Raw(usageInSQL, usageInArgs(windows)...), func(rows *sql.Rows) error {
+		var i int
+		var f UsageFigures
+		if err := rows.Scan(&i, &f.Cost, &f.RawCost, &f.Requests, &f.Tokens); err != nil {
+			return err
+		}
+		out[i-1] = f
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 const usageInSQL = `SELECT w.i, coalesce(sum(h.cost),0), coalesce(sum(h.raw_cost),0), coalesce(sum(h.requests),0)::bigint, coalesce(sum(h.tokens),0)::bigint
@@ -341,41 +332,24 @@ type windowEnds []*time.Time
 // Value implements driver.Valuer; pgx encodes the slice itself.
 func (e windowEnds) Value() (driver.Value, error) { return []*time.Time(e), nil }
 
-// scanUsageIn reads the usageInSQL rows into the figures of n windows, in
-// window order.
-func scanUsageIn(rows rowScanner, n int) ([]UsageFigures, error) {
-	out := make([]UsageFigures, n)
-	for rows.Next() {
-		var i int
-		var f UsageFigures
-		if err := rows.Scan(&i, &f.Cost, &f.RawCost, &f.Requests, &f.Tokens); err != nil {
-			return nil, err
-		}
-		out[i-1] = f
-	}
-	return out, rows.Err()
-}
-
 func usageTotals(ctx context.Context, q store.Querier, ids []int64) (map[int64]UsageFigures, error) {
-	return readRows(store.G(ctx, q).Raw(usageTotalsSQL, store.Int64s(ids)), func(r rowScanner) (map[int64]UsageFigures, error) {
-		return scanUsageTotals(r, len(ids))
-	})
-}
-
-const usageTotalsSQL = `SELECT account_id, cost, raw_cost, requests, tokens FROM account_usage_totals WHERE account_id = ANY(?)`
-
-func scanUsageTotals(rows rowScanner, n int) (map[int64]UsageFigures, error) {
-	out := make(map[int64]UsageFigures, n)
-	for rows.Next() {
+	out := make(map[int64]UsageFigures, len(ids))
+	err := store.EachRow(store.G(ctx, q).Raw(usageTotalsSQL, store.Int64s(ids)), func(rows *sql.Rows) error {
 		var id int64
 		var f UsageFigures
 		if err := rows.Scan(&id, &f.Cost, &f.RawCost, &f.Requests, &f.Tokens); err != nil {
-			return nil, err
+			return err
 		}
 		out[id] = f
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
+
+const usageTotalsSQL = `SELECT account_id, cost, raw_cost, requests, tokens FROM account_usage_totals WHERE account_id = ANY(?)`
 
 // limitStates computes what the current period of each active limit used; a
 // lifetime limit reads the totals.
@@ -854,13 +828,13 @@ func (s *Service) EnforceUsageLimits(ctx context.Context, ids []int64) error {
 		filter = store.Int64s(ids)
 	}
 	def := defaultUsageLimit()
-	cands, err := readRows(store.G(ctx, s.d.DB.Pool).Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.status, a.status_reason, a.auto_disabled_source, a.auto_disabled_until,
+	cands, err := store.CollectRows(store.G(ctx, s.d.DB.Pool).Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.status, a.status_reason, a.auto_disabled_source, a.auto_disabled_until,
 			l.updated_at, coalesce(l.raw_cost, false), coalesce(l.enabled, false), coalesce(l.amount, 0), coalesce(l.period, ?), coalesce(l.period_count, 1),
 			l.anchor, coalesce(l.timezone, ?), l.waived_window
 		FROM accounts a LEFT JOIN account_usage_limits l ON l.account_id = a.id
 		WHERE a.deleted_at IS NULL AND (?::bigint[] IS NULL OR a.id = ANY(?))
 			AND ((l.enabled AND a.status = 'active') OR (a.status = 'auto_disabled' AND a.auto_disabled_source = ?))`,
-		def.Period, def.Timezone, filter, filter, usageLimitSource), scanUsageCandidates)
+		def.Period, def.Timezone, filter, filter, usageLimitSource), scanUsageCandidate)
 	if err != nil || len(cands) == 0 {
 		return err
 	}
@@ -897,17 +871,11 @@ func (s *Service) EnforceUsageLimits(ctx context.Context, ids []int64) error {
 	return nil
 }
 
-func scanUsageCandidates(rows rowScanner) ([]usageCandidate, error) {
-	var cands []usageCandidate
-	for rows.Next() {
-		var c usageCandidate
-		if err := rows.Scan(append([]any{&c.id, &c.name, &c.pluginKey, &c.typ, &c.status, &c.reason, &c.source, &c.until, &c.limitSaved},
-			c.limit.scanTargets()...)...); err != nil {
-			return nil, err
-		}
-		cands = append(cands, c)
-	}
-	return cands, rows.Err()
+func scanUsageCandidate(rows *sql.Rows) (usageCandidate, error) {
+	var c usageCandidate
+	err := rows.Scan(append([]any{&c.id, &c.name, &c.pluginKey, &c.typ, &c.status, &c.reason, &c.source, &c.until, &c.limitSaved},
+		c.limit.scanTargets()...)...)
+	return c, err
 }
 
 func (s *Service) enforceUsageLimit(ctx context.Context, c usageCandidate, st *UsageLimitState) error {

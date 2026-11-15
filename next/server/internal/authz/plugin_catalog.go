@@ -341,7 +341,7 @@ func (s *Service) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64,
 // refusal being a Denied entry; unknown keys are invalid.
 func (s *Service) PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string) (core.PluginGrantees, error) {
 	roleKeys = dedupe(roleKeys)
-	roles, err := readRoles(selectRoles(store.G(ctx, tx), ` WHERE r.key = ANY(?) ORDER BY r.key`, store.Strings(roleKeys)))
+	roles, err := readRoles(rolesByKeys(store.G(ctx, tx), roleKeys))
 	if err != nil {
 		return core.PluginGrantees{}, err
 	}
@@ -412,15 +412,16 @@ func pluginGrantee(ctx context.Context, actor core.PermissionSet, held []string,
 // GrantPluginPermission implements core.PermissionCatalog; roles naming a
 // scope the permission does not take are invalid.
 func (s *Service) GrantPluginPermission(ctx context.Context, tx pgx.Tx, key string, roles map[string][]string) error {
-	var p permissionScopeRow
-	err := pluginPermissionScope(store.G(ctx, tx), key).Take(&p).Error
+	var scopeType string
+	var scope store.JSON[manifest.PermissionScope]
+	err := pluginPermissionScope(store.G(ctx, tx), key).Row().Scan(&scopeType, &scope)
 	switch {
 	case store.IsNoRows(err):
 		return nil // no plugin permission: nothing to grant
 	case err != nil:
 		return err
 	}
-	if err := checkScopes(key, core.ReadPluginScope(p.ScopeType, &p.Scope.V), roles); err != nil {
+	if err := checkScopes(key, core.ReadPluginScope(scopeType, &scope.V), roles); err != nil {
 		return err
 	}
 	v, err := s.Bump(ctx, tx)
@@ -432,12 +433,6 @@ func (s *Service) GrantPluginPermission(ctx context.Context, tx pgx.Tx, key stri
 	}
 	s.committedLater(v)
 	return nil
-}
-
-// permissionScopeRow is a permission's scope as stored.
-type permissionScopeRow struct {
-	ScopeType string
-	Scope     store.JSON[manifest.PermissionScope]
 }
 
 // pluginPermissionScope selects the scope type and scope of the plugin
@@ -461,15 +456,17 @@ func (s *Service) grantPlugin(ctx context.Context, tx pgx.Tx, via, key string, r
 	if len(roleKeys) == 0 {
 		return nil
 	}
-	return s.syncGrant(ctx, tx, map[string]any{"via": via}, grantPluginSQL, store.Strings(roleKeys), store.Strings(scopes), key)
+	return s.syncGrant(ctx, tx, map[string]any{"via": via}, grantPluginTo(store.G(ctx, tx), key, roleKeys, scopes))
 }
 
-// grantPluginSQL grants the plugin permission (the third parameter) to the
-// roles of the (role, scope suffix) pairs of the first two, superuser roles
-// aside, an every row grant ("") as a role_permissions row and a scoped
-// one, unless the role has the every row grant, as a role_permission_scopes
-// row; it returns each grant added (syncGrant).
-const grantPluginSQL = `
+// grantPluginTo grants the plugin permission key to the roles of the
+// (role, scope suffix) pairs of roleKeys and scopes, superuser roles aside,
+// an every row grant ("") as a role_permissions row and a scoped one,
+// unless the role has the every row grant, as a role_permission_scopes row;
+// it returns each grant added (syncGrant).
+func grantPluginTo(db *gorm.DB, key string, roleKeys, scopes []string) *gorm.DB {
+	// The pairs come first in the text, the key third.
+	return db.Raw(`
 WITH g AS (
     SELECT r.id AS role_id, p.id AS permission_id, t.scope
     FROM unnest(?::text[], ?::text[]) AS t(role, scope)
@@ -485,7 +482,9 @@ ins_scoped AS (
       AND NOT EXISTS (SELECT 1 FROM role_permissions f WHERE f.role_id = g.role_id AND f.permission_id = g.permission_id)
     ON CONFLICT DO NOTHING RETURNING role_id, permission_id, scope)
 SELECT i.role_id, p.key || CASE WHEN i.scope = '' THEN '' ELSE ':' || i.scope END
-FROM (SELECT * FROM ins UNION ALL SELECT * FROM ins_scoped) i JOIN permissions p ON p.id = i.permission_id`
+FROM (SELECT * FROM ins UNION ALL SELECT * FROM ins_scoped) i JOIN permissions p ON p.id = i.permission_id`,
+		store.Strings(roleKeys), store.Strings(scopes), key)
+}
 
 // PluginPermissions implements core.PermissionCatalog.
 func (s *Service) PluginPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]core.PluginPermission, error) {
@@ -503,16 +502,23 @@ func (s *Service) PluginPermissions(ctx context.Context, q store.Querier, plugin
 
 // pluginPermissionRead is a permission as PluginPermissions reads it.
 type pluginPermissionRead struct {
-	Key, Status, Risk, ScopeType string
-	Label                        store.JSON[core.LocalizedText]
-	Scope                        store.JSON[manifest.PermissionScope]
+	Key       string                               `gorm:"column:key"`
+	Status    string                               `gorm:"column:status"`
+	Risk      string                               `gorm:"column:risk"`
+	ScopeType string                               `gorm:"column:scope_type"`
+	Label     store.JSON[core.LocalizedText]       `gorm:"column:label"`
+	Scope     store.JSON[manifest.PermissionScope] `gorm:"column:scope"`
+}
+
+// permissionsOfPlugin are the permissions of the plugin pluginKey.
+func permissionsOfPlugin(db *gorm.DB, pluginKey string) *gorm.DB {
+	return db.Model(&model.Permission{}).Where("plugin_key = ?", pluginKey)
 }
 
 // pluginPermissions selects the permissions of the plugin pluginKey, by
 // sort and key.
 func pluginPermissions(db *gorm.DB, pluginKey string) *gorm.DB {
-	return db.Model(&model.Permission{}).Select("key", "label", "status", "risk", "scope_type", "scope").
-		Where("plugin_key = ?", pluginKey).Order("sort, key")
+	return permissionsOfPlugin(db, pluginKey).Select("key", "label", "status", "risk", "scope_type", "scope").Order("sort, key")
 }
 
 // PermissionHolders implements core.PermissionCatalog: a role holds a key
@@ -525,7 +531,7 @@ func (s *Service) PermissionHolders(ctx context.Context, q store.Querier, keys [
 	}
 	var key string
 	var h core.PermissionHolder
-	err := eachRow(holderRows(store.G(ctx, q), keys), func(rows *sql.Rows) error {
+	err := store.EachRow(holderRows(store.G(ctx, q), keys), func(rows *sql.Rows) error {
 		if err := rows.Scan(&key, &h.Role, &h.Scope); err != nil {
 			return err
 		}
@@ -623,5 +629,5 @@ func (s *Service) DeletePlugin(ctx context.Context, tx pgx.Tx, pluginKey string)
 // deletePluginPermissions deletes the permissions of the plugin; their
 // grants cascade.
 func deletePluginPermissions(db *gorm.DB, pluginKey string) *gorm.DB {
-	return db.Where("plugin_key = ?", pluginKey).Delete(&model.Permission{})
+	return permissionsOfPlugin(db, pluginKey).Delete(&model.Permission{})
 }

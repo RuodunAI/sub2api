@@ -51,8 +51,8 @@ func TestSQLAuthzPermissionLoad(t *testing.T) {
 		{"catalog", func(db *gorm.DB) *gorm.DB { return scan(catalogRows(db)) }},
 		{"role_grants", func(db *gorm.DB) *gorm.DB { return scan(roleGrants(db, []string{RoleAdmin, "custom"})) }},
 		{"role_assignables", func(db *gorm.DB) *gorm.DB { return scan(roleAssignables(db, []string{RoleAdmin})) }},
-		{"custom_roles", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeys(db, "")) }},
-		{"custom_roles_but", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeys(db, "custom")) }},
+		{"custom_roles", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeys(db)) }},
+		{"custom_roles_but", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeysBut(db, "custom")) }},
 		{"users_role_keys", func(db *gorm.DB) *gorm.DB { return scan(usersRoleKeys(db, []int64{7, 8})) }},
 	})
 }
@@ -61,12 +61,17 @@ func TestSQLAuthzPermissionLoad(t *testing.T) {
 // that guard the super admin.
 func TestSQLAuthzRoleReads(t *testing.T) {
 	assertCases(t, []sqlCase{
-		{"list", func(db *gorm.DB) *gorm.DB { return scan(selectRoles(db, ` ORDER BY r.builtin DESC, r.id`)) }},
+		{"list", func(db *gorm.DB) *gorm.DB { return scan(listedRoles(db)) }},
 		{"lock", func(db *gorm.DB) *gorm.DB { return scan(lockRole(db, 3)) }},
-		{"by_keys", func(db *gorm.DB) *gorm.DB {
-			return scan(selectRoles(db, ` WHERE r.key = ANY(?) ORDER BY r.key`, store.Strings{RoleAdmin, RoleUser}))
+		{"by_id", func(db *gorm.DB) *gorm.DB { return scan(roleByID(db, 3)) }},
+		{"by_key", func(db *gorm.DB) *gorm.DB { return scan(roleByKey(db, RoleAdmin)) }},
+		{"by_keys", func(db *gorm.DB) *gorm.DB { return scan(rolesByKeys(db, []string{RoleAdmin, RoleUser})) }},
+		{"user_roles", func(db *gorm.DB) *gorm.DB { return scan(userRoleRefs(db, 7)) }},
+		{"role_refs", func(db *gorm.DB) *gorm.DB { return scan(roleRefsByKeys(db, []string{RoleAdmin, "custom"})) }},
+		{"custom_role_refs", func(db *gorm.DB) *gorm.DB { return scan(customRoleRefsByKeys(db, []string{RoleAdmin})) }},
+		{"assignable_builtin_refs", func(db *gorm.DB) *gorm.DB {
+			return scan(assignableBuiltinRefs(db, []string{RoleOperator, RoleUser}))
 		}},
-		{"user_roles", func(db *gorm.DB) *gorm.DB { return scan(db.Raw(userRolesSQL, int64(7))) }},
 		{"assignable", func(db *gorm.DB) *gorm.DB { return scan(assignableRoleRows(db)) }},
 		{"is_superuser", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, superuserGrants(db, 7))) }},
 		{"other_superusers", func(db *gorm.DB) *gorm.DB { return scan(otherSuperusers(db, 7)) }},
@@ -81,10 +86,10 @@ func TestSQLAuthzPermissionReads(t *testing.T) {
 		{"list", func(db *gorm.DB) *gorm.DB { return scan(permissionRows(db, "demo")) }},
 		{"holders", func(db *gorm.DB) *gorm.DB { return scan(holderRows(db, []string{"plugin:demo:read"})) }},
 		{"plugin", func(db *gorm.DB) *gorm.DB { return scan(pluginPermissions(db, "demo")) }},
-		{"plugin_scope", func(db *gorm.DB) *gorm.DB {
-			var p permissionScopeRow
-			return pluginPermissionScope(db, "plugin:demo:read").Take(&p)
-		}},
+		// SetPluginRoleGrants: whether the plugin has any permission.
+		{"plugin_exists", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, permissionsOfPlugin(db, "demo"))) }},
+		// GrantPluginPermission reads it with Row: one row, no LIMIT.
+		{"plugin_scope", func(db *gorm.DB) *gorm.DB { return scan(pluginPermissionScope(db, "plugin:demo:read")) }},
 		{"granted_scopes", func(db *gorm.DB) *gorm.DB { return scan(grantedScopes(db, "plugin:demo:read")) }},
 	})
 }
@@ -156,7 +161,7 @@ func TestSQLAuthzPluginWrites(t *testing.T) {
 		{"remove_undeclared", func(db *gorm.DB) *gorm.DB { return scan(removeUndeclared(db, "demo", []string{"plugin:demo:read"})) }},
 		{"revoke_scopes", func(db *gorm.DB) *gorm.DB { return scan(revokeScopes(db, "plugin:demo:read", store.Strings{"own"})) }},
 		{"grant", func(db *gorm.DB) *gorm.DB {
-			return scan(db.Raw(grantPluginSQL, store.Strings{RoleAdmin, RoleOperator}, store.Strings{"", "own"}, "plugin:demo:read"))
+			return scan(grantPluginTo(db, "plugin:demo:read", []string{RoleAdmin, RoleOperator}, []string{"", "own"}))
 		}},
 		{"set_status", func(db *gorm.DB) *gorm.DB { return setPluginStatus(db, "demo", "active") }},
 		{"lock_staged", func(db *gorm.DB) *gorm.DB {
@@ -172,24 +177,24 @@ func TestSQLAuthzPluginWrites(t *testing.T) {
 func TestSQLAuthzSyncWrites(t *testing.T) {
 	assertCases(t, []sqlCase{
 		{"roles", func(db *gorm.DB) *gorm.DB {
-			return scan(db.Raw(syncRolesSQL, store.Strings{RoleAdmin}, store.Strings{`{"en":"Admin"}`}, store.Strings{`{}`},
+			return scan(syncRoles(db, store.Strings{RoleAdmin}, store.Strings{`{"en":"Admin"}`}, store.Strings{`{}`},
 				store.Bools{false}, store.Bools{true}, store.Int64s{2}))
 		}},
 		{"permissions", func(db *gorm.DB) *gorm.DB {
-			return scan(db.Raw(syncPermissionsSQL, store.Strings{"account:read"}, store.Strings{"account"}, store.Strings{`{"en":"Read"}`},
+			return scan(syncPermissions(db, store.Strings{"account:read"}, store.Strings{"account"}, store.Strings{`{"en":"Read"}`},
 				store.Strings{`{}`}, store.Strings{"low"}, store.Strings{`[]`}, store.Int64s{1}, store.Strings{"account"}))
 		}},
 		{"advance", func(db *gorm.DB) *gorm.DB {
 			return scan(advanceRoles(db, store.Strings{RoleAdmin}, store.Int64s{2}, store.Bools{true}))
 		}},
 		{"default_permissions", func(db *gorm.DB) *gorm.DB {
-			return scan(db.Raw(grantDefaultPermissionsSQL, RoleAdmin, store.Strings{"account:read"}))
+			return scan(grantDefaultPermissions(db, RoleAdmin, []string{"account:read"}))
 		}},
 		{"default_assignable", func(db *gorm.DB) *gorm.DB {
-			return scan(db.Raw(grantDefaultAssignableSQL, RoleAdmin, store.Strings{RoleUser}))
+			return scan(grantDefaultAssignable(db, RoleAdmin, []string{RoleUser}))
 		}},
 		{"scoped_defaults", func(db *gorm.DB) *gorm.DB {
-			return scan(db.Raw(grantScopedDefaultsSQL, store.Strings{"account:read:own"}, RoleOperator))
+			return scan(grantScopedDefaultsTo(db, RoleOperator, []string{"account:read:own"}))
 		}},
 		{"remove_undeclared", func(db *gorm.DB) *gorm.DB { return removeUndeclaredCore(db, store.Strings{"account:read"}) }},
 	})

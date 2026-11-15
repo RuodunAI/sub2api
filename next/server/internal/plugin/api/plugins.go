@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,7 +66,7 @@ const pluginSelect = `
 	                 WHERE plugin_key = p.key AND consent_status = 'awaiting_consent'), '{}')
 	FROM plugins p LEFT JOIN publishers pub ON pub.id = p.publisher_id`
 
-func scanSummary(row interface{ Scan(...any) error }) (*PluginSummary, error) {
+func scanSummary(row store.RowScanner) (*PluginSummary, error) {
 	var s PluginSummary
 	var name []byte
 	if err := row.Scan(&s.Key, &name, &s.Status, &s.StatusReason, &s.ActiveVersion, &s.DesiredVersion,
@@ -122,23 +123,9 @@ func (a *API) listPlugins(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := g.Raw(pluginSelect+` ORDER BY p.key LIMIT ? OFFSET ?`, size, (page-1)*size).Rows()
+	items, err := store.CollectRows(g.Raw(pluginSelect+` ORDER BY p.key LIMIT ? OFFSET ?`, size, (page-1)*size),
+		func(rows *sql.Rows) (*PluginSummary, error) { return scanSummary(rows) })
 	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	var items []*PluginSummary
-	for rows.Next() {
-		s, err := scanSummary(rows)
-		if err != nil {
-			rows.Close()
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, s)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

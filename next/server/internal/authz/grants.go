@@ -60,7 +60,7 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 	found := map[string]row{}
 	// A staged permission (core.PermissionDef.Staged) is unknown here: it
 	// belongs to a version not activated yet, whose consent alone grants it.
-	if err := eachRow(grantablePermissions(store.G(ctx, tx), actions), func(rows *sql.Rows) error {
+	if err := store.EachRow(grantablePermissions(store.G(ctx, tx), actions), func(rows *sql.Rows) error {
 		var k, scopeType string
 		var scope store.JSON[manifest.PermissionScope]
 		var r row

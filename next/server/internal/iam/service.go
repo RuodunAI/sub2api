@@ -217,7 +217,7 @@ func (s *Service) isActiveWithVersion(ctx context.Context, uid int64, seen int) 
 	}
 	var active bool
 	var version int
-	err := store.G(ctx, s.db.Pool).Raw(userStatus, uid).Row().Scan(&active, &version)
+	err := userStatus(store.G(ctx, s.db.Pool), uid).Row().Scan(&active, &version)
 	if store.IsNoRows(err) {
 		active, version, err = false, math.MaxInt, nil
 	}
@@ -234,7 +234,9 @@ func (s *Service) isActiveWithVersion(ctx context.Context, uid int64, seen int) 
 
 // userStatus is the statement of isActiveWithVersion, raw (the fewest
 // allocations): a request reads it on a cache miss.
-const userStatus = `SELECT status = 'active', token_version FROM users WHERE id = ? AND deleted_at IS NULL`
+func userStatus(db *gorm.DB, uid int64) *gorm.DB {
+	return db.Raw(`SELECT status = 'active', token_version FROM users WHERE id = ? AND deleted_at IS NULL`, uid)
+}
 
 func randomToken() (string, error) {
 	var b [32]byte
@@ -252,7 +254,9 @@ func hashToken(t string) string {
 // ------------------------------------------------------------ bootstrap
 
 // bootstrapLock serializes the bootstraps of the nodes.
-const bootstrapLock = `SELECT pg_advisory_xact_lock(hashtext('sub2api:iam:bootstrap'))`
+func bootstrapLock(db *gorm.DB) *gorm.DB {
+	return db.Exec(`SELECT pg_advisory_xact_lock(hashtext('sub2api:iam:bootstrap'))`)
+}
 
 // liveUsers are the users not deleted.
 func liveUsers(db *gorm.DB) *gorm.DB {
@@ -267,7 +271,7 @@ func (s *Service) Bootstrap(ctx context.Context) error {
 	var version int64
 	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
 		g := store.G(ctx, tx)
-		if err := g.Exec(bootstrapLock).Error; err != nil {
+		if err := bootstrapLock(g).Error; err != nil {
 			return err
 		}
 		exists, err := store.Exists(g, liveUsers(g))

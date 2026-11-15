@@ -535,3 +535,34 @@ func sectionKeys(data any) string {
 	}
 	return strings.Join(keys, ",")
 }
+
+// ListUsers keeps the page and size within httpapi.Pagination's bounds: a
+// size of 0 or less, or a page before the first, would otherwise reach
+// GORM, which leaves such a LIMIT or OFFSET out and reads every user.
+func TestListUsersPageBounds(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	if _, err := e.svc.db.Pool.Exec(ctx, `INSERT INTO users (email, password_hash)
+		SELECT 'user' || n || '@example.com', 'x' FROM generate_series(1, 25) n`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ page, size, want int }{
+		{1, 0, 20},  // no size: the default
+		{0, -5, 20}, // a negative size: the default
+		{-3, 2, 2},  // a page before the first: the first
+		{1, 1000, 25},
+	} {
+		list, total, err := e.svc.ListUsers(ctx, ListUsersFilter{Page: c.page, PageSize: c.size})
+		if err != nil || total != 25 || len(list) != c.want {
+			t.Errorf("page %d size %d: %d users of %d, %v; want %d of 25", c.page, c.size, len(list), total, err, c.want)
+		}
+	}
+	first, _, err := e.svc.ListUsers(ctx, ListUsersFilter{Page: 1, PageSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := e.svc.ListUsers(ctx, ListUsersFilter{Page: -3, PageSize: 2})
+	if len(before) != 2 || before[0].ID != first[0].ID || before[1].ID != first[1].ID {
+		t.Errorf("a page before the first lists %v, want the first page", before)
+	}
+}

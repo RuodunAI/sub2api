@@ -350,7 +350,7 @@ func (s *Service) loadPermissionSet(ctx context.Context, userID int64) (core.Per
 		active := false
 		var su bool
 		var key sql.NullString
-		if err := eachRow(userGrants(store.G(ctx, tx), userID), func(rows *sql.Rows) error {
+		if err := store.EachRow(userGrants(store.G(ctx, tx), userID), func(rows *sql.Rows) error {
 			if err := rows.Scan(&su, &key); err != nil {
 				return err
 			}
@@ -390,23 +390,6 @@ WHERE u.id = ? AND u.deleted_at IS NULL AND u.status = 'active'`
 
 func userGrants(db *gorm.DB, userID int64) *gorm.DB {
 	return db.Raw(userGrantsSQL, userID)
-}
-
-// eachRow runs db, a query, and calls scan on each row it returns: rows
-// read by position (columns without names of their own, or the same name
-// twice) and folded as they come, never collected.
-func eachRow(db *gorm.DB, scan func(*sql.Rows) error) error {
-	rows, err := db.Rows()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		if err := scan(rows); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
 }
 
 // RolesPermissions returns the union of all permissions granted by the given
@@ -483,7 +466,7 @@ func readRoleGrants(ctx context.Context, q store.Querier, roleKeys []string) (ma
 	var role string
 	var su, custom, anyCustom bool
 	var key sql.NullString
-	if err := eachRow(roleGrants(db, roleKeys), func(rows *sql.Rows) error {
+	if err := store.EachRow(roleGrants(db, roleKeys), func(rows *sql.Rows) error {
 		if err := rows.Scan(&role, &su, &custom, &key); err != nil {
 			return err
 		}
@@ -501,7 +484,7 @@ func readRoleGrants(ctx context.Context, q store.Querier, roleKeys []string) (ma
 		return nil, nil, err
 	}
 	var assignable string
-	if err := eachRow(roleAssignables(db, roleKeys), func(rows *sql.Rows) error {
+	if err := store.EachRow(roleAssignables(db, roleKeys), func(rows *sql.Rows) error {
 		if err := rows.Scan(&role, &assignable); err != nil {
 			return err
 		}
@@ -514,7 +497,7 @@ func readRoleGrants(ctx context.Context, q store.Querier, roleKeys []string) (ma
 		return out, nil, nil
 	}
 	var customs store.Strings
-	if err := customRoleKeys(db, "").Row().Scan(&customs); err != nil {
+	if err := customRoleKeys(db).Row().Scan(&customs); err != nil {
 		return nil, nil, err
 	}
 	return out, customs, nil
@@ -539,12 +522,13 @@ JOIN roles r ON r.id = ra.role_id AND r.key = ANY(?)
 JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser`, store.Strings(roleKeys))
 }
 
-// customRoleKeys selects the keys of the custom roles as one array, leaving
-// out except unless it is "".
-func customRoleKeys(db *gorm.DB, except string) *gorm.DB {
-	if except == "" {
-		return db.Raw(`SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin`)
-	}
+// customRoleKeys selects the keys of the custom roles as one array.
+func customRoleKeys(db *gorm.DB) *gorm.DB {
+	return db.Raw(`SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin`)
+}
+
+// customRoleKeysBut is customRoleKeys without the role except.
+func customRoleKeysBut(db *gorm.DB, except string) *gorm.DB {
 	return db.Raw(`SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin AND key <> ?`, except)
 }
 
@@ -584,7 +568,7 @@ func (s *Service) ensureCatalog(ctx context.Context) error {
 	}
 	snap := &catalogSnapshot{perms: map[string]permMeta{}}
 	v, err := s.readSnapshot(ctx, func(tx pgx.Tx) error {
-		return eachRow(catalogRows(store.G(ctx, tx)), func(rows *sql.Rows) error {
+		return store.EachRow(catalogRows(store.G(ctx, tx)), func(rows *sql.Rows) error {
 			var k string
 			var m permMeta
 			if err := rows.Scan(&k, &m.status); err != nil {

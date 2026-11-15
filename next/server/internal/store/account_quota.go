@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 
@@ -49,7 +50,7 @@ type QuotaSnapshot struct {
 const selectQuota = `SELECT account_id, windows, source, error, updated_at, last_passive_at, last_active_at, revision, next_check_at, refresh_status, generation
 	FROM account_quota_snapshots`
 
-func scanQuota(r interface{ Scan(...any) error }) (*QuotaSnapshot, error) {
+func scanQuota(r RowScanner) (*QuotaSnapshot, error) {
 	var q QuotaSnapshot
 	var raw []byte
 	if err := r.Scan(&q.AccountID, &raw, &q.Source, &q.Error, &q.UpdatedAt, &q.LastPassiveAt, &q.LastActiveAt, &q.Revision, &q.NextCheckAt, &q.RefreshStatus, &q.Generation); err != nil {
@@ -88,19 +89,17 @@ func (d *DB) AccountQuotas(ctx context.Context, accountIDs []int64) (map[int64]*
 	if len(accountIDs) == 0 {
 		return out, nil
 	}
-	rows, err := G(ctx, d.Pool).Raw(selectQuota+` WHERE account_id = ANY(?)`, Int64s(accountIDs)).Rows()
+	err := EachRow(G(ctx, d.Pool).Raw(selectQuota+` WHERE account_id = ANY(?)`, Int64s(accountIDs)), func(rows *sql.Rows) error {
+		q, err := scanQuota(rows)
+		if err == nil {
+			out[q.AccountID] = q
+		}
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		q, err := scanQuota(rows)
-		if err != nil {
-			return nil, err
-		}
-		out[q.AccountID] = q
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // AccountQuotasAt is AccountQuotas plus the time the read began
@@ -108,12 +107,7 @@ func (d *DB) AccountQuotas(ctx context.Context, accountIDs []int64) (map[int64]*
 // result reflects at least every write committed before it. Caches order
 // their entries by it (CONTRACTS §51.3).
 func (d *DB) AccountQuotasAt(ctx context.Context, accountIDs []int64) (map[int64]*QuotaSnapshot, time.Time, error) {
-	rows, err := quotasAt(G(ctx, d.Pool), accountIDs).Rows()
-	if err != nil {
-		return nil, time.Time{}, err
-	}
-	defer rows.Close()
-	read, err := readQuotaRows(rows, false)
+	read, err := readQuotaRows(quotasAt(G(ctx, d.Pool), accountIDs), false)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -156,60 +150,61 @@ const selectQuotaRead = `statement_timestamp(), q.account_id, q.windows, COALESC
 // each applied observation, so the rows of the Raw statement (quotasAt) are
 // scanned directly (BenchmarkHotReadAccountQuotas).
 func (d *DB) ReadAccountQuotas(ctx context.Context, accountIDs []int64) (*QuotaRead, error) {
-	rows, err := quotasAt(G(ctx, d.Pool), accountIDs).Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return readQuotaRows(rows, false)
+	return readQuotaRows(quotasAt(G(ctx, d.Pool), accountIDs), false)
 }
 
 // ReadAccountQuotasOfTypes reads the snapshot rows of every account not
 // deleted whose "plugin_key/type" is in keys; Accounts lists them all.
 func (d *DB) ReadAccountQuotasOfTypes(ctx context.Context, keys []string) (*QuotaRead, error) {
-	rows, err := G(ctx, d.Pool).Raw(`SELECT a.id, `+selectQuotaRead+`
+	return readQuotaRows(G(ctx, d.Pool).Raw(`SELECT a.id, `+selectQuotaRead+`
 		FROM (SELECT statement_timestamp()) t LEFT JOIN (accounts a LEFT JOIN account_quota_snapshots q ON q.account_id = a.id)
-			ON a.deleted_at IS NULL AND a.plugin_key||'/'||a.type = ANY(?)`, Strings(keys)).Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return readQuotaRows(rows, true)
+			ON a.deleted_at IS NULL AND a.plugin_key||'/'||a.type = ANY(?)`, Strings(keys)), true)
 }
 
-// readQuotaRows reads the rows of ReadAccountQuotas,
-// ReadAccountQuotasOfTypes and AccountQuotasAt; the caller closes them.
-func readQuotaRows(rows interface {
-	Next() bool
-	Scan(...any) error
-	Err() error
-}, accounts bool) (*QuotaRead, error) {
+// readQuotaRows runs db, the read of ReadAccountQuotas,
+// ReadAccountQuotasOfTypes or AccountQuotasAt, and folds its rows; accounts
+// lists the accounts covered (Accounts).
+func readQuotaRows(db *gorm.DB, accounts bool) (*QuotaRead, error) {
+	out := newQuotaRead(accounts)
+	if err := EachRow(db, func(rows *sql.Rows) error { return out.add(rows) }); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// newQuotaRead is a QuotaRead of no rows yet; accounts makes Accounts the
+// empty list rather than nil.
+func newQuotaRead(accounts bool) *QuotaRead {
 	out := &QuotaRead{Snapshots: map[int64]*QuotaSnapshot{}, Invalid: map[int64]error{}}
 	if accounts {
 		out.Accounts = []int64{}
 	}
-	for rows.Next() {
-		var account, id *int64
-		var q QuotaSnapshot
-		var raw []byte
-		if err := rows.Scan(&account, &out.At, &id, &raw, &q.Source, &q.Error, &q.UpdatedAt, &q.LastPassiveAt, &q.LastActiveAt, &q.Revision, &q.NextCheckAt, &q.RefreshStatus, &q.Generation); err != nil {
-			return nil, err
-		}
-		if account != nil {
-			out.Accounts = append(out.Accounts, *account)
-		}
-		if id == nil {
-			continue // no snapshot: the row only carries the time or the account
-		}
-		q.AccountID = *id
-		var err error
-		if q.Windows, err = quotaWindows(raw); err != nil {
-			out.Invalid[q.AccountID] = err
-			continue
-		}
-		out.Snapshots[q.AccountID] = &q
+	return out
+}
+
+// add reads one row of the account column (NULL when not asked for) and
+// selectQuotaRead into out.
+func (out *QuotaRead) add(row RowScanner) error {
+	var account, id *int64
+	var q QuotaSnapshot
+	var raw []byte
+	if err := row.Scan(&account, &out.At, &id, &raw, &q.Source, &q.Error, &q.UpdatedAt, &q.LastPassiveAt, &q.LastActiveAt, &q.Revision, &q.NextCheckAt, &q.RefreshStatus, &q.Generation); err != nil {
+		return err
 	}
-	return out, rows.Err()
+	if account != nil {
+		out.Accounts = append(out.Accounts, *account)
+	}
+	if id == nil {
+		return nil // no snapshot: the row only carries the time or the account
+	}
+	q.AccountID = *id
+	var err error
+	if q.Windows, err = quotaWindows(raw); err != nil {
+		out.Invalid[q.AccountID] = err
+		return nil
+	}
+	out.Snapshots[q.AccountID] = &q
+	return nil
 }
 
 // SaveAccountQuota merges windows into the account's snapshot (a window

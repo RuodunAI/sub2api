@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -33,27 +34,14 @@ func (a *API) listRollouts(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := rolloutPage(g, key, since, size, (page-1)*size).Rows()
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	items := []map[string]any{}
-	for rows.Next() {
+	items, err := store.CollectRows(rolloutPage(g, key, since, size, (page-1)*size), func(rows *sql.Rows) (map[string]any, error) {
 		var raw []byte
-		if err = rows.Scan(&raw); err != nil {
-			break
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
 		}
 		var item map[string]any
-		if err = json.Unmarshal(raw, &item); err != nil {
-			break
-		}
-		items = append(items, item)
-	}
-	rows.Close()
-	if err == nil {
-		err = rows.Err()
-	}
+		return item, json.Unmarshal(raw, &item)
+	})
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -110,23 +98,13 @@ func (a *API) pluginHistory(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := g.Raw(`SELECT to_jsonb(h) FROM plugin_history h`+historyWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`,
-		key, rolloutID, rolloutID, size, (page-1)*size).Rows()
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	defer rows.Close()
-	items := []json.RawMessage{}
-	for rows.Next() {
+	items, err := store.CollectRows(g.Raw(`SELECT to_jsonb(h) FROM plugin_history h`+historyWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		key, rolloutID, rolloutID, size, (page-1)*size), func(rows *sql.Rows) (json.RawMessage, error) {
 		var item json.RawMessage
-		if err := rows.Scan(&item); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
+		err := rows.Scan(&item)
+		return item, err
+	})
+	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
