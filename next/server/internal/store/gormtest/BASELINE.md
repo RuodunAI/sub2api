@@ -52,6 +52,37 @@ stays on pgx under `//gormguard:allow-pgx`. The locked reads of the same
 records inside Lookup's transaction (`discoverPrefixes`, only for a
 request that hits) are on GORM.
 
+## Batch 2c: the plugin grant check
+
+`grants.Holds` runs for every HostService call of a plugin instance that
+needs a host permission (`hostServer.require`), so for every plugin-backed
+gateway request that calls the host (account credentials, KV, locks,
+prices ...). Its benchmark measures the pgx statement next to the GORM form
+of the same statement (`Raw` over the named-parameter `versionRows`), on a
+granted permission with a scope:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/plugin/grants/
+```
+
+Recorded 2026-11-15 on gorm-2c, same machine and server as above. Medians
+of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotGrantHolds/pgx | 79 491 | 549 | 11 |
+| BenchmarkHotGrantHolds/gorm | 109 006 | 6 765 | 60 |
+
+GORM takes 5.5 times the allocations (the limit is 1.5), so Holds stays on
+pgx under `//gormguard:allow-pgx`. The other grant statements (instance
+start, consent, rollout commit, revocation) are on GORM.
+
+The provider resource statements (`internal/providerresources`) run only
+for requests that carry or return provider files, containers or skills,
+each inside a transaction that already takes advisory locks; they are on
+GORM without a benchmark.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

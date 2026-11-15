@@ -7,10 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pkgsig"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Trust levels.
@@ -131,11 +135,8 @@ func (t *TrustStore) verify(ctx context.Context, q store.Querier, p *Package, ch
 		notBefore, notAfter                          *time.Time
 		pubID                                        int64
 	)
-	err := q.QueryRow(ctx, `
-		SELECT k.public_key, k.status, k.not_before, k.not_after, p.id, p.name, p.trust_level, p.status
-		FROM publisher_keys k JOIN publishers p ON p.id = k.publisher_id
-		WHERE k.key_id = $1`, sig.KeyID).
-		Scan(&pubB64, &keyStatus, &notBefore, &notAfter, &pubID, &pubName, &trust, &pubStatus)
+	err := signingKey(store.G(ctx, q), sig.KeyID).
+		Row().Scan(&pubB64, &keyStatus, &notBefore, &notAfter, &pubID, &pubName, &trust, &pubStatus)
 	if store.IsNoRows(err) {
 		return nil, sigError(fmt.Sprintf("unknown signing key %q", sig.KeyID))
 	}
@@ -168,6 +169,14 @@ func (t *TrustStore) verify(ctx context.Context, q store.Querier, p *Package, ch
 	return &Verification{Publisher: pubName, PublisherID: &pubID, KeyID: sig.KeyID, Trust: trust, SignatureStatus: SigValid}, nil
 }
 
+// signingKey reads the signing key keyID and its publisher.
+func signingKey(db *gorm.DB, keyID string) *gorm.DB {
+	return db.Raw(`
+		SELECT k.public_key, k.status, k.not_before, k.not_after, p.id, p.name, p.trust_level, p.status
+		FROM publisher_keys k JOIN publishers p ON p.id = k.publisher_id
+		WHERE k.key_id = ?`, keyID)
+}
+
 func (t *TrustStore) check(p *Package, sig *pkgsig.Signature, pub ed25519.PublicKey) error {
 	if t.skipSigCheck {
 		return nil
@@ -180,42 +189,42 @@ func (t *TrustStore) check(p *Package, sig *pkgsig.Signature, pub ed25519.Public
 // concurrent first registration (several plugins verifying at once on a
 // fresh database): the loser's insert does nothing and the row is read back.
 func (t *TrustStore) registerOfficial(ctx context.Context, q store.Querier, name, keyID, b64 string) (int64, error) {
-	var (
-		id            int64
-		trust, status string
-		keyPub        int64
-		keyStatus     string
-	)
-	if _, err := q.Exec(ctx,
-		`INSERT INTO publishers (name, trust_level) VALUES ($1, 'official') ON CONFLICT (name) DO NOTHING`, name); err != nil {
+	g := store.G(ctx, q)
+	if err := g.Clauses(onConflictNothing("name")).Create(&model.Publisher{Name: name, TrustLevel: TrustOfficial}).Error; err != nil {
 		return 0, err
 	}
-	if err := q.QueryRow(ctx, `SELECT id, trust_level, status FROM publishers WHERE name = $1`, name).Scan(&id, &trust, &status); err != nil {
+	var pub model.Publisher
+	if err := g.Select("id", "trust_level", "status").Where("name = ?", name).Take(&pub).Error; err != nil {
 		return 0, err
 	}
-	if status != "active" {
+	id := pub.ID
+	if core.ValueOr(pub.Status, "") != "active" {
 		return 0, revokedError(fmt.Sprintf("publisher %q has been revoked", name))
 	}
-	if trust != TrustOfficial {
-		if _, err := q.Exec(ctx, `UPDATE publishers SET trust_level = 'official' WHERE id = $1`, id); err != nil {
+	if pub.TrustLevel != TrustOfficial {
+		if err := g.Model(&model.Publisher{}).Where("id = ?", id).Update("trust_level", TrustOfficial).Error; err != nil {
 			return 0, err
 		}
 	}
-	if _, err := q.Exec(ctx,
-		`INSERT INTO publisher_keys (key_id, publisher_id, public_key) VALUES ($1, $2, $3) ON CONFLICT (key_id) DO NOTHING`,
-		keyID, id, b64); err != nil {
+	if err := g.Clauses(onConflictNothing("key_id")).Create(&model.PublisherKey{KeyID: keyID, PublisherID: id, PublicKey: b64}).Error; err != nil {
 		return 0, err
 	}
-	if err := q.QueryRow(ctx, `SELECT publisher_id, status FROM publisher_keys WHERE key_id = $1`, keyID).Scan(&keyPub, &keyStatus); err != nil {
+	var key model.PublisherKey
+	if err := g.Select("publisher_id", "status").Where("key_id = ?", keyID).Take(&key).Error; err != nil {
 		return 0, err
 	}
-	if keyPub != id {
+	if key.PublisherID != id {
 		return 0, sigError(fmt.Sprintf("official key %q is registered to another publisher", keyID))
 	}
-	if keyStatus != "active" {
+	if core.ValueOr(key.Status, "") != "active" {
 		return 0, revokedError(fmt.Sprintf("signing key %q has been revoked", keyID))
 	}
 	return id, nil
+}
+
+// onConflictNothing skips an INSERT that conflicts on column.
+func onConflictNothing(column string) clause.OnConflict {
+	return clause.OnConflict{Columns: []clause.Column{{Name: column}}, DoNothing: true}
 }
 
 // CheckTrust enforces what a trust level may request: community and

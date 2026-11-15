@@ -1,0 +1,9 @@
+-- sql
+UPDATE "plugin_staged_grants" SET "granted_at"=now(),"granted_by"=$1,"scope"=$2,"status"=$3 WHERE plugin_key = $4 AND permission = $5 AND version = ANY($6)
+-- vars
+$1 *int64 7
+$2 []uint8 [123 34 112 114 101 102 105 120 34 58 34 97 34 125]
+$3 string "granted"
+$4 string "demo"
+$5 string "kv"
+$6 store.Strings [1.2.0 1.3.0]

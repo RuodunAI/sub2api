@@ -1,0 +1,5 @@
+-- sql
+UPDATE "plugins" SET "resource_limits"=$1,"row_version"=row_version + 1,"updated_at"=now() WHERE key = $2
+-- vars
+$1 []uint8 [123 34 109 101 109 111 114 121 95 109 98 34 58 50 53 54 125]
+$2 string "demo"

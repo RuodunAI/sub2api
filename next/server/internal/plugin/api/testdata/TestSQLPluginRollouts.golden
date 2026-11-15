@@ -1,0 +1,11 @@
+-- sql
+SELECT to_jsonb(r) || jsonb_build_object('coordinator',r.coordinator_node_id,'nodes',
+        COALESCE((SELECT jsonb_agg(to_jsonb(n) ORDER BY n.node_id,n.boot_id) FROM plugin_rollout_nodes n WHERE n.rollout_id=r.id),'[]'::jsonb))
+        FROM plugin_rollouts r WHERE ($1='' OR plugin_key=$2) AND ($3::timestamptz IS NULL OR created_at >= $4) ORDER BY id DESC LIMIT $5 OFFSET $6
+-- vars
+$1 string "demo"
+$2 string "demo"
+$3 *time.Time 2026-11-15 08:00:00 +0000 UTC
+$4 *time.Time 2026-11-15 08:00:00 +0000 UTC
+$5 int 20
+$6 int 0

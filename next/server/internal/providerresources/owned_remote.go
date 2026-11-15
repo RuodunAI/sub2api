@@ -14,9 +14,14 @@ func (s *Service) FindOwnedRemote(ctx context.Context, owner core.ResourceOwner,
 	if !validOwner(owner) || !validBinding(binding) || !bounded(kind) || !bounded(id) {
 		return core.ProviderResource{}, core.ErrInvalidArgument
 	}
-	r, _, err := read(ctx, s.db.Pool, `user_id=$1 AND group_id=$2 AND plugin_key='ccgateway' AND kind=$3 AND account_id=$4 AND principal_id=$5 AND generation=$6 AND remote_id=$7 AND state='ready' AND (expires_at IS NULL OR expires_at>now())`, owner.UserID, owner.GroupID, kind, binding.AccountID, binding.PrincipalID, binding.Generation, id)
+	r, _, err := read(store.G(ctx, s.db.Pool), ownedRemote, owner.UserID, owner.GroupID, kind, binding.AccountID, binding.PrincipalID, binding.Generation, id)
 	if store.IsNoRows(err) {
 		err = core.ErrNotFound
 	}
 	return r, err
 }
+
+// ownedRemote keeps the ready, unexpired ccgateway resource of an owner
+// (user, group) under a remote identity (kind, account, principal,
+// generation, remote ID).
+const ownedRemote = `user_id=? AND group_id=? AND plugin_key='ccgateway' AND kind=? AND account_id=? AND principal_id=? AND generation=? AND remote_id=? AND state='ready' AND (expires_at IS NULL OR expires_at>now())`

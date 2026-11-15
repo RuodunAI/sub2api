@@ -1,0 +1,18 @@
+-- sql
+INSERT INTO "provider_resources" ("public_id","user_id","group_id","request_id","plugin_key","kind","account_id","principal_id","generation","state","operation_id","bytes","intent_hash","expires_at","metadata") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING "remote_id","failure_code","metadata","created_at","updated_at"
+-- vars
+$1 string "s2res_1"
+$2 int64 7
+$3 int64 3
+$4 string "req"
+$5 string "ccgateway"
+$6 string "file"
+$7 int64 11
+$8 string "p"
+$9 string "g1"
+$10 string "pending"
+$11 string "op"
+$12 int64 42
+$13 string "hash"
+$14 *time.Time 2026-11-15 08:00:00 +0000 UTC
+$15 jsontext.Value {}

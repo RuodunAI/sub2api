@@ -1,0 +1,8 @@
+-- sql
+INSERT INTO "publisher_keys" ("key_id","publisher_id","public_key","not_before","not_after") VALUES ($1,$2,$3,$4,$5) ON CONFLICT ("key_id") DO NOTHING RETURNING "status","created_at"
+-- vars
+$1 string "official-2026"
+$2 int64 1
+$3 string "b64"
+$4 *time.Time nil
+$5 *time.Time nil

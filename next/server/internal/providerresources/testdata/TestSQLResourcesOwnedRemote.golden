@@ -1,0 +1,11 @@
+-- sql
+SELECT public_id,plugin_key,kind,remote_id,state,operation_id,user_id,group_id,account_id,principal_id,generation,bytes,metadata,created_at,expires_at,intent_hash FROM "provider_resources" WHERE user_id=$1 AND group_id=$2 AND plugin_key='ccgateway' AND kind=$3 AND account_id=$4 AND principal_id=$5 AND generation=$6 AND remote_id=$7 AND state='ready' AND (expires_at IS NULL OR expires_at>now()) LIMIT $8
+-- vars
+$1 int 7
+$2 int 3
+$3 string "skill"
+$4 int 11
+$5 string "p"
+$6 string "g1"
+$7 string "skill_01"
+$8 int 1

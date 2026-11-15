@@ -10,6 +10,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func (s *Service) ReserveSkillUpload(ctx context.Context, input core.SkillUploadIntent) (out core.SkillUploadReservation, err error) {
@@ -26,6 +28,7 @@ func (s *Service) ReserveSkillUpload(ctx context.Context, input core.SkillUpload
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}
+		g := store.G(ctx, tx)
 		var parent core.ProviderResource
 		fresh := false
 		if input.ParentID != "" {
@@ -40,7 +43,7 @@ func (s *Service) ReserveSkillUpload(ctx context.Context, input core.SkillUpload
 		} else {
 			var oldHash string
 			var e error
-			parent, oldHash, e = read(ctx, tx, `user_id=$1 AND group_id=$2 AND request_id=$3`, in.Owner.UserID, in.Owner.GroupID, in.RequestID)
+			parent, oldHash, e = read(g, `user_id=? AND group_id=? AND request_id=?`, in.Owner.UserID, in.Owner.GroupID, in.RequestID)
 			if store.IsNoRows(e) {
 				fresh = true
 			} else if e != nil {
@@ -50,13 +53,13 @@ func (s *Service) ReserveSkillUpload(ctx context.Context, input core.SkillUpload
 			}
 		}
 		if !fresh {
-			v, e := readSkillVersion(ctx, tx, parent, `parent_id=$1 AND request_id=$2`, parent.PublicID, in.RequestID)
+			v, e := readSkillVersion(g, parent, `parent_id=? AND request_id=?`, parent.PublicID, in.RequestID)
 			if e == nil {
-				var prior string
-				if e = tx.QueryRow(ctx, `SELECT intent_hash FROM provider_skill_versions WHERE public_id=$1`, v.PublicVersionID).Scan(&prior); e != nil {
+				var prior model.ProviderSkillVersion
+				if e = g.Select("intent_hash").Where("public_id = ?", v.PublicVersionID).Take(&prior).Error; e != nil {
 					return e
 				}
-				if prior != hash {
+				if prior.IntentHash != hash {
 					return core.ErrConflict
 				}
 				out = core.SkillUploadReservation{Parent: parent, Version: v}
@@ -79,21 +82,25 @@ func (s *Service) ReserveSkillUpload(ctx context.Context, input core.SkillUpload
 		op := uuid.NewString()
 		if fresh {
 			id := "s2res_" + uuid.NewString()
-			_, e := tx.Exec(ctx, `INSERT INTO provider_resources(public_id,user_id,group_id,request_id,plugin_key,kind,account_id,principal_id,generation,state,operation_id,bytes,metadata,intent_hash) VALUES($1,$2,$3,$4,'ccgateway','skill',$5,$6,$7,'pending',$8,0,$9,$10)`, id, in.Owner.UserID, in.Owner.GroupID, in.RequestID, in.Binding.AccountID, in.Binding.PrincipalID, in.Binding.Generation, op, in.Metadata, hash)
-			if e != nil {
+			// The skill takes its bytes from its versions.
+			row := newRow(id, op, in, "pending")
+			row.Bytes, row.IntentHash = 0, hash
+			if e := g.Create(&row).Error; e != nil {
 				return e
 			}
-			parent, _, e = read(ctx, tx, `public_id=$1`, id)
+			var e error
+			parent, _, e = read(g, `public_id=?`, id)
 			if e != nil {
 				return e
 			}
 		}
 		id := "s2skv_" + uuid.NewString()
-		_, e := tx.Exec(ctx, `INSERT INTO provider_skill_versions(public_id,parent_id,request_id,state,operation_id,bytes,intent_hash) VALUES($1,$2,$3,'pending',$4,$5,$6)`, id, parent.PublicID, in.RequestID, op, in.Bytes, hash)
+		e := g.Create(&model.ProviderSkillVersion{PublicID: id, ParentID: parent.PublicID, RequestID: in.RequestID, State: "pending",
+			OperationID: op, Bytes: in.Bytes, IntentHash: hash}).Error
 		if e != nil {
 			return e
 		}
-		v, e := readSkillVersion(ctx, tx, parent, `public_id=$1`, id)
+		v, e := readSkillVersion(g, parent, `public_id=?`, id)
 		if e != nil {
 			return e
 		}
@@ -127,6 +134,7 @@ func (s *Service) CompleteSkillUpload(ctx context.Context, in core.SkillUploadCo
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}
+		g := store.G(ctx, tx)
 		p, e := skillParent(ctx, tx, in.Owner, in.ParentID, false)
 		if e != nil {
 			return e
@@ -134,7 +142,7 @@ func (s *Service) CompleteSkillUpload(ctx context.Context, in core.SkillUploadCo
 		if p.Binding != in.Binding || (p.State != "ready" && p.State != "pending" && p.State != "uncertain") {
 			return core.ErrConflict
 		}
-		v, e := readSkillVersion(ctx, tx, p, `parent_id=$1 AND public_id=$2`, p.PublicID, in.PublicVersionID)
+		v, e := readSkillVersion(g, p, `parent_id=? AND public_id=?`, p.PublicID, in.PublicVersionID)
 		if store.IsNoRows(e) {
 			return core.ErrNotFound
 		}
@@ -176,22 +184,24 @@ func (s *Service) CompleteSkillUpload(ctx context.Context, in core.SkillUploadCo
 			}
 			pm = p.Metadata
 		}
-		_, e = tx.Exec(ctx, `UPDATE provider_resources SET remote_id=$2,state='ready',metadata=$3,updated_at=now() WHERE public_id=$1`, p.PublicID, in.RemoteSkillID, pm)
+		e = update(g, resourcesTable, p.PublicID, map[string]any{"remote_id": in.RemoteSkillID, "state": "ready", "metadata": pm}).Error
 		if e != nil {
 			return e
 		}
-		_, e = tx.Exec(ctx, `UPDATE provider_skill_versions SET remote_id=$2,legacy_epoch=$3,state='ready',metadata=$4,created_at=$5,updated_at=now() WHERE public_id=$1`, v.PublicVersionID, in.RemoteVersionID, in.LegacyEpoch, vm, in.CreatedAt)
+		e = update(g, versionsTable, v.PublicVersionID, map[string]any{
+			"remote_id": in.RemoteVersionID, "legacy_epoch": in.LegacyEpoch, "state": "ready", "metadata": vm, "created_at": in.CreatedAt,
+		}).Error
 		if store.IsUniqueViolation(e, "") {
 			return core.ErrConflict
 		}
 		if e != nil {
 			return e
 		}
-		p, _, e = read(ctx, tx, `public_id=$1`, p.PublicID)
+		p, _, e = read(g, `public_id=?`, p.PublicID)
 		if e != nil {
 			return e
 		}
-		v, e = readSkillVersion(ctx, tx, p, `public_id=$1`, v.PublicVersionID)
+		v, e = readSkillVersion(g, p, `public_id=?`, v.PublicVersionID)
 		out = core.SkillUploadReservation{Parent: p, Version: v}
 		return e
 	})
@@ -209,11 +219,12 @@ func (s *Service) MarkSkillUpload(ctx context.Context, in core.SkillUploadFailur
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}
+		g := store.G(ctx, tx)
 		p, e := skillParent(ctx, tx, in.Owner, in.ParentID, false)
 		if e != nil {
 			return e
 		}
-		v, e := readSkillVersion(ctx, tx, p, `parent_id=$1 AND public_id=$2`, p.PublicID, in.PublicVersionID)
+		v, e := readSkillVersion(g, p, `parent_id=? AND public_id=?`, p.PublicID, in.PublicVersionID)
 		if e != nil {
 			return e
 		}
@@ -228,11 +239,11 @@ func (s *Service) MarkSkillUpload(ctx context.Context, in core.SkillUploadFailur
 		if e != nil {
 			return e
 		}
-		if _, e = tx.Exec(ctx, `UPDATE provider_skill_versions SET state=$2,metadata=$3,updated_at=now() WHERE public_id=$1`, v.PublicVersionID, target, meta); e != nil {
+		if e = update(g, versionsTable, v.PublicVersionID, map[string]any{"state": target, "metadata": meta}).Error; e != nil {
 			return e
 		}
 		if p.RemoteID == "" {
-			_, e = tx.Exec(ctx, `UPDATE provider_resources SET state=$2,updated_at=now() WHERE public_id=$1`, p.PublicID, target)
+			e = update(g, resourcesTable, p.PublicID, map[string]any{"state": target}).Error
 		}
 		return e
 	})

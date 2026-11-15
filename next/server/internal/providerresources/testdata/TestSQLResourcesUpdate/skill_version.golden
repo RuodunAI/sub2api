@@ -1,0 +1,9 @@
+-- sql
+UPDATE "provider_skill_versions" SET "created_at"=$1,"legacy_epoch"=$2,"metadata"=$3,"remote_id"=$4,"state"=$5,"updated_at"=now() WHERE public_id = $6
+-- vars
+$1 time.Time 2026-11-15 08:00:00 +0000 UTC
+$2 string ""
+$3 jsontext.Value {}
+$4 string "v1"
+$5 string "ready"
+$6 string "s2res_1"

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -16,6 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/task"
 )
 
@@ -141,32 +143,16 @@ type JobRun struct {
 
 const jobRunCols = `id, job_id, scope, node_id, scheduled_at, started_at, finished_at, status, manual, message`
 
-func scanRuns(rows interface {
-	Next() bool
-	Scan(...any) error
-	Err() error
-	Close()
-}) ([]JobRun, error) {
-	defer rows.Close()
-	out := []JobRun{}
-	for rows.Next() {
-		var r JobRun
-		if err := rows.Scan(&r.ID, &r.JobID, &r.Scope, &r.NodeID, &r.ScheduledAt, &r.StartedAt, &r.FinishedAt, &r.Status, &r.Manual, &r.Message); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+// lastRuns selects the latest run of every job of key, as JobRun, whose
+// fields are the jobRunCols.
+func lastRuns(db *gorm.DB, key string) *gorm.DB {
+	return db.Raw(`SELECT DISTINCT ON (job_id) `+jobRunCols+`
+		FROM plugin_job_runs WHERE plugin_key = ? ORDER BY job_id, id DESC`, key)
 }
 
 func (a *API) jobInfos(ctx context.Context, key string, m *manifest.Manifest) ([]JobInfo, error) {
-	rows, err := a.d.DB.Pool.Query(ctx, `SELECT DISTINCT ON (job_id) `+jobRunCols+`
-		FROM plugin_job_runs WHERE plugin_key = $1 ORDER BY job_id, id DESC`, key)
-	if err != nil {
-		return nil, err
-	}
-	runs, err := scanRuns(rows)
-	if err != nil {
+	var runs []JobRun
+	if err := lastRuns(store.G(ctx, a.d.DB.Pool), key).Scan(&runs).Error; err != nil {
 		return nil, err
 	}
 	last := map[string]JobRun{}
@@ -235,13 +221,9 @@ func (a *API) jobs(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := a.d.DB.Pool.Query(rc, `SELECT `+jobRunCols+` FROM plugin_job_runs WHERE plugin_key = $1 ORDER BY id DESC LIMIT 50`, key)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	runs, err := scanRuns(rows)
-	if err != nil {
+	runs := []JobRun{}
+	if err := store.G(rc, a.d.DB.Pool).Model(&model.PluginJobRun{}).Select(jobRunCols).Where("plugin_key = ?", key).
+		Order("id DESC").Limit(50).Scan(&runs).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -322,10 +304,10 @@ func (a *API) eventsInfo(ctx context.Context, key string, m *manifest.Manifest) 
 	if m.Events != nil {
 		info.Subscribe, info.BatchSize = m.Events.Subscribe, m.Events.BatchSize
 	}
+	g := store.G(ctx, a.d.DB.Pool)
 	var cur EventCursor
-	err := a.d.DB.Pool.QueryRow(ctx, `SELECT last_event_id, consecutive_failures, next_retry_at, last_error, updated_at
-		FROM plugin_event_cursors WHERE plugin_key = $1`, key).
-		Scan(&cur.LastEventID, &cur.ConsecutiveFailures, &cur.NextRetryAt, &cur.LastError, &cur.UpdatedAt)
+	err := g.Model(&model.PluginEventCursor{}).Select("last_event_id, consecutive_failures, next_retry_at, last_error, updated_at").
+		Where("plugin_key = ?", key).Take(&cur).Error
 	switch {
 	case err == nil:
 		info.Cursor = &cur
@@ -340,33 +322,34 @@ func (a *API) eventsInfo(ctx context.Context, key string, m *manifest.Manifest) 
 		if like == nil {
 			like = []string{}
 		}
-		if err := a.d.DB.Pool.QueryRow(ctx, `SELECT count(*) FROM (
-			SELECT 1 FROM events WHERE id > $1 AND (type = ANY($2) OR type LIKE ANY($3)) LIMIT $4) t`,
-			cur.LastEventID, exact, like, backlogCap+1).Scan(&info.Backlog); err != nil {
+		if err := backlog(g, cur.LastEventID, exact, like).Row().Scan(&info.Backlog); err != nil {
 			return nil, err
 		}
 		if info.Backlog > backlogCap {
 			info.Backlog, info.BacklogCapped = backlogCap, true
 		}
 	}
-	if err := a.d.DB.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_event_deadletters WHERE plugin_key = $1`, key).
-		Scan(&info.DeadletterCount); err != nil {
+	if err := deadletters(g, key).Count(&info.DeadletterCount).Error; err != nil {
 		return nil, err
 	}
-	rows, err := a.d.DB.Pool.Query(ctx, `SELECT id, first_event_id, last_event_id, error, created_at
-		FROM plugin_event_deadletters WHERE plugin_key = $1 ORDER BY id DESC LIMIT 50`, key)
-	if err != nil {
+	if err := deadletters(g, key).Select("id, first_event_id, last_event_id, error, created_at").
+		Order("id DESC").Limit(50).Scan(&info.Deadletters).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var d Deadletter
-		if err := rows.Scan(&d.ID, &d.FirstEventID, &d.LastEventID, &d.Error, &d.CreatedAt); err != nil {
-			return nil, err
-		}
-		info.Deadletters = append(info.Deadletters, d)
-	}
-	return info, rows.Err()
+	return info, nil
+}
+
+// deadletters selects the event deadletters of key.
+func deadletters(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.PluginEventDeadletter{}).Where("plugin_key = ?", key)
+}
+
+// backlog counts the events after the cursor at id that the subscription
+// (exact types, LIKE patterns) matches, up to backlogCap+1.
+func backlog(db *gorm.DB, id int64, exact, like []string) *gorm.DB {
+	return db.Raw(`SELECT count(*) FROM (
+			SELECT 1 FROM events WHERE id > ? AND (type = ANY(?) OR type LIKE ANY(?)) LIMIT ?) t`,
+		id, store.Strings(exact), store.Strings(like), backlogCap+1)
 }
 
 func (a *API) events(c *gin.Context) {
@@ -407,11 +390,11 @@ func (a *API) resourcesInfo(ctx context.Context, key string, m *manifest.Manifes
 	if m.Resources != nil {
 		ri.Requested = Resources{MemoryMB: m.Resources.MemoryMB, CPU: m.Resources.CPU, MaxThreads: m.Resources.MaxThreads, MaxOpenFiles: m.Resources.MaxOpenFiles}
 	}
-	var raw []byte
-	if err := a.d.DB.Pool.QueryRow(ctx, `SELECT resource_limits FROM plugins WHERE key = $1`, key).Scan(&raw); err != nil {
+	var row model.Plugin
+	if err := store.G(ctx, a.d.DB.Pool).Select("resource_limits").Where("key = ?", key).Take(&row).Error; err != nil {
 		return ri, err
 	}
-	_ = json.Unmarshal(raw, &ri.Overrides)
+	_ = json.Unmarshal(row.ResourceLimits, &ri.Overrides)
 	ri.Effective = ri.Requested
 	if ri.Overrides.MemoryMB > 0 {
 		ri.Effective.MemoryMB = ri.Overrides.MemoryMB
@@ -461,8 +444,7 @@ func (a *API) putResources(c *gin.Context) {
 		return
 	}
 	b, _ := json.Marshal(in)
-	if _, err := a.d.DB.Pool.Exec(c.Request.Context(), `UPDATE plugins SET resource_limits = $2, updated_at = now(),
-		row_version = row_version + 1 WHERE key = $1`, key, b); err != nil {
+	if err := updatePlugin(store.G(c.Request.Context(), a.d.DB.Pool), key, "resource_limits", b).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -510,9 +492,17 @@ func resourcesMessage(notified bool, status string) core.LocalizedText {
 }
 
 func (a *API) pluginStatusValue(ctx context.Context, key string) (string, error) {
-	var st string
-	err := a.d.DB.Pool.QueryRow(ctx, `SELECT status FROM plugins WHERE key = $1`, key).Scan(&st)
-	return st, err
+	var row model.Plugin
+	err := store.G(ctx, a.d.DB.Pool).Select("status").Where("key = ?", key).Take(&row).Error
+	return row.Status, err
+}
+
+// updatePlugin sets column of plugin key to value, as a settings change:
+// updated_at and row_version move with it.
+func updatePlugin(db *gorm.DB, key, column string, value any) *gorm.DB {
+	return db.Model(&model.Plugin{}).Where("key = ?", key).Updates(map[string]any{
+		column: value, "updated_at": gorm.Expr("now()"), "row_version": gorm.Expr("row_version + 1"),
+	})
 }
 
 func (a *API) putEgressPolicy(c *gin.Context) {
@@ -527,13 +517,12 @@ func (a *API) putEgressPolicy(c *gin.Context) {
 		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "policy", Code: "invalid", Message: "policy must be allow_all or allowlist"}))
 		return
 	}
-	tag, err := a.d.DB.Pool.Exec(c.Request.Context(), `UPDATE plugins SET egress_policy = $2, updated_at = now(),
-		row_version = row_version + 1 WHERE key = $1`, key, in.Policy)
-	if err != nil {
-		httpapi.Fail(c, err)
+	res := updatePlugin(store.G(c.Request.Context(), a.d.DB.Pool), key, "egress_policy", in.Policy)
+	if res.Error != nil {
+		httpapi.Fail(c, res.Error)
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin not found"))
 		return
 	}
@@ -618,15 +607,16 @@ func (a *API) egress(c *gin.Context) {
 		return
 	}
 	rc := c.Request.Context()
-	rows, err := a.d.DB.Pool.Query(rc, `
+	g := store.G(rc, a.d.DB.Pool)
+	rows, err := g.Raw(`
 		SELECT host, port, count(*),
 		       count(*) FILTER (WHERE result = 'ok'), count(*) FILTER (WHERE result = 'open'),
 		       count(*) FILTER (WHERE result = 'denied'),
 		       count(*) FILTER (WHERE result NOT IN ('ok', 'open', 'denied')),
 		       COALESCE(sum(bytes_in), 0), COALESCE(sum(bytes_out), 0), max(started_at)
 		FROM plugin_egress_logs
-		WHERE plugin_key = $1 AND started_at >= $2 AND started_at < $3
-		GROUP BY host, port ORDER BY count(*) DESC LIMIT 200`, key, from, to)
+		WHERE plugin_key = ? AND started_at >= ? AND started_at < ?
+		GROUP BY host, port ORDER BY count(*) DESC LIMIT 200`, key, from, to).Rows()
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -653,30 +643,13 @@ func (a *API) egress(c *gin.Context) {
 	}
 	page, size := httpapi.Pagination(c)
 	var total int64
-	if err := a.d.DB.Pool.QueryRow(rc, `SELECT count(*) FROM plugin_egress_logs
-		WHERE plugin_key = $1 AND started_at >= $2 AND started_at < $3`, key, from, to).Scan(&total); err != nil {
+	if err := egressLogs(g, key, from, to).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err = a.d.DB.Pool.Query(rc, `
-		SELECT id, node_id, network, host, port, started_at, closed_at, duration_ms, bytes_in, bytes_out, result, error
-		FROM plugin_egress_logs WHERE plugin_key = $1 AND started_at >= $2 AND started_at < $3
-		ORDER BY started_at DESC, id DESC LIMIT $4 OFFSET $5`, key, from, to, size, (page-1)*size)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	defer rows.Close()
 	items := []EgressLog{}
-	for rows.Next() {
-		var l EgressLog
-		if err := rows.Scan(&l.ID, &l.NodeID, &l.Network, &l.Host, &l.Port, &l.StartedAt, &l.ClosedAt, &l.DurationMs, &l.BytesIn, &l.BytesOut, &l.Result, &l.Error); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, l)
-	}
-	if err := rows.Err(); err != nil {
+	if err := egressLogs(g, key, from, to).Select("id, node_id, network, host, port, started_at, closed_at, duration_ms, bytes_in, bytes_out, result, error").
+		Order("started_at DESC, id DESC").Limit(size).Offset((page - 1) * size).Scan(&items).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -684,24 +657,23 @@ func (a *API) egress(c *gin.Context) {
 		"page": httpapi.Page{Page: page, PageSize: size, Total: total}})
 }
 
+// egressLogs selects the egress logs of key started in [from, to).
+func egressLogs(db *gorm.DB, key string, from, to time.Time) *gorm.DB {
+	return db.Model(&model.PluginEgressLog{}).Where("plugin_key = ? AND started_at >= ? AND started_at < ?", key, from, to)
+}
+
 // egressDomains lists every host the plugin has reached (not limited to the
 // from/to window), most recently used first.
 func (a *API) egressDomains(ctx context.Context, key string) ([]EgressDomain, error) {
-	rows, err := a.d.DB.Pool.Query(ctx, `
-		SELECT host, first_seen_at, last_seen_at, connections, first_seen_at > now() - interval '24 hours'
-		FROM plugin_egress_domains WHERE plugin_key = $1
-		ORDER BY last_seen_at DESC, host LIMIT $2`, key, maxEgressDomains)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	out := []EgressDomain{}
-	for rows.Next() {
-		var d EgressDomain
-		if err := rows.Scan(&d.Host, &d.FirstSeenAt, &d.LastSeenAt, &d.Connections, &d.New); err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
+	err := egressDomainRows(store.G(ctx, a.d.DB.Pool), key).Scan(&out).Error
+	return out, err
+}
+
+// egressDomainRows selects the egress domains of key as EgressDomain,
+// whose fields are the columns read.
+func egressDomainRows(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.PluginEgressDomain{}).
+		Select("host, first_seen_at, last_seen_at, connections, first_seen_at > now() - interval '24 hours' AS new").
+		Where("plugin_key = ?", key).Order("last_seen_at DESC, host").Limit(maxEgressDomains)
 }

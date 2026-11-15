@@ -1,0 +1,6 @@
+-- sql
+UPDATE "plugin_versions" SET "consent_status"=$1 WHERE plugin_key = $2 AND version = $3 AND consent_status = 'approved'
+-- vars
+$1 string "awaiting_consent"
+$2 string "demo"
+$3 string "1.2.0"

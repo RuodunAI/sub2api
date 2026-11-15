@@ -57,6 +57,16 @@ var migratedPackages = map[string]string{
 	"internal/segment":         "batch 1a",
 	"internal/task":            "batch 1c",
 	"internal/webui":           "batch 1d",
+
+	// batch 2c
+	"internal/plugin/api":                   "batch 2c",
+	"internal/plugin/grants":                "batch 2c",
+	"internal/plugin/grpcruntime":           "batch 2c",
+	"internal/plugin/market":                "batch 2c",
+	"internal/plugin/pkg":                   "batch 2c",
+	"internal/plugin/registry":              "batch 2c",
+	"internal/plugin/registry/registrytest": "batch 2c",
+	"internal/providerresources":            "batch 2c",
 }
 
 // --- loading -------------------------------------------------------------

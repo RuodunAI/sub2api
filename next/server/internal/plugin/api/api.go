@@ -142,8 +142,7 @@ func (a *API) audit(c *gin.Context, action, key string, detail any) {
 
 // pluginExists returns the plugin status or renders not_found.
 func (a *API) pluginStatus(c *gin.Context, key string) (string, bool) {
-	var st string
-	err := a.d.DB.Pool.QueryRow(c.Request.Context(), `SELECT status FROM plugins WHERE key = $1`, key).Scan(&st)
+	st, err := a.pluginStatusValue(c.Request.Context(), key)
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin not found"))
 		return "", false

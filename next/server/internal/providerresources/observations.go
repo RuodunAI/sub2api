@@ -11,6 +11,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type remoteIdentity struct {
@@ -25,24 +27,16 @@ func remoteKey(plugin, kind string, binding core.ResourceBinding, id string) str
 	return hex.EncodeToString(hash[:])
 }
 func lockRemote(ctx context.Context, tx pgx.Tx, plugin, kind string, binding core.ResourceBinding, id string) error {
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "provider-resource-identity:"+remoteKey(plugin, kind, binding, id))
-	return err
+	return advisoryLock(store.G(ctx, tx), "provider-resource-identity:"+remoteKey(plugin, kind, binding, id)).Error
 }
 func lookupRemote(ctx context.Context, q store.Querier, plugin, kind string, binding core.ResourceBinding, id string) ([]core.ProviderResource, error) {
-	rows, err := q.Query(ctx, `SELECT `+columns+` FROM provider_resources WHERE plugin_key=$1 AND kind=$2 AND account_id=$3 AND principal_id=$4 AND generation=$5 AND remote_id=$6`, plugin, kind, binding.AccountID, binding.PrincipalID, binding.Generation, id)
+	var rows []model.ProviderResource
+	err := resources(store.G(ctx, q)).Where(`plugin_key=? AND kind=? AND account_id=? AND principal_id=? AND generation=? AND remote_id=?`, plugin, kind, binding.AccountID, binding.PrincipalID, binding.Generation, id).
+		Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []core.ProviderResource
-	for rows.Next() {
-		r, _, e := scan(rows)
-		if e != nil {
-			return nil, e
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return resourceList(rows), nil
 }
 
 func observedExpiry(in core.ResourceObservation, current *core.ProviderResource, now time.Time) (time.Time, error) {
@@ -92,6 +86,17 @@ func observedExpiry(in core.ResourceObservation, current *core.ProviderResource,
 	return expiry, nil
 }
 
+// observedRow is the ready provider_resources row that registers the
+// observation in under the public ID id, by operation op; key is its
+// remote identity key.
+func observedRow(id, op, key string, in core.ResourceObservation, meta json.RawMessage, expires *time.Time) *model.ProviderResource {
+	return &model.ProviderResource{
+		PublicID: id, UserID: in.Owner.UserID, GroupID: in.Owner.GroupID, RequestID: "observed:" + key, PluginKey: in.PluginKey, Kind: in.Kind,
+		AccountID: in.Binding.AccountID, PrincipalID: in.Binding.PrincipalID, Generation: in.Binding.Generation, RemoteID: in.RemoteID,
+		State: "ready", OperationID: op, Bytes: in.Bytes, Metadata: meta, IntentHash: key, ExpiresAt: expires,
+	}
+}
+
 func (s *Service) RegisterObserved(ctx context.Context, in core.ResourceObservation) (out core.ProviderResource, err error) {
 	if !validOwner(in.Owner) || !validBinding(in.Binding) || !bounded(in.PluginKey) || !bounded(in.RemoteID) || (in.Kind != "file" && in.Kind != "container") || in.Bytes < 0 || in.Bytes > s.limits.MaxResourceBytes {
 		return out, core.ErrInvalidArgument
@@ -101,6 +106,7 @@ func (s *Service) RegisterObserved(ctx context.Context, in core.ResourceObservat
 		return out, err
 	}
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e
 		}
@@ -144,11 +150,11 @@ func (s *Service) RegisterObserved(ctx context.Context, in core.ResourceObservat
 			if !expiry.IsZero() {
 				expires = &expiry
 			}
-			_, e = tx.Exec(ctx, `UPDATE provider_resources SET metadata=$2,bytes=$3,expires_at=$4,updated_at=now() WHERE public_id=$1`, r.PublicID, meta, in.Bytes, expires)
+			e = update(g, resourcesTable, r.PublicID, map[string]any{"metadata": meta, "bytes": in.Bytes, "expires_at": expires}).Error
 			if e != nil {
 				return e
 			}
-			out, _, e = read(ctx, tx, `public_id=$1`, r.PublicID)
+			out, _, e = read(g, `public_id=?`, r.PublicID)
 			return e
 		}
 		expiry, e := observedExpiry(in, nil, now)
@@ -164,14 +170,14 @@ func (s *Service) RegisterObserved(ctx context.Context, in core.ResourceObservat
 		if !expiry.IsZero() {
 			expires = &expiry
 		}
-		_, e = tx.Exec(ctx, `INSERT INTO provider_resources(public_id,user_id,group_id,request_id,plugin_key,kind,account_id,principal_id,generation,remote_id,state,operation_id,bytes,metadata,intent_hash,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ready',$11,$12,$13,$14,$15)`, id, in.Owner.UserID, in.Owner.GroupID, "observed:"+key, in.PluginKey, in.Kind, in.Binding.AccountID, in.Binding.PrincipalID, in.Binding.Generation, in.RemoteID, op, in.Bytes, meta, key, expires)
+		e = g.Create(observedRow(id, op, key, in, meta, expires)).Error
 		if store.IsUniqueViolation(e, "") {
 			return core.ErrConflict
 		}
 		if e != nil {
 			return e
 		}
-		out, _, e = read(ctx, tx, `public_id=$1`, id)
+		out, _, e = read(g, `public_id=?`, id)
 		return e
 	})
 	return
