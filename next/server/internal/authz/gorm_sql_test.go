@@ -173,14 +173,14 @@ func TestSQLAuthzSyncWrites(t *testing.T) {
 	assertCases(t, []sqlCase{
 		{"roles", func(db *gorm.DB) *gorm.DB {
 			return scan(db.Raw(syncRolesSQL, store.Strings{RoleAdmin}, store.Strings{`{"en":"Admin"}`}, store.Strings{`{}`},
-				bools{false}, bools{true}, store.Int64s{2}))
+				store.Bools{false}, store.Bools{true}, store.Int64s{2}))
 		}},
 		{"permissions", func(db *gorm.DB) *gorm.DB {
 			return scan(db.Raw(syncPermissionsSQL, store.Strings{"account:read"}, store.Strings{"account"}, store.Strings{`{"en":"Read"}`},
 				store.Strings{`{}`}, store.Strings{"low"}, store.Strings{`[]`}, store.Int64s{1}, store.Strings{"account"}))
 		}},
 		{"advance", func(db *gorm.DB) *gorm.DB {
-			return scan(advanceRoles(db, store.Strings{RoleAdmin}, store.Int64s{2}, bools{true}))
+			return scan(advanceRoles(db, store.Strings{RoleAdmin}, store.Int64s{2}, store.Bools{true}))
 		}},
 		{"default_permissions", func(db *gorm.DB) *gorm.DB {
 			return scan(db.Raw(grantDefaultPermissionsSQL, RoleAdmin, store.Strings{"account:read"}))

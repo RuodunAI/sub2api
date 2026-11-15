@@ -3,7 +3,6 @@ package authz
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,7 +59,7 @@ func (s *Service) SyncCore(ctx context.Context) error {
 		scopeTypes = append(scopeTypes, d.ScopeType)
 	}
 	var rKeys, rNames, rDescs store.Strings
-	var rSuper, rCustom bools
+	var rSuper, rCustom store.Bools
 	var rRevs store.Int64s // int32 values, as defaults_rev
 	for _, r := range builtinRoles {
 		n, _ := json.Marshal(r.name)
@@ -232,18 +231,6 @@ func removeUndeclaredCore(db *gorm.DB, keys store.Strings) *gorm.DB {
 	return db.Model(&model.Permission{}).Where("source = 'core' AND status <> 'removed' AND key <> ALL(?)", keys).Update("status", "removed")
 }
 
-// bools is a bool[] parameter: GORM expands a plain []bool into a list
-// (see store.Int64s); nil is the empty array.
-type bools []bool
-
-// Value implements driver.Valuer.
-func (a bools) Value() (driver.Value, error) {
-	if a == nil {
-		return []bool{}, nil
-	}
-	return []bool(a), nil
-}
-
 // builtinKeyConflict fails when a custom role holds one of the built-in role
 // keys: the role is never turned into the built-in one, which would hand its
 // holders that role's defaults, and never skipped, which would leave the
@@ -266,7 +253,7 @@ func builtinKeyConflict(ctx context.Context, q store.Querier, builtinKeys []stri
 // reset, counts as held): SyncCore then grants a held role the defaults it
 // lacks, turned assign_custom on here where its defaults have it (custom;
 // audited), and resets one nobody holds (resetUnheld).
-func (s *Service) advanceDefaults(ctx context.Context, tx pgx.Tx, keys store.Strings, revs store.Int64s, custom bools, behind func(key string, rev int32, held bool)) error {
+func (s *Service) advanceDefaults(ctx context.Context, tx pgx.Tx, keys store.Strings, revs store.Int64s, custom store.Bools, behind func(key string, rev int32, held bool)) error {
 	type moved struct {
 		id     int64
 		key    string
@@ -301,7 +288,7 @@ func (s *Service) advanceDefaults(ctx context.Context, tx pgx.Tx, keys store.Str
 // it, turning assign_custom on (custom) for the held ones, and returns the
 // id, key, rev, whether held and whether assign_custom was turned on of
 // each.
-func advanceRoles(db *gorm.DB, keys store.Strings, revs store.Int64s, custom bools) *gorm.DB {
+func advanceRoles(db *gorm.DB, keys store.Strings, revs store.Int64s, custom store.Bools) *gorm.DB {
 	return db.Raw(`
 WITH behind AS (
     SELECT r.id, t.rev, r.superuser OR `+roleHolders+` > 0 AS held, t.ac AND NOT r.assign_custom AS custom

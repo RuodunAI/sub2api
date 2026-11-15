@@ -8,6 +8,6 @@ RETURNING key, (xmax = 0)
 $1 store.Strings [admin]
 $2 store.Strings [{"en":"Admin"}]
 $3 store.Strings [{}]
-$4 authz.bools [false]
-$5 authz.bools [true]
+$4 store.Bools [false]
+$5 store.Bools [true]
 $6 store.Int64s [2]

@@ -10,4 +10,4 @@ RETURNING r.id, r.key, b.rev, b.held, b.held AND b.custom
 -- vars
 $1 store.Strings [admin]
 $2 store.Int64s [2]
-$3 authz.bools [true]
+$3 store.Bools [true]

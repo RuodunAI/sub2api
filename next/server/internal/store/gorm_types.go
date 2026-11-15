@@ -95,6 +95,18 @@ func (b *Bytes) Scan(src any) error {
 // GormDataType makes GORM map Bytes as a column.
 func (Bytes) GormDataType() string { return "bytea" }
 
+// Bools is a boolean[] parameter for GORM, which expands a plain []bool
+// into a list (see Int64s); nil is the empty array.
+type Bools []bool
+
+// Value implements driver.Valuer.
+func (a Bools) Value() (driver.Value, error) {
+	if a == nil {
+		return []bool{}, nil
+	}
+	return []bool(a), nil
+}
+
 // Int64s is a bigint[] parameter or column for GORM. GORM expands a plain
 // []int64 argument into one placeholder per element, which breaks
 // "= ANY(?)" and turns an empty slice into NULL; Int64s is one parameter
