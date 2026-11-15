@@ -130,11 +130,10 @@ func BenchmarkHotSettlerInsertBatch(b *testing.B) {
 }
 
 // Settlement of a pending row whose request was precharged: one
-// transaction locking the row (SELECT ... FOR UPDATE), the ledger
-// statements (ensure the balance row, release the precharge, apply the
-// charge), the
-// usage_logs update and the usage.recorded event. The precharge and the
-// insert before it are not timed.
+// transaction locking the row (SELECT ... FOR UPDATE), the ledger statement
+// (billing settleSQL: release the precharge, apply the charge), the
+// balance.changed events, the usage_logs update and the usage.recorded
+// event. The precharge and the insert before it are not timed.
 func BenchmarkHotSettle(b *testing.B) {
 	s := newBenchSettler(b)
 	ctx := context.Background()

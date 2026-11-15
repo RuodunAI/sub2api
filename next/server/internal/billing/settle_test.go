@@ -161,10 +161,10 @@ func TestSettleWithoutReservationOrCharge(t *testing.T) {
 	}
 }
 
-// One settlement is BEGIN, the balance row, the release, the charge, the
-// event, COMMIT: six flushes, one per statement since the ledger runs on
-// GORM (it was four, the first three statements in one pgx batch); the
-// charge, the event and COMMIT are under the user's lock.
+// One settlement is BEGIN, settleSQL (release and charge), the event,
+// COMMIT: four flushes, as many as with the pgx batch (batch 5a, one
+// statement per flush, took six); only the event and COMMIT follow the
+// statement under the user's lock.
 func TestSettleRoundTrips(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
@@ -191,18 +191,17 @@ func TestSettleRoundTrips(t *testing.T) {
 	settle("warmup")
 	trace.reset()
 	settle("measured")
-	if trace.flushes > 6 || trace.begins != 1 || trace.commits != 1 {
-		t.Fatalf("%d round trips (%d statements, %d batches, %d begin, %d commit) for one settlement; want 6\n%v",
+	if trace.flushes > 4 || trace.begins != 1 || trace.commits != 1 {
+		t.Fatalf("%d round trips (%d statements, %d batches, %d begin, %d commit) for one settlement; want 4\n%v",
 			trace.flushes, len(trace.statements), trace.batches, trace.begins, trace.commits, trace.statements)
 	}
-	// ApplyTx on its own: BEGIN, the balance row, the change, the event,
-	// COMMIT.
+	// ApplyTx on its own: BEGIN, the change (applySQL), the event, COMMIT.
 	trace.reset()
 	if _, err := svc.Apply(ctx, core.LedgerChange{UserID: uid, Amount: decimal.NewFromInt(1), Credit: true, Kind: KindAdminAdjust, IdempotencyKey: "apply-measured"}); err != nil {
 		t.Fatal(err)
 	}
-	if trace.flushes > 5 {
-		t.Fatalf("%d round trips (%d batches) for one Apply; want 5\n%v", trace.flushes, trace.batches, trace.statements)
+	if trace.flushes > 4 {
+		t.Fatalf("%d round trips (%d batches) for one Apply; want 4\n%v", trace.flushes, trace.batches, trace.statements)
 	}
 }
 

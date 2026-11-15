@@ -201,9 +201,12 @@ func TestSQLLockTasksOfUsage(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return lockTasksOfUsage(db, 5) })
 }
 
-// The usage_logs insert of one record (insertUsageSQL[0]): each value goes
-// to its column, the documents are one bytea parameter each, and a native
-// request's conversion is NULL. A chunk of 2^k rows repeats the row.
+// The usage_logs insert of a batch. One record (row): each value goes to
+// its column, the documents are one bytea parameter each, and a native
+// request's conversion is NULL. More (batch, two records): one array
+// parameter per column, typed as the column, holding the batch's values of
+// the column in order, a NULL element for the conversion; the text is the
+// same for every batch size.
 func TestSQLInsertUsageRow(t *testing.T) {
 	account := int64(7)
 	rec := &core.UsageRecord{RequestID: "req-1", UserID: 3, APIKeyID: 4, GroupID: 5, AccountID: &account, PluginKey: "anthropic",
@@ -211,11 +214,17 @@ func TestSQLInsertUsageRow(t *testing.T) {
 		StatusCode: 200, Success: true, Attempts: 1, UsageSemantics: "exclusive", Billable: true,
 		Tokens: core.UsageTokens{Input: 1200, Output: 800}, RateMultiplier: decimal.NewFromInt(1),
 		Price: &core.PriceRule{ID: 9, Mode: "expression", ExprHash: "hash"}, CreatedAt: settleSnapshotTime}
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return db.Raw(insertUsageSQL[0], appendUsageRow(nil, rec)...).Scan(&sqlSink)
-	})
-	if n := strings.Count(insertUsageSQL[7], "?"); n != 128*usageLogValues || len(appendUsageRow(nil, rec)) != usageLogValues {
-		t.Fatalf("%d placeholders in the 128-row insert", n)
+	second := *rec
+	second.RequestID, second.AccountID, second.Price = "req-2", nil, nil
+	for name, batch := range map[string][]*core.UsageRecord{"row": {rec}, "batch": {rec, &second}} {
+		t.Run(name, func(t *testing.T) {
+			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return insertUsageStmt(db, batch).Scan(&sqlSink) })
+		})
+	}
+	for _, text := range []string{insertUsageRowSQL, insertUsageSQL} {
+		if n := strings.Count(text, "?"); n != usageLogValues || len(appendUsageRow(nil, rec)) != usageLogValues {
+			t.Fatalf("%d placeholders in %s", n, text)
+		}
 	}
 }
 

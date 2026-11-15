@@ -89,24 +89,21 @@ func (s *Service) Apply(ctx context.Context, ch core.LedgerChange) (*core.Ledger
 // settlement to update the usage row atomically). The caller must call
 // CacheBalance after committing when the result is not a duplicate.
 //
-// Two statements (create the balance row, then applySQL: find the key or
-// lock the row, write the ledger row and the balance) and one event: two
-// round trips under the user's balance lock instead of six (CONTRACTS
-// §63.7).
+// One statement (applySQL: find the key or lock the row, write the ledger
+// row and the balance; ensureBalanceSQL before it only for a user without a
+// balance row) and one event: one round trip under the user's balance lock
+// before COMMIT instead of six (CONTRACTS §63.7).
 func (s *Service) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error) {
 	if err := validateChange(&ch); err != nil {
 		return nil, err
 	}
 	ch.Amount = ch.Amount.Round(8)
-	g := store.G(ctx, tx)
-	if err := ensureBalance(g, ch.UserID); err != nil {
-		return nil, err
-	}
-	res, raced, err := applyChange(g, ch)
+	a, err := applyChange(store.G(ctx, tx), ch)
 	if err != nil {
 		return nil, err
 	}
-	if res, err = resolveApply(ctx, tx, res, raced, ch); err != nil || res.Duplicate {
+	res, err := a.resolve(ctx, tx, ch)
+	if err != nil || res.Duplicate {
 		return res, err
 	}
 	if s.events != nil {

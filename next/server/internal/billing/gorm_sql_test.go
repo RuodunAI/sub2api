@@ -218,6 +218,16 @@ func TestSQLLedger(t *testing.T) {
 		"precharge": func(db *gorm.DB) *gorm.DB {
 			return prechargeStmt.raw(db, int64(7), "req-1", amount, KindUsage, "precharge", "req-1", "precharge:req-1", "request precharge", min).Scan(&row)
 		},
+		// A precharge's balance row, behind its lock timeout.
+		"precharge_ensure": func(db *gorm.DB) *gorm.DB { return db.Exec(prechargeEnsureSQL, int64(7)) },
+		"settle": func(db *gorm.DB) *gorm.DB {
+			ch := core.LedgerChange{UserID: 7, Amount: amount, Kind: KindUsage, RefType: "usage", RefID: "req-1", IdempotencyKey: "usage:req-1", Note: "note"}
+			return settleStmt.raw(db, settleArgs(7, "req-1", &ch)...).Scan(&row)
+		},
+		// Without a charge the charge's arguments are inert: $5 is false.
+		"settle_release_only": func(db *gorm.DB) *gorm.DB {
+			return settleStmt.raw(db, settleArgs(7, "req-1", nil)...).Scan(&row)
+		},
 	}
 	for name, build := range cases {
 		t.Run(name, func(t *testing.T) { gormtest.Assert(t, build) })

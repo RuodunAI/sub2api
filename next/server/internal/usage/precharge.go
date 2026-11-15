@@ -19,7 +19,7 @@ func (s *Service) releasePrechargeTx(ctx context.Context, tx pgx.Tx, userID int6
 }
 
 // settleLedgerTx releases the request's precharge and charges total (when
-// positive) in one ledger batch. With no charge it returns the refund's
+// positive) in one ledger statement. With no charge it returns the refund's
 // result, or nil when there was no reservation.
 func (s *Service) settleLedgerTx(ctx context.Context, tx pgx.Tx, userID int64, requestID string, total decimal.Decimal) (*core.LedgerResult, error) {
 	if s.ledger == nil {

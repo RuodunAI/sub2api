@@ -26,7 +26,9 @@ SELECT COALESCE((SELECT id FROM applied), 0),
        COALESCE((SELECT balance_after FROM existing), 0),
        COALESCE((SELECT user_id FROM existing), 0),
        COALESCE((SELECT delta FROM existing), 0),
-       COALESCE((SELECT kind FROM existing), '')
+       COALESCE((SELECT kind FROM existing), ''),
+       EXISTS (SELECT 1 FROM locked)
+           OR (EXISTS (SELECT 1 FROM existing) AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $14::bigint))
 -- vars
 $1 string "adjust:1"
 $2 int64 7
@@ -41,3 +43,4 @@ $10 *int64 9
 $11 string ""
 $12 string "note"
 $13 int64 7
+$14 int64 7
