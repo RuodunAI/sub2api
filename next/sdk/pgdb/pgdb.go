@@ -10,8 +10,11 @@ package pgdb
 import (
 	"context"
 	"database/sql/driver"
+	"errors"
 	"fmt"
 	"net"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -49,6 +52,18 @@ func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gor
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("pgdb: parse dsn: %w", err)
+	}
+	// pgx takes a key it does not know for a server setting. The host strips
+	// its pgxpool parameters (pool_max_conns, ...) from the DSN it hands a
+	// plugin, but a DSN from elsewhere (a test's, a host of an older release)
+	// may still carry them, and PostgreSQL refuses the connection over one.
+	// No PostgreSQL setting starts with pool_, so they all go; the pool is
+	// sized by Options alone. Parsing them (runtime-contract/pgdsn) would
+	// add a module dependency to every plugin for settings it does not use.
+	for k := range cfg.RuntimeParams {
+		if strings.HasPrefix(k, "pool_") {
+			delete(cfg.RuntimeParams, k)
+		}
 	}
 	if o.Dial != nil {
 		cfg.DialFunc = o.Dial
@@ -103,8 +118,19 @@ func Close(db *gorm.DB) error {
 	return sqlDB.Close()
 }
 
-// typeMap parses array values: database/sql hands them over as text.
-var typeMap = pgtype.NewMap()
+// typeMaps parse array values: database/sql hands them over as text. A
+// pgtype.Map caches scan plans without a lock, so concurrent scans take one
+// each; a pool is cheaper than a new map per scan.
+var typeMaps = sync.Pool{New: func() any { return pgtype.NewMap() }}
+
+// IsUniqueViolation reports whether err is or wraps a unique violation
+// (SQLSTATE 23505). Unlike errors.Is(err, gorm.ErrDuplicatedKey), it also
+// holds for the errors of Raw(...).Row() and Rows(), which GORM does not
+// translate.
+func IsUniqueViolation(err error) bool {
+	var e interface{ SQLState() string }
+	return errors.As(err, &e) && e.SQLState() == "23505"
+}
 
 // Array is a PostgreSQL array (text[], bigint[], ...) as a model field or a
 // query parameter. GORM expands a plain slice parameter into a list, one
@@ -132,5 +158,7 @@ func (a *Array[T]) Scan(src any) error {
 		*a = nil
 		return nil
 	}
-	return typeMap.SQLScanner((*[]T)(a)).Scan(src)
+	m := typeMaps.Get().(*pgtype.Map)
+	defer typeMaps.Put(m)
+	return m.SQLScanner((*[]T)(a)).Scan(src)
 }

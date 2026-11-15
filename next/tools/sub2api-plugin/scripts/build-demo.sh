@@ -86,8 +86,13 @@ package() {
   "$BIN" "$@" >/dev/null
 
   set -- pack --dir "$dir" --runtimes "$stage" --out-dir "$dest"
+  # An overlay fixture carries migrations ahead of the plugin's GORM models
+  # on purpose (anthropic's upgrade adds a column no model maps): db check,
+  # which compares the overlay's migrations too, does not apply to it.
+  if [ -n "$overlay" ] || [ "${SKIP_DB_CHECK:-0}" = "1" ]; then
+    set -- "$@" --skip-db-check
+  fi
   [ -n "$overlay" ] && set -- "$@" --overlay "$overlay"
-  [ "${SKIP_DB_CHECK:-0}" = "1" ] && set -- "$@" --skip-db-check
   image_roles=
   for spec in ${PACK_IMAGES:-}; do
     case "$spec" in "$plugin="?*) image_roles=${spec#*=} ;; esac

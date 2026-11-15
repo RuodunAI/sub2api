@@ -79,7 +79,8 @@ plugins() {
   # migration), so updating the core must update it.
   mkdir -p "$checks/builtin-next"
   "$checks/sub2api-plugin" build --dir plugins/anthropic --overlay testdata/upgrade --out "$checks/anthropic-next-runtime" >> "$out/plugin-build-anthropic.log"
-  pkg=$("$checks/sub2api-plugin" pack --dir plugins/anthropic --runtimes "$checks/anthropic-next-runtime" --overlay testdata/upgrade --out-dir "$checks/builtin-next")
+  # The overlay's migration has no model on purpose: no db check for it.
+  pkg=$("$checks/sub2api-plugin" pack --dir plugins/anthropic --runtimes "$checks/anthropic-next-runtime" --overlay testdata/upgrade --skip-db-check --out-dir "$checks/builtin-next")
   "$checks/sub2api-plugin" sign --key "$checks/keys/managed-test.key" --key-id managed-test --publisher sub2api "$pkg" >> "$out/plugin-build-anthropic.log"
   "$checks/sub2api-plugin" index --dir "$checks/market" --key "$checks/keys/managed-test.key" > "$out/plugin-market-index.log"
   ls "$checks/builtin" "$checks/builtin-next" "$checks/upload" "$checks/market"
