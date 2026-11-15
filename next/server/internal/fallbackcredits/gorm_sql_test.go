@@ -16,20 +16,20 @@ import (
 
 var snapshotOwner = core.ResourceOwner{UserID: 7, GroupID: 3}
 
-func TestSnapshotCreditPurgeExpired(t *testing.T) {
+func TestSQLCreditPurgeExpired(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		return ownerCredits(db, snapshotOwner).Where("expires_at < now()-interval '24 hours'").Delete(&model.ProviderFallbackCredit{})
 	})
 }
 
-func TestSnapshotCreditRetained(t *testing.T) {
+func TestSQLCreditRetained(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var n int64
 		return ownerCredits(db, snapshotOwner).Count(&n)
 	})
 }
 
-func TestSnapshotCreditRecord(t *testing.T) {
+func TestSQLCreditRecord(t *testing.T) {
 	at := time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
 	in := core.FallbackCredit{TokenHash: "t", PluginKey: "p", SourceModel: "m", Owner: snapshotOwner,
 		Binding:       core.ResourceBinding{AccountID: 9, PrincipalID: "pr", Generation: "g1"},
@@ -39,7 +39,7 @@ func TestSnapshotCreditRecord(t *testing.T) {
 	})
 }
 
-func TestSnapshotCreditRead(t *testing.T) {
+func TestSQLCreditRead(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var r model.ProviderFallbackCredit
 		return db.Take(&r, "token_hash = ?", "t")
