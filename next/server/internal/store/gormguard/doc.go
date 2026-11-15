@@ -17,24 +17,44 @@
 //   - [gorm-slice] no slice or array argument that GORM expands into a
 //     list: any element type but byte, unless the type is a driver.Valuer
 //     (store.Int64s, store.Strings and store.Times are one array parameter
-//     each; []byte and json.RawMessage are one value). This covers the
-//     parameters of Where, Or, Not, Having, Raw, Exec, Joins, Assign and
-//     Attrs, the inline conditions of Find, First, Take, Last, Delete,
-//     FirstOrInit and FirstOrCreate, the value of Update and UpdateColumn,
-//     the parameters of Select when its first argument is an SQL fragment
-//     (Select([]string{"id"}) and Select("id", "name") list columns), and
-//     the arguments of gorm.Expr and of store.Conds.And (which hands them
-//     to Where), and the Vars of clause.Expr and clause.NamedExpr literals.
-//     A []any argument is expanded as well: its elements become a list, so
+//     each). This covers the parameters of Where, Or, Not, Having, Raw,
+//     Exec, Joins, Assign and Attrs, the inline conditions of Find, First,
+//     Take, Last, Delete, FirstOrInit and FirstOrCreate, the value of
+//     Update and UpdateColumn, the parameters of Select when its first
+//     argument is an SQL fragment (Select([]string{"id"}) and
+//     Select("id", "name") list columns), and the arguments of gorm.Expr
+//     and of store.Conds.And (which hands them to Where), and the Vars of
+//     clause.Expr and clause.NamedExpr literals. A []any argument is
+//     expanded as well: its elements become a list, so
 //     Where("x IN ?", []any{1, 2}) is "x IN ($1,$2)". A spread (args...)
-//     passes its elements and is not checked;
-//   - [gorm-raw-unrun] no Error or RowsAffected read off a Raw chain that
-//     no method ran (Scan, Row, Rows, Find ...): Raw only builds the
+//     passes its elements and is not checked.
+//     A byte slice ([]byte, json.RawMessage) is one bytea or json value,
+//     except where its ? directly follows "(" in the SQL text: there
+//     clause.Expr.Build expands every slice that is no driver.Valuer, so
+//     Exec("INSERT INTO t (doc) VALUES (?)", raw) binds one parameter per
+//     byte, and an empty raw becomes NULL. When that text is a constant
+//     (a literal, a named constant, constants joined with +), the rule
+//     finds the argument each ? takes and reports a byte slice at a "(?";
+//     wrap it in store.Bytes, a driver.Valuer, or bind it through
+//     gorm.Expr("?", raw). A "( ?" is safe, and SQL built at run time
+//     (usage's rawNumbered, text joined with variables) is not checked;
+//   - [gorm-raw-unrun] no Error or RowsAffected read off a Raw statement
+//     that no method ran (Scan, Row, Rows, Find ...): Raw only builds the
 //     statement, so db.Raw("UPDATE ...").Error is nil and nothing is
-//     written; a write takes Exec;
-//   - [pgx-direct] in a package listed as migrated, no direct pgx Exec,
-//     Query or QueryRow (a pgx.Batch and CopyFrom stay on pgx), except a
-//     statement with an allow-pgx comment.
+//     written; a write takes Exec. The rule follows the statement through
+//     a chain of gorm methods (db.Raw(...).Where(...)), parentheses, a
+//     local variable (q := db.Raw(...) and later q.Error, when nothing but
+//     field reads mentions q in between: a q.Scan, a call or closure that
+//     takes q may have run it) and a call of a function of the same
+//     package that returns one *gorm.DB, a Raw statement from every
+//     return. It does not follow branches or loops (the last assignment
+//     before the read is the last one in the text), struct fields, package
+//     variables, or functions of other packages;
+//   - [pgx-direct] in a package listed as migrated (migratedPackages), or
+//     in a file listed as migrated (migratedFiles: the repository files of
+//     package store, which itself keeps pgx for its bridge, pool and
+//     migrations), no direct pgx Exec, Query or QueryRow (a pgx.Batch and
+//     CopyFrom stay on pgx), except a statement with an allow-pgx comment.
 //
 // A statement that a benchmark shows must stay on pgx (a hot path, such as
 // the API key lookup) carries this comment on its line or the line above;
