@@ -9,8 +9,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 )
 
-// RegisterRoutes mounts /roles, /permissions, /me/menus and
-// /me/assignable-roles.
+// RegisterRoutes mounts /roles, /permissions (with a plugin's role matrix),
+// /me/menus and /me/assignable-roles.
 func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.AuthedRead("/me/menus", s.handleMenus)
 	r.AuthedRead("/me/assignable-roles", s.handleAssignableRoles)
@@ -23,6 +23,8 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.Perm(http.MethodPut, "/roles/:id/assignable", "role:define", s.handleSetRoleAssignable)
 	r.Perm(http.MethodPost, "/roles/:id/reset", "role:define", s.handleResetRole)
 	r.Perm(http.MethodGet, "/permissions", "role:read", s.handleListPermissions)
+	r.Perm(http.MethodGet, "/permissions/plugins/:plugin", "role:read", s.handlePluginRoleGrants)
+	r.Perm(http.MethodPut, "/permissions/plugins/:plugin", "role:define", s.handleSetPluginRoleGrants)
 }
 
 func (s *Service) handleMenus(c *gin.Context) {
@@ -171,4 +173,30 @@ func (s *Service) handleListPermissions(c *gin.Context) {
 		return
 	}
 	httpapi.OK(c, mods)
+}
+
+func (s *Service) handlePluginRoleGrants(c *gin.Context) {
+	actorID, _ := core.UserID(c.Request.Context())
+	m, err := s.PluginRoleGrants(c.Request.Context(), actorID, c.Param("plugin"))
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.OK(c, m)
+}
+
+func (s *Service) handleSetPluginRoleGrants(c *gin.Context) {
+	var in struct {
+		Roles map[string][]string `json:"roles"`
+	}
+	if !httpapi.BindJSON(c, &in) {
+		return
+	}
+	actorID, _ := core.UserID(c.Request.Context())
+	m, err := s.SetPluginRoleGrants(c.Request.Context(), actorID, c.Param("plugin"), in.Roles)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.OK(c, m)
 }
