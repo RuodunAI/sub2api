@@ -14,7 +14,7 @@
 
 ② 的主线：
 
-1. **清单**（第 1 章）：`userPermissions[]` 新增 `group`、`risk`（low/sensitive/critical，取代 `sensitive`）、`requires`、`scope`（`{resource, options, own}` 或 `{values}`）、`defaults`（取代 `defaultRoles`）；顶层 `permissionGroups[]`；路由 `scopeFrom`。用了新字段的清单要求核心 ≥ `PluginPermissionsFirstCore`（推测 0.1.289）和 UI 3.16。旧字段不兼容，check 直接拒绝。
+1. **清单**（第 1 章）：`userPermissions[]` 新增 `group`、`risk`（low/sensitive/critical，取代 `sensitive`）、`requires`、`scope`（`{resource, options, own}` 或 `{values}`）、`defaults`（取代 `defaultRoles`）；顶层 `permissionGroups[]`；路由 `scopeFrom`。用了新字段的清单要求核心 ≥ `PluginPermissionsFirstCore`（推测 0.1.289，该核心自带 UI 3.16）：check 只按核心下限判断（`below_feature_core`），`uiFloors` 的 3.16 档与核心下限共用这个常量，只回答清单自己写的 `hostUICompat ^3.16`（第 1 章 §4.6）。旧字段不兼容，check 直接拒绝。
 2. **key 语法**（第 1 章）：`perm` 按 `plugin.` 前缀语法解析插件范围 `*` / `own` / `<res>/<value>`，`perm` 仍是叶子包；语义（资源对不对、own 允不允许、值在不在枚举里）由 authz 在写入时对照目录校验。枚举形式的资源名固定为 `value`（`…:value/input`）。
 3. **目录**（第 2 章）：迁移 0099 给 `permissions` 加 `risk/requires/group_*/scope/defaults`，核心 superOnly 映射为 critical；插件不再声明的 key 标 `removed`（授权保留不生效），重新声明时原样复活、不重套默认（D6）；`SyncPlugin` 不再做继承；新增按插件读写的矩阵接口。
 4. **同意**（第 3 章）：`new_permission_roles` 改为“本地 key → 角色 → true | 范围数组”；默认值和继承也按“安装者能否命名该角色”判，不能命名的进入现有待复核队列（D2）；critical 只有超管能授（D3）；继承规则（同 scope_type 才带范围、critical 只从 critical 继承）集中在 `planRoleGrants`。
@@ -59,7 +59,7 @@
 | `ConsentRequest.new_permission_roles` | `{local: {role: true \| ["*" \| "own" \| "value/<k>" \| "<res>/<id>" \| 裸枚举 key]}}`；出现的 key 对可命名角色整体覆盖；删除 `role_keys_for_new_permissions` | 3 | 5（`toManifestGrant`） |
 | `ConsentResult.withheld` | `[]RoleGrant`，本次挂起待复核的授予 | 3 | 5（toast） |
 | review 新字段 | `permission_groups`、`role_columns[]{key,name,builtin,superuser,nameable,reason}`、`user_permissions[].{risk,group,requires,scope,defaults(规范后缀),new,revived,renamed,cells{role:{grant,nameable,reason,withheld}}}`、`removed_user_permissions[]`；`Review(ctx, key, version, actorID)` 按查看者计算 | 3 | 5 |
-| `PendingRoleGrants` | 读 `plugin.consent` 与 `plugin.consent.auto` 的 `detail.pending`；元素带 `scope`、`risk`（取目录列）；按 (permission, role, scope) 去重 | 3 | 插件详情 `RoleGrantsReview` |
+| `PendingRoleGrants` | 读 `plugin.consent` 与 `plugin.consent.auto` 的 `detail.pending`；元素带 `scope`、`risk`（取目录列）；范围已不合当前声明的不列出；按 (permission, role, scope) 去重 | 3 | 插件详情 `RoleGrantsReview` |
 | `PUT /plugins/:key/grants/:permission` | body `{scope?}`；收窄只要 `plugin:manage`，重新授予按风险要 `plugin:grant:*`；挂在 grant step-up 下；返回 `Grant` | 3 | 5（`GrantsTab`） |
 | `core.PluginScope`、`PermissionSet.PluginScope(action)`、`PermissionSet.HasSome(k)`、`core.AuthorizePluginScope` | 新文件 `core/plugin_scope.go` | 4 | 4（routes、menus、`plugin/api/ui.go`、scope-options） |
 | `HTTPRequest.action_scope`（`ActionScope{permission, all, own, values}`） | 路由权限声明 scope 时总是带；不升 Host API | 4 | 插件（`pluginsdk.RequestScope/RequireScope`） |
