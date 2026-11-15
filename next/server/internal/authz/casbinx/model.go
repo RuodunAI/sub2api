@@ -1,0 +1,141 @@
+package casbinx
+
+import (
+	"errors"
+	"sync"
+	"sync/atomic"
+
+	"github.com/casbin/casbin/v3"
+	"github.com/casbin/casbin/v3/model"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+)
+
+// modelText is model.conf (CONTRACTS §99). A p row is one grant: p.act a
+// catalog action, p.scope its canonical scope (AllRows for every row, never
+// empty); a superuser role holds act SuperKey. r.obj is the key asked for,
+// in any spelling: permMatch parses it. No domains: a scope is a resource
+// path, not a tenant, and RBAC with domains would multiply g by scopes.
+const modelText = `
+[request_definition]
+r = sub, obj
+
+[policy_definition]
+p = sub, act, scope
+
+[role_definition]
+g = _, _
+
+[policy_effect]
+e = some(where (p.eft == allow))
+
+[matchers]
+m = g(r.sub, p.sub) && permMatch(p.act, p.scope, r.obj)
+`
+
+// permMatchName is the matcher function. Like go-admin's keyMatch2Cached it
+// must not reuse a Casbin builtin's name: AddFunction is a LoadOrStore, so a
+// clash would be ignored silently and the builtin would judge.
+const permMatchName = "permMatch"
+
+// GrantKey is the permission key of the grant (act, scope): the action alone
+// for every row, else "<act>:<scope>".
+func GrantKey(act, scope string) string {
+	if scope == AllRows {
+		return act
+	}
+	return act + ":" + scope
+}
+
+// PermMatch reports whether the grant (act, scope) implies the key want:
+// perm.Implies on the parsed keys, the function PermissionSet.Has uses, so
+// the matcher and the hot path cannot judge apart. act SuperKey implies
+// every key, future ones included; a key that does not parse matches
+// nothing.
+func PermMatch(act, scope, want string) bool {
+	if act == SuperKey {
+		return true
+	}
+	have, ok := parsed(GrantKey(act, scope))
+	if !ok {
+		return false
+	}
+	w, ok := parsed(want)
+	return ok && perm.Implies(have, w)
+}
+
+var errPermMatchArgs = errors.New("casbinx: permMatch takes 3 string arguments")
+
+func permMatchFunc(args ...any) (any, error) {
+	if len(args) != 3 {
+		return false, errPermMatchArgs
+	}
+	act, ok1 := args[0].(string)
+	scope, ok2 := args[1].(string)
+	want, ok3 := args[2].(string)
+	if !ok1 || !ok2 || !ok3 {
+		return false, errPermMatchArgs
+	}
+	return PermMatch(act, scope, want), nil
+}
+
+// parseCacheLimit bounds the perm.Parse cache. Keys come from code
+// constants, the catalog and the grants, a bounded set; past the limit a key
+// is still parsed, just not kept (go-admin's keyMatch2Cached does the same
+// for its compiled route patterns).
+const parseCacheLimit = 8192
+
+var (
+	parseCache     sync.Map // key -> parseResult
+	parseCacheSize atomic.Int64
+)
+
+type parseResult struct {
+	p  perm.Pattern
+	ok bool
+}
+
+// parsed is perm.Parse, cached: Enforce runs the matcher on every p row, so
+// each call would otherwise parse the same few hundred keys again.
+func parsed(k string) (perm.Pattern, bool) {
+	if v, ok := parseCache.Load(k); ok {
+		r := v.(parseResult)
+		return r.p, r.ok
+	}
+	p, err := perm.Parse(k)
+	r := parseResult{p, err == nil}
+	if parseCacheSize.Load() < parseCacheLimit {
+		if _, loaded := parseCache.LoadOrStore(k, r); !loaded {
+			parseCacheSize.Add(1)
+		}
+	}
+	return r.p, r.ok
+}
+
+// newModel parses modelText.
+func newModel() (model.Model, error) { return model.NewModelFromString(modelText) }
+
+// newEnforcer is the one constructor of an enforcer (go-admin's
+// newEnforcer): every enforcer gets permMatch before its first Enforce
+// compiles the matcher, answers g from roles, and is a read replica.
+//   - AutoSave off: it has no adapter, and nothing may write through it.
+//   - The g function cache off: Casbin keeps the g memo with the compiled
+//     matcher for the enforcer's lifetime, while the roles change in the
+//     RoleSource without a rebuild; with the memo a revoked role would keep
+//     working (TestGFunctionCacheMustBeOff).
+//   - No logger is set, so Casbin logs nothing.
+func newEnforcer(roles RoleSource) (*casbin.Enforcer, error) {
+	m, err := newModel()
+	if err != nil {
+		return nil, err
+	}
+	e, err := casbin.NewEnforcer(m)
+	if err != nil {
+		return nil, err
+	}
+	e.EnableAutoSave(false)
+	e.AddFunction(permMatchName, permMatchFunc)
+	e.SetRoleManager(newRoleManager(roles))
+	e.EnableGFunctionCache(false)
+	return e, nil
+}
