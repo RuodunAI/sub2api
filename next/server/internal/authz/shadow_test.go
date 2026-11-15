@@ -65,6 +65,8 @@ func (f *fakeResolver) Grants(ctx context.Context, uid, min int64) (core.Permiss
 
 func (f *fakeResolver) Prewarm(v int64) { f.prewarmed.Store(v) }
 
+func (f *fakeResolver) Reread(context.Context, int64) error { return nil }
+
 // shadowFixture is a service on a fresh database with one user, its Casbin
 // side a fakeResolver that answers what the legacy loader does (change
 // grants to differ), no sample taken, and its counters as they are.
@@ -412,6 +414,31 @@ func TestShadowRereadsAfterUnrecordedWrite(t *testing.T) {
 	if st := since(s, base); st.EnforceChecked != 1 || st.EnforceMismatches != 0 || st.Errors != 0 {
 		t.Fatalf("matcher path: %+v", st)
 	}
+}
+
+// casbin: the role cache holds the user read before a raw UPDATE disabled
+// it; the sampled legacy read comes after. The difference is re-read past
+// the role cache, not reported.
+func TestCasbinSampleRereadsRoleCache(t *testing.T) {
+	s, _, uid := shadowFixture(t, EngineCasbin)
+	l := casbinx.NewLoader(s.db)
+	s.casbin = casbinx.NewResolver(l, casbinx.NewRoleCache(l, nil), SelfPermissionKeys())
+	failOnShadowMismatch(t, s)
+	mustCan(t, s, uid, "self:profile", true) // the roles cached, active
+	if _, err := s.db.SQL.ExecContext(context.Background(), `UPDATE users SET status = 'disabled' WHERE id = $1`, uid); err != nil {
+		t.Fatal(err)
+	}
+	drop(s)
+	s.shadow.sample = func(rate float64) bool { return rate == legacySampleRate }
+	base := s.shadow.stats()
+	mustCan(t, s, uid, "self:profile", true) // Casbin answers from the cache
+	settle()
+	if st := since(s, base); st.Compared != 1 || st.Mismatches != 0 || st.Errors != 0 {
+		t.Fatalf("legacy sample: %+v", st)
+	}
+	// The re-read replaced the cached entry: the next resolution sees it.
+	drop(s)
+	mustCan(t, s, uid, "self:profile", false)
 }
 
 // Sampled Can calls (shadow) are checked on the matcher path of a real

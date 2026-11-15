@@ -87,6 +87,9 @@ type Loader interface {
 // halves of a set cannot come from different versions.
 type RoleCache interface {
 	Warm(ctx context.Context, uid, min int64) (UserRoles, error)
+	// Reload reads uid's roles from the Loader, past both levels, and
+	// keeps them (in place of an entry of the same version).
+	Reload(ctx context.Context, uid int64) (UserRoles, error)
 }
 
 // Resolver is what authz.Service calls. Grants is uid's effective
@@ -104,6 +107,11 @@ type Resolver interface {
 	// when the current one is older: the node learnt of a new version, and
 	// the requests that follow should find it built.
 	Prewarm(min int64)
+	// Reread reads uid's roles again past the role cache (Reload), for the
+	// Grants and Enforce that follow: the shadow comparison checks a
+	// difference against reads made after it, and a write the version does
+	// not record (a raw UPDATE in a test) leaves the cached entry behind.
+	Reread(ctx context.Context, uid int64) error
 
 	enforce(ctx context.Context, uid int64, key string, min int64) (bool, int64, error)
 }

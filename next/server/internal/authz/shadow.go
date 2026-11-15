@@ -231,9 +231,9 @@ func (sh *shadow) failed(ctx context.Context, uid int64, err error) {
 // The two sets are read one after the other (one on the request, the other
 // off it), so a write the version does not record may land in between: the
 // service's own writes all bump it, a raw UPDATE in a test does not. When
-// they differ, again reads the side read first once more (after the other)
-// and the fresh pair decides: a Casbin difference holds against it, a stale
-// first read does not.
+// they differ, again reads both once more, past the caches, and the fresh
+// pair decides: a Casbin difference holds against it, a stale read does
+// not.
 func (sh *shadow) compareSets(ctx context.Context, uid int64, legacy, casbin core.PermissionSet, again func(context.Context) (legacy, casbin core.PermissionSet, err error)) error {
 	if legacy.Version != casbin.Version {
 		sh.skipped.Add(1)
@@ -350,10 +350,7 @@ func (s *Service) shadowCompare(uid int64, legacy core.PermissionSet) {
 			}
 			return err
 		}
-		return s.shadow.compareSets(ctx, uid, legacy, cs, func(ctx context.Context) (core.PermissionSet, core.PermissionSet, error) {
-			fresh, err := s.legacyPermissionSet(ctx, uid)
-			return fresh, cs, err
-		})
+		return s.shadow.compareSets(ctx, uid, legacy, cs, s.reread(uid))
 	})
 }
 
@@ -369,11 +366,25 @@ func (s *Service) sampleLegacy(uid int64, cs core.PermissionSet) {
 		if err != nil {
 			return fmt.Errorf("legacy sample: %w", err)
 		}
-		return s.shadow.compareSets(ctx, uid, legacy, cs, func(ctx context.Context) (core.PermissionSet, core.PermissionSet, error) {
-			fresh, err := s.casbin.Grants(ctx, uid, legacy.Version)
-			return legacy, fresh, err
-		})
+		return s.shadow.compareSets(ctx, uid, legacy, cs, s.reread(uid))
 	})
+}
+
+// reread reads both sets of uid again past the caches (compareSets): the
+// legacy loader's, and Casbin's from roles read anew (Reread), at the
+// legacy read's version.
+func (s *Service) reread(uid int64) func(context.Context) (core.PermissionSet, core.PermissionSet, error) {
+	return func(ctx context.Context) (core.PermissionSet, core.PermissionSet, error) {
+		if err := s.casbin.Reread(ctx, uid); err != nil {
+			return core.PermissionSet{}, core.PermissionSet{}, err
+		}
+		legacy, err := s.legacyPermissionSet(ctx, uid)
+		if err != nil {
+			return core.PermissionSet{}, core.PermissionSet{}, err
+		}
+		cs, err := s.casbin.Grants(ctx, uid, legacy.Version)
+		return legacy, cs, err
+	}
 }
 
 // sampleEnforce checks a sampled Can (shadow) on the matcher path, off the
@@ -391,9 +402,9 @@ func (s *Service) checkEnforce(ctx context.Context, uid int64, key string) error
 	if err != nil {
 		return err
 	}
-	// Twice at most: a difference is checked again against a fresh legacy
-	// read, made after Casbin's (see compareSets: the first set may come from
-	// the cache, read before a write the version does not record).
+	// Twice at most: a difference is checked again against both sides read
+	// anew, past the caches (see compareSets: either may hold a read from
+	// before a write the version does not record).
 	for fresh := false; ; fresh = true {
 		got, v, err := casbinx.Enforce(ctx, s.casbin, uid, key, set.Version)
 		if err != nil {
@@ -408,6 +419,9 @@ func (s *Service) checkEnforce(ctx context.Context, uid int64, key string) error
 		}
 		want := set.Has(key)
 		if got != want && !fresh {
+			if err := s.casbin.Reread(ctx, uid); err != nil {
+				return err
+			}
 			if set, err = s.legacyPermissionSet(ctx, uid); err != nil {
 				return err
 			}

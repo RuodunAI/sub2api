@@ -397,3 +397,34 @@ func (h countHandler) Handle(_ context.Context, r slog.Record) error {
 }
 func (h countHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h countHandler) WithGroup(string) slog.Handler      { return h }
+
+// Reload reads past the cache and replaces the entry of the same version
+// (a write the version does not record); an older read does not replace a
+// newer entry.
+func TestRoleCacheReload(t *testing.T) {
+	l := &fakeRoleLoader{fn: func(_ int64, n int64) (UserRoles, error) {
+		switch n {
+		case 1:
+			return UserRoles{Version: 5, Active: true, Roles: []string{"r:a"}}, nil
+		case 2:
+			return UserRoles{Version: 5, Active: false}, nil
+		default:
+			return UserRoles{Version: 4, Active: true}, nil
+		}
+	}}
+	rc := newRoleCache(l, nil, roleCacheOptions{})
+	ctx := context.Background()
+	ur, err := rc.Warm(ctx, 7, 5)
+	require.NoError(t, err)
+	require.True(t, ur.Active)
+	ur, err = rc.Reload(ctx, 7)
+	require.NoError(t, err)
+	require.False(t, ur.Active)
+	ur, err = rc.Warm(ctx, 7, 5)
+	require.NoError(t, err)
+	require.False(t, ur.Active, "the reloaded entry answers")
+	ur, err = rc.Reload(ctx, 7)
+	require.NoError(t, err)
+	require.EqualValues(t, 5, ur.Version, "an older read keeps the newer entry")
+	require.EqualValues(t, 3, l.calls.Load())
+}

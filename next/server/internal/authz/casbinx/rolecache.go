@@ -177,6 +177,17 @@ func (c *roleCache) shared(ctx context.Context, uid, min int64) (UserRoles, erro
 	}
 }
 
+// Reload reads uid's roles from the Loader and keeps them in L1 (and L2,
+// off the caller), replacing an entry of the same version.
+func (c *roleCache) Reload(ctx context.Context, uid int64) (UserRoles, error) {
+	ur, err := c.load.UserRoles(ctx, uid)
+	if err != nil {
+		return UserRoles{}, err
+	}
+	c.setL2(uid, ur)
+	return c.store(uid, ur), nil
+}
+
 // fill reads uid's roles from L2 or, when L2 has none at version min, from
 // the Loader (writing them back to L2 off the caller), and stores them in
 // L1.
