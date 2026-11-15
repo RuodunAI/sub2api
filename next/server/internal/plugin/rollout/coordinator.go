@@ -309,10 +309,13 @@ func (c *Controller) migrate(ctx context.Context, r *rolloutRow) error {
 	if r.target == nil {
 		return nil
 	}
-	pkg, err := c.o.Packages.Open(ctx, r.key, *r.target)
+	// Held: until a reconcile pass reads this rollout, nothing else keeps
+	// the target package from being swept while the migration reads it.
+	pkg, done, err := c.o.Packages.Acquire(ctx, r.key, *r.target)
 	if err != nil {
 		return err
 	}
+	defer done()
 	if pkg.Manifest.Database == nil {
 		return nil
 	}
