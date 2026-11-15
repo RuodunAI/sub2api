@@ -79,11 +79,7 @@ func (e *Env) RolePermissionKeys(admin *Session, key string) map[string]bool {
 	if !ok {
 		e.T.Fatalf("role %s not listed", key)
 	}
-	out := map[string]bool{}
-	for _, k := range r.Get("permission_keys").Array() {
-		out[k.String()] = true
-	}
-	return out
+	return Set(r.Get("permission_keys"))
 }
 
 // SetUserRoles replaces a user's roles.

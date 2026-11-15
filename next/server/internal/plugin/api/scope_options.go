@@ -53,7 +53,7 @@ func (a *API) scopeOptions(c *gin.Context) {
 		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("permission takes no scope"))
 		return
 	}
-	q, ids, limit, err := lookup.ParseText(c)
+	q, err := lookup.ParseText(c)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -66,10 +66,10 @@ func (a *API) scopeOptions(c *gin.Context) {
 	action := manifest.PermissionKey(key, local)
 	ps := set.PluginScope(perm.Key(action))
 	if len(up.Scope.Values) > 0 {
-		httpapi.OK(c, valueOptions(rc, up.Scope.Values, ps, q, ids, limit))
+		httpapi.OK(c, valueOptions(rc, up.Scope.Values, ps, q))
 		return
 	}
-	res, err := a.pluginOptions(c, key, up.Scope.Options, action, ps, q, ids, limit)
+	res, err := a.pluginOptions(c, key, up.Scope.Options, action, ps, q)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -79,14 +79,14 @@ func (a *API) scopeOptions(c *gin.Context) {
 
 // valueOptions lists the values the caller reaches: the given ids among
 // them, else those whose key or a label contains q (case-insensitively),
-// up to limit. A value is named by its label in the request's language.
-func valueOptions(ctx context.Context, values []manifest.ScopeValue, ps core.PluginScope, q string, ids []string, limit int) lookup.Result {
+// up to the limit. A value is named by its label in the request's language.
+func valueOptions(ctx context.Context, values []manifest.ScopeValue, ps core.PluginScope, q lookup.TextQuery) lookup.Result {
 	res := lookup.Result{Items: []lookup.Item{}}
-	needle := strings.ToLower(q)
+	needle := strings.ToLower(q.Q)
 	for _, v := range values {
 		label := core.LocalizedText(v.Label)
-		match := slices.Contains(ids, v.Key)
-		if ids == nil {
+		match := slices.Contains(q.IDs, v.Key)
+		if q.IDs == nil {
 			match = strings.Contains(strings.ToLower(v.Key), needle)
 			for _, s := range label {
 				match = match || strings.Contains(strings.ToLower(s), needle)
@@ -95,7 +95,7 @@ func valueOptions(ctx context.Context, values []manifest.ScopeValue, ps core.Plu
 		if !match || !ps.Allows(v.Key) {
 			continue
 		}
-		if ids == nil && len(res.Items) == limit {
+		if q.IDs == nil && len(res.Items) == q.Limit {
 			res.More = true
 			break
 		}
@@ -107,10 +107,11 @@ func valueOptions(ctx context.Context, values []manifest.ScopeValue, ps core.Plu
 // pluginOptions asks the plugin's options route (a GET admin route at path)
 // for the candidates within ps, the caller's scope of action, the permission
 // being configured, which the plugin gets as action_scope. Nothing is asked
-// when ps reaches nothing or none of ids; what the plugin answers is kept to
-// valid rows in ps (the plugin is not trusted to filter).
-func (a *API) pluginOptions(c *gin.Context, key, path, action string, ps core.PluginScope, q string, ids []string, limit int) (lookup.Result, error) {
+// when ps reaches nothing or none of the ids; what the plugin answers is
+// kept to valid rows in ps (the plugin is not trusted to filter).
+func (a *API) pluginOptions(c *gin.Context, key, path, action string, ps core.PluginScope, q lookup.TextQuery) (lookup.Result, error) {
 	res := lookup.Result{Items: []lookup.Item{}}
+	ids, limit := q.IDs, q.Limit
 	if ps.Empty() {
 		return res, nil
 	}
@@ -123,7 +124,7 @@ func (a *API) pluginOptions(c *gin.Context, key, path, action string, ps core.Pl
 	if !ok {
 		return res, core.ErrPluginUnavailable.WithDetails(map[string]any{"plugin_key": key})
 	}
-	query := map[string]*pluginv1.HeaderValues{"q": {Values: []string{q}}, "limit": {Values: []string{strconv.Itoa(limit)}}}
+	query := map[string]*pluginv1.HeaderValues{"q": {Values: []string{q.Q}}, "limit": {Values: []string{strconv.Itoa(limit)}}}
 	if ids != nil {
 		query["ids"] = &pluginv1.HeaderValues{Values: []string{strings.Join(ids, ",")}}
 		limit = len(ids)

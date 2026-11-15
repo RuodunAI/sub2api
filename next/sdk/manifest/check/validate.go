@@ -782,8 +782,10 @@ func validUserPermKey(k string) bool {
 	return userPermKeyRe.MatchString(k) && !strings.HasSuffix(k, ":own")
 }
 
-// maxScopeValues bounds a values scope: the role editor lists every value.
-const maxScopeValues = 50
+// maxDeclaredScopeValues bounds the values a values scope declares: the
+// role editor lists every value. Not the values one request may name (the
+// runtime's maxRequestScopeValues).
+const maxDeclaredScopeValues = 50
 
 var (
 	scopeResourceRe = regexp.MustCompile(manifest.ScopeResourcePattern)
@@ -858,20 +860,15 @@ func (v *validator) permissionGroups() map[string]bool {
 	return groups
 }
 
-// inheritFrom validates a user permission's inheritFrom: local keys other
-// than its own, usually no longer declared (a rename or a split). A critical
-// permission inherits from no key declared here as less than critical, which
-// would hand a super-admin-only permission to that key's holders; the risk
-// of an undeclared old key is checked at consent against the catalog.
+// inheritFrom validates a user permission's inheritFrom: local keys no
+// longer declared here (a rename or a split). A key still declared keeps
+// its holders, who would get the new permission besides, unseen; the risk
+// of the old key is checked at consent against the catalog.
 func (v *validator) inheritFrom(f string, up manifest.UserPermission) {
-	critical := up.RiskLevel() == manifest.RiskCritical
 	for j, from := range up.InheritFrom {
 		ff := fmt.Sprintf("%s.inheritFrom[%d]", f, j)
-		switch old, declared := v.m.FindUserPermission(from); {
-		case from == up.Key || !validUserPermKey(from):
-			v.add(ff, "invalid_value", "inheritFrom %q must be a local permission key other than the permission's own", from)
-		case critical && declared && old.RiskLevel() != manifest.RiskCritical:
-			v.add(ff, "invalid_value", "a critical permission inherits from critical permissions only; %q is %s", from, old.RiskLevel())
+		if _, declared := v.m.FindUserPermission(from); declared || !validUserPermKey(from) {
+			v.add(ff, "invalid_value", "inheritFrom %q must be a local permission key this manifest no longer declares", from)
 		}
 	}
 }
@@ -915,8 +912,8 @@ func (v *validator) permissionScope(f string, s *manifest.PermissionScope) {
 
 // scopeValues validates the values of a values scope.
 func (v *validator) scopeValues(f string, values []manifest.ScopeValue) {
-	if len(values) > maxScopeValues {
-		v.add(f, "too_many", "at most %d values", maxScopeValues)
+	if len(values) > maxDeclaredScopeValues {
+		v.add(f, "too_many", "at most %d values", maxDeclaredScopeValues)
 	}
 	seen := map[string]bool{}
 	for j, sv := range values {

@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
 // Scoped permission keys (CONTRACTS §21, wildcard permissions): an action
@@ -49,11 +51,10 @@ var scopable = map[Key]Resource{
 // authz when a grant is written.
 const PluginPrefix = "plugin."
 
-// The plugin scope "<resource>/<value>"; the same patterns as
-// manifest.ScopeResourcePattern and manifest.ScopeValuePattern.
+// The plugin scope "<resource>/<value>", as a manifest declares it.
 var (
-	scopeResourceRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,29}$`)
-	scopeValueRe    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+	scopeResourceRe = regexp.MustCompile(manifest.ScopeResourcePattern)
+	scopeValueRe    = regexp.MustCompile(manifest.ScopeValuePattern)
 )
 
 // ValidScopeValue reports whether v may be a plugin scope value (a row id

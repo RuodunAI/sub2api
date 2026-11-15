@@ -114,6 +114,10 @@ func TestAC14_ResourceLimits(t *testing.T) {
 		man["resources"] = map[string]any{"memoryMB": 64 * 1024, "cpu": 0.25, "maxProcs": 64, "maxOpenFiles": 256}
 		pkg.SetManifest(t, man)
 		pkg.Sign(t, key)
+		// An upload spends a step-up proof (CONTRACTS §80.2), refused without one.
+		if r := admin.WithoutStepUp().Upload(t, "/plugins/upload", "file", "e2e_res.s2plugin", pkg.Bytes(t)); r.Status != http.StatusForbidden || r.ErrCode() != "verification_required" {
+			t.Fatalf("upload without a step-up proof: %s", r)
+		}
 		r := e.UploadPlugin(admin, "e2e_res.s2plugin", pkg.Bytes(t))
 		if r.Status != 400 || !strings.Contains(strings.ToLower(string(r.Body)), "memory") {
 			t.Fatalf("over-cap resources accepted or wrong error: %s", r)

@@ -9,6 +9,7 @@ package grants
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
@@ -165,11 +166,18 @@ func Revoke(ctx context.Context, tx pgx.Tx, key, permission string, by *int64) (
 // A set granting a scope neither wider nor within scope keeps it: it is that
 // version's own decision, on another request.
 func Narrow(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64) error {
-	return grantStaged(ctx, tx, key, permission, scope, by, `SELECT version, scope FROM plugin_staged_grants
-		WHERE plugin_key = $1 AND permission = $2 AND status = 'granted' FOR UPDATE`,
-		func(granted map[string]any) bool {
-			return pkg.ScopeWithin(scope, granted) && !pkg.ScopeWithin(granted, scope)
-		})
+	granted, err := stagedScopes(ctx, tx, `SELECT version, scope FROM plugin_staged_grants
+		WHERE plugin_key = $1 AND permission = $2 AND status = 'granted' FOR UPDATE`, key, permission)
+	if err != nil {
+		return err
+	}
+	var versions []string
+	for version, g := range granted {
+		if pkg.ScopeWithin(scope, g) && !pkg.ScopeWithin(g, scope) {
+			versions = append(versions, version)
+		}
+	}
+	return grantVersions(ctx, tx, key, permission, scope, by, versions)
 }
 
 // Reinstate lifts the revocation of permission, granting it scope, in every
@@ -177,40 +185,57 @@ func Narrow(ctx context.Context, tx pgx.Tx, key, permission string, scope map[st
 // administrator's grant, the counterpart of Revoke. A set whose version
 // requests less stays revoked, so that version still runs without it.
 func Reinstate(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64) error {
-	return grantStaged(ctx, tx, key, permission, scope, by, `SELECT s.version, hp->'scope'
+	requested, err := stagedScopes(ctx, tx, `SELECT s.version, hp->'scope'
 		FROM plugin_staged_grants s
 		JOIN plugin_versions v ON v.plugin_key = s.plugin_key AND v.version = s.version
 		CROSS JOIN LATERAL jsonb_array_elements(v.manifest->'hostPermissions') hp
-		WHERE s.plugin_key = $1 AND s.permission = $2 AND s.status = 'revoked' AND hp->>'id' = $2 FOR UPDATE OF s`,
-		func(requested map[string]any) bool { return pkg.ScopeWithin(scope, requested) })
-}
-
-// grantStaged grants permission with scope in the staged sets of key that
-// sel ((version, scope) rows, locked) returns and pick accepts by that scope.
-func grantStaged(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64, sel string, pick func(map[string]any) bool) error {
-	rows, err := tx.Query(ctx, sel, key, permission)
+		WHERE s.plugin_key = $1 AND s.permission = $2 AND s.status = 'revoked' AND hp->>'id' = $2 FOR UPDATE OF s`, key, permission)
 	if err != nil {
 		return err
 	}
 	var versions []string
+	for version, r := range requested {
+		if pkg.ScopeWithin(scope, r) {
+			versions = append(versions, version)
+		}
+	}
+	return grantVersions(ctx, tx, key, permission, scope, by, versions)
+}
+
+// stagedScopes reads version -> scope from sel's (version, scope) rows for
+// key and permission ($1, $2); a NULL scope (a host permission requesting
+// none) is nil, a scope that is no JSON object an error.
+func stagedScopes(ctx context.Context, tx pgx.Tx, sel, key, permission string) (map[string]map[string]any, error) {
+	rows, err := tx.Query(ctx, sel, key, permission)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]any{}
 	for rows.Next() {
 		var (
 			version string
 			raw     []byte
+			s       map[string]any
 		)
 		if err := rows.Scan(&version, &raw); err != nil {
-			rows.Close()
-			return err
+			return nil, err
 		}
-		var s map[string]any
-		_ = json.Unmarshal(raw, &s)
-		if pick(s) {
-			versions = append(versions, version)
+		if raw != nil {
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return nil, fmt.Errorf("scope of %s@%s %s: %w", key, version, permission, err)
+			}
 		}
+		out[version] = s
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil || len(versions) == 0 {
-		return err
+	return out, rows.Err()
+}
+
+// grantVersions grants permission with scope in the staged sets of key for
+// versions.
+func grantVersions(ctx context.Context, tx pgx.Tx, key, permission string, scope map[string]any, by *int64, versions []string) error {
+	if len(versions) == 0 {
+		return nil
 	}
 	b, err := json.Marshal(scope)
 	if err != nil {

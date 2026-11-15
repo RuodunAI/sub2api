@@ -10,6 +10,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -19,7 +20,8 @@ import (
 // scope: what the manifest requests). A scope within the current grant
 // narrows it (plugin:manage, the route's, is enough); anything else (a
 // revoked or denied permission, a wider scope) is a grant decision, checked
-// like a consent's (checkGrantRights), never wider than the active manifest
+// like a consent's: plugin:install, the consent route's, and the grant
+// rights by risk (checkGrantRights), never wider than the active manifest
 // requests. Staged sets get the same narrowing (grants.Narrow), and a staged
 // revocation of the permission is lifted when its version requests at least
 // the scope (grants.Reinstate). Audited plugin.grant.narrow /
@@ -78,6 +80,9 @@ func (s *Service) SetGrant(ctx context.Context, key, permission string, scope ma
 			err = grants.Narrow(ctx, tx, key, permission, scope, by)
 		} else {
 			action = "plugin.grant.regrant"
+			if err := s.requireInstall(ctx, actorID); err != nil {
+				return err
+			}
 			if err := s.checkGrantRights(ctx, actorID, []decision{d}, trust, hasPub); err != nil {
 				return err
 			}
@@ -108,4 +113,17 @@ func (s *Service) SetGrant(ctx context.Context, key, permission string, scope ma
 	}
 	s.Notify(ctx, key)
 	return &out, nil
+}
+
+// requireInstall fails unless the actor holds plugin:install: granting a
+// host permission again is a consent decision, which plugin:manage alone
+// must not reach (a revoked or denied low-risk permission needs no grant
+// right).
+func (s *Service) requireInstall(ctx context.Context, actorID int64) error {
+	ok, err := s.d.Authz.Can(ctx, actorID, string(perm.PluginInstall))
+	if err != nil || ok {
+		return err
+	}
+	return core.ErrPermissionDenied.WithMessage("granting a host permission again requires plugin:install").
+		WithDetails(map[string]any{"permission": string(perm.PluginInstall)})
 }

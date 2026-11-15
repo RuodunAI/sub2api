@@ -11,17 +11,22 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
-// inheritFrom names local keys other than the permission's own (old keys
-// need not be declared).
+// inheritFrom names local keys this manifest no longer declares (a rename
+// or a split): neither the permission's own key nor another declared one,
+// whose holders would get the new permission besides; a critical
+// permission alike, the risk of the old key is checked at consent.
 func TestUserPermissionInheritFrom(t *testing.T) {
 	m := minimal()
 	m.UserPermissions = []manifest.UserPermission{
 		{Key: "x:use", Label: label("Use"), InheritFrom: []string{"x:read"}},
-		{Key: "x:manage", Label: label("Manage"), InheritFrom: []string{"x:manage", "Bad Key", "x:use"}},
+		{Key: "x:manage", Label: label("Manage"), InheritFrom: []string{"x:manage", "Bad Key", "x:use", "x:edit"}},
+		{Key: "x:all", Risk: manifest.RiskCritical, Label: label("All"), InheritFrom: []string{"x:exempt", "x:manage"}},
 	}
 	assert.Equal(t, map[string]string{
 		"userPermissions[1].inheritFrom[0]": "invalid_value",
 		"userPermissions[1].inheritFrom[1]": "invalid_value",
+		"userPermissions[1].inheritFrom[2]": "invalid_value",
+		"userPermissions[2].inheritFrom[1]": "invalid_value",
 	}, fieldCodes(Validate(m, nil, ValidateOptions{Tooling: true}), "userPermissions"))
 }
 
@@ -209,19 +214,6 @@ func TestUserPermissionScope(t *testing.T) {
 		m.UserPermissions = append(m.UserPermissions, manifest.UserPermission{Key: "flow:audit", Label: label("Audit"), Scope: &c.scope})
 		assert.Equal(t, c.want, fieldCodes(Validate(m, nil, ValidateOptions{Tooling: true}), "userPermissions"), c.name)
 	}
-}
-
-// A critical permission must not inherit the holders of a key declared here
-// as less than critical; an old key no longer declared is checked at consent.
-func TestCriticalInheritFrom(t *testing.T) {
-	m := permissionManifest()
-	m.UserPermissions = append(m.UserPermissions, manifest.UserPermission{Key: "exempt:all", Risk: manifest.RiskCritical, Label: label("Exempt all")})
-	m.UserPermissions[3].InheritFrom = []string{"flow:read", "flow:manage", "exempt:all", "exempt:old"}
-	m.UserPermissions[0].InheritFrom = []string{"exempt:use"}
-	assert.Equal(t, map[string]string{
-		"userPermissions[3].inheritFrom[0]": "invalid_value",
-		"userPermissions[3].inheritFrom[1]": "invalid_value",
-	}, fieldCodes(Validate(m, nil, ValidateOptions{Tooling: true}), "userPermissions"))
 }
 
 // An older core ignores the new fields (granting admin by default and

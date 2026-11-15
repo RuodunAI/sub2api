@@ -18,8 +18,9 @@ import (
 )
 
 // roleGrantsEnv installs guard 0.1.0 with every host permission and gives the catalog its three
-// permissions (the fake SyncPlugin writes none), rules:manage held by the
-// custom role auditor; the built-in roles exist.
+// permissions (the fake SyncPlugin writes none), rules:manage and the
+// removed rules:old held by the custom role auditor; the built-in roles
+// exist.
 func roleGrantsEnv(t *testing.T) (*env, context.Context) {
 	t.Helper()
 	e := newEnv(t)
@@ -42,8 +43,10 @@ INSERT INTO roles (key, name, builtin) VALUES ('admin', '{}', true), ('operator'
 ON CONFLICT (key) DO NOTHING;
 INSERT INTO permissions (key, module, label, source, plugin_key, status)
 SELECT 'plugin.guard:' || k, 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'disabled' FROM unnest(ARRAY['rules:read','rules:manage','stats:read']) k;
+INSERT INTO permissions (key, module, label, source, plugin_key, status, risk)
+VALUES ('plugin.guard:rules:old', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low');
 INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'auditor' AND p.key = 'plugin.guard:rules:manage'`); err != nil {
+SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'auditor' AND p.key IN ('plugin.guard:rules:manage', 'plugin.guard:rules:old')`); err != nil {
 		t.Fatal(err)
 	}
 	return e, ctx
@@ -116,7 +119,7 @@ func lastDef(t *testing.T, e *env, key string) core.PermissionDef {
 func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
 	inherit := newPerm("rules:edit", "", "admin")
-	inherit.InheritFrom = []string{"rules:manage"}
+	inherit.InheritFrom = []string{"rules:old"} // removed: a rename
 	export := "plugin.guard:rules:export"
 	grant := func(perm, role, risk, via string, needs bool) RoleGrant {
 		return RoleGrant{Permission: perm, Role: role, Risk: risk, Via: via, NeedsConsent: needs, Nameable: true}
@@ -205,7 +208,7 @@ AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&detail))
 func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
 	inherit := newPerm("rules:edit", "", "admin")
-	inherit.InheritFrom = []string{"rules:manage"}
+	inherit.InheritFrom = []string{"rules:old"} // removed: a rename
 	dir := t.TempDir()
 	m := guardWith("0.1.1", newPerm("rules:export", manifest.RiskSensitive, "admin"), newPerm("rules:view", "", "admin", "user"), inherit)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "guard-0.1.1.s2plugin"), pkgtest.Build(m, e.root), 0o644))

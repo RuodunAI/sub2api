@@ -121,11 +121,9 @@ func TestParsePluginScope(t *testing.T) {
 	}
 }
 
-// perm stays a leaf package, so it repeats the manifest's plugin spelling;
+// PluginPrefix, a constant, repeats the manifest's plugin module spelling;
 // the two must agree.
-func TestScopePatternsMatchManifest(t *testing.T) {
+func TestPluginPrefixMatchesManifest(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, PluginPrefix+"k", manifest.PermissionModule("k"))
-	assert.Equal(t, manifest.ScopeResourcePattern, scopeResourceRe.String())
-	assert.Equal(t, manifest.ScopeValuePattern, scopeValueRe.String())
 }

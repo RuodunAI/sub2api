@@ -14,11 +14,12 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
 
-// maxScopeValues caps the values a scopeFrom names, the bound of a batch of
-// account ids.
-const maxScopeValues = manifest.MaxAccountBatch
+// maxRequestScopeValues caps the values one request names under a
+// scopeFrom, the bound of a batch of account ids. Not the number of values
+// a values scope may declare (check's maxDeclaredScopeValues).
+const maxRequestScopeValues = manifest.MaxAccountBatch
 
-var errTooManyScopeValues = core.ErrInvalidArgument.WithMessage(fmt.Sprintf("at most %d scope values per request", maxScopeValues))
+var errTooManyScopeValues = core.ErrInvalidArgument.WithMessage(fmt.Sprintf("at most %d scope values per request", maxRequestScopeValues))
 
 // authorizeRoute checks the route's plugin permission key at some scope
 // (PermissionSet.HasSome) and returns the caller's set for authorizeScope.
@@ -70,19 +71,17 @@ func (h *Handler) authorizeScope(c *gin.Context, rb *core.RouteBinding, set core
 
 // scopeValues reads the distinct values a scopeFrom entry names
 // (requestValues), each a plugin scope value (perm.ValidScopeValue), at
-// most maxScopeValues.
+// most maxRequestScopeValues.
 func scopeValues(from string, params map[string]string, query url.Values, body []byte) ([]string, error) {
 	values, err := requestValues(from, params, query, body)
 	if err == nil && slices.ContainsFunc(values, func(v string) bool { return !perm.ValidScopeValue(v) }) {
 		err = errBadValue
 	}
 	if err != nil {
-		_, name, _ := manifest.ParseAccountsFrom(from)
-		return nil, core.InvalidFields(core.FieldError{Field: name, Code: "invalid",
-			Message: "must be an id of letters, digits, '_', '.' or '-' (at most 64), a list of them or a comma-separated string of them"})
+		return nil, valueError(from, err, "must be an id of letters, digits, '_', '.' or '-' (at most 64), a list of them or a comma-separated string of them")
 	}
 	slices.Sort(values)
-	if values = slices.Compact(values); len(values) > maxScopeValues {
+	if values = slices.Compact(values); len(values) > maxRequestScopeValues {
 		return nil, errTooManyScopeValues
 	}
 	return values, nil

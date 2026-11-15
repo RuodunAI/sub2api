@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"slices"
 	"strconv"
@@ -47,9 +48,7 @@ func accountIDs(from []string, params map[string]string, query url.Values, body 
 			ids = append(ids, id)
 		}
 		if err != nil {
-			_, name, _ := manifest.ParseAccountsFrom(f)
-			return nil, core.InvalidFields(core.FieldError{Field: name, Code: "invalid",
-				Message: "must be an account id, a list of account ids or a comma-separated string of them"})
+			return nil, valueError(f, err, "must be an account id, a list of account ids or a comma-separated string of them")
 		}
 	}
 	slices.Sort(ids)
@@ -61,39 +60,84 @@ func accountIDs(from []string, params map[string]string, query url.Values, body 
 
 // requestValues reads the values the request names under one from entry
 // (manifest.ParseAccountsFrom): a path parameter, every value of a query
-// parameter, or top-level JSON body fields. Body field names match
+// parameter, or a top-level JSON body field. Query and body names match
 // case-insensitively, as encoding/json does when the plugin decodes the
-// body; a body that is no JSON object names none. Every value may be a
-// comma-separated string; empty parts are skipped.
+// body: every value a plugin could read under the name is checked. A body
+// naming the field twice is refused (fieldValues); a body that is no JSON
+// object names none. Every value may be a comma-separated string; empty
+// parts are skipped.
 func requestValues(from string, params map[string]string, query url.Values, body []byte) ([]string, error) {
 	source, name, _ := manifest.ParseAccountsFrom(from)
 	switch source {
 	case manifest.AccountsFromPath:
 		return splitValues(params[name]), nil
 	case manifest.AccountsFromQuery:
-		return splitValues(query[name]...), nil
+		var vals []string
+		for k, vs := range query {
+			if strings.EqualFold(k, name) {
+				vals = append(vals, vs...)
+			}
+		}
+		return splitValues(vals...), nil
 	case manifest.AccountsFromBody:
 		return fieldValues(body, name)
 	}
 	return nil, nil
 }
 
-// fieldValues reads every top-level body field named name, in any case.
-func fieldValues(body []byte, name string) ([]string, error) {
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(body, &fields)
-	var out []string
-	for k, raw := range fields {
-		if !strings.EqualFold(k, name) {
-			continue
-		}
-		more, err := rawValues(raw)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, more...)
+// errDuplicateField: the body names the field more than once. A decoder
+// keeps one occurrence (encoding/json the last, gjson the first), so the
+// core would check one while the plugin acts on another.
+var errDuplicateField = errors.New("named more than once")
+
+// valueError is the 400 for the values under from: errDuplicateField, or
+// the given message for a value that is not one.
+func valueError(from string, err error, invalid string) error {
+	_, name, _ := manifest.ParseAccountsFrom(from)
+	fe := core.FieldError{Field: name, Code: "invalid", Message: invalid}
+	if errors.Is(err, errDuplicateField) {
+		fe.Code, fe.Message = "duplicate", "must be named once (in any case)"
 	}
-	return out, nil
+	return core.InvalidFields(fe)
+}
+
+// fieldValues reads the top-level body field named name, in any case; more
+// than one such field is errDuplicateField. The object is walked token by
+// token, each member value decoded whole, so a nested field of that name
+// counts for nothing. A body that is no JSON object names none.
+func fieldValues(body []byte, name string) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, nil
+	}
+	var found []json.RawMessage
+	for dec.More() {
+		tok, err := dec.Token()
+		var raw json.RawMessage
+		if err == nil {
+			err = dec.Decode(&raw)
+		}
+		if err != nil {
+			return nil, nil
+		}
+		if k, _ := tok.(string); strings.EqualFold(k, name) {
+			found = append(found, raw)
+		}
+	}
+	// The closing brace, then nothing: trailing data is no JSON object.
+	if _, err := dec.Token(); err != nil {
+		return nil, nil
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, nil
+	}
+	switch len(found) {
+	case 0:
+		return nil, nil
+	case 1:
+		return rawValues(found[0])
+	}
+	return nil, errDuplicateField
 }
 
 var errBadValue = errors.New("not a string, a number or an array of them")
