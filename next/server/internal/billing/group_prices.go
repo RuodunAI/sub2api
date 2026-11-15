@@ -9,7 +9,6 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
@@ -47,7 +46,7 @@ type pricedGroupRow struct {
 }
 
 // loadGroups reads the groups (alias g) cond selects, by id.
-func loadGroups(ctx context.Context, q store.Querier, cond string, args ...any) ([]pricedGroup, error) {
+func loadGroups(ctx context.Context, q *gorm.DB, cond string, args ...any) ([]pricedGroup, error) {
 	var rows []pricedGroupRow
 	if err := pricedGroups(store.G(ctx, q), cond, args...).Scan(&rows).Error; err != nil {
 		return nil, err
@@ -69,7 +68,7 @@ func pricedGroups(db *gorm.DB, cond string, args ...any) *gorm.DB {
 // catalog is the enabled global prices by model.
 type catalog map[string]PriceDef
 
-func loadCatalog(ctx context.Context, q store.Querier) (catalog, error) {
+func loadCatalog(ctx context.Context, q *gorm.DB) (catalog, error) {
 	var rows []model.ModelPrice
 	if err := enabledPrices(store.G(ctx, q), "model", "mode", "config", "expression").Find(&rows).Error; err != nil {
 		return nil, err
@@ -100,7 +99,7 @@ func (c catalog) base(model string) *PriceDef {
 
 // offeredModels returns the models each of the groups provides
 // (group.OfferedModels), by group id.
-func offeredModels(ctx context.Context, q store.Querier, groups []pricedGroup, prices catalog) (map[int64][]string, error) {
+func offeredModels(ctx context.Context, q *gorm.DB, groups []pricedGroup, prices catalog) (map[int64][]string, error) {
 	infos := make([]core.GroupInfo, len(groups))
 	for i, g := range groups {
 		infos[i] = g.GroupInfo
@@ -117,7 +116,7 @@ type groupPrices struct {
 }
 
 // loadGroupPrices reads the one group cond selects; not_found without one.
-func loadGroupPrices(ctx context.Context, q store.Querier, cond string, args ...any) (*groupPrices, error) {
+func loadGroupPrices(ctx context.Context, q *gorm.DB, cond string, args ...any) (*groupPrices, error) {
 	groups, err := loadGroups(ctx, q, cond, args...)
 	if err != nil {
 		return nil, err
@@ -141,7 +140,7 @@ func loadGroupPrices(ctx context.Context, q store.Querier, cond string, args ...
 // and the rules that price it for segmentID (0 = none) in groupID. It is the
 // one place the list prices of a group's models for one segment are read;
 // the caller says which models and what to make of each.
-func eachPrice(ctx context.Context, q store.Querier, prices catalog, models []string, groupID, segmentID int64, add func(model string, base PriceDef, levels ruleLevels)) error {
+func eachPrice(ctx context.Context, q *gorm.DB, prices catalog, models []string, groupID, segmentID int64, add func(model string, base PriceDef, levels ruleLevels)) error {
 	on := core.PriceQuery{GroupID: groupID, SegmentID: segmentID}
 	rules, err := loadRules(ctx, q, rulesFor, on.GroupID, on.SegmentID, on.SegmentID)
 	if err != nil {
@@ -200,7 +199,7 @@ type GroupModelPrices struct {
 
 // scope starts the answer on the group's model prices: the group, the
 // segment asked for (0 = none) and the rate that applies.
-func (gp *groupPrices) scope(ctx context.Context, q store.Querier, segmentID int64, showUsers bool) (*GroupModelPrices, error) {
+func (gp *groupPrices) scope(ctx context.Context, q *gorm.DB, segmentID int64, showUsers bool) (*GroupModelPrices, error) {
 	g := gp.group
 	out := &GroupModelPrices{Group: g.ref()}
 	if segmentID == 0 {
@@ -227,7 +226,7 @@ func (gp *groupPrices) scope(ctx context.Context, q store.Querier, segmentID int
 
 // fill adds a row for every model the group provides, priced for the segment
 // of out.
-func (gp *groupPrices) fill(ctx context.Context, q store.Querier, out *GroupModelPrices) error {
+func (gp *groupPrices) fill(ctx context.Context, q *gorm.DB, out *GroupModelPrices) error {
 	rules, err := loadRules(ctx, q, "group_id = ?", gp.group.ID)
 	if err != nil {
 		return err
@@ -289,14 +288,14 @@ func (s *Service) showGroupPrices(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	gp, err := loadGroupPrices(ctx, s.db.Pool, "g.id = ?", groupID)
+	gp, err := loadGroupPrices(ctx, s.db.Gorm, "g.id = ?", groupID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	out, err := gp.scope(ctx, s.db.Pool, segmentID, showUsers)
+	out, err := gp.scope(ctx, s.db.Gorm, segmentID, showUsers)
 	if err == nil {
-		err = gp.fill(ctx, s.db.Pool, out)
+		err = gp.fill(ctx, s.db.Gorm, out)
 	}
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -321,7 +320,7 @@ type ruleChange struct {
 
 // check validates the items of a PUT, all or none: an item that cannot be
 // saved is a field error on items.<index>. Removing a rule always can.
-func (gp *groupPrices) check(ctx context.Context, q store.Querier, items []rulePatch) ([]ruleChange, error) {
+func (gp *groupPrices) check(ctx context.Context, q *gorm.DB, items []rulePatch) ([]ruleChange, error) {
 	segmentIDs := []int64{}
 	for _, item := range items {
 		segmentIDs = append(segmentIDs, deref(item.SegmentID))
@@ -378,7 +377,7 @@ func (s *Service) saveGroupPrices(c *gin.Context) {
 		return
 	}
 	var out *GroupModelPrices
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		gp, err := loadGroupPrices(ctx, tx, "g.id = ?", groupID)
 		if err != nil {
 			return err
@@ -426,7 +425,7 @@ func segmentsOf(changes []ruleChange) []int64 {
 // are on, whatever order the request gave them in: two requests that change
 // the same rules then lock them in the same order, and neither waits for the
 // other in a circle.
-func applyChanges(ctx context.Context, tx pgx.Tx, changes []ruleChange, updatedBy int64) error {
+func applyChanges(ctx context.Context, tx *gorm.DB, changes []ruleChange, updatedBy int64) error {
 	slices.SortStableFunc(changes, func(a, b ruleChange) int {
 		return cmp.Or(cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
 	})

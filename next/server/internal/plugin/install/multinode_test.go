@@ -3,11 +3,13 @@ package install
 import (
 	"context"
 	"errors"
-	"github.com/Masterminds/semver/v3"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 	"testing"
 	"time"
+
+	"github.com/Masterminds/semver/v3"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 )
 
 type stoppedTestNodes struct {
@@ -25,7 +27,7 @@ func TestUninstallWaitsForDurableStopAndBlocksUpload(t *testing.T) {
 	if _, err := e.svc.Upload(ctx, data, e.admin, UploadOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO plugin_runtime_nodes(plugin_key,boot_id) VALUES('guard','lost-boot')`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO plugin_runtime_nodes(plugin_key,boot_id) VALUES('guard','lost-boot')`); err != nil {
 		t.Fatal(err)
 	}
 	wait, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -42,7 +44,7 @@ func TestUninstallWaitsForDurableStopAndBlocksUpload(t *testing.T) {
 		default:
 		}
 		var pending bool
-		if err := e.db.Pool.QueryRow(wait, `SELECT EXISTS(SELECT 1 FROM plugin_uninstalls WHERE plugin_key='guard')`).Scan(&pending); err != nil {
+		if err := e.db.SQL.QueryRowContext(wait, `SELECT EXISTS(SELECT 1 FROM plugin_uninstalls WHERE plugin_key='guard')`).Scan(&pending); err != nil {
 			t.Fatal(err)
 		}
 		if pending {
@@ -97,7 +99,7 @@ func TestUninstallWaitsForDurableStopAndBlocksUpload(t *testing.T) {
 		t.Fatal("confirmation unexpectedly purged plugin")
 	}
 	var audited int
-	if err = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='plugin.uninstall.confirm_stopped'
+	if err = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action='plugin.uninstall.confirm_stopped'
 		AND user_id=$1 AND detail->>'reason'=$2 AND detail->>'administrator_confirmed_physical_stop'='true'`, e.admin, in.Reason).Scan(&audited); err != nil || audited != 1 {
 		t.Fatal("missing or duplicate confirmation audit", audited, err)
 	}
@@ -120,13 +122,13 @@ func TestBuiltinReadinessRequiresLocalGeneration(t *testing.T) {
 	if _, err := e.svc.Upload(ctx, data, e.admin, UploadOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET builtin=true,status='enabled',active_version='0.1.0' WHERE key='guard'; UPDATE plugin_versions SET consent_status='approved' WHERE plugin_key='guard'`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugins SET builtin=true,status='enabled',active_version='0.1.0' WHERE key='guard'; UPDATE plugin_versions SET consent_status='approved' WHERE plugin_key='guard'`); err != nil {
 		t.Fatal(err)
 	}
 	if ready, err := e.svc.BuiltinsReady(ctx, want, nil); ready || err != nil {
 		t.Fatal(ready, err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET status='disabled' WHERE key='guard'`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugins SET status='disabled' WHERE key='guard'`); err != nil {
 		t.Fatal(err)
 	}
 	if ready, err := e.svc.BuiltinsReady(ctx, want, nil); !ready || err != nil {

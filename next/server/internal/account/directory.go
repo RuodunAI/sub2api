@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
@@ -74,7 +73,7 @@ func (s *Service) GroupHasType(ctx context.Context, groupID int64, types []core.
 		plugins[i], kinds[i] = t.PluginKey, t.Type
 	}
 	var ok bool
-	err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT EXISTS(SELECT 1 FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
+	err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT EXISTS(SELECT 1 FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
 		JOIN unnest(?::text[], ?::text[]) AS t(plugin_key, type) ON t.plugin_key = a.plugin_key AND t.type = a.type
 		WHERE ag.group_id = ? AND a.deleted_at IS NULL)`, store.Strings(plugins), store.Strings(kinds), groupID).Row().Scan(&ok)
 	return ok, err
@@ -85,7 +84,7 @@ func (s *Service) GroupHasType(ctx context.Context, groupID int64, types []core.
 // what the group holds (CONTRACTS §24.6).
 func (s *Service) Unschedulable(ctx context.Context, groupID int64) ([]core.UnschedulableAccount, error) {
 	var all []groupMember
-	if err := store.G(ctx, s.d.DB.Pool).Table("accounts a").Select("a.id, a.status, a.schedulable, a.auto_disabled_until").
+	if err := store.G(ctx, s.d.DB.Gorm).Table("accounts a").Select("a.id, a.status, a.schedulable, a.auto_disabled_until").
 		Joins("JOIN account_groups ag ON ag.account_id = a.id").Where("ag.group_id = ? AND a.deleted_at IS NULL", groupID).
 		Order("a.id").Limit(200).Scan(&all).Error; err != nil {
 		return nil, err
@@ -151,7 +150,7 @@ func (s *Service) groupSnapshot(ctx context.Context, groupID int64) (groupSnap, 
 	}
 	v, err, _ := s.sf.Do("g:"+itoa(groupID), func() (any, error) {
 		// A miss of the snapshot cache runs this read on a gateway request.
-		snap, err := readGroupSnap(store.G(ctx, s.d.DB.Pool), groupID, now)
+		snap, err := readGroupSnap(store.G(ctx, s.d.DB.Gorm), groupID, now)
 		if err != nil {
 			return nil, err
 		}
@@ -260,7 +259,7 @@ func (s *Service) Load(ctx context.Context, id int64) (*core.Account, error) {
 // its cache runs it on a gateway request, so it is Raw SQL scanned through
 // Row, the GORM form that allocates least (BenchmarkHotLoadRow).
 func (s *Service) loadLive(ctx context.Context, id int64) (*row, error) {
-	a, err := scanRow(liveRowQuery(store.G(ctx, s.d.DB.Pool), id).Row())
+	a, err := scanRow(liveRowQuery(store.G(ctx, s.d.DB.Gorm), id).Row())
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
@@ -308,13 +307,13 @@ func (s *Service) SetCooldown(ctx context.Context, id int64, until time.Time, re
 		return nil
 	}
 	var a model.Account
-	if err := store.G(ctx, s.d.DB.Pool).Select("plugin_key, type, name").Where("id = ?", id).Take(&a).Error; err != nil {
+	if err := store.G(ctx, s.d.DB.Gorm).Select("plugin_key, type, name").Where("id = ?", id).Take(&a).Error; err != nil {
 		if store.IsNoRows(err) {
 			return nil
 		}
 		return err
 	}
-	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	return s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountStatusChanged,
 			Payload: statusPayload(id, a.PluginKey, a.Type, a.Name, "cooldown", reason, &until)})
 	})
@@ -380,7 +379,7 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		ids = append(ids, id)
 		ts = append(ts, at)
 	}
-	err := flushLastUsed(store.G(ctx, s.d.DB.Pool), ids, ts).Error
+	err := flushLastUsed(store.G(ctx, s.d.DB.Gorm), ids, ts).Error
 	if err != nil {
 		s.touchMu.Lock()
 		for id, at := range pending {

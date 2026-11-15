@@ -75,7 +75,7 @@ func quotaWindows(raw []byte) (map[string]QuotaWindow, error) {
 
 // AccountQuota returns the snapshot of one account, nil when it has none.
 func (d *DB) AccountQuota(ctx context.Context, accountID int64) (*QuotaSnapshot, error) {
-	q, err := scanQuota(G(ctx, d.Pool).Raw(selectQuota+` WHERE account_id = ?`, accountID).Row())
+	q, err := scanQuota(G(ctx, d.Gorm).Raw(selectQuota+` WHERE account_id = ?`, accountID).Row())
 	if IsNoRows(err) {
 		return nil, nil
 	}
@@ -89,7 +89,7 @@ func (d *DB) AccountQuotas(ctx context.Context, accountIDs []int64) (map[int64]*
 	if len(accountIDs) == 0 {
 		return out, nil
 	}
-	err := EachRow(G(ctx, d.Pool).Raw(selectQuota+` WHERE account_id = ANY(?)`, Int64s(accountIDs)), func(rows *sql.Rows) error {
+	err := EachRow(G(ctx, d.Gorm).Raw(selectQuota+` WHERE account_id = ANY(?)`, Int64s(accountIDs)), func(rows *sql.Rows) error {
 		q, err := scanQuota(rows)
 		if err == nil {
 			out[q.AccountID] = q
@@ -107,7 +107,7 @@ func (d *DB) AccountQuotas(ctx context.Context, accountIDs []int64) (map[int64]*
 // result reflects at least every write committed before it. Caches order
 // their entries by it (CONTRACTS §51.3).
 func (d *DB) AccountQuotasAt(ctx context.Context, accountIDs []int64) (map[int64]*QuotaSnapshot, time.Time, error) {
-	read, err := readQuotaRows(quotasAt(G(ctx, d.Pool), accountIDs), false)
+	read, err := readQuotaRows(quotasAt(G(ctx, d.Gorm), accountIDs), false)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -150,13 +150,13 @@ const selectQuotaRead = `statement_timestamp(), q.account_id, q.windows, COALESC
 // each applied observation, so the rows of the Raw statement (quotasAt) are
 // scanned directly (BenchmarkHotReadAccountQuotas).
 func (d *DB) ReadAccountQuotas(ctx context.Context, accountIDs []int64) (*QuotaRead, error) {
-	return readQuotaRows(quotasAt(G(ctx, d.Pool), accountIDs), false)
+	return readQuotaRows(quotasAt(G(ctx, d.Gorm), accountIDs), false)
 }
 
 // ReadAccountQuotasOfTypes reads the snapshot rows of every account not
 // deleted whose "plugin_key/type" is in keys; Accounts lists them all.
 func (d *DB) ReadAccountQuotasOfTypes(ctx context.Context, keys []string) (*QuotaRead, error) {
-	return readQuotaRows(G(ctx, d.Pool).Raw(`SELECT a.id, `+selectQuotaRead+`
+	return readQuotaRows(G(ctx, d.Gorm).Raw(`SELECT a.id, `+selectQuotaRead+`
 		FROM (SELECT statement_timestamp()) t LEFT JOIN (accounts a LEFT JOIN account_quota_snapshots q ON q.account_id = a.id)
 			ON a.deleted_at IS NULL AND a.plugin_key||'/'||a.type = ANY(?)`, Strings(keys)), true)
 }
@@ -221,7 +221,7 @@ func (d *DB) SaveAccountQuota(ctx context.Context, accountID int64, source strin
 	if err != nil {
 		return err
 	}
-	return saveAccountQuota(G(ctx, d.Pool), accountID, source, string(raw), nextAt).Error
+	return saveAccountQuota(G(ctx, d.Gorm), accountID, source, string(raw), nextAt).Error
 }
 
 func saveAccountQuota(db *gorm.DB, accountID int64, source, windows string, nextAt *time.Time) *gorm.DB {
@@ -249,7 +249,7 @@ func (d *DB) ApplyAccountQuotaObservation(ctx context.Context, accountID, expect
 	if err != nil {
 		return false, err
 	}
-	res := applyQuotaObservation(G(ctx, d.Pool), accountID, expectedGeneration, pluginKey, accountType, pluginVersion, string(raw), next)
+	res := applyQuotaObservation(G(ctx, d.Gorm), accountID, expectedGeneration, pluginKey, accountType, pluginVersion, string(raw), next)
 	return res.Error == nil && res.RowsAffected == 1, res.Error
 }
 
@@ -274,7 +274,7 @@ func applyQuotaObservation(db *gorm.DB, accountID, expectedGeneration int64, plu
 // attempt (on any node) did so less than floor ago. The row is created when
 // missing.
 func (d *DB) ClaimAccountQuotaQuery(ctx context.Context, accountID int64, floor time.Duration) (bool, error) {
-	res := claimAccountQuotaQuery(G(ctx, d.Pool), accountID, floor.Seconds())
+	res := claimAccountQuotaQuery(G(ctx, d.Gorm), accountID, floor.Seconds())
 	if res.Error != nil {
 		return false, res.Error
 	}
@@ -293,7 +293,7 @@ func claimAccountQuotaQuery(db *gorm.DB, accountID int64, floor float64) *gorm.D
 // SetAccountQuotaError records the failure of an active query; the windows
 // and updated_at are left as they were.
 func (d *DB) SetAccountQuotaError(ctx context.Context, accountID int64, msg string) error {
-	return setAccountQuotaError(G(ctx, d.Pool), accountID, msg).Error
+	return setAccountQuotaError(G(ctx, d.Gorm), accountID, msg).Error
 }
 
 func setAccountQuotaError(db *gorm.DB, accountID int64, msg string) *gorm.DB {
@@ -311,7 +311,7 @@ type QuotaClaim struct {
 // revision (a new one starts a new generation) and auto_refresh. It reports
 // whether a row was written (inserted, or updated with a new revision): the
 // caller announces the change so quota mirrors read it again.
-func EnsureAccountQuota(ctx context.Context, q Querier, id int64, pluginRevision string, automatic bool) (bool, error) {
+func EnsureAccountQuota(ctx context.Context, q *gorm.DB, id int64, pluginRevision string, automatic bool) (bool, error) {
 	res := ensureAccountQuota(G(ctx, q), id, pluginRevision, automatic)
 	if res.Error != nil {
 		return false, res.Error
@@ -331,7 +331,7 @@ func ensureAccountQuota(db *gorm.DB, id int64, rev string, auto bool) *gorm.DB {
 		rev, auto, auto, id, rev, auto, rev, rev, auto, rev, rev, auto)
 }
 
-func ResetAccountQuota(ctx context.Context, q Querier, id int64) error {
+func ResetAccountQuota(ctx context.Context, q *gorm.DB, id int64) error {
 	return resetAccountQuota(G(ctx, q), id).Error
 }
 
@@ -343,7 +343,7 @@ func resetAccountQuota(db *gorm.DB, id int64) *gorm.DB {
 
 func (d *DB) LeaseAccountQuota(ctx context.Context, id int64, pluginRevision string, floor, lease time.Duration, force bool) (*QuotaClaim, error) {
 	var c QuotaClaim
-	err := leaseAccountQuota(G(ctx, d.Pool), id, pluginRevision, floor.Seconds(), lease.Seconds(), force).Row().
+	err := leaseAccountQuota(G(ctx, d.Gorm), id, pluginRevision, floor.Seconds(), lease.Seconds(), force).Row().
 		Scan(&c.AccountID, &c.Generation, &c.Token, &c.Revision, &c.Failures, &c.PluginRevision, &c.Initial)
 	if IsNoRows(err) {
 		return nil, nil
@@ -367,7 +367,7 @@ func leaseAccountQuota(db *gorm.DB, id int64, rev string, floor, lease float64, 
 
 func (d *DB) AccountQuotaClaimValid(ctx context.Context, c *QuotaClaim) (bool, error) {
 	var ok bool
-	err := G(ctx, d.Pool).Raw(`SELECT EXISTS(SELECT 1 FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
+	err := G(ctx, d.Gorm).Raw(`SELECT EXISTS(SELECT 1 FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
 		WHERE q.account_id=? AND q.generation=? AND q.lease_token=? AND q.lease_until>clock_timestamp()
 		AND a.deleted_at IS NULL
 		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`, c.AccountID, c.Generation, c.Token).Row().Scan(&ok)
@@ -375,7 +375,7 @@ func (d *DB) AccountQuotaClaimValid(ctx context.Context, c *QuotaClaim) (bool, e
 }
 
 func (d *DB) ReleaseAccountQuotaQuery(ctx context.Context, c *QuotaClaim, next time.Time) (bool, error) {
-	res := releaseAccountQuota(G(ctx, d.Pool), c, next)
+	res := releaseAccountQuota(G(ctx, d.Gorm), c, next)
 	return res.Error == nil && res.RowsAffected == 1, res.Error
 }
 
@@ -396,7 +396,7 @@ func (d *DB) CompleteAccountQuota(ctx context.Context, c *QuotaClaim, windows ma
 	if err != nil {
 		return false, err
 	}
-	res := completeAccountQuota(G(ctx, d.Pool), c, string(raw), msg, next)
+	res := completeAccountQuota(G(ctx, d.Gorm), c, string(raw), msg, next)
 	return res.Error == nil && res.RowsAffected == 1, res.Error
 }
 

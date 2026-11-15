@@ -102,7 +102,7 @@ func (s *Service) test(c *gin.Context) {
 			return
 		}
 	}
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountTest), false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountTest), false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -192,7 +192,7 @@ func (s *Service) recordTest(ctx context.Context, id int64, res TestResult) {
 	}
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTestTimeout)
 	defer cancel()
-	if err := writeLastTest(store.G(wctx, s.d.DB.Pool), id, res, msg).Error; err != nil {
+	if err := writeLastTest(store.G(wctx, s.d.DB.Gorm), id, res, msg).Error; err != nil {
 		slog.WarnContext(ctx, "account: record last test", "account_id", id, "err", err)
 	}
 }

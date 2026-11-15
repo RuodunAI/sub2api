@@ -3,10 +3,10 @@ package providerresources
 import (
 	"context"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -34,7 +34,7 @@ func readSkillVersion(db *gorm.DB, parent core.ProviderResource, cond string, ar
 	err := skillVersions(db).Where(cond, args...).Take(&row).Error
 	return skillVersion(parent, row), err
 }
-func skillParent(ctx context.Context, q store.Querier, owner core.ResourceOwner, id string, ready bool) (core.ProviderResource, error) {
+func skillParent(ctx context.Context, q *gorm.DB, owner core.ResourceOwner, id string, ready bool) (core.ProviderResource, error) {
 	r, _, err := read(store.G(ctx, q), `user_id=? AND group_id=? AND public_id=?`, owner.UserID, owner.GroupID, id)
 	if store.IsNoRows(err) {
 		return r, core.ErrNotFound
@@ -60,70 +60,69 @@ func (s *Service) findSkillVersion(ctx context.Context, owner core.ResourceOwner
 	if !validOwner(owner) || !bounded(parentID) || !bounded(selector) {
 		return core.SkillVersion{}, core.ErrInvalidArgument
 	}
-	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return core.SkillVersion{}, err
-	}
-	defer tx.Rollback(ctx)
-	parent, err := skillParent(ctx, tx, owner, parentID, true)
-	if err != nil {
-		return core.SkillVersion{}, err
-	}
-	g := store.G(ctx, tx)
 	var v core.SkillVersion
-	if providerSelector {
-		v, err = readSkillVersion(g, parent, `parent_id=? AND state='ready' AND (remote_id=? OR legacy_epoch=?)`, parentID, selector, selector)
-	} else if selector == "latest" {
-		v, err = readSkillVersion(g.Order(newestFirst), parent, `parent_id=? AND state='ready'`, parentID)
-	} else {
-		v, err = readSkillVersion(g, parent, `parent_id=? AND state='ready' AND (public_id=? OR legacy_epoch=?)`, parentID, selector, selector)
+	err := s.db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+		parent, err := skillParent(ctx, tx, owner, parentID, true)
+		if err != nil {
+			return err
+		}
+		g := store.G(ctx, tx)
+		if providerSelector {
+			v, err = readSkillVersion(g, parent, `parent_id=? AND state='ready' AND (remote_id=? OR legacy_epoch=?)`, parentID, selector, selector)
+		} else if selector == "latest" {
+			v, err = readSkillVersion(g.Order(newestFirst), parent, `parent_id=? AND state='ready'`, parentID)
+		} else {
+			v, err = readSkillVersion(g, parent, `parent_id=? AND state='ready' AND (public_id=? OR legacy_epoch=?)`, parentID, selector, selector)
+		}
+		if store.IsNoRows(err) {
+			err = core.ErrNotFound
+		}
+		return err
+	})
+	if err != nil {
+		return core.SkillVersion{}, err
 	}
-	if store.IsNoRows(err) {
-		err = core.ErrNotFound
-	}
-	if err == nil {
-		err = tx.Commit(ctx)
-	}
-	return v, err
+	return v, nil
 }
 func (s *Service) ListSkillVersions(ctx context.Context, owner core.ResourceOwner, parentID, after string, limit int) (out core.SkillVersionPage, err error) {
 	if limit < 1 || limit > 1000 || !validOwner(owner) || !bounded(parentID) || (after != "" && !bounded(after)) {
 		return out, core.ErrInvalidArgument
 	}
-	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return out, err
-	}
-	defer tx.Rollback(ctx)
-	p, err := skillParent(ctx, tx, owner, parentID, true)
-	if err != nil {
-		return out, err
-	}
-	g := store.G(ctx, tx)
-	var before *core.SkillVersion
-	if after != "" {
-		v, e := readSkillVersion(g, p, `parent_id=? AND public_id=? AND state='ready'`, parentID, after)
-		if store.IsNoRows(e) {
-			return out, core.ErrNotFound
+	err = s.db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+		p, err := skillParent(ctx, tx, owner, parentID, true)
+		if err != nil {
+			return err
 		}
-		if e != nil {
-			return out, e
+		g := store.G(ctx, tx)
+		var before *core.SkillVersion
+		if after != "" {
+			v, e := readSkillVersion(g, p, `parent_id=? AND public_id=? AND state='ready'`, parentID, after)
+			if store.IsNoRows(e) {
+				return core.ErrNotFound
+			}
+			if e != nil {
+				return e
+			}
+			before = &v
 		}
-		before = &v
-	}
-	var rows []model.ProviderSkillVersion
-	if err = readyVersions(g, parentID, before, limit+1).Find(&rows).Error; err != nil {
-		return out, err
-	}
-	out.Items = make([]core.SkillVersion, len(rows))
-	for i, row := range rows {
-		out.Items[i] = skillVersion(p, row)
+		var rows []model.ProviderSkillVersion
+		if err := readyVersions(g, parentID, before, limit+1).Find(&rows).Error; err != nil {
+			return err
+		}
+		out.Items = make([]core.SkillVersion, len(rows))
+		for i, row := range rows {
+			out.Items[i] = skillVersion(p, row)
+		}
+		return nil
+	})
+	if err != nil {
+		return core.SkillVersionPage{}, err
 	}
 	out.HasMore = len(out.Items) > limit
 	if out.HasMore {
 		out.Items = out.Items[:limit]
 	}
-	return out, tx.Commit(ctx)
+	return out, nil
 }
 
 // newestFirst orders skill versions newest first, public IDs breaking ties.

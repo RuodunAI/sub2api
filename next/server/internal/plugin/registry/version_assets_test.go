@@ -2,13 +2,14 @@ package registry_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
 	pluginpkg "github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"os"
-	"path/filepath"
-	"testing"
 )
 
 func TestVersionAssetsReadApprovedPackageWithoutLocalProcess(t *testing.T) {
@@ -27,7 +28,7 @@ func TestVersionAssetsReadApprovedPackageWithoutLocalProcess(t *testing.T) {
 	if err := os.Remove(filepath.Join(packages.DataDir(), "assets", vh, "package.s2plugin")); err != nil {
 		t.Fatalf("version asset read retained a package handle: %v", err)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE plugin_versions SET consent_status='awaiting' WHERE plugin_key='assets'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE plugin_versions SET consent_status='awaiting' WHERE plugin_key='assets'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := packages.ReadVersionAsset(ctx, "assets", vh, "ui/main.js"); err == nil {

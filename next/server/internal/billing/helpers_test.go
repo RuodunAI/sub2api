@@ -112,7 +112,7 @@ func newEnvAs(t *testing.T, authz core.Authorizer) *env {
 
 func (e *env) exec(sql string, args ...any) {
 	e.t.Helper()
-	if _, err := e.db.Pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := e.db.SQL.ExecContext(context.Background(), sql, args...); err != nil {
 		e.t.Fatalf("%s: %v", sql, err)
 	}
 }
@@ -120,7 +120,7 @@ func (e *env) exec(sql string, args ...any) {
 func (e *env) user(email string) int64 {
 	e.t.Helper()
 	var id int64
-	err := e.db.Pool.QueryRow(context.Background(),
+	err := e.db.SQL.QueryRowContext(context.Background(),
 		`INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id)
 	if err != nil {
 		e.t.Fatal(err)

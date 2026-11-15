@@ -14,6 +14,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rollout"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // TestRealRuntimeSingleNode drives the controller with real plugin processes.
@@ -38,7 +39,7 @@ func TestRealRuntimeSingleNode(t *testing.T) {
 	reg := registry.New()
 	ctl, err := rollout.New(rollout.Options{DB: h.db, Node: nd, Bus: registrytest.Bus{RDB: h.rdb}, Packages: pkgs,
 		Registry: reg, Runtime: rollout.FromGRPC(grt),
-		Schemas:           dbschema.New(h.db, h.db.Pool.Config().ConnString(), mk, false),
+		Schemas:           dbschema.New(h.db, testutil.DSN(h.db), mk, false),
 		ReconcileInterval: 200 * time.Millisecond, LeaseTTL: 8 * time.Second, LeaseRenew: time.Second,
 		CoordinatorTick: 100 * time.Millisecond, DrainTimeout: 2 * time.Second})
 	if err != nil {
@@ -93,7 +94,7 @@ func TestRealRuntimeSingleNode(t *testing.T) {
 	})
 
 	// Resource limits apply at once: a new process replaces the instance.
-	if _, err := h.db.Pool.Exec(ctx, `UPDATE plugins SET resource_limits = '{"memory_mb": 300}' WHERE key = $1`, h.key); err != nil {
+	if _, err := h.db.SQL.ExecContext(ctx, `UPDATE plugins SET resource_limits = '{"memory_mb": 300}' WHERE key = $1`, h.key); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(rollout.Message{Type: rollout.MessageResources, PluginKey: h.key})

@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -63,7 +63,7 @@ func (s SchedulingSettings) normalized() SchedulingSettings {
 	return s
 }
 
-func loadSchedulingSettings(ctx context.Context, q store.Querier) (SchedulingSettings, error) {
+func loadSchedulingSettings(ctx context.Context, q *gorm.DB) (SchedulingSettings, error) {
 	v := defaultSchedulingSettings()
 	err := loadSettingsRow(ctx, q, settingsKeyScheduling, &v)
 	return v.normalized(), err
@@ -89,7 +89,7 @@ func (g *Gateway) getSchedulingHandler(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	v, err := loadSchedulingSettings(c.Request.Context(), db.Pool)
+	v, err := loadSchedulingSettings(c.Request.Context(), db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -117,7 +117,7 @@ func (g *Gateway) putSchedulingHandler(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyScheduling, nullID(uid), func(json.RawMessage) (json.RawMessage, error) {
 			return json.Marshal(in)
 		})

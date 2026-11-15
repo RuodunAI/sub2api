@@ -24,7 +24,7 @@ func owned(o core.ResourceOwner) func(*gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB { return db.Where("user_id = ? AND group_id = ?", o.UserID, o.GroupID) }
 }
 
-func readAttempt(ctx context.Context, q store.Querier, o core.ResourceOwner, id string) (attempt, error) {
+func readAttempt(ctx context.Context, q *gorm.DB, o core.ResourceOwner, id string) (attempt, error) {
 	var row model.ProviderHelperAttempt
 	if e := store.G(ctx, q).Scopes(owned(o)).Where("id = ?", id).Take(&row).Error; e != nil {
 		if store.IsNoRows(e) {
@@ -39,7 +39,7 @@ func readAttempt(ctx context.Context, q store.Querier, o core.ResourceOwner, id 
 		reservedBytes: row.ReservedBytes,
 	}, nil
 }
-func readRecord(ctx context.Context, q store.Querier, o core.ResourceOwner, id string) (core.HelperHistoryRecord, string, error) {
+func readRecord(ctx context.Context, q *gorm.DB, o core.ResourceOwner, id string) (core.HelperHistoryRecord, string, error) {
 	var row model.ProviderHelperRecord
 	if e := store.G(ctx, q).Scopes(owned(o)).Where("receipt = ?", id).Take(&row).Error; e != nil {
 		if store.IsNoRows(e) {
@@ -75,7 +75,7 @@ func prefixRows(db *gorm.DB, o core.ResourceOwner, namespace, prefix string, dst
 		Order("created_at, receipt").Scan(dst)
 }
 
-func prefixRecord(ctx context.Context, q store.Querier, o core.ResourceOwner, namespace, prefix string, now time.Time) (string, error) {
+func prefixRecord(ctx context.Context, q *gorm.DB, o core.ResourceOwner, namespace, prefix string, now time.Time) (string, error) {
 	var rows []prefixRow
 	if e := prefixRows(store.G(ctx, q), o, namespace, prefix, &rows).Error; e != nil {
 		return "", e

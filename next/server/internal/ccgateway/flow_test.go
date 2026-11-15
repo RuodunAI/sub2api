@@ -80,7 +80,7 @@ func (a fixtureAccess) AccountsInScope(ctx context.Context, uid int64, action st
 	case scope.All:
 		return true, nil, nil
 	}
-	rows, err := a.db.Pool.Query(ctx, `SELECT a.id FROM accounts a WHERE a.id = ANY($1) AND a.deleted_at IS NULL AND `+core.AccountRows.SQL(2),
+	rows, err := a.db.SQL.QueryContext(ctx, `SELECT a.id FROM accounts a WHERE a.id = ANY($1) AND a.deleted_at IS NULL AND `+core.AccountRows.SQL(2),
 		append([]any{ids}, core.AccountRows.Args(scope)...)...)
 	if err != nil {
 		return false, nil, err
@@ -116,7 +116,7 @@ func (f *runtimeFixture) runtimes(on bool) {
 	cfg, _ := json.Marshal(Config{Mode: "local", AccountRuntimes: on, AdminKey: "controller-secret", RequestPolicy: &RequestPolicy{SchemaVersion: 1, UnknownField: "reject", CLIVersion: "2.1.302"}})
 	encrypted, _ := f.cipher.Encrypt(cfg, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, e := f.db.Pool.Exec(context.Background(), `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
+	if _, e := f.db.SQL.ExecContext(context.Background(), `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
 		f.t.Fatal(e)
 	}
 }
@@ -124,7 +124,7 @@ func (f *runtimeFixture) runtimes(on bool) {
 func (f *runtimeFixture) proxy(createdBy *int64) int64 {
 	f.t.Helper()
 	var id int64
-	if e := f.db.Pool.QueryRow(context.Background(), `INSERT INTO proxies(name,protocol,host,port,created_by) VALUES('p'||clock_timestamp(),'http','proxy.example',3128,$1) RETURNING id`, createdBy).Scan(&id); e != nil {
+	if e := f.db.SQL.QueryRowContext(context.Background(), `INSERT INTO proxies(name,protocol,host,port,created_by) VALUES('p'||clock_timestamp(),'http','proxy.example',3128,$1) RETURNING id`, createdBy).Scan(&id); e != nil {
 		f.t.Fatal(e)
 	}
 	return id
@@ -139,7 +139,7 @@ func (f *runtimeFixture) account(withProxy bool) int64 {
 		pid = &id
 	}
 	var id int64
-	if e := f.db.Pool.QueryRow(context.Background(), `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('ccg','ccgateway','managed',''::bytea,$1) RETURNING id`, pid).Scan(&id); e != nil {
+	if e := f.db.SQL.QueryRowContext(context.Background(), `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('ccg','ccgateway','managed',''::bytea,$1) RETURNING id`, pid).Scan(&id); e != nil {
 		f.t.Fatal(e)
 	}
 	return id
@@ -148,7 +148,7 @@ func (f *runtimeFixture) account(withProxy bool) int64 {
 func (f *runtimeFixture) user(email string) int64 {
 	f.t.Helper()
 	var id int64
-	if err := f.db.Pool.QueryRow(context.Background(), `INSERT INTO users(email,password_hash) VALUES($1,'x') RETURNING id`, email).Scan(&id); err != nil {
+	if err := f.db.SQL.QueryRowContext(context.Background(), `INSERT INTO users(email,password_hash) VALUES($1,'x') RETURNING id`, email).Scan(&id); err != nil {
 		f.t.Fatal(err)
 	}
 	return id
@@ -526,7 +526,7 @@ func TestSessionComesFromTheContainer(t *testing.T) {
 		t.Fatalf("health: %d %v", code, out)
 	}
 	var subscription *string
-	if err := f.s.DB.Pool.QueryRow(t.Context(), `SELECT subscription_type FROM accounts WHERE id=$1`, id).Scan(&subscription); err != nil || subscription == nil || *subscription != "max" {
+	if err := f.s.DB.SQL.QueryRowContext(t.Context(), `SELECT subscription_type FROM accounts WHERE id=$1`, id).Scan(&subscription); err != nil || subscription == nil || *subscription != "max" {
 		t.Fatalf("recorded subscription %v %v", subscription, err)
 	}
 	// Every observation runs the hook; only the first changed the subscription.
@@ -634,7 +634,7 @@ func TestAccountRuntimeOwnership(t *testing.T) {
 	settings := f.user("settings@x")
 	f.auth.keys[settings] = []string{"settings:read", "settings:manage"}
 	mine, other := f.account(true), f.account(true)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE accounts SET created_by=$1 WHERE id=$2`, vendor, mine); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE accounts SET created_by=$1 WHERE id=$2`, vendor, mine); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []int64{mine, other} {

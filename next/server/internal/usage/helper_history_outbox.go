@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 // PersistUsage returns only after usage_logs and its billing-pending state have
@@ -33,7 +33,7 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 		return fmt.Errorf("durable usage record differs from frozen envelope")
 	}
 	known := false
-	before := func(tx pgx.Tx) error {
+	before := func(tx *gorm.DB) error {
 		known = false
 		g := store.G(ctx, tx)
 		if e := lockHelperUsage(g, rec.RequestID).Error; e != nil {
@@ -58,7 +58,7 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 		}
 		return nil
 	}
-	after := func(tx pgx.Tx, inserted map[string]int64) error {
+	after := func(tx *gorm.DB, inserted map[string]int64) error {
 		if known {
 			return nil
 		}

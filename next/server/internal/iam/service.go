@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -217,7 +216,7 @@ func (s *Service) isActiveWithVersion(ctx context.Context, uid int64, seen int) 
 	}
 	var active bool
 	var version int
-	err := userStatus(store.G(ctx, s.db.Pool), uid).Row().Scan(&active, &version)
+	err := userStatus(store.G(ctx, s.db.Gorm), uid).Row().Scan(&active, &version)
 	if store.IsNoRows(err) {
 		active, version, err = false, math.MaxInt, nil
 	}
@@ -269,7 +268,7 @@ func (s *Service) Bootstrap(ctx context.Context) error {
 	email, password := s.cfg.BootstrapAdminEmail, s.cfg.BootstrapAdminPassword
 	var created *User
 	var version int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if err := bootstrapLock(g).Error; err != nil {
 			return err

@@ -104,7 +104,7 @@ func (s *Service) evictQuotaCache(ctx context.Context, ids ...int64) {
 	if len(ids) == 0 || s.d.Redis == nil {
 		return
 	}
-	at, err := dbClock(ctx, s.d.DB.Pool)
+	at, err := dbClock(ctx, s.d.DB.Gorm)
 	if err != nil {
 		at = time.Now()
 	}

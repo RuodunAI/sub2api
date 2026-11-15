@@ -27,15 +27,15 @@ import (
 func hotFixture(b *testing.B) (*store.DB, *store.QuotaSnapshot) {
 	ctx := context.Background()
 	db := testutil.DB(b)
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('test','{"en":"Test"}','enabled','v1')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('test','{"en":"Test"}','enabled','v1')`); err != nil {
 		b.Fatal(err)
 	}
 	var id int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc)
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc)
 		VALUES ('bench', 'test', 'test_type', '\x00') RETURNING id`).Scan(&id); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := store.EnsureAccountQuota(ctx, db.Pool, id, "v1", true); err != nil {
+	if _, err := store.EnsureAccountQuota(ctx, db.Gorm, id, "v1", true); err != nil {
 		b.Fatal(err)
 	}
 	reset := time.Now().Add(time.Hour)
@@ -87,7 +87,7 @@ func BenchmarkHotQuotaObservation(b *testing.B) {
 			return err
 		}
 		var next *time.Time
-		_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots q SET windows=q.windows||$6::jsonb,
+		_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots q SET windows=q.windows||$6::jsonb,
 		source='passive',last_passive_at=clock_timestamp(),revision=q.revision+1,
 		next_check_at=CASE WHEN q.auto_refresh AND $7::timestamptz IS NOT NULL THEN LEAST(q.next_check_at,$7::timestamptz) ELSE q.next_check_at END
 		WHERE q.account_id=$1 AND q.generation=$2 AND EXISTS(
@@ -106,7 +106,7 @@ func BenchmarkHotReadAccountQuotas(b *testing.B) {
 	ctx := context.Background()
 	ids := []int64{q.AccountID}
 	benchPaths(b, func() error {
-		rows, err := db.Pool.Query(ctx, `SELECT NULL::bigint, statement_timestamp(), q.account_id, q.windows, COALESCE(q.source, ''), COALESCE(q.error, ''),
+		rows, err := db.SQL.QueryContext(ctx, `SELECT NULL::bigint, statement_timestamp(), q.account_id, q.windows, COALESCE(q.source, ''), COALESCE(q.error, ''),
 		q.updated_at, q.last_passive_at, q.last_active_at, COALESCE(q.revision,0), q.next_check_at, COALESCE(q.refresh_status,'pending'), COALESCE(q.generation,0)
 		FROM (SELECT statement_timestamp()) t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY($1)`, ids)
 		if err != nil {
@@ -131,7 +131,7 @@ func BenchmarkHotAccountBalances(b *testing.B) {
 	ctx := context.Background()
 	ids := []int64{q.AccountID}
 	benchPaths(b, func() error {
-		rows, err := db.Pool.Query(ctx, `SELECT account_id, amount_micros, currency, source, updated_at, error, error_at
+		rows, err := db.SQL.QueryContext(ctx, `SELECT account_id, amount_micros, currency, source, updated_at, error, error_at
 	FROM account_balances WHERE account_id = ANY($1)`, ids)
 		if err != nil {
 			return err

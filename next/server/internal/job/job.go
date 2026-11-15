@@ -181,7 +181,7 @@ func (b *Bridge) Start(ctx context.Context, tasks Tasks) error {
 		b.mu.Unlock()
 		return errors.New("job bridge needs the task service")
 	}
-	if err := store.G(ctx, b.db.Pool).Model(&model.PluginJobRun{}).
+	if err := store.G(ctx, b.db.Gorm).Model(&model.PluginJobRun{}).
 		Where("node_id = ? AND status = ?", b.nodeID, StatusRunning).
 		Updates(map[string]any{
 			"status": StatusFailed, "finished_at": gorm.Expr("now()"),
@@ -288,7 +288,7 @@ func pluginStateOf(p model.Plugin) pluginState {
 var pluginColumns = []string{"key", "status", "active_version"}
 
 // readPlugin reads one plugin's state; an unknown plugin is a no-rows error.
-func readPlugin(ctx context.Context, q store.Querier, key string) (pluginState, error) {
+func readPlugin(ctx context.Context, q *gorm.DB, key string) (pluginState, error) {
 	var p model.Plugin
 	err := store.G(ctx, q).Select(pluginColumns).Where("key = ?", key).Take(&p).Error
 	return pluginStateOf(p), err
@@ -404,7 +404,7 @@ func (b *Bridge) reconcile(ctx context.Context) error {
 
 func (b *Bridge) loadPlugins(ctx context.Context) (map[string]pluginState, error) {
 	var rows []model.Plugin
-	if err := store.G(ctx, b.db.Pool).Select(pluginColumns).Find(&rows).Error; err != nil {
+	if err := store.G(ctx, b.db.Gorm).Select(pluginColumns).Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("jobs: read plugins: %w", err)
 	}
 	out := make(map[string]pluginState, len(rows))
@@ -416,7 +416,7 @@ func (b *Bridge) loadPlugins(ctx context.Context) (map[string]pluginState, error
 
 func (b *Bridge) loadRows(ctx context.Context) ([]taskRow, error) {
 	var rows []model.ScheduledTask
-	if err := store.G(ctx, b.db.Pool).
+	if err := store.G(ctx, b.db.Gorm).
 		Select("name", "source", "plugin_key", "schedule", "timeout_ms", "max_attempts", "enabled", "args").
 		Where("source IN (?, ?) AND plugin_key IS NOT NULL", string(task.SourcePluginManifest), string(task.SourcePluginRuntime)).
 		Order("name").Find(&rows).Error; err != nil {
@@ -431,7 +431,7 @@ func (b *Bridge) loadRows(ctx context.Context) ([]taskRow, error) {
 }
 
 // deleteTaskRow removes the scheduled_tasks row of name if it has source.
-func deleteTaskRow(ctx context.Context, q store.Querier, name string, source task.Source) error {
+func deleteTaskRow(ctx context.Context, q *gorm.DB, name string, source task.Source) error {
 	return store.G(ctx, q).Where("name = ? AND source = ?", name, string(source)).Delete(&model.ScheduledTask{}).Error
 }
 
@@ -464,7 +464,7 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 		}
 	}
 	var rows []model.ScheduledTask
-	if err := store.G(ctx, b.db.Pool).Select("name", "plugin_key", "schedule", "timeout_ms", "max_attempts").
+	if err := store.G(ctx, b.db.Gorm).Select("name", "plugin_key", "schedule", "timeout_ms", "max_attempts").
 		Where("source = ?", string(task.SourcePluginManifest)).Find(&rows).Error; err != nil {
 		return false, fmt.Errorf("jobs: read plugin job rows: %w", err)
 	}
@@ -489,7 +489,7 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 	}
 	// The runtime tasks of an uninstalled plugin go with it; a disabled one
 	// keeps them for when it is enabled again.
-	res := store.G(ctx, b.db.Pool).Where("source = ? AND NOT (plugin_key = ANY(?))", string(task.SourcePluginRuntime), store.Strings(keys)).
+	res := store.G(ctx, b.db.Gorm).Where("source = ? AND NOT (plugin_key = ANY(?))", string(task.SourcePluginRuntime), store.Strings(keys)).
 		Delete(&model.ScheduledTask{})
 	if res.Error != nil {
 		return false, fmt.Errorf("jobs: remove the runtime tasks of uninstalled plugins: %w", res.Error)
@@ -500,7 +500,7 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 		if plugins[r.key].serving() && (!own[r.key] || wanted) {
 			continue
 		}
-		if err := deleteTaskRow(ctx, b.db.Pool, name, task.SourcePluginManifest); err != nil {
+		if err := deleteTaskRow(ctx, b.db.Gorm, name, task.SourcePluginManifest); err != nil {
 			return changed, fmt.Errorf("jobs: remove plugin job row %s: %w", name, err)
 		}
 		changed = true
@@ -509,7 +509,7 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 		if r, ok := have[name]; ok && r.schedule == t.ScheduleText && r.timeoutMS == t.Timeout.Milliseconds() && r.attempts == t.Attempts() {
 			continue
 		}
-		res := upsertManifestTask(store.G(ctx, b.db.Pool), t, b.opts.Version)
+		res := upsertManifestTask(store.G(ctx, b.db.Gorm), t, b.opts.Version)
 		if res.Error != nil {
 			return changed, fmt.Errorf("jobs: record plugin job %s: %w", name, res.Error)
 		}
@@ -546,7 +546,7 @@ func (b *Bridge) manifestFor(ctx context.Context, gen core.Generation, key, vers
 	if m, ok := b.manifests[ck]; ok {
 		return m
 	}
-	m, err := install.LoadManifest(ctx, b.db.Pool, key, version)
+	m, err := install.LoadManifest(ctx, b.db.Gorm, key, version)
 	if err != nil {
 		b.log.Debug("jobs: load plugin manifest", "plugin", key, "version", version, "err", err)
 		return nil
@@ -807,7 +807,7 @@ func (b *Bridge) notHere(ctx context.Context, key string, scope core.TaskScope, 
 	if scope == core.TaskNode {
 		return core.TaskSkipped("the plugin is not running on this node")
 	}
-	p, err := readPlugin(ctx, b.db.Pool, key)
+	p, err := readPlugin(ctx, b.db.Gorm, key)
 	if store.IsNoRows(err) || (err == nil && !p.serving()) {
 		return core.TaskSkipped("the plugin is not enabled")
 	}
@@ -829,7 +829,7 @@ func (b *Bridge) insertRun(ctx context.Context, key, jobID string, scope core.Ta
 	// cannot carry (store stamps only created_at and updated_at).
 	// Row().Scan keeps the no-row answer of a taken slot (claimSlot).
 	var id int64
-	g := store.G(ctx, b.db.Pool)
+	g := store.G(ctx, b.db.Gorm)
 	if scope == core.TaskCluster && !run.Manual {
 		err := claimSlot(g, key, jobID, b.nodeID, scope, run.ScheduledAt).Row().Scan(&id)
 		if store.IsNoRows(err) || store.IsUniqueViolation(err, slotUniqueIndex) {
@@ -864,7 +864,7 @@ func (b *Bridge) finishRun(id int64, status, msg string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := store.G(ctx, b.db.Pool).Model(&model.PluginJobRun{}).Where("id = ?", id).
+	if err := store.G(ctx, b.db.Gorm).Model(&model.PluginJobRun{}).Where("id = ?", id).
 		Updates(map[string]any{"status": status, "message": msg, "finished_at": gorm.Expr("now()")}).Error; err != nil {
 		b.log.Warn("job run update failed", "run_id", id, "err", err)
 	}
@@ -930,7 +930,7 @@ func (b *Bridge) missing(ctx context.Context, pluginKey, jobID string) error {
 			return core.ErrNotFound.WithMessage("job not found")
 		}
 	}
-	_, err := readPlugin(ctx, b.db.Pool, pluginKey)
+	_, err := readPlugin(ctx, b.db.Gorm, pluginKey)
 	switch {
 	case store.IsNoRows(err):
 		return core.ErrNotFound.WithMessage("plugin not found")

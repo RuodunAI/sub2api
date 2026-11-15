@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -18,7 +17,7 @@ const MaxOpenDrafts = 3
 // open drafts: without it, concurrent requests each count the committed rows
 // only and all pass the limit together (READ COMMITTED). Take it right
 // before the counting insert.
-func LockOpenDrafts(ctx context.Context, tx pgx.Tx, userID int64) error {
+func LockOpenDrafts(ctx context.Context, tx *gorm.DB, userID int64) error {
 	return lockOpenDrafts(store.G(ctx, tx), userID).Error
 }
 

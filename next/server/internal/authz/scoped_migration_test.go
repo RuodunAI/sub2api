@@ -34,7 +34,7 @@ func reach(t *testing.T, db *store.DB, users []int64) map[string][]int64 {
 				table, from = core.ProxyRows, "proxies p WHERE "
 			}
 			var ids []int64
-			require.NoError(t, db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(`+table.ID+` ORDER BY `+table.ID+`), '{}') FROM `+from+table.SQL(1),
+			require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(`+table.ID+` ORDER BY `+table.ID+`), '{}') FROM `+from+table.SQL(1),
 				table.Args(set.DataScope(uid, a))...).Scan(&ids))
 			out[fmt.Sprintf("%s %s", name, a)] = ids
 		}
@@ -42,7 +42,7 @@ func reach(t *testing.T, db *store.DB, users []int64) map[string][]int64 {
 	for _, uid := range users {
 		collect(fmt.Sprintf("user%d", uid), ctx, uid)
 	}
-	rows, err := db.Pool.Query(ctx, `SELECT id, user_id, permissions FROM user_access_keys ORDER BY id`)
+	rows, err := db.SQL.QueryContext(ctx, `SELECT id, user_id, permissions FROM user_access_keys ORDER BY id`)
 	require.NoError(t, err)
 	type key struct {
 		id, uid int64
@@ -71,12 +71,12 @@ func TestRetiredOwnKeysReachTheSameRows(t *testing.T) {
 	ctx := context.Background()
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, sql, args...)
+		_, err := db.SQL.ExecContext(ctx, sql, args...)
 		require.NoError(t, err)
 	}
 	id := func(email string) (v int64) {
 		t.Helper()
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT id FROM users WHERE email = $1`, email).Scan(&v))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT id FROM users WHERE email = $1`, email).Scan(&v))
 		return v
 	}
 	exec(`
@@ -103,12 +103,12 @@ INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u JOIN ro
 		($3, 'none', 'h3', '0003', '{account:read}')`, seller, mixed, nobody)
 	created := func(table string, uid int64) (ids []int64) {
 		t.Helper()
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT array_agg(id ORDER BY id) FROM `+table+` WHERE created_by = $1`, uid).Scan(&ids))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT array_agg(id ORDER BY id) FROM `+table+` WHERE created_by = $1`, uid).Scan(&ids))
 		return ids
 	}
 	all := func(table string) (ids []int64) {
 		t.Helper()
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT array_agg(id ORDER BY id) FROM `+table).Scan(&ids))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT array_agg(id ORDER BY id) FROM `+table).Scan(&ids))
 		return ids
 	}
 

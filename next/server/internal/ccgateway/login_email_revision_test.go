@@ -23,7 +23,7 @@ func TestLoginEmailKeepsTheRuntimeRevision(t *testing.T) {
 	}
 	set := func(settings string) {
 		t.Helper()
-		if _, err := f.db.Pool.Exec(t.Context(), `UPDATE accounts SET settings=$2::jsonb WHERE id=$1`, id, settings); err != nil {
+		if _, err := f.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET settings=$2::jsonb WHERE id=$1`, id, settings); err != nil {
 			t.Fatal(err)
 		}
 	}

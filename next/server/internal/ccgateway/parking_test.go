@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
@@ -87,7 +88,7 @@ func newParkEnv(t *testing.T, hours *int) *parkEnv {
 	encrypted, _ := cipher.Encrypt(cfg, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); err != nil {
 		t.Fatal(err)
 	}
 	return &parkEnv{db: db, s: New(db, cipher), ctl: ctl, ctx: ctx}
@@ -109,13 +110,13 @@ func (e *parkEnv) account(t *testing.T, a parkAccount) (int64, string) {
 	t.Helper()
 	e.seen++
 	var id int64
-	if err := e.db.Pool.QueryRow(e.ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,status,schedulable,auto_disabled_until,deleted_at)
+	if err := e.db.SQL.QueryRowContext(e.ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,status,schedulable,auto_disabled_until,deleted_at)
 		VALUES($1,'ccgateway','managed',''::bytea,$2,$3,CASE WHEN $4 THEN now() + interval '1 hour' END, CASE WHEN $5 THEN now() END) RETURNING id`,
 		"acct-"+strconv.Itoa(e.seen), a.status, a.schedul, a.until, a.deleted).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	key := newDraftKey()
-	if _, err := e.db.Pool.Exec(e.ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,woken_at) VALUES($1,$2,now(),
+	if _, err := e.db.SQL.ExecContext(e.ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,woken_at) VALUES($1,$2,now(),
 		CASE WHEN $3::bigint > 0 THEN now() - make_interval(secs => $3::bigint) END)`, key, id, int64(a.wokenAgo.Seconds())); err != nil {
 		t.Fatal(err)
 	}
@@ -127,11 +128,11 @@ func (e *parkEnv) account(t *testing.T, a parkAccount) (int64, string) {
 // it otherwise).
 func (e *parkEnv) setChangedAgo(t *testing.T, id int64, ago time.Duration) {
 	t.Helper()
-	err := pgx.BeginFunc(e.ctx, e.db.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(e.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+	err := pgx.BeginFunc(e.ctx, e.db.Gorm, func(tx *gorm.DB) error {
+		if _, err := store.SQLTx(tx).ExecContext(e.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
 			return err
 		}
-		_, err := tx.Exec(e.ctx, `UPDATE accounts SET status_changed_at = now() - make_interval(secs => $2::bigint) WHERE id = $1`, id, int64(ago.Seconds()))
+		_, err := store.SQLTx(tx).ExecContext(e.ctx, `UPDATE accounts SET status_changed_at = now() - make_interval(secs => $2::bigint) WHERE id = $1`, id, int64(ago.Seconds()))
 		return err
 	})
 	if err != nil {
@@ -151,7 +152,7 @@ func (e *parkEnv) park(t *testing.T) core.TaskResult {
 func (e *parkEnv) parkedAt(t *testing.T, key string) *time.Time {
 	t.Helper()
 	var at *time.Time
-	if err := e.db.Pool.QueryRow(e.ctx, `SELECT parked_at FROM ccgateway_runtimes WHERE key = $1`, key).Scan(&at); err != nil {
+	if err := e.db.SQL.QueryRowContext(e.ctx, `SELECT parked_at FROM ccgateway_runtimes WHERE key = $1`, key).Scan(&at); err != nil {
 		t.Fatal(err)
 	}
 	return at
@@ -193,7 +194,7 @@ func TestParkRuntimesStopsRedAccountsDueOnly(t *testing.T) {
 		}
 	}
 	var audits int
-	if err := e.db.Pool.QueryRow(e.ctx, `SELECT count(*) FROM audit_logs WHERE action = $1`, actionRuntimeParked).Scan(&audits); err != nil || audits != want {
+	if err := e.db.SQL.QueryRowContext(e.ctx, `SELECT count(*) FROM audit_logs WHERE action = $1`, actionRuntimeParked).Scan(&audits); err != nil || audits != want {
 		t.Fatalf("audit rows %d (%v), want %d", audits, err, want)
 	}
 	// Parked runtimes are not claimed again.
@@ -236,7 +237,7 @@ func TestParkRuntimesClaimsEachOnceWhenRunTwice(t *testing.T) {
 	}
 	wg.Wait()
 	var audits int
-	_ = e.db.Pool.QueryRow(e.ctx, `SELECT count(*) FROM audit_logs WHERE action = $1`, actionRuntimeParked).Scan(&audits)
+	_ = e.db.SQL.QueryRowContext(e.ctx, `SELECT count(*) FROM audit_logs WHERE action = $1`, actionRuntimeParked).Scan(&audits)
 	if total != n || audits != n {
 		t.Fatalf("two runs parked %d runtimes with %d audit rows, want %d", total, audits, n)
 	}
@@ -270,7 +271,7 @@ func TestParkedRuntimeFollowsTheAccount(t *testing.T) {
 	}
 
 	// The account is enabled again: the mark no longer counts.
-	if _, err := e.db.Pool.Exec(e.ctx, `UPDATE accounts SET status = 'active' WHERE id = $1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(e.ctx, `UPDATE accounts SET status = 'active' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	e.s.Kick(key)
@@ -282,7 +283,7 @@ func TestParkedRuntimeFollowsTheAccount(t *testing.T) {
 		t.Fatalf("runtime not started after the account came back: %v", puts)
 	}
 	// Disabled again: the old mark does not stop it; the task clears it.
-	if _, err := e.db.Pool.Exec(e.ctx, `UPDATE accounts SET status = 'disabled' WHERE id = $1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(e.ctx, `UPDATE accounts SET status = 'disabled' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ := e.s.desired(e.ctx, id, false); d.Parked || !d.Enabled {
@@ -310,7 +311,7 @@ func TestWakeRuntime(t *testing.T) {
 		t.Fatalf("woken runtime not started: %v", puts)
 	}
 	var woken *time.Time
-	_ = e.db.Pool.QueryRow(e.ctx, `SELECT woken_at FROM ccgateway_runtimes WHERE key = $1`, key).Scan(&woken)
+	_ = e.db.SQL.QueryRowContext(e.ctx, `SELECT woken_at FROM ccgateway_runtimes WHERE key = $1`, key).Scan(&woken)
 	if woken == nil {
 		t.Fatal("woken_at not recorded")
 	}
@@ -323,7 +324,7 @@ func TestWakeRuntime(t *testing.T) {
 		t.Fatalf("waking a running runtime: %v %v", err, e.ctl.putsOf(key))
 	}
 	var audits int
-	_ = e.db.Pool.QueryRow(e.ctx, `SELECT count(*) FROM audit_logs WHERE action = $1`, actionRuntimeWoken).Scan(&audits)
+	_ = e.db.SQL.QueryRowContext(e.ctx, `SELECT count(*) FROM audit_logs WHERE action = $1`, actionRuntimeWoken).Scan(&audits)
 	if audits != 1 {
 		t.Fatalf("%d wake audit rows", audits)
 	}

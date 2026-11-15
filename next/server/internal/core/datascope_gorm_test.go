@@ -51,7 +51,7 @@ func TestScopeTableScopeMatchesFilter(t *testing.T) {
 	one := func(sql string, args ...any) int64 {
 		t.Helper()
 		var id int64
-		require.NoError(t, db.Pool.QueryRow(ctx, sql+" RETURNING id", args...).Scan(&id))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql+" RETURNING id", args...).Scan(&id))
 		return id
 	}
 	u1 := one(`INSERT INTO users (email, password_hash) VALUES ('u1@test', 'x')`)
@@ -68,7 +68,7 @@ func TestScopeTableScopeMatchesFilter(t *testing.T) {
 	account := func(by *int64, groups ...int64) int64 {
 		id := one(`INSERT INTO accounts (name, plugin_key, type, credentials_enc, created_by) VALUES ('a', 'p', 't', '\x00', $1)`, by)
 		for _, g := range groups {
-			_, err := db.Pool.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, id, g)
+			_, err := db.SQL.ExecContext(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, id, g)
 			require.NoError(t, err)
 		}
 		accounts = append(accounts, row{id, by, groups})
@@ -113,13 +113,13 @@ func TestScopeTableScopeMatchesFilter(t *testing.T) {
 		for _, tb := range tables {
 			var f store.Filter
 			f.And(tb.t.Cond(), tb.t.Args(s)...)
-			rows, err := db.Pool.Query(ctx, "SELECT "+tb.t.ID+" FROM "+tb.from+f.Cond()+" ORDER BY "+tb.t.ID, f.Args()...)
+			rows, err := db.SQL.QueryContext(ctx, "SELECT "+tb.t.ID+" FROM "+tb.from+f.Cond()+" ORDER BY "+tb.t.ID, f.Args()...)
 			require.NoError(t, err)
 			raw, err := pgx.CollectRows(rows, pgx.RowTo[int64])
 			require.NoError(t, err, name)
 
 			var viaGORM []int64
-			require.NoError(t, store.G(ctx, db.Pool).Table(tb.from).Scopes(tb.t.Scope(s)).Order(tb.t.ID).Pluck(tb.t.ID, &viaGORM).Error, name)
+			require.NoError(t, store.G(ctx, db.Gorm).Table(tb.from).Scopes(tb.t.Scope(s)).Order(tb.t.ID).Pluck(tb.t.ID, &viaGORM).Error, name)
 
 			var want []int64
 			for _, r := range tb.rows {

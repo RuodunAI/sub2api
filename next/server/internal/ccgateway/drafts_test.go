@@ -16,7 +16,7 @@ import (
 
 func (f *runtimeFixture) draftRow(key string) (exists bool, accountID *int64, proxyID *int64, lastSeen time.Time) {
 	f.t.Helper()
-	e := f.db.Pool.QueryRow(context.Background(), `SELECT account_id, proxy_id, last_seen_at FROM ccgateway_runtimes WHERE key=$1`, key).
+	e := f.db.SQL.QueryRowContext(context.Background(), `SELECT account_id, proxy_id, last_seen_at FROM ccgateway_runtimes WHERE key=$1`, key).
 		Scan(&accountID, &proxyID, &lastSeen)
 	return e == nil, accountID, proxyID, lastSeen
 }
@@ -72,7 +72,7 @@ func TestDraftLifecycle(t *testing.T) {
 		t.Fatalf("logout on a draft: %d", code)
 	}
 	// Every call touches last_seen_at.
-	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE ccgateway_runtimes SET last_seen_at = now() - interval '10 minutes' WHERE key=$1`, key); err != nil {
+	if _, err := f.db.SQL.ExecContext(context.Background(), `UPDATE ccgateway_runtimes SET last_seen_at = now() - interval '10 minutes' WHERE key=$1`, key); err != nil {
 		t.Fatal(err)
 	}
 	f.request(creator, "GET", base+"/status", "")
@@ -161,7 +161,7 @@ func TestDraftCreateValidatesTheProxy(t *testing.T) {
 	f.auth.keys[all] = []string{"account:create"}
 	mineProxy, otherProxy := f.proxy(&own), f.proxy(nil)
 	disabled := f.proxy(nil)
-	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE proxies SET status='disabled' WHERE id=$1`, disabled); err != nil {
+	if _, err := f.db.SQL.ExecContext(context.Background(), `UPDATE proxies SET status='disabled' WHERE id=$1`, disabled); err != nil {
 		t.Fatal(err)
 	}
 	body := func(id int64) string { return `{"proxy_id":` + strconv.FormatInt(id, 10) + `}` }
@@ -206,17 +206,17 @@ func TestAdoptedAccountUsesTheDraftKey(t *testing.T) {
 	ctx := context.Background()
 	id := f.account(true)
 	key := newDraftKey()
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, created_by) VALUES($1, $2, 1)`, key, f.proxy(nil)); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, created_by) VALUES($1, $2, 1)`, key, f.proxy(nil)); err != nil {
 		t.Fatal(err)
 	}
-	tx, err := f.db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, f.db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = AdoptDraft(ctx, tx, key, id, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err = tx.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 	keys, err := f.s.runtimeKeys(ctx)
@@ -257,8 +257,8 @@ func TestAdoptedAccountUsesTheDraftKey(t *testing.T) {
 		t.Fatalf("model request route: %v", ctl.seen(""))
 	}
 	// A second adoption of the same draft fails.
-	tx, _ = f.db.Pool.Begin(ctx)
-	defer tx.Rollback(ctx)
+	tx, _ = testutil.Begin(ctx, f.db)
+	defer tx.Rollback()
 	if err = AdoptDraft(ctx, tx, key, f.account(true), nil); err == nil {
 		t.Fatal("draft adopted twice")
 	}
@@ -286,7 +286,7 @@ func TestSweepRemovesAbandonedDrafts(t *testing.T) {
 		{fresh, "1 minute", "5 minutes", nil},
 		{adopted, "5 hours", "5 hours", &accountID},
 	} {
-		if _, err := f.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, account_id, last_seen_at, created_at)
+		if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, account_id, last_seen_at, created_at)
 			VALUES($1, $2, $3, now() - $4::interval, now() - $5::interval)`, row.key, pid, row.account, row.seenAgo, row.createdAg); err != nil {
 			t.Fatal(err)
 		}
@@ -330,7 +330,7 @@ func TestSweepRemovesAbandonedDrafts(t *testing.T) {
 	ctl.mu.Lock()
 	ctl.deleteCode = 500
 	ctl.mu.Unlock()
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE ccgateway_runtimes SET last_seen_at = now() - interval '1 hour' WHERE key=$1`, fresh); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE ccgateway_runtimes SET last_seen_at = now() - interval '1 hour' WHERE key=$1`, fresh); err != nil {
 		t.Fatal(err)
 	}
 	if n, err = f.s.SweepDrafts(ctx); err == nil || n != 0 {
@@ -359,7 +359,7 @@ func TestSweepStopsWhenTheDraftQueryFails(t *testing.T) {
 	ctl := newFakeController(t)
 	f := newRuntimeFixture(t, ctl.ServeHTTP)
 	ctx := context.Background()
-	if _, err := f.db.Pool.Exec(ctx, `ALTER TABLE ccgateway_runtimes RENAME TO ccgateway_runtimes_unreadable`); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `ALTER TABLE ccgateway_runtimes RENAME TO ccgateway_runtimes_unreadable`); err != nil {
 		t.Fatal(err)
 	}
 	ctl.mu.Lock()

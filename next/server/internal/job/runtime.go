@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -47,7 +47,7 @@ type runtimeRow struct {
 
 // activeVersion reports whether version is the plugin's active version; an
 // unknown plugin is not_found.
-func (b *Bridge) activeVersion(ctx context.Context, q store.Querier, key, version string) (bool, error) {
+func (b *Bridge) activeVersion(ctx context.Context, q *gorm.DB, key, version string) (bool, error) {
 	p, err := readPlugin(ctx, q, key)
 	if store.IsNoRows(err) {
 		return false, core.ErrNotFound.WithMessage("plugin not found")
@@ -192,7 +192,7 @@ func (b *Bridge) writeRuntime(ctx context.Context, key, version string,
 	plan func(have map[string]runtimeRow) (map[string]runtimeRow, []string, error)) (bool, error) {
 	changed := false
 	ignored := false
-	err := b.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := b.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		// Two nodes syncing the same plugin at once take turns.
 		if err := g.Exec(`SELECT pg_advisory_xact_lock(hashtext('plugin_runtime_tasks:' || ?))`, key).Error; err != nil {
@@ -258,7 +258,7 @@ func (b *Bridge) writeRuntime(ctx context.Context, key, version string,
 	return false, nil
 }
 
-func readRuntime(ctx context.Context, q store.Querier, key string) (map[string]runtimeRow, error) {
+func readRuntime(ctx context.Context, q *gorm.DB, key string) (map[string]runtimeRow, error) {
 	var rows []model.ScheduledTask
 	if err := store.G(ctx, q).Select("name", "schedule", "timeout_ms", "max_attempts", "args", "enabled").
 		Where("source = ? AND plugin_key = ?", string(task.SourcePluginRuntime), key).Find(&rows).Error; err != nil {
@@ -275,7 +275,7 @@ func readRuntime(ctx context.Context, q store.Querier, key string) (map[string]r
 
 // ListPluginTasks implements core.PluginTasks.
 func (b *Bridge) ListPluginTasks(ctx context.Context, key string) ([]core.PluginTask, error) {
-	have, err := readRuntime(ctx, b.db.Pool, key)
+	have, err := readRuntime(ctx, b.db.Gorm, key)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +321,7 @@ func (b *Bridge) EnqueuePluginTask(ctx context.Context, key, id string, args jso
 	// river_job is River's table, read here with plain SQL; only River's own
 	// client writes it.
 	var queued int
-	if err := store.G(ctx, b.db.Pool).Raw(`SELECT count(*) FROM river_job WHERE kind = 'sup2api.task' AND args->>'name' = ANY(?)
+	if err := store.G(ctx, b.db.Gorm).Raw(`SELECT count(*) FROM river_job WHERE kind = 'sup2api.task' AND args->>'name' = ANY(?)
 		AND state IN ('available', 'scheduled', 'pending', 'retryable')`, store.Strings(names)).Row().Scan(&queued); err != nil {
 		return err
 	}

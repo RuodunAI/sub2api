@@ -87,7 +87,7 @@ func newAPIEnv(t *testing.T) (apiEnv, *atomic.Int32) {
 	s := env.service(t, "node-a", nil, ok, bad, node)
 	require.NoError(t, s.StartNode(t.Context()))
 	var uid int64
-	require.NoError(t, env.db.Pool.QueryRow(context.Background(),
+	require.NoError(t, env.db.SQL.QueryRowContext(context.Background(),
 		`INSERT INTO users (email, password_hash) VALUES ('tasks@test', 'x') RETURNING id`).Scan(&uid))
 	return apiEnv{clusterEnv: env, s: s, uid: uid}, &flaky
 }
@@ -144,7 +144,7 @@ func TestTaskAPIOverviewAndRuns(t *testing.T) {
 	require.NoError(t, e.s.Enqueue(ctx, "core.test.bad", nil, core.EnqueueOpts{}))
 	waitLong(t, "runs to finish", 15*time.Second, func() bool {
 		var n int
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'sup2api.task'
+		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM river_job WHERE kind = 'sup2api.task'
 			AND args->>'name' LIKE 'core.test.%' AND state IN ('completed', 'discarded')`).Scan(&n))
 		return n == 4
 	})
@@ -255,7 +255,7 @@ func TestTaskAPIManualClusterRunIsAudited(t *testing.T) {
 		return r.Status != nil && *r.Status == StatusSucceeded
 	})
 	var n int
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_type = 'task'
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_type = 'task'
 		AND target_id = 'core.test.ok' AND user_id = $2`, ActionRunManual, e.uid).Scan(&n))
 	require.Equal(t, 1, n)
 	code, body = e.call(t, "GET", "/system/tasks/core.test.ok/runs", "", PermRead)
@@ -282,11 +282,11 @@ func TestPatchSwitchesPluginTasksOnly(t *testing.T) {
 	code, body := e.call(t, http.MethodPatch, "/system/tasks/plugin.demo.sync", `{"enabled":false}`, PermManage)
 	require.Equal(t, http.StatusOK, code, body)
 	var enabled bool
-	require.NoError(t, e.db.Pool.QueryRow(context.Background(), `SELECT enabled FROM scheduled_tasks WHERE name = 'plugin.demo.sync'`).Scan(&enabled))
+	require.NoError(t, e.db.SQL.QueryRowContext(context.Background(), `SELECT enabled FROM scheduled_tasks WHERE name = 'plugin.demo.sync'`).Scan(&enabled))
 	require.False(t, enabled)
 	require.EqualValues(t, 1, changed.Load())
 	var audits int
-	require.NoError(t, e.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_id = 'plugin.demo.sync'`,
+	require.NoError(t, e.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_id = 'plugin.demo.sync'`,
 		ActionSetEnable).Scan(&audits))
 	require.Equal(t, 1, audits)
 

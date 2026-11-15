@@ -8,7 +8,6 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -97,7 +96,7 @@ const (
 // made before this consent count; the inheritFrom sources left out are
 // returned. On a first install nothing needs consent: someone (or the
 // system) consents anyway.
-func (s *Service) planRoleGrants(ctx context.Context, q store.Querier, m *manifest.Manifest, existing catalogPerms,
+func (s *Service) planRoleGrants(ctx context.Context, q *gorm.DB, m *manifest.Manifest, existing catalogPerms,
 	roles, overrides map[string]map[string][]string, upgrade bool,
 ) ([]RoleGrant, []InheritSkip, error) {
 	holders, err := s.inheritHolders(ctx, q, m, existing)
@@ -136,7 +135,7 @@ func (s *Service) planRoleGrants(ctx context.Context, q store.Querier, m *manife
 
 // inheritHolders reads the grants of the inheritFrom keys of m's
 // userPermissions that the catalog has (existing).
-func (s *Service) inheritHolders(ctx context.Context, q store.Querier, m *manifest.Manifest, existing catalogPerms) (map[string][]core.PermissionHolder, error) {
+func (s *Service) inheritHolders(ctx context.Context, q *gorm.DB, m *manifest.Manifest, existing catalogPerms) (map[string][]core.PermissionHolder, error) {
 	var from []string
 	for _, up := range m.UserPermissions {
 		for _, k := range up.InheritFrom {
@@ -245,7 +244,7 @@ func withholdGrants(m *manifest.Manifest, existing catalogPerms, plan []RoleGran
 // upgrade carried over, by its uploader; a built-in plugin, by the system)
 // and the ones withheld for review.
 // Nothing is written when there are none.
-func auditAutoGrants(ctx context.Context, tx pgx.Tx, actorID int64, key, version string, st *settlement) error {
+func auditAutoGrants(ctx context.Context, tx *gorm.DB, actorID int64, key, version string, st *settlement) error {
 	if len(st.plan) == 0 {
 		return nil
 	}
@@ -273,7 +272,7 @@ func auditAutoGrants(ctx context.Context, tx pgx.Tx, actorID int64, key, version
 // whose consent was recorded before it (earlier or later versions alike),
 // since the list shows each grant once (under its earliest version). Risk
 // is the catalog's; a grant audited before scopes existed is of every row.
-func (s *Service) PendingRoleGrants(ctx context.Context, q store.Querier, key, version string) ([]RoleGrant, error) {
+func (s *Service) PendingRoleGrants(ctx context.Context, q *gorm.DB, key, version string) ([]RoleGrant, error) {
 	var rows []pendingRoleGrantRow
 	if err := pendingRoleGrants(store.G(ctx, q), key, version).Scan(&rows).Error; err != nil || len(rows) == 0 {
 		return []RoleGrant{}, err
@@ -315,7 +314,7 @@ func (s *Service) PendingRoleGrants(ctx context.Context, q store.Querier, key, v
 // RoleGrantsToReview is PendingRoleGrants of every version as actorID may
 // see them: an inherited grant, consented or carried, names a holder of the
 // old key, which only who may see holders sees (seesHolders, C4).
-func (s *Service) RoleGrantsToReview(ctx context.Context, q store.Querier, key string, actorID int64) ([]RoleGrant, error) {
+func (s *Service) RoleGrantsToReview(ctx context.Context, q *gorm.DB, key string, actorID int64) ([]RoleGrant, error) {
 	gs, err := s.PendingRoleGrants(ctx, q, key, "")
 	if err != nil {
 		return nil, err
@@ -349,7 +348,7 @@ func (s *Service) ReviewRoleGrants(ctx context.Context, key, version string, con
 	}
 	defer release()
 	var gs []RoleGrant
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		if err := store.G(ctx, tx).Exec(`SELECT 1 FROM plugins WHERE key = ? FOR UPDATE`, key).Error; err != nil {
 			return err
 		}
@@ -384,7 +383,7 @@ func (s *Service) ReviewRoleGrants(ctx context.Context, key, version string, con
 // grantReviewed grants gs, permissions of plugin pluginKey the operator
 // confirmed (checked by the caller); a grant of another plugin's permission
 // is refused, whatever wrote it to the review list.
-func (s *Service) grantReviewed(ctx context.Context, tx pgx.Tx, pluginKey string, gs []RoleGrant) error {
+func (s *Service) grantReviewed(ctx context.Context, tx *gorm.DB, pluginKey string, gs []RoleGrant) error {
 	cat, err := s.catalog()
 	if err != nil {
 		return err
@@ -421,7 +420,7 @@ func (s *Service) grantReviewed(ctx context.Context, tx pgx.Tx, pluginKey string
 // decided them) and grants a role holds already are left out; nobody
 // consented to the rest, hence review rather than a grant. It runs at
 // activation, after the catalog sync.
-func carryRenamedHolders(ctx context.Context, cat core.PermissionCatalog, tx pgx.Tx, m *manifest.Manifest, before catalogPerms) error {
+func carryRenamedHolders(ctx context.Context, cat core.PermissionCatalog, tx *gorm.DB, m *manifest.Manifest, before catalogPerms) error {
 	var keys []string
 	retires := map[string]bool{} // by local key: inherits from a key retired now
 	for _, up := range m.UserPermissions {
@@ -476,7 +475,7 @@ func carryRenamedHolders(ctx context.Context, cat core.PermissionCatalog, tx pgx
 // scope) it planned, made or withheld (role_grants, written by every
 // consent), and the local keys its overrides named. None for a version with
 // no consent recorded.
-func consentDecisions(ctx context.Context, q store.Querier, key, version string) (map[[3]string]bool, map[string]bool, error) {
+func consentDecisions(ctx context.Context, q *gorm.DB, key, version string) (map[[3]string]bool, map[string]bool, error) {
 	var overrides store.Strings
 	var raw []byte
 	err := latestConsentDecisions(store.G(ctx, q), key, version).Row().Scan(&overrides, &raw)

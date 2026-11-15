@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -296,7 +295,7 @@ func (g *Gateway) listRulesHandler(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	rules, err := listRules(c.Request.Context(), db.Pool)
+	rules, err := listRules(c.Request.Context(), db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -308,7 +307,7 @@ func (g *Gateway) listRulesHandler(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-func getRule(ctx context.Context, q store.Querier, id int64) (*stickyRule, error) {
+func getRule(ctx context.Context, q *gorm.DB, id int64) (*stickyRule, error) {
 	var row model.StickyRule
 	err := store.G(ctx, q).Where("id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
@@ -362,7 +361,7 @@ func (g *Gateway) createRuleHandler(c *gin.Context) {
 	}
 	uid, _ := core.UserID(ctx)
 	row := adminRuleRow(r, uid)
-	err = store.G(ctx, db.Pool).Create(row).Error
+	err = store.G(ctx, db.Gorm).Create(row).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("an admin sticky rule with this name already exists"))
 		return
@@ -372,7 +371,7 @@ func (g *Gateway) createRuleHandler(c *gin.Context) {
 		return
 	}
 	g.changed(ctx, "sticky_rules")
-	created, err := getRule(ctx, db.Pool, row.ID)
+	created, err := getRule(ctx, db.Gorm, row.ID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -395,7 +394,7 @@ func (g *Gateway) updateRuleHandler(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	r, err := getRule(ctx, db.Pool, id)
+	r, err := getRule(ctx, db.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -435,7 +434,7 @@ func (g *Gateway) updateRuleHandler(c *gin.Context) {
 		}
 	}
 	uid, _ := core.UserID(ctx)
-	err = updateRule(store.G(ctx, db.Pool), id, r, uid, customized).Error
+	err = updateRule(store.G(ctx, db.Gorm), id, r, uid, customized).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("an admin sticky rule with this name already exists"))
 		return
@@ -445,7 +444,7 @@ func (g *Gateway) updateRuleHandler(c *gin.Context) {
 		return
 	}
 	g.changed(ctx, "sticky_rules")
-	updated, err := getRule(ctx, db.Pool, id)
+	updated, err := getRule(ctx, db.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -464,7 +463,7 @@ func (g *Gateway) deleteRuleHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	r, err := getRule(ctx, db.Pool, id)
+	r, err := getRule(ctx, db.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -477,7 +476,7 @@ func (g *Gateway) deleteRuleHandler(c *gin.Context) {
 		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage(msg))
 		return
 	}
-	if err := store.G(ctx, db.Pool).Where("id = ?", id).Delete(&model.StickyRule{}).Error; err != nil {
+	if err := store.G(ctx, db.Gorm).Where("id = ?", id).Delete(&model.StickyRule{}).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -492,7 +491,7 @@ func (g *Gateway) deleteRuleHandler(c *gin.Context) {
 
 func (g *Gateway) ruleNameInUse(ctx context.Context, db *store.DB, name string) bool {
 	// An error reads as not in use: the caller then drops the rule's stats.
-	gdb := store.G(ctx, db.Pool)
+	gdb := store.G(ctx, db.Gorm)
 	found, _ := store.Exists(gdb, rulesNamed(gdb, name))
 	return found
 }
@@ -514,7 +513,7 @@ func (g *Gateway) flushRuleHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	r, err := getRule(ctx, db.Pool, id)
+	r, err := getRule(ctx, db.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -566,7 +565,7 @@ func (g *Gateway) statsHandler(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	rules, err := listRules(ctx, db.Pool)
+	rules, err := listRules(ctx, db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -593,12 +592,12 @@ func (g *Gateway) getStickySettingsHandler(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	v, err := loadStickySettings(c.Request.Context(), db.Pool)
+	v, err := loadStickySettings(c.Request.Context(), db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	p, err := loadFailurePolicy(c.Request.Context(), db.Pool)
+	p, err := loadFailurePolicy(c.Request.Context(), db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -662,7 +661,7 @@ func (g *Gateway) SyncBuiltinDefaults(ctx context.Context) error {
 	if g.d.DB == nil {
 		return nil
 	}
-	if err := g.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	if err := g.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		return syncBuiltinRules(ctx, tx, builtinStickyRules())
 	}); err != nil {
 		return err
@@ -683,7 +682,7 @@ func builtinStickyRules() []manifest.StickyRule {
 // syncBuiltinRules upserts rules as the built-in defaults, leaving the
 // definition of a customized one alone, and deletes the built-in defaults no
 // longer listed.
-func syncBuiltinRules(ctx context.Context, tx pgx.Tx, rules []manifest.StickyRule) error {
+func syncBuiltinRules(ctx context.Context, tx *gorm.DB, rules []manifest.StickyRule) error {
 	names := make([]string, 0, len(rules))
 	for i, r := range rules {
 		name := strings.TrimSpace(r.Name)
@@ -777,7 +776,7 @@ func (g *Gateway) resetRuleHandler(c *gin.Context) {
 	if !ok {
 		return
 	}
-	r, err := getRule(ctx, db.Pool, id)
+	r, err := getRule(ctx, db.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -791,7 +790,7 @@ func (g *Gateway) resetRuleHandler(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := uncustomizeRule(store.G(ctx, tx), id, uid).Error; err != nil {
 			return err
 		}
@@ -801,7 +800,7 @@ func (g *Gateway) resetRuleHandler(c *gin.Context) {
 		return
 	}
 	g.changed(ctx, "sticky_rules")
-	updated, err := getRule(ctx, db.Pool, id)
+	updated, err := getRule(ctx, db.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

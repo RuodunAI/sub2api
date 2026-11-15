@@ -12,6 +12,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/event"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // roundTrips counts what actually reaches the server: every statement, and
@@ -64,7 +65,7 @@ func (r *roundTrips) reset() {
 // settings, that counts the round trips of one Precharge.
 func tracedStore(t *testing.T, base *store.DB, trace *roundTrips) *store.DB {
 	t.Helper()
-	cfg, err := pgxpool.ParseConfig(base.Pool.Config().ConnString())
+	cfg, err := testutil.DSN(pgxpool.ParseConfig(base))
 	if err != nil {
 		t.Fatal(err)
 	}

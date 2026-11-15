@@ -237,7 +237,7 @@ const runStatusSQL = `CASE j.state
 
 // clusterViews reads the cluster tasks (only one when name is set).
 func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskView, error) {
-	g := store.G(ctx, s.opts.DB.Pool)
+	g := store.G(ctx, s.opts.DB.Gorm)
 	now := time.Now()
 	out, err := store.CollectRows(g.Raw(`SELECT name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
 			lease_node, lease_until > now() AND lease_job_id IS NOT NULL,
@@ -412,7 +412,7 @@ func readHistories(ctx context.Context, rdb redis.UniversalClient, nodeID string
 // leader is the node whose River client leads now ("" when none does).
 func (s *Service) leader(ctx context.Context, live map[string]core.NodeStatus) string {
 	var id string
-	err := store.G(ctx, s.opts.DB.Pool).Raw(`SELECT leader_id FROM river_leader WHERE expires_at > now() LIMIT 1`).Row().Scan(&id)
+	err := store.G(ctx, s.opts.DB.Gorm).Raw(`SELECT leader_id FROM river_leader WHERE expires_at > now() LIMIT 1`).Row().Scan(&id)
 	if err != nil {
 		return ""
 	}
@@ -625,7 +625,7 @@ func (s *Service) scopeOf(ctx context.Context, name string) (core.TaskScope, boo
 	if s.opts.DB == nil {
 		return "", false
 	}
-	if exists, err := taskRowExists(ctx, s.opts.DB.Pool, name); err == nil && exists {
+	if exists, err := taskRowExists(ctx, s.opts.DB.Gorm, name); err == nil && exists {
 		return core.TaskCluster, true
 	}
 	return "", false
@@ -671,7 +671,7 @@ func (e *riverErrors) Scan(src any) error {
 func (s *Service) clusterRuns(ctx context.Context, name string, statuses []string, before int64, limit int) (RunsPage, error) {
 	out := RunsPage{Runs: []RunView{}}
 	var lastID int64
-	err := store.EachRow(runsQuery(store.G(ctx, s.opts.DB.Pool), name, statuses, before, limit+1), func(rows *sql.Rows) error {
+	err := store.EachRow(runsQuery(store.G(ctx, s.opts.DB.Gorm), name, statuses, before, limit+1), func(rows *sql.Rows) error {
 		var v RunView
 		var id int64
 		var scheduled time.Time
@@ -782,7 +782,7 @@ func (h *handlers) run(c *gin.Context) {
 		detail["node_id"] = body.NodeID
 	}
 	if h.s.opts.DB != nil {
-		if aerr := audit.Audit(ctx, h.s.opts.DB.Pool, uid, ActionRunManual, "task", name, detail); aerr != nil {
+		if aerr := audit.Audit(ctx, h.s.opts.DB.Gorm, uid, ActionRunManual, "task", name, detail); aerr != nil {
 			h.s.log.Warn("task: audit manual run", "task", name, "err", aerr)
 		}
 	}
@@ -826,7 +826,7 @@ func (h *handlers) patch(c *gin.Context) {
 		return
 	}
 	var row model.ScheduledTask
-	res := setPluginTaskEnabled(store.G(ctx, h.s.opts.DB.Pool), name, *body.Enabled, &row)
+	res := setPluginTaskEnabled(store.G(ctx, h.s.opts.DB.Gorm), name, *body.Enabled, &row)
 	err, source := res.Error, row.Source
 	if err == nil && res.RowsAffected == 0 {
 		if _, known := h.s.scopeOf(ctx, name); known {
@@ -846,7 +846,7 @@ func (h *handlers) patch(c *gin.Context) {
 		}
 	}
 	uid, _ := core.UserID(ctx)
-	if aerr := audit.Audit(ctx, h.s.opts.DB.Pool, uid, ActionSetEnable, "task", name,
+	if aerr := audit.Audit(ctx, h.s.opts.DB.Gorm, uid, ActionSetEnable, "task", name,
 		map[string]any{"enabled": *body.Enabled, "source": source}); aerr != nil {
 		h.s.log.Warn("task: audit task switch", "task", name, "err", aerr)
 	}

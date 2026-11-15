@@ -20,11 +20,11 @@ func TestStaleReconcileReadDefersStandbyInsteadOfFailingRollout(t *testing.T) {
 	c.o.DB = db
 	c.o.Packages.Adopt(loadPkg(t, dir, "stale", "2.0.0"))
 	// Committed state after Enable: generation 5 and a preparing rollout.
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status,row_version) VALUES('stale','{}','enabling',5)`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status,row_version) VALUES('stale','{}','enabling',5)`); err != nil {
 		t.Fatal(err)
 	}
 	var id int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO plugin_rollouts(plugin_key,action,target_version,phase) VALUES('stale','enable','2.0.0','preparing') RETURNING id`).Scan(&id); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO plugin_rollouts(plugin_key,action,target_version,phase) VALUES('stale','enable','2.0.0','preparing') RETURNING id`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	target := "2.0.0"

@@ -180,7 +180,7 @@ func TestChangePasswordAndStatusUpdateDoNotDeadlock(t *testing.T) {
 // and ip.
 func superadminLogins(t *testing.T, s *Service) []string {
 	t.Helper()
-	rows, err := s.db.Pool.Query(context.Background(), `SELECT user_id || ' ' || (detail->>'method') || ' ' || (detail->>'ip') || ' ' || ip
+	rows, err := s.db.SQL.QueryContext(context.Background(), `SELECT user_id || ' ' || (detail->>'method') || ' ' || (detail->>'ip') || ' ' || ip
 		FROM audit_logs WHERE action = 'auth.superadmin_login' ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)

@@ -7,8 +7,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -18,7 +18,7 @@ import (
 func TestAPIKeyIPAllowlistMigrationPreservesKeys(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	_, err := db.Pool.Exec(ctx, `ALTER TABLE api_keys DROP COLUMN allowed_ips;
+	_, err := db.SQL.ExecContext(ctx, `ALTER TABLE api_keys DROP COLUMN allowed_ips;
 		DROP INDEX usage_logs_client_ip_created_idx, usage_logs_api_key_created_idx;
 		DELETE FROM schema_migrations WHERE id='0052_apikey_ip_allowlist.sql';
 		INSERT INTO users(email,password_hash) VALUES ('legacy-ip@example.com','test');
@@ -27,14 +27,14 @@ func TestAPIKeyIPAllowlistMigrationPreservesKeys(t *testing.T) {
 		SELECT u.id,g.id,'legacy','masked','test-hash','active' FROM users u,groups g WHERE u.email='legacy-ip@example.com' AND g.name='legacy-ip'`)
 	require.NoError(t, err)
 	var before, after string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(k) ORDER BY id)::text FROM api_keys k`).Scan(&before))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(k) ORDER BY id)::text FROM api_keys k`).Scan(&before))
 	for range 2 {
 		_, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 		require.NoError(t, err)
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(k)-'allowed_ips' ORDER BY id)::text FROM api_keys k`).Scan(&after))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(k)-'allowed_ips' ORDER BY id)::text FROM api_keys k`).Scan(&after))
 		require.Equal(t, before, after)
 		var ips []string
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT allowed_ips FROM api_keys WHERE name='legacy'`).Scan(&ips))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT allowed_ips FROM api_keys WHERE name='legacy'`).Scan(&ips))
 		require.Empty(t, ips)
 	}
 }
@@ -42,7 +42,7 @@ func TestAPIKeyIPAllowlistMigrationPreservesKeys(t *testing.T) {
 func TestAccountLifecycleMigrationPreservesExistingRuntimes(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	_, err := db.Pool.Exec(ctx, `DROP TABLE account_lifecycle_sync,account_preparations;
+	_, err := db.SQL.ExecContext(ctx, `DROP TABLE account_lifecycle_sync,account_preparations;
 		ALTER TABLE ccgateway_runtimes DROP COLUMN initial_settings;
 		DELETE FROM schema_migrations WHERE id='0051_account_preparations.sql';
 		INSERT INTO accounts(name,plugin_key,type,credentials_enc,status,schedulable) VALUES('preserved','ccgateway','managed','','disabled',false);
@@ -50,7 +50,7 @@ func TestAccountLifecycleMigrationPreservesExistingRuntimes(t *testing.T) {
 	require.NoError(t, err)
 	query := `SELECT jsonb_build_object('accounts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM accounts a),'runtimes',(SELECT jsonb_agg(to_jsonb(r)-'initial_settings' ORDER BY key) FROM ccgateway_runtimes r))::text`
 	var before, after string
-	require.NoError(t, db.Pool.QueryRow(ctx, query).Scan(&before))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, query).Scan(&before))
 	for i := range 2 {
 		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 		require.NoError(t, err)
@@ -59,7 +59,7 @@ func TestAccountLifecycleMigrationPreservesExistingRuntimes(t *testing.T) {
 		} else {
 			require.Empty(t, done)
 		}
-		require.NoError(t, db.Pool.QueryRow(ctx, query).Scan(&after))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, query).Scan(&after))
 		require.Equal(t, before, after)
 	}
 }
@@ -67,7 +67,7 @@ func TestAccountLifecycleMigrationPreservesExistingRuntimes(t *testing.T) {
 func TestAutomaticStateMigrationPreservesLegacyAccounts(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	_, err := db.Pool.Exec(ctx, `ALTER TABLE accounts DROP COLUMN auto_disabled_until,
+	_, err := db.SQL.ExecContext(ctx, `ALTER TABLE accounts DROP COLUMN auto_disabled_until,
 		DROP COLUMN last_test_status,DROP COLUMN last_test_error_code,DROP COLUMN last_test_error_source;
 		DELETE FROM schema_migrations WHERE id IN ('0049_account_automatic_state.sql','0050_account_test_diagnostics.sql');
 		INSERT INTO accounts(name,plugin_key,type,credentials_enc,status,status_reason,schedulable) VALUES
@@ -76,7 +76,7 @@ func TestAutomaticStateMigrationPreservesLegacyAccounts(t *testing.T) {
 		('ready','fixture','key','','active','',true)`)
 	require.NoError(t, err)
 	var before, after string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(a) ORDER BY id)::text FROM accounts a`).Scan(&before))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(a) ORDER BY id)::text FROM accounts a`).Scan(&before))
 	for i := range 2 {
 		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 		require.NoError(t, err)
@@ -85,10 +85,10 @@ func TestAutomaticStateMigrationPreservesLegacyAccounts(t *testing.T) {
 		} else {
 			require.Empty(t, done)
 		}
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_agg(to_jsonb(a)-'auto_disabled_until'-'last_test_status'-'last_test_error_code'-'last_test_error_source' ORDER BY id)::text FROM accounts a`).Scan(&after))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(a)-'auto_disabled_until'-'last_test_status'-'last_test_error_code'-'last_test_error_source' ORDER BY id)::text FROM accounts a`).Scan(&after))
 		require.Equal(t, before, after)
 		var indexExists, noDeadlines bool
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE tablename='accounts' AND indexname='accounts_auto_disabled_due_idx'),
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pg_indexes WHERE tablename='accounts' AND indexname='accounts_auto_disabled_due_idx'),
 			NOT EXISTS(SELECT 1 FROM accounts WHERE auto_disabled_until IS NOT NULL OR last_test_status IS NOT NULL OR last_test_error_code IS NOT NULL OR last_test_error_source IS NOT NULL)`).Scan(&indexExists, &noDeadlines))
 		require.True(t, indexExists)
 		require.True(t, noDeadlines)
@@ -105,25 +105,25 @@ func TestLegacyProxyRealIPReplayPreservesDataAndChecksum(t *testing.T) {
 			ip := "198.51.100.46"
 			stamp := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 			var proxyID int64
-			err := db.Pool.QueryRow(ctx, `INSERT INTO proxies (name, protocol, host, port, real_ip, real_ip_updated_at)
+			err := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies (name, protocol, host, port, real_ip, real_ip_updated_at)
 				VALUES ('replay-probe','http','proxy.example',8080,$1,$2) RETURNING id`, ip, stamp).Scan(&proxyID)
 			require.NoError(t, err)
 			if missing == "real_ip" || missing == "both" {
-				_, err = db.Pool.Exec(ctx, `ALTER TABLE proxies DROP COLUMN real_ip`)
+				_, err = db.SQL.ExecContext(ctx, `ALTER TABLE proxies DROP COLUMN real_ip`)
 				require.NoError(t, err)
 			}
 			if missing == "real_ip_updated_at" || missing == "both" {
-				_, err = db.Pool.Exec(ctx, `ALTER TABLE proxies DROP COLUMN real_ip_updated_at`)
+				_, err = db.SQL.ExecContext(ctx, `ALTER TABLE proxies DROP COLUMN real_ip_updated_at`)
 				require.NoError(t, err)
 			}
-			_, err = db.Pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id >= $1`, id)
+			_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id >= $1`, id)
 			require.NoError(t, err)
 			done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 			require.NoError(t, err)
 			require.Contains(t, done, id)
 			var gotIP *string
 			var gotTime *time.Time
-			require.NoError(t, db.Pool.QueryRow(ctx, `SELECT real_ip, real_ip_updated_at FROM proxies WHERE id=$1`, proxyID).Scan(&gotIP, &gotTime))
+			require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT real_ip, real_ip_updated_at FROM proxies WHERE id=$1`, proxyID).Scan(&gotIP, &gotTime))
 			if missing == "real_ip" || missing == "both" {
 				require.Nil(t, gotIP)
 			} else {
@@ -137,7 +137,7 @@ func TestLegacyProxyRealIPReplayPreservesDataAndChecksum(t *testing.T) {
 				require.True(t, stamp.Equal(*gotTime))
 			}
 			var recorded string
-			require.NoError(t, db.Pool.QueryRow(ctx, `SELECT checksum FROM schema_migrations WHERE id=$1`, id).Scan(&recorded))
+			require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE id=$1`, id).Scan(&recorded))
 			require.Equal(t, checksum, recorded)
 			done, err = store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 			require.NoError(t, err)
@@ -160,7 +160,7 @@ func TestLegacyProxyRealIPCompatibilityRequiresExactIdentity(t *testing.T) {
 			} else {
 				body = append(body, '\n')
 				if changed == "body" {
-					_, err = db.Pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id=$1`, original)
+					_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id=$1`, original)
 					require.NoError(t, err)
 				}
 			}
@@ -171,7 +171,7 @@ func TestLegacyProxyRealIPCompatibilityRequiresExactIdentity(t *testing.T) {
 				require.ErrorContains(t, err, "already exists")
 			}
 			var recorded bool
-			require.NoError(t, db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE id=$1)`, name).Scan(&recorded))
+			require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE id=$1)`, name).Scan(&recorded))
 			require.Equal(t, changed == "applied_body", recorded)
 		})
 	}
@@ -182,7 +182,7 @@ func TestLegacyProxyRealIPCompatibilityRequiresExactIdentity(t *testing.T) {
 func TestMigrationsFromFirstIdempotentRunTwice(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	tag, err := db.Pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id >= $1`, migrations.FirstIdempotentMigration)
+	tag, err := db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id >= $1`, migrations.FirstIdempotentMigration)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestMigrationsFromFirstIdempotentRunTwice(t *testing.T) {
 func TestStickyRulesCoreOnly(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `
+	if _, err := db.SQL.ExecContext(ctx, `
 		ALTER TABLE sticky_rules DROP CONSTRAINT sticky_rules_core_only;
 		INSERT INTO plugins (key, name, status) VALUES ('acme_sticky', '{"en":"x"}', 'enabled');
 		INSERT INTO sticky_rules (name, source, plugin_key, key_sources) VALUES
@@ -217,7 +217,7 @@ func TestStickyRulesCoreOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	var names []string
-	rows, err := db.Pool.Query(ctx, `SELECT name FROM sticky_rules WHERE source = 'admin' OR plugin_key IS NOT NULL ORDER BY name`)
+	rows, err := db.SQL.QueryContext(ctx, `SELECT name FROM sticky_rules WHERE source = 'admin' OR plugin_key IS NOT NULL ORDER BY name`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestStickyRulesCoreOnly(t *testing.T) {
 		`INSERT INTO sticky_rules (name, source, plugin_key, key_sources) VALUES ('x', 'admin', 'acme_sticky', '[{"type":"user"}]')`,
 		`INSERT INTO sticky_rules (name, source, key_sources) VALUES ('x', 'admin', '[{"type":"plugin"}]')`,
 	} {
-		if _, err := db.Pool.Exec(ctx, bad); err == nil {
+		if _, err := db.SQL.ExecContext(ctx, bad); err == nil {
 			t.Fatalf("accepted: %s", bad)
 		}
 	}
@@ -247,18 +247,18 @@ func TestSecurityHardeningDoesNotReopenPrivateProxies(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	var id int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO proxies (name, protocol, host, port, allow_private)
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies (name, protocol, host, port, allow_private)
 		VALUES ('later', 'http', '10.0.0.1', 8080, false) RETURNING id`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id >= '0027'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id >= '0027'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey}); err != nil {
 		t.Fatal(err)
 	}
 	var allow bool
-	if err := db.Pool.QueryRow(ctx, `SELECT allow_private FROM proxies WHERE id = $1`, id).Scan(&allow); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT allow_private FROM proxies WHERE id = $1`, id).Scan(&allow); err != nil {
 		t.Fatal(err)
 	}
 	if allow {
@@ -274,13 +274,13 @@ func TestAPIKeyQuotaMigrationAndTrigger(t *testing.T) {
 	ctx := t.Context()
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, sql, args...)
+		_, err := db.SQL.ExecContext(ctx, sql, args...)
 		require.NoError(t, err)
 	}
 	used := func() string {
 		t.Helper()
 		var v string
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT quota_used::text FROM api_keys WHERE name='quota'`).Scan(&v))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT quota_used::text FROM api_keys WHERE name='quota'`).Scan(&v))
 		return v
 	}
 	migrate := func() {
@@ -329,12 +329,12 @@ func TestAccountSPMLimitMigration(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
 	exec := func(sql string) error {
-		_, err := db.Pool.Exec(ctx, sql)
+		_, err := db.SQL.ExecContext(ctx, sql)
 		return err
 	}
 	spm := func() (v int) {
 		t.Helper()
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT spm_limit FROM accounts WHERE name='spm'`).Scan(&v))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT spm_limit FROM accounts WHERE name='spm'`).Scan(&v))
 		return v
 	}
 	migrate := func() []string {
@@ -364,12 +364,12 @@ func TestAccountSPMWindowMigration(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
 	exec := func(sql string) error {
-		_, err := db.Pool.Exec(ctx, sql)
+		_, err := db.SQL.ExecContext(ctx, sql)
 		return err
 	}
 	window := func() (v int) {
 		t.Helper()
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT spm_window_seconds FROM accounts WHERE name='window'`).Scan(&v))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT spm_window_seconds FROM accounts WHERE name='window'`).Scan(&v))
 		return v
 	}
 	migrate := func() []string {
@@ -400,12 +400,12 @@ func TestPluginPermissionMetaMigration(t *testing.T) {
 	db := testutil.DBThrough(t, "0098_plugin_staged_grants.sql")
 	ctx := t.Context()
 	exec := func(sql string) error {
-		_, err := db.Pool.Exec(ctx, sql)
+		_, err := db.SQL.ExecContext(ctx, sql)
 		return err
 	}
 	risks := func() (v string) {
 		t.Helper()
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT string_agg(key || '=' || risk, ' ' ORDER BY key) FROM permissions`).Scan(&v))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(key || '=' || risk, ' ' ORDER BY key) FROM permissions`).Scan(&v))
 		return v
 	}
 	migrate := func() []string {
@@ -436,7 +436,7 @@ func TestAccountUsageMigrationAndTrigger(t *testing.T) {
 	ctx := t.Context()
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, sql, args...)
+		_, err := db.SQL.ExecContext(ctx, sql, args...)
 		require.NoError(t, err)
 	}
 	fold := func() {
@@ -448,7 +448,7 @@ func TestAccountUsageMigrationAndTrigger(t *testing.T) {
 		t.Helper()
 		fold()
 		var v string
-		err := db.Pool.QueryRow(ctx, `SELECT coalesce((SELECT cost::text||' '||raw_cost::text||' '||requests||' '||tokens
+		err := db.SQL.QueryRowContext(ctx, `SELECT coalesce((SELECT cost::text||' '||raw_cost::text||' '||requests||' '||tokens
 			FROM account_usage_totals WHERE account_id=(SELECT id FROM accounts WHERE name=$1)),'none')`, name).Scan(&v)
 		require.NoError(t, err)
 		return v
@@ -457,7 +457,7 @@ func TestAccountUsageMigrationAndTrigger(t *testing.T) {
 		t.Helper()
 		fold()
 		var v string
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT coalesce(sum(cost),0)::text||' '||count(*) FROM account_usage_hourly
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT coalesce(sum(cost),0)::text||' '||count(*) FROM account_usage_hourly
 			WHERE account_id=(SELECT id FROM accounts WHERE name=$1)`, name).Scan(&v))
 		return v
 	}
@@ -503,15 +503,15 @@ func TestAccountUsageMigrationAndTrigger(t *testing.T) {
 	// Two settler batches writing the same accounts in opposite orders: the
 	// journal takes no row locks, so neither waits on the other (0064's
 	// in-place sums deadlocked here).
-	tx1, err := db.Pool.Begin(ctx)
+	tx1, err := testutil.Begin(ctx, db)
 	require.NoError(t, err)
-	defer func() { _ = tx1.Rollback(ctx) }()
-	tx2, err := db.Pool.Begin(ctx)
+	defer func() { _ = tx1.Rollback().Error }()
+	tx2, err := testutil.Begin(ctx, db)
 	require.NoError(t, err)
-	defer func() { _ = tx2.Rollback(ctx) }()
-	insert := func(tx pgx.Tx, rid, account string) {
+	defer func() { _ = tx2.Rollback().Error }()
+	insert := func(tx *gorm.DB, rid, account string) {
 		t.Helper()
-		_, err := tx.Exec(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
+		_, err := store.SQLTx(tx).ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
 			total_cost, billing_status, rate_multiplier, input_tokens, output_tokens)
 			VALUES ($1, 1, 1, 1, (SELECT id FROM accounts WHERE name=$2), 'anthropic.messages', '/v1/messages', 200, true, 1, 'billed', 1, 1, 1)`, rid, account)
 		require.NoError(t, err)
@@ -520,8 +520,8 @@ func TestAccountUsageMigrationAndTrigger(t *testing.T) {
 	insert(tx2, "batch2-b", "b")
 	insert(tx1, "batch1-b", "b")
 	insert(tx2, "batch2-a", "a")
-	require.NoError(t, tx1.Commit(ctx))
-	require.NoError(t, tx2.Commit(ctx))
+	require.NoError(t, tx1.Commit().Error)
+	require.NoError(t, tx2.Commit().Error)
 	require.Equal(t, "2.60000000 2.40000000 4 464", totals("a"))
 
 	exec(`DELETE FROM schema_migrations WHERE id IN ('0064_account_usage.sql', '0068_account_usage_journal.sql')`)
@@ -539,12 +539,12 @@ func TestSegmentsMigrationBackfill(t *testing.T) {
 	ctx := t.Context()
 	exec := func(sql string) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, sql)
+		_, err := db.SQL.ExecContext(ctx, sql)
 		require.NoError(t, err)
 	}
 	text := func(sql string) (v string) {
 		t.Helper()
-		require.NoError(t, db.Pool.QueryRow(ctx, sql).Scan(&v))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
 		return v
 	}
 	migrate := func() []string {
@@ -602,11 +602,11 @@ func TestSegmentsMigrationBackfill(t *testing.T) {
 	require.Equal(t, "default", segmentOf("other@seg"), "a rerun made the user personal again")
 	require.Equal(t, "1", text(`SELECT count(*)::text FROM segments`))
 
-	_, err := db.Pool.Exec(ctx, `INSERT INTO segments(kind, name) VALUES ('named', '默认')`)
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO segments(kind, name) VALUES ('named', '默认')`)
 	require.Error(t, err, "two segments share a name")
-	_, err = db.Pool.Exec(ctx, `INSERT INTO segments(kind, name) VALUES ('personal', '')`)
+	_, err = db.SQL.ExecContext(ctx, `INSERT INTO segments(kind, name) VALUES ('personal', '')`)
 	require.Error(t, err, "a personal segment without its user")
-	_, err = db.Pool.Exec(ctx, `UPDATE segments SET discount = 0 WHERE is_default`)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE segments SET discount = 0 WHERE is_default`)
 	require.Error(t, err, "a discount of 0")
 }
 
@@ -616,11 +616,11 @@ func TestSegmentsMigrationBackfill(t *testing.T) {
 func TestOneSuperAdminConcurrentCommits(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	_, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{}', true, true);
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{}', true, true);
 		INSERT INTO users (email, password_hash) VALUES ('a@su', ''), ('b@su', '')`)
 	require.NoError(t, err)
 	const lock = `hashtext('user_roles_one_superuser')`
-	gate, err := db.Pool.Acquire(ctx)
+	gate, err := db.Gorm.Acquire(ctx)
 	require.NoError(t, err)
 	defer gate.Release()
 	_, err = gate.Exec(ctx, `SELECT pg_advisory_lock(`+lock+`)`)
@@ -628,11 +628,11 @@ func TestOneSuperAdminConcurrentCommits(t *testing.T) {
 
 	errs := make(chan error, 2)
 	for _, email := range []string{"a@su", "b@su"} {
-		tx, err := db.Pool.Begin(ctx)
+		tx, err := testutil.Begin(ctx, db)
 		require.NoError(t, err)
-		_, err = tx.Exec(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE r.superuser AND u.email = $1`, email)
+		_, err = store.SQLTx(tx).ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE r.superuser AND u.email = $1`, email)
 		require.NoError(t, err)
-		go func() { errs <- tx.Commit(ctx) }()
+		go func() { errs <- tx.Commit().Error }()
 	}
 	require.Eventually(t, func() bool {
 		var n int

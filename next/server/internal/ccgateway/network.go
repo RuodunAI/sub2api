@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"gorm.io/gorm"
 )
 
 // RuntimeNetwork controls both isolated business and egress uplink networks.
@@ -51,7 +51,7 @@ func validateNetwork(n RuntimeNetwork) (RuntimeNetwork, error) {
 
 // Read through the caller's transaction so adoption and dispatch agree on the
 // same network revision. Any network policy change invalidates old readiness.
-func (s *Service) desiredNetwork(ctx context.Context, q store.Querier, d accountDesired) (accountDesired, error) {
+func (s *Service) desiredNetwork(ctx context.Context, q *gorm.DB, d accountDesired) (accountDesired, error) {
 	c, _, err := s.loadIn(ctx, q, false)
 	if err != nil {
 		return d, err

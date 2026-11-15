@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -125,7 +124,7 @@ func (s *Service) parkRuntimes(ctx context.Context, _ core.TaskRun) (core.TaskRe
 	}
 	// Stale marks (the account changed status since) are cleared for tidiness:
 	// they never count (sqlRuntimeParked).
-	if err := store.G(ctx, s.DB.Pool).Exec(`UPDATE ccgateway_runtimes r SET parked_at = NULL
+	if err := store.G(ctx, s.DB.Gorm).Exec(`UPDATE ccgateway_runtimes r SET parked_at = NULL
 		FROM accounts a WHERE a.id = r.account_id AND r.parked_at IS NOT NULL AND NOT ` + sqlRuntimeParked).Error; err != nil {
 		return core.TaskResult{}, fmt.Errorf("clear stale marks: %w", err)
 	}
@@ -134,7 +133,7 @@ func (s *Service) parkRuntimes(ctx context.Context, _ core.TaskRun) (core.TaskRe
 		return core.TaskResult{Message: "parking is off"}, nil
 	}
 	var parked []parkedRuntime
-	err = s.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var rows []model.CcgatewayRuntime
 		err := store.G(ctx, tx).Raw(`UPDATE ccgateway_runtimes r SET parked_at = clock_timestamp()
 			FROM (SELECT r.key FROM ccgateway_runtimes r JOIN accounts a ON a.id = r.account_id
@@ -186,7 +185,7 @@ func (s *Service) ParkedRuntimes(ctx context.Context, ids []int64) (map[int64]bo
 		return out, nil
 	}
 	var parked []int64
-	if err := parkedQuery(store.G(ctx, s.DB.Pool), ids).Pluck("a.id", &parked).Error; err != nil {
+	if err := parkedQuery(store.G(ctx, s.DB.Gorm), ids).Pluck("a.id", &parked).Error; err != nil {
 		return out, err
 	}
 	for _, id := range parked {
@@ -226,7 +225,7 @@ func (s *Service) WakeRuntime(ctx context.Context, id int64) error {
 // parked).
 func (s *Service) wake(ctx context.Context, id int64) (bool, error) {
 	var woke bool
-	err := s.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var key string
 		err := store.G(ctx, tx).Raw(`UPDATE ccgateway_runtimes r SET parked_at = NULL, woken_at = clock_timestamp()
 			FROM accounts a WHERE a.id = r.account_id AND a.id = ? AND `+sqlRuntimeParked+` RETURNING r.key`, id).Row().Scan(&key)

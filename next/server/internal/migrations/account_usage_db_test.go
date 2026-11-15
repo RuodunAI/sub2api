@@ -22,14 +22,14 @@ func TestAccountUsageBackfillMatchesTrigger(t *testing.T) {
 	ctx := t.Context()
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, sql, args...)
+		_, err := db.SQL.ExecContext(ctx, sql, args...)
 		require.NoError(t, err)
 	}
 	totals := func(name string) string {
 		t.Helper()
 		exec(`SELECT account_usage_fold(1000)`)
 		var v string
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT coalesce((SELECT cost::text||' '||raw_cost::text||' '||requests
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT coalesce((SELECT cost::text||' '||raw_cost::text||' '||requests
 			FROM account_usage_totals WHERE account_id=(SELECT id FROM accounts WHERE name=$1)),'none')`, name).Scan(&v))
 		return v
 	}
@@ -69,10 +69,10 @@ func TestAccountUsageLimitCountConstraint(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
 	var id int64
-	require.NoError(t, db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES ('limit','fixture','apikey','') RETURNING id`).Scan(&id))
-	_, err := db.Pool.Exec(ctx, `INSERT INTO account_usage_limits (account_id, period, period_count) VALUES ($1, 'hour', 8784)`, id)
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES ('limit','fixture','apikey','') RETURNING id`).Scan(&id))
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO account_usage_limits (account_id, period, period_count) VALUES ($1, 'hour', 8784)`, id)
 	require.NoError(t, err)
-	_, err = db.Pool.Exec(ctx, `UPDATE account_usage_limits SET period_count = 8785 WHERE account_id = $1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE account_usage_limits SET period_count = 8785 WHERE account_id = $1`, id)
 	var pg *pgconn.PgError
 	require.ErrorAs(t, err, &pg)
 	require.Equal(t, "23514", pg.Code)
@@ -88,28 +88,28 @@ func TestAccountAutoDisabledSourceTrigger(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
 	var id int64
-	require.NoError(t, db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES ('source','fixture','apikey','') RETURNING id`).Scan(&id))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES ('source','fixture','apikey','') RETURNING id`).Scan(&id))
 	declared := func(sql string) {
 		t.Helper()
-		tx, err := db.Pool.Begin(ctx)
+		tx, err := testutil.Begin(ctx, db)
 		require.NoError(t, err)
-		defer func() { _ = tx.Rollback(ctx) }()
-		_, err = tx.Exec(ctx, `SELECT set_config('sup2api.auto_disabled_source', 'written', true)`)
+		defer func() { _ = tx.Rollback().Error }()
+		_, err = store.SQLTx(tx).ExecContext(ctx, `SELECT set_config('sup2api.auto_disabled_source', 'written', true)`)
 		require.NoError(t, err)
-		_, err = tx.Exec(ctx, sql, id)
+		_, err = store.SQLTx(tx).ExecContext(ctx, sql, id)
 		require.NoError(t, err)
-		require.NoError(t, tx.Commit(ctx))
+		require.NoError(t, tx.Commit().Error)
 	}
 	undeclared := func(sql string) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, sql, id)
+		_, err := db.SQL.ExecContext(ctx, sql, id)
 		require.NoError(t, err)
 	}
 	state := func() string {
 		t.Helper()
 		var source string
 		var deferred bool
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT auto_disabled_source, deferred_auto_disable FROM accounts WHERE id = $1`, id).Scan(&source, &deferred))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT auto_disabled_source, deferred_auto_disable FROM accounts WHERE id = $1`, id).Scan(&source, &deferred))
 		return fmt.Sprintf("%q %v", source, deferred)
 	}
 	limit := `UPDATE accounts SET status = 'auto_disabled', status_reason = 'usage limit reached: $6.00 / $5.00 (total)', auto_disabled_until = NULL,

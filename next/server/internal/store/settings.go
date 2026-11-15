@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -14,7 +13,7 @@ import (
 // first insert. The callback sees the latest committed document under the row
 // lock and must return a complete validated JSON object. Callers broadcast only
 // after their transaction commits.
-func UpdateSettingJSONTx(ctx context.Context, tx pgx.Tx, key string, updatedBy *int64, update func(json.RawMessage) (json.RawMessage, error)) (json.RawMessage, error) {
+func UpdateSettingJSONTx(ctx context.Context, tx *gorm.DB, key string, updatedBy *int64, update func(json.RawMessage) (json.RawMessage, error)) (json.RawMessage, error) {
 	db := G(ctx, tx)
 	if err := db.Exec(`INSERT INTO settings(key,value) VALUES(?,'{}') ON CONFLICT(key) DO NOTHING`, key).Error; err != nil {
 		return nil, err
@@ -67,7 +66,7 @@ func PatchSettingJSON(ctx context.Context, db *DB, key string, updatedBy *int64,
 	if err = json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	return db.Tx(ctx, func(tx pgx.Tx) error {
+	return db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := UpdateSettingJSONTx(ctx, tx, key, updatedBy, func(raw json.RawMessage) (json.RawMessage, error) {
 			var current map[string]json.RawMessage
 			if err := json.Unmarshal(raw, &current); err != nil {

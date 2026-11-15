@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -84,7 +83,7 @@ func (s *Service) serveSettings(c *gin.Context, of settingsOf, write bool) {
 // has in every group.
 func (s *Service) ofSegment(c *gin.Context, id int64, items []pairInput) ([]*Setting, error) {
 	ctx := c.Request.Context()
-	if _, _, err := segmentKind(ctx, s.db.Pool, id, ""); err != nil {
+	if _, _, err := segmentKind(ctx, s.db.Gorm, id, ""); err != nil {
 		return nil, err
 	}
 	for i := range items {
@@ -97,7 +96,7 @@ func (s *Service) ofSegment(c *gin.Context, id int64, items []pairInput) ([]*Set
 	if err != nil {
 		return nil, err
 	}
-	terms, err := SegmentTerms(ctx, s.db.Pool, id, idsOf(rows, groupID))
+	terms, err := SegmentTerms(ctx, s.db.Gorm, id, idsOf(rows, groupID))
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +108,7 @@ func (s *Service) ofSegment(c *gin.Context, id int64, items []pairInput) ([]*Set
 // grant, a rate or a model price in the group or are named by ?include=.
 func (s *Service) ofGroup(c *gin.Context, id int64, items []pairInput) ([]*Setting, error) {
 	ctx := c.Request.Context()
-	if err := requireGroup(ctx, s.db.Pool, id); err != nil {
+	if err := requireGroup(ctx, s.db.Gorm, id); err != nil {
 		return nil, err
 	}
 	for i := range items {
@@ -127,14 +126,14 @@ func (s *Service) ofGroup(c *gin.Context, id int64, items []pairInput) ([]*Setti
 	if err != nil {
 		return nil, err
 	}
-	terms, err := GroupTerms(ctx, s.db.Pool, id, idsOf(rows, segmentID))
+	terms, err := GroupTerms(ctx, s.db.Gorm, id, idsOf(rows, segmentID))
 	if err != nil {
 		return nil, err
 	}
 	return s.complete(ctx, rows, func(r *Setting) Terms { return terms[r.Segment.ID] })
 }
 
-func requireGroup(ctx context.Context, q store.Querier, id int64) error {
+func requireGroup(ctx context.Context, q *gorm.DB, id int64) error {
 	var found int64
 	err := store.G(ctx, q).Model(&model.Group{}).Select("id").Where("id = ?", id).Take(&found).Error
 	if store.IsNoRows(err) {
@@ -171,7 +170,7 @@ func idsOf(rows []*Setting, id func(*Setting) int64) []int64 {
 // (and orders), with the member count of each; complete fills in the rest.
 func (s *Service) settingRows(ctx context.Context, narrow func(*gorm.DB) *gorm.DB) ([]*Setting, error) {
 	var rows []settingRow
-	if err := settingQuery(store.G(ctx, s.db.Pool)).Scopes(narrow).Scan(&rows).Error; err != nil {
+	if err := settingQuery(store.G(ctx, s.db.Gorm)).Scopes(narrow).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]*Setting, len(rows))
@@ -285,7 +284,7 @@ func (s *Service) savePairs(ctx context.Context, items []pairInput) error {
 	ordered := slices.SortedStableFunc(slices.Values(items), func(a, b pairInput) int {
 		return cmp.Or(cmp.Compare(a.SegmentID, b.SegmentID), cmp.Compare(a.GroupID, b.GroupID))
 	})
-	return s.tx(ctx, func(tx pgx.Tx) error {
+	return s.tx(ctx, func(tx *gorm.DB) error {
 		segments, groups, err := lockPairs(ctx, tx, items)
 		if err != nil {
 			return err
@@ -320,7 +319,7 @@ func savePair(db *gorm.DB, it pairInput) *gorm.DB {
 // lockPairs returns the segments and the groups the items are about, locked
 // against deletion until the transaction ends. It fails with the field
 // errors of the items about a segment or a group that does not exist.
-func lockPairs(ctx context.Context, tx pgx.Tx, items []pairInput) (segments, groups []int64, err error) {
+func lockPairs(ctx context.Context, tx *gorm.DB, items []pairInput) (segments, groups []int64, err error) {
 	for _, it := range items {
 		segments, groups = append(segments, it.SegmentID), append(groups, it.GroupID)
 	}
@@ -346,7 +345,7 @@ func lockPairs(ctx context.Context, tx pgx.Tx, items []pairInput) (segments, gro
 
 // lockRows reports which of ids are rows of the table and locks those, in id
 // order, against deletion.
-func lockRows(ctx context.Context, tx pgx.Tx, table string, ids []int64) (map[int64]bool, error) {
+func lockRows(ctx context.Context, tx *gorm.DB, table string, ids []int64) (map[int64]bool, error) {
 	var found []int64
 	if err := store.G(ctx, tx).Table(table).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
 		Clauses(clause.Locking{Strength: store.LockingStrengthKeyShare}).Pluck("id", &found).Error; err != nil {

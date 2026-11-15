@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -114,7 +113,7 @@ func (s *Service) openAndValidate(ctx context.Context, data []byte, opt UploadOp
 // storedIdentical reports whether this exact package is stored as its key and
 // version (and was not rejected).
 func (s *Service) storedIdentical(ctx context.Context, p *pkg.Package) (bool, error) {
-	g := store.G(ctx, s.d.DB.Pool)
+	g := store.G(ctx, s.d.DB.Gorm)
 	var ok bool
 	err := store.ExistsQuery(g, versionRow(g, p.Manifest.Key, p.Manifest.Version).
 		Where("package_sha256 = ? AND consent_status <> ?", p.SHA256, ConsentRejected)).Scan(&ok).Error
@@ -125,7 +124,7 @@ func (s *Service) storedIdentical(ctx context.Context, p *pkg.Package) (bool, er
 // plugins' exclusive resources.
 func (s *Service) validatePackage(ctx context.Context, p *pkg.Package, opt UploadOptions) error {
 	m := p.Manifest
-	otherPlatforms, otherEndpoints, otherChannels, err := s.otherResources(ctx, s.d.DB.Pool, m.Key)
+	otherPlatforms, otherEndpoints, otherChannels, err := s.otherResources(ctx, s.d.DB.Gorm, m.Key)
 	if err != nil {
 		return err
 	}
@@ -146,7 +145,7 @@ func (s *Service) validatePackage(ctx context.Context, p *pkg.Package, opt Uploa
 func (s *Service) recordUpload(ctx context.Context, p *pkg.Package, actorID int64, opt UploadOptions) (*uploadRecord, error) {
 	m := p.Manifest
 	rec := &uploadRecord{consent: ConsentAwaiting}
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		ver, err := s.d.Trust.Verify(ctx, tx, p)
 		if err != nil {
 			return err
@@ -219,7 +218,7 @@ func (s *Service) recordUpload(ctx context.Context, p *pkg.Package, actorID int6
 // insertVersionRow inserts the version unless it already exists with the
 // same content. inserted is false for an identical re-upload, whose existing
 // consent status is returned so the review can report it unchanged.
-func insertVersionRow(ctx context.Context, tx pgx.Tx, p *pkg.Package, ver *pkg.Verification, opt UploadOptions, actorID int64) (inserted bool, priorConsent string, err error) {
+func insertVersionRow(ctx context.Context, tx *gorm.DB, p *pkg.Package, ver *pkg.Verification, opt UploadOptions, actorID int64) (inserted bool, priorConsent string, err error) {
 	m := p.Manifest
 	g := store.G(ctx, tx)
 	var old model.PluginVersion
@@ -288,7 +287,7 @@ func (s *Service) carryOverConsent(ctx context.Context, r *Review, key, version 
 // exclusive resource (audit 2026-10-09 P1-5): it cannot block a later upload,
 // a built-in plugin's above all, and Consent checks it again before it is
 // approved.
-func (s *Service) otherResources(ctx context.Context, q store.Querier, key string) ([]pkg.PlatformOwner, []pkg.EndpointOwner, []pkg.ChannelOwner, error) {
+func (s *Service) otherResources(ctx context.Context, q *gorm.DB, key string) ([]pkg.PlatformOwner, []pkg.EndpointOwner, []pkg.ChannelOwner, error) {
 	var rows []resourceRow
 	if err := approvedResources(store.G(ctx, q), key).Find(&rows).Error; err != nil {
 		return nil, nil, nil, err

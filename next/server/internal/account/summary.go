@@ -26,7 +26,7 @@ type Counts struct {
 
 // CountAccounts counts the live accounts in scope (core.AllScope for the
 // usage overview), for GET /accounts/summary.
-func CountAccounts(ctx context.Context, q store.Querier, scope core.DataScope) (Counts, error) {
+func CountAccounts(ctx context.Context, q *gorm.DB, scope core.DataScope) (Counts, error) {
 	var c Counts
 	err := countAccounts(store.G(ctx, q), scope).Scan(&c).Error
 	return c, err
@@ -44,7 +44,7 @@ func countAccounts(db *gorm.DB, scope core.DataScope) *gorm.DB {
 // accounts its account:read scope reaches.
 func (s *Service) summary(c *gin.Context) {
 	ctx := c.Request.Context()
-	counts, err := CountAccounts(ctx, s.d.DB.Pool, s.scopeOf(ctx, perm.AccountRead))
+	counts, err := CountAccounts(ctx, s.d.DB.Gorm, s.scopeOf(ctx, perm.AccountRead))
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

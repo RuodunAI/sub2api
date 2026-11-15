@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -78,7 +78,7 @@ func TestGroupScopedAccounts(t *testing.T) {
 	require.Equal(t, 403, code, out)
 	require.Equal(t, "would_leave_scope", out["error"].(map[string]any)["code"])
 	var groups []int64
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT array_agg(group_id ORDER BY group_id) FROM account_groups WHERE account_id = $1`, inGH).Scan(&groups))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT array_agg(group_id ORDER BY group_id) FROM account_groups WHERE account_id = $1`, inGH).Scan(&groups))
 	require.Equal(t, []int64{g, h}, groups, "the refused change was rolled back")
 
 	// Creating: into one of its groups only, with the own-level defaults.
@@ -116,7 +116,7 @@ func TestGroupScopedAccounts(t *testing.T) {
 	require.Error(t, core.AuthorizeAccounts(ctx, e.svc, mgr, "update", nil), "no ids: every account needed")
 
 	// A rebinding by someone else moves the account at once (no cache).
-	_, err = e.db.Pool.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, inH, k)
+	_, err = e.db.SQL.ExecContext(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, inH, k)
 	require.NoError(t, err)
 	code, _ = e.doAs(mgr, "GET", path(inH), nil)
 	require.Equal(t, 200, code)
@@ -139,16 +139,16 @@ func TestDeleteClearsScopedGrants(t *testing.T) {
 		ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key RETURNING id`)
 	keep := fmt.Sprintf("account/%d1", acc) // another id with the same prefix
 	for _, sc := range []string{fmt.Sprintf("account/%d", acc), fmt.Sprintf("group/%d/account/%d", g, acc), fmt.Sprintf("group/%d", g), keep, "own"} {
-		_, err := e.db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) VALUES ($1, $2, $3)`, role, perm, sc)
+		_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) VALUES ($1, $2, $3)`, role, perm, sc)
 		require.NoError(t, err)
 	}
 	scopes := func() []string {
 		var out []string
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT array_agg(scope ORDER BY scope) FROM role_permission_scopes WHERE role_id = $1`, role).Scan(&out))
+		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT array_agg(scope ORDER BY scope) FROM role_permission_scopes WHERE role_id = $1`, role).Scan(&out))
 		return out
 	}
 	version := func() (v int64) {
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v))
+		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v))
 		return v
 	}
 	v := version()
@@ -161,12 +161,12 @@ func TestDeleteClearsScopedGrants(t *testing.T) {
 	e.bus.mu.Unlock()
 	require.True(t, announced, "authz:changed published after commit")
 	var n int
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'authz.scope.clear' AND target_id = $1`, strconv.FormatInt(role, 10)).Scan(&n))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'authz.scope.clear' AND target_id = $1`, strconv.FormatInt(role, 10)).Scan(&n))
 	require.Equal(t, 1, n)
 
 	// The new version comes back for the caller to announce after commit.
 	clear := func() (got int64) {
-		require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) (err error) {
+		require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) (err error) {
 			got, err = core.ClearScopeGrants(ctx, tx, 0, core.ScopeRefGroup, []int64{g})
 			return err
 		}))

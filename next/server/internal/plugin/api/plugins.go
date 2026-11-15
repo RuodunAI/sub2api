@@ -89,12 +89,12 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 		}
 	}
 	viewer, _ := core.UserID(ctx)
-	pending, err := a.d.Install.RoleGrantsToReview(ctx, a.d.DB.Pool, s.Key, viewer)
+	pending, err := a.d.Install.RoleGrantsToReview(ctx, a.d.DB.Gorm, s.Key, viewer)
 	if err != nil {
 		return err
 	}
 	s.RoleGrantsToReview = append([]install.RoleGrant{}, pending...)
-	v, err := install.CurrentVersion(ctx, a.d.DB.Pool, s.Key)
+	v, err := install.CurrentVersion(ctx, a.d.DB.Gorm, s.Key)
 	if err != nil {
 		return err
 	}
@@ -102,7 +102,7 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 	if v != "" {
 		var sig string
 		var pub string
-		if err := store.G(ctx, a.d.DB.Pool).Raw(`SELECT signature_status, manifest->>'publisher', COALESCE(manifest->'ui'->'settings'->>'mode' = 'schema', false) FROM plugin_versions
+		if err := store.G(ctx, a.d.DB.Gorm).Raw(`SELECT signature_status, manifest->>'publisher', COALESCE(manifest->'ui'->'settings'->>'mode' = 'schema', false) FROM plugin_versions
 			WHERE plugin_key = ? AND version = ?`, s.Key, v).Row().Scan(&sig, &pub, &s.HasSettings); err != nil {
 			return err
 		}
@@ -117,7 +117,7 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 func (a *API) listPlugins(c *gin.Context) {
 	rc := c.Request.Context()
 	page, size := httpapi.Pagination(c)
-	g := store.G(rc, a.d.DB.Pool)
+	g := store.G(rc, a.d.DB.Gorm)
 	var total int64
 	if err := g.Model(&model.Plugin{}).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
@@ -206,7 +206,7 @@ type VersionInfo struct {
 func (a *API) getPlugin(c *gin.Context) {
 	rc := c.Request.Context()
 	key := c.Param("key")
-	s, err := scanSummary(store.G(rc, a.d.DB.Pool).Raw(pluginSelect+` WHERE p.key = ?`, key).Row())
+	s, err := scanSummary(store.G(rc, a.d.DB.Gorm).Raw(pluginSelect+` WHERE p.key = ?`, key).Row())
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin not found"))
 		return
@@ -228,7 +228,7 @@ func (a *API) getPlugin(c *gin.Context) {
 			httpapi.Fail(c, err)
 			return
 		}
-		m, err := install.LoadManifest(rc, a.d.DB.Pool, key, s.CurrentVersion)
+		m, err := install.LoadManifest(rc, a.d.DB.Gorm, key, s.CurrentVersion)
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
@@ -273,7 +273,7 @@ func (a *API) getPlugin(c *gin.Context) {
 			return
 		}
 	}
-	grants, err := install.LoadGrants(rc, a.d.DB.Pool, key)
+	grants, err := install.LoadGrants(rc, a.d.DB.Gorm, key)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -294,7 +294,7 @@ func (a *API) getPlugin(c *gin.Context) {
 
 func (a *API) versions(ctx context.Context, key string) ([]VersionInfo, error) {
 	var rows []model.PluginVersion
-	if err := versionRows(store.G(ctx, a.d.DB.Pool), key).Find(&rows).Error; err != nil {
+	if err := versionRows(store.G(ctx, a.d.DB.Gorm), key).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]VersionInfo, len(rows))
@@ -441,7 +441,7 @@ func (a *API) enable(c *gin.Context) {
 	}
 	// The resources the version holds are checked again: another plugin may
 	// have been approved, or the core upgraded, while it was disabled.
-	if v, err := install.CurrentVersion(c.Request.Context(), a.d.DB.Pool, key); err != nil {
+	if v, err := install.CurrentVersion(c.Request.Context(), a.d.DB.Gorm, key); err != nil {
 		httpapi.Fail(c, err)
 		return
 	} else if v != "" {
@@ -503,7 +503,7 @@ func (a *API) upgrade(c *gin.Context) {
 		return
 	}
 	var row model.PluginVersion
-	err := store.G(c.Request.Context(), a.d.DB.Pool).Select("consent_status", "signature_status").
+	err := store.G(c.Request.Context(), a.d.DB.Gorm).Select("consent_status", "signature_status").
 		Where("plugin_key = ? AND version = ?", key, in.Version).Take(&row).Error
 	consent, sig := core.ValueOr(row.ConsentStatus, ""), row.SignatureStatus
 	if store.IsNoRows(err) {
@@ -588,7 +588,7 @@ func (a *API) listGrants(c *gin.Context) {
 	if _, ok := a.pluginStatus(c, key); !ok {
 		return
 	}
-	g, err := install.LoadGrants(c.Request.Context(), a.d.DB.Pool, key)
+	g, err := install.LoadGrants(c.Request.Context(), a.d.DB.Gorm, key)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

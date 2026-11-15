@@ -2,12 +2,13 @@ package providerresources
 
 import (
 	"context"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestObservedContainerExpiryEvidence(t *testing.T) {
@@ -54,13 +55,13 @@ func TestObservedResourcesDBConcurrencyAndContexts(t *testing.T) {
 	ctx := context.Background()
 	s := New(db, Options{MaxResources: 4, MaxBytes: 100, MaxContexts: 1})
 	var owner, other core.ResourceOwner
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('observed@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('observed@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('observed-other@example.com','x') RETURNING id`).Scan(&other.UserID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('observed-other@example.com','x') RETURNING id`).Scan(&other.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('observed') RETURNING id`).Scan(&owner.GroupID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('observed') RETURNING id`).Scan(&owner.GroupID); e != nil {
 		t.Fatal(e)
 	}
 	other.GroupID = owner.GroupID
@@ -92,7 +93,7 @@ func TestObservedResourcesDBConcurrencyAndContexts(t *testing.T) {
 		}
 	}
 	var count, bytes int64
-	if e := db.Pool.QueryRow(ctx, `SELECT count(*),sum(bytes) FROM provider_resources`).Scan(&count, &bytes); e != nil || count != 1 || bytes != 10 {
+	if e := db.SQL.QueryRowContext(ctx, `SELECT count(*),sum(bytes) FROM provider_resources`).Scan(&count, &bytes); e != nil || count != 1 || bytes != 10 {
 		t.Fatal("duplicate quota", count, bytes, e)
 	}
 	bad := in
@@ -137,7 +138,7 @@ func TestObservedResourcesDBConcurrencyAndContexts(t *testing.T) {
 	if got, e := s.ResolveContext(ctx, contextID); e != nil || got.PublicID != r.PublicID {
 		t.Fatal("restart lost parent mapping", e)
 	}
-	if _, e = db.Pool.Exec(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 minute' WHERE public_id=$1`, r.PublicID); e != nil {
+	if _, e = db.SQL.ExecContext(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 minute' WHERE public_id=$1`, r.PublicID); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = s.ResolveContext(ctx, contextID); e == nil {

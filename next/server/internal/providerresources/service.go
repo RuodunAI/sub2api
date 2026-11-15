@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -92,7 +92,7 @@ func (s *Service) normalize(in core.ResourceIntent) (core.ResourceIntent, string
 	return in, hex.EncodeToString(h[:]), nil
 }
 
-func lockOwner(ctx context.Context, tx pgx.Tx, owner core.ResourceOwner) error {
+func lockOwner(ctx context.Context, tx *gorm.DB, owner core.ResourceOwner) error {
 	// A transaction-scoped lock serializes reservations/finalization for this quota.
 	raw, _ := json.Marshal(owner)
 	return advisoryLock(store.G(ctx, tx), "provider-resources:"+string(raw)).Error
@@ -103,7 +103,7 @@ func advisoryLock(db *gorm.DB, key string) *gorm.DB {
 	return db.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, key)
 }
 
-func (s *Service) quota(ctx context.Context, tx pgx.Tx, owner core.ResourceOwner, extraCount int, extraBytes int64) error {
+func (s *Service) quota(ctx context.Context, tx *gorm.DB, owner core.ResourceOwner, extraCount int, extraBytes int64) error {
 	return s.quotaAt(ctx, tx, owner, extraCount, extraBytes, time.Now())
 }
 
@@ -111,7 +111,7 @@ func resourceOccupiesQuota(r core.ProviderResource, at time.Time) bool {
 	return r.State != "deleted" && r.State != "failed" && !(r.Kind == "container" && !r.ExpiresAt.IsZero() && !r.ExpiresAt.After(at))
 }
 
-func (s *Service) quotaAt(ctx context.Context, tx pgx.Tx, owner core.ResourceOwner, extraCount int, extraBytes int64, at time.Time) error {
+func (s *Service) quotaAt(ctx context.Context, tx *gorm.DB, owner core.ResourceOwner, extraCount int, extraBytes int64, at time.Time) error {
 	var count, bytes int64
 	err := occupied(store.G(ctx, tx), owner, at).Row().Scan(&count, &bytes)
 	if err != nil {
@@ -137,7 +137,7 @@ func (s *Service) Reserve(ctx context.Context, input core.ResourceIntent) (out c
 	if err != nil {
 		return out, err
 	}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockOwner(ctx, tx, in.Owner); err != nil {
 			return err
 		}
@@ -182,7 +182,7 @@ func (s *Service) Get(ctx context.Context, owner core.ResourceOwner, id string) 
 	if !validOwner(owner) || !bounded(id) {
 		return core.ProviderResource{}, core.ErrInvalidArgument
 	}
-	r, _, err := read(store.G(ctx, s.db.Pool), `user_id=? AND group_id=? AND public_id=?`, owner.UserID, owner.GroupID, id)
+	r, _, err := read(store.G(ctx, s.db.Gorm), `user_id=? AND group_id=? AND public_id=?`, owner.UserID, owner.GroupID, id)
 	if store.IsNoRows(err) {
 		err = core.ErrNotFound
 	}
@@ -207,7 +207,7 @@ func (s *Service) List(ctx context.Context, owner core.ResourceOwner, after stri
 		return nil, core.ErrInvalidArgument
 	}
 	var rows []model.ProviderResource
-	if err := resources(store.G(ctx, s.db.Pool)).Where(`user_id=? AND group_id=? AND public_id>?`, owner.UserID, owner.GroupID, after).
+	if err := resources(store.G(ctx, s.db.Gorm)).Where(`user_id=? AND group_id=? AND public_id>?`, owner.UserID, owner.GroupID, after).
 		Order("public_id").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}

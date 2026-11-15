@@ -39,7 +39,7 @@ func TestRuntimeConfigLeavesTheCLIToTheImage(t *testing.T) {
 		encrypted, err := f.cipher.Encrypt(raw, configAAD)
 		require.NoError(t, err)
 		envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-		_, err = f.db.Pool.Exec(context.Background(), "UPDATE settings SET value=$1 WHERE key=$2", envelope, settingKey)
+		_, err = f.db.SQL.ExecContext(context.Background(), "UPDATE settings SET value=$1 WHERE key=$2", envelope, settingKey)
 		require.NoError(t, err)
 	}
 	save("2.1.302")
@@ -124,7 +124,7 @@ func TestSavedCLIVersionAsksNoRuntime(t *testing.T) {
 func TestSaveReportsStoredConfigFaults(t *testing.T) {
 	f := newRuntimeFixture(t, newFakeController(t).ServeHTTP)
 	admin := f.user("stored-fault@test")
-	_, err := f.db.Pool.Exec(context.Background(), `INSERT INTO settings(key,value) VALUES($1,'{"cipher":"AAAA"}')
+	_, err := f.db.SQL.ExecContext(context.Background(), `INSERT INTO settings(key,value) VALUES($1,'{"cipher":"AAAA"}')
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey)
 	require.NoError(t, err)
 	for _, policy := range []string{``, `,"cli_version":"2.1.305"`} {

@@ -208,7 +208,7 @@ func WithSource(src *blobs.Source) PackagesOption {
 // TrustVerifier verifies packages with the plugin trust store (official
 // root keys and publisher_keys read through q). lim bounds unpacking and
 // should match the upload limits.
-func TrustVerifier(trust *pluginpkg.TrustStore, q store.Querier, lim pluginpkg.Limits) PackageVerifier {
+func TrustVerifier(trust *pluginpkg.TrustStore, q *gorm.DB, lim pluginpkg.Limits) PackageVerifier {
 	return func(ctx context.Context, key, version string, data []byte) error {
 		p, err := pluginpkg.Open(data, lim)
 		if err != nil {
@@ -289,7 +289,7 @@ func (s *Packages) load(ctx context.Context, key, version string) (*Package, err
 		trust        *string
 		claimedAt    *time.Time
 	)
-	err := versionRecord(store.G(ctx, s.db.Pool), key, version).
+	err := versionRecord(store.G(ctx, s.db.Gorm), key, version).
 		Row().Scan(&manifestJSON, &sum, &url, &sigStatus, &publisher, &trust, &claimedAt)
 	if err != nil {
 		if store.IsNoRows(err) {

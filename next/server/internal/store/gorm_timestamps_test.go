@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -70,14 +69,14 @@ func TestSnapshotTimestamps(t *testing.T) {
 func TestGORMTimestamps(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, stampTable)
+	_, err := db.SQL.ExecContext(ctx, stampTable)
 	require.NoError(t, err)
 
 	inTx := func(f func(g *gorm.DB) error) time.Time {
 		t.Helper()
 		var now time.Time
-		require.NoError(t, db.Tx(ctx, func(tx pgx.Tx) error {
-			if err := tx.QueryRow(ctx, `SELECT now()`).Scan(&now); err != nil {
+		require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error {
+			if err := store.SQLTx(tx).QueryRowContext(ctx, `SELECT now()`).Scan(&now); err != nil {
 				return err
 			}
 			return f(store.G(ctx, tx))
@@ -87,7 +86,7 @@ func TestGORMTimestamps(t *testing.T) {
 	read := func(id int64) stampRow {
 		t.Helper()
 		var r stampRow
-		require.NoError(t, store.G(ctx, db.Pool).First(&r, id).Error)
+		require.NoError(t, store.G(ctx, db.Gorm).First(&r, id).Error)
 		return r
 	}
 

@@ -33,7 +33,7 @@ func TestTimedAutoDisableExpiresLazily(t *testing.T) {
 	g := e.exec1(`INSERT INTO groups (name) VALUES ('default') RETURNING id`)
 	mk := func(name string) int64 {
 		id := e.mkRawAccount("anthropic", "apikey", name, "sk-good-key-123", true)
-		if _, err := e.db.Pool.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, id, g); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, id, g); err != nil {
 			t.Fatal(err)
 		}
 		return id
@@ -45,7 +45,7 @@ func TestTimedAutoDisableExpiresLazily(t *testing.T) {
 		longTerm:  `status='auto_disabled',auto_disabled_until=NULL`,
 		offSwitch: `status='auto_disabled',auto_disabled_until=clock_timestamp()-interval '1 minute',schedulable=false`,
 	} {
-		if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET `+set+` WHERE id=$1`, id); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET `+set+` WHERE id=$1`, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -85,7 +85,7 @@ func TestTimedAutoDisableExpiresLazily(t *testing.T) {
 func TestAutomaticRecoveryTaskRunsAtStart(t *testing.T) {
 	e := setup(t)
 	id := e.mkRawAccount("anthropic", "apikey", "overdue", "sk-good-key-123", true)
-	if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET status='auto_disabled',auto_disabled_until=clock_timestamp()-interval '1 hour' WHERE id=$1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET status='auto_disabled',auto_disabled_until=clock_timestamp()-interval '1 hour' WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	tasks := registerTasks(t, New(e.svc.d))
@@ -111,7 +111,7 @@ func TestCandidatesSkipPendingRelease(t *testing.T) {
 func (e *env) accountStatus(id int64) string {
 	e.t.Helper()
 	var status string
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT status FROM accounts WHERE id=$1`, id).Scan(&status); err != nil {
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT status FROM accounts WHERE id=$1`, id).Scan(&status); err != nil {
 		e.t.Fatal(err)
 	}
 	return status

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/net/dns/dnsmessage"
+	"gorm.io/gorm"
 
 	sdkegress "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -91,7 +91,7 @@ func (m *memStore) prune(_ context.Context, before time.Time) error {
 	return nil
 }
 
-func (m *memStore) upsertDomains(ctx context.Context, ds []domainDelta, onNew func(context.Context, pgx.Tx, []domainDelta) error) error {
+func (m *memStore) upsertDomains(ctx context.Context, ds []domainDelta, onNew func(context.Context, *gorm.DB, []domainDelta) error) error {
 	m.mu.Lock()
 	if m.failDom != nil {
 		err := m.failDom
@@ -145,7 +145,7 @@ type memEvents struct {
 	evs []core.Event
 }
 
-func (e *memEvents) Emit(_ context.Context, _ pgx.Tx, evs ...core.Event) error {
+func (e *memEvents) Emit(_ context.Context, _ *gorm.DB, evs ...core.Event) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.evs = append(e.evs, evs...)

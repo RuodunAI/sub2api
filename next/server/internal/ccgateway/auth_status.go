@@ -6,10 +6,11 @@ import (
 	"errors"
 	"regexp"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"gorm.io/gorm"
 )
 
 var subscriptionPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
@@ -103,7 +104,7 @@ func safeAuthStatus(raw []byte) (any, error) {
 // reported in its runtime (CONTRACTS §59). An unknown value ("") leaves the
 // recorded one alone: older Workers do not report it. It reports whether the
 // recorded value actually changed.
-func recordSubscription(ctx context.Context, q store.Querier, accountID int64, value string) (bool, error) {
+func recordSubscription(ctx context.Context, q *gorm.DB, accountID int64, value string) (bool, error) {
 	if value = normalizeSubscription(value); value == "" || accountID <= 0 {
 		return false, nil
 	}
@@ -116,7 +117,7 @@ func recordSubscription(ctx context.Context, q store.Querier, accountID int64, v
 
 // recordRateLimitTier keeps on the account the tier the runtime reported. An
 // unknown value leaves the recorded one alone.
-func recordRateLimitTier(ctx context.Context, q store.Querier, accountID int64, value string) error {
+func recordRateLimitTier(ctx context.Context, q *gorm.DB, accountID int64, value string) error {
 	if value = normalizeSubscription(value); value == "" || accountID <= 0 {
 		return nil
 	}

@@ -29,13 +29,13 @@ func TestSkillResourcesDBAtomicVersionsOwnershipAndDeletion(t *testing.T) {
 	ctx := context.Background()
 	s := New(db, Options{MaxResources: 5, MaxBytes: 100, DefaultTTL: time.Hour})
 	var owner, other core.ResourceOwner
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('skill-owner@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('skill-owner@example.com','x') RETURNING id`).Scan(&owner.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('skill-other@example.com','x') RETURNING id`).Scan(&other.UserID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('skill-other@example.com','x') RETURNING id`).Scan(&other.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('skill-group') RETURNING id`).Scan(&owner.GroupID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('skill-group') RETURNING id`).Scan(&owner.GroupID); e != nil {
 		t.Fatal(e)
 	}
 	other.GroupID = owner.GroupID
@@ -92,13 +92,13 @@ func TestSkillResourcesDBAtomicVersionsOwnershipAndDeletion(t *testing.T) {
 	if e != nil || owned.PublicID != first.Parent.PublicID {
 		t.Fatal("owned remote lookup", e)
 	}
-	if _, e := db.Pool.Exec(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 second' WHERE public_id=$1`, first.Parent.PublicID); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 second' WHERE public_id=$1`, first.Parent.PublicID); e != nil {
 		t.Fatal(e)
 	}
 	if _, e := s.FindOwnedRemote(ctx, owner, binding, "skill", "skill_remote"); e == nil {
 		t.Fatal("expired remote lookup admitted")
 	}
-	if _, e := db.Pool.Exec(ctx, `UPDATE provider_resources SET expires_at=NULL WHERE public_id=$1`, first.Parent.PublicID); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `UPDATE provider_resources SET expires_at=NULL WHERE public_id=$1`, first.Parent.PublicID); e != nil {
 		t.Fatal(e)
 	}
 	wrongBinding := binding
@@ -179,7 +179,7 @@ func TestSkillResourcesDBAtomicVersionsOwnershipAndDeletion(t *testing.T) {
 		t.Fatal("remote tombstone discovered as ready")
 	}
 	var active int
-	if e = db.Pool.QueryRow(ctx, `SELECT count(*) FROM provider_skill_versions WHERE parent_id=$1 AND state!='deleted'`, first.Parent.PublicID).Scan(&active); e != nil || active != 0 {
+	if e = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM provider_skill_versions WHERE parent_id=$1 AND state!='deleted'`, first.Parent.PublicID).Scan(&active); e != nil || active != 0 {
 		t.Fatal("delete did not cascade", active, e)
 	}
 	intent.ParentID = ""
@@ -199,10 +199,10 @@ func TestSkillResourcesDBUnknownUploadAndQuota(t *testing.T) {
 	ctx := context.Background()
 	s := New(db, Options{MaxResources: 2, MaxBytes: 20})
 	var o core.ResourceOwner
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('skill-quota@example.com','x') RETURNING id`).Scan(&o.UserID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('skill-quota@example.com','x') RETURNING id`).Scan(&o.UserID); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('skill-quota') RETURNING id`).Scan(&o.GroupID); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('skill-quota') RETURNING id`).Scan(&o.GroupID); e != nil {
 		t.Fatal(e)
 	}
 	in := core.SkillUploadIntent{ResourceIntent: core.ResourceIntent{Owner: o, Binding: core.ResourceBinding{AccountID: 1, PrincipalID: "issuer", Generation: "g"}, PluginKey: "ccgateway", Kind: "skill", RequestID: "once", Bytes: 20}}

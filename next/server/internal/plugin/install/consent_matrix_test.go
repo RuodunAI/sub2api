@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -74,7 +74,7 @@ func flowGuard(version string) *manifest.Manifest {
 // denyAdmin makes the fake catalog refuse the admin role (the consenter
 // holds it).
 func denyAdmin(e *env) {
-	e.perms.grantees = func(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+	e.perms.grantees = func(context.Context, *gorm.DB, int64, []string) (core.PluginGrantees, error) {
 		return core.PluginGrantees{Denied: map[string]string{"admin": "held"}}, nil
 	}
 }
@@ -94,11 +94,11 @@ func TestInstallWithholdsUnnameableDefaults(t *testing.T) {
 	assert.Equal(t, []RoleGrant{{Permission: flow, Role: "admin", Risk: manifest.RiskSensitive, Via: viaDefault, Withheld: true}}, res.Withheld)
 	assert.Equal(t, map[string][]string{"operator": {"own"}, "supplier": {""}}, lastDef(t, e, flow).GrantRoles)
 	var pending string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail->>'pending' FROM audit_logs WHERE action = $1 AND target_id = 'guard'`, AuditConsent).Scan(&pending))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT detail->>'pending' FROM audit_logs WHERE action = $1 AND target_id = 'guard'`, AuditConsent).Scan(&pending))
 	assert.Contains(t, pending, `"role": "admin"`)
 
 	addPerms(t, e, map[string]string{"flow:manage": manifest.RiskSensitive})
-	gs, err := e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+	gs, err := e.svc.PendingRoleGrants(ctx, e.db.Gorm, "guard", "")
 	require.NoError(t, err)
 	assert.Equal(t, []RoleGrant{{Version: "0.1.0", Permission: flow, Role: "admin", Risk: manifest.RiskSensitive, Via: viaDefault, Withheld: true}}, gs)
 	_, err = e.svc.ReviewRoleGrants(ctx, "guard", "0.1.0", true, e.admin)
@@ -143,14 +143,14 @@ func TestInstallWithoutRoleDefineWithholdsAllDefaults(t *testing.T) {
 // grants it comes back with.
 func TestRevivedKeyGetsNoDefaults(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
-	_, err := e.db.Pool.Exec(ctx, `
+	_, err := e.db.SQL.ExecContext(ctx, `
 INSERT INTO permissions (key, module, label, source, plugin_key, status, risk, scope_type)
 VALUES ('plugin.guard:flow:manage', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'sensitive', 'plugin:flow');
 INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'flow/3' FROM roles r, permissions p
  WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:manage'`)
 	require.NoError(t, err)
 	m := flowGuard("0.1.1")
-	existing, err := loadCatalogPerms(ctx, e.svc.d.Permissions, e.db.Pool, m.Key)
+	existing, err := loadCatalogPerms(ctx, e.svc.d.Permissions, e.db.Gorm, m.Key)
 	require.NoError(t, err)
 	assert.True(t, existing.has("plugin.guard:flow:manage"))
 	assert.True(t, existing.removed("plugin.guard:flow:manage"))
@@ -187,7 +187,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 // no longer declares with their holders.
 func TestReviewMatrixCells(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
-	_, err := e.db.Pool.Exec(ctx, `
+	_, err := e.db.SQL.ExecContext(ctx, `
 INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{"en":"Super"}', true, true);
 INSERT INTO permissions (key, module, label, source, plugin_key, status, sort)
 VALUES ('plugin.guard:old:gone', 'plugin.guard', '{"en":"Gone"}', 'plugin', 'guard', 'active', 40);

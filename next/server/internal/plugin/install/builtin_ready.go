@@ -71,7 +71,7 @@ func (s *Service) BuiltinsCommitted(ctx context.Context, want map[string]Builtin
 }
 
 func (s *Service) builtinsReady(ctx context.Context, want map[string]BuiltinRequirement, gen core.Generation, checkLocal bool) (bool, error) {
-	g := store.G(ctx, s.d.DB.Pool)
+	g := store.G(ctx, s.d.DB.Gorm)
 	for key, need := range want {
 		var local core.PluginInfo
 		var hasLocal bool

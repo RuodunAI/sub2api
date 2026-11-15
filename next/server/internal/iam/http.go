@@ -170,7 +170,7 @@ func (s *Service) handleSegmentMembers(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := segment.Ref(c.Request.Context(), s.db.Pool, id, true); err != nil {
+	if _, err := segment.Ref(c.Request.Context(), s.db.Gorm, id, true); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

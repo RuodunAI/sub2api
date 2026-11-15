@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -71,7 +70,7 @@ func validateChange(ch *core.LedgerChange) error {
 // balance.changed event; then the Redis cache is refreshed.
 func (s *Service) Apply(ctx context.Context, ch core.LedgerChange) (*core.LedgerResult, error) {
 	var res *core.LedgerResult
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		res, err = s.ApplyTx(ctx, tx, ch)
 		return err
@@ -93,7 +92,7 @@ func (s *Service) Apply(ctx context.Context, ch core.LedgerChange) (*core.Ledger
 // row and the balance; ensureBalanceSQL before it only for a user without a
 // balance row) and one event: one round trip under the user's balance lock
 // before COMMIT instead of six (CONTRACTS §63.7).
-func (s *Service) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error) {
+func (s *Service) ApplyTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange) (*core.LedgerResult, error) {
 	if err := validateChange(&ch); err != nil {
 		return nil, err
 	}
@@ -118,7 +117,7 @@ func (s *Service) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) 
 	return res, nil
 }
 
-func findLedger(ctx context.Context, q store.Querier, key string) (*core.LedgerResult, error) {
+func findLedger(ctx context.Context, q *gorm.DB, key string) (*core.LedgerResult, error) {
 	var row model.BalanceLedger
 	err := ledgerByKey(store.G(ctx, q), key).Take(&row).Error
 	if store.IsNoRows(err) {
@@ -176,7 +175,7 @@ func (s *Service) Balance(ctx context.Context, userID int64) (decimal.Decimal, e
 	var bal decimal.Decimal
 	var lastID int64
 	// Behind the Redis cache: only a miss reads PostgreSQL.
-	err := store.G(ctx, s.db.Pool).Raw(balanceSQL, userID, userID).Row().Scan(&bal, &lastID)
+	err := store.G(ctx, s.db.Gorm).Raw(balanceSQL, userID, userID).Row().Scan(&bal, &lastID)
 	if err != nil {
 		return decimal.Zero, err
 	}

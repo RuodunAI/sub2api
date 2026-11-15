@@ -31,12 +31,12 @@ func hotFixture(b *testing.B) (*Service, int64, int64) {
 	var first int64
 	for i := range 10 {
 		var id int64
-		if err := db.Pool.QueryRow(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, models, model_mapping, model_limits, environment, created_by)
+		if err := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, models, model_mapping, model_limits, environment, created_by)
 			VALUES ('bench-' || $1::int, 'anthropic', 'apikey', '\x00', '{claude-sonnet-4-5,claude-opus-4-1}', '{"a":"b"}', '[]', '{"relay_timeout_seconds":60}', $2) RETURNING id`,
 			i, user).Scan(&id); err != nil {
 			b.Fatal(err)
 		}
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, id, group); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, id, group); err != nil {
 			b.Fatal(err)
 		}
 		if first == 0 {
@@ -74,7 +74,7 @@ func BenchmarkHotGroupSnapshot(b *testing.B) {
 		_, err := pgxGroupSnap(ctx, s.d.DB, group, time.Now())
 		return err
 	}, func() error {
-		_, err := readGroupSnap(store.G(ctx, s.d.DB.Pool), group, time.Now())
+		_, err := readGroupSnap(store.G(ctx, s.d.DB.Gorm), group, time.Now())
 		return err
 	})
 }
@@ -83,7 +83,7 @@ func BenchmarkHotLoadRow(b *testing.B) {
 	s, _, id := hotFixture(b)
 	ctx := context.Background()
 	benchPaths(b, func() error {
-		_, err := scanRow(s.d.DB.Pool.QueryRow(ctx, selectRow+` WHERE a.id = $1 AND a.deleted_at IS NULL`, id))
+		_, err := scanRow(s.d.DB.SQL.QueryRowContext(ctx, selectRow+` WHERE a.id = $1 AND a.deleted_at IS NULL`, id))
 		return err
 	}, func() error {
 		_, err := s.loadLive(ctx, id)
@@ -93,7 +93,7 @@ func BenchmarkHotLoadRow(b *testing.B) {
 
 // pgxGroupSnap is readGroupSnap as it ran on pgx.
 func pgxGroupSnap(ctx context.Context, db *store.DB, groupID int64, now time.Time) (groupSnap, error) {
-	rows, err := db.Pool.Query(ctx, `SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
+	rows, err := db.SQL.QueryContext(ctx, `SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
 			a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
 			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END
 		FROM accounts a JOIN account_groups ag ON ag.account_id = a.id

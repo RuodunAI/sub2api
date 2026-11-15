@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
@@ -59,10 +58,10 @@ const (
 // because the ledger row and the usage row must commit together.
 type TxLedger interface {
 	core.PrechargeReleaser
-	ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error)
+	ApplyTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange) (*core.LedgerResult, error)
 	// SettleTx releases the request's precharge and applies the final charge
 	// (nil: none) in one batch under the user's balance lock.
-	SettleTx(ctx context.Context, tx pgx.Tx, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error)
+	SettleTx(ctx context.Context, tx *gorm.DB, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error)
 	// CacheBalance refreshes the balance cache after commit.
 	CacheBalance(ctx context.Context, userID, ledgerID int64, balance decimal.Decimal)
 }
@@ -417,7 +416,7 @@ func conversionJSON(t *core.ConversionTrace) []byte {
 // lockUsageRow locks the usage row inside the caller's transaction and reads
 // its billing status. Every settlement path takes this lock first, so the
 // SQL and the lock order live here once.
-func lockUsageRow(ctx context.Context, tx pgx.Tx, id int64) (string, error) {
+func lockUsageRow(ctx context.Context, tx *gorm.DB, id int64) (string, error) {
 	var status string
 	err := store.G(ctx, tx).Model(&model.UsageLog{}).Select("billing_status").Where("id = ?", id).
 		Clauses(store.ForUpdate).Row().Scan(&status)
@@ -438,11 +437,11 @@ func (s *Service) insert(ctx context.Context, batch []*core.UsageRecord) ([]*cor
 	return s.insertAtomic(ctx, batch, nil, nil, false)
 }
 
-func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, before func(pgx.Tx) error, after func(pgx.Tx, map[string]int64) error, settleNow bool) ([]*core.UsageRecord, error) {
+func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, before func(*gorm.DB) error, after func(*gorm.DB, map[string]int64) error, settleNow bool) ([]*core.UsageRecord, error) {
 	var inserted []*core.UsageRecord
 	var reserved []reservedRow
 	var cached []balanceUpdate
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if before != nil {
 			if err := before(tx); err != nil {
 				return err
@@ -796,7 +795,7 @@ type balanceUpdate struct {
 // used, so a reservation and a later settlement of the same request can never
 // both take the base amount. What is new is only the row's status and the
 // pending_settlements entry.
-func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*core.LedgerResult, error) {
+func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*core.LedgerResult, error) {
 	rec := r.rec
 	p := fromRecord(rec)
 	cost, detail, _, err := s.priceOf(ctx, p)
@@ -864,7 +863,7 @@ func reserveUsageRow(db *gorm.DB, id int64, cost amounts, detail BillingDetail) 
 // correct it. Same shape as the reconcile loop's abandon path, and for the
 // same reason it writes 'billed' and never 'failed' - the money has already
 // moved, and usage_logs_billing_pending_idx covers ('pending','failed').
-func (s *Service) closeUnreconcilable(ctx context.Context, tx pgx.Tx, usageLogID int64, reason string) error {
+func (s *Service) closeUnreconcilable(ctx context.Context, tx *gorm.DB, usageLogID int64, reason string) error {
 	slog.ErrorContext(ctx, "usage: a reserved row cannot be reconciled, billing the estimate",
 		"usage_log_id", usageLogID, "reason", reason)
 	return markUsageRow(store.G(ctx, tx), usageLogID, StatusBilled, nil, map[string]string{
@@ -1066,7 +1065,7 @@ func baseCost(base *core.PriceBase, p *pending) (decimal.Decimal, error) {
 func (s *Service) settle(ctx context.Context, p *pending, skipLocked bool) error {
 	var err error
 	var ledgerRes *core.LedgerResult
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		ledgerRes, err = s.settleTx(ctx, tx, p, skipLocked)
 		return err
@@ -1088,7 +1087,7 @@ func (s *Service) markFailed(ctx context.Context, p *pending, cause error) {
 		slog.ErrorContext(ctx, "usage: settlement gave up", "request_id", p.RequestID, "attempts", attempts, "err", cause)
 	}
 	patch := jsonOr(map[string]any{"attempts": attempts, "error": trunc(cause.Error(), 1000), "inputs": p.Inputs}, "{}")
-	if err := markUsageFailed(store.G(ctx, s.db.Pool), p.RequestID, patch).Error; err != nil {
+	if err := markUsageFailed(store.G(ctx, s.db.Gorm), p.RequestID, patch).Error; err != nil {
 		slog.ErrorContext(ctx, "usage: mark failed", "request_id", p.RequestID, "err", err)
 	}
 }
@@ -1175,7 +1174,7 @@ func (s *Service) RetryPending(ctx context.Context) (int, error) {
 	if err := s.recoverExecutions(ctx); err != nil {
 		slog.WarnContext(ctx, "usage: recover execution observations", "err", err)
 	}
-	rows, err := store.G(ctx, s.db.Pool).Raw(`
+	rows, err := store.G(ctx, s.db.Gorm).Raw(`
 		SELECT u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
 		       u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
 		       u.input_tokens, u.output_tokens,
@@ -1222,7 +1221,7 @@ func (s *Service) RetryPending(ctx context.Context) (int, error) {
 	return len(list), nil
 }
 
-func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocked bool) (*core.LedgerResult, error) {
+func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLocked bool) (*core.LedgerResult, error) {
 	cost, detail, exprHash, err := s.priceOf(ctx, p)
 	if err != nil {
 		return nil, err

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -40,23 +40,23 @@ func TestPrechargeConcurrentAdmissionAndIdempotentRelease(t *testing.T) {
 		t.Fatalf("admitted %d requests", success)
 	}
 	var id string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT request_id FROM request_precharges`).Scan(&id); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT request_id FROM request_precharges`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.svc.Precharge(ctx, &core.UsageRecord{RequestID: id, UserID: uid, Price: &core.PriceRule{Expression: "flat(0.75)"}, RateMultiplier: decimal.NewFromInt(1)}); err != nil {
 		t.Fatal(err)
 	}
 	var balance decimal.Decimal
-	_ = e.db.Pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance)
 	if !balance.Equal(decimal.RequireFromString("0.25")) {
 		t.Fatalf("balance %s", balance)
 	}
 	for range 2 {
-		if err := e.db.Tx(ctx, func(tx pgx.Tx) error { _, err := e.svc.ReleasePrechargeTx(ctx, tx, uid, id); return err }); err != nil {
+		if err := e.db.Tx(ctx, func(tx *gorm.DB) error { _, err := e.svc.ReleasePrechargeTx(ctx, tx, uid, id); return err }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance)
 	if !balance.Equal(decimal.NewFromInt(1)) {
 		t.Fatalf("refund balance %s", balance)
 	}
@@ -98,7 +98,7 @@ func TestPrechargeReservationLedgerAndReplay(t *testing.T) {
 	if err := e.svc.Precharge(ctx, record("r1")); core.AsError(err).Code != core.ErrInsufficientBalance.Code {
 		t.Fatalf("no balance row: %v", err)
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM user_balances WHERE user_id=$1`, uid).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM user_balances WHERE user_id=$1`, uid).Scan(&n)
 	if n != 0 {
 		t.Fatal("refused first charge left the balance row it had created")
 	}
@@ -110,14 +110,14 @@ func TestPrechargeReservationLedgerAndReplay(t *testing.T) {
 	}
 	var balance, delta, after, amount decimal.Decimal
 	var kind, refType, refID, key, note string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.db.Pool.QueryRow(ctx, `SELECT delta,balance_after,kind,ref_type,ref_id,idempotency_key,note FROM balance_ledger WHERE idempotency_key='precharge:r1'`).
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT delta,balance_after,kind,ref_type,ref_id,idempotency_key,note FROM balance_ledger WHERE idempotency_key='precharge:r1'`).
 		Scan(&delta, &after, &kind, &refType, &refID, &key, &note); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.db.Pool.QueryRow(ctx, `SELECT amount FROM request_precharges WHERE request_id='r1' AND user_id=$1`, uid).Scan(&amount); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT amount FROM request_precharges WHERE request_id='r1' AND user_id=$1`, uid).Scan(&amount); err != nil {
 		t.Fatal(err)
 	}
 	if !balance.Equal(decimal.RequireFromString("0.25")) || !delta.Equal(decimal.RequireFromString("-0.75")) ||
@@ -130,9 +130,9 @@ func TestPrechargeReservationLedgerAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	var events, ledger int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance)
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type='balance.changed' AND payload->>'user_id'=$1`, strconv.FormatInt(uid, 10)).Scan(&events)
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM balance_ledger WHERE user_id=$1`, uid).Scan(&ledger)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE type='balance.changed' AND payload->>'user_id'=$1`, strconv.FormatInt(uid, 10)).Scan(&events)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM balance_ledger WHERE user_id=$1`, uid).Scan(&ledger)
 	if !balance.Equal(decimal.RequireFromString("0.25")) || events != 2 || ledger != 2 {
 		t.Fatalf("replay charged again: balance %s events %d ledger %d", balance, events, ledger)
 	}
@@ -140,15 +140,15 @@ func TestPrechargeReservationLedgerAndReplay(t *testing.T) {
 	if err := e.svc.Precharge(ctx, record("r2")); core.AsError(err).Code != core.ErrInsufficientBalance.Code {
 		t.Fatalf("insufficient: %v", err)
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM request_precharges WHERE request_id='r2'`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM request_precharges WHERE request_id='r2'`).Scan(&n)
 	if n != 0 {
 		t.Fatal("insufficient precharge left a reservation")
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM balance_ledger WHERE idempotency_key='precharge:r2'`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM balance_ledger WHERE idempotency_key='precharge:r2'`).Scan(&n)
 	if n != 0 {
 		t.Fatal("insufficient precharge wrote a ledger row")
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT balance FROM user_balances WHERE user_id=$1`, uid).Scan(&balance)
 	if !balance.Equal(decimal.RequireFromString("0.25")) {
 		t.Fatalf("insufficient precharge changed the balance to %s", balance)
 	}

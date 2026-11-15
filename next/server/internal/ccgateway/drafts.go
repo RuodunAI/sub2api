@@ -10,14 +10,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 // Draft runtimes (CONTRACTS §49.9): the account editor starts a runtime
@@ -91,7 +91,7 @@ func (s *Service) touchDraftOf(ctx context.Context, key string, scope *int64, ki
 	if !isDraftKey(key) {
 		return false, nil
 	}
-	res := touchDraftQuery(store.G(ctx, s.DB.Pool), key, scope, kind)
+	res := touchDraftQuery(store.G(ctx, s.DB.Gorm), key, scope, kind)
 	if res.Error != nil {
 		return false, res.Error
 	}
@@ -118,7 +118,7 @@ func (s *Service) checkProxy(ctx context.Context, id *int64) error {
 		return e
 	}
 	var status string
-	e = store.G(ctx, s.DB.Pool).Table("proxies p").Select("p.status").Where("p.id = ?", *id).
+	e = store.G(ctx, s.DB.Gorm).Table("proxies p").Select("p.status").Where("p.id = ?", *id).
 		Scopes(core.ProxyRows.Scope(refs)).Take(&status).Error
 	if store.IsNoRows(e) {
 		return reasonError(core.ErrInvalidArgument, "proxy_not_found")
@@ -167,7 +167,7 @@ func (s *Service) draftCreate(c *gin.Context) {
 	if draftScope(ctx) == nil {
 		limit = 0 // no limit
 	}
-	e := s.DB.Tx(ctx, func(tx pgx.Tx) error {
+	e := s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		if limit > 0 {
 			if err := core.LockOpenDrafts(ctx, tx, uid); err != nil {
 				return err
@@ -220,7 +220,7 @@ func (s *Service) draftUpdate(c *gin.Context) {
 		httpapi.Fail(c, e)
 		return
 	}
-	res := setDraftProxy(store.G(ctx, s.DB.Pool), key, scope, in.ProxyID)
+	res := setDraftProxy(store.G(ctx, s.DB.Gorm), key, scope, in.ProxyID)
 	if res.Error != nil || res.RowsAffected != 1 {
 		httpapi.Fail(c, errOr(res.Error, draftNotFound(core.ErrNotFound)))
 		return
@@ -248,7 +248,7 @@ func (s *Service) draftDelete(c *gin.Context) {
 		return
 	}
 	if _, e := s.removeDraft(ctx, key, true); e != nil {
-		openDraft(store.G(context.WithoutCancel(ctx), s.DB.Pool), key).Update("last_seen_at", gorm.Expr("now() - interval '1 day'"))
+		openDraft(store.G(context.WithoutCancel(ctx), s.DB.Gorm), key).Update("last_seen_at", gorm.Expr("now() - interval '1 day'"))
 		httpapi.Fail(c, transportError(e))
 		return
 	}
@@ -300,7 +300,7 @@ func (s *Service) removeDraft(ctx context.Context, key string, wait bool) (remov
 	if !isDraftKey(key) {
 		return false, errors.New("not a draft key")
 	}
-	e := s.lockedTx(ctx, key, wait, func(tx pgx.Tx) error {
+	e := s.lockedTx(ctx, key, wait, func(tx *gorm.DB) error {
 		res := openDraft(store.G(ctx, tx), key).Delete(&model.CcgatewayRuntime{})
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error
@@ -316,36 +316,18 @@ func (s *Service) removeDraft(ctx context.Context, key string, wait bool) (remov
 
 // lockedTx runs fn in a transaction holding the runtime's advisory lock and
 // commits when fn succeeds. Without wait a held lock returns nil at once.
-func (s *Service) lockedTx(ctx context.Context, key string, wait bool, fn func(pgx.Tx) error) error {
-	conn, e := s.DB.Pool.Acquire(ctx)
-	if e != nil {
-		return e
-	}
-	defer conn.Release()
-	tx, e := conn.Begin(ctx)
-	if e != nil {
-		return e
-	}
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = tx.Rollback(cleanup)
-	}()
+func (s *Service) lockedTx(ctx context.Context, key string, wait bool, fn func(*gorm.DB) error) error {
 	q := tryLockSQL
 	if wait {
 		q = lockSQL
 	}
-	var locked bool
-	if e = store.G(ctx, tx).Raw(q, key).Row().Scan(&locked); e != nil {
-		return e
-	}
-	if !locked {
-		return nil
-	}
-	if e = fn(tx); e != nil {
-		return e
-	}
-	return tx.Commit(ctx)
+	return s.DB.Tx(ctx, func(tx *gorm.DB) error {
+		var locked bool
+		if e := store.G(ctx, tx).Raw(q, key).Row().Scan(&locked); e != nil || !locked {
+			return e // a lock held elsewhere: nothing ran, nothing to commit
+		}
+		return fn(tx)
+	})
 }
 
 // deleteRemote removes a runtime on the controller (DELETE /accounts/<key>,
@@ -416,7 +398,7 @@ func (s *Service) checkDraftLogin(ctx context.Context, key string, scope *int64,
 // meanwhile (or not the caller's, or a re-authorization draft) fails with
 // 400 draft_not_found. A sweep deleting the draft concurrently holds the
 // row: the update waits and then finds nothing.
-func AdoptDraft(ctx context.Context, tx pgx.Tx, key string, accountID int64, scope *int64) error {
+func AdoptDraft(ctx context.Context, tx *gorm.DB, key string, accountID int64, scope *int64) error {
 	res := adoptDraftQuery(store.G(ctx, tx), key, accountID, scope)
 	if res.Error != nil {
 		return res.Error

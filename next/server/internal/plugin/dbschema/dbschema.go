@@ -16,8 +16,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -67,7 +65,7 @@ func (m *Manager) RolePassword(pluginKey string) string {
 // canCreateRole reports whether the current connection may create roles.
 func (m *Manager) canCreateRole(ctx context.Context) (bool, error) {
 	var ok bool
-	err := store.G(ctx, m.db.Pool).Raw(`SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname = current_user`).Row().Scan(&ok)
+	err := store.G(ctx, m.db.Gorm).Raw(`SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname = current_user`).Row().Scan(&ok)
 	return ok, err
 }
 
@@ -75,7 +73,7 @@ func (m *Manager) canCreateRole(ctx context.Context) (bool, error) {
 // schemas, which no model maps: they are raw SQL on store.G. A one-value
 // read uses Row().Scan, which, like pgx's QueryRow, fails on no row.
 //
-// DDL takes no parameters, so identifiers are quoted with pgx.Identifier
+// DDL takes no parameters, so identifiers are quoted with store.QuoteIdent
 // and literals with quoteLiteral, as before. GORM passes the text of a
 // statement without arguments through unchanged: a "?" or "@name" in a
 // literal stays text.
@@ -122,7 +120,7 @@ func (m *Manager) CheckIsolation(ctx context.Context) error {
 // shared by every database of the PostgreSQL cluster, so it names this
 // database: another database (another deployment) using the same plugin key
 // does not own the role.
-func roleMarker(ctx context.Context, q store.Querier, pluginKey string) (string, error) {
+func roleMarker(ctx context.Context, q *gorm.DB, pluginKey string) (string, error) {
 	var dbname string
 	if err := store.G(ctx, q).Raw(`SELECT current_database()`).Row().Scan(&dbname); err != nil {
 		return "", err
@@ -133,7 +131,7 @@ func roleMarker(ctx context.Context, q store.Querier, pluginKey string) (string,
 // roleOwned reports whether the existing role belongs to this plugin of this
 // database: it carries the marker, or (roles created before the marker) it
 // owns the plugin's schema here.
-func roleOwned(ctx context.Context, q store.Querier, role, schema, marker string) (bool, error) {
+func roleOwned(ctx context.Context, q *gorm.DB, role, schema, marker string) (bool, error) {
 	var owned bool
 	err := roleOwnedQuery(store.G(ctx, q), role, schema, marker).Row().Scan(&owned)
 	if store.IsNoRows(err) {
@@ -162,7 +160,7 @@ var sharedACLLockKey = store.PluginMigrationLockKey("*shared-migration-function-
 
 // grantMigrationFuncs lets role run migrationFuncs. Most Ensure calls find
 // the grant in place and write nothing.
-func grantMigrationFuncs(ctx context.Context, tx pgx.Tx, role string) error {
+func grantMigrationFuncs(ctx context.Context, tx *gorm.DB, role string) error {
 	g := store.G(ctx, tx)
 	granted := func() (bool, error) {
 		var ok bool
@@ -179,7 +177,7 @@ func grantMigrationFuncs(ctx context.Context, tx pgx.Tx, role string) error {
 	if ok, err := granted(); err != nil || ok {
 		return err
 	}
-	s := "GRANT EXECUTE ON FUNCTION " + migrationFuncs + " TO " + pgx.Identifier{role}.Sanitize()
+	s := "GRANT EXECUTE ON FUNCTION " + migrationFuncs + " TO " + store.QuoteIdent(role)
 	if err := g.Exec(s).Error; err != nil {
 		return fmt.Errorf("%s: %w", s, err)
 	}
@@ -201,9 +199,9 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 		return st, err
 	}
 	isolate := m.roleIsolation
-	sid := pgx.Identifier{schema}.Sanitize()
+	sid := store.QuoteIdent(schema)
 	lockKey := store.PluginMigrationLockKey(pluginKey)
-	err := m.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := m.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		// Serialize with migrations and other nodes ensuring the same schema.
 		if err := xactLock(g, lockKey^0x5a5a); err != nil {
@@ -213,7 +211,7 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			return g.Exec("CREATE SCHEMA IF NOT EXISTS " + sid).Error
 		}
 		role := schema
-		rid := pgx.Identifier{role}.Sanitize()
+		rid := store.QuoteIdent(role)
 		pw := quoteLiteral(m.RolePassword(pluginKey))
 		marker, err := roleMarker(ctx, tx, pluginKey)
 		if err != nil {
@@ -350,17 +348,12 @@ func (m *Manager) Migrate(ctx context.Context, pluginKey string, fsys fs.FS) ([]
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("parse plugin dsn: %w", err)
-	}
-	cfg.MaxConns = 1
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := store.OpenSized(ctx, dsn, 1)
 	if err != nil {
 		return nil, fmt.Errorf("connect as plugin role: %w", err)
 	}
 	defer pool.Close()
-	return store.Migrate(ctx, &store.DB{Pool: pool}, fsys, Tracker{PluginKey: pluginKey, AsPluginRole: true}, opt)
+	return store.Migrate(ctx, pool, fsys, Tracker{PluginKey: pluginKey, AsPluginRole: true}, opt)
 }
 
 // Pending reports whether any of ids has not been applied yet.
@@ -369,7 +362,7 @@ func (m *Manager) Pending(ctx context.Context, pluginKey string, ids []string) (
 		return false, nil
 	}
 	var n int64
-	err := pluginMigrations(store.G(ctx, m.db.Pool), pluginKey).Where("migration_id = ANY(?)", store.Strings(ids)).Count(&n).Error
+	err := pluginMigrations(store.G(ctx, m.db.Gorm), pluginKey).Where("migration_id = ANY(?)", store.Strings(ids)).Count(&n).Error
 	return n < int64(len(ids)), err
 }
 
@@ -399,17 +392,17 @@ func (m *Manager) DSN(ctx context.Context, pluginKey string) (dsn string, st Sta
 
 // Drop removes the schema, the role and the migration records.
 func (m *Manager) Drop(ctx context.Context, pluginKey string) error {
-	return m.db.Tx(ctx, func(tx pgx.Tx) error { return m.DropTx(ctx, tx, pluginKey) })
+	return m.db.Tx(ctx, func(tx *gorm.DB) error { return m.DropTx(ctx, tx, pluginKey) })
 }
 
 // DropTx holds both schema and migration locks until the lifecycle transaction
 // commits. Invalidate the local DSN cache even on rollback; Ensure rebuilds it.
-func (m *Manager) DropTx(ctx context.Context, tx pgx.Tx, pluginKey string) error {
+func (m *Manager) DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) error {
 	if !keyRe.MatchString(pluginKey) {
 		return fmt.Errorf("invalid plugin key %q", pluginKey)
 	}
 	schema := SchemaName(pluginKey)
-	sid := pgx.Identifier{schema}.Sanitize()
+	sid := store.QuoteIdent(schema)
 	g := store.G(ctx, tx)
 	err := func() error {
 		if err := xactLock(g, store.PluginMigrationLockKey(pluginKey)^0x5a5a); err != nil {
@@ -436,7 +429,7 @@ func (m *Manager) DropTx(ctx context.Context, tx pgx.Tx, pluginKey string) error
 		// A same-named role this core did not create (another database of
 		// the cluster, an operator's role) is left alone.
 		if owned {
-			rid := pgx.Identifier{schema}.Sanitize()
+			rid := store.QuoteIdent(schema)
 			// DROP OWNED revokes the role's grant on migrationFuncs.
 			if err := xactLock(g, sharedACLLockKey); err != nil {
 				return err
@@ -467,7 +460,7 @@ type Tracker struct {
 	AsPluginRole bool
 }
 
-func (Tracker) Ensure(context.Context, store.Querier) error { return nil }
+func (Tracker) Ensure(context.Context, *gorm.DB) error { return nil }
 
 // migrationRecord is a row Tracker.Applied reads.
 type migrationRecord struct {
@@ -475,7 +468,7 @@ type migrationRecord struct {
 	Checksum    string `gorm:"column:checksum"`
 }
 
-func (t Tracker) Applied(ctx context.Context, q store.Querier) (map[string]string, error) {
+func (t Tracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, error) {
 	var rows []migrationRecord
 	if err := t.appliedQuery(store.G(ctx, q)).Scan(&rows).Error; err != nil {
 		return nil, err
@@ -497,7 +490,7 @@ func (t Tracker) appliedQuery(g *gorm.DB) *gorm.DB {
 	return g.Raw(`SELECT migration_id, checksum FROM public.plugin_migrations WHERE plugin_key = ?`, t.PluginKey)
 }
 
-func (t Tracker) Record(ctx context.Context, tx pgx.Tx, id, checksum string) error {
+func (t Tracker) Record(ctx context.Context, tx *gorm.DB, id, checksum string) error {
 	return t.recordQuery(store.G(ctx, tx), id, checksum).Error
 }
 

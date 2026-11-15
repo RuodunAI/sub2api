@@ -34,7 +34,7 @@ func TestHelperUsageReceiptDBConflictAndMissingRow(t *testing.T) {
 	if err = f.svc.PersistHelperUsage(ctx, &bad, raw, digest); err == nil {
 		t.Fatal("record not bound to supplied envelope")
 	}
-	if _, err = f.db.Pool.Exec(ctx, `DELETE FROM usage_logs WHERE request_id=$1`, rec.RequestID); err != nil {
+	if _, err = f.db.SQL.ExecContext(ctx, `DELETE FROM usage_logs WHERE request_id=$1`, rec.RequestID); err != nil {
 		t.Fatal(err)
 	}
 	if err = f.svc.PersistHelperUsage(ctx, rec, raw, digest); err == nil {

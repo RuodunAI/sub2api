@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 type taskClaim struct {
@@ -27,7 +27,7 @@ type taskClaim struct {
 var errTaskDeferred = errors.New("original task account is unavailable or busy")
 
 func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, error) {
-	rows, err := claimDueTasks(store.G(ctx, s.db.Pool), limit, uuid.NewString()).Rows()
+	rows, err := claimDueTasks(store.G(ctx, s.db.Gorm), limit, uuid.NewString()).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +150,7 @@ func (s *Service) reconcileTask(ctx context.Context, e *settleEntry) bool {
 // lockTaskOutcome is always called before locking usage/pending rows. Its
 // update and the billing outcome share one transaction, so stale workers can
 // neither publish a terminal snapshot nor touch money after lease takeover.
-func (s *Service) lockTaskOutcome(ctx context.Context, tx pgx.Tx, e *settleEntry, observation string) error {
+func (s *Service) lockTaskOutcome(ctx context.Context, tx *gorm.DB, e *settleEntry, observation string) error {
 	if e.task == nil {
 		return nil
 	}
@@ -205,7 +205,7 @@ func releaseTaskClaim(db *gorm.DB, e *settleEntry, state, observation string, sn
 
 // A legacy worker may have claimed this row before lazy import transferred
 // polling to async_tasks. Financial callers already hold the usage row here.
-func lockLegacyOutcome(ctx context.Context, tx pgx.Tx, e *settleEntry) error {
+func lockLegacyOutcome(ctx context.Context, tx *gorm.DB, e *settleEntry) error {
 	if e.task != nil {
 		return nil
 	}
@@ -223,7 +223,7 @@ func lockLegacyOutcome(ctx context.Context, tx pgx.Tx, e *settleEntry) error {
 func (s *Service) finishTaskOnly(ctx context.Context, e *settleEntry, observation string) {
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err := s.outcomeTx(ctx, e, func(tx pgx.Tx) error { return s.lockTaskOutcome(ctx, tx, e, observation) })
+	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error { return s.lockTaskOutcome(ctx, tx, e, observation) })
 	if err != nil && !errors.Is(err, errNotPending) {
 		s.rec.log.Error("task outcome write failed", "task", e.task.id, "err", err)
 	}
@@ -244,7 +244,7 @@ func (s *Service) rescheduleTask(ctx context.Context, e *settleEntry, cfg resolv
 	if next.After(e.deadlineAt) {
 		next = e.deadlineAt
 	}
-	err := s.outcomeTx(ctx, e, func(tx pgx.Tx) error {
+	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
 		if err := s.lockTaskOutcome(ctx, tx, e, "pending"); err != nil {
 			return err
 		}

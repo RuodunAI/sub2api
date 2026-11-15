@@ -25,16 +25,16 @@ const migratedPolicy = `{"egress":"account_configured","revision":1,"backoff_ms"
 func TestMigrationSplitsTheMigratedAutoDisableRule(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	_, err := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES('failure_policy',$1)
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES('failure_policy',$1)
 		ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`, migratedPolicy)
 	require.NoError(t, err)
 	raw, err := migrations.FS.ReadFile("0072_failure_policy_split_auto_disable.sql")
 	require.NoError(t, err)
 	for range 2 {
-		_, err = db.Pool.Exec(ctx, string(raw))
+		_, err = db.SQL.ExecContext(ctx, string(raw))
 		require.NoError(t, err)
 	}
-	p, err := loadFailurePolicy(ctx, db.Pool)
+	p, err := loadFailurePolicy(ctx, db.Gorm)
 	require.NoError(t, err)
 	require.NotNil(t, p)
 	require.Equal(t, int64(2), p.Revision)
@@ -62,15 +62,15 @@ func TestMigrationSplitsTheMigratedAutoDisableRule(t *testing.T) {
 		require.Equal(t, tc.k, d.AccountKeyword, tc.text)
 	}
 	var history string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT value::text FROM settings WHERE key='failure_policy_history'`).Scan(&history))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT value::text FROM settings WHERE key='failure_policy_history'`).Scan(&history))
 	require.Equal(t, 1, strings.Count(history, `"revision": 1`), history)
 
 	// A policy the administrator changed is left alone.
-	_, err = db.Pool.Exec(ctx, `UPDATE settings SET value=jsonb_set($1::jsonb,'{account_rules,0,match,status_codes}','"401,403"') WHERE key='failure_policy'`, migratedPolicy)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE settings SET value=jsonb_set($1::jsonb,'{account_rules,0,match,status_codes}','"401,403"') WHERE key='failure_policy'`, migratedPolicy)
 	require.NoError(t, err)
-	_, err = db.Pool.Exec(ctx, string(raw))
+	_, err = db.SQL.ExecContext(ctx, string(raw))
 	require.NoError(t, err)
-	p, err = loadFailurePolicy(ctx, db.Pool)
+	p, err = loadFailurePolicy(ctx, db.Gorm)
 	require.NoError(t, err)
 	require.Len(t, p.AccountRules, 1)
 }
@@ -99,13 +99,13 @@ func TestMigrationSplitsTheMigratedRuleNextToOtherRules(t *testing.T) {
 	require.NoError(t, err)
 	store := func(policy string) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES('failure_policy',$1)
+		_, err := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES('failure_policy',$1)
 			ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`, policy)
 		require.NoError(t, err)
 	}
 	run := func(raw []byte) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, string(raw))
+		_, err := db.SQL.ExecContext(ctx, string(raw))
 		require.NoError(t, err)
 	}
 	ids := func(p *FailurePolicy) []string {
@@ -119,18 +119,18 @@ func TestMigrationSplitsTheMigratedRuleNextToOtherRules(t *testing.T) {
 
 	// The migrated rule after an added one, and one more after it.
 	var policy string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_set($1::jsonb, '{account_rules}',
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_set($1::jsonb, '{account_rules}',
 		jsonb_build_array($2::jsonb) || ($1::jsonb->'account_rules') || jsonb_build_array(jsonb_set($2::jsonb, '{id}', '"tail"')))::text`,
 		migratedPolicy, custom).Scan(&policy))
 	store(policy)
 	run(raw72) // leaves it alone: more than one account rule
-	p, err := loadFailurePolicy(ctx, db.Pool)
+	p, err := loadFailurePolicy(ctx, db.Gorm)
 	require.NoError(t, err)
 	require.Equal(t, []string{"quota-cooldown", "migrated-disable", "tail"}, ids(p))
 	for range 2 {
 		run(raw74)
 	}
-	p, err = loadFailurePolicy(ctx, db.Pool)
+	p, err = loadFailurePolicy(ctx, db.Gorm)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), p.Revision)
 	require.Equal(t, []string{"quota-cooldown", "login-invalid", "account-on-hold", "migrated-disable", "tail"}, ids(p))
@@ -147,12 +147,12 @@ func TestMigrationSplitsTheMigratedRuleNextToOtherRules(t *testing.T) {
 	require.Equal(t, "quota-cooldown", d.AccountRule)
 
 	// An id the policy already has is not added again.
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_set($1::jsonb, '{account_rules}',
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_set($1::jsonb, '{account_rules}',
 		jsonb_build_array(jsonb_set($2::jsonb, '{id}', '"login-invalid"')) || ($1::jsonb->'account_rules'))::text`,
 		migratedPolicy, custom).Scan(&policy))
 	store(policy)
 	run(raw74)
-	p, err = loadFailurePolicy(ctx, db.Pool)
+	p, err = loadFailurePolicy(ctx, db.Gorm)
 	require.NoError(t, err)
 	require.Equal(t, []string{"login-invalid", "account-on-hold", "migrated-disable"}, ids(p))
 	require.Equal(t, "402", p.AccountRules[0].Match.StatusCodes)
@@ -161,7 +161,7 @@ func TestMigrationSplitsTheMigratedRuleNextToOtherRules(t *testing.T) {
 	store(migratedPolicy)
 	run(raw72)
 	run(raw74)
-	p, err = loadFailurePolicy(ctx, db.Pool)
+	p, err = loadFailurePolicy(ctx, db.Gorm)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), p.Revision)
 	require.Equal(t, []string{"login-invalid", "account-on-hold", "migrated-disable"}, ids(p))
@@ -216,21 +216,21 @@ func TestMigrationAppendsStoredLoginKeywords(t *testing.T) {
 	require.NoError(t, err)
 	store := func(policy string) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES('failure_policy',$1)
+		_, err := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES('failure_policy',$1)
 			ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`, policy)
 		require.NoError(t, err)
-		_, err = db.Pool.Exec(ctx, `DELETE FROM settings WHERE key='failure_policy_history'`)
+		_, err = db.SQL.ExecContext(ctx, `DELETE FROM settings WHERE key='failure_policy_history'`)
 		require.NoError(t, err)
 	}
 	run := func(raw []byte) {
 		t.Helper()
-		_, err := db.Pool.Exec(ctx, string(raw))
+		_, err := db.SQL.ExecContext(ctx, string(raw))
 		require.NoError(t, err)
 	}
 	current := func() string {
 		t.Helper()
 		var v string
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT value::text FROM settings WHERE key='failure_policy'`).Scan(&v))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT value::text FROM settings WHERE key='failure_policy'`).Scan(&v))
 		return v
 	}
 
@@ -240,7 +240,7 @@ func TestMigrationAppendsStoredLoginKeywords(t *testing.T) {
 	for range 2 {
 		run(raw75)
 	}
-	p, err := loadFailurePolicy(ctx, db.Pool)
+	p, err := loadFailurePolicy(ctx, db.Gorm)
 	require.NoError(t, err)
 	require.Equal(t, int64(3), p.Revision)
 	want := loginAccountRules()
@@ -257,7 +257,7 @@ func TestMigrationAppendsStoredLoginKeywords(t *testing.T) {
 		Text: `{"type":"error","error":{"type":"permission_error","code":"stored_login_refused_admin","message":"x"}}`})
 	require.Equal(t, "account-on-hold", d.AccountRule)
 	var history string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT value::text FROM settings WHERE key='failure_policy_history'`).Scan(&history))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT value::text FROM settings WHERE key='failure_policy_history'`).Scan(&history))
 	require.Equal(t, 1, strings.Count(history, `"revision": 2`), history)
 	require.NotContains(t, history, `"revision": 3`)
 
@@ -266,11 +266,11 @@ func TestMigrationAppendsStoredLoginKeywords(t *testing.T) {
 	custom := `{"id":"quota-cooldown","name":"Quota","match":{"mode":"all","groups":[],"models":[],"source":"upstream","keywords":[],"protocols":[],"status_codes":"402"},"action":"cooldown","egress":"","enabled":true,"cooldown_seconds":60,"exhausted_action":"","same_account_retries":0}`
 	store(migratedPolicy)
 	run(raw72)
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_set($1::jsonb, '{account_rules}',
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_set($1::jsonb, '{account_rules}',
 		jsonb_build_array($2::jsonb) || ($1::jsonb->'account_rules'))::text`, current(), custom).Scan(&policy))
 	store(policy)
 	run(raw75)
-	p, err = loadFailurePolicy(ctx, db.Pool)
+	p, err = loadFailurePolicy(ctx, db.Gorm)
 	require.NoError(t, err)
 	require.Equal(t, int64(3), p.Revision)
 	require.Empty(t, p.AccountRules[0].Match.Keywords)
@@ -281,14 +281,14 @@ func TestMigrationAppendsStoredLoginKeywords(t *testing.T) {
 	// already names the code (in upper case).
 	store(migratedPolicy)
 	run(raw72)
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_set(jsonb_set($1::jsonb, '{account_rules,0,match,keywords}', '[]'),
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_set(jsonb_set($1::jsonb, '{account_rules,0,match,keywords}', '[]'),
 		'{account_rules,1,match,keywords}', ($1::jsonb #> '{account_rules,1,match,keywords}') || '["STORED_LOGIN_REFUSED_ADMIN"]')::text`, current()).Scan(&policy))
 	store(policy)
 	run(raw75)
 	require.JSONEq(t, policy, current())
 
 	// Left alone: a rule with 100 keywords already.
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT jsonb_set($1::jsonb, '{account_rules,0,match,keywords}',
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT jsonb_set($1::jsonb, '{account_rules,0,match,keywords}',
 		(SELECT jsonb_agg('k' || n) FROM generate_series(1, 100) n))::text`, policy).Scan(&policy))
 	store(policy)
 	run(raw75)

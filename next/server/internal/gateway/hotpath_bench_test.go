@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -23,11 +23,11 @@ import (
 func hotFixture(b *testing.B) *store.DB {
 	ctx := context.Background()
 	db := testutil.DB(b)
-	if err := db.Tx(ctx, func(tx pgx.Tx) error { return syncBuiltinRules(ctx, tx, builtinStickyRules()) }); err != nil {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error { return syncBuiltinRules(ctx, tx, builtinStickyRules()) }); err != nil {
 		b.Fatal(err)
 	}
 	doc, _ := json.Marshal(defaultGatewaySettings())
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO settings (key, value) VALUES ($1, $2)`, settingsKeyGateway, doc); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ($1, $2)`, settingsKeyGateway, doc); err != nil {
 		b.Fatal(err)
 	}
 	return db
@@ -60,12 +60,12 @@ func BenchmarkHotSettingsRow(b *testing.B) {
 	benchPaths(b, func() error {
 		v := defaultGatewaySettings()
 		var raw []byte
-		if err := db.Pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, settingsKeyGateway).Scan(&raw); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = $1`, settingsKeyGateway).Scan(&raw); err != nil {
 			return err
 		}
 		return json.Unmarshal(raw, &v)
 	}, func() error {
-		_, err := loadGatewaySettings(ctx, db.Pool)
+		_, err := loadGatewaySettings(ctx, db.Gorm)
 		return err
 	})
 }
@@ -74,7 +74,7 @@ func BenchmarkHotStickyRules(b *testing.B) {
 	db := hotFixture(b)
 	ctx := context.Background()
 	benchPaths(b, func() error {
-		rows, err := db.Pool.Query(ctx, `SELECT `+ruleColumns+` FROM sticky_rules ORDER BY priority, id`)
+		rows, err := db.SQL.QueryContext(ctx, `SELECT `+ruleColumns+` FROM sticky_rules ORDER BY priority, id`)
 		if err != nil {
 			return err
 		}
@@ -92,7 +92,7 @@ func BenchmarkHotStickyRules(b *testing.B) {
 		}
 		return rows.Err()
 	}, func() error {
-		_, err := listRules(ctx, db.Pool)
+		_, err := listRules(ctx, db.Gorm)
 		return err
 	})
 }

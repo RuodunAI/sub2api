@@ -26,14 +26,14 @@ func hotFixture(b *testing.B) (*Service, int64, string) {
 	ctx := context.Background()
 	db := testutil.DB(b)
 	user := testutil.InsertUser(b, db, "bench@test.invalid")
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name) VALUES ('bench', '{"en":"Bench"}')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ('bench', '{"en":"Bench"}')`); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = 'bench'`, user); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = 'bench'`, user); err != nil {
 		b.Fatal(err)
 	}
 	hash := hashToken("bench-key")
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO user_access_keys (user_id, name, token_hash, token_hint, permissions, last_used_at)
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO user_access_keys (user_id, name, token_hash, token_hint, permissions, last_used_at)
 		VALUES ($1, 'k', $2, 'abcd', '{account:read:own,user:read:all}', now())`, user, hash); err != nil {
 		b.Fatal(err)
 	}
@@ -67,9 +67,9 @@ func BenchmarkHotUserStatus(b *testing.B) {
 	var active bool
 	var version int
 	benchPaths(b, func() error {
-		return s.db.Pool.QueryRow(ctx, `SELECT status = 'active', token_version FROM users WHERE id = $1 AND deleted_at IS NULL`, user).Scan(&active, &version)
+		return s.db.SQL.QueryRowContext(ctx, `SELECT status = 'active', token_version FROM users WHERE id = $1 AND deleted_at IS NULL`, user).Scan(&active, &version)
 	}, func() error {
-		return userStatus(store.G(ctx, s.db.Pool), user).Row().Scan(&active, &version)
+		return userStatus(store.G(ctx, s.db.Gorm), user).Row().Scan(&active, &version)
 	})
 }
 
@@ -79,12 +79,12 @@ func BenchmarkHotAccessKey(b *testing.B) {
 	benchPaths(b, func() error {
 		var id core.AccessKeyIdentity
 		var expiresAt, lastUsed *time.Time
-		return s.db.Pool.QueryRow(ctx, `SELECT id, user_id, permissions, expires_at, last_used_at FROM user_access_keys WHERE token_hash = $1`, hash).
+		return s.db.SQL.QueryRowContext(ctx, `SELECT id, user_id, permissions, expires_at, last_used_at FROM user_access_keys WHERE token_hash = $1`, hash).
 			Scan(&id.KeyID, &id.UserID, &id.Permissions, &expiresAt, &lastUsed)
 	}, func() error {
 		var id core.AccessKeyIdentity
 		var expiresAt, lastUsed *time.Time
-		return accessKeyByHash(store.G(ctx, s.db.Pool), hash).Row().
+		return accessKeyByHash(store.G(ctx, s.db.Gorm), hash).Row().
 			Scan(&id.KeyID, &id.UserID, (*store.Strings)(&id.Permissions), &expiresAt, &lastUsed)
 	})
 }
@@ -96,7 +96,7 @@ func BenchmarkHotGetUser(b *testing.B) {
 		_, err := pgxGetUser(ctx, s.db, user)
 		return err
 	}, func() error {
-		_, err := s.getUser(ctx, s.db.Pool, user)
+		_, err := s.getUser(ctx, s.db.Gorm, user)
 		return err
 	})
 }
@@ -105,7 +105,7 @@ func BenchmarkHotGetUser(b *testing.B) {
 func pgxGetUser(ctx context.Context, db *store.DB, id int64) (*User, error) {
 	var u User
 	var balance string
-	err := db.Pool.QueryRow(ctx, `SELECT `+userColumns+` FROM `+usersFrom+` WHERE u.id = $1 AND u.deleted_at IS NULL`, id).
+	err := db.SQL.QueryRowContext(ctx, `SELECT `+userColumns+` FROM `+usersFrom+` WHERE u.id = $1 AND u.deleted_at IS NULL`, id).
 		Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
 			&u.Roles, &u.Segment.ID, &u.Segment.Kind, &u.Segment.Name, &u.Segment.UserID, &balance)
 	u.Balance = &balance

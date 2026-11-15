@@ -85,7 +85,7 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 	default:
 		if in.ProxyID != nil {
 			// Same visibility rule as POST /accounts (§21.2).
-			if err := checkRefs(ctx, s.d.DB.Pool, in.ProxyID, s.proxyRefs(ctx, perm.AccountCreate)); err != nil {
+			if err := checkRefs(ctx, s.d.DB.Gorm, in.ProxyID, s.proxyRefs(ctx, perm.AccountCreate)); err != nil {
 				httpapi.Fail(c, err)
 				return
 			}
@@ -129,7 +129,7 @@ func (s *Service) fetchAccountModels(c *gin.Context) {
 		}
 	}
 	scope := s.scopeOf(ctx, perm.AccountTest)
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, scope, false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

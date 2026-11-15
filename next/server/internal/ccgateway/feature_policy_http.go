@@ -7,13 +7,13 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 type featureGroupRef struct {
@@ -44,7 +44,7 @@ func (s *Service) accountFeaturePreview(c *gin.Context) {
 	if !ok {
 		return
 	}
-	account, err := LoadAccountFeaturePolicy(ctx, s.DB.Pool, id)
+	account, err := LoadAccountFeaturePolicy(ctx, s.DB.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return
@@ -76,7 +76,7 @@ func (s *Service) previewAuthorize(c *gin.Context, ctx context.Context, id int64
 		httpapi.Fail(c, err)
 		return false
 	}
-	g := store.G(ctx, s.DB.Pool)
+	g := store.G(ctx, s.DB.Gorm)
 	found, err := store.Exists(g, g.Model(&model.Account{}).
 		Where("id = ? AND deleted_at IS NULL AND plugin_key = 'ccgateway' AND type IN ('managed', 'apikey')", id))
 	if err != nil || !found {
@@ -125,7 +125,7 @@ func previewInput(c *gin.Context) (groupID int64, draft *AccountFeaturePolicy, o
 // them (0 means "no group selected").
 func (s *Service) accountGroups(c *gin.Context, ctx context.Context, id, groupID int64) ([]featureGroupRef, bool) {
 	var groups []featureGroupRef
-	if err := accountGroupsQuery(store.G(ctx, s.DB.Pool), id).Scan(&groups).Error; err != nil {
+	if err := accountGroupsQuery(store.G(ctx, s.DB.Gorm), id).Scan(&groups).Error; err != nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return nil, false
 	}
@@ -149,7 +149,7 @@ func accountGroupsQuery(db *gorm.DB, id int64) *gorm.DB {
 // Saving a custom draft requires at least one current account group without an
 // enabled prohibition. Groups need no separate CC configuration. Retaining an
 // unchanged dormant draft is allowed when editing other fields.
-func (s *Service) SaveAccountFeatures(ctx context.Context, tx pgx.Tx, id int64, p AccountFeaturePolicy) error {
+func (s *Service) SaveAccountFeatures(ctx context.Context, tx *gorm.DB, id int64, p AccountFeaturePolicy) error {
 	old, err := LoadAccountFeaturePolicy(ctx, tx, id)
 	if err != nil {
 		return err

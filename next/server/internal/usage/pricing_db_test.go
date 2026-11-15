@@ -40,7 +40,7 @@ func (f *fixture) scaled(id, scale string) *core.UsageRecord {
 func (f *fixture) customPrice() *core.PriceRule {
 	f.t.Helper()
 	hash := expr.Hash(customExpr)
-	_, err := f.db.Pool.Exec(f.t.Context(), `INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES ($1, $2, 1)
+	_, err := f.db.SQL.ExecContext(f.t.Context(), `INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES ($1, $2, 1)
 		ON CONFLICT DO NOTHING`, hash, customExpr)
 	require.NoError(f.t, err)
 	return &core.PriceRule{ID: f.price.ID, Model: f.price.Model, Mode: "per_token", Expression: customExpr, ExprVersion: 1, ExprHash: hash,
@@ -60,7 +60,7 @@ func (f *fixture) customPriced(id string) *core.UsageRecord {
 // back from by its hash.
 func (f *fixture) loseHistory() {
 	f.t.Helper()
-	_, err := f.db.Pool.Exec(f.t.Context(), `DELETE FROM model_price_history`)
+	_, err := f.db.SQL.ExecContext(f.t.Context(), `DELETE FROM model_price_history`)
 	require.NoError(f.t, err)
 }
 
@@ -160,9 +160,9 @@ func TestRetryUsesFrozenPriceRule(t *testing.T) {
 	ctx := t.Context()
 	scaled, custom := f.scaled("retry-scale", "0.5"), f.customPriced("retry-custom")
 	scaled.Model, custom.Model = "m-scale", "m-custom"
-	_, err := f.db.Pool.Exec(ctx, `INSERT INTO price_rules (group_id, model, kind, multiplier) VALUES ($1, 'm-scale', 'multiplier', 0.5)`, f.group)
+	_, err := f.db.SQL.ExecContext(ctx, `INSERT INTO price_rules (group_id, model, kind, multiplier) VALUES ($1, 'm-scale', 'multiplier', 0.5)`, f.group)
 	require.NoError(t, err)
-	_, err = f.db.Pool.Exec(ctx, `INSERT INTO price_rules (group_id, model, kind, mode, config, expression, expr_hash)
+	_, err = f.db.SQL.ExecContext(ctx, `INSERT INTO price_rules (group_id, model, kind, mode, config, expression, expr_hash)
 		VALUES ($1, 'm-custom', 'custom', 'per_token', '{}', $2, $3)`, f.group, customExpr, expr.Hash(customExpr))
 	require.NoError(t, err)
 
@@ -180,7 +180,7 @@ func TestRetryUsesFrozenPriceRule(t *testing.T) {
 		`DELETE FROM price_rules WHERE model = 'm-custom'`,
 		`UPDATE model_prices SET expression = '` + changed + `', expr_hash = '` + expr.Hash(changed) + `'`,
 	} {
-		_, err := f.db.Pool.Exec(ctx, sql)
+		_, err := f.db.SQL.ExecContext(ctx, sql)
 		require.NoError(t, err, sql)
 	}
 	// The caller's objects are not the frozen ones either.
@@ -348,7 +348,7 @@ func TestRefundedRowsHaveNoBaseCost(t *testing.T) {
 		}
 		return &pluginv1.ReconcileResult{NextCheckAfterSec: 600}, nil
 	}
-	_, err := rf.db.Pool.Exec(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute' WHERE ref_id = 'task-refunded'`)
+	_, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute' WHERE ref_id = 'task-refunded'`)
 	require.NoError(t, err)
 	rf.due()
 	require.Equal(t, 2, rf.svc.ReconcileDue(ctx))

@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
@@ -305,7 +303,7 @@ func (a *applyRow) dest() []any {
 // resolve turns the row into ApplyTx's result for ch: the new row, or the
 // existing one after the duplicate check, re-reading the key after a lost
 // insert race.
-func (a *applyRow) resolve(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error) {
+func (a *applyRow) resolve(ctx context.Context, tx *gorm.DB, ch core.LedgerChange) (*core.LedgerResult, error) {
 	switch {
 	case a.applied.LedgerID != 0:
 		return &a.applied, nil
@@ -380,7 +378,7 @@ func (r *releaseRow) dest() []any {
 // reservation that was deleted while its refund key already existed
 // (nothing new written) is reported through the existing ledger row, as
 // ApplyTx's duplicate.
-func (r *releaseRow) resolve(ctx context.Context, tx pgx.Tx, key string) (*core.LedgerResult, error) {
+func (r *releaseRow) resolve(ctx context.Context, tx *gorm.DB, key string) (*core.LedgerResult, error) {
 	if !r.released {
 		return nil, nil
 	}
@@ -400,7 +398,7 @@ func (r *releaseRow) resolve(ctx context.Context, tx pgx.Tx, key string) (*core.
 // releasePrecharge runs releaseSQL for the request's reservation on tx and
 // returns the refund and its amount; nil means the request had no
 // reservation.
-func releasePrecharge(ctx context.Context, tx pgx.Tx, userID int64, requestID string) (*core.LedgerResult, decimal.Decimal, error) {
+func releasePrecharge(ctx context.Context, tx *gorm.DB, userID int64, requestID string) (*core.LedgerResult, decimal.Decimal, error) {
 	key := releaseKey(requestID)
 	var r releaseRow
 	if err := releaseStmt.row(store.G(ctx, tx), requestID, userID, key, "release request precharge").Scan(r.dest()...); err != nil {
@@ -459,7 +457,7 @@ func settleLedger(db *gorm.DB, userID int64, requestID string, charge *core.Ledg
 // in one call. It returns the charge's result, or the refund's when there is
 // no charge (nil when nothing moved). The caller refreshes the balance cache
 // after committing, as for ApplyTx.
-func (s *Service) SettleTx(ctx context.Context, tx pgx.Tx, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error) {
+func (s *Service) SettleTx(ctx context.Context, tx *gorm.DB, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error) {
 	if charge != nil {
 		if err := validateChange(charge); err != nil {
 			return nil, err
@@ -508,7 +506,4 @@ func (s *Service) SettleTx(ctx context.Context, tx pgx.Tx, userID int64, request
 }
 
 // isLockTimeout reports PostgreSQL's lock_not_available (lock_timeout hit).
-func isLockTimeout(err error) bool {
-	var pg *pgconn.PgError
-	return errors.As(err, &pg) && pg.Code == "55P03"
-}
+func isLockTimeout(err error) bool { return store.SQLState(err) == "55P03" }

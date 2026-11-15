@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -26,7 +26,7 @@ func (s dbGatewaySettings) load(ctx context.Context) (GatewaySettings, error) {
 	if s.db == nil {
 		return GatewaySettings{}, core.ErrUnavailable
 	}
-	return loadGatewaySettings(ctx, s.db.Pool)
+	return loadGatewaySettings(ctx, s.db.Gorm)
 }
 
 func (s dbGatewaySettings) update(ctx context.Context, in gatewaySettingsInput, updatedBy int64) (GatewaySettings, error) {
@@ -34,7 +34,7 @@ func (s dbGatewaySettings) update(ctx context.Context, in gatewaySettingsInput, 
 	if s.db == nil {
 		return v, core.ErrUnavailable
 	}
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if in.MaxAttempts != nil {
 			if err := legacyFailureSettingGuard(ctx, tx); err != nil {
 				return err

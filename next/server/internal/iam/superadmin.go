@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
@@ -21,7 +21,7 @@ import (
 // the route (step-up superadmin.transfer: the password and a second
 // factor). The caller becomes an admin.
 func (s *Service) TransferSuperAdmin(ctx context.Context, actorID, targetID int64) error {
-	su, err := s.authz.IsSuperuser(ctx, s.db.Pool, actorID)
+	su, err := s.authz.IsSuperuser(ctx, s.db.Gorm, actorID)
 	if err != nil {
 		return err
 	}
@@ -37,7 +37,7 @@ func (s *Service) TransferSuperAdmin(ctx context.Context, actorID, targetID int6
 func (s *Service) transferSuperAdmin(ctx context.Context, actorID, targetID int64) error {
 	var v int64
 	var ended []int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var demoted []int64
 		var err error
 		if v, demoted, err = s.authz.TransferSuperAdmin(ctx, tx, actorID, targetID); err != nil {
@@ -75,7 +75,7 @@ type RecoverOptions struct {
 func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts RecoverOptions) (password string, err error) {
 	var id int64
 	var status string
-	err = userByEmail(store.G(ctx, s.db.Pool), strings.TrimSpace(email), "id, status").Row().Scan(&id, &status)
+	err = userByEmail(store.G(ctx, s.db.Gorm), strings.TrimSpace(email), "id, status").Row().Scan(&id, &status)
 	if store.IsNoRows(err) {
 		return "", core.ErrNotFound.WithMessage("user not found")
 	}

@@ -45,7 +45,7 @@ func managedCCGatewayEnv(t *testing.T, configured bool) *env {
 	})
 	// The managed transport checks the authoritative account type before
 	// allowing the legacy shared runtime. Match the scheduler fixture in PG.
-	if _, err := db.Pool.Exec(context.Background(), `INSERT INTO accounts(id,name,plugin_key,type,credentials_enc) VALUES(1,'managed-test','ccgateway','managed',''::bytea)`); err != nil {
+	if _, err := db.SQL.ExecContext(context.Background(), `INSERT INTO accounts(id,name,plugin_key,type,credentials_enc) VALUES(1,'managed-test','ccgateway','managed',''::bytea)`); err != nil {
 		t.Fatal(err)
 	}
 	e.gw.allowPrivate = false // the managed path must not require disabling SSRF.
@@ -73,7 +73,7 @@ func managedCCGatewayEnv(t *testing.T, configured bool) *env {
 			t.Fatal(err)
 		}
 		envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-		if _, err = db.Pool.Exec(context.Background(), `INSERT INTO settings(key,value) VALUES('ccgateway_remote',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, envelope); err != nil {
+		if _, err = db.SQL.ExecContext(context.Background(), `INSERT INTO settings(key,value) VALUES('ccgateway_remote',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, envelope); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -160,7 +160,7 @@ func TestCCGatewayAPIKeyRejectsLegacySharedRuntime(t *testing.T) {
 	e := managedCCGatewayEnv(t, true)
 	e.gen.accountTypes[0].Type.ID = "apikey"
 	e.accounts.accounts[1].Type = "apikey"
-	if _, err := e.gw.d.CCGateway.DB.Pool.Exec(context.Background(), `UPDATE accounts SET type='apikey' WHERE id=1`); err != nil {
+	if _, err := e.gw.d.CCGateway.DB.SQL.ExecContext(context.Background(), `UPDATE accounts SET type='apikey' WHERE id=1`); err != nil {
 		t.Fatal(err)
 	}
 	r := e.messages(body(testModel, false))

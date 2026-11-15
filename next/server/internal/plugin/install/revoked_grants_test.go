@@ -6,14 +6,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // revokedEnv runs one plugin ("mini") through versions that ask for the
@@ -54,11 +55,11 @@ func (e revokedEnv) consent(version string, req ConsentRequest) error {
 func (e revokedEnv) activate(version string, withLog bool) {
 	e.t.Helper()
 	ctx := context.Background()
-	if err := e.db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := e.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := grants.Promote(ctx, tx, "mini", version); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'mini'`, version); err != nil {
+		if _, err := store.SQLTx(tx).ExecContext(ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'mini'`, version); err != nil {
 			return err
 		}
 		return NewDefaultsApplier(nil).ApplyDefaults(ctx, tx, e.manifest(version, withLog), nil)
@@ -69,7 +70,7 @@ func (e revokedEnv) activate(version string, withLog bool) {
 
 func (e revokedEnv) statuses(version string) map[string]string {
 	e.t.Helper()
-	g, err := LoadVersionGrants(context.Background(), e.db.Pool, "mini", version)
+	g, err := LoadVersionGrants(context.Background(), e.db.Gorm, "mini", version)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestRevokedLowRiskGrantIsNotGrantedByDefault(t *testing.T) {
 		t.Fatalf("staged grants of 0.2.0: %v", s)
 	}
 	var carried string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT d->>'carried' FROM audit_logs, jsonb_array_elements(detail->'decisions') d
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT d->>'carried' FROM audit_logs, jsonb_array_elements(detail->'decisions') d
 		WHERE action = 'plugin.consent' AND target_id = 'mini' AND detail->>'version' = '0.2.0' AND d->>'permission' = 'kv'`).Scan(&carried); err != nil || carried != "false" {
 		t.Fatalf("kv decision audit: %q %v", carried, err)
 	}
@@ -153,7 +154,7 @@ func TestRevokedLowRiskGrantIsNotGrantedByDefault(t *testing.T) {
 		t.Fatalf("0.3.0 (kv restored, log dropped) not approved on upload: %s", r.ConsentStatus)
 	}
 	e.activate("0.3.0", false)
-	if g, _ := LoadGrants(ctx, e.db.Pool, "mini"); g["log"].Status != GrantRevoked {
+	if g, _ := LoadGrants(ctx, e.db.Gorm, "mini"); g["log"].Status != GrantRevoked {
 		t.Fatalf("log after a version without it: %+v", g["log"])
 	}
 	e.upload("0.4.0", true)
@@ -197,7 +198,7 @@ func TestRevocationOutlivesAWithdrawnStagedSet(t *testing.T) {
 	if err := e.svc.RevokeGrant(ctx, "mini", "log", e.admin); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.db.Tx(ctx, func(tx pgx.Tx) error { return grants.Withdraw(ctx, tx, "mini", "0.2.0", "failed") }); err != nil {
+	if err := e.db.Tx(ctx, func(tx *gorm.DB) error { return grants.Withdraw(ctx, tx, "mini", "0.2.0", "failed") }); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.consent("0.2.0", ConsentRequest{}); err != nil {
@@ -207,7 +208,7 @@ func TestRevocationOutlivesAWithdrawnStagedSet(t *testing.T) {
 		t.Fatalf("staged grants of 0.2.0 after the withdrawal: %v", s)
 	}
 	// The running version, which does not ask for log, is not given it.
-	if g, err := grants.Granted(ctx, e.db.Pool, "mini", "0.1.0", e.manifest("0.1.0", false).HostPermissions); err != nil || len(g) != 1 {
+	if g, err := grants.Granted(ctx, e.db.Gorm, "mini", "0.1.0", e.manifest("0.1.0", false).HostPermissions); err != nil || len(g) != 1 {
 		t.Fatalf("0.1.0 runs with %v (%v)", g, err)
 	}
 }
@@ -301,13 +302,13 @@ func TestSetGrantNarrowsAndRegrants(t *testing.T) {
 	domains := func(d ...any) map[string]any { return map[string]any{"domains": d} }
 	grant := func(version string) Grant {
 		t.Helper()
-		g, err := LoadVersionGrants(ctx, e.db.Pool, "mini", version)
+		g, err := LoadVersionGrants(ctx, e.db.Gorm, "mini", version)
 		require.NoError(t, err)
 		return g["net"]
 	}
 	audited := func(action string) int {
 		var n int
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_id = 'mini'`, action).Scan(&n))
+		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_id = 'mini'`, action).Scan(&n))
 		return n
 	}
 
@@ -358,7 +359,7 @@ func TestSetGrantNarrowsAndRegrants(t *testing.T) {
 	assert.Equal(t, GrantGranted, grant("0.2.0").Status)
 	assert.Equal(t, domains(a), grant("0.2.0").Scope)
 	assert.Equal(t, GrantRevoked, grant("0.3.0").Status)
-	revoked, err := grants.Revoked(ctx, e.db.Pool, "mini")
+	revoked, err := grants.Revoked(ctx, e.db.Gorm, "mini")
 	require.NoError(t, err)
 	assert.False(t, revoked["net"])
 	assert.Equal(t, 1, audited("plugin.grant.regrant"))
@@ -369,7 +370,7 @@ func TestSetGrantNarrowsAndRegrants(t *testing.T) {
 	e.authz.perms[e.limited] = map[string]bool{}
 	_, err = e.svc.SetGrant(ctx, "mini", "log", nil, e.limited)
 	assert.Equal(t, "plugin:install", core.AsError(err).Details["permission"])
-	current, err := LoadGrants(ctx, e.db.Pool, "mini")
+	current, err := LoadGrants(ctx, e.db.Gorm, "mini")
 	require.NoError(t, err)
 	assert.Equal(t, GrantRevoked, current["log"].Status)
 	e.authz.perms[e.limited] = map[string]bool{"plugin:install": true}
@@ -379,7 +380,7 @@ func TestSetGrantNarrowsAndRegrants(t *testing.T) {
 
 	// A staged version whose requested scope does not decode fails the
 	// grant instead of counting as requesting none.
-	_, err = e.db.Pool.Exec(ctx, `UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{hostPermissions}',
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{hostPermissions}',
 		(SELECT jsonb_agg(CASE WHEN hp->>'id' = 'net' THEN hp || '{"scope":"x"}' ELSE hp END) FROM jsonb_array_elements(manifest->'hostPermissions') hp))
 		WHERE plugin_key = 'mini' AND version = '0.3.0'`)
 	require.NoError(t, err)

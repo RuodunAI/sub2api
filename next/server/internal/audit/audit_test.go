@@ -144,11 +144,11 @@ func TestPluginWritesAndList(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	var uid int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, display_name, password_hash) VALUES ('a@x', 'Ann', 'x') RETURNING id`).Scan(&uid); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, display_name, password_hash) VALUES ('a@x', 'Ann', 'x') RETURNING id`).Scan(&uid); err != nil {
 		t.Fatal(err)
 	}
 	for _, action := range []string{ActionPluginWrite, "plugin.enable"} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO audit_logs (action, target_type, target_id, created_at) VALUES ($1, 'plugin', 'demo', now() - interval '2 days')`, action); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO audit_logs (action, target_type, target_id, created_at) VALUES ($1, 'plugin', 'demo', now() - interval '2 days')`, action); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -165,7 +165,7 @@ func TestPluginWritesAndList(t *testing.T) {
 	if _, err := purge.Handler(ctx, core.TaskRun{Name: purge.Name}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO audit_logs (action, target_type, target_id) VALUES ('plugin.enable', 'plugin', 'other')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO audit_logs (action, target_type, target_id) VALUES ('plugin.enable', 'plugin', 'other')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,7 +209,7 @@ func TestPluginWritesAndList(t *testing.T) {
 	}
 	var via string
 	var keyID int64
-	if err := db.Pool.QueryRow(ctx, `SELECT detail->>'via', (detail->>'access_key_id')::bigint FROM audit_logs WHERE detail->>'request_id' = 'req-2'`).Scan(&via, &keyID); err != nil || via != "access_key" || keyID != 42 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT detail->>'via', (detail->>'access_key_id')::bigint FROM audit_logs WHERE detail->>'request_id' = 'req-2'`).Scan(&via, &keyID); err != nil || via != "access_key" || keyID != 42 {
 		t.Fatalf("keyed write: %q %d %v", via, keyID, err)
 	}
 }

@@ -3,8 +3,8 @@ package store_test
 import (
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -20,7 +20,7 @@ func TestSettingValueRoundTrip(t *testing.T) {
 	db := testutil.DB(t)
 	const key = "store.test_setting_value"
 
-	_, err := store.SettingValue(store.G(ctx, db.Pool), key)
+	_, err := store.SettingValue(store.G(ctx, db.Gorm), key)
 	require.True(t, store.IsNoRows(err), "a missing row: %v", err)
 
 	into := struct {
@@ -28,11 +28,11 @@ func TestSettingValueRoundTrip(t *testing.T) {
 		B int `json:"b"`
 	}{B: 2}
 	require.NoError(t, store.PatchSettingJSON(ctx, db, key, nil, map[string]int{"a": 1}, &into))
-	raw, err := store.SettingValue(store.G(ctx, db.Pool), key)
+	raw, err := store.SettingValue(store.G(ctx, db.Gorm), key)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"a":1,"b":2}`, string(raw))
 
-	require.NoError(t, db.Tx(ctx, func(tx pgx.Tx) error {
+	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error {
 		raw, err := store.SettingValue(store.G(ctx, tx), key, store.ForUpdate)
 		require.JSONEq(t, `{"a":1,"b":2}`, string(raw))
 		return err

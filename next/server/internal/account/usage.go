@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -13,8 +12,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
 	"database/sql/driver"
@@ -263,7 +260,7 @@ func (l *UsageLimit) scanTargets() []any {
 // GORM.
 
 // usageLimits loads the configured limits of the given accounts.
-func usageLimits(ctx context.Context, q store.Querier, ids []int64) (map[int64]UsageLimit, error) {
+func usageLimits(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]UsageLimit, error) {
 	out := make(map[int64]UsageLimit, len(ids))
 	err := store.EachRow(store.G(ctx, q).Raw(usageLimitsSQL, store.Int64s(ids)), func(rows *sql.Rows) error {
 		var id int64
@@ -291,7 +288,7 @@ type usageWindow struct {
 
 // usageIn sums the hourly usage of each window, in one query; the result is
 // aligned with windows.
-func usageIn(ctx context.Context, q store.Querier, windows []usageWindow) ([]UsageFigures, error) {
+func usageIn(ctx context.Context, q *gorm.DB, windows []usageWindow) ([]UsageFigures, error) {
 	if len(windows) == 0 {
 		return make([]UsageFigures, 0), nil
 	}
@@ -332,7 +329,7 @@ type windowEnds []*time.Time
 // Value implements driver.Valuer; pgx encodes the slice itself.
 func (e windowEnds) Value() (driver.Value, error) { return []*time.Time(e), nil }
 
-func usageTotals(ctx context.Context, q store.Querier, ids []int64) (map[int64]UsageFigures, error) {
+func usageTotals(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]UsageFigures, error) {
 	out := make(map[int64]UsageFigures, len(ids))
 	err := store.EachRow(store.G(ctx, q).Raw(usageTotalsSQL, store.Int64s(ids)), func(rows *sql.Rows) error {
 		var id int64
@@ -353,7 +350,7 @@ const usageTotalsSQL = `SELECT account_id, cost, raw_cost, requests, tokens FROM
 
 // limitStates computes what the current period of each active limit used; a
 // lifetime limit reads the totals.
-func limitStates(ctx context.Context, q store.Querier, limits map[int64]UsageLimit, totals map[int64]UsageFigures, now time.Time) (map[int64]*UsageLimitState, error) {
+func limitStates(ctx context.Context, q *gorm.DB, limits map[int64]UsageLimit, totals map[int64]UsageFigures, now time.Time) (map[int64]*UsageLimitState, error) {
 	out := map[int64]*UsageLimitState{}
 	var windows []usageWindow
 	for id, l := range limits {
@@ -393,7 +390,7 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 	if s.d.DB == nil || len(out) == 0 {
 		return
 	}
-	q := s.d.DB.Pool
+	q := s.d.DB.Gorm
 	now := time.Now()
 	midnight := dayStart(now, core.TimeZone(ctx))
 	ids, today := make([]int64, len(out)), make([]usageWindow, len(out))
@@ -419,7 +416,7 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 }
 
 // usageOverview reads usageTotals, usageIn(today) and usageLimits of ids.
-func usageOverview(ctx context.Context, q store.Querier, ids []int64, today []usageWindow) (map[int64]UsageFigures, []UsageFigures, map[int64]UsageLimit, error) {
+func usageOverview(ctx context.Context, q *gorm.DB, ids []int64, today []usageWindow) (map[int64]UsageFigures, []UsageFigures, map[int64]UsageLimit, error) {
 	totals, err := usageTotals(ctx, q, ids)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("totals: %w", err)
@@ -443,7 +440,7 @@ func (s *Service) getUsage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountRead), false); err != nil {
+	if _, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountRead), false); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -456,7 +453,7 @@ func (s *Service) getUsage(c *gin.Context) {
 }
 
 func (s *Service) usageDetail(ctx context.Context, id int64, now time.Time) (*UsageDetail, error) {
-	q := s.d.DB.Pool
+	q := s.d.DB.Gorm
 	ids := []int64{id}
 	hour := now.Truncate(time.Hour)
 	windows, err := usageIn(ctx, q, []usageWindow{
@@ -499,11 +496,11 @@ func (s *Service) getUsageLimit(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountRead), false); err != nil {
+	if _, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountRead), false); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	limits, err := usageLimits(ctx, s.d.DB.Pool, []int64{id})
+	limits, err := usageLimits(ctx, s.d.DB.Gorm, []int64{id})
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -586,15 +583,14 @@ func validateUsageLimit(ctx context.Context, l UsageLimit, fields ...core.FieldE
 // a save still broke (validation drifting from the schema) into the field
 // error it is, instead of a 500.
 func usageLimitWriteError(ctx context.Context, err error) error {
-	var pg *pgconn.PgError
-	if !errors.As(err, &pg) || pg.Code != "23514" {
+	if store.SQLState(err) != "23514" { // check_violation
 		return err
 	}
 	field := map[string]string{
 		"account_usage_limits_amount_chk": "amount",
 		"account_usage_limits_period_chk": "period",
 		"account_usage_limits_count_chk":  "period_count",
-	}[pg.ConstraintName]
+	}[store.ConstraintName(err)]
 	if field == "" {
 		return core.ErrInvalidArgument.WithMessage(t(ctx, "invalid usage limit", "用量限制配置无效"))
 	}
@@ -634,7 +630,7 @@ func (l UsageLimit) same(o UsageLimit) bool {
 
 // saveUsageLimit stores the configuration of an account, clearing an early
 // release.
-func saveUsageLimit(ctx context.Context, q store.Querier, id int64, l UsageLimit) error {
+func saveUsageLimit(ctx context.Context, q *gorm.DB, id int64, l UsageLimit) error {
 	return usageLimitWriteError(ctx, upsertUsageLimit(store.G(ctx, q), id, l).Error)
 }
 
@@ -651,7 +647,7 @@ func upsertUsageLimit(db *gorm.DB, id int64, l UsageLimit) *gorm.DB {
 
 // checkUsageLimitControl refuses a configuration the account type's
 // usage_limit control does not let the caller choose.
-func (s *Service) checkUsageLimitControl(ctx context.Context, q store.Querier, a *row, in UsageLimit) error {
+func (s *Service) checkUsageLimitControl(ctx context.Context, q *gorm.DB, a *row, in UsageLimit) error {
 	bt, _ := s.accountType(a.PluginKey, a.Type)
 	decl := bt.Type.CommonControls["usage_limit"]
 	if !decl.Fixed() {
@@ -669,7 +665,7 @@ func (s *Service) checkUsageLimitControl(ctx context.Context, q store.Querier, a
 
 // fixedUsageLimit is the only configuration a fixed usage_limit control
 // accepts: the default when locked, else the current configuration.
-func fixedUsageLimit(ctx context.Context, q store.Querier, id int64, decl manifest.AccountCommonControl) (UsageLimit, error) {
+func fixedUsageLimit(ctx context.Context, q *gorm.DB, id int64, decl manifest.AccountCommonControl) (UsageLimit, error) {
 	if decl.Locked && decl.HasDefault() {
 		return parseUsageLimit(ctx, decl.Default)
 	}
@@ -704,7 +700,7 @@ func (s *Service) putUsageLimit(c *gin.Context) {
 	}
 	scope := s.scopeOf(ctx, perm.AccountUpdate)
 	uid, _ := core.UserID(ctx)
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		a, err := s.loadRow(ctx, tx, id, scope, true)
 		if err != nil {
 			return err
@@ -739,7 +735,7 @@ func (s *Service) putUsageLimit(c *gin.Context) {
 // time until (for a lifetime limit: until the limit is saved again). Runs in
 // the transaction that re-enables the account, so the sweep never sees it
 // active and unwaived.
-func waiveUsageLimit(ctx context.Context, q store.Querier, id int64, until *time.Time) error {
+func waiveUsageLimit(ctx context.Context, q *gorm.DB, id int64, until *time.Time) error {
 	limits, err := usageLimits(ctx, q, []int64{id})
 	if err != nil {
 		return err
@@ -765,7 +761,7 @@ func waive(db *gorm.DB, id int64, start time.Time) *gorm.DB {
 }
 
 // dbClock is the database's clock_timestamp().
-func dbClock(ctx context.Context, q store.Querier) (time.Time, error) {
+func dbClock(ctx context.Context, q *gorm.DB) (time.Time, error) {
 	var at time.Time
 	err := store.G(ctx, q).Raw(`SELECT clock_timestamp()`).Row().Scan(&at)
 	return at, err
@@ -773,7 +769,7 @@ func dbClock(ctx context.Context, q store.Querier) (time.Time, error) {
 
 // foldUsage folds the usage journal into the hourly and lifetime sums. Only
 // core.account.usage_limits calls it (one run at a time in the cluster).
-func foldUsage(ctx context.Context, q store.Querier) error {
+func foldUsage(ctx context.Context, q *gorm.DB) error {
 	for range 20 {
 		var n int
 		if err := store.G(ctx, q).Raw(`SELECT account_usage_fold(?)`, usageFoldBatch).Row().Scan(&n); err != nil || n < usageFoldBatch {
@@ -786,7 +782,7 @@ func foldUsage(ctx context.Context, q store.Querier) error {
 // runUsageLimits is core.account.usage_limits: fold the journal, then apply
 // every usage limit. The framework runs it on one node at a time.
 func (s *Service) runUsageLimits(ctx context.Context) error {
-	if err := foldUsage(ctx, s.d.DB.Pool); err != nil {
+	if err := foldUsage(ctx, s.d.DB.Gorm); err != nil {
 		return err
 	}
 	return s.EnforceUsageLimits(ctx, nil)
@@ -828,7 +824,7 @@ func (s *Service) EnforceUsageLimits(ctx context.Context, ids []int64) error {
 		filter = store.Int64s(ids)
 	}
 	def := defaultUsageLimit()
-	cands, err := store.CollectRows(store.G(ctx, s.d.DB.Pool).Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.status, a.status_reason, a.auto_disabled_source, a.auto_disabled_until,
+	cands, err := store.CollectRows(store.G(ctx, s.d.DB.Gorm).Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.status, a.status_reason, a.auto_disabled_source, a.auto_disabled_until,
 			l.updated_at, coalesce(l.raw_cost, false), coalesce(l.enabled, false), coalesce(l.amount, 0), coalesce(l.period, ?), coalesce(l.period_count, 1),
 			l.anchor, coalesce(l.timezone, ?), l.waived_window
 		FROM accounts a LEFT JOIN account_usage_limits l ON l.account_id = a.id
@@ -838,7 +834,7 @@ func (s *Service) EnforceUsageLimits(ctx context.Context, ids []int64) error {
 	if err != nil || len(cands) == 0 {
 		return err
 	}
-	now, err := dbClock(ctx, s.d.DB.Pool)
+	now, err := dbClock(ctx, s.d.DB.Gorm)
 	if err != nil {
 		return err
 	}
@@ -850,11 +846,11 @@ func (s *Service) EnforceUsageLimits(ctx context.Context, ids []int64) error {
 			lifetime = append(lifetime, c.id)
 		}
 	}
-	totals, err := usageTotals(ctx, s.d.DB.Pool, lifetime)
+	totals, err := usageTotals(ctx, s.d.DB.Gorm, lifetime)
 	if err != nil {
 		return err
 	}
-	states, err := limitStates(ctx, s.d.DB.Pool, limits, totals, now)
+	states, err := limitStates(ctx, s.d.DB.Gorm, limits, totals, now)
 	if err != nil {
 		return err
 	}
@@ -907,7 +903,7 @@ func (s *Service) enforceUsageLimit(ctx context.Context, c usageCandidate, st *U
 // it still running, or a changed limit now ends before it.
 func (s *Service) writeUsageLimitState(ctx context.Context, c usageCandidate, ch automaticChange) error {
 	changed := false
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var status, reason, source, deferredReason string
 		var until, deferredUntil, saved, waived *time.Time
 		var deferred bool

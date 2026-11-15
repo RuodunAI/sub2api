@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -103,13 +103,13 @@ func TestMyOverview(t *testing.T) {
 		at("ov-other", now.Add(-time.Minute), f.other),
 	})
 	for i, status := range []string{"active", "active", "disabled"} {
-		_, err := f.db.Pool.Exec(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,status) VALUES($1,$2,$3,'p',$4,$5)`,
+		_, err := f.db.SQL.ExecContext(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,status) VALUES($1,$2,$3,'p',$4,$5)`,
 			f.user, f.group, "k"+strconv.Itoa(i), "hash-ov-"+strconv.Itoa(i), status)
 		require.NoError(t, err)
 	}
-	_, err := f.db.Pool.Exec(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,expires_at) VALUES($1,$2,'expired','p','hash-ov-exp',now()-interval '1 hour')`, f.user, f.group)
+	_, err := f.db.SQL.ExecContext(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,expires_at) VALUES($1,$2,'expired','p','hash-ov-exp',now()-interval '1 hour')`, f.user, f.group)
 	require.NoError(t, err)
-	_, err = f.db.Pool.Exec(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,deleted_at) VALUES($1,$2,'gone','p','hash-ov-del',now())`, f.user, f.group)
+	_, err = f.db.SQL.ExecContext(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,deleted_at) VALUES($1,$2,'gone','p','hash-ov-del',now())`, f.user, f.group)
 	require.NoError(t, err)
 
 	ov := f.get(f.user, "/me/usage/overview?tz=Asia/Shanghai", 200)["data"].(map[string]any)
@@ -195,13 +195,13 @@ func TestRealtime(t *testing.T) {
 func TestStatsLimits(t *testing.T) {
 	f := newFixture(t)
 	show := func(lim statsLimits) (timeout, workMem string) {
-		require.NoError(t, f.svc.statsTx(t.Context(), lim, func(tx pgx.Tx) error {
+		require.NoError(t, f.svc.statsTx(t.Context(), lim, func(tx *gorm.DB) error {
 			return tx.QueryRow(t.Context(), `SELECT current_setting('statement_timeout'), current_setting('work_mem')`).Scan(&timeout, &workMem)
 		}))
 		return timeout, workMem
 	}
 	var defaultWorkMem string
-	require.NoError(t, f.svc.db.Pool.QueryRow(t.Context(), `SHOW work_mem`).Scan(&defaultWorkMem))
+	require.NoError(t, f.svc.db.SQL.QueryRowContext(t.Context(), `SHOW work_mem`).Scan(&defaultWorkMem))
 
 	timeout, workMem := show(statsLimitsFor(nil))
 	require.Equal(t, "25s", timeout)

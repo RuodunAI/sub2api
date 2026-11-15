@@ -11,10 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"github.com/gin-gonic/gin"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -106,14 +107,14 @@ func TestDBEncryptedAuditAndModelForward(t *testing.T) {
 		}
 	}
 	var persisted string
-	if e := db.Pool.QueryRow(context.Background(), "SELECT value::text FROM settings WHERE key=$1", settingKey).Scan(&persisted); e != nil {
+	if e := db.SQL.QueryRowContext(context.Background(), "SELECT value::text FROM settings WHERE key=$1", settingKey).Scan(&persisted); e != nil {
 		t.Fatal(e)
 	}
 	if strings.Contains(persisted, "secret") {
 		t.Fatal("plaintext settings")
 	}
 	var detail string
-	if e := db.Pool.QueryRow(context.Background(), "SELECT detail::text FROM audit_logs WHERE action='ccgateway.config.update'").Scan(&detail); e != nil {
+	if e := db.SQL.QueryRowContext(context.Background(), "SELECT detail::text FROM audit_logs WHERE action='ccgateway.config.update'").Scan(&detail); e != nil {
 		t.Fatal(e)
 	}
 	if detail != "{}" {
@@ -126,7 +127,7 @@ func TestDBEncryptedAuditAndModelForward(t *testing.T) {
 	plain, _ := json.Marshal(Config{Mode: "local", AdminKey: "secret-admin", APIKey: "secret-api", RequestPolicy: &RequestPolicy{SchemaVersion: 1, UnknownField: "reject", CLIVersion: "2.1.302"}})
 	encrypted, _ := cipher.Encrypt(plain, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, e := db.Pool.Exec(context.Background(), `UPDATE settings SET value=$2 WHERE key=$1`, settingKey, envelope); e != nil {
+	if _, e := db.SQL.ExecContext(context.Background(), `UPDATE settings SET value=$2 WHERE key=$1`, settingKey, envelope); e != nil {
 		t.Fatal(e)
 	}
 	upstreamCanceled := make(chan struct{})

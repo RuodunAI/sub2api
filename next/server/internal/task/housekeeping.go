@@ -40,7 +40,7 @@ func (s *Service) housekeeping(ctx context.Context, _ core.TaskRun) (core.TaskRe
 			names = append(names, t.Name)
 		}
 	}
-	g := store.G(ctx, db.Pool)
+	g := store.G(ctx, db.Gorm)
 	if err := markSeen(g, names, s.opts.Version).Error; err != nil {
 		return core.TaskResult{}, fmt.Errorf("refresh registered tasks: %w", err)
 	}

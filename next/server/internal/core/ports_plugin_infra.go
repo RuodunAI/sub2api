@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"os/exec"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -48,7 +48,7 @@ type PluginSchemaManager interface {
 	Drop(ctx context.Context, pluginKey string) error
 	// DropTx participates in the lifecycle transaction holding the plugin row.
 	// A concurrent re-install cannot begin between DROP and plugin deletion.
-	DropTx(ctx context.Context, tx pgx.Tx, pluginKey string) error
+	DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) error
 }
 
 // PluginDefaultsApplier (C1) writes version-scoped defaults (user
@@ -58,7 +58,7 @@ type PluginDefaultsApplier interface {
 	// ApplyDefaults grants each permission it creates what grants holds for
 	// its local key, role -> scope suffixes (none when absent; activation
 	// passes nil).
-	ApplyDefaults(ctx context.Context, tx pgx.Tx, m *manifest.Manifest, grants map[string]map[string][]string) error
+	ApplyDefaults(ctx context.Context, tx *gorm.DB, m *manifest.Manifest, grants map[string]map[string][]string) error
 }
 
 // ============================================================ sandbox & egress (owner: D)

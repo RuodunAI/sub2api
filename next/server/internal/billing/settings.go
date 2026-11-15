@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -76,7 +77,7 @@ func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	if snap != nil && time.Since(snap.at) < s.cacheTTL {
 		return snap.v, nil
 	}
-	v, err := loadSettings(ctx, s.db.Pool)
+	v, err := loadSettings(ctx, s.db.Gorm)
 	if err != nil {
 		return DefaultSettings(), err
 	}
@@ -88,7 +89,7 @@ func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	return v, nil
 }
 
-func loadSettings(ctx context.Context, q store.Querier) (Settings, error) {
+func loadSettings(ctx context.Context, q *gorm.DB) (Settings, error) {
 	v := DefaultSettings()
 	raw, err := store.SettingValue(store.G(ctx, q), settingsKey)
 	if store.IsNoRows(err) {
@@ -141,7 +142,7 @@ func (s *Service) registerSettingsRoutes(r *httpapi.Router) {
 }
 
 func (s *Service) getSettings(c *gin.Context) {
-	v, err := loadSettings(c.Request.Context(), s.db.Pool)
+	v, err := loadSettings(c.Request.Context(), s.db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

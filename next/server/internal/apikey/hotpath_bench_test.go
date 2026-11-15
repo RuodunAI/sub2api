@@ -28,7 +28,7 @@ func BenchmarkHotKeyLookup(b *testing.B) {
 		b.Fatal(err)
 	}
 	hash := HashKey(raw)
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO api_keys (user_id, group_id, name, key_prefix, key_hash) VALUES ($1, $2, 'k', $3, $4)`,
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO api_keys (user_id, group_id, name, key_prefix, key_hash) VALUES ($1, $2, 'k', $3, $4)`,
 		user, group, raw[:displayPrefix], hash); err != nil {
 		b.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func BenchmarkHotKeyLookup(b *testing.B) {
 			e := &cached{}
 			var groupRate, discount decimal.Decimal
 			var override *decimal.Decimal
-			err := db.Pool.QueryRow(ctx, pgxLookupSQL, hash).Scan(
+			err := db.SQL.QueryRowContext(ctx, pgxLookupSQL, hash).Scan(
 				&e.KeyID, &e.UserID, &e.KeyStatus, &e.ExpiresAt, &e.UserActive,
 				&e.GroupID, &e.GroupName, &e.GroupStatus, &groupRate, &e.ModelAllowlist, &e.ModelFilterMode, &e.GroupEnvironment, &e.GroupAvailable, &e.AllowedIPs,
 				&e.KeyLimits.RPM, &e.KeyLimits.TPM, &e.KeyLimits.Concurrency, &e.KeyQuota.Limit, &e.KeyQuota.Used, &e.GroupLossPolicy,

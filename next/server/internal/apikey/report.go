@@ -137,7 +137,7 @@ func (s *Service) usageTotals(ctx context.Context, keyID int64, r *UsageReport) 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	var cost [2]decimal.Decimal
 	t, a := &r.Usage.Today, &r.Usage.Total
-	err := store.G(ctx, s.db.Pool).Raw(usageTotalsSQL, map[string]any{"key": keyID, "today": today}).Row().Scan(
+	err := store.G(ctx, s.db.Gorm).Raw(usageTotalsSQL, map[string]any{"key": keyID, "today": today}).Row().Scan(
 		&t.Requests, &a.Requests, &t.InputTokens, &a.InputTokens, &t.OutputTokens, &a.OutputTokens,
 		&t.CacheCreationTokens, &a.CacheCreationTokens, &t.CacheReadTokens, &a.CacheReadTokens, &cost[0], &cost[1])
 	if err != nil {

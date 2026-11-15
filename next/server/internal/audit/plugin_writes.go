@@ -132,7 +132,7 @@ func (p *PluginWrites) writeLoop() {
 func (p *PluginWrites) write(r pluginWriteRow) {
 	ctx, cancel := context.WithTimeout(WithClientIP(context.Background(), r.clientIP), writeTimeout)
 	defer cancel()
-	if err := Audit(ctx, p.DB.Pool, r.userID, ActionPluginWrite, "plugin", r.plugin, r.detail); err != nil {
+	if err := Audit(ctx, p.DB.Gorm, r.userID, ActionPluginWrite, "plugin", r.plugin, r.detail); err != nil {
 		slog.WarnContext(ctx, "audit: plugin route write", "plugin", r.plugin, "request_id", r.detail["request_id"], "err", err)
 	}
 }
@@ -191,7 +191,7 @@ func (p *PluginWrites) Purge(ctx context.Context) error {
 		retention = PluginWriteRetention
 	}
 	for {
-		res := purgeBatch(store.G(ctx, p.DB.Pool), retention)
+		res := purgeBatch(store.G(ctx, p.DB.Gorm), retention)
 		if res.Error != nil || res.RowsAffected < purgeBatchSize {
 			return res.Error
 		}

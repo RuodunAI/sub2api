@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -23,7 +22,7 @@ type UninstallState struct {
 	RequestedAt    time.Time `json:"requested_at"`
 }
 
-func readUninstallState(ctx context.Context, q store.Querier, key string, lock bool) (*UninstallState, error) {
+func readUninstallState(ctx context.Context, q *gorm.DB, key string, lock bool) (*UninstallState, error) {
 	var row model.PluginUninstall
 	err := uninstallState(store.G(ctx, q), key, lock).Take(&row).Error
 	if store.IsNoRows(err) {
@@ -59,7 +58,7 @@ func uninstallState(db *gorm.DB, key string, lock bool) *gorm.DB {
 }
 
 func (s *Service) UninstallState(ctx context.Context, key string) (*UninstallState, error) {
-	return readUninstallState(ctx, s.d.DB.Pool, key, false)
+	return readUninstallState(ctx, s.d.DB.Gorm, key, false)
 }
 
 type ConfirmStoppedRequest struct {
@@ -87,7 +86,7 @@ func (s *Service) ConfirmUninstallStopped(ctx context.Context, key string, in Co
 		return nil, core.ErrUnavailable.WithMessage("node registry is required for stop confirmation")
 	}
 	var out *UninstallState
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var keyLocked string
 		if err := lockedPlugin(g, key).Select("key").Take(&keyLocked).Error; err != nil {

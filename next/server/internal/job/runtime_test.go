@@ -41,14 +41,14 @@ func TestRuntimeTasksSyncAndRun(t *testing.T) {
 
 	// The same tasks again change nothing (jsonb reformats the args).
 	var before time.Time
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT updated_at FROM scheduled_tasks WHERE name = 'plugin.demo.evaluate'`).Scan(&before))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT updated_at FROM scheduled_tasks WHERE name = 'plugin.demo.evaluate'`).Scan(&before))
 	_, err = n.bridge.SyncPluginTasks(ctx, "demo", "1.0.0", []core.PluginTask{
 		{ID: "evaluate", Schedule: "@every 10s", Args: json.RawMessage(`{"window":10}`)},
 		{ID: "review", TimeoutSec: 120},
 	})
 	require.NoError(t, err)
 	var after time.Time
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT updated_at FROM scheduled_tasks WHERE name = 'plugin.demo.evaluate'`).Scan(&after))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT updated_at FROM scheduled_tasks WHERE name = 'plugin.demo.evaluate'`).Scan(&after))
 	require.Equal(t, before, after)
 
 	// A periodic run gets the task's args.
@@ -72,7 +72,7 @@ func TestRuntimeTasksSyncAndRun(t *testing.T) {
 	require.NoError(t, n.bridge.EnqueuePluginTask(ctx, "demo", "review", json.RawMessage(`{"id":1}`), at))
 	require.NoError(t, n.bridge.EnqueuePluginTask(ctx, "demo", "review", json.RawMessage(`{"id":1}`), at))
 	var waiting int
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE args->>'name' = 'plugin.demo.review'`).Scan(&waiting))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM river_job WHERE args->>'name' = 'plugin.demo.review'`).Scan(&waiting))
 	require.Equal(t, 1, waiting)
 	require.NoError(t, n.bridge.EnqueuePluginTask(ctx, "demo", "review", json.RawMessage(`{"id":2}`), core.EnqueueOpts{}))
 	waitFor(t, "the enqueued run", 40*time.Second, func() bool {
@@ -157,7 +157,7 @@ func TestRuntimeTasksSwitchAndUninstall(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, registered(n, "plugin.demo.a"))
 
-	_, err = e.db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET enabled = false WHERE name = 'plugin.demo.a'`)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE scheduled_tasks SET enabled = false WHERE name = 'plugin.demo.a'`)
 	require.NoError(t, err)
 	require.NoError(t, n.bridge.reconcile(ctx))
 	require.False(t, registered(n, "plugin.demo.a"))
@@ -170,13 +170,13 @@ func TestRuntimeTasksSwitchAndUninstall(t *testing.T) {
 	require.False(t, list[0].Enabled)
 	require.Equal(t, "@every 2h0m0s", list[0].Schedule)
 
-	_, err = e.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'demo'`)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'demo'`)
 	require.NoError(t, err)
 	require.NoError(t, n.bridge.reconcile(ctx))
 	_, ok := readTask(t, e.db, "plugin.demo.a")
 	require.True(t, ok, "a disabled plugin keeps its runtime tasks")
 
-	_, err = e.db.Pool.Exec(ctx, `DELETE FROM plugins WHERE key = 'demo'`)
+	_, err = e.db.SQL.ExecContext(ctx, `DELETE FROM plugins WHERE key = 'demo'`)
 	require.NoError(t, err)
 	require.NoError(t, n.bridge.reconcile(ctx))
 	_, ok = readTask(t, e.db, "plugin.demo.a")

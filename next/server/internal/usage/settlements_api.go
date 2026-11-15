@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
@@ -66,7 +65,7 @@ func (e *Settlement) scanTargets() []any {
 		&e.State, &e.LastError, &e.CreatedAt}
 }
 
-func (s *Service) loadSettlement(ctx context.Context, q store.Querier, usageLogID int64) (*Settlement, error) {
+func (s *Service) loadSettlement(ctx context.Context, q *gorm.DB, usageLogID int64) (*Settlement, error) {
 	e := &Settlement{}
 	err := settlementOf(store.G(ctx, q), usageLogID).Row().Scan(e.scanTargets()...)
 	if store.IsNoRows(err) {
@@ -96,7 +95,7 @@ func (s *Service) retryReconcile(c *gin.Context) {
 		return
 	}
 	var out *Settlement
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		row, entry, err := lockSettlement(ctx, tx, id)
 		if err != nil {
 			return err
@@ -145,7 +144,7 @@ func (s *Service) retryConfig(ctx context.Context, usageLogID int64) (resolved, 
 	cfg := s.reconcileSettings(ctx)
 	var groupID int64
 	var accountID *int64
-	err := store.G(ctx, s.db.Pool).Raw(`SELECT u.group_id, u.account_id FROM usage_logs u
+	err := store.G(ctx, s.db.Gorm).Raw(`SELECT u.group_id, u.account_id FROM usage_logs u
 		WHERE u.id = ? AND EXISTS (SELECT 1 FROM async_tasks t WHERE t.usage_log_id = u.id)`, usageLogID).Row().Scan(&groupID, &accountID)
 	switch {
 	case store.IsNoRows(err):
@@ -177,7 +176,7 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 	var ledgerRes *core.LedgerResult
 	var userID int64
 	var amount decimal.Decimal
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		row, entry, err := lockSettlement(ctx, tx, id)
 		if err != nil {
 			return err
@@ -228,7 +227,7 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 
 // lockSettlement loads a usage row and its settlement entry, both locked, or
 // reports why the action does not apply.
-func lockSettlement(ctx context.Context, tx pgx.Tx, usageLogID int64) (*reservedRowState, *Settlement, error) {
+func lockSettlement(ctx context.Context, tx *gorm.DB, usageLogID int64) (*reservedRowState, *Settlement, error) {
 	// Shared lock order with managed reconciliation: task, usage, settlement.
 	g := store.G(ctx, tx)
 	if err := lockTasksOfUsage(g, usageLogID).Error; err != nil {

@@ -67,7 +67,7 @@ func (h *hostServer) require(ctx context.Context, permission string) error {
 	// after an emergency revocation has committed in PG. Also reject a stale
 	// broader scope until the local settings have refreshed.
 	if db := h.i.rt.o.DB; db != nil {
-		allowed, err := grants.Holds(ctx, db.Pool, h.key(), h.i.pkg.Version, permission, h.i.Grants()[permission])
+		allowed, err := grants.Holds(ctx, db.Gorm, h.key(), h.i.pkg.Version, permission, h.i.Grants()[permission])
 		if err != nil {
 			return status.Error(codes.Unavailable, "cannot verify current plugin grant")
 		}

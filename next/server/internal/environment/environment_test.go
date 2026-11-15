@@ -90,7 +90,7 @@ func setup(t *testing.T) *env {
 
 func mkUser(t *testing.T, db *store.DB, email string) int64 {
 	var id int64
-	if err := db.Pool.QueryRow(context.Background(),
+	if err := db.SQL.QueryRowContext(context.Background(),
 		`INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
@@ -170,11 +170,11 @@ func TestResolveEnvironment(t *testing.T) {
 		t.Fatalf("put: %v", out)
 	}
 	var groupID, accountID int64
-	if err := e.db.Pool.QueryRow(ctx, `INSERT INTO groups (name, environment)
+	if err := e.db.SQL.QueryRowContext(ctx, `INSERT INTO groups (name, environment)
 		VALUES ('g', '{"relay_timeout_seconds": 120, "task_poll_max_failures": 3}') RETURNING id`).Scan(&groupID); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.db.Pool.QueryRow(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, environment)
+	if err := e.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, environment)
 		VALUES ('a', 'p', 't', ''::bytea, '{"relay_timeout_seconds": 60, "max_request_body_mb": 10}') RETURNING id`).Scan(&accountID); err != nil {
 		t.Fatal(err)
 	}

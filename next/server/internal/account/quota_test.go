@@ -311,7 +311,7 @@ func TestAccountQuotaAPI(t *testing.T) {
 
 	// A failure is recorded and negatively cached for 30 minutes.
 	up.failStatus.Store(503)
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET last_active_at = now() - interval '31 minutes',
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET last_active_at = now() - interval '31 minutes',
 		updated_at = now() - interval '31 minutes', next_check_at = now() - interval '1 second'`); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestAccountQuotaAPI(t *testing.T) {
 	if up.calls.Load() != 4 || d["error"] == "" || d["windows"].([]any)[0].(map[string]any)["utilization"].(float64) != 55 {
 		t.Fatalf("failure: %v (calls %d)", out, up.calls.Load())
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET last_active_at = now() - interval '29 minutes'`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET last_active_at = now() - interval '29 minutes'`); err != nil {
 		t.Fatal(err)
 	}
 	e.do("GET", path, nil)
@@ -421,13 +421,13 @@ func TestAccountResetStatusRestoresScheduling(t *testing.T) {
 				ctx := t.Context()
 				id := e.mkRawAccount("anthropic", "apikey", "recover", "sk-good-key-123", true)
 				group := e.exec1(`INSERT INTO groups(name) VALUES('reset') RETURNING id`)
-				if _, err := e.db.Pool.Exec(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, id, group); err != nil {
+				if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, id, group); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := e.svc.AutoDisable(ctx, id, "upstream rejected credentials (401)"); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET status=$2 WHERE id=$1`, id, state); err != nil {
+				if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status=$2 WHERE id=$1`, id, state); err != nil {
 					t.Fatal(err)
 				}
 				if cooldown {
@@ -440,7 +440,7 @@ func TestAccountResetStatusRestoresScheduling(t *testing.T) {
 				}
 				var beforeAccount, afterAccount string
 				const preserved = `SELECT (to_jsonb(a) - ARRAY['status','status_reason','status_changed_at','updated_at'])::text FROM accounts a WHERE id=$1`
-				if err := e.db.Pool.QueryRow(ctx, preserved, id).Scan(&beforeAccount); err != nil {
+				if err := e.db.SQL.QueryRowContext(ctx, preserved, id).Scan(&beforeAccount); err != nil {
 					t.Fatal(err)
 				}
 				before := len(e.eventTypes())
@@ -450,7 +450,7 @@ func TestAccountResetStatusRestoresScheduling(t *testing.T) {
 					data(out)["schedulable"] != true || data(out)["cooldown_until"] != nil || data(out)["auto_disable"] != true {
 					t.Fatalf("reset: %d %v", code, out)
 				}
-				if err := e.db.Pool.QueryRow(ctx, preserved, id).Scan(&afterAccount); err != nil || beforeAccount != afterAccount {
+				if err := e.db.SQL.QueryRowContext(ctx, preserved, id).Scan(&afterAccount); err != nil || beforeAccount != afterAccount {
 					t.Fatalf("reset changed unrelated account fields: %v", err)
 				}
 				candidates, err := e.svc.Candidates(ctx, group, nil)
@@ -458,7 +458,7 @@ func TestAccountResetStatusRestoresScheduling(t *testing.T) {
 					t.Fatalf("candidates after reset: %v %v", candidates, err)
 				}
 				var payload string
-				if err := e.db.Pool.QueryRow(ctx, `SELECT payload::text FROM events WHERE type='account.status_changed' ORDER BY id DESC LIMIT 1`).Scan(&payload); err != nil {
+				if err := e.db.SQL.QueryRowContext(ctx, `SELECT payload::text FROM events WHERE type='account.status_changed' ORDER BY id DESC LIMIT 1`).Scan(&payload); err != nil {
 					t.Fatal(err)
 				}
 				var event map[string]any
@@ -496,7 +496,7 @@ func TestAccountResetStatusRedisFailure(t *testing.T) {
 	code, _ := e.do("POST", fmt.Sprintf("/accounts/%d/reset-status", id), nil)
 	e.mr.SetError("")
 	var status, reason string
-	if err := e.db.Pool.QueryRow(t.Context(), `SELECT status,status_reason FROM accounts WHERE id=$1`, id).Scan(&status, &reason); err != nil {
+	if err := e.db.SQL.QueryRowContext(t.Context(), `SELECT status,status_reason FROM accounts WHERE id=$1`, id).Scan(&status, &reason); err != nil {
 		t.Fatal(err)
 	}
 	if code != http.StatusServiceUnavailable || status != "auto_disabled" || reason != "upstream rejected credentials (401)" || !e.mr.Exists(cooldownKey(id)) {
@@ -515,7 +515,7 @@ func TestAccountResetStatusOwnership(t *testing.T) {
 	authz.keys[stranger] = []string{"account:update:own"}
 	authz.keys[reader] = []string{"account:read"}
 	id := e.mkRawAccount("anthropic", "apikey", "private", "sk-good-key-123", false)
-	if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET created_by=$2,status_reason='rejected' WHERE id=$1`, id, owner); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET created_by=$2,status_reason='rejected' WHERE id=$1`, id, owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.svc.SetCooldown(t.Context(), id, time.Now().Add(time.Hour), "429"); err != nil {

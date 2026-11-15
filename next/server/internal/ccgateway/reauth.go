@@ -6,11 +6,11 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 const reauthLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended('ccg-reauth:' || ?::bigint::text, 0))`
@@ -71,7 +71,7 @@ func reauthKeyQuery(db *gorm.DB, accountID int64) *gorm.DB {
 
 // CommitReauth verifies login on the same runtime and resets account-side
 // failure/quota state. Runtime mappings, sessions and volumes are retained.
-func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string, fn func(pgx.Tx, string) error) (string, error) {
+func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string, fn func(*gorm.DB, string) error) (string, error) {
 	if !s.runtimesOn(ctx) {
 		return "", reasonError(core.ErrUnavailable, "not_configured")
 	}
@@ -80,7 +80,7 @@ func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string,
 	}
 	subscriptionChanged := false
 	var observed core.AccountPreparationFacts
-	err := s.lockedTx(ctx, key, true, func(tx pgx.Tx) error {
+	err := s.lockedTx(ctx, key, true, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if err := g.Exec(reauthLockSQL, accountID).Error; err != nil {
 			return err

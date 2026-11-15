@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
@@ -53,17 +53,17 @@ type fakePerms struct {
 	// them, and canGrant (when set) decides them instead.
 	checked   [][]string
 	denyRoles error
-	canGrant  func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, risk string) error
+	canGrant  func(ctx context.Context, tx *gorm.DB, actorID int64, roles []string, risk string) error
 	// reader answers the catalog's reads (PluginPermissions,
 	// PermissionHolders) from the tables, which the tests fill.
 	reader *authz.Service
 	// grantees (when set) answers PluginGrantees, else nothing is denied.
-	grantees func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string) (core.PluginGrantees, error)
+	grantees func(ctx context.Context, tx *gorm.DB, actorID int64, roles []string) (core.PluginGrantees, error)
 	// granted records GrantPluginPermission calls as "key=role,role:scope,...".
 	granted []string
 }
 
-func (f *fakePerms) SyncPlugin(_ context.Context, _ pgx.Tx, key string, defs []core.PermissionDef) error {
+func (f *fakePerms) SyncPlugin(_ context.Context, _ *gorm.DB, key string, defs []core.PermissionDef) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var roles []string // the roles every def is granted to (the tests give them all the same)
@@ -78,7 +78,7 @@ func (f *fakePerms) SyncPlugin(_ context.Context, _ pgx.Tx, key string, defs []c
 	f.syncs = append(f.syncs, syncCall{key, defs, roles})
 	return nil
 }
-func (f *fakePerms) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, risk string) error {
+func (f *fakePerms) CanGrantToRoles(ctx context.Context, tx *gorm.DB, actorID int64, roles []string, risk string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checked = append(f.checked, roles)
@@ -87,19 +87,19 @@ func (f *fakePerms) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int6
 	}
 	return f.denyRoles
 }
-func (f *fakePerms) PluginPermissions(ctx context.Context, q store.Querier, key string) ([]core.PluginPermission, error) {
+func (f *fakePerms) PluginPermissions(ctx context.Context, q *gorm.DB, key string) ([]core.PluginPermission, error) {
 	return f.reader.PluginPermissions(ctx, q, key)
 }
-func (f *fakePerms) PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]core.PermissionHolder, error) {
+func (f *fakePerms) PermissionHolders(ctx context.Context, q *gorm.DB, keys []string) (map[string][]core.PermissionHolder, error) {
 	return f.reader.PermissionHolders(ctx, q, keys)
 }
-func (f *fakePerms) PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roles []string) (core.PluginGrantees, error) {
+func (f *fakePerms) PluginGrantees(ctx context.Context, tx *gorm.DB, actorID int64, roles []string) (core.PluginGrantees, error) {
 	if f.grantees != nil {
 		return f.grantees(ctx, tx, actorID, roles)
 	}
 	return core.PluginGrantees{}, nil
 }
-func (f *fakePerms) GrantPluginPermission(_ context.Context, tx pgx.Tx, key string, grants map[string][]string) error {
+func (f *fakePerms) GrantPluginPermission(_ context.Context, tx *gorm.DB, key string, grants map[string][]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var rec, roles, scopes []string
@@ -109,16 +109,16 @@ func (f *fakePerms) GrantPluginPermission(_ context.Context, tx pgx.Tx, key stri
 		}
 	}
 	f.granted = append(f.granted, key+"="+strings.Join(rec, ","))
-	_, err := tx.Exec(context.Background(), `
+	_, err := store.SQLTx(tx).ExecContext(context.Background(), `
 WITH g AS (SELECT r.id AS role_id, p.id AS permission_id, t.scope FROM unnest($1::text[], $2::text[]) t(role, scope)
     JOIN roles r ON r.key = t.role JOIN permissions p ON p.key = $3),
 ins AS (INSERT INTO role_permissions (role_id, permission_id) SELECT role_id, permission_id FROM g WHERE scope = '' ON CONFLICT DO NOTHING)
 INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT * FROM g WHERE scope <> '' ON CONFLICT DO NOTHING`, roles, scopes, key)
 	return err
 }
-func (f *fakePerms) SetPluginActive(context.Context, pgx.Tx, string, bool) error { return nil }
-func (f *fakePerms) DiscardStaged(context.Context, pgx.Tx, string) error         { return nil }
-func (f *fakePerms) DeletePlugin(_ context.Context, _ pgx.Tx, key string) error {
+func (f *fakePerms) SetPluginActive(context.Context, *gorm.DB, string, bool) error { return nil }
+func (f *fakePerms) DiscardStaged(context.Context, *gorm.DB, string) error         { return nil }
+func (f *fakePerms) DeletePlugin(_ context.Context, _ *gorm.DB, key string) error {
 	f.deleted = append(f.deleted, key)
 	return nil
 }
@@ -144,7 +144,7 @@ func (f *fakeRollout) Enable(ctx context.Context, key string, _ int64) (*core.Ro
 		return nil, errors.New("n/a")
 	}
 	f.enabled = append(f.enabled, key)
-	_, err := f.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = (SELECT max(version) FROM plugin_versions WHERE plugin_key = $1 AND consent_status = 'approved') WHERE key = $1`, key)
+	_, err := f.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'enabled', active_version = (SELECT max(version) FROM plugin_versions WHERE plugin_key = $1 AND consent_status = 'approved') WHERE key = $1`, key)
 	return &core.Rollout{ID: 2, PluginKey: key, Action: "enable", Phase: "active"}, err
 }
 func (f *fakeRollout) Upgrade(context.Context, string, string, int64) (*core.Rollout, error) {
@@ -153,7 +153,7 @@ func (f *fakeRollout) Upgrade(context.Context, string, string, int64) (*core.Rol
 func (f *fakeRollout) Disable(ctx context.Context, key string, _ int64, reason string) (*core.Rollout, error) {
 	f.disabled = append(f.disabled, key)
 	f.reasons = append(f.reasons, reason)
-	_, err := f.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = $1`, key)
+	_, err := f.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = $1`, key)
 	return &core.Rollout{ID: 1, PluginKey: key, Action: "disable", Phase: "active"}, err
 }
 func (f *fakeRollout) Current(context.Context, string) (*core.Rollout, error) { return nil, nil }
@@ -172,7 +172,7 @@ func (f *fakeSchemas) Drop(_ context.Context, key string) error {
 	return nil
 }
 
-func (f *fakeSchemas) DropTx(ctx context.Context, _ pgx.Tx, key string) error {
+func (f *fakeSchemas) DropTx(ctx context.Context, _ *gorm.DB, key string) error {
 	return f.Drop(ctx, key)
 }
 
@@ -204,12 +204,12 @@ func newEnv(t *testing.T) *env {
 		accounts: &fakeAccounts{}, root: pkgtest.NewKey("root-1")}
 	e.rollout = &fakeRollout{db: db}
 	// The built-in roles a consent may name (the authz sync is not run).
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name, builtin) VALUES ('admin', '{}', true), ('operator', '{}', true), ('supplier', '{}', true), ('user', '{}', true) ON CONFLICT (key) DO NOTHING`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name, builtin) VALUES ('admin', '{}', true), ('operator', '{}', true), ('supplier', '{}', true), ('user', '{}', true) ON CONFLICT (key) DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
 	for _, email := range []string{"admin@x", "ops@x"} {
 		var id int64
-		if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		if e.admin == 0 {
@@ -351,7 +351,7 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 		t.Fatalf("defaults not applied: %+v", e.perms.syncs)
 	}
 	var status string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT status FROM plugins WHERE key = 'guard'`).Scan(&status)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT status FROM plugins WHERE key = 'guard'`).Scan(&status)
 	if status != StatusInstalled {
 		t.Fatalf("status = %s", status)
 	}
@@ -360,7 +360,7 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 	}
 
 	// Simulate the runtime enabling 0.1.0.
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = '0.1.0' WHERE key = 'guard'`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'enabled', active_version = '0.1.0' WHERE key = 'guard'`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -424,34 +424,34 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 		t.Fatalf("upgrade permission sync = %+v", last)
 	}
 	var consent string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT consent_status FROM plugin_versions WHERE plugin_key = 'guard' AND version = '0.2.0'`).Scan(&consent)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT consent_status FROM plugin_versions WHERE plugin_key = 'guard' AND version = '0.2.0'`).Scan(&consent)
 	if consent != ConsentApproved {
 		t.Fatalf("consent = %s", consent)
 	}
 	// The consent waits for 0.2.0's activation: 0.1.0 keeps running with its
 	// own grants (jobs, net), 0.2.0 is given its own (log, net denied).
-	g, _ := LoadGrants(ctx, e.db.Pool, "guard")
+	g, _ := LoadGrants(ctx, e.db.Gorm, "guard")
 	if _, ok := g["log"]; ok || g["jobs"].Status != GrantGranted || g["net"].Status != GrantGranted {
 		t.Fatalf("0.1.0 grants after the consent to 0.2.0: %+v", g)
 	}
-	g, _ = LoadVersionGrants(ctx, e.db.Pool, "guard", "0.2.0")
+	g, _ = LoadVersionGrants(ctx, e.db.Gorm, "guard", "0.2.0")
 	if _, ok := g["jobs"]; ok || g["log"].Status != GrantGranted || g["net"].Status != GrantDenied || g["log"].PluginVersion != "0.2.0" {
 		t.Fatalf("0.2.0 grants before its activation: %+v", g)
 	}
 	// Activation (the rollout commit): the staged set becomes the plugin's
 	// grants, and the one 0.2.0 no longer asks for is pruned.
-	if err := e.db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := e.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := grants.Promote(ctx, tx, "guard", "0.2.0"); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET active_version = '0.2.0' WHERE key = 'guard'`); err != nil {
+		if _, err := store.SQLTx(tx).ExecContext(ctx, `UPDATE plugins SET active_version = '0.2.0' WHERE key = 'guard'`); err != nil {
 			return err
 		}
 		return NewDefaultsApplier(nil).ApplyDefaults(ctx, tx, up, nil)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	g, _ = LoadGrants(ctx, e.db.Pool, "guard")
+	g, _ = LoadGrants(ctx, e.db.Gorm, "guard")
 	if _, ok := g["jobs"]; ok || g["log"].Status != GrantGranted {
 		t.Fatalf("grants after the activation of 0.2.0: %+v", g)
 	}
@@ -483,7 +483,7 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 	if err := e.svc.RevokeGrant(ctx, "guard", "log", e.admin); err != nil {
 		t.Fatal(err)
 	}
-	if g, _ := LoadVersionGrants(ctx, e.db.Pool, "guard", "0.2.1"); g["log"].Status != GrantRevoked {
+	if g, _ := LoadVersionGrants(ctx, e.db.Gorm, "guard", "0.2.1"); g["log"].Status != GrantRevoked {
 		t.Fatalf("log staged for 0.2.1 after the revocation: %+v", g["log"])
 	}
 	if err := e.svc.RevokeGrant(ctx, "guard", "net", e.admin); core.AsError(err).Code != "not_found" {
@@ -491,16 +491,16 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 	}
 
 	// Uninstall refuses during an open rollout.
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO plugin_rollouts (plugin_key, action, phase) VALUES ('guard', 'upgrade', 'preparing')`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO plugin_rollouts (plugin_key, action, phase) VALUES ('guard', 'upgrade', 'preparing')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.svc.Uninstall(ctx, "guard", UninstallOptions{Purge: true}, e.admin); core.AsError(err).Code != "conflict" {
 		t.Fatalf("uninstall during rollout: %v", err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE plugin_rollouts SET phase = 'cancelled'`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugin_rollouts SET phase = 'cancelled'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO plugin_egress_domains (plugin_key, host) VALUES ('guard', 'example.com')`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO plugin_egress_domains (plugin_key, host) VALUES ('guard', 'example.com')`); err != nil {
 		t.Fatal(err)
 	}
 	ures, err := e.svc.Uninstall(ctx, "guard", UninstallOptions{Purge: true, PurgeAccounts: true}, e.admin)
@@ -511,7 +511,7 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 		t.Fatalf("account purge: res=%+v purged=%v", ures, e.accounts.purged)
 	}
 	var purgeAudit int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'plugin.accounts.purge'
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'plugin.accounts.purge'
 		AND target_id = 'guard' AND (detail->>'accounts_deleted')::int = 3`).Scan(&purgeAudit)
 	if purgeAudit != 1 {
 		t.Fatalf("account purge audit rows = %d", purgeAudit)
@@ -520,15 +520,15 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 		t.Fatalf("uninstall side effects: disabled=%v dropped=%v deleted=%v", e.rollout.disabled, e.schemas.dropped, e.perms.deleted)
 	}
 	var n int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_versions WHERE plugin_key = 'guard'`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_versions WHERE plugin_key = 'guard'`).Scan(&n)
 	if n != 0 {
 		t.Fatalf("versions left: %d", n)
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_egress_domains WHERE plugin_key = 'guard'`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_egress_domains WHERE plugin_key = 'guard'`).Scan(&n)
 	if n != 0 {
 		t.Fatalf("egress domains left: %d", n)
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE target_id = 'guard'`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE target_id = 'guard'`).Scan(&n)
 	if n < 6 {
 		t.Fatalf("audit rows = %d", n)
 	}
@@ -560,7 +560,7 @@ func TestRejectAndCommunityTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugins WHERE key = 'acme_tool'`).Scan(&n)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugins WHERE key = 'acme_tool'`).Scan(&n)
 	if n != 0 {
 		t.Fatal("rejected new plugin should be removed")
 	}
@@ -594,7 +594,7 @@ func TestPublisherRevocation(t *testing.T) {
 		if _, err := e.svc.Consent(ctx, key, "1.0.0", ConsentRequest{}, e.admin); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = '1.0.0' WHERE key = $1`, key); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'enabled', active_version = '1.0.0' WHERE key = $1`, key); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -607,7 +607,7 @@ func TestPublisherRevocation(t *testing.T) {
 		t.Fatalf("revoke publisher: %v %+v", err, res)
 	}
 	var sig string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT signature_status FROM plugin_versions WHERE plugin_key = 'tool_a'`).Scan(&sig)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT signature_status FROM plugin_versions WHERE plugin_key = 'tool_a'`).Scan(&sig)
 	if sig != pkg.SigRevoked {
 		t.Fatalf("signature_status = %s", sig)
 	}
@@ -637,7 +637,7 @@ func TestIdenticalReuploadSkipsNewerChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	// As an older core would have stored it.
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256,
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256,
 			package_size, signature_status, consent_status)
 		SELECT plugin_key, '0.1.1', $1, $2, $3, $4, signature_status, consent_status FROM plugin_versions
 		WHERE plugin_key = 'guard' AND version = '0.1.0'`, p.ManifestRaw, p.ManifestHash, p.SHA256, len(p.Raw)); err != nil {

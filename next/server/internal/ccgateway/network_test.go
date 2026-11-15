@@ -39,7 +39,7 @@ func TestNetworkPolicyChangesDesiredRevision(t *testing.T) {
 	cipher, _ := secret.New(make([]byte, 32))
 	s := New(db, cipher)
 	base := accountDesired{Revision: revisionOf("account-version")}
-	before, err := s.desiredNetwork(ctx, db.Pool, base)
+	before, err := s.desiredNetwork(ctx, db.Gorm, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,18 +47,18 @@ func TestNetworkPolicyChangesDesiredRevision(t *testing.T) {
 	plain, _ := json.Marshal(config)
 	enc, _ := cipher.Encrypt(plain, configAAD)
 	raw, _ := json.Marshal(map[string]any{"cipher": enc})
-	if _, err = db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`, settingKey, raw); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`, settingKey, raw); err != nil {
 		t.Fatal(err)
 	}
-	after, err := s.desiredNetwork(ctx, db.Pool, base)
+	after, err := s.desiredNetwork(ctx, db.Gorm, base)
 	if err != nil || after.Revision == before.Revision || after.Network.Pool != "10.80.0.0/16" {
 		t.Fatal("network change did not invalidate readiness", err)
 	}
-	tx, err := db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback()
 	inTx, err := s.desiredNetwork(ctx, tx, base)
 	if err != nil || inTx.Revision != after.Revision {
 		t.Fatal("transaction revision differs", err)

@@ -3,13 +3,14 @@ package gateway
 import (
 	"context"
 	"errors"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -176,7 +177,7 @@ func TestExecuteGatewayRecordBeforePublishAndAbortUnconfirmedSSE(t *testing.T) {
 			t.Fatal(r.r.StatusCode, string(raw), err)
 		}
 		var state string
-		if err = db.Pool.QueryRow(ctx, `SELECT state FROM plugin_executions WHERE request_id=$1`, r.r.Header.Get("X-Request-Id")).Scan(&state); err != nil || state != "committed" {
+		if err = db.SQL.QueryRowContext(ctx, `SELECT state FROM plugin_executions WHERE request_id=$1`, r.r.Header.Get("X-Request-Id")).Scan(&state); err != nil || state != "committed" {
 			t.Fatal(state, err)
 		}
 		if p.calls.Load() != 1 || len(e.up.keys()) != 1 {
@@ -208,7 +209,7 @@ func TestExecuteGatewayRecordBeforePublishAndAbortUnconfirmedSSE(t *testing.T) {
 		}
 		e.slots.mu.Unlock()
 		var state string
-		if err = db.Pool.QueryRow(ctx, `SELECT state FROM plugin_executions WHERE request_id=$1`, r.Header.Get("X-Request-Id")).Scan(&state); err != nil || state != "observed" {
+		if err = db.SQL.QueryRowContext(ctx, `SELECT state FROM plugin_executions WHERE request_id=$1`, r.Header.Get("X-Request-Id")).Scan(&state); err != nil || state != "observed" {
 			t.Fatal(state, err)
 		}
 		e.noRecord()
@@ -291,7 +292,7 @@ func TestExecuteGatewayLargeCaptureAndRejectedReplayPreserveUsage(t *testing.T) 
 		t.Fatalf("TPM counted rejected or duplicate facts: %d", got)
 	}
 	var input, output int64
-	if err := db.Pool.QueryRow(context.Background(), `SELECT input_tokens,output_tokens FROM usage_logs WHERE request_id=$1`, out.header.Get("X-Request-Id")).Scan(&input, &output); err != nil || input != 100 || output != 200 {
+	if err := db.SQL.QueryRowContext(context.Background(), `SELECT input_tokens,output_tokens FROM usage_logs WHERE request_id=$1`, out.header.Get("X-Request-Id")).Scan(&input, &output); err != nil || input != 100 || output != 200 {
 		t.Fatal(input, output, err)
 	}
 	e.noRecord()

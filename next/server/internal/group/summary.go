@@ -38,15 +38,15 @@ func (s *Service) fillSummary(ctx context.Context, gs []*Group) error {
 		ids[i] = g.ID
 		policies[i] = core.GroupInfo{ID: g.ID, ModelAllowlist: g.ModelAllowlist, ModelFilterMode: g.ModelFilterMode}
 	}
-	access, err := groupAccess(ctx, s.db.Pool, ids)
+	access, err := groupAccess(ctx, s.db.Gorm, ids)
 	if err != nil {
 		return err
 	}
-	offered, err := offeredModels(ctx, s.db.Pool, policies)
+	offered, err := offeredModels(ctx, s.db.Gorm, policies)
 	if err != nil {
 		return err
 	}
-	rules, err := offeredRules(ctx, s.db.Pool, offered, `pr.group_id = ANY(?)`, store.Int64s(ids))
+	rules, err := offeredRules(ctx, s.db.Gorm, offered, `pr.group_id = ANY(?)`, store.Int64s(ids))
 	if err != nil {
 		return err
 	}
@@ -68,7 +68,7 @@ func (s *Service) fillSummary(ctx context.Context, gs []*Group) error {
 }
 
 // groupAccess returns the access of each of the groups, by group id.
-func groupAccess(ctx context.Context, q store.Querier, ids []int64) (map[int64]Access, error) {
+func groupAccess(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]Access, error) {
 	out := make(map[int64]Access, len(ids))
 	for _, id := range ids {
 		out[id] = Access{Segments: []core.SegmentRef{}}
@@ -120,7 +120,7 @@ type ruleOn struct {
 // stays stored but is neither listed nor counted. offered are the models of
 // the groups by id when the caller has them; the groups of the rules missing
 // from it are read.
-func offeredRules(ctx context.Context, q store.Querier, offered map[int64][]string, cond string, args ...any) ([]ruleOn, error) {
+func offeredRules(ctx context.Context, q *gorm.DB, offered map[int64][]string, cond string, args ...any) ([]ruleOn, error) {
 	var rows []struct {
 		GroupID         int64                `gorm:"column:group_id"`
 		SegmentID       int64                `gorm:"column:segment_id"`
@@ -164,7 +164,7 @@ func offeredRules(ctx context.Context, q store.Querier, offered map[int64][]stri
 // id, on the models the groups provide now (offeredRules): what the pricing
 // table of the group lists for the segment.
 func (s *Service) SegmentRuleCounts(ctx context.Context, segmentIDs []int64) (map[int64]map[int64]int64, error) {
-	rules, err := offeredRules(ctx, s.db.Pool, nil, `pr.segment_id = ANY(?)`, store.Int64s(segmentIDs))
+	rules, err := offeredRules(ctx, s.db.Gorm, nil, `pr.segment_id = ANY(?)`, store.Int64s(segmentIDs))
 	if err != nil {
 		return nil, err
 	}

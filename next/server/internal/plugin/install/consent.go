@@ -8,7 +8,6 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -234,7 +233,7 @@ func grantDecisions(ds []decision) []grants.Decision {
 // loadConsentable locks the plugin and version rows and re-checkes every
 // barrier an approval must pass: uninstall in progress, consent status,
 // signature revocation, publisher revocation and exclusive resources.
-func (s *Service) loadConsentable(ctx context.Context, tx pgx.Tx, key, version string) (*consentable, error) {
+func (s *Service) loadConsentable(ctx context.Context, tx *gorm.DB, key, version string) (*consentable, error) {
 	g := store.G(ctx, tx)
 	var p consentablePlugin
 	err := lockedPlugin(g, key).Select(consentablePluginColumns).Take(&p).Error
@@ -307,7 +306,7 @@ func (s *Service) loadConsentable(ctx context.Context, tx pgx.Tx, key, version s
 
 // decideAndApply records the operator's decisions and moves the plugin into
 // its post-consent state.
-func (s *Service) decideAndApply(ctx context.Context, tx pgx.Tx, key, version string, req ConsentRequest, actorID int64, c *consentable, mode consentMode) (*ConsentResult, error) {
+func (s *Service) decideAndApply(ctx context.Context, tx *gorm.DB, key, version string, req ConsentRequest, actorID int64, c *consentable, mode consentMode) (*ConsentResult, error) {
 	m := c.manifest
 	decisions, ferrs := decide(m, req, c.current, c.revoked, c.upgrade)
 	overrides, oerrs := overrideGrants(m, req.NewPermissionRoles)
@@ -453,7 +452,7 @@ type settlement struct {
 // (checkRoleGrantRights, 403). On an overridden key the override decides
 // every role the actor may name (C2): a default or inherited grant to one
 // it left out is dropped, to an unnameable role withheld.
-func (s *Service) settleRoleGrants(ctx context.Context, tx pgx.Tx, actorID int64, c *consentable,
+func (s *Service) settleRoleGrants(ctx context.Context, tx *gorm.DB, actorID int64, c *consentable,
 	existing catalogPerms, roles, overrides map[string]map[string][]string, mode consentMode,
 ) (*settlement, error) {
 	m := c.manifest
@@ -528,7 +527,7 @@ func markPlan(plan []RoleGrant, gs core.PluginGrantees, canDefine bool, mode con
 // grantees reads what nameable needs of actorID for roles: its
 // PluginGrantees and whether it may define roles. The system may name
 // every role.
-func (s *Service) grantees(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, mode consentMode) (core.PluginGrantees, bool, error) {
+func (s *Service) grantees(ctx context.Context, tx *gorm.DB, actorID int64, roles []string, mode consentMode) (core.PluginGrantees, bool, error) {
 	if mode == modeSystem {
 		return core.PluginGrantees{Superuser: true}, true, nil
 	}
@@ -569,7 +568,7 @@ func (s *Service) consent(ctx context.Context, key, version string, req ConsentR
 	}
 
 	var res *ConsentResult
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		c, err := s.loadConsentable(ctx, tx, key, version)
 		if err != nil {
 			return err
@@ -670,7 +669,7 @@ func (s *Service) checkGrantRights(ctx context.Context, actorID int64, ds []deci
 // permissions the catalog does not have yet are handed out (authz
 // SyncPlugin), so an upgrade adding none needs nothing even with roles
 // named - carrying a running plugin forward must not require role:define.
-func (s *Service) checkRoleGrantRights(ctx context.Context, tx pgx.Tx, actorID int64, m *manifest.Manifest, req ConsentRequest,
+func (s *Service) checkRoleGrantRights(ctx context.Context, tx *gorm.DB, actorID int64, m *manifest.Manifest, req ConsentRequest,
 	overrides map[string]map[string][]string, existing catalogPerms,
 ) error {
 	if err := checkNamedRolesExist(ctx, tx, req.NewPermissionRoles); err != nil {
@@ -694,7 +693,7 @@ func (s *Service) checkRoleGrantRights(ctx context.Context, tx pgx.Tx, actorID i
 // one locking CanGrantToRoles of all their roles at their highest risk,
 // whose critical refusal also names the critical local keys
 // (details.permissions).
-func (s *Service) checkGrantable(ctx context.Context, tx pgx.Tx, actorID int64, pluginKey string, gs []RoleGrant) error {
+func (s *Service) checkGrantable(ctx context.Context, tx *gorm.DB, actorID int64, pluginKey string, gs []RoleGrant) error {
 	if len(gs) == 0 {
 		return nil
 	}
@@ -730,7 +729,7 @@ func (s *Service) checkGrantable(ctx context.Context, tx pgx.Tx, actorID int64, 
 // checkNamedRolesExist fails (400) when the request names a role that does
 // not exist, under new_permission_roles.<local>, whether or not the
 // permission it is named for is created now.
-func checkNamedRolesExist(ctx context.Context, q store.Querier, named map[string]map[string]manifest.RoleDefault) error {
+func checkNamedRolesExist(ctx context.Context, q *gorm.DB, named map[string]map[string]manifest.RoleDefault) error {
 	var roles []string
 	for _, rs := range named {
 		roles = append(roles, slices.Collect(maps.Keys(rs))...)
@@ -782,7 +781,7 @@ const (
 )
 
 // loadCatalogPerms reads cat's permissions of plugin pluginKey.
-func loadCatalogPerms(ctx context.Context, cat core.PermissionCatalog, q store.Querier, pluginKey string) (catalogPerms, error) {
+func loadCatalogPerms(ctx context.Context, cat core.PermissionCatalog, q *gorm.DB, pluginKey string) (catalogPerms, error) {
 	ps, err := cat.PluginPermissions(ctx, q, pluginKey)
 	if err != nil {
 		return nil, err
@@ -803,7 +802,7 @@ func (s *Service) Reject(ctx context.Context, key, version string, actorID int64
 	}
 	defer release()
 
-	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	return s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var status string
 		err := lockedPlugin(g, key).Select("status").Take(&status).Error
@@ -839,7 +838,7 @@ func (s *Service) Reject(ctx context.Context, key, version string, actorID int64
 
 // RevokeGrant marks one host permission grant revoked, staged ones included.
 func (s *Service) RevokeGrant(ctx context.Context, key, permission string, actorID int64) error {
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		// The plugin row first, as consent and the rollout commit lock it
 		// before the grant rows they write (no lock-order deadlock).
 		if err := bumpPlugin(store.G(ctx, tx), key).Error; err != nil {

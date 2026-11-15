@@ -14,13 +14,13 @@ import (
 func (e *env) one(sql string, args ...any) int64 {
 	e.t.Helper()
 	var id int64
-	require.NoError(e.t, e.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id))
+	require.NoError(e.t, e.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id))
 	return id
 }
 
 func (e *env) exec(sql string, args ...any) {
 	e.t.Helper()
-	_, err := e.db.Pool.Exec(context.Background(), sql, args...)
+	_, err := e.db.SQL.ExecContext(context.Background(), sql, args...)
 	require.NoError(e.t, err)
 }
 

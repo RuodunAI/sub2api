@@ -34,7 +34,7 @@ func quotaPluginRevision(bt core.AccountTypeBinding) string {
 // queries its quota automatically, in q. It reports whether a row was written;
 // a caller outside a transaction announces it (quotaChanged), one inside
 // announces the account change after committing.
-func (s *Service) initializeQuota(ctx context.Context, q store.Querier, id int64, bt core.AccountTypeBinding) (bool, error) {
+func (s *Service) initializeQuota(ctx context.Context, q *gorm.DB, id int64, bt core.AccountTypeBinding) (bool, error) {
 	decl := bt.Type.Quota
 	if decl == nil || !decl.Query || !decl.AutoRefresh {
 		return false, nil
@@ -65,7 +65,7 @@ func (s *Service) quotaBlocked(ctx context.Context, a *row, bt core.AccountTypeB
 		return "", nil
 	}
 	var ready bool
-	if err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT COALESCE((SELECT `+lifecycleQuotaReady+` FROM account_lifecycle_sync l WHERE l.account_id=?),true)`, a.ID).Row().Scan(&ready); err != nil {
+	if err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT COALESCE((SELECT `+lifecycleQuotaReady+` FROM account_lifecycle_sync l WHERE l.account_id=?),true)`, a.ID).Row().Scan(&ready); err != nil {
 		return "", err
 	}
 	if !ready {
@@ -119,7 +119,7 @@ func (s *Service) executeQuotaQuery(ctx context.Context, bt core.AccountTypeBind
 	if !ok || quotaPluginRevision(current) != revision {
 		return s.d.DB.AccountQuota(ctx, a.ID)
 	}
-	created, err := store.EnsureAccountQuota(ctx, s.d.DB.Pool, a.ID, revision, bt.Type.Quota.AutoRefresh)
+	created, err := store.EnsureAccountQuota(ctx, s.d.DB.Gorm, a.ID, revision, bt.Type.Quota.AutoRefresh)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +133,7 @@ func (s *Service) executeQuotaQuery(ctx context.Context, bt core.AccountTypeBind
 	if claim == nil {
 		return s.d.DB.AccountQuota(ctx, a.ID)
 	}
-	a, err = s.loadRow(ctx, s.d.DB.Pool, a.ID, core.AllScope, false)
+	a, err = s.loadRow(ctx, s.d.DB.Gorm, a.ID, core.AllScope, false)
 	if err != nil {
 		return nil, err
 	}
@@ -255,14 +255,14 @@ func quotaSweepTypes(g core.Generation) []string {
 // snapshot rows they are missing, advancing the sweep cursor.
 func (s *Service) initializeQuotaPage(ctx context.Context, keys []string) error {
 	var entries []model.Account
-	if err := accountsOfTypes(store.G(ctx, s.d.DB.Pool), keys, s.quotaSweepAfter, quotaSweepPage).Select("id, plugin_key, type").
+	if err := accountsOfTypes(store.G(ctx, s.d.DB.Gorm), keys, s.quotaSweepAfter, quotaSweepPage).Select("id, plugin_key, type").
 		Find(&entries).Error; err != nil {
 		return err
 	}
 	for _, e := range entries {
 		bt, ok := s.accountType(e.PluginKey, e.Type)
 		if ok {
-			created, err := s.initializeQuota(ctx, s.d.DB.Pool, e.ID, bt)
+			created, err := s.initializeQuota(ctx, s.d.DB.Gorm, e.ID, bt)
 			if err != nil {
 				return err
 			}
@@ -288,7 +288,7 @@ func accountsOfTypes(db *gorm.DB, keys []string, after int64, limit int) *gorm.D
 // dueQuotaIDs selects the accounts whose quota is due for a refresh now.
 func (s *Service) dueQuotaIDs(ctx context.Context, keys []string) ([]int64, error) {
 	ids := []int64{}
-	err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT q.account_id FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
+	err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT q.account_id FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
   WHERE q.auto_refresh AND q.next_check_at<=now() AND (q.lease_until IS NULL OR q.lease_until<=now())
   AND (q.last_active_at IS NULL OR q.last_active_at<=now()-make_interval(secs=>?::float8))
   AND (a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key||'/'||a.type=ANY(?)
@@ -318,7 +318,7 @@ func (s *Service) queryDueQuotas(ctx context.Context, ids []int64) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 			_, err, _ := s.quotaFlight.Do(itoa(id), func() (any, error) {
-				a, err := s.loadRow(ctx, s.d.DB.Pool, id, core.AllScope, false)
+				a, err := s.loadRow(ctx, s.d.DB.Gorm, id, core.AllScope, false)
 				if err != nil {
 					return nil, err
 				}
@@ -346,7 +346,7 @@ func (s *Service) ApplyAccountQuotaObservation(ctx context.Context, id, expected
 		return err
 	}
 	var pluginKey, accountType string
-	err = store.G(ctx, s.d.DB.Pool).Model(&model.Account{}).Select("plugin_key, type").Where("id = ? AND deleted_at IS NULL", id).
+	err = store.G(ctx, s.d.DB.Gorm).Model(&model.Account{}).Select("plugin_key, type").Where("id = ? AND deleted_at IS NULL", id).
 		Row().Scan(&pluginKey, &accountType)
 	if store.IsNoRows(err) {
 		return nil

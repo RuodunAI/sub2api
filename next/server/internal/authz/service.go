@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -148,7 +147,7 @@ func (s *Service) OnChange(fn func()) {
 // Holding the lock, v-1 is the latest committed version, so entries this node
 // cached before it are dropped: checks made inside tx never trust a cache
 // that missed a broadcast.
-func (s *Service) Bump(ctx context.Context, tx pgx.Tx) (int64, error) {
+func (s *Service) Bump(ctx context.Context, tx *gorm.DB) (int64, error) {
 	var v int64
 	if err := bumpVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
 		return 0, err
@@ -199,7 +198,7 @@ func (s *Service) committedLater(version int64) {
 }
 
 // mutate runs fn in a transaction after bumping the version, then notifies.
-func (s *Service) mutate(ctx context.Context, fn func(tx pgx.Tx) error) error {
+func (s *Service) mutate(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return s.mutateAt(ctx, nil, fn)
 }
 
@@ -215,9 +214,9 @@ func errVersionConflict(ctx context.Context, current int64) error {
 // mutateAt is mutate failing with errVersionConflict, before fn runs, when
 // expected is set and is not the authz version the write starts from (the
 // Bump serializes the comparison with every other authz write).
-func (s *Service) mutateAt(ctx context.Context, expected *int64, fn func(tx pgx.Tx) error) error {
+func (s *Service) mutateAt(ctx context.Context, expected *int64, fn func(tx *gorm.DB) error) error {
 	var v int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		if v, err = s.Bump(ctx, tx); err != nil {
 			return err
@@ -236,7 +235,7 @@ func (s *Service) mutateAt(ctx context.Context, expected *int64, fn func(tx pgx.
 
 func (s *Service) currentVersion(ctx context.Context) (int64, error) {
 	var v int64
-	err := readVersion(store.G(ctx, s.db.Pool)).Row().Scan(&v)
+	err := readVersion(store.G(ctx, s.db.Gorm)).Row().Scan(&v)
 	return v, err
 }
 
@@ -326,25 +325,23 @@ func (s *Service) userPermissionSet(ctx context.Context, userID int64) (core.Per
 
 // readSnapshot runs fn in a read-only repeatable-read transaction and returns
 // the authz version seen by that snapshot.
-func (s *Service) readSnapshot(ctx context.Context, fn func(tx pgx.Tx) error) (int64, error) {
-	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+func (s *Service) readSnapshot(ctx context.Context, fn func(tx *gorm.DB) error) (int64, error) {
+	var v int64
+	err := s.db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+		if err := readVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
+			return err
+		}
+		return fn(tx)
+	})
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	var v int64
-	if err := readVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
-		return 0, err
-	}
-	if err := fn(tx); err != nil {
-		return 0, err
-	}
-	return v, tx.Commit(ctx)
+	return v, nil
 }
 
 func (s *Service) loadPermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
 	set := core.PermissionSet{Keys: map[string]struct{}{}}
-	v, err := s.readSnapshot(ctx, func(tx pgx.Tx) error {
+	v, err := s.readSnapshot(ctx, func(tx *gorm.DB) error {
 		// One row at least for an active user, roles or not: a signed-in
 		// user holds the self permissions (withSelf).
 		active := false
@@ -402,7 +399,7 @@ func userGrants(db *gorm.DB, userID int64) *gorm.DB {
 // stays assignable as listed. Used to compare what roles carry in grant
 // checks; the effective set (loadPermissionSet) counts active permissions
 // only.
-func (s *Service) RolesPermissions(ctx context.Context, q store.Querier, roleKeys []string) (core.PermissionSet, error) {
+func (s *Service) RolesPermissions(ctx context.Context, q *gorm.DB, roleKeys []string) (core.PermissionSet, error) {
 	set := core.PermissionSet{Keys: map[string]struct{}{}, Assignable: map[string]struct{}{}}
 	if len(roleKeys) == 0 {
 		return set, nil
@@ -430,7 +427,7 @@ func (s *Service) RolesPermissions(ctx context.Context, q store.Querier, roleKey
 // eachRolePermissions is RolesPermissions of each role of roleKeys alone,
 // keyed by role key (absent for an unknown one), in at most three queries however
 // many roles: what editDenial compares each role of a listing by.
-func (s *Service) eachRolePermissions(ctx context.Context, q store.Querier, roleKeys []string) (map[string]core.PermissionSet, error) {
+func (s *Service) eachRolePermissions(ctx context.Context, q *gorm.DB, roleKeys []string) (map[string]core.PermissionSet, error) {
 	roles, customs, err := readRoleGrants(ctx, q, roleKeys)
 	if err != nil {
 		return nil, err
@@ -460,7 +457,7 @@ type roleGrantRow struct {
 // and, when one has assign_custom, every custom role key: the one reading of
 // what roles carry behind RolesPermissions and eachRolePermissions, which
 // differ only in whom the assign_custom wildcard leaves out (addCustoms).
-func readRoleGrants(ctx context.Context, q store.Querier, roleKeys []string) (map[string]*roleGrantRow, []string, error) {
+func readRoleGrants(ctx context.Context, q *gorm.DB, roleKeys []string) (map[string]*roleGrantRow, []string, error) {
 	out := map[string]*roleGrantRow{}
 	db := store.G(ctx, q)
 	var role string
@@ -567,7 +564,7 @@ func (s *Service) ensureCatalog(ctx context.Context) error {
 		return nil
 	}
 	snap := &catalogSnapshot{perms: map[string]permMeta{}}
-	v, err := s.readSnapshot(ctx, func(tx pgx.Tx) error {
+	v, err := s.readSnapshot(ctx, func(tx *gorm.DB) error {
 		return store.EachRow(catalogRows(store.G(ctx, tx)), func(rows *sql.Rows) error {
 			var k string
 			var m permMeta

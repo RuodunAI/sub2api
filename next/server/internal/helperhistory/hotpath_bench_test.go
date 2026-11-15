@@ -24,7 +24,7 @@ func BenchmarkHotHelperPrefix(b *testing.B) {
 	}{
 		{"pgx", func() (bool, error) {
 			var found bool
-			err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND public_prefix_digest=ANY($3))`,
+			err := s.db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND public_prefix_digest=ANY($3))`,
 				r.Owner.UserID, r.Owner.GroupID, miss).Scan(&found)
 			return found, err
 		}},

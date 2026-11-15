@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/shopspring/decimal"
 )
 
 // A fixed submission fee is ordinary usage, not a reservation for future
@@ -17,7 +18,7 @@ func TestTaskImmediateBillingWithoutReservationAndRetry(t *testing.T) {
 	ctx := context.Background()
 	const expression = "flat(0.25)"
 	hash := expr.Hash(expression)
-	if _, err := f.db.Pool.Exec(ctx, `INSERT INTO model_price_history(expr_hash,expression,expr_version) VALUES($1,$2,1)`, hash, expression); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `INSERT INTO model_price_history(expr_hash,expression,expr_version) VALUES($1,$2,1)`, hash, expression); err != nil {
 		t.Fatal(err)
 	}
 	register := func(request string, free bool) string {

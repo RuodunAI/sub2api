@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -51,7 +52,7 @@ func TestInsertBatchChunksAndDuplicates(t *testing.T) {
 		t.Fatalf("batch of %d", len(batch))
 	}
 	var ids map[string]int64
-	inserted, err := f.svc.insertAtomic(ctx, batch, nil, func(_ pgx.Tx, got map[string]int64) error {
+	inserted, err := f.svc.insertAtomic(ctx, batch, nil, func(_ *gorm.DB, got map[string]int64) error {
 		ids = got
 		return nil
 	}, false)
@@ -179,7 +180,7 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	var batch []*core.UsageRecord
 	for name, build := range variants {
 		var id int64
-		if err := f.db.Pool.QueryRow(ctx, valuesSQL, appendUsageRow(nil, build("values-"+name))...).Scan(&id); err != nil {
+		if err := f.db.SQL.QueryRowContext(ctx, valuesSQL, appendUsageRow(nil, build("values-"+name))...).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		batch = append(batch, build("unnest-"+name))
@@ -204,7 +205,7 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 
 // countingQuerier counts the statements run through it.
 type countingQuerier struct {
-	store.Querier
+	*gorm.DB
 	n *int
 }
 
@@ -233,7 +234,7 @@ func TestInsertBatchOneStatement(t *testing.T) {
 		batch[i] = f.record(fmt.Sprintf("one-%03d", i), i%2 == 0)
 	}
 	var statements int
-	err := f.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := f.db.Tx(ctx, func(tx *gorm.DB) error {
 		ids, err := insertUsageRows(store.G(ctx, countingQuerier{Querier: tx, n: &statements}), batch)
 		for i, id := range ids {
 			if id == 0 {

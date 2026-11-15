@@ -7,9 +7,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
@@ -36,7 +36,7 @@ func roleGrantsEnv(t *testing.T) (*env, context.Context) {
 	}
 	_, err = e.svc.Consent(ctx, "guard", "0.1.0", all, e.admin)
 	require.NoError(t, err)
-	_, err = e.db.Pool.Exec(ctx, `
+	_, err = e.db.SQL.ExecContext(ctx, `
 INSERT INTO roles (key, name, builtin) VALUES ('admin', '{}', true), ('operator', '{}', true), ('supplier', '{}', true), ('user', '{}', true), ('auditor', '{}', false)
 ON CONFLICT (key) DO NOTHING;
 INSERT INTO permissions (key, module, label, source, plugin_key, status)
@@ -80,7 +80,7 @@ func newPerm(key, risk string, roles ...string) manifest.UserPermission {
 func addPerms(t *testing.T, e *env, perms map[string]string) {
 	t.Helper()
 	for local, risk := range perms {
-		_, err := e.db.Pool.Exec(context.Background(), `INSERT INTO permissions (key, module, label, source, plugin_key, status, risk)
+		_, err := e.db.SQL.ExecContext(context.Background(), `INSERT INTO permissions (key, module, label, source, plugin_key, status, risk)
 VALUES ($1, 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'active', $2)`, "plugin.guard:"+local, risk)
 		require.NoError(t, err)
 	}
@@ -90,7 +90,7 @@ VALUES ($1, 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'active', $2)`, "pl
 func autoAudits(t *testing.T, e *env, ctx context.Context) int {
 	t.Helper()
 	var n int
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_id = 'guard'`, AuditConsentAuto).Scan(&n))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = $1 AND target_id = 'guard'`, AuditConsentAuto).Scan(&n))
 	return n
 }
 
@@ -148,7 +148,7 @@ func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 	// Only the carried-over one is audited as an automatic consent, with
 	// its grants and nothing pending.
 	var detail string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail::text FROM audit_logs WHERE action = $1 AND target_id = 'guard' AND user_id = $2`, AuditConsentAuto, e.admin).Scan(&detail))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT detail::text FROM audit_logs WHERE action = $1 AND target_id = 'guard' AND user_id = $2`, AuditConsentAuto, e.admin).Scan(&detail))
 	assert.Equal(t, 1, autoAudits(t, e, ctx))
 	for _, want := range []string{`"version": "0.1.4"`, `"pending": []`, `"review_required": false`, `"role": "supplier"`} {
 		assert.Contains(t, detail, want)
@@ -169,7 +169,7 @@ func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 
 	// A role the catalog says the operator may not name is withheld, the
 	// rest granted after the locking check.
-	e.perms.grantees = func(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+	e.perms.grantees = func(context.Context, *gorm.DB, int64, []string) (core.PluginGrantees, error) {
 		return core.PluginGrantees{Denied: map[string]string{"admin": "held"}}, nil
 	}
 	res, err = e.svc.Consent(ctx, "guard", "0.1.1", consent, e.admin)
@@ -188,7 +188,7 @@ func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 	assert.Empty(t, res.Withheld)
 	assert.Equal(t, map[string][]string{"auditor": {""}}, lastDef(t, e, "plugin.guard:rules:edit").GrantRoles)
 	// The operator consent's audit carries its plan and what it withheld.
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail::text FROM audit_logs WHERE action = $1 AND target_id = 'guard'
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT detail::text FROM audit_logs WHERE action = $1 AND target_id = 'guard'
 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&detail))
 	for _, want := range []string{`"role_grants": [{`, `"pending": [{`, `"withheld": true`, `"inherit_skipped": []`} {
 		assert.Contains(t, detail, want)
@@ -209,7 +209,7 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "guard-0.1.1.s2plugin"), pkgtest.Build(m, e.root), 0o644))
 	_ = e.svc.EnsureBuiltin(ctx, dir, testLogger(t)) // the fake rollout cannot upgrade
 	var consent string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT consent_status FROM plugin_versions WHERE plugin_key = 'guard' AND version = '0.1.1'`).Scan(&consent))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT consent_status FROM plugin_versions WHERE plugin_key = 'guard' AND version = '0.1.1'`).Scan(&consent))
 	require.Equal(t, ConsentApproved, consent)
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:export").GrantRoles)
 	assert.Equal(t, map[string][]string{"admin": {""}}, lastDef(t, e, "plugin.guard:rules:view").GrantRoles)
@@ -219,7 +219,7 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	// The catalog now has the new permissions (the real SyncPlugin would
 	// have created them).
 	addPerms(t, e, map[string]string{"rules:export": manifest.RiskSensitive, "rules:view": manifest.RiskLow, "rules:edit": manifest.RiskLow})
-	pending, err := e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+	pending, err := e.svc.PendingRoleGrants(ctx, e.db.Gorm, "guard", "")
 	require.NoError(t, err)
 	withheld := func(perm, role, risk, via string) RoleGrant {
 		return RoleGrant{Version: "0.1.1", Permission: perm, Role: role, Risk: risk, Via: via, NeedsConsent: true, Withheld: true}
@@ -246,7 +246,7 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	_, err = e.svc.ReviewRoleGrants(ctx, "guard", "0.1.1", true, e.admin)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"plugin.guard:rules:edit=auditor", "plugin.guard:rules:export=admin", "plugin.guard:rules:view=user"}, e.perms.granted)
-	pending, err = e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+	pending, err = e.svc.PendingRoleGrants(ctx, e.db.Gorm, "guard", "")
 	require.NoError(t, err)
 	assert.Empty(t, pending)
 
@@ -256,7 +256,7 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "guard-0.1.2.s2plugin"), pkgtest.Build(m, e.root), 0o644))
 	_ = e.svc.EnsureBuiltin(ctx, dir, testLogger(t))
 	addPerms(t, e, map[string]string{"stats:export": manifest.RiskLow})
-	pending, err = e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+	pending, err = e.svc.PendingRoleGrants(ctx, e.db.Gorm, "guard", "")
 	require.NoError(t, err)
 	if len(pending) != 1 || pending[0].Role != "user" || pending[0].Version != "0.1.2" {
 		t.Fatalf("second upgrade pending %+v", pending)
@@ -267,7 +267,7 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	}
 	_, err = e.svc.ReviewRoleGrants(ctx, "guard", "0.1.2", false, e.admin)
 	require.NoError(t, err)
-	pending, err = e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+	pending, err = e.svc.PendingRoleGrants(ctx, e.db.Gorm, "guard", "")
 	require.NoError(t, err)
 	assert.Empty(t, pending)
 	assert.Len(t, e.perms.granted, 3)
@@ -289,14 +289,14 @@ func TestPendingRoleGrantsScoped(t *testing.T) {
 	addPerms(t, e, map[string]string{"input:check": manifest.RiskLow})
 	declare := func(values string) {
 		t.Helper()
-		_, err := e.db.Pool.Exec(ctx, `UPDATE permissions SET scope_type = 'plugin:value', scope = jsonb_build_object('resource', 'value', 'values', $1::jsonb)
+		_, err := e.db.SQL.ExecContext(ctx, `UPDATE permissions SET scope_type = 'plugin:value', scope = jsonb_build_object('resource', 'value', 'values', $1::jsonb)
 WHERE key = 'plugin.guard:input:check'`, values)
 		require.NoError(t, err)
 	}
 	declare(`[{"key":"input"},{"key":"output"}]`)
 	scopes := func() []string {
 		t.Helper()
-		gs, err := e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+		gs, err := e.svc.PendingRoleGrants(ctx, e.db.Gorm, "guard", "")
 		require.NoError(t, err)
 		out := []string{}
 		for _, g := range gs {
@@ -307,7 +307,7 @@ WHERE key = 'plugin.guard:input:check'`, values)
 	assert.Equal(t, []string{"user:value/input", "user:value/output"}, scopes())
 	grant := func(sql string) {
 		t.Helper()
-		_, err := e.db.Pool.Exec(ctx, sql)
+		_, err := e.db.SQL.ExecContext(ctx, sql)
 		require.NoError(t, err)
 	}
 	grant(`INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'value/input' FROM roles r, permissions p
@@ -346,7 +346,7 @@ func TestRejectWithheldGrantAcrossVersions(t *testing.T) {
 	}
 	pending := func() []RoleGrant {
 		t.Helper()
-		gs, err := e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+		gs, err := e.svc.PendingRoleGrants(ctx, e.db.Gorm, "guard", "")
 		require.NoError(t, err)
 		return gs
 	}
@@ -371,7 +371,7 @@ func TestRejectWithheldGrantAcrossVersions(t *testing.T) {
 	assert.Empty(t, e.perms.granted)
 	// rules:view new again (gone from the catalog meanwhile): 0.1.3
 	// withholds it after the reject, so it is listed again.
-	_, err = e.db.Pool.Exec(ctx, `DELETE FROM permissions WHERE key = 'plugin.guard:rules:view'`)
+	_, err = e.db.SQL.ExecContext(ctx, `DELETE FROM permissions WHERE key = 'plugin.guard:rules:view'`)
 	require.NoError(t, err)
 	upgrade("0.1.3", newPerm("rules:view", "", "admin", "user"), newPerm("stats:export", "", "user"))
 	addPerms(t, e, map[string]string{"rules:view": manifest.RiskLow})

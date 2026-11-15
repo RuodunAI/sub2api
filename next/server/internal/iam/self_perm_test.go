@@ -24,14 +24,14 @@ func TestSelfPermissions(t *testing.T) {
 		}
 	}
 	roleless := mustCreateUser(t, k.s, "roleless@example.com")
-	if _, err := k.s.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, roleless); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = $1`, roleless); err != nil {
 		t.Fatal(err)
 	}
 	k.bump(t)
 	if set, err := k.authz.PermissionSet(ctx, roleless); err != nil || !set.Has("self:profile") {
 		t.Fatalf("a user without roles: %v %v", set.Keys, err)
 	}
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, roleless); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, roleless); err != nil {
 		t.Fatal(err)
 	}
 	k.bump(t)

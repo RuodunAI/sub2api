@@ -15,11 +15,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 const assetLockKey int64 = 0x5745424153534554 // WEBASSET; publish, renew and GC share this order.
@@ -139,7 +139,7 @@ func (s *SharedAssets) markReady(start time.Time) {
 
 // collect runs under assetLockKey. A lease, seven-day retention and the newest
 // three builds independently protect references; only unreferenced blobs go.
-func (s *SharedAssets) collect(ctx context.Context, tx pgx.Tx) error {
+func (s *SharedAssets) collect(ctx context.Context, tx *gorm.DB) error {
 	g := store.G(ctx, tx)
 	if err := g.Exec(collectBuildsSQL, s.opts.Retention.Seconds(), s.opts.KeepBuilds).Error; err != nil {
 		return err
@@ -197,7 +197,7 @@ func (s *SharedAssets) Publish(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	start := time.Now()
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if err := lockAssets(g); err != nil {
 			return err
@@ -237,7 +237,7 @@ func (s *SharedAssets) renew(ctx context.Context) error {
 	s.mu.Lock()
 	start := time.Now()
 	found := false
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if err := lockAssets(g); err != nil {
 			return err
@@ -298,7 +298,7 @@ func (s *SharedAssets) Read(ctx context.Context, name string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	var a model.WebAsset
-	err := store.G(ctx, s.db.Pool).Select("body").Take(&a, "path = ?", name).Error
+	err := store.G(ctx, s.db.Gorm).Select("body").Take(&a, "path = ?", name).Error
 	if store.IsNoRows(err) {
 		return nil, fs.ErrNotExist
 	}

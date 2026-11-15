@@ -38,7 +38,7 @@ func (r managedRegistry) Current() core.Generation { return r.generation }
 func TestManagedReadinessFollowsIndependentApprovedPlugins(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('thirdparty','{}','enabled','2.0.0');
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('thirdparty','{}','enabled','2.0.0');
 		INSERT INTO plugin_versions(plugin_key,version,manifest,manifest_hash,package_sha256,package_size,signature_status,consent_status)
 		VALUES('thirdparty','2.0.0','{}','hash','hash',5,'valid','approved')`)
 	if err != nil {
@@ -54,14 +54,14 @@ func TestManagedReadinessFollowsIndependentApprovedPlugins(t *testing.T) {
 	if _, err = approvedPluginsReady(ctx, db, reg, "0.2.0"); err == nil {
 		t.Fatal("incompatible core was ready")
 	}
-	_, err = db.Pool.Exec(ctx, `UPDATE plugin_versions SET consent_status='rejected' WHERE plugin_key='thirdparty'`)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE plugin_versions SET consent_status='rejected' WHERE plugin_key='thirdparty'`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = approvedPluginsReady(ctx, db, reg, "0.1.0"); err == nil {
 		t.Fatal("revoked plugin was ready")
 	}
-	_, err = db.Pool.Exec(ctx, `UPDATE plugins SET status='disabled' WHERE key='thirdparty'`)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE plugins SET status='disabled' WHERE key='thirdparty'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestManagedReadinessFollowsIndependentApprovedPlugins(t *testing.T) {
 	}
 	// A removed bundled plugin is absent from the authority and is never
 	// restored or made a startup requirement by the new core's bundle.
-	_, err = db.Pool.Exec(ctx, `DELETE FROM plugins WHERE key='thirdparty'`)
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM plugins WHERE key='thirdparty'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestManagedReadinessFollowsIndependentApprovedPlugins(t *testing.T) {
 func TestManagedReadinessWaitsForPermissionRevocation(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('granted','{}','enabled','1.0.0');
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('granted','{}','enabled','1.0.0');
 		INSERT INTO plugin_versions(plugin_key,version,manifest,manifest_hash,package_sha256,package_size,signature_status,consent_status)
 		VALUES('granted','1.0.0','{}','hash','hash',5,'valid','approved');
 		INSERT INTO plugin_permission_grants(plugin_key,permission,status,plugin_version,manifest_hash)
@@ -99,7 +99,7 @@ func TestManagedReadinessWaitsForPermissionRevocation(t *testing.T) {
 	if _, err = approvedPluginsReady(ctx, db, loaded("db.schema", "net.outbound"), "0.1.0"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE plugin_permission_grants SET status='revoked' WHERE plugin_key='granted' AND permission='net.outbound'`); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, `UPDATE plugin_permission_grants SET status='revoked' WHERE plugin_key='granted' AND permission='net.outbound'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = approvedPluginsReady(ctx, db, loaded("db.schema", "net.outbound"), "0.1.0"); err == nil || !strings.Contains(err.Error(), "revocation has not converged") {
@@ -108,7 +108,7 @@ func TestManagedReadinessWaitsForPermissionRevocation(t *testing.T) {
 	if _, err = approvedPluginsReady(ctx, db, loaded("db.schema"), "0.1.0"); err != nil {
 		t.Fatalf("reloaded generation without the revoked grant: %v", err)
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE plugin_permission_grants SET status='revoked' WHERE plugin_key='granted' AND permission='db.schema'`); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, `UPDATE plugin_permission_grants SET status='revoked' WHERE plugin_key='granted' AND permission='db.schema'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = approvedPluginsReady(ctx, db, loaded(), "0.1.0"); err == nil || !strings.Contains(err.Error(), "required permission") {
@@ -197,7 +197,7 @@ func TestOnlyExplicitBootstrapCanCoordinateBeforeAdmission(t *testing.T) {
 func TestManagedAdmissionUsesPersistedBootAndRoles(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	_, err := db.Pool.Exec(ctx, `CREATE SCHEMA updater; CREATE TABLE updater.node_admissions(
+	_, err := db.SQL.ExecContext(ctx, `CREATE SCHEMA updater; CREATE TABLE updater.node_admissions(
 		node_id text PRIMARY KEY,core_boot_id text,release_digest text,revision bigint,
 		serve_http bool,claim_background bool,coordinate_plugins bool);
 		INSERT INTO updater.node_admissions VALUES('node','boot','release',2,true,true,true)`)
@@ -237,7 +237,7 @@ func TestManagedAdmissionUsesPersistedBootAndRoles(t *testing.T) {
 	if starts.Load() != 1 || m.gate.isDraining() {
 		t.Fatal("not admitted")
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE updater.node_admissions SET revision=3`); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, `UPDATE updater.node_admissions SET revision=3`); err != nil {
 		t.Fatal(err)
 	}
 	if err = verifyAdmission(ctx, db, "node", a); err == nil {
@@ -266,16 +266,16 @@ func TestManagedSchemaCheckIsReadOnly(t *testing.T) {
 	if err := verifyCoreSchema(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	_, err := db.Pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id=(SELECT min(id) FROM schema_migrations)`)
+	_, err := db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id=(SELECT min(id) FROM schema_migrations)`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var before, after int
-	_ = db.Pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&before)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&before)
 	if err = verifyCoreSchema(ctx, db); err == nil {
 		t.Fatal("missing migration not rejected")
 	}
-	_ = db.Pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&after)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&after)
 	if before != after {
 		t.Fatal("readiness applied migrations")
 	}

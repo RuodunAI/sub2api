@@ -58,8 +58,8 @@ func scanPair(rows *sql.Rows) (pair, error) {
 // CollectRows reads every row in order and is never nil; EachRow folds them
 // as they come. An error of the query or of a scan stops the read.
 func TestCollectRows(t *testing.T) {
-	db, _ := bridgeDB(t)
-	g := store.G(context.Background(), db.Pool)
+	db, _ := widgetDB(t)
+	g := store.G(context.Background(), db.Gorm)
 	series := func(n int) *gorm.DB { return g.Raw(`SELECT n, n * 2 FROM generate_series(1, ?::int) n ORDER BY n`, n) }
 
 	got, err := store.CollectRows(series(3), scanPair)
@@ -99,8 +99,8 @@ func TestCollectRows(t *testing.T) {
 
 // Bools(nil) is the empty boolean[], not NULL, on a real server.
 func TestBoolsOnTheServer(t *testing.T) {
-	db, _ := bridgeDB(t)
-	g := store.G(context.Background(), db.Pool)
+	db, _ := widgetDB(t)
+	g := store.G(context.Background(), db.Gorm)
 	var n *int
 	require.NoError(t, g.Raw(`SELECT cardinality(?::boolean[])`, store.Bools(nil)).Row().Scan(&n))
 	require.NotNil(t, n, "nil is the empty array, not NULL")

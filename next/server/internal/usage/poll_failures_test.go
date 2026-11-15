@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/shopspring/decimal"
 )
 
 type fakeQuoter struct{}
@@ -38,7 +39,7 @@ func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 	}
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := f.db.Pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := f.db.SQL.ExecContext(ctx, sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -178,7 +179,7 @@ func TestManagedObservationTerminationPolicy(t *testing.T) {
 			if err = f.svc.RegisterTask(ctx, core.TaskRegistration{PublicID: id, UpstreamID: "raw-policy", Kind: "video", Snapshot: body, IDPaths: []string{"id"}, Deadline: time.Hour, Record: r}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = f.db.Pool.Exec(ctx, `UPDATE async_tasks SET next_check_at=now() WHERE public_id=$1`, id); err != nil {
+			if _, err = f.db.SQL.ExecContext(ctx, `UPDATE async_tasks SET next_check_at=now() WHERE public_id=$1`, id); err != nil {
 				t.Fatal(err)
 			}
 			es, err := f.svc.claimTasks(ctx, 1)
@@ -201,7 +202,7 @@ func TestManagedObservationTerminationPolicy(t *testing.T) {
 				f.svc.recordPollFailure(ctx, e, row, cfg, "HTTP 503", 0)
 			case "confirmed":
 				e.task.state = "succeeded"
-				if _, err = f.db.Pool.Exec(ctx, `UPDATE async_tasks SET state='succeeded' WHERE public_id=$1`, id); err != nil {
+				if _, err = f.db.SQL.ExecContext(ctx, `UPDATE async_tasks SET state='succeeded' WHERE public_id=$1`, id); err != nil {
 					t.Fatal(err)
 				}
 				f.svc.failObservation(ctx, e, row, "task_not_found", "expired upstream result")

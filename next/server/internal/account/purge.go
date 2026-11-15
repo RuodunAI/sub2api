@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -44,7 +42,7 @@ func (s *Service) retentionDays(pluginKey, typ string) int {
 // plugin, the cleanup of deleted account id's resources: at once, or with
 // retain at the end of the retention days its type declares. It returns that
 // end (nil: at once). Retaining needs both a resource and retention days.
-func (s *Service) markResourcesDeleted(ctx context.Context, tx pgx.Tx, id int64, pluginKey, typ string, retain bool) (*time.Time, error) {
+func (s *Service) markResourcesDeleted(ctx context.Context, tx *gorm.DB, id int64, pluginKey, typ string, retain bool) (*time.Time, error) {
 	deletion := s.deletionResource(pluginKey)
 	var options core.AccountDeletionOptions
 	if retain {
@@ -76,7 +74,7 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 	}
 	var ids []int64
 	var authzVersion int64
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		ids = ids[:0]
 		authzVersion = 0
 		g := store.G(ctx, tx)

@@ -16,14 +16,14 @@ func observationReviewOwners(t *testing.T, db *store.DB) (core.ResourceOwner, co
 	t.Helper()
 	ctx := context.Background()
 	a, b := core.ResourceOwner{}, core.ResourceOwner{}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('observation-review') RETURNING id`).Scan(&a.GroupID); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('observation-review') RETURNING id`).Scan(&a.GroupID); err != nil {
 		t.Fatal(err)
 	}
 	b.GroupID = a.GroupID
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('review-observation-a@example.com','x') RETURNING id`).Scan(&a.UserID); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('review-observation-a@example.com','x') RETURNING id`).Scan(&a.UserID); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('review-observation-b@example.com','x') RETURNING id`).Scan(&b.UserID); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('review-observation-b@example.com','x') RETURNING id`).Scan(&b.UserID); err != nil {
 		t.Fatal(err)
 	}
 	return a, b
@@ -58,7 +58,7 @@ func TestReviewObservedDBParentIdentityAcrossOwners(t *testing.T) {
 	if _, err := s.ResolveContext(ctx, y); err == nil {
 		t.Fatal("cross-owner parent became resolvable")
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 minute' WHERE public_id=$1`, first.PublicID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 minute' WHERE public_id=$1`, first.PublicID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.BindContext(ctx, y); err == nil {
@@ -102,7 +102,7 @@ func TestReviewObservedDBRenewalReacquiresAllQuotas(t *testing.T) {
 	if err = s.BindContext(ctx, oldContext); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Pool.Exec(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 minute' WHERE public_id=$1`, first.PublicID); err != nil {
+	if _, err = db.SQL.ExecContext(ctx, `UPDATE provider_resources SET expires_at=now()-interval '1 minute' WHERE public_id=$1`, first.PublicID); err != nil {
 		t.Fatal(err)
 	}
 	next := input
@@ -173,7 +173,7 @@ func TestReviewObservedDBFinalizeCannotRaceAdoption(t *testing.T) {
 		t.Fatalf("remote file had %d successful owners", successes.Load())
 	}
 	var count int
-	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM provider_resources WHERE remote_id='same_file'`).Scan(&count); err != nil || count != 1 {
+	if err = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM provider_resources WHERE remote_id='same_file'`).Scan(&count); err != nil || count != 1 {
 		t.Fatal("duplicate provider identity", count, err)
 	}
 }

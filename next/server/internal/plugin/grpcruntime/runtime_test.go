@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/cluster"
@@ -60,7 +60,7 @@ func (l *fakeLedger) Apply(_ context.Context, ch core.LedgerChange) (*core.Ledge
 	return &core.LedgerResult{LedgerID: id, BalanceAfter: l.total}, nil
 }
 
-func (l *fakeLedger) ApplyTx(ctx context.Context, _ pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error) {
+func (l *fakeLedger) ApplyTx(ctx context.Context, _ *gorm.DB, ch core.LedgerChange) (*core.LedgerResult, error) {
 	return l.Apply(ctx, ch)
 }
 
@@ -101,7 +101,7 @@ func setup(t *testing.T, grants map[string]string) *env {
 		"migrations/0001_init.sql": []byte(`CREATE TABLE items (id int PRIMARY KEY);`),
 	})
 	registrytest.Install(t, db, m, pkg, grants, "enabled")
-	schemas := dbschema.New(db, db.Pool.Config().ConnString(), mk, true)
+	schemas := dbschema.New(db, testutil.DSN(db), mk, true)
 	t.Cleanup(func() { _ = schemas.Drop(context.Background(), key) })
 	pkgs := registry.NewPackages(db, t.TempDir(), registry.WithSource(registrytest.Source()))
 	t.Cleanup(pkgs.Close)
@@ -115,7 +115,7 @@ func (e *env) setConfig(t *testing.T, cfg string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.db.Pool.Exec(context.Background(), `UPDATE plugins SET config_enc = $2 WHERE key = $1`, e.key, enc); err != nil {
+	if _, err := e.db.SQL.ExecContext(context.Background(), `UPDATE plugins SET config_enc = $2 WHERE key = $1`, e.key, enc); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -506,7 +506,7 @@ func TestLimitsStaleAfterRefresh(t *testing.T) {
 	if inst.LimitsStale() {
 		t.Fatal("fresh instance stale")
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET resource_limits = '{"memory_mb": 77}' WHERE key = $1`, e.key); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugins SET resource_limits = '{"memory_mb": 77}' WHERE key = $1`, e.key); err != nil {
 		t.Fatal(err)
 	}
 	if err := inst.Refresh(ctx); err != nil {

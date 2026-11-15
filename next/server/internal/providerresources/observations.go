@@ -7,10 +7,11 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -26,10 +27,10 @@ func remoteKey(plugin, kind string, binding core.ResourceBinding, id string) str
 	hash := sha256.Sum256(raw)
 	return hex.EncodeToString(hash[:])
 }
-func lockRemote(ctx context.Context, tx pgx.Tx, plugin, kind string, binding core.ResourceBinding, id string) error {
+func lockRemote(ctx context.Context, tx *gorm.DB, plugin, kind string, binding core.ResourceBinding, id string) error {
 	return advisoryLock(store.G(ctx, tx), "provider-resource-identity:"+remoteKey(plugin, kind, binding, id)).Error
 }
-func lookupRemote(ctx context.Context, q store.Querier, plugin, kind string, binding core.ResourceBinding, id string) ([]core.ProviderResource, error) {
+func lookupRemote(ctx context.Context, q *gorm.DB, plugin, kind string, binding core.ResourceBinding, id string) ([]core.ProviderResource, error) {
 	var rows []model.ProviderResource
 	err := resources(store.G(ctx, q)).Where(`plugin_key=? AND kind=? AND account_id=? AND principal_id=? AND generation=? AND remote_id=?`, plugin, kind, binding.AccountID, binding.PrincipalID, binding.Generation, id).
 		Find(&rows).Error
@@ -105,7 +106,7 @@ func (s *Service) RegisterObserved(ctx context.Context, in core.ResourceObservat
 	if err != nil {
 		return out, err
 	}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if e := lockOwner(ctx, tx, in.Owner); e != nil {
 			return e

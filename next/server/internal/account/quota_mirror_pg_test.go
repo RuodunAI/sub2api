@@ -19,7 +19,7 @@ import (
 // does, announcing a written row so the quota mirror reads it again.
 func (e *env) ensureQuotaRow(id int64, revision string, automatic bool) {
 	e.t.Helper()
-	created, err := store.EnsureAccountQuota(e.t.Context(), e.db.Pool, id, revision, automatic)
+	created, err := store.EnsureAccountQuota(e.t.Context(), e.db.Gorm, id, revision, automatic)
 	require.NoError(e.t, err)
 	if created {
 		e.svc.quotaChanged(e.t.Context(), id)
@@ -89,7 +89,7 @@ func TestQuotaMirrorGenerationAfterTrigger(t *testing.T) {
 	e := setup(t)
 	id := e.mkRawAccount("anthropic", "apikey", "trigger", "sk-good-key-123", true)
 	old := quotaObservationGeneration(t, e, id)
-	_, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET credentials_enc=$2 WHERE id=$1`, id, []byte("re-authorized"))
+	_, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET credentials_enc=$2 WHERE id=$1`, id, []byte("re-authorized"))
 	require.NoError(t, err)
 	snaps, err := e.svc.AccountQuotaSnapshots(t.Context(), []int64{id})
 	require.NoError(t, err)
@@ -136,7 +136,7 @@ func TestQuotaMirrorInitializeAnnounces(t *testing.T) {
 	require.NoError(t, e.svc.initializeQuotaPage(t.Context(), keys))
 	require.Len(t, payloads(), n)
 	// A new plugin revision starts a new generation and is announced.
-	created, err := store.EnsureAccountQuota(t.Context(), e.db.Pool, id, "another-revision", true)
+	created, err := store.EnsureAccountQuota(t.Context(), e.db.Gorm, id, "another-revision", true)
 	require.NoError(t, err)
 	require.True(t, created)
 	e.svc.quotaChanged(t.Context(), id)
@@ -173,7 +173,7 @@ func TestQuotaMirrorAcrossNodes(t *testing.T) {
 	other.cacheMu.Unlock()
 
 	// An account change reaches the other node's directory and mirror.
-	_, err = e.db.Pool.Exec(t.Context(), `UPDATE accounts SET credentials_enc=$2 WHERE id=$1`, id, []byte("re-authorized"))
+	_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET credentials_enc=$2 WHERE id=$1`, id, []byte("re-authorized"))
 	require.NoError(t, err)
 	e.svc.changed(t.Context(), id)
 	snaps, err = other.AccountQuotaSnapshots(t.Context(), []int64{id})
@@ -195,7 +195,7 @@ func TestQuotaMirrorReloadScope(t *testing.T) {
 	noRow := e.mkRawAccount("anthropic", "apikey", "scope-none", "sk-good-key-123", false)
 	relay := e.mkRawAccount("relay", "relay_key", "scope-relay", "sk-good-key-123", true)
 	deleted := e.mkRawAccount("anthropic", "apikey", "scope-deleted", "sk-good-key-123", true)
-	_, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET deleted_at=now() WHERE id=$1`, deleted)
+	_, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET deleted_at=now() WHERE id=$1`, deleted)
 	require.NoError(t, err)
 	require.Equal(t, []string{"anthropic/apikey"}, modelAvailabilityTypes(e.gen))
 

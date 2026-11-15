@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 // Draft sweep (CONTRACTS §49.13): abandoned, failed or cancelled drafts are
@@ -108,7 +108,7 @@ func (s *Service) SweepDrafts(ctx context.Context) (int, error) {
 // expiredDraftKeys lists the drafts that were idle too long or exist too long.
 func (s *Service) expiredDraftKeys(ctx context.Context) ([]string, error) {
 	var keys []string
-	e := runtimes(store.G(ctx, s.DB.Pool)).Where(`account_id IS NULL AND retired_at IS NULL
+	e := runtimes(store.G(ctx, s.DB.Gorm)).Where(`account_id IS NULL AND retired_at IS NULL
 		AND (last_seen_at < now() - ?::bigint * interval '1 second' OR created_at < now() - ?::bigint * interval '1 second')`,
 		int64(draftIdle/time.Second), int64(draftMaxAge/time.Second)).Order("key").Pluck("key", &keys).Error
 	if e != nil {
@@ -131,7 +131,7 @@ func (s *Service) expiredDraftKeys(ctx context.Context) ([]string, error) {
 // no other row) is in use and kept.
 func (s *Service) sweepRetired(ctx context.Context) (int, error) {
 	var keys []string
-	e := runtimes(store.G(ctx, s.DB.Pool)).Where("account_id IS NULL AND retired_at < now() - ?::bigint * interval '1 second'",
+	e := runtimes(store.G(ctx, s.DB.Gorm)).Where("account_id IS NULL AND retired_at < now() - ?::bigint * interval '1 second'",
 		int64(retiredGrace/time.Second)).Order("key").Pluck("key", &keys).Error
 	if e != nil {
 		return 0, e
@@ -141,7 +141,7 @@ func (s *Service) sweepRetired(ctx context.Context) (int, error) {
 	for _, key := range keys {
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		var done bool
-		e := s.lockedTx(c, key, false, func(tx pgx.Tx) (err error) {
+		e := s.lockedTx(c, key, false, func(tx *gorm.DB) (err error) {
 			done, err = s.sweepRetiredKey(c, tx, key)
 			return err
 		})
@@ -161,7 +161,7 @@ func (s *Service) sweepRetired(ctx context.Context) (int, error) {
 
 // sweepRetiredKey deletes one retired runtime under its lock: the row, then
 // the runtime on the controller; removed reports both happened.
-func (s *Service) sweepRetiredKey(ctx context.Context, tx pgx.Tx, key string) (removed bool, err error) {
+func (s *Service) sweepRetiredKey(ctx context.Context, tx *gorm.DB, key string) (removed bool, err error) {
 	g := store.G(ctx, tx)
 	switch {
 	case accountKeyPattern.MatchString(key):
@@ -260,7 +260,7 @@ func (s *Service) sweepOrphans(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	var found []string
-	if e := runtimes(store.G(ctx, s.DB.Pool)).Where("key = ANY(?)", store.Strings(candidates)).Pluck("key", &found).Error; e != nil {
+	if e := runtimes(store.G(ctx, s.DB.Gorm)).Where("key = ANY(?)", store.Strings(candidates)).Pluck("key", &found).Error; e != nil {
 		return 0, e
 	}
 	known := map[string]bool{}
@@ -274,7 +274,7 @@ func (s *Service) sweepOrphans(ctx context.Context) (int, error) {
 			continue
 		}
 		c, cancel := context.WithTimeout(ctx, time.Minute)
-		e := s.lockedTx(c, key, false, func(tx pgx.Tx) error {
+		e := s.lockedTx(c, key, false, func(tx *gorm.DB) error {
 			g := store.G(c, tx)
 			if found, e := store.Exists(g, runtimes(g).Where("key = ?", key)); e != nil || found {
 				return e

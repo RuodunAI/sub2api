@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -30,7 +29,7 @@ func NewPublisher(db *store.DB) *Publisher { return &Publisher{db: db} }
 // Emit inserts events into the outbox inside tx. With a nil tx the events
 // are written in their own transaction (only for callers that have no
 // business transaction to join).
-func (p *Publisher) Emit(ctx context.Context, tx pgx.Tx, events ...core.Event) error {
+func (p *Publisher) Emit(ctx context.Context, tx *gorm.DB, events ...core.Event) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -38,7 +37,7 @@ func (p *Publisher) Emit(ctx context.Context, tx pgx.Tx, events ...core.Event) e
 		if p.db == nil {
 			return errors.New("event: Emit without transaction and no database")
 		}
-		return p.db.Tx(ctx, func(tx pgx.Tx) error { return p.Emit(ctx, tx, events...) })
+		return p.db.Tx(ctx, func(tx *gorm.DB) error { return p.Emit(ctx, tx, events...) })
 	}
 	args := make([]any, 0, 2*len(events))
 	for _, ev := range events {

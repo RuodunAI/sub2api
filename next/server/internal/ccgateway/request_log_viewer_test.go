@@ -12,10 +12,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/gin-gonic/gin"
 )
 
 // viewerAuth grants exactly the listed permission keys to user 1.
@@ -74,7 +75,7 @@ func viewerFixture(t *testing.T, reply func(w http.ResponseWriter, action string
 	worker := &viewerWorker{bodies: map[string][]string{}, reply: reply}
 	s, db := requestLogsService(t, worker.handler(t))
 	var id int64
-	if e := db.Pool.QueryRow(context.Background(), `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg-audit-viewer','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id); e != nil {
+	if e := db.SQL.QueryRowContext(context.Background(), `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg-audit-viewer','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id); e != nil {
 		t.Fatal(e)
 	}
 	get := func(keys viewerAuth, path string) *httptest.ResponseRecorder {
@@ -385,7 +386,7 @@ func TestRequestLogFileStreamsAndAudits(t *testing.T) {
 	}
 	// Two chunks of one file are one audit row; the download is another.
 	var n int
-	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action=$1`,
+	if err := db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action=$1`,
 		"ccgateway.account."+strconv.FormatInt(id, 10)+".request-logs.read").Scan(&n); err != nil || n != 2 {
 		t.Fatal("audit rows", n, err)
 	}

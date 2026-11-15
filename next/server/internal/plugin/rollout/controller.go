@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -200,7 +199,7 @@ func (c *Controller) Stop(ctx context.Context) {
 		case <-done:
 			// Persist stop acknowledgement before Redis liveness disappears.
 			// Uninstall can then distinguish a clean shutdown from a partition.
-			g, boot := store.G(ctx, c.o.DB.Pool), c.o.Node.BootID()
+			g, boot := store.G(ctx, c.o.DB.Gorm), c.o.Node.BootID()
 			_ = stopBootRuntimes(g, boot).Error
 			_ = cleanBootCleanup(g, boot).Error
 			_ = ackBootUninstalls(g, boot).Error
@@ -284,7 +283,7 @@ type pluginLock struct {
 	rowVersion int64
 }
 
-func lockPlugin(ctx context.Context, tx pgx.Tx, key string) (*pluginLock, error) {
+func lockPlugin(ctx context.Context, tx *gorm.DB, key string) (*pluginLock, error) {
 	g := store.G(ctx, tx)
 	var p model.Plugin
 	err := selectPluginForUpdate(g, key, "status, active_version, row_version").Take(&p).Error
@@ -317,7 +316,7 @@ func selectPluginForUpdate(g *gorm.DB, key, cols string) *gorm.DB {
 		Clauses(store.ForUpdate)
 }
 
-func approved(ctx context.Context, tx pgx.Tx, key, version string) (bool, error) {
+func approved(ctx context.Context, tx *gorm.DB, key, version string) (bool, error) {
 	g := store.G(ctx, tx)
 	return store.Exists(g, g.Model(&model.PluginVersion{}).Select("1").
 		Where("plugin_key = ? AND version = ? AND consent_status = 'approved'", key, version))
@@ -330,7 +329,7 @@ func actor(id int64) *int64 {
 	return &id
 }
 
-func (c *Controller) insertRollout(ctx context.Context, tx pgx.Tx, key, action string, from, target *string, phase string, actorID int64) (int64, error) {
+func (c *Controller) insertRollout(ctx context.Context, tx *gorm.DB, key, action string, from, target *string, phase string, actorID int64) (int64, error) {
 	g := store.G(ctx, tx)
 	var id int64
 	err := g.Raw(`
@@ -367,7 +366,7 @@ func (c *Controller) Enable(ctx context.Context, pluginKey string, actorID int64
 	defer release()
 
 	var id int64
-	err := c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := c.o.DB.Tx(ctx, func(tx *gorm.DB) error {
 		p, err := lockPlugin(ctx, tx, pluginKey)
 		if err != nil {
 			return err
@@ -419,7 +418,7 @@ func (c *Controller) Upgrade(ctx context.Context, pluginKey, version string, act
 	defer release()
 
 	var id int64
-	err := c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := c.o.DB.Tx(ctx, func(tx *gorm.DB) error {
 		p, err := lockPlugin(ctx, tx, pluginKey)
 		if err != nil {
 			return err
@@ -463,7 +462,7 @@ func (c *Controller) Disable(ctx context.Context, pluginKey string, actorID int6
 	}
 
 	var id int64
-	err := c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := c.o.DB.Tx(ctx, func(tx *gorm.DB) error {
 		p, err := lockPlugin(ctx, tx, pluginKey)
 		if err != nil {
 			return err
@@ -510,7 +509,7 @@ func (c *Controller) started(ctx context.Context, key string, id int64) (*core.R
 // Current returns the open rollout of a plugin with live node states.
 func (c *Controller) Current(ctx context.Context, pluginKey string) (*core.Rollout, error) {
 	var id int64
-	err := openRollouts(store.G(ctx, c.o.DB.Pool), pluginKey).Select("id").Take(&id).Error
+	err := openRollouts(store.G(ctx, c.o.DB.Gorm), pluginKey).Select("id").Take(&id).Error
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
@@ -535,7 +534,7 @@ func (c *Controller) get(ctx context.Context, key string, id int64) (*core.Rollo
 	if r.phase == PhasePreparing || r.phase == PhaseActivating {
 		states, _, _ := c.nodeStates(ctx, r)
 		out.Nodes = states
-	} else if err := store.G(ctx, c.o.DB.Pool).Model(&model.PluginRolloutNode{}).Select("node_id, boot_id, state, error").
+	} else if err := store.G(ctx, c.o.DB.Gorm).Model(&model.PluginRolloutNode{}).Select("node_id, boot_id, state, error").
 		Where("rollout_id = ?", id).Order("node_id, boot_id").Scan(&out.Nodes).Error; err != nil {
 		return nil, err
 	}
@@ -586,7 +585,7 @@ type rolloutRow struct {
 
 func (c *Controller) loadRollout(ctx context.Context, id int64) (*rolloutRow, error) {
 	var rec rolloutRecord
-	err := selectRollouts(store.G(ctx, c.o.DB.Pool)).Where("id = ?", id).Take(&rec).Error
+	err := selectRollouts(store.G(ctx, c.o.DB.Gorm)).Where("id = ?", id).Take(&rec).Error
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
@@ -602,7 +601,7 @@ func (c *Controller) loadRollout(ctx context.Context, id int64) (*rolloutRow, er
 // is no longer preparing.
 func (c *Controller) finishFailed(ctx context.Context, r *rolloutRow, phase, msg string, fenced bool) (bool, error) {
 	ok := false
-	err := c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := c.o.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		res := failRollout(g, r, phase, msg, fenced, c.o.Node.BootID())
 		if res.Error != nil || res.RowsAffected == 0 {
@@ -652,7 +651,7 @@ func failRollout(g *gorm.DB, r *rolloutRow, phase, msg string, fenced bool, boot
 
 // Mark every boot which could own an instance, including disconnected boots.
 // Liveness expiry is not evidence that an old version has stopped.
-func (c *Controller) markCleanup(ctx context.Context, tx pgx.Tx, r *rolloutRow) error {
+func (c *Controller) markCleanup(ctx context.Context, tx *gorm.DB, r *rolloutRow) error {
 	return markCleanupRows(store.G(ctx, tx), r).Error
 }
 
@@ -665,7 +664,7 @@ func markCleanupRows(g *gorm.DB, r *rolloutRow) *gorm.DB {
 }
 
 // writeNodes records the per-node outcome from the live node reports.
-func (c *Controller) writeNodes(ctx context.Context, tx pgx.Tx, r *rolloutRow) error {
+func (c *Controller) writeNodes(ctx context.Context, tx *gorm.DB, r *rolloutRow) error {
 	states, _, err := c.nodeStates(ctx, r)
 	if err != nil {
 		c.log.Warn("read node states failed", "err", err)

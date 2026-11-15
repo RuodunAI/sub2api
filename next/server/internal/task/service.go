@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/background"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -234,7 +234,7 @@ func (s *Service) Enqueue(ctx context.Context, name string, args any, opts core.
 }
 
 // EnqueueTx submits one run of a cluster task inside tx (core.Tasks).
-func (s *Service) EnqueueTx(ctx context.Context, tx pgx.Tx, name string, args any, opts core.EnqueueOpts) error {
+func (s *Service) EnqueueTx(ctx context.Context, tx *gorm.DB, name string, args any, opts core.EnqueueOpts) error {
 	if tx == nil {
 		return fmt.Errorf("%w: nil transaction", core.ErrTaskInvalid)
 	}

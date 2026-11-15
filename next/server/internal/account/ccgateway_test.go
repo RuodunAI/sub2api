@@ -53,7 +53,7 @@ func (e *env) withCCGateway(runtimes bool, ctl http.HandlerFunc) *ccgateway.Serv
 		e.t.Fatal(err)
 	}
 	envelope, _ := json.Marshal(map[string]any{"cipher": enc})
-	if _, err := e.db.Pool.Exec(context.Background(), `INSERT INTO settings(key,value) VALUES('ccgateway_remote',$1)
+	if _, err := e.db.SQL.ExecContext(context.Background(), `INSERT INTO settings(key,value) VALUES('ccgateway_remote',$1)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, envelope); err != nil {
 		e.t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestCreateAdoptsAnAuthorizedDraft(t *testing.T) {
 	ctx := context.Background()
 	pid := e.exec1(`INSERT INTO proxies(name,protocol,host,port) VALUES('ccg','http','proxy.example',3128) RETURNING id`)
 	draft := func(key string, owner int64) string {
-		if _, err := e.db.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, created_by) VALUES($1,$2,$3)`, key, pid, owner); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, created_by) VALUES($1,$2,$3)`, key, pid, owner); err != nil {
 			t.Fatal(err)
 		}
 		return key
@@ -186,7 +186,7 @@ func TestCreateAdoptsAnAuthorizedDraft(t *testing.T) {
 		t.Fatalf("draft on another type: %d %v", code, out)
 	}
 	var n int
-	if err := e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM accounts`).Scan(&n); err != nil || n != 0 {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM accounts`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("accounts created by failed requests: %d %v", n, err)
 	}
 
@@ -196,7 +196,7 @@ func TestCreateAdoptsAnAuthorizedDraft(t *testing.T) {
 	}
 	id := int64(out["data"].(map[string]any)["id"].(float64))
 	var adopted *int64
-	if err := e.db.Pool.QueryRow(ctx, `SELECT account_id FROM ccgateway_runtimes WHERE key=$1 AND adopted_at IS NOT NULL`, mine).Scan(&adopted); err != nil || adopted == nil || *adopted != id {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT account_id FROM ccgateway_runtimes WHERE key=$1 AND adopted_at IS NOT NULL`, mine).Scan(&adopted); err != nil || adopted == nil || *adopted != id {
 		t.Fatalf("draft not adopted: %v %v", adopted, err)
 	}
 	// The draft cannot be used twice, and PATCH does not take it.
@@ -230,7 +230,7 @@ func TestAutomaticDisableKeepsCCGatewayRuntimeAvailable(t *testing.T) {
 	})
 	id := e.mkRawAccount("ccgateway", "managed", "recoverable-worker", "unused", true)
 	pid := e.exec1(`INSERT INTO proxies(name,protocol,host,port) VALUES('recovery','http','proxy.example',3128) RETURNING id`)
-	if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET proxy_id=$2 WHERE id=$1`, id, pid); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET proxy_id=$2 WHERE id=$1`, id, pid); err != nil {
 		t.Fatal(err)
 	}
 	if disabled, err := e.svc.AutoDisable(t.Context(), id, "quota exhausted"); err != nil || !disabled {
@@ -267,7 +267,7 @@ func TestDisabledAccountAndProxyKeepCCGatewayRuntime(t *testing.T) {
 	})
 	id := e.mkRawAccount("ccgateway", "managed", "disabled-worker", "unused", true)
 	pid := e.exec1(`INSERT INTO proxies(name,protocol,host,port) VALUES('ccg','http','proxy.example',3128) RETURNING id`)
-	if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET proxy_id=$2 WHERE id=$1`, id, pid); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET proxy_id=$2 WHERE id=$1`, id, pid); err != nil {
 		t.Fatal(err)
 	}
 	if err := ccg.Reconcile(t.Context(), itoa(id)); err != nil {
@@ -277,10 +277,10 @@ func TestDisabledAccountAndProxyKeepCCGatewayRuntime(t *testing.T) {
 	if !before.Enabled || before.Proxy["host"] != "proxy.example" {
 		t.Fatalf("initial runtime: %+v", before)
 	}
-	if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET status='disabled',status_reason='disabled by administrator',schedulable=false WHERE id=$1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET status='disabled',status_reason='disabled by administrator',schedulable=false WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.db.Pool.Exec(t.Context(), `UPDATE proxies SET status='disabled' WHERE id=$1`, pid); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE proxies SET status='disabled' WHERE id=$1`, pid); err != nil {
 		t.Fatal(err)
 	}
 	ccg.Kick(itoa(id))
@@ -305,7 +305,7 @@ func TestConnectCCGatewayRouteRemoved(t *testing.T) {
 		t.Fatalf("connect: %d %v", code, out)
 	}
 	var n int
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM accounts WHERE plugin_key='ccgateway'`).Scan(&n); err != nil || n != 0 {
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM accounts WHERE plugin_key='ccgateway'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("account created: %d %v", n, err)
 	}
 }
@@ -315,7 +315,7 @@ func TestConnectCCGatewayRouteRemoved(t *testing.T) {
 func (e *env) runtimeDeletion(id int64) (marked bool, purgeIn time.Duration, purged bool) {
 	e.t.Helper()
 	var seconds float64
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT retired_at IS NOT NULL, COALESCE(EXTRACT(EPOCH FROM purge_after-now()),-1e9), purged_at IS NOT NULL
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT retired_at IS NOT NULL, COALESCE(EXTRACT(EPOCH FROM purge_after-now()),-1e9), purged_at IS NOT NULL
 		FROM ccgateway_runtimes WHERE account_id=$1`, id).Scan(&marked, &seconds, &purged); err != nil {
 		e.t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestDeleteRetainResources(t *testing.T) {
 	other := e.mkRawAccount("anthropic", "apikey", "other", "sk-good-key-123", true)
 	deleted := func(id int64) bool {
 		var gone bool
-		if err := e.db.Pool.QueryRow(context.Background(), `SELECT deleted_at IS NOT NULL FROM accounts WHERE id=$1`, id).Scan(&gone); err != nil {
+		if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT deleted_at IS NOT NULL FROM accounts WHERE id=$1`, id).Scan(&gone); err != nil {
 			t.Fatal(err)
 		}
 		return gone
@@ -396,7 +396,7 @@ func TestPurgePluginAccountsMarksRuntimeCleanup(t *testing.T) {
 	e.withCCGateway(true, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{}`)) })
 	e.gen.types[len(e.gen.types)-1].Type.Lifecycle = &manifest.AccountLifecycle{Deletion: &manifest.AccountDeletion{RetentionDays: 3}}
 	a, b := e.mkRawAccount("ccgateway", "managed", "a", "unused", true), e.mkRawAccount("ccgateway", "managed", "b", "unused", true)
-	if _, err := e.db.Pool.Exec(context.Background(), `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES('d00000000000000aa',$1,now())`, b); err != nil {
+	if _, err := e.db.SQL.ExecContext(context.Background(), `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at) VALUES('d00000000000000aa',$1,now())`, b); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := e.svc.PurgePluginAccounts(context.Background(), "ccgateway"); err != nil || n != 2 {
@@ -465,14 +465,14 @@ func TestDeletedLifecycleFailureDoesNotHoldEvents(t *testing.T) {
 	if err := e.svc.deliverAccountLifecycle(t.Context(), id, "anthropic", core.EventAccountUpdated, []string{"name"}); err == nil {
 		t.Fatal("update failure hidden")
 	}
-	if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET deleted_at=now(),updated_at=now() WHERE id=$1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET deleted_at=now(),updated_at=now() WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.svc.deliverAccountLifecycle(t.Context(), id, "anthropic", core.EventAccountDeleted, nil); err != nil {
 		t.Fatalf("deleted phase failure held the event: %v", err)
 	}
 	var status, code string
-	if err := e.db.Pool.QueryRow(t.Context(), `SELECT status,code FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&status, &code); err != nil || status != "failed" || code != "resource_in_use" {
+	if err := e.db.SQL.QueryRowContext(t.Context(), `SELECT status,code FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&status, &code); err != nil || status != "failed" || code != "resource_in_use" {
 		t.Fatalf("synchronization state: %s %s %v", status, code, err)
 	}
 }

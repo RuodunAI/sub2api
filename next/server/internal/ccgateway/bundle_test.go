@@ -631,7 +631,7 @@ func TestRuntimeBundled(t *testing.T) {
 		t.Fatalf("override kept: %+v", saved.Images)
 	}
 	var n int
-	_ = f.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.bundled' AND detail->>'version'='0.1.16'`).Scan(&n)
+	_ = f.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.bundled' AND detail->>'version'='0.1.16'`).Scan(&n)
 	if n != 1 {
 		t.Fatalf("audit: %d", n)
 	}

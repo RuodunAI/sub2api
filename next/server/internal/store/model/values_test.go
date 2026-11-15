@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm/schema"
@@ -56,12 +55,12 @@ func TestEveryModelStoresAndReadsValues(t *testing.T) {
 
 func storeAndRead(t *testing.T, db *store.DB, s *schema.Schema, cols map[string]columnInfo, full bool) {
 	ctx := context.Background()
-	tx, err := db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, db)
 	require.NoError(t, err)
-	defer tx.Rollback(ctx) //nolint:errcheck // the rows are never kept
-	_, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`)
+	defer tx.Rollback() //nolint:errcheck // the rows are never kept
+	_, err = store.SQLTx(tx).ExecContext(ctx, `SET LOCAL session_replication_role = replica`)
 	require.NoError(t, err)
-	_, err = tx.Exec(ctx, `DELETE FROM `+s.Table)
+	_, err = store.SQLTx(tx).ExecContext(ctx, `DELETE FROM `+s.Table)
 	require.NoError(t, err)
 
 	row := reflect.New(s.ModelType)
@@ -109,7 +108,7 @@ func isStamped(f *schema.Field, c columnInfo) bool {
 }
 
 func readColumns(t *testing.T, db *store.DB) map[string]map[string]columnInfo {
-	rows, err := db.Pool.Query(context.Background(), `
+	rows, err := db.SQL.QueryContext(context.Background(), `
 		SELECT table_name, column_name, udt_name, coalesce(character_maximum_length, 0),
 		       is_nullable = 'NO', column_default IS NOT NULL OR is_identity = 'YES', is_generated = 'ALWAYS'
 		FROM information_schema.columns WHERE table_schema = 'public'`)
@@ -131,7 +130,7 @@ func readColumns(t *testing.T, db *store.DB) map[string]map[string]columnInfo {
 
 func dropCheckConstraints(t *testing.T, db *store.DB) {
 	ctx := context.Background()
-	rows, err := db.Pool.Query(ctx, `
+	rows, err := db.SQL.QueryContext(ctx, `
 		SELECT format('ALTER TABLE %s DROP CONSTRAINT %I', conrelid::regclass, conname)
 		FROM pg_constraint WHERE contype = 'c' AND conislocal AND connamespace = 'public'::regnamespace`)
 	require.NoError(t, err)
@@ -143,7 +142,7 @@ func dropCheckConstraints(t *testing.T, db *store.DB) {
 	}
 	require.NoError(t, rows.Err())
 	for _, s := range stmts {
-		_, err := db.Pool.Exec(ctx, s)
+		_, err := db.SQL.ExecContext(ctx, s)
 		require.NoError(t, err, s)
 	}
 }
@@ -163,8 +162,8 @@ func sample(t reflect.Type, c columnInfo) reflect.Value {
 	switch t {
 	case reflect.TypeFor[time.Time]():
 		v = sampleTime
-	case reflect.TypeFor[pgtype.Timestamptz]():
-		v = pgtype.Timestamptz{InfinityModifier: pgtype.Infinity, Valid: true}
+	case reflect.TypeFor[store.InfTime]():
+		v = store.InfTime{Infinity: store.PositiveInfinity, Valid: true}
 	case reflect.TypeFor[decimal.Decimal]():
 		v = decimal.NewFromInt(2)
 	case reflect.TypeFor[json.RawMessage]():
@@ -214,9 +213,9 @@ func sameValue(a, b reflect.Value) bool {
 		return x.Equal(b.Interface().(time.Time))
 	case decimal.Decimal:
 		return x.Equal(b.Interface().(decimal.Decimal))
-	case pgtype.Timestamptz:
-		y := b.Interface().(pgtype.Timestamptz)
-		return x.Valid == y.Valid && x.InfinityModifier == y.InfinityModifier && x.Time.Equal(y.Time)
+	case store.InfTime:
+		y := b.Interface().(store.InfTime)
+		return x.Valid == y.Valid && x.Infinity == y.Infinity && x.Time.Equal(y.Time)
 	}
 	return reflect.DeepEqual(a.Interface(), b.Interface())
 }

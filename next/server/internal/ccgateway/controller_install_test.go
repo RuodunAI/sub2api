@@ -17,10 +17,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/remotedocker"
-	"github.com/gin-gonic/gin"
 )
 
 // panelInstall is a controller installation over a fake Docker host; the
@@ -113,7 +114,7 @@ func (p *panelInstall) ipBody() string {
 func (p *panelInstall) count(t *testing.T, query string, args ...any) int {
 	t.Helper()
 	var n int
-	if err := p.f.db.Pool.QueryRow(context.Background(), query, args...).Scan(&n); err != nil {
+	if err := p.f.db.SQL.QueryRowContext(context.Background(), query, args...).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	return n
@@ -445,7 +446,7 @@ func TestControllerInstallSSHCredentialsAreNeverSaved(t *testing.T) {
 	// Nothing anywhere holds the SSH credentials or user.
 	var plain []byte
 	var raw []byte
-	if err := p.f.db.Pool.QueryRow(context.Background(), `SELECT value FROM settings WHERE key=$1`, settingKey).Scan(&raw); err != nil {
+	if err := p.f.db.SQL.QueryRowContext(context.Background(), `SELECT value FROM settings WHERE key=$1`, settingKey).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	var envelope struct {
@@ -456,7 +457,7 @@ func TestControllerInstallSSHCredentialsAreNeverSaved(t *testing.T) {
 		t.Fatal(err)
 	}
 	var audits string
-	_ = p.f.db.Pool.QueryRow(context.Background(), `SELECT coalesce(string_agg(action || ' ' || coalesce(detail::text, ''), ';'), '') FROM audit_logs`).Scan(&audits)
+	_ = p.f.db.SQL.QueryRowContext(context.Background(), `SELECT coalesce(string_agg(action || ' ' || coalesce(detail::text, ''), ';'), '') FROM audit_logs`).Scan(&audits)
 	response, _ := json.Marshal(out)
 	for name, text := range map[string]string{"configuration": string(plain), "audit": audits, "response": string(response)} {
 		for _, secret := range []string{"request-only-secret", "docker2.example", `"root"`, strings.Repeat("B", 43)} {
@@ -922,9 +923,9 @@ func TestControllerUploadLoad(t *testing.T) {
 		t.Fatalf("runtime images: %v", bodies)
 	}
 	var n int
-	_ = f.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.config.update' AND detail->'fields' = '["images"]'::jsonb`).Scan(&n)
+	_ = f.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.config.update' AND detail->'fields' = '["images"]'::jsonb`).Scan(&n)
 	var uploads int
-	_ = f.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.upload'`).Scan(&uploads)
+	_ = f.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.upload'`).Scan(&uploads)
 	if n != 1 || uploads != 2 {
 		t.Fatalf("audit: %d config updates, %d uploads", n, uploads)
 	}
@@ -1146,7 +1147,7 @@ func TestControllerRuntimeAndOneClickUpgrade(t *testing.T) {
 		t.Fatalf("calls: %v %v", calls, bodies)
 	}
 	var n int
-	_ = f.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.install'`).Scan(&n)
+	_ = f.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='ccgateway.runtime.install'`).Scan(&n)
 	if n != 1 {
 		t.Fatalf("audit: %d", n)
 	}

@@ -82,13 +82,13 @@ func TestUsageLimitSaveRules(t *testing.T) {
 	require.Equal(t, 200, code, "a JSON number with 8 decimals: %v", out)
 	assert.Equal(t, "1.12345678", get()["amount"])
 
-	_, err := e.db.Pool.Exec(ctx, `UPDATE account_usage_limits SET period_count = 9000 WHERE account_id = $1`, id)
+	_, err := e.db.SQL.ExecContext(ctx, `UPDATE account_usage_limits SET period_count = 9000 WHERE account_id = $1`, id)
 	require.Error(t, err, "the database bound is 1-8784")
 	var mapped *core.Error
 	require.True(t, errors.As(usageLimitWriteError(ctx, err), &mapped))
 	assert.Equal(t, 400, mapped.Status)
 	assert.Equal(t, []core.FieldError{{Field: "period_count", Code: "invalid", Message: "value out of range"}}, mapped.Details["fields"])
-	_, err = e.db.Pool.Exec(ctx, `UPDATE account_usage_limits SET amount = -1 WHERE account_id = $1`, id)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE account_usage_limits SET amount = -1 WHERE account_id = $1`, id)
 	require.True(t, errors.As(usageLimitWriteError(ctx, err), &mapped))
 	assert.Equal(t, "amount", mapped.Details["fields"].([]core.FieldError)[0].Field)
 	other := errors.New("boom")
@@ -103,25 +103,25 @@ func TestUsageLimitEnforcesOnlyTheConfigurationItRead(t *testing.T) {
 	e := setup(t)
 	ctx := t.Context()
 	id := e.mkRawAccount("anthropic", "apikey", "usage-stale", "sk-good-key-123", true)
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
 		total_cost, billing_status, rate_multiplier, input_tokens, output_tokens)
 		VALUES ('st1', 1, 1, 1, $1, 'anthropic.messages', '/v1/messages', 200, true, 6, 'billed', 1, 1, 1)`, id)
 	require.NoError(t, err)
-	require.NoError(t, foldUsage(ctx, e.db.Pool))
+	require.NoError(t, foldUsage(ctx, e.db.Gorm))
 	code, out := e.do("PUT", "/accounts/"+itoa(id)+"/usage-limit", map[string]any{"enabled": true, "amount": "10", "period": "day", "period_count": 1, "timezone": "UTC"})
 	require.Equal(t, 200, code, out)
 	status := func() string {
 		t.Helper()
 		var s string
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT status FROM accounts WHERE id = $1`, id).Scan(&s))
+		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT status FROM accounts WHERE id = $1`, id).Scan(&s))
 		return s
 	}
 	require.Equal(t, "active", status())
 
 	var saved time.Time
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT updated_at FROM account_usage_limits WHERE account_id = $1`, id).Scan(&saved))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT updated_at FROM account_usage_limits WHERE account_id = $1`, id).Scan(&saved))
 	read := UsageLimit{Enabled: true, Amount: decimal.NewFromInt(5), Period: usagePeriodDay, PeriodCount: 1, Timezone: "UTC"}
-	states, err := limitStates(ctx, e.db.Pool, map[int64]UsageLimit{id: read}, nil, time.Now())
+	states, err := limitStates(ctx, e.db.Gorm, map[int64]UsageLimit{id: read}, nil, time.Now())
 	require.NoError(t, err)
 	require.True(t, states[id].reached(), "6 is over the 5 the sweep read")
 	before := saved.Add(-time.Second)
@@ -146,11 +146,11 @@ func TestUsageLimitHoldsBackShorterDisables(t *testing.T) {
 	e := setup(t)
 	ctx := t.Context()
 	id := e.mkRawAccount("anthropic", "apikey", "usage-deferred", "sk-good-key-123", true)
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
 		total_cost, billing_status, rate_multiplier, input_tokens, output_tokens)
 		VALUES ('d1', 1, 1, 1, $1, 'anthropic.messages', '/v1/messages', 200, true, 6, 'billed', 1, 1, 1)`, id)
 	require.NoError(t, err)
-	require.NoError(t, foldUsage(ctx, e.db.Pool))
+	require.NoError(t, foldUsage(ctx, e.db.Gorm))
 	account := func() map[string]any {
 		t.Helper()
 		code, body := e.do("GET", "/accounts/"+itoa(id), nil)
@@ -184,7 +184,7 @@ func TestUsageLimitHoldsBackShorterDisables(t *testing.T) {
 		t.Helper()
 		var set bool
 		var reason string
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT deferred_auto_disable, deferred_auto_disable_reason FROM accounts WHERE id = $1`, id).Scan(&set, &reason))
+		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT deferred_auto_disable, deferred_auto_disable_reason FROM accounts WHERE id = $1`, id).Scan(&set, &reason))
 		return set, reason
 	}
 
@@ -226,7 +226,7 @@ func TestUsageLimitHoldsBackShorterDisables(t *testing.T) {
 	// One that ended while held back is gone.
 	putLimit("5.5", "none")
 	disable("cooldown", 3600)
-	_, err = e.db.Pool.Exec(ctx, `UPDATE accounts SET deferred_auto_disabled_until = clock_timestamp() - interval '1 second' WHERE id = $1`, id)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE accounts SET deferred_auto_disabled_until = clock_timestamp() - interval '1 second' WHERE id = $1`, id)
 	require.NoError(t, err)
 	putLimit("100", "none")
 	assert.Equal(t, "active", account()["status"], "ended while the limit held the account")
@@ -251,7 +251,7 @@ func TestUsageLimitHoldsBackShorterDisables(t *testing.T) {
 	// limit's without the source: the account is no longer the limit's.
 	putLimit("5.5", "none")
 	require.True(t, limited(account()))
-	_, err = e.db.Pool.Exec(ctx, `UPDATE accounts SET status_reason = 'old core: banned', auto_disabled_until = clock_timestamp() + interval '1 hour' WHERE id = $1`, id)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status_reason = 'old core: banned', auto_disabled_until = clock_timestamp() + interval '1 hour' WHERE id = $1`, id)
 	require.NoError(t, err)
 	a = account()
 	assert.False(t, limited(a), "the old core's disable is not the limit's")

@@ -34,7 +34,7 @@ func (d *DB) AccountRefreshStates(ctx context.Context, ids []int64) (map[int64]*
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := G(ctx, d.Pool).Raw(`SELECT account_id, expires_at, last_attempt_at, last_success_at, error_type, error, rejected_cred_hash
+	rows, err := G(ctx, d.Gorm).Raw(`SELECT account_id, expires_at, last_attempt_at, last_success_at, error_type, error, rejected_cred_hash
 		FROM account_credential_refresh WHERE account_id = ANY(?)`, Int64s(ids)).Rows()
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func (d *DB) AccountRefreshStates(ctx context.Context, ids []int64) (map[int64]*
 // when the credentials were saved with it). A
 // successful attempt (ErrorType "") sets last_success_at and clears the
 // error and the rejected hash.
-func RecordAccountRefresh(ctx context.Context, q Querier, s RefreshState) error {
+func RecordAccountRefresh(ctx context.Context, q *gorm.DB, s RefreshState) error {
 	return recordAccountRefresh(G(ctx, q), s).Error
 }
 

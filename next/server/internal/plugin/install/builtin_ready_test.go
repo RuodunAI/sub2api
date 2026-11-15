@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Masterminds/semver/v3"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 )
@@ -48,14 +49,14 @@ func TestBuiltinReadinessDuringUpgrade(t *testing.T) {
 		{"operator disabled remains optional", "disabled", "0.2.0", "", "0.2.0", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := e.db.Pool.Exec(ctx, `UPDATE plugin_versions SET consent_status='approved' WHERE plugin_key='guard'`); err != nil {
+			if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugin_versions SET consent_status='approved' WHERE plugin_key='guard'`); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET builtin=true,status=$1,active_version=$2 WHERE key='guard'`, tc.status, tc.active); err != nil {
+			if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugins SET builtin=true,status=$1,active_version=$2 WHERE key='guard'`, tc.status, tc.active); err != nil {
 				t.Fatal(err)
 			}
 			if tc.unapproved != "" {
-				if _, err := e.db.Pool.Exec(ctx, `UPDATE plugin_versions SET consent_status='awaiting_consent' WHERE plugin_key='guard' AND version=$1`, tc.unapproved); err != nil {
+				if _, err := e.db.SQL.ExecContext(ctx, `UPDATE plugin_versions SET consent_status='awaiting_consent' WHERE plugin_key='guard' AND version=$1`, tc.unapproved); err != nil {
 					t.Fatal(err)
 				}
 			}

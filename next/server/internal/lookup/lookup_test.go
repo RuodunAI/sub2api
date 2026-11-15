@@ -143,7 +143,7 @@ func newFixture(t *testing.T) *fixture {
 // insert runs a statement that returns one id.
 func (f *fixture) insert(sql string, args ...any) (id int64) {
 	f.t.Helper()
-	require.NoError(f.t, f.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id))
+	require.NoError(f.t, f.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id))
 	return id
 }
 

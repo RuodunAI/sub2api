@@ -3,18 +3,19 @@ package helperhistory
 import (
 	"context"
 
+	"gorm.io/gorm"
+
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
 )
 
 func (s *Service) Reserve(ctx context.Context, in core.HelperHistoryReservation) (out core.HelperHistoryAttempt, err error) {
 	if !validBinding(in.Binding) || !bounded(in.RequestID) || len(in.RequestID) > 64 || !wire.ValidDigest(in.RequestDigest) || !bounded(in.Namespace) || in.ReserveBytes <= 0 || in.ReserveBytes > wire.MaxPayloadBytes {
 		return out, core.ErrInvalidArgument
 	}
-	err = s.transaction(ctx, in.Owner, func(tx pgx.Tx) error {
+	err = s.transaction(ctx, in.Owner, func(tx *gorm.DB) error {
 		now := s.now()
 		if e := s.clean(ctx, tx, in.Owner, now); e != nil {
 			return e
@@ -71,7 +72,7 @@ func (s *Service) transition(ctx context.Context, o core.ResourceOwner, id, from
 	if !bounded(id) {
 		return core.ErrInvalidArgument
 	}
-	return s.transaction(ctx, o, func(tx pgx.Tx) error {
+	return s.transaction(ctx, o, func(tx *gorm.DB) error {
 		a, e := readAttempt(ctx, tx, o, id)
 		if e != nil {
 			return e

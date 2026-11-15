@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 	"github.com/riverqueue/river/rivertype"
 	"gorm.io/gorm"
 
@@ -38,8 +38,10 @@ const (
 	leaseGrace        = time.Minute
 	executorGroupSize = 4
 	executorQueue     = 16
-	// fetchPoll is how often a node polls for runs besides the insert
-	// notifications (River's default; snooze spreads put-offs over it).
+	// fetchPoll is how often a node polls for runs (River's default; snooze
+	// spreads put-offs over it). River runs poll-only on database/sql (no
+	// LISTEN): a run inserted on this node is fetched at once, one inserted
+	// on another node waits up to fetchPoll.
 	fetchPoll = time.Second
 )
 
@@ -119,7 +121,7 @@ type clusterBackend struct {
 	group       *background.Group
 	pluginGroup *background.Group
 
-	client *river.Client[pgx.Tx]
+	client *river.Client[*sql.Tx]
 
 	mu       sync.Mutex
 	periodic map[string]bool
@@ -145,13 +147,14 @@ func newClusterBackend(ctx context.Context, log *slog.Logger, db *store.DB, reg 
 		return nil, err
 	}
 	queues := map[string]river.QueueConfig{queueCore: {MaxWorkers: queueCoreWorkers}, queuePlugin: {MaxWorkers: queuePluginWorkers}}
-	client, err := river.NewClient(riverpgxv5.New(db.Pool), &river.Config{
+	client, err := river.NewClient(riverdatabasesql.New(db.SQL), &river.Config{
 		ID:                          clientID,
 		Logger:                      log.With("subsystem", "river"),
 		Workers:                     workers,
 		Queues:                      queues,
 		MaxAttempts:                 5,
 		FetchPollInterval:           fetchPoll,
+		PollOnly:                    true, // the database/sql driver has no listener (see fetchPoll)
 		RescueStuckJobsAfter:        rescueStuckAfter,
 		CompletedJobRetentionPeriod: completedRetain,
 		CancelledJobRetentionPeriod: failedRetain,
@@ -228,7 +231,7 @@ func (b *clusterBackend) upsert(ctx context.Context, t *Task) error {
 	// stamps only created_at and updated_at, and only on INSERT); the
 	// clause.OnConflict tree of EXCLUDED columns and expressions would only
 	// restate this statement.
-	return store.G(ctx, b.db.Pool).Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
+	return store.G(ctx, b.db.Gorm).Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, now())
 		ON CONFLICT (name) DO UPDATE SET source = EXCLUDED.source, plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
 			timeout_ms = EXCLUDED.timeout_ms, max_attempts = EXCLUDED.max_attempts, seen_version = EXCLUDED.seen_version,
@@ -237,7 +240,7 @@ func (b *clusterBackend) upsert(ctx context.Context, t *Task) error {
 }
 
 // taskRowExists reports whether name has a scheduled_tasks row.
-func taskRowExists(ctx context.Context, q store.Querier, name string) (bool, error) {
+func taskRowExists(ctx context.Context, q *gorm.DB, name string) (bool, error) {
 	var n int64
 	err := store.G(ctx, q).Model(&model.ScheduledTask{}).Where("name = ?", name).Count(&n).Error
 	return n > 0, err
@@ -296,7 +299,7 @@ func (b *clusterBackend) converge() {
 }
 
 // enqueue inserts one run of a cluster task (tx nil: outside a transaction).
-func (b *clusterBackend) enqueue(ctx context.Context, tx pgx.Tx, name string, args any, opts core.EnqueueOpts) error {
+func (b *clusterBackend) enqueue(ctx context.Context, tx *gorm.DB, name string, args any, opts core.EnqueueOpts) error {
 	t, ok := b.reg.Get(name)
 	if !ok || t.Scope != core.TaskCluster {
 		return core.ErrTaskUnknown
@@ -318,7 +321,11 @@ func (b *clusterBackend) enqueue(ctx context.Context, tx pgx.Tx, name string, ar
 	job := taskArgs{Name: name, Key: opts.UniqueKey, Args: raw}
 	var err error
 	if tx != nil {
-		_, err = b.client.InsertTx(ctx, tx, job, insert)
+		sqlTx := store.SQLTx(tx)
+		if sqlTx == nil {
+			return fmt.Errorf("task %s: enqueue in a handle that is no transaction", name)
+		}
+		_, err = b.client.InsertTx(ctx, sqlTx, job, insert)
 	} else {
 		_, err = b.client.Insert(ctx, job, insert)
 	}
@@ -507,7 +514,7 @@ var errTaskRemoved = errors.New("task: removed")
 func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (bool, error) {
 	// Raw SQL: the lease is a compare-and-set on the row, timed by
 	// clock_timestamp() and an interval parameter.
-	res := store.G(ctx, b.db.Pool).Exec(`UPDATE scheduled_tasks
+	res := store.G(ctx, b.db.Gorm).Exec(`UPDATE scheduled_tasks
 		SET lease_job_id = ?, lease_node = ?, lease_until = clock_timestamp() + ?::interval,
 			last_started_at = clock_timestamp(), updated_at = clock_timestamp()
 		WHERE name = ? AND (lease_until IS NULL OR lease_until < clock_timestamp() OR lease_job_id = ?)`,
@@ -519,7 +526,7 @@ func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (b
 		// A task registered on this node but missing its row: a core task's
 		// row was pruned, record it and try once more; a plugin task's row
 		// is gone because the task was removed.
-		exists, err := taskRowExists(ctx, b.db.Pool, t.Name)
+		exists, err := taskRowExists(ctx, b.db.Gorm, t.Name)
 		if err != nil {
 			return false, err
 		}
@@ -540,7 +547,7 @@ func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (b
 // finish releases the lease of job and, unless the run was only put off,
 // records it as the task's latest run.
 func (b *clusterBackend) finish(ctx context.Context, t *Task, jobID int64, o runOutput, putOff bool) error {
-	g := store.G(ctx, b.db.Pool)
+	g := store.G(ctx, b.db.Gorm)
 	if putOff {
 		return releaseLeases(g, "clock_timestamp()", "name = ? AND lease_job_id = ?", t.Name, jobID).Error
 	}

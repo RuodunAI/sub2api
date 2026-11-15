@@ -16,6 +16,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -23,9 +27,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm/clause"
 )
 
 const settingKey = "ccgateway_remote"
@@ -326,16 +327,16 @@ func (s *Service) Load(ctx context.Context) (Config, error) {
 // it (fresh ciphertext), so comparing it later under the row lock tells
 // whether anyone saved meanwhile (§53.9 config_changed).
 func (s *Service) loadVersioned(ctx context.Context) (Config, []byte, error) {
-	if s == nil || s.DB == nil || s.DB.Pool == nil {
+	if s == nil || s.DB == nil || s.DB.Gorm == nil {
 		return Config{}, nil, errors.New("configuration storage unavailable")
 	}
-	return s.loadIn(ctx, s.DB.Pool, false)
+	return s.loadIn(ctx, s.DB.Gorm, false)
 }
 
 // loadIn is the stored configuration read through q (a transaction sees its
 // own changes; forShare keeps it from changing until the transaction ends)
 // and the stored value as read.
-func (s *Service) loadIn(ctx context.Context, q store.Querier, forShare bool) (Config, []byte, error) {
+func (s *Service) loadIn(ctx context.Context, q *gorm.DB, forShare bool) (Config, []byte, error) {
 	var lock []clause.Expression
 	if forShare {
 		lock = append(lock, clause.Locking{Strength: clause.LockingStrengthShare})
@@ -648,7 +649,7 @@ func (c *Config) clearSSH() {
 // table: a key the body names must exist; a key only the stored configuration
 // still holds (its group was deleted meanwhile) is dropped here, the next
 // time anyone saves, so orphans do not accumulate (audit A5).
-func pruneFeatureGroups(ctx context.Context, tx pgx.Tx, saved *Config, named map[string]GroupFeaturePolicy) error {
+func pruneFeatureGroups(ctx context.Context, tx *gorm.DB, saved *Config, named map[string]GroupFeaturePolicy) error {
 	if len(saved.CCFeatureGroups) == 0 {
 		return nil
 	}
@@ -679,7 +680,7 @@ func pruneFeatureGroups(ctx context.Context, tx pgx.Tx, saved *Config, named map
 
 // mergeStored is one save under the settings row lock: the stored
 // configuration (raw) merged with the body, its feature groups checked.
-func (s *Service) mergeStored(ctx context.Context, tx pgx.Tx, in Config, raw json.RawMessage) (saved, old Config, err error) {
+func (s *Service) mergeStored(ctx context.Context, tx *gorm.DB, in Config, raw json.RawMessage) (saved, old Config, err error) {
 	old, err = s.decode(raw)
 	if err != nil {
 		return saved, old, err
@@ -728,7 +729,7 @@ func (s *Service) save(c *gin.Context) {
 	}
 	var saved Config
 	var runtimeChanged bool
-	e := s.DB.Tx(ctx, func(tx pgx.Tx) error {
+	e := s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		_, e := store.UpdateSettingJSONTx(ctx, tx, settingKey, updatedBy, func(raw json.RawMessage) (json.RawMessage, error) {
 			var old Config
 			var e error

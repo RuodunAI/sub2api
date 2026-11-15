@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 type AccountPreparation struct {
@@ -51,7 +51,7 @@ type AccountActionResource interface {
 // nothing is retained), so the caller can audit the retention without a
 // second query.
 type AccountDeletionResource interface {
-	MarkAccountDeleted(context.Context, pgx.Tx, int64, AccountDeletionOptions) (time.Time, error)
+	MarkAccountDeleted(context.Context, *gorm.DB, int64, AccountDeletionOptions) (time.Time, error)
 }
 
 // AccountDeletionOptions is how a deleted account's resources go.
@@ -64,10 +64,10 @@ type AccountDeletionOptions struct {
 
 type AccountLifecycleResource interface {
 	PrepareAccount(context.Context, AccountPreparation) error
-	UpdateAccountPreparation(context.Context, pgx.Tx, AccountPreparation) error
+	UpdateAccountPreparation(context.Context, *gorm.DB, AccountPreparation) error
 	AccountPreparationAction(context.Context, AccountPreparation, string, string, json.RawMessage) (any, error)
 	CheckAccountPreparation(context.Context, AccountPreparation) (AccountPreparationFacts, error)
-	AdoptAccountPreparation(context.Context, pgx.Tx, AccountPreparation, int64) error
+	AdoptAccountPreparation(context.Context, *gorm.DB, AccountPreparation, int64) error
 	CancelAccountPreparation(context.Context, AccountPreparation) error
 	ReconcileAccount(context.Context, int64) error
 }

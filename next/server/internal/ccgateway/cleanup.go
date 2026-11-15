@@ -9,14 +9,14 @@ import (
 	"sort"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const cleanupFeature = "runtime-cleanup-v1"
@@ -44,7 +44,7 @@ const (
 // records the purge. Detached retired rows retain their historical
 // reauthorization meaning. Previously deleted accounts are cleaned only by the
 // explicit orphan-cleanup action, not during rollout.
-func (s *Service) MarkAccountDeleted(ctx context.Context, tx pgx.Tx, id int64, opts core.AccountDeletionOptions) (time.Time, error) {
+func (s *Service) MarkAccountDeleted(ctx context.Context, tx *gorm.DB, id int64, opts core.AccountDeletionOptions) (time.Time, error) {
 	var purgeAfter time.Time
 	g := store.G(ctx, tx)
 	err := retireAccountRuntime(g, id, opts.RetainDays).Row().Scan(&purgeAfter)
@@ -152,7 +152,7 @@ func deleteFailure(status int, raw []byte, fallback string) *core.Error {
 // in tx (Reconcile holds the runtime's lock in it and commits), so no node
 // purges it again. A failure leaves the row for the next pass and is logged
 // with its reason.
-func (s *Service) purgeDeleted(ctx context.Context, tx pgx.Tx, key string, d accountDesired) error {
+func (s *Service) purgeDeleted(ctx context.Context, tx *gorm.DB, key string, d accountDesired) error {
 	if err := s.purgeRuntime(ctx, key); err != nil {
 		slog.WarnContext(ctx, "CCGateway: deleted account runtime not purged", "key", key, "account", d.AccountID, "reason", reasonOf(core.AsError(err)), "err", err)
 		return err
@@ -170,7 +170,7 @@ func (s *Service) purgeDeleted(ctx context.Context, tx pgx.Tx, key string, d acc
 // Reconcile purges them when it ends.
 func (s *Service) cleanupKeepKeys(ctx context.Context) ([]string, error) {
 	var found []string
-	err := store.G(ctx, s.DB.Pool).Raw(`
+	err := store.G(ctx, s.DB.Gorm).Raw(`
 SELECT COALESCE(r.key,a.id::text) FROM accounts a LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id
  WHERE a.plugin_key='ccgateway' AND a.deleted_at IS NULL
 UNION SELECT r.key FROM ccgateway_runtimes r WHERE r.account_id IS NULL AND r.retired_at IS NULL
@@ -240,7 +240,7 @@ func (s *Service) runtimeCleanup(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := audit.Audit(ctx, s.DB.Pool, uid, "ccgateway.runtime.cleanup", "system", "ccgateway", map[string]any{"deleted": report.Deleted, "failed": report.Failed}); err != nil {
+	if err := audit.Audit(ctx, s.DB.Gorm, uid, "ccgateway.runtime.cleanup", "system", "ccgateway", map[string]any{"deleted": report.Deleted, "failed": report.Failed}); err != nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return
 	}
@@ -267,7 +267,7 @@ type retainedRuntime struct {
 func (s *Service) retainedRuntimes(c *gin.Context) {
 	httpapi.NoStore(c)
 	var rows []retainedRow
-	if err := retainedQuery(store.G(c.Request.Context(), s.DB.Pool)).Scan(&rows).Error; err != nil {
+	if err := retainedQuery(store.G(c.Request.Context(), s.DB.Gorm)).Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return
 	}
@@ -317,7 +317,7 @@ func (s *Service) runtimePurge(c *gin.Context) {
 	defer cancel()
 	var accountID int64
 	found, retained := false, false
-	err := s.lockedTx(ctx, key, true, func(tx pgx.Tx) error {
+	err := s.lockedTx(ctx, key, true, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var r purgeTarget
 		err := purgeTargetQuery(g, key).Take(&r).Error

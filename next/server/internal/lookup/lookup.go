@@ -72,7 +72,7 @@ type Mine struct {
 	// Perms allow mine=true, any one of them; none means every signed-in user.
 	Perms []string
 	// Scope adds the conditions that leave only the caller's rows.
-	Scope func(ctx context.Context, q store.Querier, uid int64, f *store.Conds) error
+	Scope func(ctx context.Context, q *gorm.DB, uid int64, f *store.Conds) error
 	// Hint replaces Entity.Hint when set.
 	Hint string
 }
@@ -181,7 +181,7 @@ func (s *Service) lookup(c *gin.Context) {
 	hint := e.Hint
 	if a.own {
 		uid, _ := core.UserID(ctx)
-		if err := e.Mine.Scope(ctx, s.db.Pool, uid, &f); err != nil {
+		if err := e.Mine.Scope(ctx, s.db.Gorm, uid, &f); err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
@@ -190,7 +190,7 @@ func (s *Service) lookup(c *gin.Context) {
 		}
 	}
 	var rows []itemRow
-	if err := e.query(store.G(ctx, s.db.Pool), p, f, hint, &rows).Error; err != nil {
+	if err := e.query(store.G(ctx, s.db.Gorm), p, f, hint, &rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

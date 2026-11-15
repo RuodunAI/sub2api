@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -34,7 +33,7 @@ type grant struct {
 // parse, or names a plugin permission with a scope it does not take
 // (manifest.PermissionScope.Takes), is invalid; one naming no permission
 // is unknown.
-func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string, []grant, error) {
+func resolvePermissions(ctx context.Context, tx *gorm.DB, keys []string) ([]string, []grant, error) {
 	var invalid, unknown []string
 	pats := make([]perm.Pattern, 0, len(keys))
 	actions := make([]string, 0, len(keys))
@@ -148,7 +147,7 @@ const grantsInPart = `p.status <> 'staged' AND (NOT ?::bool OR (p.source = 'core
 // grant of a removed permission: listing one keeps it when the role holds
 // it, and is ignored when not (it can only be unticked). Nor of a staged
 // one (resolvePermissions refuses it as unknown first).
-func writeGrants(ctx context.Context, tx pgx.Tx, roleID int64, grants []grant, part grantPart) error {
+func writeGrants(ctx context.Context, tx *gorm.DB, roleID int64, grants []grant, part grantPart) error {
 	// Never nil: a NULL array would make "<> ALL" delete nothing (Int64s and
 	// Strings are never NULL either).
 	ids, scopedIDs, scopes := store.Int64s{}, store.Int64s{}, store.Strings{}

@@ -226,7 +226,7 @@ func (c *ruleCache) get(ctx context.Context) []*stickyRule {
 	}
 	var list []*stickyRule
 	ttl := rulesTTL
-	if all, err := listRules(ctx, c.db.Pool); err != nil {
+	if all, err := listRules(ctx, c.db.Gorm); err != nil {
 		if ctx.Err() != nil {
 			return nil // this request went away; the database may be fine
 		}
@@ -301,7 +301,7 @@ func (r *stickyRule) decodeDocuments(match, sources, includes []byte) {
 // listRules reads every rule. The rules cache reloads it on the request
 // path, so it is Raw SQL scanned row by row (scanRule), the form that
 // allocates least (BenchmarkHotStickyRules).
-func listRules(ctx context.Context, q store.Querier) ([]*stickyRule, error) {
+func listRules(ctx context.Context, q *gorm.DB) ([]*stickyRule, error) {
 	rows, err := rulesQuery(store.G(ctx, q)).Rows()
 	if err != nil {
 		return nil, err

@@ -42,7 +42,7 @@ func (s *Service) snapshot(ctx context.Context) (*priceSnapshot, error) {
 	}
 	// A snapshot lives for cacheTTL: requests read it, not the table.
 	var rows []model.ModelPrice
-	err := enabledPrices(store.G(ctx, s.db.Pool), "id", "model", "mode", "expression", "expr_version", "expr_hash", "config").
+	err := enabledPrices(store.G(ctx, s.db.Gorm), "id", "model", "mode", "expression", "expr_version", "expr_hash", "config").
 		Find(&rows).Error
 	if err != nil {
 		return nil, err
@@ -66,7 +66,7 @@ func (s *Service) snapshot(ctx context.Context) (*priceSnapshot, error) {
 		snap.byModel[r.Model] = r
 		snap.bases[r.Model] = PriceDef{Mode: r.Mode, Config: config, Expression: r.Expression}
 	}
-	if snap.rules, err = loadRules(ctx, s.db.Pool, ""); err != nil {
+	if snap.rules, err = loadRules(ctx, s.db.Gorm, ""); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()

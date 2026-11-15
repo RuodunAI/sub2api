@@ -153,7 +153,7 @@ func lastRuns(db *gorm.DB, key string) *gorm.DB {
 
 func (a *API) jobInfos(ctx context.Context, key string, m *manifest.Manifest) ([]JobInfo, error) {
 	var runs []JobRun
-	if err := lastRuns(store.G(ctx, a.d.DB.Pool), key).Scan(&runs).Error; err != nil {
+	if err := lastRuns(store.G(ctx, a.d.DB.Gorm), key).Scan(&runs).Error; err != nil {
 		return nil, err
 	}
 	last := map[string]JobRun{}
@@ -196,14 +196,14 @@ func (a *API) currentManifest(c *gin.Context, key string) (*manifest.Manifest, s
 // loadCurrentManifest returns the manifest of the plugin's current version
 // and that version; not_found when the plugin or its version is missing.
 func (a *API) loadCurrentManifest(ctx context.Context, key string) (*manifest.Manifest, string, error) {
-	v, err := install.CurrentVersion(ctx, a.d.DB.Pool, key)
+	v, err := install.CurrentVersion(ctx, a.d.DB.Gorm, key)
 	if err != nil {
 		return nil, "", err
 	}
 	if v == "" {
 		return nil, "", core.ErrNotFound.WithMessage("plugin has no version")
 	}
-	m, err := install.LoadManifest(ctx, a.d.DB.Pool, key, v)
+	m, err := install.LoadManifest(ctx, a.d.DB.Gorm, key, v)
 	if err != nil {
 		return nil, "", err
 	}
@@ -223,7 +223,7 @@ func (a *API) jobs(c *gin.Context) {
 		return
 	}
 	runs := []JobRun{}
-	if err := store.G(rc, a.d.DB.Pool).Model(&model.PluginJobRun{}).Select(jobRunCols).Where("plugin_key = ?", key).
+	if err := store.G(rc, a.d.DB.Gorm).Model(&model.PluginJobRun{}).Select(jobRunCols).Where("plugin_key = ?", key).
 		Order("id DESC").Limit(50).Scan(&runs).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -305,7 +305,7 @@ func (a *API) eventsInfo(ctx context.Context, key string, m *manifest.Manifest) 
 	if m.Events != nil {
 		info.Subscribe, info.BatchSize = m.Events.Subscribe, m.Events.BatchSize
 	}
-	g := store.G(ctx, a.d.DB.Pool)
+	g := store.G(ctx, a.d.DB.Gorm)
 	var cur EventCursor
 	err := g.Model(&model.PluginEventCursor{}).Select("last_event_id, consecutive_failures, next_retry_at, last_error, updated_at").
 		Where("plugin_key = ?", key).Take(&cur).Error
@@ -392,7 +392,7 @@ func (a *API) resourcesInfo(ctx context.Context, key string, m *manifest.Manifes
 		ri.Requested = Resources{MemoryMB: m.Resources.MemoryMB, CPU: m.Resources.CPU, MaxThreads: m.Resources.MaxThreads, MaxOpenFiles: m.Resources.MaxOpenFiles}
 	}
 	var row model.Plugin
-	if err := store.G(ctx, a.d.DB.Pool).Select("resource_limits").Where("key = ?", key).Take(&row).Error; err != nil {
+	if err := store.G(ctx, a.d.DB.Gorm).Select("resource_limits").Where("key = ?", key).Take(&row).Error; err != nil {
 		return ri, err
 	}
 	_ = json.Unmarshal(row.ResourceLimits, &ri.Overrides)
@@ -445,7 +445,7 @@ func (a *API) putResources(c *gin.Context) {
 		return
 	}
 	b, _ := json.Marshal(in)
-	if err := updatePlugin(store.G(c.Request.Context(), a.d.DB.Pool), key, "resource_limits", b).Error; err != nil {
+	if err := updatePlugin(store.G(c.Request.Context(), a.d.DB.Gorm), key, "resource_limits", b).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -494,7 +494,7 @@ func resourcesMessage(notified bool, status string) core.LocalizedText {
 
 func (a *API) pluginStatusValue(ctx context.Context, key string) (string, error) {
 	var row model.Plugin
-	err := store.G(ctx, a.d.DB.Pool).Select("status").Where("key = ?", key).Take(&row).Error
+	err := store.G(ctx, a.d.DB.Gorm).Select("status").Where("key = ?", key).Take(&row).Error
 	return row.Status, err
 }
 
@@ -516,7 +516,7 @@ func (a *API) putEgressPolicy(c *gin.Context) {
 		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "policy", Code: "invalid", Message: "policy must be allow_all or allowlist"}))
 		return
 	}
-	res := updatePlugin(store.G(c.Request.Context(), a.d.DB.Pool), key, "egress_policy", in.Policy)
+	res := updatePlugin(store.G(c.Request.Context(), a.d.DB.Gorm), key, "egress_policy", in.Policy)
 	if res.Error != nil {
 		httpapi.Fail(c, res.Error)
 		return
@@ -606,7 +606,7 @@ func (a *API) egress(c *gin.Context) {
 		return
 	}
 	rc := c.Request.Context()
-	g := store.G(rc, a.d.DB.Pool)
+	g := store.G(rc, a.d.DB.Gorm)
 	summary, err := store.CollectRows(g.Raw(`
 		SELECT host, port, count(*),
 		       count(*) FILTER (WHERE result = 'ok'), count(*) FILTER (WHERE result = 'open'),
@@ -654,7 +654,7 @@ func egressLogs(db *gorm.DB, key string, from, to time.Time) *gorm.DB {
 // from/to window), most recently used first.
 func (a *API) egressDomains(ctx context.Context, key string) ([]EgressDomain, error) {
 	out := []EgressDomain{}
-	err := egressDomainRows(store.G(ctx, a.d.DB.Pool), key).Scan(&out).Error
+	err := egressDomainRows(store.G(ctx, a.d.DB.Gorm), key).Scan(&out).Error
 	return out, err
 }
 

@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"strconv"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 // FeatureOverrides is sparse: omitted keys inherit, including individual source
@@ -414,7 +414,7 @@ func (c Config) ResolveFeaturePolicy(groupID int64, account AccountFeaturePolicy
 		PolicyRevision: fmt.Sprintf("%d:%d:%d", c.FeatureRevision, groupID, account.Revision)}
 }
 
-func LoadAccountFeaturePolicy(ctx context.Context, q store.Querier, id int64) (AccountFeaturePolicy, error) {
+func LoadAccountFeaturePolicy(ctx context.Context, q *gorm.DB, id int64) (AccountFeaturePolicy, error) {
 	p := AccountFeaturePolicy{Mode: "follow"}
 	var row model.CcgatewayAccountFeaturePolicy
 	err := store.G(ctx, q).Select("mode", "overrides", "revision").Where("account_id = ?", id).Take(&row).Error
@@ -431,7 +431,7 @@ func LoadAccountFeaturePolicy(ctx context.Context, q store.Querier, id int64) (A
 
 // SaveAccountFeaturePolicyTx runs while the parent account row is locked; this
 // serializes first insertion as well as updates, without a delete/recreate ABA.
-func SaveAccountFeaturePolicyTx(ctx context.Context, tx pgx.Tx, id int64, p AccountFeaturePolicy) error {
+func SaveAccountFeaturePolicyTx(ctx context.Context, tx *gorm.DB, id int64, p AccountFeaturePolicy) error {
 	if err := p.Validate(); err != nil {
 		return core.ErrInvalidArgument.WithMessage(err.Error())
 	}

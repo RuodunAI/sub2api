@@ -32,7 +32,7 @@ func stmtFixture(b *testing.B) (*benchSettler, string, int64) {
 	rec := s.record(0, true)
 	s.insert(b, rec)
 	var id int64
-	if err := s.svc.db.Pool.QueryRow(context.Background(), `SELECT id FROM usage_logs WHERE request_id = $1`, rec.RequestID).Scan(&id); err != nil {
+	if err := s.svc.db.SQL.QueryRowContext(context.Background(), `SELECT id FROM usage_logs WHERE request_id = $1`, rec.RequestID).Scan(&id); err != nil {
 		b.Fatal(err)
 	}
 	return s, rec.RequestID, id
@@ -67,7 +67,7 @@ func benchStmt(b *testing.B, pgxPath, gormPath func(i int) error) {
 func BenchmarkHotStmtSettleLock(b *testing.B) {
 	s, requestID, _ := stmtFixture(b)
 	ctx := context.Background()
-	pool := s.svc.db.Pool
+	pool := s.svc.db.Gorm
 	benchStmt(b, func(int) error {
 		var status string
 		return pool.QueryRow(ctx, `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`, requestID).Scan(&status)
@@ -81,7 +81,7 @@ func BenchmarkHotStmtSettleLock(b *testing.B) {
 func BenchmarkHotStmtSettleUpdate(b *testing.B) {
 	s, requestID, _ := stmtFixture(b)
 	ctx := context.Background()
-	pool := s.svc.db.Pool
+	pool := s.svc.db.Gorm
 	total, rate, base := decimal.RequireFromString("0.012345"), decimal.NewFromInt(1), decimal.RequireFromString("0.012345")
 	bd := BillingDetail{Tier: "default", Cost: base, TotalCost: total, RateMultiplier: rate}
 	p := &pending{RequestID: requestID, PriceID: s.price.ID, Mode: s.price.Mode, Rate: rate}
@@ -101,7 +101,7 @@ func BenchmarkHotStmtSettleUpdate(b *testing.B) {
 func BenchmarkHotStmtReserveUpdate(b *testing.B) {
 	s, _, id := stmtFixture(b)
 	ctx := context.Background()
-	pool := s.svc.db.Pool
+	pool := s.svc.db.Gorm
 	total, base := decimal.RequireFromString("0.5"), decimal.RequireFromString("0.5")
 	bd := BillingDetail{Tier: "default", Cost: base, TotalCost: total}
 	benchStmt(b, func(int) error {
@@ -118,7 +118,7 @@ func BenchmarkHotStmtReserveUpdate(b *testing.B) {
 func BenchmarkHotStmtReserveEntry(b *testing.B) {
 	s, _, id := stmtFixture(b)
 	ctx := context.Background()
-	pool := s.svc.db.Pool
+	pool := s.svc.db.Gorm
 	at := time.Now().Add(time.Hour)
 	benchStmt(b, func(i int) error {
 		var entryID int64

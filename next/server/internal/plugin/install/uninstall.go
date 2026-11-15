@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -41,7 +40,7 @@ type UninstallResult struct {
 // plugin's publisher (retired.go).
 func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOptions, actorID int64) (UninstallResult, error) {
 	var res UninstallResult
-	if builtin, err := IsBuiltin(ctx, s.d.DB.Pool, key); err != nil {
+	if builtin, err := IsBuiltin(ctx, s.d.DB.Gorm, key); err != nil {
 		return res, err
 	} else if builtin {
 		return res, ErrBuiltin
@@ -53,7 +52,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 		return res, err
 	}
 	purge := opt.Purge
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var st string
 		err := lockedPlugin(g, key).Select("status").Take(&st).Error
@@ -122,7 +121,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 	return res, nil
 }
 
-func checkUninstall(ctx context.Context, q store.Querier, key string) error {
+func checkUninstall(ctx context.Context, q *gorm.DB, key string) error {
 	g := store.G(ctx, q)
 	var pending bool
 	if err := store.ExistsQuery(g, uninstallRow(g, key)).Scan(&pending).Error; err != nil {
@@ -162,7 +161,7 @@ func (s *Service) quiesce(ctx context.Context, key string, actorID int64) error 
 			return err
 		}
 		defer release()
-		return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+		return s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 			g := store.G(ctx, tx)
 			var p model.Plugin
 			if err := lockedPlugin(g, key).Select("row_version, builtin").Take(&p).Error; err != nil {
@@ -210,7 +209,7 @@ func (s *Service) quiesce(ctx context.Context, key string, actorID int64) error 
 		var stopped bool
 		// Include nodes that joined while the marker was being committed. A
 		// node starting after it can only read the disabled desired state.
-		err = addUninstallTargets(store.G(waitCtx, s.d.DB.Pool), key, ids).Row().Scan(&stopped)
+		err = addUninstallTargets(store.G(waitCtx, s.d.DB.Gorm), key, ids).Row().Scan(&stopped)
 		if err != nil {
 			return err
 		}

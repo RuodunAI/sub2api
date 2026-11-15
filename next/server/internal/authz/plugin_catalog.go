@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -39,7 +38,7 @@ const runningPluginStatuses = `'enabled','upgrading'`
 // authz.sync.remove: their grants stay, granting nothing, until the key
 // comes back. Staged keys stay as they are until that version activates or
 // another consent discards them (DiscardStaged).
-func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []core.PermissionDef) error {
+func (s *Service) SyncPlugin(ctx context.Context, tx *gorm.DB, pluginKey string, defs []core.PermissionDef) error {
 	if pluginKey == "" {
 		return core.ErrInvalidArgument.WithMessage("plugin key is required")
 	}
@@ -110,7 +109,7 @@ WHERE plugin_key = ? AND status NOT IN ('removed', 'staged') AND key <> ALL(?) R
 // (authz.sync.discard) with the roles holding each: their grants stop or
 // start counting, or go, with no role write behind it. Nothing is
 // written for no keys.
-func (s *Service) auditKeyStatus(ctx context.Context, tx pgx.Tx, action, pluginKey string, keys []string) error {
+func (s *Service) auditKeyStatus(ctx context.Context, tx *gorm.DB, action, pluginKey string, keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -175,7 +174,7 @@ func checkScopes(key string, ps manifest.PermissionScope, roles map[string][]str
 // whether it was removed before (it revives). sensitive
 // is still written (risk <> 'low') for the previous core, should it run
 // again; this one never reads it. A key of another owner is a conflict.
-func upsertPluginPermission(ctx context.Context, tx pgx.Tx, pluginKey, local string, d core.PermissionDef) (inserted, wasRemoved bool, err error) {
+func upsertPluginPermission(ctx context.Context, tx *gorm.DB, pluginKey, local string, d core.PermissionDef) (inserted, wasRemoved bool, err error) {
 	label := d.Label
 	if label.Get("en") == "" {
 		label = core.LocalizedText{"en": local}
@@ -252,7 +251,7 @@ func orEmpty[M ~map[K]V, K comparable, V any](m M) M {
 // authz.sync.revoke (via scope_changed). They must go rather than merely
 // stop implying: an own or enum grant would still match at run time. Grants
 // of every row always stay.
-func (s *Service) pruneScopes(ctx context.Context, tx pgx.Tx, key string, ps manifest.PermissionScope) error {
+func (s *Service) pruneScopes(ctx context.Context, tx *gorm.DB, key string, ps manifest.PermissionScope) error {
 	db := store.G(ctx, tx)
 	var scopes store.Strings
 	if err := grantedScopes(db, key).Row().Scan(&scopes); err != nil {
@@ -300,7 +299,7 @@ WHERE p.id = rs.permission_id AND p.key = ? AND rs.scope = ANY(?) RETURNING rs.r
 // invalid. Like every role write it bumps tx (serializing with other role
 // changes) and locks the roles; the SyncPlugin that follows publishes the
 // new version.
-func (s *Service) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, risk string) error {
+func (s *Service) CanGrantToRoles(ctx context.Context, tx *gorm.DB, actorID int64, roleKeys []string, risk string) error {
 	if roleKeys = dedupe(roleKeys); len(roleKeys) == 0 {
 		return nil
 	}
@@ -339,7 +338,7 @@ func (s *Service) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64,
 // PluginGrantees implements core.PermissionCatalog: CanGrantToRoles's
 // rules (editDenial, granteeDenial) read-only, without a bump or locks, a
 // refusal being a Denied entry; unknown keys are invalid.
-func (s *Service) PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string) (core.PluginGrantees, error) {
+func (s *Service) PluginGrantees(ctx context.Context, tx *gorm.DB, actorID int64, roleKeys []string) (core.PluginGrantees, error) {
 	roleKeys = dedupe(roleKeys)
 	roles, err := readRoles(rolesByKeys(store.G(ctx, tx), roleKeys))
 	if err != nil {
@@ -372,7 +371,7 @@ func (s *Service) PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, 
 
 // pluginGrantor is actorID's grantSet with the keys of the roles it holds;
 // the system (actor 0) is a superuser, as editableRole lets it through.
-func (s *Service) pluginGrantor(ctx context.Context, tx pgx.Tx, actorID int64) (core.PermissionSet, []string, error) {
+func (s *Service) pluginGrantor(ctx context.Context, tx *gorm.DB, actorID int64) (core.PermissionSet, []string, error) {
 	if actorID == 0 {
 		return core.PermissionSet{Superuser: true}, nil, nil
 	}
@@ -411,7 +410,7 @@ func pluginGrantee(ctx context.Context, actor core.PermissionSet, held []string,
 
 // GrantPluginPermission implements core.PermissionCatalog; roles naming a
 // scope the permission does not take are invalid.
-func (s *Service) GrantPluginPermission(ctx context.Context, tx pgx.Tx, key string, roles map[string][]string) error {
+func (s *Service) GrantPluginPermission(ctx context.Context, tx *gorm.DB, key string, roles map[string][]string) error {
 	var scopeType string
 	var scope store.JSON[manifest.PermissionScope]
 	err := pluginPermissionScope(store.G(ctx, tx), key).Row().Scan(&scopeType, &scope)
@@ -446,7 +445,7 @@ func pluginPermissionScope(db *gorm.DB, key string) *gorm.DB {
 // admin ones (which hold every permission), audited with via and the
 // granted key, its scope included. A removed key grants nothing. Callers
 // check the scopes (checkScopes).
-func (s *Service) grantPlugin(ctx context.Context, tx pgx.Tx, via, key string, roles map[string][]string) error {
+func (s *Service) grantPlugin(ctx context.Context, tx *gorm.DB, via, key string, roles map[string][]string) error {
 	var roleKeys, scopes []string
 	for _, role := range slices.Sorted(maps.Keys(roles)) {
 		for _, sfx := range manifest.CanonicalSuffixes(roles[role]) {
@@ -487,7 +486,7 @@ FROM (SELECT * FROM ins UNION ALL SELECT * FROM ins_scoped) i JOIN permissions p
 }
 
 // PluginPermissions implements core.PermissionCatalog.
-func (s *Service) PluginPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]core.PluginPermission, error) {
+func (s *Service) PluginPermissions(ctx context.Context, q *gorm.DB, pluginKey string) ([]core.PluginPermission, error) {
 	var rows []pluginPermissionRead
 	if err := pluginPermissions(store.G(ctx, q), pluginKey).Scan(&rows).Error; err != nil {
 		return nil, err
@@ -524,7 +523,7 @@ func pluginPermissions(db *gorm.DB, pluginKey string) *gorm.DB {
 // PermissionHolders implements core.PermissionCatalog: a role holds a key
 // by a role_permissions row (every row) or role_permission_scopes rows
 // (each scope), whatever the permission's status.
-func (s *Service) PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]core.PermissionHolder, error) {
+func (s *Service) PermissionHolders(ctx context.Context, q *gorm.DB, keys []string) (map[string][]core.PermissionHolder, error) {
 	out := map[string][]core.PermissionHolder{}
 	if len(keys) == 0 {
 		return out, nil
@@ -557,7 +556,7 @@ ORDER BY 1, 2, 3`, ks, ks)
 }
 
 // SetPluginActive implements core.PermissionCatalog.
-func (s *Service) SetPluginActive(ctx context.Context, tx pgx.Tx, pluginKey string, active bool) error {
+func (s *Service) SetPluginActive(ctx context.Context, tx *gorm.DB, pluginKey string, active bool) error {
 	v, err := s.Bump(ctx, tx)
 	if err != nil {
 		return err
@@ -582,7 +581,7 @@ func setPluginStatus(db *gorm.DB, pluginKey, status string) *gorm.DB {
 // DiscardStaged implements core.PermissionCatalog: the plugin's staged keys
 // and, cascading, their grants go, audited as authz.sync.discard with the
 // roles that held them; nothing happens without any.
-func (s *Service) DiscardStaged(ctx context.Context, tx pgx.Tx, pluginKey string) error {
+func (s *Service) DiscardStaged(ctx context.Context, tx *gorm.DB, pluginKey string) error {
 	db := store.G(ctx, tx)
 	var keys []string
 	if err := lockStaged(db, pluginKey).Pluck("key", &keys).Error; err != nil || len(keys) == 0 {
@@ -614,7 +613,7 @@ func deletePermissions(db *gorm.DB, keys []string) *gorm.DB {
 }
 
 // DeletePlugin implements core.PermissionCatalog; role grants cascade.
-func (s *Service) DeletePlugin(ctx context.Context, tx pgx.Tx, pluginKey string) error {
+func (s *Service) DeletePlugin(ctx context.Context, tx *gorm.DB, pluginKey string) error {
 	v, err := s.Bump(ctx, tx)
 	if err != nil {
 		return err

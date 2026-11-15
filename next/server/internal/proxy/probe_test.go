@@ -78,7 +78,7 @@ func TestProbeEndpoint(t *testing.T) {
 		t.Fatalf("proxy auth %q", auth.Load())
 	}
 	var n int
-	_ = db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM proxies`).Scan(&n)
+	_ = db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM proxies`).Scan(&n)
 	if n != 0 || res["proxy_id"] != nil {
 		t.Fatalf("probe without save stored a proxy: %d %v", n, res)
 	}

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -40,7 +40,7 @@ func (f *fakeTasks) Trigger(_ context.Context, name string) error {
 
 func (f *fakeTasks) Enqueue(context.Context, string, any, core.EnqueueOpts) error { return nil }
 
-func (f *fakeTasks) EnqueueTx(context.Context, pgx.Tx, string, any, core.EnqueueOpts) error {
+func (f *fakeTasks) EnqueueTx(context.Context, *gorm.DB, string, any, core.EnqueueOpts) error {
 	return nil
 }
 
@@ -131,14 +131,14 @@ func TestUsageLimitsTaskFoldsAndEnforces(t *testing.T) {
 	if code != 200 {
 		t.Fatal(code, out)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
 		total_cost, billing_status, billing_detail, rate_multiplier, input_tokens, output_tokens)
 		VALUES ('task-u1', 1, 1, 1, $1, 'anthropic.messages', '/v1/messages', 200, true, 6, 'billed', '{"cost":"5"}', 1.2, 100, 20)`, id); err != nil {
 		t.Fatal(err)
 	}
 	status := func() string {
 		var s string
-		if err := e.db.Pool.QueryRow(ctx, `SELECT status FROM accounts WHERE id = $1`, id).Scan(&s); err != nil {
+		if err := e.db.SQL.QueryRowContext(ctx, `SELECT status FROM accounts WHERE id = $1`, id).Scan(&s); err != nil {
 			t.Fatal(err)
 		}
 		return s
@@ -150,7 +150,7 @@ func TestUsageLimitsTaskFoldsAndEnforces(t *testing.T) {
 		t.Fatal(err)
 	}
 	var pending int
-	if err := e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM account_usage_deltas`).Scan(&pending); err != nil || pending != 0 {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM account_usage_deltas`).Scan(&pending); err != nil || pending != 0 {
 		t.Fatalf("journal rows left: %d (%v)", pending, err)
 	}
 	if s := status(); s != "auto_disabled" {

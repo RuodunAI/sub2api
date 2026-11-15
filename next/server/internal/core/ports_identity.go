@@ -10,13 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // ============================================================ identity & authz (owner: A core-data)
@@ -503,38 +502,38 @@ type PermissionCatalog interface {
 	// included; the consent resolved inheritance into them), drops scope
 	// grants the declared scope no longer takes, and marks keys no longer
 	// declared removed (their grants stay, granting nothing).
-	SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []PermissionDef) error
+	SyncPlugin(ctx context.Context, tx *gorm.DB, pluginKey string, defs []PermissionDef) error
 	// CanGrantToRoles fails unless actorID may change every role of
 	// roleKeys (super admin roles never), as handing them a plugin's new
 	// permissions of risk at most risk does, and each is on its assignable
 	// list and, but for a superuser, not held by actorID. A critical risk
 	// also needs a superuser actor.
-	CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, risk string) error
+	CanGrantToRoles(ctx context.Context, tx *gorm.DB, actorID int64, roleKeys []string, risk string) error
 	// PluginGrantees is CanGrantToRoles read-only: no version bump, no
 	// locks, a refusal is a Denied entry rather than an error.
-	PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string) (PluginGrantees, error)
+	PluginGrantees(ctx context.Context, tx *gorm.DB, actorID int64, roleKeys []string) (PluginGrantees, error)
 	// GrantPluginPermission grants the existing plugin permission key to
 	// roles (role -> scope suffixes as PermissionDef.GrantRoles; removed
 	// keys and super admin roles skipped), each grant audited as
 	// authz.sync.grant: the role grants an upgrade withheld until someone
 	// confirmed them. Callers check the rights (CanGrantToRoles).
-	GrantPluginPermission(ctx context.Context, tx pgx.Tx, key string, roles map[string][]string) error
+	GrantPluginPermission(ctx context.Context, tx *gorm.DB, key string, roles map[string][]string) error
 	// PluginPermissions lists the plugin's permissions, removed ones
 	// included, by their sort.
-	PluginPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]PluginPermission, error)
+	PluginPermissions(ctx context.Context, q *gorm.DB, pluginKey string) ([]PluginPermission, error)
 	// PermissionHolders maps each key of keys to its grants, every row and
 	// scoped ones, by role then scope; super admin roles aside, removed
 	// keys keeping theirs (D6).
-	PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]PermissionHolder, error)
+	PermissionHolders(ctx context.Context, q *gorm.DB, keys []string) (map[string][]PermissionHolder, error)
 	// SetPluginActive flips status active/disabled (enable/disable); removed
 	// and staged permissions stay as they are.
-	SetPluginActive(ctx context.Context, tx pgx.Tx, pluginKey string, active bool) error
+	SetPluginActive(ctx context.Context, tx *gorm.DB, pluginKey string, active bool) error
 	// DiscardStaged deletes the plugin's staged permissions (PermissionDef.
 	// Staged) and their grants: a consent supersedes what an earlier one,
 	// of a version not activated, created for it.
-	DiscardStaged(ctx context.Context, tx pgx.Tx, pluginKey string) error
+	DiscardStaged(ctx context.Context, tx *gorm.DB, pluginKey string) error
 	// DeletePlugin removes the plugin's permissions and grants (uninstall).
-	DeletePlugin(ctx context.Context, tx pgx.Tx, pluginKey string) error
+	DeletePlugin(ctx context.Context, tx *gorm.DB, pluginKey string) error
 }
 
 // ============================================================ api keys & groups (owner: A)
@@ -1020,11 +1019,11 @@ type ProxyResolver interface {
 	// audit detail needs does not exist yet when the account is being
 	// created. After the account row is written, callers pass created ==
 	// true rows to AuditAutoCreate in the same transaction.
-	FindOrCreate(ctx context.Context, tx pgx.Tx, spec ProxySpec, ownerID int64, scope DataScope) (id int64, created bool, err error)
+	FindOrCreate(ctx context.Context, tx *gorm.DB, spec ProxySpec, ownerID int64, scope DataScope) (id int64, created bool, err error)
 	// AuditAutoCreate records the audit row proxy.create {auto:true,
 	// account_id} (actor = ownerID, ip from audit.WithClientIP on ctx) for a
 	// proxy FindOrCreate just inserted, and announces the new proxy on
 	// config:changed. Call it once per created proxy, in the same
 	// transaction, after the account id is known.
-	AuditAutoCreate(ctx context.Context, tx pgx.Tx, proxyID, ownerID, accountID int64) error
+	AuditAutoCreate(ctx context.Context, tx *gorm.DB, proxyID, ownerID, accountID int64) error
 }

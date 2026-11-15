@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pkgsig"
@@ -63,7 +62,7 @@ type RevokeResult struct {
 
 // ListPublishers returns all publishers with keys.
 func (s *Service) ListPublishers(ctx context.Context) ([]Publisher, error) {
-	g := store.G(ctx, s.d.DB.Pool)
+	g := store.G(ctx, s.d.DB.Gorm)
 	var pubs []model.Publisher
 	if err := g.Order("name").Find(&pubs).Error; err != nil {
 		return nil, err
@@ -124,7 +123,7 @@ func (s *Service) CreatePublisher(ctx context.Context, in CreatePublisherInput, 
 		return nil, core.InvalidFields(errs...)
 	}
 	var id int64
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		pub := model.Publisher{Name: in.Name, TrustLevel: in.TrustLevel}
 		if err := store.G(ctx, tx).Create(&pub).Error; err != nil {
 			return err
@@ -146,7 +145,7 @@ func (s *Service) CreatePublisher(ctx context.Context, in CreatePublisherInput, 
 	return s.getPublisher(ctx, id)
 }
 
-func insertKey(ctx context.Context, tx pgx.Tx, pubID int64, k KeyInput) error {
+func insertKey(ctx context.Context, tx *gorm.DB, pubID int64, k KeyInput) error {
 	return store.G(ctx, tx).Create(newPublisherKey(pubID, k)).Error
 }
 
@@ -161,7 +160,7 @@ func (s *Service) AddPublisherKey(ctx context.Context, pubID int64, k KeyInput, 
 	if errs := validateKey(-1, k); len(errs) > 0 {
 		return nil, core.InvalidFields(errs...)
 	}
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var status string
 		err := store.G(ctx, tx).Model(&model.Publisher{}).Select("status").Where("id = ?", pubID).Clauses(store.ForUpdate).Take(&status).Error
 		if store.IsNoRows(err) {
@@ -205,7 +204,7 @@ func (s *Service) getPublisher(ctx context.Context, id int64) (*Publisher, error
 func (s *Service) RevokePublisher(ctx context.Context, pubID int64, reason string, actorID int64) (*RevokeResult, error) {
 	res := &RevokeResult{DisabledPlugins: []string{}}
 	var toDisable []string
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		r := g.Model(&model.Publisher{}).Where("id = ?", pubID).
 			Updates(map[string]any{"status": publisherRevoked, "revoked_at": gorm.Expr("now()")})
@@ -244,7 +243,7 @@ func (s *Service) RevokePublisher(ctx context.Context, pubID int64, reason strin
 func (s *Service) RevokeKey(ctx context.Context, keyID, reason string, actorID int64) (*RevokeResult, error) {
 	res := &RevokeResult{DisabledPlugins: []string{}}
 	var toDisable []string
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		r := g.Model(&model.PublisherKey{}).Where("key_id = ?", keyID).Update("status", publisherRevoked)
 		if r.Error != nil {

@@ -18,14 +18,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/environment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 )
 
 // Runtime keys (CONTRACTS §49.7): an account's runtime is named after the
@@ -157,11 +157,11 @@ func revisionOf(version string) string {
 // desired reads authoritative state: request forwarding never reconfigures an
 // egress and never trusts the scheduler's cached proxy binding.
 func (s *Service) desired(ctx context.Context, id int64, credentials bool) (accountDesired, error) {
-	return s.desiredIn(ctx, s.DB.Pool, id, credentials)
+	return s.desiredIn(ctx, s.DB.Gorm, id, credentials)
 }
 
 // desiredIn is desired read through q (a transaction sees its own changes).
-func (s *Service) desiredIn(ctx context.Context, q store.Querier, id int64, credentials bool) (accountDesired, error) {
+func (s *Service) desiredIn(ctx context.Context, q *gorm.DB, id int64, credentials bool) (accountDesired, error) {
 	var d accountDesired
 	var version string
 	var spec core.ProxySpec
@@ -225,7 +225,7 @@ func (s *Service) draftDesired(ctx context.Context, key string, credentials bool
 	var version string
 	var spec core.ProxySpec
 	var password, settings []byte
-	err := store.G(ctx, s.DB.Pool).Raw(`SELECT
+	err := store.G(ctx, s.DB.Gorm).Raw(`SELECT
   r.proxy_id IS NOT NULL AND (p.id IS NULL OR p.protocol NOT IN ('http','https','socks5')),
   concat_ws('|','draft',r.key,r.proxy_id,p.updated_at),
   COALESCE(p.protocol,''),COALESCE(p.host,''),COALESCE(p.port,0),COALESCE(p.username,''),p.password_enc,r.initial_settings
@@ -249,7 +249,7 @@ func (s *Service) draftDesired(ctx context.Context, key string, credentials bool
 			return d, err
 		}
 	}
-	return s.desiredNetwork(ctx, s.DB.Pool, d)
+	return s.desiredNetwork(ctx, s.DB.Gorm, d)
 }
 
 // resolveKey maps an account id to its runtime key (the adopted draft key,
@@ -265,7 +265,7 @@ func (s *Service) resolveKey(ctx context.Context, key string) (string, error) {
 	}
 	id, _ := strconv.ParseInt(key, 10, 64)
 	var r model.CcgatewayRuntime
-	e := runtimes(store.G(ctx, s.DB.Pool)).Select("key").Where("account_id = ?", id).Take(&r).Error
+	e := runtimes(store.G(ctx, s.DB.Gorm)).Select("key").Where("account_id = ?", id).Take(&r).Error
 	if store.IsNoRows(e) {
 		return strconv.FormatInt(id, 10), nil
 	}
@@ -287,7 +287,7 @@ func (s *Service) desiredKey(ctx context.Context, key string, credentials bool) 
 		return d, e
 	}
 	var r model.CcgatewayRuntime
-	if e := runtimes(store.G(ctx, s.DB.Pool)).Select("account_id").Where("key = ?", key).Take(&r).Error; e != nil {
+	if e := runtimes(store.G(ctx, s.DB.Gorm)).Select("account_id").Where("key = ?", key).Take(&r).Error; e != nil {
 		return accountDesired{}, e
 	}
 	if r.AccountID != nil {
@@ -347,26 +347,17 @@ func (s *Service) Reconcile(ctx context.Context, key string) error {
 	if e != nil {
 		return e
 	}
-	conn, e := s.DB.Pool.Acquire(ctx)
-	if e != nil {
-		return e
-	}
-	defer conn.Release()
-	tx, e := conn.Begin(ctx)
-	if e != nil {
-		return e
-	}
-	defer func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = tx.Rollback(cleanup)
-	}()
+	// The transaction writes only on the paths that block or purge the
+	// runtime; every other path read under the lock and commits nothing.
+	return s.DB.Tx(ctx, func(tx *gorm.DB) error { return s.reconcileLocked(ctx, tx, key) })
+}
+
+// reconcileLocked is Reconcile in tx: nothing when another node holds the
+// runtime's lock.
+func (s *Service) reconcileLocked(ctx context.Context, tx *gorm.DB, key string) error {
 	var locked bool
-	if e = store.G(ctx, tx).Raw(tryLockSQL, key).Row().Scan(&locked); e != nil {
+	if e := store.G(ctx, tx).Raw(tryLockSQL, key).Row().Scan(&locked); e != nil || !locked {
 		return e
-	}
-	if !locked {
-		return nil
 	}
 	d, e := s.desiredKey(ctx, key, true)
 	if e != nil {
@@ -379,10 +370,7 @@ func (s *Service) Reconcile(ctx context.Context, key string) error {
 		case d.Purged:
 			return nil
 		case d.PurgeRequested && !d.Retained:
-			if e = s.purgeDeleted(ctx, tx, key, d); e != nil {
-				return e
-			}
-			return tx.Commit(ctx)
+			return s.purgeDeleted(ctx, tx, key, d)
 		}
 	}
 	if d.ProxyUnusable && !d.Deleted {
@@ -448,7 +436,7 @@ func blockedRevision(revision string) int64 {
 // d's revision less than blockedFor ago, by this node or any other
 // (ccgateway_runtimes.blocked_revision / blocked_at, read under the
 // runtime's advisory lock), and no change asked to block it again since.
-func (s *Service) blockedRecently(ctx context.Context, tx pgx.Tx, key string, d accountDesired) (bool, error) {
+func (s *Service) blockedRecently(ctx context.Context, tx *gorm.DB, key string, d accountDesired) (bool, error) {
 	now := time.Now()
 	s.blockedMu.Lock()
 	m, ok := s.blocked[key]
@@ -476,9 +464,9 @@ func (s *Service) blockedRecently(ctx context.Context, tx pgx.Tx, key string, d 
 }
 
 // markBlocked records the enabled:false just sent to runtime key, in the
-// database for every node (committing tx, which releases the runtime's
-// lock) and in memory.
-func (s *Service) markBlocked(ctx context.Context, tx pgx.Tx, key string, d accountDesired) error {
+// database for every node (in tx, whose commit releases the runtime's lock)
+// and in memory.
+func (s *Service) markBlocked(ctx context.Context, tx *gorm.DB, key string, d accountDesired) error {
 	now := time.Now()
 	s.blockedMu.Lock()
 	if s.blocked == nil {
@@ -486,10 +474,7 @@ func (s *Service) markBlocked(ctx context.Context, tx pgx.Tx, key string, d acco
 	}
 	s.blocked[key] = blockedMark{revision: d.Revision, accountID: d.AccountID, at: now}
 	s.blockedMu.Unlock()
-	if err := markBlockedRow(store.G(ctx, tx), key, blockedRevision(d.Revision), now).Error; err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return markBlockedRow(store.G(ctx, tx), key, blockedRevision(d.Revision), now).Error
 }
 
 // markBlockedRow records a block of runtime key at revision (blockedRevision)
@@ -628,7 +613,7 @@ var (
 // the sweep deletes them.
 func (s *Service) runtimeKeys(ctx context.Context) ([]string, error) {
 	var keys []string
-	e := store.G(ctx, s.DB.Pool).Raw(`SELECT COALESCE(r.key, a.id::text) FROM accounts a
+	e := store.G(ctx, s.DB.Gorm).Raw(`SELECT COALESCE(r.key, a.id::text) FROM accounts a
   LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id
   WHERE a.plugin_key='ccgateway' AND a.type IN ('managed','apikey') AND r.purged_at IS NULL
   UNION ALL SELECT key FROM ccgateway_runtimes WHERE account_id IS NULL AND retired_at IS NULL
@@ -969,10 +954,10 @@ func (s *Service) noteFacts(ctx context.Context, accountID int64, raw []byte) {
 	if json.Unmarshal(raw, &status) != nil {
 		return
 	}
-	if err := recordRateLimitTier(ctx, s.DB.Pool, accountID, status.RateLimitTier); err != nil {
+	if err := recordRateLimitTier(ctx, s.DB.Gorm, accountID, status.RateLimitTier); err != nil {
 		slog.WarnContext(ctx, "ccgateway: record rate limit tier", "account", accountID, "err", err)
 	}
-	changed, err := recordSubscription(ctx, s.DB.Pool, accountID, status.SubscriptionType)
+	changed, err := recordSubscription(ctx, s.DB.Gorm, accountID, status.SubscriptionType)
 	if err != nil {
 		slog.WarnContext(ctx, "ccgateway: record subscription type", "account", accountID, "err", err)
 		return

@@ -6,57 +6,17 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"gorm.io/gorm/schema"
 )
 
-func TestTimesScan(t *testing.T) {
-	at := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
-	cases := []struct {
-		src  any
-		want Times
-		err  string
-	}{
-		{nil, nil, ""},
-		{[]time.Time{at}, Times{at}, ""},
-		{[]any{at}, Times{at}, ""},
-		{`{"2024-01-02 03:04:05+00"}`, Times{at}, ""},
-		{"{}", Times{}, ""},
-		{[]any{at, "x"}, nil, "element 1"},
-		{int64(1), nil, "cannot scan int64"},
-	}
-	for _, c := range cases {
-		var got Times
-		err := got.Scan(c.src)
-		if c.err != "" {
-			if err == nil || !strings.Contains(err.Error(), c.err) {
-				t.Errorf("Scan(%#v) error = %v, want %q", c.src, err, c.err)
-			}
-			continue
-		}
-		if err != nil || len(got) != len(c.want) || (c.want == nil) != (got == nil) {
-			t.Errorf("Scan(%#v) = %#v, %v; want %#v", c.src, got, err, c.want)
-			continue
-		}
-		for i := range got {
-			if !got[i].Equal(c.want[i]) {
-				t.Errorf("Scan(%#v)[%d] = %v, want %v", c.src, i, got[i], c.want[i])
-			}
-		}
-	}
-	if v, _ := Times(nil).Value(); !reflect.DeepEqual(v, []time.Time{}) {
-		t.Errorf("Times(nil).Value() = %#v, want the empty array", v)
-	}
-}
-
-// Bools is one boolean[] parameter, nil the empty array, and a column to
-// GORM's schema parser rather than a relation.
+// Bools is one boolean[] parameter in its text form, nil the empty array,
+// and a column to GORM's schema parser rather than a relation.
 func TestBools(t *testing.T) {
-	if v, _ := Bools(nil).Value(); !reflect.DeepEqual(v, []bool{}) {
+	if v, _ := Bools(nil).Value(); v != "{}" {
 		t.Errorf("Bools(nil).Value() = %#v, want the empty array", v)
 	}
-	if v, _ := (Bools{true, false}).Value(); !reflect.DeepEqual(v, []bool{true, false}) {
+	if v, _ := (Bools{true, false}).Value(); v != "{t,f}" {
 		t.Errorf("Bools{true, false}.Value() = %#v", v)
 	}
 	type row struct {
@@ -135,14 +95,15 @@ func TestInt64sScan(t *testing.T) {
 		err  string
 	}{
 		{nil, nil, ""},
-		{[]int64{1, 2}, Int64s{1, 2}, ""},
-		{[]int64{}, Int64s{}, ""},
-		{[]any{int64(1), int32(2), int16(3)}, Int64s{1, 2, 3}, ""},
 		{"{4,-5}", Int64s{4, -5}, ""},
 		{[]byte("{6}"), Int64s{6}, ""},
 		{"{}", Int64s{}, ""},
-		{[]any{int64(1), nil}, nil, "element 1"},
+		{"{{1,2},{3,4}}", Int64s{1, 2, 3, 4}, ""},
+		{"[0:1]={7,8}", Int64s{7, 8}, ""},
+		{"{9223372036854775807}", Int64s{9223372036854775807}, ""},
 		{"{1,NULL}", nil, "NULL"},
+		{"{9223372036854775808}", nil, "out of range"},
+		{[]int64{1}, nil, "cannot scan"},
 		{"{a}", nil, "invalid"},
 		{int64(1), nil, "cannot scan int64"},
 	}
@@ -168,13 +129,13 @@ func TestStringsScan(t *testing.T) {
 		err  string
 	}{
 		{nil, nil, ""},
-		{[]string{"a"}, Strings{"a"}, ""},
-		{[]any{"a", "b"}, Strings{"a", "b"}, ""},
 		{`{a,"b,c","d\"e",""}`, Strings{"a", "b,c", `d"e`, ""}, ""},
 		{[]byte(`{x}`), Strings{"x"}, ""},
 		{"{}", Strings{}, ""},
-		{[]any{"a", 1}, nil, "element 1"},
+		{`{"NULL",null_ish,"\\\\",{nested}}`, Strings{"NULL", "null_ish", `\\`, "nested"}, ""},
 		{"{a,NULL}", nil, "NULL"},
+		{"{a,null}", nil, "NULL"},
+		{[]string{"a"}, nil, "cannot scan"},
 		{true, nil, "cannot scan bool"},
 	}
 	for _, c := range cases {

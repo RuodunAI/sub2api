@@ -24,7 +24,7 @@ import (
 func TestRiverSchemaIsCurrent(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	migrator, err := rivermigrate.New(riverpgxv5.New(db.Pool), nil)
+	migrator, err := rivermigrate.New(riverpgxv5.New(db.Gorm), nil)
 	require.NoError(t, err)
 	res, err := migrator.Validate(ctx, nil)
 	require.NoError(t, err)
@@ -34,7 +34,7 @@ func TestRiverSchemaIsCurrent(t *testing.T) {
 	require.Len(t, existing, len(migrator.AllVersions()))
 	for _, table := range []string{"river_job", "river_leader", "river_queue", "river_notification", "river_migration", "scheduled_tasks"} {
 		var ok bool
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok))
 		require.True(t, ok, table)
 	}
 }
@@ -69,14 +69,14 @@ func TestCoreMigrationsAsNonSuperuser(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 	var super bool
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&super))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`).Scan(&super))
 	require.False(t, super)
 	for range 2 {
 		_, err = store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 		require.NoError(t, err)
 	}
 	var versions int
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT count(*) FROM river_migration WHERE line = 'main'`).Scan(&versions))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM river_migration WHERE line = 'main'`).Scan(&versions))
 	require.Equal(t, 8, versions)
 }
 
@@ -86,18 +86,18 @@ func TestAccountStatusChangedAtTrigger(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
 	var id int64
-	require.NoError(t, db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,status,schedulable)
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,status,schedulable)
 		VALUES('parking','ccgateway','managed','','active',true) RETURNING id`).Scan(&id))
 	at := func() time.Time {
 		var ts *time.Time
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT status_changed_at FROM accounts WHERE id=$1`, id).Scan(&ts))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT status_changed_at FROM accounts WHERE id=$1`, id).Scan(&ts))
 		require.NotNil(t, ts)
 		return *ts
 	}
 	set := func(sql string) {
 		// Each statement is its own transaction, so now() moves on.
 		time.Sleep(5 * time.Millisecond)
-		_, err := db.Pool.Exec(ctx, sql, id)
+		_, err := db.SQL.ExecContext(ctx, sql, id)
 		require.NoError(t, err)
 	}
 	inserted := at()
@@ -127,7 +127,7 @@ func TestAccountStatusChangedAtTrigger(t *testing.T) {
 func TestAccountRuntimeParkingMigrationBackfill(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	_, err := db.Pool.Exec(ctx, `DROP TRIGGER accounts_status_changed_at ON accounts;
+	_, err := db.SQL.ExecContext(ctx, `DROP TRIGGER accounts_status_changed_at ON accounts;
 		ALTER TABLE accounts DROP COLUMN status_changed_at;
 		ALTER TABLE ccgateway_runtimes DROP COLUMN parked_at, DROP COLUMN woken_at, DROP COLUMN blocked_revision, DROP COLUMN blocked_at;
 		DELETE FROM schema_migrations WHERE id='0085_account_runtime_parking.sql';
@@ -139,14 +139,14 @@ func TestAccountRuntimeParkingMigrationBackfill(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"0085_account_runtime_parking.sql"}, done)
 	var first time.Time
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT status_changed_at FROM accounts WHERE name='legacy-red'`).Scan(&first))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT status_changed_at FROM accounts WHERE name='legacy-red'`).Scan(&first))
 	require.True(t, first.After(started), "backfilled from the migration time, got %v", first)
 
-	_, err = db.Pool.Exec(ctx, `DELETE FROM schema_migrations WHERE id='0085_account_runtime_parking.sql'`)
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id='0085_account_runtime_parking.sql'`)
 	require.NoError(t, err)
 	_, err = store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 	require.NoError(t, err)
 	var again time.Time
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT status_changed_at FROM accounts WHERE name='legacy-red'`).Scan(&again))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT status_changed_at FROM accounts WHERE name='legacy-red'`).Scan(&again))
 	require.Equal(t, first, again)
 }

@@ -24,18 +24,18 @@ func hostWithoutCreateRole(t *testing.T, db *store.DB) *store.DB {
 	pw := "pw-" + randKey()
 	rid := pgx.Identifier{role}.Sanitize()
 	var dbname string
-	if err := db.Pool.QueryRow(ctx, `SELECT current_database()`).Scan(&dbname); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT current_database()`).Scan(&dbname); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range []string{
 		"CREATE ROLE " + rid + " LOGIN NOCREATEROLE NOSUPERUSER PASSWORD '" + pw + "'",
 		"GRANT CREATE, CONNECT ON DATABASE " + pgx.Identifier{dbname}.Sanitize() + " TO " + rid,
 	} {
-		if _, err := db.Pool.Exec(ctx, s); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, s); err != nil {
 			t.Fatal(err)
 		}
 	}
-	u, err := url.Parse(db.Pool.Config().ConnString())
+	u, err := testutil.DSN(url.Parse(db))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,8 +47,8 @@ func hostWithoutCreateRole(t *testing.T, db *store.DB) *store.DB {
 	t.Cleanup(func() {
 		host.Close()
 		c := context.Background()
-		_, _ = db.Pool.Exec(c, "DROP OWNED BY "+rid)
-		_, _ = db.Pool.Exec(c, "DROP ROLE IF EXISTS "+rid)
+		_, _ = db.SQL.ExecContext(c, "DROP OWNED BY "+rid)
+		_, _ = db.SQL.ExecContext(c, "DROP ROLE IF EXISTS "+rid)
 	})
 	return host
 }
@@ -60,7 +60,7 @@ func TestEnsureFailsWithoutCreateRole(t *testing.T) {
 	ctx := context.Background()
 	host := hostWithoutCreateRole(t, db)
 	key := randKey()
-	m := dbschema.New(host, host.Pool.Config().ConnString(), make([]byte, 32), true)
+	m := dbschema.New(host, testutil.DSN(host), make([]byte, 32), true)
 
 	err := m.CheckIsolation(ctx)
 	if !errors.Is(err, dbschema.ErrIsolationUnavailable) || core.AsError(err).Code != "plugin_db_isolation_unavailable" {
@@ -76,12 +76,12 @@ func TestEnsureFailsWithoutCreateRole(t *testing.T) {
 		}
 	}
 	var exists bool
-	if err := db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, "plg_"+key).Scan(&exists); err != nil || exists {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, "plg_"+key).Scan(&exists); err != nil || exists {
 		t.Fatalf("schema created without isolation: %v %v", exists, err)
 	}
 	// Turning isolation off is an explicit operator choice, not a silent
 	// fallback: then the shared role is used.
-	shared := dbschema.New(host, host.Pool.Config().ConnString(), make([]byte, 32), false)
+	shared := dbschema.New(host, testutil.DSN(host), make([]byte, 32), false)
 	t.Cleanup(func() { _ = shared.Drop(context.Background(), key) })
 	if err := shared.CheckIsolation(ctx); err != nil {
 		t.Fatal(err)
@@ -99,13 +99,13 @@ func TestEnsureRefusesForeignRole(t *testing.T) {
 	key := randKey()
 	role := "plg_" + key
 	rid := pgx.Identifier{role}.Sanitize()
-	if _, err := db.Pool.Exec(ctx, "CREATE ROLE "+rid+" LOGIN PASSWORD 'theirs' CONNECTION LIMIT 3"); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, "CREATE ROLE "+rid+" LOGIN PASSWORD 'theirs' CONNECTION LIMIT 3"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = db.Pool.Exec(context.Background(), "DROP ROLE IF EXISTS "+rid) })
+	t.Cleanup(func() { _, _ = db.SQL.ExecContext(context.Background(), "DROP ROLE IF EXISTS "+rid) })
 	mk := make([]byte, 32)
 	_, _ = rand.Read(mk)
-	m := dbschema.New(db, db.Pool.Config().ConnString(), mk, true)
+	m := dbschema.New(db, testutil.DSN(db), mk, true)
 
 	if _, err := m.Ensure(ctx, key); !errors.Is(err, dbschema.ErrRoleConflict) || core.AsError(err).Code != "plugin_db_role_conflict" {
 		t.Fatalf("Ensure: %v", err)
@@ -115,21 +115,21 @@ func TestEnsureRefusesForeignRole(t *testing.T) {
 	}
 	var limit int
 	var comment *string
-	if err := db.Pool.QueryRow(ctx, `SELECT rolconnlimit, shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = $1`, role).Scan(&limit, &comment); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT rolconnlimit, shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = $1`, role).Scan(&limit, &comment); err != nil {
 		t.Fatal(err)
 	}
 	if limit != 3 || comment != nil {
 		t.Fatalf("foreign role altered: limit=%d comment=%v", limit, comment)
 	}
 	var exists bool
-	if err := db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, role).Scan(&exists); err != nil || exists {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, role).Scan(&exists); err != nil || exists {
 		t.Fatalf("schema created for a foreign role: %v %v", exists, err)
 	}
 	// Uninstall with purge does not drop it either.
 	if err := m.Drop(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, role).Scan(&exists); err != nil || !exists {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)`, role).Scan(&exists); err != nil || !exists {
 		t.Fatalf("foreign role dropped: %v %v", exists, err)
 	}
 }
@@ -144,7 +144,7 @@ func TestEnsureExistingRoleAsNonSuperuser(t *testing.T) {
 	pw := "pw-" + randKey()
 	rid := pgx.Identifier{role}.Sanitize()
 	var dbname string
-	if err := db.Pool.QueryRow(ctx, `SELECT current_database()`).Scan(&dbname); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT current_database()`).Scan(&dbname); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range []string{
@@ -152,11 +152,11 @@ func TestEnsureExistingRoleAsNonSuperuser(t *testing.T) {
 		"GRANT CREATE, CONNECT ON DATABASE " + pgx.Identifier{dbname}.Sanitize() + " TO " + rid,
 		"GRANT EXECUTE ON FUNCTION public.plugin_migrations_applied(varchar), public.plugin_migration_record(varchar, varchar, varchar) TO " + rid + " WITH GRANT OPTION",
 	} {
-		if _, err := db.Pool.Exec(ctx, s); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, s); err != nil {
 			t.Fatal(err)
 		}
 	}
-	u, err := url.Parse(db.Pool.Config().ConnString())
+	u, err := testutil.DSN(url.Parse(db))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,18 +168,18 @@ func TestEnsureExistingRoleAsNonSuperuser(t *testing.T) {
 	key := randKey()
 	mk := make([]byte, 32)
 	_, _ = rand.Read(mk)
-	m := dbschema.New(host, host.Pool.Config().ConnString(), mk, true)
+	m := dbschema.New(host, testutil.DSN(host), mk, true)
 	t.Cleanup(func() {
 		c := context.Background()
 		_ = m.Drop(c, key)
 		host.Close()
-		_, _ = db.Pool.Exec(c, "DROP OWNED BY "+rid)
-		_, _ = db.Pool.Exec(c, "DROP ROLE IF EXISTS "+rid)
+		_, _ = db.SQL.ExecContext(c, "DROP OWNED BY "+rid)
+		_, _ = db.SQL.ExecContext(c, "DROP ROLE IF EXISTS "+rid)
 	})
 	if _, err := m.Ensure(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	m2 := dbschema.New(host, host.Pool.Config().ConnString(), mk, true)
+	m2 := dbschema.New(host, testutil.DSN(host), mk, true)
 	if st, err := m2.Ensure(ctx, key); err != nil || !st.RoleIsolated {
 		t.Fatalf("re-ensure as non-superuser: %+v %v", st, err)
 	}
@@ -196,22 +196,22 @@ func TestEnsureAdoptsOwnRole(t *testing.T) {
 	key := randKey()
 	mk := make([]byte, 32)
 	_, _ = rand.Read(mk)
-	m := dbschema.New(db, db.Pool.Config().ConnString(), mk, true)
+	m := dbschema.New(db, testutil.DSN(db), mk, true)
 	t.Cleanup(func() { _ = m.Drop(context.Background(), key) })
 	if _, err := m.Ensure(ctx, key); err != nil {
 		t.Fatal(err)
 	}
 	// A second manager (another node, or after a restart) adopts it.
-	m2 := dbschema.New(db, db.Pool.Config().ConnString(), mk, true)
+	m2 := dbschema.New(db, testutil.DSN(db), mk, true)
 	if st, err := m2.Ensure(ctx, key); err != nil || !st.RoleIsolated {
 		t.Fatalf("own role: %+v %v", st, err)
 	}
 	// A role created before the marker existed is recognised by the schema
 	// it owns.
-	if _, err := db.Pool.Exec(ctx, "COMMENT ON ROLE "+pgx.Identifier{"plg_" + key}.Sanitize()+" IS NULL"); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, "COMMENT ON ROLE "+pgx.Identifier{"plg_" + key}.Sanitize()+" IS NULL"); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := dbschema.New(db, db.Pool.Config().ConnString(), mk, true).Ensure(ctx, key); err != nil || !st.RoleIsolated {
+	if st, err := dbschema.New(db, testutil.DSN(db), mk, true).Ensure(ctx, key); err != nil || !st.RoleIsolated {
 		t.Fatalf("legacy own role: %+v %v", st, err)
 	}
 }
@@ -229,8 +229,8 @@ func TestEnsureConcurrentPlugins(t *testing.T) {
 		keys[i] = randKey()
 	}
 	nodes := []*dbschema.Manager{
-		dbschema.New(db, db.Pool.Config().ConnString(), mk, true),
-		dbschema.New(db, db.Pool.Config().ConnString(), mk, true),
+		dbschema.New(db, testutil.DSN(db), mk, true),
+		dbschema.New(db, testutil.DSN(db), mk, true),
 	}
 	t.Cleanup(func() {
 		for _, k := range keys {
@@ -255,7 +255,7 @@ func TestEnsureConcurrentPlugins(t *testing.T) {
 	}
 	for _, k := range keys {
 		var ok bool
-		if err := db.Pool.QueryRow(ctx, `SELECT has_function_privilege($1, 'public.plugin_migrations_applied(varchar)', 'EXECUTE')`,
+		if err := db.SQL.QueryRowContext(ctx, `SELECT has_function_privilege($1, 'public.plugin_migrations_applied(varchar)', 'EXECUTE')`,
 			dbschema.SchemaName(k)).Scan(&ok); err != nil || !ok {
 			t.Fatalf("role of %s cannot run the migration functions: %v %v", k, ok, err)
 		}

@@ -9,9 +9,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -40,7 +40,7 @@ func TestManifestBuiltinRoleKeysMatchBuiltinRoles(t *testing.T) {
 func permissionHolders(t *testing.T, db *store.DB, key string) []string {
 	t.Helper()
 	var roles []string
-	require.NoError(t, db.Pool.QueryRow(context.Background(), `
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `
 SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1`, key).Scan(&roles))
 	return roles
@@ -55,12 +55,12 @@ func TestSyncPluginGrantRoles(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
 	sync := func(defs ...core.PermissionDef) {
 		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, "guard", defs) }); err != nil {
+		if err := db.Tx(ctx, func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, "guard", defs) }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -137,7 +137,7 @@ func TestCanGrantToRoles(t *testing.T) {
 	crew := addUser(t, s, "crew@x.com", "crew")
 	lead := addUser(t, s, "lead@x.com", "lead")
 	pair := addUser(t, s, "pair@x.com", "pair", "held")
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := s.SetUserRoles(ctx, tx, 0, root, []string{RoleSuperAdmin, "small"})
 		return err
 	}); err != nil {
@@ -146,7 +146,7 @@ func TestCanGrantToRoles(t *testing.T) {
 	can := func(actor int64, roles ...string) string {
 		t.Helper()
 		var code string
-		_ = db.Tx(ctx, func(tx pgx.Tx) error {
+		_ = db.Tx(ctx, func(tx *gorm.DB) error {
 			if err := s.CanGrantToRoles(ctx, tx, actor, roles, manifest.RiskLow); err != nil {
 				code = core.AsError(err).Code
 			}
@@ -200,7 +200,7 @@ func TestSyncPluginSplitsGrowthAndModeration(t *testing.T) {
 	}
 	sync := func(key string, defs []core.PermissionDef) {
 		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, key, defs) }); err != nil {
+		if err := db.Tx(ctx, func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, key, defs) }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -217,7 +217,7 @@ func TestSyncPluginSplitsGrowthAndModeration(t *testing.T) {
 		return &m
 	}
 	for _, key := range []string{"growth", "moderation"} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -253,13 +253,13 @@ func TestGrantPluginPermission(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
 	const key = "plugin.guard:rules:export"
 	grant := func(key string, roles ...string) {
 		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error {
+		if err := db.Tx(ctx, func(tx *gorm.DB) error {
 			if err := s.SyncPlugin(ctx, tx, "guard", []core.PermissionDef{{Key: "rules:export"}}); err != nil {
 				return err
 			}
@@ -293,7 +293,7 @@ func TestGrantPluginPermission(t *testing.T) {
 		if declared {
 			defs = append(defs, flowRun)
 		}
-		return db.Tx(ctx, func(tx pgx.Tx) error {
+		return db.Tx(ctx, func(tx *gorm.DB) error {
 			if err := s.SyncPlugin(ctx, tx, "guard", defs); err != nil {
 				return err
 			}
@@ -321,11 +321,11 @@ func TestGrantPluginPermission(t *testing.T) {
 func syncer(t *testing.T, s *Service, key string) func(defs ...core.PermissionDef) error {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := s.db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"P"}', 'enabled')`, key); err != nil {
+	if _, err := s.db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"P"}', 'enabled')`, key); err != nil {
 		t.Fatal(err)
 	}
 	return func(defs ...core.PermissionDef) error {
-		return s.db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, key, defs) })
+		return s.db.Tx(ctx, func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, key, defs) })
 	}
 }
 
@@ -333,7 +333,7 @@ func syncer(t *testing.T, s *Service, key string) func(defs ...core.PermissionDe
 func scopedHolders(t *testing.T, db *store.DB, key string) []string {
 	t.Helper()
 	var out []string
-	require.NoError(t, db.Pool.QueryRow(context.Background(), `
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `
 SELECT COALESCE(array_agg(r.key || ':' || rs.scope ORDER BY r.key, rs.scope), '{}') FROM role_permission_scopes rs
 JOIN roles r ON r.id = rs.role_id JOIN permissions p ON p.id = rs.permission_id WHERE p.key = $1`, key).Scan(&out))
 	return out
@@ -343,7 +343,7 @@ JOIN roles r ON r.id = rs.role_id JOIN permissions p ON p.id = rs.permission_id 
 func auditCount(t *testing.T, db *store.DB, action, key, via string) int {
 	t.Helper()
 	var n int
-	require.NoError(t, db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs
 WHERE action = $1 AND detail->>'key' = $2 AND detail->>'via' = $3`, action, key, via).Scan(&n))
 	return n
 }
@@ -353,7 +353,7 @@ WHERE action = $1 AND detail->>'key' = $2 AND detail->>'via' = $3`, action, key,
 func statusAudits(t *testing.T, db *store.DB, action string) []string {
 	t.Helper()
 	var out []string
-	require.NoError(t, db.Pool.QueryRow(context.Background(), `SELECT COALESCE(array_agg(detail::text ORDER BY id), '{}') FROM audit_logs
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(array_agg(detail::text ORDER BY id), '{}') FROM audit_logs
 WHERE action = $1 AND target_type = 'plugin' AND target_id = 'guard' AND user_id IS NULL`, action).Scan(&out))
 	return out
 }
@@ -391,21 +391,21 @@ func TestSyncPluginRemovesAndRevives(t *testing.T) {
 	require.Len(t, removed, 1)
 	assert.JSONEq(t, `{"keys":["plugin.guard:b:read"],"holders":{"plugin.guard:b:read":["admin","operator"]}}`, removed[0])
 	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, b); return !ok })
-	if set, err := s.RolesPermissions(ctx, db.Pool, []string{RoleAdmin}); err != nil || set.Has(b) {
+	if set, err := s.RolesPermissions(ctx, db.Gorm, []string{RoleAdmin}); err != nil || set.Has(b) {
 		t.Fatalf("grant view counts a removed key: %v", err)
 	}
 
 	// Enabling or disabling the plugin never brings it back.
 	for _, active := range []bool{true, false} {
-		must(db.Tx(ctx, func(tx pgx.Tx) error { return s.SetPluginActive(ctx, tx, "guard", active) }))
+		must(db.Tx(ctx, func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", active) }))
 		if got := permissionStatus(t, db, b); got != "removed" {
 			t.Fatalf("SetPluginActive(%v): %s", active, got)
 		}
 	}
-	must(db.Tx(ctx, func(tx pgx.Tx) error { return s.SetPluginActive(ctx, tx, "guard", true) }))
+	must(db.Tx(ctx, func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", true) }))
 
 	// Revoked while removed: stays revoked; the revival grants nothing new.
-	if _, err := db.Pool.Exec(ctx, `DELETE FROM role_permissions rp USING roles r, permissions p
+	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM role_permissions rp USING roles r, permissions p
 WHERE r.id = rp.role_id AND p.id = rp.permission_id AND r.key = $1 AND p.key = $2`, RoleOperator, b); err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ WHERE r.id = rp.role_id AND p.id = rp.permission_id AND r.key = $1 AND p.key = $
 
 	// Revived while the plugin is not running: disabled, as a new key.
 	must(sync(core.PermissionDef{Key: "a:read"}))
-	if _, err := db.Pool.Exec(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'guard'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'guard'`); err != nil {
 		t.Fatal(err)
 	}
 	must(sync(core.PermissionDef{Key: "a:read"}, core.PermissionDef{Key: "b:read"}))
@@ -473,7 +473,7 @@ func TestSyncPluginScopedGrants(t *testing.T) {
 	var sensitive bool
 	var groupSort int
 	var requires []string
-	if err := db.Pool.QueryRow(ctx, `SELECT risk, sensitive, scope_type, scope->>'resource', group_key, group_sort, requires, defaults::text
+	if err := db.SQL.QueryRowContext(ctx, `SELECT risk, sensitive, scope_type, scope->>'resource', group_key, group_sort, requires, defaults::text
 FROM permissions WHERE key = $1`, key).Scan(&risk, &sensitive, &scopeType, &resource, &group, &groupSort, &requires, &defaults); err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestPluginGrantees(t *testing.T) {
 	addUser(t, s, "other@x.com", "other")
 	grantees := func(actor int64, roles ...string) (core.PluginGrantees, error) {
 		var out core.PluginGrantees
-		err := db.Tx(ctx, func(tx pgx.Tx) error {
+		err := db.Tx(ctx, func(tx *gorm.DB) error {
 			var err error
 			out, err = s.PluginGrantees(ctx, tx, actor, roles)
 			return err
@@ -625,7 +625,7 @@ func TestCanGrantToRolesCritical(t *testing.T) {
 		{"system", ctx, 0, ""},
 	} {
 		var reason string
-		_ = db.Tx(c.ctx, func(tx pgx.Tx) error {
+		_ = db.Tx(c.ctx, func(tx *gorm.DB) error {
 			if err := s.CanGrantToRoles(c.ctx, tx, c.actor, []string{RoleOperator}, manifest.RiskCritical); err != nil {
 				reason, _ = core.AsError(err).Details["reason"].(string)
 				if reason == "" {

@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -61,7 +60,7 @@ func withLoginMethod(ctx context.Context, method string) context.Context {
 // just used. A family from before these rows exists gets its row on the next
 // refresh, with what is known then. A new login also clears the user's rows
 // that have outlived any refresh token.
-func (s *Service) touchLoginSession(ctx context.Context, tx pgx.Tx, userID int64, familyID string, isNew bool) error {
+func (s *Service) touchLoginSession(ctx context.Context, tx *gorm.DB, userID int64, familyID string, isNew bool) error {
 	meta, _ := ctx.Value(sessionMetaKey{}).(sessionMeta)
 	g := store.G(ctx, tx)
 	if isNew {
@@ -90,7 +89,7 @@ func upsertLoginSession(db *gorm.DB, familyID string, userID int64, meta session
 
 // auditSuperuserLogin records a new login of a superuser in tx, with how it
 // started and from where, and logs a warning.
-func (s *Service) auditSuperuserLogin(ctx context.Context, tx pgx.Tx, userID int64) error {
+func (s *Service) auditSuperuserLogin(ctx context.Context, tx *gorm.DB, userID int64) error {
 	su, err := s.authz.IsSuperuser(ctx, tx, userID)
 	if err != nil || !su {
 		return err
@@ -108,7 +107,7 @@ func (s *Service) auditSuperuserLogin(ctx context.Context, tx pgx.Tx, userID int
 // currentFamily marks the caller's own.
 func (s *Service) Sessions(ctx context.Context, userID int64, currentFamily string) ([]LoginSession, error) {
 	var rows []sessionRow
-	if err := liveSessions(store.G(ctx, s.db.Pool), userID).Scan(&rows).Error; err != nil {
+	if err := liveSessions(store.G(ctx, s.db.Gorm), userID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]LoginSession, 0, len(rows))
@@ -145,7 +144,7 @@ func liveSessions(db *gorm.DB, userID int64) *gorm.DB {
 // token stops and its access token is rejected; the other sessions renew on
 // their next 401.
 func (s *Service) RevokeSession(ctx context.Context, userID int64, familyID string) error {
-	return s.changeSessions(ctx, userID, oneSession(familyID), func(tx pgx.Tx) error {
+	return s.changeSessions(ctx, userID, oneSession(familyID), func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		live, err := store.Exists(g, userFamily(g, userID, familyID))
 		if err != nil {
@@ -165,7 +164,7 @@ func userFamily(db *gorm.DB, userID int64, familyID string) *gorm.DB {
 
 // RevokeOtherSessions ends every login session of the user but keepFamily.
 func (s *Service) RevokeOtherSessions(ctx context.Context, userID int64, keepFamily string) error {
-	return s.changeSessions(ctx, userID, otherSessions(keepFamily), func(tx pgx.Tx) error {
+	return s.changeSessions(ctx, userID, otherSessions(keepFamily), func(tx *gorm.DB) error {
 		return audit.Audit(ctx, tx, userID, "user.session.revoke_others", "user", strconv.FormatInt(userID, 10), nil)
 	})
 }
@@ -185,7 +184,7 @@ func oneSession(family string) sessionsToEnd { return sessionsToEnd{only: family
 // login sessions `which` selects; a session whose refresh token survives
 // renews on its next 401. Callers lock the user row first and call
 // sessionsChanged after commit.
-func invalidateSessions(ctx context.Context, tx pgx.Tx, userID int64, which sessionsToEnd) (revoked int64, err error) {
+func invalidateSessions(ctx context.Context, tx *gorm.DB, userID int64, which sessionsToEnd) (revoked int64, err error) {
 	g := store.G(ctx, tx)
 	if err := bumpTokenVersion(g, userID).Error; err != nil {
 		return 0, err
@@ -226,8 +225,8 @@ func bumpTokenVersion(db *gorm.DB, userID int64) *gorm.DB {
 // holding the user row lock, then announces the change. It takes no authz
 // lock; a caller that needs one opens its own transaction in the authz ->
 // user lock order and calls invalidateSessions and sessionsChanged itself.
-func (s *Service) changeSessions(ctx context.Context, userID int64, which sessionsToEnd, fn func(tx pgx.Tx) error) error {
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+func (s *Service) changeSessions(ctx context.Context, userID int64, which sessionsToEnd, fn func(tx *gorm.DB) error) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockRefreshUser(ctx, tx, userID); err != nil {
 			return err
 		}
@@ -272,7 +271,7 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, displayName s
 	if utf8.RuneCountInString(displayName) > 100 {
 		return core.InvalidFields(core.FieldError{Field: "display_name", Code: "too_long", Message: "at most 100 characters"})
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := setLiveProfile(store.G(ctx, tx), userID, displayName).Error; err != nil {
 			return err
 		}

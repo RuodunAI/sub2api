@@ -7,9 +7,10 @@ import (
 	"maps"
 	"slices"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Common account controls (CONTRACTS §87): an account type declares per
@@ -263,7 +264,7 @@ func (p controlPlan) converge(in *input, current *row) {
 
 // convergeUsageLimit stores a locked usage limit on an account holding
 // another one, reporting whether it did.
-func (p controlPlan) convergeUsageLimit(ctx context.Context, q store.Querier, id int64) (bool, error) {
+func (p controlPlan) convergeUsageLimit(ctx context.Context, q *gorm.DB, id int64) (bool, error) {
 	if !p.usageLimitLocked || p.usageLimit == nil {
 		return false, nil
 	}

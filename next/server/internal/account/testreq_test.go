@@ -14,8 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/requestfailure"
 	"github.com/tidwall/gjson"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/requestfailure"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -188,7 +189,7 @@ func TestAccountTestPreservesErrorOriginAndCode(t *testing.T) {
 		// before the runtime (the schema permits any protocol).
 		id := e.mkRawAccount("ccgateway", "managed", "disabled", "unused", false)
 		pid := e.exec1(`INSERT INTO proxies(name,protocol,host,port) VALUES('bad','','proxy.example',3128) RETURNING id`)
-		if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET proxy_id=$2 WHERE id=$1`, id, pid); err != nil {
+		if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET proxy_id=$2 WHERE id=$1`, id, pid); err != nil {
 			t.Fatal(err)
 		}
 		_, raw := e.doRaw(e.uid, "POST", "/accounts/"+itoa(id)+"/test", nil)
@@ -255,7 +256,7 @@ func TestAccountTestPreservesManagedCLIErrorWithoutInference(t *testing.T) {
 				t.Fatal(err)
 			}
 			envelope, _ := json.Marshal(map[string]any{"cipher": enc})
-			if _, err := e.db.Pool.Exec(context.Background(), `UPDATE settings SET value=$1 WHERE key='ccgateway_remote'`, envelope); err != nil {
+			if _, err := e.db.SQL.ExecContext(context.Background(), `UPDATE settings SET value=$1 WHERE key='ccgateway_remote'`, envelope); err != nil {
 				t.Fatal(err)
 			}
 			e.plat.testURL = ccgateway.VirtualTestURL
@@ -375,7 +376,7 @@ func TestAccountTestFailureIsClassifiedButHarmless(t *testing.T) {
 
 	// The account is untouched: still active, no cooldown, no status event.
 	var status, reason string
-	if err := e.db.Pool.QueryRow(ctx,
+	if err := e.db.SQL.QueryRowContext(ctx,
 		`SELECT status, status_reason FROM accounts WHERE id = $1`, id).Scan(&status, &reason); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +453,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 		t.Fatalf("untested account: %s", lt.Raw)
 	}
 	var updated time.Time
-	if err := e.db.Pool.QueryRow(ctx, `SELECT updated_at FROM accounts WHERE id = $1`, id).Scan(&updated); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT updated_at FROM accounts WHERE id = $1`, id).Scan(&updated); err != nil {
 		t.Fatal(err)
 	}
 
@@ -483,7 +484,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 	}
 	var ok bool
 	var msg string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT last_test_ok, last_test_message FROM accounts WHERE id = $1`, bad).Scan(&ok, &msg); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT last_test_ok, last_test_message FROM accounts WHERE id = $1`, bad).Scan(&ok, &msg); err != nil {
 		t.Fatal(err)
 	}
 	if ok || len(msg) > maxLastTestMessage || !utf8.ValidString(msg) || msg != gjson.GetBytes(raw, "data.message").String() {
@@ -492,7 +493,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 	// A short classification reason must not be prepended either.
 	e.plat.classify = &pluginv1.ClassifyErrorResponse{Reason: "bad key"}
 	_, _ = e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", bad), nil)
-	if err := e.db.Pool.QueryRow(ctx, `SELECT last_test_message FROM accounts WHERE id = $1`, bad).Scan(&msg); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT last_test_message FROM accounts WHERE id = $1`, bad).Scan(&msg); err != nil {
 		t.Fatal(err)
 	}
 	if strings.HasPrefix(msg, "bad key: ") || !strings.Contains(msg, "invalid x-api-key") {
@@ -501,7 +502,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 	// Without a reason the upstream message is kept.
 	e.plat.classify = nil
 	_, _ = e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", bad), nil)
-	if err := e.db.Pool.QueryRow(ctx, `SELECT last_test_message FROM accounts WHERE id = $1`, bad).Scan(&msg); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT last_test_message FROM accounts WHERE id = $1`, bad).Scan(&msg); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(msg, "invalid x-api-key") {
@@ -509,7 +510,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 	}
 
 	var after time.Time
-	if err := e.db.Pool.QueryRow(ctx, `SELECT updated_at FROM accounts WHERE id = $1`, id).Scan(&after); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT updated_at FROM accounts WHERE id = $1`, id).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
 	if !after.Equal(updated) {

@@ -1,9 +1,8 @@
 // Package gormtest snapshots the SQL that GORM builds, without a database.
 //
-// GORM only builds statements in this codebase; pgx executes them (see the
-// GORM notes in package store). What a migrated repository sends to
-// PostgreSQL is therefore fully decided by the query builder, and a golden
-// file of its SQL and arguments is the review surface for a migration: the
+// Every statement of the core is built by GORM (see the GORM notes in
+// package store): what a repository sends to PostgreSQL is fully decided by
+// the query builder, and a golden file of its SQL and arguments is the review surface for a migration: the
 // diff shows exactly how a statement changed. Assert compares a query with
 // testdata/<test name>.golden; `go test -run <test> -update` rewrites it.
 package gormtest
@@ -33,12 +32,13 @@ var update = flag.Bool("update", false, "rewrite the SQL snapshots under testdat
 // flag, which it cannot declare again.
 func Updating() bool { return *update }
 
-// DB returns a DryRun session of store.G's instance without a Querier. The
-// snapshots therefore describe the statements store.G builds in production
-// (same configuration, callbacks and clause builders), and a statement that
-// escaped DryRun would fail with store.ErrNoQuerier, never reach a server.
+// DB returns a DryRun session of an instance configured as store.Open's
+// (store.DryRun). The snapshots therefore describe the statements built in
+// production (same configuration, callbacks and clause builders), and a
+// statement that escaped DryRun would fail with store.ErrOffline, never
+// reach a server.
 func DB() *gorm.DB {
-	return store.G(context.Background(), nil).Session(&gorm.Session{DryRun: true})
+	return store.DryRun().WithContext(context.Background())
 }
 
 // Build runs build against a DryRun session and returns the statement it

@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func auditIAMWaitLocks(t *testing.T, ctx context.Context, db *store.DB, want int) {
 	t.Helper()
 	for {
 		var n int
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&n); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n >= want {
@@ -44,13 +45,13 @@ func TestAuditRefreshReplayIncludesConcurrentDescendant(t *testing.T) {
 	ageRotation(t, s, parent.RefreshToken)
 	ctx, cancel := context.WithTimeout(background, 60*time.Second)
 	defer cancel()
-	barrier, err := s.db.Pool.Begin(ctx)
+	barrier, err := testutil.Begin(ctx, s.db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer barrier.Rollback(background)
+	defer barrier.Rollback()
 	var id int64
-	if err := barrier.QueryRow(ctx, `SELECT id FROM refresh_tokens WHERE token_hash=$1 FOR UPDATE`, hashToken(child.RefreshToken)).Scan(&id); err != nil {
+	if err := store.SQLTx(barrier).QueryRowContext(ctx, `SELECT id FROM refresh_tokens WHERE token_hash=$1 FOR UPDATE`, hashToken(child.RefreshToken)).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	type result struct {
@@ -62,7 +63,7 @@ func TestAuditRefreshReplayIncludesConcurrentDescendant(t *testing.T) {
 	auditIAMWaitLocks(t, ctx, s.db, 1)
 	go func() { p, err := s.Refresh(ctx, parent.RefreshToken); replay <- result{p, err} }()
 	auditIAMWaitLocks(t, ctx, s.db, 2)
-	if err := barrier.Commit(ctx); err != nil {
+	if err := barrier.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 	rotated, replayed := <-rotation, <-replay
@@ -73,7 +74,7 @@ func TestAuditRefreshReplayIncludesConcurrentDescendant(t *testing.T) {
 		t.Fatalf("replay: %+v", replayed)
 	}
 	var active int
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM refresh_tokens WHERE user_id=$1 AND revoked_at IS NULL`, parent.User.ID).Scan(&active); err != nil {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM refresh_tokens WHERE user_id=$1 AND revoked_at IS NULL`, parent.User.ID).Scan(&active); err != nil {
 		t.Fatal(err)
 	}
 	if active != 0 {

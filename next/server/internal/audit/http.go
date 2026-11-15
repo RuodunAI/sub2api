@@ -46,7 +46,7 @@ func RegisterRoutes(r *httpapi.Router, db *store.DB) {
 			f.And(x.cond, t)
 		}
 		page, size := httpapi.Pagination(c)
-		g := store.G(c.Request.Context(), db.Pool)
+		g := store.G(c.Request.Context(), db.Gorm)
 		var total int64
 		if err := logs(g, f).Count(&total).Error; err != nil {
 			httpapi.Fail(c, err)

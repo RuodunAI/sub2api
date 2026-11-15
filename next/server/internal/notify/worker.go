@@ -110,7 +110,7 @@ type queued struct {
 // send it again.
 func (s *Service) step(ctx context.Context) bool {
 	var row model.Notification
-	res := s.claim(store.G(ctx, s.db.Pool), &row)
+	res := s.claim(store.G(ctx, s.db.Gorm), &row)
 	if res.Error != nil || res.RowsAffected == 0 {
 		if res.Error != nil && ctx.Err() == nil {
 			slog.WarnContext(ctx, "notify: claim", "err", res.Error)
@@ -185,7 +185,7 @@ func (s *Service) deliver(ctx context.Context, q queued) error {
 func (s *Service) finish(ctx context.Context, q queued, err error) {
 	stopping := ctx.Err() != nil
 	ctx = context.WithoutCancel(ctx)
-	if exec := s.record(store.G(ctx, s.db.Pool), q, err, stopping).Error; exec != nil {
+	if exec := s.record(store.G(ctx, s.db.Gorm), q, err, stopping).Error; exec != nil {
 		slog.WarnContext(ctx, "notify: record outcome", "id", q.id, "err", exec)
 	}
 }
@@ -258,7 +258,7 @@ func (s *Service) PurgeTaskSpec() core.TaskSpec {
 // its node died mid-delivery), which step no longer claims, and deletes the
 // finished rows past the retention; it returns how many it deleted.
 func (s *Service) purge(ctx context.Context) (int64, error) {
-	db := store.G(ctx, s.db.Pool)
+	db := store.G(ctx, s.db.Gorm)
 	if err := db.Model(&model.Notification{}).Where("status = 'sending' AND attempts >= ? AND next_attempt_at <= now()", s.opts.MaxAttempts).
 		Updates(map[string]any{"status": "failed", "last_error": "the last attempt did not finish"}).Error; err != nil {
 		return 0, fmt.Errorf("fail expired rows: %w", err)

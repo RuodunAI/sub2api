@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -29,7 +30,7 @@ func TestTrustVerify(t *testing.T) {
 	}
 
 	// Official root key: publisher auto-registered as official.
-	v, err := ts.Verify(ctx, db.Pool, open(pkgtest.Build(pkgtest.Guard("guard", "0.1.0", "sub2api"), root)))
+	v, err := ts.Verify(ctx, db.Gorm, open(pkgtest.Build(pkgtest.Guard("guard", "0.1.0", "sub2api"), root)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,32 +38,32 @@ func TestTrustVerify(t *testing.T) {
 		t.Fatalf("verification = %+v", v)
 	}
 	// Second verification reuses the rows.
-	if _, err := ts.Verify(ctx, db.Pool, open(pkgtest.Build(pkgtest.Guard("guard", "0.1.1", "sub2api"), root))); err != nil {
+	if _, err := ts.Verify(ctx, db.Gorm, open(pkgtest.Build(pkgtest.Guard("guard", "0.1.1", "sub2api"), root))); err != nil {
 		t.Fatal(err)
 	}
 
 	// Unsigned rejected unless allowed.
 	unsigned := open(pkgtest.Build(pkgtest.Minimal("mini", "0.1.0", "dev"), pkgtest.Key{}))
-	if _, err := ts.Verify(ctx, db.Pool, unsigned); err == nil {
+	if _, err := ts.Verify(ctx, db.Gorm, unsigned); err == nil {
 		t.Fatal("unsigned should be rejected")
 	}
 	ts2, _ := NewTrustStore(nil, true)
-	if v, err := ts2.Verify(ctx, db.Pool, unsigned); err != nil || v.Trust != TrustUnsigned {
+	if v, err := ts2.Verify(ctx, db.Gorm, unsigned); err != nil || v.Trust != TrustUnsigned {
 		t.Fatalf("unsigned allowed: %v %+v", err, v)
 	}
 
 	// Registered community publisher with a key window.
 	var pubID int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO publishers (name, trust_level) VALUES ('acme', 'community') RETURNING id`).Scan(&pubID); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO publishers (name, trust_level) VALUES ('acme', 'community') RETURNING id`).Scan(&pubID); err != nil {
 		t.Fatal(err)
 	}
 	k := pkgtest.NewKey("acme-1")
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO publisher_keys (key_id, publisher_id, public_key, not_after) VALUES ($1, $2, $3, $4)`,
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO publisher_keys (key_id, publisher_id, public_key, not_after) VALUES ($1, $2, $3, $4)`,
 		k.ID, pubID, k.PubB64(), time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	acme := open(pkgtest.Build(pkgtest.Minimal("acme_tool", "1.0.0", "acme"), k))
-	v, err = ts.Verify(ctx, db.Pool, acme)
+	v, err = ts.Verify(ctx, db.Gorm, acme)
 	if err != nil || v.Trust != TrustCommunity || *v.PublisherID != pubID {
 		t.Fatalf("community: %v %+v", err, v)
 	}
@@ -70,37 +71,37 @@ func TestTrustVerify(t *testing.T) {
 	// Tampered package fails.
 	files := pkgtest.Sign(pkgtest.Files(pkgtest.Minimal("acme_tool", "1.0.0", "acme")), "acme", k)
 	files["runtimes/linux-amd64/plugin"] = []byte("evil")
-	if _, err := ts.Verify(ctx, db.Pool, open(pkgtest.Zip(files))); err == nil {
+	if _, err := ts.Verify(ctx, db.Gorm, open(pkgtest.Zip(files))); err == nil {
 		t.Fatal("tampered package accepted")
 	}
 
 	// Publisher mismatch.
 	other := pkgtest.Minimal("acme_tool", "1.0.0", "someone")
-	if _, err := ts.Verify(ctx, db.Pool, open(pkgtest.Zip(pkgtest.Sign(pkgtest.Files(other), "someone", k)))); err == nil {
+	if _, err := ts.Verify(ctx, db.Gorm, open(pkgtest.Zip(pkgtest.Sign(pkgtest.Files(other), "someone", k)))); err == nil {
 		t.Fatal("key of another publisher accepted")
 	}
 
 	// Expired key.
 	ts.SetClock(func() time.Time { return time.Now().Add(2 * time.Hour) })
-	if _, err := ts.Verify(ctx, db.Pool, acme); err == nil {
+	if _, err := ts.Verify(ctx, db.Gorm, acme); err == nil {
 		t.Fatal("expired key accepted")
 	}
 	ts.SetClock(time.Now)
 
 	// Revoked key.
-	if _, err := db.Pool.Exec(ctx, `UPDATE publisher_keys SET status = 'revoked' WHERE key_id = $1`, k.ID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE publisher_keys SET status = 'revoked' WHERE key_id = $1`, k.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err = ts.Verify(ctx, db.Pool, acme)
+	_, err = ts.Verify(ctx, db.Gorm, acme)
 	if core.AsError(err).Code != "permission_denied" {
 		t.Fatalf("revoked key: %v", err)
 	}
 
 	// Revoked official publisher.
-	if _, err := db.Pool.Exec(ctx, `UPDATE publishers SET status = 'revoked' WHERE name = 'sub2api'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE publishers SET status = 'revoked' WHERE name = 'sub2api'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.Verify(ctx, db.Pool, open(pkgtest.Build(pkgtest.Guard("guard", "0.1.2", "sub2api"), root))); err == nil {
+	if _, err := ts.Verify(ctx, db.Gorm, open(pkgtest.Build(pkgtest.Guard("guard", "0.1.2", "sub2api"), root))); err == nil {
 		t.Fatal("revoked official publisher accepted")
 	}
 }
@@ -116,7 +117,7 @@ func TestTrustOfficialConcurrentFirstRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	verify := func(q store.Querier, version string) (*Verification, error) {
+	verify := func(q *gorm.DB, version string) (*Verification, error) {
 		p, err := Open(pkgtest.Build(pkgtest.Guard("guard", version, "sub2api"), root), Limits{})
 		if err != nil {
 			t.Fatal(err)
@@ -124,11 +125,11 @@ func TestTrustOfficialConcurrentFirstRegistration(t *testing.T) {
 		return ts.Verify(ctx, q, p)
 	}
 
-	first, err := db.Pool.Begin(ctx)
+	first, err := testutil.Begin(ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Rollback(ctx)
+	defer first.Rollback()
 	a, err := verify(first, "0.1.0")
 	if err != nil {
 		t.Fatal(err)
@@ -140,20 +141,20 @@ func TestTrustOfficialConcurrentFirstRegistration(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		second, err := db.Pool.Begin(ctx)
+		second, err := testutil.Begin(ctx, db)
 		if err != nil {
 			done <- result{err: err}
 			return
 		}
-		defer second.Rollback(ctx)
+		defer second.Rollback()
 		v, err := verify(second, "0.1.1")
 		if err == nil {
-			err = second.Commit(ctx)
+			err = second.Commit().Error
 		}
 		done <- result{v, err}
 	}()
 	time.Sleep(200 * time.Millisecond) // let the second verification reach the insert and wait on the first
-	if err := first.Commit(ctx); err != nil {
+	if err := first.Commit().Error; err != nil {
 		t.Fatal(err)
 	}
 	b := <-done
@@ -179,11 +180,11 @@ func TestTrustSkipSignatureCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.Verify(ctx, db.Pool, p); err == nil {
+	if _, err := ts.Verify(ctx, db.Gorm, p); err == nil {
 		t.Fatal("mismatched signature accepted with verification on")
 	}
 	ts.SetVerifySignatures(false)
-	if v, err := ts.Verify(ctx, db.Pool, p); err != nil || v.Trust != TrustOfficial {
+	if v, err := ts.Verify(ctx, db.Gorm, p); err != nil || v.Trust != TrustOfficial {
 		t.Fatalf("verification off: %v %+v", err, v)
 	}
 }

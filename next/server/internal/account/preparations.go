@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -80,7 +79,7 @@ func (s *Service) createPreparation(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	if err := checkRefs(ctx, s.d.DB.Pool, in.ProxyID, s.proxyRefs(ctx, perm.AccountCreate)); err != nil {
+	if err := checkRefs(ctx, s.d.DB.Gorm, in.ProxyID, s.proxyRefs(ctx, perm.AccountCreate)); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -112,7 +111,7 @@ func (s *Service) createPreparation(c *gin.Context) {
 		limit = 0 // no limit
 	}
 	var fresh bool // this request inserted the row
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var matches, active bool
 		// The count and the insert run under the user's lock. A repeated
 		// idempotency key is not a new preparation and passes.
@@ -183,7 +182,7 @@ func (s *Service) createPreparation(c *gin.Context) {
 func (s *Service) loadPreparation(ctx context.Context, key string) (core.AccountPreparation, error) {
 	var p model.AccountPreparation
 	uid, _ := core.UserID(ctx)
-	res := touchPreparation(store.G(ctx, s.d.DB.Pool), &p, key, uid)
+	res := touchPreparation(store.G(ctx, s.d.DB.Gorm), &p, key, uid)
 	if res.Error == nil && res.RowsAffected == 0 {
 		return core.AccountPreparation{}, core.ErrNotFound
 	}
@@ -260,7 +259,7 @@ func (s *Service) preparationAction(c *gin.Context) {
 	}
 	if !read {
 		uid, _ := core.UserID(ctx)
-		if err := audit.Audit(ctx, s.d.DB.Pool, uid, "account.preparation."+action, "account_preparation", p.Key, nil); err != nil {
+		if err := audit.Audit(ctx, s.d.DB.Gorm, uid, "account.preparation."+action, "account_preparation", p.Key, nil); err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
@@ -288,7 +287,7 @@ func (s *Service) updatePreparation(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	if err := checkRefs(ctx, s.d.DB.Pool, in.ProxyID, s.proxyRefs(ctx, perm.AccountCreate)); err != nil {
+	if err := checkRefs(ctx, s.d.DB.Gorm, in.ProxyID, s.proxyRefs(ctx, perm.AccountCreate)); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -302,7 +301,7 @@ func (s *Service) updatePreparation(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		res := openPreparation(store.G(ctx, tx).Model(&model.AccountPreparation{}), p.Key, p.CreatedBy).
 			Updates(map[string]any{"proxy_id": p.ProxyID, "last_seen_at": gorm.Expr("now()")})
 		if res.Error != nil {
@@ -330,7 +329,7 @@ func (s *Service) cancelPreparation(c *gin.Context) {
 	ctx := audit.Context(c)
 	uid, _ := core.UserID(ctx)
 	var p model.AccountPreparation
-	err := store.G(ctx, s.d.DB.Pool).Select(preparationColumns).
+	err := store.G(ctx, s.d.DB.Gorm).Select(preparationColumns).
 		Where("key = ? AND created_by = ? AND account_id IS NULL AND state IN ('pending','ready','cancelling')", c.Param("key"), uid).
 		Take(&p).Error
 	if store.IsNoRows(err) {
@@ -400,7 +399,7 @@ func (s *Service) disposePreparation(ctx context.Context, p core.AccountPreparat
 		}
 	}
 	var was string
-	g := store.G(ctx, s.d.DB.Pool)
+	g := store.G(ctx, s.d.DB.Gorm)
 	err = g.Raw(`UPDATE account_preparations ap SET state='cancelling'
 		FROM (SELECT key, state FROM account_preparations WHERE key=? FOR UPDATE) old
 		WHERE ap.key=old.key AND ap.account_id IS NULL
@@ -440,7 +439,7 @@ func (s *Service) disposePreparation(ctx context.Context, p core.AccountPreparat
 	if reason == disposeExpired {
 		actor = 0
 	}
-	return audit.Audit(ctx, s.d.DB.Pool, actor, "account.preparation.cancel", "account_preparation", p.Key, map[string]any{"reason": reason})
+	return audit.Audit(ctx, s.d.DB.Gorm, actor, "account.preparation.cancel", "account_preparation", p.Key, map[string]any{"reason": reason})
 }
 
 // checkPreparationForCreate checks the preparation_key of POST /accounts and
@@ -465,7 +464,7 @@ func (s *Service) checkPreparationForCreate(ctx context.Context, bt core.Account
 		return nil, none, core.ErrInvalidArgument.WithMessage("Preparation does not match this account")
 	}
 	var equal bool
-	if err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT ?::jsonb=?::jsonb`, p.Settings, settings).Row().Scan(&equal); err != nil {
+	if err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT ?::jsonb=?::jsonb`, p.Settings, settings).Row().Scan(&equal); err != nil {
 		return nil, none, err
 	}
 	if !equal {
@@ -485,7 +484,7 @@ func (s *Service) checkPreparationForCreate(ctx context.Context, bt core.Account
 	return &p, facts, nil
 }
 
-func (s *Service) adoptPreparation(ctx context.Context, tx pgx.Tx, p core.AccountPreparation, id int64) error {
+func (s *Service) adoptPreparation(ctx context.Context, tx *gorm.DB, p core.AccountPreparation, id int64) error {
 	res := openPreparation(store.G(ctx, tx).Model(&model.AccountPreparation{}), p.Key, p.CreatedBy).
 		Where("proxy_id IS NOT DISTINCT FROM ?::bigint AND settings = ?::jsonb", p.ProxyID, p.Settings).
 		Updates(map[string]any{"state": "adopted", "account_id": id})

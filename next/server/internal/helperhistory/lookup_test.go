@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -23,7 +23,7 @@ func TestHelperHistoryDBUnknownLookupDoesNotWaitForWriter(t *testing.T) {
 	errCh := make(chan error, 1)
 	acquired, release := make(chan struct{}), make(chan struct{})
 	go func() {
-		errCh <- s.db.Tx(ctx, func(tx pgx.Tx) error {
+		errCh <- s.db.Tx(ctx, func(tx *gorm.DB) error {
 			if e := lock(ctx, tx, r.Owner); e != nil {
 				return e
 			}
@@ -105,7 +105,7 @@ func TestHelperHistoryDBLookupExpiryAndCorruptionStayKnown(t *testing.T) {
 	ctx := context.Background()
 	prefix := strings.Repeat("d", 64)
 	record := finish(t, s, r, prefix, "fixture")
-	if _, e := s.db.Pool.Exec(ctx, `UPDATE provider_helper_records SET payload=decode('00','hex') WHERE receipt=$1`, record.Receipt); e != nil {
+	if _, e := s.db.SQL.ExecContext(ctx, `UPDATE provider_helper_records SET payload=decode('00','hex') WHERE receipt=$1`, record.Receipt); e != nil {
 		t.Fatal(e)
 	}
 	v, e := s.Lookup(ctx, r.Owner, []string{prefix})

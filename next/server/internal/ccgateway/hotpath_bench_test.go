@@ -21,7 +21,7 @@ func BenchmarkHotSharedAccountType(b *testing.B) {
 	cipher, _ := secret.New(make([]byte, 32))
 	s := New(db, cipher)
 	var id int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id); err != nil {
 		b.Fatal(err)
 	}
 	for _, bc := range []struct {
@@ -30,7 +30,7 @@ func BenchmarkHotSharedAccountType(b *testing.B) {
 	}{
 		{"pgx", func() (string, error) {
 			var kind string
-			err := db.Pool.QueryRow(ctx, "SELECT type FROM accounts WHERE id=$1 AND plugin_key='ccgateway'", id).Scan(&kind)
+			err := db.SQL.QueryRowContext(ctx, "SELECT type FROM accounts WHERE id=$1 AND plugin_key='ccgateway'", id).Scan(&kind)
 			return kind, err
 		}},
 		{"gorm", func() (string, error) { return s.sharedAccountType(ctx, id) }},

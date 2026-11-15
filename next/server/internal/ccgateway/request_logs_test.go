@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"github.com/gin-gonic/gin"
 )
 
 const leveledWorkerState = `{"enabled":true,"level":"full","full_until":"2026-10-23T15:04:05+08:00","levels":["off","summary","full"],` +
@@ -37,10 +38,10 @@ func requestLogsService(t *testing.T, handler http.HandlerFunc) (*Service, *stor
 	raw, _ := json.Marshal(Config{Mode: "local", AccountRuntimes: true, AdminKey: "controller-secret"})
 	encrypted, _ := cipher.Encrypt(raw, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, e := db.Pool.Exec(context.Background(), `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
+	if _, e := db.SQL.ExecContext(context.Background(), `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := db.Pool.Exec(context.Background(), `INSERT INTO accounts(id,name,plugin_key,type,credentials_enc) VALUES(25,'ccg-25','ccgateway','managed',''::bytea)`); e != nil {
+	if _, e := db.SQL.ExecContext(context.Background(), `INSERT INTO accounts(id,name,plugin_key,type,credentials_enc) VALUES(25,'ccg-25','ccgateway','managed',''::bytea)`); e != nil {
 		t.Fatal(e)
 	}
 	return s, db
@@ -151,7 +152,7 @@ func TestRequestLogsLevelsSavedInTheCoreAndAudited(t *testing.T) {
 	var level string
 	var stored *time.Time
 	var by *int64
-	if err := db.Pool.QueryRow(ctx, `SELECT level, full_until, updated_by FROM ccgateway_account_request_logs WHERE account_id=25`).Scan(&level, &stored, &by); err != nil ||
+	if err := db.SQL.QueryRowContext(ctx, `SELECT level, full_until, updated_by FROM ccgateway_account_request_logs WHERE account_id=25`).Scan(&level, &stored, &by); err != nil ||
 		level != "full" || stored == nil || !stored.Equal(until) {
 		t.Fatalf("stored %s %v %v", level, stored, err)
 	}
@@ -160,7 +161,7 @@ func TestRequestLogsLevelsSavedInTheCoreAndAudited(t *testing.T) {
 		t.Fatalf("PUT follow: %+v", got.Data)
 	}
 	var rows int
-	_ = db.Pool.QueryRow(ctx, `SELECT count(*) FROM ccgateway_account_request_logs`).Scan(&rows)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM ccgateway_account_request_logs`).Scan(&rows)
 	if rows != 0 {
 		t.Fatal("follow kept the row")
 	}
@@ -187,7 +188,7 @@ func TestRequestLogsLevelsSavedInTheCoreAndAudited(t *testing.T) {
 	count := func(where string) int {
 		t.Helper()
 		var n int
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='ccgateway.account.25.request-logs' AND `+where).Scan(&n); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action='ccgateway.account.25.request-logs' AND `+where).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -205,7 +206,7 @@ func TestRequestLogsLevelsSavedInTheCoreAndAudited(t *testing.T) {
 		t.Fatalf("clear audit rows: %d", n)
 	}
 	var n int
-	_ = db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE detail::text LIKE '%must-not-leak%'`).Scan(&n)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE detail::text LIKE '%must-not-leak%'`).Scan(&n)
 	if n != 0 {
 		t.Fatal("Worker data leaked into the audit log")
 	}
@@ -237,11 +238,11 @@ func TestRequestLogsWithoutWorker(t *testing.T) {
 		t.Fatalf("deleted account: %d", w.Code)
 	}
 	// The row goes with the account (ON DELETE CASCADE).
-	if _, err := db.Pool.Exec(context.Background(), `DELETE FROM accounts WHERE id=25`); err != nil {
+	if _, err := db.SQL.ExecContext(context.Background(), `DELETE FROM accounts WHERE id=25`); err != nil {
 		t.Fatal(err)
 	}
 	var n int
-	_ = db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM ccgateway_account_request_logs`).Scan(&n)
+	_ = db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM ccgateway_account_request_logs`).Scan(&n)
 	if n != 0 {
 		t.Fatal("row kept after the account was deleted")
 	}

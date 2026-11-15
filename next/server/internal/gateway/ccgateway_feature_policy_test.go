@@ -9,10 +9,12 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
-	"github.com/jackc/pgx/v5"
-	"github.com/stretchr/testify/require"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // This exercises HTTP authentication -> scheduler -> dispatch -> managed
@@ -51,7 +53,7 @@ func TestCCGatewayAuthenticatedKeyGroupReachesWorkerAndFollowClearsAll(t *testin
 	encrypted, err := svc.Cipher.Encrypt(raw, []byte("system:ccgateway:v1"))
 	require.NoError(t, err)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	_, err = svc.DB.Pool.Exec(ctx, "UPDATE settings SET value=$1 WHERE key='ccgateway_remote'", envelope)
+	_, err = svc.DB.SQL.ExecContext(ctx, "UPDATE settings SET value=$1 WHERE key='ccgateway_remote'", envelope)
 	require.NoError(t, err)
 	ap := ccgateway.AccountFeaturePolicy{Mode: "custom", Overrides: ccgateway.FeatureOverrides{
 		RelayMode:              str("build"),
@@ -59,9 +61,9 @@ func TestCCGatewayAuthenticatedKeyGroupReachesWorkerAndFollowClearsAll(t *testin
 		BuildBillingSources:    features.BuildBillingSources{"cc_entrypoint": "worker"},
 	}}
 	save := func(p ccgateway.AccountFeaturePolicy) error {
-		return svc.DB.Tx(ctx, func(tx pgx.Tx) error {
+		return svc.DB.Tx(ctx, func(tx *gorm.DB) error {
 			var id int64
-			if err := tx.QueryRow(ctx, "SELECT id FROM accounts WHERE id=1 FOR UPDATE").Scan(&id); err != nil {
+			if err := store.SQLTx(tx).QueryRowContext(ctx, "SELECT id FROM accounts WHERE id=1 FOR UPDATE").Scan(&id); err != nil {
 				return err
 			}
 			return ccgateway.SaveAccountFeaturePolicyTx(ctx, tx, 1, p)
@@ -69,9 +71,9 @@ func TestCCGatewayAuthenticatedKeyGroupReachesWorkerAndFollowClearsAll(t *testin
 	}
 	require.NoError(t, save(ap))
 	for gid := int64(3); gid <= 8; gid++ {
-		_, err = svc.DB.Pool.Exec(ctx, "INSERT INTO groups(id,name) VALUES($1,$2)", gid, "feature-group-"+strconv.FormatInt(gid, 10))
+		_, err = svc.DB.SQL.ExecContext(ctx, "INSERT INTO groups(id,name) VALUES($1,$2)", gid, "feature-group-"+strconv.FormatInt(gid, 10))
 		require.NoError(t, err)
-		_, err = svc.DB.Pool.Exec(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES(1,$1)", gid)
+		_, err = svc.DB.SQL.ExecContext(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES(1,$1)", gid)
 		require.NoError(t, err)
 		principal := *e.auth.keys[testKey]
 		principal.Group.ID = gid
@@ -131,7 +133,7 @@ func TestCCGatewayAuthenticatedKeyGroupReachesWorkerAndFollowClearsAll(t *testin
 	ap.Revision = 1
 	require.NoError(t, save(ap))
 	svc.AccountChanged(1)
-	stored, err := ccgateway.LoadAccountFeaturePolicy(ctx, svc.DB.Pool, 1)
+	stored, err := ccgateway.LoadAccountFeaturePolicy(ctx, svc.DB.Gorm, 1)
 	require.NoError(t, err)
 	require.Equal(t, ccgateway.FeatureOverrides{}, stored.Overrides)
 	require.EqualValues(t, 2, stored.Revision)

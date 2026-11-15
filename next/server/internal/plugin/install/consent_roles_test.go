@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Handing a version's new permissions to roles the request names needs
@@ -32,7 +33,7 @@ func TestConsentRoleGrantRights(t *testing.T) {
 	all := manifest.RoleDefault{Unscoped: true}
 	exempt := newPerm("rules:exempt", manifest.RiskCritical)
 	upload(guardWith("0.1.0", exempt))
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO roles (key, name, builtin) VALUES ('auditor', '{}', false), ('ops', '{}', false) ON CONFLICT (key) DO NOTHING`)
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name, builtin) VALUES ('auditor', '{}', false), ('ops', '{}', false) ON CONFLICT (key) DO NOTHING`)
 	require.NoError(t, err)
 	named := ConsentRequest{Grants: explicitGuardGrants(), NewPermissionRoles: map[string]map[string]manifest.RoleDefault{
 		"rules:read": {"auditor": all}, "stats:read": {"auditor": all, "ops": all}}}
@@ -51,7 +52,7 @@ func TestConsentRoleGrantRights(t *testing.T) {
 
 	// A critical permission named by a non-superuser: the catalog's
 	// refusal names the permission.
-	e.perms.canGrant = func(_ context.Context, _ pgx.Tx, _ int64, _ []string, risk string) error {
+	e.perms.canGrant = func(_ context.Context, _ *gorm.DB, _ int64, _ []string, risk string) error {
 		if risk == manifest.RiskCritical {
 			return core.ErrPermissionDenied.WithDetails(map[string]any{"reason": "critical", "superuser": true})
 		}
@@ -103,11 +104,11 @@ func TestConsentRenameInheritsOnly(t *testing.T) {
 		require.NoError(t, err)
 		want := map[string][]string{"user": {"own"}}
 		if old != "" {
-			_, err := e.db.Pool.Exec(ctx, `
+			_, err := e.db.SQL.ExecContext(ctx, `
 INSERT INTO permissions (key, module, label, source, plugin_key, status, scope_type)
 VALUES ('plugin.guard:rules:view', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', $1)`, old)
 			require.NoError(t, err)
-			_, err = e.db.Pool.Exec(ctx, `
+			_, err = e.db.SQL.ExecContext(ctx, `
 INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:rules:view';
 INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'flow/3' FROM roles r, permissions p WHERE r.key = 'supplier' AND p.key = 'plugin.guard:rules:view'`)
 			require.NoError(t, err)
@@ -136,7 +137,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 // critical inherits, withheld when the consenter is no superuser.
 func TestConsentInheritRules(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
-	_, err := e.db.Pool.Exec(ctx, `
+	_, err := e.db.SQL.ExecContext(ctx, `
 INSERT INTO permissions (key, module, label, source, plugin_key, status, risk, scope_type)
 VALUES ('plugin.guard:old:exempt', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'critical', ''),
        ('plugin.guard:old:low', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', ''),
@@ -164,7 +165,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:strict").GrantRoles)
 	assert.Equal(t, map[string][]string{"auditor": {""}}, lastDef(t, e, "plugin.guard:flow:edit").GrantRoles)
 	var skipped string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail->>'inherit_skipped' FROM audit_logs WHERE action = $1 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&skipped))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT detail->>'inherit_skipped' FROM audit_logs WHERE action = $1 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&skipped))
 	assert.JSONEq(t, `[{"permission":"plugin.guard:rules:strict","from":"plugin.guard:old:low","reason":"risk"},
 		{"permission":"plugin.guard:flow:edit","from":"plugin.guard:old:flow","reason":"scope_type"}]`, skipped)
 }
@@ -176,7 +177,7 @@ func realCatalog(t *testing.T, e *env, ctx context.Context) {
 	t.Helper()
 	cat := authz.New(authz.Deps{DB: e.db})
 	require.NoError(t, cat.Start(ctx))
-	require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
+	require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := cat.SetUserRoles(ctx, tx, 0, e.admin, []string{authz.RoleSuperAdmin})
 		return err
 	}))
@@ -188,7 +189,7 @@ func realCatalog(t *testing.T, e *env, ctx context.Context) {
 func scopeGrants(t *testing.T, e *env, ctx context.Context, role, local string) []string {
 	t.Helper()
 	var out []string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(rs.scope ORDER BY rs.scope), '{}') FROM role_permission_scopes rs
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(rs.scope ORDER BY rs.scope), '{}') FROM role_permission_scopes rs
 JOIN roles r ON r.id = rs.role_id JOIN permissions p ON p.id = rs.permission_id
 WHERE r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local).Scan(&out))
 	return out
@@ -201,7 +202,7 @@ WHERE r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local).Scan(&out))
 func TestConsentInheritsOnlyScopesTheNewKeyTakes(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
 	realCatalog(t, e, ctx)
-	_, err := e.db.Pool.Exec(ctx, `
+	_, err := e.db.SQL.ExecContext(ctx, `
 INSERT INTO permissions (key, module, label, source, plugin_key, status, risk, scope_type, scope)
 VALUES ('plugin.guard:old:flow', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', 'plugin:flow', '{"resource":"flow","own":true}'),
        ('plugin.guard:old:kind', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', 'plugin:value',
@@ -226,7 +227,7 @@ WHERE r.key = 'auditor' AND p.key = v.key`)
 	assert.Equal(t, []string{"flow/3"}, scopeGrants(t, e, ctx, "auditor", "flow:edit"))
 	assert.Equal(t, []string{"value/a"}, scopeGrants(t, e, ctx, "auditor", "kind:edit"))
 	var skipped string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail->>'inherit_skipped' FROM audit_logs WHERE action = $1 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&skipped))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT detail->>'inherit_skipped' FROM audit_logs WHERE action = $1 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&skipped))
 	assert.JSONEq(t, `[{"permission":"plugin.guard:flow:edit","from":"plugin.guard:old:flow","reason":"scope"},
 		{"permission":"plugin.guard:kind:edit","from":"plugin.guard:old:kind","reason":"scope"}]`, skipped)
 }
@@ -252,8 +253,8 @@ func TestStagedUpgradePrunesScopesAtActivation(t *testing.T) {
 	}
 	activate := func(m *manifest.Manifest) {
 		t.Helper()
-		require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
+		require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) error {
+			if _, err := store.SQLTx(tx).ExecContext(ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
 				return err
 			}
 			return e.svc.d.Defaults.ApplyDefaults(ctx, tx, m, nil)
@@ -262,13 +263,13 @@ func TestStagedUpgradePrunesScopesAtActivation(t *testing.T) {
 	declaresOwn := func() bool {
 		t.Helper()
 		var own bool
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT COALESCE((scope->>'own')::boolean, false) FROM permissions WHERE key = 'plugin.guard:flow:manage'`).Scan(&own))
+		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT COALESCE((scope->>'own')::boolean, false) FROM permissions WHERE key = 'plugin.guard:flow:manage'`).Scan(&own))
 		return own
 	}
 	v1, v2, v3 := flowAt("0.1.1", true), flowAt("0.1.2", false), flowAt("0.1.3", true)
 	upload(v1)
 	activate(v1)
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
 SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:manage'`)
 	require.NoError(t, err)
 
@@ -291,10 +292,10 @@ SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'operator' AN
 // name still waits for review (D2).
 func TestConsentOverrideDecidesInheritance(t *testing.T) {
 	e, ctx := roleGrantsEnv(t) // auditor holds the removed rules:old
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
 WHERE r.key IN ('operator', 'supplier') AND p.key = 'plugin.guard:rules:old'`)
 	require.NoError(t, err)
-	e.perms.grantees = func(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+	e.perms.grantees = func(context.Context, *gorm.DB, int64, []string) (core.PluginGrantees, error) {
 		return core.PluginGrantees{Denied: map[string]string{"supplier": core.GrantDenyHeld}}, nil
 	}
 	edit := newPerm("rules:edit", "")
@@ -360,7 +361,7 @@ func (g guardRollout) upload(m *manifest.Manifest) *Review {
 // activate makes m the running version, as the rollout's commit does.
 func (g guardRollout) activate(m *manifest.Manifest) {
 	g.t.Helper()
-	require.NoError(g.t, g.e.db.Tx(g.ctx, func(tx pgx.Tx) error {
+	require.NoError(g.t, g.e.db.Tx(g.ctx, func(tx *gorm.DB) error {
 		if _, err := tx.Exec(g.ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
 			return err
 		}
@@ -374,7 +375,7 @@ func (g guardRollout) activate(m *manifest.Manifest) {
 // setActive disables or enables the running version, as the rollout does.
 func (g guardRollout) setActive(active bool) {
 	g.t.Helper()
-	require.NoError(g.t, g.e.db.Tx(g.ctx, func(tx pgx.Tx) error {
+	require.NoError(g.t, g.e.db.Tx(g.ctx, func(tx *gorm.DB) error {
 		return g.e.svc.d.Permissions.SetPluginActive(g.ctx, tx, "guard", active)
 	}))
 }
@@ -383,14 +384,14 @@ func (g guardRollout) setActive(active bool) {
 func (g guardRollout) state(local string) [2]string {
 	g.t.Helper()
 	var status, risk string
-	require.NoError(g.t, g.e.db.Pool.QueryRow(g.ctx, `SELECT status, risk FROM permissions WHERE key = $1`, "plugin.guard:"+local).Scan(&status, &risk))
+	require.NoError(g.t, g.e.db.SQL.QueryRowContext(g.ctx, `SELECT status, risk FROM permissions WHERE key = $1`, "plugin.guard:"+local).Scan(&status, &risk))
 	return [2]string{status, risk}
 }
 
 // grant gives role every row of the guard permission local.
 func (g guardRollout) grant(role, local string) {
 	g.t.Helper()
-	_, err := g.e.db.Pool.Exec(g.ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
+	_, err := g.e.db.SQL.ExecContext(g.ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
 WHERE r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local)
 	require.NoError(g.t, err)
 }
@@ -398,7 +399,7 @@ WHERE r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local)
 // revoke takes every row of the guard permission local from role.
 func (g guardRollout) revoke(role, local string) {
 	g.t.Helper()
-	_, err := g.e.db.Pool.Exec(g.ctx, `DELETE FROM role_permissions rp USING permissions p, roles r
+	_, err := g.e.db.SQL.ExecContext(g.ctx, `DELETE FROM role_permissions rp USING permissions p, roles r
 WHERE p.id = rp.permission_id AND r.id = rp.role_id AND r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local)
 	require.NoError(g.t, err)
 }
@@ -406,7 +407,7 @@ WHERE p.id = rp.permission_id AND r.id = rp.role_id AND r.key = $1 AND p.key = $
 // pending is the role grants guard has to review, as viewer sees them.
 func (g guardRollout) pending(viewer int64) []RoleGrant {
 	g.t.Helper()
-	gs, err := g.e.svc.RoleGrantsToReview(g.ctx, g.e.db.Pool, "guard", viewer)
+	gs, err := g.e.svc.RoleGrantsToReview(g.ctx, g.e.db.Gorm, "guard", viewer)
 	require.NoError(g.t, err)
 	return gs
 }
@@ -458,7 +459,7 @@ func TestStagedKeysOfAVersionNeverActivated(t *testing.T) {
 	v1 := guardWith("0.1.1", read, old)
 	g.upload(v1)
 	g.activate(v1)
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'own'
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'own'
 FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:old'`)
 	require.NoError(t, err)
 	v2 := guardWith("0.1.2", read)
@@ -487,7 +488,7 @@ FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:f
 	assert.Empty(t, row.Cells["admin"].Grant)
 	assert.Equal(t, []string{"operator"}, permissionRoles(t, e, ctx, "plugin.guard:flow:new"), "v3's grant to admin went with its key")
 	var discarded string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail::text FROM audit_logs WHERE action = 'authz.sync.discard'`).Scan(&discarded))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT detail::text FROM audit_logs WHERE action = 'authz.sync.discard'`).Scan(&discarded))
 	assert.JSONEq(t, `{"keys": ["plugin.guard:flow:new"], "holders": {"plugin.guard:flow:new": ["admin"]}}`, discarded)
 	g.activate(v4)
 	assert.Equal(t, [2]string{"active", "low"}, g.state("flow:new"))
@@ -513,7 +514,7 @@ func TestActivationListsLateHoldersOfRenamedKeys(t *testing.T) {
 	v2 := guardWith("0.1.2", list)
 	g.upload(v2)
 	assert.Equal(t, []string{"operator"}, permissionRoles(t, e, ctx, "plugin.guard:rules:list"), "low to operator: carried over")
-	planned, _, err := consentDecisions(ctx, e.db.Pool, "guard", "0.1.2")
+	planned, _, err := consentDecisions(ctx, e.db.Gorm, "guard", "0.1.2")
 	require.NoError(t, err)
 	assert.Equal(t, map[[3]string]bool{{"plugin.guard:rules:list", "operator", ""}: true}, planned, "an automatic consent's plan reads back")
 
@@ -538,7 +539,7 @@ func TestActivationListsLateHoldersOfRenamedKeys(t *testing.T) {
 func permissionRoles(t *testing.T, e *env, ctx context.Context, key string) []string {
 	t.Helper()
 	var out []string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM role_permissions rp
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM role_permissions rp
 JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1`, key).Scan(&out))
 	return out
 }

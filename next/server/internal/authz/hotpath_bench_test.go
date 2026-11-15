@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -25,10 +25,10 @@ func BenchmarkHotAuthz(b *testing.B) {
 		b.Fatal(err)
 	}
 	var uid int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ('bench@test.invalid', 'x') RETURNING id`).Scan(&uid); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, password_hash) VALUES ('bench@test.invalid', 'x') RETURNING id`).Scan(&uid); err != nil {
 		b.Fatal(err)
 	}
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := s.SetUserRoles(ctx, tx, 0, uid, []string{RoleAdmin})
 		return err
 	}); err != nil {

@@ -6,12 +6,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/remotedocker"
-	"github.com/gin-gonic/gin"
 )
 
 // detached returns a context that outlives the HTTP request (the caller or a
@@ -98,7 +99,7 @@ func (s *Service) recordDetail(c *gin.Context, action string, detail any) {
 	ctx, cancel := detached(c, 5*time.Second)
 	defer cancel()
 	uid, _ := core.UserID(ctx)
-	if e := audit.Audit(ctx, s.DB.Pool, uid, "ccgateway."+action, "system", "ccgateway", detail); e != nil {
+	if e := audit.Audit(ctx, s.DB.Gorm, uid, "ccgateway."+action, "system", "ccgateway", detail); e != nil {
 		slog.Error("CCGateway audit failed", "action", action)
 	}
 }

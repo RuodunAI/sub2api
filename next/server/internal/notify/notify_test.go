@@ -91,7 +91,7 @@ func email(subject string) core.Notification {
 
 func status(t *testing.T, db *store.DB, id int64) (st string, attempts int, lastErr string) {
 	t.Helper()
-	if err := db.Pool.QueryRow(context.Background(), `SELECT status, attempts, last_error FROM notifications WHERE id = $1`, id).
+	if err := db.SQL.QueryRowContext(context.Background(), `SELECT status, attempts, last_error FROM notifications WHERE id = $1`, id).
 		Scan(&st, &attempts, &lastErr); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func status(t *testing.T, db *store.DB, id int64) (st string, attempts int, last
 // due makes every queued row due now (the retry delay has passed).
 func due(t *testing.T, db *store.DB) {
 	t.Helper()
-	if _, err := db.Pool.Exec(context.Background(), `UPDATE notifications SET next_attempt_at = now() - interval '1 second'
+	if _, err := db.SQL.ExecContext(context.Background(), `UPDATE notifications SET next_attempt_at = now() - interval '1 second'
 		WHERE status IN ('pending', 'sending')`); err != nil {
 		t.Fatal(err)
 	}
@@ -171,14 +171,14 @@ func TestNotifyDedupeAndRateLimit(t *testing.T) {
 		t.Fatalf("other source: %+v %v", guard, err)
 	}
 	// A failed notification does not hold its key.
-	if _, err := db.Pool.Exec(ctx, `UPDATE notifications SET status = 'failed' WHERE id = $1`, guard.ID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE notifications SET status = 'failed' WHERE id = $1`, guard.ID); err != nil {
 		t.Fatal(err)
 	}
 	if r, err := s.Notify(ctx, "guard", n); err != nil || r.Deduplicated || r.ID == guard.ID {
 		t.Fatalf("after a failure: %+v %v", r, err)
 	}
 	var recipients []string
-	if err := db.Pool.QueryRow(ctx, `SELECT recipients FROM notifications WHERE id = $1`, first.ID).Scan(&recipients); err != nil || fmt.Sprint(recipients) != "[ops@example.com]" {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT recipients FROM notifications WHERE id = $1`, first.ID).Scan(&recipients); err != nil || fmt.Sprint(recipients) != "[ops@example.com]" {
 		t.Fatalf("recipients: %v %v", recipients, err)
 	}
 	for i := 0; i < 2; i++ {
@@ -221,7 +221,7 @@ func TestDeliveryOutcomes(t *testing.T) {
 	// Cut off by shutdown, a delivery gives its attempt back.
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := db.Pool.Exec(ctx, `UPDATE notifications SET status = 'sending', attempts = 2 WHERE id = $1`, retried.ID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE notifications SET status = 'sending', attempts = 2 WHERE id = $1`, retried.ID); err != nil {
 		t.Fatal(err)
 	}
 	s.finish(canceled, queued{id: retried.ID, attempt: 2}, context.Canceled)
@@ -247,7 +247,7 @@ func TestDeliveryLeaseAndMissingChannel(t *testing.T) {
 	last, _ := s.Notify(ctx, "dynweight", email("last"))
 	// A worker that outlived its lease does not overwrite the next claim.
 	q := queued{id: r.ID, attempt: 1}
-	if _, err := db.Pool.Exec(ctx, `UPDATE notifications SET status = 'sending', attempts = 2 WHERE id = $1`, r.ID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE notifications SET status = 'sending', attempts = 2 WHERE id = $1`, r.ID); err != nil {
 		t.Fatal(err)
 	}
 	s.finish(ctx, q, nil)
@@ -257,7 +257,7 @@ func TestDeliveryLeaseAndMissingChannel(t *testing.T) {
 	// The provider plugin is not bound (starting, restarting, gone): the
 	// row waits without using an attempt, then fails after UnboundFor.
 	var provider string
-	if err := db.Pool.QueryRow(ctx, `SELECT provider FROM notifications WHERE id = $1`, r.ID).Scan(&provider); err != nil || provider != "mailer" {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT provider FROM notifications WHERE id = $1`, r.ID).Scan(&provider); err != nil || provider != "mailer" {
 		t.Fatalf("provider: %q %v", provider, err)
 	}
 	bound := s.reg
@@ -275,7 +275,7 @@ func TestDeliveryLeaseAndMissingChannel(t *testing.T) {
 	if st, attempts, _ := status(t, db, r.ID); st != "pending" || attempts != 2 {
 		t.Fatalf("other provider: %s %d", st, attempts)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE notifications SET created_at = now() - interval '25 hours' WHERE id = $1`, r.ID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE notifications SET created_at = now() - interval '25 hours' WHERE id = $1`, r.ID); err != nil {
 		t.Fatal(err)
 	}
 	due(t, db)
@@ -286,7 +286,7 @@ func TestDeliveryLeaseAndMissingChannel(t *testing.T) {
 	s.reg = bound
 
 	// A last attempt whose lease ran out is not claimed again: purge fails it.
-	if _, err := db.Pool.Exec(ctx, `UPDATE notifications SET status = 'sending', attempts = 3 WHERE id = $1`, last.ID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE notifications SET status = 'sending', attempts = 3 WHERE id = $1`, last.ID); err != nil {
 		t.Fatal(err)
 	}
 	due(t, db)
@@ -342,7 +342,7 @@ func TestDeliveryProviderNotRunning(t *testing.T) {
 	}
 	// Bounded: past UnboundFor the row fails.
 	old, _ := s.Notify(ctx, "dynweight", email("dead plugin"))
-	if _, err := db.Pool.Exec(ctx, `UPDATE notifications SET created_at = now() - interval '25 hours' WHERE id = $1`, old.ID); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE notifications SET created_at = now() - interval '25 hours' WHERE id = $1`, old.ID); err != nil {
 		t.Fatal(err)
 	}
 	p.outcomes = []error{notRunningErr{}}
@@ -485,7 +485,7 @@ func TestStopCancelsPastCallerBudget(t *testing.T) {
 func TestRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	s, _, db := setup(t)
-	if _, err := db.Pool.Exec(context.Background(), `INSERT INTO users (id, email, password_hash) VALUES (1, 'a@x.com', 'x'), (2, 'b@x.com', 'x')`); err != nil {
+	if _, err := db.SQL.ExecContext(context.Background(), `INSERT INTO users (id, email, password_hash) VALUES (1, 'a@x.com', 'x'), (2, 'b@x.com', 'x')`); err != nil {
 		t.Fatal(err)
 	}
 	engine := gin.New()

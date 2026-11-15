@@ -371,7 +371,7 @@ func (s *Service) AccountsInScope(ctx context.Context, userID int64, action stri
 		return true, nil, nil
 	}
 	var allowed []int64
-	err = liveInScope(store.G(ctx, s.d.DB.Pool), ids, scope).
+	err = liveInScope(store.G(ctx, s.d.DB.Gorm), ids, scope).
 		Order(clause.OrderBy{Expression: clause.Expr{SQL: "array_position(?, a.id)", Vars: []any{store.Int64s(ids)}}}).
 		Pluck("a.id", &allowed).Error
 	return false, allowed, err

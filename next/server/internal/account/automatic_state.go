@@ -8,7 +8,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -29,7 +28,7 @@ const automaticStateSweepInterval = time.Minute
 const usageLimitsInterval = 5 * time.Second
 const maxAutomaticDisableDuration = 366 * 24 * time.Hour
 
-func automaticDisableEnabled(ctx context.Context, q store.Querier) (bool, error) {
+func automaticDisableEnabled(ctx context.Context, q *gorm.DB) (bool, error) {
 	var enabled bool
 	err := store.G(ctx, q).Raw(`SELECT COALESCE(
 		(SELECT (value->>'account_enabled')::boolean FROM settings WHERE key='failure_policy'),
@@ -38,7 +37,7 @@ func automaticDisableEnabled(ctx context.Context, q store.Querier) (bool, error)
 }
 
 func (s *Service) getAutoDisablePolicy(c *gin.Context) {
-	enabled, err := automaticDisableEnabled(c.Request.Context(), s.d.DB.Pool)
+	enabled, err := automaticDisableEnabled(c.Request.Context(), s.d.DB.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -70,7 +69,7 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 	out := &pluginv1.SetAccountAutomaticStateResponse{}
 	var name, pluginKey, typ string
 	var cooldownCleared bool
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var allowed bool
 		var until, deferredUntil *time.Time
 		var now time.Time
@@ -185,7 +184,7 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 // failure policy that the usage limit holds back, on an account the caller
 // locked in tx; the status stays the limit's. The 0070 trigger drops it once
 // the account is no longer the limit's.
-func writeDeferredDisable(ctx context.Context, tx pgx.Tx, id int64, set bool, reason string, until *time.Time, detail map[string]any) error {
+func writeDeferredDisable(ctx context.Context, tx *gorm.DB, id int64, set bool, reason string, until *time.Time, detail map[string]any) error {
 	if err := deferDisable(store.G(ctx, tx), id, set, reason, until).Error; err != nil {
 		return err
 	}
@@ -225,7 +224,7 @@ type automaticChange struct {
 // auto_disabled_source: the 0070 trigger otherwise takes a reason or release
 // time change of an automatic disable for a writer that does not know the
 // source (an older core) and clears the mark.
-func (s *Service) writeAutomaticStatus(ctx context.Context, tx pgx.Tx, action string, ch automaticChange) error {
+func (s *Service) writeAutomaticStatus(ctx context.Context, tx *gorm.DB, action string, ch automaticChange) error {
 	g := store.G(ctx, tx)
 	if err := g.Exec(`SELECT set_config('sup2api.auto_disabled_source', 'written', true)`).Error; err != nil {
 		return err
@@ -269,7 +268,7 @@ func (s *Service) afterStatusChange(ctx context.Context, id int64, pluginKey, ty
 
 func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
 	var accounts []recoveredAccount
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		if err := recoverExpired(store.G(ctx, tx)).Scan(&accounts).Error; err != nil {
 			return err
 		}

@@ -234,7 +234,7 @@ func ConfigAAD(pluginKey string) []byte { return []byte("plugin-config:" + plugi
 func (r *Runtime) loadSettings(ctx context.Context, pkg *registry.Package) (*settings, error) {
 	key := pkg.Key
 	var row model.Plugin
-	err := pluginSettings(store.G(ctx, r.o.DB.Pool), key).Take(&row).Error
+	err := pluginSettings(store.G(ctx, r.o.DB.Gorm), key).Take(&row).Error
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ func (r *Runtime) loadSettings(ctx context.Context, pkg *registry.Package) (*set
 	if pkg.Manifest != nil {
 		declared = pkg.Manifest.HostPermissions
 	}
-	if st.grants, err = grants.Granted(ctx, r.o.DB.Pool, key, pkg.Version, declared); err != nil {
+	if st.grants, err = grants.Granted(ctx, r.o.DB.Gorm, key, pkg.Version, declared); err != nil {
 		return nil, err
 	}
 	h := sha256.New()

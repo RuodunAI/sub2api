@@ -39,7 +39,7 @@ func FundUser(tb testing.TB, ledger core.Ledger, user int64) {
 func insertID(tb testing.TB, db *store.DB, sql string, args ...any) int64 {
 	tb.Helper()
 	var id int64
-	if err := db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id); err != nil {
+	if err := db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id); err != nil {
 		tb.Fatal(err)
 	}
 	return id

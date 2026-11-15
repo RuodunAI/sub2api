@@ -13,6 +13,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rollout"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // declaredManifest is a runtime "none" package: an account type of the
@@ -77,7 +78,7 @@ func TestRuntimeNoneStaticInstance(t *testing.T) {
 	if g := inst.Grants(); !g.Has("platform.register") || len(g) != 1 {
 		t.Fatalf("grants = %v", g)
 	}
-	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash)
+	if _, err := h.db.SQL.ExecContext(ctx, `INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash)
 		VALUES ($1, 'kv', '{}', 'granted', '1.0.0', 'x')`, h.key); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +154,7 @@ func TestUpgradeBetweenGRPCAndNone(t *testing.T) {
 	reg := registry.New()
 	ctl, err := rollout.New(rollout.Options{DB: h.db, Node: nd, Bus: registrytest.Bus{RDB: h.rdb}, Packages: pkgs,
 		Registry: reg, Runtime: rollout.FromGRPC(grt),
-		Schemas:           dbschema.New(h.db, h.db.Pool.Config().ConnString(), mk, false),
+		Schemas:           dbschema.New(h.db, testutil.DSN(h.db), mk, false),
 		ReconcileInterval: 200 * time.Millisecond, LeaseTTL: 8 * time.Second, LeaseRenew: time.Second,
 		CoordinatorTick: 100 * time.Millisecond, DrainTimeout: time.Second})
 	if err != nil {

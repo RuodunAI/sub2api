@@ -6,10 +6,11 @@ import (
 	"net/http"
 	"strings"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // First-party plugins (next/plugins) are shipped in the image or in the
@@ -68,14 +69,14 @@ var ErrResourceConflict = core.NewError(http.StatusConflict, "plugin_resource_co
 // only at upload: approval, enable and upgrade call it, since another plugin
 // may have been approved and the core upgraded since.
 func (s *Service) CheckResources(ctx context.Context, key, version string) error {
-	m, err := LoadManifest(ctx, s.d.DB.Pool, key, version)
+	m, err := LoadManifest(ctx, s.d.DB.Gorm, key, version)
 	if err != nil {
 		return err
 	}
-	return s.checkResources(ctx, s.d.DB.Pool, m)
+	return s.checkResources(ctx, s.d.DB.Gorm, m)
 }
 
-func (s *Service) checkResources(ctx context.Context, q store.Querier, m *manifest.Manifest) error {
+func (s *Service) checkResources(ctx context.Context, q *gorm.DB, m *manifest.Manifest) error {
 	others, endpoints, channels, err := s.otherResources(ctx, q, m.Key)
 	if err != nil {
 		return err

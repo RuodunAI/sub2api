@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
@@ -47,7 +46,7 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 	}
 	var id int64
 	var hash, status string
-	err := userByEmail(store.G(ctx, s.db.Pool), strings.ToLower(strings.TrimSpace(email)), "id, password_hash, status").Row().Scan(&id, &hash, &status)
+	err := userByEmail(store.G(ctx, s.db.Gorm), strings.ToLower(strings.TrimSpace(email)), "id, password_hash, status").Row().Scan(&id, &hash, &status)
 	if store.IsNoRows(err) {
 		// Burn comparable time so response timing does not reveal accounts.
 		_ = bcrypt.CompareHashAndPassword(s.dummyHash, []byte(password))
@@ -65,7 +64,7 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 	if status != StatusActive {
 		return nil, errUserDisabled
 	}
-	twoFactor, err := hasTwoFactor(store.G(ctx, s.db.Pool), id)
+	twoFactor, err := hasTwoFactor(store.G(ctx, s.db.Gorm), id)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +76,7 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		return &TokenPair{TwoFactorRequired: true, FlowToken: token, ExpiresIn: flowTTLSeconds}, nil
 	}
 	var pair *TokenPair
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		// The user row is the parent lock for every refresh-token family.
 		// Recheck the password snapshot after acquiring it: a password change
 		// may have committed while bcrypt was running above.
@@ -118,7 +117,7 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 	var payload login2FAPayload
 	var raw []byte
 	var userID int64
-	err := liveFlow(store.G(ctx, s.db.Pool), flowToken, flowLogin2FA, "payload, user_id").Row().Scan(&raw, &userID)
+	err := liveFlow(store.G(ctx, s.db.Gorm), flowToken, flowLogin2FA, "payload, user_id").Row().Scan(&raw, &userID)
 	if store.IsNoRows(err) {
 		return nil, errFlowExpired
 	}
@@ -132,7 +131,7 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 		return nil, rateLimitedError(ctx, wait)
 	}
 	var pair *TokenPair
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var hash, status string
 		if err := lockLiveUser(g, userID, "password_hash, status").Row().Scan(&hash, &status); err != nil {
@@ -185,7 +184,7 @@ func newFamilyID() (string, error) {
 
 // issueTokens issues an access token and a refresh token in familyID (a new
 // family when empty, i.e. on login, which is audited for a superuser).
-func (s *Service) issueTokens(ctx context.Context, tx pgx.Tx, userID int64, familyID string) (*TokenPair, error) {
+func (s *Service) issueTokens(ctx context.Context, tx *gorm.DB, userID int64, familyID string) (*TokenPair, error) {
 	g := store.G(ctx, tx)
 	var tokenVersion int
 	if err := userTokenVersion(g, userID).Row().Scan(&tokenVersion); err != nil {
@@ -318,7 +317,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	var pair *TokenPair
 	var replayUser int64
 	var replayFamily string
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var id, uid int64
 		// Discover the parent without locking a child first. All issuers and
@@ -418,7 +417,7 @@ func (s *Service) Logout(ctx context.Context, userID int64, refreshToken string)
 	which := allSessions
 	if refreshToken != "" {
 		var family string
-		err := liveFamilyOf(store.G(ctx, s.db.Pool), hashToken(refreshToken), userID).Row().Scan(&family)
+		err := liveFamilyOf(store.G(ctx, s.db.Gorm), hashToken(refreshToken), userID).Row().Scan(&family)
 		if store.IsNoRows(err) {
 			return nil
 		}
@@ -447,7 +446,7 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, keepFamily, 
 	if err != nil {
 		return err
 	}
-	return s.changeSessions(ctx, userID, otherSessions(keepFamily), func(tx pgx.Tx) error {
+	return s.changeSessions(ctx, userID, otherSessions(keepFamily), func(tx *gorm.DB) error {
 		res := setLivePassword(store.G(ctx, tx), userID, string(newHash))
 		if res.Error == nil && res.RowsAffected == 0 {
 			return core.ErrUnauthenticated

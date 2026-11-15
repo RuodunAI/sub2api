@@ -2,10 +2,12 @@ package usage
 
 import (
 	"context"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 func TestStopWaitsForOverflowBeforeConnectionAcquired(t *testing.T) {
@@ -13,7 +15,7 @@ func TestStopWaitsForOverflowBeforeConnectionAcquired(t *testing.T) {
 	ctx := context.Background()
 	poolCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cfg := f.db.Pool.Config()
+	cfg := f.db.Gorm.Config()
 	cfg.MaxConns = 2
 	cfg.MinConns = 0
 	pool, err := pgxpool.NewWithConfig(poolCtx, cfg)

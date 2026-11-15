@@ -24,8 +24,8 @@ func TestScopedRoleGrants(t *testing.T) {
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	rows := func(id int64) (plain, scoped []string) {
 		t.Helper()
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(p.key ORDER BY p.key), '{}') FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1`, id).Scan(&plain))
-		require.NoError(t, db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(p.key || ':' || rs.scope ORDER BY p.key, rs.scope), '{}') FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id WHERE rs.role_id = $1`, id).Scan(&scoped))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(p.key ORDER BY p.key), '{}') FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1`, id).Scan(&plain))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(p.key || ':' || rs.scope ORDER BY p.key, rs.scope), '{}') FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id WHERE rs.role_id = $1`, id).Scan(&scoped))
 		return plain, scoped
 	}
 

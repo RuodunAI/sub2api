@@ -13,10 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"github.com/jackc/pgx/v5"
 )
 
 // keptConfig is the request cache's configuration entry: cfg read at at.
@@ -99,10 +100,10 @@ func TestRequestCacheControllerMode(t *testing.T) {
 	cipher, _ := secret.New(make([]byte, 32))
 	s := New(db, cipher)
 	var pid, id int64
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('cache','http','proxy.example',3128) RETURNING id`).Scan(&pid); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('cache','http','proxy.example',3128) RETURNING id`).Scan(&pid); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('ccg','ccgateway','managed',''::bytea,$1) RETURNING id`, pid).Scan(&id); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('ccg','ccgateway','managed',''::bytea,$1) RETURNING id`, pid).Scan(&id); e != nil {
 		t.Fatal(e)
 	}
 	var mu sync.Mutex
@@ -131,7 +132,7 @@ func TestRequestCacheControllerMode(t *testing.T) {
 	plain, _ := json.Marshal(cfg)
 	encrypted, _ := cipher.Encrypt(plain, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, e := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
 		t.Fatal(e)
 	}
 	revision := func() string {
@@ -165,7 +166,7 @@ func TestRequestCacheControllerMode(t *testing.T) {
 	// The proxy changed and another node reconciled the runtime, but the
 	// message was missed: the kept revision is refused once, then the
 	// request goes through with the account read again and its body intact.
-	if _, e := db.Pool.Exec(ctx, `UPDATE proxies SET port=3129,updated_at=clock_timestamp() WHERE id=$1`, pid); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `UPDATE proxies SET port=3129,updated_at=clock_timestamp() WHERE id=$1`, pid); e != nil {
 		t.Fatal(e)
 	}
 	panel.apply(revision())
@@ -280,7 +281,7 @@ func TestBlockedRuntimeIsNotRewrittenEveryPass(t *testing.T) {
 	cipher, _ := secret.New(make([]byte, 32))
 	s := New(db, cipher)
 	var id int64
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,deleted_at) VALUES('off','ccgateway','managed',''::bytea,now()) RETURNING id`).Scan(&id); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,deleted_at) VALUES('off','ccgateway','managed',''::bytea,now()) RETURNING id`).Scan(&id); e != nil {
 		t.Fatal(e)
 	}
 	var mu sync.Mutex
@@ -304,7 +305,7 @@ func TestBlockedRuntimeIsNotRewrittenEveryPass(t *testing.T) {
 	cfg, _ := json.Marshal(Config{Mode: "local", AccountRuntimes: true, AdminKey: "controller-secret", RequestPolicy: &RequestPolicy{SchemaVersion: 1, UnknownField: "reject", CLIVersion: "2.1.302"}})
 	encrypted, _ := cipher.Encrypt(cfg, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, e := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
 		t.Fatal(e)
 	}
 	key := strconv.FormatInt(id, 10)
@@ -336,7 +337,7 @@ func TestRouteFollowsTheControllerWithoutTheBus(t *testing.T) {
 	cipher, _ := secret.New(make([]byte, 32))
 	s := New(db, cipher)
 	var id int64
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id); e != nil {
 		t.Fatal(e)
 	}
 	account := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -353,7 +354,7 @@ func TestRouteFollowsTheControllerWithoutTheBus(t *testing.T) {
 		plain, _ := json.Marshal(cfg)
 		encrypted, _ := cipher.Encrypt(plain, configAAD)
 		envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-		if _, e := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
+		if _, e := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -427,10 +428,10 @@ func TestRequestPathKeepsPolicyAndWorkerHealth(t *testing.T) {
 	cipher, _ := secret.New(make([]byte, 32))
 	s := New(db, cipher)
 	var id, gid int64
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('ccg','ccgateway','managed',''::bytea) RETURNING id`).Scan(&id); e != nil {
 		t.Fatal(e)
 	}
-	if e := db.Pool.QueryRow(ctx, `INSERT INTO groups(name) VALUES('a7') RETURNING id`).Scan(&gid); e != nil {
+	if e := db.SQL.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES('a7') RETURNING id`).Scan(&gid); e != nil {
 		t.Fatal(e)
 	}
 	var mu sync.Mutex
@@ -456,7 +457,7 @@ func TestRequestPathKeepsPolicyAndWorkerHealth(t *testing.T) {
 	plain, _ := json.Marshal(cfg)
 	encrypted, _ := cipher.Encrypt(plain, configAAD)
 	envelope, _ := json.Marshal(map[string]any{"cipher": encrypted})
-	if _, e := db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
+	if _, e := db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, settingKey, envelope); e != nil {
 		t.Fatal(e)
 	}
 	d, e := s.desired(ctx, id, false)
@@ -466,7 +467,7 @@ func TestRequestPathKeepsPolicyAndWorkerHealth(t *testing.T) {
 	panel.apply(d.Revision)
 	savePolicy := func(p AccountFeaturePolicy) {
 		t.Helper()
-		if e := db.Tx(ctx, func(tx pgx.Tx) error { return SaveAccountFeaturePolicyTx(ctx, tx, id, p) }); e != nil {
+		if e := db.Tx(ctx, func(tx *gorm.DB) error { return SaveAccountFeaturePolicyTx(ctx, tx, id, p) }); e != nil {
 			t.Fatal(e)
 		}
 	}

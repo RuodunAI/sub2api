@@ -46,7 +46,7 @@ func (s *Service) createFlow(ctx context.Context, purpose string, userID int64, 
 	if userID != 0 {
 		owner = &userID
 	}
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	if err := deleteExpiredFlows(g).Error; err != nil {
 		return "", err
 	}
@@ -88,7 +88,7 @@ func takeFlowQuery(db *gorm.DB, hash, purpose string, userID int64) *gorm.DB {
 // takeFlow consumes a flow: it can be taken once, by the user it belongs to
 // (userID 0 takes a flow of any owner). out receives the payload; the returned
 // id is the owner, 0 when none.
-func (s *Service) takeFlow(ctx context.Context, q store.Querier, token, purpose string, userID int64, out any) (int64, error) {
+func (s *Service) takeFlow(ctx context.Context, q *gorm.DB, token, purpose string, userID int64, out any) (int64, error) {
 	if token == "" {
 		return 0, errFlowExpired
 	}

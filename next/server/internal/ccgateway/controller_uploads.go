@@ -11,10 +11,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
-	"github.com/gin-gonic/gin"
 )
 
 // Image uploads and upgrades through the control panel (CONTRACTS §53.6).
@@ -287,7 +288,7 @@ func (s *Service) uploadLoad(c *gin.Context) {
 		}
 		s.kickAll(ctx)
 	}
-	if e := audit.Audit(ctx, s.DB.Pool, uid, "ccgateway.runtime.upload", "system", "ccgateway", map[string]any{"role": in.Role, "apply": in.Apply, "update_existing": in.UpdateExisting, "ref": ref}); e != nil {
+	if e := audit.Audit(ctx, s.DB.Gorm, uid, "ccgateway.runtime.upload", "system", "ccgateway", map[string]any{"role": in.Role, "apply": in.Apply, "update_existing": in.UpdateExisting, "ref": ref}); e != nil {
 		slog.Error("CCGateway audit failed", "action", "runtime.upload")
 	}
 	out := gin.H{"sha256": loaded.SHA256, "images": images, "ref": ref, "runtime": s.runtimeState(ctx, cfg)}

@@ -47,7 +47,7 @@ func newBenchSettler(b *testing.B) *benchSettler {
 		b.Fatal(err)
 	}
 	s.price = &core.PriceRule{Model: "claude-sonnet-4-5", Mode: "expression", Expression: a6Expr, ExprVersion: 1, ExprHash: prog.Hash()}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO model_prices (model, mode, expression, expr_hash, source)
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO model_prices (model, mode, expression, expr_hash, source)
 		VALUES ('claude-sonnet-4-5', 'expression', $1, $2, 'manual') RETURNING id`, a6Expr, prog.Hash()).Scan(&s.price.ID); err != nil {
 		b.Fatal(err)
 	}

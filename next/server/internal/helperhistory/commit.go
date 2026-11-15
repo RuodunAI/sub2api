@@ -4,11 +4,12 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/jackc/pgx/v5"
 )
 
 func (s *Service) Commit(ctx context.Context, o core.ResourceOwner, id string, in core.HelperHistoryCompletion) (out core.HelperHistoryRecord, err error) {
@@ -16,7 +17,7 @@ func (s *Service) Commit(ctx context.Context, o core.ResourceOwner, id string, i
 		return out, core.ErrInvalidArgument
 	}
 	var committedConflict error
-	err = s.transaction(ctx, o, func(tx pgx.Tx) error {
+	err = s.transaction(ctx, o, func(tx *gorm.DB) error {
 		now := s.now()
 		a, e := readAttempt(ctx, tx, o, id)
 		if e != nil {
@@ -111,7 +112,7 @@ func (s *Service) Commit(ctx context.Context, o core.ResourceOwner, id string, i
 	}
 	return
 }
-func (s *Service) parentChain(ctx context.Context, q store.Querier, o core.ResourceOwner, id, namespace string, now time.Time) (core.HelperHistoryChain, error) {
+func (s *Service) parentChain(ctx context.Context, q *gorm.DB, o core.ResourceOwner, id, namespace string, now time.Time) (core.HelperHistoryChain, error) {
 	prefixes := []string{}
 	for id != "" {
 		if len(prefixes) >= wire.MaxChainDepth {

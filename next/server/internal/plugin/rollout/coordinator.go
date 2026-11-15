@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -69,7 +68,7 @@ func (c *Controller) takeOver(ctx context.Context, r *rolloutRow) {
 	if !r.leaseExpire {
 		return
 	}
-	res := claimLease(store.G(ctx, c.o.DB.Pool), r.id, c.o.Node.NodeID(), c.o.Node.BootID(), c.o.LeaseTTL)
+	res := claimLease(store.G(ctx, c.o.DB.Gorm), r.id, c.o.Node.NodeID(), c.o.Node.BootID(), c.o.LeaseTTL)
 	if res.Error != nil || res.RowsAffected == 0 {
 		return // lost the race or DB error; the next reconcile retries
 	}
@@ -137,7 +136,7 @@ func (c *Controller) keepLease(ctx context.Context, cancel context.CancelFunc, i
 			return
 		case <-t.C:
 		}
-		res := renewLease(store.G(ctx, c.o.DB.Pool), id, c.o.Node.BootID(), c.o.LeaseTTL)
+		res := renewLease(store.G(ctx, c.o.DB.Gorm), id, c.o.Node.BootID(), c.o.LeaseTTL)
 		err := res.Error
 		switch {
 		case err == nil && res.RowsAffected == 0:
@@ -188,7 +187,7 @@ func (c *Controller) coordinateStep(ctx context.Context, id int64, st *coordStat
 			}
 			st.migrated = true
 			var p model.Plugin
-			_ = store.G(ctx, c.o.DB.Pool).Model(&model.Plugin{}).Select("active_version").Where("key = ?", r.key).Take(&p).Error
+			_ = store.G(ctx, c.o.DB.Gorm).Model(&model.Plugin{}).Select("active_version").Where("key = ?", r.key).Take(&p).Error
 			st.dataFrom = deref(p.ActiveVersion)
 			c.publish(ctx, r.key, r.id)
 			c.kick()
@@ -317,7 +316,7 @@ func (c *Controller) migrate(ctx context.Context, r *rolloutRow) error {
 	if pkg.Manifest.Database == nil {
 		return nil
 	}
-	granted, err := grants.Holds(ctx, c.o.DB.Pool, r.key, *r.target, "db.schema", nil)
+	granted, err := grants.Holds(ctx, c.o.DB.Gorm, r.key, *r.target, "db.schema", nil)
 	if err != nil {
 		return err
 	}
@@ -378,7 +377,7 @@ func (c *Controller) migrateData(ctx context.Context, r *rolloutRow, from string
 	// run it again. Recording can still be lost after a successful call, so
 	// MigrateData must stay idempotent.
 	id := fmt.Sprintf("data:rollout-%d:%s->%s", r.id, from, *r.target)
-	g := store.G(ctx, c.o.DB.Pool)
+	g := store.G(ctx, c.o.DB.Gorm)
 	done, err := store.Exists(g, g.Table("plugin_migrations").Select("1").Where("plugin_key = ? AND migration_id = ?", r.key, id))
 	if err != nil || done {
 		return done, err
@@ -400,7 +399,7 @@ func recordDataMigration(g *gorm.DB, key, id string) *gorm.DB {
 
 // commit is the commit point: preparing -> activating.
 func (c *Controller) commit(ctx context.Context, r *rolloutRow) error {
-	return c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
+	return c.o.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if err := advancePhase(g, r, PhasePreparing, PhaseActivating, c.o.Node.BootID()); err != nil {
 			return err
@@ -449,7 +448,7 @@ func (c *Controller) commit(ctx context.Context, r *rolloutRow) error {
 
 // complete ends an activating rollout: activating -> active.
 func (c *Controller) complete(ctx context.Context, r *rolloutRow) error {
-	return c.o.DB.Tx(ctx, func(tx pgx.Tx) error {
+	return c.o.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		if err := advancePhase(g, r, PhaseActivating, PhaseActive, c.o.Node.BootID()); err != nil {
 			return err
@@ -516,7 +515,7 @@ func (c *Controller) handOff(ctx context.Context, r *rolloutRow) (bool, error) {
 	c.coordMu.Lock()
 	c.handedOff[r.id] = true
 	c.coordMu.Unlock()
-	if err := releaseLease(store.G(ctx, c.o.DB.Pool), r.id, c.o.Node.BootID()).Error; err != nil {
+	if err := releaseLease(store.G(ctx, c.o.DB.Gorm), r.id, c.o.Node.BootID()).Error; err != nil {
 		return false, err
 	}
 	c.log.Warn("handing plugin rollout to a ready node", "rollout_id", r.id, "plugin", r.key)

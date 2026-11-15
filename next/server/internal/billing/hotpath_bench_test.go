@@ -64,7 +64,7 @@ func BenchmarkHotPrecharge(b *testing.B) {
 func BenchmarkHotReleasePrecharge(b *testing.B) {
 	svc, uid := benchBilling(b)
 	ctx := context.Background()
-	pool := svc.db.Pool
+	pool := svc.db.Gorm
 	paths := []struct {
 		name string
 		run  func(requestID string) error

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -23,7 +23,7 @@ import (
 func rolePermissionKeys(t *testing.T, s *Service, id int64) []string {
 	t.Helper()
 	var keys []string
-	if err := s.db.Pool.QueryRow(context.Background(), `SELECT COALESCE(array_agg(p.key ORDER BY p.key), '{}')
+	if err := s.db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(array_agg(p.key ORDER BY p.key), '{}')
 FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1`, id).Scan(&keys); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestSuperOnlyPermissions(t *testing.T) {
 	mustCan(t, s, admin, "publisher:manage", true)
 
 	// A sync leaves what the role holds; a reset takes it back to defaults.
-	if _, err := db.Pool.Exec(ctx, `DELETE FROM permissions WHERE key = 'system:update:recover'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM permissions WHERE key = 'system:update:recover'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
@@ -287,7 +287,7 @@ func TestOperatorWhitelist(t *testing.T) {
 	if _, err := s.SetRolePermissions(ctx, root, opID, before, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE permissions SET module = 'node' WHERE key = 'audit:read'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE permissions SET module = 'node' WHERE key = 'audit:read'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
@@ -298,7 +298,7 @@ func TestOperatorWhitelist(t *testing.T) {
 		t.Fatalf("a sync changed the operator: %v, want %v", got, before)
 	}
 	var module string
-	if err := db.Pool.QueryRow(ctx, `SELECT module FROM permissions WHERE key = 'audit:read'`).Scan(&module); err != nil || module != "audit" {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT module FROM permissions WHERE key = 'audit:read'`).Scan(&module); err != nil || module != "audit" {
 		t.Fatalf("audit:read module = %q, %v", module, err)
 	}
 
@@ -394,16 +394,16 @@ func TestSetRolePermissionsKeepsInactive(t *testing.T) {
 	ctx := context.Background()
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	admin := addUser(t, s, "admin@x.com", RoleAdmin)
-	_, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'installed')`)
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'installed')`)
 	require.NoError(t, err)
-	require.NoError(t, db.Tx(ctx, func(tx pgx.Tx) error {
+	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error {
 		return s.SyncPlugin(ctx, tx, "guard", withRoles([]core.PermissionDef{{Key: "stats:read"}, {Key: "audit:read"}}, RoleAdmin))
 	}))
 	r, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "watch", Name: lt("Watch", "watch"),
 		PermissionKeys: []string{"account:read", "proxy:read", "plugin.guard:stats:read"}})
 	require.NoError(t, err)
-	require.NoError(t, db.Tx(ctx, func(tx pgx.Tx) error { return s.SetPluginActive(ctx, tx, "guard", false) }))
-	_, err = db.Pool.Exec(ctx, `UPDATE permissions SET status = 'removed' WHERE key IN ('proxy:read', 'plugin.guard:audit:read')`)
+	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", false) }))
+	_, err = db.SQL.ExecContext(ctx, `UPDATE permissions SET status = 'removed' WHERE key IN ('proxy:read', 'plugin.guard:audit:read')`)
 	require.NoError(t, err)
 	held := []string{"account:read", "plugin.guard:stats:read", "proxy:read"}
 
@@ -483,7 +483,7 @@ func TestPluginRoleGrantsMatrix(t *testing.T) {
 	assert.ElementsMatch(t, append(slices.Clone(opBefore), "plugin.m:flow:read"), rolePermissionKeys(t, s, op))
 	assert.Equal(t, userBefore, rolePermissionKeys(t, s, user))
 	var via string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT detail->>'via' FROM audit_logs WHERE action = 'role.permissions' AND target_id::bigint = $1`, op).Scan(&via))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT detail->>'via' FROM audit_logs WHERE action = 'role.permissions' AND target_id::bigint = $1`, op).Scan(&via))
 	assert.Equal(t, "plugin_matrix", via)
 	_, err = s.SetPluginRoleGrants(ctx, admin, "m", map[string][]string{RoleOperator: {}}, nil)
 	require.NoError(t, err)
@@ -516,7 +516,7 @@ func TestRoleWritesAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := db.Pool.Query(ctx, `SELECT action, target_id::bigint FROM audit_logs
+	rows, err := db.SQL.QueryContext(ctx, `SELECT action, target_id::bigint FROM audit_logs
 WHERE target_type = 'role' AND action LIKE 'role.%' AND user_id = $1 ORDER BY id`, root)
 	if err != nil {
 		t.Fatal(err)
@@ -546,7 +546,7 @@ WHERE target_type = 'role' AND action LIKE 'role.%' AND user_id = $1 ORDER BY id
 	}
 	// The reset says what the role had and now has.
 	var assign string
-	if err := db.Pool.QueryRow(ctx, `SELECT detail->'after'->>'assignable_role_keys' FROM audit_logs WHERE action = 'role.reset' AND detail->>'key' = 'operator'
+	if err := db.SQL.QueryRowContext(ctx, `SELECT detail->'after'->>'assignable_role_keys' FROM audit_logs WHERE action = 'role.reset' AND detail->>'key' = 'operator'
   AND detail->'after'->'permission_keys' ? 'task:run' AND detail->'before'->'permission_keys' ? 'task:run' AND NOT detail ? 'via'`).Scan(&assign); err != nil || assign != `["supplier", "user"]` {
 		t.Fatalf("role.reset detail: %q %v", assign, err)
 	}
@@ -709,7 +709,7 @@ func TestRolePermissionWritesAuditRemovals(t *testing.T) {
 		After          []string `json:"after"`
 	}
 	var raw []byte
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT detail FROM audit_logs WHERE action = 'role.permissions' AND target_id::bigint = $1
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT detail FROM audit_logs WHERE action = 'role.permissions' AND target_id::bigint = $1
 ORDER BY id DESC LIMIT 1`, op).Scan(&raw))
 	require.NoError(t, json.Unmarshal(raw, &detail))
 	assert.ElementsMatch(t, []string{"plugin.m:flow:read", "plugin.m:flow:old"}, detail.Removed)
@@ -722,7 +722,7 @@ ORDER BY id DESC LIMIT 1`, op).Scan(&raw))
 	keys := r.PermissionKeys
 	_, err = s.SetRolePermissions(ctx, root, op, keys[1:], nil)
 	require.NoError(t, err)
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT detail FROM audit_logs WHERE action = 'role.permissions' AND target_id::bigint = $1
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT detail FROM audit_logs WHERE action = 'role.permissions' AND target_id::bigint = $1
 ORDER BY id DESC LIMIT 1`, op).Scan(&raw))
 	detail.Before = nil
 	require.NoError(t, json.Unmarshal(raw, &detail))

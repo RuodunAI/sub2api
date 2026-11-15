@@ -7,8 +7,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 )
 
 func TestCCFeatureAccountPatchAtomicAndScoped(t *testing.T) {
@@ -19,7 +20,7 @@ func TestCCFeatureAccountPatchAtomicAndScoped(t *testing.T) {
 	enc, err := e.svc.d.Cipher.Encrypt([]byte(`{}`), aad("ccgateway"))
 	require.NoError(t, err)
 	id := e.exec1("INSERT INTO accounts(name,plugin_key,type,credentials_enc,created_by) VALUES('original','ccgateway','managed',$1,$2) RETURNING id", enc, e.uid)
-	_, err = e.db.Pool.Exec(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)", id, gid)
+	_, err = e.db.SQL.ExecContext(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)", id, gid)
 	require.NoError(t, err)
 	cfg, err := ccg.Load(ctx)
 	require.NoError(t, err)
@@ -37,13 +38,13 @@ func TestCCFeatureAccountPatchAtomicAndScoped(t *testing.T) {
 	code, out = e.do("PATCH", path, map[string]any{"name": "must-rollback", "cc_feature_policy": p})
 	require.Equal(t, 409, code, out)
 	var name string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, "SELECT name FROM accounts WHERE id=$1", id).Scan(&name))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, "SELECT name FROM accounts WHERE id=$1", id).Scan(&name))
 	require.Equal(t, "changed", name)
 	p["mode"] = "follow"
 	p["revision"] = 1
 	code, out = e.do("PATCH", path, map[string]any{"cc_feature_policy": p})
 	require.Equal(t, 200, code, out)
-	saved, err := ccgateway.LoadAccountFeaturePolicy(ctx, e.db.Pool, id)
+	saved, err := ccgateway.LoadAccountFeaturePolicy(ctx, e.db.Gorm, id)
 	require.NoError(t, err)
 	require.Empty(t, saved.Overrides.BuildBillingSources)
 	require.EqualValues(t, 2, saved.Revision)
@@ -55,14 +56,14 @@ func TestCCFeatureAccountPatchAtomicAndScoped(t *testing.T) {
 		require.NoError(t, err)
 		envelope, err := json.Marshal(map[string]any{"cipher": cipher})
 		require.NoError(t, err)
-		_, err = e.db.Pool.Exec(ctx, "UPDATE settings SET value=$1 WHERE key='ccgateway_remote'", envelope)
+		_, err = e.db.SQL.ExecContext(ctx, "UPDATE settings SET value=$1 WHERE key='ccgateway_remote'", envelope)
 		require.NoError(t, err)
 	}
 	p["mode"], p["revision"] = "custom", 2
 	setGroup(true)
 	code, _ = e.do("PATCH", path, map[string]any{"name": "must-not-save", "cc_feature_policy": p})
 	require.Equal(t, 403, code)
-	require.NoError(t, e.db.Pool.QueryRow(ctx, "SELECT name FROM accounts WHERE id=$1", id).Scan(&name))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, "SELECT name FROM accounts WHERE id=$1", id).Scan(&name))
 	require.Equal(t, "changed", name)
 	// An inactive group restriction cannot block direct overrides of global defaults.
 	setGroup(false)

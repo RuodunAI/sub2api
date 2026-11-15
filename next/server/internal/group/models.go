@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -30,7 +31,7 @@ func (s *Service) models(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	byGroup, err := ProvidedModels(ctx, s.db.Pool, []int64{id})
+	byGroup, err := ProvidedModels(ctx, s.db.Gorm, []int64{id})
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -42,7 +43,7 @@ func (s *Service) models(c *gin.Context) {
 // accounts declare, sorted, and how many of its accounts declare none (they
 // serve every model). Deleted accounts do not count. Every asked group has an
 // entry.
-func ProvidedModels(ctx context.Context, q store.Querier, groupIDs []int64) (map[int64]Models, error) {
+func ProvidedModels(ctx context.Context, q *gorm.DB, groupIDs []int64) (map[int64]Models, error) {
 	var rows []struct {
 		GroupID int64         `gorm:"column:group_id"`
 		Models  store.Strings `gorm:"column:models"`
@@ -106,7 +107,7 @@ func (m Models) Offered(priced []string, policy core.GroupInfo) []string {
 // OfferedModels returns the models each of the groups provides
 // (Models.Offered), by group id; priced are the models with an enabled global
 // price. Of a group it reads the id and the model policy.
-func OfferedModels(ctx context.Context, q store.Querier, groups []core.GroupInfo, priced []string) (map[int64][]string, error) {
+func OfferedModels(ctx context.Context, q *gorm.DB, groups []core.GroupInfo, priced []string) (map[int64][]string, error) {
 	provided, err := providedModels(ctx, q, groups)
 	if err != nil {
 		return nil, err
@@ -119,7 +120,7 @@ func OfferedModels(ctx context.Context, q store.Querier, groups []core.GroupInfo
 }
 
 // providedModels returns ProvidedModels of the groups.
-func providedModels(ctx context.Context, q store.Querier, groups []core.GroupInfo) (map[int64]Models, error) {
+func providedModels(ctx context.Context, q *gorm.DB, groups []core.GroupInfo) (map[int64]Models, error) {
 	ids := make([]int64, len(groups))
 	for i, g := range groups {
 		ids[i] = g.ID
@@ -129,7 +130,7 @@ func providedModels(ctx context.Context, q store.Querier, groups []core.GroupInf
 
 // offeredModels returns OfferedModels of the groups against the models that
 // have an enabled global price now.
-func offeredModels(ctx context.Context, q store.Querier, groups []core.GroupInfo) (map[int64][]string, error) {
+func offeredModels(ctx context.Context, q *gorm.DB, groups []core.GroupInfo) (map[int64][]string, error) {
 	var priced []string
 	if err := store.G(ctx, q).Model(&model.ModelPrice{}).Where("enabled").Pluck("model", &priced).Error; err != nil {
 		return nil, err
@@ -140,7 +141,7 @@ func offeredModels(ctx context.Context, q store.Querier, groups []core.GroupInfo
 // groupsProviding returns the ids of the groups that provide the model name
 // (Models.Offers); never nil.
 func (s *Service) groupsProviding(ctx context.Context, name string) ([]int64, error) {
-	db := store.G(ctx, s.db.Pool)
+	db := store.G(ctx, s.db.Gorm)
 	var rows []struct {
 		ID              int64                `gorm:"column:id"`
 		ModelAllowlist  store.JSON[[]string] `gorm:"column:model_allowlist"`
@@ -153,7 +154,7 @@ func (s *Service) groupsProviding(ctx context.Context, name string) ([]int64, er
 	for i, r := range rows {
 		groups[i] = core.GroupInfo{ID: r.ID, ModelAllowlist: r.ModelAllowlist.V, ModelFilterMode: core.ValueOr(r.ModelFilterMode, "")}
 	}
-	provided, err := providedModels(ctx, s.db.Pool, groups)
+	provided, err := providedModels(ctx, s.db.Gorm, groups)
 	if err != nil {
 		return nil, err
 	}

@@ -11,9 +11,9 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -54,11 +54,11 @@ func newDBEnv(t *testing.T, opts ...dbEnvOpt) *dbEnv {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	e := &dbEnv{t: t, db: db}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ('admin@test', 'x') RETURNING id`).Scan(&e.uid); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, password_hash) VALUES ('admin@test', 'x') RETURNING id`).Scan(&e.uid); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"anthropic", "other"} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -236,7 +236,7 @@ func TestStickySettingsAPI(t *testing.T) {
 	}
 
 	// The gateway row is read with defaults for missing fields.
-	if _, err := e.db.Pool.Exec(context.Background(),
+	if _, err := e.db.SQL.ExecContext(context.Background(),
 		`INSERT INTO settings (key, value) VALUES ('gateway', '{"max_attempts": 5}')`); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestGatewaySettingsAPIDB(t *testing.T) {
 		t.Fatalf("settings cache not refreshed: %+v", gw)
 	}
 	var by *int64
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT updated_by FROM settings WHERE key = 'gateway'`).Scan(&by); err != nil || by == nil || *by != e.uid {
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT updated_by FROM settings WHERE key = 'gateway'`).Scan(&by); err != nil || by == nil || *by != e.uid {
 		t.Fatalf("updated_by %v %v", by, err)
 	}
 }
@@ -306,7 +306,7 @@ func TestStickyRulesFromDBDriveScheduling(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.gw.rules = newRuleCache(db)
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		return syncBuiltinRules(ctx, tx, builtinPlatform(t, "anthropic").StickyRules)
 	}); err != nil {
 		t.Fatal(err)
@@ -350,7 +350,7 @@ func TestBuiltinStickyDefaults(t *testing.T) {
 	defaultTTL := r.Get("ttl_seconds").Int()
 	// A start rewrites an outdated, unedited definition as a whole: the
 	// models the rule used to carry go away (built-in rules set none).
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE sticky_rules SET match = match || '{"models":["claude-*"]}' WHERE id = $1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE sticky_rules SET match = match || '{"models":["claude-*"]}' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.gw.SyncBuiltinDefaults(ctx); err != nil {
@@ -384,7 +384,7 @@ func TestBuiltinStickyDefaults(t *testing.T) {
 
 	// A restart keeps the administrator's switches and edits and drops stale
 	// built-in rules.
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO sticky_rules (name, source, key_sources) VALUES ('stale', 'builtin', '[]')`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO sticky_rules (name, source, key_sources) VALUES ('stale', 'builtin', '[]')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.gw.SyncBuiltinDefaults(ctx); err != nil {
@@ -451,14 +451,14 @@ func TestSchedulingSettingsAPIDB(t *testing.T) {
 	}
 	var mode string
 	var by *int64
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT value->>'mode', updated_by FROM settings WHERE key = 'scheduling'`).Scan(&mode, &by); err != nil ||
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT value->>'mode', updated_by FROM settings WHERE key = 'scheduling'`).Scan(&mode, &by); err != nil ||
 		mode != "traffic" || by == nil || *by != e.uid {
 		t.Fatalf("stored mode %q, updated_by %v %v", mode, by, err)
 	}
 	// A row of the former default mode with the limit load off balances by
 	// sessions, without model limits (TestSchedulingSettingsNormalized has the
 	// other rows).
-	if _, err := e.db.Pool.Exec(context.Background(), `UPDATE settings SET value = '{"mode":"default","metric":"tpm","limit_load":false,"model_limits":true}' WHERE key = 'scheduling'`); err != nil {
+	if _, err := e.db.SQL.ExecContext(context.Background(), `UPDATE settings SET value = '{"mode":"default","metric":"tpm","limit_load":false,"model_limits":true}' WHERE key = 'scheduling'`); err != nil {
 		t.Fatal(err)
 	}
 	if code, res := e.api("GET", "/settings/scheduling", nil); code != 200 || res.Get("data.mode").String() != "traffic" || res.Get("data.metric").String() != "sessions" ||

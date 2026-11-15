@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -116,7 +115,7 @@ func strOr(a, b string) string {
 func (s *Service) loadWebAuthnUser(ctx context.Context, userID int64) (*webAuthnUser, string, error) {
 	u := &webAuthnUser{id: userID}
 	var status string
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	err := liveUser(g, userID, "email, display_name, status").Row().Scan(&u.email, &u.displayName, &status)
 	if store.IsNoRows(err) {
 		return nil, "", errPasskeyFailed
@@ -151,7 +150,7 @@ func passkeyCredentials(db *gorm.DB, userID int64) *gorm.DB {
 // Passkeys lists the user's passkeys.
 func (s *Service) Passkeys(ctx context.Context, userID int64) ([]Passkey, error) {
 	var rows []model.UserPasskey
-	if err := passkeyList(store.G(ctx, s.db.Pool), userID).Find(&rows).Error; err != nil {
+	if err := passkeyList(store.G(ctx, s.db.Gorm), userID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]Passkey, 0, len(rows))
@@ -211,7 +210,7 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, r *http.Request
 		return nil, err
 	}
 	var session webauthn.SessionData
-	if _, err := s.takeFlow(ctx, s.db.Pool, flowToken, flowPasskeyRegister, userID, &session); err != nil {
+	if _, err := s.takeFlow(ctx, s.db.Gorm, flowToken, flowPasskeyRegister, userID, &session); err != nil {
 		return nil, err
 	}
 	wa, err := s.webAuthnFor(r, session.RelyingPartyID)
@@ -235,7 +234,7 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, r *http.Request
 		return nil, err
 	}
 	p := &Passkey{Name: name, RPID: session.RelyingPartyID}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		err := insertPasskey(store.G(ctx, tx), userID, name, session.RelyingPartyID, c.ID, raw).Row().Scan(&p.ID, &p.CreatedAt)
 		if store.IsNoRows(err) {
 			return core.ErrConflict.WithMessage("this passkey is already registered")
@@ -261,7 +260,7 @@ func insertPasskey(db *gorm.DB, userID int64, name, rpID string, credentialID, c
 
 // DeletePasskey removes one of the user's passkeys.
 func (s *Service) DeletePasskey(ctx context.Context, userID, id int64) error {
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := s.keepLastFactor(ctx, tx, userID, core.StepUpSelfPasskeyDelete); err != nil {
 			return err
 		}
@@ -318,7 +317,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 		return nil, rateLimitedError(ctx, wait)
 	}
 	var session webauthn.SessionData
-	if _, err := s.takeFlow(ctx, s.db.Pool, flowToken, flowPasskeyLogin, 0, &session); err != nil {
+	if _, err := s.takeFlow(ctx, s.db.Gorm, flowToken, flowPasskeyLogin, 0, &session); err != nil {
 		return nil, err
 	}
 	fail := func() (*TokenPair, error) {
@@ -338,7 +337,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 	found, verified, err := wa.ValidatePasskeyLogin(func(rawID, handle []byte) (webauthn.User, error) {
 		var owner int64
 		var rpID string
-		err := passkeyByCredential(store.G(ctx, s.db.Pool), rawID).Row().Scan(&passkeyID, &owner, &rpID)
+		err := passkeyByCredential(store.G(ctx, s.db.Gorm), rawID).Row().Scan(&passkeyID, &owner, &rpID)
 		if err != nil {
 			return nil, err
 		}
@@ -363,7 +362,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 		return nil, err
 	}
 	var pair *TokenPair
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var status string
 		if err := lockLiveUser(g, user.id, "status").Row().Scan(&status); err != nil {

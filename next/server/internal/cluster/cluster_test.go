@@ -157,14 +157,14 @@ func TestRegistryHealthyWithPG(t *testing.T) {
 	ctx := context.Background()
 	_, rdb := newRedis(t)
 	c := newClock()
-	r := NewRegistry(rdb, db.Pool, RegistryOptions{NodeID: "n", Now: c.Now})
+	r := NewRegistry(rdb, db.Gorm, RegistryOptions{NodeID: "n", Now: c.Now})
 	if err := r.Heartbeat(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if !r.Healthy() {
 		t.Fatal("expected healthy")
 	}
-	db.Pool.Close()
+	db.Close()
 	c.Add(10 * time.Second)
 	_ = r.Heartbeat(ctx) // redis ok, pg fails
 	c.Add(6 * time.Second)

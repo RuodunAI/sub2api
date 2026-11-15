@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -56,13 +56,13 @@ func TestProxyIDScope(t *testing.T) {
 	// It matches its proxy by address (an account's proxy_url) without
 	// creating one; another address it may not create.
 	keeperScope := core.DataScope{IDs: []int64{mine}}
-	require.NoError(t, db.Tx(ctx, func(tx pgx.Tx) error {
+	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error {
 		id, created, err := svc.FindOrCreate(ctx, tx, Spec{Protocol: "http", Host: "h.example", Port: 8080}, keeper, keeperScope)
 		require.Equal(t, mine, id)
 		require.False(t, created)
 		return err
 	}))
-	require.Error(t, db.Tx(ctx, func(tx pgx.Tx) error {
+	require.Error(t, db.Tx(ctx, func(tx *gorm.DB) error {
 		_, _, err := svc.FindOrCreate(ctx, tx, Spec{Protocol: "http", Host: "other.example", Port: 8080}, keeper, keeperScope)
 		return err
 	}))
@@ -75,13 +75,13 @@ func TestProxyIDScope(t *testing.T) {
 	role := scalar(t, db, `INSERT INTO roles (key, name) VALUES ('keeper', '{}') RETURNING id`)
 	permID := scalar(t, db, `INSERT INTO permissions (key, module, label, source) VALUES ('proxy:manage', 'proxy', '{}', 'core')
 		ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key RETURNING id`)
-	_, err := db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) VALUES ($1, $2, $3), ($1, $2, $4)`,
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) VALUES ($1, $2, $3), ($1, $2, $4)`,
 		role, permID, fmt.Sprintf("proxy/%d", mine), fmt.Sprintf("proxy/%d", other))
 	require.NoError(t, err)
 	code, _ = do(t, engine, admin, "DELETE", fmt.Sprintf("/proxies/%d", mine), nil)
 	require.Equal(t, 204, code)
 	var left []string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT array_agg(scope) FROM role_permission_scopes WHERE role_id = $1`, role).Scan(&left))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT array_agg(scope) FROM role_permission_scopes WHERE role_id = $1`, role).Scan(&left))
 	require.Equal(t, []string{fmt.Sprintf("proxy/%d", other)}, left)
 }
 
@@ -106,6 +106,6 @@ func permission(out map[string]any) string {
 
 func scalar(t *testing.T, db *store.DB, sql string) (v int64) {
 	t.Helper()
-	require.NoError(t, db.Pool.QueryRow(context.Background(), sql).Scan(&v))
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), sql).Scan(&v))
 	return v
 }

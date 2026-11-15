@@ -1,127 +1,188 @@
 // Package store owns the PostgreSQL pool, transactions and the migration
-// runner shared by the core schema and plugin schemas.
-// G runs GORM statements on the same pool or transaction (see gorm.go).
+// runner shared by the core schema and plugin schemas. Statements are built
+// and run by GORM over that pool (see gorm.go).
 package store
 
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
+	"sync"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// Querier is satisfied by *pgxpool.Pool and pgx.Tx, so repositories can run
-// inside or outside a transaction.
-type Querier interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
+// DB is the core's connection pool.
 type DB struct {
-	Pool *pgxpool.Pool
+	// Gorm runs every statement: on the pool, or through Tx, TxOptions and
+	// WithConn on one transaction or connection of it.
+	Gorm *gorm.DB
+	// SQL is the same pool as a database/sql handle, for what needs one
+	// rather than GORM: River, the tests. Production code goes through Gorm
+	// (gormguard [sql-handle]).
+	SQL *sql.DB
 }
 
+// Open connects to dsn. The pool is sized by SUB2API_PG_MAX_CONNS, else the
+// DSN's pool_* parameters (see poolConfig), else the defaults.
 func Open(ctx context.Context, dsn string) (*DB, error) {
-	cfg, err := pgxpool.ParseConfig(dsn)
+	dsn, pc, err := takePoolParams(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("parse database url: %w", err)
+		return nil, err
 	}
-	cfg.MaxConns = poolMaxConns(dsn, os.Getenv("SUB2API_PG_MAX_CONNS"), cfg.MaxConns)
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pc.maxConns = poolMaxConns(os.Getenv("SUB2API_PG_MAX_CONNS"), pc.maxConns)
+	db, err := open(ctx, dsn, pc)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("database pool opened", "max_conns", pc.maxConns, "min_conns", pc.minConns,
+		"max_conn_lifetime", pc.maxLifetime, "max_conn_idle_time", pc.maxIdleTime)
+	return db, nil
+}
+
+// OpenSized connects to dsn with a pool of at most maxConns connections,
+// whatever the DSN or the environment say: a pool for one job, such as
+// running a plugin's migrations as its own role.
+func OpenSized(ctx context.Context, dsn string, maxConns int) (*DB, error) {
+	dsn, pc, err := takePoolParams(dsn)
+	if err != nil {
+		return nil, err
+	}
+	pc.maxConns = maxConns
+	return open(ctx, dsn, pc)
+}
+
+func open(ctx context.Context, dsn string, pc poolConfig) (*DB, error) {
+	g, err := gorm.Open(postgres.New(postgres.Config{DSN: dsn}), gormConfig())
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
+	if err := registerTimestamps(g); err != nil {
+		return nil, err
+	}
+	sqlDB, err := g.DB()
+	if err != nil {
+		return nil, err
+	}
+	pc.apply(sqlDB)
+	if err := sqlDB.PingContext(ctx); err != nil {
+		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
-	slog.Info("database pool opened", "max_conns", cfg.MaxConns, "min_conns", cfg.MinConns,
-		"max_conn_lifetime", cfg.MaxConnLifetime, "max_conn_idle_time", cfg.MaxConnIdleTime)
-	return &DB{Pool: pool}, nil
+	return &DB{Gorm: g, SQL: sqlDB}, nil
 }
 
-func (db *DB) Close() { db.Pool.Close() }
+// Close closes the pool.
+func (db *DB) Close() { _ = db.SQL.Close() }
 
-// Tx runs fn in a transaction, committing on nil error.
-func (db *DB) Tx(ctx context.Context, fn func(tx pgx.Tx) error) (err error) {
-	tx, err := db.Pool.Begin(ctx)
+// MaxConns is the size of the pool, 0 for a DB without one.
+func (db *DB) MaxConns() int {
+	if db == nil || db.SQL == nil {
+		return 0
+	}
+	return db.SQL.Stats().MaxOpenConnections
+}
+
+// Ping checks that the database answers on a pooled connection.
+func (db *DB) Ping(ctx context.Context) error { return db.SQL.PingContext(ctx) }
+
+// Tx runs fn in a transaction, committing on nil error and rolling back on
+// an error or a panic, which it then re-raises.
+func (db *DB) Tx(ctx context.Context, fn func(tx *gorm.DB) error) error {
+	return db.Gorm.WithContext(ctx).Transaction(fn)
+}
+
+// TxOptions is Tx with an isolation level or read-only access, such as
+// ReadOnly or Snapshot.
+func (db *DB) TxOptions(ctx context.Context, opts sql.TxOptions, fn func(tx *gorm.DB) error) error {
+	return db.Gorm.WithContext(ctx).Transaction(fn, &opts)
+}
+
+var (
+	// ReadOnly is a read-only transaction at the default isolation level.
+	ReadOnly = sql.TxOptions{ReadOnly: true}
+	// Snapshot is a read-only repeatable-read transaction: all its reads see
+	// one snapshot of the database.
+	Snapshot = sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
+)
+
+// WithConn runs fn on one connection taken from the pool, for state that
+// lives on a session rather than a transaction (a session advisory lock).
+// conn's statements all run on that connection; conn.Transaction opens a
+// transaction on it. The connection goes back to the pool when fn returns.
+func (db *DB) WithConn(ctx context.Context, fn func(conn *gorm.DB) error) error {
+	c, err := db.SQL.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if p := recover(); p != nil {
-			_ = tx.Rollback(ctx)
-			panic(p)
-		}
-		if err != nil {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-	if err = fn(tx); err != nil {
-		return err
+	defer c.Close()
+	// A session of its own: the Statement is a copy, so pointing it at the
+	// connection leaves the pool's handle as it is.
+	s := db.Gorm.Session(&gorm.Session{NewDB: true, Context: ctx})
+	s.Statement.ConnPool = c
+	return fn(s)
+}
+
+// SQLTx is the database/sql transaction a handle of Tx, TxOptions or a
+// WithConn transaction runs on, for a library that takes one (River's
+// InsertTx); nil when tx is no transaction.
+func SQLTx(tx *gorm.DB) *sql.Tx {
+	if tx == nil {
+		return nil
 	}
-	return tx.Commit(ctx)
+	t, _ := tx.Statement.ConnPool.(*sql.Tx)
+	return t
 }
 
-// IsUniqueViolation reports a 23505 error (optionally on a named constraint).
-func IsUniqueViolation(err error, constraint string) bool {
-	var pg *pgconn.PgError
-	if !errors.As(err, &pg) || pg.Code != "23505" {
-		return false
-	}
-	return constraint == "" || pg.ConstraintName == constraint
-}
-
-// IsForeignKeyViolation reports a write that refers to a row that is not
-// there (any more).
-func IsForeignKeyViolation(err error) bool {
-	var pg *pgconn.PgError
-	return errors.As(err, &pg) && pg.Code == "23503"
-}
-
-// IsDeadlock reports a transaction the server aborted to break a deadlock
-// (40P01); nothing of it was applied.
-func IsDeadlock(err error) bool {
-	var pg *pgconn.PgError
-	return errors.As(err, &pg) && pg.Code == "40P01"
-}
-
-// IsNoRows reports a read that found no row: pgx.ErrNoRows, or GORM's
+// IsNoRows reports a read that found no row: GORM's
 // gorm.ErrRecordNotFound (First, Take, Last) and database/sql's
-// sql.ErrNoRows (Row().Scan) on the GORM path.
+// sql.ErrNoRows (Row().Scan).
 func IsNoRows(err error) bool {
-	return errors.Is(err, pgx.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, sql.ErrNoRows)
+	return errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, sql.ErrNoRows)
 }
 
-// defaultPoolMaxConns is the pool size when neither SUB2API_PG_MAX_CONNS nor
-// the DSN's pool_max_conns sets one.
-const defaultPoolMaxConns = 20
+// DryRun is a DryRun session of a GORM instance configured as Open's
+// (callbacks, clause builders), on a pool that never connects: it builds
+// statements without a database, and one that escaped DryRun would fail
+// instead of reaching a server. Package gormtest snapshots its SQL.
+func DryRun() *gorm.DB { return dryRun().Session(&gorm.Session{DryRun: true, NewDB: true}) }
 
-// poolMaxConns picks the pool size: SUB2API_PG_MAX_CONNS (AR-P1-2) first,
-// then pool_max_conns in the DSN (parsed is what pgxpool read from it), else
-// defaultPoolMaxConns. pgxpool.ParseConfig never leaves MaxConns at 0 (it
-// defaults to max(4, NumCPU)), so the absence of pool_max_conns is what
-// tells the default apart: 4 connections shared by the gateway and the
-// console made every list request queue for a connection per statement. A
-// plugin-heavy or multi-node setup may need more.
-func poolMaxConns(dsn, env string, parsed int32) int32 {
-	if env != "" {
-		if n, err := strconv.Atoi(env); err == nil && n > 0 {
-			return int32(n)
-		}
+// ErrOffline is what a statement of DryRun's instance that is no DryRun
+// gets: there is no database behind it.
+var ErrOffline = errors.New("store: the DryRun instance has no database")
+
+var dryRun = sync.OnceValue(func() *gorm.DB {
+	g, err := gorm.Open(postgres.New(postgres.Config{Conn: sql.OpenDB(offline{})}), gormConfig())
+	if err == nil {
+		err = registerTimestamps(g)
 	}
-	if strings.Contains(dsn, "pool_max_conns") {
-		return parsed
+	if err != nil {
+		panic("store: open the DryRun instance: " + err.Error()) // no I/O: only a programming error gets here
 	}
-	return defaultPoolMaxConns
+	return g
+})
+
+// offline is a database/sql connector and driver whose connections all
+// fail to open.
+type offline struct{}
+
+func (offline) Connect(context.Context) (driver.Conn, error) { return nil, ErrOffline }
+func (offline) Driver() driver.Driver                        { return offline{} }
+func (offline) Open(string) (driver.Conn, error)             { return nil, ErrOffline }
+
+// QuoteIdent quotes a (qualified) identifier for SQL text, for DDL, which
+// takes no parameters: QuoteIdent("s", "t") is "s"."t".
+func QuoteIdent(parts ...string) string {
+	q := make([]string, len(parts))
+	for i, p := range parts {
+		p = strings.ReplaceAll(p, "\x00", "")
+		q[i] = `"` + strings.ReplaceAll(p, `"`, `""`) + `"`
+	}
+	return strings.Join(q, ".")
 }

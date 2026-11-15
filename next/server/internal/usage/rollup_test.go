@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // rollupRow is one usage_logs row of the rollup tests.
@@ -39,7 +41,7 @@ func (f *fixture) insertRollupRows(now time.Time, prefix string, rows []rollupRo
 		if r.base != "" {
 			base = &r.base
 		}
-		_, err := f.db.Pool.Exec(f.t.Context(), `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id,
+		_, err := f.db.SQL.ExecContext(f.t.Context(), `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id,
 			platform, protocol, endpoint, model, upstream_model, status_code, success, input_tokens, output_tokens, cache_read_tokens,
 			billing_detail, total_cost, rate_multiplier, anomalies, latency_ms, first_token_ms, client_ip, created_at, base_cost)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, '/v1/messages', $8::text, $8::text || '-up', 200, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
@@ -135,7 +137,7 @@ func TestRollupMatchesLive(t *testing.T) {
 	f.insertRollupRows(now, "rollup", rows)
 
 	live := func() map[string]string {
-		_, err := f.db.Pool.Exec(ctx, `UPDATE usage_hourly_state SET low = NULL, high = NULL`)
+		_, err := f.db.SQL.ExecContext(ctx, `UPDATE usage_hourly_state SET low = NULL, high = NULL`)
 		require.NoError(t, err)
 		out := map[string]string{}
 		for _, p := range rollupPaths(now, f.user) {
@@ -145,9 +147,9 @@ func TestRollupMatchesLive(t *testing.T) {
 	}
 	check := func(stage string) {
 		t.Helper()
-		_, err := f.db.Pool.Exec(ctx, `UPDATE usage_hourly_state SET low = NULL, high = NULL`)
+		_, err := f.db.SQL.ExecContext(ctx, `UPDATE usage_hourly_state SET low = NULL, high = NULL`)
 		require.NoError(t, err)
-		_, err = f.db.Pool.Exec(ctx, `TRUNCATE usage_hourly, usage_hourly_dirty`)
+		_, err = f.db.SQL.ExecContext(ctx, `TRUNCATE usage_hourly, usage_hourly_dirty`)
 		require.NoError(t, err)
 		want := live()
 		for runs := 0; ; runs++ {
@@ -167,7 +169,7 @@ func TestRollupMatchesLive(t *testing.T) {
 	for _, p := range rollupPaths(now, f.user) {
 		before[p] = f.statsJSON(p)
 	}
-	_, err := f.db.Pool.Exec(ctx, `UPDATE usage_hourly SET requests = requests + 1000`)
+	_, err := f.db.SQL.ExecContext(ctx, `UPDATE usage_hourly SET requests = requests + 1000`)
 	require.NoError(t, err)
 	for _, p := range rollupPaths(now, f.user) {
 		u, _ := url.Parse(p)
@@ -176,38 +178,38 @@ func TestRollupMatchesLive(t *testing.T) {
 		live := g == "ip" || g == "endpoint" || q.Get("success") != "" || (q.Get("tz") == "Asia/Kolkata" && (g == "day" || g == "hour" || u.Path == "/usage/overview"))
 		require.Equal(t, live, before[p] == f.statsJSON(p), p)
 	}
-	_, err = f.db.Pool.Exec(ctx, `UPDATE usage_hourly SET requests = requests - 1000`)
+	_, err = f.db.SQL.ExecContext(ctx, `UPDATE usage_hourly SET requests = requests - 1000`)
 	require.NoError(t, err)
 
 	var low, high time.Time
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `SELECT low, high FROM usage_hourly_state`).Scan(&low, &high))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `SELECT low, high FROM usage_hourly_state`).Scan(&low, &high))
 	// The hour of the oldest row, which in the first minutes of an hour is not the hour of 40 days ago.
 	require.Equal(t, now.Add(-rows[len(rows)-1].age).Truncate(time.Hour), low)
 	var sealed time.Time
-	require.NoError(t, f.db.Pool.QueryRow(ctx, sealedSQL).Scan(&sealed))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, sealedSQL).Scan(&sealed))
 	require.Equal(t, sealed, high)
 
 	// Changes to rolled-up hours mark them; the next refresh recomputes them.
-	_, err = f.db.Pool.Exec(ctx, `UPDATE usage_logs SET total_cost = total_cost + 1, success = NOT success
+	_, err = f.db.SQL.ExecContext(ctx, `UPDATE usage_logs SET total_cost = total_cost + 1, success = NOT success
 		WHERE request_id IN ('rollup-12', 'rollup-25')`)
 	require.NoError(t, err)
 	f.insertRollupRows(now, "late", []rollupRow{{age: 26*time.Hour + 5*time.Minute, user: f.user, model: "late", protocol: "anthropic.messages",
 		platform: "anthropic", success: true, in: 7, out: 3, cost: "2", multiplier: "1", anomalies: `{}`, latency: 50}})
-	_, err = f.db.Pool.Exec(ctx, `DELETE FROM usage_logs WHERE request_id = 'rollup-30'`)
+	_, err = f.db.SQL.ExecContext(ctx, `DELETE FROM usage_logs WHERE request_id = 'rollup-30'`)
 	require.NoError(t, err)
-	_, err = f.db.Pool.Exec(ctx, `UPDATE usage_logs SET base_cost = 9 WHERE request_id = 'rollup-27'`) // nothing else marks its hour
+	_, err = f.db.SQL.ExecContext(ctx, `UPDATE usage_logs SET base_cost = 9 WHERE request_id = 'rollup-27'`) // nothing else marks its hour
 	require.NoError(t, err)
 	var marks int
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM usage_hourly_dirty`).Scan(&marks))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM usage_hourly_dirty`).Scan(&marks))
 	require.Positive(t, marks)
 
 	want := live()
-	_, err = f.db.Pool.Exec(ctx, `UPDATE usage_hourly_state SET low = $1, high = $2`, low, high)
+	_, err = f.db.SQL.ExecContext(ctx, `UPDATE usage_hourly_state SET low = $1, high = $2`, low, high)
 	require.NoError(t, err)
 	f.compareRollup("marked", now, want) // marked hours are read live until recomputed
 	_, err = f.svc.refreshRollup(ctx)
 	require.NoError(t, err)
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM usage_hourly_dirty`).Scan(&marks))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM usage_hourly_dirty`).Scan(&marks))
 	require.Zero(t, marks)
 	f.compareRollup("changes", now, want)
 }
@@ -225,10 +227,10 @@ func TestRollupTriggerSkipsRecentRows(t *testing.T) {
 	ctx := t.Context()
 	f.insertRollupRows(time.Now(), "recent", []rollupRow{{age: time.Minute, user: f.user, model: "m", protocol: "p", platform: "x",
 		success: true, cost: "1", multiplier: "1", anomalies: `{}`}})
-	_, err := f.db.Pool.Exec(ctx, `UPDATE usage_logs SET total_cost = 2`)
+	_, err := f.db.SQL.ExecContext(ctx, `UPDATE usage_logs SET total_cost = 2`)
 	require.NoError(t, err)
 	var marks int
-	require.NoError(t, f.db.Pool.QueryRow(ctx, `SELECT count(*) FROM usage_hourly_dirty`).Scan(&marks))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM usage_hourly_dirty`).Scan(&marks))
 	require.Zero(t, marks)
 }
 
@@ -238,18 +240,18 @@ func TestRollupSealWaitsForOpenWrites(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	var free time.Time
-	require.NoError(t, f.db.Pool.QueryRow(ctx, sealedSQL).Scan(&free))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, sealedSQL).Scan(&free))
 	require.Equal(t, time.Now().Add(-rollupSeal).Truncate(time.Hour), free.Truncate(time.Hour))
 
-	tx, err := f.db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, f.db)
 	require.NoError(t, err)
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback().Error }()
 	var started time.Time
-	_, err = tx.Exec(ctx, `SELECT txid_current()`) // a write transaction has an xid
+	_, err = store.SQLTx(tx).ExecContext(ctx, `SELECT txid_current()`) // a write transaction has an xid
 	require.NoError(t, err)
-	require.NoError(t, tx.QueryRow(ctx, `SELECT xact_start FROM pg_stat_activity WHERE pid = pg_backend_pid()`).Scan(&started))
+	require.NoError(t, store.SQLTx(tx).QueryRowContext(ctx, `SELECT xact_start FROM pg_stat_activity WHERE pid = pg_backend_pid()`).Scan(&started))
 	var held time.Time
-	require.NoError(t, f.db.Pool.QueryRow(ctx, sealedSQL).Scan(&held))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, sealedSQL).Scan(&held))
 	// The bound is the earlier of the usual seal and the open transaction's
 	// start (less its 15 minute grace), both truncated to the hour.
 	want := started.Add(-15 * time.Minute)

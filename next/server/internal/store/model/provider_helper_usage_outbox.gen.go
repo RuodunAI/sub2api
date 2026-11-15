@@ -5,21 +5,21 @@ package model
 import (
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // ProviderHelperUsageOutbox is a row of table provider_helper_usage_outbox.
 type ProviderHelperUsageOutbox struct {
-	RequestID     string             `gorm:"column:request_id;primaryKey"`           // text
-	AttemptID     string             `gorm:"column:attempt_id"`                      // text
-	UserID        int64              `gorm:"column:user_id"`                         // bigint
-	GroupID       int64              `gorm:"column:group_id"`                        // bigint
-	Digest        string             `gorm:"column:digest"`                          // text
-	Payload       []byte             `gorm:"column:payload"`                         // bytea
-	CreatedAt     time.Time          `gorm:"column:created_at;autoCreateTime:false"` // timestamp with time zone
-	NextAttemptAt pgtype.Timestamptz `gorm:"column:next_attempt_at;default:(-)"`     // timestamp with time zone default '-infinity'::timestamp with time zone
-	RetryCount    int64              `gorm:"column:retry_count;default:(-)"`         // bigint default 0
-	FailureCode   string             `gorm:"column:failure_code;default:(-)"`        // text default ''::text
+	RequestID     string        `gorm:"column:request_id;primaryKey"`           // text
+	AttemptID     string        `gorm:"column:attempt_id"`                      // text
+	UserID        int64         `gorm:"column:user_id"`                         // bigint
+	GroupID       int64         `gorm:"column:group_id"`                        // bigint
+	Digest        string        `gorm:"column:digest"`                          // text
+	Payload       []byte        `gorm:"column:payload"`                         // bytea
+	CreatedAt     time.Time     `gorm:"column:created_at;autoCreateTime:false"` // timestamp with time zone
+	NextAttemptAt store.InfTime `gorm:"column:next_attempt_at;default:(-)"`     // timestamp with time zone default '-infinity'::timestamp with time zone
+	RetryCount    int64         `gorm:"column:retry_count;default:(-)"`         // bigint default 0
+	FailureCode   string        `gorm:"column:failure_code;default:(-)"`        // text default ''::text
 }
 
 // TableName implements gorm's schema.Tabler.

@@ -3,19 +3,21 @@ package providerresources
 import (
 	"bytes"
 	"context"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"time"
 )
 
-func (s *Service) mutate(ctx context.Context, owner core.ResourceOwner, id string, fn func(pgx.Tx, core.ProviderResource) error) error {
+func (s *Service) mutate(ctx context.Context, owner core.ResourceOwner, id string, fn func(*gorm.DB, core.ProviderResource) error) error {
 	if !validOwner(owner) || !bounded(id) {
 		return core.ErrInvalidArgument
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockOwner(ctx, tx, owner); err != nil {
 			return err
 		}
@@ -38,7 +40,7 @@ func (s *Service) Finalize(ctx context.Context, in core.ResourceCompletion) (out
 	if err != nil {
 		return out, err
 	}
-	err = s.mutate(ctx, in.Owner, in.PublicID, func(tx pgx.Tx, r core.ProviderResource) error {
+	err = s.mutate(ctx, in.Owner, in.PublicID, func(tx *gorm.DB, r core.ProviderResource) error {
 		if r.Binding != in.Binding || r.OperationID != in.OperationID {
 			return core.ErrConflict
 		}
@@ -96,7 +98,7 @@ func (s *Service) Finalize(ctx context.Context, in core.ResourceCompletion) (out
 }
 
 func (s *Service) MarkUncertain(ctx context.Context, owner core.ResourceOwner, id, op string) error {
-	return s.mutate(ctx, owner, id, func(tx pgx.Tx, r core.ProviderResource) error {
+	return s.mutate(ctx, owner, id, func(tx *gorm.DB, r core.ProviderResource) error {
 		if r.OperationID != op || (r.State != "pending" && r.State != "uncertain") {
 			return core.ErrConflict
 		}
@@ -113,7 +115,7 @@ func (s *Service) FailCreate(ctx context.Context, owner core.ResourceOwner, id, 
 	default:
 		return core.ErrInvalidArgument.WithMessage("creation failure needs confirmed provider rejection evidence")
 	}
-	return s.mutate(ctx, owner, id, func(tx pgx.Tx, r core.ProviderResource) error {
+	return s.mutate(ctx, owner, id, func(tx *gorm.DB, r core.ProviderResource) error {
 		if r.OperationID != op || (r.State != "pending" && r.State != "uncertain" && r.State != "failed") {
 			return core.ErrConflict
 		}
@@ -133,7 +135,7 @@ func (s *Service) FailCreate(ctx context.Context, owner core.ResourceOwner, id, 
 }
 
 func (s *Service) BeginDelete(ctx context.Context, owner core.ResourceOwner, id string, binding core.ResourceBinding) (out core.ResourceReservation, err error) {
-	err = s.mutate(ctx, owner, id, func(tx pgx.Tx, r core.ProviderResource) error {
+	err = s.mutate(ctx, owner, id, func(tx *gorm.DB, r core.ProviderResource) error {
 		if r.Binding != binding {
 			return core.ErrConflict.WithMessage("resource issuer identity changed")
 		}
@@ -156,7 +158,7 @@ func (s *Service) BeginDelete(ctx context.Context, owner core.ResourceOwner, id 
 // A failed or timed out delete is not evidence that the remote object vanished.
 // Retrying requires an explicit reconciliation operation, not BeginDelete.
 func (s *Service) FinishDelete(ctx context.Context, owner core.ResourceOwner, id, op string, confirmed bool) error {
-	return s.mutate(ctx, owner, id, func(tx pgx.Tx, r core.ProviderResource) error {
+	return s.mutate(ctx, owner, id, func(tx *gorm.DB, r core.ProviderResource) error {
 		if r.OperationID != op {
 			return core.ErrConflict
 		}

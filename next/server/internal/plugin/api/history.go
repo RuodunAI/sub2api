@@ -28,7 +28,7 @@ func (a *API) listRollouts(c *gin.Context) {
 		since = &value
 	}
 	page, size := httpapi.Pagination(c)
-	g := store.G(ctx(c), a.d.DB.Pool)
+	g := store.G(ctx(c), a.d.DB.Gorm)
 	var total int64
 	if err := g.Raw(`SELECT count(*) FROM plugin_rollouts`+rolloutsWhere, key, key, since, since).Row().Scan(&total); err != nil {
 		httpapi.Fail(c, err)
@@ -92,7 +92,7 @@ func (a *API) pluginHistory(c *gin.Context) {
 	}
 	page, size := httpapi.Pagination(c)
 	key := c.Param("key")
-	g := store.G(ctx(c), a.d.DB.Pool)
+	g := store.G(ctx(c), a.d.DB.Gorm)
 	var total int64
 	if err := g.Raw(`SELECT count(*) FROM plugin_history`+historyWhere, key, rolloutID, rolloutID).Row().Scan(&total); err != nil {
 		httpapi.Fail(c, err)

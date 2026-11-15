@@ -15,9 +15,9 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -92,7 +92,7 @@ func setup(t *testing.T) *env {
 const goneModel = "gone"
 
 func (e *env) ruleCounts(ctx context.Context, segmentIDs []int64) (map[int64]map[int64]int64, error) {
-	rows, err := e.db.Pool.Query(ctx, `SELECT segment_id, group_id, count(*) FROM price_rules
+	rows, err := e.db.SQL.QueryContext(ctx, `SELECT segment_id, group_id, count(*) FROM price_rules
 		WHERE segment_id = ANY($1) AND model <> $2 GROUP BY 1, 2`, segmentIDs, goneModel)
 	if err != nil {
 		return nil, err
@@ -120,15 +120,15 @@ func TestTxConflicts(t *testing.T) {
 	failure := errors.New("failure")
 	for _, tc := range []struct {
 		name     string
-		fn       func(tx pgx.Tx) error
+		fn       func(tx *gorm.DB) error
 		conflict bool
 	}{
-		{"a row referred to is gone", func(tx pgx.Tx) error {
-			_, err := tx.Exec(ctx, `INSERT INTO segment_groups (segment_id, group_id, granted) VALUES (default_segment_id(), 999999, true)`)
+		{"a row referred to is gone", func(tx *gorm.DB) error {
+			_, err := store.SQLTx(tx).ExecContext(ctx, `INSERT INTO segment_groups (segment_id, group_id, granted) VALUES (default_segment_id(), 999999, true)`)
 			return err
 		}, true},
-		{"a deadlock", func(pgx.Tx) error { return &pgconn.PgError{Code: "40P01"} }, true},
-		{"another error", func(pgx.Tx) error { return failure }, false},
+		{"a deadlock", func(*gorm.DB) error { return &pgconn.PgError{Code: "40P01"} }, true},
+		{"another error", func(*gorm.DB) error { return failure }, false},
 	} {
 		err := e.svc.tx(ctx, tc.fn)
 		if !tc.conflict {
@@ -139,20 +139,20 @@ func TestTxConflicts(t *testing.T) {
 		require.ErrorAs(t, err, &ce, tc.name)
 		require.Equal(t, core.ErrConflict.Code, ce.Code, tc.name)
 	}
-	require.NoError(t, e.svc.tx(ctx, func(pgx.Tx) error { return nil }))
+	require.NoError(t, e.svc.tx(ctx, func(*gorm.DB) error { return nil }))
 }
 
 // id runs an INSERT ... RETURNING id (or any query of one integer).
 func (e *env) id(sql string, args ...any) int64 {
 	e.t.Helper()
 	var id int64
-	require.NoError(e.t, e.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id))
+	require.NoError(e.t, e.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id))
 	return id
 }
 
 func (e *env) exec(sql string, args ...any) {
 	e.t.Helper()
-	_, err := e.db.Pool.Exec(context.Background(), sql, args...)
+	_, err := e.db.SQL.ExecContext(context.Background(), sql, args...)
 	require.NoError(e.t, err)
 }
 

@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
-	"github.com/jackc/pgx/v5"
-	"github.com/stretchr/testify/require"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 func featureString(v string) *string { return &v }
@@ -220,9 +222,9 @@ func TestAccountFeaturePolicyRevisionAndClear(t *testing.T) {
 	id := f.account(false)
 	ctx := context.Background()
 	save := func(p AccountFeaturePolicy) error {
-		return f.db.Tx(ctx, func(tx pgx.Tx) error {
+		return f.db.Tx(ctx, func(tx *gorm.DB) error {
 			var locked int64
-			if err := tx.QueryRow(ctx, "SELECT id FROM accounts WHERE id=$1 FOR UPDATE", id).Scan(&locked); err != nil {
+			if err := store.SQLTx(tx).QueryRowContext(ctx, "SELECT id FROM accounts WHERE id=$1 FOR UPDATE", id).Scan(&locked); err != nil {
 				return err
 			}
 			return SaveAccountFeaturePolicyTx(ctx, tx, id, p)
@@ -240,7 +242,7 @@ func TestAccountFeaturePolicyRevisionAndClear(t *testing.T) {
 	}
 	require.NoError(t, save(p))
 	require.Equal(t, "conflict", core.AsError(save(p)).Code)
-	read, err := LoadAccountFeaturePolicy(ctx, f.db.Pool, id)
+	read, err := LoadAccountFeaturePolicy(ctx, f.db.Gorm, id)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, read.Revision)
 	require.Len(t, read.Overrides.BuildAttachmentSources, 10)
@@ -260,7 +262,7 @@ func TestAccountFeaturePolicyRevisionAndClear(t *testing.T) {
 	}
 	read.Mode = "follow"
 	require.NoError(t, save(read))
-	read, err = LoadAccountFeaturePolicy(ctx, f.db.Pool, id)
+	read, err = LoadAccountFeaturePolicy(ctx, f.db.Gorm, id)
 	require.NoError(t, err)
 	require.EqualValues(t, 2, read.Revision)
 	require.Equal(t, FeatureOverrides{}, read.Overrides)
@@ -294,11 +296,11 @@ func TestFeaturePreviewPermissionsAndNoWorker(t *testing.T) {
 	f.auth.keys[uid] = []string{"account:read:own", "account:update:own"}
 	f.auth.keys[outsider] = []string{"account:read:own", "account:update:own"}
 	id := f.account(false)
-	_, err := f.db.Pool.Exec(ctx, "UPDATE accounts SET created_by=$1 WHERE id=$2", uid, id)
+	_, err := f.db.SQL.ExecContext(ctx, "UPDATE accounts SET created_by=$1 WHERE id=$2", uid, id)
 	require.NoError(t, err)
 	var gid int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, "INSERT INTO groups(name) VALUES('preview') RETURNING id").Scan(&gid))
-	_, err = f.db.Pool.Exec(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)", id, gid)
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, "INSERT INTO groups(name) VALUES('preview') RETURNING id").Scan(&gid))
+	_, err = f.db.SQL.ExecContext(ctx, "INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)", id, gid)
 	require.NoError(t, err)
 	code, out := f.callAs(uid, "GET", id, "cc-features?group_id="+strconv.FormatInt(gid, 10), "")
 	require.Equal(t, 200, code, out)
@@ -314,7 +316,7 @@ func TestFeaturePreviewPermissionsAndNoWorker(t *testing.T) {
 	code, out = f.callAs(uid, "POST", id, "cc-features/preview", `{"group_id":`+strconv.FormatInt(gid, 10)+`,"cc_feature_policy":{"mode":"custom","revision":0,"overrides":{"relay_mode":"direct"}}}`)
 	require.Equal(t, 200, code, out)
 	require.Equal(t, "direct", data(out)["effective"].(map[string]any)["relay_mode"])
-	read, err := LoadAccountFeaturePolicy(ctx, f.db.Pool, id)
+	read, err := LoadAccountFeaturePolicy(ctx, f.db.Gorm, id)
 	require.NoError(t, err)
 	require.EqualValues(t, 0, read.Revision)
 	require.Equal(t, "follow", read.Mode)
@@ -329,7 +331,7 @@ func TestFeatureConfigHTTPAtomicAndNoRuntimeKick(t *testing.T) {
 	ctx := context.Background()
 	uid := f.user("settings@test")
 	var gid int64
-	require.NoError(t, f.db.Pool.QueryRow(ctx, "INSERT INTO groups(name) VALUES('policy-save') RETURNING id").Scan(&gid))
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, "INSERT INTO groups(name) VALUES('policy-save') RETURNING id").Scan(&gid))
 	f.account(false)
 	tasks := newFakeTasks()
 	require.NoError(t, f.s.RegisterTasks(tasks))

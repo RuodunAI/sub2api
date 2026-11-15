@@ -36,7 +36,7 @@ func (s *Bridge) RetentionTaskSpec() core.TaskSpec {
 // PurgeRuns keeps the newest KeepRuns runs per (plugin, job) and marks runs
 // stuck in "running" for longer than StaleAfter as failed.
 func (s *Bridge) PurgeRuns(ctx context.Context) (int64, error) {
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	if err := abandonStaleRuns(g, s.opts.StaleAfter).Error; err != nil {
 		return 0, err
 	}

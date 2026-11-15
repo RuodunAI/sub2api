@@ -11,7 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
@@ -81,10 +80,10 @@ func scanUser(row store.RowScanner) (*User, error) {
 
 // GetUser returns a non-deleted user or ErrNotFound.
 func (s *Service) GetUser(ctx context.Context, id int64) (*User, error) {
-	return s.getUser(ctx, s.db.Pool, id)
+	return s.getUser(ctx, s.db.Gorm, id)
 }
 
-func (s *Service) getUser(ctx context.Context, q store.Querier, id int64) (*User, error) {
+func (s *Service) getUser(ctx context.Context, q *gorm.DB, id int64) (*User, error) {
 	u, err := scanUser(userByID(store.G(ctx, q), id).Row())
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("user not found")
@@ -95,7 +94,7 @@ func (s *Service) getUser(ctx context.Context, q store.Querier, id int64) (*User
 // LookupUsers implements core.UserDirectory (HostService.GetUsers).
 func (s *Service) LookupUsers(ctx context.Context, ids []int64) ([]core.UserSummary, error) {
 	var rows []core.UserSummary
-	if err := lookupUsers(store.G(ctx, s.db.Pool), ids).Scan(&rows).Error; err != nil {
+	if err := lookupUsers(store.G(ctx, s.db.Gorm), ids).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := []core.UserSummary{}
@@ -130,7 +129,7 @@ type ListUsersFilter struct {
 // ListUsers returns a page of non-deleted users ordered by id.
 func (s *Service) ListUsers(ctx context.Context, f ListUsersFilter) ([]*User, int64, error) {
 	filter := usersFilter(f)
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	var total int64
 	if err := usersCount(g, filter).Count(&total).Error; err != nil {
 		return nil, 0, err
@@ -200,7 +199,7 @@ func IsDefaultRoles(keys []string) bool {
 func (s *Service) CreateUser(ctx context.Context, actorID int64, in CreateUserInput) (*User, error) {
 	var u *User
 	var v int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		u, v, err = s.createUserTx(ctx, tx, actorID, in)
 		return err
@@ -212,7 +211,7 @@ func (s *Service) CreateUser(ctx context.Context, actorID int64, in CreateUserIn
 	return u, nil
 }
 
-func (s *Service) createUserTx(ctx context.Context, tx pgx.Tx, actorID int64, in CreateUserInput) (*User, int64, error) {
+func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, in CreateUserInput) (*User, int64, error) {
 	email, fields := normalizeEmail(in.Email)
 	if f := validatePassword("password", in.Password); f != nil {
 		fields = append(fields, *f)
@@ -276,7 +275,7 @@ func insertUser(db *gorm.DB, email, displayName, passwordHash string, segmentID 
 // lockNamedSegment checks that id, when given, is a named segment and keeps
 // the segment from being deleted until the transaction ends, so the user
 // about to join it cannot be left pointing at nothing.
-func lockNamedSegment(ctx context.Context, tx pgx.Tx, id *int64) error {
+func lockNamedSegment(ctx context.Context, tx *gorm.DB, id *int64) error {
 	if id == nil {
 		return nil
 	}
@@ -377,7 +376,7 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 	}
 	var v int64
 	var u *User
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		v, u, err = s.applyUpdateTx(ctx, tx, actorID, id, in, email, hash)
 		return err
@@ -394,7 +393,7 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 
 // applyUpdateTx performs the locked read, authorization checks and the write
 // inside the caller's transaction.
-func (s *Service) applyUpdateTx(ctx context.Context, tx pgx.Tx, actorID, id int64, in UpdateUserInput, email string, hash []byte) (int64, *User, error) {
+func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id int64, in UpdateUserInput, email string, hash []byte) (int64, *User, error) {
 	var v int64
 	// Keep the established authz -> user lock order. Even an apparently
 	// unchanged status must invalidate authorization after concurrent edits.
@@ -503,7 +502,7 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 
 	var v int64
 	var dropped bool // a personal segment went, with its price rules
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		if v, err = s.authz.Bump(ctx, tx); err != nil {
 			return err
@@ -572,7 +571,7 @@ func deleteUserKeys(db *gorm.DB, userID int64) *gorm.DB {
 func (s *Service) SetUserRoles(ctx context.Context, actorID, id int64, roleKeys []string) (*User, error) {
 	var v int64
 	var u *User
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		cur, err := s.getUser(ctx, tx, id)
 		if err != nil {
 			return err
@@ -597,7 +596,7 @@ func (s *Service) SetUserRoles(ctx context.Context, actorID, id int64, roleKeys 
 
 // ------------------------------------------------------------ helpers
 
-func (s *Service) emit(ctx context.Context, tx pgx.Tx, typ string, userID int64, email, status string) error {
+func (s *Service) emit(ctx context.Context, tx *gorm.DB, typ string, userID int64, email, status string) error {
 	if s.events == nil {
 		return nil
 	}
@@ -631,7 +630,7 @@ func emailTaken() error {
 	})
 }
 
-func lockRefreshUser(ctx context.Context, tx pgx.Tx, userID int64) error {
+func lockRefreshUser(ctx context.Context, tx *gorm.DB, userID int64) error {
 	var id int64
 	err := lockUser(store.G(ctx, tx), userID).Row().Scan(&id)
 	if store.IsNoRows(err) {

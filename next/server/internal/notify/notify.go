@@ -14,7 +14,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -123,7 +122,7 @@ func (s *Service) Notify(ctx context.Context, source string, n core.Notification
 		return core.NotifyResult{}, err
 	}
 	var out core.NotifyResult
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		db := store.G(ctx, tx)
 		// One sender at a time per source, so the dedupe and rate checks
 		// below see each other's rows.

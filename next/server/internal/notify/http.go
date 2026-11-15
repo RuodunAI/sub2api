@@ -60,7 +60,7 @@ func (s *Service) list(c *gin.Context) {
 	ctx := c.Request.Context()
 	page, size := httpapi.Pagination(c)
 	status, source := c.Query("status"), c.Query("source")
-	db := store.G(ctx, s.db.Pool)
+	db := store.G(ctx, s.db.Gorm)
 	var total int64
 	if err := db.Model(&model.Notification{}).Scopes(filterRecords(status, source)).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)

@@ -33,7 +33,7 @@ func readOnlyExtensionsFixture(t *testing.T) (*env, *preparationResource, int64,
 func savedSettings(t *testing.T, e *env, id int64) map[string]any {
 	t.Helper()
 	var raw []byte
-	if err := e.db.Pool.QueryRow(t.Context(), `SELECT settings FROM accounts WHERE id=$1`, id).Scan(&raw); err != nil {
+	if err := e.db.SQL.QueryRowContext(t.Context(), `SELECT settings FROM accounts WHERE id=$1`, id).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	out := map[string]any{}
@@ -95,7 +95,7 @@ func TestReadOnlyExtensionsArePluginOwned(t *testing.T) {
 		t.Fatalf("audit rows %d", n)
 	}
 	var detail string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT detail::text FROM audit_logs WHERE action='account.extensions.plugin' AND target_id=$1`, strconv.FormatInt(id, 10)).Scan(&detail); err != nil || detail != `{"keys": ["login"]}` {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT detail::text FROM audit_logs WHERE action='account.extensions.plugin' AND target_id=$1`, strconv.FormatInt(id, 10)).Scan(&detail); err != nil || detail != `{"keys": ["login"]}` {
 		t.Fatalf("audit detail %q %v (values are not audited)", detail, err)
 	}
 	// An unknown email leaves the value alone.

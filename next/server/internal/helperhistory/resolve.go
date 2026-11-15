@@ -4,21 +4,21 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5"
 )
 
 func (s *Service) Resolve(ctx context.Context, o core.ResourceOwner, prefixes []string, namespace string) (out core.HelperHistoryChain, err error) {
-	err = s.transaction(ctx, o, func(tx pgx.Tx) error {
+	err = s.transaction(ctx, o, func(tx *gorm.DB) error {
 		var e error
 		out, e = s.resolve(ctx, tx, o, prefixes, namespace, s.now())
 		return e
 	})
 	return
 }
-func (s *Service) resolve(ctx context.Context, q store.Querier, o core.ResourceOwner, prefixes []string, namespace string, now time.Time) (out core.HelperHistoryChain, err error) {
+func (s *Service) resolve(ctx context.Context, q *gorm.DB, o core.ResourceOwner, prefixes []string, namespace string, now time.Time) (out core.HelperHistoryChain, err error) {
 	if !bounded(namespace) || len(prefixes) > wire.MaxChainDepth {
 		return out, core.ErrInvalidArgument
 	}

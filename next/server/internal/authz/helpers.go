@@ -17,11 +17,11 @@ func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh
 
 // querier is the pool checks read through outside a transaction; nil for
 // tests without a database, which never query.
-func (s *Service) querier() store.Querier {
+func (s *Service) querier() *gorm.DB {
 	if s.db == nil {
 		return nil
 	}
-	return s.db.Pool
+	return s.db.Gorm
 }
 
 // usersRoleSet is the union of what the roles of userIDs grant (the grant
@@ -31,14 +31,14 @@ func (s *Service) querier() store.Querier {
 // user, which is right for authorizing that user and wrong for deciding who
 // may act on it. Tests without a database seed the cache and are answered
 // from it.
-func (s *Service) usersRoleSet(ctx context.Context, q store.Querier, userIDs []int64) (core.PermissionSet, error) {
+func (s *Service) usersRoleSet(ctx context.Context, q *gorm.DB, userIDs []int64) (core.PermissionSet, error) {
 	set, _, err := s.usersRoles(ctx, q, userIDs)
 	return set, err
 }
 
 // usersRoles is usersRoleSet with the keys of those roles, sorted; tests
 // without a database have no role keys.
-func (s *Service) usersRoles(ctx context.Context, q store.Querier, userIDs []int64) (core.PermissionSet, []string, error) {
+func (s *Service) usersRoles(ctx context.Context, q *gorm.DB, userIDs []int64) (core.PermissionSet, []string, error) {
 	if s.db == nil {
 		return s.cachedUnion(userIDs), nil, nil
 	}
@@ -77,7 +77,7 @@ func (s *Service) cachedUnion(userIDs []int64) core.PermissionSet {
 // superuser. Whom it acts on is its roles alone (canActOnUsers, FU6). It reads
 // through q, so a check inside a transaction sees that transaction and never
 // this node's cache, which may lag another node's change (C-L4).
-func (s *Service) grantSet(ctx context.Context, q store.Querier, actorID int64) (core.PermissionSet, error) {
+func (s *Service) grantSet(ctx context.Context, q *gorm.DB, actorID int64) (core.PermissionSet, error) {
 	set, err := s.usersRoleSet(ctx, q, []int64{actorID})
 	if err != nil {
 		return core.PermissionSet{}, err
@@ -88,7 +88,7 @@ func (s *Service) grantSet(ctx context.Context, q store.Querier, actorID int64) 
 // covers fails with deny, detailed by what is missing, unless actorID's
 // grantSet holds all of want, the superuser flag included. The system (actor
 // 0) is always covered.
-func (s *Service) covers(ctx context.Context, q store.Querier, actorID int64, want core.PermissionSet, deny *core.Error) error {
+func (s *Service) covers(ctx context.Context, q *gorm.DB, actorID int64, want core.PermissionSet, deny *core.Error) error {
 	if actorID == 0 {
 		return nil
 	}
@@ -169,7 +169,7 @@ func cannotActOnRole(ctx context.Context) *core.Error {
 
 // audit records one audit_logs row of an authz change through q, the
 // change's transaction.
-func (s *Service) audit(ctx context.Context, q store.Querier, actorID int64, action, targetType string, id any, detail any) error {
+func (s *Service) audit(ctx context.Context, q *gorm.DB, actorID int64, action, targetType string, id any, detail any) error {
 	return audit.Audit(ctx, q, actorID, action, targetType, fmt.Sprint(id), detail)
 }
 
@@ -213,7 +213,7 @@ func (s *Service) CanActOnUsers(ctx context.Context, actorID int64, action core.
 
 // canActOnUsers is CanActOnUsers reading through q, the transaction of the
 // change when there is one.
-func (s *Service) canActOnUsers(ctx context.Context, q store.Querier, actorID int64, action core.UserAction, targetIDs ...int64) error {
+func (s *Service) canActOnUsers(ctx context.Context, q *gorm.DB, actorID int64, action core.UserAction, targetIDs ...int64) error {
 	ids := slices.Compact(slices.Sorted(slices.Values(targetIDs)))
 	if actorID == 0 || len(ids) == 0 {
 		return nil
@@ -254,7 +254,7 @@ func (s *Service) canActOnUsers(ctx context.Context, q store.Querier, actorID in
 
 // auditSelf records an action of actorID on itself that CanActOnUsers let
 // through: self, and the session or access key it came by.
-func (s *Service) auditSelf(ctx context.Context, q store.Querier, actorID int64) error {
+func (s *Service) auditSelf(ctx context.Context, q *gorm.DB, actorID int64) error {
 	if s.db == nil {
 		return nil // tests without a database: nowhere to audit
 	}

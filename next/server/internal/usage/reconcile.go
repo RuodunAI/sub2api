@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
@@ -213,7 +212,7 @@ func (s *Service) reconcileSweep(ctx context.Context) int {
 // dies halfway through a sweep loses a lease rather than wedging an entry,
 // and a second node cannot pick up what this one is already holding.
 func (s *Service) claimDue(ctx context.Context, limit int) ([]*settleEntry, error) {
-	rows, err := claimDueEntries(store.G(ctx, s.db.Pool), limit).Rows()
+	rows, err := claimDueEntries(store.G(ctx, s.db.Gorm), limit).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -580,7 +579,7 @@ func (s *Service) rescheduleAttempt(ctx context.Context, e *settleEntry, cfg res
 		// One last attempt exactly at the deadline rather than one fewer.
 		next = e.deadlineAt
 	}
-	err := s.outcomeTx(ctx, e, func(tx pgx.Tx) error {
+	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
 		status, err := lockUsageRow(ctx, tx, e.usageLogID)
 		if err != nil {
 			return err
@@ -620,7 +619,7 @@ func rescheduleEntry(db *gorm.DB, e *settleEntry, increment int, next time.Time,
 func (s *Service) closeEntry(ctx context.Context, e *settleEntry, state, note string) {
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	if err := closeEntryRow(store.G(ctx, s.db.Pool), e.id, state, note).Error; err != nil {
+	if err := closeEntryRow(store.G(ctx, s.db.Gorm), e.id, state, note).Error; err != nil {
 		s.rec.log.Error("reconcile: close entry", "entry", e.id, "err", err)
 	}
 }
@@ -658,7 +657,7 @@ func (s *Service) settleReconciled(ctx context.Context, e *settleEntry, row *res
 	var ledgerRes *core.LedgerResult
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err = s.outcomeTx(ctx, e, func(tx pgx.Tx) error {
+	err = s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
 		if err := s.lockTaskOutcome(ctx, tx, e, "closed"); err != nil {
 			return err
 		}
@@ -746,7 +745,7 @@ func (s *Service) refundFailed(ctx context.Context, e *settleEntry, row *reserve
 	var ledgerRes *core.LedgerResult
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err := s.outcomeTx(ctx, e, func(tx pgx.Tx) error {
+	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
 		if err := s.lockTaskOutcome(ctx, tx, e, "closed"); err != nil {
 			return err
 		}
@@ -899,7 +898,7 @@ func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reserve
 	p := row.p
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err := s.outcomeTx(ctx, e, func(tx pgx.Tx) error {
+	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
 		observation := "closed"
 		if entryState == SettleStateAbandoned {
 			observation = "abandoned"
@@ -958,7 +957,7 @@ func (s *Service) loadReserved(ctx context.Context, usageLogID int64) (*reserved
 	p := &pending{}
 	st := &reservedRowState{p: p}
 	var metrics, detail []byte
-	err := store.G(ctx, s.db.Pool).Raw(`
+	err := store.G(ctx, s.db.Gorm).Raw(`
 		SELECT u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
 		       u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
 		       u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens,

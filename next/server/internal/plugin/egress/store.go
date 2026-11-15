@@ -5,7 +5,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -20,7 +19,7 @@ type pgStore struct{ db *store.DB }
 const logBatch = 65535 / 12
 
 func (s pgStore) resetOpen(ctx context.Context, nodeID string, before time.Time) (int64, error) {
-	res := resetOpenLogs(store.G(ctx, s.db.Pool), nodeID, before)
+	res := resetOpenLogs(store.G(ctx, s.db.Gorm), nodeID, before)
 	return res.RowsAffected, res.Error
 }
 
@@ -69,9 +68,9 @@ func (s pgStore) insertDone(ctx context.Context, rows []logEntry) error {
 // their ids.
 func (s pgStore) insertLogs(ctx context.Context, logs []model.PluginEgressLog) error {
 	if len(logs) <= logBatch {
-		return insertLogRows(store.G(ctx, s.db.Pool), logs).Error
+		return insertLogRows(store.G(ctx, s.db.Gorm), logs).Error
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		for chunk := range slices.Chunk(logs, logBatch) {
 			if err := insertLogRows(g, chunk).Error; err != nil {
@@ -90,7 +89,7 @@ func insertLogRows(g *gorm.DB, logs []model.PluginEgressLog) *gorm.DB {
 }
 
 func (s pgStore) closeRows(ctx context.Context, rows []closedRow) error {
-	return closeLogRows(store.G(ctx, s.db.Pool), rows).Error
+	return closeLogRows(store.G(ctx, s.db.Gorm), rows).Error
 }
 
 // closeLogRows updates the closed rows in one statement. Raw SQL: the
@@ -117,16 +116,16 @@ func closeLogRows(g *gorm.DB, rows []closedRow) *gorm.DB {
 }
 
 func (s pgStore) prune(ctx context.Context, before time.Time) error {
-	return store.G(ctx, s.db.Pool).Where("started_at < ?", before).Delete(&model.PluginEgressLog{}).Error
+	return store.G(ctx, s.db.Gorm).Where("started_at < ?", before).Delete(&model.PluginEgressLog{}).Error
 }
 
 func (s pgStore) upsertDomains(ctx context.Context, ds []domainDelta,
-	onNew func(ctx context.Context, tx pgx.Tx, news []domainDelta) error) error {
+	onNew func(ctx context.Context, tx *gorm.DB, news []domainDelta) error) error {
 	byKey := make(map[domainKey]domainDelta, len(ds))
 	for _, d := range ds {
 		byKey[domainKey{d.PluginKey, d.Host}] = d
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var rows []upsertedDomain
 		if err := upsertDomainRows(store.G(ctx, tx), ds).Scan(&rows).Error; err != nil {
 			return err

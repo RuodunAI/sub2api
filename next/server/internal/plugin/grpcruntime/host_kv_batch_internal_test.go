@@ -483,11 +483,11 @@ func (q *pgQueries) take() []string {
 func TestKVBatchChecksTheGrantOnceAndMakesOneRedisRoundTrip(t *testing.T) {
 	base := testutil.DB(t)
 	ctx := context.Background()
-	if _, err := base.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status)VALUES('pa','{}','enabled');INSERT INTO plugin_permission_grants(plugin_key,permission,scope,status,plugin_version,manifest_hash)VALUES('pa','kv','{}','granted','1.0.0','hash')`); err != nil {
+	if _, err := base.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status)VALUES('pa','{}','enabled');INSERT INTO plugin_permission_grants(plugin_key,permission,scope,status,plugin_version,manifest_hash)VALUES('pa','kv','{}','granted','1.0.0','hash')`); err != nil {
 		t.Fatal(err)
 	}
 	queries := &pgQueries{}
-	cfg := base.Pool.Config()
+	cfg := base.Gorm.Config()
 	cfg.ConnConfig.Tracer = queries
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -551,7 +551,7 @@ func TestKVBatchChecksTheGrantOnceAndMakesOneRedisRoundTrip(t *testing.T) {
 	}
 
 	// A grant revoked in PostgreSQL stops the next call, before Redis.
-	if _, err := base.Pool.Exec(ctx, `UPDATE plugin_permission_grants SET status='revoked'`); err != nil {
+	if _, err := base.SQL.ExecContext(ctx, `UPDATE plugin_permission_grants SET status='revoked'`); err != nil {
 		t.Fatal(err)
 	}
 	if got := kvBatchCodes(h, "n", keys); got != allCodes(codes.PermissionDenied) {

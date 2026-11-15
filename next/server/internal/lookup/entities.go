@@ -81,8 +81,8 @@ var groupOpenTo = segment.UsableGroupSQL("g", "?")
 
 // callerIs is the Scope of a kind whose own rows one condition selects; its
 // "?" takes the caller's id.
-func callerIs(cond string) func(context.Context, store.Querier, int64, *store.Conds) error {
-	return func(_ context.Context, _ store.Querier, uid int64, f *store.Conds) error {
+func callerIs(cond string) func(context.Context, *gorm.DB, int64, *store.Conds) error {
+	return func(_ context.Context, _ *gorm.DB, uid int64, f *store.Conds) error {
 		f.And(cond, uid)
 		return nil
 	}
@@ -94,7 +94,7 @@ func callerIs(cond string) func(context.Context, store.Querier, int64, *store.Co
 // them. GET /me/prices?group_id= lists a subset of it: of these, only the
 // models the accounts of that group provide. The group policy is a glob list
 // (core.GroupInfo.AllowsModel), evaluated here rather than rewritten in SQL.
-func usableModels(ctx context.Context, q store.Querier, uid int64, f *store.Conds) error {
+func usableModels(ctx context.Context, q *gorm.DB, uid int64, f *store.Conds) error {
 	db := store.G(ctx, q)
 	groups, err := modelPolicies(db, uid)
 	if err != nil {

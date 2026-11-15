@@ -56,7 +56,7 @@ func (s *Service) myBalance(c *gin.Context) {
 	ctx := c.Request.Context()
 	uid, _ := core.UserID(ctx)
 	var bal decimal.Decimal
-	err := store.G(ctx, s.db.Pool).Raw(`SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = ?), 0)`, uid).Row().Scan(&bal)
+	err := store.G(ctx, s.db.Gorm).Raw(`SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = ?), 0)`, uid).Row().Scan(&bal)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -83,7 +83,7 @@ func (s *Service) myLedger(c *gin.Context) {
 			f.And(x.cond, t)
 		}
 	}
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	var total int64
 	if err := ledgerRows(g, f).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
@@ -152,7 +152,7 @@ func (s *Service) listLedger(c *gin.Context, userID *int64) {
 			f.And(x.cond, t)
 		}
 	}
-	g := store.G(ctx, s.db.Pool)
+	g := store.G(ctx, s.db.Gorm)
 	var total int64
 	if err := ledgerRows(g, f).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)

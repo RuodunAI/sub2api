@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -42,7 +43,7 @@ func Context(c *gin.Context) context.Context {
 
 // Audit writes one audit_logs row. actorID 0 means system. detail nil is
 // written as {}. q may be the pool or a transaction.
-func Audit(ctx context.Context, q store.Querier, actorID int64, action, targetType, targetID string, detail any) error {
+func Audit(ctx context.Context, q *gorm.DB, actorID int64, action, targetType, targetID string, detail any) error {
 	var uid *int64
 	if actorID > 0 {
 		uid = &actorID

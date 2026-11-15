@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -28,7 +28,7 @@ func liveContexts(db *gorm.DB, owner core.ResourceOwner, at time.Time, renewID s
 		Where(`c.user_id=? AND c.group_id=? AND r.kind='container' AND r.state='ready' AND (r.expires_at>? OR r.public_id=?)`, owner.UserID, owner.GroupID, at, renewID)
 }
 
-func (s *Service) contextQuota(ctx context.Context, tx pgx.Tx, owner core.ResourceOwner, extra int, at time.Time, renewID string) error {
+func (s *Service) contextQuota(ctx context.Context, tx *gorm.DB, owner core.ResourceOwner, extra int, at time.Time, renewID string) error {
 	var count int64
 	err := liveContexts(store.G(ctx, tx), owner, at, renewID).Count(&count).Error
 	if err != nil {
@@ -40,7 +40,7 @@ func (s *Service) contextQuota(ctx context.Context, tx pgx.Tx, owner core.Resour
 	return nil
 }
 
-func contextTarget(ctx context.Context, q store.Querier, in core.ResourceContext, id string) (core.ProviderResource, error) {
+func contextTarget(ctx context.Context, q *gorm.DB, in core.ResourceContext, id string) (core.ProviderResource, error) {
 	r, _, err := read(store.G(ctx, q), `user_id=? AND group_id=? AND public_id=?`, in.Owner.UserID, in.Owner.GroupID, id)
 	if store.IsNoRows(err) {
 		return r, core.ErrNotFound
@@ -58,7 +58,7 @@ func (s *Service) BindContext(ctx context.Context, in core.ResourceContext) erro
 	if !validResourceContext(in) || !bounded(in.ResourceID) {
 		return core.ErrInvalidArgument
 	}
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockOwner(ctx, tx, in.Owner); err != nil {
 			return err
 		}
@@ -102,7 +102,7 @@ func (s *Service) ResolveContext(ctx context.Context, in core.ResourceContext) (
 	if !validResourceContext(in) {
 		return out, core.ErrInvalidArgument
 	}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockOwner(ctx, tx, in.Owner); err != nil {
 			return err
 		}

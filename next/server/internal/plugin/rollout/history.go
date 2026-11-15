@@ -29,7 +29,7 @@ func (c *Controller) recordNodeHistory(ctx context.Context, key string, s NodePl
 	}
 	message, _ := json.Marshal(map[string]string{"standby": s.Standby, "fallback": s.Fallback, "error": s.Error, "rollout": s.Rollout})
 	row := historyRow(key, s, c.o.Node.NodeID(), c.o.Node.BootID(), string(message))
-	if err := store.G(ctx, c.o.DB.Pool).Create(row).Error; err != nil {
+	if err := store.G(ctx, c.o.DB.Gorm).Create(row).Error; err != nil {
 		c.log.Warn("persist plugin node history failed", "plugin", key, "err", err)
 		return
 	}
@@ -61,7 +61,7 @@ func (c *Controller) cleanHistory(ctx context.Context) {
 	if time.Since(c.historyCleaned) < time.Hour {
 		return
 	}
-	if err := pruneHistory(store.G(ctx, c.o.DB.Pool)).Error; err != nil {
+	if err := pruneHistory(store.G(ctx, c.o.DB.Gorm)).Error; err != nil {
 		c.log.Warn("clean plugin history failed", "err", err)
 		return
 	}

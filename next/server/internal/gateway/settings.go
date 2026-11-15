@@ -229,26 +229,26 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 		s.at = time.Now()
 		return s
 	}
-	s.failurePolicy, s.failurePolicyErr = loadFailurePolicy(ctx, c.db.Pool)
+	s.failurePolicy, s.failurePolicyErr = loadFailurePolicy(ctx, c.db.Gorm)
 	if s.failurePolicyErr != nil {
 		return s
 	}
-	gw, err := loadGatewaySettings(ctx, c.db.Pool)
+	gw, err := loadGatewaySettings(ctx, c.db.Gorm)
 	if err != nil {
 		return s
 	}
 	s.gateway = gw.normalized()
-	st, err := loadStickySettings(ctx, c.db.Pool)
+	st, err := loadStickySettings(ctx, c.db.Gorm)
 	if err != nil {
 		return s
 	}
 	s.sticky = st
-	ad, err := loadAutoDisableSettings(ctx, c.db.Pool)
+	ad, err := loadAutoDisableSettings(ctx, c.db.Gorm)
 	if err != nil {
 		return s
 	}
 	s.autoDisable = ad
-	sc, err := loadSchedulingSettings(ctx, c.db.Pool)
+	sc, err := loadSchedulingSettings(ctx, c.db.Gorm)
 	if err != nil {
 		return s
 	}
@@ -260,7 +260,7 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 // row (the column is NOT NULL). The settings cache reloads it on the request
 // path, so it is Raw SQL scanned through Row, the form that allocates least
 // (BenchmarkHotSettingsRow).
-func settingValue(ctx context.Context, q store.Querier, key string) ([]byte, error) {
+func settingValue(ctx context.Context, q *gorm.DB, key string) ([]byte, error) {
 	var raw []byte
 	err := settingValueQuery(store.G(ctx, q), key).Row().Scan(&raw)
 	if store.IsNoRows(err) {
@@ -274,7 +274,7 @@ func settingValueQuery(db *gorm.DB, key string) *gorm.DB {
 	return db.Raw(`SELECT value FROM settings WHERE key = ?`, key)
 }
 
-func loadSettingsRow(ctx context.Context, q store.Querier, key string, into any) error {
+func loadSettingsRow(ctx context.Context, q *gorm.DB, key string, into any) error {
 	raw, err := settingValue(ctx, q, key)
 	if err != nil || raw == nil {
 		return err
@@ -283,13 +283,13 @@ func loadSettingsRow(ctx context.Context, q store.Querier, key string, into any)
 	return json.Unmarshal(raw, into)
 }
 
-func loadGatewaySettings(ctx context.Context, q store.Querier) (GatewaySettings, error) {
+func loadGatewaySettings(ctx context.Context, q *gorm.DB) (GatewaySettings, error) {
 	v := defaultGatewaySettings()
 	err := loadSettingsRow(ctx, q, settingsKeyGateway, &v)
 	return v, err
 }
 
-func loadStickySettings(ctx context.Context, q store.Querier) (StickySettings, error) {
+func loadStickySettings(ctx context.Context, q *gorm.DB) (StickySettings, error) {
 	v := defaultStickySettings()
 	err := loadSettingsRow(ctx, q, settingsKeySticky, &v)
 	if v.DefaultTTLSeconds <= 0 {
