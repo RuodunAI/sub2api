@@ -1,0 +1,5 @@
+-- sql
+SELECT epoch, target_boot_ids, stopped_boot_ids, requested_at FROM "plugin_uninstalls" WHERE plugin_key = $1 LIMIT $2 FOR UPDATE
+-- vars
+$1 string "demo"
+$2 int 1

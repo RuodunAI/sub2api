@@ -12,12 +12,16 @@ import (
 	"slices"
 	"sync"
 
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/blobs"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Plugin statuses (plugins.status).
@@ -197,9 +201,33 @@ func (s *Service) checkPackage(ctx context.Context, key, version string) error {
 
 // packageRef reads the sha256 and market URL of key@version's package.
 func packageRef(ctx context.Context, q store.Querier, key, version string) (sha, url string, err error) {
-	err = q.QueryRow(ctx, `SELECT package_sha256, package_url FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
-		key, version).Scan(&sha, &url)
-	return sha, url, err
+	var v model.PluginVersion
+	err = versionRow(store.G(ctx, q), key, version).Select("package_sha256, package_url").Take(&v).Error
+	return v.PackageSha256, v.PackageURL, err
+}
+
+// forUpdate locks the rows a statement reads (FOR UPDATE).
+var forUpdate = clause.Locking{Strength: clause.LockingStrengthUpdate}
+
+// pluginRow is the plugins row of key.
+func pluginRow(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.Plugin{}).Where("key = ?", key)
+}
+
+// lockedPlugin is the plugins row of key, read FOR UPDATE: the lock every
+// lifecycle change takes first (no lock-order deadlock with the grant rows).
+func lockedPlugin(db *gorm.DB, key string) *gorm.DB {
+	return pluginRow(db, key).Clauses(forUpdate)
+}
+
+// versionRow is the plugin_versions row of key@version.
+func versionRow(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Model(&model.PluginVersion{}).Where("plugin_key = ? AND version = ?", key, version)
+}
+
+// selectExists selects whether sub, a query built on db, finds a row.
+func selectExists(db, sub *gorm.DB) *gorm.DB {
+	return db.Raw("SELECT EXISTS (?)", sub.Select("1"))
 }
 
 // cached returns the package unpacked for key@version with sha while the
@@ -242,23 +270,28 @@ func (s *Service) uncache(key, version string) []cachedPkg {
 // else the newest uploaded one. Empty when the plugin has no versions.
 func CurrentVersion(ctx context.Context, q store.Querier, key string) (string, error) {
 	var v string
-	err := q.QueryRow(ctx, `
-		SELECT COALESCE(p.active_version, p.desired_version,
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved'
-		     ORDER BY uploaded_at DESC LIMIT 1),
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status <> 'rejected'
-		     ORDER BY uploaded_at DESC LIMIT 1), '')
-		FROM plugins p WHERE p.key = $1`, key).Scan(&v)
+	err := currentVersion(store.G(ctx, q), key).Row().Scan(&v)
 	if store.IsNoRows(err) {
 		return "", core.ErrNotFound.WithMessage("plugin not found")
 	}
 	return v, err
 }
 
+// currentVersion is the statement of CurrentVersion.
+func currentVersion(db *gorm.DB, key string) *gorm.DB {
+	return db.Raw(`
+		SELECT COALESCE(p.active_version, p.desired_version,
+		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved'
+		     ORDER BY uploaded_at DESC LIMIT 1),
+		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status <> 'rejected'
+		     ORDER BY uploaded_at DESC LIMIT 1), '')
+		FROM plugins p WHERE p.key = ?`, key)
+}
+
 // LoadManifest reads plugin_versions.manifest.
 func LoadManifest(ctx context.Context, q store.Querier, key, version string) (*manifest.Manifest, error) {
-	var raw []byte
-	err := q.QueryRow(ctx, `SELECT manifest FROM plugin_versions WHERE plugin_key = $1 AND version = $2`, key, version).Scan(&raw)
+	var v model.PluginVersion
+	err := versionRow(store.G(ctx, q), key, version).Select("manifest").Take(&v).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
@@ -266,7 +299,7 @@ func LoadManifest(ctx context.Context, q store.Querier, key, version string) (*m
 		return nil, err
 	}
 	var m manifest.Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(v.Manifest, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil

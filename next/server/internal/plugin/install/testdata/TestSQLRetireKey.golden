@@ -1,0 +1,7 @@
+-- sql
+INSERT INTO plugin_key_retirements (plugin_key, publisher_id, retired_by)
+		SELECT key, publisher_id, $1 FROM plugins WHERE key = $2
+		ON CONFLICT (plugin_key) DO UPDATE SET publisher_id = EXCLUDED.publisher_id, retired_at = now(), retired_by = EXCLUDED.retired_by
+-- vars
+$1 *int64 7
+$2 string "demo"

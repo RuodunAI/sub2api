@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 
 	"github.com/Masterminds/semver/v3"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // BuiltinRequirement is immutable image metadata, read once at startup.
@@ -68,6 +71,7 @@ func (s *Service) BuiltinsCommitted(ctx context.Context, want map[string]Builtin
 }
 
 func (s *Service) builtinsReady(ctx context.Context, want map[string]BuiltinRequirement, gen core.Generation, checkLocal bool) (bool, error) {
+	g := store.G(ctx, s.d.DB.Pool)
 	for key, need := range want {
 		var local core.PluginInfo
 		var hasLocal bool
@@ -77,11 +81,8 @@ func (s *Service) builtinsReady(ctx context.Context, want map[string]BuiltinRequ
 		var status string
 		var active *string
 		var approved, activeApproved, localApproved bool
-		err := s.d.DB.Pool.QueryRow(ctx, `SELECT status,active_version,EXISTS(SELECT 1 FROM plugin_versions v
-			WHERE v.plugin_key=plugins.key AND v.version=$2 AND consent_status='approved'),
-			EXISTS(SELECT 1 FROM plugin_versions v WHERE v.plugin_key=plugins.key AND v.version=plugins.active_version AND consent_status='approved'),
-			EXISTS(SELECT 1 FROM plugin_versions v WHERE v.plugin_key=plugins.key AND v.version=$3 AND consent_status='approved')
-			FROM plugins WHERE key=$1 AND builtin`, key, need.Version.Original(), local.Version).Scan(&status, &active, &approved, &activeApproved, &localApproved)
+		err := builtinState(g, key, need.Version.Original(), local.Version).
+			Row().Scan(&status, &active, &approved, &activeApproved, &localApproved)
 		if err != nil {
 			return false, err
 		}
@@ -113,4 +114,14 @@ func (s *Service) builtinsReady(ctx context.Context, want map[string]BuiltinRequ
 		}
 	}
 	return true, nil
+}
+
+// builtinState selects the status and active version of built-in plugin key
+// and whether its versions need, active and local are approved.
+func builtinState(db *gorm.DB, key, need, local string) *gorm.DB {
+	return db.Raw(`SELECT status,active_version,EXISTS(SELECT 1 FROM plugin_versions v
+			WHERE v.plugin_key=plugins.key AND v.version=? AND consent_status='approved'),
+			EXISTS(SELECT 1 FROM plugin_versions v WHERE v.plugin_key=plugins.key AND v.version=plugins.active_version AND consent_status='approved'),
+			EXISTS(SELECT 1 FROM plugin_versions v WHERE v.plugin_key=plugins.key AND v.version=? AND consent_status='approved')
+			FROM plugins WHERE key=? AND builtin`, need, local, key)
 }

@@ -2,12 +2,14 @@ package install
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"maps"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -272,30 +274,14 @@ func auditAutoGrants(ctx context.Context, tx pgx.Tx, actorID int64, key, version
 // since the list shows each grant once (under its earliest version). Risk
 // is the catalog's; a grant audited before scopes existed is of every row.
 func (s *Service) PendingRoleGrants(ctx context.Context, q store.Querier, key, version string) ([]RoleGrant, error) {
-	rows, err := q.Query(ctx, `
-SELECT a.detail->>'version', g->>'permission', g->>'role', COALESCE(g->>'scope', ''), COALESCE(g->>'via', ''),
-       COALESCE((g->>'needs_consent')::boolean, true)
-FROM audit_logs a CROSS JOIN LATERAL jsonb_array_elements(a.detail->'pending') g
-WHERE a.action = ANY($3) AND a.target_type = 'plugin' AND a.target_id = $1
-  AND jsonb_typeof(a.detail->'pending') = 'array'
-  AND a.created_at >= (SELECT installed_at FROM plugins WHERE key = $1)
-  AND ($2 = '' OR a.detail->>'version' = $2)
-  AND NOT EXISTS (SELECT 1 FROM audit_logs b WHERE b.target_type = 'plugin' AND b.target_id = a.target_id
-      AND b.action = ANY($4) AND b.id > a.id
-      AND (b.detail->>'version' = a.detail->>'version'
-        OR (b.action = $5 AND b.detail->'grants' @> jsonb_build_array(jsonb_build_object('permission', g->>'permission', 'role', g->>'role')))))
-  AND EXISTS (SELECT 1 FROM roles r WHERE r.key = g->>'role' AND NOT r.superuser)
-ORDER BY a.id, 2, 3, 4`, key, version, []string{AuditConsentAuto, AuditConsent, AuditRoleGrantsCarry},
-		[]string{AuditRoleGrantsConfirm, AuditRoleGrantsReject}, AuditRoleGrantsReject)
-	if err != nil {
-		return nil, err
-	}
-	listed, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (RoleGrant, error) {
-		g := RoleGrant{Withheld: true}
-		return g, r.Scan(&g.Version, &g.Permission, &g.Role, &g.Scope, &g.Via, &g.NeedsConsent)
-	})
-	if err != nil || len(listed) == 0 {
+	var rows []pendingRoleGrantRow
+	if err := pendingRoleGrants(store.G(ctx, q), key, version).Scan(&rows).Error; err != nil || len(rows) == 0 {
 		return []RoleGrant{}, err
+	}
+	listed := make([]RoleGrant, len(rows))
+	for i, r := range rows {
+		listed[i] = RoleGrant{Version: r.Version, Permission: r.Permission, Role: r.Role, Scope: r.Scope, Via: r.Via,
+			NeedsConsent: r.NeedsConsent, Withheld: true}
 	}
 	cat, err := s.catalog()
 	if err != nil {
@@ -364,7 +350,7 @@ func (s *Service) ReviewRoleGrants(ctx context.Context, key, version string, con
 	defer release()
 	var gs []RoleGrant
 	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM plugins WHERE key = $1 FOR UPDATE`, key); err != nil {
+		if err := store.G(ctx, tx).Exec(`SELECT 1 FROM plugins WHERE key = ? FOR UPDATE`, key).Error; err != nil {
 			return err
 		}
 		var err error
@@ -491,14 +477,9 @@ func carryRenamedHolders(ctx context.Context, cat core.PermissionCatalog, tx pgx
 // consent), and the local keys its overrides named. None for a version with
 // no consent recorded.
 func consentDecisions(ctx context.Context, q store.Querier, key, version string) (map[[3]string]bool, map[string]bool, error) {
-	var overrides []string
+	var overrides store.Strings
 	var raw []byte
-	err := q.QueryRow(ctx, `
-SELECT COALESCE((SELECT array_agg(k) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.detail->'new_permission_roles') = 'object'
-           THEN a.detail->'new_permission_roles' ELSE '{}' END) k), '{}'),
-       COALESCE(a.detail->'role_grants', '[]')
-FROM audit_logs a WHERE a.action = $3 AND a.target_type = 'plugin' AND a.target_id = $1 AND a.detail->>'version' = $2
-ORDER BY a.id DESC LIMIT 1`, key, version, AuditConsent).Scan(&overrides, &raw)
+	err := latestConsentDecisions(store.G(ctx, q), key, version).Row().Scan(&overrides, &raw)
 	if store.IsNoRows(err) {
 		return nil, nil, nil
 	}
@@ -520,4 +501,50 @@ ORDER BY a.id DESC LIMIT 1`, key, version, AuditConsent).Scan(&overrides, &raw)
 		overridden[local] = true
 	}
 	return planned, overridden, nil
+}
+
+// pendingRoleGrantRow is a row of pendingRoleGrants.
+type pendingRoleGrantRow struct {
+	Version      string `gorm:"column:version"`
+	Permission   string `gorm:"column:permission"`
+	Role         string `gorm:"column:role"`
+	Scope        string `gorm:"column:scope"`
+	Via          string `gorm:"column:via"`
+	NeedsConsent bool   `gorm:"column:needs_consent"`
+}
+
+// pendingRoleGrants selects the role grants of key withheld for review and
+// not cleared since (PendingRoleGrants), of version ("" for every version).
+// The parameters are named: key and version appear twice each.
+func pendingRoleGrants(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Raw(`
+SELECT a.detail->>'version' AS version, g->>'permission' AS permission, g->>'role' AS role,
+       COALESCE(g->>'scope', '') AS scope, COALESCE(g->>'via', '') AS via,
+       COALESCE((g->>'needs_consent')::boolean, true) AS needs_consent
+FROM audit_logs a CROSS JOIN LATERAL jsonb_array_elements(a.detail->'pending') g
+WHERE a.action = ANY(@listed) AND a.target_type = 'plugin' AND a.target_id = @key
+  AND jsonb_typeof(a.detail->'pending') = 'array'
+  AND a.created_at >= (SELECT installed_at FROM plugins WHERE key = @key)
+  AND (@version = '' OR a.detail->>'version' = @version)
+  AND NOT EXISTS (SELECT 1 FROM audit_logs b WHERE b.target_type = 'plugin' AND b.target_id = a.target_id
+      AND b.action = ANY(@cleared) AND b.id > a.id
+      AND (b.detail->>'version' = a.detail->>'version'
+        OR (b.action = @reject AND b.detail->'grants' @> jsonb_build_array(jsonb_build_object('permission', g->>'permission', 'role', g->>'role')))))
+  AND EXISTS (SELECT 1 FROM roles r WHERE r.key = g->>'role' AND NOT r.superuser)
+ORDER BY a.id, 2, 3, 4`,
+		sql.Named("key", key), sql.Named("version", version),
+		sql.Named("listed", store.Strings{AuditConsentAuto, AuditConsent, AuditRoleGrantsCarry}),
+		sql.Named("cleared", store.Strings{AuditRoleGrantsConfirm, AuditRoleGrantsReject}),
+		sql.Named("reject", AuditRoleGrantsReject))
+}
+
+// latestConsentDecisions selects the override keys and the role_grants plan
+// of the latest consent of key@version.
+func latestConsentDecisions(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Raw(`
+SELECT COALESCE((SELECT array_agg(k) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.detail->'new_permission_roles') = 'object'
+           THEN a.detail->'new_permission_roles' ELSE '{}' END) k), '{}'),
+       COALESCE(a.detail->'role_grants', '[]')
+FROM audit_logs a WHERE a.action = ? AND a.target_type = 'plugin' AND a.target_id = ? AND a.detail->>'version' = ?
+ORDER BY a.id DESC LIMIT 1`, AuditConsent, key, version)
 }

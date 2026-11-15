@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // UploadOptions constrain an upload (market installs pin key and version).
@@ -112,10 +114,10 @@ func (s *Service) openAndValidate(ctx context.Context, data []byte, opt UploadOp
 // storedIdentical reports whether this exact package is stored as its key and
 // version (and was not rejected).
 func (s *Service) storedIdentical(ctx context.Context, p *pkg.Package) (bool, error) {
+	g := store.G(ctx, s.d.DB.Pool)
 	var ok bool
-	err := s.d.DB.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_versions
-		WHERE plugin_key = $1 AND version = $2 AND package_sha256 = $3 AND consent_status <> $4)`,
-		p.Manifest.Key, p.Manifest.Version, p.SHA256, ConsentRejected).Scan(&ok)
+	err := selectExists(g, versionRow(g, p.Manifest.Key, p.Manifest.Version).
+		Where("package_sha256 = ? AND consent_status <> ?", p.SHA256, ConsentRejected)).Scan(&ok).Error
 	return ok, err
 }
 
@@ -153,17 +155,16 @@ func (s *Service) recordUpload(ctx context.Context, p *pkg.Package, actorID int6
 		if err := pkg.CheckTrust(m, ver.Trust); err != nil {
 			return err
 		}
-		var (
-			status   string
-			pubID    *int64
-			existing = true
-		)
-		err = tx.QueryRow(ctx, `SELECT status, publisher_id FROM plugins WHERE key = $1 FOR UPDATE`, m.Key).Scan(&status, &pubID)
+		g := store.G(ctx, tx)
+		var plugin model.Plugin
+		existing := true
+		err = lockedPlugin(g, m.Key).Select("status, publisher_id").Take(&plugin).Error
 		if store.IsNoRows(err) {
 			existing = false
 		} else if err != nil {
 			return err
 		}
+		status, pubID := plugin.Status, plugin.PublisherID
 		if err := checkReserved(m, opt.Source, ver.Trust, !existing && !s.opt.Plugins.DevMode); err != nil {
 			return err
 		}
@@ -181,10 +182,7 @@ func (s *Service) recordUpload(ctx context.Context, p *pkg.Package, actorID int6
 			}
 		}
 		if !existing {
-			name, _ := json.Marshal(m.Name)
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO plugins (key, name, publisher_id, status, installed_by)
-				VALUES ($1, $2, $3, $4, $5)`, m.Key, name, ver.PublisherID, StatusAwaitingConsent, nullID(actorID)); err != nil {
+			if err := g.Create(newPlugin(m, ver.PublisherID, actorID)).Error; err != nil {
 				return err
 			}
 			status = StatusAwaitingConsent
@@ -196,8 +194,7 @@ func (s *Service) recordUpload(ctx context.Context, p *pkg.Package, actorID int6
 		if !insert {
 			rec.consent = priorConsent // idempotent re-upload keeps its status
 		}
-		if err := tx.QueryRow(ctx, `SELECT uploaded_at FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
-			m.Key, m.Version).Scan(&rec.uploadedAt); err != nil {
+		if err := versionRow(g, m.Key, m.Version).Select("uploaded_at").Take(&rec.uploadedAt).Error; err != nil {
 			return err
 		}
 		if status != StatusAwaitingConsent {
@@ -224,16 +221,17 @@ func (s *Service) recordUpload(ctx context.Context, p *pkg.Package, actorID int6
 // consent status is returned so the review can report it unchanged.
 func insertVersionRow(ctx context.Context, tx pgx.Tx, p *pkg.Package, ver *pkg.Verification, opt UploadOptions, actorID int64) (inserted bool, priorConsent string, err error) {
 	m := p.Manifest
-	var oldSHA, oldConsent string
-	err = tx.QueryRow(ctx, `SELECT package_sha256, consent_status FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
-		m.Key, m.Version).Scan(&oldSHA, &oldConsent)
+	g := store.G(ctx, tx)
+	var old model.PluginVersion
+	err = versionRow(g, m.Key, m.Version).Select("package_sha256, consent_status").Take(&old).Error
+	oldSHA, oldConsent := old.PackageSha256, core.ValueOr(old.ConsentStatus, "")
 	switch {
 	case store.IsNoRows(err):
 	case err != nil:
 		return false, "", err
 	case oldConsent == ConsentRejected:
 		// A rejected upload may be retried (possibly with other content).
-		if _, err := tx.Exec(ctx, `DELETE FROM plugin_versions WHERE plugin_key = $1 AND version = $2`, m.Key, m.Version); err != nil {
+		if err := versionRow(g, m.Key, m.Version).Delete(&model.PluginVersion{}).Error; err != nil {
 			return false, "", err
 		}
 	case oldSHA == p.SHA256:
@@ -241,13 +239,24 @@ func insertVersionRow(ctx context.Context, tx pgx.Tx, p *pkg.Package, ver *pkg.V
 	default:
 		return false, "", core.ErrConflict.WithMessage(fmt.Sprintf("version %s of %q was already uploaded with different content", m.Version, m.Key))
 	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_url,
-		  package_size, publisher_id, key_id, signature_status, consent_status, uploaded_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		m.Key, m.Version, p.ManifestRaw, p.ManifestHash, p.SHA256, opt.PackageURL, len(p.Raw),
-		ver.PublisherID, nullStr(ver.KeyID), ver.SignatureStatus, ConsentAwaiting, nullID(actorID))
-	return true, "", err
+	return true, "", g.Create(newVersion(p, ver, opt, actorID)).Error
+}
+
+// newPlugin is the plugins row of a first upload of m, awaiting consent.
+func newPlugin(m *manifest.Manifest, publisherID *int64, actorID int64) *model.Plugin {
+	name, _ := json.Marshal(m.Name)
+	return &model.Plugin{Key: m.Key, Name: name, PublisherID: publisherID, Status: StatusAwaitingConsent, InstalledBy: nullID(actorID)}
+}
+
+// newVersion is the plugin_versions row of an upload of p, awaiting consent.
+func newVersion(p *pkg.Package, ver *pkg.Verification, opt UploadOptions, actorID int64) *model.PluginVersion {
+	m, consent := p.Manifest, ConsentAwaiting
+	return &model.PluginVersion{
+		PluginKey: m.Key, Version: m.Version, Manifest: p.ManifestRaw, ManifestHash: p.ManifestHash,
+		PackageSha256: p.SHA256, PackageURL: opt.PackageURL, PackageSize: int64(len(p.Raw)),
+		PublisherID: ver.PublisherID, KeyID: nullStr(ver.KeyID), SignatureStatus: ver.SignatureStatus,
+		ConsentStatus: &consent, UploadedBy: nullID(actorID),
+	}
 }
 
 // carryOverConsent approves an upgrade that neither adds nor widens host
@@ -280,37 +289,42 @@ func (s *Service) carryOverConsent(ctx context.Context, r *Review, key, version 
 // a built-in plugin's above all, and Consent checks it again before it is
 // approved.
 func (s *Service) otherResources(ctx context.Context, q store.Querier, key string) ([]pkg.PlatformOwner, []pkg.EndpointOwner, []pkg.ChannelOwner, error) {
-	rows, err := q.Query(ctx, `
-		SELECT plugin_key, manifest->'platforms', manifest->'notifications'
-		FROM plugin_versions
-		WHERE plugin_key <> $1 AND consent_status = 'approved'
-			AND (jsonb_typeof(manifest->'platforms') = 'array' OR jsonb_typeof(manifest->'notifications') = 'object')
-		ORDER BY plugin_key, version`, key)
-	if err != nil {
+	var rows []resourceRow
+	if err := approvedResources(store.G(ctx, q), key).Find(&rows).Error; err != nil {
 		return nil, nil, nil, err
 	}
-	defer rows.Close()
 	var ms []*manifest.Manifest
-	for rows.Next() {
-		m := &manifest.Manifest{}
-		var platforms, notifications []byte
-		if err := rows.Scan(&m.Key, &platforms, &notifications); err != nil {
-			return nil, nil, nil, err
-		}
-		if platforms != nil && json.Unmarshal(platforms, &m.Platforms) != nil ||
-			notifications != nil && json.Unmarshal(notifications, &m.Notifications) != nil {
+	for _, r := range rows {
+		m := &manifest.Manifest{Key: r.PluginKey}
+		if r.Platforms != nil && json.Unmarshal(r.Platforms, &m.Platforms) != nil ||
+			r.Notifications != nil && json.Unmarshal(r.Notifications, &m.Notifications) != nil {
 			continue
 		}
 		ms = append(ms, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, nil, err
 	}
 	pfs, eps := pkg.OthersFromManifests(ms)
 	return pfs, eps, pkg.ChannelsFromManifests(ms), nil
 }
 
+// resourceRow is what approvedResources reads of a version's manifest.
+type resourceRow struct {
+	PluginKey     string          `gorm:"column:plugin_key"`
+	Platforms     json.RawMessage `gorm:"column:platforms"`
+	Notifications json.RawMessage `gorm:"column:notifications"`
+}
+
+// approvedResources selects the platforms and notification channels of the
+// approved versions of plugins other than key.
+func approvedResources(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.PluginVersion{}).
+		Select("plugin_key, manifest->'platforms' AS platforms, manifest->'notifications' AS notifications").
+		Where(`plugin_key <> ? AND consent_status = 'approved'
+			AND (jsonb_typeof(manifest->'platforms') = 'array' OR jsonb_typeof(manifest->'notifications') = 'object')`, key).
+		Order("plugin_key, version")
+}
+
 func sameID(a, b *int64) bool {
+
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}

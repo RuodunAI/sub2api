@@ -2,18 +2,22 @@ package install
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Review is the consent screen payload (CONTRACTS §5.7).
@@ -270,8 +274,15 @@ func riskOf(id string) string {
 // LoadGrants reads all grant rows of a plugin: what its active version is
 // granted.
 func LoadGrants(ctx context.Context, q store.Querier, key string) (map[string]Grant, error) {
-	return loadGrants(ctx, q, `SELECT permission, scope, status, plugin_version, granted_by, granted_at
-		FROM plugin_permission_grants WHERE plugin_key = $1`, key)
+	return loadGrants(pluginGrants(store.G(ctx, q), key))
+}
+
+// grantColumns are the columns of a grant row a Grant shows.
+const grantColumns = "permission, scope, status, plugin_version, granted_by, granted_at"
+
+// pluginGrants selects the grant rows of plugin key (LoadGrants).
+func pluginGrants(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.PluginPermissionGrant{}).Select(grantColumns).Where("plugin_key = ?", key)
 }
 
 // loadPriorGrants reads what an upgrade is reviewed and decided against:
@@ -288,28 +299,42 @@ func loadPriorGrants(ctx context.Context, q store.Querier, key string) (map[stri
 // LoadVersionGrants reads the grant rows key@version runs with: the set
 // staged for it while it is not active, else the plugin's grants.
 func LoadVersionGrants(ctx context.Context, q store.Querier, key, version string) (map[string]Grant, error) {
-	return loadGrants(ctx, q, `SELECT permission, scope, status, plugin_version, granted_by, granted_at FROM `+grants.VersionRows, key, version)
+	return loadGrants(versionGrants(store.G(ctx, q), key, version))
 }
 
-func loadGrants(ctx context.Context, q store.Querier, sql string, args ...any) (map[string]Grant, error) {
-	rows, err := q.Query(ctx, sql, args...)
-	if err != nil {
+// versionRowsNamed is grants.VersionRows with named parameters: it takes
+// key and version as $1 and $2, several times each, for pgx.
+var versionRowsNamed = strings.NewReplacer("$1", "@key", "$2", "@version").Replace(grants.VersionRows)
+
+// versionGrants selects the grant rows key@version runs with (LoadVersionGrants).
+func versionGrants(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Raw("SELECT "+grantColumns+" FROM "+versionRowsNamed, sql.Named("key", key), sql.Named("version", version))
+}
+
+// grantRow is a grant row as a Grant shows it.
+type grantRow struct {
+	Permission    string          `gorm:"column:permission"`
+	Scope         json.RawMessage `gorm:"column:scope"`
+	Status        string          `gorm:"column:status"`
+	PluginVersion string          `gorm:"column:plugin_version"`
+	GrantedBy     *int64          `gorm:"column:granted_by"`
+	GrantedAt     time.Time       `gorm:"column:granted_at"`
+}
+
+// loadGrants reads the grant rows q selects, by permission.
+func loadGrants(q *gorm.DB) (map[string]Grant, error) {
+	var rows []grantRow
+	if err := q.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]Grant{}
-	for rows.Next() {
-		var g Grant
-		var scope []byte
-		if err := rows.Scan(&g.Permission, &scope, &g.Status, &g.PluginVersion, &g.GrantedBy, &g.GrantedAt); err != nil {
-			return nil, err
-		}
-		g.Scope = map[string]any{}
-		_ = json.Unmarshal(scope, &g.Scope)
-		g.Risk = riskOf(g.Permission)
+	out := make(map[string]Grant, len(rows))
+	for _, r := range rows {
+		g := Grant{Permission: r.Permission, Risk: riskOf(r.Permission), Scope: map[string]any{}, Status: r.Status,
+			PluginVersion: r.PluginVersion, GrantedBy: r.GrantedBy, GrantedAt: r.GrantedAt}
+		_ = json.Unmarshal(r.Scope, &g.Scope)
 		out[g.Permission] = g
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // SortedGrants returns grants ordered by permission id.
@@ -582,16 +607,13 @@ func (x *consentMatrix) cell(key string, up *ReviewUserPerm, col ReviewRoleColum
 // then built-in ones, as the viewer actorID may name them for a permission
 // of low risk. It returns what it read of the viewer (grantees).
 func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, actorID int64, mode consentMode) (core.PluginGrantees, bool, error) {
-	rows, err := tx.Query(ctx, `SELECT key, name, builtin, superuser FROM roles ORDER BY superuser DESC, builtin DESC, id`)
-	if err != nil {
+	var roles []roleColumnRow
+	if err := roleColumns(store.G(ctx, tx)).Find(&roles).Error; err != nil {
 		return core.PluginGrantees{}, false, err
 	}
-	cols, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ReviewRoleColumn, error) {
-		var c ReviewRoleColumn
-		return c, row.Scan(&c.Key, &c.Name, &c.Builtin, &c.Superuser)
-	})
-	if err != nil {
-		return core.PluginGrantees{}, false, err
+	cols := make([]ReviewRoleColumn, len(roles))
+	for i, r := range roles {
+		cols[i] = ReviewRoleColumn{Key: r.Key, Name: r.Name.V, Builtin: r.Builtin, Superuser: r.Superuser}
 	}
 	var keys []string
 	for _, c := range cols {
@@ -679,14 +701,8 @@ func (s *Service) Review(ctx context.Context, key, version string, actorID int64
 		sha                        string
 		uploadedAt                 time.Time
 	)
-	err := s.d.DB.Pool.QueryRow(ctx, `
-		SELECT p.status, v.consent_status, v.signature_status, v.key_id, pub.name, pub.trust_level,
-		       v.package_size, v.package_sha256, v.uploaded_at
-		FROM plugin_versions v
-		JOIN plugins p ON p.key = v.plugin_key
-		LEFT JOIN publishers pub ON pub.id = v.publisher_id
-		WHERE v.plugin_key = $1 AND v.version = $2`, key, version).
-		Scan(&status, &consent, &sigStatus, &keyID, &pubName, &trust, &size, &sha, &uploadedAt)
+	err := reviewedVersion(store.G(ctx, s.d.DB.Pool), key, version).
+		Row().Scan(&status, &consent, &sigStatus, &keyID, &pubName, &trust, &size, &sha, &uploadedAt)
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
@@ -731,10 +747,41 @@ func (s *Service) Review(ctx context.Context, key, version string, actorID int64
 // version, else the newest approved version other than target.
 func (s *Service) runningVersion(ctx context.Context, q store.Querier, key, target string) (string, error) {
 	var v string
-	err := q.QueryRow(ctx, `
-		SELECT COALESCE(p.active_version,
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved' AND version <> $2
-		     ORDER BY uploaded_at DESC LIMIT 1), '')
-		FROM plugins p WHERE p.key = $1`, key, target).Scan(&v)
+	err := runningVersion(store.G(ctx, q), key, target).Row().Scan(&v)
 	return v, err
+}
+
+// runningVersion is the statement of Service.runningVersion.
+func runningVersion(db *gorm.DB, key, target string) *gorm.DB {
+	return db.Raw(`
+		SELECT COALESCE(p.active_version,
+		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved' AND version <> ?
+		     ORDER BY uploaded_at DESC LIMIT 1), '')
+		FROM plugins p WHERE p.key = ?`, target, key)
+}
+
+// roleColumnRow is a roles row as a consent matrix column shows it.
+type roleColumnRow struct {
+	Key       string                         `gorm:"column:key"`
+	Name      store.JSON[core.LocalizedText] `gorm:"column:name"`
+	Builtin   bool                           `gorm:"column:builtin"`
+	Superuser bool                           `gorm:"column:superuser"`
+}
+
+// roleColumns selects the consent matrix's roles: super admins first, then
+// built-in ones.
+func roleColumns(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.Role{}).Select("key, name, builtin, superuser").Order("superuser DESC, builtin DESC, id")
+}
+
+// reviewedVersion selects what the review of key@version shows of the
+// plugin, the version and its publisher.
+func reviewedVersion(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Raw(`
+		SELECT p.status, v.consent_status, v.signature_status, v.key_id, pub.name, pub.trust_level,
+		       v.package_size, v.package_sha256, v.uploaded_at
+		FROM plugin_versions v
+		JOIN plugins p ON p.key = v.plugin_key
+		LEFT JOIN publishers pub ON pub.id = v.publisher_id
+		WHERE v.plugin_key = ? AND v.version = ?`, key, version)
 }

@@ -1,0 +1,8 @@
+-- sql
+INSERT INTO "publisher_keys" ("key_id","publisher_id","public_key","not_before","not_after") VALUES ($1,$2,$3,$4,$5) RETURNING "status","created_at"
+-- vars
+$1 string "k1"
+$2 int64 3
+$3 string "pk"
+$4 *time.Time nil
+$5 *time.Time 2027-01-01 00:00:00 +0000 UTC

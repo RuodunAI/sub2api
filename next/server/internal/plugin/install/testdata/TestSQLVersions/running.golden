@@ -1,0 +1,8 @@
+-- sql
+SELECT COALESCE(p.active_version,
+		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved' AND version <> $1
+		     ORDER BY uploaded_at DESC LIMIT 1), '')
+		FROM plugins p WHERE p.key = $2
+-- vars
+$1 string "1.2.0"
+$2 string "demo"

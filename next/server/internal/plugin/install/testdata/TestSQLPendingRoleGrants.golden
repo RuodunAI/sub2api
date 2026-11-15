@@ -1,0 +1,23 @@
+-- sql
+SELECT a.detail->>'version' AS version, g->>'permission' AS permission, g->>'role' AS role,
+       COALESCE(g->>'scope', '') AS scope, COALESCE(g->>'via', '') AS via,
+       COALESCE((g->>'needs_consent')::boolean, true) AS needs_consent
+FROM audit_logs a CROSS JOIN LATERAL jsonb_array_elements(a.detail->'pending') g
+WHERE a.action = ANY($1) AND a.target_type = 'plugin' AND a.target_id = $2
+  AND jsonb_typeof(a.detail->'pending') = 'array'
+  AND a.created_at >= (SELECT installed_at FROM plugins WHERE key = $3)
+  AND ($4 = '' OR a.detail->>'version' = $5)
+  AND NOT EXISTS (SELECT 1 FROM audit_logs b WHERE b.target_type = 'plugin' AND b.target_id = a.target_id
+      AND b.action = ANY($6) AND b.id > a.id
+      AND (b.detail->>'version' = a.detail->>'version'
+        OR (b.action = $7 AND b.detail->'grants' @> jsonb_build_array(jsonb_build_object('permission', g->>'permission', 'role', g->>'role')))))
+  AND EXISTS (SELECT 1 FROM roles r WHERE r.key = g->>'role' AND NOT r.superuser)
+ORDER BY a.id, 2, 3, 4
+-- vars
+$1 store.Strings [plugin.consent.auto plugin.consent plugin.role_grants.carry]
+$2 string "demo"
+$3 string "demo"
+$4 string "1.2.0"
+$5 string "1.2.0"
+$6 store.Strings [plugin.role_grants.confirm plugin.role_grants.reject]
+$7 string "plugin.role_grants.reject"

@@ -1,0 +1,10 @@
+-- sql
+SELECT status,active_version,EXISTS(SELECT 1 FROM plugin_versions v
+			WHERE v.plugin_key=plugins.key AND v.version=$1 AND consent_status='approved'),
+			EXISTS(SELECT 1 FROM plugin_versions v WHERE v.plugin_key=plugins.key AND v.version=plugins.active_version AND consent_status='approved'),
+			EXISTS(SELECT 1 FROM plugin_versions v WHERE v.plugin_key=plugins.key AND v.version=$2 AND consent_status='approved')
+			FROM plugins WHERE key=$3 AND builtin
+-- vars
+$1 string "1.2.0"
+$2 string "1.1.0"
+$3 string "demo"

@@ -1,0 +1,7 @@
+-- sql
+SELECT p.key FROM plugins p
+			WHERE p.status IN ('enabled', 'enabling', 'upgrading')
+			  AND EXISTS (SELECT 1 FROM plugin_versions v WHERE v.plugin_key = p.key AND v.key_id = $1
+			              AND (v.version = p.active_version OR v.version = p.desired_version))
+-- vars
+$1 string "k1"

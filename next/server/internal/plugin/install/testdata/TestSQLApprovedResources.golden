@@ -1,0 +1,5 @@
+-- sql
+SELECT plugin_key, manifest->'platforms' AS platforms, manifest->'notifications' AS notifications FROM "plugin_versions" WHERE plugin_key <> $1 AND consent_status = 'approved'
+			AND (jsonb_typeof(manifest->'platforms') = 'array' OR jsonb_typeof(manifest->'notifications') = 'object') ORDER BY plugin_key, version
+-- vars
+$1 string "demo"

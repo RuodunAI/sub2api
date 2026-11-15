@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -31,13 +32,12 @@ func (s *Service) SetGrant(ctx context.Context, key, permission string, scope ma
 	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		// The plugin row first, as RevokeGrant, consent and the rollout
 		// commit lock it before the grant rows (no lock-order deadlock).
+		g := store.G(ctx, tx)
 		var (
 			status, trust string
 			hasPub        bool
 		)
-		err := tx.QueryRow(ctx, `UPDATE plugins p SET row_version = row_version + 1, updated_at = now() WHERE key = $1
-			RETURNING status, publisher_id IS NOT NULL, COALESCE((SELECT trust_level FROM publishers WHERE id = p.publisher_id), $2)`,
-			key, pkg.TrustUnsigned).Scan(&status, &hasPub, &trust)
+		err := bumpPluginReturningTrust(g, key).Row().Scan(&status, &hasPub, &trust)
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("plugin not found")
 		}
@@ -92,7 +92,7 @@ func (s *Service) SetGrant(ctx context.Context, key, permission string, scope ma
 			return err
 		}
 		var hash string
-		if err := tx.QueryRow(ctx, `SELECT manifest_hash FROM plugin_versions WHERE plugin_key = $1 AND version = $2`, key, version).Scan(&hash); err != nil {
+		if err := versionRow(g, key, version).Select("manifest_hash").Take(&hash).Error; err != nil {
 			return err
 		}
 		if err := grants.Record(ctx, tx, key, version, hash, by, false, grantDecisions([]decision{d})); err != nil {
@@ -126,4 +126,12 @@ func (s *Service) requireInstall(ctx context.Context, actorID int64) error {
 	}
 	return core.ErrPermissionDenied.WithMessage("granting a host permission again requires plugin:install").
 		WithDetails(map[string]any{"permission": string(perm.PluginInstall)})
+}
+
+// bumpPluginReturningTrust is bumpPlugin returning the plugin's status,
+// whether it has a publisher, and its trust level.
+func bumpPluginReturningTrust(db *gorm.DB, key string) *gorm.DB {
+	return db.Raw(`UPDATE plugins p SET row_version = row_version + 1, updated_at = now() WHERE key = ?
+			RETURNING status, publisher_id IS NOT NULL, COALESCE((SELECT trust_level FROM publishers WHERE id = p.publisher_id), ?)`,
+		key, pkg.TrustUnsigned)
 }

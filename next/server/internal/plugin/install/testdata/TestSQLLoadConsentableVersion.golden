@@ -1,0 +1,6 @@
+-- sql
+SELECT consent_status, signature_status, manifest_hash FROM "plugin_versions" WHERE plugin_key = $1 AND version = $2 LIMIT $3 FOR UPDATE
+-- vars
+$1 string "demo"
+$2 string "1.2.0"
+$3 int 1

@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // running reports whether a status means instances may be serving.
@@ -52,8 +54,9 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 	}
 	purge := opt.Purge
 	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
 		var st string
-		err := tx.QueryRow(ctx, `SELECT status FROM plugins WHERE key = $1 FOR UPDATE`, key).Scan(&st)
+		err := lockedPlugin(g, key).Select("status").Take(&st).Error
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("plugin not found")
 		}
@@ -64,7 +67,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 			return core.ErrConflict.WithMessage("the plugin was re-enabled concurrently")
 		}
 		var stopped bool
-		if err := tx.QueryRow(ctx, `SELECT target_boot_ids <@ stopped_boot_ids FROM plugin_uninstalls WHERE plugin_key = $1 FOR UPDATE`, key).Scan(&stopped); err != nil {
+		if err := uninstallRow(g, key).Select("target_boot_ids <@ stopped_boot_ids").Clauses(forUpdate).Take(&stopped).Error; err != nil {
 			return err
 		}
 		if !stopped {
@@ -96,14 +99,14 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 		if err := retireKey(ctx, tx, key, actorID); err != nil {
 			return err
 		}
-		if tag, err := tx.Exec(ctx, `DELETE FROM plugins WHERE key = $1 AND NOT builtin`, key); err != nil {
-			return err
-		} else if tag.RowsAffected() == 0 {
+		if r := g.Where("key = ? AND NOT builtin", key).Delete(&model.Plugin{}); r.Error != nil {
+			return r.Error
+		} else if r.RowsAffected == 0 {
 			return ErrBuiltin
 		}
 		// No foreign key to plugins: a reinstalled plugin must raise
 		// plugin.egress_new_domain again for the hosts it connects to.
-		if _, err := tx.Exec(ctx, `DELETE FROM plugin_egress_domains WHERE plugin_key = $1`, key); err != nil {
+		if err := g.Where("plugin_key = ?", key).Delete(&model.PluginEgressDomain{}).Error; err != nil {
 			return err
 		}
 		return audit.Audit(ctx, tx, actorID, "plugin.uninstall", "plugin", key, map[string]any{
@@ -120,8 +123,9 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 }
 
 func checkUninstall(ctx context.Context, q store.Querier, key string) error {
+	g := store.G(ctx, q)
 	var pending bool
-	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_uninstalls WHERE plugin_key = $1)`, key).Scan(&pending); err != nil {
+	if err := selectExists(g, uninstallRow(g, key)).Scan(&pending).Error; err != nil {
 		return err
 	}
 	if pending {
@@ -159,27 +163,27 @@ func (s *Service) quiesce(ctx context.Context, key string, actorID int64) error 
 		}
 		defer release()
 		return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-			var epoch int64
-			var builtin bool
-			if err := tx.QueryRow(ctx, `SELECT row_version, builtin FROM plugins WHERE key = $1 FOR UPDATE`, key).Scan(&epoch, &builtin); err != nil {
+			g := store.G(ctx, tx)
+			var p model.Plugin
+			if err := lockedPlugin(g, key).Select("row_version, builtin").Take(&p).Error; err != nil {
 				return err
 			}
-			if builtin {
+			if p.Builtin {
 				return ErrBuiltin
 			}
 			var open bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugin_rollouts WHERE plugin_key=$1 AND phase IN ('preparing','activating'))`, key).Scan(&open); err != nil {
+			if err := selectExists(g, g.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", key)).
+				Scan(&open).Error; err != nil {
 				return err
 			}
 			if open {
 				return core.ErrConflict.WithMessage("a rollout is in progress; cancel it or wait until it finishes")
 			}
-			tag, err := tx.Exec(ctx, `INSERT INTO plugin_uninstalls(plugin_key,epoch,target_boot_ids)
-			VALUES($1::text,$2,ARRAY(SELECT DISTINCT unnest($3::text[] || ARRAY(SELECT boot_id FROM plugin_runtime_nodes WHERE plugin_key=$1::text AND NOT stopped)))) ON CONFLICT DO NOTHING`, key, epoch+1, ids)
-			if err != nil || tag.RowsAffected() == 0 {
-				return err
+			r := beginUninstall(g, key, p.RowVersion+1, ids)
+			if r.Error != nil || r.RowsAffected == 0 {
+				return r.Error
 			}
-			if _, err := tx.Exec(ctx, `UPDATE plugins SET status='disabled', desired_version=NULL, status_reason='uninstalling', row_version=row_version+1, updated_at=now() WHERE key=$1`, key); err != nil {
+			if err := disableForUninstall(g, key).Error; err != nil {
 				return err
 			}
 			if s.d.Permissions != nil {
@@ -206,8 +210,7 @@ func (s *Service) quiesce(ctx context.Context, key string, actorID int64) error 
 		var stopped bool
 		// Include nodes that joined while the marker was being committed. A
 		// node starting after it can only read the disabled desired state.
-		err = s.d.DB.Pool.QueryRow(waitCtx, `UPDATE plugin_uninstalls SET target_boot_ids=ARRAY(SELECT DISTINCT unnest(target_boot_ids || $2::text[]))
-			WHERE plugin_key=$1 RETURNING target_boot_ids <@ stopped_boot_ids`, key, ids).Scan(&stopped)
+		err = addUninstallTargets(store.G(waitCtx, s.d.DB.Pool), key, ids).Row().Scan(&stopped)
 		if err != nil {
 			return err
 		}
@@ -222,7 +225,40 @@ func (s *Service) quiesce(ctx context.Context, key string, actorID int64) error 
 	}
 }
 
+// uninstallRow is the plugin_uninstalls row of key: the uninstall barrier.
+func uninstallRow(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.PluginUninstall{}).Where("plugin_key = ?", key)
+}
+
+// beginUninstall leaves the uninstall barrier of key, unless one is up,
+// targeting the live boots and the nodes still running the plugin.
+func beginUninstall(db *gorm.DB, key string, epoch int64, boots []string) *gorm.DB {
+	return db.Exec(`INSERT INTO plugin_uninstalls(plugin_key,epoch,target_boot_ids)
+			VALUES(?::text,?,ARRAY(SELECT DISTINCT unnest(?::text[] || ARRAY(SELECT boot_id FROM plugin_runtime_nodes WHERE plugin_key=?::text AND NOT stopped)))) ON CONFLICT DO NOTHING`,
+		key, epoch, store.Strings(boots), key)
+}
+
+// disableForUninstall disables key and clears its desired version while
+// its uninstall waits for the nodes to stop.
+func disableForUninstall(db *gorm.DB, key string) *gorm.DB {
+	return pluginRow(db, key).Updates(map[string]any{
+		"status":          StatusDisabled,
+		"desired_version": nil,
+		"status_reason":   "uninstalling",
+		"row_version":     gorm.Expr("row_version + 1"),
+		"updated_at":      gorm.Expr("now()"),
+	})
+}
+
+// addUninstallTargets adds boots to the targets of key's uninstall and
+// selects whether every target has stopped.
+func addUninstallTargets(db *gorm.DB, key string, boots []string) *gorm.DB {
+	return db.Raw(`UPDATE plugin_uninstalls SET target_boot_ids=ARRAY(SELECT DISTINCT unnest(target_boot_ids || ?::text[]))
+			WHERE plugin_key=? RETURNING target_boot_ids <@ stopped_boot_ids`, store.Strings(boots), key)
+}
+
 // disableRevoked disables running plugins after a revocation (best effort).
+
 func (s *Service) disableRevoked(ctx context.Context, keys []string, actorID int64, reason string) []string {
 	var disabled []string
 	for _, k := range keys {
