@@ -139,17 +139,6 @@ func TestSQLParkedRuntimes(t *testing.T) {
 	})
 }
 
-func TestSQLSetting(t *testing.T) {
-	for name, forShare := range map[string]bool{"read": false, "share": true} {
-		t.Run(name, func(t *testing.T) {
-			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-				var row model.Setting
-				return settingQuery(db, forShare).Take(&row)
-			})
-		})
-	}
-}
-
 func TestSQLAccountRuntime(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var used bool

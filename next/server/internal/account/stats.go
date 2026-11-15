@@ -21,7 +21,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/observation"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const (
@@ -356,8 +355,7 @@ func (s *Stats) flush(ctx context.Context, samples []core.ObservationMetricSampl
 func (s *Stats) Settings(ctx context.Context) (StatsSettings, error) {
 	v := StatsSettings{WindowSeconds: 60}
 	if s.db != nil {
-		var raw []byte
-		err := store.G(ctx, s.db.Pool).Model(&model.Setting{}).Select("value").Where("key = ?", statsSettingsKey).Row().Scan(&raw)
+		raw, err := store.SettingValue(store.G(ctx, s.db.Pool), statsSettingsKey)
 		if err != nil && !store.IsNoRows(err) {
 			return v, err
 		}

@@ -22,7 +22,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // SettingsKey is the settings row of the global layer.
@@ -199,23 +198,17 @@ func layersQuery(db *gorm.DB, groupID, accountID int64, dst *layerRows) *gorm.DB
 
 func loadGlobal(ctx context.Context, q store.Querier) (core.EnvironmentValues, error) {
 	values := core.EnvironmentValues{}
-	var row model.Setting
-	err := globalQuery(store.G(ctx, q)).Take(&row).Error
+	raw, err := store.SettingValue(store.G(ctx, q), SettingsKey)
 	if store.IsNoRows(err) {
 		return values, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(row.Value, &values); err != nil {
+	if err := json.Unmarshal(raw, &values); err != nil {
 		return nil, err
 	}
 	return values, nil
-}
-
-// globalQuery selects the value of the global layer's settings row.
-func globalQuery(db *gorm.DB) *gorm.DB {
-	return db.Model(&model.Setting{}).Select("value").Where("key = ?", SettingsKey)
 }
 
 // variablesView is GET /environment/variables: the declared variables and

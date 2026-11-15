@@ -6,7 +6,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The SQL snapshots of the environment statements (testdata/*.golden); the
@@ -14,8 +13,4 @@ import (
 
 func TestSQLLayers(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return layersQuery(db, 3, 9, &layerRows{}) })
-}
-
-func TestSQLGlobal(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return globalQuery(db).Take(&model.Setting{}) })
 }

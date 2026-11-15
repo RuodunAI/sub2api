@@ -25,7 +25,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
-	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -337,9 +336,11 @@ func (s *Service) loadVersioned(ctx context.Context) (Config, []byte, error) {
 // own changes; forShare keeps it from changing until the transaction ends)
 // and the stored value as read.
 func (s *Service) loadIn(ctx context.Context, q store.Querier, forShare bool) (Config, []byte, error) {
-	var row model.Setting
-	e := settingQuery(store.G(ctx, q), forShare).Take(&row).Error
-	raw := []byte(row.Value)
+	var lock []clause.Expression
+	if forShare {
+		lock = append(lock, clause.Locking{Strength: clause.LockingStrengthShare})
+	}
+	raw, e := store.SettingValue(store.G(ctx, q), settingKey, lock...)
 	if store.IsNoRows(e) {
 		// The row a later update creates holds {}.
 		raw, e = []byte("{}"), nil
@@ -357,16 +358,6 @@ func (s *Service) loadIn(ctx context.Context, q store.Querier, forShare bool) (C
 		}
 	}
 	return c, raw, e
-}
-
-// settingQuery reads the stored configuration; forShare keeps it from
-// changing until the transaction ends.
-func settingQuery(db *gorm.DB, forShare bool) *gorm.DB {
-	db = db.Model(&model.Setting{}).Select("value").Where("key = ?", settingKey)
-	if forShare {
-		db = db.Clauses(clause.Locking{Strength: clause.LockingStrengthShare})
-	}
-	return db
 }
 
 // mergeConfig applies a PUT remote-config body to the saved configuration
