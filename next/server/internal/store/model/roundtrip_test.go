@@ -50,7 +50,7 @@ func TestUserRoundTrip(t *testing.T) {
 	require.NoError(t, g.First(&again, u.ID).Error)
 	require.NotNil(t, again.LastLoginAt)
 	require.True(t, login.Equal(*again.LastLoginAt))
-	require.True(t, again.UpdatedAt.After(u.UpdatedAt), "the update stamps updated_at from the database clock")
+	require.True(t, again.UpdatedAt.Equal(u.UpdatedAt), "an update that does not assign updated_at leaves it alone")
 
 	// A nil pointer takes the default; a pointer to the zero value writes
 	// it, even where the default is not zero.
@@ -63,7 +63,7 @@ func TestUserRoundTrip(t *testing.T) {
 }
 
 // numeric keeps every digit, jsonb round-trips as raw JSON, and an update
-// assigns updated_at from the database clock.
+// writes only the columns it assigns.
 func TestGroupRoundTrip(t *testing.T) {
 	g := openGorm(t)
 	grp := model.Group{
@@ -92,7 +92,7 @@ func TestGroupRoundTrip(t *testing.T) {
 		return tx.Model(&model.Group{ID: grp.ID}).Update("description", "x")
 	})
 	require.NoError(t, err)
-	require.Equal(t, `UPDATE "groups" SET "description"=$1,"updated_at"=now() WHERE "id" = $2`, query)
+	require.Equal(t, `UPDATE "groups" SET "description"=$1 WHERE "id" = $2`, query)
 }
 
 // Nullable numeric and jsonb columns hold NULL as nil and values exactly.

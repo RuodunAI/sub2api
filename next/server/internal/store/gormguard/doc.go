@@ -23,11 +23,11 @@
 //     FirstOrInit and FirstOrCreate, the value of Update and UpdateColumn,
 //     the parameters of Select when its first argument is an SQL fragment
 //     (Select([]string{"id"}) and Select("id", "name") list columns), and
-//     the arguments of gorm.Expr and the Vars of clause.Expr and
-//     clause.NamedExpr literals. A []any argument is expanded as well: its
-//     elements become a list, so Where("x IN ?", []any{1, 2}) is
-//     "x IN ($1,$2)". A spread (args...) passes its elements and is not
-//     checked;
+//     the arguments of gorm.Expr and of store.Conds.And (which hands them
+//     to Where), and the Vars of clause.Expr and clause.NamedExpr literals.
+//     A []any argument is expanded as well: its elements become a list, so
+//     Where("x IN ?", []any{1, 2}) is "x IN ($1,$2)". A spread (args...)
+//     passes its elements and is not checked;
 //   - [pgx-direct] in a package listed as migrated, no direct pgx Exec,
 //     Query or QueryRow (a pgx.Batch and CopyFrom stay on pgx), except a
 //     statement with an allow-pgx comment.

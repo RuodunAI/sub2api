@@ -378,12 +378,14 @@ func f(db *gorm.DB, a []int64, b []string, c []int32, d []int, e ids, arr [2]int
 	db.Where(clause.Expr{SQL: "id = ANY(?)", Vars: []any{a}})
 	db.Where(clause.Expr{"id = ANY(?)", []any{1, a}, false})
 	db.Where(clause.NamedExpr{SQL: "id = ANY(@ids)", Vars: []any{a}})
+	var conds store.Conds
+	conds.And("id = ANY(?)", a)
 }
 `,
 			want: []string{ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice,
 				ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice,
 				ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice,
-				ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice},
+				ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice},
 		},
 		{
 			name: "slice/Valuers, bytes, scalars, spreads, destinations and column lists pass",
@@ -416,6 +418,9 @@ func f(db *gorm.DB, a []int64, raw []byte, doc json.RawMessage, at []time.Time, 
 	db.Where(clause.Expr{SQL: "id = ANY(?)", Vars: []any{store.Int64s(a)}})
 	db.Where(clause.Expr{SQL: "x = ?", Vars: args})
 	b.Where("x", []int64{1})
+	var conds store.Conds
+	conds.And("id = ANY(?)", store.Int64s(a))
+	conds.And("x = ? AND y = ?", args...)
 }
 `,
 		},

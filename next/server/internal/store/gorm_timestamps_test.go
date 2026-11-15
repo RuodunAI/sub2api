@@ -44,17 +44,18 @@ func TestSnapshotTimestamps(t *testing.T) {
 		"insert_batch": func(tx *gorm.DB) *gorm.DB {
 			return tx.Create(&[]stampRow{{Name: "a"}, {Name: "b", CreatedAt: stampAt}})
 		},
+		// An UPDATE writes updated_at only when it assigns it.
 		"update": func(tx *gorm.DB) *gorm.DB { return tx.Model(&stampRow{ID: 1}).Update("name", "b") },
 		"updates_struct": func(tx *gorm.DB) *gorm.DB {
 			return tx.Model(&stampRow{ID: 1}).Updates(stampRow{Name: "b"})
 		},
-		// An updated_at the statement assigns wins.
 		"updates_explicit": func(tx *gorm.DB) *gorm.DB {
 			return tx.Model(&stampRow{ID: 1}).Updates(map[string]any{"name": "b", "updated_at": stampAt})
 		},
-		// UpdateColumn skips the hooks, updated_at included.
+		"updates_now": func(tx *gorm.DB) *gorm.DB {
+			return tx.Model(&stampRow{ID: 1}).Updates(map[string]any{"name": "b", "updated_at": gorm.Expr("now()")})
+		},
 		"update_column": func(tx *gorm.DB) *gorm.DB { return tx.Model(&stampRow{ID: 1}).UpdateColumn("name", "b") },
-		// Without a model there is no updated_at to know of.
 		"update_table": func(tx *gorm.DB) *gorm.DB {
 			return tx.Table("stamp_rows").Where("id = ?", 1).Update("name", "b")
 		},
@@ -64,7 +65,8 @@ func TestSnapshotTimestamps(t *testing.T) {
 }
 
 // On a database: both stamps are the transaction's now(), as the raw SQL
-// gets, and the INSERT reads created_at back into the struct.
+// gets, the INSERT reads created_at back into the struct, and an UPDATE
+// moves updated_at only when it assigns it.
 func TestGORMTimestamps(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
@@ -96,14 +98,18 @@ func TestGORMTimestamps(t *testing.T) {
 	assert.True(t, created.Equal(got.CreatedAt))
 	assert.True(t, created.Equal(got.UpdatedAt))
 
-	updated := inTx(func(g *gorm.DB) error { return g.Model(&stampRow{ID: row.ID}).Update("name", "b").Error })
+	inTx(func(g *gorm.DB) error { return g.Model(&stampRow{ID: row.ID}).Update("name", "b").Error })
+	got = read(row.ID)
+	assert.Equal(t, "b", got.Name)
+	assert.True(t, created.Equal(got.UpdatedAt), "an UPDATE that does not assign updated_at leaves it alone")
+
+	updated := inTx(func(g *gorm.DB) error {
+		return g.Model(&stampRow{ID: row.ID}).Updates(map[string]any{"name": "c", "updated_at": gorm.Expr("now()")}).Error
+	})
 	got = read(row.ID)
 	assert.True(t, updated.After(created))
 	assert.True(t, updated.Equal(got.UpdatedAt), "updated_at %v, now() %v", got.UpdatedAt, updated)
 	assert.True(t, created.Equal(got.CreatedAt))
-
-	inTx(func(g *gorm.DB) error { return g.Model(&stampRow{ID: row.ID}).UpdateColumn("name", "c").Error })
-	assert.True(t, updated.Equal(read(row.ID).UpdatedAt), "UpdateColumn leaves updated_at alone")
 
 	inTx(func(g *gorm.DB) error {
 		return g.Model(&stampRow{ID: row.ID}).Updates(map[string]any{"name": "d", "updated_at": stampAt}).Error

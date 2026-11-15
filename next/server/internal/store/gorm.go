@@ -24,6 +24,11 @@
 //   - A jsonb column read into a Go value (a []string, a struct) is a
 //     JSON[T], e.g. JSON[[]string]: GORM hands the raw document over where
 //     pgx used to decode it. json.RawMessage keeps the document as is.
+//   - Read results into a row struct of their own (a model, or a local
+//     struct tagged gorm:"column:...") and convert it to the API type, so
+//     the API shape and the columns change apart. Scanning into an API or
+//     core type directly is fine where its fields are the columns read,
+//     one to one.
 //   - Give model and result fields concrete types: GORM refuses a struct
 //     with a field of type any or another interface ("unsupported data
 //     type"); a document is a JSON[T] or json.RawMessage.
@@ -32,9 +37,14 @@
 //   - Errors stay pgx's: IsUniqueViolation and friends work as with pgx;
 //     test "not found" with IsNoRows (GORM reports it as
 //     gorm.ErrRecordNotFound).
-//   - updated_at, and created_at where no database default fills it, come
-//     from the database clock as in the raw SQL (gorm_timestamps.go). Save
-//     writes every field as the struct holds it, updated_at included.
+//   - An UPDATE writes exactly the columns the raw SQL wrote: updated_at
+//     only where that SQL set it, with the same expression (now(),
+//     clock_timestamp()), e.g. "updated_at": gorm.Expr("now()") in the
+//     Updates map. Nothing adds it on its own; some updated_at columns are
+//     versions that must not move. An INSERT fills a zero created_at or
+//     updated_at that no database default fills with now()
+//     (gorm_timestamps.go). Save writes every field as the struct holds it,
+//     updated_at included.
 //   - Call a function that returns void (pg_advisory_xact_lock and the
 //     other advisory locks) with Exec, not Raw(...).Scan: there is no value
 //     to scan, and the bridge does not read the void type.

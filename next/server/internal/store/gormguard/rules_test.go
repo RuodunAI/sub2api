@@ -50,7 +50,7 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 	rel := strings.TrimPrefix(pkgPath, r.module+"/")
 	_, owner := r.owners[rel]
 	_, migrated := r.migrated[rel]
-	c := &checker{fset: fset, info: info, owner: owner, migrated: migrated}
+	c := &checker{fset: fset, info: info, owner: owner, migrated: migrated, storePkg: r.module + "/internal/store"}
 	for _, f := range files {
 		c.allowed = allowComments(fset, f)
 		ast.Inspect(f, c.visit)
@@ -62,6 +62,7 @@ type checker struct {
 	fset            *token.FileSet
 	info            *types.Info
 	owner, migrated bool
+	storePkg        string         // import path of package store
 	allowed         map[int]string // line -> reason of an allow-pgx comment
 	out             []string
 }
@@ -157,6 +158,9 @@ func (c *checker) parameterArgs(fn *types.Func, n *ast.CallExpr) []ast.Expr {
 	switch {
 	case isGormFunc(fn, "Expr"):
 		return args
+	case fn.Name() == "And" && isMethodOf(fn, c.storePkg, "Conds"):
+		// store.Conds.And passes its arguments to Where.
+		return tail(args, 1)
 	case !isGormMethod(fn):
 		return nil
 	case fn.Name() == "Select":
@@ -301,9 +305,12 @@ func isNamed(t types.Type, pkg, name string) bool {
 
 // isGormMethod reports a method of gorm.DB, including one promoted through
 // an embedded *gorm.DB.
-func isGormMethod(fn *types.Func) bool {
+func isGormMethod(fn *types.Func) bool { return isMethodOf(fn, gormPkg, "DB") }
+
+// isMethodOf reports a method of the named type pkg.name.
+func isMethodOf(fn *types.Func, pkg, name string) bool {
 	recv := fn.Type().(*types.Signature).Recv()
-	return recv != nil && isNamed(recv.Type(), gormPkg, "DB")
+	return recv != nil && isNamed(recv.Type(), pkg, name)
 }
 
 func isGormFunc(fn *types.Func, name string) bool {
