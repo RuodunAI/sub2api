@@ -7,7 +7,9 @@ import (
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // Lookup intentionally ignores the currently proposed account and namespace.
@@ -78,24 +80,29 @@ func (s *Service) Lookup(ctx context.Context, owner core.ResourceOwner, prefixes
 // first, just without the lock.
 func (s *Service) anyPrefix(ctx context.Context, o core.ResourceOwner, prefixes []string) (bool, error) {
 	var found bool
-	err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND public_prefix_digest=ANY($3))`,
-		o.UserID, o.GroupID, prefixes).Scan(&found)
+	err := anyPrefixQuery(store.G(ctx, s.db.Pool), o, prefixes, &found).Error
 	return found, err
 }
+
+// withPrefixes keeps the records of o under any of prefixes.
+func withPrefixes(db *gorm.DB, o core.ResourceOwner, prefixes []string) *gorm.DB {
+	return db.Model(&model.ProviderHelperRecord{}).Scopes(owned(o)).Where("public_prefix_digest = ANY(?)", store.Strings(prefixes))
+}
+
+// anyPrefixQuery reads into found whether withPrefixes has a row.
+func anyPrefixQuery(db *gorm.DB, o core.ResourceOwner, prefixes []string, found *bool) *gorm.DB {
+	return db.Raw("SELECT EXISTS(?)", withPrefixes(db, o, prefixes).Select("1")).Scan(found)
+}
+
 func discoverPrefixes(ctx context.Context, q store.Querier, o core.ResourceOwner, prefixes []string) (map[string]bool, map[string]bool, error) {
-	namespaces, found := map[string]bool{}, map[string]bool{}
-	rows, e := q.Query(ctx, `SELECT DISTINCT namespace,public_prefix_digest FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND public_prefix_digest=ANY($3)`, o.UserID, o.GroupID, prefixes)
-	if e != nil {
+	var rows []struct{ Namespace, PublicPrefixDigest string }
+	if e := withPrefixes(store.G(ctx, q), o, prefixes).Distinct("namespace", "public_prefix_digest").Scan(&rows).Error; e != nil {
 		return nil, nil, e
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var namespace, prefix string
-		if e = rows.Scan(&namespace, &prefix); e != nil {
-			return nil, nil, e
-		}
-		namespaces[namespace] = true
-		found[prefix] = true
+	namespaces, found := map[string]bool{}, map[string]bool{}
+	for _, r := range rows {
+		namespaces[r.Namespace] = true
+		found[r.PublicPrefixDigest] = true
 	}
-	return namespaces, found, rows.Err()
+	return namespaces, found, nil
 }

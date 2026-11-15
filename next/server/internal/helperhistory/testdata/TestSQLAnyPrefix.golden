@@ -1,0 +1,6 @@
+-- sql
+SELECT EXISTS(SELECT 1 FROM "provider_helper_records" WHERE public_prefix_digest = ANY($1) AND (user_id = $2 AND group_id = $3))
+-- vars
+$1 store.Strings [p1 p2]
+$2 int64 3
+$3 int64 5

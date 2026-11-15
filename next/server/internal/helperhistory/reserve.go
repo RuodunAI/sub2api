@@ -6,6 +6,7 @@ import (
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -29,10 +30,11 @@ func (s *Service) Reserve(ctx context.Context, in core.HelperHistoryReservation)
 			}
 			parent = chain.Records[len(chain.Records)-1].Receipt
 		}
-		var id string
-		e = tx.QueryRow(ctx, `SELECT id FROM provider_helper_attempts WHERE user_id=$1 AND group_id=$2 AND request_id=$3`, in.Owner.UserID, in.Owner.GroupID, in.RequestID).Scan(&id)
+		db := store.G(ctx, tx)
+		var prior model.ProviderHelperAttempt
+		e = db.Select("id").Scopes(owned(in.Owner)).Where("request_id = ?", in.RequestID).Take(&prior).Error
 		if e == nil {
-			old, e := readAttempt(ctx, tx, in.Owner, id)
+			old, e := readAttempt(ctx, tx, in.Owner, prior.ID)
 			if e != nil {
 				return e
 			}
@@ -51,13 +53,17 @@ func (s *Service) Reserve(ctx context.Context, in core.HelperHistoryReservation)
 		if e = s.quota(ctx, tx, in.Owner, now, in.ReserveBytes); e != nil {
 			return e
 		}
-		id, e = identifier()
+		id, e := identifier()
 		if e != nil {
 			return e
 		}
 		out = core.HelperHistoryAttempt{ID: id, ParentReceipt: parent, State: "reserved", Binding: in.Binding, ExpiresAt: now.Add(s.options.Retention)}
-		_, e = tx.Exec(ctx, `INSERT INTO provider_helper_attempts(id,user_id,group_id,request_id,request_digest,namespace,account_id,principal_id,generation,parent_receipt,state,reserved_bytes,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'reserved',$11,$12,$13)`, id, in.Owner.UserID, in.Owner.GroupID, in.RequestID, in.RequestDigest, in.Namespace, in.Binding.AccountID, in.Binding.PrincipalID, in.Binding.Generation, parent, in.ReserveBytes, now, out.ExpiresAt)
-		return e
+		// A root attempt's empty parent_receipt is the column's default, so
+		// GORM leaving the zero value out of the INSERT stores the same ''.
+		return db.Create(&model.ProviderHelperAttempt{ID: id, UserID: in.Owner.UserID, GroupID: in.Owner.GroupID, RequestID: in.RequestID,
+			RequestDigest: in.RequestDigest, Namespace: in.Namespace, AccountID: in.Binding.AccountID, PrincipalID: in.Binding.PrincipalID,
+			Generation: in.Binding.Generation, ParentReceipt: parent, State: out.State, ReservedBytes: in.ReserveBytes, CreatedAt: now,
+			ExpiresAt: out.ExpiresAt}).Error
 	})
 	return
 }
@@ -79,8 +85,7 @@ func (s *Service) transition(ctx context.Context, o core.ResourceOwner, id, from
 		if a.State != from {
 			return core.ErrConflict.WithMessage("helper history attempt cannot transition")
 		}
-		_, e = tx.Exec(ctx, `UPDATE provider_helper_attempts SET state=$1 WHERE id=$2`, to, id)
-		return e
+		return setAttemptState(store.G(ctx, tx), id, to).Error
 	})
 }
 func (s *Service) MarkDispatched(c context.Context, o core.ResourceOwner, id string) error {

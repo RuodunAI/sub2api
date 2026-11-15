@@ -4,8 +4,11 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type attempt struct {
@@ -15,49 +18,81 @@ type attempt struct {
 	reservedBytes                                    int64
 }
 
-func readAttempt(ctx context.Context, q store.Querier, o core.ResourceOwner, id string) (a attempt, e error) {
-	e = q.QueryRow(ctx, `SELECT id,parent_receipt,state,account_id,principal_id,generation,expires_at,request_id,request_digest,namespace,usage_digest,reserved_bytes FROM provider_helper_attempts WHERE user_id=$1 AND group_id=$2 AND id=$3`, o.UserID, o.GroupID, id).Scan(&a.ID, &a.ParentReceipt, &a.State, &a.Binding.AccountID, &a.Binding.PrincipalID, &a.Binding.Generation, &a.ExpiresAt, &a.requestID, &a.requestDigest, &a.namespace, &a.usageDigest, &a.reservedBytes)
-	a.owner = o
-	if store.IsNoRows(e) {
-		e = core.ErrNotFound
-	}
-	return
+// owned keeps the rows of owner o; every read of this package goes through
+// it, so no statement crosses owners.
+func owned(o core.ResourceOwner) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB { return db.Where("user_id = ? AND group_id = ?", o.UserID, o.GroupID) }
 }
-func readRecord(ctx context.Context, q store.Querier, o core.ResourceOwner, id string) (r core.HelperHistoryRecord, digest string, e error) {
-	e = q.QueryRow(ctx, `SELECT receipt,parent_receipt,public_prefix_digest,chain_digest,namespace,account_id,principal_id,generation,payload,expires_at,payload_digest FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND receipt=$3`, o.UserID, o.GroupID, id).Scan(&r.Receipt, &r.ParentReceipt, &r.PublicPrefixDigest, &r.ChainDigest, &r.Namespace, &r.Binding.AccountID, &r.Binding.PrincipalID, &r.Binding.Generation, &r.Payload, &r.ExpiresAt, &digest)
-	if store.IsNoRows(e) {
-		e = core.ErrNotFound
+
+func readAttempt(ctx context.Context, q store.Querier, o core.ResourceOwner, id string) (attempt, error) {
+	var row model.ProviderHelperAttempt
+	if e := store.G(ctx, q).Scopes(owned(o)).Where("id = ?", id).Take(&row).Error; e != nil {
+		if store.IsNoRows(e) {
+			e = core.ErrNotFound
+		}
+		return attempt{}, e
 	}
-	return
+	return attempt{
+		HelperHistoryAttempt: core.HelperHistoryAttempt{ID: row.ID, ParentReceipt: row.ParentReceipt, State: row.State,
+			Binding: core.ResourceBinding{AccountID: row.AccountID, PrincipalID: row.PrincipalID, Generation: row.Generation}, ExpiresAt: row.ExpiresAt},
+		owner: o, requestID: row.RequestID, requestDigest: row.RequestDigest, namespace: row.Namespace, usageDigest: row.UsageDigest,
+		reservedBytes: row.ReservedBytes,
+	}, nil
 }
+func readRecord(ctx context.Context, q store.Querier, o core.ResourceOwner, id string) (core.HelperHistoryRecord, string, error) {
+	var row model.ProviderHelperRecord
+	if e := store.G(ctx, q).Scopes(owned(o)).Where("receipt = ?", id).Take(&row).Error; e != nil {
+		if store.IsNoRows(e) {
+			e = core.ErrNotFound
+		}
+		return core.HelperHistoryRecord{}, "", e
+	}
+	return core.HelperHistoryRecord{Receipt: row.Receipt, ParentReceipt: row.ParentReceipt, PublicPrefixDigest: row.PublicPrefixDigest,
+		ChainDigest: row.ChainDigest, Namespace: row.Namespace,
+		Binding: core.ResourceBinding{AccountID: row.AccountID, PrincipalID: row.PrincipalID, Generation: row.Generation},
+		Payload: row.Payload, ExpiresAt: row.ExpiresAt}, row.PayloadDigest, nil
+}
+
+// setAttemptState moves attempt id to state; the caller holds the owner's
+// lock and has read the attempt through owned.
+func setAttemptState(db *gorm.DB, id, state string) *gorm.DB {
+	return db.Model(&model.ProviderHelperAttempt{}).Where("id = ?", id).Update("state", state)
+}
+
+// prefixRow is one record that prefixRecord weighs.
+type prefixRow struct {
+	Receipt     string
+	ChainDigest string
+	ExpiresAt   time.Time
+	Present     bool // the payload is still there
+}
+
+// prefixRows reads into dst the records of o under namespace and prefix,
+// oldest first.
+func prefixRows(db *gorm.DB, o core.ResourceOwner, namespace, prefix string, dst *[]prefixRow) *gorm.DB {
+	return db.Model(&model.ProviderHelperRecord{}).Select("receipt, chain_digest, expires_at, payload IS NOT NULL AS present").
+		Scopes(owned(o)).Where("namespace = ? AND public_prefix_digest = ?", namespace, prefix).
+		Order("created_at, receipt").Scan(dst)
+}
+
 func prefixRecord(ctx context.Context, q store.Querier, o core.ResourceOwner, namespace, prefix string, now time.Time) (string, error) {
-	rows, e := q.Query(ctx, `SELECT receipt,chain_digest,expires_at,payload IS NOT NULL FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND namespace=$3 AND public_prefix_digest=$4 ORDER BY created_at,receipt`, o.UserID, o.GroupID, namespace, prefix)
-	if e != nil {
+	var rows []prefixRow
+	if e := prefixRows(store.G(ctx, q), o, namespace, prefix, &rows).Error; e != nil {
 		return "", e
 	}
-	defer rows.Close()
 	id, digest := "", ""
 	expired := false
-	for rows.Next() {
-		var current, hash string
-		var expiry time.Time
-		var present bool
-		if e = rows.Scan(&current, &hash, &expiry, &present); e != nil {
-			return "", e
-		}
-		if digest != "" && digest != hash {
+	for _, r := range rows {
+		if digest != "" && digest != r.ChainDigest {
 			return "", core.ErrConflict.WithMessage("ambiguous helper history prefix")
 		}
-		digest = hash
-		if !present || !expiry.After(now) {
+		digest = r.ChainDigest
+		if !r.Present || !r.ExpiresAt.After(now) {
 			expired = true
 		}
 		if id == "" {
-			id = current
+			id = r.Receipt
 		}
-	}
-	if e = rows.Err(); e != nil {
-		return "", e
 	}
 	if id == "" || expired {
 		return "", core.ErrNotFound.WithMessage("helper history missing or expired")
