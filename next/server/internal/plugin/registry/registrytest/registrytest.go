@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -480,11 +481,18 @@ var sourceDir string
 
 // Main runs a package's tests (TestMain) and then removes Source's
 // directory, about 125 MB that each test process would otherwise leave in
-// the temporary directory.
-func Main(m *testing.M) {
+// the temporary directory. A check's error then fails a run that passed
+// (testutil.Exit, which this package may not import: it is no test file).
+func Main(m *testing.M, checks ...func() error) {
 	code := m.Run()
 	if sourceDir != "" {
 		_ = os.RemoveAll(sourceDir)
+	}
+	for _, check := range checks {
+		if err := check(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			code = max(code, 1)
+		}
 	}
 	os.Exit(code)
 }

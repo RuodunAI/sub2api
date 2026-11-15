@@ -135,11 +135,13 @@ func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*as
 // --- the repository ------------------------------------------------------
 
 // TestRepositoryFollowsGORMRules checks every non-test file of the packages
-// that depend on GORM, and the imports of every Go file of the module, test
-// files included ([pgx-import]).
+// that depend on GORM or Casbin, and the imports of every Go file of the
+// module, test files included ([pgx-import], [testutil-import], and
+// gorm-adapter's of [casbin-api]).
 func TestRepositoryFollowsGORMRules(t *testing.T) {
 	root, module := moduleRoot(t)
-	r := rules{module: module, owners: instanceOwners, sqlOwners: sqlOwners, pgxFiles: pgxFiles}
+	r := rules{module: module, owners: instanceOwners, sqlOwners: sqlOwners, pgxFiles: pgxFiles,
+		casbinOwners: casbinOwners, enforceOwners: enforceOwners}
 	known := map[string]bool{} // packages and their files, relative to the module
 	var targets []listed
 	for _, p := range goList(t, root, "./...") {
@@ -148,11 +150,11 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 		for _, name := range p.GoFiles {
 			known[rel+"/"+name] = true
 		}
-		if slices.Contains(p.Deps, gormPkg) {
+		if slices.ContainsFunc(p.Deps, func(d string) bool { return d == gormPkg || casbinWritePkg.MatchString(d) }) {
 			targets = append(targets, p)
 		}
 	}
-	for _, list := range []map[string]string{instanceOwners, sqlOwners, pgxFiles} {
+	for _, list := range []map[string]string{instanceOwners, sqlOwners, pgxFiles, casbinOwners, enforceOwners} {
 		for rel := range list {
 			if !known[rel] {
 				t.Errorf("%s is listed but is no package or Go file of %s; drop its entry", rel, module)

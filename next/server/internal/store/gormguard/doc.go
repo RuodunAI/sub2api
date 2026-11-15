@@ -1,7 +1,7 @@
 // Package gormguard holds the source checks that keep the core's database
 // access in one shape: package store owns the pool, its GORM instance and
-// the transactions, every statement is built and run by GORM, and pgx is
-// only the driver under database/sql. The checks are tests (in the style of
+// the transactions, every statement is built and run by GORM, pgx is only
+// the driver under database/sql, and Casbin only reads the policy. The checks are tests (in the style of
 // the ticker and permission guards), type-checked so that they see through
 // aliases, embedding and variables. Package store is the owner below;
 // internal/testutil, test infrastructure, is one as well (instanceOwners in
@@ -82,7 +82,26 @@
 //     by build constraints included, imports pgx (any package of its
 //     module) but internal/store/pgerror.go (pgxFiles), which reads the
 //     SQLSTATE and constraint name of the *pgconn.PgError that GORM's
-//     driver returns.
+//     driver returns;
+//   - [casbin-api] Casbin only reads the policy (CONTRACTS §99): casbin_rule
+//     is the projection of the role tables, which their triggers write in
+//     the writer's transaction. gorm-adapter is imported by
+//     internal/authz/casbinx alone (casbinOwners; test files included).
+//     Nowhere, casbinx included, is a write, transaction or self-reloading
+//     API of Casbin's enforcers, its persist interfaces or gorm-adapter
+//     named: policy management (Add/Remove/Update/Delete of policies,
+//     grouping policies, roles, permissions and users, their Ctx, Ex and
+//     Self forms), SavePolicy, Transaction, BeginTransaction,
+//     WithTransaction, Commit, Rollback, StartAutoLoadPolicy, the synced,
+//     transactional and distributed enforcers, nor EnableAutoSave with
+//     anything but the constant false. The in-memory model (model.Model's
+//     AddPolicies, how a snapshot is built) and the role manager are not
+//     covered. Casbin's own Enforce* is called in casbinx alone, and the
+//     Enforce of casbinx (Resolver, Snapshot) only there, in
+//     internal/authz/shadow.go and in cmd/sub2api (enforceOwners; test
+//     files exempt): it runs every policy through the matcher, so a request
+//     answers with PermissionSet.Has. Packages that depend on Casbin are
+//     checked as well as those that depend on GORM.
 //
 // Why empty lists matter (gorm v1.31; gormtest's TestExpansionTraps keeps
 // the shapes): GORM turns an expanded empty list into NULL, and the result
@@ -97,5 +116,6 @@
 // parameter instead: Not("id = ANY(?)", store.Int64s(ids)) means what it
 // says for every ids.
 //
-// The package has no code of its own; see guard_test.go and rules_test.go.
+// The package has no code of its own; see guard_test.go, rules_test.go and
+// casbin_test.go.
 package gormguard
