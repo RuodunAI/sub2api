@@ -22,6 +22,7 @@ func All() []any {
 		&AuthFlow{},
 		&AuthzMeta{},
 		&BalanceLedger{},
+		&CasbinRule{},
 		&CcgatewayAccountFeaturePolicy{},
 		&CcgatewayAccountRequestLog{},
 		&CcgatewayRuntime{},

@@ -209,7 +209,7 @@ func TestAuthzHardeningMigration(t *testing.T) {
 	require.Equal(t, "delegator=true:operator,user", h.assignable(), "built-in lists are the core sync's")
 	require.Equal(t, "0", h.text(`SELECT max(defaults_rev)::text FROM roles`))
 	require.Equal(t, "op@x=account:read,account:update:own root@x=account:read:own,role:assign,role:define,user:read seller@x=account:read:own,proxy:manage:own", h.accessKeys())
-	require.Equal(t, version, h.text(`SELECT (version - 1)::text FROM authz_meta`), "the version moves once")
+	require.Equal(t, version, h.text(`SELECT (version - 2)::text FROM authz_meta`), "the version moves once, and once more for 0100's backfill")
 	require.Equal(t, "authz.grant.migrate=28 authz.reclaim.super_only=7 role.assignable=1 user.access_key.migrate=3",
 		h.text(`SELECT string_agg(action || '=' || n, ' ' ORDER BY action) FROM (
             SELECT action, count(*) AS n FROM audit_logs WHERE user_id IS NULL AND detail->>'via' = 'migration 0097' GROUP BY action) a`))
@@ -329,7 +329,9 @@ func TestAuthzHardeningRollback(t *testing.T) {
         VALUES ('stg', '1.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved'), ('stg', '2.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved')`)
 	h.exec(`INSERT INTO plugin_staged_grants (plugin_key, version, permission, status, manifest_hash) VALUES ('stg', '2.0.0', 'lock', 'granted', 'h')`)
 
-	// The upgrade went on through 0099: 0.1.289 is rolled back first.
+	// The upgrade went on through 0100: 0.1.290 and 0.1.289 are rolled back
+	// first.
+	require.NoError(t, h.down("0.1.290-casbin-down.sql"))
 	require.NoError(t, h.down("0.1.289-plugin-perm-down.sql"))
 	require.NoError(t, h.down("0.1.286-authz-down.sql"))
 
@@ -392,6 +394,8 @@ WHERE r.key = 'editor' AND p.key IN ('plugin.pm:flow:manage', 'plugin.pm:old', '
 INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, s.scope FROM roles r, permissions p
 JOIN (VALUES ('account:read', 'own'), ('plugin.pm:flow:manage', 'flow/3'), ('plugin.pm:old', 'flow/1')) s(key, scope) ON s.key = p.key
 WHERE r.key = 'editor'`)
+	// The upgrade went on through 0100: 0.1.290 is rolled back first.
+	require.NoError(t, h.down("0.1.290-casbin-down.sql"))
 	version := h.text(`SELECT version::text FROM authz_meta`)
 
 	require.NoError(t, h.down("0.1.289-plugin-perm-down.sql"))
