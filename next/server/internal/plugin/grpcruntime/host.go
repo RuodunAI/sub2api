@@ -21,6 +21,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 )
 
@@ -429,21 +430,26 @@ func (h *hostServer) AccountScopeCheck(ctx context.Context, in *pluginv1.Account
 
 // qualify resolves the permission a plugin asks about to its RBAC key. own
 // reports that the key belongs to this plugin: its fully qualified key, or a
-// local key its manifest declares, which becomes "plugin.<key>:<local>". Every
-// other key (a core permission such as "user:read", another plugin's key) is
-// used as given and is not the plugin's own.
-func (h *hostServer) qualify(perm string) (key string, own bool) {
-	if _, ok := manifest.LocalPermission(h.key(), perm); ok {
-		return perm, true
+// local key whose action its manifest declares (with or without a scope,
+// "rules:read:own"), which becomes "plugin.<key>:<local>". Every other key (a
+// core permission such as "user:read", another plugin's key) is used as given
+// and is not the plugin's own.
+func (h *hostServer) qualify(p string) (key string, own bool) {
+	if _, ok := manifest.LocalPermission(h.key(), p); ok {
+		return p, true
 	}
 	// A declared key never contains a ".", so another plugin's qualified key
 	// cannot match here and falls through as not own.
-	for _, up := range h.i.pkg.Manifest.UserPermissions {
-		if up.Key == perm {
-			return manifest.PermissionKey(h.key(), perm), true
-		}
+	key = manifest.PermissionKey(h.key(), p)
+	pat, err := perm.Parse(key)
+	if err != nil {
+		return p, false
 	}
-	return perm, false
+	local, _ := manifest.LocalPermission(h.key(), string(pat.Action))
+	if _, ok := h.i.pkg.Manifest.FindUserPermission(local); ok {
+		return key, true
+	}
+	return p, false
 }
 
 // ------------------------------------------------------------------ ledger

@@ -310,6 +310,18 @@ func parse(c *gin.Context, e *Entity) (*params, error) {
 	return p, nil
 }
 
+// ParseText reads q, ids and limit as GET /lookup does for a kind without
+// numeric ids: the plugin scope options proxy (CONTRACTS §96.1 rules) shares
+// it. ids is nil when not given.
+func ParseText(c *gin.Context) (q string, ids []string, limit int, err error) {
+	p, err := parse(c, &Entity{})
+	if err != nil {
+		return "", nil, 0, err
+	}
+	ids, _ = p.ids.([]string)
+	return p.text, ids, p.limit, nil
+}
+
 // parseIDs reads ids=a,b,c: positive integers, or names when the kind has no
 // numeric id.
 func parseIDs(v string, numeric bool) (any, error) {

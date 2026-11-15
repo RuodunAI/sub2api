@@ -107,6 +107,9 @@ func (a *API) RegisterRoutes(r *httpapi.Router) {
 	// POST /system/tasks/:name/run.
 	r.Perm(http.MethodPost, "/plugins/:key/jobs/:job_id/run", task.PermRun, a.runJob)
 	r.Perm(http.MethodGet, "/plugins/:key/events", PermRead, a.events)
+	// Candidates are kept to the caller's own scope, and names show on read
+	// only role and plugin pages too: either read key will do.
+	r.PermAny(http.MethodGet, "/plugins/:key/scope-options", a.scopeOptions, perm.RoleRead, perm.PluginRead)
 
 	r.Self(http.MethodGet, "/ui/plugins", PermSelfUI, a.uiPlugins)
 	r.Perm(http.MethodGet, "/nodes", PermNodeRead, a.nodes)

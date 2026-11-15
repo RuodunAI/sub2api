@@ -262,7 +262,9 @@ func Forbidden() *pluginv1.HTTPResponse {
 // without a user is a 401, a user without the permission a 403, and a host
 // that cannot answer a 503. Use it where one route needs more than the
 // permission its manifest entry names; h must be the initialised host, so
-// register such routes from Init.
+// register such routes from Init. perm is asked for every row: a holder of
+// only part of a scoped permission (own, some values) gets a 403, so routes
+// of scoped permissions use RequestScope and RequireScope instead.
 func RequirePermission(h Host, perm string, next HandlerFunc) HandlerFunc {
 	return func(ctx context.Context, req *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
 		uid := req.GetCaller().GetUserId()

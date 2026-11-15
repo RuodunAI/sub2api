@@ -78,6 +78,8 @@ func TestPluginRouteAccounts(t *testing.T) {
 		{"no account key", "GET", "/accounts/10/usage", "plain", "", 403, "read"},
 		{"malformed id", "GET", "/weights?account_ids=10,x", "admin", "", 400, ""},
 		{"malformed body id", "POST", "/reset", "admin", `{"account_ids":[true]}`, 400, ""},
+		{"decimal body id", "POST", "/reset", "admin", `{"account_id":1.5}`, 400, ""},
+		{"body string array", "POST", "/reset", "owner", `{"account_ids":["10","11,10"]}`, 201, "update"},
 		{"too many ids", "POST", "/reset", "admin", string(tooManyBody), 400, ""},
 		{"inferred: others' account", "POST", "/consume", "owner", `{"account_ids":[12]}`, 404, "update"},
 		{"inferred: own account", "POST", "/consume", "owner", `{"account_ids":[10]}`, 201, "update"},
