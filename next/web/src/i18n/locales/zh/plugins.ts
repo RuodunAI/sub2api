@@ -272,6 +272,27 @@ export default {
     requestedValue: 'manifest 申请值：{value}'
   },
 
+  matrix: {
+    permission: '权限',
+    superFixed: '超级管理员拥有全部权限',
+    moreRoles: '更多角色',
+    fewerRoles: '收起自定义角色',
+    notGranted: '不授予',
+    scopeAll: '全部',
+    scopeOwn: '自己创建的',
+    scopeCustom: '指定…',
+    scopeCount: '指定 {n} 项',
+    scopeOf: '「{role}」的「{perm}」范围',
+    done: '完成',
+    pendingReview: '待超管复核',
+    pendingReviewHint: '你不能给这个角色分配，按插件建议挂起，由超级管理员复核。',
+    criticalOnly: '仅超级管理员可授予',
+    roleReadonly: '你不能修改此角色',
+    differs: '与插件建议不同',
+    foldMore: '另有 {n} 项，展开查看',
+    foldLess: '收起'
+  },
+
   detail: {
     tabs: {
       overview: '概览',

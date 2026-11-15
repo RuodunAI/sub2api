@@ -929,6 +929,33 @@ on('DELETE', '/plugins/:key/grants/:permission', (req) => {
   return noContent()
 })
 
+// The scope each grant had before it was first narrowed: what the manifest asks for, never exceeded.
+const requestedScopes = new WeakMap<Any, Any | null>()
+
+/** Whether scope is within requested (pkg.ScopeWithin): the same keys or fewer, each list a non-empty subset, the rest equal. */
+function scopeWithin(scope: Any | null, requested: Any | null): boolean {
+  if (!scope || !requested) return !scope || !Object.keys(scope).length
+  return Object.entries(scope).every(([k, v]) => {
+    const r = requested[k]
+    if (Array.isArray(v) && Array.isArray(r)) return v.length > 0 && v.every((x) => r.includes(x))
+    return JSON.stringify(v) === JSON.stringify(r)
+  })
+}
+
+// Narrows a host permission grant, or grants a revoked one again (body {scope?}; none: the scope requested).
+on('PUT', '/plugins/:key/grants/:permission', stepUp('plugin.grant', (req) => {
+  const p = find(req.params.key)
+  if (!p) return notFound(req.params.key)
+  const g = p.grants.find((x) => x.permission === req.params.permission)
+  if (!g) return fail(404, 'not_found', 'the active version does not request this permission')
+  if (!requestedScopes.has(g)) requestedScopes.set(g, g.scope)
+  const requested = requestedScopes.get(g) ?? null
+  const scope = req.body?.scope ?? requested
+  if (!scopeWithin(scope, requested)) return fail(400, 'scope_too_wide', 'the scope is wider than the manifest requests')
+  Object.assign(g, { scope, status: 'active', granted_at: now() })
+  return g
+}))
+
 on('PUT', '/plugins/:key/resources', (req) => {
   const p = find(req.params.key)
   if (!p) return notFound(req.params.key)

@@ -9,7 +9,7 @@ import ScopePicker from './ScopePicker.vue'
 enableAutoUnmount(afterEach)
 vi.mock('@/components/entity/lookup', () => ({ useEntityNames: () => ({ label: (_kind: string, id: number) => `#${id}`, gone: () => false }) }))
 
-const perm = (key: string, status = 'active'): PermissionItem => ({ key, label: key, sensitive: false, status })
+const perm = (key: string, status = 'active'): PermissionItem => ({ key, label: key, risk: 'low', sensitive: false, status })
 const mod: PermissionModule = {
   module: 'demo',
   label: 'Demo',

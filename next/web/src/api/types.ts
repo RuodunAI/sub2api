@@ -89,18 +89,62 @@ export interface AssignableRole {
   missing_assign_custom?: boolean
 }
 
+/**
+ * How much a user permission lets its holder do (UI 3.16): sensitive touches
+ * money, credentials, users' own text or bans; critical gets around a
+ * security control and only the super admin grants it at install (the core's
+ * super-only keys). Plugin host permissions rank risk on their own scale
+ * (HostPermissionReview.risk).
+ */
+export type PermRisk = 'low' | 'sensitive' | 'critical'
+
+/** A plugin's permissionGroups entry: the heading its permissions show under in the editors. */
+export interface PermissionGroup {
+  key: string
+  label: LText
+  sort: number
+}
+
+/**
+ * The scope a plugin permission declares (manifest.PermissionScope as is),
+ * the same in GET /permissions and the consent review: the action takes "*",
+ * "own" (when own) or "<resource>/<value>".
+ */
+export interface PluginScopeDecl {
+  /** The resource, without "plugin:"; "value" for a static enum (the server always fills it). */
+  resource: string
+  /** The rows the holder created can be granted ("own"). */
+  own?: boolean
+  /** The plugin route listing candidates; shown only: the console asks GET /plugins/:key/scope-options. */
+  options?: string
+  /** A static enum: granted as "value/<key>". */
+  values?: Array<{ key: string; label: LText }>
+}
+
 export interface PermissionItem {
   key: string
   label: LText
   /** What it allows (core catalog); shown as a hint. */
   description?: LText
-  sensitive: boolean
+  /** Core keys: super-only → critical, sensitive → sensitive, the rest low. */
+  risk: PermRisk
+  /** @deprecated The catalog sends risk; kept until the editors that still read it move to risk. */
+  sensitive?: boolean
   /** Using it needs a step-up verification each time (CONTRACTS §80.2); shown only. */
   step_up?: boolean
-  /** The resource its scope ranges over ("account", "proxy"; CONTRACTS §21), "" for none. */
+  /**
+   * The resource its scope ranges over: "account", "proxy" (CONTRACTS §21),
+   * "plugin:<resource>" ("plugin:value" for an enum); "" for none.
+   */
   scope_type?: string
-  /** Soft dependencies: keys it is of little use without, of the same scope; editor hints only. */
+  /** Plugin scoped keys only. */
+  scope?: PluginScopeDecl
+  /** The plugin's permission group key (plugin keys only). */
+  group?: string
+  /** Soft dependencies (full keys): keys it is of little use without, of the same scope; editor hints only. */
   requires?: string[]
+  /** The plugin's suggestion (plugin keys only, never critical ones): built-in role → full canonical keys, comparable with permission_keys as is. */
+  defaults?: Partial<Record<'admin' | 'operator' | 'supplier' | 'user', string[]>>
   status: string // active | disabled | removed
 }
 
@@ -110,7 +154,34 @@ export interface PermissionModule {
   source: string // core | plugin
   plugin_key?: string | null
   status: string
+  /** Plugin modules only, sorted; the permissions come ordered by group, then sort. */
+  groups?: PermissionGroup[]
   permissions: PermissionItem[]
+}
+
+/** One role of GET/PUT /permissions/plugins/:plugin (authz PluginRoleRow). */
+export interface PluginRoleRow {
+  id: number
+  key: string
+  name: LText
+  builtin: boolean
+  superuser: boolean
+  /** The caller may change the role (editableRole); the super admin role never is. */
+  editable: boolean
+  denied?: 'superuser_role' | 'not_editable' | 'not_assignable'
+  /** The role's keys of this plugin, removed ones included. */
+  permission_keys: string[]
+}
+
+/**
+ * GET /permissions/plugins/:plugin (role:read), and the answer of its PUT
+ * (role:define, body {roles: {role: keys[]}}: replaces only the listed roles'
+ * keys of this plugin; a 403 adds details.role).
+ */
+export interface PluginRoleMatrix {
+  plugin_key: string
+  module: PermissionModule
+  roles: PluginRoleRow[]
 }
 
 // ------------------------------------------------------------------ keys, groups, proxies
@@ -1477,12 +1548,18 @@ export interface PluginReview {
   routes: Array<Record<string, any>>
   menus: Array<Record<string, any>>
   user_permissions: ReviewUserPermission[]
+  /** The plugin's permissionGroups, sorted. */
+  permission_groups?: PermissionGroup[]
+  /** The matrix columns, worked out for the viewer: a review differs per caller. */
+  role_columns?: ReviewRoleColumn[]
+  /** Upgrades: the keys this version no longer declares (kept on their holders, not in force). */
+  removed_user_permissions?: Array<{ key: string; label: LText; holders: string[] }>
   database?: { schema: string; migrations: string[] } | null
   resources?: Record<string, any> | null
   external_services: string[]
   host_permissions: HostPermissionReview[]
   diff?: { added: ReviewDiffItem[]; widened: ReviewDiffItem[]; removed: ReviewDiffItem[] } | null
-  /** Role grants the new permissions get without overrides (defaultRoles, inheritFrom holders). */
+  /** Role grants the new permissions get without overrides (defaults, inheritFrom holders). */
   new_role_grants?: PluginRoleGrant[]
   /** One of them needs consent: the upgrade is not carried over. */
   role_grants_need_consent?: boolean
@@ -1490,17 +1567,55 @@ export interface PluginReview {
   needs_db_schema_unconfined?: boolean
 }
 
+/** A role column of the consent matrix (review role_columns), for the viewer. */
+export interface ReviewRoleColumn {
+  key: string
+  name: LText
+  builtin: boolean
+  superuser: boolean
+  /** The viewer may name the role in the consent. */
+  nameable: boolean
+  reason?: string
+}
+
+/** One permission × role cell of the consent review, for the viewer. */
+export interface ReviewCell {
+  /** Canonical suffixes granted when the consent does not override the row: [] none, [""] all, "own", "value/input", "flow/3". */
+  grant: string[]
+  /** The viewer may name this cell (critical rows included in the server's answer). */
+  nameable: boolean
+  /** superuser_role | not_editable | not_assignable | held | role_define | critical */
+  reason?: string
+  /** Its default or inherited grant waits for a super admin's review (D2). */
+  withheld: boolean
+}
+
 /** A user permission a plugin version declares (consent review). */
 export interface ReviewUserPermission {
+  /** Local key. */
   key: string
   label: LText
   description?: LText
+  risk: PermRisk
+  /** @deprecated The review sends risk; kept until the consent page moves to risk. */
   sensitive?: boolean
-  /** Roles it goes to when created, unless the consent names others. */
+  group?: string
+  /** Local keys. */
+  requires?: string[]
+  scope?: PluginScopeDecl
+  /** The plugin's suggestion: role → canonical suffixes ("" all), shaped as cells[].grant. */
+  defaults?: Record<string, string[]>
+  /** @deprecated Replaced by defaults; kept until the consent page moves to the matrix. */
   default_roles?: string[]
   inherit_from?: string[]
   /** Not in the catalog yet: the consent creates it, and only then do roles named for it apply. */
   new?: boolean
+  /** Removed in the version before, declared again: comes back with its grants (D6); shown only. */
+  revived?: boolean
+  /** inheritFrom names a held key: granted by inheritance, not by defaults. */
+  renamed?: boolean
+  /** Every role of role_columns. */
+  cells?: Record<string, ReviewCell>
 }
 
 /** One role grant of a plugin permission (CONTRACTS P4C). */
@@ -1510,9 +1625,36 @@ export interface PluginRoleGrant {
   /** Qualified permission key. */
   permission: string
   role: string
-  sensitive: boolean
-  via: 'default' | 'inherit'
+  /** Canonical suffix, "" for all. */
+  scope?: string
+  risk: PermRisk
+  /** @deprecated The server sends risk; kept until the grant lists move to risk. */
+  sensitive?: boolean
+  via: 'default' | 'inherit' | 'override'
   needs_consent: boolean
+  /** The caller may name the role. */
+  nameable?: boolean
+  /** Held back for a super admin's review (D2). */
+  withheld?: boolean
+}
+
+/**
+ * A cell of POST …/consent new_permission_roles: true for an unscoped
+ * permission, else its scopes: "*", "own", "value/<key>", "<resource>/<id>".
+ */
+export type ManifestGrant = true | string[]
+
+/**
+ * POST …/consent new_permission_roles: local key → role → grant. A listed key
+ * overrides its whole row for the roles the caller may name: a role left out
+ * gets nothing, {} gives it to none.
+ */
+export type NewPermissionRoles = Record<string, Record<string, ManifestGrant>>
+
+/** The answer of POST …/consent. */
+export interface ConsentResult {
+  /** The grants this consent held back for a super admin's review (D2). */
+  withheld?: PluginRoleGrant[]
 }
 
 export interface RolloutNode {
