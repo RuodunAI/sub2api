@@ -376,4 +376,16 @@ func TestSetGrantNarrowsAndRegrants(t *testing.T) {
 	g, err = e.svc.SetGrant(ctx, "mini", "log", nil, e.limited)
 	require.NoError(t, err)
 	assert.Equal(t, GrantGranted, g.Status)
+
+	// A staged version whose requested scope does not decode fails the
+	// grant instead of counting as requesting none.
+	_, err = e.db.Pool.Exec(ctx, `UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{hostPermissions}',
+		(SELECT jsonb_agg(CASE WHEN hp->>'id' = 'net' THEN hp || '{"scope":"x"}' ELSE hp END) FROM jsonb_array_elements(manifest->'hostPermissions') hp))
+		WHERE plugin_key = 'mini' AND version = '0.3.0'`)
+	require.NoError(t, err)
+	require.NoError(t, e.svc.RevokeGrant(ctx, "mini", "net", e.admin))
+	e.authz.perms[e.limited] = map[string]bool{"plugin:install": true, PermGrantHigh: true}
+	_, err = e.svc.SetGrant(ctx, "mini", "net", domains(a), e.limited)
+	require.ErrorContains(t, err, "mini@0.3.0")
+	assert.Equal(t, GrantRevoked, grant("0.3.0").Status)
 }
