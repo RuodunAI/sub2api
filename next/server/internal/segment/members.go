@@ -6,10 +6,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // addMembers moves users into a named segment and answers how many moved.
@@ -33,7 +36,7 @@ func (s *Service) addMembers(c *gin.Context) {
 	var dropped bool
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		// The lock keeps the segment from being deleted under the move.
-		kind, _, err := segmentKind(ctx, tx, id, "FOR KEY SHARE")
+		kind, _, err := segmentKind(ctx, tx, id, "KEY SHARE")
 		if err != nil {
 			return err
 		}
@@ -60,9 +63,9 @@ func (s *Service) addMembers(c *gin.Context) {
 // user; a deleted user is none.
 func requireUsers(ctx context.Context, q store.Querier, ids []int64) error {
 	var unknown int64
-	err := q.QueryRow(ctx, `SELECT i.id FROM unnest($1::bigint[]) WITH ORDINALITY AS i(id, n)
+	err := store.G(ctx, q).Raw(`SELECT i.id FROM unnest(?::bigint[]) WITH ORDINALITY AS i(id, n)
 		WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = i.id AND u.deleted_at IS NULL)
-		ORDER BY i.n LIMIT 1`, ids).Scan(&unknown)
+		ORDER BY i.n LIMIT 1`, store.Int64s(ids)).Take(&unknown).Error
 	if store.IsNoRows(err) {
 		return nil
 	}
@@ -79,17 +82,22 @@ func requireUsers(ctx context.Context, q store.Querier, ids []int64) error {
 // many moved (a user already there does not) and whether a personal segment
 // went: its price rules went with it.
 func moveUsers(ctx context.Context, tx pgx.Tx, to int64, userIDs []int64, from string) (moved int, dropped bool, err error) {
-	ids, err := lockUsers(ctx, tx, `id = ANY($1) AND deleted_at IS NULL AND segment_id <> $2
-		AND ($3 = '' OR segment_id IN (SELECT id FROM segments WHERE kind = $3))`, userIDs, to, from)
+	ids, err := lockUsers(ctx, tx, movingUsers, store.Int64s(userIDs), to, from, from)
 	if err != nil {
 		return 0, false, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE users SET segment_id = $1 WHERE id = ANY($2)`, to, ids); err != nil {
+	if err := store.G(ctx, tx).Model(&model.User{}).Where("id = ANY(?)", store.Int64s(ids)).Update("segment_id", to).Error; err != nil {
 		return 0, false, err
 	}
 	dropped, err = DropPersonal(ctx, tx, ids...)
 	return len(ids), dropped, err
 }
+
+// movingUsers picks the users of ids (the first parameter) that are not
+// deleted and not in the segment to (the second), only those in a segment of
+// the kind from (the last two, "" = any).
+const movingUsers = `id = ANY(?) AND deleted_at IS NULL AND segment_id <> ?
+	AND (? = '' OR segment_id IN (SELECT id FROM segments WHERE kind = ?))`
 
 // lockUsers locks the users cond picks, in id order, until the transaction
 // ends, and returns their ids. Every writer of users.segment_id locks first
@@ -98,11 +106,14 @@ func moveUsers(ctx context.Context, tx pgx.Tx, to int64, userIDs []int64, from s
 // another writer replaced one meanwhile, queues on it behind the key-share
 // holders (inserts that refer to the user), which can close a cycle.
 func lockUsers(ctx context.Context, tx pgx.Tx, cond string, args ...any) ([]int64, error) {
-	rows, err := tx.Query(ctx, `SELECT id FROM users WHERE `+cond+` ORDER BY id FOR NO KEY UPDATE`, args...)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowTo[int64])
+	var ids []int64
+	err := lockUsersQuery(store.G(ctx, tx), cond, args...).Pluck("id", &ids).Error
+	return ids, err
+}
+
+// lockUsersQuery selects the users cond picks, locked in id order (lockUsers).
+func lockUsersQuery(db *gorm.DB, cond string, args ...any) *gorm.DB {
+	return db.Model(&model.User{}).Where(cond, args...).Order("id").Clauses(clause.Locking{Strength: "NO KEY UPDATE"})
 }
 
 // DropPersonal deletes the personal segments of the users, who have left
@@ -110,6 +121,6 @@ func lockUsers(ctx context.Context, tx pgx.Tx, cond string, args ...any) ([]int6
 // went: the cached price rules are then stale, and the caller drops them
 // after the transaction (Deps.PriceRulesChanged).
 func DropPersonal(ctx context.Context, tx pgx.Tx, userIDs ...int64) (bool, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM segments WHERE kind = 'personal' AND user_id = ANY($1)`, userIDs)
-	return tag.RowsAffected() > 0, err
+	res := store.G(ctx, tx).Where("kind = 'personal' AND user_id = ANY(?)", store.Int64s(userIDs)).Delete(&model.Segment{})
+	return res.RowsAffected > 0, res.Error
 }

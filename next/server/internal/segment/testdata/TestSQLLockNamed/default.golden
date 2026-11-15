@@ -1,0 +1,4 @@
+-- sql
+SELECT "id" FROM "segments" WHERE kind = 'named' AND is_default LIMIT $1 FOR KEY SHARE
+-- vars
+$1 int 1

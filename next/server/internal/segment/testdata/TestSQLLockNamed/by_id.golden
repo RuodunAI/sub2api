@@ -1,0 +1,5 @@
+-- sql
+SELECT "id" FROM "segments" WHERE kind = 'named' AND id = $1 LIMIT $2 FOR KEY SHARE
+-- vars
+$1 int64 3
+$2 int 1

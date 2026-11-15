@@ -7,10 +7,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // makePersonal gives a user a segment of their own, with {"copy": true}
@@ -50,8 +53,8 @@ func (s *Service) makePersonal(c *gin.Context) {
 // user is not found.
 func userSegmentKind(ctx context.Context, q store.Querier, userID int64) (string, error) {
 	var kind string
-	err := q.QueryRow(ctx, `SELECT s.kind FROM users u JOIN segments s ON s.id = u.segment_id
-		WHERE u.id = $1 AND u.deleted_at IS NULL`, userID).Scan(&kind)
+	err := store.G(ctx, q).Table("users u").Select("s.kind").Joins("JOIN segments s ON s.id = u.segment_id").
+		Where("u.id = ? AND u.deleted_at IS NULL", userID).Take(&kind).Error
 	if store.IsNoRows(err) {
 		return "", UserNotFound(ctx)
 	}
@@ -72,23 +75,28 @@ func createPersonal(ctx context.Context, tx pgx.Tx, userID int64, copyFrom bool)
 	}
 	// The user is not locked yet: referring to the origin waits for a
 	// delete of it, and that delete waits for its members.
-	var id, from int64
-	err = tx.QueryRow(ctx, `INSERT INTO segments (kind, user_id, origin_id, discount)
-		SELECT 'personal', u.id, s.id, CASE WHEN $2 THEN s.discount ELSE 1 END
+	var created struct {
+		ID       int64 `gorm:"column:id"`
+		OriginID int64 `gorm:"column:origin_id"`
+	}
+	g := store.G(ctx, tx)
+	err = g.Raw(`INSERT INTO segments (kind, user_id, origin_id, discount)
+		SELECT 'personal', u.id, s.id, CASE WHEN ? THEN s.discount ELSE 1 END
 		FROM users u JOIN segments s ON s.id = u.segment_id
-		WHERE u.id = $1 AND u.deleted_at IS NULL AND s.kind = 'named'
-		RETURNING id, origin_id`, userID, copyFrom).Scan(&id, &from)
+		WHERE u.id = ? AND u.deleted_at IS NULL AND s.kind = 'named'
+		RETURNING id, origin_id`, copyFrom, userID).Take(&created).Error
 	if store.IsNoRows(err) || store.IsUniqueViolation(err, "segments_user_uq") {
 		return 0, already
 	}
 	if err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE users SET segment_id = $2 WHERE id = $1 AND segment_id = $3 AND deleted_at IS NULL`, userID, id, from)
-	if err != nil {
-		return 0, err
+	id, from := created.ID, created.OriginID
+	res := g.Model(&model.User{}).Where("id = ? AND segment_id = ? AND deleted_at IS NULL", userID, from).Update("segment_id", id)
+	if res.Error != nil {
+		return 0, res.Error
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return 0, core.ErrConflict.WithMessage(t(ctx, "the user changed user group meanwhile, try again", "该用户的用户组刚被修改，请重试"))
 	}
 	if !copyFrom {
@@ -100,14 +108,14 @@ func createPersonal(ctx context.Context, tx pgx.Tx, userID int64, copyFrom bool)
 // copySettings gives segment to what segment from has in every group: its
 // grants, rate overrides and model prices. The two are unrelated afterwards.
 func copySettings(ctx context.Context, tx pgx.Tx, from, to int64) error {
-	if _, err := tx.Exec(ctx, `INSERT INTO segment_groups (segment_id, group_id, granted, rate_override)
-		SELECT $2::bigint, group_id, granted, rate_override FROM segment_groups WHERE segment_id = $1`, from, to); err != nil {
+	g := store.G(ctx, tx)
+	if err := g.Exec(`INSERT INTO segment_groups (segment_id, group_id, granted, rate_override)
+		SELECT ?::bigint, group_id, granted, rate_override FROM segment_groups WHERE segment_id = ?`, to, from).Error; err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO price_rules (group_id, segment_id, model, kind, multiplier, mode, config, expression, expr_hash, updated_by)
-		SELECT group_id, $2::bigint, model, kind, multiplier, mode, config, expression, expr_hash, updated_by
-		FROM price_rules WHERE segment_id = $1`, from, to)
-	return err
+	return g.Exec(`INSERT INTO price_rules (group_id, segment_id, model, kind, multiplier, mode, config, expression, expr_hash, updated_by)
+		SELECT group_id, ?::bigint, model, kind, multiplier, mode, config, expression, expr_hash, updated_by
+		FROM price_rules WHERE segment_id = ?`, to, from).Error
 }
 
 // removePersonal moves a personal user back to a named segment (?to=, the
@@ -179,10 +187,21 @@ func moveTarget(ctx context.Context, tx pgx.Tx, to string) (int64, error) {
 // id names no named segment.
 func LockNamed(ctx context.Context, tx pgx.Tx, id *int64) (int64, error) {
 	var found int64
-	err := tx.QueryRow(ctx, `SELECT id FROM segments
-		WHERE kind = 'named' AND CASE WHEN $1::bigint IS NULL THEN is_default ELSE id = $1 END FOR KEY SHARE`, id).Scan(&found)
+	err := lockNamedQuery(store.G(ctx, tx), id).Take(&found).Error
 	if store.IsNoRows(err) {
 		return 0, core.ErrNotFound
 	}
 	return found, err
+}
+
+// lockNamedQuery selects the id of the named segment id names, the default
+// one when id is nil, locked against deletion (LockNamed).
+func lockNamedQuery(db *gorm.DB, id *int64) *gorm.DB {
+	db = db.Model(&model.Segment{}).Select("id").Where("kind = 'named'")
+	if id == nil {
+		db = db.Where("is_default")
+	} else {
+		db = db.Where("id = ?", *id)
+	}
+	return db.Clauses(clause.Locking{Strength: "KEY SHARE"})
 }
