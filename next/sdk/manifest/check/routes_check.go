@@ -75,16 +75,20 @@ func (v *validator) routeAccounts(f string, r manifest.Route) {
 
 // routeScopeFrom validates routes[i].scopeFrom of an admin or user route:
 // the route's permission declares a scope the named value is checked
-// against.
+// against. A route of a scoped permission other than GET must name the rows
+// it acts on: any scope admits the route, so without scopeFrom only the
+// plugin would keep the holder of one row from acting on every row. A
+// route that names none (creating a row, say) takes an unscoped permission.
 func (v *validator) routeScopeFrom(f string, r manifest.Route) {
-	if r.ScopeFrom == "" {
-		return
-	}
-	if v.m.UserPermissionScope(r.Permission) == nil {
+	scoped := v.m.UserPermissionScope(r.Permission) != nil
+	switch {
+	case r.ScopeFrom != "" && !scoped:
 		v.add(f, "unsupported", "permission %q declares no scope", r.Permission)
-		return
+	case r.ScopeFrom != "":
+		v.valueFrom(f, r, r.ScopeFrom)
+	case scoped && strings.ToUpper(r.Method) != "GET":
+		v.add(f, "required", "%s routes of the scoped permission %q name the rows they act on; give a route naming none an unscoped permission", strings.ToUpper(r.Method), r.Permission)
 	}
-	v.valueFrom(f, r, r.ScopeFrom)
 }
 
 // valueFrom checks one "path:|query:|body:" entry of route r (accounts.from,
