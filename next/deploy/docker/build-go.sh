@@ -61,10 +61,11 @@ if [ -n "$ccg_packaged" ]; then
 fi
 mkdir -p "$OUT/bin" "$OUT/market" "$OUT/builtin"
 cd "$SRC"
-# The core Docker context excludes CCGateway companion container modules.
-# Retain the workspace dependency graph used by the server and plugins.
+# The core Docker context holds only the contracts module of the CCGateway
+# companions (Dockerfile.dockerignore): drop every other companion module
+# from the workspace, keeping the graph the server and plugins build with.
 if [ -f go.work ]; then
-  sed '/^[[:space:]]*\.\/plugins\/ccgateway\/companions[[:space:]]*$/d; /^[[:space:]]*\.\/plugins\/ccgateway\/companions\/worker[[:space:]]*$/d' go.work > go.build.work
+  sed -E '/^[[:space:]]*\.\/plugins\/ccgateway\/companions\/contracts[[:space:]]*$/b; /^[[:space:]]*\.\/plugins\/ccgateway\/companions(\/[^[:space:]]*)?[[:space:]]*$/d' go.work > go.build.work
   if [ -f go.work.sum ]; then cp go.work.sum go.build.work.sum; fi
   export GOWORK="$PWD/go.build.work"
 fi
