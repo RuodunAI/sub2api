@@ -443,6 +443,57 @@ func TestStoreTypesAsParameters(t *testing.T) {
 	}
 }
 
+// The array types hand pgx their plain slice as the value (see
+// store.Int64s), which database/sql itself would refuse: this keeps that
+// pgx's driver takes it and encodes it as the parameter's array type, with
+// or without a cast, and that GORM binds each as one parameter rather than
+// expanding it into a list.
+func TestArrayParametersRelyOnPgxStdlib(t *testing.T) {
+	db, _ := widgetDB(t)
+	ctx := context.Background()
+	at := time.Date(2024, 1, 2, 3, 4, 5, 123456789, time.UTC)
+	one := int64(1)
+	params := []any{
+		store.Int64s{3, 1}, store.Strings{"a", `"b"`}, store.Times{at}, store.Bools{true, false},
+		store.NullStrings([]string{"x"}), store.Array[*int64]{&one, nil}, store.Int64s(nil),
+	}
+
+	// GORM: one placeholder each, the value itself in the statement's Vars.
+	q := store.DryRun().Exec(`SELECT ?::int8[], ?::text[], ?::timestamptz[], ?::bool[], ?::text[], ?::int8[], ?::int8[]`, params...)
+	require.NoError(t, q.Error)
+	require.Equal(t, `SELECT $1::int8[], $2::text[], $3::timestamptz[], $4::bool[], $5::text[], $6::int8[], $7::int8[]`, q.Statement.SQL.String())
+	require.Equal(t, params, q.Statement.Vars)
+
+	// pgx: the same values come back, through database/sql's text form.
+	var r struct {
+		Ids   store.Int64s
+		Tags  store.Strings
+		Times store.Times
+		Flags string
+		Only  store.Strings
+		Ptrs  string
+		Empty store.Int64s
+	}
+	g := store.G(ctx, db.Gorm)
+	require.NoError(t, g.Raw(`SELECT ?::int8[] AS ids, ?::text[] AS tags, ?::timestamptz[] AS times, ?::bool[]::text AS flags,
+		?::text[] AS only, ?::int8[]::text AS ptrs, ?::int8[] AS empty`, params...).Scan(&r).Error)
+	assert.Equal(t, store.Int64s{3, 1}, r.Ids)
+	assert.Equal(t, store.Strings{"a", `"b"`}, r.Tags)
+	require.Len(t, r.Times, 1)
+	assert.True(t, at.Truncate(time.Microsecond).Equal(r.Times[0]), "%v", r.Times[0])
+	assert.Equal(t, "{t,f}", r.Flags)
+	assert.Equal(t, store.Strings{"x"}, r.Only)
+	assert.Equal(t, "{1,NULL}", r.Ptrs)
+	assert.Equal(t, store.Int64s{}, r.Empty, "nil is the empty array, not NULL")
+
+	// Without a cast the parameter takes its type from its use.
+	var n int64
+	require.NoError(t, g.Raw(`SELECT count(*) FROM generate_series(1, 5) x WHERE x = ANY(?)`, store.Int64s{2, 4, 9}).Row().Scan(&n))
+	assert.EqualValues(t, 2, n)
+	require.NoError(t, g.Raw(`SELECT count(*) FROM (VALUES ('a'), ('b'), ('c')) v(s) WHERE s = ANY(?)`, store.Strings{"c", "a"}).Row().Scan(&n))
+	assert.EqualValues(t, 2, n)
+}
+
 // account is a hand-written model of a real table with text[] columns and
 // no gorm type tags: Int64s and Strings map as columns by themselves.
 type account struct {

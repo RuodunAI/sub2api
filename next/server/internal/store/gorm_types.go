@@ -97,32 +97,40 @@ func (Bytes) GormDataType() string { return "bytea" }
 // into a list (see Int64s); nil is the empty array.
 type Bools []bool
 
-// Value implements driver.Valuer.
-func (a Bools) Value() (driver.Value, error) {
-	return appendArray(a, func(b []byte, v bool) []byte {
-		if v {
-			return append(b, 't')
-		}
-		return append(b, 'f')
-	}), nil
-}
+// Value implements driver.Valuer with the plain slice (see Int64s).
+func (a Bools) Value() (driver.Value, error) { return orEmpty([]bool(a)), nil }
 
 // GormDataType is that of Int64s.
 func (Bools) GormDataType() string { return "boolean[]" }
 
 // Int64s is a bigint[] parameter or column for GORM. GORM expands a plain
 // []int64 argument into one placeholder per element, which breaks
-// "= ANY(?)" and turns an empty slice into NULL; Int64s is one parameter,
-// written in the array's text form, and nil is the empty array.
+// "= ANY(?)" and turns an empty slice into NULL; Int64s is one parameter
+// (GORM binds a driver.Valuer as is), and nil is the empty array.
 //
-// It reads a column from that text form, which database/sql gives every
-// array. A NULL array reads as nil, the empty one as an empty slice; a NULL
-// element is an error.
+// Value returns the plain []int64, which is no driver.Value of
+// database/sql's: the parameter relies on pgx's database/sql driver, whose
+// CheckNamedValue accepts any argument and hands it to pgx, which calls
+// Value and encodes the slice as the parameter's array type, in binary, as
+// it encodes a []int64. (Writing the array's text instead made pgx parse
+// it again: up to 1.7 times the allocations of a statement with array
+// parameters.) Strings, Times, Bools and Array do the same;
+// TestArrayParametersRelyOnPgxStdlib keeps it.
+//
+// It reads a column from the array's text form, which database/sql gives
+// every array. A NULL array reads as nil, the empty one as an empty slice;
+// a NULL element is an error.
 type Int64s []int64
 
-// Value implements driver.Valuer.
-func (a Int64s) Value() (driver.Value, error) {
-	return appendArray(a, func(b []byte, v int64) []byte { return strconv.AppendInt(b, v, 10) }), nil
+// Value implements driver.Valuer with the plain slice (see above).
+func (a Int64s) Value() (driver.Value, error) { return orEmpty([]int64(a)), nil }
+
+// orEmpty is a, or an empty slice for nil, which pgx would bind as NULL.
+func orEmpty[T any](a []T) []T {
+	if a == nil {
+		return []T{}
+	}
+	return a
 }
 
 // GormDataType makes GORM map Int64s as a column: a slice type without it
@@ -138,8 +146,8 @@ func (a *Int64s) Scan(src any) (err error) {
 // Strings is the text[] counterpart of Int64s.
 type Strings []string
 
-// Value implements driver.Valuer.
-func (a Strings) Value() (driver.Value, error) { return appendArray(a, appendQuoted), nil }
+// Value implements driver.Valuer with the plain slice (see Int64s).
+func (a Strings) Value() (driver.Value, error) { return orEmpty([]string(a)), nil }
 
 // GormDataType is that of Int64s.
 func (Strings) GormDataType() string { return "text[]" }
@@ -164,8 +172,9 @@ func (a *Strings) Scan(src any) (err error) {
 // time.Local; ±infinity is an error, as no time.Time holds it.
 type Times []time.Time
 
-// Value implements driver.Valuer.
-func (a Times) Value() (driver.Value, error) { return appendArray(a, appendTimestamp), nil }
+// Value implements driver.Valuer with the plain slice (see Int64s); pgx
+// drops the sub-microsecond part.
+func (a Times) Value() (driver.Value, error) { return orEmpty([]time.Time(a)), nil }
 
 // GormDataType is that of Int64s.
 func (Times) GormDataType() string { return "timestamptz[]" }

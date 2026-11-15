@@ -11,7 +11,8 @@ import (
 // The text forms of PostgreSQL arrays and timestamps. database/sql hands
 // over every array column as its text ("{1,2}", {"a b","c"}), and pgx's
 // driver a timestamptz it cannot turn into a time.Time (±infinity) as text,
-// so the store types parse them here; they write arrays in the same form.
+// so the store types parse them here. Array parameters are written by pgx
+// (see Int64s).
 
 // parseArray calls elem with each element of src, the text form of an
 // array, in order; null marks an unquoted NULL. A multi-dimensional array
@@ -170,45 +171,6 @@ func scanArray[E any](src any, parse func(string) (E, error)) ([]E, error) {
 		return nil, err
 	}
 	return out, nil
-}
-
-// appendArray writes a as an array's text form, each element written by
-// add.
-func appendArray[E any](a []E, add func([]byte, E) []byte) string {
-	b := make([]byte, 0, 2+len(a)*8)
-	b = append(b, '{')
-	for i, e := range a {
-		if i > 0 {
-			b = append(b, ',')
-		}
-		b = add(b, e)
-	}
-	return string(append(b, '}'))
-}
-
-// appendQuoted writes s as a double-quoted array element.
-func appendQuoted(b []byte, s string) []byte {
-	b = append(b, '"')
-	for i := 0; i < len(s); i++ {
-		if s[i] == '"' || s[i] == '\\' {
-			b = append(b, '\\')
-		}
-		b = append(b, s[i])
-	}
-	return append(b, '"')
-}
-
-// timestampLayout writes a time PostgreSQL reads as the same instant
-// (Z is UTC), to the microsecond it stores.
-const timestampLayout = "2006-01-02 15:04:05.999999Z07:00"
-
-// appendTimestamp writes t as a quoted array element. The sub-microsecond
-// part is dropped, as pgx's binary encoding drops it, rather than rounded
-// by the server.
-func appendTimestamp(b []byte, t time.Time) []byte {
-	b = append(b, '"')
-	b = t.UTC().Truncate(time.Microsecond).AppendFormat(b, timestampLayout)
-	return append(b, '"')
 }
 
 // parseTimestamptz reads a finite timestamptz as PostgreSQL prints it with

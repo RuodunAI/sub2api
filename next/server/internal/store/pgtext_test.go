@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql/driver"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -60,32 +62,33 @@ func equalElems[E comparable](a, b []E) bool {
 	return true
 }
 
-// What the array types write is what they read.
-func TestArrayTextRoundTrip(t *testing.T) {
-	strs := Strings{"", "a b", `q"uote`, `back\slash`, "NULL", "{,}", "日本"}
-	v, _ := strs.Value()
-	var back Strings
-	if err := back.Scan(v); err != nil || !equalElems(back, strs) {
-		t.Errorf("Strings %q -> %v -> %q, %v", strs, v, back, err)
+// The array parameters are the plain slices for pgx to encode (see Int64s),
+// nil an empty one rather than NULL; Array is its slice as given.
+func TestArrayValuesArePlainSlices(t *testing.T) {
+	at := time.Date(2024, 1, 2, 3, 4, 5, 6, time.UTC)
+	one := int64(1)
+	for _, c := range []struct {
+		v    driver.Valuer
+		want any
+	}{
+		{Int64s{1, 2}, []int64{1, 2}},
+		{Int64s(nil), []int64{}},
+		{Strings{"a", ""}, []string{"a", ""}},
+		{Strings(nil), []string{}},
+		{Times{at}, []time.Time{at}},
+		{Times(nil), []time.Time{}},
+		{Bools{true}, []bool{true}},
+		{Bools(nil), []bool{}},
+		{NullStrings([]string{"x"}).(driver.Valuer), []string{"x"}},
+		{Array[*int64]{&one, nil}, []*int64{&one, nil}},
+	} {
+		got, err := c.v.Value()
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%T(%v).Value() = %#v, %v; want %#v", c.v, c.v, got, err, c.want)
+		}
 	}
-	ids := Int64s{-9223372036854775808, 0, 9223372036854775807}
-	v, _ = ids.Value()
-	var backIDs Int64s
-	if err := backIDs.Scan(v); err != nil || !equalElems(backIDs, ids) {
-		t.Errorf("Int64s %v -> %v -> %v, %v", ids, v, backIDs, err)
-	}
-	if v, _ := Int64s(nil).Value(); v != "{}" {
-		t.Errorf("Int64s(nil).Value() = %#v", v)
-	}
-	if v, _ := Strings(nil).Value(); v != "{}" {
-		t.Errorf("Strings(nil).Value() = %#v", v)
-	}
-	if v, _ := Times(nil).Value(); v != "{}" {
-		t.Errorf("Times(nil).Value() = %#v", v)
-	}
-	at := time.Date(2024, 1, 2, 3, 4, 5, 123456789, time.FixedZone("", 8*3600))
-	if v, _ := (Times{at}).Value(); v != `{"2024-01-01 19:04:05.123456Z"}` {
-		t.Errorf("Times.Value() = %#v", v)
+	if NullStrings(nil) != nil {
+		t.Error("NullStrings(nil) is not NULL")
 	}
 }
 

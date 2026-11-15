@@ -10,15 +10,9 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-// Bools is one boolean[] parameter in its text form, nil the empty array,
-// and a column to GORM's schema parser rather than a relation.
+// Bools is a column to GORM's schema parser rather than a relation (its
+// Value: TestArrayValuesArePlainSlices).
 func TestBools(t *testing.T) {
-	if v, _ := Bools(nil).Value(); v != "{}" {
-		t.Errorf("Bools(nil).Value() = %#v, want the empty array", v)
-	}
-	if v, _ := (Bools{true, false}).Value(); v != "{t,f}" {
-		t.Errorf("Bools{true, false}.Value() = %#v", v)
-	}
 	type row struct {
 		ID    int64
 		Flags Bools
