@@ -16,11 +16,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // SettingsKey is the settings row of the global layer.
@@ -175,30 +177,50 @@ func (s *Service) fallback(last core.EnvironmentValues) core.EnvironmentValues {
 // ResolveEnvironment reads the group and account layers and merges them with
 // the global one. accountID 0 resolves the group alone.
 func (s *Service) ResolveEnvironment(ctx context.Context, groupID, accountID int64) (core.Environment, error) {
+	var row layerRows
+	if err := layersQuery(store.G(ctx, s.db.Pool), groupID, accountID, &row).Error; err != nil {
+		return nil, err
+	}
 	var group, account core.EnvironmentValues
-	err := s.db.Pool.QueryRow(ctx, `SELECT
-		COALESCE((SELECT environment FROM groups WHERE id = $1), '{}'),
-		COALESCE((SELECT environment FROM accounts WHERE id = $2 AND deleted_at IS NULL), '{}')`, groupID, accountID).Scan(&group, &account)
-	if err != nil {
+	if err := json.Unmarshal(row.GroupEnv, &group); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(row.AccountEnv, &account); err != nil {
 		return nil, err
 	}
 	return core.ResolveEnvironment(s.GlobalEnvironment(ctx), group, account), nil
 }
 
+// layerRows are the group and account layers as stored, JSON objects.
+type layerRows struct{ GroupEnv, AccountEnv json.RawMessage }
+
+// layersQuery reads into dst the layers of a group and a live account, {}
+// for a row that is not there.
+func layersQuery(db *gorm.DB, groupID, accountID int64, dst *layerRows) *gorm.DB {
+	return db.Raw(`SELECT
+		COALESCE((SELECT environment FROM groups WHERE id = ?), '{}') AS group_env,
+		COALESCE((SELECT environment FROM accounts WHERE id = ? AND deleted_at IS NULL), '{}') AS account_env`, groupID, accountID).Scan(dst)
+}
+
 func loadGlobal(ctx context.Context, q store.Querier) (core.EnvironmentValues, error) {
 	values := core.EnvironmentValues{}
-	var raw []byte
-	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, SettingsKey).Scan(&raw)
+	var row model.Setting
+	err := globalQuery(store.G(ctx, q)).Take(&row).Error
 	if store.IsNoRows(err) {
 		return values, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(raw, &values); err != nil {
+	if err := json.Unmarshal(row.Value, &values); err != nil {
 		return nil, err
 	}
 	return values, nil
+}
+
+// globalQuery selects the value of the global layer's settings row.
+func globalQuery(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.Setting{}).Select("value").Where("key = ?", SettingsKey)
 }
 
 // variablesView is GET /environment/variables: the declared variables and

@@ -1,0 +1,8 @@
+-- sql
+SELECT to_jsonb(a) || jsonb_build_object('user_email', u.email, 'user_name', u.display_name) FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id WHERE a.target_type = $1 AND a.user_id = $2 AND a.created_at >= $3 ORDER BY a.id DESC LIMIT $4 OFFSET $5
+-- vars
+$1 string "plugin"
+$2 int64 7
+$3 time.Time 2026-01-01 00:00:00 +0000 UTC
+$4 int 20
+$5 int 40

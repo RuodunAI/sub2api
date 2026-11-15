@@ -14,7 +14,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 type Options struct {
@@ -57,8 +59,7 @@ func validBinding(b core.ResourceBinding) bool {
 	return b.AccountID > 0 && bounded(b.PrincipalID) && bounded(b.Generation)
 }
 func lock(ctx context.Context, q store.Querier, o core.ResourceOwner) error {
-	_, e := q.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, fmt.Sprintf("helper-history:%d:%d", o.UserID, o.GroupID))
-	return e
+	return store.G(ctx, q).Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, fmt.Sprintf("helper-history:%d:%d", o.UserID, o.GroupID)).Error
 }
 func (s *Service) transaction(ctx context.Context, o core.ResourceOwner, fn func(pgx.Tx) error) error {
 	if !validOwner(o) || s.db == nil || s.cipher == nil {
@@ -82,33 +83,44 @@ func chainDigest(parent string, b core.ResourceBinding, namespace, prefix, paylo
 func (s *Service) clean(ctx context.Context, q store.Querier, o core.ResourceOwner, now time.Time) error {
 	// Identity tombstones are never automatically evicted: a later identical
 	// public prefix must not resurrect an old client with a different hidden chain.
-	if _, e := q.Exec(ctx, `UPDATE provider_helper_records SET payload=NULL WHERE user_id=$1 AND group_id=$2 AND expires_at<=$3 AND payload IS NOT NULL`, o.UserID, o.GroupID, now); e != nil {
+	db := store.G(ctx, q)
+	if e := db.Model(&model.ProviderHelperRecord{}).Scopes(owned(o)).Where("expires_at <= ? AND payload IS NOT NULL", now).
+		Update("payload", nil).Error; e != nil {
 		return e
 	}
-
-	_, e := q.Exec(ctx, `DELETE FROM provider_helper_attempts WHERE user_id=$1 AND group_id=$2 AND expires_at<=$3`, o.UserID, o.GroupID, now.Add(-s.options.TombstoneRetention))
-	return e
+	return db.Scopes(owned(o)).Where("expires_at <= ?", now.Add(-s.options.TombstoneRetention)).Delete(&model.ProviderHelperAttempt{}).Error
 }
-func (s *Service) quota(ctx context.Context, q store.Querier, o core.ResourceOwner, now time.Time, bytes int64) error {
-	var count, size int64
-	// Every live reservation can become both a record and an outbox entry.
-	// Existing outbox rows are counted once; acknowledged frozen usage needs
-	// no future outbox reservation. Abort retains only bounded identity metadata.
-	e := q.QueryRow(ctx, `WITH owned_attempts AS (
- SELECT a.* FROM provider_helper_attempts a WHERE user_id=$1 AND group_id=$2 AND state!='committed'
+
+// holdings is what an owner holds and has reserved.
+type holdings struct{ Count, Size int64 }
+
+// holdingsQuery reads into dst the holdings of owner o: rows and bytes. Every
+// live reservation can become both a record and an outbox entry. Existing
+// outbox rows are counted once; acknowledged frozen usage needs no future
+// outbox reservation. Abort retains only bounded identity metadata. The
+// parameters are named, as each is used several times.
+func holdingsQuery(db *gorm.DB, o core.ResourceOwner, now time.Time, dst *holdings) *gorm.DB {
+	return db.Raw(`WITH owned_attempts AS (
+ SELECT a.* FROM provider_helper_attempts a WHERE user_id=@user AND group_id=@group AND state!='committed'
  ) SELECT
- (SELECT count(*) FROM provider_helper_records WHERE user_id=$1 AND group_id=$2)+
- (SELECT count(*) FROM provider_helper_usage_outbox WHERE user_id=$1 AND group_id=$2)+
- (SELECT coalesce(sum(CASE WHEN state='aborted' THEN 1 WHEN usage_digest!='' THEN 1 ELSE 2 END),0) FROM owned_attempts),
- (SELECT coalesce(sum(payload_bytes),0) FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND expires_at>$3)+
- (SELECT coalesce(sum(octet_length(payload)),0) FROM provider_helper_usage_outbox WHERE user_id=$1 AND group_id=$2)+
+ (SELECT count(*) FROM provider_helper_records WHERE user_id=@user AND group_id=@group)+
+ (SELECT count(*) FROM provider_helper_usage_outbox WHERE user_id=@user AND group_id=@group)+
+ (SELECT coalesce(sum(CASE WHEN state='aborted' THEN 1 WHEN usage_digest!='' THEN 1 ELSE 2 END),0) FROM owned_attempts) AS count,
+ (SELECT coalesce(sum(payload_bytes),0) FROM provider_helper_records WHERE user_id=@user AND group_id=@group AND expires_at>@now)+
+ (SELECT coalesce(sum(octet_length(payload)),0) FROM provider_helper_usage_outbox WHERE user_id=@user AND group_id=@group)+
  (SELECT coalesce(sum(CASE WHEN state='aborted' THEN 0 ELSE
- CASE WHEN expires_at>$3 THEN reserved_bytes+$4 ELSE 0 END+
- CASE WHEN usage_digest='' THEN $5 ELSE 0 END END),0) FROM owned_attempts)`, o.UserID, o.GroupID, now, 64, maxUsageBytes+64).Scan(&count, &size)
-	if e != nil {
+ CASE WHEN expires_at>@now THEN reserved_bytes+@record_overhead ELSE 0 END+
+ CASE WHEN usage_digest='' THEN @usage_reserve ELSE 0 END END),0) FROM owned_attempts) AS size`,
+		map[string]any{"user": o.UserID, "group": o.GroupID, "now": now, "record_overhead": 64, "usage_reserve": maxUsageBytes + 64}).
+		Scan(dst)
+}
+
+func (s *Service) quota(ctx context.Context, q store.Querier, o core.ResourceOwner, now time.Time, bytes int64) error {
+	var h holdings
+	if e := holdingsQuery(store.G(ctx, q), o, now, &h).Error; e != nil {
 		return e
 	}
-	if count+2 > int64(s.options.MaxRecords) || bytes+64+maxUsageBytes+64 > s.options.MaxBytes-size {
+	if h.Count+2 > int64(s.options.MaxRecords) || bytes+64+maxUsageBytes+64 > s.options.MaxBytes-h.Size {
 		return core.ErrRateLimited.WithMessage("helper history capacity exhausted")
 	}
 	return nil
@@ -120,6 +132,6 @@ func (s *Service) ExpirePayloads(ctx context.Context) error {
 	if s.db == nil {
 		return core.ErrInvalidArgument
 	}
-	_, err := s.db.Pool.Exec(ctx, `UPDATE provider_helper_records SET payload=NULL WHERE expires_at<=$1 AND payload IS NOT NULL`, s.now())
-	return err
+	return store.G(ctx, s.db.Pool).Model(&model.ProviderHelperRecord{}).Where("expires_at <= ? AND payload IS NOT NULL", s.now()).
+		Update("payload", nil).Error
 }

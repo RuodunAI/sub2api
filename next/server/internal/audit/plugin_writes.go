@@ -14,8 +14,11 @@ import (
 	"time"
 	"unicode"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -188,13 +191,24 @@ func (p *PluginWrites) Purge(ctx context.Context) error {
 		retention = PluginWriteRetention
 	}
 	for {
-		tag, err := p.DB.Pool.Exec(ctx, `DELETE FROM audit_logs WHERE id IN (SELECT id FROM audit_logs
-			WHERE action = $1 AND created_at < now() - make_interval(secs => $2) ORDER BY id LIMIT 10000)`,
-			ActionPluginWrite, retention.Seconds())
-		if err != nil || tag.RowsAffected() < 10000 {
-			return err
+		res := purgeBatch(store.G(ctx, p.DB.Pool), retention)
+		if res.Error != nil || res.RowsAffected < purgeBatchSize {
+			return res.Error
 		}
 	}
+}
+
+// purgeBatchSize bounds one DELETE of Purge, so that no statement holds
+// locks on a large backlog for long.
+const purgeBatchSize = 10000
+
+// purgeBatch deletes up to purgeBatchSize plugin write rows older than
+// retention, oldest first.
+func purgeBatch(db *gorm.DB, retention time.Duration) *gorm.DB {
+	old := db.Model(&model.AuditLog{}).Select("id").
+		Where("action = ? AND created_at < now() - make_interval(secs => ?)", ActionPluginWrite, retention.Seconds()).
+		Order("id").Limit(purgeBatchSize)
+	return db.Where("id IN (?)", old).Delete(&model.AuditLog{})
 }
 
 // bodySummary is a bounded copy of a JSON request body that is safe to keep:

@@ -1,0 +1,6 @@
+-- sql
+SELECT count(*) FROM audit_logs a WHERE a.target_type = $1 AND a.user_id = $2 AND a.created_at >= $3
+-- vars
+$1 string "plugin"
+$2 int64 7
+$3 time.Time 2026-01-01 00:00:00 +0000 UTC

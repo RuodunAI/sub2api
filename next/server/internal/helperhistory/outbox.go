@@ -8,7 +8,10 @@ import (
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const maxUsageBytes = 2 << 20
@@ -38,10 +41,11 @@ func (s *Service) saveUsage(ctx context.Context, q store.Querier, a attempt, r *
 		}
 		return nil
 	}
-	var old string
-	e = q.QueryRow(ctx, `SELECT digest FROM provider_helper_usage_outbox WHERE request_id=$1`, a.requestID).Scan(&old)
+	db := store.G(ctx, q)
+	var old model.ProviderHelperUsageOutbox
+	e = outboxDigest(db, a.requestID).Take(&old).Error
 	if e == nil {
-		if old != digest {
+		if old.Digest != digest {
 			return core.ErrConflict.WithMessage("helper usage changed after freeze")
 		}
 		return nil
@@ -53,11 +57,21 @@ func (s *Service) saveUsage(ctx context.Context, q store.Querier, a attempt, r *
 	if e != nil {
 		return e
 	}
-	if _, e = q.Exec(ctx, `UPDATE provider_helper_attempts SET usage_digest=$1 WHERE id=$2`, digest, a.ID); e != nil {
+	if e = db.Model(&model.ProviderHelperAttempt{}).Where("id = ?", a.ID).Update("usage_digest", digest).Error; e != nil {
 		return e
 	}
-	_, e = q.Exec(ctx, `INSERT INTO provider_helper_usage_outbox(request_id,attempt_id,user_id,group_id,digest,payload,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, a.requestID, a.ID, a.owner.UserID, a.owner.GroupID, digest, encrypted, s.now())
-	return e
+	// RETURNING only the key: GORM would read back the defaulted columns,
+	// and next_attempt_at defaults to -infinity, which time.Time cannot hold.
+	return db.Clauses(clause.Returning{Columns: []clause.Column{{Name: "request_id"}}}).
+		Create(&model.ProviderHelperUsageOutbox{RequestID: a.requestID, AttemptID: a.ID, UserID: a.owner.UserID, GroupID: a.owner.GroupID,
+			Digest: digest, Payload: encrypted, CreatedAt: s.now()}).Error
+}
+
+// outboxDigest selects the digest of the outbox entry of requestID. It reads
+// only that column: next_attempt_at may be -infinity, which a model read of
+// every column could not decode.
+func outboxDigest(db *gorm.DB, requestID string) *gorm.DB {
+	return db.Model(&model.ProviderHelperUsageOutbox{}).Select("digest").Where("request_id = ?", requestID)
 }
 func (s *Service) PersistUncertainUsage(ctx context.Context, o core.ResourceOwner, id string, r *core.UsageRecord) error {
 	return s.transaction(ctx, o, func(tx pgx.Tx) error {
@@ -74,9 +88,15 @@ func (s *Service) PersistUncertainUsage(ctx context.Context, o core.ResourceOwne
 		if e = s.saveUsage(ctx, tx, a, r); e != nil {
 			return e
 		}
-		_, e = tx.Exec(ctx, `UPDATE provider_helper_attempts SET state='uncertain' WHERE id=$1`, id)
-		return e
+		return setAttemptState(store.G(ctx, tx), id, "uncertain").Error
 	})
+}
+
+// pendingOutbox reads into dst up to limit entries due at now, the longest
+// waiting first. Only the columns delivered are read (see outboxDigest).
+func pendingOutbox(db *gorm.DB, now time.Time, limit int, dst *[]model.ProviderHelperUsageOutbox) *gorm.DB {
+	return db.Select("request_id, attempt_id, user_id, group_id, digest, payload").Where("next_attempt_at <= ?", now).
+		Order("next_attempt_at, created_at, request_id").Limit(limit).Find(dst)
 }
 
 // PendingUsage does not consume or lease entries. Consumers must persist by the
@@ -85,21 +105,16 @@ func (s *Service) PendingUsage(ctx context.Context, limit int) ([]core.HelperHis
 	if limit < 1 || limit > 100 || s.db == nil || s.cipher == nil {
 		return nil, core.ErrInvalidArgument
 	}
-	rows, e := s.db.Pool.Query(ctx, `SELECT request_id,attempt_id,user_id,group_id,digest,payload FROM provider_helper_usage_outbox WHERE next_attempt_at<=$2 ORDER BY next_attempt_at,created_at,request_id LIMIT $1`, limit, s.now())
-	if e != nil {
+	var rows []model.ProviderHelperUsageOutbox
+	if e := pendingOutbox(store.G(ctx, s.db.Pool), s.now(), limit, &rows).Error; e != nil {
 		return nil, e
 	}
-	defer rows.Close()
 	out := []core.HelperHistoryUsage{}
 	var invalid []struct{ id, digest, code string }
-	for rows.Next() {
-		var v core.HelperHistoryUsage
-		var owner core.ResourceOwner
-		var encrypted []byte
-		if e = rows.Scan(&v.RequestID, &v.AttemptID, &owner.UserID, &owner.GroupID, &v.Digest, &encrypted); e != nil {
-			return nil, e
-		}
-		raw, e := s.cipher.Decrypt(encrypted, usageAAD(v.RequestID, v.AttemptID, v.Digest, owner))
+	for _, row := range rows {
+		v := core.HelperHistoryUsage{RequestID: row.RequestID, AttemptID: row.AttemptID, Digest: row.Digest}
+		owner := core.ResourceOwner{UserID: row.UserID, GroupID: row.GroupID}
+		raw, e := s.cipher.Decrypt(row.Payload, usageAAD(v.RequestID, v.AttemptID, v.Digest, owner))
 		if e != nil || len(raw) > maxUsageBytes || wire.Digest(raw) != v.Digest {
 			invalid = append(invalid, struct{ id, digest, code string }{v.RequestID, v.Digest, "integrity"})
 			continue
@@ -112,11 +127,6 @@ func (s *Service) PendingUsage(ctx context.Context, limit int) ([]core.HelperHis
 		v.Record = record
 		v.FrozenEnvelope = append([]byte(nil), raw...)
 		out = append(out, v)
-	}
-	err := rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
 	}
 	for _, item := range invalid {
 		if err := s.deferUsage(ctx, item.id, item.digest, item.code); err != nil {
@@ -141,26 +151,36 @@ func (s *Service) deferUsage(ctx context.Context, requestID, digest, code string
 	if s.db == nil {
 		return core.ErrInvalidArgument
 	}
-	_, err := s.db.Pool.Exec(ctx, `UPDATE provider_helper_usage_outbox SET next_attempt_at=GREATEST(next_attempt_at,$3),retry_count=LEAST(retry_count,2147483646)+1,failure_code=$4 WHERE request_id=$1 AND digest=$2`, requestID, digest, s.now().Add(time.Minute), code)
-	return err
+	return deferOutbox(store.G(ctx, s.db.Pool), requestID, digest, code, s.now().Add(time.Minute)).Error
 }
+
+// deferOutbox holds the outbox entry back until at least until and counts
+// the retry, saturating short of the int4 range.
+func deferOutbox(db *gorm.DB, requestID, digest, code string, until time.Time) *gorm.DB {
+	return db.Model(&model.ProviderHelperUsageOutbox{}).Where("request_id = ? AND digest = ?", requestID, digest).Updates(map[string]any{
+		"next_attempt_at": gorm.Expr("GREATEST(next_attempt_at, ?)", until),
+		"retry_count":     gorm.Expr("LEAST(retry_count, 2147483646) + 1"),
+		"failure_code":    code,
+	})
+}
+
 func (s *Service) AckUsage(ctx context.Context, requestID, digest string) error {
 	if !bounded(requestID) || !wire.ValidDigest(digest) {
 		return core.ErrInvalidArgument
 	}
 	return s.db.Tx(ctx, func(tx pgx.Tx) error {
-		var old string
-		e := tx.QueryRow(ctx, `SELECT digest FROM provider_helper_usage_outbox WHERE request_id=$1 FOR UPDATE`, requestID).Scan(&old)
+		db := store.G(ctx, tx)
+		var old model.ProviderHelperUsageOutbox
+		e := outboxDigest(db, requestID).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Take(&old).Error
 		if store.IsNoRows(e) {
 			return nil
 		}
 		if e != nil {
 			return e
 		}
-		if old != digest {
+		if old.Digest != digest {
 			return core.ErrConflict
 		}
-		_, e = tx.Exec(ctx, `DELETE FROM provider_helper_usage_outbox WHERE request_id=$1`, requestID)
-		return e
+		return db.Where("request_id = ?", requestID).Delete(&model.ProviderHelperUsageOutbox{}).Error
 	})
 }

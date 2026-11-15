@@ -1,0 +1,3 @@
+-- sql
+SELECT to_regclass('updater.upgrades') IS NOT NULL
+-- vars

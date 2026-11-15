@@ -1,0 +1,12 @@
+-- sql
+SELECT a.id AS id, a.name AS name, a.plugin_key AS hint, a.status AS status FROM accounts a WHERE a.deleted_at IS NULL AND (($1::boolean OR COALESCE(a.created_by = $2::bigint, false) OR a.id = ANY($3::bigint[]) OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ($4::boolean OR ag.group_id = ANY($5::bigint[]))) OR EXISTS (SELECT 1 FROM account_groups ag JOIN unnest($6::bigint[], $7::bigint[]) sp(g, x) ON sp.x = ag.account_id AND (sp.g = 0 OR sp.g = ag.group_id) WHERE ag.account_id = a.id))) ORDER BY (EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = $8)) DESC, a.name, a.id LIMIT $9
+-- vars
+$1 bool false
+$2 int64 7
+$3 store.Int64s [5]
+$4 bool true
+$5 store.Int64s [3]
+$6 store.Int64s []
+$7 store.Int64s []
+$8 int64 3
+$9 int 11

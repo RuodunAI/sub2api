@@ -1,0 +1,8 @@
+-- sql
+UPDATE "notifications" SET "attempts"=attempts - 1,"last_error"=$1,"next_attempt_at"=now() + make_interval(secs => $2),"status"=CASE WHEN created_at < now() - make_interval(secs => $3) THEN 'failed' ELSE 'pending' END WHERE id = $4 AND status = 'sending' AND attempts = $5
+-- vars
+$1 string "the plugin providing the notification channel is not available (it is starting, restarting, disabled or uninstalled)"
+$2 float64 30
+$3 float64 86400
+$4 int64 9
+$5 int32 3

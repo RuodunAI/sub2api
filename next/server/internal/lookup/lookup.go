@@ -15,7 +15,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -34,7 +35,7 @@ const (
 )
 
 // Entity describes one kind of row. Columns and conditions are SQL over the
-// aliases of From; conditions take "?" placeholders (store.Filter).
+// aliases of From; conditions take "?" placeholders (Conds).
 type Entity struct {
 	Kind string // path segment: /lookup/<kind>
 	From string // FROM clause
@@ -71,9 +72,18 @@ type Mine struct {
 	// Perms allow mine=true, any one of them; none means every signed-in user.
 	Perms []string
 	// Scope adds the conditions that leave only the caller's rows.
-	Scope func(ctx context.Context, q store.Querier, uid int64, f *store.Filter) error
+	Scope func(ctx context.Context, q store.Querier, uid int64, f *Conds) error
 	// Hint replaces Entity.Hint when set.
 	Hint string
+}
+
+// Conds are the conditions of one lookup, ANDed, as GORM scopes.
+type Conds []func(*gorm.DB) *gorm.DB
+
+// And adds cond, whose "?" placeholders take args in order. An array
+// argument is a store.Int64s or store.Strings.
+func (c *Conds) And(cond string, args ...any) {
+	*c = append(*c, func(db *gorm.DB) *gorm.DB { return db.Where(cond, args...) })
 }
 
 // Ref is a query parameter holding the id of another entity.
@@ -97,6 +107,21 @@ type Item struct {
 	Hint   string `json:"hint,omitempty"`
 	Status string `json:"status,omitempty"`
 }
+
+// itemRow is an Item as query reads it.
+type itemRow struct {
+	ID                 itemID
+	Name, Hint, Status string
+}
+
+// itemID is the id column as the driver hands it: an int64, or the name of
+// a model. GORM maps no interface field, hence the Scanner.
+type itemID struct{ v any }
+
+func (i *itemID) Scan(src any) error { i.v = src; return nil }
+
+// GormDataType makes GORM map itemID as a column.
+func (itemID) GormDataType() string { return "text" }
 
 // Result is the answer of GET /lookup/:kind. More says that the limit cut
 // further matches off.
@@ -144,12 +169,12 @@ func (s *Service) lookup(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	var f store.Filter
+	var f Conds
 	if e.Live != "" {
 		f.And(e.Live)
 	}
 	if a.named != nil {
-		f.And(e.ID+" = ANY(?)", a.named)
+		f.And(e.ID+" = ANY(?)", store.Int64s(a.named))
 	}
 	if e.Table != nil {
 		scope, err := core.Scope(ctx, s.authz, perm.Key(e.Read))
@@ -160,7 +185,7 @@ func (s *Service) lookup(c *gin.Context) {
 			httpapi.Fail(c, err)
 			return
 		}
-		f.And(e.Table.Cond(), e.Table.Args(scope)...)
+		f = append(f, e.Table.Scope(scope))
 	}
 	hint := e.Hint
 	if a.own {
@@ -173,19 +198,14 @@ func (s *Service) lookup(c *gin.Context) {
 			hint = e.Mine.Hint
 		}
 	}
-	sql, args := e.statement(p, &f, hint)
-	rows, err := s.db.Pool.Query(ctx, sql, args...)
-	if err != nil {
+	var rows []itemRow
+	if err := e.query(store.G(ctx, s.db.Pool), p, f, hint, &rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (it Item, err error) {
-		err = r.Scan(&it.ID, &it.Name, &it.Hint, &it.Status)
-		return it, err
-	})
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
+	items := make([]Item, len(rows))
+	for i, r := range rows {
+		items[i] = Item{ID: r.ID.v, Name: r.Name, Hint: r.Hint, Status: r.Status}
 	}
 	// statement asked for one row more than the limit to learn this.
 	more := p.ids == nil && len(items) > p.limit
@@ -248,7 +268,7 @@ func (s *Service) allowNamed(c *gin.Context, e *Entity) (access, bool) {
 type params struct {
 	text  string // q
 	id    *int64 // q read as an id: all digits, on a kind with numeric ids
-	ids   any    // []int64, or []string for models; nil when not given
+	ids   any    // store.Int64s, or store.Strings for models; nil when not given
 	limit int
 	mine  bool
 	refs  map[string]int64 // the given Narrow and Prefer parameters
@@ -326,12 +346,12 @@ func ParseText(c *gin.Context) (TextQuery, error) {
 	if err != nil {
 		return TextQuery{}, err
 	}
-	ids, _ := p.ids.([]string)
+	ids, _ := p.ids.(store.Strings)
 	return TextQuery{Q: p.text, IDs: ids, Limit: p.limit}, nil
 }
 
 // parseIDs reads ids=a,b,c: positive integers, or names when the kind has no
-// numeric id.
+// numeric id. They come as one array parameter each.
 func parseIDs(v string, numeric bool) (any, error) {
 	parts := strings.Split(v, ",")
 	if len(parts) > maxIDs {
@@ -344,9 +364,9 @@ func parseIDs(v string, numeric bool) (any, error) {
 				return nil, invalid("ids")
 			}
 		}
-		return parts, nil
+		return store.Strings(parts), nil
 	}
-	ids := make([]int64, len(parts))
+	ids := make(store.Int64s, len(parts))
 	for i, part := range parts {
 		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
 		if err != nil || id <= 0 {
@@ -359,8 +379,8 @@ func parseIDs(v string, numeric bool) (any, error) {
 
 // search adds the condition of q to f: the name or a Search column contains
 // it, or it is the id. It returns the order that lists the row of that id
-// first.
-func (e *Entity) search(p *params, f *store.Filter) []string {
+// first, with its argument.
+func (e *Entity) search(p *params, f *Conds) (string, []any) {
 	pattern := "%" + store.Like(p.text) + "%"
 	var conds []string
 	var args []any
@@ -370,46 +390,52 @@ func (e *Entity) search(p *params, f *store.Filter) []string {
 	}
 	if p.id == nil {
 		f.And("("+strings.Join(conds, " OR ")+")", args...)
-		return nil
+		return "", nil
 	}
 	f.And("("+strings.Join(append(conds, e.ID+" = ?"), " OR ")+")", append(args, *p.id)...)
-	return []string{"(" + e.ID + " = $" + strconv.Itoa(f.Len()) + ") DESC"}
+	return "(" + e.ID + " = ?) DESC", []any{*p.id}
 }
 
-// statement builds the query of one request on top of f, which holds the
+// query reads into dst the rows of one request on top of f, which holds the
 // conditions of the caller's range. Order: the row whose id is q, the rows a
 // Prefer parameter selects, then by name and id.
-func (e *Entity) statement(p *params, f *store.Filter, hint string) (string, []any) {
+func (e *Entity) query(db *gorm.DB, p *params, f Conds, hint string, dst *[]itemRow) *gorm.DB {
 	for _, r := range e.Narrow {
 		if id, ok := p.refs[r.Param]; ok {
 			f.And(r.Cond, id)
 		}
 	}
 	var order []string
+	var orderArgs []any
 	switch {
 	case p.ids != nil: // exactly these rows: q and limit do not apply
 		f.And(e.key()+" = ANY(?)", p.ids)
 	case p.text != "":
-		order = e.search(p, f)
+		if first, args := e.search(p, &f); first != "" {
+			order, orderArgs = append(order, first), args
+		}
 	}
-	args := f.Args()
 	for _, r := range e.Prefer {
 		if id, ok := p.refs[r.Param]; ok {
-			args = append(args, id)
-			order = append(order, "("+strings.Replace(r.Cond, "?", "$"+strconv.Itoa(len(args)), 1)+") DESC")
+			order = append(order, "("+r.Cond+") DESC")
+			orderArgs = append(orderArgs, id)
 		}
 	}
 	order = append(order, e.Name)
 	if e.ID != "" {
 		order = append(order, e.ID)
 	}
-	sql := "SELECT " + e.key() + ", " + e.Name + ", " + orEmpty(hint) + ", " + orEmpty(e.Status) +
-		" FROM " + e.From + f.Cond() + " ORDER BY " + strings.Join(order, ", ")
-	if p.ids != nil {
-		return sql, args
+	// The aliases are the columns of itemRow.
+	db = db.Table(e.From).Select(e.key() + " AS id, " + e.Name + " AS name, " + orEmpty(hint) + " AS hint, " + orEmpty(e.Status) + " AS status").
+		Scopes(f...).
+		// One expression for the whole order: GORM renders an ORDER BY
+		// expression in place of the columns of other Order calls.
+		Order(clause.OrderBy{Expression: clause.Expr{SQL: strings.Join(order, ", "), Vars: orderArgs, WithoutParentheses: true}})
+	if p.ids == nil {
+		// One row more than asked tells whether the limit cut matches off.
+		db = db.Limit(p.limit + 1)
 	}
-	// One row more than asked tells whether the limit cut matches off.
-	return sql + " LIMIT $" + strconv.Itoa(len(args)+1), append(args, p.limit+1)
+	return db.Scan(dst)
 }
 
 // orEmpty is the SQL of an optional text expression.

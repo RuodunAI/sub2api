@@ -1,0 +1,5 @@
+-- sql
+SELECT request_id, attempt_id, user_id, group_id, digest, payload FROM "provider_helper_usage_outbox" WHERE next_attempt_at <= $1 ORDER BY next_attempt_at, created_at, request_id LIMIT $2
+-- vars
+$1 time.Time 2026-01-02 03:04:05 +0000 UTC
+$2 int 50

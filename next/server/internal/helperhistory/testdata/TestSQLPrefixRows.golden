@@ -1,0 +1,7 @@
+-- sql
+SELECT receipt, chain_digest, expires_at, payload IS NOT NULL AS present FROM "provider_helper_records" WHERE (namespace = $1 AND public_prefix_digest = $2) AND (user_id = $3 AND group_id = $4) ORDER BY created_at, receipt
+-- vars
+$1 string "ns"
+$2 string "prefix"
+$3 int64 3
+$4 int64 5

@@ -7,6 +7,7 @@ import (
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -82,11 +83,17 @@ func (s *Service) Commit(ctx context.Context, o core.ResourceOwner, id string, i
 		if e != nil {
 			return e
 		}
-		_, e = tx.Exec(ctx, `INSERT INTO provider_helper_records(receipt,attempt_id,user_id,group_id,namespace,account_id,principal_id,generation,parent_receipt,public_prefix_digest,chain_digest,payload_digest,payload,payload_bytes,created_at,expires_at,tombstone_until) VALUES($1,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, id, o.UserID, o.GroupID, a.namespace, a.Binding.AccountID, a.Binding.PrincipalID, a.Binding.Generation, a.ParentReceipt, in.PublicPrefixDigest, out.ChainDigest, payloadDigest, ciphertext, len(ciphertext), now, expiry, expiry.Add(s.options.TombstoneRetention))
+		// A root record's empty parent_receipt is the column's default, so
+		// GORM leaving the zero value out of the INSERT stores the same ''.
+		db := store.G(ctx, tx)
+		e = db.Create(&model.ProviderHelperRecord{Receipt: id, AttemptID: id, UserID: o.UserID, GroupID: o.GroupID, Namespace: a.namespace,
+			AccountID: a.Binding.AccountID, PrincipalID: a.Binding.PrincipalID, Generation: a.Binding.Generation, ParentReceipt: a.ParentReceipt,
+			PublicPrefixDigest: in.PublicPrefixDigest, ChainDigest: out.ChainDigest, PayloadDigest: payloadDigest, Payload: ciphertext,
+			PayloadBytes: int64(len(ciphertext)), CreatedAt: now, ExpiresAt: expiry, TombstoneUntil: expiry.Add(s.options.TombstoneRetention)}).Error
 		if e != nil {
 			return e
 		}
-		if _, e = tx.Exec(ctx, `UPDATE provider_helper_attempts SET state='committed' WHERE id=$1`, id); e != nil {
+		if e = setAttemptState(db, id, "committed").Error; e != nil {
 			return e
 		}
 		out.Payload = append([]byte(nil), in.Payload...)

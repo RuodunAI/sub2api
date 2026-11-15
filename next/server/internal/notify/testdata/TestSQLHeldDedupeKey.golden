@@ -1,0 +1,8 @@
+-- sql
+SELECT "id" FROM "notifications" WHERE source = $1 AND dedupe_key = $2 AND status <> 'failed'
+		AND created_at > now() - make_interval(secs => $3) ORDER BY id DESC LIMIT $4
+-- vars
+$1 string "core"
+$2 string "quota:7"
+$3 int 600
+$4 int 1

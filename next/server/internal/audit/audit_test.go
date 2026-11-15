@@ -33,6 +33,22 @@ func (r *recorder) Exec(_ context.Context, sql string, args ...any) (pgconn.Comm
 func (r *recorder) Query(context.Context, string, ...any) (pgx.Rows, error) { return nil, nil }
 func (r *recorder) QueryRow(context.Context, string, ...any) pgx.Row        { return nil }
 
+// arg is the argument the recorded INSERT writes into column col.
+func (r *recorder) arg(t *testing.T, col string) any {
+	t.Helper()
+	open, end := strings.IndexByte(r.sql, '('), strings.IndexByte(r.sql, ')')
+	if open < 0 || end < open {
+		t.Fatalf("no column list in %s", r.sql)
+	}
+	for i, c := range strings.Split(r.sql[open+1:end], ",") {
+		if strings.Trim(strings.TrimSpace(c), `"`) == col && i < len(r.args) {
+			return r.args[i]
+		}
+	}
+	t.Fatalf("no column %s in %s", col, r.sql)
+	return nil
+}
+
 func TestAudit(t *testing.T) {
 	ctx := WithClientIP(context.Background(), strings.Repeat("1", 70))
 	if ClientIP(context.Background()) != "" || ClientIP(ctx) == "" {
@@ -42,20 +58,20 @@ func TestAudit(t *testing.T) {
 	if err := Audit(ctx, rec, 7, "proxy.update", "proxy", "12", map[string]any{"fields": []string{"name"}}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(rec.sql, "INSERT INTO audit_logs") || len(rec.args) != 6 {
+	if !strings.Contains(rec.sql, `INSERT INTO "audit_logs"`) || len(rec.args) != 6 {
 		t.Fatalf("exec %s %v", rec.sql, rec.args)
 	}
-	if uid := rec.args[0].(*int64); uid == nil || *uid != 7 {
-		t.Fatalf("user_id %v", rec.args[0])
+	if uid := rec.arg(t, "user_id").(*int64); uid == nil || *uid != 7 {
+		t.Fatalf("user_id %v", rec.arg(t, "user_id"))
 	}
-	if rec.args[1] != "proxy.update" || rec.args[2] != "proxy" || rec.args[3] != "12" {
-		t.Fatalf("args %v", rec.args)
+	if rec.arg(t, "action") != "proxy.update" || rec.arg(t, "target_type") != "proxy" || rec.arg(t, "target_id") != "12" {
+		t.Fatalf("args %s %v", rec.sql, rec.args)
 	}
 	var detail map[string]any
-	if err := json.Unmarshal(rec.args[4].([]byte), &detail); err != nil || detail["fields"].([]any)[0] != "name" {
-		t.Fatalf("detail %s", rec.args[4])
+	if err := json.Unmarshal(rec.arg(t, "detail").([]byte), &detail); err != nil || detail["fields"].([]any)[0] != "name" {
+		t.Fatalf("detail %s", rec.arg(t, "detail"))
 	}
-	if ip := rec.args[5].(string); len(ip) != 64 {
+	if ip := rec.arg(t, "ip").(string); len(ip) != 64 {
 		t.Fatalf("ip not truncated: %d", len(ip))
 	}
 
@@ -63,8 +79,8 @@ func TestAudit(t *testing.T) {
 	if err := Audit(context.Background(), rec, 0, "x", "", "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if rec.args[0].(*int64) != nil || string(rec.args[4].([]byte)) != "{}" || rec.args[5] != "" {
-		t.Fatalf("system row %v", rec.args)
+	if rec.arg(t, "user_id").(*int64) != nil || string(rec.arg(t, "detail").([]byte)) != "{}" || rec.arg(t, "ip") != "" {
+		t.Fatalf("system row %s %v", rec.sql, rec.args)
 	}
 }
 
