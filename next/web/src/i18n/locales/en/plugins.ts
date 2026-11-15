@@ -272,6 +272,27 @@ export default {
     requestedValue: 'Requested by manifest: {value}'
   },
 
+  matrix: {
+    permission: 'Permission',
+    superFixed: 'The super admin has every permission',
+    moreRoles: 'More roles',
+    fewerRoles: 'Hide custom roles',
+    notGranted: 'Not granted',
+    scopeAll: 'All',
+    scopeOwn: 'Created by them',
+    scopeCustom: 'Chosen…',
+    scopeCount: '{n} chosen',
+    scopeOf: 'Scope of "{perm}" for "{role}"',
+    done: 'Done',
+    pendingReview: 'Awaiting super admin',
+    pendingReviewHint: 'You cannot assign this role: the plugin\'s suggestion is held for a super admin to review.',
+    criticalOnly: 'Only a super admin can grant this',
+    roleReadonly: 'You cannot change this role',
+    differs: 'Differs from the plugin\'s suggestion',
+    foldMore: '{n} more, show all',
+    foldLess: 'Show fewer'
+  },
+
   detail: {
     tabs: {
       overview: 'Overview',

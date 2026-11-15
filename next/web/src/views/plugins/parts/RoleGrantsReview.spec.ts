@@ -17,7 +17,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (k: string) => !mo
 import { ApiError } from '@sub2api/host'
 import RoleGrantsReview from './RoleGrantsReview.vue'
 
-const grant = (version: string, role: string, needs = true): PluginRoleGrant => ({ version, permission: 'plugin.mod:mod:read', role, sensitive: needs, via: 'default', needs_consent: needs })
+const grant = (version: string, role: string, needs = true): PluginRoleGrant => ({ version, permission: 'plugin.mod:mod:read', role, risk: needs ? 'sensitive' : 'low', sensitive: needs, via: 'default', needs_consent: needs })
 const all = [grant('0.2.0', 'user'), grant('0.3.0', 'lead'), grant('0.3.0', 'admin', false)]
 const render = async (grants = all) => {
   const w = mount(RoleGrantsReview, { props: { pluginKey: 'mod', grants }, global: { plugins: [i18n] } })

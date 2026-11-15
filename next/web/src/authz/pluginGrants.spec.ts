@@ -1,0 +1,69 @@
+import { describe, expect, it } from 'vitest'
+import { ALL_SCOPE, OWN_SCOPE, refScope } from './implies'
+import { cellKeys, cellOfScopes, diffCells, keysFromSuffixes, narrows, riskSummary, sameKeys, scopesOfCell, suggestedOf, toManifestGrant, withCell } from './pluginGrants'
+
+const A = 'plugin.m:flow:manage'
+const B = 'plugin.m:flow:read'
+
+describe('plugin grants', () => {
+  it('cellKeys/withCell replace one action only, canonical and sorted', () => {
+    const keys = [B, `${A}:own`, `${A}:flow/3`]
+    expect(cellKeys(keys, A)).toEqual([`${A}:own`, `${A}:flow/3`])
+    expect(withCell(keys, A, [`${A}:*`])).toEqual([A, B])
+    expect(withCell([`${B}:*`, A], A, [])).toEqual([B])
+    // A narrower scope another one implies is not kept beside it.
+    expect(withCell([], A, [A, `${A}:own`])).toEqual([A])
+  })
+
+  it('scopesOfCell and cellOfScopes convert both ways', () => {
+    expect(scopesOfCell([`${A}:own`, `${A}:value/input`, B], A)).toEqual([OWN_SCOPE, refScope('value/input')])
+    expect(cellOfScopes(A, [refScope('flow/3'), OWN_SCOPE])).toEqual([`${A}:flow/3`, `${A}:own`])
+    expect(cellOfScopes(A, [ALL_SCOPE])).toEqual([A])
+  })
+
+  it('sameKeys ignores spelling and order', () => {
+    expect(sameKeys([`${A}:*`], [A])).toBe(true)
+    expect(sameKeys([`${A}:own`, B], [B, `${A}:own`])).toBe(true)
+    expect(sameKeys([`${A}:own`], [A])).toBe(false)
+  })
+
+  it('narrows only takes away', () => {
+    expect(narrows([A], [`${A}:own`], A)).toBe(true)
+    expect(narrows([`${A}:flow/1`, `${A}:flow/2`], [`${A}:flow/2`], A)).toBe(true)
+    expect(narrows([`${A}:own`], [A], A)).toBe(false)
+    expect(narrows([], [`${A}:own`], A)).toBe(false)
+  })
+
+  it('suggestedOf merges defaults per role', () => {
+    const perms = [{ defaults: { admin: [A], operator: [`${A}:own`] } }, { defaults: { operator: [B] } }, {}]
+    expect(suggestedOf(perms)).toEqual({ admin: [A], operator: [`${A}:own`, B].sort() })
+  })
+
+  it('diffCells reports one change per cell, spelling aside', () => {
+    const base = { operator: [`${A}:*`, B], user: [] }
+    const next = { operator: [A], user: [B] }
+    expect(diffCells(base, next, [A, B], ['operator', 'user'])).toEqual([
+      { action: B, role: 'operator', from: [B], to: [] },
+      { action: B, role: 'user', from: [], to: [B] }
+    ])
+  })
+
+  it('riskSummary counts the permissions of a risk and the roles given one', () => {
+    const perms = [{ key: A, risk: 'sensitive' as const }, { key: B, risk: 'low' as const }]
+    expect(riskSummary({ admin: [A], operator: [`${A}:own`, B], user: [B] }, perms, 'sensitive')).toEqual({ perms: 1, roles: 2 })
+    expect(riskSummary({ user: [B] }, perms, 'sensitive')).toEqual({ perms: 0, roles: 0 })
+  })
+
+  it('keysFromSuffixes maps "" to the bare action', () => {
+    expect(keysFromSuffixes(A, ['', 'own'])).toEqual([A, `${A}:own`])
+    expect(keysFromSuffixes(A, ['value/input'])).toEqual([`${A}:value/input`])
+  })
+
+  it('toManifestGrant: unscoped → true, scoped all → ["*"], value/own/id kept as suffixes, none → null', () => {
+    const scoped = { action: A, scope: { resource: 'flow', own: true } }
+    expect(toManifestGrant({ action: B }, [B])).toBe(true)
+    expect(toManifestGrant(scoped, [`${A}:*`])).toEqual(['*'])
+    expect(toManifestGrant(scoped, [`${A}:value/input`, `${A}:own`, `${A}:flow/3`])).toEqual(['flow/3', 'own', 'value/input'])
+    expect(toManifestGrant(scoped, [B])).toBeNull()
+  })
+})

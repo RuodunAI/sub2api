@@ -41,7 +41,7 @@ const review = (over: Partial<PluginReview> = {}): PluginReview => ({
   events: [],
   routes: [],
   menus: [],
-  user_permissions: [{ key: 'demo.read', label: { en: 'Read', zh: '读取' } }],
+  user_permissions: [{ key: 'demo.read', label: { en: 'Read', zh: '读取' }, risk: 'low' }],
   external_services: [],
   host_permissions: [
     { id: 'http.client', risk: 'high' },
@@ -86,7 +86,7 @@ describe('plugin consent page', () => {
     mocks.post.mockResolvedValue({})
   })
 
-  const perm = (key: string, over: object = {}) => ({ key, label: { en: key, zh: key }, new: true, default_roles: ['admin'], ...over })
+  const perm = (key: string, over: object = {}) => ({ key, label: { en: key, zh: key }, risk: 'low' as const, new: true, default_roles: ['admin'], ...over })
   const roleBox = (w: ReturnType<typeof render>, permKey: string, role: string) => w.get(`[data-permission="${permKey}"] input[data-role="${role}"]`)
 
   it('sends the ticked permissions as grants and roles only for the new permissions whose roles changed', async () => {
