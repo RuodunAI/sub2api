@@ -1,0 +1,5 @@
+-- sql
+UPDATE "users" SET "display_name"=$1,"updated_at"=now() WHERE id = $2 AND deleted_at IS NULL
+-- vars
+$1 string ""
+$2 int64 7

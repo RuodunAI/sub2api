@@ -1,0 +1,7 @@
+-- sql
+SELECT u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
+    COALESCE((SELECT array_agg(r.key ORDER BY r.key) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id), '{}'),
+    s.id, s.kind, CASE WHEN s.user_id IS NULL THEN s.name ELSE u.email END AS name, s.user_id,
+    COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text FROM users u JOIN segments s ON s.id = u.segment_id WHERE u.id = $1 AND u.deleted_at IS NULL
+-- vars
+$1 int64 7

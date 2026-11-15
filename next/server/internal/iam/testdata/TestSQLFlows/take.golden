@@ -1,0 +1,8 @@
+-- sql
+DELETE FROM auth_flows WHERE token_hash = $1 AND purpose = $2 AND expires_at > now()
+		AND ($3::bigint = 0 OR user_id = $4) RETURNING payload, user_id
+-- vars
+$1 string "hash"
+$2 string "step_up_proof"
+$3 int64 7
+$4 int64 7

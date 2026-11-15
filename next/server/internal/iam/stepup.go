@@ -13,11 +13,13 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Step-up verification (CONTRACTS §80.2, docs/DESIGN-2026-11-12-AUTHZ-HARDENING.md
@@ -120,8 +122,7 @@ func (s *Service) StepUpMethods(ctx context.Context, userID int64, scope, operat
 	}
 	var totp bool
 	var passkeys int
-	err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1),
-		(SELECT count(*) FROM user_passkeys WHERE user_id = $1)`, userID).Scan(&totp, &passkeys)
+	err := userFactors(store.G(ctx, s.db.Pool), userID).Row().Scan(&totp, &passkeys)
 	if err != nil {
 		return nil, err
 	}
@@ -147,6 +148,12 @@ func (s *Service) StepUpMethods(ctx context.Context, userID int64, scope, operat
 		pw.Reason = reasonStrongFirst
 	}
 	return &VerifyMethods{Scope: scope, PasswordRequired: passwordToo, Methods: []VerifyMethod{pk, code, pw}}, nil
+}
+
+// userFactors reads whether userID has two-factor and how many passkeys.
+func userFactors(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Raw(`SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = ?),
+		(SELECT count(*) FROM user_passkeys WHERE user_id = ?)`, userID, userID)
 }
 
 // lastSuperFactor reports the super admin about to remove the last of its
@@ -363,8 +370,7 @@ func (s *Service) finishStepUpPasskey(ctx context.Context, r *http.Request, user
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Pool.Exec(ctx, `UPDATE user_passkeys SET credential = $3, last_used_at = now() WHERE user_id = $1 AND credential_id = $2`, userID, used.ID, raw)
-	return err
+	return usePasskey(store.G(ctx, s.db.Pool).Where("user_id = ? AND credential_id = ?", userID, used.ID), raw).Error
 }
 
 // ConsumeStepUp implements core.StepUpVerifier.
@@ -416,30 +422,39 @@ func (s *Service) OpenStepUpSession(ctx context.Context, scope, session string) 
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Pool.Exec(ctx, `INSERT INTO auth_flows (token_hash, purpose, user_id, payload, expires_at) VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (token_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at, created_at = now()`,
-		hashToken(stepUpSessionToken(ctx, uid, scope, session)), flowStepUpSession, uid, payload, time.Now().Add(core.StepUpSessionIdle))
-	return err
+	return store.G(ctx, s.db.Pool).Exec(openStepUpSession,
+		hashToken(stepUpSessionToken(ctx, uid, scope, session)), flowStepUpSession, uid, payload, time.Now().Add(core.StepUpSessionIdle)).Error
 }
+
+// openStepUpSession stores a step-up session, or starts it afresh.
+const openStepUpSession = `INSERT INTO auth_flows (token_hash, purpose, user_id, payload, expires_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (token_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at, created_at = now()`
 
 // ContinueStepUpSession implements core.StepUpSessions.
 func (s *Service) ContinueStepUpSession(ctx context.Context, scope, session string) error {
 	uid, _ := core.UserID(ctx)
 	continued := false
 	if uid != 0 && session != "" {
-		tag, err := s.db.Pool.Exec(ctx, `UPDATE auth_flows SET expires_at = LEAST($3, created_at + make_interval(secs => $4))
-			WHERE token_hash = $1 AND purpose = $2 AND expires_at > now() AND created_at > now() - make_interval(secs => $4)`,
-			hashToken(stepUpSessionToken(ctx, uid, scope, session)), flowStepUpSession, time.Now().Add(core.StepUpSessionIdle), core.StepUpSessionMax.Seconds())
-		if err != nil {
-			return err
+		res := continueStepUpSession(store.G(ctx, s.db.Pool), hashToken(stepUpSessionToken(ctx, uid, scope, session)),
+			time.Now().Add(core.StepUpSessionIdle), core.StepUpSessionMax.Seconds())
+		if res.Error != nil {
+			return res.Error
 		}
-		continued = tag.RowsAffected() == 1
+		continued = res.RowsAffected == 1
 	}
 	if !continued {
 		return core.ErrVerificationExpired.WithMessage(t(ctx, "this verified operation has expired or belongs to another session; start it again",
 			"这次操作的二次验证已过期或属于其他会话，请重新开始")).WithDetails(map[string]any{"scope": scope})
 	}
 	return nil
+}
+
+// continueStepUpSession extends the step-up session tokenHash to idle, at
+// most to maxSecs after it was opened, while it is live.
+func continueStepUpSession(db *gorm.DB, tokenHash string, idle time.Time, maxSecs float64) *gorm.DB {
+	return db.Model(&model.AuthFlow{}).
+		Where("token_hash = ? AND purpose = ? AND expires_at > now() AND created_at > now() - make_interval(secs => ?)", tokenHash, flowStepUpSession, maxSecs).
+		Update("expires_at", gorm.Expr("LEAST(?, created_at + make_interval(secs => ?))", idle, maxSecs))
 }
 
 // proofStillEnough applies the policy again when the proof is spent: the
@@ -476,15 +491,15 @@ func (s *Service) keepLastFactor(ctx context.Context, tx pgx.Tx, userID int64, s
 	if !ok || core.StepUpPassword(ctx) {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, userID); err != nil {
+	g := store.G(ctx, tx)
+	if err := g.Exec(lockUserIfAny, userID).Error; err != nil {
 		return err
 	}
 	// A statement of its own after the lock: under READ COMMITTED (store.DB.Tx)
 	// it sees a removal the lock waited for.
 	var totp bool
 	var passkeys int
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1),
-		(SELECT count(*) FROM user_passkeys WHERE user_id = $1)`, userID).Scan(&totp, &passkeys); err != nil {
+	if err := userFactors(g, userID).Row().Scan(&totp, &passkeys); err != nil {
 		return err
 	}
 	last, err := s.lastSuperFactor(ctx, userID, scope, operation, totp, passkeys)
@@ -493,6 +508,10 @@ func (s *Service) keepLastFactor(ctx context.Context, tx pgx.Tx, userID int64, s
 	}
 	return s.verificationRequired(ctx, userID, scope, operation)
 }
+
+// lockUserIfAny locks the row of a user, with Exec: unlike lockUser, a user
+// without a row is no error.
+const lockUserIfAny = `SELECT 1 FROM users WHERE id = ? FOR UPDATE`
 
 // verificationRequired is the 403 that tells the console what to verify:
 // the scope, the operation to bind the proof to and the methods.
@@ -514,8 +533,7 @@ func (s *Service) RenamePasskey(ctx context.Context, userID, id int64, name stri
 	}
 	p := &Passkey{ID: id}
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `UPDATE user_passkeys SET name = $3 WHERE id = $1 AND user_id = $2 RETURNING name, rp_id, created_at, last_used_at`,
-			id, userID, name).Scan(&p.Name, &p.RPID, &p.CreatedAt, &p.LastUsedAt)
+		err := renamePasskey(store.G(ctx, tx), id, userID, name).Row().Scan(&p.Name, &p.RPID, &p.CreatedAt, &p.LastUsedAt)
 		if store.IsNoRows(err) {
 			return core.ErrNotFound
 		}
@@ -528,4 +546,10 @@ func (s *Service) RenamePasskey(ctx context.Context, userID, id int64, name stri
 		return nil, err
 	}
 	return p, nil
+}
+
+// renamePasskey renames the passkey id of userID and returns it.
+func renamePasskey(db *gorm.DB, id, userID int64, name string) *gorm.DB {
+	return db.Raw(`UPDATE user_passkeys SET name = ? WHERE id = ? AND user_id = ? RETURNING name, rp_id, created_at, last_used_at`,
+		name, id, userID)
 }

@@ -1,0 +1,4 @@
+-- sql
+UPDATE "api_keys" SET "deleted_at"=now() WHERE user_id = $1 AND deleted_at IS NULL
+-- vars
+$1 int64 7

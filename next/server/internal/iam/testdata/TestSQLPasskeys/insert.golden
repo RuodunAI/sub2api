@@ -1,0 +1,9 @@
+-- sql
+INSERT INTO user_passkeys (user_id, name, rp_id, credential_id, credential) VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (credential_id) DO NOTHING RETURNING id, created_at
+-- vars
+$1 int64 7
+$2 string "Laptop"
+$3 string "example.com"
+$4 []uint8 [1 2]
+$5 []uint8 [123 34 105 100 34 58 34 65 81 73 68 34 125]

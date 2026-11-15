@@ -1,0 +1,4 @@
+-- sql
+DELETE FROM "user_passkeys" WHERE user_id = $1
+-- vars
+$1 int64 7

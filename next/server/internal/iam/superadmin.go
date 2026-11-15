@@ -75,8 +75,7 @@ type RecoverOptions struct {
 func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts RecoverOptions) (password string, err error) {
 	var id int64
 	var status string
-	err = s.db.Pool.QueryRow(ctx, `SELECT id, status FROM users WHERE lower(email) = lower($1) AND deleted_at IS NULL`,
-		strings.TrimSpace(email)).Scan(&id, &status)
+	err = userByEmail(store.G(ctx, s.db.Pool), strings.TrimSpace(email), "id, status").Row().Scan(&id, &status)
 	if store.IsNoRows(err) {
 		return "", core.ErrNotFound.WithMessage("user not found")
 	}

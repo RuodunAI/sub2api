@@ -1,0 +1,4 @@
+-- sql
+SELECT secret_enc, last_step, locked_until FROM "user_totp" WHERE user_id = $1 FOR UPDATE
+-- vars
+$1 int64 7

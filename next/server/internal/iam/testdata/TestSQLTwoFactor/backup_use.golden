@@ -1,0 +1,4 @@
+-- sql
+UPDATE "user_totp_backup_codes" SET "used_at"=now() WHERE id = $1
+-- vars
+$1 int64 3

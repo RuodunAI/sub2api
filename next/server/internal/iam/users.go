@@ -12,12 +12,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // User statuses.
@@ -43,18 +45,32 @@ type User struct {
 	Segment core.SegmentRef `json:"segment,omitzero"`
 }
 
-const userSelect = `
-SELECT u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
+// userColumns are what scanUser reads, from usersFrom. They are read by
+// position: the segment's id has the name of the user's.
+const userColumns = `u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
     COALESCE((SELECT array_agg(r.key ORDER BY r.key) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id), '{}'),
     ` + segment.RefColumns + `,
-    COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text
-FROM users u JOIN segments s ON s.id = u.segment_id`
+    COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text`
 
-func scanUser(row pgx.Row) (*User, error) {
+const usersFrom = `users u JOIN segments s ON s.id = u.segment_id`
+
+// userByID is the statement of getUser, raw (the fewest allocations): it
+// loads the user of every login, refresh and GET /me.
+const userByID = `SELECT ` + userColumns + ` FROM ` + usersFrom + ` WHERE u.id = ? AND u.deleted_at IS NULL`
+
+// usersView selects userColumns, for ListUsers' conditions and page.
+func usersView(db *gorm.DB) *gorm.DB {
+	return db.Table(usersFrom).Select(userColumns)
+}
+
+// rowScanner is a *sql.Row or *sql.Rows.
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanUser(row rowScanner) (*User, error) {
 	var u User
 	var balance string
 	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
-		&u.Roles, &u.Segment.ID, &u.Segment.Kind, &u.Segment.Name, &u.Segment.UserID, &balance)
+		(*store.Strings)(&u.Roles), &u.Segment.ID, &u.Segment.Kind, &u.Segment.Name, &u.Segment.UserID, &balance)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +84,7 @@ func (s *Service) GetUser(ctx context.Context, id int64) (*User, error) {
 }
 
 func (s *Service) getUser(ctx context.Context, q store.Querier, id int64) (*User, error) {
-	u, err := scanUser(q.QueryRow(ctx, userSelect+` WHERE u.id = $1 AND u.deleted_at IS NULL`, id))
+	u, err := scanUser(store.G(ctx, q).Raw(userByID, id).Row())
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("user not found")
 	}
@@ -77,26 +93,27 @@ func (s *Service) getUser(ctx context.Context, q store.Querier, id int64) (*User
 
 // LookupUsers implements core.UserDirectory (HostService.GetUsers).
 func (s *Service) LookupUsers(ctx context.Context, ids []int64) ([]core.UserSummary, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT u.id, u.display_name, u.status
-		FROM unnest($1::bigint[]) WITH ORDINALITY AS q(id, n) JOIN users u ON u.id = q.id AND u.deleted_at IS NULL
-		ORDER BY q.n`, ids)
-	if err != nil {
+	var rows []core.UserSummary
+	if err := lookupUsers(store.G(ctx, s.db.Pool), ids).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []core.UserSummary{}
 	seen := map[int64]bool{}
-	for rows.Next() {
-		var u core.UserSummary
-		if err := rows.Scan(&u.ID, &u.DisplayName, &u.Status); err != nil {
-			return nil, err
-		}
+	for _, u := range rows {
 		if !seen[u.ID] {
 			seen[u.ID] = true
 			out = append(out, u)
 		}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// lookupUsers reads the undeleted users of ids in their order, repeats
+// included.
+func lookupUsers(db *gorm.DB, ids []int64) *gorm.DB {
+	return db.Raw(`SELECT u.id, u.display_name, u.status
+		FROM unnest(?::bigint[]) WITH ORDINALITY AS q(id, n) JOIN users u ON u.id = q.id AND u.deleted_at IS NULL
+		ORDER BY q.n`, store.Int64s(ids))
 }
 
 // ListUsersFilter filters GET /users.
@@ -111,7 +128,31 @@ type ListUsersFilter struct {
 
 // ListUsers returns a page of non-deleted users ordered by id.
 func (s *Service) ListUsers(ctx context.Context, f ListUsersFilter) ([]*User, int64, error) {
-	var filter store.Filter
+	filter := usersFilter(f)
+	g := store.G(ctx, s.db.Pool)
+	var total int64
+	if err := g.Table("users u").Scopes(filter.Scope()).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	rows, err := usersPage(g, filter, f.Page, f.PageSize).Rows()
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []*User{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, u)
+	}
+	return out, total, rows.Err()
+}
+
+// usersFilter are the conditions of ListUsers on the users u.
+func usersFilter(f ListUsersFilter) store.Conds {
+	var filter store.Conds
 	filter.And("u.deleted_at IS NULL")
 	if q := strings.TrimSpace(f.Query); q != "" {
 		pattern := "%" + store.Like(q) + "%"
@@ -131,26 +172,13 @@ func (s *Service) ListUsers(ctx context.Context, f ListUsersFilter) ([]*User, in
 		id, _ := strconv.ParseInt(f.Segment, 10, 64)
 		filter.And("u.segment_id = ?", id)
 	}
-	where, args := filter.Cond(), filter.Args()
-	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM users u`+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
-	rows, err := s.db.Pool.Query(ctx, userSelect+where+` ORDER BY u.id LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	out := []*User{}
-	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, u)
-	}
-	return out, total, rows.Err()
+	return filter
+}
+
+// usersPage is the page of ListUsers. Pagination keeps page at 1 or more, so
+// the offset is never negative (GORM would leave a negative one out).
+func usersPage(db *gorm.DB, filter store.Conds, page, size int) *gorm.DB {
+	return usersView(db).Scopes(filter.Scope()).Order("u.id").Limit(size).Offset((page - 1) * size)
 }
 
 // CreateUserInput is the body of POST /users.
@@ -206,9 +234,7 @@ func (s *Service) createUserTx(ctx context.Context, tx pgx.Tx, actorID int64, in
 		return nil, 0, err
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO users (email, display_name, password_hash, segment_id)
-		VALUES ($1, $2, $3, COALESCE($4, default_segment_id())) RETURNING id`,
-		email, in.DisplayName, string(hash), in.SegmentID).Scan(&id)
+	err = store.G(ctx, tx).Raw(insertUser, email, in.DisplayName, string(hash), in.SegmentID).Row().Scan(&id)
 	if store.IsUniqueViolation(err, "") {
 		return nil, 0, emailTaken()
 	}
@@ -240,6 +266,10 @@ func (s *Service) createUserTx(ctx context.Context, tx pgx.Tx, actorID int64, in
 	u, err := s.getUser(ctx, tx, id)
 	return u, v, err
 }
+
+// insertUser creates a user in segmentID, or the default segment when nil.
+const insertUser = `INSERT INTO users (email, display_name, password_hash, segment_id)
+		VALUES (?, ?, ?, COALESCE(?, default_segment_id())) RETURNING id`
 
 // lockNamedSegment checks that id, when given, is a named segment and keeps
 // the segment from being deleted until the transaction ends, so the user
@@ -401,14 +431,7 @@ func (s *Service) applyUpdateTx(ctx context.Context, tx pgx.Tx, actorID, id int6
 		}
 	}
 
-	_, err = tx.Exec(ctx, `
-UPDATE users SET
-    email = COALESCE($2, email),
-    display_name = COALESCE($3, display_name),
-    status = COALESCE($4, status),
-    password_hash = COALESCE($5, password_hash),
-    updated_at = now()
-WHERE id = $1`, id, nilStr(email), in.DisplayName, in.Status, nilBytes(hash))
+	err = updateUser(store.G(ctx, tx), id, userChanges(in, email, hash)).Error
 	if store.IsUniqueViolation(err, "") {
 		return 0, nil, emailTaken()
 	}
@@ -449,6 +472,22 @@ WHERE id = $1`, id, nilStr(email), in.DisplayName, in.Status, nilBytes(hash))
 	return v, u, nil
 }
 
+// userChanges are the columns applyUpdateTx writes: those the update sets,
+// and updated_at.
+func userChanges(in UpdateUserInput, email string, hash []byte) map[string]any {
+	set := map[string]any{"updated_at": gorm.Expr("now()")}
+	store.SetIf(set, "email", nilStr(email))
+	store.SetIf(set, "display_name", in.DisplayName)
+	store.SetIf(set, "status", in.Status)
+	store.SetIf(set, "password_hash", nilBytes(hash))
+	return set
+}
+
+// updateUser writes set to the user id, deleted or not.
+func updateUser(db *gorm.DB, id int64, set map[string]any) *gorm.DB {
+	return db.Model(&model.User{}).Where("id = ?", id).Updates(set)
+}
+
 // DeleteUser soft-deletes a user and ends their sessions.
 func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 	if actorID == id {
@@ -467,8 +506,9 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 		if v, err = s.authz.Bump(ctx, tx); err != nil {
 			return err
 		}
+		g := store.G(ctx, tx)
 		var email string
-		err = tx.QueryRow(ctx, `SELECT email FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&email)
+		err = liveUser(g, id, "email").Clauses(store.ForUpdate).Row().Scan(&email)
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("user not found")
 		}
@@ -481,7 +521,7 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 		// A soft delete does not fire the cascade of segments.user_id: the
 		// user goes back to the default segment and a personal one is removed
 		// here, with its grants, rates and prices.
-		if _, err := tx.Exec(ctx, `UPDATE users SET deleted_at = now(), updated_at = now(), segment_id = default_segment_id() WHERE id = $1`, id); err != nil {
+		if err := updateUser(g, id, userDeletion()).Error; err != nil {
 			return err
 		}
 		if dropped, err = segment.DropPersonal(ctx, tx, id); err != nil {
@@ -492,7 +532,7 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 		}
 		// The user's API keys go with the user: authentication already
 		// rejects them, and left behind they would block deleting their group.
-		if _, err := tx.Exec(ctx, `UPDATE api_keys SET deleted_at = now() WHERE user_id = $1 AND deleted_at IS NULL`, id); err != nil {
+		if err := deleteUserKeys(g, id).Error; err != nil {
 			return err
 		}
 		if err := s.emit(ctx, tx, "user.updated", id, email, "deleted"); err != nil {
@@ -512,6 +552,16 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 		s.priceRulesChanged(ctx)
 	}
 	return nil
+}
+
+// userDeletion soft-deletes a user and moves it back to the default segment.
+func userDeletion() map[string]any {
+	return map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()"), "segment_id": gorm.Expr("default_segment_id()")}
+}
+
+// deleteUserKeys soft-deletes the live API keys of userID.
+func deleteUserKeys(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.APIKey{}).Where("user_id = ? AND deleted_at IS NULL", userID).Update("deleted_at", gorm.Expr("now()"))
 }
 
 // SetUserRoles replaces a user's roles (PUT /users/:id/roles). An access
@@ -581,11 +631,32 @@ func emailTaken() error {
 
 func lockRefreshUser(ctx context.Context, tx pgx.Tx, userID int64) error {
 	var id int64
-	err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&id)
+	err := lockUser(store.G(ctx, tx), userID).Row().Scan(&id)
 	if store.IsNoRows(err) {
 		return errBadRefresh
 	}
 	return err
+}
+
+// lockUser locks the row of userID, deleted or not, until the transaction
+// ends.
+func lockUser(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.User{}).Select("id").Where("id = ?", userID).Clauses(store.ForUpdate)
+}
+
+// liveUser selects cols of the undeleted user id.
+func liveUser(db *gorm.DB, id int64, cols string) *gorm.DB {
+	return db.Model(&model.User{}).Select(cols).Where("id = ? AND deleted_at IS NULL", id)
+}
+
+// userByEmail selects cols of the undeleted user with email, in any case.
+func userByEmail(db *gorm.DB, email, cols string) *gorm.DB {
+	return db.Model(&model.User{}).Select(cols).Where("lower(email) = lower(?) AND deleted_at IS NULL", email)
+}
+
+// touchLastLogin records a login of userID.
+func touchLastLogin(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.User{}).Where("id = ?", userID).Update("last_login_at", gorm.Expr("now()"))
 }
 
 func nilStr(s string) *string {
