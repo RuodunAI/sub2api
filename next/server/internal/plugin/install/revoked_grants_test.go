@@ -288,7 +288,8 @@ func TestRevocationDuringAStagedUpgradeOutlivesItsActivation(t *testing.T) {
 }
 
 // SetGrant narrows a host permission grant with plugin:manage alone, and
-// grants a revoked one again as a consent does (grant rights by risk),
+// grants a revoked one again as a consent does (plugin:install and the
+// grant rights by risk),
 // never wider than the active version requests. Staged sets follow:
 // narrowed where wider, a revocation lifted where the version requests at
 // least the scope; a set granting a scope neither wider nor within it, or a
@@ -332,11 +333,16 @@ func TestSetGrantNarrowsAndRegrants(t *testing.T) {
 	assert.Equal(t, 1, audited("plugin.grant.narrow"))
 
 	// Wider than requested: 400; not requested: 404; back to the requested
-	// scope is a high-risk grant: plugin:grant:high.
+	// scope is a grant decision: plugin:install, then plugin:grant:high
+	// for this high-risk one.
 	_, err = e.svc.SetGrant(ctx, "mini", "net", domains(a, c), e.admin)
 	assert.Equal(t, "scope_too_wide", fieldCode(err, "scope"))
 	_, err = e.svc.SetGrant(ctx, "mini", "users.read", nil, e.admin)
 	assert.Equal(t, "not_found", core.AsError(err).Code)
+	_, err = e.svc.SetGrant(ctx, "mini", "net", nil, e.limited)
+	assert.Equal(t, "permission_denied", core.AsError(err).Code)
+	assert.Equal(t, "plugin:install", core.AsError(err).Details["permission"])
+	e.authz.perms[e.limited] = map[string]bool{"plugin:install": true}
 	_, err = e.svc.SetGrant(ctx, "mini", "net", nil, e.limited)
 	assert.Equal(t, "permission_denied", core.AsError(err).Code)
 	assert.Equal(t, PermGrantHigh, core.AsError(err).Details["permission"])
@@ -344,7 +350,7 @@ func TestSetGrantNarrowsAndRegrants(t *testing.T) {
 	// A revocation reaches every staged set; granting again lifts it where
 	// the version requests [a] (0.2.0), not where it requests less (0.3.0).
 	require.NoError(t, e.svc.RevokeGrant(ctx, "mini", "net", e.admin))
-	e.authz.perms[e.limited] = map[string]bool{PermGrantHigh: true}
+	e.authz.perms[e.limited] = map[string]bool{"plugin:install": true, PermGrantHigh: true}
 	g, err = e.svc.SetGrant(ctx, "mini", "net", domains(a), e.limited)
 	require.NoError(t, err)
 	assert.Equal(t, GrantGranted, g.Status)
@@ -357,9 +363,16 @@ func TestSetGrantNarrowsAndRegrants(t *testing.T) {
 	assert.False(t, revoked["net"])
 	assert.Equal(t, 1, audited("plugin.grant.regrant"))
 
-	// A low-risk one is granted again without any grant right.
+	// A low-risk one takes no grant right, but still plugin:install:
+	// plugin:manage alone does not undo a revocation.
 	require.NoError(t, e.svc.RevokeGrant(ctx, "mini", "log", e.admin))
 	e.authz.perms[e.limited] = map[string]bool{}
+	_, err = e.svc.SetGrant(ctx, "mini", "log", nil, e.limited)
+	assert.Equal(t, "plugin:install", core.AsError(err).Details["permission"])
+	current, err := LoadGrants(ctx, e.db.Pool, "mini")
+	require.NoError(t, err)
+	assert.Equal(t, GrantRevoked, current["log"].Status)
+	e.authz.perms[e.limited] = map[string]bool{"plugin:install": true}
 	g, err = e.svc.SetGrant(ctx, "mini", "log", nil, e.limited)
 	require.NoError(t, err)
 	assert.Equal(t, GrantGranted, g.Status)

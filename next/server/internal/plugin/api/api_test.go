@@ -804,11 +804,13 @@ func TestSetGrantRoute(t *testing.T) {
 	spec := r.Routes()[i]
 	assert.Equal(t, core.StepUpPluginGrant, spec.StepUp)
 	assert.Equal(t, []perm.Key{PermManage}, spec.Keys)
-	assert.ElementsMatch(t, []perm.Key{perm.PluginGrantHigh, perm.PluginGrantCritical, perm.PluginGrantDBSchemaUnconfined}, spec.Extra)
+	assert.ElementsMatch(t, []perm.Key{perm.PluginInstall, perm.PluginGrantHigh, perm.PluginGrantCritical, perm.PluginGrantDBSchemaUnconfined}, spec.Extra)
 }
 
-// plugin:manage narrows a grant; granting a denied high-risk permission
-// takes plugin:grant:high; an empty body grants the requested scope.
+// plugin:manage narrows a grant, also in a chunked body (no
+// Content-Length); granting a denied or revoked permission again takes
+// plugin:install, even a low-risk one, and plugin:grant:high for a
+// high-risk one; an empty body grants the requested scope.
 func TestAPISetGrant(t *testing.T) {
 	h, root := newHarness(t)
 	ctx := context.Background()
@@ -825,13 +827,27 @@ func TestAPISetGrant(t *testing.T) {
 	}
 
 	narrower := map[string]any{"scope": map[string]any{"points": []any{"gateway.request"}, "fields": []any{"model"}}}
-	code, out := h.do("PUT", "/plugins/guard/grants/gateway.hook", "manager", narrower)
-	require.Equal(t, 200, code, out)
+	raw, _ := json.Marshal(narrower)
+	req := httptest.NewRequest("PUT", "/api/v1/plugins/guard/grants/gateway.hook", bytes.NewReader(raw))
+	req.ContentLength = -1
+	req.Header.Set("Authorization", "Bearer manager")
+	w := httptest.NewRecorder()
+	h.engine.ServeHTTP(w, req)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	out := map[string]any{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
 	assert.Equal(t, "granted", data(out)["status"])
 	assert.Equal(t, narrower["scope"], data(out)["scope"])
+	code, out := h.do("PUT", "/plugins/guard/grants/gateway.hook", "manager", map[string]any{"scope": "x"})
+	require.Equal(t, http.StatusBadRequest, code, out)
 
 	code, out = h.do("PUT", "/plugins/guard/grants/net", "manager", nil)
 	require.Equal(t, http.StatusForbidden, code, out)
+	code, _ = h.do("DELETE", "/plugins/guard/grants/events", "manager", nil)
+	require.Equal(t, http.StatusNoContent, code)
+	code, out = h.do("PUT", "/plugins/guard/grants/events", "manager", nil)
+	require.Equal(t, http.StatusForbidden, code, out)
+	assert.Contains(t, fmt.Sprint(out["error"]), "plugin:install")
 	code, out = h.do("PUT", "/plugins/guard/grants/net", "admin", nil)
 	require.Equal(t, 200, code, out)
 	assert.Equal(t, "granted", data(out)["status"])
