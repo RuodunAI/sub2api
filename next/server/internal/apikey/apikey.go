@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
@@ -21,12 +22,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const (
@@ -114,9 +118,7 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		ids = append(ids, id)
 		ts = append(ts, at)
 	}
-	_, err := s.db.Pool.Exec(ctx, `UPDATE api_keys k SET last_used_at = v.t
-		FROM (SELECT unnest($1::bigint[]) AS id, unnest($2::timestamptz[]) AS t) v
-		WHERE k.id = v.id AND (k.last_used_at IS NULL OR k.last_used_at < v.t)`, ids, ts)
+	err := store.G(ctx, s.db.Pool).Exec(flushLastUsedSQL, store.Int64s(ids), timestamps(ts)).Error
 	if err != nil {
 		// Put them back so the next tick retries.
 		s.mu.Lock()
@@ -129,6 +131,19 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 	}
 	return err
 }
+
+// flushLastUsedSQL moves last_used_at of the keys (the ids, then the times
+// in the same order) forward, never back.
+const flushLastUsedSQL = `UPDATE api_keys k SET last_used_at = v.t
+	FROM (SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v
+	WHERE k.id = v.id AND (k.last_used_at IS NULL OR k.last_used_at < v.t)`
+
+// timestamps is a timestamptz[] parameter for GORM, which expands a plain
+// slice into one placeholder per element (see store.Int64s).
+type timestamps []time.Time
+
+// Value implements driver.Valuer.
+func (t timestamps) Value() (driver.Value, error) { return []time.Time(t), nil }
 
 func (s *Service) touch(id int64) {
 	s.mu.Lock()
@@ -259,6 +274,10 @@ func (s *Service) Authenticate(ctx context.Context, rawKey string) (*core.APIKey
 // statement: the key, its owner and the owner's segment, the key's group and
 // what the segment gets there. Whether the owner may use the group is
 // segment.OpenToUserSQL, as for the key endpoints and /me/groups.
+//
+// It runs on every gateway request and stays on pgx: through GORM it took
+// 149 to 186 allocations per lookup instead of 88 (BenchmarkHotKeyLookup;
+// internal/store/gormtest/BASELINE.md).
 var lookupSQL = `SELECT k.id, k.user_id, k.status, k.expires_at,
 		(u.status = 'active' AND u.deleted_at IS NULL),
 		COALESCE(g.id, 0), COALESCE(g.name, ''), COALESCE(g.status, 'deleted'), COALESCE(g.rate_multiplier, 1),
@@ -365,21 +384,50 @@ type APIKey struct {
 	Key string `json:"key,omitempty"`
 }
 
-var selectKey = `SELECT k.id, k.user_id, u.email, k.name, k.key_prefix, g.id, COALESCE(g.name, ''),
+// selectKey are the columns of keyRow, read by keyView.
+var selectKey = `k.id, k.user_id, u.email AS user_email, k.name, k.key_prefix, g.id AS group_id, COALESCE(g.name, '') AS group_name,
 		CASE WHEN g.id IS NULL THEN 'deleted'
 			WHEN g.status <> 'active' THEN 'disabled'
 			WHEN ` + segment.OpenToUserSQL("g", "k.user_id") + ` THEN 'active'
-			ELSE 'unavailable' END,
-		k.status, k.expires_at, k.last_used_at, k.created_at, k.key_cipher IS NOT NULL, k.allowed_ips,
-		k.rpm_limit, k.tpm_limit, k.max_concurrency, k.quota_limit, k.quota_used
-	FROM api_keys k JOIN users u ON u.id = k.user_id LEFT JOIN groups g ON g.id = k.group_id`
+			ELSE 'unavailable' END AS group_status,
+		k.status, k.expires_at, k.last_used_at, k.created_at, k.key_cipher IS NOT NULL AS copyable, k.allowed_ips,
+		k.rpm_limit, k.tpm_limit, k.max_concurrency, k.quota_limit, k.quota_used`
 
-func scanKey(row pgx.Row) (*APIKey, error) {
-	var k APIKey
-	err := row.Scan(&k.ID, &k.UserID, &k.UserEmail, &k.Name, &k.KeyPrefix, &k.GroupID, &k.GroupName, &k.GroupStatus,
-		&k.Status, &k.ExpiresAt, &k.LastUsedAt, &k.CreatedAt, &k.Copyable, &k.AllowedIPs,
-		&k.RPM, &k.TPM, &k.Concurrency, &k.Limit, &k.Used)
-	return &k, err
+// keyView selects keyRow rows from api_keys k, with the owner u and the
+// group g.
+func keyView(db *gorm.DB) *gorm.DB {
+	return keysWithOwner(db).Select(selectKey).Joins("LEFT JOIN groups g ON g.id = k.group_id")
+}
+
+// keysWithOwner is api_keys k joined with its owner u, what the filters of
+// the key list read.
+func keysWithOwner(db *gorm.DB) *gorm.DB {
+	return db.Table("api_keys k").Joins("JOIN users u ON u.id = k.user_id")
+}
+
+// keyRow is a row of keyView.
+type keyRow struct {
+	ID, UserID                     int64
+	UserEmail, Name, KeyPrefix     string
+	GroupID                        *int64
+	GroupName, GroupStatus, Status string
+	ExpiresAt, LastUsedAt          *time.Time
+	CreatedAt                      time.Time
+	Copyable                       bool
+	AllowedIPs                     store.Strings
+	RpmLimit                       int
+	TpmLimit                       int64
+	MaxConcurrency                 int
+	QuotaLimit, QuotaUsed          decimal.Decimal
+}
+
+func (r *keyRow) key() *APIKey {
+	return &APIKey{ID: r.ID, UserID: r.UserID, UserEmail: r.UserEmail, Name: r.Name, KeyPrefix: r.KeyPrefix,
+		GroupID: r.GroupID, GroupName: r.GroupName, GroupStatus: r.GroupStatus,
+		Status: r.Status, ExpiresAt: r.ExpiresAt, LastUsedAt: r.LastUsedAt, CreatedAt: r.CreatedAt,
+		Copyable: r.Copyable, AllowedIPs: r.AllowedIPs,
+		KeyLimits: core.KeyLimits{RPM: r.RpmLimit, TPM: r.TpmLimit, Concurrency: r.MaxConcurrency},
+		KeyQuota:  core.KeyQuota{Limit: r.QuotaLimit, Used: r.QuotaUsed}}
 }
 
 func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh) }
@@ -388,39 +436,27 @@ func notFound(ctx context.Context) error {
 	return core.ErrNotFound.WithMessage(t(ctx, "api key not found", "API Key 不存在"))
 }
 
-func (s *Service) query(c *gin.Context, where string, args []any, hideEmail bool) {
+func (s *Service) query(c *gin.Context, filter func(*gorm.DB) *gorm.DB, hideEmail bool) {
 	ctx := c.Request.Context()
 	page, size := httpapi.Pagination(c)
+	g := store.G(ctx, s.db.Pool)
 	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM api_keys k JOIN users u ON u.id = k.user_id`+where, args...).Scan(&total); err != nil {
+	if err := keysWithOwner(g).Scopes(filter).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	n := len(args)
-	rows, err := s.db.Pool.Query(ctx, selectKey+where+` ORDER BY k.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2),
-		append(args, size, (page-1)*size)...)
-	if err != nil {
+	var rows []keyRow
+	if err := keyView(g).Scopes(filter).Order("k.id DESC").Limit(size).Offset((page - 1) * size).Find(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	defer rows.Close()
-	items := []*APIKey{}
-	for rows.Next() {
-		k, err := scanKey(rows)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
+	items := make([]*APIKey, len(rows))
+	for i := range rows {
+		items[i] = rows[i].key()
 		if hideEmail {
-			k.UserEmail = ""
+			items[i].UserEmail = ""
 		}
-		items = append(items, k)
 	}
-	if err := rows.Err(); err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	rows.Close()
 	if err := s.fill(ctx, items); err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -435,7 +471,7 @@ func (s *Service) listMine(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	s.query(c, f.Cond(), f.Args(), true)
+	s.query(c, f, true)
 }
 
 // keyStatusFilters are the conditions of the status= filter of GET
@@ -448,11 +484,12 @@ var keyStatusFilters = map[string]string{
 	"expired":  "k.status = 'active' AND k.expires_at <= now()",
 }
 
-// mineFilter builds the WHERE clause of GET /me/api-keys: the caller's keys,
-// narrowed by q (name or key prefix), status and group_id.
-func mineFilter(c *gin.Context, userID int64) (*store.Filter, error) {
+// mineFilter builds the WHERE clause of GET /me/api-keys over api_keys k:
+// the caller's keys, narrowed by q (name or key prefix), status and
+// group_id.
+func mineFilter(c *gin.Context, userID int64) (func(*gorm.DB) *gorm.DB, error) {
 	ctx := c.Request.Context()
-	var f store.Filter
+	var f filter
 	f.And("k.deleted_at IS NULL AND k.user_id = ?", userID)
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
 		// PostgreSQL takes neither as text.
@@ -482,8 +519,18 @@ func mineFilter(c *gin.Context, userID int64) (*store.Filter, error) {
 		}
 		f.And("k.group_id = ?", id)
 	}
-	return &f, nil
+	return f.scope, nil
 }
+
+// filter collects conditions joined with AND, as a GORM scope.
+type filter []func(*gorm.DB) *gorm.DB
+
+// And appends cond with its arguments (? placeholders).
+func (f *filter) And(cond string, args ...any) {
+	*f = append(*f, func(db *gorm.DB) *gorm.DB { return db.Where(cond, args...) })
+}
+
+func (f filter) scope(db *gorm.DB) *gorm.DB { return db.Scopes(f...) }
 
 // searchedPrefix is the key prefix the search text q asks for, or "" when q
 // is not the start of a key: KeyPrefix or less starts every key, so it would
@@ -501,13 +548,15 @@ func searchedPrefix(q string) string {
 }
 
 func (s *Service) loadKey(ctx context.Context, id, ownerID int64) (*APIKey, error) {
-	k, err := scanKey(s.db.Pool.QueryRow(ctx, selectKey+` WHERE k.id = $1 AND k.user_id = $2 AND k.deleted_at IS NULL`, id, ownerID))
+	var r keyRow
+	err := keyView(store.G(ctx, s.db.Pool)).Where("k.id = ? AND k.user_id = ? AND k.deleted_at IS NULL", id, ownerID).Take(&r).Error
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
 	if err != nil {
 		return nil, err
 	}
+	k := r.key()
 	if err := s.fill(ctx, []*APIKey{k}); err != nil {
 		return nil, err
 	}
@@ -520,14 +569,20 @@ func (s *Service) loadKey(ctx context.Context, id, ownerID int64) (*APIKey, erro
 // foreign key violation.
 func groupAvailable(ctx context.Context, q store.Querier, userID, groupID int64) (bool, error) {
 	var ok bool
-	err := q.QueryRow(ctx, `SELECT true FROM groups g WHERE g.id = $2
-		AND `+segment.UsableGroupSQL("g", "$1")+`
-		FOR KEY SHARE OF g`,
-		userID, groupID).Scan(&ok)
+	err := usableGroup(store.G(ctx, q), userID, groupID).Take(&ok).Error
 	if store.IsNoRows(err) {
 		return false, nil
 	}
 	return ok, err
+}
+
+// usableGroup selects true for group when user may use it, key-share
+// locking the group row.
+func usableGroup(db *gorm.DB, userID, groupID int64) *gorm.DB {
+	return db.Table("groups g").Select("true").
+		Where("g.id = ?", groupID).
+		Where(segment.UsableGroupSQL("g", "?"), userID).
+		Clauses(clause.Locking{Strength: "KEY SHARE", Table: clause.Table{Name: "g"}})
 }
 
 // requireGroup fails with a group_id field error unless the group is usable by user.
@@ -601,12 +656,17 @@ func (s *Service) createMine(c *gin.Context) {
 		if err := requireGroup(ctx, tx, uid, in.GroupID); err != nil {
 			return err
 		}
-		if err := tx.QueryRow(ctx, `INSERT INTO api_keys (user_id, group_id, name, key_prefix, key_hash, expires_at, allowed_ips,
-				rpm_limit, tpm_limit, max_concurrency, quota_limit)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-			uid, in.GroupID, name, raw[:displayPrefix], hash, in.ExpiresAt, allowedIPs, in.RPM, in.TPM, in.Concurrency, in.QuotaLimit).Scan(&id); err != nil {
+		// The caps and allowed_ips have database defaults: GORM leaves them
+		// out of the INSERT when zero, and those defaults (0, '{}') are the
+		// zero values.
+		k := model.APIKey{UserID: uid, GroupID: &in.GroupID, Name: name, KeyPrefix: raw[:displayPrefix], KeyHash: hash,
+			ExpiresAt: in.ExpiresAt, AllowedIPs: allowedIPs, RpmLimit: in.RPM, TpmLimit: in.TPM,
+			MaxConcurrency: in.Concurrency, QuotaLimit: in.QuotaLimit}
+		g := store.G(ctx, tx)
+		if err := g.Create(&k).Error; err != nil {
 			return err
 		}
+		id = k.ID
 		if s.Cipher == nil {
 			return nil
 		}
@@ -614,8 +674,7 @@ func (s *Service) createMine(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE api_keys SET key_cipher = $2 WHERE id = $1`, id, sealed)
-		return err
+		return g.Model(&model.APIKey{}).Where("id = ?", id).Update("key_cipher", sealed).Error
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -660,22 +719,15 @@ func (s *Service) updateMine(c *gin.Context) {
 				return err
 			}
 		}
-		err := tx.QueryRow(ctx, `UPDATE api_keys SET status = COALESCE($3, status), group_id = COALESCE($4, group_id),
-				rpm_limit = COALESCE($5, rpm_limit), tpm_limit = COALESCE($6, tpm_limit), max_concurrency = COALESCE($7, max_concurrency),
-				quota_limit = COALESCE($8, quota_limit), quota_used = CASE WHEN $9 THEN 0 ELSE quota_used END,
-				name = COALESCE($10, name), allowed_ips = COALESCE($11, allowed_ips),
-				expires_at = CASE WHEN $12 THEN $13 ELSE expires_at END
-			WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL RETURNING key_hash`,
-			id, uid, in.Status, in.GroupID, in.RPM, in.TPM, in.Concurrency, in.QuotaLimit, in.ResetQuota,
-			in.Name, in.AllowedIPs, in.ExpiresAt != nil, in.expiry).Scan(&hash)
-		if store.IsNoRows(err) {
-			return notFound(ctx)
+		var err error
+		if hash, err = updateOwned(ctx, tx, id, uid, in.changes()); err != nil {
+			return err
 		}
+		detail, err := json.Marshal(in)
 		if err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO audit_logs (user_id,action,target_type,target_id,detail,ip) VALUES ($1,'apikey.update','apikey',$2,$3,$4)`, uid, strconv.FormatInt(id, 10), in, c.ClientIP())
-		return err
+		return auditKey(ctx, tx, uid, id, "apikey.update", c.ClientIP(), detail)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -707,6 +759,56 @@ type keyUpdate struct {
 	ResetQuota bool `json:"reset_quota,omitempty"`
 
 	expiry *time.Time // ExpiresAt decoded
+}
+
+// changes are the columns the update writes: the fields present, quota_used
+// back to 0 on ResetQuota, and expires_at (NULL included) when given.
+func (u *keyUpdate) changes() map[string]any {
+	set := map[string]any{}
+	put := func(column string, present bool, v func() any) {
+		if present {
+			set[column] = v()
+		}
+	}
+	put("status", u.Status != nil, func() any { return *u.Status })
+	put("group_id", u.GroupID != nil, func() any { return *u.GroupID })
+	put("rpm_limit", u.RPM != nil, func() any { return *u.RPM })
+	put("tpm_limit", u.TPM != nil, func() any { return *u.TPM })
+	put("max_concurrency", u.Concurrency != nil, func() any { return *u.Concurrency })
+	put("quota_limit", u.QuotaLimit != nil, func() any { return *u.QuotaLimit })
+	put("quota_used", u.ResetQuota, func() any { return decimal.Zero })
+	put("name", u.Name != nil, func() any { return *u.Name })
+	put("allowed_ips", u.AllowedIPs != nil, func() any { return store.Strings(*u.AllowedIPs) })
+	put("expires_at", u.ExpiresAt != nil, func() any { return u.expiry })
+	return set
+}
+
+// updateOwned writes set to the owner's live key id and returns the key's
+// hash; notFound when there is no such key.
+func updateOwned(ctx context.Context, q store.Querier, id, ownerID int64, set map[string]any) (string, error) {
+	var k model.APIKey
+	res := ownedUpdate(store.G(ctx, q), &k, id, ownerID, set)
+	switch {
+	case res.Error != nil:
+		return "", res.Error
+	case res.RowsAffected == 0:
+		return "", notFound(ctx)
+	}
+	return k.KeyHash, nil
+}
+
+// ownedUpdate writes set to the owner's live key id, returning its hash into
+// k.
+func ownedUpdate(db *gorm.DB, k *model.APIKey, id, ownerID int64, set map[string]any) *gorm.DB {
+	return db.Model(k).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).
+		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, ownerID).Updates(set)
+}
+
+// auditKey records action on key id by uid from ip; a nil detail leaves the
+// column's default.
+func auditKey(ctx context.Context, q store.Querier, uid, id int64, action, ip string, detail json.RawMessage) error {
+	return store.G(ctx, q).Create(&model.AuditLog{UserID: &uid, Action: action, TargetType: "apikey",
+		TargetID: strconv.FormatInt(id, 10), Detail: detail, IP: ip}).Error
 }
 
 // normalize checks the fields given and puts the name and allowlist in their
@@ -818,18 +920,19 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 	}
 	var oldHash string
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT key_hash FROM api_keys WHERE id=$1 AND deleted_at IS NULL AND user_id=$2 FOR UPDATE`, id, ownerID).Scan(&oldHash); err != nil {
+		g := store.G(ctx, tx)
+		if err := owned(g, id, ownerID).Select("key_hash").Clauses(clause.Locking{Strength: "UPDATE"}).Take(&oldHash).Error; err != nil {
 			if store.IsNoRows(err) {
 				return notFound(ctx)
 			}
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE api_keys SET key_hash=$2, key_prefix=$3, key_cipher=$4 WHERE id=$1`, id, HashKey(raw), raw[:displayPrefix], sealed); err != nil {
+		if err := g.Model(&model.APIKey{}).Where("id = ?", id).
+			Updates(map[string]any{"key_hash": HashKey(raw), "key_prefix": raw[:displayPrefix], "key_cipher": sealed}).Error; err != nil {
 			return err
 		}
 		uid, _ := core.UserID(ctx)
-		_, err := tx.Exec(ctx, `INSERT INTO audit_logs (user_id,action,target_type,target_id,ip) VALUES ($1,'apikey.rotate','apikey',$2,$3)`, uid, strconv.FormatInt(id, 10), c.ClientIP())
-		return err
+		return auditKey(ctx, tx, uid, id, "apikey.rotate", c.ClientIP(), nil)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -847,6 +950,11 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 	httpapi.OK(c, k)
 }
 
+// owned narrows api_keys to the owner's live key id.
+func owned(db *gorm.DB, id, ownerID int64) *gorm.DB {
+	return db.Model(&model.APIKey{}).Where("id = ? AND deleted_at IS NULL AND user_id = ?", id, ownerID)
+}
+
 func (s *Service) reveal(c *gin.Context, ownerID int64) {
 	httpapi.NoStore(c)
 	id, ok := httpapi.PathID(c, "id")
@@ -854,8 +962,9 @@ func (s *Service) reveal(c *gin.Context, ownerID int64) {
 		return
 	}
 	ctx := c.Request.Context()
-	var sealed []byte
-	err := s.db.Pool.QueryRow(ctx, `SELECT key_cipher FROM api_keys WHERE id = $1 AND deleted_at IS NULL AND user_id = $2`, id, ownerID).Scan(&sealed)
+	var k model.APIKey
+	err := owned(store.G(ctx, s.db.Pool), id, ownerID).Select("key_cipher").Take(&k).Error
+	sealed := k.KeyCipher
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, notFound(ctx))
 		return
@@ -874,7 +983,7 @@ func (s *Service) reveal(c *gin.Context, ownerID int64) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if _, err := s.db.Pool.Exec(ctx, `INSERT INTO audit_logs (user_id, action, target_type, target_id, ip) VALUES ($1, 'apikey.reveal', 'apikey', $2, $3)`, uid, strconv.FormatInt(id, 10), c.ClientIP()); err != nil {
+	if err := auditKey(ctx, s.db.Pool, uid, id, "apikey.reveal", c.ClientIP(), nil); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -882,13 +991,7 @@ func (s *Service) reveal(c *gin.Context, ownerID int64) {
 }
 
 func (s *Service) softDelete(ctx context.Context, id int64, ownerID int64) error {
-	var hash string
-	err := s.db.Pool.QueryRow(ctx, `UPDATE api_keys SET deleted_at = now()
-		WHERE id = $1 AND deleted_at IS NULL AND user_id = $2 RETURNING key_hash`,
-		id, ownerID).Scan(&hash)
-	if store.IsNoRows(err) {
-		return notFound(ctx)
-	}
+	hash, err := updateOwned(ctx, s.db.Pool, id, ownerID, map[string]any{"deleted_at": gorm.Expr("now()")})
 	if err != nil {
 		return err
 	}

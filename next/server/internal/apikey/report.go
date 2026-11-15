@@ -8,6 +8,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Balances reads a user's balance (the billing service).
@@ -117,22 +118,26 @@ func rateReports(k *APIKey) []RateReport {
 	return out
 }
 
+// usageTotalsSQL sums the usage records of key @key from @today on, and in
+// total.
+const usageTotalsSQL = `SELECT
+		count(*) FILTER (WHERE created_at >= @today), count(*),
+		COALESCE(sum(input_tokens) FILTER (WHERE created_at >= @today), 0), COALESCE(sum(input_tokens), 0),
+		COALESCE(sum(output_tokens) FILTER (WHERE created_at >= @today), 0), COALESCE(sum(output_tokens), 0),
+		COALESCE(sum(cache_creation_tokens + cache_creation_1h_tokens) FILTER (WHERE created_at >= @today), 0),
+		COALESCE(sum(cache_creation_tokens + cache_creation_1h_tokens), 0),
+		COALESCE(sum(cache_read_tokens) FILTER (WHERE created_at >= @today), 0), COALESCE(sum(cache_read_tokens), 0),
+		COALESCE(sum(apikey_quota_charge(billing_status, total_cost)) FILTER (WHERE created_at >= @today), 0),
+		COALESCE(sum(apikey_quota_charge(billing_status, total_cost)), 0)
+	FROM usage_logs WHERE api_key_id = @key`
+
 // usageTotals sums the key's usage records today and in total; the cost is
 // what the quota counts (apikey_quota_charge, migration 0059).
 func (s *Service) usageTotals(ctx context.Context, keyID int64, r *UsageReport) error {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	var cost [2]decimal.Decimal
 	t, a := &r.Usage.Today, &r.Usage.Total
-	err := s.db.Pool.QueryRow(ctx, `SELECT
-			count(*) FILTER (WHERE created_at >= $2), count(*),
-			COALESCE(sum(input_tokens) FILTER (WHERE created_at >= $2), 0), COALESCE(sum(input_tokens), 0),
-			COALESCE(sum(output_tokens) FILTER (WHERE created_at >= $2), 0), COALESCE(sum(output_tokens), 0),
-			COALESCE(sum(cache_creation_tokens + cache_creation_1h_tokens) FILTER (WHERE created_at >= $2), 0),
-			COALESCE(sum(cache_creation_tokens + cache_creation_1h_tokens), 0),
-			COALESCE(sum(cache_read_tokens) FILTER (WHERE created_at >= $2), 0), COALESCE(sum(cache_read_tokens), 0),
-			COALESCE(sum(apikey_quota_charge(billing_status, total_cost)) FILTER (WHERE created_at >= $2), 0),
-			COALESCE(sum(apikey_quota_charge(billing_status, total_cost)), 0)
-		FROM usage_logs WHERE api_key_id = $1`, keyID, today).Scan(
+	err := store.G(ctx, s.db.Pool).Raw(usageTotalsSQL, map[string]any{"key": keyID, "today": today}).Row().Scan(
 		&t.Requests, &a.Requests, &t.InputTokens, &a.InputTokens, &t.OutputTokens, &a.OutputTokens,
 		&t.CacheCreationTokens, &a.CacheCreationTokens, &t.CacheReadTokens, &a.CacheReadTokens, &cost[0], &cost[1])
 	if err != nil {

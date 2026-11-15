@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -102,15 +101,11 @@ func (s *Service) updateIPAllowlist(c *gin.Context) {
 	}
 	var hash string
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `UPDATE api_keys SET allowed_ips=$3 WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL RETURNING key_hash`, id, uid, entries).Scan(&hash)
-		if store.IsNoRows(err) {
-			return notFound(ctx)
-		}
-		if err != nil {
+		var err error
+		if hash, err = updateOwned(ctx, tx, id, uid, map[string]any{"allowed_ips": store.Strings(entries)}); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO audit_logs (user_id,action,target_type,target_id,ip) VALUES ($1,'apikey.ip_allowlist','apikey',$2,$3)`, uid, strconv.FormatInt(id, 10), c.ClientIP())
-		return err
+		return auditKey(ctx, tx, uid, id, "apikey.ip_allowlist", c.ClientIP(), nil)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
