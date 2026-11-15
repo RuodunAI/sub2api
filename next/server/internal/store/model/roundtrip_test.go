@@ -1,34 +1,25 @@
 package model_test
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// These tests check the models alone against a migrated database, through
-// GORM's own PostgreSQL driver; production code reaches GORM through
-// store.G instead.
+// These tests check the models against a migrated database through
+// store.G, the path production code takes.
 func openGorm(t *testing.T) *gorm.DB {
 	t.Helper()
-	db := testutil.DB(t)
-	g, err := gorm.Open(postgres.Open(db.Pool.Config().ConnString()), &gorm.Config{Logger: logger.Discard})
-	require.NoError(t, err)
-	sqlDB, err := g.DB()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sqlDB.Close() })
-	return g
+	return store.G(context.Background(), testutil.DB(t).Pool)
 }
 
 func dryRun(g *gorm.DB) *gorm.DB { return g.Session(&gorm.Session{DryRun: true}) }
@@ -146,12 +137,8 @@ func TestUserBalanceKeyIsWritten(t *testing.T) {
 	require.Equal(t, bal, got)
 }
 
-// Arrays and bytea; text[] needs store.Strings to scan, which arrives with
-// the GORM bridge.
+// Arrays and bytea round-trip through store.Strings and []byte.
 func TestAccountRoundTrip(t *testing.T) {
-	if _, ok := any(&store.Strings{}).(sql.Scanner); !ok {
-		t.Skip("store.Strings does not implement sql.Scanner yet")
-	}
 	g := openGorm(t)
 	acc := model.Account{
 		Name: "a1", PluginKey: "p", Type: "t",

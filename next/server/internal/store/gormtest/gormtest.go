@@ -22,9 +22,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 // update is registered by this package, so a test package that imports it
@@ -47,18 +47,13 @@ func (refuseConnector) Connect(context.Context) (driver.Conn, error) { return ni
 func (refuseConnector) Driver() driver.Driver                        { return nil }
 
 // DB returns a shared GORM instance in DryRun mode with the postgres
-// dialect. It is independent of store.G, but its gorm.Config must stay in
-// step with the one store.G uses (naming, default transaction off), or the
-// snapshots would describe statements production never builds.
+// dialect and store.GormConfig, so the snapshots describe the statements
+// store.G builds in production.
 func DB() (*gorm.DB, error) {
 	dryOnce.Do(func() {
-		conn := sql.OpenDB(refuseConnector{})
-		dry, dryErr = gorm.Open(postgres.New(postgres.Config{Conn: conn}), &gorm.Config{
-			DryRun:                 true,
-			DisableAutomaticPing:   true,
-			SkipDefaultTransaction: true,
-			Logger:                 logger.Discard,
-		})
+		cfg := store.GormConfig()
+		cfg.DryRun = true
+		dry, dryErr = gorm.Open(postgres.New(postgres.Config{Conn: sql.OpenDB(refuseConnector{})}), cfg)
 	})
 	return dry, dryErr
 }
