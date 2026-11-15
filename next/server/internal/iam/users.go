@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/mail"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -56,17 +58,16 @@ const usersFrom = `users u JOIN segments s ON s.id = u.segment_id`
 
 // userByID is the statement of getUser, raw (the fewest allocations): it
 // loads the user of every login, refresh and GET /me.
-const userByID = `SELECT ` + userColumns + ` FROM ` + usersFrom + ` WHERE u.id = ? AND u.deleted_at IS NULL`
+func userByID(db *gorm.DB, id int64) *gorm.DB {
+	return db.Raw(`SELECT `+userColumns+` FROM `+usersFrom+` WHERE u.id = ? AND u.deleted_at IS NULL`, id)
+}
 
 // usersView selects userColumns, for ListUsers' conditions and page.
 func usersView(db *gorm.DB) *gorm.DB {
 	return db.Table(usersFrom).Select(userColumns)
 }
 
-// rowScanner is a *sql.Row or *sql.Rows.
-type rowScanner interface{ Scan(dest ...any) error }
-
-func scanUser(row rowScanner) (*User, error) {
+func scanUser(row store.RowScanner) (*User, error) {
 	var u User
 	var balance string
 	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
@@ -84,7 +85,7 @@ func (s *Service) GetUser(ctx context.Context, id int64) (*User, error) {
 }
 
 func (s *Service) getUser(ctx context.Context, q store.Querier, id int64) (*User, error) {
-	u, err := scanUser(store.G(ctx, q).Raw(userByID, id).Row())
+	u, err := scanUser(userByID(store.G(ctx, q), id).Row())
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("user not found")
 	}
@@ -131,23 +132,19 @@ func (s *Service) ListUsers(ctx context.Context, f ListUsersFilter) ([]*User, in
 	filter := usersFilter(f)
 	g := store.G(ctx, s.db.Pool)
 	var total int64
-	if err := g.Table("users u").Scopes(filter.Scope()).Count(&total).Error; err != nil {
+	if err := usersCount(g, filter).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	rows, err := usersPage(g, filter, f.Page, f.PageSize).Rows()
+	out, err := store.CollectRows(usersPage(g, filter, f.Page, f.PageSize), func(rows *sql.Rows) (*User, error) { return scanUser(rows) })
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
-	out := []*User{}
-	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, u)
-	}
-	return out, total, rows.Err()
+	return out, total, nil
+}
+
+// usersCount is what ListUsers counts: the users u that filter keeps.
+func usersCount(db *gorm.DB, filter store.Conds) *gorm.DB {
+	return db.Table("users u").Scopes(filter.Scope())
 }
 
 // usersFilter are the conditions of ListUsers on the users u.
@@ -175,9 +172,11 @@ func usersFilter(f ListUsersFilter) store.Conds {
 	return filter
 }
 
-// usersPage is the page of ListUsers. Pagination keeps page at 1 or more, so
-// the offset is never negative (GORM would leave a negative one out).
+// usersPage is the page of ListUsers, page and size kept within
+// httpapi.Pagination's bounds: GORM would leave out a size of 0 or less
+// and a negative offset, and read every user.
 func usersPage(db *gorm.DB, filter store.Conds, page, size int) *gorm.DB {
+	page, size = httpapi.PageBounds(page, size)
 	return usersView(db).Scopes(filter.Scope()).Order("u.id").Limit(size).Offset((page - 1) * size)
 }
 
@@ -234,7 +233,7 @@ func (s *Service) createUserTx(ctx context.Context, tx pgx.Tx, actorID int64, in
 		return nil, 0, err
 	}
 	var id int64
-	err = store.G(ctx, tx).Raw(insertUser, email, in.DisplayName, string(hash), in.SegmentID).Row().Scan(&id)
+	err = insertUser(store.G(ctx, tx), email, in.DisplayName, string(hash), in.SegmentID).Row().Scan(&id)
 	if store.IsUniqueViolation(err, "") {
 		return nil, 0, emailTaken()
 	}
@@ -267,9 +266,12 @@ func (s *Service) createUserTx(ctx context.Context, tx pgx.Tx, actorID int64, in
 	return u, v, err
 }
 
-// insertUser creates a user in segmentID, or the default segment when nil.
-const insertUser = `INSERT INTO users (email, display_name, password_hash, segment_id)
-		VALUES (?, ?, ?, COALESCE(?, default_segment_id())) RETURNING id`
+// insertUser creates a user in segmentID, or the default segment when nil,
+// and returns its id.
+func insertUser(db *gorm.DB, email, displayName, passwordHash string, segmentID *int64) *gorm.DB {
+	return db.Raw(`INSERT INTO users (email, display_name, password_hash, segment_id)
+		VALUES (?, ?, ?, COALESCE(?, default_segment_id())) RETURNING id`, email, displayName, passwordHash, segmentID)
+}
 
 // lockNamedSegment checks that id, when given, is a named segment and keeps
 // the segment from being deleted until the transaction ends, so the user
@@ -508,7 +510,7 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 		}
 		g := store.G(ctx, tx)
 		var email string
-		err = liveUser(g, id, "email").Clauses(store.ForUpdate).Row().Scan(&email)
+		err = lockLiveUser(g, id, "email").Row().Scan(&email)
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("user not found")
 		}
@@ -646,12 +648,17 @@ func lockUser(db *gorm.DB, userID int64) *gorm.DB {
 
 // liveUser selects cols of the undeleted user id.
 func liveUser(db *gorm.DB, id int64, cols string) *gorm.DB {
-	return db.Model(&model.User{}).Select(cols).Where("id = ? AND deleted_at IS NULL", id)
+	return liveUsers(db).Select(cols).Where("id = ?", id)
+}
+
+// lockLiveUser is liveUser, the row locked until the transaction ends.
+func lockLiveUser(db *gorm.DB, id int64, cols string) *gorm.DB {
+	return liveUser(db, id, cols).Clauses(store.ForUpdate)
 }
 
 // userByEmail selects cols of the undeleted user with email, in any case.
 func userByEmail(db *gorm.DB, email, cols string) *gorm.DB {
-	return db.Model(&model.User{}).Select(cols).Where("lower(email) = lower(?) AND deleted_at IS NULL", email)
+	return liveUsers(db).Select(cols).Where("lower(email) = lower(?)", email)
 }
 
 // touchLastLogin records a login of userID.

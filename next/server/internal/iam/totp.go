@@ -131,7 +131,7 @@ func (s *Service) issueBackupCodes(ctx context.Context, tx pgx.Tx, userID int64)
 		if err != nil {
 			return nil, err
 		}
-		if err := g.Exec(insertBackupCode, userID, string(hash)).Error; err != nil {
+		if err := insertBackupCode(g, userID, string(hash)).Error; err != nil {
 			return nil, err
 		}
 		codes[i] = code
@@ -139,9 +139,11 @@ func (s *Service) issueBackupCodes(ctx context.Context, tx pgx.Tx, userID int64)
 	return codes, nil
 }
 
-// insertBackupCode stores the hash of a backup code, raw: Create would add a
-// RETURNING of the defaulted columns.
-const insertBackupCode = `INSERT INTO user_totp_backup_codes (user_id, code_hash) VALUES (?, ?)`
+// insertBackupCode stores the hash of a backup code of userID, raw: Create
+// would add a RETURNING of the defaulted columns.
+func insertBackupCode(db *gorm.DB, userID int64, hash string) *gorm.DB {
+	return db.Exec(`INSERT INTO user_totp_backup_codes (user_id, code_hash) VALUES (?, ?)`, userID, hash)
+}
 
 // deleteBackupCodes removes the backup codes of userID.
 func deleteBackupCodes(db *gorm.DB, userID int64) *gorm.DB {
@@ -156,6 +158,16 @@ func useBackupCode(db *gorm.DB, id int64) *gorm.DB {
 // totpOf is the two-factor row of userID.
 func totpOf(db *gorm.DB, userID int64) *gorm.DB {
 	return db.Model(&model.UserTOTP{}).Where("user_id = ?", userID)
+}
+
+// totpEnabledAt reads when userID enabled two-factor.
+func totpEnabledAt(db *gorm.DB, userID int64) *gorm.DB {
+	return totpOf(db, userID).Select("enabled_at")
+}
+
+// deleteTOTP turns two-factor off for userID.
+func deleteTOTP(db *gorm.DB, userID int64) *gorm.DB {
+	return totpOf(db, userID).Delete(&model.UserTOTP{})
 }
 
 // hasTwoFactor reports whether userID has two-factor enabled.
@@ -234,9 +246,14 @@ func lockTOTP(db *gorm.DB, userID int64) *gorm.DB {
 	return totpOf(db, userID).Select("secret_enc, last_step, locked_until").Clauses(store.ForUpdate)
 }
 
-// unusedBackupCodes are the backup codes of userID still to be used.
+// backupCodesLeft are the backup codes of userID still to be used.
+func backupCodesLeft(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.UserTOTPBackupCode{}).Where("user_id = ? AND used_at IS NULL", userID)
+}
+
+// unusedBackupCodes reads the id and hash of backupCodesLeft.
 func unusedBackupCodes(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Model(&model.UserTOTPBackupCode{}).Select("id, code_hash").Where("user_id = ? AND used_at IS NULL", userID)
+	return backupCodesLeft(db, userID).Select("id, code_hash")
 }
 
 // recordSecondFactorFailure counts a wrong code; the fifth locks the factor
@@ -249,7 +266,7 @@ func (s *Service) recordSecondFactorFailure(ctx context.Context, userID int64) e
 func (s *Service) TwoFactor(ctx context.Context, userID int64) (*TwoFactorStatus, error) {
 	g := store.G(ctx, s.db.Pool)
 	var at time.Time
-	err := totpOf(g, userID).Select("enabled_at").Row().Scan(&at)
+	err := totpEnabledAt(g, userID).Row().Scan(&at)
 	if store.IsNoRows(err) {
 		return &TwoFactorStatus{}, nil
 	}
@@ -257,7 +274,7 @@ func (s *Service) TwoFactor(ctx context.Context, userID int64) (*TwoFactorStatus
 		return nil, err
 	}
 	var left int64
-	err = g.Model(&model.UserTOTPBackupCode{}).Where("user_id = ? AND used_at IS NULL", userID).Count(&left).Error
+	err = backupCodesLeft(g, userID).Count(&left).Error
 	return &TwoFactorStatus{Enabled: true, EnabledAt: &at, BackupCodesLeft: int(left)}, err
 }
 
@@ -318,7 +335,7 @@ func (s *Service) StartTwoFactor(ctx context.Context, userID int64) (*TwoFactorS
 func (s *Service) EnableTwoFactor(ctx context.Context, userID int64, flowToken, code string) ([]string, error) {
 	var payload totpSetupPayload
 	var raw []byte
-	err := liveFlow(store.G(ctx, s.db.Pool), flowToken, flowTOTPSetup, "payload").Where("user_id = ?", userID).Row().Scan(&raw)
+	err := ownedFlow(store.G(ctx, s.db.Pool), flowToken, flowTOTPSetup, userID, "payload").Row().Scan(&raw)
 	if store.IsNoRows(err) {
 		return nil, errFlowExpired
 	}
@@ -345,7 +362,7 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID int64, flowToken, 
 		if err := lockRefreshUser(ctx, tx, userID); err != nil {
 			return err
 		}
-		res := store.G(ctx, tx).Exec(insertTOTP, userID, sealed, step)
+		res := insertTOTP(store.G(ctx, tx), userID, sealed, step)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -367,10 +384,13 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID int64, flowToken, 
 	return codes, nil
 }
 
-// insertTOTP enables two-factor with a sealed secret, unless it is; raw:
-// Create would add a RETURNING of the defaulted columns. The secret's ? does
-// not follow a (, where GORM would expand the bytes.
-const insertTOTP = `INSERT INTO user_totp (user_id, secret_enc, last_step) VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING`
+// insertTOTP enables two-factor for userID with a sealed secret and the
+// step of the code that proved it, unless it is; raw: Create would add a
+// RETURNING of the defaulted columns. The secret's ? does not follow a (,
+// where GORM would expand the bytes.
+func insertTOTP(db *gorm.DB, userID int64, sealed []byte, lastStep int64) *gorm.DB {
+	return db.Exec(`INSERT INTO user_totp (user_id, secret_enc, last_step) VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING`, userID, sealed, lastStep)
+}
 
 // DisableTwoFactor turns the factor off; the route has verified the caller
 // (step-up self.2fa.disable).
@@ -429,7 +449,7 @@ func removeTwoFactor(ctx context.Context, tx pgx.Tx, userID int64) error {
 	if err := deleteBackupCodes(g, userID).Error; err != nil {
 		return err
 	}
-	return totpOf(g, userID).Delete(&model.UserTOTP{}).Error
+	return deleteTOTP(g, userID).Error
 }
 
 // deletePasskeysOf removes every passkey of userID.

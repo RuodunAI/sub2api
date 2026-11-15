@@ -370,7 +370,7 @@ func (s *Service) finishStepUpPasskey(ctx context.Context, r *http.Request, user
 	if err != nil {
 		return err
 	}
-	return usePasskey(store.G(ctx, s.db.Pool).Where("user_id = ? AND credential_id = ?", userID, used.ID), raw).Error
+	return usePasskey(userPasskeyByCredential(store.G(ctx, s.db.Pool), userID, used.ID), raw).Error
 }
 
 // ConsumeStepUp implements core.StepUpVerifier.
@@ -422,13 +422,17 @@ func (s *Service) OpenStepUpSession(ctx context.Context, scope, session string) 
 	if err != nil {
 		return err
 	}
-	return store.G(ctx, s.db.Pool).Exec(openStepUpSession,
-		hashToken(stepUpSessionToken(ctx, uid, scope, session)), flowStepUpSession, uid, payload, time.Now().Add(core.StepUpSessionIdle)).Error
+	return openStepUpSession(store.G(ctx, s.db.Pool), hashToken(stepUpSessionToken(ctx, uid, scope, session)), uid, payload,
+		time.Now().Add(core.StepUpSessionIdle)).Error
 }
 
-// openStepUpSession stores a step-up session, or starts it afresh.
-const openStepUpSession = `INSERT INTO auth_flows (token_hash, purpose, user_id, payload, expires_at) VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT (token_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at, created_at = now()`
+// openStepUpSession stores the step-up session hash of userID, or starts it
+// afresh.
+func openStepUpSession(db *gorm.DB, hash string, userID int64, payload []byte, expiresAt time.Time) *gorm.DB {
+	return db.Exec(`INSERT INTO auth_flows (token_hash, purpose, user_id, payload, expires_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (token_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at, created_at = now()`,
+		hash, flowStepUpSession, userID, payload, expiresAt)
+}
 
 // ContinueStepUpSession implements core.StepUpSessions.
 func (s *Service) ContinueStepUpSession(ctx context.Context, scope, session string) error {
@@ -492,7 +496,7 @@ func (s *Service) keepLastFactor(ctx context.Context, tx pgx.Tx, userID int64, s
 		return nil
 	}
 	g := store.G(ctx, tx)
-	if err := g.Exec(lockUserIfAny, userID).Error; err != nil {
+	if err := lockUserIfAny(g, userID).Error; err != nil {
 		return err
 	}
 	// A statement of its own after the lock: under READ COMMITTED (store.DB.Tx)
@@ -509,9 +513,11 @@ func (s *Service) keepLastFactor(ctx context.Context, tx pgx.Tx, userID int64, s
 	return s.verificationRequired(ctx, userID, scope, operation)
 }
 
-// lockUserIfAny locks the row of a user, with Exec: unlike lockUser, a user
+// lockUserIfAny locks the row of userID, with Exec: unlike lockUser, a user
 // without a row is no error.
-const lockUserIfAny = `SELECT 1 FROM users WHERE id = ? FOR UPDATE`
+func lockUserIfAny(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Exec(`SELECT 1 FROM users WHERE id = ? FOR UPDATE`, userID)
+}
 
 // verificationRequired is the 403 that tells the console what to verify:
 // the scope, the operation to bind the proof to and the methods.

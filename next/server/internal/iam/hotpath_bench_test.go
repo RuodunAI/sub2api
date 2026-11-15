@@ -69,7 +69,7 @@ func BenchmarkHotUserStatus(b *testing.B) {
 	benchPaths(b, func() error {
 		return s.db.Pool.QueryRow(ctx, `SELECT status = 'active', token_version FROM users WHERE id = $1 AND deleted_at IS NULL`, user).Scan(&active, &version)
 	}, func() error {
-		return store.G(ctx, s.db.Pool).Raw(userStatus, user).Row().Scan(&active, &version)
+		return userStatus(store.G(ctx, s.db.Pool), user).Row().Scan(&active, &version)
 	})
 }
 
@@ -84,7 +84,7 @@ func BenchmarkHotAccessKey(b *testing.B) {
 	}, func() error {
 		var id core.AccessKeyIdentity
 		var expiresAt, lastUsed *time.Time
-		return store.G(ctx, s.db.Pool).Raw(accessKeyByHash, hash).Row().
+		return accessKeyByHash(store.G(ctx, s.db.Pool), hash).Row().
 			Scan(&id.KeyID, &id.UserID, (*store.Strings)(&id.Permissions), &expiresAt, &lastUsed)
 	})
 }

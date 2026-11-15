@@ -1,0 +1,4 @@
+-- sql
+SELECT count(*) FROM "user_totp_backup_codes" WHERE user_id = $1 AND used_at IS NULL
+-- vars
+$1 int64 7

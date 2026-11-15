@@ -69,7 +69,7 @@ func (s *Service) touchLoginSession(ctx context.Context, tx pgx.Tx, userID int64
 			return err
 		}
 	}
-	return g.Exec(upsertLoginSession, familyID, userID, meta.method, meta.ip, meta.userAgent).Error
+	return upsertLoginSession(g, familyID, userID, meta).Error
 }
 
 // deleteStaleSessions removes the login sessions of userID last used before
@@ -78,12 +78,15 @@ func deleteStaleSessions(db *gorm.DB, userID int64, before time.Time) *gorm.DB {
 	return db.Where("user_id = ? AND last_used_at < ?", userID, before).Delete(&model.LoginSession{})
 }
 
-// upsertLoginSession records a login session, or that one was used again:
-// an empty address or user agent keeps the one known.
-const upsertLoginSession = `INSERT INTO login_sessions (family_id, user_id, method, ip, user_agent) VALUES (?, ?, ?, ?, ?)
+// upsertLoginSession records the login session familyID of userID, or that
+// it was used again: an empty address or user agent keeps the one known.
+func upsertLoginSession(db *gorm.DB, familyID string, userID int64, meta sessionMeta) *gorm.DB {
+	return db.Exec(`INSERT INTO login_sessions (family_id, user_id, method, ip, user_agent) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT (family_id) DO UPDATE SET last_used_at = now(),
 			ip = CASE WHEN EXCLUDED.ip = '' THEN login_sessions.ip ELSE EXCLUDED.ip END,
-			user_agent = CASE WHEN EXCLUDED.user_agent = '' THEN login_sessions.user_agent ELSE EXCLUDED.user_agent END`
+			user_agent = CASE WHEN EXCLUDED.user_agent = '' THEN login_sessions.user_agent ELSE EXCLUDED.user_agent END`,
+		familyID, userID, meta.method, meta.ip, meta.userAgent)
+}
 
 // auditSuperuserLogin records a new login of a superuser in tx, with how it
 // started and from where, and logs a warning.
@@ -279,6 +282,6 @@ func (s *Service) UpdateProfile(ctx context.Context, userID int64, displayName s
 
 // setLiveProfile changes the display name of the undeleted user userID.
 func setLiveProfile(db *gorm.DB, userID int64, displayName string) *gorm.DB {
-	return db.Model(&model.User{}).Where("id = ? AND deleted_at IS NULL", userID).
+	return liveUsers(db).Where("id = ?", userID).
 		Updates(map[string]any{"display_name": displayName, "updated_at": gorm.Expr("now()")})
 }
