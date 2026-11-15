@@ -32,6 +32,7 @@ func (e *Env) Login(email, password string) *Session {
 		e.T.Fatalf("login response incomplete: %s", r)
 	}
 	c.Token = d.Get("access_token").String()
+	c.Password = password
 	return &Session{Client: c, Email: email, Password: password, UserID: d.Get("user.id").Int(), Refresh: d.Get("refresh_token").String()}
 }
 

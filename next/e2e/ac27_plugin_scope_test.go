@@ -109,9 +109,13 @@ func TestPluginScopeOptionsE2E(t *testing.T) {
 		t.Errorf("unscoped permission: want 400, got %s", r)
 	}
 
-	// An enum scope needs no running plugin.
+	// An enum scope needs no running plugin; the grants of a disabled
+	// plugin reach nothing, though.
 	e.Disable(admin, pk)
-	if ids := options(reader); !slices.Equal(ids, []string{"a"}) {
+	if ids := options(admin); !slices.Equal(ids, []string{"a", "b"}) {
+		t.Errorf("super admin options while disabled: %v", ids)
+	}
+	if ids := options(reader); len(ids) != 0 {
 		t.Errorf("value/a holder options while disabled: %v", ids)
 	}
 }

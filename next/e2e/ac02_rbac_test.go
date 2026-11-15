@@ -43,10 +43,11 @@ func TestAC02_CustomRoleMenusAndForbidden(t *testing.T) {
 			t.Errorf("/me lacks %s", p)
 		}
 	}
-	// The built-in "user" role may be added by default (CONTRACTS §4).
+	// The built-in "user" role may be added by default (CONTRACTS §4), and
+	// every user holds the self: permissions.
 	userRole := map[string]bool{"apikey:self:manage": true, "balance:self:read": true, "usage:self:read": true, "gateway:use": true}
 	for p := range got {
-		if !strings.HasPrefix(p, "account:") && !strings.HasPrefix(p, "proxy:") && !userRole[p] {
+		if !strings.HasPrefix(p, "account:") && !strings.HasPrefix(p, "proxy:") && !strings.HasPrefix(p, "self:") && !userRole[p] {
 			t.Errorf("/me has unexpected permission %s", p)
 		}
 	}
