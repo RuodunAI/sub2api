@@ -1,0 +1,5 @@
+-- sql
+INSERT INTO user_balances (user_id) SELECT $1::bigint WHERE set_config('lock_timeout', '3s', true) IS NOT NULL
+    ON CONFLICT DO NOTHING
+-- vars
+$1 int64 7

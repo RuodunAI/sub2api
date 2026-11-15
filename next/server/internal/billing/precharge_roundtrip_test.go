@@ -81,10 +81,9 @@ func tracedStore(t *testing.T, base *store.DB, trace *roundTrips) *store.DB {
 // by ApplyTx: BEGIN, insert the balance row, lock it, the idempotency lookup,
 // insert the reservation, then the same insert, lock and lookup again, insert
 // the ledger row, update the balance, the event and COMMIT. The merged path
-// must stay at seven flushes, one per statement since it runs on GORM
-// (it was four in one pgx batch): BEGIN, lock_timeout, the balance row, its
-// lock, the reservation with its ledger row (prechargeSQL), the event,
-// COMMIT.
+// must stay at four flushes, as many as its pgx batch took (batch 5a, one
+// statement per flush, took seven): BEGIN, prechargeSQL (lock timeout,
+// lock, reservation and ledger row), the event, COMMIT.
 func TestPrechargeRoundTrips(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
@@ -107,8 +106,8 @@ func TestPrechargeRoundTrips(t *testing.T) {
 	if err := svc.Precharge(ctx, record("measured")); err != nil {
 		t.Fatal(err)
 	}
-	if trace.flushes > 7 {
-		t.Fatalf("%d round trips (%d statements, %d batches) for one precharge; want at most 7\n%v",
+	if trace.flushes > 4 {
+		t.Fatalf("%d round trips (%d statements, %d batches) for one precharge; want at most 4\n%v",
 			trace.flushes, len(trace.statements), trace.batches, trace.statements)
 	}
 	if trace.begins != 1 || trace.commits != 1 {

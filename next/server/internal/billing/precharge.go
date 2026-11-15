@@ -2,6 +2,7 @@ package billing
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"
@@ -88,80 +89,142 @@ func (s *Service) Precharge(ctx context.Context, r *core.UsageRecord) error {
 	return err
 }
 
-// prechargeTx reserves the precharge and writes its ledger entry: set the
-// lock timeout, create the balance row, lock it, then reserve and charge
-// under that lock (prechargeSQL), followed by the caller's balance.changed
-// event and COMMIT. The statements are the ones Precharge used to run one by
-// one, minus the ones ApplyTx repeated (the balance row insert, its FOR
-// UPDATE lock and the idempotency lookup), and with the sufficiency check
-// expressed in SQL so that one statement under the lock does the whole
-// reservation. The row lock is still taken before anything else touches the
-// user's money, the idempotency key is still the ledger key, and a duplicate
-// still charges nothing and reports no error.
+// prechargeTx reserves the precharge and writes its ledger entry in one
+// statement (prechargeSQL: the lock timeout, the balance row's lock, the
+// reservation and its ledger row), followed by the caller's balance.changed
+// event and COMMIT: BEGIN, prechargeSQL, the event and COMMIT are four round
+// trips, as in the pgx batch this replaced. The statements are the ones
+// Precharge used to run one by one, minus the ones ApplyTx repeated (the
+// balance row insert, its FOR UPDATE lock and the idempotency lookup), and
+// with the sufficiency check expressed in SQL. The row lock is still taken
+// before anything else touches the user's money, the idempotency key is
+// still the ledger key, and a duplicate still charges nothing and reports
+// no error.
 func (s *Service) prechargeTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange, min decimal.Decimal) (*core.LedgerResult, error) {
 	g := store.G(ctx, tx)
-	// The request path must not queue behind a long settlement: past
-	// prechargeLockTimeout the lock wait fails (55P03) and Precharge answers
-	// 503 instead of holding a pool connection.
-	if err := g.Exec(`SET LOCAL lock_timeout = '` + prechargeLockTimeout + `'`).Error; err != nil {
-		return nil, err
+	p, err := runPrecharge(g, ch, min)
+	if err == nil && !p.locked {
+		// No balance row to lock (the user's first precharge): the statement
+		// wrote nothing and holds no row lock. Create the row and run it
+		// again: the statements Precharge ran before, in their order (lock
+		// timeout, balance row, lock, reservation). Unlike ApplyTx, Precharge
+		// returns an unknown user's foreign key violation as it is.
+		if err = g.Exec(prechargeEnsureSQL, ch.UserID).Error; err == nil {
+			p, err = runPrecharge(g, ch, min)
+		}
+		if err == nil && !p.locked {
+			err = sql.ErrNoRows // what the lock statement read when the row was gone
+		}
 	}
-	// Unlike ApplyTx, Precharge returns an unknown user's foreign key
-	// violation as it is.
-	if err := g.Exec(ensureBalanceSQL, ch.UserID).Error; err != nil {
-		return nil, err
-	}
-	var lockedUser, ledgerID int64
-	if err := g.Raw(`SELECT user_id FROM user_balances WHERE user_id = ? FOR UPDATE`, ch.UserID).Row().Scan(&lockedUser); err != nil {
-		return nil, err
-	}
-	var after decimal.Decimal
-	var duplicate, sufficient bool
-	err := prechargeStmt.row(g, ch.UserID, ch.RefID, ch.Amount, ch.Kind, ch.RefType, ch.RefID, ch.IdempotencyKey, ch.Note, min).
-		Scan(&ledgerID, &after, &duplicate, &sufficient)
 	if err != nil {
 		return nil, err
 	}
 	switch {
-	case ledgerID != 0:
-		return &core.LedgerResult{LedgerID: ledgerID, BalanceAfter: after}, nil
-	case duplicate:
+	case p.ledgerID != 0:
+		return &core.LedgerResult{LedgerID: p.ledgerID, BalanceAfter: p.after}, nil
+	case p.duplicate:
 		// The same request id was precharged before: nothing is charged and
 		// Precharge has always answered success here.
 		return nil, nil
-	case !sufficient:
+	case !p.sufficient && p.fresh:
 		return nil, core.ErrInsufficientBalance
 	}
-	// The key was not visible to the statement (so nothing was inserted) yet
-	// the balance would have allowed it: another transaction inserted that key
-	// after the statement's snapshot. ApplyTx answered by reading the row and
-	// comparing it; do the same, and return it so the caller refreshes the
-	// balance cache exactly as ApplyTx's caller did.
-	dup, err := findLedger(ctx, tx, ch.IdempotencyKey)
-	if err != nil {
-		return nil, err
-	}
-	if dup == nil {
-		return nil, core.ErrInternal.WithMessage("idempotency key vanished during insert")
-	}
-	delta := ch.Amount
-	if !ch.Credit {
-		delta = delta.Neg()
-	}
-	if dup.UserID != ch.UserID || !dup.Delta.Equal(delta) || dup.Kind != ch.Kind {
-		return nil, core.ErrConflict.WithMessage("idempotency key reused with different user, amount or kind")
-	}
-	return dup, nil
+	return resolvePrecharge(ctx, tx, ch, p.sufficient)
 }
 
-// prechargeSQL is the reservation and its ledger entry in one statement under
-// the row lock prechargeTx took. The guards are the statements Precharge used
-// to run in order:
+// resolvePrecharge answers a precharge that wrote nothing although its
+// snapshot did not hold the key. Precharge used to lock the balance row
+// first and read the key in a later statement, so it also saw the keys
+// committed while it waited for the lock; prechargeSQL's snapshot predates
+// the lock. A key of this user committed in between is a duplicate, which
+// Precharge answered with success: a ledger row of a user is written under
+// that user's lock, so this user's key committed before the lock was ours,
+// and the separate statement read it. The rest is as before: a key of
+// another user that took the insert is a conflict, and a key that cannot be
+// found is an internal error.
+//
+// sufficient says which case this is. The balance sufficed: the insert lost
+// the key to another transaction (ON CONFLICT), the case Precharge re-read
+// the key for. It did not, and the balance row changed after the snapshot
+// (prechargeRow.fresh false): a transaction holding the lock committed in
+// between, maybe with this key.
+func resolvePrecharge(ctx context.Context, tx pgx.Tx, ch core.LedgerChange, sufficient bool) (*core.LedgerResult, error) {
+	dup, err := findLedger(ctx, tx, ch.IdempotencyKey)
+	switch {
+	case err != nil:
+		return nil, err
+	case !sufficient && dup == nil:
+		return nil, core.ErrInsufficientBalance
+	case !sufficient:
+		return nil, nil
+	case dup == nil:
+		return nil, core.ErrInternal.WithMessage("idempotency key vanished during insert")
+	case dup.UserID == ch.UserID:
+		return nil, nil
+	}
+	return checkDuplicate(dup, ch)
+}
+
+// prechargeRow is what prechargeSQL reports.
+type prechargeRow struct {
+	ledgerID   int64           // the new ledger row, 0 when none was written
+	after      decimal.Decimal // its balance_after
+	duplicate  bool            // the key was in the statement's snapshot
+	sufficient bool            // the locked balance allowed the precharge
+	locked     bool            // the balance row was locked
+	fresh      bool            // and it was the snapshot's version of the row
+}
+
+// runPrecharge runs prechargeSQL for a validated, rounded change on db.
+func runPrecharge(db *gorm.DB, ch core.LedgerChange, min decimal.Decimal) (prechargeRow, error) {
+	var p prechargeRow
+	err := prechargeStmt.row(db, ch.UserID, ch.RefID, ch.Amount, ch.Kind, ch.RefType, ch.RefID, ch.IdempotencyKey, ch.Note, min).
+		Scan(&p.ledgerID, &p.after, &p.duplicate, &p.sufficient, &p.locked, &p.fresh)
+	return p, err
+}
+
+// prechargeLockTimeoutSQL sets the precharge's lock timeout for the rest of
+// the transaction, as SET LOCAL did: the request path must not queue behind
+// a long settlement, so past prechargeLockTimeout a lock wait fails (55P03)
+// and Precharge answers 503 instead of holding a pool connection. It is a
+// condition of the first statement, evaluated on the balance row before the
+// statement waits for it or for anything else, so that it costs no round
+// trip of its own. The one wait it cannot bound is for a table lock: a
+// statement takes those before it evaluates anything, and only DDL holds
+// one that conflicts.
+const prechargeLockTimeoutSQL = `set_config('lock_timeout', '` + prechargeLockTimeout + `', true) IS NOT NULL`
+
+// prechargeEnsureSQL is ensureBalanceSQL behind the lock timeout, for a
+// precharge that found no balance row: prechargeSQL did not set the timeout
+// then (it is evaluated on the row), and the insert may wait for another
+// transaction's insert of the row.
+const prechargeEnsureSQL = `INSERT INTO user_balances (user_id) SELECT ?::bigint WHERE ` + prechargeLockTimeoutSQL + `
+    ON CONFLICT DO NOTHING`
+
+// prechargeSQL is the whole precharge in one statement. locked takes the
+// balance row's FOR UPDATE lock after setting the lock timeout (its
+// condition, evaluated on the row before the row is locked); every write
+// reads the locked row, and the final SELECT reads it too, so the lock is
+// taken whatever else the statement does, as the separate lock statement
+// took it, and before anything is written. The guards are the statements
+// Precharge used to run in order:
 //   - balance - amount must exceed min_balance (meetsMin), else nothing is
 //     reserved and the caller reports insufficient balance;
 //   - a ledger row with the idempotency key must not exist yet (it answered
 //     success and charged nothing when it did) — then ledger yields no row and
 //     the caller sees duplicate=true.
+//
+// The balance is the locked row's: FOR UPDATE returns the row's latest
+// version, after waiting for the transaction that held it, which is what
+// prechargeSQL read when it ran after the lock statement. The idempotency
+// key is read in the statement's snapshot, which is taken before the lock
+// and lacks what committed while the statement waited; so the statement
+// also reports whether the locked row is the snapshot's version (fresh, by
+// ctid). If it is, no transaction that held the lock committed in between,
+// so no ledger row of this user did (each one updates the balance row), and
+// the key reads as it read after the lock. If it is not, the insert still
+// decides (ON CONFLICT sees every committed key) and resolvePrecharge
+// answers the cases without an insert.
 //
 // When both pass, balance_ledger, request_precharges and the balance update
 // happen with the values ApplyTx wrote: delta -round(amount, 8) (validateChange
@@ -171,17 +234,21 @@ func (s *Service) prechargeTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChan
 // type: a bare $n that Postgres sees in two contexts is an "inconsistent
 // types deduced" error, and ledgerStmt binds each use of $n as a parameter
 // of its own. Parameters: 1 user, 2 request id, 3 amount, 4 kind,
-// 5 ref_type, 6 ref_id, 7 idempotency key, 8 note, 9 min_balance.
+// 5 ref_type, 6 ref_id, 7 idempotency key, 8 note, 9 min_balance. Columns:
+// prechargeRow.
 const prechargeSQL = `
-WITH ledger AS (
+WITH locked AS (
+    SELECT b.ctid AS version, b.balance FROM user_balances b
+    WHERE b.user_id = $1::bigint AND ` + prechargeLockTimeoutSQL + `
+    FOR UPDATE
+), ledger AS (
     INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
         idempotency_key, operator_id, plugin_key, note)
-    SELECT $1::bigint, -round($3::numeric, 8), b.balance - round($3::numeric, 8), $4::text, $5::text,
+    SELECT $1::bigint, -round($3::numeric, 8), l.balance - round($3::numeric, 8), $4::text, $5::text,
         $6::text, $7::varchar, NULL, NULL, $8::text
-    FROM user_balances b
-    WHERE b.user_id = $1::bigint
-      AND b.balance - $3::numeric > $9::numeric
-      AND NOT EXISTS (SELECT 1 FROM balance_ledger l WHERE l.idempotency_key = $7::varchar)
+    FROM locked l
+    WHERE l.balance - $3::numeric > $9::numeric
+      AND NOT EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $7::varchar)
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING id, balance_after
 ), reserved AS (
@@ -197,7 +264,9 @@ WITH ledger AS (
 SELECT COALESCE((SELECT id FROM applied), 0),
        COALESCE((SELECT balance_after FROM applied), 0),
        EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $7::varchar),
-       COALESCE((SELECT balance - $3::numeric > $9::numeric FROM user_balances WHERE user_id = $1::bigint), false)`
+       COALESCE((SELECT balance - $3::numeric > $9::numeric FROM locked), false),
+       EXISTS (SELECT 1 FROM locked),
+       COALESCE((SELECT l.version = b.ctid FROM locked l, user_balances b WHERE b.user_id = $1::bigint), false)`
 
 var prechargeStmt = newLedgerStmt(prechargeSQL)
 

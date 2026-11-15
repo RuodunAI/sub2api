@@ -4,11 +4,11 @@ package usage
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/bits"
 	"strings"
 	"sync"
 	"time"
@@ -528,62 +528,103 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 }
 
 // usageLogColumns are the usage_logs columns insertUsageRows writes, in the
-// order of appendUsageRow's values.
-const usageLogColumns = `request_id, user_id, api_key_id, group_id, account_id, plugin_key, plugin_version,
-	platform, protocol, endpoint, model, upstream_model, stream, status_code, success, error_type,
-	error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-	cache_creation_1h_tokens, metrics, sticky_rule, sticky_hit, hook_decisions, rate_multiplier,
-	price_id, expr_hash, billing_mode, billing_detail, billing_status, latency_ms, first_token_ms,
-	client_ip, user_agent, node_id, created_at, account_type, upstream_protocol, client_request_id,
-	sched_decisions, plugin_detail, anomalies, upload_ms, conversion`
+// order of appendUsageRow's values, with the element type of the array
+// parameter that carries each: the column's type without its length or
+// scale, the type a VALUES parameter of the column took.
+var usageLogColumns = [usageLogValues][2]string{
+	{"request_id", "varchar"}, {"user_id", "bigint"}, {"api_key_id", "bigint"}, {"group_id", "bigint"},
+	{"account_id", "bigint"}, {"plugin_key", "varchar"}, {"plugin_version", "varchar"}, {"platform", "varchar"},
+	{"protocol", "varchar"}, {"endpoint", "varchar"}, {"model", "varchar"}, {"upstream_model", "varchar"},
+	{"stream", "boolean"}, {"status_code", "integer"}, {"success", "boolean"}, {"error_type", "varchar"},
+	{"error_message", "text"}, {"attempts", "integer"}, {"input_tokens", "bigint"}, {"output_tokens", "bigint"},
+	{"cache_read_tokens", "bigint"}, {"cache_creation_tokens", "bigint"}, {"cache_creation_1h_tokens", "bigint"},
+	{"metrics", "jsonb"}, {"sticky_rule", "varchar"}, {"sticky_hit", "boolean"}, {"hook_decisions", "jsonb"},
+	{"rate_multiplier", "numeric"}, {"price_id", "bigint"}, {"expr_hash", "varchar"}, {"billing_mode", "varchar"},
+	{"billing_detail", "jsonb"}, {"billing_status", "varchar"}, {"latency_ms", "integer"},
+	{"first_token_ms", "integer"}, {"client_ip", "varchar"}, {"user_agent", "varchar"}, {"node_id", "varchar"},
+	{"created_at", "timestamptz"}, {"account_type", "varchar"}, {"upstream_protocol", "varchar"},
+	{"client_request_id", "varchar"}, {"sched_decisions", "jsonb"}, {"plugin_detail", "jsonb"},
+	{"anomalies", "jsonb"}, {"upload_ms", "integer"}, {"conversion", "jsonb"},
+}
+
+// usageLogNames is the list of usageLogColumns' names.
+var usageLogNames = func() string {
+	names := make([]string, len(usageLogColumns))
+	for i, c := range usageLogColumns {
+		names[i] = c[0]
+	}
+	return strings.Join(names, ", ")
+}()
 
 // usageLogValues is the number of usageLogColumns.
 const usageLogValues = 47
 
-// insertUsageSQL[k] inserts 1<<k usage rows (up to 128, 6016 parameters,
-// far below PostgreSQL's 65535), skipping a request id that is already
-// there, and returns the id and request id of each row it inserted.
-// insertUsageRows splits a batch into chunks of these sizes, so that a pool
-// connection prepares at most eight texts whatever the batch sizes.
-var insertUsageSQL = func() (out [8]string) {
-	row := "(" + strings.Repeat("?,", usageLogValues-1) + "?)"
-	for k := range out {
-		out[k] = `INSERT INTO usage_logs (` + usageLogColumns + `) VALUES ` +
-			strings.Repeat(row+",", 1<<k-1) + row + `
+// insertUsageSQL inserts any number of usage rows in one statement and one
+// round trip, skipping a request id that is already there, and returns the
+// id and request id of each row it inserted. Each column's values are one
+// array parameter (47 whatever the batch size, far below PostgreSQL's 65535,
+// and one text for every batch, so a connection prepares it once), which
+// unnest turns back into rows, in batch order: WITH ORDINALITY numbers them
+// and the insert takes them in that order, so a request id repeated in the
+// batch keeps its first record's row and the ids follow the batch, as the
+// one-INSERT-per-record pgx batch had them. Each value is the one a VALUES
+// parameter of the column bound (pgx encodes an array's elements as it
+// encodes the scalar, nil as NULL), converted to the column by the same
+// assignment (length check, numeric scale).
+var insertUsageSQL = func() string {
+	arrays := make([]string, len(usageLogColumns))
+	for i, c := range usageLogColumns {
+		arrays[i] = "?::" + c[1] + "[]"
+	}
+	return `INSERT INTO usage_logs (` + usageLogNames + `)
+			SELECT ` + usageLogNames + `
+			FROM unnest(` + strings.Join(arrays, ", ") + `) WITH ORDINALITY AS r(` + usageLogNames + `, ord)
+			ORDER BY ord
 			ON CONFLICT (request_id) DO NOTHING
 			RETURNING id, request_id`
-	}
-	return out
 }()
+
+// insertUsageRowSQL inserts a batch of one, the settler's usual batch when
+// it is not busy, with the values bound as they are: also one round trip,
+// and cheaper than 47 arrays of one element each (gormtest/BASELINE.md).
+// Same columns, conflict and result as insertUsageSQL.
+var insertUsageRowSQL = `INSERT INTO usage_logs (` + usageLogNames + `)
+			VALUES (` + strings.Repeat("?, ", usageLogValues-1) + `?)
+			ON CONFLICT (request_id) DO NOTHING
+			RETURNING id, request_id`
+
+// insertUsageStmt is the insert of batch on db, not yet run:
+// insertUsageRowSQL for one record, insertUsageSQL for more.
+func insertUsageStmt(db *gorm.DB, batch []*core.UsageRecord) *gorm.DB {
+	vals := make([]any, 0, len(batch)*usageLogValues)
+	for _, rec := range batch {
+		vals = appendUsageRow(vals, rec)
+	}
+	if len(batch) == 1 {
+		return db.Raw(insertUsageRowSQL, vals...)
+	}
+	return db.Raw(insertUsageSQL, usageArrays(vals, len(batch))...)
+}
 
 // insertUsageRows inserts the rows of batch on db, in batch order, and
 // returns the id of each record's new row: 0 where its request id was
-// already there, or taken by an earlier record of the batch. Each chunk is
-// one statement and one round trip, so a batch takes one per bit set in its
-// size (200: 128 + 64 + 8) where the pgx batch before took one in all; the
-// rows go in batch order, as the batch's statements did.
+// already there, or taken by an earlier record of the batch.
 func insertUsageRows(db *gorm.DB, batch []*core.UsageRecord) ([]int64, error) {
+	if len(batch) == 0 {
+		return nil, nil
+	}
+	got, err := insertedUsageRows(insertUsageStmt(db, batch))
+	if err != nil {
+		return nil, err
+	}
 	ids := make([]int64, len(batch))
-	for start := 0; start < len(batch); {
-		k := min(bits.Len(uint(len(batch)-start)), len(insertUsageSQL)) - 1
-		chunk := batch[start : start+1<<k]
-		vars := make([]any, 0, len(chunk)*usageLogValues)
-		for _, rec := range chunk {
-			vars = appendUsageRow(vars, rec)
+	for i, rec := range batch {
+		// The first record of a request id is the one its row holds.
+		key := trunc(rec.RequestID, 64)
+		if id, ok := got[key]; ok {
+			ids[i] = id
+			delete(got, key)
 		}
-		got, err := insertedUsageRows(db.Raw(insertUsageSQL[k], vars...))
-		if err != nil {
-			return nil, err
-		}
-		for i, rec := range chunk {
-			// The first record of a request id is the one its row holds.
-			key := trunc(rec.RequestID, 64)
-			if id, ok := got[key]; ok {
-				ids[start+i] = id
-				delete(got, key)
-			}
-		}
-		start += len(chunk)
 	}
 	return ids, nil
 }
@@ -606,6 +647,84 @@ func insertedUsageRows(stmt *gorm.DB) (map[string]int64, error) {
 		got[requestID] = id
 	}
 	return got, rows.Err()
+}
+
+// usageArrays turns n rows of appendUsageRow values (row after row) into
+// insertUsageSQL's parameters: one array per column, of the Go type of the
+// column's values.
+func usageArrays(vals []any, n int) []any {
+	arrays := make([]any, usageLogValues)
+	for col := range arrays {
+		switch vals[col].(type) {
+		case string:
+			arrays[col] = store.Strings(columnOf[string](vals, col, n))
+		case int64:
+			arrays[col] = store.Int64s(columnOf[int64](vals, col, n))
+		case bool:
+			arrays[col] = store.Bools(columnOf[bool](vals, col, n))
+		case time.Time:
+			arrays[col] = store.Times(columnOf[time.Time](vals, col, n))
+		case int:
+			arrays[col] = array[int](columnOf[int](vals, col, n))
+		case *int64:
+			arrays[col] = array[*int64](columnOf[*int64](vals, col, n))
+		case decimal.Decimal:
+			arrays[col] = array[decimal.Decimal](columnOf[decimal.Decimal](vals, col, n))
+		case store.Bytes:
+			arrays[col] = array[store.Bytes](columnOf[store.Bytes](vals, col, n))
+		default:
+			panic(fmt.Sprintf("usage: no array for a %T usage_logs value", vals[col]))
+		}
+	}
+	return arrays
+}
+
+// columnOf is column col of n rows of usageLogValues values each.
+func columnOf[T any](vals []any, col, n int) []T {
+	out := make([]T, n)
+	for i := range out {
+		out[i] = vals[i*usageLogValues+col].(T)
+	}
+	return out
+}
+
+// array is one array parameter for GORM, which would expand a plain slice
+// into a list (store.Int64s and its kind, for the element types they do not
+// cover): pgx encodes each element as it encodes a T parameter, a nil
+// pointer or nil store.Bytes as NULL.
+type array[T any] []T
+
+// Value implements driver.Valuer.
+func (a array[T]) Value() (driver.Value, error) { return []T(a), nil }
+
+// String shows the values, a document as its text and a nil one as NULL
+// (gormtest snapshots).
+func (a array[T]) String() string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, v := range a {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		switch x := any(v).(type) {
+		case *int64:
+			if x == nil {
+				b.WriteString("NULL")
+			} else {
+				fmt.Fprint(&b, *x)
+			}
+		case store.Bytes:
+			if x == nil {
+				b.WriteString("NULL")
+			} else {
+				b.Write(x)
+			}
+		default:
+			fmt.Fprint(&b, v)
+		}
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // appendUsageRow appends the usageLogColumns values of rec's new row.

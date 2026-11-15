@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -35,7 +37,9 @@ func concurrently(n int, fn func(i int) error) []error {
 }
 
 // assertLedgerBalanced checks that the user's balance is the sum of the
-// user's ledger rows and equals want.
+// user's ledger rows and equals want, and that the rows chain in id order:
+// each balance_after is the previous one plus the row's delta (a refund is
+// written before the charge of its settlement).
 func (e *env) assertLedgerBalanced(uid int64, want string) {
 	e.t.Helper()
 	var sum decimal.Decimal
@@ -45,6 +49,170 @@ func (e *env) assertLedgerBalanced(uid int64, want string) {
 	bal := e.balance(uid)
 	if !bal.Equal(sum) || !bal.Equal(decimal.RequireFromString(want)) {
 		e.t.Fatalf("balance %s, ledger sum %s, want %s", bal, sum, want)
+	}
+	if n := e.count(`SELECT count(*) FROM (
+		SELECT balance_after, delta, lag(balance_after, 1, 0::numeric) OVER (ORDER BY id) AS before
+		FROM balance_ledger WHERE user_id = $1) l
+		WHERE balance_after <> before + delta`, uid); n != 0 {
+		e.t.Fatalf("%d ledger rows do not follow the row before them", n)
+	}
+}
+
+// waitForLockWaiters returns once n backends of the test database wait for
+// a lock.
+func (e *env) waitForLockWaiters(n int) {
+	e.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for e.count(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`) < n {
+		if time.Now().After(deadline) {
+			e.t.Fatalf("fewer than %d backends wait for a lock", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// openPrecharge precharges 1 for the request in a transaction it leaves
+// open (the caller commits it), holding the user's balance lock.
+func (e *env) openPrecharge(uid int64, requestID string) pgx.Tx {
+	e.t.Helper()
+	ctx := context.Background()
+	tx, err := e.db.Pool.Begin(ctx)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	ch := core.LedgerChange{UserID: uid, Amount: decimal.NewFromInt(1), Kind: KindUsage, RefType: "precharge",
+		RefID: requestID, IdempotencyKey: "precharge:" + requestID, Note: "request precharge"}
+	if lr, err := e.svc.prechargeTx(ctx, tx, ch, decimal.Zero); err != nil || lr == nil {
+		e.t.Fatalf("open precharge: %+v %v", lr, err)
+	}
+	return tx
+}
+
+// A replay that queued for the balance lock while the first precharge of
+// its request committed. Its statement's snapshot predates that commit, so
+// it does not see the key, and the locked row is a newer version than the
+// snapshot's. It answers success and charges nothing, as Precharge did when
+// it read the key after taking the lock: with a balance that no longer
+// covers a second precharge (it must not report insufficient balance) and
+// with one that does (the insert meets the key; no event either way).
+func TestPrechargeReplayAfterLockWait(t *testing.T) {
+	for name, seed := range map[string]string{"insufficient": "1.5", "sufficient": "10"} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			uid := e.user("precharge-wait-" + name + "@test.invalid")
+			e.seed(uid, seed)
+			first := e.openPrecharge(uid, "replayed")
+			done := make(chan error, 1)
+			go func() { done <- e.svc.Precharge(ctx, usageRecord(uid, "replayed", "flat(1)")) }()
+			e.waitForLockWaiters(1)
+			if err := first.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("replay: %v", err)
+			}
+			if n := e.count(`SELECT count(*) FROM balance_ledger WHERE idempotency_key = 'precharge:replayed'`); n != 1 {
+				t.Fatalf("%d ledger rows of the replayed request", n)
+			}
+			if n := e.count(`SELECT count(*) FROM request_precharges WHERE request_id = 'replayed'`); n != 1 {
+				t.Fatalf("%d reservations of the replayed request", n)
+			}
+			e.assertLedgerBalanced(uid, decimal.RequireFromString(seed).Sub(decimal.NewFromInt(1)).String())
+			// The seed's event only: the open precharge emits none, the
+			// replay must not either.
+			if n := e.count(`SELECT count(*) FROM events WHERE type = 'balance.changed' AND payload->>'user_id' = $1`, itoa(uid)); n != 1 {
+				t.Fatalf("%d balance events", n)
+			}
+		})
+	}
+}
+
+// Another user's precharge of the same request id takes the key while this
+// one waits on it (each holds only its own balance lock): the key belongs
+// to someone else, a conflict, and this user is not charged.
+func TestPrechargeKeyOfAnotherUser(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	owner, other := e.user("precharge-owner@test.invalid"), e.user("precharge-other@test.invalid")
+	e.seed(owner, "10")
+	e.seed(other, "10")
+	first := e.openPrecharge(owner, "shared")
+	done := make(chan error, 1)
+	go func() { done <- e.svc.Precharge(ctx, usageRecord(other, "shared", "flat(1)")) }()
+	e.waitForLockWaiters(1)
+	if err := first.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; core.AsError(err).Code != core.ErrConflict.Code {
+		t.Fatalf("other user's precharge: %v", err)
+	}
+	e.assertLedgerBalanced(owner, "9")
+	e.assertLedgerBalanced(other, "10")
+}
+
+// A user's first precharge finds no balance row: the row is created and the
+// precharge applied, within min_balance; with the default minimum the
+// precharge is refused, as when ensureBalanceSQL always ran first. A
+// precharge whose balance row another transaction is inserting gives up
+// after the lock timeout like one queueing for the lock.
+func TestPrechargeCreatesBalanceRow(t *testing.T) {
+	ctx := context.Background()
+	t.Run("credit", func(t *testing.T) {
+		e := newEnv(t)
+		e.exec(`INSERT INTO settings (key, value) VALUES ('billing', '{"min_balance":"-5"}')`)
+		uid := e.user("precharge-first@test.invalid")
+		if err := e.svc.Precharge(ctx, usageRecord(uid, "first", "flat(1)")); err != nil {
+			t.Fatal(err)
+		}
+		e.assertLedgerBalanced(uid, "-1")
+	})
+	t.Run("refused", func(t *testing.T) {
+		e := newEnv(t)
+		uid := e.user("precharge-empty@test.invalid")
+		if err := e.svc.Precharge(ctx, usageRecord(uid, "first", "flat(1)")); core.AsError(err).Code != core.ErrInsufficientBalance.Code {
+			t.Fatalf("precharge without balance: %v", err)
+		}
+	})
+	t.Run("busy", func(t *testing.T) {
+		e := newEnv(t)
+		uid := e.user("precharge-busy-row@test.invalid")
+		tx, err := e.db.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, `INSERT INTO user_balances (user_id) VALUES ($1)`, uid); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		if err := e.svc.Precharge(ctx, usageRecord(uid, "blocked", "flat(1)")); core.AsError(err).Code != core.ErrUnavailable.Code {
+			t.Fatalf("blocked precharge: %v", err)
+		}
+		if took := time.Since(start); took < 2*time.Second || took > 10*time.Second {
+			t.Fatalf("gave up after %s", took)
+		}
+	})
+}
+
+// A settlement for a user without a balance row creates it, as
+// ensureBalanceSQL did before every settlement: the charge makes the
+// balance negative, and a release with nothing to release leaves an empty
+// row.
+func TestSettleCreatesBalanceRow(t *testing.T) {
+	e := newEnv(t)
+	charged, released := e.user("settle-first@test.invalid"), e.user("settle-nothing@test.invalid")
+	res, err := e.settle(charged, "first", "0.25")
+	if err != nil || res == nil || res.Duplicate || !res.BalanceAfter.Equal(decimal.RequireFromString("-0.25")) {
+		t.Fatalf("charge: %+v %v", res, err)
+	}
+	e.assertLedgerBalanced(charged, "-0.25")
+	if res, err := e.settle(released, "nothing", ""); err != nil || res != nil {
+		t.Fatalf("release: %+v %v", res, err)
+	}
+	if !e.balance(released).IsZero() {
+		t.Fatal("balance row not created")
 	}
 }
 
@@ -190,4 +358,8 @@ func TestPrechargeConcurrentReplayAndAdmission(t *testing.T) {
 		t.Fatalf("%d ledger rows of the replayed request", n)
 	}
 	e.assertLedgerBalanced(uid, "1")
+	// seed, the replayed request and the three admitted: replays emit nothing.
+	if n := e.count(`SELECT count(*) FROM events WHERE type = 'balance.changed' AND payload->>'user_id' = $1`, itoa(uid)); n != 5 {
+		t.Fatalf("%d balance events", n)
+	}
 }

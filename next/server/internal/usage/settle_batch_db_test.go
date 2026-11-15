@@ -7,18 +7,24 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/shopspring/decimal"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-// The usage_logs insert of a settler batch is one multi-row INSERT per
-// power-of-two chunk. A batch of 203 records (chunks of 128, 64, 8, 2 and
-// 1) holds a request id already stored, a repeat inside one chunk, a repeat
-// in a later chunk and two ids that differ only past the 64 characters the
-// column keeps: each of them is skipped, the first record of an id is the
-// one inserted, and each inserted record gets its own row's id.
+// The usage_logs insert of a settler batch is one statement (insertUsageSQL,
+// one array per column). A batch of 203 records holds a request id already
+// stored, a repeat next to its first record, a repeat far from it and two
+// ids that differ only past the 64 characters the column keeps: each of
+// them is skipped, the first record of an id is the one inserted, and each
+// inserted record gets its own row's id. (Batch 5a cut the batch into
+// power-of-two chunks, 128, 64, 8, 2 and 1 here, and placed the repeats on
+// both sides of the chunk boundaries.)
 func TestInsertBatchChunksAndDuplicates(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -136,5 +142,110 @@ func TestSettleConcurrentSameRow(t *testing.T) {
 	}
 	if s := f.scalar(`SELECT (SELECT sum(delta) FROM balance_ledger WHERE user_id = $1) = (SELECT balance FROM user_balances WHERE user_id = $1)`, f.user); s != "true" {
 		t.Fatal("balance is not the ledger's sum")
+	}
+}
+
+// The batch insert stores each value as the one-row VALUES insert of the
+// pgx batch it replaced did, column by column: a nanosecond timestamp, a
+// rate past the column's scale, NULL and non-NULL account and conversion,
+// documents, free and billable records.
+func TestInsertBatchMatchesValuesInsert(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	account := int64(42)
+	full := func(rec *core.UsageRecord) *core.UsageRecord {
+		rec.AccountID, rec.Stream, rec.StickyRule, rec.StickyHit = &account, true, "rule", true
+		rec.ErrorType, rec.ErrorMessage, rec.Attempts = "upstream", "boom ü", 3
+		rec.LatencyMs, rec.FirstTokenMs, rec.UploadMs = 1234, 56, 7
+		rec.ClientIP, rec.UserAgent, rec.NodeID, rec.ClientRequestID = "203.0.113.9", "ua/1", "node-1", "client-1"
+		rec.RateMultiplier = decimal.RequireFromString("1.23456")
+		rec.CreatedAt = time.Date(2026, 11, 15, 12, 0, 0, 123456789, time.UTC)
+		rec.Metrics = map[string]any{"seconds": 8.5}
+		rec.PluginDetail = core.RawJSON(`{"job":"j-1"}`)
+		rec.Conversion = &core.ConversionTrace{V: 1, Grade: "lossy", Hops: []string{"a", "b"}}
+		return rec
+	}
+	variants := map[string]func(id string) *core.UsageRecord{
+		"billable": func(id string) *core.UsageRecord { return full(f.record(id, true)) },
+		"free":     func(id string) *core.UsageRecord { return f.record(id, false) },
+	}
+	columns := make([]string, len(usageLogColumns))
+	params := make([]string, len(usageLogColumns))
+	for i, c := range usageLogColumns {
+		columns[i], params[i] = c[0], fmt.Sprintf("$%d", i+1)
+	}
+	valuesSQL := `INSERT INTO usage_logs (` + strings.Join(columns, ", ") + `) VALUES (` + strings.Join(params, ", ") + `)
+		ON CONFLICT (request_id) DO NOTHING RETURNING id`
+	var batch []*core.UsageRecord
+	for name, build := range variants {
+		var id int64
+		if err := f.db.Pool.QueryRow(ctx, valuesSQL, appendUsageRow(nil, build("values-"+name))...).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		batch = append(batch, build("unnest-"+name))
+		// A batch of one takes insertUsageRowSQL.
+		if _, err := f.svc.insert(ctx, []*core.UsageRecord{build("row-" + name)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.svc.insert(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	const row = `SELECT (to_jsonb(u) - 'id' - 'request_id')::text FROM usage_logs u WHERE request_id = $1`
+	for name := range variants {
+		want := f.scalar(row, "values-"+name)
+		for _, form := range []string{"unnest-", "row-"} {
+			if got := f.scalar(row, form+name); got != want {
+				t.Fatalf("%s%s:\n got %s\nwant %s", form, name, got, want)
+			}
+		}
+	}
+}
+
+// countingQuerier counts the statements run through it.
+type countingQuerier struct {
+	store.Querier
+	n *int
+}
+
+func (c countingQuerier) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	*c.n++
+	return c.Querier.Exec(ctx, sql, args...)
+}
+
+func (c countingQuerier) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	*c.n++
+	return c.Querier.Query(ctx, sql, args...)
+}
+
+func (c countingQuerier) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	*c.n++
+	return c.Querier.QueryRow(ctx, sql, args...)
+}
+
+// Any batch is one statement, one round trip, as the pgx batch was (batch
+// 5a took one per power-of-two chunk: 300 is 128, 128, 32, 8 and 4).
+func TestInsertBatchOneStatement(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	batch := make([]*core.UsageRecord, 300)
+	for i := range batch {
+		batch[i] = f.record(fmt.Sprintf("one-%03d", i), i%2 == 0)
+	}
+	var statements int
+	err := f.db.Tx(ctx, func(tx pgx.Tx) error {
+		ids, err := insertUsageRows(store.G(ctx, countingQuerier{Querier: tx, n: &statements}), batch)
+		for i, id := range ids {
+			if id == 0 {
+				t.Errorf("record %d not inserted", i)
+			}
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statements != 1 {
+		t.Fatalf("%d statements for a batch of %d", statements, len(batch))
 	}
 }

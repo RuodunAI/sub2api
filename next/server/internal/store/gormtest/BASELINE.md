@@ -215,7 +215,8 @@ statement or an earlier chunk), is skipped as before and the first record
 of an id keeps its row (TestInsertBatchChunksAndDuplicates). The chunk
 sizes bound the statement texts a connection prepares to eight; a batch
 of n records takes one round trip per bit set in n (200: 128 + 64 + 8)
-where the pgx batch took one.
+where the pgx batch took one. Since gorm-5rtt every batch is one statement
+again (see "Round trips after batch 5a" below).
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
@@ -329,7 +330,8 @@ COMMIT) where it was 4, a settlement's ledger part 3 where it was 1, ApplyTx
 2 where it was 1 (TestPrechargeRoundTrips, TestSettleRoundTrips). Under the
 user's balance lock a settlement now waits for the charge statement after
 the release; a precharge's lock is held from its lock statement through
-prechargeSQL, the event and COMMIT, as before.
+prechargeSQL, the event and COMMIT, as before. gorm-5rtt brought all three
+back to the pgx batch's count (see "Round trips after batch 5a" below).
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
@@ -361,6 +363,82 @@ On GORM since batch 4c, because they do not run for every request:
 - the expiry sweep's select, the console (prices, group and segment price
   rules, price sources and their sync, ledger lists, `/me/balance`,
   `/me/prices`, `/key/prices`, quotes).
+
+## Round trips after batch 5a (gorm-5rtt)
+
+Batch 5a ran each statement of a pgx batch on its own, so every one became
+a round trip; at a remote PostgreSQL (milliseconds each) that is request
+latency, and in the ledger it is time the user's balance row stays locked.
+gorm-5rtt merges them back, with the same SQL semantics (lock order, FOR
+UPDATE, idempotency keys, ON CONFLICT, RETURNING, numeric amounts, errors,
+lock timeout); the reasoning is in the comments of `settleSQL`,
+`prechargeSQL`, `resolvePrecharge` and `insertUsageSQL`:
+
+- Billing no longer runs `ensureBalanceSQL` before every change. The ledger
+  statements report whether they found the balance row; only when they did
+  not (they then wrote nothing and hold no row lock) does the caller create
+  it and run the statement again, the old sequence. For an existing row
+  that INSERT was a no-op.
+- Precharge is one statement: `set_config('lock_timeout', '3s', true)` as
+  the lock CTE's condition (evaluated on the row before it is locked; it
+  bounds every row wait as SET LOCAL did, but not a wait for a table lock,
+  which only DDL causes), the FOR UPDATE lock, the reservation and its
+  ledger row. The idempotency key, which the old statement read after the
+  lock, is read in a snapshot taken before it; the statement reports
+  whether the locked row is still the snapshot's version (ctid), and when
+  it is not, the cases without an insert re-read the key
+  (`resolvePrecharge`), so a replay that waited behind its first precharge
+  still answers success (TestPrechargeReplayAfterLockWait).
+- A settlement's release and charge are one statement (`settleSQL`): one
+  FOR UPDATE, the refund row before the charge row, one balance UPDATE to
+  the final value.
+- The `usage_logs` insert of a batch is one statement of 47 array
+  parameters (`unnest ... WITH ORDINALITY ... ORDER BY ord`, one text for
+  every size); a batch of one binds its values directly
+  (`insertUsageRowSQL`), which allocates less. Both store what the pgx
+  VALUES insert stored, column by column (TestInsertBatchMatchesValuesInsert).
+
+Round trips (flushes; TestPrechargeRoundTrips, TestSettleRoundTrips,
+TestInsertBatchOneStatement):
+
+| Path | pgx batch | batch 5a | gorm-5rtt | under the balance lock (gorm-5rtt) |
+|---|---:|---:|---:|---|
+| Precharge (BEGIN … COMMIT) | 4 | 7 | 4 | statement tail, event, COMMIT |
+| SettleTx ledger statements | 1 | 3 | 1 | statement tail (then event, caller's statements, COMMIT) |
+| ApplyTx statements | 1 | 2 | 1 | statement tail, event, COMMIT |
+| usage insert of n records | 1 | popcount-chunks (200: 3) | 1 | — |
+
+A user's first balance change (no balance row yet) takes two more: the
+row's insert and the statement again.
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench 'HotPrecharge|HotReleasePrecharge' -benchmem -benchtime 1000x -count 5 ./internal/billing/
+go test -run '^$' -bench 'HotSettle$|HotSettlerInsertFree|HotSettlerInsertPending' -benchmem -benchtime 1000x -count 5 ./internal/usage/
+go test -run '^$' -bench HotSettlerInsertBatch -benchmem -benchtime 100x -count 5 ./internal/usage/
+```
+
+Recorded 2026-11-15, the three trees one after the other on the same
+machine and local server (pgx: 25b7ba75, the last commit before batch 5a,
+with batch 5a's usage benchmark file for the 200-row batch; batch 5a:
+493c046d; gorm-5rtt). Medians of 5; the server is local, so a round trip
+costs tens of microseconds here, not the milliseconds of a remote one, and
+ns/op is noisy (shared server). ReleasePrecharge's statement did not change
+(its gorm row is the production code in all three).
+
+| Benchmark | pgx ns/op | pgx B/op | pgx allocs | 5a ns/op | 5a B/op | 5a allocs | 5rtt ns/op | 5rtt B/op | 5rtt allocs |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `billing` BenchmarkHotPrecharge | 836 038 | 10 830 | 291 | 903 226 | 26 018 | 516 | 766 509 | 23 374 | 451 |
+| `billing` BenchmarkHotReleasePrecharge/miss/gorm | 118 301 | 8 437 | 76 | 109 050 | 8 437 | 76 | 95 160 | 8 437 | 76 |
+| `billing` BenchmarkHotReleasePrecharge/hit/gorm | 363 943 | 8 535 | 81 | 281 862 | 8 535 | 81 | 367 379 | 8 535 | 81 |
+| `usage` BenchmarkHotSettle | 1 524 456 | 43 219 | 928 | 1 668 416 | 61 598 | 1 071 | 1 470 025 | 60 635 | 1 013 |
+| `usage` BenchmarkHotSettlerInsertFree | 1 024 114 | 13 135 | 248 | 835 875 | 32 268 | 383 | 840 445 | 32 257 | 381 |
+| `usage` BenchmarkHotSettlerInsertPending | 486 729 | 5 525 | 102 | 497 067 | 17 410 | 192 | 472 504 | 17 420 | 192 |
+| `usage` BenchmarkHotSettlerInsertBatch (200 rows) | 23 155 843 | 2 387 014 | 28 350 | 25 415 379 | 5 554 823 | 50 363 | 20 420 555 | 3 492 263 | 37 703 |
+
+The 47 one-element arrays of a batch of one cost 467 allocs/op and
+37 440 B/op in BenchmarkHotSettlerInsertPending (one round trip either
+way), hence `insertUsageRowSQL` for that case.
 
 ## Batch 4d: the gateway settings and sticky rules, the account snapshots
 
@@ -546,10 +624,10 @@ statement per request; it reaches the database through the services below.
 | When | Function | SQL |
 |---|---|---|
 | every request, synchronous | `apikey.(*Service).lookup` ← `Authenticate` ← gateway `call.run` | `lookupSQL`: `SELECT k.id, … FROM api_keys k JOIN users u … JOIN segments s … LEFT JOIN groups g … LEFT JOIN segment_groups sg … WHERE k.key_hash = $1 AND k.deleted_at IS NULL` (not cached, on purpose) |
-| billable request, synchronous | `billing.(*Service).Precharge` → `prechargeTx` ← gateway `call.precharge` | BEGIN; one statement each (a pgx batch until batch 5a): `SET LOCAL lock_timeout`, `INSERT INTO user_balances (user_id) … ON CONFLICT DO NOTHING`, `SELECT user_id FROM user_balances WHERE user_id = $1 FOR UPDATE`, `prechargeSQL` (CTE: insert `balance_ledger` ON CONFLICT DO NOTHING RETURNING, insert `request_precharges`, update `user_balances`); `INSERT INTO events`; COMMIT |
+| billable request, synchronous | `billing.(*Service).Precharge` → `prechargeTx` ← gateway `call.precharge` | BEGIN; `prechargeSQL` (CTE: `set_config('lock_timeout', '3s', true)` and the `user_balances` row FOR UPDATE, insert `balance_ledger` ON CONFLICT DO NOTHING RETURNING, insert `request_precharges`, update `user_balances`; a pgx batch with SET LOCAL, the balance row insert and the lock as statements of their own until batch 5a, one statement each in batch 5a); a user's first precharge also `prechargeEnsureSQL` and `prechargeSQL` again; `INSERT INTO events`; COMMIT |
 | billable request, Redis miss only | `billing.(*Service).Balance` ← `CheckBalance` | `SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = $1), 0), COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = $1), 0)` |
-| every request, settler (async) | `usage.(*Service).insertAtomic` ← `insert` ← `process` / `Submit` | BEGIN; `INSERT INTO usage_logs (47 columns) VALUES (…), … ON CONFLICT (request_id) DO NOTHING RETURNING id, request_id`, one per power-of-two chunk of the batch (a pgx batch of one INSERT per row until batch 5a); free rows: `releaseSQL` (`ReleasePrechargeTx`) and `INSERT INTO events`; COMMIT |
-| billable request, settler (async) | `usage.(*Service).settle` → `settleTx` | BEGIN; `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`; `billing.SettleTx`: `ensureBalanceSQL`, `releaseSQL`, `applySQL` (one statement each; a pgx batch until batch 5a); `UPDATE usage_logs SET total_cost = …, billing_status = 'billed', … WHERE request_id = $1`; `INSERT INTO events`; COMMIT |
+| every request, settler (async) | `usage.(*Service).insertAtomic` ← `insert` ← `process` / `Submit` | BEGIN; `INSERT INTO usage_logs (47 columns) SELECT … FROM unnest($1::varchar[], …) WITH ORDINALITY … ORDER BY ord ON CONFLICT (request_id) DO NOTHING RETURNING id, request_id`, one statement for the batch (`VALUES (…)` for a batch of one; a pgx batch of one INSERT per row until batch 5a, one INSERT per power-of-two chunk in batch 5a); free rows: `releaseSQL` (`ReleasePrechargeTx`) and `INSERT INTO events`; COMMIT |
+| billable request, settler (async) | `usage.(*Service).settle` → `settleTx` | BEGIN; `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`; `billing.SettleTx`: `settleSQL` (release and charge in one CTE statement; `ensureBalanceSQL`, `releaseSQL`, `applySQL` in a pgx batch until batch 5a, one statement each in batch 5a); `UPDATE usage_logs SET total_cost = …, billing_status = 'billed', … WHERE request_id = $1`; `INSERT INTO events`; COMMIT |
 | async task submission, synchronous (added with batch 4b) | `usage.(*Service).BeginTask`, `ReceiveTask`, `RegisterTask` → `recordTask` ← gateway `tasks.go`, `execute.go` | `INSERT INTO task_submission_receipts`; `UPDATE task_submission_receipts SET state = $2, … response_body = COALESCE($4, response_body)`; in the usage transaction: `SELECT … FROM task_submission_receipts WHERE request_id = $1 AND state = 'received' FOR UPDATE`, `INSERT INTO async_tasks`, `UPDATE pending_settlements SET task_public_id`, `UPDATE task_submission_receipts SET state = 'registered'` |
 | every async task poll, synchronous | `usage.(*Service).FindTask` → `readTask` ← gateway `tasks.go` | `SELECT public_id, … FROM async_tasks WHERE plugin_key = $1 AND kind = $2 AND user_id = $3 AND group_id = $4 AND (public_id = $5 OR …) ORDER BY public_id LIMIT 2` |
 

@@ -1,13 +1,16 @@
 -- sql
-WITH ledger AS (
+WITH locked AS (
+    SELECT b.ctid AS version, b.balance FROM user_balances b
+    WHERE b.user_id = $1::bigint AND set_config('lock_timeout', '3s', true) IS NOT NULL
+    FOR UPDATE
+), ledger AS (
     INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
         idempotency_key, operator_id, plugin_key, note)
-    SELECT $1::bigint, -round($2::numeric, 8), b.balance - round($3::numeric, 8), $4::text, $5::text,
-        $6::text, $7::varchar, NULL, NULL, $8::text
-    FROM user_balances b
-    WHERE b.user_id = $9::bigint
-      AND b.balance - $10::numeric > $11::numeric
-      AND NOT EXISTS (SELECT 1 FROM balance_ledger l WHERE l.idempotency_key = $12::varchar)
+    SELECT $2::bigint, -round($3::numeric, 8), l.balance - round($4::numeric, 8), $5::text, $6::text,
+        $7::text, $8::varchar, NULL, NULL, $9::text
+    FROM locked l
+    WHERE l.balance - $10::numeric > $11::numeric
+      AND NOT EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $12::varchar)
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING id, balance_after
 ), reserved AS (
@@ -23,17 +26,19 @@ WITH ledger AS (
 SELECT COALESCE((SELECT id FROM applied), 0),
        COALESCE((SELECT balance_after FROM applied), 0),
        EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $17::varchar),
-       COALESCE((SELECT balance - $18::numeric > $19::numeric FROM user_balances WHERE user_id = $20::bigint), false)
+       COALESCE((SELECT balance - $18::numeric > $19::numeric FROM locked), false),
+       EXISTS (SELECT 1 FROM locked),
+       COALESCE((SELECT l.version = b.ctid FROM locked l, user_balances b WHERE b.user_id = $20::bigint), false)
 -- vars
 $1 int64 7
-$2 decimal.Decimal 0.5
+$2 int64 7
 $3 decimal.Decimal 0.5
-$4 string "usage"
-$5 string "precharge"
-$6 string "req-1"
-$7 string "precharge:req-1"
-$8 string "request precharge"
-$9 int64 7
+$4 decimal.Decimal 0.5
+$5 string "usage"
+$6 string "precharge"
+$7 string "req-1"
+$8 string "precharge:req-1"
+$9 string "request precharge"
 $10 decimal.Decimal 0.5
 $11 decimal.Decimal 0
 $12 string "precharge:req-1"

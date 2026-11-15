@@ -35,8 +35,8 @@ func benchBilling(b *testing.B) (*Service, int64) {
 }
 
 // Precharge runs for every billable request before it is forwarded:
-// BEGIN, lock_timeout, ensure the balance row, lock it, the reservation and
-// its ledger row (prechargeSQL), the balance.changed event, COMMIT.
+// BEGIN, prechargeSQL (lock timeout, the balance row's lock, the
+// reservation and its ledger row), the balance.changed event, COMMIT.
 func BenchmarkHotPrecharge(b *testing.B) {
 	svc, uid := benchBilling(b)
 	ctx := context.Background()
