@@ -357,7 +357,8 @@ function pluginRoleMatrix(req: MockRequest, m: ModuleDef) {
     version: authzVersion,
     module: moduleOut(m),
     roles: roles.map((r) => {
-      const editable = !r.superuser && managesRole(who, r.key)
+      // Managed, and nothing it holds beyond the caller (§43.6).
+      const editable = !r.superuser && managesRole(who, r.key) && r.permission_keys.every((k) => removedAction(k) || mayGrant(who, k))
       return {
         id: r.id,
         key: r.key,
