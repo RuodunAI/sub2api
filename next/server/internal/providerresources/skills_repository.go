@@ -61,7 +61,7 @@ func (s *Service) findSkillVersion(ctx context.Context, owner core.ResourceOwner
 		return core.SkillVersion{}, core.ErrInvalidArgument
 	}
 	var v core.SkillVersion
-	err := s.db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+	err := s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		parent, err := skillParent(ctx, tx, owner, parentID, true)
 		if err != nil {
 			return err
@@ -88,7 +88,7 @@ func (s *Service) ListSkillVersions(ctx context.Context, owner core.ResourceOwne
 	if limit < 1 || limit > 1000 || !validOwner(owner) || !bounded(parentID) || (after != "" && !bounded(after)) {
 		return out, core.ErrInvalidArgument
 	}
-	err = s.db.TxOptions(ctx, store.Snapshot, func(tx *gorm.DB) error {
+	err = s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		p, err := skillParent(ctx, tx, owner, parentID, true)
 		if err != nil {
 			return err

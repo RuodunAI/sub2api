@@ -18,6 +18,9 @@ const MaxOpenDrafts = 3
 // only and all pass the limit together (READ COMMITTED). Take it right
 // before the counting insert.
 func LockOpenDrafts(ctx context.Context, tx *gorm.DB, userID int64) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	return lockOpenDrafts(store.G(ctx, tx), userID).Error
 }
 

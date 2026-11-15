@@ -29,6 +29,9 @@ func (s *Service) FindOrCreate(ctx context.Context, tx *gorm.DB, spec Spec, owne
 	if err := checkSpec(spec); err != nil {
 		return 0, false, err
 	}
+	if err := store.RequireTx(tx); err != nil {
+		return 0, false, err
+	}
 	// Serialise concurrent saves of the same URL for the rest of the
 	// transaction; the lock key ignores the password on purpose (same key
 	// space as the SQL pre-filter).

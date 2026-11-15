@@ -82,6 +82,9 @@ func (m *Manager) canCreateRole(ctx context.Context) (bool, error) {
 // xactLock takes a transaction-scoped advisory lock. It returns void, so it
 // runs with Exec (see package store).
 func xactLock(g *gorm.DB, key int64) error {
+	if err := store.RequireTx(g); err != nil {
+		return err
+	}
 	return g.Exec(`SELECT pg_advisory_xact_lock(?)`, key).Error
 }
 
