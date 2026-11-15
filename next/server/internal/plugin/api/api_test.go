@@ -98,10 +98,15 @@ type noopPerms struct{}
 func (noopPerms) SyncPlugin(context.Context, pgx.Tx, string, []core.PermissionDef) error {
 	return nil
 }
-func (noopPerms) CanGrantToRoles(context.Context, pgx.Tx, int64, []string) error        { return nil }
-func (noopPerms) GrantPluginPermission(context.Context, pgx.Tx, string, []string) error { return nil }
-func (noopPerms) SetPluginActive(context.Context, pgx.Tx, string, bool) error           { return nil }
-func (noopPerms) DeletePlugin(context.Context, pgx.Tx, string) error                    { return nil }
+func (noopPerms) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, bool) error { return nil }
+func (noopPerms) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+	return core.PluginGrantees{}, nil
+}
+func (noopPerms) GrantPluginPermission(context.Context, pgx.Tx, string, map[string][]string) error {
+	return nil
+}
+func (noopPerms) SetPluginActive(context.Context, pgx.Tx, string, bool) error { return nil }
+func (noopPerms) DeletePlugin(context.Context, pgx.Tx, string) error          { return nil }
 
 type rollout struct {
 	db *store.DB

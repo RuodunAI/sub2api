@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -51,7 +52,7 @@ type fakePerms struct {
 	// canGrant (when set) decides them instead.
 	checked   [][]string
 	denyRoles error
-	canGrant  func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string) error
+	canGrant  func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, critical bool) error
 	// granted records GrantPluginPermission calls as "key=role,...".
 	granted []string
 }
@@ -61,28 +62,32 @@ func (f *fakePerms) SyncPlugin(_ context.Context, _ pgx.Tx, key string, defs []c
 	defer f.mu.Unlock()
 	var roles []string // the roles every def is granted to (the tests give them all the same)
 	if len(defs) > 0 {
-		roles = defs[0].GrantRoles
+		roles = grantRoleKeys(defs[0].GrantRoles)
 	}
 	for _, d := range defs {
-		if !slices.Equal(d.GrantRoles, roles) {
+		if !slices.Equal(grantRoleKeys(d.GrantRoles), roles) {
 			roles = nil
 		}
 	}
 	f.syncs = append(f.syncs, syncCall{key, defs, roles})
 	return nil
 }
-func (f *fakePerms) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roles []string) error {
+func (f *fakePerms) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, critical bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checked = append(f.checked, roles)
 	if f.canGrant != nil {
-		return f.canGrant(ctx, tx, actorID, roles)
+		return f.canGrant(ctx, tx, actorID, roles, critical)
 	}
 	return f.denyRoles
 }
-func (f *fakePerms) GrantPluginPermission(_ context.Context, tx pgx.Tx, key string, roles []string) error {
+func (f *fakePerms) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+	return core.PluginGrantees{}, nil
+}
+func (f *fakePerms) GrantPluginPermission(_ context.Context, tx pgx.Tx, key string, grants map[string][]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	roles := grantRoleKeys(grants)
 	f.granted = append(f.granted, key+"="+strings.Join(roles, ","))
 	_, err := tx.Exec(context.Background(), `INSERT INTO role_permissions (role_id, permission_id)
 		SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = ANY($1) AND p.key = $2 ON CONFLICT DO NOTHING`, roles, key)
@@ -92,6 +97,15 @@ func (f *fakePerms) SetPluginActive(context.Context, pgx.Tx, string, bool) error
 func (f *fakePerms) DeletePlugin(_ context.Context, _ pgx.Tx, key string) error {
 	f.deleted = append(f.deleted, key)
 	return nil
+}
+
+// grantRoleKeys are the roles of catalog grants (role -> scopes), sorted;
+// nil for nil.
+func grantRoleKeys(grants map[string][]string) []string {
+	if grants == nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(grants))
 }
 
 type fakeRollout struct {

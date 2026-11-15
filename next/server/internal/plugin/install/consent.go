@@ -525,7 +525,7 @@ func (s *Service) checkRolesGrantable(ctx context.Context, tx pgx.Tx, actorID in
 	}
 	roles = slices.Clone(roles)
 	slices.Sort(roles)
-	return s.d.Permissions.CanGrantToRoles(ctx, tx, actorID, slices.Compact(roles))
+	return s.d.Permissions.CanGrantToRoles(ctx, tx, actorID, slices.Compact(roles), false)
 }
 
 // checkNamedRolesExist fails (400) when the request names a role that does

@@ -306,7 +306,7 @@ func (s *Service) grantReviewed(ctx context.Context, tx pgx.Tx, gs []RoleGrant) 
 		byKey[g.Permission] = append(byKey[g.Permission], g.Role)
 	}
 	for _, k := range slices.Sorted(maps.Keys(byKey)) {
-		if err := s.d.Permissions.GrantPluginPermission(ctx, tx, k, byKey[k]); err != nil {
+		if err := s.d.Permissions.GrantPluginPermission(ctx, tx, k, unscopedGrants(byKey[k])); err != nil {
 			return err
 		}
 	}

@@ -134,7 +134,7 @@ func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := e.perms.syncs[len(e.perms.syncs)-1].defs
-	if d := last[len(last)-1]; d.Key != "plugin.guard:rules:export" || !slices.Equal(d.GrantRoles, []string{"admin", "user"}) {
+	if d := last[len(last)-1]; d.Key != "plugin.guard:rules:export" || !slices.Equal(grantRoleKeys(d.GrantRoles), []string{"admin", "user"}) {
 		t.Fatalf("consented def %+v", d)
 	}
 }
@@ -160,7 +160,7 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	defs := e.perms.syncs[len(e.perms.syncs)-1].defs
 	got := map[string][]string{}
 	for _, d := range defs {
-		got[d.Key] = d.GrantRoles
+		got[d.Key] = grantRoleKeys(d.GrantRoles)
 		if d.InheritFrom != nil {
 			t.Fatalf("a new permission still inherits (grants are by name, as planned): %+v", d)
 		}

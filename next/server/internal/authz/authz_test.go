@@ -839,7 +839,7 @@ func TestPluginCatalog(t *testing.T) {
 	}
 	defs := []core.PermissionDef{
 		{Key: "stats:read", Label: lt("View stats", "查看统计")},
-		{Key: "rules:manage", Label: lt("Manage rules", "管理规则"), Sensitive: true},
+		{Key: "rules:manage", Label: lt("Manage rules", "管理规则"), Risk: manifest.RiskSensitive},
 	}
 	// First install: the plugin is not running, so its keys start disabled
 	// and enabling turns them on.
@@ -880,10 +880,8 @@ func TestPluginCatalog(t *testing.T) {
 	eventually(t, func() bool { ok, _ := s.Can(ctx, user, "plugin.guard:audit:read"); return ok })
 	mustCan(t, s, admin, "plugin.guard:stats:read", true) // kept grant
 	mustCan(t, s, admin, "plugin.guard:audit:read", false)
-	var n int
-	_ = db.Pool.QueryRow(ctx, `SELECT count(*) FROM permissions WHERE key = 'plugin.guard:rules:manage'`).Scan(&n)
-	if n != 0 {
-		t.Fatal("undeclared permission not deleted")
+	if got := permissionStatus(t, db, "plugin.guard:rules:manage"); got != "removed" {
+		t.Fatalf("undeclared permission: %s", got)
 	}
 
 	tx(func(tx pgx.Tx) error { return s.DeletePlugin(ctx, tx, "guard") })
@@ -1255,8 +1253,8 @@ func TestOwnershipCatalog(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s missing from catalog", key)
 		}
-		if d.Sensitive != sensitive {
-			t.Fatalf("%s sensitive = %v, want %v", key, d.Sensitive, sensitive)
+		if got := d.Risk != manifest.RiskLow; got != sensitive {
+			t.Fatalf("%s risk = %s, want sensitive %v", key, d.Risk, sensitive)
 		}
 		if d.Label.Get("en") == "" || d.Label.Get("zh") == "" || d.Label.Get("en") == d.Label.Get("zh") {
 			t.Fatalf("%s label = %v", key, d.Label)
@@ -1338,11 +1336,20 @@ func (taskRecorder) EnqueueTx(context.Context, pgx.Tx, string, any, core.Enqueue
 	return nil
 }
 
-// withRoles sets the GrantRoles of every def.
+// withRoles grants every def to roles, every row.
 func withRoles(defs []core.PermissionDef, roles ...string) []core.PermissionDef {
 	out := slices.Clone(defs)
 	for i := range out {
-		out[i].GrantRoles = roles
+		out[i].GrantRoles = unscoped(roles...)
+	}
+	return out
+}
+
+// unscoped is GrantRoles granting roles every row.
+func unscoped(roles ...string) map[string][]string {
+	out := make(map[string][]string, len(roles))
+	for _, r := range roles {
+		out[r] = []string{""}
 	}
 	return out
 }

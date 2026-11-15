@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -139,6 +140,48 @@ func TestCatalogFlaggedSets(t *testing.T) {
 	}
 	if !slices.Equal(stepUp, wantStepUp) {
 		t.Errorf("stepUp = %v, want %v", stepUp, wantStepUp)
+	}
+}
+
+// A core permission's risk: superOnly ones are critical, other sensitive
+// ones sensitive, the rest low; the core sync stores it with the soft
+// dependencies, and sensitive as risk <> 'low' for an older core.
+func TestCatalogRisk(t *testing.T) {
+	t.Parallel()
+	for _, m := range slices.Concat(coreModules, []coreModule{selfModule}) {
+		for _, p := range m.perms {
+			want := manifest.RiskLow
+			switch {
+			case p.superOnly:
+				want = manifest.RiskCritical
+			case p.sensitive:
+				want = manifest.RiskSensitive
+			}
+			if got := p.risk(); got != want {
+				t.Errorf("%s risk = %s, want %s", p.key, got, want)
+			}
+		}
+	}
+	db := testutil.DB(t)
+	newService(t, db, newMemBus(), nil)
+	for key, want := range map[string]struct {
+		risk      string
+		sensitive bool
+		requires  []string
+	}{
+		"balance:adjust:any": {manifest.RiskCritical, true, []string{"balance:adjust"}},
+		"role:define":        {manifest.RiskSensitive, true, []string{"role:read"}},
+		"user:read":          {manifest.RiskLow, false, []string{}},
+	} {
+		var risk string
+		var sensitive bool
+		var requires []string
+		if err := db.Pool.QueryRow(context.Background(), `SELECT risk, sensitive, requires FROM permissions WHERE key = $1`, key).Scan(&risk, &sensitive, &requires); err != nil {
+			t.Fatal(err)
+		}
+		if risk != want.risk || sensitive != want.sensitive || !slices.Equal(requires, want.requires) {
+			t.Errorf("%s stored %s %v %v", key, risk, sensitive, requires)
+		}
 	}
 }
 

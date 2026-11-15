@@ -91,8 +91,8 @@ export type PermRef = PermKey | ScopedPermKey | PluginPermKey
 
 export interface PermMeta {
   module: string
-  /** Flagged in the role editor: credentials, money, trust roots, code execution, identity. */
-  sensitive: boolean
+  /** Role editor badge: sensitive for credentials, money, trust roots, code execution, identity; critical for super admin only ones. */
+  risk: 'low' | 'sensitive' | 'critical'
   /** Some of its routes need a step-up proof each time (CONTRACTS §80.2). */
   stepUp: boolean
   /** Soft dependencies, of the same scope for a scopable action; editor hints only. */
@@ -103,7 +103,7 @@ export interface PermMeta {
 export const PERMISSIONS: Record<PermKey, PermMeta> = {
   'user:read': {
     module: 'user',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -113,7 +113,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'user:create': {
     module: 'user',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['user:read'],
     description: {
@@ -123,7 +123,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'user:update': {
     module: 'user',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['user:read'],
     description: {
@@ -133,7 +133,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'user:delete': {
     module: 'user',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: ['user:read'],
     description: {
@@ -143,7 +143,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'user:password:reset': {
     module: 'user',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: ['user:read', 'user:update'],
     description: {
@@ -153,7 +153,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'role:read': {
     module: 'role',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -163,7 +163,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'role:define': {
     module: 'role',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['role:read'],
     description: {
@@ -173,7 +173,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'role:assign': {
     module: 'role',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['role:read', 'user:read'],
     description: {
@@ -183,7 +183,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'apikey:self:manage': {
     module: 'apikey',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: [],
     description: {
@@ -193,7 +193,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'group:read': {
     module: 'group',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -203,7 +203,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'group:manage': {
     module: 'group',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['group:read'],
     description: {
@@ -213,7 +213,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'segment:read': {
     module: 'segment',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -223,7 +223,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'segment:manage': {
     module: 'segment',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['segment:read'],
     description: {
@@ -233,7 +233,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:read': {
     module: 'account',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -243,7 +243,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:create': {
     module: 'account',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['account:read'],
     description: {
@@ -253,7 +253,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:update': {
     module: 'account',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['account:read'],
     description: {
@@ -263,7 +263,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:delete': {
     module: 'account',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['account:read'],
     description: {
@@ -273,7 +273,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:test': {
     module: 'account',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['account:read'],
     description: {
@@ -283,7 +283,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:credential:view': {
     module: 'account',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: ['account:read'],
     description: {
@@ -293,7 +293,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:settings:custom': {
     module: 'account',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['account:update'],
     description: {
@@ -303,7 +303,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:group:bind': {
     module: 'account',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['account:update'],
     description: {
@@ -313,7 +313,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'account:relay': {
     module: 'account',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['account:create'],
     description: {
@@ -323,7 +323,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'proxy:read': {
     module: 'proxy',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -333,7 +333,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'proxy:manage': {
     module: 'proxy',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: ['proxy:read'],
     description: {
@@ -343,7 +343,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'price:read': {
     module: 'price',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -353,7 +353,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'price:manage': {
     module: 'price',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['price:read'],
     description: {
@@ -363,7 +363,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'balance:self:read': {
     module: 'balance',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -373,7 +373,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'balance:all:read': {
     module: 'balance',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -383,7 +383,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'balance:adjust': {
     module: 'balance',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['balance:all:read', 'user:read'],
     description: {
@@ -393,7 +393,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'balance:adjust:any': {
     module: 'balance',
-    sensitive: true,
+    risk: 'critical',
     stepUp: false,
     requires: ['balance:adjust'],
     description: {
@@ -403,7 +403,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'usage:self:read': {
     module: 'usage',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -413,7 +413,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'usage:all:read': {
     module: 'usage',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -423,7 +423,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'usage:settle': {
     module: 'usage',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['usage:all:read'],
     description: {
@@ -433,7 +433,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'sticky:read': {
     module: 'sticky',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -443,7 +443,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'sticky:manage': {
     module: 'sticky',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['sticky:read'],
     description: {
@@ -453,7 +453,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:read': {
     module: 'plugin',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -463,7 +463,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:install': {
     module: 'plugin',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: ['plugin:read', 'plugin:market:read'],
     description: {
@@ -473,7 +473,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:manage': {
     module: 'plugin',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['plugin:read'],
     description: {
@@ -483,7 +483,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:uninstall': {
     module: 'plugin',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['plugin:read'],
     description: {
@@ -493,7 +493,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:grant:high': {
     module: 'plugin',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: ['plugin:install'],
     description: {
@@ -503,7 +503,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:grant:critical': {
     module: 'plugin',
-    sensitive: true,
+    risk: 'critical',
     stepUp: true,
     requires: ['plugin:install'],
     description: {
@@ -513,7 +513,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:grant:db_schema_unconfined': {
     module: 'plugin',
-    sensitive: true,
+    risk: 'critical',
     stepUp: true,
     requires: ['plugin:install'],
     description: {
@@ -523,7 +523,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:egress:read': {
     module: 'plugin',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: ['plugin:read'],
     description: {
@@ -533,7 +533,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'plugin:market:read': {
     module: 'plugin',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -543,7 +543,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'publisher:read': {
     module: 'publisher',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -553,7 +553,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'publisher:manage': {
     module: 'publisher',
-    sensitive: true,
+    risk: 'critical',
     stepUp: true,
     requires: ['publisher:read'],
     description: {
@@ -563,7 +563,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'node:read': {
     module: 'node',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -573,7 +573,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'audit:read': {
     module: 'audit',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -583,7 +583,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'task:read': {
     module: 'task',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -593,7 +593,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'task:run': {
     module: 'task',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['task:read'],
     description: {
@@ -603,7 +603,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'task:manage': {
     module: 'task',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: false,
     requires: ['task:read'],
     description: {
@@ -613,7 +613,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'gateway:use': {
     module: 'gateway',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -623,7 +623,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'settings:read': {
     module: 'settings',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -633,7 +633,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'settings:manage': {
     module: 'settings',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: ['settings:read'],
     description: {
@@ -643,7 +643,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'system:update:read': {
     module: 'system_update',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -653,7 +653,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'system:update:execute': {
     module: 'system_update',
-    sensitive: true,
+    risk: 'critical',
     stepUp: true,
     requires: ['system:update:read'],
     description: {
@@ -663,7 +663,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'system:update:recover': {
     module: 'system_update',
-    sensitive: true,
+    risk: 'critical',
     stepUp: true,
     requires: ['system:update:read'],
     description: {
@@ -673,7 +673,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'self:profile': {
     module: 'self',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {
@@ -683,7 +683,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'self:security': {
     module: 'self',
-    sensitive: true,
+    risk: 'sensitive',
     stepUp: true,
     requires: [],
     description: {
@@ -693,7 +693,7 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'self:plugin_ui': {
     module: 'self',
-    sensitive: false,
+    risk: 'low',
     stepUp: false,
     requires: [],
     description: {

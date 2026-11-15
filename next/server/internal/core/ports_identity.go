@@ -358,45 +358,80 @@ func (denyAllUsers) CanActOnUsers(context.Context, int64, UserAction, ...int64) 
 	return ErrInternal
 }
 
+// PluginScopeTypePrefix starts the scope_type of a scoped plugin permission:
+// "plugin:" + its manifest scope's ResourceName().
+const PluginScopeTypePrefix = "plugin:"
+
 // PermissionDef describes one permission in the catalog.
 type PermissionDef struct {
 	Key    string
 	Module string
-	// ScopeType is the resource the action's scope ranges over
-	// (perm.ScopeType), "" for an action that takes none.
-	ScopeType   string
+	// ScopeType is the resource the action's scope ranges over: core
+	// "account"/"proxy" (perm.ScopeType), plugin PluginScopeTypePrefix + the
+	// manifest scope's ResourceName(); "" for an action that takes none.
+	ScopeType string
+	// Scope is a plugin permission's manifest scope (Resource set to
+	// ResourceName()); nil for core and unscoped ones.
+	Scope       *manifest.PermissionScope
 	Label       LocalizedText
 	Description LocalizedText
-	Sensitive   bool
+	Risk        string // manifest.RiskLow (also when empty) | RiskSensitive | RiskCritical
 	Sort        int
-	// GrantRoles are the roles a plugin permission is granted to when the
-	// catalog first creates it (super admin roles are skipped).
-	GrantRoles []string
+	// Group of a plugin permission (manifest permissionGroups[]).
+	Group      string
+	GroupLabel LocalizedText
+	GroupSort  int
+	// Requires are soft dependencies, qualified keys; never authorization.
+	Requires []string
+	// Defaults is the manifest's suggestion, role -> canonical scope
+	// suffixes ("" every row): stored for the console's "restore plugin
+	// suggestion", never granted by itself. Nil for a critical permission.
+	Defaults map[string][]string
+	// GrantRoles are what the catalog grants when it first creates the
+	// permission, role -> suffixes as Defaults (super admin roles skipped):
+	// the consent's decision, not the manifest's.
+	GrantRoles map[string][]string
 	// InheritFrom are keys of the same plugin's permissions (local or
 	// qualified) whose holders get a plugin permission when the catalog
 	// first creates it; only grants that exist before this sync count.
 	InheritFrom []string
 }
 
+// PluginGrantees is which roles an actor may hand new plugin permissions
+// (PermissionCatalog.PluginGrantees): Denied maps a role to why not.
+type PluginGrantees struct {
+	Superuser bool              `json:"superuser"` // may grant critical ones
+	Denied    map[string]string `json:"denied"`    // superuser_role | not_editable | not_assignable | held
+}
+
 // PermissionCatalog is used by the plugin runtime to manage plugin-owned
 // permissions ("plugin.<key>:<local>"). Every mutation bumps the authz version
 // and broadcasts authz:changed.
 type PermissionCatalog interface {
-	// SyncPlugin upserts the plugin's permissions (install/upgrade), grants
-	// newly created ones to their GrantRoles and to the holders of their
-	// InheritFrom keys, then deletes ones no longer declared.
+	// SyncPlugin upserts the plugin's permissions (install/upgrade),
+	// revives removed ones it declares again (grants as they were, no
+	// GrantRoles), grants newly created ones their GrantRoles (scopes
+	// included) and the holders of their InheritFrom keys, drops scope
+	// grants the declared scope no longer takes, and marks keys no longer
+	// declared removed (their grants stay, granting nothing).
 	SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []PermissionDef) error
 	// CanGrantToRoles fails unless actorID may change every role of
 	// roleKeys (super admin roles never), as handing them a plugin's new
 	// permissions does, and each is on its assignable list and, but for a
-	// superuser, not held by actorID.
-	CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string) error
+	// superuser, not held by actorID. A critical permission also needs a
+	// superuser actor.
+	CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, critical bool) error
+	// PluginGrantees is CanGrantToRoles read-only: no version bump, no
+	// locks, a refusal is a Denied entry rather than an error.
+	PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string) (PluginGrantees, error)
 	// GrantPluginPermission grants the existing plugin permission key to
-	// roleKeys (super admin roles skipped), each grant audited as
+	// roles (role -> scope suffixes as PermissionDef.GrantRoles; removed
+	// keys and super admin roles skipped), each grant audited as
 	// authz.sync.grant: the role grants an upgrade withheld until someone
 	// confirmed them. Callers check the rights (CanGrantToRoles).
-	GrantPluginPermission(ctx context.Context, tx pgx.Tx, key string, roleKeys []string) error
-	// SetPluginActive flips status active/disabled (enable/disable).
+	GrantPluginPermission(ctx context.Context, tx pgx.Tx, key string, roles map[string][]string) error
+	// SetPluginActive flips status active/disabled (enable/disable); removed
+	// permissions stay removed.
 	SetPluginActive(ctx context.Context, tx pgx.Tx, pluginKey string, active bool) error
 	// DeletePlugin removes the plugin's permissions and grants (uninstall).
 	DeletePlugin(ctx context.Context, tx pgx.Tx, pluginKey string) error
