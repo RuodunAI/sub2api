@@ -104,14 +104,14 @@ describe('plugin permissions tab', () => {
     expect(mocks.refresh).toHaveBeenCalled()
   })
 
-  it('a 403 shows the role and what was missing', async () => {
+  it('a 403 shows the role by name and what was missing', async () => {
     const w = await render()
     await box(w, EXPORT, 'operator').setValue(true)
     mocks.put.mockRejectedValueOnce(new ApiError(403, { code: 'permission_denied', message: 'no', details: { missing: [EXPORT], role: 'operator' } }))
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
     const text = w.get('[data-testid="matrix-save-missing"]').text()
-    expect(text).toContain('operator')
+    expect(text.startsWith('Operator')).toBe(true)
     expect(text).toContain(EXPORT)
     expect(mocks.toast).not.toHaveBeenCalled()
     // The edit stays to fix or reset.
@@ -166,6 +166,39 @@ describe('plugin permissions tab', () => {
     await flushPromises()
     expect(w.get('[data-testid="plugin-user-permissions"]').text()).toContain('This plugin declares no permissions for users.')
     expect(mocks.toast).not.toHaveBeenCalled()
+  })
+
+  it('a matrix that fails to load says so with a retry, not "declares none"', async () => {
+    mocks.get.mockImplementation(async (path: string) => {
+      if (path.startsWith('/permissions/plugins/')) throw new ApiError(500, { code: 'internal', message: 'boom' })
+      return []
+    })
+    const w = mount(PermissionsTab, { props: { detail: { key: 'guard', status: 'enabled' } as unknown as PluginDetail }, global: { plugins: [i18n] } })
+    await flushPromises()
+    const card = w.get('[data-testid="plugin-user-permissions"]')
+    expect(card.text()).not.toContain('This plugin declares no permissions for users.')
+    expect(card.find('[data-testid="matrix-load-failed"]').exists()).toBe(true)
+
+    mocks.get.mockImplementation(async (path: string) => (path.startsWith('/permissions/plugins/') ? structuredClone(MATRIX) : []))
+    await card.get('[data-testid="matrix-load-failed"] button').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="matrix-load-failed"]').exists()).toBe(false)
+    expect(box(w, READ, 'operator').element.checked).toBe(true)
+  })
+
+  it('reloads the matrix with the detail unless it holds unsaved edits', async () => {
+    const w = await render()
+    const reads = () => mocks.get.mock.calls.filter(([path]) => path === '/permissions/plugins/guard').length
+    expect(reads()).toBe(1)
+    await w.setProps({ detail: { key: 'guard', status: 'enabled', grants: [] } as unknown as PluginDetail })
+    await flushPromises()
+    expect(reads()).toBe(2)
+
+    await box(w, EXPORT, 'operator').setValue(true)
+    await w.setProps({ detail: { key: 'guard', status: 'enabled', grants: [] } as unknown as PluginDetail })
+    await flushPromises()
+    expect(reads()).toBe(2)
+    expect(box(w, EXPORT, 'operator').element.checked).toBe(true)
   })
 
   it('disabled plugin shows grants kept', async () => {

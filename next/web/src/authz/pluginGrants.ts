@@ -8,10 +8,24 @@
 // compare and sum many roles × actions. Pure.
 import { canonicalPermission, parsePermission, patternKey, reduceScopes, scopeImplies, scopeSuffix, type Scope } from './implies'
 import { withScopes } from './scopeChoice'
-import type { ManifestGrant, PermRisk } from '../api/types'
+import type { ManifestGrant, PermissionItem, PermRisk } from '../api/types'
 
 /** Role → the role's full canonical keys of one plugin. */
 export type RoleKeys = Record<string, string[]>
+
+/** The roles a plugin's suggestion (manifest defaults) may name: the built-in ones but the super admin. */
+export const SUGGESTED_ROLES = ['admin', 'operator', 'supplier', 'user'] as const satisfies readonly (keyof NonNullable<PermissionItem['defaults']>)[]
+export type SuggestedRole = (typeof SUGGESTED_ROLES)[number]
+
+/**
+ * Whether the plugin's suggestion speaks for role: a custom role's cells are
+ * its own (no suggestion names it, so restoring or comparing would only clear
+ * them). Built-in keys are reserved, so the key alone tells.
+ */
+export const isSuggestedRole = (role: string): role is SuggestedRole => (SUGGESTED_ROLES as readonly string[]).includes(role)
+
+/** The plugin-local part of a full key ("flow:read" of "plugin.m:flow:read"). */
+export const localOf = (key: string) => key.slice(key.indexOf(':') + 1)
 
 /** The action of a key ("plugin.m:flow:manage" of "plugin.m:flow:manage:own"); a key that does not parse is its own. */
 export const actionOf = (key: string) => parsePermission(key)?.action ?? key

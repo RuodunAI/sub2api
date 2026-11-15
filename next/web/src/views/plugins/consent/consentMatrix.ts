@@ -1,33 +1,13 @@
 import { computed, type Ref } from 'vue'
-import type { AssignableRole, NewPermissionRoles, PluginReview, ReviewRoleColumn, ReviewUserPermission } from '@/api/types'
-import { useAssignableRoles } from '@/composables/useAssignableRoles'
-import { useAuthStore } from '@/stores/auth'
+import { pluginPermissionKey } from '@sub2api/host'
+import type { NewPermissionRoles, PluginReview, ReviewRoleColumn, ReviewUserPermission } from '@/api/types'
 import { keysFromSuffixes, riskSummary, toManifestGrant, type RoleKeys } from '@/authz/pluginGrants'
 import { useGrantMatrix, type CellLock, type MatrixPerm, type MatrixRole } from '@/components/permission/useGrantMatrix'
 import { asArray } from '../pluginUtil'
 
-/**
- * The roles the caller may hand plugin permissions to (install
- * checkRolesGrantable: role:define, then CanGrantToRoles): the super admin
- * any role, others only roles on their managed list, within them, that they
- * do not hold themselves (built-in roles alike). The review of held-back
- * grants uses it; the consent page takes the server's role_columns / cells.
- */
-export function useNameableRoles() {
-  const auth = useAuthStore()
-  const managed = useAssignableRoles()
-  const choices = computed<AssignableRole[]>(() => {
-    if (!auth.has('role:define')) return []
-    if (auth.me?.superuser) return managed.roles.value
-    return managed.roles.value.filter((r) => r.grantable && !auth.me?.roles.includes(r.key))
-  })
-  const canName = (role: string) => choices.value.some((c) => c.key === role)
-  return { choices, canName }
-}
-
 /** A review row as a matrix row: local keys made full, defaults (canonical suffixes) made full keys. */
 function toMatrixPerm(pluginKey: string, p: ReviewUserPermission): MatrixPerm {
-  const full = (local: string) => `plugin.${pluginKey}:${local}`
+  const full = (local: string) => pluginPermissionKey(pluginKey, local)
   const action = full(p.key)
   const defaults = p.defaults && Object.fromEntries(Object.entries(p.defaults).map(([role, suffixes]) => [role, keysFromSuffixes(action, suffixes)]))
   return {
@@ -41,6 +21,7 @@ function toMatrixPerm(pluginKey: string, p: ReviewUserPermission): MatrixPerm {
     scope: p.scope,
     // A renamed row is granted by inheritance: it has no suggestion to restore.
     defaults: p.renamed ? undefined : defaults,
+    inheritFrom: p.renamed ? p.inherit_from : undefined,
     status: 'active'
   }
 }
@@ -53,13 +34,17 @@ function toMatrixPerm(pluginKey: string, p: ReviewUserPermission): MatrixPerm {
  * starts at what the consent gives without overriding the row (cells.grant:
  * defaults and inheritance), and one the viewer may not name is held for a
  * super admin's review whatever the row becomes (D2), or is critical (D3).
+ * A renamed row is granted to the old key's holders whether or not it is
+ * overridden (install inheritFrom), so it is shown as inherited and locked:
+ * the roles are adjusted on the Roles page once installed.
  */
 export function useConsentMatrix(review: Ref<PluginReview | null>) {
   const pluginKey = computed(() => review.value?.plugin_key ?? '')
   const rows = computed(() => asArray<ReviewUserPermission>(review.value?.user_permissions).filter((p) => p.new && !p.revived))
   const perms = computed(() => rows.value.map((p) => toMatrixPerm(pluginKey.value, p)))
   const roles = computed<MatrixRole[]>(() => asArray<ReviewRoleColumn>(review.value?.role_columns))
-  const cellOf = (p: MatrixPerm, r: MatrixRole) => rows.value.find((x) => x.key === p.local)?.cells?.[r.key]
+  const cells = computed(() => new Map(rows.value.map((p) => [p.key, p.cells ?? {}])))
+  const cellOf = (p: MatrixPerm, r: MatrixRole) => cells.value.get(p.local)?.[r.key]
 
   const baseline = computed<RoleKeys>(() =>
     Object.fromEntries(roles.value.map((r) => [r.key, perms.value.flatMap((p) => keysFromSuffixes(p.action, cellOf(p, r)?.grant ?? []))]))
@@ -67,8 +52,8 @@ export function useConsentMatrix(review: Ref<PluginReview | null>) {
   function lockOf(p: MatrixPerm, r: MatrixRole): CellLock {
     if (r.superuser) return 'superuser'
     const c = cellOf(p, r)
-    if (c?.nameable) return null
-    return c?.reason === 'critical' ? 'critical' : 'pending_review'
+    if (!c?.nameable) return c?.reason === 'critical' ? 'critical' : c?.withheld ? 'pending_review' : 'role_readonly'
+    return p.inheritFrom ? 'inherited' : null
   }
   const matrix = useGrantMatrix({ perms, roles, baseline, lockOf })
 
@@ -85,10 +70,12 @@ export function useConsentMatrix(review: Ref<PluginReview | null>) {
     )
   }
 
-  /** What the consent grants as the viewer leaves it: the cells it may name (held cells go to review instead). */
-  const granted = computed<RoleKeys>(() => Object.fromEntries(roles.value.map((r) => [r.key, perms.value.filter((p) => lockOf(p, r) === null).flatMap((p) => matrix.cell(p, r))])))
+  /** What the consent grants as the viewer leaves it: the cells it may name, inherited ones included (held cells go to review instead). */
+  const granted = computed<RoleKeys>(() => Object.fromEntries(roles.value.map((r) => [r.key, perms.value.filter((p) => cellOf(p, r)?.nameable).flatMap((p) => matrix.cell(p, r))])))
+  const riskOf = computed(() => perms.value.map((p) => ({ key: p.action, risk: p.risk })))
   const summary = computed(() => ({
-    sensitive: riskSummary(granted.value, perms.value.map((p) => ({ key: p.action, risk: p.risk })), 'sensitive'),
+    sensitive: riskSummary(granted.value, riskOf.value, 'sensitive'),
+    critical: riskSummary(granted.value, riskOf.value, 'critical'),
     /** Held for review whether or not the row is overridden. */
     pending: perms.value.reduce((n, p) => n + roles.value.filter((r) => cellOf(p, r)?.withheld).length, 0)
   }))

@@ -9,7 +9,11 @@ import { getReview, putReview } from './reviewCache'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), push: vi.fn(), can: true, lacks: new Set<string>(), superuser: true, epoch: 0, managed: [] as object[] }))
 // An API error is anything carrying a code (the tests reject with plain objects).
-vi.mock('@sub2api/host', () => ({ api: { get: mocks.get, post: mocks.post }, isApiError: (e: unknown) => typeof e === 'object' && e !== null && 'code' in e }))
+vi.mock('@sub2api/host', async (original) => ({
+  ...(await original<object>()),
+  api: { get: mocks.get, post: mocks.post },
+  isApiError: (e: unknown) => typeof e === 'object' && e !== null && 'code' in e
+}))
 vi.mock('vue-router', () => ({ RouterLink: { template: '<a><slot /></a>' }, useRoute: () => ({ params: { key: 'demo', version: '1.2.0' } }), useRouter: () => ({ push: mocks.push }) }))
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => {
@@ -17,7 +21,8 @@ vi.mock('@/stores/auth', () => ({
     return {
       has,
       hasDynamic: has,
-      scopes: () => [{ all: true, own: false, group: 0, id: 0 }],
+      // The permissions a consent creates are new: only the super admin holds them already.
+      scopes: () => (mocks.superuser ? [{ all: true, own: false, group: 0, id: 0 }] : []),
       me: { id: 1, roles: ['admin', 'lead'], superuser: mocks.superuser },
       permissionsEpoch: mocks.epoch
     }
@@ -175,6 +180,61 @@ describe('plugin consent page', () => {
     expect(roleBox(w, 'exempt', 'operator').element.disabled).toBe(true)
     expect(w.get('tr[data-permission="plugin.demo:exempt"]').text()).toContain(i18n.global.t('plugins.matrix.criticalOnly'))
     expect(w.find('[data-testid="consent-summary-pending"]').exists()).toBe(false)
+  })
+
+  it('a cell the caller may not name with nothing to hold is locked without the review mark', async () => {
+    const w = render(withMatrix({ user_permissions: [perm('demo.read', { cells: { ...HELD, operator: cell([], { nameable: false, reason: 'held' }) } })] }))
+    await flushPromises()
+    expect(td(w, 'demo.read', 'operator').attributes('data-lock')).toBe('role_readonly')
+    expect(td(w, 'demo.read', 'operator').text()).not.toContain(i18n.global.t('plugins.matrix.pendingReview'))
+    expect(td(w, 'demo.read', 'operator').attributes('title')).toBe(i18n.global.t('plugins.matrix.roleReadonly'))
+    expect(w.get('[data-testid="consent-summary-pending"]').text()).toBe(i18n.global.t('plugins.matrix.summaryPending', { n: 1 }))
+  })
+
+  it('a renamed row shows what it inherits from, locked: the server grants the old holders whatever is sent', async () => {
+    const renamed = perm('flow:edit', {
+      defaults: undefined,
+      renamed: true,
+      inherit_from: ['flow:write'],
+      cells: { ...perm('x').cells, admin: cell(), operator: cell(['']) }
+    })
+    const w = render(withMatrix({ user_permissions: [renamed, perm('demo.read')] }))
+    await flushPromises()
+    const row = w.get('tr[data-permission="plugin.demo:flow:edit"]')
+    expect(row.get('[data-testid="matrix-inherited"]').text()).toBe(i18n.global.t('plugins.matrix.inheritedFrom', { keys: 'flow:write' }))
+    expect(roleBox(w, 'flow:edit', 'operator').element.checked).toBe(true)
+    expect(roleBox(w, 'flow:edit', 'operator').element.disabled).toBe(true)
+    expect(roleBox(w, 'flow:edit', 'admin').element.disabled).toBe(true)
+    // The reason reaches screen readers too, not only the title.
+    expect(roleBox(w, 'flow:edit', 'operator').attributes('aria-label')).toContain(i18n.global.t('plugins.matrix.inheritedHint'))
+    expect(row.find('[data-testid="matrix-restore-row"]').exists()).toBe(false)
+
+    // Changing other rows never sends it.
+    await roleBox(w, 'demo.read', 'operator').setValue(true)
+    expect((await approve(w)).new_permission_roles).toEqual({ 'demo.read': { admin: true, operator: true, lead: [] } })
+  })
+
+  it('a non-super installer may give a new scoped permission any scope: it need not hold it', async () => {
+    mocks.superuser = false
+    const flow = perm('flow:manage', { scope: { resource: 'flow', own: true }, defaults: { operator: ['own'] }, cells: { ...perm('x').cells, admin: cell(), operator: cell(['own']) } })
+    const w = render(withMatrix({ user_permissions: [flow] }))
+    await flushPromises()
+    const select = td(w, 'flow:manage', 'operator').get<HTMLSelectElement>('select')
+    const texts = () => select.findAll('option').map((o) => o.text())
+    const { t } = i18n.global
+    expect(texts()).toEqual([t('plugins.matrix.notGranted'), t('plugins.matrix.scopeAll'), t('plugins.matrix.scopeOwn'), t('plugins.matrix.scopeCustom')])
+    await select.setValue(String(texts().indexOf(t('plugins.matrix.notGranted'))))
+    // Cleared, it can still go back (and further).
+    await select.setValue(String(texts().indexOf(t('plugins.matrix.scopeAll'))))
+    expect((await approve(w)).new_permission_roles).toEqual({ 'flow:manage': { admin: [], operator: ['*'], lead: [] } })
+  })
+
+  it('footer sums the critical grants a super admin makes', async () => {
+    const w = render(withMatrix({ user_permissions: [perm('exempt', { risk: 'critical', defaults: {}, cells: { ...perm('x').cells, admin: cell() } })] }))
+    await flushPromises()
+    expect(w.find('[data-testid="consent-summary-critical"]').exists()).toBe(false)
+    await roleBox(w, 'exempt', 'operator').setValue(true)
+    expect(w.get('[data-testid="consent-summary-critical"]').text()).toBe(i18n.global.t('plugins.matrix.summaryCritical', { n: 1, m: 1 }))
   })
 
   it('footer sums the sensitive grants it makes', async () => {

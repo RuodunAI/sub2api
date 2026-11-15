@@ -17,7 +17,7 @@ import HostPermissionTable from './consent/HostPermissionTable.vue'
 import type { HPRow } from './consent/hostPermission'
 import { useConsentLabels } from './consent/hostPermission'
 import { useOptionalT } from '@/composables/optionalText'
-import { useConsentMatrix } from './consent/newPermissionRoles'
+import { useConsentMatrix } from './consent/consentMatrix'
 import NewRoleGrants from './consent/NewRoleGrants.vue'
 import ConsentNeed from './consent/ConsentNeed.vue'
 import UpgradePermissionChanges from './consent/UpgradePermissionChanges.vue'
@@ -291,7 +291,6 @@ onMounted(load)
           :roles="consent.roles.value"
           :plugin-key="review.plugin_key"
           :lock-of="consent.lockOf"
-          :scope-limit="auth.scopes"
           collapse-custom
         >
           <template v-if="isUpgrade" #trailing-head>{{ t('plugins.matrix.needsConfirm') }}</template>
@@ -320,6 +319,9 @@ onMounted(load)
           </p>
           <p v-if="consent.summary.value.sensitive.perms" class="text-gray-600 dark:text-gray-300" data-testid="consent-summary-sensitive">
             {{ t('plugins.matrix.summarySensitive', { n: consent.summary.value.sensitive.perms, m: consent.summary.value.sensitive.roles }) }}
+          </p>
+          <p v-if="consent.summary.value.critical.perms" class="text-red-600 dark:text-red-400" data-testid="consent-summary-critical">
+            {{ t('plugins.matrix.summaryCritical', { n: consent.summary.value.critical.perms, m: consent.summary.value.critical.roles }) }}
           </p>
           <p v-if="consent.summary.value.pending" class="text-orange-700 dark:text-orange-300" data-testid="consent-summary-pending">
             {{ t('plugins.matrix.summaryPending', { n: consent.summary.value.pending }) }}
