@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/control"
 	"github.com/alicebob/miniredis/v2"
@@ -389,5 +390,89 @@ func TestOpenPoolConnectsWithPoolParams(t *testing.T) {
 			t.Errorf("select through a DSN with pool params: %v", err)
 		}
 		closePool(db)
+	}
+}
+
+// An Exec on the pool reads its result before its connection goes back:
+// database/sql reads RowsAffected after, under the connection's mutex,
+// which the connection's next statement holds while it waits for a row
+// lock. GORM reads the result right after the Exec, so the test widens the
+// window on the pool GORM runs on: T holds a row lock on one of two
+// connections, A's UPDATE runs on the other, B takes it and waits for T's
+// lock, and only then is A's result read.
+func TestOpenPoolExecDoesNotWaitForRowLocks(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not configured")
+	}
+	ctx := context.Background()
+	t.Setenv("SUB2API_GATEWAY_POOL_MAX_CONNS", "2")
+	db, err := openPool(config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closePool(db)
+	t.Setenv("SUB2API_GATEWAY_POOL_MAX_CONNS", "1")
+	watch, err := openPool(config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closePool(watch)
+
+	table := fmt.Sprintf("gateway_exec_lock_%d_%d", os.Getpid(), time.Now().UnixNano())
+	if err := db.Exec(`CREATE TABLE ` + table + ` (id int PRIMARY KEY, n int NOT NULL DEFAULT 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(`DROP TABLE ` + table)
+	if err := db.Exec(`INSERT INTO ` + table + ` (id) VALUES (1), (2)`).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	tx := db.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	if err := tx.Exec(`UPDATE ` + table + ` SET n = 1 WHERE id = 1`).Error; err != nil {
+		t.Fatal(err)
+	}
+	res, err := db.WithContext(ctx).Statement.ConnPool.ExecContext(ctx, `UPDATE `+table+` SET n = 2 WHERE id = 2`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiter := make(chan error, 1)
+	go func() { waiter <- db.WithContext(ctx).Exec(`UPDATE ` + table + ` SET n = 3 WHERE id = 1`).Error }()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		var n int
+		err := watch.Raw(`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE ?`, "%"+table+"%").Row().Scan(&n)
+		if err == nil && n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("B never waited for T's lock: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	read := make(chan int64, 1)
+	go func() {
+		n, _ := res.RowsAffected()
+		read <- n
+	}()
+	select {
+	case n := <-read:
+		if n != 1 {
+			t.Errorf("RowsAffected = %d, want 1", n)
+		}
+	case <-time.After(5 * time.Second):
+		tx.Rollback() // frees B, and with it the read
+		<-read
+		t.Fatal("A's RowsAffected waits for B, which waits for T's row lock")
+	}
+	if err := tx.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-waiter; err != nil {
+		t.Fatal(err)
 	}
 }

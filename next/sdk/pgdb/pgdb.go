@@ -87,6 +87,19 @@ func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gor
 	if _, set := cfg.RuntimeParams["search_path"]; !set && o.SearchPath != "" {
 		cfg.RuntimeParams["search_path"] = o.SearchPath
 	}
+	// Array columns reach Array.Scan as their text, which pgtype parses in
+	// the server's default formats only: DateStyle ISO for timestamps and
+	// dates, IntervalStyle postgres for intervals. Both are pinned, over the
+	// DSN's (in any letter case: PostgreSQL's names have none, and two
+	// spellings would both be sent), its options and the role's, database's
+	// or server's default.
+	for k := range cfg.RuntimeParams {
+		if strings.EqualFold(k, "datestyle") || strings.EqualFold(k, "intervalstyle") {
+			delete(cfg.RuntimeParams, k)
+		}
+	}
+	cfg.RuntimeParams["datestyle"] = "ISO"
+	cfg.RuntimeParams["intervalstyle"] = "postgres"
 	sqlDB := stdlib.OpenDB(*cfg)
 	conns := o.MaxConns
 	if conns <= 0 {
@@ -116,6 +129,9 @@ func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gor
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("pgdb: open: %w", err)
 	}
+	// After gorm.Open, which took sqlDB as the instance's pool (see pool).
+	db.ConnPool = pool{sqlDB}
+	db.Statement.ConnPool = db.ConnPool
 	return db, nil
 }
 

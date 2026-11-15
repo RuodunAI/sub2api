@@ -36,6 +36,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/supervisor"
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/pgdsn"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/sqlpool"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -265,6 +266,11 @@ func openPool(c config) (*gorm.DB, error) {
 		return nil, err
 	}
 	pool.Apply(sqlDB, gatewayPool, nil)
+	// GORM reads an Exec's RowsAffected after database/sql has given the
+	// connection back, under a mutex that the connection's next statement
+	// holds: sqlpool reads it first (see there).
+	db.ConnPool = sqlpool.New(sqlDB)
+	db.Statement.ConnPool = db.ConnPool
 	return db, nil
 }
 

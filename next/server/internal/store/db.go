@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/pgdsn"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/sqlpool"
 )
 
 // DB is the core's connection pool.
@@ -65,6 +66,15 @@ func OpenSized(ctx context.Context, dsn string, maxConns int) (*DB, error) {
 // open connects to dsn, which holds no pool_* parameter, and sizes the pool
 // from pool over poolDefaults.
 func open(ctx context.Context, dsn string, pool pgdsn.Pool) (*DB, error) {
+	// database/sql hands array columns over as their text, which Times
+	// parses in DateStyle ISO's format (pgtext.go). The session's DateStyle
+	// is pinned to it, over the DSN's (a datestyle parameter, or -c in
+	// options) and the role's, database's or server's default, which could
+	// print 'SQL, DMY' or German dates.
+	dsn, err := pgdsn.Set(dsn, "datestyle", "ISO")
+	if err != nil {
+		return nil, err
+	}
 	g, err := gorm.Open(postgres.New(postgres.Config{DSN: dsn}), gormConfig())
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -77,6 +87,12 @@ func open(ctx context.Context, dsn string, pool pgdsn.Pool) (*DB, error) {
 		return nil, err
 	}
 	pool.Apply(sqlDB, poolDefaults, nil)
+	// GORM reads an Exec's RowsAffected after database/sql has given the
+	// connection back, under a mutex that the connection's next statement
+	// holds: sqlpool reads it first (see there). Transactions and WithConn
+	// keep their connection and need no wrapper.
+	g.ConnPool = sqlpool.New(sqlDB)
+	g.Statement.ConnPool = g.ConnPool
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
