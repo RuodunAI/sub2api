@@ -4,6 +4,38 @@
 
 每次发布在最前面加一节，写清版本、提交和用户能看到的变化。版本有三条线：核心、网关（外壳）、插件（如 ccgateway）。
 
+## 未发布
+
+开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
+
+### 核心 0.1.289（版本号推测）+ 9 个内置插件：插件权限声明与角色分配（迁移 0099，主节点优先，短暂停服）
+
+设计见 `next/docs/plugin-permissions/`，契约见 CONTRACTS §4“插件权限”、§5.2、§5.7、§5.8、§21.0“插件资源范围”。
+
+- **插件权限按“权限 × 角色”矩阵分配**：安装、升级确认页和插件详情新的“权限”标签用同一个矩阵。插件详情的“授权”标签改名“权限”（旧链接 `?tab=grants` 自动跳到 `?tab=permissions`），分两部分：插件申请的访问权限（原“授权”，新增“收窄”和“重新授予”），以及插件提供给用户的权限 × 角色，可以直接勾选保存（只提交改动的角色；有未保存的修改时切换标签或离开页面会先确认）。角色编辑页的插件权限按插件声明的分组显示，标出低 / 敏感 / 关键三级风险，内置角色上标出与插件建议不同的项，可以“恢复插件建议”（只改编辑框，保存才生效）。
+- **宿主权限收窄、重新授予**：`PUT /plugins/:key/grants/:permission`。收窄（列表型范围，每个列表至少留一项）只要 `plugin:manage`；已撤销、被拒的可以重新授予，按风险要 `plugin:grant:high`/`critical`。两者都要二次验证，超出插件申请的范围被拒（`scope_too_wide`）。
+- **插件资源范围**：插件可以给权限声明范围，角色可以只拿“全部”“自己创建的”或指定的几项（如某几个审核流程）；角色编辑页从 `GET /plugins/:key/scope-options` 选候选。核心转发插件路由时按范围放行、判 `scopeFrom` 指向的值，并把调用者的范围交给插件（`action_scope`）。本次的内置插件都还没有声明范围。
+- **风险等级取代敏感标记**：权限分 low / sensitive / critical 三级；critical 等同核心的超管专属，安装时只有超管能授给角色、不进任何默认值。内置插件：`moderation:exempt` 改为 critical（新部署只有超管持有，线上已有的持有者保留）；`claude_oauth:manage`、`codex:manage`、`moderation:read` 提为 sensitive（只影响以后新建 key 的自动授予与升级是否要确认，已有授权不变）；默认授予的角色不变。
+- 控制台 UI 3.16。
+
+**行为变化**（外部脚本、插件作者需要留意）：
+
+- `GET /permissions`、安装审查 `review`、`RoleGrant` 的 JSON 去掉 `sensitive`，改为 `risk`。同意请求的 `new_permission_roles` 改为 `{本地 key: {角色: true | [范围]}}`，旧的数组写法返回 400，`role_keys_for_new_permissions` 不再读取。
+- 默认或继承的授予给了同意者不能指定的角色时，不再 403，改为挂起待复核（插件详情顶部的待确认授予），首次安装也一样；显式指定不能指定的角色仍 403。
+- 插件新版本不再声明的权限标为“已移除”（以前直接删除）：授予保留但不生效，再次声明时原样恢复，不重新套默认值。角色编辑页可以取消勾选已移除的权限；通过 API 保存角色（`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin`）时不带上已移除的 key，会删掉这些授予。
+- 角色编辑页禁用编辑者自己没有的权限，核心权限也一样（以前能勾选，保存时才被拒）。
+- 插件菜单、页面、slot 按“任意范围持有”显示；iframe 桥 `permissions.check(本地 key)` 对不带范围的 key 只要持有任一范围即为 true，带范围的 key 须精确持有。
+- 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。
+- 清单的 `defaults` 省略时不授予任何角色（以前 `defaultRoles` 省略时给 `admin`）。
+
+**迁移 0099**（`0099_plugin_permission_meta.sql`，唯一的核心迁移，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填。`sensitive` 列保留一个版本给旧核心读（新核心照写、不读），下一个迁移删除。按 0.1.286 的主节点优先方式发布（短暂停服），不与旧核心滚动混跑；发布迁移前需要确认。
+
+**回滚**：网关不允许跨 schema 回退，线上出问题修复前进，或从数据库备份恢复。不经网关的部署可以按 `next/deploy/rollback/0.1.289-plugin-perm-down.md` 跑反向脚本：删除已移除的插件权限及其授予、删除插件范围授予（逐条审计 `via: "rollback 0.1.289"`，保留的授予因此丢失），删掉新列，再把升级过的插件切回旧版本。
+
+**第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.289（`below_feature_core`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
+
+**内置插件**：9 个声明了用户权限的内置插件（anthropic、claude-oauth、codex、dynweight、growth、guard、moderation、payment、volcengine）的清单已改用 `risk`/`defaults`，`hostCompat` 升到 `>=0.1.289 <0.2.0`，所以需要核心 ≥0.1.289；回滚核心时内置插件集合也要回到旧版本。**版本号还没升，发布前必须升**（同一版本号、不同内容时会保留旧清单）；注意 codex 的 `plugin.go` 里的 `Version`、guard 的 0.2.9-test overlay 和 anthropic 的 0.3.3-test 测试夹具。当前分支上的版本：anthropic 0.3.2、claude-oauth 0.2.3、codex 0.1.4、dynweight 0.5.9、growth 0.2.0、guard 0.2.9、moderation 0.12.0、payment 0.1.1、volcengine 0.12.7。
+
 ## 2026-11-14
 
 ### 核心 0.1.285（`b12c9aede`，滚动；无迁移，内置插件保持线上版本）
