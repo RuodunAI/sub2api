@@ -5,32 +5,21 @@
 // review declares it; the whole card only when at least one is present.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SBadge, SCard, SCheckbox, SDisclosure, SHint, SIcon } from '@sub2api/ui'
+import { SBadge, SCard, SDisclosure, SHint } from '@sub2api/ui'
 import type { PluginReview } from '@/api/types'
-import { useAssignableRoles } from '@/composables/useAssignableRoles'
+import PermRiskBadge from '@/components/permission/PermRiskBadge.vue'
 import { lt } from '@/i18n'
 import { formatBytes } from '@/utils/format'
 import { useOptionalT } from '@/composables/optionalText'
 import { accountTypesOf, asArray, display, endpointText, formatDuration, hpKey, pick, platformsOf } from '../pluginUtil'
 import PluginGatewayDecl from '../parts/PluginGatewayDecl.vue'
 import { useConsentLabels } from './hostPermission'
-import type { useNewPermissionRoles } from './newPermissionRoles'
 
-const props = defineProps<{
-  review: PluginReview
-  /** The roles the caller may give each new permission (ConsentView). */
-  permissionRoles: ReturnType<typeof useNewPermissionRoles>
-}>()
-const managed = useAssignableRoles()
+const props = defineProps<{ review: PluginReview }>()
 const { t } = useI18n()
 const tr = useOptionalT()
 const { colon } = useConsentLabels()
 const listSep = computed(() => t('plugins.listSep'))
-
-/** A role's display name when it is on the caller's managed list, else its key. */
-function roleName(key: string): string {
-  return lt(managed.get(key)?.name) || key
-}
 
 const reviewPlatforms = computed(() => platformsOf(props.review))
 const reviewAccountTypes = computed(() => accountTypesOf(props.review))
@@ -201,33 +190,13 @@ const hasProvides = computed(() => {
 
       <li v-if="review.user_permissions?.length">
         <div class="font-medium">{{ t('plugins.consent.userPermissions') }}</div>
-        <ul class="mt-1 space-y-2 pl-4">
-          <li v-for="p in review.user_permissions" :key="p.key" :data-permission="p.key">
-            <SBadge :tone="p.sensitive ? 'warning' : 'gray'" :title="lt(p.description)">
-              {{ lt(p.label) || p.key }}
-              <span class="font-mono opacity-70">({{ p.key }})</span>
-              <SIcon v-if="p.sensitive" name="lock" class="h-3 w-3" />
-            </SBadge>
-            <SHint v-if="!p.new" inline size="xs" class="ml-2">{{ t('plugins.consent.permissionExists') }}</SHint>
-            <template v-else>
-              <SHint v-if="p.default_roles?.length" inline size="xs" class="ml-2">{{ t('plugins.consent.defaultRoles', { roles: p.default_roles.map(roleName).join(listSep) }) }}</SHint>
-              <SHint v-else inline size="xs" class="ml-2">{{ t('plugins.consent.noDefaultRoles') }}</SHint>
-            </template>
-            <SHint v-if="p.inherit_from?.length" inline size="xs" class="ml-2">{{ t('plugins.consent.inheritFrom', { keys: p.inherit_from.join(listSep) }) }}</SHint>
-            <div v-if="p.new && permissionRoles.choices.value.length" class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1" data-testid="permission-roles">
-              <SHint inline size="xs">{{ t('plugins.consent.grantToRoles') }}</SHint>
-              <SCheckbox
-                v-for="r in permissionRoles.choices.value"
-                :key="r.key"
-                size="xs"
-                :data-role="r.key"
-                :model-value="permissionRoles.selected(p).includes(r.key)"
-                @update:model-value="permissionRoles.toggle(p, r.key, !!$event)"
-              >
-                {{ lt(r.name) || r.key }}
-              </SCheckbox>
-              <SHint v-if="permissionRoles.dropsDefaults(p)" inline size="xs" tone="warning">{{ t('plugins.consent.replacesDefaults') }}</SHint>
-            </div>
+        <ul class="mt-1 space-y-1 pl-4">
+          <li v-for="p in review.user_permissions" :key="p.key" class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs" :data-permission="p.key">
+            <span :title="lt(p.description)">{{ lt(p.label) || p.key }}</span>
+            <PermRiskBadge :risk="p.risk" />
+            <span class="font-mono text-gray-500 dark:text-dark-400">{{ p.key }}</span>
+            <SHint v-if="!p.new && !p.revived" inline size="xs">{{ t('plugins.consent.permissionExists') }}</SHint>
+            <SHint v-if="p.inherit_from?.length" inline size="xs">{{ t('plugins.consent.inheritFrom', { keys: p.inherit_from.join(listSep) }) }}</SHint>
           </li>
         </ul>
       </li>

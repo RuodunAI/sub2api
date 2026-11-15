@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SEmpty, SHint, SIcon, SPageHeader, SSpinner, confirm, toast } from '@sub2api/ui'
-import type { HostPermissionReview, PluginReview, PluginRoleGrant, ReviewDiffItem } from '@/api/types'
+import type { ConsentResult, HostPermissionReview, PluginReview, PluginRoleGrant, ReviewDiffItem } from '@/api/types'
 import { lt } from '@/i18n'
 import { errorMessage, notifyError } from '@/utils/errors'
 import { useAuthStore } from '@/stores/auth'
@@ -17,8 +17,12 @@ import HostPermissionTable from './consent/HostPermissionTable.vue'
 import type { HPRow } from './consent/hostPermission'
 import { useConsentLabels } from './consent/hostPermission'
 import { useOptionalT } from '@/composables/optionalText'
-import { useNewPermissionRoles } from './consent/newPermissionRoles'
+import { useConsentMatrix } from './consent/newPermissionRoles'
 import NewRoleGrants from './consent/NewRoleGrants.vue'
+import ConsentNeed from './consent/ConsentNeed.vue'
+import UpgradePermissionChanges from './consent/UpgradePermissionChanges.vue'
+import PermissionMatrix from '@/components/permission/PermissionMatrix.vue'
+import type { MatrixPerm } from '@/components/permission/useGrantMatrix'
 import { P } from '@/generated/permissions'
 
 const { t } = useI18n()
@@ -41,12 +45,11 @@ const rejecting = ref(false)
 const showMissing = ref(false)
 
 const checked = reactive<Record<string, boolean>>({})
-const permissionRoles = useNewPermissionRoles(review)
-/** The default grants, less those of permissions given other roles here (their choice is shown with them). */
-const shownRoleGrants = computed(() => {
-  const changed = new Set(Object.keys(permissionRoles.payload()).map((k) => `plugin.${key.value}:${k}`))
-  return asArray<PluginRoleGrant>(review.value?.new_role_grants).filter((g) => g.via !== 'default' || !changed.has(g.permission))
-})
+const consent = useConsentMatrix(review)
+const roleGrants = computed(() => asArray<PluginRoleGrant>(review.value?.new_role_grants))
+/** The matrix shows the default grants; the list keeps those inherited from holders of an earlier key. */
+const inheritGrants = computed(() => roleGrants.value.filter((g) => g.via === 'inherit'))
+const grantsOf = (p: MatrixPerm) => roleGrants.value.filter((g) => g.permission === p.action)
 
 /** Granting db.schema to this plugin takes the override as well (review.needs_db_schema_unconfined). */
 const DB_SCHEMA = 'db.schema'
@@ -104,18 +107,8 @@ const missingRequired = computed(() => rows.value.filter((r) => !r.optional && !
 const blockedByPermission = computed(() => rows.value.filter((r) => !r.optional && !r.allowed))
 const signatureOk = computed(() => review.value?.signature_status === 'valid')
 const isUpgrade = computed(() => !!review.value?.diff)
-/**
- * An upgrade's grants that need consent go only to roles the caller may name
- * (the server's checkRolesGrantable, as confirming held-back grants): the
- * roles of such grants it may not name. Giving a permission other roles
- * above takes its default grants out of the list.
- */
-const blockedRoles = computed(() =>
-  isUpgrade.value ? [...new Set(shownRoleGrants.value.filter((g) => g.needs_consent && !permissionRoles.canName(g.role)).map((g) => g.role))] : []
-)
-const canSubmit = computed(
-  () => !!review.value && review.value.host_compat_ok !== false && blockedByPermission.value.length === 0 && blockedRoles.value.length === 0
-)
+// Grants to roles the caller may not name go to a super admin's review instead of blocking (D2).
+const canSubmit = computed(() => !!review.value && review.value.host_compat_ok !== false && blockedByPermission.value.length === 0)
 const { colon, hpLabel } = useConsentLabels()
 
 function sigLabel(s: string | undefined): string {
@@ -169,16 +162,19 @@ async function submit() {
   const denied = rows.value.filter((x) => !checked[x.id]).map((x) => x.id)
   submitting.value = true
   try {
-    await api.post(`/plugins/${encodeURIComponent(key.value)}/versions/${encodeURIComponent(version.value)}/consent`, {
+    const res = await api.post<ConsentResult>(`/plugins/${encodeURIComponent(key.value)}/versions/${encodeURIComponent(version.value)}/consent`, {
       grants,
       denied,
-      new_permission_roles: permissionRoles.payload()
+      new_permission_roles: consent.payload()
     })
     dropReview(key.value, version.value)
     toast(t('plugins.consent.approved', { name: lt(r.name) || r.plugin_key, version: r.version }), 'success')
+    if (res?.withheld?.length) toast(t('plugins.matrix.withheld', { n: res.withheld.length }), 'info')
     router.push({ path: `/plugins/${encodeURIComponent(key.value)}`, query: { consented: version.value } })
   } catch (e) {
-    notifyError(e)
+    // The matrix locks critical rows for a non-super caller; a refusal still says why (D3).
+    if (isApiError(e) && e.details?.reason === 'critical') toast(t('plugins.matrix.criticalOnly'), 'error')
+    else notifyError(e)
   } finally {
     submitting.value = false
   }
@@ -284,10 +280,28 @@ onMounted(load)
       </SCard>
 
       <!-- what the plugin provides -->
-      <ProvidesSummary :review="review" :permission-roles="permissionRoles" />
+      <ProvidesSummary :review="review" />
 
-      <!-- the role grants the new permissions get -->
-      <NewRoleGrants :grants="shownRoleGrants" :need-consent="!!review.role_grants_need_consent" :blocked-roles="blockedRoles" class="mt-4" />
+      <!-- the roles the permissions the consent creates go to -->
+      <SCard v-if="consent.perms.value.length" :title="t('plugins.matrix.title')" :subtitle="t('plugins.matrix.hint', { n: consent.perms.value.length })" class="mt-4" data-testid="permission-matrix">
+        <PermissionMatrix
+          :matrix="consent.matrix"
+          :perms="consent.perms.value"
+          :groups="review.permission_groups"
+          :roles="consent.roles.value"
+          :plugin-key="review.plugin_key"
+          :lock-of="consent.lockOf"
+          :scope-limit="auth.scopes"
+          collapse-custom
+        >
+          <template v-if="isUpgrade" #trailing-head>{{ t('plugins.matrix.needsConfirm') }}</template>
+          <template v-if="isUpgrade" #trailing="{ perm }"><ConsentNeed :grants="grantsOf(perm)" /></template>
+        </PermissionMatrix>
+      </SCard>
+      <UpgradePermissionChanges v-if="isUpgrade" :review="review" />
+
+      <!-- the role grants inherited from holders of an earlier key -->
+      <NewRoleGrants :grants="inheritGrants" :need-consent="!!review.role_grants_need_consent" class="mt-4" />
 
       <!-- host permissions -->
       <HostPermissionTable :rows="rows" :checked="checked" :show-missing="showMissing" @toggle="toggle" />
@@ -301,11 +315,14 @@ onMounted(load)
           <p v-else-if="blockedByPermission.length" class="text-orange-700 dark:text-orange-300">
             {{ t('plugins.consent.blockedByPermission', { list: blockedByPermission.map((x) => hpLabel(x.id)).join(', ') }) }}
           </p>
-          <p v-else-if="blockedRoles.length" class="text-orange-700 dark:text-orange-300" data-testid="role-grants-blocked">
-            {{ t('plugins.consent.roleGrantsBlocked') }}
-          </p>
           <p v-else-if="missingRequired.length" class="text-gray-600 dark:text-gray-300">
             {{ t('plugins.consent.stillRequired', { n: missingRequired.length }) }}
+          </p>
+          <p v-if="consent.summary.value.sensitive.perms" class="text-gray-600 dark:text-gray-300" data-testid="consent-summary-sensitive">
+            {{ t('plugins.matrix.summarySensitive', { n: consent.summary.value.sensitive.perms, m: consent.summary.value.sensitive.roles }) }}
+          </p>
+          <p v-if="consent.summary.value.pending" class="text-orange-700 dark:text-orange-300" data-testid="consent-summary-pending">
+            {{ t('plugins.matrix.summaryPending', { n: consent.summary.value.pending }) }}
           </p>
         </div>
         <div class="flex gap-2">

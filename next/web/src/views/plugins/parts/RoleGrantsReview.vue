@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // Role grants a built-in plugin's automatic upgrade held back for review
-// (role_grants_to_review, CONTRACTS P4C): listed with what they need; who may
-// name every role listed (plugin:install, and each role nameable as on the
-// consent page: useNameableRoles, the server's checkRolesGrantable) confirms
+// (role_grants_to_review, CONTRACTS P4C): listed with their scope, risk and
+// what they need; who may name every role listed (plugin:install, and each
+// role nameable: useNameableRoles, the server's checkRolesGrantable) confirms
 // them or rejects them all, per version.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
