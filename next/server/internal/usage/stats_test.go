@@ -86,6 +86,8 @@ func TestMyOverview(t *testing.T) {
 	ctx := t.Context()
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	now := time.Now()
+	overviewNow = func() time.Time { return now }
+	t.Cleanup(func() { overviewNow = time.Now })
 	w := overviewWindows(now, loc)
 	at := func(id string, ts time.Time, user int64) *core.UsageRecord {
 		r := f.record(id, false)

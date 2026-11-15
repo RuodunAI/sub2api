@@ -216,7 +216,7 @@ func (s *Service) overview(c *gin.Context, self *int64) {
 }
 
 func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Location, self *int64, users, accounts bool) (Overview, error) {
-	w := overviewWindows(time.Now(), loc)
+	w := overviewWindows(overviewNow(), loc)
 	out := Overview{TZ: tz}
 	var activeToday int64
 	err := s.statsTx(ctx, statsLimitsFor(self), func(tx pgx.Tx) error {
@@ -361,6 +361,10 @@ func realtimeQuery(db *gorm.DB, f *store.Filter) *gorm.DB {
 			count(*) FILTER (WHERE `+realtimeFailure+`)
 			FROM usage_logs u`+f.Cond(), f.Args())
 }
+
+// overviewNow is the clock of the overview's calendar windows; a test fixes
+// it so that a run across midnight sees the windows it seeded.
+var overviewNow = time.Now
 
 type windows struct{ today, yesterday, last30d, last5m time.Time }
 
