@@ -1,6 +1,7 @@
 package install
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -30,13 +31,19 @@ func NewDefaultsApplier(perms core.PermissionCatalog) *DefaultsApplier {
 // what grants holds for their local key (roleGrants, settled by the
 // consent), and drops host permission grants the manifest no longer
 // requests, except revocations: a version asking for the permission again
-// does not get it by default (grants.Revoked). It runs inside the caller's
-// transaction.
+// does not get it by default (grants.Revoked). An activation (grants nil)
+// also lists for review what renamed keys' holders since the consent would
+// inherit (carryRenamedHolders). It runs inside the caller's transaction.
 // Plugins bring no sticky rules (CONTRACTS §5.6).
 func (a *DefaultsApplier) ApplyDefaults(ctx context.Context, tx pgx.Tx, m *manifest.Manifest, grants map[string]map[string][]string) error {
 	if a.perms != nil {
 		if err := a.perms.SyncPlugin(ctx, tx, m.Key, PermissionDefs(m, grants)); err != nil {
 			return fmt.Errorf("sync plugin permissions: %w", err)
+		}
+		if grants == nil {
+			if err := carryRenamedHolders(ctx, a.perms, tx, m); err != nil {
+				return fmt.Errorf("carry renamed holders: %w", err)
+			}
 		}
 	}
 	ids := make([]string, 0, len(m.HostPermissions))
@@ -78,43 +85,52 @@ func PermissionDefs(m *manifest.Manifest, grants map[string]map[string][]string)
 		for _, r := range up.Requires {
 			d.Requires = append(d.Requires, manifest.PermissionKey(m.Key, r))
 		}
-		if d.Scope = catalogScope(up.Scope); d.Scope != nil {
-			d.ScopeType = core.PluginScopeTypePrefix + d.Scope.Resource
-		}
+		d.Scope, d.ScopeType = core.StoredPluginScope(up.Scope), core.PluginScopeType(up.Scope)
 		defs = append(defs, d)
 	}
 	return defs
 }
 
-// catalogScope is a manifest scope as the catalog and the review show it:
-// Resource set to ResourceName() (the values resource for a values scope);
-// nil for nil.
-func catalogScope(s *manifest.PermissionScope) *manifest.PermissionScope {
-	if s == nil {
-		return nil
-	}
-	out := *s
-	out.Resource = s.ResourceName()
-	return &out
-}
-
-// unionDefs merges b into a (b wins on key collisions), preserving order.
-func unionDefs(a, b []core.PermissionDef) []core.PermissionDef {
+// stageDefs is what a consent made while the running version's
+// definitions (running) serve syncs the catalog with, the new version's
+// (next) in its order, then the keys only the running one declares:
+//   - a key only next declares is Staged: created disabled, a removed one
+//     left removed, until activation (logic #4);
+//   - a key both declare keeps the running scope, scope_type and defaults
+//     (the defaults name scopes of that scope), so no scope grant the
+//     running version serves is pruned before activation, and takes the
+//     higher of the two risks, never lowering it meanwhile (an old manifest
+//     may declare no risk at all); the rest (label, group, sort, requires)
+//     is next's.
+//
+// Activation's ApplyDefaults syncs next's definitions alone.
+func stageDefs(next, running []core.PermissionDef) []core.PermissionDef {
 	idx := map[string]int{}
-	out := make([]core.PermissionDef, 0, len(a)+len(b))
-	for _, d := range a {
+	out := make([]core.PermissionDef, 0, len(next)+len(running))
+	for _, d := range next {
+		d.Staged = true
 		idx[d.Key] = len(out)
 		out = append(out, d)
 	}
-	for _, d := range b {
-		if i, ok := idx[d.Key]; ok {
-			out[i] = d
+	for _, r := range running {
+		i, ok := idx[r.Key]
+		if !ok {
+			out = append(out, r)
 			continue
 		}
-		idx[d.Key] = len(out)
-		out = append(out, d)
+		d := &out[i]
+		d.Staged = false
+		d.Scope, d.ScopeType, d.Defaults = r.Scope, r.ScopeType, r.Defaults
+		if riskRank(r.Risk) > riskRank(d.Risk) {
+			d.Risk = r.Risk
+		}
 	}
 	return out
+}
+
+// riskRank orders user permission risks, low (or none) first.
+func riskRank(risk string) int {
+	return slices.Index(manifest.UserPermissionRisks, cmp.Or(risk, manifest.RiskLow))
 }
 
 // roleGrants resolves, per local userPermission key, the role -> scope
@@ -126,12 +142,12 @@ func unionDefs(a, b []core.PermissionDef) []core.PermissionDef {
 // (planRoleGrants); the roles the consent's override names replace theirs
 // (overrideGrants). Defaults to roles the override leaves out stay: the
 // consent's settlement drops or withholds them (settleRoleGrants).
-func roleGrants(m *manifest.Manifest, overrides map[string]map[string][]string, existing map[string]bool) map[string]map[string][]string {
+func roleGrants(m *manifest.Manifest, overrides map[string]map[string][]string, existing catalogPerms) map[string]map[string][]string {
 	out := make(map[string]map[string][]string, len(m.UserPermissions))
 	for _, up := range m.UserPermissions {
 		roles := map[string][]string{}
 		out[up.Key] = roles
-		if existing[manifest.PermissionKey(m.Key, up.Key)] {
+		if existing.has(manifest.PermissionKey(m.Key, up.Key)) {
 			continue
 		}
 		if !renamed(m, up, existing) {
@@ -145,6 +161,6 @@ func roleGrants(m *manifest.Manifest, overrides map[string]map[string][]string, 
 // renamed reports that up inherits from a key the catalog has (existing):
 // a rename or split, which keeps the old key's holders instead of getting
 // the manifest defaults.
-func renamed(m *manifest.Manifest, up manifest.UserPermission, existing map[string]bool) bool {
-	return slices.ContainsFunc(up.InheritFrom, func(from string) bool { return existing[manifest.PermissionKey(m.Key, from)] })
+func renamed(m *manifest.Manifest, up manifest.UserPermission, existing catalogPerms) bool {
+	return slices.ContainsFunc(up.InheritFrom, func(from string) bool { return existing.has(manifest.PermissionKey(m.Key, from)) })
 }

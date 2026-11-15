@@ -11,7 +11,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
@@ -28,9 +27,11 @@ const runningPluginStatuses = `'enabled','upgrading'`
 // grants but the scoped ones their new scope no longer takes (pruneScopes);
 // a removed one declared again revives with the plugin's status and the
 // grants it had, never its GrantRoles (D6), audited as authz.sync.revive.
-// Keys no longer declared are marked removed last, audited as
-// authz.sync.remove: their grants stay, granting nothing, until the key
-// comes back.
+// A Staged definition (a version not running yet) is created disabled and
+// never revives a removed key: activation does both (SyncPlugin again, then
+// SetPluginActive). Keys no longer declared are marked removed last,
+// audited as authz.sync.remove: their grants stay, granting nothing, until
+// the key comes back.
 func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []core.PermissionDef) error {
 	if pluginKey == "" {
 		return core.ErrInvalidArgument.WithMessage("plugin key is required")
@@ -57,12 +58,12 @@ func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, d
 		if err != nil {
 			return err
 		}
-		if wasRemoved {
+		if wasRemoved && !d.Staged {
 			revived = append(revived, key)
 		}
 		if inserted {
 			created = append(created, d)
-		} else if err := s.pruneScopes(ctx, tx, key, readPluginScope(d.ScopeType, d.Scope)); err != nil {
+		} else if err := s.pruneScopes(ctx, tx, key, core.ReadPluginScope(d.ScopeType, d.Scope)); err != nil {
 			return err
 		}
 	}
@@ -98,23 +99,17 @@ func (s *Service) auditKeyStatus(ctx context.Context, tx pgx.Tx, action, pluginK
 	if len(keys) == 0 {
 		return nil
 	}
-	rows, err := tx.Query(ctx, `
-SELECT p.key, array_agg(DISTINCT r.key ORDER BY r.key) FROM permissions p
-JOIN (SELECT role_id, permission_id FROM role_permissions
-      UNION SELECT role_id, permission_id FROM role_permission_scopes) h ON h.permission_id = p.id
-JOIN roles r ON r.id = h.role_id
-WHERE p.key = ANY($1) GROUP BY p.key`, keys)
+	grants, err := s.PermissionHolders(ctx, tx, keys)
 	if err != nil {
 		return err
 	}
 	holders := map[string][]string{}
-	var key string
-	var roles []string
-	if _, err := pgx.ForEachRow(rows, []any{&key, &roles}, func() error {
-		holders[key] = roles
-		return nil
-	}); err != nil {
-		return err
+	for key, hs := range grants {
+		for _, h := range hs {
+			if !slices.Contains(holders[key], h.Role) {
+				holders[key] = append(holders[key], h.Role)
+			}
+		}
 	}
 	slices.Sort(keys)
 	return s.audit(ctx, tx, 0, action, "plugin", pluginKey, map[string]any{"keys": keys, "holders": holders})
@@ -132,7 +127,7 @@ func checkPluginDef(d core.PermissionDef) error {
 	case d.Risk == manifest.RiskCritical && len(d.Defaults) > 0:
 		return core.ErrInvalidArgument.WithMessage("permission " + d.Key + ": a critical permission has no defaults")
 	}
-	ps := readPluginScope(d.ScopeType, d.Scope)
+	ps := core.ReadPluginScope(d.ScopeType, d.Scope)
 	if err := checkScopes(d.Key, ps, d.Defaults); err != nil {
 		return err
 	}
@@ -148,9 +143,8 @@ func checkScopes(key string, ps manifest.PermissionScope, roles map[string][]str
 			if sfx == "" {
 				continue
 			}
-			k := key + ":" + sfx
-			if p, err := perm.Parse(k); err != nil || string(p.Action) != key || p.Suffix() != sfx || !ps.Takes(sfx) {
-				invalid = append(invalid, k)
+			if c, ok := core.PluginScopeSuffix(key, sfx); !ok || c != sfx || !ps.Takes(sfx) {
+				invalid = append(invalid, withSuffix(key, sfx))
 			}
 		}
 	}
@@ -181,7 +175,7 @@ WITH prev AS (SELECT status FROM permissions WHERE key = $1)
 INSERT INTO permissions (key, module, label, description, source, plugin_key, risk, sensitive, status, sort,
     scope_type, scope, group_key, group_label, group_sort, requires, defaults)
 VALUES ($1, $2, $3, $4, 'plugin', $5::text, $6::varchar, $6::varchar <> 'low',
-    CASE WHEN EXISTS (SELECT 1 FROM plugins WHERE key = $5::text AND status IN (`+runningPluginStatuses+`))
+    CASE WHEN NOT $15::bool AND EXISTS (SELECT 1 FROM plugins WHERE key = $5::text AND status IN (`+runningPluginStatuses+`))
          THEN 'active' ELSE 'disabled' END,
     $7, $8, $9, $10, $11, $12, COALESCE($13::text[], '{}'), $14)
 ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label,
@@ -189,12 +183,13 @@ ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label
     sort = EXCLUDED.sort, scope_type = EXCLUDED.scope_type, scope = EXCLUDED.scope,
     group_key = EXCLUDED.group_key, group_label = EXCLUDED.group_label, group_sort = EXCLUDED.group_sort,
     requires = EXCLUDED.requires, defaults = EXCLUDED.defaults,
-    -- a removed key declared again revives with the plugin's status; others keep theirs
-    status = CASE WHEN permissions.status = 'removed' THEN EXCLUDED.status ELSE permissions.status END
+    -- a removed key declared again revives with the plugin's status, unless
+    -- staged; others keep theirs
+    status = CASE WHEN permissions.status = 'removed' AND NOT $15::bool THEN EXCLUDED.status ELSE permissions.status END
     WHERE permissions.plugin_key = EXCLUDED.plugin_key
 RETURNING (xmax = 0), COALESCE((SELECT status = 'removed' FROM prev), false)`, d.Key, manifest.PermissionModule(pluginKey), label, orEmpty(d.Description), pluginKey,
 		d.Risk, d.Sort, d.ScopeType, scope, d.Group, orEmpty(d.GroupLabel), d.GroupSort,
-		d.Requires, orEmpty(d.Defaults)).Scan(&inserted, &wasRemoved)
+		d.Requires, orEmpty(d.Defaults), d.Staged).Scan(&inserted, &wasRemoved)
 	if store.IsNoRows(err) {
 		return false, false, core.ErrConflict.WithMessage("permission " + d.Key + " belongs to another owner")
 	}
@@ -249,9 +244,9 @@ WHERE p.id = rs.permission_id AND p.key = $1 AND rs.scope = ANY($2) RETURNING rs
 }
 
 // CanGrantToRoles implements core.PermissionCatalog: actorID may hand new
-// plugin permissions to each role of roleKeys, which is a change of that
-// role (editableRole: within the actor's grantSet and, built-in or held,
-// on its assignable list) to a role the actor may assign
+// plugin permissions, of risk at most risk, to each role of roleKeys, which
+// is a change of that role (editableRole: within the actor's grantSet and,
+// built-in or held, on its assignable list) to a role the actor may assign
 // and does not hold itself (pluginGrantee, T59): the new permissions need
 // not be held, so an actor naming its own role would get what
 // PUT /roles/:id/permissions refuses. A critical permission takes a
@@ -260,7 +255,7 @@ WHERE p.id = rs.permission_id AND p.key = $1 AND rs.scope = ANY($2) RETURNING rs
 // invalid. Like every role write it bumps tx (serializing with other role
 // changes) and locks the roles; the SyncPlugin that follows publishes the
 // new version.
-func (s *Service) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, critical bool) error {
+func (s *Service) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, risk string) error {
 	if roleKeys = dedupe(roleKeys); len(roleKeys) == 0 {
 		return nil
 	}
@@ -275,7 +270,7 @@ func (s *Service) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64,
 	if err != nil {
 		return err
 	}
-	if critical && !actor.Superuser {
+	if risk == manifest.RiskCritical && !actor.Superuser {
 		return core.ErrPermissionDenied.WithMessage(t(ctx,
 			"only the super admin may grant critical plugin permissions",
 			"只有超级管理员能授予插件的关键权限")).WithDetails(map[string]any{"reason": core.GrantDenyCritical, "superuser": true})
@@ -326,7 +321,8 @@ func (s *Service) PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, 
 	}
 	out := core.PluginGrantees{Superuser: actor.Superuser, Denied: map[string]string{}}
 	for _, r := range roles {
-		if why := cmp.Or(editDenial(actor, sets[r.Key], r), granteeDenial(actor, held, r.Key)); why != "" {
+		edit, _ := editDenial(actor, sets[r.Key], r)
+		if why := cmp.Or(edit, granteeDenial(actor, held, r.Key)); why != "" {
 			out.Denied[r.Key] = why
 		}
 	}
@@ -384,7 +380,7 @@ func (s *Service) GrantPluginPermission(ctx context.Context, tx pgx.Tx, key stri
 	case err != nil:
 		return err
 	}
-	if err := checkScopes(key, readPluginScope(scopeType, &scope), roles); err != nil {
+	if err := checkScopes(key, core.ReadPluginScope(scopeType, &scope), roles); err != nil {
 		return err
 	}
 	v, err := s.Bump(ctx, tx)
@@ -430,6 +426,54 @@ ins_scoped AS (
     ON CONFLICT DO NOTHING RETURNING role_id, permission_id, scope)
 SELECT i.role_id, p.key || CASE WHEN i.scope = '' THEN '' ELSE ':' || i.scope END
 FROM (SELECT * FROM ins UNION ALL SELECT * FROM ins_scoped) i JOIN permissions p ON p.id = i.permission_id`, roleKeys, scopes, key)
+}
+
+// PluginPermissions implements core.PermissionCatalog.
+func (s *Service) PluginPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]core.PluginPermission, error) {
+	rows, err := q.Query(ctx, `SELECT key, label, status, risk, scope_type, scope FROM permissions
+WHERE plugin_key = $1 ORDER BY sort, key`, pluginKey)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (core.PluginPermission, error) {
+		var p core.PluginPermission
+		var scopeType string
+		var scope manifest.PermissionScope
+		if err := row.Scan(&p.Key, &p.Label, &p.Status, &p.Risk, &scopeType, &scope); err != nil {
+			return p, err
+		}
+		p.Scope, p.ScopeType = core.ReadPluginScope(scopeType, &scope), scopeType
+		return p, nil
+	})
+}
+
+// PermissionHolders implements core.PermissionCatalog: a role holds a key
+// by a role_permissions row (every row) or role_permission_scopes rows
+// (each scope), whatever the permission's status.
+func (s *Service) PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]core.PermissionHolder, error) {
+	out := map[string][]core.PermissionHolder{}
+	if len(keys) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `
+SELECT p.key, r.key, '' FROM role_permissions rp
+  JOIN permissions p ON p.id = rp.permission_id JOIN roles r ON r.id = rp.role_id
+ WHERE p.key = ANY($1) AND NOT r.superuser
+UNION ALL
+SELECT p.key, r.key, rs.scope FROM role_permission_scopes rs
+  JOIN permissions p ON p.id = rs.permission_id JOIN roles r ON r.id = rs.role_id
+ WHERE p.key = ANY($1) AND NOT r.superuser
+ORDER BY 1, 2, 3`, keys)
+	if err != nil {
+		return nil, err
+	}
+	var key string
+	var h core.PermissionHolder
+	_, err = pgx.ForEachRow(rows, []any{&key, &h.Role, &h.Scope}, func() error {
+		out[key] = append(out[key], h)
+		return nil
+	})
+	return out, err
 }
 
 // SetPluginActive implements core.PermissionCatalog.

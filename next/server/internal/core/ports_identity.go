@@ -16,6 +16,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // ============================================================ identity & authz (owner: A core-data)
@@ -362,6 +363,60 @@ func (denyAllUsers) CanActOnUsers(context.Context, int64, UserAction, ...int64) 
 // "plugin:" + its manifest scope's ResourceName().
 const PluginScopeTypePrefix = "plugin:"
 
+// The one encoding of a plugin permission's scope in the catalog: written
+// as StoredPluginScope with PluginScopeType, read back with ReadPluginScope.
+
+// StoredPluginScope is manifest scope s as the catalog stores it and the
+// console reads it (PermissionDef.Scope, GET /permissions, the review):
+// Resource set to ResourceName(), the values resource for a values scope;
+// nil for nil.
+func StoredPluginScope(s *manifest.PermissionScope) *manifest.PermissionScope {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	out.Resource = s.ResourceName()
+	return &out
+}
+
+// PluginScopeType is the scope_type of a plugin permission of manifest
+// scope s, "" for none.
+func PluginScopeType(s *manifest.PermissionScope) string {
+	if s == nil {
+		return ""
+	}
+	return PluginScopeTypePrefix + s.ResourceName()
+}
+
+// ReadPluginScope reads a stored plugin permission's scope_type and scope
+// as the scope its grants may name (manifest.PermissionScope.Takes): the
+// zero scope (every row only) for an unscoped one, the resource always
+// that of scope_type.
+func ReadPluginScope(scopeType string, s *manifest.PermissionScope) manifest.PermissionScope {
+	res, ok := strings.CutPrefix(scopeType, PluginScopeTypePrefix)
+	if !ok {
+		return manifest.PermissionScope{}
+	}
+	var out manifest.PermissionScope
+	if s != nil {
+		out = *s
+	}
+	out.Resource = res
+	return out
+}
+
+// PluginScopeSuffix is the canonical form of sfx, a scope suffix of the
+// plugin permission key ("own", "flow/3", "value/input"); ok is false when
+// key:sfx is not a scope of key. Whether the permission takes it is
+// ReadPluginScope's Takes.
+func PluginScopeSuffix(key, sfx string) (string, bool) {
+	p, err := perm.Parse(key + ":" + sfx)
+	if err != nil || string(p.Action) != key {
+		return "", false
+	}
+	return p.Suffix(), true
+}
+
 // PermissionDef describes one permission in the catalog.
 type PermissionDef struct {
 	Key    string
@@ -391,6 +446,30 @@ type PermissionDef struct {
 	// permission, role -> suffixes as Defaults (super admin roles skipped):
 	// the consent's decision, not the manifest's.
 	GrantRoles map[string][]string
+	// Staged: declared only by a version approved while another runs. The
+	// catalog creates it disabled and leaves it removed when it is, so it
+	// means nothing before that version's activation syncs it again.
+	Staged bool
+}
+
+// PluginPermission is a plugin permission as the catalog holds it
+// (PermissionCatalog.PluginPermissions).
+type PluginPermission struct {
+	Key    string // qualified
+	Label  LocalizedText
+	Status string // active | disabled | removed
+	Risk   string // manifest.RiskLow | RiskSensitive | RiskCritical
+	// ScopeType and Scope as stored; Scope read back with ReadPluginScope
+	// (the zero scope for an unscoped key).
+	ScopeType string
+	Scope     manifest.PermissionScope
+}
+
+// PermissionHolder is one grant of a permission
+// (PermissionCatalog.PermissionHolders): the role and the scope.
+type PermissionHolder struct {
+	Role  string
+	Scope string // canonical suffix; "" every row
 }
 
 // PluginGrantees is which roles an actor may hand new plugin permissions
@@ -425,10 +504,10 @@ type PermissionCatalog interface {
 	SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []PermissionDef) error
 	// CanGrantToRoles fails unless actorID may change every role of
 	// roleKeys (super admin roles never), as handing them a plugin's new
-	// permissions does, and each is on its assignable list and, but for a
-	// superuser, not held by actorID. A critical permission also needs a
-	// superuser actor.
-	CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, critical bool) error
+	// permissions of risk at most risk does, and each is on its assignable
+	// list and, but for a superuser, not held by actorID. A critical risk
+	// also needs a superuser actor.
+	CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, risk string) error
 	// PluginGrantees is CanGrantToRoles read-only: no version bump, no
 	// locks, a refusal is a Denied entry rather than an error.
 	PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string) (PluginGrantees, error)
@@ -438,6 +517,13 @@ type PermissionCatalog interface {
 	// authz.sync.grant: the role grants an upgrade withheld until someone
 	// confirmed them. Callers check the rights (CanGrantToRoles).
 	GrantPluginPermission(ctx context.Context, tx pgx.Tx, key string, roles map[string][]string) error
+	// PluginPermissions lists the plugin's permissions, removed ones
+	// included, by their sort.
+	PluginPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]PluginPermission, error)
+	// PermissionHolders maps each key of keys to its grants, every row and
+	// scoped ones, by role then scope; super admin roles aside, removed
+	// keys keeping theirs (D6).
+	PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]PermissionHolder, error)
 	// SetPluginActive flips status active/disabled (enable/disable); removed
 	// permissions stay removed.
 	SetPluginActive(ctx context.Context, tx pgx.Tx, pluginKey string, active bool) error

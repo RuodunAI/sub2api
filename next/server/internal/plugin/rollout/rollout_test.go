@@ -117,7 +117,15 @@ type recorder struct {
 	events   []string
 }
 
-func (r *recorder) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, bool) error { return nil }
+func (r *recorder) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, string) error {
+	return nil
+}
+func (r *recorder) PluginPermissions(context.Context, store.Querier, string) ([]core.PluginPermission, error) {
+	return nil, nil
+}
+func (r *recorder) PermissionHolders(context.Context, store.Querier, []string) (map[string][]core.PermissionHolder, error) {
+	return nil, nil
+}
 func (r *recorder) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
 	return core.PluginGrantees{}, nil
 }

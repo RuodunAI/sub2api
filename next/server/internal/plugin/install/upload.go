@@ -258,11 +258,12 @@ func insertVersionRow(ctx context.Context, tx pgx.Tx, p *pkg.Package, ver *pkg.V
 // revoked host permission it asks for (only an operator restores one).
 func (s *Service) carryOverConsent(ctx context.Context, r *Review, key, version string, actorID int64) error {
 	revoked := slices.ContainsFunc(r.HostPermissions, func(hp ReviewHostPerm) bool { return hp.Revoked })
+	mode := consentModeOf(ctx, true)
 	if r.UpgradeFrom == "" || r.ConsentStatus != ConsentAwaiting || r.Diff == nil || revoked ||
-		len(r.Diff.Added) != 0 || len(r.Diff.Widened) != 0 || (r.RoleGrantsNeedConsent && !isSystem(ctx)) {
+		len(r.Diff.Added) != 0 || len(r.Diff.Widened) != 0 || (r.RoleGrantsNeedConsent && mode == modeAuto) {
 		return nil
 	}
-	_, err := s.consent(ctx, key, version, ConsentRequest{}, actorID, true)
+	_, err := s.consent(ctx, key, version, ConsentRequest{}, actorID, mode)
 	switch {
 	case errors.Is(err, errRoleGrantsNeedConsent):
 		return nil

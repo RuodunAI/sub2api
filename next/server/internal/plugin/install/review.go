@@ -11,6 +11,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -168,8 +169,10 @@ type ReviewUserPerm struct {
 type ReviewCell struct {
 	// Grant is what a consent without override gives (canonical suffixes;
 	// [] none, [""] every row). For a revived key, the grants it revives
-	// with; for any other existing key, [].
-	Grant    []string `json:"grant"`
+	// with; for any other existing key, []. Absent on a revived or renamed
+	// row for a viewer without role:read: it tells who holds the old key
+	// (C4).
+	Grant    []string `json:"grant,omitzero"`
 	Nameable bool     `json:"nameable"`
 	Reason   string   `json:"reason,omitempty"` // role_define|critical|superuser_role|not_editable|not_assignable|held
 	Withheld bool     `json:"withheld"`         // Grant goes to review instead (D2)
@@ -187,9 +190,11 @@ type ReviewRoleColumn struct {
 
 // ReviewRemovedPerm is a permission an upgrade no longer declares.
 type ReviewRemovedPerm struct {
-	Key     string             `json:"key"` // local
-	Label   core.LocalizedText `json:"label"`
-	Holders []string           `json:"holders"` // role keys, super admins aside
+	Key   string             `json:"key"` // local
+	Label core.LocalizedText `json:"label"`
+	// Holders are the role keys holding it, super admins aside; absent for
+	// a viewer without role:read (C4).
+	Holders []string `json:"holders,omitzero"`
 }
 
 type ReviewDatabase struct {
@@ -405,7 +410,7 @@ func buildReview(m *manifest.Manifest, files map[string][]byte, ver *pkg.Verific
 		}
 		r.UserPermissions = append(r.UserPermissions, ReviewUserPerm{Key: up.Key, Label: core.LocalizedText(up.Label),
 			Description: core.LocalizedText(up.Description), Risk: up.RiskLevel(), Group: up.Group, Requires: up.Requires,
-			Scope: catalogScope(up.Scope), Defaults: defaults, InheritFrom: up.InheritFrom, Cells: map[string]ReviewCell{}})
+			Scope: core.StoredPluginScope(up.Scope), Defaults: defaults, InheritFrom: up.InheritFrom, Cells: map[string]ReviewCell{}})
 	}
 	if m.Database != nil {
 		r.Database = &ReviewDatabase{Schema: m.Database.Schema, Migrations: pkg.MigrationFiles(files, m.Database.Migrations)}
@@ -461,52 +466,70 @@ func diffGrants(m *manifest.Manifest, current map[string]Grant) *ReviewDiff {
 }
 
 // resolveRoleGrants fills in the consent matrix for the viewer actorID, as
-// a consent without overrides by it would settle given the catalog now:
-// the role columns, each permission's cells and flags, the role grants
-// (roleGrants, planRoleGrants) and, on an upgrade (r.Diff set), the
-// permissions this version no longer declares. A system viewer (a built-in
-// plugin's upload) may name every role.
+// a consent without overrides by it would settle given the catalog now
+// (markPlan in the viewer's mode: a system viewer, a built-in plugin's
+// upload, may name every role): the role columns, each permission's cells
+// and flags, the role grants (roleGrants, planRoleGrants) and, on an
+// upgrade (r.Diff set), the permissions this version no longer declares.
+// Who holds an existing key is role:read's to see (C4): without it the
+// viewer gets no cell grants of revived or renamed rows, no inherited role
+// grants and no holders of removed keys.
 func (s *Service) resolveRoleGrants(ctx context.Context, r *Review, m *manifest.Manifest, actorID int64) error {
+	mode := consentModeOf(ctx, false)
+	seeHolders := mode == modeSystem
+	if !seeHolders {
+		var err error
+		if seeHolders, err = s.d.Authz.Can(ctx, actorID, string(perm.RoleRead)); err != nil {
+			return err
+		}
+	}
 	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		existing, revived, err := catalogKeys(ctx, tx, m)
+		existing, err := s.catalogKeys(ctx, tx, m.Key)
 		if err != nil {
 			return err
 		}
 		x := consentMatrix{roles: roleGrants(m, nil, existing)}
-		if x.plan, _, err = planRoleGrants(ctx, tx, m, existing, x.roles, nil, r.Diff != nil); err != nil {
+		if x.plan, _, err = s.planRoleGrants(ctx, tx, m, existing, x.roles, nil, r.Diff != nil); err != nil {
 			return err
 		}
-		if x.gs, x.canDefine, err = s.noteRoleColumns(ctx, tx, r, actorID); err != nil {
+		if x.gs, x.canDefine, err = s.noteRoleColumns(ctx, tx, r, actorID, mode); err != nil {
 			return err
 		}
-		for i := range x.plan {
-			g := &x.plan[i]
-			g.Nameable, _ = nameable(x.gs, x.canDefine, g.Role, g.Risk)
-			g.Withheld = !g.Nameable
+		markPlan(x.plan, x.gs, x.canDefine, mode)
+		r.RoleGrantsNeedConsent = needConsent(x.plan)
+		r.NewRoleGrants = slices.DeleteFunc(slices.Clone(x.plan), func(g RoleGrant) bool { return !seeHolders && g.Via == viaInherit })
+		if r.NewRoleGrants == nil {
+			r.NewRoleGrants = []RoleGrant{}
 		}
-		r.NewRoleGrants, r.RoleGrantsNeedConsent = append([]RoleGrant{}, x.plan...), needConsent(x.plan)
 		var revivedKeys []string
-		for key, ok := range revived {
-			if ok {
+		for _, up := range m.UserPermissions {
+			if key := manifest.PermissionKey(m.Key, up.Key); existing.removed(key) {
 				revivedKeys = append(revivedKeys, key)
 			}
 		}
-		if x.held, err = inheritHolders(ctx, tx, revivedKeys); err != nil {
-			return err
+		if len(revivedKeys) > 0 {
+			cat, _ := s.catalog() // catalogKeys checked it
+			if x.held, err = cat.PermissionHolders(ctx, tx, revivedKeys); err != nil {
+				return err
+			}
 		}
 		for i := range r.UserPermissions {
 			up := &r.UserPermissions[i]
 			key := manifest.PermissionKey(m.Key, up.Key)
 			decl, _ := m.FindUserPermission(up.Key)
-			up.New, up.Revived, up.Renamed = !existing[key], revived[key], renamed(m, decl, existing)
+			up.New, up.Revived, up.Renamed = !existing.has(key), existing.removed(key), renamed(m, decl, existing)
 			for _, col := range r.RoleColumns {
-				up.Cells[col.Key] = x.cell(key, up, col)
+				c := x.cell(key, up, col)
+				if !seeHolders && (up.Revived || up.Renamed) {
+					c.Grant = nil
+				}
+				up.Cells[col.Key] = c
 			}
 		}
 		if r.Diff == nil {
 			return nil
 		}
-		return noteRemovedPerms(ctx, tx, r, m)
+		return s.noteRemovedPerms(ctx, tx, r, m, seeHolders)
 	})
 }
 
@@ -518,7 +541,7 @@ type consentMatrix struct {
 	canDefine bool
 	roles     map[string]map[string][]string
 	plan      []RoleGrant
-	held      map[string][]roleRef
+	held      map[string][]core.PermissionHolder
 }
 
 // cell is the consent matrix cell of permission key (up) and role column
@@ -531,25 +554,26 @@ func (x *consentMatrix) cell(key string, up *ReviewUserPerm, col ReviewRoleColum
 		return c
 	}
 	c.Nameable, c.Reason = nameable(x.gs, x.canDefine, col.Key, up.Risk)
+	var grant []string
 	switch {
 	case up.Revived:
 		for _, h := range x.held[key] {
-			if h.key == col.Key {
-				c.Grant = append(c.Grant, h.scope)
+			if h.Role == col.Key {
+				grant = append(grant, h.Scope)
 			}
 		}
-		return c
-	case !up.New:
-		return c
-	}
-	c.Grant = append(c.Grant, x.roles[up.Key][col.Key]...)
-	for _, g := range x.plan {
-		if g.Permission == key && g.Role == col.Key && g.Via == viaInherit && !slices.Contains(c.Grant, g.Scope) {
-			c.Grant = append(c.Grant, g.Scope)
+	case up.New:
+		grant = slices.Clone(x.roles[up.Key][col.Key])
+		for _, g := range x.plan {
+			if g.Permission == key && g.Role == col.Key && g.Via == viaInherit {
+				grant = append(grant, g.Scope)
+			}
 		}
+		c.Withheld = len(grant) > 0 && !c.Nameable
 	}
-	slices.Sort(c.Grant)
-	c.Withheld = len(c.Grant) > 0 && !c.Nameable
+	if grant = manifest.CanonicalSuffixes(grant); grant != nil {
+		c.Grant = grant
+	}
 	return c
 }
 
@@ -557,7 +581,7 @@ func (x *consentMatrix) cell(key string, up *ReviewUserPerm, col ReviewRoleColum
 // admins first (they hold every permission, so nothing is written to them),
 // then built-in ones, as the viewer actorID may name them for a permission
 // of low risk. It returns what it read of the viewer (grantees).
-func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, actorID int64) (core.PluginGrantees, bool, error) {
+func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, actorID int64, mode consentMode) (core.PluginGrantees, bool, error) {
 	rows, err := tx.Query(ctx, `SELECT key, name, builtin, superuser FROM roles ORDER BY superuser DESC, builtin DESC, id`)
 	if err != nil {
 		return core.PluginGrantees{}, false, err
@@ -575,7 +599,7 @@ func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, act
 			keys = append(keys, c.Key)
 		}
 	}
-	gs, canDefine, err := s.grantees(ctx, tx, actorID, keys)
+	gs, canDefine, err := s.grantees(ctx, tx, actorID, keys, mode)
 	if err != nil {
 		return core.PluginGrantees{}, false, err
 	}
@@ -592,41 +616,46 @@ func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, act
 }
 
 // noteRemovedPerms lists the permissions of the plugin the catalog has but
-// m no longer declares, with the roles holding them.
-func noteRemovedPerms(ctx context.Context, tx pgx.Tx, r *Review, m *manifest.Manifest) error {
-	keys := make([]string, 0, len(m.UserPermissions))
-	for _, up := range m.UserPermissions {
-		keys = append(keys, manifest.PermissionKey(m.Key, up.Key))
-	}
-	rows, err := tx.Query(ctx, `SELECT key, label FROM permissions
-WHERE plugin_key = $1 AND status <> 'removed' AND key <> ALL($2) ORDER BY sort, key`, m.Key, keys)
+// m no longer declares (still active or disabled: SyncPlugin's removal
+// rule), with the roles holding them when seeHolders.
+func (s *Service) noteRemovedPerms(ctx context.Context, tx pgx.Tx, r *Review, m *manifest.Manifest, seeHolders bool) error {
+	cat, err := s.catalog()
 	if err != nil {
 		return err
 	}
-	removed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ReviewRemovedPerm, error) {
-		var p ReviewRemovedPerm
-		return p, row.Scan(&p.Key, &p.Label)
-	})
+	perms, err := cat.PluginPermissions(ctx, tx, m.Key)
 	if err != nil {
 		return err
 	}
-	gone := make([]string, len(removed))
-	for i, p := range removed {
-		gone[i] = p.Key
+	var gone []core.PluginPermission
+	for _, p := range perms {
+		local, _ := manifest.LocalPermission(m.Key, p.Key)
+		if _, declared := m.FindUserPermission(local); !declared && p.Status != permStatusRemoved {
+			gone = append(gone, p)
+		}
 	}
-	held, err := inheritHolders(ctx, tx, gone)
-	if err != nil {
-		return err
+	var held map[string][]core.PermissionHolder
+	if seeHolders && len(gone) > 0 {
+		keys := make([]string, len(gone))
+		for i, p := range gone {
+			keys[i] = p.Key
+		}
+		if held, err = cat.PermissionHolders(ctx, tx, keys); err != nil {
+			return err
+		}
 	}
-	for _, p := range removed {
-		p.Holders = []string{}
+	for _, p := range gone {
+		rp := ReviewRemovedPerm{Label: p.Label}
+		rp.Key, _ = manifest.LocalPermission(m.Key, p.Key)
+		if seeHolders {
+			rp.Holders = []string{}
+		}
 		for _, h := range held[p.Key] {
-			if !slices.Contains(p.Holders, h.key) {
-				p.Holders = append(p.Holders, h.key)
+			if !slices.Contains(rp.Holders, h.Role) {
+				rp.Holders = append(rp.Holders, h.Role)
 			}
 		}
-		p.Key, _ = manifest.LocalPermission(m.Key, p.Key)
-		r.RemovedUserPermissions = append(r.RemovedUserPermissions, p)
+		r.RemovedUserPermissions = append(r.RemovedUserPermissions, rp)
 	}
 	return nil
 }
