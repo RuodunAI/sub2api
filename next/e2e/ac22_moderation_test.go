@@ -263,3 +263,32 @@ func TestAC22_PromptModeration(t *testing.T) {
 		t.Fatalf("own call hook decision: %q", selfNote)
 	}
 }
+
+// AC 22 (plugin permissions): moderation:exempt is critical, so no role gets
+// it by default; a role the super admin grants it to still makes its users
+// staff (isStaff asks the host for the permission).
+func TestAC22_ExemptIsCriticalStaff(t *testing.T) {
+	e := Setup(t)
+	admin := e.Admin()
+	e.EnsurePlugin(admin, moderationKey, "")
+	exempt := "plugin." + moderationKey + ":moderation:exempt"
+	mod, _ := e.PluginPermissions(admin, moderationKey)
+	p, ok := Find(mod.Get("permissions").Array(), "key", exempt)
+	if !ok || p.Get("risk").String() != "critical" || p.Get("defaults").Exists() {
+		t.Fatalf("catalog entry of %s: %s", exempt, p.Raw)
+	}
+
+	roleKey := e.RoleKey("modstaff")
+	e.CreateRole(admin, roleKey, roleKey, []string{exempt})
+	staff := e.CreateUser(admin, UserSpec{Roles: []string{"user", roleKey}})
+	plain := e.CreateUser(admin, UserSpec{})
+	for _, c := range []struct {
+		u    *Session
+		want bool
+	}{{staff, true}, {plain, false}} {
+		d := admin.OK(t, http.MethodGet, fmt.Sprintf("/p/moderation/users/%d", c.u.UserID), nil)
+		if d.Get("staff").Bool() != c.want {
+			t.Errorf("user %d staff = %v, want %v: %s", c.u.UserID, d.Get("staff").Bool(), c.want, d.Raw)
+		}
+	}
+}

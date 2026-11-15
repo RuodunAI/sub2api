@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 // RegisterPublisher creates a publisher with trust level (verified|community)
@@ -28,8 +30,9 @@ func (e *Env) RegisterPublisher(admin *Session, key *SigningKey, trust string) i
 // DerivedGuardPackage builds a third-party package from the official guard
 // package: new plugin key and schema, publisher = key.Publisher, signed with
 // key. Unless keepNative, everything requiring ui.native is stripped so the
-// package is acceptable for community/verified publishers.
-func (e *Env) DerivedGuardPackage(pluginKey string, key *SigningKey, keepNative bool) Package {
+// package is acceptable for community/verified publishers. edits then change
+// the manifest further (a version among them) before the binaries are built.
+func (e *Env) DerivedGuardPackage(pluginKey string, key *SigningKey, keepNative bool, edits ...func(m map[string]any)) Package {
 	e.T.Helper()
 	pkg := ReadPackage(e.T, e.MarketPackage("guard", e.defaultVersion("guard")))
 	m := pkg.Manifest(e.T)
@@ -79,8 +82,12 @@ func (e *Env) DerivedGuardPackage(pluginKey string, key *SigningKey, keepNative 
 			}
 		}
 	}
+	for _, edit := range edits {
+		edit(m)
+	}
 	// The host checks GetInfo against the package, so the binaries must
-	// report the new key: rebuild them with the SDK build-time key.
+	// report the new key and version: rebuild them with the SDK build-time
+	// values.
 	for p := range pkg {
 		if rest, ok := strings.CutPrefix(p, "runtimes/"); ok {
 			osArch, _, _ := strings.Cut(rest, "/")
@@ -91,6 +98,67 @@ func (e *Env) DerivedGuardPackage(pluginKey string, key *SigningKey, keepNative 
 	pkg.SetManifest(e.T, m)
 	pkg.Sign(e.T, key)
 	return pkg
+}
+
+// DerivedPlugin is a third-party plugin derived from guard
+// (DerivedGuardPackage) under a key unique to the run: a key stays with its
+// publisher after an uninstall, so a fixed key would refuse the publisher of
+// the next run.
+type DerivedPlugin struct {
+	Key    string
+	Signer *SigningKey
+}
+
+// NewDerivedPlugin registers a verified publisher for a new derived plugin.
+func (e *Env) NewDerivedPlugin(admin *Session, prefix string) DerivedPlugin {
+	e.T.Helper()
+	name := e.Name("e2e-" + prefix)
+	signer := NewSigningKey(e.T, name, name)
+	e.RegisterPublisher(admin, signer, "verified")
+	return DerivedPlugin{Key: e.RoleKey(prefix), Signer: signer}
+}
+
+// Package builds a version of the plugin (DerivedGuardPackage edits).
+func (d DerivedPlugin) Package(e *Env, edits ...func(m map[string]any)) Package {
+	e.T.Helper()
+	return e.DerivedGuardPackage(d.Key, d.Signer, false, edits...)
+}
+
+// UploadPackage uploads pkg and returns its review.
+func (e *Env) UploadPackage(admin *Session, pkg Package) gjson.Result {
+	e.T.Helper()
+	m := pkg.Manifest(e.T)
+	r := e.UploadPlugin(admin, fmt.Sprintf("%v-%v.s2plugin", m["key"], m["version"]), pkg.Bytes(e.T))
+	if r.Status != 200 {
+		e.T.Fatalf("upload %v@%v: %s", m["key"], m["version"], r)
+	}
+	return reviewOf(e, r.Data())
+}
+
+// InstallVersion uploads pkg, consents with newPermissionRoles (Consent)
+// when the version awaits consent, and makes it the enabled version: a
+// first install is enabled, and uninstalled when the test ends; a later
+// version is upgraded to. Returns the upload's review.
+func (e *Env) InstallVersion(admin *Session, pkg Package, newPermissionRoles map[string]any) gjson.Result {
+	e.T.Helper()
+	m := pkg.Manifest(e.T)
+	key, version := fmt.Sprint(m["key"]), fmt.Sprint(m["version"])
+	_, installed := e.Plugin(admin, key)
+	rev := e.UploadPackage(admin, pkg)
+	if rev.Get("consent_status").String() == "awaiting_consent" {
+		e.Consent(admin, rev, newPermissionRoles)
+	}
+	if installed {
+		e.Upgrade(admin, key, version)
+		return rev
+	}
+	e.Enable(admin, key)
+	e.T.Cleanup(func() {
+		if _, ok := e.Plugin(admin, key); ok {
+			e.Uninstall(admin, key, true)
+		}
+	})
+	return rev
 }
 
 // buildGuardBinary compiles plugins/guard with an overridden plugin key.
