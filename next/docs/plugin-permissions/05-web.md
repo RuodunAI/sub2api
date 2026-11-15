@@ -397,8 +397,9 @@ const props = withDefaults(defineProps<{
   roles: MatrixRole[]
   pluginKey: string
   lockOf: (perm: MatrixPerm, role: MatrixRole) => CellLock
-  /** 编辑者对动作的范围（auth.scopes），决定范围下拉框的可选项；超管为 [ALL_SCOPE]。 */
-  scopeLimit: (action: string) => Scope[]
+  /** 编辑者对动作的范围（auth.scopes），决定范围下拉框的可选项；缺省为全部范围。
+   *  确认页不传：同意时不要求持有新权限（consent.go），能否命名由 Review 的 cells.nameable 决定。 */
+  scopeLimit?: (action: string) => Scope[]
   /** 自定义角色收进“更多角色”（确认页 true；详情页 false）。 */
   collapseCustom?: boolean
   /** 首屏显示的行数，超过时“另有 N 项，展开查看”（详情页传 5；确认页不折叠）。 */
@@ -606,7 +607,7 @@ export function toManifestGrant(p: MatrixPerm, keys: readonly string[]): Manifes
 <ProvidesSummary :review="review" />                         <!-- 去掉 permission-roles 复选框，见下 -->
 <SCard v-if="consent.perms.value.length" :title="t('plugins.matrix.title')" :subtitle="t('plugins.matrix.hint', { n })" data-testid="permission-matrix">
   <PermissionMatrix :matrix="consent.matrix" :perms="consent.perms.value" :groups="review.permission_groups"
-    :roles="consent.roles.value" :plugin-key="review.plugin_key" :lock-of="consent.lockOf" :scope-limit="auth.scopes" collapse-custom>
+    :roles="consent.roles.value" :plugin-key="review.plugin_key" :lock-of="consent.lockOf" collapse-custom>
     <template v-if="isUpgrade" #trailing-head>{{ t('plugins.matrix.needsConfirm') }}</template>
     <template v-if="isUpgrade" #trailing="{ perm }"><ConsentNeed :grants="grantsOf(perm)" /></template>
   </PermissionMatrix>

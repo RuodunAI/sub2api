@@ -132,3 +132,4 @@ export {
   validate as validateSchema
 } from './schema/schema'
 export type { JSONSchema, UISchema, EnumOption, ValidateMessages } from './schema/schema'
+export { useScrollClip } from './scrollClip'

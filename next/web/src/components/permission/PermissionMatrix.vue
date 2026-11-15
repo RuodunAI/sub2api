@@ -18,9 +18,9 @@
 //
 // Slots: #toolbar (end of the toolbar), #trailing-head and #trailing="{ perm }"
 // (one more column, e.g. the upgrade's "needs confirmation").
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SBadge, SButton, SCheckbox, SHint, SIcon } from '@sub2api/ui'
+import { SBadge, SButton, SCheckbox, SHint, SIcon, useScrollClip } from '@sub2api/ui'
 import type { PermissionGroup } from '@/api/types'
 import { lt } from '@/i18n'
 import { ALL_SCOPE, type Scope } from '@/authz/implies'
@@ -131,17 +131,7 @@ const groupOpen = (perms: MatrixPerm[], r: MatrixRole) => !props.readOnly && pro
 // fade on the right edge says so while columns are hidden past it.
 const scroller = ref<HTMLElement>()
 const table = ref<HTMLElement>()
-const clipped = ref(false)
-const measure = () => {
-  const e = scroller.value
-  clipped.value = !!e && e.scrollLeft + e.clientWidth < e.scrollWidth - 1
-}
-const resized = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
-onMounted(() => {
-  for (const el of [scroller.value, table.value]) if (el) resized?.observe(el)
-  measure()
-})
-onBeforeUnmount(() => resized?.disconnect())
+const clipped = useScrollClip(scroller, table)
 
 const expanded = ref<{ action: string; role: string } | null>(null)
 const expandedCell = computed(() => {
@@ -165,7 +155,7 @@ const expandedCell = computed(() => {
     </div>
 
     <div class="relative">
-      <div ref="scroller" class="overflow-x-auto rounded-xl border border-line" @scroll.passive="measure">
+      <div ref="scroller" class="overflow-x-auto rounded-xl border border-line">
         <table ref="table" class="w-full border-collapse text-sm">
           <thead>
             <tr class="border-b border-line">
