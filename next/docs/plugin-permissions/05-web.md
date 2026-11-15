@@ -384,8 +384,8 @@ export function useGrantMatrix(opts: {
 }
 ```
 
-- 两种标记分开算。“与建议不同”（`differsFromSuggested`）在三处都显示。“未保存的修改”（`changes`）只在详情页作为保存栏显示；确认页用它决定发哪些行（payload）。确认页的 baseline 是 `cells.grant`，大多数情况下等于插件建议，带继承时比建议多。
-- `setGroup` 落实 D1。勾选时，无范围的项写裸 key，带范围的项写 `defaultScopes(offer)` 的 key（`scopeChoice.ts:297-300`，取能提供的最宽范围），跳过锁住和 removed 的项。所以存下来的永远是具体 key，不会有通配。
+- 两种标记分开算。“与建议不同”（`differs`，三处同名、中性灰点，见 §4.9）在三处都显示。“未保存的修改”（`changes`）只在详情页作为保存栏显示；确认页用它决定发哪些行（payload）。确认页的 baseline 是 `cells.grant`，大多数情况下等于插件建议，带继承时比建议多。
+- `setGroup`（现为 `toggleGroup`）落实 D1。勾选时，无范围的项写裸 key，带范围的项写 `defaultScopes(offer)` 的 key（`scopeChoice.ts:297-300`，取能提供的最宽范围），跳过锁住、removed 和 critical 的项（critical 只能逐项勾，§4.9）。所以存下来的永远是具体 key，不会有通配。
 
 ### 4.4 共用组件 `PermissionMatrix.vue`（新文件 `components/permission/PermissionMatrix.vue`）
 
@@ -687,12 +687,23 @@ async function save() {
 - **原型 D 的“收窄 / 重新授予”（已定采纳）**：接第 3 章新增的 `PUT /plugins/:key/grants/:permission`（body `{scope?}`，省略时为清单请求的范围；返回更新后的 `PluginGrant`）。GrantsTab 操作列在“撤销”旁加两个按钮，写法照 `revoke()`（`GrantsTab.vue:47-65`）：
   - 已授予且范围里有数组项（`{domains:[…]}`、`{fields:[…]}` 这类）时显示“收窄”：新组件 `detail/NarrowGrantDialog.vue`（约 50 行）用 `scopeEntries`（`pluginUtil.ts`，`ScopeChips` 已在用）把范围列成可取消的标签，每个数组至少留一项，提交 `{scope}`；服务端用 `ScopeWithin` 拒绝更宽的范围（400 `scope_too_wide`）。确认页现在没有宿主权限范围的编辑控件（`HostPermissionTable` 只用 `ScopeChips` 展示），所以这里不复用它；非数组形状（如 `limits`）首版不提供收窄按钮，只能撤销。
   - `status === 'revoked'`（或被拒）时显示“重新授予”：确认后提交 `{}`（按清单请求的范围）。
-  - 两者都需要 `plugin:manage`，重新授予高 / 关键风险还需要 `plugin:grant:high/critical`；路由挂在 grant step-up 下，HTTP 客户端遇到 step-up 会自动弹验证框（`components/stepUp/stepUp.ts:2`），GrantsTab 不需要自己处理。成功后 `load()` 并 `emit('changed')`，与撤销相同。
+  - 两者都需要 `plugin:manage`；重新授予还需要 `plugin:install`（403 `details.permission=plugin:install`，没有时按钮置灰并在 title 说明），高 / 关键风险另需 `plugin:grant:high/critical`；路由挂在 grant step-up 下，HTTP 客户端遇到 step-up 会自动弹验证框（`components/stepUp/stepUp.ts:2`），GrantsTab 不需要自己处理。成功后 `load()` 并 `emit('changed')`，与撤销相同。
 - **保存**只发有变更的角色，body 是这些角色在该插件上的完整 key（第 2 章：只替换列出的角色）。成功后用响应替换 `data`，baseline 随之重置。若编辑者自己持有被改的角色，调用 `auth.refreshPermissions()`，与 `RolesView.vue:183` 相同。
 - **错误展示**：把 `RolesView.vue:196-207` 的 `missingText` 抽到 `utils/permErrors.ts`（`missingText(e, t)`），两处共用，多出的 `details.role` 显示为“{角色}：”前缀。
-- **离开保护**：PermissionsTab 通过 `emit('dirty')` 把状态告诉 PluginDetailView。切换标签时 `watch(tab)` 先 `await confirmDiscard(dirty)`（复用 `composables/confirmDiscard.ts`），不确认就把 tab 改回去；离开路由加 `onBeforeRouteLeave`，同样调用 confirmDiscard。
+- **离开保护**：PermissionsTab 自己挂 `onBeforeRouteUpdate` / `onBeforeRouteLeave`（换标签、换插件、离开页面都是路由变化），有未保存的格子时 `confirmDiscard`（复用 `composables/confirmDiscard.ts`）；不再 `emit('dirty')`，PluginDetailView 只从 `?tab=` 推出当前标签。
 - `RoleGrantsReview` 仍在页面顶部（`:242`），不挪进标签：它的主体是“待复核的版本”，要在所有标签上都看得见。
 - 原型 D 的列顺序与确认页相同，自定义角色直接展开（`collapseCustom=false`）。
+
+### 4.9 修复轮的前端变更（review2 / FIX.md）
+
+- **术语**：两类权限处处同名——“插件可使用的宿主权限”（`plugins.permissions.hostTitle`）与“插件提供给用户的权限”（`userTitle`）；“与建议不同”一个名字、一个中性灰色；挂起统一叫“待超管复核”；英文风险等级分开（宿主 `Very high`，用户权限 `Security-critical`）。
+- **批量跳过 critical**：矩阵的组勾选框与角色编辑页的模块 / 组全选都不勾 critical 项（`groupRows` / `bulk`），title 说明要逐项勾。
+- **保存前确认**：角色编辑页与详情页保存时，用 `newRiskyGrants(baseline, next, perms)` 列出新授出的 sensitive / critical 项（收窄不算），`confirmRiskyGrants` 弹确认（含 critical 时为 danger）。critical 插件 key 新授出时服务端还要 `plugin.grant` step-up（C3），由 HTTP 客户端的现有验证框处理。
+- **版本与合并（C1）**：`GET /permissions/plugins/:plugin` 与角色对象带 `version`，矩阵 PUT 与 `PUT /roles/:id/permissions` 带上读到的版本。409 `version_conflict` 时自动重读：矩阵由 `useGrantMatrix` 在 baseline 变化时把本地按格的改动重放到新数据上（同一机制也让详情页在确认待复核后刷新 baseline）；角色编辑页按动作对比原值与编辑值，`withCell` 套到新 key 上。随后提示“已载入最新数据并保留你的改动，请检查后再保存”。
+- **授出视图（逻辑 #3）**：编辑者能授出的 = `/me` 的 key ∪ 自己角色的 `permission_keys`（排除 removed 动作），见 `useEditorGrants`。停用插件的 key 不在 `/me` 里但仍在角色上，所以不会被锁成“未持有”。`scopeLimit` 由组合函数内部使用，不再经 props 传。
+- **恢复建议的共用规则（H1）**：`pluginGrants.restoreCell / suggestionState`；编辑者不能整格恢复的格子不动并计入“跳过 N 项”（toast），矩阵与角色编辑页同一函数，测试用例表共用（`authz/testing/restoreCases.ts`）。只读角色不显示“不能授出”。
+- **继承行（C2 / C4）**：改名行可逐格编辑，初值取 Review 的 `cells.grant`，格上标“继承自 {旧 key}”；改过的行按普通行发送（可命名角色缺省或 `[]` = 不授予，不可命名的仍挂起）。查看者无 role:read 时服务端省略 `cells.<role>.grant` / `holders` / `via: inherit` 条目：继承格无初值时锁定为只读（`holders_hidden`），说明看不到持有者、提交时保持原授权；`holders` 缺省时“已移除”只说移除不列角色。
+- **页面**：确认页自定义角色列在含授予或待复核格时自动展开（按钮带数量）；升级页用户权限只在变更卡里一行汇总，矩阵只列新建项，重新声明 / 移除项单列；未保存栏显示“角色 · 权限：原 → 新”，多条可展开；“指定…”保持选中，范围面板滚入视野并取得焦点，面板标题用资源名、权限名作提示；手机宽度下超管列收起为一行说明，锁原因有图例；依赖提示从全部声明的权限取名字。
 
 ---
 
@@ -723,7 +734,7 @@ async function save() {
 | `views/plugins/detail/PermissionsTab.vue`（新） | §4.8 |
 | `views/plugins/detail/GrantsTab.vue` | 增加 `embedded` prop；操作列加“收窄”“重新授予”（`PUT /plugins/:key/grants/:permission`） |
 | `views/plugins/detail/NarrowGrantDialog.vue`（新） | 收窄对话框：`scopeEntries` 列出数组项，可取消，至少留一项 |
-| `components/plugin/PluginIframe.vue` | 第 4 章 §4.3.8：`permissions.check` 的本地 key 不带范围时按“任意范围持有”判断（`/me` 列表里有该 key 或该 key 加范围后缀），带范围时精确匹配；仍不用 `auth.has` |
+| `components/plugin/PluginIframe.vue` | 第 4 章 §4.3.8：`permissions.check` 的本地 key 不带范围时按“任意范围持有”判断（`hasAction`），带范围时按蕴含判断（`permissionIndex(me.permissions).has`，与服务端同口径：持有全部范围即持有 `…:own`、`…:flow/2`）；仍不用 `auth.has` |
 | `views/plugins/PluginDetailView.vue` | 标签 `grants` 改为 `permissions`，加别名；离开确认 |
 | `i18n/locales/{zh,en}/roles.ts`、`plugins.ts`、`entity.ts` | §5.1 |
 | `web/mock/resources.ts` | `/permissions` 加 risk/group/groups/requires/scope/defaults，去掉 sensitive；新增 `GET/PUT /permissions/plugins/:plugin`、`GET /plugins/:key/scope-options`、`PUT /plugins/:key/grants/:permission`。guard 模块加一个带范围的项和一个 critical 项（演示用，对应原型 C/D）；`PUT /roles/:id/permissions` 的校验天然支持插件范围，因为 mock 引用的就是 `implies.ts` |

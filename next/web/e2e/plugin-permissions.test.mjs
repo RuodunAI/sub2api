@@ -7,18 +7,23 @@
 //
 // On a desktop screen, in English, it checks
 // - the role editor: the guard's module lists its permissions under their
-//   groups with risk badges, compares a built-in role with the plugin's
-//   suggestion and restores it (scopes included), and greys out what a
-//   non-super editor does not hold;
+//   groups with risk badges (a removed one kept on the role that holds it),
+//   compares a built-in role with the plugin's suggestion and restores it
+//   (scopes included), asks before granting a sensitive permission, ticks a
+//   group without its critical permission, and greys out what a non-super
+//   editor does not hold;
 // - the install / upgrade consent matrix: cells prefilled from the
 //   suggestions, one cell changed sends just that permission, a non-super
 //   viewer sees its cells held for review and the critical row locked, an
 //   upgrade lists only the new permissions with the revived and removed ones
-//   apart;
+//   apart, and a renamed row starts from the old key's holders, editable;
 // - the plugin detail "Permissions" tab: a cell changed shows the unsaved
-//   bar and saves to the same role data the Roles page edits; a host
-//   permission grant narrowed, revoked and granted again; the old
-//   ?tab=grants link lands on it;
+//   bar and saves to the same role data the Roles page edits; a group ticked
+//   leaves the critical row; granting a critical permission asks first and
+//   then for step-up; a save after someone else's (409 version_conflict)
+//   reloads with the edits kept and saves again; a non-super editor offers
+//   only the scopes it holds; a host permission grant narrowed, revoked and
+//   granted again; the old ?tab=grants link lands on it;
 // - in the dark theme the matrix's pinned first column is opaque, so cells
 //   scrolled under it do not show through.
 // The mock keeps its state while it runs: every test that saves puts the
@@ -94,9 +99,11 @@ describe('role editor', () => {
       sections.map((s) => [s.dataset.group, Array.from(s.querySelectorAll('[data-permission]'), (p) => p.dataset.permission.split(':').slice(1).join(':'))])
     )
     assert.deepEqual(groups, [
-      ['rules', ['rules:read', 'rules:manage']],
+      ['rules', ['rules:read', 'rules:manage', 'rules:test']],
       ['ops', ['stats:read', 'alerts:mute', 'bypass']]
     ])
+    // The operator still holds rules:test, which the running version no longer declares.
+    await permission(guard, 'rules:test').getByText('Removed').waitFor()
     const risk = async (key) => permission(guard, key).locator('[data-risk]').getAttribute('data-risk')
     assert.equal(await risk('rules:read'), 'low', 'a plugin module badges low risk too')
     assert.equal(await risk('rules:manage'), 'sensitive')
@@ -105,7 +112,7 @@ describe('role editor', () => {
     // The operator holds stats:read only: rules:read and rules:manage (own) differ from the suggestion.
     const mark = (key) => permission(guard, key).locator('[data-testid="permission-mark"]')
     assert.equal(await mark('stats:read').textContent(), 'Plugin suggestion')
-    assert.equal(await mark('rules:read').textContent(), 'Changed')
+    assert.equal(await mark('rules:read').textContent(), 'Differs from suggestion')
     await guard.locator('[data-testid="module-restore"]').click()
     await guard.locator('[data-testid="module-differs"]').waitFor({ state: 'detached' })
     for (const key of ['rules:read', 'rules:manage', 'stats:read']) assert.equal(await mark(key).textContent(), 'Plugin suggestion', key)
@@ -114,14 +121,33 @@ describe('role editor', () => {
     assert.equal(await checked(scope.locator('[data-testid="scope-own"]')), true)
     assert.equal(await checked(scope.locator('[data-testid="scope-all"]')), false)
 
-    const saved = await nextCall(page, 'PUT', '/roles/4/permissions', () => page.locator('[data-testid="role-save"]').click())
+    // rules:manage is sensitive: the save lists it and asks first.
+    const saved = await nextCall(page, 'PUT', '/roles/4/permissions', async () => {
+      await page.locator('[data-testid="role-save"]').click()
+      const dialog = page.locator('[role="dialog"]', { hasText: 'Grant sensitive or security-critical permissions?' })
+      await dialog.getByText('Manage rules').waitFor()
+      await page.locator('[data-testid="confirm-ok"]').click()
+    })
     const mine = saved.body.permission_keys.filter((k) => k.startsWith(`${GUARD}:`)).sort()
-    assert.deepEqual(mine, [`${GUARD}:rules:manage:own`, `${GUARD}:rules:read`, `${GUARD}:stats:read`])
+    assert.deepEqual(mine, [`${GUARD}:rules:manage:own`, `${GUARD}:rules:read`, `${GUARD}:rules:test`, `${GUARD}:stats:read`])
+    assert.equal(typeof saved.body.version, 'number', 'the save carries the version it read')
 
     // Back to the fixture: the rules group cleared, saved.
-    await guard.locator('[data-group="rules"] [data-testid="group-select-all"]').click()
-    await nextCall(page, 'PUT', '/roles/4/permissions', () => page.locator('[data-testid="role-save"]').click())
-    assert.equal(await mark('rules:read').textContent(), 'Changed')
+    for (const key of ['rules:read', 'rules:manage']) await permission(guard, key).locator('input').uncheck()
+    const back = await nextCall(page, 'PUT', '/roles/4/permissions', () => page.locator('[data-testid="role-save"]').click())
+    assert.deepEqual(back.body.permission_keys.filter((k) => k.startsWith(`${GUARD}:`)).sort(), [`${GUARD}:rules:test`, `${GUARD}:stats:read`])
+    assert.equal(await mark('rules:read').textContent(), 'Differs from suggestion')
+    await page.context().close()
+  })
+
+  test('a group ticked whole leaves its critical permission to be ticked alone', async () => {
+    const page = await signIn()
+    const guard = await openRole(page, 'vendor')
+    await guard.locator('[data-group="ops"] [data-testid="group-select-all"]').click()
+    assert.equal(await checked(permission(guard, 'stats:read').locator('input')), true)
+    assert.equal(await checked(permission(guard, 'alerts:mute').locator('input')), true)
+    assert.equal(await checked(permission(guard, 'bypass').locator('input')), false, 'the critical permission came with the group')
+    // Not saved: discarded with the page.
     await page.context().close()
   })
 
@@ -176,7 +202,7 @@ describe('plugin detail permissions tab', () => {
 
     await target.check()
     await bar.waitFor()
-    assert.match(await bar.textContent(), /1 unsaved changes\s*Supplier · View rules/)
+    assert.match(await bar.textContent(), /1 unsaved change\s*Supplier · View rules: Not granted → Granted/)
     assert.equal(await row(matrix, `${GUARD}:rules:read`).locator('td[data-role="supplier"] [data-testid="cell-differs"]').count(), 1)
     // Reset drops it; ticked again and saved, only the supplier goes out, with all its guard keys.
     await bar.locator('[data-testid="settings-reset"]').click()
@@ -184,7 +210,8 @@ describe('plugin detail permissions tab', () => {
     assert.equal(await checked(target), false)
     await target.check()
     const saved = await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
-    assert.deepEqual(saved.body, { roles: { supplier: [`${GUARD}:rules:read`] } })
+    assert.deepEqual(saved.body.roles, { supplier: [`${GUARD}:rules:read`] })
+    assert.equal(typeof saved.body.version, 'number', 'the save carries the version it read')
     await bar.waitFor({ state: 'detached' })
     assert.equal(await checked(target), true)
 
@@ -213,7 +240,11 @@ describe('plugin detail permissions tab', () => {
     assert.equal(await select.evaluate((el) => el.selectedOptions[0].textContent.trim()), '1 chosen')
 
     const bar = matrix.locator('[data-testid="matrix-save"]')
-    const saved = await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
+    // A sensitive permission newly granted: asked first.
+    const saved = await nextCall(page, 'PUT', '/permissions/plugins/guard', async () => {
+      await bar.locator('[data-testid="settings-save"]').click()
+      await page.locator('[data-testid="confirm-ok"]').click()
+    })
     assert.deepEqual(saved.body.roles.operator.filter((k) => k.startsWith(`${GUARD}:rules:manage`)), [`${GUARD}:rules:manage:ruleset/3`])
 
     const guard = await openRole(page, 'operator')
@@ -224,6 +255,93 @@ describe('plugin detail permissions tab', () => {
     await page.goto(`${BASE}/plugins/guard?tab=permissions`)
     await select.selectOption({ label: 'Not granted' })
     await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
+    await page.context().close()
+  })
+
+  test('a group ticked for a role leaves the critical row; granting it asks first, then for step-up', async () => {
+    const page = await signIn()
+    await page.goto(`${BASE}/plugins/guard?tab=permissions`)
+    const matrix = page.locator('[data-testid="plugin-user-permissions"]')
+    await matrix.locator('[data-testid="matrix-fold"]').click()
+    const bypass = cell(matrix, `${GUARD}:bypass`, 'supplier')
+    await matrix.locator('tr[data-group="ops"] [data-group-role="supplier"]').locator('xpath=descendant-or-self::input').check()
+    assert.equal(await checked(cell(matrix, `${GUARD}:stats:read`, 'supplier')), true)
+    assert.equal(await checked(bypass), false, 'the critical row came with the group')
+    const bar = matrix.locator('[data-testid="matrix-save"]')
+    await bar.locator('[data-testid="settings-reset"]').click()
+    await bar.waitFor({ state: 'detached' })
+
+    // Ticked alone, the save names it and asks; cancelled, nothing is sent.
+    await bypass.check()
+    await bar.locator('[data-testid="settings-save"]').click()
+    const dialog = page.locator('[role="dialog"]', { hasText: 'Grant sensitive or security-critical permissions?' })
+    await dialog.getByText(/Bypass the rules \(Security-critical\) → Supplier/).waitFor()
+    await page.locator('[data-testid="confirm-cancel"]').click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal(await checked(bypass), true, 'cancelling keeps the edit, unsaved')
+    // Confirmed, the server asks for step-up before granting it (C3).
+    const saved = await nextCall(page, 'PUT', '/permissions/plugins/guard', async () => {
+      await bar.locator('[data-testid="settings-save"]').click()
+      await page.locator('[data-testid="confirm-ok"]').click()
+      await stepUp(page)
+    })
+    assert.deepEqual(saved.body.roles, { supplier: [`${GUARD}:bypass`] })
+    await bar.waitFor({ state: 'detached' })
+
+    // Back to the fixture: taking it off asks nothing.
+    await bypass.uncheck()
+    await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
+    await page.context().close()
+  })
+
+  test('a save after someone else\'s reloads with the edits kept, and saves again', async () => {
+    const page = await signIn()
+    await page.goto(`${BASE}/plugins/guard?tab=permissions`)
+    const matrix = page.locator('[data-testid="plugin-user-permissions"]')
+    const mine = cell(matrix, `${GUARD}:stats:read`, 'supplier')
+    await mine.check()
+
+    // Meanwhile another admin grants the operator rules:read.
+    const other = await signIn()
+    await other.goto(`${BASE}/plugins/guard?tab=permissions`)
+    const theirs = other.locator('[data-testid="plugin-user-permissions"]')
+    await cell(theirs, `${GUARD}:rules:read`, 'operator').check()
+    await nextCall(other, 'PUT', '/permissions/plugins/guard', () => theirs.locator('[data-testid="matrix-save"] [data-testid="settings-save"]').click())
+
+    const bar = matrix.locator('[data-testid="matrix-save"]')
+    const [conflict] = await Promise.all([
+      page.waitForResponse((r) => r.request().method() === 'PUT' && new URL(r.url()).pathname === '/api/v1/permissions/plugins/guard'),
+      bar.locator('[data-testid="settings-save"]').click()
+    ])
+    assert.equal(conflict.status(), 409)
+    await page.getByText('The grants changed while you were editing').waitFor()
+    // The other save shows, the edit is still there and still unsaved.
+    await page.waitForFunction((el) => el.checked, await cell(matrix, `${GUARD}:rules:read`, 'operator').elementHandle())
+    assert.equal(await checked(mine), true)
+    assert.match(await bar.textContent(), /1 unsaved change\s*Supplier · View stats/)
+    const saved = await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
+    assert.deepEqual(saved.body.roles, { supplier: [`${GUARD}:stats:read`] })
+    await bar.waitFor({ state: 'detached' })
+
+    // Back to the fixture.
+    await mine.uncheck()
+    await cell(matrix, `${GUARD}:rules:read`, 'operator').uncheck()
+    await nextCall(page, 'PUT', '/permissions/plugins/guard', () => bar.locator('[data-testid="settings-save"]').click())
+    await other.context().close()
+    await page.context().close()
+  })
+
+  test('a non-super editor offers only the scopes it holds and edits only the roles it manages', async () => {
+    const page = await signIn('manager@example.com')
+    await page.goto(`${BASE}/plugins/guard?tab=permissions`)
+    const matrix = page.locator('[data-testid="plugin-user-permissions"]')
+    const select = cell(matrix, `${GUARD}:rules:manage`, 'operator')
+    // It holds rules:manage at the own scope only (the grant view is read with the matrix).
+    await select.locator('option', { hasText: 'Created by them' }).waitFor({ state: 'attached' })
+    const options = (await select.locator('option').allTextContents()).map((o) => o.trim())
+    assert.deepEqual(options, ['Not granted', 'Created by them'])
+    // Its own role is not on its managed list.
+    assert.equal(await row(matrix, `${GUARD}:rules:read`).locator('td[data-role="admin"]').getAttribute('data-lock'), 'role_readonly')
     await page.context().close()
   })
 
@@ -341,12 +459,40 @@ describe('consent matrix', () => {
     const matrix = page.locator('[data-testid="permission-matrix"]')
     await matrix.locator('tr[data-permission]').first().waitFor()
     const rows = await matrix.locator('tr[data-permission]').evaluateAll((trs) => trs.map((tr) => tr.dataset.permission))
-    assert.deepEqual(rows.sort(), [`${GUARD}:reports:export`, `${GUARD}:rules:publish`])
+    assert.deepEqual(rows.sort(), [`${GUARD}:alerts:silence`, `${GUARD}:reports:export`, `${GUARD}:rules:publish`])
     // The new sensitive one needs confirming.
     await row(matrix, `${GUARD}:rules:publish`).locator('[data-testid="consent-need"]').waitFor()
     const changes = page.locator('[data-testid="upgrade-permission-changes"]')
     await changes.locator('[data-testid="upgrade-revived"]').getByText('Dry-run rules').waitFor()
     await changes.locator('[data-testid="upgrade-removed"]').getByText('Mute alerts').waitFor()
+    await page.context().close()
+  })
+
+  test('upgrade: a renamed row starts from the old key\'s holders and is edited like any other', async () => {
+    const page = await signIn()
+    await page.goto(`${BASE}${UPGRADE}`)
+    const matrix = page.locator('[data-testid="permission-matrix"]')
+    const renamed = row(matrix, `${GUARD}:alerts:silence`)
+    await renamed.locator('[data-testid="matrix-inherited"]').getByText('Inherited from alerts:mute').waitFor()
+    const admin = cell(matrix, `${GUARD}:alerts:silence`, 'admin')
+    assert.equal(await admin.isDisabled(), false)
+    assert.notEqual(await admin.evaluate((el) => el.selectedOptions[0].textContent.trim()), 'Not granted', 'the holder does not start granted')
+    await admin.selectOption({ label: 'Not granted' })
+    await cell(matrix, `${GUARD}:alerts:silence`, 'operator').selectOption({ label: 'All' })
+
+    // The consent is answered here, so the upgrade stays pending for the next run.
+    let body = null
+    await page.route('**/api/v1/plugins/guard/versions/0.2.0/consent', async (route) => {
+      body = route.request().postDataJSON()
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: { ok: true, withheld: [] } }) })
+    })
+    for (const box of await page.locator('[data-testid="host-permissions"] input[type=checkbox]').all()) await box.check()
+    await page.locator('[data-testid="consent-approve"]').click()
+    await page.waitForURL((url) => url.pathname === '/plugins/guard')
+    const sent = body.new_permission_roles['alerts:silence']
+    const granted = Object.fromEntries(Object.entries(sent).filter(([, g]) => g === true || g.length))
+    assert.deepEqual(granted, { operator: ['*'] })
+    assert.deepEqual(sent.admin, [])
     await page.context().close()
   })
 })

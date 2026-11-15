@@ -113,19 +113,31 @@ export const pricerUser: Identity = {
   superuser: false
 }
 
+/** The core's super-only keys (authz/catalog.go): critical, and not among admin's defaults. */
+export const SUPER_ONLY_KEYS = new Set(['balance:adjust:any', 'plugin:grant:critical', 'plugin:grant:db_schema_unconfined', 'publisher:manage', 'system:update:execute', 'system:update:recover'])
+
+/**
+ * The guard keys of the built-in admin role in the mock: rules:manage at the
+ * own scope only, no alerts:mute or bypass. The role also holds the disabled
+ * foo plugin's key, which /me leaves out and the role editor's grant view
+ * keeps grantable.
+ */
+export const MANAGER_PLUGIN_KEYS = ['plugin.guard:rules:read', 'plugin.guard:rules:manage:own', 'plugin.guard:stats:read']
+
 /**
  * Sign in as manager@example.com (password admin): the built-in admin role,
- * not the super admin. It may name no role for a plugin permission, so an
- * install's suggestions go to review (D2), and it lacks the guard's
- * plugin.guard:alerts:mute and :bypass, which the role editor then offers
- * greyed out.
+ * not the super admin. It holds no super-only key, manages the roles admin
+ * may assign (operator, supplier, user and the custom ones) but not admin
+ * itself, so an install's suggestions to admin go to review (D2), holds
+ * rules:manage at the own scope only (no "All" to offer), and lacks the
+ * guard's alerts:mute and bypass, which the role editor offers greyed out.
  */
-const managerUser: Identity = {
+export const managerUser: Identity = {
   id: 10,
   email: 'manager@example.com',
   display_name: 'Manager',
   roles: ['admin'],
-  permissions: ALL_PERMISSIONS,
+  permissions: [...ALL_PERMISSIONS.filter((k) => !SUPER_ONLY_KEYS.has(k) && !k.startsWith('plugin.guard:')), ...MANAGER_PLUGIN_KEYS],
   superuser: false
 }
 
@@ -313,14 +325,15 @@ on('POST', '/me/verify', (req) => {
   proofs.add(proof)
   return { proof, expires_at: now(300), method, scope, context }
 })
-/** handler behind a one-time proof of scope, as Router.StepUp(scope). */
-export const stepUp = (scope: string, handler: MockHandler): MockHandler => (req) => {
+/** The 403 verification_required of a request without a valid one-time proof of scope (spent when valid); null when it has one. */
+export function stepUpRequired(req: MockRequest, scope: string): ReturnType<typeof fail> | null {
   const proof = req.headers['x-verify-proof']
-  if (!proof || !proofs.delete(proof)) {
-    return fail(403, 'verification_required', "verify it's you to continue", { ...verifyMethods(scope, `${req.method} /api/v1${req.path}`), context: `${req.method} /api/v1${req.path}` })
-  }
-  return handler(req)
+  if (proof && proofs.delete(proof)) return null
+  const context = `${req.method} /api/v1${req.path}`
+  return fail(403, 'verification_required', "verify it's you to continue", { ...verifyMethods(scope, context), context })
 }
+/** handler behind a one-time proof of scope, as Router.StepUp(scope). */
+export const stepUp = (scope: string, handler: MockHandler): MockHandler => (req) => stepUpRequired(req, scope) ?? handler(req)
 on('POST', '/me/two-factor/setup', stepUp('self.2fa.enable', () => ({
   flow_token: 'mock-totp', expires_in: 300, secret: 'MOCKSECRETMOCKSECRET', otpauth_url: 'otpauth://totp/mock',
   qr_code: 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=='

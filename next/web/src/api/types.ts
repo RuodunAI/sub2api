@@ -75,6 +75,12 @@ export interface Role {
   assign_custom?: boolean
   user_count?: number
   member_count?: number // deprecated alias
+  /**
+   * The global authz version the role was read at (C1): PUT
+   * /roles/:id/permissions carries it back and is refused with 409
+   * version_conflict once grants changed meanwhile.
+   */
+  version?: number
 }
 
 /** One role of GET /me/assignable-roles: on the caller's managed list (CONTRACTS §43.6). */
@@ -180,6 +186,8 @@ export interface PluginRoleMatrix {
   plugin_key: string
   module: PermissionModule
   roles: PluginRoleRow[]
+  /** The global authz version the matrix was read at (C1): the PUT carries it back (409 version_conflict once grants changed). */
+  version?: number
 }
 
 // ------------------------------------------------------------------ keys, groups, proxies
@@ -1550,8 +1558,8 @@ export interface PluginReview {
   permission_groups?: PermissionGroup[]
   /** The matrix columns, worked out for the viewer: a review differs per caller. */
   role_columns?: ReviewRoleColumn[]
-  /** Upgrades: the keys this version no longer declares (kept on their holders, not in force). */
-  removed_user_permissions?: Array<{ key: string; label: LText; holders: string[] }>
+  /** Upgrades: the keys this version no longer declares (kept on their holders, not in force); holders left out for a viewer without role:read (C4). */
+  removed_user_permissions?: Array<{ key: string; label: LText; holders?: string[] }>
   database?: { schema: string; migrations: string[] } | null
   resources?: Record<string, any> | null
   external_services: string[]
@@ -1573,17 +1581,24 @@ export interface ReviewRoleColumn {
   superuser: boolean
   /** The viewer may name the role in the consent. */
   nameable: boolean
-  reason?: string
+  reason?: ConsentDenyReason
 }
+
+/** Why the viewer may not name a role (column) or cell of the consent matrix. */
+export type ConsentDenyReason = 'superuser_role' | 'not_editable' | 'not_assignable' | 'held' | 'role_define' | 'critical'
 
 /** One permission × role cell of the consent review, for the viewer. */
 export interface ReviewCell {
-  /** Canonical suffixes granted when the consent does not override the row: [] none, [""] all, "own", "value/input", "flow/3". */
-  grant: string[]
+  /**
+   * Canonical suffixes granted when the consent does not override the row: []
+   * none, [""] all, "own", "value/input", "flow/3". Left out on revived and
+   * renamed rows for a viewer without role:read (C4: they would tell who
+   * holds the old key).
+   */
+  grant?: string[]
   /** The viewer may name this cell (critical rows included in the server's answer). */
   nameable: boolean
-  /** superuser_role | not_editable | not_assignable | held | role_define | critical */
-  reason?: string
+  reason?: ConsentDenyReason
   /** Its default or inherited grant waits for a super admin's review (D2). */
   withheld: boolean
 }

@@ -5,7 +5,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
-import { SButton, SHint, STable, confirm, toast, type TableColumn } from '@sub2api/ui'
+import { SHint, SRowAction, STable, confirm, toast, type TableColumn } from '@sub2api/ui'
 import PluginStatusBadge from '../parts/PluginStatusBadge.vue'
 import { formatDateTime } from '@/utils/format'
 import { notifyError } from '@/utils/errors'
@@ -31,6 +31,8 @@ const narrowing = ref<PluginGrant | null>(null)
 const narrowOpen = ref(false)
 
 const canManage = computed(() => auth.has('plugin:manage'))
+/** Granting again is an install's right (the PUT answers 403 permission=plugin:install without it): offered greyed out with the reason. */
+const canRegrant = computed(() => auth.has('plugin:install'))
 const notGranted = (g: PluginGrant) => g.status === 'revoked' || g.status === 'denied'
 /** Only a list with more than one item can lose one (each keeps at least one); other scope shapes are only revoked. */
 const narrowable = (g: PluginGrant) => !notGranted(g) && Object.values(g.scope ?? {}).some((v) => Array.isArray(v) && v.length > 1)
@@ -151,15 +153,17 @@ onMounted(load)
       </template>
       <template #cell-actions="{ row }">
         <div v-if="canManage" class="flex justify-end gap-1">
-          <SButton v-if="narrowable(row)" size="sm" variant="ghost" :disabled="setting === row.permission" data-testid="grant-narrow" @click="openNarrow(row)">{{
-            t('plugins.grants.narrow')
-          }}</SButton>
-          <SButton v-if="notGranted(row)" size="sm" variant="ghost" :loading="setting === row.permission" data-testid="grant-regrant" @click="regrant(row)">{{
-            t('plugins.grants.regrant')
-          }}</SButton>
-          <SButton v-if="row.status !== 'revoked'" size="sm" variant="ghost" tone="danger" :loading="revoking === row.permission" @click="revoke(row)">{{
-            t('plugins.grants.revoke')
-          }}</SButton>
+          <SRowAction v-if="narrowable(row)" :label="t('plugins.grants.narrow')" :disabled="setting === row.permission" data-testid="grant-narrow" @click="openNarrow(row)" />
+          <SRowAction
+            v-if="notGranted(row)"
+            :label="t('plugins.grants.regrant')"
+            :loading="setting === row.permission"
+            :disabled="!canRegrant"
+            :title="canRegrant ? undefined : t('plugins.grants.needsPermission', { permission: 'plugin:install' })"
+            data-testid="grant-regrant"
+            @click="regrant(row)"
+          />
+          <SRowAction v-if="row.status !== 'revoked'" :label="t('plugins.grants.revoke')" tone="danger" :loading="revoking === row.permission" @click="revoke(row)" />
         </div>
       </template>
     </STable>

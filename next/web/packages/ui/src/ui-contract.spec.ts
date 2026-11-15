@@ -65,6 +65,9 @@ describe('host UI 3 contract', () => {
     expect(PRESET_UI_VERSION).toBe(HOST_UI_VERSION)
     expect([hostPackage.version, uiPackage.version, presetPackage.version]).toEqual([HOST_UI_VERSION, HOST_UI_VERSION, HOST_UI_VERSION])
   })
+  it('exports the horizontal clip probe the permission matrix uses (UI 3.16)', () => {
+    expect(ui.useScrollClip).toBeDefined()
+  })
   it('exports more filters, applied filter chips and one-line chip lists (UI 3.10)', () => {
     expect(ui.SFilterChips).toBeDefined()
     expect(ui.SChipList).toBeDefined()

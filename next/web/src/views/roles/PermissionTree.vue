@@ -7,10 +7,10 @@ import type { PermissionItem, PermissionModule } from '@/api/types'
 import { lt } from '@/i18n'
 import { ALL_SCOPE, parsePermission, reduceScopes, type Scope, type ScopeResource } from '@/authz/implies'
 import { defaultScopes, offerOf, withScopes } from '@/authz/scopeChoice'
-import { cellKeys, isSuggestedRole, localOf, sameKeys, withCell, type SuggestedRole } from '@/authz/pluginGrants'
+import { cellKeys, isSuggestedRole, localOf, restoreCell, suggestionState, withCell, type SuggestedRole } from '@/authz/pluginGrants'
 import PermRiskBadge from '@/components/permission/PermRiskBadge.vue'
 import { groupSections, permHint } from '@/components/permission/permRows'
-import ScopePicker from './ScopePicker.vue'
+import ScopePicker, { type ScopeTarget } from './ScopePicker.vue'
 
 // Permission checkboxes of a role, one collapsible block per module (core
 // modules first, then plugin modules). `allGranted` (superuser) ticks
@@ -19,13 +19,17 @@ import ScopePicker from './ScopePicker.vue'
 // A scoped action (scope_type, CONTRACTS §21) is one row; ticked, its scopes
 // open below it (ScopePicker), offered as far as `scopeLimit` (the editor's
 // own scopes of the action) implies; without it everything is offered.
-// `grantable` (the editor's own keys) keeps an unticked permission the
-// editor does not hold from being ticked: the server refuses grants beyond
-// the editor. A plugin module lists its permissions under their groups, a
-// group ticked as a whole for concrete keys (D1). With `roleKey` a built-in
+// `grantable` (the editor's own keys, in the grant view: a disabled plugin's
+// count, useEditorGrants) keeps an unticked permission the editor does not
+// hold from being ticked: the server refuses grants beyond the editor. A
+// plugin module lists its permissions under their groups, a group ticked as
+// a whole for concrete keys (D1); a module's or group's checkbox leaves the
+// critical ones out, which are ticked one by one. With `roleKey` a built-in
 // role compares each plugin permission with the plugin's suggestion for it
 // (defaults) and can put a module back to it, locally: the restore is saved
-// with the rest of the page.
+// with the rest of the page. Comparing and restoring follow the matrix's
+// rules (pluginGrants.suggestionState / restoreCell): a cell the editor
+// cannot put back whole is neither marked nor touched.
 const props = defineProps<{
   modules: PermissionModule[]
   granted: Set<string>
@@ -34,7 +38,7 @@ const props = defineProps<{
   scopeLimit?: (action: string) => Scope[]
   /** The role being edited: a built-in one shows and restores the plugins' suggestions. */
   roleKey?: string
-  /** Whether the editor may grant a key (auth.hasDynamic). */
+  /** Whether the editor may grant a key (useEditorGrants.mayGrant). */
   grantable?: (key: string) => boolean
 }>()
 const emit = defineEmits<{ (e: 'update:granted', v: Set<string>): void }>()
@@ -62,10 +66,11 @@ const scopesOf = (key: string) => grantedScopes.value.get(key) ?? []
 const offerFor = (key: string) => offerOf(props.scopeLimit ? props.scopeLimit(key) : [ALL_SCOPE], key)
 const isChecked = (key: string) => !!props.allGranted || props.granted.has(key) || scopesOf(key).length > 0
 const showScopes = (p: PermissionItem) => scoped(p) && !props.allGranted && (isChecked(p.key) || opened.value.has(p.key))
-/** A plugin action ranges over its own resource: none of the core rows, its manifest scope instead. */
-const pickerResource = (p: PermissionItem) => (p.scope_type?.startsWith('plugin:') ? '' : (p.scope_type as ScopeResource))
-const pickerPlugin = (m: PermissionModule, p: PermissionItem) =>
-  m.plugin_key && p.scope ? { key: m.plugin_key, local: localOf(p.key), scope: p.scope } : undefined
+/** Whose scopes a scoped action picks: a plugin action's own resource (its manifest scope), else a core resource's rows. */
+const pickerTarget = (m: PermissionModule, p: PermissionItem): ScopeTarget =>
+  m.plugin_key && p.scope_type?.startsWith('plugin:')
+    ? { kind: 'plugin', key: m.plugin_key, local: localOf(p.key), scope: p.scope, label: p.label }
+    : { kind: 'core', resource: p.scope_type as ScopeResource }
 
 /** granted with p on or off; a scoped action goes on at its widest offered scope. */
 function withItem(granted: Set<string>, p: PermissionItem, on: boolean): Set<string> {
@@ -82,16 +87,19 @@ const permInactive = (m: PermissionModule, p: PermissionItem) => moduleInactive(
 /** The editor may grant p: holds it, or (a scoped action) holds some scope of it, which ScopePicker offers. */
 const mayGrant = (p: PermissionItem) => !props.grantable || props.grantable(p.key) || (scoped(p) && !!props.scopeLimit?.(p.key).length)
 // A ticked permission can always be unticked. A removed one can only be
-// unticked (disabled plugin ones stay selectable), and so can one the editor
-// may not grant.
+// unticked, and so can one the editor may not grant (a disabled plugin's
+// stays selectable to its holders: grantable is the grant view).
 const selectable = (p: PermissionItem) => isChecked(p.key) || (p.status !== 'removed' && mayGrant(p))
-const notHeld = (p: PermissionItem) => !props.allGranted && p.status !== 'removed' && !selectable(p)
+const notHeld = (p: PermissionItem) => !props.allGranted && !props.readOnly && p.status !== 'removed' && !selectable(p)
 
-// "All" means every selectable one; ticked permissions always are.
+/** What a module's or group's checkbox ticks: the selectable permissions but the critical ones (D1), ticked one by one. */
+const bulk = (perms: PermissionItem[]) => perms.filter((p) => selectable(p) && p.risk !== 'critical')
+// "All" means every one the checkbox ticks.
 function stateOf(perms: PermissionItem[]): 'all' | 'some' | 'none' {
-  const n = grantedCount(perms)
+  const rows = bulk(perms)
+  const n = rows.filter((p) => isChecked(p.key)).length
   if (n === 0) return 'none'
-  return n === perms.filter(selectable).length ? 'all' : 'some'
+  return n === rows.length ? 'all' : 'some'
 }
 
 function toggle(p: PermissionItem) {
@@ -99,11 +107,11 @@ function toggle(p: PermissionItem) {
   emit('update:granted', withItem(props.granted, p, !isChecked(p.key)))
 }
 
-/** Ticks or clears every selectable permission of a module or group, as concrete keys (D1). */
+/** Ticks or clears the permissions of a module or group its checkbox covers (bulk), as concrete keys (D1). */
 function toggleAll(perms: PermissionItem[]) {
   if (props.readOnly) return
   const on = stateOf(perms) !== 'all'
-  emit('update:granted', perms.filter(selectable).reduce((s, p) => withItem(s, p, on), props.granted))
+  emit('update:granted', bulk(perms).reduce((s, p) => withItem(s, p, on), props.granted))
 }
 
 function setScopes(p: PermissionItem, scopes: Scope[]) {
@@ -120,37 +128,39 @@ const unmet = (p: PermissionItem) => (isChecked(p.key) ? (p.requires ?? []).filt
 // The plugins' suggestions for the edited built-in role.
 const suggestedRole = computed<SuggestedRole | null>(() => (!props.allGranted && props.roleKey && isSuggestedRole(props.roleKey) ? props.roleKey : null))
 const grantedKeys = computed(() => [...props.granted])
+const mayGrantKey = (key: string) => !props.grantable || props.grantable(key)
 /** Rows with a suggestion: not critical (none suggested) nor removed (no new grants). */
 const suggests = (p: PermissionItem) => !!p.defaults && p.status !== 'removed'
 const suggestion = (p: PermissionItem, role: SuggestedRole) => p.defaults?.[role] ?? []
-/** "suggested" while the permission is granted as the plugin suggests, "changed" once it differs; null without a suggestion to compare. */
-function mark(p: PermissionItem): 'suggested' | 'changed' | null {
+/** The permission against the plugin's suggestion for the role (pluginGrants.suggestionState); null without one. */
+function suggestionOf(p: PermissionItem) {
   const role = suggestedRole.value
-  if (!role || !suggests(p)) return null
-  const want = suggestion(p, role)
-  if (!sameKeys(cellKeys(grantedKeys.value, p.key), want)) return 'changed'
-  return want.length ? 'suggested' : null
+  return role && suggests(p) ? suggestionState(cellKeys(grantedKeys.value, p.key), suggestion(p, role), mayGrantKey) : null
 }
-const differing = (m: PermissionModule) => m.permissions.filter((p) => mark(p) === 'changed').length
+/** "suggested" while granted as the plugin suggests, "differs" while a restore can put it back; null otherwise. */
+function mark(p: PermissionItem): 'suggested' | 'differs' | null {
+  const st = suggestionOf(p)
+  if (st === 'differs') return 'differs'
+  return st === 'same' && suggestion(p, suggestedRole.value!).length ? 'suggested' : null
+}
+const differing = (m: PermissionModule) => m.permissions.filter((p) => mark(p) === 'differs').length
 
 /**
  * Puts a module's permissions back to the plugin's suggestion, locally (saved
- * with the page). A suggested key the editor may not grant is skipped, unless
- * the role holds it already.
+ * with the page); a permission the editor cannot put back whole stays as it
+ * is and is counted as skipped.
  */
 function restoreSuggested(m: PermissionModule) {
   const role = suggestedRole.value
   if (!role || props.readOnly) return
   let skipped = 0
   const keys = m.permissions.filter(suggests).reduce((acc, p) => {
-    const held = cellKeys(acc, p.key)
-    const want = suggestion(p, role)
-    const next = want.filter((k) => held.includes(k) || !props.grantable || props.grantable(k))
-    skipped += want.length - next.length
-    return withCell(acc, p.key, next)
+    const next = restoreCell(cellKeys(acc, p.key), suggestion(p, role), mayGrantKey)
+    if (!next) skipped++
+    return next ? withCell(acc, p.key, next) : acc
   }, grantedKeys.value)
   emit('update:granted', new Set(keys))
-  if (skipped) toast(t('roles.restoreSkipped', { n: skipped }), 'info')
+  if (skipped) toast(t('roles.restoreSkipped', { n: skipped }, skipped), 'info')
 }
 </script>
 
@@ -180,13 +190,14 @@ function restoreSuggested(m: PermissionModule) {
               class="shrink-0"
               :model-value="stateOf(m.permissions) === 'all'"
               :indeterminate="stateOf(m.permissions) === 'some'"
-              :disabled="readOnly || !m.permissions.some(selectable)"
+              :disabled="readOnly || !bulk(m.permissions).length"
               :label="t('roles.selectAll')"
+              :title="t('roles.groupSkipsCritical')"
               @update:model-value="toggleAll(m.permissions)"
             />
           </div>
           <div v-if="differing(m)" class="flex flex-wrap items-center gap-2 border-t border-line px-3 py-1.5" data-testid="module-differs">
-            <SHint inline size="xs">{{ t('roles.differsCount', { n: differing(m) }) }}</SHint>
+            <SHint inline size="xs">{{ t('roles.differsCount', { n: differing(m) }, differing(m)) }}</SHint>
             <SButton v-if="!readOnly" size="xs" variant="secondary" icon="refresh" data-testid="module-restore" @click="restoreSuggested(m)">{{ t('roles.restoreSuggested') }}</SButton>
           </div>
           <template v-if="!collapsed.has(m.module)">
@@ -199,8 +210,9 @@ function restoreSuggested(m: PermissionModule) {
                   class="shrink-0"
                   :model-value="stateOf(s.perms) === 'all'"
                   :indeterminate="stateOf(s.perms) === 'some'"
-                  :disabled="readOnly || !s.perms.some(selectable)"
+                  :disabled="readOnly || !bulk(s.perms).length"
                   :label="t('roles.groupSelectAll')"
+                  :title="t('roles.groupSkipsCritical')"
                   data-testid="group-select-all"
                   @update:model-value="toggleAll(s.perms)"
                 />
@@ -223,10 +235,10 @@ function restoreSuggested(m: PermissionModule) {
                         <span class="truncate">{{ lt(p.label) || p.key }}</span>
                         <PermRiskBadge v-if="p.risk !== 'low' || m.source === 'plugin'" :risk="p.risk" class="shrink-0" />
                         <span v-if="p.step_up" class="shrink-0 text-primary-500 dark:text-primary-400" :title="t('roles.stepUp')" :aria-label="t('roles.stepUp')" role="img" data-testid="permission-step-up"><SIcon name="shield" class="h-3.5 w-3.5" /></span>
-                        <SBadge v-if="mark(p)" size="xs" class="shrink-0" :tone="mark(p) === 'changed' ? 'primary' : 'gray'" data-testid="permission-mark">{{ t(`roles.${mark(p)}`) }}</SBadge>
+                        <SBadge v-if="mark(p)" size="xs" class="shrink-0" tone="gray" :dot="mark(p) === 'differs'" :data-mark="mark(p)" data-testid="permission-mark">{{ t(`roles.${mark(p)}`) }}</SBadge>
                         <template v-if="!moduleInactive(m)">
                           <SBadge v-if="p.status === 'disabled'" tone="warning">{{ t('roles.pluginDisabled') }}</SBadge>
-                          <SBadge v-else-if="p.status === 'removed'" tone="gray">{{ t('roles.removed') }}</SBadge>
+                          <SBadge v-else-if="p.status === 'removed'" tone="gray" :title="t('roles.removedHint')" data-testid="permission-removed">{{ t('roles.removed') }}</SBadge>
                         </template>
                       </span>
                       <SHint v-if="notHeld(p)" inline size="xs" class="block truncate" data-testid="permission-not-held">{{ t('roles.notHeld') }}</SHint>
@@ -239,8 +251,7 @@ function restoreSuggested(m: PermissionModule) {
                     v-if="showScopes(p)"
                     class="min-w-0 sm:col-span-2 xl:col-span-3"
                     :action="p.key"
-                    :resource="pickerResource(p)"
-                    :plugin="pickerPlugin(m, p)"
+                    :target="pickerTarget(m, p)"
                     :scopes="scopesOf(p.key)"
                     :offer="offerFor(p.key)"
                     :disabled="readOnly"

@@ -93,21 +93,32 @@ const PLUGIN_SCOPE = 'pscope:'
 /** The kind of the values a plugin permission's scope takes. */
 export const pluginScopeKind = (plugin: string, local: string): PluginScopeKind => `${PLUGIN_SCOPE}${plugin}/${local}`
 
+/** Whether kind is a plugin scope's (pluginScopeKind) rather than a core entity. */
+export const isPluginScopeKind = (kind: EntityKind): kind is PluginScopeKind => kind.startsWith(PLUGIN_SCOPE)
+
+/** The descriptors of the plugin scope kinds seen so far: a kind gets the same object every time. */
+const pluginScopes = new Map<PluginScopeKind, EntityDescriptor>()
+
 /** The description of a kind. */
 export function entityOf(kind: EntityKind): EntityDescriptor {
-  if (!kind.startsWith(PLUGIN_SCOPE)) return ENTITIES[kind as CoreEntityKind]
-  const rest = kind.slice(PLUGIN_SCOPE.length)
-  const i = rest.indexOf('/')
-  return {
-    path: '',
-    url: `/plugins/${encodeURIComponent(rest.slice(0, i))}/scope-options`,
-    query: { permission: rest.slice(i + 1) },
-    icon: 'plugin',
-    label: 'entity.kind.pluginScope',
-    numeric: false,
-    opaqueIds: true,
-    permissions: ['role:read', 'plugin:read']
+  if (!isPluginScopeKind(kind)) return ENTITIES[kind]
+  let entity = pluginScopes.get(kind)
+  if (!entity) {
+    const rest = kind.slice(PLUGIN_SCOPE.length)
+    const i = rest.indexOf('/')
+    entity = {
+      path: '',
+      url: `/plugins/${encodeURIComponent(rest.slice(0, i))}/scope-options`,
+      query: { permission: rest.slice(i + 1) },
+      icon: 'plugin',
+      label: 'entity.kind.pluginScope',
+      numeric: false,
+      opaqueIds: true,
+      permissions: ['role:read', 'plugin:read']
+    }
+    pluginScopes.set(kind, entity)
   }
+  return entity
 }
 
 /** Whether a caller holding what `auth` answers may look `kind` up (`mine`: only its own rows). */

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { i18n } from '@/i18n'
 import type { PermissionItem, PermissionModule } from '@/api/types'
-import { parsePermission } from '@/authz/implies'
+import { parsePermission, permissionIndex } from '@/authz/implies'
+import { RESTORE_ACTION, RESTORE_CASES } from '@/authz/testing/restoreCases'
 import PermissionTree from './PermissionTree.vue'
 import ScopePicker from './ScopePicker.vue'
 
@@ -202,25 +203,27 @@ describe('PermissionTree plugin modules', () => {
     expect(w.text()).toContain(i18n.global.t('roles.riskLegend'))
   })
 
-  it('marks "suggested" and "changed" against the defaults of the edited built-in role only', () => {
+  it('marks "suggested" and "differs" against the defaults of the edited built-in role only', () => {
     const t = i18n.global.t
     const w = renderGuard([`${G}:rules:read`, `${G}:rules:manage`, `${G}:bypass`], { roleKey: 'operator' })
     // rules:manage is granted wider than suggested; stats:read has no suggestion for operator and is not granted; bypass suggests nothing.
-    expect(marks(w)).toEqual({ [`${G}:rules:read`]: t('roles.suggested'), [`${G}:rules:manage`]: t('roles.changed') })
-    expect(w.get('[data-testid="module-differs"]').text()).toContain(t('roles.differsCount', { n: 1 }))
+    expect(marks(w)).toEqual({ [`${G}:rules:read`]: t('roles.suggested'), [`${G}:rules:manage`]: t('roles.differs') })
+    expect(w.get('[data-testid="module-differs"]').text()).toContain(t('roles.differsCount', { n: 1 }, 1))
     expect(marks(renderGuard([`${G}:rules:read`], { roleKey: 'lead' }))).toEqual({})
     expect(renderGuard([], { roleKey: 'operator', allGranted: true }).find('[data-testid="permission-mark"]').exists()).toBe(false)
   })
 
-  it('restores a module to the suggestion locally, skipping keys the editor cannot grant', async () => {
+  it('restores a module to the suggestion locally, leaving cells the editor cannot restore whole', async () => {
     ui.toast.mockClear()
     const grantable = (k: string) => k !== `${G}:stats:read`
     const w = renderGuard(['user:read', `${G}:rules:manage`, `${G}:loose`], { roleKey: 'admin', grantable })
-    expect(w.get('[data-testid="module-differs"]').text()).toContain(i18n.global.t('roles.differsCount', { n: 2 }))
+    // stats:read is out of reach: neither marked nor counted.
+    expect(w.get('[data-testid="module-differs"]').text()).toContain(i18n.global.t('roles.differsCount', { n: 1 }, 1))
+    expect(marks(w)[`${G}:stats:read`]).toBeUndefined()
     await w.get('[data-testid="module-restore"]').trigger('click')
     // Keys without a suggestion (loose) and other modules stay; stats:read is skipped.
     expect(lastEmitted(w)).toEqual([`${G}:loose`, `${G}:rules:manage`, `${G}:rules:read`, 'user:read'])
-    expect(ui.toast).toHaveBeenCalledWith(i18n.global.t('roles.restoreSkipped', { n: 1 }), 'info')
+    expect(ui.toast).toHaveBeenCalledWith(i18n.global.t('roles.restoreSkipped', { n: 1 }, 1), 'info')
     expect(renderGuard([`${G}:rules:read`], { roleKey: 'admin', readOnly: true }).find('[data-testid="module-restore"]').exists()).toBe(false)
   })
 
@@ -246,8 +249,52 @@ describe('PermissionTree plugin modules', () => {
 
   it('opens ScopePicker in plugin mode for a plugin scoped action', () => {
     const picker = renderGuard([`${G}:rules:manage:own`]).getComponent(ScopePicker)
-    expect(picker.props('resource')).toBe('')
-    expect(picker.props('plugin')).toEqual({ key: 'guard', local: 'rules:manage', scope: { resource: 'ruleset', own: true } })
+    expect(picker.props('target')).toEqual({ kind: 'plugin', key: 'guard', local: 'rules:manage', scope: { resource: 'ruleset', own: true }, label: 'Manage rules' })
+  })
+
+  it('a group or module checkbox leaves critical permissions out; they are ticked one by one (D1)', async () => {
+    const w = renderGuard([])
+    await w.get('[data-group="ops"] input[data-testid="group-select-all"]').setValue(true)
+    expect(lastEmitted(w)).toEqual([`${G}:stats:read`])
+    // All the group ticks is ticked: the checkbox reads "all" without bypass.
+    const ticked = renderGuard([`${G}:stats:read`])
+    expect(ticked.get<HTMLInputElement>('[data-group="ops"] input[data-testid="group-select-all"]').element.checked).toBe(true)
+    await box(ticked, `${G}:bypass`).setValue(true)
+    expect(lastEmitted(ticked)).toEqual([`${G}:bypass`, `${G}:stats:read`])
+  })
+
+  it('a read-only role does not say what the editor cannot grant', () => {
+    const grantable = (k: string) => k !== `${G}:bypass`
+    expect(renderGuard([], { grantable }).findAll('[data-testid="permission-not-held"]')).toHaveLength(1)
+    expect(renderGuard([], { grantable, readOnly: true }).findAll('[data-testid="permission-not-held"]')).toHaveLength(0)
+  })
+
+  describe('restoring the suggestion: the cases the matrix answers alike', () => {
+    for (const c of RESTORE_CASES) {
+      it(c.name, async () => {
+        ui.toast.mockClear()
+        const m: PermissionModule = {
+          module: 'plugin.m',
+          label: 'M',
+          source: 'plugin',
+          plugin_key: 'm',
+          status: 'active',
+          permissions: [{ ...perm(RESTORE_ACTION), scope_type: 'plugin:flow', scope: { resource: 'flow', own: true }, defaults: { operator: c.want } }]
+        }
+        const w = mount(PermissionTree, {
+          props: { modules: [m], granted: new Set(c.cell), roleKey: 'operator', grantable: (k: string) => permissionIndex(c.editor).has(k) },
+          global: { plugins: [i18n], stubs: { EntityPicker: true } }
+        })
+        const mark = w.find('[data-testid="permission-mark"]')
+        expect(mark.exists() ? mark.attributes('data-mark') : null).toBe(c.state === 'differs' ? 'differs' : c.state === 'same' && c.want.length ? 'suggested' : null)
+        const restore = w.find('[data-testid="module-restore"]')
+        expect(restore.exists()).toBe(c.state === 'differs')
+        if (restore.exists()) {
+          await restore.trigger('click')
+          expect(lastEmitted(w)).toEqual(c.restored)
+        }
+      })
+    }
   })
 
   it('says a disabled plugin\'s grants are kept', () => {

@@ -16,7 +16,7 @@ const sc = (action: string, suffix: string): Scope => parsePermission(suffix ? `
 
 function render(action: string, held: string[], limit: string[], resource: 'account' | 'proxy' = 'account') {
   return mount(ScopePicker, {
-    props: { action, resource, scopes: held.map((k) => sc(action, k)), offer: offerOf(limit.map((k) => sc(action, k))) },
+    props: { action, target: { kind: 'core' as const, resource }, scopes: held.map((k) => sc(action, k)), offer: offerOf(limit.map((k) => sc(action, k))) },
     global: { plugins: [i18n], stubs: { EntityPicker } }
   })
 }
@@ -90,7 +90,7 @@ describe('ScopePicker plugin actions', () => {
   function renderPlugin(local: string, scope: PluginScopeDecl, held: string[], limit: string[]) {
     const action = `plugin.guard:${local}`
     return mount(ScopePicker, {
-      props: { action, resource: '', plugin: { key: 'guard', local, scope }, scopes: held.map((k) => sc(action, k)), offer: offerOf(limit.map((k) => sc(action, k)), action) },
+      props: { action, target: { kind: 'plugin' as const, key: 'guard', local, scope, label: 'Manage rules' }, scopes: held.map((k) => sc(action, k)), offer: offerOf(limit.map((k) => sc(action, k)), action) },
       global: { plugins: [i18n], stubs: { EntityPicker } }
     })
   }

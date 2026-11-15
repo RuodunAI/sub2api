@@ -7,6 +7,7 @@ import { i18n } from '@/i18n'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { actionOf } from '@/authz/pluginGrants'
+import { permissionIndex } from '@/authz/implies'
 
 // Sandboxed plugin iframe (sandbox="allow-scripts": opaque origin, no
 // cookies/storage of the console, no session). All communication goes
@@ -70,22 +71,25 @@ function pluginPath(raw: unknown): string | null {
   return url.pathname.slice(apiBase().length) + url.search
 }
 
+/** The /me list as patterns, without the superuser shortcut (see localAllowed). */
+const held = computed(() => permissionIndex(auth.me?.permissions ?? []))
+
 /**
- * A local permission key of this plugin ("stats:read") the caller holds; a
- * qualified key ("plugin.<key>:...") is false, so the frame learns nothing
- * about other plugins or the core. An unscoped key is held at any scope
- * ("flow:manage" by "plugin.<key>:flow:manage:own"), as the server shows
- * menus and buttons (HasSome); a scoped one ("flow:manage:own") only as it
- * is. Membership in the /me list, not auth.has: a superuser's shortcut would
- * answer true for keys the plugin never declared and tell the frame the
- * caller is the super admin.
+ * A local permission key of this plugin ("stats:read") the caller holds, as
+ * the server decides (core HasSome); a qualified key ("plugin.<key>:...") is
+ * false, so the frame learns nothing about other plugins or the core. An
+ * unscoped key is held at any scope ("flow:manage" by
+ * "plugin.<key>:flow:manage:own": menus and buttons show); a scoped one
+ * ("flow:manage:own") when a held key implies it (the whole row, or a scope
+ * covering it). Within the /me list, not auth.has: a superuser's shortcut
+ * would answer true for keys the plugin never declared and tell the frame
+ * the caller is the super admin.
  */
 function localAllowed(k: string): boolean {
   if (k === '' || k.startsWith('plugin.')) return false
   const key = pluginPermissionKey(props.pluginKey, k)
   if (key === '') return false
-  if (auth.holds(key)) return true
-  return actionOf(key) === key && (auth.me?.permissions ?? []).some((p) => actionOf(p) === key)
+  return actionOf(key) === key ? held.value.hasAction(key) : held.value.has(key)
 }
 
 async function handleRequest(id: string, method: string, params: any) {

@@ -12,7 +12,10 @@ import { useAssignableRoles } from '@/composables/useAssignableRoles'
 import { inAllLocales, lt } from '@/i18n'
 import { fieldErrors, notifyError } from '@/utils/errors'
 import { applyFormError } from '@/utils/formErrors'
-import { missingText } from '@/utils/permErrors'
+import { isVersionConflict, missingText } from '@/utils/permErrors'
+import { actionOf, diffCells, newRiskyGrants, withCell } from '@/authz/pluginGrants'
+import { useEditorGrants } from '@/components/permission/useEditorGrants'
+import { confirmRiskyGrants } from '@/components/permission/confirmRiskyGrants'
 import PermissionTree from './PermissionTree.vue'
 import RoleAssignable from './RoleAssignable.vue'
 import { ROLE_KEY_PATTERN } from '@/generated/permissions'
@@ -27,6 +30,10 @@ const modules = ref<PermissionModule[]>([])
 const loading = ref(true)
 const selectedId = ref<number | null>(null)
 const selected = computed(() => roles.value.find((r) => r.id === selectedId.value) || null)
+/** Every permission of the catalog by key. */
+const catalog = computed(() => new Map(modules.value.flatMap((m) => m.permissions.map((p) => [p.key, p]))))
+/** What the editor may grant: its keys in the grant view (a disabled plugin's included, a removed permission's not). */
+const editor = useEditorGrants(() => roles.value, (action) => catalog.value.get(action)?.status === 'removed')
 
 // ------------------------------------------------------------------ loading
 
@@ -136,10 +143,13 @@ async function save() {
     return
   }
   if (permsDirty.value && permsMissing.value && !(await confirm({ message: t('roles.overwriteUnknown'), danger: true }))) return
-  // Each changed part has its own endpoint; they run in order and stop at the first refusal.
+  if (permsDirty.value && !(await confirmRisky(r))) return
+  // Each changed part has its own endpoint; they run in order and stop at the
+  // first refusal. The permissions go first: they carry the version read with
+  // the role, which any other write would move on (C1).
   const steps = [
+    permsDirty.value && (() => api.put(`/roles/${r.id}/permissions`, { permission_keys: [...perms.value].sort(), ...(r.version !== undefined && { version: r.version }) })),
     metaDirty.value && (() => api.patch(`/roles/${r.id}`, metaPatch())),
-    permsDirty.value && (() => api.put(`/roles/${r.id}/permissions`, { permission_keys: [...perms.value].sort() })),
     assignableDirty.value && (() => api.put(`/roles/${r.id}/assignable`, { role_keys: [...assignable.value].sort(), assign_custom: assignCustom.value }))
   ].filter((step) => !!step)
   saving.value = true
@@ -153,6 +163,10 @@ async function save() {
     }
     toast(t('common.saved'), 'success')
   } catch (e) {
+    if (isVersionConflict(e)) {
+      saving.value = false
+      return rebase(r).catch(notifyError)
+    }
     missing = missingText(e, t)
     showSaveError(e)
   }
@@ -160,6 +174,32 @@ async function save() {
   if (done) await showSaved(r, done === steps.length).catch(notifyError)
   saveMissing.value = missing
   saving.value = false
+}
+
+/** The sensitive and critical permissions this save grants the role, confirmed first. */
+function confirmRisky(r: RoleRow) {
+  const all = [...catalog.value.values()].map((p) => ({ action: p.key, risk: p.risk }))
+  const risky = newRiskyGrants({ [r.key]: original.value.perms }, { [r.key]: [...perms.value] }, all)
+  return confirmRiskyGrants(risky, (action) => catalog.value.get(action)?.label, () => lt(r.name) || r.key)
+}
+
+/**
+ * The role's permissions changed since they were read (409 version_conflict):
+ * reads them again and puts the edited cells (one action each, as the matrix
+ * keeps them) on top, to be saved once more. The other fields stay as edited.
+ */
+async function rebase(r: RoleRow) {
+  const before = original.value.perms
+  const edited = [...perms.value]
+  await loadRoles()
+  const fresh = roles.value.find((x) => x.id === r.id)
+  if (!fresh) return
+  const keys = [...(fresh.permission_keys ?? [])].sort()
+  const actions = [...new Set([...before, ...edited].map(actionOf))]
+  const cells = diffCells({ [r.key]: before }, { [r.key]: edited }, actions, [r.key])
+  original.value = { ...original.value, perms: keys }
+  perms.value = new Set(cells.reduce((acc, c) => withCell(acc, c.action, c.to), keys))
+  toast(t('roles.conflictMerged'), 'info')
 }
 
 /**
@@ -348,9 +388,9 @@ async function restoreDefaults() {
             :modules="modules"
             :all-granted="selected.superuser"
             :read-only="readOnly"
-            :scope-limit="auth.scopes"
+            :scope-limit="editor.scopes"
             :role-key="selected.key"
-            :grantable="auth.hasDynamic"
+            :grantable="editor.mayGrant"
           />
 
           <RoleAssignable v-if="!selected.superuser && Array.isArray(selected.assignable_role_keys)" v-model:keys="assignable" v-model:assign-custom="assignCustom" :roles="roles" :read-only="readOnly" />

@@ -4,9 +4,9 @@ import { createPinia } from 'pinia'
 import { i18n } from '@/i18n'
 
 const perms = vi.hoisted(() => ({ held: new Set<string>() }))
-// holds and me.permissions: the /me list; has (with the superuser shortcut) must not be used.
+// me.permissions: the /me list; has (with the superuser shortcut) must not be used.
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ holds: (k: string) => perms.held.has(k), me: { permissions: [...perms.held] }, has: () => true })
+  useAuthStore: () => ({ me: { permissions: [...perms.held] }, has: () => true })
 }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 enableAutoUnmount(afterEach)
@@ -38,7 +38,7 @@ describe('PluginIframe permissions.check (T83)', () => {
     })
   })
 
-  it('an unscoped local key is held at any scope; a scoped one matches exactly', async () => {
+  it('an unscoped local key is held at any scope; a scoped one when a held key implies it', async () => {
     perms.held = new Set(['plugin.guard:flow:manage:own', 'plugin.guard:rule:read:value/input', 'plugin.other:stats:read:own'])
     const r = await ask('permissions.check', { keys: ['flow:manage', 'flow:manage:own', 'flow:manage:flow/3', 'rule:read', 'rule:read:value/other', 'flow', 'stats:read'] })
     expect(r.result).toEqual({
@@ -51,6 +51,12 @@ describe('PluginIframe permissions.check (T83)', () => {
       flow: false,
       'stats:read': false
     })
+  })
+
+  it('the whole row or a covering scope holds a scoped key, as the server decides', async () => {
+    perms.held = new Set(['plugin.guard:flow:manage', 'plugin.guard:rule:read:value/input'])
+    const r = await ask('permissions.check', { keys: ['flow:manage:own', 'flow:manage:flow/3', 'rule:read:value/input', 'rule:read:own'] })
+    expect(r.result).toEqual({ 'flow:manage:own': true, 'flow:manage:flow/3': true, 'rule:read:value/input': true, 'rule:read:own': false })
   })
 
   it('refuses more than 50 keys or no array', async () => {

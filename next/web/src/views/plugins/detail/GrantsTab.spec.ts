@@ -5,10 +5,10 @@ import { i18n } from '@/i18n'
 import GrantsTab from './GrantsTab.vue'
 import type { PluginDetail, PluginGrant } from '../pluginUtil'
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), del: vi.fn(), toast: vi.fn(), confirm: vi.fn(async () => true) }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), del: vi.fn(), toast: vi.fn(), confirm: vi.fn(async () => true), lacks: new Set<string>() }))
 vi.mock('@sub2api/host', async (original) => ({ ...await original<typeof import('@sub2api/host')>(), api: { get: mocks.get, put: mocks.put, del: mocks.del } }))
 vi.mock('@sub2api/ui', async (original) => ({ ...await original<object>(), toast: mocks.toast, confirm: mocks.confirm }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: () => true }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (k: string) => !mocks.lacks.has(k) }) }))
 enableAutoUnmount(afterEach)
 
 const GRANTS: PluginGrant[] = [
@@ -31,6 +31,7 @@ const chip = (w: W, list: string, text: string) => w.get(`[data-list="${list}"]`
 describe('plugin grants tab', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mocks.lacks = new Set()
     i18n.global.locale.value = 'en'
     mocks.put.mockResolvedValue({})
   })
@@ -76,6 +77,17 @@ describe('plugin grants tab', () => {
     expect(mocks.confirm).toHaveBeenCalled()
     expect(mocks.put).toHaveBeenCalledWith('/plugins/guard/grants/broadcast', {})
     expect(mocks.toast).toHaveBeenCalledWith('Permission granted again', 'success')
+  })
+
+  it('granting again takes plugin:install: without it the button is greyed out and says so', async () => {
+    mocks.lacks = new Set(['plugin:install'])
+    const w = await render()
+    const button = row(w, 'broadcast').get('[data-testid="grant-regrant"]')
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(button.attributes('title')).toBe(i18n.global.t('plugins.grants.needsPermission', { permission: 'plugin:install' }))
+    await button.trigger('click')
+    await flushPromises()
+    expect(mocks.put).not.toHaveBeenCalled()
   })
 
   it('a 400 scope_too_wide shows the error and keeps the dialog', async () => {
