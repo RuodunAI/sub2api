@@ -472,7 +472,7 @@ func ScopeOptions(fn func(ctx context.Context, q ScopeOptionsQuery) ([]ScopeOpti
   - `scope("plugin.p:flow:manage")`：例如 `["plugin.p:flow:manage:own","plugin.p:flow:manage:flow/2"]`。
   依赖这些语义的插件页面声明 `hostUICompat: "^3.16"`，因为 3.15 的控制台不解析插件范围。用 scope 的清单反正必须 3.16（第 1 章）。
 - 行级按钮（某一行能否编辑）：**推荐由插件后端在列表行里返回 `can_edit`**，后端用 `Scope.Allows(id, created_by)` 计算。不推荐前端自己用 `scope()` 加 `created_by` 去算：own 的判定依赖插件数据，放在后端只有一份逻辑。
-- iframe 桥 `permissions.check`（`PluginIframe.vue:79`）：本地 key 不带范围时，改为“`/me` 列表里有该 key，或者有该 key 加一段范围后缀”（任意范围）；带范围时精确匹配。仍然不用 `auth.has`，避免超管捷径泄露身份，这一点原有注释已经写明。
+- iframe 桥 `permissions.check`（`PluginIframe.vue:79`）：本地 key 不带范围时，改为“`/me` 列表里有该 key，或者有该 key 加一段范围后缀”（任意范围，同服务端 `HasSome`）；带范围时按蕴含判断（持有全部或蕴含该范围的授予即为 true，同服务端 `Has`；二审 logic #6，此前精确匹配，持有全部反而为 false）。仍然不用 `auth.has`，避免超管捷径泄露身份，这一点原有注释已经写明。
 
 ### 4.3.9 网关请求路径不受影响
 

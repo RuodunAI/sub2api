@@ -36,25 +36,14 @@ func TestManifestBuiltinRoleKeysMatchBuiltinRoles(t *testing.T) {
 	}
 }
 
+// permissionHolders lists the roles holding every row of key.
 func permissionHolders(t *testing.T, db *store.DB, key string) []string {
 	t.Helper()
 	var roles []string
-	if err := db.Pool.QueryRow(context.Background(), `
+	require.NoError(t, db.Pool.QueryRow(context.Background(), `
 SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM role_permissions rp
-JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1`, key).Scan(&roles); err != nil {
-		t.Fatal(err)
-	}
+JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1`, key).Scan(&roles))
 	return roles
-}
-
-func syncGrantAudits(t *testing.T, db *store.DB, key, via string) int {
-	t.Helper()
-	var n int
-	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs
-WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL AND detail->>'key' = $1 AND detail->>'via' = $2`, key, via).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
 }
 
 // A permission the catalog creates goes to its GrantRoles (never a super
@@ -84,7 +73,7 @@ func TestSyncPluginGrantRoles(t *testing.T) {
 	if got := permissionHolders(t, db, manage); len(got) != 0 {
 		t.Fatalf("holders of %s: %v", manage, got)
 	}
-	if n := syncGrantAudits(t, db, read, "default"); n != 2 {
+	if n := auditCount(t, db, "authz.sync.grant", read, "default"); n != 2 {
 		t.Fatalf("default grant audits: %d", n)
 	}
 
@@ -158,7 +147,7 @@ func TestCanGrantToRoles(t *testing.T) {
 		t.Helper()
 		var code string
 		_ = db.Tx(ctx, func(tx pgx.Tx) error {
-			if err := s.CanGrantToRoles(ctx, tx, actor, roles, false); err != nil {
+			if err := s.CanGrantToRoles(ctx, tx, actor, roles, manifest.RiskLow); err != nil {
 				code = core.AsError(err).Code
 			}
 			return nil
@@ -284,7 +273,7 @@ func TestGrantPluginPermission(t *testing.T) {
 	if got := permissionHolders(t, db, key); !slices.Equal(got, []string{RoleUser}) {
 		t.Fatalf("holders %v", got)
 	}
-	if n := syncGrantAudits(t, db, key, "review"); n != 1 {
+	if n := auditCount(t, db, "authz.sync.grant", key, "review"); n != 1 {
 		t.Fatalf("%d audits", n)
 	}
 	if s.Version() <= before {
@@ -344,21 +333,18 @@ func syncer(t *testing.T, s *Service, key string) func(defs ...core.PermissionDe
 func scopedHolders(t *testing.T, db *store.DB, key string) []string {
 	t.Helper()
 	var out []string
-	if err := db.Pool.QueryRow(context.Background(), `
+	require.NoError(t, db.Pool.QueryRow(context.Background(), `
 SELECT COALESCE(array_agg(r.key || ':' || rs.scope ORDER BY r.key, rs.scope), '{}') FROM role_permission_scopes rs
-JOIN roles r ON r.id = rs.role_id JOIN permissions p ON p.id = rs.permission_id WHERE p.key = $1`, key).Scan(&out); err != nil {
-		t.Fatal(err)
-	}
+JOIN roles r ON r.id = rs.role_id JOIN permissions p ON p.id = rs.permission_id WHERE p.key = $1`, key).Scan(&out))
 	return out
 }
 
+// auditCount counts the audits of action naming key with via.
 func auditCount(t *testing.T, db *store.DB, action, key, via string) int {
 	t.Helper()
 	var n int
-	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs
-WHERE action = $1 AND detail->>'key' = $2 AND detail->>'via' = $3`, action, key, via).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs
+WHERE action = $1 AND detail->>'key' = $2 AND detail->>'via' = $3`, action, key, via).Scan(&n))
 	return n
 }
 
@@ -434,7 +420,7 @@ WHERE r.id = rp.role_id AND p.id = rp.permission_id AND r.key = $1 AND p.key = $
 	require.Len(t, revived, 1)
 	assert.JSONEq(t, `{"keys":["plugin.guard:b:read"],"holders":{"plugin.guard:b:read":["admin"]}}`, revived[0])
 	assert.Len(t, statusAudits(t, db, "authz.sync.remove"), 1, "a sync removing nothing writes nothing")
-	if n := syncGrantAudits(t, db, b, "default"); n != 2 {
+	if n := auditCount(t, db, "authz.sync.grant", b, "default"); n != 2 {
 		t.Fatalf("default grant audits: %d", n)
 	}
 	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, b); return ok })
@@ -480,7 +466,7 @@ func TestSyncPluginScopedGrants(t *testing.T) {
 	if got := scopedHolders(t, db, key); !slices.Equal(got, []string{"operator:flow/3", "operator:own"}) {
 		t.Fatalf("scoped holders %v", got)
 	}
-	if n := syncGrantAudits(t, db, key+":own", "default"); n != 1 {
+	if n := auditCount(t, db, "authz.sync.grant", key+":own", "default"); n != 1 {
 		t.Fatalf("audits of the own grant: %d", n)
 	}
 	var risk, scopeType, resource, group, defaults string
@@ -640,7 +626,7 @@ func TestCanGrantToRolesCritical(t *testing.T) {
 	} {
 		var reason string
 		_ = db.Tx(c.ctx, func(tx pgx.Tx) error {
-			if err := s.CanGrantToRoles(c.ctx, tx, c.actor, []string{RoleOperator}, true); err != nil {
+			if err := s.CanGrantToRoles(c.ctx, tx, c.actor, []string{RoleOperator}, manifest.RiskCritical); err != nil {
 				reason, _ = core.AsError(err).Details["reason"].(string)
 				if reason == "" {
 					reason = err.Error()

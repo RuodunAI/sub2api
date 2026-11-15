@@ -337,7 +337,7 @@ func TestResetBuiltinRole(t *testing.T) {
 	if _, err := s.UpdateRole(ctx, root, opID, UpdateRoleInput{Name: lt("Night shift", "夜班")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetRolePermissions(ctx, root, opID, []string{"user:read", "settings:manage", "plugin.guard:stats:read"}); err != nil {
+	if _, err := s.SetRolePermissions(ctx, root, opID, []string{"user:read", "settings:manage", "plugin.guard:stats:read"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	mustCan(t, s, opUser, "settings:manage", true)
@@ -390,7 +390,7 @@ func TestAuthorizerCacheInvalidation(t *testing.T) {
 	mustCan(t, b, uid, "user:read", false) // cached on b
 
 	// Mutation on node a is visible on node b through the bus.
-	if _, err := a.SetRolePermissions(ctx, root, roleID(t, a, RoleUser), append(append([]string{}, userRolePermissions...), "user:read")); err != nil {
+	if _, err := a.SetRolePermissions(ctx, root, roleID(t, a, RoleUser), append(append([]string{}, userRolePermissions...), "user:read"), nil); err != nil {
 		t.Fatal(err)
 	}
 	mustCan(t, a, uid, "user:read", true)
@@ -406,7 +406,7 @@ func TestAuthorizerCacheInvalidation(t *testing.T) {
 		t.Fatalf("version poll spec: %+v", poll)
 	}
 	mustCan(t, c, uid, "user:read", true)
-	if _, err := a.SetRolePermissions(ctx, root, roleID(t, a, RoleUser), userRolePermissions); err != nil {
+	if _, err := a.SetRolePermissions(ctx, root, roleID(t, a, RoleUser), userRolePermissions, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := poll.Handler(ctx, core.TaskRun{Name: poll.Name}); err != nil {
@@ -483,7 +483,7 @@ func TestBumpDropsStaleCache(t *testing.T) {
 	uid := addUser(t, b, "u@x.com", RoleUser)
 	root := addUser(t, b, "root@x.com", RoleSuperAdmin)
 	mustCan(t, a, uid, "user:read", false) // cached on a
-	if _, err := b.SetRolePermissions(ctx, root, roleID(t, b, RoleUser), append(slices.Clone(userRolePermissions), "user:read")); err != nil {
+	if _, err := b.SetRolePermissions(ctx, root, roleID(t, b, RoleUser), append(slices.Clone(userRolePermissions), "user:read"), nil); err != nil {
 		t.Fatal(err)
 	}
 	mustCan(t, a, uid, "user:read", false) // stale on a
@@ -520,7 +520,7 @@ func TestRoleManagement(t *testing.T) {
 	if err := s.DeleteRole(ctx, root, roleID(t, s, RoleAdmin)); !isCode(err, "conflict") {
 		t.Fatalf("delete builtin: %v", err)
 	}
-	if _, err := s.SetRolePermissions(ctx, admin, roleID(t, s, RoleSuperAdmin), []string{"user:read"}); !isCode(err, "conflict") {
+	if _, err := s.SetRolePermissions(ctx, admin, roleID(t, s, RoleSuperAdmin), []string{"user:read"}, nil); !isCode(err, "conflict") {
 		t.Fatalf("super_admin perms: %v", err)
 	}
 	if _, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "ops", Name: lt("Ops", "运营"), PermissionKeys: []string{"nope:x"}}); !isCode(err, "invalid_argument") {
@@ -788,7 +788,7 @@ func TestGrantChecksIgnoreStaleCache(t *testing.T) {
 	actor := addUser(t, b, "g@x.com", "granter")
 	alice := addUser(t, b, "alice@x.com")
 	mustCan(t, a, actor, "account:read", true) // cached on a
-	if _, err := b.SetRolePermissions(ctx, root, granter.ID, []string{"user:read"}); err != nil {
+	if _, err := b.SetRolePermissions(ctx, root, granter.ID, []string{"user:read"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	mustCan(t, a, actor, "account:read", true) // stale on a

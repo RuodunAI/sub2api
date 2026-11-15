@@ -190,14 +190,14 @@ func TestSyncCoreFillsDefaultsOnce(t *testing.T) {
 	// an admin short of role:define and assign_custom, beyond its defaults
 	// with balance:adjust:any; none filled yet.
 	held := slices.DeleteFunc(slices.Clone(operatorDefaults), func(k string) bool { return k == "task:run" || k == "account:credential:view:own" })
-	if _, err := s.SetRolePermissions(ctx, root, opID, append(held, "settings:read", "account:credential:view")); err != nil {
+	if _, err := s.SetRolePermissions(ctx, root, opID, append(held, "settings:read", "account:credential:view"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SetRoleAssignable(ctx, root, opID, AssignableInput{RoleKeys: []string{RoleUser}}); err != nil {
 		t.Fatal(err)
 	}
 	adminHeld := slices.DeleteFunc(rolePermissionKeys(t, s, adminID), func(k string) bool { return k == "role:define" })
-	if _, err := s.SetRolePermissions(ctx, root, adminID, append(adminHeld, "balance:adjust:any")); err != nil {
+	if _, err := s.SetRolePermissions(ctx, root, adminID, append(adminHeld, "balance:adjust:any"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SetRoleAssignable(ctx, root, adminID, AssignableInput{RoleKeys: []string{RoleOperator, RoleSupplier, RoleUser}}); err != nil {
@@ -273,10 +273,10 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_id = $1 AND det
 	}
 
 	// What is changed afterwards stays changed, and the version stays.
-	if _, err := s.SetRolePermissions(ctx, root, opID, held); err != nil {
+	if _, err := s.SetRolePermissions(ctx, root, opID, held, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetRolePermissions(ctx, root, adminID, adminHeld); err != nil {
+	if _, err := s.SetRolePermissions(ctx, root, adminID, adminHeld, nil); err != nil {
 		t.Fatal(err)
 	}
 	v, _ := s.currentVersion(ctx)
@@ -550,7 +550,7 @@ func TestHeldRoleWritesNeedAssign(t *testing.T) {
 			_, err := s.UpdateRole(ctx, lead1, id, UpdateRoleInput{Name: lt("Renamed", "改名")})
 			return err
 		},
-		"permissions": func(id int64) error { _, err := s.SetRolePermissions(ctx, lead1, id, []string{}); return err },
+		"permissions": func(id int64) error { _, err := s.SetRolePermissions(ctx, lead1, id, []string{}, nil); return err },
 		"assignable":  func(id int64) error { _, err := s.SetRoleAssignable(ctx, lead1, id, AssignableInput{}); return err },
 		"delete":      func(id int64) error { return s.DeleteRole(ctx, lead1, id) },
 	}

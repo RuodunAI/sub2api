@@ -48,6 +48,24 @@ func (d RoleDefault) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.Unscoped)
 }
 
+// Suffixes is d as canonical scope suffixes (CanonicalSuffixes; nil for
+// none): "" for Unscoped, and each scope resolve turns into a suffix; the
+// scopes it refuses are bad, in order.
+func (d RoleDefault) Suffixes(resolve func(scope string) (string, bool)) (suffixes, bad []string) {
+	if d.Unscoped {
+		suffixes = append(suffixes, "")
+	}
+	for _, v := range d.Scopes {
+		sfx, ok := resolve(v)
+		if !ok {
+			bad = append(bad, v)
+			continue
+		}
+		suffixes = append(suffixes, sfx)
+	}
+	return CanonicalSuffixes(suffixes), bad
+}
+
 func (d *RoleDefault) UnmarshalJSON(b []byte) error {
 	var unscoped bool
 	if json.Unmarshal(b, &unscoped) == nil {
@@ -146,16 +164,7 @@ func (up UserPermission) DefaultGrants() map[string][]string {
 	}
 	out := make(map[string][]string, len(up.Defaults))
 	for role, d := range up.Defaults {
-		var suffixes []string
-		if d.Unscoped {
-			suffixes = append(suffixes, "")
-		}
-		for _, v := range d.Scopes {
-			if suffix, ok := scope.GrantSuffix(v); ok {
-				suffixes = append(suffixes, suffix)
-			}
-		}
-		if suffixes = CanonicalSuffixes(suffixes); suffixes != nil {
+		if suffixes, _ := d.Suffixes(scope.GrantSuffix); suffixes != nil {
 			out[role] = suffixes
 		}
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	authzsvc "github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -98,7 +99,15 @@ type noopPerms struct{}
 func (noopPerms) SyncPlugin(context.Context, pgx.Tx, string, []core.PermissionDef) error {
 	return nil
 }
-func (noopPerms) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, bool) error { return nil }
+func (noopPerms) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, string) error { return nil }
+
+// The catalog's reads come from the tables the tests fill.
+func (noopPerms) PluginPermissions(ctx context.Context, q store.Querier, key string) ([]core.PluginPermission, error) {
+	return authzsvc.New(authzsvc.Deps{}).PluginPermissions(ctx, q, key)
+}
+func (noopPerms) PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]core.PermissionHolder, error) {
+	return authzsvc.New(authzsvc.Deps{}).PermissionHolders(ctx, q, keys)
+}
 func (noopPerms) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
 	return core.PluginGrantees{}, nil
 }

@@ -18,9 +18,10 @@ import (
 
 // grant is a resolved grant: the permission and its scope, "" for every row.
 type grant struct {
-	key   string // canonical
-	id    int64
-	scope string
+	key      string // canonical
+	id       int64
+	scope    string
+	critical bool // of a critical plugin permission (stepUpCritical)
 }
 
 // resolvePermissions canonicalizes keys, without duplicates or keys another
@@ -50,10 +51,11 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 	type row struct {
 		id      int64
 		removed bool
+		risk    string
 		scope   manifest.PermissionScope
 	}
 	found := map[string]row{}
-	rows, err := tx.Query(ctx, `SELECT key, id, status = 'removed', scope_type, scope FROM permissions WHERE key = ANY($1)`, actions)
+	rows, err := tx.Query(ctx, `SELECT key, id, status = 'removed', risk, scope_type, scope FROM permissions WHERE key = ANY($1)`, actions)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -61,11 +63,11 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 		var k, scopeType string
 		var scope manifest.PermissionScope
 		var r row
-		if err := rows.Scan(&k, &r.id, &r.removed, &scopeType, &scope); err != nil {
+		if err := rows.Scan(&k, &r.id, &r.removed, &r.risk, &scopeType, &scope); err != nil {
 			rows.Close()
 			return nil, nil, err
 		}
-		r.scope = readPluginScope(scopeType, &scope)
+		r.scope = core.ReadPluginScope(scopeType, &scope)
 		found[k] = r
 	}
 	rows.Close()
@@ -85,7 +87,8 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 			if !r.removed {
 				live = append(live, string(p.Key()))
 			}
-			grants = append(grants, grant{key: string(p.Key()), id: r.id, scope: p.Suffix()})
+			critical := isPluginAction(p.Action) && r.risk == manifest.RiskCritical
+			grants = append(grants, grant{key: string(p.Key()), id: r.id, scope: p.Suffix(), critical: critical})
 		}
 	}
 	if len(invalid) > 0 {
@@ -103,25 +106,8 @@ func invalidKeys(keys []string) error {
 	return core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "invalid", Message: "invalid permission keys: " + strings.Join(keys, ", ")})
 }
 
-// readPluginScope reads a plugin permission's scope_type and scope as the
-// scope its grants may name (manifest.PermissionScope.Takes): the zero scope
-// (every row only) for an unscoped one, the resource always that of
-// scope_type.
-func readPluginScope(scopeType string, scope *manifest.PermissionScope) manifest.PermissionScope {
-	res, ok := strings.CutPrefix(scopeType, core.PluginScopeTypePrefix)
-	if !ok {
-		return manifest.PermissionScope{}
-	}
-	var out manifest.PermissionScope
-	if scope != nil {
-		out = *scope
-	}
-	out.Resource = res
-	return out
-}
-
 // isPluginAction reports whether a is a plugin permission's action, whose
-// scopes the catalog checks (readPluginScope) rather than perm.
+// scopes the catalog checks (core.ReadPluginScope) rather than perm.
 func isPluginAction(a perm.Key) bool { return strings.HasPrefix(string(a), perm.PluginPrefix) }
 
 // grantPart is the part of a role's grants a write replaces: all of them,
@@ -129,6 +115,21 @@ func isPluginAction(a perm.Key) bool { return strings.HasPrefix(string(a), perm.
 type grantPart struct {
 	coreOnly bool
 	plugin   string // a plugin key; "" for none
+}
+
+// of is the keys of keys within part, in order.
+func (part grantPart) of(keys []string) []string {
+	prefix := manifest.PermissionModule(part.plugin) + ":"
+	out := []string{}
+	for _, k := range keys {
+		switch {
+		case part.plugin != "" && !strings.HasPrefix(k, prefix):
+		case part.coreOnly && strings.HasPrefix(k, perm.PluginPrefix):
+		default:
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // grantsInPart is the SQL condition on p, a granted permission, of the
@@ -214,6 +215,15 @@ func impliedByOther(set core.PermissionSet, k perm.Key) bool {
 		}
 	}
 	return false
+}
+
+// withSuffix is the key of the permission key at scope suffix sfx, key
+// itself for "" (every row).
+func withSuffix(key, sfx string) string {
+	if sfx == "" {
+		return key
+	}
+	return key + ":" + sfx
 }
 
 // notImplied returns the keys of want that have does not imply, in order:

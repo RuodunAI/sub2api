@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -47,7 +48,7 @@ func TestPlanNeedsConsentByRisk(t *testing.T) {
 	}}
 	roles := roleGrants(m, map[string]map[string][]string{"low:read": {"auditor": {""}}}, nil)
 	for _, upgrade := range []bool{false, true} {
-		plan, _, err := planRoleGrants(context.Background(), nil, m, nil, roles, nil, upgrade)
+		plan, _, err := (&Service{}).planRoleGrants(context.Background(), nil, m, nil, roles, nil, upgrade)
 		require.NoError(t, err)
 		needs := map[string]bool{}
 		for _, g := range plan {
@@ -92,13 +93,12 @@ func TestInstallWithholdsUnnameableDefaults(t *testing.T) {
 	flow := "plugin.guard:flow:manage"
 	assert.Equal(t, []RoleGrant{{Permission: flow, Role: "admin", Risk: manifest.RiskSensitive, Via: viaDefault, Withheld: true}}, res.Withheld)
 	assert.Equal(t, map[string][]string{"operator": {"own"}, "supplier": {""}}, lastDef(t, e, flow).GrantRoles)
-	assert.Equal(t, [][]string{{"operator", "supplier"}}, e.perms.checked)
 	var pending string
 	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail->>'pending' FROM audit_logs WHERE action = $1 AND target_id = 'guard'`, AuditConsent).Scan(&pending))
 	assert.Contains(t, pending, `"role": "admin"`)
 
 	addPerms(t, e, map[string]string{"flow:manage": manifest.RiskSensitive})
-	gs, err := PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+	gs, err := e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
 	require.NoError(t, err)
 	assert.Equal(t, []RoleGrant{{Version: "0.1.0", Permission: flow, Role: "admin", Risk: manifest.RiskSensitive, Via: viaDefault, Withheld: true}}, gs)
 	_, err = e.svc.ReviewRoleGrants(ctx, "guard", "0.1.0", true, e.admin)
@@ -150,11 +150,11 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
  WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:manage'`)
 	require.NoError(t, err)
 	m := flowGuard("0.1.1")
-	existing, revived, err := catalogKeys(ctx, e.db.Pool, m)
+	existing, err := e.svc.catalogKeys(ctx, e.db.Pool, m.Key)
 	require.NoError(t, err)
-	assert.True(t, existing["plugin.guard:flow:manage"])
-	assert.True(t, revived["plugin.guard:flow:manage"])
-	assert.False(t, revived["plugin.guard:rules:read"])
+	assert.True(t, existing.has("plugin.guard:flow:manage"))
+	assert.True(t, existing.removed("plugin.guard:flow:manage"))
+	assert.False(t, existing.removed("plugin.guard:rules:read"))
 
 	// Nothing to grant, nothing new: the upgrade is carried over.
 	up, err := e.svc.Upload(ctx, pkgtest.Build(m, e.root), e.admin, UploadOptions{})
@@ -170,6 +170,14 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	assert.Equal(t, []string{}, flow.Cells["admin"].Grant)
 	assert.False(t, flow.Cells["operator"].Withheld)
 	assert.Empty(t, r.NewRoleGrants)
+
+	// Who holds an existing key is role:read's to see (C4).
+	delete(e.authz.perms[e.admin], "role:read")
+	r, err = e.svc.Review(ctx, "guard", "0.1.1", e.admin)
+	require.NoError(t, err)
+	cell, err := json.Marshal(r.UserPermissions[len(r.UserPermissions)-1].Cells["operator"])
+	require.NoError(t, err)
+	assert.NotContains(t, string(cell), `"grant"`)
 }
 
 // The review's matrix is the viewer's: columns say which roles it may name
@@ -226,4 +234,11 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	assert.False(t, byKey["rules:manage"].New)
 	assert.Equal(t, ReviewCell{Grant: []string{}, Nameable: true}, byKey["rules:manage"].Cells["auditor"])
 	assert.Equal(t, []ReviewRemovedPerm{{Key: "old:gone", Label: core.LocalizedText{"en": "Gone"}, Holders: []string{"auditor", "operator"}}}, r.RemovedUserPermissions)
+
+	delete(e.authz.perms[e.admin], "role:read")
+	r, err = e.svc.Review(ctx, "guard", "0.1.1", e.admin)
+	require.NoError(t, err)
+	assert.Equal(t, []ReviewRemovedPerm{{Key: "old:gone", Label: core.LocalizedText{"en": "Gone"}}}, r.RemovedUserPermissions, "no holders (C4)")
+	assert.Equal(t, ReviewCell{Grant: []string{""}, Reason: "held", Withheld: true}, r.UserPermissions[len(r.UserPermissions)-2].Cells["admin"],
+		"a new key's defaults are the manifest's, not holders")
 }

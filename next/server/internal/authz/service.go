@@ -6,6 +6,8 @@ package authz
 import (
 	"context"
 	"log/slog"
+	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -185,11 +187,30 @@ func (s *Service) committedLater(version int64) {
 
 // mutate runs fn in a transaction after bumping the version, then notifies.
 func (s *Service) mutate(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	return s.mutateAt(ctx, nil, fn)
+}
+
+// errVersionConflict is the refusal of a write made against an authz
+// version other than the current one (expected, CONTRACTS C1): the editor
+// read before someone else's change, which the write would undo.
+func errVersionConflict(ctx context.Context, current int64) error {
+	return core.NewError(http.StatusConflict, "version_conflict", t(ctx,
+		"permissions changed since you loaded them; reload and save again",
+		"权限在你打开之后已被修改，请重新加载后再保存")).WithDetails(map[string]any{"version": current})
+}
+
+// mutateAt is mutate failing with errVersionConflict, before fn runs, when
+// expected is set and is not the authz version the write starts from (the
+// Bump serializes the comparison with every other authz write).
+func (s *Service) mutateAt(ctx context.Context, expected *int64, fn func(tx pgx.Tx) error) error {
 	var v int64
 	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
 		if v, err = s.Bump(ctx, tx); err != nil {
 			return err
+		}
+		if expected != nil && *expected != v-1 {
+			return errVersionConflict(ctx, v-1)
 		}
 		return fn(tx)
 	})
@@ -365,91 +386,117 @@ func (s *Service) RolesPermissions(ctx context.Context, q store.Querier, roleKey
 	if len(roleKeys) == 0 {
 		return set, nil
 	}
-	rows, err := q.Query(ctx, `
-SELECT r.superuser, r.assign_custom, g.key
-FROM roles r`+roleGrantsJoin(`p.status <> 'removed'`)+`
-WHERE r.key = ANY($1)`, roleKeys)
+	roles, customs, err := readRoleGrants(ctx, q, roleKeys)
 	if err != nil {
 		return core.PermissionSet{}, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var su, custom bool
-		var key *string
-		if err := rows.Scan(&su, &custom, &key); err != nil {
-			return core.PermissionSet{}, err
+	for _, r := range roles {
+		set.Superuser = set.Superuser || r.superuser
+		set.AssignCustom = set.AssignCustom || r.assignCustom
+		for _, k := range r.keys {
+			set.Add(k)
 		}
-		set.Superuser = set.Superuser || su
-		set.AssignCustom = set.AssignCustom || custom
-		if key != nil {
-			set.Add(*key)
+		for _, k := range r.assignable {
+			set.Assignable[k] = struct{}{}
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return core.PermissionSet{}, err
-	}
-	var assignable []string
-	if err := q.QueryRow(ctx, `
-SELECT COALESCE(array_agg(key), '{}') FROM (
-    SELECT ar.key FROM role_assignable_roles ra
-    JOIN roles r ON r.id = ra.role_id AND r.key = ANY($1)
-    JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser
-    UNION
-    SELECT c.key FROM roles c WHERE NOT c.builtin AND $2 AND c.key <> ALL($1)) a`, roleKeys, set.AssignCustom).Scan(&assignable); err != nil {
-		return core.PermissionSet{}, err
-	}
-	for _, k := range assignable {
-		set.Assignable[k] = struct{}{}
+	if set.AssignCustom {
+		addCustoms(set.Assignable, customs, roleKeys)
 	}
 	return set, nil
 }
 
 // eachRolePermissions is RolesPermissions of each role of roleKeys alone,
-// keyed by role key (absent for an unknown one), in two queries however
+// keyed by role key (absent for an unknown one), in at most three queries however
 // many roles: what editDenial compares each role of a listing by.
 func (s *Service) eachRolePermissions(ctx context.Context, q store.Querier, roleKeys []string) (map[string]core.PermissionSet, error) {
-	out := make(map[string]core.PermissionSet, len(roleKeys))
+	roles, customs, err := readRoleGrants(ctx, q, roleKeys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]core.PermissionSet, len(roles))
+	for key, r := range roles {
+		set := core.PermissionSetOf(r.keys...)
+		set.Superuser, set.AssignCustom = r.superuser, r.assignCustom
+		set.Assignable = core.PermissionSetOf(r.assignable...).Keys
+		if r.assignCustom {
+			addCustoms(set.Assignable, customs, []string{key})
+		}
+		out[key] = set
+	}
+	return out, nil
+}
+
+// roleGrantRow is one role as readRoleGrants reads it: its flags, its grants
+// (canonical keys, removed permissions aside) and the roles its assignable
+// list names, superuser roles aside.
+type roleGrantRow struct {
+	superuser, assignCustom bool
+	keys, assignable        []string
+}
+
+// readRoleGrants reads each role of roleKeys (absent for an unknown one)
+// and, when one has assign_custom, every custom role key: the one reading of
+// what roles carry behind RolesPermissions and eachRolePermissions, which
+// differ only in whom the assign_custom wildcard leaves out (addCustoms).
+func readRoleGrants(ctx context.Context, q store.Querier, roleKeys []string) (map[string]*roleGrantRow, []string, error) {
+	out := map[string]*roleGrantRow{}
 	rows, err := q.Query(ctx, `
 SELECT r.key, r.superuser, r.assign_custom, g.key
 FROM roles r`+roleGrantsJoin(`p.status <> 'removed'`)+`
 WHERE r.key = ANY($1)`, roleKeys)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var role string
-	var su, custom bool
+	var su, custom, anyCustom bool
 	var key *string
 	if _, err := pgx.ForEachRow(rows, []any{&role, &su, &custom, &key}, func() error {
-		set, ok := out[role]
-		if !ok {
-			set = core.PermissionSet{Superuser: su, AssignCustom: custom, Keys: map[string]struct{}{}, Assignable: map[string]struct{}{}}
+		r := out[role]
+		if r == nil {
+			r = &roleGrantRow{superuser: su, assignCustom: custom}
+			out[role] = r
+			anyCustom = anyCustom || custom
 		}
 		if key != nil {
-			set.Add(*key)
+			r.keys = append(r.keys, *key)
 		}
-		out[role] = set
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rows, err = q.Query(ctx, `
 SELECT r.key, ar.key FROM role_assignable_roles ra
 JOIN roles r ON r.id = ra.role_id AND r.key = ANY($1)
-JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser
-UNION
-SELECT r.key, c.key FROM roles r JOIN roles c ON NOT c.builtin AND c.key <> r.key
-WHERE r.key = ANY($1) AND r.assign_custom`, roleKeys)
+JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser`, roleKeys)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var assignable string
 	if _, err := pgx.ForEachRow(rows, []any{&role, &assignable}, func() error {
-		out[role].Assignable[assignable] = struct{}{}
+		out[role].assignable = append(out[role].assignable, assignable)
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return out, nil
+	if !anyCustom {
+		return out, nil, nil
+	}
+	var customs []string
+	if err := q.QueryRow(ctx, `SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin`).Scan(&customs); err != nil {
+		return nil, nil, err
+	}
+	return out, customs, nil
+}
+
+// addCustoms adds to assignable every custom role but those of except: what
+// the assign_custom wildcard of except's holder covers (§43.6).
+func addCustoms(assignable map[string]struct{}, customs, except []string) {
+	for _, k := range customs {
+		if !slices.Contains(except, k) {
+			assignable[k] = struct{}{}
+		}
+	}
 }
 
 // ActivePermissionKeys lists every active permission, the self ones
