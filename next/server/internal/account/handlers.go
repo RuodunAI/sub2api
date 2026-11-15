@@ -657,31 +657,46 @@ func (s *Service) list(c *gin.Context) {
 // loadRow).
 var listRowColumns = strings.Replace(rowColumns, "a.credentials_enc", "NULL::bytea", 1)
 
-// listPage reads the total and one page of the accounts conds keep, one
-// statement each. Newest accounts come first; editing priority or weight
-// never moves a row, so the console's auto-refresh keeps every account in
-// place.
+// listPage reads the total and one page of the accounts conds keep, in one
+// statement: each row of the page carries the total (listRows). A page past
+// the end has no row to carry it, so only then is it counted on its own (on
+// the first page no row means none). Newest accounts come first; editing
+// priority or weight never moves a row, so the console's auto-refresh
+// keeps every account in place.
 func (s *Service) listPage(ctx context.Context, conds store.Conds, page, size int) (int64, []*row, error) {
 	db := store.G(ctx, s.d.DB.Pool)
 	var total int64
-	if err := listCount(db, conds).Count(&total).Error; err != nil {
-		return 0, nil, err
-	}
-	rows, err := store.CollectRows(listRows(db, conds, page, size), func(rs *sql.Rows) (*row, error) { return scanRow(rs) })
+	rows, err := store.CollectRows(listRows(db, conds, page, size), func(rs *sql.Rows) (*row, error) {
+		return scanRow(withTotal{rs, &total})
+	})
 	if err != nil {
 		return 0, nil, err
 	}
-	return total, rows, nil
+	if len(rows) == 0 && page > 1 {
+		err = listCount(db, conds).Count(&total).Error
+	}
+	return total, rows, err
 }
+
+// withTotal scans a row of listRows: scanRow's columns, then the total.
+type withTotal struct {
+	rs    *sql.Rows
+	total *int64
+}
+
+func (w withTotal) Scan(dest ...any) error { return w.rs.Scan(append(dest, w.total)...) }
 
 // listCount counts the accounts conds keep.
 func listCount(db *gorm.DB, conds store.Conds) *gorm.DB {
 	return db.Table("accounts a").Scopes(conds.Scope())
 }
 
-// listRows selects one page of the accounts conds keep, in listRowColumns.
+// listRows selects one page of the accounts conds keep, in listRowColumns,
+// each row followed by the number of accounts conds keep (listCount as a
+// subquery, which PostgreSQL runs once, in the page's snapshot).
 func listRows(db *gorm.DB, conds store.Conds, page, size int) *gorm.DB {
-	return db.Table("accounts a").Select(listRowColumns).Joins("LEFT JOIN users u ON u.id = a.created_by").
+	total := listCount(db.Session(&gorm.Session{NewDB: true}), conds).Select("count(*)")
+	return db.Table("accounts a").Select(listRowColumns+", (?)", total).Joins("LEFT JOIN users u ON u.id = a.created_by").
 		Scopes(conds.Scope()).Order("a.created_at DESC, a.id DESC").Limit(size).Offset((page - 1) * size)
 }
 

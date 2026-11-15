@@ -1,0 +1,60 @@
+-- sql
+WITH history AS (
+    INSERT INTO model_price_history (expr_hash, expression, expr_version)
+    SELECT h, e, v FROM unnest($1::varchar[], $2::text[], $3::int[]) WITH ORDINALITY AS x(h, e, v, o)
+    ORDER BY o
+    ON CONFLICT (expr_hash) DO NOTHING
+    RETURNING 1
+), changed AS (
+    SELECT * FROM unnest($4::bigint[], $5::bigint[], $6::text[], $7::boolean[], $8::boolean[], $9::text[], $10::text[], $11::text[],
+        $12::jsonb[], $13::text[], $14::text[])
+        WITH ORDINALITY AS c(group_id, segment_id, model, removed, saved, kind, multiplier, mode, config, expression, expr_hash, o)
+), locked AS (
+    SELECT r.id, c.removed FROM price_rules r
+    JOIN changed c ON r.group_id = c.group_id AND r.model = c.model AND r.segment_id IS NOT DISTINCT FROM c.segment_id
+    WHERE (SELECT count(*) FROM history) >= 0
+    ORDER BY c.o
+    FOR UPDATE OF r
+), deleted AS (
+    DELETE FROM price_rules
+    WHERE id IN (SELECT id FROM locked WHERE removed) AND (SELECT count(*) FROM locked) >= 0
+    RETURNING 1
+), group_saved AS (
+    INSERT INTO price_rules (group_id, segment_id, model, kind, multiplier, mode, config, expression, expr_hash, updated_by)
+    SELECT group_id, segment_id, model, kind, multiplier::numeric, NULLIF(mode, ''), config, expression, expr_hash, $15::bigint
+    FROM changed
+    WHERE saved AND segment_id IS NULL AND (SELECT count(*) FROM deleted) >= 0
+    ORDER BY o
+    ON CONFLICT (group_id, model) WHERE segment_id IS NULL DO UPDATE SET kind = EXCLUDED.kind, multiplier = EXCLUDED.multiplier,
+        mode = EXCLUDED.mode, config = EXCLUDED.config, expression = EXCLUDED.expression,
+        expr_hash = EXCLUDED.expr_hash, updated_by = EXCLUDED.updated_by, updated_at = now()
+    RETURNING 1
+), segment_saved AS (
+    INSERT INTO price_rules (group_id, segment_id, model, kind, multiplier, mode, config, expression, expr_hash, updated_by)
+    SELECT group_id, segment_id, model, kind, multiplier::numeric, NULLIF(mode, ''), config, expression, expr_hash, $16::bigint
+    FROM changed
+    WHERE saved AND segment_id IS NOT NULL AND (SELECT count(*) FROM group_saved) >= 0
+    ORDER BY o
+    ON CONFLICT (group_id, segment_id, model) WHERE segment_id IS NOT NULL DO UPDATE SET kind = EXCLUDED.kind, multiplier = EXCLUDED.multiplier,
+        mode = EXCLUDED.mode, config = EXCLUDED.config, expression = EXCLUDED.expression,
+        expr_hash = EXCLUDED.expr_hash, updated_by = EXCLUDED.updated_by, updated_at = now()
+    RETURNING 1
+)
+SELECT count(*) FROM segment_saved
+-- vars
+$1 store.Strings [b67b5f5938d990a59bd23264b3c82d5d9055128a6d78aab0994597de293c267c]
+$2 store.Strings [v1:tier("base", flat(0))]
+$3 store.Array[int] [1]
+$4 store.Int64s [3 3 3 3]
+$5 store.Array[*int64] [NULL NULL 5 5]
+$6 store.Strings [claude-opus-4-5 claude-sonnet-4-5 claude-haiku-4-5 claude-sonnet-4-5]
+$7 store.Bools [true false true false]
+$8 store.Bools [true true false true]
+$9 store.Strings [multiplier multiplier  custom]
+$10 store.Array[*string] [1.25 1.25 NULL NULL]
+$11 store.Strings [   per_request]
+$12 store.Array[github.com/Sub2API-Devs/sup2api/next/server/internal/store.Bytes] [NULL NULL NULL {"price":null}]
+$13 store.Strings [   tier("base", flat(0))]
+$14 store.Strings [   b67b5f5938d990a59bd23264b3c82d5d9055128a6d78aab0994597de293c267c]
+$15 *int64 2
+$16 *int64 2

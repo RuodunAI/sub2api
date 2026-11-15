@@ -1,14 +1,15 @@
 -- sql
-WITH locked AS (
+WITH reservation AS (
+    SELECT 1 FROM request_precharges WHERE request_id = $1::varchar AND user_id = $2::bigint
+), locked AS (
     SELECT balance FROM user_balances
-    WHERE user_id = $1::bigint
-      AND EXISTS (SELECT 1 FROM request_precharges WHERE request_id = $2::varchar AND user_id = $3::bigint)
+    WHERE user_id = $3::bigint AND (EXISTS (SELECT 1 FROM reservation))
     FOR UPDATE
 ), released AS (
     DELETE FROM request_precharges p USING locked
     WHERE p.request_id = $4::varchar AND p.user_id = $5::bigint
     RETURNING p.amount
-), ledger AS (
+), refund AS (
     INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
         idempotency_key, operator_id, plugin_key, note)
     SELECT $6::bigint, r.amount, l.balance + r.amount, 'refund', 'precharge', $7::varchar,
@@ -18,18 +19,18 @@ WITH locked AS (
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING id, balance_after
 ), applied AS (
-    UPDATE user_balances SET balance = ledger.balance_after, updated_at = now()
-    FROM ledger
+    UPDATE user_balances SET balance = refund.balance_after, updated_at = now()
+    FROM refund
     WHERE user_balances.user_id = $11::bigint
-    RETURNING ledger.id, ledger.balance_after
+    RETURNING refund.id AS refund_id, refund.balance_after AS refund_after
 )
-SELECT COALESCE((SELECT id FROM applied), 0),
-       COALESCE((SELECT balance_after FROM applied), 0),
+SELECT COALESCE((SELECT refund_id FROM applied), 0),
+       COALESCE((SELECT refund_after FROM applied), 0),
        EXISTS (SELECT 1 FROM released),
        COALESCE((SELECT amount FROM released), 0)
 -- vars
-$1 int64 7
-$2 string "req-1"
+$1 string "req-1"
+$2 int64 7
 $3 int64 7
 $4 string "req-1"
 $5 int64 7

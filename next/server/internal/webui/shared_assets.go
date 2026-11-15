@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"log/slog"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -175,17 +177,33 @@ func renewBuild(g *gorm.DB, build string, secs float64) *gorm.DB {
 		})
 }
 
-// putAsset stores the blob of f, or keeps the stored one when it has the
-// same hash, and returns its path; a retained immutable path is never
-// replaced with different bytes, so for those it returns no row.
-func putAsset(g *gorm.DB, f publicFile) *gorm.DB {
-	return g.Raw(`INSERT INTO web_assets(path,sha256,body,size) VALUES(?,?,?,?)
-		ON CONFLICT(path) DO UPDATE SET sha256=web_assets.sha256 WHERE web_assets.sha256=EXCLUDED.sha256 RETURNING path`,
-		f.name, f.hash, store.Bytes(f.body), len(f.body))
-}
+// putAssetsSQL stores the files of a build in one statement and one round
+// trip, whatever their number: the paths, hashes and bodies are an array
+// parameter each, which unnest turns back into rows, written in the files'
+// order (WITH ORDINALITY). Each blob is stored, or the stored one kept when
+// it has the same hash; a retained immutable path is never replaced with
+// different bytes, so put returns no row for it. Each path put returns is
+// listed among the files of the build (the last parameter). The statement
+// returns the paths put returned: a file missing from them is a collision,
+// which fails the publication (its transaction rolls back what the
+// statement wrote).
+const putAssetsSQL = `WITH put AS (
+	INSERT INTO web_assets(path,sha256,body,size)
+	SELECT path,sha256,body,octet_length(body) FROM unnest(?::text[],?::text[],?::bytea[]) WITH ORDINALITY AS f(path,sha256,body,o) ORDER BY o
+	ON CONFLICT(path) DO UPDATE SET sha256=web_assets.sha256 WHERE web_assets.sha256=EXCLUDED.sha256 RETURNING path
+), listed AS (
+	INSERT INTO web_asset_build_files(build_id,path) SELECT ?,path FROM put ON CONFLICT DO NOTHING
+)
+SELECT path FROM put`
 
-// addBuildFileSQL lists a path among the files of a build.
-const addBuildFileSQL = `INSERT INTO web_asset_build_files(build_id,path) VALUES(?,?) ON CONFLICT DO NOTHING`
+// putAssets runs putAssetsSQL for files, of build.
+func putAssets(g *gorm.DB, build string, files []publicFile) *gorm.DB {
+	paths, hashes, bodies := make(store.Strings, len(files)), make(store.Strings, len(files)), make(store.Array[store.Bytes], len(files))
+	for i, f := range files {
+		paths[i], hashes[i], bodies[i] = f.name, f.hash, f.body
+	}
+	return g.Raw(putAssetsSQL, paths, hashes, bodies, build)
+}
 
 // storeUsage selects the bytes and files of the shared assets and the
 // number of builds.
@@ -208,13 +226,13 @@ func (s *SharedAssets) Publish(ctx context.Context) error {
 		if err := g.Exec(publishBuildSQL, s.buildID, s.opts.Lease.Seconds()).Error; err != nil {
 			return err
 		}
+		var put []string
+		if err := putAssets(g, s.buildID, s.files).Scan(&put).Error; err != nil {
+			return fmt.Errorf("immutable console asset collision or write failure: %w", err)
+		}
 		for _, f := range s.files {
-			var name string
-			if err := putAsset(g, f).Row().Scan(&name); err != nil {
-				return fmt.Errorf("immutable console asset collision or write failure (%s): %w", f.name, err)
-			}
-			if err := g.Exec(addBuildFileSQL, s.buildID, f.name).Error; err != nil {
-				return err
+			if !slices.Contains(put, f.name) {
+				return fmt.Errorf("immutable console asset collision or write failure (%s): %w", f.name, sql.ErrNoRows)
 			}
 		}
 		var size int64

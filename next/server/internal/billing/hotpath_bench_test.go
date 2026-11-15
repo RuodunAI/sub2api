@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -62,6 +63,8 @@ func BenchmarkHotPrecharge(b *testing.B) {
 // on GORM (releaseStmt); it is measured next to the pgx form it had before,
 // for a request without a reservation (miss) and with one (hit).
 func BenchmarkHotReleasePrecharge(b *testing.B) {
+	// releaseSQL as pgx ran it, its named parameters numbered.
+	releasePgxSQL := strings.NewReplacer("$request", "$1", "$user", "$2", "$refund_key", "$3", "$refund_note", "$4").Replace(releaseSQL)
 	svc, uid := benchBilling(b)
 	ctx := context.Background()
 	pool := svc.db.Pool
@@ -73,14 +76,14 @@ func BenchmarkHotReleasePrecharge(b *testing.B) {
 			var got core.LedgerResult
 			var released bool
 			var amount decimal.Decimal
-			return pool.QueryRow(ctx, releaseSQL, requestID, uid, releaseKey(requestID), "release request precharge").
+			return pool.QueryRow(ctx, releasePgxSQL, requestID, uid, releaseKey(requestID), "release request precharge").
 				Scan(&got.LedgerID, &got.BalanceAfter, &released, &amount)
 		}},
 		{"gorm", func(requestID string) error {
 			var got core.LedgerResult
 			var released bool
 			var amount decimal.Decimal
-			return releaseStmt.row(store.G(ctx, pool), requestID, uid, releaseKey(requestID), "release request precharge").
+			return releaseStmt.Raw(store.G(ctx, pool), requestID, uid, releaseKey(requestID), "release request precharge").Row().
 				Scan(&got.LedgerID, &got.BalanceAfter, &released, &amount)
 		}},
 	}

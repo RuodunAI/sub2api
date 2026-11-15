@@ -235,14 +235,14 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 			&out.Last5m.Requests, &out.Last5m.Tokens, &activeToday)
 		from := statRows(`u.created_at AS at, u.user_id`, ``, f.Cond(), span, &args)
 		g := store.G(ctx, tx)
-		if err := rawNumbered(g, `SELECT `+
+		if err := store.RawNumbered(g, `SELECT `+
 			totalsColumns(`u.at >= `+today, false)+`, `+
 			totalsColumns(`u.at >= `+yesterday+` AND u.at < `+today, false)+`, `+
 			totalsColumns(``, false)+`, `+
 			sumOf(`u.requests`, `u.at >= `+last5m)+`, `+
 			sumOf(`u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens`, `u.at >= `+last5m)+`,
 			count(DISTINCT u.user_id) FILTER (WHERE u.at >= `+today+`)
-			FROM `+from, args).Row().Scan(targets...); err != nil {
+			FROM `+from, args...).Row().Scan(targets...); err != nil {
 			return err
 		}
 		if self != nil {
@@ -356,10 +356,10 @@ func (s *Service) realtime(c *gin.Context, self *int64) {
 
 // realtimeQuery selects the Realtime figures of the rows f matches.
 func realtimeQuery(db *gorm.DB, f *store.Filter) *gorm.DB {
-	return rawNumbered(db, `SELECT count(*) FILTER (WHERE u.success),
+	return store.RawNumbered(db, `SELECT count(*) FILTER (WHERE u.success),
 			COALESCE(sum(`+realtimeTokens+`) FILTER (WHERE u.success), 0),
 			count(*) FILTER (WHERE `+realtimeFailure+`)
-			FROM usage_logs u`+f.Cond(), f.Args())
+			FROM usage_logs u`+f.Cond(), f.Args()...)
 }
 
 // overviewNow is the clock of the overview's calendar windows; a test fixes

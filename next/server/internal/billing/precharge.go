@@ -178,7 +178,7 @@ type prechargeRow struct {
 // runPrecharge runs prechargeSQL for a validated, rounded change on db.
 func runPrecharge(db *gorm.DB, ch core.LedgerChange, min decimal.Decimal) (prechargeRow, error) {
 	var p prechargeRow
-	err := prechargeStmt.row(db, ch.UserID, ch.RefID, ch.Amount, ch.Kind, ch.RefType, ch.RefID, ch.IdempotencyKey, ch.Note, min).
+	err := prechargeStmt.Raw(db, ch.UserID, ch.RefID, ch.Amount, ch.Kind, ch.RefType, ch.RefID, ch.IdempotencyKey, ch.Note, min).Row().
 		Scan(&p.ledgerID, &p.after, &p.duplicate, &p.sufficient, &p.locked, &p.fresh)
 	return p, err
 }
@@ -232,7 +232,7 @@ const prechargeEnsureSQL = `INSERT INTO user_balances (user_id) SELECT ?::bigint
 // ref and note unchanged. The update reads the inserted row through RETURNING,
 // which is how data-modifying CTEs communicate. Every parameter carries its
 // type: a bare $n that Postgres sees in two contexts is an "inconsistent
-// types deduced" error, and ledgerStmt binds each use of $n as a parameter
+// types deduced" error, and store.Numbered binds each use of $n as a parameter
 // of its own. Parameters: 1 user, 2 request id, 3 amount, 4 kind,
 // 5 ref_type, 6 ref_id, 7 idempotency key, 8 note, 9 min_balance. Columns:
 // prechargeRow.
@@ -268,7 +268,7 @@ SELECT COALESCE((SELECT id FROM applied), 0),
        EXISTS (SELECT 1 FROM locked),
        COALESCE((SELECT l.version = b.ctid FROM locked l, user_balances b WHERE b.user_id = $1::bigint), false)`
 
-var prechargeStmt = newLedgerStmt(prechargeSQL)
+var prechargeStmt = store.NewNumbered(prechargeSQL)
 
 // ReleasePrechargeTx deletes the request's reservation and refunds it, in one
 // statement under the user's balance lock (releaseSQL) plus the event. nil

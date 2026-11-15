@@ -177,7 +177,7 @@ func (r *Record) scanTargets() []any {
 // recordQuery selects the records matching where (store.Filter's numbered
 // conditions over args), followed by tail (ORDER BY, LIMIT ...).
 func recordQuery(db *gorm.DB, where string, args []any, tail string) *gorm.DB {
-	return rawNumbered(db, `SELECT `+recordColumns+recordJoins+where+tail, args)
+	return store.RawNumbered(db, `SELECT `+recordColumns+recordJoins+where+tail, args...)
 }
 
 // hideUpstream removes upstream account details (account, account type,
@@ -553,7 +553,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 			}
 			f.And("(u.created_at, u.id) < (?, ?)", at, id)
 		}
-	} else if err := rawNumbered(store.G(ctx, s.db.Pool), `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()).Row().Scan(&total); err != nil {
+	} else if err := store.RawNumbered(store.G(ctx, s.db.Pool), `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()...).Row().Scan(&total); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -1097,10 +1097,10 @@ type summaryShape struct{ outKey, key, extra, join, lastAt, groupBy, order strin
 // and appends its bounds to args: the caller passes a slice of its own.
 func summaryQuery(db *gorm.DB, sh summaryShape, where string, span *hourSpan, args []any) *gorm.DB {
 	from := statRows(sh.key+` AS k, `+sh.extra+` AS e, u.created_at AS at`, sh.join, where, span, &args)
-	return rawNumbered(db, `
+	return store.RawNumbered(db, `
 				SELECT `+sh.outKey+` AS k, COALESCE(max(u.e), ''), `+totalsColumns("", true)+`,
 				       `+sumOf("u.anomalous_rows", "")+`, `+sumOf("u.estimated_rows", "")+`, `+sumOf("u.estimated_cost", "")+`, `+sh.lastAt+`
-				FROM `+from+sh.groupBy+sh.order, args)
+				FROM `+from+sh.groupBy+sh.order, args...)
 }
 
 // summaryRange is the summary's range: from (default 30 days ago) to to

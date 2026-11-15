@@ -6,8 +6,7 @@ WITH existing AS (
     SELECT 1 FROM request_precharges WHERE request_id = $3::varchar AND user_id = $4::bigint
 ), locked AS (
     SELECT balance FROM user_balances
-    WHERE user_id = $5::bigint
-      AND (EXISTS (SELECT 1 FROM reservation) OR ($6::boolean AND NOT EXISTS (SELECT 1 FROM existing)))
+    WHERE user_id = $5::bigint AND (EXISTS (SELECT 1 FROM reservation) OR ($6::boolean AND NOT EXISTS (SELECT 1 FROM existing)))
     FOR UPDATE
 ), released AS (
     DELETE FROM request_precharges p USING locked
@@ -50,9 +49,7 @@ SELECT COALESCE((SELECT refund_id FROM applied), 0),
        COALESCE((SELECT delta FROM existing), 0),
        COALESCE((SELECT kind FROM existing), ''),
        EXISTS (SELECT 1 FROM locked)
-           OR (NOT EXISTS (SELECT 1 FROM reservation)
-               AND (NOT $26::boolean OR EXISTS (SELECT 1 FROM existing))
-               AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $27::bigint))
+           OR (NOT (EXISTS (SELECT 1 FROM reservation) OR ($26::boolean AND NOT EXISTS (SELECT 1 FROM existing))) AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $27::bigint))
 -- vars
 $1 bool true
 $2 string "usage:req-1"

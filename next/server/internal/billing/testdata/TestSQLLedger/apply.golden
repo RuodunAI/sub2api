@@ -1,26 +1,28 @@
 -- sql
 WITH existing AS (
-    SELECT id, balance_after, user_id, delta, kind FROM balance_ledger WHERE idempotency_key = $1::varchar
+    SELECT id, balance_after, user_id, delta, kind FROM balance_ledger
+    WHERE idempotency_key = $1::varchar
 ), locked AS (
     SELECT balance FROM user_balances
-    WHERE user_id = $2::bigint AND NOT EXISTS (SELECT 1 FROM existing)
+    WHERE user_id = $2::bigint AND (NOT EXISTS (SELECT 1 FROM existing))
     FOR UPDATE
-), ledger AS (
+), charge AS (
     INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
         idempotency_key, operator_id, plugin_key, note)
-    SELECT $3::bigint, $4::numeric, locked.balance + $5::numeric, $6::text, $7::text, $8::text,
-        $9::varchar, $10::bigint, NULLIF($11::text, ''), $12::text
-    FROM locked
+    SELECT $3::bigint, $4::numeric, l.balance + $5::numeric, $6::text, $7::text,
+        $8::text, $9::varchar, $10::bigint, NULLIF($11::text, ''), $12::text
+    FROM locked l
+    WHERE NOT EXISTS (SELECT 1 FROM existing)
     ON CONFLICT (idempotency_key) DO NOTHING
     RETURNING id, balance_after
 ), applied AS (
-    UPDATE user_balances SET balance = ledger.balance_after, updated_at = now()
-    FROM ledger
+    UPDATE user_balances SET balance = charge.balance_after, updated_at = now()
+    FROM charge
     WHERE user_balances.user_id = $13::bigint
-    RETURNING ledger.id, ledger.balance_after
+    RETURNING charge.id AS charge_id, charge.balance_after AS charge_after
 )
-SELECT COALESCE((SELECT id FROM applied), 0),
-       COALESCE((SELECT balance_after FROM applied), 0),
+SELECT COALESCE((SELECT charge_id FROM applied), 0),
+       COALESCE((SELECT charge_after FROM applied), 0),
        EXISTS (SELECT 1 FROM existing),
        COALESCE((SELECT id FROM existing), 0),
        COALESCE((SELECT balance_after FROM existing), 0),
@@ -28,7 +30,7 @@ SELECT COALESCE((SELECT id FROM applied), 0),
        COALESCE((SELECT delta FROM existing), 0),
        COALESCE((SELECT kind FROM existing), ''),
        EXISTS (SELECT 1 FROM locked)
-           OR (EXISTS (SELECT 1 FROM existing) AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $14::bigint))
+           OR (NOT (NOT EXISTS (SELECT 1 FROM existing)) AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $14::bigint))
 -- vars
 $1 string "adjust:1"
 $2 int64 7

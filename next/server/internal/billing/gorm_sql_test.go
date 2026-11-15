@@ -1,6 +1,8 @@
 package billing
 
 import (
+	"cmp"
+	"context"
 	"encoding/json"
 	"slices"
 	"testing"
@@ -164,40 +166,35 @@ func TestSQLInsertHistory(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return insertHistory(db, prog) })
 }
 
-// A group price and a segment price take the partial unique index of their
-// level as the conflict target; the update moves updated_at by now(). A
-// multiplier has no config (NULL) and no mode (NULLIF to NULL). The custom
-// price's config holds no number, whose pointer the snapshot would print.
-func TestSQLUpsertRule(t *testing.T) {
+// The rule changes of a PUT, one statement of array parameters: a group
+// price and a segment price saved (each upserted on the partial unique
+// index of its level, the update moving updated_at by now()), one removed,
+// and one removed and saved again (two changes of one rule). A multiplier
+// has no config (NULL) and no mode (NULLIF to NULL); the custom price's
+// expression also goes to the history. The custom price's config holds no
+// number, whose pointer the snapshot would print.
+func TestSQLWriteRules(t *testing.T) {
 	mult := "1.25"
-	cases := map[string]struct {
-		on core.PriceQuery
-		r  *storedRule
-	}{
-		"group_multiplier": {core.PriceQuery{GroupID: 3, Model: "claude-sonnet-4-5"},
-			&storedRule{Rule: Rule{Kind: core.PriceRuleMultiplier, Multiplier: &mult}}},
-		"segment_custom": {core.PriceQuery{GroupID: 3, SegmentID: 5, Model: "claude-sonnet-4-5"},
-			&storedRule{Rule: Rule{Kind: core.PriceRuleCustom, Mode: "per_request", Config: map[string]*float64{"price": nil}},
-				expression: "flat(0.5)", exprHash: "h"}},
+	group := core.PriceQuery{GroupID: 3, Model: "claude-sonnet-4-5"}
+	segment := core.PriceQuery{GroupID: 3, SegmentID: 5, Model: "claude-sonnet-4-5"}
+	gone := core.PriceQuery{GroupID: 3, SegmentID: 5, Model: "claude-haiku-4-5"}
+	again := core.PriceQuery{GroupID: 3, Model: "claude-opus-4-5"}
+	multiplier := &storedRule{Rule: Rule{Kind: core.PriceRuleMultiplier, Multiplier: &mult}}
+	custom, err := checkCustom(context.Background(), Rule{Kind: core.PriceRuleCustom, Mode: "per_request",
+		Config: map[string]*float64{"price": new(float64)}}, "per_request")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, c := range cases {
-		t.Run(name, func(t *testing.T) {
-			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return upsertRule(db, c.on, c.r, 2) })
-		})
+	custom.Config = map[string]*float64{"price": nil}
+	changes := []ruleChange{{segment, custom}, {group, multiplier}, {gone, nil}, {again, nil}, {again, multiplier}}
+	slices.SortStableFunc(changes, func(a, b ruleChange) int {
+		return cmp.Or(cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
+	})
+	w, err := collapseChanges(changes)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A group price is deleted where segment_id is NULL, a segment's where it
-// is the segment (IS NOT DISTINCT FROM).
-func TestSQLDeleteRule(t *testing.T) {
-	for name, on := range map[string]core.PriceQuery{
-		"group":   {GroupID: 3, Model: "claude-sonnet-4-5"},
-		"segment": {GroupID: 3, SegmentID: 5, Model: "claude-sonnet-4-5"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return deleteRule(db, on) })
-		})
-	}
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return writeRules(db, w, 2) })
 }
 
 // The ledger statements of the request path: the CTEs bind each use of a
@@ -210,46 +207,27 @@ func TestSQLLedger(t *testing.T) {
 	cases := map[string]func(*gorm.DB) *gorm.DB{
 		"ensure_balance": func(db *gorm.DB) *gorm.DB { return db.Exec(ensureBalanceSQL, int64(7)) },
 		"apply": func(db *gorm.DB) *gorm.DB {
-			return applyStmt.raw(db, int64(7), amount.Neg(), KindAdminAdjust, "manual", "ref-1", "adjust:1", &operator, "", "note").Scan(&row)
+			return applyStmt.Raw(db, int64(7), amount.Neg(), KindAdminAdjust, "manual", "ref-1", "adjust:1", &operator, "", "note").Scan(&row)
 		},
 		"release": func(db *gorm.DB) *gorm.DB {
-			return releaseStmt.raw(db, "req-1", int64(7), releaseKey("req-1"), "release request precharge").Scan(&row)
+			return releaseStmt.Raw(db, "req-1", int64(7), releaseKey("req-1"), "release request precharge").Scan(&row)
 		},
 		"precharge": func(db *gorm.DB) *gorm.DB {
-			return prechargeStmt.raw(db, int64(7), "req-1", amount, KindUsage, "precharge", "req-1", "precharge:req-1", "request precharge", min).Scan(&row)
+			return prechargeStmt.Raw(db, int64(7), "req-1", amount, KindUsage, "precharge", "req-1", "precharge:req-1", "request precharge", min).Scan(&row)
 		},
 		// A precharge's balance row, behind its lock timeout.
 		"precharge_ensure": func(db *gorm.DB) *gorm.DB { return db.Exec(prechargeEnsureSQL, int64(7)) },
 		"settle": func(db *gorm.DB) *gorm.DB {
 			ch := core.LedgerChange{UserID: 7, Amount: amount, Kind: KindUsage, RefType: "usage", RefID: "req-1", IdempotencyKey: "usage:req-1", Note: "note"}
-			return settleStmt.raw(db, settleArgs(7, "req-1", &ch)...).Scan(&row)
+			return settleStmt.Raw(db, settleArgs(7, "req-1", &ch)...).Scan(&row)
 		},
 		// Without a charge the charge's arguments are inert: $5 is false.
 		"settle_release_only": func(db *gorm.DB) *gorm.DB {
-			return settleStmt.raw(db, settleArgs(7, "req-1", nil)...).Scan(&row)
+			return settleStmt.Raw(db, settleArgs(7, "req-1", nil)...).Scan(&row)
 		},
 	}
 	for name, build := range cases {
 		t.Run(name, func(t *testing.T) { gormtest.Assert(t, build) })
-	}
-}
-
-// newLedgerStmt numbers the arguments as the text names them and refuses a
-// text GORM would misread.
-func TestLedgerStmt(t *testing.T) {
-	st := newLedgerStmt(`SELECT $2::int, $1::text, $2::int, $10`)
-	if st.sql != `SELECT ?::int, ?::text, ?::int, ?` || !slices.Equal(st.args, []int{1, 0, 1, 9}) {
-		t.Fatalf("%q %v", st.sql, st.args)
-	}
-	for _, bad := range []string{`SELECT ? FROM t`, `SELECT @x`, `SELECT $0`} {
-		func() {
-			defer func() {
-				if recover() == nil {
-					t.Errorf("%q: no panic", bad)
-				}
-			}()
-			newLedgerStmt(bad)
-		}()
 	}
 }
 

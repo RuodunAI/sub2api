@@ -388,11 +388,11 @@ func rollupHours(ctx context.Context, tx pgx.Tx, from, to time.Time) (int, error
 
 // rollupInsert writes the rollup rows of the hours [from, to). The measures
 // hold jsonb's ? operator (anomalousRow), so the statement keeps its $n
-// placeholders and goes through execNumbered.
+// placeholders and goes through store.ExecNumbered.
 func rollupInsert(db *gorm.DB, from, to time.Time) *gorm.DB {
 	dims := strings.Join(rollupDims, ", ")
-	return execNumbered(db, `INSERT INTO usage_hourly (created_at, `+dims+`, `+measureList(func(m statMeasure) string { return m.name })+`)
+	return store.ExecNumbered(db, `INSERT INTO usage_hourly (created_at, `+dims+`, `+measureList(func(m statMeasure) string { return m.name })+`)
 		SELECT date_trunc('hour', u.created_at, 'UTC'), `+dims+`, `+measureList(func(m statMeasure) string { return `sum(` + m.row + `)` })+`
 		FROM usage_logs u WHERE u.created_at >= $1 AND u.created_at < $2
-		GROUP BY 1, `+dims, []any{from, to})
+		GROUP BY 1, `+dims, from, to)
 }
