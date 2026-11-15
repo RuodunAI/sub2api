@@ -63,6 +63,11 @@ mutation() {
 # Signed test packages for the bundled-plugin bootstrap (anthropic, volcengine).
 plugins() {
   set -e
+  # pack compares the GORM models of every plugin with internal/model
+  # (anthropic, volcengine, guard) with its migrations, on PostgreSQL: the pg
+  # service of isolated-compose.yml, whose DSN the gotest container has. The
+  # embedded fallback cannot run here (initdb refuses root).
+  : "${TEST_DATABASE_URL:?pack runs sub2api-plugin db check: run this phase in the gotest container of isolated-compose.yml}"
   checks=/src/checks
   mkdir -p "$checks/builtin"
   CGO_ENABLED=0 go build -o "$checks/sub2api-plugin" ./tools/sub2api-plugin
