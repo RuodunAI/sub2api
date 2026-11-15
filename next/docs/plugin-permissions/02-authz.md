@@ -665,7 +665,7 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 | 角色编辑页、插件矩阵 | 显示“已移除”，只能取消勾选，勾不上新的 | `setRolePart` |
 | 重新声明 | 状态随插件；授权原样恢复，不套默认、不继承 | 2.3.6 |
 | 访问密钥里的这个 key | 保留字符串，不生效（和用户生效集取交集）；不能新选；复活后重新生效 | `grantablePermissions` 只允许 active，选择器只列 active |
-| 插件停用（disabled） | 授权保留不生效；授予视图仍计入 | 现状 |
+| 插件停用（disabled） | 授权保留不生效；授予视图仍计入，持有者仍可授出（二审 logic #3 确认保留） | 现状 |
 | 卸载 | 行和授权一起删除 | `DeletePlugin`，D5 |
 
 ## 2.4 改动清单
@@ -786,5 +786,6 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 - **关键权限二次验证（C3）**：`resolvePermissions` 标出 critical 的插件 key，`setRolePart`、`CreateRole` 对**新增**的 critical key 在写入事务里 `ConsumeStepUp(StepUpPluginGrant)`；路由不变，被拒时事务回滚、版本不变。
 - **审计**：`role.permissions` 记 `added`、`removed`；矩阵写入另记该插件上的 `before`/`after`。
 - **只读端口**：`PermissionCatalog` 加 `PluginPermissions`（一个插件的 key、状态、风险、范围）与 `PermissionHolders`（key → 角色与范围，超管角色除外），install 不再直接读授权表（code-backend #1）。范围的存取统一在 `core.StoredPluginScope`/`PluginScopeType`/`ReadPluginScope`/`PluginScopeSuffix`（#5）。
-- **暂存同意**：`PermissionDef.Staged` 时 `SyncPlugin` 新建的 key 为 `disabled`、不复活 removed key（logic #4）。
-- `RolesPermissions` 与 `eachRolePermissions` 共用 `readRoleGrants`（#3）；`editDenial` 同时返回缺的权限，`editableRole` 不再重算（#10）。
+- **暂存同意**：`PermissionDef.Staged` 时 `SyncPlugin` 新建的 key 为 `staged`（`SetPluginActive` 不碰），不复活 removed key、不裁剪其范围授予；激活的同步把声明的 staged key 随插件状态启用，不声明的不动、也不标 removed（logic #4、N3）。新增端口 `DiscardStaged`：删除插件的 staged key 及授予，审计 `authz.sync.discard`，每次同意先调用。
+- `RolesPermissions` 与 `eachRolePermissions` 共用 `readRoleGrants`（#3）；`editDenial` 同时返回缺的权限，`editableRole` 不再重算（#10）。`setRolePart` 的审计按写入的授予算出 after，不再重读角色（N5）。
+- **停用插件**（logic #3 取舍）：生效集不计、授予视图计入的现状保留，持有者停用期间仍能授出；见 CONTRACTS §4。

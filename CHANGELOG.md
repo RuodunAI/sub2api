@@ -23,21 +23,21 @@
 - `GET /permissions`、安装审查 `review`、`RoleGrant` 的 JSON 去掉 `sensitive`，改为 `risk`。同意请求的 `new_permission_roles` 改为 `{本地 key: {角色: true | [范围]}}`，旧的数组写法返回 400，`role_keys_for_new_permissions` 不再读取。
 - 默认或继承的授予给了同意者不能指定的角色时，不再 403，改为挂起待复核（插件详情顶部的待确认授予），首次安装也一样；显式指定不能指定的角色仍 403。
 - 插件新版本不再声明的权限标为“已移除”（以前直接删除）：授予保留但不生效，再次声明时原样恢复，不重新套默认值。标记和恢复各写一条审计（`authz.sync.remove` / `authz.sync.revive`，列出持有的角色）。插件升级收窄了权限范围（不再允许“自己创建的”、删掉某个可选值）时，不再接受的范围授予在新版本激活时删除；新版本只是同意、还没激活时，正在运行的旧版本的授予不受影响。角色编辑页可以取消勾选已移除的权限；通过 API 保存角色（`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin`）时不带上已移除的 key，会删掉这些授予。
-- 角色编辑页禁用编辑者自己没有的权限，核心权限也一样（以前能勾选，保存时才被拒）。
+- 角色编辑页禁用编辑者自己没有的权限，核心权限也一样（以前能勾选，保存时才被拒）。插件停用期间它的权限不生效，但授予照常算持有：持有者仍可在矩阵、角色页授出和修改。
 - 插件菜单、页面、slot 按“任意范围持有”显示；iframe 桥 `permissions.check(本地 key)` 对不带范围的 key 只要持有任一范围即为 true，带范围的 key 按蕴含判断（持有全部范围也为 true，与服务端一致）。
-- 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。没有 `role:read` 的查看者看不到旧 key 由哪些角色持有（`removed_user_permissions[].holders`、复活和改名行的格子初值、继承来的 `new_role_grants` 都省略）。
+- 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。没有 `role:read` 的查看者看不到旧 key 由哪些角色持有（`removed_user_permissions[].holders`、复活和改名行的格子初值与“会挂起”标记、继承来的 `new_role_grants`、插件列表与详情里继承来的待复核授予都省略）。
 - **并发保存不再互相覆盖**：角色对象和插件权限矩阵带 `version`（全局授权版本）；`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin` 带上读到的 `version` 时，期间别人改过授权就返回 409 `version_conflict`（`details.version` 为当前版本），不写入；不带不检查。控制台收到后自动重读、合并本地改动，再提示保存。
 - 通过角色编辑（新建角色、改角色权限、插件权限矩阵）**新授出关键（critical）插件权限**要二次验证，与安装同意、复核确认一致；只保留或撤销不需要。
 - 角色权限保存的审计（`role.permissions`）记下删掉的权限（`removed`，含已移除的插件权限），插件矩阵保存另记该插件上的 `before`/`after`。
 - 同意请求的 `new_permission_roles` 列出的权限，对改名继承同样生效：列出的角色以覆盖为准，没列的角色不继承（以前继承一律照常）；确认页上继承来的格子可以逐格修改。
-- 暂存升级（另一个版本还在运行）的同意不再提前生效：新版本才有的权限建成停用，重新声明的已移除权限不恢复，都等激活时再处理；新旧都声明的权限风险取两者较高的，范围和默认值仍按运行版本。同意之后、激活之前旧 key 新增的持有者，激活时不自动继承，列为待复核授予（审计 `plugin.role_grants.carry`）。
+- 暂存升级（另一个版本还在运行）的同意不再提前生效：新版本才有的权限建成“暂存”（`status = 'staged'`，不生效，停用再启用运行版本也不会打开），重新声明的已移除权限不恢复、范围授予不裁剪，都等激活时再处理；新旧都声明的权限风险取两者较高的，范围和默认值仍按运行版本。之后再同意别的版本时，上一次暂存的权限连同授予作废（审计 `authz.sync.discard`），按新版本的建议重新结算。同意之后、激活之前旧 key 新增的持有者，在停用旧 key 的那次激活时列为待复核授予（审计 `plugin.role_grants.carry`），以后的升级不再重提。
 - 插件路由的 `scopeFrom` 与账号路由的 `accounts.from`：query 参数名不分大小写匹配，每个值都校验；JSON body 里同名字段（不分大小写）出现多次返回 400 `duplicate`。
 - 重新授予宿主权限（`PUT /plugins/:key/grants/:permission`）需要 `plugin:install`；请求体总是读取，不再依赖 `Content-Length`（以前分块传输的收窄请求会被当成“授予到清单申请的范围”）。
 - 清单的 `defaults` 省略时不授予任何角色（以前 `defaultRoles` 省略时给 `admin`）。
 
 **迁移 0099**（`0099_plugin_permission_meta.sql`，唯一的核心迁移，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填。`sensitive` 列保留一个版本给旧核心读（新核心照写、不读），下一个迁移删除。按 0.1.286 的主节点优先方式发布（短暂停服），不与旧核心滚动混跑；发布迁移前需要确认。
 
-**回滚**：网关不允许跨 schema 回退，线上出问题修复前进，或从数据库备份恢复。不经网关的部署可以按 `next/deploy/rollback/0.1.289-plugin-perm-down.md` 跑反向脚本：删除已移除的插件权限及其授予、删除插件范围授予（逐条审计 `via: "rollback 0.1.289"`，保留的授予因此丢失），拒绝仍待复核的带范围或关键授予（旧核心会把它们确认成整行授予），删掉新列，再把升级过的插件切回旧版本。
+**回滚**：网关不允许跨 schema 回退，线上出问题修复前进，或从数据库备份恢复。不经网关的部署可以按 `next/deploy/rollback/0.1.289-plugin-perm-down.md` 跑反向脚本：删除已移除和暂存的插件权限及其授予、删除插件范围授予（逐条审计 `via: "rollback 0.1.289"`，保留的授予因此丢失），拒绝仍待复核的带范围或关键授予（旧核心会把它们确认成整行授予），删掉新列，再把升级过的插件切回旧版本。
 
 **第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.289（`below_feature_core`）。清单检查另要求：权限声明了 `scope` 的非 GET 路由必须写 `scopeFrom`（`required`）；`inheritFrom` 只能指向本清单已不再声明的 key（`invalid_value`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
 
