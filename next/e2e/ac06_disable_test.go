@@ -21,8 +21,7 @@ func TestAC06_DisableEnableUninstall(t *testing.T) {
 	tn := e.NewTenant(admin, TenantOpts{})
 	e.MustMessages(tn.APIKey, MessagesBody(tn.Model, "before disable", false), nil)
 
-	pluginModule := func() (gjson.Result, bool) { return e.PluginPermissions(admin, "anthropic") }
-	m, ok := pluginModule()
+	m, ok := e.PluginPermissions(admin, "anthropic")
 	if !ok || m.Get("status").String() != "active" || m.Get("source").String() != "plugin" {
 		t.Fatalf("plugin permission module before disable: %s", m.Raw)
 	}
@@ -68,7 +67,7 @@ func TestAC06_DisableEnableUninstall(t *testing.T) {
 		t.Fatal("orphaned account missing from ?orphaned=all")
 	}
 	// Plugin permissions greyed out.
-	m, ok = pluginModule()
+	m, ok = e.PluginPermissions(admin, "anthropic")
 	if !ok || m.Get("status").String() != "disabled" {
 		t.Fatalf("plugin permission module after disable: %s", m.Raw)
 	}
@@ -111,7 +110,7 @@ func TestAC06_DisableEnableUninstall(t *testing.T) {
 	}
 
 	e.Enable(admin, "anthropic")
-	m, _ = pluginModule()
+	m, _ = e.PluginPermissions(admin, "anthropic")
 	if m.Get("status").String() != "active" {
 		t.Fatalf("permissions not restored: %s", m.Raw)
 	}
@@ -127,7 +126,7 @@ func TestAC06_DisableEnableUninstall(t *testing.T) {
 	if r.Status != 403 || r.JSON().Get("error.details.reason").String() != "builtin" {
 		t.Fatalf("uninstall of a built-in plugin: %s", r)
 	}
-	if _, ok := pluginModule(); !ok {
+	if _, ok := e.PluginPermissions(admin, "anthropic"); !ok {
 		t.Fatal("plugin permissions removed by a refused uninstall")
 	}
 	// While the plugin is disabled the account counts as orphaned (CONTRACTS
