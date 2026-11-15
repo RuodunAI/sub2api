@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -606,7 +607,7 @@ func (a *API) egress(c *gin.Context) {
 	}
 	rc := c.Request.Context()
 	g := store.G(rc, a.d.DB.Pool)
-	rows, err := g.Raw(`
+	summary, err := store.CollectRows(g.Raw(`
 		SELECT host, port, count(*),
 		       count(*) FILTER (WHERE result = 'ok'), count(*) FILTER (WHERE result = 'open'),
 		       count(*) FILTER (WHERE result = 'denied'),
@@ -614,23 +615,12 @@ func (a *API) egress(c *gin.Context) {
 		       COALESCE(sum(bytes_in), 0), COALESCE(sum(bytes_out), 0), max(started_at)
 		FROM plugin_egress_logs
 		WHERE plugin_key = ? AND started_at >= ? AND started_at < ?
-		GROUP BY host, port ORDER BY count(*) DESC LIMIT 200`, key, from, to).Rows()
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	summary := []EgressSummary{}
-	for rows.Next() {
+		GROUP BY host, port ORDER BY count(*) DESC LIMIT 200`, key, from, to), func(rows *sql.Rows) (EgressSummary, error) {
 		var s EgressSummary
-		if err := rows.Scan(&s.Host, &s.Port, &s.Count, &s.OK, &s.Open, &s.Denied, &s.Errors, &s.BytesIn, &s.BytesOut, &s.LastAt); err != nil {
-			rows.Close()
-			httpapi.Fail(c, err)
-			return
-		}
-		summary = append(summary, s)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		err := rows.Scan(&s.Host, &s.Port, &s.Count, &s.OK, &s.Open, &s.Denied, &s.Errors, &s.BytesIn, &s.BytesOut, &s.LastAt)
+		return s, err
+	})
+	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

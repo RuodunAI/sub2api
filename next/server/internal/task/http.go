@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -237,17 +238,12 @@ const runStatusSQL = `CASE j.state
 // clusterViews reads the cluster tasks (only one when name is set).
 func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskView, error) {
 	g := store.G(ctx, s.opts.DB.Pool)
-	rows, err := g.Raw(`SELECT name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
+	now := time.Now()
+	out, err := store.CollectRows(g.Raw(`SELECT name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
 			lease_node, lease_until > now() AND lease_job_id IS NOT NULL,
 			last_node, last_started_at, last_finished_at, last_status, COALESCE(last_count, 0), COALESCE(last_message, ''),
 			COALESCE(last_error, ''), last_success_at, consecutive_failures
-		FROM scheduled_tasks WHERE ? = '' OR name = ? ORDER BY name`, name, name).Rows()
-	if err != nil {
-		return nil, err
-	}
-	var out []ClusterTaskView
-	now := time.Now()
-	for rows.Next() {
+		FROM scheduled_tasks WHERE ? = '' OR name = ? ORDER BY name`, name, name), func(rows *sql.Rows) (ClusterTaskView, error) {
 		var v ClusterTaskView
 		var lastNode, lastStatus *string
 		var running *bool
@@ -257,8 +253,7 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		if err := rows.Scan(&v.Name, &v.Source, &v.PluginKey, &v.Schedule, &v.TimeoutMS, &v.MaxAttempts, &v.Enabled,
 			&v.LeaseNode, &running, &lastNode, &started, &finished, &lastStatus, &count, &msg, &errText,
 			&v.LastSuccessAt, &v.ConsecutiveFailures); err != nil {
-			rows.Close()
-			return nil, err
+			return v, err
 		}
 		v.Running = running != nil && *running
 		if !v.Running {
@@ -282,14 +277,10 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 			}
 		}
 		v.Recent = []string{}
-		out = append(out, v)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(out) == 0 {
-		return []ClusterTaskView{}, nil
+		return v, nil
+	})
+	if err != nil || len(out) == 0 {
+		return out, err
 	}
 	names := make([]string, len(out))
 	index := make(map[string]int, len(out))
@@ -297,29 +288,24 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		names[i], index[v.Name] = v.Name, i
 	}
 
-	recent, err := g.Raw(`SELECT t.name, r.statuses FROM unnest(?::text[]) AS t(name)
+	err = store.EachRow(g.Raw(`SELECT t.name, r.statuses FROM unnest(?::text[]) AS t(name)
 		CROSS JOIN LATERAL (SELECT COALESCE(array_agg(st ORDER BY id DESC), '{}') AS statuses FROM (
 			SELECT j.id, `+runStatusSQL+` AS st FROM river_job j
 			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = t.name ORDER BY j.id DESC LIMIT ?) x) r`,
-		store.Strings(names), recentRuns).Rows()
+		store.Strings(names), recentRuns), func(rows *sql.Rows) error {
+		var n string
+		var sts store.Strings
+		if err := rows.Scan(&n, &sts); err != nil {
+			return err
+		}
+		out[index[n]].Recent = sts
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	for recent.Next() {
-		var n string
-		var sts store.Strings
-		if err := recent.Scan(&n, &sts); err != nil {
-			recent.Close()
-			return nil, err
-		}
-		out[index[n]].Recent = sts
-	}
-	recent.Close()
-	if err := recent.Err(); err != nil {
-		return nil, err
-	}
 
-	stats, err := g.Raw(`SELECT name,
+	err = store.EachRow(g.Raw(`SELECT name,
 			count(*) FILTER (WHERE st IN ('succeeded', 'continued', 'failed', 'timeout', 'skipped')),
 			count(*) FILTER (WHERE st IN ('failed', 'timeout')),
 			count(*) FILTER (WHERE st = 'skipped'),
@@ -328,21 +314,20 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		FROM (SELECT j.args->>'name' AS name, `+runStatusSQL+` AS st, (j.metadata->'output'->>'duration_ms')::bigint AS ms
 			FROM river_job j WHERE j.kind = 'sup2api.task' AND j.args->>'name' = ANY(?)
 				AND (j.created_at > now() - interval '24 hours' OR j.state IN ('available', 'scheduled', 'pending', 'retryable'))) x
-		GROUP BY name`, store.Strings(names)).Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer stats.Close()
-	for stats.Next() {
+		GROUP BY name`, store.Strings(names)), func(rows *sql.Rows) error {
 		var n string
 		var st Stats24h
 		var queued int
-		if err := stats.Scan(&n, &st.Runs, &st.Failed, &st.Skipped, &st.AvgMS, &st.MaxMS, &queued); err != nil {
-			return nil, err
+		if err := rows.Scan(&n, &st.Runs, &st.Failed, &st.Skipped, &st.AvgMS, &st.MaxMS, &queued); err != nil {
+			return err
 		}
 		out[index[n]].Stats24h, out[index[n]].Queued = st, queued
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, stats.Err()
+	return out, nil
 }
 
 // nodeViews reads the node task states of every live node (one node and one
@@ -684,14 +669,9 @@ func (e *riverErrors) Scan(src any) error {
 }
 
 func (s *Service) clusterRuns(ctx context.Context, name string, statuses []string, before int64, limit int) (RunsPage, error) {
-	rows, err := runsQuery(store.G(ctx, s.opts.DB.Pool), name, statuses, before, limit+1).Rows()
-	if err != nil {
-		return RunsPage{}, err
-	}
-	defer rows.Close()
 	out := RunsPage{Runs: []RunView{}}
 	var lastID int64
-	for rows.Next() {
+	err := store.EachRow(runsQuery(store.G(ctx, s.opts.DB.Pool), name, statuses, before, limit+1), func(rows *sql.Rows) error {
 		var v RunView
 		var id int64
 		var scheduled time.Time
@@ -701,11 +681,12 @@ func (s *Service) clusterRuns(ctx context.Context, name string, statuses []strin
 		var attemptedBy store.Strings
 		if err := rows.Scan(&id, &v.Status, &scheduled, &attempted, &finalized, &v.Attempt, &v.MaxAttempts, &v.Manual,
 			&output, &errs, &attemptedBy); err != nil {
-			return RunsPage{}, err
+			return err
 		}
 		if len(out.Runs) == limit {
+			// The row past the page (the query reads limit+1): there is a next one.
 			out.NextBeforeID = &lastID
-			break
+			return nil
 		}
 		lastID = id
 		v.ID = strconv.FormatInt(id, 10)
@@ -724,8 +705,12 @@ func (s *Service) clusterRuns(ctx context.Context, name string, statuses []strin
 			v.Error = truncate(errs[len(errs)-1].Error)
 		}
 		out.Runs = append(out.Runs, v)
+		return nil
+	})
+	if err != nil {
+		return RunsPage{}, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // runsQuery selects up to limit runs of the cluster task name from

@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log/slog"
 	"slices"
@@ -186,19 +187,14 @@ func groupMembersQuery(db *gorm.DB, groupID int64) *gorm.DB {
 // least (BenchmarkHotGroupSnapshot).
 func readGroupSnap(db *gorm.DB, groupID int64, now time.Time) (groupSnap, error) {
 	snap := groupSnap{at: now, refs: []core.AccountRef{}}
-	rows, err := groupMembersQuery(db, groupID).Rows()
-	if err != nil {
-		return snap, err
-	}
-	defer rows.Close()
-	for rows.Next() {
+	err := store.EachRow(groupMembersQuery(db, groupID), func(rows *sql.Rows) error {
 		var a core.AccountRef
 		var mapping, limits []byte
 		var env store.JSON[core.EnvironmentValues]
 		var until *time.Time
 		if err := rows.Scan(&a.ID, &a.Name, &a.PluginKey, &a.Type, &a.Priority, &a.Weight, &a.MaxConcurrency, &a.ProxyID,
 			(*store.Strings)(&a.Models), &mapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &limits, &env, &a.ConversionLossPolicy, &until); err != nil {
-			return snap, err
+			return err
 		}
 		if len(mapping) > 0 {
 			_ = json.Unmarshal(mapping, &a.ModelMapping)
@@ -211,8 +207,9 @@ func readGroupSnap(db *gorm.DB, groupID int64, now time.Time) (groupSnap, error)
 		}
 		a.ModelLimits, a.Environment = parseModelLimits(limits), env.V
 		snap.refs = append(snap.refs, a)
-	}
-	return snap, rows.Err()
+		return nil
+	})
+	return snap, err
 }
 
 // Load returns one account with decrypted credentials (not deleted; any status).

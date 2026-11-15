@@ -3,6 +3,7 @@ package account
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -666,20 +667,11 @@ func (s *Service) listPage(ctx context.Context, conds store.Conds, page, size in
 	if err := listCount(db, conds).Count(&total).Error; err != nil {
 		return 0, nil, err
 	}
-	rs, err := listRows(db, conds, page, size).Rows()
+	rows, err := store.CollectRows(listRows(db, conds, page, size), func(rs *sql.Rows) (*row, error) { return scanRow(rs) })
 	if err != nil {
 		return 0, nil, err
 	}
-	defer rs.Close()
-	rows := []*row{}
-	for rs.Next() {
-		a, err := scanRow(rs)
-		if err != nil {
-			return 0, nil, err
-		}
-		rows = append(rows, a)
-	}
-	return total, rows, rs.Err()
+	return total, rows, nil
 }
 
 // listCount counts the accounts conds keep.
