@@ -47,7 +47,7 @@ func TestScopedRoleGrants(t *testing.T) {
 
 	// Narrowing drops the scope; a redundant own next to the full key is
 	// not kept.
-	r, err = s.SetRolePermissions(ctx, root, r.ID, []string{"account:update:group/12", "account:test", "account:test:own"})
+	r, err = s.SetRolePermissions(ctx, root, r.ID, []string{"account:update:group/12", "account:test", "account:test:own"}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"account:test", "account:update:group/12"}, slices.Sorted(slices.Values(r.PermissionKeys)))
 	plain, scoped = rows(r.ID)
@@ -56,7 +56,7 @@ func TestScopedRoleGrants(t *testing.T) {
 
 	// Scoped grants only: every unscoped grant goes (a NULL id list once
 	// kept them); then nothing at all.
-	r, err = s.SetRolePermissions(ctx, root, r.ID, []string{"account:read:own"})
+	r, err = s.SetRolePermissions(ctx, root, r.ID, []string{"account:read:own"}, nil)
 	require.NoError(t, err)
 	require.Equal(t, []string{"account:read:own"}, r.PermissionKeys)
 	plain, scoped = rows(r.ID)
@@ -67,14 +67,14 @@ func TestScopedRoleGrants(t *testing.T) {
 	require.False(t, set.Has("account:test"))
 	require.True(t, set.Has("account:read:own"))
 
-	r, err = s.SetRolePermissions(ctx, root, r.ID, []string{})
+	r, err = s.SetRolePermissions(ctx, root, r.ID, []string{}, nil)
 	require.NoError(t, err)
 	plain, scoped = rows(r.ID)
 	require.Empty(t, plain)
 	require.Empty(t, scoped)
 
 	for _, bad := range []string{"user:read:own", "account:create:account/5", "account:read:proxy/1", "account:read:group/01", "account:own:read"} {
-		_, err = s.SetRolePermissions(ctx, root, r.ID, []string{bad})
+		_, err = s.SetRolePermissions(ctx, root, r.ID, []string{bad}, nil)
 		var ce *core.Error
 		require.True(t, errors.As(err, &ce) && ce.Code == "invalid_argument", "%s: %v", bad, err)
 	}

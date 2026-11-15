@@ -177,7 +177,7 @@ func PermissionDefs(m *manifest.Manifest, grants map[string]map[string][]string)
 | `InheritFrom` | **字段删除**（第 2 章同时删掉 `grantInherited` 和 SyncPlugin 的继承步骤）。所有同意路径都会经过 `withholdGrants`，继承已在计划时解析成显式 `GrantRoles`（§3.4.2–3.4.3），SyncPlugin 只负责授予 GrantRoles |
 | `Sensitive` | 删除 |
 
-`unionDefs` 不变（后放的一方在 key 相同时胜出）。暂存升级时的调用顺序见 §3.4.5。
+暂存升级用 `stageDefs(next, running)`（二审取代 `unionDefs`）：新旧都声明的 key 的范围与 `defaults` 取运行版本，风险取较高的，其余取新版本；调用顺序见 §3.4.5。
 
 ### 3.3.4 Review 输出（`review.go`）
 
@@ -222,7 +222,7 @@ type ReviewRoleColumn struct {
 type ReviewRemovedPerm struct {
 	Key     string             `json:"key"` // local
 	Label   core.LocalizedText `json:"label"`
-	Holders []string           `json:"holders"` // role keys, super admin aside
+	Holders []string           `json:"holders,omitzero"` // role keys, super admin aside; nil without role:read (C4)
 }
 ```
 
@@ -447,7 +447,7 @@ roles, named := roleGrants(m, overrides, existing)
 roles, plan, pending, err := settleRoleGrants(..., roles, named, auto)
 grants.Record(...)                                                  // 不变
 首装 / 无运行版本：ApplyDefaults(m, roles)
-有运行版本（暂存）：SyncPlugin(unionDefs(PermissionDefs(m, roles), PermissionDefs(old, nil)))
+有运行版本（暂存）：SyncPlugin(stageDefs(PermissionDefs(m, roles), PermissionDefs(old, nil)))   // Staged
 审计
 ```
 
@@ -662,3 +662,11 @@ func (s *Service) SetGrant(ctx context.Context, key, permission string, scope ma
 7. 存量审计里的待复核项没有 `scope`，按 `""`（全部）处理，等同于现有语义（当时没有范围）。reject 的跨版本清除仍按 (permission, role) 匹配，不受影响。
 8. 复活的 key 如果同时改了 scope_type，第 2 章 `pruneScopes` 会删除不再适配的范围行；review 的 `cells.grant` 显示的是同意之前的持有，同意后可能变少。首版不在 review 上特别标注（插件改资源名本来就少见，审计里有 `scope_changed` 记录）。
 9. 已有 key 的风险升高（如 `moderation:exempt` 改 critical）：确认页首版不列出，已有授权不动（与第 2 章 §2.6 第 1 条同一结论）。
+
+## 3.10 二审修订（0.1.289 候选，发布前）
+
+- **同意模式**：`consentMode`（`modeOperator`/`modeAuto`/`modeSystem`，`consentModeOf`）取代 `auto bool` 与散落的 `isSystem`；同意与预览共用 `markPlan` 判断挂起（code-backend #2）。`checkGrantable` 一次调用 `CanGrantToRoles(roles, 最高风险)`，本地 key 用 `manifest.LocalPermission`（#4、#9）。`planRoleGrants` 不再用 `builtin` 假值区分覆盖（#8）；覆盖值规范化复用 `RoleDefault.Suffixes`（#6）；`cells.grant` 经 `CanonicalSuffixes`（#7）。
+- **继承跟随覆盖（C2）**：`new_permission_roles[local]` 出现时，能指定角色上的继承授予以覆盖为准（缺省或 `[]` 不授予）。
+- **审查可见性（C4）**：查看者没有 `role:read`（系统同意除外）时，`removed_user_permissions[].holders`、revived/renamed 行的 `cells.<角色>.grant` 省略（`omitzero`），`new_role_grants` 去掉 `via: inherit`。
+- **暂存同意**：`PermissionDefs` 带 `Staged`，新 key 建成 disabled、removed key 不复活，激活时 `ApplyDefaults(m, nil)` 再按被激活版本同步（logic #4）。激活时 `carryRenamedHolders` 把同意之后旧 key 新增的持有者记成 `plugin.role_grants.carry` 待复核（logic #5），`PendingRoleGrants` 一并读取，并只列本插件的权限（security #10）；`grantReviewed` 拒绝非本插件的 key。
+- 目录读取全部经第 2 章的只读端口（`loadCatalogPerms`、`PermissionHolders`）；仍直接查 `roles` 表的只有角色列（`noteRoleColumns`）、点名角色存在性与待复核项的角色存在性检查。

@@ -79,19 +79,19 @@ func TestRoleGrantsPriority(t *testing.T) {
 	cases := []struct {
 		name      string
 		overrides map[string]map[string][]string
-		existing  map[string]bool
+		existing  catalogPerms
 		want      map[string]map[string][]string
 	}{
 		{"manifest", nil, nil, defaults},
 		// growth:use inherits growth:read, which the catalog has.
-		{"rename", nil, map[string]bool{"plugin.growth:growth:read": true},
+		{"rename", nil, catalogPerms{"plugin.growth:growth:read": {}},
 			map[string]map[string][]string{"growth:use": {}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}}}},
-		{"existing and revived", nil, map[string]bool{"plugin.growth:flow:manage": true},
+		{"existing and revived", nil, catalogPerms{"plugin.growth:flow:manage": {}},
 			map[string]map[string][]string{"growth:use": {"admin": {""}, "user": {""}}, "growth:stats:read": {}, "flow:manage": {}}},
 		{"override", map[string]map[string][]string{"flow:manage": {"operator": {""}, "auditor": {"flow/3"}}, "growth:stats:read": {}}, nil,
 			map[string]map[string][]string{"growth:use": {"admin": {""}, "user": {""}}, "growth:stats:read": {},
 				"flow:manage": {"admin": {""}, "operator": {""}, "auditor": {"flow/3"}}}},
-		{"override of a rename", map[string]map[string][]string{"growth:use": {"auditor": {""}}}, map[string]bool{"plugin.growth:growth:read": true},
+		{"override of a rename", map[string]map[string][]string{"growth:use": {"auditor": {""}}}, catalogPerms{"plugin.growth:growth:read": {}},
 			map[string]map[string][]string{"growth:use": {"auditor": {""}}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}}}},
 	}
 	for _, c := range cases {

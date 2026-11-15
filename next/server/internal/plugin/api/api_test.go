@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	authzsvc "github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -98,7 +99,15 @@ type noopPerms struct{}
 func (noopPerms) SyncPlugin(context.Context, pgx.Tx, string, []core.PermissionDef) error {
 	return nil
 }
-func (noopPerms) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, bool) error { return nil }
+func (noopPerms) CanGrantToRoles(context.Context, pgx.Tx, int64, []string, string) error { return nil }
+
+// The catalog's reads come from the tables the tests fill.
+func (noopPerms) PluginPermissions(ctx context.Context, q store.Querier, key string) ([]core.PluginPermission, error) {
+	return authzsvc.New(authzsvc.Deps{}).PluginPermissions(ctx, q, key)
+}
+func (noopPerms) PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]core.PermissionHolder, error) {
+	return authzsvc.New(authzsvc.Deps{}).PermissionHolders(ctx, q, keys)
+}
 func (noopPerms) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
 	return core.PluginGrantees{}, nil
 }
@@ -601,6 +610,24 @@ func TestUIPluginsNativeEntryOnly(t *testing.T) {
 	}
 }
 
+// GET /ui/plugins shows a plugin's menu and slot to a holder of any scope
+// of their permission.
+func TestUIPluginsScopedPermission(t *testing.T) {
+	h, _ := newHarness(t)
+	menus := func(token string) []any {
+		code, out := h.do("GET", "/ui/plugins", token, nil)
+		require.Equal(t, 200, code, out)
+		ui, _ := out["data"].([]any)
+		if len(ui) == 0 {
+			return nil
+		}
+		return ui[0].(map[string]any)["menus"].([]any)
+	}
+	// The viewer holds stats:read; its key narrows that to one value.
+	assert.Len(t, menus(core.AccessKeyPrefix+"plugin.guard:stats:read:value/a,"+PermSelfUI), 1)
+	assert.Empty(t, menus(core.AccessKeyPrefix+"plugin.guard:other:read:value/a,"+PermSelfUI))
+}
+
 func mustExec(t *testing.T, db *store.DB, sql string, args ...any) {
 	t.Helper()
 	if _, err := db.Pool.Exec(context.Background(), sql, args...); err != nil {
@@ -804,11 +831,13 @@ func TestSetGrantRoute(t *testing.T) {
 	spec := r.Routes()[i]
 	assert.Equal(t, core.StepUpPluginGrant, spec.StepUp)
 	assert.Equal(t, []perm.Key{PermManage}, spec.Keys)
-	assert.ElementsMatch(t, []perm.Key{perm.PluginGrantHigh, perm.PluginGrantCritical, perm.PluginGrantDBSchemaUnconfined}, spec.Extra)
+	assert.ElementsMatch(t, []perm.Key{perm.PluginInstall, perm.PluginGrantHigh, perm.PluginGrantCritical, perm.PluginGrantDBSchemaUnconfined}, spec.Extra)
 }
 
-// plugin:manage narrows a grant; granting a denied high-risk permission
-// takes plugin:grant:high; an empty body grants the requested scope.
+// plugin:manage narrows a grant, also in a chunked body (no
+// Content-Length); granting a denied or revoked permission again takes
+// plugin:install, even a low-risk one, and plugin:grant:high for a
+// high-risk one; an empty body grants the requested scope.
 func TestAPISetGrant(t *testing.T) {
 	h, root := newHarness(t)
 	ctx := context.Background()
@@ -825,13 +854,27 @@ func TestAPISetGrant(t *testing.T) {
 	}
 
 	narrower := map[string]any{"scope": map[string]any{"points": []any{"gateway.request"}, "fields": []any{"model"}}}
-	code, out := h.do("PUT", "/plugins/guard/grants/gateway.hook", "manager", narrower)
-	require.Equal(t, 200, code, out)
+	raw, _ := json.Marshal(narrower)
+	req := httptest.NewRequest("PUT", "/api/v1/plugins/guard/grants/gateway.hook", bytes.NewReader(raw))
+	req.ContentLength = -1
+	req.Header.Set("Authorization", "Bearer manager")
+	w := httptest.NewRecorder()
+	h.engine.ServeHTTP(w, req)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	out := map[string]any{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
 	assert.Equal(t, "granted", data(out)["status"])
 	assert.Equal(t, narrower["scope"], data(out)["scope"])
+	code, out := h.do("PUT", "/plugins/guard/grants/gateway.hook", "manager", map[string]any{"scope": "x"})
+	require.Equal(t, http.StatusBadRequest, code, out)
 
 	code, out = h.do("PUT", "/plugins/guard/grants/net", "manager", nil)
 	require.Equal(t, http.StatusForbidden, code, out)
+	code, _ = h.do("DELETE", "/plugins/guard/grants/events", "manager", nil)
+	require.Equal(t, http.StatusNoContent, code)
+	code, out = h.do("PUT", "/plugins/guard/grants/events", "manager", nil)
+	require.Equal(t, http.StatusForbidden, code, out)
+	assert.Contains(t, fmt.Sprint(out["error"]), "plugin:install")
 	code, out = h.do("PUT", "/plugins/guard/grants/net", "admin", nil)
 	require.Equal(t, 200, code, out)
 	assert.Equal(t, "granted", data(out)["status"])

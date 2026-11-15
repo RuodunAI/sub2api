@@ -121,12 +121,13 @@ func (s *Service) handleSetRolePermissions(c *gin.Context) {
 	}
 	var in struct {
 		PermissionKeys []string `json:"permission_keys"`
+		Version        *int64   `json:"version"`
 	}
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
 	actorID, _ := core.UserID(c.Request.Context())
-	role, err := s.SetRolePermissions(c.Request.Context(), actorID, id, in.PermissionKeys)
+	role, err := s.SetRolePermissions(c.Request.Context(), actorID, id, in.PermissionKeys, in.Version)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -187,13 +188,14 @@ func (s *Service) handlePluginRoleGrants(c *gin.Context) {
 
 func (s *Service) handleSetPluginRoleGrants(c *gin.Context) {
 	var in struct {
-		Roles map[string][]string `json:"roles"`
+		Roles   map[string][]string `json:"roles"`
+		Version *int64              `json:"version"`
 	}
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
 	actorID, _ := core.UserID(c.Request.Context())
-	m, err := s.SetPluginRoleGrants(c.Request.Context(), actorID, c.Param("plugin"), in.Roles)
+	m, err := s.SetPluginRoleGrants(c.Request.Context(), actorID, c.Param("plugin"), in.Roles, in.Version)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -310,16 +310,24 @@ func parse(c *gin.Context, e *Entity) (*params, error) {
 	return p, nil
 }
 
-// ParseText reads q, ids and limit as GET /lookup does for a kind without
+// TextQuery is the q, ids and limit of a lookup over text ids; IDs is nil
+// when not given.
+type TextQuery struct {
+	Q     string
+	IDs   []string
+	Limit int
+}
+
+// ParseText reads a TextQuery as GET /lookup does for a kind without
 // numeric ids: the plugin scope options proxy (CONTRACTS §96.1 rules) shares
-// it. ids is nil when not given.
-func ParseText(c *gin.Context) (q string, ids []string, limit int, err error) {
+// it.
+func ParseText(c *gin.Context) (TextQuery, error) {
 	p, err := parse(c, &Entity{})
 	if err != nil {
-		return "", nil, 0, err
+		return TextQuery{}, err
 	}
-	ids, _ = p.ids.([]string)
-	return p.text, ids, p.limit, nil
+	ids, _ := p.ids.([]string)
+	return TextQuery{Q: p.text, IDs: ids, Limit: p.limit}, nil
 }
 
 // parseIDs reads ids=a,b,c: positive integers, or names when the kind has no

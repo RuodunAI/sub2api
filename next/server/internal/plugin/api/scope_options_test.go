@@ -272,21 +272,3 @@ func TestScopeOptionsErrors(t *testing.T) {
 		assert.Equal(t, "plugin_unavailable", code)
 	}
 }
-
-// GET /ui/plugins shows a plugin's menu and slot to a holder of any scope
-// of their permission.
-func TestUIPluginsScopedPermission(t *testing.T) {
-	h, _ := newHarness(t)
-	menus := func(token string) []any {
-		code, out := h.do("GET", "/ui/plugins", token, nil)
-		require.Equal(t, 200, code, out)
-		ui, _ := out["data"].([]any)
-		if len(ui) == 0 {
-			return nil
-		}
-		return ui[0].(map[string]any)["menus"].([]any)
-	}
-	// The viewer holds stats:read; its key narrows that to one value.
-	assert.Len(t, menus(core.AccessKeyPrefix+"plugin.guard:stats:read:value/a,"+PermSelfUI), 1)
-	assert.Empty(t, menus(core.AccessKeyPrefix+"plugin.guard:other:read:value/a,"+PermSelfUI))
-}

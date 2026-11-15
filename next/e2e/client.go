@@ -17,7 +17,8 @@ import (
 
 // Client is a thin JSON client for the console API (/api/v1) and the
 // gateway. It carries an optional bearer token, and the password that
-// answers a step-up (CONTRACTS §80.2) when the session has one.
+// answers a step-up (CONTRACTS §80.2) when the session has one
+// (WithoutStepUp leaves the refusal to the caller).
 type Client struct {
 	Base     string
 	HTTP     *http.Client
@@ -103,6 +104,14 @@ func (c *Client) Do(t testing.TB, method, path string, body any, opts ...ReqOpt)
 	}
 	opts = append(opts, Header("X-Verify-Proof", v.Data().Get("proof").String()))
 	return c.send(t, method, path, bytes.NewReader(payload), ctype, opts)
+}
+
+// WithoutStepUp returns a copy of c that answers no step-up, for a case
+// that observes the verification_required refusal itself.
+func (c *Client) WithoutStepUp() *Client {
+	cp := *c
+	cp.Password = ""
+	return &cp
 }
 
 func mustJSON(t testing.TB, v any) []byte {
@@ -222,6 +231,15 @@ func Strings(r gjson.Result) []string {
 	out := []string{}
 	for _, v := range r.Array() {
 		out = append(out, v.String())
+	}
+	return out
+}
+
+// Set returns the elements of a JSON array as a set of strings.
+func Set(r gjson.Result) map[string]bool {
+	out := map[string]bool{}
+	for _, v := range Strings(r) {
+		out[v] = true
 	}
 	return out
 }

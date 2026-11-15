@@ -50,8 +50,8 @@ func TestConsentRoleGrantRights(t *testing.T) {
 
 	// A critical permission named by a non-superuser: the catalog's
 	// refusal names the permission.
-	e.perms.canGrant = func(_ context.Context, _ pgx.Tx, _ int64, _ []string, critical bool) error {
-		if critical {
+	e.perms.canGrant = func(_ context.Context, _ pgx.Tx, _ int64, _ []string, risk string) error {
+		if risk == manifest.RiskCritical {
 			return core.ErrPermissionDenied.WithDetails(map[string]any{"reason": "critical", "superuser": true})
 		}
 		return nil
@@ -63,7 +63,6 @@ func TestConsentRoleGrantRights(t *testing.T) {
 	require.Equal(t, "permission_denied", ce.Code)
 	assert.Equal(t, "critical", ce.Details["reason"])
 	assert.Equal(t, []string{"rules:exempt"}, ce.Details["permissions"])
-	assert.Equal(t, []bool{false, false, true}, e.perms.critical)
 	e.perms.canGrant = nil
 
 	// An unknown role is invalid under the field that names it, also for a
@@ -130,9 +129,8 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	}
 }
 
-// Inheritance follows the holders before the consent only (a key created
-// by the same consent is no source), keeps scoped grants of the same
-// scope_type only, and a critical permission inherits from critical keys
+// Inheritance keeps scoped grants of the same scope_type only (a key the
+// manifest still declares is no source: the manifest check refuses it), and a critical permission inherits from critical keys
 // only; every source left out is audited (inherit_skipped). Critical to
 // critical inherits, withheld when the consenter is no superuser.
 func TestConsentInheritRules(t *testing.T) {
@@ -154,9 +152,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	flow := newPerm("flow:edit", "")
 	flow.Scope = &manifest.PermissionScope{Resource: "flow", Own: true}
 	flow.InheritFrom = []string{"old:flow"} // ticket scopes: skipped
-	chained := newPerm("rules:chained", "")
-	chained.InheritFrom = []string{"rules:exempt"} // created by this consent: no source
-	_, err = e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", exempt, strict, flow, chained), e.root), e.admin, UploadOptions{})
+	_, err = e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", exempt, strict, flow), e.root), e.admin, UploadOptions{})
 	require.NoError(t, err)
 	res, err := e.svc.Consent(ctx, "guard", "0.1.1", ConsentRequest{Grants: explicitGuardGrants()}, e.admin)
 	require.NoError(t, err)
@@ -166,7 +162,6 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:exempt").GrantRoles)
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:strict").GrantRoles)
 	assert.Equal(t, map[string][]string{"auditor": {""}}, lastDef(t, e, "plugin.guard:flow:edit").GrantRoles)
-	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:chained").GrantRoles)
 	var skipped string
 	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail->>'inherit_skipped' FROM audit_logs WHERE action = $1 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&skipped))
 	assert.JSONEq(t, `[{"permission":"plugin.guard:rules:strict","from":"plugin.guard:old:low","reason":"risk"},
@@ -287,4 +282,133 @@ SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'operator' AN
 	activate(v2)
 	assert.Empty(t, scopeGrants(t, e, ctx, "operator", "flow:manage"), "pruned at v2's activation")
 	assert.False(t, declaresOwn())
+}
+
+// A consent's override of a renamed permission decides its inheritance
+// too (CONTRACTS C2): a holder of the old key the override names gets what
+// it names, one it leaves out nothing, and a holder the consenter may not
+// name still waits for review (D2).
+func TestConsentOverrideDecidesInheritance(t *testing.T) {
+	e, ctx := roleGrantsEnv(t) // auditor holds the removed rules:old
+	_, err := e.db.Pool.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.key IN ('operator', 'supplier') AND p.key = 'plugin.guard:rules:old'`)
+	require.NoError(t, err)
+	e.perms.grantees = func(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+		return core.PluginGrantees{Denied: map[string]string{"supplier": core.GrantDenyHeld}}, nil
+	}
+	edit := newPerm("rules:edit", "")
+	edit.InheritFrom = []string{"rules:old"}
+	_, err = e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", edit), e.root), e.admin, UploadOptions{})
+	require.NoError(t, err)
+	r, err := e.svc.Review(ctx, "guard", "0.1.1", e.admin)
+	require.NoError(t, err)
+	row := r.UserPermissions[len(r.UserPermissions)-1]
+	require.True(t, row.Renamed)
+	assert.Equal(t, []string{""}, row.Cells["auditor"].Grant, "the cell's initial value is the inherited grant")
+
+	req := ConsentRequest{Grants: explicitGuardGrants(), NewPermissionRoles: map[string]map[string]manifest.RoleDefault{
+		"rules:edit": {"operator": {Unscoped: true}, "auditor": {Scopes: []string{}}}}}
+	res, err := e.svc.Consent(ctx, "guard", "0.1.1", req, e.admin)
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]string{"operator": {""}}, lastDef(t, e, "plugin.guard:rules:edit").GrantRoles)
+	assert.Equal(t, []RoleGrant{{Permission: "plugin.guard:rules:edit", Role: "supplier", Risk: manifest.RiskLow, Via: viaInherit,
+		Withheld: true}}, res.Withheld)
+}
+
+// A consent made while another version runs is staged (logic #2, #4): a
+// key only the new version declares is created disabled, a removed key it
+// declares again stays removed, and a key both declare keeps the higher
+// risk; activation turns them all to the new version's definitions.
+func TestStagedConsentWaitsForActivation(t *testing.T) {
+	e, ctx := roleGrantsEnv(t)
+	realCatalog(t, e, ctx)
+	activate := func(m *manifest.Manifest) {
+		t.Helper()
+		require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
+				return err
+			}
+			if err := e.svc.d.Defaults.ApplyDefaults(ctx, tx, m, nil); err != nil {
+				return err
+			}
+			return e.svc.d.Permissions.SetPluginActive(ctx, tx, "guard", true)
+		}))
+	}
+	upload := func(m *manifest.Manifest) {
+		t.Helper()
+		r, err := e.svc.Upload(ctx, pkgtest.Build(m, e.root), e.admin, UploadOptions{})
+		require.NoError(t, err)
+		require.Equal(t, ConsentApproved, r.ConsentStatus, "carried over")
+	}
+	state := func(local string) (status, risk string) {
+		t.Helper()
+		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT status, risk FROM permissions WHERE key = $1`, "plugin.guard:"+local).Scan(&status, &risk))
+		return status, risk
+	}
+	v1 := guardWith("0.1.1", newPerm("flow:read", manifest.RiskSensitive), newPerm("flow:audit", ""), newPerm("flow:old", ""))
+	upload(v1)
+	activate(v1)
+	v2 := guardWith("0.1.2", newPerm("flow:read", manifest.RiskSensitive), newPerm("flow:audit", ""))
+	upload(v2)
+	activate(v2)
+	status, _ := state("flow:old")
+	require.Equal(t, "removed", status)
+
+	// The running manifest may declare no risk at all (an old format): the
+	// new one's risk applies at once when higher, never when lower.
+	v3 := guardWith("0.1.3", newPerm("flow:read", ""), newPerm("flow:audit", manifest.RiskSensitive), newPerm("flow:old", ""), newPerm("flow:new", "", "admin"))
+	upload(v3)
+	for local, want := range map[string][2]string{"flow:old": {"removed", "low"}, "flow:new": {"disabled", "low"},
+		"flow:read": {"active", "sensitive"}, "flow:audit": {"active", "sensitive"}} {
+		status, risk := state(local)
+		assert.Equal(t, want, [2]string{status, risk}, local)
+	}
+	activate(v3)
+	for local, want := range map[string][2]string{"flow:old": {"active", "low"}, "flow:new": {"active", "low"},
+		"flow:read": {"active", "low"}, "flow:audit": {"active", "sensitive"}} {
+		status, risk := state(local)
+		assert.Equal(t, want, [2]string{status, risk}, local)
+	}
+}
+
+// Holders a renamed key's old key gains between a staged consent and the
+// activation are listed for review at activation (logic #5), as inheriting
+// would have given them; the holders the consent already planned are not.
+func TestActivationListsLateHoldersOfRenamedKeys(t *testing.T) {
+	e, ctx := roleGrantsEnv(t)
+	realCatalog(t, e, ctx)
+	_, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = '0.1.0' WHERE key = 'guard';
+INSERT INTO permissions (key, module, label, source, plugin_key, status) VALUES ('plugin.guard:rules:view', 'plugin.guard', '{}', 'plugin', 'guard', 'active');
+INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:rules:view'`)
+	require.NoError(t, err)
+	list := newPerm("rules:list", "")
+	list.InheritFrom = []string{"rules:view"}
+	v := guardWith("0.1.1", list)
+	r, err := e.svc.Upload(ctx, pkgtest.Build(v, e.root), e.admin, UploadOptions{})
+	require.NoError(t, err)
+	require.Equal(t, ConsentApproved, r.ConsentStatus, "carried over: low to operator")
+	assert.Equal(t, []string{"operator"}, permissionRoles(t, e, ctx, "plugin.guard:rules:list"))
+
+	_, err = e.db.Pool.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.key = 'supplier' AND p.key = 'plugin.guard:rules:view'`)
+	require.NoError(t, err)
+	require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE plugins SET active_version = '0.1.1' WHERE key = 'guard'`); err != nil {
+			return err
+		}
+		return e.svc.d.Defaults.ApplyDefaults(ctx, tx, v, nil)
+	}))
+	gs, err := e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
+	require.NoError(t, err)
+	assert.Equal(t, []RoleGrant{{Version: "0.1.1", Permission: "plugin.guard:rules:list", Role: "supplier", Risk: manifest.RiskLow,
+		Via: viaInherit, NeedsConsent: true, Withheld: true}}, gs)
+}
+
+// permissionRoles lists the roles holding every row of key.
+func permissionRoles(t *testing.T, e *env, ctx context.Context, key string) []string {
+	t.Helper()
+	var out []string
+	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM role_permissions rp
+JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1`, key).Scan(&out))
+	return out
 }

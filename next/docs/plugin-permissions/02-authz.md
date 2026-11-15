@@ -273,8 +273,8 @@ type PermissionCatalog interface {
     // the declared scope no longer allows, and marks keys no longer
     // declared removed. It never inherits: the consent resolved that (ch.3).
     SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []PermissionDef) error
-    // CanGrantToRoles: as before; critical also needs a superuser actor.
-    CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, critical bool) error
+    // CanGrantToRoles: as before; risk critical also needs a superuser actor.
+    CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string, risk string) error
     // PluginGrantees is CanGrantToRoles read-only: no Bump, no locks, a
     // refusal is a Denied entry rather than an error.
     PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string) (PluginGrantees, error)
@@ -435,7 +435,7 @@ func granteeDenial(actor core.PermissionSet, held []string, key string) string /
 - `editableRole`（`roles.go:129`）改成：锁行，取 `grantSet` 和 `cur`，调用 `editDenial`，再把原因映射回原来的错误（`errSuperuserRoleFrozen`、`cannotActOnRole`、`notAssignable`）。行为和错误文案都不变，actor 0 照旧放行。
 - `pluginGrantee` 改成 `granteeDenial` 的报错包装。
 
-**`CanGrantToRoles(ctx, tx, actorID, roleKeys, critical)`**：在现有流程的最前面加一条：
+**`CanGrantToRoles(ctx, tx, actorID, roleKeys, risk)`**（二审改为传风险，调用方传本次授予里最高的风险）：在现有流程的最前面加一条：
 
 ```go
 if critical && actorID != 0 && !actor.Superuser {
@@ -446,7 +446,7 @@ if critical && actorID != 0 && !actor.Superuser {
 ```
 
 - `actor` 来自 `pluginGrantor`，访问密钥会经 `RestrictToAccessKey` 去掉超管标记，所以通过访问密钥不能授 critical。
-- 第 3 章把 critical 和非 critical 的授予分两次调用（安装、升级同意，以及复核确认 `checkRolesGrantable`）。
+- 第 3 章每次只调用一次，传本次授予的最高风险（二审 code-backend #4，此前按 critical 分两批调用）。
 
 **`PluginGrantees`**：
 
@@ -768,7 +768,7 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
   - `scope_type = "plugin:"+ResourceName()`，存储的范围是 `"<res>/<value>"` 或 `"own"`。
 - **第 3 章（install）**：
   - `core.PermissionDef{Risk, Group, GroupLabel, GroupSort, Requires, ScopeType, Scope *manifest.PermissionScope, Defaults, GrantRoles map[string][]string}`。`InheritFrom` 删除，继承由 `planRoleGrants` 解析，包括范围同 scope_type 才继承、critical 只从 critical 继承这两条。
-  - `CanGrantToRoles(ctx, tx, actorID, roleKeys, critical bool)`。
+  - `CanGrantToRoles(ctx, tx, actorID, roleKeys, risk string)`。
   - `PluginGrantees(ctx, tx, actorID, roleKeys) (core.PluginGrantees, error)`，原因码 `superuser_role|not_editable|not_assignable|held`。
   - `GrantPluginPermission(ctx, tx, key, map[string][]string)`。
   - `SetPluginActive` 不碰 removed（本章实现）。
@@ -779,3 +779,12 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
   - `GET /permissions` 的新字段：`risk`、`group`、`groups`、`requires`、`scope_type`、`scope{resource, own?, options?, values?}`（`manifest.PermissionScope`，resource 总是填，枚举为 `value`）、`defaults`（完整 key）。`sensitive` 字段去掉。
   - `GET`/`PUT /api/v1/permissions/plugins/:plugin`；403 的 `details.role`。“恢复插件建议”由前端用 `defaults` 预填后保存，后端不提供 reset 接口。
   - `generated/permissions.ts` 里的 `PermMeta.risk`。
+
+## 二审修订（0.1.289 候选，发布前）
+
+- **并发写入（C1）**：`Role.Version` 与 `PluginRoleMatrix.Version` 返回 `authz_meta.version`；矩阵 GET 在可重复读快照里读 `version` 与角色（`readSnapshot`）。`SetRolePermissions`、`SetPluginRoleGrants` 多一个 `version *int64`，经 `mutateAt` 在 Bump 之后比较 `v-1`，不一致 409 `version_conflict`（`details.version`），nil 不检查。
+- **关键权限二次验证（C3）**：`resolvePermissions` 标出 critical 的插件 key，`setRolePart`、`CreateRole` 对**新增**的 critical key 在写入事务里 `ConsumeStepUp(StepUpPluginGrant)`；路由不变，被拒时事务回滚、版本不变。
+- **审计**：`role.permissions` 记 `added`、`removed`；矩阵写入另记该插件上的 `before`/`after`。
+- **只读端口**：`PermissionCatalog` 加 `PluginPermissions`（一个插件的 key、状态、风险、范围）与 `PermissionHolders`（key → 角色与范围，超管角色除外），install 不再直接读授权表（code-backend #1）。范围的存取统一在 `core.StoredPluginScope`/`PluginScopeType`/`ReadPluginScope`/`PluginScopeSuffix`（#5）。
+- **暂存同意**：`PermissionDef.Staged` 时 `SyncPlugin` 新建的 key 为 `disabled`、不复活 removed key（logic #4）。
+- `RolesPermissions` 与 `eachRolePermissions` 共用 `readRoleGrants`（#3）；`editDenial` 同时返回缺的权限，`editableRole` 不再重算（#10）。

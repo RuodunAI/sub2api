@@ -1,6 +1,6 @@
 // Package perm names permission keys and parses their scopes (CONTRACTS
-// §21.0). It is a leaf package: it imports nothing internal, so every module
-// can use it.
+// §21.0). It is a leaf package: it imports nothing internal (from the sdk,
+// the manifest only), so every module can use it.
 package perm
 
 // Key is a permission key, e.g. "account:read" or "account:read:own".

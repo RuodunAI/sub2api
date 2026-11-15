@@ -3,7 +3,6 @@ package install
 import (
 	"context"
 	"errors"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"maps"
 	"slices"
 	"strings"
@@ -13,11 +12,13 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -48,13 +49,14 @@ type fakePerms struct {
 	mu      sync.Mutex
 	syncs   []syncCall
 	deleted []string
-	// checked records CanGrantToRoles calls, critical the critical flag of
-	// each; denyRoles fails them, and canGrant (when set) decides them
-	// instead.
+	// checked records the roles of CanGrantToRoles calls; denyRoles fails
+	// them, and canGrant (when set) decides them instead.
 	checked   [][]string
-	critical  []bool
 	denyRoles error
-	canGrant  func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, critical bool) error
+	canGrant  func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, risk string) error
+	// reader answers the catalog's reads (PluginPermissions,
+	// PermissionHolders) from the tables, which the tests fill.
+	reader *authz.Service
 	// grantees (when set) answers PluginGrantees, else nothing is denied.
 	grantees func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string) (core.PluginGrantees, error)
 	// granted records GrantPluginPermission calls as "key=role,role:scope,...".
@@ -76,15 +78,20 @@ func (f *fakePerms) SyncPlugin(_ context.Context, _ pgx.Tx, key string, defs []c
 	f.syncs = append(f.syncs, syncCall{key, defs, roles})
 	return nil
 }
-func (f *fakePerms) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, critical bool) error {
+func (f *fakePerms) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, risk string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checked = append(f.checked, roles)
-	f.critical = append(f.critical, critical)
 	if f.canGrant != nil {
-		return f.canGrant(ctx, tx, actorID, roles, critical)
+		return f.canGrant(ctx, tx, actorID, roles, risk)
 	}
 	return f.denyRoles
+}
+func (f *fakePerms) PluginPermissions(ctx context.Context, q store.Querier, key string) ([]core.PluginPermission, error) {
+	return f.reader.PluginPermissions(ctx, q, key)
+}
+func (f *fakePerms) PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]core.PermissionHolder, error) {
+	return f.reader.PermissionHolders(ctx, q, keys)
 }
 func (f *fakePerms) PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roles []string) (core.PluginGrantees, error) {
 	if f.grantees != nil {
@@ -184,7 +191,7 @@ type env struct {
 	accounts *fakeAccounts
 	authz    *fakeAuthz
 	root     pkgtest.Key
-	admin    int64 // all grant rights, role:define included
+	admin    int64 // plugin:install, all grant rights, role:define and role:read
 	limited  int64 // plugin:install + grant:high only
 }
 
@@ -192,7 +199,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	db := testutil.DB(t)
 	ctx := context.Background()
-	e := &env{db: db, perms: &fakePerms{}, schemas: &fakeSchemas{},
+	e := &env{db: db, perms: &fakePerms{reader: authz.New(authz.Deps{DB: db})}, schemas: &fakeSchemas{},
 		accounts: &fakeAccounts{}, root: pkgtest.NewKey("root-1")}
 	e.rollout = &fakeRollout{db: db}
 	// The built-in roles a consent may name (the authz sync is not run).
@@ -211,8 +218,8 @@ func newEnv(t *testing.T) *env {
 		}
 	}
 	e.authz = &fakeAuthz{perms: map[int64]map[string]bool{
-		e.admin:   {PermGrantHigh: true, PermGrantCritical: true, "role:define": true},
-		e.limited: {PermGrantHigh: true},
+		e.admin:   {"plugin:install": true, PermGrantHigh: true, PermGrantCritical: true, "role:define": true, "role:read": true},
+		e.limited: {"plugin:install": true, PermGrantHigh: true},
 	}}
 	ts, err := pkg.NewTrustStore([]string{e.root.ID + "=" + e.root.PubB64()}, false)
 	if err != nil {

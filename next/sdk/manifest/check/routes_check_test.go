@@ -71,7 +71,8 @@ func TestRouteAccounts(t *testing.T) {
 
 // routes[i].scopeFrom names, in the accounts.from DSL, the id an admin or
 // user route acts on; its permission must declare a scope to check it
-// against, and public/webhook routes carry no caller to check.
+// against, and public/webhook routes carry no caller to check. A route of a
+// scoped permission other than GET must name it.
 func TestRouteScopeFrom(t *testing.T) {
 	good := manifest.AccountAction{ID: "reset", Label: manifest.LocalizedText{"en": "Reset"},
 		Permission: "assets:manage", Route: "POST /assets/reset"}
@@ -89,6 +90,10 @@ func TestRouteScopeFrom(t *testing.T) {
 		m.Routes[3].ScopeFrom = from
 		assert.Empty(t, uiCodes(m), from)
 	}
+	// A GET route (a list, filtered by the plugin) need not name a row.
+	m := scoped()
+	m.Routes[3].Method = "GET"
+	assert.Empty(t, uiCodes(m))
 	cases := []struct {
 		name, from, perm string
 		route            int
@@ -98,6 +103,8 @@ func TestRouteScopeFrom(t *testing.T) {
 		{"unscoped permission", "path:id", "assets:manage", 3, "routes[3].scopeFrom", "unsupported"},
 		{"unknown prefix", "header:x-id", "assets:edit", 3, "routes[3].scopeFrom", "invalid"},
 		{"not a param", "path:asset_id", "assets:edit", 3, "routes[3].scopeFrom", "unknown_param"},
+		{"scoped POST route naming nothing", "", "assets:edit", 3, "routes[3].scopeFrom", "required"},
+		{"unscoped POST route naming nothing", "", "assets:manage", 3, "routes[3].scopeFrom", ""},
 	}
 	for _, tc := range cases {
 		m := scoped()

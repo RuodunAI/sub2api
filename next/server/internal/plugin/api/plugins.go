@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,7 +85,7 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 			}
 		}
 	}
-	pending, err := install.PendingRoleGrants(ctx, a.d.DB.Pool, s.Key, "")
+	pending, err := a.d.Install.PendingRoleGrants(ctx, a.d.DB.Pool, s.Key, "")
 	if err != nil {
 		return err
 	}
@@ -603,12 +604,16 @@ func (a *API) listGrants(c *gin.Context) {
 }
 
 // setGrant narrows or grants again one host permission; body {scope?}
-// (omitted: the scope the manifest requests). It returns the grant.
+// (an empty body or no scope: the scope the manifest requests). It returns
+// the grant. The body is read whatever Content-Length says: a chunked
+// request carries none, and skipping its scope would turn a narrowing into
+// a grant of the whole requested scope.
 func (a *API) setGrant(c *gin.Context) {
 	var in struct {
 		Scope map[string]any `json:"scope"`
 	}
-	if c.Request.ContentLength > 0 && !httpapi.BindJSON(c, &in) {
+	if err := c.ShouldBindJSON(&in); err != nil && !errors.Is(err, io.EOF) {
+		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage(err.Error()))
 		return
 	}
 	g, err := a.d.Install.SetGrant(ctx(c), c.Param("key"), c.Param("permission"), in.Scope, actor(c))
