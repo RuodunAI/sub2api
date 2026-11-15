@@ -5,7 +5,8 @@ export default {
     api_key: 'API Key',
     account: '账号',
     model: '模型',
-    proxy: '代理'
+    proxy: '代理',
+    pluginScope: '插件数据'
   },
   contains: '名称包含 “{text}”',
   containsHint: '模糊匹配',
@@ -18,6 +19,7 @@ export default {
   moreUnlisted: '还有更多未列出，输入以缩小范围',
   none: '没有匹配的{name}',
   failed: '列表加载失败',
+  failedTypeValue: '候选暂不可用，可直接输入值',
   typeId: '{name} ID',
   typeIdOrName: '{name} ID 或名称',
   typeFor: '{label}（{what}）',

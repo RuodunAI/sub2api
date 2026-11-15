@@ -17,6 +17,7 @@ vi.mock('@/stores/auth', () => ({
     get me() { return auth.me },
     get permissionsEpoch() { return 0 },
     has: (p: string | string[]) => !auth.perms || [p].flat().some(k => auth.perms!.includes(k)),
+    hasDynamic: (k: string) => !auth.perms || auth.perms.includes(k),
     refreshPermissions: async () => undefined
   })
 }))
@@ -104,14 +105,14 @@ describe('RolesView permissions (T77)', () => {
   ]
 
   let meID = 100
-  async function open(id: number, { superuser = false, perms = ['role:define'], manages = [] as string[], list = roles as object[] } = {}) {
+  async function open(id: number, { superuser = false, perms = ['role:define'], manages = [] as string[], list = roles as object[], stubs = {} } = {}) {
     // A new identity each time: the managed-roles list is cached per user.
     auth.me = { id: ++meID, roles: [], superuser }
     mocks.get.mockImplementation(async (path: string) =>
       path === '/me/assignable-roles' ? manages.map(key => ({ key, name: key, builtin: true, grantable: true, missing: [], missing_assignable: [], missing_assign_custom: false })) : [])
     auth.perms = perms
     lookups.roles = list
-    const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true } } })
+    const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true, ...stubs } } })
     await flushPromises()
     const target = (list as typeof roles).find(r => r.id === id)!
     await w.findAll('button').find(b => b.text().includes(target.key))!.trigger('click')
@@ -175,6 +176,38 @@ describe('RolesView permissions (T77)', () => {
     await w.get('[data-testid="role-save"]').trigger('click')
     await flushPromises()
     expect(w.get('[data-testid="role-save-missing"]').text()).toContain('admin')
+  })
+
+  it('names the role a refused save was refused for', async () => {
+    mocks.put.mockRejectedValueOnce(new ApiError(403, { code: 'permission_denied', message: 'no', details: { missing: ['plugin.guard:bypass'], role: 'lead' } }))
+    const w = await open(2)
+    await w.get('[data-testid="role-assignable"] input[data-role="admin"]').setValue(true)
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    const missing = i18n.global.t('roles.missingPermissions', { keys: 'plugin.guard:bypass' })
+    expect(w.get('[data-testid="role-save-missing"]').text()).toBe(i18n.global.t('roles.missingFor', { role: 'lead', text: missing }))
+  })
+
+  describe('plugin permissions', () => {
+    const PermissionTree = { name: 'PermissionTree', props: ['granted', 'modules', 'allGranted', 'readOnly', 'scopeLimit', 'roleKey', 'grantable'], emits: ['update:granted'], template: '<i />' }
+
+    it('passes the role key and what the editor may grant to the tree', async () => {
+      const w = await open(2, { perms: ['role:define', 'plugin.guard:rules:read'], stubs: { PermissionTree } })
+      const tree = w.getComponent(PermissionTree)
+      expect(tree.props('roleKey')).toBe('lead')
+      const grantable = tree.props('grantable') as (k: string) => boolean
+      expect([grantable('plugin.guard:rules:read'), grantable('plugin.guard:bypass')]).toEqual([true, false])
+    })
+
+    it('saves plugin scoped keys with the rest through PUT /roles/:id/permissions', async () => {
+      mocks.put.mockClear()
+      const w = await open(2, { stubs: { PermissionTree } })
+      w.getComponent(PermissionTree).vm.$emit('update:granted', new Set(['user:read', 'plugin.guard:rules:read', 'plugin.guard:rules:manage:own']))
+      await flushPromises()
+      await w.get('[data-testid="role-save"]').trigger('click')
+      await flushPromises()
+      expect(mocks.put).toHaveBeenCalledWith('/roles/2/permissions', { permission_keys: ['plugin.guard:rules:manage:own', 'plugin.guard:rules:read', 'user:read'] })
+    })
   })
 
   it('without role:define: no create button and no editing', async () => {

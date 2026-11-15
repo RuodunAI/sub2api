@@ -18,13 +18,15 @@
 // (those a form holds already). A caller who may not look the kind up (by
 // permission, or the core answered 403 / 404) gets a text box: digits are an
 // id, other text the name search, or no pick at all (it clears the id) where
-// `text` is not bound. Also a host component for plugins
-// (HOST_COMPONENT_NAMES). What a kind is comes from entity/entities.ts.
+// `text` is not bound. A plugin's scope values (an opaque kind) are picked by
+// name or taken as typed (a valid value) when the plugin cannot list them now.
+// Also a host component for plugins (HOST_COMPONENT_NAMES). What a kind is
+// comes from entity/entities.ts.
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { FIELD_KEY, SInput, SSelect, type SelectOption } from '@sub2api/ui'
 import { useAuthStore } from '@/stores/auth'
-import { ENTITIES, isEntityId, mayLookUp, type EntityKind } from './entity/entities'
+import { entityOf, isEntityId, isScopeValue, mayLookUp, type EntityKind } from './entity/entities'
 import { lookupEntities, lookupUnavailable, useEntityNames, type EntityItem, type LookupResult } from './entity/lookup'
 
 const props = withDefaults(
@@ -60,7 +62,7 @@ const MAX_PAGE = 50
 const ID = '#'
 const TEXT = '~'
 
-const entity = computed(() => ENTITIES[props.kind])
+const entity = computed(() => entityOf(props.kind))
 const label = computed(() => props.placeholder ?? t(entity.value.label))
 // The label of a form item around (SField, SSettingRow) names the picker: an
 // aria-label would put the placeholder ("No proxy", "Add Group") in its place.
@@ -140,6 +142,7 @@ function row(item: EntityItem): SelectOption {
 function typedIsId(v: string): boolean {
   if (excluded.value.has(v)) return false
   if (props.extra.some((item) => String(item.id) === v)) return true
+  if (entity.value.opaqueIds) return isScopeValue(v)
   return entity.value.numeric ? isEntityId(v) : !searchesText.value
 }
 // The one place typed text is read: an id is the entity that has it, else the
@@ -165,7 +168,7 @@ const unlisted = computed(() => more.value && !listed.value.length)
 const footer = computed(() => (more.value && !loading.value && !unlisted.value ? t('entity.more', { n: listed.value.length }) : undefined))
 /** The line of an empty list; it names the entity, not the field the placeholder may name. */
 const empty = computed(() => {
-  if (failed.value) return t('entity.failed')
+  if (failed.value) return t(entity.value.opaqueIds ? 'entity.failedTypeValue' : 'entity.failed')
   return unlisted.value ? t('entity.moreUnlisted') : t('entity.none', { name: t(entity.value.label) })
 })
 /** What a scope parameter did to the list ("Only keys of a@x"), for the first one set. */
@@ -187,7 +190,8 @@ const selected = computed<SelectOption | undefined>(() => {
   if (props.text && !props.id) return { value: value.value, label: t('entity.contains', { text: props.text }) }
   if (!props.id) return undefined
   const name = names.name(props.kind, props.id)
-  return { value: value.value, label: name ?? `#${props.id}`, hint: name && entity.value.numeric ? `#${props.id}` : undefined }
+  const unnamed = entity.value.opaqueIds ? props.id : `#${props.id}`
+  return { value: value.value, label: name ?? unnamed, hint: name && entity.value.numeric ? `#${props.id}` : undefined }
 })
 function pick(v: SelectOption['value']) {
   const picked = typeof v === 'string' ? v : ''

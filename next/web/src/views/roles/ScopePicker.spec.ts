@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { i18n } from '@/i18n'
+import type { PluginScopeDecl } from '@/api/types'
 import { parsePermission, patternKey, type Scope } from '@/authz/implies'
 import { offerOf } from '@/authz/scopeChoice'
 import ScopePicker from './ScopePicker.vue'
@@ -80,5 +81,54 @@ describe('ScopePicker', () => {
     expect(w.find('[data-testid="scope-ids"]').exists()).toBe(false)
     expect(w.find('[data-testid="scope-pairs"]').exists()).toBe(false)
     expect(w.findAllComponents(EntityPicker).map((p) => p.props('kind'))).toEqual(['group'])
+  })
+})
+
+describe('ScopePicker plugin actions', () => {
+  const RULES: PluginScopeDecl = { resource: 'ruleset', own: true }
+  const CHANNELS: PluginScopeDecl = { resource: 'value', values: [{ key: 'webhook', label: { en: 'Webhook', zh: 'Webhook' } }, { key: 'email', label: { en: 'Email', zh: '邮件' } }] }
+  function renderPlugin(local: string, scope: PluginScopeDecl, held: string[], limit: string[]) {
+    const action = `plugin.guard:${local}`
+    return mount(ScopePicker, {
+      props: { action, resource: '', plugin: { key: 'guard', local, scope }, scopes: held.map((k) => sc(action, k)), offer: offerOf(limit.map((k) => sc(action, k)), action) },
+      global: { plugins: [i18n], stubs: { EntityPicker } }
+    })
+  }
+
+  it('toggles enum values, offered as far as the editor holds them', async () => {
+    i18n.global.locale.value = 'en'
+    const w = renderPlugin('alerts:mute', CHANNELS, [], [''])
+    expect(w.get('[data-testid="scope-refs"]').text()).toContain(i18n.global.t('roles.scope.values'))
+    expect(w.findAll('[data-testid="scope-refs"] [aria-pressed]').map((c) => c.text())).toEqual(['Webhook', 'Email'])
+    expect(w.findAllComponents(EntityPicker)).toHaveLength(0)
+    // Own only where the manifest allows it.
+    expect(w.find('[data-testid="scope-own"]').exists()).toBe(false)
+    await w.findAll('[data-testid="scope-refs"] [aria-pressed]')[1].trigger('click')
+    expect(emitted(w, 'plugin.guard:alerts:mute')).toEqual(['plugin.guard:alerts:mute:value/email'])
+
+    const limited = renderPlugin('alerts:mute', CHANNELS, [], ['value/webhook'])
+    expect(limited.find('[data-testid="scope-all"]').exists()).toBe(false)
+    expect(limited.findAll('[data-testid="scope-refs"] [aria-pressed]').map((c) => c.text())).toEqual(['Webhook'])
+  })
+
+  it('picks plugin resource values through the plugin scope kind and shows the picked ones', async () => {
+    const w = renderPlugin('rules:manage', RULES, ['own', 'ruleset/3'], [''])
+    expect(w.get('[data-testid="scope-refs"]').text()).toContain(i18n.global.t('roles.scope.items'))
+    expect(w.find('[data-testid="scope-own"]').exists()).toBe(true)
+    const picker = w.getComponent(EntityPicker)
+    expect(picker.props('kind')).toBe('pscope:guard/rules:manage')
+    expect(picker.props('exclude')).toEqual(['3'])
+    picker.vm.$emit('update:id', '7')
+    expect(emitted(w, 'plugin.guard:rules:manage')).toEqual(['plugin.guard:rules:manage:own', 'plugin.guard:rules:manage:ruleset/3', 'plugin.guard:rules:manage:ruleset/7'])
+    // A restricted editor toggles the values it holds.
+    const limited = renderPlugin('rules:manage', RULES, [], ['ruleset/3'])
+    expect(limited.findAllComponents(EntityPicker)).toHaveLength(0)
+    expect(limited.findAll('[data-testid="scope-refs"] [aria-pressed]')).toHaveLength(1)
+  })
+
+  it('shows none of the group, account or proxy rows', () => {
+    const w = renderPlugin('rules:manage', RULES, [], [''])
+    for (const id of ['scope-groups', 'scope-ids', 'scope-pairs']) expect(w.find(`[data-testid="${id}"]`).exists()).toBe(false)
+    expect(w.findAllComponents(EntityPicker).map((p) => p.props('kind'))).toEqual(['pscope:guard/rules:manage'])
   })
 })

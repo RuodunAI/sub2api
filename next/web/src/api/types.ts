@@ -128,8 +128,6 @@ export interface PermissionItem {
   description?: LText
   /** Core keys: super-only → critical, sensitive → sensitive, the rest low. */
   risk: PermRisk
-  /** @deprecated The catalog sends risk; kept until the editors that still read it move to risk. */
-  sensitive?: boolean
   /** Using it needs a step-up verification each time (CONTRACTS §80.2); shown only. */
   step_up?: boolean
   /**
