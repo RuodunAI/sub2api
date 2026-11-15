@@ -219,6 +219,36 @@ func TestPruneOrphansAndRelease(t *testing.T) {
 	}
 }
 
+// Release keeps a package that a caller of Acquire still reads.
+func TestReleaseKeepsAcquiredPackage(t *testing.T) {
+	dir := t.TempDir()
+	data := registrytest.Package(t, registrytest.Manifest("demo", "1.0.0"), []byte("bin"), nil)
+	p, err := LoadPackage(dir, data, "", "unsigned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewPackages(nil, dir)
+	s.Adopt(p)
+	got, done, err := s.Acquire(context.Background(), "demo", "1.0.0")
+	if err != nil || got != p {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := s.Release("demo", "1.0.0"); !errors.Is(err, ErrPackageInUse) {
+		t.Fatalf("release of a held package: %v", err)
+	}
+	if _, err := p.ReadFile("manifest.json"); err != nil || !exists(p.Dir) {
+		t.Fatalf("held package unreadable after Release: %v", err)
+	}
+	done()
+	done() // idempotent
+	if err := s.Release("demo", "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ReadFile("manifest.json"); err == nil || exists(p.Dir) || len(s.Cached()) != 0 {
+		t.Fatal("package kept after its hold was done")
+	}
+}
+
 func TestVersionOfDir(t *testing.T) {
 	for name, want := range map[string]string{
 		"1.0.0-0123abcd":      "1.0.0",

@@ -467,7 +467,10 @@ func (c *Controller) ensure(ctx context.Context, s *slot, version string, epoch 
 	}
 	s.mu.Unlock()
 
-	pkg, err := c.o.Packages.Open(ctx, s.key, version)
+	pkg, done, err := c.o.Packages.Acquire(ctx, s.key, version)
+	if err == nil {
+		defer done() // until the entry below keeps the package
+	}
 	var inst Instance
 	if err == nil {
 		err = c.registerRuntime(ctx, s.key, pVersionEpoch{version, epoch})

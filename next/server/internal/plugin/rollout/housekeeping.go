@@ -2,10 +2,12 @@ package rollout
 
 import (
 	"context"
+	"errors"
 	"sort"
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -70,7 +72,11 @@ func (c *Controller) sweepPackages() {
 		if c.packageInUse(ref.Key, ref.Version) {
 			continue
 		}
-		if err := c.o.Packages.Release(ref.Key, ref.Version); err != nil {
+		err := c.o.Packages.Release(ref.Key, ref.Version)
+		if errors.Is(err, registry.ErrPackageInUse) {
+			continue // read right now (a migration); the next sweep retries
+		}
+		if err != nil {
 			c.log.Warn("remove unused plugin package failed", "plugin", ref.Key, "version", ref.Version, "err", err)
 			continue
 		}

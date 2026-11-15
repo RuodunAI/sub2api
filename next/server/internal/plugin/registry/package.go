@@ -45,6 +45,7 @@ type Package struct {
 
 	file *os.File
 	zr   *zip.Reader
+	refs int // Acquire holds not yet done; guarded by Packages.mu
 }
 
 // Hash8 is the short package hash used in directory names and asset URLs.
@@ -234,13 +235,31 @@ func NewPackages(db *store.DB, dataDir string, opts ...PackagesOption) *Packages
 func (s *Packages) DataDir() string { return s.dataDir }
 
 // Open returns the verified package of key@version, downloading it from the
-// market or the primary when it is not cached on disk yet.
+// market or the primary when it is not cached on disk yet. The package is
+// not held: Release may close it at any time, so a caller that reads its
+// files outside a running instance uses Acquire.
 func (s *Packages) Open(ctx context.Context, key, version string) (*Package, error) {
+	p, done, err := s.Acquire(ctx, key, version)
+	if err != nil {
+		return nil, err
+	}
+	done()
+	return p, nil
+}
+
+// ErrPackageInUse is returned by Release while an Acquire of the package
+// is not done yet.
+var ErrPackageInUse = errors.New("plugin package in use")
+
+// Acquire is Open that holds the package until done is called: Release
+// leaves a held package (file handle and directory) alone.
+func (s *Packages) Acquire(ctx context.Context, key, version string) (p *Package, done func(), err error) {
 	id := key + "@" + version
 	s.mu.Lock()
 	if p, ok := s.cache[id]; ok {
+		p.refs++
 		s.mu.Unlock()
-		return p, nil
+		return p, s.doneFunc(p), nil
 	}
 	lk, ok := s.fetch[id]
 	if !ok {
@@ -253,19 +272,31 @@ func (s *Packages) Open(ctx context.Context, key, version string) (*Package, err
 	defer lk.Unlock()
 	s.mu.Lock()
 	if p, ok := s.cache[id]; ok {
+		p.refs++
 		s.mu.Unlock()
-		return p, nil
+		return p, s.doneFunc(p), nil
 	}
 	s.mu.Unlock()
 
-	p, err := s.load(ctx, key, version)
-	if err != nil {
-		return nil, err
+	if p, err = s.load(ctx, key, version); err != nil {
+		return nil, nil, err
 	}
 	s.mu.Lock()
 	s.cache[id] = p
+	p.refs++
 	s.mu.Unlock()
-	return p, nil
+	return p, s.doneFunc(p), nil
+}
+
+func (s *Packages) doneFunc(p *Package) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			p.refs--
+			s.mu.Unlock()
+		})
+	}
 }
 
 // versionRecord reads what loading key@version needs: its manifest, package
@@ -484,7 +515,8 @@ func (s *Packages) Cached() []PackageRef {
 // Release closes the cached package key@version and deletes its directory
 // (package file and extracted binary). Call it only once no instance of
 // the version runs anymore. Without a cached package every
-// "<version>-<hash8>" directory of the version is removed.
+// "<version>-<hash8>" directory of the version is removed. A package still
+// held by Acquire is kept and ErrPackageInUse returned.
 func (s *Packages) Release(key, version string) error {
 	id := key + "@" + version
 	s.mu.Lock()
@@ -499,6 +531,10 @@ func (s *Packages) Release(key, version string) error {
 
 	s.mu.Lock()
 	p := s.cache[id]
+	if p != nil && p.refs > 0 {
+		s.mu.Unlock()
+		return ErrPackageInUse
+	}
 	delete(s.cache, id)
 	s.mu.Unlock()
 
