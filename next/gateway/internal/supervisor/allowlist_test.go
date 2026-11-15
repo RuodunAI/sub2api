@@ -47,9 +47,9 @@ func TestInheritedEnvCoversCoreConfiguration(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			// The dev command, test helpers and fixtures are not run by a
-			// managed core.
-			case "devenv", "testdata", "registrytest", "node_modules", "web":
+			// The dev command, the model generator, test helpers and
+			// fixtures are not run by a managed core.
+			case "devenv", "gen-models", "testdata", "registrytest", "node_modules", "web":
 				return filepath.SkipDir
 			}
 			return nil
