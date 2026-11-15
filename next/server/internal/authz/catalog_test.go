@@ -12,7 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -431,17 +435,71 @@ func TestSyncCoreWritesDescriptions(t *testing.T) {
 	if !strings.Contains(upd.Description.Get("en"), "scope") || upd.Description.Get("zh") == "" {
 		t.Fatalf("account:update description = %v", upd.Description)
 	}
-	if !slices.Equal(upd.Requires, []string{"account:read"}) || read.Requires != nil || upd.ScopeType != "account" {
+	if !slices.Equal(upd.Requires, []string{"account:read"}) || len(read.Requires) != 0 || upd.ScopeType != "account" {
 		t.Fatalf("account:update = %+v, account:read requires %v", upd, read.Requires)
 	}
 	if usage := items["usage:all:read"].Description.Get("en"); !strings.Contains(usage, "email") {
 		t.Fatalf("usage:all:read description = %q", usage)
 	}
-	if del := items["user:delete"]; !del.StepUp || !del.Sensitive || del.ScopeType != "" {
+	if del := items["user:delete"]; !del.StepUp || del.Risk != manifest.RiskSensitive || del.ScopeType != "" {
 		t.Fatalf("user:delete = %+v", del)
 	}
 	raw, err := json.Marshal(read)
 	if err != nil || strings.Contains(string(raw), "requires") {
 		t.Fatalf("requires is omitted when empty: %s, %v", raw, err)
 	}
+}
+
+// GET /permissions lists a plugin's catalog metadata as stored: groups in
+// their order, each permission's group, scope (resource without the
+// "plugin:" prefix), requires and defaults expanded to full keys; a core
+// permission's risk and requires come from its columns.
+func TestListPermissionsPluginMeta(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	flows, actions := lt("Flows", "流程"), lt("Actions", "处置")
+	require.NoError(t, syncer(t, s, "mod")(
+		core.PermissionDef{Key: "exempt", Risk: manifest.RiskCritical, Group: "action", GroupLabel: actions, GroupSort: 30},
+		core.PermissionDef{Key: "flow:manage", ScopeType: "plugin:flow", Scope: &manifest.PermissionScope{Resource: "flow", Own: true, Options: "/scopes/flow"},
+			Risk: manifest.RiskSensitive, Group: "flow", GroupLabel: flows, GroupSort: 10, Sort: 2, Requires: []string{"plugin.mod:flow:read"},
+			Defaults: map[string][]string{RoleAdmin: {""}, RoleOperator: {"own", "flow/3"}}},
+		core.PermissionDef{Key: "flow:read", Group: "flow", GroupLabel: flows, GroupSort: 10, Sort: 1}))
+	mods, err := s.ListPermissions(context.Background())
+	require.NoError(t, err)
+	items := map[string]PermissionItem{}
+	var mod *PermissionModule
+	for _, m := range mods {
+		if m.Module == "plugin.mod" {
+			mod = m
+		}
+		for _, p := range m.Permissions {
+			items[p.Key] = p
+		}
+	}
+	require.NotNil(t, mod)
+	assert.Equal(t, []PermissionGroup{{Key: "flow", Label: flows, Sort: 10}, {Key: "action", Label: actions, Sort: 30}}, mod.Groups)
+	keys := make([]string, 0, len(mod.Permissions))
+	for _, p := range mod.Permissions {
+		keys = append(keys, p.Key)
+	}
+	assert.Equal(t, []string{"plugin.mod:flow:read", "plugin.mod:flow:manage", "plugin.mod:exempt"}, keys)
+
+	manage := items["plugin.mod:flow:manage"]
+	assert.Equal(t, manifest.RiskSensitive, manage.Risk)
+	assert.Equal(t, "plugin:flow", manage.ScopeType)
+	assert.Equal(t, &manifest.PermissionScope{Resource: "flow", Own: true, Options: "/scopes/flow"}, manage.Scope)
+	assert.Equal(t, "flow", manage.Group)
+	assert.Equal(t, []string{"plugin.mod:flow:read"}, manage.Requires)
+	assert.Equal(t, map[string][]string{RoleAdmin: {"plugin.mod:flow:manage"},
+		RoleOperator: {"plugin.mod:flow:manage:own", "plugin.mod:flow:manage:flow/3"}}, manage.Defaults)
+	exempt := items["plugin.mod:exempt"]
+	assert.Equal(t, manifest.RiskCritical, exempt.Risk)
+	assert.Nil(t, exempt.Scope)
+	assert.Nil(t, exempt.Defaults)
+
+	adjust := items["balance:adjust:any"]
+	assert.Equal(t, manifest.RiskCritical, adjust.Risk)
+	assert.Equal(t, []string{"balance:adjust"}, adjust.Requires)
+	assert.Nil(t, items["account:read"].Scope, "a core scope type carries no plugin scope")
 }

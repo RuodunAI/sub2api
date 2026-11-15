@@ -24,10 +24,11 @@ type grant struct {
 }
 
 // resolvePermissions canonicalizes keys, without duplicates or keys another
-// implies (canonicalKeys), and resolves them to grants, dropping removed
-// permissions. A key that does not parse, or names a plugin permission with
-// a scope it does not take (pluginScope.fits), is invalid; one naming no
-// permission is unknown.
+// implies (canonicalKeys), and resolves them to grants: live lists the keys
+// of permissions not removed, grants all of them, so that a write keeps the
+// removed ones listed (writeGrants never adds one). A key that does not
+// parse, or names a plugin permission with a scope it does not take
+// (pluginScope.fits), is invalid; one naming no permission is unknown.
 func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string, []grant, error) {
 	var invalid, unknown []string
 	pats := make([]perm.Pattern, 0, len(keys))
@@ -70,7 +71,7 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 	if err := rows.Err(); err != nil {
 		return nil, nil, err
 	}
-	kept := make([]string, 0, len(pats))
+	live := make([]string, 0, len(pats))
 	grants := make([]grant, 0, len(pats))
 	for _, p := range pats {
 		r, ok := found[string(p.Action)]
@@ -79,8 +80,10 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 			unknown = append(unknown, string(p.Key()))
 		case isPluginAction(p.Action) && !r.scope.fits(p):
 			invalid = append(invalid, string(p.Key()))
-		case !r.removed:
-			kept = append(kept, string(p.Key()))
+		default:
+			if !r.removed {
+				live = append(live, string(p.Key()))
+			}
 			grants = append(grants, grant{key: string(p.Key()), id: r.id, scope: p.Suffix()})
 		}
 	}
@@ -90,7 +93,7 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 	if len(unknown) > 0 {
 		return nil, nil, core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "unknown", Message: "unknown permissions: " + strings.Join(unknown, ", ")})
 	}
-	return kept, grants, nil
+	return live, grants, nil
 }
 
 // invalidKeys is the refusal of keys that do not parse or name a scope
@@ -143,10 +146,23 @@ func (ps pluginScope) fits(p perm.Pattern) bool {
 // scopes the catalog checks (pluginScope) rather than perm.
 func isPluginAction(a perm.Key) bool { return strings.HasPrefix(string(a), perm.PluginPrefix) }
 
-// writeGrants makes grants the role's live grants, its core ones only when
-// coreOnly (a reset leaves plugin permissions alone). Grants of removed
-// permissions stay: they grant nothing, and revive with the key.
-func writeGrants(ctx context.Context, tx pgx.Tx, roleID int64, grants []grant, coreOnly bool) error {
+// grantPart is the part of a role's grants a write replaces: all of them,
+// the core ones (a reset), or one plugin's.
+type grantPart struct {
+	coreOnly bool
+	plugin   string // a plugin key; "" for none
+}
+
+// grantsInPart is the SQL condition on p, a granted permission, of the
+// grants a write of part $2 (coreOnly) and $3 (plugin) replaces. A reset
+// keeps the grants of removed permissions, to come back with the key; any
+// other write drops them unless listed, so an editor can untick them.
+const grantsInPart = `(NOT $2::bool OR (p.source = 'core' AND p.status <> 'removed')) AND ($3::text = '' OR p.plugin_key = $3::text)`
+
+// writeGrants makes grants the role's grants within part. It never adds a
+// grant of a removed permission: listing one keeps it when the role holds
+// it, and is ignored when not (it can only be unticked).
+func writeGrants(ctx context.Context, tx pgx.Tx, roleID int64, grants []grant, part grantPart) error {
 	// Never nil: a NULL array would make "<> ALL" delete nothing.
 	ids, scopedIDs, scopes := []int64{}, []int64{}, []string{}
 	for _, g := range grants {
@@ -156,24 +172,24 @@ func writeGrants(ctx context.Context, tx pgx.Tx, roleID int64, grants []grant, c
 			scopedIDs, scopes = append(scopedIDs, g.id), append(scopes, g.scope)
 		}
 	}
-	source := ""
-	if coreOnly {
-		source = ` AND p.source = 'core'`
-	}
 	if _, err := tx.Exec(ctx, `DELETE FROM role_permissions rp USING permissions p
-WHERE rp.role_id = $1 AND p.id = rp.permission_id AND p.status <> 'removed'`+source+` AND rp.permission_id <> ALL($2)`, roleID, ids); err != nil {
+WHERE rp.role_id = $1 AND p.id = rp.permission_id AND `+grantsInPart+` AND rp.permission_id <> ALL($4)`,
+		roleID, part.coreOnly, part.plugin, ids); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT $1, unnest($2::bigint[]) ON CONFLICT DO NOTHING`, roleID, ids); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id)
+SELECT $1, id FROM permissions WHERE id = ANY($2) AND status <> 'removed' ON CONFLICT DO NOTHING`, roleID, ids); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM role_permission_scopes rs USING permissions p
-WHERE rs.role_id = $1 AND p.id = rs.permission_id AND p.status <> 'removed'
-  AND (rs.permission_id, rs.scope) NOT IN (SELECT * FROM unnest($2::bigint[], $3::text[]))`, roleID, scopedIDs, scopes); err != nil {
+WHERE rs.role_id = $1 AND p.id = rs.permission_id AND `+grantsInPart+`
+  AND (rs.permission_id, rs.scope) NOT IN (SELECT * FROM unnest($4::bigint[], $5::text[]))`,
+		roleID, part.coreOnly, part.plugin, scopedIDs, scopes); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-SELECT $1, * FROM unnest($2::bigint[], $3::text[]) ON CONFLICT DO NOTHING`, roleID, scopedIDs, scopes)
+SELECT $1, g.id, g.scope FROM unnest($2::bigint[], $3::text[]) g (id, scope)
+JOIN permissions p ON p.id = g.id AND p.status <> 'removed' ON CONFLICT DO NOTHING`, roleID, scopedIDs, scopes)
 	return err
 }
 

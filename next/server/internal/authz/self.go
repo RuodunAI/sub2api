@@ -44,7 +44,7 @@ func SelfPermissionModule() *PermissionModule {
 	m := &PermissionModule{Module: selfModule.key, Label: selfModule.label, Source: "core", Status: "active", Permissions: []PermissionItem{}}
 	for _, p := range selfModule.perms {
 		m.Permissions = append(m.Permissions, PermissionItem{Key: string(p.key), Label: lt(p.en, p.zh), Description: p.description(),
-			Requires: p.requiredKeys(), Sensitive: p.sensitive, StepUp: p.stepUp, Status: "active"})
+			Requires: p.requiredKeys(), Risk: p.risk(), StepUp: p.stepUp, Status: "active"})
 	}
 	return m
 }

@@ -2,6 +2,8 @@ package authz
 
 import (
 	"context"
+	"errors"
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -235,7 +238,7 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 		if err != nil {
 			return err
 		}
-		if err := writeGrants(ctx, tx, id, grants, false); err != nil {
+		if err := writeGrants(ctx, tx, id, grants, grantPart{}); err != nil {
 			return err
 		}
 		if err := setRoleAssignable(ctx, tx, id, assign, in.AssignCustom); err != nil {
@@ -369,7 +372,7 @@ func (s *Service) resetDefaults(ctx context.Context, tx pgx.Tx, actorID int64, r
 	if _, err := tx.Exec(ctx, `UPDATE roles SET defaults_rev = $2 WHERE id = $1`, r.ID, def.rev); err != nil {
 		return err
 	}
-	if err := writeGrants(ctx, tx, r.ID, grants, true); err != nil {
+	if err := writeGrants(ctx, tx, r.ID, grants, grantPart{coreOnly: true}); err != nil {
 		return err
 	}
 	after, err := s.getRole(ctx, tx, r.ID)
@@ -386,36 +389,44 @@ func roleDetail(r *Role) map[string]any {
 }
 
 // SetRolePermissions replaces the permissions of a role actorID may edit
-// (editableRole). The actor must hold the permissions being added (CONTRACTS
-// §4.1, SEC-H2); those the role keeps are within it already. Removed
-// permissions in keys are ignored and their grant rows kept, so a role saves
-// back as listed (P2).
+// (editableRole), as setRolePart does.
 func (s *Service) SetRolePermissions(ctx context.Context, actorID, id int64, keys []string) (*Role, error) {
 	err := s.mutate(ctx, func(tx pgx.Tx) error {
 		r, err := s.editableRole(ctx, tx, actorID, id)
 		if err != nil {
 			return err
 		}
-		live, grants, err := resolvePermissions(ctx, tx, keys)
-		if err != nil {
-			return err
-		}
-		added := notImplied(live, r.PermissionKeys)
-		if err := s.covers(ctx, tx, actorID, core.PermissionSetOf(added...), cannotGrant(ctx)); err != nil {
-			return err
-		}
-		if err := writeGrants(ctx, tx, id, grants, false); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE roles SET updated_at = now() WHERE id = $1`, id); err != nil {
-			return err
-		}
-		return s.audit(ctx, tx, actorID, "role.permissions", "role", id, map[string]any{"permission_keys": live, "added": added})
+		return s.setRolePart(ctx, tx, actorID, r, keys, grantPart{}, map[string]any{})
 	})
 	if err != nil {
 		return nil, err
 	}
 	return s.GetRole(ctx, id)
+}
+
+// setRolePart makes keys the grants of r (locked by editableRole) within
+// part. actorID must hold what keys add beyond what r grants (CONTRACTS
+// §4.1, SEC-H2); what r keeps is within it already. A removed permission r
+// holds stays when listed, so a role saves back as listed (P2), and goes
+// when not; one it does not hold is ignored (writeGrants). Audited as
+// role.permissions with detail, to which it adds the keys.
+func (s *Service) setRolePart(ctx context.Context, tx pgx.Tx, actorID int64, r *Role, keys []string, part grantPart, detail map[string]any) error {
+	live, grants, err := resolvePermissions(ctx, tx, keys)
+	if err != nil {
+		return err
+	}
+	added := notImplied(live, r.PermissionKeys)
+	if err := s.covers(ctx, tx, actorID, core.PermissionSetOf(added...), cannotGrant(ctx)); err != nil {
+		return err
+	}
+	if err := writeGrants(ctx, tx, r.ID, grants, part); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE roles SET updated_at = now() WHERE id = $1`, r.ID); err != nil {
+		return err
+	}
+	detail["permission_keys"], detail["added"] = live, added
+	return s.audit(ctx, tx, actorID, "role.permissions", "role", r.ID, detail)
 }
 
 // AssignableInput is the body of PUT /roles/:id/assignable.
@@ -738,36 +749,54 @@ type PermissionItem struct {
 	Key         string             `json:"key"`
 	Label       core.LocalizedText `json:"label"`
 	Description core.LocalizedText `json:"description"`
-	Sensitive   bool               `json:"sensitive"`
+	Risk        string             `json:"risk"` // manifest.RiskLow | RiskSensitive | RiskCritical
 	// StepUp: using it may need a step-up proof (catalog stepUp).
 	StepUp bool `json:"step_up"`
 	// Requires: soft dependencies, keys it is of little use without (catalog
-	// requires); editor hints only, never part of authorization. Core
-	// permissions only.
+	// requires, manifest requires); editor hints only, never part of
+	// authorization.
 	Requires []string `json:"requires,omitempty"`
 	// ScopeType: the key takes a scope over this resource ("account",
-	// "proxy"; CONTRACTS §21), "" for none.
+	// "proxy"; CONTRACTS §21; "plugin:<resource>"), "" for none.
 	ScopeType string `json:"scope_type"`
-	Status    string `json:"status"`
+	// Scope: a plugin permission's scope as declared, its resource the
+	// ResourceName() ("value" for an enum); plugin scoped keys only.
+	Scope *manifest.PermissionScope `json:"scope,omitempty"`
+	Group string                    `json:"group,omitempty"` // a plugin permission's group key
+	// Defaults: the plugin's suggestion as full canonical keys per built-in
+	// role, comparable with Role.permission_keys as is (the console restores
+	// it through the usual writes).
+	Defaults map[string][]string `json:"defaults,omitempty"`
+	Status   string              `json:"status"`
 }
 
 // PermissionModule groups permissions by module.
 type PermissionModule struct {
-	Module      string             `json:"module"`
-	Label       core.LocalizedText `json:"label"`
-	Source      string             `json:"source"`
-	PluginKey   *string            `json:"plugin_key"`
-	Status      string             `json:"status"`
-	Permissions []PermissionItem   `json:"permissions"`
+	Module    string             `json:"module"`
+	Label     core.LocalizedText `json:"label"`
+	Source    string             `json:"source"`
+	PluginKey *string            `json:"plugin_key"`
+	Status    string             `json:"status"`
+	// Groups: a plugin module's permission groups, by their sort.
+	Groups      []PermissionGroup `json:"groups,omitempty"`
+	Permissions []PermissionItem  `json:"permissions"`
+}
+
+// PermissionGroup is a plugin's permission group (manifest permissionGroups[]).
+type PermissionGroup struct {
+	Key   string             `json:"key"`
+	Label core.LocalizedText `json:"label"`
+	Sort  int                `json:"sort"`
 }
 
 // ListPermissions returns the catalog grouped by module: core modules in
-// catalog order, then plugin modules by plugin key.
+// catalog order, then plugin modules by plugin key, each plugin's by group.
 func (s *Service) ListPermissions(ctx context.Context) ([]*PermissionModule, error) {
 	rows, err := s.db.Pool.Query(ctx, `
-SELECT p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.sensitive, p.status, p.scope_type, pl.name
+SELECT p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.risk, p.requires, p.status, p.scope_type, p.scope,
+    p.group_key, p.group_label, p.group_sort, p.defaults, pl.name
 FROM permissions p LEFT JOIN plugins pl ON pl.key = p.plugin_key
-ORDER BY p.source, p.module, p.sort, p.key`)
+ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`)
 	if err != nil {
 		return nil, err
 	}
@@ -778,15 +807,36 @@ ORDER BY p.source, p.module, p.sort, p.key`)
 		var it PermissionItem
 		var module, source string
 		var pluginKey *string
+		var scope manifest.PermissionScope
+		var group PermissionGroup
+		var defaults map[string][]string
 		var pluginName core.LocalizedText
-		if err := rows.Scan(&it.Key, &module, &it.Label, &it.Description, &source, &pluginKey, &it.Sensitive, &it.Status, &it.ScopeType, &pluginName); err != nil {
+		if err := rows.Scan(&it.Key, &module, &it.Label, &it.Description, &source, &pluginKey, &it.Risk, &it.Requires, &it.Status,
+			&it.ScopeType, &scope, &group.Key, &group.Label, &group.Sort, &defaults, &pluginName); err != nil {
 			return nil, err
 		}
 		if it.Description == nil {
 			it.Description = core.LocalizedText{}
 		}
 		if p, ok := corePermByKey(it.Key); ok {
-			it.StepUp, it.Requires = p.stepUp, p.requiredKeys()
+			it.StepUp = p.stepUp
+		}
+		if strings.HasPrefix(it.ScopeType, core.PluginScopeTypePrefix) {
+			it.Scope = &scope
+		}
+		it.Group = group.Key
+		// Suffixes expanded to keys once here, so the console never parses them.
+		if len(defaults) > 0 {
+			it.Defaults = make(map[string][]string, len(defaults))
+		}
+		for role, suffixes := range defaults {
+			for _, sfx := range suffixes {
+				key := it.Key
+				if sfx != "" {
+					key += ":" + sfx
+				}
+				it.Defaults[role] = append(it.Defaults[role], key)
+			}
 		}
 		m := byModule[module]
 		if m == nil {
@@ -801,6 +851,9 @@ ORDER BY p.source, p.module, p.sort, p.key`)
 			}
 			byModule[module] = m
 			order = append(order, m)
+		}
+		if group.Key != "" && !slices.ContainsFunc(m.Groups, func(g PermissionGroup) bool { return g.Key == group.Key }) {
+			m.Groups = append(m.Groups, group)
 		}
 		m.Permissions = append(m.Permissions, it)
 	}
@@ -834,6 +887,128 @@ ORDER BY p.source, p.module, p.sort, p.key`)
 		return a.Module < b.Module
 	})
 	return order, nil
+}
+
+// ------------------------------------------------------------ plugin role matrix
+
+// errPluginNotFound is the answer for a plugin the catalog holds no
+// permissions of: unknown, or declaring none.
+var errPluginNotFound = core.ErrNotFound.WithMessage("plugin not found")
+
+// PluginRoleMatrix is GET/PUT /permissions/plugins/:plugin: the plugin's
+// catalog module and every role's grants of it.
+type PluginRoleMatrix struct {
+	PluginKey string            `json:"plugin_key"`
+	Module    *PermissionModule `json:"module"`
+	Roles     []PluginRoleRow   `json:"roles"`
+}
+
+// PluginRoleRow is one role of a PluginRoleMatrix, as the caller may change
+// it.
+type PluginRoleRow struct {
+	ID        int64              `json:"id"`
+	Key       string             `json:"key"`
+	Name      core.LocalizedText `json:"name"`
+	Builtin   bool               `json:"builtin"`
+	Superuser bool               `json:"superuser"`
+	Editable  bool               `json:"editable"`
+	Denied    string             `json:"denied,omitempty"` // editDenial
+	// PermissionKeys: the role's grants of this plugin, removed ones included.
+	PermissionKeys []string `json:"permission_keys"`
+}
+
+// PluginRoleGrants is the plugin's catalog module (as ListPermissions lists
+// it) and every role's grants of it, each with whether actorID may change
+// the role (editDenial).
+func (s *Service) PluginRoleGrants(ctx context.Context, actorID int64, pluginKey string) (*PluginRoleMatrix, error) {
+	mods, err := s.ListPermissions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(mods, func(m *PermissionModule) bool { return m.PluginKey != nil && *m.PluginKey == pluginKey })
+	if i < 0 {
+		return nil, errPluginNotFound
+	}
+	roles, err := s.ListRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	actor, err := s.grantSet(ctx, s.db.Pool, actorID)
+	if err != nil {
+		return nil, err
+	}
+	prefix := mods[i].Module + ":"
+	out := &PluginRoleMatrix{PluginKey: pluginKey, Module: mods[i], Roles: make([]PluginRoleRow, 0, len(roles))}
+	for _, r := range roles {
+		cur, err := s.RolesPermissions(ctx, s.db.Pool, []string{r.Key})
+		if err != nil {
+			return nil, err
+		}
+		denied := editDenial(actor, cur, r)
+		row := PluginRoleRow{ID: r.ID, Key: r.Key, Name: r.Name, Builtin: r.Builtin, Superuser: r.Superuser,
+			Editable: denied == "", Denied: denied, PermissionKeys: []string{}}
+		for _, k := range r.PermissionKeys {
+			if strings.HasPrefix(k, prefix) {
+				row.PermissionKeys = append(row.PermissionKeys, k)
+			}
+		}
+		out.Roles = append(out.Roles, row)
+	}
+	return out, nil
+}
+
+// SetPluginRoleGrants makes roles[k] the grants of role k of the plugin's
+// permissions, for each role listed; other roles and the roles' other
+// grants stay. Each role is changed as SetRolePermissions changes it
+// (editableRole, setRolePart), in key order, all or none; a key of another
+// plugin is foreign, and a refusal names its role (details.role).
+func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, pluginKey string, roles map[string][]string) (*PluginRoleMatrix, error) {
+	err := s.mutate(ctx, func(tx pgx.Tx) error {
+		var found bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM permissions WHERE plugin_key = $1)`, pluginKey).Scan(&found); err != nil {
+			return err
+		}
+		if !found {
+			return errPluginNotFound
+		}
+		keys := slices.Sorted(maps.Keys(roles))
+		refs, err := queryRoles(ctx, tx, `SELECT id, key, superuser FROM roles WHERE key = ANY($1)`, keys)
+		if err != nil {
+			return err
+		}
+		for _, k := range keys {
+			i := slices.IndexFunc(refs, func(r roleRef) bool { return r.key == k })
+			if i < 0 {
+				return core.InvalidFields(core.FieldError{Field: "roles." + k, Code: "unknown", Message: "unknown role " + k})
+			}
+			if err := s.setPluginRole(ctx, tx, actorID, refs[i].id, pluginKey, roles[k]); err != nil {
+				var ce *core.Error
+				if errors.As(err, &ce) {
+					return ce.WithDetails(map[string]any{"role": k})
+				}
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.PluginRoleGrants(ctx, actorID, pluginKey)
+}
+
+// setPluginRole makes keys, which must all be permissions of plugin
+// pluginKey, the grants of role id of that plugin's permissions.
+func (s *Service) setPluginRole(ctx context.Context, tx pgx.Tx, actorID, id int64, pluginKey string, keys []string) error {
+	r, err := s.editableRole(ctx, tx, actorID, id)
+	if err != nil {
+		return err
+	}
+	prefix := manifest.PermissionModule(pluginKey) + ":"
+	if i := slices.IndexFunc(keys, func(k string) bool { return !strings.HasPrefix(k, prefix) }); i >= 0 {
+		return core.InvalidFields(core.FieldError{Field: "roles." + r.Key, Code: "foreign", Message: keys[i] + " is not a permission of plugin " + pluginKey})
+	}
+	return s.setRolePart(ctx, tx, actorID, r, keys, grantPart{plugin: pluginKey}, map[string]any{"plugin": pluginKey, "via": "plugin_matrix"})
 }
 
 // addedKeys returns the keys in want that are not in have, in want order.

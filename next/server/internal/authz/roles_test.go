@@ -2,12 +2,16 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -377,8 +381,10 @@ func TestRoleWritesNeedActOnRole(t *testing.T) {
 	}
 }
 
-// P2: a role saves back as listed. Permissions of a disabled plugin are
-// granted as before; removed ones are ignored and their grant rows kept.
+// Saving a role keeps grants of disabled permissions and the removed ones
+// it lists (a role saves back as listed, P2), drops removed ones it leaves
+// out (they can be unticked) and never adds a removed one it does not hold
+// (nor can they be ticked). A reset keeps removed core grants.
 func TestSetRolePermissionsKeepsInactive(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
@@ -386,42 +392,101 @@ func TestSetRolePermissionsKeepsInactive(t *testing.T) {
 	ctx := context.Background()
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	admin := addUser(t, s, "admin@x.com", RoleAdmin)
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'installed')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
-		return s.SyncPlugin(ctx, tx, "guard", withRoles([]core.PermissionDef{{Key: "stats:read"}}, RoleAdmin))
-	}); err != nil {
-		t.Fatal(err)
-	}
+	_, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'installed')`)
+	require.NoError(t, err)
+	require.NoError(t, db.Tx(ctx, func(tx pgx.Tx) error {
+		return s.SyncPlugin(ctx, tx, "guard", withRoles([]core.PermissionDef{{Key: "stats:read"}, {Key: "audit:read"}}, RoleAdmin))
+	}))
 	r, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "watch", Name: lt("Watch", "watch"),
 		PermissionKeys: []string{"account:read", "proxy:read", "plugin.guard:stats:read"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SetPluginActive(ctx, tx, "guard", false) }); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE permissions SET status = 'removed' WHERE key = 'proxy:read'`); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.NoError(t, db.Tx(ctx, func(tx pgx.Tx) error { return s.SetPluginActive(ctx, tx, "guard", false) }))
+	_, err = db.Pool.Exec(ctx, `UPDATE permissions SET status = 'removed' WHERE key IN ('proxy:read', 'plugin.guard:audit:read')`)
+	require.NoError(t, err)
+	held := []string{"account:read", "plugin.guard:stats:read", "proxy:read"}
 
-	if _, err := s.SetRolePermissions(ctx, admin, r.ID, r.PermissionKeys); err != nil {
-		t.Fatalf("save as listed: %v", err)
+	_, err = s.SetRolePermissions(ctx, admin, r.ID, r.PermissionKeys)
+	require.NoError(t, err, "save as listed")
+	assert.Equal(t, held, rolePermissionKeys(t, s, r.ID))
+	_, err = s.SetRolePermissions(ctx, admin, r.ID, append(slices.Clone(r.PermissionKeys), "plugin.guard:audit:read"))
+	require.NoError(t, err, "a removed key the role does not hold is ignored")
+	assert.Equal(t, held, rolePermissionKeys(t, s, r.ID))
+	_, err = s.SetRolePermissions(ctx, admin, r.ID, []string{"account:read", "plugin.guard:stats:read"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"account:read", "plugin.guard:stats:read"}, rolePermissionKeys(t, s, r.ID), "the removed one left out goes")
+	_, err = s.SetRolePermissions(ctx, admin, r.ID, []string{"nope:x"})
+	assert.True(t, isCode(err, "invalid_argument"), "unknown key: %v", err)
+
+	op := roleID(t, s, RoleOperator)
+	require.Contains(t, rolePermissionKeys(t, s, op), "proxy:read")
+	_, err = s.ResetRole(ctx, root, op)
+	require.NoError(t, err)
+	assert.Contains(t, rolePermissionKeys(t, s, op), "proxy:read", "a reset keeps removed core grants")
+}
+
+// A plugin's role matrix: GET shows every role's grants of the plugin and
+// whether the caller may change the role; PUT replaces the listed roles'
+// grants of that plugin only, each as a role write (editableRole, covers),
+// all or none, a refusal naming its role.
+func TestPluginRoleGrantsMatrix(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	admin := addUser(t, s, "admin@x.com", RoleAdmin)
+	flow := &manifest.PermissionScope{Resource: "flow", Own: true}
+	require.NoError(t, syncer(t, s, "m")(
+		core.PermissionDef{Key: "flow:read", GrantRoles: unscoped(RoleAdmin)},
+		core.PermissionDef{Key: "flow:manage", ScopeType: "plugin:flow", Scope: flow, GrantRoles: unscoped(RoleAdmin)},
+		core.PermissionDef{Key: "flow:delete"}))
+	require.NoError(t, syncer(t, s, "other")(core.PermissionDef{Key: "x:read", GrantRoles: unscoped(RoleAdmin)}))
+	op, user := roleID(t, s, RoleOperator), roleID(t, s, RoleUser)
+	opBefore, userBefore := rolePermissionKeys(t, s, op), rolePermissionKeys(t, s, user)
+
+	m, err := s.PluginRoleGrants(ctx, admin, "m")
+	require.NoError(t, err)
+	assert.Equal(t, "plugin.m", m.Module.Module)
+	rows := map[string]PluginRoleRow{}
+	for _, r := range m.Roles {
+		rows[r.Key] = r
 	}
-	if got := rolePermissionKeys(t, s, r.ID); !slices.Equal(got, []string{"account:read", "plugin.guard:stats:read", "proxy:read"}) {
-		t.Fatalf("after save: %v", got)
-	}
-	// Dropping the plugin permission deletes its row; the removed one stays.
-	if _, err := s.SetRolePermissions(ctx, admin, r.ID, []string{"account:read"}); err != nil {
-		t.Fatal(err)
-	}
-	if got := rolePermissionKeys(t, s, r.ID); !slices.Equal(got, []string{"account:read", "proxy:read"}) {
-		t.Fatalf("after drop: %v", got)
-	}
-	if _, err := s.SetRolePermissions(ctx, admin, r.ID, []string{"nope:x"}); !isCode(err, "invalid_argument") {
-		t.Fatalf("unknown key: %v", err)
-	}
+	assert.True(t, !rows[RoleAdmin].Editable && rows[RoleAdmin].Denied == denyNotAssignable, "%+v", rows[RoleAdmin])
+	assert.ElementsMatch(t, []string{"plugin.m:flow:read", "plugin.m:flow:manage"}, rows[RoleAdmin].PermissionKeys)
+	assert.True(t, rows[RoleSuperAdmin].Superuser && !rows[RoleSuperAdmin].Editable && rows[RoleSuperAdmin].Denied == denySuperuserRole, "%+v", rows[RoleSuperAdmin])
+	assert.True(t, rows[RoleOperator].Editable && rows[RoleOperator].Denied == "", "%+v", rows[RoleOperator])
+	assert.Equal(t, []string{}, rows[RoleOperator].PermissionKeys)
+
+	// The second role fails: nothing is written, and the refusal names it.
+	_, err = s.SetPluginRoleGrants(ctx, admin, "m", map[string][]string{RoleOperator: {"plugin.m:flow:read"}, RoleUser: {"plugin.m:flow:delete"}})
+	var ce *core.Error
+	require.True(t, errors.As(err, &ce) && ce.Code == "permission_denied", "%v", err)
+	assert.Equal(t, RoleUser, ce.Details["role"])
+	assert.Equal(t, []string{"plugin.m:flow:delete"}, ce.Details["missing"])
+	assert.Equal(t, opBefore, rolePermissionKeys(t, s, op), "rolled back")
+	_, err = s.SetPluginRoleGrants(ctx, admin, "m", map[string][]string{RoleOperator: {"plugin.other:x:read"}})
+	assert.Equal(t, "foreign", fieldCode(err, "roles.operator"), "%v", err)
+	_, err = s.SetPluginRoleGrants(ctx, admin, "m", map[string][]string{"nope": {}})
+	assert.Equal(t, "unknown", fieldCode(err, "roles.nope"), "%v", err)
+	_, err = s.SetPluginRoleGrants(ctx, admin, "nope", map[string][]string{RoleOperator: {}})
+	assert.True(t, isCode(err, "not_found"), "%v", err)
+	_, err = s.PluginRoleGrants(ctx, admin, "nope")
+	assert.True(t, isCode(err, "not_found"), "%v", err)
+
+	// Other roles and the role's other grants stay.
+	set := []string{"plugin.m:flow:read", "plugin.m:flow:manage:flow/2", "plugin.m:flow:manage:flow/5"}
+	m, err = s.SetPluginRoleGrants(ctx, admin, "m", map[string][]string{RoleOperator: set})
+	require.NoError(t, err)
+	i := slices.IndexFunc(m.Roles, func(r PluginRoleRow) bool { return r.Key == RoleOperator })
+	assert.ElementsMatch(t, set, m.Roles[i].PermissionKeys)
+	assert.ElementsMatch(t, append(slices.Clone(opBefore), "plugin.m:flow:read"), rolePermissionKeys(t, s, op))
+	assert.Equal(t, userBefore, rolePermissionKeys(t, s, user))
+	var via string
+	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT detail->>'via' FROM audit_logs WHERE action = 'role.permissions' AND target_id::bigint = $1`, op).Scan(&via))
+	assert.Equal(t, "plugin_matrix", via)
+	_, err = s.SetPluginRoleGrants(ctx, admin, "m", map[string][]string{RoleOperator: {}})
+	require.NoError(t, err)
+	assert.Equal(t, opBefore, rolePermissionKeys(t, s, op))
+	assert.Empty(t, scopedHolders(t, db, "plugin.m:flow:manage"))
 }
 
 // Every role write leaves one audit row, by its actor, on the role.
