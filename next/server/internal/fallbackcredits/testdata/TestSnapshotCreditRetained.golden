@@ -1,0 +1,5 @@
+-- sql
+SELECT count(*) FROM "provider_fallback_credits" WHERE user_id = $1 AND group_id = $2
+-- vars
+$1 int64 7
+$2 int64 3
