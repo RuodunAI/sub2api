@@ -70,6 +70,47 @@ func TestSplitRejects(t *testing.T) {
 	}
 }
 
+func TestSet(t *testing.T) {
+	for _, tc := range []struct {
+		name, dsn, want string
+	}{
+		{"url without query", "postgres://u:p@db/app", "postgres://u:p@db/app?datestyle=ISO"},
+		{"url with fragment", "postgres://db/app#f", "postgres://db/app?datestyle=ISO#f"},
+		{"url replaced in any case", "postgres://db/app?DateStyle=German&sslmode=disable&datestyle=SQL%2C%20DMY#f",
+			"postgres://db/app?sslmode=disable&datestyle=ISO#f"},
+		{"kv", "host=db dbname=app", "datestyle='ISO' host=db dbname=app"},
+		{"kv replaced", "host=db DATESTYLE = 'SQL, DMY' dbname=app", "datestyle='ISO' host=db dbname=app"},
+		{"kv empty value last", "host=db password=", "datestyle='ISO' host=db password="},
+		{"kv empty", "", "datestyle='ISO'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Set(tc.dsn, "datestyle", "ISO")
+			if err != nil || got != tc.want {
+				t.Fatalf("Set(%q) = %q, %v; want %q", tc.dsn, got, err, tc.want)
+			}
+		})
+	}
+	// Values that need escaping read back as given.
+	for _, dsn := range []string{"postgres://db/app", "host=db"} {
+		got, err := Set(dsn, "application_name", `a+b 'c\d&e`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var read string
+		if _, err := filter(got, func(k, v string) (bool, error) {
+			if k == "application_name" {
+				read = v
+			}
+			return true, nil
+		}); err != nil || read != `a+b 'c\d&e` {
+			t.Fatalf("Set(%q) = %q reads back %q, %v", dsn, got, read, err)
+		}
+	}
+	if _, err := Set("password='secret", "datestyle", "ISO"); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("Set of an invalid DSN: %v", err)
+	}
+}
+
 // nopDriver lets a *sql.DB exist without a server: Apply never connects.
 type nopDriver struct{}
 

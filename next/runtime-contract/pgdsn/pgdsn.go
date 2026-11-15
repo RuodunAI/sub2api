@@ -5,8 +5,8 @@
 // and a plain pgx connection would send them to PostgreSQL as settings,
 // which it rejects (FATAL: unrecognized configuration parameter). Split
 // takes them out of either DSN form and Pool.Apply maps what database/sql
-// can express onto a *sql.DB. Standard library only, so any module can
-// depend on it.
+// can express onto a *sql.DB; Set pins a setting of the session. Standard
+// library only, so any module can depend on it.
 package pgdsn
 
 import (
@@ -84,17 +84,60 @@ func (p *Pool) set(key, value string) (known bool, err error) {
 // dsn is a URL (postgres:// or postgresql://) or keyword=value pairs, the two
 // forms libpq and pgx accept. What is not a pool parameter is kept as written.
 func Split(dsn string) (string, Pool, error) {
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		return splitURL(dsn)
+	var p Pool
+	out, err := filter(dsn, func(key, value string) (bool, error) {
+		known, err := p.set(key, value)
+		return !known, err
+	})
+	if err != nil {
+		return "", Pool{}, err
 	}
-	return splitKeywordValue(dsn)
+	return out, p, nil
 }
 
-func splitURL(dsn string) (string, Pool, error) {
-	var p Pool
+// Set returns dsn with the parameter key set to value, whatever dsn set it
+// to: every occurrence of key goes, in any letter case (PostgreSQL's setting
+// names have none), and key=value is added. The other parameters are kept
+// as written.
+func Set(dsn, key, value string) (string, error) {
+	out, err := filter(dsn, func(k, _ string) (bool, error) { return !strings.EqualFold(k, key), nil })
+	if err != nil {
+		return "", err
+	}
+	if !isURL(dsn) {
+		// First: a last pair with an empty value ("password=") would take
+		// the next pair for its value.
+		return strings.TrimRight(key+"="+quote(value)+" "+out, " "), nil
+	}
+	base, fragment, hasFragment := strings.Cut(out, "#")
+	sep := "?"
+	if strings.Contains(base, "?") {
+		sep = "&"
+	}
+	base += sep + uriEncode(key) + "=" + uriEncode(value)
+	if hasFragment {
+		base += "#" + fragment
+	}
+	return base, nil
+}
+
+func isURL(dsn string) bool {
+	return strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://")
+}
+
+// filter returns dsn without the parameters keep refuses; keep sees each
+// key and value unescaped, and its error is returned as is.
+func filter(dsn string, keep func(key, value string) (bool, error)) (string, error) {
+	if isURL(dsn) {
+		return filterURL(dsn, keep)
+	}
+	return filterKeywordValue(dsn, keep)
+}
+
+func filterURL(dsn string, keep func(key, value string) (bool, error)) (string, error) {
 	base, rest, hasQuery := strings.Cut(dsn, "?")
 	if !hasQuery {
-		return dsn, p, nil
+		return dsn, nil
 	}
 	query, fragment, hasFragment := strings.Cut(rest, "#")
 	var kept []string
@@ -103,13 +146,13 @@ func splitURL(dsn string) (string, Pool, error) {
 		key, err1 := url.QueryUnescape(k)
 		value, err2 := url.QueryUnescape(v)
 		if err1 != nil || err2 != nil {
-			return "", Pool{}, errors.New("pgdsn: invalid query in the database URL")
+			return "", errors.New("pgdsn: invalid query in the database URL")
 		}
-		known, err := p.set(key, value)
+		ok, err := keep(key, value)
 		if err != nil {
-			return "", Pool{}, err
+			return "", err
 		}
-		if !known && pair != "" {
+		if ok && pair != "" {
 			kept = append(kept, pair)
 		}
 	}
@@ -120,38 +163,58 @@ func splitURL(dsn string) (string, Pool, error) {
 	if hasFragment {
 		out += "#" + fragment
 	}
-	return out, p, nil
+	return out, nil
 }
 
-// splitKeywordValue follows libpq's (and pgconn's) keyword=value syntax:
+// filterKeywordValue follows libpq's (and pgconn's) keyword=value syntax:
 // blanks around "=", a value either single quoted or running to the next
 // blank, and a backslash escaping the next character in both. The pairs
 // that stay are copied byte for byte.
-func splitKeywordValue(dsn string) (string, Pool, error) {
-	var p Pool
+func filterKeywordValue(dsn string, keep func(key, value string) (bool, error)) (string, error) {
 	var kept []string
 	s := strings.TrimLeft(dsn, blanks)
 	for s != "" {
 		eq := strings.IndexByte(s, '=')
 		if eq < 0 {
-			return "", Pool{}, errors.New("pgdsn: invalid keyword/value database DSN")
+			return "", errors.New("pgdsn: invalid keyword/value database DSN")
 		}
 		key := strings.Trim(s[:eq], blanks)
 		rest := strings.TrimLeft(s[eq+1:], blanks)
 		n, err := valueLen(rest)
 		if err != nil {
-			return "", Pool{}, err
+			return "", err
 		}
-		known, err := p.set(key, unescape(rest[:n]))
+		ok, err := keep(key, unescape(rest[:n]))
 		if err != nil {
-			return "", Pool{}, err
+			return "", err
 		}
-		if !known {
+		if ok {
 			kept = append(kept, key+"="+rest[:n])
 		}
 		s = strings.TrimLeft(rest[n:], blanks)
 	}
-	return strings.Join(kept, " "), p, nil
+	return strings.Join(kept, " "), nil
+}
+
+// uriEncode percent-encodes all but the unreserved characters of s. Not
+// url.QueryEscape: libpq and pgx read a "+" of a URL as itself, not a blank.
+func uriEncode(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', strings.IndexByte("-._~", c) >= 0:
+			b.WriteByte(c)
+		default:
+			b.Write([]byte{'%', hex[c>>4], hex[c&15]})
+		}
+	}
+	return b.String()
+}
+
+// quote single-quotes a keyword=value value, which unescape reads back.
+func quote(value string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(value) + "'"
 }
 
 // blanks are the separators of the keyword=value form (C isspace).

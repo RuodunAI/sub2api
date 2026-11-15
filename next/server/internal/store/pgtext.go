@@ -174,7 +174,8 @@ func scanArray[E any](src any, parse func(string) (E, error)) ([]E, error) {
 }
 
 // parseTimestamptz reads a finite timestamptz as PostgreSQL prints it with
-// DateStyle ISO: "2024-05-01 10:00:00.123456+08", the offset with optional
+// DateStyle ISO, which open pins for every session of the pool:
+// "2024-05-01 10:00:00.123456+08", the offset with optional
 // minutes and seconds, a year of four digits or more and an optional " BC".
 // The time is in time.Local, as pgx returns timestamptz values.
 func parseTimestamptz(s string) (time.Time, error) {
