@@ -88,17 +88,29 @@ func selectRoles(db *gorm.DB, tail string, args ...any) *gorm.DB {
 	return db.Raw(roleSelect+tail, args...)
 }
 
+// listedRoles selects every role, built-in first.
+func listedRoles(db *gorm.DB) *gorm.DB {
+	return selectRoles(db, ` ORDER BY r.builtin DESC, r.id`)
+}
+
+// roleByID selects role id.
+func roleByID(db *gorm.DB, id int64) *gorm.DB {
+	return selectRoles(db, ` WHERE r.id = ?`, id)
+}
+
+// roleByKey selects the role key.
+func roleByKey(db *gorm.DB, key string) *gorm.DB {
+	return selectRoles(db, ` WHERE r.key = ?`, key)
+}
+
+// rolesByKeys selects the roles of keys, by key.
+func rolesByKeys(db *gorm.DB, keys []string) *gorm.DB {
+	return selectRoles(db, ` WHERE r.key = ANY(?) ORDER BY r.key`, store.Strings(keys))
+}
+
 // readRoles reads the roles q, a selectRoles query, returns (never nil).
 func readRoles(q *gorm.DB) ([]*Role, error) {
-	out := []*Role{}
-	err := eachRow(q, func(rows *sql.Rows) error {
-		r, err := scanRole(rows)
-		if err == nil {
-			out = append(out, r)
-		}
-		return err
-	})
-	return out, err
+	return store.CollectRows(q, scanRole)
 }
 
 // readRole is readRoles of a query of one role, failing with sql.ErrNoRows
@@ -139,7 +151,7 @@ func (s *Service) ListRoles(ctx context.Context) ([]*Role, error) {
 }
 
 func listRoles(ctx context.Context, q store.Querier) ([]*Role, error) {
-	return readRoles(selectRoles(store.G(ctx, q), ` ORDER BY r.builtin DESC, r.id`))
+	return readRoles(listedRoles(store.G(ctx, q)))
 }
 
 // GetRole returns one role or ErrNotFound.
@@ -148,7 +160,7 @@ func (s *Service) GetRole(ctx context.Context, id int64) (*Role, error) {
 }
 
 func (s *Service) getRole(ctx context.Context, q store.Querier, id int64) (*Role, error) {
-	r, err := readRole(selectRoles(store.G(ctx, q), ` WHERE r.id = ?`, id))
+	r, err := readRole(roleByID(store.G(ctx, q), id))
 	if store.IsNoRows(err) {
 		return nil, errRoleNotFound
 	}
@@ -420,7 +432,7 @@ func (s *Service) resetDefaults(ctx context.Context, tx pgx.Tx, actorID int64, r
 	if err != nil {
 		return err
 	}
-	assign, err := queryRoles(ctx, tx, `SELECT id, key, superuser FROM roles WHERE key = ANY(?) AND builtin AND NOT superuser ORDER BY key`, store.Strings(def.assignable))
+	assign, err := queryRoles(assignableBuiltinRefs(store.G(ctx, tx), def.assignable))
 	if err != nil {
 		return err
 	}
@@ -604,7 +616,7 @@ func grantOf(ctx context.Context, q store.Querier, roleKey string, perms, roles 
 		return set, nil
 	}
 	var keys store.Strings
-	if err := customRoleKeys(store.G(ctx, q), roleKey).Row().Scan(&keys); err != nil {
+	if err := customRoleKeysBut(store.G(ctx, q), roleKey).Row().Scan(&keys); err != nil {
 		return core.PermissionSet{}, err
 	}
 	for _, k := range keys {
@@ -659,7 +671,7 @@ func (s *Service) SetUserRoles(ctx context.Context, tx pgx.Tx, actorID, userID i
 	if err != nil {
 		return 0, err
 	}
-	cur, err := queryRoles(ctx, tx, userRolesSQL, userID)
+	cur, err := queryRoles(userRoleRefs(store.G(ctx, tx), userID))
 	if err != nil {
 		return 0, err
 	}
@@ -727,30 +739,35 @@ type roleRef struct {
 	superuser bool
 }
 
-// userRolesSQL selects the roles a user holds, by key.
-const userRolesSQL = `SELECT r.id, r.key, r.superuser FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? ORDER BY r.key`
+// userRoleRefs selects the roles userID holds, by key.
+func userRoleRefs(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Raw(`SELECT r.id, r.key, r.superuser FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? ORDER BY r.key`, userID)
+}
 
-// queryRoles runs query, which selects id, key and superuser of roles and
-// whose placeholders take args.
-func queryRoles(ctx context.Context, q store.Querier, query string, args ...any) ([]roleRef, error) {
-	out := []roleRef{}
-	err := eachRow(store.G(ctx, q).Raw(query, args...), func(rows *sql.Rows) error {
+// roleRefsByKeys selects the roles of keys, by key.
+func roleRefsByKeys(db *gorm.DB, keys []string) *gorm.DB {
+	return db.Raw(`SELECT id, key, superuser FROM roles WHERE key = ANY(?) ORDER BY key`, store.Strings(keys))
+}
+
+// queryRoles reads the roles q, a roleRefs query (id, key, superuser),
+// returns (never nil).
+func queryRoles(q *gorm.DB) ([]roleRef, error) {
+	return store.CollectRows(q, func(rows *sql.Rows) (roleRef, error) {
 		var r roleRef
-		if err := rows.Scan(&r.id, &r.key, &r.superuser); err != nil {
-			return err
-		}
-		out = append(out, r)
-		return nil
+		err := rows.Scan(&r.id, &r.key, &r.superuser)
+		return r, err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+}
+
+// assignableBuiltinRefs selects the built-in roles of keys but superuser
+// ones, by key: what a reset makes assignable.
+func assignableBuiltinRefs(db *gorm.DB, keys []string) *gorm.DB {
+	return db.Raw(`SELECT id, key, superuser FROM roles WHERE key = ANY(?) AND builtin AND NOT superuser ORDER BY key`, store.Strings(keys))
 }
 
 // resolveRoles returns the roles of keys, failing on unknown ones.
 func resolveRoles(ctx context.Context, q store.Querier, keys []string) ([]roleRef, error) {
-	roles, err := queryRoles(ctx, q, `SELECT id, key, superuser FROM roles WHERE key = ANY(?) ORDER BY key`, store.Strings(keys))
+	roles, err := queryRoles(roleRefsByKeys(store.G(ctx, q), keys))
 	if err != nil {
 		return nil, err
 	}
@@ -881,9 +898,9 @@ func (s *Service) AssignableRoles(ctx context.Context, actorID int64) ([]Assigna
 
 // assignableRoleRow is a role as AssignableRoles reads it.
 type assignableRoleRow struct {
-	Key     string
-	Name    store.JSON[core.LocalizedText]
-	Builtin bool
+	Key     string                         `gorm:"column:key"`
+	Name    store.JSON[core.LocalizedText] `gorm:"column:name"`
+	Builtin bool                           `gorm:"column:builtin"`
 }
 
 // assignableRoleRows selects every role but superuser ones, built-in
@@ -952,7 +969,7 @@ func (s *Service) ListPermissions(ctx context.Context) ([]*PermissionModule, err
 func listPermissions(ctx context.Context, q store.Querier, pluginKey string) ([]*PermissionModule, error) {
 	byModule := map[string]*PermissionModule{}
 	var order []*PermissionModule
-	if err := eachRow(permissionRows(store.G(ctx, q), pluginKey), func(rows *sql.Rows) error {
+	if err := store.EachRow(permissionRows(store.G(ctx, q), pluginKey), func(rows *sql.Rows) error {
 		var it PermissionItem
 		var module, source string
 		var pluginKey *string
@@ -1151,7 +1168,7 @@ func (s *Service) pluginRoleGrants(ctx context.Context, q store.Querier, actorID
 func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, pluginKey string, roles map[string][]string, version *int64) (*PluginRoleMatrix, error) {
 	err := s.mutateAt(ctx, version, func(tx pgx.Tx) error {
 		db := store.G(ctx, tx)
-		found, err := store.Exists(db, db.Model(&model.Permission{}).Where("plugin_key = ?", pluginKey))
+		found, err := store.Exists(db, permissionsOfPlugin(db, pluginKey))
 		if err != nil {
 			return err
 		}
@@ -1159,7 +1176,7 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 			return errPluginNotFound
 		}
 		keys := slices.Sorted(maps.Keys(roles))
-		refs, err := queryRoles(ctx, tx, `SELECT id, key, superuser FROM roles WHERE key = ANY(?)`, store.Strings(keys))
+		refs, err := queryRoles(roleRefsByKeys(db, keys))
 		if err != nil {
 			return err
 		}
