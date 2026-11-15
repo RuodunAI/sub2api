@@ -62,29 +62,47 @@ func (tokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
 	case "plain": // no account key
 		return 4, nil
 	}
+	if u, ok := scopeUsers[tok]; ok {
+		return u.id, nil
+	}
 	return 0, errors.New("bad token")
 }
 
 // VerifyAccessKey accepts any key as the admin's: sak_<permission> carries
-// plugin.demo:<permission>.
-func (tokens) VerifyAccessKey(_ context.Context, raw, _ string) (core.AccessKeyIdentity, error) {
-	perm := "plugin.demo:" + strings.TrimPrefix(raw, core.AccessKeyPrefix)
-	return core.AccessKeyIdentity{UserID: 1, KeyID: 1, Permissions: []string{perm}}, nil
+// plugin.demo:<permission>; sak_<token>@<permission> is the key of the
+// user of token.
+func (t tokens) VerifyAccessKey(ctx context.Context, raw, _ string) (core.AccessKeyIdentity, error) {
+	tok, perm, found := strings.Cut(strings.TrimPrefix(raw, core.AccessKeyPrefix), "@")
+	uid := int64(1)
+	if !found {
+		perm = tok
+	} else if id, err := t.VerifyAccessToken(ctx, tok); err == nil {
+		uid = id
+	}
+	return core.AccessKeyIdentity{UserID: uid, KeyID: 1, Permissions: []string{"plugin.demo:" + perm}}, nil
 }
 
 type authz struct{}
 
-// Can grants the demo plugin's keys to every user but "nobody", narrowed by
-// the request's access key as authz does.
-func (authz) Can(ctx context.Context, uid int64, perm string) (bool, error) {
-	set := core.PermissionSetOf()
-	if uid != 2 {
-		set = core.PermissionSetOf("plugin.demo:rules:read", "plugin.demo:reset")
-	}
-	return core.RestrictToAccessKey(ctx, uid, set).Has(perm), nil
+func (a authz) Can(ctx context.Context, uid int64, perm string) (bool, error) {
+	set, err := a.PermissionSet(ctx, uid)
+	return set.Has(perm), err
 }
-func (authz) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
-	return core.PermissionSet{}, nil
+
+// PermissionSet grants the demo plugin's keys to every user but "nobody"
+// and the scope test users (their own grants), narrowed by the request's
+// access key as authz does.
+func (authz) PermissionSet(ctx context.Context, uid int64) (core.PermissionSet, error) {
+	set := core.PermissionSetOf("plugin.demo:rules:read", "plugin.demo:reset")
+	for _, u := range scopeUsers {
+		if u.id == uid {
+			set = core.PermissionSetOf(u.keys...)
+		}
+	}
+	if uid == 2 {
+		set = core.PermissionSetOf()
+	}
+	return core.RestrictToAccessKey(ctx, uid, set), nil
 }
 func (authz) CanGrant(context.Context, int64, []string) error { return nil }
 func (authz) Version() int64                                  { return 42 }

@@ -5,6 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -72,4 +76,24 @@ func TestBindMenuRoutes(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A plugin menu naming a scoped plugin permission shows to a holder of any
+// of its scopes, and not to a holder of none.
+func TestPluginMenusScopedPermission(t *testing.T) {
+	t.Parallel()
+	reg := fakeRegistry{gen: fakeGen{plugins: []core.PluginInfo{{Key: "mod", Manifest: &manifest.Manifest{UI: &manifest.UI{
+		Menus: []manifest.Menu{{ID: "flows", Label: manifest.LocalizedText{"en": "Flows"}, Page: "flows", Permission: "flow:manage"}},
+	}}}}}}
+	s := &Service{plugins: reg}
+	ids := func(set core.PermissionSet) []string {
+		var out []string
+		for _, m := range s.pluginMenus(set) {
+			out = append(out, m.ID)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"mod:flows"}, ids(core.PermissionSetOf("plugin.mod:flow:manage:own")))
+	assert.Equal(t, []string{"mod:flows"}, ids(core.PermissionSetOf("plugin.mod:flow:manage:flow/3")))
+	assert.Empty(t, ids(core.PermissionSetOf("plugin.mod:flow:read:own")))
 }

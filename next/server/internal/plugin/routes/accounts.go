@@ -1,7 +1,9 @@
 package routes
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -33,22 +35,22 @@ func (h *Handler) authorizeAccounts(c *gin.Context, acc *manifest.RouteAccounts,
 	return true
 }
 
-// accountIDs collects the distinct account ids the request names under from:
-// path parameters, query parameters (every value) and top-level JSON body
-// fields. Body field names match case-insensitively, as encoding/json does
-// when the plugin decodes the body. A body that is no JSON object names none.
+// accountIDs collects the distinct account ids the request names under from
+// (requestValues), each a decimal integer.
 func accountIDs(from []string, params map[string]string, query url.Values, body []byte) ([]int64, error) {
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(body, &fields)
 	var ids []int64
 	for _, f := range from {
-		source, name, _ := manifest.ParseAccountsFrom(f)
-		more, err := sourceIDs(source, name, params, query, fields)
+		vals, err := requestValues(f, params, query, body)
+		for _, v := range vals {
+			id, perr := strconv.ParseInt(v, 10, 64)
+			err = errors.Join(err, perr)
+			ids = append(ids, id)
+		}
 		if err != nil {
+			_, name, _ := manifest.ParseAccountsFrom(f)
 			return nil, core.InvalidFields(core.FieldError{Field: name, Code: "invalid",
 				Message: "must be an account id, a list of account ids or a comma-separated string of them"})
 		}
-		ids = append(ids, more...)
 	}
 	slices.Sort(ids)
 	if ids = slices.Compact(ids); len(ids) > manifest.MaxAccountBatch {
@@ -57,64 +59,81 @@ func accountIDs(from []string, params map[string]string, query url.Values, body 
 	return ids, nil
 }
 
-// sourceIDs reads the ids of one RouteAccounts.From entry.
-func sourceIDs(source, name string, params map[string]string, query url.Values, fields map[string]json.RawMessage) ([]int64, error) {
+// requestValues reads the values the request names under one from entry
+// (manifest.ParseAccountsFrom): a path parameter, every value of a query
+// parameter, or top-level JSON body fields. Body field names match
+// case-insensitively, as encoding/json does when the plugin decodes the
+// body; a body that is no JSON object names none. Every value may be a
+// comma-separated string; empty parts are skipped.
+func requestValues(from string, params map[string]string, query url.Values, body []byte) ([]string, error) {
+	source, name, _ := manifest.ParseAccountsFrom(from)
 	switch source {
 	case manifest.AccountsFromPath:
-		return splitIDs(params[name])
+		return splitValues(params[name]), nil
 	case manifest.AccountsFromQuery:
-		return splitIDs(query[name]...)
+		return splitValues(query[name]...), nil
 	case manifest.AccountsFromBody:
-		return fieldIDs(fields, name)
+		return fieldValues(body, name)
 	}
 	return nil, nil
 }
 
-// fieldIDs reads every body field named name, in any case.
-func fieldIDs(fields map[string]json.RawMessage, name string) ([]int64, error) {
-	var ids []int64
+// fieldValues reads every top-level body field named name, in any case.
+func fieldValues(body []byte, name string) ([]string, error) {
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(body, &fields)
+	var out []string
 	for k, raw := range fields {
 		if !strings.EqualFold(k, name) {
 			continue
 		}
-		more, err := rawIDs(raw)
+		more, err := rawValues(raw)
 		if err != nil {
 			return nil, err
 		}
-		ids = append(ids, more...)
+		out = append(out, more...)
 	}
-	return ids, nil
+	return out, nil
 }
 
-// rawIDs reads a JSON number, array of numbers or comma-separated string.
-func rawIDs(raw json.RawMessage) ([]int64, error) {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return splitIDs(s)
-	}
-	var ids []int64
-	if json.Unmarshal(raw, &ids) == nil {
-		return ids, nil
-	}
-	var id int64
-	err := json.Unmarshal(raw, &id)
-	return []int64{id}, err
-}
+var errBadValue = errors.New("not a string, a number or an array of them")
 
-// splitIDs parses comma-separated ids; empty parts are skipped.
-func splitIDs(vals ...string) ([]int64, error) {
-	var ids []int64
-	for _, v := range vals {
-		for _, part := range strings.Split(v, ",") {
-			if part = strings.TrimSpace(part); part == "" {
-				continue
-			}
-			id, err := strconv.ParseInt(part, 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			ids = append(ids, id)
+// rawValues reads a JSON string, number or array of them; null names none.
+func rawValues(raw json.RawMessage) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	items, isArray := v.([]any)
+	if !isArray {
+		items = []any{v}
+	}
+	var out []string
+	for _, item := range items {
+		switch x := item.(type) {
+		case string:
+			out = append(out, splitValues(x)...)
+		case json.Number:
+			out = append(out, x.String())
+		case nil: // null names none
+		default:
+			return nil, errBadValue
 		}
 	}
-	return ids, nil
+	return out, nil
+}
+
+// splitValues splits comma-separated values; empty parts are skipped.
+func splitValues(vals ...string) []string {
+	var out []string
+	for _, v := range vals {
+		for _, part := range strings.Split(v, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }
