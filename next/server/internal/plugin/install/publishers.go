@@ -163,7 +163,7 @@ func (s *Service) AddPublisherKey(ctx context.Context, pubID int64, k KeyInput, 
 	}
 	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		var status string
-		err := store.G(ctx, tx).Model(&model.Publisher{}).Select("status").Where("id = ?", pubID).Clauses(forUpdate).Take(&status).Error
+		err := store.G(ctx, tx).Model(&model.Publisher{}).Select("status").Where("id = ?", pubID).Clauses(store.ForUpdate).Take(&status).Error
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("publisher not found")
 		}

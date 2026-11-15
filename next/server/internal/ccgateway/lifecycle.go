@@ -54,7 +54,7 @@ func insertPreparation(db *gorm.DB, p core.AccountPreparation) *gorm.DB {
 // preparationMatches reports whether the open draft of p is the one p
 // describes (same creator, proxy and settings).
 func preparationMatches(db *gorm.DB, p core.AccountPreparation) (bool, error) {
-	return rowExists(db, preparationDraft(db, p))
+	return store.Exists(db, preparationDraft(db, p))
 }
 
 // preparationDraft is the open draft p describes.

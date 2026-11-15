@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -24,7 +25,7 @@ var (
 func TestSQLResourcesReadLocked(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var row model.ProviderResource
-		return resources(db.Clauses(forUpdate)).Where(`user_id=? AND group_id=? AND public_id=?`, 7, 3, "s2res_1").Take(&row)
+		return resources(db.Clauses(store.ForUpdate)).Where(`user_id=? AND group_id=? AND public_id=?`, 7, 3, "s2res_1").Take(&row)
 	})
 }
 

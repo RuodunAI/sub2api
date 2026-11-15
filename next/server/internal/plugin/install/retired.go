@@ -58,7 +58,7 @@ func retirement(db *gorm.DB, key string) *gorm.DB {
 func claimRetiredKey(ctx context.Context, tx pgx.Tx, key string, publisher *int64, source string) error {
 	g := store.G(ctx, tx)
 	var r model.PluginKeyRetirement
-	err := retirement(g, key).Select("publisher_id").Clauses(forUpdate).Take(&r).Error
+	err := retirement(g, key).Select("publisher_id").Clauses(store.ForUpdate).Take(&r).Error
 	switch {
 	case store.IsNoRows(err):
 		return nil
@@ -151,7 +151,7 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		g := store.G(ctx, tx)
 		var one int
-		err := retirement(g, key).Select("1").Clauses(forUpdate).Take(&one).Error
+		err := retirement(g, key).Select("1").Clauses(store.ForUpdate).Take(&one).Error
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("the plugin key is not retired")
 		}
@@ -159,7 +159,7 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 			return err
 		}
 		var installed bool
-		if err := selectExists(g, pluginRow(g, key)).Scan(&installed).Error; err != nil {
+		if err := store.ExistsQuery(g, pluginRow(g, key)).Scan(&installed).Error; err != nil {
 			return err
 		}
 		if installed {

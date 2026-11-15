@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -295,14 +294,14 @@ func lockPlugin(ctx context.Context, tx pgx.Tx, key string) (*pluginLock, error)
 	if err != nil {
 		return nil, err
 	}
-	uninstalling, err := exists(g, uninstallPending(g, key))
+	uninstalling, err := store.Exists(g, uninstallPending(g, key))
 	if err != nil {
 		return nil, err
 	}
 	if uninstalling {
 		return nil, core.ErrConflict.WithMessage("plugin uninstall is waiting for nodes to stop")
 	}
-	open, err := exists(g, openRollouts(g, key).Select("1"))
+	open, err := store.Exists(g, openRollouts(g, key).Select("1"))
 	if err != nil {
 		return nil, err
 	}
@@ -315,12 +314,12 @@ func lockPlugin(ctx context.Context, tx pgx.Tx, key string) (*pluginLock, error)
 // selectPluginForUpdate selects cols of the plugin row and locks it.
 func selectPluginForUpdate(g *gorm.DB, key, cols string) *gorm.DB {
 	return g.Model(&model.Plugin{}).Select(cols).Where("key = ?", key).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})
+		Clauses(store.ForUpdate)
 }
 
 func approved(ctx context.Context, tx pgx.Tx, key, version string) (bool, error) {
 	g := store.G(ctx, tx)
-	return exists(g, g.Model(&model.PluginVersion{}).Select("1").
+	return store.Exists(g, g.Model(&model.PluginVersion{}).Select("1").
 		Where("plugin_key = ? AND version = ? AND consent_status = 'approved'", key, version))
 }
 

@@ -895,7 +895,7 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 	var oldHash string
 	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
 		g := store.G(ctx, tx)
-		if err := owned(g, id, ownerID).Select("key_hash").Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Take(&oldHash).Error; err != nil {
+		if err := owned(g, id, ownerID).Select("key_hash").Clauses(store.ForUpdate).Take(&oldHash).Error; err != nil {
 			if store.IsNoRows(err) {
 				return notFound(ctx)
 			}

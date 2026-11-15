@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/santhosh-tekuri/jsonschema/v6"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -245,7 +244,7 @@ func mergeSettings(fields []manifest.SecretField, old, in map[string]any, manage
 func (a *API) loadValues(c *gin.Context, q store.Querier, key string, forUpdate bool) (map[string]any, error) {
 	db := store.G(c.Request.Context(), q).Select("config_enc").Where("key = ?", key)
 	if forUpdate {
-		db = db.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})
+		db = db.Clauses(store.ForUpdate)
 	}
 	var row model.Plugin
 	if err := db.Take(&row).Error; err != nil {

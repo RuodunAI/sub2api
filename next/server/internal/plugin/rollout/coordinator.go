@@ -379,7 +379,7 @@ func (c *Controller) migrateData(ctx context.Context, r *rolloutRow, from string
 	// MigrateData must stay idempotent.
 	id := fmt.Sprintf("data:rollout-%d:%s->%s", r.id, from, *r.target)
 	g := store.G(ctx, c.o.DB.Pool)
-	done, err := exists(g, g.Table("plugin_migrations").Select("1").Where("plugin_key = ? AND migration_id = ?", r.key, id))
+	done, err := store.Exists(g, g.Table("plugin_migrations").Select("1").Where("plugin_key = ? AND migration_id = ?", r.key, id))
 	if err != nil || done {
 		return done, err
 	}

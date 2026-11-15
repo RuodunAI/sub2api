@@ -2,16 +2,12 @@ package providerresources
 
 import (
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const columns = `public_id,plugin_key,kind,remote_id,state,operation_id,user_id,group_id,account_id,principal_id,generation,bytes,metadata,created_at,expires_at,intent_hash`
-
-// forUpdate locks the rows a query reads until the transaction ends.
-var forUpdate = clause.Locking{Strength: clause.LockingStrengthUpdate}
 
 // resources selects the columns of provider_resources a ProviderResource
 // and its intent hash hold.

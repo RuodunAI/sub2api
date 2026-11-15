@@ -446,7 +446,7 @@ type LogRecord struct {
 
 // Summary groups a plugin's egress in [from, to) by host (busiest first).
 func Summary(ctx context.Context, q store.Querier, pluginKey string, from, to time.Time) ([]HostSummary, error) {
-	var out []HostSummary
+	out := []HostSummary{}
 	if err := summaryQuery(store.G(ctx, q), pluginKey, from, to).Scan(&out).Error; err != nil {
 		return nil, err
 	}

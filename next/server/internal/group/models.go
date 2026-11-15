@@ -157,9 +157,8 @@ func (s *Service) groupsProviding(ctx context.Context, name string) ([]int64, er
 	if err != nil {
 		return nil, err
 	}
-	var priced bool
-	if err := db.Raw("SELECT EXISTS (?)", db.Model(&model.ModelPrice{}).Select("1").Where("model = ? AND enabled", name)).
-		Scan(&priced).Error; err != nil {
+	priced, err := store.Exists(db, db.Model(&model.ModelPrice{}).Where("model = ? AND enabled", name))
+	if err != nil {
 		return nil, err
 	}
 	ids := []int64{}

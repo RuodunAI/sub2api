@@ -11,7 +11,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const maxUsageBytes = 2 << 20
@@ -168,7 +167,7 @@ func (s *Service) AckUsage(ctx context.Context, requestID, digest string) error 
 	return s.db.Tx(ctx, func(tx pgx.Tx) error {
 		db := store.G(ctx, tx)
 		var old model.ProviderHelperUsageOutbox
-		e := outboxDigest(db, requestID).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Take(&old).Error
+		e := outboxDigest(db, requestID).Clauses(store.ForUpdate).Take(&old).Error
 		if store.IsNoRows(e) {
 			return nil
 		}

@@ -44,7 +44,7 @@ func (s *Service) QueryAccountQuota(ctx context.Context, accountID int64, operat
 	}
 	// A disabled account is only kept out of scheduling; its usage is queried.
 	g := store.G(ctx, s.DB.Pool)
-	if found, err := rowExists(g, g.Model(&model.Account{}).
+	if found, err := store.Exists(g, g.Model(&model.Account{}).
 		Where("id = ? AND plugin_key = 'ccgateway' AND type = 'managed' AND deleted_at IS NULL", accountID)); err != nil || !found {
 		return nil, usageFail("account_unavailable", "The account is not available for quota queries.")
 	}

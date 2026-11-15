@@ -67,7 +67,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 			return core.ErrConflict.WithMessage("the plugin was re-enabled concurrently")
 		}
 		var stopped bool
-		if err := uninstallRow(g, key).Select("target_boot_ids <@ stopped_boot_ids").Clauses(forUpdate).Take(&stopped).Error; err != nil {
+		if err := uninstallRow(g, key).Select("target_boot_ids <@ stopped_boot_ids").Clauses(store.ForUpdate).Take(&stopped).Error; err != nil {
 			return err
 		}
 		if !stopped {
@@ -125,7 +125,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 func checkUninstall(ctx context.Context, q store.Querier, key string) error {
 	g := store.G(ctx, q)
 	var pending bool
-	if err := selectExists(g, uninstallRow(g, key)).Scan(&pending).Error; err != nil {
+	if err := store.ExistsQuery(g, uninstallRow(g, key)).Scan(&pending).Error; err != nil {
 		return err
 	}
 	if pending {
@@ -172,7 +172,7 @@ func (s *Service) quiesce(ctx context.Context, key string, actorID int64) error 
 				return ErrBuiltin
 			}
 			var open bool
-			if err := selectExists(g, g.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", key)).
+			if err := store.ExistsQuery(g, g.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", key)).
 				Scan(&open).Error; err != nil {
 				return err
 			}
@@ -241,13 +241,11 @@ func beginUninstall(db *gorm.DB, key string, epoch int64, boots []string) *gorm.
 // disableForUninstall disables key and clears its desired version while
 // its uninstall waits for the nodes to stop.
 func disableForUninstall(db *gorm.DB, key string) *gorm.DB {
-	return pluginRow(db, key).Updates(map[string]any{
+	return pluginRow(db, key).Updates(model.PluginChange(map[string]any{
 		"status":          StatusDisabled,
 		"desired_version": nil,
 		"status_reason":   "uninstalling",
-		"row_version":     gorm.Expr("row_version + 1"),
-		"updated_at":      gorm.Expr("now()"),
-	})
+	}))
 }
 
 // addUninstallTargets adds boots to the targets of key's uninstall and
@@ -258,7 +256,6 @@ func addUninstallTargets(db *gorm.DB, key string, boots []string) *gorm.DB {
 }
 
 // disableRevoked disables running plugins after a revocation (best effort).
-
 func (s *Service) disableRevoked(ctx context.Context, keys []string, actorID int64, reason string) []string {
 	var disabled []string
 	for _, k := range keys {

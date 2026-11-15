@@ -21,7 +21,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -394,9 +393,6 @@ func scoped(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
 	return db.Table("proxies p").Where("p.id = ?", id).Scopes(core.ProxyRows.Scope(scope))
 }
 
-// forUpdate locks the rows a query reads until the transaction ends.
-var forUpdate = clause.Locking{Strength: clause.LockingStrengthUpdate}
-
 func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh) }
 
 func notFound(ctx context.Context) error {
@@ -732,7 +728,7 @@ func (s *Service) update(c *gin.Context) {
 		// Visibility first (404 outside the caller's range); the lock keeps
 		// what the checks below read true until the commit.
 		var cur row
-		err := scoped(store.G(ctx, tx), id, scope).Select(connectionColumns).Clauses(forUpdate).Take(&cur).Error
+		err := scoped(store.G(ctx, tx), id, scope).Select(connectionColumns).Clauses(store.ForUpdate).Take(&cur).Error
 		if store.IsNoRows(err) {
 			return notFound(ctx)
 		}
@@ -813,7 +809,7 @@ func (s *Service) delete(c *gin.Context) {
 		// Visibility first: a proxy outside the caller's range is 404 even
 		// when it is in use.
 		var name string
-		err := scoped(store.G(ctx, tx), id, scope).Select("p.name").Clauses(forUpdate).Take(&name).Error
+		err := scoped(store.G(ctx, tx), id, scope).Select("p.name").Clauses(store.ForUpdate).Take(&name).Error
 		if store.IsNoRows(err) {
 			return notFound(ctx)
 		}
@@ -932,7 +928,7 @@ func (s *Service) recordObservedIP(ctx context.Context, id int64, ip string) err
 	return s.db.Tx(ctx, func(tx pgx.Tx) error {
 		g := store.G(ctx, tx)
 		var previous string
-		if err := g.Model(&model.Proxy{}).Select("COALESCE(real_ip, '')").Where("id = ?", id).Clauses(forUpdate).
+		if err := g.Model(&model.Proxy{}).Select("COALESCE(real_ip, '')").Where("id = ?", id).Clauses(store.ForUpdate).
 			Take(&previous).Error; err != nil {
 			return err
 		}

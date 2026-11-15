@@ -500,9 +500,7 @@ func (a *API) pluginStatusValue(ctx context.Context, key string) (string, error)
 // updatePlugin sets column of plugin key to value, as a settings change:
 // updated_at and row_version move with it.
 func updatePlugin(db *gorm.DB, key, column string, value any) *gorm.DB {
-	return db.Model(&model.Plugin{}).Where("key = ?", key).Updates(map[string]any{
-		column: value, "updated_at": gorm.Expr("now()"), "row_version": gorm.Expr("row_version + 1"),
-	})
+	return db.Model(&model.Plugin{}).Where("key = ?", key).Updates(model.PluginChange(map[string]any{column: value}))
 }
 
 func (a *API) putEgressPolicy(c *gin.Context) {

@@ -75,7 +75,7 @@ func TestSQLLoadConsentablePlugin(t *testing.T) {
 func TestSQLLoadConsentableVersion(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var v model.PluginVersion
-		return versionRow(db, "demo", "1.2.0").Select("consent_status, signature_status, manifest_hash").Clauses(forUpdate).Take(&v)
+		return versionRow(db, "demo", "1.2.0").Select("consent_status, signature_status, manifest_hash").Clauses(store.ForUpdate).Take(&v)
 	})
 }
 
@@ -93,7 +93,7 @@ func TestSQLUninstallState(t *testing.T) {
 func TestSQLUninstallStopped(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var stopped bool
-		return uninstallRow(db, "demo").Select("target_boot_ids <@ stopped_boot_ids").Clauses(forUpdate).Take(&stopped)
+		return uninstallRow(db, "demo").Select("target_boot_ids <@ stopped_boot_ids").Clauses(store.ForUpdate).Take(&stopped)
 	})
 }
 
@@ -123,7 +123,7 @@ func TestSQLAddStoppedBoots(t *testing.T) {
 func TestSQLRolloutOpen(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var open bool
-		return selectExists(db, db.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", "demo")).Scan(&open)
+		return store.ExistsQuery(db, db.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", "demo")).Scan(&open)
 	})
 }
 

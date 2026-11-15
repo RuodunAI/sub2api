@@ -13,7 +13,6 @@ import (
 	"sync"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
@@ -206,9 +205,6 @@ func packageRef(ctx context.Context, q store.Querier, key, version string) (sha,
 	return v.PackageSha256, v.PackageURL, err
 }
 
-// forUpdate locks the rows a statement reads (FOR UPDATE).
-var forUpdate = clause.Locking{Strength: clause.LockingStrengthUpdate}
-
 // pluginRow is the plugins row of key.
 func pluginRow(db *gorm.DB, key string) *gorm.DB {
 	return db.Model(&model.Plugin{}).Where("key = ?", key)
@@ -217,17 +213,12 @@ func pluginRow(db *gorm.DB, key string) *gorm.DB {
 // lockedPlugin is the plugins row of key, read FOR UPDATE: the lock every
 // lifecycle change takes first (no lock-order deadlock with the grant rows).
 func lockedPlugin(db *gorm.DB, key string) *gorm.DB {
-	return pluginRow(db, key).Clauses(forUpdate)
+	return pluginRow(db, key).Clauses(store.ForUpdate)
 }
 
 // versionRow is the plugin_versions row of key@version.
 func versionRow(db *gorm.DB, key, version string) *gorm.DB {
 	return db.Model(&model.PluginVersion{}).Where("plugin_key = ? AND version = ?", key, version)
-}
-
-// selectExists selects whether sub, a query built on db, finds a row.
-func selectExists(db, sub *gorm.DB) *gorm.DB {
-	return db.Raw("SELECT EXISTS (?)", sub.Select("1"))
 }
 
 // cached returns the package unpacked for key@version with sha while the

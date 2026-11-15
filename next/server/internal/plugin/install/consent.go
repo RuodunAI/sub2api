@@ -250,7 +250,7 @@ func (s *Service) loadConsentable(ctx context.Context, tx pgx.Tx, key, version s
 		return nil, err
 	}
 	var v model.PluginVersion
-	err = versionRow(g, key, version).Select("consent_status, signature_status, manifest_hash").Clauses(forUpdate).Take(&v).Error
+	err = versionRow(g, key, version).Select("consent_status, signature_status, manifest_hash").Clauses(store.ForUpdate).Take(&v).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
@@ -875,18 +875,16 @@ const consentablePluginColumns = "status, active_version, COALESCE(active_versio
 // markInstalled moves a first install's plugin row to installed, recording
 // its name and who installed it (unless already recorded).
 func markInstalled(db *gorm.DB, key string, name []byte, actorID int64) *gorm.DB {
-	return pluginRow(db, key).Updates(map[string]any{
+	return pluginRow(db, key).Updates(model.PluginChange(map[string]any{
 		"status":       StatusInstalled,
 		"name":         name,
 		"installed_by": gorm.Expr("COALESCE(installed_by, ?)", nullID(actorID)),
 		"installed_at": gorm.Expr("now()"),
-		"updated_at":   gorm.Expr("now()"),
-		"row_version":  gorm.Expr("row_version + 1"),
-	})
+	}))
 }
 
 // bumpPlugin moves the plugin row's version, which also locks it: the
 // first write of a grant change.
 func bumpPlugin(db *gorm.DB, key string) *gorm.DB {
-	return pluginRow(db, key).Updates(map[string]any{"row_version": gorm.Expr("row_version + 1"), "updated_at": gorm.Expr("now()")})
+	return pluginRow(db, key).Updates(model.PluginChange(map[string]any{}))
 }

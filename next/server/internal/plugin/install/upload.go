@@ -116,7 +116,7 @@ func (s *Service) openAndValidate(ctx context.Context, data []byte, opt UploadOp
 func (s *Service) storedIdentical(ctx context.Context, p *pkg.Package) (bool, error) {
 	g := store.G(ctx, s.d.DB.Pool)
 	var ok bool
-	err := selectExists(g, versionRow(g, p.Manifest.Key, p.Manifest.Version).
+	err := store.ExistsQuery(g, versionRow(g, p.Manifest.Key, p.Manifest.Version).
 		Where("package_sha256 = ? AND consent_status <> ?", p.SHA256, ConsentRejected)).Scan(&ok).Error
 	return ok, err
 }
@@ -324,7 +324,6 @@ func approvedResources(db *gorm.DB, key string) *gorm.DB {
 }
 
 func sameID(a, b *int64) bool {
-
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}

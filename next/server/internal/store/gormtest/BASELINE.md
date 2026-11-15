@@ -66,6 +66,22 @@ go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/acco
 ```
 
 Recorded 2026-11-15 on gorm-2a, same machine and server as above. Medians
+of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotGroupSnapshot/pgx | 161 496 | 22 250 | 250 |
+| BenchmarkHotGroupSnapshot/gorm | 248 970 | 37 865 | 610 |
+| BenchmarkHotLoadRow/pgx | 100 952 | 6 432 | 63 |
+| BenchmarkHotLoadRow/gorm | 136 736 | 16 629 | 206 |
+
+GORM takes 2.4 and 3.3 times the allocations (the limit is 1.5), so both
+stay on pgx under `//gormguard:allow-pgx`. `Load` reads its row with a
+statement of its own (`loadLive`: any live account, no scope condition);
+`loadRow`, which the console and the background jobs use, is on GORM. The
+other account calls of the gateway (`GroupHasType` and `Unschedulable`
+after a failed dispatch, the name read of `SetCooldown`, the automatic
+disables) run on GORM: none of them runs for every request.
 
 ## Batch 2b: the CCGateway shared-runtime account read
 
@@ -84,6 +100,15 @@ go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/ccga
 ```
 
 Recorded 2026-11-15 on gorm-2b, same machine and server as above. Medians
+of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotSharedAccountType/pgx | 52 824 | 445 | 8 |
+| BenchmarkHotSharedAccountType/gorm | 64 007 | 5 805 | 65 |
+
+GORM takes 8.1 times the allocations, so sharedAccountType stays on pgx
+under `//gormguard:allow-pgx`.
 
 ## Batch 2c: the plugin grant check
 
@@ -104,25 +129,6 @@ of 5.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| BenchmarkHotGroupSnapshot/pgx | 161 496 | 22 250 | 250 |
-| BenchmarkHotGroupSnapshot/gorm | 248 970 | 37 865 | 610 |
-| BenchmarkHotLoadRow/pgx | 100 952 | 6 432 | 63 |
-| BenchmarkHotLoadRow/gorm | 136 736 | 16 629 | 206 |
-
-GORM takes 2.4 and 3.3 times the allocations (the limit is 1.5), so both
-stay on pgx under `//gormguard:allow-pgx`. `Load` reads its row with a
-statement of its own (`loadLive`: any live account, no scope condition);
-`loadRow`, which the console and the background jobs use, is on GORM. The
-other account calls of the gateway (`GroupHasType` and `Unschedulable`
-after a failed dispatch, the name read of `SetCooldown`, the automatic
-disables) run on GORM: none of them runs for every request.
-
-| BenchmarkHotSharedAccountType/pgx | 52 824 | 445 | 8 |
-| BenchmarkHotSharedAccountType/gorm | 64 007 | 5 805 | 65 |
-
-GORM takes 8.1 times the allocations, so sharedAccountType stays on pgx
-under `//gormguard:allow-pgx`.
-
 | BenchmarkHotGrantHolds/pgx | 79 491 | 549 | 11 |
 | BenchmarkHotGrantHolds/gorm | 109 006 | 6 765 | 60 |
 

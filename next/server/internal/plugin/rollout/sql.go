@@ -19,13 +19,6 @@ var (
 	leaseFromNow = "clock_timestamp() + ? * interval '1 millisecond'"
 )
 
-// exists reports whether sub selects a row.
-func exists(g, sub *gorm.DB) (bool, error) {
-	var ok bool
-	err := g.Raw("SELECT EXISTS (?)", sub).Scan(&ok).Error
-	return ok, err
-}
-
 // uninstallPending selects the uninstall marker of a plugin.
 func uninstallPending(g *gorm.DB, key string) *gorm.DB {
 	return g.Model(&model.PluginUninstall{}).Select("1").Where("plugin_key = ?", key)
@@ -36,13 +29,10 @@ func openRollouts(g *gorm.DB, key string) *gorm.DB {
 	return g.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", key)
 }
 
-// updatePlugin writes set to the plugin row. Every rollout change of a
-// plugin also sets updated_at and moves row_version, the generation that
-// reconcile passes and runtime registration compare.
+// updatePlugin writes set to the plugin row, as a change of it
+// (model.PluginChange).
 func updatePlugin(g *gorm.DB, key string, set map[string]any) *gorm.DB {
-	set["updated_at"] = sqlNow
-	set["row_version"] = bumpRowVersion
-	return g.Model(&model.Plugin{}).Where("key = ?", key).Updates(set)
+	return g.Model(&model.Plugin{}).Where("key = ?", key).Updates(model.PluginChange(set))
 }
 
 // rolloutCols are the plugin_rollouts columns of a rolloutRow, read into a

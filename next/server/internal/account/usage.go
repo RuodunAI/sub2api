@@ -987,7 +987,7 @@ func (s *Service) writeUsageLimitState(ctx context.Context, c usageCandidate, ch
 		g := store.G(ctx, tx)
 		err := g.Model(&model.Account{}).Select(`status, status_reason, auto_disabled_source, auto_disabled_until,
 				deferred_auto_disable, deferred_auto_disable_reason, deferred_auto_disabled_until, clock_timestamp()`).
-			Where("id = ? AND deleted_at IS NULL", c.id).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Row().
+			Where("id = ? AND deleted_at IS NULL", c.id).Clauses(store.ForUpdate).Row().
 			Scan(&status, &reason, &source, &until, &deferred, &deferredReason, &deferredUntil, &now)
 		if store.IsNoRows(err) {
 			return nil

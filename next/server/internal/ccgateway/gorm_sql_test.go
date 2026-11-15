@@ -8,6 +8,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -92,7 +93,7 @@ func TestSQLPreparationMatches(t *testing.T) {
 	p := core.AccountPreparation{Key: "d0123456789abcdef", ProxyID: &proxy, Settings: json.RawMessage(`{"locale":"en"}`), CreatedBy: 9}
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var found bool
-		return existsQuery(db, preparationDraft(db, p)).Scan(&found)
+		return store.ExistsQuery(db, preparationDraft(db, p)).Scan(&found)
 	})
 }
 

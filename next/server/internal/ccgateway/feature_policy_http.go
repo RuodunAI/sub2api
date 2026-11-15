@@ -77,7 +77,7 @@ func (s *Service) previewAuthorize(c *gin.Context, ctx context.Context, id int64
 		return false
 	}
 	g := store.G(ctx, s.DB.Pool)
-	found, err := rowExists(g, g.Model(&model.Account{}).
+	found, err := store.Exists(g, g.Model(&model.Account{}).
 		Where("id = ? AND deleted_at IS NULL AND plugin_key = 'ccgateway' AND type IN ('managed', 'apikey')", id))
 	if err != nil || !found {
 		httpapi.Fail(c, core.ErrNotFound)

@@ -515,7 +515,7 @@ func (c *Controller) registerRuntime(ctx context.Context, key string, expected .
 		if len(expected) > 0 && p.RowVersion != expected[0].epoch {
 			return errStaleGeneration
 		}
-		pending, err := exists(g, uninstallPending(g, key))
+		pending, err := store.Exists(g, uninstallPending(g, key))
 		if err != nil {
 			return err
 		}

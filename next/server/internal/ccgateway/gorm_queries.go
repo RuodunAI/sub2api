@@ -9,19 +9,6 @@ import (
 
 // Query pieces shared by the statements built with GORM (store.G).
 
-// rowExists reports whether q, a query without a select list built from db,
-// finds a row: one SELECT EXISTS round trip, as the raw statements were.
-func rowExists(db *gorm.DB, q *gorm.DB) (bool, error) {
-	var found bool
-	err := existsQuery(db, q).Scan(&found).Error
-	return found, err
-}
-
-// existsQuery is the statement of rowExists.
-func existsQuery(db *gorm.DB, q *gorm.DB) *gorm.DB {
-	return db.Raw("SELECT EXISTS(?)", q.Select("1"))
-}
-
 // runtimes is the ccgateway_runtimes table.
 func runtimes(db *gorm.DB) *gorm.DB {
 	return db.Model(&model.CcgatewayRuntime{})

@@ -97,13 +97,12 @@ func GuardOwnSegments(ctx context.Context, q store.Querier, users core.UserGuard
 		return nil
 	}
 	g := store.G(ctx, q)
-	var member bool
-	if err := g.Raw("SELECT EXISTS (?)", g.Table("users u").Select("1").Joins("JOIN segments s ON s.id = u.segment_id").
-		Where("u.id = ? AND s.id = ANY(?) AND NOT s.is_default", actor, store.Int64s(segmentIDs))).
-		Scan(&member).Error; err != nil || !member {
+	member, err := store.Exists(g, g.Table("users u").Joins("JOIN segments s ON s.id = u.segment_id").
+		Where("u.id = ? AND s.id = ANY(?) AND NOT s.is_default", actor, store.Int64s(segmentIDs)))
+	if err != nil || !member {
 		return err
 	}
-	err := users.CanActOnUsers(ctx, actor, core.ActOnData, actor)
+	err = users.CanActOnUsers(ctx, actor, core.ActOnData, actor)
 	if err != nil && core.AsError(err).Code == core.ErrPermissionDenied.Code {
 		return errOwnSegment(ctx).WithCause(err)
 	}

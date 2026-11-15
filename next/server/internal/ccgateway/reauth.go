@@ -60,8 +60,6 @@ func (s *Service) ReauthDraft(ctx context.Context, accountID int64) (string, boo
 	return d.Key, false, nil
 }
 
-// CommitReauth verifies login on the same runtime and resets account-side
-// failure/quota state. Runtime mappings, sessions and volumes are retained.
 // reauthKeyQuery locks managed ccgateway account accountID and reads its
 // runtime key.
 func reauthKeyQuery(db *gorm.DB, accountID int64) *gorm.DB {
@@ -71,6 +69,8 @@ func reauthKeyQuery(db *gorm.DB, accountID int64) *gorm.DB {
 		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "a"}})
 }
 
+// CommitReauth verifies login on the same runtime and resets account-side
+// failure/quota state. Runtime mappings, sessions and volumes are retained.
 func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string, fn func(pgx.Tx, string) error) (string, error) {
 	if !s.runtimesOn(ctx) {
 		return "", reasonError(core.ErrUnavailable, "not_configured")

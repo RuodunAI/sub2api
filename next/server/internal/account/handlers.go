@@ -182,10 +182,8 @@ func inScope(ctx context.Context, q store.Querier, id int64, scope core.DataScop
 	if scope.All {
 		return true, nil
 	}
-	var ok bool
 	db := store.G(ctx, q)
-	err := db.Raw("SELECT EXISTS (?)", scopedAccount(db, id, scope).Select("1")).Scan(&ok).Error
-	return ok, err
+	return store.Exists(db, scopedAccount(db, id, scope))
 }
 
 // scopedAccount is account id (live or not) if it is in scope.
@@ -1324,9 +1322,12 @@ func rawJSON(doc *string) json.RawMessage {
 	return json.RawMessage(*doc)
 }
 
-// environmentJSON is the environment column of v, encoded as pgx encoded
-// the map.
+// environmentJSON is the environment column of v; nil is the empty object,
+// the column's default.
 func environmentJSON(v core.EnvironmentValues) json.RawMessage {
+	if v == nil {
+		return json.RawMessage(`{}`)
+	}
 	b, _ := json.Marshal(v)
 	return b
 }

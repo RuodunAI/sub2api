@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -258,7 +257,7 @@ func lockAutomaticState(db *gorm.DB, id int64, owner string) *gorm.DB {
 	return db.Model(&model.Account{}).Select(`name,plugin_key,type,status,status_reason,auto_disabled_source,auto_disable,auto_disabled_until,
 		deferred_auto_disable,deferred_auto_disable_reason,deferred_auto_disabled_until,clock_timestamp()`).
 		Where("id = ? AND deleted_at IS NULL AND (? = '' OR plugin_key = ?)", id, owner, owner).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})
+		Clauses(store.ForUpdate)
 }
 
 // afterStatusChange tells the routing cache and the CCGateway runtime of a

@@ -276,7 +276,7 @@ func (s *Service) sweepOrphans(ctx context.Context) (int, error) {
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		e := s.lockedTx(c, key, false, func(tx pgx.Tx) error {
 			g := store.G(c, tx)
-			if found, e := rowExists(g, runtimes(g).Where("key = ?", key)); e != nil || found {
+			if found, e := store.Exists(g, runtimes(g).Where("key = ?", key)); e != nil || found {
 				return e
 			}
 			if e := s.deleteRemote(c, key, false); e != nil {

@@ -53,7 +53,7 @@ func readUninstallState(ctx context.Context, q store.Querier, key string, lock b
 func uninstallState(db *gorm.DB, key string, lock bool) *gorm.DB {
 	db = uninstallRow(db, key).Select("epoch, target_boot_ids, stopped_boot_ids, requested_at")
 	if lock {
-		db = db.Clauses(forUpdate)
+		db = db.Clauses(store.ForUpdate)
 	}
 	return db
 }

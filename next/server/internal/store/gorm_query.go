@@ -1,6 +1,9 @@
 package store
 
-import "gorm.io/gorm"
+import (
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
 
 // Query building helpers for the GORM path.
 
@@ -39,3 +42,20 @@ const (
 	LockingStrengthNoKeyUpdate = "NO KEY UPDATE"
 	LockingStrengthKeyShare    = "KEY SHARE"
 )
+
+// ForUpdate locks the rows a query reads until the transaction ends (FOR
+// UPDATE), for db.Clauses.
+var ForUpdate = clause.Locking{Strength: clause.LockingStrengthUpdate}
+
+// ExistsQuery selects whether sub, a query built on db, finds a row, in one
+// SELECT EXISTS round trip; sub's select list becomes 1.
+func ExistsQuery(db, sub *gorm.DB) *gorm.DB {
+	return db.Raw("SELECT EXISTS (?)", sub.Select("1"))
+}
+
+// Exists reports whether sub, a query built on db, finds a row (ExistsQuery).
+func Exists(db, sub *gorm.DB) (bool, error) {
+	var found bool
+	err := ExistsQuery(db, sub).Scan(&found).Error
+	return found, err
+}
