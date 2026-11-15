@@ -122,6 +122,12 @@ type clusterBackend struct {
 	pluginGroup *background.Group
 
 	client *river.Client[*sql.Tx]
+	// startMu keeps an Insert outside a transaction from overlapping
+	// client.Start. Without a listener (database/sql), River has such an
+	// Insert wake the producer of its queue, which reads state that Start
+	// writes without a lock (river v0.49.0, producer.fetchLimiter): Start
+	// holds it, Insert shares it. InsertTx wakes nothing.
+	startMu sync.RWMutex
 
 	mu       sync.Mutex
 	periodic map[string]bool
@@ -279,7 +285,10 @@ func (b *clusterBackend) converge() {
 	case stopped || want == running:
 		return
 	case want:
-		if err := b.client.Start(b.runCtx); err != nil {
+		b.startMu.Lock()
+		err := b.client.Start(b.runCtx)
+		b.startMu.Unlock()
+		if err != nil {
 			b.log.Warn("task: start River", "err", err)
 			return
 		}
@@ -327,7 +336,9 @@ func (b *clusterBackend) enqueue(ctx context.Context, tx *gorm.DB, name string, 
 		}
 		_, err = b.client.InsertTx(ctx, sqlTx, job, insert)
 	} else {
+		b.startMu.RLock()
 		_, err = b.client.Insert(ctx, job, insert)
+		b.startMu.RUnlock()
 	}
 	return err
 }
@@ -338,6 +349,8 @@ func (b *clusterBackend) trigger(ctx context.Context, name string) error {
 	if !ok || t.Scope != core.TaskCluster {
 		return core.ErrTaskUnknown
 	}
+	b.startMu.RLock()
+	defer b.startMu.RUnlock()
 	_, err := b.client.Insert(ctx, taskArgs{Name: name, Key: manualKey, Manual: true}, &river.InsertOpts{
 		Queue: t.queue(), MaxAttempts: 1, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: unfinishedStates}})
 	return err
@@ -498,6 +511,8 @@ func (b *clusterBackend) work(ctx context.Context, t *Task, job *river.Job[taskA
 // not make two; the lease keeps it from overlapping a scheduled run. A
 // failed insert leaves the work to the next scheduled run.
 func (b *clusterBackend) continueRun(ctx context.Context, t *Task, job *river.Job[taskArgs], delay time.Duration) {
+	b.startMu.RLock()
+	defer b.startMu.RUnlock()
 	_, err := b.client.Insert(ctx, taskArgs{Name: t.Name, Key: continueKey + strconv.FormatInt(job.ID, 10), Args: job.Args.Args},
 		&river.InsertOpts{Queue: t.queue(), MaxAttempts: t.Attempts(), ScheduledAt: time.Now().Add(delay),
 			UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: unfinishedStates}})

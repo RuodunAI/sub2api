@@ -644,23 +644,23 @@ type riverError struct {
 	Error   string    `json:"error"`
 }
 
-// riverErrors reads river_job.errors (jsonb[]), which the GORM bridge hands
-// over as one JSON text per element; NULL is nil.
+// riverErrors reads river_job.errors (jsonb[]), which database/sql hands
+// over as the array's text: one JSON text per element; NULL is nil.
 type riverErrors []riverError
 
 // Scan implements sql.Scanner.
 func (e *riverErrors) Scan(src any) error {
-	if src == nil {
+	var elems store.Strings
+	if err := elems.Scan(src); err != nil {
+		return fmt.Errorf("task: scan river errors: %w", err)
+	}
+	if elems == nil {
 		*e = nil
 		return nil
 	}
-	elems, ok := src.([][]byte)
-	if !ok {
-		return fmt.Errorf("task: cannot scan %T into river errors", src)
-	}
 	out := make(riverErrors, len(elems))
 	for i, b := range elems {
-		if err := json.Unmarshal(b, &out[i]); err != nil {
+		if err := json.Unmarshal([]byte(b), &out[i]); err != nil {
 			return err
 		}
 	}
