@@ -1,0 +1,8 @@
+-- sql
+SELECT p.protocol, p.host, p.port, p.username, p.password_enc FROM proxies p WHERE p.id = $1 AND (($2::boolean OR COALESCE(p.created_by = $3::bigint, false) OR p.id = ANY($4::bigint[]))) LIMIT $5 FOR UPDATE
+-- vars
+$1 int64 5
+$2 bool false
+$3 int64 7
+$4 store.Int64s [3 4]
+$5 int 1
