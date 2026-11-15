@@ -2,11 +2,9 @@ package install
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -299,16 +297,7 @@ func loadPriorGrants(ctx context.Context, q store.Querier, key string) (map[stri
 // LoadVersionGrants reads the grant rows key@version runs with: the set
 // staged for it while it is not active, else the plugin's grants.
 func LoadVersionGrants(ctx context.Context, q store.Querier, key, version string) (map[string]Grant, error) {
-	return loadGrants(versionGrants(store.G(ctx, q), key, version))
-}
-
-// versionRowsNamed is grants.VersionRows with named parameters: it takes
-// key and version as $1 and $2, several times each, for pgx.
-var versionRowsNamed = strings.NewReplacer("$1", "@key", "$2", "@version").Replace(grants.VersionRows)
-
-// versionGrants selects the grant rows key@version runs with (LoadVersionGrants).
-func versionGrants(db *gorm.DB, key, version string) *gorm.DB {
-	return db.Raw("SELECT "+grantColumns+" FROM "+versionRowsNamed, sql.Named("key", key), sql.Named("version", version))
+	return loadGrants(grants.VersionGrantsQuery(store.G(ctx, q), key, version))
 }
 
 // grantRow is a grant row as a Grant shows it.

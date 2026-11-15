@@ -2,7 +2,6 @@ package install
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -180,15 +179,10 @@ func TestSQLPluginGrants(t *testing.T) {
 	})
 }
 
-// grants.VersionRows takes key and version several times each, as $1 and
-// $2: a change of its placeholders must change versionRowsNamed too.
 func TestSQLVersionGrants(t *testing.T) {
-	if strings.Contains(versionRowsNamed, "$") || !strings.Contains(versionRowsNamed, "@key") || !strings.Contains(versionRowsNamed, "@version") {
-		t.Fatalf("grants.VersionRows no longer takes $1 and $2:\n%s", grants.VersionRows)
-	}
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var rows []grantRow
-		return versionGrants(db, "demo", "1.2.0").Scan(&rows)
+		return grants.VersionGrantsQuery(db, "demo", "1.2.0").Scan(&rows)
 	})
 }
 
