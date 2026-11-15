@@ -44,6 +44,10 @@ var stepUpExemptRoutes = map[string]string{
 	// none to flag): an access key never sees these routes.
 	"POST /me/access-keys":      "session only, no permission",
 	"PATCH /me/access-keys/:id": "session only, no permission",
+	// Narrowing a host grant needs plugin:manage alone; granting one again
+	// needs the plugin:grant:* key of its risk (flagged stepUp, in Extra),
+	// checked by the handler, and both spend the consent's proof.
+	"PUT /plugins/:key/grants/:permission": "narrowing needs plugin:manage only; regrant keys are in Extra",
 }
 
 // checkRoutes holds the registered console routes to the start-up rules
