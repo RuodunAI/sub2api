@@ -44,12 +44,15 @@ var migratedPackages = map[string]string{
 	"internal/apikey":                       "batch 1d",
 	"internal/app":                          "batch 1d",
 	"internal/audit":                        "batch 1b",
+	"internal/billing":                      "batch 4c",
 	"internal/ccgateway":                    "batch 2b",
 	"internal/cluster":                      "batch 1b",
+	"internal/core":                         "batch 4d",
 	"internal/environment":                  "batch 1b",
 	"internal/event":                        "batch 1c",
 	"internal/event/delivery":               "batch 1c",
 	"internal/fallbackcredits":              "batch 1d",
+	"internal/gateway":                      "batch 4d",
 	"internal/group":                        "batch 1a",
 	"internal/helperhistory":                "batch 1b",
 	"internal/job":                          "batch 1c",
@@ -70,6 +73,7 @@ var migratedPackages = map[string]string{
 	"internal/proxy":                        "batch 1d",
 	"internal/segment":                      "batch 1a",
 	"internal/task":                         "batch 1c",
+	"internal/usage":                        "batch 4a/4b",
 	"internal/webui":                        "batch 1d",
 }
 
@@ -282,6 +286,21 @@ func f(ctx context.Context, db *gorm.DB, pool *pgxpool.Pool, x fake) {
 	x.Transaction()
 }
 `,
+		},
+		{
+			name: "raw-unrun/a Raw chain read without running it",
+			pkg:  "internal/billing",
+			src: `
+func f(db *gorm.DB) {
+	_ = db.Raw("UPDATE t SET a = 1").Error
+	_ = db.Raw("DELETE FROM t WHERE id = ?", 1).Where("x").RowsAffected
+	var n int
+	_ = db.Raw("SELECT 1").Scan(&n).Error
+	_ = db.Exec("UPDATE t SET a = 1").Error
+	_ = db.Where("id = ?", 1).Error
+}
+`,
+			want: []string{ruleUnrun, ruleUnrun},
 		},
 		{
 			name:    "open/outside store, through an alias and as a value",

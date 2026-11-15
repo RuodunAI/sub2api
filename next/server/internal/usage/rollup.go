@@ -380,13 +380,12 @@ func rollupHours(ctx context.Context, tx pgx.Tx, from, to time.Time) (int, error
 		return 0, err
 	}
 	dims := strings.Join(rollupDims, ", ")
-	// anomalousRow holds the jsonb ? operator, which GORM would bind the
-	// first argument to, so this statement keeps pgx and its $n placeholders.
-	//gormguard:allow-pgx the SQL holds the jsonb ? operator, which GORM takes for a placeholder
-	if _, err := tx.Exec(ctx, `INSERT INTO usage_hourly (created_at, `+dims+`, `+measureList(func(m statMeasure) string { return m.name })+`)
+	// The measures hold jsonb's ? operator (anomalousRow), so the statement
+	// keeps its $n placeholders and goes through execNumbered.
+	if err := execNumbered(store.G(ctx, tx), `INSERT INTO usage_hourly (created_at, `+dims+`, `+measureList(func(m statMeasure) string { return m.name })+`)
 		SELECT date_trunc('hour', u.created_at, 'UTC'), `+dims+`, `+measureList(func(m statMeasure) string { return `sum(` + m.row + `)` })+`
 		FROM usage_logs u WHERE u.created_at >= $1 AND u.created_at < $2
-		GROUP BY 1, `+dims, from, to); err != nil {
+		GROUP BY 1, `+dims, []any{from, to}).Error; err != nil {
 		return 0, err
 	}
 	return int(to.Sub(from) / time.Hour), nil

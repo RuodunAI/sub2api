@@ -28,6 +28,10 @@
 //     A []any argument is expanded as well: its elements become a list, so
 //     Where("x IN ?", []any{1, 2}) is "x IN ($1,$2)". A spread (args...)
 //     passes its elements and is not checked;
+//   - [gorm-raw-unrun] no Error or RowsAffected read off a Raw chain that
+//     no method ran (Scan, Row, Rows, Find ...): Raw only builds the
+//     statement, so db.Raw("UPDATE ...").Error is nil and nothing is
+//     written; a write takes Exec;
 //   - [pgx-direct] in a package listed as migrated, no direct pgx Exec,
 //     Query or QueryRow (a pgx.Batch and CopyFrom stay on pgx), except a
 //     statement with an allow-pgx comment.

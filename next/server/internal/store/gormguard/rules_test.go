@@ -15,6 +15,7 @@ const (
 	ruleInstance = "[gorm-instance]"
 	ruleSlice    = "[gorm-slice]"
 	rulePgx      = "[pgx-direct]"
+	ruleUnrun    = "[gorm-raw-unrun]"
 )
 
 // bannedMethods are the gorm (*DB) methods that would let GORM own a
@@ -33,6 +34,15 @@ var conditionMethods = map[string]int{
 	"Where": 0, "Or": 0, "Not": 0, "Having": 0, "Raw": 0, "Exec": 0, "Joins": 0, "Assign": 0, "Attrs": 0,
 	"Find": 1, "First": 1, "Take": 1, "Last": 1, "Delete": 1, "FirstOrInit": 1, "FirstOrCreate": 1,
 	"Update": 1, "UpdateColumn": 1,
+}
+
+// runMethods are the gorm (*DB) methods that run the statement built so
+// far; Raw only builds one.
+var runMethods = map[string]bool{
+	"Scan": true, "Row": true, "Rows": true, "ScanRows": true, "Pluck": true, "Count": true,
+	"Find": true, "FindInBatches": true, "First": true, "Take": true, "Last": true, "FirstOrInit": true, "FirstOrCreate": true,
+	"Exec": true, "Create": true, "CreateInBatches": true, "Save": true, "Update": true, "Updates": true,
+	"UpdateColumn": true, "UpdateColumns": true, "Delete": true,
 }
 
 // pgxMethods are the direct statement calls of a pgx querier.
@@ -75,6 +85,7 @@ func (c *checker) visit(n ast.Node) bool {
 	switch n := n.(type) {
 	case *ast.SelectorExpr:
 		c.selector(n)
+		c.unrun(n)
 	case *ast.CallExpr:
 		c.call(n)
 	case *ast.AssignStmt:
@@ -99,6 +110,35 @@ func (c *checker) selector(n *ast.SelectorExpr) {
 		c.report(n, "%s gorm.Open outside package store: take a handle from store.G", ruleOpen)
 	case c.migrated && isPgxStatement(fn):
 		c.pgx(n, fn)
+	}
+}
+
+// unrun reports the Error or RowsAffected of a Raw chain that no method
+// ran: db.Raw(sql).Error is nil without the statement ever reaching the
+// database. A write takes Exec instead of Raw, a read ends in Scan, Row or
+// Rows.
+func (c *checker) unrun(n *ast.SelectorExpr) {
+	if n.Sel.Name != "Error" && n.Sel.Name != "RowsAffected" {
+		return
+	}
+	for e := n.X; ; {
+		call, ok := e.(*ast.CallExpr)
+		if !ok {
+			return
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return
+		}
+		fn := funcOf(c.info, sel)
+		if fn == nil || !isGormMethod(fn) || runMethods[fn.Name()] {
+			return
+		}
+		if fn.Name() == "Raw" {
+			c.report(n, "%s %s of a Raw statement that never ran: use Exec for a write, end a read in Scan, Row or Rows", ruleUnrun, n.Sel.Name)
+			return
+		}
+		e = sel.X
 	}
 }
 

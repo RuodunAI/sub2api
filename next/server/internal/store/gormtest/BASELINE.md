@@ -175,6 +175,78 @@ recovery and retention, the monitor receipts, the helper usage receipts and
 the console (usage lists, details, export, summary, overview, realtime,
 manual reconcile and refund) are on GORM.
 
+## Batch 4b: the settler's statements
+
+Per billable request the settler runs, besides the `usage_logs` insert
+(a pgx.Batch, unchanged) and the ledger statements (package billing):
+`settleTx`'s row lock (`SELECT billing_status FROM usage_logs WHERE
+request_id = $1 FOR UPDATE`) and its write of the billing fields
+(`billUsageRow`). A request a plugin reserves runs `reserveTx` instead:
+the write of the estimate and the `pending_settlements` insert (`ON
+CONFLICT (plugin_key, ref_id) DO NOTHING RETURNING id`). The benchmark
+measures each pgx statement next to its GORM form (`Raw(...).Row().Scan`
+for the reads, `Exec` for the writes), against one pending row:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench HotStmt -benchmem -benchtime 1000x -count 5 ./internal/usage/
+```
+
+Recorded 2026-11-15 on gorm-4b, same machine and server as above. Medians
+of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| `gateway` BenchmarkHotSettingsRow/pgx | 56 013 | 909 | 10 |
+| `gateway` BenchmarkHotSettingsRow/gorm | 72 454 | 6 191 | 69 |
+| `gateway` BenchmarkHotStickyRules/pgx | 78 480 | 3 234 | 52 |
+| `gateway` BenchmarkHotStickyRules/gorm | 110 444 | 19 991 | 210 |
+| `store` BenchmarkHotQuotaObservation/pgx | 456 373 | 466 | 12 |
+| `store` BenchmarkHotQuotaObservation/gorm | 483 965 | 5 149 | 47 |
+| `store` BenchmarkHotReadAccountQuotas/pgx | 47 262 | 2 854 | 45 |
+| `store` BenchmarkHotReadAccountQuotas/gorm | 74 536 | 7 599 | 104 |
+| `store` BenchmarkHotAccountBalances/pgx | 103 089 | 997 | 19 |
+| `store` BenchmarkHotAccountBalances/gorm | 69 130 | 4 901 | 70 |
+
+GORM takes 6.9, 4.0, 3.9 and 2.3 times the allocations (the limit is 1.5),
+so the settings reads, `listRules`, `ApplyAccountQuotaObservation` and
+`ReadAccountQuotas` stay on pgx under `//gormguard:allow-pgx`. The other
+statements are on GORM: the sticky rule console writes, the start-up sync
+of the built-in rules and the failure policy lock in the gateway;
+`AccountBalances` (3.7 times, not on the request path) and the other
+balance, quota, credential refresh and settings statements of package
+store, which the console, the refresh jobs and the debounced passive quota
+writer (`SaveAccountQuota`, at most every 30 s per account) run.
+
+| BenchmarkHotStmtSettleLock/pgx | 338 788 | 461 | 9 |
+| BenchmarkHotStmtSettleLock/gorm | 313 103 | 3 493 | 45 |
+| BenchmarkHotStmtSettleUpdate/pgx | 554 210 | 2 939 | 99 |
+| BenchmarkHotStmtSettleUpdate/gorm | 470 680 | 6 628 | 139 |
+| BenchmarkHotStmtReserveUpdate/pgx | 502 428 | 2 291 | 70 |
+| BenchmarkHotStmtReserveUpdate/gorm | 424 302 | 5 228 | 104 |
+| BenchmarkHotStmtReserveEntry/pgx | 349 366 | 645 | 14 |
+| BenchmarkHotStmtReserveEntry/gorm | 250 247 | 4 412 | 59 |
+
+The row lock (5.0 times the allocations) and the reservation entry (4.2
+times) stay on pgx under `//gormguard:allow-pgx`. The two writes (1.40 and
+1.49 times; most of their allocations are encoding the decimal and jsonb
+arguments, which both paths do) are on GORM. The whole settlement moves
+from 863 to 903 allocs/op (BenchmarkHotSettle, 1.05 times; the free and
+pending inserts are unchanged at 233 and 102):
+
+| Benchmark | before | after |
+|---|---:|---:|
+| BenchmarkHotSettlerInsertFree | 233 | 233 |
+| BenchmarkHotSettlerInsertPending | 102 | 102 |
+| BenchmarkHotSettle | 863 | 903 |
+
+The rest of the settler (`markFailed`, `RetryPending`,
+`closeUnreconcilable`, the reconcile loop, the task registry and the
+hourly rollup) runs off the request path or on failures only and is on
+GORM without a benchmark, but for one statement: the rollup's `INSERT INTO
+usage_hourly ... SELECT` keeps pgx, because its measures hold the jsonb `?`
+operator (`anomalousRow`), which GORM takes for a placeholder.
+
 ## Batch 4c: billing
 
 The ledger writes of the request path are pgx batches and stay so (a
@@ -250,78 +322,6 @@ account list reads it, behind Redis (`cachedAccountBalances`); it is
 measured for the record.
 
 Recorded 2026-11-15 on gorm-4d, same machine and server as above. Medians
-
-## Batch 4b: the settler's statements
-
-Per billable request the settler runs, besides the `usage_logs` insert
-(a pgx.Batch, unchanged) and the ledger statements (package billing):
-`settleTx`'s row lock (`SELECT billing_status FROM usage_logs WHERE
-request_id = $1 FOR UPDATE`) and its write of the billing fields
-(`billUsageRow`). A request a plugin reserves runs `reserveTx` instead:
-the write of the estimate and the `pending_settlements` insert (`ON
-CONFLICT (plugin_key, ref_id) DO NOTHING RETURNING id`). The benchmark
-measures each pgx statement next to its GORM form (`Raw(...).Row().Scan`
-for the reads, `Exec` for the writes), against one pending row:
-
-```sh
-TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
-go test -run '^$' -bench HotStmt -benchmem -benchtime 1000x -count 5 ./internal/usage/
-```
-
-Recorded 2026-11-15 on gorm-4b, same machine and server as above. Medians
-of 5.
-
-| Benchmark | ns/op | B/op | allocs/op |
-|---|---:|---:|---:|
-| `gateway` BenchmarkHotSettingsRow/pgx | 56 013 | 909 | 10 |
-| `gateway` BenchmarkHotSettingsRow/gorm | 72 454 | 6 191 | 69 |
-| `gateway` BenchmarkHotStickyRules/pgx | 78 480 | 3 234 | 52 |
-| `gateway` BenchmarkHotStickyRules/gorm | 110 444 | 19 991 | 210 |
-| `store` BenchmarkHotQuotaObservation/pgx | 456 373 | 466 | 12 |
-| `store` BenchmarkHotQuotaObservation/gorm | 483 965 | 5 149 | 47 |
-| `store` BenchmarkHotReadAccountQuotas/pgx | 47 262 | 2 854 | 45 |
-| `store` BenchmarkHotReadAccountQuotas/gorm | 74 536 | 7 599 | 104 |
-| `store` BenchmarkHotAccountBalances/pgx | 103 089 | 997 | 19 |
-| `store` BenchmarkHotAccountBalances/gorm | 69 130 | 4 901 | 70 |
-
-GORM takes 6.9, 4.0, 3.9 and 2.3 times the allocations (the limit is 1.5),
-so the settings reads, `listRules`, `ApplyAccountQuotaObservation` and
-`ReadAccountQuotas` stay on pgx under `//gormguard:allow-pgx`. The other
-statements are on GORM: the sticky rule console writes, the start-up sync
-of the built-in rules and the failure policy lock in the gateway;
-`AccountBalances` (3.7 times, not on the request path) and the other
-balance, quota, credential refresh and settings statements of package
-store, which the console, the refresh jobs and the debounced passive quota
-writer (`SaveAccountQuota`, at most every 30 s per account) run.
-
-| BenchmarkHotStmtSettleLock/pgx | 338 788 | 461 | 9 |
-| BenchmarkHotStmtSettleLock/gorm | 313 103 | 3 493 | 45 |
-| BenchmarkHotStmtSettleUpdate/pgx | 554 210 | 2 939 | 99 |
-| BenchmarkHotStmtSettleUpdate/gorm | 470 680 | 6 628 | 139 |
-| BenchmarkHotStmtReserveUpdate/pgx | 502 428 | 2 291 | 70 |
-| BenchmarkHotStmtReserveUpdate/gorm | 424 302 | 5 228 | 104 |
-| BenchmarkHotStmtReserveEntry/pgx | 349 366 | 645 | 14 |
-| BenchmarkHotStmtReserveEntry/gorm | 250 247 | 4 412 | 59 |
-
-The row lock (5.0 times the allocations) and the reservation entry (4.2
-times) stay on pgx under `//gormguard:allow-pgx`. The two writes (1.40 and
-1.49 times; most of their allocations are encoding the decimal and jsonb
-arguments, which both paths do) are on GORM. The whole settlement moves
-from 863 to 903 allocs/op (BenchmarkHotSettle, 1.05 times; the free and
-pending inserts are unchanged at 233 and 102):
-
-| Benchmark | before | after |
-|---|---:|---:|
-| BenchmarkHotSettlerInsertFree | 233 | 233 |
-| BenchmarkHotSettlerInsertPending | 102 | 102 |
-| BenchmarkHotSettle | 863 | 903 |
-
-The rest of the settler (`markFailed`, `RetryPending`,
-`closeUnreconcilable`, the reconcile loop, the task registry and the
-hourly rollup) runs off the request path or on failures only and is on
-GORM without a benchmark, but for one statement: the rollup's `INSERT INTO
-usage_hourly ... SELECT` keeps pgx, because its measures hold the jsonb `?`
-operator (`anomalousRow`), which GORM takes for a placeholder.
 
 ## What every request runs
 

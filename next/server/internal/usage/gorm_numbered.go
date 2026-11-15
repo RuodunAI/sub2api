@@ -21,6 +21,19 @@ import (
 // package's own: a malformed placeholder, or an @ (which makes GORM parse
 // named parameters), is a programming error and panics.
 func rawNumbered(db *gorm.DB, query string, args []any) *gorm.DB {
+	sql, vars := numbered(query, args)
+	return db.Raw(sql, vars...)
+}
+
+// execNumbered is db.Exec for SQL numbered as rawNumbered's is.
+func execNumbered(db *gorm.DB, query string, args []any) *gorm.DB {
+	sql, vars := numbered(query, args)
+	return db.Exec(sql, vars...)
+}
+
+// numbered rewrites query for GORM as rawNumbered describes: the SQL and
+// the bindings of its placeholders.
+func numbered(query string, args []any) (string, []any) {
 	if strings.Contains(query, "@") {
 		panic("usage: rawNumbered SQL holds an @, which GORM reads as a named parameter")
 	}
@@ -54,7 +67,7 @@ func rawNumbered(db *gorm.DB, query string, args []any) *gorm.DB {
 		vars = append(vars, args[n-1])
 		i = j - 1
 	}
-	return db.Raw(b.String(), vars...)
+	return b.String(), vars
 }
 
 // literalQuestionMark is the binding of a ? that rawNumbered's SQL holds: an
