@@ -55,7 +55,10 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 		scope   manifest.PermissionScope
 	}
 	found := map[string]row{}
-	rows, err := tx.Query(ctx, `SELECT key, id, status = 'removed', risk, scope_type, scope FROM permissions WHERE key = ANY($1)`, actions)
+	// A staged permission (core.PermissionDef.Staged) is unknown here: it
+	// belongs to a version not activated yet, whose consent alone grants it.
+	rows, err := tx.Query(ctx, `SELECT key, id, status = 'removed', risk, scope_type, scope FROM permissions
+WHERE key = ANY($1) AND status <> 'staged'`, actions)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -133,12 +136,15 @@ func (part grantPart) of(keys []string) []string {
 // grantsInPart is the SQL condition on p, a granted permission, of the
 // grants a write of part $2 (coreOnly) and $3 (plugin) replaces. A reset
 // keeps the grants of removed permissions, to come back with the key; any
-// other write drops them unless listed, so an editor can untick them.
-const grantsInPart = `(NOT $2::bool OR (p.source = 'core' AND p.status <> 'removed')) AND ($3::text = '' OR p.plugin_key = $3::text)`
+// other write drops them unless listed, so an editor can untick them. No
+// write touches the grants of a staged permission, which no editor sees:
+// its version's consent made them.
+const grantsInPart = `p.status <> 'staged' AND (NOT $2::bool OR (p.source = 'core' AND p.status <> 'removed')) AND ($3::text = '' OR p.plugin_key = $3::text)`
 
 // writeGrants makes grants the role's grants within part. It never adds a
 // grant of a removed permission: listing one keeps it when the role holds
-// it, and is ignored when not (it can only be unticked).
+// it, and is ignored when not (it can only be unticked). Nor of a staged
+// one (resolvePermissions refuses it as unknown first).
 func writeGrants(ctx context.Context, tx pgx.Tx, roleID int64, grants []grant, part grantPart) error {
 	// Never nil: a NULL array would make "<> ALL" delete nothing.
 	ids, scopedIDs, scopes := []int64{}, []int64{}, []string{}
@@ -155,7 +161,7 @@ WHERE rp.role_id = $1 AND p.id = rp.permission_id AND `+grantsInPart+` AND rp.pe
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id)
-SELECT $1, id FROM permissions WHERE id = ANY($2) AND status <> 'removed' ON CONFLICT DO NOTHING`, roleID, ids); err != nil {
+SELECT $1, id FROM permissions WHERE id = ANY($2) AND status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING`, roleID, ids); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM role_permission_scopes rs USING permissions p
@@ -166,7 +172,7 @@ WHERE rs.role_id = $1 AND p.id = rs.permission_id AND `+grantsInPart+`
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
 SELECT $1, g.id, g.scope FROM unnest($2::bigint[], $3::text[]) g (id, scope)
-JOIN permissions p ON p.id = g.id AND p.status <> 'removed' ON CONFLICT DO NOTHING`, roleID, scopedIDs, scopes)
+JOIN permissions p ON p.id = g.id AND p.status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING`, roleID, scopedIDs, scopes)
 	return err
 }
 

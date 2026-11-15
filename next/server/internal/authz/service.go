@@ -428,7 +428,7 @@ func (s *Service) eachRolePermissions(ctx context.Context, q store.Querier, role
 }
 
 // roleGrantRow is one role as readRoleGrants reads it: its flags, its grants
-// (canonical keys, removed permissions aside) and the roles its assignable
+// (canonical keys, removed and staged permissions aside) and the roles its assignable
 // list names, superuser roles aside.
 type roleGrantRow struct {
 	superuser, assignCustom bool
@@ -443,7 +443,7 @@ func readRoleGrants(ctx context.Context, q store.Querier, roleKeys []string) (ma
 	out := map[string]*roleGrantRow{}
 	rows, err := q.Query(ctx, `
 SELECT r.key, r.superuser, r.assign_custom, g.key
-FROM roles r`+roleGrantsJoin(`p.status <> 'removed'`)+`
+FROM roles r`+roleGrantsJoin(`p.status NOT IN ('removed', 'staged')`)+`
 WHERE r.key = ANY($1)`, roleKeys)
 	if err != nil {
 		return nil, nil, err
