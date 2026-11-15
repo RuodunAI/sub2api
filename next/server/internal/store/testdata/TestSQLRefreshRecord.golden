@@ -1,0 +1,18 @@
+-- sql
+INSERT INTO account_credential_refresh
+			(account_id, expires_at, last_attempt_at, last_success_at, error_type, error, rejected_cred_hash)
+		VALUES ($1, $2, now(), CASE WHEN $3 = '' THEN now() END, $4, $5, $6)
+		ON CONFLICT (account_id) DO UPDATE SET
+			expires_at = COALESCE(EXCLUDED.expires_at, account_credential_refresh.expires_at),
+			last_attempt_at = EXCLUDED.last_attempt_at,
+			last_success_at = COALESCE(EXCLUDED.last_success_at, account_credential_refresh.last_success_at),
+			error_type = EXCLUDED.error_type,
+			error = EXCLUDED.error,
+			rejected_cred_hash = EXCLUDED.rejected_cred_hash
+-- vars
+$1 int64 11
+$2 *time.Time 2026-11-15 12:00:00 +0000 UTC
+$3 string "transient"
+$4 string "transient"
+$5 string "boom"
+$6 []uint8 [1 2]

@@ -1,0 +1,15 @@
+-- sql
+INSERT INTO "sticky_rules" ("name","source","plugin_key","key_sources","updated_by","enabled","priority","match","ttl_seconds","key_includes","on_failure","pass_headers") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING "id","enabled","priority","match","value_regex","ttl_seconds","key_includes","on_failure","updated_at","customized","pass_headers"
+-- vars
+$1 string "r"
+$2 string "admin"
+$3 *string nil
+$4 jsontext.Value [{"type":"header","name":"x-session"}]
+$5 *int64 7
+$6 *bool false
+$7 *int 0
+$8 jsontext.Value {"protocols":["anthropic"]}
+$9 *int 0
+$10 jsontext.Value []
+$11 *string "stick"
+$12 store.Strings []

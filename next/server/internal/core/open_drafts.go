@@ -4,6 +4,9 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // MaxOpenDrafts is how many open account drafts one user may hold at a time
@@ -16,6 +19,9 @@ const MaxOpenDrafts = 3
 // only and all pass the limit together (READ COMMITTED). Take it right
 // before the counting insert.
 func LockOpenDrafts(ctx context.Context, tx pgx.Tx, userID int64) error {
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('open-drafts:' || $1::bigint::text, 0))`, userID)
-	return err
+	return lockOpenDrafts(store.G(ctx, tx), userID).Error
+}
+
+func lockOpenDrafts(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Exec(`SELECT pg_advisory_xact_lock(hashtextextended('open-drafts:' || ?::bigint::text, 0))`, userID)
 }

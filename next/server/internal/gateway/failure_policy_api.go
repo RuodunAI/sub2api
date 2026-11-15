@@ -15,6 +15,7 @@ import (
 
 func loadFailurePolicy(ctx context.Context, q store.Querier) (*FailurePolicy, error) {
 	var raw []byte
+	//gormguard:allow-pgx cached request-path read (settingsTTL); GORM takes 6.9x the allocations (BASELINE.md, batch 4d)
 	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1`, failurePolicyKey).Scan(&raw)
 	if store.IsNoRows(err) {
 		return nil, nil
@@ -37,8 +38,7 @@ func loadFailurePolicy(ctx context.Context, q store.Querier) (*FailurePolicy, er
 
 // Serialize legacy settings and policy publication, including the first insert.
 func lockFailureSettings(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('gateway.failure_policy'))`)
-	return err
+	return store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtext('gateway.failure_policy'))`).Error
 }
 
 func (g *Gateway) getFailurePolicy(c *gin.Context) {

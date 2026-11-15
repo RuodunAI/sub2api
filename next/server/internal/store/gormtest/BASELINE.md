@@ -224,6 +224,57 @@ On GORM, because they do not run for every request:
   rules, price sources and their sync, ledger lists, `/me/balance`,
   `/me/prices`, `/key/prices`, quotes).
 
+## Batch 4d: the gateway settings and sticky rules, the account snapshots
+
+The gateway package runs no statement of its own for each request (forward,
+pipeline and hooks run none at all). The request path reaches its settings
+rows (`loadSettingsRow`, `loadFailurePolicy`) through the settings cache
+(`settingsTTL`, 10 s) and the sticky rules (`listRules`) through the rules
+cache (`rulesTTL`, 30 s), so a request runs them on a miss only. As in
+batch 2a, the benchmark compares each pgx statement with the GORM form of
+the same statement (a `model.Setting` `Take`; a `model.StickyRule` `Find`
+plus the conversion), the gateway settings row and the built-in rules:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/gateway/ ./internal/store/
+```
+
+In package store, `ApplyAccountQuotaObservation` runs for every upstream
+answer that carries a quota observation (gateway `applyQuotaObservation`),
+with no cache in front, and `ReadAccountQuotas` follows each one that
+applied (the quota mirror reloads the account). Their GORM form is the same
+SQL through `store.G(...).Exec` / `Raw(...).Rows()`: package store cannot
+use the models. `AccountBalances` was listed as hot, but only the console's
+account list reads it, behind Redis (`cachedAccountBalances`); it is
+measured for the record.
+
+Recorded 2026-11-15 on gorm-4d, same machine and server as above. Medians
+of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| `gateway` BenchmarkHotSettingsRow/pgx | 56 013 | 909 | 10 |
+| `gateway` BenchmarkHotSettingsRow/gorm | 72 454 | 6 191 | 69 |
+| `gateway` BenchmarkHotStickyRules/pgx | 78 480 | 3 234 | 52 |
+| `gateway` BenchmarkHotStickyRules/gorm | 110 444 | 19 991 | 210 |
+| `store` BenchmarkHotQuotaObservation/pgx | 456 373 | 466 | 12 |
+| `store` BenchmarkHotQuotaObservation/gorm | 483 965 | 5 149 | 47 |
+| `store` BenchmarkHotReadAccountQuotas/pgx | 47 262 | 2 854 | 45 |
+| `store` BenchmarkHotReadAccountQuotas/gorm | 74 536 | 7 599 | 104 |
+| `store` BenchmarkHotAccountBalances/pgx | 103 089 | 997 | 19 |
+| `store` BenchmarkHotAccountBalances/gorm | 69 130 | 4 901 | 70 |
+
+GORM takes 6.9, 4.0, 3.9 and 2.3 times the allocations (the limit is 1.5),
+so the settings reads, `listRules`, `ApplyAccountQuotaObservation` and
+`ReadAccountQuotas` stay on pgx under `//gormguard:allow-pgx`. The other
+statements are on GORM: the sticky rule console writes, the start-up sync
+of the built-in rules and the failure policy lock in the gateway;
+`AccountBalances` (3.7 times, not on the request path) and the other
+balance, quota, credential refresh and settings statements of package
+store, which the console, the refresh jobs and the debounced passive quota
+writer (`SaveAccountQuota`, at most every 30 s per account) run.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

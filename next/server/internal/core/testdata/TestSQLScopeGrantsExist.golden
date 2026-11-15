@@ -1,0 +1,4 @@
+-- sql
+SELECT EXISTS (SELECT 1 FROM "role_permission_scopes" WHERE scope ~ ANY($1))
+-- vars
+$1 store.Strings [(^|/)account/3$ (^|/)account/4$]

@@ -1,0 +1,18 @@
+-- sql
+WITH cleared AS (
+    DELETE FROM role_permission_scopes rs USING permissions p
+    WHERE p.id = rs.permission_id AND rs.scope ~ ANY($1)
+    RETURNING rs.role_id, p.key || ':' || rs.scope AS key
+), audited AS (
+    INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
+    SELECT $2, 'authz.scope.clear', 'role', role_id::text,
+        jsonb_build_object('kind', $3::text, 'ids', to_jsonb($4::bigint[]), 'keys', to_jsonb(array_agg(key ORDER BY key)))
+    FROM cleared GROUP BY role_id
+)
+UPDATE authz_meta SET version = version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM cleared)
+RETURNING version
+-- vars
+$1 store.Strings [(^|/)account/3$ (^|/)account/4$]
+$2 *int64 9
+$3 string "account"
+$4 store.Int64s [3 4]

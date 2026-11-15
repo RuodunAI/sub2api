@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // UpdateSettingJSONTx serializes partial configuration updates, including the
@@ -13,11 +14,12 @@ import (
 // lock and must return a complete validated JSON object. Callers broadcast only
 // after their transaction commits.
 func UpdateSettingJSONTx(ctx context.Context, tx pgx.Tx, key string, updatedBy *int64, update func(json.RawMessage) (json.RawMessage, error)) (json.RawMessage, error) {
-	if _, err := tx.Exec(ctx, `INSERT INTO settings(key,value) VALUES($1,'{}') ON CONFLICT(key) DO NOTHING`, key); err != nil {
+	db := G(ctx, tx)
+	if err := db.Exec(`INSERT INTO settings(key,value) VALUES(?,'{}') ON CONFLICT(key) DO NOTHING`, key).Error; err != nil {
 		return nil, err
 	}
-	var raw json.RawMessage
-	if err := tx.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1 FOR UPDATE`, key).Scan(&raw); err != nil {
+	var raw []byte
+	if err := lockSetting(db, key).Row().Scan(&raw); err != nil {
 		return nil, err
 	}
 	next, err := update(raw)
@@ -28,8 +30,18 @@ func UpdateSettingJSONTx(ctx context.Context, tx pgx.Tx, key string, updatedBy *
 	if err := json.Unmarshal(next, &obj); err != nil || obj == nil {
 		return nil, errors.New("setting must be a JSON object")
 	}
-	_, err = tx.Exec(ctx, `UPDATE settings SET value=$2,updated_by=$3,updated_at=now() WHERE key=$1`, key, next, updatedBy)
-	return next, err
+	return next, writeSetting(db, key, next, updatedBy).Error
+}
+
+// lockSetting selects the document of settings row key and locks the row.
+func lockSetting(db *gorm.DB, key string) *gorm.DB {
+	return db.Table("settings").Select("value").Where("key = ?", key).Clauses(ForUpdate)
+}
+
+// writeSetting stores next as the document of settings row key.
+func writeSetting(db *gorm.DB, key string, next json.RawMessage, updatedBy *int64) *gorm.DB {
+	return db.Table("settings").Where("key = ?", key).
+		Updates(map[string]any{"value": next, "updated_by": updatedBy, "updated_at": gorm.Expr("now()")})
 }
 
 // PatchSettingJSON merges non-null supplied fields under the same transaction

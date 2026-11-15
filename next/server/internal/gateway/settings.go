@@ -256,6 +256,7 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 
 func loadSettingsRow(ctx context.Context, q store.Querier, key string, into any) error {
 	var raw []byte
+	//gormguard:allow-pgx cached request-path read (settingsTTL); GORM takes 6.9x the allocations (BASELINE.md, batch 4d)
 	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&raw)
 	if store.IsNoRows(err) {
 		return nil

@@ -10,12 +10,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/platforms"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // RegisterRoutes mounts the sticky-session console API (CONTRACTS §5.6) and
@@ -306,11 +309,25 @@ func (g *Gateway) listRulesHandler(c *gin.Context) {
 }
 
 func getRule(ctx context.Context, q store.Querier, id int64) (*stickyRule, error) {
-	r, err := scanRule(q.QueryRow(ctx, `SELECT `+ruleColumns+` FROM sticky_rules WHERE id = $1`, id))
+	var row model.StickyRule
+	err := store.G(ctx, q).Where("id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound
 	}
-	return r, err
+	if err != nil {
+		return nil, err
+	}
+	return ruleOf(&row), nil
+}
+
+// ruleOf is the rule of a sticky_rules row, as scanRule reads it.
+func ruleOf(m *model.StickyRule) *stickyRule {
+	r := &stickyRule{ID: m.ID, Name: m.Name, Source: m.Source, Enabled: core.ValueOr(m.Enabled, false),
+		Priority: core.ValueOr(m.Priority, 0), ValueRegex: m.ValueRegex, TTLSeconds: core.ValueOr(m.TTLSeconds, 0),
+		OnFailure: core.ValueOr(m.OnFailure, ""), PassHeaders: m.PassHeaders, Customized: m.Customized,
+		UpdatedBy: m.UpdatedBy, UpdatedAt: m.UpdatedAt}
+	r.decodeDocuments(m.Match, m.KeySources, m.KeyIncludes)
+	return r
 }
 
 func nullID(id int64) *int64 {
@@ -320,7 +337,7 @@ func nullID(id int64) *int64 {
 	return &id
 }
 
-func mustJSON(v any) []byte {
+func mustJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
 }
@@ -344,13 +361,8 @@ func (g *Gateway) createRuleHandler(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	var id int64
-	err = db.Pool.QueryRow(ctx, `
-		INSERT INTO sticky_rules (name, source, enabled, priority, match, key_sources, value_regex, ttl_seconds,
-			key_includes, on_failure, updated_by, updated_at, pass_headers)
-		VALUES ($1, 'admin', $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11) RETURNING id`,
-		r.Name, r.Enabled, r.Priority, mustJSON(r.Match), mustJSON(r.KeySources), r.ValueRegex, r.TTLSeconds,
-		mustJSON(nonNil(r.KeyIncludes)), r.OnFailure, nullID(uid), nonNil(r.PassHeaders)).Scan(&id)
+	row := adminRuleRow(r, uid)
+	err = store.G(ctx, db.Pool).Create(row).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("an admin sticky rule with this name already exists"))
 		return
@@ -360,7 +372,7 @@ func (g *Gateway) createRuleHandler(c *gin.Context) {
 		return
 	}
 	g.changed(ctx, "sticky_rules")
-	created, err := getRule(ctx, db.Pool, id)
+	created, err := getRule(ctx, db.Pool, row.ID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -423,13 +435,7 @@ func (g *Gateway) updateRuleHandler(c *gin.Context) {
 		}
 	}
 	uid, _ := core.UserID(ctx)
-	_, err = db.Pool.Exec(ctx, `
-		UPDATE sticky_rules SET name = $2, enabled = $3, priority = $4, match = $5, key_sources = $6,
-			value_regex = $7, ttl_seconds = $8, key_includes = $9, on_failure = $10, updated_by = $11, customized = $12,
-			pass_headers = $13, updated_at = now()
-		WHERE id = $1`,
-		id, r.Name, r.Enabled, r.Priority, mustJSON(r.Match), mustJSON(r.KeySources), r.ValueRegex, r.TTLSeconds,
-		mustJSON(nonNil(r.KeyIncludes)), r.OnFailure, nullID(uid), customized, nonNil(r.PassHeaders))
+	err = updateRule(store.G(ctx, db.Pool), id, r, uid, customized).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("an admin sticky rule with this name already exists"))
 		return
@@ -471,7 +477,7 @@ func (g *Gateway) deleteRuleHandler(c *gin.Context) {
 		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage(msg))
 		return
 	}
-	if _, err := db.Pool.Exec(ctx, `DELETE FROM sticky_rules WHERE id = $1`, id); err != nil {
+	if err := store.G(ctx, db.Pool).Where("id = ?", id).Delete(&model.StickyRule{}).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -485,8 +491,8 @@ func (g *Gateway) deleteRuleHandler(c *gin.Context) {
 }
 
 func (g *Gateway) ruleNameInUse(ctx context.Context, db *store.DB, name string) bool {
-	var n int
-	_ = db.Pool.QueryRow(ctx, `SELECT count(*) FROM sticky_rules WHERE name = $1`, name).Scan(&n)
+	var n int64
+	_ = store.G(ctx, db.Pool).Model(&model.StickyRule{}).Where("name = ?", name).Count(&n).Error
 	return n > 0
 }
 
@@ -686,23 +692,59 @@ func syncBuiltinRules(ctx context.Context, tx pgx.Tx, rules []manifest.StickyRul
 		if len(includes) == 0 {
 			includes = defaultKeyIncludes
 		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO sticky_rules (name, source, enabled, priority, match, key_sources, value_regex,
-				ttl_seconds, key_includes, on_failure, pass_headers, updated_at)
-			VALUES ($1, 'builtin', true, $2, $3, $4, $5, $6, $7, $8, $9, now())
-			ON CONFLICT (name, source) DO UPDATE SET match = EXCLUDED.match, key_sources = EXCLUDED.key_sources,
-				value_regex = EXCLUDED.value_regex, ttl_seconds = EXCLUDED.ttl_seconds,
-				key_includes = EXCLUDED.key_includes, on_failure = EXCLUDED.on_failure,
-				pass_headers = EXCLUDED.pass_headers, updated_at = now()
-			WHERE NOT sticky_rules.customized`,
-			name, 100+i, mustJSON(r.Match), mustJSON(r.KeySources), r.ValueRegex, max(r.TTLSeconds, 0),
-			mustJSON(includes), onFailure, nonNil(r.PassHeaders)); err != nil {
+		row := &model.StickyRule{Name: name, Source: sourceBuiltin, Enabled: new(true), Priority: new(100 + i),
+			Match: mustJSON(r.Match), KeySources: mustJSON(r.KeySources), ValueRegex: r.ValueRegex,
+			TTLSeconds: new(max(r.TTLSeconds, 0)), KeyIncludes: mustJSON(includes), OnFailure: &onFailure,
+			PassHeaders: nonNil(r.PassHeaders)}
+		if err := upsertBuiltinRule(store.G(ctx, tx), row).Error; err != nil {
 			return err
 		}
 		names = append(names, name)
 	}
-	_, err := tx.Exec(ctx, `DELETE FROM sticky_rules WHERE source = 'builtin' AND NOT (name = ANY($1))`, names)
-	return err
+	return deleteStaleBuiltinRules(store.G(ctx, tx), names).Error
+}
+
+// adminRuleRow is the row that creates r as an admin rule. updated_at is
+// left to its default, now(), as the statement wrote it.
+func adminRuleRow(r *stickyRule, uid int64) *model.StickyRule {
+	return &model.StickyRule{Name: r.Name, Source: sourceAdmin, Enabled: &r.Enabled, Priority: &r.Priority,
+		Match: mustJSON(r.Match), KeySources: mustJSON(r.KeySources), ValueRegex: r.ValueRegex,
+		TTLSeconds: &r.TTLSeconds, KeyIncludes: mustJSON(nonNil(r.KeyIncludes)), OnFailure: &r.OnFailure,
+		UpdatedBy: nullID(uid), PassHeaders: nonNil(r.PassHeaders)}
+}
+
+// updateRule writes the definition and switches of rule id from r.
+func updateRule(db *gorm.DB, id int64, r *stickyRule, uid int64, customized bool) *gorm.DB {
+	return db.Model(&model.StickyRule{}).Where("id = ?", id).Updates(map[string]any{
+		"name": r.Name, "enabled": r.Enabled, "priority": r.Priority, "match": mustJSON(r.Match),
+		"key_sources": mustJSON(r.KeySources), "value_regex": r.ValueRegex, "ttl_seconds": r.TTLSeconds,
+		"key_includes": mustJSON(nonNil(r.KeyIncludes)), "on_failure": r.OnFailure, "updated_by": nullID(uid),
+		"customized": customized, "pass_headers": store.Strings(nonNil(r.PassHeaders)), "updated_at": gorm.Expr("now()"),
+	})
+}
+
+// uncustomizeRule hands the definition of built-in rule id back to the
+// start-up sync. It writes no updated_at, as the statement it replaces did:
+// the sync that follows does.
+func uncustomizeRule(db *gorm.DB, id, uid int64) *gorm.DB {
+	return db.Model(&model.StickyRule{}).Where("id = ?", id).Updates(map[string]any{"customized": false, "updated_by": nullID(uid)})
+}
+
+// upsertBuiltinRule inserts row as a built-in default, or rewrites the
+// definition of the built-in rule of its name unless an administrator
+// customized it; the switches (enabled, priority) stay as they are.
+func upsertBuiltinRule(db *gorm.DB, row *model.StickyRule) *gorm.DB {
+	return db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "name"}, {Name: "source"}},
+		DoUpdates: append(clause.AssignmentColumns([]string{"match", "key_sources", "value_regex", "ttl_seconds",
+			"key_includes", "on_failure", "pass_headers"}), clause.Assignment{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}),
+		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "NOT sticky_rules.customized"}}},
+	}).Create(row)
+}
+
+// deleteStaleBuiltinRules deletes the built-in defaults not named.
+func deleteStaleBuiltinRules(db *gorm.DB, names []string) *gorm.DB {
+	return db.Where("source = 'builtin' AND NOT (name = ANY(?))", store.Strings(names)).Delete(&model.StickyRule{})
 }
 
 // ruleDefinition is what tells whether a rule's definition changed (not its
@@ -744,7 +786,7 @@ func (g *Gateway) resetRuleHandler(c *gin.Context) {
 	}
 	uid, _ := core.UserID(ctx)
 	if err := db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE sticky_rules SET customized = false, updated_by = $2 WHERE id = $1`, id, nullID(uid)); err != nil {
+		if err := uncustomizeRule(store.G(ctx, tx), id, uid).Error; err != nil {
 			return err
 		}
 		return syncBuiltinRules(ctx, tx, builtinStickyRules())

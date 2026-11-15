@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // Account quota snapshots (table account_quota_snapshots, CONTRACTS §44).
@@ -66,7 +68,7 @@ func scanQuota(r interface{ Scan(...any) error }) (*QuotaSnapshot, error) {
 
 // AccountQuota returns the snapshot of one account, nil when it has none.
 func (d *DB) AccountQuota(ctx context.Context, accountID int64) (*QuotaSnapshot, error) {
-	q, err := scanQuota(d.Pool.QueryRow(ctx, selectQuota+` WHERE account_id = $1`, accountID))
+	q, err := scanQuota(G(ctx, d.Pool).Raw(selectQuota+` WHERE account_id = ?`, accountID).Row())
 	if IsNoRows(err) {
 		return nil, nil
 	}
@@ -80,7 +82,7 @@ func (d *DB) AccountQuotas(ctx context.Context, accountIDs []int64) (map[int64]*
 	if len(accountIDs) == 0 {
 		return out, nil
 	}
-	rows, err := d.Pool.Query(ctx, selectQuota+` WHERE account_id = ANY($1)`, accountIDs)
+	rows, err := G(ctx, d.Pool).Raw(selectQuota+` WHERE account_id = ANY(?)`, Int64s(accountIDs)).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -102,9 +104,9 @@ func (d *DB) AccountQuotas(ctx context.Context, accountIDs []int64) (map[int64]*
 func (d *DB) AccountQuotasAt(ctx context.Context, accountIDs []int64) (map[int64]*QuotaSnapshot, time.Time, error) {
 	out := map[int64]*QuotaSnapshot{}
 	var at time.Time
-	rows, err := d.Pool.Query(ctx, `SELECT statement_timestamp(), q.account_id, q.windows, COALESCE(q.source, ''), COALESCE(q.error, ''),
+	rows, err := G(ctx, d.Pool).Raw(`SELECT statement_timestamp(), q.account_id, q.windows, COALESCE(q.source, ''), COALESCE(q.error, ''),
 			q.updated_at, q.last_passive_at, q.last_active_at, COALESCE(q.revision,0), q.next_check_at, COALESCE(q.refresh_status,'pending'), COALESCE(q.generation,0)
-		FROM (SELECT statement_timestamp()) t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY($1)`, accountIDs)
+		FROM (SELECT statement_timestamp()) t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY(?)`, Int64s(accountIDs)).Rows()
 	if err != nil {
 		return nil, at, err
 	}
@@ -153,33 +155,36 @@ const selectQuotaRead = `statement_timestamp(), q.account_id, q.windows, COALESC
 // ReadAccountQuotas reads the snapshot rows of accountIDs; accounts without
 // one are absent from Snapshots and Invalid.
 func (d *DB) ReadAccountQuotas(ctx context.Context, accountIDs []int64) (*QuotaRead, error) {
+	//gormguard:allow-pgx quota mirror reload after each applied observation; GORM takes 2.3x the allocations (BASELINE.md, batch 4d)
 	rows, err := d.Pool.Query(ctx, `SELECT NULL::bigint, `+selectQuotaRead+`
 		FROM (SELECT statement_timestamp()) t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY($1)`, accountIDs)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	return readQuotaRows(rows, false)
 }
 
 // ReadAccountQuotasOfTypes reads the snapshot rows of every account not
 // deleted whose "plugin_key/type" is in keys; Accounts lists them all.
 func (d *DB) ReadAccountQuotasOfTypes(ctx context.Context, keys []string) (*QuotaRead, error) {
-	rows, err := d.Pool.Query(ctx, `SELECT a.id, `+selectQuotaRead+`
+	rows, err := G(ctx, d.Pool).Raw(`SELECT a.id, `+selectQuotaRead+`
 		FROM (SELECT statement_timestamp()) t LEFT JOIN (accounts a LEFT JOIN account_quota_snapshots q ON q.account_id = a.id)
-			ON a.deleted_at IS NULL AND a.plugin_key||'/'||a.type = ANY($1)`, keys)
+			ON a.deleted_at IS NULL AND a.plugin_key||'/'||a.type = ANY(?)`, Strings(keys)).Rows()
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	return readQuotaRows(rows, true)
 }
 
+// readQuotaRows reads the rows of ReadAccountQuotas (pgx) and
+// ReadAccountQuotasOfTypes (database/sql); the caller closes them.
 func readQuotaRows(rows interface {
 	Next() bool
 	Scan(...any) error
-	Close()
 	Err() error
 }, accounts bool) (*QuotaRead, error) {
-	defer rows.Close()
 	out := &QuotaRead{Snapshots: map[int64]*QuotaSnapshot{}, Invalid: map[int64]error{}}
 	if accounts {
 		out.Accounts = []int64{}
@@ -224,10 +229,14 @@ func (d *DB) SaveAccountQuota(ctx context.Context, accountID int64, source strin
 	if err != nil {
 		return err
 	}
-	_, err = d.Pool.Exec(ctx, `INSERT INTO account_quota_snapshots
+	return saveAccountQuota(G(ctx, d.Pool), accountID, source, string(raw), nextAt).Error
+}
+
+func saveAccountQuota(db *gorm.DB, accountID int64, source, windows string, nextAt *time.Time) *gorm.DB {
+	return db.Exec(`INSERT INTO account_quota_snapshots
 			(account_id, windows, source, error, updated_at, last_passive_at, revision, refresh_status, next_check_at)
-		SELECT $1::bigint, $2::jsonb, $3::text, '', clock_timestamp(), CASE WHEN $3::text = 'passive' THEN clock_timestamp() END, 1, 'ready', $4::timestamptz
-		WHERE EXISTS (SELECT 1 FROM accounts WHERE id = $1 AND deleted_at IS NULL)
+		SELECT ?::bigint, ?::jsonb, ?::text, '', clock_timestamp(), CASE WHEN ?::text = 'passive' THEN clock_timestamp() END, 1, 'ready', ?::timestamptz
+		WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ? AND deleted_at IS NULL)
 		ON CONFLICT (account_id) DO UPDATE SET
 			windows = account_quota_snapshots.windows || EXCLUDED.windows,
 			source = EXCLUDED.source,
@@ -235,10 +244,9 @@ func (d *DB) SaveAccountQuota(ctx context.Context, accountID int64, source strin
 			updated_at = clock_timestamp(),
 			revision = account_quota_snapshots.revision + 1,
 			refresh_status = 'ready',
-			next_check_at = CASE WHEN account_quota_snapshots.auto_refresh AND $4::timestamptz IS NOT NULL THEN LEAST(account_quota_snapshots.next_check_at,$4::timestamptz) ELSE account_quota_snapshots.next_check_at END,
+			next_check_at = CASE WHEN account_quota_snapshots.auto_refresh AND ?::timestamptz IS NOT NULL THEN LEAST(account_quota_snapshots.next_check_at,?::timestamptz) ELSE account_quota_snapshots.next_check_at END,
 			last_passive_at = COALESCE(EXCLUDED.last_passive_at, account_quota_snapshots.last_passive_at)`,
-		accountID, string(raw), source, nextAt)
-	return err
+		accountID, windows, source, source, nextAt, accountID, nextAt, nextAt)
 }
 
 func (d *DB) ApplyAccountQuotaObservation(ctx context.Context, accountID, expectedGeneration int64, pluginKey, accountType, pluginVersion string, windows map[string]QuotaWindow, next *time.Time) (bool, error) {
@@ -249,6 +257,7 @@ func (d *DB) ApplyAccountQuotaObservation(ctx context.Context, accountID, expect
 	if err != nil {
 		return false, err
 	}
+	//gormguard:allow-pgx runs for every upstream answer with a quota observation; GORM takes 3.9x the allocations (BASELINE.md, batch 4d)
 	tag, err := d.Pool.Exec(ctx, `UPDATE account_quota_snapshots q SET windows=q.windows||$6::jsonb,
 		source='passive',last_passive_at=clock_timestamp(),revision=q.revision+1,
 		next_check_at=CASE WHEN q.auto_refresh AND $7::timestamptz IS NOT NULL THEN LEAST(q.next_check_at,$7::timestamptz) ELSE q.next_check_at END
@@ -264,23 +273,30 @@ func (d *DB) ApplyAccountQuotaObservation(ctx context.Context, accountID, expect
 // attempt (on any node) did so less than floor ago. The row is created when
 // missing.
 func (d *DB) ClaimAccountQuotaQuery(ctx context.Context, accountID int64, floor time.Duration) (bool, error) {
-	tag, err := d.Pool.Exec(ctx, `INSERT INTO account_quota_snapshots (account_id, last_active_at)
-		SELECT $1::bigint, now() WHERE EXISTS (SELECT 1 FROM accounts WHERE id = $1)
+	res := claimAccountQuotaQuery(G(ctx, d.Pool), accountID, floor.Seconds())
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}
+
+func claimAccountQuotaQuery(db *gorm.DB, accountID int64, floor float64) *gorm.DB {
+	return db.Exec(`INSERT INTO account_quota_snapshots (account_id, last_active_at)
+		SELECT ?::bigint, now() WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)
 		ON CONFLICT (account_id) DO UPDATE SET last_active_at = now()
 		WHERE account_quota_snapshots.last_active_at IS NULL
-			OR account_quota_snapshots.last_active_at <= now() - make_interval(secs => $2::float8)`,
-		accountID, floor.Seconds())
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() == 1, nil
+			OR account_quota_snapshots.last_active_at <= now() - make_interval(secs => ?::float8)`,
+		accountID, accountID, floor)
 }
 
 // SetAccountQuotaError records the failure of an active query; the windows
 // and updated_at are left as they were.
 func (d *DB) SetAccountQuotaError(ctx context.Context, accountID int64, msg string) error {
-	_, err := d.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET error = $2, refresh_status='error', revision=revision+1 WHERE account_id = $1`, accountID, msg)
-	return err
+	return setAccountQuotaError(G(ctx, d.Pool), accountID, msg).Error
+}
+
+func setAccountQuotaError(db *gorm.DB, accountID int64, msg string) *gorm.DB {
+	return db.Exec(`UPDATE account_quota_snapshots SET error = ?, refresh_status='error', revision=revision+1 WHERE account_id = ?`, msg, accountID)
 }
 
 type QuotaClaim struct {
@@ -295,39 +311,38 @@ type QuotaClaim struct {
 // whether a row was written (inserted, or updated with a new revision): the
 // caller announces the change so quota mirrors read it again.
 func EnsureAccountQuota(ctx context.Context, q Querier, id int64, pluginRevision string, automatic bool) (bool, error) {
-	tag, err := q.Exec(ctx, `INSERT INTO account_quota_snapshots(account_id,plugin_revision,auto_refresh,next_check_at)
-		SELECT id,$2,$3,CASE WHEN $3 THEN now() END FROM accounts WHERE id=$1 AND deleted_at IS NULL
-		ON CONFLICT(account_id) DO UPDATE SET plugin_revision=$2,auto_refresh=$3,
-		generation=CASE WHEN account_quota_snapshots.plugin_revision<>$2 THEN nextval('account_quota_generation_seq') ELSE account_quota_snapshots.generation END,
-		lease_until=CASE WHEN account_quota_snapshots.plugin_revision<>$2 THEN NULL ELSE account_quota_snapshots.lease_until END,
-		revision=account_quota_snapshots.revision+1,
-		next_check_at=CASE WHEN NOT $3 THEN NULL WHEN account_quota_snapshots.plugin_revision<>$2 THEN now() ELSE COALESCE(account_quota_snapshots.next_check_at,now()) END
-		WHERE account_quota_snapshots.plugin_revision<>$2 OR account_quota_snapshots.auto_refresh<>$3`, id, pluginRevision, automatic)
-	if err != nil {
-		return false, err
+	res := ensureAccountQuota(G(ctx, q), id, pluginRevision, automatic)
+	if res.Error != nil {
+		return false, res.Error
 	}
-	return tag.RowsAffected() > 0, nil
+	return res.RowsAffected > 0, nil
+}
+
+func ensureAccountQuota(db *gorm.DB, id int64, rev string, auto bool) *gorm.DB {
+	return db.Exec(`INSERT INTO account_quota_snapshots(account_id,plugin_revision,auto_refresh,next_check_at)
+		SELECT id,?,?,CASE WHEN ? THEN now() END FROM accounts WHERE id=? AND deleted_at IS NULL
+		ON CONFLICT(account_id) DO UPDATE SET plugin_revision=?,auto_refresh=?,
+		generation=CASE WHEN account_quota_snapshots.plugin_revision<>? THEN nextval('account_quota_generation_seq') ELSE account_quota_snapshots.generation END,
+		lease_until=CASE WHEN account_quota_snapshots.plugin_revision<>? THEN NULL ELSE account_quota_snapshots.lease_until END,
+		revision=account_quota_snapshots.revision+1,
+		next_check_at=CASE WHEN NOT ? THEN NULL WHEN account_quota_snapshots.plugin_revision<>? THEN now() ELSE COALESCE(account_quota_snapshots.next_check_at,now()) END
+		WHERE account_quota_snapshots.plugin_revision<>? OR account_quota_snapshots.auto_refresh<>?`,
+		rev, auto, auto, id, rev, auto, rev, rev, auto, rev, rev, auto)
 }
 
 func ResetAccountQuota(ctx context.Context, q Querier, id int64) error {
-	_, err := q.Exec(ctx, `UPDATE account_quota_snapshots SET windows='{}',source='',error='',updated_at=NULL,last_passive_at=NULL,
+	return resetAccountQuota(G(ctx, q), id).Error
+}
+
+func resetAccountQuota(db *gorm.DB, id int64) *gorm.DB {
+	return db.Exec(`UPDATE account_quota_snapshots SET windows='{}',source='',error='',updated_at=NULL,last_passive_at=NULL,
 		generation=nextval('account_quota_generation_seq'),revision=revision+1,lease_until=NULL,failures=0,
-		refresh_status='pending',next_check_at=CASE WHEN auto_refresh THEN now() END WHERE account_id=$1`, id)
-	return err
+		refresh_status='pending',next_check_at=CASE WHEN auto_refresh THEN now() END WHERE account_id=?`, id)
 }
 
 func (d *DB) LeaseAccountQuota(ctx context.Context, id int64, pluginRevision string, floor, lease time.Duration, force bool) (*QuotaClaim, error) {
 	var c QuotaClaim
-	err := d.Pool.QueryRow(ctx, `UPDATE account_quota_snapshots q SET last_active_at=clock_timestamp(),
-		lease_token=nextval('account_quota_generation_seq'),lease_until=clock_timestamp()+make_interval(secs=>$4::float8)
-		WHERE account_id=$1 AND plugin_revision=$2
-		AND (lease_until IS NULL OR lease_until<=clock_timestamp())
-		AND ($3::float8<=0 OR last_active_at IS NULL OR last_active_at<=clock_timestamp()-make_interval(secs=>$3::float8))
-		AND ($5 OR next_check_at IS NULL OR next_check_at<=clock_timestamp())
-		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
-		AND ($5 OR a.schedulable OR q.updated_at IS NULL)
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))
-		RETURNING account_id,generation,lease_token,revision,failures,plugin_revision,updated_at IS NULL`, id, pluginRevision, floor.Seconds(), lease.Seconds(), force).
+	err := leaseAccountQuota(G(ctx, d.Pool), id, pluginRevision, floor.Seconds(), lease.Seconds(), force).Row().
 		Scan(&c.AccountID, &c.Generation, &c.Token, &c.Revision, &c.Failures, &c.PluginRevision, &c.Initial)
 	if IsNoRows(err) {
 		return nil, nil
@@ -335,22 +350,41 @@ func (d *DB) LeaseAccountQuota(ctx context.Context, id int64, pluginRevision str
 	return &c, err
 }
 
+func leaseAccountQuota(db *gorm.DB, id int64, rev string, floor, lease float64, force bool) *gorm.DB {
+	return db.Raw(`UPDATE account_quota_snapshots q SET last_active_at=clock_timestamp(),
+		lease_token=nextval('account_quota_generation_seq'),lease_until=clock_timestamp()+make_interval(secs=>?::float8)
+		WHERE account_id=? AND plugin_revision=?
+		AND (lease_until IS NULL OR lease_until<=clock_timestamp())
+		AND (?::float8<=0 OR last_active_at IS NULL OR last_active_at<=clock_timestamp()-make_interval(secs=>?::float8))
+		AND (? OR next_check_at IS NULL OR next_check_at<=clock_timestamp())
+		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
+		AND (? OR a.schedulable OR q.updated_at IS NULL)
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))
+		RETURNING account_id,generation,lease_token,revision,failures,plugin_revision,updated_at IS NULL`,
+		lease, id, rev, floor, floor, force, force)
+}
+
 func (d *DB) AccountQuotaClaimValid(ctx context.Context, c *QuotaClaim) (bool, error) {
 	var ok bool
-	err := d.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
-		WHERE q.account_id=$1 AND q.generation=$2 AND q.lease_token=$3 AND q.lease_until>clock_timestamp()
+	err := G(ctx, d.Pool).Raw(`SELECT EXISTS(SELECT 1 FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
+		WHERE q.account_id=? AND q.generation=? AND q.lease_token=? AND q.lease_until>clock_timestamp()
 		AND a.deleted_at IS NULL
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`, c.AccountID, c.Generation, c.Token).Scan(&ok)
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`, c.AccountID, c.Generation, c.Token).Row().Scan(&ok)
 	return ok, err
 }
 
 func (d *DB) ReleaseAccountQuotaQuery(ctx context.Context, c *QuotaClaim, next time.Time) (bool, error) {
-	tag, err := d.Pool.Exec(ctx, `UPDATE account_quota_snapshots q SET lease_until=NULL,
-		next_check_at=CASE WHEN revision<>$5 THEN next_check_at ELSE GREATEST($4::timestamptz,clock_timestamp()+interval '30 seconds') END
-		WHERE account_id=$1 AND generation=$2 AND lease_token=$3 AND lease_until>clock_timestamp()
+	res := releaseAccountQuota(G(ctx, d.Pool), c, next)
+	return res.Error == nil && res.RowsAffected == 1, res.Error
+}
+
+func releaseAccountQuota(db *gorm.DB, c *QuotaClaim, next time.Time) *gorm.DB {
+	return db.Exec(`UPDATE account_quota_snapshots q SET lease_until=NULL,
+		next_check_at=CASE WHEN revision<>? THEN next_check_at ELSE GREATEST(?::timestamptz,clock_timestamp()+interval '30 seconds') END
+		WHERE account_id=? AND generation=? AND lease_token=? AND lease_until>clock_timestamp()
 		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`, c.AccountID, c.Generation, c.Token, next, c.Revision)
-	return err == nil && tag.RowsAffected() == 1, err
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`,
+		c.Revision, next, c.AccountID, c.Generation, c.Token)
 }
 
 func (d *DB) CompleteAccountQuota(ctx context.Context, c *QuotaClaim, windows map[string]QuotaWindow, msg string, next time.Time) (bool, error) {
@@ -361,16 +395,24 @@ func (d *DB) CompleteAccountQuota(ctx context.Context, c *QuotaClaim, windows ma
 	if err != nil {
 		return false, err
 	}
-	tag, err := d.Pool.Exec(ctx, `UPDATE account_quota_snapshots q SET
-		windows=CASE WHEN $5='' AND revision=$7 THEN windows||$4::jsonb ELSE windows END,
-		source=CASE WHEN $5='' AND revision=$7 THEN 'active' ELSE source END,
-		updated_at=CASE WHEN $5='' AND revision=$7 THEN clock_timestamp() ELSE updated_at END,
-		error=CASE WHEN revision=$7 THEN $5 ELSE error END,
-		refresh_status=CASE WHEN revision<>$7 THEN refresh_status WHEN $5='' THEN 'ready' ELSE 'error' END,
-		failures=CASE WHEN revision<>$7 THEN failures WHEN $5='' THEN 0 ELSE LEAST(failures+1,10) END,
-		next_check_at=CASE WHEN revision<>$7 THEN next_check_at ELSE $6::timestamptz END,lease_until=NULL,revision=revision+1
-		WHERE account_id=$1 AND generation=$2 AND lease_token=$3 AND lease_until>clock_timestamp()
+	res := completeAccountQuota(G(ctx, d.Pool), c, string(raw), msg, next)
+	return res.Error == nil && res.RowsAffected == 1, res.Error
+}
+
+// completeAccountQuota repeats msg and the claim's revision for each of
+// their uses: GORM's placeholders are positional.
+func completeAccountQuota(db *gorm.DB, c *QuotaClaim, windows, msg string, next time.Time) *gorm.DB {
+	rev := c.Revision
+	return db.Exec(`UPDATE account_quota_snapshots q SET
+		windows=CASE WHEN ?='' AND revision=? THEN windows||?::jsonb ELSE windows END,
+		source=CASE WHEN ?='' AND revision=? THEN 'active' ELSE source END,
+		updated_at=CASE WHEN ?='' AND revision=? THEN clock_timestamp() ELSE updated_at END,
+		error=CASE WHEN revision=? THEN ? ELSE error END,
+		refresh_status=CASE WHEN revision<>? THEN refresh_status WHEN ?='' THEN 'ready' ELSE 'error' END,
+		failures=CASE WHEN revision<>? THEN failures WHEN ?='' THEN 0 ELSE LEAST(failures+1,10) END,
+		next_check_at=CASE WHEN revision<>? THEN next_check_at ELSE ?::timestamptz END,lease_until=NULL,revision=revision+1
+		WHERE account_id=? AND generation=? AND lease_token=? AND lease_until>clock_timestamp()
 		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`, c.AccountID, c.Generation, c.Token, string(raw), msg, next, c.Revision)
-	return err == nil && tag.RowsAffected() == 1, err
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`,
+		msg, rev, windows, msg, rev, msg, rev, rev, msg, rev, msg, rev, msg, rev, next, c.AccountID, c.Generation, c.Token)
 }

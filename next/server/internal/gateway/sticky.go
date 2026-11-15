@@ -279,6 +279,13 @@ func scanRule(row interface{ Scan(...any) error }) (*stickyRule, error) {
 		&r.ValueRegex, &r.TTLSeconds, &includes, &r.OnFailure, &r.UpdatedBy, &r.UpdatedAt, &r.Customized, &r.PassHeaders); err != nil {
 		return nil, err
 	}
+	r.decodeDocuments(match, sources, includes)
+	return &r, nil
+}
+
+// decodeDocuments reads the jsonb columns of the rule's row; a malformed
+// document reads as empty rather than failing the rule list.
+func (r *stickyRule) decodeDocuments(match, sources, includes []byte) {
 	if len(match) > 0 {
 		_ = json.Unmarshal(match, &r.Match)
 	}
@@ -288,10 +295,10 @@ func scanRule(row interface{ Scan(...any) error }) (*stickyRule, error) {
 	if len(includes) > 0 {
 		_ = json.Unmarshal(includes, &r.KeyIncludes)
 	}
-	return &r, nil
 }
 
 func listRules(ctx context.Context, q store.Querier) ([]*stickyRule, error) {
+	//gormguard:allow-pgx cached request-path read (rulesTTL); GORM takes 4.0x the allocations (BASELINE.md, batch 4d)
 	rows, err := q.Query(ctx, `SELECT `+ruleColumns+` FROM sticky_rules ORDER BY priority, id`)
 	if err != nil {
 		return nil, err

@@ -1,0 +1,22 @@
+-- sql
+INSERT INTO account_quota_snapshots(account_id,plugin_revision,auto_refresh,next_check_at)
+		SELECT id,$1,$2,CASE WHEN $3 THEN now() END FROM accounts WHERE id=$4 AND deleted_at IS NULL
+		ON CONFLICT(account_id) DO UPDATE SET plugin_revision=$5,auto_refresh=$6,
+		generation=CASE WHEN account_quota_snapshots.plugin_revision<>$7 THEN nextval('account_quota_generation_seq') ELSE account_quota_snapshots.generation END,
+		lease_until=CASE WHEN account_quota_snapshots.plugin_revision<>$8 THEN NULL ELSE account_quota_snapshots.lease_until END,
+		revision=account_quota_snapshots.revision+1,
+		next_check_at=CASE WHEN NOT $9 THEN NULL WHEN account_quota_snapshots.plugin_revision<>$10 THEN now() ELSE COALESCE(account_quota_snapshots.next_check_at,now()) END
+		WHERE account_quota_snapshots.plugin_revision<>$11 OR account_quota_snapshots.auto_refresh<>$12
+-- vars
+$1 string "v1"
+$2 bool true
+$3 bool true
+$4 int64 11
+$5 string "v1"
+$6 bool true
+$7 string "v1"
+$8 string "v1"
+$9 bool true
+$10 string "v1"
+$11 string "v1"
+$12 bool true

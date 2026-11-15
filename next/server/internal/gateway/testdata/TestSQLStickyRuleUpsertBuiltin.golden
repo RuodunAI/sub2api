@@ -1,0 +1,15 @@
+-- sql
+INSERT INTO "sticky_rules" ("name","source","plugin_key","key_sources","updated_by","enabled","priority","match","ttl_seconds","key_includes","on_failure","pass_headers") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT ("name","source") DO UPDATE SET "match"="excluded"."match","key_sources"="excluded"."key_sources","value_regex"="excluded"."value_regex","ttl_seconds"="excluded"."ttl_seconds","key_includes"="excluded"."key_includes","on_failure"="excluded"."on_failure","pass_headers"="excluded"."pass_headers","updated_at"=now() WHERE NOT sticky_rules.customized  RETURNING "id","enabled","priority","match","value_regex","ttl_seconds","key_includes","on_failure","updated_at","customized","pass_headers"
+-- vars
+$1 string "b"
+$2 string "builtin"
+$3 *string nil
+$4 jsontext.Value []
+$5 *int64 nil
+$6 *bool true
+$7 *int 101
+$8 jsontext.Value {}
+$9 *int 0
+$10 jsontext.Value ["group","model","rule"]
+$11 *string "failover"
+$12 store.Strings []
