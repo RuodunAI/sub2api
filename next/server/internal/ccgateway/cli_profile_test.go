@@ -46,7 +46,7 @@ func TestRuntimeConfigLeavesTheCLIToTheImage(t *testing.T) {
 	d, err := f.s.desired(context.Background(), id, true)
 	require.NoError(t, err)
 	require.Nil(t, d.CLI)
-	require.NoError(t, f.s.putConfig(context.Background(), d.Key, d))
+	require.NoError(t, f.s.putConfig(context.Background(), nil, d.Key, d))
 	require.NotContains(t, received, "cli")
 
 	save("2.1.304")
@@ -56,10 +56,10 @@ func TestRuntimeConfigLeavesTheCLIToTheImage(t *testing.T) {
 
 	// An older controller still needs a profile: the stored version.
 	features = `["cli-profile-v1"]`
-	require.NoError(t, f.s.putConfig(context.Background(), changed.Key, changed))
+	require.NoError(t, f.s.putConfig(context.Background(), nil, changed.Key, changed))
 	require.Equal(t, map[string]any{"version": "2.1.304", "request_mode": "build", "disable_auto_update": true}, received["cli"])
 	features = `[]`
-	require.ErrorContains(t, f.s.putConfig(context.Background(), changed.Key, changed), "cli-profile-v1")
+	require.ErrorContains(t, f.s.putConfig(context.Background(), nil, changed.Key, changed), "cli-profile-v1")
 }
 
 func TestPinnedRequestModesSaveReload(t *testing.T) {

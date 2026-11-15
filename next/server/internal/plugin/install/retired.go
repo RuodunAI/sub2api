@@ -147,7 +147,7 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 		return res, guardErr
 	}
 	defer release()
-	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+	err := s.purgeTx(ctx, opt.PurgeAccounts, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var one int
 		err := retirement(g, key).Select("1").Clauses(store.ForUpdate).Take(&one).Error
@@ -165,6 +165,7 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 			return core.ErrConflict.WithMessage("the plugin key is installed again; uninstall it first")
 		}
 		if opt.PurgeAccounts {
+			// A transaction of its own, under the retirement's lock (purgeTx).
 			n, err := s.d.Accounts.PurgePluginAccounts(ctx, key)
 			res.AccountsDeleted = n
 			if err != nil {

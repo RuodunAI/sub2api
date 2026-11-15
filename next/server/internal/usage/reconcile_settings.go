@@ -176,6 +176,14 @@ func (r resolved) clampDelay(want time.Duration, attempts int) time.Duration {
 // the module uses for settings; on a read error the defaults stand, which
 // keeps the loop running rather than stalling every entry.
 func (s *Service) reconcileSettings(ctx context.Context) resolved {
+	return s.reconcileSettingsIn(ctx, s.db.Gorm)
+}
+
+// reconcileSettingsIn is reconcileSettings with a cache miss read through
+// q: a caller in a transaction passes it, so that the read takes no second
+// connection. The transaction does not write the settings, so it reads what
+// the pool would.
+func (s *Service) reconcileSettingsIn(ctx context.Context, q *gorm.DB) resolved {
 	s.mu.Lock()
 	snap, at := s.reconcileCfg, s.reconcileCfgAt
 	epoch := s.reconcileEpoch
@@ -183,7 +191,7 @@ func (s *Service) reconcileSettings(ctx context.Context) resolved {
 	if snap != nil && time.Since(at) < reconcileSettingsTTL {
 		return *snap
 	}
-	v, err := loadReconcileSettings(ctx, s.db.Gorm)
+	v, err := loadReconcileSettings(ctx, q)
 	if err != nil {
 		return DefaultReconcileSettings().resolve()
 	}

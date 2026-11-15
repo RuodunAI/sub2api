@@ -115,18 +115,24 @@ func unknownScope() error {
 // super admin removing its last factor (lastSuperFactor), ask for the
 // password with it.
 func (s *Service) StepUpMethods(ctx context.Context, userID int64, scope, operation string) (*VerifyMethods, error) {
+	return s.stepUpMethods(ctx, s.db.Gorm, userID, scope, operation)
+}
+
+// stepUpMethods is StepUpMethods read through q: the pool, or the
+// transaction of a caller that holds one.
+func (s *Service) stepUpMethods(ctx context.Context, q *gorm.DB, userID int64, scope, operation string) (*VerifyMethods, error) {
 	passwordToo, ok := stepUpScopes[scope]
 	if !ok {
 		return nil, unknownScope()
 	}
 	var totp bool
 	var passkeys int
-	err := userFactors(store.G(ctx, s.db.Gorm), userID).Row().Scan(&totp, &passkeys)
+	err := userFactors(store.G(ctx, q), userID).Row().Scan(&totp, &passkeys)
 	if err != nil {
 		return nil, err
 	}
 	if !passwordToo {
-		if passwordToo, err = s.lastSuperFactor(ctx, userID, scope, operation, totp, passkeys); err != nil {
+		if passwordToo, err = s.lastSuperFactor(ctx, q, userID, scope, operation, totp, passkeys); err != nil {
 			return nil, err
 		}
 	}
@@ -161,7 +167,7 @@ func userFactors(db *gorm.DB, userID int64) *gorm.DB {
 // two-factor. Like the transfer, that takes the password as well as a
 // factor: one factor alone must not be enough to leave the account to the
 // password. Other users are not affected.
-func (s *Service) lastSuperFactor(ctx context.Context, userID int64, scope, operation string, totp bool, passkeys int) (bool, error) {
+func (s *Service) lastSuperFactor(ctx context.Context, q *gorm.DB, userID int64, scope, operation string, totp bool, passkeys int) (bool, error) {
 	var last bool
 	switch scope {
 	case core.StepUpUserSecurityReset:
@@ -174,7 +180,7 @@ func (s *Service) lastSuperFactor(ctx context.Context, userID int64, scope, oper
 	if !last {
 		return false, nil
 	}
-	return s.authz.IsSuperuser(ctx, s.db.Gorm, userID)
+	return s.authz.IsSuperuser(ctx, q, userID)
 }
 
 // resetTarget is the user a DELETE /users/:id/security operation acts on,
@@ -399,7 +405,7 @@ func (s *Service) ConsumeStepUp(ctx context.Context, scope string) error {
 			}
 		}
 	}
-	return s.verificationRequired(ctx, uid, scope, operation)
+	return s.verificationRequired(ctx, s.db.Gorm, uid, scope, operation)
 }
 
 // stepUpSessionToken names the auth_flows row of a step-up session: one per
@@ -505,11 +511,11 @@ func (s *Service) keepLastFactor(ctx context.Context, tx *gorm.DB, userID int64,
 	if err := userFactors(g, userID).Row().Scan(&totp, &passkeys); err != nil {
 		return err
 	}
-	last, err := s.lastSuperFactor(ctx, userID, scope, operation, totp, passkeys)
+	last, err := s.lastSuperFactor(ctx, tx, userID, scope, operation, totp, passkeys)
 	if err != nil || !last {
 		return err
 	}
-	return s.verificationRequired(ctx, userID, scope, operation)
+	return s.verificationRequired(ctx, tx, userID, scope, operation)
 }
 
 // lockUserIfAny locks the row of userID, with Exec: unlike lockUser, a user
@@ -520,8 +526,8 @@ func lockUserIfAny(db *gorm.DB, userID int64) *gorm.DB {
 
 // verificationRequired is the 403 that tells the console what to verify:
 // the scope, the operation to bind the proof to and the methods.
-func (s *Service) verificationRequired(ctx context.Context, userID int64, scope, operation string) error {
-	methods, err := s.StepUpMethods(ctx, userID, scope, operation)
+func (s *Service) verificationRequired(ctx context.Context, q *gorm.DB, userID int64, scope, operation string) error {
+	methods, err := s.stepUpMethods(ctx, q, userID, scope, operation)
 	if err != nil {
 		return err
 	}

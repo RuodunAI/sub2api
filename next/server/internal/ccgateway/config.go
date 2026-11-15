@@ -323,6 +323,18 @@ func (s *Service) Load(ctx context.Context) (Config, error) {
 	return c, e
 }
 
+// configIn is the configuration read through q, a transaction the caller
+// holds, so that the read takes no second connection while it holds one;
+// nil q reads it on the pool (Load). The transactions that pass one do not
+// write the configuration: they read what the pool would.
+func (s *Service) configIn(ctx context.Context, q *gorm.DB) (Config, error) {
+	if q == nil {
+		return s.Load(ctx)
+	}
+	c, _, e := s.loadIn(ctx, q, false)
+	return c, e
+}
+
 // loadVersioned is Load plus the stored value as read: every write changes
 // it (fresh ciphertext), so comparing it later under the row lock tells
 // whether anyone saved meanwhile (§53.9 config_changed).

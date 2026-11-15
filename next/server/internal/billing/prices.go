@@ -186,7 +186,8 @@ type checked struct {
 // check builds and validates the expression for a price. Validation errors
 // and an unconfirmed big-cost warning are returned as invalid_argument with
 // details {errors, warnings, confirmation_required}.
-func (s *Service) check(ctx context.Context, mode string, config json.RawMessage, expression string, confirm bool) (*checked, error) {
+// q reads the settings: the caller's transaction, or the pool.
+func (s *Service) check(ctx context.Context, q *gorm.DB, mode string, config json.RawMessage, expression string, confirm bool) (*checked, error) {
 	if len(config) == 0 || string(config) == "null" {
 		config = json.RawMessage("{}")
 	}
@@ -203,7 +204,7 @@ func (s *Service) check(ctx context.Context, mode string, config json.RawMessage
 		}
 		return nil, core.InvalidFields(core.FieldError{Field: "mode", Code: "invalid", Message: err.Error()})
 	}
-	st, _ := s.Settings(ctx)
+	st, _ := s.settingsIn(ctx, q)
 	rep := expr.Validate(src, expr.ValidateOptions{Facts: s.factsFor(), BigCostUSD: st.BigCostWarningUSD})
 	if !rep.OK {
 		return nil, core.ErrInvalidArgument.WithMessage("invalid price expression").WithDetails(map[string]any{
@@ -253,7 +254,7 @@ func (s *Service) createPrice(c *gin.Context) {
 		httpapi.Fail(c, core.InvalidFields(fields...))
 		return
 	}
-	ck, err := s.check(ctx, mode, in.Config, deref(in.Expression), in.Confirm)
+	ck, err := s.check(ctx, s.db.Gorm, mode, in.Config, deref(in.Expression), in.Confirm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -323,7 +324,7 @@ func (s *Service) updatePrice(c *gin.Context) {
 		}
 		src, hash, version := cur.Expression, cur.ExprHash, cur.ExprVersion
 		if pricing {
-			ck, err := s.check(ctx, mode, config, expression, in.Confirm)
+			ck, err := s.check(ctx, tx, mode, config, expression, in.Confirm)
 			if err != nil {
 				return err
 			}

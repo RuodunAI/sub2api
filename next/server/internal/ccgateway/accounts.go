@@ -221,11 +221,17 @@ func (s *Service) desiredIn(ctx context.Context, q *gorm.DB, id int64, credentia
 // and the proxy, so every node computes the same one. A retired runtime has
 // no desired state: it is never reconfigured, only deleted by the sweep.
 func (s *Service) draftDesired(ctx context.Context, key string, credentials bool) (accountDesired, error) {
+	return s.draftDesiredIn(ctx, s.DB.Gorm, key, credentials)
+}
+
+// draftDesiredIn is draftDesired read through q (a transaction the caller
+// holds, or the pool).
+func (s *Service) draftDesiredIn(ctx context.Context, q *gorm.DB, key string, credentials bool) (accountDesired, error) {
 	d := accountDesired{Kind: "managed", Key: key}
 	var version string
 	var spec core.ProxySpec
 	var password, settings []byte
-	err := store.G(ctx, s.DB.Gorm).Raw(`SELECT
+	err := store.G(ctx, q).Raw(`SELECT
   r.proxy_id IS NOT NULL AND (p.id IS NULL OR p.protocol NOT IN ('http','https','socks5')),
   concat_ws('|','draft',r.key,r.proxy_id,p.updated_at),
   COALESCE(p.protocol,''),COALESCE(p.host,''),COALESCE(p.port,0),COALESCE(p.username,''),p.password_enc,r.initial_settings
@@ -249,7 +255,7 @@ func (s *Service) draftDesired(ctx context.Context, key string, credentials bool
 			return d, err
 		}
 	}
-	return s.desiredNetwork(ctx, s.DB.Gorm, d)
+	return s.desiredNetwork(ctx, q, d)
 }
 
 // resolveKey maps an account id to its runtime key (the adopted draft key,
@@ -272,34 +278,42 @@ func (s *Service) resolveKey(ctx context.Context, key string) (string, error) {
 	return r.Key, e
 }
 
-// desiredKey is the desired state of a resolved runtime key: the account
-// that adopted the draft, the draft itself, or the account with that id.
-func (s *Service) desiredKey(ctx context.Context, key string, credentials bool) (accountDesired, error) {
+// desiredKey is the desired state of a resolved runtime key, read through
+// q: the account that adopted the draft, the draft itself, or the account
+// with that id.
+func (s *Service) desiredKey(ctx context.Context, q *gorm.DB, key string, credentials bool) (accountDesired, error) {
 	if !isDraftKey(key) {
 		id, e := strconv.ParseInt(key, 10, 64)
 		if e != nil {
 			return accountDesired{}, e
 		}
-		d, e := s.desired(ctx, id, credentials)
+		d, e := s.desiredIn(ctx, q, id, credentials)
 		if e == nil && d.Key != key {
 			return d, fmt.Errorf("account %d uses runtime %s", id, d.Key)
 		}
 		return d, e
 	}
 	var r model.CcgatewayRuntime
-	if e := runtimes(store.G(ctx, s.DB.Gorm)).Select("account_id").Where("key = ?", key).Take(&r).Error; e != nil {
+	if e := runtimes(store.G(ctx, q)).Select("account_id").Where("key = ?", key).Take(&r).Error; e != nil {
 		return accountDesired{}, e
 	}
 	if r.AccountID != nil {
-		return s.desired(ctx, *r.AccountID, credentials)
+		return s.desiredIn(ctx, q, *r.AccountID, credentials)
 	}
-	return s.draftDesired(ctx, key, credentials)
+	return s.draftDesiredIn(ctx, q, key, credentials)
 }
 
 // runtimeRequest calls /accounts/<key>/<path> on the controller (path ""
 // addresses the runtime itself). header holds extra name/value pairs.
 func (s *Service) runtimeRequest(ctx context.Context, key, method, path string, body []byte, revision string, header ...string) (*http.Response, func() error, error) {
-	cfg, e := s.Load(ctx)
+	return s.runtimeRequestIn(ctx, nil, key, method, path, body, revision, header...)
+}
+
+// runtimeRequestIn is runtimeRequest with the configuration read through q
+// (configIn): a caller in a transaction passes it, so that the read takes
+// no second connection.
+func (s *Service) runtimeRequestIn(ctx context.Context, q *gorm.DB, key, method, path string, body []byte, revision string, header ...string) (*http.Response, func() error, error) {
+	cfg, e := s.configIn(ctx, q)
 	if e != nil || !cfg.AccountRuntimes {
 		return nil, nil, errNotConfigured
 	}
@@ -359,7 +373,7 @@ func (s *Service) reconcileLocked(ctx context.Context, tx *gorm.DB, key string) 
 	if e := store.G(ctx, tx).Raw(tryLockSQL, key).Row().Scan(&locked); e != nil || !locked {
 		return e
 	}
-	d, e := s.desiredKey(ctx, key, true)
+	d, e := s.desiredKey(ctx, tx, key, true)
 	if e != nil {
 		return e
 	}
@@ -385,7 +399,7 @@ func (s *Service) reconcileLocked(ctx context.Context, tx *gorm.DB, key string) 
 		}
 	}
 	// Check remote readiness without rewriting an unchanged configuration.
-	res, close, e := s.runtimeRequest(ctx, key, "GET", "status", nil, "")
+	res, close, e := s.runtimeRequestIn(ctx, tx, key, "GET", "status", nil, "")
 	if e == nil {
 		var status struct {
 			Status   string `json:"status"`
@@ -398,7 +412,7 @@ func (s *Service) reconcileLocked(ctx context.Context, tx *gorm.DB, key string) 
 			return nil
 		}
 	}
-	if e = s.putConfig(ctx, key, d); e != nil || d.Enabled {
+	if e = s.putConfig(ctx, tx, key, d); e != nil || d.Enabled {
 		return e
 	}
 	return s.markBlocked(ctx, tx, key, d)
@@ -520,12 +534,13 @@ func (s *Service) forgetBlocked(keys ...string) {
 	}
 }
 
-// putConfig applies d to the runtime key on the controller (PUT config).
-// The core names no CLI (the image decides, cli-from-image-v1); a
-// controller without that feature is sent the legacy profile (legacyCLI).
-func (s *Service) putConfig(ctx context.Context, key string, d accountDesired) error {
+// putConfig applies d to the runtime key on the controller (PUT config),
+// reading the configuration through q (configIn). The core names no CLI
+// (the image decides, cli-from-image-v1); a controller without that feature
+// is sent the legacy profile (legacyCLI).
+func (s *Service) putConfig(ctx context.Context, q *gorm.DB, key string, d accountDesired) error {
 	if d.CLI == nil {
-		cfg, err := s.Load(ctx)
+		cfg, err := s.configIn(ctx, q)
 		if err != nil {
 			return err
 		}
@@ -544,7 +559,7 @@ func (s *Service) putConfig(ctx context.Context, key string, d accountDesired) e
 		}
 	}
 	body, _ := json.Marshal(d)
-	res, close, e := s.runtimeRequest(ctx, key, "PUT", "config", body, "")
+	res, close, e := s.runtimeRequestIn(ctx, q, key, "PUT", "config", body, "")
 	if e != nil {
 		return e
 	}

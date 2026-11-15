@@ -99,6 +99,10 @@ type Service struct {
 
 	cacheMu sync.Mutex
 	cache   []cachedPkg // tiny LRU of unpacked packages
+
+	// purgeMu admits one transaction at a time that purges a plugin's
+	// accounts in a transaction of their own (purgeTx).
+	purgeMu sync.Mutex
 }
 
 type cachedPkg struct {
