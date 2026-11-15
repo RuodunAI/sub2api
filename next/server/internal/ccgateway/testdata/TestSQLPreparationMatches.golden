@@ -1,0 +1,7 @@
+-- sql
+SELECT EXISTS(SELECT 1 FROM "ccgateway_runtimes" WHERE (key = $1 AND account_id IS NULL AND retired_at IS NULL) AND for_account IS NULL AND (proxy_id IS NOT DISTINCT FROM $2 AND initial_settings = $3::jsonb) AND created_by = $4)
+-- vars
+$1 string "d0123456789abcdef"
+$2 *int64 4
+$3 jsontext.Value {"locale":"en"}
+$4 int64 9

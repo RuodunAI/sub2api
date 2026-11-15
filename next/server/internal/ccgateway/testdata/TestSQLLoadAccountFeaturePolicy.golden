@@ -1,0 +1,5 @@
+-- sql
+SELECT "mode","overrides","revision" FROM "ccgateway_account_feature_policies" WHERE account_id = $1 LIMIT $2
+-- vars
+$1 int 7
+$2 int 1

@@ -1,0 +1,7 @@
+-- sql
+INSERT INTO "ccgateway_account_feature_policies" ("account_id","mode","overrides","revision") VALUES ($1,$2,$3,$4) ON CONFLICT ("account_id") DO UPDATE SET "mode"="excluded"."mode","overrides"="excluded"."overrides","revision"="excluded"."revision","updated_at"=clock_timestamp() RETURNING "overrides","revision","updated_at"
+-- vars
+$1 int64 7
+$2 string "custom"
+$3 jsontext.Value {"level":"off"}
+$4 *int64 3

@@ -1,0 +1,5 @@
+-- sql
+SELECT COALESCE(r.key, a.id::text) FROM accounts a LEFT JOIN ccgateway_runtimes r ON r.account_id = a.id WHERE a.id = $1 AND a.plugin_key = 'ccgateway' AND a.type = 'managed' AND a.deleted_at IS NULL LIMIT $2 FOR UPDATE OF "a"
+-- vars
+$1 int64 7
+$2 int 1

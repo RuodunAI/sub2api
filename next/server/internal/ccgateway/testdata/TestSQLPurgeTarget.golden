@@ -1,0 +1,5 @@
+-- sql
+SELECT a.id, a.deleted_at IS NOT NULL AND r.retired_at IS NOT NULL AND r.purged_at IS NULL AS retained FROM ccgateway_runtimes r JOIN accounts a ON a.id = r.account_id WHERE r.key = $1 AND a.plugin_key = 'ccgateway' LIMIT $2 FOR UPDATE OF "r"
+-- vars
+$1 string "7"
+$2 int 1

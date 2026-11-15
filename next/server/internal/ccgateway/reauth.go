@@ -9,9 +9,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-const reauthLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended('ccg-reauth:' || $1::bigint::text, 0))`
+const reauthLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended('ccg-reauth:' || ?::bigint::text, 0))`
 
 // ReauthDraft keeps its compatibility name, but returns the existing runtime.
 // It never creates a draft, copies credentials, or replaces Docker resources.
@@ -60,6 +62,15 @@ func (s *Service) ReauthDraft(ctx context.Context, accountID int64) (string, boo
 
 // CommitReauth verifies login on the same runtime and resets account-side
 // failure/quota state. Runtime mappings, sessions and volumes are retained.
+// reauthKeyQuery locks managed ccgateway account accountID and reads its
+// runtime key.
+func reauthKeyQuery(db *gorm.DB, accountID int64) *gorm.DB {
+	return db.Table("accounts a").Joins("LEFT JOIN ccgateway_runtimes r ON r.account_id = a.id").
+		Select("COALESCE(r.key, a.id::text)").
+		Where("a.id = ? AND a.plugin_key = 'ccgateway' AND a.type = 'managed' AND a.deleted_at IS NULL", accountID).
+		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "a"}})
+}
+
 func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string, fn func(pgx.Tx, string) error) (string, error) {
 	if !s.runtimesOn(ctx) {
 		return "", reasonError(core.ErrUnavailable, "not_configured")
@@ -70,12 +81,12 @@ func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string,
 	subscriptionChanged := false
 	var observed core.AccountPreparationFacts
 	err := s.lockedTx(ctx, key, true, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, reauthLockSQL, accountID); err != nil {
+		g := store.G(ctx, tx)
+		if err := g.Exec(reauthLockSQL, accountID).Error; err != nil {
 			return err
 		}
 		var current string
-		err := tx.QueryRow(ctx, `SELECT COALESCE(r.key,a.id::text) FROM accounts a LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id
-   WHERE a.id=$1 AND a.plugin_key='ccgateway' AND a.type='managed' AND a.deleted_at IS NULL FOR UPDATE OF a`, accountID).Scan(&current)
+		err := reauthKeyQuery(g, accountID).Take(&current).Error
 		if store.IsNoRows(err) || (err == nil && current != key) {
 			return draftNotFound(core.ErrInvalidArgument)
 		}

@@ -1,0 +1,7 @@
+-- sql
+SELECT "a"."id" FROM accounts a JOIN ccgateway_runtimes r ON r.account_id = a.id WHERE a.id = ANY($1) AND a.plugin_key = 'ccgateway' AND (r.parked_at IS NOT NULL AND a.deleted_at IS NULL AND a.status_changed_at IS NOT NULL
+	AND r.parked_at >= a.status_changed_at AND (a.status = 'disabled'
+	OR (a.status IN ('auto_disabled', 'error') AND a.auto_disabled_until IS NULL)
+	OR (a.status = 'active' AND NOT a.schedulable)))
+-- vars
+$1 store.Int64s [7 8]

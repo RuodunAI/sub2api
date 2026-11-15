@@ -7,7 +7,10 @@ import (
 	"strconv"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var _ core.AccountLifecycleResource = (*Service)(nil)
@@ -22,13 +25,13 @@ func (s *Service) PrepareAccount(ctx context.Context, p core.AccountPreparation)
 	if err := s.checkProxy(ctx, p.ProxyID); err != nil {
 		return err
 	}
-	tag, err := s.DB.Pool.Exec(ctx, `INSERT INTO ccgateway_runtimes(key,proxy_id,created_by,initial_settings) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT (key) DO NOTHING`, p.Key, p.ProxyID, p.CreatedBy, p.Settings)
-	if err != nil {
-		return err
+	g := store.G(ctx, s.DB.Pool)
+	res := insertPreparation(g, p)
+	if res.Error != nil {
+		return res.Error
 	}
-	if tag.RowsAffected() == 0 {
-		var matches bool
-		err := s.DB.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ccgateway_runtimes WHERE key=$1 AND created_by=$2 AND proxy_id IS NOT DISTINCT FROM $3 AND initial_settings=$4::jsonb AND account_id IS NULL AND for_account IS NULL AND retired_at IS NULL)`, p.Key, p.CreatedBy, p.ProxyID, p.Settings).Scan(&matches)
+	if res.RowsAffected == 0 {
+		matches, err := preparationMatches(g, p)
 		if err != nil {
 			return err
 		}
@@ -38,6 +41,26 @@ func (s *Service) PrepareAccount(ctx context.Context, p core.AccountPreparation)
 	}
 	s.Kick(p.Key)
 	return nil
+}
+
+// insertPreparation inserts the draft of preparation p unless its key
+// exists. The settings are written as given: a nil value is NULL, not the
+// column default.
+func insertPreparation(db *gorm.DB, p core.AccountPreparation) *gorm.DB {
+	return runtimes(db).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).
+		Create(map[string]any{"key": p.Key, "proxy_id": p.ProxyID, "created_by": p.CreatedBy, "initial_settings": p.Settings})
+}
+
+// preparationMatches reports whether the open draft of p is the one p
+// describes (same creator, proxy and settings).
+func preparationMatches(db *gorm.DB, p core.AccountPreparation) (bool, error) {
+	return rowExists(db, preparationDraft(db, p))
+}
+
+// preparationDraft is the open draft p describes.
+func preparationDraft(db *gorm.DB, p core.AccountPreparation) *gorm.DB {
+	return newAccountDraft(db, p.Key, &p.CreatedBy).
+		Where("proxy_id IS NOT DISTINCT FROM ? AND initial_settings = ?::jsonb", p.ProxyID, p.Settings)
 }
 
 // AccountPreparationAction runs one action on a preparation's draft runtime
@@ -77,19 +100,19 @@ func (s *Service) AccountPreparationAction(ctx context.Context, p core.AccountPr
 }
 
 func (s *Service) UpdateAccountPreparation(ctx context.Context, tx pgx.Tx, p core.AccountPreparation) error {
-	tag, err := tx.Exec(ctx, `UPDATE ccgateway_runtimes SET proxy_id=$2,last_seen_at=now() WHERE key=$1 AND created_by=$3 AND account_id IS NULL AND retired_at IS NULL AND for_account IS NULL`, p.Key, p.ProxyID, p.CreatedBy)
-	if err != nil {
-		return err
+	res := setDraftProxy(store.G(ctx, tx), p.Key, &p.CreatedBy, p.ProxyID)
+	if res.Error != nil {
+		return res.Error
 	}
-	if tag.RowsAffected() != 1 {
+	if res.RowsAffected != 1 {
 		return core.ErrNotFound
 	}
 	return nil
 }
 
 func (s *Service) CheckAccountPreparation(ctx context.Context, p core.AccountPreparation) (core.AccountPreparationFacts, error) {
-	var matches bool
-	if err := s.DB.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ccgateway_runtimes WHERE key=$1 AND created_by=$2 AND proxy_id IS NOT DISTINCT FROM $3 AND initial_settings=$4::jsonb AND account_id IS NULL AND for_account IS NULL AND retired_at IS NULL)`, p.Key, p.CreatedBy, p.ProxyID, p.Settings).Scan(&matches); err != nil {
+	matches, err := preparationMatches(store.G(ctx, s.DB.Pool), p)
+	if err != nil {
 		return core.AccountPreparationFacts{}, err
 	}
 	if !matches {

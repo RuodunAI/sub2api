@@ -1,0 +1,6 @@
+-- sql
+UPDATE "ccgateway_runtimes" SET "last_seen_at"=now(),"proxy_id"=$1 WHERE (key = $2 AND account_id IS NULL AND retired_at IS NULL) AND for_account IS NULL AND created_by = $3
+-- vars
+$1 *int64 nil
+$2 string "d0123456789abcdef"
+$3 int64 9

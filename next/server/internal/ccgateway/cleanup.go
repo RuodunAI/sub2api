@@ -15,6 +15,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const cleanupFeature = "runtime-cleanup-v1"
@@ -44,19 +46,32 @@ const (
 // explicit orphan-cleanup action, not during rollout.
 func (s *Service) MarkAccountDeleted(ctx context.Context, tx pgx.Tx, id int64, opts core.AccountDeletionOptions) (time.Time, error) {
 	var purgeAfter time.Time
-	err := tx.QueryRow(ctx, `UPDATE ccgateway_runtimes SET retired_at=now(),purge_after=now()+make_interval(days => $2::int),purged_at=NULL
-	 WHERE account_id=$1 RETURNING purge_after`, id, opts.RetainDays).Scan(&purgeAfter)
+	g := store.G(ctx, tx)
+	err := retireAccountRuntime(g, id, opts.RetainDays).Row().Scan(&purgeAfter)
 	if err == nil {
 		return purgeAfter, nil
 	}
 	if !store.IsNoRows(err) {
 		return time.Time{}, err
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,retired_at,purge_after)
-	 VALUES($1::bigint::text,$1,now(),now(),now()+make_interval(days => $2::int)) ON CONFLICT(key) DO UPDATE
-	 SET account_id=EXCLUDED.account_id,retired_at=EXCLUDED.retired_at,purge_after=EXCLUDED.purge_after,purged_at=NULL
-	 RETURNING purge_after`, id, opts.RetainDays).Scan(&purgeAfter)
+	err = insertRetiredRuntime(g, id, opts.RetainDays).Row().Scan(&purgeAfter)
 	return purgeAfter, err
+}
+
+// retireAccountRuntime marks the runtime row of account id retired, due for
+// its purge in days days, and returns purge_after.
+func retireAccountRuntime(db *gorm.DB, id int64, days int) *gorm.DB {
+	return db.Raw(`UPDATE ccgateway_runtimes SET retired_at=now(),purge_after=now()+make_interval(days => ?::int),purged_at=NULL
+	 WHERE account_id=? RETURNING purge_after`, days, id)
+}
+
+// insertRetiredRuntime is retireAccountRuntime for an account without a row
+// (its runtime is named after its id) and returns purge_after.
+func insertRetiredRuntime(db *gorm.DB, id int64, days int) *gorm.DB {
+	return db.Raw(`INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,retired_at,purge_after)
+	 VALUES(?::bigint::text,?,now(),now(),now()+make_interval(days => ?::int)) ON CONFLICT(key) DO UPDATE
+	 SET account_id=EXCLUDED.account_id,retired_at=EXCLUDED.retired_at,purge_after=EXCLUDED.purge_after,purged_at=NULL
+	 RETURNING purge_after`, id, id, days)
 }
 
 type cleanupCandidate struct {
@@ -143,8 +158,8 @@ func (s *Service) purgeDeleted(ctx context.Context, tx pgx.Tx, key string, d acc
 		return err
 	}
 	slog.InfoContext(ctx, "CCGateway: deleted account runtime purged", "key", key, "account", d.AccountID)
-	_, err := tx.Exec(ctx, `UPDATE ccgateway_runtimes SET purged_at=now() WHERE key=$1 AND account_id=$2 AND purged_at IS NULL`, key, d.AccountID)
-	return err
+	return runtimes(store.G(ctx, tx)).Where("key = ? AND account_id = ? AND purged_at IS NULL", key, d.AccountID).
+		Update("purged_at", gorm.Expr("now()")).Error
 }
 
 // Read the authoritative list after the controller inventory. Pagination and
@@ -154,30 +169,24 @@ func (s *Service) purgeDeleted(ctx context.Context, tx pgx.Tx, key string, d acc
 // Keep the runtimes of deleted accounts still in their retention period too:
 // Reconcile purges them when it ends.
 func (s *Service) cleanupKeepKeys(ctx context.Context) ([]string, error) {
-	rows, err := s.DB.Pool.Query(ctx, `
+	var found []string
+	err := store.G(ctx, s.DB.Pool).Raw(`
 SELECT COALESCE(r.key,a.id::text) FROM accounts a LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id
  WHERE a.plugin_key='ccgateway' AND a.deleted_at IS NULL
 UNION SELECT r.key FROM ccgateway_runtimes r WHERE r.account_id IS NULL AND r.retired_at IS NULL
-UNION SELECT key FROM ccgateway_runtimes WHERE account_id IS NULL AND retired_at >= now()-$1::bigint*interval '1 second'
+UNION SELECT key FROM ccgateway_runtimes WHERE account_id IS NULL AND retired_at >= now()-?::bigint*interval '1 second'
 UNION SELECT r.key FROM ccgateway_runtimes r WHERE r.account_id IS NOT NULL AND r.purged_at IS NULL AND `+sqlInRetention,
-		int64(retiredGrace/time.Second))
+		int64(retiredGrace/time.Second)).Scan(&found).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	keys := []string{}
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
-		}
+	// Never nil: keep_keys is sent as a JSON list.
+	keys := make([]string, 0, len(found))
+	for _, key := range found {
 		if !accountKeyPattern.MatchString(key) && !isDraftKey(key) {
 			return nil, core.ErrUnavailable
 		}
 		keys = append(keys, key)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	sort.Strings(keys)
 	return keys, nil
@@ -257,31 +266,38 @@ type retainedRuntime struct {
 // purge_after and is due since it was retired. Times are RFC3339 (UTC).
 func (s *Service) retainedRuntimes(c *gin.Context) {
 	httpapi.NoStore(c)
-	rows, err := s.DB.Pool.Query(c.Request.Context(), `SELECT r.key,a.id,a.name,a.type,a.deleted_at,`+sqlPurgeAt+`,`+sqlPurgeAt+` <= now()
-  FROM ccgateway_runtimes r JOIN accounts a ON a.id=r.account_id
-  WHERE a.plugin_key='ccgateway' AND `+sqlPendingPurge+`
-  ORDER BY 6,r.key`)
-	if err != nil {
+	var rows []retainedRow
+	if err := retainedQuery(store.G(c.Request.Context(), s.DB.Pool)).Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return
 	}
-	defer rows.Close()
-	out := []retainedRuntime{}
-	for rows.Next() {
-		var item retainedRuntime
-		var deletedAt, purgeAfter time.Time
-		if err := rows.Scan(&item.Key, &item.AccountID, &item.AccountName, &item.AccountType, &deletedAt, &purgeAfter, &item.Due); err != nil {
-			httpapi.Fail(c, core.ErrUnavailable)
-			return
-		}
-		item.DeletedAt, item.PurgeAfter = deletedAt.UTC().Format(time.RFC3339), purgeAfter.UTC().Format(time.RFC3339)
-		out = append(out, item)
-	}
-	if rows.Err() != nil {
-		httpapi.Fail(c, core.ErrUnavailable)
-		return
+	out := make([]retainedRuntime, len(rows))
+	for i, r := range rows {
+		out[i] = retainedRuntime{Key: r.Key, AccountID: r.AccountID, AccountName: r.AccountName, AccountType: r.AccountType,
+			DeletedAt: r.DeletedAt.UTC().Format(time.RFC3339), PurgeAfter: r.PurgeAt.UTC().Format(time.RFC3339), Due: r.Due}
 	}
 	httpapi.OK(c, map[string]any{"runtimes": out})
+}
+
+// retainedRow is a row of retainedQuery.
+type retainedRow struct {
+	Key         string    `gorm:"column:key"`
+	AccountID   int64     `gorm:"column:account_id"`
+	AccountName string    `gorm:"column:account_name"`
+	AccountType string    `gorm:"column:account_type"`
+	DeletedAt   time.Time `gorm:"column:deleted_at"`
+	PurgeAt     time.Time `gorm:"column:purge_at"`
+	Due         bool      `gorm:"column:due"`
+}
+
+// retainedQuery lists the runtimes of deleted accounts not purged yet, the
+// one due first first.
+func retainedQuery(db *gorm.DB) *gorm.DB {
+	return db.Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").
+		Select("r.key, a.id AS account_id, a.name AS account_name, a.type AS account_type, a.deleted_at, " +
+			sqlPurgeAt + " AS purge_at, " + sqlPurgeAt + " <= now() AS due").
+		Where("a.plugin_key = 'ccgateway' AND " + sqlPendingPurge).
+		Order("purge_at, r.key")
 }
 
 // runtimePurge serves POST /system/ccgateway/runtimes/:key/purge: the
@@ -302,19 +318,20 @@ func (s *Service) runtimePurge(c *gin.Context) {
 	var accountID int64
 	found, retained := false, false
 	err := s.lockedTx(ctx, key, true, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `SELECT a.id, `+sqlPendingPurge+`
-  FROM ccgateway_runtimes r JOIN accounts a ON a.id=r.account_id WHERE r.key=$1 AND a.plugin_key='ccgateway' FOR UPDATE OF r`, key).Scan(&accountID, &retained)
+		g := store.G(ctx, tx)
+		var r purgeTarget
+		err := purgeTargetQuery(g, key).Take(&r).Error
 		if store.IsNoRows(err) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		found = true
+		accountID, retained, found = r.AccountID, r.Retained, true
 		if !retained {
 			return nil
 		}
-		if _, err := tx.Exec(ctx, `UPDATE ccgateway_runtimes SET purge_after=now() WHERE key=$1 AND purge_after > now()`, key); err != nil {
+		if err := runtimes(g).Where("key = ? AND purge_after > now()", key).Update("purge_after", gorm.Expr("now()")).Error; err != nil {
 			return err
 		}
 		uid, _ := core.UserID(ctx)
@@ -331,4 +348,19 @@ func (s *Service) runtimePurge(c *gin.Context) {
 		s.Kick(key)
 		httpapi.Accepted(c, map[string]any{"accepted": true, "key": key, "account_id": accountID})
 	}
+}
+
+// purgeTarget is the row of purgeTargetQuery.
+type purgeTarget struct {
+	AccountID int64 `gorm:"column:id"`
+	Retained  bool  `gorm:"column:retained"`
+}
+
+// purgeTargetQuery locks runtime key of a ccgateway account and reads its
+// account and whether it is a deleted account's runtime not purged yet.
+func purgeTargetQuery(db *gorm.DB, key string) *gorm.DB {
+	return db.Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").
+		Select("a.id, "+sqlPendingPurge+" AS retained").
+		Where("r.key = ? AND a.plugin_key = 'ccgateway'", key).
+		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "r"}})
 }

@@ -16,6 +16,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/gin-gonic/gin"
 )
 
@@ -212,18 +214,15 @@ func (s *Service) runtimeAccounts(ctx context.Context, keys []string) map[string
 	if len(drafts) == 0 {
 		return out
 	}
-	rows, e := s.DB.Pool.Query(ctx, `SELECT key, account_id FROM ccgateway_runtimes WHERE key = ANY($1) AND account_id IS NOT NULL`, drafts)
+	var rows []model.CcgatewayRuntime
+	e := runtimes(store.G(ctx, s.DB.Pool)).Select("key", "account_id").
+		Where("key = ANY(?) AND account_id IS NOT NULL", store.Strings(drafts)).Find(&rows).Error
 	if e != nil {
 		slog.WarnContext(ctx, "CCGateway: reading the accounts of draft runtimes failed", "err", e)
 		return out
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var key string
-		var id int64
-		if rows.Scan(&key, &id) == nil {
-			out[key] = id
-		}
+	for _, r := range rows {
+		out[r.Key] = *r.AccountID // account_id IS NOT NULL
 	}
 	return out
 }
