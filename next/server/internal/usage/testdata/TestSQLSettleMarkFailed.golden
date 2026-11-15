@@ -1,0 +1,6 @@
+-- sql
+UPDATE "usage_logs" SET "billing_detail"=billing_detail || $1::jsonb,"billing_status"=$2 WHERE request_id = $3 AND billing_status IN ('pending', 'failed')
+-- vars
+$1 []uint8 [123 34 97 116 116 101 109 112 116 115 34 58 50 125]
+$2 string "failed"
+$3 string "req-1"

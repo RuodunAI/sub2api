@@ -9,8 +9,11 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 type taskClaim struct {
@@ -24,14 +27,7 @@ type taskClaim struct {
 var errTaskDeferred = errors.New("original task account is unavailable or busy")
 
 func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, error) {
-	rows, err := s.db.Pool.Query(ctx, `WITH claimed AS (
-		UPDATE async_tasks t SET claim_token=$3,lease_until=now()+make_interval(secs=>$2)
-		FROM (SELECT public_id FROM async_tasks WHERE observation_status='pending' AND next_check_at<=now()
-			AND (lease_until IS NULL OR lease_until<=now()) ORDER BY next_check_at,public_id FOR UPDATE SKIP LOCKED LIMIT $1) due
-		WHERE t.public_id=due.public_id RETURNING t.*)
-		SELECT t.public_id,t.claim_token,t.kind,t.state,t.plugin_key,t.upstream_ref_id,t.usage_log_id,t.account_id,
-			t.attempts,t.poll_failures,t.created_at,t.deadline_at,COALESCE(p.id,0),t.group_id
-		FROM claimed t LEFT JOIN pending_settlements p ON p.task_public_id=t.public_id`, limit, int(reconcileLease/time.Second), uuid.NewString())
+	rows, err := claimDueTasks(store.G(ctx, s.db.Pool), limit, uuid.NewString()).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -46,6 +42,20 @@ func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, er
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// claimDueTasks leases up to limit due task observations to token (an
+// UPDATE of async_tasks that leaves updated_at alone) and reads them with
+// their legacy entry, if any.
+func claimDueTasks(db *gorm.DB, limit int, token string) *gorm.DB {
+	return db.Raw(`WITH claimed AS (
+		UPDATE async_tasks t SET claim_token=?,lease_until=now()+make_interval(secs=>?)
+		FROM (SELECT public_id FROM async_tasks WHERE observation_status='pending' AND next_check_at<=now()
+			AND (lease_until IS NULL OR lease_until<=now()) ORDER BY next_check_at,public_id FOR UPDATE SKIP LOCKED LIMIT ?) due
+		WHERE t.public_id=due.public_id RETURNING t.*)
+		SELECT t.public_id,t.claim_token,t.kind,t.state,t.plugin_key,t.upstream_ref_id,t.usage_log_id,t.account_id,
+			t.attempts,t.poll_failures,t.created_at,t.deadline_at,COALESCE(p.id,0),t.group_id
+		FROM claimed t LEFT JOIN pending_settlements p ON p.task_public_id=t.public_id`, token, int(reconcileLease/time.Second), limit)
 }
 
 func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (context.Context, *pluginv1.Account, *int64, func(), error) {
@@ -145,10 +155,11 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx pgx.Tx, e *settleEntry
 		return nil
 	}
 	t := e.task
+	g := store.G(ctx, tx)
 	var current string
-	err := tx.QueryRow(ctx, `SELECT state FROM async_tasks WHERE public_id=$1 AND claim_token=$2
-		AND observation_status='pending' AND lease_until>clock_timestamp() FOR UPDATE`, t.id, t.token).Scan(&current)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := g.Raw(`SELECT state FROM async_tasks WHERE public_id=? AND claim_token=?
+		AND observation_status='pending' AND lease_until>clock_timestamp() FOR UPDATE`, t.id, t.token).Row().Scan(&current)
+	if store.IsNoRows(err) {
 		return errNotPending
 	}
 	if err != nil {
@@ -157,7 +168,7 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx pgx.Tx, e *settleEntry
 	// Recheck after a row-lock wait: the statement's original visibility test
 	// may have run before the lease expired while waiting for the lock.
 	var valid bool
-	if err := tx.QueryRow(ctx, `SELECT lease_until>clock_timestamp() FROM async_tasks WHERE public_id=$1`, t.id).Scan(&valid); err != nil {
+	if err := g.Raw(`SELECT lease_until>clock_timestamp() FROM async_tasks WHERE public_id=?`, t.id).Row().Scan(&valid); err != nil {
 		return err
 	}
 	if !valid {
@@ -174,14 +185,24 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx pgx.Tx, e *settleEntry
 		}
 		state = current
 	}
-	_, err = tx.Exec(ctx, `UPDATE async_tasks SET state=$2,observation_status=$3,
-		snapshot=COALESCE($4,snapshot),snapshot_id_paths=CASE WHEN $4::bytea IS NULL THEN snapshot_id_paths ELSE $5::jsonb END,
-		claim_token='',lease_until=NULL,attempts=attempts+CASE WHEN $3='closed' THEN 1 ELSE 0 END,
-		failure_code=CASE WHEN $3='closed' THEN $6 ELSE failure_code END,
-		last_error=CASE WHEN $3='closed' THEN $7 ELSE last_error END,
-		poll_failures=CASE WHEN $3='closed' AND $8 THEN poll_failures+1 WHEN $3='closed' AND $9 THEN 0 ELSE poll_failures END,
-		updated_at=now() WHERE public_id=$1`, t.id, state, observation, snapshot, paths, t.failureCode, t.failureReason, e.pollFailed, e.pollObserved)
-	return err
+	return releaseTaskClaim(g, e, state, observation, snapshot, paths).Error
+}
+
+// releaseTaskClaim writes a task's observation and gives up its claim.
+// Arguments are positional, repeated where the statement reuses one; the
+// space in "COALESCE( ?" keeps GORM from spreading the []byte into a list,
+// which it does to a slice right after "(".
+func releaseTaskClaim(db *gorm.DB, e *settleEntry, state, observation string, snapshot, paths []byte) *gorm.DB {
+	t := e.task
+	return db.Exec(`UPDATE async_tasks SET state=?,observation_status=?,
+		snapshot=COALESCE( ?,snapshot),snapshot_id_paths=CASE WHEN ?::bytea IS NULL THEN snapshot_id_paths ELSE ?::jsonb END,
+		claim_token='',lease_until=NULL,attempts=attempts+CASE WHEN ?='closed' THEN 1 ELSE 0 END,
+		failure_code=CASE WHEN ?='closed' THEN ? ELSE failure_code END,
+		last_error=CASE WHEN ?='closed' THEN ? ELSE last_error END,
+		poll_failures=CASE WHEN ?='closed' AND ? THEN poll_failures+1 WHEN ?='closed' AND ? THEN 0 ELSE poll_failures END,
+		updated_at=now() WHERE public_id=?`,
+		state, observation, snapshot, snapshot, paths, observation, observation, t.failureCode, observation, t.failureReason,
+		observation, e.pollFailed, observation, e.pollObserved, t.id)
 }
 
 // A legacy worker may have claimed this row before lazy import transferred
@@ -191,7 +212,8 @@ func lockLegacyOutcome(ctx context.Context, tx pgx.Tx, e *settleEntry) error {
 		return nil
 	}
 	var managed *string
-	if err := tx.QueryRow(ctx, `SELECT task_public_id FROM pending_settlements WHERE id=$1 FOR UPDATE`, e.id).Scan(&managed); err != nil {
+	if err := store.G(ctx, tx).Model(&model.PendingSettlement{}).Select("task_public_id").Where("id = ?", e.id).
+		Clauses(store.ForUpdate).Row().Scan(&managed); err != nil {
 		return err
 	}
 	if managed != nil {
@@ -228,17 +250,25 @@ func (s *Service) rescheduleTask(ctx context.Context, e *settleEntry, cfg resolv
 		if err := s.lockTaskOutcome(ctx, tx, e, "pending"); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `UPDATE async_tasks SET attempts=attempts+$2,next_check_at=$3,last_error=$4,
-		poll_failures=CASE WHEN $5 THEN poll_failures+1 WHEN $6 THEN 0 ELSE poll_failures END WHERE public_id=$1`, e.task.id, n, next, trunc(reason, 2000), e.pollFailed, e.pollObserved)
+		g := store.G(ctx, tx)
+		err := rescheduleRow(g, "async_tasks", "public_id", e.task.id, e, n, next, reason).Error
 		if err == nil && e.id != 0 {
-			_, err = tx.Exec(ctx, `UPDATE pending_settlements SET attempts=attempts+$2,next_check_at=$3,last_error=$4,
-			poll_failures=CASE WHEN $5 THEN poll_failures+1 WHEN $6 THEN 0 ELSE poll_failures END WHERE id=$1`, e.id, n, next, trunc(reason, 2000), e.pollFailed, e.pollObserved)
+			err = rescheduleRow(g, "pending_settlements", "id", e.id, e, n, next, reason).Error
 		}
 		return err
 	})
 	if err != nil && !errors.Is(err, errNotPending) {
 		s.rec.log.Error("task reschedule failed", "task", e.task.id, "err", err)
 	}
+}
+
+// rescheduleRow moves the next check of a task's row in table (async_tasks
+// or its pending_settlements entry, keyed by column) and counts the attempt.
+// It leaves updated_at alone, as the task's other bookkeeping writes do.
+func rescheduleRow(db *gorm.DB, table, key string, id any, e *settleEntry, n int, next time.Time, reason string) *gorm.DB {
+	return db.Exec(`UPDATE `+table+` SET attempts=attempts+?,next_check_at=?,last_error=?,
+		poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END WHERE `+key+`=?`,
+		n, next, trunc(reason, 2000), e.pollFailed, e.pollObserved, id)
 }
 
 func taskPaths(gen core.Generation, e *settleEntry) ([]string, error) {

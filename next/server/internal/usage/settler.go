@@ -14,10 +14,12 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -415,7 +417,8 @@ func conversionJSON(t *core.ConversionTrace) []byte {
 // SQL and the lock order live here once.
 func lockUsageRow(ctx context.Context, tx pgx.Tx, id int64) (string, error) {
 	var status string
-	err := tx.QueryRow(ctx, `SELECT billing_status FROM usage_logs WHERE id=$1 FOR UPDATE`, id).Scan(&status)
+	err := store.G(ctx, tx).Model(&model.UsageLog{}).Select("billing_status").Where("id = ?", id).
+		Clauses(store.ForUpdate).Row().Scan(&status)
 	return status, err
 }
 
@@ -621,9 +624,9 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 	if total.Sign() > 0 {
 		detail.LedgerID = &res.LedgerID
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE usage_logs SET total_cost = $2, base_cost = $5, billing_detail = $3, matched_tier = $4
-		WHERE id = $1`, r.id, total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), cost.base); err != nil {
+	if err := store.G(ctx, tx).Exec(`
+		UPDATE usage_logs SET total_cost = ?, base_cost = ?, billing_detail = ?, matched_tier = ?
+		WHERE id = ?`, total, cost.base, jsonOr(detail, "{}"), trunc(detail.Tier, 100), r.id).Error; err != nil {
 		return nil, err
 	}
 	rv := rec.Reservation
@@ -635,6 +638,7 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 		nextAt = deadlineAt
 	}
 	var entryID int64
+	//gormguard:allow-pgx per reserved request; GORM takes 4.2x the allocations (gormtest/BASELINE.md, Batch 4b)
 	err = tx.QueryRow(ctx, `
 		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
@@ -668,10 +672,10 @@ func (s *Service) closeUnreconcilable(ctx context.Context, tx pgx.Tx, usageLogID
 		core.AnomalyReconcile:      core.ReconcileAbandoned,
 		core.AnomalyReconcileError: trunc(reason, 500),
 	})
-	_, err := tx.Exec(ctx, `
-		UPDATE usage_logs SET billing_status = 'billed', anomalies = anomalies || $2::jsonb
-		WHERE id = $1`, usageLogID, marker)
-	return err
+	return store.G(ctx, tx).Model(&model.UsageLog{}).Where("id = ?", usageLogID).Updates(map[string]any{
+		"billing_status": StatusBilled,
+		"anomalies":      gorm.Expr("anomalies || ?::jsonb", marker),
+	}).Error
 }
 
 // pending is everything needed to settle one usage row.
@@ -889,12 +893,20 @@ func (s *Service) markFailed(ctx context.Context, p *pending, cause error) {
 		slog.ErrorContext(ctx, "usage: settlement gave up", "request_id", p.RequestID, "attempts", attempts, "err", cause)
 	}
 	patch := jsonOr(map[string]any{"attempts": attempts, "error": trunc(cause.Error(), 1000), "inputs": p.Inputs}, "{}")
-	_, err := s.db.Pool.Exec(ctx, `
-		UPDATE usage_logs SET billing_status = 'failed', billing_detail = billing_detail || $2::jsonb
-		WHERE request_id = $1 AND billing_status IN ('pending', 'failed')`, p.RequestID, patch)
-	if err != nil {
+	if err := markUsageFailed(store.G(ctx, s.db.Pool), p.RequestID, patch).Error; err != nil {
 		slog.ErrorContext(ctx, "usage: mark failed", "request_id", p.RequestID, "err", err)
 	}
+}
+
+// markUsageFailed sets a row that is still unsettled to failed, merging
+// patch into its billing detail.
+func markUsageFailed(db *gorm.DB, requestID string, patch []byte) *gorm.DB {
+	return db.Model(&model.UsageLog{}).
+		Where("request_id = ? AND billing_status IN ('pending', 'failed')", requestID).
+		Updates(map[string]any{
+			"billing_status": StatusFailed,
+			"billing_detail": gorm.Expr("billing_detail || ?::jsonb", patch),
+		})
 }
 
 func recordedEvent(p *pending, total decimal.Decimal, status string) core.Event {
@@ -968,7 +980,7 @@ func (s *Service) RetryPending(ctx context.Context) (int, error) {
 	if err := s.recoverExecutions(ctx); err != nil {
 		slog.WarnContext(ctx, "usage: recover execution observations", "err", err)
 	}
-	rows, err := s.db.Pool.Query(ctx, `
+	rows, err := store.G(ctx, s.db.Pool).Raw(`
 		SELECT u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
 		       u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
 		       u.input_tokens, u.output_tokens,
@@ -976,9 +988,9 @@ func (s *Service) RetryPending(ctx context.Context) (int, error) {
 		       u.created_at, u.rate_multiplier, COALESCE(u.price_id, 0), u.billing_mode, u.billing_detail,
 		       COALESCE(h.expression, mp.expression, '')`+frozenPriceJoins+`
 		WHERE u.billing_status IN ('pending', 'failed')
-		  AND u.created_at < now() - make_interval(secs => $1)
-		  AND COALESCE((u.billing_detail->>'attempts')::int, 0) < $2
-		ORDER BY u.id LIMIT 500`, s.opts.RetryAfter.Seconds(), s.opts.MaxAttempts)
+		  AND u.created_at < now() - make_interval(secs => ?)
+		  AND COALESCE((u.billing_detail->>'attempts')::int, 0) < ?
+		ORDER BY u.id LIMIT 500`, s.opts.RetryAfter.Seconds(), s.opts.MaxAttempts).Rows()
 	if err != nil {
 		return 0, err
 	}
@@ -1027,6 +1039,7 @@ func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocke
 		lock += ` SKIP LOCKED`
 	}
 	var status string
+	//gormguard:allow-pgx every billable request; GORM takes 5x the allocations (gormtest/BASELINE.md, Batch 4b)
 	if err := tx.QueryRow(ctx, lock, p.RequestID).Scan(&status); err != nil {
 		if store.IsNoRows(err) {
 			return nil, errNotPending
@@ -1043,15 +1056,7 @@ func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocke
 	if total.Sign() > 0 {
 		detail.LedgerID = &ledgerRes.LedgerID
 	}
-	var priceID *int64
-	if p.PriceID > 0 {
-		priceID = &p.PriceID
-	}
-	_, err = tx.Exec(ctx, `
-			UPDATE usage_logs SET total_cost = $2, billing_status = 'billed', billing_detail = $3, matched_tier = $4,
-				expr_hash = $5, billing_mode = $6, price_id = $7, rate_multiplier = $8, base_cost = $9
-			WHERE request_id = $1`,
-		p.RequestID, total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, p.Mode, priceID, p.Rate, cost.base)
+	err = billUsageRow(store.G(ctx, tx), p, cost, detail, exprHash).Error
 	if err != nil {
 		return nil, err
 	}
@@ -1059,4 +1064,19 @@ func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocke
 		return ledgerRes, s.events.Emit(ctx, tx, recordedEvent(p, total, StatusBilled))
 	}
 	return ledgerRes, nil
+}
+
+// billUsageRow writes a settled row's billing fields, once per billable
+// request: BenchmarkHotStmtSettleUpdate measures this statement on GORM at
+// 1.4 times pgx's allocations, under the 1.5 limit (gormtest/BASELINE.md).
+func billUsageRow(db *gorm.DB, p *pending, cost amounts, detail BillingDetail, exprHash string) *gorm.DB {
+	var priceID *int64
+	if p.PriceID > 0 {
+		priceID = &p.PriceID
+	}
+	return db.Exec(`
+			UPDATE usage_logs SET total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?,
+				expr_hash = ?, billing_mode = ?, price_id = ?, rate_multiplier = ?, base_cost = ?
+			WHERE request_id = ?`,
+		cost.total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, p.Mode, priceID, p.Rate, cost.base, p.RequestID)
 }
