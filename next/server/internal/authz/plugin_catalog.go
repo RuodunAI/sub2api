@@ -22,13 +22,14 @@ const runningPluginStatuses = `'enabled','upgrading'`
 
 // SyncPlugin implements core.PermissionCatalog. A new permission follows the
 // plugin: active while the plugin runs, disabled otherwise (SetPluginActive
-// turns it on at enable), and is granted to its GrantRoles and to the
-// holders of its InheritFrom keys (grantInherited), each grant audited as
-// authz.sync.grant. Existing ones keep their status and role grants but the
-// scoped ones their new scope no longer takes (pruneScopes); a removed one
-// declared again revives with the plugin's status and the grants it had,
-// never its GrantRoles (D6). Keys no longer declared are marked removed
-// last: their grants stay, granting nothing, until the key comes back.
+// turns it on at enable), and is granted to its GrantRoles (the consent
+// resolved inheritance into them, install.planRoleGrants), each grant
+// audited as authz.sync.grant. Existing ones keep their status and role
+// grants but the scoped ones their new scope no longer takes (pruneScopes);
+// a removed one declared again revives with the plugin's status and the
+// grants it had, never its GrantRoles (D6). Keys no longer declared are
+// marked removed last: their grants stay, granting nothing, until the key
+// comes back.
 func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []core.PermissionDef) error {
 	if pluginKey == "" {
 		return core.ErrInvalidArgument.WithMessage("plugin key is required")
@@ -63,26 +64,6 @@ func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, d
 	for _, d := range created {
 		if err := s.grantPlugin(ctx, tx, "default", d.Key, d.GrantRoles); err != nil {
 			return err
-		}
-	}
-	// Only grants that exist before this sync are inherited: a key created
-	// now has none yet but the defaults just written, which are not its
-	// holders' rights, so it is left out of every from list.
-	isNew := make(map[string]bool, len(created))
-	for _, d := range created {
-		isNew[d.Key] = true
-	}
-	for _, d := range created {
-		from := make([]string, 0, len(d.InheritFrom))
-		for _, k := range d.InheritFrom {
-			if key := manifest.PermissionKey(pluginKey, k); !isNew[key] {
-				from = append(from, key)
-			}
-		}
-		if from = dedupe(from); len(from) > 0 {
-			if err := s.grantInherited(ctx, tx, d.Key, from); err != nil {
-				return err
-			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `UPDATE permissions SET status = 'removed'
