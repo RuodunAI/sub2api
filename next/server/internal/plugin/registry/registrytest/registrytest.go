@@ -461,13 +461,30 @@ var (
 
 // Source is the package source shared by every node of a test process, as
 // the primary's store is in a cluster. AddVersion and uploads put into it.
+// Its directory outlives every test, so a package that uses it runs its
+// tests through Main, which removes it.
 func Source() *blobs.Source {
 	sourceOnce.Do(func() {
 		dir, err := os.MkdirTemp("", "sub2api-test-blobs-")
 		if err != nil {
 			panic(err)
 		}
+		sourceDir = dir
 		source = &blobs.Source{Store: blobs.Dir(dir), MaxBytes: 256 << 20}
 	})
 	return source
+}
+
+// sourceDir is the directory of Source, once made.
+var sourceDir string
+
+// Main runs a package's tests (TestMain) and then removes Source's
+// directory, about 125 MB that each test process would otherwise leave in
+// the temporary directory.
+func Main(m *testing.M) {
+	code := m.Run()
+	if sourceDir != "" {
+		_ = os.RemoveAll(sourceDir)
+	}
+	os.Exit(code)
 }
