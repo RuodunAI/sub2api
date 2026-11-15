@@ -98,6 +98,45 @@ export function diffCells(base: RoleKeys, next: RoleKeys, actions: readonly stri
   )
 }
 
+/** What replayCells did with the edits: kept, dropped (refused now), and kept over someone else's change of the same cell. */
+export interface Replay {
+  value: RoleKeys
+  kept: CellChange[]
+  dropped: CellChange[]
+  clashes: CellChange[]
+}
+
+/**
+ * Puts the cells edited against base (one action of one role each) on top
+ * of fresh, the grants read again (after a 409 version_conflict, or a
+ * reload): the role editor and the matrix merge alike. allows says whether
+ * a cell may still take its edit given what it holds now (a lock that came
+ * in meanwhile); a refused edit is dropped, to be told. An edit of a cell
+ * fresh changed too wins, and is a clash to be told.
+ */
+export function replayCells(
+  base: RoleKeys,
+  edited: RoleKeys,
+  fresh: RoleKeys,
+  actions: readonly string[],
+  roles: readonly string[],
+  allows: (change: CellChange, now: string[]) => boolean = () => true
+): Replay {
+  const value: RoleKeys = Object.fromEntries(Object.entries(fresh).map(([role, keys]) => [role, [...keys]]))
+  const out: Replay = { value, kept: [], dropped: [], clashes: [] }
+  for (const c of diffCells(base, edited, actions, roles)) {
+    const now = cellKeys(value[c.role] ?? [], c.action)
+    if (!allows(c, now)) {
+      out.dropped.push(c)
+      continue
+    }
+    value[c.role] = withCell(value[c.role] ?? [], c.action, c.to)
+    out.kept.push(c)
+    if (!sameKeys(now, c.from) && !sameKeys(now, c.to)) out.clashes.push(c)
+  }
+  return out
+}
+
 /** How many permissions of the risk value grants, and to which roles ("N sensitive permissions to Admin, Operator"). */
 export function riskSummary(value: RoleKeys, perms: readonly { action: string; risk: PermRisk }[], risk: PermRisk): { perms: number; roles: string[] } {
   const actions = new Set(perms.filter((p) => p.risk === risk).map((p) => p.action))
@@ -154,7 +193,8 @@ export const grantableWithin = (scopeLimit: (action: string) => readonly Scope[]
  * matrix both restore through it.
  */
 export function restoreCell(held: readonly string[], want: readonly string[], mayGrant: (key: string) => boolean): string[] | null {
-  const have = new Set(canonicalSet(held))
+  // Implied by what the cell holds is no new grant (the server's notImplied): narrowing needs nothing held.
+  const have = permissionIndex(held)
   const next = canonicalSet(want)
   return next.every((k) => have.has(k) || mayGrant(k)) ? next : null
 }

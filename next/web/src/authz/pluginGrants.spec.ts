@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ALL_SCOPE, OWN_SCOPE, refScope } from './implies'
 import { ALL_SCOPE as ALL, permissionIndex } from './implies'
-import { cellKeys, cellOfScopes, cellSummary, diffCells, grantableWithin, isSuggestedRole, keysFromSuffixes, localOf, narrows, newRiskyGrants, restoreCell, riskSummary, sameKeys, scopesOfCell, suggestedOf, suggestionState, toManifestGrant, withCell } from './pluginGrants'
+import { cellKeys, cellOfScopes, cellSummary, diffCells, grantableWithin, isSuggestedRole, keysFromSuffixes, localOf, narrows, newRiskyGrants, replayCells, restoreCell, riskSummary, sameKeys, scopesOfCell, suggestedOf, suggestionState, toManifestGrant, withCell } from './pluginGrants'
 import { RESTORE_CASES } from './testing/restoreCases'
 
 const A = 'plugin.m:flow:manage'
@@ -115,5 +115,26 @@ describe('plugin grants', () => {
         expect(restoreCell(c.cell, c.want, mayGrant) ?? c.cell).toEqual(c.restored)
       })
     }
+  })
+  describe('replayCells', () => {
+    const A = 'plugin.m:flow:manage'
+    const B = 'plugin.m:flow:read'
+    it('puts the edited cells on top of the fresh grants, keeping what others changed elsewhere', () => {
+      const r = replayCells({ op: [B] }, { op: [B, `${A}:own`] }, { op: [B], lead: [B] }, [A, B], ['op', 'lead'])
+      expect(r.value).toEqual({ op: [`${A}:own`, B], lead: [B] })
+      expect(r.kept.map((c) => c.action)).toEqual([A])
+      expect(r.dropped).toEqual([])
+      expect(r.clashes).toEqual([])
+    })
+    it('a cell both sides changed keeps the edit and is a clash; the same change on both sides is none', () => {
+      const r = replayCells({ op: [] }, { op: [`${A}:own`], lead: [B] }, { op: [A], lead: [B] }, [A, B], ['op', 'lead'])
+      expect(r.value.op).toEqual([`${A}:own`])
+      expect(r.clashes.map((c) => [c.role, c.action])).toEqual([['op', A]])
+    })
+    it('drops an edit the cell may no longer take', () => {
+      const r = replayCells({ op: [] }, { op: [A, B] }, { op: [] }, [A, B], ['op'], (c) => c.action !== A)
+      expect(r.value.op).toEqual([B])
+      expect(r.dropped.map((c) => c.action)).toEqual([A])
+    })
   })
 })

@@ -23,6 +23,8 @@ export const RESTORE_CASES: RestoreCase[] = [
   { name: 'the editor does not hold the action', editor: [], cell: [], want: [A], state: 'unreachable', restored: [] },
   { name: 'taking away needs nothing held', editor: [], cell: [`${A}:own`], want: [], state: 'differs', restored: [] },
   { name: 'the suggestion is narrower than the grant', editor: [A], cell: [`${A}:own`, `${A}:flow/3`], want: [`${A}:own`], state: 'differs', restored: [`${A}:own`] },
+  // The server's check: a key the cell's own keys imply is no new grant.
+  { name: 'narrowing a grant the editor does not hold', editor: [], cell: [A], want: [`${A}:own`], state: 'differs', restored: [`${A}:own`] },
   { name: 'the editor holds what the suggestion grants', editor: [`${A}:own`], cell: [], want: [`${A}:own`], state: 'differs', restored: [`${A}:own`] },
   { name: 'as suggested', editor: [`${A}:own`], cell: [`${A}:own`], want: [`${A}:own`], state: 'same', restored: [`${A}:own`] }
 ]
