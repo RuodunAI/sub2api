@@ -14,7 +14,7 @@ import (
 // The statements of the gateway's request path: the settings rows and the
 // sticky rules. Both are cached (settingsTTL, rulesTTL), so a request
 // runs them on a miss only. Each GORM statement (gorm) is measured next to
-// the pgx statement it replaced (pgx), against a real PostgreSQL
+// the pgx statement it replaced (sql; raw database/sql since batch 6), against a real PostgreSQL
 // (TEST_DATABASE_URL), as recorded in internal/store/gormtest/BASELINE.md:
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/gateway/
@@ -33,12 +33,12 @@ func hotFixture(b *testing.B) *store.DB {
 	return db
 }
 
-// benchPaths runs the former pgx and the GORM form of one read.
-func benchPaths(b *testing.B, pgxPath, gormPath func() error) {
+// benchPaths runs the raw database/sql (formerly pgx) and the GORM form of one read.
+func benchPaths(b *testing.B, sqlPath, gormPath func() error) {
 	for _, p := range []struct {
 		name string
 		run  func() error
-	}{{"pgx", pgxPath}, {"gorm", gormPath}} {
+	}{{"sql", sqlPath}, {"gorm", gormPath}} {
 		b.Run(p.name, func(b *testing.B) {
 			if err := p.run(); err != nil {
 				b.Fatal(err)

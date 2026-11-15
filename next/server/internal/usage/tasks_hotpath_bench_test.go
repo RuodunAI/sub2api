@@ -85,13 +85,13 @@ func (f *taskFixture) submission(b *testing.B) taskSubmission {
 	return s
 }
 
-// benchTask runs the pgx and the GORM form of one statement; prepare, if
+// benchTask runs the raw database/sql (formerly pgx) and the GORM form of one statement; prepare, if
 // set, runs untimed before each call and returns what the call takes.
-func benchTask[T any](b *testing.B, prepare func(*testing.B) T, pgxPath, gormPath func(T) error) {
+func benchTask[T any](b *testing.B, prepare func(*testing.B) T, sqlPath, gormPath func(T) error) {
 	for _, p := range []struct {
 		name string
 		run  func(T) error
-	}{{"pgx", pgxPath}, {"gorm", gormPath}} {
+	}{{"sql", sqlPath}, {"gorm", gormPath}} {
 		b.Run(p.name, func(b *testing.B) {
 			step := func() {
 				var arg T
@@ -118,9 +118,9 @@ func benchTask[T any](b *testing.B, prepare func(*testing.B) T, pgxPath, gormPat
 func BenchmarkHotTaskFind(b *testing.B) {
 	f := newTaskFixture(b)
 	ctx := context.Background()
-	q, pool := f.query, f.svc.db.Gorm
+	q, pool, raw := f.query, f.svc.db.Gorm, f.svc.db.SQL
 	benchTask(b, nil, func(struct{}) error {
-		rows, err := pool.Query(ctx, `SELECT public_id,upstream_ref_id,model,state,
+		rows, err := raw.QueryContext(ctx, `SELECT public_id,upstream_ref_id,model,state,
 			CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
 			snapshot,snapshot_id_paths,failure_code,last_error
 			FROM async_tasks WHERE plugin_key=$1 AND kind=$2 AND user_id=$3 AND group_id=$4
@@ -142,7 +142,7 @@ func BenchmarkHotTaskFind(b *testing.B) {
 func BenchmarkHotTaskBegin(b *testing.B) {
 	f := newTaskFixture(b)
 	ctx := context.Background()
-	pool := f.svc.db.Gorm
+	pool, raw := f.svc.db.Gorm, f.svc.db.SQL
 	next := func(*testing.B) core.TaskIntent {
 		f.n++
 		in := f.intent
@@ -150,7 +150,7 @@ func BenchmarkHotTaskBegin(b *testing.B) {
 		return in
 	}
 	benchTask(b, next, func(in core.TaskIntent) error {
-		_, err := pool.Exec(ctx, `INSERT INTO task_submission_receipts
+		_, err := raw.ExecContext(ctx, `INSERT INTO task_submission_receipts
 		(request_id, public_id, plugin_key, kind, user_id, api_key_id, group_id, account_id, model, protocol)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, in.RequestID, "s2task_"+in.RequestID, in.PluginKey, in.Kind,
 			in.UserID, in.APIKeyID, in.GroupID, in.AccountID, in.Model, in.Protocol)
@@ -165,7 +165,7 @@ func BenchmarkHotTaskBegin(b *testing.B) {
 func BenchmarkHotTaskReceive(b *testing.B) {
 	f := newTaskFixture(b)
 	ctx := context.Background()
-	pool := f.svc.db.Gorm
+	pool, raw := f.svc.db.Gorm, f.svc.db.SQL
 	body := []byte(`{"id":"up-bench","status":"queued"}`)
 	dispatched := func(b *testing.B) string {
 		f.n++
@@ -177,7 +177,7 @@ func BenchmarkHotTaskReceive(b *testing.B) {
 		return in.RequestID
 	}
 	benchTask(b, dispatched, func(id string) error {
-		_, err := pool.Exec(ctx, `UPDATE task_submission_receipts SET state=$2, response_status=$3,
+		_, err := raw.ExecContext(ctx, `UPDATE task_submission_receipts SET state=$2, response_status=$3,
 		response_body=COALESCE($4,response_body), last_error=$5 WHERE request_id=$1 AND state <> 'registered'`,
 			id, "received", 200, body, "")
 		return err

@@ -11,7 +11,7 @@ import (
 )
 
 // The account snapshot statements near the gateway's request path, each
-// GORM form (gorm) measured next to the pgx statement it replaced (pgx)
+// GORM form (gorm) measured next to the pgx statement it replaced (sql; raw database/sql since batch 6)
 // against a real PostgreSQL (TEST_DATABASE_URL), as recorded in
 // internal/store/gormtest/BASELINE.md:
 //
@@ -56,12 +56,12 @@ func hotFixture(b *testing.B) (*store.DB, *store.QuotaSnapshot) {
 	return db, q
 }
 
-// benchPaths runs the former pgx and the GORM form of one statement.
-func benchPaths(b *testing.B, pgxPath, gormPath func() error) {
+// benchPaths runs the raw database/sql (formerly pgx) and the GORM form of one statement.
+func benchPaths(b *testing.B, sqlPath, gormPath func() error) {
 	for _, p := range []struct {
 		name string
 		run  func() error
-	}{{"pgx", pgxPath}, {"gorm", gormPath}} {
+	}{{"sql", sqlPath}, {"gorm", gormPath}} {
 		b.Run(p.name, func(b *testing.B) {
 			if err := p.run(); err != nil {
 				b.Fatal(err)

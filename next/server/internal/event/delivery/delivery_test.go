@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -195,8 +194,8 @@ func addPlugin(t *testing.T, db *store.DB, key string) {
 func emit(t *testing.T, q *gorm.DB, typ string) int64 {
 	t.Helper()
 	var id int64
-	if err := q.QueryRow(context.Background(),
-		`INSERT INTO events (type, payload) VALUES ($1, '{"k":1}') RETURNING id`, typ).Scan(&id); err != nil {
+	if err := q.WithContext(context.Background()).Raw(
+		`INSERT INTO events (type, payload) VALUES ($1, '{"k":1}') RETURNING id`, typ).Row().Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -440,7 +439,7 @@ func TestPartialAckRedelivers(t *testing.T) {
 	eventually(t, 20*time.Second, "cursor created", func() bool { return cursorExists(db, "guard") })
 
 	var ids []int64
-	tx, err := db.Gorm.Begin(context.Background())
+	tx, err := testutil.Begin(context.Background(), db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +487,7 @@ func TestBackoffThenDeadLetter(t *testing.T) {
 	startNode(t, db, newMemLocker(), nil, newRegistry(binding("guard", app, 0, "usage.recorded")), "n1", o)
 	eventually(t, 20*time.Second, "cursor created", func() bool { return cursorExists(db, "guard") })
 
-	tx, _ := db.Gorm.Begin(context.Background())
+	tx, _ := testutil.Begin(context.Background(), db)
 	a := emit(t, tx, "usage.recorded")
 	b := emit(t, tx, "usage.recorded")
 	mu.Lock()
@@ -670,7 +669,7 @@ func TestPurgeEvents(t *testing.T) {
 	}
 	var left []int64
 	rows, _ := db.SQL.QueryContext(ctx, `SELECT id FROM events ORDER BY id`)
-	left, _ = pgx.CollectRows(rows, pgx.RowTo[int64])
+	left, _ = testutil.Column[int64](rows)
 	sort.Slice(left, func(i, j int) bool { return left[i] < left[j] })
 	if !equalIDs(left, ids[4:]) {
 		t.Fatalf("left %v, want %v", left, ids[4:])

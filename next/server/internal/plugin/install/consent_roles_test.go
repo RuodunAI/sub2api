@@ -362,7 +362,7 @@ func (g guardRollout) upload(m *manifest.Manifest) *Review {
 func (g guardRollout) activate(m *manifest.Manifest) {
 	g.t.Helper()
 	require.NoError(g.t, g.e.db.Tx(g.ctx, func(tx *gorm.DB) error {
-		if _, err := tx.Exec(g.ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
+		if _, err := store.SQLTx(tx).ExecContext(g.ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
 			return err
 		}
 		if err := g.e.svc.d.Defaults.ApplyDefaults(g.ctx, tx, m, nil); err != nil {

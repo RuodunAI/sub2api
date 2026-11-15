@@ -11,8 +11,6 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -82,7 +80,7 @@ func TestSchemaRoleMigrateDSNDrop(t *testing.T) {
 		t.Fatalf("changed script: %v %v", again, err)
 	}
 	var rows int
-	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM `+pgx.Identifier{"plg_" + key, "items"}.Sanitize()).Scan(&rows); err != nil || rows != 2 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM `+store.QuoteIdent("plg_"+key, "items")).Scan(&rows); err != nil || rows != 2 {
 		t.Fatalf("items after the re-run = %d %v", rows, err)
 	}
 	if again, err := m.Migrate(ctx, key, fsys); err != nil || len(again) != 0 {
@@ -94,26 +92,26 @@ func TestSchemaRoleMigrateDSNDrop(t *testing.T) {
 	if err != nil || !st2.RoleIsolated {
 		t.Fatalf("dsn: %v %+v", err, st2)
 	}
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, done, err := testutil.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect as plugin role: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer done()
 	var who string
 	var n int
-	if err := conn.QueryRow(ctx, `SELECT current_user, (SELECT count(*) FROM items)`).Scan(&who, &n); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT current_user, (SELECT count(*) FROM items)`).Scan(&who, &n); err != nil {
 		t.Fatal(err)
 	}
 	if who != "plg_"+key || n != 2 {
 		t.Fatalf("who=%s n=%d", who, n)
 	}
-	if _, err := conn.Exec(ctx, `SELECT count(*) FROM public.users`); err == nil || !strings.Contains(err.Error(), "permission denied") {
+	if _, err := conn.ExecContext(ctx, `SELECT count(*) FROM public.users`); err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("plugin role reads core tables: %v", err)
 	}
-	if _, err := conn.Exec(ctx, `CREATE TABLE public.evil (id int)`); err == nil {
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE public.evil (id int)`); err == nil {
 		t.Fatal("plugin role can create tables in public")
 	}
-	conn.Close(ctx)
+	done()
 
 	if err := m.Drop(ctx, key); err != nil {
 		t.Fatal(err)
@@ -143,19 +141,19 @@ func TestSchemaWithoutRoleIsolation(t *testing.T) {
 	if err != nil || st.RoleIsolated {
 		t.Fatalf("%v %+v", err, st)
 	}
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, done, err := testutil.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer done()
 	var sp string
-	if err := conn.QueryRow(ctx, `SHOW search_path`).Scan(&sp); err != nil {
+	if err := conn.QueryRowContext(ctx, `SHOW search_path`).Scan(&sp); err != nil {
 		t.Fatal(err)
 	}
 	if sp != "plg_"+key {
 		t.Fatalf("search_path = %q", sp)
 	}
-	if _, err := conn.Exec(ctx, `SELECT * FROM t`); err != nil {
+	if _, err := conn.ExecContext(ctx, `SELECT * FROM t`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -237,7 +235,7 @@ func TestOfficialPluginMigrationsAreIdempotent(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				schema := pgx.Identifier{"idem_" + randKey()}.Sanitize()
+				schema := store.QuoteIdent("idem_" + randKey())
 				if _, err = store.SQLTx(tx).ExecContext(ctx, "CREATE SCHEMA "+schema+"; SET LOCAL search_path TO "+schema); err != nil {
 					t.Fatal(err)
 				}

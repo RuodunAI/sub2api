@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -115,7 +114,7 @@ func TestScopeTableScopeMatchesFilter(t *testing.T) {
 			f.And(tb.t.Cond(), tb.t.Args(s)...)
 			rows, err := db.SQL.QueryContext(ctx, "SELECT "+tb.t.ID+" FROM "+tb.from+f.Cond()+" ORDER BY "+tb.t.ID, f.Args()...)
 			require.NoError(t, err)
-			raw, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+			raw, err := testutil.Column[int64](rows)
 			require.NoError(t, err, name)
 
 			var viaGORM []int64

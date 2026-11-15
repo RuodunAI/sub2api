@@ -14,7 +14,7 @@ import (
 // The key lookup is the first database statement of every gateway request
 // (Gateway.serve → Authenticate) and is not cached by design (see cached).
 // Its GORM form (gorm, lookup) is measured next to the pgx statement it
-// replaced (pgx), against a real PostgreSQL (TEST_DATABASE_URL), as
+// replaced (sql; raw database/sql since batch 6), against a real PostgreSQL (TEST_DATABASE_URL), as
 // recorded in internal/store/gormtest/BASELINE.md:
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/apikey/
@@ -39,7 +39,7 @@ func BenchmarkHotKeyLookup(b *testing.B) {
 		name   string
 		lookup func() (*cached, error)
 	}{
-		{"pgx", func() (*cached, error) {
+		{"sql", func() (*cached, error) {
 			e := &cached{}
 			var groupRate, discount decimal.Decimal
 			var override *decimal.Decimal

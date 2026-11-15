@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -128,7 +127,7 @@ func (e *parkEnv) account(t *testing.T, a parkAccount) (int64, string) {
 // it otherwise).
 func (e *parkEnv) setChangedAgo(t *testing.T, id int64, ago time.Duration) {
 	t.Helper()
-	err := pgx.BeginFunc(e.ctx, e.db.Gorm, func(tx *gorm.DB) error {
+	err := e.db.Tx(e.ctx, func(tx *gorm.DB) error {
 		if _, err := store.SQLTx(tx).ExecContext(e.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
 			return err
 		}

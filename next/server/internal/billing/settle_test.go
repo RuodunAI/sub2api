@@ -172,8 +172,7 @@ func TestSettleRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	uid := e.user("settle-round-trips@test.invalid")
 	e.seed(uid, "10")
-	trace := &roundTrips{}
-	db := tracedStore(t, e.db, trace)
+	db, trace := testutil.Traced(e.db)
 	svc := New(db, e.rdb, e.bus, event.NewPublisher(db), nil)
 	for _, id := range []string{"warmup", "measured"} {
 		if err := e.svc.Precharge(ctx, usageRecord(uid, id, "flat(1)")); err != nil {
@@ -191,20 +190,14 @@ func TestSettleRoundTrips(t *testing.T) {
 		}
 	}
 	settle("warmup")
-	trace.reset()
+	trace.Take()
 	settle("measured")
-	if trace.flushes > 4 || trace.begins != 1 || trace.commits != 1 {
-		t.Fatalf("%d round trips (%d statements, %d batches, %d begin, %d commit) for one settlement; want 4\n%v",
-			trace.flushes, len(trace.statements), trace.batches, trace.begins, trace.commits, trace.statements)
-	}
+	oneTx(t, "one settlement", trace.Take(), 4)
 	// ApplyTx on its own: BEGIN, the change (applySQL), the event, COMMIT.
-	trace.reset()
 	if _, err := svc.Apply(ctx, core.LedgerChange{UserID: uid, Amount: decimal.NewFromInt(1), Credit: true, Kind: KindAdminAdjust, IdempotencyKey: "apply-measured"}); err != nil {
 		t.Fatal(err)
 	}
-	if trace.flushes > 4 {
-		t.Fatalf("%d round trips (%d batches) for one Apply; want 4\n%v", trace.flushes, trace.batches, trace.statements)
-	}
+	oneTx(t, "one Apply", trace.Take(), 4)
 }
 
 // A precharge queueing behind a held balance lock gives up after

@@ -147,6 +147,21 @@ func Connect(ctx context.Context, dsn string) (conn *sql.Conn, done func(), err 
 	return conn, func() { _ = conn.Close(); db.Close() }, nil
 }
 
+// Column reads the single column of every row of rows into a slice, never
+// nil, and closes rows.
+func Column[T any](rows *sql.Rows) ([]T, error) {
+	defer rows.Close()
+	out := []T{}
+	for rows.Next() {
+		var v T
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // Begin opens a transaction that the test ends itself (Commit, Rollback),
 // for interleaving it with others; store.DB.Tx is the production way.
 func Begin(ctx context.Context, db *store.DB) (*gorm.DB, error) {

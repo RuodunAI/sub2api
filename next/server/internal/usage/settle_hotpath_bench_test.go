@@ -38,14 +38,14 @@ func stmtFixture(b *testing.B) (*benchSettler, string, int64) {
 	return s, rec.RequestID, id
 }
 
-// benchStmt runs the pgx and the GORM form of one statement; i counts the
+// benchStmt runs the raw database/sql (formerly pgx) and the GORM form of one statement; i counts the
 // calls of each form across the framework's reruns, for statements that need
 // a fresh key each time.
-func benchStmt(b *testing.B, pgxPath, gormPath func(i int) error) {
+func benchStmt(b *testing.B, sqlPath, gormPath func(i int) error) {
 	for _, p := range []struct {
 		name string
 		run  func(int) error
-	}{{"pgx", pgxPath}, {"gorm", gormPath}} {
+	}{{"sql", sqlPath}, {"gorm", gormPath}} {
 		calls := 0
 		next := func() int { calls++; return calls }
 		b.Run(p.name, func(b *testing.B) {
@@ -67,10 +67,10 @@ func benchStmt(b *testing.B, pgxPath, gormPath func(i int) error) {
 func BenchmarkHotStmtSettleLock(b *testing.B) {
 	s, requestID, _ := stmtFixture(b)
 	ctx := context.Background()
-	pool := s.svc.db.Gorm
+	pool, raw := s.svc.db.Gorm, s.svc.db.SQL
 	benchStmt(b, func(int) error {
 		var status string
-		return pool.QueryRow(ctx, `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`, requestID).Scan(&status)
+		return raw.QueryRowContext(ctx, `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`, requestID).Scan(&status)
 	}, func(int) error {
 		var status string
 		return lockPendingRow(store.G(ctx, pool), requestID, false).Row().Scan(&status)
@@ -81,12 +81,12 @@ func BenchmarkHotStmtSettleLock(b *testing.B) {
 func BenchmarkHotStmtSettleUpdate(b *testing.B) {
 	s, requestID, _ := stmtFixture(b)
 	ctx := context.Background()
-	pool := s.svc.db.Gorm
+	pool, raw := s.svc.db.Gorm, s.svc.db.SQL
 	total, rate, base := decimal.RequireFromString("0.012345"), decimal.NewFromInt(1), decimal.RequireFromString("0.012345")
 	bd := BillingDetail{Tier: "default", Cost: base, TotalCost: total, RateMultiplier: rate}
 	p := &pending{RequestID: requestID, PriceID: s.price.ID, Mode: s.price.Mode, Rate: rate}
 	benchStmt(b, func(int) error {
-		_, err := pool.Exec(ctx, `
+		_, err := raw.ExecContext(ctx, `
 			UPDATE usage_logs SET total_cost = $2, billing_status = 'billed', billing_detail = $3, matched_tier = $4,
 				expr_hash = $5, billing_mode = $6, price_id = $7, rate_multiplier = $8, base_cost = $9
 			WHERE request_id = $1`,
@@ -101,11 +101,11 @@ func BenchmarkHotStmtSettleUpdate(b *testing.B) {
 func BenchmarkHotStmtReserveUpdate(b *testing.B) {
 	s, _, id := stmtFixture(b)
 	ctx := context.Background()
-	pool := s.svc.db.Gorm
+	pool, raw := s.svc.db.Gorm, s.svc.db.SQL
 	total, base := decimal.RequireFromString("0.5"), decimal.RequireFromString("0.5")
 	bd := BillingDetail{Tier: "default", Cost: base, TotalCost: total}
 	benchStmt(b, func(int) error {
-		_, err := pool.Exec(ctx, `
+		_, err := raw.ExecContext(ctx, `
 		UPDATE usage_logs SET total_cost = $2, base_cost = $5, billing_detail = $3, matched_tier = $4
 		WHERE id = $1`, id, total, jsonOr(bd, "{}"), trunc(bd.Tier, 100), base)
 		return err
@@ -118,11 +118,11 @@ func BenchmarkHotStmtReserveUpdate(b *testing.B) {
 func BenchmarkHotStmtReserveEntry(b *testing.B) {
 	s, _, id := stmtFixture(b)
 	ctx := context.Background()
-	pool := s.svc.db.Gorm
+	pool, raw := s.svc.db.Gorm, s.svc.db.SQL
 	at := time.Now().Add(time.Hour)
 	benchStmt(b, func(i int) error {
 		var entryID int64
-		return pool.QueryRow(ctx, `
+		return raw.QueryRowContext(ctx, `
 		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (plugin_key, ref_id) DO NOTHING

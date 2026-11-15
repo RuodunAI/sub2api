@@ -215,7 +215,9 @@ func TestQuotaLifecycleEnvironmentPendingIsReady(t *testing.T) {
 		t.Helper()
 		tag, err := e.db.SQL.ExecContext(ctx, `UPDATE account_lifecycle_sync SET status=$2,code=$3 WHERE account_id=$1`, id, status, code)
 		require.NoError(t, err)
-		require.EqualValues(t, 1, tag.RowsAffected())
+		n, err := tag.RowsAffected()
+		require.NoError(t, err)
+		require.EqualValues(t, 1, n)
 	}
 	blocked := func() string {
 		t.Helper()

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Day and hour buckets follow tz (CONTRACTS §66): 00:30 in Shanghai is the
@@ -196,7 +197,7 @@ func TestStatsLimits(t *testing.T) {
 	f := newFixture(t)
 	show := func(lim statsLimits) (timeout, workMem string) {
 		require.NoError(t, f.svc.statsTx(t.Context(), lim, func(tx *gorm.DB) error {
-			return tx.QueryRow(t.Context(), `SELECT current_setting('statement_timeout'), current_setting('work_mem')`).Scan(&timeout, &workMem)
+			return store.SQLTx(tx).QueryRowContext(t.Context(), `SELECT current_setting('statement_timeout'), current_setting('work_mem')`).Scan(&timeout, &workMem)
 		}))
 		return timeout, workMem
 	}

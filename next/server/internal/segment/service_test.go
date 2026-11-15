@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
@@ -127,7 +126,11 @@ func TestTxConflicts(t *testing.T) {
 			_, err := store.SQLTx(tx).ExecContext(ctx, `INSERT INTO segment_groups (segment_id, group_id, granted) VALUES (default_segment_id(), 999999, true)`)
 			return err
 		}, true},
-		{"a deadlock", func(*gorm.DB) error { return &pgconn.PgError{Code: "40P01"} }, true},
+		{"a deadlock", func(tx *gorm.DB) error {
+			// The error the server sends for one (SQLSTATE 40P01).
+			_, err := store.SQLTx(tx).ExecContext(ctx, `DO $$ BEGIN RAISE EXCEPTION 'deadlock detected' USING ERRCODE = '40P01'; END $$`)
+			return err
+		}, true},
 		{"another error", func(*gorm.DB) error { return failure }, false},
 	} {
 		err := e.svc.tx(ctx, tc.fn)

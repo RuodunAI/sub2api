@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -454,29 +452,6 @@ func TestKVSetManyScriptChecksItsArguments(t *testing.T) {
 	}
 }
 
-// pgQueries counts the statements sent on a pool.
-type pgQueries struct {
-	mu  sync.Mutex
-	sql []string
-}
-
-func (q *pgQueries) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	q.mu.Lock()
-	q.sql = append(q.sql, data.SQL)
-	q.mu.Unlock()
-	return ctx
-}
-
-func (q *pgQueries) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func (q *pgQueries) take() []string {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	out := q.sql
-	q.sql = nil
-	return out
-}
-
 // TestKVBatchChecksTheGrantOnceAndMakesOneRedisRoundTrip is the point of the
 // batch calls: whatever the number of keys, one grant query in PostgreSQL
 // and one command to Redis.
@@ -486,16 +461,9 @@ func TestKVBatchChecksTheGrantOnceAndMakesOneRedisRoundTrip(t *testing.T) {
 	if _, err := base.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status)VALUES('pa','{}','enabled');INSERT INTO plugin_permission_grants(plugin_key,permission,scope,status,plugin_version,manifest_hash)VALUES('pa','kv','{}','granted','1.0.0','hash')`); err != nil {
 		t.Fatal(err)
 	}
-	queries := &pgQueries{}
-	cfg := base.Gorm.Config()
-	cfg.ConnConfig.Tracer = queries
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
+	db, queries := testutil.Traced(base)
 	_, rdb, calls := kvRedis(t)
-	h := kvEnv(t, "pa", kvGrant, rdb, &store.DB{Pool: pool})
+	h := kvEnv(t, "pa", kvGrant, rdb, db)
 
 	keys := numberedKeys("k", 64)
 	items := make([]*pluginv1.KVSetManyItem, len(keys))
@@ -504,7 +472,7 @@ func TestKVBatchChecksTheGrantOnceAndMakesOneRedisRoundTrip(t *testing.T) {
 	}
 	expect := func(what string, wantRedis ...string) {
 		t.Helper()
-		if got := queries.take(); len(got) != 1 || !strings.Contains(got[0], "plugin_permission_grants") {
+		if got := queries.Take(); len(got) != 1 || !strings.Contains(got[0], "plugin_permission_grants") {
 			t.Errorf("%s: PostgreSQL statements = %q, want the one grant check", what, got)
 		}
 		if got := calls.take(); !slices.Equal(got, wantRedis) {
@@ -543,7 +511,7 @@ func TestKVBatchChecksTheGrantOnceAndMakesOneRedisRoundTrip(t *testing.T) {
 	if got := kvBatchCodes(h, "n", nil); got != allCodes(codes.OK) {
 		t.Fatalf("no keys: %v", got)
 	}
-	if got := queries.take(); len(got) != 3 {
+	if got := queries.Take(); len(got) != 3 {
 		t.Errorf("three calls without keys: %d PostgreSQL statements, want 3", len(got))
 	}
 	if got := calls.take(); len(got) != 0 {

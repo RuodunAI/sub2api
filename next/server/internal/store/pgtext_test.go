@@ -90,7 +90,9 @@ func TestArrayTextRoundTrip(t *testing.T) {
 }
 
 func TestParseTimestamptz(t *testing.T) {
-	utc := func(y int, mo time.Month, d, h, mi, s, ns int) time.Time { return time.Date(y, mo, d, h, mi, s, ns, time.UTC) }
+	utc := func(y int, mo time.Month, d, h, mi, s, ns int) time.Time {
+		return time.Date(y, mo, d, h, mi, s, ns, time.UTC)
+	}
 	for _, c := range []struct {
 		src  string
 		want time.Time

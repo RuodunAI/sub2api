@@ -186,15 +186,19 @@ func TestMigrationsFromFirstIdempotentRunTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tag.RowsAffected() == 0 {
+	forgot, err := tag.RowsAffected()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forgot == 0 {
 		t.Fatalf("%s is not among the applied migrations", migrations.FirstIdempotentMigration)
 	}
 	again, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 	if err != nil {
 		t.Fatalf("second run: %v", err)
 	}
-	if int64(len(again)) != tag.RowsAffected() {
-		t.Fatalf("re-applied %v, want the %d forgotten migrations", again, tag.RowsAffected())
+	if int64(len(again)) != forgot {
+		t.Fatalf("re-applied %v, want the %d forgotten migrations", again, forgot)
 	}
 }
 
@@ -620,10 +624,10 @@ func TestOneSuperAdminConcurrentCommits(t *testing.T) {
 		INSERT INTO users (email, password_hash) VALUES ('a@su', ''), ('b@su', '')`)
 	require.NoError(t, err)
 	const lock = `hashtext('user_roles_one_superuser')`
-	gate, err := db.Gorm.Acquire(ctx)
+	gate, done, err := testutil.Connect(ctx, testutil.DSN(db))
 	require.NoError(t, err)
-	defer gate.Release()
-	_, err = gate.Exec(ctx, `SELECT pg_advisory_lock(`+lock+`)`)
+	defer done()
+	_, err = gate.ExecContext(ctx, `SELECT pg_advisory_lock(`+lock+`)`)
 	require.NoError(t, err)
 
 	errs := make(chan error, 2)
@@ -636,10 +640,10 @@ func TestOneSuperAdminConcurrentCommits(t *testing.T) {
 	}
 	require.Eventually(t, func() bool {
 		var n int
-		return gate.QueryRow(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+		return gate.QueryRowContext(ctx, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
 			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&n) == nil && n == 2
 	}, 10*time.Second, 20*time.Millisecond, "both commits wait on the lock")
-	_, err = gate.Exec(ctx, `SELECT pg_advisory_unlock(`+lock+`)`)
+	_, err = gate.ExecContext(ctx, `SELECT pg_advisory_unlock(`+lock+`)`)
 	require.NoError(t, err)
 
 	first, second := <-errs, <-errs

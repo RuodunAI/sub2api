@@ -157,7 +157,7 @@ func TestRegistryHealthyWithPG(t *testing.T) {
 	ctx := context.Background()
 	_, rdb := newRedis(t)
 	c := newClock()
-	r := NewRegistry(rdb, db.Gorm, RegistryOptions{NodeID: "n", Now: c.Now})
+	r := NewRegistry(rdb, db, RegistryOptions{NodeID: "n", Now: c.Now})
 	if err := r.Heartbeat(ctx); err != nil {
 		t.Fatal(err)
 	}

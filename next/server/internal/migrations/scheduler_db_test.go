@@ -8,8 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 	"github.com/riverqueue/river/rivermigrate"
 	"github.com/stretchr/testify/require"
 
@@ -24,7 +23,7 @@ import (
 func TestRiverSchemaIsCurrent(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	migrator, err := rivermigrate.New(riverpgxv5.New(db.Gorm), nil)
+	migrator, err := rivermigrate.New(riverdatabasesql.New(db.SQL), nil)
 	require.NoError(t, err)
 	res, err := migrator.Validate(ctx, nil)
 	require.NoError(t, err)
@@ -44,22 +43,22 @@ func TestRiverSchemaIsCurrent(t *testing.T) {
 func TestCoreMigrationsAsNonSuperuser(t *testing.T) {
 	base := testpg.URL(t)
 	ctx := context.Background()
-	admin, err := pgx.Connect(ctx, base)
+	admin, done, err := testutil.Connect(ctx, base)
 	require.NoError(t, err)
-	defer admin.Close(ctx)
+	defer done()
 	role := fmt.Sprintf("mig_%d_%d", os.Getpid(), time.Now().UnixNano()%1_000_000)
-	_, err = admin.Exec(ctx, "CREATE ROLE "+role+" LOGIN PASSWORD 'pw' NOSUPERUSER NOCREATEDB NOCREATEROLE")
+	_, err = admin.ExecContext(ctx, "CREATE ROLE "+role+" LOGIN PASSWORD 'pw' NOSUPERUSER NOCREATEDB NOCREATEROLE")
 	require.NoError(t, err)
-	_, err = admin.Exec(ctx, "CREATE DATABASE "+role+" OWNER "+role)
+	_, err = admin.ExecContext(ctx, "CREATE DATABASE "+role+" OWNER "+role)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		c, err := pgx.Connect(context.Background(), base)
+		c, done, err := testutil.Connect(context.Background(), base)
 		if err != nil {
 			return
 		}
-		defer c.Close(context.Background())
-		_, _ = c.Exec(context.Background(), "DROP DATABASE IF EXISTS "+role+" WITH (FORCE)")
-		_, _ = c.Exec(context.Background(), "DROP ROLE IF EXISTS "+role)
+		defer done()
+		_, _ = c.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+role+" WITH (FORCE)")
+		_, _ = c.ExecContext(context.Background(), "DROP ROLE IF EXISTS "+role)
 	})
 	u, err := url.Parse(base)
 	require.NoError(t, err)

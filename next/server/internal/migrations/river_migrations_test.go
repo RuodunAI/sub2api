@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 )
 
 // River's own schema is applied as ordinary core migrations, one file per
@@ -24,8 +24,14 @@ import (
 //
 // riverMigrationFirst is the core migration number of River version 1;
 // version N is riverMigrationFirst+N-1.
+//
+// The files were generated from riverpgxv5 (riverGeneratedFrom, which their
+// header names); the core has used riverdatabasesql (riverModule) since
+// batch 6, whose migration SQL at the same version is byte for byte the
+// same, so the headers stay as written.
 const (
-	riverModule         = "github.com/riverqueue/river/riverdriver/riverpgxv5"
+	riverModule         = "github.com/riverqueue/river/riverdriver/riverdatabasesql"
+	riverGeneratedFrom  = "github.com/riverqueue/river/riverdriver/riverpgxv5"
 	riverVersion        = "v0.49.0"
 	riverMigrationFirst = 76
 	riverSchemaTemplate = "/* TEMPLATE: schema */"
@@ -35,7 +41,7 @@ const (
 // version: name -> content.
 func riverMigrationFiles(t *testing.T) map[string]string {
 	t.Helper()
-	src := (&riverpgxv5.Driver{}).GetMigrationFS("main")
+	src := (&riverdatabasesql.Driver{}).GetMigrationFS("main")
 	ups, err := fs.Glob(src, "migration/main/*.up.sql")
 	if err != nil || len(ups) == 0 {
 		t.Fatalf("river migrations: %v (%d files)", err, len(ups))
@@ -61,7 +67,7 @@ func riverMigrationFiles(t *testing.T) map[string]string {
 		tag := fmt.Sprintf("$river_v%03d$", version)
 		var b strings.Builder
 		fmt.Fprintf(&b, "-- River schema, migration line main, version %d (%s).\n", version, m[2])
-		fmt.Fprintf(&b, "-- Generated from %s@%s %s\n", riverModule, riverVersion, strings.TrimPrefix(path, "migration/main/"))
+		fmt.Fprintf(&b, "-- Generated from %s@%s %s\n", riverGeneratedFrom, riverVersion, strings.TrimPrefix(path, "migration/main/"))
 		fmt.Fprintf(&b, "-- (sha256 %s) with the schema template removed.\n", hex.EncodeToString(sum[:]))
 		b.WriteString("-- Do not edit: TestRiverMigrationsMatchModule compares this file with the\n")
 		b.WriteString("-- module (TASK-FRAMEWORK-DESIGN §9.1). To upgrade River, add the new versions as\n")

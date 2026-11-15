@@ -17,7 +17,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -85,7 +84,7 @@ func (a fixtureAccess) AccountsInScope(ctx context.Context, uid int64, action st
 	if err != nil {
 		return false, nil, err
 	}
-	allowed, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	allowed, err := testutil.Column[int64](rows)
 	return false, allowed, err
 }
 

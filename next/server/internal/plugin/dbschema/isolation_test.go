@@ -7,8 +7,6 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -17,30 +15,30 @@ import (
 
 // hostWithoutCreateRole connects to the test database as a fresh login role
 // that may create schemas but not roles.
-func hostWithoutCreateRole(t *testing.T, db *store.DB) *store.DB {
+func hostWithoutCreateRole(t *testing.T, db *store.DB) (host *store.DB, dsn string) {
 	t.Helper()
 	ctx := context.Background()
 	role := "nocr_" + randKey()
 	pw := "pw-" + randKey()
-	rid := pgx.Identifier{role}.Sanitize()
+	rid := store.QuoteIdent(role)
 	var dbname string
 	if err := db.SQL.QueryRowContext(ctx, `SELECT current_database()`).Scan(&dbname); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range []string{
 		"CREATE ROLE " + rid + " LOGIN NOCREATEROLE NOSUPERUSER PASSWORD '" + pw + "'",
-		"GRANT CREATE, CONNECT ON DATABASE " + pgx.Identifier{dbname}.Sanitize() + " TO " + rid,
+		"GRANT CREATE, CONNECT ON DATABASE " + store.QuoteIdent(dbname) + " TO " + rid,
 	} {
 		if _, err := db.SQL.ExecContext(ctx, s); err != nil {
 			t.Fatal(err)
 		}
 	}
-	u, err := testutil.DSN(url.Parse(db))
+	u, err := url.Parse(testutil.DSN(db))
 	if err != nil {
 		t.Fatal(err)
 	}
 	u.User = url.UserPassword(role, pw)
-	host, err := store.Open(ctx, u.String())
+	host, err = store.Open(ctx, u.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +48,7 @@ func hostWithoutCreateRole(t *testing.T, db *store.DB) *store.DB {
 		_, _ = db.SQL.ExecContext(c, "DROP OWNED BY "+rid)
 		_, _ = db.SQL.ExecContext(c, "DROP ROLE IF EXISTS "+rid)
 	})
-	return host
+	return host, u.String()
 }
 
 // Without CREATEROLE the plugin is refused with a clear code instead of
@@ -58,9 +56,9 @@ func hostWithoutCreateRole(t *testing.T, db *store.DB) *store.DB {
 func TestEnsureFailsWithoutCreateRole(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	host := hostWithoutCreateRole(t, db)
+	host, hostDSN := hostWithoutCreateRole(t, db)
 	key := randKey()
-	m := dbschema.New(host, testutil.DSN(host), make([]byte, 32), true)
+	m := dbschema.New(host, hostDSN, make([]byte, 32), true)
 
 	err := m.CheckIsolation(ctx)
 	if !errors.Is(err, dbschema.ErrIsolationUnavailable) || core.AsError(err).Code != "plugin_db_isolation_unavailable" {
@@ -81,7 +79,7 @@ func TestEnsureFailsWithoutCreateRole(t *testing.T) {
 	}
 	// Turning isolation off is an explicit operator choice, not a silent
 	// fallback: then the shared role is used.
-	shared := dbschema.New(host, testutil.DSN(host), make([]byte, 32), false)
+	shared := dbschema.New(host, hostDSN, make([]byte, 32), false)
 	t.Cleanup(func() { _ = shared.Drop(context.Background(), key) })
 	if err := shared.CheckIsolation(ctx); err != nil {
 		t.Fatal(err)
@@ -98,7 +96,7 @@ func TestEnsureRefusesForeignRole(t *testing.T) {
 	ctx := context.Background()
 	key := randKey()
 	role := "plg_" + key
-	rid := pgx.Identifier{role}.Sanitize()
+	rid := store.QuoteIdent(role)
 	if _, err := db.SQL.ExecContext(ctx, "CREATE ROLE "+rid+" LOGIN PASSWORD 'theirs' CONNECTION LIMIT 3"); err != nil {
 		t.Fatal(err)
 	}
@@ -142,21 +140,21 @@ func TestEnsureExistingRoleAsNonSuperuser(t *testing.T) {
 	ctx := context.Background()
 	role := "cr_" + randKey()
 	pw := "pw-" + randKey()
-	rid := pgx.Identifier{role}.Sanitize()
+	rid := store.QuoteIdent(role)
 	var dbname string
 	if err := db.SQL.QueryRowContext(ctx, `SELECT current_database()`).Scan(&dbname); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range []string{
 		"CREATE ROLE " + rid + " LOGIN CREATEROLE NOSUPERUSER PASSWORD '" + pw + "'",
-		"GRANT CREATE, CONNECT ON DATABASE " + pgx.Identifier{dbname}.Sanitize() + " TO " + rid,
+		"GRANT CREATE, CONNECT ON DATABASE " + store.QuoteIdent(dbname) + " TO " + rid,
 		"GRANT EXECUTE ON FUNCTION public.plugin_migrations_applied(varchar), public.plugin_migration_record(varchar, varchar, varchar) TO " + rid + " WITH GRANT OPTION",
 	} {
 		if _, err := db.SQL.ExecContext(ctx, s); err != nil {
 			t.Fatal(err)
 		}
 	}
-	u, err := testutil.DSN(url.Parse(db))
+	u, err := url.Parse(testutil.DSN(db))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +166,7 @@ func TestEnsureExistingRoleAsNonSuperuser(t *testing.T) {
 	key := randKey()
 	mk := make([]byte, 32)
 	_, _ = rand.Read(mk)
-	m := dbschema.New(host, testutil.DSN(host), mk, true)
+	m := dbschema.New(host, u.String(), mk, true)
 	t.Cleanup(func() {
 		c := context.Background()
 		_ = m.Drop(c, key)
@@ -179,7 +177,7 @@ func TestEnsureExistingRoleAsNonSuperuser(t *testing.T) {
 	if _, err := m.Ensure(ctx, key); err != nil {
 		t.Fatal(err)
 	}
-	m2 := dbschema.New(host, testutil.DSN(host), mk, true)
+	m2 := dbschema.New(host, u.String(), mk, true)
 	if st, err := m2.Ensure(ctx, key); err != nil || !st.RoleIsolated {
 		t.Fatalf("re-ensure as non-superuser: %+v %v", st, err)
 	}
@@ -208,7 +206,7 @@ func TestEnsureAdoptsOwnRole(t *testing.T) {
 	}
 	// A role created before the marker existed is recognised by the schema
 	// it owns.
-	if _, err := db.SQL.ExecContext(ctx, "COMMENT ON ROLE "+pgx.Identifier{"plg_" + key}.Sanitize()+" IS NULL"); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, "COMMENT ON ROLE "+store.QuoteIdent("plg_"+key)+" IS NULL"); err != nil {
 		t.Fatal(err)
 	}
 	if st, err := dbschema.New(db, testutil.DSN(db), mk, true).Ensure(ctx, key); err != nil || !st.RoleIsolated {

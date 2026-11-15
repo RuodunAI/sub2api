@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
@@ -73,10 +72,9 @@ func TestAccountUsageLimitCountConstraint(t *testing.T) {
 	_, err := db.SQL.ExecContext(ctx, `INSERT INTO account_usage_limits (account_id, period, period_count) VALUES ($1, 'hour', 8784)`, id)
 	require.NoError(t, err)
 	_, err = db.SQL.ExecContext(ctx, `UPDATE account_usage_limits SET period_count = 8785 WHERE account_id = $1`, id)
-	var pg *pgconn.PgError
-	require.ErrorAs(t, err, &pg)
-	require.Equal(t, "23514", pg.Code)
-	require.Equal(t, "account_usage_limits_count_chk", pg.ConstraintName)
+	require.Error(t, err)
+	require.Equal(t, "23514", store.SQLState(err))
+	require.Equal(t, "account_usage_limits_count_chk", store.ConstraintName(err))
 }
 
 // accounts.auto_disabled_source (0070) is the core's mark on its own

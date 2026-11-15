@@ -17,7 +17,6 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -824,7 +823,7 @@ func (e *env) eventTypes() []string {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	ts, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	ts, err := testutil.Column[string](rows)
 	if err != nil {
 		e.t.Fatal(err)
 	}

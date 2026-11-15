@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // familyOf reads the login session id out of an access token.
@@ -185,7 +185,7 @@ func superadminLogins(t *testing.T, s *Service) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	out, err := testutil.Column[string](rows)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,12 +40,12 @@ func hotFixture(b *testing.B) (*Service, int64, string) {
 	return New(Deps{DB: db}), user, hash
 }
 
-// benchPaths runs the pgx and the GORM form of one read.
-func benchPaths(b *testing.B, pgxPath, gormPath func() error) {
+// benchPaths runs the raw database/sql (formerly pgx) and the GORM form of one read.
+func benchPaths(b *testing.B, sqlPath, gormPath func() error) {
 	for _, p := range []struct {
 		name string
 		run  func() error
-	}{{"pgx", pgxPath}, {"gorm", gormPath}} {
+	}{{"sql", sqlPath}, {"gorm", gormPath}} {
 		b.Run(p.name, func(b *testing.B) {
 			if err := p.run(); err != nil {
 				b.Fatal(err)
@@ -93,7 +93,7 @@ func BenchmarkHotGetUser(b *testing.B) {
 	s, user, _ := hotFixture(b)
 	ctx := context.Background()
 	benchPaths(b, func() error {
-		_, err := pgxGetUser(ctx, s.db, user)
+		_, err := sqlGetUser(ctx, s.db, user)
 		return err
 	}, func() error {
 		_, err := s.getUser(ctx, s.db.Gorm, user)
@@ -101,8 +101,8 @@ func BenchmarkHotGetUser(b *testing.B) {
 	})
 }
 
-// pgxGetUser is getUser as it was on pgx.
-func pgxGetUser(ctx context.Context, db *store.DB, id int64) (*User, error) {
+// sqlGetUser is getUser as it was on pgx, on database/sql.
+func sqlGetUser(ctx context.Context, db *store.DB, id int64) (*User, error) {
 	var u User
 	var balance string
 	err := db.SQL.QueryRowContext(ctx, `SELECT `+userColumns+` FROM `+usersFrom+` WHERE u.id = $1 AND u.deleted_at IS NULL`, id).
