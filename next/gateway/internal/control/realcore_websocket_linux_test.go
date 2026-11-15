@@ -138,10 +138,10 @@ func TestRealCoreShellsCarryWebSocketsAcrossNodes(t *testing.T) {
 
 	// ---- CPU offload: a hands new sessions to b; open ones stay put. The
 	// marks are what the heartbeats of serving nodes would store.
-	if _, err := c.db.Exec(ctx, `UPDATE updater.nodes SET mode='local',ready=true,core_boot_id='core-b',route_revision=$2 WHERE cluster_id=$1 AND node_id='b'`, c.dbname, rev); err != nil {
+	if err := c.db.WithContext(ctx).Exec(`UPDATE updater.nodes SET mode='local',ready=true,core_boot_id='core-b',route_revision=? WHERE cluster_id=? AND node_id='b'`, rev, c.dbname).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.db.Exec(ctx, `UPDATE updater.nodes SET offloading=true WHERE cluster_id=$1 AND node_id='a'`, c.dbname); err != nil {
+	if err := c.db.WithContext(ctx).Exec(`UPDATE updater.nodes SET offloading=true WHERE cluster_id=? AND node_id='a'`, c.dbname).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := a.runtime.SetOffload([]Node{{ID: "b", PeerURL: b.private.URL, CoreBootID: "core-b", RouteRevision: rev}}); err != nil {

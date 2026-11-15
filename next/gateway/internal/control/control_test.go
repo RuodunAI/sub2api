@@ -14,8 +14,10 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/alicebob/miniredis/v2"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func TestCompatibilityRejectsUnsafeTransitions(t *testing.T) {
@@ -165,26 +167,46 @@ func integrationStore(t *testing.T) *Store {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not configured")
 	}
-	db, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(db.Close)
+	db := openTestDB(t, dsn)
 	s := &Store{DB: db, Cluster: fmt.Sprintf("updater-test-%d", time.Now().UnixNano())}
-	if err = s.EnsureSchema(context.Background()); err != nil {
+	if err := s.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		ctx := context.Background()
-		_, _ = db.Exec(ctx, `DELETE FROM updater.events WHERE upgrade_id IN (SELECT id FROM updater.upgrades WHERE cluster_id=$1)`, s.Cluster)
-		_, _ = db.Exec(ctx, `DELETE FROM updater.stop_confirmations WHERE cluster_id=$1`, s.Cluster)
-		_, _ = db.Exec(ctx, `DELETE FROM updater.steps WHERE upgrade_id IN (SELECT id FROM updater.upgrades WHERE cluster_id=$1)`, s.Cluster)
-		_, _ = db.Exec(ctx, `DELETE FROM updater.upgrades WHERE cluster_id=$1`, s.Cluster)
-		_, _ = db.Exec(ctx, `DELETE FROM updater.node_admissions WHERE cluster_id=$1`, s.Cluster)
-		_, _ = db.Exec(ctx, `DELETE FROM updater.nodes WHERE cluster_id=$1`, s.Cluster)
-		_, _ = db.Exec(ctx, `DELETE FROM updater.clusters WHERE cluster_id=$1`, s.Cluster)
+		for _, q := range []string{
+			`DELETE FROM updater.events WHERE upgrade_id IN (SELECT id FROM updater.upgrades WHERE cluster_id=?)`,
+			`DELETE FROM updater.stop_confirmations WHERE cluster_id=?`,
+			`DELETE FROM updater.steps WHERE upgrade_id IN (SELECT id FROM updater.upgrades WHERE cluster_id=?)`,
+			`DELETE FROM updater.upgrades WHERE cluster_id=?`,
+			`DELETE FROM updater.node_admissions WHERE cluster_id=?`,
+			`DELETE FROM updater.nodes WHERE cluster_id=?`,
+			`DELETE FROM updater.clusters WHERE cluster_id=?`,
+		} {
+			db.Exec(q, s.Cluster)
+		}
 	})
 	return s
+}
+
+// openTestDB opens a GORM pool on dsn that the test closes when it ends.
+func openTestDB(t *testing.T, dsn string) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{SkipDefaultTransaction: true, DisableAutomaticPing: true, Logger: logger.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	return db
+}
+
+// quoteIdent quotes an SQL identifier: in double quotes, with each double
+// quote inside doubled.
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 func setupEngines(t *testing.T) (*Store, *Engine, *Engine, Release) {
 	t.Helper()
@@ -677,7 +699,7 @@ func TestPostgresMaintenanceStopBarrierAndRecovery(t *testing.T) {
 		t.Fatal("coordinator blocked on its own plan row lock:", ctx.Err())
 	}
 	var blockedReason string
-	if err = s.DB.QueryRow(ctx, `SELECT blocked_reason FROM updater.upgrades WHERE id=$1`, p.ID).Scan(&blockedReason); err != nil || !strings.Contains(blockedReason, "waiting for followers to stop") {
+	if err = s.db(ctx).Raw(`SELECT blocked_reason FROM updater.upgrades WHERE id=?`, p.ID).Row().Scan(&blockedReason); err != nil || !strings.Contains(blockedReason, "waiting for followers to stop") {
 		t.Fatalf("blocked reason was not persisted: %q %v", blockedReason, err)
 	}
 	if err = b.Heartbeat(ctx); err != nil {
@@ -719,7 +741,7 @@ func TestPostgresLegacyPlanAndCrossSchemaRollbackAreRejected(t *testing.T) {
 	if _, err = s.Action(ctx, p.ID, "pause", "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(ctx, `UPDATE updater.upgrades SET strategy='legacy-rolling' WHERE id=$1`, p.ID); err != nil {
+	if err = s.db(ctx).Exec(`UPDATE updater.upgrades SET strategy='legacy-rolling' WHERE id=?`, p.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.Action(ctx, p.ID, "resume", "admin"); err == nil {
@@ -728,10 +750,10 @@ func TestPostgresLegacyPlanAndCrossSchemaRollbackAreRejected(t *testing.T) {
 	if _, err = s.Rollback(ctx, p.ID, "admin"); err == nil {
 		t.Fatal("legacy recovery accepted")
 	}
-	if _, err = s.DB.Exec(ctx, `UPDATE updater.upgrades SET strategy=$2 WHERE id=$1`, p.ID, PrimaryFirst); err != nil {
+	if err = s.db(ctx).Exec(`UPDATE updater.upgrades SET strategy=? WHERE id=?`, PrimaryFirst, p.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(ctx, `UPDATE updater.releases SET manifest=jsonb_set(manifest,'{schema_after}','"contract-2"') WHERE digest=$1`, target.Digest); err != nil {
+	if err = s.db(ctx).Exec(`UPDATE updater.releases SET manifest=jsonb_set(manifest,'{schema_after}','"contract-2"') WHERE digest=?`, target.Digest).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.Rollback(ctx, p.ID, "admin"); err == nil {
@@ -787,7 +809,7 @@ func TestPostgresUnknownCoreAndOldShellBlockUpgrade(t *testing.T) {
 		t.Fatalf("unmanaged accepted: %+v %v", pf, err)
 	}
 	_ = s.Redis.Del(ctx, "node:info:unmanaged-test").Err()
-	if _, err = s.DB.Exec(ctx, `UPDATE updater.nodes SET peer_protocol=0 WHERE node_id=$1`, a.Node.ID); err != nil {
+	if err = s.db(ctx).Exec(`UPDATE updater.nodes SET peer_protocol=0 WHERE node_id=?`, a.Node.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	pf, err = s.Preflight(ctx, target.Digest)
@@ -863,7 +885,7 @@ func TestPostgresPauseBetweenAdmissionCheckAndCommitWins(t *testing.T) {
 	// The earlier failed attempt already committed one admission row; only
 	// its revision can show whether another admission slipped through.
 	admission := func() (rev int64) {
-		_ = s.DB.QueryRow(ctx, `SELECT COALESCE((SELECT revision FROM updater.node_admissions WHERE cluster_id=$1 AND node_id=$2),0)`, s.Cluster, a.Node.ID).Scan(&rev)
+		_ = s.db(ctx).Raw(`SELECT COALESCE((SELECT revision FROM updater.node_admissions WHERE cluster_id=? AND node_id=?),0)`, s.Cluster, a.Node.ID).Row().Scan(&rev)
 		return rev
 	}
 	revisionBefore := admission()
@@ -972,7 +994,7 @@ func TestPostgresDisabledWorkerStillStopsAndAcknowledges(t *testing.T) {
 		t.Fatal("disabled core survived")
 	}
 	var ack bool
-	if err = s.DB.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM updater.stop_confirmations WHERE upgrade_id=$1 AND node_id=$2 AND shell_boot_id=$3)`, p.ID, b.Node.ID, b.Node.ShellBootID).Scan(&ack); err != nil || !ack {
+	if err = s.db(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM updater.stop_confirmations WHERE upgrade_id=? AND node_id=? AND shell_boot_id=?)`, p.ID, b.Node.ID, b.Node.ShellBootID).Row().Scan(&ack); err != nil || !ack {
 		t.Fatalf("safety stop was not persisted: %v", err)
 	}
 	// The safety report must match the persisted runtime identity, not just the
@@ -1003,7 +1025,7 @@ func TestPostgresFollowerResumesForwardingWhenPrimaryServes(t *testing.T) {
 	ctx := context.Background()
 	br := b.Runtime.(*fakeRuntime)
 	redirects := func() int { return strings.Count(strings.Join(br.calls, ","), "redirect:"+a.Node.ID) }
-	if _, err := s.DB.Exec(ctx, `UPDATE updater.nodes SET ready=false WHERE node_id=$1`, a.Node.ID); err != nil {
+	if err := s.db(ctx).Exec(`UPDATE updater.nodes SET ready=false WHERE node_id=?`, a.Node.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	br.mode = "maintenance"

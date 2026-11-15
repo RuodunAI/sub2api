@@ -71,7 +71,7 @@ type shedRuntime struct {
 
 func (r *shedRuntime) SetOffload(nodes []Node) error {
 	var marked bool
-	_ = r.store.DB.QueryRow(context.Background(), `SELECT offloading FROM updater.nodes WHERE node_id=$1`, r.node).Scan(&marked)
+	_ = r.store.db(context.Background()).Raw(`SELECT offloading FROM updater.nodes WHERE node_id=?`, r.node).Row().Scan(&marked)
 	entry := "local"
 	if len(nodes) > 0 {
 		entry = "shed:" + nodes[0].ID

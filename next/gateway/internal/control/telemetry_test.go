@@ -186,7 +186,7 @@ func TestTelemetryHeartbeatDoesNotRewriteDurableSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	var before, after string
-	if err := s.DB.QueryRow(ctx, `SELECT xmin::text FROM updater.nodes WHERE node_id=$1`, a.Node.ID).Scan(&before); err != nil {
+	if err := s.db(ctx).Raw(`SELECT xmin::text FROM updater.nodes WHERE node_id=?`, a.Node.ID).Row().Scan(&before); err != nil {
 		t.Fatal(err)
 	}
 	nodes, err := s.Nodes(ctx)
@@ -205,7 +205,7 @@ func TestTelemetryHeartbeatDoesNotRewriteDurableSnapshot(t *testing.T) {
 	if err := s.Heartbeat(ctx, report); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DB.QueryRow(ctx, `SELECT xmin::text FROM updater.nodes WHERE node_id=$1`, a.Node.ID).Scan(&after); err != nil {
+	if err := s.db(ctx).Raw(`SELECT xmin::text FROM updater.nodes WHERE node_id=?`, a.Node.ID).Row().Scan(&after); err != nil {
 		t.Fatal(err)
 	}
 	if before != after {

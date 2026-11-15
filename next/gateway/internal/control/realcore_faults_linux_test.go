@@ -80,7 +80,7 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 	}
 	activePlan := func(ctx context.Context) (bool, error) {
 		var active bool
-		err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE cluster_id=$1 AND status IN ('running','paused'))`, c.dbname).Scan(&active)
+		err := db.WithContext(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused'))`, c.dbname).Row().Scan(&active)
 		return active, err
 	}
 
@@ -100,7 +100,7 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 	}
 	wait("bundled plugins enabled", 3*time.Minute, func() bool {
 		var n int
-		_ = db.QueryRow(ctx, `SELECT count(*) FROM plugins WHERE key IN ('anthropic','volcengine') AND status='enabled'`).Scan(&n)
+		_ = db.WithContext(ctx).Raw(`SELECT count(*) FROM plugins WHERE key IN ('anthropic','volcengine') AND status='enabled'`).Row().Scan(&n)
 		return n == 2
 	})
 
@@ -176,7 +176,7 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 						return violate("primary migration while %s is alive", other.engine.Node.ShellBootID)
 					}
 					var confirmed bool
-					if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM updater.stop_confirmations WHERE cluster_id=$1 AND node_id=$2 AND shell_boot_id=$3)`, c.dbname, other.id, other.engine.Node.ShellBootID).Scan(&confirmed); err != nil || !confirmed {
+					if err := db.WithContext(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM updater.stop_confirmations WHERE cluster_id=? AND node_id=? AND shell_boot_id=?)`, c.dbname, other.id, other.engine.Node.ShellBootID).Row().Scan(&confirmed); err != nil || !confirmed {
 						return violate("primary migration without a stop confirmation of %s", other.engine.Node.ShellBootID)
 					}
 				}
@@ -185,7 +185,7 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 					go func() {
 						for i := 0; i < 1200; i++ {
 							var sleeping bool
-							_ = db.QueryRow(context.Background(), `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND state='active' AND query ILIKE '%pg_sleep%' AND query NOT ILIKE '%pg_stat_activity%')`, c.dbname).Scan(&sleeping)
+							_ = db.WithContext(context.Background()).Raw(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=? AND state='active' AND query ILIKE '%pg_sleep%' AND query NOT ILIKE '%pg_stat_activity%')`, c.dbname).Row().Scan(&sleeping)
 							if st := n.supervisor.Status(); sleeping && st.Running && st.PID > 0 {
 								if p, err := os.FindProcess(st.PID); err == nil && p.Kill() == nil {
 									killedPID.Store(int64(st.PID))
@@ -334,11 +334,11 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 			// node stays stopped and every entrance stays unavailable.
 			wait("interrupted migration backend gone", time.Minute, func() bool {
 				var busy bool
-				_ = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=$1 AND state='active' AND query ILIKE '%pg_sleep%' AND query NOT ILIKE '%pg_stat_activity%')`, c.dbname).Scan(&busy)
+				_ = db.WithContext(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=? AND state='active' AND query ILIKE '%pg_sleep%' AND query NOT ILIKE '%pg_stat_activity%')`, c.dbname).Row().Scan(&busy)
 				return !busy
 			})
 			var table, recorded bool
-			if err = db.QueryRow(ctx, `SELECT to_regclass('managed_upgrade_probe') IS NOT NULL, EXISTS(SELECT 1 FROM schema_migrations WHERE id=$1)`, os.Getenv("TEST_EXPECT_MIGRATION")).Scan(&table, &recorded); err != nil || table || recorded {
+			if err = db.WithContext(ctx).Raw(`SELECT to_regclass('managed_upgrade_probe') IS NOT NULL, EXISTS(SELECT 1 FROM schema_migrations WHERE id=?)`, os.Getenv("TEST_EXPECT_MIGRATION")).Row().Scan(&table, &recorded); err != nil || table || recorded {
 				t.Fatalf("interrupted migration left state: table=%v recorded=%v err=%v", table, recorded, err)
 			}
 			checkDown := func(when string) {
@@ -393,7 +393,7 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 		return len(c.list()) == 4
 	})
 	var rows int
-	if err = db.QueryRow(ctx, `SELECT count(*) FROM managed_upgrade_probe`).Scan(&rows); err != nil || rows != 1 {
+	if err = db.WithContext(ctx).Raw(`SELECT count(*) FROM managed_upgrade_probe`).Row().Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("retried migration must apply exactly once: rows=%d err=%v", rows, err)
 	}
 	t.Log("update completed; the retried migration applied once; d serves the target")
@@ -428,8 +428,8 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 	var output, failures, usageRows int64
 	var accountID int64
 	var failureCode string
-	if err = db.QueryRow(ctx, `SELECT u.billing_status,u.total_cost::text,u.output_tokens,u.account_id,t.poll_failures,t.failure_code,(SELECT count(*) FROM usage_logs WHERE request_id=$2)
-		FROM async_tasks t JOIN usage_logs u ON u.id=t.usage_log_id WHERE t.public_id=$1`, publicID, requestID).Scan(&status, &cost, &output, &accountID, &failures, &failureCode, &usageRows); err != nil {
+	if err = db.WithContext(ctx).Raw(`SELECT u.billing_status,u.total_cost::text,u.output_tokens,u.account_id,t.poll_failures,t.failure_code,(SELECT count(*) FROM usage_logs WHERE request_id=?)
+		FROM async_tasks t JOIN usage_logs u ON u.id=t.usage_log_id WHERE t.public_id=?`, requestID, publicID).Row().Scan(&status, &cost, &output, &accountID, &failures, &failureCode, &usageRows); err != nil {
 		t.Fatal(err)
 	}
 	if status != "billed" || output != 17 || accountID != video.accountID || failures != 0 || failureCode != "" || usageRows != 1 {
