@@ -1,4 +1,4 @@
-/* global process, document, getComputedStyle */
+/* global process, document, getComputedStyle, URL */
 // The plugin permission screens in a browser, run against the mock app (no
 // backend), like phone-layout.test.mjs:
 //
