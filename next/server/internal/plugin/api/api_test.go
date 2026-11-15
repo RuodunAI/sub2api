@@ -601,6 +601,24 @@ func TestUIPluginsNativeEntryOnly(t *testing.T) {
 	}
 }
 
+// GET /ui/plugins shows a plugin's menu and slot to a holder of any scope
+// of their permission.
+func TestUIPluginsScopedPermission(t *testing.T) {
+	h, _ := newHarness(t)
+	menus := func(token string) []any {
+		code, out := h.do("GET", "/ui/plugins", token, nil)
+		require.Equal(t, 200, code, out)
+		ui, _ := out["data"].([]any)
+		if len(ui) == 0 {
+			return nil
+		}
+		return ui[0].(map[string]any)["menus"].([]any)
+	}
+	// The viewer holds stats:read; its key narrows that to one value.
+	assert.Len(t, menus(core.AccessKeyPrefix+"plugin.guard:stats:read:value/a,"+PermSelfUI), 1)
+	assert.Empty(t, menus(core.AccessKeyPrefix+"plugin.guard:other:read:value/a,"+PermSelfUI))
+}
+
 func mustExec(t *testing.T, db *store.DB, sql string, args ...any) {
 	t.Helper()
 	if _, err := db.Pool.Exec(context.Background(), sql, args...); err != nil {
