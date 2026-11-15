@@ -102,8 +102,9 @@ func reviewOf(e *Env, d gjson.Result) gjson.Result {
 	return d
 }
 
-// ConsentAll approves every requested host permission and grants new plugin
-// permissions to roleKeys.
+// ConsentAll approves every requested host permission and grants every
+// row of each plugin permission the consent creates (review new=true) to
+// roleKeys instead of its manifest defaults; none keeps the defaults.
 func (e *Env) ConsentAll(admin *Session, review gjson.Result, roleKeys []string) {
 	e.T.Helper()
 	grants := []map[string]any{}
@@ -114,12 +115,22 @@ func (e *Env) ConsentAll(admin *Session, review gjson.Result, roleKeys []string)
 		}
 		grants = append(grants, g)
 	}
-	if roleKeys == nil {
-		roleKeys = []string{}
+	body := map[string]any{"grants": grants, "denied": []string{}}
+	if len(roleKeys) > 0 {
+		roles := map[string]bool{}
+		for _, r := range roleKeys {
+			roles[r] = true
+		}
+		overrides := map[string]any{}
+		for _, up := range review.Get("user_permissions").Array() {
+			if up.Get("new").Bool() {
+				overrides[up.Get("key").String()] = roles
+			}
+		}
+		body["new_permission_roles"] = overrides
 	}
 	admin.OK(e.T, http.MethodPost,
-		fmt.Sprintf("/plugins/%s/versions/%s/consent", review.Get("plugin_key").String(), review.Get("version").String()),
-		map[string]any{"grants": grants, "denied": []string{}, "role_keys_for_new_permissions": roleKeys})
+		fmt.Sprintf("/plugins/%s/versions/%s/consent", review.Get("plugin_key").String(), review.Get("version").String()), body)
 }
 
 // Plugin returns GET /plugins/:key, or ok=false on 404.

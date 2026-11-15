@@ -20,7 +20,7 @@ func TestReviewConsentFlags(t *testing.T) {
 	}
 	review := func() *Review {
 		t.Helper()
-		r, err := e.svc.Review(ctx, "guard", "0.1.0")
+		r, err := e.svc.Review(ctx, "guard", "0.1.0", e.admin)
 		if err != nil {
 			t.Fatal(err)
 		}
