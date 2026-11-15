@@ -1,0 +1,12 @@
+-- sql
+SELECT sg.group_id,
+			COALESCE(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS segment_ids,
+			COALESCE(array_agg(s.name ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS names,
+			count(*) FILTER (WHERE s.kind = 'personal') AS personal_count
+		FROM segment_groups sg
+		JOIN segments s ON s.id = sg.segment_id
+		JOIN groups g ON g.id = sg.group_id
+		WHERE sg.group_id = ANY($1) AND sg.granted AND g.visibility = 'restricted'
+		GROUP BY sg.group_id
+-- vars
+$1 store.Int64s [1 2]

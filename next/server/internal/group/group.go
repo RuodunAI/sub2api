@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,11 +17,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Service serves the group endpoints.
@@ -90,38 +94,85 @@ type MyGroup struct {
 	Exclusive bool `json:"exclusive"`
 }
 
-// selectGroup lists the group columns; account_count only counts accounts of
-// enabled plugins (keys is the parameter holding core.ActivePluginKeys, NULL =
-// no filter).
-func selectGroup(keys string) string {
-	return `SELECT g.id, g.name, g.description, g.status, g.rate_multiplier::text, g.visibility,
+// groupColumns are the columns of a groupRow of the groups g; account_count
+// only counts accounts of enabled plugins (both parameters are the keys of
+// core.ActivePluginKeys, NULL = no filter).
+const groupColumns = `g.id, g.name, g.description, g.status, g.rate_multiplier, g.visibility,
 	g.model_allowlist, g.model_filter_mode, g.environment, g.conversion_loss_policy, g.created_at, g.updated_at,
 	(SELECT count(*) FROM account_groups ag JOIN accounts a ON a.id = ag.account_id
-	  WHERE ag.group_id = g.id AND a.deleted_at IS NULL AND (` + keys + `::text[] IS NULL OR a.plugin_key = ANY(` + keys + `))),
-	(SELECT count(*) FROM api_keys k WHERE k.group_id = g.id AND k.deleted_at IS NULL)
-	FROM groups g`
+	  WHERE ag.group_id = g.id AND a.deleted_at IS NULL AND (?::text[] IS NULL OR a.plugin_key = ANY(?))) AS account_count,
+	(SELECT count(*) FROM api_keys k WHERE k.group_id = g.id AND k.deleted_at IS NULL) AS api_key_count`
+
+// groupRow is a row of groupColumns.
+type groupRow struct {
+	model.Group
+	AccountCount int64 `gorm:"column:account_count"`
+	APIKeyCount  int64 `gorm:"column:api_key_count"`
 }
 
-func scanGroup(row pgx.Row) (*Group, error) {
-	var g Group
-	var rate string
-	if err := row.Scan(&g.ID, &g.Name, &g.Description, &g.Status, &rate, &g.Visibility,
-		&g.ModelAllowlist, &g.ModelFilterMode, &g.Environment, &g.ConversionLossPolicy, &g.CreatedAt, &g.UpdatedAt, &g.AccountCount, &g.APIKeyCount); err != nil {
+// selectGroups reads the groupRows of the groups g the caller narrows;
+// keys are core.ActivePluginKeys.
+func selectGroups(db *gorm.DB, keys []string) *gorm.DB {
+	// nil (no registry) stays NULL and counts every account; store.Strings
+	// would make it the empty array, which counts none.
+	var arg any
+	if keys != nil {
+		arg = store.Strings(keys)
+	}
+	return db.Table("groups g").Select(groupColumns, arg, arg)
+}
+
+// listFilter narrows the groups g to those GET /groups asks for: the name
+// contains q, the status is status (both "" = any) and, unless providing is
+// nil, the id is one of providing.
+func listFilter(q, status string, providing []int64) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		if q != "" {
+			db = db.Where("g.name ILIKE ?", "%"+q+"%")
+		}
+		if status != "" {
+			db = db.Where("g.status = ?", status)
+		}
+		if providing != nil {
+			db = db.Where("g.id = ANY(?)", store.Int64s(providing))
+		}
+		return db
+	}
+}
+
+// group is the API view of the row, without what fill adds.
+func (r *groupRow) group() (*Group, error) {
+	g := &Group{ID: r.ID, Name: r.Name, Description: r.Description, Status: r.Status, RateMultiplier: r.RateMultiplier.String(),
+		Visibility: r.Visibility, ModelFilterMode: r.ModelFilterMode, ConversionLossPolicy: r.ConversionLossPolicy,
+		AccountCount: r.AccountCount, APIKeyCount: r.APIKeyCount, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+	var err error
+	if g.ModelAllowlist, err = allowlist(r.ModelAllowlist); err != nil {
 		return nil, err
 	}
-	g.RateMultiplier = normRate(rate)
-	if g.ModelAllowlist == nil {
-		g.ModelAllowlist = []string{}
+	if err := decodeJSON(r.Environment, &g.Environment); err != nil {
+		return nil, err
 	}
-	return &g, nil
+	return g, nil
 }
 
-func normRate(s string) string {
-	d, err := decimal.NewFromString(s)
-	if err != nil {
-		return s
+// allowlist decodes a model_allowlist column; never nil.
+func allowlist(raw json.RawMessage) ([]string, error) {
+	var out []string
+	if err := decodeJSON(raw, &out); err != nil {
+		return nil, err
 	}
-	return d.String()
+	if out == nil {
+		out = []string{}
+	}
+	return out, nil
+}
+
+// decodeJSON decodes a json column into v; NULL leaves v as it is.
+func decodeJSON(raw json.RawMessage, v any) error {
+	if raw == nil {
+		return nil
+	}
+	return json.Unmarshal(raw, v)
 }
 
 func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh) }
@@ -139,33 +190,27 @@ func (s *Service) list(c *gin.Context) {
 			return
 		}
 	}
-	where := ` WHERE ($1 = '' OR g.name ILIKE '%' || $1 || '%') AND ($2 = '' OR g.status = $2)
-		AND ($3::bigint[] IS NULL OR g.id = ANY($3))`
+	g, filter := store.G(ctx, s.db.Pool), listFilter(q, status, providing)
 	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM groups g`+where, q, status, providing).Scan(&total); err != nil {
+	if err := g.Table("groups g").Scopes(filter).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := s.db.Pool.Query(ctx, selectGroup("$6")+where+` ORDER BY g.id LIMIT $4 OFFSET $5`, q, status, providing, size, (page-1)*size, core.ActivePluginKeys(s.reg))
-	if err != nil {
+	var rows []groupRow
+	if err := selectGroups(g, core.ActivePluginKeys(s.reg)).Scopes(filter).
+		Order("g.id").Limit(size).Offset((page - 1) * size).Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	defer rows.Close()
-	items := []*Group{}
-	for rows.Next() {
-		g, err := scanGroup(rows)
+	items := make([]*Group, 0, len(rows))
+	for i := range rows {
+		item, err := rows[i].group()
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		items = append(items, g)
+		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	rows.Close()
 	if err := s.fill(ctx, items); err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -199,11 +244,15 @@ func (s *Service) fillPlatforms(ctx context.Context, gs []*Group) error {
 
 // loadRow reads the row of a group, without what fill adds.
 func (s *Service) loadRow(ctx context.Context, id int64) (*Group, error) {
-	g, err := scanGroup(s.db.Pool.QueryRow(ctx, selectGroup("$2")+` WHERE g.id = $1`, id, core.ActivePluginKeys(s.reg)))
+	var row groupRow
+	err := selectGroups(store.G(ctx, s.db.Pool), core.ActivePluginKeys(s.reg)).Where("g.id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage(t(ctx, "group not found", "分组不存在"))
 	}
-	return g, err
+	if err != nil {
+		return nil, err
+	}
+	return row.group()
 }
 
 func (s *Service) load(ctx context.Context, id int64) (*Group, error) {
@@ -305,6 +354,33 @@ func (in *groupInput) validate(ctx context.Context, create bool) error {
 	return nil
 }
 
+// columns are the groups columns of the provided fields, as written.
+func (in *groupInput) columns() map[string]any {
+	set := map[string]any{}
+	put := func(column string, v *string) {
+		if v != nil {
+			set[column] = *v
+		}
+	}
+	put("name", in.Name)
+	put("description", in.Description)
+	put("status", in.Status)
+	put("rate_multiplier", in.RateMultiplier)
+	put("visibility", in.Visibility)
+	put("model_filter_mode", in.ModelFilterMode)
+	if in.ModelAllowlist != nil {
+		b, _ := json.Marshal(*in.ModelAllowlist)
+		set["model_allowlist"] = string(b)
+	}
+	if in.Environment != nil {
+		set["environment"] = *in.Environment
+	}
+	if in.ConversionLossPolicy.Set {
+		set["conversion_loss_policy"] = in.ConversionLossPolicy.Stored()
+	}
+	return set
+}
+
 func dupName(ctx context.Context) error {
 	return core.InvalidFields(core.FieldError{Field: "name", Code: "duplicate",
 		Message: t(ctx, "a group with this name already exists", "分组名称已存在")})
@@ -320,33 +396,13 @@ func (s *Service) create(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	desc, status, rate, vis, allow := "", "active", "1", "public", []string{}
-	if in.Description != nil {
-		desc = *in.Description
-	}
-	if in.Status != nil {
-		status = *in.Status
-	}
-	if in.RateMultiplier != nil {
-		rate = *in.RateMultiplier
-	}
-	if in.Visibility != nil {
-		vis = *in.Visibility
-	}
-	if in.ModelAllowlist != nil {
-		allow = *in.ModelAllowlist
-	}
-	mode := "blacklist"
-	if in.ModelFilterMode != nil {
-		mode = *in.ModelFilterMode
-	}
-	env := core.ValueOr(in.Environment, core.EnvironmentValues{})
-	allowJSON, _ := json.Marshal(allow)
-	var id int64
-	err := s.db.Pool.QueryRow(ctx, `INSERT INTO groups (name, description, status, rate_multiplier, visibility, model_allowlist, model_filter_mode, environment,
-		conversion_loss_policy)
-		VALUES ($1, $2, $3, $4::numeric, $5, $6::jsonb, $7, $8, $9) RETURNING id`,
-		*in.Name, desc, status, rate, vis, string(allowJSON), mode, env, in.ConversionLossPolicy.Stored()).Scan(&id)
+	// The defaults of the fields left out, every one written: a map writes
+	// what it names, where a model would leave a zero rate to the column
+	// default.
+	row := map[string]any{"description": "", "status": "active", "rate_multiplier": "1", "visibility": "public",
+		"model_allowlist": "[]", "model_filter_mode": "blacklist", "environment": core.EnvironmentValues{}, "conversion_loss_policy": nil}
+	maps.Copy(row, in.columns())
+	err := store.G(ctx, s.db.Pool).Model(&model.Group{}).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(row).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, dupName(ctx))
 		return
@@ -355,6 +411,7 @@ func (s *Service) create(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
+	id, _ := row["id"].(int64) // RETURNING id, read back into the map
 	g, err := s.load(ctx, id)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -377,25 +434,11 @@ func (s *Service) update(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	var allowJSON *string
-	if in.ModelAllowlist != nil {
-		b, _ := json.Marshal(*in.ModelAllowlist)
-		v := string(b)
-		allowJSON = &v
-	}
-	tag, err := s.db.Pool.Exec(ctx, `UPDATE groups SET
-		name = COALESCE($2, name),
-		description = COALESCE($3, description),
-		status = COALESCE($4, status),
-		rate_multiplier = COALESCE($5::numeric, rate_multiplier),
-		visibility = COALESCE($6, visibility),
-		model_allowlist = COALESCE($7::jsonb, model_allowlist),
-		model_filter_mode = COALESCE($8, model_filter_mode),
-		environment = COALESCE($9, environment),
-		conversion_loss_policy = CASE WHEN $10 THEN $11 ELSE conversion_loss_policy END,
-		updated_at = now()
-		WHERE id = $1`, id, in.Name, in.Description, in.Status, in.RateMultiplier, in.Visibility, allowJSON, in.ModelFilterMode, in.Environment,
-		in.ConversionLossPolicy.Set, in.ConversionLossPolicy.Stored())
+	// A field left out keeps its value.
+	set := in.columns()
+	set["updated_at"] = gorm.Expr("now()")
+	res := store.G(ctx, s.db.Pool).Model(&model.Group{}).Where("id = ?", id).Updates(set)
+	err := res.Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, dupName(ctx))
 		return
@@ -404,7 +447,7 @@ func (s *Service) update(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage(t(ctx, "group not found", "分组不存在")))
 		return
 	}
@@ -446,12 +489,9 @@ func (s *Service) delete(c *gin.Context) {
 		if moveTo != nil {
 			ids = append(ids, *moveTo)
 		}
-		rows, err := tx.Query(ctx, `SELECT id FROM groups WHERE id = ANY($1) ORDER BY id FOR UPDATE`, ids)
-		if err != nil {
-			return err
-		}
-		locked, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-		if err != nil {
+		g := store.G(ctx, tx)
+		var locked []int64
+		if err := lockGroups(g, ids).Pluck("id", &locked).Error; err != nil {
 			return err
 		}
 		if !slices.Contains(locked, id) {
@@ -461,18 +501,19 @@ func (s *Service) delete(c *gin.Context) {
 			return core.InvalidFields(core.FieldError{Field: "move_keys_to", Code: "not_found",
 				Message: t(ctx, "the target group does not exist", "目标分组不存在")})
 		}
-		rows, err = tx.Query(ctx, `UPDATE api_keys SET group_id = $2 WHERE group_id = $1 RETURNING key_hash`, id, moveTo)
-		if err != nil {
+		var moved []model.APIKey
+		if err := moveKeys(g, &moved, id, moveTo).Error; err != nil {
 			return err
 		}
-		hashes, err = pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return err
+		hashes = make([]string, len(moved))
+		for i, k := range moved {
+			hashes[i] = k.KeyHash
 		}
-		if _, err = tx.Exec(ctx, `DELETE FROM groups WHERE id = $1`, id); err != nil {
+		if err := g.Delete(&model.Group{}, id).Error; err != nil {
 			return err
 		}
 		uid, _ := core.UserID(ctx)
+		var err error
 		authzVersion, err = core.ClearScopeGrants(ctx, tx, uid, core.ScopeRefGroup, []int64{id})
 		return err
 	})
@@ -486,38 +527,45 @@ func (s *Service) delete(c *gin.Context) {
 	httpapi.NoContent(c)
 }
 
+// lockGroups selects the groups of ids, locked for update in id order.
+func lockGroups(db *gorm.DB, ids []int64) *gorm.DB {
+	return db.Model(&model.Group{}).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
+		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate})
+}
+
+// moveKeys moves every API key of the group (soft-deleted ones included) to
+// the group to, none when nil, and reads the key hash of each into moved.
+func moveKeys(db *gorm.DB, moved *[]model.APIKey, group int64, to *int64) *gorm.DB {
+	return db.Model(moved).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).
+		Where("group_id = ?", group).Update("group_id", to)
+}
+
+// myGroupRow is a row of GET /me/groups.
+type myGroupRow struct {
+	model.Group
+	Exclusive bool `gorm:"column:exclusive"`
+}
+
 func (s *Service) myGroups(c *gin.Context) {
 	ctx := c.Request.Context()
 	uid, _ := core.UserID(ctx)
-	rows, err := s.db.Pool.Query(ctx, `SELECT g.id, g.name, g.description, g.rate_multiplier::text, g.model_allowlist, g.model_filter_mode,
-			g.visibility = 'restricted'
-		FROM groups g
-		WHERE `+segment.UsableGroupSQL("g", "$1")+`
-		ORDER BY g.id`, uid)
-	if err != nil {
+	var rows []myGroupRow
+	if err := store.G(ctx, s.db.Pool).Table("groups g").
+		Select("g.id, g.name, g.description, g.rate_multiplier, g.model_allowlist, g.model_filter_mode, g.visibility = 'restricted' AS exclusive").
+		Where(segment.UsableGroupSQL("g", "?"), uid).Order("g.id").Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	defer rows.Close()
-	out := []MyGroup{}
-	for rows.Next() {
-		var g MyGroup
-		var rate string
-		if err := rows.Scan(&g.ID, &g.Name, &g.Description, &rate, &g.ModelAllowlist, &g.ModelFilterMode, &g.Exclusive); err != nil {
+	out := make([]MyGroup, 0, len(rows))
+	for _, r := range rows {
+		allow, err := allowlist(r.ModelAllowlist)
+		if err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		g.RateMultiplier = normRate(rate)
-		if g.ModelAllowlist == nil {
-			g.ModelAllowlist = []string{}
-		}
-		out = append(out, g)
+		out = append(out, MyGroup{ID: r.ID, Name: r.Name, Description: r.Description, RateMultiplier: r.RateMultiplier.String(),
+			ModelAllowlist: allow, ModelFilterMode: r.ModelFilterMode, Exclusive: r.Exclusive})
 	}
-	if err := rows.Err(); err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	rows.Close()
 	ids := make([]int64, len(out))
 	for i, g := range out {
 		ids[i] = g.ID
@@ -553,13 +601,8 @@ func (s *Service) dropKeyCache(ctx context.Context, groupID int64) {
 	if s.rdb == nil {
 		return
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT key_hash FROM api_keys WHERE group_id = $1`, groupID)
-	if err != nil {
-		slog.WarnContext(ctx, "group: list api keys for cache drop", "err", err)
-		return
-	}
-	hashes, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
+	var hashes []string
+	if err := store.G(ctx, s.db.Pool).Model(&model.APIKey{}).Where("group_id = ?", groupID).Pluck("key_hash", &hashes).Error; err != nil {
 		slog.WarnContext(ctx, "group: list api keys for cache drop", "err", err)
 		return
 	}

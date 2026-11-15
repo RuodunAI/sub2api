@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -60,61 +61,69 @@ func (t Terms) EffectiveRate() EffectiveRate {
 	return EffectiveRate{Value: t.Rate, Source: t.RateSource, GroupDefault: t.GroupRate, Discount: t.Discount}
 }
 
-const selectTerms = `SELECT g.id, s.id, COALESCE(sg.granted, false), g.visibility = 'public',
-		g.rate_multiplier, s.discount, sg.rate_override
-	FROM groups g
-	JOIN segments s ON s.id = `
+// termsColumns are the columns of a termsRow.
+const termsColumns = `g.id AS group_id, s.id AS segment_id, COALESCE(sg.granted, false) AS granted, g.visibility = 'public' AS public,
+	g.rate_multiplier, s.discount, sg.rate_override`
 
-const joinTerms = `
-	LEFT JOIN segment_groups sg ON sg.segment_id = s.id AND sg.group_id = g.id
-	WHERE g.id = ANY($2)`
+// termsRow is what a segment gets in a group, as stored.
+type termsRow struct {
+	GroupID      int64            `gorm:"column:group_id"`
+	SegmentID    int64            `gorm:"column:segment_id"`
+	Granted      bool             `gorm:"column:granted"`
+	Public       bool             `gorm:"column:public"`
+	GroupRate    decimal.Decimal  `gorm:"column:rate_multiplier"`
+	Discount     decimal.Decimal  `gorm:"column:discount"`
+	RateOverride *decimal.Decimal `gorm:"column:rate_override"`
+}
 
 // UserTerms returns the terms of the user's segment in each of the groups
 // that exist, by group id. A deleted user has none.
 func UserTerms(ctx context.Context, q store.Querier, userID int64, groupIDs []int64) (map[int64]Terms, error) {
-	return queryTerms(ctx, q, selectTerms+`(SELECT u.segment_id FROM users u WHERE u.id = $1 AND u.deleted_at IS NULL)`+joinTerms, byGroup, userID, groupIDs)
+	return queryTerms(ctx, q, byGroup, groupIDs, userSegment, userID)
 }
+
+// userSegment is the segment of a user (the parameter) who is not deleted.
+const userSegment = `(SELECT u.segment_id FROM users u WHERE u.id = ? AND u.deleted_at IS NULL)`
 
 // SegmentTerms returns the terms of the segment in each of the groups that
 // exist, by group id.
 func SegmentTerms(ctx context.Context, q store.Querier, segmentID int64, groupIDs []int64) (map[int64]Terms, error) {
-	return queryTerms(ctx, q, selectTerms+`$1`+joinTerms, byGroup, segmentID, groupIDs)
+	return queryTerms(ctx, q, byGroup, groupIDs, `?`, segmentID)
 }
 
 // GroupTerms returns the terms each of the segments that exist gets in the
 // group, by segment id.
 func GroupTerms(ctx context.Context, q store.Querier, groupID int64, segmentIDs []int64) (map[int64]Terms, error) {
-	return queryTerms(ctx, q, selectTerms+`ANY($1)`+joinTerms, bySegment, segmentIDs, []int64{groupID})
+	return queryTerms(ctx, q, bySegment, []int64{groupID}, `ANY(?)`, store.Int64s(segmentIDs))
 }
 
 func byGroup(groupID int64, _ Terms) int64 { return groupID }
 
 func bySegment(_ int64, t Terms) int64 { return t.SegmentID }
 
-// queryTerms runs a terms query and files each row under what key picks.
-func queryTerms(ctx context.Context, q store.Querier, sql string, key func(groupID int64, t Terms) int64, args ...any) (map[int64]Terms, error) {
-	rows, err := q.Query(ctx, sql, args...)
-	if err != nil {
+// termsQuery reads the termsRows of the segments s.id = segment picks (an
+// expression of arg) in the groups of groupIDs.
+func termsQuery(db *gorm.DB, groupIDs []int64, segment string, arg any) *gorm.DB {
+	return db.Table("groups g").Select(termsColumns).
+		Joins("JOIN segments s ON s.id = "+segment, arg).
+		Joins("LEFT JOIN segment_groups sg ON sg.segment_id = s.id AND sg.group_id = g.id").
+		Where("g.id = ANY(?)", store.Int64s(groupIDs))
+}
+
+// queryTerms runs a termsQuery and files each row under what key picks.
+func queryTerms(ctx context.Context, q store.Querier, key func(groupID int64, t Terms) int64, groupIDs []int64, segment string, arg any) (map[int64]Terms, error) {
+	var rows []termsRow
+	if err := termsQuery(store.G(ctx, q), groupIDs, segment, arg).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[int64]Terms{}
-	for rows.Next() {
-		var groupID int64
-		var t Terms
-		var public bool
-		var override decimal.NullDecimal
-		if err := rows.Scan(&groupID, &t.SegmentID, &t.Granted, &public, &t.GroupRate, &t.Discount, &override); err != nil {
-			return nil, err
-		}
-		if override.Valid {
-			t.Override = &override.Decimal
-		}
-		t.Open = public || t.Granted
+	out := make(map[int64]Terms, len(rows))
+	for _, r := range rows {
+		t := Terms{SegmentID: r.SegmentID, Granted: r.Granted, Open: r.Public || r.Granted,
+			GroupRate: r.GroupRate, Discount: r.Discount, Override: r.RateOverride}
 		t.Rate, t.RateSource = core.SegmentRate(t.GroupRate, t.Discount, t.Override)
-		out[key(groupID, t)] = t
+		out[key(r.GroupID, t)] = t
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ShowUsers reports whether the caller may read users: only then does a
@@ -130,22 +139,22 @@ func ShowUsers(ctx context.Context, authz core.Authorizer) (bool, error) {
 
 // RefColumns are the columns of a core.SegmentRef (id, kind, name, user id)
 // of the segments row s; u is the users row of the user of a personal
-// segment, its only member. It is the one place a personal segment is named
-// by its user's email.
-const RefColumns = `s.id, s.kind, CASE WHEN s.user_id IS NULL THEN s.name ELSE u.email END, s.user_id`
+// segment, its only member. They are named as the fields they scan into. It
+// is the one place a personal segment is named by its user's email.
+const RefColumns = `s.id, s.kind, CASE WHEN s.user_id IS NULL THEN s.name ELSE u.email END AS name, s.user_id`
 
 // Ref names a segment. A personal segment goes by its user's email; callers
 // that may not read users (showUsers false) get "#<user id>" instead, so a
 // role that only reads groups or prices cannot list users through it. A
 // segment that does not exist is NotFound.
 func Ref(ctx context.Context, q store.Querier, id int64, showUsers bool) (core.SegmentRef, error) {
-	ref := core.SegmentRef{ID: id}
-	err := q.QueryRow(ctx, `SELECT `+RefColumns+fromSegments+` WHERE s.id = $1`, id).Scan(&ref.ID, &ref.Kind, &ref.Name, &ref.UserID)
+	var ref core.SegmentRef
+	err := fromSegments(store.G(ctx, q)).Select(RefColumns).Where("s.id = ?", id).Take(&ref).Error
 	if store.IsNoRows(err) {
-		return ref, NotFound(ctx)
+		return core.SegmentRef{ID: id}, NotFound(ctx)
 	}
 	if err != nil {
-		return ref, err
+		return core.SegmentRef{ID: id}, err
 	}
 	return Masked(ref, showUsers), nil
 }

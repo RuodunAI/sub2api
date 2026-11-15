@@ -1,0 +1,8 @@
+-- sql
+SELECT "id" FROM "users" WHERE id = ANY($1) AND deleted_at IS NULL AND segment_id <> $2
+	AND ($3 = '' OR segment_id IN (SELECT id FROM segments WHERE kind = $4)) ORDER BY id FOR NO KEY UPDATE
+-- vars
+$1 store.Int64s [5 6]
+$2 int64 2
+$3 string "personal"
+$4 string "personal"

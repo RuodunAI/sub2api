@@ -1,0 +1,15 @@
+-- sql
+INSERT INTO segment_groups (segment_id, group_id, granted, rate_override)
+		VALUES ($1, $2, COALESCE($3, false), $4::numeric)
+		ON CONFLICT (segment_id, group_id) DO UPDATE SET
+			granted = COALESCE($5, segment_groups.granted),
+			rate_override = CASE WHEN $6 THEN $7::numeric ELSE segment_groups.rate_override END,
+			updated_at = now()
+-- vars
+$1 int64 3
+$2 int64 4
+$3 *bool nil
+$4 *decimal.Decimal 0.8
+$5 *bool nil
+$6 bool true
+$7 *decimal.Decimal 0.8

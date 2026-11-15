@@ -4,10 +4,12 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Deps is what the segment service needs of the rest of the server.
@@ -94,10 +96,11 @@ func GuardOwnSegments(ctx context.Context, q store.Querier, users core.UserGuard
 	if actor == 0 || len(segmentIDs) == 0 {
 		return nil
 	}
+	g := store.G(ctx, q)
 	var member bool
-	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users u JOIN segments s ON s.id = u.segment_id
-		WHERE u.id = $1 AND s.id = ANY($2) AND NOT s.is_default)`,
-		actor, segmentIDs).Scan(&member); err != nil || !member {
+	if err := g.Raw("SELECT EXISTS (?)", g.Table("users u").Select("1").Joins("JOIN segments s ON s.id = u.segment_id").
+		Where("u.id = ? AND s.id = ANY(?) AND NOT s.is_default", actor, store.Int64s(segmentIDs))).
+		Scan(&member).Error; err != nil || !member {
 		return err
 	}
 	err := users.CanActOnUsers(ctx, actor, core.ActOnData, actor)
@@ -138,11 +141,16 @@ func (s *Service) tx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 }
 
 // segmentKind returns the kind of a segment and whether it is the default
-// one, locking the row as lock says ("" = not at all).
+// one, locking the row with the lock strength ("" = not at all).
 func segmentKind(ctx context.Context, q store.Querier, id int64, lock string) (kind string, isDefault bool, err error) {
-	err = q.QueryRow(ctx, `SELECT kind, is_default FROM segments WHERE id = $1 `+lock, id).Scan(&kind, &isDefault)
+	db := store.G(ctx, q).Model(&model.Segment{}).Select("kind", "is_default").Where("id = ?", id)
+	if lock != "" {
+		db = db.Clauses(clause.Locking{Strength: lock})
+	}
+	var row model.Segment
+	err = db.Take(&row).Error
 	if store.IsNoRows(err) {
 		return "", false, NotFound(ctx)
 	}
-	return kind, isDefault, err
+	return row.Kind, row.IsDefault, err
 }
