@@ -12,9 +12,12 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
+	"gorm.io/gorm"
 )
 
 type monitorOutcome struct {
@@ -37,25 +40,25 @@ func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(pgx.Tx)
 		return err
 	}
 	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "plugin-monitor:"+m.id); err != nil {
+		g := store.G(ctx, tx)
+		if err := g.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, "plugin-monitor:"+m.id).Error; err != nil {
 			return err
 		}
 		var digest string
-		err := tx.QueryRow(ctx, `SELECT digest FROM plugin_monitor_receipts WHERE id=$1`, m.id).Scan(&digest)
+		err := g.Model(&model.PluginMonitorReceipt{}).Select("digest").Where("id = ?", m.id).Row().Scan(&digest)
 		if err == nil {
 			if digest != m.digest {
 				return core.ErrConflict.WithMessage("monitor result already committed")
 			}
 			return nil
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !store.IsNoRows(err) {
 			return err
 		}
 		if err = fn(tx); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO plugin_monitor_receipts(id,digest,task_id) VALUES($1,$2,$3)`, m.id, m.digest, m.taskID)
-		return err
+		return g.Create(&model.PluginMonitorReceipt{ID: m.id, Digest: m.digest, TaskID: m.taskID}).Error
 	})
 	m.err = err
 	m.done = err == nil
@@ -169,11 +172,12 @@ func (s *Service) applyMonitorResult(ctx context.Context, e *settleEntry, row *r
 			if err := lockLegacyOutcome(ctx, tx, e); err != nil {
 				return err
 			}
-			tag, err := tx.Exec(ctx, `UPDATE pending_settlements SET attempts=attempts+1,poll_failures=0,next_check_at=$2,last_error='' WHERE id=$1 AND state='pending'`, e.id, next)
-			if err == nil && tag.RowsAffected() != 1 {
+			res := pendingByID(store.G(ctx, tx), e.id).Updates(map[string]any{
+				"attempts": gorm.Expr("attempts+1"), "poll_failures": 0, "next_check_at": next, "last_error": ""})
+			if res.Error == nil && res.RowsAffected != 1 {
 				return errNotPending
 			}
-			return err
+			return res.Error
 		})
 	}
 	switch state {
@@ -185,4 +189,10 @@ func (s *Service) applyMonitorResult(ctx context.Context, e *settleEntry, row *r
 		s.refundFailed(ctx, e, row, res.Reason)
 	}
 	return e.monitor.err
+}
+
+// pendingByID is the settlement entry id while it is still pending, for an
+// UPDATE.
+func pendingByID(db *gorm.DB, id int64) *gorm.DB {
+	return settlementByID(db, id).Where("state = 'pending'")
 }

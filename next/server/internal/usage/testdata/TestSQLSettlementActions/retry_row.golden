@@ -1,0 +1,6 @@
+-- sql
+UPDATE "usage_logs" SET "anomalies"=anomalies || $1::jsonb,"billing_status"=$2 WHERE id = $3
+-- vars
+$1 []uint8 [123 34 114 101 99 111 110 99 105 108 101 34 58 34 114 101 116 114 121 105 110 103 34 125]
+$2 string "reserved"
+$3 int64 5

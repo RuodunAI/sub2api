@@ -13,6 +13,8 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Usage export (CONTRACTS §66.5): GET /me/usage/export and GET /usage/export
@@ -188,8 +190,7 @@ func (s *Service) export(c *gin.Context, self *int64) {
 		}
 		args, cond := page.Args(), page.Cond()
 		batch := min(exportBatch, exportMaxRows-rows)
-		q, err := s.db.Pool.Query(ctx, `SELECT `+recordColumns+recordJoins+cond+
-			` ORDER BY u.created_at DESC, u.id DESC LIMIT `+strconv.Itoa(batch+1), args...)
+		q, err := recordQuery(store.G(ctx, s.db.Pool), cond, args, ` ORDER BY u.created_at DESC, u.id DESC LIMIT `+strconv.Itoa(batch+1)).Rows()
 		if err != nil {
 			// Headers are sent: end the file with the error so it is not
 			// mistaken for a complete export.
@@ -205,7 +206,7 @@ func (s *Service) export(c *gin.Context, self *int64) {
 			}
 			var r Record
 			if err := q.Scan(r.scanTargets()...); err != nil {
-				q.Close()
+				_ = q.Close()
 				_ = w.Write([]string{"# export failed: " + err.Error()})
 				w.Flush()
 				return
@@ -222,7 +223,7 @@ func (s *Service) export(c *gin.Context, self *int64) {
 			n++
 			cursorAt, cursorID = r.CreatedAt, r.ID
 		}
-		q.Close()
+		_ = q.Close()
 		rows += n
 		w.Flush()
 		if !more {
@@ -238,8 +239,12 @@ func (s *Service) export(c *gin.Context, self *int64) {
 	w.Flush()
 	uid, _ := core.UserID(ctx)
 	detail, _ := json.Marshal(map[string]any{"rows": rows, "truncated": truncated, "self": self != nil, "query": c.Request.URL.RawQuery})
-	_, _ = s.db.Pool.Exec(ctx, `INSERT INTO audit_logs (user_id, action, target_type, detail, ip) VALUES ($1, 'usage.export', 'usage', $2, $3)`,
-		uid, detail, c.ClientIP())
+	_ = store.G(ctx, s.db.Pool).Create(exportAudit(uid, detail, c.ClientIP())).Error
+}
+
+// exportAudit is the audit_logs row of an export.
+func exportAudit(userID int64, detail json.RawMessage, ip string) *model.AuditLog {
+	return &model.AuditLog{UserID: &userID, Action: "usage.export", TargetType: "usage", Detail: detail, IP: ip}
 }
 
 // csvCell keeps a spreadsheet from evaluating a text cell as a formula.

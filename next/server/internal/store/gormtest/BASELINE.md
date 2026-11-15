@@ -141,6 +141,40 @@ for requests that carry or return provider files, containers or skills,
 each inside a transaction that already takes advisory locks; they are on
 GORM without a benchmark.
 
+## Batch 4a: the plugin execution records
+
+A request served through an Execute plugin (`gateway` `canExecute`) writes
+its plugin_executions row on every attempt (`usage.BeginExecution`, the
+intent, and `ObserveExecution`, the observation) and commits it inside the
+usage transaction (`CommitExecution`: `lockExecution`, the row locked FOR
+UPDATE, and `markExecutionCommitted`). The benchmark measures each pgx
+statement next to the GORM form of the same statement (`Create` of
+`model.PluginExecution`, `Updates` with a map, and the locked `Row().Scan`
+plus `Updates` in one transaction):
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench HotExecution -benchmem -benchtime 1000x -count 5 ./internal/usage/
+```
+
+Recorded 2026-11-15 on gorm-4a, same machine and server as above (shared
+with other test runs; ns/op is noise). Medians of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotExecution/begin/pgx | 526 111 | 5 522 | 19 |
+| BenchmarkHotExecution/begin/gorm | 2 734 771 | 14 868 | 121 |
+| BenchmarkHotExecution/observe/pgx | 1 261 612 | 5 529 | 20 |
+| BenchmarkHotExecution/observe/gorm | 511 548 | 11 869 | 86 |
+| BenchmarkHotExecution/commit/pgx | 652 199 | 1 114 | 21 |
+| BenchmarkHotExecution/commit/gorm | 687 708 | 13 194 | 161 |
+
+GORM takes 6.4, 4.3 and 7.7 times the allocations (the limit is 1.5), so
+the four statements stay on pgx under `//gormguard:allow-pgx`. Execution
+recovery and retention, the monitor receipts, the helper usage receipts and
+the console (usage lists, details, export, summary, overview, realtime,
+manual reconcile and refund) are on GORM.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

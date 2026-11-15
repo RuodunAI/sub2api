@@ -15,10 +15,12 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -168,8 +170,14 @@ func (r *Record) scanTargets() []any {
 		&r.Endpoint, &r.Model, &r.UpstreamModel, &r.Stream, &r.StatusCode, &r.Success, &r.ErrorType,
 		&r.ErrorMessage, &r.Attempts, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens,
 		&r.CacheCreationTokens, &r.CacheCreation1hTokens, &r.TotalCost, &r.RateMultiplier, &r.BillingStatus,
-		&r.BillingMode, &r.MatchedTier, &r.LatencyMs, &r.FirstTokenMs, &r.UploadMs, &r.StickyHit, &r.ClientIP, &r.Conversion,
-		&r.AttemptTrail, &r.StandardCost}
+		&r.BillingMode, &r.MatchedTier, &r.LatencyMs, &r.FirstTokenMs, &r.UploadMs, &r.StickyHit, &r.ClientIP, nullRaw{&r.Conversion},
+		nullRaw{&r.AttemptTrail}, &r.StandardCost}
+}
+
+// recordQuery selects the records matching where (store.Filter's numbered
+// conditions over args), followed by tail (ORDER BY, LIMIT ...).
+func recordQuery(db *gorm.DB, where string, args []any, tail string) *gorm.DB {
+	return rawNumbered(db, `SELECT `+recordColumns+recordJoins+where+tail, args)
 }
 
 // hideUpstream removes upstream account details (account, account type,
@@ -545,7 +553,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 			}
 			f.And("(u.created_at, u.id) < (?, ?)", at, id)
 		}
-	} else if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()...).Scan(&total); err != nil {
+	} else if err := rawNumbered(store.G(ctx, s.db.Pool), `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()).Row().Scan(&total); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -555,8 +563,8 @@ func (s *Service) list(c *gin.Context, self *int64) {
 	}
 	n := f.Len()
 	args := append(f.Args(), limit, offset)
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+recordColumns+recordJoins+f.Cond()+
-		` ORDER BY u.created_at DESC, u.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2), args...)
+	rows, err := recordQuery(store.G(ctx, s.db.Pool), f.Cond(), args,
+		` ORDER BY u.created_at DESC, u.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2)).Rows()
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -622,12 +630,10 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 		return
 	}
 	var d Detail
-	targets := append(d.Record.scanTargets(), &d.PluginVersion, &d.Metrics, &d.StickyRule, &d.HookDecisions,
-		&d.PriceID, &d.ExprHash, &d.BillingDetail, &d.UserAgent, &d.NodeID, &d.PluginDetail, &d.Anomalies)
-	err := s.db.Pool.QueryRow(ctx, `SELECT `+recordColumns+`, u.plugin_version, u.metrics, u.sticky_rule,
-		u.hook_decisions, u.price_id, u.expr_hash, u.billing_detail, u.user_agent, u.node_id,
-		u.plugin_detail, u.anomalies`+
-		recordJoins+` WHERE u.id = $1`, id).Scan(targets...)
+	targets := append(d.Record.scanTargets(), &d.PluginVersion, nullRaw{&d.Metrics}, &d.StickyRule, nullRaw{&d.HookDecisions},
+		&d.PriceID, &d.ExprHash, nullRaw{&d.BillingDetail}, &d.UserAgent, &d.NodeID, nullRaw{&d.PluginDetail}, nullRaw{&d.Anomalies})
+	g := store.G(ctx, s.db.Pool)
+	err := detailQuery(g, id).Row().Scan(targets...)
 	if store.IsNoRows(err) || (err == nil && self != nil && d.UserID != *self) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("usage record not found"))
 		return
@@ -638,14 +644,14 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 	}
 	if d.PriceID != nil {
 		var p PriceRef
-		err := s.db.Pool.QueryRow(ctx, `SELECT id, model, source FROM model_prices WHERE id = $1`, *d.PriceID).
+		err := g.Model(&model.ModelPrice{}).Select("id, model, source").Where("id = ?", *d.PriceID).Row().
 			Scan(&p.ID, &p.Model, &p.Source)
 		if err == nil {
 			d.Price = &p
 		}
 	}
 	var ledgerID int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT id FROM balance_ledger WHERE idempotency_key = $1`, "usage:"+d.RequestID).Scan(&ledgerID); err == nil {
+	if err := g.Model(&model.BalanceLedger{}).Select("id").Where("idempotency_key = ?", "usage:"+d.RequestID).Row().Scan(&ledgerID); err == nil {
 		d.LedgerID = &ledgerID
 	}
 	accounts := s.seesAccounts(ctx, self)
@@ -668,6 +674,15 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 		d.Anomalies = s.shapeAnomalies(ctx, d.Anomalies, accounts)
 	}
 	httpapi.OK(c, d)
+}
+
+// detailQuery selects the record of a detail: the list's columns and the
+// detail's own.
+func detailQuery(db *gorm.DB, id int64) *gorm.DB {
+	return db.Raw(`SELECT `+recordColumns+`, u.plugin_version, u.metrics, u.sticky_rule,
+		u.hook_decisions, u.price_id, u.expr_hash, u.billing_detail, u.user_agent, u.node_id,
+		u.plugin_detail, u.anomalies`+
+		recordJoins+` WHERE u.id = ?`, id)
 }
 
 // Keys of usage_logs.anomalies whose JSON names accounts.
@@ -802,7 +817,7 @@ func (s *Service) accountNames(ctx context.Context, ids []int64) (map[int64]stri
 	if len(ids) == 0 {
 		return names, true
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT id, name FROM accounts WHERE id = ANY($1)`, ids)
+	rows, err := store.G(ctx, s.db.Pool).Model(&model.Account{}).Select("id, name").Where("id = ANY(?)", store.Int64s(ids)).Rows()
 	if err != nil {
 		return nil, false
 	}
@@ -1031,10 +1046,8 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 					return err
 				}
 			}
-			rows, err := tx.Query(ctx, `
-				SELECT `+outKey+` AS k, COALESCE(max(u.e), ''), `+totalsColumns("", true)+`,
-				       `+sumOf("u.anomalous_rows", "")+`, `+sumOf("u.estimated_rows", "")+`, `+sumOf("u.estimated_cost", "")+`, `+lastAt+`
-				FROM `+statRows(key+` AS k, `+extra+` AS e, u.created_at AS at`, join, f.Cond(), span, &args)+groupBy+order, args...)
+			sh := summaryShape{outKey: outKey, key: key, extra: extra, join: join, lastAt: lastAt, groupBy: groupBy, order: order}
+			rows, err := summaryQuery(store.G(ctx, tx), sh, f.Cond(), span, args).Rows()
 			if err != nil {
 				return err
 			}
@@ -1072,6 +1085,22 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 		return
 	}
 	httpapi.OK(c, out)
+}
+
+// summaryShape is what the group_by of a summary makes of its query: the
+// output key and the per-row key, extra column and join under statRows, the
+// last-request column, and the GROUP BY and ORDER BY tails.
+type summaryShape struct{ outKey, key, extra, join, lastAt, groupBy, order string }
+
+// summaryQuery selects the summary rows of where (store.Filter's numbered
+// conditions over args) through statRows, which reads span from the rollup.
+func summaryQuery(db *gorm.DB, sh summaryShape, where string, span *hourSpan, args []any) *gorm.DB {
+	args = slices.Clip(args) // statRows appends the span's bounds
+	from := statRows(sh.key+` AS k, `+sh.extra+` AS e, u.created_at AS at`, sh.join, where, span, &args)
+	return rawNumbered(db, `
+				SELECT `+sh.outKey+` AS k, COALESCE(max(u.e), ''), `+totalsColumns("", true)+`,
+				       `+sumOf("u.anomalous_rows", "")+`, `+sumOf("u.estimated_rows", "")+`, `+sumOf("u.estimated_cost", "")+`, `+sh.lastAt+`
+				FROM `+from+sh.groupBy+sh.order, args)
 }
 
 // summaryRange is the summary's range: from (default 30 days ago) to to

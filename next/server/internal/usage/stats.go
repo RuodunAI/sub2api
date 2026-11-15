@@ -15,11 +15,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/account"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Console statistics (CONTRACTS §66): the summary's day and hour buckets and
@@ -82,7 +84,7 @@ func (s *Service) statsTx(ctx context.Context, lim statsLimits, fn func(pgx.Tx) 
 	if lim.workMem != "" {
 		set += `; SET LOCAL work_mem = '` + lim.workMem + `'`
 	}
-	if _, err := tx.Exec(ctx, set); err != nil {
+	if err := store.G(ctx, tx).Exec(set).Error; err != nil {
 		return err
 	}
 	if err := fn(tx); err != nil {
@@ -231,14 +233,16 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 		yesterday, today, last5m := addArg(&args, w.yesterday), addArg(&args, w.today), addArg(&args, w.last5m)
 		targets := append(append(append(out.Today.scanTargets(), out.Yesterday.scanTargets()...), out.Last30d.scanTargets()...),
 			&out.Last5m.Requests, &out.Last5m.Tokens, &activeToday)
-		if err := tx.QueryRow(ctx, `SELECT `+
+		from := statRows(`u.created_at AS at, u.user_id`, ``, f.Cond(), span, &args)
+		g := store.G(ctx, tx)
+		if err := rawNumbered(g, `SELECT `+
 			totalsColumns(`u.at >= `+today, false)+`, `+
 			totalsColumns(`u.at >= `+yesterday+` AND u.at < `+today, false)+`, `+
 			totalsColumns(``, false)+`, `+
 			sumOf(`u.requests`, `u.at >= `+last5m)+`, `+
 			sumOf(`u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens`, `u.at >= `+last5m)+`,
 			count(DISTINCT u.user_id) FILTER (WHERE u.at >= `+today+`)
-			FROM `+statRows(`u.created_at AS at, u.user_id`, ``, f.Cond(), span, &args), args...).Scan(targets...); err != nil {
+			FROM `+from, args).Row().Scan(targets...); err != nil {
 			return err
 		}
 		if self != nil {
@@ -246,9 +250,7 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 				Total  int64 `json:"total"`
 				Active int64 `json:"active"`
 			}{}
-			return tx.QueryRow(ctx, `SELECT count(*),
-				count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now()))
-				FROM api_keys WHERE user_id = $1 AND deleted_at IS NULL`, *self).Scan(&out.APIKeys.Total, &out.APIKeys.Active)
+			return apiKeyCounts(g, *self).Row().Scan(&out.APIKeys.Total, &out.APIKeys.Active)
 		}
 		if users {
 			out.Users = &struct {
@@ -257,8 +259,7 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 				ActiveToday int64 `json:"active_today"`
 			}{}
 			out.Users.ActiveToday = activeToday
-			if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE created_at >= $1)
-				FROM users WHERE deleted_at IS NULL`, w.today).Scan(&out.Users.Total, &out.Users.NewToday); err != nil {
+			if err := userCounts(g, w.today).Row().Scan(&out.Users.Total, &out.Users.NewToday); err != nil {
 				return err
 			}
 		}
@@ -272,6 +273,20 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 		return nil
 	})
 	return out, err
+}
+
+// apiKeyCounts selects how many API keys the user has, and how many of them
+// are active and unexpired.
+func apiKeyCounts(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.APIKey{}).
+		Select(`count(*), count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now()))`).
+		Where("user_id = ? AND deleted_at IS NULL", userID)
+}
+
+// userCounts selects how many users there are, and how many of them were
+// created since today.
+func userCounts(db *gorm.DB, today time.Time) *gorm.DB {
+	return db.Model(&model.User{}).Select(`count(*), count(*) FILTER (WHERE created_at >= ?)`, today).Where("deleted_at IS NULL")
 }
 
 // Realtime is GET /usage/realtime and GET /me/usage/realtime: the last minute
@@ -330,16 +345,21 @@ func (s *Service) realtime(c *gin.Context, self *int64) {
 	f.And("u.protocol NOT LIKE '%.count_tokens'")
 	var out Realtime
 	err = s.statsTx(ctx, directStats, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE u.success),
-			COALESCE(sum(`+realtimeTokens+`) FILTER (WHERE u.success), 0),
-			count(*) FILTER (WHERE `+realtimeFailure+`)
-			FROM usage_logs u`+f.Cond(), f.Args()...).Scan(&out.RPM, &out.TPM, &out.RecentFailures)
+		return realtimeQuery(store.G(ctx, tx), f).Row().Scan(&out.RPM, &out.TPM, &out.RecentFailures)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	httpapi.OK(c, out)
+}
+
+// realtimeQuery selects the Realtime figures of the rows f matches.
+func realtimeQuery(db *gorm.DB, f *store.Filter) *gorm.DB {
+	return rawNumbered(db, `SELECT count(*) FILTER (WHERE u.success),
+			COALESCE(sum(`+realtimeTokens+`) FILTER (WHERE u.success), 0),
+			count(*) FILTER (WHERE `+realtimeFailure+`)
+			FROM usage_logs u`+f.Cond(), f.Args())
 }
 
 type windows struct{ today, yesterday, last30d, last5m time.Time }
