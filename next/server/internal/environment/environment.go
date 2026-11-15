@@ -181,18 +181,13 @@ func (s *Service) ResolveEnvironment(ctx context.Context, groupID, accountID int
 	if err := layersQuery(store.G(ctx, s.db.Pool), groupID, accountID, &row).Error; err != nil {
 		return nil, err
 	}
-	var group, account core.EnvironmentValues
-	if err := json.Unmarshal(row.GroupEnv, &group); err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(row.AccountEnv, &account); err != nil {
-		return nil, err
-	}
-	return core.ResolveEnvironment(s.GlobalEnvironment(ctx), group, account), nil
+	return core.ResolveEnvironment(s.GlobalEnvironment(ctx), row.GroupEnv.V, row.AccountEnv.V), nil
 }
 
-// layerRows are the group and account layers as stored, JSON objects.
-type layerRows struct{ GroupEnv, AccountEnv json.RawMessage }
+// layerRows are the group and account layers.
+type layerRows struct {
+	GroupEnv, AccountEnv store.JSON[core.EnvironmentValues]
+}
 
 // layersQuery reads into dst the layers of a group and a live account, {}
 // for a row that is not there.

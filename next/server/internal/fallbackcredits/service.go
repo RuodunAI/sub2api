@@ -60,22 +60,34 @@ func normalize(in core.FallbackCredit, now time.Time) (core.FallbackCredit, erro
 	return in, nil
 }
 
-func read(ctx context.Context, q store.Querier, tokenHash string) (out core.FallbackCredit, err error) {
-	var r model.ProviderFallbackCredit
-	if err = store.G(ctx, q).Take(&r, "token_hash = ?", tokenHash).Error; err != nil {
-		return out, err
+// creditRow is a stored credit with its prompt digests decoded (the field
+// shadows the raw one of the model: GORM maps a column to the shallowest
+// field of its name).
+type creditRow struct {
+	model.ProviderFallbackCredit
+	PromptDigests store.JSON[[]string] `gorm:"column:prompt_digests"`
+}
+
+// readQuery reads the credit of tokenHash into dst.
+func readQuery(db *gorm.DB, tokenHash string, dst *creditRow) *gorm.DB {
+	return db.Take(dst, "token_hash = ?", tokenHash)
+}
+
+func read(ctx context.Context, q store.Querier, tokenHash string) (core.FallbackCredit, error) {
+	var r creditRow
+	if err := readQuery(store.G(ctx, q), tokenHash, &r).Error; err != nil {
+		return core.FallbackCredit{}, err
 	}
-	out = core.FallbackCredit{
-		TokenHash:   r.TokenHash,
-		Owner:       core.ResourceOwner{UserID: r.UserID, GroupID: r.GroupID},
-		Binding:     core.ResourceBinding{AccountID: r.AccountID, PrincipalID: r.PrincipalID, Generation: r.Generation},
-		PluginKey:   r.PluginKey,
-		SourceModel: r.SourceModel,
-		ObservedAt:  r.ObservedAt,
-		ExpiresAt:   r.ExpiresAt,
-	}
-	err = json.Unmarshal(r.PromptDigests, &out.PromptDigests)
-	return out, err
+	return core.FallbackCredit{
+		TokenHash:     r.TokenHash,
+		Owner:         core.ResourceOwner{UserID: r.UserID, GroupID: r.GroupID},
+		Binding:       core.ResourceBinding{AccountID: r.AccountID, PrincipalID: r.PrincipalID, Generation: r.Generation},
+		PluginKey:     r.PluginKey,
+		SourceModel:   r.SourceModel,
+		PromptDigests: r.PromptDigests.V,
+		ObservedAt:    r.ObservedAt,
+		ExpiresAt:     r.ExpiresAt,
+	}, nil
 }
 
 // lockKey takes the transaction-scoped advisory lock of key.

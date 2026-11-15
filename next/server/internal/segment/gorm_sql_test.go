@@ -46,6 +46,34 @@ func TestSQLLockMovingUsers(t *testing.T) {
 	})
 }
 
+// The moves of users between segments write segment_id alone, as the raw
+// SQL did: users.updated_at stays.
+func TestSQLSetUserSegment(t *testing.T) {
+	for name, build := range map[string]func(*gorm.DB) *gorm.DB{
+		// moveUsers
+		"move": func(db *gorm.DB) *gorm.DB { return setUserSegment(db, int64(2), "id = ANY(?)", store.Int64s{5, 6}) },
+		// createPersonal: only from the segment the user was in.
+		"personal": func(db *gorm.DB) *gorm.DB {
+			return setUserSegment(db, int64(9), "id = ? AND segment_id = ? AND deleted_at IS NULL", int64(5), int64(2))
+		},
+		// delete: the members of a deleted segment.
+		"default": func(db *gorm.DB) *gorm.DB {
+			return setUserSegment(db, gorm.Expr("default_segment_id()"), "id = ANY(?)", store.Int64s{5, 6})
+		},
+	} {
+		t.Run(name, func(t *testing.T) { gormtest.Assert(t, build) })
+	}
+}
+
+// A PATCH writes the fields present and updated_at = now(), as the raw SQL
+// did.
+func TestSQLSegmentUpdate(t *testing.T) {
+	name, discount := "VIP", "0.9"
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return updateSegment(db, 3, &segmentInput{Name: &name, Discount: &discount})
+	})
+}
+
 func TestSQLLockNamed(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {

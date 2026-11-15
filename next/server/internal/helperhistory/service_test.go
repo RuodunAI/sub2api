@@ -19,7 +19,7 @@ func payload(text string) []byte {
 	b, _ := json.Marshal(wire.Payload{Version: 1, Segments: []wire.Segment{{AfterMessage: 0, PublicAnchorDigest: strings.Repeat("a", 64), ToolCatalogDigest: strings.Repeat("b", 64), Messages: []json.RawMessage{json.RawMessage(`{"role":"assistant","content":[{"type":"tool_use","name":"ToolSearch","id":"tool_a","input":{"n":9007199254740993}}]}`), json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_a","content":"` + text + `"}]}`)}}}})
 	return b
 }
-func fixture(t *testing.T) (*Service, core.HelperHistoryReservation) {
+func fixture(t testing.TB) (*Service, core.HelperHistoryReservation) {
 	t.Helper()
 	db := testutil.DB(t)
 	c, e := secret.New(bytes.Repeat([]byte{7}, 32))
@@ -41,7 +41,7 @@ func usage(r core.HelperHistoryReservation) *core.UsageRecord {
 	id := r.Binding.AccountID
 	return &core.UsageRecord{RequestID: r.RequestID, UserID: r.Owner.UserID, GroupID: r.Owner.GroupID, AccountID: &id, Tokens: core.UsageTokens{Input: 12, Output: 3}}
 }
-func finish(t *testing.T, s *Service, r core.HelperHistoryReservation, prefix, text string) core.HelperHistoryRecord {
+func finish(t testing.TB, s *Service, r core.HelperHistoryReservation, prefix, text string) core.HelperHistoryRecord {
 	t.Helper()
 	ctx := context.Background()
 	a, e := s.Reserve(ctx, r)

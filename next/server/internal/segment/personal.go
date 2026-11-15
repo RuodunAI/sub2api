@@ -92,7 +92,7 @@ func createPersonal(ctx context.Context, tx pgx.Tx, userID int64, copyFrom bool)
 		return 0, err
 	}
 	id, from := created.ID, created.OriginID
-	res := g.Model(&model.User{}).Where("id = ? AND segment_id = ? AND deleted_at IS NULL", userID, from).Update("segment_id", id)
+	res := setUserSegment(g, id, "id = ? AND segment_id = ? AND deleted_at IS NULL", userID, from)
 	if res.Error != nil {
 		return 0, res.Error
 	}
@@ -203,5 +203,5 @@ func lockNamedQuery(db *gorm.DB, id *int64) *gorm.DB {
 	} else {
 		db = db.Where("id = ?", *id)
 	}
-	return db.Clauses(clause.Locking{Strength: "KEY SHARE"})
+	return db.Clauses(clause.Locking{Strength: store.LockingStrengthKeyShare})
 }

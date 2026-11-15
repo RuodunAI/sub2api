@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/event"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -12,7 +13,8 @@ func TestObservedIPNotifiesAccountsOnlyOnChange(t *testing.T) {
 	service := New(db, testCipher(t), nil, Options{Events: event.NewPublisher(db)})
 	ctx := t.Context()
 	var proxyID int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('lifecycle','http','proxy.invalid',3128) RETURNING id`).Scan(&proxyID); err != nil {
+	var version time.Time
+	if err := db.Pool.QueryRow(ctx, `INSERT INTO proxies(name,protocol,host,port) VALUES('lifecycle','http','proxy.invalid',3128) RETURNING id, updated_at`).Scan(&proxyID, &version); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Pool.Exec(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,proxy_id) VALUES('first','first','managed',''::bytea,$1),('second','second','managed',''::bytea,$1)`, proxyID); err != nil {
@@ -29,5 +31,13 @@ func TestObservedIPNotifiesAccountsOnlyOnChange(t *testing.T) {
 	}
 	if events != 4 || unexpected != 0 {
 		t.Fatalf("incorrect proxy notifications: events=%d unexpected=%d", events, unexpected)
+	}
+	// updated_at versions the cached client: a probe must not rebuild it.
+	var after time.Time
+	if err := db.Pool.QueryRow(ctx, `SELECT updated_at FROM proxies WHERE id=$1`, proxyID).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if !after.Equal(version) {
+		t.Fatalf("recording the observed IP moved updated_at from %v to %v", version, after)
 	}
 }

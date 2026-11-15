@@ -13,23 +13,24 @@ import (
 //
 // Most created_at and updated_at columns default to now(), and no trigger
 // maintains updated_at: the raw SQL writes updated_at = now() in each
-// UPDATE that should. GORM's own stamping (autoCreateTime, autoUpdateTime)
-// reads the Go clock, so the generated models switch it off, and G's
-// instance writes the database clock instead, as the raw SQL does (inside
-// a transaction both paths get the transaction's start time):
+// UPDATE that should, and leaves it alone in the others (proxies.updated_at,
+// for one, versions the cached HTTP client, so an UPDATE that bumped it
+// would rebuild the client). GORM's own stamping (autoCreateTime,
+// autoUpdateTime) reads the Go clock, so the generated models switch it
+// off, and G's instance follows the raw SQL instead:
 //
-//   - an UPDATE built by Update or Updates on a model with an updated_at
-//     column sets updated_at = now() unless the statement assigns
-//     updated_at itself. UpdateColumn and UpdateColumns leave it alone, as
-//     they skip GORM's hooks;
+//   - an UPDATE sets updated_at only where the statement assigns it, as the
+//     raw SQL it replaces did: Update("updated_at", gorm.Expr("now()")) or
+//     an "updated_at" entry in an Updates map;
 //   - an INSERT writes now() for a zero created_at or updated_at that is
 //     NOT NULL without a database default (a time.Time field without a
 //     default tag) and reads the value back with RETURNING, as GORM reads
-//     the defaulted columns.
+//     the defaulted columns. Inside a transaction now() is the
+//     transaction's start time, on both paths.
 //
-// Both rewrite a clause as the statement is built (gorm's ClauseBuilders):
-// GORM fills VALUES and SET from the struct inside its create and update
-// callbacks, with no hook between filling and building, and only an
+// The INSERT rewrites the VALUES clause as the statement is built (gorm's
+// ClauseBuilders): GORM fills VALUES from the struct inside its create
+// callback, with no hook between filling and building, and only an
 // expression in the clause yields the database clock.
 
 const (
@@ -44,7 +45,6 @@ var (
 
 func registerTimestamps(g *gorm.DB) error {
 	g.ClauseBuilders["VALUES"] = buildValues
-	g.ClauseBuilders["SET"] = buildSet
 	return g.Callback().Create().Before("gorm:create").Register("store:return_stamped", returnStamped)
 }
 
@@ -83,30 +83,6 @@ func stampZero(rows [][]any, i int) {
 			row[i] = dbNow
 		}
 	}
-}
-
-// buildSet adds updated_at = now() to an UPDATE that does not assign it.
-func buildSet(c clause.Clause, b clause.Builder) {
-	if set, ok := c.Expression.(clause.Set); ok && touchesUpdatedAt(b, set) {
-		c.Expression = append(set[:len(set):len(set)], clause.Assignment{Column: clause.Column{Name: updatedAtColumn}, Value: dbNow})
-	}
-	c.Build(b)
-}
-
-func touchesUpdatedAt(b clause.Builder, set clause.Set) bool {
-	stmt, s := statementSchema(b)
-	if s == nil || stmt.SkipHooks {
-		return false
-	}
-	if f := s.LookUpField(updatedAtColumn); f == nil || f.DBName != updatedAtColumn || !f.Updatable {
-		return false
-	}
-	for _, a := range set {
-		if a.Column.Name == updatedAtColumn {
-			return false
-		}
-	}
-	return true
 }
 
 // returnStamped adds the stamped columns to the INSERT's RETURNING. GORM's

@@ -380,22 +380,14 @@ const proxyColumns = `p.id, p.name, p.protocol, p.host, p.port, p.username, p.pa
 	  AND (?::text[] IS NULL OR a.plugin_key = ANY(?))) AS account_count,
 	p.created_by, u.email AS created_by_email, p.created_at, p.updated_at, p.real_ip, p.real_ip_updated_at`
 
-// proxyView selects Proxy rows of proxies p, counting the accounts of keys
-// (see pluginKeys).
-func proxyView(db *gorm.DB, keys any) *gorm.DB {
-	return db.Table("proxies p").Select(proxyColumns, keys, keys).Joins("LEFT JOIN users u ON u.id = p.created_by")
+// proxyView selects Proxy rows of proxies p, counting the accounts of the
+// plugins keys (core.ActivePluginKeys; nil counts every account).
+func proxyView(db *gorm.DB, keys []string) *gorm.DB {
+	arg := store.NullStrings(keys)
+	return db.Table("proxies p").Select(proxyColumns, arg, arg).Joins("LEFT JOIN users u ON u.id = p.created_by")
 }
 
-// pluginKeys is core.ActivePluginKeys as one text[] parameter, NULL (count
-// every account) without a registry: store.Strings would send nil as the
-// empty array.
-func (s *Service) pluginKeys() any {
-	keys := core.ActivePluginKeys(s.opts.Registry)
-	if keys == nil {
-		return nil
-	}
-	return store.Strings(keys)
-}
+func (s *Service) pluginKeys() []string { return core.ActivePluginKeys(s.opts.Registry) }
 
 // scoped narrows proxies p to row id within scope.
 func scoped(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
@@ -403,7 +395,7 @@ func scoped(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
 }
 
 // forUpdate locks the rows a query reads until the transaction ends.
-var forUpdate = clause.Locking{Strength: "UPDATE"}
+var forUpdate = clause.Locking{Strength: clause.LockingStrengthUpdate}
 
 func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh) }
 
@@ -469,18 +461,17 @@ func (s *Service) list(c *gin.Context) {
 // within the name or host (a % or _ in q stays a wildcard, as it was),
 // status and creator narrow when set, all within scope.
 func listFilter(q, status string, creator *int64, scope core.DataScope) func(*gorm.DB) *gorm.DB {
-	return func(db *gorm.DB) *gorm.DB {
-		if q != "" {
-			db = db.Where("(p.name ILIKE ? OR p.host ILIKE ?)", "%"+q+"%", "%"+q+"%")
-		}
-		if status != "" {
-			db = db.Where("p.status = ?", status)
-		}
-		if creator != nil {
-			db = db.Where("p.created_by = ?", *creator)
-		}
-		return db.Scopes(core.ProxyRows.Scope(scope))
+	var f store.Conds
+	if q != "" {
+		f.And("(p.name ILIKE ? OR p.host ILIKE ?)", "%"+q+"%", "%"+q+"%")
 	}
+	if status != "" {
+		f.And("p.status = ?", status)
+	}
+	if creator != nil {
+		f.And("p.created_by = ?", *creator)
+	}
+	return append(f, core.ProxyRows.Scope(scope)).Scope()
 }
 
 func (s *Service) get(c *gin.Context) {
@@ -608,22 +599,20 @@ func (s *Service) encryptPassword(pw *string) ([]byte, error) {
 
 // changes are the columns a PATCH writes: the fields present (enc is the
 // encrypted password, nil clearing it), allow_private when set, and always
-// updated_at.
+// updated_at, the version of the cached client (Service.HTTPClient), at
+// clock_timestamp() as the raw SQL had it.
 func (in *input) changes(enc []byte, allowPrivate *bool) map[string]any {
 	set := map[string]any{"updated_at": gorm.Expr("clock_timestamp()")}
-	put := func(column string, present bool, v func() any) {
-		if present {
-			set[column] = v()
-		}
+	store.SetIf(set, "name", in.Name)
+	store.SetIf(set, "protocol", in.Protocol)
+	store.SetIf(set, "host", in.Host)
+	store.SetIf(set, "port", in.Port)
+	store.SetIf(set, "username", in.Username)
+	if in.Password != nil {
+		set["password_enc"] = enc
 	}
-	put("name", in.Name != nil, func() any { return *in.Name })
-	put("protocol", in.Protocol != nil, func() any { return *in.Protocol })
-	put("host", in.Host != nil, func() any { return *in.Host })
-	put("port", in.Port != nil, func() any { return *in.Port })
-	put("username", in.Username != nil, func() any { return *in.Username })
-	put("password_enc", in.Password != nil, func() any { return enc })
-	put("status", in.Status != nil, func() any { return *in.Status })
-	put("allow_private", allowPrivate != nil, func() any { return *allowPrivate })
+	store.SetIf(set, "status", in.Status)
+	store.SetIf(set, "allow_private", allowPrivate)
 	return set
 }
 
@@ -947,8 +936,7 @@ func (s *Service) recordObservedIP(ctx context.Context, id int64, ip string) err
 			Take(&previous).Error; err != nil {
 			return err
 		}
-		if err := g.Model(&model.Proxy{}).Where("id = ?", id).
-			Updates(map[string]any{"real_ip": ip, "real_ip_updated_at": gorm.Expr("now()")}).Error; err != nil {
+		if err := observeIP(g, id, ip).Error; err != nil {
 			return err
 		}
 		if previous == ip {
@@ -956,6 +944,14 @@ func (s *Service) recordObservedIP(ctx context.Context, id int64, ip string) err
 		}
 		return s.notifyAccountProxyChange(ctx, tx, id, "proxy.real_ip")
 	})
+}
+
+// observeIP records ip as the address the proxy was seen to exit from.
+// updated_at stays: it versions the cached client (Service.HTTPClient), which
+// a probe leaves as it is, and the raw SQL did not write it.
+func observeIP(db *gorm.DB, id int64, ip string) *gorm.DB {
+	return db.Model(&model.Proxy{}).Where("id = ?", id).
+		Updates(map[string]any{"real_ip": ip, "real_ip_updated_at": gorm.Expr("now()")})
 }
 
 // proxiedAccounts selects the live accounts going through proxy id, by id.

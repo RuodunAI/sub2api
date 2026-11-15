@@ -141,17 +141,17 @@ func offeredModels(ctx context.Context, q store.Querier, groups []core.GroupInfo
 // (Models.Offers); never nil.
 func (s *Service) groupsProviding(ctx context.Context, name string) ([]int64, error) {
 	db := store.G(ctx, s.db.Pool)
-	var rows []model.Group
-	if err := db.Select("id", "model_allowlist", "model_filter_mode").Find(&rows).Error; err != nil {
+	var rows []struct {
+		ID              int64                `gorm:"column:id"`
+		ModelAllowlist  store.JSON[[]string] `gorm:"column:model_allowlist"`
+		ModelFilterMode *string              `gorm:"column:model_filter_mode"`
+	}
+	if err := db.Model(&model.Group{}).Select("id", "model_allowlist", "model_filter_mode").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	groups := make([]core.GroupInfo, len(rows))
 	for i, r := range rows {
-		allow, err := allowlist(r.ModelAllowlist)
-		if err != nil {
-			return nil, err
-		}
-		groups[i] = core.GroupInfo{ID: r.ID, ModelAllowlist: allow, ModelFilterMode: core.ValueOr(r.ModelFilterMode, "")}
+		groups[i] = core.GroupInfo{ID: r.ID, ModelAllowlist: r.ModelAllowlist.V, ModelFilterMode: core.ValueOr(r.ModelFilterMode, "")}
 	}
 	provided, err := providedModels(ctx, s.db.Pool, groups)
 	if err != nil {

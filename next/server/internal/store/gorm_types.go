@@ -118,6 +118,16 @@ func (a Strings) Value() (driver.Value, error) {
 // GormDataType is that of Int64s.
 func (Strings) GormDataType() string { return "text[]" }
 
+// NullStrings is a as one text[] parameter, nil being SQL NULL: for SQL in
+// which NULL means "no filter" (?::text[] IS NULL OR x = ANY(?)), where
+// Strings(nil), the empty array, would match nothing.
+func NullStrings(a []string) any {
+	if a == nil {
+		return nil
+	}
+	return Strings(a)
+}
+
 // Scan implements sql.Scanner.
 func (a *Strings) Scan(src any) error {
 	return scanArray(src, pgtype.TextArrayOID, (*pgtype.FlatArray[string])(a), func(e any) (string, bool) {

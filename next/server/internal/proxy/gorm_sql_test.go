@@ -15,22 +15,22 @@ import (
 
 var snapshotScope = core.DataScope{Owner: 7, IDs: []int64{3, 4}}
 
-func TestSnapshotProxyLoad(t *testing.T) {
+func TestSQLProxyLoad(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var p Proxy
-		return proxyView(scoped(db, 5, snapshotScope), store.Strings{"openai"}).Take(&p)
+		return proxyView(scoped(db, 5, snapshotScope), []string{"openai"}).Take(&p)
 	})
 }
 
 // Without a registry every account counts: the keys are NULL, not [].
-func TestSnapshotProxyLoadAllPlugins(t *testing.T) {
+func TestSQLProxyLoadAllPlugins(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var p Proxy
 		return proxyView(scoped(db, 5, core.AllScope), nil).Take(&p)
 	})
 }
 
-func TestSnapshotProxyList(t *testing.T) {
+func TestSQLProxyList(t *testing.T) {
 	creator := int64(9)
 	filter := listFilter("eu", "active", &creator, snapshotScope)
 	t.Run("count", func(t *testing.T) {
@@ -53,15 +53,16 @@ func TestSnapshotProxyList(t *testing.T) {
 	})
 }
 
-func TestSnapshotProxyLockForUpdate(t *testing.T) {
+func TestSQLProxyLockForUpdate(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var cur row
 		return scoped(db, 5, snapshotScope).Select(connectionColumns).Clauses(forUpdate).Take(&cur)
 	})
 }
 
-// A PATCH writes the fields present only, including a cleared password.
-func TestSnapshotProxyUpdate(t *testing.T) {
+// A PATCH writes the fields present only, including a cleared password,
+// and moves updated_at by clock_timestamp().
+func TestSQLProxyUpdate(t *testing.T) {
 	name, port, allow := "eu-1", 8080, false
 	in := input{Name: &name, Port: &port, Password: new(string)}
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
@@ -69,20 +70,26 @@ func TestSnapshotProxyUpdate(t *testing.T) {
 	})
 }
 
-func TestSnapshotProxyCreate(t *testing.T) {
+// A probe writes the address it saw and leaves updated_at, the version of
+// the cached client, alone.
+func TestSQLProxyObserveIP(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return observeIP(db, 5, "203.0.113.7") })
+}
+
+func TestSQLProxyCreate(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		return db.Create(newProxy("eu", "http", "10.0.0.1", 3128, "", nil, "active", false, 7))
 	})
 }
 
-func TestSnapshotProxyCandidates(t *testing.T) {
+func TestSQLProxyCandidates(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var found []row
 		return candidates(db, Spec{Protocol: "http", Host: "proxy.example", Port: 3128, Username: "u", Password: "p"}, snapshotScope).Find(&found)
 	})
 }
 
-func TestSnapshotProxyLifecycleSync(t *testing.T) {
+func TestSQLProxyLifecycleSync(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		return db.Exec(lifecycleSyncSQL, store.Int64s{11, 12})
 	})

@@ -349,7 +349,7 @@ func lockPairs(ctx context.Context, tx pgx.Tx, items []pairInput) (segments, gro
 func lockRows(ctx context.Context, tx pgx.Tx, table string, ids []int64) (map[int64]bool, error) {
 	var found []int64
 	if err := store.G(ctx, tx).Table(table).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
-		Clauses(clause.Locking{Strength: "KEY SHARE"}).Pluck("id", &found).Error; err != nil {
+		Clauses(clause.Locking{Strength: store.LockingStrengthKeyShare}).Pluck("id", &found).Error; err != nil {
 		return nil, err
 	}
 	known := make(map[int64]bool, len(found))

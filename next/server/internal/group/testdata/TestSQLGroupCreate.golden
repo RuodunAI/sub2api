@@ -1,0 +1,8 @@
+-- sql
+INSERT INTO "groups" ("name","conversion_loss_policy","rate_multiplier","visibility","model_allowlist") VALUES ($1,$2,$3,$4,$5) RETURNING "id","description","status","rate_multiplier","visibility","model_allowlist","created_at","updated_at","model_filter_mode","environment"
+-- vars
+$1 string "vip"
+$2 *string nil
+$3 *decimal.Decimal 0
+$4 *string "restricted"
+$5 jsontext.Value ["claude-*"]

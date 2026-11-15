@@ -1,0 +1,4 @@
+-- sql
+UPDATE "users" SET "segment_id"=default_segment_id() WHERE id = ANY($1)
+-- vars
+$1 store.Int64s [5 6]

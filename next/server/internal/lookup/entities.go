@@ -2,7 +2,6 @@ package lookup
 
 import (
 	"context"
-	"encoding/json"
 
 	"gorm.io/gorm"
 
@@ -82,8 +81,8 @@ var groupOpenTo = segment.UsableGroupSQL("g", "?")
 
 // callerIs is the Scope of a kind whose own rows one condition selects; its
 // "?" takes the caller's id.
-func callerIs(cond string) func(context.Context, store.Querier, int64, *Conds) error {
-	return func(_ context.Context, _ store.Querier, uid int64, f *Conds) error {
+func callerIs(cond string) func(context.Context, store.Querier, int64, *store.Conds) error {
+	return func(_ context.Context, _ store.Querier, uid int64, f *store.Conds) error {
 		f.And(cond, uid)
 		return nil
 	}
@@ -95,7 +94,7 @@ func callerIs(cond string) func(context.Context, store.Querier, int64, *Conds) e
 // them. GET /me/prices?group_id= lists a subset of it: of these, only the
 // models the accounts of that group provide. The group policy is a glob list
 // (core.GroupInfo.AllowsModel), evaluated here rather than rewritten in SQL.
-func usableModels(ctx context.Context, q store.Querier, uid int64, f *Conds) error {
+func usableModels(ctx context.Context, q store.Querier, uid int64, f *store.Conds) error {
 	db := store.G(ctx, q)
 	groups, err := modelPolicies(db, uid)
 	if err != nil {
@@ -118,10 +117,10 @@ func usableModels(ctx context.Context, q store.Querier, uid int64, f *Conds) err
 	return nil
 }
 
-// policyRow is the model policy of one group as stored: the allowlist is a
-// JSON array.
+// policyRow is the model policy of one group. SQL NULL and JSON null read
+// as no list, as when pgx decoded the jsonb column into a []string.
 type policyRow struct {
-	ModelAllowlist  json.RawMessage
+	ModelAllowlist  store.JSON[[]string]
 	ModelFilterMode string
 }
 
@@ -131,8 +130,7 @@ func policyRows(db *gorm.DB, uid int64, dst *[]policyRow) *gorm.DB {
 	return db.Table("groups g").Select("g.model_allowlist, g.model_filter_mode").Where(groupOpenTo, uid).Scan(dst)
 }
 
-// modelPolicies is policyRows decoded, as pgx decodes a jsonb column into a
-// []string: SQL NULL and JSON null are no list.
+// modelPolicies is policyRows as core.GroupInfo.
 func modelPolicies(db *gorm.DB, uid int64) ([]core.GroupInfo, error) {
 	var rows []policyRow
 	if err := policyRows(db, uid, &rows).Error; err != nil {
@@ -140,12 +138,7 @@ func modelPolicies(db *gorm.DB, uid int64) ([]core.GroupInfo, error) {
 	}
 	groups := make([]core.GroupInfo, len(rows))
 	for i, r := range rows {
-		groups[i].ModelFilterMode = r.ModelFilterMode
-		if len(r.ModelAllowlist) > 0 {
-			if err := json.Unmarshal(r.ModelAllowlist, &groups[i].ModelAllowlist); err != nil {
-				return nil, err
-			}
-		}
+		groups[i] = core.GroupInfo{ModelAllowlist: r.ModelAllowlist.V, ModelFilterMode: r.ModelFilterMode}
 	}
 	return groups, nil
 }

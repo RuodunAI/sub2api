@@ -27,6 +27,8 @@
 // Nullable columns are pointers, except []byte, json.RawMessage and
 // pgtype.Timestamptz, whose zero value already is NULL.
 //
-// created_at and updated_at are stamped from the database clock by store.G,
-// not by GORM (see store/gorm_timestamps.go).
+// GORM's own timestamping is off: store.G fills a zero created_at or
+// updated_at without a database default with now() on INSERT, and an
+// UPDATE writes updated_at only where it assigns it, as the raw SQL did
+// (see store/gorm_timestamps.go).
 package model

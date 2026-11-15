@@ -1,0 +1,3 @@
+-- sql
+SELECT "widgets"."id","widgets"."name","widgets"."owner","widgets"."tag","widgets"."tags","widgets"."refs" FROM "widgets"
+-- vars

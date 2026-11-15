@@ -13,7 +13,7 @@ import (
 
 // Every use of a named parameter is a parameter of its own, all with the
 // value of the name.
-func TestSnapshotRecordRun(t *testing.T) {
+func TestSQLRecordRun(t *testing.T) {
 	o := runOutput{Status: StatusFailed, Count: 3, Error: "upstream down"}
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
 		return recordRun(tx, "core.test.bad", 42, "node-a", StatusFailed, o)
@@ -21,20 +21,38 @@ func TestSnapshotRecordRun(t *testing.T) {
 }
 
 // The registered names are one text[] parameter; none is the empty array.
-func TestSnapshotRemoveStaleCoreTasks(t *testing.T) {
+func TestSQLRemoveStaleCoreTasks(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
 		return removeStaleCoreTasks(tx, []string{"core.a", "core.b"})
 	})
 }
 
-func TestSnapshotRunsQuery(t *testing.T) {
+func TestSQLRunsQuery(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
 		return runsQuery(tx, "core.test.ok", []string{StatusFailed, StatusTimeout}, 120, 21)
 	})
 }
 
+// The refresh of the registered core tasks leaves updated_at alone.
+func TestSQLMarkSeen(t *testing.T) {
+	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return markSeen(tx, []string{"core.a", "core.b"}, "1.2.3") })
+}
+
+// A put-off run frees its own lease by the statement clock; housekeeping
+// frees the expired ones by the transaction's.
+func TestSQLReleaseLeases(t *testing.T) {
+	t.Run("put off", func(t *testing.T) {
+		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
+			return releaseLeases(tx, "clock_timestamp()", "name = ? AND lease_job_id = ?", "core.test", int64(42))
+		})
+	})
+	t.Run("expired", func(t *testing.T) {
+		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return releaseLeases(tx, "now()", "lease_until < now()") })
+	})
+}
+
 // false is written (a map, not a struct) and only the source comes back.
-func TestSnapshotSetPluginTaskEnabled(t *testing.T) {
+func TestSQLSetPluginTaskEnabled(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
 		var row model.ScheduledTask
 		return setPluginTaskEnabled(tx, "plugin.demo.sync", false, &row)

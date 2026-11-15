@@ -60,16 +60,13 @@ func (s *Service) saveUsage(ctx context.Context, q store.Querier, a attempt, r *
 	if e = db.Model(&model.ProviderHelperAttempt{}).Where("id = ?", a.ID).Update("usage_digest", digest).Error; e != nil {
 		return e
 	}
-	// RETURNING only the key: GORM would read back the defaulted columns,
-	// and next_attempt_at defaults to -infinity, which time.Time cannot hold.
-	return db.Clauses(clause.Returning{Columns: []clause.Column{{Name: "request_id"}}}).
-		Create(&model.ProviderHelperUsageOutbox{RequestID: a.requestID, AttemptID: a.ID, UserID: a.owner.UserID, GroupID: a.owner.GroupID,
-			Digest: digest, Payload: encrypted, CreatedAt: s.now()}).Error
+	return db.Create(&model.ProviderHelperUsageOutbox{RequestID: a.requestID, AttemptID: a.ID, UserID: a.owner.UserID, GroupID: a.owner.GroupID,
+		Digest: digest, Payload: encrypted, CreatedAt: s.now()}).Error
 }
 
-// outboxDigest selects the digest of the outbox entry of requestID. It reads
-// only that column: next_attempt_at may be -infinity, which a model read of
-// every column could not decode.
+// outboxDigest selects the digest of the outbox entry of requestID, the one
+// column its callers compare: the row also holds the encrypted usage, up to
+// maxUsageBytes, which they have no use for.
 func outboxDigest(db *gorm.DB, requestID string) *gorm.DB {
 	return db.Model(&model.ProviderHelperUsageOutbox{}).Select("digest").Where("request_id = ?", requestID)
 }
@@ -93,7 +90,7 @@ func (s *Service) PersistUncertainUsage(ctx context.Context, o core.ResourceOwne
 }
 
 // pendingOutbox reads into dst up to limit entries due at now, the longest
-// waiting first. Only the columns delivered are read (see outboxDigest).
+// waiting first: the columns delivered, as the raw SQL read them.
 func pendingOutbox(db *gorm.DB, now time.Time, limit int, dst *[]model.ProviderHelperUsageOutbox) *gorm.DB {
 	return db.Select("request_id, attempt_id, user_id, group_id, digest, payload").Where("next_attempt_at <= ?", now).
 		Order("next_attempt_at, created_at, request_id").Limit(limit).Find(dst)

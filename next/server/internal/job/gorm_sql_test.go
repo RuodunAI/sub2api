@@ -15,14 +15,14 @@ import (
 
 // The slot claim repeats key, job and slot: once for the row, once for the
 // NOT EXISTS check.
-func TestSnapshotClaimSlot(t *testing.T) {
+func TestSQLClaimSlot(t *testing.T) {
 	slot := time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
 		return claimSlot(tx, "demo", "sync", "node-a", core.TaskCluster, slot)
 	})
 }
 
-func TestSnapshotUpsertManifestTask(t *testing.T) {
+func TestSQLUpsertManifestTask(t *testing.T) {
 	tk := &task.Task{
 		TaskSpec:     core.TaskSpec{Name: TaskName("demo", "sync"), Timeout: 90 * time.Second, MaxAttempts: 3},
 		Source:       task.SourcePluginManifest,
@@ -33,10 +33,10 @@ func TestSnapshotUpsertManifestTask(t *testing.T) {
 }
 
 // The failed status, finished_at and the message are one SET list.
-func TestSnapshotAbandonStaleRuns(t *testing.T) {
+func TestSQLAbandonStaleRuns(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return abandonStaleRuns(tx, 2*time.Hour) })
 }
 
-func TestSnapshotTrimRuns(t *testing.T) {
+func TestSQLTrimRuns(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return trimRuns(tx, 1000) })
 }

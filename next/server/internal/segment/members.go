@@ -36,7 +36,7 @@ func (s *Service) addMembers(c *gin.Context) {
 	var dropped bool
 	err := s.tx(ctx, func(tx pgx.Tx) error {
 		// The lock keeps the segment from being deleted under the move.
-		kind, _, err := segmentKind(ctx, tx, id, "KEY SHARE")
+		kind, _, err := segmentKind(ctx, tx, id, store.LockingStrengthKeyShare)
 		if err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func moveUsers(ctx context.Context, tx pgx.Tx, to int64, userIDs []int64, from s
 	if err != nil {
 		return 0, false, err
 	}
-	if err := store.G(ctx, tx).Model(&model.User{}).Where("id = ANY(?)", store.Int64s(ids)).Update("segment_id", to).Error; err != nil {
+	if err := setUserSegment(store.G(ctx, tx), to, "id = ANY(?)", store.Int64s(ids)).Error; err != nil {
 		return 0, false, err
 	}
 	dropped, err = DropPersonal(ctx, tx, ids...)
@@ -113,7 +113,14 @@ func lockUsers(ctx context.Context, tx pgx.Tx, cond string, args ...any) ([]int6
 
 // lockUsersQuery selects the users cond picks, locked in id order (lockUsers).
 func lockUsersQuery(db *gorm.DB, cond string, args ...any) *gorm.DB {
-	return db.Model(&model.User{}).Where(cond, args...).Order("id").Clauses(clause.Locking{Strength: "NO KEY UPDATE"})
+	return db.Model(&model.User{}).Where(cond, args...).Order("id").Clauses(clause.Locking{Strength: store.LockingStrengthNoKeyUpdate})
+}
+
+// setUserSegment puts the users cond picks into segment (an id, or an
+// expression such as default_segment_id()). Only segment_id is written:
+// updated_at stays, as in the raw SQL each caller replaced.
+func setUserSegment(db *gorm.DB, segment any, cond string, args ...any) *gorm.DB {
+	return db.Model(&model.User{}).Where(cond, args...).Update("segment_id", segment)
 }
 
 // DropPersonal deletes the personal segments of the users, who have left
