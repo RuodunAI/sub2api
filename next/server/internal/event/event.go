@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -38,7 +40,7 @@ func (p *Publisher) Emit(ctx context.Context, tx pgx.Tx, events ...core.Event) e
 		}
 		return p.db.Tx(ctx, func(tx pgx.Tx) error { return p.Emit(ctx, tx, events...) })
 	}
-	batch := &pgx.Batch{}
+	args := make([]any, 0, 2*len(events))
 	for _, ev := range events {
 		if ev.Type == "" {
 			return errors.New("event: empty type")
@@ -47,9 +49,16 @@ func (p *Publisher) Emit(ctx context.Context, tx pgx.Tx, events ...core.Event) e
 		if err != nil {
 			return fmt.Errorf("event %s: %w", ev.Type, err)
 		}
-		batch.Queue(`INSERT INTO events (type, payload) VALUES ($1, $2)`, ev.Type, payload)
+		args = append(args, ev.Type, payload)
 	}
-	return tx.SendBatch(ctx, batch).Close()
+	return insertEvents(store.G(ctx, tx), args).Error
+}
+
+// insertEvents inserts the events whose (type, payload) pairs args holds,
+// one row each in their order (the ids follow it): any number of events
+// takes one round trip.
+func insertEvents(db *gorm.DB, args []any) *gorm.DB {
+	return db.Exec(`INSERT INTO events (type, payload) VALUES (?, ?)`+strings.Repeat(`, (?, ?)`, len(args)/2-1), args...)
 }
 
 func marshal(v any) ([]byte, error) {

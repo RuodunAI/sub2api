@@ -14,8 +14,7 @@ import (
 // The SQL of the account snapshot and settings statements built with GORM
 // (see package gormtest). Distinct values show where each argument goes:
 // GORM's placeholders are positional, so a value used several times in a
-// statement is passed once per use. ApplyAccountQuotaObservation and
-// ReadAccountQuotas stay on pgx (hotpath_bench_test.go).
+// statement is passed once per use.
 
 var (
 	snapshotTime  = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
@@ -50,6 +49,14 @@ func TestSQLSettingWrite(t *testing.T) {
 func TestSQLQuotasAt(t *testing.T) {
 	var rows []struct{ ID int64 }
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return store.QuotasAtSQL(db, []int64{11, 12}).Scan(&rows) })
+}
+
+// A passive observation merges its windows under the generation and plugin
+// checks; updated_at is left as it is.
+func TestSQLQuotaApplyObservation(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return store.ApplyObservationSQL(db, 11, 22, "anthropic", "oauth", "1.2.0", `{"5h":{}}`, &snapshotTime)
+	})
 }
 
 func TestSQLBalanceUpsert(t *testing.T) {

@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,10 +15,9 @@ import (
 // pgStore is the PostgreSQL logStore.
 type pgStore struct{ db *store.DB }
 
-var logColumns = []string{
-	"plugin_key", "node_id", "network", "host", "port", "started_at",
-	"duration_ms", "bytes_in", "bytes_out", "result", "error", "closed_at",
-}
+// logBatch is the most rows one INSERT of log rows carries: PostgreSQL
+// takes at most 65535 parameters, and a row has up to 12.
+const logBatch = 65535 / 12
 
 func (s pgStore) resetOpen(ctx context.Context, nodeID string, before time.Time) (int64, error) {
 	res := resetOpenLogs(store.G(ctx, s.db.Pool), nodeID, before)
@@ -34,37 +34,59 @@ func resetOpenLogs(g *gorm.DB, nodeID string, before time.Time) *gorm.DB {
 		})
 }
 
-// insertOpen inserts the rows in one pipelined batch (one round trip) so
-// every id maps back to its row.
+// insertOpen inserts result='open' rows and returns their ids in order, all
+// rows or none (on an error no id is returned, nothing was written).
 func (s pgStore) insertOpen(ctx context.Context, rows []logEntry) ([]int64, error) {
-	b := &pgx.Batch{}
-	for _, r := range rows {
-		b.Queue(`INSERT INTO plugin_egress_logs (plugin_key, node_id, network, host, port, started_at, duration_ms, result)
-			VALUES ($1, $2, $3, $4, $5, $6, 0, 'open') RETURNING id`,
-			r.PluginKey, r.NodeID, r.Network, r.Host, r.Port, r.StartedAt)
+	logs := make([]model.PluginEgressLog, len(rows))
+	for i, r := range rows {
+		logs[i] = model.PluginEgressLog{PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network, Host: r.Host,
+			Port: r.Port, StartedAt: r.StartedAt, Result: "open"}
 	}
-	br := s.db.Pool.SendBatch(ctx, b)
-	defer br.Close()
-	ids := make([]int64, 0, len(rows))
-	for range rows {
-		var id int64
-		if err := br.QueryRow().Scan(&id); err != nil {
-			return ids, err
-		}
-		ids = append(ids, id)
+	if err := s.insertLogs(ctx, logs); err != nil {
+		return nil, err
 	}
-	return ids, br.Close()
+	ids := make([]int64, len(logs))
+	for i := range logs {
+		ids[i] = logs[i].ID
+	}
+	return ids, nil
 }
 
+// insertDone inserts finished rows whole, all or none.
 func (s pgStore) insertDone(ctx context.Context, rows []logEntry) error {
-	_, err := s.db.Pool.CopyFrom(ctx, pgx.Identifier{"plugin_egress_logs"}, logColumns,
-		pgx.CopyFromSlice(len(rows), func(i int) ([]any, error) {
-			r := rows[i]
-			closed := r.StartedAt.Add(time.Duration(r.DurationMS) * time.Millisecond)
-			return []any{r.PluginKey, r.NodeID, r.Network, r.Host, r.Port, r.StartedAt,
-				r.DurationMS, r.BytesIn, r.BytesOut, r.Result, r.Error, closed}, nil
-		}))
-	return err
+	logs := make([]model.PluginEgressLog, len(rows))
+	for i, r := range rows {
+		closed := r.StartedAt.Add(time.Duration(r.DurationMS) * time.Millisecond)
+		logs[i] = model.PluginEgressLog{PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network, Host: r.Host,
+			Port: r.Port, StartedAt: r.StartedAt, DurationMs: r.DurationMS, BytesIn: r.BytesIn, BytesOut: r.BytesOut,
+			Result: r.Result, Error: r.Error, ClosedAt: &closed}
+	}
+	return s.insertLogs(ctx, logs)
+}
+
+// insertLogs inserts logs all or none, in multi-row INSERTs of at most
+// logBatch rows (a transaction holds them when there are several), and sets
+// their ids.
+func (s pgStore) insertLogs(ctx context.Context, logs []model.PluginEgressLog) error {
+	if len(logs) <= logBatch {
+		return insertLogRows(store.G(ctx, s.db.Pool), logs).Error
+	}
+	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+		g := store.G(ctx, tx)
+		for chunk := range slices.Chunk(logs, logBatch) {
+			if err := insertLogRows(g, chunk).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// insertLogRows inserts logs in one statement and sets their ids (RETURNING
+// id, in row order). A zero bytes_in, bytes_out or error is written as the
+// column's DEFAULT, which is that zero value.
+func insertLogRows(g *gorm.DB, logs []model.PluginEgressLog) *gorm.DB {
+	return g.Create(&logs)
 }
 
 func (s pgStore) closeRows(ctx context.Context, rows []closedRow) error {

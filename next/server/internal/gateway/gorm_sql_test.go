@@ -11,8 +11,19 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// The SQL of the sticky rule writes built with GORM (see package gormtest).
-// The settings rows and the rule list stay on pgx (hotpath_bench_test.go).
+// The SQL of the gateway statements built with GORM (see package gormtest).
+
+// The settings row the settings cache reloads (settingValue).
+func TestSQLSettingValue(t *testing.T) {
+	var raw []byte
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return settingValueQuery(db, settingsKeyGateway).Scan(&raw) })
+}
+
+// The rule list the rules cache reloads (listRules).
+func TestSQLStickyRules(t *testing.T) {
+	var rows []struct{ ID int64 }
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return rulesQuery(db).Scan(&rows) })
+}
 
 func snapshotRule() *stickyRule {
 	return &stickyRule{Name: "r", Source: sourceAdmin, Enabled: false, Priority: 0, OnFailure: onFailureStick,

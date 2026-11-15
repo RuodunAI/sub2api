@@ -36,8 +36,7 @@ const VersionRows = `(
 
 // versionRows is VersionRows for GORM, which numbers the placeholders
 // itself: the parameters are named (@key, @version) since each appears
-// more than once. It is derived so that the two forms cannot drift apart;
-// VersionRows keeps $1/$2 while raw pgx callers remain.
+// more than once. It is derived so that the two forms cannot drift apart.
 var versionRows = strings.NewReplacer("$1", "@key", "$2", "@version").Replace(VersionRows)
 
 // VersionGrantsQuery selects the grant rows key@version runs with (see
@@ -89,16 +88,29 @@ func grantedRows(db *gorm.DB, key, version string, ids []string) *gorm.DB {
 
 // Holds reports whether key@version is granted permission now, with exactly
 // scope unless it is nil: the per-call check behind an instance's cached
-// grants, and the rollout's check of db.schema before migrating. It stays on
-// pgx: every HostService call that needs a permission runs it, at 11
-// allocs/op where the GORM form takes 60 (BenchmarkHotGrantHolds,
-// gormtest/BASELINE.md).
+// grants, and the rollout's check of db.schema before migrating. Every
+// HostService call that needs a permission runs it, so it is positional Raw
+// SQL scanned through Row, the GORM form that allocates least
+// (BenchmarkHotGrantHolds, gormtest/BASELINE.md).
 func Holds(ctx context.Context, q store.Querier, key, version, permission string, scope []byte) (bool, error) {
 	var ok bool
-	//gormguard:allow-pgx per-call grant check of every HostService call: 11 allocs/op on pgx, 60 on GORM (BenchmarkHotGrantHolds)
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+VersionRows+`
-		WHERE permission = $3 AND status = 'granted' AND ($4::jsonb IS NULL OR scope = $4::jsonb))`, key, version, permission, scope).Scan(&ok)
+	err := holdsQuery(store.G(ctx, q), key, version, permission, scope).Row().Scan(&ok)
 	return ok, err
+}
+
+// holdsSQL is Holds's statement over VersionRows with positional
+// placeholders: named ones (versionRows) would cost a map and its parsing on
+// every call. Its key and version arguments therefore follow VersionRows's
+// placeholder order, $1 $2 $1 $1 $2 (TestVersionRowsPlaceholderOrder).
+var holdsSQL = `SELECT EXISTS (SELECT 1 FROM ` + strings.NewReplacer("$1", "?", "$2", "?").Replace(VersionRows) + `
+		WHERE permission = ? AND status = 'granted' AND (?::jsonb IS NULL OR scope = ?::jsonb))`
+
+// holdsQuery is Holds's statement. scope is a store.Bytes: nil is NULL (any
+// scope), and the bytes stay one parameter after "(". The repeated
+// arguments are boxed once each.
+func holdsQuery(db *gorm.DB, key, version, permission string, scope []byte) *gorm.DB {
+	k, v, s := any(key), any(version), any(store.Bytes(scope))
+	return db.Raw(holdsSQL, k, v, k, k, v, permission, s, s)
 }
 
 // Decision is one host permission decision of a consent.

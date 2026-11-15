@@ -259,11 +259,10 @@ func (l *UsageLimit) scanTargets() []any {
 }
 
 // The usage reads below are written with ? placeholders and read through
-// GORM; usageOverview sends the same statements in one pgx batch, numbered
-// by dollarSQL, and both read the rows with the same scan.
+// GORM.
 
-// rowScanner is what the usage scans need of pgx.Rows and *sql.Rows; the
-// caller closes the rows.
+// rowScanner is what the usage scans need of *sql.Rows; the caller closes
+// the rows.
 type rowScanner interface {
 	Next() bool
 	Scan(dest ...any) error
@@ -279,20 +278,6 @@ func readRows[T any](db *gorm.DB, scan func(rowScanner) (T, error)) (T, error) {
 	}
 	defer rows.Close()
 	return scan(rows)
-}
-
-// dollarSQL numbers the ? placeholders of query for pgx: $1, $2, ...
-func dollarSQL(query string) string {
-	var b strings.Builder
-	n := 0
-	for _, part := range strings.Split(query, "?") {
-		if n > 0 {
-			b.WriteString("$" + strconv.Itoa(n))
-		}
-		b.WriteString(part)
-		n++
-	}
-	return b.String()
 }
 
 // usageLimits loads the configured limits of the given accounts.
@@ -441,9 +426,8 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 	for i, v := range out {
 		ids[i], today[i] = v.ID, usageWindow{account: v.ID, since: midnight}
 	}
-	// The totals, today's usage and the limits do not depend on each other:
-	// one round trip. The limit periods are computed in Go (time zones,
-	// DST, month ends) and read with a second query when one is active.
+	// The limit periods are computed in Go (time zones, DST, month ends)
+	// and read with another query when one is active.
 	totals, todays, limits, err := usageOverview(ctx, q, ids, today)
 	if err != nil {
 		slog.WarnContext(ctx, "account: read usage", "err", err)
@@ -460,43 +444,19 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 	}
 }
 
-// usageOverview reads usageTotals, usageIn(today) and usageLimits of ids in
-// one batch, with the same statements and results as the three calls.
-func usageOverview(ctx context.Context, q interface {
-	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
-}, ids []int64, today []usageWindow) (map[int64]UsageFigures, []UsageFigures, map[int64]UsageLimit, error) {
-	batch := &pgx.Batch{}
-	batch.Queue(dollarSQL(usageTotalsSQL), ids)
-	batch.Queue(dollarSQL(usageInSQL), usageInArgs(today)...)
-	batch.Queue(dollarSQL(usageLimitsSQL), ids)
-	br := q.SendBatch(ctx, batch)
-	defer br.Close()
-	read := func(what string, scan func(rowScanner) error) error {
-		rows, err := br.Query()
-		if err != nil {
-			return fmt.Errorf("%s: %w", what, err)
-		}
-		defer rows.Close()
-		if err := scan(rows); err != nil {
-			return fmt.Errorf("%s: %w", what, err)
-		}
-		return nil
-	}
-	var totals map[int64]UsageFigures
-	var todays []UsageFigures
-	var limits map[int64]UsageLimit
-	err := read("totals", func(r rowScanner) (err error) { totals, err = scanUsageTotals(r, len(ids)); return })
-	if err == nil {
-		err = read("today", func(r rowScanner) (err error) { todays, err = scanUsageIn(r, len(today)); return })
-	}
-	if err == nil {
-		err = read("limits", func(r rowScanner) (err error) { limits, err = scanUsageLimits(r, len(ids)); return })
-	}
+// usageOverview reads usageTotals, usageIn(today) and usageLimits of ids.
+func usageOverview(ctx context.Context, q store.Querier, ids []int64, today []usageWindow) (map[int64]UsageFigures, []UsageFigures, map[int64]UsageLimit, error) {
+	totals, err := usageTotals(ctx, q, ids)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("totals: %w", err)
 	}
-	if err := br.Close(); err != nil {
-		return nil, nil, nil, err
+	todays, err := usageIn(ctx, q, today)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("today: %w", err)
+	}
+	limits, err := usageLimits(ctx, q, ids)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("limits: %w", err)
 	}
 	return totals, todays, limits, nil
 }

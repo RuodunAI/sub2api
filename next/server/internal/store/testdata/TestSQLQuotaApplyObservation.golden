@@ -1,0 +1,17 @@
+-- sql
+UPDATE account_quota_snapshots q SET windows=q.windows||$1::jsonb,
+		source='passive',last_passive_at=clock_timestamp(),revision=q.revision+1,
+		next_check_at=CASE WHEN q.auto_refresh AND $2::timestamptz IS NOT NULL THEN LEAST(q.next_check_at,$3::timestamptz) ELSE q.next_check_at END
+		WHERE q.account_id=$4 AND q.generation=$5 AND EXISTS(
+			SELECT 1 FROM accounts a JOIN plugins p ON p.key=a.plugin_key
+			WHERE a.id=q.account_id AND a.plugin_key=$6 AND a.type=$7 AND a.deleted_at IS NULL
+			AND p.status IN ('enabled','upgrading') AND p.active_version=$8)
+-- vars
+$1 string "{\"5h\":{}}"
+$2 *time.Time 2026-11-15 12:00:00 +0000 UTC
+$3 *time.Time 2026-11-15 12:00:00 +0000 UTC
+$4 int64 11
+$5 int64 22
+$6 string "anthropic"
+$7 string "oauth"
+$8 string "1.2.0"

@@ -1,0 +1,18 @@
+-- sql
+SELECT EXISTS (SELECT 1 FROM (
+	SELECT permission, scope, status, version AS plugin_version, granted_by, granted_at
+	FROM plugin_staged_grants WHERE plugin_key = $1 AND version = $2
+	UNION ALL
+	SELECT permission, scope, status, plugin_version, granted_by, granted_at
+	FROM plugin_permission_grants WHERE plugin_key = $3
+	  AND NOT EXISTS (SELECT 1 FROM plugin_staged_grants WHERE plugin_key = $4 AND version = $5)) g
+		WHERE permission = $6 AND status = 'granted' AND ($7::jsonb IS NULL OR scope = $8::jsonb))
+-- vars
+$1 string "demo"
+$2 string "1.2.0"
+$3 string "demo"
+$4 string "demo"
+$5 string "1.2.0"
+$6 string "kv"
+$7 store.Bytes []
+$8 store.Bytes []

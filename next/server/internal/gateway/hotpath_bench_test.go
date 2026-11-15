@@ -8,14 +8,13 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // The statements of the gateway's request path: the settings rows and the
 // sticky rules. Both are cached (settingsTTL, rulesTTL), so a request
-// runs them on a miss only; they stay on pgx. Each is measured next to the
-// GORM form of the same statement, against a real PostgreSQL
+// runs them on a miss only. Each GORM statement (gorm) is measured next to
+// the pgx statement it replaced (pgx), against a real PostgreSQL
 // (TEST_DATABASE_URL), as recorded in internal/store/gormtest/BASELINE.md:
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/gateway/
@@ -34,7 +33,7 @@ func hotFixture(b *testing.B) *store.DB {
 	return db
 }
 
-// benchPaths runs the pgx and the GORM form of one read.
+// benchPaths runs the former pgx and the GORM form of one read.
 func benchPaths(b *testing.B, pgxPath, gormPath func() error) {
 	for _, p := range []struct {
 		name string
@@ -59,16 +58,15 @@ func BenchmarkHotSettingsRow(b *testing.B) {
 	db := hotFixture(b)
 	ctx := context.Background()
 	benchPaths(b, func() error {
-		_, err := loadGatewaySettings(ctx, db.Pool)
-		return err
-	}, func() error {
 		v := defaultGatewaySettings()
-		var row model.Setting
-		err := store.G(ctx, db.Pool).Model(&model.Setting{}).Select("value").Where("key = ?", settingsKeyGateway).Take(&row).Error
-		if err != nil {
+		var raw []byte
+		if err := db.Pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, settingsKeyGateway).Scan(&raw); err != nil {
 			return err
 		}
-		return json.Unmarshal(row.Value, &v)
+		return json.Unmarshal(raw, &v)
+	}, func() error {
+		_, err := loadGatewaySettings(ctx, db.Pool)
+		return err
 	})
 }
 
@@ -76,17 +74,25 @@ func BenchmarkHotStickyRules(b *testing.B) {
 	db := hotFixture(b)
 	ctx := context.Background()
 	benchPaths(b, func() error {
-		_, err := listRules(ctx, db.Pool)
-		return err
-	}, func() error {
-		var rows []model.StickyRule
-		if err := store.G(ctx, db.Pool).Order("priority, id").Find(&rows).Error; err != nil {
+		rows, err := db.Pool.Query(ctx, `SELECT `+ruleColumns+` FROM sticky_rules ORDER BY priority, id`)
+		if err != nil {
 			return err
 		}
-		out := make([]*stickyRule, 0, len(rows))
-		for i := range rows {
-			out = append(out, ruleOf(&rows[i]))
+		defer rows.Close()
+		var out []*stickyRule
+		for rows.Next() {
+			var r stickyRule
+			var match, sources, includes []byte
+			if err := rows.Scan(&r.ID, &r.Name, &r.Source, &r.Enabled, &r.Priority, &match, &sources,
+				&r.ValueRegex, &r.TTLSeconds, &includes, &r.OnFailure, &r.UpdatedBy, &r.UpdatedAt, &r.Customized, &r.PassHeaders); err != nil {
+				return err
+			}
+			r.decodeDocuments(match, sources, includes)
+			out = append(out, &r)
 		}
-		return nil
+		return rows.Err()
+	}, func() error {
+		_, err := listRules(ctx, db.Pool)
+		return err
 	})
 }

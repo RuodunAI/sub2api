@@ -77,15 +77,20 @@ func (s *Service) Lookup(ctx context.Context, owner core.ResourceOwner, prefixes
 
 // anyPrefix is the unlocked probe of Lookup: does any of prefixes belong to a
 // record of this owner at all? It reads what Lookup's transaction would read
-// first (withPrefixes), just without the lock. It stays on pgx: every request
-// with helper prefixes runs it, at 12 allocs/op where the GORM form of the
-// statement takes 130 (BenchmarkHotHelperPrefix, gormtest/BASELINE.md).
+// first (withPrefixes), just without the lock. Every request with helper
+// prefixes runs it, so it is Raw SQL scanned through Row rather than built
+// from withPrefixes: the form that allocates least (BenchmarkHotHelperPrefix,
+// gormtest/BASELINE.md).
 func (s *Service) anyPrefix(ctx context.Context, o core.ResourceOwner, prefixes []string) (bool, error) {
 	var found bool
-	//gormguard:allow-pgx hot path of every helper request: 12 allocs/op on pgx, 130 on GORM (BenchmarkHotHelperPrefix)
-	err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM provider_helper_records WHERE user_id=$1 AND group_id=$2 AND public_prefix_digest=ANY($3))`,
-		o.UserID, o.GroupID, prefixes).Scan(&found)
+	err := prefixProbe(store.G(ctx, s.db.Pool), o, prefixes).Row().Scan(&found)
 	return found, err
+}
+
+// prefixProbe selects whether any of prefixes belongs to a record of o.
+func prefixProbe(db *gorm.DB, o core.ResourceOwner, prefixes []string) *gorm.DB {
+	return db.Raw(`SELECT EXISTS(SELECT 1 FROM provider_helper_records WHERE user_id=? AND group_id=? AND public_prefix_digest=ANY(?))`,
+		o.UserID, o.GroupID, store.Strings(prefixes))
 }
 
 // withPrefixes keeps the records of o under any of prefixes.

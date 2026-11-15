@@ -14,7 +14,11 @@ import (
 )
 
 // The SQL of the API key statements built with GORM (see package gormtest).
-// The per-request lookup (lookupSQL) stays on pgx.
+
+// The per-request lookup (lookupSQL).
+func TestSQLKeyLookup(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return lookupQuery(db, "hash").Scan(&struct{ ID int64 }{}) })
+}
 
 func TestSQLKeyList(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

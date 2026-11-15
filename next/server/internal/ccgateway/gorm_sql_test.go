@@ -18,6 +18,13 @@ import (
 
 var snapshotAt = time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
 
+// The account read of every request on the shared runtime
+// (sharedAccountType).
+func TestSQLSharedAccountType(t *testing.T) {
+	var kind string
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return sharedAccountTypeQuery(db, 7).Scan(&kind) })
+}
+
 // A reported fact writes its column only, never accounts.updated_at.
 func TestSQLRecordAccountFact(t *testing.T) {
 	for _, column := range []string{"subscription_type", "rate_limit_tier"} {

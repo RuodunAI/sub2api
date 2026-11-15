@@ -5,16 +5,14 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // sharedAccountType is the only statement this package runs for every
 // forwarded request without a cache in front (a configuration without
-// per-account runtimes). It stays on pgx; the GORM form of the same statement
-// is measured next to it, against a real PostgreSQL (TEST_DATABASE_URL), as
-// recorded in internal/store/gormtest/BASELINE.md:
+// per-account runtimes). Its GORM form (gorm) is measured next to the pgx
+// statement it replaced (pgx), against a real PostgreSQL
+// (TEST_DATABASE_URL), as recorded in internal/store/gormtest/BASELINE.md:
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/ccgateway/
 func BenchmarkHotSharedAccountType(b *testing.B) {
@@ -30,13 +28,12 @@ func BenchmarkHotSharedAccountType(b *testing.B) {
 		name string
 		read func() (string, error)
 	}{
-		{"pgx", func() (string, error) { return s.sharedAccountType(ctx, id) }},
-		{"gorm", func() (string, error) {
+		{"pgx", func() (string, error) {
 			var kind string
-			err := store.G(ctx, db.Pool).Model(&model.Account{}).Select("type").
-				Where("id = ? AND plugin_key = 'ccgateway'", id).Take(&kind).Error
+			err := db.Pool.QueryRow(ctx, "SELECT type FROM accounts WHERE id=$1 AND plugin_key='ccgateway'", id).Scan(&kind)
 			return kind, err
 		}},
+		{"gorm", func() (string, error) { return s.sharedAccountType(ctx, id) }},
 	} {
 		b.Run(bc.name, func(b *testing.B) {
 			if kind, err := bc.read(); err != nil || kind != "managed" {

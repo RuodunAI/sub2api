@@ -1,6 +1,8 @@
 package grants
 
 import (
+	"regexp"
+	"slices"
 	"testing"
 
 	"gorm.io/gorm"
@@ -17,6 +19,25 @@ func TestSQLGrantsGranted(t *testing.T) {
 		var rows []scopeRow
 		return grantedRows(db, "demo", "1.2.0", []string{"kv", "lock"}).Scan(&rows)
 	})
+}
+
+// The per-call check (Holds), with a scope and without one (NULL).
+func TestSQLGrantsHolds(t *testing.T) {
+	for name, scope := range map[string][]byte{"scope": []byte(`{"prefix":"a"}`), "any": nil} {
+		t.Run(name, func(t *testing.T) {
+			var ok bool
+			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return holdsQuery(db, "demo", "1.2.0", "kv", scope).Scan(&ok) })
+		})
+	}
+}
+
+// holdsQuery passes the key and version in the order VersionRows numbers
+// them.
+func TestVersionRowsPlaceholderOrder(t *testing.T) {
+	got := regexp.MustCompile(`\$\d`).FindAllString(VersionRows, -1)
+	if want := []string{"$1", "$2", "$1", "$1", "$2"}; !slices.Equal(got, want) {
+		t.Fatalf("VersionRows placeholders %v, holdsQuery passes %v", got, want)
+	}
 }
 
 func TestSQLGrantsRecord(t *testing.T) {

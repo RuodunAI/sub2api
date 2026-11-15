@@ -152,11 +152,11 @@ const selectQuotaRead = `statement_timestamp(), q.account_id, q.windows, COALESC
 		q.updated_at, q.last_passive_at, q.last_active_at, COALESCE(q.revision,0), q.next_check_at, COALESCE(q.refresh_status,'pending'), COALESCE(q.generation,0)`
 
 // ReadAccountQuotas reads the snapshot rows of accountIDs; accounts without
-// one are absent from Snapshots and Invalid.
+// one are absent from Snapshots and Invalid. The quota mirror reloads after
+// each applied observation, so the rows of the Raw statement (quotasAt) are
+// scanned directly (BenchmarkHotReadAccountQuotas).
 func (d *DB) ReadAccountQuotas(ctx context.Context, accountIDs []int64) (*QuotaRead, error) {
-	//gormguard:allow-pgx quota mirror reload after each applied observation; GORM takes 2.3x the allocations (BASELINE.md, batch 4d)
-	rows, err := d.Pool.Query(ctx, `SELECT NULL::bigint, `+selectQuotaRead+`
-		FROM (SELECT statement_timestamp()) t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY($1)`, accountIDs)
+	rows, err := quotasAt(G(ctx, d.Pool), accountIDs).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -177,9 +177,8 @@ func (d *DB) ReadAccountQuotasOfTypes(ctx context.Context, keys []string) (*Quot
 	return readQuotaRows(rows, true)
 }
 
-// readQuotaRows reads the rows of ReadAccountQuotas (pgx),
-// ReadAccountQuotasOfTypes and AccountQuotasAt (database/sql); the caller
-// closes them.
+// readQuotaRows reads the rows of ReadAccountQuotas,
+// ReadAccountQuotasOfTypes and AccountQuotasAt; the caller closes them.
 func readQuotaRows(rows interface {
 	Next() bool
 	Scan(...any) error
@@ -255,15 +254,24 @@ func (d *DB) ApplyAccountQuotaObservation(ctx context.Context, accountID, expect
 	if err != nil {
 		return false, err
 	}
-	//gormguard:allow-pgx runs for every upstream answer with a quota observation; GORM takes 3.9x the allocations (BASELINE.md, batch 4d)
-	tag, err := d.Pool.Exec(ctx, `UPDATE account_quota_snapshots q SET windows=q.windows||$6::jsonb,
+	res := applyQuotaObservation(G(ctx, d.Pool), accountID, expectedGeneration, pluginKey, accountType, pluginVersion, string(raw), next)
+	return res.Error == nil && res.RowsAffected == 1, res.Error
+}
+
+// applyQuotaObservation merges the windows document into the account's
+// snapshot if the generation and the account's plugin still match. Every
+// upstream answer with a quota observation runs it: Raw SQL through Exec,
+// the GORM form that allocates least (BenchmarkHotQuotaObservation). It
+// leaves updated_at as it is, as it always did.
+func applyQuotaObservation(db *gorm.DB, accountID, expectedGeneration int64, pluginKey, accountType, pluginVersion, windows string, next *time.Time) *gorm.DB {
+	return db.Exec(`UPDATE account_quota_snapshots q SET windows=q.windows||?::jsonb,
 		source='passive',last_passive_at=clock_timestamp(),revision=q.revision+1,
-		next_check_at=CASE WHEN q.auto_refresh AND $7::timestamptz IS NOT NULL THEN LEAST(q.next_check_at,$7::timestamptz) ELSE q.next_check_at END
-		WHERE q.account_id=$1 AND q.generation=$2 AND EXISTS(
+		next_check_at=CASE WHEN q.auto_refresh AND ?::timestamptz IS NOT NULL THEN LEAST(q.next_check_at,?::timestamptz) ELSE q.next_check_at END
+		WHERE q.account_id=? AND q.generation=? AND EXISTS(
 			SELECT 1 FROM accounts a JOIN plugins p ON p.key=a.plugin_key
-			WHERE a.id=q.account_id AND a.plugin_key=$3 AND a.type=$4 AND a.deleted_at IS NULL
-			AND p.status IN ('enabled','upgrading') AND p.active_version=$5)`, accountID, expectedGeneration, pluginKey, accountType, pluginVersion, string(raw), next)
-	return err == nil && tag.RowsAffected() == 1, err
+			WHERE a.id=q.account_id AND a.plugin_key=? AND a.type=? AND a.deleted_at IS NULL
+			AND p.status IN ('enabled','upgrading') AND p.active_version=?)`,
+		windows, next, next, accountID, expectedGeneration, pluginKey, accountType, pluginVersion)
 }
 
 // ClaimAccountQuotaQuery reserves the right to query the upstream for the

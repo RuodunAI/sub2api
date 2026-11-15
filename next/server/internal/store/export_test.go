@@ -18,4 +18,5 @@ var (
 	LeaseQuotaSQL       = leaseAccountQuota
 	ReleaseQuotaSQL     = releaseAccountQuota
 	CompleteQuotaSQL    = completeAccountQuota
+	ApplyObservationSQL = applyQuotaObservation
 )
