@@ -107,6 +107,9 @@ func (a Bools) Value() (driver.Value, error) {
 	return []bool(a), nil
 }
 
+// GormDataType is that of Int64s.
+func (Bools) GormDataType() string { return "boolean[]" }
+
 // Int64s is a bigint[] parameter or column for GORM. GORM expands a plain
 // []int64 argument into one placeholder per element, which breaks
 // "= ANY(?)" and turns an empty slice into NULL; Int64s is one parameter

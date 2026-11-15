@@ -62,6 +62,14 @@ func Fail(c *gin.Context, err error) {
 func Pagination(c *gin.Context) (page, size int) {
 	page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
 	size, _ = strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	return PageBounds(page, size)
+}
+
+// PageBounds keeps a page and its size within Pagination's bounds: page 1
+// to 1,000,000, size 1 to 200 with 20 for none. A query paged with them
+// never takes a negative LIMIT or OFFSET, which GORM would leave out (every
+// row).
+func PageBounds(page, size int) (int, int) {
 	if page < 1 {
 		page = 1
 	}

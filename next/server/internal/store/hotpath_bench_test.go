@@ -113,8 +113,13 @@ func BenchmarkHotReadAccountQuotas(b *testing.B) {
 			return err
 		}
 		defer rows.Close()
-		_, err = store.ReadQuotaRows(rows, false)
-		return err
+		read := store.NewQuotaRead(false)
+		for rows.Next() {
+			if err := store.AddQuotaRow(read, rows); err != nil {
+				return err
+			}
+		}
+		return rows.Err()
 	}, func() error {
 		_, err := db.ReadAccountQuotas(ctx, ids)
 		return err

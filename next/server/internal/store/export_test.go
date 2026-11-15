@@ -4,7 +4,8 @@ package store
 // snapshots (gormtest imports store, so they cannot live in this package)
 // and the hot-path benchmarks.
 var (
-	ReadQuotaRows       = readQuotaRows
+	NewQuotaRead        = newQuotaRead
+	AddQuotaRow         = (*QuotaRead).add
 	QuotasAtSQL         = quotasAt
 	SettingValueSQL     = settingValue
 	WriteSetting        = writeSetting

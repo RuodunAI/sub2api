@@ -4,8 +4,11 @@ import (
 	"database/sql/driver"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"gorm.io/gorm/schema"
 )
 
 func TestTimesScan(t *testing.T) {
@@ -44,6 +47,29 @@ func TestTimesScan(t *testing.T) {
 	}
 	if v, _ := Times(nil).Value(); !reflect.DeepEqual(v, []time.Time{}) {
 		t.Errorf("Times(nil).Value() = %#v, want the empty array", v)
+	}
+}
+
+// Bools is one boolean[] parameter, nil the empty array, and a column to
+// GORM's schema parser rather than a relation.
+func TestBools(t *testing.T) {
+	if v, _ := Bools(nil).Value(); !reflect.DeepEqual(v, []bool{}) {
+		t.Errorf("Bools(nil).Value() = %#v, want the empty array", v)
+	}
+	if v, _ := (Bools{true, false}).Value(); !reflect.DeepEqual(v, []bool{true, false}) {
+		t.Errorf("Bools{true, false}.Value() = %#v", v)
+	}
+	type row struct {
+		ID    int64
+		Flags Bools
+	}
+	s, err := schema.Parse(&row{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := s.LookUpField("flags")
+	if f == nil || f.DataType != "boolean[]" || len(s.Relationships.Relations) > 0 {
+		t.Errorf("Bools parses as %+v (relations %v), want a boolean[] column", f, s.Relationships.Relations)
 	}
 }
 

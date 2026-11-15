@@ -1,9 +1,13 @@
 package store_test
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -40,4 +44,68 @@ func TestNullStrings(t *testing.T) {
 	assert.Nil(t, store.NullStrings(nil))
 	assert.Equal(t, store.Strings{}, store.NullStrings([]string{}))
 	assert.Equal(t, store.Strings{"a"}, store.NullStrings([]string{"a"}))
+}
+
+// pair is a row of TestCollectRows.
+type pair struct{ n, double int64 }
+
+func scanPair(rows *sql.Rows) (pair, error) {
+	var p pair
+	err := rows.Scan(&p.n, &p.double)
+	return p, err
+}
+
+// CollectRows reads every row in order and is never nil; EachRow folds them
+// as they come. An error of the query or of a scan stops the read.
+func TestCollectRows(t *testing.T) {
+	db, _ := bridgeDB(t)
+	g := store.G(context.Background(), db.Pool)
+	series := func(n int) *gorm.DB { return g.Raw(`SELECT n, n * 2 FROM generate_series(1, ?::int) n ORDER BY n`, n) }
+
+	got, err := store.CollectRows(series(3), scanPair)
+	require.NoError(t, err)
+	assert.Equal(t, []pair{{1, 2}, {2, 4}, {3, 6}}, got)
+
+	none, err := store.CollectRows(series(0), scanPair)
+	require.NoError(t, err)
+	assert.NotNil(t, none, "no rows is the empty list, not nil")
+	assert.Empty(t, none)
+
+	var sum int64
+	require.NoError(t, store.EachRow(series(4), func(rows *sql.Rows) error {
+		p, err := scanPair(rows)
+		sum += p.double
+		return err
+	}))
+	assert.EqualValues(t, 20, sum)
+
+	stop := errors.New("stop")
+	calls := 0
+	err = store.EachRow(series(3), func(*sql.Rows) error { calls++; return stop })
+	assert.ErrorIs(t, err, stop)
+	assert.Equal(t, 1, calls, "the first error ends the read")
+
+	bad, err := store.CollectRows(series(2), func(rows *sql.Rows) (string, error) {
+		var a, b, c string
+		err := rows.Scan(&a, &b, &c) // one column too many
+		return a, err
+	})
+	assert.Error(t, err)
+	assert.Nil(t, bad)
+
+	_, err = store.CollectRows(g.Raw(`SELECT no_such_column FROM widgets`), scanPair)
+	assert.ErrorContains(t, err, "no_such_column")
+}
+
+// Bools(nil) is the empty boolean[], not NULL, on a real server.
+func TestBoolsOnTheServer(t *testing.T) {
+	db, _ := bridgeDB(t)
+	g := store.G(context.Background(), db.Pool)
+	var n *int
+	require.NoError(t, g.Raw(`SELECT cardinality(?::boolean[])`, store.Bools(nil)).Row().Scan(&n))
+	require.NotNil(t, n, "nil is the empty array, not NULL")
+	assert.Equal(t, 0, *n)
+	var flags []bool
+	require.NoError(t, g.Raw(`SELECT ?::boolean[]`, store.Bools{true, false}).Row().Scan(&flags))
+	assert.Equal(t, []bool{true, false}, flags)
 }
