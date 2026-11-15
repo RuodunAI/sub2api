@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { SEmpty, SHint, SIcon } from '@sub2api/ui'
+import { SEmpty, SHint, SIcon, toastState } from '@sub2api/ui'
 import { i18n } from '@/i18n'
 import type { PluginReview } from '@/api/types'
 import ConsentView from './ConsentView.vue'
@@ -17,6 +17,7 @@ vi.mock('@/stores/auth', () => ({
     return {
       has,
       hasDynamic: has,
+      scopes: () => [{ all: true, own: false, group: 0, id: 0 }],
       me: { id: 1, roles: ['admin', 'lead'], superuser: mocks.superuser },
       permissionsEpoch: mocks.epoch
     }
@@ -86,73 +87,121 @@ describe('plugin consent page', () => {
     mocks.post.mockResolvedValue({})
   })
 
-  const perm = (key: string, over: object = {}) => ({ key, label: { en: key, zh: key }, risk: 'low' as const, new: true, default_roles: ['admin'], ...over })
-  const roleBox = (w: ReturnType<typeof render>, permKey: string, role: string) => w.get(`[data-permission="${permKey}"] input[data-role="${role}"]`)
-
-  it('sends the ticked permissions as grants and roles only for the new permissions whose roles changed', async () => {
-    const w = render(review({ user_permissions: [perm('demo.read'), perm('demo.write'), perm('demo.old', { new: false })] }))
-    await flushPromises()
-    // Each new permission starts at its manifest default roles.
-    expect(w.text()).toContain('默认授予：管理员')
-    expect((roleBox(w, 'demo.read', 'admin').element as HTMLInputElement).checked).toBe(true)
-    expect(w.find('[data-permission="demo.old"] [data-testid="permission-roles"]').exists()).toBe(false)
-    await roleBox(w, 'demo.write', 'auditor').setValue(true)
-    await w.get('[data-testid="host-permissions"] input[type="checkbox"]').setValue(true)
+  // The viewer's matrix: super admin column fixed, admin / operator built in, lead custom (under "more roles").
+  const column = (key: string, over: object = {}) => ({ key, name: { en: key, zh: key }, builtin: true, superuser: false, nameable: true, ...over })
+  const COLUMNS = [column('super_admin', { superuser: true, nameable: false, reason: 'superuser_role' }), column('admin'), column('operator'), column('lead', { builtin: false })]
+  const cell = (grant: string[] = [], over: object = {}) => ({ grant, nameable: true, withheld: false, ...over })
+  /** A new permission suggested to admin, which is where it starts. */
+  const perm = (key: string, over: object = {}) => ({
+    key,
+    label: { en: key, zh: key },
+    risk: 'low' as const,
+    new: true,
+    defaults: { admin: [''] },
+    cells: { super_admin: cell([], { nameable: false, reason: 'superuser_role' }), admin: cell(['']), operator: cell(), lead: cell() },
+    ...over
+  })
+  const HELD = { super_admin: cell([], { nameable: false, reason: 'superuser_role' }), admin: cell([''], { nameable: false, reason: 'held', withheld: true }), operator: cell(), lead: cell() }
+  const withMatrix = (over: Partial<PluginReview>) => review({ role_columns: COLUMNS, host_permissions: [{ id: 'storage.read', risk: 'low' }], ...over })
+  const td = (w: ReturnType<typeof render>, local: string, role: string) => w.get(`[data-testid="permission-matrix"] tr[data-permission="plugin.demo:${local}"] td[data-role="${role}"]`)
+  const roleBox = (w: ReturnType<typeof render>, local: string, role: string) => td(w, local, role).get<HTMLInputElement>('input[type="checkbox"]')
+  async function approve(w: ReturnType<typeof render>) {
     await w.get('[data-testid="consent-approve"]').trigger('click')
     await flushPromises()
+    return mocks.post.mock.calls[0]?.[1]
+  }
+
+  it('sends the ticked permissions as grants, and only the rows changed from where they started, each with every role the caller may name', async () => {
+    const w = render(withMatrix({ user_permissions: [perm('demo.read'), perm('demo.write'), perm('demo.old', { new: false })], host_permissions: [{ id: 'http.client', risk: 'high' }, { id: 'storage.read', risk: 'low' }] }))
+    await flushPromises()
+    // Each row starts at what the consent gives without overriding it (cells.grant).
+    expect(roleBox(w, 'demo.read', 'admin').element.checked).toBe(true)
+    expect(roleBox(w, 'demo.read', 'operator').element.checked).toBe(false)
+    expect(w.find('tr[data-permission="plugin.demo:demo.old"]').exists()).toBe(false)
+    await roleBox(w, 'demo.write', 'operator').setValue(true)
+    await w.get('[data-testid="host-permissions"] input[type="checkbox"]').setValue(true)
+    await approve(w)
     expect(mocks.post).toHaveBeenCalledWith('/plugins/demo/versions/1.2.0/consent', {
       grants: [{ permission: 'http.client' }, { permission: 'storage.read' }],
       denied: [],
-      new_permission_roles: { 'demo.write': ['admin', 'auditor'] }
+      new_permission_roles: { 'demo.write': { admin: true, operator: true, lead: [] } }
     })
     expect(mocks.push).toHaveBeenCalledWith({ path: '/plugins/demo', query: { consented: '1.2.0' } })
   })
 
-  it('unticking every default sends an empty list; ticking back to the defaults sends nothing', async () => {
-    const w = render(review({ user_permissions: [perm('demo.read'), perm('demo.write')], host_permissions: [{ id: 'storage.read', risk: 'low' }] }))
+  it('clearing a role sends it empty; going back to where a row started sends nothing', async () => {
+    const w = render(withMatrix({ user_permissions: [perm('demo.read'), perm('demo.write')] }))
     await flushPromises()
     await roleBox(w, 'demo.read', 'admin').setValue(false)
-    await roleBox(w, 'demo.write', 'lead').setValue(true)
-    await roleBox(w, 'demo.write', 'lead').setValue(false)
-    await w.get('[data-testid="consent-approve"]').trigger('click')
-    await flushPromises()
-    expect(mocks.post.mock.calls[0][1].new_permission_roles).toEqual({ 'demo.read': [] })
+    await roleBox(w, 'demo.write', 'operator').setValue(true)
+    await roleBox(w, 'demo.write', 'operator').setValue(false)
+    expect((await approve(w)).new_permission_roles).toEqual({ 'demo.read': { admin: [], operator: [], lead: [] } })
   })
 
-  it('leaves the default grants of a permission given other roles out of the grant list', async () => {
-    const grants = [
-      { permission: 'plugin.demo:demo.read', role: 'admin', sensitive: false, via: 'default', needs_consent: false },
-      { permission: 'plugin.demo:demo.write', role: 'admin', sensitive: false, via: 'default', needs_consent: false }
-    ]
-    const w = render(review({ user_permissions: [perm('demo.read'), perm('demo.write')], new_role_grants: grants as never }))
+  it('sends a scoped row as its scopes: "*" for all, suffixes for the rest', async () => {
+    const flow = perm('flow:manage', {
+      scope: { resource: 'flow', own: true },
+      defaults: { admin: [''], operator: ['own'] },
+      cells: { ...perm('x').cells, operator: cell(['own']) }
+    })
+    const w = render(withMatrix({ user_permissions: [flow] }))
     await flushPromises()
-    expect(w.findAll('[data-testid="new-role-grants"] li')).toHaveLength(2)
-    await roleBox(w, 'demo.read', 'lead').setValue(true)
-    expect(w.findAll('[data-testid="new-role-grants"] li')).toHaveLength(1)
+    const select = td(w, 'flow:manage', 'operator').get<HTMLSelectElement>('select')
+    const texts = select.findAll('option').map((o) => o.text())
+    expect(select.element.value).toBe(String(texts.indexOf(i18n.global.t('plugins.matrix.scopeOwn'))))
+    await select.setValue(String(texts.indexOf(i18n.global.t('plugins.matrix.notGranted'))))
+    expect((await approve(w)).new_permission_roles).toEqual({ 'flow:manage': { admin: ['*'], operator: [], lead: [] } })
   })
 
-  it('offers no role choice without role:define: the manifest defaults apply', async () => {
-    mocks.lacks = new Set(['role:define'])
-    const w = render(review({ user_permissions: [perm('demo.read')], host_permissions: [{ id: 'storage.read', risk: 'low' }] }))
+  it('locks what the server says the caller may not name: held for review, counted in the footer, never sent', async () => {
+    const w = render(withMatrix({ user_permissions: [perm('demo.read', { cells: HELD })] }))
     await flushPromises()
-    expect(w.find('[data-testid="permission-roles"]').exists()).toBe(false)
-    await w.get('[data-testid="consent-approve"]').trigger('click')
-    await flushPromises()
-    expect(mocks.post.mock.calls[0][1].new_permission_roles).toEqual({})
+    expect(td(w, 'demo.read', 'admin').attributes('data-lock')).toBe('pending_review')
+    expect(td(w, 'demo.read', 'admin').text()).toContain(i18n.global.t('plugins.matrix.pendingReview'))
+    expect(roleBox(w, 'demo.read', 'admin').element.disabled).toBe(true)
+    const pending = i18n.global.t('plugins.matrix.summaryPending', { n: 1 })
+    expect(w.get('[data-testid="consent-summary-pending"]').text()).toBe(pending)
+    // Overriding the row leaves the held cell held: still counted, still not sent.
+    await roleBox(w, 'demo.read', 'operator').setValue(true)
+    expect(w.get('[data-testid="consent-summary-pending"]').text()).toBe(pending)
+    expect((await approve(w)).new_permission_roles).toEqual({ 'demo.read': { operator: true, lead: [] } })
   })
 
-  it('a non-super admin names only roles it manages and does not hold, built-in ones included', async () => {
-    mocks.superuser = false
-    const w = render(review({ user_permissions: [perm('demo.read')], host_permissions: [{ id: 'storage.read', risk: 'low' }] }))
+  it('a critical permission cannot be granted by a non-super installer', async () => {
+    const critical = { super_admin: cell([], { nameable: false, reason: 'superuser_role' }), admin: cell([], { nameable: false, reason: 'critical' }), operator: cell([], { nameable: false, reason: 'critical' }), lead: cell([], { nameable: false, reason: 'critical' }) }
+    const w = render(withMatrix({ user_permissions: [perm('exempt', { risk: 'critical', defaults: {}, cells: critical })] }))
     await flushPromises()
-    const roles = w.findAll('[data-permission="demo.read"] input[data-role]').map((b) => b.attributes('data-role'))
-    expect(roles).toEqual(['auditor', 'operator'])
-    await roleBox(w, 'demo.read', 'auditor').setValue(true)
-    // The built-in default cannot be named by this caller: it drops out.
-    expect(w.text()).toContain(i18n.global.t('plugins.consent.replacesDefaults'))
-    await w.get('[data-testid="consent-approve"]').trigger('click')
+    expect(td(w, 'exempt', 'operator').attributes('data-lock')).toBe('critical')
+    expect(roleBox(w, 'exempt', 'operator').element.disabled).toBe(true)
+    expect(w.get('tr[data-permission="plugin.demo:exempt"]').text()).toContain(i18n.global.t('plugins.matrix.criticalOnly'))
+    expect(w.find('[data-testid="consent-summary-pending"]').exists()).toBe(false)
+  })
+
+  it('footer sums the sensitive grants it makes', async () => {
+    const w = render(withMatrix({ user_permissions: [perm('a', { risk: 'sensitive' }), perm('b', { risk: 'sensitive', cells: HELD }), perm('c')] }))
     await flushPromises()
-    expect(mocks.post.mock.calls[0][1].new_permission_roles).toEqual({ 'demo.read': ['auditor'] })
+    // a to admin; b to admin is held, so it is not granted here.
+    expect(w.get('[data-testid="consent-summary-sensitive"]').text()).toBe(i18n.global.t('plugins.matrix.summarySensitive', { n: 1, m: 1 }))
+    await roleBox(w, 'b', 'operator').setValue(true)
+    expect(w.get('[data-testid="consent-summary-sensitive"]').text()).toBe(i18n.global.t('plugins.matrix.summarySensitive', { n: 2, m: 2 }))
+  })
+
+  it('toasts the grants the consent held back for review', async () => {
+    toastState.items.splice(0)
+    mocks.post.mockResolvedValue({ withheld: [{ permission: 'plugin.demo:demo.read', role: 'admin', scope: '', risk: 'low', via: 'default', needs_consent: false, withheld: true }] })
+    const w = render(withMatrix({ user_permissions: [perm('demo.read', { cells: HELD })] }))
+    await flushPromises()
+    await approve(w)
+    expect(toastState.items.map((x) => x.message)).toContain(i18n.global.t('plugins.matrix.withheld', { n: 1 }))
+  })
+
+  it('words a critical refusal itself', async () => {
+    toastState.items.splice(0)
+    mocks.post.mockRejectedValue({ status: 403, code: 'permission_denied', message: 'denied', details: { reason: 'critical', superuser: true, permissions: ['exempt'] } })
+    const w = render(withMatrix({}))
+    await flushPromises()
+    await approve(w)
+    expect(toastState.items.map((x) => x.message)).toContain(i18n.global.t('plugins.matrix.criticalOnly'))
   })
 
   it('tells beforehand when db.schema needs the unconfined override the caller lacks', async () => {
@@ -167,57 +216,57 @@ describe('plugin consent page', () => {
     expect((ok.get('[data-testid="consent-approve"]').element as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('lists the role grants of the new permissions, marking those that need confirmation', async () => {
+  it('lists only the inherited role grants, marking those that need confirmation; the matrix shows the default ones', async () => {
     const grants = [
-      { permission: 'plugin.demo:demo.read', role: 'admin', sensitive: false, via: 'default', needs_consent: false },
-      { permission: 'plugin.demo:demo.read', role: 'lead', sensitive: true, via: 'inherit', needs_consent: true }
+      { permission: 'plugin.demo:demo.read', role: 'admin', scope: '', risk: 'low', via: 'default', needs_consent: false },
+      { permission: 'plugin.demo:demo.read', role: 'lead', scope: '', risk: 'sensitive', via: 'inherit', needs_consent: true },
+      { permission: 'plugin.demo:demo.read', role: 'operator', scope: '', risk: 'low', via: 'inherit', needs_consent: false }
     ]
-    const w = render(review({ new_role_grants: grants as never, role_grants_need_consent: true }))
+    const w = render(withMatrix({ user_permissions: [perm('demo.read')], new_role_grants: grants as never, role_grants_need_consent: true }))
     await flushPromises()
     expect(w.findAll('[data-testid="new-role-grants"] li')).toHaveLength(2)
     expect(w.findAll('[data-needs-consent]')).toHaveLength(1)
     expect(w.find('[data-testid="role-grants-need-consent"]').exists()).toBe(true)
   })
 
-  it('on an upgrade, approves grants that need consent only for whoever may name their roles', async () => {
+  it('on an upgrade, roles the caller may not name go to review instead of blocking', async () => {
     const grants = [
-      { permission: 'plugin.demo:demo.read', role: 'admin', sensitive: true, via: 'default', needs_consent: true },
-      { permission: 'plugin.demo:demo.read', role: 'operator', sensitive: false, via: 'default', needs_consent: false }
+      { permission: 'plugin.demo:demo.read', role: 'admin', scope: '', risk: 'sensitive', via: 'default', needs_consent: true, nameable: false, withheld: true },
+      { permission: 'plugin.demo:demo.write', role: 'admin', scope: '', risk: 'low', via: 'default', needs_consent: false, nameable: true, withheld: false }
     ]
-    const upgrade = review({
-      user_permissions: [perm('demo.read', { default_roles: ['admin', 'operator'] })],
-      host_permissions: [{ id: 'storage.read', risk: 'low' }],
+    mocks.superuser = false
+    const w = render(withMatrix({
+      user_permissions: [perm('demo.read', { risk: 'sensitive', cells: HELD }), perm('demo.write')],
       diff: { added: [], widened: [], removed: [] } as never,
       new_role_grants: grants as never,
       role_grants_need_consent: true
-    })
-    const approve = (w: ReturnType<typeof render>) => (w.get('[data-testid="consent-approve"]').element as HTMLButtonElement).disabled
-    // The super admin may name any role.
-    const ok = render(upgrade)
+    }))
     await flushPromises()
-    expect(approve(ok)).toBe(false)
-    expect(ok.find('[data-testid="role-grants-blocked"]').exists()).toBe(false)
-    // A non-super admin may not change the built-in admin role: blocked, and told which role.
-    mocks.superuser = false
-    const w = render(upgrade)
+    expect((w.get('[data-testid="consent-approve"]').element as HTMLButtonElement).disabled).toBe(false)
+    // The "needs confirmation" column, per row.
+    expect(w.get('[data-testid="permission-matrix"] thead').text()).toContain(i18n.global.t('plugins.matrix.needsConfirm'))
+    expect(w.get('tr[data-permission="plugin.demo:demo.read"]').text()).toContain(i18n.global.t('plugins.matrix.needConfirmSensitive'))
+    expect(w.get('tr[data-permission="plugin.demo:demo.write"]').text()).toContain(i18n.global.t('plugins.matrix.autoGrant'))
+    expect((await approve(w)).new_permission_roles).toEqual({})
+  })
+
+  it('on an upgrade, lists only the new permissions, with kept, revived and removed ones as information', async () => {
+    const w = render(withMatrix({
+      user_permissions: [perm('demo.new'), perm('demo.kept', { new: false }), perm('demo.back', { new: true, revived: true, label: { en: 'Back', zh: '回来' } })],
+      removed_user_permissions: [{ key: 'demo.gone', label: { en: 'Gone', zh: '已去' }, holders: ['admin', 'operator'] }],
+      diff: { added: [], widened: [], removed: [] } as never
+    }))
     await flushPromises()
-    expect(approve(w)).toBe(true)
-    expect(w.find('[data-testid="role-grants-blocked"]').exists()).toBe(true)
-    expect(w.findAll('[data-testid="role-grant-blocked"]')).toHaveLength(1)
-    // Giving the permission a role it may name instead takes the default grants out.
-    await roleBox(w, 'demo.read', 'auditor').setValue(true)
-    expect(approve(w)).toBe(false)
-    // Or only the built-in default it may name (operator, on its list): the
-    // choice differs from the defaults and is sent.
-    await roleBox(w, 'demo.read', 'auditor').setValue(false)
-    expect(approve(w)).toBe(false)
-    await w.get('[data-testid="consent-approve"]').trigger('click')
+    expect(w.findAll('[data-testid="permission-matrix"] tbody tr[data-permission]').map((r) => r.attributes('data-permission'))).toEqual(['plugin.demo:demo.new'])
+    const changes = w.get('[data-testid="upgrade-permission-changes"]')
+    expect(changes.text()).toContain(i18n.global.t('plugins.matrix.upgradeKept', { n: 1 }))
+    expect(changes.get('[data-testid="upgrade-revived"]').text()).toContain('回来')
+    expect(changes.get('[data-testid="upgrade-removed"]').text()).toContain(i18n.global.t('plugins.matrix.removedHint', { m: 2 }))
+    // A first install has none of it.
+    const first = render(withMatrix({ user_permissions: [perm('demo.new')] }))
     await flushPromises()
-    expect(mocks.post.mock.calls[0][1].new_permission_roles).toEqual({ 'demo.read': ['operator'] })
-    // A first install is not held to it (the server checks upgrades only).
-    const first = render({ ...upgrade, diff: null })
-    await flushPromises()
-    expect(approve(first)).toBe(false)
+    expect(first.find('[data-testid="upgrade-permission-changes"]').exists()).toBe(false)
+    expect(first.find('[data-testid="permission-matrix"] thead').text()).not.toContain(i18n.global.t('plugins.matrix.needsConfirm'))
   })
 
   it('keeps a scope on the grant it belongs to', async () => {

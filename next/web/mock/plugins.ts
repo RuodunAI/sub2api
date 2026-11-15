@@ -2,9 +2,10 @@
 // grants, settings, resources, egress, jobs, events) and the plugin market.
 // /ui/plugins and /p/<key>/... live in pluginui.ts; publishers are not here.
 import { fail, noContent, now, on, paginate } from './router'
-import { stepUp } from './core'
+import { caller, stepUp, type Identity } from './core'
 import { pluginPlatforms } from './platforms'
 import { pluginAccountCount, uninstallPluginAccounts } from './accounts'
+import { invalid } from './resources'
 
 type Any = Record<string, any>
 
@@ -113,7 +114,11 @@ plugins.set('guard', {
   trust: 'official',
   egress_policy: 'allowlist',
   resources: { memory_mb: 128, cpu: 0.25, max_threads: 64, max_open_files: 256 },
-  versions: [{ version: '0.1.0', consent_status: 'approved' }],
+  // 0.2.0 waits for consent: the upgrade's permission matrix (new, revived and removed user permissions).
+  versions: [
+    { version: '0.1.0', consent_status: 'approved' },
+    { version: '0.2.0', consent_status: 'pending' }
+  ],
   grants: [
     grant('kv'),
     grant('db.schema'),
@@ -329,6 +334,45 @@ plugins.set('videogen', {
 /** An item of review.diff (review.go DiffItem). */
 const diffItem = (id: string, risk: string) => ({ id, risk })
 
+// The guard's user permissions as the catalog has them (resources.ts plugin.guard):
+// local keys, defaults as canonical suffixes ("" every row), as the review sends them.
+const GUARD_PERMISSIONS: Any[] = [
+  { key: 'rules:read', label: { en: 'View rules', zh: '查看规则' }, risk: 'low', group: 'rules', defaults: { admin: [''], operator: [''] } },
+  {
+    key: 'rules:manage', label: { en: 'Manage rules', zh: '管理规则' }, risk: 'sensitive', group: 'rules', requires: ['rules:read'],
+    scope: { resource: 'ruleset', own: true, options: '/scopes/ruleset' }, defaults: { admin: [''], operator: ['own'] }
+  },
+  { key: 'stats:read', label: { en: 'View stats', zh: '查看统计' }, risk: 'low', group: 'ops', defaults: { admin: [''], operator: [''], supplier: [''] } },
+  {
+    key: 'alerts:mute', label: { en: 'Mute alerts', zh: '静音告警' }, risk: 'low', group: 'ops',
+    scope: { resource: 'value', values: [{ key: 'webhook', label: { en: 'Webhook', zh: 'Webhook' } }, { key: 'email', label: { en: 'Email', zh: '邮件' } }] },
+    defaults: { admin: ['value/webhook', 'value/email'] }
+  },
+  { key: 'bypass', label: { en: 'Bypass the rules', zh: '免于拦截' }, risk: 'critical', group: 'ops', defaults: {} }
+]
+const GUARD_GROUPS = [{ key: 'rules', label: { en: 'Rules', zh: '拦截规则' }, sort: 10 }, { key: 'ops', label: { en: 'Operations', zh: '运行' }, sort: 20 }]
+
+/**
+ * The user permission part of a guard review: a first install creates every
+ * permission; an upgrade keeps them, adds two (one sensitive, one suggested
+ * to a custom role: both need confirmation), brings rules:test back with its
+ * grants (D6) and no longer declares alerts:mute.
+ */
+function guardUserPermissions(upgrade: boolean): Any {
+  if (!upgrade) return { user_permissions: GUARD_PERMISSIONS.map((p) => ({ ...p, new: true })), permission_groups: GUARD_GROUPS }
+  const kept = GUARD_PERMISSIONS.filter((p) => p.key !== 'alerts:mute').map((p) => ({ ...p, new: false }))
+  return {
+    user_permissions: [
+      ...kept,
+      { key: 'rules:publish', label: { en: 'Publish rules', zh: '发布规则' }, risk: 'sensitive', group: 'rules', requires: ['rules:manage'], defaults: { admin: [''] }, new: true },
+      { key: 'reports:export', label: { en: 'Export reports', zh: '导出报表' }, risk: 'low', group: 'ops', defaults: { admin: [''], readonly: [''] }, new: true },
+      { key: 'rules:test', label: { en: 'Dry-run rules', zh: '试运行规则' }, risk: 'low', group: 'rules', defaults: { operator: [''] }, revived: true }
+    ],
+    permission_groups: GUARD_GROUPS,
+    removed_user_permissions: [{ key: 'alerts:mute', label: { en: 'Mute alerts', zh: '静音告警' }, holders: ['admin'] }]
+  }
+}
+
 function guardReview(version: string, diff?: Any): Any {
   return {
     plugin_key: 'guard',
@@ -365,11 +409,7 @@ function guardReview(version: string, diff?: Any): Any {
       { method: 'GET', path: '/stats', scope: 'admin', permission: 'stats:read' }
     ],
     menus: [{ id: 'guard', label: { en: 'Guard', zh: '请求守卫' }, type: 'native' }],
-    user_permissions: [
-      { key: 'rules:read', label: { en: 'View rules', zh: '查看拦截规则' } },
-      { key: 'rules:manage', label: { en: 'Manage rules', zh: '管理拦截规则' }, sensitive: true },
-      { key: 'stats:read', label: { en: 'View statistics', zh: '查看拦截统计' } }
-    ],
+    ...guardUserPermissions(!!diff),
     database: { schema: 'plg_guard', migrations: ['0001_init.sql', '0002_stats.sql'] },
     resources: { memoryMB: 128, cpu: 0.25, maxProcs: 64, maxOpenFiles: 256 },
     external_services: ['hooks.example.com'],
@@ -485,7 +525,84 @@ function genericReview(key: string, version: string, name: Any, publisher: strin
   }
 }
 
+/** The role columns of a review (super admin first, built-in roles, then custom ones). */
+const REVIEW_ROLES: Any[] = [
+  { key: 'super_admin', name: { en: 'Super admin', zh: '超级管理员' }, builtin: true, superuser: true },
+  { key: 'admin', name: { en: 'Admin', zh: '管理员' }, builtin: true, superuser: false },
+  { key: 'operator', name: { en: 'Operator', zh: '运维' }, builtin: true, superuser: false },
+  { key: 'supplier', name: { en: 'Supplier', zh: '供应商' }, builtin: true, superuser: false },
+  { key: 'user', name: { en: 'User', zh: '普通用户' }, builtin: true, superuser: false },
+  { key: 'vendor', name: { en: 'Vendor', zh: '供应商（自定义）' }, builtin: false, superuser: false },
+  { key: 'readonly', name: { en: 'Read only', zh: '只读' }, builtin: false, superuser: false }
+]
+/** Roles an upgrade grants a low-risk permission without asking (install autoGrantRoles). */
+const AUTO_GRANT_ROLES = new Set(['admin', 'operator', 'supplier'])
+
+/** Why the viewer may not name a role for a permission of the risk; '' when it may. The mock knows no non-super caller with role:define. */
+function denial(who: Identity, role: Any, risk: string): string {
+  if (role.superuser) return 'superuser_role'
+  if (who.superuser) return ''
+  return risk === 'critical' ? 'critical' : 'role_define'
+}
+
+/**
+ * A review as the viewer sees it (install Review(actorID)): the matrix
+ * columns and cells, and the role grants of the permissions the consent
+ * creates. A cell the viewer may not name keeps its suggestion and goes to
+ * review (D2).
+ */
+function forViewer(r: Any, who: Identity): Any {
+  const perms: Any[] = r.user_permissions ?? []
+  if (!perms.length) return r
+  const upgrade = !!r.diff
+  const created = (p: Any) => p.new && !p.revived
+  const cellOf = (p: Any, role: Any) => {
+    const reason = denial(who, role, p.risk)
+    const grant: string[] = created(p) && !role.superuser ? (p.defaults?.[role.key] ?? []) : []
+    return { grant, nameable: !reason, ...(reason ? { reason } : {}), withheld: !!reason && grant.length > 0 }
+  }
+  const user_permissions: Any[] = perms.map((p) => ({ ...p, cells: Object.fromEntries(REVIEW_ROLES.map((role) => [role.key, cellOf(p, role)])) }))
+  const new_role_grants = user_permissions.filter(created).flatMap((p) =>
+    REVIEW_ROLES.flatMap((role) => {
+      const c = p.cells[role.key]
+      const needs = upgrade && (p.risk !== 'low' || !AUTO_GRANT_ROLES.has(role.key))
+      return c.grant.map((scope: string) => ({ permission: `plugin.${r.plugin_key}:${p.key}`, role: role.key, scope, risk: p.risk, via: 'default', needs_consent: needs, nameable: c.nameable, withheld: c.withheld }))
+    })
+  )
+  const role_columns = REVIEW_ROLES.map((role) => {
+    const reason = denial(who, role, 'low')
+    return { ...role, nameable: !reason, ...(reason ? { reason } : {}) }
+  })
+  return { ...r, user_permissions, role_columns, new_role_grants, role_grants_need_consent: new_role_grants.some((g) => g.needs_consent) }
+}
+
+/**
+ * Checks a consent's new_permission_roles (local key → role → true | scopes)
+ * against the viewer's review; returns the error, or the grants held for
+ * review (the defaults of cells the viewer may not name, overridden or not).
+ */
+function settleRoleGrants(r: Any, who: Identity, overrides: Any): { error: Any } | { withheld: Any[] } {
+  const v = forViewer(r, who)
+  for (const [local, roles] of Object.entries<Any>(overrides ?? {})) {
+    const p = v.user_permissions?.find((x: Any) => x.key === local && x.new && !x.revived)
+    if (!p) return { error: invalid(`new_permission_roles.${local}`, 'not a permission this consent creates', 'unknown') }
+    for (const [role, grant] of Object.entries<unknown>(roles ?? {})) {
+      if (grant !== true && !(Array.isArray(grant) && grant.every((x) => typeof x === 'string'))) {
+        return { error: invalid(`new_permission_roles.${local}.${role}`, 'a grant is true or a list of scopes') }
+      }
+      const c = p.cells[role]
+      if (!c) return { error: invalid(`new_permission_roles.${local}`, 'unknown role', 'unknown') }
+      if (c.reason === 'critical') return { error: fail(403, 'permission_denied', 'only the super admin grants critical permissions', { reason: 'critical', superuser: true, permissions: [local] }) }
+      if (!c.nameable) return { error: fail(403, 'permission_denied', 'you may not name this role', { role }) }
+    }
+  }
+  return { withheld: (v.new_role_grants ?? []).filter((g: Any) => g.withheld) }
+}
+
 const reviews = new Map<string, Any>()
+// guard: a first install (as after an uninstall) and the pending 0.2.0 upgrade.
+reviews.set('guard@0.1.0', guardReview('0.1.0'))
+reviews.set('guard@0.2.0', guardReview('0.2.0', { added: [diffItem('net', 'high')], widened: [], removed: [] }))
 reviews.set('foo_platform@1.0.0', genericReview('foo_platform', '1.0.0', { en: 'Foo Platform', zh: 'Foo 平台' }, 'foo-labs', 'community'))
 reviews.set('anthropic@0.2.0', anthropicReview('0.2.0'))
 
@@ -797,17 +914,15 @@ on('POST', '/plugins/retired-keys/:key/release', (req) => {
   return { accounts_deleted: body.purge_accounts ? r.accounts : 0, kv_deleted: body.purge ? 1 : 0 }
 })
 
-on('POST', '/plugins/upload', stepUp('plugin.install', () => {
+on('POST', '/plugins/upload', stepUp('plugin.install', (req) => {
   // multipart bodies are not parsed by the mock server: pretend it was guard 0.1.1
-  return stageVersion(
-    guardReview('0.1.1', { added: [], widened: [diffItem('gateway.hook', 'high')], removed: [] })
-  )
+  return forViewer(stageVersion(guardReview('0.1.1', { added: [], widened: [diffItem('gateway.hook', 'high')], removed: [] })), caller(req))
 }))
 
 on('POST', '/plugins/install-from-market', stepUp('plugin.install', (req) => {
   const { key, version } = req.body || {}
   if (!key || !version) return fail(400, 'invalid_argument', 'key and version are required')
-  return stageVersion(reviewFor(key, version))
+  return forViewer(stageVersion(reviewFor(key, version)), caller(req))
 }))
 
 on('GET', '/plugins/:key', (req) => {
@@ -831,7 +946,7 @@ on('DELETE', '/plugins/:key', (req) => {
 
 on('GET', '/plugins/:key/versions/:version/review', (req) => {
   const r = reviews.get(`${req.params.key}@${req.params.version}`)
-  return r ?? fail(404, 'not_found', 'no review for this version')
+  return r ? forViewer(r, caller(req)) : fail(404, 'not_found', 'no review for this version')
 })
 
 on('POST', '/plugins/:key/versions/:version/consent', stepUp('plugin.grant', (req) => {
@@ -840,11 +955,13 @@ on('POST', '/plugins/:key/versions/:version/consent', stepUp('plugin.grant', (re
   const grants: Array<{ permission: string; scope?: Any }> = req.body?.grants || []
   const v = p.versions.find((x) => x.version === req.params.version)
   if (!v) return fail(404, 'not_found', 'version not found')
+  const settled = settleRoleGrants(reviews.get(`${p.key}@${v.version}`) ?? {}, caller(req), req.body?.new_permission_roles)
+  if ('error' in settled) return settled.error
   v.consent_status = 'approved'
   p.grants = grants.map((g) => grant(g.permission, g.scope ?? null, req.params.version))
   if (p.status === 'awaiting_consent') p.status = 'installed'
   if (!p.active_version) p.desired_version = req.params.version
-  return { ok: true }
+  return { ok: true, withheld: settled.withheld }
 }))
 
 on('POST', '/plugins/:key/versions/:version/reject', (req) => {

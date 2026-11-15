@@ -1597,16 +1597,12 @@ export interface ReviewUserPermission {
   label: LText
   description?: LText
   risk: PermRisk
-  /** @deprecated The review sends risk; kept until the consent page moves to risk. */
-  sensitive?: boolean
   group?: string
   /** Local keys. */
   requires?: string[]
   scope?: PluginScopeDecl
   /** The plugin's suggestion: role → canonical suffixes ("" all), shaped as cells[].grant. */
   defaults?: Record<string, string[]>
-  /** @deprecated Replaced by defaults; kept until the consent page moves to the matrix. */
-  default_roles?: string[]
   inherit_from?: string[]
   /** Not in the catalog yet: the consent creates it, and only then do roles named for it apply. */
   new?: boolean
@@ -1628,8 +1624,6 @@ export interface PluginRoleGrant {
   /** Canonical suffix, "" for all. */
   scope?: string
   risk: PermRisk
-  /** @deprecated The server sends risk; kept until the grant lists move to risk. */
-  sensitive?: boolean
   via: 'default' | 'inherit' | 'override'
   needs_consent: boolean
   /** The caller may name the role. */
