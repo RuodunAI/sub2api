@@ -2,11 +2,8 @@ package billing
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -27,8 +24,8 @@ import (
 // caller's COMMIT.
 //
 // They run through GORM (store.G) on the caller's transaction. The CTE
-// statements keep pgx's numbered placeholders, which name each parameter
-// once however often the CTEs use it; ledgerStmt rewrites them for GORM
+// statements keep placeholders that name each parameter once however often
+// the CTEs use it ($1 or $user); store.NewNumbered rewrites them for GORM
 // once, at start-up.
 //
 // Creating the balance row on demand. A data-modifying CTE's rows are
@@ -57,96 +54,180 @@ func ensureBalance(db *gorm.DB, userID int64) error {
 	return err
 }
 
-// applySQL is ApplyTx in one statement: find an existing ledger row for the
-// idempotency key; otherwise lock the balance row, insert the ledger row with
-// the new balance and update the balance. Parameters: 1 user, 2 signed delta,
-// 3 kind, 4 ref_type, 5 ref_id, 6 idempotency key, 7 operator id (NULL), 8
-// plugin key (” → NULL), 9 note. Columns: applied id and balance_after (0
-// when nothing was written), whether the key existed before the statement
-// and that row's id, balance_after, user_id, delta and kind (applyRow), and
-// whether the balance row was present (see above). Nothing applied and no
-// existing row means another transaction inserted the key after this
-// statement's snapshot (ON CONFLICT DO NOTHING); the caller re-reads it.
-const applySQL = `
-WITH existing AS (
-    SELECT id, balance_after, user_id, delta, kind FROM balance_ledger WHERE idempotency_key = $6::varchar
-), locked AS (
-    SELECT balance FROM user_balances
-    WHERE user_id = $1::bigint AND NOT EXISTS (SELECT 1 FROM existing)
-    FOR UPDATE
-), ledger AS (
-    INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
-        idempotency_key, operator_id, plugin_key, note)
-    SELECT $1::bigint, $2::numeric, locked.balance + $2::numeric, $3::text, $4::text, $5::text,
-        $6::varchar, $7::bigint, NULLIF($8::text, ''), $9::text
-    FROM locked
+// The three ledger statements below (applySQL, releaseSQL, settleSQL) are
+// assembled from the fragments that follow, so that a settlement's writes
+// are a release's and a charge's by construction rather than by a copy.
+// The fragments name their parameters ($user, $key ...), and each statement
+// lists the names in the order of its arguments (store.NewNumbered).
+
+// ledgerInsert starts the INSERT of a ledger row, ledgerInserted ends it: an
+// idempotency key that exists by then (committed after the statement's
+// snapshot) is no row, and the row reports its id and balance_after.
+const (
+	ledgerInsert = `INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
+        idempotency_key, operator_id, plugin_key, note)`
+	ledgerInserted = `
     ON CONFLICT (idempotency_key) DO NOTHING
-    RETURNING id, balance_after
-), applied AS (
-    UPDATE user_balances SET balance = ledger.balance_after, updated_at = now()
-    FROM ledger
-    WHERE user_balances.user_id = $1::bigint
-    RETURNING ledger.id, ledger.balance_after
+    RETURNING id, balance_after`
 )
-SELECT COALESCE((SELECT id FROM applied), 0),
-       COALESCE((SELECT balance_after FROM applied), 0),
+
+// reservationCTE is the request's reservation, as the statement's snapshot
+// holds it.
+const reservationCTE = `reservation AS (
+    SELECT 1 FROM request_precharges WHERE request_id = $request::varchar AND user_id = $user::bigint
+)`
+
+// hasReservation is the condition under which a release locks the balance
+// row.
+const hasReservation = `EXISTS (SELECT 1 FROM reservation)`
+
+// releaseCTEs release the request's reservation under the balance lock
+// (locked, which holds the row whenever hasReservation does): it is deleted
+// under that lock (released, USING locked), the lock order the ledger and
+// the expiry sweeper share, and refunded with its amount unless the refund's
+// key already exists (refund).
+const releaseCTEs = `released AS (
+    DELETE FROM request_precharges p USING locked
+    WHERE p.request_id = $request::varchar AND p.user_id = $user::bigint
+    RETURNING p.amount
+), refund AS (
+    ` + ledgerInsert + `
+    SELECT $user::bigint, r.amount, l.balance + r.amount, 'refund', 'precharge', $request::varchar,
+        $refund_key::varchar, NULL, NULL, $refund_note::text
+    FROM released r, locked l
+    WHERE NOT EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $refund_key::varchar)` + ledgerInserted + `
+)`
+
+// releaseColumns are what a statement reports of the release (releaseRow):
+// the refund's row as applied, whether a reservation was deleted and its
+// amount.
+const releaseColumns = `COALESCE((SELECT refund_id FROM applied), 0),
+       COALESCE((SELECT refund_after FROM applied), 0),
+       EXISTS (SELECT 1 FROM released),
+       COALESCE((SELECT amount FROM released), 0)`
+
+// The charge fragments take charged, the SQL condition under which the
+// statement makes a charge: "" for one that always does (applySQL).
+
+// ifCharged is cond, preceded by charged when there is one.
+func ifCharged(charged, cond string) string {
+	if charged == "" {
+		return cond
+	}
+	return charged + ` AND ` + cond
+}
+
+// existingCTE is the row of the charge's idempotency key, as the
+// statement's snapshot holds it, when charged.
+func existingCTE(charged string) string {
+	return `existing AS (
+    SELECT id, balance_after, user_id, delta, kind FROM balance_ledger
+    WHERE ` + ifCharged(charged, `idempotency_key = $key::varchar`) + `
+)`
+}
+
+// chargeWanted is the condition under which a statement writes its charge
+// and locks the balance row for it: it makes one, and the key is not taken.
+func chargeWanted(charged string) string {
+	return ifCharged(charged, `NOT EXISTS (SELECT 1 FROM existing)`)
+}
+
+// chargeCTE writes the charge's ledger row when chargeWanted: delta added to
+// base, the balance it applies to, read from the rows of from (locked l
+// among them).
+func chargeCTE(charged, base, from string) string {
+	return `charge AS (
+    ` + ledgerInsert + `
+    SELECT $user::bigint, $delta::numeric, ` + base + ` + $delta::numeric, $kind::text, $ref_type::text,
+        $ref_id::text, $key::varchar, $operator::bigint, NULLIF($plugin::text, ''), $note::text
+    FROM ` + from + `
+    WHERE ` + chargeWanted(charged) + ledgerInserted + `
+)`
+}
+
+// chargeColumns are what a statement reports of the charge (applyRow): the
+// charge's row as applied, whether its key existed before the statement
+// and that row.
+const chargeColumns = `COALESCE((SELECT charge_id FROM applied), 0),
+       COALESCE((SELECT charge_after FROM applied), 0),
        EXISTS (SELECT 1 FROM existing),
        COALESCE((SELECT id FROM existing), 0),
        COALESCE((SELECT balance_after FROM existing), 0),
        COALESCE((SELECT user_id FROM existing), 0),
        COALESCE((SELECT delta FROM existing), 0),
-       COALESCE((SELECT kind FROM existing), ''),
-       EXISTS (SELECT 1 FROM locked)
-           OR (EXISTS (SELECT 1 FROM existing) AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $1::bigint))`
+       COALESCE((SELECT kind FROM existing), '')`
 
-var applyStmt = newLedgerStmt(applySQL)
-
-// releaseSQL is ReleasePrechargeTx in one statement. The balance row is
-// locked first and the reservation deleted under that lock (USING locked), the
-// lock order the ledger and the expiry sweeper share; the lock is not taken
-// when the request has no reservation. The refund ledger row is written with
-// the reservation's amount unless its idempotency key already exists.
-// Parameters: 1 request id, 2 user, 3 idempotency key, 4 note. Columns: the
-// refund's id and balance_after (0 when none was written), whether a
-// reservation was deleted and its amount (releaseRow).
-const releaseSQL = `
-WITH locked AS (
+// lockedCTE locks the user's balance row FOR UPDATE when lock (an SQL
+// condition) holds. Every write reads the locked row, so a statement that
+// did not lock it writes nothing.
+func lockedCTE(lock string) string {
+	return `locked AS (
     SELECT balance FROM user_balances
-    WHERE user_id = $2::bigint
-      AND EXISTS (SELECT 1 FROM request_precharges WHERE request_id = $1::varchar AND user_id = $2::bigint)
+    WHERE user_id = $user::bigint AND (` + lock + `)
     FOR UPDATE
-), released AS (
-    DELETE FROM request_precharges p USING locked
-    WHERE p.request_id = $1::varchar AND p.user_id = $2::bigint
-    RETURNING p.amount
-), ledger AS (
-    INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
-        idempotency_key, operator_id, plugin_key, note)
-    SELECT $2::bigint, r.amount, l.balance + r.amount, 'refund', 'precharge', $1::varchar,
-        $3::varchar, NULL, NULL, $4::text
-    FROM released r, locked l
-    WHERE NOT EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $3::varchar)
-    ON CONFLICT (idempotency_key) DO NOTHING
-    RETURNING id, balance_after
-), applied AS (
-    UPDATE user_balances SET balance = ledger.balance_after, updated_at = now()
-    FROM ledger
-    WHERE user_balances.user_id = $2::bigint
-    RETURNING ledger.id, ledger.balance_after
-)
-SELECT COALESCE((SELECT id FROM applied), 0),
-       COALESCE((SELECT balance_after FROM applied), 0),
-       EXISTS (SELECT 1 FROM released),
-       COALESCE((SELECT amount FROM released), 0)`
+)`
+}
 
-var releaseStmt = newLedgerStmt(releaseSQL)
+// presentColumn is whether the statement found the balance row (see
+// ensureBalanceSQL): it locked the row, or it wanted no lock (lock, the
+// condition of its lockedCTE, is false) and the row is there.
+func presentColumn(lock string) string {
+	return `EXISTS (SELECT 1 FROM locked)
+           OR (NOT (` + lock + `) AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $user::bigint))`
+}
+
+// applySQL is ApplyTx in one statement: find an existing ledger row for the
+// idempotency key; otherwise lock the balance row, insert the ledger row with
+// the new balance and update the balance. Arguments: applyArgs (applyNames).
+// Columns: chargeColumns (applyRow) and present. Nothing applied and no
+// existing row means another transaction inserted the key after this
+// statement's snapshot (ON CONFLICT DO NOTHING); the caller re-reads it.
+var applySQL = func() string {
+	lock := chargeWanted("")
+	return `
+WITH ` + existingCTE("") + `, ` + lockedCTE(lock) + `, ` + chargeCTE("", "l.balance", "locked l") + `, applied AS (
+    UPDATE user_balances SET balance = charge.balance_after, updated_at = now()
+    FROM charge
+    WHERE user_balances.user_id = $user::bigint
+    RETURNING charge.id AS charge_id, charge.balance_after AS charge_after
+)
+SELECT ` + chargeColumns + `,
+       ` + presentColumn(lock)
+}()
+
+// applyNames name applySQL's arguments: the user, the signed delta, kind,
+// ref_type, ref_id, idempotency key, operator id (NULL), plugin key ("" →
+// NULL) and note.
+var applyNames = []string{"user", "delta", "kind", "ref_type", "ref_id", "key", "operator", "plugin", "note"}
+
+var applyStmt = store.NewNumbered(applySQL, applyNames...)
+
+// releaseSQL is ReleasePrechargeTx in one statement: the balance row is
+// locked when the request has a reservation, which releaseCTEs delete and
+// refund. Arguments: the request id, the user, the refund's idempotency key
+// and note. Columns: releaseColumns (releaseRow). It reports no presence:
+// prechargeSQL reserves only under the user's balance row, so without the
+// row there is nothing to release.
+var releaseSQL = `
+WITH ` + reservationCTE + `, ` + lockedCTE(hasReservation) + `, ` + releaseCTEs + `, applied AS (
+    UPDATE user_balances SET balance = refund.balance_after, updated_at = now()
+    FROM refund
+    WHERE user_balances.user_id = $user::bigint
+    RETURNING refund.id AS refund_id, refund.balance_after AS refund_after
+)
+SELECT ` + releaseColumns
+
+var releaseStmt = store.NewNumbered(releaseSQL, "request", "user", "refund_key", "refund_note")
 
 // settleSQL is SettleTx in one statement: releaseSQL for the request's
-// reservation, then applySQL for its charge (when $5), as one. It replaces
-// the two statements SettleTx ran under the balance lock, which cost a round
-// trip each while the lock was held.
+// reservation, then applySQL for its charge (when $charge), as one. It
+// replaces the two statements SettleTx ran under the balance lock, which
+// cost a round trip each while the lock was held.
 //
 // Why it is the same as releaseSQL followed by applySQL:
+//   - The writes. The release and the charge are those statements'
+//     fragments (releaseCTEs, chargeCTE), and the lock condition is either
+//     of theirs.
 //   - The lock. The balance row is locked FOR UPDATE once, when either
 //     statement locked it: a reservation is visible (releaseSQL's
 //     condition) or a charge whose key is not (applySQL's). Every write reads
@@ -158,7 +239,7 @@ var releaseStmt = newLedgerStmt(releaseSQL)
 //     a key that commits in between was "existing" and is now a lost ON
 //     CONFLICT race (charge empty, existing empty), which the caller already
 //     answers with the same row and the same duplicate check
-//     (resolveApply), the way ApplyTx always has.
+//     (applyRow.resolve), the way ApplyTx always has.
 //   - The amounts. The charge's balance_after is the refund's balance_after
 //     plus the delta, or the locked balance plus the delta when no refund
 //     was written: the balance applySQL read after releaseSQL's update.
@@ -174,122 +255,52 @@ var releaseStmt = newLedgerStmt(releaseSQL)
 //     returns both ledger rows, so a row is reported only with its balance
 //     update, as each statement's applied did.
 //
-// Parameters: 1 user, 2 request id, 3 refund idempotency key, 4 refund note,
-// 5 whether there is a charge, 6 its signed delta, 7 kind, 8 ref_type,
-// 9 ref_id, 10 idempotency key, 11 operator id, 12 plugin key (” → NULL),
-// 13 note. Columns: releaseRow's, applyRow's for the charge, and present.
-const settleSQL = `
-WITH existing AS (
-    SELECT id, balance_after, user_id, delta, kind FROM balance_ledger
-    WHERE $5::boolean AND idempotency_key = $10::varchar
-), reservation AS (
-    SELECT 1 FROM request_precharges WHERE request_id = $2::varchar AND user_id = $1::bigint
-), locked AS (
-    SELECT balance FROM user_balances
-    WHERE user_id = $1::bigint
-      AND (EXISTS (SELECT 1 FROM reservation) OR ($5::boolean AND NOT EXISTS (SELECT 1 FROM existing)))
-    FOR UPDATE
-), released AS (
-    DELETE FROM request_precharges p USING locked
-    WHERE p.request_id = $2::varchar AND p.user_id = $1::bigint
-    RETURNING p.amount
-), refund AS (
-    INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
-        idempotency_key, operator_id, plugin_key, note)
-    SELECT $1::bigint, r.amount, l.balance + r.amount, 'refund', 'precharge', $2::varchar,
-        $3::varchar, NULL, NULL, $4::text
-    FROM released r, locked l
-    WHERE NOT EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $3::varchar)
-    ON CONFLICT (idempotency_key) DO NOTHING
-    RETURNING id, balance_after
-), charge AS (
-    INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
-        idempotency_key, operator_id, plugin_key, note)
-    SELECT $1::bigint, $6::numeric, COALESCE(r.balance_after, l.balance) + $6::numeric, $7::text, $8::text,
-        $9::text, $10::varchar, $11::bigint, NULLIF($12::text, ''), $13::text
-    FROM locked l LEFT JOIN refund r ON true
-    WHERE $5::boolean AND NOT EXISTS (SELECT 1 FROM existing)
-    ON CONFLICT (idempotency_key) DO NOTHING
-    RETURNING id, balance_after
-), applied AS (
+// Arguments: settleArgs (settleNames). Columns: releaseColumns,
+// chargeColumns and present.
+var settleSQL = func() string {
+	charged := `$charge::boolean`
+	lock := hasReservation + ` OR (` + chargeWanted(charged) + `)`
+	return `
+WITH ` + existingCTE(charged) + `, ` + reservationCTE + `, ` + lockedCTE(lock) + `, ` + releaseCTEs + `, ` +
+		chargeCTE(charged, "COALESCE(r.balance_after, l.balance)", "locked l LEFT JOIN refund r ON true") + `, applied AS (
     UPDATE user_balances SET balance = COALESCE(c.balance_after, r.balance_after), updated_at = now()
     FROM (SELECT 1) one LEFT JOIN refund r ON true LEFT JOIN charge c ON true
-    WHERE user_balances.user_id = $1::bigint AND (r.id IS NOT NULL OR c.id IS NOT NULL)
+    WHERE user_balances.user_id = $user::bigint AND (r.id IS NOT NULL OR c.id IS NOT NULL)
     RETURNING r.id AS refund_id, r.balance_after AS refund_after, c.id AS charge_id, c.balance_after AS charge_after
 )
-SELECT COALESCE((SELECT refund_id FROM applied), 0),
-       COALESCE((SELECT refund_after FROM applied), 0),
-       EXISTS (SELECT 1 FROM released),
-       COALESCE((SELECT amount FROM released), 0),
-       COALESCE((SELECT charge_id FROM applied), 0),
-       COALESCE((SELECT charge_after FROM applied), 0),
-       EXISTS (SELECT 1 FROM existing),
-       COALESCE((SELECT id FROM existing), 0),
-       COALESCE((SELECT balance_after FROM existing), 0),
-       COALESCE((SELECT user_id FROM existing), 0),
-       COALESCE((SELECT delta FROM existing), 0),
-       COALESCE((SELECT kind FROM existing), ''),
-       EXISTS (SELECT 1 FROM locked)
-           OR (NOT EXISTS (SELECT 1 FROM reservation)
-               AND (NOT $5::boolean OR EXISTS (SELECT 1 FROM existing))
-               AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $1::bigint))`
+SELECT ` + releaseColumns + `,
+       ` + chargeColumns + `,
+       ` + presentColumn(lock)
+}()
 
-var settleStmt = newLedgerStmt(settleSQL)
+// settleNames name settleSQL's arguments: the user, the request id, the
+// refund's idempotency key and note, whether there is a charge, then the
+// charge's as applyNames has them, without the user.
+var settleNames = append([]string{"user", "request", "refund_key", "refund_note", "charge"}, applyNames[1:]...)
 
-// ledgerStmt is a ledger statement rewritten for GORM: each $n of its SQL is
-// a ? that binds the n-th argument, again wherever $n repeats.
-type ledgerStmt struct {
-	sql  string
-	args []int // for each ?, in order, the index of the argument it binds
-}
+var settleStmt = store.NewNumbered(settleSQL, settleNames...)
 
-// newLedgerStmt rewrites query, which must hold no ? or @ of its own (GORM
-// reads both as placeholders) and no $ but its placeholders.
-func newLedgerStmt(query string) ledgerStmt {
-	if strings.ContainsAny(query, "?@") {
-		panic("billing: a ledger statement holds a ? or @")
+// runLedger runs a ledger statement whose last column is present on db
+// with args, scanning the others into dest, and when the statement did not
+// find the user's balance row, creates it (ensureBalanceSQL) and runs the
+// statement again.
+func runLedger(db *gorm.DB, st store.Numbered, userID int64, args []any, dest ...any) error {
+	var present bool
+	dest = append(dest, &present)
+	run := func() error { return st.Raw(db, args...).Row().Scan(dest...) }
+	if err := run(); err != nil || present {
+		return err
 	}
-	var b strings.Builder
-	var st ledgerStmt
-	for i := 0; i < len(query); i++ {
-		j := i + 1
-		for query[i] == '$' && j < len(query) && query[j] >= '0' && query[j] <= '9' {
-			j++
-		}
-		if j == i+1 {
-			b.WriteByte(query[i])
-			continue
-		}
-		n, _ := strconv.Atoi(query[i+1 : j])
-		if n < 1 {
-			panic("billing: a ledger statement holds $" + query[i+1:j])
-		}
-		st.args = append(st.args, n-1)
-		b.WriteByte('?')
-		i = j - 1
+	if err := ensureBalance(db, userID); err != nil {
+		return err
 	}
-	st.sql = b.String()
-	return st
-}
-
-// row runs the statement on db with args ($1 is args[0]) and returns its
-// one row.
-func (st ledgerStmt) row(db *gorm.DB, args ...any) *sql.Row {
-	return st.raw(db, args...).Row()
-}
-
-// raw is the statement on db with args, not yet run.
-func (st ledgerStmt) raw(db *gorm.DB, args ...any) *gorm.DB {
-	vars := make([]any, len(st.args))
-	for i, n := range st.args {
-		vars[i] = args[n]
-	}
-	return db.Raw(st.sql, vars...)
+	return run()
 }
 
 func releaseKey(requestID string) string { return "precharge_release:" + requestID }
 
-// applyRow is what applySQL reports of a change, and settleSQL of its charge.
+// applyRow is what applySQL reports of a change, and settleSQL of its
+// charge (chargeColumns).
 type applyRow struct {
 	applied core.LedgerResult // the new ledger row; LedgerID 0 when none was written
 	existed bool              // the key's row was there before the statement
@@ -325,7 +336,8 @@ func (a *applyRow) resolve(ctx context.Context, tx pgx.Tx, ch core.LedgerChange)
 	return checkDuplicate(dup, ch)
 }
 
-// applyArgs are applySQL's parameters for a validated, rounded change.
+// applyArgs are applySQL's arguments (applyNames) for a validated, rounded
+// change.
 func applyArgs(ch core.LedgerChange) []any {
 	delta := ch.Amount
 	if !ch.Credit {
@@ -335,18 +347,10 @@ func applyArgs(ch core.LedgerChange) []any {
 }
 
 // applyChange runs applySQL for a validated, rounded change on db, creating
-// the balance row first when the statement reports it missing.
+// the balance row when the statement reports it missing.
 func applyChange(db *gorm.DB, ch core.LedgerChange) (applyRow, error) {
 	var a applyRow
-	var present bool
-	run := func() error { return applyStmt.row(db, applyArgs(ch)...).Scan(append(a.dest(), &present)...) }
-	if err := run(); err != nil || present {
-		return a, err
-	}
-	if err := ensureBalance(db, ch.UserID); err != nil {
-		return a, err
-	}
-	err := run()
+	err := runLedger(db, applyStmt, ch.UserID, applyArgs(ch), a.dest()...)
 	return a, err
 }
 
@@ -364,7 +368,7 @@ func checkDuplicate(dup *core.LedgerResult, ch core.LedgerChange) (*core.LedgerR
 }
 
 // releaseRow is what releaseSQL reports of a request's reservation, and
-// settleSQL of its release.
+// settleSQL of its release (releaseColumns).
 type releaseRow struct {
 	refund   core.LedgerResult // the refund's ledger row; LedgerID 0 when none was written
 	released bool              // a reservation was deleted
@@ -403,7 +407,7 @@ func (r *releaseRow) resolve(ctx context.Context, tx pgx.Tx, key string) (*core.
 func releasePrecharge(ctx context.Context, tx pgx.Tx, userID int64, requestID string) (*core.LedgerResult, decimal.Decimal, error) {
 	key := releaseKey(requestID)
 	var r releaseRow
-	if err := releaseStmt.row(store.G(ctx, tx), requestID, userID, key, "release request precharge").Scan(r.dest()...); err != nil {
+	if err := releaseStmt.Raw(store.G(ctx, tx), requestID, userID, key, "release request precharge").Row().Scan(r.dest()...); err != nil {
 		return nil, r.amount, err
 	}
 	res, err := r.resolve(ctx, tx, key)
@@ -422,9 +426,9 @@ type settleRow struct {
 	charge  applyRow
 }
 
-// settleArgs are settleSQL's parameters: the release's, then the charge's
-// as applySQL takes them (without the user, $1 already), or inert values
-// when there is no charge.
+// settleArgs are settleSQL's arguments (settleNames): the release's, then
+// the charge's as applySQL takes them (without the user, already first), or
+// inert values when there is no charge.
 func settleArgs(userID int64, requestID string, charge *core.LedgerChange) []any {
 	args := []any{userID, requestID, releaseKey(requestID), "release request precharge", charge != nil}
 	if charge == nil {
@@ -434,22 +438,11 @@ func settleArgs(userID int64, requestID string, charge *core.LedgerChange) []any
 }
 
 // settleLedger runs settleSQL for the request's release and the validated,
-// rounded charge (nil: release only) on db, creating the balance row first
-// when the statement reports it missing.
+// rounded charge (nil: release only) on db, creating the balance row when
+// the statement reports it missing.
 func settleLedger(db *gorm.DB, userID int64, requestID string, charge *core.LedgerChange) (settleRow, error) {
-	args := settleArgs(userID, requestID, charge)
 	var st settleRow
-	var present bool
-	run := func() error {
-		return settleStmt.row(db, args...).Scan(append(append(st.release.dest(), st.charge.dest()...), &present)...)
-	}
-	if err := run(); err != nil || present {
-		return st, err
-	}
-	if err := ensureBalance(db, userID); err != nil {
-		return st, err
-	}
-	err := run()
+	err := runLedger(db, settleStmt, userID, settleArgs(userID, requestID, charge), append(st.release.dest(), st.charge.dest()...)...)
 	return st, err
 }
 

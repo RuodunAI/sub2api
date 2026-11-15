@@ -422,25 +422,49 @@ func segmentsOf(changes []ruleChange) []int64 {
 	return ids
 }
 
-// applyChanges writes the changes in tx. They go in the order of what they
-// are on, whatever order the request gave them in: two requests that change
-// the same rules then lock them in the same order, and neither waits for the
-// other in a circle.
+// applyChanges writes the changes in tx, in one statement (writeRulesSQL).
+// They go in the order of what they are on, whatever order the request gave
+// them in: two requests that change the same rules then lock them in the
+// same order, and neither waits for the other in a circle.
 func applyChanges(ctx context.Context, tx pgx.Tx, changes []ruleChange, updatedBy int64) error {
-	slices.SortStableFunc(changes, func(a, b ruleChange) int {
-		return cmp.Or(cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
-	})
-	g := store.G(ctx, tx)
-	for _, ch := range changes {
-		var err error
-		if ch.rule == nil {
-			err = deleteRule(g, ch.on).Error
-		} else {
-			err = saveRule(g, ch.on, ch.rule, updatedBy)
-		}
-		if err != nil {
-			return err
-		}
+	if len(changes) == 0 {
+		return nil
 	}
-	return nil
+	slices.SortStableFunc(changes, func(a, b ruleChange) int {
+		return cmp.Or(cmp.Compare(a.on.GroupID, b.on.GroupID), cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
+	})
+	w, err := collapseChanges(changes)
+	if err != nil {
+		return err
+	}
+	return writeRules(store.G(ctx, tx), w, updatedBy).Error
+}
+
+// collapseChanges turns sorted changes into writeRulesSQL's rows, one per
+// rule, leaving what the changes of the rule (adjacent once sorted) left
+// one after the other: the rule removed when any of them removes it, saved
+// as the last one when that saves it (removed then saved: a new row), and
+// the expression of every custom price in the history.
+func collapseChanges(changes []ruleChange) (*ruleWrites, error) {
+	w := &ruleWrites{}
+	for len(changes) > 0 {
+		n := 1
+		for n < len(changes) && changes[n].on == changes[0].on {
+			n++
+		}
+		removed := false
+		for _, ch := range changes[:n] {
+			if ch.rule == nil {
+				removed = true
+			} else if err := w.addHistory(ch.rule); err != nil {
+				return nil, err
+			}
+		}
+		last := changes[n-1]
+		if err := w.addRule(last.on, removed, last.rule); err != nil {
+			return nil, err
+		}
+		changes = changes[n:]
+	}
+	return w, nil
 }

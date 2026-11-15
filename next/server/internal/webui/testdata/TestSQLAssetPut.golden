@@ -1,8 +1,14 @@
 -- sql
-INSERT INTO web_assets(path,sha256,body,size) VALUES($1,$2,$3,$4)
-		ON CONFLICT(path) DO UPDATE SET sha256=web_assets.sha256 WHERE web_assets.sha256=EXCLUDED.sha256 RETURNING path
+WITH put AS (
+	INSERT INTO web_assets(path,sha256,body,size)
+	SELECT path,sha256,body,octet_length(body) FROM unnest($1::text[],$2::text[],$3::bytea[]) WITH ORDINALITY AS f(path,sha256,body,o) ORDER BY o
+	ON CONFLICT(path) DO UPDATE SET sha256=web_assets.sha256 WHERE web_assets.sha256=EXCLUDED.sha256 RETURNING path
+), listed AS (
+	INSERT INTO web_asset_build_files(build_id,path) SELECT $4,path FROM put ON CONFLICT DO NOTHING
+)
+SELECT path FROM put
 -- vars
-$1 string "assets/a.js"
-$2 string "h"
-$3 store.Bytes [120]
-$4 int 1
+$1 store.Strings [assets/a.js assets/b.css]
+$2 store.Strings [h i]
+$3 store.Array[github.com/Sub2API-Devs/sup2api/next/server/internal/store.Bytes] [x ]
+$4 string "b1"

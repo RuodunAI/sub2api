@@ -9,7 +9,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
-	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -19,7 +18,7 @@ import (
 
 // The SQL of the console and query statements of the package built with
 // GORM (see package gormtest). The filtered usage reads keep store.Filter's
-// numbered conditions and go through rawNumbered; the per-request execution
+// numbered conditions and go through store.RawNumbered; the per-request execution
 // statements (BeginExecution, ObserveExecution, the commit's lock and mark)
 // stay on pgx (BenchmarkHotExecution).
 
@@ -40,61 +39,11 @@ func sqlFilter(t *testing.T, query string, self *int64) *store.Filter {
 // sqlSink stands for the row a statement reads, which a snapshot does not see.
 var sqlSink struct{}
 
-func TestRawNumbered(t *testing.T) {
-	sql, vars, err := gormtest.Build(func(db *gorm.DB) *gorm.DB {
-		return rawNumbered(db, `SELECT '$1', $2, E'\\' FROM t WHERE a = $1 AND (j ? 'k' OR b = $2) OR c = $10 OR d = '?'`,
-			[]any{"a", 2, 3, 4, 5, 6, 7, 8, 9, "ten"}).Scan(&sqlSink)
-	})
-	require.NoError(t, err)
-	require.Equal(t, `SELECT '$1', $1, E'\\' FROM t WHERE a = $2 AND (j ? 'k' OR b = $3) OR c = $4 OR d = '?'`, sql)
-	require.Equal(t, []any{2, "a", 2, "ten"}, vars)
-	for _, bad := range []string{`a = $3`, `a = $0`, `a = $`, `a = '@x' AND b = $1`} {
-		require.Panics(t, func() { rawNumbered(gormtest.DB(), bad, []any{1, 2}) }, bad)
-	}
-}
-
-// A $ inside a literal stays text however the literal escapes its quote:
-// a doubled quote in either kind, \' in E'...' only (in '...' a backslash
-// is a byte).
-func TestRawNumberedQuotes(t *testing.T) {
-	for _, c := range []struct{ in, want string }{
-		{`SELECT 'it''s $1', $1`, `SELECT 'it''s $1', ?`},
-		{`SELECT E'it\'s $1', $1`, `SELECT E'it\'s $1', ?`},
-		{`SELECT e'it''s \' $1', $1`, `SELECT e'it''s \' $1', ?`},
-		{`SELECT E'a\\', $1`, `SELECT E'a\\', ?`},
-		{`SELECT E'a\\''$1', $1`, `SELECT E'a\\''$1', ?`},
-		{`SELECT 'a\', $1`, `SELECT 'a\', ?`},
-		{`SELECT TYPE'a\', $1`, `SELECT TYPE'a\', ?`},
-		{`SELECT E'\?', $1`, `SELECT E'\?', ?`},
-		{`SELECT ''$1`, `SELECT ''?`},
-	} {
-		sql, vars := numbered(c.in, []any{"v"})
-		require.Equal(t, c.want, sql, c.in)
-		require.Equal(t, "v", vars[len(vars)-1], c.in)
-	}
-}
-
-// A []byte or json.RawMessage argument stays one parameter right after "(",
-// where GORM spreads a slice into one placeholder per element and turns an
-// empty one into NULL.
-func TestRawNumberedBytes(t *testing.T) {
-	sql, vars, err := gormtest.Build(func(db *gorm.DB) *gorm.DB {
-		return execNumbered(db, `UPDATE t SET a = COALESCE($1, a), b = COALESCE($2, b), c = ($3::jsonb), d = $4 WHERE id = $5`,
-			[]any{[]byte("ab"), []byte{}, json.RawMessage(`{"k":1}`), json.RawMessage{}, 7})
-	})
-	require.NoError(t, err)
-	require.Equal(t, `UPDATE t SET a = COALESCE($1, a), b = COALESCE($2, b), c = ($3::jsonb), d = $4 WHERE id = $5`, sql)
-	require.Equal(t, []any{store.Bytes("ab"), store.Bytes{}, store.Bytes(`{"k":1}`), store.Bytes{}, 7}, vars)
-	empty, err := vars[1].(store.Bytes).Value()
-	require.NoError(t, err)
-	require.Equal(t, []byte{}, empty, "an empty slice is the empty value, not NULL")
-}
-
 func TestSQLUsageList(t *testing.T) {
 	f := sqlFilter(t, "model=claude&api_key_name=ci_%25&success=true&from=2026-11-01T00:00:00Z&to=2026-11-15T00:00:00Z", nil)
 	t.Run("count", func(t *testing.T) {
 		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-			return rawNumbered(db, `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()).Scan(&sqlSink)
+			return store.RawNumbered(db, `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()...).Scan(&sqlSink)
 		})
 	})
 	t.Run("page", func(t *testing.T) {

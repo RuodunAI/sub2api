@@ -538,6 +538,78 @@ and usage, statement for statement and in the same transaction:
   publishing transaction;
 - `account` list page and usage overview (above, batch 2a).
 
+The multi-row event insert and the round trips the last two items and
+`billing` `applyChanges` had gained were reworked by gorm-5fix (below).
+
+## gorm-5fix: the event insert's text, the console's round trips
+
+`event.Publisher.Emit` runs in the settler's transaction, under the user's
+balance lock when it carries a ledger change (`usage` `insertAtomic`).
+Batch 5b's multi-row `VALUES` insert had a text per event count: pgx's
+statement cache prepares each new text, a Prepare round trip under that
+lock, and two parameters per event capped a call at 32767 events. Several
+events are now `insertEventsSQL`, two array parameters (`unnest ... WITH
+ORDINALITY ... ORDER BY`, ids in event order) and one text for any count;
+one event keeps the one-row `VALUES` insert (`insertEventSQL`, the batch 5b
+text and arguments), as `insertUsageRowSQL` does for a batch of one.
+TestEmitManyAsOne checks that both store the same documents,
+TestEmitPastParameterLimit 40 000 events in one call,
+TestEmitPreparesTwoTexts the prepares:
+
+| Emit, counts 1 to 12 on one connection | batch 5b | gorm-5fix |
+|---|---:|---:|
+| `INSERT INTO events` texts prepared | 12 | 2 |
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench HotEmit -benchmem -benchtime 2000x -count 5 ./internal/event/
+```
+
+Recorded 2026-11-15, d6ad15ef (before) and gorm-5fix (after), same
+machine and local server, the after run beside other test runs: ns/op is
+noise (the one-event path is the same code in both). Medians of 5; one
+transaction holds every iteration, so the statement is prepared once.
+
+| BenchmarkHotEmit | before ns/op | before B/op | before allocs | after ns/op | after B/op | after allocs |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 event | 32 645 | 2 794 | 45 | 65 967 | 2 794 | 45 |
+| 2 events | 43 326 | 3 403 | 66 | 80 799 | 3 387 | 70 |
+| 10 events | 122 351 | 10 177 | 219 | 153 176 | 7 357 | 193 |
+
+The ledger's hot paths after gorm-5fix (its ledger statements are built
+from shared fragments, the same SQL; a settlement emits two events):
+BenchmarkHotPrecharge 451 allocs/op, BenchmarkHotReleasePrecharge/gorm 76
+(miss) and 81 (hit), BenchmarkHotSettle 1 019 (gorm-5rtt 1 013),
+BenchmarkHotSettlerInsertFree 381, BenchmarkHotSettlerInsertPending 192.
+
+The console statements batch 5a and 5b had split are one statement again,
+with the same rows, locks and results (snapshots TestSQLAccountList,
+TestSQLAccountUsageOverview, TestSQLWriteRules, TestSQLAssetPut):
+
+| Path | pgx batch | before (d6ad15ef) | gorm-5fix |
+|---|---:|---:|---:|
+| `account` `listPage` | 1 | 2 | 1 (2 for a page past the end, which has no row to carry the total) |
+| `account` `usageOverview` (the list's usage cell) | 1 | 3 | 1 |
+| `billing` `applyChanges` (PUT group model prices) | 1 | one per change, one more per custom price | 1 |
+| `webui` `Publish`, file writes | 1 | 2 per file | 1 |
+
+- `listPage`: the page carries the total as a scalar subquery (`listRows`),
+  run once, in the page's snapshot.
+- `usageOverview`: `usageOverviewSQL` reads each account's totals and limit
+  (LEFT JOIN, with whether there is one) and its window from midnight
+  (LATERAL sums), one row per account in list order;
+  TestUsageOverviewMatchesItsReads compares it with the three reads.
+- `applyChanges`: `writeRulesSQL` takes the changes as arrays, one row per
+  rule (several changes of one rule collapsed into removed and saved), and
+  runs history, ordered `FOR UPDATE` of the existing rules, deletes, the
+  group's upserts and the segments' upserts one after the other (each step
+  reads the previous one in a one-time condition). TestWriteRulesMatchesSequential
+  compares it with the statements one by one, TestWriteRulesConcurrentNoDeadlock
+  fails without the ordered lock step.
+- `Publish`: `putAssetsSQL` writes every blob and lists its path in the
+  build in one statement of arrays, in file order; a file whose path it
+  did not return is the immutable collision that fails the publication.
+
 ## Batch 3a: console authentication (iam)
 
 From batch 3 on every statement moves to GORM, hot or not; the numbers are

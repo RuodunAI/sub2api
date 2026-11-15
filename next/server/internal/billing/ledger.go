@@ -90,9 +90,11 @@ func (s *Service) Apply(ctx context.Context, ch core.LedgerChange) (*core.Ledger
 // CacheBalance after committing when the result is not a duplicate.
 //
 // One statement (applySQL: find the key or lock the row, write the ledger
-// row and the balance; ensureBalanceSQL before it only for a user without a
-// balance row) and one event: one round trip under the user's balance lock
-// before COMMIT instead of six (CONTRACTS §63.7).
+// row and the balance) and one event: one round trip under the user's
+// balance lock before COMMIT instead of six (CONTRACTS §63.7). For a user
+// without a balance row the statement finds no row and writes nothing;
+// ensureBalanceSQL then creates the row and the statement runs again
+// (runLedger).
 func (s *Service) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error) {
 	if err := validateChange(&ch); err != nil {
 		return nil, err
