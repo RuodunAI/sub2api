@@ -692,89 +692,103 @@ more.
 
 Batch 6 removed the forwarding driver: GORM (gorm.io/driver/postgres, pgx's
 database/sql driver underneath) owns the pool and the transactions, and
-store's array types are written and read as PostgreSQL's array text
-instead of through pgtype. Every hot-path benchmark ran on the base of the
-batch (72d1ab3f, GORM over the forwarding driver) and on the batch,
-package by package, base first:
+store's array types no longer go through pgtype. Every hot-path benchmark
+ran on three trees, interleaved package by package so that load drift hits
+all three:
+
+- bridge: 563d5111, the batch's base after gorm-5fix and gorm-sdkfix were
+  merged into it (GORM over the forwarding driver);
+- text: the batch with the array parameters written as PostgreSQL's array
+  text ("{1,2}");
+- batch 6: the batch as committed, the array parameters handed to pgx as
+  plain slices (see store.Int64s).
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
-go test -run '^$' -bench Hot -skip HotSettlerInsertBatch -benchmem -benchtime 1000x -count 5 \
+go test -run '^$' -bench Hot -skip HotSettlerInsertBatch -benchmem -benchtime 1000x -count 3 \
   ./internal/apikey/ ./internal/billing/ ./internal/usage/ ./internal/account/ \
   ./internal/helperhistory/ ./internal/iam/ ./internal/store/ ./internal/gateway/ \
   ./internal/ccgateway/ ./internal/plugin/grants/ ./internal/authz/
-# and HotSettlerInsertBatch with -benchtime 100x
+# and HotSettlerInsertBatch with -benchtime 100x; two rounds of each
 ```
 
-Recorded 2026-11-15, same machine and server as above. Medians of 5.
-allocs/op is stable to the unit; ns/op is not: the "pgx"/"sql" variants,
-the same SQL on pgx before and on database/sql after, moved by -54% to
-+194% between the two runs, and a second pass over the read paths
-(interleaved, 6 runs each, at two to three times the absolute times)
-put the GORM forms of the single-row reads within 20% of their base. The
-table holds the production (GORM) forms; the raw variants stay in the
-benchmarks for comparison.
+Recorded 2026-11-15, same machine and server as above. Medians of 6 (two
+rounds of 3). allocs/op is stable to the unit; ns/op is not (compare the
+text and batch 6 columns on the paths the arrays do not touch). The table holds the production
+(GORM) forms; the raw variants ("pgx" on the bridge, "sql" on the batch)
+stay in the benchmarks for comparison.
 
-| Benchmark | base ns/op | B/op | allocs/op | batch 6 ns/op | B/op | allocs/op | allocs |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `apikey` HotKeyLookup/gorm | 69 068 | 11 162 | 150 | 79 898 | 9 812 | 141 | -6% |
-| `billing` HotPrecharge | 960 183 | 23 255 | 451 | 1 427 114 | 25 552 | 468 | +4% |
-| `billing` HotReleasePrecharge/miss/gorm | 113 239 | 8 437 | 76 | 96 275 | 7 808 | 70 | -8% |
-| `billing` HotReleasePrecharge/hit/gorm | 508 232 | 8 536 | 81 | 976 806 | 7 888 | 75 | -7% |
-| `usage` HotExecution/begin/gorm | 424 495 | 8 563 | 54 | 713 657 | 8 079 | 49 | -9% |
-| `usage` HotExecution/observe/gorm | 648 947 | 8 724 | 55 | 566 341 | 8 228 | 50 | -9% |
-| `usage` HotExecution/commit/gorm | 647 935 | 7 493 | 104 | 686 440 | 9 692 | 121 | +16% |
-| `usage` HotSettlerInsertFree | 1 585 039 | 32 272 | 381 | 1 582 580 | 34 216 | 396 | +4% |
-| `usage` HotSettlerInsertPending | 986 123 | 17 417 | 192 | 1 496 907 | 20 213 | 214 | +11% |
-| `usage` HotSettle | 1 882 817 | 60 705 | 1 013 | 1 641 709 | 61 414 | 1 020 | +1% |
-| `usage` HotStmtSettleLock/gorm | 351 718 | 3 493 | 45 | 266 536 | 2 960 | 39 | -13% |
-| `usage` HotStmtSettleUpdate/gorm | 334 208 | 8 288 | 169 | 412 487 | 7 814 | 164 | -3% |
-| `usage` HotStmtReserveUpdate/gorm | 393 025 | 6 862 | 132 | 423 456 | 6 390 | 127 | -4% |
-| `usage` HotStmtReserveEntry/gorm | 275 849 | 4 428 | 60 | 309 603 | 3 896 | 54 | -10% |
-| `usage` HotTaskFind/gorm | 76 382 | 6 458 | 92 | 48 861 | 5 658 | 86 | -7% |
-| `usage` HotTaskBegin/gorm | 226 171 | 4 090 | 49 | 303 276 | 3 616 | 44 | -10% |
-| `usage` HotTaskReceive/gorm | 267 247 | 3 429 | 40 | 304 976 | 2 938 | 35 | -12% |
-| `usage` HotTaskRegister/gorm | 836 999 | 12 229 | 176 | 1 837 374 | 13 852 | 188 | +7% |
-| `usage` HotSettlerInsertBatch | 21 356 895 | 3 492 361 | 37 704 | 25 216 213 | 4 967 922 | 55 220 | +46% |
-| `account` HotGroupSnapshot/gorm | 156 987 | 27 197 | 419 | 182 352 | 26 096 | 399 | -5% |
-| `account` HotLoadRow/gorm | 86 034 | 13 988 | 186 | 76 944 | 11 819 | 172 | -8% |
-| `helperhistory` HotHelperPrefix/gorm | 38 550 | 3 789 | 52 | 59 929 | 5 966 | 90 | +73% |
-| `iam` HotUserStatus/gorm | 21 410 | 3 525 | 43 | 22 206 | 2 960 | 37 | -14% |
-| `iam` HotAccessKey/gorm | 38 796 | 4 221 | 66 | 43 580 | 3 456 | 55 | -17% |
-| `iam` HotGetUser/gorm | 60 613 | 7 173 | 94 | 89 640 | 6 128 | 83 | -12% |
-| `store` HotQuotaObservation/gorm | 652 542 | 5 197 | 50 | 789 608 | 4 723 | 45 | -10% |
-| `store` HotReadAccountQuotas/gorm | 59 106 | 7 615 | 105 | 123 010 | 7 467 | 130 | +24% |
-| `store` HotAccountBalances/gorm | 47 664 | 4 901 | 70 | 72 745 | 4 939 | 95 | +36% |
-| `gateway` HotSettingsRow/gorm | 19 315 | 4 181 | 46 | 28 333 | 3 649 | 40 | -13% |
-| `gateway` HotStickyRules/gorm | 46 777 | 8 054 | 141 | 62 568 | 7 131 | 130 | -8% |
-| `ccgateway` HotSharedAccountType/gorm | 46 907 | 3 349 | 43 | 19 783 | 2 816 | 37 | -14% |
-| `plugin/grants` HotGrantHolds/gorm | 45 270 | 5 045 | 60 | 59 058 | 4 512 | 54 | -10% |
-| `authz` HotAuthz/permission_set | 257 189 | 13 640 | 201 | 350 702 | 16 166 | 221 | +10% |
-| `authz` HotAuthz/catalog | 184 519 | 21 027 | 435 | 260 602 | 23 561 | 455 | +5% |
-| `authz` HotAuthz/version | 51 359 | 3 213 | 38 | 48 263 | 2 680 | 32 | -16% |
+| Benchmark | bridge ns/op | allocs/op | text ns/op | allocs/op | batch 6 ns/op | B/op | allocs/op | allocs vs bridge |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `apikey` HotKeyLookup/gorm | 96 116 | 150 | 109 784 | 141 | 119 208 | 9 812 | 141 | -6% |
+| `billing` HotPrecharge | 646 800 | 451 | 813 342 | 468 | 734 781 | 25 517 | 468 | +4% |
+| `billing` HotReleasePrecharge/miss/gorm | 126 694 | 76 | 98 996 | 70 | 115 245 | 7 808 | 70 | -8% |
+| `billing` HotReleasePrecharge/hit/gorm | 419 201 | 81 | 314 749 | 75 | 310 502 | 7 887 | 75 | -7% |
+| `usage` HotExecution/begin/gorm | 260 830 | 54 | 270 876 | 49 | 271 221 | 8 093 | 49 | -9% |
+| `usage` HotExecution/observe/gorm | 297 537 | 55 | 276 858 | 50 | 289 152 | 8 229 | 50 | -9% |
+| `usage` HotExecution/commit/gorm | 504 944 | 104 | 450 774 | 121 | 490 366 | 9 689 | 121 | +16% |
+| `usage` HotSettlerInsertFree | 881 616 | 381 | 803 294 | 396 | 848 846 | 34 218 | 396 | +4% |
+| `usage` HotSettlerInsertPending | 565 516 | 192 | 545 536 | 214 | 545 060 | 20 218 | 214 | +11% |
+| `usage` HotSettle | 1 441 965 | 1 019 | 1 554 026 | 1 066 | 1 601 338 | 62 080 | 1 026 | +1% |
+| `usage` HotStmtSettleLock/gorm | 234 180 | 45 | 236 870 | 39 | 235 442 | 2 960 | 39 | -13% |
+| `usage` HotStmtSettleUpdate/gorm | 364 116 | 169 | 369 807 | 164 | 340 792 | 7 814 | 164 | -3% |
+| `usage` HotStmtReserveUpdate/gorm | 358 807 | 132 | 293 896 | 127 | 289 983 | 6 391 | 127 | -4% |
+| `usage` HotStmtReserveEntry/gorm | 254 717 | 60 | 240 231 | 54 | 254 260 | 3 896 | 54 | -10% |
+| `usage` HotTaskFind/gorm | 81 138 | 92 | 78 178 | 86 | 82 225 | 5 664 | 86 | -7% |
+| `usage` HotTaskBegin/gorm | 231 604 | 49 | 243 498 | 44 | 251 952 | 3 616 | 44 | -10% |
+| `usage` HotTaskReceive/gorm | 225 272 | 40 | 245 428 | 35 | 214 302 | 2 936 | 35 | -12% |
+| `usage` HotTaskRegister/gorm | 673 130 | 176 | 835 320 | 188 | 813 218 | 13 862 | 188 | +7% |
+| `usage` HotSettlerInsertBatch | 22 491 530 | 37 284 | 23 071 784 | 55 248 | 20 917 412 | 3 263 120 | 37 104 | -0% |
+| `account` HotGroupSnapshot/gorm | 153 779 | 419 | 215 644 | 399 | 193 088 | 26 075 | 399 | -5% |
+| `account` HotLoadRow/gorm | 92 678 | 186 | 128 172 | 172 | 129 920 | 11 820 | 172 | -8% |
+| `helperhistory` HotHelperPrefix/gorm | 67 824 | 52 | 81 560 | 90 | 71 879 | 3 256 | 46 | -12% |
+| `iam` HotUserStatus/gorm | 62 241 | 43 | 60 012 | 37 | 60 530 | 2 960 | 37 | -14% |
+| `iam` HotAccessKey/gorm | 71 403 | 66 | 73 271 | 55 | 71 190 | 3 456 | 55 | -17% |
+| `iam` HotGetUser/gorm | 95 354 | 94 | 111 290 | 83 | 113 592 | 6 128 | 83 | -12% |
+| `store` HotQuotaObservation/gorm | 247 742 | 50 | 242 999 | 45 | 217 934 | 4 722 | 45 | -10% |
+| `store` HotReadAccountQuotas/gorm | 78 570 | 105 | 104 626 | 130 | 99 402 | 6 694 | 99 | -6% |
+| `store` HotAccountBalances/gorm | 81 892 | 70 | 89 356 | 95 | 90 426 | 4 176 | 64 | -9% |
+| `gateway` HotSettingsRow/gorm | 70 727 | 46 | 79 570 | 40 | 64 726 | 3 649 | 40 | -13% |
+| `gateway` HotStickyRules/gorm | 90 788 | 141 | 104 923 | 130 | 91 880 | 7 136 | 130 | -8% |
+| `ccgateway` HotSharedAccountType/gorm | 61 358 | 43 | 67 518 | 37 | 66 274 | 2 816 | 37 | -14% |
+| `plugin/grants` HotGrantHolds/gorm | 87 678 | 60 | 74 116 | 54 | 76 477 | 4 512 | 54 | -10% |
+| `authz` HotAuthz/permission_set | 296 160 | 201 | 321 525 | 221 | 314 474 | 16 176 | 221 | +10% |
+| `authz` HotAuthz/catalog | 226 358 | 435 | 261 238 | 455 | 264 151 | 23 566 | 455 | +5% |
+| `authz` HotAuthz/version | 57 331 | 38 | 55 809 | 32 | 62 556 | 2 680 | 32 | -16% |
 
 Without the forwarding driver a statement costs 5 to 17% fewer
 allocations: the bridge's per-column decoding into driver values and its
-rows wrapper are gone. What costs more is an array:
+rows wrapper are gone. The paths with more allocations than the bridge
+(HotExecution/commit +16%, HotSettlerInsertPending +11%,
+HotAuthz/permission_set +10%) have no array parameter and cost the same
+in the text form.
 
-- An array parameter (store.Int64s, Strings, Times, Bools) is now its
-  text form ("{1,2}"), which pgx parses again into the parameter's binary
-  form. The array-parameter reads went up: HotHelperPrefix (`= ANY($3)`
-  with a text[]) +73% allocations, HotReadAccountQuotas +24%,
-  HotAccountBalances +36%, and the settler's batch insert (`unnest` of 47
-  array parameters) +46% allocations and +42% bytes. In the interleaved
-  pass HotHelperPrefix was 28% and HotReadAccountQuotas 34% slower than
-  base, HotGroupSnapshot (a text[] column read through store.Strings)
-  27%. These are the paths above 20%.
-- The write transactions (HotPrecharge, HotSettlerInsertPending,
-  HotTaskRegister, HotExecution/begin) also show +49% to +120% ns/op in
-  the table, with allocations within +11%; their raw variants moved the
-  same way between the runs (HotTaskRegister/sql +157%), which puts it on
-  the server's commit fsyncs rather than on the code.
+Array parameters. Written as their text, an array parameter was parsed
+again by pgx into the parameter's binary form: HotHelperPrefix (`=
+ANY($3)` with a text[]) took 90 allocations against the bridge's 52,
+HotReadAccountQuotas 130 against 105, HotAccountBalances 95 against 70,
+and the settler's batch insert (`unnest` of 47 array parameters) 55 248
+against 37 284, with 46% more bytes. Their Value now returns the plain
+slice, which pgx encodes natively as it does a []int64; all four are at or
+below the bridge (46, 99, 64 and 37 104 allocations), and HotSettle is
+back to 1 026 (bridge 1 019, text 1 066). The slice is no database/sql
+driver.Value: the types rely on pgx's driver accepting any argument
+(its CheckNamedValue), which TestArrayParametersRelyOnPgxStdlib keeps.
 
-A Value that handed pgx the plain slice instead of its text would remove
-the array cost (pgx encodes a []int64 natively), at the price of a Value
-that is not a database/sql driver.Value; batch 6 keeps the text form.
+Reads. What the reads still pay over the bridge in time is database/sql's
+row scanning, the same on the raw form: HotLoadRow/sql takes 148
+allocations against 63 for /pgx on the bridge, HotGroupSnapshot/sql 375
+against 250, HotReadAccountQuotas/sql 75 against 46, and the GORM forms
+sit at their raw form's time (HotLoadRow and HotGroupSnapshot, which
+read the accounts' text[] columns, 26 to 40% slower than the bridge;
+HotReadAccountQuotas 27%). Part of it is the array columns: database/sql
+hands every array column over as its text, which store.Strings and the
+other types parse (pgtext.go). Nothing without pgx reads them cheaper:
+Go 1.27's driver.RowsColumnScanner lets pgx's driver scan a column
+straight into a plain slice destination, but a destination that
+implements sql.Scanner (as the store types must, to be GORM columns)
+still gets database/sql's text, so the cheaper read would take pgx's own
+types in the models. Batch 6 keeps the text read.
 
 ## What every request runs
 

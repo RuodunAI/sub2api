@@ -400,8 +400,9 @@ func TestGORMReadsEverySchemaColumn(t *testing.T) {
 	}
 }
 
-// Array and InfTime parameters: written in their text form, typed by the
-// server, in both of pgx's ways of sending a statement.
+// Array and InfTime parameters: arrays as plain slices for pgx to encode,
+// InfTime as a time.Time or "±infinity", in both of pgx's ways of sending a
+// statement.
 func TestStoreTypesAsParameters(t *testing.T) {
 	db, _ := widgetDB(t)
 	ctx := context.Background()
