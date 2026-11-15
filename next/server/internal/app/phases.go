@@ -181,7 +181,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	}
 	b.stopper.add("notifications", b.ntf.Stop)
 
-	az := authz.New(authz.Deps{DB: b.db, Bus: b.cl.Bus, Plugins: b.reg})
+	az := authz.New(authz.Deps{DB: b.db, Bus: b.cl.Bus, Plugins: b.reg, Redis: b.rdb})
 	if err := az.Start(b.ctx); err != nil {
 		return nil, fmt.Errorf("authz: %w", err)
 	}

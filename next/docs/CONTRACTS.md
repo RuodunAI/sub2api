@@ -329,6 +329,7 @@
 | `rl:account:{id}:spms:{秒}`、`rl:account:{id}:m:{key}:spms:{秒}`、`rl:account:{id}:md:{model}:spms:{秒}` | ZSET 同一周期内出现过的粘性会话：member = 粘性会话键（WebSocket 连接没有粘性键时为 `conn:{首轮请求 ID}`，§71.2），score = 最后出现的段号；每次写入删除 score < 当前段 − 20 的成员，TTL 同上。`req:{请求 ID}` 不写入。周期是 key 名的一部分，改周期即换新计数。2026-11-11 前是 ZSET `…:spm`（score = 毫秒时间），不再读写 | A |
 | `rl:apikey:{id}:rpmb`、`rl:apikey:{id}:tpmb` | HASH API Key 近 60 秒窗口的分段计数，格式同账号（§60.3、§68.3）；API Key 没有会话上限 | A |
 | `slot:account-model:{key}:{id}` | ZSET 账号某个模型列表的并发槽位，格式同 `slot:{kind}:{id}`（§68.2） | D |
+| `authz:c:ur:{uid}` | STRING JSON `{"v":版本,"a":是否 active,"r":["r:<角色 key>",...]}`，Casbin 用户角色缓存的第二级，TTL 15 分钟；写入用 Lua，已有值版本更新时不覆盖；只在 `v` ≥ 节点要求的版本时采用，Valkey 出错时跳过、直接读 PG（§99.4） | authz |
 
 广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
 
@@ -344,6 +345,7 @@
 | `sticky` | `{enabled, default_ttl_seconds, keep_on_account_disabled}` | `true`、3600、`false` |
 | `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}` | 3、2000、300 |
 | `auto_disable` | `{enabled, status_codes, keywords}`（§42.2） | `true`、`"401"`、new-api 的 7 条关键词 |
+| `authz` | `{engine}`：权限解析引擎 `legacy` / `shadow` / `casbin`（§99.3） | `shadow` |
 
 ## 9. 环境变量
 
@@ -6774,6 +6776,7 @@ cluster 任务：
 | `core.events.retention` | 1h / 5m |
 | `core.jobs.retention` | 1h / 5m |
 | `core.notify.purge` | 1h / 5m |
+| `core.authz.casbin_drift`（§99.6，0.1.290 候选） | 10m / 1m |
 | `core.egress.logs_prune`（原来每个节点都删） | 1h / 5m |
 
 node 任务：
@@ -8529,3 +8532,86 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 
 - 网关 `gateway/attempt_trail_test.go`：`TestAttemptTrail`（单次不写、换号 A→B、失败策略同号 A→A→B、全部失败）、`TestAttemptTrailBounds`（超 10 步计入 `omitted`、第 10 步仍有 `next`、`message` 截断）；`gateway/websocket_test.go` 的 `TestWebSocketHandshakeFailoverDisablesTheAccount`（握手换号的链路，最后一步取轮次结果）。
 - 使用记录 `usage/api_filter_test.go`：`TestUsageAttemptTrail`（PostgreSQL：三种视图的裁剪、详情补名而列表不带名、旧行与单次为 `null`、`retried` 在列表/汇总/导出的全站与自助视图、汇总 `anomalies` 不计、导出调用链路列的三种写法）、`TestShapeTrailDropsUnreadable`、`TestParseFilterInvalidSearch`（`retried=maybe`）。
+
+## 99. 权限判断接入 Casbin（Mode P，影子模式；迁移 0100；核心 0.1.290 候选）
+
+设计见“sup2api 权限判断迁移到 Casbin：实现设计”（阶段 S1）。Casbin 接管“用户经哪些角色持有哪些授予、某个 key 是否被蕴含”；防提权、可分配、`CanActOnUsers`、超管唯一、访问密钥交集 `Restrict`、插件复核、DataScope 仍由自研代码负责，输入改为 Casbin 产出的集合。本期不做 team（S0）。
+
+### 99.1 投影与触发器（Mode P）
+
+- 旧角色表（`role_permissions`、`role_permission_scopes`、`user_roles`、`roles.superuser`）仍是写入的真相，Go 写路径不变。`casbin_rule`（gorm-adapter 的列布局 `id, ptype, v0..v5`，`v1`、`v2` 加宽）是它们的投影，由数据库触发器在**写入方的同一事务**里维护：任何版本的核心、迁移脚本、FK 级联、`core.ClearScopeGrants` 都覆盖到。
+- 映射只写在视图 `authz_casbin_expected` 一处：`p, r:<角色 key>, <权限 key>, *`（整行授予）、`p, r:<角色 key>, <权限 key>, <范围>`（范围授予）、超管角色 `p, r:<角色 key>, *, *`、`g, u:<用户 id>, r:<角色 key>`。已移除、已停用权限的授予照常映射，加载时按 `permissions.status` 过滤。self 权限不落库，加载时注入虚拟角色 `r:_self`。
+- `authz_casbin_drift` 是两个方向的差（多出的行、缺少的行）；`authz_casbin_repair()` 按 `authz_casbin_expected` 修正 `casbin_rule` 并返回改动行数。
+- 触发器的覆盖范围、改 `roles.key` / `permissions.key` 被拒、TRUNCATE 的处理见迁移 `0100_casbin_rule.sql` 的注释。迁移回填 `casbin_rule` 并升 authz 版本。
+
+### 99.2 解析（`internal/authz/casbinx`）
+
+- 模型：`r = sub, obj`，`p = sub, act, scope`，`g = _, _`，matcher `g(r.sub, p.sub) && permMatch(p.act, p.scope, r.obj)`，`permMatch` 就是 `perm.Implies`（act `*` 蕴含一切）。
+- 每个 authz 版本一份不可变快照：在只读 RR 事务里读版本、权限状态和 p 行（gorm-adapter 只读加载，`TurnOffAutoMigrate`），只装 active 权限的 p 行与超管行；g 不装入，由只读 RoleManager 从用户角色缓存回答（`EnableGFunctionCache(false)`）。`Ensure(min)`：快照版本 ≥ min 直接用，否则 single-flight 重建（50 ms 去抖），最多等 2 s，超时报错（fail closed）。
+- `Resolver.Grants(uid, min)` 产出 `core.PermissionSet`（`*` → `Superuser`），`Version` 取快照与角色两者较小的版本。路由、`core.Can`、网关的判定都读这个集合（`PermissionSet.Has`，同一个 `perm.Implies`）；`Enforce` 把每条策略跑一遍 matcher（8–230 µs），只用于影子抽样、诊断与 `authz-verify`。
+
+### 99.3 开关 `authz.engine`
+
+| 值 | 谁说了算 | 另一边 |
+| --- | --- | --- |
+| `legacy` | 旧加载器 | 不算 |
+| `shadow`（默认） | 旧加载器 | 集合缓存未命中时（每个用户每个版本一次）同步再用 Casbin 算一遍，比较整个集合；`Can` 按 1% 抽样，异步用 `Enforce` 核对 `Has` |
+| `casbin` | Casbin（出错则请求失败，fail closed） | 旧加载器按 5% 抽样，异步反向比较 |
+
+- 存在 `settings` 表 `authz` 行 `{"engine": ...}`（§8）。接口 `GET /settings/authz`（`settings:read`）返回 `{engine（存的值）, effective（本节点在用的）, source: setting | env | default, shadow: 本节点计数}`；`PUT /settings/authz {"engine"}`（`settings:manage`）只接受三个值，其他返回 400 `invalid`。控制台没有页面。
+- 跨节点生效：`PUT` 后广播 `config:changed` `{"key":"settings.authz"}`，各节点重读；漏掉广播的节点由 `core.authz.version_poll`（30 s）重读。存的值不认识（含大小写不同、`casbin-only`）按 `shadow`。
+- 环境变量 `SUP2API_AUTHZ_ENGINE` 优先于设置（测试与应急）：设了就固定这个节点，不读设置；值不认识按 `shadow` 并记 Warn。
+- 节点切换引擎时清空已缓存的集合（不升版本）：切回 `legacy` 后不会继续用 Casbin 算出的集合。
+- 没有数据库的 `authz.Service`（只用于单元测试）始终是 `legacy`。
+
+### 99.4 缓存
+
+| 层 | 内容 | 有效性 |
+| --- | --- | --- |
+| 进程 | 快照（`atomic.Pointer`，CAS 拒绝旧版本） | 版本 ≥ 要求的版本 |
+| 进程 | `users[uid]` 有效集合（现有，按引擎产出） | `set.Version ≥ minVersion`，现有失效机制 |
+| 进程 | 用户角色 `{v, active, roles}`，RoleManager 只读这一层 | `v ≥` 要求的版本 |
+| Valkey | `authz:c:ur:{uid}`（§7），两个节点共用 | 同上；出错跳过，读 PG |
+
+`authz.Deps.Redis` 由 `app` 传入；为 nil（`sub2api admin` 命令）时只有进程一级。
+
+### 99.5 影子比较与切换门槛
+
+- 比较只在两边版本一致时进行（旧加载器的 RR 版本 == Casbin 集合的版本），否则记为 `skipped_version_skew`。集合按规范形式比较：超管标记（记作 `*`）、整行 key、所有范围 key（包括已整行持有的动作下的范围）。
+- 不一致：`slog.Warn("authz: shadow mismatch", kind, user_id, version, key, legacy_only, casbin_only)`，按种类 + 用户 + 版本 + key 去重（最多记 4096 条，满了重新开始）后计数；不影响请求结果。Casbin 出错只计数，日志每分钟最多一条。影子比较在请求路径上最多等 1 s，抽样核对在请求外执行（5 s 上限）。
+- 计数（本节点、自启动起）：`compared`、`skipped_version_skew`、`mismatches`、`errors`、`enforce_checked`、`enforce_mismatches`，见 `GET /settings/authz` 的 `shadow`。仓库没有指标系统，计数只在这里和日志里。
+- 测试：`authz` 测试的 `newService` 把不一致设成 `t.Errorf`；`authz`、`iam`、`account`、`plugin/install` 的 `TestMain` 在全部测试跑完后检查 `authz.ShadowMismatchError()`，有未被测试自己处理的不一致就让整包失败。默认 `shadow`，所以这些包的 DB 测试顺带验证一致性；`SUP2API_AUTHZ_ENGINE=legacy|casbin` 跑另外两档。
+- 从 `shadow` 切到 `casbin` 的门槛：`shadow` 至少运行 2 周；期间覆盖插件安装、升级、停用、卸载，角色编辑与重置，超管移交，用户禁用与删除，`ClearScopeGrants`（删分组、账号、代理）各至少一次；各节点 `mismatches`、`enforce_mismatches` 为 0；漂移任务一直为 0；切换前在生产备份的隔离副本上跑一次 `authz-verify --keys` 为 0。
+
+### 99.6 漂移任务 `core.authz.casbin_drift`
+
+集群任务（一个节点执行），每 10 分钟，超时 1 分钟：`SELECT count(*) FROM authz_casbin_drift`；非 0 时记 Warn，在一次 authz 写入里（先 `Bump` 取 `authz_meta` 行锁，与其他授权写入串行）调用 `authz_casbin_repair()`，提交后 `Committed` 广播新版本，各节点重建快照、丢掉按漂移的行算出的集合。运行记录 `count` 是修正的行数，`message` 写“N rows drifted, M repaired”。旧表是真相，修正是安全的。
+
+### 99.7 `sub2api admin authz-verify`
+
+```
+sub2api admin authz-verify [--keys] [--max-diffs N]
+```
+
+在服务器上对配置的数据库只读运行（不跑迁移、不连 Redis）：对 `users` 表的每个用户（含已删除、已停用的，两边都应为空）比较旧加载器与 Casbin 的集合，版本不一致时重试一次、仍不一致计为跳过；`--keys` 时再对目录里每个 key（任何状态）、self key、每个角色授予过的范围 key 比较 `Enforce` 与旧集合的 `Has`。输出用户数、比较数、跳过数、不一致数（`--keys` 再加 key 数、检查数、不一致数）和前 N 条差异（默认 20）。有不一致或出错时退出码 1，用法错误 2。
+
+### 99.8 回滚
+
+- 运行时：`PUT /settings/authz {"engine":"legacy"}`（或在节点上设 `SUP2API_AUTHZ_ENGINE=legacy` 重启），立即生效，不需要发版。旧表从未被改写，`legacy` 与接入前完全一样。
+- 托管部署（经网关）不能跨 schema 回退：迁移 0100 只做加法，旧二进制照常运行（触发器继续维护 `casbin_rule`，没有害处），出问题修复前进加开关。
+- 非托管部署可以按 `next/deploy/rollback/0.1.290-casbin-down.md` 跑反向脚本：删触发器、函数、两个视图、`casbin_rule` 和 `schema_migrations` 的 0100 一行，不丢任何授予。
+
+### 99.9 禁止事项
+
+由 `internal/store/gormguard` 的 `[casbin-api]` 检查：
+
+- 热路径（路由、网关、菜单、`core.Can`）不调用 `Enforce`：casbinx 的 `Enforce` 只能在 `internal/authz/casbinx`、`internal/authz/shadow.go`、`cmd/sub2api` 里调用，Casbin 自己的 `Enforce*` 只能在 casbinx 里调用。
+- gorm-adapter 只在 casbinx 里 import。
+- 任何地方（casbinx 也一样）不使用 Casbin 或 adapter 的写入、事务、自重载 API：`AddPolicy` 一类的策略管理、`SavePolicy`、adapter 的 `Transaction()`、`TransactionalEnforcer`、`SyncedEnforcer`、`StartAutoLoadPolicy`、`EnableAutoSave(true)`。策略只由触发器写；快照在内存里用 `model.Model` 构建，不经 enforcer 的管理 API。
+
+### 99.10 实现位置
+
+- 迁移：`server/internal/migrations/0100_casbin_rule.sql`；回滚 `deploy/rollback/0.1.290-casbin-down.{sql,md}`
+- 解析：`server/internal/authz/casbinx/`（`api.go` 接口、`model.go`、`rolemanager.go`、`snapshot.go`、`engine.go`、`loader.go`、`resolver.go`、`rolecache.go`）
+- 接入：`server/internal/authz/service.go`（`loadPermissionSet` 分流、`Can` 抽样）、`engine.go`（开关与接口）、`shadow.go`（比较与计数）、`drift.go`（漂移任务）、`verify.go`；命令 `server/cmd/sub2api/authz_verify.go`
+- 检查：`server/internal/store/gormguard/casbin_test.go`

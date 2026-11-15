@@ -16,17 +16,24 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-const adminUsage = "usage: sub2api admin recover-superadmin --email <existing user> [--reset-password] [--reset-2fa]"
+const adminUsage = "usage: sub2api admin recover-superadmin --email <existing user> [--reset-password] [--reset-2fa]\n" +
+	"       sub2api admin authz-verify [--keys] [--max-diffs N]"
 
-// runAdmin is `sub2api admin <command>`: repairs run on the server against
-// the configured database while the core may be down. It runs no migrations
-// and connects no Redis, and there is no HTTP counterpart.
+// runAdmin is `sub2api admin <command>`: repairs and checks run on the
+// server against the configured database while the core may be down. It
+// runs no migrations and connects no Redis, and there is no HTTP
+// counterpart.
 func runAdmin(args []string) int {
-	if len(args) == 0 || args[0] != "recover-superadmin" {
-		fmt.Fprintln(os.Stderr, adminUsage)
-		return 2
+	if len(args) > 0 {
+		switch args[0] {
+		case "recover-superadmin":
+			return runRecoverSuperAdmin(args[1:])
+		case "authz-verify":
+			return runAuthzVerify(args[1:])
+		}
 	}
-	return runRecoverSuperAdmin(args[1:])
+	fmt.Fprintln(os.Stderr, adminUsage)
+	return 2
 }
 
 // runRecoverSuperAdmin makes an existing user the only super admin (the

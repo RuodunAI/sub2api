@@ -22,6 +22,7 @@ const (
 	ruleSQL      = "[sql-handle]"
 	ruleTestutil = "[testutil-import]"
 	ruleTxPool   = "[tx-pool]"
+	ruleCasbin   = "[casbin-api]"
 )
 
 // bannedMethods are the gorm (*DB) methods that would let GORM own a
@@ -70,6 +71,10 @@ type rules struct {
 	owners    map[string]string // packages that own the instance, relative to the module
 	sqlOwners map[string]string // packages that may use store.DB.SQL, relative to the module
 	pgxFiles  map[string]string // the files that may import pgx, relative to the module
+	// casbinOwners may import gorm-adapter and call Casbin's Enforce;
+	// enforceOwners (packages or files) may call casbinx's (casbin_test.go).
+	casbinOwners  map[string]string
+	enforceOwners map[string]string
 }
 
 // check returns the findings of one type-checked package as
@@ -80,10 +85,14 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 	rel := strings.TrimPrefix(pkgPath, r.module+"/")
 	_, owner := r.owners[rel]
 	_, sqlOwner := r.sqlOwners[rel]
-	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/internal/store"}
+	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/internal/store",
+		casbinxPkg: r.module + "/" + casbinxPkg, casbinOwner: listedWithin(r.casbinOwners, rel)}
 	c.index(files)
 	for _, f := range files {
-		c.sqlOwner = sqlOwner || strings.HasSuffix(fset.Position(f.Package).Filename, "_test.go")
+		name := filepath.Base(fset.Position(f.Package).Filename)
+		test := strings.HasSuffix(name, "_test.go")
+		c.sqlOwner = sqlOwner || test
+		c.enforceOwner = test || listedWithin(r.enforceOwners, rel) || listedWithin(r.enforceOwners, rel+"/"+name)
 		ast.Inspect(f, c.visit)
 	}
 	return c.out
@@ -109,6 +118,9 @@ func (r rules) imports(fset *token.FileSet, rel string, f *ast.File) []string {
 		case production && within(path, r.module+"/"+testutilPkg):
 			out = append(out, fmt.Sprintf("%s: %s import of %s outside the test files: it owns the GORM instance and the pool as test infrastructure only",
 				fset.Position(imp.Pos()), ruleTestutil, path))
+		case within(path, adapterModule) && !listedWithin(r.casbinOwners, rel):
+			out = append(out, fmt.Sprintf("%s: %s import of %s outside %s: Casbin reads the policy there, through the adapter's read-only load alone",
+				fset.Position(imp.Pos()), ruleCasbin, path, casbinxPkg))
 		}
 	}
 	return out
@@ -126,6 +138,11 @@ type checker struct {
 	owner, sqlOwner bool
 	storePkg        string // import path of package store
 	out             []string
+
+	// [casbin-api]: the import path of casbinx, whether the package owns
+	// Casbin and whether the file being visited may call casbinx's Enforce.
+	casbinxPkg                string
+	casbinOwner, enforceOwner bool
 
 	// What [gorm-raw-unrun] follows a Raw statement through: the functions
 	// of the package, the assignments and uses of its local variables, and
@@ -263,6 +280,8 @@ func (c *checker) selector(n *ast.SelectorExpr) {
 		c.report(n, "%s gorm.Open outside package store: take a handle from store.G", ruleOpen)
 	case fn.Name() == "SQLTx" && fn.Pkg() != nil && fn.Pkg().Path() == c.storePkg && !c.sqlOwner:
 		c.report(n, "%s store.SQLTx outside package store, River (internal/task) and the tests: run the statement on the transaction's GORM handle", ruleSQL)
+	default:
+		c.casbinSelector(n, fn)
 	}
 }
 
@@ -455,6 +474,7 @@ func (c *checker) call(n *ast.CallExpr) {
 		return
 	}
 	c.txCallbacks(fn, n)
+	c.casbinCall(fn, n)
 	for _, arg := range c.parameterArgs(fn, n) {
 		c.checkParam(arg, "gorm "+fn.Name())
 	}

@@ -87,6 +87,7 @@ func newService(t *testing.T, db *store.DB, bus core.Bus, reg core.PluginRegistr
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	s := New(Deps{DB: db, Bus: bus, Plugins: reg, PollInterval: 100 * time.Millisecond})
+	failOnShadowMismatch(t, s)
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -399,7 +400,11 @@ func TestAuthorizerCacheInvalidation(t *testing.T) {
 	// Without a broadcast the version poll task catches up.
 	c := newService(t, db, nil, nil)
 	var poll core.TaskSpec
-	if err := c.RegisterTasks(taskRecorder(func(spec core.TaskSpec) { poll = spec })); err != nil {
+	if err := c.RegisterTasks(taskRecorder(func(spec core.TaskSpec) {
+		if spec.Name == VersionPollTask {
+			poll = spec
+		}
+	})); err != nil {
 		t.Fatal(err)
 	}
 	if poll.Name != VersionPollTask || poll.Scope != core.TaskNode || poll.RequireWork || poll.Every != 100*time.Millisecond {
