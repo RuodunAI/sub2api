@@ -1,0 +1,8 @@
+-- sql
+SELECT u.id AS id, u.email AS name, u.display_name AS hint, u.status AS status FROM users u WHERE u.deleted_at IS NULL AND ((u.email ILIKE $1 ESCAPE E'\\' OR u.display_name ILIKE $2 ESCAPE E'\\' OR u.id = $3)) ORDER BY (u.id = $4) DESC, u.email, u.id LIMIT $5
+-- vars
+$1 string "%42%"
+$2 string "%42%"
+$3 int64 42
+$4 int64 42
+$5 int 21

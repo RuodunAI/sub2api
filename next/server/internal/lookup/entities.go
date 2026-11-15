@@ -2,12 +2,14 @@ package lookup
 
 import (
 	"context"
+	"encoding/json"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // entities are the kinds of GET /lookup/:kind (CONTRACTS §96). They are kept
@@ -80,8 +82,8 @@ var groupOpenTo = segment.UsableGroupSQL("g", "?")
 
 // callerIs is the Scope of a kind whose own rows one condition selects; its
 // "?" takes the caller's id.
-func callerIs(cond string) func(context.Context, store.Querier, int64, *store.Filter) error {
-	return func(_ context.Context, _ store.Querier, uid int64, f *store.Filter) error {
+func callerIs(cond string) func(context.Context, store.Querier, int64, *Conds) error {
+	return func(_ context.Context, _ store.Querier, uid int64, f *Conds) error {
 		f.And(cond, uid)
 		return nil
 	}
@@ -93,26 +95,14 @@ func callerIs(cond string) func(context.Context, store.Querier, int64, *store.Fi
 // them. GET /me/prices?group_id= lists a subset of it: of these, only the
 // models the accounts of that group provide. The group policy is a glob list
 // (core.GroupInfo.AllowsModel), evaluated here rather than rewritten in SQL.
-func usableModels(ctx context.Context, q store.Querier, uid int64, f *store.Filter) error {
-	var open store.Filter
-	open.And(groupOpenTo, uid)
-	rows, err := q.Query(ctx, `SELECT g.model_allowlist, g.model_filter_mode FROM groups g`+open.Cond(), open.Args()...)
+func usableModels(ctx context.Context, q store.Querier, uid int64, f *Conds) error {
+	db := store.G(ctx, q)
+	groups, err := modelPolicies(db, uid)
 	if err != nil {
 		return err
 	}
-	groups, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (g core.GroupInfo, err error) {
-		err = r.Scan(&g.ModelAllowlist, &g.ModelFilterMode)
-		return g, err
-	})
-	if err != nil {
-		return err
-	}
-	rows, err = q.Query(ctx, `SELECT model FROM model_prices WHERE enabled`)
-	if err != nil {
-		return err
-	}
-	models, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
+	var models []string
+	if err := db.Model(&model.ModelPrice{}).Where("enabled").Pluck("model", &models).Error; err != nil {
 		return err
 	}
 	usable := []string{}
@@ -124,6 +114,38 @@ func usableModels(ctx context.Context, q store.Querier, uid int64, f *store.Filt
 			}
 		}
 	}
-	f.And("mp.model = ANY(?)", usable)
+	f.And("mp.model = ANY(?)", store.Strings(usable))
 	return nil
+}
+
+// policyRow is the model policy of one group as stored: the allowlist is a
+// JSON array.
+type policyRow struct {
+	ModelAllowlist  json.RawMessage
+	ModelFilterMode string
+}
+
+// policyRows reads into dst the model policies of the groups user uid can
+// use.
+func policyRows(db *gorm.DB, uid int64, dst *[]policyRow) *gorm.DB {
+	return db.Table("groups g").Select("g.model_allowlist, g.model_filter_mode").Where(groupOpenTo, uid).Scan(dst)
+}
+
+// modelPolicies is policyRows decoded, as pgx decodes a jsonb column into a
+// []string: SQL NULL and JSON null are no list.
+func modelPolicies(db *gorm.DB, uid int64) ([]core.GroupInfo, error) {
+	var rows []policyRow
+	if err := policyRows(db, uid, &rows).Error; err != nil {
+		return nil, err
+	}
+	groups := make([]core.GroupInfo, len(rows))
+	for i, r := range rows {
+		groups[i].ModelFilterMode = r.ModelFilterMode
+		if len(r.ModelAllowlist) > 0 {
+			if err := json.Unmarshal(r.ModelAllowlist, &groups[i].ModelAllowlist); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return groups, nil
 }
