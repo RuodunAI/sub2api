@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -228,6 +229,64 @@ func TestBindWithoutOwnCode(t *testing.T) {
 	code11, _ := p.ensureCode(ctx, 11)
 	if err := p.bindInviter(ctx, 10, code11); err == nil {
 		t.Fatal("mutual referral accepted")
+	}
+}
+
+// TestEnsureCodeConcurrent: callers racing to create a user's code all get
+// the one stored, not the codes that lost the insert.
+func TestEnsureCodeConcurrent(t *testing.T) {
+	p, _, _ := startDB(t, nil)
+	ctx := context.Background()
+	const n = 8
+	codes := make([]string, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			<-start
+			codes[i], errs[i] = p.ensureCode(ctx, 42)
+		})
+	}
+	close(start)
+	wg.Wait()
+	db, _ := p.db(ctx)
+	stored, err := codeOf(db, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range n {
+		if errs[i] != nil || codes[i] != stored {
+			t.Errorf("call %d: %q, %v; stored %q", i, codes[i], errs[i], stored)
+		}
+	}
+}
+
+// TestCommissionWithoutBoundAt: an invitee row without bound_at fails the
+// event, which is delivered again, instead of acknowledging it unpaid (as
+// the zero time would, being long expired) or paying it.
+func TestCommissionWithoutBoundAt(t *testing.T) {
+	p, h, fh := startDB(t, Settings{
+		ReferralEnabled:      true,
+		ReferralRatePercent:  10,
+		ReferralDurationDays: 30,
+		CheckinTimezone:      "UTC",
+	})
+	ctx := context.Background()
+	code1, _ := p.ensureCode(ctx, 1)
+	if err := p.bindInviter(ctx, 2, code1); err != nil {
+		t.Fatal(err)
+	}
+	db, _ := p.db(ctx)
+	if err := db.Exec(`UPDATE referral_codes SET bound_at = NULL WHERE user_id = 2`).Error; err != nil {
+		t.Fatal(err)
+	}
+	usage := &pluginv1.Event{Id: 100, Type: "usage.recorded", PayloadJson: `{"user_id":2,"total_cost":"1.00","billing_status":"billed"}`}
+	if _, err := h.App.OnEvents(ctx, &pluginv1.OnEventsRequest{Events: []*pluginv1.Event{usage}}); err == nil {
+		t.Fatal("event without bound_at acknowledged")
+	}
+	if n := len(fh.Ledger()); n != 0 {
+		t.Fatalf("ledger = %d entries, want none", n)
 	}
 }
 

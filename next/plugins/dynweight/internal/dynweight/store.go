@@ -39,20 +39,6 @@ func (s store) with(ctx context.Context) *gorm.DB { return s.db.WithContext(ctx)
 
 var errVersionConflict = errors.New("the configuration was changed meanwhile")
 
-// insertBatch is the most rows one INSERT carries (PostgreSQL takes at most
-// 65535 parameters per statement).
-const insertBatch = 1000
-
-// insertAll inserts rows in batches of one transaction (all of them or
-// none, like the one statement or batch it replaces), in the order given:
-// callers sort them, so that concurrent writers lock rows in the same order
-// and do not deadlock.
-func insertAll[T any](db *gorm.DB, rows []T, clauses ...clause.Expression) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		return tx.Clauses(clauses...).CreateInBatches(&rows, insertBatch).Error
-	})
-}
-
 // keyColumns are the key of obs, state and sticky_pending.
 var keyColumns = []clause.Column{{Name: "account_id"}, {Name: "group_id"}, {Name: "model"}}
 
@@ -137,7 +123,7 @@ func (s store) addObs(ctx context.Context, deltas []obsDelta) error {
 		}
 		rows[i] = model.Obs{AccountID: d.AccountID, GroupID: d.GroupID, Model: d.Model, WindowStart: d.window, Counts: fields}
 	}
-	return insertAll(s.with(ctx), rows, clause.OnConflict{
+	return pgdb.InsertAll(s.with(ctx), rows, clause.OnConflict{
 		Columns:   append(slices.Clone(keyColumns), clause.Column{Name: "window_start"}),
 		DoUpdates: clause.Set{{Column: clause.Column{Name: "counts"}, Value: gorm.Expr(sumCounts)}},
 	})
@@ -309,7 +295,7 @@ func (s store) tombstone(ctx context.Context, keys []key, window func(key) int64
 		// The reset columns, whatever the document says.
 		rows[i].Base, rows[i].Eff, rows[i].Tombstone, rows[i].EvalWindow = 0, 0, true, w
 	}
-	return insertAll(s.with(ctx), rows, clause.OnConflict{
+	return pgdb.InsertAll(s.with(ctx), rows, clause.OnConflict{
 		Columns: keyColumns,
 		DoUpdates: append(clause.AssignmentColumns([]string{"data", "base", "eff", "tombstone", "eval_window"}),
 			clause.Assignments(map[string]any{"gen": gorm.Expr("state.gen + 1"), "updated_at": gorm.Expr("now()")})...),
@@ -399,7 +385,7 @@ func (s store) saveBases(ctx context.Context, bases map[pair]base) error {
 		v := bases[p]
 		rows = append(rows, model.Base{AccountID: p.AccountID, GroupID: p.GroupID, Weight: v.Weight, Name: v.Name, SeenAt: v.SeenAt})
 	}
-	return insertAll(s.with(ctx), rows, clause.OnConflict{
+	return pgdb.InsertAll(s.with(ctx), rows, clause.OnConflict{
 		Columns:   []clause.Column{{Name: "account_id"}, {Name: "group_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"weight", "name", "seen_at"}),
 	})
@@ -444,7 +430,7 @@ func (s store) addEvents(ctx context.Context, events []eventRow) error {
 		rows[i] = model.Event{AccountID: e.AccountID, GroupID: e.GroupID, Model: e.Model, Kind: e.Kind, Reason: e.Reason,
 			WeightFrom: e.From, WeightTo: e.To, Rules: names, Detail: raw}
 	}
-	return insertAll(s.with(ctx), rows)
+	return pgdb.InsertAll(s.with(ctx), rows)
 }
 
 // keyColumnList selects the key columns.

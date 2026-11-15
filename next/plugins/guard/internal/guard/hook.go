@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/textutil"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/model"
@@ -163,7 +164,7 @@ func (p *Plugin) writeBlocks(ctx context.Context, evs []blockEvent) error {
 		counts[j].Blocked++
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.CreateInBatches(&logs, insertBatch).Error; err != nil {
+		if err := pgdb.Insert(tx, logs); err != nil {
 			return err
 		}
 		return addStats(tx, counts)

@@ -17,7 +17,7 @@ import (
 // as pgdb.Array (GORM would expand a plain slice into a list of
 // parameters), JSON values the driver hands over as text are decoded with
 // jsonOf. The record and statistics batches are model rows (internal/model)
-// inserted with insertRows.
+// inserted with pgdb.Insert, in the order their callers sort them.
 //
 // The *gorm.DB a function gets carries the context its statements run
 // under (Host.DB binds it): helpers take no context of their own.
@@ -101,18 +101,6 @@ func collect[T any](q *gorm.DB, scan func(row) (T, error)) ([]T, error) {
 // column reads the one column of q's rows.
 func column[T any](q *gorm.DB) ([]T, error) {
 	return collect(q, func(r row) (v T, err error) { return v, r.Scan(&v) })
-}
-
-// insertBatch is the most rows one INSERT carries (PostgreSQL takes at most
-// 65535 parameters per statement).
-const insertBatch = 1000
-
-// insertRows inserts rows insertBatch at a time, in the order given:
-// callers sort them, so that concurrent writers lock rows in the same order
-// and do not deadlock. Callers that need all of them or none (the batch
-// the statements replace) run it in a transaction.
-func insertRows[T any](tx *gorm.DB, rows []T, clauses ...clause.Expression) error {
-	return tx.Clauses(clauses...).CreateInBatches(&rows, insertBatch).Error
 }
 
 // columns names the conflict target of an upsert.

@@ -6,6 +6,8 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 )
 
 // pagedQuery is one paged list endpoint over the table of a model. The
@@ -29,20 +31,18 @@ type pagedQuery struct {
 // them, converted by conv. It returns the total for the pagination block,
 // which callers still need even when the page is empty.
 func listPaged[M, T any](db *gorm.DB, q pagedQuery, limit, offset int, conv func(M) T) ([]T, int, error) {
-	match := func(db *gorm.DB) *gorm.DB {
-		db = db.Model(new(M))
-		if q.where != "" {
-			db = db.Where(q.where, q.args...)
+	db = db.Model(new(M))
+	if q.where != "" {
+		db = db.Where(q.where, q.args...)
+	}
+	rows, total, err := pgdb.List[M](db, q.columns, q.orderBy, limit, offset)
+	if err != nil {
+		label := q.queryLabel
+		var le *pgdb.ListError
+		if errors.As(err, &le) && le.Count {
+			label = q.countLabel
 		}
-		return db
-	}
-	var total int64
-	if err := db.Scopes(match).Count(&total).Error; err != nil {
-		return nil, 0, fmt.Errorf("%s: %w", q.countLabel, err)
-	}
-	var rows []M
-	if err := db.Scopes(match).Select(q.columns).Order(q.orderBy).Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
-		return nil, 0, fmt.Errorf("%s: %w", q.queryLabel, err)
+		return nil, 0, fmt.Errorf("%s: %w", label, err)
 	}
 	items := make([]T, len(rows))
 	for i, r := range rows {

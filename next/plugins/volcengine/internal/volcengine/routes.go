@@ -26,6 +26,7 @@ import (
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/volcengine/internal/model"
@@ -224,7 +225,7 @@ func (p *Plugin) db(ctx context.Context) (*gorm.DB, *pluginv1.HTTPResponse) {
 	if err != nil {
 		return nil, unavailable("database unavailable: " + err.Error())
 	}
-	return d, nil
+	return pgdb.DriverErrors(d), nil
 }
 
 // ---------------------------------------------------------------- accounts
@@ -494,7 +495,7 @@ func (p *Plugin) getGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 		if callErr != nil {
 			if callErr.NotFound() {
 				// Upstream is the truth: the index is stale, and it says so.
-				if err := markMissing(tx, &model.AssetGroup{}, id); err != nil {
+				if err := markMissing[model.AssetGroup](tx, id); err != nil {
 					p.log.Warn("volcengine: cannot mark an asset group missing", "id", id, "error", err.Error())
 				}
 				return pluginsdk.ErrorResponse(http.StatusNotFound, "upstream_not_found",
@@ -548,7 +549,7 @@ func (p *Plugin) updateGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		putPtr(body, "Description", in.Description)
 		if _, callErr := p.ark.call(ctx, cfg, ActionUpdateAssetGroup, body); callErr != nil {
 			if callErr.NotFound() {
-				if err := markMissing(tx, &model.AssetGroup{}, id); err != nil {
+				if err := markMissing[model.AssetGroup](tx, id); err != nil {
 					p.log.Warn("volcengine: cannot mark an asset group missing", "id", id, "error", err.Error())
 				}
 			}
@@ -581,7 +582,7 @@ func (p *Plugin) deleteGroup(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if _, callErr := p.ark.call(ctx, cfg, ActionDeleteAssetGroup, map[string]any{"Id": row.UpstreamID}); callErr != nil && !callErr.NotFound() {
 			return upstreamFail(callErr), nil
 		}
-		if err := deleteRow(tx, &model.AssetGroup{}, id); err != nil {
+		if err := deleteRow[model.AssetGroup](tx, id); err != nil {
 			return nil, err
 		}
 		return pluginsdk.DataResponse(map[string]any{"id": id, "deleted": true}), nil
@@ -699,7 +700,7 @@ func (p *Plugin) getAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 		result, callErr := p.ark.call(ctx, cfg, ActionGetAsset, map[string]any{"Id": row.UpstreamID})
 		if callErr != nil {
 			if callErr.NotFound() {
-				if err := markMissing(tx, &model.Asset{}, id); err != nil {
+				if err := markMissing[model.Asset](tx, id); err != nil {
 					p.log.Warn("volcengine: cannot mark an asset missing", "id", id, "error", err.Error())
 				}
 				return pluginsdk.ErrorResponse(http.StatusNotFound, "upstream_not_found",
@@ -744,7 +745,7 @@ func (p *Plugin) updateAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		putPtr(body, "Description", in.Description)
 		if _, callErr := p.ark.call(ctx, cfg, ActionUpdateAsset, body); callErr != nil {
 			if callErr.NotFound() {
-				if err := markMissing(tx, &model.Asset{}, id); err != nil {
+				if err := markMissing[model.Asset](tx, id); err != nil {
 					p.log.Warn("volcengine: cannot mark an asset missing", "id", id, "error", err.Error())
 				}
 			}
@@ -774,7 +775,7 @@ func (p *Plugin) deleteAsset(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if _, callErr := p.ark.call(ctx, cfg, ActionDeleteAsset, map[string]any{"Id": row.UpstreamID}); callErr != nil && !callErr.NotFound() {
 			return upstreamFail(callErr), nil
 		}
-		if err := deleteRow(tx, &model.Asset{}, id); err != nil {
+		if err := deleteRow[model.Asset](tx, id); err != nil {
 			return nil, err
 		}
 		return pluginsdk.DataResponse(map[string]any{"id": id, "deleted": true}), nil

@@ -17,6 +17,8 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
+
 	"github.com/Sub2API-Devs/sup2api/next/plugins/volcengine/internal/model"
 )
 
@@ -172,18 +174,23 @@ func applyAssetUpdate(db *gorm.DB, id int64, name *string) error {
 	})).Error
 }
 
-// markMissing records that the upstream copy of an index row (a
-// *model.AssetGroup or *model.Asset) is gone. The row is kept: an operator
-// has to be able to see that the index and the Volcengine console disagree,
-// and DELETE still cleans it up.
-func markMissing(db *gorm.DB, table any, id int64) error {
-	return db.Model(table).Where("id = ?", id).
+// indexRow is a row of the index tables, the only ones markMissing and
+// deleteRow may touch.
+type indexRow interface {
+	model.AssetGroup | model.Asset
+}
+
+// markMissing records that the upstream copy of an index row is gone. The
+// row is kept: an operator has to be able to see that the index and the
+// Volcengine console disagree, and DELETE still cleans it up.
+func markMissing[T indexRow](db *gorm.DB, id int64) error {
+	return db.Model(new(T)).Where("id = ?", id).
 		Updates(map[string]any{"index_status": IndexMissing, "checked_at": gorm.Expr("now()")}).Error
 }
 
-// deleteRow drops an index row (a *model.AssetGroup or *model.Asset).
-func deleteRow(db *gorm.DB, table any, id int64) error {
-	return db.Where("id = ?", id).Delete(table).Error
+// deleteRow drops an index row.
+func deleteRow[T indexRow](db *gorm.DB, id int64) error {
+	return db.Where("id = ?", id).Delete(new(T)).Error
 }
 
 // ---------------------------------------------------------------- list queries
@@ -244,31 +251,25 @@ func search(db *gorm.DB, cond, q string) *gorm.DB {
 	return db.Where(cond, sql.Named("q", q))
 }
 
-// listOf counts rows (a fresh query per call: GORM statements are not
-// reused) and reads a page of them as the JSON items; Items stays [] when
-// the page is empty.
-func listOf(rows func() *gorm.DB, items, order string, limit, offset int) (*listPage, error) {
-	out := &listPage{Items: []json.RawMessage{}}
-	if err := rows().Count(&out.Total).Error; err != nil {
+// listOf counts the rows rows selects and reads a page of them as the JSON
+// items; Items is [] when the page is empty.
+func listOf(rows *gorm.DB, items, order string, limit, offset int) (*listPage, error) {
+	page, total, err := pgdb.List[json.RawMessage](rows, items, order, limit, offset)
+	if err != nil {
 		return nil, err
 	}
-	if err := rows().Select(items).Order(order).Limit(limit).Offset(offset).Scan(&out.Items).Error; err != nil {
-		return nil, err
-	}
-	return out, nil
+	return &listPage{Items: page, Total: total}, nil
 }
 
 // listGroups returns a page of the group index, newest first, optionally for
 // one account, one index status and/or a search term (already escaped by
 // LikeTerm).
 func listGroups(db *gorm.DB, accountID int64, status, q string, limit, offset int) (*listPage, error) {
-	rows := func() *gorm.DB {
-		g := db.Table("asset_groups AS g")
-		g = filter(g, "g.account_id", accountID)
-		g = filter(g, "g.index_status", status)
-		return search(g, groupSearch, q)
-	}
-	return listOf(rows, `to_jsonb(g) || jsonb_build_object('asset_count',
+	g := db.Table("asset_groups AS g")
+	g = filter(g, "g.account_id", accountID)
+	g = filter(g, "g.index_status", status)
+	g = search(g, groupSearch, q)
+	return listOf(g, `to_jsonb(g) || jsonb_build_object('asset_count',
 		(SELECT count(*) FROM assets a WHERE a.group_id = g.id))`, "g.id DESC", limit, offset)
 }
 
@@ -276,14 +277,12 @@ func listGroups(db *gorm.DB, accountID int64, status, q string, limit, offset in
 // one account, one local group, one index status and/or a search term
 // (already escaped by LikeTerm).
 func listAssets(db *gorm.DB, accountID, groupID int64, status, q string, limit, offset int) (*listPage, error) {
-	rows := func() *gorm.DB {
-		a := db.Table("assets AS a").Joins("JOIN asset_groups g ON g.id = a.group_id")
-		a = filter(a, "a.account_id", accountID)
-		a = filter(a, "a.group_id", groupID)
-		a = filter(a, "a.index_status", status)
-		return search(a, assetSearch, q)
-	}
-	return listOf(rows, `to_jsonb(a) || jsonb_build_object('group_name', g.name, 'group_upstream_id', g.upstream_id)`,
+	a := db.Table("assets AS a").Joins("JOIN asset_groups g ON g.id = a.group_id")
+	a = filter(a, "a.account_id", accountID)
+	a = filter(a, "a.group_id", groupID)
+	a = filter(a, "a.index_status", status)
+	a = search(a, assetSearch, q)
+	return listOf(a, `to_jsonb(a) || jsonb_build_object('group_name', g.name, 'group_upstream_id', g.upstream_id)`,
 		"a.id DESC", limit, offset)
 }
 

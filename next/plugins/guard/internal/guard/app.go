@@ -12,13 +12,10 @@ import (
 	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/model"
 )
-
-// insertBatch is the most rows one INSERT carries (PostgreSQL takes at most
-// 65535 parameters per statement).
-const insertBatch = 1000
 
 // Job ids declared in manifest.json.
 const (
@@ -101,13 +98,13 @@ func minuteOf(t time.Time) time.Time { return t.UTC().Truncate(time.Minute) }
 // addStats adds the counters of rows (one per minute, group and model) to
 // stats_minutely, in the order given: the order the rows are locked in.
 func addStats(tx *gorm.DB, rows []model.StatsMinutely) error {
-	return tx.Clauses(clause.OnConflict{
+	return pgdb.Insert(tx, rows, clause.OnConflict{
 		Columns: []clause.Column{{Name: "minute"}, {Name: "group_id"}, {Name: "model"}},
 		DoUpdates: clause.Set{
 			{Column: clause.Column{Name: "requests"}, Value: gorm.Expr("stats_minutely.requests + EXCLUDED.requests")},
 			{Column: clause.Column{Name: "blocked"}, Value: gorm.Expr("stats_minutely.blocked + EXCLUDED.blocked")},
 		},
-	}).CreateInBatches(&rows, insertBatch).Error
+	})
 }
 
 // RunJob implements pluginsdk.JobRunner.

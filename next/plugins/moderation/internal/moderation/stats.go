@@ -665,13 +665,13 @@ func (p *Plugin) writeStats(ctx context.Context, rows map[statKey]*counters, cha
 			Suspicious: u.suspicious, High: u.high, Errors: u.errors, LastHitAt: last})
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		if err := insertRows(tx, hourly, statsUpsert); err != nil {
+		if err := pgdb.Insert(tx, hourly, statsUpsert); err != nil {
 			return err
 		}
-		if err := insertRows(tx, costs, costsUpsert); err != nil {
+		if err := pgdb.Insert(tx, costs, costsUpsert); err != nil {
 			return err
 		}
-		return insertRows(tx, daily, userDailyUpsert)
+		return pgdb.Insert(tx, daily, userDailyUpsert)
 	})
 }
 
