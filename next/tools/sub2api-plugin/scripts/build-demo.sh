@@ -34,6 +34,9 @@
 #                   plugin's package, requiring exactly these roles. Only
 #                   the plugin's own package; overlay fixtures never get
 #                   images. Set by deploy/docker/build-go.sh for ccgateway.
+#   SKIP_DB_CHECK=1 pack without comparing the GORM models with migrations/
+#                   (pack --skip-db-check), where no PostgreSQL can run: the
+#                   image build (root, no network). TestDBCheck covers it.
 set -eu
 
 if [ $# -lt 3 ]; then
@@ -84,6 +87,7 @@ package() {
 
   set -- pack --dir "$dir" --runtimes "$stage" --out-dir "$dest"
   [ -n "$overlay" ] && set -- "$@" --overlay "$overlay"
+  [ "${SKIP_DB_CHECK:-0}" = "1" ] && set -- "$@" --skip-db-check
   image_roles=
   for spec in ${PACK_IMAGES:-}; do
     case "$spec" in "$plugin="?*) image_roles=${spec#*=} ;; esac

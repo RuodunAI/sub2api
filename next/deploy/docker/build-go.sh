@@ -117,7 +117,9 @@ if [ -f tools/sub2api-plugin/scripts/build-demo.sh ]; then
   # Everything packaged here is in the market; only BUILTIN_PLUGINS below is
   # built into the image.
   echo "==> tools/sub2api-plugin/scripts/build-demo.sh"
-  sh tools/sub2api-plugin/scripts/build-demo.sh "$OUT/market" "$KEYS" "$KEY_ID"
+  # No PostgreSQL in the image build (initdb refuses root): the GORM models
+  # are compared with migrations/ by TestDBCheck in CI instead.
+  SKIP_DB_CHECK=1 sh tools/sub2api-plugin/scripts/build-demo.sh "$OUT/market" "$KEYS" "$KEY_ID"
 else
   # Generic fallback: one package per plugins/<name>/manifest.json.
   TMP=$(mktemp -d)
