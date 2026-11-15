@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -360,10 +362,21 @@ WHERE action = $1 AND detail->>'key' = $2 AND detail->>'via' = $3`, action, key,
 	return n
 }
 
+// statusAudits lists the details of the system's action audits of plugin
+// guard, oldest first.
+func statusAudits(t *testing.T, db *store.DB, action string) []string {
+	t.Helper()
+	var out []string
+	require.NoError(t, db.Pool.QueryRow(context.Background(), `SELECT COALESCE(array_agg(detail::text ORDER BY id), '{}') FROM audit_logs
+WHERE action = $1 AND target_type = 'plugin' AND target_id = 'guard' AND user_id IS NULL`, action).Scan(&out))
+	return out
+}
+
 // A key a plugin no longer declares is marked removed, its grants kept and
 // granting nothing; declared again it revives with the plugin's status and
 // the grants it then has, never its GrantRoles (D6). Enabling or disabling
-// the plugin leaves it removed.
+// the plugin leaves it removed. Both changes are audited with the roles
+// whose grants stop or start counting.
 func TestSyncPluginRemovesAndRevives(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
@@ -388,6 +401,9 @@ func TestSyncPluginRemovesAndRevives(t *testing.T) {
 	if got := permissionHolders(t, db, b); !slices.Equal(got, []string{RoleAdmin, RoleOperator}) {
 		t.Fatalf("grants of a removed key: %v", got)
 	}
+	removed := statusAudits(t, db, "authz.sync.remove")
+	require.Len(t, removed, 1)
+	assert.JSONEq(t, `{"keys":["plugin.guard:b:read"],"holders":{"plugin.guard:b:read":["admin","operator"]}}`, removed[0])
 	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, b); return !ok })
 	if set, err := s.RolesPermissions(ctx, db.Pool, []string{RoleAdmin}); err != nil || set.Has(b) {
 		t.Fatalf("grant view counts a removed key: %v", err)
@@ -414,6 +430,10 @@ WHERE r.id = rp.role_id AND p.id = rp.permission_id AND r.key = $1 AND p.key = $
 	if got := permissionHolders(t, db, b); !slices.Equal(got, []string{RoleAdmin}) {
 		t.Fatalf("revived grants: %v", got)
 	}
+	revived := statusAudits(t, db, "authz.sync.revive")
+	require.Len(t, revived, 1)
+	assert.JSONEq(t, `{"keys":["plugin.guard:b:read"],"holders":{"plugin.guard:b:read":["admin"]}}`, revived[0])
+	assert.Len(t, statusAudits(t, db, "authz.sync.remove"), 1, "a sync removing nothing writes nothing")
 	if n := syncGrantAudits(t, db, b, "default"); n != 2 {
 		t.Fatalf("default grant audits: %d", n)
 	}

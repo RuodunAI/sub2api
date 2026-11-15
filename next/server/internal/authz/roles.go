@@ -150,20 +150,13 @@ func (s *Service) editableRole(ctx context.Context, tx pgx.Tx, actorID, id int64
 		return nil, err
 	}
 	switch editDenial(actor, cur, r) {
-	case denyNotEditable:
+	case core.GrantDenyNotEditable:
 		return nil, within(actor, cur, cannotActOnRole(ctx))
-	case denyNotAssignable:
+	case core.GrantDenyNotAssignable:
 		return nil, notAssignable(ctx, r.Key)
 	}
 	return r, nil
 }
-
-// Why an actor may not change a role (editDenial).
-const (
-	denySuperuserRole = "superuser_role"
-	denyNotEditable   = "not_editable"
-	denyNotAssignable = "not_assignable"
-)
 
 // editDenial is why actor (its grantSet) may not change role r, whose
 // grants are cur, "" when it may: editableRole's rule, a superuser role
@@ -171,11 +164,11 @@ const (
 func editDenial(actor, cur core.PermissionSet, r *Role) string {
 	switch {
 	case r.Superuser:
-		return denySuperuserRole
+		return core.GrantDenySuperuserRole
 	case !actor.Missing(cur).Empty():
-		return denyNotEditable
+		return core.GrantDenyNotEditable
 	case (r.Builtin || r.UserCount > 0) && !actor.CanAssign(r.Key):
-		return denyNotAssignable
+		return core.GrantDenyNotAssignable
 	}
 	return ""
 }
@@ -792,11 +785,18 @@ type PermissionGroup struct {
 // ListPermissions returns the catalog grouped by module: core modules in
 // catalog order, then plugin modules by plugin key, each plugin's by group.
 func (s *Service) ListPermissions(ctx context.Context) ([]*PermissionModule, error) {
+	return s.listPermissions(ctx, "")
+}
+
+// listPermissions is ListPermissions of the plugin pluginKey only, of the
+// whole catalog for "".
+func (s *Service) listPermissions(ctx context.Context, pluginKey string) ([]*PermissionModule, error) {
 	rows, err := s.db.Pool.Query(ctx, `
 SELECT p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.risk, p.requires, p.status, p.scope_type, p.scope,
     p.group_key, p.group_label, p.group_sort, p.defaults, pl.name
 FROM permissions p LEFT JOIN plugins pl ON pl.key = p.plugin_key
-ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`)
+WHERE $1 = '' OR p.plugin_key = $1
+ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`, pluginKey)
 	if err != nil {
 		return nil, err
 	}
@@ -921,12 +921,14 @@ type PluginRoleRow struct {
 // it) and every role's grants of it, each with whether actorID may change
 // the role (editDenial).
 func (s *Service) PluginRoleGrants(ctx context.Context, actorID int64, pluginKey string) (*PluginRoleMatrix, error) {
-	mods, err := s.ListPermissions(ctx)
+	if pluginKey == "" {
+		return nil, errPluginNotFound
+	}
+	mods, err := s.listPermissions(ctx, pluginKey)
 	if err != nil {
 		return nil, err
 	}
-	i := slices.IndexFunc(mods, func(m *PermissionModule) bool { return m.PluginKey != nil && *m.PluginKey == pluginKey })
-	if i < 0 {
+	if len(mods) == 0 {
 		return nil, errPluginNotFound
 	}
 	roles, err := s.ListRoles(ctx)
@@ -937,14 +939,18 @@ func (s *Service) PluginRoleGrants(ctx context.Context, actorID int64, pluginKey
 	if err != nil {
 		return nil, err
 	}
-	prefix := mods[i].Module + ":"
-	out := &PluginRoleMatrix{PluginKey: pluginKey, Module: mods[i], Roles: make([]PluginRoleRow, 0, len(roles))}
+	keys := make([]string, len(roles))
+	for i, r := range roles {
+		keys[i] = r.Key
+	}
+	sets, err := s.eachRolePermissions(ctx, s.db.Pool, keys)
+	if err != nil {
+		return nil, err
+	}
+	prefix := mods[0].Module + ":"
+	out := &PluginRoleMatrix{PluginKey: pluginKey, Module: mods[0], Roles: make([]PluginRoleRow, 0, len(roles))}
 	for _, r := range roles {
-		cur, err := s.RolesPermissions(ctx, s.db.Pool, []string{r.Key})
-		if err != nil {
-			return nil, err
-		}
-		denied := editDenial(actor, cur, r)
+		denied := editDenial(actor, sets[r.Key], r)
 		row := PluginRoleRow{ID: r.ID, Key: r.Key, Name: r.Name, Builtin: r.Builtin, Superuser: r.Superuser,
 			Editable: denied == "", Denied: denied, PermissionKeys: []string{}}
 		for _, k := range r.PermissionKeys {

@@ -177,7 +177,7 @@ func PermissionDefs(m *manifest.Manifest, grants map[string]map[string][]string)
 | `InheritFrom` | **字段删除**（第 2 章同时删掉 `grantInherited` 和 SyncPlugin 的继承步骤）。所有同意路径都会经过 `withholdGrants`，继承已在计划时解析成显式 `GrantRoles`（§3.4.2–3.4.3），SyncPlugin 只负责授予 GrantRoles |
 | `Sensitive` | 删除 |
 
-`unionDefs` 不变。
+`unionDefs` 不变（后放的一方在 key 相同时胜出）。暂存升级时的调用顺序见 §3.4.5。
 
 ### 3.3.4 Review 输出（`review.go`）
 
@@ -350,8 +350,9 @@ ORDER BY 1, 2, 4
 
   继承规则从第 2 章移到这里（第 2 章删掉 `grantInherited` 后，继承只剩这一处实现）：
   - 规则 1：带范围的行只在旧 key 的 `scope_type` 等于新 key 的 `"plugin:"+ResourceName()` 时才继承；不相等就丢弃这一行，无范围行照常继承。
+  - 规则 1b：`scope_type` 相同的范围行还要能落到新 key 的声明上（`manifest.PermissionScope.Takes`，与目录 `checkScopes`/`pruneScopes` 同一套判定）：新声明不再允许 own 时丢弃 `own` 行，values 里删掉的值丢弃对应的 `value/<v>` 行。否则这些后缀会进 `GrantRoles`，被目录判为 invalid，整个同意 400。
   - 规则 2（与第 1、2 章约定）：新 key 为 critical 时，只从同样是 critical 的旧 key 继承。旧 key 的风险从查询里多取的 `p.risk` 得到。非 critical 的旧 key 跳过不继承，并记录到计划的 `skipped` 中。第 1 章的清单校验看不到已不再声明的 key 的风险，所以这项检查只能放在同意时做。
-  - 被跳过的继承来源以 `[]InheritSkip{Permission, From, Reason: "scope_type"|"risk"}` 返回，并写进同意审计（`plugin.consent` 和 `plugin.consent.auto` 的 detail 都加 `inherit_skipped`）。规则 1 只丢弃带范围的行，同样记一条 `scope_type`。
+  - 被跳过的继承来源以 `[]InheritSkip{Permission, From, Reason: "scope_type"|"scope"|"risk"}` 返回，并写进同意审计（`plugin.consent` 和 `plugin.consent.auto` 的 detail 都加 `inherit_skipped`）。规则 1 只丢弃带范围的行，同样记一条 `scope_type`；规则 1b 记 `scope`。
 - `Risk = up.RiskLevel()`。
 - **升级规则（autoGrantRoles 对应三级风险）**：
 
@@ -446,9 +447,11 @@ roles, named := roleGrants(m, overrides, existing)
 roles, plan, pending, err := settleRoleGrants(..., roles, named, auto)
 grants.Record(...)                                                  // 不变
 首装 / 无运行版本：ApplyDefaults(m, roles)
-有运行版本：SyncPlugin(unionDefs(PermissionDefs(old, nil), PermissionDefs(m, roles)))
+有运行版本（暂存）：SyncPlugin(unionDefs(PermissionDefs(m, roles), PermissionDefs(old, nil)))
 审计
 ```
+
+暂存升级时新旧都声明的 key 用运行中版本的定义（old 胜出），新建的 key 仍来自 m（带同意时结算的授予）。否则同意那一刻 `SyncPlugin` 就按新声明 `pruneScopes`，运行中的旧版本提前失去范围授予；激活失败或改升别的版本时这些授予也回不来（范围行是物理删除）。裁剪推迟到激活：`rollout/coordinator.go` 激活时调用 `ApplyDefaults(m, nil)`，`SyncPlugin` 按被激活版本的声明裁剪并标记 removed。
 
 审计：
 - 操作者同意：`plugin.consent` 的 detail 删去 `role_keys`，新增 `role_grants: plan`、`pending: pending`（总是数组）。
@@ -480,6 +483,7 @@ ORDER BY a.id, 2, 3, 4
 
 - risk 取目录里的 `permissions.risk`（第 2 章新增的列），不读审计里写的值，所以存量审计行里只有 `sensitive` 也不受影响。
 - 被 removed 的权限不再显示（确认了也不会生效，第 2 章的 `GrantPluginPermission` 会跳过 removed）。
+- 范围已不合当前声明的项不再显示（读出 `p.scope`，用 `manifest.PermissionScope.Takes` 过滤）：之后的升级去掉了 own 或删掉了某个值时，这些项确认也会被目录判为 invalid，还会连累同一版本的其他项。
 - 结果按 (permission, role, scope) 去重。
 
 `ReviewRoleGrants`：继续按整个版本确认或拒绝（接口不变），检查改为 `checkGrantable` 按 critical 分批；`grantReviewed` 按 permission 汇总成 `map[role][]scope`，调用第 2 章的 `GrantPluginPermission(ctx, tx, key, roles map[string][]string)`。

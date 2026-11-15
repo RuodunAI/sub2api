@@ -404,6 +404,54 @@ SELECT COALESCE(array_agg(key), '{}') FROM (
 	return set, nil
 }
 
+// eachRolePermissions is RolesPermissions of each role of roleKeys alone,
+// keyed by role key (absent for an unknown one), in two queries however
+// many roles: what editDenial compares each role of a listing by.
+func (s *Service) eachRolePermissions(ctx context.Context, q store.Querier, roleKeys []string) (map[string]core.PermissionSet, error) {
+	out := make(map[string]core.PermissionSet, len(roleKeys))
+	rows, err := q.Query(ctx, `
+SELECT r.key, r.superuser, r.assign_custom, g.key
+FROM roles r`+roleGrantsJoin(`p.status <> 'removed'`)+`
+WHERE r.key = ANY($1)`, roleKeys)
+	if err != nil {
+		return nil, err
+	}
+	var role string
+	var su, custom bool
+	var key *string
+	if _, err := pgx.ForEachRow(rows, []any{&role, &su, &custom, &key}, func() error {
+		set, ok := out[role]
+		if !ok {
+			set = core.PermissionSet{Superuser: su, AssignCustom: custom, Keys: map[string]struct{}{}, Assignable: map[string]struct{}{}}
+		}
+		if key != nil {
+			set.Add(*key)
+		}
+		out[role] = set
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	rows, err = q.Query(ctx, `
+SELECT r.key, ar.key FROM role_assignable_roles ra
+JOIN roles r ON r.id = ra.role_id AND r.key = ANY($1)
+JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser
+UNION
+SELECT r.key, c.key FROM roles r JOIN roles c ON NOT c.builtin AND c.key <> r.key
+WHERE r.key = ANY($1) AND r.assign_custom`, roleKeys)
+	if err != nil {
+		return nil, err
+	}
+	var assignable string
+	if _, err := pgx.ForEachRow(rows, []any{&role, &assignable}, func() error {
+		out[role].Assignable[assignable] = struct{}{}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ActivePermissionKeys lists every active permission, the self ones
 // included (used for superusers in /me).
 func (s *Service) ActivePermissionKeys(ctx context.Context) ([]string, error) {

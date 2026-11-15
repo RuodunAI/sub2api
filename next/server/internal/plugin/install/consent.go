@@ -183,16 +183,9 @@ func overrideGrants(m *manifest.Manifest, in map[string]map[string]manifest.Role
 				}
 				suffixes = append(suffixes, sfx)
 			}
-			switch {
-			case len(suffixes) == 0:
-				continue
-			case slices.Contains(suffixes, ""):
-				suffixes = []string{""}
-			default:
-				slices.Sort(suffixes)
-				suffixes = slices.Compact(suffixes)
+			if suffixes = manifest.CanonicalSuffixes(suffixes); suffixes != nil {
+				roles[role] = suffixes
 			}
-			roles[role] = suffixes
 		}
 		out[local] = roles
 	}
@@ -214,17 +207,10 @@ func scopeSuffix(key string, s *manifest.PermissionScope, v string) (string, boo
 		return sfx, true
 	}
 	p, err := perm.Parse(key + ":" + v)
-	switch {
-	case err != nil || string(p.Action) != key:
+	if err != nil || string(p.Action) != key {
 		return "", false
-	case p.Scope.Own:
-		return p.Suffix(), s.Own
-	case p.Scope.Res != s.ResourceName():
-		return "", false
-	case len(s.Values) > 0:
-		return p.Suffix(), slices.ContainsFunc(s.Values, func(sv manifest.ScopeValue) bool { return sv.Key == p.Scope.Value })
 	}
-	return p.Suffix(), true
+	return p.Suffix(), s.Takes(p.Suffix())
 }
 
 // consentable is the locked state Consent decides on.
@@ -380,14 +366,17 @@ func (s *Service) decideAndApply(ctx context.Context, tx pgx.Tx, key, version st
 		}
 	default:
 		// Register the new version's permissions next to the running
-		// ones so role grants chosen now exist before activation; the
-		// runtime's ApplyDefaults at activation removes stale ones.
+		// ones so role grants chosen now exist before activation. A key
+		// both declare keeps the running version's definition, so its
+		// scope grants are not pruned while that version still serves
+		// them: the runtime's ApplyDefaults at activation switches to the
+		// new definitions, pruning scopes and marking stale keys removed.
 		if s.d.Permissions != nil {
 			old, err := LoadManifest(ctx, tx, key, *c.activeVersion)
 			if err != nil {
 				return nil, err
 			}
-			defs := unionDefs(PermissionDefs(old, nil), PermissionDefs(m, st.roles))
+			defs := unionDefs(PermissionDefs(m, st.roles), PermissionDefs(old, nil))
 			if err := s.d.Permissions.SyncPlugin(ctx, tx, key, defs); err != nil {
 				return nil, err
 			}
@@ -494,9 +483,9 @@ func (s *Service) settleRoleGrants(ctx context.Context, tx pgx.Tx, actorID int64
 func nameable(gs core.PluginGrantees, canDefine bool, role, risk string) (bool, string) {
 	switch {
 	case !canDefine:
-		return false, "role_define"
+		return false, core.GrantDenyRoleDefine
 	case risk == manifest.RiskCritical && !gs.Superuser:
-		return false, "critical"
+		return false, core.GrantDenyCritical
 	}
 	if reason, denied := gs.Denied[role]; denied {
 		return false, reason
@@ -672,7 +661,7 @@ func (s *Service) checkGrantable(ctx context.Context, tx pgx.Tx, actorID int64, 
 		return err
 	}
 	err := s.checkRolesGrantable(ctx, tx, actorID, critical, true)
-	if ce := core.AsError(err); ce != nil && ce.Details["reason"] == "critical" {
+	if ce := core.AsError(err); ce != nil && ce.Details["reason"] == core.GrantDenyCritical {
 		slices.Sort(criticalKeys)
 		return ce.WithDetails(map[string]any{"permissions": slices.Compact(criticalKeys)})
 	}

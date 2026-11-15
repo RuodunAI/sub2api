@@ -377,7 +377,7 @@ func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, d
 
       复活时直接复用 `EXCLUDED.status`，也就是插入时算出的运行状态，不用再写一遍 CASE。没有返回行仍然表示 key 属于别的插件，报 `ErrConflict`（同现状）。
    3. `inserted` 的 key 进入 `created`。
-   4. 没有新建的 key 一律执行 `pruneScopes(ctx, tx, key, def)`：读出该权限的范围行，用 `fits`（按 def 的新声明）挑出不再适用的，`DELETE ... WHERE permission_id=$1 AND scope = ANY($2) RETURNING role_id, scope`，每行写审计 `authz.sync.revoke {via:"scope_changed", key}`。不带范围的行（全部）始终有效，保留。范围没变时它什么也不删，所以不需要先读旧行比对（审查时去掉了原来的 `pluginRows`；插件权限每个插件只有几项，多一次按 `permission_id` 的索引查询可以忽略）。必须删而不能只靠“蕴含不上”：`own` 和枚举值即使被清单收回，运行时仍会命中（第 4 章 `PluginScope.Own/Allows`）。
+   4. 没有新建的 key 一律执行 `pruneScopes(ctx, tx, key, def)`：读出该权限的范围行，用 `fits`（按 def 的新声明；实现为 `manifest.PermissionScope.Takes`，目录、同意的 `scopeSuffix` 和继承共用这一套判定）挑出不再适用的，`DELETE ... WHERE permission_id=$1 AND scope = ANY($2) RETURNING role_id, scope`，每行写审计 `authz.sync.revoke {via:"scope_changed", key}`。不带范围的行（全部）始终有效，保留。范围没变时它什么也不删，所以不需要先读旧行比对（审查时去掉了原来的 `pluginRows`；插件权限每个插件只有几项，多一次按 `permission_id` 的索引查询可以忽略）。必须删而不能只靠“蕴含不上”：`own` 和枚举值即使被清单收回，运行时仍会命中（第 4 章 `PluginScope.Own/Allows`）。暂存升级（另一版本仍在运行）的同意不会触发这里的裁剪：第 3 章 §3.4.5 让新旧都声明的 key 沿用运行版本的定义，裁剪在激活时的 `ApplyDefaults(m, nil)` 里按被激活版本的声明进行。
 3. 对 `created`：`grantPlugin(ctx, tx, "default", key, d.GrantRoles)`。**继承这一步删除**：第 3 章已经在同意时按“当前持有者”把继承解析成显式的 `GrantRoles`（含范围），`PermissionDef.InheritFrom` 字段删除，所以 `SyncPlugin` 的继承分支和 `grantInherited`（`sync.go:308`）不再有调用方，一并删掉。`isNew` 和 `from` 的计算（`plugin_catalog.go:79-96`）也随之删除。
 4. 把删除改成标记：
 
@@ -387,6 +387,8 @@ func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, d
    ```
 
    授权行不动。复活靠第 2 步的 upsert。因为复活的行不进 `created`，它不会被授 `GrantRoles`，也不会做继承，原授权原样生效，满足“不重套默认”。第 3 章的 `catalogKeys` 把 removed 的行算作已有，前后一致。
+
+   标记和复活都改变了持有者的授予是否生效，却没有角色写入，所以各写一条系统审计（目标是插件）：`UPDATE … RETURNING key` 标记的 key 写 `authz.sync.remove`，upsert 时原来是 removed 的 key（upsert 前用 CTE 读出旧状态）写 `authz.sync.revive`，detail 都是 `{keys, holders: {key: [角色]}}`。没有 key 时不写。
 5. `committedLater(v)`（同现状）。
 
 `grantPlugin` 支持范围：
