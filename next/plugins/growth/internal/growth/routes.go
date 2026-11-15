@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/growth/internal/model"
@@ -274,13 +275,8 @@ func pagedList[T any](ctx context.Context, p *Plugin, req *pluginv1.HTTPRequest,
 		return unavailable(err), nil
 	}
 	page, size := pluginsdk.Pagination(req, 20)
-	offset := (page - 1) * size
-	var total int64
-	if err := db.Scopes(from).Count(&total).Error; err != nil {
-		return unavailable(err), nil
-	}
-	var items []T
-	if err := db.Scopes(from).Select(columns).Order(orderBy).Limit(size).Offset(offset).Find(&items).Error; err != nil {
+	items, total, err := pgdb.List[T](from(db), columns, orderBy, size, (page-1)*size)
+	if err != nil {
 		return unavailable(err), nil
 	}
 	return pluginsdk.ListResponse(orNil(items), pluginsdk.Page{Page: page, PageSize: size, Total: total}), nil

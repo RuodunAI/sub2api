@@ -6,11 +6,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
@@ -213,13 +215,19 @@ func nullIfEmpty(s string) *string {
 }
 
 // returningID makes an INSERT of events read back the ids only, not every
-// column with a database default.
+// column with a database default (GORM always reads something back).
 var returningID = clause.Returning{Columns: columns("id")}
 
 // writeEvents persists a batch, all of it or nothing, and returns the ids of
-// its records.
+// its records. The ids are drawn first and written with the rows: the ids a
+// multi-row INSERT returns come in an order PostgreSQL does not promise to
+// be the order of its rows, so they could not be told apart.
 func (p *Plugin) writeEvents(ctx context.Context, evs []eventRec) ([]int64, error) {
 	db, err := p.db(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := eventIDs(db, len(evs))
 	if err != nil {
 		return nil, err
 	}
@@ -227,14 +235,26 @@ func (p *Plugin) writeEvents(ctx context.Context, evs []eventRec) ([]int64, erro
 	for i := range evs {
 		evs[i].storable()
 		rows[i] = evs[i].row()
+		rows[i].ID = ids[i]
 	}
-	if err := db.Transaction(func(tx *gorm.DB) error { return insertRows(tx, rows, returningID) }); err != nil {
+	if err := pgdb.InsertAll(db, rows, returningID); err != nil {
 		return nil, err
 	}
-	ids := make([]int64, len(rows))
-	for i := range rows {
-		ids[i] = rows[i].ID
+	return ids, nil
+}
+
+// eventIDs draws n ids from the sequence of events.id, ascending: a batch's
+// records get them in order, as they did one INSERT each.
+func eventIDs(db *gorm.DB, n int) ([]int64, error) {
+	ids := make([]int64, 0, n)
+	err := db.Raw(`SELECT nextval(pg_get_serial_sequence('events', 'id')) FROM generate_series(1, ?)`, n).Scan(&ids).Error
+	if err != nil {
+		return nil, err
 	}
+	if len(ids) != n {
+		return nil, fmt.Errorf("moderation: drew %d event ids, want %d", len(ids), n)
+	}
+	slices.Sort(ids)
 	return ids, nil
 }
 
@@ -493,12 +513,12 @@ func (p *Plugin) applyBans(ctx context.Context, users map[int64]bool) {
 				expires = &t
 			}
 			reason := violationsReason(n, c.BanWindowSeconds)
-			n, err := affected(tx.Exec(`INSERT INTO blocks (user_id, reason, violations, source, created_at, expires_at, created_by)
+			rows, err := affected(tx.Exec(`INSERT INTO blocks (user_id, reason, violations, source, created_at, expires_at, created_by)
 				VALUES (?, ?, ?, 'auto', ?, ?, NULL)
 				ON CONFLICT (user_id) DO UPDATE SET reason = EXCLUDED.reason, violations = EXCLUDED.violations,
 					source = 'auto', created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at, created_by = NULL
 				WHERE blocks.expires_at IS NOT NULL AND blocks.expires_at <= ?`, uid, reason, n, now, expires, now))
-			banned = n > 0
+			banned = rows > 0
 			return err
 		})
 		if err != nil {

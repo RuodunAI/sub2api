@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/growth/internal/model"
@@ -95,7 +96,7 @@ func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("growth: database unavailable: %w", err)
 	}
-	return db, nil
+	return pgdb.DriverErrors(db), nil
 }
 
 // exists reports whether the query q selects any row (SELECT EXISTS).
@@ -207,16 +208,21 @@ func (p *Plugin) ensureCode(ctx context.Context, userID int64) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		err = db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}}, DoNothing: true}).
-			Create(&model.ReferralCode{UserID: userID, Code: code}).Error
-		if err == nil {
-			return code, nil
-		}
+		res := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}}, DoNothing: true}).
+			Create(&model.ReferralCode{UserID: userID, Code: code})
 		// The user_id conflict is absorbed: a duplicate key is the code's.
-		if errors.Is(err, gorm.ErrDuplicatedKey) {
+		if errors.Is(res.Error, gorm.ErrDuplicatedKey) {
 			continue // collision, retry
 		}
-		return "", err
+		if res.Error != nil {
+			return "", res.Error
+		}
+		if res.RowsAffected == 0 {
+			// A concurrent call stored the user's code first: answer that
+			// one, not the code generated here.
+			return codeOf(db, userID)
+		}
+		return code, nil
 	}
 	// Fallback: query existing.
 	return codeOf(db, userID)
@@ -308,10 +314,14 @@ func (p *Plugin) recordCommission(ctx context.Context, inviteeUserID int64, even
 		return err
 	}
 	inviterID := *invitee.InviterUserID // not NULL: the WHERE above
+	// bindInviter sets bound_at with the inviter. A row without one is
+	// broken: fail, so that the event is delivered again, rather than pay or
+	// refuse a commission on a binding time nobody knows.
+	if invitee.BoundAt == nil {
+		return fmt.Errorf("growth: referral of user %d has an inviter but no bound_at", inviteeUserID)
+	}
 	if cfg.ReferralDurationDays > 0 {
-		// bindInviter sets bound_at with the inviter.
-		boundAt := deref(invitee.BoundAt)
-		if time.Now().After(boundAt.AddDate(0, 0, cfg.ReferralDurationDays)) {
+		if time.Now().After(invitee.BoundAt.AddDate(0, 0, cfg.ReferralDurationDays)) {
 			return nil // expired
 		}
 	}
@@ -435,15 +445,6 @@ func checkins(db *gorm.DB) *gorm.DB { return db.Model(&model.Checkin{}) }
 // checkedIn reports whether userID checked in on date (YYYY-MM-DD).
 func checkedIn(db *gorm.DB, userID int64, date string) (bool, error) {
 	return exists(db, checkins(db).Where("user_id = ? AND checkin_date = ?", userID, date))
-}
-
-// deref is the value p points to, the zero value for nil (a NULL column).
-func deref[T any](p *T) T {
-	if p == nil {
-		var zero T
-		return zero
-	}
-	return *p
 }
 
 // orNil keeps an empty list nil: these endpoints have always answered null,

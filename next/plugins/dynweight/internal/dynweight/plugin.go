@@ -14,6 +14,7 @@ import (
 	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/dynweight/internal/rules"
@@ -131,7 +132,10 @@ func (p *Plugin) store(ctx context.Context) (store, error) {
 		return store{}, pluginsdk.ErrHostNotReady
 	}
 	db, err := p.host.DB(ctx)
-	return store{db: db}, err
+	if err != nil {
+		return store{}, err
+	}
+	return store{db: pgdb.DriverErrors(db)}, nil
 }
 
 func (p *Plugin) loop() {
