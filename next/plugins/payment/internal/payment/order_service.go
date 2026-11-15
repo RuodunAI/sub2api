@@ -11,9 +11,10 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/model"
 )
 
 // OrderService handles payment order operations
@@ -56,7 +57,7 @@ func (s *OrderService) CreateOrder(ctx context.Context, req CreateOrderRequest) 
 		return nil, err
 	}
 	// Load payment config
-	cfg, err := s.loadConfig(ctx, db)
+	cfg, err := s.loadConfig(db)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
@@ -77,7 +78,7 @@ func (s *OrderService) CreateOrder(ctx context.Context, req CreateOrderRequest) 
 	}
 
 	// Check pending orders limit
-	if err := s.checkPendingLimit(ctx, db, req.UserID, cfg.MaxPendingOrders); err != nil {
+	if err := s.checkPendingLimit(db, req.UserID, cfg.MaxPendingOrders); err != nil {
 		return nil, err
 	}
 
@@ -102,29 +103,26 @@ func (s *OrderService) CreateOrder(ctx context.Context, req CreateOrderRequest) 
 	// TODO: Get user email from host (需要核心提供用户查询接口)
 	userEmail := fmt.Sprintf("user_%d@example.com", req.UserID)
 
-	// Create order in database
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
+	// Create order in database. SQL rather than Create: GORM would store the
+	// column default for an empty order type ('balance'), this stores ''.
 	var orderID int64
-	err = tx.QueryRow(ctx, `
-		INSERT INTO payment_orders (
-			user_id, user_email, out_trade_no, payment_type, amount, pay_amount,
-			fee_rate, currency, order_type, status, expires_at, client_ip, src_host, src_url, plan_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-		RETURNING id
-	`, req.UserID, userEmail, outTradeNo, req.PaymentType, req.Amount, payAmount,
-		feeRate, CurrencyDefaultCNY, req.OrderType, StatusPending, expiresAt,
-		req.ClientIP, req.SrcHost, req.SrcURL, req.PlanID).Scan(&orderID)
+	err = inTx(db, func(tx *gorm.DB) error {
+		err := tx.Raw(`
+			INSERT INTO payment_orders (
+				user_id, user_email, out_trade_no, payment_type, amount, pay_amount,
+				fee_rate, currency, order_type, status, expires_at, client_ip, src_host, src_url, plan_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			RETURNING id
+		`, req.UserID, userEmail, outTradeNo, req.PaymentType, req.Amount, payAmount,
+			feeRate, CurrencyDefaultCNY, req.OrderType, StatusPending, expiresAt,
+			req.ClientIP, req.SrcHost, req.SrcURL, req.PlanID).Scan(&orderID).Error
+		if err != nil {
+			return fmt.Errorf("insert order: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("insert order: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit: %w", err)
+		return nil, err
 	}
 
 	// TODO: Select provider instance and create payment
@@ -165,15 +163,10 @@ func (s *OrderService) HandlePaymentNotification(ctx context.Context, providerKe
 	}
 
 	// Find order
-	var order Order
-	err = db.QueryRow(ctx, `
-		SELECT id, user_id, amount, pay_amount, status, currency
-		FROM payment_orders
-		WHERE out_trade_no = $1
-	`, notification.OutTradeNo).Scan(
-		&order.ID, &order.UserID, &order.Amount, &order.PayAmount, &order.Status, &order.Currency,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	var order model.Order
+	err = db.Select("id, user_id, amount, pay_amount, status, currency").
+		Where("out_trade_no = ?", notification.OutTradeNo).Take(&order).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return fmt.Errorf("%w: %s", ErrOrderNotFound, notification.OutTradeNo)
 	}
 	if err != nil {
@@ -195,11 +188,9 @@ func (s *OrderService) HandlePaymentNotification(ctx context.Context, providerKe
 
 	// Update order to paid
 	now := time.Now()
-	_, err = db.Exec(ctx, `
-		UPDATE payment_orders
-		SET status = $1, payment_trade_no = $2, paid_at = $3, updated_at = $4
-		WHERE id = $5 AND status IN ($6, $7)
-	`, StatusPaid, notification.TradeNo, now, now, order.ID, StatusPending, StatusExpired)
+	err = orders(db).Where("id = ? AND status IN (?, ?)", order.ID, StatusPending, StatusExpired).Updates(map[string]any{
+		"status": StatusPaid, "payment_trade_no": notification.TradeNo, "paid_at": now, "updated_at": now,
+	}).Error
 	if err != nil {
 		return fmt.Errorf("update order to paid: %w", err)
 	}
@@ -219,11 +210,9 @@ func (s *OrderService) executeFulfillment(ctx context.Context, orderID, userID i
 		return err
 	}
 	// Update order status to recharging
-	_, err = db.Exec(ctx, `
-		UPDATE payment_orders
-		SET status = $1, updated_at = $2
-		WHERE id = $3 AND status = $4
-	`, StatusRecharging, time.Now(), orderID, StatusPaid)
+	err = orders(db).Where("id = ? AND status = ?", orderID, StatusPaid).Updates(map[string]any{
+		"status": StatusRecharging, "updated_at": time.Now(),
+	}).Error
 	if err != nil {
 		return fmt.Errorf("update to recharging: %w", err)
 	}
@@ -240,20 +229,16 @@ func (s *OrderService) executeFulfillment(ctx context.Context, orderID, userID i
 	})
 	if err != nil {
 		// Mark order as failed
-		_, _ = db.Exec(ctx, `
-			UPDATE payment_orders
-			SET status = $1, failed_at = $2, failed_reason = $3, updated_at = $4
-			WHERE id = $5
-		`, StatusFailed, time.Now(), err.Error(), time.Now(), orderID)
+		_ = orders(db).Where("id = ?", orderID).Updates(map[string]any{
+			"status": StatusFailed, "failed_at": time.Now(), "failed_reason": err.Error(), "updated_at": time.Now(),
+		}).Error
 		return fmt.Errorf("credit ledger: %w", err)
 	}
 
 	// Mark order as completed
-	_, err = db.Exec(ctx, `
-		UPDATE payment_orders
-		SET status = $1, updated_at = $2
-		WHERE id = $3
-	`, StatusCompleted, time.Now(), orderID)
+	err = orders(db).Where("id = ?", orderID).Updates(map[string]any{
+		"status": StatusCompleted, "updated_at": time.Now(),
+	}).Error
 	if err != nil {
 		return fmt.Errorf("update to completed: %w", err)
 	}
@@ -269,21 +254,18 @@ func (s *OrderService) executeFulfillment(ctx context.Context, orderID, userID i
 }
 
 // checkPendingLimit checks if user has too many pending orders
-func (s *OrderService) checkPendingLimit(ctx context.Context, db *pgxpool.Pool, userID int64, maxPending int) error {
+func (s *OrderService) checkPendingLimit(db *gorm.DB, userID int64, maxPending int) error {
 	if maxPending <= 0 {
 		return nil
 	}
 
-	var count int
-	err := db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM payment_orders
-		WHERE user_id = $1 AND status = $2
-	`, userID, StatusPending).Scan(&count)
+	var count int64
+	err := orders(db).Where("user_id = ? AND status = ?", userID, StatusPending).Count(&count).Error
 	if err != nil {
 		return fmt.Errorf("check pending orders: %w", err)
 	}
 
-	if count >= maxPending {
+	if count >= int64(maxPending) {
 		return fmt.Errorf("too many pending orders: %d (max %d)", count, maxPending)
 	}
 
@@ -291,24 +273,32 @@ func (s *OrderService) checkPendingLimit(ctx context.Context, db *pgxpool.Pool, 
 }
 
 // loadConfig loads payment configuration
-func (s *OrderService) loadConfig(ctx context.Context, db *pgxpool.Pool) (*PaymentConfig, error) {
-	var cfg PaymentConfig
-	err := db.QueryRow(ctx, `
-		SELECT enabled, min_amount, max_amount, daily_limit, order_timeout_minutes,
-			max_pending_orders, enabled_payment_types, balance_disabled,
-			balance_recharge_multiplier, recharge_fee_rate, load_balance_strategy
-		FROM payment_config WHERE id = 1
-	`).Scan(
-		&cfg.Enabled, &cfg.MinAmount, &cfg.MaxAmount, &cfg.DailyLimit,
-		&cfg.OrderTimeoutMinutes, &cfg.MaxPendingOrders, &cfg.EnabledPaymentTypes,
-		&cfg.BalanceDisabled, &cfg.BalanceRechargeMultiplier, &cfg.RechargeFeeRate,
-		&cfg.LoadBalanceStrategy,
-	)
+func (s *OrderService) loadConfig(db *gorm.DB) (*PaymentConfig, error) {
+	var row model.Config
+	err := db.Select(`enabled, min_amount, max_amount, daily_limit, order_timeout_minutes,
+		max_pending_orders, enabled_payment_types, balance_disabled,
+		balance_recharge_multiplier, recharge_fee_rate, load_balance_strategy`).
+		Take(&row, model.ConfigID).Error
 	if err != nil {
 		return nil, fmt.Errorf("load payment config: %w", err)
 	}
-	return &cfg, nil
+	return &PaymentConfig{
+		Enabled:                   row.Enabled,
+		MinAmount:                 row.MinAmount,
+		MaxAmount:                 row.MaxAmount,
+		DailyLimit:                row.DailyLimit,
+		OrderTimeoutMinutes:       row.OrderTimeoutMinutes,
+		MaxPendingOrders:          row.MaxPendingOrders,
+		EnabledPaymentTypes:       row.EnabledPaymentTypes,
+		BalanceDisabled:           row.BalanceDisabled,
+		BalanceRechargeMultiplier: row.BalanceRechargeMultiplier,
+		RechargeFeeRate:           row.RechargeFeeRate,
+		LoadBalanceStrategy:       row.LoadBalanceStrategy,
+	}, nil
 }
+
+// orders selects from payment_orders.
+func orders(db *gorm.DB) *gorm.DB { return db.Model(&model.Order{}) }
 
 // PaymentNotification represents parsed payment notification
 type PaymentNotification struct {
@@ -325,34 +315,33 @@ func (s *OrderService) ListOrders(ctx context.Context, userID int64, limit, offs
 	if err != nil {
 		return nil, 0, err
 	}
-	// payment_trade_no is NULL until the order is paid.
-	orders, total, err := listPaged(ctx, db, pagedQuery{
-		countSQL:   `SELECT COUNT(*) FROM payment_orders`,
-		listSQL:    selectOrders,
-		where:      "user_id = $1",
+	return listPaged(db, pagedQuery{
+		columns:    selectOrders,
+		where:      "user_id = ?",
 		args:       []any{userID},
 		orderBy:    "created_at DESC",
 		countLabel: "count orders",
 		queryLabel: "query orders",
-		scanLabel:  "scan order",
-	}, limit, offset, func(row pgx.CollectableRow) (Order, error) {
-		var o Order
-		err := row.Scan(
-			&o.ID, &o.UserID, &o.OutTradeNo, &o.PaymentType, &o.PaymentTradeNo,
-			&o.Amount, &o.PayAmount, &o.Currency, &o.OrderType, &o.Status,
-			&o.ExpiresAt, &o.PaidAt, &o.CreatedAt,
-		)
-		return o, err
+	}, limit, offset, func(o model.Order) Order {
+		return Order{
+			ID:             o.ID,
+			UserID:         o.UserID,
+			OutTradeNo:     o.OutTradeNo,
+			PaymentType:    o.PaymentType,
+			PaymentTradeNo: deref(o.PaymentTradeNo), // NULL until the order is paid
+			Amount:         o.Amount,
+			PayAmount:      o.PayAmount,
+			Currency:       o.Currency,
+			OrderType:      o.OrderType,
+			Status:         o.Status,
+			ExpiresAt:      o.ExpiresAt,
+			PaidAt:         o.PaidAt,
+			CreatedAt:      o.CreatedAt,
+		}
 	})
-	if err != nil {
-		return nil, 0, err
-	}
-	return orders, total, nil
 }
 
 // selectOrders is the column list of the order list statements.
-const selectOrders = `
-	SELECT id, user_id, out_trade_no, payment_type, COALESCE(payment_trade_no, ''),
-		amount, pay_amount, currency, order_type, status,
-		expires_at, paid_at, created_at
-	FROM payment_orders`
+const selectOrders = `id, user_id, out_trade_no, payment_type, payment_trade_no,
+	amount, pay_amount, currency, order_type, status,
+	expires_at, paid_at, created_at`

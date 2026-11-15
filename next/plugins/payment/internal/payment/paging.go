@@ -1,23 +1,20 @@
 package payment
 
 import (
-	"context"
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// pagedQuery is one paged list endpoint. The WHERE clause and its arguments
-// are written once: listPaged appends them to both statements and numbers the
-// page's LIMIT/OFFSET after them, so a caller never shifts "$2"/"$3" by hand.
+// pagedQuery is one paged list endpoint over the table of a model. The
+// filter is written once: listPaged applies it to both the count and the page.
 type pagedQuery struct {
-	// countSQL and listSQL end at the table (no WHERE, ORDER BY or LIMIT).
-	countSQL string
-	listSQL  string
-	// where is the optional filter shared by both statements, with its
-	// placeholders numbered from $1; args are its arguments.
+	// columns is the page's select list.
+	columns string
+	// where is the optional filter shared by both statements; args are its
+	// arguments.
 	where string
 	args  []any
 	// orderBy is the page statement's ORDER BY ("created_at DESC").
@@ -26,49 +23,42 @@ type pagedQuery struct {
 	// report the raw error to administrators ("count codes: ...").
 	countLabel string
 	queryLabel string
-	scanLabel  string
 }
 
-// statements renders the count and page SQL with the filter applied and the
-// page window numbered after the filter's arguments.
-func (q pagedQuery) statements(limit, offset int) (countSQL, listSQL string, args []any) {
-	where := ""
-	if q.where != "" {
-		where = " WHERE " + q.where
+// listPaged counts the rows of model M that q selects and reads one page of
+// them, converted by conv. It returns the total for the pagination block,
+// which callers still need even when the page is empty.
+func listPaged[M, T any](db *gorm.DB, q pagedQuery, limit, offset int, conv func(M) T) ([]T, int, error) {
+	match := func(db *gorm.DB) *gorm.DB {
+		db = db.Model(new(M))
+		if q.where != "" {
+			db = db.Where(q.where, q.args...)
+		}
+		return db
 	}
-	countSQL = q.countSQL + where
-	listSQL = fmt.Sprintf("%s%s ORDER BY %s LIMIT $%d OFFSET $%d",
-		q.listSQL, where, q.orderBy, len(q.args)+1, len(q.args)+2)
-	args = append(append(make([]any, 0, len(q.args)+2), q.args...), limit, offset)
-	return countSQL, listSQL, args
-}
-
-// listPaged runs the count and the page statement and reads the rows into T.
-// It returns the total for the pagination block, which callers still need even
-// when the page is empty.
-func listPaged[T any](ctx context.Context, db *pgxpool.Pool, q pagedQuery, limit, offset int, scan pgx.RowToFunc[T]) ([]T, int, error) {
-	countSQL, listSQL, args := q.statements(limit, offset)
-	var total int
-	if err := db.QueryRow(ctx, countSQL, args[:len(q.args)]...).Scan(&total); err != nil {
+	var total int64
+	if err := db.Scopes(match).Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("%s: %w", q.countLabel, err)
 	}
-	rows, err := db.Query(ctx, listSQL, args...)
-	if err != nil {
+	var rows []M
+	if err := db.Scopes(match).Select(q.columns).Order(q.orderBy).Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
 		return nil, 0, fmt.Errorf("%s: %w", q.queryLabel, err)
 	}
-	items, err := pgx.CollectRows(rows, scan)
-	if err != nil {
-		return nil, 0, fmt.Errorf("%s: %w", q.scanLabel, err)
+	items := make([]T, len(rows))
+	for i, r := range rows {
+		items[i] = conv(r)
 	}
-	return items, total, nil
+	return items, int(total), nil
 }
 
 // lockedRow describes the row a redemption locks and the wording of its
 // failures: the messages are rendered to the console verbatim, so each caller
 // keeps its own.
 type lockedRow struct {
-	query string // SELECT ... FOR UPDATE taking exactly one argument
-	arg   any
+	// columns are read; where selects exactly one row with one argument.
+	columns string
+	where   string
+	arg     any
 	// missing is returned when no row matches.
 	missing string
 	// queryFail prefixes a genuine query error ("query code").
@@ -76,27 +66,46 @@ type lockedRow struct {
 }
 
 // withLockedRow runs fn inside a transaction that holds the FOR UPDATE lock on
-// the row lockedRow selects; the transaction commits when fn returns nil. fn
-// reads and writes the row through tx.
-func withLockedRow[T any](ctx context.Context, db *pgxpool.Pool, l lockedRow, scan func(pgx.Row) (T, error), fn func(pgx.Tx, T) error) error {
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
+// the row of model M that l selects; the transaction commits when fn returns
+// nil. fn reads and writes through tx.
+func withLockedRow[M any](db *gorm.DB, l lockedRow, fn func(tx *gorm.DB, row M) error) error {
+	return inTx(db, func(tx *gorm.DB) error {
+		var row M
+		err := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
+			Select(l.columns).Where(l.where, l.arg).Take(&row).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.New(l.missing)
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", l.queryFail, err)
+		}
+		return fn(tx, row)
+	})
+}
 
-	row, err := scan(tx.QueryRow(ctx, l.query, l.arg))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errors.New(l.missing)
+// inTx runs fn in a transaction that commits when fn returns nil. Unlike
+// gorm.DB.Transaction it keeps the wording of begin and commit failures,
+// which the endpoints report.
+func inTx(db *gorm.DB, fn func(tx *gorm.DB) error) error {
+	tx := db.Begin()
+	if tx.Error != nil {
+		return fmt.Errorf("begin transaction: %w", tx.Error)
 	}
-	if err != nil {
-		return fmt.Errorf("%s: %w", l.queryFail, err)
-	}
-	if err := fn(tx, row); err != nil {
+	defer tx.Rollback() // a no-op once committed
+	if err := fn(tx); err != nil {
 		return err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// deref is the value p points to, the zero value for nil (a NULL column).
+func deref[T any](p *T) T {
+	if p == nil {
+		var zero T
+		return zero
+	}
+	return *p
 }
