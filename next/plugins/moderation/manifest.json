@@ -18,7 +18,7 @@
       "binaries": "runtimes/{os}-{arch}/plugin"
     }
   },
-  "hostCompat": ">=0.1.286 <0.2.0",
+  "hostCompat": ">=0.1.289 <0.2.0",
   "hostUICompat": "^3.15",
   "capabilities": [
     {
@@ -128,7 +128,8 @@
   "userPermissions": [
     {
       "key": "moderation:read",
-      "defaultRoles": ["admin"],
+      "risk": "sensitive",
+      "defaults": { "admin": true },
       "label": {
         "en": "View prompt moderation",
         "zh": "查看提示词审核"
@@ -140,7 +141,7 @@
     },
     {
       "key": "moderation:manage",
-      "defaultRoles": ["admin"],
+      "defaults": { "admin": true },
       "label": {
         "en": "Manage prompt moderation",
         "zh": "管理提示词审核"
@@ -152,8 +153,7 @@
     },
     {
       "key": "moderation:exempt",
-      "defaultRoles": [],
-      "inheritFrom": ["moderation:read"],
+      "risk": "critical",
       "label": {
         "en": "Exempt from moderation watch and bans",
         "zh": "免于审核观察与封禁"

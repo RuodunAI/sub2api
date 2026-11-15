@@ -479,10 +479,11 @@ guard-0.1.0.s2plugin
 
   "database": { "schema": "plg_guard", "migrations": "migrations/" },
 
-  "userPermissions": [
-    { "key": "rules:read",   "label": { "zh": "查看拦截规则" } },
-    { "key": "rules:manage", "label": { "zh": "管理拦截规则" } },
-    { "key": "stats:read",   "label": { "zh": "查看拦截统计" } }
+  "userPermissions": [                          // 登记为 plugin.guard:<key>；risk/defaults 等需核心 >=0.1.289（CONTRACTS §4）
+    { "key": "rules:read",   "label": { "zh": "查看拦截规则" }, "defaults": { "admin": true, "operator": true } },
+    { "key": "rules:manage", "label": { "zh": "管理拦截规则" }, "risk": "sensitive",  // low（默认）/ sensitive / critical
+      "requires": ["rules:read"], "defaults": { "admin": true } },              // defaults：首次登记时建议授予的内置角色
+    { "key": "stats:read",   "label": { "zh": "查看拦截统计" } }                     // 不写 defaults 不授予任何角色
   ],
 
   "routes": [                                   // 挂在 /api/plugins/guard/ 下，核心先鉴权再转发

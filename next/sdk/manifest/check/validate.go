@@ -258,6 +258,7 @@ func Validate(m *manifest.Manifest, files map[string][]byte, opt ValidateOptions
 	v.jobs()
 	v.database()
 	v.userPermissions()
+	v.retiredUserPermissionFields()
 	v.routes()
 	v.ui()
 	v.resources()
@@ -814,14 +815,28 @@ func (v *validator) userPermissions() {
 				v.add(fmt.Sprintf("%s.requires[%d]", f, j), "unknown", "requires %q must be another permission declared here", r)
 			}
 		}
-		for j, r := range up.DefaultRoles {
-			if !slices.Contains(manifest.BuiltinRoleKeys, r) {
-				v.add(fmt.Sprintf("%s.defaultRoles[%d]", f, j), "invalid_value", "role %q is not one of %v", r, manifest.BuiltinRoleKeys)
-			}
-		}
 		v.inheritFrom(f, up)
 		v.permissionScope(f+".scope", up.Scope)
 		v.permissionDefaults(f+".defaults", up)
+	}
+}
+
+// retiredUserPermissionFields rejects the userPermissions fields the
+// permission model replaced, which would otherwise decode to nothing: a
+// permission still declaring them would silently lose its defaults and risk.
+func (v *validator) retiredUserPermissionFields() {
+	var raw struct {
+		UserPermissions []map[string]json.RawMessage `json:"userPermissions"`
+	}
+	if json.Unmarshal(v.files["manifest.json"], &raw) != nil {
+		return
+	}
+	for i, up := range raw.UserPermissions {
+		for _, field := range []struct{ old, repl string }{{"sensitive", "risk"}, {"defaultRoles", "defaults"}} {
+			if _, ok := up[field.old]; ok {
+				v.add(fmt.Sprintf("userPermissions[%d].%s", i, field.old), "unsupported", "%s was removed; use %s", field.old, field.repl)
+			}
+		}
 	}
 }
 

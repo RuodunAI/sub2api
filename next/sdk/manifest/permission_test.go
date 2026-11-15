@@ -2,7 +2,6 @@ package manifest
 
 import (
 	"encoding/json"
-	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -48,37 +47,6 @@ func TestLocalPermission(t *testing.T) {
 		if ok != c.ok || (ok && got != c.want) {
 			t.Errorf("%s: LocalPermission(shop, %q) = %q, %v, want %q, %v", c.name, c.key, got, ok, c.want, c.ok)
 		}
-	}
-}
-
-func TestUserPermissionRoles(t *testing.T) {
-	if got := (UserPermission{}).Roles(); !slices.Equal(got, []string{"admin"}) {
-		t.Fatalf("default roles %v", got)
-	}
-	// Omitted (or null) is admin, an explicit [] is none, and both survive
-	// a marshalling round trip.
-	for raw, want := range map[string][]string{`{"key":"a:b"}`: {"admin"}, `{"key":"a:b","defaultRoles":null}`: {"admin"}, `{"key":"a:b","defaultRoles":[]}`: {}} {
-		var up UserPermission
-		if err := json.Unmarshal([]byte(raw), &up); err != nil {
-			t.Fatal(err)
-		}
-		again, _ := json.Marshal(up)
-		var back UserPermission
-		if err := json.Unmarshal(again, &back); err != nil {
-			t.Fatal(err)
-		}
-		if got, round := up.Roles(), back.Roles(); !slices.Equal(got, want) || !slices.Equal(round, want) {
-			t.Errorf("%s: roles %v, after a round trip %v, want %v", raw, got, round, want)
-		}
-	}
-	up := UserPermission{DefaultRoles: []string{"user", "admin"}}
-	got := up.Roles()
-	got[0] = "x"
-	if up.DefaultRoles[0] != "user" {
-		t.Fatal("Roles aliases DefaultRoles")
-	}
-	if slices.Contains(BuiltinRoleKeys, "super_admin") {
-		t.Fatal("super_admin is never a default role")
 	}
 }
 

@@ -12,20 +12,6 @@ import (
 // keeps the lists in step).
 var BuiltinRoleKeys = []string{"admin", "operator", "supplier", "user"}
 
-// DefaultPermissionRoles are the roles of a permission declaring no
-// defaultRoles.
-var DefaultPermissionRoles = []string{"admin"}
-
-// Roles reports the built-in roles the permission is granted to when first
-// created: DefaultRoles, DefaultPermissionRoles when omitted (nil), none for
-// an explicit empty list.
-func (up UserPermission) Roles() []string {
-	if up.DefaultRoles == nil {
-		return slices.Clone(DefaultPermissionRoles)
-	}
-	return slices.Clone(up.DefaultRoles)
-}
-
 // UserPermissionRisks are the risks a user permission may declare.
 var UserPermissionRisks = []string{RiskLow, RiskSensitive, RiskCritical}
 
