@@ -13,8 +13,10 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // Request log levels (REQUEST-LOG-LEVELS-DESIGN §2/§4,
@@ -114,12 +116,15 @@ func effectiveRequestLog(c Config, a AccountRequestLog, now time.Time) string {
 
 // LoadAccountRequestLog reads account id's own level; no row follows.
 func LoadAccountRequestLog(ctx context.Context, q store.Querier, id int64) (AccountRequestLog, error) {
-	var a AccountRequestLog
-	err := q.QueryRow(ctx, `SELECT level, full_until FROM ccgateway_account_request_logs WHERE account_id=$1`, id).Scan(&a.Level, &a.FullUntil)
+	var row model.CcgatewayAccountRequestLog
+	err := store.G(ctx, q).Select("level", "full_until").Where("account_id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
 		return AccountRequestLog{}, nil
 	}
-	return a, err
+	if err != nil {
+		return AccountRequestLog{}, err
+	}
+	return AccountRequestLog{Level: row.Level, FullUntil: row.FullUntil}, nil
 }
 
 // requestLogLevel is the request_log a request of account id carries: read
@@ -283,12 +288,11 @@ func (s *Service) saveAccountRequestLog(c *gin.Context, ctx context.Context, id 
 			return err
 		}
 		detail["previous"] = viewSetting(old, time.Now()).Level
+		g := store.G(ctx, tx)
 		if change.Level == requestLogFollow {
-			_, err = tx.Exec(ctx, `DELETE FROM ccgateway_account_request_logs WHERE account_id=$1`, id)
+			err = g.Where("account_id = ?", id).Delete(&model.CcgatewayAccountRequestLog{}).Error
 		} else {
-			_, err = tx.Exec(ctx, `INSERT INTO ccgateway_account_request_logs(account_id,level,full_until,updated_by)
-				VALUES($1,$2,$3,$4) ON CONFLICT(account_id) DO UPDATE SET level=EXCLUDED.level,full_until=EXCLUDED.full_until,
-				updated_by=EXCLUDED.updated_by,updated_at=clock_timestamp()`, id, change.Level, fullUntil, updatedBy)
+			err = saveRequestLog(g, &model.CcgatewayAccountRequestLog{AccountID: id, Level: change.Level, FullUntil: fullUntil, UpdatedBy: updatedBy}).Error
 		}
 		if err != nil {
 			return err
@@ -300,6 +304,11 @@ func (s *Service) saveAccountRequestLog(c *gin.Context, ctx context.Context, id 
 	}
 	s.requestLogChanged(ctx, id)
 	return nil
+}
+
+// saveRequestLog writes an account's own level.
+func saveRequestLog(db *gorm.DB, row *model.CcgatewayAccountRequestLog) *gorm.DB {
+	return db.Clauses(upsertAccountRow("level", "full_until", "updated_by")).Create(row)
 }
 
 // requestLogChange is one validated PUT form: Level (+FullForHours for

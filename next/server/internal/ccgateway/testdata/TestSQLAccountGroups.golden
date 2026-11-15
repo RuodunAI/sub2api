@@ -1,0 +1,4 @@
+-- sql
+SELECT g.id, g.name FROM groups g JOIN account_groups a ON a.group_id = g.id WHERE a.account_id = $1 ORDER BY g.id
+-- vars
+$1 int64 7

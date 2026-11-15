@@ -283,8 +283,7 @@ func (a *attempt) resolveRoute(resource bool) *outcome {
 // until it is migrated).
 func (a *attempt) resolveShared() *outcome {
 	if a.t.accountID > 0 {
-		var kind string
-		if err := a.t.s.DB.Pool.QueryRow(a.ctx, "SELECT type FROM accounts WHERE id=$1 AND plugin_key='ccgateway'", a.t.accountID).Scan(&kind); err != nil || kind == "apikey" {
+		if kind, err := a.t.s.sharedAccountType(a.ctx, a.t.accountID); err != nil || kind == "apikey" {
 			return a.fail(errors.New("API key accounts require per-account runtimes"))
 		}
 	}
@@ -301,6 +300,16 @@ func (a *attempt) resolveShared() *outcome {
 	a.client, a.base, a.close, a.modelKey = client, base, closeFn, a.cfg.APIKey
 	a.finishOnce()
 	return nil
+}
+
+// sharedAccountType is the type of ccgateway account id, read for every
+// request forwarded to the shared runtime (not cached, unlike the account
+// state of per-account runtimes).
+func (s *Service) sharedAccountType(ctx context.Context, id int64) (string, error) {
+	var kind string
+	//gormguard:allow-pgx read for every request on the shared runtime: 8 allocs/op on pgx, 65 on GORM (BenchmarkHotSharedAccountType)
+	err := s.DB.Pool.QueryRow(ctx, "SELECT type FROM accounts WHERE id=$1 AND plugin_key='ccgateway'", id).Scan(&kind)
+	return kind, err
 }
 
 func (a *attempt) finishOnce() {

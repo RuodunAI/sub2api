@@ -14,8 +14,10 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // Draft runtimes (CONTRACTS §49.9): the account editor starts a runtime
@@ -65,6 +67,17 @@ const (
 	accountDraft int64 = 0
 )
 
+// draftKind keeps the drafts of kind (anyDraft, accountDraft or an account
+// id).
+func draftKind(kind int64) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		if kind == anyDraft {
+			return db
+		}
+		return db.Where("COALESCE(for_account, 0) = ?", kind)
+	}
+}
+
 // touchDraft marks an open draft the caller may see as used (last_seen_at)
 // and reports whether it exists. Adopted drafts are accounts now and
 // retired runtimes are gone for the API: not found.
@@ -78,13 +91,16 @@ func (s *Service) touchDraftOf(ctx context.Context, key string, scope *int64, ki
 	if !isDraftKey(key) {
 		return false, nil
 	}
-	tag, e := s.DB.Pool.Exec(ctx, `UPDATE ccgateway_runtimes SET last_seen_at=now()
-		WHERE key=$1 AND account_id IS NULL AND retired_at IS NULL AND ($2::bigint IS NULL OR created_by=$2)
-		AND ($3::bigint = -1 OR COALESCE(for_account, 0) = $3)`, key, scope, kind)
-	if e != nil {
-		return false, e
+	res := touchDraftQuery(store.G(ctx, s.DB.Pool), key, scope, kind)
+	if res.Error != nil {
+		return false, res.Error
 	}
-	return tag.RowsAffected() == 1, nil
+	return res.RowsAffected == 1, nil
+}
+
+// touchDraftQuery marks open draft key of kind visible to scope as used.
+func touchDraftQuery(db *gorm.DB, key string, scope *int64, kind int64) *gorm.DB {
+	return openDraft(db, key).Scopes(createdBy(scope), draftKind(kind)).Update("last_seen_at", gorm.Expr("now()"))
 }
 
 // checkProxy validates a draft's proxy_id: none (direct egress), or visible
@@ -102,8 +118,8 @@ func (s *Service) checkProxy(ctx context.Context, id *int64) error {
 		return e
 	}
 	var status string
-	e = s.DB.Pool.QueryRow(ctx, `SELECT p.status FROM proxies p WHERE p.id=$1 AND `+core.ProxyRows.SQL(2),
-		append([]any{*id}, core.ProxyRows.Args(refs)...)...).Scan(&status)
+	e = store.G(ctx, s.DB.Pool).Table("proxies p").Select("p.status").Where("p.id = ?", *id).
+		Scopes(core.ProxyRows.Scope(refs)).Take(&status).Error
 	if store.IsNoRows(e) {
 		return reasonError(core.ErrInvalidArgument, "proxy_not_found")
 	}
@@ -157,15 +173,11 @@ func (s *Service) draftCreate(c *gin.Context) {
 				return err
 			}
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO ccgateway_runtimes(key, proxy_id, created_by)
-			SELECT $1, $2, NULLIF($3::bigint, 0)
-			WHERE $4::int = 0 OR (SELECT count(*) FROM ccgateway_runtimes
-				WHERE created_by = $3 AND account_id IS NULL AND retired_at IS NULL) < $4`,
-			key, in.ProxyID, uid, limit)
-		if err == nil && tag.RowsAffected() == 0 {
-			err = core.ErrTooManyDrafts
+		res := insertDraft(store.G(ctx, tx), key, in.ProxyID, uid, limit)
+		if res.Error == nil && res.RowsAffected == 0 {
+			return core.ErrTooManyDrafts
 		}
-		return err
+		return res.Error
 	})
 	if e != nil {
 		httpapi.Fail(c, e)
@@ -174,6 +186,18 @@ func (s *Service) draftCreate(c *gin.Context) {
 	s.Kick(key)
 	s.record(c, "draft."+key+".create")
 	httpapi.Created(c, gin.H{"key": key})
+}
+
+// insertDraft inserts draft key of user uid unless uid has limit open drafts
+// already (limit 0: no limit); no row is inserted then.
+func insertDraft(db *gorm.DB, key string, proxyID *int64, uid int64, limit int) *gorm.DB {
+	// Positional: GORM leaves a named parameter followed by a cast (@uid::bigint)
+	// unreplaced.
+	return db.Exec(`INSERT INTO ccgateway_runtimes(key, proxy_id, created_by)
+			SELECT ?, ?, NULLIF(?::bigint, 0)
+			WHERE ?::int = 0 OR (SELECT count(*) FROM ccgateway_runtimes
+				WHERE created_by = ? AND account_id IS NULL AND retired_at IS NULL) < ?`,
+		key, proxyID, uid, limit, uid, limit)
 }
 
 // draftUpdate serves PUT /system/ccgateway/drafts/:key {proxy_id} → {key}.
@@ -196,16 +220,20 @@ func (s *Service) draftUpdate(c *gin.Context) {
 		httpapi.Fail(c, e)
 		return
 	}
-	tag, e := s.DB.Pool.Exec(ctx, `UPDATE ccgateway_runtimes SET proxy_id=$2, last_seen_at=now()
-		WHERE key=$1 AND account_id IS NULL AND retired_at IS NULL AND for_account IS NULL
-		AND ($3::bigint IS NULL OR created_by=$3)`, key, in.ProxyID, scope)
-	if e != nil || tag.RowsAffected() != 1 {
-		httpapi.Fail(c, errOr(e, draftNotFound(core.ErrNotFound)))
+	res := setDraftProxy(store.G(ctx, s.DB.Pool), key, scope, in.ProxyID)
+	if res.Error != nil || res.RowsAffected != 1 {
+		httpapi.Fail(c, errOr(res.Error, draftNotFound(core.ErrNotFound)))
 		return
 	}
 	s.Kick(key)
 	s.record(c, "draft."+key+".update")
 	httpapi.OK(c, gin.H{"key": key})
+}
+
+// setDraftProxy sets the proxy of new-account draft key visible to scope and
+// marks it used.
+func setDraftProxy(db *gorm.DB, key string, scope, proxyID *int64) *gorm.DB {
+	return newAccountDraft(db, key, scope).Updates(map[string]any{"proxy_id": proxyID, "last_seen_at": gorm.Expr("now()")})
 }
 
 // draftDelete serves DELETE /system/ccgateway/drafts/:key → 204: the runtime
@@ -220,8 +248,7 @@ func (s *Service) draftDelete(c *gin.Context) {
 		return
 	}
 	if _, e := s.removeDraft(ctx, key, true); e != nil {
-		_, _ = s.DB.Pool.Exec(context.WithoutCancel(ctx), `UPDATE ccgateway_runtimes
-			SET last_seen_at = now() - interval '1 day' WHERE key=$1 AND account_id IS NULL AND retired_at IS NULL`, key)
+		openDraft(store.G(context.WithoutCancel(ctx), s.DB.Pool), key).Update("last_seen_at", gorm.Expr("now() - interval '1 day'"))
 		httpapi.Fail(c, transportError(e))
 		return
 	}
@@ -274,11 +301,11 @@ func (s *Service) removeDraft(ctx context.Context, key string, wait bool) (remov
 		return false, errors.New("not a draft key")
 	}
 	e := s.lockedTx(ctx, key, wait, func(tx pgx.Tx) error {
-		tag, e := tx.Exec(ctx, `DELETE FROM ccgateway_runtimes WHERE key=$1 AND account_id IS NULL AND retired_at IS NULL`, key)
-		if e != nil || tag.RowsAffected() == 0 {
-			return e
+		res := openDraft(store.G(ctx, tx), key).Delete(&model.CcgatewayRuntime{})
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error
 		}
-		if e = s.deleteRemote(ctx, key, false); e != nil {
+		if e := s.deleteRemote(ctx, key, false); e != nil {
 			return e
 		}
 		removed = true
@@ -309,7 +336,7 @@ func (s *Service) lockedTx(ctx context.Context, key string, wait bool, fn func(p
 		q = lockSQL
 	}
 	var locked bool
-	if e = tx.QueryRow(ctx, q, key).Scan(&locked); e != nil {
+	if e = store.G(ctx, tx).Raw(q, key).Row().Scan(&locked); e != nil {
 		return e
 	}
 	if !locked {
@@ -390,14 +417,19 @@ func (s *Service) checkDraftLogin(ctx context.Context, key string, scope *int64,
 // 400 draft_not_found. A sweep deleting the draft concurrently holds the
 // row: the update waits and then finds nothing.
 func AdoptDraft(ctx context.Context, tx pgx.Tx, key string, accountID int64, scope *int64) error {
-	tag, e := tx.Exec(ctx, `UPDATE ccgateway_runtimes SET account_id=$2, adopted_at=now(), last_seen_at=now()
-		WHERE key=$1 AND account_id IS NULL AND retired_at IS NULL AND for_account IS NULL
-		AND ($3::bigint IS NULL OR created_by=$3)`, key, accountID, scope)
-	if e != nil {
-		return e
+	res := adoptDraftQuery(store.G(ctx, tx), key, accountID, scope)
+	if res.Error != nil {
+		return res.Error
 	}
-	if tag.RowsAffected() != 1 {
+	if res.RowsAffected != 1 {
 		return draftNotFound(core.ErrInvalidArgument)
 	}
 	return nil
+}
+
+// adoptDraftQuery makes new-account draft key visible to scope the runtime
+// of account accountID.
+func adoptDraftQuery(db *gorm.DB, key string, accountID int64, scope *int64) *gorm.DB {
+	return newAccountDraft(db, key, scope).
+		Updates(map[string]any{"account_id": accountID, "adopted_at": gorm.Expr("now()"), "last_seen_at": gorm.Expr("now()")})
 }

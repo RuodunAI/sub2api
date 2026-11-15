@@ -1,0 +1,6 @@
+-- sql
+INSERT INTO "ccgateway_runtimes" ("created_by","initial_settings","key","proxy_id") VALUES ($1,(NULL),$2,$3) ON CONFLICT ("key") DO NOTHING RETURNING "created_at","last_seen_at","initial_settings"
+-- vars
+$1 int64 9
+$2 string "d0123456789abcdef"
+$3 *int64 nil

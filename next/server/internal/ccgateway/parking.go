@@ -2,16 +2,18 @@ package ccgateway
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Parking: the runtime of an account that stayed red (needs a person) for
@@ -123,8 +125,8 @@ func (s *Service) parkRuntimes(ctx context.Context, _ core.TaskRun) (core.TaskRe
 	}
 	// Stale marks (the account changed status since) are cleared for tidiness:
 	// they never count (sqlRuntimeParked).
-	if _, err := s.DB.Pool.Exec(ctx, `UPDATE ccgateway_runtimes r SET parked_at = NULL
-		FROM accounts a WHERE a.id = r.account_id AND r.parked_at IS NOT NULL AND NOT `+sqlRuntimeParked); err != nil {
+	if err := store.G(ctx, s.DB.Pool).Exec(`UPDATE ccgateway_runtimes r SET parked_at = NULL
+		FROM accounts a WHERE a.id = r.account_id AND r.parked_at IS NOT NULL AND NOT ` + sqlRuntimeParked).Error; err != nil {
 		return core.TaskResult{}, fmt.Errorf("clear stale marks: %w", err)
 	}
 	after := cfg.ParkAfter()
@@ -133,28 +135,20 @@ func (s *Service) parkRuntimes(ctx context.Context, _ core.TaskRun) (core.TaskRe
 	}
 	var parked []parkedRuntime
 	err = s.DB.Tx(ctx, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `UPDATE ccgateway_runtimes r SET parked_at = clock_timestamp()
+		var rows []model.CcgatewayRuntime
+		err := store.G(ctx, tx).Raw(`UPDATE ccgateway_runtimes r SET parked_at = clock_timestamp()
 			FROM (SELECT r.key FROM ccgateway_runtimes r JOIN accounts a ON a.id = r.account_id
 				WHERE a.plugin_key = 'ccgateway' AND a.type IN ('managed', 'apikey') AND a.deleted_at IS NULL
 					AND r.retired_at IS NULL AND r.purged_at IS NULL AND r.parked_at IS NULL
 					AND a.status_changed_at IS NOT NULL AND `+sqlAccountRed+`
-					AND greatest(a.status_changed_at, r.woken_at) <= clock_timestamp() - $1::interval
-				ORDER BY r.key LIMIT $2 FOR UPDATE OF r SKIP LOCKED) due
-			WHERE r.key = due.key RETURNING r.key, r.account_id`, after.String(), parkBatch)
+					AND greatest(a.status_changed_at, r.woken_at) <= clock_timestamp() - ?::interval
+				ORDER BY r.key LIMIT ? FOR UPDATE OF r SKIP LOCKED) due
+			WHERE r.key = due.key RETURNING r.key, r.account_id`, after.String(), parkBatch).Scan(&rows).Error
 		if err != nil {
 			return err
 		}
-		for rows.Next() {
-			var p parkedRuntime
-			if err := rows.Scan(&p.key, &p.accountID); err != nil {
-				rows.Close()
-				return err
-			}
-			parked = append(parked, p)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
+		for _, r := range rows {
+			parked = append(parked, parkedRuntime{key: r.Key, accountID: core.ValueOr(r.AccountID, 0)})
 		}
 		hours := cfg.parkAfterHours()
 		for _, p := range parked {
@@ -191,20 +185,20 @@ func (s *Service) ParkedRuntimes(ctx context.Context, ids []int64) (map[int64]bo
 	if s == nil || s.DB == nil || len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.DB.Pool.Query(ctx, `SELECT a.id FROM accounts a JOIN ccgateway_runtimes r ON r.account_id = a.id
-		WHERE a.id = ANY($1) AND a.plugin_key = 'ccgateway' AND `+sqlRuntimeParked, ids)
-	if err != nil {
+	var parked []int64
+	if err := parkedQuery(store.G(ctx, s.DB.Pool), ids).Pluck("a.id", &parked).Error; err != nil {
 		return out, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return out, err
-		}
+	for _, id := range parked {
 		out[id] = true
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// parkedQuery is the ccgateway accounts among ids whose runtime is parked.
+func parkedQuery(db *gorm.DB, ids []int64) *gorm.DB {
+	return db.Table("accounts a").Joins("JOIN ccgateway_runtimes r ON r.account_id = a.id").
+		Where("a.id = ANY(?) AND a.plugin_key = 'ccgateway' AND "+sqlRuntimeParked, store.Int64s(ids))
 }
 
 // WakeRuntime starts the parked runtime of account id and waits until it is
@@ -234,9 +228,9 @@ func (s *Service) wake(ctx context.Context, id int64) (bool, error) {
 	var woke bool
 	err := s.DB.Tx(ctx, func(tx pgx.Tx) error {
 		var key string
-		err := tx.QueryRow(ctx, `UPDATE ccgateway_runtimes r SET parked_at = NULL, woken_at = clock_timestamp()
-			FROM accounts a WHERE a.id = r.account_id AND a.id = $1 AND `+sqlRuntimeParked+` RETURNING r.key`, id).Scan(&key)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err := store.G(ctx, tx).Raw(`UPDATE ccgateway_runtimes r SET parked_at = NULL, woken_at = clock_timestamp()
+			FROM accounts a WHERE a.id = r.account_id AND a.id = ? AND `+sqlRuntimeParked+` RETURNING r.key`, id).Row().Scan(&key)
+		if store.IsNoRows(err) {
 			return nil
 		}
 		if err != nil {

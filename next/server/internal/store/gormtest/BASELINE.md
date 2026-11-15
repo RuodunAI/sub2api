@@ -52,6 +52,33 @@ stays on pgx under `//gormguard:allow-pgx`. The locked reads of the same
 records inside Lookup's transaction (`discoverPrefixes`, only for a
 request that hits) are on GORM.
 
+## Batch 2b: the CCGateway shared-runtime account read
+
+`ccgateway.(*Service).sharedAccountType` runs for every model request
+forwarded to the shared runtime (a configuration saved without per-account
+runtimes; `attempt.resolveShared`), with no cache in front. With per-account
+runtimes the request path reads the configuration, the account state, its
+feature policy and request log level through the request cache
+(`requestCacheTTL`, dropped on change), so those statements only run on a
+miss and are on GORM. The benchmark measures the pgx statement next to the
+GORM form (`Model(&model.Account{}).Select("type").Where(...).Take`):
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/ccgateway/
+```
+
+Recorded 2026-11-15 on gorm-2b, same machine and server as above. Medians
+of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotSharedAccountType/pgx | 52 824 | 445 | 8 |
+| BenchmarkHotSharedAccountType/gorm | 64 007 | 5 805 | 65 |
+
+GORM takes 8.1 times the allocations, so sharedAccountType stays on pgx
+under `//gormguard:allow-pgx`.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

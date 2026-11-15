@@ -22,8 +22,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/remotedocker"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const settingKey = "ccgateway_remote"
@@ -334,12 +337,9 @@ func (s *Service) loadVersioned(ctx context.Context) (Config, []byte, error) {
 // own changes; forShare keeps it from changing until the transaction ends)
 // and the stored value as read.
 func (s *Service) loadIn(ctx context.Context, q store.Querier, forShare bool) (Config, []byte, error) {
-	query := "SELECT value FROM settings WHERE key=$1"
-	if forShare {
-		query += " FOR SHARE"
-	}
-	var raw []byte
-	e := q.QueryRow(ctx, query, settingKey).Scan(&raw)
+	var row model.Setting
+	e := settingQuery(store.G(ctx, q), forShare).Take(&row).Error
+	raw := []byte(row.Value)
 	if store.IsNoRows(e) {
 		// The row a later update creates holds {}.
 		raw, e = []byte("{}"), nil
@@ -357,6 +357,16 @@ func (s *Service) loadIn(ctx context.Context, q store.Querier, forShare bool) (C
 		}
 	}
 	return c, raw, e
+}
+
+// settingQuery reads the stored configuration; forShare keeps it from
+// changing until the transaction ends.
+func settingQuery(db *gorm.DB, forShare bool) *gorm.DB {
+	db = db.Model(&model.Setting{}).Select("value").Where("key = ?", settingKey)
+	if forShare {
+		db = db.Clauses(clause.Locking{Strength: clause.LockingStrengthShare})
+	}
+	return db
 }
 
 // mergeConfig applies a PUT remote-config body to the saved configuration
@@ -656,12 +666,8 @@ func pruneFeatureGroups(ctx context.Context, tx pgx.Tx, saved *Config, named map
 		id, _ := strconv.ParseInt(key, 10, 64)
 		ids = append(ids, id)
 	}
-	rows, err := tx.Query(ctx, "SELECT id FROM groups WHERE id = ANY($1)", ids)
-	if err != nil {
-		return err
-	}
-	existing, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	if err != nil {
+	var existing []int64
+	if err := store.G(ctx, tx).Model(&model.Group{}).Where("id = ANY(?)", store.Int64s(ids)).Pluck("id", &existing).Error; err != nil {
 		return err
 	}
 	live := map[string]bool{}

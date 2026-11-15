@@ -9,6 +9,8 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Subscription usage of Claude Code (OAuth) accounts, CONTRACTS §44.8. The
@@ -41,8 +43,9 @@ func (s *Service) QueryAccountQuota(ctx context.Context, accountID int64, operat
 		return nil, usageFail("unsupported", "Unsupported quota operation.")
 	}
 	// A disabled account is only kept out of scheduling; its usage is queried.
-	var exists bool
-	if err := s.DB.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND plugin_key='ccgateway' AND type='managed' AND deleted_at IS NULL)`, accountID).Scan(&exists); err != nil || !exists {
+	g := store.G(ctx, s.DB.Pool)
+	if found, err := rowExists(g, g.Model(&model.Account{}).
+		Where("id = ? AND plugin_key = 'ccgateway' AND type = 'managed' AND deleted_at IS NULL", accountID)); err != nil || !found {
 		return nil, usageFail("account_unavailable", "The account is not available for quota queries.")
 	}
 	cfg, e := s.Load(ctx)

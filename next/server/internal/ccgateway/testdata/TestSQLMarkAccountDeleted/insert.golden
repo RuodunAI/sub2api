@@ -1,0 +1,9 @@
+-- sql
+INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,retired_at,purge_after)
+	 VALUES($1::bigint::text,$2,now(),now(),now()+make_interval(days => $3::int)) ON CONFLICT(key) DO UPDATE
+	 SET account_id=EXCLUDED.account_id,retired_at=EXCLUDED.retired_at,purge_after=EXCLUDED.purge_after,purged_at=NULL
+	 RETURNING purge_after
+-- vars
+$1 int64 7
+$2 int64 7
+$3 int 30

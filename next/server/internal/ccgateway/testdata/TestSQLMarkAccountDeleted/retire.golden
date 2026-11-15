@@ -1,0 +1,6 @@
+-- sql
+UPDATE ccgateway_runtimes SET retired_at=now(),purge_after=now()+make_interval(days => $1::int),purged_at=NULL
+	 WHERE account_id=$2 RETURNING purge_after
+-- vars
+$1 int 30
+$2 int64 7

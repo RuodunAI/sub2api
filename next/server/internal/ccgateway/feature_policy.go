@@ -11,7 +11,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // FeatureOverrides is sparse: omitted keys inherit, including individual source
@@ -414,15 +416,16 @@ func (c Config) ResolveFeaturePolicy(groupID int64, account AccountFeaturePolicy
 
 func LoadAccountFeaturePolicy(ctx context.Context, q store.Querier, id int64) (AccountFeaturePolicy, error) {
 	p := AccountFeaturePolicy{Mode: "follow"}
-	var raw []byte
-	err := q.QueryRow(ctx, `SELECT mode,overrides,revision FROM ccgateway_account_feature_policies WHERE account_id=$1`, id).Scan(&p.Mode, &raw, &p.Revision)
+	var row model.CcgatewayAccountFeaturePolicy
+	err := store.G(ctx, q).Select("mode", "overrides", "revision").Where("account_id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
 		return p, nil
 	}
 	if err != nil {
 		return p, err
 	}
-	err = json.Unmarshal(raw, &p.Overrides)
+	p.Mode, p.Revision = row.Mode, core.ValueOr(row.Revision, 0)
+	err = json.Unmarshal(row.Overrides, &p.Overrides)
 	return p, err
 }
 
@@ -446,10 +449,13 @@ func SaveAccountFeaturePolicyTx(ctx context.Context, tx pgx.Tx, id int64, p Acco
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO ccgateway_account_feature_policies(account_id,mode,overrides,revision)
-		VALUES($1,$2,$3::jsonb,$4) ON CONFLICT(account_id) DO UPDATE SET mode=EXCLUDED.mode,overrides=EXCLUDED.overrides,
-		revision=EXCLUDED.revision,updated_at=clock_timestamp()`, id, p.Mode, raw, old.Revision+1)
-	return err
+	return saveFeaturePolicy(store.G(ctx, tx), id, p.Mode, raw, old.Revision+1).Error
+}
+
+// saveFeaturePolicy writes account id's policy at revision.
+func saveFeaturePolicy(db *gorm.DB, id int64, mode string, overrides json.RawMessage, revision int64) *gorm.DB {
+	return db.Clauses(upsertAccountRow("mode", "overrides", "revision")).
+		Create(&model.CcgatewayAccountFeaturePolicy{AccountID: id, Mode: mode, Overrides: overrides, Revision: &revision})
 }
 
 func (s *Service) resolvedWorkerPolicy(ctx context.Context, c Config, accountID, groupID int64) (features.WorkerPolicy, error) {

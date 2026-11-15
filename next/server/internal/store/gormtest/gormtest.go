@@ -28,6 +28,11 @@ import (
 // gets -update without declaring it (and must not declare its own).
 var update = flag.Bool("update", false, "rewrite the SQL snapshots under testdata")
 
+// Updating reports whether the test runs with -update: a package with
+// golden files of its own next to the snapshots rewrites them on the same
+// flag, which it cannot declare again.
+func Updating() bool { return *update }
+
 // DB returns a DryRun session of store.G's instance without a Querier. The
 // snapshots therefore describe the statements store.G builds in production
 // (same configuration, callbacks and clause builders), and a statement that

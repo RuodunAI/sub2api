@@ -2,7 +2,6 @@ package ccgateway
 
 import (
 	"context"
-	"flag"
 	"os"
 	"reflect"
 	"regexp"
@@ -12,13 +11,13 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
 
 // Compose installation (CONTRACTS §76): the docker run path is the 0.1.226
 // text, the template follows the guard's permission rules, the golden
 // scripts are what the core runs.
-
-var updateGolden = flag.Bool("update", false, "rewrite testdata/compose-*.golden.sh")
 
 var placeholderImages = RuntimeImages{App: "placeholder-app:0", Egress: "placeholder-egress:0", Controller: "placeholder-controller:0", Guard: "placeholder-guard:0"}
 
@@ -412,7 +411,7 @@ func TestComposeGoldenScripts(t *testing.T) {
 		"compose-finish.golden.sh":   finishScript,
 	} {
 		path := "testdata/" + name
-		if *updateGolden {
+		if gormtest.Updating() { // -update, declared by gormtest for this package's SQL snapshots too
 			if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 				t.Fatal(err)
 			}

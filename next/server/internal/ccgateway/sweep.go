@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // Draft sweep (CONTRACTS §49.13): abandoned, failed or cancelled drafts are
@@ -104,22 +107,18 @@ func (s *Service) SweepDrafts(ctx context.Context) (int, error) {
 
 // expiredDraftKeys lists the drafts that were idle too long or exist too long.
 func (s *Service) expiredDraftKeys(ctx context.Context) ([]string, error) {
-	rows, e := s.DB.Pool.Query(ctx, `SELECT key FROM ccgateway_runtimes WHERE account_id IS NULL AND retired_at IS NULL
-		AND (last_seen_at < now() - $1::bigint * interval '1 second' OR created_at < now() - $2::bigint * interval '1 second')
-		ORDER BY key`, int64(draftIdle/time.Second), int64(draftMaxAge/time.Second))
+	var keys []string
+	e := runtimes(store.G(ctx, s.DB.Pool)).Where(`account_id IS NULL AND retired_at IS NULL
+		AND (last_seen_at < now() - ?::bigint * interval '1 second' OR created_at < now() - ?::bigint * interval '1 second')`,
+		int64(draftIdle/time.Second), int64(draftMaxAge/time.Second)).Order("key").Pluck("key", &keys).Error
 	if e != nil {
 		return nil, e
 	}
-	defer rows.Close()
 	var expired []string
-	for rows.Next() {
-		var key string
-		if rows.Scan(&key) == nil && isDraftKey(key) {
+	for _, key := range keys {
+		if isDraftKey(key) {
 			expired = append(expired, key)
 		}
-	}
-	if e = rows.Err(); e != nil {
-		return nil, e
 	}
 	return expired, nil
 }
@@ -131,20 +130,10 @@ func (s *Service) expiredDraftKeys(ctx context.Context) ([]string, error) {
 // sweep. An account-id runtime the account would still fall back to (it has
 // no other row) is in use and kept.
 func (s *Service) sweepRetired(ctx context.Context) (int, error) {
-	rows, e := s.DB.Pool.Query(ctx, `SELECT key FROM ccgateway_runtimes WHERE account_id IS NULL
-		AND retired_at < now() - $1::bigint * interval '1 second' ORDER BY key`, int64(retiredGrace/time.Second))
-	if e != nil {
-		return 0, e
-	}
 	var keys []string
-	for rows.Next() {
-		var key string
-		if rows.Scan(&key) == nil {
-			keys = append(keys, key)
-		}
-	}
-	rows.Close()
-	if e = rows.Err(); e != nil {
+	e := runtimes(store.G(ctx, s.DB.Pool)).Where("account_id IS NULL AND retired_at < now() - ?::bigint * interval '1 second'",
+		int64(retiredGrace/time.Second)).Order("key").Pluck("key", &keys).Error
+	if e != nil {
 		return 0, e
 	}
 	removed := 0
@@ -173,12 +162,12 @@ func (s *Service) sweepRetired(ctx context.Context) (int, error) {
 // sweepRetiredKey deletes one retired runtime under its lock: the row, then
 // the runtime on the controller; removed reports both happened.
 func (s *Service) sweepRetiredKey(ctx context.Context, tx pgx.Tx, key string) (removed bool, err error) {
+	g := store.G(ctx, tx)
 	switch {
 	case accountKeyPattern.MatchString(key):
 		id, _ := strconv.ParseInt(key, 10, 64)
 		var used bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1)
-			AND NOT EXISTS(SELECT 1 FROM ccgateway_runtimes WHERE account_id=$1)`, id).Scan(&used); err != nil {
+		if err := accountRuntimeQuery(g, id).Scan(&used).Error; err != nil {
 			return false, err
 		}
 		if used {
@@ -188,14 +177,22 @@ func (s *Service) sweepRetiredKey(ctx context.Context, tx pgx.Tx, key string) (r
 	case !isDraftKey(key):
 		return false, nil
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM ccgateway_runtimes WHERE key=$1 AND account_id IS NULL AND retired_at IS NOT NULL`, key)
-	if err != nil || tag.RowsAffected() == 0 {
-		return false, err
+	res := runtimes(g).Where("key = ? AND account_id IS NULL AND retired_at IS NOT NULL", key).Delete(&model.CcgatewayRuntime{})
+	if res.Error != nil || res.RowsAffected == 0 {
+		return false, res.Error
 	}
 	if err := s.deleteRemote(ctx, key, true); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// accountRuntimeQuery reports whether account id exists and has no runtime
+// row, so that it falls back to the runtime named after its id.
+func accountRuntimeQuery(db *gorm.DB, id int64) *gorm.DB {
+	return db.Raw("SELECT EXISTS(?) AND NOT EXISTS(?)",
+		db.Model(&model.Account{}).Select("1").Where("id = ?", id),
+		runtimes(db).Select("1").Where("account_id = ?", id))
 }
 
 // remoteRuntime is one entry of the controller's GET /accounts.
@@ -262,20 +259,13 @@ func (s *Service) sweepOrphans(ctx context.Context) (int, error) {
 	if len(candidates) == 0 {
 		return 0, nil
 	}
+	var found []string
+	if e := runtimes(store.G(ctx, s.DB.Pool)).Where("key = ANY(?)", store.Strings(candidates)).Pluck("key", &found).Error; e != nil {
+		return 0, e
+	}
 	known := map[string]bool{}
-	rows, e := s.DB.Pool.Query(ctx, `SELECT key FROM ccgateway_runtimes WHERE key = ANY($1)`, candidates)
-	if e != nil {
-		return 0, e
-	}
-	for rows.Next() {
-		var key string
-		if rows.Scan(&key) == nil {
-			known[key] = true
-		}
-	}
-	rows.Close()
-	if e = rows.Err(); e != nil {
-		return 0, e
+	for _, key := range found {
+		known[key] = true
 	}
 	removed := 0
 	var firstErr error
@@ -285,8 +275,8 @@ func (s *Service) sweepOrphans(ctx context.Context) (int, error) {
 		}
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		e := s.lockedTx(c, key, false, func(tx pgx.Tx) error {
-			var exists bool
-			if e := tx.QueryRow(c, `SELECT EXISTS(SELECT 1 FROM ccgateway_runtimes WHERE key=$1)`, key).Scan(&exists); e != nil || exists {
+			g := store.G(c, tx)
+			if found, e := rowExists(g, runtimes(g).Where("key = ?", key)); e != nil || found {
 				return e
 			}
 			if e := s.deleteRemote(c, key, false); e != nil {

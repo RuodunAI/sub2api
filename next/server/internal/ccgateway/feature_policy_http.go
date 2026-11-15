@@ -4,12 +4,16 @@ import (
 	"context"
 	"net/http"
 	"reflect"
+	"slices"
 	"strconv"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 type featureGroupRef struct {
@@ -72,10 +76,10 @@ func (s *Service) previewAuthorize(c *gin.Context, ctx context.Context, id int64
 		httpapi.Fail(c, err)
 		return false
 	}
-	var exists bool
-	err := s.DB.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE id=$1 AND deleted_at IS NULL
-		AND plugin_key='ccgateway' AND type IN ('managed','apikey'))`, id).Scan(&exists)
-	if err != nil || !exists {
+	g := store.G(ctx, s.DB.Pool)
+	found, err := rowExists(g, g.Model(&model.Account{}).
+		Where("id = ? AND deleted_at IS NULL AND plugin_key = 'ccgateway' AND type IN ('managed', 'apikey')", id))
+	if err != nil || !found {
 		httpapi.Fail(c, core.ErrNotFound)
 		return false
 	}
@@ -120,34 +124,26 @@ func previewInput(c *gin.Context) (groupID int64, draft *AccountFeaturePolicy, o
 // accountGroups lists the account's groups and confirms groupID is one of
 // them (0 means "no group selected").
 func (s *Service) accountGroups(c *gin.Context, ctx context.Context, id, groupID int64) ([]featureGroupRef, bool) {
-	rows, err := s.DB.Pool.Query(ctx, `SELECT g.id,g.name FROM groups g JOIN account_groups a ON a.group_id=g.id WHERE a.account_id=$1 ORDER BY g.id`, id)
-	if err != nil {
+	var groups []featureGroupRef
+	if err := accountGroupsQuery(store.G(ctx, s.DB.Pool), id).Scan(&groups).Error; err != nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return nil, false
 	}
-	groups := []featureGroupRef{}
-	found := groupID == 0
-	for rows.Next() {
-		var g featureGroupRef
-		if err = rows.Scan(&g.ID, &g.Name); err != nil {
-			break
-		}
-		groups = append(groups, g)
-		found = found || g.ID == groupID
+	if groups == nil {
+		groups = []featureGroupRef{} // a JSON list
 	}
-	if err == nil {
-		err = rows.Err()
-	}
-	rows.Close()
-	if err != nil {
-		httpapi.Fail(c, core.ErrUnavailable)
-		return nil, false
-	}
+	found := groupID == 0 || slices.ContainsFunc(groups, func(g featureGroupRef) bool { return g.ID == groupID })
 	if !found {
 		httpapi.Fail(c, core.ErrNotFound)
 		return nil, false
 	}
 	return groups, true
+}
+
+// accountGroupsQuery lists the groups of account id.
+func accountGroupsQuery(db *gorm.DB, id int64) *gorm.DB {
+	return db.Table("groups g").Joins("JOIN account_groups a ON a.group_id = g.id").
+		Select("g.id, g.name").Where("a.account_id = ?", id).Order("g.id")
 }
 
 // Saving a custom draft requires at least one current account group without an
@@ -163,26 +159,11 @@ func (s *Service) SaveAccountFeatures(ctx context.Context, tx pgx.Tx, id int64, 
 		if err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, "SELECT group_id FROM account_groups WHERE account_id=$1", id)
-		if err != nil {
+		var gids []int64
+		if err := store.G(ctx, tx).Model(&model.AccountGroup{}).Where("account_id = ?", id).Pluck("group_id", &gids).Error; err != nil {
 			return err
 		}
-		allowed := false
-		for rows.Next() {
-			var gid int64
-			if err = rows.Scan(&gid); err != nil {
-				break
-			}
-			allowed = allowed || cfg.allowsAccountFeatures(gid)
-		}
-		if err == nil {
-			err = rows.Err()
-		}
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		if !allowed {
+		if !slices.ContainsFunc(gids, cfg.allowsAccountFeatures) {
 			return core.ErrPermissionDenied.WithMessage("No account group permits CC feature overrides.")
 		}
 	}

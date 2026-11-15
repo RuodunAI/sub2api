@@ -8,6 +8,8 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
+	"gorm.io/gorm"
 )
 
 var subscriptionPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
@@ -105,11 +107,11 @@ func recordSubscription(ctx context.Context, q store.Querier, accountID int64, v
 	if value = normalizeSubscription(value); value == "" || accountID <= 0 {
 		return false, nil
 	}
-	tag, err := q.Exec(ctx, `UPDATE accounts SET subscription_type=$2 WHERE id=$1 AND subscription_type IS DISTINCT FROM $2`, accountID, value)
-	if err != nil {
-		return false, err
+	res := recordAccountFact(store.G(ctx, q), accountID, "subscription_type", value)
+	if res.Error != nil {
+		return false, res.Error
 	}
-	return tag.RowsAffected() > 0, nil
+	return res.RowsAffected > 0, nil
 }
 
 // recordRateLimitTier keeps on the account the tier the runtime reported. An
@@ -118,8 +120,14 @@ func recordRateLimitTier(ctx context.Context, q store.Querier, accountID int64, 
 	if value = normalizeSubscription(value); value == "" || accountID <= 0 {
 		return nil
 	}
-	_, err := q.Exec(ctx, `UPDATE accounts SET rate_limit_tier=$2 WHERE id=$1 AND rate_limit_tier IS DISTINCT FROM $2`, accountID, value)
-	return err
+	return recordAccountFact(store.G(ctx, q), accountID, "rate_limit_tier", value).Error
+}
+
+// recordAccountFact sets column (a fact the runtime reports) of account
+// accountID to value unless it holds that already, so an unchanged report
+// writes no row. updated_at is left alone, as these updates always did.
+func recordAccountFact(db *gorm.DB, accountID int64, column, value string) *gorm.DB {
+	return db.Model(&model.Account{}).Where("id = ? AND "+column+" IS DISTINCT FROM ?", accountID, value).Update(column, value)
 }
 
 // factsObserved runs the FactsObserved hook, when any, once what the
