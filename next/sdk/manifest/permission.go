@@ -88,17 +88,53 @@ func (s PermissionScope) GrantSuffix(v string) (string, bool) {
 	case v == "*":
 		return "", true
 	case len(s.Values) > 0:
-		ok := slices.ContainsFunc(s.Values, func(sv ScopeValue) bool { return sv.Key == v })
-		return ScopeValueResource + "/" + v, ok
+		return ScopeValueResource + "/" + v, s.hasValue(v)
 	case v == "own":
 		return v, s.Own
 	}
 	return "", false
 }
 
+// Takes reports whether sfx, a canonical stored suffix, is a scope a
+// permission of scope s may be granted with: "" (every row) always, "own"
+// when s.Own, "<resource>/<value>" of ResourceName, of its Values when it
+// lists them. The zero scope (an unscoped permission) takes "" only. The
+// catalog, the consent and inheritance all judge scopes by it.
+func (s PermissionScope) Takes(sfx string) bool {
+	res, v, ok := strings.Cut(sfx, "/")
+	switch {
+	case sfx == "":
+		return true
+	case sfx == "own":
+		return s.Own
+	case !ok || res == "" || v == "" || res != s.ResourceName():
+		return false
+	}
+	return len(s.Values) == 0 || s.hasValue(v)
+}
+
+// hasValue reports whether s lists the values key v.
+func (s PermissionScope) hasValue(v string) bool {
+	return slices.ContainsFunc(s.Values, func(sv ScopeValue) bool { return sv.Key == v })
+}
+
+// CanonicalSuffixes is how a role's scope suffixes of one permission are
+// stored and compared: nil for none, [""] alone when they hold "" (every
+// row implies the rest), else sorted and deduplicated. suffixes is not
+// changed.
+func CanonicalSuffixes(suffixes []string) []string {
+	if len(suffixes) == 0 {
+		return nil
+	}
+	out := slices.Compact(slices.Sorted(slices.Values(suffixes)))
+	if out[0] == "" {
+		return []string{""}
+	}
+	return out
+}
+
 // DefaultGrants maps each role of up.Defaults to its canonical suffixes
-// (GrantSuffix), sorted and deduplicated, [""] alone when it holds "" since
-// every row implies the rest. nil for a critical permission. Entries check
+// (GrantSuffix, CanonicalSuffixes). nil for a critical permission. Entries check
 // rejects are skipped, so callers of a checked manifest need no errors.
 func (up UserPermission) DefaultGrants() map[string][]string {
 	if len(up.Defaults) == 0 || up.RiskLevel() == RiskCritical {
@@ -119,16 +155,9 @@ func (up UserPermission) DefaultGrants() map[string][]string {
 				suffixes = append(suffixes, suffix)
 			}
 		}
-		switch {
-		case len(suffixes) == 0:
-			continue
-		case slices.Contains(suffixes, ""):
-			suffixes = []string{""}
-		default:
-			slices.Sort(suffixes)
-			suffixes = slices.Compact(suffixes)
+		if suffixes = CanonicalSuffixes(suffixes); suffixes != nil {
+			out[role] = suffixes
 		}
-		out[role] = suffixes
 	}
 	return out
 }

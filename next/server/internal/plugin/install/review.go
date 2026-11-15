@@ -582,7 +582,7 @@ func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, act
 	for i := range cols {
 		c := &cols[i]
 		if c.Superuser {
-			c.Reason = denySuperuserRole
+			c.Reason = core.GrantDenySuperuserRole
 			continue
 		}
 		c.Nameable, c.Reason = nameable(gs, canDefine, c.Key, manifest.RiskLow)
@@ -590,10 +590,6 @@ func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, act
 	r.RoleColumns = append([]ReviewRoleColumn{}, cols...)
 	return gs, canDefine, nil
 }
-
-// denySuperuserRole is why no plugin permission is written to a super
-// admin role (the catalog's PluginGrantees reason): it holds every one.
-const denySuperuserRole = "superuser_role"
 
 // noteRemovedPerms lists the permissions of the plugin the catalog has but
 // m no longer declares, with the roles holding them.

@@ -277,7 +277,8 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 
 // The review queue lists each (permission, role, scope) a consent withheld
 // until the role holds it: a scoped row hides that scope only, a row of
-// every row hides them all; a removed permission is not listed.
+// every row hides them all; a scope the permission no longer declares and a
+// removed permission are not listed.
 func TestPendingRoleGrantsScoped(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
 	dir := t.TempDir()
@@ -288,6 +289,13 @@ func TestPendingRoleGrantsScoped(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "guard-0.1.1.s2plugin"), pkgtest.Build(guardWith("0.1.1", check), e.root), 0o644))
 	_ = e.svc.EnsureBuiltin(ctx, dir, testLogger(t))
 	addPerms(t, e, map[string]string{"input:check": manifest.RiskLow})
+	declare := func(values string) {
+		t.Helper()
+		_, err := e.db.Pool.Exec(ctx, `UPDATE permissions SET scope_type = 'plugin:value', scope = jsonb_build_object('resource', 'value', 'values', $1::jsonb)
+WHERE key = 'plugin.guard:input:check'`, values)
+		require.NoError(t, err)
+	}
+	declare(`[{"key":"input"},{"key":"output"}]`)
 	scopes := func() []string {
 		t.Helper()
 		gs, err := PendingRoleGrants(ctx, e.db.Pool, "guard", "")
@@ -312,6 +320,8 @@ WHERE r.key = 'user' AND p.key = 'plugin.guard:input:check'`)
 	assert.Empty(t, scopes())
 	grant(`DELETE FROM role_permissions; DELETE FROM role_permission_scopes`)
 	assert.Len(t, scopes(), 2)
+	declare(`[{"key":"input"}]`)
+	assert.Equal(t, []string{"user:value/input"}, scopes())
 	grant(`UPDATE permissions SET status = 'removed' WHERE key = 'plugin.guard:input:check'`)
 	assert.Empty(t, scopes())
 }

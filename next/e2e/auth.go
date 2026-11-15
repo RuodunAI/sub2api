@@ -32,6 +32,7 @@ func (e *Env) Login(email, password string) *Session {
 		e.T.Fatalf("login response incomplete: %s", r)
 	}
 	c.Token = d.Get("access_token").String()
+	c.Password = password
 	return &Session{Client: c, Email: email, Password: password, UserID: d.Get("user.id").Int(), Refresh: d.Get("refresh_token").String()}
 }
 
@@ -64,6 +65,16 @@ func (e *Env) Admin() *Session {
 func (s *Session) Me(t testing.TB) gjson.Result {
 	t.Helper()
 	return s.OK(t, http.MethodGet, "/me", nil)
+}
+
+// Permissions returns the permission keys of GET /me as a set.
+func (s *Session) Permissions(t testing.TB) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	for _, p := range s.Me(t).Get("permissions").Array() {
+		out[p.String()] = true
+	}
+	return out
 }
 
 // Menus returns GET /me/menus flattened to items (each with its section).

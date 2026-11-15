@@ -120,6 +120,40 @@ func TestGrantSuffix(t *testing.T) {
 	}
 }
 
+func TestScopeTakes(t *testing.T) {
+	resource := PermissionScope{Resource: "flow", Options: "/scopes/flow"}
+	values := PermissionScope{Resource: ScopeValueResource, Values: []ScopeValue{{Key: "input"}}}
+	cases := []struct {
+		name  string
+		scope PermissionScope
+		sfx   string
+		want  bool
+	}{
+		{"every row", PermissionScope{}, "", true},
+		{"unscoped takes nothing else", PermissionScope{}, "own", false},
+		{"own not allowed", resource, "own", false},
+		{"own allowed", PermissionScope{Resource: "flow", Own: true}, "own", true},
+		{"an id of its resource", resource, "flow/3", true},
+		{"another resource", resource, "doc/3", false},
+		{"no value", resource, "flow/", false},
+		{"declared value", values, "value/input", true},
+		{"value no longer declared", values, "value/output", false},
+		{"values scope with Resource unset", PermissionScope{Values: values.Values}, "value/input", true},
+		{"manifest spelling is not a suffix", values, "input", false},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, c.scope.Takes(c.sfx), c.name)
+	}
+}
+
+func TestCanonicalSuffixes(t *testing.T) {
+	in := []string{"value/b", "value/a", "value/b"}
+	assert.Equal(t, []string{"value/a", "value/b"}, CanonicalSuffixes(in))
+	assert.Equal(t, []string{"value/b", "value/a", "value/b"}, in, "the input stays")
+	assert.Equal(t, []string{""}, CanonicalSuffixes([]string{"own", ""}))
+	assert.Nil(t, CanonicalSuffixes([]string{}))
+}
+
 func TestUserPermissionScopeLookup(t *testing.T) {
 	scope := &PermissionScope{Resource: "flow", Own: true}
 	m := &Manifest{UserPermissions: []UserPermission{{Key: "flow:read"}, {Key: "flow:manage", Scope: scope}}}

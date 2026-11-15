@@ -69,24 +69,32 @@ const (
 )
 
 // InheritSkip is an inheritFrom source planRoleGrants left out for a
-// permission: a scoped grant of a key of another scope_type ("scope_type"),
-// or a key that is not critical for a critical permission ("risk").
+// permission (Reason).
 type InheritSkip struct {
 	Permission string `json:"permission"`
 	From       string `json:"from"`
 	Reason     string `json:"reason"`
 }
 
+// Why planRoleGrants left an inheritFrom source out (InheritSkip.Reason).
+const (
+	skipRisk      = "risk"       // a key not critical, for a critical permission
+	skipScopeType = "scope_type" // a scoped grant of a key of another scope_type
+	skipScope     = "scope"      // a scoped grant the permission's scope does not take (own, a value)
+)
+
 // planRoleGrants lists the role grants a consent makes for every
 // userPermission the catalog does not have yet (existing): its roles
 // (roleGrants; via override for the roles overrides names) and the roles
 // holding one of its inheritFrom keys now, so only grants made before this
 // consent count. Inheritance keeps a scoped grant only when the old key
-// ranges over the same resource (scope_type), and a critical permission
-// inherits from critical keys only (the manifest check cannot see the risk
-// of a key no longer declared); the sources left out are returned. On a
-// first install nothing needs consent: someone (or the system) consents
-// anyway. Super admin roles hold every permission and are left out.
+// ranges over the same resource (scope_type) and the new key's scope takes
+// it (manifest.PermissionScope.Takes: own allowed, the value declared), and
+// a critical permission inherits from critical keys only (the manifest
+// check cannot see the risk of a key no longer declared); the sources left
+// out are returned. On a first install nothing needs consent: someone (or
+// the system) consents anyway. Super admin roles hold every permission and
+// are left out.
 func planRoleGrants(ctx context.Context, q store.Querier, m *manifest.Manifest, existing map[string]bool,
 	roles, overrides map[string]map[string][]string, upgrade bool,
 ) ([]RoleGrant, []InheritSkip, error) {
@@ -135,18 +143,21 @@ func planRoleGrants(ctx context.Context, q store.Querier, m *manifest.Manifest, 
 				add(up, role, scope, true, via)
 			}
 		}
+		var scope manifest.PermissionScope
 		scopeType := ""
 		if up.Scope != nil {
-			scopeType = core.PluginScopeTypePrefix + up.Scope.ResourceName()
+			scope, scopeType = *up.Scope, core.PluginScopeTypePrefix+up.Scope.ResourceName()
 		}
 		for _, k := range up.InheritFrom {
 			old := manifest.PermissionKey(m.Key, k)
 			for _, h := range holders[old] {
 				switch {
 				case up.RiskLevel() == manifest.RiskCritical && h.risk != manifest.RiskCritical:
-					skip(InheritSkip{Permission: key, From: old, Reason: "risk"})
+					skip(InheritSkip{Permission: key, From: old, Reason: skipRisk})
 				case h.scope != "" && h.scopeType != scopeType:
-					skip(InheritSkip{Permission: key, From: old, Reason: "scope_type"})
+					skip(InheritSkip{Permission: key, From: old, Reason: skipScopeType})
+				case !scope.Takes(h.scope):
+					skip(InheritSkip{Permission: key, From: old, Reason: skipScope})
 				default:
 					add(up, h.key, h.scope, h.builtin, viaInherit)
 				}
@@ -260,16 +271,18 @@ func auditAutoGrants(ctx context.Context, tx pgx.Tx, actorID int64, key, version
 // PendingRoleGrants lists the role grants consents of key withheld for
 // review (version "" for every version) since it was installed, that nobody
 // confirmed or rejected since and that still mean something: the permission
-// exists and is not removed, the role exists and holds neither every row of
-// it nor the grant's scope. A confirm or reject clears its version's list;
-// a reject also clears the same (permission, role) under every version
-// whose consent was recorded before it (earlier or later versions alike),
-// since the list shows each grant once (under its earliest version). Risk
-// is the catalog's; a grant audited before scopes existed is of every row.
+// exists and is not removed, its scope as now declared takes the grant's
+// (an upgrade may have dropped own or a value), the role exists and holds
+// neither every row of it nor the grant's scope. A confirm or reject
+// clears its version's list; a reject also clears the same (permission,
+// role) under every version whose consent was recorded before it (earlier
+// or later versions alike), since the list shows each grant once (under
+// its earliest version). Risk is the catalog's; a grant audited before
+// scopes existed is of every row.
 func PendingRoleGrants(ctx context.Context, q store.Querier, key, version string) ([]RoleGrant, error) {
 	rows, err := q.Query(ctx, `
 SELECT a.detail->>'version', g->>'permission', g->>'role', COALESCE(g->>'scope', ''), p.risk, COALESCE(g->>'via', ''),
-       COALESCE((g->>'needs_consent')::boolean, true)
+       COALESCE((g->>'needs_consent')::boolean, true), p.scope
 FROM audit_logs a CROSS JOIN LATERAL jsonb_array_elements(a.detail->'pending') g
 JOIN permissions p ON p.key = g->>'permission' AND p.status <> 'removed'
 WHERE a.action = ANY($3) AND a.target_type = 'plugin' AND a.target_id = $1
@@ -290,21 +303,29 @@ ORDER BY a.id, 2, 3, 4`, key, version, []string{AuditConsentAuto, AuditConsent},
 	if err != nil {
 		return nil, err
 	}
-	gs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (RoleGrant, error) {
-		g := RoleGrant{Withheld: true}
-		return g, r.Scan(&g.Version, &g.Permission, &g.Role, &g.Scope, &g.Risk, &g.Via, &g.NeedsConsent)
+	type pending struct {
+		RoleGrant
+		declared manifest.PermissionScope
+	}
+	ps, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (pending, error) {
+		p := pending{RoleGrant: RoleGrant{Withheld: true}}
+		return p, r.Scan(&p.Version, &p.Permission, &p.Role, &p.Scope, &p.Risk, &p.Via, &p.NeedsConsent, &p.declared)
 	})
 	if err != nil {
 		return nil, err
 	}
 	type grant struct{ permission, role, scope string }
 	seen := map[grant]bool{}
-	return slices.DeleteFunc(gs, func(g RoleGrant) bool {
-		k := grant{g.Permission, g.Role, g.Scope}
-		dup := seen[k]
+	gs := []RoleGrant{}
+	for _, p := range ps {
+		k := grant{p.Permission, p.Role, p.Scope}
+		if seen[k] || !p.declared.Takes(p.Scope) {
+			continue
+		}
 		seen[k] = true
-		return dup
-	}), nil
+		gs = append(gs, p.RoleGrant)
+	}
+	return gs, nil
 }
 
 // ReviewRoleGrants confirms (grants) or rejects the role grants the consent

@@ -16,11 +16,13 @@ import (
 )
 
 // Client is a thin JSON client for the console API (/api/v1) and the
-// gateway. It carries an optional bearer token.
+// gateway. It carries an optional bearer token, and the password that
+// answers a step-up (CONTRACTS §80.2) when the session has one.
 type Client struct {
-	Base  string
-	HTTP  *http.Client
-	Token string
+	Base     string
+	HTTP     *http.Client
+	Token    string
+	Password string
 }
 
 // NewClient returns an anonymous client for base.
@@ -73,24 +75,48 @@ func Query(kv ...string) ReqOpt {
 
 // Do performs a request. body may be nil, []byte, io.Reader or any JSON value.
 // path is relative to Base; "/api/v1" is NOT added automatically.
+// A step-up refusal is answered with the client's password and the request
+// sent again with the proof, unless body is an io.Reader.
 func (c *Client) Do(t testing.TB, method, path string, body any, opts ...ReqOpt) *Resp {
 	t.Helper()
-	var rd io.Reader
+	var payload []byte
 	ctype := ""
 	switch b := body.(type) {
 	case nil:
 	case []byte:
-		rd = bytes.NewReader(b)
+		payload = b
 	case io.Reader:
-		rd = b
+		return c.send(t, method, path, b, ctype, opts)
 	default:
-		raw, err := json.Marshal(b)
-		if err != nil {
-			t.Fatalf("marshal %s %s: %v", method, path, err)
-		}
-		rd = bytes.NewReader(raw)
-		ctype = "application/json"
+		payload, ctype = mustJSON(t, b), "application/json"
 	}
+	r := c.send(t, method, path, bytes.NewReader(payload), ctype, opts)
+	if r.Status != http.StatusForbidden || r.ErrCode() != "verification_required" || c.Password == "" {
+		return r
+	}
+	d := r.JSON().Get("error.details")
+	v := c.send(t, http.MethodPost, "/api/v1/me/verify", bytes.NewReader(mustJSON(t, map[string]string{
+		"scope": d.Get("scope").String(), "context": d.Get("context").String(), "method": "password", "password": c.Password,
+	})), "application/json", nil)
+	if v.Status != http.StatusOK {
+		t.Fatalf("step-up for %s %s: %s", method, path, v)
+	}
+	opts = append(opts, Header("X-Verify-Proof", v.Data().Get("proof").String()))
+	return c.send(t, method, path, bytes.NewReader(payload), ctype, opts)
+}
+
+func mustJSON(t testing.TB, v any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// send performs one request.
+func (c *Client) send(t testing.TB, method, path string, rd io.Reader, ctype string, opts []ReqOpt) *Resp {
+	t.Helper()
 	req, err := http.NewRequest(method, c.Base+path, rd)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -189,6 +215,15 @@ func Find(items []gjson.Result, field string, value any) (gjson.Result, bool) {
 		}
 	}
 	return gjson.Result{}, false
+}
+
+// Strings returns the elements of a JSON array as strings.
+func Strings(r gjson.Result) []string {
+	out := []string{}
+	for _, v := range r.Array() {
+		out = append(out, v.String())
+	}
+	return out
 }
 
 // PathEscape escapes one path segment.

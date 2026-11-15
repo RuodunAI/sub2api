@@ -113,7 +113,23 @@ export const pricerUser: Identity = {
   superuser: false
 }
 
-const identities = [me, plainUser, vendorUser, readonlyUser, moderatorUser, pricerUser]
+/**
+ * Sign in as manager@example.com (password admin): the built-in admin role,
+ * not the super admin. It may name no role for a plugin permission, so an
+ * install's suggestions go to review (D2), and it lacks the guard's
+ * plugin.guard:alerts:mute and :bypass, which the role editor then offers
+ * greyed out.
+ */
+const managerUser: Identity = {
+  id: 10,
+  email: 'manager@example.com',
+  display_name: 'Manager',
+  roles: ['admin'],
+  permissions: ALL_PERMISSIONS,
+  superuser: false
+}
+
+const identities = [me, plainUser, vendorUser, readonlyUser, moderatorUser, pricerUser, managerUser]
 
 /** Email of a (possibly deleted) user id, for created_by_email. */
 export function userEmail(id: number | null | undefined): string | null {

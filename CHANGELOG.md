@@ -22,7 +22,7 @@
 
 - `GET /permissions`、安装审查 `review`、`RoleGrant` 的 JSON 去掉 `sensitive`，改为 `risk`。同意请求的 `new_permission_roles` 改为 `{本地 key: {角色: true | [范围]}}`，旧的数组写法返回 400，`role_keys_for_new_permissions` 不再读取。
 - 默认或继承的授予给了同意者不能指定的角色时，不再 403，改为挂起待复核（插件详情顶部的待确认授予），首次安装也一样；显式指定不能指定的角色仍 403。
-- 插件新版本不再声明的权限标为“已移除”（以前直接删除）：授予保留但不生效，再次声明时原样恢复，不重新套默认值。角色编辑页可以取消勾选已移除的权限；通过 API 保存角色（`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin`）时不带上已移除的 key，会删掉这些授予。
+- 插件新版本不再声明的权限标为“已移除”（以前直接删除）：授予保留但不生效，再次声明时原样恢复，不重新套默认值。标记和恢复各写一条审计（`authz.sync.remove` / `authz.sync.revive`，列出持有的角色）。插件升级收窄了权限范围（不再允许“自己创建的”、删掉某个可选值）时，不再接受的范围授予在新版本激活时删除；新版本只是同意、还没激活时，正在运行的旧版本的授予不受影响。角色编辑页可以取消勾选已移除的权限；通过 API 保存角色（`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin`）时不带上已移除的 key，会删掉这些授予。
 - 角色编辑页禁用编辑者自己没有的权限，核心权限也一样（以前能勾选，保存时才被拒）。
 - 插件菜单、页面、slot 按“任意范围持有”显示；iframe 桥 `permissions.check(本地 key)` 对不带范围的 key 只要持有任一范围即为 true，带范围的 key 须精确持有。
 - 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。
@@ -30,7 +30,7 @@
 
 **迁移 0099**（`0099_plugin_permission_meta.sql`，唯一的核心迁移，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填。`sensitive` 列保留一个版本给旧核心读（新核心照写、不读），下一个迁移删除。按 0.1.286 的主节点优先方式发布（短暂停服），不与旧核心滚动混跑；发布迁移前需要确认。
 
-**回滚**：网关不允许跨 schema 回退，线上出问题修复前进，或从数据库备份恢复。不经网关的部署可以按 `next/deploy/rollback/0.1.289-plugin-perm-down.md` 跑反向脚本：删除已移除的插件权限及其授予、删除插件范围授予（逐条审计 `via: "rollback 0.1.289"`，保留的授予因此丢失），删掉新列，再把升级过的插件切回旧版本。
+**回滚**：网关不允许跨 schema 回退，线上出问题修复前进，或从数据库备份恢复。不经网关的部署可以按 `next/deploy/rollback/0.1.289-plugin-perm-down.md` 跑反向脚本：删除已移除的插件权限及其授予、删除插件范围授予（逐条审计 `via: "rollback 0.1.289"`，保留的授予因此丢失），拒绝仍待复核的带范围或关键授予（旧核心会把它们确认成整行授予），删掉新列，再把升级过的插件切回旧版本。
 
 **第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.289（`below_feature_core`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
 
