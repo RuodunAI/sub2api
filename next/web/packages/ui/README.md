@@ -414,3 +414,5 @@ const { EntityMultiPicker } = host.components
 ## 插件权限的范围（UI SDK 3.16）
 
 插件的用户权限可以在清单里声明 `scope`（`{resource, own, options}` 或枚举 `{values}`），授权 key 写作 `plugin.<key>:<权限>:own`、`…:<resource>/<值>`，枚举的资源名固定为 `value`（`…:value/input`）。3.16 的控制台按语法解析这些 key，`host.permissions` 的三个方法对插件 key 与核心 key 同一口径：`has('plugin.p:flow:manage')` 只在持有全部范围时为真，`hasAction('plugin.p:flow:manage')` 任意范围即为真（决定“编辑”按钮是否出现），`scope('plugin.p:flow:manage')` 返回持有的规范 key，如 `["plugin.p:flow:manage:own", "plugin.p:flow:manage:flow/2"]`。行级能否编辑仍建议由插件后端在列表行里返回。方法签名与 3.15 相同；UI 3.15 的控制台不解析插件范围，依赖这些语义的页面声明 `hostUICompat: "^3.16"`，`hostCompat` 要求核心 `>=0.1.289`（0.1.288 是最后一个带 UI 3.15 的核心）。声明了 `scope`、`group`、`risk` 等新字段的清单本来就要求这一版本。
+
+同一版本导出 `useScrollClip(scroller, content)`：横向滚动容器的内容被裁到右侧之外时返回 `true`（随尺寸变化与滚动更新），用来在可横向滚动的表格右缘画渐隐或提示“还有列”。核心的权限矩阵与 `STable` 用的就是它；`scroller` 是 `overflow-x: auto` 的元素，`content` 是其中的表格，两个都是 `Ref<HTMLElement | undefined>`，挂载前为 `false`。
