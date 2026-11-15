@@ -16,12 +16,18 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
 
+	"database/sql/driver"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Account usage and usage limits (CONTRACTS §73). Usage is the core's own
@@ -252,19 +258,53 @@ func (l *UsageLimit) scanTargets() []any {
 	return []any{&l.RawCost, &l.Enabled, &l.Amount, &l.Period, &l.PeriodCount, &l.Anchor, &l.Timezone, &l.waived}
 }
 
-// usageLimits loads the configured limits of the given accounts.
-func usageLimits(ctx context.Context, q store.Querier, ids []int64) (map[int64]UsageLimit, error) {
-	rows, err := q.Query(ctx, usageLimitsSQL, ids)
-	if err != nil {
-		return nil, err
-	}
-	return scanUsageLimits(rows, len(ids))
+// The usage reads below are written with ? placeholders and read through
+// GORM; usageOverview sends the same statements in one pgx batch, numbered
+// by dollarSQL, and both read the rows with the same scan.
+
+// rowScanner is what the usage scans need of pgx.Rows and *sql.Rows; the
+// caller closes the rows.
+type rowScanner interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
 }
 
-const usageLimitsSQL = `SELECT account_id, ` + usageLimitColumns + ` FROM account_usage_limits WHERE account_id = ANY($1)`
-
-func scanUsageLimits(rows pgx.Rows, n int) (map[int64]UsageLimit, error) {
+// readRows runs the GORM statement db and scans its rows.
+func readRows[T any](db *gorm.DB, scan func(rowScanner) (T, error)) (T, error) {
+	rows, err := db.Rows()
+	if err != nil {
+		var zero T
+		return zero, err
+	}
 	defer rows.Close()
+	return scan(rows)
+}
+
+// dollarSQL numbers the ? placeholders of query for pgx: $1, $2, ...
+func dollarSQL(query string) string {
+	var b strings.Builder
+	n := 0
+	for _, part := range strings.Split(query, "?") {
+		if n > 0 {
+			b.WriteString("$" + strconv.Itoa(n))
+		}
+		b.WriteString(part)
+		n++
+	}
+	return b.String()
+}
+
+// usageLimits loads the configured limits of the given accounts.
+func usageLimits(ctx context.Context, q store.Querier, ids []int64) (map[int64]UsageLimit, error) {
+	return readRows(store.G(ctx, q).Raw(usageLimitsSQL, store.Int64s(ids)), func(r rowScanner) (map[int64]UsageLimit, error) {
+		return scanUsageLimits(r, len(ids))
+	})
+}
+
+const usageLimitsSQL = `SELECT account_id, ` + usageLimitColumns + ` FROM account_usage_limits WHERE account_id = ANY(?)`
+
+func scanUsageLimits(rows rowScanner, n int) (map[int64]UsageLimit, error) {
 	out := make(map[int64]UsageLimit, n)
 	for rows.Next() {
 		var id int64
@@ -290,30 +330,35 @@ func usageIn(ctx context.Context, q store.Querier, windows []usageWindow) ([]Usa
 	if len(windows) == 0 {
 		return make([]UsageFigures, 0), nil
 	}
-	rows, err := q.Query(ctx, usageInSQL, usageInArgs(windows)...)
-	if err != nil {
-		return nil, err
-	}
-	return scanUsageIn(rows, len(windows))
+	return readRows(store.G(ctx, q).Raw(usageInSQL, usageInArgs(windows)...), func(r rowScanner) ([]UsageFigures, error) {
+		return scanUsageIn(r, len(windows))
+	})
 }
 
 const usageInSQL = `SELECT w.i, coalesce(sum(h.cost),0), coalesce(sum(h.raw_cost),0), coalesce(sum(h.requests),0)::bigint, coalesce(sum(h.tokens),0)::bigint
-		FROM unnest($1::bigint[], $2::timestamptz[], $3::timestamptz[]) WITH ORDINALITY AS w(id, since, until, i)
+		FROM unnest(?::bigint[], ?::timestamptz[], ?::timestamptz[]) WITH ORDINALITY AS w(id, since, until, i)
 		LEFT JOIN account_usage_hourly h ON h.account_id = w.id AND h.hour >= w.since AND (w.until IS NULL OR h.hour < w.until)
 		GROUP BY w.i`
 
 func usageInArgs(windows []usageWindow) []any {
-	ids, since, until := make([]int64, len(windows)), make([]time.Time, len(windows)), make([]*time.Time, len(windows))
+	ids, since, until := make(store.Int64s, len(windows)), make(store.Times, len(windows)), make(windowEnds, len(windows))
 	for i, w := range windows {
 		ids[i], since[i], until[i] = w.account, w.since, w.until
 	}
 	return []any{ids, since, until}
 }
 
+// windowEnds is the timestamptz[] of the windows' ends, a nil end (now)
+// being a NULL element: one array parameter, as store.Times is (which has
+// no NULL).
+type windowEnds []*time.Time
+
+// Value implements driver.Valuer; pgx encodes the slice itself.
+func (e windowEnds) Value() (driver.Value, error) { return []*time.Time(e), nil }
+
 // scanUsageIn reads the usageInSQL rows into the figures of n windows, in
 // window order.
-func scanUsageIn(rows pgx.Rows, n int) ([]UsageFigures, error) {
-	defer rows.Close()
+func scanUsageIn(rows rowScanner, n int) ([]UsageFigures, error) {
 	out := make([]UsageFigures, n)
 	for rows.Next() {
 		var i int
@@ -327,17 +372,14 @@ func scanUsageIn(rows pgx.Rows, n int) ([]UsageFigures, error) {
 }
 
 func usageTotals(ctx context.Context, q store.Querier, ids []int64) (map[int64]UsageFigures, error) {
-	rows, err := q.Query(ctx, usageTotalsSQL, ids)
-	if err != nil {
-		return nil, err
-	}
-	return scanUsageTotals(rows, len(ids))
+	return readRows(store.G(ctx, q).Raw(usageTotalsSQL, store.Int64s(ids)), func(r rowScanner) (map[int64]UsageFigures, error) {
+		return scanUsageTotals(r, len(ids))
+	})
 }
 
-const usageTotalsSQL = `SELECT account_id, cost, raw_cost, requests, tokens FROM account_usage_totals WHERE account_id = ANY($1)`
+const usageTotalsSQL = `SELECT account_id, cost, raw_cost, requests, tokens FROM account_usage_totals WHERE account_id = ANY(?)`
 
-func scanUsageTotals(rows pgx.Rows, n int) (map[int64]UsageFigures, error) {
-	defer rows.Close()
+func scanUsageTotals(rows rowScanner, n int) (map[int64]UsageFigures, error) {
 	out := make(map[int64]UsageFigures, n)
 	for rows.Next() {
 		var id int64
@@ -424,16 +466,17 @@ func usageOverview(ctx context.Context, q interface {
 	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
 }, ids []int64, today []usageWindow) (map[int64]UsageFigures, []UsageFigures, map[int64]UsageLimit, error) {
 	batch := &pgx.Batch{}
-	batch.Queue(usageTotalsSQL, ids)
-	batch.Queue(usageInSQL, usageInArgs(today)...)
-	batch.Queue(usageLimitsSQL, ids)
+	batch.Queue(dollarSQL(usageTotalsSQL), ids)
+	batch.Queue(dollarSQL(usageInSQL), usageInArgs(today)...)
+	batch.Queue(dollarSQL(usageLimitsSQL), ids)
 	br := q.SendBatch(ctx, batch)
 	defer br.Close()
-	read := func(what string, scan func(pgx.Rows) error) error {
+	read := func(what string, scan func(rowScanner) error) error {
 		rows, err := br.Query()
 		if err != nil {
 			return fmt.Errorf("%s: %w", what, err)
 		}
+		defer rows.Close()
 		if err := scan(rows); err != nil {
 			return fmt.Errorf("%s: %w", what, err)
 		}
@@ -442,12 +485,12 @@ func usageOverview(ctx context.Context, q interface {
 	var totals map[int64]UsageFigures
 	var todays []UsageFigures
 	var limits map[int64]UsageLimit
-	err := read("totals", func(r pgx.Rows) (err error) { totals, err = scanUsageTotals(r, len(ids)); return })
+	err := read("totals", func(r rowScanner) (err error) { totals, err = scanUsageTotals(r, len(ids)); return })
 	if err == nil {
-		err = read("today", func(r pgx.Rows) (err error) { todays, err = scanUsageIn(r, len(today)); return })
+		err = read("today", func(r rowScanner) (err error) { todays, err = scanUsageIn(r, len(today)); return })
 	}
 	if err == nil {
-		err = read("limits", func(r pgx.Rows) (err error) { limits, err = scanUsageLimits(r, len(ids)); return })
+		err = read("limits", func(r rowScanner) (err error) { limits, err = scanUsageLimits(r, len(ids)); return })
 	}
 	if err != nil {
 		return nil, nil, nil, err
@@ -658,13 +701,18 @@ func (l UsageLimit) same(o UsageLimit) bool {
 // saveUsageLimit stores the configuration of an account, clearing an early
 // release.
 func saveUsageLimit(ctx context.Context, q store.Querier, id int64, l UsageLimit) error {
-	_, err := q.Exec(ctx, `INSERT INTO account_usage_limits (account_id, `+usageLimitColumns+`, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, clock_timestamp())
+	return usageLimitWriteError(ctx, upsertUsageLimit(store.G(ctx, q), id, l).Error)
+}
+
+// upsertUsageLimit writes the configuration of account id, clearing an
+// early release.
+func upsertUsageLimit(db *gorm.DB, id int64, l UsageLimit) *gorm.DB {
+	return db.Exec(`INSERT INTO account_usage_limits (account_id, `+usageLimitColumns+`, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, clock_timestamp())
 		ON CONFLICT (account_id) DO UPDATE SET raw_cost = EXCLUDED.raw_cost, enabled = EXCLUDED.enabled, amount = EXCLUDED.amount,
 			period = EXCLUDED.period, period_count = EXCLUDED.period_count, anchor = EXCLUDED.anchor, timezone = EXCLUDED.timezone,
 			waived_window = NULL, updated_at = clock_timestamp()`,
 		id, l.RawCost, l.Enabled, l.Amount, l.Period, l.PeriodCount, l.Anchor, l.Timezone)
-	return usageLimitWriteError(ctx, err)
 }
 
 // checkUsageLimitControl refuses a configuration the account type's
@@ -769,12 +817,24 @@ func waiveUsageLimit(ctx context.Context, q store.Querier, id int64, until *time
 	var at time.Time
 	if until != nil {
 		at = until.Add(-time.Nanosecond) // periods end before their end
-	} else if err := q.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
+	} else if at, err = dbClock(ctx, q); err != nil {
 		return err
 	}
 	start, _ := l.window(at)
-	_, err = q.Exec(ctx, `UPDATE account_usage_limits SET waived_window = $2 WHERE account_id = $1`, id, start)
-	return err
+	return waive(store.G(ctx, q), id, start).Error
+}
+
+// waive records the early release of account id for the period starting at
+// start, leaving updated_at, the configuration's version, alone.
+func waive(db *gorm.DB, id int64, start time.Time) *gorm.DB {
+	return db.Model(&model.AccountUsageLimit{}).Where("account_id = ?", id).Update("waived_window", start)
+}
+
+// dbClock is the database's clock_timestamp().
+func dbClock(ctx context.Context, q store.Querier) (time.Time, error) {
+	var at time.Time
+	err := store.G(ctx, q).Raw(`SELECT clock_timestamp()`).Row().Scan(&at)
+	return at, err
 }
 
 // foldUsage folds the usage journal into the hourly and lifetime sums. Only
@@ -782,7 +842,7 @@ func waiveUsageLimit(ctx context.Context, q store.Querier, id int64, until *time
 func foldUsage(ctx context.Context, q store.Querier) error {
 	for range 20 {
 		var n int
-		if err := q.QueryRow(ctx, `SELECT account_usage_fold($1)`, usageFoldBatch).Scan(&n); err != nil || n < usageFoldBatch {
+		if err := store.G(ctx, q).Raw(`SELECT account_usage_fold(?)`, usageFoldBatch).Row().Scan(&n); err != nil || n < usageFoldBatch {
 			return err
 		}
 	}
@@ -831,30 +891,21 @@ func (s *Service) EnforceUsageLimits(ctx context.Context, ids []int64) error {
 	}
 	var filter any
 	if ids != nil {
-		filter = ids
+		filter = store.Int64s(ids)
 	}
 	def := defaultUsageLimit()
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id, a.name, a.plugin_key, a.type, a.status, a.status_reason, a.auto_disabled_source, a.auto_disabled_until,
-			l.updated_at, coalesce(l.raw_cost, false), coalesce(l.enabled, false), coalesce(l.amount, 0), coalesce(l.period, $3), coalesce(l.period_count, 1),
-			l.anchor, coalesce(l.timezone, $4), l.waived_window
+	cands, err := readRows(store.G(ctx, s.d.DB.Pool).Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.status, a.status_reason, a.auto_disabled_source, a.auto_disabled_until,
+			l.updated_at, coalesce(l.raw_cost, false), coalesce(l.enabled, false), coalesce(l.amount, 0), coalesce(l.period, ?), coalesce(l.period_count, 1),
+			l.anchor, coalesce(l.timezone, ?), l.waived_window
 		FROM accounts a LEFT JOIN account_usage_limits l ON l.account_id = a.id
-		WHERE a.deleted_at IS NULL AND ($1::bigint[] IS NULL OR a.id = ANY($1))
-			AND ((l.enabled AND a.status = 'active') OR (a.status = 'auto_disabled' AND a.auto_disabled_source = $2))`,
-		filter, usageLimitSource, def.Period, def.Timezone)
-	if err != nil {
-		return err
-	}
-	cands, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (usageCandidate, error) {
-		var c usageCandidate
-		err := r.Scan(append([]any{&c.id, &c.name, &c.pluginKey, &c.typ, &c.status, &c.reason, &c.source, &c.until, &c.limitSaved},
-			c.limit.scanTargets()...)...)
-		return c, err
-	})
+		WHERE a.deleted_at IS NULL AND (?::bigint[] IS NULL OR a.id = ANY(?))
+			AND ((l.enabled AND a.status = 'active') OR (a.status = 'auto_disabled' AND a.auto_disabled_source = ?))`,
+		def.Period, def.Timezone, filter, filter, usageLimitSource), scanUsageCandidates)
 	if err != nil || len(cands) == 0 {
 		return err
 	}
-	var now time.Time
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+	now, err := dbClock(ctx, s.d.DB.Pool)
+	if err != nil {
 		return err
 	}
 	limits := make(map[int64]UsageLimit, len(cands))
@@ -884,6 +935,19 @@ func (s *Service) EnforceUsageLimits(ctx context.Context, ids []int64) error {
 		return fmt.Errorf("usage limits: %d of %d accounts failed", failed, len(cands))
 	}
 	return nil
+}
+
+func scanUsageCandidates(rows rowScanner) ([]usageCandidate, error) {
+	var cands []usageCandidate
+	for rows.Next() {
+		var c usageCandidate
+		if err := rows.Scan(append([]any{&c.id, &c.name, &c.pluginKey, &c.typ, &c.status, &c.reason, &c.source, &c.until, &c.limitSaved},
+			c.limit.scanTargets()...)...); err != nil {
+			return nil, err
+		}
+		cands = append(cands, c)
+	}
+	return cands, rows.Err()
 }
 
 func (s *Service) enforceUsageLimit(ctx context.Context, c usageCandidate, st *UsageLimitState) error {
@@ -920,9 +984,10 @@ func (s *Service) writeUsageLimitState(ctx context.Context, c usageCandidate, ch
 		var until, deferredUntil, saved, waived *time.Time
 		var deferred bool
 		var now time.Time
-		err := tx.QueryRow(ctx, `SELECT status, status_reason, auto_disabled_source, auto_disabled_until,
-				deferred_auto_disable, deferred_auto_disable_reason, deferred_auto_disabled_until, clock_timestamp()
-			FROM accounts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, c.id).
+		g := store.G(ctx, tx)
+		err := g.Model(&model.Account{}).Select(`status, status_reason, auto_disabled_source, auto_disabled_until,
+				deferred_auto_disable, deferred_auto_disable_reason, deferred_auto_disabled_until, clock_timestamp()`).
+			Where("id = ? AND deleted_at IS NULL", c.id).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).Row().
 			Scan(&status, &reason, &source, &until, &deferred, &deferredReason, &deferredUntil, &now)
 		if store.IsNoRows(err) {
 			return nil
@@ -933,7 +998,8 @@ func (s *Service) writeUsageLimitState(ctx context.Context, c usageCandidate, ch
 		if status != c.status || reason != c.reason || source != c.source || !sameTime(until, c.until) {
 			return nil
 		}
-		err = tx.QueryRow(ctx, `SELECT updated_at, waived_window FROM account_usage_limits WHERE account_id = $1 FOR SHARE`, c.id).Scan(&saved, &waived)
+		err = g.Model(&model.AccountUsageLimit{}).Select("updated_at, waived_window").Where("account_id = ?", c.id).
+			Clauses(clause.Locking{Strength: clause.LockingStrengthShare}).Row().Scan(&saved, &waived)
 		if err != nil && !store.IsNoRows(err) {
 			return err
 		}

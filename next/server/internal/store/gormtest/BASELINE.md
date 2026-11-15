@@ -52,6 +52,37 @@ stays on pgx under `//gormguard:allow-pgx`. The locked reads of the same
 records inside Lookup's transaction (`discoverPrefixes`, only for a
 request that hits) are on GORM.
 
+## Batch 2a: the account reads of the request path
+
+The gateway reaches two account reads, both behind a 30 s cache
+(`snapshotTTL`), so a request runs them on a miss only: `groupSnapshot`
+(← `Candidates`, the schedulable accounts of the group) and the row of
+`Load` (`loadLive`). Their benchmark measures each pgx statement next to
+the GORM form of the same statement, on a group of ten accounts:
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/account/
+```
+
+Recorded 2026-11-15 on gorm-2a, same machine and server as above. Medians
+of 5.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| BenchmarkHotGroupSnapshot/pgx | 161 496 | 22 250 | 250 |
+| BenchmarkHotGroupSnapshot/gorm | 248 970 | 37 865 | 610 |
+| BenchmarkHotLoadRow/pgx | 100 952 | 6 432 | 63 |
+| BenchmarkHotLoadRow/gorm | 136 736 | 16 629 | 206 |
+
+GORM takes 2.4 and 3.3 times the allocations (the limit is 1.5), so both
+stay on pgx under `//gormguard:allow-pgx`. `Load` reads its row with a
+statement of its own (`loadLive`: any live account, no scope condition);
+`loadRow`, which the console and the background jobs use, is on GORM. The
+other account calls of the gateway (`GroupHasType` and `Unschedulable`
+after a failed dispatch, the name read of `SetCooldown`, the automatic
+disables) run on GORM: none of them runs for every request.
+
 ## What every request runs
 
 Read from the code at 06c2f18f. The gateway package itself runs no

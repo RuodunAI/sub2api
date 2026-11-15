@@ -1,0 +1,25 @@
+-- sql
+INSERT INTO "accounts" ("name","plugin_key","type","credentials_enc","proxy_id","created_by","subscription_type","auto_models","param_override","conversion_loss_policy","settings","status","schedulable","priority","max_concurrency","models","model_mapping","weight","auto_disable","model_limits","environment","header_passthrough","spm_window_seconds") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,(NULL),$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING "id","settings","status","status_reason","schedulable","priority","max_concurrency","created_at","updated_at","models","model_mapping","weight","rpm_limit","tpm_limit","tpd_limit","spm_limit","auto_disable","model_limits","environment","auto_disabled_source","deferred_auto_disable","deferred_auto_disable_reason","header_passthrough","spm_window_seconds","admin_locked"
+-- vars
+$1 string "n"
+$2 string "anthropic"
+$3 string "apikey"
+$4 []uint8 [1]
+$5 *int64 nil
+$6 *int64 nil
+$7 *string nil
+$8 *bool nil
+$9 *string nil
+$10 jsontext.Value {}
+$11 *string "disabled"
+$12 *bool false
+$13 *int 0
+$14 *int 0
+$15 store.Strings []
+$16 jsontext.Value {}
+$17 *int 1
+$18 *bool false
+$19 jsontext.Value []
+$20 jsontext.Value {}
+$21 store.Strings []
+$22 *int 60

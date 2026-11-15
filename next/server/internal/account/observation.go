@@ -7,6 +7,8 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/observation"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type StatsConsumer struct{}
@@ -103,22 +105,11 @@ func (s *Service) ReadPluginObservationMetrics(ctx context.Context, key string, 
 	} else if in.Namespace != "plugin" {
 		return nil, core.ErrInvalidArgument
 	}
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id FROM accounts a WHERE a.id=ANY($1) AND a.deleted_at IS NULL AND ($2::boolean OR a.plugin_key=$3) ORDER BY a.id`, in.AccountIds, all, key)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	ids := make([]int64, 0, len(in.AccountIds))
-	for rows.Next() {
-		var id int64
-		if err = rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	if err = rows.Err(); err != nil {
+	if err := store.G(ctx, s.d.DB.Pool).Model(&model.Account{}).
+		Where("id = ANY(?) AND deleted_at IS NULL AND (?::boolean OR plugin_key = ?)", store.Int64s(in.AccountIds), all, key).
+		Order("id").Pluck("id", &ids).Error; err != nil {
 		return nil, err
 	}
-	rows.Close()
 	return s.d.Stats.ReadObservationMetrics(ctx, namespace, ids, in.Metrics, int(in.WindowSeconds))
 }

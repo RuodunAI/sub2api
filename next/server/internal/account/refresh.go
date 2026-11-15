@@ -18,6 +18,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -25,6 +27,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Credential refresh (CONTRACTS §48), modelled on sub2api's
@@ -252,10 +255,9 @@ func (s *Service) refreshAccount(ctx context.Context, id int64, force bool) (*Re
 	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		// Only over the credentials this renewal started from: an
 		// administrator who saved new ones meanwhile wins.
-		tag, err := tx.Exec(ctx, `UPDATE accounts SET credentials_enc = $3, updated_at = clock_timestamp()
-			WHERE id = $1 AND credentials_enc = $2 AND deleted_at IS NULL`, id, a.CredEnc, enc)
-		if err != nil || tag.RowsAffected() == 0 {
-			return err
+		res := renewCredentials(store.G(ctx, tx), id, a.CredEnc, enc)
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error
 		}
 		saved = true
 		detail := map[string]any{"expires_at": state.ExpiresAt}
@@ -436,10 +438,9 @@ func (s *Service) SweepRefresh(ctx context.Context) (int, error) {
 // (refreshAccount checks again under the lock), the last id read and how
 // many rows were read.
 func (s *Service) dueAccounts(ctx context.Context, keys []string, after int64) (due []int64, last int64, n int, err error) {
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id, a.plugin_key, a.type, a.credentials_enc FROM accounts a
-		WHERE a.deleted_at IS NULL AND a.plugin_key || '/' || a.type = ANY($1) AND a.id > $2
-		ORDER BY a.id LIMIT $3`, keys, after, refreshPage)
-	if err != nil {
+	var page []model.Account
+	if err := accountsOfTypes(store.G(ctx, s.d.DB.Pool), keys, after, refreshPage).Select("id, plugin_key, type, credentials_enc").
+		Find(&page).Error; err != nil {
 		return nil, 0, 0, err
 	}
 	type cand struct {
@@ -449,22 +450,13 @@ func (s *Service) dueAccounts(ctx context.Context, keys []string, after int64) (
 		plugin  string
 	}
 	var cands []cand
-	for rows.Next() {
-		var c cand
-		var typ string
-		if err := rows.Scan(&c.id, &c.plugin, &typ, &c.credEnc); err != nil {
-			rows.Close()
-			return nil, 0, 0, err
-		}
+	for _, a := range page {
 		n++
-		last = c.id
-		if c.decl, _ = s.refreshDecl(c.plugin, typ); c.decl != nil {
+		last = a.ID
+		c := cand{id: a.ID, credEnc: a.CredentialsEnc, plugin: a.PluginKey}
+		if c.decl, _ = s.refreshDecl(a.PluginKey, a.Type); c.decl != nil {
 			cands = append(cands, c)
 		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, 0, 0, err
 	}
 	ids := make([]int64, 0, len(cands))
 	for _, c := range cands {
@@ -495,4 +487,11 @@ func (s *Service) dueAccounts(ctx context.Context, keys []string, after int64) (
 		}
 	}
 	return due, last, n, nil
+}
+
+// renewCredentials replaces the credentials of live account id while they
+// are still old, the ones a renewal started from.
+func renewCredentials(db *gorm.DB, id int64, old, renewed []byte) *gorm.DB {
+	return db.Model(&model.Account{}).Where("id = ? AND credentials_enc = ? AND deleted_at IS NULL", id, old).
+		Updates(map[string]any{"credentials_enc": renewed, "updated_at": gorm.Expr("clock_timestamp()")})
 }

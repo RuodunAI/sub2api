@@ -6,11 +6,16 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/jackc/pgx/v5"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // factsJSON is the resource_facts_json of save hooks (CONTRACTS §59): ""
@@ -200,12 +205,9 @@ func (s *Service) refreshFromFacts(ctx context.Context, id int64, observed core.
 	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
 		// Only over the row the plugin saw: a concurrent save ran its own
 		// before_update, and switching to manual mode wins.
-		tag, err := tx.Exec(ctx, `UPDATE accounts SET models = CASE WHEN $5 THEN $3::text[] ELSE models END,
-			model_mapping = COALESCE($4::jsonb, model_mapping), settings = COALESCE($6::jsonb, settings), updated_at = clock_timestamp()
-			WHERE id = $1 AND updated_at = $2 AND deleted_at IS NULL AND (NOT $5 OR auto_models IS NOT FALSE)`,
-			id, cur.UpdatedAt, models, mapping, modelsChanged, settingsJSON)
-		if err != nil || tag.RowsAffected() == 0 {
-			return err
+		res := saveFacts(store.G(ctx, tx), id, cur.UpdatedAt, modelsChanged, models, mapping, settingsJSON)
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error
 		}
 		saved = true
 		if modelsChanged {
@@ -238,6 +240,23 @@ func (s *Service) refreshFromFacts(ctx context.Context, id int64, observed core.
 	s.changed(ctx, id)
 	s.kickCCGateway(id, cur.PluginKey, cur.Type)
 	return nil
+}
+
+// saveFacts writes what refreshFromFacts patched over the row version
+// version, unless the account switched to manual models meanwhile and the
+// models changed. A nil models list is NULL, as pgx sent it.
+func saveFacts(db *gorm.DB, id int64, version time.Time, modelsChanged bool, models []string, mapping, settings *string) *gorm.DB {
+	set := map[string]any{"updated_at": gorm.Expr("clock_timestamp()")}
+	if modelsChanged {
+		set["models"] = store.NullStrings(models)
+	}
+	store.SetIf(set, "model_mapping", mapping)
+	store.SetIf(set, "settings", settings)
+	db = db.Model(&model.Account{}).Where("id = ? AND updated_at = ? AND deleted_at IS NULL", id, version)
+	if modelsChanged {
+		db = db.Where("auto_models IS NOT FALSE")
+	}
+	return db.Updates(set)
 }
 
 // createAudit is the account.create audit detail: the subscription type the

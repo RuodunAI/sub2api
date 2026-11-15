@@ -1,0 +1,8 @@
+-- sql
+UPDATE "accounts" SET "auto_disabled_source"=$1,"auto_disabled_until"=$2,"status"=$3,"status_reason"=$4,"updated_at"=clock_timestamp() WHERE id = $5
+-- vars
+$1 string "usage_limit"
+$2 *time.Time 2026-11-15 12:00:00 +0000 UTC
+$3 string "auto_disabled"
+$4 string "r"
+$5 int64 5

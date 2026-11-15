@@ -1,0 +1,4 @@
+-- sql
+UPDATE "accounts" SET "deleted_at"=now(),"updated_at"=now() WHERE plugin_key = $1 AND deleted_at IS NULL RETURNING "id","type","name"
+-- vars
+$1 string "anthropic"

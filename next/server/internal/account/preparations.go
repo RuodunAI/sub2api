@@ -11,14 +11,18 @@ import (
 	"slices"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func (s *Service) registerPreparationRoutes(r *httpapi.Router) {
@@ -117,14 +121,19 @@ func (s *Service) createPreparation(c *gin.Context) {
 				return err
 			}
 		}
-		err := tx.QueryRow(ctx, `INSERT INTO account_preparations(key,plugin_key,account_type,proxy_id,settings,created_by,idempotency_key)
-			SELECT $1,$2::text,$3::text,$4,$5::jsonb,$6::bigint,NULLIF($7::text,'')
-			WHERE $8::int = 0
-				OR (SELECT count(*) FROM account_preparations WHERE created_by=$6::bigint AND account_id IS NULL AND state IN ('pending','ready') AND expires_at>now()) < $8::int
-				OR EXISTS (SELECT 1 FROM account_preparations WHERE created_by=$6::bigint AND plugin_key=$2::text AND account_type=$3::text AND idempotency_key=NULLIF($7::text,''))
+		// The arguments repeat where the statement reuses one ($n on pgx).
+		err := store.G(ctx, tx).Raw(`INSERT INTO account_preparations(key,plugin_key,account_type,proxy_id,settings,created_by,idempotency_key)
+			SELECT ?,?::text,?::text,?,?::jsonb,?::bigint,NULLIF(?::text,'')
+			WHERE ?::int = 0
+				OR (SELECT count(*) FROM account_preparations WHERE created_by=?::bigint AND account_id IS NULL AND state IN ('pending','ready') AND expires_at>now()) < ?::int
+				OR EXISTS (SELECT 1 FROM account_preparations WHERE created_by=?::bigint AND plugin_key=?::text AND account_type=?::text AND idempotency_key=NULLIF(?::text,''))
 			ON CONFLICT (created_by,plugin_key,account_type,idempotency_key) DO UPDATE SET last_seen_at=now()
-			RETURNING key,settings=$5::jsonb AND proxy_id IS NOT DISTINCT FROM $4::bigint,account_id IS NULL AND state IN ('pending','ready') AND expires_at>now(),xmax=0`,
-			p.Key, p.PluginKey, p.Type, p.ProxyID, p.Settings, uid, in.IdempotencyKey, limit).Scan(&p.Key, &matches, &active, &fresh)
+			RETURNING key,settings=?::jsonb AND proxy_id IS NOT DISTINCT FROM ?::bigint,account_id IS NULL AND state IN ('pending','ready') AND expires_at>now(),xmax=0`,
+			p.Key, p.PluginKey, p.Type, p.ProxyID, p.Settings, uid, in.IdempotencyKey,
+			limit,
+			uid, limit,
+			uid, p.PluginKey, p.Type, in.IdempotencyKey,
+			p.Settings, p.ProxyID).Row().Scan(&p.Key, &matches, &active, &fresh)
 		if store.IsNoRows(err) {
 			return core.ErrTooManyDrafts
 		}
@@ -172,14 +181,35 @@ func (s *Service) createPreparation(c *gin.Context) {
 }
 
 func (s *Service) loadPreparation(ctx context.Context, key string) (core.AccountPreparation, error) {
-	var p core.AccountPreparation
+	var p model.AccountPreparation
 	uid, _ := core.UserID(ctx)
-	err := s.d.DB.Pool.QueryRow(ctx, `UPDATE account_preparations SET last_seen_at=now() WHERE key=$1 AND created_by=$2 AND account_id IS NULL AND state IN ('pending','ready') AND expires_at>now() RETURNING key,plugin_key,account_type,proxy_id,settings,created_by`, key, uid).
-		Scan(&p.Key, &p.PluginKey, &p.Type, &p.ProxyID, &p.Settings, &p.CreatedBy)
-	if store.IsNoRows(err) {
-		return p, core.ErrNotFound
+	res := touchPreparation(store.G(ctx, s.d.DB.Pool), &p, key, uid)
+	if res.Error == nil && res.RowsAffected == 0 {
+		return core.AccountPreparation{}, core.ErrNotFound
 	}
-	return p, err
+	return preparationOf(p), res.Error
+}
+
+// preparationColumns are the columns of core.AccountPreparation.
+const preparationColumns = "key,plugin_key,account_type,proxy_id,settings,created_by"
+
+func preparationOf(p model.AccountPreparation) core.AccountPreparation {
+	return core.AccountPreparation{Key: p.Key, PluginKey: p.PluginKey, Type: p.AccountType, ProxyID: p.ProxyID,
+		Settings: p.Settings, CreatedBy: p.CreatedBy}
+}
+
+// openPreparation is preparation key of uid while it is open: not adopted,
+// pending or ready, and not expired.
+func openPreparation(db *gorm.DB, key string, uid int64) *gorm.DB {
+	return db.Where("key = ? AND created_by = ? AND account_id IS NULL AND state IN ('pending','ready') AND expires_at > now()", key, uid)
+}
+
+// touchPreparation marks open preparation key of uid seen, reading it into
+// into.
+func touchPreparation(db *gorm.DB, into *model.AccountPreparation, key string, uid int64) *gorm.DB {
+	return openPreparation(db.Model(into), key, uid).
+		Clauses(clause.Returning{Columns: []clause.Column{{Name: "key"}, {Name: "plugin_key"}, {Name: "account_type"}, {Name: "proxy_id"}, {Name: "settings"}, {Name: "created_by"}}}).
+		Update("last_seen_at", gorm.Expr("now()"))
 }
 
 func (s *Service) preparationAction(c *gin.Context) {
@@ -273,11 +303,12 @@ func (s *Service) updatePreparation(c *gin.Context) {
 		return
 	}
 	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE account_preparations SET proxy_id=$2,last_seen_at=now() WHERE key=$1 AND created_by=$3 AND account_id IS NULL AND state IN ('pending','ready') AND expires_at>now()`, p.Key, p.ProxyID, p.CreatedBy)
-		if err != nil {
-			return err
+		res := openPreparation(store.G(ctx, tx).Model(&model.AccountPreparation{}), p.Key, p.CreatedBy).
+			Updates(map[string]any{"proxy_id": p.ProxyID, "last_seen_at": gorm.Expr("now()")})
+		if res.Error != nil {
+			return res.Error
 		}
-		if tag.RowsAffected() != 1 {
+		if res.RowsAffected != 1 {
 			return core.ErrConflict
 		}
 		if err := resource.UpdateAccountPreparation(ctx, tx, p); err != nil {
@@ -298,14 +329,15 @@ func (s *Service) updatePreparation(c *gin.Context) {
 func (s *Service) cancelPreparation(c *gin.Context) {
 	ctx := audit.Context(c)
 	uid, _ := core.UserID(ctx)
-	var p core.AccountPreparation
-	err := s.d.DB.Pool.QueryRow(ctx, `SELECT key,plugin_key,account_type,proxy_id,settings,created_by FROM account_preparations WHERE key=$1 AND created_by=$2 AND account_id IS NULL AND state IN ('pending','ready','cancelling')`, c.Param("key"), uid).
-		Scan(&p.Key, &p.PluginKey, &p.Type, &p.ProxyID, &p.Settings, &p.CreatedBy)
+	var p model.AccountPreparation
+	err := store.G(ctx, s.d.DB.Pool).Select(preparationColumns).
+		Where("key = ? AND created_by = ? AND account_id IS NULL AND state IN ('pending','ready','cancelling')", c.Param("key"), uid).
+		Take(&p).Error
 	if store.IsNoRows(err) {
 		err = core.ErrNotFound
 	}
 	if err == nil {
-		err = s.disposePreparation(ctx, p, disposeCancelled)
+		err = s.disposePreparation(ctx, preparationOf(p), disposeCancelled)
 	}
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -368,13 +400,14 @@ func (s *Service) disposePreparation(ctx context.Context, p core.AccountPreparat
 		}
 	}
 	var was string
-	err = s.d.DB.Pool.QueryRow(ctx, `UPDATE account_preparations ap SET state='cancelling'
-		FROM (SELECT key, state FROM account_preparations WHERE key=$1 FOR UPDATE) old
+	g := store.G(ctx, s.d.DB.Pool)
+	err = g.Raw(`UPDATE account_preparations ap SET state='cancelling'
+		FROM (SELECT key, state FROM account_preparations WHERE key=? FOR UPDATE) old
 		WHERE ap.key=old.key AND ap.account_id IS NULL
-		AND CASE $2::text WHEN 'abandoned' THEN ap.state='pending'
+		AND CASE ?::text WHEN 'abandoned' THEN ap.state='pending'
 			WHEN 'expired' THEN ap.state='cancelling' OR ap.state IN ('pending','ready') AND (ap.expires_at<=now() OR ap.last_seen_at<now()-interval '15 minutes')
 			ELSE ap.state IN ('pending','ready','cancelling') END
-		RETURNING old.state`, p.Key, reason).Scan(&was)
+		RETURNING old.state`, p.Key, reason).Row().Scan(&was)
 	if store.IsNoRows(err) {
 		if reason == disposeExpired {
 			return nil
@@ -394,11 +427,13 @@ func (s *Service) disposePreparation(ctx context.Context, p core.AccountPreparat
 	if err := resource.CancelAccountPreparation(ctx, p); err != nil {
 		return err
 	}
-	final := `UPDATE account_preparations SET state='cancelled' WHERE key=$1 AND account_id IS NULL AND state='cancelling'`
+	final := g.Where("key = ? AND account_id IS NULL AND state = 'cancelling'", p.Key)
 	if reason == disposeAbandoned {
-		final = `DELETE FROM account_preparations WHERE key=$1 AND account_id IS NULL AND state='cancelling'`
+		final = final.Delete(&model.AccountPreparation{})
+	} else {
+		final = final.Model(&model.AccountPreparation{}).Update("state", "cancelled")
 	}
-	if _, err := s.d.DB.Pool.Exec(ctx, final, p.Key); err != nil {
+	if err := final.Error; err != nil {
 		return err
 	}
 	actor := p.CreatedBy
@@ -430,7 +465,7 @@ func (s *Service) checkPreparationForCreate(ctx context.Context, bt core.Account
 		return nil, none, core.ErrInvalidArgument.WithMessage("Preparation does not match this account")
 	}
 	var equal bool
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT $1::jsonb=$2::jsonb`, p.Settings, settings).Scan(&equal); err != nil {
+	if err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT ?::jsonb=?::jsonb`, p.Settings, settings).Row().Scan(&equal); err != nil {
 		return nil, none, err
 	}
 	if !equal {
@@ -451,11 +486,13 @@ func (s *Service) checkPreparationForCreate(ctx context.Context, bt core.Account
 }
 
 func (s *Service) adoptPreparation(ctx context.Context, tx pgx.Tx, p core.AccountPreparation, id int64) error {
-	tag, err := tx.Exec(ctx, `UPDATE account_preparations SET state='adopted',account_id=$2 WHERE key=$1 AND created_by=$3 AND account_id IS NULL AND state IN ('pending','ready') AND expires_at>now() AND proxy_id IS NOT DISTINCT FROM $4::bigint AND settings=$5::jsonb`, p.Key, id, p.CreatedBy, p.ProxyID, p.Settings)
-	if err != nil {
-		return err
+	res := openPreparation(store.G(ctx, tx).Model(&model.AccountPreparation{}), p.Key, p.CreatedBy).
+		Where("proxy_id IS NOT DISTINCT FROM ?::bigint AND settings = ?::jsonb", p.ProxyID, p.Settings).
+		Updates(map[string]any{"state": "adopted", "account_id": id})
+	if res.Error != nil {
+		return res.Error
 	}
-	if tag.RowsAffected() != 1 {
+	if res.RowsAffected != 1 {
 		return core.ErrConflict.WithMessage("Account preparation is no longer available")
 	}
 	resource, err := s.preparationResource(p)

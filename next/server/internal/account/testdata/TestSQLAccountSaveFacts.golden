@@ -1,0 +1,7 @@
+-- sql
+UPDATE "accounts" SET "models"=$1,"settings"=$2,"updated_at"=clock_timestamp() WHERE (id = $3 AND updated_at = $4 AND deleted_at IS NULL) AND auto_models IS NOT FALSE
+-- vars
+$1 store.Strings [m]
+$2 string "{\"email\":\"a@b.c\"}"
+$3 int64 5
+$4 time.Time 2026-11-15 12:00:00 +0000 UTC

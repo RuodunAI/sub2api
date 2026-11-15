@@ -40,6 +40,7 @@ var instanceOwners = map[string]string{
 // statements are built with store.G: they must not go back to pgx Exec,
 // Query or QueryRow. A package is added here in the batch that migrates it.
 var migratedPackages = map[string]string{
+	"internal/account":         "batch 2a",
 	"internal/apikey":          "batch 1d",
 	"internal/app":             "batch 1d",
 	"internal/audit":           "batch 1b",

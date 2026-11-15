@@ -11,9 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -368,14 +370,16 @@ func (s *Service) AccountsInScope(ctx context.Context, userID int64, action stri
 	case scope.All:
 		return true, nil, nil
 	}
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id FROM accounts a
-		WHERE a.id = ANY($1) AND a.deleted_at IS NULL AND `+core.AccountRows.SQL(2)+`
-		ORDER BY array_position($1, a.id)`, append([]any{ids}, core.AccountRows.Args(scope)...)...)
-	if err != nil {
-		return false, nil, err
-	}
-	allowed, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	var allowed []int64
+	err = liveInScope(store.G(ctx, s.d.DB.Pool), ids, scope).
+		Order(clause.OrderBy{Expression: clause.Expr{SQL: "array_position(?, a.id)", Vars: []any{store.Int64s(ids)}}}).
+		Pluck("a.id", &allowed).Error
 	return false, allowed, err
+}
+
+// liveInScope is the live accounts of ids in scope.
+func liveInScope(db *gorm.DB, ids []int64, scope core.DataScope) *gorm.DB {
+	return db.Table("accounts a").Where("a.id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids)).Scopes(core.AccountRows.Scope(scope))
 }
 
 // proxyRefs is the proxies a caller writing an account under action may

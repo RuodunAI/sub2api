@@ -16,6 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -26,6 +28,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -86,24 +89,37 @@ type row struct {
 	AdminLocked bool
 }
 
-// selectRow joins the creator's email (also for soft-deleted users); every
-// statement built on it must qualify account columns with "a.".
-const selectRow = `SELECT a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.settings, a.proxy_id,
+// rowColumns are the columns of a row, in scanRow's order. Every statement
+// reading them joins the creator's email (also for soft-deleted users) and
+// must qualify account columns with "a.".
+const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.settings, a.proxy_id,
 	a.status, a.status_reason, a.schedulable, a.auto_disable, a.priority, a.weight, a.max_concurrency,
 	a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment, a.last_used_at,
 	a.created_by, u.email, a.created_at, a.updated_at,
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
-	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.rate_limit_tier,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked
-	FROM accounts a LEFT JOIN users u ON u.id = a.created_by`
+	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.rate_limit_tier,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
 
+// selectRow is the raw SQL form of selectRows, for the list batch.
+const selectRow = `SELECT ` + rowColumns + ` FROM accounts a LEFT JOIN users u ON u.id = a.created_by`
+
+// selectRows reads rowColumns, for scanRow over its Row().
+func selectRows(db *gorm.DB) *gorm.DB {
+	return db.Table("accounts a").Select(rowColumns).Joins("LEFT JOIN users u ON u.id = a.created_by")
+}
+
+// scanRow reads one row of rowColumns, from pgx (the list batch) or from
+// GORM's Row(). The arrays and the environment go through store types,
+// which both paths decode: database/sql hands jsonb over as its document.
 func scanRow(r pgx.Row) (*row, error) {
 	var a row
+	var env store.JSON[core.EnvironmentValues]
 	err := r.Scan(&a.ID, &a.Name, &a.PluginKey, &a.Type, &a.CredEnc, &a.Settings, &a.ProxyID,
 		&a.Status, &a.StatusReason, &a.Schedulable, &a.AutoDisable, &a.Priority, &a.Weight, &a.MaxConcurrency,
-		&a.Models, &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &a.Environment, &a.LastUsedAt,
+		(*store.Strings)(&a.Models), &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &env, &a.LastUsedAt,
 		&a.CreatedBy, &a.CreatedByEmail, &a.CreatedAt, &a.UpdatedAt,
 		&a.LastTestAt, &a.LastTestOK, &a.LastTestLatencyMs, &a.LastTestModel, &a.LastTestMessage, &a.AutoDisabledUntil,
-		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.SubscriptionType, &a.RateLimitTier, &a.AutoModels, &a.AutoDisabledSource, &a.HeaderPassthrough, &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
+		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.SubscriptionType, &a.RateLimitTier, &a.AutoModels, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
+	a.Environment = env.V
 	return &a, err
 }
 
@@ -167,19 +183,32 @@ func inScope(ctx context.Context, q store.Querier, id int64, scope core.DataScop
 		return true, nil
 	}
 	var ok bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM accounts a WHERE a.id = $1 AND `+core.AccountRows.SQL(2)+`)`,
-		append([]any{id}, core.AccountRows.Args(scope)...)...).Scan(&ok)
+	db := store.G(ctx, q)
+	err := db.Raw("SELECT EXISTS (?)", scopedAccount(db, id, scope).Select("1")).Scan(&ok).Error
 	return ok, err
+}
+
+// scopedAccount is account id (live or not) if it is in scope.
+func scopedAccount(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
+	return db.Table("accounts a").Where("a.id = ?", id).Scopes(core.AccountRows.Scope(scope))
+}
+
+// lockAccountRow locks the accounts row (alias a) of a joined read.
+var lockAccountRow = clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "a"}}
+
+// rowQuery reads one live account in scope as selectRow, locked if lock.
+func rowQuery(db *gorm.DB, id int64, scope core.DataScope, lock bool) *gorm.DB {
+	db = selectRows(db).Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope))
+	if lock {
+		db = db.Clauses(lockAccountRow)
+	}
+	return db
 }
 
 // loadRow returns one live account in scope; rows outside the scope are
 // 404 like missing ones.
 func (s *Service) loadRow(ctx context.Context, q store.Querier, id int64, scope core.DataScope, lock bool) (*row, error) {
-	sql := selectRow + ` WHERE a.id = $1 AND a.deleted_at IS NULL AND ` + core.AccountRows.SQL(2)
-	if lock {
-		sql += ` FOR UPDATE OF a`
-	}
-	a, err := scanRow(q.QueryRow(ctx, sql, append([]any{id}, core.AccountRows.Args(scope)...)...))
+	a, err := scanRow(rowQuery(store.G(ctx, q), id, scope, lock).Row())
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
@@ -404,23 +433,25 @@ var errViewPanicked = errors.New("account: list read failed")
 
 // fillGroups sets GroupIDs and Groups (ordered by group id).
 func (s *Service) fillGroups(ctx context.Context, ids []int64, byID map[int64]*View) error {
-	gr, err := s.d.DB.Pool.Query(ctx, `SELECT ag.account_id, g.id, g.name FROM account_groups ag
-		JOIN groups g ON g.id = ag.group_id WHERE ag.account_id = ANY($1) ORDER BY g.id`, ids)
-	if err != nil {
+	var refs []accountGroupRef
+	if err := store.G(ctx, s.d.DB.Pool).Table("account_groups ag").Select("ag.account_id, g.id, g.name").
+		Joins("JOIN groups g ON g.id = ag.group_id").Where("ag.account_id = ANY(?)", store.Int64s(ids)).
+		Order("g.id").Scan(&refs).Error; err != nil {
 		return err
 	}
-	defer gr.Close()
-	for gr.Next() {
-		var aid int64
-		var g GroupRef
-		if err := gr.Scan(&aid, &g.ID, &g.Name); err != nil {
-			return err
-		}
-		v := byID[aid]
-		v.GroupIDs = append(v.GroupIDs, g.ID)
-		v.Groups = append(v.Groups, g)
+	for _, r := range refs {
+		v := byID[r.AccountID]
+		v.GroupIDs = append(v.GroupIDs, r.ID)
+		v.Groups = append(v.Groups, GroupRef{ID: r.ID, Name: r.Name})
 	}
-	return gr.Err()
+	return nil
+}
+
+// accountGroupRef is one group of an account, as fillGroups reads it.
+type accountGroupRef struct {
+	AccountID int64
+	ID        int64
+	Name      string
 }
 
 // fillCooldowns sets CooldownUntil and CooldownReason from Redis.
@@ -747,6 +778,58 @@ func (in *input) paramOverride() *string {
 	return &s
 }
 
+// columns are the account columns a PATCH writes: the fields present (false
+// and 0 included) and what the update derived from them (the settings, the
+// status reason, the JSON documents, admin_locked), with updated_at. A
+// present list that is nil keeps the column, as the NULL pgx sent for it
+// did. proxy_id and credentials_enc are the caller's to add.
+func (in *input) columns(settings, reason, mapping, limits *string, adminLocked *bool) map[string]any {
+	set := map[string]any{"updated_at": gorm.Expr("clock_timestamp()")}
+	store.SetIf(set, "name", in.Name)
+	store.SetIf(set, "priority", in.Priority)
+	store.SetIf(set, "max_concurrency", in.MaxConcurrency)
+	store.SetIf(set, "schedulable", in.Schedulable)
+	if in.Status != nil {
+		set["status"], set["auto_disabled_until"] = *in.Status, nil
+	}
+	store.SetIf(set, "status_reason", reason)
+	store.SetIf(set, "settings", settings)
+	store.SetIf(set, "weight", in.Weight)
+	setList(set, "models", in.Models)
+	store.SetIf(set, "model_mapping", mapping)
+	store.SetIf(set, "rpm_limit", in.RPMLimit)
+	store.SetIf(set, "tpm_limit", in.TPMLimit)
+	store.SetIf(set, "auto_disable", in.AutoDisable)
+	store.SetIf(set, "auto_models", in.AutoModels)
+	store.SetIf(set, "model_limits", limits)
+	store.SetIf(set, "spm_limit", in.SPMLimit)
+	if in.Environment != nil && *in.Environment != nil {
+		set["environment"] = store.JSON[core.EnvironmentValues]{V: *in.Environment}
+	}
+	setList(set, "header_passthrough", in.HeaderPassthrough)
+	if len(in.ParamOverride) > 0 {
+		set["param_override"] = in.paramOverride()
+	}
+	if in.ConversionLossPolicy.Set {
+		set["conversion_loss_policy"] = in.ConversionLossPolicy.Stored()
+	}
+	store.SetIf(set, "spm_window_seconds", in.SPMWindowSeconds)
+	store.SetIf(set, "admin_locked", adminLocked)
+	return set
+}
+
+// setList puts the text[] *v into set unless v or *v is nil.
+func setList(set map[string]any, column string, v *[]string) {
+	if v != nil && *v != nil {
+		set[column] = store.Strings(*v)
+	}
+}
+
+// updateScoped writes set to account id if it is in scope.
+func updateScoped(db *gorm.DB, id int64, scope core.DataScope, set map[string]any) *gorm.DB {
+	return scopedAccount(db, id, scope).Updates(set)
+}
+
 // changedFields lists the request fields present in a PATCH for the audit
 // detail (names only, never values; credentials is one name).
 func (in *input) changedFields() []string {
@@ -991,8 +1074,8 @@ func checkRefs(ctx context.Context, q store.Querier, proxyID *int64, refs core.D
 		return nil
 	}
 	var ok bool
-	err := q.QueryRow(ctx, `SELECT true FROM proxies p WHERE p.id = $1 AND `+core.ProxyRows.SQL(2),
-		append([]any{*proxyID}, core.ProxyRows.Args(refs)...)...).Scan(&ok)
+	err := store.G(ctx, q).Table("proxies p").Select("true").Where("p.id = ?", *proxyID).
+		Scopes(core.ProxyRows.Scope(refs)).Take(&ok).Error
 	if store.IsNoRows(err) {
 		return core.InvalidFields(core.FieldError{Field: "proxy_id", Code: "not_found",
 			Message: t(ctx, "proxy not found", "代理不存在")})
@@ -1002,6 +1085,14 @@ func checkRefs(ctx context.Context, q store.Querier, proxyID *int64, refs core.D
 
 // groupDiff is how a write changes an account's groups.
 type groupDiff struct{ added, removed, unbindable []int64 }
+
+// groupBinding is one group loadGroupDiff reads: whether the account is in
+// it, and whether the caller may bind it.
+type groupBinding struct {
+	ID       int64
+	Bound    bool
+	Bindable bool
+}
 
 func (d groupDiff) changed() bool { return len(d.added)+len(d.removed) > 0 }
 
@@ -1053,34 +1144,31 @@ func loadGroupDiff(ctx context.Context, q store.Querier, accountID int64, want [
 	if want == nil {
 		return d, nil
 	}
-	rows, err := q.Query(ctx, `SELECT g.id, ag.account_id IS NOT NULL, `+segment.UsableGroupSQL("g", "$3")+`
-		FROM groups g LEFT JOIN account_groups ag ON ag.group_id = g.id AND ag.account_id = $1
-		WHERE g.id = ANY($2) OR ag.account_id IS NOT NULL`, accountID, want, uid)
-	if err != nil {
+	var groups []groupBinding
+	if err := store.G(ctx, q).Raw(`SELECT g.id, ag.account_id IS NOT NULL AS bound, `+segment.UsableGroupSQL("g", "?")+` AS bindable
+		FROM groups g LEFT JOIN account_groups ag ON ag.group_id = g.id AND ag.account_id = ?
+		WHERE g.id = ANY(?) OR ag.account_id IS NOT NULL`, uid, accountID, store.Int64s(want)).Scan(&groups).Error; err != nil {
 		return d, err
 	}
-	var id int64
-	var bound, bindable bool
 	found := 0
-	_, err = pgx.ForEachRow(rows, []any{&id, &bound, &bindable}, func() error {
+	for _, g := range groups {
 		switch {
-		case !slices.Contains(want, id): // bound, not wanted
-			d.removed = append(d.removed, id)
-			return nil
-		case !bound:
-			d.added = append(d.added, id)
-			if !bindable {
-				d.unbindable = append(d.unbindable, id)
+		case !slices.Contains(want, g.ID): // bound, not wanted
+			d.removed = append(d.removed, g.ID)
+			continue
+		case !g.Bound:
+			d.added = append(d.added, g.ID)
+			if !g.Bindable {
+				d.unbindable = append(d.unbindable, g.ID)
 			}
 		}
 		found++
-		return nil
-	})
-	if err == nil && found != len(want) {
-		err = core.InvalidFields(core.FieldError{Field: "group_ids", Code: "not_found",
+	}
+	if found != len(want) {
+		return d, core.InvalidFields(core.FieldError{Field: "group_ids", Code: "not_found",
 			Message: t(ctx, "some groups do not exist", "部分分组不存在")})
 	}
-	return d, err
+	return d, nil
 }
 
 // ownChange is what a write by an own-level caller changes; cur is nil on
@@ -1195,12 +1283,52 @@ func (s *Service) checkCustomUpstream(ctx context.Context, scope core.DataScope,
 func uniqueIDs(in []int64) []int64 { return x.Unique(in) }
 
 func setGroups(ctx context.Context, tx pgx.Tx, id int64, groupIDs []int64) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM account_groups WHERE account_id = $1 AND NOT (group_id = ANY($2))`, id, groupIDs); err != nil {
+	g := store.G(ctx, tx)
+	if err := g.Where("account_id = ? AND NOT (group_id = ANY(?))", id, store.Int64s(groupIDs)).
+		Delete(&model.AccountGroup{}).Error; err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) SELECT $1, unnest($2::bigint[])
-		ON CONFLICT DO NOTHING`, id, groupIDs)
-	return err
+	return g.Exec(`INSERT INTO account_groups (account_id, group_id) SELECT ?, unnest(?::bigint[])
+		ON CONFLICT DO NOTHING`, id, store.Int64s(groupIDs)).Error
+}
+
+// accountInsertColumns are the columns a create writes; the others take
+// their defaults. Those with a non-zero default (status, schedulable,
+// priority, max_concurrency, weight, auto_disable, spm_window_seconds) are
+// pointers in model.Account, set by insertAccount's caller, so a false or 0
+// the caller chose is written as such.
+var accountInsertColumns = []string{"name", "plugin_key", "type", "credentials_enc", "settings",
+	"proxy_id", "status", "schedulable", "priority", "max_concurrency", "created_by",
+	"weight", "models", "model_mapping", "rpm_limit", "tpm_limit", "auto_disable", "subscription_type", "auto_models", "model_limits", "spm_limit", "environment", "header_passthrough", "param_override",
+	"conversion_loss_policy", "spm_window_seconds"}
+
+// insertAccount inserts a and reads its id back.
+func insertAccount(db *gorm.DB, a *model.Account) *gorm.DB {
+	return db.Select(accountInsertColumns).Create(a)
+}
+
+// nonZero is &v, or nil (NULL) for the zero value: NULLIF(v, zero).
+func nonZero[T comparable](v T) *T {
+	var zero T
+	if v == zero {
+		return nil
+	}
+	return &v
+}
+
+// rawJSON is the jsonb value of a document, nil (NULL) for none.
+func rawJSON(doc *string) json.RawMessage {
+	if doc == nil {
+		return nil
+	}
+	return json.RawMessage(*doc)
+}
+
+// environmentJSON is the environment column of v, encoded as pgx encoded
+// the map.
+func environmentJSON(v core.EnvironmentValues) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // basicPayload is the payload of account.created/updated/deleted (CONTRACTS §12).
@@ -1401,18 +1529,18 @@ func (s *Service) create(c *gin.Context) {
 			}
 			proxyID, proxyCreated = &pid, created
 		}
-		if err := tx.QueryRow(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, settings,
-			proxy_id, status, schedulable, priority, max_concurrency, created_by,
-			weight, models, model_mapping, rpm_limit, tpm_limit, auto_disable, subscription_type, auto_models, model_limits, spm_limit, environment, header_passthrough, param_override,
-			conversion_loss_policy, spm_window_seconds)
-			VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, NULLIF($11::bigint, 0),
-			$12, $13, $14::jsonb, $15, $16, $17, NULLIF($18, ''), $19, $20::jsonb, $21, $22, $23::text[], $24::jsonb, $25, $26) RETURNING id`,
-			*in.Name, bt.Plugin.Key, bt.Type.ID, p.enc, string(p.settings),
-			proxyID, status, sched, prio, maxc, uid,
-			weight, models, mappingJSON(mapping), rpm, tpm, autoDisable, facts.SubscriptionType, in.AutoModels, modelLimitsJSON(modelLimits), spm, environment, headerPassthrough, in.paramOverride(),
-			in.ConversionLossPolicy.Stored(), spmWindow).Scan(&id); err != nil {
+		created := model.Account{Name: *in.Name, PluginKey: bt.Plugin.Key, Type: bt.Type.ID, CredentialsEnc: p.enc,
+			Settings: json.RawMessage(p.settings), ProxyID: proxyID, Status: &status, Schedulable: &sched, Priority: &prio,
+			MaxConcurrency: &maxc, CreatedBy: nonZero(uid), Weight: &weight, Models: store.Strings(models),
+			ModelMapping: json.RawMessage(mappingJSON(mapping)), RpmLimit: rpm, TpmLimit: tpm, AutoDisable: &autoDisable,
+			SubscriptionType: nonZero(facts.SubscriptionType), AutoModels: in.AutoModels,
+			ModelLimits: json.RawMessage(modelLimitsJSON(modelLimits)), SpmLimit: spm, Environment: environmentJSON(environment),
+			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(in.paramOverride()),
+			ConversionLossPolicy: in.ConversionLossPolicy.Stored(), SpmWindowSeconds: &spmWindow}
+		if err := insertAccount(store.G(ctx, tx), &created).Error; err != nil {
 			return err
 		}
+		id = created.ID
 		if err := setGroups(ctx, tx, id, groupIDs); err != nil {
 			return err
 		}
@@ -1685,37 +1813,14 @@ func (s *Service) update(c *gin.Context) {
 			l := modelLimitsJSON(*in.ModelLimits)
 			limits = &l
 		}
-		if _, err := tx.Exec(ctx, `UPDATE accounts a SET
-			name = COALESCE($2, name),
-			proxy_id = CASE WHEN $3 THEN $4 ELSE proxy_id END,
-			priority = COALESCE($5, priority),
-			max_concurrency = COALESCE($6, max_concurrency),
-			schedulable = COALESCE($7, schedulable),
-			status = COALESCE($8, status),
-			auto_disabled_until = CASE WHEN $8::text IS NOT NULL THEN NULL ELSE auto_disabled_until END,
-			status_reason = COALESCE($9, status_reason),
-			credentials_enc = COALESCE($10, credentials_enc),
-			settings = COALESCE($11::jsonb, settings),
-			weight = COALESCE($12, weight),
-			models = COALESCE($13::text[], models),
-			model_mapping = COALESCE($14::jsonb, model_mapping),
-			rpm_limit = COALESCE($15, rpm_limit),
-			tpm_limit = COALESCE($16, tpm_limit),
-			auto_disable = COALESCE($17, auto_disable),
-			auto_models = COALESCE($18, auto_models),
-			model_limits = COALESCE($19::jsonb, model_limits),
-			spm_limit = COALESCE($20, spm_limit),
-			environment = COALESCE($21, environment),
-			header_passthrough = COALESCE($22::text[], header_passthrough),
-			param_override = CASE WHEN $23 THEN $24::jsonb ELSE param_override END,
-			conversion_loss_policy = CASE WHEN $25 THEN $26 ELSE conversion_loss_policy END,
-			spm_window_seconds = COALESCE($27, spm_window_seconds),
-			admin_locked = COALESCE($28, admin_locked),
-			updated_at = clock_timestamp()
-			WHERE a.id = $1 AND `+core.AccountRows.SQL(29), append([]any{id, in.Name, setProxy, proxyID, in.Priority, in.MaxConcurrency, in.Schedulable,
-			in.Status, reason, enc, settings, in.Weight, in.Models, mapping, in.RPMLimit, in.TPMLimit,
-			in.AutoDisable, in.AutoModels, limits, in.SPMLimit, in.Environment, in.HeaderPassthrough,
-			len(in.ParamOverride) > 0, in.paramOverride(), in.ConversionLossPolicy.Set, in.ConversionLossPolicy.Stored(), in.SPMWindowSeconds, adminLocked}, core.AccountRows.Args(scope)...)...); err != nil {
+		set := in.columns(settings, reason, mapping, limits, adminLocked)
+		if setProxy {
+			set["proxy_id"] = proxyID
+		}
+		if enc != nil {
+			set["credentials_enc"] = enc
+		}
+		if err := updateScoped(store.G(ctx, tx), id, scope, set).Error; err != nil {
 			return err
 		}
 		if statusChanged && *in.Status == "active" && limitDisabled(locked.Status, locked.AutoDisabledSource) {
@@ -1830,9 +1935,7 @@ func (s *Service) resetStatus(c *gin.Context) {
 		if statusReset {
 			// A reset unlocks (an own-level reset of a locked account was
 			// refused above).
-			if _, err := tx.Exec(ctx, `UPDATE accounts SET status = 'active', status_reason = '', auto_disabled_until = NULL,
-				admin_locked = false, updated_at = clock_timestamp()
-				WHERE id = $1`, id); err != nil {
+			if err := resetStatus(store.G(ctx, tx), id).Error; err != nil {
 				return err
 			}
 			// Brought back by hand: the usage limit leaves it running for
@@ -1871,6 +1974,20 @@ func (s *Service) resetStatus(c *gin.Context) {
 	httpapi.OK(c, v)
 }
 
+// resetStatus brings account id back to active, unlocked.
+func resetStatus(db *gorm.DB, id int64) *gorm.DB {
+	return db.Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{"status": "active", "status_reason": "",
+		"auto_disabled_until": nil, "admin_locked": false, "updated_at": gorm.Expr("clock_timestamp()")})
+}
+
+// softDelete marks live account id in scope deleted, reading its plugin
+// key, type and name back into into.
+func softDelete(db *gorm.DB, into *model.Account, id int64, scope core.DataScope) *gorm.DB {
+	return db.Model(into).Table("accounts a").Clauses(clause.Returning{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "type"}, {Name: "name"}}}).
+		Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope)).
+		Updates(map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()")})
+}
+
 // clearCooldown deletes the account's runtime scheduling block (the Redis
 // cooldown key) and reports whether there was one.
 func (s *Service) clearCooldown(ctx context.Context, id int64) (bool, error) {
@@ -1898,19 +2015,19 @@ func (s *Service) delete(c *gin.Context) {
 	uid, _ := core.UserID(ctx)
 	var authzVersion int64
 	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		var pk, typ, name string
-		err := tx.QueryRow(ctx, `UPDATE accounts a SET deleted_at = now(), updated_at = now()
-			WHERE a.id = $1 AND a.deleted_at IS NULL AND `+core.AccountRows.SQL(2)+` RETURNING plugin_key, type, name`,
-			append([]any{id}, core.AccountRows.Args(scope)...)...).Scan(&pk, &typ, &name)
-		if store.IsNoRows(err) {
+		var deleted model.Account
+		res := softDelete(store.G(ctx, tx), &deleted, id, scope)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
 			return notFound(ctx)
 		}
-		if err != nil {
+		pk, typ, name := deleted.PluginKey, deleted.Type, deleted.Name
+		if err := store.G(ctx, tx).Where("account_id = ?", id).Delete(&model.AccountGroup{}).Error; err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM account_groups WHERE account_id = $1`, id); err != nil {
-			return err
-		}
+		var err error
 		if authzVersion, err = core.ClearScopeGrants(ctx, tx, uid, core.ScopeRefAccount, []int64{id}); err != nil {
 			return err
 		}

@@ -10,9 +10,12 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const quotaSweepPage = 64
@@ -62,7 +65,7 @@ func (s *Service) quotaBlocked(ctx context.Context, a *row, bt core.AccountTypeB
 		return "", nil
 	}
 	var ready bool
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT `+lifecycleQuotaReady+` FROM account_lifecycle_sync l WHERE l.account_id=$1),true)`, a.ID).Scan(&ready); err != nil {
+	if err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT COALESCE((SELECT `+lifecycleQuotaReady+` FROM account_lifecycle_sync l WHERE l.account_id=?),true)`, a.ID).Row().Scan(&ready); err != nil {
 		return "", err
 	}
 	if !ready {
@@ -251,40 +254,23 @@ func quotaSweepTypes(g core.Generation) []string {
 // initializeQuotaPage walks one cursor page of accounts and creates the quota
 // snapshot rows they are missing, advancing the sweep cursor.
 func (s *Service) initializeQuotaPage(ctx context.Context, keys []string) error {
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id,a.plugin_key,a.type FROM accounts a WHERE a.deleted_at IS NULL
-  AND a.plugin_key||'/'||a.type=ANY($1) AND a.id>$2 ORDER BY a.id LIMIT $3`, keys, s.quotaSweepAfter, quotaSweepPage)
-	if err != nil {
-		return err
-	}
-	type entry struct {
-		id          int64
-		plugin, typ string
-	}
-	entries := []entry{}
-	for rows.Next() {
-		var e entry
-		if err := rows.Scan(&e.id, &e.plugin, &e.typ); err != nil {
-			rows.Close()
-			return err
-		}
-		entries = append(entries, e)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	var entries []model.Account
+	if err := accountsOfTypes(store.G(ctx, s.d.DB.Pool), keys, s.quotaSweepAfter, quotaSweepPage).Select("id, plugin_key, type").
+		Find(&entries).Error; err != nil {
 		return err
 	}
 	for _, e := range entries {
-		bt, ok := s.accountType(e.plugin, e.typ)
+		bt, ok := s.accountType(e.PluginKey, e.Type)
 		if ok {
-			created, err := s.initializeQuota(ctx, s.d.DB.Pool, e.id, bt)
+			created, err := s.initializeQuota(ctx, s.d.DB.Pool, e.ID, bt)
 			if err != nil {
 				return err
 			}
 			if created {
-				s.quotaChanged(ctx, e.id)
+				s.quotaChanged(ctx, e.ID)
 			}
 		}
-		s.quotaSweepAfter = e.id
+		s.quotaSweepAfter = e.ID
 	}
 	if len(entries) < quotaSweepPage {
 		s.quotaSweepAfter = 0
@@ -292,28 +278,23 @@ func (s *Service) initializeQuotaPage(ctx context.Context, keys []string) error 
 	return nil
 }
 
+// accountsOfTypes is the page of live accounts of the types keys
+// ("plugin/type") after id after, by id.
+func accountsOfTypes(db *gorm.DB, keys []string, after int64, limit int) *gorm.DB {
+	return db.Model(&model.Account{}).Where("deleted_at IS NULL AND plugin_key || '/' || type = ANY(?) AND id > ?", store.Strings(keys), after).
+		Order("id").Limit(limit)
+}
+
 // dueQuotaIDs selects the accounts whose quota is due for a refresh now.
 func (s *Service) dueQuotaIDs(ctx context.Context, keys []string) ([]int64, error) {
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT q.account_id FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
-  WHERE q.auto_refresh AND q.next_check_at<=now() AND (q.lease_until IS NULL OR q.lease_until<=now())
-  AND (q.last_active_at IS NULL OR q.last_active_at<=now()-make_interval(secs=>$3::float8))
-  AND (a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key||'/'||a.type=ANY($1)
-  AND NOT EXISTS(SELECT 1 FROM account_lifecycle_sync l WHERE l.account_id=a.id AND NOT `+lifecycleQuotaReady+`)
-  ORDER BY q.next_check_at,q.account_id LIMIT $2`, keys, quotaSweepPage, quotaQueryFloor.Seconds())
-	if err != nil {
-		return nil, err
-	}
 	ids := []int64{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	return ids, rows.Err()
+	err := store.G(ctx, s.d.DB.Pool).Raw(`SELECT q.account_id FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
+  WHERE q.auto_refresh AND q.next_check_at<=now() AND (q.lease_until IS NULL OR q.lease_until<=now())
+  AND (q.last_active_at IS NULL OR q.last_active_at<=now()-make_interval(secs=>?::float8))
+  AND (a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key||'/'||a.type=ANY(?)
+  AND NOT EXISTS(SELECT 1 FROM account_lifecycle_sync l WHERE l.account_id=a.id AND NOT `+lifecycleQuotaReady+`)
+  ORDER BY q.next_check_at,q.account_id LIMIT ?`, quotaQueryFloor.Seconds(), store.Strings(keys), quotaSweepPage).Scan(&ids).Error
+	return ids, err
 }
 
 // queryDueQuotas queries the selected accounts concurrently, four at a time,
@@ -365,7 +346,8 @@ func (s *Service) ApplyAccountQuotaObservation(ctx context.Context, id, expected
 		return err
 	}
 	var pluginKey, accountType string
-	err = s.d.DB.Pool.QueryRow(ctx, `SELECT plugin_key,type FROM accounts WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&pluginKey, &accountType)
+	err = store.G(ctx, s.d.DB.Pool).Model(&model.Account{}).Select("plugin_key, type").Where("id = ? AND deleted_at IS NULL", id).
+		Row().Scan(&pluginKey, &accountType)
 	if store.IsNoRows(err) {
 		return nil
 	}

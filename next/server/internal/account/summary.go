@@ -5,6 +5,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -26,12 +28,16 @@ type Counts struct {
 // usage overview), for GET /accounts/summary.
 func CountAccounts(ctx context.Context, q store.Querier, scope core.DataScope) (Counts, error) {
 	var c Counts
-	err := q.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE a.status = 'active' AND a.schedulable),
-		count(*) FILTER (WHERE a.status IN ('auto_disabled', 'error') OR (a.status = 'active' AND NOT a.schedulable)),
-		count(*) FILTER (WHERE a.status = 'disabled')
-		FROM accounts a WHERE a.deleted_at IS NULL AND `+core.AccountRows.SQL(1), core.AccountRows.Args(scope)...).
-		Scan(&c.Total, &c.Available, &c.AutoDisabled, &c.Disabled)
+	err := countAccounts(store.G(ctx, q), scope).Scan(&c).Error
 	return c, err
+}
+
+// countAccounts selects Counts over the live accounts in scope.
+func countAccounts(db *gorm.DB, scope core.DataScope) *gorm.DB {
+	return db.Table("accounts a").Select(`count(*) AS total, count(*) FILTER (WHERE a.status = 'active' AND a.schedulable) AS available,
+		count(*) FILTER (WHERE a.status IN ('auto_disabled', 'error') OR (a.status = 'active' AND NOT a.schedulable)) AS auto_disabled,
+		count(*) FILTER (WHERE a.status = 'disabled') AS disabled`).
+		Where("a.deleted_at IS NULL").Scopes(core.AccountRows.Scope(scope))
 }
 
 // summary is GET /accounts/summary: the caller's account counts, over the
