@@ -397,8 +397,20 @@ type PermissionDef struct {
 // (PermissionCatalog.PluginGrantees): Denied maps a role to why not.
 type PluginGrantees struct {
 	Superuser bool              `json:"superuser"` // may grant critical ones
-	Denied    map[string]string `json:"denied"`    // superuser_role | not_editable | not_assignable | held
+	Denied    map[string]string `json:"denied"`    // a GrantDeny* reason
 }
+
+// Why an actor may not change a role or hand it new plugin permissions:
+// PluginGrantees.Denied, the role matrix's denied, the consent review's
+// reasons and a critical refusal's details.reason. The console reads them.
+const (
+	GrantDenySuperuserRole = "superuser_role" // a super admin role: frozen, it holds everything
+	GrantDenyNotEditable   = "not_editable"   // the role holds what the actor lacks
+	GrantDenyNotAssignable = "not_assignable" // not on the actor's assignable list
+	GrantDenyHeld          = "held"           // the actor holds the role
+	GrantDenyRoleDefine    = "role_define"    // the actor lacks role:define
+	GrantDenyCritical      = "critical"       // a critical permission, the actor no superuser
+)
 
 // PermissionCatalog is used by the plugin runtime to manage plugin-owned
 // permissions ("plugin.<key>:<local>"). Every mutation bumps the authz version

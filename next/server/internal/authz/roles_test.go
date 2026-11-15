@@ -450,9 +450,9 @@ func TestPluginRoleGrantsMatrix(t *testing.T) {
 	for _, r := range m.Roles {
 		rows[r.Key] = r
 	}
-	assert.True(t, !rows[RoleAdmin].Editable && rows[RoleAdmin].Denied == denyNotAssignable, "%+v", rows[RoleAdmin])
+	assert.True(t, !rows[RoleAdmin].Editable && rows[RoleAdmin].Denied == core.GrantDenyNotAssignable, "%+v", rows[RoleAdmin])
 	assert.ElementsMatch(t, []string{"plugin.m:flow:read", "plugin.m:flow:manage"}, rows[RoleAdmin].PermissionKeys)
-	assert.True(t, rows[RoleSuperAdmin].Superuser && !rows[RoleSuperAdmin].Editable && rows[RoleSuperAdmin].Denied == denySuperuserRole, "%+v", rows[RoleSuperAdmin])
+	assert.True(t, rows[RoleSuperAdmin].Superuser && !rows[RoleSuperAdmin].Editable && rows[RoleSuperAdmin].Denied == core.GrantDenySuperuserRole, "%+v", rows[RoleSuperAdmin])
 	assert.True(t, rows[RoleOperator].Editable && rows[RoleOperator].Denied == "", "%+v", rows[RoleOperator])
 	assert.Equal(t, []string{}, rows[RoleOperator].PermissionKeys)
 

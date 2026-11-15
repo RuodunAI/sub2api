@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 )
@@ -170,4 +171,120 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail->>'inherit_skipped' FROM audit_logs WHERE action = $1 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&skipped))
 	assert.JSONEq(t, `[{"permission":"plugin.guard:rules:strict","from":"plugin.guard:old:low","reason":"risk"},
 		{"permission":"plugin.guard:flow:edit","from":"plugin.guard:old:flow","reason":"scope_type"}]`, skipped)
+}
+
+// realCatalog puts the authz catalog behind e's install service
+// (permissions, defaults, grantees) and makes e.admin a super admin, so
+// that syncs and grants run the catalog's own checks.
+func realCatalog(t *testing.T, e *env, ctx context.Context) {
+	t.Helper()
+	cat := authz.New(authz.Deps{DB: e.db})
+	require.NoError(t, cat.Start(ctx))
+	require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
+		_, err := cat.SetUserRoles(ctx, tx, 0, e.admin, []string{authz.RoleSuperAdmin})
+		return err
+	}))
+	e.svc.d.Permissions, e.svc.d.Defaults = cat, NewDefaultsApplier(cat)
+}
+
+// scopeGrants lists role's scope grants of the guard permission local,
+// sorted.
+func scopeGrants(t *testing.T, e *env, ctx context.Context, role, local string) []string {
+	t.Helper()
+	var out []string
+	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT COALESCE(array_agg(rs.scope ORDER BY rs.scope), '{}') FROM role_permission_scopes rs
+JOIN roles r ON r.id = rs.role_id JOIN permissions p ON p.id = rs.permission_id
+WHERE r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local).Scan(&out))
+	return out
+}
+
+// Against the real catalog, an inherited scoped grant the new key's scope
+// does not take (own no longer allowed, a value no longer declared) is left
+// out (inherit_skipped "scope") instead of failing the consent; the scoped
+// grants it takes are inherited.
+func TestConsentInheritsOnlyScopesTheNewKeyTakes(t *testing.T) {
+	e, ctx := roleGrantsEnv(t)
+	realCatalog(t, e, ctx)
+	_, err := e.db.Pool.Exec(ctx, `
+INSERT INTO permissions (key, module, label, source, plugin_key, status, risk, scope_type, scope)
+VALUES ('plugin.guard:old:flow', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', 'plugin:flow', '{"resource":"flow","own":true}'),
+       ('plugin.guard:old:kind', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', 'plugin:value',
+        '{"resource":"value","values":[{"key":"a"},{"key":"b"}]}');
+INSERT INTO role_permission_scopes (role_id, permission_id, scope)
+SELECT r.id, p.id, v.scope FROM roles r, permissions p,
+    (VALUES ('plugin.guard:old:flow', 'own'), ('plugin.guard:old:flow', 'flow/3'),
+            ('plugin.guard:old:kind', 'value/a'), ('plugin.guard:old:kind', 'value/b')) v(key, scope)
+WHERE r.key = 'auditor' AND p.key = v.key`)
+	require.NoError(t, err)
+	flow := newPerm("flow:edit", "")
+	flow.Scope = &manifest.PermissionScope{Resource: "flow", Options: "/rules"} // own dropped
+	flow.InheritFrom = []string{"old:flow"}
+	kind := newPerm("kind:edit", "")
+	kind.Scope = &manifest.PermissionScope{Values: []manifest.ScopeValue{{Key: "a", Label: manifest.LocalizedText{"en": "A"}}}} // b deleted
+	kind.InheritFrom = []string{"old:kind"}
+	_, err = e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", flow, kind), e.root), e.admin, UploadOptions{})
+	require.NoError(t, err)
+	res, err := e.svc.Consent(ctx, "guard", "0.1.1", ConsentRequest{Grants: explicitGuardGrants()}, e.admin)
+	require.NoError(t, err)
+	assert.Empty(t, res.Withheld)
+	assert.Equal(t, []string{"flow/3"}, scopeGrants(t, e, ctx, "auditor", "flow:edit"))
+	assert.Equal(t, []string{"value/a"}, scopeGrants(t, e, ctx, "auditor", "kind:edit"))
+	var skipped string
+	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail->>'inherit_skipped' FROM audit_logs WHERE action = $1 AND detail->>'version' = '0.1.1'`, AuditConsent).Scan(&skipped))
+	assert.JSONEq(t, `[{"permission":"plugin.guard:flow:edit","from":"plugin.guard:old:flow","reason":"scope"},
+		{"permission":"plugin.guard:kind:edit","from":"plugin.guard:old:kind","reason":"scope"}]`, skipped)
+}
+
+// A staged upgrade (another version runs) that narrows a scope keeps the
+// running version's definition and scope grants at consent: neither a
+// failed activation nor a later version taking the scope again loses them.
+// The activation (the runtime's ApplyDefaults) switches to the activated
+// version's scope, pruning only then.
+func TestStagedUpgradePrunesScopesAtActivation(t *testing.T) {
+	e, ctx := roleGrantsEnv(t)
+	realCatalog(t, e, ctx)
+	flowAt := func(version string, own bool) *manifest.Manifest {
+		flow := newPerm("flow:manage", "")
+		flow.Scope = &manifest.PermissionScope{Resource: "flow", Options: "/rules", Own: own}
+		return guardWith(version, flow)
+	}
+	upload := func(m *manifest.Manifest) {
+		t.Helper()
+		r, err := e.svc.Upload(ctx, pkgtest.Build(m, e.root), e.admin, UploadOptions{})
+		require.NoError(t, err)
+		require.Equal(t, ConsentApproved, r.ConsentStatus, "carried over")
+	}
+	activate := func(m *manifest.Manifest) {
+		t.Helper()
+		require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
+				return err
+			}
+			return e.svc.d.Defaults.ApplyDefaults(ctx, tx, m, nil)
+		}))
+	}
+	declaresOwn := func() bool {
+		t.Helper()
+		var own bool
+		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT COALESCE((scope->>'own')::boolean, false) FROM permissions WHERE key = 'plugin.guard:flow:manage'`).Scan(&own))
+		return own
+	}
+	v1, v2, v3 := flowAt("0.1.1", true), flowAt("0.1.2", false), flowAt("0.1.3", true)
+	upload(v1)
+	activate(v1)
+	_, err := e.db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
+SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:manage'`)
+	require.NoError(t, err)
+
+	upload(v2)
+	assert.Equal(t, []string{"own"}, scopeGrants(t, e, ctx, "operator", "flow:manage"), "v1 still serves own")
+	assert.True(t, declaresOwn(), "the catalog keeps v1's scope")
+	upload(v3)
+	assert.Equal(t, []string{"own"}, scopeGrants(t, e, ctx, "operator", "flow:manage"))
+	activate(v3)
+	assert.Equal(t, []string{"own"}, scopeGrants(t, e, ctx, "operator", "flow:manage"), "v3 takes own")
+
+	activate(v2)
+	assert.Empty(t, scopeGrants(t, e, ctx, "operator", "flow:manage"), "pruned at v2's activation")
+	assert.False(t, declaresOwn())
 }

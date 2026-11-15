@@ -6,6 +6,8 @@
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 0.1.289-plugin-perm-down.sql
 --
 -- What it does, in one transaction (see 0.1.289-plugin-perm-down.md):
+--   0. Withheld role grants core 0.1.288 would confirm wrong (a scoped or a
+--      critical one) are rejected, so that its review list leaves them out.
 --   1. Plugin permissions no longer declared (status 'removed') are deleted
 --      with their grants: core 0.1.288's SetPluginActive would make them
 --      active again, and deleting them is what it did itself.
@@ -32,6 +34,33 @@ BEGIN
         RAISE EXCEPTION 'migrations after 0099_plugin_permission_meta.sql are applied: roll those back first';
     END IF;
 END $$;
+
+-- 0. Core 0.1.288 lists withheld role grants (plugin.consent.auto
+-- detail.pending) by permission and role alone: confirming a scoped one
+-- would grant every row, and it knows no critical risk, so a non-superuser
+-- could confirm one. Each such grant still awaiting review (0.1.289's rule,
+-- removed permissions aside) is rejected, one audit per plugin; both cores
+-- read a reject's grants as clearing that (permission, role) under every
+-- version recorded before it.
+INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
+SELECT NULL, 'plugin.role_grants.reject', 'plugin', w.target_id,
+       jsonb_build_object('via', 'rollback 0.1.289', 'grants', jsonb_agg(DISTINCT w.item ORDER BY w.item))
+FROM (
+    SELECT a.target_id, jsonb_build_object('permission', g->>'permission', 'role', g->>'role',
+           'scope', COALESCE(g->>'scope', ''), 'risk', p.risk) AS item
+    FROM audit_logs a CROSS JOIN LATERAL jsonb_array_elements(a.detail->'pending') g
+    JOIN permissions p ON p.key = g->>'permission' AND p.source = 'plugin' AND p.status <> 'removed'
+    WHERE a.action = 'plugin.consent.auto' AND a.target_type = 'plugin'
+      AND jsonb_typeof(a.detail->'pending') = 'array'
+      AND a.created_at >= (SELECT installed_at FROM plugins WHERE key = a.target_id)
+      AND (COALESCE(g->>'scope', '') <> '' OR p.risk = 'critical')
+      AND NOT EXISTS (SELECT 1 FROM audit_logs b WHERE b.target_type = 'plugin' AND b.target_id = a.target_id
+          AND b.action IN ('plugin.role_grants.confirm', 'plugin.role_grants.reject') AND b.id > a.id
+          AND (b.detail->>'version' = a.detail->>'version'
+            OR (b.action = 'plugin.role_grants.reject'
+                AND b.detail->'grants' @> jsonb_build_array(jsonb_build_object('permission', g->>'permission', 'role', g->>'role')))))
+) w
+GROUP BY w.target_id;
 
 -- 1 and 2. Every grant that goes: each grant of a removed plugin permission
 -- and each scoped grant of a plugin permission.
