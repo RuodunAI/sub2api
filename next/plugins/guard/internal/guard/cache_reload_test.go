@@ -10,35 +10,33 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type cacheReloadHost struct {
 	pluginsdk.Host
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
-func (h *cacheReloadHost) DB(context.Context) (*pgxpool.Pool, error) { return h.pool, nil }
+func (h *cacheReloadHost) DB(ctx context.Context) (*gorm.DB, error) {
+	return h.db.WithContext(ctx), nil
+}
 
-type reloadTraceKey struct{}
 type reloadBarrier struct {
 	armed            atomic.Bool
 	entered, release chan struct{}
 }
 
-func (b *reloadBarrier) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(d.SQL, "SELECT id, name, kind, pattern, enabled, updated_at FROM rules") && b.armed.CompareAndSwap(true, false) {
-		return context.WithValue(ctx, reloadTraceKey{}, true)
-	}
-	return ctx
-}
-func (b *reloadBarrier) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
-	if ctx.Value(reloadTraceKey{}) == true {
+// afterQuery runs after a GORM query has read its rows. The armed rule
+// load stops there until released: read, but not published yet.
+func (b *reloadBarrier) afterQuery(tx *gorm.DB) {
+	if strings.Contains(tx.Statement.SQL.String(), `FROM "rules"`) && b.armed.CompareAndSwap(true, false) {
 		close(b.entered)
-		<-b.release // The rows have been read, but the plugin has not published them.
+		<-b.release
 	}
 }
 
@@ -54,24 +52,22 @@ func TestRuleCacheRejectsLateReload(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			barrier := &reloadBarrier{entered: make(chan struct{}), release: make(chan struct{})}
-			cfg, err := pgxpool.ParseConfig(dsn)
+			db, err := pgdb.Open(dsn, pgdb.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.ConnConfig.Tracer = barrier
-			db, err := pgxpool.NewWithConfig(ctx, cfg)
-			if err != nil {
+			defer pgdb.Close(db) //nolint:errcheck // test cleanup
+			if err := db.Callback().Query().After("gorm:query").Register("test:reload_barrier", barrier.afterQuery); err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
 			var once sync.Once
 			release := func() { once.Do(func() { close(barrier.release) }) }
 			defer release()
-			if _, err := db.Exec(ctx, `UPDATE rules SET pattern='old'`); err != nil {
+			if err := db.WithContext(ctx).Exec(`UPDATE rules SET pattern='old'`).Error; err != nil {
 				t.Fatal(err)
 			}
 			p := New()
-			p.host = &cacheReloadHost{pool: db}
+			p.host = &cacheReloadHost{db: db}
 			oldCtx, stopOld := context.WithCancel(ctx)
 			defer stopOld()
 			barrier.armed.Store(true)
@@ -85,7 +81,7 @@ func TestRuleCacheRejectsLateReload(t *testing.T) {
 			if cancelOld {
 				stopOld()
 			} else {
-				if _, err := db.Exec(ctx, `UPDATE rules SET pattern='new'`); err != nil {
+				if err := db.WithContext(ctx).Exec(`UPDATE rules SET pattern='new'`).Error; err != nil {
 					t.Fatal(err)
 				}
 				if err := p.reloadRules(ctx); err != nil {

@@ -6,12 +6,19 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/model"
 )
+
+// insertBatch is the most rows one INSERT carries (PostgreSQL takes at most
+// 65535 parameters per statement).
+const insertBatch = 1000
 
 // Job ids declared in manifest.json.
 const (
@@ -47,9 +54,9 @@ func (p *Plugin) OnEvents(ctx context.Context, in *pluginv1.OnEventsRequest) (*p
 		return nil, status.Error(codes.Unavailable, err.Error())
 	}
 	var last int64
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+	err = db.Transaction(func(tx *gorm.DB) error {
 		for _, ev := range evs {
-			if err := p.applyEvent(ctx, tx, ev); err != nil {
+			if err := p.applyEvent(tx, ev); err != nil {
 				return err
 			}
 			if ev.GetId() > last {
@@ -67,14 +74,12 @@ func (p *Plugin) OnEvents(ctx context.Context, in *pluginv1.OnEventsRequest) (*p
 // applyEvent records one event as processed and counts it. The idempotency
 // insert and the counter update share the caller's transaction, so a
 // redelivered event is either fully applied or not at all.
-func (p *Plugin) applyEvent(ctx context.Context, tx pgx.Tx, ev *pluginv1.Event) error {
-	var inserted bool
-	if err := tx.QueryRow(ctx, `WITH ins AS (
-			INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING 1)
-		SELECT EXISTS (SELECT 1 FROM ins)`, ev.GetId()).Scan(&inserted); err != nil {
-		return err
+func (p *Plugin) applyEvent(tx *gorm.DB, ev *pluginv1.Event) error {
+	res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.ProcessedEvent{EventID: ev.GetId()})
+	if res.Error != nil {
+		return res.Error
 	}
-	if !inserted || ev.GetType() != "usage.recorded" {
+	if res.RowsAffected == 0 || ev.GetType() != "usage.recorded" { // 0: applied before
 		return nil
 	}
 	var u usageRecorded
@@ -86,11 +91,23 @@ func (p *Plugin) applyEvent(ctx context.Context, tx pgx.Tx, ev *pluginv1.Event) 
 	if at.IsZero() {
 		at = time.UnixMilli(ev.GetOccurredAtUnixMs())
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO stats_minutely (minute, group_id, model, requests, blocked)
-		VALUES (date_trunc('minute', $1::timestamptz), $2, $3, 1, 0)
-		ON CONFLICT (minute, group_id, model) DO UPDATE SET requests = stats_minutely.requests + 1`,
-		at.UTC(), u.GroupID, u.Model)
-	return err
+	return addStats(tx, []model.StatsMinutely{{Minute: minuteOf(at), GroupID: u.GroupID, Model: u.Model, Requests: 1}})
+}
+
+// minuteOf is the start of t's minute, as date_trunc('minute', t) (time
+// zone offsets are whole minutes; the driver truncates t to microseconds).
+func minuteOf(t time.Time) time.Time { return t.UTC().Truncate(time.Minute) }
+
+// addStats adds the counters of rows (one per minute, group and model) to
+// stats_minutely, in the order given: the order the rows are locked in.
+func addStats(tx *gorm.DB, rows []model.StatsMinutely) error {
+	return tx.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "minute"}, {Name: "group_id"}, {Name: "model"}},
+		DoUpdates: clause.Set{
+			{Column: clause.Column{Name: "requests"}, Value: gorm.Expr("stats_minutely.requests + EXCLUDED.requests")},
+			{Column: clause.Column{Name: "blocked"}, Value: gorm.Expr("stats_minutely.blocked + EXCLUDED.blocked")},
+		},
+	}).CreateInBatches(&rows, insertBatch).Error
 }
 
 // RunJob implements pluginsdk.JobRunner.
@@ -104,32 +121,33 @@ func (p *Plugin) RunJob(ctx context.Context, in *pluginv1.RunJobRequest) (*plugi
 	case JobRollup:
 		// Recompute the hourly rows of the last day from the minutely rows
 		// (idempotent; covers late events and the current partial hour).
-		tag, err := db.Exec(ctx, `INSERT INTO stats_hourly (hour, group_id, model, requests, blocked)
+		res := db.Exec(`INSERT INTO stats_hourly (hour, group_id, model, requests, blocked)
 			SELECT date_trunc('hour', minute, 'UTC'), group_id, model, sum(requests), sum(blocked)
-			FROM stats_minutely WHERE minute >= date_trunc('hour', $1::timestamptz, 'UTC')
+			FROM stats_minutely WHERE minute >= date_trunc('hour', ?::timestamptz, 'UTC')
 			GROUP BY 1, 2, 3
 			ON CONFLICT (hour, group_id, model) DO UPDATE
 			SET requests = EXCLUDED.requests, blocked = EXCLUDED.blocked`, now.Add(-rollupLookback))
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "rollup: %v", err)
+		if res.Error != nil {
+			return nil, status.Errorf(codes.Internal, "rollup: %v", res.Error)
 		}
-		return &pluginv1.RunJobResponse{Message: fmt.Sprintf("rolled up %d hourly rows", tag.RowsAffected())}, nil
+		return &pluginv1.RunJobResponse{Message: fmt.Sprintf("rolled up %d hourly rows", res.RowsAffected)}, nil
 	case JobCleanup:
 		var total int64
 		for _, q := range []struct {
-			sql    string
+			model  any
+			column string
 			before time.Time
 		}{
-			{`DELETE FROM stats_minutely WHERE minute < $1`, now.Add(-minutelyRetention)},
-			{`DELETE FROM stats_hourly WHERE hour < $1`, now.Add(-longRetention)},
-			{`DELETE FROM block_log WHERE occurred_at < $1`, now.Add(-longRetention)},
-			{`DELETE FROM processed_events WHERE processed_at < $1`, now.Add(-longRetention)},
+			{&model.StatsMinutely{}, "minute", now.Add(-minutelyRetention)},
+			{&model.StatsHourly{}, "hour", now.Add(-longRetention)},
+			{&model.BlockLog{}, "occurred_at", now.Add(-longRetention)},
+			{&model.ProcessedEvent{}, "processed_at", now.Add(-longRetention)},
 		} {
-			tag, err := db.Exec(ctx, q.sql, q.before)
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "cleanup: %v", err)
+			res := db.Where(q.column+" < ?", q.before).Delete(q.model)
+			if res.Error != nil {
+				return nil, status.Errorf(codes.Internal, "cleanup: %v", res.Error)
 			}
-			total += tag.RowsAffected()
+			total += res.RowsAffected
 		}
 		return &pluginv1.RunJobResponse{Message: fmt.Sprintf("deleted %d rows", total)}, nil
 	default:

@@ -9,10 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/textutil"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/model"
 )
 
 // DenyCode is returned to clients when a rule blocks a request.
@@ -135,22 +137,36 @@ func (p *Plugin) writeBlocks(ctx context.Context, evs []blockEvent) error {
 	if err != nil {
 		return err
 	}
-	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		b := &pgx.Batch{}
-		for _, ev := range evs {
-			var snippet *string
-			if ev.Snippet != "" {
-				snippet = &ev.Snippet
-			}
-			b.Queue(`INSERT INTO block_log (occurred_at, rule_id, rule_name, request_id, user_id, group_id, model, snippet)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-				ev.At, ev.RuleID, ev.RuleName, ev.RequestID, ev.UserID, ev.GroupID, ev.Model, snippet)
-			b.Queue(`INSERT INTO stats_minutely (minute, group_id, model, requests, blocked)
-				VALUES (date_trunc('minute', $1::timestamptz), $2, $3, 0, 1)
-				ON CONFLICT (minute, group_id, model) DO UPDATE SET blocked = stats_minutely.blocked + 1`,
-				ev.At, ev.GroupID, ev.Model)
+	logs := make([]model.BlockLog, len(evs))
+	// One counter row per minute, group and model (an INSERT cannot update
+	// a row twice), in the order the events first touch them: the order the
+	// one statement per event this replaces locked them in.
+	type key struct {
+		minute, group int64
+		model         string
+	}
+	var counts []model.StatsMinutely
+	index := map[key]int{}
+	for i, ev := range evs {
+		logs[i] = model.BlockLog{OccurredAt: ev.At, RuleID: ev.RuleID, RuleName: ev.RuleName, RequestID: ev.RequestID,
+			UserID: ev.UserID, GroupID: ev.GroupID, Model: ev.Model}
+		if ev.Snippet != "" {
+			logs[i].Snippet = &ev.Snippet
 		}
-		return tx.SendBatch(ctx, b).Close()
+		minute := minuteOf(ev.At)
+		k := key{minute.Unix(), ev.GroupID, ev.Model}
+		j, ok := index[k]
+		if !ok {
+			j, index[k] = len(counts), len(counts)
+			counts = append(counts, model.StatsMinutely{Minute: minute, GroupID: ev.GroupID, Model: ev.Model})
+		}
+		counts[j].Blocked++
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.CreateInBatches(&logs, insertBatch).Error; err != nil {
+			return err
+		}
+		return addStats(tx, counts)
 	})
 }
 
