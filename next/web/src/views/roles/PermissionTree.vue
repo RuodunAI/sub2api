@@ -205,7 +205,9 @@ function restoreSuggested(m: PermissionModule) {
                   @update:model-value="toggleAll(s.perms)"
                 />
               </div>
-              <div class="grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+              <!-- grid-cols-1 (minmax(0, 1fr)) and min-w-0 keep a scope picker from widening the
+                   single phone column past the screen. -->
+              <div class="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
                 <!-- SCheckbox's own text span fixes the colour, so the inactive tone goes on the
                      slot content; [&>span]:min-w-0 lets the truncate inside shrink. -->
                 <template v-for="p in s.perms" :key="p.key">
@@ -235,7 +237,7 @@ function restoreSuggested(m: PermissionModule) {
                   </SCheckbox>
                   <ScopePicker
                     v-if="showScopes(p)"
-                    class="sm:col-span-2 xl:col-span-3"
+                    class="min-w-0 sm:col-span-2 xl:col-span-3"
                     :action="p.key"
                     :resource="pickerResource(p)"
                     :plugin="pickerPlugin(m, p)"
