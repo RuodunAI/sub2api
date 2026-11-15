@@ -150,7 +150,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
  WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:manage'`)
 	require.NoError(t, err)
 	m := flowGuard("0.1.1")
-	existing, err := e.svc.catalogKeys(ctx, e.db.Pool, m.Key)
+	existing, err := loadCatalogPerms(ctx, e.svc.d.Permissions, e.db.Pool, m.Key)
 	require.NoError(t, err)
 	assert.True(t, existing.has("plugin.guard:flow:manage"))
 	assert.True(t, existing.removed("plugin.guard:flow:manage"))

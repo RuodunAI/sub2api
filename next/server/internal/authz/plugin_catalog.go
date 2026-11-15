@@ -27,11 +27,15 @@ const runningPluginStatuses = `'enabled','upgrading'`
 // grants but the scoped ones their new scope no longer takes (pruneScopes);
 // a removed one declared again revives with the plugin's status and the
 // grants it had, never its GrantRoles (D6), audited as authz.sync.revive.
-// A Staged definition (a version not running yet) is created disabled and
-// never revives a removed key: activation does both (SyncPlugin again, then
-// SetPluginActive). Keys no longer declared are marked removed last,
-// audited as authz.sync.remove: their grants stay, granting nothing, until
-// the key comes back.
+// A Staged definition (declared by a version approved while another runs,
+// not by the running one) is created staged, granting nothing whatever the
+// plugin's status, and neither revives a removed key nor prunes its scope
+// grants: the version's activation, syncing again, does that and turns the
+// staged keys it declares on, keeping what its consent granted them. Keys
+// no longer declared are marked removed last, audited as
+// authz.sync.remove: their grants stay, granting nothing, until the key
+// comes back. Staged keys stay as they are until that version activates or
+// another consent discards them (DiscardStaged).
 func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []core.PermissionDef) error {
 	if pluginKey == "" {
 		return core.ErrInvalidArgument.WithMessage("plugin key is required")
@@ -63,8 +67,13 @@ func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, d
 		}
 		if inserted {
 			created = append(created, d)
-		} else if err := s.pruneScopes(ctx, tx, key, core.ReadPluginScope(d.ScopeType, d.Scope)); err != nil {
-			return err
+			continue
+		}
+		// A staged key's scope grants are pruned at activation, if at all.
+		if !d.Staged {
+			if err := s.pruneScopes(ctx, tx, key, core.ReadPluginScope(d.ScopeType, d.Scope)); err != nil {
+				return err
+			}
 		}
 	}
 	for _, d := range created {
@@ -73,7 +82,7 @@ func (s *Service) SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, d
 		}
 	}
 	rows, err := tx.Query(ctx, `UPDATE permissions SET status = 'removed'
-WHERE plugin_key = $1 AND status <> 'removed' AND key <> ALL($2) RETURNING key`, pluginKey, keys)
+WHERE plugin_key = $1 AND status NOT IN ('removed', 'staged') AND key <> ALL($2) RETURNING key`, pluginKey, keys)
 	if err != nil {
 		return err
 	}
@@ -91,9 +100,10 @@ WHERE plugin_key = $1 AND status <> 'removed' AND key <> ALL($2) RETURNING key`,
 	return nil
 }
 
-// auditKeyStatus records keys of pluginKey marked removed (authz.sync.remove)
-// or declared again (authz.sync.revive) with the roles holding each: their
-// grants stop or start counting with no role write behind it. Nothing is
+// auditKeyStatus records keys of pluginKey marked removed (authz.sync.remove),
+// declared again (authz.sync.revive) or discarded staged
+// (authz.sync.discard) with the roles holding each: their grants stop or
+// start counting, or go, with no role write behind it. Nothing is
 // written for no keys.
 func (s *Service) auditKeyStatus(ctx context.Context, tx pgx.Tx, action, pluginKey string, keys []string) error {
 	if len(keys) == 0 {
@@ -175,17 +185,18 @@ WITH prev AS (SELECT status FROM permissions WHERE key = $1)
 INSERT INTO permissions (key, module, label, description, source, plugin_key, risk, sensitive, status, sort,
     scope_type, scope, group_key, group_label, group_sort, requires, defaults)
 VALUES ($1, $2, $3, $4, 'plugin', $5::text, $6::varchar, $6::varchar <> 'low',
-    CASE WHEN NOT $15::bool AND EXISTS (SELECT 1 FROM plugins WHERE key = $5::text AND status IN (`+runningPluginStatuses+`))
-         THEN 'active' ELSE 'disabled' END,
+    CASE WHEN $15::bool THEN 'staged'
+         WHEN EXISTS (SELECT 1 FROM plugins WHERE key = $5::text AND status IN (`+runningPluginStatuses+`)) THEN 'active'
+         ELSE 'disabled' END,
     $7, $8, $9, $10, $11, $12, COALESCE($13::text[], '{}'), $14)
 ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label,
     description = EXCLUDED.description, risk = EXCLUDED.risk, sensitive = EXCLUDED.sensitive,
     sort = EXCLUDED.sort, scope_type = EXCLUDED.scope_type, scope = EXCLUDED.scope,
     group_key = EXCLUDED.group_key, group_label = EXCLUDED.group_label, group_sort = EXCLUDED.group_sort,
     requires = EXCLUDED.requires, defaults = EXCLUDED.defaults,
-    -- a removed key declared again revives with the plugin's status, unless
-    -- staged; others keep theirs
-    status = CASE WHEN permissions.status = 'removed' AND NOT $15::bool THEN EXCLUDED.status ELSE permissions.status END
+    -- a removed key declared again revives, and a staged one turns on, with
+    -- the plugin's status, unless staged still; others keep theirs
+    status = CASE WHEN permissions.status IN ('removed', 'staged') AND NOT $15::bool THEN EXCLUDED.status ELSE permissions.status END
     WHERE permissions.plugin_key = EXCLUDED.plugin_key
 RETURNING (xmax = 0), COALESCE((SELECT status = 'removed' FROM prev), false)`, d.Key, manifest.PermissionModule(pluginKey), label, orEmpty(d.Description), pluginKey,
 		d.Risk, d.Sort, d.ScopeType, scope, d.Group, orEmpty(d.GroupLabel), d.GroupSort,
@@ -308,7 +319,7 @@ func (s *Service) PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, 
 	for i, r := range roles {
 		found[i] = r.Key
 	}
-	if unknown := addedKeys(roleKeys, found); len(unknown) > 0 {
+	if unknown := keysNotIn(roleKeys, found); len(unknown) > 0 {
 		return core.PluginGrantees{}, core.InvalidFields(core.FieldError{Field: "role_keys", Code: "unknown", Message: "unknown roles: " + strings.Join(unknown, ", ")})
 	}
 	actor, held, err := s.pluginGrantor(ctx, tx, actorID)
@@ -486,7 +497,33 @@ func (s *Service) SetPluginActive(ctx context.Context, tx pgx.Tx, pluginKey stri
 	if active {
 		status = "active"
 	}
-	if _, err := tx.Exec(ctx, `UPDATE permissions SET status = $2 WHERE plugin_key = $1 AND status <> 'removed'`, pluginKey, status); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE permissions SET status = $2 WHERE plugin_key = $1 AND status NOT IN ('removed', 'staged')`, pluginKey, status); err != nil {
+		return err
+	}
+	s.committedLater(v)
+	return nil
+}
+
+// DiscardStaged implements core.PermissionCatalog: the plugin's staged keys
+// and, cascading, their grants go, audited as authz.sync.discard with the
+// roles that held them; nothing happens without any.
+func (s *Service) DiscardStaged(ctx context.Context, tx pgx.Tx, pluginKey string) error {
+	rows, err := tx.Query(ctx, `SELECT key FROM permissions WHERE plugin_key = $1 AND status = 'staged' ORDER BY key FOR UPDATE`, pluginKey)
+	if err != nil {
+		return err
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(keys) == 0 {
+		return err
+	}
+	v, err := s.Bump(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if err := s.auditKeyStatus(ctx, tx, "authz.sync.discard", pluginKey, keys); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM permissions WHERE key = ANY($1)`, keys); err != nil {
 		return err
 	}
 	s.committedLater(v)

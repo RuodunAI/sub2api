@@ -12,6 +12,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
@@ -296,7 +297,11 @@ ORDER BY a.id, 2, 3, 4`, key, version, []string{AuditConsentAuto, AuditConsent, 
 	if err != nil || len(listed) == 0 {
 		return []RoleGrant{}, err
 	}
-	perms, err := s.catalogKeys(ctx, q, key)
+	cat, err := s.catalog()
+	if err != nil {
+		return nil, err
+	}
+	perms, err := loadCatalogPerms(ctx, cat, q, key)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +309,6 @@ ORDER BY a.id, 2, 3, 4`, key, version, []string{AuditConsentAuto, AuditConsent, 
 	for i, g := range listed {
 		keys[i] = g.Permission
 	}
-	cat, _ := s.catalog() // catalogKeys checked it
 	holders, err := cat.PermissionHolders(ctx, q, keys)
 	if err != nil {
 		return nil, err
@@ -320,6 +324,30 @@ ORDER BY a.id, 2, 3, 4`, key, version, []string{AuditConsentAuto, AuditConsent, 
 		gs = append(gs, g)
 	}
 	return gs, nil
+}
+
+// RoleGrantsToReview is PendingRoleGrants of every version as actorID may
+// see them: an inherited grant, consented or carried, names a holder of the
+// old key, which only who may see holders sees (seesHolders, C4).
+func (s *Service) RoleGrantsToReview(ctx context.Context, q store.Querier, key string, actorID int64) ([]RoleGrant, error) {
+	gs, err := s.PendingRoleGrants(ctx, q, key, "")
+	if err != nil {
+		return nil, err
+	}
+	see, err := s.seesHolders(ctx, actorID)
+	if err != nil || see {
+		return gs, err
+	}
+	return slices.DeleteFunc(gs, func(g RoleGrant) bool { return g.Via == viaInherit }), nil
+}
+
+// seesHolders reports whether actorID may see which roles hold a
+// permission (C4): role:read's to see, and the system's.
+func (s *Service) seesHolders(ctx context.Context, actorID int64) (bool, error) {
+	if isSystem(ctx) {
+		return true, nil
+	}
+	return s.d.Authz.Can(ctx, actorID, string(perm.RoleRead))
 }
 
 // ReviewRoleGrants confirms (grants) or rejects the role grants the consent
@@ -394,31 +422,38 @@ func (s *Service) grantReviewed(ctx context.Context, tx pgx.Tx, pluginKey string
 }
 
 // carryRenamedHolders lists for review (AuditRoleGrantsCarry, by the
-// system) the grants that holders an inheritFrom key gained after the
-// consent of m's version would inherit by inheritGrants: a consent made
-// while another version runs resolves inheritance then, and the old key's
-// grants stop counting at activation (D6), so a holder added in between
-// would otherwise lose the feature silently. Grants that consent planned
-// (made or withheld), every permission whose roles it overrode (C2: the
-// override decided them) and grants a role holds already are left out;
-// nobody consented to the rest, hence review rather than a grant. It runs
-// at activation, after the catalog sync.
-func carryRenamedHolders(ctx context.Context, cat core.PermissionCatalog, tx pgx.Tx, m *manifest.Manifest) error {
-	perms, err := loadCatalogPerms(ctx, cat, tx, m.Key)
-	if err != nil {
-		return err
-	}
+// system) the grants that holders of an inheritFrom key this activation of
+// m retires gained after m's consent would inherit by inheritGrants: a
+// consent made while another version runs resolves inheritance then, and
+// the old key's grants stop counting at activation (D6), so a holder added
+// in between would otherwise lose the feature silently. Only keys live
+// before the activation (before, the catalog then) are retired by it: one
+// an earlier activation retired was carried then, and its holders since
+// are no one's to inherit, so a grant revoked or rejected later never comes
+// back with the next upgrade. Grants that consent planned (made or
+// withheld), every permission whose roles it overrode (C2: the override
+// decided them) and grants a role holds already are left out; nobody
+// consented to the rest, hence review rather than a grant. It runs at
+// activation, after the catalog sync.
+func carryRenamedHolders(ctx context.Context, cat core.PermissionCatalog, tx pgx.Tx, m *manifest.Manifest, before catalogPerms) error {
 	var keys []string
+	retires := map[string]bool{} // by local key: inherits from a key retired now
 	for _, up := range m.UserPermissions {
-		if renamed(m, up, perms) {
-			keys = append(keys, manifest.PermissionKey(m.Key, up.Key))
-			for _, from := range up.InheritFrom {
-				keys = append(keys, manifest.PermissionKey(m.Key, from))
+		for _, from := range up.InheritFrom {
+			if old := manifest.PermissionKey(m.Key, from); before.has(old) && !before.removed(old) {
+				keys, retires[up.Key] = append(keys, old), true
 			}
+		}
+		if retires[up.Key] {
+			keys = append(keys, manifest.PermissionKey(m.Key, up.Key))
 		}
 	}
 	if len(keys) == 0 {
 		return nil
+	}
+	perms, err := loadCatalogPerms(ctx, cat, tx, m.Key)
+	if err != nil {
+		return err
 	}
 	holders, err := cat.PermissionHolders(ctx, tx, keys)
 	if err != nil {
@@ -431,9 +466,10 @@ func carryRenamedHolders(ctx context.Context, cat core.PermissionCatalog, tx pgx
 	pending := []RoleGrant{}
 	for _, up := range m.UserPermissions {
 		key := manifest.PermissionKey(m.Key, up.Key)
-		if !renamed(m, up, perms) || perms.removed(key) || overridden[up.Key] {
+		if !retires[up.Key] || perms.removed(key) || overridden[up.Key] {
 			continue
 		}
+		// holders has the retired keys alone among up's inheritFrom.
 		gs, _ := inheritGrants(m, up, perms, holders)
 		for _, g := range gs {
 			g.NeedsConsent, g.Withheld = true, true
@@ -451,17 +487,18 @@ func carryRenamedHolders(ctx context.Context, cat core.PermissionCatalog, tx pgx
 
 // consentDecisions reads what the latest consent of key@version decided on
 // the role grants of the permissions it created: the (permission, role,
-// scope) it planned, made or withheld, and the local keys its overrides
-// named. None for a version with no consent recorded.
+// scope) it planned, made or withheld (role_grants, written by every
+// consent), and the local keys its overrides named. None for a version with
+// no consent recorded.
 func consentDecisions(ctx context.Context, q store.Querier, key, version string) (map[[3]string]bool, map[string]bool, error) {
 	var overrides []string
 	var raw []byte
 	err := q.QueryRow(ctx, `
 SELECT COALESCE((SELECT array_agg(k) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.detail->'new_permission_roles') = 'object'
            THEN a.detail->'new_permission_roles' ELSE '{}' END) k), '{}'),
-       COALESCE(a.detail->'role_grants', '[]') || COALESCE(a.detail->'granted', '[]') || COALESCE(a.detail->'pending', '[]')
-FROM audit_logs a WHERE a.action = ANY($3) AND a.target_type = 'plugin' AND a.target_id = $1 AND a.detail->>'version' = $2
-ORDER BY a.id DESC LIMIT 1`, key, version, []string{AuditConsent, AuditConsentAuto}).Scan(&overrides, &raw)
+       COALESCE(a.detail->'role_grants', '[]')
+FROM audit_logs a WHERE a.action = $3 AND a.target_type = 'plugin' AND a.target_id = $1 AND a.detail->>'version' = $2
+ORDER BY a.id DESC LIMIT 1`, key, version, AuditConsent).Scan(&overrides, &raw)
 	if store.IsNoRows(err) {
 		return nil, nil, nil
 	}

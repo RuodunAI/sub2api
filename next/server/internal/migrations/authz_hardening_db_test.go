@@ -365,17 +365,18 @@ INSERT INTO roles (key, name) VALUES ('editor', '{}'), ('viewer', '{}');
 INSERT INTO plugins (key, name, status, active_version, installed_at) VALUES ('pm', '{}', 'enabled', '1.0.0', now() - interval '1 hour');
 INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
     ('account:read', 'account', '{}', 'core', NULL), ('plugin.pm:flow:manage', 'plugin.pm', '{}', 'plugin', 'pm'), ('plugin.pm:old', 'plugin.pm', '{}', 'plugin', 'pm'),
-    ('plugin.pm:purge', 'plugin.pm', '{}', 'plugin', 'pm')`)
+    ('plugin.pm:purge', 'plugin.pm', '{}', 'plugin', 'pm'), ('plugin.pm:next', 'plugin.pm', '{}', 'plugin', 'pm')`)
 	const statusComment = `SELECT COALESCE(col_description(attrelid, attnum), '') FROM pg_attribute WHERE attrelid = 'permissions'::regclass AND attname = 'status'`
 	schema, comment := h.schema(), h.text(statusComment)
 	require.NoError(t, h.migrate())
 
 	// What 0.1.289 writes: a key its plugin no longer declares, kept with its
-	// grants, a plugin scope with a resource longer than 0.1.288 allows, and
+	// grants, a key a version not activated yet declares (staged), a plugin scope with a resource longer than 0.1.288 allows, and
 	// withheld role grants: scoped, critical, of every row, and some
 	// reviewed already.
 	h.exec(`
 UPDATE permissions SET status = 'removed' WHERE key = 'plugin.pm:old';
+UPDATE permissions SET status = 'staged' WHERE key = 'plugin.pm:next';
 UPDATE permissions SET scope_type = 'plugin:workflowdefinition', risk = 'sensitive' WHERE key = 'plugin.pm:flow:manage';
 UPDATE permissions SET risk = 'critical' WHERE key = 'plugin.pm:purge';
 INSERT INTO audit_logs (user_id, action, target_type, target_id, detail) VALUES
@@ -387,7 +388,7 @@ INSERT INTO audit_logs (user_id, action, target_type, target_id, detail) VALUES
         {"permission": "plugin.pm:flow:manage", "role": "viewer", "scope": ""},
         {"permission": "plugin.pm:old", "role": "viewer", "scope": "flow/1"}]}');
 INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
-WHERE r.key = 'editor' AND p.key IN ('plugin.pm:flow:manage', 'plugin.pm:old');
+WHERE r.key = 'editor' AND p.key IN ('plugin.pm:flow:manage', 'plugin.pm:old', 'plugin.pm:next');
 INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, s.scope FROM roles r, permissions p
 JOIN (VALUES ('account:read', 'own'), ('plugin.pm:flow:manage', 'flow/3'), ('plugin.pm:old', 'flow/1')) s(key, scope) ON s.key = p.key
 WHERE r.key = 'editor'`)
@@ -399,7 +400,7 @@ WHERE r.key = 'editor'`)
 	require.Equal(t, comment, h.text(statusComment))
 	require.Equal(t, "editor account:read:own, editor plugin.pm:flow:manage", h.grants())
 	require.Equal(t, "account:read=, plugin.pm:flow:manage=, plugin.pm:purge=", h.text(`SELECT string_agg(key || '=' || scope_type, ', ' ORDER BY key) FROM permissions`))
-	require.Equal(t, "plugin.pm:flow:manage:flow/3, plugin.pm:old, plugin.pm:old:flow/1", h.text(`SELECT string_agg(detail->>'dropped', ', ' ORDER BY detail->>'dropped')
+	require.Equal(t, "plugin.pm:flow:manage:flow/3, plugin.pm:next, plugin.pm:old, plugin.pm:old:flow/1", h.text(`SELECT string_agg(detail->>'dropped', ', ' ORDER BY detail->>'dropped')
         FROM audit_logs a JOIN roles r ON r.id = a.target_id::bigint
         WHERE a.user_id IS NULL AND a.action = 'authz.grant.migrate' AND a.detail->>'via' = 'rollback 0.1.289' AND r.key = 'editor'`))
 	require.Equal(t, version, h.text(`SELECT (version - 1)::text FROM authz_meta`), "the version moves once")

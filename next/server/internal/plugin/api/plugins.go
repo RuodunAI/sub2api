@@ -85,7 +85,8 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 			}
 		}
 	}
-	pending, err := a.d.Install.PendingRoleGrants(ctx, a.d.DB.Pool, s.Key, "")
+	viewer, _ := core.UserID(ctx)
+	pending, err := a.d.Install.RoleGrantsToReview(ctx, a.d.DB.Pool, s.Key, viewer)
 	if err != nil {
 		return err
 	}

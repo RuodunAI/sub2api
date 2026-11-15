@@ -11,7 +11,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -476,15 +475,16 @@ func diffGrants(m *manifest.Manifest, current map[string]Grant) *ReviewDiff {
 // grants and no holders of removed keys.
 func (s *Service) resolveRoleGrants(ctx context.Context, r *Review, m *manifest.Manifest, actorID int64) error {
 	mode := consentModeOf(ctx, false)
-	seeHolders := mode == modeSystem
-	if !seeHolders {
-		var err error
-		if seeHolders, err = s.d.Authz.Can(ctx, actorID, string(perm.RoleRead)); err != nil {
-			return err
-		}
+	seeHolders, err := s.seesHolders(ctx, actorID)
+	if err != nil {
+		return err
 	}
 	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		existing, err := s.catalogKeys(ctx, tx, m.Key)
+		cat, err := s.catalog()
+		if err != nil {
+			return err
+		}
+		existing, err := loadCatalogPerms(ctx, cat, tx, m.Key)
 		if err != nil {
 			return err
 		}
@@ -508,7 +508,6 @@ func (s *Service) resolveRoleGrants(ctx context.Context, r *Review, m *manifest.
 			}
 		}
 		if len(revivedKeys) > 0 {
-			cat, _ := s.catalog() // catalogKeys checked it
 			if x.held, err = cat.PermissionHolders(ctx, tx, revivedKeys); err != nil {
 				return err
 			}
@@ -521,7 +520,8 @@ func (s *Service) resolveRoleGrants(ctx context.Context, r *Review, m *manifest.
 			for _, col := range r.RoleColumns {
 				c := x.cell(key, up, col)
 				if !seeHolders && (up.Revived || up.Renamed) {
-					c.Grant = nil
+					// Both come from the old key's holders (C4).
+					c.Grant, c.Withheld = nil, false
 				}
 				up.Cells[col.Key] = c
 			}

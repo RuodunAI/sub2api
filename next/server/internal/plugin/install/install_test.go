@@ -117,6 +117,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT * FROM
 	return err
 }
 func (f *fakePerms) SetPluginActive(context.Context, pgx.Tx, string, bool) error { return nil }
+func (f *fakePerms) DiscardStaged(context.Context, pgx.Tx, string) error         { return nil }
 func (f *fakePerms) DeletePlugin(_ context.Context, _ pgx.Tx, key string) error {
 	f.deleted = append(f.deleted, key)
 	return nil

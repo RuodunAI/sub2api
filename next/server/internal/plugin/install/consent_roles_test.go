@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -315,93 +316,222 @@ WHERE r.key IN ('operator', 'supplier') AND p.key = 'plugin.guard:rules:old'`)
 		Withheld: true}}, res.Withheld)
 }
 
+// A renamed row's cells show no viewer without role:read who holds the old
+// key (C4, N4): neither the grant nor withheld, which an unnameable holder
+// would set.
+func TestRenamedCellsHideOldHolders(t *testing.T) {
+	e, ctx := roleGrantsEnv(t) // auditor holds the removed rules:old
+	edit := newPerm("rules:edit", "")
+	edit.InheritFrom = []string{"rules:old"}
+	_, err := e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", edit), e.root), e.admin, UploadOptions{})
+	require.NoError(t, err)
+	delete(e.authz.perms[e.admin], "role:read")
+	delete(e.authz.perms[e.admin], "role:define")
+	r, err := e.svc.Review(ctx, "guard", "0.1.1", e.admin)
+	require.NoError(t, err)
+	row := r.UserPermissions[len(r.UserPermissions)-1]
+	require.True(t, row.Renamed)
+	for role, c := range row.Cells {
+		b, err := json.Marshal(c)
+		require.NoError(t, err)
+		assert.NotContains(t, string(b), `"grant"`, role)
+		assert.False(t, c.Withheld, role)
+	}
+}
+
+// guardRollout drives guard through real consents and activations on the
+// real catalog (realCatalog).
+type guardRollout struct {
+	t   *testing.T
+	e   *env
+	ctx context.Context
+}
+
+// upload uploads m, its consent carried over (approved): staged when a
+// version runs.
+func (g guardRollout) upload(m *manifest.Manifest) *Review {
+	g.t.Helper()
+	r, err := g.e.svc.Upload(g.ctx, pkgtest.Build(m, g.e.root), g.e.admin, UploadOptions{})
+	require.NoError(g.t, err)
+	require.Equal(g.t, ConsentApproved, r.ConsentStatus, "carried over")
+	return r
+}
+
+// activate makes m the running version, as the rollout's commit does.
+func (g guardRollout) activate(m *manifest.Manifest) {
+	g.t.Helper()
+	require.NoError(g.t, g.e.db.Tx(g.ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(g.ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
+			return err
+		}
+		if err := g.e.svc.d.Defaults.ApplyDefaults(g.ctx, tx, m, nil); err != nil {
+			return err
+		}
+		return g.e.svc.d.Permissions.SetPluginActive(g.ctx, tx, "guard", true)
+	}))
+}
+
+// setActive disables or enables the running version, as the rollout does.
+func (g guardRollout) setActive(active bool) {
+	g.t.Helper()
+	require.NoError(g.t, g.e.db.Tx(g.ctx, func(tx pgx.Tx) error {
+		return g.e.svc.d.Permissions.SetPluginActive(g.ctx, tx, "guard", active)
+	}))
+}
+
+// state is the catalog status and risk of the guard permission local.
+func (g guardRollout) state(local string) [2]string {
+	g.t.Helper()
+	var status, risk string
+	require.NoError(g.t, g.e.db.Pool.QueryRow(g.ctx, `SELECT status, risk FROM permissions WHERE key = $1`, "plugin.guard:"+local).Scan(&status, &risk))
+	return [2]string{status, risk}
+}
+
+// grant gives role every row of the guard permission local.
+func (g guardRollout) grant(role, local string) {
+	g.t.Helper()
+	_, err := g.e.db.Pool.Exec(g.ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
+WHERE r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local)
+	require.NoError(g.t, err)
+}
+
+// revoke takes every row of the guard permission local from role.
+func (g guardRollout) revoke(role, local string) {
+	g.t.Helper()
+	_, err := g.e.db.Pool.Exec(g.ctx, `DELETE FROM role_permissions rp USING permissions p, roles r
+WHERE p.id = rp.permission_id AND r.id = rp.role_id AND r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local)
+	require.NoError(g.t, err)
+}
+
+// pending is the role grants guard has to review, as viewer sees them.
+func (g guardRollout) pending(viewer int64) []RoleGrant {
+	g.t.Helper()
+	gs, err := g.e.svc.RoleGrantsToReview(g.ctx, g.e.db.Pool, "guard", viewer)
+	require.NoError(g.t, err)
+	return gs
+}
+
 // A consent made while another version runs is staged (logic #2, #4): a
-// key only the new version declares is created disabled, a removed key it
+// key only the new version declares is created staged, a removed key it
 // declares again stays removed, and a key both declare keeps the higher
 // risk; activation turns them all to the new version's definitions.
 func TestStagedConsentWaitsForActivation(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
 	realCatalog(t, e, ctx)
-	activate := func(m *manifest.Manifest) {
-		t.Helper()
-		require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = $1 WHERE key = 'guard'`, m.Version); err != nil {
-				return err
-			}
-			if err := e.svc.d.Defaults.ApplyDefaults(ctx, tx, m, nil); err != nil {
-				return err
-			}
-			return e.svc.d.Permissions.SetPluginActive(ctx, tx, "guard", true)
-		}))
-	}
-	upload := func(m *manifest.Manifest) {
-		t.Helper()
-		r, err := e.svc.Upload(ctx, pkgtest.Build(m, e.root), e.admin, UploadOptions{})
-		require.NoError(t, err)
-		require.Equal(t, ConsentApproved, r.ConsentStatus, "carried over")
-	}
-	state := func(local string) (status, risk string) {
-		t.Helper()
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT status, risk FROM permissions WHERE key = $1`, "plugin.guard:"+local).Scan(&status, &risk))
-		return status, risk
-	}
+	g := guardRollout{t, e, ctx}
 	v1 := guardWith("0.1.1", newPerm("flow:read", manifest.RiskSensitive), newPerm("flow:audit", ""), newPerm("flow:old", ""))
-	upload(v1)
-	activate(v1)
+	g.upload(v1)
+	g.activate(v1)
 	v2 := guardWith("0.1.2", newPerm("flow:read", manifest.RiskSensitive), newPerm("flow:audit", ""))
-	upload(v2)
-	activate(v2)
-	status, _ := state("flow:old")
-	require.Equal(t, "removed", status)
+	g.upload(v2)
+	g.activate(v2)
+	require.Equal(t, "removed", g.state("flow:old")[0])
 
 	// The running manifest may declare no risk at all (an old format): the
 	// new one's risk applies at once when higher, never when lower.
 	v3 := guardWith("0.1.3", newPerm("flow:read", ""), newPerm("flow:audit", manifest.RiskSensitive), newPerm("flow:old", ""), newPerm("flow:new", "", "admin"))
-	upload(v3)
-	for local, want := range map[string][2]string{"flow:old": {"removed", "low"}, "flow:new": {"disabled", "low"},
+	g.upload(v3)
+	for local, want := range map[string][2]string{"flow:old": {"removed", "low"}, "flow:new": {"staged", "low"},
 		"flow:read": {"active", "sensitive"}, "flow:audit": {"active", "sensitive"}} {
-		status, risk := state(local)
-		assert.Equal(t, want, [2]string{status, risk}, local)
+		assert.Equal(t, want, g.state(local), local)
 	}
-	activate(v3)
+	g.activate(v3)
 	for local, want := range map[string][2]string{"flow:old": {"active", "low"}, "flow:new": {"active", "low"},
 		"flow:read": {"active", "low"}, "flow:audit": {"active", "sensitive"}} {
-		status, risk := state(local)
-		assert.Equal(t, want, [2]string{status, risk}, local)
+		assert.Equal(t, want, g.state(local), local)
 	}
+	assert.Equal(t, []string{"admin"}, permissionRoles(t, e, ctx, "plugin.guard:flow:new"), "the staged consent's grant stands")
+}
+
+// What a staged consent did means nothing until its version activates
+// (N3): the running version's removed key keeps its scope grants, a
+// staged key stays off when the running version is disabled and enabled
+// again, and a later consent discards the staged keys, planning them anew
+// for its own version (its defaults, a truthful review).
+func TestStagedKeysOfAVersionNeverActivated(t *testing.T) {
+	e, ctx := roleGrantsEnv(t)
+	realCatalog(t, e, ctx)
+	g := guardRollout{t, e, ctx}
+	old := newPerm("flow:old", "")
+	old.Scope = &manifest.PermissionScope{Resource: "flow", Own: true}
+	read := newPerm("flow:read", "")
+	v1 := guardWith("0.1.1", read, old)
+	g.upload(v1)
+	g.activate(v1)
+	_, err := e.db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'own'
+FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:old'`)
+	require.NoError(t, err)
+	v2 := guardWith("0.1.2", read)
+	g.upload(v2)
+	g.activate(v2)
+	require.Equal(t, "removed", g.state("flow:old")[0])
+
+	// v3 declares flow:old again, unscoped, and adds flow:new for admin.
+	g.upload(guardWith("0.1.3", read, newPerm("flow:old", ""), newPerm("flow:new", "", "admin")))
+	assert.Equal(t, "removed", g.state("flow:old")[0])
+	assert.Equal(t, []string{"own"}, scopeGrants(t, e, ctx, "operator", "flow:old"), "pruned at activation, if ever")
+	assert.Equal(t, "staged", g.state("flow:new")[0])
+	assert.Equal(t, []string{"admin"}, permissionRoles(t, e, ctx, "plugin.guard:flow:new"))
+
+	g.setActive(false)
+	g.setActive(true)
+	assert.Equal(t, "staged", g.state("flow:new")[0], "v2 does not declare it")
+
+	// v4 supersedes v3, declaring flow:new for operator.
+	v4 := guardWith("0.1.4", read, newPerm("flow:new", "", "operator"))
+	r := g.upload(v4)
+	row := r.UserPermissions[len(r.UserPermissions)-1]
+	require.Equal(t, "flow:new", row.Key)
+	assert.True(t, row.New)
+	assert.Equal(t, []string{""}, row.Cells["operator"].Grant)
+	assert.Empty(t, row.Cells["admin"].Grant)
+	assert.Equal(t, []string{"operator"}, permissionRoles(t, e, ctx, "plugin.guard:flow:new"), "v3's grant to admin went with its key")
+	var discarded string
+	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT detail::text FROM audit_logs WHERE action = 'authz.sync.discard'`).Scan(&discarded))
+	assert.JSONEq(t, `{"keys": ["plugin.guard:flow:new"], "holders": {"plugin.guard:flow:new": ["admin"]}}`, discarded)
+	g.activate(v4)
+	assert.Equal(t, [2]string{"active", "low"}, g.state("flow:new"))
+	assert.Equal(t, []string{"own"}, scopeGrants(t, e, ctx, "operator", "flow:old"))
 }
 
 // Holders a renamed key's old key gains between a staged consent and the
-// activation are listed for review at activation (logic #5), as inheriting
-// would have given them; the holders the consent already planned are not.
+// activation retiring it are listed for review then (logic #5), as
+// inheriting would have given them; grants the consent planned are not,
+// though revoked since (N2), nor anything at a later activation (N1).
+// Who holds the old key is role:read's to see (C4, N4).
 func TestActivationListsLateHoldersOfRenamedKeys(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
 	realCatalog(t, e, ctx)
-	_, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = '0.1.0' WHERE key = 'guard';
-INSERT INTO permissions (key, module, label, source, plugin_key, status) VALUES ('plugin.guard:rules:view', 'plugin.guard', '{}', 'plugin', 'guard', 'active');
-INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:rules:view'`)
-	require.NoError(t, err)
+	g := guardRollout{t, e, ctx}
+	v1 := guardWith("0.1.1", newPerm("rules:view", ""))
+	g.upload(v1)
+	g.activate(v1)
+	g.grant("operator", "rules:view")
+
 	list := newPerm("rules:list", "")
 	list.InheritFrom = []string{"rules:view"}
-	v := guardWith("0.1.1", list)
-	r, err := e.svc.Upload(ctx, pkgtest.Build(v, e.root), e.admin, UploadOptions{})
+	v2 := guardWith("0.1.2", list)
+	g.upload(v2)
+	assert.Equal(t, []string{"operator"}, permissionRoles(t, e, ctx, "plugin.guard:rules:list"), "low to operator: carried over")
+	planned, _, err := consentDecisions(ctx, e.db.Pool, "guard", "0.1.2")
 	require.NoError(t, err)
-	require.Equal(t, ConsentApproved, r.ConsentStatus, "carried over: low to operator")
-	assert.Equal(t, []string{"operator"}, permissionRoles(t, e, ctx, "plugin.guard:rules:list"))
+	assert.Equal(t, map[[3]string]bool{{"plugin.guard:rules:list", "operator", ""}: true}, planned, "an automatic consent's plan reads back")
 
-	_, err = e.db.Pool.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
-WHERE r.key = 'supplier' AND p.key = 'plugin.guard:rules:view'`)
+	g.revoke("operator", "rules:list")
+	g.grant("supplier", "rules:view")
+	g.activate(v2)
+	late := RoleGrant{Version: "0.1.2", Permission: "plugin.guard:rules:list", Role: "supplier", Risk: manifest.RiskLow,
+		Via: viaInherit, NeedsConsent: true, Withheld: true}
+	assert.Equal(t, []RoleGrant{late}, g.pending(e.admin))
+	assert.Empty(t, g.pending(e.limited), "no role:read: an inherited grant names a holder of the old key")
+
+	_, err = e.svc.ReviewRoleGrants(ctx, "guard", "0.1.2", false, e.admin)
 	require.NoError(t, err)
-	require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET active_version = '0.1.1' WHERE key = 'guard'`); err != nil {
-			return err
-		}
-		return e.svc.d.Defaults.ApplyDefaults(ctx, tx, v, nil)
-	}))
-	gs, err := e.svc.PendingRoleGrants(ctx, e.db.Pool, "guard", "")
-	require.NoError(t, err)
-	assert.Equal(t, []RoleGrant{{Version: "0.1.1", Permission: "plugin.guard:rules:list", Role: "supplier", Risk: manifest.RiskLow,
-		Via: viaInherit, NeedsConsent: true, Withheld: true}}, gs)
+	v3 := guardWith("0.1.3", list)
+	g.upload(v3)
+	g.activate(v3)
+	assert.Empty(t, g.pending(e.admin), "a later upgrade keeping inheritFrom proposes nothing again")
+	assert.Empty(t, permissionRoles(t, e, ctx, "plugin.guard:rules:list"))
 }
 
 // permissionRoles lists the roles holding every row of key.

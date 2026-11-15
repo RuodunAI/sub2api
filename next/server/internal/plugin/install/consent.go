@@ -314,7 +314,18 @@ func (s *Service) decideAndApply(ctx context.Context, tx pgx.Tx, key, version st
 	if err := s.checkGrantRights(ctx, actorID, decisions, c.trust, c.publisherID != nil); err != nil {
 		return nil, err
 	}
-	existing, err := s.catalogKeys(ctx, tx, m.Key)
+	// What an earlier consent of a version never activated staged is
+	// superseded: its keys are new to this one, which plans their grants
+	// (tx holds the plugin row, so no other consent changes the catalog
+	// meanwhile).
+	cat, err := s.catalog()
+	if err != nil {
+		return nil, err
+	}
+	if err := cat.DiscardStaged(ctx, tx, m.Key); err != nil {
+		return nil, err
+	}
+	existing, err := loadCatalogPerms(ctx, cat, tx, m.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -380,15 +391,18 @@ func (s *Service) decideAndApply(ctx context.Context, tx pgx.Tx, key, version st
 	for _, d := range decisions {
 		summary = append(summary, map[string]any{"permission": d.permission, "status": d.status, "scope": d.scope, "carried": d.carried})
 	}
-	detail := map[string]any{"version": version, "upgrade": c.upgrade, "decisions": summary, "new_permission_roles": req.NewPermissionRoles}
+	// role_grants is the plan, made and withheld, whoever consented: what
+	// activation reads back (consentDecisions).
+	detail := map[string]any{"version": version, "upgrade": c.upgrade, "decisions": summary, "new_permission_roles": req.NewPermissionRoles,
+		"role_grants": st.plan}
 	if mode != modeOperator {
-		// A consent nobody gave: its role grants are audited apart, where
-		// the review queue reads them too.
+		// A consent nobody gave: what it made and withheld is audited apart,
+		// where the review queue reads them too.
 		if err := auditAutoGrants(ctx, tx, actorID, key, version, st); err != nil {
 			return nil, err
 		}
 	} else {
-		detail["role_grants"], detail["pending"], detail["inherit_skipped"] = st.plan, st.pending, st.skipped
+		detail["pending"], detail["inherit_skipped"] = st.pending, st.skipped
 	}
 	return res, audit.Audit(ctx, tx, actorID, AuditConsent, "plugin", key, detail)
 }
@@ -742,31 +756,29 @@ func checkNamedRolesExist(ctx context.Context, q store.Querier, named map[string
 }
 
 // catalogPerms is what the permission catalog holds of a plugin's
-// permissions, by qualified key, removed ones included (catalogKeys).
+// permissions, by qualified key, removed and staged ones included
+// (loadCatalogPerms).
 type catalogPerms map[string]core.PluginPermission
 
 // has reports whether the catalog has key, removed or not: a key declared
-// again is not new (D6).
-func (c catalogPerms) has(key string) bool { _, ok := c[key]; return ok }
+// again is not new (D6). A staged key is new still: a consent discards it
+// (DiscardStaged) and plans it afresh.
+func (c catalogPerms) has(key string) bool {
+	p, ok := c[key]
+	return ok && p.Status != permStatusStaged
+}
 
 // removed reports whether key is removed now: a version declaring it
 // revives it.
 func (c catalogPerms) removed(key string) bool { return c[key].Status == permStatusRemoved }
 
-// permStatusRemoved is the catalog status of a key no version declares now
-// (D6).
-const permStatusRemoved = "removed"
-
-// catalogKeys reads what the catalog holds of plugin pluginKey's
-// permissions. In consent, tx holds the plugin row, so no other consent
-// changes them meanwhile.
-func (s *Service) catalogKeys(ctx context.Context, q store.Querier, pluginKey string) (catalogPerms, error) {
-	cat, err := s.catalog()
-	if err != nil {
-		return nil, err
-	}
-	return loadCatalogPerms(ctx, cat, q, pluginKey)
-}
+// Catalog statuses: removed, a key no version declares now (D6); staged,
+// one only a version approved while another runs declares
+// (core.PermissionDef.Staged).
+const (
+	permStatusRemoved = "removed"
+	permStatusStaged  = "staged"
+)
 
 // loadCatalogPerms reads cat's permissions of plugin pluginKey.
 func loadCatalogPerms(ctx context.Context, cat core.PermissionCatalog, q store.Querier, pluginKey string) (catalogPerms, error) {

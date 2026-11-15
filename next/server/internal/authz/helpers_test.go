@@ -261,7 +261,7 @@ func TestCanActOnUsers(t *testing.T) {
 	}
 }
 
-func TestAddedKeys(t *testing.T) {
+func TestKeysNotIn(t *testing.T) {
 	tests := []struct {
 		name       string
 		want, have []string
@@ -274,8 +274,8 @@ func TestAddedKeys(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := addedKeys(tt.want, tt.have); !slices.Equal(got, tt.added) {
-				t.Errorf("addedKeys(%v, %v) = %v, want %v", tt.want, tt.have, got, tt.added)
+			if got := keysNotIn(tt.want, tt.have); !slices.Equal(got, tt.added) {
+				t.Errorf("keysNotIn(%v, %v) = %v, want %v", tt.want, tt.have, got, tt.added)
 			}
 		})
 	}

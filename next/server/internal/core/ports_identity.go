@@ -447,8 +447,10 @@ type PermissionDef struct {
 	// the consent's decision, not the manifest's.
 	GrantRoles map[string][]string
 	// Staged: declared only by a version approved while another runs. The
-	// catalog creates it disabled and leaves it removed when it is, so it
-	// means nothing before that version's activation syncs it again.
+	// catalog creates it with status staged (granting nothing, untouched by
+	// SetPluginActive) and leaves it removed, scope grants unpruned, when it
+	// is, so it means nothing before that version's activation syncs it
+	// again.
 	Staged bool
 }
 
@@ -525,8 +527,12 @@ type PermissionCatalog interface {
 	// keys keeping theirs (D6).
 	PermissionHolders(ctx context.Context, q store.Querier, keys []string) (map[string][]PermissionHolder, error)
 	// SetPluginActive flips status active/disabled (enable/disable); removed
-	// permissions stay removed.
+	// and staged permissions stay as they are.
 	SetPluginActive(ctx context.Context, tx pgx.Tx, pluginKey string, active bool) error
+	// DiscardStaged deletes the plugin's staged permissions (PermissionDef.
+	// Staged) and their grants: a consent supersedes what an earlier one,
+	// of a version not activated, created for it.
+	DiscardStaged(ctx context.Context, tx pgx.Tx, pluginKey string) error
 	// DeletePlugin removes the plugin's permissions and grants (uninstall).
 	DeletePlugin(ctx context.Context, tx pgx.Tx, pluginKey string) error
 }

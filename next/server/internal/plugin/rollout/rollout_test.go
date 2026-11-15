@@ -141,7 +141,8 @@ func (r *recorder) SetPluginActive(_ context.Context, _ pgx.Tx, _ string, active
 	r.mu.Unlock()
 	return nil
 }
-func (r *recorder) DeletePlugin(context.Context, pgx.Tx, string) error { return nil }
+func (r *recorder) DeletePlugin(context.Context, pgx.Tx, string) error  { return nil }
+func (r *recorder) DiscardStaged(context.Context, pgx.Tx, string) error { return nil }
 func (r *recorder) ApplyDefaults(_ context.Context, _ pgx.Tx, m *manifest.Manifest, _ map[string]map[string][]string) error {
 	r.mu.Lock()
 	r.defaults = append(r.defaults, m.Version)

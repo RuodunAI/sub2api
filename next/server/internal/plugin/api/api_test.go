@@ -115,6 +115,7 @@ func (noopPerms) GrantPluginPermission(context.Context, pgx.Tx, string, map[stri
 	return nil
 }
 func (noopPerms) SetPluginActive(context.Context, pgx.Tx, string, bool) error { return nil }
+func (noopPerms) DiscardStaged(context.Context, pgx.Tx, string) error         { return nil }
 func (noopPerms) DeletePlugin(context.Context, pgx.Tx, string) error          { return nil }
 
 type rollout struct {

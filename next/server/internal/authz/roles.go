@@ -434,12 +434,16 @@ func (s *Service) setRolePart(ctx context.Context, tx pgx.Tx, actorID int64, r *
 	if _, err := tx.Exec(ctx, `UPDATE roles SET updated_at = now() WHERE id = $1`, r.ID); err != nil {
 		return err
 	}
-	after, err := s.getRole(ctx, tx, r.ID)
-	if err != nil {
-		return err
+	// What r holds within part now (writeGrants): the live keys and the
+	// removed ones it held and kept.
+	held := slices.Clone(live)
+	for _, g := range grants {
+		if !slices.Contains(live, g.key) && slices.Contains(r.PermissionKeys, g.key) {
+			held = append(held, g.key)
+		}
 	}
-	before, now := part.of(r.PermissionKeys), part.of(after.PermissionKeys)
-	detail["permission_keys"], detail["added"], detail["removed"] = live, added, append([]string{}, addedKeys(before, now)...)
+	before, now := part.of(r.PermissionKeys), part.of(held)
+	detail["permission_keys"], detail["added"], detail["removed"] = live, added, keysNotIn(before, now)
 	if part.plugin != "" {
 		detail["before"], detail["after"] = before, now
 	}
@@ -478,7 +482,7 @@ func (s *Service) SetRoleAssignable(ctx context.Context, actorID, id int64, in A
 			return err
 		}
 		keys := roleKeysOf(assign)
-		added := addedKeys(keys, r.AssignableRoleKeys)
+		added := keysNotIn(keys, r.AssignableRoleKeys)
 		grant, err := grantOf(ctx, tx, r.Key, nil, added, in.AssignCustom && !r.AssignCustom)
 		if err != nil {
 			return err
@@ -650,7 +654,7 @@ func resolveRoles(ctx context.Context, q store.Querier, keys []string) ([]roleRe
 	if err != nil {
 		return nil, err
 	}
-	if unknown := addedKeys(keys, roleKeysOf(roles)); len(unknown) > 0 {
+	if unknown := keysNotIn(keys, roleKeysOf(roles)); len(unknown) > 0 {
 		return nil, core.InvalidFields(core.FieldError{Field: "role_keys", Code: "unknown", Message: "unknown roles: " + strings.Join(unknown, ", ")})
 	}
 	return roles, nil
@@ -1070,11 +1074,12 @@ func (s *Service) setPluginRole(ctx context.Context, tx pgx.Tx, actorID, id int6
 	return s.setRolePart(ctx, tx, actorID, r, keys, grantPart{plugin: pluginKey}, map[string]any{"plugin": pluginKey, "via": "plugin_matrix"})
 }
 
-// addedKeys returns the keys in want that are not in have, in want order.
-func addedKeys(want, have []string) []string {
-	var out []string
-	for _, k := range want {
-		if !slices.Contains(have, k) {
+// keysNotIn returns the keys of keys that are not in of, in order (never
+// nil): what a write adds, drops, or names unknown.
+func keysNotIn(keys, of []string) []string {
+	out := []string{}
+	for _, k := range keys {
+		if !slices.Contains(of, k) {
 			out = append(out, k)
 		}
 	}

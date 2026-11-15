@@ -8,9 +8,11 @@
 -- What it does, in one transaction (see 0.1.289-plugin-perm-down.md):
 --   0. Withheld role grants core 0.1.288 would confirm wrong (a scoped or a
 --      critical one) are rejected, so that its review list leaves them out.
---   1. Plugin permissions no longer declared (status 'removed') are deleted
---      with their grants: core 0.1.288's SetPluginActive would make them
---      active again, and deleting them is what it did itself.
+--   1. Plugin permissions no longer declared (status 'removed') or declared
+--      only by a version approved but never activated (status 'staged') are
+--      deleted with their grants: core 0.1.288's SetPluginActive would make
+--      them active, and deleting no longer declared keys is what it did
+--      itself.
 --   2. Scoped grants of plugin permissions are deleted: core 0.1.288 cannot
 --      parse plugin scopes, so they granted nothing there.
 --   3. Schema: the columns and constraint the migration added go,
@@ -62,19 +64,19 @@ FROM (
 ) w
 GROUP BY w.target_id;
 
--- 1 and 2. Every grant that goes: each grant of a removed plugin permission
--- and each scoped grant of a plugin permission.
+-- 1 and 2. Every grant that goes: each grant of a removed or staged plugin
+-- permission and each scoped grant of a plugin permission.
 INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
 SELECT NULL, 'authz.grant.migrate', 'role', g.role_id::text, jsonb_build_object('via', 'rollback 0.1.289', 'dropped', g.dropped)
 FROM (
     SELECT rp.role_id, p.key AS dropped FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id
-    WHERE p.source = 'plugin' AND p.status = 'removed'
+    WHERE p.source = 'plugin' AND p.status IN ('removed', 'staged')
     UNION ALL
     SELECT rs.role_id, p.key || ':' || rs.scope FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id
     WHERE p.source = 'plugin'
 ) g;
 
-DELETE FROM permissions WHERE source = 'plugin' AND status = 'removed';
+DELETE FROM permissions WHERE source = 'plugin' AND status IN ('removed', 'staged');
 DELETE FROM role_permission_scopes rs USING permissions p WHERE p.id = rs.permission_id AND p.source = 'plugin';
 
 -- 3. Schema. Only plugin rows can have a scope_type over 20 characters, and

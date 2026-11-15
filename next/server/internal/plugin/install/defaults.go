@@ -32,16 +32,21 @@ func NewDefaultsApplier(perms core.PermissionCatalog) *DefaultsApplier {
 // consent), and drops host permission grants the manifest no longer
 // requests, except revocations: a version asking for the permission again
 // does not get it by default (grants.Revoked). An activation (grants nil)
-// also lists for review what renamed keys' holders since the consent would
-// inherit (carryRenamedHolders). It runs inside the caller's transaction.
+// also lists for review what holders the old keys it retires gained since
+// the consent would inherit (carryRenamedHolders). It runs inside the
+// caller's transaction.
 // Plugins bring no sticky rules (CONTRACTS §5.6).
 func (a *DefaultsApplier) ApplyDefaults(ctx context.Context, tx pgx.Tx, m *manifest.Manifest, grants map[string]map[string][]string) error {
 	if a.perms != nil {
+		before, err := loadCatalogPerms(ctx, a.perms, tx, m.Key)
+		if err != nil {
+			return err
+		}
 		if err := a.perms.SyncPlugin(ctx, tx, m.Key, PermissionDefs(m, grants)); err != nil {
 			return fmt.Errorf("sync plugin permissions: %w", err)
 		}
 		if grants == nil {
-			if err := carryRenamedHolders(ctx, a.perms, tx, m); err != nil {
+			if err := carryRenamedHolders(ctx, a.perms, tx, m, before); err != nil {
 				return fmt.Errorf("carry renamed holders: %w", err)
 			}
 		}
@@ -135,7 +140,7 @@ func riskRank(risk string) int {
 
 // roleGrants resolves, per local userPermission key, the role -> scope
 // suffixes a permission created now is planned with: nothing for a key the
-// catalog has (existing, catalogKeys: removed rows included, so a key
+// catalog has (existing, loadCatalogPerms: removed rows included, so a key
 // declared again gets no defaults, D6); else the manifest defaults
 // (DefaultGrants), none for a rename or split, which inherits from an old
 // key the catalog has and so only keeps that key's holders

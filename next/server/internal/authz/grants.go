@@ -122,12 +122,10 @@ func (part grantPart) of(keys []string) []string {
 	prefix := manifest.PermissionModule(part.plugin) + ":"
 	out := []string{}
 	for _, k := range keys {
-		switch {
-		case part.plugin != "" && !strings.HasPrefix(k, prefix):
-		case part.coreOnly && strings.HasPrefix(k, perm.PluginPrefix):
-		default:
-			out = append(out, k)
+		if (part.plugin != "" && !strings.HasPrefix(k, prefix)) || (part.coreOnly && strings.HasPrefix(k, perm.PluginPrefix)) {
+			continue
 		}
+		out = append(out, k)
 	}
 	return out
 }
