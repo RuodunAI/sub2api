@@ -1,53 +1,46 @@
 <script setup lang="ts">
 // A plugin's user permissions × roles, shared by the install / upgrade
-// consent page and the plugin detail "Permissions" tab. It emits nothing: the
-// state lives in `matrix` (useGrantMatrix), which the page owns and reads
-// (`matrix.value`, `matrix.changes`, `matrix.dirty`) to save or build its
-// payload. `lockOf` says which cells may change (CellLock); `scopeLimit` what
-// a scoped cell may offer: the editor's scopes of an action (auth.scopes) on
-// the detail page; left out, everything (the consent page: the permissions it
-// creates need not be held, the server's cells.nameable decides).
+// consent page and the plugin detail "Permissions" tab. It emits nothing and
+// takes its rows, columns, locks and the editor's scopes from `matrix`
+// (useGrantMatrix), which the page owns and reads (`matrix.value`,
+// `matrix.changes`, `matrix.dirty`) to save or build its payload.
 //
-// Rows follow `perms` under their `groups` (a heading row per group whose
-// checkbox ticks the group's shown rows for one role as concrete keys, D1);
-// permissions of no listed group come last. An unscoped cell is a checkbox; a
-// scoped one MatrixScopeCell, whose "chosen…" opens ScopePicker below the
-// table, outside the scroll area, so phones do not cut it off. A dot marks a
-// cell that differs from the plugin's suggestion; a locked cell says why in
-// its control's label as well as its title.
+// Rows follow the matrix's perms under their `groups` (a heading row per
+// group whose checkbox ticks the group's ordinary rows for one role as
+// concrete keys, D1; a critical row is ticked on its own); permissions of no
+// listed group come last. An unscoped cell is a checkbox; a scoped one
+// MatrixScopeCell, whose "chosen…" opens ScopePicker below the table,
+// outside the scroll area, so phones do not cut it off; it scrolls into view
+// and takes the focus. A mark on a cell's corner says it differs from the
+// plugin's suggestion; a locked cell says why in its control's label and
+// title, and the legend explains the lock for touch screens. On phones the
+// super admin column (fixed at everything) gives way to a line saying so.
 //
 // Slots: #toolbar (end of the toolbar), #trailing-head and #trailing="{ perm }"
 // (one more column, e.g. the upgrade's "needs confirmation").
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SBadge, SButton, SCheckbox, SHint, SIcon, useScrollClip } from '@sub2api/ui'
+import { SBadge, SButton, SCheckbox, SHint, SIcon, toast, useScrollClip } from '@sub2api/ui'
 import type { PermissionGroup } from '@/api/types'
 import { lt } from '@/i18n'
-import { ALL_SCOPE, type Scope } from '@/authz/implies'
-import { offerOf } from '@/authz/scopeChoice'
 import { cellOfScopes, scopesOfCell } from '@/authz/pluginGrants'
 import ScopePicker from '@/views/roles/ScopePicker.vue'
 import PermRiskBadge from './PermRiskBadge.vue'
 import MatrixScopeCell from './MatrixScopeCell.vue'
 import { groupSections, permHint } from './permRows'
-import { isFixed, isShrinkOnly, type CellLock, type GrantMatrix, type MatrixPerm, type MatrixRole } from './useGrantMatrix'
+import { isFixed, type CellLock, type CellState, type GrantMatrix, type MatrixPerm, type MatrixRole } from './useGrantMatrix'
 
 const props = withDefaults(
   defineProps<{
     matrix: GrantMatrix
-    perms: MatrixPerm[]
     groups?: PermissionGroup[]
-    roles: MatrixRole[]
     pluginKey: string
-    lockOf: (perm: MatrixPerm, role: MatrixRole) => CellLock
-    scopeLimit?: (action: string) => Scope[]
-    /** Custom roles fold under "more roles" (consent page). */
+    /** Custom roles fold under "more roles" (consent page), unless one of their cells grants something. */
     collapseCustom?: boolean
     /** Rows shown before "N more" (0: all). */
     foldAfter?: number
-    readOnly?: boolean
   }>(),
-  { groups: () => [], scopeLimit: () => [ALL_SCOPE], collapseCustom: false, foldAfter: 0, readOnly: false }
+  { groups: () => [], collapseCustom: false, foldAfter: 0 }
 )
 const { t } = useI18n()
 
@@ -55,77 +48,52 @@ const LOCK_HINT: Record<Exclude<CellLock, null>, string> = {
   superuser: 'plugins.matrix.superFixed',
   pending_review: 'plugins.matrix.pendingReviewHint',
   critical: 'plugins.matrix.criticalOnly',
-  inherited: 'plugins.matrix.inheritedHint',
   not_held: 'roles.notHeld',
   role_readonly: 'plugins.matrix.roleReadonly',
-  removed: 'roles.removed'
+  removed: 'roles.removedHint',
+  holders_hidden: 'plugins.matrix.holdersHidden'
 }
 
-const showCustom = ref(false)
-const customCount = computed(() => props.roles.filter((r) => !r.builtin).length)
-const shownRoles = computed(() => (props.collapseCustom && !showCustom.value ? props.roles.filter((r) => r.builtin) : props.roles))
+const perms = computed(() => props.matrix.perms.value)
+const roles = computed(() => props.matrix.roles.value)
+const readOnly = computed(() => props.matrix.readOnly.value)
+const state = (p: MatrixPerm, r: MatrixRole) => props.matrix.state(p, r)
 
-const unfolded = ref(false)
-const folded = computed(() => props.foldAfter > 0 && !unfolded.value && props.perms.length > props.foldAfter)
-const sections = computed(() => groupSections(folded.value ? props.perms.slice(0, props.foldAfter) : props.perms, props.groups))
-
-const offerFor = (action: string) => offerOf(props.scopeLimit(action), action)
 const roleName = (r: MatrixRole) => lt(r.name) || r.key
 const label = (p: MatrixPerm) => lt(p.label) || p.local
+const hint = (v: CellState) => (v.lock ? t(LOCK_HINT[v.lock]) : '')
+/** The control's label, with the lock's reason for screen readers. */
+const aria = (p: MatrixPerm, r: MatrixRole) => [label(p), roleName(r), hint(state(p, r))].filter(Boolean).join(' · ')
 
-/** What one cell renders, worked out once per cell. */
-interface CellView {
-  lock: CellLock
-  /** The keys it shows: everything for the super admin, else its keys. */
-  keys: string[]
-  /** Frozen outright (or the whole matrix read-only). */
-  fixed: boolean
-  /** Fixed, or empty under a take-away-only lock. */
-  disabled: boolean
-  differs: boolean
-  /** Why it is locked; '' when it is not. */
-  hint: string
-  /** The control's label, with the lock's reason for screen readers. */
-  aria: string
-}
-const cellId = (p: MatrixPerm, r: MatrixRole) => `${p.action}\u0000${r.key}`
-const views = computed(() => {
-  const out = new Map<string, CellView>()
-  for (const p of props.perms) {
-    for (const r of props.roles) {
-      const lock = props.lockOf(p, r)
-      const keys = lock === 'superuser' ? [p.action] : props.matrix.cell(p, r)
-      const fixed = props.readOnly || isFixed(lock)
-      const hint = lock ? t(LOCK_HINT[lock]) : ''
-      out.set(cellId(p, r), {
-        lock,
-        keys,
-        fixed,
-        disabled: fixed || (lock !== null && !keys.length),
-        differs: props.matrix.differsFromSuggested(p, r),
-        hint,
-        aria: [label(p), roleName(r), hint].filter(Boolean).join(' · ')
-      })
-    }
-  }
-  return out
-})
-const view = (p: MatrixPerm, r: MatrixRole) => views.value.get(cellId(p, r))!
-const cellsOf = (p: MatrixPerm) => props.roles.map((r) => view(p, r))
+// Custom roles fold away unless a cell of theirs grants something or waits
+// for review: a grant must not hide in a column nobody opened.
+const customRoles = computed(() => roles.value.filter((r) => !r.builtin))
+const customGrants = computed(() => customRoles.value.reduce((n, r) => n + perms.value.filter((p) => state(p, r).keys.length || state(p, r).lock === 'pending_review').length, 0))
+const showCustom = ref<boolean | null>(null)
+const customShown = computed(() => showCustom.value ?? customGrants.value > 0)
+const shownRoles = computed(() => (props.collapseCustom && !customShown.value ? roles.value.filter((r) => r.builtin) : roles.value))
+/** The super admin column is fixed at everything: phones drop it for a line saying so. */
+const columnClass = (r: MatrixRole) => (r.superuser ? 'hidden md:table-cell' : '')
+const hasSuper = computed(() => roles.value.some((r) => r.superuser))
 
-const requiresText = (p: MatrixPerm) => (p.requires ?? []).map((k) => {
-  const req = props.perms.find((x) => x.action === k)
-  return req ? label(req) : k
-}).join(t('roles.listSep'))
-const differing = computed(() => [...views.value.values()].filter((v) => v.differs).length)
-const readonlyColumns = computed(() => new Set(props.roles.filter((r) => props.perms.length > 0 && props.perms.every((p) => view(p, r).lock === 'role_readonly')).map((r) => r.key)))
-const anyPending = computed(() => [...views.value.values()].some((v) => v.lock === 'pending_review'))
+const unfolded = ref(false)
+const folded = computed(() => props.foldAfter > 0 && !unfolded.value && perms.value.length > props.foldAfter)
+const sections = computed(() => groupSections(folded.value ? perms.value.slice(0, props.foldAfter) : perms.value, props.groups))
+
+const readonlyColumns = computed(() => new Set(roles.value.filter((r) => perms.value.length > 0 && perms.value.every((p) => state(p, r).lock === 'role_readonly')).map((r) => r.key)))
+const anyPending = computed(() => perms.value.some((p) => roles.value.some((r) => state(p, r).lock === 'pending_review')))
 /** A lock icon in the cell: frozen by the cell itself, not by its column (whose heading shows it) nor marked otherwise. */
-const lockIcon = (r: MatrixRole, v: CellView) => isFixed(v.lock) && v.lock !== 'superuser' && v.lock !== 'pending_review' && !readonlyColumns.value.has(r.key)
+const lockIcon = (r: MatrixRole, v: CellState) => isFixed(v.lock) && v.lock !== 'superuser' && v.lock !== 'pending_review' && !readonlyColumns.value.has(r.key)
+const anyLock = computed(() => readonlyColumns.value.size > 0 || perms.value.some((p) => shownRoles.value.some((r) => lockIcon(r, state(p, r)))))
+const rowDiffers = (p: MatrixPerm) => roles.value.some((r) => props.matrix.differs(p, r))
 
-// A heading row's checkbox: the group's shown rows the role's cell may take (useGrantMatrix.groupRows).
-const groupState = (perms: MatrixPerm[], r: MatrixRole) => props.matrix.groupState(perms, r, offerFor)
-const groupOpen = (perms: MatrixPerm[], r: MatrixRole) => !props.readOnly && props.matrix.groupRows(perms, r, offerFor).length > 0
+function restore(p?: MatrixPerm) {
+  const skipped = props.matrix.restore(p)
+  if (skipped) toast(t('roles.restoreSkipped', { n: skipped }, skipped), 'info')
+}
+
+// A heading row's checkbox: the group's ordinary rows the role's cell may take (useGrantMatrix.groupRows).
+const groupOpen = (rows: MatrixPerm[], r: MatrixRole) => !readOnly.value && props.matrix.groupRows(rows, r).length > 0
 
 // More roles than fit scroll inside the card under the fixed first column; a
 // fade on the right edge says so while columns are hidden past it.
@@ -136,23 +104,33 @@ const clipped = useScrollClip(scroller, table)
 const expanded = ref<{ action: string; role: string } | null>(null)
 const expandedCell = computed(() => {
   const e = expanded.value
-  const perm = e && props.perms.find((p) => p.action === e.action)
-  const role = e && props.roles.find((r) => r.key === e.role)
+  const perm = e && perms.value.find((p) => p.action === e.action)
+  const role = e && roles.value.find((r) => r.key === e.role)
   return perm && role ? { perm, role } : null
 })
+const editing = (p: MatrixPerm, r: MatrixRole) => expanded.value?.action === p.action && expanded.value.role === r.key
+const panel = ref<HTMLElement>()
+/** Opens a cell's scope picker below the table and brings it into view: the select alone would not show it changed. */
+async function openScope(p: MatrixPerm, r: MatrixRole) {
+  expanded.value = { action: p.action, role: r.key }
+  await nextTick()
+  panel.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  panel.value?.focus({ preventScroll: true })
+}
 </script>
 
 <template>
   <div class="space-y-3" data-testid="perm-matrix">
     <div class="flex flex-wrap items-center gap-2">
-      <SHint v-if="differing" inline size="xs" data-testid="matrix-differs">{{ t('roles.differsCount', { n: differing }) }}</SHint>
-      <SButton v-if="differing && !readOnly" size="xs" variant="secondary" data-testid="matrix-restore" @click="matrix.restore()">{{ t('roles.restoreSuggested') }}</SButton>
-      <SButton v-if="collapseCustom && customCount" size="xs" variant="ghost" data-testid="matrix-more-roles" @click="showCustom = !showCustom">
-        {{ showCustom ? t('plugins.matrix.fewerRoles') : t('plugins.matrix.moreRoles') }}
-        <SIcon name="chevron-down" class="h-3.5 w-3.5 transition-transform" :class="showCustom ? 'rotate-180' : ''" />
+      <SHint v-if="matrix.differing.value" inline size="xs" data-testid="matrix-differs">{{ t('roles.differsCount', { n: matrix.differing.value }, matrix.differing.value) }}</SHint>
+      <SButton v-if="matrix.differing.value && !readOnly" size="xs" variant="secondary" icon="refresh" data-testid="matrix-restore" @click="restore()">{{ t('roles.restoreSuggested') }}</SButton>
+      <SButton v-if="collapseCustom && customRoles.length" size="xs" variant="ghost" data-testid="matrix-more-roles" @click="showCustom = !customShown">
+        {{ customShown ? t('plugins.matrix.fewerRoles') : customGrants ? t('plugins.matrix.moreRolesGrants', { n: customGrants }, customGrants) : t('plugins.matrix.moreRoles') }}
+        <SIcon name="chevron-down" class="h-3.5 w-3.5 transition-transform" :class="customShown ? 'rotate-180' : ''" />
       </SButton>
       <slot name="toolbar" />
     </div>
+    <SHint v-if="hasSuper" size="xs" class="md:hidden" data-testid="matrix-super-note">{{ t('plugins.matrix.superFixedNote') }}</SHint>
 
     <div class="relative">
       <div ref="scroller" class="overflow-x-auto rounded-xl border border-line">
@@ -167,6 +145,7 @@ const expandedCell = computed(() => {
                 :key="r.key"
                 scope="col"
                 class="min-w-[5.5rem] max-w-[8rem] px-1.5 py-2 text-center font-medium text-fg-subtle"
+                :class="columnClass(r)"
                 :title="r.superuser ? t('plugins.matrix.superFixed') : readonlyColumns.has(r.key) ? t('plugins.matrix.roleReadonly') : roleName(r)"
                 :data-role="r.key"
               >
@@ -181,17 +160,18 @@ const expandedCell = computed(() => {
           <tbody v-for="s in sections" :key="s.key" class="border-b border-line last:border-b-0">
             <tr v-if="s.label" class="group bg-surface-2" :data-group="s.key">
               <th scope="rowgroup" class="sticky left-0 z-[1] bg-surface-2 px-3 py-1.5 text-left text-xs font-medium text-fg-subtle">{{ s.label }}</th>
-              <td v-for="r in shownRoles" :key="r.key" class="px-1.5 py-1.5 text-center">
+              <td v-for="r in shownRoles" :key="r.key" class="px-1.5 py-1.5 text-center" :class="columnClass(r)">
                 <SCheckbox
                   v-if="!r.superuser"
                   bare
                   size="xs"
-                  :model-value="groupState(s.perms, r) === 'all'"
-                  :indeterminate="groupState(s.perms, r) === 'some'"
+                  :model-value="matrix.groupState(s.perms, r) === 'all'"
+                  :indeterminate="matrix.groupState(s.perms, r) === 'some'"
                   :disabled="!groupOpen(s.perms, r)"
                   :aria-label="`${t('roles.groupSelectAll')} · ${s.label} · ${roleName(r)}`"
+                  :title="t('roles.groupSkipsCritical')"
                   :data-group-role="r.key"
-                  @update:model-value="matrix.toggleGroup(s.perms, r, offerFor)"
+                  @update:model-value="matrix.toggleGroup(s.perms, r)"
                 />
               </td>
               <td v-if="$slots['trailing-head']" />
@@ -201,68 +181,69 @@ const expandedCell = computed(() => {
                 <div class="flex min-w-0 flex-wrap items-center gap-1.5">
                   <span class="line-clamp-2 text-fg" :class="p.status === 'removed' ? 'text-fg-subtle line-through' : ''">{{ label(p) }}</span>
                   <PermRiskBadge :risk="p.risk" />
-                  <SBadge v-if="p.status === 'removed'" size="xs" tone="gray">{{ t('roles.removed') }}</SBadge>
-                  <button
-                    v-if="!readOnly && cellsOf(p).some((v) => v.differs)"
-                    type="button"
-                    class="ml-auto shrink-0 rounded p-0.5 text-fg-subtle hover:text-fg"
-                    :title="t('roles.restoreSuggested')"
+                  <SBadge v-if="p.status === 'removed'" size="xs" tone="gray" :title="t('roles.removedHint')" data-testid="matrix-removed">{{ t('roles.removed') }}</SBadge>
+                  <SButton
+                    v-if="!readOnly && rowDiffers(p)"
+                    size="xs"
+                    variant="ghost"
+                    icon="refresh"
+                    icon-only
+                    class="ml-auto shrink-0"
                     :aria-label="t('roles.restoreSuggested')"
+                    :title="t('roles.restoreSuggested')"
                     data-testid="matrix-restore-row"
-                    @click="matrix.restore(p)"
-                  ><SIcon name="refresh" class="h-3.5 w-3.5" /></button>
+                    @click="restore(p)"
+                  />
                 </div>
-                <SHint v-if="cellsOf(p).some((v) => v.lock === 'critical')" size="xs" class="mt-0.5 text-danger-600 dark:text-danger-400">{{ t('plugins.matrix.criticalOnly') }}</SHint>
+                <SHint v-if="roles.some((r) => state(p, r).lock === 'critical')" size="xs" class="mt-0.5 text-danger-600 dark:text-danger-400">{{ t('plugins.matrix.criticalOnly') }}</SHint>
                 <SHint v-if="p.inheritFrom?.length" size="xs" class="mt-0.5" data-testid="matrix-inherited">
                   {{ t('plugins.matrix.inheritedFrom', { keys: p.inheritFrom.join(t('roles.listSep')) }) }}
                 </SHint>
-                <SHint v-if="p.requires?.length" size="xs" class="mt-0.5">{{ t('roles.requiresHint', { names: requiresText(p) }) }}</SHint>
+                <SHint v-if="p.requires?.length" size="xs" class="mt-0.5">{{ t('roles.requiresHint', { names: matrix.requiresLabels(p).join(t('roles.listSep')) }) }}</SHint>
                 <SHint size="xs" class="mt-0.5 hidden truncate font-mono md:block">{{ p.action }}</SHint>
               </th>
               <td
                 v-for="r in shownRoles"
                 :key="r.key"
                 class="px-1.5 py-2 text-center"
-                :class="view(p, r).lock === 'pending_review' ? 'bg-warning-50 dark:bg-warning-900/20' : ''"
-                :title="view(p, r).hint || undefined"
+                :class="[columnClass(r), state(p, r).lock === 'pending_review' ? 'bg-warning-50 dark:bg-warning-900/20' : '', editing(p, r) ? 'bg-primary-50 dark:bg-primary-900/20' : '']"
+                :title="hint(state(p, r)) || undefined"
                 :data-role="r.key"
-                :data-lock="view(p, r).lock ?? undefined"
+                :data-lock="state(p, r).lock ?? undefined"
               >
-                <!-- The dot sits on the control's corner, so it reads as this cell's whatever the row's height. -->
+                <!-- The mark sits on the control's corner, so it reads as this cell's whatever the row's height. -->
                 <span class="relative inline-flex max-w-full" :class="p.scope ? 'w-full' : ''">
                   <SCheckbox
                     v-if="!p.scope"
                     bare
                     size="xs"
-                    :model-value="view(p, r).keys.length > 0"
-                    :disabled="view(p, r).disabled"
-                    :aria-label="view(p, r).aria"
+                    :model-value="state(p, r).keys.length > 0"
+                    :disabled="state(p, r).disabled"
+                    :aria-label="aria(p, r)"
                     @update:model-value="matrix.setCell(p, r, $event ? [p.action] : [])"
                   />
                   <MatrixScopeCell
                     v-else
                     class="w-full"
                     :perm="p"
-                    :keys="view(p, r).keys"
-                    :offer="offerFor(p.action)"
-                    :shrink-only="isShrinkOnly(view(p, r).lock)"
-                    :disabled="view(p, r).disabled"
-                    :fixed="view(p, r).fixed"
-                    :label="view(p, r).aria"
+                    :cell="state(p, r)"
+                    :offer="matrix.offerFor(p.action)"
+                    :editing="editing(p, r)"
+                    :label="aria(p, r)"
                     @update="matrix.setCell(p, r, $event)"
-                    @open="expanded = { action: p.action, role: r.key }"
+                    @open="openScope(p, r)"
                   />
                   <span
-                    v-if="view(p, r).differs"
-                    class="absolute -right-1.5 -top-1 h-1.5 w-1.5 rounded-full bg-primary-500 dark:bg-primary-400"
+                    v-if="matrix.differs(p, r)"
+                    class="absolute -right-1.5 -top-1 h-1.5 w-1.5 rounded-full bg-gray-400 dark:bg-gray-500"
                     role="img"
-                    :title="t('plugins.matrix.differs')"
-                    :aria-label="t('plugins.matrix.differs')"
+                    :title="t('roles.differs')"
+                    :aria-label="t('roles.differs')"
                     data-testid="cell-differs"
                   />
                 </span>
-                <SBadge v-if="view(p, r).lock === 'pending_review'" size="xs" tone="warning" class="mt-1">{{ t('plugins.matrix.pendingReview') }}</SBadge>
-                <SIcon v-else-if="lockIcon(r, view(p, r))" name="lock" class="ml-1 inline h-3 w-3 text-fg-subtle" />
+                <SBadge v-if="state(p, r).lock === 'pending_review'" size="xs" tone="warning" class="mt-1">{{ t('plugins.matrix.pendingReview') }}</SBadge>
+                <SIcon v-else-if="lockIcon(r, state(p, r))" name="lock" class="ml-1 inline h-3 w-3 text-fg-subtle" />
               </td>
               <td v-if="$slots['trailing-head']" class="px-2 py-2"><slot name="trailing" :perm="p" /></td>
             </tr>
@@ -276,26 +257,26 @@ const expandedCell = computed(() => {
       {{ folded ? t('plugins.matrix.foldMore', { n: perms.length - foldAfter }) : t('plugins.matrix.foldLess') }}
     </SButton>
 
-    <div v-if="expandedCell" class="w-full space-y-2 rounded-xl border border-line p-3" data-testid="matrix-scope-panel">
+    <div v-if="expandedCell" ref="panel" tabindex="-1" class="w-full scroll-mb-24 space-y-2 rounded-xl border border-primary-300 p-3 outline-none dark:border-primary-700" data-testid="matrix-scope-panel">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <span class="text-sm font-medium text-fg">{{ t('plugins.matrix.scopeOf', { role: roleName(expandedCell.role), perm: label(expandedCell.perm) }) }}</span>
         <SButton size="xs" variant="secondary" data-testid="matrix-scope-done" @click="expanded = null">{{ t('plugins.matrix.done') }}</SButton>
       </div>
       <ScopePicker
         :action="expandedCell.perm.action"
-        resource=""
-        :plugin="{ key: pluginKey, local: expandedCell.perm.local, scope: expandedCell.perm.scope }"
+        :target="{ kind: 'plugin', key: pluginKey, local: expandedCell.perm.local, scope: expandedCell.perm.scope, label: expandedCell.perm.label }"
         :scopes="scopesOfCell(matrix.cell(expandedCell.perm, expandedCell.role), expandedCell.perm.action)"
-        :offer="offerFor(expandedCell.perm.action)"
-        :disabled="view(expandedCell.perm, expandedCell.role).disabled"
+        :offer="matrix.offerFor(expandedCell.perm.action)"
+        :disabled="state(expandedCell.perm, expandedCell.role).disabled"
         @update:scopes="matrix.setCell(expandedCell.perm, expandedCell.role, cellOfScopes(expandedCell.perm.action, $event))"
       />
     </div>
 
     <SHint size="xs" class="flex flex-wrap items-center gap-x-3 gap-y-1">
       <span>{{ t('roles.riskLegend') }}</span>
-      <span class="inline-flex items-center gap-1"><span class="h-1.5 w-1.5 rounded-full bg-primary-500 dark:bg-primary-400" />{{ t('plugins.matrix.differs') }}</span>
+      <span class="inline-flex items-center gap-1"><span class="h-1.5 w-1.5 rounded-full bg-gray-400 dark:bg-gray-500" />{{ t('roles.differs') }}</span>
       <span v-if="anyPending" class="inline-flex items-center gap-1"><SBadge size="xs" tone="warning">{{ t('plugins.matrix.pendingReview') }}</SBadge>{{ t('plugins.matrix.pendingReviewHint') }}</span>
+      <span v-if="anyLock" class="inline-flex items-center gap-1" data-testid="matrix-lock-legend"><SIcon name="lock" class="h-3 w-3" />{{ t('plugins.matrix.lockLegend') }}</span>
     </SHint>
   </div>
 </template>

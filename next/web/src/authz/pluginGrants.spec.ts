@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { ALL_SCOPE, OWN_SCOPE, refScope } from './implies'
-import { cellKeys, cellOfScopes, diffCells, isSuggestedRole, keysFromSuffixes, localOf, narrows, riskSummary, sameKeys, scopesOfCell, suggestedOf, toManifestGrant, withCell } from './pluginGrants'
+import { ALL_SCOPE as ALL, permissionIndex } from './implies'
+import { cellKeys, cellOfScopes, cellSummary, diffCells, grantableWithin, isSuggestedRole, keysFromSuffixes, localOf, narrows, newRiskyGrants, restoreCell, riskSummary, sameKeys, scopesOfCell, suggestedOf, suggestionState, toManifestGrant, withCell } from './pluginGrants'
+import { RESTORE_CASES } from './testing/restoreCases'
 
 const A = 'plugin.m:flow:manage'
 const B = 'plugin.m:flow:read'
@@ -60,9 +62,9 @@ describe('plugin grants', () => {
   })
 
   it('riskSummary counts the permissions of a risk and the roles given one', () => {
-    const perms = [{ key: A, risk: 'sensitive' as const }, { key: B, risk: 'low' as const }]
-    expect(riskSummary({ admin: [A], operator: [`${A}:own`, B], user: [B] }, perms, 'sensitive')).toEqual({ perms: 1, roles: 2 })
-    expect(riskSummary({ user: [B] }, perms, 'sensitive')).toEqual({ perms: 0, roles: 0 })
+    const perms = [{ action: A, risk: 'sensitive' as const }, { action: B, risk: 'low' as const }]
+    expect(riskSummary({ admin: [A], operator: [`${A}:own`, B], user: [B] }, perms, 'sensitive')).toEqual({ perms: 1, roles: ['admin', 'operator'] })
+    expect(riskSummary({ user: [B] }, perms, 'sensitive')).toEqual({ perms: 0, roles: [] })
   })
 
   it('keysFromSuffixes maps "" to the bare action', () => {
@@ -76,5 +78,42 @@ describe('plugin grants', () => {
     expect(toManifestGrant(scoped, [`${A}:*`])).toEqual(['*'])
     expect(toManifestGrant(scoped, [`${A}:value/input`, `${A}:own`, `${A}:flow/3`])).toEqual(['flow/3', 'own', 'value/input'])
     expect(toManifestGrant(scoped, [B])).toBeNull()
+  })
+
+  it('newRiskyGrants lists the sensitive and critical cells a change grants more of, critical first', () => {
+    const C = 'plugin.m:bypass'
+    const perms = [{ action: A, risk: 'sensitive' as const }, { action: B, risk: 'low' as const }, { action: C, risk: 'critical' as const }]
+    const base = { admin: [`${A}:own`], operator: [A] }
+    expect(newRiskyGrants(base, { admin: [A, B, C], operator: [`${A}:own`] }, perms)).toEqual([
+      { action: C, role: 'admin', risk: 'critical' },
+      { action: A, role: 'admin', risk: 'sensitive' }
+    ])
+    // Taking away and keeping ask nothing.
+    expect(newRiskyGrants(base, { admin: [`${A}:own`], operator: [] }, perms)).toEqual([])
+  })
+
+  it('grantableWithin checks a key against the editor\'s scopes of its action', () => {
+    const may = grantableWithin((a) => (a === A ? [OWN_SCOPE] : a === B ? [ALL] : []))
+    expect(may(`${A}:own`)).toBe(true)
+    expect(may(A)).toBe(false)
+    expect(may(`${B}:own`)).toBe(true)
+    expect(may('plugin.m:other')).toBe(false)
+  })
+
+  it('cellSummary names a cell\'s choice', () => {
+    expect(cellSummary([], A)).toEqual({ choice: 'none', refs: 0 })
+    expect(cellSummary([A, `${A}:own`], A)).toEqual({ choice: 'all', refs: 0 })
+    expect(cellSummary([`${A}:own`], A)).toEqual({ choice: 'own', refs: 0 })
+    expect(cellSummary([`${A}:own`, `${A}:flow/3`], A)).toEqual({ choice: 'custom', refs: 1 })
+  })
+
+  describe('restoring the suggestion (shared with the role editor and the matrix)', () => {
+    for (const c of RESTORE_CASES) {
+      it(c.name, () => {
+        const mayGrant = (k: string) => permissionIndex(c.editor).has(k)
+        expect(suggestionState(c.cell, c.want, mayGrant)).toBe(c.state)
+        expect(restoreCell(c.cell, c.want, mayGrant) ?? c.cell).toEqual(c.restored)
+      })
+    }
   })
 })

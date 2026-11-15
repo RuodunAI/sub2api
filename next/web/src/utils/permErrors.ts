@@ -20,3 +20,10 @@ export function missingText(e: unknown, t: (key: string, values?: Record<string,
     .join(' · ')
   return text && typeof d.role === 'string' && d.role ? t('roles.missingFor', { role: roleName(d.role), text }) : text
 }
+
+/**
+ * The write was refused because the grants changed since they were read
+ * (409 version_conflict: GET returned a `version`, the PUT carried it): the
+ * editor reloads and puts its edits on top of what it finds.
+ */
+export const isVersionConflict = (e: unknown) => isApiError(e) && e.code === 'version_conflict'

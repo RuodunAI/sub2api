@@ -6,8 +6,8 @@
 // cell is the keys of one action ("plugin.m:flow:manage" plus its scoped keys)
 // of one role. scopeChoice.withScopes edits one action of one set; these
 // compare and sum many roles × actions. Pure.
-import { canonicalPermission, parsePermission, patternKey, reduceScopes, scopeImplies, scopeSuffix, type Scope } from './implies'
-import { withScopes } from './scopeChoice'
+import { canonicalPermission, parsePermission, permissionIndex, patternKey, reduceScopes, scopeImplies, scopeSuffix, type Scope } from './implies'
+import { choiceOf, withScopes } from './scopeChoice'
 import type { ManifestGrant, PermissionItem, PermRisk } from '../api/types'
 
 /** Role → the role's full canonical keys of one plugin. */
@@ -98,17 +98,86 @@ export function diffCells(base: RoleKeys, next: RoleKeys, actions: readonly stri
   )
 }
 
-/** How many permissions of the risk value grants, and to how many roles ("N sensitive permissions to M roles"). */
-export function riskSummary(value: RoleKeys, perms: readonly { key: string; risk: PermRisk }[], risk: PermRisk): { perms: number; roles: number } {
-  const actions = new Set(perms.filter((p) => p.risk === risk).map((p) => p.key))
+/** How many permissions of the risk value grants, and to which roles ("N sensitive permissions to Admin, Operator"). */
+export function riskSummary(value: RoleKeys, perms: readonly { action: string; risk: PermRisk }[], risk: PermRisk): { perms: number; roles: string[] } {
+  const actions = new Set(perms.filter((p) => p.risk === risk).map((p) => p.action))
   const granted = new Set<string>()
-  let roles = 0
-  for (const keys of Object.values(value)) {
+  const roles: string[] = []
+  for (const [role, keys] of Object.entries(value)) {
     const held = keys.map(actionOf).filter((a) => actions.has(a))
     held.forEach((a) => granted.add(a))
-    if (held.length) roles++
+    if (held.length) roles.push(role)
   }
   return { perms: granted.size, roles }
+}
+
+/** A cell of a sensitive or critical permission that a change grants more of. */
+export interface RiskyGrant {
+  action: string
+  role: string
+  risk: Exclude<PermRisk, 'low'>
+}
+
+/**
+ * The cells of sensitive and critical permissions next grants a key in that
+ * base does not imply (a new or wider grant; narrowing or taking away is not), critical first:
+ * what a save asks to confirm (D1: a group ticks no critical row, but a row
+ * ticked one by one still lands here).
+ */
+export function newRiskyGrants(base: RoleKeys, next: RoleKeys, perms: readonly { action: string; risk: PermRisk }[]): RiskyGrant[] {
+  const out: RiskyGrant[] = []
+  for (const p of perms) {
+    if (p.risk === 'low') continue
+    for (const [role, keys] of Object.entries(next)) {
+      const before = permissionIndex(cellKeys(base[role] ?? [], p.action))
+      if (cellKeys(keys, p.action).some((k) => !before.has(k))) out.push({ action: p.action, role, risk: p.risk })
+    }
+  }
+  return out.sort((a, b) => Number(b.risk === 'critical') - Number(a.risk === 'critical'))
+}
+
+/**
+ * Whether the editor may grant key: one of its scopes of the key's action
+ * (scopeLimit, auth.scopes on the detail page) implies the key's scope.
+ */
+export const grantableWithin = (scopeLimit: (action: string) => readonly Scope[]) => (key: string) => {
+  const p = parsePermission(key)
+  return !!p && scopeLimit(p.action).some((l) => scopeImplies(l, p.scope))
+}
+
+/**
+ * A cell put back to want (the plugin's suggestion), or null when the editor
+ * cannot do it whole: a key of want it does not hold already that mayGrant
+ * refuses (the server would refuse the save). Such a cell is left as it is,
+ * neither cut down to what the editor may grant (that would take away grants
+ * the suggestion keeps) nor written past the editor. The role editor and the
+ * matrix both restore through it.
+ */
+export function restoreCell(held: readonly string[], want: readonly string[], mayGrant: (key: string) => boolean): string[] | null {
+  const have = new Set(canonicalSet(held))
+  const next = canonicalSet(want)
+  return next.every((k) => have.has(k) || mayGrant(k)) ? next : null
+}
+
+/**
+ * How a cell stands against the plugin's suggestion: the same, differing
+ * (restoreCell can put it back), or out of the editor's reach (not marked,
+ * not counted, skipped by a restore).
+ */
+export type SuggestionState = 'same' | 'differs' | 'unreachable'
+export function suggestionState(held: readonly string[], want: readonly string[], mayGrant: (key: string) => boolean): SuggestionState {
+  if (sameKeys(held, want)) return 'same'
+  return restoreCell(held, want, mayGrant) ? 'differs' : 'unreachable'
+}
+
+/** A cell as one choice: none, every row, the own rows, or chosen values (refs: how many plugin values). */
+export function cellSummary(keys: readonly string[], action: string): { choice: 'none' | 'all' | 'own' | 'custom'; refs: number } {
+  const scopes = scopesOfCell(keys, action)
+  const c = choiceOf(scopes)
+  const refs = c.refs.length
+  if (!scopes.length) return { choice: 'none', refs }
+  if (c.all) return { choice: 'all', refs }
+  return { choice: scopes.length === 1 && c.own ? 'own' : 'custom', refs }
 }
 
 /** Canonical suffixes (the review's cells[].grant and defaults) → full keys: "" is the bare action, the rest action:<suffix>. */

@@ -1,13 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { i18n } from '@/i18n'
-import { ALL_SCOPE, OWN_SCOPE, refScope, type Scope } from '@/authz/implies'
+import { ALL_SCOPE, OWN_SCOPE, permissionIndex, refScope, type Scope } from '@/authz/implies'
 import type { RoleKeys } from '@/authz/pluginGrants'
+import { RESTORE_ACTION, RESTORE_CASES } from '@/authz/testing/restoreCases'
 import PermissionMatrix from './PermissionMatrix.vue'
 import { useGrantMatrix, type CellLock, type MatrixPerm, type MatrixRole } from './useGrantMatrix'
 
 enableAutoUnmount(afterEach)
+const ui = vi.hoisted(() => ({ toast: vi.fn() }))
+vi.mock('@sub2api/ui', async (original) => ({ ...(await original<object>()), toast: ui.toast }))
 
 const READ = 'plugin.m:flow:read'
 const MANAGE = 'plugin.m:flow:manage'
@@ -26,15 +29,19 @@ interface Setup {
   baseline?: RoleKeys
   lockOf?: (p: MatrixPerm, r: MatrixRole) => CellLock
   scopeLimit?: (action: string) => Scope[]
+  perms?: MatrixPerm[]
+  readOnly?: boolean
   props?: Record<string, unknown>
 }
-function render({ baseline = SUGGESTED, lockOf = (_p, r) => (r.superuser ? 'superuser' : null), scopeLimit = () => [ALL_SCOPE], props = {} }: Setup = {}) {
-  const matrix = useGrantMatrix({ perms: ref(PERMS), roles: ref(ROLES), baseline: ref(baseline), lockOf })
+function render({ baseline = SUGGESTED, lockOf = (_p, r) => (r.superuser ? 'superuser' : null), scopeLimit = () => [ALL_SCOPE], perms = PERMS, readOnly = false, props = {} }: Setup = {}) {
+  const base = ref(baseline)
+  const matrix = useGrantMatrix({ perms: ref(perms), roles: ref(ROLES), baseline: base, lockOf, scopeLimit, readOnly: ref(readOnly) })
   const w = mount(PermissionMatrix, {
-    props: { matrix, perms: PERMS, groups: [{ key: 'flow', label: 'Flows', sort: 10 }], roles: ROLES, pluginKey: 'm', lockOf, scopeLimit, ...props },
+    props: { matrix, groups: [{ key: 'flow', label: 'Flows', sort: 10 }], pluginKey: 'm', ...props },
+    attachTo: document.body,
     global: {
       plugins: [i18n],
-      stubs: { ScopePicker: { name: 'ScopePicker', props: ['action', 'scopes', 'offer', 'plugin', 'resource', 'disabled'], emits: ['update:scopes'], template: '<div data-testid="scope-picker" />' } },
+      stubs: { ScopePicker: { name: 'ScopePicker', props: ['action', 'scopes', 'offer', 'target', 'disabled'], emits: ['update:scopes'], template: '<div data-testid="scope-picker" />' } },
       config: {
         warnHandler: (msg) => {
           if (msg.includes('Failed to resolve component')) throw new Error(msg)
@@ -42,7 +49,7 @@ function render({ baseline = SUGGESTED, lockOf = (_p, r) => (r.superuser ? 'supe
       }
     }
   })
-  return { w, matrix }
+  return { w, matrix, base }
 }
 type W = ReturnType<typeof render>['w']
 const cell = (w: W, action: string, roleKey: string) => w.get(`tr[data-permission="${action}"] td[data-role="${roleKey}"]`)
@@ -109,7 +116,7 @@ describe('PermissionMatrix', () => {
     await box(w, READ, 'admin').setValue(false)
     const dot = cell(w, READ, 'admin').get('[data-testid="cell-differs"]')
     expect(dot.attributes('role')).toBe('img')
-    expect(dot.attributes('aria-label')).toBe(i18n.global.t('plugins.matrix.differs'))
+    expect(dot.attributes('aria-label')).toBe(i18n.global.t('roles.differs'))
   })
 
   it('the suggestion speaks for built-in roles only: custom roles never differ and restore keeps their grants', async () => {
@@ -140,10 +147,14 @@ describe('PermissionMatrix', () => {
     expect(w.find('[data-testid="scope-picker"]').exists()).toBe(false)
 
     await choose(w, MANAGE, 'cs', 'Chosen…')
+    await w.vm.$nextTick()
     const panel = w.get('[data-testid="matrix-scope-panel"]')
     expect(w.get('table').element.compareDocumentPosition(panel.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // The select says what is being chosen while the panel is open, and the panel takes the focus.
+    expect(select(w, MANAGE, 'cs').element.selectedOptions[0].text).toBe('Chosen…')
+    expect(document.activeElement).toBe(panel.element)
     const picker = w.getComponent({ name: 'ScopePicker' })
-    expect(picker.props('plugin')).toEqual({ key: 'm', local: 'flow:manage', scope: { resource: 'flow', own: true } })
+    expect(picker.props('target')).toEqual({ kind: 'plugin', key: 'm', local: 'flow:manage', scope: { resource: 'flow', own: true }, label: MANAGE })
     expect(picker.props('offer').refs).toEqual(['flow/2'])
 
     picker.vm.$emit('update:scopes', [refScope('flow/2')])
@@ -197,6 +208,64 @@ describe('PermissionMatrix', () => {
     expect(w.find('th[data-role="cs"]').exists()).toBe(false)
     await w.get('[data-testid="matrix-more-roles"]').trigger('click')
     expect(w.find('th[data-role="cs"]').exists()).toBe(true)
+  })
+
+  it('a custom role granted something is not folded away, and the button counts its grants', async () => {
+    const { w } = render({ baseline: { ...SUGGESTED, cs: [READ] }, props: { collapseCustom: true } })
+    expect(w.find('th[data-role="cs"]').exists()).toBe(true)
+    await w.get('[data-testid="matrix-more-roles"]').trigger('click')
+    expect(w.find('th[data-role="cs"]').exists()).toBe(false)
+    expect(w.get('[data-testid="matrix-more-roles"]').text()).toContain(i18n.global.t('plugins.matrix.moreRolesGrants', { n: 1 }, 1))
+  })
+
+  it('a group checkbox leaves a critical row out: it is ticked on its own (D1)', async () => {
+    const perms = [perm(READ, { group: 'flow' }), perm(EXEMPT, { group: 'flow', risk: 'critical' })]
+    const { w, matrix } = render({ baseline: {}, perms })
+    const group = () => w.get<HTMLInputElement>('tr[data-group="flow"] input[data-group-role="admin"]')
+    await group().setValue(true)
+    expect(matrix.value.value.admin).toEqual([READ])
+    expect(group().element.checked).toBe(true)
+    await box(w, EXEMPT, 'admin').setValue(true)
+    expect(matrix.value.value.admin).toEqual([EXEMPT, READ])
+  })
+
+  it('keeps the cells changed locally when the baseline is read again (a reload, a conflict)', async () => {
+    const { w, matrix, base } = render()
+    await box(w, READ, 'operator').setValue(false)
+    // Meanwhile someone gave admin the critical row and the operator the own rows only.
+    base.value = { ...SUGGESTED, admin: [EXEMPT, MANAGE, READ] }
+    await w.vm.$nextTick()
+    expect(matrix.value.value.admin).toEqual([EXEMPT, MANAGE, READ])
+    expect(matrix.value.value.operator).toEqual([`${MANAGE}:own`])
+    expect(matrix.changes.value.map((c) => `${c.role} ${c.action}`)).toEqual([`operator ${READ}`])
+  })
+
+  it('a read-only matrix changes nothing', async () => {
+    const { w, matrix } = render({ readOnly: true })
+    expect(box(w, READ, 'admin').element.disabled).toBe(true)
+    matrix.setCell(PERMS[0], ROLES[1], [])
+    expect(matrix.dirty.value).toBe(false)
+    expect(w.find('[data-testid="matrix-restore"]').exists()).toBe(false)
+  })
+
+  it('hides the super admin column on phones and says why', () => {
+    const { w } = render()
+    expect(w.get('th[data-role="super_admin"]').classes()).toContain('hidden')
+    expect(w.get('[data-testid="matrix-super-note"]').classes()).toContain('md:hidden')
+  })
+
+  describe('restoring the suggestion: the cases the role editor answers alike', () => {
+    for (const c of RESTORE_CASES) {
+      it(c.name, async () => {
+        ui.toast.mockClear()
+        const perms = [perm(RESTORE_ACTION, { scope: { resource: 'flow', own: true }, defaults: { operator: c.want } })]
+        const held = permissionIndex(c.editor)
+        const { w, matrix } = render({ perms, baseline: { operator: c.cell }, scopeLimit: (a) => held.scopes(a), lockOf: (_p, r) => (r.superuser ? 'superuser' : null) })
+        expect(cell(w, RESTORE_ACTION, 'operator').find('[data-testid="cell-differs"]').exists()).toBe(c.state === 'differs')
+        expect(matrix.restore()).toBe(c.state === 'unreachable' ? 1 : 0)
+        expect(matrix.cell(perms[0], ROLES[2])).toEqual(c.restored)
+      })
+    }
   })
 
   it('folds rows after foldAfter', async () => {
