@@ -4,11 +4,11 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
@@ -72,13 +72,10 @@ func (p *Plugin) getUsers(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	rows, err := db.Query(ctx, `SELECT u FROM unnest($1::bigint[]) AS u WHERE
+	ids, err = column[int64](db.Raw(`SELECT u FROM unnest(?::bigint[]) AS u WHERE
 		EXISTS (SELECT 1 FROM events WHERE user_id = u) OR EXISTS (SELECT 1 FROM watchlist WHERE user_id = u)
 		OR EXISTS (SELECT 1 FROM watch_events WHERE user_id = u) OR EXISTS (SELECT 1 FROM watch_events WHERE operator_id = u)
-		OR EXISTS (SELECT 1 FROM blocks WHERE user_id = u) OR EXISTS (SELECT 1 FROM unblocks WHERE user_id = u)`, ids)
-	if err == nil {
-		ids, err = pgx.CollectRows(rows, pgx.RowTo[int64])
-	}
+		OR EXISTS (SELECT 1 FROM blocks WHERE user_id = u) OR EXISTS (SELECT 1 FROM unblocks WHERE user_id = u)`, pgdb.Array[int64](ids)))
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "users: %v", err)
 	}

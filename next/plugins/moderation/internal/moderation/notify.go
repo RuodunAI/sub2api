@@ -126,7 +126,7 @@ func (p *Plugin) runAlertsJob(ctx context.Context) (*pluginv1.RunJobResponse, er
 		return nil, status.Errorf(codes.Internal, "alerts: %v", err)
 	}
 	flows, _ := flowCounters(rows, time.Time{})
-	names, err := p.flowNames(ctx, db)
+	names, err := p.flowNames(db)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "alerts: %v", err)
 	}

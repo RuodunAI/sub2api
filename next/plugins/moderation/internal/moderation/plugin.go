@@ -19,8 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/singleflight"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -388,16 +388,16 @@ func (p *Plugin) HandleHTTP(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 	return resp, err
 }
 
-// db returns the plugin database pool.
-func (p *Plugin) db(ctx context.Context) (*pgxpool.Pool, error) {
+// db returns the plugin database handle, bound to ctx.
+func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if p.host == nil {
 		return nil, errors.New("moderation: host not initialised")
 	}
-	pool, err := p.host.DB(ctx)
+	db, err := p.host.DB(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errDBUnavailable, err)
 	}
-	return pool, nil
+	return db, nil
 }
 
 // ---------------------------------------------------------------- concurrency

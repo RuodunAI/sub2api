@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -31,9 +31,9 @@ func (p *Plugin) flowVersionView(ctx context.Context, flowID int64, version int,
 	var published []byte
 	var publishedAt *time.Time
 	var deleted bool
-	err = db.QueryRow(ctx, `SELECT name, version, published, published_at, deleted_at IS NOT NULL FROM flows WHERE id = $1`, flowID).
+	err = queryRow(db, `SELECT name, version, published, published_at, deleted_at IS NOT NULL FROM flows WHERE id = ?`, flowID).
 		Scan(&name, &cur, &published, &publishedAt, &deleted)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && deleted {
+	if errors.Is(err, gorm.ErrRecordNotFound) || err == nil && deleted {
 		return &FlowVersionView{FlowID: flowID, Version: version, Deleted: true, Note: NoteFlowDeleted, Stages: []StageView{}}, nil
 	}
 	if err != nil {
@@ -57,8 +57,8 @@ func (p *Plugin) flowVersionView(ctx context.Context, flowID int64, version int,
 	}
 	var raw []byte
 	var at time.Time
-	err = db.QueryRow(ctx, `SELECT spec, published_at FROM flow_versions WHERE flow_id = $1 AND version = $2`, flowID, version).Scan(&raw, &at)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = queryRow(db, `SELECT spec, published_at FROM flow_versions WHERE flow_id = ? AND version = ?`, flowID, version).Scan(&raw, &at)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, errNotFound
 	}
 	if err != nil {
@@ -97,18 +97,14 @@ func (p *Plugin) listFlowVersions(ctx context.Context, req *pluginv1.HTTPRequest
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
 	var cur int
-	err = db.QueryRow(ctx, `SELECT version FROM flows WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&cur)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = queryRow(db, `SELECT version FROM flows WHERE id = ? AND deleted_at IS NULL`, id).Scan(&cur)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("flow"), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `SELECT version, published_at, published_by FROM flow_versions WHERE flow_id = $1 ORDER BY version DESC`, id)
-	if err != nil {
-		return nil, err
-	}
-	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (FlowVersionItem, error) {
+	items, err := collect(db.Raw(`SELECT version, published_at, published_by FROM flow_versions WHERE flow_id = ? ORDER BY version DESC`, id), func(r row) (FlowVersionItem, error) {
 		var it FlowVersionItem
 		err := r.Scan(&it.Version, &it.PublishedAt, &it.PublishedBy)
 		it.PublishedAt, it.Current = it.PublishedAt.UTC(), it.Version == cur
@@ -162,10 +158,10 @@ func (p *Plugin) rollbackFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 			pluginsdk.FieldErrors{}.Add("version", "required", "version and expected_version are required / 请指定要回滚到的版本和当前版本号")), nil
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		var cur int
-		err := tx.QueryRow(ctx, `SELECT version FROM flows WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&cur)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err := queryRow(tx, `SELECT version FROM flows WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, id).Scan(&cur)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			resp = notFound("flow")
 			return errRollback
 		}
@@ -179,15 +175,15 @@ func (p *Plugin) rollbackFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 		}
 		var raw []byte
 		var auto bool
-		err = tx.QueryRow(ctx, `SELECT spec, auto_timeout FROM flow_versions WHERE flow_id = $1 AND version = $2`, id, in.Version).Scan(&raw, &auto)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err = queryRow(tx, `SELECT spec, auto_timeout FROM flow_versions WHERE flow_id = ? AND version = ?`, id, in.Version).Scan(&raw, &auto)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			resp = pluginsdk.ErrorResponse(http.StatusNotFound, "not_found", "flow version not found / 流程版本不存在")
 			return errRollback
 		}
 		if err != nil {
 			return err
 		}
-		spec, err := checkDraft(ctx, tx, raw)
+		spec, err := checkDraft(tx, raw)
 		var missing *MissingAuditorsError
 		if errors.As(err, &missing) {
 			resp = errorWithDetails(http.StatusBadRequest, "missing_auditors", "the version uses deleted auditors / 该版本使用了已删除的审核器",
@@ -201,7 +197,7 @@ func (p *Plugin) rollbackFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 		if auto {
 			spec.TotalTimeoutMs = 0
 		}
-		return publishSpec(ctx, tx, id, cur+1, spec, p.now().UTC(), callerID(req))
+		return publishSpec(tx, id, cur+1, spec, p.now().UTC(), callerID(req))
 	})
 	if resp != nil {
 		return resp, nil
@@ -253,8 +249,8 @@ func (p *Plugin) simulateFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	var chunks []*chunk
 	if sel.EventID > 0 {
 		var text *string
-		err := db.QueryRow(ctx, `SELECT text FROM events WHERE id = $1`, sel.EventID).Scan(&text)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err := queryRow(db, `SELECT text FROM events WHERE id = ?`, sel.EventID).Scan(&text)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return notFound("event"), nil
 		}
 		if err != nil {
@@ -276,8 +272,8 @@ func (p *Plugin) simulateFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	var name string
 	var cur int
 	var draft, published []byte
-	err = db.QueryRow(ctx, `SELECT name, version, draft, published FROM flows WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&name, &cur, &draft, &published)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = queryRow(db, `SELECT name, version, draft, published FROM flows WHERE id = ? AND deleted_at IS NULL`, id).Scan(&name, &cur, &draft, &published)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("flow"), nil
 	}
 	if err != nil {
@@ -292,8 +288,8 @@ func (p *Plugin) simulateFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 		}
 		raw, version = published, cur
 	case "version":
-		err := db.QueryRow(ctx, `SELECT spec FROM flow_versions WHERE flow_id = $1 AND version = $2`, id, sel.Version).Scan(&raw)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err := queryRow(db, `SELECT spec FROM flow_versions WHERE flow_id = ? AND version = ?`, id, sel.Version).Scan(&raw)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return pluginsdk.ErrorResponse(http.StatusNotFound, "not_found", "flow version not found / 流程版本不存在"), nil
 		}
 		if err != nil {
@@ -308,7 +304,7 @@ func (p *Plugin) simulateFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	if err != nil || len(spec.Stages) == 0 {
 		return pluginsdk.ErrorResponse(http.StatusBadRequest, "invalid_flow", "the flow spec has no stages / 流程没有审核级"), nil
 	}
-	if err := fillAutoTimeout(ctx, db, spec); err != nil {
+	if err := fillAutoTimeout(db, spec); err != nil {
 		return nil, err
 	}
 	f := &liveFlow{ID: id, Name: name, Version: version, Spec: spec, timeout: time.Duration(spec.TotalTimeoutMs) * time.Millisecond}

@@ -12,10 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
@@ -273,7 +273,7 @@ const eventColumns = `id, created_at, request_id, user_id, api_key_id, group_id,
 
 func (e *Event) scanTargets() []any {
 	return []any{&e.ID, &e.CreatedAt, &e.RequestID, &e.UserID, &e.APIKeyID, &e.GroupID, &e.Model, &e.Protocol, &e.Endpoint, &e.SessionFp, &e.Mode, &e.Timing, &e.Result,
-		&e.FlowID, &e.FlowVersion, &e.Severity, &e.HitCategories, &e.HighestCategory, &e.HighestScore, &e.ReviewStatus, &e.ReviewedBy, &e.ReviewedAt,
+		&e.FlowID, &e.FlowVersion, &e.Severity, (*pgdb.Array[string])(&e.HitCategories), &e.HighestCategory, &e.HighestScore, &e.ReviewStatus, &e.ReviewedBy, &e.ReviewedAt,
 		&e.Counted, &e.InputFormat, &e.TextChars, &e.ImageCount, &e.InputMessageSize, &e.LatencyMs, &e.QueueMs, &e.KeepUntil, &e.Replayed,
 		&e.Verdict, &e.Reason, &e.Error, &e.LLMModel, &e.FlowSource, &e.fallbackID, &e.fallbackReason, &e.Level, &e.LevelSource}
 }
@@ -376,8 +376,7 @@ func (f *sqlFilter) search(req *pluginv1.HTTPRequest) {
 		return
 	}
 	like := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(v) + "%"
-	a := f.arg(like)
-	f.conds = append(f.conds, "(request_id ILIKE "+a+" OR reason ILIKE "+a+" OR text ILIKE "+a+")")
+	f.conds = append(f.conds, "(request_id ILIKE "+f.arg(like)+" OR reason ILIKE "+f.arg(like)+" OR text ILIKE "+f.arg(like)+")")
 }
 
 // pagination reads page (>= 1, default 1) and page_size (1-100, default 20).
@@ -414,17 +413,12 @@ func (p *Plugin) listEvents(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
 	var total int64
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM events WHERE `+where, args...).Scan(&total); err != nil {
+	if err := queryRow(db, `SELECT count(*) FROM events WHERE `+where, args...).Scan(&total); err != nil {
 		return nil, err
 	}
-	n := len(args)
 	args = append(args, size, (page-1)*size)
-	rows, err := db.Query(ctx, `SELECT `+eventColumns+`, left(coalesce(text, ''), 120), trace FROM events WHERE `+where+
-		fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d OFFSET $%d`, n+1, n+2), args...)
-	if err != nil {
-		return nil, err
-	}
-	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (EventListItem, error) {
+	items, err := collect(db.Raw(`SELECT `+eventColumns+`, left(coalesce(text, ''), 120), trace FROM events WHERE `+where+
+		` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, args...), func(r row) (EventListItem, error) {
 		var it EventListItem
 		var trace []byte
 		err := r.Scan(append(it.scanTargets(), &it.TextExcerpt, &trace)...)
@@ -436,9 +430,6 @@ func (p *Plugin) listEvents(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 	})
 	if err != nil {
 		return nil, err
-	}
-	if items == nil {
-		items = []EventListItem{}
 	}
 	return pluginsdk.ListResponse(items, pluginsdk.Page{Page: page, PageSize: size, Total: total}), nil
 }
@@ -454,8 +445,8 @@ func (p *Plugin) getEvent(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	}
 	var d EventDetail
 	var trace []byte
-	err = db.QueryRow(ctx, `SELECT `+eventColumns+`, text, trace FROM events WHERE id = $1`, id).Scan(append(d.scanTargets(), &d.Text, &trace)...)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = queryRow(db, `SELECT `+eventColumns+`, text, trace FROM events WHERE id = ?`, id).Scan(append(d.scanTargets(), &d.Text, &trace)...)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("event"), nil
 	}
 	if err != nil {
@@ -472,8 +463,8 @@ func (p *Plugin) getEvent(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 }
 
 // eventContext fills the detail context of a record.
-func (p *Plugin) eventContext(ctx context.Context, db *pgxpool.Pool, d *EventDetail) error {
-	for _, load := range []func(context.Context, *pgxpool.Pool, *EventDetail) error{
+func (p *Plugin) eventContext(ctx context.Context, db *gorm.DB, d *EventDetail) error {
+	for _, load := range []func(context.Context, *gorm.DB, *EventDetail) error{
 		relatedEvents, p.flowContext, eventExtras,
 	} {
 		if err := load(ctx, db, d); err != nil {
@@ -489,17 +480,13 @@ func (p *Plugin) eventContext(ctx context.Context, db *pgxpool.Pool, d *EventDet
 }
 
 // relatedEvents lists the other records of the same request (pre and post).
-func relatedEvents(ctx context.Context, db *pgxpool.Pool, d *EventDetail) error {
+func relatedEvents(ctx context.Context, db *gorm.DB, d *EventDetail) error {
 	d.Related = []RelatedItem{}
 	if d.RequestID == "" {
 		return nil
 	}
-	rows, err := db.Query(ctx, `SELECT id, created_at, timing, result, flow_id, flow_version, severity FROM events
-		WHERE request_id = $1 AND id <> $2 ORDER BY id LIMIT 20`, d.RequestID, d.ID)
-	if err != nil {
-		return err
-	}
-	related, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (RelatedItem, error) {
+	related, err := collect(db.Raw(`SELECT id, created_at, timing, result, flow_id, flow_version, severity FROM events
+		WHERE request_id = ? AND id <> ? ORDER BY id LIMIT 20`, d.RequestID, d.ID), func(r row) (RelatedItem, error) {
 		var it RelatedItem
 		err := r.Scan(&it.ID, &it.CreatedAt, &it.Timing, &it.Result, &it.FlowID, &it.FlowVersion, &it.Severity)
 		it.CreatedAt = it.CreatedAt.UTC()
@@ -513,12 +500,12 @@ func relatedEvents(ctx context.Context, db *pgxpool.Pool, d *EventDetail) error 
 
 // flowContext adds the flow's name, its current version and the version
 // that ran.
-func (p *Plugin) flowContext(ctx context.Context, db *pgxpool.Pool, d *EventDetail) error {
+func (p *Plugin) flowContext(ctx context.Context, db *gorm.DB, d *EventDetail) error {
 	if d.FlowID <= 0 {
 		return nil
 	}
-	err := db.QueryRow(ctx, `SELECT name, version FROM flows WHERE id = $1`, d.FlowID).Scan(&d.FlowName, &d.FlowCurrent)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	err := queryRow(db, `SELECT name, version FROM flows WHERE id = ?`, d.FlowID).Scan(&d.FlowName, &d.FlowCurrent)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
 	v, err := p.flowVersionView(ctx, d.FlowID, d.FlowVersion, p.snap.Load())
@@ -530,13 +517,13 @@ func (p *Plugin) flowContext(ctx context.Context, db *pgxpool.Pool, d *EventDeta
 }
 
 // eventExtras adds the readable input text.
-func eventExtras(ctx context.Context, db *pgxpool.Pool, d *EventDetail) error {
+func eventExtras(ctx context.Context, db *gorm.DB, d *EventDetail) error {
 	if d.InputMessageSize == 0 {
 		return nil
 	}
 	var msg *string
-	err := db.QueryRow(ctx, `SELECT input_message FROM events WHERE id = $1`, d.ID).Scan(&msg)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	err := queryRow(db, `SELECT input_message FROM events WHERE id = ?`, d.ID).Scan(&msg)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
 	if msg != nil {
@@ -547,7 +534,7 @@ func eventExtras(ctx context.Context, db *pgxpool.Pool, d *EventDetail) error {
 
 // userState is a user's moderation state now: watch entry, user lists,
 // moderator, block.
-func (p *Plugin) userState(ctx context.Context, db *pgxpool.Pool, uid int64) (UserState, error) {
+func (p *Plugin) userState(ctx context.Context, db *gorm.DB, uid int64) (UserState, error) {
 	now := p.now().UTC()
 	st := UserState{Staff: p.isStaff(ctx, uid)}
 	if until, ok := (*p.blocked.Load())[uid]; ok && (until.IsZero() || now.Before(until)) {
@@ -557,12 +544,12 @@ func (p *Plugin) userState(ctx context.Context, db *pgxpool.Pool, uid int64) (Us
 			st.Until = &u
 		}
 	}
-	w, err := scanWatch(db.QueryRow(ctx, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > $2)`, uid, now))
+	w, err := scanWatch(queryRow(db, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?)`, uid, now))
 	switch {
 	case err == nil:
 		st.Watch = &w
 		st.Allowlisted, st.Blocklisted = w.Lock == LockAllowlist, w.Lock == LockBlocklist
-	case !errors.Is(err, pgx.ErrNoRows):
+	case !errors.Is(err, gorm.ErrRecordNotFound):
 		return st, err
 	}
 	return st, nil
@@ -582,8 +569,8 @@ func (p *Plugin) getEventInput(ctx context.Context, req *pluginv1.HTTPRequest) (
 	}
 	var msg *string
 	var format string
-	err = db.QueryRow(ctx, `SELECT input_message, input_format FROM events WHERE id = $1`, id).Scan(&msg, &format)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = queryRow(db, `SELECT input_message, input_format FROM events WHERE id = ?`, id).Scan(&msg, &format)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("event"), nil
 	}
 	if err != nil {
@@ -608,11 +595,11 @@ func (p *Plugin) deleteEvent(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	tag, err := db.Exec(ctx, `DELETE FROM events WHERE id = $1`, id)
+	n, err := affected(db.Exec(`DELETE FROM events WHERE id = ?`, id))
 	if err != nil {
 		return nil, err
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 {
 		return notFound("event"), nil
 	}
 	return pluginsdk.DataResponse(map[string]any{"id": id, "deleted": true}), nil
@@ -658,51 +645,49 @@ func (p *Plugin) reviewEvents(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	rows, err := db.Query(ctx, `SELECT DISTINCT user_id FROM events WHERE id = ANY($1) AND `+suspiciousResult+` ORDER BY user_id`, in.IDs)
-	if err != nil {
-		return nil, err
-	}
-	users, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	ids := pgdb.Array[int64](in.IDs)
+	users, err := column[int64](db.Raw(`SELECT DISTINCT user_id FROM events WHERE id = ANY(?) AND `+suspiciousResult+` ORDER BY user_id`, ids))
 	if err != nil {
 		return nil, err
 	}
 	now, by := p.now().UTC(), callerID(req)
 	updated := 0
 	for _, uid := range users {
-		err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		err := db.Transaction(func(tx *gorm.DB) error {
 			if uid > 0 {
-				if err := lockBlockSubject(ctx, tx, uid); err != nil {
+				if err := lockBlockSubject(tx, uid); err != nil {
 					return err
 				}
 			}
 			var epoch int64
-			if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT violation_epoch FROM watchlist WHERE user_id = $1 AND level = 'observe'), 0)`, uid).Scan(&epoch); err != nil {
+			if err := queryRow(tx, `SELECT coalesce((SELECT violation_epoch FROM watchlist WHERE user_id = ? AND level = 'observe'), 0)`, uid).Scan(&epoch); err != nil {
 				return err
 			}
-			// Take back: counted records of the current window turning false_positive.
-			tag, err := tx.Exec(ctx, `UPDATE events SET counted = false
-				WHERE id = ANY($1) AND user_id = $2 AND counted AND $3 = 'false_positive' AND violation_epoch = $4 AND $4 <> 0`,
-				in.IDs, uid, in.Status, epoch)
+			// Take back: counted records of the current window turning
+			// false_positive. The epoch is bound twice; the cast keeps the
+			// second one a bigint like the column of the first.
+			n, err := affected(tx.Exec(`UPDATE events SET counted = false
+				WHERE id = ANY(?) AND user_id = ? AND counted AND ? = 'false_positive' AND violation_epoch = ? AND ?::bigint <> 0`, ids, uid, in.Status, epoch, epoch))
 			if err != nil {
 				return err
 			}
-			delta := -int(tag.RowsAffected())
+			delta := -int(n)
 			// Count again: false positives of the current window turning back.
-			tag, err = tx.Exec(ctx, `UPDATE events SET counted = true
-				WHERE id = ANY($1) AND user_id = $2 AND NOT counted AND review_status = 'false_positive' AND $3 <> 'false_positive'
-				  AND violation_epoch = $4 AND $4 <> 0 AND `+suspiciousResult, in.IDs, uid, in.Status, epoch)
+			n, err = affected(tx.Exec(`UPDATE events SET counted = true
+				WHERE id = ANY(?) AND user_id = ? AND NOT counted AND review_status = 'false_positive' AND ? <> 'false_positive'
+				  AND violation_epoch = ? AND ?::bigint <> 0 AND `+suspiciousResult, ids, uid, in.Status, epoch, epoch))
 			if err != nil {
 				return err
 			}
-			delta += int(tag.RowsAffected())
-			tag, err = tx.Exec(ctx, `UPDATE events SET review_status = $3, reviewed_by = $4, reviewed_at = $5
-				WHERE id = ANY($1) AND user_id = $2 AND `+suspiciousResult, in.IDs, uid, in.Status, by, now)
+			delta += int(n)
+			n, err = affected(tx.Exec(`UPDATE events SET review_status = ?, reviewed_by = ?, reviewed_at = ?
+				WHERE id = ANY(?) AND user_id = ? AND `+suspiciousResult, in.Status, by, now, ids, uid))
 			if err != nil {
 				return err
 			}
-			updated += int(tag.RowsAffected())
+			updated += int(n)
 			if delta != 0 {
-				_, err = tx.Exec(ctx, `UPDATE watchlist SET violation_count = GREATEST(violation_count + $2, 0), updated_at = $3 WHERE user_id = $1`, uid, delta, now)
+				err = tx.Exec(`UPDATE watchlist SET violation_count = GREATEST(violation_count + ?, 0), updated_at = ? WHERE user_id = ?`, delta, now, uid).Error
 			}
 			return err
 		})
@@ -729,7 +714,7 @@ type Block struct {
 
 const blockColumns = `user_id, reason, violations, source, created_at, expires_at, created_by`
 
-func scanBlock(r pgx.Row) (Block, error) {
+func scanBlock(r row) (Block, error) {
 	var b Block
 	err := r.Scan(&b.UserID, &b.Reason, &b.Violations, &b.Source, &b.CreatedAt, &b.ExpiresAt, &b.CreatedBy)
 	b.CreatedAt, b.ExpiresAt = b.CreatedAt.UTC(), utcPtr(b.ExpiresAt)
@@ -741,12 +726,8 @@ func (p *Plugin) listBlocks(ctx context.Context, _ *pluginv1.HTTPRequest) (*plug
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	rows, err := db.Query(ctx, `SELECT `+blockColumns+` FROM blocks
-		WHERE expires_at IS NULL OR expires_at > $1 ORDER BY created_at DESC, user_id`, p.now().UTC())
-	if err != nil {
-		return nil, err
-	}
-	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Block, error) { return scanBlock(r) })
+	list, err := collect(db.Raw(`SELECT `+blockColumns+` FROM blocks
+		WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC, user_id`, p.now().UTC()), func(r row) (Block, error) { return scanBlock(r) })
 	if err != nil {
 		return nil, err
 	}
@@ -801,13 +782,13 @@ func (p *Plugin) createBlock(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		expires = &t
 	}
 	var b Block
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		if err := lockBlockSubject(ctx, tx, uid); err != nil {
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := lockBlockSubject(tx, uid); err != nil {
 			return err
 		}
 		var err error
-		b, err = scanBlock(tx.QueryRow(ctx, `INSERT INTO blocks (user_id, reason, violations, source, created_at, expires_at, created_by)
-		VALUES ($1, $2, 0, 'manual', $3, $4, $5)
+		b, err = scanBlock(queryRow(tx, `INSERT INTO blocks (user_id, reason, violations, source, created_at, expires_at, created_by)
+		VALUES (?, ?, 0, 'manual', ?, ?, ?)
 		ON CONFLICT (user_id) DO UPDATE SET reason = EXCLUDED.reason, source = 'manual', created_at = EXCLUDED.created_at,
 			expires_at = EXCLUDED.expires_at, created_by = EXCLUDED.created_by
 		RETURNING `+blockColumns, uid, reason, now, expires, callerID(req)))
@@ -830,20 +811,19 @@ func (p *Plugin) deleteBlock(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
 	var found bool
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		if err := lockBlockSubject(ctx, tx, uid); err != nil {
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := lockBlockSubject(tx, uid); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx, `DELETE FROM blocks WHERE user_id = $1`, uid)
+		n, err := affected(tx.Exec(`DELETE FROM blocks WHERE user_id = ?`, uid))
 		if err != nil {
 			return err
 		}
-		if found = tag.RowsAffected() > 0; !found {
+		if found = n > 0; !found {
 			return nil
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO unblocks (user_id, at) VALUES ($1, $2)
-			ON CONFLICT (user_id) DO UPDATE SET at = EXCLUDED.at`, uid, p.now().UTC())
-		return err
+		return tx.Exec(`INSERT INTO unblocks (user_id, at) VALUES (?, ?)
+			ON CONFLICT (user_id) DO UPDATE SET at = EXCLUDED.at`, uid, p.now().UTC()).Error
 	})
 	if err != nil {
 		return nil, err

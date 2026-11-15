@@ -16,9 +16,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
@@ -1323,8 +1324,8 @@ func (p *Plugin) clearVerdictCache(ctx context.Context, _ *pluginv1.HTTPRequest)
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
 	var epoch int64
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `UPDATE config_state SET cache_epoch = cache_epoch + 1, config_version = config_version + 1
+	err = db.Transaction(func(tx *gorm.DB) error {
+		return queryRow(tx, `UPDATE config_state SET cache_epoch = cache_epoch + 1, config_version = config_version + 1
 			WHERE id = 1 RETURNING cache_epoch`).Scan(&epoch)
 	})
 	if err != nil {
@@ -1413,12 +1414,8 @@ func (p *Plugin) reviewedHits(ctx context.Context, ids []int64, status string) [
 		fail(err)
 		return nil
 	}
-	rows, err := db.Query(ctx, `SELECT request_id, flow_id, trace FROM events
-		WHERE id = ANY($1) AND `+suspiciousResult+` AND trace IS NOT NULL ORDER BY id`, ids)
-	if err != nil {
-		fail(err)
-		return nil
-	}
+	q := db.Raw(`SELECT request_id, flow_id, trace FROM events
+		WHERE id = ANY(?) AND `+suspiciousResult+` AND trace IS NOT NULL ORDER BY id`, pgdb.Array[int64](ids))
 	snap := p.snap.Load()
 	at := p.now().Unix()
 	var (
@@ -1428,7 +1425,7 @@ func (p *Plugin) reviewedHits(ctx context.Context, ids []int64, status string) [
 		flowID int64
 		raw    []byte
 	)
-	_, err = pgx.ForEachRow(rows, []any{&rid, &flowID, &raw}, func() error {
+	err = eachRow(q, []any{&rid, &flowID, &raw}, func() error {
 		var tr Trace
 		if json.Unmarshal(raw, &tr) != nil || tr.Cache == nil || !isHexHash(tr.Cache.Key) ||
 			len(tr.Cache.Segs) == 0 || slices.ContainsFunc(tr.Cache.Segs, func(s string) bool { return !isHexHash(s) }) {
