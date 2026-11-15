@@ -491,9 +491,15 @@ func (g *Gateway) deleteRuleHandler(c *gin.Context) {
 }
 
 func (g *Gateway) ruleNameInUse(ctx context.Context, db *store.DB, name string) bool {
-	var n int64
-	_ = store.G(ctx, db.Pool).Model(&model.StickyRule{}).Where("name = ?", name).Count(&n).Error
-	return n > 0
+	// An error reads as not in use: the caller then drops the rule's stats.
+	gdb := store.G(ctx, db.Pool)
+	found, _ := store.Exists(gdb, rulesNamed(gdb, name))
+	return found
+}
+
+// rulesNamed selects the sticky rules named name.
+func rulesNamed(db *gorm.DB, name string) *gorm.DB {
+	return db.Model(&model.StickyRule{}).Where("name = ?", name)
 }
 
 // flushRuleHandler deletes every binding of the rule.

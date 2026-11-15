@@ -1,0 +1,4 @@
+-- sql
+SELECT value FROM "settings" WHERE key = $1
+-- vars
+$1 string "billing"

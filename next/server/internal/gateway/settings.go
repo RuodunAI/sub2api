@@ -254,14 +254,22 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 	return s
 }
 
-func loadSettingsRow(ctx context.Context, q store.Querier, key string, into any) error {
+// settingValue reads the document of settings row key, nil when there is no
+// row (the column is NOT NULL). It stays on pgx, unlike store.SettingValue:
+// the settings cache reloads it on the request path.
+func settingValue(ctx context.Context, q store.Querier, key string) ([]byte, error) {
 	var raw []byte
 	//gormguard:allow-pgx cached request-path read (settingsTTL); GORM takes 6.9x the allocations (BASELINE.md, batch 4d)
 	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&raw)
 	if store.IsNoRows(err) {
-		return nil
+		return nil, nil
 	}
-	if err != nil {
+	return raw, err
+}
+
+func loadSettingsRow(ctx context.Context, q store.Querier, key string, into any) error {
+	raw, err := settingValue(ctx, q, key)
+	if err != nil || raw == nil {
 		return err
 	}
 	// Fields absent from the stored document keep the defaults in into.

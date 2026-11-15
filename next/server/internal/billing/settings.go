@@ -7,12 +7,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Missing-price policies.
@@ -90,22 +88,15 @@ func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	return v, nil
 }
 
-// settingsRow selects the stored billing settings document.
-func settingsRow(db *gorm.DB) *gorm.DB {
-	return db.Model(&model.Setting{}).Select("value").Where("key = ?", settingsKey)
-}
-
 func loadSettings(ctx context.Context, q store.Querier) (Settings, error) {
 	v := DefaultSettings()
-	var row model.Setting
-	err := settingsRow(store.G(ctx, q)).Take(&row).Error
+	raw, err := store.SettingValue(store.G(ctx, q), settingsKey)
 	if store.IsNoRows(err) {
 		return v, nil
 	}
 	if err != nil {
 		return v, err
 	}
-	raw := row.Value
 	// Fields absent from the stored document keep their defaults.
 	var partial struct {
 		PreConsumeTokens       *int64           `json:"pre_consume_tokens"`

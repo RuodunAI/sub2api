@@ -5,7 +5,8 @@ package store
 // and the hot-path benchmarks.
 var (
 	ReadQuotaRows       = readQuotaRows
-	LockSetting         = lockSetting
+	QuotasAtSQL         = quotasAt
+	SettingValueSQL     = settingValue
 	WriteSetting        = writeSetting
 	UpsertBalanceSQL    = upsertBalance
 	RecordRefreshSQL    = recordAccountRefresh

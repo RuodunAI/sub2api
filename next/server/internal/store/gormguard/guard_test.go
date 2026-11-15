@@ -77,6 +77,18 @@ var migratedPackages = map[string]string{
 	"internal/webui":                        "batch 1d",
 }
 
+// migratedFiles lists single files, relative to the module, that are held
+// to [pgx-direct] although their package is not in migratedPackages:
+// package store keeps pgx where it owns the connection (the GORM bridge in
+// gorm.go, the pool in db.go, the migrations in migrate.go), while its
+// repository files build their statements with store.G.
+var migratedFiles = map[string]string{
+	"internal/store/account_balance.go": "batch 4d",
+	"internal/store/account_quota.go":   "batch 4d",
+	"internal/store/account_refresh.go": "batch 4d",
+	"internal/store/settings.go":        "batch 4d",
+}
+
 // --- loading -------------------------------------------------------------
 
 type listed struct {
@@ -147,6 +159,7 @@ func exportImporter(fset *token.FileSet, pkgs []listed) types.Importer {
 func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*ast.File) (*types.Info, error) {
 	info := &types.Info{
 		Types:      map[ast.Expr]types.TypeAndValue{},
+		Defs:       map[*ast.Ident]types.Object{},
 		Uses:       map[*ast.Ident]types.Object{},
 		Selections: map[*ast.SelectorExpr]*types.Selection{},
 	}
@@ -157,23 +170,30 @@ func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*as
 // --- the repository ------------------------------------------------------
 
 // TestRepositoryFollowsGORMRules checks every non-test file of the packages
-// the rules can apply to: those that depend on GORM, and the migrated ones.
+// the rules can apply to: those that depend on GORM, the migrated ones and
+// those with a migrated file.
 func TestRepositoryFollowsGORMRules(t *testing.T) {
 	root, module := moduleRoot(t)
-	r := rules{module: module, owners: instanceOwners, migrated: migratedPackages}
-	known := map[string]bool{}
+	r := rules{module: module, owners: instanceOwners, migrated: migratedPackages, files: migratedFiles}
+	known := map[string]bool{} // packages and their files, relative to the module
 	var targets []listed
 	for _, p := range goList(t, root, "./...") {
 		rel := strings.TrimPrefix(p.ImportPath, module+"/")
 		known[rel] = true
-		if _, migrated := r.migrated[rel]; migrated || slices.Contains(p.Deps, gormPkg) {
+		_, migrated := r.migrated[rel]
+		for _, name := range p.GoFiles {
+			known[rel+"/"+name] = true
+			_, file := r.files[rel+"/"+name]
+			migrated = migrated || file
+		}
+		if migrated || slices.Contains(p.Deps, gormPkg) {
 			targets = append(targets, p)
 		}
 	}
-	for _, list := range []map[string]string{instanceOwners, migratedPackages} {
+	for _, list := range []map[string]string{instanceOwners, migratedPackages, migratedFiles} {
 		for rel := range list {
 			if !known[rel] {
-				t.Errorf("%s is listed but is no package of %s; drop its entry", rel, module)
+				t.Errorf("%s is listed but is no package or Go file of %s; drop its entry", rel, module)
 			}
 		}
 	}
@@ -242,10 +262,12 @@ func TestRules(t *testing.T) {
 		module:   fixtureModule,
 		owners:   map[string]string{"internal/store": "test"},
 		migrated: map[string]string{"internal/usage": "test"},
+		files:    map[string]string{"internal/store/repo.go": "test"},
 	}
 	cases := []struct {
 		name    string
 		pkg     string // relative to the module
+		file    string // the file name, when it matters
 		imports string // extra imports
 		src     string
 		want    []string // the rule tags of the findings, in source order
@@ -301,6 +323,88 @@ func f(db *gorm.DB) {
 }
 `,
 			want: []string{ruleUnrun, ruleUnrun},
+		},
+		{
+			name: "raw-unrun/through a variable, parentheses and a function of the package",
+			pkg:  "internal/billing",
+			src: `
+func update(db *gorm.DB) *gorm.DB { return db.Raw("UPDATE t SET a = 1") }
+
+func wrapped(db *gorm.DB, id int64) *gorm.DB {
+	q := db.Raw("DELETE FROM t WHERE id = ?", id)
+	return (q).Where("x")
+}
+
+func f(db *gorm.DB) {
+	q := db.Raw("UPDATE t SET a = 1")
+	_ = q.Error
+	_ = q.RowsAffected
+	var r *gorm.DB
+	r = (db.Raw("SELECT 1"))
+	_ = r.Error
+	_ = (db.Raw("UPDATE t SET a = 1")).Error
+	_ = (db).Raw("UPDATE t SET a = 1").Error
+	_ = update(db).Error
+	_ = update(db).Where("x").RowsAffected
+	_ = wrapped(db, 1).Error
+	s := update(db)
+	_ = s.Error
+}
+`,
+			want: []string{ruleUnrun, ruleUnrun, ruleUnrun, ruleUnrun, ruleUnrun, ruleUnrun, ruleUnrun, ruleUnrun, ruleUnrun},
+		},
+		{
+			name: "raw-unrun/statements that ran, may have run, or are no gorm",
+			pkg:  "internal/billing",
+			src: `
+type fake struct {
+	Error        error
+	RowsAffected int64
+}
+
+func (x *fake) Raw(string, ...any) *fake { return x }
+
+func update(db *gorm.DB) *gorm.DB { return db.Raw("UPDATE t SET a = 1") }
+
+func scanned(db *gorm.DB) *gorm.DB {
+	var n int
+	return db.Raw("SELECT 1").Scan(&n)
+}
+
+func either(db *gorm.DB, write bool) *gorm.DB {
+	if write {
+		return db.Exec("UPDATE t SET a = 1")
+	}
+	return db.Raw("SELECT 1")
+}
+
+func run(*gorm.DB) {}
+
+func f(db *gorm.DB, x *fake) {
+	var n int
+	q := db.Raw("SELECT 1")
+	q.Scan(&n)
+	_ = q.Error
+	r := db.Raw("SELECT 1")
+	run(r)
+	_ = r.Error
+	s := db.Raw("SELECT 1")
+	s = s.Scan(&n)
+	_ = s.Error
+	t := db.Raw("SELECT 1")
+	rows, _ := t.Rows()
+	_ = rows
+	_ = t.Error
+	e := db.Exec("UPDATE t SET a = 1")
+	_ = e.Error
+	_ = update(db).Scan(&n).Error
+	_ = scanned(db).Error
+	_ = either(db, true).Error
+	_ = x.Raw("UPDATE t SET a = 1").Error
+	_ = x.Raw("UPDATE t SET a = 1").RowsAffected
+	_ = db.Error
+}
+`,
 		},
 		{
 			name:    "open/outside store, through an alias and as a value",
@@ -458,6 +562,79 @@ func f(db *gorm.DB, a []int64, raw []byte, doc json.RawMessage, at []time.Time, 
 `,
 		},
 		{
+			name:    "slice/byte slices at a (?",
+			pkg:     "internal/billing",
+			imports: `import "encoding/json"`,
+			src: `
+const insert = "INSERT INTO t (doc) VALUES (?)"
+
+func f(db *gorm.DB, raw []byte, doc json.RawMessage, digest [4]byte) {
+	db.Exec("INSERT INTO t (a, b) VALUES (?, ?)", raw, doc)
+	db.Exec(insert, doc)
+	db.Where("digest IN (?)", digest)
+	db.Raw("SELECT f(?)", raw)
+	_ = gorm.Expr("coalesce(?, '')", doc)
+	db.Where(clause.Expr{SQL: "x = (?)", Vars: []any{raw}})
+	db.Where(clause.Expr{SQL: "x = ?", Vars: []any{raw}, WithoutParentheses: true})
+	var conds store.Conds
+	conds.And("x = (?)", raw)
+	db.Select("(?) AS d", raw)
+	var rows []struct{ ID int64 }
+	db.Find(&rows, "x = (?)", raw)
+}
+`,
+			want: []string{ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice, ruleSlice},
+		},
+		{
+			name: "slice/byte slices elsewhere, Valuers, wrapped and unknown SQL pass",
+			pkg:  "internal/billing",
+			imports: `import (
+	"database/sql/driver"
+	"encoding/json"
+)`,
+			src: `
+// bytea stands in for store.Bytes: a byte slice that is a driver.Valuer.
+type bytea []byte
+
+func (b bytea) Value() (driver.Value, error) { return []byte(b), nil }
+
+func f(db *gorm.DB, raw []byte, doc json.RawMessage, query string, args []any) {
+	db.Exec("INSERT INTO t (a, b) VALUES ( ?, ?)", raw, doc)
+	db.Exec("INSERT INTO t (a) VALUES (?)", bytea(raw))
+	db.Exec("INSERT INTO t (a) VALUES (?)", gorm.Expr("?", raw))
+	db.Where("blob = ?", raw)
+	db.Exec(query, raw)
+	db.Exec("INSERT INTO t (a, b) VALUES (?, ?)", args...)
+	db.Exec("UPDATE t SET a = ? WHERE b = ANY(?)", raw, store.Int64s(nil))
+	db.Where(clause.Expr{SQL: "x = ?", Vars: []any{raw}})
+	db.Model(&struct{}{}).Update("doc", doc)
+}
+`,
+		},
+		{
+			name: "pgx/a migrated file of a package that is not",
+			pkg:  "internal/store",
+			file: "repo.go",
+			src: `
+func f(ctx context.Context, q store.Querier) {
+	_, _ = q.Exec(ctx, "x")
+	//gormguard:allow-pgx hot path, see BASELINE.md
+	_ = q.QueryRow(ctx, "x")
+}
+`,
+			want: []string{rulePgx},
+		},
+		{
+			name: "pgx/the other files of that package",
+			pkg:  "internal/store",
+			file: "migrate.go",
+			src: `
+func f(ctx context.Context, q store.Querier) {
+	_, _ = q.Exec(ctx, "x")
+}
+`,
+		},
+		{
 			name: "pgx/allow comments with a reason, on the line or the line above",
 			pkg:  "internal/usage",
 			src: `
@@ -528,7 +705,11 @@ func f(ctx context.Context, q store.Querier, pool *pgxpool.Pool) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			src := "package p\n" + fixtureImports + c.imports + "\n" + c.src + fixtureUses
-			f, err := parser.ParseFile(fset, c.name+".go", src, parser.SkipObjectResolution|parser.ParseComments)
+			name := c.file
+			if name == "" {
+				name = c.name + ".go"
+			}
+			f, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution|parser.ParseComments)
 			if err != nil {
 				t.Fatal(err)
 			}

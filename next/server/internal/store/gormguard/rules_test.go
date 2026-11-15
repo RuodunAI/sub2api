@@ -3,8 +3,10 @@ package gormguard
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"strings"
 )
 
@@ -51,18 +53,23 @@ var pgxMethods = map[string]bool{"Exec": true, "Query": true, "QueryRow": true}
 type rules struct {
 	module   string
 	owners   map[string]string
-	migrated map[string]string
+	migrated map[string]string // packages, relative to the module
+	files    map[string]string // single migrated files, relative to the module
 }
 
 // check returns the findings of one type-checked package as
-// "file:line:col: [rule] message". The files must be parsed with comments.
+// "file:line:col: [rule] message". The files must be parsed with comments,
+// and info must hold Defs as well as Types, Uses and Selections.
 func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, info *types.Info) []string {
 	rel := strings.TrimPrefix(pkgPath, r.module+"/")
 	_, owner := r.owners[rel]
 	_, migrated := r.migrated[rel]
-	c := &checker{fset: fset, info: info, owner: owner, migrated: migrated, storePkg: r.module + "/internal/store"}
+	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/internal/store"}
+	c.index(files)
 	for _, f := range files {
 		c.allowed = allowComments(fset, f)
+		_, file := r.files[rel+"/"+filepath.Base(fset.Position(f.Package).Filename)]
+		c.migrated = migrated || file
 		ast.Inspect(f, c.visit)
 	}
 	return c.out
@@ -75,6 +82,100 @@ type checker struct {
 	storePkg        string         // import path of package store
 	allowed         map[int]string // line -> reason of an allow-pgx comment
 	out             []string
+
+	// What [gorm-raw-unrun] follows a Raw statement through: the functions
+	// of the package, the assignments and uses of its local variables, and
+	// whether a function returns an unrun Raw statement (memoized).
+	funcs   map[*types.Func]*ast.FuncDecl
+	assigns map[*types.Var][]assignment
+	uses    map[*types.Var][]use
+	rawFns  map[*types.Func]bool
+}
+
+// assignment is a value given to a local variable as of position at: rhs,
+// or nil when it is no single expression (v, err := f(), a range).
+type assignment struct {
+	at  token.Pos
+	rhs ast.Expr
+}
+
+// use is a mention of a local variable other than a := declaration;
+// fieldRead marks a field read such as q.Error, which runs nothing.
+type use struct {
+	pos       token.Pos
+	fieldRead bool
+}
+
+// index records the functions of the package and the assignments and uses
+// of its local variables, for unrunRaw.
+func (c *checker) index(files []*ast.File) {
+	c.funcs = map[*types.Func]*ast.FuncDecl{}
+	c.assigns = map[*types.Var][]assignment{}
+	c.uses = map[*types.Var][]use{}
+	c.rawFns = map[*types.Func]bool{}
+	fieldReads := map[*ast.Ident]bool{}
+	assign := func(at token.Pos, lhs []ast.Expr, rhs []ast.Expr) {
+		for i, l := range lhs {
+			id, _ := l.(*ast.Ident)
+			v := c.localVar(id)
+			if v == nil {
+				continue
+			}
+			a := assignment{at: at}
+			if len(lhs) == len(rhs) {
+				a.rhs = rhs[i]
+			}
+			c.assigns[v] = append(c.assigns[v], a)
+		}
+	}
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.FuncDecl:
+				if fn, ok := c.info.Defs[n.Name].(*types.Func); ok {
+					c.funcs[fn] = n
+				}
+			case *ast.AssignStmt:
+				assign(n.End(), n.Lhs, n.Rhs)
+			case *ast.RangeStmt:
+				assign(n.X.End(), []ast.Expr{n.Key, n.Value}, nil)
+			case *ast.ValueSpec:
+				lhs := make([]ast.Expr, len(n.Names))
+				for i, id := range n.Names {
+					lhs[i] = id
+				}
+				assign(n.End(), lhs, n.Values)
+			case *ast.SelectorExpr:
+				if id, ok := n.X.(*ast.Ident); ok {
+					if s := c.info.Selections[n]; s != nil && s.Kind() == types.FieldVal {
+						fieldReads[id] = true
+					}
+				}
+			}
+			return true
+		})
+	}
+	for id := range c.info.Uses {
+		if v := c.localVar(id); v != nil {
+			c.uses[v] = append(c.uses[v], use{pos: id.Pos(), fieldRead: fieldReads[id]})
+		}
+	}
+}
+
+// localVar is the variable, declared in a function, that id names.
+func (c *checker) localVar(id *ast.Ident) *types.Var {
+	if id == nil {
+		return nil
+	}
+	obj := c.info.Defs[id]
+	if obj == nil {
+		obj = c.info.Uses[id]
+	}
+	v, _ := obj.(*types.Var)
+	if v == nil || v.IsField() || v.Pkg() == nil || v.Parent() == nil || v.Parent() == v.Pkg().Scope() {
+		return nil
+	}
+	return v
 }
 
 func (c *checker) report(n ast.Node, format string, args ...any) {
@@ -113,33 +214,109 @@ func (c *checker) selector(n *ast.SelectorExpr) {
 	}
 }
 
-// unrun reports the Error or RowsAffected of a Raw chain that no method
-// ran: db.Raw(sql).Error is nil without the statement ever reaching the
-// database. A write takes Exec instead of Raw, a read ends in Scan, Row or
-// Rows.
+// unrun reports the Error or RowsAffected of a Raw statement that no
+// method ran (unrunRaw): db.Raw(sql).Error is nil without the statement
+// ever reaching the database. A write takes Exec instead of Raw, a read
+// ends in Scan, Row or Rows.
 func (c *checker) unrun(n *ast.SelectorExpr) {
 	if n.Sel.Name != "Error" && n.Sel.Name != "RowsAffected" {
 		return
 	}
-	for e := n.X; ; {
-		call, ok := e.(*ast.CallExpr)
-		if !ok {
-			return
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return
-		}
-		fn := funcOf(c.info, sel)
-		if fn == nil || !isGormMethod(fn) || runMethods[fn.Name()] {
-			return
-		}
-		if fn.Name() == "Raw" {
-			c.report(n, "%s %s of a Raw statement that never ran: use Exec for a write, end a read in Scan, Row or Rows", ruleUnrun, n.Sel.Name)
-			return
-		}
-		e = sel.X
+	if s := c.info.Selections[n]; s == nil || s.Kind() != types.FieldVal || s.Obj().Pkg() == nil || s.Obj().Pkg().Path() != gormPkg {
+		return
 	}
+	if c.unrunRaw(n.X) {
+		c.report(n, "%s %s of a Raw statement that never ran: use Exec for a write, end a read in Scan, Row or Rows", ruleUnrun, n.Sel.Name)
+	}
+}
+
+// unrunRaw reports whether e is a Raw statement that no method ran: a
+// chain of gorm methods that reaches Raw without a run method (Scan, Exec
+// ...), seen through parentheses, through a local variable whose last
+// assignment is such a statement (varHoldsRaw), and through a call of a
+// function of the package that returns one (returnsRaw).
+func (c *checker) unrunRaw(e ast.Expr) bool {
+	for {
+		switch x := ast.Unparen(e).(type) {
+		case *ast.Ident:
+			return c.varHoldsRaw(x)
+		case *ast.CallExpr:
+			fn := calledFunc(c.info, x)
+			switch {
+			case fn == nil:
+				return false
+			case !isGormMethod(fn):
+				return c.returnsRaw(fn)
+			case runMethods[fn.Name()]:
+				return false
+			case fn.Name() == "Raw":
+				return true
+			}
+			sel, ok := ast.Unparen(x.Fun).(*ast.SelectorExpr)
+			if !ok {
+				return false
+			}
+			e = sel.X
+		default:
+			return false
+		}
+	}
+}
+
+// varHoldsRaw reports whether the local variable id names holds an unrun
+// Raw statement where id stands: its last assignment before id is one, and
+// nothing mentions the variable in between but field reads. Any other
+// mention may have run the statement, which the variable shares: q.Scan,
+// a chain built on q, a call or a closure that takes q. Branches and loops
+// are not followed: the last assignment is the last one in the text.
+func (c *checker) varHoldsRaw(id *ast.Ident) bool {
+	v := c.localVar(id)
+	if v == nil {
+		return false
+	}
+	var last *assignment
+	for i, a := range c.assigns[v] {
+		if a.at <= id.Pos() && (last == nil || a.at > last.at) {
+			last = &c.assigns[v][i]
+		}
+	}
+	if last == nil || last.rhs == nil {
+		return false
+	}
+	for _, u := range c.uses[v] {
+		if !u.fieldRead && u.pos > last.at && u.pos < id.Pos() {
+			return false
+		}
+	}
+	return c.unrunRaw(last.rhs)
+}
+
+// returnsRaw reports whether fn is a function of the package that returns
+// a single *gorm.DB, and an unrun Raw statement from every return.
+func (c *checker) returnsRaw(fn *types.Func) bool {
+	fn = fn.Origin()
+	if raw, ok := c.rawFns[fn]; ok {
+		return raw
+	}
+	c.rawFns[fn] = false // while it is being looked at: recursion returns no Raw statement of its own
+	decl := c.funcs[fn]
+	res := fn.Type().(*types.Signature).Results()
+	if decl == nil || decl.Body == nil || res.Len() != 1 || !isNamed(res.At(0).Type(), gormPkg, "DB") {
+		return false
+	}
+	found, all := false, true
+	ast.Inspect(decl.Body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.ReturnStmt:
+			found = true
+			all = all && len(n.Results) == 1 && c.unrunRaw(n.Results[0])
+		}
+		return all
+	})
+	c.rawFns[fn] = found && all
+	return c.rawFns[fn]
 }
 
 func (c *checker) pgx(n *ast.SelectorExpr, fn *types.Func) {
@@ -153,7 +330,7 @@ func (c *checker) pgx(n *ast.SelectorExpr, fn *types.Func) {
 	case ok:
 		c.report(n, "%s %s without a reason: say why %s stays on pgx", rulePgx, allowPgx, fn.Name())
 	default:
-		c.report(n, "%s pgx %s in a migrated package: build the statement with store.G (Batch and CopyFrom stay on pgx; a measured hot path takes %s <reason>)",
+		c.report(n, "%s pgx %s in a migrated package or file: build the statement with store.G (Batch and CopyFrom stay on pgx; a measured hot path takes %s <reason>)",
 			rulePgx, fn.Name(), allowPgx)
 	}
 }
@@ -185,6 +362,68 @@ func (c *checker) call(n *ast.CallExpr) {
 	for _, arg := range c.parameterArgs(fn, n) {
 		c.checkParam(arg, "gorm "+fn.Name())
 	}
+	if i, ok := c.sqlIndex(fn, n); ok && i < len(n.Args) {
+		vars := n.Args[i+1:]
+		if n.Ellipsis.IsValid() {
+			vars = vars[:len(vars)-1]
+		}
+		c.checkParenBytes(n.Args[i], vars, false, "gorm "+fn.Name())
+	}
+}
+
+// sqlIndex is the index of the argument of a gorm call that is SQL text
+// whose ? placeholders take the arguments after it: the condition or
+// statement of Where, Or, Not, Having, Raw, Exec and Joins, the inline
+// condition of the finders, a fragment given to Select, and the text of
+// gorm.Expr and store.Conds.And.
+func (c *checker) sqlIndex(fn *types.Func, n *ast.CallExpr) (int, bool) {
+	switch {
+	case isGormFunc(fn, "Expr"), fn.Name() == "And" && isMethodOf(fn, c.storePkg, "Conds"):
+		return 0, true
+	case !isGormMethod(fn):
+		return 0, false
+	case fn.Name() == "Select":
+		return 0, len(n.Args) > 0 && isString(c.info.TypeOf(n.Args[0]))
+	case fn.Name() == "Assign", fn.Name() == "Attrs", fn.Name() == "Update", fn.Name() == "UpdateColumn":
+		return 0, false // values, not SQL text
+	}
+	i, ok := conditionMethods[fn.Name()]
+	return i, ok
+}
+
+// checkParenBytes reports a byte slice bound to a ? that directly follows
+// "(" in sqlArg, when sqlArg is a constant SQL text whose placeholders
+// take vars in order (all: at every ?, clause.Expr's WithoutParentheses).
+// There clause.Expr.Build expands any slice that is no driver.Valuer,
+// []byte and json.RawMessage included, into one parameter per element, and
+// an empty one into NULL.
+func (c *checker) checkParenBytes(sqlArg ast.Expr, vars []ast.Expr, all bool, where string) {
+	tv, ok := c.info.Types[sqlArg]
+	if !ok || tv.Value == nil || tv.Value.Kind() != constant.String {
+		return
+	}
+	for i, paren := range parenPlaceholders(constant.StringVal(tv.Value), len(vars)) {
+		if t := c.info.TypeOf(vars[i]); (paren || all) && byteSlice(t) {
+			c.report(vars[i], `%s %s argument to %s at a "(?": GORM binds each byte as a parameter there (an empty one as NULL); wrap it in store.Bytes, or bind it through gorm.Expr("?", v)`, ruleSlice, t, where)
+		}
+	}
+}
+
+// parenPlaceholders reports, for each of n arguments, whether the ? that
+// takes it directly follows "(" in sql, as clause.Expr.Build reads the
+// text (a ? past the last argument is text).
+func parenPlaceholders(sql string, n int) []bool {
+	out := make([]bool, n)
+	idx, afterParen := 0, false
+	for i := 0; i < len(sql); i++ {
+		if sql[i] == '?' && idx < n {
+			out[idx] = afterParen
+			idx++
+			continue
+		}
+		afterParen = sql[i] == '('
+	}
+	return out
 }
 
 // parameterArgs returns the arguments of a gorm call that become SQL
@@ -230,6 +469,11 @@ func (c *checker) literal(n *ast.CompositeLit) {
 	for _, e := range vars.Elts {
 		c.checkParam(e, t.String()+".Vars")
 	}
+	all := false
+	if wp, ok := c.info.Types[fieldValue(n, "WithoutParentheses", 2)]; ok && wp.Value != nil {
+		all = constant.BoolVal(wp.Value)
+	}
+	c.checkParenBytes(fieldValue(n, "SQL", 0), vars.Elts, all, t.String())
 }
 
 func (c *checker) checkParam(arg ast.Expr, where string) {
@@ -353,6 +597,18 @@ func isMethodOf(fn *types.Func, pkg, name string) bool {
 	return recv != nil && isNamed(recv.Type(), pkg, name)
 }
 
+// calledFunc is the function or method a call names, if any.
+func calledFunc(info *types.Info, call *ast.CallExpr) *types.Func {
+	switch f := ast.Unparen(call.Fun).(type) {
+	case *ast.Ident:
+		fn, _ := info.Uses[f].(*types.Func)
+		return fn
+	case *ast.SelectorExpr:
+		return funcOf(info, f)
+	}
+	return nil
+}
+
 func isGormFunc(fn *types.Func, name string) bool {
 	return fn.Pkg() != nil && fn.Pkg().Path() == gormPkg && fn.Name() == name && fn.Type().(*types.Signature).Recv() == nil
 }
@@ -373,26 +629,48 @@ func isPgxStatement(fn *types.Func) bool {
 	return ok && n.Obj().Pkg() != nil && strings.HasPrefix(n.Obj().Pkg().Path(), pgxPrefix)
 }
 
-// expandedSlice reports what GORM expands into a list: a slice or array of
-// anything but bytes ([]byte is a bytea value) that is no driver.Valuer
-// (store.Int64s, store.Strings and store.Times are).
+// expandedSlice reports what GORM expands into a list wherever it is
+// bound: a slice or array of anything but bytes that is no driver.Valuer
+// (store.Int64s, store.Strings and store.Times are). A byte slice is one
+// bytea value except at a "(?" (byteSlice, checkParenBytes).
 func expandedSlice(t types.Type) bool {
-	if t == nil {
+	elem := sliceElem(t)
+	if elem == nil || isByte(elem) {
 		return false
 	}
-	var elem types.Type
+	return !isValuer(t)
+}
+
+// byteSlice reports a slice or array of bytes ([]byte, json.RawMessage)
+// that is no driver.Valuer.
+func byteSlice(t types.Type) bool {
+	elem := sliceElem(t)
+	return elem != nil && isByte(elem) && !isValuer(t)
+}
+
+// sliceElem is the element type of a slice or array type, else nil.
+func sliceElem(t types.Type) types.Type {
+	if t == nil {
+		return nil
+	}
 	switch u := t.Underlying().(type) {
 	case *types.Slice:
-		elem = u.Elem()
+		return u.Elem()
 	case *types.Array:
-		elem = u.Elem()
-	default:
-		return false
+		return u.Elem()
 	}
-	if b, ok := elem.Underlying().(*types.Basic); ok && b.Kind() == types.Byte {
-		return false
-	}
+	return nil
+}
+
+func isByte(t types.Type) bool {
+	b, ok := t.Underlying().(*types.Basic)
+	return ok && b.Kind() == types.Byte
+}
+
+// isValuer reports a type with a Value method, a driver.Valuer: GORM binds
+// it as one value anywhere.
+func isValuer(t types.Type) bool {
 	obj, _, _ := types.LookupFieldOrMethod(t, false, nil, "Value")
-	_, valuer := obj.(*types.Func)
-	return !valuer
+	_, ok := obj.(*types.Func)
+	return ok
 }

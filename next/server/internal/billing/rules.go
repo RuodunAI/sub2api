@@ -251,7 +251,7 @@ func queueSave(b *pgx.Batch, on core.PriceQuery, r *storedRule, updatedBy int64)
 		if err != nil {
 			return err
 		}
-		b.Queue(recordHistorySQL, prog.Hash(), prog.Expression(), prog.Version())
+		b.Queue(recordHistoryBatchSQL, historyArgs(prog)...)
 	}
 	target := `(group_id, model) WHERE segment_id IS NULL`
 	if on.SegmentID != 0 {
