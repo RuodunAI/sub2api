@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 )
@@ -17,9 +18,9 @@ func TestEnsureBuiltinInstallsEnablesAndBlocksUninstall(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	dir := t.TempDir()
-	m := pkgtest.Guard("guard", "0.1.0", "sub2api")
+	m := permModel(pkgtest.Guard("guard", "0.1.0", "sub2api"))
 	for i := range m.UserPermissions {
-		m.UserPermissions[i].DefaultRoles = []string{"operator", "user"}
+		m.UserPermissions[i].Defaults = map[string]manifest.RoleDefault{"operator": {Unscoped: true}, "user": {Unscoped: true}}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "guard-0.1.0.s2plugin"), pkgtest.Build(m, e.root), 0o644); err != nil {
 		t.Fatal(err)
@@ -41,7 +42,7 @@ func TestEnsureBuiltinInstallsEnablesAndBlocksUninstall(t *testing.T) {
 	}
 	// Every requested host permission is granted, including critical ones,
 	// without an operator; new plugin permissions went to their manifest
-	// defaultRoles (admin when omitted), not to a role the start names.
+	// defaults, not to a role the start names.
 	grants, err := LoadGrants(ctx, e.db.Pool, "guard")
 	if err != nil {
 		t.Fatal(err)

@@ -123,7 +123,7 @@ func TestRevokedLowRiskGrantIsNotGrantedByDefault(t *testing.T) {
 	if rv := revokedOf(r); !rv["kv"] || !rv["log"] {
 		t.Fatalf("review of 0.2.0 does not mark the revoked permissions: %+v", r.HostPermissions)
 	}
-	if rr, err := e.svc.Review(ctx, "mini", "0.2.0"); err != nil || !revokedOf(rr)["kv"] {
+	if rr, err := e.svc.Review(ctx, "mini", "0.2.0", e.admin); err != nil || !revokedOf(rr)["kv"] {
 		t.Fatalf("stored review of 0.2.0: %v %+v", err, rr)
 	}
 

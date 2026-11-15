@@ -71,7 +71,7 @@ func (s *Service) Upload(ctx context.Context, data []byte, actorID int64, opt Up
 	}
 	r := buildReview(p.Manifest, p.Files, rec.verification, s.opt.HostVersion, rec.current)
 	r.noteRevoked(rec.revoked)
-	if err := r.resolveDefaultRoles(ctx, s.d.DB.Pool, p.Manifest); err != nil {
+	if err := s.resolveRoleGrants(ctx, r, p.Manifest, actorID); err != nil {
 		return nil, err
 	}
 	s.noteDBSchema(r, p.Manifest)

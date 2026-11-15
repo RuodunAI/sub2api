@@ -55,9 +55,10 @@ type PluginSchemaManager interface {
 // permissions, sticky rules) for a manifest. C1 calls it on
 // first install; C2 calls it when an upgrade activates.
 type PluginDefaultsApplier interface {
-	// ApplyDefaults grants each permission it creates to the roles grants
-	// holds for the local key (none when absent; activation passes nil).
-	ApplyDefaults(ctx context.Context, tx pgx.Tx, m *manifest.Manifest, grants map[string][]string) error
+	// ApplyDefaults grants each permission it creates what grants holds for
+	// its local key, role -> scope suffixes (none when absent; activation
+	// passes nil).
+	ApplyDefaults(ctx context.Context, tx pgx.Tx, m *manifest.Manifest, grants map[string]map[string][]string) error
 }
 
 // ============================================================ sandbox & egress (owner: D)

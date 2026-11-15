@@ -48,12 +48,16 @@ type fakePerms struct {
 	mu      sync.Mutex
 	syncs   []syncCall
 	deleted []string
-	// checked records CanGrantToRoles calls; denyRoles fails them, and
-	// canGrant (when set) decides them instead.
+	// checked records CanGrantToRoles calls, critical the critical flag of
+	// each; denyRoles fails them, and canGrant (when set) decides them
+	// instead.
 	checked   [][]string
+	critical  []bool
 	denyRoles error
 	canGrant  func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string, critical bool) error
-	// granted records GrantPluginPermission calls as "key=role,...".
+	// grantees (when set) answers PluginGrantees, else nothing is denied.
+	grantees func(ctx context.Context, tx pgx.Tx, actorID int64, roles []string) (core.PluginGrantees, error)
+	// granted records GrantPluginPermission calls as "key=role,role:scope,...".
 	granted []string
 }
 
@@ -76,21 +80,33 @@ func (f *fakePerms) CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int6
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checked = append(f.checked, roles)
+	f.critical = append(f.critical, critical)
 	if f.canGrant != nil {
 		return f.canGrant(ctx, tx, actorID, roles, critical)
 	}
 	return f.denyRoles
 }
-func (f *fakePerms) PluginGrantees(context.Context, pgx.Tx, int64, []string) (core.PluginGrantees, error) {
+func (f *fakePerms) PluginGrantees(ctx context.Context, tx pgx.Tx, actorID int64, roles []string) (core.PluginGrantees, error) {
+	if f.grantees != nil {
+		return f.grantees(ctx, tx, actorID, roles)
+	}
 	return core.PluginGrantees{}, nil
 }
 func (f *fakePerms) GrantPluginPermission(_ context.Context, tx pgx.Tx, key string, grants map[string][]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	roles := grantRoleKeys(grants)
-	f.granted = append(f.granted, key+"="+strings.Join(roles, ","))
-	_, err := tx.Exec(context.Background(), `INSERT INTO role_permissions (role_id, permission_id)
-		SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = ANY($1) AND p.key = $2 ON CONFLICT DO NOTHING`, roles, key)
+	var rec, roles, scopes []string
+	for _, role := range grantRoleKeys(grants) {
+		for _, sc := range grants[role] {
+			rec, roles, scopes = append(rec, strings.TrimSuffix(role+":"+sc, ":")), append(roles, role), append(scopes, sc)
+		}
+	}
+	f.granted = append(f.granted, key+"="+strings.Join(rec, ","))
+	_, err := tx.Exec(context.Background(), `
+WITH g AS (SELECT r.id AS role_id, p.id AS permission_id, t.scope FROM unnest($1::text[], $2::text[]) t(role, scope)
+    JOIN roles r ON r.key = t.role JOIN permissions p ON p.key = $3),
+ins AS (INSERT INTO role_permissions (role_id, permission_id) SELECT role_id, permission_id FROM g WHERE scope = '' ON CONFLICT DO NOTHING)
+INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT * FROM g WHERE scope <> '' ON CONFLICT DO NOTHING`, roles, scopes, key)
 	return err
 }
 func (f *fakePerms) SetPluginActive(context.Context, pgx.Tx, string, bool) error { return nil }
@@ -168,7 +184,7 @@ type env struct {
 	accounts *fakeAccounts
 	authz    *fakeAuthz
 	root     pkgtest.Key
-	admin    int64 // all grant rights
+	admin    int64 // all grant rights, role:define included
 	limited  int64 // plugin:install + grant:high only
 }
 
@@ -195,7 +211,7 @@ func newEnv(t *testing.T) *env {
 		}
 	}
 	e.authz = &fakeAuthz{perms: map[int64]map[string]bool{
-		e.admin:   {PermGrantHigh: true, PermGrantCritical: true},
+		e.admin:   {PermGrantHigh: true, PermGrantCritical: true, "role:define": true},
 		e.limited: {PermGrantHigh: true},
 	}}
 	ts, err := pkg.NewTrustStore([]string{e.root.ID + "=" + e.root.PubB64()}, false)
@@ -222,6 +238,18 @@ func fieldCode(err error, field string) string {
 		}
 	}
 	return ""
+}
+
+// rolesFor overrides every permission of m with every row to roles.
+func rolesFor(m *manifest.Manifest, roles ...string) map[string]map[string]manifest.RoleDefault {
+	out := map[string]map[string]manifest.RoleDefault{}
+	for _, up := range m.UserPermissions {
+		out[up.Key] = map[string]manifest.RoleDefault{}
+		for _, r := range roles {
+			out[up.Key][r] = manifest.RoleDefault{Unscoped: true}
+		}
+	}
+	return out
 }
 
 func explicitGuardGrants() []GrantInput {
@@ -265,7 +293,7 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 		t.Fatalf("conflicting re-upload: %v", err)
 	}
 	// Stored review.
-	if rr, err := e.svc.Review(ctx, "guard", "0.1.0"); err != nil || rr.PackageSHA256 != r.PackageSHA256 {
+	if rr, err := e.svc.Review(ctx, "guard", "0.1.0", e.admin); err != nil || rr.PackageSHA256 != r.PackageSHA256 {
 		t.Fatalf("review: %v", err)
 	}
 
@@ -297,12 +325,13 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 	inputs := append(explicitGuardGrants(), GrantInput{Permission: "net", Scope: map[string]any{"domains": []any{}}})
 	// Handing the new plugin permissions to roles needs role:define (SEC-H2);
 	// role:assign alone is not enough.
+	delete(e.authz.perms[e.admin], "role:define")
 	e.authz.perms[e.admin]["role:assign"] = true
-	if _, err := e.svc.Consent(ctx, "guard", "0.1.0", ConsentRequest{Grants: inputs, RoleKeysForNewPermissions: []string{"admin"}}, e.admin); core.AsError(err).Code != "permission_denied" {
+	if _, err := e.svc.Consent(ctx, "guard", "0.1.0", ConsentRequest{Grants: inputs, NewPermissionRoles: rolesFor(m, "admin")}, e.admin); core.AsError(err).Code != "permission_denied" {
 		t.Fatalf("role grant without role:define: %v", err)
 	}
 	e.authz.perms[e.admin]["role:define"] = true
-	res, err := e.svc.Consent(ctx, "guard", "0.1.0", ConsentRequest{Grants: inputs, RoleKeysForNewPermissions: []string{"admin"}}, e.admin)
+	res, err := e.svc.Consent(ctx, "guard", "0.1.0", ConsentRequest{Grants: inputs, NewPermissionRoles: rolesFor(m, "admin")}, e.admin)
 	if err != nil {
 		t.Fatalf("consent: %v", err)
 	}
@@ -374,7 +403,8 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 	// medium. 0.2.0 adds a user permission, and handing it to a role needs
 	// role:define.
 	e.authz.perms[e.limited]["role:define"] = true
-	res, err = e.svc.Consent(ctx, "guard", "0.2.0", ConsentRequest{Grants: []GrantInput{{Permission: "events"}, {Permission: "ui.native"}}, RoleKeysForNewPermissions: []string{"admin"}}, e.limited)
+	export := map[string]map[string]manifest.RoleDefault{"rules:export": {"admin": {Unscoped: true}}}
+	res, err = e.svc.Consent(ctx, "guard", "0.2.0", ConsentRequest{Grants: []GrantInput{{Permission: "events"}, {Permission: "ui.native"}}, NewPermissionRoles: export}, e.limited)
 	if err != nil {
 		t.Fatalf("upgrade consent: %v", err)
 	}
@@ -382,7 +412,7 @@ func TestInstallConsentUpgradeUninstall(t *testing.T) {
 		t.Fatalf("upgrade result = %+v", res)
 	}
 	last := e.perms.syncs[len(e.perms.syncs)-1]
-	if len(last.defs) != 4 || last.roles[0] != "admin" {
+	if len(last.defs) != 4 || last.defs[3].Key != "plugin.guard:rules:export" || !slices.Equal(grantRoleKeys(last.defs[3].GrantRoles), []string{"admin"}) {
 		t.Fatalf("upgrade permission sync = %+v", last)
 	}
 	var consent string

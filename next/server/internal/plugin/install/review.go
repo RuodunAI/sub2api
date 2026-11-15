@@ -7,6 +7,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
@@ -47,10 +49,20 @@ type Review struct {
 	ExternalServices []string            `json:"external_services"`
 	HostPermissions  []ReviewHostPerm    `json:"host_permissions"`
 	Diff             *ReviewDiff         `json:"diff,omitempty"`
-	// NewRoleGrants are the roles the permissions this version creates go
-	// to without overrides (manifest defaultRoles and the holders of their
-	// inheritFrom keys now); RoleGrantsNeedConsent is set when one of them
-	// needs consent, so an upgrade is not carried over (rolegrants.go).
+	// PermissionGroups and RoleColumns lay out the consent matrix of
+	// UserPermissions: its rows' groups and its columns, every role, as the
+	// viewer may name them.
+	PermissionGroups []manifest.PermissionGroup `json:"permission_groups"`
+	RoleColumns      []ReviewRoleColumn         `json:"role_columns"`
+	// RemovedUserPermissions are the permissions of the plugin this version
+	// no longer declares (upgrades only): marked removed, their grants kept
+	// (D6).
+	RemovedUserPermissions []ReviewRemovedPerm `json:"removed_user_permissions"`
+	// NewRoleGrants are the (role, scope) pairs the permissions this
+	// version creates go to without overrides (manifest defaults and the
+	// holders of their inheritFrom keys now), marked as the viewer would
+	// consent; RoleGrantsNeedConsent is set when one of them needs
+	// consent, so an upgrade is not carried over (rolegrants.go).
 	NewRoleGrants         []RoleGrant `json:"new_role_grants"`
 	RoleGrantsNeedConsent bool        `json:"role_grants_need_consent"`
 	// NeedsDBSchemaUnconfined: granting the db.schema this version asks for
@@ -128,18 +140,56 @@ type ReviewSlot struct {
 }
 
 type ReviewUserPerm struct {
-	Key         string             `json:"key"`
-	Label       core.LocalizedText `json:"label"`
-	Description core.LocalizedText `json:"description,omitempty"`
-	Sensitive   bool               `json:"sensitive"`
-	// DefaultRoles are the roles the permission goes to when first created
-	// unless the consent overrides them (roleGrants: the manifest
-	// defaultRoles, none for a rename which only inherits from InheritFrom).
-	DefaultRoles []string `json:"default_roles"`
-	InheritFrom  []string `json:"inherit_from,omitempty"`
+	Key         string                    `json:"key"` // local
+	Label       core.LocalizedText        `json:"label"`
+	Description core.LocalizedText        `json:"description,omitempty"`
+	Risk        string                    `json:"risk"`
+	Group       string                    `json:"group,omitempty"`
+	Requires    []string                  `json:"requires,omitempty"` // local keys
+	Scope       *manifest.PermissionScope `json:"scope,omitempty"`    // Resource = ResourceName(), as GET /permissions
+	// Defaults are the manifest's suggestion (DefaultGrants): role ->
+	// canonical suffixes, as Cells' Grant.
+	Defaults    map[string][]string `json:"defaults"`
+	InheritFrom []string            `json:"inherit_from,omitempty"`
 	// New: the catalog has no such permission yet; the consent creates it,
-	// and only then do its roles (new_permission_roles) apply.
+	// and only then do its grants (new_permission_roles) apply.
 	New bool `json:"new"`
+	// Revived: removed earlier and declared again, its grants come back as
+	// they were (D6).
+	Revived bool `json:"revived"`
+	// Renamed: it inherits from a key the catalog has, so it gets no
+	// defaults, only that key's holders.
+	Renamed bool `json:"renamed"`
+	// Cells cover every role of Review.RoleColumns.
+	Cells map[string]ReviewCell `json:"cells"`
+}
+
+// ReviewCell is one (permission, role) of the consent matrix, for the viewer.
+type ReviewCell struct {
+	// Grant is what a consent without override gives (canonical suffixes;
+	// [] none, [""] every row). For a revived key, the grants it revives
+	// with; for any other existing key, [].
+	Grant    []string `json:"grant"`
+	Nameable bool     `json:"nameable"`
+	Reason   string   `json:"reason,omitempty"` // role_define|critical|superuser_role|not_editable|not_assignable|held
+	Withheld bool     `json:"withheld"`         // Grant goes to review instead (D2)
+}
+
+// ReviewRoleColumn is one role of the consent matrix, for the viewer.
+type ReviewRoleColumn struct {
+	Key       string             `json:"key"`
+	Name      core.LocalizedText `json:"name"`
+	Builtin   bool               `json:"builtin"`
+	Superuser bool               `json:"superuser"`
+	Nameable  bool               `json:"nameable"`
+	Reason    string             `json:"reason,omitempty"`
+}
+
+// ReviewRemovedPerm is a permission an upgrade no longer declares.
+type ReviewRemovedPerm struct {
+	Key     string             `json:"key"` // local
+	Label   core.LocalizedText `json:"label"`
+	Holders []string           `json:"holders"` // role keys, super admins aside
 }
 
 type ReviewDatabase struct {
@@ -271,29 +321,32 @@ func SortedGrants(m map[string]Grant) []Grant {
 // buildReview renders the review. current is nil for first installs.
 func buildReview(m *manifest.Manifest, files map[string][]byte, ver *pkg.Verification, hostVersion string, current map[string]Grant) *Review {
 	r := &Review{
-		PluginKey:        m.Key,
-		Version:          m.Version,
-		Name:             core.LocalizedText(m.Name),
-		Description:      core.LocalizedText(m.Description),
-		Icon:             m.Icon,
-		Publisher:        ver.Publisher,
-		Trust:            ver.Trust,
-		SignatureStatus:  ver.SignatureStatus,
-		KeyID:            ver.KeyID,
-		HostCompat:       m.HostCompat,
-		Capabilities:     []string{},
-		GatewayEndpoints: []ReviewEndpoint{},
-		Platforms:        []ReviewPlatform{},
-		AccountTypes:     []ReviewAccountType{},
-		Hooks:            []ReviewHook{},
-		Jobs:             []ReviewJob{},
-		Events:           []string{},
-		Routes:           []ReviewRoute{},
-		Menus:            []ReviewMenu{},
-		Slots:            []ReviewSlot{},
-		UserPermissions:  []ReviewUserPerm{},
-		ExternalServices: append([]string{}, m.ExternalServices...),
-		HostPermissions:  []ReviewHostPerm{},
+		PluginKey:              m.Key,
+		Version:                m.Version,
+		Name:                   core.LocalizedText(m.Name),
+		Description:            core.LocalizedText(m.Description),
+		Icon:                   m.Icon,
+		Publisher:              ver.Publisher,
+		Trust:                  ver.Trust,
+		SignatureStatus:        ver.SignatureStatus,
+		KeyID:                  ver.KeyID,
+		HostCompat:             m.HostCompat,
+		Capabilities:           []string{},
+		GatewayEndpoints:       []ReviewEndpoint{},
+		Platforms:              []ReviewPlatform{},
+		AccountTypes:           []ReviewAccountType{},
+		Hooks:                  []ReviewHook{},
+		Jobs:                   []ReviewJob{},
+		Events:                 []string{},
+		Routes:                 []ReviewRoute{},
+		Menus:                  []ReviewMenu{},
+		Slots:                  []ReviewSlot{},
+		UserPermissions:        []ReviewUserPerm{},
+		PermissionGroups:       append([]manifest.PermissionGroup{}, m.PermissionGroups...),
+		RoleColumns:            []ReviewRoleColumn{},
+		RemovedUserPermissions: []ReviewRemovedPerm{},
+		ExternalServices:       append([]string{}, m.ExternalServices...),
+		HostPermissions:        []ReviewHostPerm{},
 	}
 	r.HostCompatOK, _ = pkg.HostCompatible(m.HostCompat, hostVersion)
 	for _, c := range m.Capabilities {
@@ -346,8 +399,13 @@ func buildReview(m *manifest.Manifest, files map[string][]byte, ver *pkg.Verific
 		}
 	}
 	for _, up := range m.UserPermissions {
+		defaults := up.DefaultGrants()
+		if defaults == nil {
+			defaults = map[string][]string{}
+		}
 		r.UserPermissions = append(r.UserPermissions, ReviewUserPerm{Key: up.Key, Label: core.LocalizedText(up.Label),
-			Description: core.LocalizedText(up.Description), Sensitive: up.Sensitive, InheritFrom: up.InheritFrom})
+			Description: core.LocalizedText(up.Description), Risk: up.RiskLevel(), Group: up.Group, Requires: up.Requires,
+			Scope: catalogScope(up.Scope), Defaults: defaults, InheritFrom: up.InheritFrom, Cells: map[string]ReviewCell{}})
 	}
 	if m.Database != nil {
 		r.Database = &ReviewDatabase{Schema: m.Database.Schema, Migrations: pkg.MigrationFiles(files, m.Database.Migrations)}
@@ -402,27 +460,177 @@ func diffGrants(m *manifest.Manifest, current map[string]Grant) *ReviewDiff {
 	return d
 }
 
-// resolveDefaultRoles sets each user permission's DefaultRoles to what a
-// consent naming no roles grants it given the catalog now (roleGrants), and
-// the role grants that consent makes (planRoleGrants).
-func (r *Review) resolveDefaultRoles(ctx context.Context, q store.Querier, m *manifest.Manifest) error {
-	existing, err := catalogKeys(ctx, q, m)
+// resolveRoleGrants fills in the consent matrix for the viewer actorID, as
+// a consent without overrides by it would settle given the catalog now:
+// the role columns, each permission's cells and flags, the role grants
+// (roleGrants, planRoleGrants) and, on an upgrade (r.Diff set), the
+// permissions this version no longer declares. A system viewer (a built-in
+// plugin's upload) may name every role.
+func (s *Service) resolveRoleGrants(ctx context.Context, r *Review, m *manifest.Manifest, actorID int64) error {
+	return s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+		existing, revived, err := catalogKeys(ctx, tx, m)
+		if err != nil {
+			return err
+		}
+		x := consentMatrix{roles: roleGrants(m, nil, existing)}
+		if x.plan, _, err = planRoleGrants(ctx, tx, m, existing, x.roles, nil, r.Diff != nil); err != nil {
+			return err
+		}
+		if x.gs, x.canDefine, err = s.noteRoleColumns(ctx, tx, r, actorID); err != nil {
+			return err
+		}
+		for i := range x.plan {
+			g := &x.plan[i]
+			g.Nameable, _ = nameable(x.gs, x.canDefine, g.Role, g.Risk)
+			g.Withheld = !g.Nameable
+		}
+		r.NewRoleGrants, r.RoleGrantsNeedConsent = append([]RoleGrant{}, x.plan...), needConsent(x.plan)
+		var revivedKeys []string
+		for key, ok := range revived {
+			if ok {
+				revivedKeys = append(revivedKeys, key)
+			}
+		}
+		if x.held, err = inheritHolders(ctx, tx, revivedKeys); err != nil {
+			return err
+		}
+		for i := range r.UserPermissions {
+			up := &r.UserPermissions[i]
+			key := manifest.PermissionKey(m.Key, up.Key)
+			decl, _ := m.FindUserPermission(up.Key)
+			up.New, up.Revived, up.Renamed = !existing[key], revived[key], renamed(m, decl, existing)
+			for _, col := range r.RoleColumns {
+				up.Cells[col.Key] = x.cell(key, up, col)
+			}
+		}
+		if r.Diff == nil {
+			return nil
+		}
+		return noteRemovedPerms(ctx, tx, r, m)
+	})
+}
+
+// consentMatrix is what the consent matrix's cells are read from: the
+// viewer's rights (nameable), the grants a consent without overrides plans
+// (roleGrants, planRoleGrants) and the grants of the revived keys.
+type consentMatrix struct {
+	gs        core.PluginGrantees
+	canDefine bool
+	roles     map[string]map[string][]string
+	plan      []RoleGrant
+	held      map[string][]roleRef
+}
+
+// cell is the consent matrix cell of permission key (up) and role column
+// col. A new key's grant is its roles and the scopes plan inherits for the
+// role, withheld when the viewer may not name it; a revived key's grant is
+// what it gives the role back; any other existing key's none.
+func (x *consentMatrix) cell(key string, up *ReviewUserPerm, col ReviewRoleColumn) ReviewCell {
+	c := ReviewCell{Grant: []string{}, Reason: col.Reason}
+	if col.Superuser {
+		return c
+	}
+	c.Nameable, c.Reason = nameable(x.gs, x.canDefine, col.Key, up.Risk)
+	switch {
+	case up.Revived:
+		for _, h := range x.held[key] {
+			if h.key == col.Key {
+				c.Grant = append(c.Grant, h.scope)
+			}
+		}
+		return c
+	case !up.New:
+		return c
+	}
+	c.Grant = append(c.Grant, x.roles[up.Key][col.Key]...)
+	for _, g := range x.plan {
+		if g.Permission == key && g.Role == col.Key && g.Via == viaInherit && !slices.Contains(c.Grant, g.Scope) {
+			c.Grant = append(c.Grant, g.Scope)
+		}
+	}
+	slices.Sort(c.Grant)
+	c.Withheld = len(c.Grant) > 0 && !c.Nameable
+	return c
+}
+
+// noteRoleColumns sets the consent matrix's columns: every role, super
+// admins first (they hold every permission, so nothing is written to them),
+// then built-in ones, as the viewer actorID may name them for a permission
+// of low risk. It returns what it read of the viewer (grantees).
+func (s *Service) noteRoleColumns(ctx context.Context, tx pgx.Tx, r *Review, actorID int64) (core.PluginGrantees, bool, error) {
+	rows, err := tx.Query(ctx, `SELECT key, name, builtin, superuser FROM roles ORDER BY superuser DESC, builtin DESC, id`)
+	if err != nil {
+		return core.PluginGrantees{}, false, err
+	}
+	cols, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ReviewRoleColumn, error) {
+		var c ReviewRoleColumn
+		return c, row.Scan(&c.Key, &c.Name, &c.Builtin, &c.Superuser)
+	})
+	if err != nil {
+		return core.PluginGrantees{}, false, err
+	}
+	var keys []string
+	for _, c := range cols {
+		if !c.Superuser {
+			keys = append(keys, c.Key)
+		}
+	}
+	gs, canDefine, err := s.grantees(ctx, tx, actorID, keys)
+	if err != nil {
+		return core.PluginGrantees{}, false, err
+	}
+	for i := range cols {
+		c := &cols[i]
+		if c.Superuser {
+			c.Reason = denySuperuserRole
+			continue
+		}
+		c.Nameable, c.Reason = nameable(gs, canDefine, c.Key, manifest.RiskLow)
+	}
+	r.RoleColumns = append([]ReviewRoleColumn{}, cols...)
+	return gs, canDefine, nil
+}
+
+// denySuperuserRole is why no plugin permission is written to a super
+// admin role (the catalog's PluginGrantees reason): it holds every one.
+const denySuperuserRole = "superuser_role"
+
+// noteRemovedPerms lists the permissions of the plugin the catalog has but
+// m no longer declares, with the roles holding them.
+func noteRemovedPerms(ctx context.Context, tx pgx.Tx, r *Review, m *manifest.Manifest) error {
+	keys := make([]string, 0, len(m.UserPermissions))
+	for _, up := range m.UserPermissions {
+		keys = append(keys, manifest.PermissionKey(m.Key, up.Key))
+	}
+	rows, err := tx.Query(ctx, `SELECT key, label FROM permissions
+WHERE plugin_key = $1 AND status <> 'removed' AND key <> ALL($2) ORDER BY sort, key`, m.Key, keys)
 	if err != nil {
 		return err
 	}
-	grants := roleGrants(m, ConsentRequest{}, existing)
-	for i := range r.UserPermissions {
-		up := &r.UserPermissions[i]
-		up.DefaultRoles = grants[up.Key]
-		up.New = !existing[manifest.PermissionKey(m.Key, up.Key)]
-	}
-	plan, err := planRoleGrants(ctx, q, m, existing, grants)
+	removed, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ReviewRemovedPerm, error) {
+		var p ReviewRemovedPerm
+		return p, row.Scan(&p.Key, &p.Label)
+	})
 	if err != nil {
 		return err
 	}
-	r.NewRoleGrants, r.RoleGrantsNeedConsent = plan, needConsent(plan)
-	if r.NewRoleGrants == nil {
-		r.NewRoleGrants = []RoleGrant{}
+	gone := make([]string, len(removed))
+	for i, p := range removed {
+		gone[i] = p.Key
+	}
+	held, err := inheritHolders(ctx, tx, gone)
+	if err != nil {
+		return err
+	}
+	for _, p := range removed {
+		p.Holders = []string{}
+		for _, h := range held[p.Key] {
+			if !slices.Contains(p.Holders, h.key) {
+				p.Holders = append(p.Holders, h.key)
+			}
+		}
+		p.Key, _ = manifest.LocalPermission(m.Key, p.Key)
+		r.RemovedUserPermissions = append(r.RemovedUserPermissions, p)
 	}
 	return nil
 }
@@ -435,8 +643,9 @@ func (s *Service) noteDBSchema(r *Review, m *manifest.Manifest) {
 	r.NeedsDBSchemaUnconfined = asks && s.dbSchemaUnconfined(r.Trust == pkg.TrustOfficial)
 }
 
-// Review returns the review of a stored version (for the consent page).
-func (s *Service) Review(ctx context.Context, key, version string) (*Review, error) {
+// Review returns the review of a stored version (for the consent page), its
+// consent matrix as actorID may name the roles.
+func (s *Service) Review(ctx context.Context, key, version string, actorID int64) (*Review, error) {
 	var (
 		status, consent, sigStatus string
 		keyID                      *string
@@ -483,7 +692,7 @@ func (s *Service) Review(ctx context.Context, key, version string) (*Review, err
 	}
 	r := buildReview(p.Manifest, p.Files, ver, s.opt.HostVersion, current)
 	r.noteRevoked(revoked)
-	if err := r.resolveDefaultRoles(ctx, s.d.DB.Pool, p.Manifest); err != nil {
+	if err := s.resolveRoleGrants(ctx, r, p.Manifest, actorID); err != nil {
 		return nil, err
 	}
 	s.noteDBSchema(r, p.Manifest)

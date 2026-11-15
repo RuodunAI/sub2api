@@ -308,21 +308,6 @@ WITH ins AS (
 SELECT ins.role_id, p.key || ':' || ins.scope FROM ins JOIN permissions p ON p.id = ins.permission_id`, roleKey, keys)
 }
 
-// grantInherited grants newKey to every role holding a key of from: a
-// permission split from others (a plugin manifest's inheritFrom) keeps
-// their holders' rights. Run only when newKey is first created, it is
-// idempotent; each grant is audited.
-func (s *Service) grantInherited(ctx context.Context, tx pgx.Tx, newKey string, from []string) error {
-	return s.syncGrant(ctx, tx, map[string]any{"via": "inherit", "from": from}, `
-WITH ins AS (
-    INSERT INTO role_permissions (role_id, permission_id)
-    SELECT DISTINCT rp.role_id, np.id FROM role_permissions rp
-    JOIN permissions op ON op.id = rp.permission_id AND op.key = ANY($1)
-    JOIN permissions np ON np.key = $2
-    ON CONFLICT DO NOTHING RETURNING role_id, permission_id)
-SELECT ins.role_id, p.key FROM ins JOIN permissions p ON p.id = ins.permission_id`, from, newKey)
-}
-
 // syncGrant runs sql, an automatic grant returning the role id and the
 // granted key (a permission, or an assignable role) of each row it adds,
 // and audits each row as authz.sync.grant by the system with via plus the

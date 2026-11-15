@@ -232,7 +232,7 @@ func (a *API) getPlugin(c *gin.Context) {
 	d := PluginDetail{PluginSummary: *s, Grants: []install.Grant{}, NodeList: nodeStates(nodes, key), Hooks: []HookInfo{}, Jobs: []JobInfo{}}
 
 	if s.CurrentVersion != "" {
-		if d.Manifest, err = a.d.Install.Review(rc, key, s.CurrentVersion); err != nil {
+		if d.Manifest, err = a.d.Install.Review(rc, key, s.CurrentVersion, actor(c)); err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
@@ -380,7 +380,7 @@ func (a *API) installFromMarket(c *gin.Context) {
 }
 
 func (a *API) review(c *gin.Context) {
-	r, err := a.d.Install.Review(c.Request.Context(), c.Param("key"), c.Param("version"))
+	r, err := a.d.Install.Review(c.Request.Context(), c.Param("key"), c.Param("version"), actor(c))
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

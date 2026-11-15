@@ -391,10 +391,6 @@ type PermissionDef struct {
 	// permission, role -> suffixes as Defaults (super admin roles skipped):
 	// the consent's decision, not the manifest's.
 	GrantRoles map[string][]string
-	// InheritFrom are keys of the same plugin's permissions (local or
-	// qualified) whose holders get a plugin permission when the catalog
-	// first creates it; only grants that exist before this sync count.
-	InheritFrom []string
 }
 
 // PluginGrantees is which roles an actor may hand new plugin permissions
@@ -411,7 +407,7 @@ type PermissionCatalog interface {
 	// SyncPlugin upserts the plugin's permissions (install/upgrade),
 	// revives removed ones it declares again (grants as they were, no
 	// GrantRoles), grants newly created ones their GrantRoles (scopes
-	// included) and the holders of their InheritFrom keys, drops scope
+	// included; the consent resolved inheritance into them), drops scope
 	// grants the declared scope no longer takes, and marks keys no longer
 	// declared removed (their grants stay, granting nothing).
 	SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []PermissionDef) error

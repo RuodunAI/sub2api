@@ -56,10 +56,10 @@ WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL A
 }
 
 // A permission the catalog creates goes to its GrantRoles (never a super
-// admin role) and to the holders of its InheritFrom keys, each grant
-// audited; the renamed key is marked removed, and an existing permission
-// keeps its grants.
-func TestSyncPluginGrantRolesAndInheritFrom(t *testing.T) {
+// admin role), each grant audited, and nothing else: the consent resolves
+// inheritance into GrantRoles. A key no longer declared is marked removed,
+// and an existing permission keeps its grants.
+func TestSyncPluginGrantRoles(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
@@ -86,10 +86,11 @@ func TestSyncPluginGrantRolesAndInheritFrom(t *testing.T) {
 		t.Fatalf("default grant audits: %d", n)
 	}
 
-	// stats:read is renamed stats:view, which also goes to the user role.
-	sync(core.PermissionDef{Key: "stats:view", GrantRoles: unscoped(RoleUser), InheritFrom: []string{"stats:read"}},
+	// stats:read is renamed stats:view: the new key gets its GrantRoles
+	// only, the old one is removed with its grants kept.
+	sync(core.PermissionDef{Key: "stats:view", GrantRoles: unscoped(RoleUser)},
 		core.PermissionDef{Key: "rules:manage", GrantRoles: unscoped(RoleAdmin)})
-	if got := permissionHolders(t, db, view); !slices.Equal(got, []string{RoleAdmin, RoleOperator, RoleUser}) {
+	if got := permissionHolders(t, db, view); !slices.Equal(got, []string{RoleUser}) {
 		t.Fatalf("holders of %s: %v", view, got)
 	}
 	if got := permissionHolders(t, db, manage); len(got) != 0 {
@@ -98,59 +99,8 @@ func TestSyncPluginGrantRolesAndInheritFrom(t *testing.T) {
 	if got := permissionStatus(t, db, read); got != "removed" {
 		t.Fatalf("old key %s: %s", read, got)
 	}
-	if n := syncGrantAudits(t, db, view, "inherit"); n != 2 {
-		t.Fatalf("inherit grant audits: %d", n)
-	}
-	if n := syncGrantAudits(t, db, view, "default"); n != 1 {
-		t.Fatalf("default grant audits of %s: %d", view, n)
-	}
-	var from []string
-	if err := db.Pool.QueryRow(ctx, `SELECT ARRAY(SELECT jsonb_array_elements_text(detail->'from')) FROM audit_logs
-WHERE action = 'authz.sync.grant' AND detail->>'key' = $1 AND detail->>'via' = 'inherit' LIMIT 1`, view).Scan(&from); err != nil || !slices.Equal(from, []string{read}) {
-		t.Fatalf("inherit audit from %v %v", from, err)
-	}
-}
-
-// Only grants that exist before the sync are inherited: on a first install a
-// key inheriting from another new key gets none of its defaults, and a chain
-// through a key created in the same sync is not followed (manifest
-// InheritFrom; moderation:exempt from moderation:read).
-func TestSyncPluginInheritsOnlyEarlierGrants(t *testing.T) {
-	t.Parallel()
-	db := testutil.DB(t)
-	s := newService(t, db, newMemBus(), nil)
-	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('mod', '{"en":"Mod"}', 'enabled')`); err != nil {
-		t.Fatal(err)
-	}
-	sync := func(defs ...core.PermissionDef) {
-		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, "mod", defs) }); err != nil {
-			t.Fatal(err)
-		}
-	}
-	const read, exempt, chained = "plugin.mod:read", "plugin.mod:exempt", "plugin.mod:chained"
-	// exempt is listed before and chained after what they inherit from, so
-	// neither the order nor the defaults written now matter.
-	sync(core.PermissionDef{Key: "exempt", GrantRoles: unscoped(), InheritFrom: []string{"read"}},
-		core.PermissionDef{Key: "read", GrantRoles: unscoped(RoleAdmin)},
-		core.PermissionDef{Key: "chained", GrantRoles: unscoped(), InheritFrom: []string{"exempt"}})
-	if got := permissionHolders(t, db, read); !slices.Equal(got, []string{RoleAdmin}) {
-		t.Fatalf("holders of %s: %v", read, got)
-	}
-	for _, key := range []string{exempt, chained} {
-		if got := permissionHolders(t, db, key); len(got) != 0 {
-			t.Fatalf("holders of %s on a first install: %v", key, got)
-		}
-	}
-	// An upgrade adding a key that inherits from an existing one does
-	// inherit its holders.
-	sync(core.PermissionDef{Key: "exempt", GrantRoles: unscoped(), InheritFrom: []string{"read"}},
-		core.PermissionDef{Key: "read", GrantRoles: unscoped(RoleAdmin)},
-		core.PermissionDef{Key: "chained", GrantRoles: unscoped(), InheritFrom: []string{"exempt"}},
-		core.PermissionDef{Key: "later", GrantRoles: unscoped(), InheritFrom: []string{"read"}})
-	if got := permissionHolders(t, db, "plugin.mod:later"); !slices.Equal(got, []string{RoleAdmin}) {
-		t.Fatalf("holders of a key added later: %v", got)
+	if got := permissionHolders(t, db, read); !slices.Equal(got, []string{RoleAdmin, RoleOperator}) {
+		t.Fatalf("grants of the removed %s: %v", read, got)
 	}
 }
 
@@ -244,10 +194,10 @@ func TestCanGrantToRoles(t *testing.T) {
 	}
 }
 
-// Syncing the real growth and moderation manifests over their old keys:
-// holders of growth:read get growth:use, of growth:manage growth:stats:read,
-// of moderation:read moderation:exempt (T60); the old keys are removed with
-// their grants kept (D6).
+// Syncing the real growth and moderation manifests over their old keys
+// with what a consent decided (activation: nothing): the split keys get no
+// holders from the catalog (the consent resolves inheritance), and the old
+// keys are removed with their grants kept (D6).
 func TestSyncPluginSplitsGrowthAndModeration(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
@@ -283,17 +233,14 @@ func TestSyncPluginSplitsGrowthAndModeration(t *testing.T) {
 	sync("growth", []core.PermissionDef{{Key: "growth:read", GrantRoles: unscoped(RoleUser, RoleAdmin)}, {Key: "growth:manage", GrantRoles: unscoped(RoleAdmin)}})
 	sync("moderation", []core.PermissionDef{{Key: "moderation:read", GrantRoles: unscoped(RoleAdmin, "moderator")}, {Key: "moderation:manage", GrantRoles: unscoped(RoleAdmin)}})
 
-	// Without the manifest defaults (a consent naming no role) only
-	// inheritance hands the new keys out.
-	none := map[string][]string{}
-	sync("growth", install.PermissionDefs(load("growth"), none))
-	sync("moderation", install.PermissionDefs(load("moderation"), none))
+	sync("growth", install.PermissionDefs(load("growth"), nil))
+	sync("moderation", install.PermissionDefs(load("moderation"), nil))
 	for key, want := range map[string][]string{
-		"plugin.growth:growth:use":            {RoleAdmin, RoleUser},
-		"plugin.growth:growth:stats:read":     {RoleAdmin},
+		"plugin.growth:growth:use":            {},
+		"plugin.growth:growth:stats:read":     {},
 		"plugin.growth:growth:read":           {RoleAdmin, RoleUser},
 		"plugin.growth:growth:manage":         {RoleAdmin},
-		"plugin.moderation:moderation:exempt": {RoleAdmin, "moderator"},
+		"plugin.moderation:moderation:exempt": {},
 		"plugin.moderation:moderation:read":   {RoleAdmin, "moderator"},
 	} {
 		if got := permissionHolders(t, db, key); !slices.Equal(got, want) {
