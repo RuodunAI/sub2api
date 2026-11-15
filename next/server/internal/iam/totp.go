@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"image/png"
 	"strconv"
@@ -333,15 +332,7 @@ func (s *Service) StartTwoFactor(ctx context.Context, userID int64) (*TwoFactorS
 // until the flow expires.
 func (s *Service) EnableTwoFactor(ctx context.Context, userID int64, flowToken, code string) ([]string, error) {
 	var payload totpSetupPayload
-	var raw []byte
-	err := ownedFlow(store.G(ctx, s.db.Gorm), flowToken, flowTOTPSetup, userID, "payload").Row().Scan(&raw)
-	if store.IsNoRows(err) {
-		return nil, errFlowExpired
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	if _, err := s.peekFlow(ctx, flowToken, flowTOTPSetup, userID, &payload); err != nil {
 		return nil, err
 	}
 	sealed, err := base64.StdEncoding.DecodeString(payload.Sealed)
@@ -459,18 +450,21 @@ func deletePasskeysOf(db *gorm.DB, userID int64) *gorm.DB {
 // ResetSecurity is the operator's way back in for a user who lost their
 // factors: it removes the user's two-factor and passkeys, only of a user the
 // operator manages (authz.CanActOnUsers; oneself only as the super admin,
-// FU6). Over HTTP the route has verified the caller (step-up
-// user.security.reset), the super admin resetting its own factors included.
+// FU6), and ends the user's sessions, which the lost device may hold (the
+// caller's own survives a reset of oneself). Over HTTP the route has
+// verified the caller (step-up user.security.reset), the super admin
+// resetting its own factors included.
 func (s *Service) ResetSecurity(ctx context.Context, actorID, targetID int64) error {
 	// SEC-H2: removing the factors of a user one does not manage would leave
 	// that account one password away from takeover.
 	if err := s.authz.CanActOnUser(ctx, actorID, core.ActOnIdentity, targetID); err != nil {
 		return err
 	}
-	return s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := lockRefreshUser(ctx, tx, targetID); err != nil {
-			return err
-		}
+	which := allSessions
+	if actorID == targetID {
+		which = otherSessions(core.Session(ctx))
+	}
+	return s.changeSessions(ctx, targetID, which, func(tx *gorm.DB) error {
 		if err := removeTwoFactor(ctx, tx, targetID); err != nil {
 			return err
 		}

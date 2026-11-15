@@ -45,7 +45,7 @@ func (s *Service) transferSuperAdmin(ctx context.Context, actorID, targetID int6
 		}
 		ended = append(demoted, targetID)
 		for _, uid := range ended {
-			if _, err := invalidateSessions(ctx, tx, uid, allSessions); err != nil {
+			if err := s.invalidateSessions(ctx, tx, uid, allSessions); err != nil {
 				return err
 			}
 		}

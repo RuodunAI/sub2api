@@ -176,6 +176,30 @@ describe('token refresh', () => {
     expect(onUnauthenticated).toHaveBeenCalledWith('expired')
   })
 
+  it('signs out on 401 of an opaque session, without asking to refresh', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_a', expires_in: 604800 })
+    const onUnauthenticated = vi.fn()
+    http.configureHttp({ onUnauthenticated })
+    const f = stubFetch(() => json({ code: 'unauthenticated' }, 401))
+    await expect(http.api.get('/x')).rejects.toBeInstanceOf(http.ApiError)
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(http.session.get()).toBeNull()
+    expect(onUnauthenticated).toHaveBeenCalledWith('expired')
+  })
+
+  it('retries an opaque session\'s 401 when the token changed meanwhile (step-up rotation)', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_old', expires_in: 604800 })
+    const f = stubFetch((url, init) => {
+      if (init.headers.Authorization === 'Bearer s2s_old') {
+        http.session.set({ ...http.session.get()!, access_token: 's2s_new' })
+        return json({ code: 'unauthenticated' }, 401)
+      }
+      return json({ ok: 1 })
+    })
+    expect(await http.api.get('/x')).toEqual({ ok: 1 })
+    expect(f).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the session when refresh fails with a server error', async () => {
     http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
     const onUnauthenticated = vi.fn()

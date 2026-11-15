@@ -13,7 +13,8 @@ export type Money = string
 
 export interface TokenResponse {
   access_token: string
-  refresh_token: string
+  /** Absent for an opaque session (s2s_, CONTRACTS §100). */
+  refresh_token?: string
   expires_in: number
   user?: Me
   /** A correct password on an account with two-factor: POST /auth/login/2fa finishes the login. */

@@ -2,18 +2,14 @@ package authz
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // EngineMode says which resolver answers the effective permission sets
@@ -47,23 +43,19 @@ const engineRefreshTimeout = 10 * time.Second
 // it).
 const EngineEnv = "SUP2API_AUTHZ_ENGINE"
 
-// engineSettingKey is the settings row holding {"engine": ...}; the
-// config:changed payload of its change is {"key": "settings.authz"}.
-const engineSettingKey = "authz"
-
-var engineChangedPayload = []byte(`{"key":"settings.` + engineSettingKey + `"}`)
+// engineSwitch is authz.engine: the settings row "authz" holding
+// {"engine": ...}, whose change config:changed announces as
+// {"key": "settings.authz"}.
+var engineSwitch = Switch{
+	Key: "authz", Field: "engine", Env: EngineEnv,
+	Values:  []string{string(EngineLegacy), string(EngineShadow), string(EngineCasbin)},
+	Default: string(EngineShadow), Action: "authz.engine.set",
+	Denied: core.LocalizedText{"en": "only the super admin can switch the authorization engine", "zh": "只有超级管理员可以切换权限引擎"},
+}
 
 // ParseEngine reads an engine name. Anything else, empty included, is
 // shadow: an unreadable value keeps the legacy answers and keeps comparing.
-func ParseEngine(s string) EngineMode {
-	switch e := EngineMode(s); e {
-	case EngineLegacy, EngineShadow, EngineCasbin:
-		return e
-	}
-	return EngineShadow
-}
-
-func validEngine(s string) bool { return ParseEngine(s) == EngineMode(s) }
+func ParseEngine(s string) EngineMode { return EngineMode(engineSwitch.Parse(s)) }
 
 // EngineSettings is the "authz" settings row.
 type EngineSettings struct {
@@ -81,14 +73,8 @@ type EngineStatus struct {
 
 // envEngine is the engine EngineEnv sets, if it is set.
 func envEngine() (EngineMode, bool) {
-	raw, ok := os.LookupEnv(EngineEnv)
-	if !ok || raw == "" {
-		return "", false
-	}
-	if !validEngine(raw) {
-		slog.Warn("authz: invalid "+EngineEnv+", using shadow", "value", raw)
-	}
-	return ParseEngine(raw), true
+	e, ok := engineSwitch.Pinned()
+	return EngineMode(e), ok
 }
 
 // EngineMode is the engine this node resolves permission sets with; a
@@ -132,23 +118,13 @@ func (s *Service) refreshEngine(ctx context.Context) {
 // engineSetting reads the "authz" settings row; a missing row is the
 // default (an empty engine, shadow).
 func (s *Service) engineSetting(ctx context.Context) (EngineSettings, error) {
-	var v EngineSettings
-	raw, err := store.SettingValue(store.G(ctx, s.db.Gorm), engineSettingKey)
-	if store.IsNoRows(err) {
-		return v, nil
-	}
-	if err != nil {
-		return v, err
-	}
-	return v, json.Unmarshal(raw, &v)
+	e, err := engineSwitch.Stored(ctx, s.db.Gorm)
+	return EngineSettings{Engine: e}, err
 }
 
 // onConfigChanged follows a change of authz.engine made on another node.
 func (s *Service) onConfigChanged(payload []byte) {
-	var event struct {
-		Key string `json:"key"`
-	}
-	if json.Unmarshal(payload, &event) == nil && event.Key == "settings."+engineSettingKey {
+	if engineSwitch.Changed(payload) {
 		// Off the bus goroutine, which must not block on the database, and
 		// bounded: every settings change is broadcast, and a stuck pool
 		// must not pile the reads up.
@@ -166,14 +142,7 @@ func (s *Service) EngineStatus(ctx context.Context) (EngineStatus, error) {
 	if err != nil {
 		return EngineStatus{}, err
 	}
-	src := "default"
-	switch {
-	case s.engineEnv:
-		src = "env"
-	case v.Engine != "":
-		src = "setting"
-	}
-	return EngineStatus{Engine: v.Engine, Effective: s.EngineMode(), Source: src, Shadow: s.shadow.stats()}, nil
+	return EngineStatus{Engine: v.Engine, Effective: s.EngineMode(), Source: engineSwitch.Source(s.engineEnv, v.Engine), Shadow: s.shadow.stats()}, nil
 }
 
 // SetEngine stores authz.engine and tells every node. Only the super admin
@@ -182,59 +151,13 @@ func (s *Service) EngineStatus(ctx context.Context) (EngineStatus, error) {
 // is audited (authz.engine.set) in the transaction that stores it.
 // EngineEnv still wins on the nodes that set it.
 func (s *Service) SetEngine(ctx context.Context, actorID int64, e string) (EngineStatus, error) {
-	if !validEngine(e) {
-		return EngineStatus{}, core.InvalidFields(core.FieldError{Field: "engine", Code: "invalid",
-			Message: t(ctx, "must be legacy, shadow or casbin", "必须是 legacy、shadow 或 casbin")})
-	}
-	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		q := store.G(ctx, tx)
-		su, err := s.IsSuperuser(ctx, q, actorID)
-		if err != nil {
-			return err
-		}
-		if !su {
-			return core.ErrPermissionDenied.WithMessage(t(ctx,
-				"only the super admin can switch the authorization engine", "只有超级管理员可以切换权限引擎"))
-		}
-		var from EngineSettings
-		if _, err := store.UpdateSettingJSONTx(ctx, tx, engineSettingKey, &actorID, func(raw json.RawMessage) (json.RawMessage, error) {
-			return withEngine(raw, e, &from)
-		}); err != nil {
-			return err
-		}
-		return s.audit(ctx, q, actorID, "authz.engine.set", "setting", engineSettingKey,
-			map[string]any{"from": from.Engine, "to": e, "request_id": core.RequestID(ctx)})
-	})
-	if err != nil {
+	if err := s.SetSwitch(ctx, engineSwitch, actorID, e); err != nil {
 		return EngineStatus{}, err
 	}
 	if !s.engineEnv {
 		s.setEngine(ParseEngine(e))
 	}
-	if s.bus != nil {
-		if err := s.bus.Publish(context.WithoutCancel(ctx), core.ChannelConfigChanged, engineChangedPayload); err != nil {
-			slog.WarnContext(ctx, "authz: publish authz.engine change failed", "err", err)
-		}
-	}
 	return s.EngineStatus(ctx)
-}
-
-// withEngine is the settings document raw with its engine set to e (other
-// fields kept); from receives the engine it held.
-func withEngine(raw json.RawMessage, e string, from *EngineSettings) (json.RawMessage, error) {
-	doc := map[string]json.RawMessage{}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, err
-	}
-	if old, ok := doc["engine"]; ok {
-		_ = json.Unmarshal(old, &from.Engine) // a non-string is audited as ""
-	}
-	v, err := json.Marshal(e)
-	if err != nil {
-		return nil, err
-	}
-	doc["engine"] = v
-	return json.Marshal(doc)
 }
 
 func (s *Service) handleGetEngine(c *gin.Context) {

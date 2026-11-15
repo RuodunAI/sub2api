@@ -3,6 +3,7 @@ package iam
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -24,8 +26,8 @@ const (
 	loginMethodPasskey   = "passkey"
 )
 
-// LoginSession is one signed-in browser or device: a refresh token family with
-// a live token.
+// LoginSession is one signed-in browser or device: an opaque session, or a
+// refresh token family with a live token.
 type LoginSession struct {
 	ID         string    `json:"id"`
 	Method     string    `json:"method"`
@@ -103,18 +105,35 @@ func (s *Service) auditSuperuserLogin(ctx context.Context, tx *gorm.DB, userID i
 	return nil
 }
 
-// Sessions lists the user's live login sessions, most recently used first.
-// currentFamily marks the caller's own.
+// Sessions lists the user's live login sessions, the opaque ones and the
+// refresh token families, most recently used first. currentFamily marks the
+// caller's own.
 func (s *Service) Sessions(ctx context.Context, userID int64, currentFamily string) ([]LoginSession, error) {
 	var rows []sessionRow
 	if err := liveSessions(store.G(ctx, s.db.Gorm), userID).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	out := make([]LoginSession, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, LoginSession{ID: r.ID, Method: r.Method, IP: r.IP, UserAgent: r.UserAgent,
-			CreatedAt: r.CreatedAt, LastUsedAt: r.LastUsedAt, Current: r.ID == currentFamily})
+	var opaque []tokenstore.Session
+	if s.sessions != nil {
+		var err error
+		if opaque, err = s.sessions.List(ctx, userID); err != nil {
+			return nil, err
+		}
 	}
+	out := make([]LoginSession, 0, len(rows)+len(opaque))
+	seen := make(map[string]bool, len(opaque))
+	for _, o := range opaque {
+		seen[o.ID] = true
+		out = append(out, LoginSession{ID: o.ID, Method: o.Method, IP: o.IP, UserAgent: o.UserAgent,
+			CreatedAt: o.CreatedAt, LastUsedAt: o.LastSeen, Current: o.ID == currentFamily})
+	}
+	for _, r := range rows {
+		if !seen[r.ID] { // a family being exchanged for its opaque session
+			out = append(out, LoginSession{ID: r.ID, Method: r.Method, IP: r.IP, UserAgent: r.UserAgent,
+				CreatedAt: r.CreatedAt, LastUsedAt: r.LastUsedAt, Current: r.ID == currentFamily})
+		}
+	}
+	slices.SortStableFunc(out, func(a, b LoginSession) int { return b.LastUsedAt.Compare(a.LastUsedAt) })
 	return out, nil
 }
 
@@ -140,13 +159,16 @@ func liveSessions(db *gorm.DB, userID int64) *gorm.DB {
 		ORDER BY 6 DESC`, userID)
 }
 
-// RevokeSession ends one of the user's login sessions at once: its refresh
-// token stops and its access token is rejected; the other sessions renew on
-// their next 401.
+// RevokeSession ends one of the user's login sessions at once: an opaque
+// one is gone, or its refresh token stops and its access token is
+// rejected; the other JWT sessions renew on their next 401.
 func (s *Service) RevokeSession(ctx context.Context, userID int64, familyID string) error {
 	return s.changeSessions(ctx, userID, oneSession(familyID), func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		live, err := store.Exists(g, userFamily(g, userID, familyID))
+		if err == nil && !live && s.sessions != nil {
+			live, err = s.sessions.Has(ctx, userID, familyID)
+		}
 		if err != nil {
 			return err
 		}
@@ -180,23 +202,40 @@ func otherSessions(keep string) sessionsToEnd { return sessionsToEnd{keep: keep}
 func oneSession(family string) sessionsToEnd { return sessionsToEnd{only: family} }
 
 // invalidateSessions stops every access token of userID at once
-// (token_version+1, CONTRACTS §43.2) and revokes the refresh tokens and
-// login sessions `which` selects; a session whose refresh token survives
-// renews on its next 401. Callers lock the user row first and call
-// sessionsChanged after commit.
-func invalidateSessions(ctx context.Context, tx *gorm.DB, userID int64, which sessionsToEnd) (revoked int64, err error) {
+// (token_version+1, CONTRACTS §43.2) and revokes the refresh tokens, login
+// sessions and opaque sessions `which` selects; a session whose refresh
+// token survives renews on its next 401. Callers lock the user row first and
+// call sessionsChanged after commit.
+func (s *Service) invalidateSessions(ctx context.Context, tx *gorm.DB, userID int64, which sessionsToEnd) error {
 	g := store.G(ctx, tx)
 	if err := bumpTokenVersion(g, userID).Error; err != nil {
-		return 0, err
+		return err
 	}
-	res := revokeSessions(g, userID, which)
-	if res.Error != nil {
-		return 0, res.Error
+	if err := revokeSessions(g, userID, which).Error; err != nil {
+		return err
 	}
 	if err := deleteSessions(g, userID, which).Error; err != nil {
-		return 0, err
+		return err
 	}
-	return res.RowsAffected, nil
+	return s.revokeOpaque(ctx, g, userID, which)
+}
+
+// revokeOpaque ends the opaque sessions `which` selects and stamps the
+// others with the token_version just bumped: they have no refresh token to
+// renew with, so the bump that stops the JWTs must not stop them. It runs in
+// the transaction, under the user's lock, so no login slips a session in
+// with the old version; a survivor stamped ahead of a rollback is still
+// accepted (verifyOpaque rejects only older ones). Without a store (the
+// server CLI) the bump alone ends them all.
+func (s *Service) revokeOpaque(ctx context.Context, g *gorm.DB, userID int64, which sessionsToEnd) error {
+	if s.sessions == nil {
+		return nil
+	}
+	var tv int
+	if err := userTokenVersion(g, userID).Row().Scan(&tv); err != nil {
+		return err
+	}
+	return s.sessions.Revoke(ctx, userID, tokenstore.Selection{Only: which.only, Keep: which.keep}, tv)
 }
 
 // revokeSessions revokes the live refresh tokens of the families of userID
@@ -235,8 +274,7 @@ func (s *Service) changeSessions(ctx context.Context, userID int64, which sessio
 				return err
 			}
 		}
-		_, err := invalidateSessions(ctx, tx, userID, which)
-		return err
+		return s.invalidateSessions(ctx, tx, userID, which)
 	})
 	if err != nil {
 		return err

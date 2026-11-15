@@ -8,6 +8,19 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 核心 0.1.290（版本号推测）：控制台会话改为 Valkey 不透明令牌（无迁移，开关默认不变）
+
+契约见 CONTRACTS §100。本版本同时认 JWT 与新的 `s2s_` 令牌，签发哪种由开关 `session.issue` 决定，默认仍签发 JWT，用户看不到变化。
+
+- **不透明会话**：`s2s_` 令牌存在 Valkey（只存哈希），一个令牌、滑动续期（空闲 7 天、绝对 30 天，`SUB2API_SESSION_IDLE_TTL` / `SUB2API_SESSION_MAX_TTL`），没有 refresh token。撤销单个会话立即失效（JWT 要等 access token 过期）；改密码、禁用、删除用户、撤销其他会话时批量删除，`token_version` 照旧兜底。二次验证后换发同一会话的新令牌（`POST /me/verify` 响应的 `access_token`）。
+- **开关**：`PUT /settings/session {"issue": "jwt" | "s2s"}`（`settings:manage` + 二次验证 `session.issue`，只有超管本人可以，写审计 `session.issue.set`），广播后各节点生效；环境变量 `SUP2API_SESSION_ISSUE` 优先。切到 `s2s` 后已登录的控制台在下次刷新时自动换成 `s2s_`，不用重新登录。控制台没有页面。
+- **中间流程**（两步登录、通行密钥、TOTP 设置、step-up）在开关为 `s2s` 时只写 Valkey、取用 `GETDEL`；读取先 Valkey 后 `auth_flows`。
+- **Valkey 故障**：不透明会话鉴权、登录返回 503 并记 ERROR `tokenstore: valkey unavailable`，不回退 JWT；会话鉴权的 503 不再被改写成 401。访问密钥和网关 Key 不受影响。
+- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。开关为 `jwt` 时，撤销会话、改密码、禁用和删除用户、两步登录在 Valkey 不可用时也返回 503。
+- 控制台：登录响应没有 `refresh_token` 时，401 直接回登录页，不走刷新。
+
+**发布**：全部节点升级到本版本后再 `PUT /settings/session {"issue":"s2s"}`，不需要第二次发版。**回退**：切回 `jwt` 立即恢复签发 JWT，已发的 `s2s_` 有效到过期；代码回滚到上一版时 `s2s_` 用户需要重新登录。JWT 代码与 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表在切换 30 天后另行清理（§100.7）。
+
 ### 核心 0.1.290（版本号推测）：权限判断接入 Casbin，影子模式（迁移 0100，可滚动）
 
 契约见 CONTRACTS §99。用户可见的权限不变：默认 `authz.engine = shadow`，旧加载器照常说了算。

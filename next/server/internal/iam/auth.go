@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -15,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -22,10 +22,12 @@ import (
 // TokenPair is the response of login and refresh. When the account has
 // two-factor authentication, a correct password answers with only
 // TwoFactorRequired and FlowToken; POST /auth/login/2fa gives the tokens.
+// An opaque session (session.issue s2s) has no refresh token: the console
+// then takes a 401 for the end of the session.
 type TokenPair struct {
 	AccessToken       string `json:"access_token,omitempty"`
 	RefreshToken      string `json:"refresh_token,omitempty"`
-	ExpiresIn         int64  `json:"expires_in,omitempty"` // access token lifetime, seconds
+	ExpiresIn         int64  `json:"expires_in,omitempty"` // access token lifetime (opaque: idle timeout), seconds
 	User              *User  `json:"user,omitempty"`
 	TwoFactorRequired bool   `json:"two_factor_required,omitempty"`
 	FlowToken         string `json:"flow_token,omitempty"`
@@ -115,16 +117,8 @@ type login2FAPayload struct {
 // limit, and ends with the first correct one.
 func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip string) (*TokenPair, error) {
 	var payload login2FAPayload
-	var raw []byte
-	var userID int64
-	err := liveFlow(store.G(ctx, s.db.Gorm), flowToken, flowLogin2FA, "payload, user_id").Row().Scan(&raw, &userID)
-	if store.IsNoRows(err) {
-		return nil, errFlowExpired
-	}
+	userID, err := s.peekFlow(ctx, flowToken, flowLogin2FA, 0, &payload)
 	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
 	}
 	if wait := s.limiter.check(ctx, payload.Email, ip); wait > 0 {
@@ -182,20 +176,19 @@ func newFamilyID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// issueTokens issues an access token and a refresh token in familyID (a new
-// family when empty, i.e. on login, which is audited for a superuser).
+// issueTokens issues the credentials of a login session familyID (a new
+// one when empty, i.e. on login, which is audited for a superuser): an
+// opaque session or a JWT pair, as session.issue says. The caller holds
+// the user's row lock.
 func (s *Service) issueTokens(ctx context.Context, tx *gorm.DB, userID int64, familyID string) (*TokenPair, error) {
 	g := store.G(ctx, tx)
 	var tokenVersion int
 	if err := userTokenVersion(g, userID).Row().Scan(&tokenVersion); err != nil {
 		return nil, err
 	}
-	refresh, err := randomToken()
-	if err != nil {
-		return nil, err
-	}
 	newFamily := familyID == ""
 	if newFamily {
+		var err error
 		if familyID, err = newFamilyID(); err != nil {
 			return nil, err
 		}
@@ -203,23 +196,39 @@ func (s *Service) issueTokens(ctx context.Context, tx *gorm.DB, userID int64, fa
 			return nil, err
 		}
 	}
+	issue := s.issueJWT
+	if s.issuesOpaque(ctx) {
+		issue = s.issueOpaque
+	}
+	pair, err := issue(ctx, g, userID, tokenVersion, familyID, newFamily)
+	if err != nil {
+		return nil, err
+	}
+	if pair.User, err = s.getUser(ctx, tx, userID); err != nil {
+		return nil, err
+	}
+	pair.User.Balance = nil
+	pair.User.Segment = core.SegmentRef{}
+	return pair, nil
+}
+
+// issueJWT issues an access token and a refresh token in familyID.
+func (s *Service) issueJWT(ctx context.Context, g *gorm.DB, userID int64, tokenVersion int, familyID string, isNew bool) (*TokenPair, error) {
+	refresh, err := randomToken()
+	if err != nil {
+		return nil, err
+	}
 	access, err := s.issueAccessToken(userID, tokenVersion, familyID)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.touchLoginSession(ctx, tx, userID, familyID, newFamily); err != nil {
+	if err := s.touchLoginSession(ctx, g, userID, familyID, isNew); err != nil {
 		return nil, err
 	}
 	if err := insertRefreshToken(g, userID, hashToken(refresh), time.Now().Add(s.cfg.RefreshTokenTTL), familyID).Error; err != nil {
 		return nil, err
 	}
-	u, err := s.getUser(ctx, tx, userID)
-	if err != nil {
-		return nil, err
-	}
-	u.Balance = nil
-	u.Segment = core.SegmentRef{}
-	return &TokenPair{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(s.cfg.AccessTokenTTL / time.Second), User: u}, nil
+	return &TokenPair{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(s.cfg.AccessTokenTTL / time.Second)}, nil
 }
 
 // insertRefreshToken stores a refresh token, raw: Create would add a
@@ -309,7 +318,10 @@ func rotatedJustNow(revokedAt, replacedAt *time.Time, now time.Time) bool {
 // Refresh rotates a refresh token: the presented one is marked revoked and
 // replaced, and a new pair is issued in the same family. Presenting a token
 // that was already rotated or revoked revokes every token of its family
-// (CONTRACTS §14.2) and fails with 401.
+// (CONTRACTS §14.2), and the opaque session it may have been exchanged for,
+// and fails with 401. With session.issue s2s the token is exchanged for an
+// opaque session of the same id instead (issueOpaque): the user stays
+// signed in across the switch.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair, error) {
 	if refreshToken == "" {
 		return nil, errBadRefresh
@@ -397,6 +409,11 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	if replayFamily != "" {
 		slog.WarnContext(ctx, "iam: refresh token reuse detected, token family revoked",
 			"user_id", replayUser, "family_id", replayFamily)
+		if s.sessions != nil {
+			if err := s.sessions.Revoke(ctx, replayUser, tokenstore.Selection{Only: replayFamily}, 0); err != nil {
+				return nil, err
+			}
+		}
 		return nil, errBadRefresh
 	}
 	return pair, nil
@@ -412,21 +429,38 @@ func rotateRefresh(db *gorm.DB, id int64) *gorm.DB {
 }
 
 // Logout ends the session refreshToken belongs to, if it is a live token of
-// userID; an empty token ends every session of the user.
+// userID. Without one, an opaque session ends itself (it has no refresh
+// token to name it by); otherwise every session of the user ends.
 func (s *Service) Logout(ctx context.Context, userID int64, refreshToken string) error {
+	var family string
+	var err error
+	if refreshToken == "" {
+		family, err = s.ownOpaqueSession(ctx, userID)
+	} else if err = liveFamilyOf(store.G(ctx, s.db.Gorm), hashToken(refreshToken), userID).Row().Scan(&family); store.IsNoRows(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	which := allSessions
-	if refreshToken != "" {
-		var family string
-		err := liveFamilyOf(store.G(ctx, s.db.Gorm), hashToken(refreshToken), userID).Row().Scan(&family)
-		if store.IsNoRows(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
+	if family != "" {
 		which = oneSession(family)
 	}
 	return s.changeSessions(ctx, userID, which, nil)
+}
+
+// ownOpaqueSession is the caller's login session when it is an opaque one
+// of userID, "" otherwise.
+func (s *Service) ownOpaqueSession(ctx context.Context, userID int64) (string, error) {
+	id := core.Session(ctx)
+	if id == "" || s.sessions == nil {
+		return "", nil
+	}
+	ok, err := s.sessions.Has(ctx, userID, id)
+	if !ok {
+		id = ""
+	}
+	return id, err
 }
 
 // liveFamilyOf reads the family of the live refresh token hash of userID.

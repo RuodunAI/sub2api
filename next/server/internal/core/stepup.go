@@ -45,6 +45,10 @@ const (
 	// /settings/authz, CONTRACTS §99), which decides who answers every
 	// permission check of the site.
 	StepUpAuthzEngine = "authz.engine"
+	// StepUpSessionIssue: switching what a login issues, JWTs or opaque
+	// sessions (PUT /settings/session, CONTRACTS §100), which decides how
+	// every console user stays signed in.
+	StepUpSessionIssue = "session.issue"
 	// StepUpHostInstall: installing or reaching code that runs on a host the
 	// core controls (the ccgateway controller and runtimes, SSH targets).
 	StepUpHostInstall = "host.install"
@@ -156,8 +160,9 @@ func StepUpPassword(ctx context.Context) bool {
 
 type sessionCtxKey struct{}
 
-// WithSession records the login session (refresh token family) a console
-// JWT belongs to.
+// WithSession records the login session a console token belongs to: the
+// refresh token family of a JWT, the id of an opaque session (an exchanged
+// family keeps its id).
 func WithSession(ctx context.Context, family string) context.Context {
 	return context.WithValue(ctx, sessionCtxKey{}, family)
 }

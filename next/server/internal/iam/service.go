@@ -1,5 +1,6 @@
-// Package iam implements console identity: users, login with JWT access
-// tokens and rotating refresh tokens and the super
+// Package iam implements console identity: users, login with opaque
+// sessions kept in Valkey (s2s_, CONTRACTS §100) or, until that switch is
+// flipped, JWT access tokens and rotating refresh tokens, and the super
 // admin bootstrap. It implements core.TokenVerifier.
 package iam
 
@@ -13,6 +14,7 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -69,6 +72,14 @@ type Service struct {
 
 	limiter *loginLimiter
 
+	// sessions and flows are in Valkey (nil without Redis: the server
+	// CLI); issue is what a login issues (session.issue); sessionIdle is
+	// the idle timeout of an opaque session.
+	sessions    tokenstore.SessionStore
+	flows       tokenstore.FlowStore
+	issue       issueModeState
+	sessionIdle time.Duration
+
 	dummyHash []byte
 
 	mu          sync.Mutex
@@ -102,6 +113,15 @@ func New(d Deps) *Service {
 	s := &Service{db: d.DB, rdb: d.Redis, cfg: d.Config, events: d.Events, authz: d.Authz, bus: d.Bus, cipher: d.Cipher, cost: d.BcryptCost, status: map[int64]statusEntry{},
 		priceRulesChanged: d.PriceRulesChanged, limiter: newLoginLimiter(d.Redis)}
 	s.dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing"), s.cost)
+	s.issue.pinned, s.issue.hasPinned = issueSwitch.Pinned()
+	if d.Redis != nil {
+		var o tokenstore.Options
+		if d.Config != nil {
+			o.Idle, o.Max = d.Config.SessionIdleTTL, d.Config.SessionMaxTTL
+		}
+		v := tokenstore.NewValkey(d.Redis, o)
+		s.sessions, s.flows, s.sessionIdle = v, v, v.Idle()
+	}
 	if d.Authz != nil {
 		d.Authz.UseStepUp(s)
 		// Status changes (disable/delete) bump the authz version.
@@ -124,8 +144,12 @@ func (s *Service) subscribe(bus core.Bus) {
 		}
 		s.forgetStatus(uid)
 	})
+	bus.Subscribe(core.ChannelConfigChanged, s.issueChanged)
 	if r, ok := bus.(core.BusReconnects); ok {
-		r.OnReconnect(s.clearStatusCache)
+		r.OnReconnect(func() {
+			s.clearStatusCache()
+			s.issue.cached.Store(nil)
+		})
 	}
 }
 
@@ -174,8 +198,13 @@ func (s *Service) VerifyAccessToken(ctx context.Context, token string) (int64, e
 }
 
 // VerifySession implements core.SessionVerifier: VerifyAccessToken that also
-// returns the token's login session.
+// returns the token's login session. Both kinds are accepted whatever
+// session.issue says: an s2s_ token is an opaque session, anything else a
+// JWT, until every JWT has expired (CONTRACTS §100.5).
 func (s *Service) VerifySession(ctx context.Context, token string) (int64, string, error) {
+	if strings.HasPrefix(token, tokenstore.SessionPrefix) {
+		return s.verifyOpaque(ctx, token)
+	}
 	var claims accessClaims
 	_, err := jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) { return s.cfg.JWTSecret, nil },
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())

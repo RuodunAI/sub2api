@@ -107,6 +107,8 @@ func setup(t *testing.T) *env {
 		JWTSecret:              []byte("0123456789abcdef0123456789abcdef"),
 		AccessTokenTTL:         time.Hour,
 		RefreshTokenTTL:        24 * time.Hour,
+		SessionIdleTTL:         7 * 24 * time.Hour,
+		SessionMaxTTL:          30 * 24 * time.Hour,
 		BootstrapAdminEmail:    adminEmail,
 		BootstrapAdminPassword: adminPassword,
 	}

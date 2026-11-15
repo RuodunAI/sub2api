@@ -20,7 +20,8 @@ import (
 
 // ============================================================ identity & authz (owner: A core-data)
 
-// TokenVerifier validates console access tokens (JWT).
+// TokenVerifier validates console access tokens: JWTs, and the opaque
+// session tokens (s2s_) that replace them (CONTRACTS §100).
 type TokenVerifier interface {
 	VerifyAccessToken(ctx context.Context, token string) (userID int64, err error)
 }
@@ -169,7 +170,8 @@ type AccessKeyVerifier interface {
 	VerifyAccessKey(ctx context.Context, raw, ip string) (AccessKeyIdentity, error)
 }
 
-// AuthenticateBearer resolves a console bearer token to its user: a JWT, or an
+// AuthenticateBearer resolves a console bearer token to its user: a login
+// session (a JWT or an s2s_ token, both through SessionVerifier), or an
 // access key, whose limits then travel in the returned context.
 func AuthenticateBearer(ctx context.Context, tokens TokenVerifier, token, ip string) (context.Context, int64, error) {
 	if !strings.HasPrefix(token, AccessKeyPrefix) {

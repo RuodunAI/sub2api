@@ -16,7 +16,8 @@ import (
 )
 
 // RegisterRoutes mounts /auth/*, /me, /me/password, /users*, the members of
-// a segment, which are a users list, and the super admin transfer.
+// a segment, which are a users list, the super admin transfer and the
+// session.issue switch.
 func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.Public(http.MethodPost, "/auth/login", s.handleLogin)
 	r.Public(http.MethodPost, "/auth/refresh", s.handleRefresh)
@@ -37,6 +38,7 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	// The super admin's own standing: under self:security for an access key.
 	r.StepUp(core.StepUpSuperAdminTransfer).Self(http.MethodPost, "/system/super-admin/transfer", selfSecurity, s.handleTransferSuperAdmin)
 	s.registerSecurityRoutes(r)
+	s.registerIssueRoutes(r)
 }
 
 func actor(c *gin.Context) int64 {

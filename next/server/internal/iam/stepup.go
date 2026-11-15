@@ -17,6 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -25,8 +26,10 @@ import (
 // 期 4): the one implementation of core.StepUpVerifier. A caller verifies
 // once (VerifyStepUp) and gets a proof: five minutes, one use, bound to the
 // user, the session or access key, the scope and the operation. Proofs are
-// auth_flows rows like the other short steps (§79.1): shared by the nodes,
-// taken once by DELETE ... RETURNING, and they need no Redis.
+// flows like the other short steps (§79.1, flow.go): shared by the nodes and
+// taken once (GETDEL in Valkey, DELETE ... RETURNING in auth_flows). A
+// session that verifies gets a new token of the same session (§100.4), so
+// the proof's binding to the session holds.
 
 // The verification methods.
 const (
@@ -72,6 +75,7 @@ var stepUpScopes = map[string]bool{
 	core.StepUpPublisherManage:    false,
 	core.StepUpSystemUpdate:       false,
 	core.StepUpAuthzEngine:        false,
+	core.StepUpSessionIssue:       false,
 	core.StepUpHostInstall:        false,
 	core.StepUpAccessKeyWrite:     false,
 	core.StepUpSuperAdminIdentity: false,
@@ -227,13 +231,16 @@ type VerifyInput struct {
 	Credential json.RawMessage `json:"credential"`
 }
 
-// StepUpProof is the response of POST /me/verify.
+// StepUpProof is the response of POST /me/verify. AccessToken is the new
+// token of a caller signed in with an opaque session: the console uses it
+// from then on (the old one works for a few seconds more).
 type StepUpProof struct {
-	Proof     string    `json:"proof"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Method    string    `json:"method"`
-	Scope     string    `json:"scope"`
-	Context   string    `json:"context"`
+	Proof       string    `json:"proof"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Method      string    `json:"method"`
+	Scope       string    `json:"scope"`
+	Context     string    `json:"context"`
+	AccessToken string    `json:"access_token,omitempty"`
 }
 
 var errMethodUnavailable = core.InvalidFields(core.FieldError{Field: "method", Code: "unavailable", Message: "this verification method is not available"})
@@ -280,7 +287,28 @@ func (s *Service) VerifyStepUp(ctx context.Context, r *http.Request, userID int6
 	if err := audit.Audit(ctx, s.db.Gorm, userID, "user.security_verify", "user", strconv.FormatInt(userID, 10), detail); err != nil {
 		return nil, err
 	}
-	return &StepUpProof{Proof: token, ExpiresAt: time.Now().Add(flowTTL), Method: in.Method, Scope: in.Scope, Context: in.Context}, nil
+	access, err := s.rotateOwnSession(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &StepUpProof{Proof: token, ExpiresAt: time.Now().Add(flowTTL), Method: in.Method, Scope: in.Scope, Context: in.Context,
+		AccessToken: access}, nil
+}
+
+// rotateOwnSession gives the caller's opaque session a new token after it
+// verified, so a token taken before the verification is not the one that
+// carries on (session fixation); the session id, which proofs and step-up
+// windows are bound to, stays. "" for a JWT session or an access key.
+func (s *Service) rotateOwnSession(ctx context.Context, userID int64) (string, error) {
+	id := core.Session(ctx)
+	if _, key := core.AccessKey(ctx); key || id == "" || s.sessions == nil {
+		return "", nil
+	}
+	token, err := s.sessions.Rotate(ctx, userID, id)
+	if errors.Is(err, tokenstore.ErrNotFound) {
+		return "", nil
+	}
+	return token, err
 }
 
 // confirmCode checks a TOTP or backup code of userID; a wrong one counts
@@ -424,12 +452,15 @@ func (s *Service) OpenStepUpSession(ctx context.Context, scope, session string) 
 	if uid == 0 || session == "" || core.StepUpSpent(ctx) != scope {
 		return core.ErrVerificationRequired.WithDetails(map[string]any{"scope": scope})
 	}
+	name := hashToken(stepUpSessionToken(ctx, uid, scope, session))
+	if s.issuesOpaque(ctx) {
+		return s.flows.OpenWindow(ctx, name, core.StepUpSessionIdle)
+	}
 	payload, err := json.Marshal(map[string]string{"scope": scope, "session": session, "subject": stepUpSubject(ctx)})
 	if err != nil {
 		return err
 	}
-	return openStepUpSession(store.G(ctx, s.db.Gorm), hashToken(stepUpSessionToken(ctx, uid, scope, session)), uid, payload,
-		time.Now().Add(core.StepUpSessionIdle)).Error
+	return openStepUpSession(store.G(ctx, s.db.Gorm), name, uid, payload, time.Now().Add(core.StepUpSessionIdle)).Error
 }
 
 // openStepUpSession stores the step-up session hash of userID, or starts it
@@ -440,23 +471,34 @@ func openStepUpSession(db *gorm.DB, hash string, userID int64, payload []byte, e
 		hash, flowStepUpSession, userID, payload, expiresAt)
 }
 
-// ContinueStepUpSession implements core.StepUpSessions.
+// ContinueStepUpSession implements core.StepUpSessions: a window in Valkey,
+// else one in auth_flows (opened before the switch to s2s).
 func (s *Service) ContinueStepUpSession(ctx context.Context, scope, session string) error {
 	uid, _ := core.UserID(ctx)
 	continued := false
 	if uid != 0 && session != "" {
-		res := continueStepUpSession(store.G(ctx, s.db.Gorm), hashToken(stepUpSessionToken(ctx, uid, scope, session)),
-			time.Now().Add(core.StepUpSessionIdle), core.StepUpSessionMax.Seconds())
-		if res.Error != nil {
-			return res.Error
+		var err error
+		if continued, err = s.continueStepUpWindow(ctx, hashToken(stepUpSessionToken(ctx, uid, scope, session))); err != nil {
+			return err
 		}
-		continued = res.RowsAffected == 1
 	}
 	if !continued {
 		return core.ErrVerificationExpired.WithMessage(t(ctx, "this verified operation has expired or belongs to another session; start it again",
 			"这次操作的二次验证已过期或属于其他会话，请重新开始")).WithDetails(map[string]any{"scope": scope})
 	}
 	return nil
+}
+
+// continueStepUpWindow extends the step-up session name, in Valkey first.
+func (s *Service) continueStepUpWindow(ctx context.Context, name string) (bool, error) {
+	if s.flows != nil {
+		ok, err := s.flows.ContinueWindow(ctx, name, core.StepUpSessionIdle, core.StepUpSessionMax)
+		if ok || err != nil {
+			return ok, err
+		}
+	}
+	res := continueStepUpSession(store.G(ctx, s.db.Gorm), name, time.Now().Add(core.StepUpSessionIdle), core.StepUpSessionMax.Seconds())
+	return res.RowsAffected == 1, res.Error
 }
 
 // continueStepUpSession extends the step-up session tokenHash to idle, at

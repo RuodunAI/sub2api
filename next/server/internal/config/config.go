@@ -49,6 +49,11 @@ type Config struct {
 	AccessTokenTTL  time.Duration // SUB2API_ACCESS_TOKEN_TTL, default 2h
 	RefreshTokenTTL time.Duration // SUB2API_REFRESH_TOKEN_TTL, default 720h
 
+	// An opaque session (s2s_, CONTRACTS §100) ends unused for
+	// SessionIdleTTL and SessionMaxTTL after its login, used or not.
+	SessionIdleTTL time.Duration // SUB2API_SESSION_IDLE_TTL, default 168h
+	SessionMaxTTL  time.Duration // SUB2API_SESSION_MAX_TTL, default 720h
+
 	BootstrapAdminEmail    string // SUB2API_BOOTSTRAP_ADMIN_EMAIL
 	BootstrapAdminPassword string // SUB2API_BOOTSTRAP_ADMIN_PASSWORD
 
@@ -174,6 +179,15 @@ func Load(goos string) (*Config, error) {
 	}
 	if c.ShutdownDelay, err = durationEnv("SUB2API_SHUTDOWN_DELAY", 3*time.Second); err != nil {
 		return nil, err
+	}
+	if c.SessionIdleTTL, err = durationEnv("SUB2API_SESSION_IDLE_TTL", 7*24*time.Hour); err != nil {
+		return nil, err
+	}
+	if c.SessionMaxTTL, err = durationEnv("SUB2API_SESSION_MAX_TTL", 30*24*time.Hour); err != nil {
+		return nil, err
+	}
+	if c.SessionIdleTTL <= 0 || c.SessionMaxTTL < c.SessionIdleTTL {
+		return nil, fmt.Errorf("SUB2API_SESSION_IDLE_TTL must be positive and at most SUB2API_SESSION_MAX_TTL")
 	}
 	if c.Environment, err = environmentEnv(); err != nil {
 		return nil, err

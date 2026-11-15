@@ -3,7 +3,9 @@
 // Contract (docs/CONTRACTS.md §3):
 //   success  -> {"data": ...}            list -> {"data": [...], "page": {...}}
 //   failure  -> {"error": {code, message, details}}
-// 401 triggers one refresh attempt (POST /auth/refresh) and a retry.
+// 401 triggers one refresh attempt (POST /auth/refresh) and a retry when the
+// session has a refresh token; an opaque session (s2s_, CONTRACTS §100) has
+// none, so its 401 goes straight back to the login page.
 // 403 verification_required asks onVerificationRequired for a step-up proof
 // and replays the request once with X-Verify-Proof (CONTRACTS §80.2).
 
@@ -115,7 +117,8 @@ export interface RequestOptions {
 
 export interface Session {
   access_token: string
-  refresh_token: string
+  /** Absent for an opaque session, which renews itself on the server. */
+  refresh_token?: string
   /** epoch ms */
   expires_at: number
 }
@@ -148,8 +151,8 @@ export const session = {
     }
     listeners.forEach((fn) => fn(s))
   },
-  /** Store a login/refresh response ({access_token, refresh_token, expires_in}). */
-  fromTokenResponse(r: { access_token: string; refresh_token: string; expires_in: number }) {
+  /** Store a login/refresh response ({access_token, refresh_token?, expires_in}). */
+  fromTokenResponse(r: { access_token: string; refresh_token?: string; expires_in: number }) {
     session.set({
       access_token: r.access_token,
       refresh_token: r.refresh_token,
@@ -362,6 +365,8 @@ async function doRefresh(stale: string | undefined): Promise<RefreshOutcome> {
 function refreshSession(stale: string | undefined): Promise<RefreshOutcome> {
   const s = session.get()
   if (s && stale && s.access_token !== stale) return Promise.resolve('ok')
+  // Nothing to renew an opaque session with: the 401 means it ended.
+  if (!s?.refresh_token) return Promise.resolve('invalid')
   if (!refreshing) {
     refreshing = withRefreshLock(() => doRefresh(stale)).finally(() => {
       refreshing = null
