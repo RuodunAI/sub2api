@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -17,6 +18,14 @@ func snapshotRule() *stickyRule {
 	return &stickyRule{Name: "r", Source: sourceAdmin, Enabled: false, Priority: 0, OnFailure: onFailureStick,
 		Match:      manifest.StickyMatch{Protocols: []string{"anthropic"}},
 		KeySources: []manifest.StickyKeySource{{Type: "header", Name: "x-session"}}, TTLSeconds: 0}
+}
+
+// Whether a rule of the name is left, after a delete: one SELECT EXISTS.
+func TestSQLStickyRuleNameInUse(t *testing.T) {
+	var found bool
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return store.ExistsQuery(db, rulesNamed(db, "r")).Scan(&found)
+	})
 }
 
 // A disabled rule of priority 0 and TTL 0 writes them (the columns default

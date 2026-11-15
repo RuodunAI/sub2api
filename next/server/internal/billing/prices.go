@@ -615,20 +615,35 @@ func expressionFor(mode string, config json.RawMessage, expression string) (stri
 }
 
 // recordHistorySQL keeps an expression (hash, canonical text, version) where
-// a settlement retry reads it back; queueSave batches it.
+// a settlement retry reads it back, with the arguments historyArgs gives.
+// recordHistory runs it through GORM; queueSave batches the same text
+// numbered for pgx (recordHistoryBatchSQL), so the two cannot drift apart.
 const recordHistorySQL = `
-		INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES ($1, $2, $3)
+		INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES (?, ?, ?)
 		ON CONFLICT (expr_hash) DO NOTHING`
+
+var recordHistoryBatchSQL = pgxNumbered(recordHistorySQL)
+
+func historyArgs(p *expr.Program) []any { return []any{p.Hash(), p.Expression(), p.Version()} }
 
 // recordHistory runs recordHistorySQL on q.
 func recordHistory(ctx context.Context, q store.Querier, p *expr.Program) error {
 	return insertHistory(store.G(ctx, q), p).Error
 }
 
-// insertHistory is recordHistorySQL on GORM: a map on the bare table, so
-// nothing is read back.
 func insertHistory(db *gorm.DB, p *expr.Program) *gorm.DB {
-	return db.Table(model.ModelPriceHistory{}.TableName()).
-		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "expr_hash"}}, DoNothing: true}).
-		Create(map[string]any{"expr_hash": p.Hash(), "expression": p.Expression(), "expr_version": p.Version()})
+	return db.Exec(recordHistorySQL, historyArgs(p)...)
+}
+
+// pgxNumbered numbers the ? placeholders of a statement $1, $2 ... for a
+// pgx.Batch. The text must hold no other ? (a jsonb operator, a literal).
+func pgxNumbered(query string) string {
+	parts := strings.Split(query, "?")
+	var b strings.Builder
+	b.WriteString(parts[0])
+	for i, part := range parts[1:] {
+		b.WriteString("$" + strconv.Itoa(i+1))
+		b.WriteString(part)
+	}
+	return b.String()
 }

@@ -22,9 +22,18 @@ var (
 	snapshotClaim = &store.QuotaClaim{AccountID: 11, Generation: 22, Token: 33, Revision: 44}
 )
 
+// SettingValue's read, as billing and usage load their settings (the row is
+// the primary key's: no LIMIT), and as UpdateSettingJSONTx locks it.
+func TestSQLSettingValue(t *testing.T) {
+	var raw []byte
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return store.SettingValueSQL(db, "billing").Scan(&raw) })
+}
+
 func TestSQLSettingLock(t *testing.T) {
 	var raw []byte
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return store.LockSetting(db, "gateway").Scan(&raw) })
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return store.SettingValueSQL(db, "gateway").Clauses(store.ForUpdate).Scan(&raw)
+	})
 }
 
 // The update writes updated_at = now(), as the statement it replaces did.
@@ -33,6 +42,14 @@ func TestSQLSettingWrite(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		return store.WriteSetting(db, "gateway", json.RawMessage(`{"a":1}`), &uid)
 	})
+}
+
+// AccountQuotasAt reads ReadAccountQuotas's columns (readQuotaRows), with a
+// NULL account column, and one row with only the time when no account has a
+// snapshot.
+func TestSQLQuotasAt(t *testing.T) {
+	var rows []struct{ ID int64 }
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return store.QuotasAtSQL(db, []int64{11, 12}).Scan(&rows) })
 }
 
 func TestSQLBalanceUpsert(t *testing.T) {

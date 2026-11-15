@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // UpdateSettingJSONTx serializes partial configuration updates, including the
@@ -18,8 +19,8 @@ func UpdateSettingJSONTx(ctx context.Context, tx pgx.Tx, key string, updatedBy *
 	if err := db.Exec(`INSERT INTO settings(key,value) VALUES(?,'{}') ON CONFLICT(key) DO NOTHING`, key).Error; err != nil {
 		return nil, err
 	}
-	var raw []byte
-	if err := lockSetting(db, key).Row().Scan(&raw); err != nil {
+	raw, err := SettingValue(db, key, ForUpdate)
+	if err != nil {
 		return nil, err
 	}
 	next, err := update(raw)
@@ -33,9 +34,18 @@ func UpdateSettingJSONTx(ctx context.Context, tx pgx.Tx, key string, updatedBy *
 	return next, writeSetting(db, key, next, updatedBy).Error
 }
 
-// lockSetting selects the document of settings row key and locks the row.
-func lockSetting(db *gorm.DB, key string) *gorm.DB {
-	return db.Table("settings").Select("value").Where("key = ?", key).Clauses(ForUpdate)
+// SettingValue reads the document of settings row key; a missing row is an
+// IsNoRows error. clauses go into the SELECT: ForUpdate locks the row until
+// the transaction ends.
+func SettingValue(db *gorm.DB, key string, clauses ...clause.Expression) (json.RawMessage, error) {
+	var raw []byte
+	err := settingValue(db, key).Clauses(clauses...).Row().Scan(&raw)
+	return raw, err
+}
+
+// settingValue selects the document of settings row key.
+func settingValue(db *gorm.DB, key string) *gorm.DB {
+	return db.Table("settings").Select("value").Where("key = ?", key)
 }
 
 // writeSetting stores next as the document of settings row key.

@@ -55,15 +55,21 @@ func scanQuota(r interface{ Scan(...any) error }) (*QuotaSnapshot, error) {
 	if err := r.Scan(&q.AccountID, &raw, &q.Source, &q.Error, &q.UpdatedAt, &q.LastPassiveAt, &q.LastActiveAt, &q.Revision, &q.NextCheckAt, &q.RefreshStatus, &q.Generation); err != nil {
 		return nil, err
 	}
-	q.Windows = map[string]QuotaWindow{}
-	if len(raw) > 0 {
-		// A malformed document reads as "no windows" rather than failing the
-		// account list it is shown in.
-		if err := json.Unmarshal(raw, &q.Windows); err != nil {
-			return nil, err
-		}
+	var err error
+	if q.Windows, err = quotaWindows(raw); err != nil {
+		return nil, err
 	}
 	return &q, nil
+}
+
+// quotaWindows decodes the windows document of a snapshot row; an empty one
+// holds no windows.
+func quotaWindows(raw []byte) (map[string]QuotaWindow, error) {
+	w := map[string]QuotaWindow{}
+	if len(raw) == 0 {
+		return w, nil
+	}
+	return w, json.Unmarshal(raw, &w)
 }
 
 // AccountQuota returns the snapshot of one account, nil when it has none.
@@ -102,35 +108,28 @@ func (d *DB) AccountQuotas(ctx context.Context, accountIDs []int64) (map[int64]*
 // result reflects at least every write committed before it. Caches order
 // their entries by it (CONTRACTS §51.3).
 func (d *DB) AccountQuotasAt(ctx context.Context, accountIDs []int64) (map[int64]*QuotaSnapshot, time.Time, error) {
-	out := map[int64]*QuotaSnapshot{}
-	var at time.Time
-	rows, err := G(ctx, d.Pool).Raw(`SELECT statement_timestamp(), q.account_id, q.windows, COALESCE(q.source, ''), COALESCE(q.error, ''),
-			q.updated_at, q.last_passive_at, q.last_active_at, COALESCE(q.revision,0), q.next_check_at, COALESCE(q.refresh_status,'pending'), COALESCE(q.generation,0)
-		FROM (SELECT statement_timestamp()) t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY(?)`, Int64s(accountIDs)).Rows()
+	rows, err := quotasAt(G(ctx, d.Pool), accountIDs).Rows()
 	if err != nil {
-		return nil, at, err
+		return nil, time.Time{}, err
 	}
 	defer rows.Close()
-	for rows.Next() {
-		var id *int64
-		var q QuotaSnapshot
-		var raw []byte
-		if err := rows.Scan(&at, &id, &raw, &q.Source, &q.Error, &q.UpdatedAt, &q.LastPassiveAt, &q.LastActiveAt, &q.Revision, &q.NextCheckAt, &q.RefreshStatus, &q.Generation); err != nil {
-			return nil, at, err
-		}
-		if id == nil {
-			continue // no snapshot at all: the row only carries the time
-		}
-		q.AccountID = *id
-		q.Windows = map[string]QuotaWindow{}
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &q.Windows); err != nil {
-				return nil, at, err
-			}
-		}
-		out[q.AccountID] = &q
+	read, err := readQuotaRows(rows, false)
+	if err != nil {
+		return nil, time.Time{}, err
 	}
-	return out, at, rows.Err()
+	// Unlike the quota mirror, the callers of this read take no partial
+	// result: a malformed row (any one) fails it.
+	for _, err := range read.Invalid {
+		return nil, read.At, err
+	}
+	return read.Snapshots, read.At, nil
+}
+
+// quotasAt selects the rows of AccountQuotasAt: ReadAccountQuotas's read on
+// GORM.
+func quotasAt(db *gorm.DB, accountIDs []int64) *gorm.DB {
+	return db.Raw(`SELECT NULL::bigint, `+selectQuotaRead+`
+		FROM (SELECT statement_timestamp()) t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY(?)`, Int64s(accountIDs))
 }
 
 // QuotaRead is a read of account quota snapshots for the core's in-memory
@@ -178,8 +177,9 @@ func (d *DB) ReadAccountQuotasOfTypes(ctx context.Context, keys []string) (*Quot
 	return readQuotaRows(rows, true)
 }
 
-// readQuotaRows reads the rows of ReadAccountQuotas (pgx) and
-// ReadAccountQuotasOfTypes (database/sql); the caller closes them.
+// readQuotaRows reads the rows of ReadAccountQuotas (pgx),
+// ReadAccountQuotasOfTypes and AccountQuotasAt (database/sql); the caller
+// closes them.
 func readQuotaRows(rows interface {
 	Next() bool
 	Scan(...any) error
@@ -203,12 +203,10 @@ func readQuotaRows(rows interface {
 			continue // no snapshot: the row only carries the time or the account
 		}
 		q.AccountID = *id
-		q.Windows = map[string]QuotaWindow{}
-		if len(raw) > 0 {
-			if err := json.Unmarshal(raw, &q.Windows); err != nil {
-				out.Invalid[q.AccountID] = err
-				continue
-			}
+		var err error
+		if q.Windows, err = quotaWindows(raw); err != nil {
+			out.Invalid[q.AccountID] = err
+			continue
 		}
 		out.Snapshots[q.AccountID] = &q
 	}

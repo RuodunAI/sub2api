@@ -14,13 +14,8 @@ import (
 )
 
 func loadFailurePolicy(ctx context.Context, q store.Querier) (*FailurePolicy, error) {
-	var raw []byte
-	//gormguard:allow-pgx cached request-path read (settingsTTL); GORM takes 6.9x the allocations (BASELINE.md, batch 4d)
-	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1`, failurePolicyKey).Scan(&raw)
-	if store.IsNoRows(err) {
-		return nil, nil
-	}
-	if err != nil {
+	raw, err := settingValue(ctx, q, failurePolicyKey)
+	if err != nil || raw == nil {
 		return nil, err
 	}
 	var p FailurePolicy

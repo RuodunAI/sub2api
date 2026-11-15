@@ -12,7 +12,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The "reconcile" row of the settings table (CONTRACTS §8): how long the core
@@ -200,8 +199,7 @@ const reconcileSettingsTTL = 10 * time.Second
 
 func loadReconcileSettings(ctx context.Context, q store.Querier) (ReconcileSettings, error) {
 	v := DefaultReconcileSettings()
-	var raw []byte
-	err := store.G(ctx, q).Model(&model.Setting{}).Select("value").Where("key = ?", settingsKeyReconcile).Row().Scan(&raw)
+	raw, err := store.SettingValue(store.G(ctx, q), settingsKeyReconcile)
 	if store.IsNoRows(err) {
 		return v, nil
 	}

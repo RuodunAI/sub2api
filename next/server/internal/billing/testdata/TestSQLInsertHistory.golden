@@ -1,6 +1,7 @@
 -- sql
-INSERT INTO "model_price_history" ("expr_hash","expr_version","expression") VALUES ($1,$2,$3) ON CONFLICT ("expr_hash") DO NOTHING
+INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES ($1, $2, $3)
+		ON CONFLICT (expr_hash) DO NOTHING
 -- vars
 $1 string "f3b5f428d31d26b03bcc304fc9f23d6085f6aad9ca2390a00dd47f51d089d7f8"
-$2 int 1
-$3 string "v1:flat(0.5)"
+$2 string "v1:flat(0.5)"
+$3 int 1

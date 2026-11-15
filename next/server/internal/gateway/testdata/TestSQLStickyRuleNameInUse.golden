@@ -1,0 +1,4 @@
+-- sql
+SELECT EXISTS (SELECT 1 FROM "sticky_rules" WHERE name = $1)
+-- vars
+$1 string "r"

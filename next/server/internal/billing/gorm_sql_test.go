@@ -2,6 +2,7 @@ package billing
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,16 +157,14 @@ func TestSQLUpdatePriceRow(t *testing.T) {
 	})
 }
 
+// The history insert runs on GORM, and queueSave batches the same text with
+// the placeholders numbered for pgx.
 func TestSQLInsertHistory(t *testing.T) {
 	prog := testProgram(t)
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return insertHistory(db, prog) })
-}
-
-func TestSQLSettingsRow(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		var row model.Setting
-		return settingsRow(db).Take(&row)
-	})
+	if !strings.Contains(recordHistoryBatchSQL, "VALUES ($1, $2, $3)") || strings.Contains(recordHistoryBatchSQL, "?") {
+		t.Fatalf("batch text %q", recordHistoryBatchSQL)
+	}
 }
 
 func TestSQLSource(t *testing.T) {
