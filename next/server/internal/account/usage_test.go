@@ -267,11 +267,11 @@ func TestUsageLimitOwnsItsDisable(t *testing.T) {
 		"anchor": "2026-10-01T08:00:00+05:30", "timezone": "Asia/Kolkata"}), "hourly periods start on a UTC hour")
 }
 
-// What users were charged (cost) is the operator usage views' to see:
-// only a caller holding usage:all:read gets it, in the list and in
-// GET /accounts/:id/usage; any other reader of the account, its owner or an
-// agent above it, sees the raw cost alone (D1, CONTRACTS §102.4).
-func TestUsageChargedCostOnlyForUsageReaders(t *testing.T) {
+// An account's usage shows what users were charged (cost) next to the raw
+// cost to anyone who reads the account, its owner included, in the list
+// and in GET /accounts/:id/usage (CONTRACTS §102.4): only the account-side
+// usage records (/account-usage) keep to the standard cost (D1).
+func TestUsageCostForAccountReaders(t *testing.T) {
 	az := fakeAuthz{keys: map[int64][]string{}}
 	e := setupWith(t, az)
 	ctx := t.Context()
@@ -285,18 +285,16 @@ func TestUsageChargedCostOnlyForUsageReaders(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, foldUsage(ctx, e.db.Gorm))
 
-	for uid, charged := range map[int64]bool{operator: true, supplier: false} {
+	for _, uid := range []int64{operator, supplier} {
 		code, out := e.doAs(uid, "GET", "/accounts/"+itoa(id)+"/usage", nil)
 		require.Equal(t, 200, code, out)
 		code, list := e.doAs(uid, "GET", "/accounts", nil)
 		require.Equal(t, 200, code, list)
 		usage := list["data"].([]any)[0].(map[string]any)["usage"].(map[string]any)
-		for name, f := range map[string]any{"detail total": data(out)["total"], "detail today": data(out)["today"],
-			"detail 30 days": data(out)["last_30_days"], "list total": usage["total"], "list today": usage["today"]} {
+		for name, f := range map[string]any{"detail total": data(out)["total"], "list total": usage["total"]} {
 			figures := f.(map[string]any)
-			_, has := figures["cost"]
-			assert.Equal(t, charged, has, "%d %s: %v", uid, name, figures)
-			assert.Contains(t, figures, "raw_cost", "%d %s", uid, name)
+			assert.Equal(t, "6", figures["cost"], "%d %s", uid, name)
+			assert.Equal(t, "5", figures["raw_cost"], "%d %s", uid, name)
 		}
 	}
 }

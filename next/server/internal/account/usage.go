@@ -192,40 +192,12 @@ func (l UsageLimit) periodText() string {
 	return fmt.Sprintf("per %d %ss", l.PeriodCount, l.Period)
 }
 
-// UsageFigures is the usage of an account over some time. Cost is what
-// users were charged, which its JSON carries only for a caller holding
-// usage:all:read (charged, seenBy): an account-side caller sees RawCost,
-// the cost before rates, alone (D1, CONTRACTS §102.4).
+// UsageFigures is the usage of an account over some time.
 type UsageFigures struct {
 	Cost     decimal.Decimal `json:"cost"`
 	RawCost  decimal.Decimal `json:"raw_cost"`
 	Requests int64           `json:"requests"`
 	Tokens   int64           `json:"tokens"`
-	charged  bool
-}
-
-// MarshalJSON leaves Cost out unless f is charged.
-func (f UsageFigures) MarshalJSON() ([]byte, error) {
-	type figures UsageFigures
-	if f.charged {
-		return json.Marshal(figures(f))
-	}
-	return json.Marshal(struct {
-		figures
-		Cost *decimal.Decimal `json:"cost,omitempty"` // hides figures.Cost
-	}{figures: figures(f)})
-}
-
-// seenBy is f as a caller sees it: with Cost when charged.
-func (f UsageFigures) seenBy(charged bool) UsageFigures {
-	f.charged = charged
-	return f
-}
-
-// seesCharged reports whether the caller sees what users were charged: it
-// holds usage:all:read, the operator usage views' permission.
-func (s *Service) seesCharged(ctx context.Context) (bool, error) {
-	return core.Can(ctx, s.d.Authorizer, perm.UsageAllRead)
 }
 
 // UsageLimitState is the usage limit of an account and what the current
@@ -401,11 +373,6 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 	if s.d.DB == nil || len(out) == 0 {
 		return
 	}
-	charged, err := s.seesCharged(ctx)
-	if err != nil {
-		slog.WarnContext(ctx, "account: read usage permission", "err", err)
-		return
-	}
 	q := s.d.DB.Gorm
 	now := time.Now()
 	midnight := dayStart(now, core.TimeZone(ctx))
@@ -426,8 +393,8 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 		return
 	}
 	for i, v := range out {
-		v.Usage = &UsageView{RawCostAccounting: limits[v.ID].RawCost, Total: totals[v.ID].seenBy(charged), Today: todays[i].seenBy(charged),
-			Limit: states[v.ID], LimitDisabled: v.limitDisabled}
+		v.Usage = &UsageView{RawCostAccounting: limits[v.ID].RawCost, Total: totals[v.ID], Today: todays[i], Limit: states[v.ID],
+			LimitDisabled: v.limitDisabled}
 	}
 }
 
@@ -497,13 +464,7 @@ func (s *Service) getUsage(c *gin.Context) {
 	httpapi.OK(c, d)
 }
 
-// usageDetail is GET /accounts/:id/usage of account id at now, with what
-// users were charged for a caller who sees it (seesCharged).
 func (s *Service) usageDetail(ctx context.Context, id int64, now time.Time) (*UsageDetail, error) {
-	charged, err := s.seesCharged(ctx)
-	if err != nil {
-		return nil, err
-	}
 	q := s.d.DB.Gorm
 	ids := []int64{id}
 	hour := now.Truncate(time.Hour)
@@ -527,8 +488,8 @@ func (s *Service) usageDetail(ctx context.Context, id int64, now time.Time) (*Us
 	if err != nil {
 		return nil, err
 	}
-	return &UsageDetail{RawCostAccounting: limits[id].RawCost, Today: windows[0].seenBy(charged), Last7Days: windows[1].seenBy(charged),
-		Last30Days: windows[2].seenBy(charged), Total: totals[id].seenBy(charged), Limit: states[id]}, nil
+	return &UsageDetail{RawCostAccounting: limits[id].RawCost, Today: windows[0], Last7Days: windows[1], Last30Days: windows[2],
+		Total: totals[id], Limit: states[id]}, nil
 }
 
 // usageLimitView is GET /accounts/:id/usage-limit. Configured is false
