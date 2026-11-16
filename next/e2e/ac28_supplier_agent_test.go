@@ -54,7 +54,7 @@ func newAgentTree(e *Env, admin *Session, cl *OwnershipCleanup) *agentTree {
 	}
 
 	account := func(s *Session, extra map[string]any) gjson.Result {
-		d := e.CreateOwnedAccount(s, e.OwnedAccountBody("", nil, extra))
+		d := e.CreateOwnedAccount(s, e.OwnedAccountBody("", extra))
 		cl.Accounts = append(cl.Accounts, d.Get("id").Int())
 		if d.Get("owner_id").Int() != s.UserID || d.Get("created_by").Int() != s.UserID {
 			t.Fatalf("account of %s: owner and creator should be its maker: %s", s.Email, d.Raw)

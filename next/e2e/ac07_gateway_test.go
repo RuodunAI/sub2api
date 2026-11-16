@@ -147,7 +147,7 @@ func TestGatewayFailoverAndCooldown(t *testing.T) {
 		t.Fatalf("during cooldown got %v", used)
 	}
 
-	// Once the cooldown is over, 401 fails over and disables the account.
+	// Once the cooldown is over, 401 fails over and auto-disables the account.
 	Eventually(t, 10*time.Second, 500*time.Millisecond, "primary cooldown over", func() bool {
 		a := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", primary.ID), nil)
 		return a.Get("cooldown_until").String() == ""
@@ -159,8 +159,8 @@ func TestGatewayFailoverAndCooldown(t *testing.T) {
 		t.Fatalf("401 failover got %v", used)
 	}
 	acct = admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", primary.ID), nil)
-	if acct.Get("status").String() != "disabled" && acct.Get("status").String() != "error" {
-		t.Fatalf("primary not disabled after 401: %s", acct.Raw)
+	if acct.Get("status").String() != "auto_disabled" {
+		t.Fatalf("primary not auto-disabled after 401 (CONTRACTS §42): %s", acct.Raw)
 	}
 
 	// 400 is returned to the client as is, without failover.

@@ -3196,7 +3196,7 @@ sub2api dev [--addr 127.0.0.1:8080] [--state <dir>] [--builtin-dir <dir>] [--res
 ```
 
 - **PostgreSQL**：`sdk/testpg` 的本机服务器（§2，与测试共用一个进程），库名 `sub2api_dev`。指定了非默认的 `--state` 时，库名是 `sub2api_dev_<状态目录哈希>`：状态目录里的主密钥必须和它加密的数据配套。
-- **Redis**：进程内的 miniredis，退出即清空。插件 KV、限流计数、冷却等不会跨重启保留，PG 里的数据会。
+- **Redis**：进程内的 miniredis，退出即清空。插件 KV、限流计数、冷却等不会跨重启保留，PG 里的数据会。键的 TTL 跟着墙钟走（每 100ms 推进一次 miniredis 的时钟，miniredis 自己不会过期键），冷却、会话、并发槽位、锁都按时到期（`devenv.TestMemoryRedisExpires`）。
 - **状态目录**：默认 `<用户缓存目录>/sub2api-dev`，存这些内容：
   - `secrets.json`：主密钥、管理员密码，首次运行生成，权限 0600；
   - `plugins/`：插件数据；
@@ -7524,4 +7524,4 @@ type OwnerGuard interface { CheckOwner(ctx context.Context, tx *gorm.DB, actorID
 
 ### 102.6 端到端安全测试
 
-`next/e2e/ac28_supplier_agent_test.go`（`TestAC28_SupplierAgentTeam`）在真实核心上搭 admin → 代理 A → 代理 B → 供应商 C，另有无关的代理 X 与普通用户 U，逐项验证计划 §5.1–5.6：用户、账号、代理、`/account-usage`、`/lookup` 越出 team 一律 404（403 用于不带范围的入口）；角色指派（不在可分配清单、team 外、对自己、角色不变的重放）、`owner_cannot_manage`、operator 不能分配或管理代理（D6）；owner 的 self、cycle（含两个并发移动）、`too_deep`（8 层链）；访问密钥先收窄再展开；dynweight 的账号路由（read 看 team，update 只能自己的）；删除用户后 team 照旧（D7）；管理员改账号所属后可见性立即跟随。单节点即可跑：`sub2api-plugin dev`（anthropic、dynweight 内置）加本机 `deploy/mock-upstream`，`E2E_NODE_URLS` 指向同一节点。
+`next/e2e/ac28_supplier_agent_test.go`（`TestAC28_SupplierAgentTeam`）在真实核心上搭 admin → 代理 A → 代理 B → 供应商 C，另有无关的代理 X 与普通用户 U，逐项验证计划 §5.1–5.6：用户、账号、代理、`/account-usage`、`/lookup` 越出 team 一律 404（403 用于不带范围的入口）；角色指派（不在可分配清单、team 外、对自己、角色不变的重放）、`owner_cannot_manage`、operator 不能分配或管理代理（D6）；owner 的 self、cycle（含两个并发移动）、`too_deep`（8 层链）；访问密钥先收窄再展开；dynweight 的账号路由（read 看 team，update 只能自己的）；删除用户后 team 照旧（D7）；管理员改账号所属后可见性立即跟随。单节点即可跑：`sub2api-plugin dev`（anthropic、dynweight 内置）加本机 `deploy/mock-upstream`，`E2E_NODE_URLS` 指向同一节点。同样的单节点也能跑 AC02、AC04、AC07、AC23 与网关的故障转移、冷却测试（冷却靠 dev 内存 Redis 按时过期，§47）；用到 `/market/` 的（AC02 插件矩阵、AC27）要在核心前面放一个提供签名市场目录（`sub2api-plugin pack`/`sign`/`index` 生成）、其余请求转发给核心的服务，`E2E_BASE_URL` 指向它，e2e 栈里这是 Caddy。

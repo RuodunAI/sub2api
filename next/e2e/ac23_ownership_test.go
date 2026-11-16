@@ -20,7 +20,7 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 	cl := &OwnershipCleanup{}
 	defer cl.Run(e, admin)
 
-	// 1. Roles, users, a group for the accounts.
+	// 1. Roles and users.
 	vendorKey, viewerKey := e.RoleKey("vendor"), e.RoleKey("viewer")
 	vendorRole, a := e.NewUserWithRoles(admin, vendorKey, VendorPerms)
 	b := e.CreateUser(admin, UserSpec{Roles: []string{vendorKey}})
@@ -32,8 +32,6 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 			t.Fatalf("user %s has no id", u.Email)
 		}
 	}
-	gid := e.CreateGroup(admin, e.Name("grp-own"), "restricted", 1, nil)
-	groups := []int64{gid}
 
 	const (
 		proxyURL      = "socks5://u:p@10.0.0.1:1080"
@@ -44,7 +42,7 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 	// 2. A creates accounts with proxy_url: first creates the proxy, the
 	// same string (and equivalent spellings) reuse it, a different password
 	// makes a new one.
-	acc1 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", groups, map[string]any{"proxy_url": proxyURL}))
+	acc1 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", map[string]any{"proxy_url": proxyURL}))
 	acc1ID, proxyID := acc1.Get("id").Int(), acc1.Get("proxy_id").Int()
 	cl.Accounts = append(cl.Accounts, acc1ID)
 	if !acc1.Get("proxy_created").Bool() || proxyID == 0 {
@@ -58,21 +56,21 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 		t.Fatalf("omitted base_url must normalise to the official address: %s", acc1.Raw)
 	}
 
-	acc2 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", groups, map[string]any{"proxy_url": proxyURL}))
+	acc2 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", map[string]any{"proxy_url": proxyURL}))
 	acc2ID := acc2.Get("id").Int()
 	cl.Accounts = append(cl.Accounts, acc2ID)
 	if acc2.Get("proxy_created").Bool() || acc2.Get("proxy_id").Int() != proxyID {
 		t.Fatalf("same proxy_url must reuse proxy %d: %s", proxyID, acc2.Raw)
 	}
 
-	acc3 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", groups, map[string]any{"proxy_url": proxyURLAlt}))
+	acc3 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", map[string]any{"proxy_url": proxyURLAlt}))
 	acc3ID := acc3.Get("id").Int()
 	cl.Accounts = append(cl.Accounts, acc3ID)
 	if acc3.Get("proxy_created").Bool() || acc3.Get("proxy_id").Int() != proxyID {
 		t.Fatalf("equivalent proxy_url (%s) must reuse proxy %d: %s", proxyURLAlt, proxyID, acc3.Raw)
 	}
 
-	acc4 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", groups, map[string]any{"proxy_url": proxyURLOther}))
+	acc4 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", map[string]any{"proxy_url": proxyURLOther}))
 	acc4ID, proxyID2 := acc4.Get("id").Int(), acc4.Get("proxy_id").Int()
 	cl.Accounts = append(cl.Accounts, acc4ID)
 	if !acc4.Get("proxy_created").Bool() || proxyID2 == 0 || proxyID2 == proxyID {
@@ -95,7 +93,7 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 	}
 
 	// proxy_id together with proxy_url -> conflict.
-	r := a.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", groups, map[string]any{"proxy_url": proxyURL, "proxy_id": proxyID}))
+	r := a.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", map[string]any{"proxy_url": proxyURL, "proxy_id": proxyID}))
 	ExpectFieldError(t, r, "proxy_url", "conflict")
 
 	// Invalid proxy_url -> invalid; the message never echoes the string.
@@ -107,7 +105,7 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 		"http://u:secret-" + e.RunID + "@10.0.0.1:99999", // port out of range
 		"not a url " + e.RunID,
 	} {
-		r := a.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", groups, map[string]any{"proxy_url": bad}))
+		r := a.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", map[string]any{"proxy_url": bad}))
 		ExpectFieldError(t, r, "proxy_url", "invalid")
 		if strings.Contains(string(r.Body), e.RunID) || strings.Contains(string(r.Body), "secret-") {
 			t.Fatalf("proxy_url error echoes the input (may contain a password): %s", r)
@@ -116,7 +114,7 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 
 	// B's own account with the same proxy string: B cannot see A's proxy, so
 	// a new one is created for B (visible scope = own).
-	accB := e.CreateOwnedAccount(b, e.OwnedAccountBody("", groups, map[string]any{"proxy_url": proxyURL}))
+	accB := e.CreateOwnedAccount(b, e.OwnedAccountBody("", map[string]any{"proxy_url": proxyURL}))
 	accBID, proxyBID := accB.Get("id").Int(), accB.Get("proxy_id").Int()
 	cl.Accounts = append(cl.Accounts, accBID)
 	if !accB.Get("proxy_created").Bool() || proxyBID == 0 || proxyBID == proxyID {
@@ -166,9 +164,9 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 	ExpectNotFound(t, a.API(t, http.MethodDelete, bPx, nil))
 	ExpectNotFound(t, a.API(t, http.MethodPost, bPx+"/test", nil))
 	// Linking B's proxy by id is "not found" for A as well.
-	ExpectFieldError(t, a.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", groups, map[string]any{"proxy_id": proxyBID})), "proxy_id", "not_found")
+	ExpectFieldError(t, a.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", map[string]any{"proxy_id": proxyBID})), "proxy_id", "not_found")
 	// Linking its own proxy by id works and does not create anything.
-	acc5 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", groups, map[string]any{"proxy_id": proxyID2}))
+	acc5 := e.CreateOwnedAccount(a, e.OwnedAccountBody("", map[string]any{"proxy_id": proxyID2}))
 	cl.Accounts = append(cl.Accounts, acc5.Get("id").Int())
 	if acc5.Get("proxy_id").Int() != proxyID2 || acc5.Get("proxy_created").Bool() {
 		t.Fatalf("proxy_id link: %s", acc5.Raw)
@@ -212,7 +210,7 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 		"credentials": map[string]any{"api_key": "******", "base_url": "https://relay2.example.com"},
 	}), "credentials.base_url", "forbidden")
 	// Creating with a custom base_url is refused for the vendor too.
-	ExpectFieldError(t, a.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", groups, map[string]any{
+	ExpectFieldError(t, a.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", map[string]any{
 		"credentials": map[string]any{"api_key": "sk-ant-mock-" + e.Name("guard"), "base_url": e.MockInternalURL},
 	})), "credentials.base_url", "forbidden")
 
@@ -242,7 +240,7 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 	ExpectPermissionDenied(t, v.API(t, http.MethodPatch, acc1Path, map[string]any{"name": e.Name("viewer")}))
 	ExpectPermissionDenied(t, v.API(t, http.MethodPost, acc1Path+"/credentials/reveal", nil))
 	ExpectPermissionDenied(t, v.API(t, http.MethodDelete, acc1Path, nil))
-	ExpectPermissionDenied(t, v.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", groups, nil)))
+	ExpectPermissionDenied(t, v.API(t, http.MethodPost, "/accounts", e.OwnedAccountBody("", nil)))
 	ExpectPermissionDenied(t, v.API(t, http.MethodPatch, bPx, map[string]any{"name": e.Name("viewer")}))
 	vd := v.OK(t, http.MethodGet, acc1Path, nil)
 	if vd.Get("credentials.api_key").String() != "******" {
@@ -283,16 +281,20 @@ func TestAC23_OwnershipAndProxyURL(t *testing.T) {
 	if m := IDSet(pByA); !m[proxyID] || !m[proxyID2] || m[proxyBID] {
 		t.Fatalf("proxies created_by=A: %v", m)
 	}
-	// The vendor's own filter ignores created_by (own scope) and mine=true
-	// is a no-op for it.
-	if m := IDSet(a.ListAll(t, "/accounts", "created_by", fmt.Sprint(b.UserID))); m[accBID] || !m[acc1ID] {
-		t.Fatalf("created_by is ignored under own scope: %v", m)
+	// Under own scope created_by narrows within the scope (CONTRACTS §21.0):
+	// B's accounts stay out of reach and none of A's match; mine=true is a
+	// no-op for the vendor.
+	if m := IDSet(a.ListAll(t, "/accounts", "created_by", fmt.Sprint(b.UserID))); len(m) != 0 {
+		t.Fatalf("created_by=B under A's own scope: %v", m)
+	}
+	if m := IDSet(a.ListAll(t, "/accounts", "created_by", fmt.Sprint(a.UserID))); !m[acc1ID] || m[accBID] {
+		t.Fatalf("created_by=A under own scope: %v", m)
 	}
 	if m := IDSet(a.ListAll(t, "/accounts", "mine", "true")); !m[acc1ID] {
 		t.Fatalf("mine=true under own scope: %v", m)
 	}
 	// The admin's own account (default base_url = mock) shows under mine=true.
-	adminAcc := e.CreateAccount(admin, AccountSpec{GroupIDs: groups})
+	adminAcc := e.CreateAccount(admin, AccountSpec{})
 	cl.Accounts = append(cl.Accounts, adminAcc)
 	if m := IDSet(admin.ListAll(t, "/accounts", "mine", "true")); !m[adminAcc] {
 		t.Fatalf("admin mine=true lacks its own account %d", adminAcc)
