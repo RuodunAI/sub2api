@@ -162,8 +162,7 @@ func TestUserOwner(t *testing.T) {
 		return e.owners.calls[len(e.owners.calls)-1]
 	}
 
-	// A team-only creator: itself by default. The default role (user) is
-	// not within an agent's.
+	// A team-only creator: itself by default.
 	code, out := e.call(e.agentTok, "POST", "/users", map[string]any{"email": "made@example.com", "password": adminPassword, "role_keys": []string{authz.RoleSupplier}})
 	if code != 201 || out["data"].(map[string]any)["owner_id"] != float64(e.agent) {
 		t.Fatalf("agent creates: %d %v", code, out)
