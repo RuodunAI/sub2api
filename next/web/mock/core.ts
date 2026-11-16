@@ -523,11 +523,11 @@ let failurePolicy = {
   egress: 'account_configured', backoff_ms: 200, max_wait_ms: 0, respect_retry_after: false, account_enabled: true,
   retry_rules: [
     failureRule('http-transient', 'HTTP transient errors', '408,500-599', [], false),
-    failureRule('rate-limit', 'Account quota and gateway concurrency (429)', '429', ["exceed your account's rate limit", 'gateway concurrency limit reached'], false)
+    failureRule('rate-limit', 'Account quota (429)', '429', ["exceed your account's rate limit"], false)
   ],
   account_rules: [
-    failureRule('login-invalid', 'Login invalid (401)', '401', ['oauth access token has been revoked', 'oauth token has been revoked', 'oauth refresh token is no longer valid'], true),
-    failureRule('account-on-hold', 'Account on hold (403)', '403', ['oauth_account_on_hold', 'oauth authentication is currently not allowed for this organization'], true),
+    failureRule('login-invalid', 'Login invalid (401)', '401', ['oauth access token has been revoked', 'oauth token has been revoked', 'invalid x-api-key'], true),
+    failureRule('account-on-hold', 'Account on hold (403)', '403', ['oauth authentication is currently not allowed for this organization'], true),
     failureRule('migrated-disable', 'Existing automatic disable', '', ['your credit balance is too low', 'this organization has been disabled.', 'you exceeded your current quota'], true)
   ]
 }

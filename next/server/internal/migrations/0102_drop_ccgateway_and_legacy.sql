@@ -6,9 +6,10 @@
 -- 317b0c331.
 -- This drops what the core kept for it and uninstalls the plugin the way
 -- plugin/install.Uninstall does with purge, without the node barrier: every
--- node is stopped while a release migrates (primary first). Last, it drops
--- the data kept only for the cores before 0.1.290 (CONTRACTS §101.4), which
--- never run next to this one.
+-- node is stopped while a release migrates (primary first), and takes the
+-- keywords only CCGateway answered with out of the failure policy. Last, it
+-- drops the data kept only for the cores before 0.1.290 (CONTRACTS §101.4),
+-- which never run next to this one.
 --
 -- Kept on purpose:
 --   - accounts with plugin_key 'ccgateway' (and their groups, usage rows,
@@ -107,6 +108,77 @@ BEGIN
         EXECUTE 'DROP OWNED BY plg_ccgateway';
         EXECUTE 'DROP ROLE plg_ccgateway';
     END IF;
+END $$;
+
+-- The failure policy keywords only CCGateway answered with: its Worker's
+-- codes (oauth_refresh_dead, oauth_account_on_hold, stored_login_refused_*),
+-- its engine's messages (not_logged_in, "has cleared its stored login",
+-- "gateway concurrency limit reached") and Claude Code's own client message
+-- ("oauth refresh token is no longer valid"). A rule loses them only while
+-- its keywords are exactly what 0072/0074 wrote (with or without what 0075
+-- appended), or for rate-limit, the former default: a rule an administrator
+-- edited is left alone. The replaced policy goes to the history and the
+-- revision moves on; running again changes nothing.
+DO $$
+DECLARE
+    p     jsonb;
+    upd   jsonb;
+    hist  jsonb;
+    rules text;
+BEGIN
+    SELECT value INTO p FROM settings WHERE key = 'failure_policy' FOR UPDATE;
+    IF p IS NULL THEN
+        RETURN;
+    END IF;
+    upd := p;
+    FOREACH rules IN ARRAY ARRAY['account_rules', 'retry_rules'] LOOP
+        CONTINUE WHEN jsonb_typeof(p->rules) IS DISTINCT FROM 'array';
+        upd := upd || jsonb_build_object(rules, (
+            SELECT coalesce(jsonb_agg(
+                CASE WHEN c.keywords IS NULL THEN e
+                     ELSE jsonb_set(e, '{match,keywords}', c.keywords)
+                          || CASE WHEN e->>'name' = c.old_name THEN jsonb_build_object('name', c.name) ELSE '{}' END
+                END ORDER BY i), '[]'::jsonb)
+            FROM jsonb_array_elements(p->rules) WITH ORDINALITY AS t(e, i)
+            LEFT JOIN (VALUES
+                ('account_rules', 'login-invalid',
+                 '["oauth access token has been revoked", "oauth token has been revoked", "oauth refresh token is no longer valid",
+                   "oauth_refresh_dead", "not_logged_in", "has cleared its stored login", "invalid x-api-key", "invalid bearer token",
+                   "the security token included in the request is invalid", "your account is not authorized"]'::jsonb,
+                 '["stored_login_refused_restart_needed"]'::jsonb,
+                 '["oauth access token has been revoked", "oauth token has been revoked", "invalid x-api-key", "invalid bearer token",
+                   "the security token included in the request is invalid", "your account is not authorized"]'::jsonb,
+                 NULL, NULL),
+                ('account_rules', 'account-on-hold',
+                 '["oauth_account_on_hold", "oauth authentication is currently not allowed for this organization"]',
+                 '["stored_login_refused_admin"]',
+                 '["oauth authentication is currently not allowed for this organization"]',
+                 NULL, NULL),
+                ('retry_rules', 'rate-limit',
+                 '["exceed your account''s rate limit", "gateway concurrency limit reached"]',
+                 '[]',
+                 '["exceed your account''s rate limit"]',
+                 'Account quota and gateway concurrency (429)', 'Account quota (429)')
+            ) AS c(kind, id, written, appended, keywords, old_name, name)
+                ON c.kind = rules AND e->>'id' = c.id
+               AND e->'match'->'keywords' IN (c.written, c.written || c.appended)));
+    END LOOP;
+
+    IF upd = p THEN
+        RETURN;
+    END IF;
+
+    SELECT value INTO hist FROM settings WHERE key = 'failure_policy_history' FOR UPDATE;
+    hist := jsonb_build_array(p) || coalesce(hist->'policies', '[]'::jsonb);
+    IF jsonb_array_length(hist) > 10 THEN
+        hist := (SELECT jsonb_agg(e ORDER BY i) FROM jsonb_array_elements(hist) WITH ORDINALITY AS t(e, i) WHERE i <= 10);
+    END IF;
+    INSERT INTO settings (key, value, updated_at) VALUES ('failure_policy_history', jsonb_build_object('policies', hist), now())
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
+
+    UPDATE settings SET value = upd || jsonb_build_object('revision', coalesce((p->>'revision')::bigint, 0) + 1),
+            updated_by = NULL, updated_at = now()
+    WHERE key = 'failure_policy';
 END $$;
 
 -- Kept only for the cores before 0.1.290 (CONTRACTS §101.4). The scheduling

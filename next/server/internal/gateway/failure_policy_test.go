@@ -502,7 +502,6 @@ func TestDefaultRetryRulesOnlyRetryUsefulRateLimits(t *testing.T) {
 		rule   string
 	}{
 		{"quota", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_1"}`, "rate-limit"},
-		{"concurrency", 429, `{"error":{"message":"Gateway concurrency limit reached","type":"rate_limit_error"},"type":"error"}`, "rate-limit"},
 		{"long context", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for long context requests."}}`, ""},
 		{"any other 429", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"some refusal"}}`, ""},
 		{"timeout", 408, ``, "http-transient"},
