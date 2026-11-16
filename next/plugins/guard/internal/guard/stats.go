@@ -141,13 +141,13 @@ func (p *Plugin) getStats(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 		st.Bucket = "day"
 	}
 	// Minutely rows are kept 8 days; older windows read the hourly rollup.
-	q := statsQuery{table: "stats_minutely", col: "minute", from: from, to: to, loc: loc}
+	q := statsQuery{model: &model.StatsMinutely{}, col: clause.Column{Name: "minute"}, from: from, to: to, loc: loc}
 	if from.Before(now.Add(-7 * 24 * time.Hour)) {
-		q.table, q.col = "stats_hourly", "hour"
+		q.model, q.col = &model.StatsHourly{}, clause.Column{Name: "hour"}
 	}
-	q.bucket = clause.Expr{SQL: "date_trunc('hour', " + q.col + ", 'UTC')"}
+	q.bucket = clause.Expr{SQL: "date_trunc('hour', ?, 'UTC')", Vars: []any{q.col}}
 	if st.Bucket == "day" {
-		q.bucket = clause.Expr{SQL: "date_trunc('day', " + q.col + ", ?)", Vars: []any{loc.String()}}
+		q.bucket = clause.Expr{SQL: "date_trunc('day', ?, ?)", Vars: []any{q.col, loc.String()}}
 	}
 	if err := q.trend(db, &st); err != nil {
 		return nil, err
@@ -161,12 +161,12 @@ func (p *Plugin) getStats(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	return pluginsdk.DataResponse(st), nil
 }
 
-// statsQuery is the trend statement's inputs. table, col and bucket are SQL
-// fragments chosen from the constants in getStats (never from a request);
-// a day bucket binds loc.
+// statsQuery is the trend statement's inputs. model and col, the table and
+// its time column, are chosen in getStats (never from a request); a day
+// bucket binds loc.
 type statsQuery struct {
-	table    string
-	col      string
+	model    any
+	col      clause.Column
 	bucket   clause.Expr
 	from, to time.Time
 	loc      *time.Location
@@ -175,8 +175,8 @@ type statsQuery struct {
 // trend fills the trend (with empty buckets) and the two totals.
 func (q statsQuery) trend(db *gorm.DB, st *Stats) error {
 	var points []TrendPoint
-	err := db.Table(q.table).Select("? AS ts, sum(blocked)::bigint AS blocked, sum(requests)::bigint AS total", q.bucket).
-		Where(q.col+" >= ? AND "+q.col+" < ?", q.from, q.to).Group("ts").Order("ts").Scan(&points).Error
+	err := db.Model(q.model).Select("? AS ts, sum(blocked)::bigint AS blocked, sum(requests)::bigint AS total", q.bucket).
+		Where("? >= ? AND ? < ?", q.col, q.from, q.col, q.to).Group("ts").Order("ts").Scan(&points).Error
 	if err != nil {
 		return err
 	}
@@ -202,12 +202,12 @@ func (q statsQuery) trend(db *gorm.DB, st *Stats) error {
 
 // statsTopRules fills the ten rules that blocked most often.
 func statsTopRules(db *gorm.DB, st *Stats, from, to time.Time) error {
-	return db.Raw(`SELECT b.rule_id, coalesce(r.name, max(b.rule_name)) AS name, coalesce(r.kind, '') AS kind,
-			coalesce(r.pattern, '') AS pattern, count(*) AS hits
-		FROM block_log b LEFT JOIN rules r ON r.id = b.rule_id
-		WHERE b.occurred_at >= ? AND b.occurred_at < ?
-		GROUP BY b.rule_id, r.name, r.kind, r.pattern
-		ORDER BY count(*) DESC, b.rule_id LIMIT 10`, from, to).Scan(&st.TopRules).Error
+	return db.Table("block_log b").
+		Select("b.rule_id, coalesce(r.name, max(b.rule_name)) AS name, coalesce(r.kind, '') AS kind, coalesce(r.pattern, '') AS pattern, count(*) AS hits").
+		Joins("LEFT JOIN rules r ON r.id = b.rule_id").
+		Where("b.occurred_at >= ? AND b.occurred_at < ?", from, to).
+		Group("b.rule_id, r.name, r.kind, r.pattern").
+		Order("count(*) DESC, b.rule_id").Limit(10).Scan(&st.TopRules).Error
 }
 
 // statsRecent fills the twenty most recent blocks.

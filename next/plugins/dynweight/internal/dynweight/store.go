@@ -198,12 +198,19 @@ func (s store) writeState(ctx context.Context, k key, st rules.State, gen int64,
 		if written, err = putState(tx, stateOf(k, st, raw), gen); err != nil || !written {
 			return err
 		}
-		return tx.Exec(`INSERT INTO sticky_pending (account_id, group_id, model, salt, percent, strategies, zero, weight)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			ON CONFLICT (account_id, group_id, model) DO UPDATE SET salt = EXCLUDED.salt,
-				percent = GREATEST(sticky_pending.percent, EXCLUDED.percent), strategies = EXCLUDED.strategies,
-				zero = sticky_pending.zero OR EXCLUDED.zero, weight = EXCLUDED.weight, attempts = 0, created_at = now(), claimed_until = '-infinity'`,
-			k.AccountID, k.GroupID, k.Model, clear.Salt, clear.Percent, clear.Strategies, clear.Zero, clear.Weight).Error
+		// A map on the table, not the model: no RETURNING of the defaults
+		// ('-infinity' does not fit a time.Time).
+		return tx.Table("sticky_pending").Clauses(clause.OnConflict{
+			Columns: keyColumns,
+			DoUpdates: append(clause.AssignmentColumns([]string{"salt", "strategies", "weight"}), clause.Assignments(map[string]any{
+				"percent":       gorm.Expr("GREATEST(sticky_pending.percent, EXCLUDED.percent)"),
+				"zero":          gorm.Expr("sticky_pending.zero OR EXCLUDED.zero"),
+				"attempts":      0,
+				"created_at":    gorm.Expr("now()"),
+				"claimed_until": gorm.Expr("'-infinity'"),
+			})...),
+		}).Create(map[string]any{"account_id": k.AccountID, "group_id": k.GroupID, "model": k.Model, "salt": clear.Salt,
+			"percent": clear.Percent, "strategies": clear.Strategies, "zero": clear.Zero, "weight": clear.Weight}).Error
 	})
 	return written && err == nil, err
 }
@@ -241,13 +248,14 @@ type pendingClear struct {
 // first, counting the attempt.
 func (s store) claimClears(ctx context.Context, lease time.Duration, limit int) ([]pendingClear, error) {
 	// claimed_until is not read back: '-infinity' does not fit a time.Time.
-	var rows []model.StickyPending
-	err := s.with(ctx).Raw(`UPDATE sticky_pending p SET claimed_until = now() + make_interval(secs => ?), attempts = p.attempts + 1
-		FROM (SELECT account_id, group_id, model FROM sticky_pending WHERE claimed_until < now()
-			ORDER BY created_at LIMIT ? FOR UPDATE SKIP LOCKED) c
-		WHERE p.account_id = c.account_id AND p.group_id = c.group_id AND p.model = c.model
-		RETURNING p.account_id, p.group_id, p.model, p.salt, p.percent, p.strategies, p.zero, p.weight, p.attempts, p.created_at`,
-		lease.Seconds(), limit).Scan(&rows).Error
+	db := s.with(ctx)
+	free := db.Model(&model.StickyPending{}).Select(keyColumnList).Where("claimed_until < now()").
+		Order("created_at").Limit(limit).Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked})
+	rows := []model.StickyPending{}
+	err := db.Model(&rows).Clauses(clause.Returning{Columns: []clause.Column{{Name: "account_id"}, {Name: "group_id"}, {Name: "model"},
+		{Name: "salt"}, {Name: "percent"}, {Name: "strategies"}, {Name: "zero"}, {Name: "weight"}, {Name: "attempts"}, {Name: "created_at"}}}).
+		Where("("+keyColumnList+") IN (?)", free).
+		Updates(map[string]any{"claimed_until": gorm.Expr("now() + make_interval(secs => ?)", lease.Seconds()), "attempts": gorm.Expr("attempts + 1")}).Error
 	if err != nil {
 		return nil, err
 	}
@@ -318,9 +326,10 @@ func (s store) loadWeights(ctx context.Context) (map[key]weight, error) {
 		model.State
 		SeenAt time.Time
 	}
-	err := s.with(ctx).Raw(`SELECT s.account_id, s.group_id, s.model, s.base, s.eff, COALESCE(b.seen_at, 'epoch') AS seen_at
-		FROM state s LEFT JOIN bases b ON b.account_id = s.account_id AND b.group_id = s.group_id
-		WHERE NOT s.tombstone AND s.eff <> s.base`).Scan(&rows).Error
+	err := s.with(ctx).Table("state s").
+		Select("s.account_id, s.group_id, s.model, s.base, s.eff, COALESCE(b.seen_at, 'epoch') AS seen_at").
+		Joins("LEFT JOIN bases b ON b.account_id = s.account_id AND b.group_id = s.group_id").
+		Where("NOT s.tombstone AND s.eff <> s.base").Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
@@ -340,9 +349,9 @@ func (s store) loadTrends(ctx context.Context, accountIDs []int64) (map[key]rule
 		LastChange   string
 		LastChangeAt int64
 	}
-	err := s.with(ctx).Raw(`SELECT account_id, group_id, model, base, eff, COALESCE(data->>'last_change', '') AS last_change,
-		COALESCE((data->>'last_change_at')::bigint, 0) AS last_change_at
-		FROM state WHERE account_id = ANY(?) AND NOT tombstone AND eff <> base`, pgdb.Array[int64](accountIDs)).Scan(&rows).Error
+	err := s.with(ctx).Model(&model.State{}).
+		Select("account_id, group_id, model, base, eff, COALESCE(data->>'last_change', '') AS last_change, COALESCE((data->>'last_change_at')::bigint, 0) AS last_change_at").
+		Where("account_id = ANY(?) AND NOT tombstone AND eff <> base", pgdb.Array[int64](accountIDs)).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}

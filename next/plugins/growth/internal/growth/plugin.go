@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/growth/internal/model"
@@ -96,13 +97,6 @@ func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 		return nil, fmt.Errorf("growth: database unavailable: %w", err)
 	}
 	return db, nil
-}
-
-// exists reports whether the query q selects any row (SELECT EXISTS).
-func exists(db, q *gorm.DB) (bool, error) {
-	var ok bool
-	err := db.Raw("SELECT EXISTS(?)", q.Select("1")).Scan(&ok).Error
-	return ok, err
 }
 
 // ---------------------------------------------------------------- settings
@@ -296,7 +290,7 @@ func (p *Plugin) recordCommission(ctx context.Context, inviteeUserID int64, even
 		return err
 	}
 	// Check if already processed.
-	done, err := exists(db, commissions(db).Where("event_type = ? AND event_id = ?", eventType, eventID))
+	done, err := pgdb.Exists(db, commissions(db).Where("event_type = ? AND event_id = ?", eventType, eventID))
 	if err != nil {
 		return err
 	}
@@ -443,7 +437,7 @@ func checkins(db *gorm.DB) *gorm.DB { return db.Model(&model.Checkin{}) }
 
 // checkedIn reports whether userID checked in on date (YYYY-MM-DD).
 func checkedIn(db *gorm.DB, userID int64, date string) (bool, error) {
-	return exists(db, checkins(db).Where("user_id = ? AND checkin_date = ?", userID, date))
+	return pgdb.Exists(db, checkins(db).Where("user_id = ? AND checkin_date = ?", userID, date))
 }
 
 // orNil keeps an empty list nil: these endpoints have always answered null,

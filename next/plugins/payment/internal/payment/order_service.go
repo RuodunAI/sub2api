@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/model"
 )
@@ -103,19 +104,16 @@ func (s *OrderService) CreateOrder(ctx context.Context, req CreateOrderRequest) 
 	// TODO: Get user email from host (需要核心提供用户查询接口)
 	userEmail := fmt.Sprintf("user_%d@example.com", req.UserID)
 
-	// Create order in database. SQL rather than Create: GORM would store the
-	// column default for an empty order type ('balance'), this stores ''.
+	// Create order in database. A map rather than a model: GORM would store
+	// the column default for an empty order type ('balance'), this stores ''.
 	var orderID int64
 	err = inTx(db, func(tx *gorm.DB) error {
-		err := tx.Raw(`
-			INSERT INTO payment_orders (
-				user_id, user_email, out_trade_no, payment_type, amount, pay_amount,
-				fee_rate, currency, order_type, status, expires_at, client_ip, src_host, src_url, plan_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			RETURNING id
-		`, req.UserID, userEmail, outTradeNo, req.PaymentType, req.Amount, payAmount,
-			feeRate, CurrencyDefaultCNY, req.OrderType, StatusPending, expiresAt,
-			req.ClientIP, req.SrcHost, req.SrcURL, req.PlanID).Scan(&orderID).Error
+		row := map[string]any{"user_id": req.UserID, "user_email": userEmail, "out_trade_no": outTradeNo,
+			"payment_type": req.PaymentType, "amount": req.Amount, "pay_amount": payAmount, "fee_rate": feeRate,
+			"currency": CurrencyDefaultCNY, "order_type": req.OrderType, "status": StatusPending, "expires_at": expiresAt,
+			"client_ip": req.ClientIP, "src_host": req.SrcHost, "src_url": req.SrcURL, "plan_id": req.PlanID}
+		err := tx.Model(&model.Order{}).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(row).Error
+		orderID, _ = row["id"].(int64)
 		if err != nil {
 			return fmt.Errorf("insert order: %w", err)
 		}
