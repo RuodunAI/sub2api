@@ -118,3 +118,27 @@ func TestGORMRefusesInterfaceFields(t *testing.T) {
 	})
 	assert.ErrorContains(t, err, "unsupported data type")
 }
+
+// NextIDs reserves ascending ids from the table's sequence; a batch created
+// with them keeps them.
+func TestNextIDs(t *testing.T) {
+	db, _ := widgetDB(t)
+	ctx := context.Background()
+	_, err := db.SQL.ExecContext(ctx, `CREATE TABLE docs (id bigserial PRIMARY KEY, tags jsonb NOT NULL, attrs jsonb)`)
+	require.NoError(t, err)
+	g := store.G(ctx, db.Gorm)
+
+	none, err := store.NextIDs(g, "docs", 0)
+	require.NoError(t, err)
+	assert.Empty(t, none)
+
+	ids, err := store.NextIDs(g, "docs", 3)
+	require.NoError(t, err)
+	require.Len(t, ids, 3)
+	assert.True(t, ids[0] < ids[1] && ids[1] < ids[2])
+	rows := []doc{{ID: ids[0]}, {ID: ids[1]}, {ID: ids[2]}}
+	require.NoError(t, g.Create(&rows).Error)
+	var got []int64
+	require.NoError(t, g.Model(&doc{}).Order("id").Pluck("id", &got).Error)
+	assert.Equal(t, ids, got)
+}

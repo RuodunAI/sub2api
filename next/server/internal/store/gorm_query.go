@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"slices"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -127,4 +128,18 @@ func CollectRows[T any](db *gorm.DB, scan func(*sql.Rows) (T, error)) ([]T, erro
 		return nil, err
 	}
 	return out, nil
+}
+
+// NextIDs reserves n ids from the id sequence of table, ascending, for a
+// batch insert that must know each row's id before it writes the rows: the
+// caller sets the ids on its models and creates them with one INSERT, so no
+// row depends on the order RETURNING happens to give.
+func NextIDs(db *gorm.DB, table string, n int) ([]int64, error) {
+	ids := make([]int64, 0, n)
+	if n <= 0 {
+		return ids, nil
+	}
+	err := db.Raw(`SELECT nextval(pg_get_serial_sequence(?, 'id')) FROM generate_series(1, ?)`, table, n).Scan(&ids).Error
+	slices.Sort(ids)
+	return ids, err
 }
