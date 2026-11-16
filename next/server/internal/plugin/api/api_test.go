@@ -42,20 +42,20 @@ import (
 
 type tokens struct{ testutil.StepUpPassed }
 
-func (tokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
+func (tokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
 	switch tok {
 	case "admin":
-		return 1, nil
+		return 1, "", nil
 	case "viewer":
-		return 2, nil
+		return 2, "", nil
 	case "nobody":
-		return 3, nil
+		return 3, "", nil
 	case "manager":
-		return 4, nil
+		return 4, "", nil
 	case "runner":
-		return 5, nil
+		return 5, "", nil
 	}
-	return 0, errors.New("bad token")
+	return 0, "", core.ErrUnauthenticated
 }
 
 // authz: user 1 is superuser; user 2 only has plugin.guard:stats:read;

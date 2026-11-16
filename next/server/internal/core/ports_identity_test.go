@@ -249,7 +249,6 @@ func TestScopeGroups(t *testing.T) {
 // sessionVerifier answers every token with user 7 and session "sid".
 type sessionVerifier struct{}
 
-func (sessionVerifier) VerifyAccessToken(context.Context, string) (int64, error) { return 7, nil }
 func (sessionVerifier) VerifySession(context.Context, string) (int64, string, error) {
 	return 7, "sid", nil
 }

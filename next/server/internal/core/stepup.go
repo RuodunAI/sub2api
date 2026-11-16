@@ -164,9 +164,3 @@ func Session(ctx context.Context) string {
 	id, _ := ctx.Value(sessionCtxKey{}).(string)
 	return id
 }
-
-// SessionVerifier is optionally implemented by a TokenVerifier: it also
-// tells the login session of the token.
-type SessionVerifier interface {
-	VerifySession(ctx context.Context, token string) (userID int64, session string, err error)
-}

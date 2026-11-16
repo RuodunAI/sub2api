@@ -7,7 +7,9 @@
 // §100): the session is cleared and onUnauthenticated sends the console to the
 // login page, unless another tab stored a different token meanwhile, which the
 // request is retried with once. A tab whose session another tab cleared (a
-// logout there, or a 401) follows it to the login page.
+// logout there, or a 401) follows it to the login page. Any other status,
+// 5xx included, leaves the session alone. fetchWithSession applies the same
+// policy to a raw fetch (an upload, a stream, a file).
 // 403 verification_required asks onVerificationRequired for a step-up proof
 // and replays the request once with X-Verify-Proof (CONTRACTS §80.2).
 
@@ -119,6 +121,10 @@ export interface RequestOptions {
 
 export interface Session {
   access_token: string
+  /** @deprecated Never set: sessions renew on the server (CONTRACTS §100). Removed in host UI 4.0. */
+  refresh_token?: string
+  /** @deprecated Never set: sessions renew on the server (CONTRACTS §100). Removed in host UI 4.0. */
+  expires_at?: number
 }
 
 const SESSION_KEY = 's2a.session'
@@ -276,43 +282,65 @@ function sessionEnded(token: string | undefined) {
   config.onUnauthenticated?.(s ? 'expired' : 'unauthenticated')
 }
 
+/** A fetch init whose headers are a plain record. */
+export type SessionFetchInit = Omit<RequestInit, 'headers'> & { headers?: Record<string, string> }
+
+/** fetch with the console's headers (token when given, locale); reports the authz version. */
+async function fetchAs(url: string, init: SessionFetchInit, token: string | undefined): Promise<Response> {
+  const headers = { ...init.headers }
+  if (token) headers.Authorization = 'Bearer ' + token
+  const loc = config.locale?.()
+  if (loc) headers['Accept-Language'] = loc
+  const res = await fetch(url, { ...init, headers })
+  const version = Number(res.headers.get(AUTHZ_VERSION_HEADER) || NaN)
+  if (Number.isFinite(version)) config.onAuthzVersion?.(version)
+  return res
+}
+
+/**
+ * Sends with the session's token. A 401 is sent once more when another tab
+ * stored a different token meanwhile (its storage event may not have arrived
+ * yet); a 401 of the session's token ends the session.
+ */
+async function sendWithSession(send: (token: string | undefined) => Promise<Response>): Promise<Response> {
+  let token = session.get()?.access_token
+  let res = await send(token)
+  if (res.status !== 401) return res
+  const s = syncSession()
+  if (s && s.access_token !== token) {
+    token = s.access_token
+    res = await send(token)
+  }
+  if (res.status === 401) sessionEnded(token)
+  return res
+}
+
+/**
+ * fetch of a console API path (as request takes it) with the session token,
+ * for what the JSON client cannot carry: a raw body, a stream, a file. A 401
+ * follows the client's policy (resent once with a token another tab stored,
+ * otherwise the session ends). The response, a failed one included, is the
+ * caller's to read.
+ */
+export function fetchWithSession(path: string, init: SessionFetchInit = {}): Promise<Response> {
+  const url = buildURL(path)
+  return sendWithSession((token) => fetchAs(url, init, token))
+}
+
 /** Low-level request returning the parsed JSON envelope (or null for 204). */
 export async function requestRaw(method: string, path: string, opts: RequestOptions = {}): Promise<any> {
-  /** Access token carried by the last attempt. */
-  let sentToken: string | undefined
-  const doFetch = async (extra?: Record<string, string>): Promise<Response> => {
-    const headers: Record<string, string> = { Accept: 'application/json', ...(opts.headers || {}), ...extra }
-    const isForm = typeof FormData !== 'undefined' && opts.body instanceof FormData
-    let body: BodyInit | undefined
-    if (opts.body !== undefined) {
-      if (isForm) body = opts.body as FormData
-      else {
-        headers['Content-Type'] = 'application/json'
-        body = JSON.stringify(opts.body)
-      }
-    }
-    const s = session.get()
-    sentToken = !opts.anonymous ? s?.access_token : undefined
-    if (sentToken) headers['Authorization'] = 'Bearer ' + sentToken
-    const loc = config.locale?.()
-    if (loc) headers['Accept-Language'] = loc
-    const res = await fetch(buildURL(path, opts.query), { method, headers, body, signal: sendSignal(opts) })
-    const version = Number(res.headers.get(AUTHZ_VERSION_HEADER) || NaN)
-    if (Number.isFinite(version)) config.onAuthzVersion?.(version)
-    return res
+  const headers: Record<string, string> = { Accept: 'application/json', ...opts.headers }
+  let body: BodyInit | undefined
+  if (typeof FormData !== 'undefined' && opts.body instanceof FormData) body = opts.body
+  else if (opts.body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+    body = JSON.stringify(opts.body)
   }
-
-  /**
-   * One attempt. On 401 it is sent once more when another tab stored a
-   * different token meanwhile (its storage event may not have arrived yet).
-   */
-  const send = async (extra?: Record<string, string>): Promise<Response> => {
-    let res = await doFetch(extra)
-    if (res.status !== 401 || opts.anonymous) return res
-    const s = syncSession()
-    if (s && s.access_token !== sentToken) res = await doFetch(extra)
-    if (res.status === 401) sessionEnded(sentToken)
-    return res
+  const url = buildURL(path, opts.query)
+  /** One attempt, with extra headers (a step-up proof); each has its own time limit. */
+  const send = (extra?: Record<string, string>): Promise<Response> => {
+    const init = () => ({ method, headers: { ...headers, ...extra }, body, signal: sendSignal(opts) })
+    return opts.anonymous ? fetchAs(url, init(), undefined) : sendWithSession((token) => fetchAs(url, init(), token))
   }
 
   let res = await send()
@@ -458,3 +486,22 @@ export function createClient(prefix = ''): ApiClient {
 
 /** Console API client rooted at /api/v1. */
 export const api: ApiClient = createClient()
+
+// ------------------------------------------------------------------ host UI 3.x compatibility
+//
+// The console renewed JWT sessions itself until sessions moved to the server
+// (CONTRACTS §100). Plugins built against UI 3.x may still import these: they
+// stay, harmless, until host UI 4.0.
+
+/** @deprecated Sessions renew on the server; always 0. Removed in host UI 4.0. */
+export const RENEW_BEFORE_MS = 0
+
+/** @deprecated Sessions renew on the server; never due. Removed in host UI 4.0. */
+export function renewalDue(_session: Session | null, _now: number): boolean {
+  return false
+}
+
+/** @deprecated Sessions renew on the server; does nothing and returns a no-op stop. Removed in host UI 4.0. */
+export function startKeepAlive(): () => void {
+  return () => {}
+}

@@ -43,11 +43,11 @@ type keyAuth struct {
 	keys map[int64][]string
 }
 
-func (a *keyAuth) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
+func (a *keyAuth) VerifySession(_ context.Context, tok string) (int64, string, error) {
 	if tok == "test" {
-		return 1, nil
+		return 1, "", nil
 	}
-	return strconv.ParseInt(strings.TrimPrefix(tok, "u"), 10, 64)
+	return testutil.SessionUser(tok, "u")
 }
 func (a *keyAuth) Can(ctx context.Context, uid int64, key string) (bool, error) {
 	set, err := a.PermissionSet(ctx, uid)

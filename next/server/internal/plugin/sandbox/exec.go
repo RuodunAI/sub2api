@@ -100,7 +100,7 @@ func RunExec(args []string) int {
 	return runExec(o)
 }
 
-// protectedEnvPrefix marks core configuration (DSNs, master key, JWT secret)
+// protectedEnvPrefix marks core configuration (DSNs, master key, secrets)
 // that must never reach a plugin.
 const protectedEnvPrefix = "SUB2API_"
 

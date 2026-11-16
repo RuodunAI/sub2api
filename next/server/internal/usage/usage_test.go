@@ -68,8 +68,8 @@ type fixture struct {
 
 type allowAll struct{}
 
-func (allowAll) VerifyAccessToken(_ context.Context, token string) (int64, error) {
-	return strconv.ParseInt(token, 10, 64)
+func (allowAll) VerifySession(_ context.Context, token string) (int64, string, error) {
+	return testutil.SessionUser(token, "")
 }
 func (allowAll) Can(context.Context, int64, string) (bool, error) { return true, nil }
 

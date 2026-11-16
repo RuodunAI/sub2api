@@ -24,8 +24,10 @@ type permAuth struct {
 	perms map[string]bool
 }
 
-func (a permAuth) VerifyAccessToken(context.Context, string) (int64, error) { return a.uid, nil }
-func (a permAuth) Can(_ context.Context, _ int64, p string) (bool, error)   { return a.perms[p], nil }
+func (a permAuth) VerifySession(context.Context, string) (int64, string, error) {
+	return a.uid, "", nil
+}
+func (a permAuth) Can(_ context.Context, _ int64, p string) (bool, error) { return a.perms[p], nil }
 func (a permAuth) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
 	keys := map[string]struct{}{}
 	for k, ok := range a.perms {

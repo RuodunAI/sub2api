@@ -59,7 +59,7 @@ func asSession(t *testing.T, s *Service, ctx context.Context, token string) cont
 func live(t *testing.T, s *Service, tokens ...string) {
 	t.Helper()
 	for _, tok := range tokens {
-		if _, err := s.VerifyAccessToken(context.Background(), tok); err != nil {
+		if _, _, err := s.VerifySession(context.Background(), tok); err != nil {
 			t.Fatalf("%.12s…: %v", tok, err)
 		}
 	}
@@ -68,7 +68,7 @@ func live(t *testing.T, s *Service, tokens ...string) {
 func ended(t *testing.T, s *Service, tokens ...string) {
 	t.Helper()
 	for _, tok := range tokens {
-		if _, err := s.VerifyAccessToken(context.Background(), tok); !isCode(err, "unauthenticated") {
+		if _, _, err := s.VerifySession(context.Background(), tok); !isCode(err, "unauthenticated") {
 			t.Fatalf("%.12s… still works: %v", tok, err)
 		}
 	}
@@ -211,13 +211,13 @@ func TestAdminPasswordResetBroadcasts(t *testing.T) {
 	node2 := New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: az2, Bus: e.bus, BcryptCost: bcrypt.MinCost})
 
 	p := mustLogin(t, s, u.Email, pw)
-	if _, err := node2.VerifyAccessToken(ctx, p.AccessToken); err != nil {
+	if _, _, err := node2.VerifySession(ctx, p.AccessToken); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpUserPasswordReset), root, u.ID, UpdateUserInput{Password: &reset}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := node2.VerifyAccessToken(ctx, p.AccessToken); !isCode(err, "unauthenticated") {
+	if _, _, err := node2.VerifySession(ctx, p.AccessToken); !isCode(err, "unauthenticated") {
 		t.Fatalf("node 2 still accepts the old token: %v", err)
 	}
 }
@@ -332,9 +332,9 @@ func TestFlowsTakenOnce(t *testing.T) {
 	secret, _ := enableTwoFactor(t, s, id)
 	step := mustLogin(t, s, adminEmail, adminPassword)
 	clearLastStep(t, s, id)
-	pair, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
+	result, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(pair.AccessToken, tokenstore.SessionPrefix))
+	assert.True(t, strings.HasPrefix(result.AccessToken, tokenstore.SessionPrefix))
 	clearLastStep(t, s, id)
 	_, err = s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
 	assert.True(t, isCode(err, "invalid_argument") && !isBadSecondFactor(err), "flow reused: %v", err)
@@ -378,7 +378,7 @@ func TestValkeyDownIsAnOutage(t *testing.T) {
 	var valkey outage
 	valkey.on(k.env, k.s)
 	require.NoError(t, valkey.during(func() error {
-		_, err := k.s.VerifyAccessToken(ctx, token)
+		_, _, err := k.s.VerifySession(ctx, token)
 		assert.Equal(t, http.StatusServiceUnavailable, core.AsError(err).Status, "verify: %v", err)
 		code, out := k.call(token, "GET", "/me", nil)
 		assert.Equal(t, http.StatusServiceUnavailable, code, out)
@@ -390,6 +390,20 @@ func TestValkeyDownIsAnOutage(t *testing.T) {
 		return err
 	}))
 	ended(t, k.s, victim)
+	live(t, k.s, token)
+}
+
+// PostgreSQL failing while a session is checked (a status cache miss) is an
+// outage too: the server error as it is, never a 401 that ends the console
+// session, which is still good once the database is back.
+func TestDatabaseDownIsAnOutage(t *testing.T) {
+	k := newKeyEnv(t)
+	token := mustLogin(t, k.s, adminEmail, adminPassword).AccessToken
+	k.s.clearStatusCache()
+	require.NoError(t, k.s.db.Gorm.Exec(`ALTER TABLE users RENAME TO users_away`).Error)
+	code, out := k.call(token, "GET", "/me", nil)
+	require.NoError(t, k.s.db.Gorm.Exec(`ALTER TABLE users_away RENAME TO users`).Error)
+	assert.Equal(t, http.StatusInternalServerError, code, out)
 	live(t, k.s, token)
 }
 
@@ -415,9 +429,9 @@ func TestPasskeyLoginIssuesASession(t *testing.T) {
 	begin, err = s.BeginPasskeyLogin(ctx, r, testIP)
 	require.NoError(t, err)
 	credential := a.get(t, begin)
-	pair, err := s.FinishPasskeyLogin(withLoginMethod(ctx, loginMethodPasskey), r, begin.FlowToken, credential, testIP)
+	result, err := s.FinishPasskeyLogin(withLoginMethod(ctx, loginMethodPasskey), r, begin.FlowToken, credential, testIP)
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(pair.AccessToken, tokenstore.SessionPrefix))
+	assert.True(t, strings.HasPrefix(result.AccessToken, tokenstore.SessionPrefix))
 	sessions, err := s.Sessions(ctx, id, "")
 	require.NoError(t, err)
 	require.Len(t, sessions, 1)
@@ -508,9 +522,9 @@ func TestFailedLoginLeavesNothingBehind(t *testing.T) {
 	require.ErrorContains(t, err, "the change fails here")
 	restore()
 	clearLastStep(t, s, id)
-	pair, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
+	result, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
 	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(pair.AccessToken, tokenstore.SessionPrefix))
+	assert.True(t, strings.HasPrefix(result.AccessToken, tokenstore.SessionPrefix))
 
 	// The flow taken by another request meanwhile: the session issued
 	// before the take is ended.
@@ -827,12 +841,12 @@ func (w *sessionWalk) check(ended *Service) {
 	for _, tk := range w.tokens {
 		if !w.ended[tk.sid] && !w.rotated[tk.value] {
 			for _, n := range []*Service{w.s, w.other} {
-				_, err := n.VerifyAccessToken(w.ctx, tk.value)
+				_, _, err := n.VerifySession(w.ctx, tk.value)
 				require.NoError(w.t, err, "%s: a token of a session no change ended is rejected", w.where())
 			}
 			continue
 		}
-		_, err := ended.VerifyAccessToken(w.ctx, tk.value)
+		_, _, err := ended.VerifySession(w.ctx, tk.value)
 		require.True(w.t, isCode(err, "unauthenticated"), "%s: a token of an ended session works: %v", w.where(), err)
 	}
 }
@@ -1084,7 +1098,7 @@ func (r *sessionRace) work(t *testing.T, seed uint64, steps int) []string {
 		case 0:
 			trail = append(trail, "login")
 			x := &raceSession{born: [2]int64{r.clock.Add(1), 0}}
-			var p *TokenPair
+			var p *LoginResult
 			if p, err = r.s.Login(r.ctx, r.email, adminPassword, testIP); err != nil {
 				break
 			}
@@ -1176,11 +1190,11 @@ func TestEndedSessionsStayEndedConcurrently(t *testing.T) {
 				switch {
 				case mustEnd:
 					for _, tok := range x.tokens {
-						_, err := n.VerifyAccessToken(ctx, tok)
+						_, _, err := n.VerifySession(ctx, tok)
 						require.True(t, isCode(err, "unauthenticated"), "round %d %+v %+v %q: an ended session works: %v", round, x, r.changes, trails, err)
 					}
 				case !mayEnd:
-					_, err := n.VerifyAccessToken(ctx, x.tokens[len(x.tokens)-1])
+					_, _, err := n.VerifySession(ctx, x.tokens[len(x.tokens)-1])
 					require.NoError(t, err, "round %d %+v %+v %q: a session no change ended is rejected", round, x, r.changes, trails)
 				}
 			}

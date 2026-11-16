@@ -14,7 +14,7 @@
 //
 // The chunk loop is a pure function over an injectable transport, so the
 // resume / retry / cancel rules are unit-tested apart from the component.
-import { ApiError, api, apiBase, session } from '@sub2api/host'
+import { ApiError, api, fetchWithSession } from '@sub2api/host'
 import type { CcgRuntimeImages, CcgWorkersReport } from '@/api/types'
 
 export type ImageRole = 'app' | 'egress' | 'controller'
@@ -202,24 +202,14 @@ function timeoutSignal(ms: number, signal?: AbortSignal): AbortSignal {
 
 /**
  * The console client JSON-encodes every non-FormData body, so a raw chunk is
- * sent with fetch carrying the same session token. A 401 lets the shared
- * client renew the session (one refresh shared with every other request, or
- * sign-out when it cannot) by reading the upload, then the chunk is sent once more.
+ * sent with fetchWithSession, which carries the session token and follows the
+ * client's 401 policy.
  */
-export function createUploadTransport(fetchImpl: typeof fetch = (...args) => fetch(...args)): UploadTransport {
+export function createUploadTransport(): UploadTransport {
   const path = (id: string) => `${UPLOADS}/${encodeURIComponent(id)}`
   async function put(id: string, offset: number, chunk: Blob, signal?: AbortSignal): Promise<UploadPosition> {
-    const send = () => {
-      const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/octet-stream', 'X-CCG-Offset': String(offset) }
-      const token = session.get()?.access_token
-      if (token) headers.Authorization = 'Bearer ' + token
-      return fetchImpl(apiBase() + path(id), { method: 'PUT', headers, body: chunk, signal: timeoutSignal(CHUNK_TIMEOUT_MS, signal) })
-    }
-    let res = await send()
-    if (res.status === 401) {
-      await api.get(path(id), undefined, { signal })
-      res = await send()
-    }
+    const headers = { Accept: 'application/json', 'Content-Type': 'application/octet-stream', 'X-CCG-Offset': String(offset) }
+    const res = await fetchWithSession(path(id), { method: 'PUT', headers, body: chunk, signal: timeoutSignal(CHUNK_TIMEOUT_MS, signal) })
     const json = await readJSON(res)
     if (!res.ok) throw new ApiError(res.status, json?.error || { code: statusCode(res.status), message: res.statusText || 'request failed' })
     return (json && typeof json === 'object' && 'data' in json ? json.data : json) as UploadPosition

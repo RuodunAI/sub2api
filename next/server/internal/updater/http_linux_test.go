@@ -24,8 +24,10 @@ type bridgeAuth struct {
 	id int64
 }
 
-func (a bridgeAuth) VerifyAccessToken(context.Context, string) (int64, error) { return a.id, nil }
-func (a bridgeAuth) Can(context.Context, int64, string) (bool, error)         { return true, nil }
+func (a bridgeAuth) VerifySession(context.Context, string) (int64, string, error) {
+	return a.id, "", nil
+}
+func (a bridgeAuth) Can(context.Context, int64, string) (bool, error) { return true, nil }
 func (a bridgeAuth) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
 	return core.PermissionSet{Superuser: true}, nil
 }

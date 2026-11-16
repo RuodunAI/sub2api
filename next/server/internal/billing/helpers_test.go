@@ -55,8 +55,8 @@ func (b *memBus) Subscribe(ch string, h func([]byte)) func() {
 // allowAll authenticates "Bearer <user id>" and grants every permission.
 type allowAll struct{}
 
-func (allowAll) VerifyAccessToken(_ context.Context, token string) (int64, error) {
-	return strconv.ParseInt(token, 10, 64)
+func (allowAll) VerifySession(_ context.Context, token string) (int64, string, error) {
+	return testutil.SessionUser(token, "")
 }
 func (allowAll) Can(context.Context, int64, string) (bool, error) { return true, nil }
 func (allowAll) PermissionSet(context.Context, int64) (core.PermissionSet, error) {

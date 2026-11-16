@@ -91,7 +91,6 @@ type statusEntry struct {
 
 var (
 	_ core.TokenVerifier     = (*Service)(nil)
-	_ core.SessionVerifier   = (*Service)(nil)
 	_ core.AccessKeyVerifier = (*Service)(nil)
 	_ core.StepUpVerifier    = (*Service)(nil)
 	_ core.StepUpSessions    = (*Service)(nil)
@@ -164,13 +163,7 @@ func (s *Service) forgetStatus(userID int64) {
 
 // ------------------------------------------------------------ sessions
 
-// VerifyAccessToken implements core.TokenVerifier.
-func (s *Service) VerifyAccessToken(ctx context.Context, token string) (int64, error) {
-	uid, _, err := s.VerifySession(ctx, token)
-	return uid, err
-}
-
-// VerifySession implements core.SessionVerifier: the user and the session
+// VerifySession implements core.TokenVerifier: the user and the session
 // id of an s2s_ token. Valkey down fails with 503 (tokenstore.ErrUnavailable);
 // there is no fallback. A session from before a token_version bump that did
 // not reach Valkey (ending every session, the server CLI) is dropped on

@@ -20,9 +20,10 @@ import (
 
 // ============================================================ identity & authz (owner: A core-data)
 
-// TokenVerifier validates console session tokens (s2s_, CONTRACTS §100).
+// TokenVerifier validates console session tokens (s2s_, CONTRACTS §100):
+// the user and the login session of the token.
 type TokenVerifier interface {
-	VerifyAccessToken(ctx context.Context, token string) (userID int64, err error)
+	VerifySession(ctx context.Context, token string) (userID int64, session string, err error)
 }
 
 // PermissionSet is a user's effective permissions at a given authz version.
@@ -170,22 +171,15 @@ type AccessKeyVerifier interface {
 }
 
 // AuthenticateBearer resolves a console bearer token to its user: a login
-// session (through SessionVerifier when the verifier tells its id), or an
-// access key, whose limits then travel in the returned context.
+// session, whose id then travels in the returned context, or an access key,
+// whose limits do.
 func AuthenticateBearer(ctx context.Context, tokens TokenVerifier, token, ip string) (context.Context, int64, error) {
 	if !strings.HasPrefix(token, AccessKeyPrefix) {
-		if sv, ok := tokens.(SessionVerifier); ok {
-			uid, session, err := sv.VerifySession(ctx, token)
-			if err != nil {
-				return ctx, 0, err
-			}
-			return WithSession(WithUserID(ctx, uid), session), uid, nil
-		}
-		uid, err := tokens.VerifyAccessToken(ctx, token)
+		uid, session, err := tokens.VerifySession(ctx, token)
 		if err != nil {
 			return ctx, 0, err
 		}
-		return WithUserID(ctx, uid), uid, nil
+		return WithSession(WithUserID(ctx, uid), session), uid, nil
 	}
 	keys, ok := tokens.(AccessKeyVerifier)
 	if !ok {

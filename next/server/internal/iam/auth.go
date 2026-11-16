@@ -18,12 +18,12 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// TokenPair is the response of a login: the session token (s2s_). When the
+// LoginResult is the response of a login: the session token (s2s_). When the
 // account has two-factor authentication, a correct password answers with
 // only TwoFactorRequired and FlowToken; POST /auth/login/2fa gives the
 // token. A session has nothing to renew it with: it lives while it is used
 // (CONTRACTS §100), and the console takes a 401 for its end.
-type TokenPair struct {
+type LoginResult struct {
 	AccessToken       string `json:"access_token,omitempty"`
 	ExpiresIn         int64  `json:"expires_in,omitempty"` // the session's idle timeout (a flow's lifetime), seconds
 	User              *User  `json:"user,omitempty"`
@@ -41,7 +41,7 @@ var (
 // Login checks the password and issues tokens. Disabled users are rejected.
 // ip is the client address used by the failed-login rate limit (CONTRACTS
 // §14.2); while email+IP or IP is locked out the password is not checked.
-func (s *Service) Login(ctx context.Context, email, password, ip string) (*TokenPair, error) {
+func (s *Service) Login(ctx context.Context, email, password, ip string) (*LoginResult, error) {
 	if wait := s.limiter.check(ctx, email, ip); wait > 0 {
 		return nil, rateLimitedError(ctx, wait)
 	}
@@ -74,9 +74,9 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		if err != nil {
 			return nil, err
 		}
-		return &TokenPair{TwoFactorRequired: true, FlowToken: token, ExpiresIn: flowTTLSeconds}, nil
+		return &LoginResult{TwoFactorRequired: true, FlowToken: token, ExpiresIn: flowTTLSeconds}, nil
 	}
-	var pair *TokenPair
+	var result *LoginResult
 	err = s.issueTx(ctx, func(is *issuer) error {
 		// The user row is the parent lock for every session change.
 		// Recheck the password snapshot after acquiring it: a password change
@@ -98,13 +98,13 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		if err := touchLastLogin(g, id).Error; err != nil {
 			return err
 		}
-		pair, err = is.issue(ctx, id)
+		result, err = is.issue(ctx, id)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return pair, nil
+	return result, nil
 }
 
 // login2FAPayload is what a correct password leaves for the second step: the
@@ -117,7 +117,7 @@ type login2FAPayload struct {
 // LoginSecondFactor finishes a password login with a TOTP or backup code. The
 // flow survives a wrong code, under the per-user lockout and the login rate
 // limit, and ends with the first correct one.
-func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip string) (*TokenPair, error) {
+func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip string) (*LoginResult, error) {
 	var payload login2FAPayload
 	userID, err := s.peekFlow(ctx, flowToken, flowLogin2FA, 0, &payload)
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 	if wait := s.limiter.check(ctx, payload.Email, ip); wait > 0 {
 		return nil, rateLimitedError(ctx, wait)
 	}
-	var pair *TokenPair
+	var result *LoginResult
 	err = s.issueTx(ctx, func(is *issuer) error {
 		g := store.G(ctx, is.tx)
 		var hash, status string
@@ -149,7 +149,7 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 			return err
 		}
 		var err error
-		if pair, err = is.issue(withLoginMethod(ctx, loginMethodTwoFactor), userID); err != nil {
+		if result, err = is.issue(withLoginMethod(ctx, loginMethodTwoFactor), userID); err != nil {
 			return err
 		}
 		// Taken last: a failure before leaves the flow for another try (a
@@ -168,7 +168,7 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 		return nil, err
 	}
 	s.limiter.reset(ctx, payload.Email, ip)
-	return pair, nil
+	return result, nil
 }
 
 // newSessionID returns a random session id.
@@ -213,7 +213,7 @@ func (s *Service) issueTx(ctx context.Context, fn func(is *issuer) error) error 
 // read under the user's row lock, which the caller holds, so a revocation
 // cannot slip in between. A superuser's login is audited. The session,
 // stored in Valkey, is the last thing done before the commit.
-func (is *issuer) issue(ctx context.Context, userID int64) (*TokenPair, error) {
+func (is *issuer) issue(ctx context.Context, userID int64) (*LoginResult, error) {
 	s, g := is.s, store.G(ctx, is.tx)
 	if s.sessions == nil {
 		return nil, tokenstore.ErrUnavailable
@@ -240,7 +240,7 @@ func (is *issuer) issue(ctx context.Context, userID int64) (*TokenPair, error) {
 		return nil, err
 	}
 	is.stored = &sess
-	return &TokenPair{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second), User: user}, nil
+	return &LoginResult{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second), User: user}, nil
 }
 
 // loginUser is the user a login answers with: no balance or segment.

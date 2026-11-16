@@ -233,7 +233,7 @@ func TestStepUpWithPasskey(t *testing.T) {
 	if err := s.ConsumeStepUp(core.WithStepUp(ctx, p.Proof, testOperation), core.StepUpUserDelete); err != nil {
 		t.Fatal(err)
 	}
-	// A refused assertion is a field error, not a 401 (the console would refresh the session).
+	// A refused assertion is a field error, not a 401 (the console would end the session).
 	bad, err := s.BeginStepUpPasskey(ctx, r, id, core.StepUpUserDelete, testIP)
 	if err != nil {
 		t.Fatal(err)

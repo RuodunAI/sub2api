@@ -161,8 +161,8 @@ func TestRecoverSuperAdminNewSignInWorksOnARunningNode(t *testing.T) {
 	s, ctx := e.svc, audit.WithSource(context.Background(), "cli")
 	root := mustLogin(t, s, adminEmail, adminPassword)
 	mustCreateUser(t, s, "target@example.com")
-	for _, p := range []*TokenPair{root, mustLogin(t, s, "target@example.com", adminPassword)} {
-		if _, err := s.VerifyAccessToken(ctx, p.AccessToken); err != nil { // fills the status cache
+	for _, p := range []*LoginResult{root, mustLogin(t, s, "target@example.com", adminPassword)} {
+		if _, _, err := s.VerifySession(ctx, p.AccessToken); err != nil { // fills the status cache
 			t.Fatal(err)
 		}
 	}
@@ -174,7 +174,7 @@ func TestRecoverSuperAdminNewSignInWorksOnARunningNode(t *testing.T) {
 		}
 		for _, who := range []string{"target@example.com", adminEmail} {
 			p := mustLogin(t, s, who, adminPassword)
-			if _, err := s.VerifyAccessToken(ctx, p.AccessToken); err != nil {
+			if _, _, err := s.VerifySession(ctx, p.AccessToken); err != nil {
 				t.Fatalf("after recovering %s, a new sign-in of %s is rejected: %v", email, who, err)
 			}
 		}
@@ -196,11 +196,11 @@ func TestStatusCacheKeepsADeletedUser(t *testing.T) {
 	exec(`UPDATE users SET token_version = token_version + 1 WHERE id = $1`)
 	p := mustLogin(t, s, "gone@example.com", adminPassword)
 	exec(`UPDATE users SET deleted_at = now() WHERE id = $1`)
-	if _, err := s.VerifyAccessToken(ctx, p.AccessToken); err == nil {
+	if _, _, err := s.VerifySession(ctx, p.AccessToken); err == nil {
 		t.Fatal("a deleted user's token is accepted")
 	}
 	exec(`UPDATE users SET deleted_at = NULL WHERE id = $1`) // behind the cache's back
-	if _, err := s.VerifyAccessToken(ctx, p.AccessToken); err == nil {
+	if _, _, err := s.VerifySession(ctx, p.AccessToken); err == nil {
 		t.Fatal("the cached entry of a deleted user was read again")
 	}
 }

@@ -39,7 +39,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 
 ## 配置节点
 
-复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis 和主密钥。迁移已有集群时必须沿用原密钥及数据库。
+复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis 和主密钥。迁移已有集群时必须沿用原密钥及数据库，`SUB2API_JWT_SECRET` 也照原值保留：0.1.290 起的核心不读它，但回退到之前的核心时必须有（`deploy/rollback/0.1.290-session-down.md`）。
 
 修改 `config/node-a.json` 和 `config/node-b.json`：
 

@@ -127,7 +127,7 @@ func isCode(err error, code string) bool {
 
 // mustLogin signs in: a session token, or the second step of an account
 // with two-factor.
-func mustLogin(t *testing.T, s *Service, email, password string) *TokenPair {
+func mustLogin(t *testing.T, s *Service, email, password string) *LoginResult {
 	t.Helper()
 	p, err := s.Login(context.Background(), email, password, testIP)
 	if err != nil {
@@ -173,13 +173,13 @@ func TestBootstrapLoginLogout(t *testing.T) {
 	}
 	p := mustLogin(t, s, "ROOT@example.com ", adminPassword)
 	if p.ExpiresIn != int64(e.cfg.SessionIdleTTL/time.Second) || p.User.Email != adminEmail || p.User.Roles[0] != authz.RoleSuperAdmin || p.User.LastLoginAt == nil {
-		t.Fatalf("pair: %+v user %+v", p, p.User)
+		t.Fatalf("result: %+v user %+v", p, p.User)
 	}
-	uid, err := s.VerifyAccessToken(ctx, p.AccessToken)
+	uid, _, err := s.VerifySession(ctx, p.AccessToken)
 	if err != nil || uid != p.User.ID {
 		t.Fatalf("verify: %d %v", uid, err)
 	}
-	if _, err := s.VerifyAccessToken(ctx, p.AccessToken+"x"); err == nil {
+	if _, _, err := s.VerifySession(ctx, p.AccessToken+"x"); err == nil {
 		t.Fatal("tampered token accepted")
 	}
 	me, err := s.GetMe(ctx, uid)
@@ -195,7 +195,7 @@ func TestBootstrapLoginLogout(t *testing.T) {
 	if err := s.Logout(core.WithSession(ctx, id), uid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.VerifyAccessToken(ctx, p.AccessToken); !isCode(err, "unauthenticated") {
+	if _, _, err := s.VerifySession(ctx, p.AccessToken); !isCode(err, "unauthenticated") {
 		t.Fatalf("session after logout: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func TestBootstrapLoginLogout(t *testing.T) {
 	if err := s.ChangePassword(ctx, uid, "", "new-password-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.VerifyAccessToken(ctx, p3.AccessToken); err == nil {
+	if _, _, err := s.VerifySession(ctx, p3.AccessToken); err == nil {
 		t.Fatal("session survived password change")
 	}
 	mustLogin(t, s, adminEmail, "new-password-1")
@@ -255,7 +255,7 @@ func TestUserLifecycle(t *testing.T) {
 	}
 
 	// Disable: login and access tokens stop working.
-	pair := mustLogin(t, s, "alice@example.com", "password-1")
+	result := mustLogin(t, s, "alice@example.com", "password-1")
 	disabled := StatusDisabled
 	if u, err = s.UpdateUser(ctx, root, u.ID, UpdateUserInput{Status: &disabled}); err != nil || u.Status != StatusDisabled {
 		t.Fatalf("disable: %+v %v", u, err)
@@ -263,7 +263,7 @@ func TestUserLifecycle(t *testing.T) {
 	if _, err := s.Login(ctx, "alice@example.com", "password-1", testIP); !isCode(err, "permission_denied") {
 		t.Fatalf("login disabled: %v", err)
 	}
-	if _, err := s.VerifyAccessToken(ctx, pair.AccessToken); err == nil {
+	if _, _, err := s.VerifySession(ctx, result.AccessToken); err == nil {
 		t.Fatal("disabled user's token accepted")
 	}
 	if ok, _ := e.authz.Can(ctx, u.ID, "gateway:use"); ok {

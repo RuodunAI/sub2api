@@ -103,7 +103,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, next: () => voi
   const path = url.pathname.slice('/api/v1'.length)
   const method = (req.method || 'GET').toUpperCase()
   if (!path.startsWith('/auth/login') && !accessTokenValid(req.headers.authorization)) {
-    return send(res, 401, { error: { code: 'unauthenticated', message: 'access token expired or revoked' } })
+    return send(res, 401, { error: { code: 'unauthenticated', message: 'session has ended' } })
   }
   for (const r of routes) {
     if (r.method !== method && r.method !== 'ANY') continue
