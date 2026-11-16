@@ -141,6 +141,10 @@
 
 **上线顺序**：同 0.1.128。18:10:29 UTC 更新 ovh 的 sup2api-1（9 秒就绪）；18:10:59 从 Caddy 摘下 3140（`Caddyfile.bak-gw132`），重建 sup2api-ccp，18:11:24 `/readyz` 200（22 秒），同时恢复 Caddy（与备份逐字节一致）。全程 api.prophey.ai `/readyz` 200。两节点启动后无 WARN/ERROR。核心版本不变。
 
+## 网关 0.1.134：随核心 0.1.290 换上（2026-11-17）
+
+源码 `e3906cc68`，镜像 `sup2api-gateway:0.1.134`（ID `b17f0838…`），在 ovh 的 `~/sup2api/release-0.1.290` 构建（`stage/0.1.290/build.sh`，runtime-contract 与 gateway 的 vet/test 通过），经本机复制到 clicodeplus（gzip 约 44 MB，SHA `51fdc8a6…`，`/root/gateway-images/`）。核心 0.1.290 的升级计划仍在 0.1.133 下执行，计划完成后才换外壳：compose 去掉 `SUB2API_JWT_SECRET`（0.1.290 不再读），`.env` 的 `GATEWAY_IMAGE` 改成 0.1.134；换前的 compose、`.env`、config 备份在 `/root/sup2api-node/backup-0.1.290/`。北京 00:28:06 重建、00:28:42 就绪。这次 new-api 渠道 392 正关着、没有流量，所以没有先让出。外壳 0.1.134 不能运行核心 0.1.288，回退核心时外壳一起回到 0.1.133（见 [0.1.290 发布手册](../../rollback/0.1.290-release.md) 第五节）。
+
 ## 网关换版流程（2026-11-08 起，下一版网关（预计 0.1.133）：节点让出，不再改 Caddy）
 
 下一版网关起（CONTRACTS §82），本机管理 socket 提供 `POST /system/nodes/self/yield`。换网关镜像前先让节点把新请求交给另一个节点并让 `/readyz` 返回 503，Caddy 的健康检查会在 5 秒内把流量切到 ovh；重建容器后新网关就绪、`/readyz` 恢复 200，Caddy 自动切回。**不再需要改 Caddyfile。** 旧网关（≤0.1.132）没有这个接口，换到新版的那一次仍按上面“从 Caddy 摘下 3140”的老办法做。
