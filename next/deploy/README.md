@@ -1,24 +1,32 @@
 # sub2api-next deployment
 
-The long-running deployment is `single/` (compose project `sup2api` on ovh),
-published on `:3130` and `:3131`. See `single/README.md`.
+The long-running deployment is gateway-managed: since 2026-10-02 every node runs
+`sub2api-gateway` (`next/gateway`) as its public entry, which supervises the
+local core (listening on loopback only) and installs signed core releases with
+the primary-first or rolling upgrade flow and Redis per-node peer keys described
+in the [multi-node protocol](../docs/MULTINODE-SYNC-PROTOCOL.md). Building and
+publishing releases and configuring nodes: [gateway/README.md](gateway/README.md);
+each environment's deployment record: `gateway/<environment>/README.md`.
+One-way releases (migrations that cannot be undone) have their upgrade and
+rollback runbooks in [rollback/](rollback/).
 
-The opt-in [shell-managed deployment](shell/README.md) runs a stable public
-proxy/supervisor and downloads signed core releases. It now uses the
-primary-first maintenance flow with Redis per-node peer keys described in the
-[multi-node protocol](../docs/MULTINODE-SYNC-PROTOCOL.md); it passed isolated
-real-PG/Redis and three-node validation on 2026-10-02 (see
-[the record](../docs/audits/2026-10-02/MULTINODE-VALIDATION.md)) but is not
-deployed. It does not replace `single/` automatically.
+`single/` runs the core directly, without the gateway (services `app` and
+`app-2` sharing their own PostgreSQL and Valkey). It is no longer the long-running deployment (see the
+note at the top of [single/README.md](single/README.md)): do not run its
+`deploy.sh` on a host that now runs the gateway-managed stack, since it would
+bring the old containers back up on the same ports.
 
 Automated acceptance tests use the separate `e2e/` stack: two nodes behind
 Caddy on `127.0.0.1:3120`, their own PostgreSQL/Redis, signed plugin market and
 mock upstream. See [e2e/README.md](e2e/README.md) for setup and commands. Never
-run these destructive tests against `sup2api` or the unit-test `testdb` database.
+run these destructive tests against a production stack or the unit-test
+`testdb` database.
 
 ```
 deploy/
-├── single/                # compose.yml + deploy.sh of the sup2api stack
+├── gateway/               # gateway image, release packaging, node config; one README per environment
+├── rollback/              # upgrade and rollback runbooks (and SQL) of one-way releases
+├── single/                # compose.yml + deploy.sh of a core-only stack without the gateway
 ├── e2e/                   # isolated two-node stack + Caddy + opt-in Go test runner
 ├── docker/                # build and entrypoint scripts used by ../Dockerfile
 ├── mock-upstream/         # mock Anthropic API (standalone Go module, used by e2e)

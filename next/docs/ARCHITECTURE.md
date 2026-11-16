@@ -1,8 +1,7 @@
-# sub2api-next 架构设计（初始版本）
+# sub2api-next 架构设计
 
-> 状态：草案，待确认
+> 状态：现行，随代码维护（生产运行中，核心 0.1.x）。与代码冲突时以代码为准并改正本文；接口与行为约定以 [CONTRACTS.md](CONTRACTS.md) 为准。§1、§17 记录的是初始版本的范围与实施计划，§18 是决策记录，现状以 §2–§16 为准。
 > 目标：基于"用户 / 角色 / 权限 + 插件"的架构，重写一个全新的服务。旧代码保留，仅作参考。
-> 平台方面，初始版本只实现 Anthropic Messages 协议的 API Key 转发；插件体系的各项能力在本期全部落地。
 
 ---
 
@@ -73,33 +72,47 @@
 flowchart LR
   client["客户端<br/>Claude Code / SDK / curl"]
   admin["管理员浏览器<br/>控制台"]
-  lb["Caddy 负载均衡<br/>TLS · 健康检查 · 流式透传"]
+  rp["外层反向代理（可选）<br/>TLS 终止 · 按节点分流 · 检查 /readyz"]
 
-  subgraph cluster["sub2api-next 集群（所有节点对等，没有主节点）"]
-    n1["node-1<br/>核心进程 + 插件进程"]
-    n2["node-2<br/>核心进程 + 插件进程"]
+  subgraph cluster["sub2api-next 集群（处理请求时节点对等；升级由配置的主节点协调）"]
+    subgraph n1["node-1"]
+      g1["sub2api-gateway<br/>公网入口 · supervisor · 托管升级"]
+      c1["核心 sub2api（只听回环）<br/>+ 插件进程"]
+    end
+    subgraph n2["node-2"]
+      g2["sub2api-gateway"]
+      c2["核心 + 插件进程"]
+    end
     nN["node-N ..."]
   end
 
-  pg[("PostgreSQL<br/>public：核心表<br/>plg_*：各插件的 schema")]
-  redis[("Redis<br/>节点注册 · 并发槽位 · 冷却 · 余额缓存<br/>分布式锁 · 广播")]
+  pg[("PostgreSQL<br/>public：核心表<br/>plg_*：各插件的 schema<br/>updater：升级计划")]
+  redis[("Redis / Valkey<br/>会话 · 节点注册 · 并发槽位 · 冷却 · 余额缓存<br/>分布式锁 · 广播 · 节点密钥登记")]
+  rel["核心发布源<br/>签名的清单与发布包（HTTPS）"]
   market["插件市场索引<br/>签名的静态 JSON"]
-  up["上游<br/>api.anthropic.com"]
+  up["上游<br/>api.anthropic.com 等"]
   ext["插件访问的外部服务<br/>（经出口隧道）"]
 
-  client --> lb
-  admin --> lb
-  lb --> n1 & n2 & nN
-  n1 & n2 & nN --> pg
-  n1 & n2 & nN --> redis
-  n1 & n2 & nN -->|"按账号绑定的代理"| up
-  n1 & n2 & nN -->|"出口隧道"| ext
-  n1 & n2 & nN -.->|"浏览 / 下载插件"| market
+  client --> rp
+  admin --> rp
+  rp --> g1 & g2 & nN
+  g1 --> c1
+  g2 --> c2
+  g1 <-->|"节点间 HTTPS（维护时转发、插件包同步）"| g2
+  g1 & g2 -.->|"下载核心发布"| rel
+  c1 & c2 & nN --> pg
+  c1 & c2 & nN --> redis
+  g1 & g2 --> pg & redis
+  c1 & c2 & nN -->|"按账号绑定的代理"| up
+  c1 & c2 & nN -->|"出口隧道"| ext
+  c1 & c2 & nN -.->|"浏览 / 下载插件"| market
 ```
+
+每个节点的公网入口是网关外壳 `sub2api-gateway`（`next/gateway`）：它监听对外端口、启停并监督本机核心进程（核心只监听回环地址）、执行托管升级，本机核心不可用或维护中时把请求转给其他节点（CONTRACTS §33、§34、§39）。外层反向代理只做 TLS 终止和按节点分流，可以没有。部署入口见 [`deploy/gateway`](../deploy/gateway/README.md)；不经网关、只跑核心的单机栈见 [`deploy/single`](../deploy/single/README.md)，e2e 栈（两个节点前面一个 Caddy）见 [`deploy/e2e`](../deploy/e2e/README.md)。
 
 要点：
 
-- **节点对等**：任何节点都能处理网关请求和管理请求
+- **节点对等**：任何节点都能处理网关请求和管理请求；只有升级时由配置的主节点协调（`primary-first-v1`：从节点先转发到主节点并停止，主节点停机、迁移、启动，再逐个恢复从节点；不改库的版本可走 `rolling-v1` 逐个节点滚动，见 GATEWAY-MANAGED-UPDATES.md、CONTRACTS §34、§82）
 - **PostgreSQL 是期望状态和账本的唯一依据**
 - **Redis 保存实时状态**，数据丢失后几秒内自动恢复；余额缓存丢失时回源 PG。本文的"Redis"指任何 Redis 协议的服务，默认部署用 Valkey（Redis 7.2 的分支，协议、命令、Lua 均兼容），Redis 7+ 同样可用；`SUB2API_REDIS_URL` 接受 `redis://`、`rediss://`、`valkey://`、`valkeys://`、`unix://`
 - **插件进程运行在每个节点本地**，通过本机 unix socket 与核心通信，所有对外连接经核心的出口隧道
@@ -1539,41 +1552,57 @@ anthropic 平台及其端点、用量规则、默认粘性规则由**核心内�
 ### 16.1 旧代码备份与新代码位置
 
 - 备份：打 tag `legacy/v0.2.8`，创建分支 `legacy/main`，旧代码原样保留
-- 新代码：新分支 `feat/next-platform`，新建 `next/` 目录，与旧代码并存
+- 新代码：`next/` 目录，与仓库根目录的旧代码（`backend/`、`frontend/`）并存。开发分支是 `develop`（早期的 `feat/next-platform` 已不再使用），新工作从 `develop` 开分支，完成后合回 `develop`
 
 ### 16.2 目录结构
 
 ```
 next/
-├── go.work                        # Go 工作区：server、sdk、plugins、tools
-├── server/                        # 核心服务（独立 Go module）
-│   ├── cmd/sub2api/main.go        # 含隐藏子命令 plugin-exec（启动器）
+├── go.work                        # Go 工作区：下列每个 Go module（CONTRACTS §2）
+├── server/                        # 核心服务 sub2api（独立 Go module）
+│   ├── cmd/
+│   │   ├── sub2api/main.go        # 含 dev 子命令与隐藏子命令 plugin-exec（启动器）
+│   │   ├── gen-models/            # 由迁移生成 GORM 模型（store/model）
+│   │   └── convert-record/        # 协议转换黄金样例录制工具（手动运行）
 │   ├── internal/
-│   │   ├── app/  config/  store/  migrations/  cluster/
-│   │   ├── iam/  authz/  apikey/  group/  proxy/  account/
-│   │   ├── billing/  usage/  event/  job/
-│   │   ├── gateway/               # 流水线、调度、钩子执行、用量提取
+│   │   ├── app/  config/  core/  store/  migrations/  cluster/  task/  job/  event/
+│   │   ├── iam/  authz/  apikey/  group/  proxy/  account/  billing/  usage/  ...
+│   │   ├── gateway/               # 流水线、调度、钩子执行、用量提取；convert/ 是协议转换
 │   │   ├── plugin/                # 包、签名与信任、manifest、授权、迁移、注册表、发布、市场
 │   │   │   ├── grpcruntime/       # 唯一允许引用 go-plugin 的包；HostService、EgressService
 │   │   │   └── sandbox/           # seccomp、rlimit、oom_score_adj、nice、看门狗（//go:build linux）
 │   │   └── httpapi/               # gin 路由、handler、中间件
-│   └── web/                       # 嵌入前端构建产物
-├── sdk/                           # 插件 SDK（独立 Go module，插件只依赖它）
+│   └── web/                       # 嵌入前端构建产物（dist/index.html 是被跟踪的占位文件）
+├── gateway/                       # 节点外壳（独立 Go module）
+│   ├── cmd/sub2api-gateway/       # 公网入口、本机核心的 supervisor、托管升级、节点间转发
+│   ├── cmd/sub2api-release/       # 核心发布包的密钥、打包与签名
+│   └── internal/                  # control、supervisor、proxy、peer、release、pluginblob、sqlguard ...
+├── runtime-contract/              # 外壳与核心的协议；gormpg（共用的数据库层与 sqlcheck）、sqlpool、locklease
+├── sdk/                           # 插件 SDK（独立 Go module，插件只依赖它和 runtime-contract）
 │   ├── proto/sub2api/plugin/v1/*.proto
-│   ├── gen/
-│   └── pluginsdk/                 # Serve()、Host 客户端、出口隧道 Transport/Dialer/Resolver、测试工具
-├── plugins/
-│   ├── anthropic/                 # 独立 Go module
-│   └── guard/                     # 独立 Go module，含 ui/native 前端工程
+│   ├── gen/  manifest/  protocol/  pkgsig/
+│   ├── pluginsdk/                 # Serve()、Host 客户端、出口隧道 Transport/Dialer/Resolver、测试工具
+│   ├── pgdb/                      # 插件的 GORM 句柄、组合器、TestNoRawSQL/TestNoPgxImports
+│   └── testpg/                    # 测试用 PostgreSQL（TEST_DATABASE_URL 或本机 embedded-postgres）
+├── plugins/                       # 官方插件，每个是独立 Go module；released.json 记录线上版本
+│   ├── anthropic/  openai/  gemini/  volcengine/  custom/  relay/  claude-oauth/
+│   ├── codex/                     # 含 ui/native
+│   ├── ccgateway/                 # 含 companions/（engine、worker、controller-go、guard、contracts、cli-mods、xray-egress）
+│   ├── dynweight/  growth/  guard/  moderation/   # 含 ui/native
+│   └── mailer/  payment/
+├── protocol-codec/                # 早期的协议转换库；next/ 内无人引用，只剩旧版 backend/ 依赖
 ├── tools/
-│   └── sub2api-plugin/            # keygen / build / pack / sign / verify / index
+│   └── sub2api-plugin/            # keygen / build / pack / sign / verify / index / db diff|check / dev
+├── e2e/                           # 验收测试（需要部署好的 e2e 栈；CI 只编译）
 ├── web/                           # 控制台（Vue 3）
 │   ├── src/
 │   └── packages/
 │       ├── ui/                    # @sub2api/ui 组件库（共享给原生插件）
 │       ├── host/                  # @sub2api/host 宿主 API
 │       └── vite-preset/           # 插件前端构建预设
-├── deploy/                        # docker-compose、Caddyfile
+├── deploy/                        # 镜像构建脚本（docker/）、网关托管部署（gateway/）、单机栈（single/）、
+│                                  # e2e 栈（e2e/）、mock-upstream、发布与回退手册（rollback/）
+├── Dockerfile                     # 核心、插件与控制台的镜像构建
 └── docs/
 ```
 
