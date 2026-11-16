@@ -121,8 +121,8 @@ func TestSQLUpsertRolloutNode(t *testing.T) {
 	})
 }
 
-func TestSQLMarkCleanupRows(t *testing.T) {
-	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return markCleanupRows(tx, sqlRollout) })
+func TestSQLMarkCleanup(t *testing.T) {
+	gormtest.AssertRun(t, func(tx *gorm.DB) error { return (&Controller{}).markCleanup(tx.Statement.Context, tx, sqlRollout) })
 }
 
 func TestSQLAckCleanup(t *testing.T) {

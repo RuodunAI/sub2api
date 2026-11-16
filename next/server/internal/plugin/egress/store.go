@@ -29,10 +29,6 @@ func resetOpenLogs(g *gorm.DB, nodeID string, before time.Time) *gorm.DB {
 		})
 }
 
-// logBatch is the most rows one INSERT writes: thirteen parameters each,
-// under PostgreSQL's 65535.
-const logBatch = 4000
-
 // insertOpen inserts result='open' rows and returns their ids in order, all
 // rows or none (on an error no id is returned, nothing was written). The ids
 // are reserved first (store.NextIDs), so each is its row's whatever order
@@ -42,9 +38,9 @@ func (s pgStore) insertOpen(ctx context.Context, rows []logEntry) ([]int64, erro
 	if err != nil {
 		return nil, err
 	}
-	open := make([]model.PluginEgressLog, len(rows))
+	open := make([]logRow, len(rows))
 	for i, r := range rows {
-		open[i] = model.PluginEgressLog{ID: ids[i], PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network,
+		open[i] = logRow{ID: ids[i], PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network,
 			Host: r.Host, Port: r.Port, StartedAt: r.StartedAt, Result: ResultOpen}
 	}
 	if err := s.create(ctx, open); err != nil {
@@ -53,29 +49,53 @@ func (s pgStore) insertOpen(ctx context.Context, rows []logEntry) ([]int64, erro
 	return ids, nil
 }
 
-// insertDone inserts finished rows whole, all or none. A finished row's
-// closed_at is its start plus its duration.
+// insertDone inserts finished rows whole, all or none, their ids from the
+// sequence. A finished row's closed_at is its start plus its duration.
 func (s pgStore) insertDone(ctx context.Context, rows []logEntry) error {
-	done := make([]model.PluginEgressLog, len(rows))
+	done := make([]logRow, len(rows))
 	for i, r := range rows {
 		closed := r.StartedAt.Add(time.Duration(r.DurationMS) * time.Millisecond)
-		done[i] = model.PluginEgressLog{PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network, Host: r.Host,
+		done[i] = logRow{PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network, Host: r.Host,
 			Port: r.Port, StartedAt: r.StartedAt, DurationMs: int(int32(r.DurationMS)), BytesIn: r.BytesIn,
 			BytesOut: r.BytesOut, Result: r.Result, Error: r.Error, ClosedAt: &closed}
 	}
-	return s.create(ctx, done)
+	return s.create(ctx, done, "id")
 }
 
-// create writes rows, all or none: in one INSERT, or in a transaction of
-// several when they are more than one takes.
-func (s pgStore) create(ctx context.Context, rows []model.PluginEgressLog) error {
+// logRow is a plugin_egress_logs row the writer inserts, every column
+// written as given. model.PluginEgressLog would write a column with a
+// database default only when some row's value is not zero, and read it
+// back (RETURNING): the INSERT's text would follow the values.
+type logRow struct {
+	ID         int64      `gorm:"column:id;primaryKey;autoIncrement:false"`
+	PluginKey  string     `gorm:"column:plugin_key"`
+	NodeID     string     `gorm:"column:node_id"`
+	Network    string     `gorm:"column:network"`
+	Host       string     `gorm:"column:host"`
+	Port       int        `gorm:"column:port"`
+	StartedAt  time.Time  `gorm:"column:started_at"`
+	DurationMs int        `gorm:"column:duration_ms"`
+	BytesIn    int64      `gorm:"column:bytes_in"`
+	BytesOut   int64      `gorm:"column:bytes_out"`
+	Result     string     `gorm:"column:result"`
+	Error      string     `gorm:"column:error"`
+	ClosedAt   *time.Time `gorm:"column:closed_at"`
+}
+
+func (logRow) TableName() string { return model.PluginEgressLog{}.TableName() }
+
+// create writes rows without the omitted columns, all or none:
+// store.InsertChunk rows per INSERT, in a transaction when they take more
+// than one, so a full chunk has one text whatever the batch size.
+func (s pgStore) create(ctx context.Context, rows []logRow, omit ...string) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	if len(rows) <= logBatch {
-		return store.G(ctx, s.db.Gorm).Create(&rows).Error
+	insert := func(g *gorm.DB) error { return g.Omit(omit...).CreateInBatches(&rows, store.InsertChunk).Error }
+	if len(rows) <= store.InsertChunk {
+		return insert(store.G(ctx, s.db.Gorm))
 	}
-	return s.db.Tx(ctx, func(tx *gorm.DB) error { return store.G(ctx, tx).CreateInBatches(&rows, logBatch).Error })
+	return s.db.Tx(ctx, func(tx *gorm.DB) error { return insert(store.G(ctx, tx)) })
 }
 
 func (s pgStore) closeRows(ctx context.Context, rows []closedRow) error {
@@ -153,7 +173,9 @@ type upsertedDomain struct {
 func (upsertedDomain) TableName() string { return model.PluginEgressDomain{}.TableName() }
 
 // upsertDomainRows adds the deltas to plugin_egress_domains and reads the
-// rows back into the returned slice.
+// rows back into the returned slice, store.InsertChunk rows per statement
+// (in the caller's transaction): any number of hosts stays under
+// PostgreSQL's 65535 parameters.
 func upsertDomainRows(g *gorm.DB, ds []domainDelta) ([]upsertedDomain, *gorm.DB) {
 	rows := make([]upsertedDomain, len(ds))
 	for i, d := range ds {
@@ -165,5 +187,5 @@ func upsertDomainRows(g *gorm.DB, ds []domainDelta) ([]upsertedDomain, *gorm.DB)
 			{Column: clause.Column{Name: "connections"}, Value: gorm.Expr("plugin_egress_domains.connections + EXCLUDED.connections")},
 		}},
 		clause.Returning{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "host"}, {Name: "first_seen_at"}, {Name: "(xmax = 0) AS inserted", Raw: true}}},
-	).Create(&rows)
+	).CreateInBatches(&rows, store.InsertChunk)
 }

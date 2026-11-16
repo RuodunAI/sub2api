@@ -347,9 +347,9 @@ func (w *worker) loadCursor(ctx context.Context) (cursor, error) {
 // createCursor inserts the cursor of key at the newest event, unless another
 // node just did.
 func createCursor(g *gorm.DB, key string) *gorm.DB {
-	newest := g.Model(&model.Event{}).Select("COALESCE(max(id), 0)")
-	return g.Table(model.PluginEventCursor{}.TableName()).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}}, DoNothing: true}).
-		Create(map[string]any{"plugin_key": key, "last_event_id": gorm.Expr("(?)", newest)})
+	return store.InsertSelect(g, model.PluginEventCursor{}.TableName(), []string{"plugin_key", "last_event_id"},
+		g.Model(&model.Event{}).Select("?::text, COALESCE(max(id), 0)", key),
+		clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}}, DoNothing: true})
 }
 
 // readCursor reads the cursor row; a missing row is a no-rows error.

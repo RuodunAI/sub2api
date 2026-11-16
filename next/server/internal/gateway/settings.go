@@ -258,8 +258,9 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 }
 
 // settingValue reads the document of settings row key, nil when there is no
-// row (the column is NOT NULL). The settings cache reloads it on the request
-// path: one row read through Row.
+// row (the column is NOT NULL): one row read through Row. The settings
+// cache reloads it once per settingsTTL, in the request that finds the
+// cache stale.
 func settingValue(ctx context.Context, q *gorm.DB, key string) ([]byte, error) {
 	var raw []byte
 	err := store.G(ctx, q).Model(&model.Setting{}).Select("value").Where("key = ?", key).Row().Scan(&raw)

@@ -76,6 +76,13 @@ func G(ctx context.Context, q *gorm.DB) *gorm.DB {
 	return q.WithContext(ctx)
 }
 
+// InsertChunk is the row count of each full INSERT of a writer whose
+// batches vary in size: it creates them with CreateInBatches(rows,
+// InsertChunk), so every full chunk has one text, and pgx prepares and
+// caches at most InsertChunk texts of it on a connection (the full chunk's
+// and one per remainder size) instead of one per batch size.
+const InsertChunk = 100
+
 // gormConfig is the configuration of Open's GORM instance. DryRun snapshots
 // (package gormtest) take an instance of the same configuration, so they
 // build the same SQL.

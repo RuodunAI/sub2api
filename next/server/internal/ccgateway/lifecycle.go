@@ -11,6 +11,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 var _ core.AccountLifecycleResource = (*Service)(nil)
@@ -26,10 +27,8 @@ func (s *Service) PrepareAccount(ctx context.Context, p core.AccountPreparation)
 		return err
 	}
 	g := store.G(ctx, s.DB.Gorm)
-	// The settings are written as given: a nil value is NULL, not the column
-	// default.
-	res := runtimes(g).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).
-		Create(map[string]any{"key": p.Key, "proxy_id": p.ProxyID, "created_by": p.CreatedBy, "initial_settings": p.Settings})
+	res := g.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).
+		Create(&preparedDraft{Key: p.Key, ProxyID: p.ProxyID, CreatedBy: p.CreatedBy, InitialSettings: p.Settings})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -45,6 +44,18 @@ func (s *Service) PrepareAccount(ctx context.Context, p core.AccountPreparation)
 	s.Kick(p.Key)
 	return nil
 }
+
+// preparedDraft is the ccgateway_runtimes row of a preparation's draft:
+// every column written as given (nil settings are NULL, not the column
+// default), the others their defaults, and nothing read back.
+type preparedDraft struct {
+	Key             string          `gorm:"column:key"`
+	ProxyID         *int64          `gorm:"column:proxy_id"`
+	CreatedBy       int64           `gorm:"column:created_by"`
+	InitialSettings json.RawMessage `gorm:"column:initial_settings"`
+}
+
+func (preparedDraft) TableName() string { return model.CcgatewayRuntime{}.TableName() }
 
 // preparationMatches reports whether the open draft of p is the one p
 // describes (same creator, proxy and settings).

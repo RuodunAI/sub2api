@@ -281,16 +281,16 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			}
 		}
 		for _, s := range []struct {
-			ddl  string
-			args []store.DDLArg
+			action, ddl string
+			args        []store.DDLArg
 		}{
-			{"ALTER SCHEMA %s OWNER TO %s", []store.DDLArg{sid, rid}},
-			{"REVOKE ALL ON SCHEMA %s FROM PUBLIC", []store.DDLArg{sid}},
-			{"GRANT USAGE, CREATE ON SCHEMA %s TO %s", []store.DDLArg{sid, rid}},
-			{"ALTER ROLE %s SET search_path TO %s", []store.DDLArg{rid, sid}},
+			{"hand the schema to the role", "ALTER SCHEMA %s OWNER TO %s", []store.DDLArg{sid, rid}},
+			{"revoke the public's access", "REVOKE ALL ON SCHEMA %s FROM PUBLIC", []store.DDLArg{sid}},
+			{"grant the role the schema", "GRANT USAGE, CREATE ON SCHEMA %s TO %s", []store.DDLArg{sid, rid}},
+			{"set the role's search_path", "ALTER ROLE %s SET search_path TO %s", []store.DDLArg{rid, sid}},
 		} {
 			if err := store.DDL(g, s.ddl, s.args...); err != nil {
-				return fmt.Errorf("%s (schema %s): %w", s.ddl, schema, err)
+				return fmt.Errorf("%s (role %s): %w", s.action, role, err)
 			}
 		}
 		if err := grantMigrationFuncs(ctx, tx, role); err != nil {

@@ -59,10 +59,19 @@ func Audit(ctx context.Context, q *gorm.DB, actorID int64, action, targetType, t
 	if len(ip) > 64 {
 		ip = ip[:64]
 	}
-	// A map on the bare table: every column is written as given, and with
-	// no model GORM adds no RETURNING, so the INSERT stays one Exec (nothing
-	// is read back).
-	return store.G(ctx, q).Table(model.AuditLog{}.TableName()).Create(map[string]any{
-		"user_id": uid, "action": action, "target_type": targetType, "target_id": targetID, "detail": b, "ip": ip,
-	}).Error
+	return store.G(ctx, q).Create(&auditRow{UserID: uid, Action: action, TargetType: targetType, TargetID: targetID, Detail: b, IP: ip}).Error
 }
+
+// auditRow is the audit_logs row Audit writes: every column as given, the
+// id and created_at their defaults, so the INSERT reads nothing back (no
+// RETURNING) and stays one Exec.
+type auditRow struct {
+	UserID     *int64 `gorm:"column:user_id"`
+	Action     string `gorm:"column:action"`
+	TargetType string `gorm:"column:target_type"`
+	TargetID   string `gorm:"column:target_id"`
+	Detail     []byte `gorm:"column:detail"`
+	IP         string `gorm:"column:ip"`
+}
+
+func (auditRow) TableName() string { return model.AuditLog{}.TableName() }

@@ -531,8 +531,11 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 }
 
 // usageLogRow is the usage_logs row the settler inserts: every column it
-// writes, each always written (no database default fills one in), so the
-// INSERT has one text per batch size whatever the values.
+// writes, each always written, so the INSERT has one text per row count
+// whatever the values. It cannot be model.UsageLog, whose columns with a
+// database default go into an INSERT only when some row's value is not
+// zero (Select("*") does not change that) and come back with RETURNING;
+// everything else on usage_logs (the UPDATEs, the reads) uses the model.
 type usageLogRow struct {
 	ID                    int64           `gorm:"column:id;primaryKey;autoIncrement:false"`
 	RequestID             string          `gorm:"column:request_id"`
@@ -600,8 +603,9 @@ var skipLoggedRequest = clause.OnConflict{Columns: []clause.Column{{Name: "reque
 // A batch of one, the settler's usual one when it is not busy, is one
 // INSERT that returns the new row's id. A larger batch reserves its ids
 // first (store.NextIDs, ascending in batch order) and inserts the rows with
-// them: two round trips whatever its size. Only when some row was skipped
-// does a third read which ids made it.
+// them, store.InsertChunk rows per INSERT: every full chunk has the same
+// text whatever the batch size. Only when some row was skipped does a last
+// read find which ids made it.
 func insertUsageRows(db *gorm.DB, batch []*core.UsageRecord) ([]int64, error) {
 	if len(batch) == 0 {
 		return nil, nil
@@ -621,12 +625,12 @@ func insertUsageRows(db *gorm.DB, batch []*core.UsageRecord) ([]int64, error) {
 	for i := range rows {
 		rows[i].ID = ids[i]
 	}
-	res := db.Clauses(skipLoggedRequest).Create(&rows)
+	res := db.Clauses(skipLoggedRequest).CreateInBatches(&rows, store.InsertChunk)
 	if res.Error != nil || res.RowsAffected == int64(len(rows)) {
 		return ids, res.Error
 	}
 	var written []int64
-	if err := db.Model(&usageLogRow{}).Where("id = ANY(?)", store.Int64s(ids)).Pluck("id", &written).Error; err != nil {
+	if err := db.Model(&model.UsageLog{}).Where("id = ANY(?)", store.Int64s(ids)).Pluck("id", &written).Error; err != nil {
 		return nil, err
 	}
 	for i, id := range ids {
@@ -723,7 +727,7 @@ func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*c
 	if total.Sign() > 0 {
 		detail.LedgerID = &res.LedgerID
 	}
-	if err := store.G(ctx, tx).Model(&usageLogRow{}).Where("id = ?", r.id).Updates(map[string]any{
+	if err := store.G(ctx, tx).Model(&model.UsageLog{}).Where("id = ?", r.id).Updates(map[string]any{
 		"total_cost": cost.total, "base_cost": cost.base, "billing_detail": store.Bytes(jsonOr(detail, "{}")), "matched_tier": trunc(detail.Tier, 100),
 	}).Error; err != nil {
 		return nil, err
@@ -1132,8 +1136,11 @@ func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLoc
 	if skipLocked {
 		lock = lock.SkipLocked()
 	}
+	// The model is a value: an UPDATE through a pointer to one copies each
+	// assigned value into it, on every settlement, for nobody to read.
+	g, row := store.G(ctx, tx), model.UsageLog{}
 	var status string
-	if err := store.G(ctx, tx).Model(&usageLogRow{}).Select("billing_status").Where("request_id = ?", p.RequestID).
+	if err := g.Model(row).Select("billing_status").Where("request_id = ?", p.RequestID).
 		Clauses(lock).Row().Scan(&status); err != nil {
 		if store.IsNoRows(err) {
 			return nil, errNotPending
@@ -1154,7 +1161,7 @@ func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLoc
 	if p.PriceID > 0 {
 		priceID = &p.PriceID
 	}
-	err = store.G(ctx, tx).Model(&usageLogRow{}).Where("request_id = ?", p.RequestID).Updates(map[string]any{
+	err = g.Model(row).Where("request_id = ?", p.RequestID).Updates(map[string]any{
 		"total_cost": cost.total, "billing_status": StatusBilled, "billing_detail": store.Bytes(jsonOr(detail, "{}")),
 		"matched_tier": trunc(detail.Tier, 100), "expr_hash": exprHash, "billing_mode": p.Mode, "price_id": priceID,
 		"rate_multiplier": p.Rate, "base_cost": cost.base,

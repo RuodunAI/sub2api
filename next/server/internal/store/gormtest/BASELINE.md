@@ -26,6 +26,26 @@ runs shared the server, so ns/op is noisy. Values are medians of 5.
 HotSettle also prices the record with the expression engine; only its
 difference before and after the migration means anything.
 
+## Reading the batch sections
+
+Each batch section records its tree: the functions, statements, tests and
+benchmarks it names are that batch's, and its numbers are not rerun. Where
+a later change replaced what a section names, the section says so; the
+current numbers are in "0.1.290 round 2" and the current statements in
+"What every request runs", at the end. 0.1.290 inlined the single-caller
+query functions that existed for SQL snapshots and dropped the benchmarks
+that timed them next to their pgx form. Those the sections still name:
+
+| Benchmark | Dropped in | The path's benchmark now |
+|---|---|---|
+| `account` HotGroupSnapshot, HotLoadRow | fcc847b62 | none: the group snapshot is cached (30 s), a miss only |
+| `ccgateway` HotSharedAccountType | c53893903 | none: one builder read (`sharedAccountType`), shared-runtime requests only |
+| `gateway` HotSettingsRow, HotStickyRules | 3a06fe721 | none: cached (`settingsTTL`, `rulesTTL`), a miss only |
+| `billing` HotReleasePrecharge | d53ea00a5 | `usage` HotSettlerInsertFree (a free row's release) |
+| `usage` HotStmtSettleLock, HotStmtSettleUpdate | b36dc6677 | `usage` HotSettle |
+| `usage` HotStmtReserveUpdate, HotStmtReserveEntry | b36dc6677 | none: requests a plugin reserves |
+| `usage` HotExecution, HotTaskFind/Begin/Receive/Register | b36dc6677 | `usage` HotExecution and HotTask since 0.1.290 round 2, through the Service methods |
+
 ## Batch 1: the helper history prefix probe
 
 `helperhistory.(*Service).anyPrefix` runs for every gateway request that
@@ -101,8 +121,9 @@ feature policy and request log level through the request cache
 miss and are on GORM. sharedAccountType stayed on pgx under
 `//gormguard:allow-pgx` until batch 5b (batch 2b's form,
 `Model(&model.Account{}).Select("type").Where(...).Take`, took 65 allocs/op
-against 8); it is on GORM now as `Raw(...).Row().Scan`
-(`sharedAccountTypeQuery`):
+against 8); batch 5b put it on GORM as `Raw(...).Row().Scan`
+(`sharedAccountTypeQuery`), and 0.1.290 builds it in sharedAccountType
+(`Model(&model.Account{}).Select("type")`, no benchmark since):
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
@@ -126,11 +147,11 @@ needs a host permission (`hostServer.require`), so for every plugin-backed
 gateway request that calls the host (account credentials, KV, locks,
 prices ...). It stayed on pgx under `//gormguard:allow-pgx` until batch 5b
 (batch 2c's form, `Raw` over the named-parameter `versionRows`, took 60
-allocs/op against 11). It is on GORM now as `Raw(...).Row().Scan`
-(`holdsQuery`) with positional parameters, which spare the map and the
-named-parameter parsing: the key and version follow VersionRows's
-placeholder order (`TestVersionRowsPlaceholderOrder`) and each repeated
-argument is boxed once. Measured on a granted permission with a scope:
+allocs/op against 11). Batch 5b put it on GORM as `Raw(...).Row().Scan`
+of that SQL with positional parameters, which spare the map and the
+named-parameter parsing. 0.1.290 builds it (`holdsQuery`, a `(?) UNION ALL
+(?)` of the two grant tables); its cost and allocation gate are in
+"0.1.290 round 2". Measured on a granted permission with a scope:
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
@@ -398,8 +419,9 @@ lock timeout); the reasoning is in the comments of `settleSQL`,
   (`insertUsageRowSQL`), which allocates less. Both store what the pgx
   VALUES insert stored, column by column (TestInsertBatchMatchesValuesInsert).
 
-Round trips (flushes; TestPrechargeRoundTrips, TestSettleRoundTrips,
-TestInsertBatchOneStatement):
+Round trips (flushes; TestPrechargeRoundTrips, TestSettleRoundTrips, and
+for the usage insert TestInsertBatchOneStatement, TestInsertBatchChunks
+since 0.1.290):
 
 | Path | pgx batch | batch 5a | gorm-5rtt | under the balance lock (gorm-5rtt) |
 |---|---:|---:|---:|---|
@@ -459,10 +481,14 @@ The settings read (`settingValue`), `listRules`,
 `ApplyAccountQuotaObservation` and `ReadAccountQuotas` stayed on pgx under
 `//gormguard:allow-pgx` until batch 5b (batch 4d measured their GORM forms,
 a `model.Setting` `Take`, a `model.StickyRule` `Find` plus the conversion,
-and the same SQL through `store.G`, at 69, 210, 47 and 104 allocs/op). They
-are on GORM now as Raw SQL scanned into local variables (`settingValueQuery`
-and `rulesQuery` with `scanRule`; `quotasAt` with `readQuotaRows`) and
-`Exec` (`applyQuotaObservation`); package store cannot use the models:
+and the same SQL through `store.G`, at 69, 210, 47 and 104 allocs/op). Batch
+5b put them on GORM as Raw SQL scanned into local variables
+(`settingValueQuery` and `rulesQuery` with `scanRule`; `quotasAt` with
+`readQuotaRows`) and `Exec` (`applyQuotaObservation`). 0.1.290 builds them:
+`settingValue` and `listRules` read through the models (no benchmark since;
+the caches reload them once per TTL), `applyQuotaObservation` is an
+`Updates` of a column map on the table (package store cannot use the
+models), 100 allocs/op ("0.1.290 round 2"):
 
 ```sh
 TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable \
@@ -533,7 +559,9 @@ and usage, statement for statement and in the same transaction:
   `insertDone` (CopyFrom): multi-row `Create` of `model.PluginEgressLog`
   with `RETURNING id`, at most 5461 rows (65535 / 12 parameters) per
   statement, several statements in one transaction; a failed write returns
-  no ids, as the batch's implicit transaction had written none;
+  no ids, as the batch's implicit transaction had written none (since
+  0.1.290: ids from `store.NextIDs`, typed rows in `store.InsertChunk`-row
+  INSERTs, see round 2);
 - `webui` `Publish`: the two writes of each file, in file order, in the
   publishing transaction;
 - `account` list page and usage overview (above, batch 2a).
@@ -548,7 +576,7 @@ balance lock when it carries a ledger change (`usage` `insertAtomic`).
 Batch 5b's multi-row `VALUES` insert had a text per event count: pgx's
 statement cache prepares each new text, a Prepare round trip under that
 lock, and two parameters per event capped a call at 32767 events. Several
-events are now `insertEventsSQL`, two array parameters (`unnest ... WITH
+events were `insertEventsSQL` (until gorm-raw, below), two array parameters (`unnest ... WITH
 ORDINALITY ... ORDER BY`, ids in event order) and one text for any count;
 one event keeps the one-row `VALUES` insert (`insertEventSQL`, the batch 5b
 text and arguments), as `insertUsageRowSQL` does for a batch of one.
@@ -605,7 +633,7 @@ TestSQLAccountUsageOverview, TestSQLWriteRules, TestSQLAssetPut):
   statements in the transaction (admin path; the empty ones are skipped).
   TestWriteRulesMatchesSequential compares it with the statements one by
   one, TestWriteRulesConcurrentNoDeadlock fails without the ordered lock.
-- `Publish`: `putAssetsSQL` writes every blob and lists its path in the
+- `Publish` (until gorm-raw, below): `putAssetsSQL` writes every blob and lists its path in the
   build in one statement of arrays, in file order; a file whose path it
   did not return is the immutable collision that fails the publication.
 
@@ -615,19 +643,27 @@ The hand-written statements of `event`, `webui`, `task`, `job` and
 `plugin/**` are GORM builder statements (same rows, locks and results).
 Two of the gorm-5fix choices above are given up for that:
 
-- `event.Publisher.Emit` writes column maps with `Table("events")
-  .CreateInBatches` (1000 rows per INSERT, nothing read back): one
-  statement in the caller's transaction as before, the ids in event order
-  as each `VALUES` row takes the next one in list order. The text again
-  depends on the count, so a connection prepares one text per event count
-  it sees, once (counts are 1 and 2 on the settle path); TestSettleRoundTrips
-  still sees 4 statements. BenchmarkHotEmit (allocs/op, gorm-5fix → gorm-raw,
-  ns/op within noise): 1 event 41 → 121, 2 events 66 → 187, 10 events
-  189 → 725.
+- `event.Publisher.Emit` creates typed rows (`eventRow`, type and
+  payload: no id or default field, so nothing is read back; column maps
+  with `Table("events")` at gorm-raw), one INSERT up to 1000 events and
+  `CreateInBatches` of 1000 past that: one statement in the caller's
+  transaction as before, the ids in event order as each `VALUES` row takes
+  the next one in list order. The text again depends on the count, so a
+  connection prepares one text per event count it sees, once (counts are 1
+  and 2 on the settle path); TestSettleRoundTrips still sees 4 statements.
+  BenchmarkHotEmit (allocs/op, gorm-5fix → gorm-raw's maps → 0.1.290 round
+  2, ns/op within noise): 1 event 41 → 121 → 54, 2 events 66 → 187 → 71,
+  10 events 189 → 725 → 210.
 - `webui` `Publish` writes the blobs (`ON CONFLICT (path) DO NOTHING`),
   reads back the hashes of the build's paths to find the immutable
   collision, then lists the files in the build: 3 statements up to 1000
   files (was 1), at publication only.
+
+The builder costs on two more paths: `plugin/grants` `Holds` (every
+HostService call that needs a permission) is a `(?) UNION ALL (?)` of
+builder queries, 227 allocs/op at first where batch 6's Raw took 54 (142
+since round 2, below); `plugin/egress`'s log inserts had a text per row
+count and column set until round 2.
 
 ## Batch 3a: console authentication (iam)
 
@@ -845,17 +881,103 @@ HotKeyLookup/gorm 141, HotLoadRow/gorm 172, HotSettle 1 026,
 HotPrecharge 468, HotStmtSettleLock/gorm 39, HotGroupSnapshot/gorm 399,
 HotAuthz/catalog 455 allocs/op before and after.
 
+## 0.1.290 round 2: the builder's hot-path cost
+
+The second review of 0.1.290 measured the builder forms against
+bbb031368 (batch 6 merged, the last tree before the builder conversion)
+and the integration head 9e0350847. Round 2 changes:
+
+- `grants.holdsQuery` builds each branch once with the grant's conditions
+  in it and no outer query, the staged-set test an uncorrelated `NOT
+  EXISTS`; BenchmarkHotGrantHolds fails above 150 allocs/op
+  (`holdsAllocs`, testing.AllocsPerRun before the timing).
+- Inserts write typed rows (`TableName`, the written columns only, no
+  default or id field, so no RETURNING; `store.DBNow` for a column set to
+  the database clock) instead of a map with `Table`, which fails GORM's
+  schema parse on every call and formats the map into the discarded
+  error: the user's balance row (`ensureBalanceRow`), the audit row, the
+  synced price, the balance and refresh rows of package store, the
+  CCGateway draft, the job run. The event cursor and the rollout's
+  cleanup rows are `store.InsertSelect`.
+- The settler's update of a settled row and its lock use a model value
+  (`model.UsageLog{}`): through a pointer, GORM copies every assigned
+  value into the model. `usageLogRow` (the insert) and the updates share
+  `model.UsageLog`'s columns, so no name misses the schema
+  (`LookUpField` builds the snake-case name of a miss). The stamped-row
+  callbacks look columns up by name only.
+- Variable-size inserts use `CreateInBatches(&rows, store.InsertChunk)`
+  (100): every full chunk has one text, so a connection prepares at most
+  InsertChunk texts per insert (the full chunk's and one per remainder
+  size; one per batch size before), and a chunk stays far below 65535
+  parameters. The settler's batch is `store.NextIDs` then one INSERT per
+  100 rows (a 200-row batch: 3 statements, where batch 6's `unnest` was
+  1; TestInsertBatchChunks); egress logs are 100-row INSERTs, in a
+  transaction past one chunk, and its domain upsert too (it failed past
+  about 13 000 domains). The event insert stays one `Create` up to 1000
+  events (counts 1 and 2 on the settle path).
+
+```sh
+TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+go test -run '^$' -bench 'HotSettle$|HotSettlerInsertFree|HotSettlerInsertPending|HotExecution|HotTask' -benchmem -benchtime 1000x -count 3 ./internal/usage/
+go test -run '^$' -bench HotSettlerInsertBatch -benchmem -benchtime 100x -count 3 ./internal/usage/
+go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 3 ./internal/billing/ ./internal/apikey/ ./internal/store/
+go test -run '^$' -bench Hot -benchmem -benchtime 2000x -count 3 ./internal/plugin/grants/ ./internal/event/
+```
+
+Recorded 2026-11-16, same machine, the server shared with other test runs
+(ns/op is noise). allocs/op, medians of 3; bbb031368 and 9e0350847 from
+the same day's runs.
+
+| Benchmark | bbb031368 | 9e0350847 | round 2 | round 2 B/op |
+|---|---:|---:|---:|---:|
+| `usage` HotSettle | 1 024 | 1 145 | 1 085 | 70 700 |
+| `usage` HotSettlerInsertFree | 397 | 450 | 451 | 44 850 |
+| `usage` HotSettlerInsertPending | 213 | 252 | 253 | 28 760 |
+| `usage` HotSettlerInsertBatch (200 rows) | 37 104 | 45 800 | 45 807 | 5 210 000 |
+| `billing` HotPrecharge | 468 | 498 | 481 | 27 700 |
+| `apikey` HotKeyLookup/gorm | 141 | 154 | 154 | 10 500 |
+| `plugin/grants` HotGrantHolds/gorm | 54 | 227 | 142 | 15 233 |
+| `store` HotQuotaObservation/gorm | 47 | 100 | 100 | 9 850 |
+| `event` HotEmit/1 | — | 63 | 54 | 4 363 |
+| `event` HotEmit/2 | — | 80 | 71 | 4 868 |
+| `event` HotEmit/10 | — | 219 | 210 | 10 746 |
+
+What stays over bbb031368 is the builder's per-statement cost, not
+avoidable without Raw: a settlement's event `Create` costs about 13
+allocations more than the raw INSERT and its `Updates` about 25 (HotSettle
++61, HotPrecharge +13); `holdsQuery` builds two subqueries and a union
+where the Raw bound one text (+88, and 15 KB against 4.5 KB); the quota
+observation's `Updates` of a column map +53. The settler's batch pays
+for `NextIDs` and the chunked VALUES where `unnest` bound 47 arrays: +8 700
+allocations and about 1.9 MB per 200 rows, on the settler's asynchronous
+path; the 100-row chunks cost no more than 9e0350847's one 200-row
+INSERT (45 800 allocations, 5.69 MB).
+
+The plugin execution and task statements have benchmarks again, through
+the Service methods (BenchmarkHotExecution, BenchmarkHotTask; commit and
+register include their usage row's transaction):
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| `usage` HotExecution/begin | 623 852 | 14 377 | 113 |
+| `usage` HotExecution/observe | 482 747 | 11 992 | 91 |
+| `usage` HotExecution/commit | 1 664 356 | 57 451 | 616 |
+| `usage` HotTask/begin | 410 694 | 9 521 | 105 |
+| `usage` HotTask/receive | 386 062 | 6 360 | 76 |
+| `usage` HotTask/register | 1 817 111 | 75 325 | 815 |
+| `usage` HotTask/find | 1 001 866 | 9 172 | 121 |
+
 ## What every request runs
 
-Read from the code at 06c2f18f. The gateway package itself runs no
+Read from the code at 0.1.290 (06c2f18f before). The gateway package itself runs no
 statement per request; it reaches the database through the services below.
 
 | When | Function | SQL |
 |---|---|---|
 | every request, synchronous | `apikey.(*Service).lookup` ← `Authenticate` ← gateway `call.run` | `lookupQuery`: `SELECT k.id, … FROM api_keys k JOIN users u … JOIN segments s … LEFT JOIN groups g … LEFT JOIN segment_groups sg … WHERE k.key_hash = $1 AND k.deleted_at IS NULL` (not cached, on purpose) |
-| billable request, synchronous | `billing.(*Service).Precharge` → `prechargeTx` ← gateway `call.precharge` | BEGIN; `prechargeSQL` (CTE: `set_config('lock_timeout', '3s', true)` and the `user_balances` row FOR UPDATE, insert `balance_ledger` ON CONFLICT DO NOTHING RETURNING, insert `request_precharges`, update `user_balances`; a pgx batch with SET LOCAL, the balance row insert and the lock as statements of their own until batch 5a, one statement each in batch 5a); a user's first precharge also `prechargeEnsureSQL` and `prechargeSQL` again; `INSERT INTO events`; COMMIT |
+| billable request, synchronous | `billing.(*Service).Precharge` → `prechargeTx` ← gateway `call.precharge` | BEGIN; `prechargeSQL` (CTE: `set_config('lock_timeout', '3s', true)` and the `user_balances` row FOR UPDATE, insert `balance_ledger` ON CONFLICT DO NOTHING RETURNING, insert `request_precharges`, update `user_balances`; a pgx batch with SET LOCAL, the balance row insert and the lock as statements of their own until batch 5a, one statement each in batch 5a); a user's first precharge also `ensurePrechargeBalance` (`INSERT INTO user_balances (user_id) SELECT … WHERE set_config('lock_timeout', …) ON CONFLICT DO NOTHING`) and `prechargeSQL` again; `INSERT INTO events`; COMMIT |
 | billable request, Redis miss only | `billing.(*Service).Balance` ← `CheckBalance` | `SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = $1), 0), COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = $1), 0)` |
-| every request, settler (async) | `usage.(*Service).insertAtomic` ← `insert` ← `process` / `Submit` | BEGIN; `INSERT INTO usage_logs (47 columns) SELECT … FROM unnest($1::varchar[], …) WITH ORDINALITY … ORDER BY ord ON CONFLICT (request_id) DO NOTHING RETURNING id, request_id`, one statement for the batch (`VALUES (…)` for a batch of one; a pgx batch of one INSERT per row until batch 5a, one INSERT per power-of-two chunk in batch 5a); free rows: `releaseSQL` (`ReleasePrechargeTx`) and `INSERT INTO events`; COMMIT |
+| every request, settler (async) | `usage.(*Service).insertAtomic` ← `insert` ← `process` / `Submit` | BEGIN; a batch of one: `INSERT INTO usage_logs (…) VALUES (…) ON CONFLICT (request_id) DO NOTHING RETURNING id`; a larger batch: `store.NextIDs` (`SELECT nextval(…) FROM generate_series(1, n)`), then `INSERT INTO usage_logs (id, …) VALUES (…), … ON CONFLICT (request_id) DO NOTHING` per `store.InsertChunk` (100) rows, and a read of the ids written when a row was skipped (one `unnest` statement from gorm-5rtt to 0.1.290; a pgx batch of one INSERT per row until batch 5a, one INSERT per power-of-two chunk in batch 5a); free rows: `releaseSQL` (`ReleasePrechargeTx`) and `INSERT INTO events`; COMMIT |
 | billable request, settler (async) | `usage.(*Service).settle` → `settleTx` | BEGIN; `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`; `billing.SettleTx`: `settleSQL` (release and charge in one CTE statement; `ensureBalanceSQL`, `releaseSQL`, `applySQL` in a pgx batch until batch 5a, one statement each in batch 5a); `UPDATE usage_logs SET total_cost = …, billing_status = 'billed', … WHERE request_id = $1`; `INSERT INTO events`; COMMIT |
 | async task submission, synchronous (added with batch 4b) | `usage.(*Service).BeginTask`, `ReceiveTask`, `RegisterTask` → `recordTask` ← gateway `tasks.go`, `execute.go` | `INSERT INTO task_submission_receipts`; `UPDATE task_submission_receipts SET state = $2, … response_body = COALESCE($4, response_body)`; in the usage transaction: `SELECT … FROM task_submission_receipts WHERE request_id = $1 AND state = 'received' FOR UPDATE`, `INSERT INTO async_tasks`, `UPDATE pending_settlements SET task_public_id`, `UPDATE task_submission_receipts SET state = 'registered'` |
 | every async task poll, synchronous | `usage.(*Service).FindTask` → `readTask` ← gateway `tasks.go` | `SELECT public_id, … FROM async_tasks WHERE plugin_key = $1 AND kind = $2 AND user_id = $3 AND group_id = $4 AND (public_id = $5 OR …) ORDER BY public_id LIMIT 2` |

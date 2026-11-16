@@ -1,4 +1,0 @@
--- sql
-SELECT "boot_id" FROM "plugin_runtime_nodes" WHERE plugin_key = $1 AND NOT stopped
--- vars
-$1 string "demo"
