@@ -18,7 +18,6 @@ type Permission struct {
 	Description json.RawMessage `gorm:"column:description;default:(-)"`   // jsonb default '{}'::jsonb
 	Source      string          `gorm:"column:source"`                    // character varying(10)
 	PluginKey   *string         `gorm:"column:plugin_key"`                // character varying(30)
-	Sensitive   bool            `gorm:"column:sensitive;default:(-)"`     // boolean default false
 	// active | disabled (owning plugin disabled) | removed (dropped from code or no longer declared by its plugin; grants kept, granting nothing) | staged (declared only by a staged plugin version; grants nothing until that version activates)
 	Status     *string         `gorm:"column:status;default:(-)"`                          // character varying(10) default 'active'::character varying
 	Sort       int             `gorm:"column:sort;default:(-)"`                            // integer default 0

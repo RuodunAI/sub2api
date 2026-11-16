@@ -10,8 +10,6 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
-
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 )
 
 // Tracker records which migrations have been applied for one scope.
@@ -139,7 +137,7 @@ func (CoreTracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, 
 	for _, r := range rows {
 		m[r.ID] = r.Checksum
 	}
-	return supersedeApplied(renameApplied(m))
+	return renameApplied(m), nil
 }
 
 // MigrationChecksum is the checksum schema_migrations records for a
@@ -147,30 +145,6 @@ func (CoreTracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, 
 func MigrationChecksum(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
-}
-
-// supersedeApplied reports a core migration applied with an earlier content
-// that a development build carried (migrations.SupersededBuilds) with its
-// current checksum: a database holding one is not refused as modified, and
-// does not run it again.
-func supersedeApplied(m map[string]string) (map[string]string, error) {
-	builds, err := migrations.SupersededBuilds()
-	if err != nil {
-		return nil, err
-	}
-	for _, files := range builds {
-		for id, body := range files {
-			if m[id] != MigrationChecksum(body) {
-				continue
-			}
-			cur, err := migrations.FS.ReadFile(id)
-			if err != nil {
-				return nil, err
-			}
-			m[id] = MigrationChecksum(cur)
-		}
-	}
-	return m, nil
 }
 
 // renamedCoreMigrations maps the id of a core migration renamed after a build

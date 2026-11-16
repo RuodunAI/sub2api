@@ -263,7 +263,7 @@ func TestManagedAdmissionUsesPersistedBootAndRoles(t *testing.T) {
 func TestManagedSchemaCheckIsReadOnly(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	if err := verifyCoreSchema(ctx, db); err != nil {
+	if err := VerifyCoreSchema(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	_, err := db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id=(SELECT min(id) FROM schema_migrations)`)
@@ -272,7 +272,7 @@ func TestManagedSchemaCheckIsReadOnly(t *testing.T) {
 	}
 	var before, after int
 	_ = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&before)
-	if err = verifyCoreSchema(ctx, db); err == nil {
+	if err = VerifyCoreSchema(ctx, db); err == nil {
 		t.Fatal("missing migration not rejected")
 	}
 	_ = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&after)

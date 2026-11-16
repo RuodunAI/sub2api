@@ -21,6 +21,9 @@ const (
 	// the authz hardening.
 	lastReleased = "0096_usage_base_cost.sql"
 	hardening    = "0097_authz_hardening.sql"
+	// production is the last core migration of 0.1.288, the release 0.1.290
+	// upgrades.
+	production = "0098_plugin_staged_grants.sql"
 )
 
 // hardeningDB is a database as core 0.1.285 leaves it, with the authz data
@@ -322,14 +325,14 @@ func TestAuthzHardeningNeedsOneSuperAdmin(t *testing.T) {
 // every role and access key (own scopes, the redundant ones the migration
 // only audited, role:manage, the super-only permissions taken back), with
 // group scopes written since dropped and audited. Upgrading again then
-// gives the same grants as the first upgrade. The upgrade stops at 0.1.289
-// (0099): 0.1.290's 0100 is one way, and this tree's core sync writes
-// casbin_rule, so what a 0.1.289 sync changed is not part of it.
+// gives the same grants as the first upgrade. The upgrade stops at 0.1.288
+// (0098): 0.1.290's 0100 is one way, and this tree's core sync writes
+// casbin_rule, so what a sync of 0.1.286-0.1.288 changed is not part of it.
 func TestAuthzHardeningRollback(t *testing.T) {
 	h := newHardeningDB(t)
 	schema, grants, keys := h.schema(), h.grants(), h.accessKeys()
 
-	require.NoError(t, h.migrateThrough(beforeCasbin))
+	require.NoError(t, h.migrateThrough(production))
 	upgraded := h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater")
 	// Written after the upgrade: a group scope, which 0.1.285 cannot express.
 	h.exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope)
@@ -342,8 +345,6 @@ func TestAuthzHardeningRollback(t *testing.T) {
         VALUES ('stg', '1.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved'), ('stg', '2.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved')`)
 	h.exec(`INSERT INTO plugin_staged_grants (plugin_key, version, permission, status, manifest_hash) VALUES ('stg', '2.0.0', 'lock', 'granted', 'h')`)
 
-	// The upgrade went on through 0099: 0.1.289 is rolled back first.
-	require.NoError(t, h.down("0.1.289-plugin-perm-down.sql"))
 	require.NoError(t, h.down("0.1.286-authz-down.sql"))
 
 	require.Equal(t, schema, h.schema())
@@ -358,70 +359,8 @@ func TestAuthzHardeningRollback(t *testing.T) {
 
 	require.ErrorContains(t, h.down("0.1.286-authz-down.sql"), "nothing to roll back")
 
-	require.NoError(t, h.migrateThrough(beforeCasbin))
+	require.NoError(t, h.migrateThrough(production))
 	require.Equal(t, upgraded, h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater"))
-}
-
-// The 0.1.289 rollback script puts the database back in the shape 0.1.288
-// runs on: the schema of a database migrated through 0098, without the
-// plugin permissions no longer declared (0.1.288 would make them active
-// again) and the scoped grants of plugin permissions (0.1.288 cannot parse
-// them), every grant that goes audited. Core scoped grants and the declared
-// plugin permissions with their unscoped grants stay; upgrading again works.
-func TestPluginPermissionMetaRollback(t *testing.T) {
-	h := &hardeningDB{t: t, db: testutil.DBThrough(t, "0098_plugin_staged_grants.sql"), ctx: context.Background()}
-	h.exec(`
-INSERT INTO roles (key, name) VALUES ('editor', '{}'), ('viewer', '{}');
-INSERT INTO plugins (key, name, status, active_version, installed_at) VALUES ('pm', '{}', 'enabled', '1.0.0', now() - interval '1 hour');
-INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
-    ('account:read', 'account', '{}', 'core', NULL), ('plugin.pm:flow:manage', 'plugin.pm', '{}', 'plugin', 'pm'), ('plugin.pm:old', 'plugin.pm', '{}', 'plugin', 'pm'),
-    ('plugin.pm:purge', 'plugin.pm', '{}', 'plugin', 'pm'), ('plugin.pm:next', 'plugin.pm', '{}', 'plugin', 'pm')`)
-	const statusComment = `SELECT COALESCE(col_description(attrelid, attnum), '') FROM pg_attribute WHERE attrelid = 'permissions'::regclass AND attname = 'status'`
-	schema, comment := h.schema(), h.text(statusComment)
-	require.NoError(t, h.migrateThrough(beforeCasbin))
-
-	// What 0.1.289 writes: a key its plugin no longer declares, kept with its
-	// grants, a key a version not activated yet declares (staged), a plugin scope with a resource longer than 0.1.288 allows, and
-	// withheld role grants: scoped, critical, of every row, and some
-	// reviewed already.
-	h.exec(`
-UPDATE permissions SET status = 'removed' WHERE key = 'plugin.pm:old';
-UPDATE permissions SET status = 'staged' WHERE key = 'plugin.pm:next';
-UPDATE permissions SET scope_type = 'plugin:workflowdefinition', risk = 'sensitive' WHERE key = 'plugin.pm:flow:manage';
-UPDATE permissions SET risk = 'critical' WHERE key = 'plugin.pm:purge';
-INSERT INTO audit_logs (user_id, action, target_type, target_id, detail) VALUES
-    (NULL, 'plugin.consent.auto', 'plugin', 'pm', '{"version": "1.0.0", "pending": [{"permission": "plugin.pm:purge", "role": "viewer", "scope": ""}]}'),
-    (NULL, 'plugin.role_grants.confirm', 'plugin', 'pm', '{"version": "1.0.0", "grants": []}'),
-    (NULL, 'plugin.consent.auto', 'plugin', 'pm', '{"version": "1.0.1", "pending": [
-        {"permission": "plugin.pm:flow:manage", "role": "editor", "scope": "flow/3"},
-        {"permission": "plugin.pm:purge", "role": "editor", "scope": ""},
-        {"permission": "plugin.pm:flow:manage", "role": "viewer", "scope": ""},
-        {"permission": "plugin.pm:old", "role": "viewer", "scope": "flow/1"}]}');
-INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
-WHERE r.key = 'editor' AND p.key IN ('plugin.pm:flow:manage', 'plugin.pm:old', 'plugin.pm:next');
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, s.scope FROM roles r, permissions p
-JOIN (VALUES ('account:read', 'own'), ('plugin.pm:flow:manage', 'flow/3'), ('plugin.pm:old', 'flow/1')) s(key, scope) ON s.key = p.key
-WHERE r.key = 'editor'`)
-	version := h.text(`SELECT version::text FROM authz_meta`)
-
-	require.NoError(t, h.down("0.1.289-plugin-perm-down.sql"))
-
-	require.Equal(t, schema, h.schema())
-	require.Equal(t, comment, h.text(statusComment))
-	require.Equal(t, "editor account:read:own, editor plugin.pm:flow:manage", h.grants())
-	require.Equal(t, "account:read=, plugin.pm:flow:manage=, plugin.pm:purge=", h.text(`SELECT string_agg(key || '=' || scope_type, ', ' ORDER BY key) FROM permissions`))
-	require.Equal(t, "plugin.pm:flow:manage:flow/3, plugin.pm:next, plugin.pm:old, plugin.pm:old:flow/1", h.text(`SELECT string_agg(detail->>'dropped', ', ' ORDER BY detail->>'dropped')
-        FROM audit_logs a JOIN roles r ON r.id = a.target_id::bigint
-        WHERE a.user_id IS NULL AND a.action = 'authz.grant.migrate' AND a.detail->>'via' = 'rollback 0.1.289' AND r.key = 'editor'`))
-	require.Equal(t, version, h.text(`SELECT (version - 1)::text FROM authz_meta`), "the version moves once")
-	// 0.1.288 would confirm the scoped and the critical one wrong: rejected.
-	require.JSONEq(t, `[{"permission": "plugin.pm:purge", "role": "editor", "scope": "", "risk": "critical"},
-		{"permission": "plugin.pm:flow:manage", "role": "editor", "scope": "flow/3", "risk": "sensitive"}]`,
-		h.text(`SELECT string_agg(detail->>'grants', '') FROM audit_logs
-        WHERE user_id IS NULL AND action = 'plugin.role_grants.reject' AND target_id = 'pm' AND detail->>'via' = 'rollback 0.1.289'`))
-
-	require.ErrorContains(t, h.down("0.1.289-plugin-perm-down.sql"), "nothing to roll back")
-	require.NoError(t, h.migrateThrough(beforeCasbin))
 }
 
 // filterGrants keeps the grants of got whose permission appears in want: the

@@ -77,12 +77,11 @@ func TestCasbinRuleColumnWidths(t *testing.T) {
 	require.Equal(t, "g "+casbinrule.UserSub(root)+" r:"+rk+", p r:"+rk+" "+pk+" "+sc, h.policy(rk))
 }
 
-// An upgrade: a database through 0099 (as develop's 0.1.289 builds left
-// it) gets the rows of what it holds, grants of removed, disabled and
-// staged permissions and soft-deleted users included, a grant held both
-// for every row and as a scope * row once; the role tables and 0097's
-// one-holder trigger go; the version moves once; a second run changes
-// nothing.
+// An upgrade: a database through 0099 gets the rows of what it holds,
+// grants of removed, disabled and staged permissions and soft-deleted users
+// included, a grant held both for every row and as a scope * row once; the
+// role tables, 0097's one-holder trigger and permissions.sensitive go; the
+// version moves once; a second run changes nothing.
 func TestCasbinRuleMigration(t *testing.T) {
 	h := &hardeningDB{t: t, db: testutil.DBThrough(t, beforeCasbin), ctx: context.Background()}
 	h.exec(`
@@ -111,7 +110,8 @@ INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u JOIN ro
 	require.Equal(t, want, h.policy())
 	require.Equal(t, "", h.text(`SELECT concat_ws(' ', to_regclass('role_permissions'), to_regclass('role_permission_scopes'), to_regclass('user_roles'),
         to_regprocedure('user_roles_one_superuser()'))`), "the role tables and their trigger function are gone")
-	require.Equal(t, "", h.text(`SELECT COALESCE(string_agg(proname, ', '), '') FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'authz_casbin%'`))
+	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'permissions' AND column_name = 'sensitive'`), "permissions.sensitive is left")
 	require.Equal(t, version, h.text(`SELECT (version - 1)::text FROM authz_meta`), "the version moves once")
 
 	migrated := h.text(`SELECT version::text FROM authz_meta`)
@@ -197,7 +197,7 @@ func TestCasbinRuleSeveralSuperAdmins(t *testing.T) {
 		`INSERT INTO user_roles (user_id, role_id) SELECT u, r.id FROM unnest($1::bigint[]) u, roles r WHERE r.key = 'super_admin'`, []int64{a, b})
 	err := h.migrate()
 	require.ErrorContains(t, err, fmt.Sprintf("several super admins: user ids %d, %d", a, b))
-	require.ErrorContains(t, err, `hint: keep one with "sub2api admin recover-superadmin --email`)
+	require.ErrorContains(t, err, `hint: keep one with the 0.1.288 binary: "sub2api admin recover-superadmin --email`)
 	require.Equal(t, "false true", h.text(`SELECT (to_regclass('casbin_rule') IS NOT NULL)::text || ' ' || (to_regclass('user_roles') IS NOT NULL)::text`), "the migration rolled back")
 }
 

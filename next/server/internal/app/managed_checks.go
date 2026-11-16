@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"slices"
 	"sort"
 	"strings"
 
@@ -91,9 +90,12 @@ func validateMigrationPermit(inventory []coreMigration, applied map[string]strin
 		}
 		return fmt.Errorf("non-bootstrap migration requires expected_schema_before")
 	}
-	before, err := sourcePrefix(inventory, p.ExpectedSchemaBefore)
-	if err != nil {
-		return err
+	before := -1
+	for i := range len(inventory) + 1 {
+		if inventoryContract(inventory[:i]) == p.ExpectedSchemaBefore {
+			before = i
+			break
+		}
 	}
 	if before < 0 {
 		return fmt.Errorf("approved source schema is not a compatible prefix of embedded migrations")
@@ -102,37 +104,6 @@ func validateMigrationPermit(inventory []coreMigration, applied map[string]strin
 		return fmt.Errorf("database schema is older than the approved source schema")
 	}
 	return nil
-}
-
-// sourcePrefix returns how many migrations of inventory the source schema
-// contract covers, or -1. The contract is a prefix of inventory as embedded,
-// or as a development build that applied superseded contents of some of them
-// embedded it (migrations.SupersededBuilds): the gateway hands over that
-// build's own contract as the source, and the database it left is accepted
-// (store.CoreTracker).
-func sourcePrefix(inventory []coreMigration, contract string) (int, error) {
-	builds, err := migrations.SupersededBuilds()
-	if err != nil {
-		return -1, err
-	}
-	variants := [][]coreMigration{inventory}
-	for _, files := range builds {
-		v := slices.Clone(inventory)
-		for i := range v {
-			if body, ok := files[v[i].name]; ok {
-				v[i].body = body
-			}
-		}
-		variants = append(variants, v)
-	}
-	for _, v := range variants {
-		for i := range len(v) + 1 {
-			if inventoryContract(v[:i]) == contract {
-				return i, nil
-			}
-		}
-	}
-	return -1, nil
 }
 
 type permittedCoreTracker struct {
@@ -163,7 +134,7 @@ func prepareCoreSchema(ctx context.Context, db *store.DB, p runtimecontract.Prep
 		return nil, fmt.Errorf("target schema differs from embedded migrations")
 	}
 	if !p.AllowMigration {
-		return nil, verifyCoreSchema(ctx, db)
+		return nil, VerifyCoreSchema(ctx, db)
 	}
 	applied, err := (store.CoreTracker{}).Applied(ctx, db.Gorm)
 	if err != nil {
@@ -180,7 +151,7 @@ func prepareCoreSchema(ctx context.Context, db *store.DB, p runtimecontract.Prep
 	if err != nil {
 		return names, err
 	}
-	return names, verifyCoreSchema(ctx, db)
+	return names, VerifyCoreSchema(ctx, db)
 }
 
 // SchemaContract identifies the exact embedded migration inventory. It is
@@ -193,10 +164,11 @@ func SchemaContract() (string, error) {
 	return inventoryContract(inventory), nil
 }
 
-// verifyCoreSchema never creates a tracker or runs SQL migrations. A prepared
-// candidate requires exactly its known migrations. Once a maintenance upgrade
-// changes the database, an older binary cannot safely infer compatibility.
-func verifyCoreSchema(ctx context.Context, db *store.DB) error {
+// VerifyCoreSchema fails unless the database holds exactly this core's
+// migrations; it never creates a tracker or runs SQL migrations. A prepared
+// candidate and the server CLI need it. Once a maintenance upgrade changes
+// the database, an older binary cannot safely infer compatibility.
+func VerifyCoreSchema(ctx context.Context, db *store.DB) error {
 	applied, err := (store.CoreTracker{}).Applied(ctx, db.Gorm)
 	if err != nil {
 		return err

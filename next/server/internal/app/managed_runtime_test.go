@@ -173,7 +173,7 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 		t.Fatalf("prepare: %d %s %v", code, b, err)
 	}
 	s := waitStatus("prepared")
-	if err = verifyCoreSchema(ctx, db); err != nil {
+	if err = VerifyCoreSchema(ctx, db); err != nil {
 		t.Fatalf("embedded schema not prepared: %v", err)
 	}
 	if s.Ready {

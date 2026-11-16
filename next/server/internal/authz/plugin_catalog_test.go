@@ -466,16 +466,15 @@ func TestSyncPluginScopedGrants(t *testing.T) {
 		t.Fatalf("audits of the own grant: %d", n)
 	}
 	var risk, scopeType, resource, group, defaults string
-	var sensitive bool
 	var groupSort int
 	var requires []string
-	if err := db.SQL.QueryRowContext(ctx, `SELECT risk, sensitive, scope_type, scope->>'resource', group_key, group_sort, requires, defaults::text
-FROM permissions WHERE key = $1`, key).Scan(&risk, &sensitive, &scopeType, &resource, &group, &groupSort, &requires, &defaults); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT risk, scope_type, scope->>'resource', group_key, group_sort, requires, defaults::text
+FROM permissions WHERE key = $1`, key).Scan(&risk, &scopeType, &resource, &group, &groupSort, &requires, &defaults); err != nil {
 		t.Fatal(err)
 	}
-	if risk != manifest.RiskSensitive || !sensitive || scopeType != "plugin:flow" || resource != "flow" || group != "flow" || groupSort != 10 ||
+	if risk != manifest.RiskSensitive || scopeType != "plugin:flow" || resource != "flow" || group != "flow" || groupSort != 10 ||
 		!slices.Equal(requires, []string{"plugin.mod:flow:read"}) || defaults != `{"operator": ["own"]}` {
-		t.Fatalf("stored %s %v %s %s %s %d %v %s", risk, sensitive, scopeType, resource, group, groupSort, requires, defaults)
+		t.Fatalf("stored %s %s %s %s %d %v %s", risk, scopeType, resource, group, groupSort, requires, defaults)
 	}
 
 	enum := &manifest.PermissionScope{Resource: manifest.ScopeValueResource, Values: []manifest.ScopeValue{{Key: "input"}, {Key: "output"}}}

@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
@@ -170,15 +169,10 @@ type authzChange struct {
 	Users []int64 `json:"u,omitempty"`
 }
 
-// parseChange reads an authz:changed payload: a change, or a bare version
-// (a change of everything).
+// parseChange reads an authz:changed payload; false when it is not one.
 func parseChange(payload []byte) (authzChange, bool) {
 	var c authzChange
-	if json.Unmarshal(payload, &c) == nil && c.Version > 0 {
-		return c, true
-	}
-	v, err := strconv.ParseInt(string(payload), 10, 64)
-	return authzChange{Version: v}, err == nil
+	return c, json.Unmarshal(payload, &c) == nil && c.Version > 0
 }
 
 // Bump increments the authz version inside tx, for a write of the roles or
@@ -187,8 +181,7 @@ func parseChange(payload []byte) (authzChange, bool) {
 // lock, serializing all authz mutations. Holding the lock, v-1 is the
 // latest committed version, so entries this node cached before it are
 // dropped: checks made inside tx never trust a cache that missed a
-// broadcast. It works on a database before 0100 (policy_version), as the
-// legacy super admin transfer needs.
+// broadcast.
 func (s *Service) Bump(ctx context.Context, tx *gorm.DB, users ...int64) (int64, error) {
 	return s.bump(ctx, tx, false, users)
 }
@@ -217,8 +210,7 @@ func (s *Service) bump(ctx context.Context, tx *gorm.DB, policy bool, users []in
 
 // bumpVersions increments the authz version and, for a policy write, the
 // policy version, locking their row, and returns them: the policy version
-// is 0 when it stays (a user write, which never names the column, so that
-// it runs on a database before 0100 too).
+// is 0 when it stays (a user write).
 func bumpVersions(db *gorm.DB, policy bool) (model.AuthzMeta, error) {
 	set, returning := map[string]any{"version": gorm.Expr("version + 1")}, []clause.Column{{Name: "version"}}
 	if policy {

@@ -14,9 +14,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestTransferSuperAdminHTTP(t *testing.T) {
@@ -100,8 +97,7 @@ func TestTransferSuperAdminHTTP(t *testing.T) {
 }
 
 // RecoverSuperAdmin leaves the target the only holder from any start: no
-// holder or one (casbin_rule_one_superuser allows no more; several are
-// TestRecoverSuperAdminBeforeCasbinRule's).
+// holder or one (casbin_rule_one_superuser allows no more).
 func TestRecoverSuperAdmin(t *testing.T) {
 	for _, holders := range []int{0, 1} {
 		t.Run(strconv.Itoa(holders), func(t *testing.T) {
@@ -219,57 +215,4 @@ func mustCreateUser(t *testing.T, s *Service, email string) int64 {
 		t.Fatal(err)
 	}
 	return u.ID
-}
-
-// On a 0.1.285 database with two super admins 0097 stops the upgrade and
-// asks for the CLI, which runs before the migrations reach casbin_rule: it
-// makes the user the only holder (the other an admin), refusing a disabled
-// user and the resets until the core has migrated; the migrations then go
-// through, casbin_rule naming the one holder.
-func TestRecoverSuperAdminBeforeCasbinRule(t *testing.T) {
-	e := setupAdmin(t) // its configuration
-	db := testutil.DBThrough(t, "0096_usage_base_cost.sql")
-	ctx := audit.WithSource(context.Background(), "cli")
-	_, err := db.SQL.ExecContext(ctx, `
-INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{}', true, true), ('admin', '{}', true, false), ('user', '{}', true, false);
-INSERT INTO users (email, password_hash, status) VALUES ('a@x', '', 'active'), ('b@x', '', 'active'), ('c@x', '', 'disabled');
-INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE r.key = 'super_admin' AND u.email IN ('a@x', 'b@x')`)
-	require.NoError(t, err)
-	migrate := func() error {
-		_, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
-		return err
-	}
-	require.ErrorContains(t, migrate(), "several super admins")
-
-	cli := New(Deps{DB: db, Config: e.cfg, Authz: authz.New(authz.Deps{DB: db})}) // as cmd/sub2api/admin.go
-	for _, c := range []struct {
-		email string
-		opts  RecoverOptions
-	}{{"a@x", RecoverOptions{ResetPassword: true}}, {"a@x", RecoverOptions{ResetTwoFactor: true}}, {"c@x", RecoverOptions{}}} {
-		_, err := cli.RecoverSuperAdmin(ctx, c.email, c.opts)
-		require.True(t, isCode(err, "conflict"), "%s %+v: %v", c.email, c.opts, err)
-	}
-	_, err = cli.RecoverSuperAdmin(ctx, "a@x", RecoverOptions{})
-	require.NoError(t, err)
-
-	require.NoError(t, migrate())
-	id := func(email string) (v int64) {
-		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT id FROM users WHERE email = $1`, email).Scan(&v))
-		return v
-	}
-	require.Equal(t, []string{authz.RoleSuperAdmin}, testutil.RoleKeys(t, db, id("a@x")))
-	require.Equal(t, []string{authz.RoleAdmin}, testutil.RoleKeys(t, db, id("b@x")))
-
-	// Past 0100 a stray user_roles table (a single-table restore) changes
-	// nothing: the command recovers through casbin_rule, resets included,
-	// and leaves the stray table alone.
-	_, err = db.SQL.ExecContext(ctx, `CREATE TABLE public.user_roles (user_id bigint, role_id bigint)`)
-	require.NoError(t, err)
-	_, err = cli.RecoverSuperAdmin(ctx, "b@x", RecoverOptions{ResetPassword: true})
-	require.NoError(t, err)
-	require.Contains(t, testutil.RoleKeys(t, db, id("b@x")), authz.RoleSuperAdmin)
-	require.Equal(t, []string{authz.RoleAdmin}, testutil.RoleKeys(t, db, id("a@x")))
-	var stray int
-	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM public.user_roles`).Scan(&stray))
-	require.Zero(t, stray)
 }

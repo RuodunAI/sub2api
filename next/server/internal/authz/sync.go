@@ -229,7 +229,7 @@ func syncPermissions(db *gorm.DB, defs []core.PermissionDef) (inserted []string,
 		}
 		changed = true
 		if err := db.Model(&model.Permission{}).Where("id = ?", have[i].ID).Updates(map[string]any{
-			"module": want.Module, "label": want.Label, "description": want.Description, "risk": want.Risk, "sensitive": want.Sensitive,
+			"module": want.Module, "label": want.Label, "description": want.Description, "risk": want.Risk,
 			"requires": want.Requires, "status": want.Status, "sort": want.Sort, "scope_type": want.ScopeType,
 		}).Error; err != nil {
 			return nil, false, err
@@ -258,7 +258,7 @@ func corePermissionRow(d core.PermissionDef) (model.Permission, error) {
 		return model.Permission{}, err
 	}
 	risk, status := d.Risk, "active"
-	return model.Permission{Key: d.Key, Module: d.Module, Label: label, Description: desc, Source: "core", Risk: &risk, Sensitive: risk != "low",
+	return model.Permission{Key: d.Key, Module: d.Module, Label: label, Description: desc, Source: "core", Risk: &risk,
 		Requires: append(store.Strings{}, d.Requires...), Status: &status, Sort: d.Sort, ScopeType: d.ScopeType}, nil
 }
 

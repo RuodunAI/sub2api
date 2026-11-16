@@ -181,7 +181,7 @@ func TestLegacyProxyRealIPCompatibilityRequiresExactIdentity(t *testing.T) {
 
 // replayDB is a fresh database for the tests that forget applied
 // migrations and run them again: through 0099, since 0100 drops the role
-// tables the migrations before it write. None of those runs again after
+// tables and permissions.sensitive the migrations before it write. None of those runs again after
 // 0100 outside a test: a migration is recorded in its own transaction.
 func replayDB(t *testing.T) *store.DB {
 	t.Helper()
@@ -438,16 +438,16 @@ func TestPluginPermissionMetaMigration(t *testing.T) {
 		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(key || '=' || risk, ' ' ORDER BY key) FROM permissions`).Scan(&v))
 		return v
 	}
-	migrate := func() []string {
+	migrate := func() []string { // 0099 alone: 0100 drops sensitive
 		t.Helper()
-		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		done, err := store.Migrate(ctx, db, testutil.MigrationsThrough(t, beforeCasbin), store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 		require.NoError(t, err)
 		return done
 	}
 	const forget = `DELETE FROM schema_migrations WHERE id='0099_plugin_permission_meta.sql'`
 	require.NoError(t, exec(`INSERT INTO permissions (key, module, label, source, sensitive) VALUES
 		('a:read','a','{}','core',false), ('a:secret','a','{}','core',true), ('b:secret','b','{}','core',true)`))
-	require.Equal(t, migrationsAfter(t, "0098_plugin_staged_grants.sql"), migrate())
+	require.Equal(t, []string{beforeCasbin}, migrate())
 	require.Equal(t, "a:read=low a:secret=sensitive b:secret=sensitive", risks())
 
 	require.NoError(t, exec(`UPDATE permissions SET risk = 'critical' WHERE key = 'a:secret';
@@ -457,9 +457,9 @@ func TestPluginPermissionMetaMigration(t *testing.T) {
 	require.Error(t, exec(`UPDATE permissions SET risk = 'high' WHERE key = 'a:read'`))
 }
 
-// 0101 drops the JWT session tables and the session.issue switch (CONTRACTS
-// §100.6), leaving every other setting, and a rerun changes nothing: what
-// the release runbook checks (deploy/rollback/0.1.290-session-down.md).
+// 0101 drops the JWT session tables (CONTRACTS §100.6), and a rerun
+// changes nothing: what the release runbook checks
+// (deploy/rollback/0.1.290-session-down.md).
 func TestMigration0101DropsJWTSessions(t *testing.T) {
 	const id = "0101_drop_jwt_sessions.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
@@ -470,30 +470,20 @@ func TestMigration0101DropsJWTSessions(t *testing.T) {
 		require.NoError(t, err)
 		return done
 	}
-	state := func() (tables, settings string) {
+	tables := func() (tables string) {
 		t.Helper()
 		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT concat_ws(' ', to_regclass('refresh_tokens'), to_regclass('login_sessions'), to_regclass('auth_flows'))`).Scan(&tables))
-		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT coalesce(string_agg(key, ' ' ORDER BY key), '') FROM settings WHERE key IN ('session', 'kept')`).Scan(&settings))
-		return tables, settings
+		return tables
 	}
-	_, err := db.SQL.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('session', '{"issue":"s2s"}'), ('kept', '{}')
-		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`)
-	require.NoError(t, err)
-	tables, settings := state()
-	require.Equal(t, "refresh_tokens login_sessions auth_flows", tables)
-	require.Equal(t, "kept session", settings)
+	require.Equal(t, "refresh_tokens login_sessions auth_flows", tables())
 
 	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
-	tables, settings = state()
-	require.Empty(t, tables, "tables left")
-	require.Equal(t, "kept", settings)
+	require.Empty(t, tables(), "tables left")
 
-	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = $1`, id)
+	_, err := db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = $1`, id)
 	require.NoError(t, err)
 	require.Equal(t, []string{id}, migrate())
-	tables, settings = state()
-	require.Empty(t, tables, "a rerun recreated tables")
-	require.Equal(t, "kept", settings)
+	require.Empty(t, tables(), "a rerun recreated tables")
 }
 
 // 0064 and 0068 sum an account's usage (CONTRACTS §73): existing rows are

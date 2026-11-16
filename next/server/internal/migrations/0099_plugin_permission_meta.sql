@@ -2,12 +2,8 @@
 -- replace the sensitive flag, plugin permission groups, soft dependencies,
 -- scopes and the manifest's suggested grants, kept per permission. A plugin
 -- permission no longer declared becomes status 'removed' (its grants stay and
--- grant nothing) instead of being deleted. Reversed by
--- deploy/rollback/0.1.289-plugin-perm-down.sql.
---
--- permissions.sensitive stays for one release so the previous core still
--- runs on this schema: new code writes it as risk <> 'low' and never reads
--- it. The next migration drops it.
+-- grant nothing) instead of being deleted. risk takes over from
+-- permissions.sensitive, which 0100 drops.
 --
 -- Safe to run again: every change is IF NOT EXISTS or converges, and the
 -- risk backfill only touches rows still at the default.

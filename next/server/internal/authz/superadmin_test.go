@@ -13,19 +13,15 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
+// transfer runs TransferSuperAdmin in a transaction, as iam does, and
+// announces the version.
 func transfer(s *Service, actor, target int64) ([]int64, error) {
-	return transferWith(s, s.TransferSuperAdmin, actor, target)
-}
-
-// transferWith runs move (TransferSuperAdmin or its Legacy form) in a
-// transaction, as iam does, and announces the version.
-func transferWith(s *Service, move func(context.Context, *gorm.DB, int64, int64) (int64, []int64, error), actor, target int64) ([]int64, error) {
 	ctx := context.Background()
 	var v int64
 	var demoted []int64
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
-		v, demoted, err = move(ctx, tx, actor, target)
+		v, demoted, err = s.TransferSuperAdmin(ctx, tx, actor, target)
 		return err
 	})
 	if err == nil {
@@ -36,15 +32,12 @@ func transferWith(s *Service, move func(context.Context, *gorm.DB, int64, int64)
 
 // superAdminsNow lists the holders of the super admin role, as the
 // transfer reads them.
-func superAdminsNow(t *testing.T, s *Service) []int64 { return superAdminsIn(t, s, policyHolders{}) }
-
-// superAdminsIn lists the holders of the super admin role in h.
-func superAdminsIn(t *testing.T, s *Service, h holderStore) []int64 {
+func superAdminsNow(t *testing.T, s *Service) []int64 {
 	t.Helper()
 	var ids []int64
 	err := s.db.Tx(context.Background(), func(tx *gorm.DB) error {
 		var err error
-		ids, err = h.lock(tx)
+		ids, err = casbinrule.LockMembers(tx, RoleSuperAdmin)
 		return err
 	})
 	if err != nil {
@@ -150,64 +143,6 @@ func TestTransferSuperAdminRepairs(t *testing.T) {
 	var via string
 	if err := db.SQL.QueryRowContext(ctx, `SELECT detail->>'via' FROM audit_logs WHERE action = 'superadmin.transfer' AND target_id = $1`, strconv.FormatInt(c, 10)).Scan(&via); err != nil || via != "cli" {
 		t.Fatalf("via %q %v", via, err)
-	}
-}
-
-// The console's transfer (and the CLI's on a migrated database) writes
-// casbin_rule whatever else the database holds: a table named user_roles
-// left after 0100 (a restore of one table, a stray CREATE) is no store.
-func TestTransferSuperAdminIgnoresStrayUserRoles(t *testing.T) {
-	t.Parallel()
-	db := testutil.DB(t)
-	s := newService(t, db, newMemBus(), nil)
-	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
-	target := addUser(t, s, "target@x.com", RoleUser)
-	if _, err := db.SQL.ExecContext(context.Background(), `CREATE TABLE user_roles (user_id bigint, role_id bigint)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := transfer(s, root, target); err != nil || !slices.Equal(superAdminsNow(t, s), []int64{target}) {
-		t.Fatalf("holders %v, %v", superAdminsNow(t, s), err)
-	}
-}
-
-// On the schema before migration 0100 (user_roles, whose 0097 check of one
-// holder points the operator at the CLI), the CLI repairs several holders:
-// every other one becomes an admin, a deleted one only loses the role.
-func TestTransferSuperAdminRepairsLegacy(t *testing.T) {
-	t.Parallel()
-	db := testutil.DBThrough(t, "0099_plugin_permission_meta.sql")
-	s := New(Deps{DB: db})
-	ctx := context.Background()
-	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name, superuser) VALUES ($1, '{}', true), ($2, '{}', false), ($3, '{}', false)`,
-		RoleSuperAdmin, RoleAdmin, RoleUser); err != nil {
-		t.Fatal(err)
-	}
-	users := map[string]int64{}
-	for _, name := range []string{"a", "b", "c", "d"} {
-		users[name] = testutil.InsertUser(t, db, name+"@x.com")
-	}
-	a, b, d := users["a"], users["b"], users["d"]
-	testutil.ExecWithoutTrigger(t, db, "user_roles", "user_roles_one_superuser",
-		`INSERT INTO user_roles (user_id, role_id) SELECT u, r.id FROM unnest($1::bigint[]) u, roles r WHERE r.key = $2`, []int64{a, b, d}, RoleSuperAdmin)
-	if _, err := db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, d); err != nil {
-		t.Fatal(err)
-	}
-	demoted, err := transferWith(s, s.TransferSuperAdminLegacy, 0, b)
-	if holders := superAdminsIn(t, s, legacyHolders{}); err != nil || !slices.Equal(demoted, []int64{a, d}) || !slices.Equal(holders, []int64{b}) {
-		t.Fatalf("several holders: demoted %v, holders %v, %v", demoted, holders, err)
-	}
-	roles := func(uid int64) []string {
-		var keys []string
-		if err := db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`, uid).Scan(&keys); err != nil {
-			t.Fatal(err)
-		}
-		return keys
-	}
-	if got := roles(a); !slices.Equal(got, []string{RoleAdmin}) {
-		t.Fatalf("demoted holder roles: %v", got)
-	}
-	if got := roles(d); len(got) != 0 {
-		t.Fatalf("deleted holder roles: %v", got)
 	}
 }
 

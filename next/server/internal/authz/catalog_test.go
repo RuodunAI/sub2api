@@ -150,7 +150,7 @@ func TestCatalogFlaggedSets(t *testing.T) {
 
 // A core permission's risk: superOnly ones are critical, other sensitive
 // ones sensitive, the rest low; the core sync stores it with the soft
-// dependencies, and sensitive as risk <> 'low' for an older core.
+// dependencies.
 func TestCatalogRisk(t *testing.T) {
 	t.Parallel()
 	for _, m := range slices.Concat(coreModules, []coreModule{selfModule}) {
@@ -170,22 +170,20 @@ func TestCatalogRisk(t *testing.T) {
 	db := testutil.DB(t)
 	newService(t, db, newMemBus(), nil)
 	for key, want := range map[string]struct {
-		risk      string
-		sensitive bool
-		requires  []string
+		risk     string
+		requires []string
 	}{
-		"balance:adjust:any": {manifest.RiskCritical, true, []string{"balance:adjust"}},
-		"role:define":        {manifest.RiskSensitive, true, []string{"role:read"}},
-		"user:read":          {manifest.RiskLow, false, []string{}},
+		"balance:adjust:any": {manifest.RiskCritical, []string{"balance:adjust"}},
+		"role:define":        {manifest.RiskSensitive, []string{"role:read"}},
+		"user:read":          {manifest.RiskLow, []string{}},
 	} {
 		var risk string
-		var sensitive bool
 		var requires []string
-		if err := db.SQL.QueryRowContext(context.Background(), `SELECT risk, sensitive, requires FROM permissions WHERE key = $1`, key).Scan(&risk, &sensitive, &requires); err != nil {
+		if err := db.SQL.QueryRowContext(context.Background(), `SELECT risk, requires FROM permissions WHERE key = $1`, key).Scan(&risk, &requires); err != nil {
 			t.Fatal(err)
 		}
-		if risk != want.risk || sensitive != want.sensitive || !slices.Equal(requires, want.requires) {
-			t.Errorf("%s stored %s %v %v", key, risk, sensitive, requires)
+		if risk != want.risk || !slices.Equal(requires, want.requires) {
+			t.Errorf("%s stored %s %v", key, risk, requires)
 		}
 	}
 }

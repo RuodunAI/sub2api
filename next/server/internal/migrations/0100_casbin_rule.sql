@@ -2,7 +2,7 @@
 -- layout, becomes the one store of who holds which grant. The role tables
 -- role_permissions, role_permission_scopes and user_roles, and the
 -- superuser flag's grant, are turned into its rows and the three tables
--- dropped:
+-- dropped (with permissions.sensitive, which 0099's risk replaced):
 --
 --   p, r:<role key>, <permission key>, *          role_permissions
 --   p, r:<role key>, <permission key>, <scope>    role_permission_scopes
@@ -39,7 +39,8 @@ SELECT 1 FROM authz_meta WHERE id = 1 FOR UPDATE;
 -- does it write a second holder of the role, which that index refuses:
 -- 0097 asked for one and its trigger kept it so, but a repair that bypassed
 -- the trigger may have left several (a deleted holder counts, as its row
--- is converted too); the server CLI keeps one on this schema.
+-- is converted too); the server CLI of the release before (0.1.288) keeps
+-- one on this schema.
 DO $$
 DECLARE
     bad text;
@@ -63,7 +64,7 @@ BEGIN
         FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE r.superuser;
         IF cardinality(holders) > 1 THEN
             RAISE EXCEPTION 'several super admins: user ids %', array_to_string(holders, ', ')
-                USING ERRCODE = 'check_violation', HINT = 'keep one with "sub2api admin recover-superadmin --email <the email of the one to keep>" (the others become admins) and start again';
+                USING ERRCODE = 'check_violation', HINT = 'keep one with the 0.1.288 binary: "sub2api admin recover-superadmin --email <the email of the one to keep>" (the others become admins), then start again';
         END IF;
     END IF;
 END $$;
@@ -118,12 +119,6 @@ CREATE INDEX IF NOT EXISTS casbin_rule_v1_idx ON casbin_rule (ptype, v1);
 -- commit and then fails with unique_violation.
 CREATE UNIQUE INDEX IF NOT EXISTS casbin_rule_one_superuser ON casbin_rule (v1) WHERE ptype = 'g' AND v1 = 'r:super_admin';
 
--- 0099's COMMENT again: a development database that applied 0099 before
--- it named the staged status keeps that first form (store.CoreTracker
--- accepts its checksum), and gets the comment here.
-COMMENT ON COLUMN permissions.status IS
-    'active | disabled (owning plugin disabled) | removed (dropped from code or no longer declared by its plugin; grants kept, granting nothing) | staged (declared only by a staged plugin version; grants nothing until that version activates)';
-
 -- Two counters beside authz_meta.version, which every authz write moves
 -- (the X-Authz-Version of the console, the user caches):
 --   - policy_version moves with the writes of what the policy snapshot
@@ -165,3 +160,4 @@ BEGIN
     DROP FUNCTION IF EXISTS user_roles_one_superuser();
     UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1;
 END $$;
+ALTER TABLE permissions DROP COLUMN IF EXISTS sensitive;

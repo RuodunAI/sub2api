@@ -214,7 +214,7 @@ func upsertPluginPermission(ctx context.Context, tx *gorm.DB, pluginKey, local s
 		return false, false, core.ErrConflict.WithMessage("permission " + d.Key + " belongs to another owner")
 	}
 	set := map[string]any{"module": want.Module, "label": want.Label, "description": want.Description, "risk": want.Risk,
-		"sensitive": want.Sensitive, "sort": want.Sort, "scope_type": want.ScopeType, "scope": want.Scope, "group_key": want.GroupKey,
+		"sort": want.Sort, "scope_type": want.ScopeType, "scope": want.Scope, "group_key": want.GroupKey,
 		"group_label": want.GroupLabel, "group_sort": want.GroupSort, "requires": want.Requires, "defaults": want.Defaults}
 	// A removed key declared again revives, and a staged one turns on,
 	// with the plugin's status, unless staged still; others keep theirs.
@@ -240,7 +240,7 @@ func pluginPermissionRow(pluginKey string, label core.LocalizedText, scope manif
 	}
 	risk := d.Risk
 	return model.Permission{Key: d.Key, Module: manifest.PermissionModule(pluginKey), Label: jsons[0], Description: jsons[1], Source: "plugin",
-		PluginKey: &pluginKey, Risk: &risk, Sensitive: risk != manifest.RiskLow, Sort: d.Sort, ScopeType: d.ScopeType, Scope: jsons[2],
+		PluginKey: &pluginKey, Risk: &risk, Sort: d.Sort, ScopeType: d.ScopeType, Scope: jsons[2],
 		GroupKey: d.Group, GroupLabel: jsons[3], GroupSort: d.GroupSort, Requires: append(store.Strings{}, d.Requires...), Defaults: jsons[4]}, nil
 }
 

@@ -163,14 +163,13 @@ func TestMissedBroadcastLoadsPolicy(t *testing.T) {
 	warm()
 	require.Equal(t, [3]int64{3, 3, 4}, reads(), "a change naming nobody: the policy, every user again")
 
-	c, ok := parseChange([]byte("12"))
-	require.True(t, ok)
-	require.Equal(t, authzChange{Version: 12}, c, "a bare version reads as a change of everything")
-	c, ok = parseChange([]byte(`{"v":13,"u":[4]}`))
+	c, ok := parseChange([]byte(`{"v":13,"u":[4]}`))
 	require.True(t, ok)
 	require.True(t, casbinx.Change(c).UsersOnly())
-	_, ok = parseChange([]byte("nope"))
-	require.False(t, ok)
+	for _, bad := range []string{"12", "nope", `{"u":[4]}`} {
+		_, ok = parseChange([]byte(bad))
+		require.False(t, ok, bad)
+	}
 }
 
 // commitBump runs a user write of uid (a status change) and commits it.
