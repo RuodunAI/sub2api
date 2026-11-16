@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -334,13 +335,11 @@ func actor(id int64) *int64 {
 
 func (c *Controller) insertRollout(ctx context.Context, tx *gorm.DB, key, action string, from, target *string, phase string, actorID int64) (int64, error) {
 	g := store.G(ctx, tx)
-	var id int64
-	err := g.Raw(`
-		INSERT INTO plugin_rollouts (plugin_key, action, from_version, target_version, phase,
-			coordinator_node_id, coordinator_boot_id, coordinator_lease_until, created_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, `+leaseFromNow+`, ?)
-		RETURNING id`,
-		key, action, from, target, phase, c.o.Node.NodeID(), c.o.Node.BootID(), c.o.LeaseTTL.Milliseconds(), actor(actorID)).Scan(&id).Error
+	row := map[string]any{"plugin_key": key, "action": action, "from_version": from, "target_version": target, "phase": phase,
+		"coordinator_node_id": c.o.Node.NodeID(), "coordinator_boot_id": c.o.Node.BootID(),
+		"coordinator_lease_until": gorm.Expr(leaseFromNow, c.o.LeaseTTL.Milliseconds()), "created_by": actor(actorID)}
+	err := g.Table(model.PluginRollout{}.TableName()).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(row).Error
+	id, _ := row["id"].(int64)
 	if store.IsUniqueViolation(err, "") {
 		return 0, errOpen
 	}
@@ -658,12 +657,22 @@ func (c *Controller) markCleanup(ctx context.Context, tx *gorm.DB, r *rolloutRow
 	return markCleanupRows(store.G(ctx, tx), r).Error
 }
 
-// markCleanupRows is markCleanup's statement. Raw SQL: an INSERT from a
-// SELECT with an upsert.
+// markCleanupRows is markCleanup's statements: the boots running the
+// plugin, then a cleanup row for each, pending again if it was there.
 func markCleanupRows(g *gorm.DB, r *rolloutRow) *gorm.DB {
-	return g.Exec(`INSERT INTO plugin_rollout_cleanup(rollout_id,boot_id,state)
-		SELECT ?,boot_id,'cleanup_pending' FROM plugin_runtime_nodes WHERE plugin_key=? AND NOT stopped
-		ON CONFLICT(rollout_id,boot_id) DO UPDATE SET state='cleanup_pending',updated_at=now()`, r.id, r.key)
+	var boots []string
+	if res := g.Model(&model.PluginRuntimeNode{}).Where("plugin_key = ? AND NOT stopped", r.key).Pluck("boot_id", &boots); res.Error != nil || len(boots) == 0 {
+		return res
+	}
+	rows := make([]model.PluginRolloutCleanup, len(boots))
+	for i, b := range boots {
+		rows[i] = model.PluginRolloutCleanup{RolloutID: r.id, BootID: b, State: "cleanup_pending"}
+	}
+	return g.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "rollout_id"}, {Name: "boot_id"}},
+		DoUpdates: clause.Set{{Column: clause.Column{Name: "state"}, Value: "cleanup_pending"},
+			{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}},
+	}).Create(&rows)
 }
 
 // writeNodes records the per-node outcome from the live node reports.
@@ -689,13 +698,13 @@ func (c *Controller) writeNodes(ctx context.Context, tx *gorm.DB, r *rolloutRow)
 	return nil
 }
 
-// upsertRolloutNode records one node's outcome. Raw SQL: an upsert whose
-// update reads EXCLUDED.
+// upsertRolloutNode records one node's outcome.
 func upsertRolloutNode(g *gorm.DB, rolloutID int64, nodeID, bootID, state, msg string) *gorm.DB {
-	return g.Exec(`INSERT INTO plugin_rollout_nodes (rollout_id, node_id, boot_id, state, error)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (rollout_id, boot_id) DO UPDATE SET state = EXCLUDED.state, error = EXCLUDED.error, updated_at = now()`,
-		rolloutID, nodeID, bootID, state, msg)
+	return g.Table(model.PluginRolloutNode{}.TableName()).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "rollout_id"}, {Name: "boot_id"}},
+		DoUpdates: append(clause.AssignmentColumns([]string{"state", "error"}),
+			clause.Assignment{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}),
+	}).Create(map[string]any{"rollout_id": rolloutID, "node_id": nodeID, "boot_id": bootID, "state": state, "error": msg})
 }
 
 // nodeStates reads every live node's report for the rollout. selfSeen

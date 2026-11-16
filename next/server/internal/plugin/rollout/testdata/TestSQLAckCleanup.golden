@@ -1,9 +1,7 @@
 -- sql
-UPDATE plugin_rollout_cleanup n SET state='cleaned',updated_at=now()
-		FROM plugin_rollouts r,plugins p WHERE n.rollout_id=r.id AND r.plugin_key=p.key
-		AND p.key=$1 AND p.row_version=$2 AND n.boot_id=$3 AND n.state='cleanup_pending'
-		AND r.phase NOT IN ('preparing','activating')
+UPDATE "plugin_rollout_cleanup" SET "state"=$1,"updated_at"=now() WHERE rollout_id IN (SELECT r.id FROM plugin_rollouts AS r JOIN plugins p ON p.key = r.plugin_key WHERE p.key = $2 AND p.row_version = $3 AND r.phase NOT IN ('preparing', 'activating')) AND boot_id = $4 AND state = 'cleanup_pending'
 -- vars
-$1 string "demo"
-$2 int64 7
-$3 string "boot-a"
+$1 string "cleaned"
+$2 string "demo"
+$3 int64 7
+$4 string "boot-a"
