@@ -28,6 +28,8 @@ func TestStatsAPIs(t *testing.T) {
 	mustHook(t, h, hookReq("clean text"))
 	mustHook(t, h, hookReq("clean text")) // pass cache
 	waitEvents(t, h, map[string]string{"result": "block"}, 1)
+	// The watch list is written after the records commit (afterWrite).
+	waitFor(t, "enforce-level watch entry", func() bool { return p.watchLevel(3) == LevelEnforce })
 
 	st := decodeData[Status](t, h.Do("GET", "/status", map[string]string{"tz_offset_minutes": "480"}, nil))
 	if st.Today.Audited != 4 || st.Today.Suspicious != 1 || st.Today.Blocked != 1 || st.Today.Overturned != 1 || st.Today.CacheSkipped != 1 {
