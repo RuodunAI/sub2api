@@ -1488,7 +1488,7 @@ FROM plugins pl LEFT JOIN publishers pub ON pub.id = pl.publisher_id WHERE pl.ke
 | 插件 `hostCompat`/UI 3.15 下限 0.1.286 | 保持 0.1.286：0.1.285 已被线上另一个核心发布占用（billing、Claude max_tokens，无迁移，UI 仍 3.14），本版本顺延为 0.1.286 |
 | moderation 原生 UI 在没有 `hasAction` 时回落到 `account:own:read` | 删除：0.12.0 的 `hostCompat` 是 `>=0.1.286`，宿主都有 `hasAction` |
 
-保留：核心在 `SUB2API_UPDATER_TOKEN_FILE` 未设置时不带令牌（develop 既有，线上网关会设置）。`web/packages/ui/README.md` 与 `@sub2api/host` 注释里给插件作者的 `hasAction?.() ?? has('account:own:read')` 回退建议已删除（发布前待定项一并清理），用到 `hasAction`/`scope` 的插件声明 `hostUICompat ^3.15`。
+保留：核心在 `SUB2API_UPDATER_TOKEN_FILE` 未设置时不带令牌（develop 既有，线上网关会设置；0.1.291 删除：托管核心没有令牌时启动失败，非托管核心不连管理 socket，见 CONTRACTS §101.3）。`web/packages/ui/README.md` 与 `@sub2api/host` 注释里给插件作者的 `hasAction?.() ?? has('account:own:read')` 回退建议已删除（发布前待定项一并清理），用到 `hasAction`/`scope` 的插件声明 `hostUICompat ^3.15`。
 
 测试：`migrations` `TestAuthzHardeningMigration`（从 0096 形态的库：旧 own 授予（角色与密钥、冗余与非冗余）、`role:manage`（admin、operator、自定义角色）、超管专属权限的改写，审计条数、版本只推进一次，重跑不变，启动同步后不回退）、`TestAuthzHardeningNeedsOneSuperAdmin`（0 个、2 个超管报错且库不变）、`TestAuthzHardeningRollback`（0.1.290 后已删除）（反向脚本后表结构与 0096 一致、旧键授予恢复、再升级结果相同）；authz `TestRetiredOwnKeysReachTheSameRows`（每个用户、每把密钥在 8 个动作上可达的账号、代理与 0.1.285 的 own 语义一致）。
 

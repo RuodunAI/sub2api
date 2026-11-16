@@ -78,12 +78,13 @@ type Config struct {
 }
 
 type ManagedConfig struct {
-	Enabled                                             bool
-	Socket, Token, ReleaseDigest, BootID, UpdaterSocket string
-	// UpdaterToken authenticates the core to the shell's management socket
-	// (UPDATER_SOCKET): read from the file SUB2API_UPDATER_TOKEN_FILE names,
-	// 64 hex characters, kept in memory only. A managed core requires it.
-	UpdaterToken string
+	Enabled                              bool
+	Socket, Token, ReleaseDigest, BootID string
+	// UpdaterSocket is the shell's management socket (UPDATER_SOCKET) and
+	// UpdaterToken authenticates the core to it: read from the file
+	// SUB2API_UPDATER_TOKEN_FILE names, 64 hex characters, kept in memory
+	// only. Only a managed core reads them, and it requires the token.
+	UpdaterSocket, UpdaterToken string
 }
 
 // readUpdaterToken reads the file SUB2API_UPDATER_TOKEN_FILE names.
@@ -149,7 +150,7 @@ func Load(goos string) (*Config, error) {
 		BootstrapAdminEmail:    os.Getenv("SUB2API_BOOTSTRAP_ADMIN_EMAIL"),
 		BootstrapAdminPassword: os.Getenv("SUB2API_BOOTSTRAP_ADMIN_PASSWORD"),
 	}
-	c.Managed = ManagedConfig{Enabled: boolEnv("SUB2API_MANAGED", false), Socket: os.Getenv("SUB2API_CONTROL_SOCKET"), Token: os.Getenv("SUB2API_CONTROL_TOKEN"), ReleaseDigest: os.Getenv("SUB2API_RELEASE_DIGEST"), BootID: os.Getenv("SUB2API_CORE_BOOT_ID"), UpdaterSocket: os.Getenv("UPDATER_SOCKET")}
+	c.Managed = ManagedConfig{Enabled: boolEnv("SUB2API_MANAGED", false), Socket: os.Getenv("SUB2API_CONTROL_SOCKET"), Token: os.Getenv("SUB2API_CONTROL_TOKEN"), ReleaseDigest: os.Getenv("SUB2API_RELEASE_DIGEST"), BootID: os.Getenv("SUB2API_CORE_BOOT_ID")}
 	var err error
 	if c.Managed.Enabled {
 		if c.Managed.Socket == "" || len(c.Managed.Token) < 32 || c.Managed.ReleaseDigest == "" || c.Managed.BootID == "" {
@@ -158,6 +159,7 @@ func Load(goos string) (*Config, error) {
 		if c.Managed.UpdaterToken, err = readUpdaterToken(); err != nil {
 			return nil, err
 		}
+		c.Managed.UpdaterSocket = os.Getenv("UPDATER_SOCKET")
 	}
 	if c.NodeID == "" {
 		h, _ := os.Hostname()

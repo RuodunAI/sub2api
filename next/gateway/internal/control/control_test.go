@@ -214,7 +214,8 @@ func setupEngines(t *testing.T) (*Store, *Engine, *Engine, Release) {
 }
 
 // setupEnginesWith registers two nodes, a (primary) and b, serving the old
-// release; rolling marks them as shells that execute rolling plans.
+// release. rolling signs both releases rolling; otherwise they are signed
+// maintenance and upgrade primary-first.
 func setupEnginesWith(t *testing.T, rolling bool) (*Store, *Engine, *Engine, Release) {
 	t.Helper()
 	s := integrationStore(t)
@@ -225,6 +226,9 @@ func setupEnginesWith(t *testing.T, rolling bool) (*Store, *Engine, *Engine, Rel
 	s.Redis = redisClient
 	ctx := context.Background()
 	old, target := testRelease(s.Cluster+"old"), testRelease(s.Cluster+"new")
+	if !rolling {
+		old.Manifest.Strategy, target.Manifest.Strategy = "maintenance", "maintenance"
+	}
 	for _, r := range []Release{old, target} {
 		if err := s.PutRelease(ctx, r); err != nil {
 			t.Fatal(err)
@@ -235,7 +239,7 @@ func setupEnginesWith(t *testing.T, rolling bool) (*Store, *Engine, *Engine, Rel
 		t.Fatal(err)
 	}
 	mk := func(id string) *Engine {
-		n := Node{Enabled: true, PeerProtocol: PeerProtocol, Strategy: PrimaryFirst, Rolling: rolling, ID: id, PeerURL: "https://" + id, ShellBootID: "boot", OS: "linux", Arch: "amd64", RuntimeABI: "test"}
+		n := Node{Enabled: true, PeerProtocol: PeerProtocol, Strategy: PrimaryFirst, ID: id, PeerURL: "https://" + id, ShellBootID: "boot", OS: "linux", Arch: "amd64", RuntimeABI: "test"}
 		if err := s.Register(ctx, n); err != nil {
 			t.Fatal(err)
 		}
@@ -800,6 +804,57 @@ func TestPostgresUnknownCoreAndOldShellBlockUpgrade(t *testing.T) {
 	pf, err = s.Preflight(ctx, target.Digest)
 	if err != nil || !strings.Contains(strings.Join(pf.Blockers, ","), "capabilities") {
 		t.Fatalf("old shell accepted: %+v %v", pf, err)
+	}
+}
+
+// The heartbeat's node snapshot is taken before the node writes the boot of
+// its restarted core, so it still names the old boot; the unmanaged-core
+// check reads PG and accepts the new one.
+func TestPostgresUnmanagedBlockersReadTheBootFromPG(t *testing.T) {
+	s, a, b, _ := setupEngines(t)
+	ctx := context.Background()
+	rt := a.Runtime.(*fakeRuntime)
+	rt.mu.Lock()
+	rt.status.Hello.BootID = "new-a"
+	rt.mu.Unlock()
+	if err := a.Heartbeat(ctx); err != nil {
+		t.Fatal(err)
+	}
+	oldBoot := "old-" + a.Node.ID
+	stale := false
+	for _, n := range s.NodeDirectory() {
+		stale = stale || (n.ID == a.Node.ID && n.CoreBootID == oldBoot)
+	}
+	if !stale {
+		t.Fatalf("the snapshot does not hold the old boot: %+v", s.NodeDirectory())
+	}
+	register := func(node, managed, boot string) {
+		t.Helper()
+		if err := s.Redis.ZAdd(ctx, "node:live", redis.Z{Score: 1, Member: "live-" + node}).Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Redis.HSet(ctx, "node:info:live-"+node, "node_id", node, "managed", managed, "core_boot_id", boot).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	register(b.Node.ID, "true", "old-"+b.Node.ID)
+	for _, tc := range []struct {
+		name, managed, boot string
+		blocked             bool
+	}{
+		{"the boot PG records", "true", "new-a", false},
+		{"the snapshot's old boot", "true", oldBoot, true},
+		{"an unmanaged core", "false", "new-a", true},
+		{"no boot", "true", "", true},
+	} {
+		register(a.Node.ID, tc.managed, tc.boot)
+		blockers, err := s.UnmanagedBlockers(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"unmanaged or unrecognized active core: " + a.Node.ID}; tc.blocked != (len(blockers) > 0) || (tc.blocked && !reflect.DeepEqual(blockers, want)) {
+			t.Errorf("%s: %v", tc.name, blockers)
+		}
 	}
 }
 

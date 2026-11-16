@@ -5788,8 +5788,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 ### 82.1 策略选择
 
 - 签名工具按是否改库签策略：`schema_before == schema_after` 签 `rolling`，否则 `maintenance`（此前一律 `maintenance`）。
-- 节点登记新增能力标记 `updater.nodes.rolling`（本版本网关为 true，旧网关为 false，schema 幂等加列）。
-- 预检（`POST /system/upgrades/preflight`）返回 `strategy`：目标清单签 `rolling` 且不改库、全部启用节点都是 rolling 网关、且至少两个启用节点本地就绪 → `rolling-v1`；否则仍是 `primary-first-v1`。计划创建时把预检选出的策略写入 `updater.upgrades.strategy`，首条事件说明是哪种。
+- 节点登记新增能力标记 `updater.nodes.rolling`（本版本网关为 true，旧网关为 false，schema 幂等加列；0.1.135 起预检不再看它，见 §101.3）。
+- 预检（`POST /system/upgrades/preflight`）返回 `strategy`：目标清单签 `rolling` 且不改库、全部启用节点都是 rolling 网关（0.1.135 起不再检查）、且至少两个启用节点本地就绪 → `rolling-v1`；否则仍是 `primary-first-v1`。计划创建时把预检选出的策略写入 `updater.upgrades.strategy`，首条事件说明是哪种。
 - 回退（`rollback`）生成的恢复计划同样选策略，但只要求至少一个节点本地就绪：被打断计划停掉的成员让不出流量也没有流量可让，直接在基线上重启，然后承接另一个节点。
 - 两种策略的步骤、恢复、暂停/继续、准入校验（`admissionAllowed`、`planAuthorizesTx`）都接受；（0.1.290 起不再识别 `legacy-rolling` 等旧策略：唯一索引保证同时最多一个未结束的计划，0.1.290 本身的计划完成之后才换外壳，那时不会有旧策略的计划未结束，§101）。
 
@@ -7393,8 +7393,9 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 - 停止核心时直接按调用方的要求发 `DrainRequest.Graceful`，不再看核心是否声明 `drain.graceful`；`Hello.Has` 删除。
 - 0.1.290 时为外壳 0.1.133 保留的两处，在所有节点换上外壳 0.1.134 之后的核心版本删除（CHANGELOG“未发布”）：
   - `Hello.capabilities` 与 `drain.graceful`：0.1.133 只对声明了它的核心发 `Graceful`，0.1.134 起不看声明。`DrainRequest.Graceful` 本身保留。
-  - 不带更新令牌访问管理 socket：托管核心没有 `SUB2API_UPDATER_TOKEN_FILE`（或文件不合格）时启动失败。外壳 0.1.133 与 0.1.134 本来就总是传这个变量（配置 `management_token_file` 缺省为管理 socket 旁的 `shell.token`，每次启动先写好令牌再启动核心），0.1.290 时说“旧外壳没有令牌”是误记；外壳启动核心时也不再判断路径是否为空。
+  - 不带更新令牌访问管理 socket：托管核心没有 `SUB2API_UPDATER_TOKEN_FILE`（或文件不合格）时启动失败。外壳 0.1.133 与 0.1.134 本来就总是传这个变量（配置 `management_token_file` 缺省为管理 socket 旁的 `shell.token`，每次启动先写好令牌再启动核心），0.1.290 时说“旧外壳没有令牌”是误记；外壳启动核心时也不再判断路径是否为空。非托管核心既不读令牌也不读 `UPDATER_SOCKET`：升级接口返回 503 `updater_unavailable`，插件包只存本地目录。
 - 插件变更阻塞检查不再看 `plugin_rollout_nodes` 的 `cleanup_pending`（迁移 0021 之前的开发版核心）。
+- rolling-v1 的资格不再要求每个启用节点都登记 `updater.nodes.rolling`（外壳 0.1.133 起都是 true，只有更早的外壳为 false）；外壳 0.1.135 照常写 true、不再读，这一列保留，因为换外壳期间仍在运行的 0.1.134 协调者还读它。
 
 ### 101.4 账号与任务
 

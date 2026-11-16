@@ -70,7 +70,6 @@ ALTER TABLE updater.nodes DROP COLUMN IF EXISTS cpu_percent;
 ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS offloading boolean NOT NULL DEFAULT false;
 -- Blocked reason (2026-10-04): coordinator/worker waiting errors are written here.
 ALTER TABLE updater.upgrades ADD COLUMN IF NOT EXISTS blocked_reason text NOT NULL DEFAULT '';
--- Rolling plans (2026-11-08): a shell that can yield its traffic to the other
--- serving nodes while its core restarts registers rolling=true. An older shell
--- leaves the default, and the cluster then upgrades primary-first.
+-- Rolling plans (2026-11-08): every shell since 0.1.133 registers
+-- rolling=true; 0.1.134 still reads it while the gateways are replaced.
 ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS rolling boolean NOT NULL DEFAULT false;

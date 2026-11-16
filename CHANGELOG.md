@@ -12,12 +12,13 @@
 
 0.1.290 已在所有节点上线（核心 0.1.290、网关外壳 0.1.134），升级前的备份已删除，不能再回到 0.1.288。按“迁移完成后不留兼容代码”，删除只为外壳 0.1.133、核心 0.1.288 和这次回退保留的部分（CONTRACTS §101.3）。
 
-- **托管核心必须有管理 socket 令牌**：`SUB2API_MANAGED=true` 时没有 `SUB2API_UPDATER_TOKEN_FILE`、文件读不到或内容不是 64 位十六进制，核心启动失败；转发升级接口与插件包读写总是带令牌，不再有“没有令牌就不带”的分支。非托管核心不读这个变量。线上的外壳 0.1.134（以及之前的 0.1.133）总是传这个变量并在启动核心前写好令牌文件，不需要改配置。
+- **托管核心必须有管理 socket 令牌**：`SUB2API_MANAGED=true` 时没有 `SUB2API_UPDATER_TOKEN_FILE`、文件读不到或内容不是 64 位十六进制，核心启动失败；转发升级接口与插件包读写总是带令牌，不再有“没有令牌就不带”的分支。非托管核心既不读这个变量也不读 `UPDATER_SOCKET`：升级接口返回 503 `updater_unavailable`，插件包存本地目录。线上的外壳 0.1.134（以及之前的 0.1.133）总是传这个变量并在启动核心前写好令牌文件，不需要改配置。
 - **核心不再声明 `drain.graceful`**：`runtimecontract.Hello` 去掉 `capabilities` 与 `CapabilityGracefulDrain`，只有外壳 0.1.133 看它。`DrainRequest.graceful` 照旧：外壳 0.1.134 起按需要发送，核心照样让在途请求跑完。
 - **网关外壳 schema 删除 `updater.nodes.cpu_percent`**（`DROP COLUMN IF EXISTS`）：只有外壳 0.1.133 读写这一列，0.1.134 不读。外壳启动核心时总是传令牌文件路径，不再判断它是否为空。
 - **删除 0.1.290 的发布与回退手册**：`next/deploy/rollback/0.1.290-release.md`、`0.1.290-casbin-down.md/.sql`、`0.1.290-session-down.md`、`0.1.290-effective-permissions.sql` 只服务那次已完成的单向升级，删除（原文用 `git show 91e0c26bc:next/deploy/rollback/<文件名>` 读取）；只为它们存在的测试 `TestEffectivePermissionsScript`、`TestCasbinRuleOneWay` 与从 0.1.288 升级的 `TestManagedUpgradeFromProductionResumesWithTheSamePermit` 一并删除，后者固定的线上 schema 契约改为 0.1.290 的（迁移到 0102，`d78ba831…333c`，`TestReleasedMigrationsKeepTheProductionSchema`）。回到 0.1.285 的 `0.1.286-authz-down.md/.sql` 与 `TestAuthzHardeningRollback` 同样不再适用，一并删除，`next/deploy/rollback/` 现在为空（下一次单向发布再建）。已应用的迁移 0097、0098、0100–0102 的注释里仍写着这些文件名（迁移文件不能再改）。
 - `next/deploy/gateway/.env.example` 去掉外壳 0.1.134 起不再读取的 `SUB2API_ALLOW_TOKENLESS_MANAGEMENT`。
-- **升级预检不再把刚启动的托管核心当成未托管**（网关）：预检、建计划和迁移屏障共用的“未托管核心”检查用心跳缓存的节点目录核对 Redis 里的核心登记，而这份快照早于本节点这次心跳写入的新 `core_boot_id`；核心刚启动或重启后、下一次心跳前，预检会误报 `unmanaged or unrecognized active core`。改为总是从 PG 读节点表（外壳 0.1.132 起有这个问题）。
+- **rolling-v1 不再检查节点的 `rolling` 标记**（网关）：外壳 0.1.133 起都登记 `rolling=true`，资格只看签名策略、schema 不变与至少两个节点在服务。0.1.135 照常写 true、不再读；列保留，换外壳期间的 0.1.134 协调者还读它。
+- **升级预检不再把刚启动的托管核心当成未托管**（网关）：预检、回退到基线和迁移屏障共用的“未托管核心”检查用心跳缓存的节点目录核对 Redis 里的核心登记，而这份快照早于本节点这次心跳写入的新 `core_boot_id`，核心重启后可能要再过一个心跳才不误报 `unmanaged or unrecognized active core`。改为从 PG 读启用节点的 `core_boot_id`；核心在 Redis 登记后、外壳下一次心跳前仍会被报出，误报不超过一个心跳（外壳 0.1.132 起有这个问题）。
 - **真实核心测试 `TestRealCore*` 恢复可跑**：harness 给核心传它实际读取的 `DATABASE_URL`/`REDIS_URL`（原来是核心不读的 `SUB2API_` 前缀名）；清理测试库时一并删除核心为它建的插件数据库角色（角色属于整个 PostgreSQL 集群，留下来下一个测试装内置插件会 `plugin_db_role_conflict`）；滚动升级测试等内置插件 rollout 结束再预检；测试 API 客户端遇到 `verification_required` 用密码完成二次验证后重发；Responses WebSocket 测试按“优先级越大越先用”（2026-11-09 起）让被拒的账号先被选中；核心监听端口选在内核临时端口范围之下，避免被测试自己的出站连接占用；`next/deploy/ci/check.sh` 构建的两个测试核心改为 0.1.900/0.1.901，落在内置插件 `hostCompat`（`>=0.1.290 <0.2.0`）里。
 
 **发布**：两条线互不依赖，顺序不限。核心 0.1.291 没有迁移，可以在外壳 0.1.134 下走 `rolling-v1`；外壳 0.1.134 照常发 `graceful`、传令牌文件。网关 0.1.135 按部署记录逐个节点更换，它照常驱动核心 0.1.290（外壳不检查 `capabilities`，多出的字段忽略）；换外壳期间 0.1.134 重启时会把空的 `cpu_percent` 加回来，之后的 0.1.135 启动时再删掉，都不影响服务。

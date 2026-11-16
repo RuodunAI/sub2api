@@ -96,21 +96,23 @@ func TestUpdaterTokenFile(t *testing.T) {
 		}
 		return p
 	}
-	// A managed core requires the token; an unmanaged one does not read it.
+	// A managed core requires the token; an unmanaged one reads neither the
+	// token nor the socket, so it has no updater bridge.
+	t.Setenv("UPDATER_SOCKET", "/run/updater.sock")
 	t.Setenv("SUB2API_UPDATER_TOKEN_FILE", "")
 	if _, err := config.Load("linux"); err == nil || !strings.Contains(err.Error(), "SUB2API_UPDATER_TOKEN_FILE") {
 		t.Fatalf("managed core started without the token: %v", err)
 	}
 	t.Setenv("SUB2API_MANAGED", "false")
 	cfg, err := config.Load("linux")
-	if err != nil || cfg.Managed.UpdaterToken != "" {
-		t.Fatalf("unmanaged: %q %v", cfg.Managed.UpdaterToken, err)
+	if err != nil || cfg.Managed.UpdaterToken != "" || cfg.Managed.UpdaterSocket != "" {
+		t.Fatalf("unmanaged: %+v %v", cfg.Managed, err)
 	}
 	t.Setenv("SUB2API_MANAGED", "true")
 	tok := strings.Repeat("aB", 32)
 	t.Setenv("SUB2API_UPDATER_TOKEN_FILE", write("ok", "  "+tok+"\n"))
-	if cfg, err = config.Load("linux"); err != nil || cfg.Managed.UpdaterToken != tok {
-		t.Fatalf("valid: %q %v", cfg.Managed.UpdaterToken, err)
+	if cfg, err = config.Load("linux"); err != nil || cfg.Managed.UpdaterToken != tok || cfg.Managed.UpdaterSocket != "/run/updater.sock" {
+		t.Fatalf("valid: %q %q %v", cfg.Managed.UpdaterToken, cfg.Managed.UpdaterSocket, err)
 	}
 	// The token stays in memory: it is not in the environment.
 	for _, kv := range os.Environ() {
