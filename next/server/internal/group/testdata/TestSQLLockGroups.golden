@@ -1,4 +1,0 @@
--- sql
-SELECT "id" FROM "groups" WHERE id = ANY($1) ORDER BY id FOR UPDATE
--- vars
-$1 store.Int64s [4 9]

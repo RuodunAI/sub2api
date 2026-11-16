@@ -3,21 +3,17 @@ package billing
 import (
 	"context"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/event"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // The request-path database work of billing, measured against a real
-// PostgreSQL (TEST_DATABASE_URL). These are the baseline the GORM migration
-// is compared with (internal/store/gormtest/BASELINE.md): run them before
-// and after with
+// PostgreSQL (TEST_DATABASE_URL):
 //
 //	go test -run '^$' -bench Hot -benchmem -count 5 ./internal/billing/
 //
@@ -54,73 +50,5 @@ func BenchmarkHotPrecharge(b *testing.B) {
 		if err := svc.Precharge(ctx, rec); err != nil {
 			b.Fatal(err)
 		}
-	}
-}
-
-// ReleasePrechargeTx runs for every free request the settler records
-// (usage insertAtomic), most of which hold no reservation, and for every
-// reservation the expiry sweeper returns. Its statement (releaseSQL) runs
-// on GORM (releaseStmt); it is measured next to its raw database/sql form (pgx before batch 6),
-// for a request without a reservation (miss) and with one (hit).
-func BenchmarkHotReleasePrecharge(b *testing.B) {
-	// releaseSQL as pgx ran it, its named parameters numbered.
-	releasePgxSQL := strings.NewReplacer("$request", "$1", "$user", "$2", "$refund_key", "$3", "$refund_note", "$4").Replace(releaseSQL)
-	svc, uid := benchBilling(b)
-	ctx := context.Background()
-	pool, raw := svc.db.Gorm, svc.db.SQL
-	paths := []struct {
-		name string
-		run  func(requestID string) error
-	}{
-		{"sql", func(requestID string) error {
-			var got core.LedgerResult
-			var released bool
-			var amount decimal.Decimal
-			return raw.QueryRowContext(ctx, releasePgxSQL, requestID, uid, releaseKey(requestID), "release request precharge").
-				Scan(&got.LedgerID, &got.BalanceAfter, &released, &amount)
-		}},
-		{"gorm", func(requestID string) error {
-			var got core.LedgerResult
-			var released bool
-			var amount decimal.Decimal
-			return releaseStmt.Raw(store.G(ctx, pool), requestID, uid, releaseKey(requestID), "release request precharge").Row().
-				Scan(&got.LedgerID, &got.BalanceAfter, &released, &amount)
-		}},
-	}
-	reserve := func(b *testing.B, requestID string) {
-		b.StopTimer()
-		if _, err := raw.ExecContext(ctx, `INSERT INTO request_precharges (request_id, user_id, amount) VALUES ($1, $2, 0.5)`, requestID, uid); err != nil {
-			b.Fatal(err)
-		}
-		b.StartTimer()
-	}
-	for _, p := range paths {
-		b.Run("miss/"+p.name, func(b *testing.B) {
-			if err := p.run("none"); err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
-				if err := p.run("none"); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
-		b.Run("hit/"+p.name, func(b *testing.B) {
-			reserve(b, p.name+"-warmup")
-			if err := p.run(p.name + "-warmup"); err != nil {
-				b.Fatal(err)
-			}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := range b.N {
-				id := p.name + "-" + strconv.Itoa(i)
-				reserve(b, id)
-				if err := p.run(id); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
 	}
 }

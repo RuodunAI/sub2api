@@ -104,15 +104,22 @@ const groupColumns = `g.id, g.name, g.description, g.status, g.rate_multiplier, 
 	  WHERE ag.group_id = g.id AND a.deleted_at IS NULL AND (?::text[] IS NULL OR a.plugin_key = ANY(?))) AS account_count,
 	(SELECT count(*) FROM api_keys k WHERE k.group_id = g.id AND k.deleted_at IS NULL) AS api_key_count`
 
-// groupRow is a row of groupColumns. Its documents are decoded: the fields
-// shadow the raw ones of model.Group (GORM maps a column to the shallowest
-// field of its name).
+// groupRow is a row of groupColumns, its documents decoded.
 type groupRow struct {
-	model.Group
-	ModelAllowlist store.JSON[[]string]               `gorm:"column:model_allowlist"`
-	Environment    store.JSON[core.EnvironmentValues] `gorm:"column:environment"`
-	AccountCount   int64                              `gorm:"column:account_count"`
-	APIKeyCount    int64                              `gorm:"column:api_key_count"`
+	ID                   int64                              `gorm:"column:id"`
+	Name                 string                             `gorm:"column:name"`
+	Description          string                             `gorm:"column:description"`
+	Status               *string                            `gorm:"column:status"`
+	RateMultiplier       *decimal.Decimal                   `gorm:"column:rate_multiplier"`
+	Visibility           *string                            `gorm:"column:visibility"`
+	ModelAllowlist       store.JSON[[]string]               `gorm:"column:model_allowlist"`
+	ModelFilterMode      *string                            `gorm:"column:model_filter_mode"`
+	Environment          store.JSON[core.EnvironmentValues] `gorm:"column:environment"`
+	ConversionLossPolicy *string                            `gorm:"column:conversion_loss_policy"`
+	CreatedAt            time.Time                          `gorm:"column:created_at"`
+	UpdatedAt            time.Time                          `gorm:"column:updated_at"`
+	AccountCount         int64                              `gorm:"column:account_count"`
+	APIKeyCount          int64                              `gorm:"column:api_key_count"`
 }
 
 // selectGroups reads the groupRows of the groups g the caller narrows;
@@ -351,29 +358,6 @@ func (in *groupInput) columns() map[string]any {
 	return set
 }
 
-// updateGroup writes the fields of in present to group id.
-func updateGroup(db *gorm.DB, id int64, in *groupInput) *gorm.DB {
-	return db.Model(&model.Group{}).Where("id = ?", id).Updates(in.columns())
-}
-
-// newGroup is the row of a new group: the fields of in present, written
-// as given (a 0 rate included), and the column defaults for the others.
-func newGroup(in *groupInput) *model.Group {
-	row := &model.Group{Name: *in.Name, Description: core.ValueOr(in.Description, ""), Status: in.Status,
-		Visibility: in.Visibility, ModelFilterMode: in.ModelFilterMode, ConversionLossPolicy: in.ConversionLossPolicy.Stored()}
-	if in.RateMultiplier != nil {
-		rate := decimal.RequireFromString(*in.RateMultiplier) // validate normalized it
-		row.RateMultiplier = &rate
-	}
-	if in.ModelAllowlist != nil {
-		row.ModelAllowlist, _ = json.Marshal(*in.ModelAllowlist)
-	}
-	if in.Environment != nil {
-		row.Environment, _ = json.Marshal(*in.Environment)
-	}
-	return row
-}
-
 func dupName(ctx context.Context) error {
 	return core.InvalidFields(core.FieldError{Field: "name", Code: "duplicate",
 		Message: t(ctx, "a group with this name already exists", "分组名称已存在")})
@@ -389,7 +373,20 @@ func (s *Service) create(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	row := newGroup(&in)
+	// The fields of in present are written as given (a 0 rate included),
+	// the column defaults stand for the others.
+	row := &model.Group{Name: *in.Name, Description: core.ValueOr(in.Description, ""), Status: in.Status,
+		Visibility: in.Visibility, ModelFilterMode: in.ModelFilterMode, ConversionLossPolicy: in.ConversionLossPolicy.Stored()}
+	if in.RateMultiplier != nil {
+		rate := decimal.RequireFromString(*in.RateMultiplier) // validate normalized it
+		row.RateMultiplier = &rate
+	}
+	if in.ModelAllowlist != nil {
+		row.ModelAllowlist, _ = json.Marshal(*in.ModelAllowlist)
+	}
+	if in.Environment != nil {
+		row.Environment, _ = json.Marshal(*in.Environment)
+	}
 	err := store.G(ctx, s.db.Gorm).Create(row).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, dupName(ctx))
@@ -422,7 +419,7 @@ func (s *Service) update(c *gin.Context) {
 		return
 	}
 	// A field left out keeps its value.
-	res := updateGroup(store.G(ctx, s.db.Gorm), id, &in)
+	res := store.G(ctx, s.db.Gorm).Model(&model.Group{}).Where("id = ?", id).Updates(in.columns())
 	err := res.Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, dupName(ctx))
@@ -476,7 +473,8 @@ func (s *Service) delete(c *gin.Context) {
 		}
 		g := store.G(ctx, tx)
 		var locked []int64
-		if err := lockGroups(g, ids).Pluck("id", &locked).Error; err != nil {
+		if err := g.Model(&model.Group{}).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
+			Clauses(store.ForUpdate).Pluck("id", &locked).Error; err != nil {
 			return err
 		}
 		if !slices.Contains(locked, id) {
@@ -486,8 +484,10 @@ func (s *Service) delete(c *gin.Context) {
 			return core.InvalidFields(core.FieldError{Field: "move_keys_to", Code: "not_found",
 				Message: t(ctx, "the target group does not exist", "目标分组不存在")})
 		}
+		// Every key of the group moves, soft-deleted ones included.
 		var moved []model.APIKey
-		if err := moveKeys(g, &moved, id, moveTo).Error; err != nil {
+		if err := g.Model(&moved).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).
+			Where("group_id = ?", id).Update("group_id", moveTo).Error; err != nil {
 			return err
 		}
 		hashes = make([]string, len(moved))
@@ -512,31 +512,18 @@ func (s *Service) delete(c *gin.Context) {
 	httpapi.NoContent(c)
 }
 
-// lockGroups selects the groups of ids, locked for update in id order.
-func lockGroups(db *gorm.DB, ids []int64) *gorm.DB {
-	return db.Model(&model.Group{}).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
-		Clauses(store.ForUpdate)
-}
-
-// moveKeys moves every API key of the group (soft-deleted ones included) to
-// the group to, none when nil, and reads the key hash of each into moved.
-func moveKeys(db *gorm.DB, moved *[]model.APIKey, group int64, to *int64) *gorm.DB {
-	return db.Model(moved).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).
-		Where("group_id = ?", group).Update("group_id", to)
-}
-
-// myGroupRow is a row of GET /me/groups, its allowlist decoded (as in
-// groupRow).
-type myGroupRow struct {
-	model.Group
-	ModelAllowlist store.JSON[[]string] `gorm:"column:model_allowlist"`
-	Exclusive      bool                 `gorm:"column:exclusive"`
-}
-
 func (s *Service) myGroups(c *gin.Context) {
 	ctx := c.Request.Context()
 	uid, _ := core.UserID(ctx)
-	var rows []myGroupRow
+	var rows []struct {
+		ID              int64                `gorm:"column:id"`
+		Name            string               `gorm:"column:name"`
+		Description     string               `gorm:"column:description"`
+		RateMultiplier  *decimal.Decimal     `gorm:"column:rate_multiplier"`
+		ModelAllowlist  store.JSON[[]string] `gorm:"column:model_allowlist"`
+		ModelFilterMode *string              `gorm:"column:model_filter_mode"`
+		Exclusive       bool                 `gorm:"column:exclusive"`
+	}
 	if err := store.G(ctx, s.db.Gorm).Table("groups g").
 		Select("g.id, g.name, g.description, g.rate_multiplier, g.model_allowlist, g.model_filter_mode, g.visibility = 'restricted' AS exclusive").
 		Where(segment.UsableGroupSQL("g", "?"), uid).Order("g.id").Scan(&rows).Error; err != nil {

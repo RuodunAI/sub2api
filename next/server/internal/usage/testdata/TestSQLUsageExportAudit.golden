@@ -1,8 +1,0 @@
--- sql
-INSERT INTO "audit_logs" ("user_id","action","target_type","detail","ip") VALUES ($1,$2,$3,$4,$5) RETURNING "id","target_type","target_id","detail","ip","created_at"
--- vars
-$1 *int64 7
-$2 string "usage.export"
-$3 string "usage"
-$4 jsontext.Value {"rows":3}
-$5 string "203.0.113.9"

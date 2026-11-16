@@ -241,7 +241,17 @@ func (s *Service) commitCCGatewayReauth(c *gin.Context) {
 func (s *Service) resetForReauth(ctx context.Context, tx *gorm.DB, a *row) (bool, error) {
 	release := a.Status == "error" || a.Status == "auto_disabled" && !limitDisabled(a.Status, a.AutoDisabledSource)
 	g := store.G(ctx, tx)
-	if err := resetAccountState(g, a.ID, release).Error; err != nil {
+	// release brings an error or automatic disable back to active; the
+	// deferred disable and the last test go either way.
+	if err := g.Model(&model.Account{}).Where("id = ?", a.ID).Updates(map[string]any{
+		"status":                gorm.Expr("CASE WHEN ? THEN 'active' ELSE status END", release),
+		"status_reason":         gorm.Expr("CASE WHEN ? THEN '' ELSE status_reason END", release),
+		"auto_disabled_until":   gorm.Expr("CASE WHEN NOT ? AND status = 'auto_disabled' THEN auto_disabled_until END", release),
+		"deferred_auto_disable": false, "deferred_auto_disable_reason": "", "deferred_auto_disabled_until": nil,
+		"last_test_at": nil, "last_test_ok": nil, "last_test_latency_ms": nil, "last_test_model": nil, "last_test_message": nil,
+		"last_test_status": nil, "last_test_error_code": nil, "last_test_error_source": nil,
+		"updated_at": gorm.Expr("clock_timestamp()"),
+	}).Error; err != nil {
 		return false, err
 	}
 	if err := store.ResetAccountQuota(ctx, tx, a.ID); err != nil {
@@ -259,21 +269,6 @@ func (s *Service) resetForReauth(ctx context.Context, tx *gorm.DB, a *row) (bool
 		return false, err
 	}
 	return release, nil
-}
-
-// resetAccountState is the accounts part of resetForReauth: release brings
-// an error or automatic disable back to active; the deferred disable and
-// the last test go either way.
-func resetAccountState(db *gorm.DB, id int64, release bool) *gorm.DB {
-	return db.Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{
-		"status":                gorm.Expr("CASE WHEN ? THEN 'active' ELSE status END", release),
-		"status_reason":         gorm.Expr("CASE WHEN ? THEN '' ELSE status_reason END", release),
-		"auto_disabled_until":   gorm.Expr("CASE WHEN NOT ? AND status = 'auto_disabled' THEN auto_disabled_until END", release),
-		"deferred_auto_disable": false, "deferred_auto_disable_reason": "", "deferred_auto_disabled_until": nil,
-		"last_test_at": nil, "last_test_ok": nil, "last_test_latency_ms": nil, "last_test_model": nil, "last_test_message": nil,
-		"last_test_status": nil, "last_test_error_code": nil, "last_test_error_source": nil,
-		"updated_at": gorm.Expr("clock_timestamp()"),
-	})
 }
 
 // fillRuntimeParked sets runtime_parked on the CCGateway accounts of views

@@ -16,16 +16,16 @@ import (
 // not see.
 var numberedSink struct{}
 
-func TestRawNumbered(t *testing.T) {
+func TestNumberedRaw(t *testing.T) {
 	sql, vars, err := gormtest.Build(func(db *gorm.DB) *gorm.DB {
-		return store.RawNumbered(db, `SELECT '$1', $2, E'\\' FROM t WHERE a = $1 AND (j ? 'k' OR b = $2) OR c = $10 OR d = '?'`,
+		return store.NewNumbered(`SELECT '$1', $2, E'\\' FROM t WHERE a = $1 AND (j ? 'k' OR b = $2) OR c = $10 OR d = '?'`).Raw(db,
 			"a", 2, 3, 4, 5, 6, 7, 8, 9, "ten").Scan(&numberedSink)
 	})
 	require.NoError(t, err)
 	require.Equal(t, `SELECT '$1', $1, E'\\' FROM t WHERE a = $2 AND (j ? 'k' OR b = $3) OR c = $4 OR d = '?'`, sql)
 	require.Equal(t, []any{2, "a", 2, "ten"}, vars)
 	for _, bad := range []string{`a = $3`, `a = $0`, `a = $`, `a = '@x' AND b = $1`} {
-		require.Panics(t, func() { store.RawNumbered(gormtest.DB(), bad, 1, 2) }, bad)
+		require.Panics(t, func() { store.NewNumbered(bad).Raw(gormtest.DB(), 1, 2) }, bad)
 	}
 }
 
@@ -59,7 +59,7 @@ func TestNumberedNames(t *testing.T) {
 // A $ inside a literal stays text however the literal escapes its quote:
 // a doubled quote in either kind, \' in E'...' only (in '...' a backslash
 // is a byte).
-func TestRawNumberedQuotes(t *testing.T) {
+func TestNumberedQuotes(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{`SELECT 'it''s $1', $1`, `SELECT 'it''s $1', ?`},
 		{`SELECT E'it\'s $1', $1`, `SELECT E'it\'s $1', ?`},
@@ -81,9 +81,9 @@ func TestRawNumberedQuotes(t *testing.T) {
 // A []byte or json.RawMessage argument stays one parameter right after "(",
 // where GORM spreads a slice into one placeholder per element and turns an
 // empty one into NULL.
-func TestRawNumberedBytes(t *testing.T) {
+func TestNumberedBytes(t *testing.T) {
 	sql, vars, err := gormtest.Build(func(db *gorm.DB) *gorm.DB {
-		return store.ExecNumbered(db, `UPDATE t SET a = COALESCE($1, a), b = COALESCE($2, b), c = ($3::jsonb), d = $4 WHERE id = $5`,
+		return store.NewNumbered(`UPDATE t SET a = COALESCE($1, a), b = COALESCE($2, b), c = ($3::jsonb), d = $4 WHERE id = $5`).Exec(db,
 			[]byte("ab"), []byte{}, json.RawMessage(`{"k":1}`), json.RawMessage{}, 7)
 	})
 	require.NoError(t, err)

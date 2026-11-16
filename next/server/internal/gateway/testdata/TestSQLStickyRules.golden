@@ -1,4 +1,0 @@
--- sql
-SELECT id, name, source, enabled, priority, match, key_sources,
-	value_regex, ttl_seconds, key_includes, on_failure, updated_by, updated_at, customized, pass_headers FROM sticky_rules ORDER BY priority, id
--- vars

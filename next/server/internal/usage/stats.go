@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/account"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -211,29 +212,30 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 	out := Overview{TZ: tz}
 	var activeToday int64
 	err := s.statsTx(ctx, statsLimitsFor(self), func(tx *gorm.DB) error {
-		var f store.Filter
+		var f store.Conds
 		f.And("u.created_at >= ?", w.last30d)
 		if self != nil {
 			f.And("u.user_id = ?", *self)
 		}
-		args := f.Args()
 		span, err := rollupSpan(ctx, tx, w.last30d, time.Now(), loc)
 		if err != nil {
 			return err
 		}
-		yesterday, today, last5m := addArg(&args, w.yesterday), addArg(&args, w.today), addArg(&args, w.last5m)
 		targets := append(append(append(out.Today.scanTargets(), out.Yesterday.scanTargets()...), out.Last30d.scanTargets()...),
 			&out.Last5m.Requests, &out.Last5m.Tokens, &activeToday)
-		from := statRows(`u.created_at AS at, u.user_id`, ``, f.Cond(), span, &args)
 		g := store.G(ctx, tx)
-		if err := store.RawNumbered(g, `SELECT `+
-			totalsColumns(`u.at >= `+today, false)+`, `+
-			totalsColumns(`u.at >= `+yesterday+` AND u.at < `+today, false)+`, `+
+		// Named parameters: each window bound is used several times.
+		if err := g.Raw(`SELECT `+
+			totalsColumns(`u.at >= @today`, false)+`, `+
+			totalsColumns(`u.at >= @yesterday AND u.at < @today`, false)+`, `+
 			totalsColumns(``, false)+`, `+
-			sumOf(`u.requests`, `u.at >= `+last5m)+`, `+
-			sumOf(`u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens`, `u.at >= `+last5m)+`,
-			count(DISTINCT u.user_id) FILTER (WHERE u.at >= `+today+`)
-			FROM `+from, args...).Row().Scan(targets...); err != nil {
+			sumOf(`u.requests`, `u.at >= @last5m`)+`, `+
+			sumOf(`u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens`, `u.at >= @last5m`)+`,
+			count(DISTINCT u.user_id) FILTER (WHERE u.at >= @today)
+			FROM @rows`, map[string]any{
+			"today": w.today, "yesterday": w.yesterday, "last5m": w.last5m,
+			"rows": statRows(g, clause.Expr{SQL: `u.created_at AS at, u.user_id`}, ``, f, span),
+		}).Row().Scan(targets...); err != nil {
 			return err
 		}
 		if self != nil {
@@ -241,7 +243,10 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 				Total  int64 `json:"total"`
 				Active int64 `json:"active"`
 			}{}
-			return apiKeyCounts(g, *self).Row().Scan(&out.APIKeys.Total, &out.APIKeys.Active)
+			// Active ones are also unexpired.
+			return g.Model(&model.APIKey{}).
+				Select(`count(*), count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now()))`).
+				Where("user_id = ? AND deleted_at IS NULL", *self).Row().Scan(&out.APIKeys.Total, &out.APIKeys.Active)
 		}
 		if users {
 			out.Users = &struct {
@@ -250,7 +255,7 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 				ActiveToday int64 `json:"active_today"`
 			}{}
 			out.Users.ActiveToday = activeToday
-			if err := userCounts(g, w.today).Row().Scan(&out.Users.Total, &out.Users.NewToday); err != nil {
+			if err := g.Model(&model.User{}).Select(`count(*), count(*) FILTER (WHERE created_at >= ?)`, w.today).Where("deleted_at IS NULL").Row().Scan(&out.Users.Total, &out.Users.NewToday); err != nil {
 				return err
 			}
 		}
@@ -264,20 +269,6 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 		return nil
 	})
 	return out, err
-}
-
-// apiKeyCounts selects how many API keys the user has, and how many of them
-// are active and unexpired.
-func apiKeyCounts(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Model(&model.APIKey{}).
-		Select(`count(*), count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now()))`).
-		Where("user_id = ? AND deleted_at IS NULL", userID)
-}
-
-// userCounts selects how many users there are, and how many of them were
-// created since today.
-func userCounts(db *gorm.DB, today time.Time) *gorm.DB {
-	return db.Model(&model.User{}).Select(`count(*), count(*) FILTER (WHERE created_at >= ?)`, today).Where("deleted_at IS NULL")
 }
 
 // Realtime is GET /usage/realtime and GET /me/usage/realtime: the last minute
@@ -336,21 +327,16 @@ func (s *Service) realtime(c *gin.Context, self *int64) {
 	f.And("u.protocol NOT LIKE '%.count_tokens'")
 	var out Realtime
 	err = s.statsTx(ctx, directStats, func(tx *gorm.DB) error {
-		return realtimeQuery(store.G(ctx, tx), f).Row().Scan(&out.RPM, &out.TPM, &out.RecentFailures)
+		return store.G(ctx, tx).Table("usage_logs u").Select(`count(*) FILTER (WHERE u.success),
+			COALESCE(sum(`+realtimeTokens+`) FILTER (WHERE u.success), 0),
+			count(*) FILTER (WHERE `+realtimeFailure+`)`).Scopes(f.Scope()).
+			Row().Scan(&out.RPM, &out.TPM, &out.RecentFailures)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	httpapi.OK(c, out)
-}
-
-// realtimeQuery selects the Realtime figures of the rows f matches.
-func realtimeQuery(db *gorm.DB, f *store.Filter) *gorm.DB {
-	return store.RawNumbered(db, `SELECT count(*) FILTER (WHERE u.success),
-			COALESCE(sum(`+realtimeTokens+`) FILTER (WHERE u.success), 0),
-			count(*) FILTER (WHERE `+realtimeFailure+`)
-			FROM usage_logs u`+f.Cond(), f.Args()...)
 }
 
 // overviewNow is the clock of the overview's calendar windows; a test fixes

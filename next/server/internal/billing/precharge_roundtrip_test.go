@@ -12,13 +12,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// Precharge used to run about a dozen serial statements, half of them repeated
-// by ApplyTx: BEGIN, insert the balance row, lock it, the idempotency lookup,
-// insert the reservation, then the same insert, lock and lookup again, insert
-// the ledger row, update the balance, the event and COMMIT. The merged path
-// must stay at four flushes, as many as its pgx batch took (batch 5a, one
-// statement per flush, took seven): BEGIN, prechargeSQL (lock timeout,
-// lock, reservation and ledger row), the event, COMMIT.
+// A precharge is four flushes: BEGIN, prechargeSQL (lock timeout, lock,
+// reservation and ledger row), the event, COMMIT.
 func TestPrechargeRoundTrips(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()

@@ -60,22 +60,13 @@ func normalize(in core.FallbackCredit, now time.Time) (core.FallbackCredit, erro
 	return in, nil
 }
 
-// creditRow is a stored credit with its prompt digests decoded (the field
-// shadows the raw one of the model: GORM maps a column to the shallowest
-// field of its name).
-type creditRow struct {
-	model.ProviderFallbackCredit
-	PromptDigests store.JSON[[]string] `gorm:"column:prompt_digests"`
-}
-
-// readQuery reads the credit of tokenHash into dst.
-func readQuery(db *gorm.DB, tokenHash string, dst *creditRow) *gorm.DB {
-	return db.Take(dst, "token_hash = ?", tokenHash)
-}
-
 func read(ctx context.Context, q *gorm.DB, tokenHash string) (core.FallbackCredit, error) {
-	var r creditRow
-	if err := readQuery(store.G(ctx, q), tokenHash, &r).Error; err != nil {
+	var r model.ProviderFallbackCredit
+	if err := store.G(ctx, q).Take(&r, "token_hash = ?", tokenHash).Error; err != nil {
+		return core.FallbackCredit{}, err
+	}
+	var digests []string
+	if err := json.Unmarshal(r.PromptDigests, &digests); err != nil {
 		return core.FallbackCredit{}, err
 	}
 	return core.FallbackCredit{
@@ -84,7 +75,7 @@ func read(ctx context.Context, q *gorm.DB, tokenHash string) (core.FallbackCredi
 		Binding:       core.ResourceBinding{AccountID: r.AccountID, PrincipalID: r.PrincipalID, Generation: r.Generation},
 		PluginKey:     r.PluginKey,
 		SourceModel:   r.SourceModel,
-		PromptDigests: r.PromptDigests.V,
+		PromptDigests: digests,
 		ObservedAt:    r.ObservedAt,
 		ExpiresAt:     r.ExpiresAt,
 	}, nil
@@ -139,24 +130,19 @@ func (s *Service) Record(ctx context.Context, input core.FallbackCredit) error {
 		if retained >= int64(s.maxRetained) {
 			return core.ErrRateLimited.WithMessage("fallback credit tracking capacity exceeded")
 		}
-		return g.Create(newRow(in)).Error
+		digests, _ := json.Marshal(in.PromptDigests)
+		return g.Create(&model.ProviderFallbackCredit{
+			TokenHash: in.TokenHash, UserID: in.Owner.UserID, GroupID: in.Owner.GroupID,
+			AccountID: in.Binding.AccountID, PrincipalID: in.Binding.PrincipalID, Generation: in.Binding.Generation,
+			PluginKey: in.PluginKey, SourceModel: in.SourceModel, PromptDigests: digests,
+			ObservedAt: in.ObservedAt, ExpiresAt: in.ExpiresAt,
+		}).Error
 	})
 }
 
 // ownerCredits narrows provider_fallback_credits to owner's records.
 func ownerCredits(db *gorm.DB, owner core.ResourceOwner) *gorm.DB {
 	return db.Model(&model.ProviderFallbackCredit{}).Where("user_id = ? AND group_id = ?", owner.UserID, owner.GroupID)
-}
-
-// newRow is the stored form of a normalized credit.
-func newRow(in core.FallbackCredit) *model.ProviderFallbackCredit {
-	digests, _ := json.Marshal(in.PromptDigests)
-	return &model.ProviderFallbackCredit{
-		TokenHash: in.TokenHash, UserID: in.Owner.UserID, GroupID: in.Owner.GroupID,
-		AccountID: in.Binding.AccountID, PrincipalID: in.Binding.PrincipalID, Generation: in.Binding.Generation,
-		PluginKey: in.PluginKey, SourceModel: in.SourceModel, PromptDigests: digests,
-		ObservedAt: in.ObservedAt, ExpiresAt: in.ExpiresAt,
-	}
 }
 
 func (s *Service) Resolve(ctx context.Context, in core.FallbackCreditLookup) (core.FallbackCredit, error) {

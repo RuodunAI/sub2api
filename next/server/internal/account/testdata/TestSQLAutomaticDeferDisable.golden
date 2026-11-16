@@ -1,7 +1,0 @@
--- sql
-UPDATE "accounts" SET "deferred_auto_disable"=$1,"deferred_auto_disable_reason"=$2,"deferred_auto_disabled_until"=$3 WHERE id = $4
--- vars
-$1 bool false
-$2 string ""
-$3 *time.Time nil
-$4 int64 5

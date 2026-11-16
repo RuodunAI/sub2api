@@ -7,19 +7,7 @@ import (
 
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
-
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
-
-// The usage cell of the account list: totals, today's window and the limit
-// of every listed account in one statement.
-func TestSQLAccountUsageOverview(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return db.Raw(usageOverviewSQL, store.Int64s{3, 4}, time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)).Scan(&struct{}{})
-	})
-}
 
 // usageOverview reads what usageTotals, usageIn and usageLimits read of the
 // same accounts, one statement for the three: accounts with and without

@@ -1,6 +1,0 @@
--- sql
-UPDATE "accounts" SET "rate_limit_tier"=$1 WHERE id = $2 AND rate_limit_tier IS DISTINCT FROM $3
--- vars
-$1 string "max"
-$2 int64 7
-$3 string "max"

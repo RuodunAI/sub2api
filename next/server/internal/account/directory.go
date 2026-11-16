@@ -167,26 +167,19 @@ func (s *Service) groupSnapshot(ctx context.Context, groupID int64) (groupSnap, 
 	return v.(groupSnap), nil
 }
 
-// groupMembersQuery selects the group's schedulable accounts, in
-// scheduling order, as readGroupSnap scans them: the active ones and those
-// under a timed automatic disable, with its release time (else NULL).
-func groupMembersQuery(db *gorm.DB, groupID int64) *gorm.DB {
-	return db.Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
+// readGroupSnap reads the group's snapshot taken at now: its schedulable
+// accounts in scheduling order, the active ones and those under a timed
+// automatic disable with its release time. A miss of the snapshot cache
+// runs it on a gateway request: Raw SQL scanned row by row.
+func readGroupSnap(db *gorm.DB, groupID int64, now time.Time) (groupSnap, error) {
+	snap := groupSnap{at: now, refs: []core.AccountRef{}}
+	err := store.EachRow(db.Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
 			a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
 			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END
 		FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
 		WHERE ag.group_id = ? AND a.deleted_at IS NULL AND a.schedulable
 			AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)
-		ORDER BY a.priority DESC, a.id`, groupID)
-}
-
-// readGroupSnap reads the group's snapshot taken at now. It runs on a
-// gateway request when the snapshot cache misses, so it scans the rows of
-// the Raw statement into local variables, the GORM form that allocates
-// least (BenchmarkHotGroupSnapshot).
-func readGroupSnap(db *gorm.DB, groupID int64, now time.Time) (groupSnap, error) {
-	snap := groupSnap{at: now, refs: []core.AccountRef{}}
-	err := store.EachRow(groupMembersQuery(db, groupID), func(rows *sql.Rows) error {
+		ORDER BY a.priority DESC, a.id`, groupID), func(rows *sql.Rows) error {
 		var a core.AccountRef
 		var mapping, limits []byte
 		var env store.JSON[core.EnvironmentValues]
@@ -257,18 +250,13 @@ func (s *Service) Load(ctx context.Context, id int64) (*core.Account, error) {
 
 // loadLive is loadRow of any live account, unlocked, for Load: a miss of
 // its cache runs it on a gateway request, so it is Raw SQL scanned through
-// Row, the GORM form that allocates least (BenchmarkHotLoadRow).
+// Row.
 func (s *Service) loadLive(ctx context.Context, id int64) (*row, error) {
-	a, err := scanRow(liveRowQuery(store.G(ctx, s.d.DB.Gorm), id).Row())
+	a, err := scanRow(store.G(ctx, s.d.DB.Gorm).Raw(selectRow+` WHERE a.id = ? AND a.deleted_at IS NULL`, id).Row())
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
 	return a, err
-}
-
-// liveRowQuery selects rowColumns of live account id.
-func liveRowQuery(db *gorm.DB, id int64) *gorm.DB {
-	return db.Raw(selectRow+` WHERE a.id = ? AND a.deleted_at IS NULL`, id)
 }
 
 // IsCoolingDown reports whether the account has an active cooldown.
@@ -379,7 +367,11 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		ids = append(ids, id)
 		ts = append(ts, at)
 	}
-	err := flushLastUsed(store.G(ctx, s.d.DB.Gorm), ids, ts).Error
+	// last_used_at only moves forward, and alone: updated_at is the version
+	// other writers check.
+	err := store.G(ctx, s.d.DB.Gorm).Exec(`UPDATE accounts a SET last_used_at = v.t
+		FROM (SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v
+		WHERE a.id = v.id AND (a.last_used_at IS NULL OR a.last_used_at < v.t)`, store.Int64s(ids), store.Times(ts)).Error
 	if err != nil {
 		s.touchMu.Lock()
 		for id, at := range pending {
@@ -390,12 +382,4 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		s.touchMu.Unlock()
 	}
 	return err
-}
-
-// flushLastUsed moves last_used_at of each account ids[i] forward to ts[i],
-// leaving updated_at alone.
-func flushLastUsed(db *gorm.DB, ids []int64, ts []time.Time) *gorm.DB {
-	return db.Exec(`UPDATE accounts a SET last_used_at = v.t
-		FROM (SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v
-		WHERE a.id = v.id AND (a.last_used_at IS NULL OR a.last_used_at < v.t)`, store.Int64s(ids), store.Times(ts))
 }

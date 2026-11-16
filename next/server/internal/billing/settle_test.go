@@ -164,9 +164,8 @@ func TestSettleWithoutReservationOrCharge(t *testing.T) {
 }
 
 // One settlement is BEGIN, settleSQL (release and charge), the event,
-// COMMIT: four flushes, as many as with the pgx batch (batch 5a, one
-// statement per flush, took six); only the event and COMMIT follow the
-// statement under the user's lock.
+// COMMIT: four flushes; only the event and COMMIT follow the statement
+// under the user's lock.
 func TestSettleRoundTrips(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()

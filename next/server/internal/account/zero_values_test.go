@@ -11,7 +11,7 @@ import (
 // The accounts columns with a non-zero default (schedulable, auto_disable,
 // priority, max_concurrency, status) are pointers on the GORM path: a false
 // or 0 the caller sends must reach the row on create and on PATCH, never
-// fall back to the default (TestSQLAccountCreate, TestSQLAccountUpdate).
+// fall back to the default.
 func TestAccountZeroValuesAreWritten(t *testing.T) {
 	e := setup(t)
 	type columns struct {

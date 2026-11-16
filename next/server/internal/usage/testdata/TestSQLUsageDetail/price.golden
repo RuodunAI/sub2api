@@ -1,4 +1,0 @@
--- sql
-SELECT id, model, source FROM "model_prices" WHERE id = $1
--- vars
-$1 int64 3

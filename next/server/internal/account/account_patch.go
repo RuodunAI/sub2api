@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -200,11 +199,22 @@ func (s *Service) refreshFromFacts(ctx context.Context, id int64, observed core.
 		value := string(settings)
 		settingsJSON = &value
 	}
+	set := map[string]any{"updated_at": gorm.Expr("clock_timestamp()")}
+	if modelsChanged {
+		set["models"] = store.NullStrings(models) // nil is NULL
+	}
+	store.SetIf(set, "model_mapping", mapping)
+	store.SetIf(set, "settings", settingsJSON)
 	saved := false
 	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		// Only over the row the plugin saw: a concurrent save ran its own
-		// before_update, and switching to manual mode wins.
-		res := saveFacts(store.G(ctx, tx), id, cur.UpdatedAt, modelsChanged, models, mapping, settingsJSON)
+		// before_update, and switching to manual mode wins when the models
+		// changed.
+		saving := store.G(ctx, tx).Model(&model.Account{}).Where("id = ? AND updated_at = ? AND deleted_at IS NULL", id, cur.UpdatedAt)
+		if modelsChanged {
+			saving = saving.Where("auto_models IS NOT FALSE")
+		}
+		res := saving.Updates(set)
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error
 		}
@@ -239,23 +249,6 @@ func (s *Service) refreshFromFacts(ctx context.Context, id int64, observed core.
 	s.changed(ctx, id)
 	s.kickCCGateway(id, cur.PluginKey, cur.Type)
 	return nil
-}
-
-// saveFacts writes what refreshFromFacts patched over the row version
-// version, unless the account switched to manual models meanwhile and the
-// models changed. A nil models list is NULL, as pgx sent it.
-func saveFacts(db *gorm.DB, id int64, version time.Time, modelsChanged bool, models []string, mapping, settings *string) *gorm.DB {
-	set := map[string]any{"updated_at": gorm.Expr("clock_timestamp()")}
-	if modelsChanged {
-		set["models"] = store.NullStrings(models)
-	}
-	store.SetIf(set, "model_mapping", mapping)
-	store.SetIf(set, "settings", settings)
-	db = db.Model(&model.Account{}).Where("id = ? AND updated_at = ? AND deleted_at IS NULL", id, version)
-	if modelsChanged {
-		db = db.Where("auto_models IS NOT FALSE")
-	}
-	return db.Updates(set)
 }
 
 // createAudit is the account.create audit detail: the subscription type the

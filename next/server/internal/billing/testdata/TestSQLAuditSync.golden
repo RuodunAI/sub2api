@@ -1,8 +1,0 @@
--- sql
-INSERT INTO "audit_logs" ("action","detail","target_id","target_type","user_id") VALUES ($1,$2,$3,$4,NULLIF($5::bigint, 0))
--- vars
-$1 string "price.sync"
-$2 []uint8 [123 34 99 114 101 97 116 101 100 34 58 49 125]
-$3 string "4"
-$4 string "price_source"
-$5 int64 0

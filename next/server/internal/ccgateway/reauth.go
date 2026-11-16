@@ -60,15 +60,6 @@ func (s *Service) ReauthDraft(ctx context.Context, accountID int64) (string, boo
 	return d.Key, false, nil
 }
 
-// reauthKeyQuery locks managed ccgateway account accountID and reads its
-// runtime key.
-func reauthKeyQuery(db *gorm.DB, accountID int64) *gorm.DB {
-	return db.Table("accounts a").Joins("LEFT JOIN ccgateway_runtimes r ON r.account_id = a.id").
-		Select("COALESCE(r.key, a.id::text)").
-		Where("a.id = ? AND a.plugin_key = 'ccgateway' AND a.type = 'managed' AND a.deleted_at IS NULL", accountID).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "a"}})
-}
-
 // CommitReauth verifies login on the same runtime and resets account-side
 // failure/quota state. Runtime mappings, sessions and volumes are retained.
 func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string, fn func(*gorm.DB, string) error) (string, error) {
@@ -85,8 +76,13 @@ func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string,
 		if err := g.Exec(reauthLockSQL, accountID).Error; err != nil {
 			return err
 		}
+		// The runtime key of the managed account, which stays locked.
 		var current string
-		err := reauthKeyQuery(g, accountID).Take(&current).Error
+		err := g.Table("accounts a").Joins("LEFT JOIN ccgateway_runtimes r ON r.account_id = a.id").
+			Select("COALESCE(r.key, a.id::text)").
+			Where("a.id = ? AND a.plugin_key = 'ccgateway' AND a.type = 'managed' AND a.deleted_at IS NULL", accountID).
+			Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "a"}}).
+			Take(&current).Error
 		if store.IsNoRows(err) || (err == nil && current != key) {
 			return draftNotFound(core.ErrInvalidArgument)
 		}

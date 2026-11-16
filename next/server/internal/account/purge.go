@@ -79,7 +79,9 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 		authzVersion = 0
 		g := store.G(ctx, tx)
 		var purged []model.Account
-		if err := purgeAccounts(g, &purged, pluginKey).Error; err != nil {
+		if err := g.Model(&purged).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "type"}, {Name: "name"}}}).
+			Where("plugin_key = ? AND deleted_at IS NULL", pluginKey).
+			Updates(map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()")}).Error; err != nil {
 			return err
 		}
 		var evs []core.Event
@@ -125,14 +127,6 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 	s.purged(ctx, pluginKey, len(ids))
 	slog.InfoContext(ctx, "account: purged plugin accounts", "plugin_key", pluginKey, "count", len(ids))
 	return len(ids), nil
-}
-
-// purgeAccounts marks the live accounts of pluginKey deleted, reading their
-// ids, types and names back into into.
-func purgeAccounts(db *gorm.DB, into *[]model.Account, pluginKey string) *gorm.DB {
-	return db.Model(into).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "type"}, {Name: "name"}}}).
-		Where("plugin_key = ? AND deleted_at IS NULL", pluginKey).
-		Updates(map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()")})
 }
 
 // purged invalidates local caches (CCGateway's request path included) and

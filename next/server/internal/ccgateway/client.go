@@ -14,8 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"gorm.io/gorm"
-
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/features"
 	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/requestfailure"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -307,17 +305,11 @@ func (a *attempt) resolveShared() *outcome {
 
 // sharedAccountType is the type of ccgateway account id, read for every
 // request forwarded to the shared runtime (not cached, unlike the account
-// state of per-account runtimes). Raw SQL scanned through Row: the least
-// GORM allocates for one value (BenchmarkHotSharedAccountType).
+// state of per-account runtimes): Raw SQL scanned through Row.
 func (s *Service) sharedAccountType(ctx context.Context, id int64) (string, error) {
 	var kind string
-	err := sharedAccountTypeQuery(store.G(ctx, s.DB.Gorm), id).Row().Scan(&kind)
+	err := store.G(ctx, s.DB.Gorm).Raw("SELECT type FROM accounts WHERE id=? AND plugin_key='ccgateway'", id).Row().Scan(&kind)
 	return kind, err
-}
-
-// sharedAccountTypeQuery selects the type of ccgateway account id.
-func sharedAccountTypeQuery(db *gorm.DB, id int64) *gorm.DB {
-	return db.Raw("SELECT type FROM accounts WHERE id=? AND plugin_key='ccgateway'", id)
 }
 
 func (a *attempt) finishOnce() {

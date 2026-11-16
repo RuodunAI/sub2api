@@ -229,8 +229,9 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 // reports why the action does not apply.
 func lockSettlement(ctx context.Context, tx *gorm.DB, usageLogID int64) (*reservedRowState, *Settlement, error) {
 	// Shared lock order with managed reconciliation: task, usage, settlement.
+	// Exec: the task rows are locked, not read.
 	g := store.G(ctx, tx)
-	if err := lockTasksOfUsage(g, usageLogID).Error; err != nil {
+	if err := g.Exec(`SELECT public_id FROM async_tasks WHERE usage_log_id=? FOR UPDATE`, usageLogID).Error; err != nil {
 		return nil, nil, err
 	}
 	p := &pending{}
@@ -252,12 +253,6 @@ func lockSettlement(ctx context.Context, tx *gorm.DB, usageLogID int64) (*reserv
 		return nil, nil, err
 	}
 	return st, e, nil
-}
-
-// lockTasksOfUsage locks the async_tasks of a usage row. Exec: the rows are
-// locked, not read.
-func lockTasksOfUsage(db *gorm.DB, usageLogID int64) *gorm.DB {
-	return db.Exec(`SELECT public_id FROM async_tasks WHERE usage_log_id=? FOR UPDATE`, usageLogID)
 }
 
 // markUsageRow moves a usage row to status, with the other columns of set,

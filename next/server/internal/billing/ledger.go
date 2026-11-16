@@ -124,7 +124,8 @@ func (s *Service) ApplyTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange
 
 func findLedger(ctx context.Context, q *gorm.DB, key string) (*core.LedgerResult, error) {
 	var row model.BalanceLedger
-	err := ledgerByKey(store.G(ctx, q), key).Take(&row).Error
+	err := store.G(ctx, q).Model(&model.BalanceLedger{}).Select("id", "balance_after", "user_id", "delta", "kind").
+		Where("idempotency_key = ?", key).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
@@ -133,13 +134,6 @@ func findLedger(ctx context.Context, q *gorm.DB, key string) (*core.LedgerResult
 	}
 	return &core.LedgerResult{Duplicate: true, LedgerID: row.ID, BalanceAfter: row.BalanceAfter,
 		UserID: row.UserID, Delta: row.Delta, Kind: row.Kind}, nil
-}
-
-// ledgerByKey is the ledger row of an idempotency key, as far as a
-// duplicate is compared and reported.
-func ledgerByKey(db *gorm.DB, key string) *gorm.DB {
-	return db.Model(&model.BalanceLedger{}).Select("id", "balance_after", "user_id", "delta", "kind").
-		Where("idempotency_key = ?", key)
 }
 
 // CacheBalance stores a balance observed at ledgerID in Redis (best effort;

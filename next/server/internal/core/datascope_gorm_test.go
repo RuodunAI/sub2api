@@ -16,16 +16,20 @@ import (
 
 func TestScopeTableScopeSQL(t *testing.T) {
 	s := core.DataScope{Owner: 7, Groups: []int64{0, 3}, IDs: []int64{5}, PairG: []int64{2}, PairID: []int64{9}}
+	// The predicate text is fixed per table: one plan whatever the ids.
 	for _, c := range []struct {
-		t     core.ScopeTable
-		table string
-	}{{core.AccountRows, "accounts a"}, {core.ProxyRows, "proxies p"}} {
+		t            core.ScopeTable
+		table, where string
+	}{{core.AccountRows, "accounts a", "($1::boolean OR COALESCE(a.created_by = $2::bigint, false) OR a.id = ANY($3::bigint[])" +
+		" OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ($4::boolean OR ag.group_id = ANY($5::bigint[])))" +
+		" OR EXISTS (SELECT 1 FROM account_groups ag JOIN unnest($6::bigint[], $7::bigint[]) sp(g, x) ON sp.x = ag.account_id AND (sp.g = 0 OR sp.g = ag.group_id) WHERE ag.account_id = a.id))"},
+		{core.ProxyRows, "proxies p", "($1::boolean OR COALESCE(p.created_by = $2::bigint, false) OR p.id = ANY($3::bigint[]))"}} {
 		query, vars, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB {
 			var ids []int64
 			return tx.Table(c.table).Select(c.t.ID).Scopes(c.t.Scope(s)).Find(&ids)
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "SELECT "+c.t.ID+" FROM "+c.table+" WHERE "+c.t.SQL(1), query)
+		assert.Equal(t, "SELECT "+c.t.ID+" FROM "+c.table+" WHERE "+c.where, query)
 		want := c.t.Args(s)
 		require.Len(t, vars, len(want))
 		for i, v := range vars {
@@ -38,10 +42,9 @@ func TestScopeTableScopeSQL(t *testing.T) {
 	}
 }
 
-// TestScopeTableScopeMatchesFilter reads one data set through the raw path
-// (store.Filter with Cond and Args) and the GORM scope, and checks both
-// against DataScope.AllowsRow.
-func TestScopeTableScopeMatchesFilter(t *testing.T) {
+// TestScopeTableScopeMatchesAllowsRow reads one data set through the GORM
+// scope and checks it against DataScope.AllowsRow.
+func TestScopeTableScopeMatchesAllowsRow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping database test in short mode")
 	}
@@ -110,13 +113,6 @@ func TestScopeTableScopeMatchesFilter(t *testing.T) {
 	}
 	for name, s := range scopes {
 		for _, tb := range tables {
-			var f store.Filter
-			f.And(tb.t.Cond(), tb.t.Args(s)...)
-			rows, err := db.SQL.QueryContext(ctx, "SELECT "+tb.t.ID+" FROM "+tb.from+f.Cond()+" ORDER BY "+tb.t.ID, f.Args()...)
-			require.NoError(t, err)
-			raw, err := testutil.Column[int64](rows)
-			require.NoError(t, err, name)
-
 			var viaGORM []int64
 			require.NoError(t, store.G(ctx, db.Gorm).Table(tb.from).Scopes(tb.t.Scope(s)).Order(tb.t.ID).Pluck(tb.t.ID, &viaGORM).Error, name)
 
@@ -126,7 +122,6 @@ func TestScopeTableScopeMatchesFilter(t *testing.T) {
 					want = append(want, r.id)
 				}
 			}
-			assert.ElementsMatch(t, want, raw, "%s %s: raw path", name, tb.from)
 			assert.ElementsMatch(t, want, viaGORM, "%s %s: GORM scope", name, tb.from)
 		}
 	}

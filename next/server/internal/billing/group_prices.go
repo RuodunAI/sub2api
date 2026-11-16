@@ -48,7 +48,8 @@ type pricedGroupRow struct {
 // loadGroups reads the groups (alias g) cond selects, by id.
 func loadGroups(ctx context.Context, q *gorm.DB, cond string, args ...any) ([]pricedGroup, error) {
 	var rows []pricedGroupRow
-	if err := pricedGroups(store.G(ctx, q), cond, args...).Scan(&rows).Error; err != nil {
+	if err := store.G(ctx, q).Table("groups g").Select(`g.id, g.name, g.rate_multiplier, g.model_allowlist, g.model_filter_mode,
+		g.visibility = 'public' AS public`).Where(cond, args...).Order("g.id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]pricedGroup, len(rows))
@@ -57,12 +58,6 @@ func loadGroups(ctx context.Context, q *gorm.DB, cond string, args ...any) ([]pr
 			ModelAllowlist: r.ModelAllowlist.V, ModelFilterMode: r.ModelFilterMode}}
 	}
 	return out, nil
-}
-
-// pricedGroups selects what pricing reads of the groups cond selects.
-func pricedGroups(db *gorm.DB, cond string, args ...any) *gorm.DB {
-	return db.Table("groups g").Select(`g.id, g.name, g.rate_multiplier, g.model_allowlist, g.model_filter_mode,
-		g.visibility = 'public' AS public`).Where(cond, args...).Order("g.id")
 }
 
 // catalog is the enabled global prices by model.

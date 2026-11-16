@@ -1,4 +1,0 @@
--- sql
-SELECT "id" FROM "usage_logs" WHERE request_id = $1 FOR UPDATE
--- vars
-$1 string "req-1"

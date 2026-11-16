@@ -23,9 +23,7 @@ import (
 // stored, a repeat next to its first record, a repeat far from it and two
 // ids that differ only past the 64 characters the column keeps: each of
 // them is skipped, the first record of an id is the one inserted, and each
-// inserted record gets its own row's id. (Batch 5a cut the batch into
-// power-of-two chunks, 128, 64, 8, 2 and 1 here, and placed the repeats on
-// both sides of the chunk boundaries.)
+// inserted record gets its own row's id.
 func TestInsertBatchChunksAndDuplicates(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -146,11 +144,10 @@ func TestSettleConcurrentSameRow(t *testing.T) {
 	}
 }
 
-// pgxValuesSQL and pgxValues are the one-row VALUES insert of the pgx
-// batch that insertUsageSQL replaced, as f99d1a3a wrote it (settler.go
-// insertAtomic): the statement and its arguments, written out on their own,
-// not derived from usageLogColumns and appendUsageRow, which they check.
-const pgxValuesSQL = `
+// valuesSQL and valuesArgs are a plain one-row VALUES insert: the statement
+// and its arguments, written out on their own, not derived from
+// usageLogColumns and appendUsageRow, which they check.
+const valuesSQL = `
 	INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, plugin_key, plugin_version,
 		platform, protocol, endpoint, model, upstream_model, stream, status_code, success, error_type,
 		error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
@@ -163,7 +160,7 @@ const pgxValuesSQL = `
 	ON CONFLICT (request_id) DO NOTHING
 	RETURNING id`
 
-func pgxValues(rec *core.UsageRecord) []any {
+func valuesArgs(rec *core.UsageRecord) []any {
 	status := initialStatus(rec)
 	var priceID *int64
 	var exprHash, mode string
@@ -203,8 +200,8 @@ func pgxValues(rec *core.UsageRecord) []any {
 		jsonOr(rec.SchedDecisions, "[]"), pluginDetailJSON(rec.PluginDetail), anomalies, rec.UploadMs, conversionJSON(rec.Conversion)}
 }
 
-// The batch insert stores each value as the one-row VALUES insert of the
-// pgx batch it replaced did (pgxValues), column by column: a nanosecond
+// The batch insert stores each value as a one-row VALUES insert does
+// (valuesArgs), column by column: a nanosecond
 // timestamp, a rate past the column's scale, NULL and non-NULL account and
 // conversion, documents, free and billable records.
 func TestInsertBatchMatchesValuesInsert(t *testing.T) {
@@ -230,7 +227,7 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	var batch []*core.UsageRecord
 	for name, build := range variants {
 		var id int64
-		if err := f.db.SQL.QueryRowContext(ctx, pgxValuesSQL, pgxValues(build("values-"+name))...).Scan(&id); err != nil {
+		if err := f.db.SQL.QueryRowContext(ctx, valuesSQL, valuesArgs(build("values-"+name))...).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		batch = append(batch, build("unnest-"+name))
@@ -253,8 +250,7 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	}
 }
 
-// Any batch is one statement, one round trip, as the pgx batch was (batch
-// 5a took one per power-of-two chunk: 300 is 128, 128, 32, 8 and 4).
+// Any batch, 300 records here, is one statement and one round trip.
 func TestInsertBatchOneStatement(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

@@ -449,13 +449,9 @@ func SaveAccountFeaturePolicyTx(ctx context.Context, tx *gorm.DB, id int64, p Ac
 	if err != nil {
 		return err
 	}
-	return saveFeaturePolicy(store.G(ctx, tx), id, p.Mode, raw, old.Revision+1).Error
-}
-
-// saveFeaturePolicy writes account id's policy at revision.
-func saveFeaturePolicy(db *gorm.DB, id int64, mode string, overrides json.RawMessage, revision int64) *gorm.DB {
-	return db.Clauses(upsertAccountRow("mode", "overrides", "revision")).
-		Create(&model.CcgatewayAccountFeaturePolicy{AccountID: id, Mode: mode, Overrides: overrides, Revision: &revision})
+	revision := old.Revision + 1
+	return store.G(ctx, tx).Clauses(upsertAccountRow("mode", "overrides", "revision")).
+		Create(&model.CcgatewayAccountFeaturePolicy{AccountID: id, Mode: p.Mode, Overrides: raw, Revision: &revision}).Error
 }
 
 func (s *Service) resolvedWorkerPolicy(ctx context.Context, c Config, accountID, groupID int64) (features.WorkerPolicy, error) {

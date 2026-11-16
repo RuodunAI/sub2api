@@ -1,5 +1,0 @@
--- sql
-UPDATE "proxies" SET "real_ip"=$1,"real_ip_updated_at"=now() WHERE id = $2
--- vars
-$1 string "203.0.113.7"
-$2 int64 5

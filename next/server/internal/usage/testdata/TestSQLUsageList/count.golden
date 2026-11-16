@@ -1,5 +1,5 @@
 -- sql
-SELECT count(*) FROM usage_logs u WHERE u.model = $1 AND u.success = $2 AND EXISTS (SELECT 1 FROM api_keys fk WHERE fk.id=u.api_key_id AND fk.name ILIKE $3 ESCAPE E'\\') AND u.created_at >= $4 AND u.created_at < $5
+SELECT count(*) FROM usage_logs u WHERE u.model = $1 AND u.success = $2 AND (EXISTS (SELECT 1 FROM api_keys fk WHERE fk.id=u.api_key_id AND fk.name ILIKE $3 ESCAPE E'\\')) AND u.created_at >= $4 AND u.created_at < $5
 -- vars
 $1 string "claude"
 $2 bool true

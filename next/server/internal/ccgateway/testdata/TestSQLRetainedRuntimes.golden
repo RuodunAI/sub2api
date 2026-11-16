@@ -1,3 +1,0 @@
--- sql
-SELECT r.key, a.id AS account_id, a.name AS account_name, a.type AS account_type, a.deleted_at, COALESCE(r.purge_after, r.retired_at) AS purge_at, COALESCE(r.purge_after, r.retired_at) <= now() AS due FROM ccgateway_runtimes r JOIN accounts a ON a.id = r.account_id WHERE a.plugin_key = 'ccgateway' AND a.deleted_at IS NOT NULL AND r.retired_at IS NOT NULL AND r.purged_at IS NULL ORDER BY purge_at, r.key
--- vars

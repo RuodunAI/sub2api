@@ -9,8 +9,8 @@ import (
 
 // Query building helpers for the GORM path.
 
-// Conds are WHERE conditions gathered one at a time and applied together:
-// the GORM counterpart of Filter. The zero value holds none.
+// Conds are WHERE conditions gathered one at a time and applied together.
+// The zero value holds none.
 type Conds []func(*gorm.DB) *gorm.DB
 
 // And adds cond, whose "?" placeholders take args in order; the conditions

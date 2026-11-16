@@ -1,8 +1,0 @@
--- sql
-UPDATE "usage_logs" SET "anomalies"=anomalies || $1::jsonb,"base_cost"=$2,"billing_status"=$3,"total_cost"=$4 WHERE id = $5
--- vars
-$1 []uint8 [123 34 114 101 99 111 110 99 105 108 101 34 58 34 114 101 102 117 110 100 101 100 34 125]
-$2 decimal.Decimal 0
-$3 string "free"
-$4 decimal.Decimal 0
-$5 int64 5

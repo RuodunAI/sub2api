@@ -298,11 +298,10 @@ func (r *stickyRule) decodeDocuments(match, sources, includes []byte) {
 	}
 }
 
-// listRules reads every rule. The rules cache reloads it on the request
-// path, so it is Raw SQL scanned row by row (scanRule), the form that
-// allocates least (BenchmarkHotStickyRules).
+// listRules reads every rule in rank order. The rules cache reloads it on
+// the request path: Raw SQL scanned row by row (scanRule).
 func listRules(ctx context.Context, q *gorm.DB) ([]*stickyRule, error) {
-	rows, err := rulesQuery(store.G(ctx, q)).Rows()
+	rows, err := store.G(ctx, q).Raw(`SELECT ` + ruleColumns + ` FROM sticky_rules ORDER BY priority, id`).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -316,11 +315,6 @@ func listRules(ctx context.Context, q *gorm.DB) ([]*stickyRule, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
-}
-
-// rulesQuery selects ruleColumns of every rule, in rank order.
-func rulesQuery(db *gorm.DB) *gorm.DB {
-	return db.Raw(`SELECT ` + ruleColumns + ` FROM sticky_rules ORDER BY priority, id`)
 }
 
 // ---------------------------------------------------------------- per-request state

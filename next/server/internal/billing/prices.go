@@ -68,19 +68,14 @@ func (r *priceRow) price() *Price {
 	return p
 }
 
-// priceByID selects the price id, locking its model_prices row when lock is
-// set.
-func priceByID(db *gorm.DB, id int64, lock bool) *gorm.DB {
-	db = pricesWithSource(db).Select(priceColumns).Where("mp.id = ?", id)
+func (s *Service) getPrice(ctx context.Context, q *gorm.DB, id int64, lock bool) (*Price, error) {
+	db := pricesWithSource(store.G(ctx, q)).Select(priceColumns).Where("mp.id = ?", id)
 	if lock {
+		// The price row only, not its source.
 		db = db.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "mp"}})
 	}
-	return db
-}
-
-func (s *Service) getPrice(ctx context.Context, q *gorm.DB, id int64, lock bool) (*Price, error) {
 	var row priceRow
-	err := priceByID(store.G(ctx, q), id, lock).Take(&row).Error
+	err := db.Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("price not found")
 	}
@@ -134,7 +129,8 @@ func (s *Service) listPrices(c *gin.Context) {
 		return
 	}
 	var rows []priceRow
-	if err := pricePage(g, f, page, size).Scan(&rows).Error; err != nil {
+	if err := pricesWithSource(g).Select(priceColumns).Scopes(f.Scope()).Order("mp.model, mp.id").
+		Limit(size).Offset((page - 1) * size).Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -143,11 +139,6 @@ func (s *Service) listPrices(c *gin.Context) {
 		items = append(items, rows[i].price())
 	}
 	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
-}
-
-// pricePage is one page of the prices f selects, by model.
-func pricePage(db *gorm.DB, f store.Conds, page, size int) *gorm.DB {
-	return pricesWithSource(db).Select(priceColumns).Scopes(f.Scope()).Order("mp.model, mp.id").Limit(size).Offset((page - 1) * size)
 }
 
 func (s *Service) showPrice(c *gin.Context) {
@@ -240,11 +231,11 @@ func (s *Service) createPrice(c *gin.Context) {
 		return
 	}
 	var fields []core.FieldError
-	model, mode := deref(in.Model), deref(in.Mode)
+	name, mode := deref(in.Model), deref(in.Mode)
 	switch {
-	case model == "":
+	case name == "":
 		fields = append(fields, modelField("required"))
-	case !manifest.ValidModelID(model):
+	case !manifest.ValidModelID(name):
 		fields = append(fields, modelField("invalid"))
 	}
 	if mode == "" {
@@ -263,7 +254,11 @@ func (s *Service) createPrice(c *gin.Context) {
 	uid, _ := core.UserID(ctx)
 	var p *Price
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
-		row := manualPrice(model, ck, enabled, deref(in.Note), nullID(uid))
+		// Every column is written, enabled and expr_version included;
+		// updated_at is the default.
+		version := ck.prog.Version()
+		row := &model.ModelPrice{Model: name, Mode: ck.mode, Config: ck.config, Expression: ck.src, ExprVersion: &version,
+			ExprHash: ck.prog.Hash(), Source: SourceManual, Enabled: &enabled, Note: deref(in.Note), UpdatedBy: nullID(uid)}
 		if err := store.G(ctx, tx).Create(row).Error; err != nil {
 			return err
 		}
@@ -384,15 +379,6 @@ func (s *Service) deletePrice(c *gin.Context) {
 	}
 	s.changed(ctx, "prices")
 	httpapi.NoContent(c)
-}
-
-// manualPrice is a price an administrator typed in, as created. Every
-// column is written, enabled and expr_version included; updated_at is the
-// default.
-func manualPrice(name string, ck *checked, enabled bool, note string, by *int64) *model.ModelPrice {
-	version := ck.prog.Version()
-	return &model.ModelPrice{Model: name, Mode: ck.mode, Config: ck.config, Expression: ck.src, ExprVersion: &version,
-		ExprHash: ck.prog.Hash(), Source: SourceManual, Enabled: &enabled, Note: note, UpdatedBy: by}
 }
 
 // updatePriceRow writes the columns of set to the price id and moves its
@@ -617,12 +603,7 @@ func expressionFor(mode string, config json.RawMessage, expression string) (stri
 // recordHistory keeps an expression (hash, canonical text, version) on q
 // where a settlement retry reads it back.
 func recordHistory(ctx context.Context, q *gorm.DB, p *expr.Program) error {
-	return insertHistory(store.G(ctx, q), p).Error
-}
-
-// insertHistory is recordHistory's statement on db.
-func insertHistory(db *gorm.DB, p *expr.Program) *gorm.DB {
-	return db.Exec(`
+	return store.G(ctx, q).Exec(`
 		INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES (?, ?, ?)
-		ON CONFLICT (expr_hash) DO NOTHING`, p.Hash(), p.Expression(), p.Version())
+		ON CONFLICT (expr_hash) DO NOTHING`, p.Hash(), p.Expression(), p.Version()).Error
 }

@@ -194,19 +194,14 @@ func scopedAccount(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
 // lockAccountRow locks the accounts row (alias a) of a joined read.
 var lockAccountRow = clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "a"}}
 
-// rowQuery reads one live account in scope as selectRow, locked if lock.
-func rowQuery(db *gorm.DB, id int64, scope core.DataScope, lock bool) *gorm.DB {
-	db = selectRows(db).Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope))
-	if lock {
-		db = db.Clauses(lockAccountRow)
-	}
-	return db
-}
-
 // loadRow returns one live account in scope; rows outside the scope are
 // 404 like missing ones.
 func (s *Service) loadRow(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope, lock bool) (*row, error) {
-	a, err := scanRow(rowQuery(store.G(ctx, q), id, scope, lock).Row())
+	db := selectRows(store.G(ctx, q)).Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope))
+	if lock {
+		db = db.Clauses(lockAccountRow)
+	}
+	a, err := scanRow(db.Row())
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
@@ -795,8 +790,8 @@ func (in *input) paramOverride() *string {
 // columns are the account columns a PATCH writes: the fields present (false
 // and 0 included) and what the update derived from them (the settings, the
 // status reason, the JSON documents, admin_locked), with updated_at. A
-// present list that is nil keeps the column, as the NULL pgx sent for it
-// did. proxy_id and credentials_enc are the caller's to add.
+// present list that is nil keeps the column. proxy_id and credentials_enc
+// are the caller's to add.
 func (in *input) columns(settings, reason, mapping, limits *string, adminLocked *bool) map[string]any {
 	set := map[string]any{"updated_at": gorm.Expr("clock_timestamp()")}
 	store.SetIf(set, "name", in.Name)
@@ -837,11 +832,6 @@ func setList(set map[string]any, column string, v *[]string) {
 	if v != nil && *v != nil {
 		set[column] = store.Strings(*v)
 	}
-}
-
-// updateScoped writes set to account id if it is in scope.
-func updateScoped(db *gorm.DB, id int64, scope core.DataScope, set map[string]any) *gorm.DB {
-	return scopedAccount(db, id, scope).Updates(set)
 }
 
 // changedFields lists the request fields present in a PATCH for the audit
@@ -1309,17 +1299,12 @@ func setGroups(ctx context.Context, tx *gorm.DB, id int64, groupIDs []int64) err
 // accountInsertColumns are the columns a create writes; the others take
 // their defaults. Those with a non-zero default (status, schedulable,
 // priority, max_concurrency, weight, auto_disable, spm_window_seconds) are
-// pointers in model.Account, set by insertAccount's caller, so a false or 0
-// the caller chose is written as such.
+// pointers in model.Account, always set by the create, so a false or 0 the
+// caller chose is written as such.
 var accountInsertColumns = []string{"name", "plugin_key", "type", "credentials_enc", "settings",
 	"proxy_id", "status", "schedulable", "priority", "max_concurrency", "created_by",
 	"weight", "models", "model_mapping", "rpm_limit", "tpm_limit", "auto_disable", "subscription_type", "auto_models", "model_limits", "spm_limit", "environment", "header_passthrough", "param_override",
 	"conversion_loss_policy", "spm_window_seconds"}
-
-// insertAccount inserts a and reads its id back.
-func insertAccount(db *gorm.DB, a *model.Account) *gorm.DB {
-	return db.Select(accountInsertColumns).Create(a)
-}
 
 // nonZero is &v, or nil (NULL) for the zero value: NULLIF(v, zero).
 func nonZero[T comparable](v T) *T {
@@ -1554,7 +1539,7 @@ func (s *Service) create(c *gin.Context) {
 			ModelLimits: json.RawMessage(modelLimitsJSON(modelLimits)), SpmLimit: spm, Environment: environmentJSON(environment),
 			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(in.paramOverride()),
 			ConversionLossPolicy: in.ConversionLossPolicy.Stored(), SpmWindowSeconds: &spmWindow}
-		if err := insertAccount(store.G(ctx, tx), &created).Error; err != nil {
+		if err := store.G(ctx, tx).Select(accountInsertColumns).Create(&created).Error; err != nil {
 			return err
 		}
 		id = created.ID
@@ -1837,7 +1822,7 @@ func (s *Service) update(c *gin.Context) {
 		if enc != nil {
 			set["credentials_enc"] = enc
 		}
-		if err := updateScoped(store.G(ctx, tx), id, scope, set).Error; err != nil {
+		if err := scopedAccount(store.G(ctx, tx), id, scope).Updates(set).Error; err != nil {
 			return err
 		}
 		if statusChanged && *in.Status == "active" && limitDisabled(locked.Status, locked.AutoDisabledSource) {
@@ -1997,14 +1982,6 @@ func resetStatus(db *gorm.DB, id int64) *gorm.DB {
 		"auto_disabled_until": nil, "admin_locked": false, "updated_at": gorm.Expr("clock_timestamp()")})
 }
 
-// softDelete marks live account id in scope deleted, reading its plugin
-// key, type and name back into into.
-func softDelete(db *gorm.DB, into *model.Account, id int64, scope core.DataScope) *gorm.DB {
-	return db.Model(into).Table("accounts a").Clauses(clause.Returning{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "type"}, {Name: "name"}}}).
-		Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope)).
-		Updates(map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()")})
-}
-
 // clearCooldown deletes the account's runtime scheduling block (the Redis
 // cooldown key) and reports whether there was one.
 func (s *Service) clearCooldown(ctx context.Context, id int64) (bool, error) {
@@ -2033,7 +2010,10 @@ func (s *Service) delete(c *gin.Context) {
 	var authzVersion int64
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var deleted model.Account
-		res := softDelete(store.G(ctx, tx), &deleted, id, scope)
+		res := store.G(ctx, tx).Model(&deleted).Table("accounts a").
+			Clauses(clause.Returning{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "type"}, {Name: "name"}}}).
+			Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope)).
+			Updates(map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()")})
 		if res.Error != nil {
 			return res.Error
 		}

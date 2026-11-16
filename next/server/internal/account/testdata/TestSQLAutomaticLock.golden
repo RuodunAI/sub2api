@@ -1,7 +1,0 @@
--- sql
-SELECT name,plugin_key,type,status,status_reason,auto_disabled_source,auto_disable,auto_disabled_until,
-		deferred_auto_disable,deferred_auto_disable_reason,deferred_auto_disabled_until,clock_timestamp() FROM "accounts" WHERE id = $1 AND deleted_at IS NULL AND ($2 = '' OR plugin_key = $3) FOR UPDATE
--- vars
-$1 int64 5
-$2 string "anthropic"
-$3 string "anthropic"

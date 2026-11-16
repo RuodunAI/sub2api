@@ -1,5 +1,0 @@
--- sql
-UPDATE "pending_settlements" SET "last_error"=$1 WHERE id = $2
--- vars
-$1 string "refunded by an administrator: x"
-$2 int64 9

@@ -254,7 +254,8 @@ func (s *Service) refreshAccount(ctx context.Context, id int64, force bool) (*Re
 	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		// Only over the credentials this renewal started from: an
 		// administrator who saved new ones meanwhile wins.
-		res := renewCredentials(store.G(ctx, tx), id, a.CredEnc, enc)
+		res := store.G(ctx, tx).Model(&model.Account{}).Where("id = ? AND credentials_enc = ? AND deleted_at IS NULL", id, a.CredEnc).
+			Updates(map[string]any{"credentials_enc": enc, "updated_at": gorm.Expr("clock_timestamp()")})
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error
 		}
@@ -486,11 +487,4 @@ func (s *Service) dueAccounts(ctx context.Context, keys []string, after int64) (
 		}
 	}
 	return due, last, n, nil
-}
-
-// renewCredentials replaces the credentials of live account id while they
-// are still old, the ones a renewal started from.
-func renewCredentials(db *gorm.DB, id int64, old, renewed []byte) *gorm.DB {
-	return db.Model(&model.Account{}).Where("id = ? AND credentials_enc = ? AND deleted_at IS NULL", id, old).
-		Updates(map[string]any{"credentials_enc": renewed, "updated_at": gorm.Expr("clock_timestamp()")})
 }

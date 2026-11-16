@@ -35,12 +35,14 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 	known := false
 	before := func(tx *gorm.DB) error {
 		known = false
+		// The persistence of one helper usage record is serialized; its
+		// receipt and usage row are read locked.
 		g := store.G(ctx, tx)
-		if e := lockHelperUsage(g, rec.RequestID).Error; e != nil {
+		if e := g.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, "helper-usage:"+rec.RequestID).Error; e != nil {
 			return e
 		}
 		var old string
-		e := helperUsageReceipt(g, rec.RequestID).Row().Scan(&old)
+		e := g.Model(&model.ProviderHelperUsageReceipt{}).Select("digest").Where("request_id = ?", rec.RequestID).Clauses(store.ForUpdate).Row().Scan(&old)
 		if e != nil && !store.IsNoRows(e) {
 			return e
 		}
@@ -49,7 +51,7 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 			return fmt.Errorf("durable usage receipt conflict")
 		}
 		var usageID int64
-		e = lockedUsageID(g, rec.RequestID).Row().Scan(&usageID)
+		e = g.Model(&model.UsageLog{}).Select("id").Where("request_id = ?", rec.RequestID).Clauses(store.ForUpdate).Row().Scan(&usageID)
 		if e != nil && !store.IsNoRows(e) {
 			return e
 		}
@@ -69,22 +71,6 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 	}
 	_, err = s.insertAtomic(ctx, []*core.UsageRecord{rec}, before, after, false)
 	return err
-}
-
-// lockHelperUsage serializes the persistence of one helper usage record.
-func lockHelperUsage(db *gorm.DB, requestID string) *gorm.DB {
-	return db.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, "helper-usage:"+requestID)
-}
-
-// helperUsageReceipt selects, locked, the digest a helper usage record was
-// persisted with.
-func helperUsageReceipt(db *gorm.DB, requestID string) *gorm.DB {
-	return db.Model(&model.ProviderHelperUsageReceipt{}).Select("digest").Where("request_id = ?", requestID).Clauses(store.ForUpdate)
-}
-
-// lockedUsageID selects, locked, the id of the usage row of requestID.
-func lockedUsageID(db *gorm.DB, requestID string) *gorm.DB {
-	return db.Model(&model.UsageLog{}).Select("id").Where("request_id = ?", requestID).Clauses(store.ForUpdate)
 }
 
 type helperUsageOutbox interface {

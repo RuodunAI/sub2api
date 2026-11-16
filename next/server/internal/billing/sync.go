@@ -308,8 +308,9 @@ func (s *Service) updateSource(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	err = updateSourceRow(store.G(ctx, s.db.Gorm), id, map[string]any{
+	err = store.G(ctx, s.db.Gorm).Model(&model.PriceSyncSource{}).Where("id = ?", id).Updates(map[string]any{
 		"name": name, "kind": kind, "url": u, "api_key_enc": enc, "options": opts, "enabled": enabled,
+		"updated_at": gorm.Expr("now()"),
 	}).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("a price source with this name already exists"))
@@ -346,13 +347,6 @@ func (s *Service) deleteSource(c *gin.Context) {
 	}
 	s.changed(ctx, "prices")
 	httpapi.NoContent(c)
-}
-
-// updateSourceRow writes the columns of set to the source id and moves its
-// updated_at, as an edit of the source does.
-func updateSourceRow(db *gorm.DB, id int64, set map[string]any) *gorm.DB {
-	set["updated_at"] = gorm.Expr("now()")
-	return db.Model(&model.PriceSyncSource{}).Where("id = ?", id).Updates(set)
 }
 
 // setSourceStatus records the outcome of a fetch or an import on the source
@@ -926,25 +920,6 @@ func (s *Service) currentPrices(ctx context.Context, q *gorm.DB) (map[string]*Sy
 	return out, nil
 }
 
-// insertSyncedPrice creates the price of name imported from the source:
-// a map on the bare table writes every column as the INSERT named it and
-// reads nothing back.
-func insertSyncedPrice(db *gorm.DB, name string, p *syncPrice, sourceID int64, by *int64) *gorm.DB {
-	return db.Table(model.ModelPrice{}.TableName()).Create(map[string]any{
-		"model": name, "mode": p.Mode, "config": p.Config, "expression": p.Expression, "expr_version": p.version,
-		"expr_hash": p.hash, "source": SourceSync, "sync_source_id": sourceID, "synced_at": gorm.Expr("now()"),
-		"enabled": true, "note": "", "updated_by": by,
-	})
-}
-
-// auditSync writes the audit row of an import by user (0 = none).
-func auditSync(db *gorm.DB, user, sourceID int64, detail []byte) *gorm.DB {
-	return db.Table(model.AuditLog{}.TableName()).Create(map[string]any{
-		"user_id": gorm.Expr("NULLIF(?::bigint, 0)", user), "action": "price.sync", "target_type": "price_source",
-		"target_id": fmt.Sprint(sourceID), "detail": detail,
-	})
-}
-
 func syncAction(in *syncPrice, cur *SyncCurrent) string {
 	switch {
 	case cur == nil:
@@ -1026,24 +1001,24 @@ func (s *Service) applySync(c *gin.Context) {
 			return err
 		}
 		seen := map[string]bool{}
-		for _, model := range in.Models {
-			if seen[model] {
+		for _, name := range in.Models {
+			if seen[name] {
 				continue
 			}
-			seen[model] = true
-			p := f.prices[model]
+			seen[name] = true
+			p := f.prices[name]
 			if p == nil {
-				res.Skipped = append(res.Skipped, SyncSkip{Model: model, Reason: "not_in_source"})
+				res.Skipped = append(res.Skipped, SyncSkip{Model: name, Reason: "not_in_source"})
 				continue
 			}
-			c := cur[model]
+			c := cur[name]
 			if syncAction(p, c) == "unchanged" {
 				res.Unchanged++
 				continue
 			}
 			prog, err := expr.CompileCached(p.Expression)
 			if err != nil {
-				res.Skipped = append(res.Skipped, SyncSkip{Model: model, Reason: "invalid_expression"})
+				res.Skipped = append(res.Skipped, SyncSkip{Model: name, Reason: "invalid_expression"})
 				continue
 			}
 			if err := recordHistory(ctx, tx, prog); err != nil {
@@ -1051,7 +1026,13 @@ func (s *Service) applySync(c *gin.Context) {
 			}
 			g := store.G(ctx, tx)
 			if c == nil {
-				err = insertSyncedPrice(g, model, p, id, nullID(uid)).Error
+				// A map on the bare table writes every column as the INSERT
+				// named it and reads nothing back.
+				err = g.Table(model.ModelPrice{}.TableName()).Create(map[string]any{
+					"model": name, "mode": p.Mode, "config": p.Config, "expression": p.Expression, "expr_version": p.version,
+					"expr_hash": p.hash, "source": SourceSync, "sync_source_id": id, "synced_at": gorm.Expr("now()"),
+					"enabled": true, "note": "", "updated_by": nullID(uid),
+				}).Error
 				res.Created++
 			} else {
 				err = updatePriceRow(g, c.ID, map[string]any{
@@ -1071,7 +1052,10 @@ func (s *Service) applySync(c *gin.Context) {
 		}
 		detail, _ := json.Marshal(map[string]any{"created": res.Created, "updated": res.Updated,
 			"unchanged": res.Unchanged, "skipped": len(res.Skipped)})
-		return auditSync(g, uid, id, detail).Error
+		return g.Table(model.AuditLog{}.TableName()).Create(map[string]any{
+			"user_id": gorm.Expr("NULLIF(?::bigint, 0)", uid), "action": "price.sync", "target_type": "price_source",
+			"target_id": fmt.Sprint(id), "detail": detail,
+		}).Error
 	})
 	if err != nil {
 		httpapi.Fail(c, err)

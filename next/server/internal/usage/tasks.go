@@ -21,21 +21,15 @@ var _ core.AsyncTasks = (*Service)(nil)
 
 // The statements of the task endpoints are on the request path: BeginTask,
 // ReceiveTask and registerTask run for every task submission, FindTask for
-// every poll of a client. They are Raw/Exec with the SQL they had on pgx,
-// the GORM form that allocates least (BenchmarkHotTask*,
-// internal/store/gormtest/BASELINE.md, Batch 4b).
+// every poll of a client. They are Raw/Exec statements.
 
 func (s *Service) BeginTask(ctx context.Context, in core.TaskIntent) (string, error) {
+	// The dispatch identity of the submission; the database fills its
+	// state, expiry and timestamps.
 	id := "s2task_" + uuid.NewString()
-	return id, insertReceipt(ctx, s.db.Gorm, id, in)
-}
-
-// insertReceipt writes the dispatch identity of a task submission; the
-// database fills its state, expiry and timestamps.
-func insertReceipt(ctx context.Context, q *gorm.DB, publicID string, in core.TaskIntent) error {
-	return store.G(ctx, q).Exec(`INSERT INTO task_submission_receipts
+	return id, store.G(ctx, s.db.Gorm).Exec(`INSERT INTO task_submission_receipts
 		(request_id, public_id, plugin_key, kind, user_id, api_key_id, group_id, account_id, model, protocol)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`, in.RequestID, publicID, in.PluginKey, in.Kind,
+		VALUES (?,?,?,?,?,?,?,?,?,?)`, in.RequestID, id, in.PluginKey, in.Kind,
 		in.UserID, in.APIKeyID, in.GroupID, in.AccountID, in.Model, in.Protocol).Error
 }
 
@@ -48,13 +42,9 @@ func (s *Service) ReceiveTask(ctx context.Context, requestID string, status int,
 	if reason != "" {
 		state = "uncertain"
 	}
-	return receiveTask(ctx, s.db.Gorm, requestID, state, status, body, reason)
-}
-
-// receiveTask records the upstream's answer to a submission not yet
-// registered. A nil body keeps the stored one; an empty one is stored.
-func receiveTask(ctx context.Context, q *gorm.DB, requestID, state string, status int, body []byte, reason string) error {
-	return store.G(ctx, q).Exec(`UPDATE task_submission_receipts SET state=?, response_status=?,
+	// For a submission not yet registered. A nil body keeps the stored one;
+	// an empty one is stored.
+	return store.G(ctx, s.db.Gorm).Exec(`UPDATE task_submission_receipts SET state=?, response_status=?,
 		response_body=COALESCE(?,response_body), last_error=? WHERE request_id=? AND state <> 'registered'`,
 		state, status, store.Bytes(body), trunc(reason, 2000), requestID).Error
 }
@@ -156,33 +146,19 @@ func (s *Service) FindTask(ctx context.Context, q core.TaskQuery) (*core.TaskSna
 }
 
 // readTask reads the task q names: by its public ID, or by the upstream ID
-// of an imported legacy task. Two matches are no match.
+// of an imported legacy task. None is sql.ErrNoRows, two matches are no
+// match.
 func readTask(ctx context.Context, db *gorm.DB, q core.TaskQuery) (*core.TaskSnapshot, error) {
-	rows, err := taskByID(store.G(ctx, db), q).Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanTask(rows)
-}
-
-// taskByID selects the task q names, readTask's statement.
-func taskByID(db *gorm.DB, q core.TaskQuery) *gorm.DB {
-	return db.Raw(`SELECT public_id,upstream_ref_id,model,state,
+	rows, err := store.G(ctx, db).Raw(`SELECT public_id,upstream_ref_id,model,state,
 		CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
 		snapshot,snapshot_id_paths,failure_code,last_error
 		FROM async_tasks WHERE plugin_key=? AND kind=? AND user_id=? AND group_id=?
 		AND (public_id=? OR (legacy_imported AND upstream_ref_id=? AND NOT starts_with(?,'s2task_')))
-		ORDER BY public_id LIMIT 2`, q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID, q.ID, q.ID)
-}
-
-// scanTask reads the one row of readTask's statement from rows, which the
-// caller closes: sql.ErrNoRows without one, not found with two.
-func scanTask(rows interface {
-	Next() bool
-	Scan(...any) error
-	Err() error
-}) (*core.TaskSnapshot, error) {
+		ORDER BY public_id LIMIT 2`, q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID, q.ID, q.ID).Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	if !rows.Next() {
 		if rows.Err() != nil {
 			return nil, rows.Err()
@@ -191,7 +167,7 @@ func scanTask(rows interface {
 	}
 	out := &core.TaskSnapshot{}
 	var paths []byte
-	err := rows.Scan(&out.PublicID, &out.UpstreamID, &out.Model, &out.State, &out.ObservationStatus, &out.Body, &paths, &out.FailureCode, &out.FailureReason)
+	err = rows.Scan(&out.PublicID, &out.UpstreamID, &out.Model, &out.State, &out.ObservationStatus, &out.Body, &paths, &out.FailureCode, &out.FailureReason)
 	if rows.Next() {
 		return nil, core.ErrNotFound.WithMessage("task not found")
 	}
@@ -243,11 +219,16 @@ func (s *Service) importLegacyTask(ctx context.Context, q core.TaskQuery) error 
 		}
 		id := "s2task_" + uuid.NewString()
 		// Already settled legacy rows still need an observation, without another debit.
-		if err = insertLegacyTask(g, id, q, &e).Error; err != nil {
+		if err = g.Exec(`INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,group_id,
+		account_id,model,protocol,usage_log_id,snapshot_id_paths,legacy_imported,next_check_at,deadline_at,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,true,?,?,?)`, id, q.PluginKey, q.Kind, q.ID, q.UserID, e.apiKeyID, q.GroupID,
+			*e.accountID, e.model, q.SubmitProtocol, e.usageLogID, jsonOr(q.IDPaths, "[]"), e.next, e.deadline, e.created).Error; err != nil {
 			return err
 		}
-		// Importing into the managed scheduler must not reset query failures.
-		if err = importTaskCounters(g, id, e.id).Error; err != nil {
+		// Importing into the managed scheduler must not reset query failures;
+		// updated_at keeps the insert's value.
+		if err = g.Exec(`UPDATE async_tasks SET poll_failures=p.poll_failures,attempts=p.attempts
+		FROM pending_settlements p WHERE async_tasks.public_id=? AND p.id=?`, id, e.id).Error; err != nil {
 			return err
 		}
 		return g.Model(&model.PendingSettlement{}).Where("id = ?", e.id).Update("task_public_id", id).Error
@@ -275,22 +256,6 @@ func legacyTaskEntries(db *gorm.DB, q core.TaskQuery, cols, lockOf string) *gorm
 	return db.Raw(`SELECT `+cols+` FROM pending_settlements p JOIN usage_logs u ON u.id=p.usage_log_id
 		WHERE p.plugin_key=? AND p.ref_id=? AND u.user_id=? AND u.group_id=? AND u.protocol=? FOR UPDATE OF `+lockOf,
 		q.PluginKey, q.ID, q.UserID, q.GroupID, q.SubmitProtocol)
-}
-
-// insertLegacyTask inserts the task imported from the legacy entry e under
-// publicID.
-func insertLegacyTask(db *gorm.DB, publicID string, q core.TaskQuery, e *legacyEntry) *gorm.DB {
-	return db.Exec(`INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,group_id,
-		account_id,model,protocol,usage_log_id,snapshot_id_paths,legacy_imported,next_check_at,deadline_at,created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,true,?,?,?)`, publicID, q.PluginKey, q.Kind, q.ID, q.UserID, e.apiKeyID, q.GroupID,
-		*e.accountID, e.model, q.SubmitProtocol, e.usageLogID, jsonOr(q.IDPaths, "[]"), e.next, e.deadline, e.created)
-}
-
-// importTaskCounters copies a legacy entry's counters onto the task imported
-// from it; updated_at keeps the insert's value.
-func importTaskCounters(db *gorm.DB, publicID string, entryID int64) *gorm.DB {
-	return db.Exec(`UPDATE async_tasks SET poll_failures=p.poll_failures,attempts=p.attempts
-		FROM pending_settlements p WHERE async_tasks.public_id=? AND p.id=?`, publicID, entryID)
 }
 
 func (s *Service) cleanTaskReceipts(ctx context.Context) {

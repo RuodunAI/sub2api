@@ -29,13 +29,12 @@ func reach(t *testing.T, db *store.DB, users []int64) map[string][]int64 {
 		set, err := s.PermissionSet(ctx, uid)
 		require.NoError(t, err)
 		for _, a := range scopableActions {
-			table, from := core.AccountRows, "accounts a WHERE a.deleted_at IS NULL AND "
+			table, q := core.AccountRows, store.G(ctx, db.Gorm).Table("accounts a").Where("a.deleted_at IS NULL")
 			if perm.ScopeType(a) == perm.ResourceProxy {
-				table, from = core.ProxyRows, "proxies p WHERE "
+				table, q = core.ProxyRows, store.G(ctx, db.Gorm).Table("proxies p")
 			}
-			var ids []int64
-			require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(`+table.ID+` ORDER BY `+table.ID+`), '{}') FROM `+from+table.SQL(1),
-				table.Args(set.DataScope(uid, a))...).Scan(&ids))
+			ids := []int64{}
+			require.NoError(t, q.Scopes(table.Scope(set.DataScope(uid, a))).Order(table.ID).Pluck(table.ID, &ids).Error)
 			out[fmt.Sprintf("%s %s", name, a)] = ids
 		}
 	}
