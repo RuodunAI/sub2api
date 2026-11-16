@@ -13,12 +13,14 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Step-up verification (CONTRACTS §80.2, docs/DESIGN-2026-11-12-AUTHZ-HARDENING.md
@@ -158,8 +160,8 @@ func (s *Service) stepUpMethods(ctx context.Context, q *gorm.DB, userID int64, s
 
 // userFactors reads whether userID has two-factor and how many passkeys.
 func userFactors(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Raw(`SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = ?),
-		(SELECT count(*) FROM user_passkeys WHERE user_id = ?)`, userID, userID)
+	passkeys := db.Model(&model.UserPasskey{}).Select("count(*)").Where("user_id = ?", userID)
+	return store.OneRow(db).Select("EXISTS (?), (?)", totpOf(db, userID).Select("1"), passkeys)
 }
 
 // lastSuperFactor reports the super admin about to remove the last of its
@@ -563,10 +565,10 @@ func (s *Service) keepLastFactor(ctx context.Context, tx *gorm.DB, userID int64,
 	return s.verificationRequired(ctx, tx, userID, scope, operation)
 }
 
-// lockUserIfAny locks the row of userID, with Exec: unlike lockUser, a user
-// without a row is no error.
+// lockUserIfAny locks the row of userID: unlike lockUser, a user without a
+// row is no error.
 func lockUserIfAny(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Exec(`SELECT 1 FROM users WHERE id = ? FOR UPDATE`, userID)
+	return db.Model(&model.User{}).Select("1").Where("id = ?", userID).Clauses(store.ForUpdate()).Find(&[]int{})
 }
 
 // verificationRequired is the 403 that tells the console what to verify:
@@ -589,13 +591,15 @@ func (s *Service) RenamePasskey(ctx context.Context, userID, id int64, name stri
 	}
 	p := &Passkey{ID: id}
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
-		err := renamePasskey(store.G(ctx, tx), id, userID, name).Row().Scan(&p.Name, &p.RPID, &p.CreatedAt, &p.LastUsedAt)
-		if store.IsNoRows(err) {
+		var row model.UserPasskey
+		res := renamePasskey(store.G(ctx, tx), id, userID, name, &row)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
 			return core.ErrNotFound
 		}
-		if err != nil {
-			return err
-		}
+		p.Name, p.RPID, p.CreatedAt, p.LastUsedAt = row.Name, row.RpID, row.CreatedAt, row.LastUsedAt
 		return audit.Audit(ctx, tx, userID, "user.passkey.rename", "user", strconv.FormatInt(userID, 10), map[string]any{"passkey_id": id, "name": name})
 	})
 	if err != nil {
@@ -604,8 +608,8 @@ func (s *Service) RenamePasskey(ctx context.Context, userID, id int64, name stri
 	return p, nil
 }
 
-// renamePasskey renames the passkey id of userID and returns it.
-func renamePasskey(db *gorm.DB, id, userID int64, name string) *gorm.DB {
-	return db.Raw(`UPDATE user_passkeys SET name = ? WHERE id = ? AND user_id = ? RETURNING name, rp_id, created_at, last_used_at`,
-		name, id, userID)
+// renamePasskey renames the passkey id of userID and reads it into dst.
+func renamePasskey(db *gorm.DB, id, userID int64, name string, dst *model.UserPasskey) *gorm.DB {
+	return db.Model(dst).Clauses(clause.Returning{Columns: []clause.Column{{Name: "name"}, {Name: "rp_id"}, {Name: "created_at"}, {Name: "last_used_at"}}}).
+		Where("id = ? AND user_id = ?", id, userID).Update("name", name)
 }

@@ -1,4 +1,4 @@
 -- sql
-SELECT id, user_id, permissions, expires_at, last_used_at FROM user_access_keys WHERE token_hash = $1
+SELECT id, user_id, permissions, expires_at, last_used_at FROM "user_access_keys" WHERE token_hash = $1
 -- vars
 $1 string "hash"

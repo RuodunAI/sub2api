@@ -1,5 +1,5 @@
 -- sql
-UPDATE user_passkeys SET name = $1 WHERE id = $2 AND user_id = $3 RETURNING name, rp_id, created_at, last_used_at
+UPDATE "user_passkeys" SET "name"=$1 WHERE id = $2 AND user_id = $3 RETURNING "name","rp_id","created_at","last_used_at"
 -- vars
 $1 string "Phone"
 $2 int64 4

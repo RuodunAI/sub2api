@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
@@ -49,17 +50,17 @@ type User struct {
 
 // userColumns are what scanUser reads, from usersFrom. They are read by
 // position: the segment's id has the name of the user's.
-var userColumns = `u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
+const userColumns = `u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
     COALESCE((SELECT array_agg(k ORDER BY k) FROM (` + casbinrule.RolesOfUser + `) ur(k)), '{}'),
     ` + segment.RefColumns + `,
     COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text`
 
 const usersFrom = `users u JOIN segments s ON s.id = u.segment_id`
 
-// userByID is the statement of getUser, raw (the fewest allocations): it
-// loads the user of every login and GET /me.
+// userByID is the statement of getUser, scanned through Row (the fewest
+// allocations): it loads the user of every login and GET /me.
 func userByID(db *gorm.DB, id int64) *gorm.DB {
-	return db.Raw(`SELECT `+userColumns+` FROM `+usersFrom+` WHERE u.id = ? AND u.deleted_at IS NULL`, id)
+	return usersView(db).Where("u.id = ? AND u.deleted_at IS NULL", id)
 }
 
 // usersView selects userColumns, for ListUsers' conditions and page.
@@ -112,9 +113,8 @@ func (s *Service) LookupUsers(ctx context.Context, ids []int64) ([]core.UserSumm
 // lookupUsers reads the undeleted users of ids in their order, repeats
 // included.
 func lookupUsers(db *gorm.DB, ids []int64) *gorm.DB {
-	return db.Raw(`SELECT u.id, u.display_name, u.status
-		FROM unnest(?::bigint[]) WITH ORDINALITY AS q(id, n) JOIN users u ON u.id = q.id AND u.deleted_at IS NULL
-		ORDER BY q.n`, store.Int64s(ids))
+	return db.Table("unnest(?::bigint[]) WITH ORDINALITY AS q(id, n)", store.Int64s(ids)).Select("u.id, u.display_name, u.status").
+		Joins("JOIN users u ON u.id = q.id AND u.deleted_at IS NULL").Order("q.n")
 }
 
 // ListUsersFilter filters GET /users.
@@ -269,8 +269,9 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 // insertUser creates a user in segmentID, or the default segment when nil,
 // and returns its id.
 func insertUser(db *gorm.DB, email, displayName, passwordHash string, segmentID *int64) *gorm.DB {
-	return db.Raw(`INSERT INTO users (email, display_name, password_hash, segment_id)
-		VALUES (?, ?, ?, COALESCE(?, default_segment_id())) RETURNING id`, email, displayName, passwordHash, segmentID)
+	row := store.OneRow(db).Select("?, ?, ?, COALESCE(?, default_segment_id())", email, displayName, passwordHash, segmentID)
+	return store.InsertSelectReturning(db, model.User{}.TableName(), []string{"email", "display_name", "password_hash", "segment_id"}, row,
+		clause.Returning{Columns: []clause.Column{{Name: "id"}}})
 }
 
 // lockNamedSegment checks that id, when given, is a named segment and keeps

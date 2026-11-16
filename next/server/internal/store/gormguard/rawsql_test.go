@@ -68,6 +68,9 @@ var sqlConstAllowed = map[string]string{
 	"internal/usage.statRows":                "the measure columns are joined from the constant statMeasures table by measureList, whose callback [sql-const] cannot follow",
 	"internal/usage.rollupHours":             "the measure columns are joined from the constant statMeasures table by measureList, whose callback [sql-const] cannot follow",
 	"internal/store.DDL":                     "the format is checked where DDL is called; its arguments are quoted (Ident, Literal)",
+	"internal/lookup.Service.lookup":         "columns and conditions of the fixed entities table (entities.go), chosen by kind: a whitelist whose exported fields [sql-const] does not follow",
+	"internal/lookup.Entity.search":          "columns and conditions of the fixed entities table (entities.go), chosen by kind: a whitelist whose exported fields [sql-const] does not follow",
+	"internal/lookup.Entity.query":           "columns and conditions of the fixed entities table (entities.go), chosen by kind: a whitelist whose exported fields [sql-const] does not follow",
 	"internal/store.Conds.And":               "the text is checked where Conds.And is called",
 	"internal/store.UpdateFrom":              "the text is checked where UpdateFrom is called",
 }

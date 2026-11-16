@@ -17,6 +17,7 @@ import (
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -137,10 +138,10 @@ func (s *Service) issueBackupCodes(ctx context.Context, tx *gorm.DB, userID int6
 	return codes, nil
 }
 
-// insertBackupCode stores the hash of a backup code of userID, raw: Create
-// would add a RETURNING of the defaulted columns.
+// insertBackupCode stores the hash of a backup code of userID: a map on the
+// bare table, which reads nothing back.
 func insertBackupCode(db *gorm.DB, userID int64, hash string) *gorm.DB {
-	return db.Exec(`INSERT INTO user_totp_backup_codes (user_id, code_hash) VALUES (?, ?)`, userID, hash)
+	return db.Table(model.UserTOTPBackupCode{}.TableName()).Create(map[string]any{"user_id": userID, "code_hash": hash})
 }
 
 // deleteBackupCodes removes the backup codes of userID.
@@ -378,11 +379,11 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID int64, flowToken, 
 }
 
 // insertTOTP enables two-factor for userID with a sealed secret and the
-// step of the code that proved it, unless it is; raw: Create would add a
-// RETURNING of the defaulted columns. The secret's ? does not follow a (,
-// where GORM would expand the bytes.
+// step of the code that proved it, unless it is: a map on the bare table,
+// which reads nothing back; the secret is one bytea value.
 func insertTOTP(db *gorm.DB, userID int64, sealed []byte, lastStep int64) *gorm.DB {
-	return db.Exec(`INSERT INTO user_totp (user_id, secret_enc, last_step) VALUES (?, ?, ?) ON CONFLICT (user_id) DO NOTHING`, userID, sealed, lastStep)
+	return db.Table(model.UserTOTP{}.TableName()).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}}, DoNothing: true}).
+		Create(map[string]any{"user_id": userID, "secret_enc": store.Bytes(sealed), "last_step": lastStep})
 }
 
 // DisableTwoFactor turns the factor off; the route has verified the caller

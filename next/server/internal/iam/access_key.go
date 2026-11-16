@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
@@ -123,6 +124,10 @@ func (s *Service) lostPermissions(ctx context.Context, userID int64, keys []*Acc
 
 const accessKeyColumns = `id, name, token_hint, permissions, expires_at, last_used_at, last_used_ip, created_at`
 
+// accessKeyReturning returns the accessKeyColumns of a key written.
+var accessKeyReturning = clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "name"}, {Name: "token_hint"}, {Name: "permissions"},
+	{Name: "expires_at"}, {Name: "last_used_at"}, {Name: "last_used_ip"}, {Name: "created_at"}}}
+
 // accessKeyRow is a row of accessKeyColumns.
 type accessKeyRow struct {
 	ID          int64         `gorm:"column:id"`
@@ -210,8 +215,9 @@ func (s *Service) CreateAccessKey(ctx context.Context, userID int64, in CreateAc
 
 // insertAccessKey creates an access key and returns its accessKeyColumns.
 func insertAccessKey(db *gorm.DB, userID int64, name, hash, hint string, perms []string, expiresAt *time.Time) *gorm.DB {
-	return db.Raw(`INSERT INTO user_access_keys (user_id, name, token_hash, token_hint, permissions, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?) RETURNING `+accessKeyColumns, userID, name, hash, hint, store.Strings(perms), expiresAt)
+	row := store.OneRow(db).Select("?, ?, ?, ?, ?, ?", userID, name, hash, hint, store.Strings(perms), expiresAt)
+	return store.InsertSelectReturning(db, model.UserAccessKey{}.TableName(),
+		[]string{"user_id", "name", "token_hash", "token_hint", "permissions", "expires_at"}, row, accessKeyReturning)
 }
 
 // UpdateAccessKey renames a key or replaces its permissions (the route
@@ -235,7 +241,7 @@ func (s *Service) UpdateAccessKey(ctx context.Context, userID, id int64, in Upda
 	var key *AccessKey
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var row accessKeyRow
-		res := updateAccessKey(store.G(ctx, tx), id, userID, name, perms).Scan(&row)
+		res := updateAccessKey(store.G(ctx, tx), id, userID, name, perms, &row)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -252,11 +258,12 @@ func (s *Service) UpdateAccessKey(ctx context.Context, userID, id int64, in Upda
 	return key, s.lostPermissions(ctx, userID, []*AccessKey{key})
 }
 
-// updateAccessKey renames the key id of userID or replaces its permissions;
-// a nil name or perms keeps what the key has.
-func updateAccessKey(db *gorm.DB, id, userID int64, name *string, perms []string) *gorm.DB {
-	return db.Raw(`UPDATE user_access_keys SET name = COALESCE(?, name), permissions = COALESCE(?, permissions)
-			WHERE id = ? AND user_id = ? RETURNING `+accessKeyColumns, name, store.NullStrings(perms), id, userID)
+// updateAccessKey renames the key id of userID or replaces its permissions,
+// and reads the key into dst; a nil name or perms keeps what the key has.
+func updateAccessKey(db *gorm.DB, id, userID int64, name *string, perms []string, dst *accessKeyRow) *gorm.DB {
+	return db.Model(dst).Table(model.UserAccessKey{}.TableName()).Clauses(accessKeyReturning).
+		Where("id = ? AND user_id = ?", id, userID).
+		Updates(map[string]any{"name": gorm.Expr("COALESCE(?, name)", name), "permissions": gorm.Expr("COALESCE(?, permissions)", store.NullStrings(perms))})
 }
 
 // DeleteAccessKey revokes a key at once.
@@ -341,10 +348,11 @@ func (s *Service) VerifyAccessKey(ctx context.Context, raw, ip string) (core.Acc
 	return id, nil
 }
 
-// accessKeyByHash is the statement of VerifyAccessKey, raw (the fewest
-// allocations): it runs for every request made with an access key.
+// accessKeyByHash is the statement of VerifyAccessKey, scanned through Row
+// (the fewest allocations): it runs for every request made with an access
+// key.
 func accessKeyByHash(db *gorm.DB, hash string) *gorm.DB {
-	return db.Raw(`SELECT id, user_id, permissions, expires_at, last_used_at FROM user_access_keys WHERE token_hash = ?`, hash)
+	return db.Model(&model.UserAccessKey{}).Select("id, user_id, permissions, expires_at, last_used_at").Where("token_hash = ?", hash)
 }
 
 // touchAccessKey records a use of the key id, at most every

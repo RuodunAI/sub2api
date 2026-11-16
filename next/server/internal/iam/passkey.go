@@ -15,6 +15,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -254,8 +255,10 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, r *http.Request
 // credential stored before returns no row. credential_id and credential are
 // bytes: none of their ? follows a (.
 func insertPasskey(db *gorm.DB, userID int64, name, rpID string, credentialID, credential []byte) *gorm.DB {
-	return db.Raw(`INSERT INTO user_passkeys (user_id, name, rp_id, credential_id, credential) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT (credential_id) DO NOTHING RETURNING id, created_at`, userID, name, rpID, credentialID, credential)
+	row := store.OneRow(db).Select("?, ?, ?, ?, ?", userID, name, rpID, credentialID, credential)
+	return store.InsertSelectReturning(db, model.UserPasskey{}.TableName(), []string{"user_id", "name", "rp_id", "credential_id", "credential"}, row,
+		clause.OnConflict{Columns: []clause.Column{{Name: "credential_id"}}, DoNothing: true},
+		clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "created_at"}}})
 }
 
 // DeletePasskey removes one of the user's passkeys.

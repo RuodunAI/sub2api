@@ -1,5 +1,5 @@
 -- sql
-INSERT INTO user_totp_backup_codes (user_id, code_hash) VALUES ($1, $2)
+INSERT INTO "user_totp_backup_codes" ("code_hash","user_id") VALUES ($1,$2)
 -- vars
-$1 int64 7
-$2 string "$2a$code"
+$1 string "$2a$code"
+$2 int64 7

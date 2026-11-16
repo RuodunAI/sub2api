@@ -1,3 +1,0 @@
--- sql
-SELECT pg_advisory_xact_lock(hashtext('sub2api:iam:bootstrap'))
--- vars

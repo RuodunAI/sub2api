@@ -1,6 +1,5 @@
 -- sql
-INSERT INTO user_passkeys (user_id, name, rp_id, credential_id, credential) VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (credential_id) DO NOTHING RETURNING id, created_at
+INSERT INTO "user_passkeys" ("user_id","name","rp_id","credential_id","credential") SELECT $1, $2, $3, $4, $5 FROM (SELECT) AS one ON CONFLICT ("credential_id") DO NOTHING RETURNING "id","created_at"
 -- vars
 $1 int64 7
 $2 string "Laptop"

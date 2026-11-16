@@ -8,6 +8,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The SQL of the iam statements built with GORM (see package gormtest): every
@@ -51,7 +52,6 @@ func TestSQLUserLocks(t *testing.T) {
 		"lock_user_if_any":     func(db *gorm.DB) *gorm.DB { return lockUserIfAny(db, 7) },
 		"factors":              func(db *gorm.DB) *gorm.DB { return read(userFactors(db, 7)) },
 		"has_two_factor":       func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, totpOf(db, 7))) },
-		"bootstrap_lock":       func(db *gorm.DB) *gorm.DB { return bootstrapLock(db) },
 		"bootstrap_exists":     func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, liveUsers(db))) },
 		"touch_last_login":     func(db *gorm.DB) *gorm.DB { return touchLastLogin(db, 7) },
 		"bump_tokenversion":    func(db *gorm.DB) *gorm.DB { return bumpTokenVersion(db, 7, 2) },
@@ -139,7 +139,7 @@ func TestSQLPasskeys(t *testing.T) {
 		"use_step_up": func(db *gorm.DB) *gorm.DB {
 			return usePasskey(userPasskeyByCredential(db, 7, []byte{0x01, 0x02}), cred)
 		},
-		"rename": func(db *gorm.DB) *gorm.DB { return read(renamePasskey(db, 4, 7, "Phone")) },
+		"rename": func(db *gorm.DB) *gorm.DB { return renamePasskey(db, 4, 7, "Phone", &model.UserPasskey{}) },
 		"delete": func(db *gorm.DB) *gorm.DB { return deletePasskey(db, 4, 7) },
 	})
 }
@@ -160,8 +160,10 @@ func TestSQLAccessKeys(t *testing.T) {
 			var n int64
 			return accessKeysOf(db, 7).Count(&n)
 		},
-		"rename":      func(db *gorm.DB) *gorm.DB { return read(updateAccessKey(db, 5, 7, &name, nil)) },
-		"permissions": func(db *gorm.DB) *gorm.DB { return read(updateAccessKey(db, 5, 7, nil, []string{"account:read:own"})) },
-		"delete":      func(db *gorm.DB) *gorm.DB { return deleteAccessKey(db, 5, 7) },
+		"rename": func(db *gorm.DB) *gorm.DB { return updateAccessKey(db, 5, 7, &name, nil, &accessKeyRow{}) },
+		"permissions": func(db *gorm.DB) *gorm.DB {
+			return updateAccessKey(db, 5, 7, nil, []string{"account:read:own"}, &accessKeyRow{})
+		},
+		"delete": func(db *gorm.DB) *gorm.DB { return deleteAccessKey(db, 5, 7) },
 	})
 }
