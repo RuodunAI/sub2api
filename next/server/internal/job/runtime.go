@@ -195,7 +195,7 @@ func (b *Bridge) writeRuntime(ctx context.Context, key, version string,
 	err := b.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		// Two nodes syncing the same plugin at once take turns.
-		if err := g.Exec(`SELECT pg_advisory_xact_lock(hashtext('plugin_runtime_tasks:' || ?))`, key).Error; err != nil {
+		if err := store.XactLockHashtext(ctx, tx, "plugin_runtime_tasks:"+key); err != nil {
 			return err
 		}
 		active, err := b.activeVersion(ctx, tx, key, version)

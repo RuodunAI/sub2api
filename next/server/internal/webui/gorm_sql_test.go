@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"database/sql"
+	"errors"
 	"testing"
 
 	"gorm.io/gorm"
@@ -11,15 +13,19 @@ import (
 // The SQL of the shared asset statements built with GORM (see package
 // gormtest).
 
-// The file writes of Publish: every blob and its place in the build, in one
-// statement of array parameters.
+// The file writes of Publish: the blobs and the stored hashes read back.
+// DryRun reads none, a collision, so the run stops before the files of the
+// build.
 func TestSQLAssetPut(t *testing.T) {
-	var paths []string
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return putAssets(db, "b1", []publicFile{
+	gormtest.AssertRun(t, func(db *gorm.DB) error {
+		err := putAssets(db, "b1", []publicFile{
 			{name: "assets/a.js", hash: "h", body: []byte("x")},
 			{name: "assets/b.css", hash: "i", body: []byte{}},
-		}).Scan(&paths)
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
 	})
 }
 
@@ -30,15 +36,11 @@ func TestSQLAssetRenewBuild(t *testing.T) {
 }
 
 func TestSQLAssetPublishBuild(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return db.Exec(publishBuildSQL, "b1", 90.0)
-	})
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return publishBuild(db, "b1", 90) })
 }
 
 func TestSQLAssetCollectBuilds(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return db.Exec(collectBuildsSQL, 604800.0, 3)
-	})
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return collectBuilds(db, 604800, 3) })
 }
 
 func TestSQLAssetStoreUsage(t *testing.T) {

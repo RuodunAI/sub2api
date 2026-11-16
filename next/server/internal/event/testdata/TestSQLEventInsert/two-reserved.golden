@@ -1,0 +1,9 @@
+-- sql
+INSERT INTO "events" ("type","payload","id") VALUES ($1,$2,$3),($4,$5,$6) RETURNING "id","occurred_at"
+-- vars
+$1 string "balance.changed"
+$2 jsontext.Value {"user_id":7}
+$3 int64 41
+$4 string "user.updated"
+$5 jsontext.Value {}
+$6 int64 42

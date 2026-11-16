@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -33,8 +32,8 @@ func lastEventID(t *testing.T, db *store.DB) int64 {
 	return id
 }
 
-// Several events (one array statement) are stored as each on its own (the
-// one-row statement) stores it: in their order, every kind of payload as
+// Several events (reserved ids, one INSERT) are stored as each on its own
+// (one row) stores it: in their order, every kind of payload as
 // the same document, nil as {} and a JSON null as a document, not NULL.
 func TestEmitManyAsOne(t *testing.T) {
 	db := testutil.DB(t)
@@ -74,8 +73,8 @@ func TestEmitManyAsOne(t *testing.T) {
 	require.Empty(t, storedEvents(t, db, start))
 }
 
-// More events than VALUES rows could bind (two parameters each, 65535 in
-// all) are one statement of two parameters, the ids in event order.
+// More events than one INSERT could bind (three parameters each, 65535 in
+// all) are written in batches, the ids in event order across them.
 func TestEmitPastParameterLimit(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
@@ -93,28 +92,4 @@ func TestEmitPastParameterLimit(t *testing.T) {
 			t.Fatalf("event %d = %q, want %q", i, g, want)
 		}
 	}
-}
-
-// Every count of events is one of two texts, so a connection prepares the
-// insert at most twice, however many counts it sees (pgx prepares each
-// text once per connection): a Prepare is a round trip, run in the caller's
-// transaction.
-func TestEmitPreparesTwoTexts(t *testing.T) {
-	db, trace := testutil.Traced(testutil.DB(t))
-	ctx := context.Background()
-	pub := event.NewPublisher(db)
-	for n := 1; n <= 12; n++ {
-		events := make([]core.Event, n)
-		for i := range events {
-			events[i] = core.Event{Type: "x.y", Payload: i}
-		}
-		require.NoError(t, pub.Emit(ctx, nil, events...))
-	}
-	inserts := map[string]bool{}
-	for _, text := range trace.Take() {
-		if strings.Contains(text, "INSERT INTO events") {
-			inserts[text] = true
-		}
-	}
-	require.Len(t, inserts, 2, "%v", inserts)
 }

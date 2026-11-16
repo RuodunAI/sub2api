@@ -1,6 +1,5 @@
 -- sql
-INSERT INTO events (type, payload)
-	SELECT t, p FROM unnest($1::varchar[], $2::jsonb[]) WITH ORDINALITY AS e(t, p, o) ORDER BY o
+SELECT nextval(pg_get_serial_sequence($1, 'id')) FROM generate_series(1, $2)
 -- vars
-$1 store.Strings [balance.changed user.updated]
-$2 gormpg.Array[github.com/Sub2API-Devs/sup2api/next/server/internal/store.Bytes] [{"user_id":7} {}]
+$1 string "events"
+$2 int 2

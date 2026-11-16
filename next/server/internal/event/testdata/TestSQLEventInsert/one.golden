@@ -1,5 +1,5 @@
 -- sql
-INSERT INTO events (type, payload) VALUES ($1, $2)
+INSERT INTO "events" ("type","payload") VALUES ($1,$2) RETURNING "id","occurred_at"
 -- vars
 $1 string "balance.changed"
-$2 []uint8 [123 34 117 115 101 114 95 105 100 34 58 55 125]
+$2 jsontext.Value {"user_id":7}

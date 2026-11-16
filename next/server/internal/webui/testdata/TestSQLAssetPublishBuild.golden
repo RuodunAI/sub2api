@@ -1,6 +1,5 @@
 -- sql
-INSERT INTO web_asset_builds(build_id,lease_until) VALUES($1,clock_timestamp()+make_interval(secs=>$2))
-	ON CONFLICT(build_id) DO UPDATE SET lease_until=EXCLUDED.lease_until,last_seen=clock_timestamp()
+INSERT INTO "web_asset_builds" ("build_id","lease_until") VALUES ($1,clock_timestamp() + make_interval(secs => $2)) ON CONFLICT ("build_id") DO UPDATE SET "lease_until"="excluded"."lease_until","last_seen"=clock_timestamp()
 -- vars
 $1 string "b1"
 $2 float64 90

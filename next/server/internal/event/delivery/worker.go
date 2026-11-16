@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -347,8 +347,9 @@ func (w *worker) loadCursor(ctx context.Context) (cursor, error) {
 // createCursor inserts the cursor of key at the newest event, unless another
 // node just did.
 func createCursor(g *gorm.DB, key string) *gorm.DB {
-	return g.Exec(`INSERT INTO plugin_event_cursors (plugin_key, last_event_id)
-		SELECT ?, COALESCE(max(id), 0) FROM events ON CONFLICT (plugin_key) DO NOTHING`, key)
+	newest := g.Model(&model.Event{}).Select("COALESCE(max(id), 0)")
+	return g.Table(model.PluginEventCursor{}.TableName()).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}}, DoNothing: true}).
+		Create(map[string]any{"plugin_key": key, "last_event_id": gorm.Expr("(?)", newest)})
 }
 
 // readCursor reads the cursor row; a missing row is a no-rows error.
@@ -430,15 +431,7 @@ func (w *worker) checkGap(ctx context.Context) error {
 }
 
 func (w *worker) snapshot(ctx context.Context) (xmin, xmax uint64, err error) {
-	var a, b string
-	if err = store.G(ctx, w.s.db.Gorm).Raw(`SELECT pg_snapshot_xmin(s)::text, pg_snapshot_xmax(s)::text FROM pg_current_snapshot() s`).Row().Scan(&a, &b); err != nil {
-		return 0, 0, err
-	}
-	if xmin, err = strconv.ParseUint(a, 10, 64); err != nil {
-		return 0, 0, err
-	}
-	xmax, err = strconv.ParseUint(b, 10, 64)
-	return xmin, xmax, err
+	return store.CurrentSnapshot(store.G(ctx, w.s.db.Gorm))
 }
 
 func backoff(failures int, lo, hi time.Duration) time.Duration {
