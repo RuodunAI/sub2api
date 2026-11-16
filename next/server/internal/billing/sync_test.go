@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 )
 
 const litellmSample = `{

@@ -1,5 +1,6 @@
 // Package secret provides AES-256-GCM encryption with the server master key
-// for credentials, proxy passwords and plugin settings.
+// shared by the core (credentials, proxy passwords, plugin settings) and the
+// gateway (update-source secrets); both hold the same cluster master key.
 package secret
 
 import (

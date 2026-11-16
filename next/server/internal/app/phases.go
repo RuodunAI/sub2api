@@ -53,7 +53,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/sandbox"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/proxy"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ratelimit"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/task"
