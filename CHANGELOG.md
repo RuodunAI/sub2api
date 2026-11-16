@@ -117,7 +117,7 @@
 | growth | — | 0.2.1 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
 | guard | — | 0.2.10 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；规则、统计、事件改用 GORM，功能不变 |
 | payment | — | 0.1.2 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；订单与通知改用 GORM，功能不变 |
-| relay | — | 0.3.1 | `hostCompat >=0.1.290`，用 SDK 0.2.0 重新编译，功能不变 |
+| relay | 0.3.0 | 0.3.1 | `hostCompat >=0.1.290`，用 SDK 0.2.0 重新编译，功能不变 |
 
 `tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` 对照 `next/plugins/released.json`（线上各插件的版本和源码摘要，取自 0.1.286 打包的 `951525943`），发现内容变了而版本没升的插件就失败；每次发布后按该测试的说明重写这个文件。
 
