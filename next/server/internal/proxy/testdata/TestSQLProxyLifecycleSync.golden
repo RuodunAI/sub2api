@@ -1,4 +1,0 @@
--- sql
-INSERT INTO account_lifecycle_sync(account_id,status) SELECT unnest($1::bigint[]),'pending' ON CONFLICT (account_id) DO UPDATE SET status='pending',code='',generation=account_lifecycle_sync.generation+1,updated_at=now()
--- vars
-$1 store.Int64s [11 12]

@@ -1,5 +1,0 @@
--- sql
-DELETE FROM "provider_fallback_credits" WHERE (user_id = $1 AND group_id = $2) AND expires_at < now()-interval '24 hours'
--- vars
-$1 int64 7
-$2 int64 3

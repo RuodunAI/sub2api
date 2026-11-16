@@ -300,7 +300,9 @@ func (s *Service) HTTPClient(ctx context.Context, proxyID *int64) (*http.Client,
 		return e.result()
 	}
 	var r row
-	err := clientRow(store.G(ctx, s.db.Gorm), id).Take(&r).Error
+	err := store.G(ctx, s.db.Gorm).Model(&model.Proxy{}).
+		Select("protocol, host, port, username, password_enc, status, allow_private, updated_at").
+		Where("id = ?", id).Take(&r).Error
 	if store.IsNoRows(err) {
 		s.Invalidate(id)
 		return nil, core.ErrNotFound.WithMessage("proxy not found")
@@ -335,13 +337,6 @@ func (s *Service) HTTPClient(ctx context.Context, proxyID *int64) (*http.Client,
 	ne := &entry{client: c, status: r.Status, updatedAt: r.UpdatedAt, checkedAt: now}
 	s.clients[id] = ne
 	return ne.result()
-}
-
-// clientRow selects what the cached client of proxy id is built from.
-func clientRow(db *gorm.DB, id int64) *gorm.DB {
-	return db.Model(&model.Proxy{}).
-		Select("protocol, host, port, username, password_enc, status, allow_private, updated_at").
-		Where("id = ?", id)
 }
 
 func (e *entry) result() (*http.Client, error) {
@@ -934,7 +929,10 @@ func (s *Service) recordObservedIP(ctx context.Context, id int64, ip string) err
 			Take(&previous).Error; err != nil {
 			return err
 		}
-		if err := observeIP(g, id, ip).Error; err != nil {
+		// updated_at stays: it versions the cached client (HTTPClient), which
+		// a probe leaves as it is.
+		if err := g.Model(&model.Proxy{}).Where("id = ?", id).
+			Updates(map[string]any{"real_ip": ip, "real_ip_updated_at": gorm.Expr("now()")}).Error; err != nil {
 			return err
 		}
 		if previous == ip {
@@ -942,20 +940,6 @@ func (s *Service) recordObservedIP(ctx context.Context, id int64, ip string) err
 		}
 		return s.notifyAccountProxyChange(ctx, tx, id, "proxy.real_ip")
 	})
-}
-
-// observeIP records ip as the address the proxy was seen to exit from.
-// updated_at stays: it versions the cached client (Service.HTTPClient), which
-// a probe leaves as it is, and the raw SQL did not write it.
-func observeIP(db *gorm.DB, id int64, ip string) *gorm.DB {
-	return db.Model(&model.Proxy{}).Where("id = ?", id).
-		Updates(map[string]any{"real_ip": ip, "real_ip_updated_at": gorm.Expr("now()")})
-}
-
-// proxiedAccounts selects the live accounts going through proxy id, by id.
-func proxiedAccounts(db *gorm.DB, id int64) *gorm.DB {
-	return db.Model(&model.Account{}).Select("id, plugin_key, type, name").
-		Where("proxy_id = ? AND deleted_at IS NULL", id).Order("id")
 }
 
 // lifecycleSyncSQL queues a lifecycle sync of the accounts (?, their ids).
@@ -971,7 +955,8 @@ func (s *Service) notifyAccountProxyChange(ctx context.Context, tx *gorm.DB, id 
 	}
 	g := store.G(ctx, tx)
 	var accounts []model.Account
-	if err := proxiedAccounts(g, id).Find(&accounts).Error; err != nil {
+	if err := g.Model(&model.Account{}).Select("id, plugin_key, type, name").
+		Where("proxy_id = ? AND deleted_at IS NULL", id).Order("id").Find(&accounts).Error; err != nil {
 		return err
 	}
 	var events []core.Event

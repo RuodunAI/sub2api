@@ -79,7 +79,18 @@ func groupAccess(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]Access
 		Names         store.Strings `gorm:"column:names"`
 		PersonalCount int64         `gorm:"column:personal_count"`
 	}
-	if err := groupAccessQuery(store.G(ctx, q), ids).Scan(&rows).Error; err != nil {
+	// For each private group of ids that grants a segment: the named
+	// segments granted it (ids and names in id order) and the number of
+	// personal ones.
+	if err := store.G(ctx, q).Raw(`SELECT sg.group_id,
+			COALESCE(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS segment_ids,
+			COALESCE(array_agg(s.name ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS names,
+			count(*) FILTER (WHERE s.kind = 'personal') AS personal_count
+		FROM segment_groups sg
+		JOIN segments s ON s.id = sg.segment_id
+		JOIN groups g ON g.id = sg.group_id
+		WHERE sg.group_id = ANY(?) AND sg.granted AND g.visibility = 'restricted'
+		GROUP BY sg.group_id`, store.Int64s(ids)).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, r := range rows {
@@ -90,21 +101,6 @@ func groupAccess(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]Access
 		out[r.GroupID] = a
 	}
 	return out, nil
-}
-
-// groupAccessQuery reads, for each private group of ids that grants a
-// segment, the named segments granted it (ids and names in id order) and the
-// number of personal ones.
-func groupAccessQuery(db *gorm.DB, ids []int64) *gorm.DB {
-	return db.Raw(`SELECT sg.group_id,
-			COALESCE(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS segment_ids,
-			COALESCE(array_agg(s.name ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS names,
-			count(*) FILTER (WHERE s.kind = 'personal') AS personal_count
-		FROM segment_groups sg
-		JOIN segments s ON s.id = sg.segment_id
-		JOIN groups g ON g.id = sg.group_id
-		WHERE sg.group_id = ANY(?) AND sg.granted AND g.visibility = 'restricted'
-		GROUP BY sg.group_id`, store.Int64s(ids))
 }
 
 // ruleOn is what a price rule is on: a model in a group, for a segment (0 =
