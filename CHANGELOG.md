@@ -8,9 +8,16 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.291 + 网关 0.1.135：删除为网关 0.1.133 与回退到 0.1.288 保留的代码，修正升级预检误报（无核心迁移）
+## 2026-11-17
+
+### 核心 0.1.291 + 网关 0.1.135：删除为网关 0.1.133 与回退到 0.1.288 保留的代码，修正升级预检误报（`a0eac3c38`，滚动；无核心迁移，内置插件与 0.1.290 相同）
 
 0.1.290 已在所有节点上线（核心 0.1.290、网关外壳 0.1.134），升级前的备份已删除，不能再回到 0.1.288。按“迁移完成后不留兼容代码”，删除只为外壳 0.1.133、核心 0.1.288 和这次回退保留的部分（CONTRACTS §101.3）。
+
+- **上线**：北京时间 03:55:33–03:58:27。核心：计划 `8041bf318cb8884029391dee3061d87f` rolling-v1 completed（清单 `5a0fff61…3824`，03:55:33→03:56:41，先 ccp 后 ovh），`/readyz`（ovh 3130 与 api.prophey.ai）全程 200。网关：镜像 `sup2api-gateway:0.1.135` 逐个节点手动更换（先从节点 ccp 03:57:15–03:57:53，再主节点 ovh 03:58:10–03:58:27），每个节点先 `sub2api-gateway yield` 等 `/readyz` 503 且在途请求为 0 再重建容器；两节点 `updater.nodes.gateway_version` = 0.1.135、`self_update` = true。
+- new-api 渠道 392 没有关（滚动发布，用户 11-12 要求）；不备份数据库。03:30–04:08 的请求 5xx 为 0（发布前 243 次、滚动与换网关期间 17 次、之后到 04:08 共 45 次）。
+- 首次更新检测（03:59:27，默认来源 GitHub `Sub2API-Devs/sup2api`）两条线都返回“the update source has no stable core/gateway release”：还没有 `core-v*`、`gateway-v*` Release，节点也没有发布流水线的公钥，属预期。
+- 回滚：核心用 0.1.290 清单 `8823ac9e…bb32` 建 rolling 计划（schema 相同）；网关把节点 `.env` 的 `GATEWAY_IMAGE` 改回 `sup2api-gateway:0.1.134` 后同样先让出再重建（0.1.134 启动时把空的 `cpu_percent` 列加回来，不影响服务）。部署细节见 [OVH 部署记录](next/deploy/gateway/ovh/README.md)。
 
 - **托管核心必须有管理 socket 令牌**：`SUB2API_MANAGED=true` 时没有 `SUB2API_UPDATER_TOKEN_FILE`、文件读不到或内容不是 64 位十六进制，核心启动失败；转发升级接口与插件包读写总是带令牌，不再有“没有令牌就不带”的分支。非托管核心既不读这个变量也不读 `UPDATER_SOCKET`：升级接口返回 503 `updater_unavailable`，插件包存本地目录。线上的外壳 0.1.134（以及之前的 0.1.133）总是传这个变量并在启动核心前写好令牌文件，不需要改配置。
 - **核心不再声明 `drain.graceful`**：`runtimecontract.Hello` 去掉 `capabilities` 与 `CapabilityGracefulDrain`，只有外壳 0.1.133 看它。`DrainRequest.graceful` 照旧：外壳 0.1.134 起按需要发送，核心照样让在途请求跑完。
@@ -27,8 +34,6 @@
   - 网关：新子命令 `sub2api-gateway version`；新配置 `allow_private_update_sources`（`url` 来源允许内网地址）；已安装的网关放在 `<root>/gateway/<版本>/`，`<root>/gateway/current` 指定启动哪一版（换了更新的镜像时镜像自带的版本优先，只记 INFO）。第一次换上本版网关仍按镜像手动换；之后各节点都报告版本并能自更新时才出现网关的一键更新。`release_origin` 与 `import -manifest` 保留给离线发布。
 
 **发布**：两条线互不依赖，顺序不限。核心 0.1.291 没有迁移，可以在外壳 0.1.134 下走 `rolling-v1`；外壳 0.1.134 照常发 `graceful`、传令牌文件。网关 0.1.135 按部署记录逐个节点更换，它照常驱动核心 0.1.290（外壳不检查 `capabilities`，多出的字段忽略）；换外壳期间 0.1.134 重启时会把空的 `cpu_percent` 加回来，之后的 0.1.135 启动时再删掉，都不影响服务。
-
-## 2026-11-17
 
 ### 核心 0.1.290 + 插件 + 网关 0.1.134：插件权限声明、Casbin 权限存储、Valkey 控制台会话、GORM、删除 CCGateway（`e3906cc68`，迁移 0099–0102，单向，停服发布，所有人重新登录）
 
