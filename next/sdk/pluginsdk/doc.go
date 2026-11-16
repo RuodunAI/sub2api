@@ -80,7 +80,8 @@
 // Create, Updates, Delete, clause.OnConflict, clause.Returning), not
 // written out: Raw and Exec only combine built queries ("(?) UNION ALL
 // (?)", pgdb.Exists, pgdb.InsertSelect), and pgdb.NextIDs, LockTable and
-// TryXactLock cover sequences and locks. SQL text (of Raw, Exec, Where,
+// TryXactLock cover sequences and locks; package hierarchy keeps a tree in
+// a table (a parent and a materialized path per row). SQL text (of Raw, Exec, Where,
 // Select, Order, Joins, Table, gorm.Expr, clause.Expr ...) is a constant:
 // values go in as ? parameters, and a column a request picks through a
 // fixed whitelist into clause.Column or clause.OrderByColumn. TestNoRawSQL

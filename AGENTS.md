@@ -20,7 +20,7 @@
 | `next/server` | 核心服务（模块化单体）：控制台 API、网关流水线、计费、插件运行时，二进制 `sub2api` |
 | `next/gateway` | 节点外壳 `sub2api-gateway`：公网入口、管理本机核心进程（supervisor）、托管升级；另有发布签名工具 `sub2api-release` |
 | `next/runtime-contract` | 外壳与核心的协议，以及核心、网关、SDK 共用的数据库层 `gormpg`（打开连接、组合器、SQL 检查器 `gormpg/sqlcheck`） |
-| `next/sdk` | 插件契约：`proto`/`gen`（gRPC）、`manifest`、`pluginsdk`（插件开发包）、`pgdb`（插件的 GORM 句柄）、`testpg`（测试用 PostgreSQL） |
+| `next/sdk` | 插件契约：`proto`/`gen`（gRPC）、`manifest`、`pluginsdk`（插件开发包）、`pgdb`（插件的 GORM 句柄）、`hierarchy`（表里的树：物化路径，核心的用户上级也用它）、`testpg`（测试用 PostgreSQL） |
 | `next/plugins/*` | 官方插件，每个是独立 Go 模块；`plugins/released.json` 记录线上版本 |
 | `next/tools/sub2api-plugin` | 插件 CLI：keygen、build、pack、sign、verify、index、`db diff/check`、`dev` |
 | `next/web` | 控制台（Vue 3 + Vite + TS + Pinia + Tailwind），`packages/` 下是共享给插件的 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` |
