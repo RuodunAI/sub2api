@@ -91,8 +91,8 @@ func TestMigration0011Rolling(t *testing.T) {
 				t.Fatalf("0.9.3 query %.40q: %v", q, err)
 			}
 		}
-		ids, err := column[int64](db.Raw(`SELECT id FROM events`))
-		if err != nil {
+		var ids []int64
+		if err := db.Raw(`SELECT id FROM events`).Scan(&ids).Error; err != nil {
 			t.Fatal(err)
 		}
 		for _, id := range ids {

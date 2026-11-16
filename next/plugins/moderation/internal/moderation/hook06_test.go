@@ -346,7 +346,7 @@ func TestErrorRecordsKeepShortText(t *testing.T) {
 	waitEvents(t, h, map[string]string{"request_id": "err", "result": "error"}, 1)
 	db, _ := p.db(context.Background())
 	var n int
-	if err := queryRow(db, `SELECT char_length(text) FROM events WHERE request_id = 'err'`).Scan(&n); err != nil || n != 100 {
+	if err := db.Raw(`SELECT char_length(text) FROM events WHERE request_id = 'err'`).Row().Scan(&n); err != nil || n != 100 {
 		t.Fatalf("error text = %d %v", n, err)
 	}
 }
@@ -409,7 +409,7 @@ func TestInputMessageKeptPerSetting(t *testing.T) {
 			}
 			var msg, text *string
 			var size int
-			if err := queryRow(db, `SELECT input_message::text, input_message_size, text FROM events WHERE id = ?`, ev.ID).Scan(&msg, &size, &text); err != nil {
+			if err := db.Raw(`SELECT input_message::text, input_message_size, text FROM events WHERE id = ?`, ev.ID).Row().Scan(&msg, &size, &text); err != nil {
 				t.Fatal(err)
 			}
 			if kept := msg != nil; kept != tc.kept || (size > 0) != tc.kept || (ev.InputMessageSize > 0) != tc.kept {

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -28,16 +29,16 @@ func (p *Plugin) upgradeOnce(ctx context.Context) {
 		return
 	}
 	c := p.cfg.Load()
-	var imported, converted bool
-	if err := queryRow(db, `SELECT lists_imported, legacy_converted FROM config_state WHERE id = 1`).Scan(&imported, &converted); err != nil {
+	var st model.ConfigState
+	if err := configState(db).Select("lists_imported, legacy_converted").Take(&st).Error; err != nil {
 		p.log.Warn("moderation: reading the upgrade state failed, retrying later", "error", err.Error())
 		return
 	}
-	if !imported {
+	if !st.ListsImported {
 		fixed, err := p.importLists(db, c.lists)
 		if err == nil {
 			// Another node may have set it first: setting it again is harmless.
-			err = db.Exec(`UPDATE config_state SET lists_imported = true WHERE id = 1`).Error
+			err = configState(db).Update("lists_imported", true).Error
 		}
 		if fixed > 0 {
 			p.watchChanged(ctx)
@@ -49,7 +50,7 @@ func (p *Plugin) upgradeOnce(ctx context.Context) {
 		p.log.Info("moderation: imported the user lists of the settings into the watch list",
 			"allowlist", len(c.lists.allow), "blocklist", len(c.lists.block), "invalid", c.lists.invalid, "fixed", fixed)
 	}
-	if !converted && c.setup01 {
+	if !st.LegacyConverted && c.setup01 {
 		p.log.Error("moderation: the settings hold a 0.1 single-model setup that was never converted, and 0.11.0 no longer converts it: upgrade through moderation <= 0.10 first")
 	}
 	p.upgraded.Store(true)
@@ -62,8 +63,8 @@ func (p *Plugin) upgradeOnce(ctx context.Context) {
 // Every fix writes a history row and a log line. fixed counts the fixes,
 // also when it stops at an error.
 func (p *Plugin) importLists(db *gorm.DB, l retiredLists) (fixed int, err error) {
-	locked, err := column[int64](db.Raw(`SELECT user_id FROM watchlist WHERE locked`))
-	if err != nil {
+	var locked []int64
+	if err := db.Model(&model.Watch{}).Where("locked").Pluck("user_id", &locked).Error; err != nil {
 		return 0, err
 	}
 	lists := map[int64]string{} // "" = neither list

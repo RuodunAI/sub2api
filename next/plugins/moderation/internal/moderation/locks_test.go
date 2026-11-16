@@ -27,7 +27,7 @@ func TestLockAPI(t *testing.T) {
 		t.Helper()
 		db, err := p.db(context.Background())
 		if err == nil {
-			err = queryRow(db, `SELECT watch_version FROM config_state WHERE id = 1`).Scan(&v)
+			err = db.Raw(`SELECT watch_version FROM config_state WHERE id = 1`).Row().Scan(&v)
 		}
 		if err != nil {
 			t.Fatal(err)

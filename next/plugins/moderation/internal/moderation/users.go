@@ -72,10 +72,13 @@ func (p *Plugin) getUsers(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	ids, err = column[int64](db.Raw(`SELECT u FROM unnest(?::bigint[]) AS u WHERE
-		EXISTS (SELECT 1 FROM events WHERE user_id = u) OR EXISTS (SELECT 1 FROM watchlist WHERE user_id = u)
+	known := []int64{}
+	err = db.Table("unnest(?::bigint[]) AS u", pgdb.Array[int64](ids)).
+		Where(`EXISTS (SELECT 1 FROM events WHERE user_id = u) OR EXISTS (SELECT 1 FROM watchlist WHERE user_id = u)
 		OR EXISTS (SELECT 1 FROM watch_events WHERE user_id = u) OR EXISTS (SELECT 1 FROM watch_events WHERE operator_id = u)
-		OR EXISTS (SELECT 1 FROM blocks WHERE user_id = u) OR EXISTS (SELECT 1 FROM unblocks WHERE user_id = u)`, pgdb.Array[int64](ids)))
+		OR EXISTS (SELECT 1 FROM blocks WHERE user_id = u) OR EXISTS (SELECT 1 FROM unblocks WHERE user_id = u)`).
+		Pluck("u", &known).Error
+	ids = known
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "users: %v", err)
 	}

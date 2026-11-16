@@ -68,3 +68,13 @@ func NextIDs(db *gorm.DB, table string, n int) ([]int64, error) {
 func LockTable(tx *gorm.DB, table string) error {
 	return tx.Exec("LOCK TABLE ? IN SHARE ROW EXCLUSIVE MODE", clause.Table{Name: table}).Error
 }
+
+// TryXactLock tries the transaction-level advisory lock of name in the
+// current schema (installs sharing a database keep their own keys) and
+// reports whether tx got it; it is held until tx ends. The key is
+// hashtextextended(name || ':' || current_schema(), 0).
+func TryXactLock(tx *gorm.DB, name string) (bool, error) {
+	var locked bool
+	err := tx.Raw("SELECT pg_try_advisory_xact_lock(hashtextextended(? || ':' || current_schema(), 0))", name).Scan(&locked).Error
+	return locked, err
+}

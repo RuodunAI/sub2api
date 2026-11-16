@@ -15,7 +15,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -24,18 +26,18 @@ import (
 // JobCleanup is the job id declared in manifest.json.
 const JobCleanup = "cleanup"
 
-// BackfillLegacySQL fills result and retention of 0.1 records; the same
-// statement as migrations/0003_flows_watchlist.sql.
-const BackfillLegacySQL = `UPDATE events SET
-    result = CASE
-        WHEN verdict = 'block' AND action = 'deny' THEN 'block'
-        WHEN verdict IN ('block', 'flag') THEN 'hit'
-        WHEN verdict = 'error' THEN 'error'
-        ELSE 'pass' END,
-    timing = CASE WHEN mode = 'enforce' THEN 'pre' ELSE 'post' END,
-    hit_categories = categories,
-    keep_until = coalesce(keep_until, created_at + CASE WHEN verdict IN ('block', 'flag') THEN interval '180 days' ELSE interval '30 days' END)
-WHERE result = ''`
+// backfillLegacy fills result and retention of the 0.1 records (result
+// ”); the same statement as migrations/0003_flows_watchlist.sql.
+func backfillLegacy(db *gorm.DB) error {
+	return db.Model(&model.Event{}).Where("result = ''").Updates(map[string]any{
+		"result": gorm.Expr(`CASE WHEN verdict = 'block' AND action = 'deny' THEN 'block' WHEN verdict IN ('block', 'flag') THEN 'hit'
+			WHEN verdict = 'error' THEN 'error' ELSE 'pass' END`),
+		"timing":         gorm.Expr("CASE WHEN mode = 'enforce' THEN 'pre' ELSE 'post' END"),
+		"hit_categories": gorm.Expr("categories"),
+		"keep_until": gorm.Expr(`coalesce(keep_until, created_at + CASE WHEN verdict IN ('block', 'flag') THEN interval '180 days'
+			ELSE interval '30 days' END)`),
+	}).Error
+}
 
 type jsonNumber = json.Number
 
@@ -312,8 +314,8 @@ func (p *Plugin) importConfig(ctx context.Context, req *pluginv1.HTTPRequest) (*
 		now := p.now().UTC()
 		ids := make([]int64, len(chans))
 		for i, ch := range chans {
-			if err := queryRow(tx, `INSERT INTO channels (type, protocol, name, base_url, model, billing_model, timeout_ms, enabled, created_at, updated_at)
-				VALUES (?,?,?,?,?,?,?,false,?,?) RETURNING id`, ch.Type, ch.Protocol, ch.Name, ch.BaseURL, ch.Model, ch.BillingModel, ch.TimeoutMs, now, now).Scan(&ids[i]); err != nil {
+			var err error
+			if ids[i], err = insertRow(tx, &model.Channel{}, ch.row(false, now)); err != nil {
 				return err
 			}
 			if err := p.storeKey(ctx, tx, ids[i], ch.APIKey); err != nil {
@@ -323,7 +325,8 @@ func (p *Plugin) importConfig(ctx context.Context, req *pluginv1.HTTPRequest) (*
 		aids := make([]int64, len(auds))
 		for i, a := range auds {
 			cfg, _ := json.Marshal(a.Config)
-			if err := queryRow(tx, `INSERT INTO auditors (name, type, channel_id, config, created_at, updated_at) VALUES (?,?,?,?,?,?) RETURNING id`, a.Name, a.Type, ids[in.Data.Auditors[i].ChannelRef], cfg, now, now).Scan(&aids[i]); err != nil {
+			var err error
+			if aids[i], err = insertAuditor(tx, a.Name, a.Type, ids[in.Data.Auditors[i].ChannelRef], cfg, now); err != nil {
 				return err
 			}
 		}
@@ -356,7 +359,7 @@ func (p *Plugin) RunJob(ctx context.Context, in *pluginv1.RunJobRequest) (*plugi
 	now := p.now().UTC()
 	// Rows 0.1 nodes wrote during a rolling upgrade get their result and
 	// retention like the migration gave the older ones.
-	if err := db.Exec(BackfillLegacySQL).Error; err != nil {
+	if err := backfillLegacy(db); err != nil {
 		return nil, status.Errorf(codes.Internal, "cleanup backfill: %v", err)
 	}
 	// The expiries come first: they are small and decide who is moderated
@@ -405,8 +408,11 @@ func purgeBudget(ctx context.Context) (context.Context, context.CancelFunc) {
 func (p *Plugin) expireBlocks(ctx context.Context, db *gorm.DB, now time.Time) (int64, error) {
 	var blocks int64
 	err := db.Transaction(func(tx *gorm.DB) error {
-		users, err := column[int64](tx.Raw(`SELECT user_id FROM blocks WHERE expires_at <= ?
-			UNION SELECT user_id FROM unblocks WHERE at < ? ORDER BY user_id`, now, now.Add(-366*24*time.Hour)))
+		yearAgo := now.Add(-366 * 24 * time.Hour)
+		var users []int64
+		err := tx.Table("(?) AS u", tx.Raw("(?) UNION (?)",
+			tx.Model(&model.Block{}).Select("user_id").Where("expires_at <= ?", now),
+			tx.Model(&model.Unblock{}).Select("user_id").Where("at < ?", yearAgo))).Order("user_id").Pluck("user_id", &users).Error
 		if err != nil {
 			return err
 		}
@@ -416,13 +422,24 @@ func (p *Plugin) expireBlocks(ctx context.Context, db *gorm.DB, now time.Time) (
 			}
 		}
 		ids := pgdb.Array[int64](users)
-		if blocks, err = affected(tx.Exec(`WITH expired AS (
-				DELETE FROM blocks WHERE user_id = ANY(?) AND expires_at IS NOT NULL AND expires_at <= ? RETURNING user_id, expires_at)
-			INSERT INTO unblocks (user_id, at) SELECT user_id, expires_at FROM expired
-			ON CONFLICT (user_id) DO UPDATE SET at = GREATEST(unblocks.at, EXCLUDED.at)`, ids, now)); err != nil {
+		var expired []model.Block
+		err = tx.Clauses(clause.Returning{Columns: columns("user_id", "expires_at")}).
+			Where("user_id = ANY(?) AND expires_at IS NOT NULL AND expires_at <= ?", ids, now).Delete(&expired).Error
+		if err != nil {
 			return err
 		}
-		return tx.Exec(`DELETE FROM unblocks WHERE user_id = ANY(?) AND at < ?`, ids, now.Add(-366*24*time.Hour)).Error
+		if blocks = int64(len(expired)); blocks > 0 {
+			unblocks := make([]model.Unblock, len(expired))
+			for i, b := range expired {
+				unblocks[i] = model.Unblock{UserID: b.UserID, At: *b.ExpiresAt}
+			}
+			err = tx.Clauses(clause.OnConflict{Columns: columns("user_id"),
+				DoUpdates: clause.Set{assign("at", "GREATEST(unblocks.at, EXCLUDED.at)")}}).Create(&unblocks).Error
+			if err != nil {
+				return err
+			}
+		}
+		return tx.Where("user_id = ANY(?) AND at < ?", ids, yearAgo).Delete(&model.Unblock{}).Error
 	})
 	if err == nil && blocks > 0 {
 		p.blocksChanged(ctx)
@@ -438,10 +455,10 @@ var (
 	purgePause = 50 * time.Millisecond
 )
 
-// purgeLockKey is the advisory lock that keeps the retention purge on one
-// node at a time (Configure starts it on every node); the schema tells
-// installs sharing a database apart.
-const purgeLockKey = `hashtextextended('moderation.retention_purge:' || current_schema(), 0)`
+// purgeLock names the advisory lock that keeps the retention purge on one
+// node at a time (Configure starts it on every node); pgdb.TryXactLock
+// adds the schema, which tells installs sharing a database apart.
+const purgeLock = "moderation.retention_purge"
 
 // purgeRetention deletes the records past their keep_until or older than
 // the current retention of their result, and the statistics past
@@ -473,11 +490,10 @@ func (p *Plugin) purgeRetention(ctx context.Context, db *gorm.DB, now time.Time)
 			p.log.Warn("moderation: retention purge lock release failed", "error", err.Error())
 		}
 	}()
-	var locked bool
-	if err := queryRow(tx, `SELECT pg_try_advisory_xact_lock(`+purgeLockKey+`)`).Scan(&locked); err != nil || !locked {
+	if locked, err := pgdb.TryXactLock(tx, purgeLock); err != nil || !locked {
 		return 0, err
 	}
-	deleted, err := deleteBatches(ctx, db, "events", `SELECT ctid FROM events WHERE keep_until < ?`, now)
+	deleted, err := deleteBatches(ctx, db, &model.Event{}, db.Model(&model.Event{}).Select("ctid").Where("keep_until < ?", now))
 	if err != nil {
 		return deleted, fmt.Errorf("events: %w", err)
 	}
@@ -486,8 +502,8 @@ func (p *Plugin) purgeRetention(ctx context.Context, db *gorm.DB, now time.Time)
 	for result, keep := range retention {
 		results, cuts = append(results, result), append(cuts, now.Add(-keep))
 	}
-	n, err := deleteBatches(ctx, db, "events", `SELECT e.ctid FROM events e JOIN unnest(?::text[], ?::timestamptz[]) AS r(result, cut)
-		ON e.result = r.result AND e.created_at < r.cut`, pgdb.Array[string](results), pgdb.Array[time.Time](cuts))
+	n, err := deleteBatches(ctx, db, &model.Event{}, db.Table("events e").Select("e.ctid").Joins(`JOIN unnest(?::text[], ?::timestamptz[]) AS r(result, cut)
+		ON e.result = r.result AND e.created_at < r.cut`, pgdb.Array[string](results), pgdb.Array[time.Time](cuts)))
 	deleted += n
 	if err != nil {
 		return deleted, fmt.Errorf("events by retention: %w", err)
@@ -498,17 +514,20 @@ func (p *Plugin) purgeRetention(ctx context.Context, db *gorm.DB, now time.Time)
 	return deleted, nil
 }
 
-// deleteBatches deletes the rows of table whose ctid selectCtid returns,
-// purgeBatch per statement with purgePause between statements, until a
-// statement deletes fewer or ctx ends. It returns the rows deleted.
-func deleteBatches(ctx context.Context, db *gorm.DB, table, selectCtid string, args ...any) (int64, error) {
-	query := fmt.Sprintf(`DELETE FROM %s WHERE ctid = ANY(ARRAY(%s LIMIT %d))`, table, selectCtid, purgeBatch)
+// deleteBatches deletes the rows of m's table whose ctid rows (a query on
+// that table) selects, purgeBatch per statement with purgePause between
+// statements, until a statement deletes fewer or ctx ends. It returns the
+// rows deleted. A join qualifies the ctid: unqualified, it would name the
+// row being deleted.
+func deleteBatches(ctx context.Context, db *gorm.DB, m any, rows *gorm.DB) (int64, error) {
+	batch := rows.Limit(purgeBatch)
 	var total int64
 	for {
-		n, err := affected(db.Exec(query, args...))
-		if err != nil {
-			return total, err
+		res := db.Where("ctid = ANY(ARRAY(?))", batch).Delete(m)
+		if res.Error != nil {
+			return total, res.Error
 		}
+		n := res.RowsAffected
 		total += n
 		if n < int64(purgeBatch) {
 			return total, nil
@@ -527,8 +546,8 @@ func (p *Plugin) expireWatch(ctx context.Context, now time.Time) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	users, err := column[int64](db.Raw(`SELECT user_id FROM watchlist WHERE expires_at <= ? ORDER BY user_id`, now))
-	if err != nil {
+	var users []int64
+	if err := db.Model(&model.Watch{}).Where("expires_at <= ?", now).Order("user_id").Pluck("user_id", &users).Error; err != nil {
 		return 0, err
 	}
 	n := 0

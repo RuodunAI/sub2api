@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -113,34 +114,35 @@ func TestMigration0013Rolling(t *testing.T) {
 	after := write0100(20)
 	read0100()
 	var left int
-	if err := queryRow(db, `SELECT count(*) FROM information_schema.columns WHERE table_schema = ?
+	if err := db.Raw(`SELECT count(*) FROM information_schema.columns WHERE table_schema = ?
 		AND (column_name LIKE 'ai\_%' OR column_name LIKE 'latest\_%' OR column_name LIKE 'analysis\_%' OR column_name = 'analyzed_at')`,
-		schema).Scan(&left); err != nil || left != 1 { // watch_events.analysis_id stays
+		schema).Row().Scan(&left); err != nil || left != 1 { // watch_events.analysis_id stays
 		t.Fatalf("%d analysis columns left (%v)", left, err)
 	}
 	var gone bool
-	if err := queryRow(db, `SELECT to_regclass(?) IS NULL`, ident(schema, "user_analyses")).Scan(&gone); err != nil || !gone {
+	if err := db.Raw(`SELECT to_regclass(?) IS NULL`, ident(schema, "user_analyses")).Row().Scan(&gone); err != nil || !gone {
 		t.Fatalf("user_analyses dropped = %v (%v)", gone, err)
 	}
 	// 0.11.0 runs with every migration applied and reads the 0.10.0 rows.
 	pluginsdktest.ApplyMigrations(t, dsn, schema, filepath.Join("..", "..", "migrations"))
 	for uid, lock := range map[int64]string{10: "", 11: "", 12: LockAllowlist, 20: "", 21: "", 22: LockAllowlist} {
-		w, err := scanWatch(queryRow(db, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = ?`, uid))
+		w, err := takeWatch(db.Where("user_id = ?", uid))
 		if err != nil || w.Lock != lock || w.UserID != uid {
 			t.Fatalf("user %d: %+v (%v)", uid, w, err)
 		}
 	}
 	for _, id := range []int64{before, after} {
-		var e Event
-		if err := queryRow(db, `SELECT `+eventColumns+` FROM events WHERE id = ?`, id).Scan(e.scanTargets()...); err != nil {
+		var row model.Event
+		if err := db.Select(eventColumns).Take(&row, id).Error; err != nil {
 			t.Fatal(err)
 		}
+		e := eventOf(row)
 		if e.Level == nil || *e.Level != LevelObserve || e.Result != ResultHit {
 			t.Fatalf("record %d = %+v", id, e)
 		}
 	}
 	var imported bool
-	if err := queryRow(db, `SELECT lists_imported FROM config_state WHERE id = 1`).Scan(&imported); err != nil || imported {
+	if err := db.Raw(`SELECT lists_imported FROM config_state WHERE id = 1`).Row().Scan(&imported); err != nil || imported {
 		t.Fatalf("lists_imported = %v (%v)", imported, err)
 	}
 }

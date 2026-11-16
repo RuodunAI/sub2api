@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -50,12 +51,12 @@ func (p *Plugin) convertParityOnce(ctx context.Context) {
 	fail := func(err error) {
 		p.log.Warn("moderation: converting the watch list for 0.8.0 failed, retrying later", "error", err.Error())
 	}
-	var done bool
-	var at *time.Time
-	if err := queryRow(db, `SELECT parity_converted, parity_converted_at FROM config_state WHERE id = 1`).Scan(&done, &at); err != nil {
+	var st model.ConfigState
+	if err := configState(db).Select("parity_converted, parity_converted_at").Take(&st).Error; err != nil {
 		fail(err)
 		return
 	}
+	done, at := st.ParityConverted, st.ParityConvertedAt
 	finished := func() {
 		end := int64(0) // no timestamp: converted before it was recorded, no window
 		if at != nil {
@@ -86,14 +87,16 @@ func (p *Plugin) convertParityOnce(ctx context.Context) {
 	if !done {
 		// The first run is over; another node may have finished it first,
 		// then its time counts.
-		if err := db.Exec(`UPDATE config_state SET parity_converted = true, parity_converted_at = ? WHERE id = 1 AND NOT parity_converted`, now).Error; err != nil {
+		err := configState(db).Where("NOT parity_converted").
+			Updates(map[string]any{"parity_converted": true, "parity_converted_at": now}).Error
+		if err == nil {
+			err = configState(db).Select("parity_converted_at").Take(&st).Error
+		}
+		if err != nil {
 			fail(err)
 			return
 		}
-		if err := queryRow(db, `SELECT parity_converted_at FROM config_state WHERE id = 1`).Scan(&at); err != nil {
-			fail(err)
-			return
-		}
+		at = st.ParityConvertedAt
 	}
 	finished()
 	if !done || converted > 0 {
@@ -112,7 +115,9 @@ const parityLive = `level = 'observe' AND source = 'auto' AND (expires_at IS NUL
 // entries added since the given time (nil = all of them), and returns how
 // many it changed - also when it stops at an error.
 func convertParityEntries(db *gorm.DB, now time.Time, since *time.Time) (converted int, err error) {
-	users, err := column[int64](db.Raw(`SELECT user_id FROM watchlist WHERE `+parityLive+` AND (?::timestamptz IS NULL OR since_at >= ?) ORDER BY user_id`, now, since, since))
+	var users []int64
+	err = db.Model(&model.Watch{}).Where(parityLive, now).Where("?::timestamptz IS NULL OR since_at >= ?", since, since).
+		Order("user_id").Pluck("user_id", &users).Error
 	if err != nil {
 		return 0, err
 	}
@@ -136,9 +141,10 @@ func convertParityEntry(db *gorm.DB, now time.Time, uid int64) (changed bool, er
 		if err := lockBlockSubject(tx, uid); err != nil {
 			return err
 		}
-		n, err := affected(tx.Exec(`UPDATE watchlist SET level = 'enforce', updated_at = ? WHERE user_id = ? AND `+parityLive, now, uid, now))
-		if err != nil || n == 0 {
-			return err
+		res := tx.Model(&model.Watch{}).Where("user_id = ?", uid).Where(parityLive, now).
+			Updates(map[string]any{"level": LevelEnforce, "updated_at": now})
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error
 		}
 		if err := watchEvent(tx, watchChange{uid: uid, action: "set_level", from: LevelObserve, to: LevelEnforce, reason: parityReason}); err != nil {
 			return err

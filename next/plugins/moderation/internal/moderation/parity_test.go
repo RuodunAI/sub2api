@@ -53,7 +53,7 @@ func TestParityConversionOnce(t *testing.T) {
 		t.Helper()
 		db, _ := p.db(ctx)
 		var done bool
-		if err := queryRow(db, `SELECT parity_converted FROM config_state WHERE id = 1`).Scan(&done); err != nil {
+		if err := db.Raw(`SELECT parity_converted FROM config_state WHERE id = 1`).Row().Scan(&done); err != nil {
 			t.Fatal(err)
 		}
 		return done
@@ -74,7 +74,7 @@ func TestParityConversionOnce(t *testing.T) {
 		prepare(t, p, rows)
 		db, _ := p.db(ctx)
 		var expires time.Time
-		if err := queryRow(db, `SELECT expires_at FROM watchlist WHERE user_id = 21`).Scan(&expires); err != nil {
+		if err := db.Raw(`SELECT expires_at FROM watchlist WHERE user_id = 21`).Row().Scan(&expires); err != nil {
 			t.Fatal(err)
 		}
 		// Both nodes convert at the same time: the row lock lets one do it.
@@ -126,7 +126,7 @@ func TestParityConversionOnce(t *testing.T) {
 			t.Fatalf("history = %s", got)
 		}
 		var after time.Time
-		if err := queryRow(db, `SELECT expires_at FROM watchlist WHERE user_id = 21`).Scan(&after); err != nil || !after.Equal(expires) {
+		if err := db.Raw(`SELECT expires_at FROM watchlist WHERE user_id = 21`).Row().Scan(&after); err != nil || !after.Equal(expires) {
 			t.Fatalf("expiry %v -> %v (%v)", expires, after, err)
 		}
 		// The hooks of both nodes see the new levels.
@@ -181,7 +181,7 @@ func TestParityConversionOnce(t *testing.T) {
 		}
 		db, _ := p.db(ctx)
 		var n int
-		if err := queryRow(db, `SELECT count(*) FROM watch_events`).Scan(&n); err != nil || n != 0 {
+		if err := db.Raw(`SELECT count(*) FROM watch_events`).Row().Scan(&n); err != nil || n != 0 {
 			t.Fatalf("history rows = %d %v", n, err)
 		}
 	})
@@ -197,14 +197,14 @@ func TestParityConversionWindow(t *testing.T) {
 	waitFor(t, "conversion at start", p.parityDone.Load)
 	db, _ := p.db(ctx)
 	var at *time.Time
-	if err := queryRow(db, `SELECT parity_converted_at FROM config_state WHERE id = 1 AND parity_converted`).Scan(&at); err != nil || at == nil ||
+	if err := db.Raw(`SELECT parity_converted_at FROM config_state WHERE id = 1 AND parity_converted`).Row().Scan(&at); err != nil || at == nil ||
 		time.Since(*at) > time.Minute {
 		t.Fatalf("conversion time = %v (%v)", at, err)
 	}
 	levels := func() string {
 		t.Helper()
-		list, err := column[string](db.Raw(`SELECT user_id || ':' || level FROM watchlist ORDER BY user_id`))
-		if err != nil {
+		var list []string
+		if err := db.Raw(`SELECT user_id || ':' || level FROM watchlist ORDER BY user_id`).Scan(&list).Error; err != nil {
 			t.Fatal(err)
 		}
 		return strings.Join(list, " ")
@@ -311,8 +311,8 @@ func TestParityConversionLockOrder(t *testing.T) {
 	// statement waiting), and has not finished.
 	waitFor(t, "the conversion to wait for the user's lock", func() bool {
 		var waiting int
-		if err := queryRow(db, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'
-			AND query LIKE '%block_subjects%' AND pid <> pg_backend_pid()`).Scan(&waiting); err != nil {
+		if err := db.Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'
+			AND query LIKE '%block_subjects%' AND pid <> pg_backend_pid()`).Row().Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		return waiting > 0
@@ -337,7 +337,7 @@ func TestParityConversionLockOrder(t *testing.T) {
 	within(t, "the conversion", converted)
 	var level, note string
 	var done bool
-	if err := queryRow(db, `SELECT w.level, w.note, s.parity_converted FROM watchlist w, config_state s WHERE w.user_id = 41 AND s.id = 1`).Scan(&level, &note, &done); err != nil ||
+	if err := db.Raw(`SELECT w.level, w.note, s.parity_converted FROM watchlist w, config_state s WHERE w.user_id = 41 AND s.id = 1`).Row().Scan(&level, &note, &done); err != nil ||
 		level != LevelEnforce || note != "in progress" || !done || !p.parityDone.Load() {
 		t.Fatalf("entry = %s %q, converted = %v (%v)", level, note, done, err)
 	}

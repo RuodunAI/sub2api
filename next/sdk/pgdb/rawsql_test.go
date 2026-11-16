@@ -30,7 +30,7 @@ var rawSQLFiles = map[string]string{
 	"sdk/pgdb/pgdbtool/migrator.go": "schema drift check: reads a column default from pg_attrdef and normalizes one through a temporary table under a savepoint (DDL)",
 	"sdk/pgdb/pgdbtool/drift.go":    "migration replay: SET LOCAL search_path / ROLE, RESET ROLE and the catalog read of the role's grants",
 	"sdk/pgdb/pgdbtool/migrate.go":  "migration runner: CREATE SCHEMA / DROP SCHEMA and SET LOCAL search_path (DDL)",
-	"sdk/pgdb/query.go":             "NextIDs (nextval of a serial over generate_series) and LockTable (LOCK TABLE): no data statements",
+	"sdk/pgdb/query.go":             "NextIDs (nextval of a serial over generate_series), LockTable (LOCK TABLE) and TryXactLock (pg_try_advisory_xact_lock): no data statements",
 }
 
 // dynamicSQLFiles lists the files, relative to next/, whose SQL text (the
@@ -51,7 +51,7 @@ var dynamicSQLFiles = map[string]string{
 // is a string, is SQL text.
 var sqlTextMethods = map[string]bool{
 	"Raw": true, "Exec": true, "Where": true, "Not": true, "Or": true, "Having": true, "Select": true,
-	"Omit": false, "Order": true, "Group": true, "Joins": true, "InnerJoins": true, "Table": true, "Distinct": true,
+	"Order": true, "Group": true, "Joins": true, "InnerJoins": true, "Table": true, "Distinct": true,
 }
 
 // sqlCombinator matches Raw and Exec text that only combines what GORM

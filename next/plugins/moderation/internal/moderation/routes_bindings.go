@@ -7,7 +7,9 @@ import (
 	"strconv"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
@@ -83,21 +85,18 @@ func (p *Plugin) listBindings(ctx context.Context, _ *pluginv1.HTTPRequest) (*pl
 // enabled flow whose spec was dropped from the snapshot is not reported as
 // applying.
 func loadBindings(db *gorm.DB, snap *snapshot) ([]Binding, error) {
-	list, err := collect(db.Raw(`SELECT b.group_id, b.account_id, b.flow_id
-		FROM (
-			SELECT group_id, account_id, flow_id FROM flow_accounts
-			UNION ALL SELECT group_id, 0, flow_id FROM flow_groups) b
-		ORDER BY b.account_id = 0, b.account_id, b.group_id`), func(r row) (Binding, error) {
-		var b Binding
-		err := r.Scan(&b.GroupID, &b.AccountID, &b.FlowID)
+	var rows []model.FlowAccount
+	both := db.Raw("(?) UNION ALL (?)", db.Model(&model.FlowAccount{}).Select("group_id, account_id, flow_id"),
+		db.Model(&model.FlowGroup{}).Select("group_id, 0 AS account_id, flow_id"))
+	err := db.Table("(?) AS b", both).Order("b.account_id = 0, b.account_id, b.group_id").Scan(&rows).Error
+	list := make([]Binding, len(rows))
+	for i, r := range rows {
+		b := Binding{GroupID: r.GroupID, AccountID: r.AccountID, FlowID: r.FlowID}
 		b.Kind = bindingKind(b.GroupID, b.AccountID)
 		b.FallbackReason = snap.staleReason(b.FlowID)
 		b.Inactive = b.FallbackReason != ""
 		b.EffectiveFlowID = snap.effectiveFlow(b.GroupID, b.AccountID)
-		return b, err
-	})
-	if list == nil {
-		list = []Binding{}
+		list[i] = b
 	}
 	return list, err
 }
@@ -130,8 +129,8 @@ func (p *Plugin) putBinding(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 	var resp *pluginv1.HTTPResponse
 	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		if in.FlowID > 0 {
-			var exists bool
-			if err := queryRow(tx, `SELECT EXISTS(SELECT 1 FROM flows WHERE id = ? AND deleted_at IS NULL)`, in.FlowID).Scan(&exists); err != nil {
+			exists, err := flowExists(tx, in.FlowID)
+			if err != nil {
 				return err
 			}
 			if !exists {
@@ -149,13 +148,11 @@ func (p *Plugin) putBinding(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 			return errRollback
 		}
 		if in.AccountID == 0 {
-			err = tx.Exec(`INSERT INTO flow_groups (group_id, flow_id) VALUES (?, ?)
-				ON CONFLICT (group_id) DO UPDATE SET flow_id = EXCLUDED.flow_id`, in.GroupID, in.FlowID).Error
-		} else {
-			err = tx.Exec(`INSERT INTO flow_accounts (group_id, account_id, flow_id) VALUES (?, ?, ?)
-				ON CONFLICT (group_id, account_id) DO UPDATE SET flow_id = EXCLUDED.flow_id`, in.GroupID, in.AccountID, in.FlowID).Error
+			return tx.Clauses(clause.OnConflict{Columns: columns("group_id"), DoUpdates: clause.AssignmentColumns([]string{"flow_id"})}).
+				Create(&model.FlowGroup{GroupID: in.GroupID, FlowID: in.FlowID}).Error
 		}
-		return err
+		return tx.Clauses(clause.OnConflict{Columns: columns("group_id", "account_id"), DoUpdates: clause.AssignmentColumns([]string{"flow_id"})}).
+			Create(&model.FlowAccount{GroupID: in.GroupID, AccountID: in.AccountID, FlowID: in.FlowID}).Error
 	})
 	if resp != nil {
 		return resp, nil
@@ -171,9 +168,9 @@ func bindingFlow(tx *gorm.DB, group, account int64) (int64, bool, error) {
 	var flow int64
 	var err error
 	if account == 0 {
-		err = queryRow(tx, `SELECT flow_id FROM flow_groups WHERE group_id = ?`, group).Scan(&flow)
+		err = tx.Model(&model.FlowGroup{}).Select("flow_id").Where("group_id = ?", group).Take(&flow).Error
 	} else {
-		err = queryRow(tx, `SELECT flow_id FROM flow_accounts WHERE group_id = ? AND account_id = ?`, group, account).Scan(&flow)
+		err = tx.Model(&model.FlowAccount{}).Select("flow_id").Where("group_id = ? AND account_id = ?", group, account).Take(&flow).Error
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, false, nil
@@ -189,16 +186,17 @@ func (p *Plugin) deleteBinding(ctx context.Context, req *pluginv1.HTTPRequest) (
 	}
 	var resp *pluginv1.HTTPResponse
 	err := p.configTx(ctx, func(tx *gorm.DB) error {
-		query, args := `DELETE FROM flow_accounts WHERE group_id = ? AND account_id = ?`, []any{group, account}
+		var res *gorm.DB
 		if account == 0 {
-			query, args = `DELETE FROM flow_groups WHERE group_id = ?`, args[:1]
+			res = tx.Where("group_id = ?", group).Delete(&model.FlowGroup{})
+		} else {
+			res = tx.Where("group_id = ? AND account_id = ?", group, account).Delete(&model.FlowAccount{})
 		}
-		n, err := affected(tx.Exec(query, args...))
-		if err == nil && n == 0 {
+		if res.Error == nil && res.RowsAffected == 0 {
 			resp = pluginsdk.ErrorResponse(http.StatusNotFound, "not_found", "binding not found / 绑定不存在")
 			return errRollback
 		}
-		return err
+		return res.Error
 	})
 	if resp != nil {
 		return resp, nil
