@@ -12,10 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/settingswitch"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
@@ -34,10 +34,10 @@ const (
 const IssueEnv = "SUB2API_SESSION_ISSUE"
 
 // issueSwitch is session.issue: the settings row "session" holding
-// {"issue": ...}, flipped the way authz.engine is (authz.Switch).
-var issueSwitch = authz.Switch{
+// {"issue": ...}, flipped the way authz.engine is.
+var issueSwitch = settingswitch.Switch{
 	Key: "session", Field: "issue", Env: IssueEnv,
-	Values: []string{IssueJWT, IssueOpaque}, Default: IssueJWT, Action: "session.issue.set",
+	Values: []string{IssueJWT, IssueOpaque}, Default: IssueJWT, Action: "session.issue.set", Log: "iam",
 	Denied: core.LocalizedText{"en": "only the super admin can switch how logins are issued", "zh": "只有超级管理员可以切换登录凭证的签发方式"},
 }
 
@@ -53,16 +53,23 @@ type issueCached struct {
 }
 
 // issueModeState holds what issueMode answers from: the pinned mode, or
-// the cached setting (nil: read it again).
+// the cached setting (nil: none read yet).
 type issueModeState struct {
 	pinned    string
 	hasPinned bool
 	cached    atomic.Pointer[issueCached]
 }
 
-// issueMode is what this node issues now. A failed read keeps the last
-// mode known (jwt before any): the login that asked fails on the same
-// database anyway.
+// expire makes issueMode read the setting again, keeping the mode known
+// for a read that fails.
+func (st *issueModeState) expire() {
+	if c := st.cached.Load(); c != nil {
+		st.cached.Store(&issueCached{mode: c.mode})
+	}
+}
+
+// issueMode is what this node issues now. A failed read, or a value that
+// is not a string, keeps the last mode known (jwt before any).
 func (s *Service) issueMode(ctx context.Context) string {
 	if s.issue.hasPinned {
 		return s.issue.pinned
@@ -93,7 +100,7 @@ func (s *Service) issuesOpaque(ctx context.Context) bool {
 // issueChanged follows a change of session.issue made on any node.
 func (s *Service) issueChanged(payload []byte) {
 	if issueSwitch.Changed(payload) {
-		s.issue.cached.Store(nil)
+		s.issue.expire()
 	}
 }
 
@@ -133,7 +140,7 @@ func (s *Service) IssueStatus(ctx context.Context) (IssueStatus, error) {
 	if err != nil { // unknown (null): the switch back to jwt reports without it
 		slog.WarnContext(ctx, "iam: listing the live nodes failed", "err", err)
 	}
-	s.issue.cached.Store(nil)
+	s.issue.expire()
 	effective := IssueJWT
 	if s.issuesOpaque(ctx) {
 		effective = IssueOpaque
@@ -163,7 +170,7 @@ func (s *Service) nodesBehind(ctx context.Context) ([]BehindNode, error) {
 	return out, nil
 }
 
-// SetIssue stores session.issue and tells every node (authz.SetSwitch:
+// SetIssue stores session.issue and tells every node (settingswitch:
 // super admin only, audited session.issue.set). Switching to s2s waits for
 // every live node to accept opaque sessions: 409 lists the ones behind.
 // Switching back to jwt is always possible. IssueEnv still wins on the
@@ -180,7 +187,7 @@ func (s *Service) SetIssue(ctx context.Context, actorID int64, mode string) (Iss
 				"部分节点还不支持不透明会话，请先升级这些节点")).WithDetails(map[string]any{"nodes": behind})
 		}
 	}
-	if err := s.authz.SetSwitch(ctx, issueSwitch, actorID, mode); err != nil {
+	if err := issueSwitch.Set(ctx, s.db, s.bus, s.authz.IsSuperuser, actorID, mode); err != nil {
 		return IssueStatus{}, err
 	}
 	return s.IssueStatus(ctx)

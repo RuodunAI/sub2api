@@ -156,7 +156,7 @@ func (s *Service) subscribe(bus core.Bus) {
 	if r, ok := bus.(core.BusReconnects); ok {
 		r.OnReconnect(func() {
 			s.clearStatusCache()
-			s.issue.cached.Store(nil)
+			s.issue.expire()
 		})
 	}
 }

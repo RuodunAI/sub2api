@@ -156,6 +156,20 @@ func TestIssueSwitch(t *testing.T) {
 	assert.Equal(t, "env", st.Source)
 }
 
+// A session.issue that is not a string keeps the mode a node issues: it is
+// not read as the default (jwt).
+func TestIssueKeepsItsModeOnABadSetting(t *testing.T) {
+	t.Setenv(IssueEnv, "")
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	issue(t, s, IssueOpaque)
+	require.NoError(t, s.db.Gorm.Exec(`UPDATE settings SET value = '{"issue": 1}' WHERE key = 'session'`).Error)
+	s.issueChanged([]byte(`{"key":"settings.session"}`))
+	assert.Equal(t, IssueOpaque, s.issueMode(ctx))
+	_, err := s.IssueStatus(ctx)
+	assert.ErrorContains(t, err, "not a string")
+}
+
 // Switching takes a step-up proof (session.issue) besides settings:manage;
 // reading does not.
 func TestIssueRoutes(t *testing.T) {

@@ -8702,7 +8702,7 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 - 跨节点生效：`PUT` 后广播 `config:changed` `{"key":"settings.session"}`，各节点丢掉缓存；漏掉广播的节点最多 30 秒后重读（缓存 30 秒，总线重连时也丢掉）。
 - 环境变量 `SUB2API_SESSION_ISSUE` 优先于设置：设了就固定这个节点；值不认识按 `jwt` 并记 Warn。没有 Redis 的进程（`sub2api admin`）永远签发 JWT。变量在网关传给核心的白名单里（`supervisor.inheritedEnv`），`deploy/single` 的 compose 也映射了。
 - 应急（接口不可用时）：直接改 `settings` 表（30 秒内全部节点生效），或设环境变量重启单个节点，见 `deploy/rollback/0.1.290-session-down.md`。
-- 与 `authz.engine` 共用一套机制（`authz.Switch`：设置行 + 超管本人 + 审计 + 广播 + 环境变量优先）。
+- 与 `authz.engine` 共用一套机制（`internal/settingswitch`：设置行 + 超管本人 + 审计 + 广播 + 环境变量优先；超管检查由调用方以函数注入，日志前缀跟随调用方；设置行里该字段不是字符串时读取报错，各节点保持当前模式，不回落到默认值）。
 
 ### 100.6 故障
 

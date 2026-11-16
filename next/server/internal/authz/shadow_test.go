@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -640,6 +641,21 @@ func TestEngineSetting(t *testing.T) {
 	}
 	if c.EngineMode() != EngineShadow {
 		t.Fatalf("after the poll: %q", c.EngineMode())
+	}
+	// An engine that is not a string keeps the engine a node uses.
+	for _, v := range []string{`{"engine":"legacy"}`, `{"engine":3}`} {
+		if err := db.Gorm.Exec(`UPDATE settings SET value = ? WHERE key = 'authz'`, v).Error; err != nil {
+			t.Fatal(err)
+		}
+		if _, err := poll.Handler(ctx, core.TaskRun{Name: poll.Name}); err != nil {
+			t.Fatal(err)
+		}
+		if c.EngineMode() != EngineLegacy {
+			t.Fatalf("after %s: %q", v, c.EngineMode())
+		}
+	}
+	if _, err := c.EngineStatus(ctx); err == nil || !strings.Contains(err.Error(), "not a string") {
+		t.Fatalf("status of a bad engine: %v", err)
 	}
 
 	// EngineEnv pins a node whatever is stored.

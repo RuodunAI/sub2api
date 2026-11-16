@@ -10,6 +10,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/settingswitch"
 )
 
 // EngineMode says which resolver answers the effective permission sets
@@ -46,10 +47,10 @@ const EngineEnv = "SUB2API_AUTHZ_ENGINE"
 // engineSwitch is authz.engine: the settings row "authz" holding
 // {"engine": ...}, whose change config:changed announces as
 // {"key": "settings.authz"}.
-var engineSwitch = Switch{
+var engineSwitch = settingswitch.Switch{
 	Key: "authz", Field: "engine", Env: EngineEnv,
 	Values:  []string{string(EngineLegacy), string(EngineShadow), string(EngineCasbin)},
-	Default: string(EngineShadow), Action: "authz.engine.set",
+	Default: string(EngineShadow), Action: "authz.engine.set", Log: "authz",
 	Denied: core.LocalizedText{"en": "only the super admin can switch the authorization engine", "zh": "只有超级管理员可以切换权限引擎"},
 }
 
@@ -151,7 +152,7 @@ func (s *Service) EngineStatus(ctx context.Context) (EngineStatus, error) {
 // is audited (authz.engine.set) in the transaction that stores it.
 // EngineEnv still wins on the nodes that set it.
 func (s *Service) SetEngine(ctx context.Context, actorID int64, e string) (EngineStatus, error) {
-	if err := s.SetSwitch(ctx, engineSwitch, actorID, e); err != nil {
+	if err := engineSwitch.Set(ctx, s.db, s.bus, s.IsSuperuser, actorID, e); err != nil {
 		return EngineStatus{}, err
 	}
 	if !s.engineEnv {
