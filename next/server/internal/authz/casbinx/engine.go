@@ -318,11 +318,13 @@ func (e *engine) apply() {
 	}
 }
 
-// next takes the next step off the queue: the change next to the state's
+// next picks the next step from the queue: the change next to the state's
 // version when it names the users it changed alone (the oldest first,
 // such a change first among equals), else a load of the policy (none
 // loaded, a policy change, a version skipped or one whose extent is
-// unknown), which takes every change it covers. Called with e.mu held.
+// unknown), which takes every change it covers. A change stays queued
+// until the state's version passes it, so a failing step is picked again.
+// Called with e.mu held.
 func (e *engine) next() (step, bool) {
 	st := e.cur.Load()
 	if st == nil {
@@ -340,7 +342,6 @@ func (e *engine) next() (step, bool) {
 		return cmp.Compare(boolRank(!a.UsersOnly()), boolRank(!b.UsersOnly()))
 	})
 	if c := e.queue[0]; c.Version == v+1 && c.UsersOnly() {
-		e.queue = e.queue[1:]
 		return step{version: c.Version, users: c.Users}, true
 	}
 	return step{load: true, version: e.known}, true
