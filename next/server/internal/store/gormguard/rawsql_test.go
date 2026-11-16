@@ -71,6 +71,7 @@ var sqlConstAllowed = map[string]string{
 	"internal/lookup.Service.lookup":         "columns and conditions of the fixed entities table (entities.go), chosen by kind: a whitelist whose exported fields [sql-const] does not follow",
 	"internal/lookup.Entity.search":          "columns and conditions of the fixed entities table (entities.go), chosen by kind: a whitelist whose exported fields [sql-const] does not follow",
 	"internal/lookup.Entity.query":           "columns and conditions of the fixed entities table (entities.go), chosen by kind: a whitelist whose exported fields [sql-const] does not follow",
+	"internal/core.ScopeTable.Scope":         "Cond is joined from the columns of a ScopeTable, set only by core's AccountRows and ProxyRows",
 	"internal/store.Conds.And":               "the text is checked where Conds.And is called",
 	"internal/store.UpdateFrom":              "the text is checked where UpdateFrom is called",
 }
