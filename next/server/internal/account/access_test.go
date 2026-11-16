@@ -5,7 +5,10 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
 
 func TestAccountsInScope(t *testing.T) {
@@ -46,4 +49,25 @@ func TestAccountsInScope(t *testing.T) {
 	if err := core.AuthorizeAccounts(ctx, e.svc, alice, "update", []int64{a1, b1}); core.AsError(err).Code != "not_found" {
 		t.Fatalf("another's id: %v", err)
 	}
+}
+
+// unreadableSet is an authorizer whose permission sets cannot be read.
+type unreadableSet struct{ denyAll }
+
+func (unreadableSet) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
+	return core.PermissionSet{}, core.ErrUnavailable
+}
+
+// A proxy range that cannot be read fails an account write with 503, never
+// reaching no proxy (400 proxy_id not_found; CONTRACTS §103.2), and is read
+// only for a proxy_id.
+func TestCheckProxyRefFailsClosed(t *testing.T) {
+	s := &Service{d: Deps{Authorizer: unreadableSet{}}}
+	const uid = 7
+	own := core.PermissionSetOf("account:create:own").DataScope(uid, perm.AccountCreate)
+	ctx := core.WithScope(core.WithUserID(context.Background(), uid), perm.AccountCreate, own)
+	require.NoError(t, s.checkProxyRef(ctx, nil, perm.AccountCreate))
+	proxyID := int64(1)
+	err := s.checkProxyRef(ctx, &proxyID, perm.AccountCreate)
+	require.ErrorIs(t, err, core.ErrUnavailable)
 }

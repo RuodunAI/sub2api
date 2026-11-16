@@ -228,7 +228,9 @@ type overviewOf struct {
 }
 
 // scopeKey identifies the rows of s in a snapshot cache key: callers of
-// different scopes never share an answer.
+// different scopes never share an answer. It names the scope, not the rows
+// it reaches: a move of a user or an account between owners shows in a
+// cached answer once that expires (CONTRACTS §103.2).
 func scopeKey(s core.DataScope) string {
 	return fmt.Sprint(s.All, s.Owners, s.Teams, s.Groups, s.IDs, s.PairG, s.PairID)
 }

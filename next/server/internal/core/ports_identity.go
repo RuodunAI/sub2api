@@ -399,11 +399,13 @@ type OwnerGuard interface {
 	// or deleted (not_found), or may not manage userID by its roles
 	// (owner_cannot_manage; on a create the roles come after, and
 	// assigning them, but for the system's, checks it), and an actor that
-	// may not act (ActOnIdentity) on every user of the old and the new
-	// owner's chains (the owner and those above it, whose teams the user
-	// leaves or joins) and, on an update, on userID; the actor itself and
-	// those above it in a chain aside. A change is audited as user.owner
-	// (from, to). Actor 0 (the system) needs no permission.
+	// may not act (ActOnIdentity), on an update, on userID as it stands
+	// under the lock, before the move (after it a team holder naming itself
+	// holds userID in its team), or, after the move, on every user of the
+	// old and the new owner's chains (the owner and those above it, whose
+	// teams the user leaves or joins); the actor itself and those above it
+	// in a chain aside. A change is audited as user.owner (from, to). Actor
+	// 0 (the system) needs no permission.
 	SetOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error)
 }
 

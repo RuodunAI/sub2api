@@ -187,6 +187,40 @@ func TestSetOwnerTeamHolder(t *testing.T) {
 	}
 }
 
+// On an update the actor must manage the user as it stands under the
+// authz lock, before the move (CONTRACTS §103.3): a team holder naming
+// itself the owner of a user outside its team, which would then be inside,
+// is refused, also when the user left the team after the caller's own
+// check (iam's read of the user, outside the transaction).
+func TestSetOwnerChecksUserBeforeMove(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	admin := addUser(t, s, "admin@x.com", RoleAdmin)
+	agent := addUser(t, s, "agent@x.com", RoleSupplierAgent)
+	outsider := addUser(t, s, "out@x.com", RoleUser)
+	notInTeam := func(err error) bool {
+		return isCode(err, "permission_denied") && detail(err, "reason") == "not_in_team"
+	}
+
+	_, err := moveOwner(s, agent, outsider, ptr(agent))
+	require.True(t, notInTeam(err), "%v", err)
+	require.Zero(t, ownerIn(t, s, outsider))
+
+	// The race, in order: the agent's check passes while the user is in its
+	// team, an admin takes the user out, then the agent's move comes.
+	sub := chain(t, s, agent, 1, RoleUser, RoleSupplierAgent)[0]
+	leaf := chain(t, s, sub, 1, RoleUser)[0]
+	require.NoError(t, s.CanActOnUsers(ctx, agent, core.ActOnIdentity, leaf))
+	_, err = moveOwner(s, admin, leaf, ptr(0))
+	require.NoError(t, err)
+	_, err = moveOwner(s, agent, leaf, ptr(agent))
+	require.True(t, notInTeam(err), "%v", err)
+	require.Zero(t, ownerIn(t, s, leaf))
+	require.Len(t, ownerAudits(t, s, leaf), 1, "the admin's move alone")
+}
+
 // A chain is at most core.MaxTeamDepth levels below its top: no owner
 // that would put the user, or a user below it, deeper (plan 5.3).
 func TestSetOwnerDepth(t *testing.T) {
