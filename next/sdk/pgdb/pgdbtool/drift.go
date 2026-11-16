@@ -62,8 +62,10 @@ var errRollback = errors.New("pgdbtool: rollback")
 // back: an interrupted run leaves nothing behind. It
 //
 //   - runs migrations in a scratch schema as a scratch role that owns the
-//     schema and nothing else, like the host runs them as the plugin's role
-//     (a migration that needs more fails here as it would on install);
+//     schema and nothing else, like the host runs them as the plugin's role,
+//     which it makes the owner of plg_<key> (ALTER SCHEMA ... OWNER TO; a
+//     new schema grants PUBLIC nothing, as the host's REVOKE leaves it): a
+//     migration that needs more fails here as it would on install;
 //   - lets AutoMigrate build models in a second, empty schema;
 //   - compares the two schemas' catalogs: tables, each column's type, NOT
 //     NULL and default (by value, so that 0 and '0'::numeric agree), primary

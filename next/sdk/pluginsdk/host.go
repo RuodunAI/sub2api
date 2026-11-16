@@ -304,15 +304,17 @@ func (h *host) DB(ctx context.Context) (*gorm.DB, error) {
 	return h.db.WithContext(ctx), nil
 }
 
-// guardContext makes a statement on a handle whose context is done say
-// why: Host.DB binds the handle to the context it was asked with, and one
-// kept past it (from Init, for a goroutine) fails on every call. The error
-// still wraps the context's (errors.Is context.Canceled).
+// guardContext stops a statement whose context is done before it runs,
+// with the context's error (errors.Is context.Canceled or
+// DeadlineExceeded) and the one cause the context cannot tell from a
+// cancellation or a timeout: Host.DB binds the handle to the context it was
+// asked with, so one kept past it (from Init, for a goroutine) fails like
+// this on every call.
 func guardContext(db *gorm.DB) error {
 	check := func(tx *gorm.DB) {
 		if err := tx.Statement.Context.Err(); err != nil {
-			_ = tx.AddError(fmt.Errorf("pluginsdk: the context of this Host.DB handle is done; "+
-				"a handle is bound to the context it was asked with: ask Host.DB again for each call: %w", err))
+			_ = tx.AddError(fmt.Errorf("pluginsdk: statement not run, its context is done (%w); "+
+				"a handle kept from an earlier Host.DB call fails like this: ask Host.DB again for each call", err))
 		}
 	}
 	cb := db.Callback()

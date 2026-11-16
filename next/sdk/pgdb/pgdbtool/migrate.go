@@ -30,7 +30,7 @@ func ReadMigrations(dirs ...string) ([]Migration, error) {
 	for _, d := range dirs {
 		entries, err := os.ReadDir(d)
 		if err != nil {
-			return nil, fmt.Errorf("pgdb: read migrations %s: %w", d, err)
+			return nil, fmt.Errorf("pgdbtool: read migrations %s: %w", d, err)
 		}
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
@@ -52,7 +52,7 @@ func ApplyMigrations(ctx context.Context, db *gorm.DB, schema string, migrations
 	for _, m := range migrations {
 		text, err := os.ReadFile(m.Path)
 		if err != nil {
-			return fmt.Errorf("pgdb: read %s: %w", m.Name, err)
+			return fmt.Errorf("pgdbtool: read %s: %w", m.Name, err)
 		}
 		err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := tx.Exec("SET LOCAL search_path TO ?", clause.Table{Name: schema}).Error; err != nil {
@@ -63,7 +63,7 @@ func ApplyMigrations(ctx context.Context, db *gorm.DB, schema string, migrations
 			return tx.Exec(string(text)).Error
 		})
 		if err != nil {
-			return fmt.Errorf("pgdb: migration %s: %w", m.Name, err)
+			return fmt.Errorf("pgdbtool: migration %s: %w", m.Name, err)
 		}
 	}
 	return nil

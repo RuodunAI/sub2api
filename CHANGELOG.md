@@ -62,7 +62,7 @@
 - **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 422 `unknown_scope`；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
 - **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。停在 0097 的库上 `sub2api admin recover-superadmin` 只做移交（目标须已启用，不接受 `--reset-password`、`--reset-2fa`），迁移完成后再跑一次带上它们。
 
-迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099（0099 在 develop 上的两种内容核心都接受）。
+迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099（0099 在 develop 上的两种内容核心都接受，经网关升级时也接受第一版构建的 schema 契约作为源）。
 
 #### 控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101）
 
@@ -108,8 +108,7 @@
 | dynweight（内置） | 0.5.9 | 0.5.10 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
 | moderation（内置） | 0.12.0 | 0.12.1 | 清单改用 `risk`/`defaults`（`moderation:exempt` 改为 critical，`moderation:read` 提为 sensitive），`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
 | volcengine（内置） | 0.12.7 | 0.12.8 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；素材索引与视频账本改用 GORM，功能不变 |
-| ccgateway、mailer（内置） | 0.1.133、0.1.2 | 不变 | 只换了 SDK 依赖，发布时沿用线上包的字节（重新编译的包内容不同、版本号相同，内置同步会跳过） |
-| openai、gemini、custom（内置） | 0.4.0、0.3.0、0.1.0 | 不变 | — |
+| ccgateway、mailer、openai、gemini、custom（内置） | 0.1.133、0.1.2、0.4.0、0.3.0、0.1.0 | 不变 | 源码不变，只换了 SDK 依赖；发布时一律沿用线上包的字节（用新 SDK 重新编译的包内容不同、版本号相同，内置同步会跳过并记 WARN） |
 | claude-oauth | — | 0.2.4 | 清单改用 `risk`/`defaults`（`claude_oauth:manage` 提为 sensitive），`hostCompat >=0.1.290` |
 | growth | — | 0.2.1 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
 | guard | — | 0.2.10 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；规则、统计、事件改用 GORM，功能不变 |

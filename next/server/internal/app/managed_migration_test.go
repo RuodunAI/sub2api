@@ -101,6 +101,42 @@ func TestMigrationAndPluginPreparationDoNotAdmitBusiness(t *testing.T) {
 // refuse the new core.
 const productionSchema = "1f73f300166fd6f94fc4332169fb1016c64ae88a2587d49da9294327b38b9d4f"
 
+// firstPermissionMetaSchema is the schema contract of the first development
+// build with 0099 (b5b2fb564), whose 0099 a later commit changed: the
+// migrations through that build's 0099 (migrations.SupersededBuilds), as its
+// `sub2api schema-contract` printed it.
+const firstPermissionMetaSchema = "03e0d403e9932201a63b0057d5f9cd4f4ce90bea1fc62e4c00d52e6f4228bc64"
+
+// A managed environment that build migrated upgrades with its contract as
+// the plan's source (review 1116 PR-1): the permit names the superseded 0099,
+// the database recorded its checksum, and the core migrates 0100 and 0101.
+func TestManagedUpgradeFromASupersededBuild(t *testing.T) {
+	const id = "0099_plugin_permission_meta.sql"
+	ctx := t.Context()
+	db := testutil.DBThrough(t, id)
+	builds, err := migrations.SupersededBuilds()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE schema_migrations SET checksum = $1 WHERE id = $2`,
+		store.MigrationChecksum(builds["b5b2fb564"][id]), id); err != nil {
+		t.Fatal(err)
+	}
+	contract, err := SchemaContract()
+	if err != nil {
+		t.Fatal(err)
+	}
+	permit := rc.PrepareRequest{AllowMigration: true, ExpectedSchemaBefore: firstPermissionMetaSchema, ExpectedSchemaAfter: contract}
+	done, err := prepareCoreSchema(ctx, db, permit)
+	if want := []string{"0100_casbin_rule.sql", "0101_drop_jwt_sessions.sql"}; err != nil || !slices.Equal(done[:min(len(done), 2)], want) {
+		t.Fatalf("upgrade from the superseded build: %v %v, want %v first", done, err, want)
+	}
+	permit.ExpectedSchemaBefore = strings.Repeat("0", 64)
+	if _, err := prepareCoreSchema(ctx, db, permit); err == nil || !strings.Contains(err.Error(), "not a compatible prefix") {
+		t.Fatalf("an unknown source accepted: %v", err)
+	}
+}
+
 // The 0.1.290 upgrade as the primary-first plan runs it on production: a
 // database at 0098 takes 0099-0101 under the one permit start-primary
 // hands the core. 0100 refuses a database with two super admin holders

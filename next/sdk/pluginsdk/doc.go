@@ -72,8 +72,9 @@
 // The handle is bound to the context Host.DB was called with: ask again for
 // each call (it is cheap, the connections are shared) and never keep one,
 // e.g. from Init for a goroutine; a kept handle fails every statement once
-// its context is done, with an error that says so. Plugin code does not
-// import pgx.
+// its context is done, with an error that names this as a possible cause
+// (an ordinary cancellation or timeout gets the same error). Plugin code
+// does not import pgx.
 //
 // Statements are built by GORM on the models (Model/Table, Where, Select,
 // Create, Updates, Delete, clause.OnConflict, clause.Returning), not
