@@ -7511,6 +7511,7 @@ type OwnerGuard interface { CheckOwner(ctx context.Context, tx *gorm.DB, actorID
 持有 `usage:account:read`（任意范围）的人看“自己范围内的账号”服务过的请求，字段只给白名单（D1），与 `/usage`（`usage:all:read`，全站、全部字段）分开；`/usage` 不变。admin 同时持有两者，控制台菜单按 `hideWith: usage:all:read` 只显示一套。
 
 - 路由，全部 `PermScoped(GET, …, usage:account:read)`：`/account-usage`（列表）、`/account-usage/summary`、`/account-usage/overview`、`/account-usage/realtime`、`/account-usage/export`、`/account-usage/:id`（详情）。
+- 控制台页面 `/account-usage`（账号日志）与 `/account-usage/overview`（账号用量概览）：`/account-usage` 是新的页面根，`manifest.ConsoleSegments` 加 `account-usage`，插件的 GET / HEAD 网关端点不能以它开头（§55，先例是 §97.7 的 `/segments`）。
 - 行范围：`u.account_id IN (SELECT a.id FROM accounts a WHERE <AccountRows 条件>)`，不过滤 `a.deleted_at`（已删除账号的历史照样可看）；全部范围（operator、admin）为 `u.account_id IS NOT NULL`。没有账号的记录不在其中。范围外的 `:id` 404。
 - 列表项 `AccountRecord`（字段名与 `/usage` 的 Record 相同）：`id`、`request_id`、`created_at`、`account_id`、`account_name`、`plugin_key`、`platform`、`account_type`、`protocol`、`endpoint`、`model`、`upstream_model`、`stream`、`status_code`、`success`、`error_type`、`attempts`、`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_creation_tokens`、`cache_creation_1h_tokens`、`standard_cost`（十进制字符串，与 Record 的金额同一编码）、`latency_ms`、`first_token_ms`、`attempt_trail`。
 - 详情 `AccountDetail` = `AccountRecord` + `metrics`。
