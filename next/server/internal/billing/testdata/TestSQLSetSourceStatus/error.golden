@@ -1,5 +1,0 @@
--- sql
-UPDATE "price_sync_sources" SET "last_error"=$1 WHERE id = $2
--- vars
-$1 string "fetch failed"
-$2 int64 4

@@ -92,21 +92,17 @@ func (s *Service) Precharge(ctx context.Context, r *core.UsageRecord) error {
 // statement (prechargeSQL: the lock timeout, the balance row's lock, the
 // reservation and its ledger row), followed by the caller's balance.changed
 // event and COMMIT: BEGIN, prechargeSQL, the event and COMMIT are four round
-// trips, as in the pgx batch this replaced. The statements are the ones
-// Precharge used to run one by one, minus the ones ApplyTx repeated (the
-// balance row insert, its FOR UPDATE lock and the idempotency lookup), and
-// with the sufficiency check expressed in SQL. The row lock is still taken
-// before anything else touches the user's money, the idempotency key is
-// still the ledger key, and a duplicate still charges nothing and reports
-// no error.
+// trips. The sufficiency check is expressed in SQL. The row lock is taken
+// before anything else touches the user's money, the idempotency key is the
+// ledger key, and a duplicate charges nothing and reports no error.
 func (s *Service) prechargeTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange, min decimal.Decimal) (*core.LedgerResult, error) {
 	g := store.G(ctx, tx)
 	p, err := runPrecharge(g, ch, min)
 	if err == nil && !p.locked {
 		// No balance row to lock (the user's first precharge): the statement
 		// wrote nothing and holds no row lock. Create the row and run it
-		// again: the statements Precharge ran before, in their order (lock
-		// timeout, balance row, lock, reservation). Unlike ApplyTx, Precharge
+		// again, in the order lock timeout, balance row, lock, reservation.
+		// Unlike ApplyTx, Precharge
 		// returns an unknown user's foreign key violation as it is.
 		if err = g.Exec(prechargeEnsureSQL, ch.UserID).Error; err == nil {
 			p, err = runPrecharge(g, ch, min)
@@ -285,7 +281,12 @@ func (s *Service) ReleasePrechargeTx(ctx context.Context, tx *gorm.DB, userID in
 
 func (s *Service) ReleaseExpiredPrecharges(ctx context.Context) error {
 	var entries []model.RequestPrecharge
-	if err := expiredPrecharges(store.G(ctx, s.db.Gorm)).Scan(&entries).Error; err != nil {
+	// The oldest expired reservations, 100 at a time. Pending usage is
+	// retried by settlement and keeps its reservation.
+	if err := store.G(ctx, s.db.Gorm).Table("request_precharges p").Select("p.request_id, p.user_id").
+		Where(`p.expires_at < now() AND NOT EXISTS (SELECT 1 FROM usage_logs u
+			WHERE u.request_id = p.request_id AND u.billing_status IN ('pending', 'failed'))`).
+		Order("p.expires_at").Limit(100).Scan(&entries).Error; err != nil {
 		return err
 	}
 	var failedCount int
@@ -309,16 +310,6 @@ func (s *Service) ReleaseExpiredPrecharges(ctx context.Context) error {
 		slog.ErrorContext(ctx, "billing: some expired precharges failed to release", "failed", failedCount, "total", len(entries))
 	}
 	return nil
-}
-
-// expiredPrecharges selects the request and user of the oldest expired
-// reservations, 100 at a time. Pending usage is retried by settlement and
-// must keep its reservation.
-func expiredPrecharges(db *gorm.DB) *gorm.DB {
-	return db.Table("request_precharges p").Select("p.request_id, p.user_id").
-		Where(`p.expires_at < now() AND NOT EXISTS (SELECT 1 FROM usage_logs u
-			WHERE u.request_id = p.request_id AND u.billing_status IN ('pending', 'failed'))`).
-		Order("p.expires_at").Limit(100)
 }
 
 // prechargeLockTimeout bounds how long one precharge waits for the user's

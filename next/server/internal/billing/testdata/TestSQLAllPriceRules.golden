@@ -1,4 +1,0 @@
--- sql
-SELECT group_id, COALESCE(segment_id, 0) AS segment_id, model, kind, multiplier,
-		COALESCE(mode, '') AS mode, config, expression, expr_hash FROM "price_rules"
--- vars

@@ -1,5 +1,0 @@
--- sql
-SELECT p.request_id, p.user_id FROM request_precharges p WHERE p.expires_at < now() AND NOT EXISTS (SELECT 1 FROM usage_logs u
-			WHERE u.request_id = p.request_id AND u.billing_status IN ('pending', 'failed')) ORDER BY p.expires_at LIMIT $1
--- vars
-$1 int 100

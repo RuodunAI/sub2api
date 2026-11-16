@@ -134,20 +134,15 @@ type ruleRow struct {
 	ExprHash   string
 }
 
-// priceRules selects the price rules cond selects; "" selects all of them.
-func priceRules(db *gorm.DB, cond string, args ...any) *gorm.DB {
-	db = db.Model(&model.PriceRule{}).Select(`group_id, COALESCE(segment_id, 0) AS segment_id, model, kind, multiplier,
-		COALESCE(mode, '') AS mode, config, expression, expr_hash`)
-	if cond == "" {
-		return db
-	}
-	return db.Where(cond, args...)
-}
-
 // loadRules reads the price rules cond selects ("" for all of them).
 func loadRules(ctx context.Context, q *gorm.DB, cond string, args ...any) (ruleSet, error) {
+	db := store.G(ctx, q).Model(&model.PriceRule{}).Select(`group_id, COALESCE(segment_id, 0) AS segment_id, model, kind, multiplier,
+		COALESCE(mode, '') AS mode, config, expression, expr_hash`)
+	if cond != "" {
+		db = db.Where(cond, args...)
+	}
 	var rows []ruleRow
-	if err := priceRules(store.G(ctx, q), cond, args...).Scan(&rows).Error; err != nil {
+	if err := db.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make(ruleSet, len(rows))
