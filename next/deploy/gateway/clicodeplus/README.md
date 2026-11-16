@@ -143,7 +143,7 @@
 
 ## 网关 0.1.134：随核心 0.1.290 换上（2026-11-17）
 
-源码 `e3906cc68`，镜像 `sup2api-gateway:0.1.134`（ID `b17f0838…`），在 ovh 的 `~/sup2api/release-0.1.290` 构建（`stage/0.1.290/build.sh`，runtime-contract 与 gateway 的 vet/test 通过），经本机复制到 clicodeplus（gzip 约 44 MB，SHA `51fdc8a6…`，`/root/gateway-images/`）。核心 0.1.290 的升级计划仍在 0.1.133 下执行，计划完成后才换外壳：compose 去掉 `SUB2API_JWT_SECRET`（0.1.290 不再读），`.env` 的 `GATEWAY_IMAGE` 改成 0.1.134；换前的 compose、`.env`、config 备份在 `/root/sup2api-node/backup-0.1.290/`。北京 00:28:06 重建、00:28:42 就绪。这次 new-api 渠道 392 正关着、没有流量，所以没有先让出。外壳 0.1.134 不能运行核心 0.1.288，回退核心时外壳一起回到 0.1.133（见 [0.1.290 发布手册](../../rollback/0.1.290-release.md) 第五节）。
+源码 `e3906cc68`，镜像 `sup2api-gateway:0.1.134`（ID `b17f0838…`），在 ovh 的 `~/sup2api/release-0.1.290` 构建（`stage/0.1.290/build.sh`，runtime-contract 与 gateway 的 vet/test 通过），经本机复制到 clicodeplus（gzip 约 44 MB，SHA `51fdc8a6…`，`/root/gateway-images/`）。核心 0.1.290 的升级计划仍在 0.1.133 下执行，计划完成后才换外壳：compose 去掉 `SUB2API_JWT_SECRET`（0.1.290 不再读），`.env` 的 `GATEWAY_IMAGE` 改成 0.1.134；换前的 compose、`.env`、config 备份在 `/root/sup2api-node/backup-0.1.290/`。北京 00:28:06 重建、00:28:42 就绪。这次 new-api 渠道 392 正关着、没有流量，所以没有先让出。外壳 0.1.134 不能运行核心 0.1.288；升级前的数据库备份已删除，不再回退（0.1.290 发布手册已删除，原文 `git show 91e0c26bc:next/deploy/rollback/0.1.290-release.md`）。
 
 ## 网关换版流程（2026-11-08 起，下一版网关（预计 0.1.133）：节点让出，不再改 Caddy）
 

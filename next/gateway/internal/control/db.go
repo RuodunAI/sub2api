@@ -55,7 +55,9 @@ type nodeRecord struct {
 	PeerProtocol int
 	Strategy     string
 	JoiningPlan  string
-	Rolling      bool
+	// Rolling is always true: shells 0.1.134 still read it to choose
+	// rolling-v1 while the gateways are replaced one at a time.
+	Rolling bool
 }
 
 func (nodeRecord) TableName() string { return "updater.nodes" }

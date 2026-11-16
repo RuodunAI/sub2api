@@ -152,7 +152,7 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 				return err
 			}
 			res := tx.Clauses(conflict).Create(&nodeRecord{NodeID: n.ID, ClusterID: s.Cluster, PeerURL: n.PeerURL, ShellBootID: n.ShellBootID,
-				OS: n.OS, Arch: n.Arch, RuntimeABI: n.RuntimeABI, PeerProtocol: n.PeerProtocol, Strategy: n.Strategy, JoiningPlan: plan, Rolling: n.Rolling})
+				OS: n.OS, Arch: n.Arch, RuntimeABI: n.RuntimeABI, PeerProtocol: n.PeerProtocol, Strategy: n.Strategy, JoiningPlan: plan, Rolling: true})
 			if res.Error != nil {
 				return res.Error
 			}
@@ -189,7 +189,7 @@ func (s *Store) Heartbeat(ctx context.Context, n Node) error {
 	return s.reportTelemetry(ctx, n, observedLocally)
 }
 func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.nodes(s.db(ctx)).Select("node_id,peer_url,shell_boot_id,release_digest,core_boot_id,mode,ready,last_seen,error,os,arch,runtime_abi,route_revision,stopped,enabled,peer_protocol,strategy,joining_plan,offloading,telemetry_boot_id,rolling").Order("node_id").Rows()
+	rows, err := s.nodes(s.db(ctx)).Select("node_id,peer_url,shell_boot_id,release_digest,core_boot_id,mode,ready,last_seen,error,os,arch,runtime_abi,route_revision,stopped,enabled,peer_protocol,strategy,joining_plan,offloading,telemetry_boot_id").Order("node_id").Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +197,7 @@ func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
 	out := []Node{}
 	for rows.Next() {
 		var n Node
-		if err = rows.Scan(&n.ID, &n.PeerURL, &n.ShellBootID, &n.ReleaseDigest, &n.CoreBootID, &n.Mode, &n.Ready, &n.LastSeen, &n.Error, &n.OS, &n.Arch, &n.RuntimeABI, &n.RouteRevision, &n.Stopped, &n.Enabled, &n.PeerProtocol, &n.Strategy, &n.JoiningPlan, &n.Offloading, &n.TelemetryBootID, &n.Rolling); err != nil {
+		if err = rows.Scan(&n.ID, &n.PeerURL, &n.ShellBootID, &n.ReleaseDigest, &n.CoreBootID, &n.Mode, &n.Ready, &n.LastSeen, &n.Error, &n.OS, &n.Arch, &n.RuntimeABI, &n.RouteRevision, &n.Stopped, &n.Enabled, &n.PeerProtocol, &n.Strategy, &n.JoiningPlan, &n.Offloading, &n.TelemetryBootID); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -230,9 +230,9 @@ func (s *Store) NodesWithPackage(ctx context.Context, _ string) ([]Node, error) 
 	return out, rows.Err()
 }
 
-// NodeDirectory returns the most recent heartbeat snapshot. Only revocation
-// operations (DisableNode) and explicit preflight checks must query PG for
-// strong consistency; authorization and routing use this cached view.
+// NodeDirectory returns the most recent heartbeat snapshot. Authorization and
+// routing use this cached view; revocation (DisableNode) and the upgrade
+// checks (Preflight, baseline recovery, the migration barrier) read PG.
 func (s *Store) NodeDirectory() []Node {
 	if ptr := s.nodeDirectory.Load(); ptr != nil {
 		return *ptr
@@ -326,9 +326,8 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 
 // rollingEligible decides whether a plan for target may restart the nodes
 // one at a time (Rolling). The release must keep the schema and be signed
-// rolling, and every enabled node must be a Rolling shell, with at least two
-// of them serving so that one can take the other's traffic. Anything else
-// upgrades primary-first, as before.
+// rolling, with at least two enabled nodes serving so that one can take the
+// other's traffic. Anything else upgrades primary-first.
 func rollingEligible(target Release, nodes []Node, minServing int) bool {
 	m := target.Manifest
 	if m.Strategy != "rolling" || m.SchemaBefore == "" || m.SchemaBefore != m.SchemaAfter {
@@ -338,9 +337,6 @@ func rollingEligible(target Release, nodes []Node, minServing int) bool {
 	for _, n := range nodes {
 		if !n.Enabled {
 			continue
-		}
-		if !n.Rolling {
-			return false
 		}
 		if n.ServingLocal(time.Now()) {
 			serving++
@@ -1076,6 +1072,11 @@ func (s *Store) AuthorizeAnyNodeTarget(ctx context.Context, self string, u *url.
 
 // UnmanagedBlockers reads the existing core registry. A healthy old core that
 // never registered a managed identity must not survive the migration barrier.
+// Every live core must be managed and run the boot PG records for its enabled
+// node. PG is read, not the heartbeat's NodeDirectory, whose snapshot predates
+// the boot the node's own heartbeat wrote. A core that registered in Redis
+// after its shell's last heartbeat is still reported until the next one, so a
+// false blocker lasts under one heartbeat.
 func (s *Store) UnmanagedBlockers(ctx context.Context) ([]string, error) {
 	if s.Redis == nil {
 		return nil, errors.New("core registry verification unavailable")
@@ -1084,18 +1085,13 @@ func (s *Store) UnmanagedBlockers(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodes := s.NodeDirectory()
-	if nodes == nil {
-		nodes, err = s.Nodes(ctx)
-		if err != nil {
-			return nil, err
-		}
+	var nodes []struct{ NodeID, CoreBootID string }
+	if err = s.nodes(s.db(ctx)).Where("enabled").Select("node_id,core_boot_id").Scan(&nodes).Error; err != nil {
+		return nil, err
 	}
 	known := map[string]string{}
 	for _, n := range nodes {
-		if n.Enabled {
-			known[n.ID] = n.CoreBootID
-		}
+		known[n.NodeID] = n.CoreBootID
 	}
 	out := []string{}
 	for _, boot := range boots {

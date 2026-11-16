@@ -434,8 +434,7 @@ func TestPluginPermissionMetaMigration(t *testing.T) {
 }
 
 // 0101 drops the JWT session tables (CONTRACTS §100.6), and a rerun
-// changes nothing: what the release runbook checks
-// (deploy/rollback/0.1.290-session-down.md).
+// changes nothing.
 func TestMigration0101DropsJWTSessions(t *testing.T) {
 	const id = "0101_drop_jwt_sessions.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
@@ -462,12 +461,12 @@ func TestMigration0101DropsJWTSessions(t *testing.T) {
 	require.Empty(t, tables(), "a rerun recreated tables")
 }
 
-// 0102 removes CCGateway (deploy/rollback/0.1.290-release.md): its tables,
-// columns, settings and tasks, the account lifecycle contract, and the plugin
-// as an uninstall with purge would, its permissions and their grants
-// included. Its accounts, their usage and other plugins stay. It also drops
-// what only the cores before 0.1.290 used: the scheduling mode (normalizing
-// the row) and async_tasks.legacy_imported. A rerun changes nothing.
+// 0102 removes CCGateway (CONTRACTS §101.5): its tables, columns, settings
+// and tasks, the account lifecycle contract, and the plugin as an uninstall
+// with purge would, its permissions and their grants included. Its accounts,
+// their usage and other plugins stay. It also drops what only the cores
+// before 0.1.290 used: the scheduling mode (normalizing the row) and
+// async_tasks.legacy_imported. A rerun changes nothing.
 func TestMigration0102DropsCCGatewayAndLegacy(t *testing.T) {
 	const id = "0102_drop_ccgateway_and_legacy.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))

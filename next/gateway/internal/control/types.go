@@ -32,10 +32,6 @@ type Node struct {
 	// Offloading is set before the node sends its new requests elsewhere and
 	// cleared after it stopped; receivers authorize offloaded forwards by it.
 	Offloading bool `json:"offloading"`
-	// Rolling marks a shell that executes rolling-v1 plans: it can yield its
-	// traffic to any serving node while its own core restarts. Older shells
-	// leave it false, and a cluster with one of them upgrades primary-first.
-	Rolling bool `json:"rolling"`
 }
 
 // nodeFreshness is the age beyond which a heartbeat observation is stale. Every
@@ -131,8 +127,8 @@ const PrimaryFirst = "primary-first-v1"
 // (Node.Offloading, the CPU offload channel), drains and restarts its core
 // on the target release, serves locally again and takes its traffic back.
 // Only a release whose SchemaBefore equals its SchemaAfter and whose signed
-// strategy is "rolling" qualifies, and every enabled node must be a Rolling
-// shell with at least two of them serving (Preflight).
+// strategy is "rolling" qualifies, with at least two enabled nodes serving
+// (Preflight).
 const Rolling = "rolling-v1"
 
 // PeerProtocol 2: Redis registrations carry the SHA-256 of the node key

@@ -24,8 +24,7 @@ import (
 
 // RegisterRoutes serves the console's update routes by forwarding them to
 // the shell's management socket. token (config Managed.UpdaterToken) is sent
-// as "Authorization: Bearer <token>" on every forwarded request; empty sends
-// none (the gateway 0.1.133 shell, see config.ManagedConfig.UpdaterToken).
+// as "Authorization: Bearer <token>" on every forwarded request.
 func RegisterRoutes(r *httpapi.Router, socketPath, token string, db *store.DB) {
 	client := &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
@@ -63,9 +62,7 @@ func registerRoutes(r *httpapi.Router, available bool, client *http.Client, toke
 		req.Header.Set("Content-Type", "application/json")
 		uid, _ := core.UserID(c.Request.Context())
 		req.Header.Set("X-Updater-Actor", strconv.FormatInt(uid, 10))
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
+		req.Header.Set("Authorization", "Bearer "+token)
 		response, err := client.Do(req)
 		if err != nil {
 			c.JSON(503, gin.H{"error": gin.H{"code": "updater_unavailable", "message": "Local gateway is unavailable"}})

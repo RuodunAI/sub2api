@@ -269,10 +269,7 @@ func (r *LocalRuntime) Start(ctx context.Context, digest string, options rc.Prep
 	boot := hex.EncodeToString(id)
 	env := append([]string{}, r.Env...)
 	env = append(env, "PATH="+filepath.Join(p.Directory, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"), "SUB2API_BUILTIN_PLUGIN_DIR="+filepath.Join(p.Directory, "builtin"))
-	env = append(env, "SUB2API_MANAGED=true", "SUB2API_CONTROL_SOCKET="+r.CoreSocket, "SUB2API_CONTROL_TOKEN="+token, "SUB2API_CORE_BOOT_ID="+boot, "SUB2API_RELEASE_DIGEST="+digest, "NODE_ID="+r.NodeID, "UPDATER_SOCKET="+r.ManagementSocket, "SUB2API_HTTP_ADDR="+strings.TrimPrefix(r.CoreURL, "http://"))
-	if r.ManagementTokenFile != "" {
-		env = append(env, "SUB2API_UPDATER_TOKEN_FILE="+r.ManagementTokenFile)
-	}
+	env = append(env, "SUB2API_MANAGED=true", "SUB2API_CONTROL_SOCKET="+r.CoreSocket, "SUB2API_CONTROL_TOKEN="+token, "SUB2API_CORE_BOOT_ID="+boot, "SUB2API_RELEASE_DIGEST="+digest, "NODE_ID="+r.NodeID, "UPDATER_SOCKET="+r.ManagementSocket, "SUB2API_UPDATER_TOKEN_FILE="+r.ManagementTokenFile, "SUB2API_HTTP_ADDR="+strings.TrimPrefix(r.CoreURL, "http://"))
 	c := localapi.New(r.CoreSocket, token)
 	r.mu.Lock()
 	r.client = c

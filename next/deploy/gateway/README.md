@@ -39,7 +39,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 
 ## 配置节点
 
-复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis 和主密钥。迁移已有集群时必须沿用原密钥及数据库。本版外壳不再把 `SUB2API_JWT_SECRET` 传给核心，只能运行 0.1.290 起的核心：从 0.1.288 升级时先在原来的外壳下跑完升级计划，再换本版外壳（`deploy/rollback/0.1.290-release.md`）。
+复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis 和主密钥。迁移已有集群时必须沿用原密钥及数据库。外壳只运行 0.1.290 起的核心。
 
 修改 `config/node-a.json` 和 `config/node-b.json`：
 
@@ -138,3 +138,5 @@ docker compose exec node-a sub2api-gateway enable-node -id node-b
 `go test -race ./gateway/... ./runtime-contract/... ./server/internal/app/...` 执行基础测试。设置 `TEST_DATABASE_URL`、`TEST_REDIS_URL` 可运行真实持久化/锁测试；Linux 下再设置 `TEST_CORE_V1`、`TEST_CORE_V2` 指向两个不同源快照构建的核心，执行 `TestRealCoreRollingUpgrade`。该测试需测试数据库用户具备 CREATEDB，仅使用隔离测试环境。
 
 `TEST_SHELL_NODES=3` 可追加三节点验证。设置 `TEST_BUILTIN_DIR`（包含已签名 `.s2plugin`）和 `TEST_BUILTIN_KEY=keyId=base64-public-key` 后，会首装真实插件并验证升级前后插件批准版本/状态不变。`TEST_EXPECT_MIGRATION` 填写只加在 R2 独立源码副本中的测试迁移文件名（该迁移须创建只有一行的 `managed_upgrade_probe` 表），测试会确认它只应用一次。默认保留插件安全隔离；仅在明确不验证沙箱的环境中才使用 `TEST_PLUGIN_DEV_MODE`。再设置 `TEST_MOCK_URL`（用 `deploy/mock-upstream` 启动的模拟上游，核心须能访问）并让 R2 测试迁移包含 `pg_sleep`，会运行 `TestRealCoreFaultsDuringPrimaryFirstUpgrade`：网关重启、新节点加入、迁移中断、Redis 断连、跨停机的异步视频任务与跨登记过期的 SSE。2026-10-02 所用脚本见 [final-check.sh](../../docs/audits/2026-10-02/evidence/final-check.sh)。
+
+全部 `TestRealCore*` 的准备与环境变量以 [check.sh](../ci/check.sh) 的 `plugins`、`realcore` 两步为准：两个核心的版本号（`-X main.Version`）须落在内置插件的 `hostCompat`（`>=0.1.290 <0.2.0`）里，否则核心拒装它们；R2 另带 `TEST_BUILTIN_NEXT_DIR` 里的新版 anthropic；插件包测试还要 `TEST_UPLOAD_PACKAGE`（带原生 UI 的 guard）、`TEST_MARKET_DIR`、`TEST_MARKET_KEY`。测试数据库用户还需 CREATEROLE（插件数据库角色隔离）；测试结束会删掉为测试库建的插件角色。Redis 可带密码（`redis://:密码@主机:端口/0`）。

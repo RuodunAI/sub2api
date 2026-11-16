@@ -379,8 +379,8 @@ func runManaged(ctx context.Context, cfg *config.Config, version string, log *sl
 	runtimeCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := &managedCore{hello: runtimecontract.Hello{Protocol: runtimecontract.Protocol, NodeID: cfg.NodeID, BootID: cfg.Managed.BootID, ReleaseDigest: cfg.Managed.ReleaseDigest, CoreVersion: version,
-		ClusterProtocol: runtimecontract.Range{Min: runtimecontract.ClusterProtocolVersion, Max: runtimecontract.ClusterProtocolVersion}, TaskProtocol: runtimecontract.Range{Min: runtimecontract.TaskProtocolVersion, Max: runtimecontract.TaskProtocolVersion}, HostAPIVersion: protocol.HostAPIVersion,
-		Capabilities: []string{runtimecontract.CapabilityGracefulDrain}}, token: cfg.Managed.Token, mode: "candidate", cancel: cancel, shutdown: make(chan struct{}), log: log}
+		ClusterProtocol: runtimecontract.Range{Min: runtimecontract.ClusterProtocolVersion, Max: runtimecontract.ClusterProtocolVersion}, TaskProtocol: runtimecontract.Range{Min: runtimecontract.TaskProtocolVersion, Max: runtimecontract.TaskProtocolVersion}, HostAPIVersion: protocol.HostAPIVersion},
+		token: cfg.Managed.Token, mode: "candidate", cancel: cancel, shutdown: make(chan struct{}), log: log}
 	m.schemaContract, err = SchemaContract()
 	if err != nil {
 		return err
