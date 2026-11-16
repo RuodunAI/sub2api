@@ -602,9 +602,16 @@ func expressionFor(mode string, config json.RawMessage, expression string) (stri
 	return "", fmt.Errorf("unknown mode %q", mode)
 }
 
-// recordHistory keeps an expression (hash, canonical text, version) on q
-// where a settlement retry reads it back.
-func recordHistory(ctx context.Context, q *gorm.DB, p *expr.Program) error {
+// recordHistory keeps expressions (hash, canonical text, version) on q
+// where a settlement retry reads them back, in one INSERT in their order.
+func recordHistory(ctx context.Context, q *gorm.DB, progs ...*expr.Program) error {
+	if len(progs) == 0 {
+		return nil
+	}
+	rows := make([]model.ModelPriceHistory, len(progs))
+	for i, p := range progs {
+		rows[i] = model.ModelPriceHistory{ExprHash: p.Hash(), Expression: p.Expression(), ExprVersion: p.Version()}
+	}
 	return store.G(ctx, q).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "expr_hash"}}, DoNothing: true}).
-		Create(&model.ModelPriceHistory{ExprHash: p.Hash(), Expression: p.Expression(), ExprVersion: p.Version()}).Error
+		Create(&rows).Error
 }

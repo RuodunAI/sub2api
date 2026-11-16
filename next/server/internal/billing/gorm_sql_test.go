@@ -17,7 +17,7 @@ import (
 
 // The SQL of the billing statements assembled from parts (see package
 // gormtest): the ledger's writes of the request path (TestSQLLedger), the
-// batched rule write and the ledger list's filter.
+// rule writes and the ledger list's filter.
 
 // The ledger list counts and pages the rows its query parameters select.
 func TestSQLLedgerCount(t *testing.T) {
@@ -35,20 +35,20 @@ func TestSQLLedgerCount(t *testing.T) {
 	})
 }
 
-// The rule changes of a PUT, one statement of array parameters: a group
-// price and a segment price saved (each upserted on the partial unique
-// index of its level, the update moving updated_at by now()), one removed,
-// and one removed and saved again (two changes of one rule). A multiplier
-// has no config (NULL) and no mode (NULLIF to NULL); the custom price's
-// expression also goes to the history. The custom price's config holds no
-// number, whose pointer the snapshot would print.
+// The rule changes of a PUT: the custom price's expression to the history,
+// the changed rules locked in the order of their keys, the removed ones
+// deleted (one removed and saved again: two changes of one rule), and the
+// saved ones upserted on the partial unique index of their level, the group
+// price before the segment's, the update moving updated_at by now(). A
+// multiplier has no config and no mode (NULL). The custom price's config
+// holds no number, whose pointer the snapshot would print.
 func TestSQLWriteRules(t *testing.T) {
-	mult := "1.25"
+	multiplier := &storedRule{Rule: Rule{Kind: core.PriceRuleMultiplier}}
+	multiplier.setScale(decimal.RequireFromString("1.25"))
 	group := core.PriceQuery{GroupID: 3, Model: "claude-sonnet-4-5"}
 	segment := core.PriceQuery{GroupID: 3, SegmentID: 5, Model: "claude-sonnet-4-5"}
 	gone := core.PriceQuery{GroupID: 3, SegmentID: 5, Model: "claude-haiku-4-5"}
 	again := core.PriceQuery{GroupID: 3, Model: "claude-opus-4-5"}
-	multiplier := &storedRule{Rule: Rule{Kind: core.PriceRuleMultiplier, Multiplier: &mult}}
 	custom, err := checkCustom(context.Background(), Rule{Kind: core.PriceRuleCustom, Mode: "per_request",
 		Config: map[string]*float64{"price": new(float64)}}, "per_request")
 	if err != nil {
@@ -59,11 +59,11 @@ func TestSQLWriteRules(t *testing.T) {
 	slices.SortStableFunc(changes, func(a, b ruleChange) int {
 		return cmp.Or(cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
 	})
-	w, err := collapseChanges(changes)
+	w, err := collapseChanges(changes, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return writeRules(db, w, 2) })
+	gormtest.AssertRun(t, func(db *gorm.DB) error { return writeRules(db.Statement.Context, db, w) })
 }
 
 // The ledger statements of the request path: the CTEs bind each use of a

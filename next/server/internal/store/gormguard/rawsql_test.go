@@ -31,7 +31,6 @@ var rawSQLAllowed = map[string]string{
 	"internal/billing.applyStmt":                   "ledger CTE: apply a charge or credit to user_balances and balance_ledger in one statement",
 	"internal/billing.releaseStmt":                 "ledger CTE: release a request precharge and refund it in one statement",
 	"internal/billing.settleStmt":                  "ledger CTE: settle (release the precharge, apply the charge) in one statement",
-	"internal/billing.writeRules":                  "price rules: history, lock, delete and both partial-index upserts of any number of changes in one data-modifying CTE and one round trip (lock order = change order); GORM needs five statements",
 	"internal/plugin/dbschema.Tracker.recordQuery": "call of the void SECURITY DEFINER function plugin_migration_record as the plugin role",
 	// store: the runners of those statements and the helpers for what is
 	// no data statement.

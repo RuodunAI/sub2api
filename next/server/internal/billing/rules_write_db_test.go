@@ -19,9 +19,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// sequentialRuleChanges is applyChanges as it was before writeRulesSQL: the
-// statements of each change one after the other, in the order applyChanges
-// sorts the changes in (the reference writeRulesSQL must match).
+// sequentialRuleChanges is the statements of each change one after the
+// other, in the order applyChanges sorts the changes in (the reference
+// writeRules must match).
 func sequentialRuleChanges(ctx context.Context, tx *gorm.DB, changes []ruleChange, updatedBy int64) error {
 	slices.SortStableFunc(changes, func(a, b ruleChange) int {
 		return cmp.Or(cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
@@ -91,7 +91,7 @@ func ruleState(t *testing.T, ctx context.Context, tx *gorm.DB, group int64, init
 	return append(state, history...)
 }
 
-// writeRulesSQL leaves what the statements of the changes left one after
+// writeRules leaves what the statements of the changes left one after
 // the other: the rules (kept or new rows), their values, updated_by and
 // updated_at, and the history, also when a request changes one rule twice.
 func TestWriteRulesMatchesSequential(t *testing.T) {
@@ -169,7 +169,7 @@ func TestWriteRulesMatchesSequential(t *testing.T) {
 var errRollback = errors.New("rollback")
 
 // Two requests changing the same rules in opposite orders lock them in one
-// order (writeRulesSQL's locked step) and never deadlock.
+// order (writeRules' lock) and never deadlock.
 func TestWriteRulesConcurrentNoDeadlock(t *testing.T) {
 	e := newPricingEnv(t, allowAll{})
 	ctx := context.Background()

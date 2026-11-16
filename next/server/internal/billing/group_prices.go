@@ -416,33 +416,29 @@ func segmentsOf(changes []ruleChange) []int64 {
 	return ids
 }
 
-// applyChanges writes the changes in tx, in one statement (writeRulesSQL).
-// They go in the order of what they are on, whatever order the request gave
-// them in: two requests that change the same rules then lock them in the
-// same order, and neither waits for the other in a circle.
+// applyChanges writes the changes in tx (writeRules). They go in the order
+// of what they are on, whatever order the request gave them in: two
+// requests that change the same rules then save them in the same order.
 func applyChanges(ctx context.Context, tx *gorm.DB, changes []ruleChange, updatedBy int64) error {
-	if err := store.RequireTx(tx); err != nil {
-		return err
-	}
 	if len(changes) == 0 {
 		return nil
 	}
 	slices.SortStableFunc(changes, func(a, b ruleChange) int {
 		return cmp.Or(cmp.Compare(a.on.GroupID, b.on.GroupID), cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
 	})
-	w, err := collapseChanges(changes)
+	w, err := collapseChanges(changes, updatedBy)
 	if err != nil {
 		return err
 	}
-	return writeRules(store.G(ctx, tx), w, updatedBy).Error
+	return writeRules(ctx, tx, w)
 }
 
-// collapseChanges turns sorted changes into writeRulesSQL's rows, one per
-// rule, leaving what the changes of the rule (adjacent once sorted) left
-// one after the other: the rule removed when any of them removes it, saved
+// collapseChanges turns sorted changes into writeRules' writes by
+// updatedBy, one per rule, leaving what the changes of the rule (adjacent
+// once sorted) left one after the other: the rule removed when any of them removes it, saved
 // as the last one when that saves it (removed then saved: a new row), and
 // the expression of every custom price in the history.
-func collapseChanges(changes []ruleChange) (*ruleWrites, error) {
+func collapseChanges(changes []ruleChange, updatedBy int64) (*ruleWrites, error) {
 	w := &ruleWrites{}
 	for len(changes) > 0 {
 		n := 1
@@ -458,7 +454,7 @@ func collapseChanges(changes []ruleChange) (*ruleWrites, error) {
 			}
 		}
 		last := changes[n-1]
-		if err := w.addRule(last.on, removed, last.rule); err != nil {
+		if err := w.addRule(last.on, removed, last.rule, updatedBy); err != nil {
 			return nil, err
 		}
 		changes = changes[n:]

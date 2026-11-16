@@ -599,13 +599,12 @@ TestSQLAccountUsageOverview, TestSQLWriteRules, TestSQLAssetPut):
   (LEFT JOIN, with whether there is one) and its window from midnight
   (LATERAL sums), one row per account in list order;
   TestUsageOverviewMatchesItsReads compares it with the three reads.
-- `applyChanges`: `writeRulesSQL` takes the changes as arrays, one row per
-  rule (several changes of one rule collapsed into removed and saved), and
-  runs history, ordered `FOR UPDATE` of the existing rules, deletes, the
-  group's upserts and the segments' upserts one after the other (each step
-  reads the previous one in a one-time condition). TestWriteRulesMatchesSequential
-  compares it with the statements one by one, TestWriteRulesConcurrentNoDeadlock
-  fails without the ordered lock step.
+- `applyChanges`: was one data-modifying CTE (`writeRulesSQL`); since
+  0.1.290 `writeRules` runs history, ordered `FOR UPDATE` of the existing
+  rules, the delete and the two levels' upserts as up to five builder
+  statements in the transaction (admin path; the empty ones are skipped).
+  TestWriteRulesMatchesSequential compares it with the statements one by
+  one, TestWriteRulesConcurrentNoDeadlock fails without the ordered lock.
 - `Publish`: `putAssetsSQL` writes every blob and lists its path in the
   build in one statement of arrays, in file order; a file whose path it
   did not return is the immutable collision that fails the publication.
