@@ -222,23 +222,7 @@ func (s *Service) Load(ctx context.Context, id int64) (*core.Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	settings := a.Settings
-	if len(settings) == 0 {
-		settings = []byte("{}")
-	}
-	acc := core.Account{
-		AccountRef: core.AccountRef{ID: a.ID, Name: a.Name, PluginKey: a.PluginKey, Type: a.Type,
-			Priority: a.Priority, Weight: a.Weight, MaxConcurrency: a.MaxConcurrency, ProxyID: a.ProxyID,
-			Models: a.Models, ModelMapping: a.mapping(), RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(),
-			Environment: a.Environment, ConversionLossPolicy: core.ValueOr(a.LossPolicy, "")},
-		Status:            a.Status,
-		Schedulable:       a.Schedulable,
-		AutoDisable:       a.AutoDisable,
-		Credentials:       json.RawMessage(plain),
-		Settings:          json.RawMessage(settings),
-		HeaderPassthrough: a.HeaderPassthrough,
-		ParamOverride:     core.LoadParamOverride(a.ParamOverride),
-	}
+	acc := a.coreAccount(plain)
 	s.cacheMu.Lock()
 	if s.epoch == epoch {
 		s.accounts[id] = accountSnap{at: now, acc: acc}

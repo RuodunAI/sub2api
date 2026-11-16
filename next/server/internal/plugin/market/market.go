@@ -40,10 +40,6 @@ const (
 	maxSigBytes   = 4 << 10
 )
 
-// PackageDownloadTimeout bounds one package download: packages may be up to
-// rc.PluginPackageMaxBytes, far more than an index request needs.
-const PackageDownloadTimeout = 10 * time.Minute
-
 // Source is a market_sources row.
 type Source struct {
 	ID        int64     `json:"id"`
@@ -88,7 +84,7 @@ type Service struct {
 	db       *store.DB
 	inst     Installer
 	client   *http.Client
-	pkg      *http.Client // client with at least PackageDownloadTimeout
+	pkg      *http.Client // client with at least rc.PluginPackageTransferTimeout
 	maxBytes int64
 	now      func() time.Time
 
@@ -104,7 +100,7 @@ type cached struct {
 }
 
 // New builds the market client. client nil uses a 60 s timeout client;
-// package downloads use a copy of it with at least PackageDownloadTimeout.
+// package downloads use a copy of it with at least rc.PluginPackageTransferTimeout.
 // maxPackageBytes bounds downloads (config MaxPackageBytes).
 func New(db *store.DB, inst Installer, client *http.Client, maxPackageBytes int64) *Service {
 	if client == nil {
@@ -114,8 +110,8 @@ func New(db *store.DB, inst Installer, client *http.Client, maxPackageBytes int6
 		maxPackageBytes = rc.PluginPackageMaxBytes
 	}
 	pkgClient := *client
-	if pkgClient.Timeout != 0 && pkgClient.Timeout < PackageDownloadTimeout {
-		pkgClient.Timeout = PackageDownloadTimeout
+	if pkgClient.Timeout != 0 && pkgClient.Timeout < rc.PluginPackageTransferTimeout {
+		pkgClient.Timeout = rc.PluginPackageTransferTimeout
 	}
 	return &Service{db: db, inst: inst, client: client, pkg: &pkgClient, maxBytes: maxPackageBytes, now: time.Now, cache: map[int64]cached{}}
 }

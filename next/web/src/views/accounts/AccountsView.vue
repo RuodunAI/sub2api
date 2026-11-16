@@ -161,7 +161,6 @@ function groupName(id: number, refs?: Array<{ id: number; name: string }>) {
 function groupNames(ids: number[] | undefined, refs?: Array<{ id: number; name: string }>) {
   return ids?.length ? ids.map((id) => groupName(id, refs)).join(', ') : '—'
 }
-/** Read-only plugin facts of a row, without the ones repeating its name (e.g. a login email used as the name). */
 const groupTags = (a: Account) => (a.group_ids || []).map((id) => ({ id, name: groupName(id, a.groups), platforms: lookupGroup(id)?.platforms }))
 /** Platforms the account's type serves now: their marks lead its type line. */
 const rowPlatforms = (a: Account) => (typeOf(a)?.platforms ?? []).filter((p) => p.available !== false).map((p) => p.id)

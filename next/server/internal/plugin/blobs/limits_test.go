@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
+
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
 // Without a configured limit transfers take the shared plugin package limit.
 func TestLimitsDefaultToThePackageLimit(t *testing.T) {
 	s := NewShell("unused.sock", "", 0)
-	if s.max != 64<<20 || s.client.Timeout != shellTimeout || shellTimeout < 10*time.Minute {
+	if s.max != 64<<20 || s.client.Timeout != rc.PluginPackageTransferTimeout {
 		t.Fatalf("shell: max %d, timeout %s", s.max, s.client.Timeout)
 	}
 	if s = NewShell("unused.sock", "", 300<<20); s.max != 300<<20 {

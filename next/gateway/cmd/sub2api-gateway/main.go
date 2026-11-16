@@ -34,6 +34,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/proxy"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/supervisor"
+	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -560,7 +561,7 @@ func (s *serveSet) buildRuntime(ctx context.Context, peerManager *peer.Manager, 
 	// primary change among them); only that client is authorized this way.
 	packageClient := peer.NewClient(peerManager.WrapTransport(proxy.PeerTransport(s.clientTLS), func(ctx context.Context, u *url.URL) error {
 		return s.store.AuthorizeAnyNodeTarget(ctx, c.NodeID, u)
-	}), 30*time.Minute)
+	}), runtimecontract.PluginPackageTransferTimeout)
 	pluginBlobs := control.PluginBlobs(s.store, c.NodeID, c.Root, packageClient, c.PluginMaxBytes, c.PluginStoreMaxBytes)
 	s.pluginBlobs = pluginBlobs
 	rt.PluginBlobs = pluginBlobs.Peer()

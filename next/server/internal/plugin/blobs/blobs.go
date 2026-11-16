@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
@@ -122,10 +121,6 @@ type Shell struct {
 	max    int64
 }
 
-// shellTimeout bounds one transfer through the shell, which may fetch the
-// package from the primary first.
-const shellTimeout = 10 * time.Minute
-
 // NewShell talks to the shell's management socket. token (config
 // Managed.UpdaterToken) is sent as "Authorization: Bearer <token>"; empty
 // sends none (the gateway 0.1.133 shell, see config.ManagedConfig.UpdaterToken).
@@ -142,7 +137,7 @@ func newShell(dial func(ctx context.Context, network, addr string) (net.Conn, er
 	if maxBytes <= 0 {
 		maxBytes = rc.PluginPackageMaxBytes
 	}
-	return &Shell{token: token, max: maxBytes, client: &http.Client{Timeout: shellTimeout, Transport: &http.Transport{DialContext: dial}}}
+	return &Shell{token: token, max: maxBytes, client: &http.Client{Timeout: rc.PluginPackageTransferTimeout, Transport: &http.Transport{DialContext: dial}}}
 }
 
 func (s *Shell) url(sum string) string { return "http://shell/system/plugin-blobs/" + sum }

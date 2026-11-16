@@ -2,8 +2,7 @@
 // §23.3 UI 3.6): the row menu and the bulk bar both run one through `run`,
 // which confirms, POSTs `{account_ids}` to the plugin's own route (a single
 // row is a one-element array; at most MAX_ACCOUNT_BATCH ids per request, each
-// request given 95 s like the account-type actions) and reports like the
-// other bulk actions.
+// request given 95 s) and reports like the other bulk actions.
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api, MAX_ACCOUNT_BATCH } from '@sub2api/host'

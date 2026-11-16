@@ -330,6 +330,8 @@ func TestMigrationDropsCCGatewayKeywords(t *testing.T) {
 		if with0075 {
 			run(raw75)
 		}
+		_, err = db.SQL.ExecContext(ctx, `DELETE FROM settings WHERE key='failure_policy_history'`)
+		require.NoError(t, err)
 	}
 
 	for _, with0075 := range []bool{true, false} {
@@ -352,9 +354,13 @@ func TestMigrationDropsCCGatewayKeywords(t *testing.T) {
 		require.Equal(t, want.Name, p.RetryRules[1].Name)
 		require.Equal(t, want.Match.Keywords, p.RetryRules[1].Match.Keywords, "migration 0102 and defaultRetryRules must agree")
 		require.Equal(t, before.RetryRules[0], p.RetryRules[0])
-		var history string
-		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT value::text FROM settings WHERE key='failure_policy_history'`).Scan(&history))
-		require.Contains(t, history, "stored_login_refused_restart_needed")
+		var history []FailurePolicy
+		var raw string
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT (value->'policies')::text FROM settings WHERE key='failure_policy_history'`).Scan(&raw))
+		require.NoError(t, json.Unmarshal([]byte(raw), &history))
+		require.Len(t, history, 1, "one change, one entry")
+		require.Equal(t, before.Revision, history[0].Revision)
+		require.Contains(t, history[0].AccountRules[0].Match.Keywords, "oauth_refresh_dead")
 	}
 
 	// Left alone: rules whose keywords an administrator changed (one added,

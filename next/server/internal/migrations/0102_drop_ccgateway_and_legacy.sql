@@ -4,12 +4,12 @@
 -- was the only implementer of (preparations, runtime synchronization, the
 -- subscription type and automatic models). Its last source is commit
 -- 317b0c331.
--- This drops what the core kept for it and uninstalls the plugin the way
--- plugin/install.Uninstall does with purge, without the node barrier: every
--- node is stopped while a release migrates (primary first), and takes the
+-- This drops what the core kept for it, uninstalls the plugin the way
+-- plugin/install.Uninstall does with purge (without the node barrier: every
+-- node is stopped while a release migrates, primary first) and takes the
 -- keywords only CCGateway answered with out of the failure policy. Last, it
--- drops the data kept only for the cores before 0.1.290 (CONTRACTS §101.4),
--- which never run next to this one.
+-- drops the data kept only for the cores before 0.1.290 (CONTRACTS §101.4,
+-- §101.6), which never run next to this one.
 --
 -- Kept on purpose:
 --   - accounts with plugin_key 'ccgateway' (and their groups, usage rows,
@@ -181,7 +181,7 @@ BEGIN
     WHERE key = 'failure_policy';
 END $$;
 
--- Kept only for the cores before 0.1.290 (CONTRACTS §101.4). The scheduling
+-- Kept only for the cores before 0.1.290 (CONTRACTS §101.4, §101.6). The scheduling
 -- settings' mode is no longer read or written; a row of the former "default"
 -- mode (or any but "traffic") with the limit load off had the metric and
 -- model limits greyed out, not chosen, so they take the defaults (§89).

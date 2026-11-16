@@ -20,6 +20,10 @@ const (
 	PluginPackageMaxBytes  = 64 << 20  // compressed archive
 	PluginUnpackedMaxBytes = 256 << 20 // sum of uncompressed file sizes
 	PluginPackageMaxFiles  = 2000      // regular files
+	// PluginPackageTransferTimeout bounds one package transfer: a market
+	// download, a core's request through its shell and the shell's fetch
+	// from another node.
+	PluginPackageTransferTimeout = 10 * time.Minute
 )
 
 // ClusterChangeLock serializes core plans and plugin mutation submissions.

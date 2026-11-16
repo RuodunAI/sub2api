@@ -153,14 +153,33 @@ func (a *row) mapping() map[string]string {
 
 func (a *row) modelLimits() []core.ModelLimit { return parseModelLimits(a.ModelLimits) }
 
+// coreAccount is the account with the given plaintext credentials, as the
+// gateway sees it.
+func (a *row) coreAccount(plain []byte) core.Account {
+	settings := a.Settings
+	if len(settings) == 0 {
+		settings = []byte("{}")
+	}
+	return core.Account{
+		AccountRef: core.AccountRef{ID: a.ID, Name: a.Name, PluginKey: a.PluginKey, Type: a.Type,
+			Priority: a.Priority, Weight: a.Weight, MaxConcurrency: a.MaxConcurrency, ProxyID: a.ProxyID,
+			Models: a.Models, ModelMapping: a.mapping(), RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(),
+			Environment: a.Environment, ConversionLossPolicy: core.ValueOr(a.LossPolicy, "")},
+		Status:            a.Status,
+		Schedulable:       a.Schedulable,
+		AutoDisable:       a.AutoDisable,
+		Credentials:       json.RawMessage(plain),
+		Settings:          json.RawMessage(settings),
+		HeaderPassthrough: a.HeaderPassthrough,
+		ParamOverride:     core.LoadParamOverride(a.ParamOverride),
+	}
+}
+
 // pluginAccount is the account as a plugin sees it, with the given plaintext
 // credentials.
 func (a *row) pluginAccount(credentials []byte) *pluginv1.Account {
-	return &pluginv1.Account{Id: a.ID, Name: a.Name, Type: a.Type, CredentialsJson: string(credentials), SettingsJson: string(a.Settings), Properties: &pluginv1.AccountProperties{
-		Status: a.Status, Schedulable: a.Schedulable, AutoDisable: a.AutoDisable, Priority: int32(a.Priority), Weight: int32(a.Weight), MaxConcurrency: int32(a.MaxConcurrency),
-		RpmLimit: int32(a.RPMLimit), TpmLimit: a.TPMLimit, SpmLimit: int32(a.SPMLimit), ProxyId: a.ProxyID, Models: a.Models, ModelMapping: a.mapping(),
-		ModelLimits: core.PluginModelLimits(a.modelLimits()),
-	}}
+	acc := a.coreAccount(credentials)
+	return acc.PluginAccount("")
 }
 
 func notFound(ctx context.Context) error {

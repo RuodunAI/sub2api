@@ -29,12 +29,6 @@ export function errorMessage(e: unknown): string {
 }
 
 /** The user dismissed the step-up verification of the request: nothing to report. */
-/** `details.reason` of an API error (the cause code some refusals carry), or ''. */
-export function reasonOf(e: unknown): string {
-  const r = (e as { details?: { reason?: unknown } } | null)?.details?.reason
-  return typeof r === 'string' ? r : ''
-}
-
 export const verificationCancelled = (e: unknown) => isApiError(e) && e.code === VERIFICATION_CANCELLED
 
 /** Shows an error toast unless it is an auth redirect, a dismissed verification or an aborted request. */
