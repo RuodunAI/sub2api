@@ -149,18 +149,24 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 func (s *Store) Heartbeat(ctx context.Context, n Node) error {
 	observedLocally := time.Now()
 	var accepted bool
+	// Named parameters: each value is written once however often the
+	// statement uses it. GORM ends a name only at a blank, comma, quote,
+	// parenthesis or semicolon, so a typed one is CAST(@x AS t), not @x::t.
 	err := s.db(ctx).Raw(`WITH changed AS (
- UPDATE updater.nodes SET release_digest=?,core_boot_id=?,mode=?,ready=?,
- last_seen=now(),route_revision=?,stopped=?,offloading=?,telemetry_boot_id=?,
- cpu_percent=CASE WHEN EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=? AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id) THEN ?::double precision ELSE NULL END,error=''
- WHERE node_id=? AND cluster_id=? AND shell_boot_id=? AND enabled AND (
+ UPDATE updater.nodes SET release_digest=@release,core_boot_id=@core,mode=@mode,ready=@ready,
+ last_seen=now(),route_revision=@route,stopped=@stopped,offloading=@offloading,telemetry_boot_id=@boot,
+ cpu_percent=CASE WHEN EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id) THEN CAST(@cpu AS double precision) ELSE NULL END,error=''
+ WHERE node_id=@node AND cluster_id=@cluster AND shell_boot_id=@boot AND enabled AND (
  (release_digest,core_boot_id,mode,ready,route_revision,stopped,offloading,telemetry_boot_id)
- IS DISTINCT FROM (?::text,?::text,?::text,?::boolean,?::bigint,?::boolean,?::boolean,?::text)
- OR (cpu_percent IS NOT NULL AND NOT EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=? AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id))
+ IS DISTINCT FROM (CAST(@release AS text),CAST(@core AS text),CAST(@mode AS text),CAST(@ready AS boolean),CAST(@route AS bigint),CAST(@stopped AS boolean),CAST(@offloading AS boolean),CAST(@boot AS text))
+ OR (cpu_percent IS NOT NULL AND NOT EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id))
  OR (last_seen<now()-interval '5 seconds' AND EXISTS (
- SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=? AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id)))
+ SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id)))
  RETURNING node_id)
- SELECT EXISTS(SELECT 1 FROM changed) OR EXISTS(SELECT 1 FROM updater.nodes WHERE node_id=? AND cluster_id=? AND shell_boot_id=? AND enabled)`, n.ReleaseDigest, n.CoreBootID, n.Mode, n.Ready, n.RouteRevision, n.Stopped, n.Offloading, n.ShellBootID, s.Cluster, n.CPUPercent, n.ID, s.Cluster, n.ShellBootID, n.ReleaseDigest, n.CoreBootID, n.Mode, n.Ready, n.RouteRevision, n.Stopped, n.Offloading, n.ShellBootID, s.Cluster, s.Cluster, n.ID, s.Cluster, n.ShellBootID).Row().Scan(&accepted)
+ SELECT EXISTS(SELECT 1 FROM changed) OR EXISTS(SELECT 1 FROM updater.nodes WHERE node_id=@node AND cluster_id=@cluster AND shell_boot_id=@boot AND enabled)`, map[string]any{
+		"release": n.ReleaseDigest, "core": n.CoreBootID, "mode": n.Mode, "ready": n.Ready, "route": n.RouteRevision,
+		"stopped": n.Stopped, "offloading": n.Offloading, "boot": n.ShellBootID, "cluster": s.Cluster, "cpu": n.CPUPercent, "node": n.ID,
+	}).Row().Scan(&accepted)
 	if err != nil {
 		return err
 	}

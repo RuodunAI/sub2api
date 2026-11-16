@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"gorm.io/gorm"
@@ -34,20 +35,19 @@ func (d *DB) AccountRefreshStates(ctx context.Context, ids []int64) (map[int64]*
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := G(ctx, d.Gorm).Raw(`SELECT account_id, expires_at, last_attempt_at, last_success_at, error_type, error, rejected_cred_hash
-		FROM account_credential_refresh WHERE account_id = ANY(?)`, Int64s(ids)).Rows()
+	err := EachRow(G(ctx, d.Gorm).Raw(`SELECT account_id, expires_at, last_attempt_at, last_success_at, error_type, error, rejected_cred_hash
+		FROM account_credential_refresh WHERE account_id = ANY(?)`, Int64s(ids)), func(rows *sql.Rows) error {
+		var s RefreshState
+		if err := rows.Scan(&s.AccountID, &s.ExpiresAt, &s.LastAttemptAt, &s.LastSuccessAt, &s.ErrorType, &s.Error, &s.RejectedCredHash); err != nil {
+			return err
+		}
+		out[s.AccountID] = &s
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var s RefreshState
-		if err := rows.Scan(&s.AccountID, &s.ExpiresAt, &s.LastAttemptAt, &s.LastSuccessAt, &s.ErrorType, &s.Error, &s.RejectedCredHash); err != nil {
-			return nil, err
-		}
-		out[s.AccountID] = &s
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // RecordAccountRefresh stores the outcome of one refresh attempt (in tx
