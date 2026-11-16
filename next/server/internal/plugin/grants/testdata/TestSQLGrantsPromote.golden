@@ -1,10 +1,5 @@
 -- sql
-WITH staged AS (DELETE FROM plugin_staged_grants WHERE plugin_key = $1 AND version = $2 RETURNING *)
-		INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash, granted_by, granted_at)
-		SELECT plugin_key, permission, scope, status, version, manifest_hash, granted_by, granted_at FROM staged
-		ON CONFLICT (plugin_key, permission) DO UPDATE SET
-		  scope = EXCLUDED.scope, status = EXCLUDED.status, plugin_version = EXCLUDED.plugin_version,
-		  manifest_hash = EXCLUDED.manifest_hash, granted_by = EXCLUDED.granted_by, granted_at = EXCLUDED.granted_at
+DELETE FROM "plugin_staged_grants" WHERE plugin_key = $1 AND version = $2 RETURNING *
 -- vars
 $1 string "demo"
 $2 string "1.2.0"

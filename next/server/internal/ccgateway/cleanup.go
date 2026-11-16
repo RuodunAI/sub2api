@@ -7,15 +7,18 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const cleanupFeature = "runtime-cleanup-v1"
@@ -44,22 +47,25 @@ const (
 // reauthorization meaning. Previously deleted accounts are cleaned only by the
 // explicit orphan-cleanup action, not during rollout.
 func (s *Service) MarkAccountDeleted(ctx context.Context, tx *gorm.DB, id int64, opts core.AccountDeletionOptions) (time.Time, error) {
-	var purgeAfter time.Time
 	g := store.G(ctx, tx)
-	err := g.Raw(`UPDATE ccgateway_runtimes SET retired_at=now(),purge_after=now()+make_interval(days => ?::int),purged_at=NULL
-	 WHERE account_id=? RETURNING purge_after`, opts.RetainDays, id).Row().Scan(&purgeAfter)
-	if err == nil {
-		return purgeAfter, nil
+	purgeAfter := gorm.Expr("now()+make_interval(days => ?::int)", opts.RetainDays)
+	returning := clause.Returning{Columns: []clause.Column{{Name: "purge_after"}}}
+	var row model.CcgatewayRuntime
+	res := g.Model(&row).Clauses(returning).Where("account_id = ?", id).
+		Updates(map[string]any{"retired_at": gorm.Expr("now()"), "purge_after": purgeAfter, "purged_at": nil})
+	if res.Error != nil || res.RowsAffected > 0 {
+		return core.ValueOr(row.PurgeAfter, time.Time{}), res.Error
 	}
-	if !store.IsNoRows(err) {
+	// No row: the account's runtime is named after its id. RETURNING reads
+	// purge_after back into the inserted values, as the model's field type
+	// (*time.Time).
+	values := map[string]any{"key": strconv.FormatInt(id, 10), "account_id": id, "adopted_at": gorm.Expr("now()"), "retired_at": gorm.Expr("now()"), "purge_after": purgeAfter}
+	set := append(clause.AssignmentColumns([]string{"account_id", "retired_at", "purge_after"}), clause.Assignment{Column: clause.Column{Name: "purged_at"}})
+	if err := runtimes(g).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoUpdates: set}, returning).Create(values).Error; err != nil {
 		return time.Time{}, err
 	}
-	// No row: the account's runtime is named after its id.
-	err = g.Raw(`INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,retired_at,purge_after)
-	 VALUES(?::bigint::text,?,now(),now(),now()+make_interval(days => ?::int)) ON CONFLICT(key) DO UPDATE
-	 SET account_id=EXCLUDED.account_id,retired_at=EXCLUDED.retired_at,purge_after=EXCLUDED.purge_after,purged_at=NULL
-	 RETURNING purge_after`, id, id, opts.RetainDays).Row().Scan(&purgeAfter)
-	return purgeAfter, err
+	at, _ := values["purge_after"].(*time.Time)
+	return core.ValueOr(at, time.Time{}), nil
 }
 
 type cleanupCandidate struct {
@@ -158,13 +164,13 @@ func (s *Service) purgeDeleted(ctx context.Context, tx *gorm.DB, key string, d a
 // Reconcile purges them when it ends.
 func (s *Service) cleanupKeepKeys(ctx context.Context) ([]string, error) {
 	var found []string
-	err := store.G(ctx, s.DB.Gorm).Raw(`
-SELECT COALESCE(r.key,a.id::text) FROM accounts a LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id
- WHERE a.plugin_key='ccgateway' AND a.deleted_at IS NULL
-UNION SELECT r.key FROM ccgateway_runtimes r WHERE r.account_id IS NULL AND r.retired_at IS NULL
-UNION SELECT key FROM ccgateway_runtimes WHERE account_id IS NULL AND retired_at >= now()-?::bigint*interval '1 second'
-UNION SELECT r.key FROM ccgateway_runtimes r WHERE r.account_id IS NOT NULL AND r.purged_at IS NULL AND `+sqlInRetention,
-		int64(retiredGrace/time.Second)).Scan(&found).Error
+	g := store.G(ctx, s.DB.Gorm)
+	err := g.Raw("(?) UNION (?) UNION (?) UNION (?)",
+		g.Table("accounts a").Joins("LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id").Select("COALESCE(r.key,a.id::text)").
+			Where("a.plugin_key='ccgateway' AND a.deleted_at IS NULL"),
+		openDrafts(g).Select("key"),
+		runtimes(g).Select("key").Where("account_id IS NULL AND retired_at >= now()-?::bigint*interval '1 second'", int64(retiredGrace/time.Second)),
+		g.Table("ccgateway_runtimes r").Select("r.key").Where("r.account_id IS NOT NULL AND r.purged_at IS NULL AND "+sqlInRetention)).Scan(&found).Error
 	if err != nil {
 		return nil, err
 	}

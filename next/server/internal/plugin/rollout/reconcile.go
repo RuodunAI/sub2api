@@ -536,11 +536,14 @@ func selectEpochForShare(g *gorm.DB, key string) *gorm.DB {
 		Clauses(store.Lock(clause.LockingStrengthShare))
 }
 
-// upsertRuntimeNode records that this boot runs the plugin. Raw SQL: the
-// upsert turns a stopped row back on.
+// upsertRuntimeNode records that this boot runs the plugin; the upsert
+// turns a stopped row back on.
 func upsertRuntimeNode(g *gorm.DB, key, bootID string) *gorm.DB {
-	return g.Exec(`INSERT INTO plugin_runtime_nodes(plugin_key,boot_id) VALUES(?,?)
-			ON CONFLICT(plugin_key,boot_id) DO UPDATE SET stopped=false,updated_at=now()`, key, bootID)
+	return g.Table(model.PluginRuntimeNode{}.TableName()).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "plugin_key"}, {Name: "boot_id"}},
+		DoUpdates: clause.Set{{Column: clause.Column{Name: "stopped"}, Value: false},
+			{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}},
+	}).Create(map[string]any{"plugin_key": key, "boot_id": bootID})
 }
 
 // Only a reconciliation of the current PG generation may acknowledge cleanup.
@@ -569,13 +572,13 @@ func (c *Controller) acknowledgeCleanup(ctx context.Context, p *pluginRow) {
 }
 
 // ackCleanup marks this boot's cleanup of the plugin's finished rollouts
-// done, while the plugin is still at generation epoch. Raw SQL: an UPDATE
-// joined with FROM.
+// done, while the plugin is still at generation epoch.
 func ackCleanup(g *gorm.DB, key, bootID string, epoch int64) *gorm.DB {
-	return g.Exec(`UPDATE plugin_rollout_cleanup n SET state='cleaned',updated_at=now()
-		FROM plugin_rollouts r,plugins p WHERE n.rollout_id=r.id AND r.plugin_key=p.key
-		AND p.key=? AND p.row_version=? AND n.boot_id=? AND n.state='cleanup_pending'
-		AND r.phase NOT IN ('preparing','activating')`, key, epoch, bootID)
+	finished := g.Table("plugin_rollouts AS r").Select("r.id").Joins("JOIN plugins p ON p.key = r.plugin_key").
+		Where("p.key = ? AND p.row_version = ? AND r.phase NOT IN ('preparing', 'activating')", key, epoch)
+	return g.Model(&model.PluginRolloutCleanup{}).
+		Where("rollout_id IN (?) AND boot_id = ? AND state = 'cleanup_pending'", finished, bootID).
+		Updates(map[string]any{"state": "cleaned", "updated_at": gorm.Expr("now()")})
 }
 
 // republish switches the registry when the serving set (instances

@@ -11,13 +11,13 @@ import (
 	"log/slog"
 	"path"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -143,33 +143,17 @@ func (s *SharedAssets) markReady(start time.Time) {
 // three builds independently protect references; only unreferenced blobs go.
 func (s *SharedAssets) collect(ctx context.Context, tx *gorm.DB) error {
 	g := store.G(ctx, tx)
-	if err := g.Exec(collectBuildsSQL, s.opts.Retention.Seconds(), s.opts.KeepBuilds).Error; err != nil {
+	// The builds past their lease and their retention that are not among the
+	// newest kept ones.
+	newest := g.Model(&model.WebAssetBuild{}).Select("build_id").Order("published_at DESC, build_id DESC").Limit(s.opts.KeepBuilds)
+	if err := g.Where("lease_until <= clock_timestamp() AND last_seen < clock_timestamp() - make_interval(secs => ?)", s.opts.Retention.Seconds()).
+		Where("build_id NOT IN (?)", newest).Delete(&model.WebAssetBuild{}).Error; err != nil {
 		return err
 	}
-	return g.Exec(collectAssetsSQL).Error
+	// The blobs no build refers to.
+	listed := g.Model(&model.WebAssetBuildFile{}).Select("1").Where("web_asset_build_files.path = web_assets.path")
+	return g.Where("NOT EXISTS (?)", listed).Delete(&model.WebAsset{}).Error
 }
-
-// collectBuildsSQL drops the builds past their lease and their retention
-// (seconds) that are not among the newest kept ones.
-const collectBuildsSQL = `DELETE FROM web_asset_builds WHERE lease_until<=clock_timestamp()
-	AND last_seen<clock_timestamp()-make_interval(secs=>?)
-	AND build_id NOT IN (SELECT build_id FROM web_asset_builds ORDER BY published_at DESC,build_id DESC LIMIT ?)`
-
-// collectAssetsSQL drops the blobs no build refers to.
-const collectAssetsSQL = `DELETE FROM web_assets a WHERE NOT EXISTS(SELECT 1 FROM web_asset_build_files f WHERE f.path=a.path)`
-
-// lockAssets takes assetLockKey for the rest of the transaction.
-func lockAssets(g *gorm.DB) error {
-	if err := store.RequireTx(g); err != nil {
-		return err
-	}
-	return g.Exec(`SELECT pg_advisory_xact_lock(?)`, assetLockKey).Error
-}
-
-// publishBuildSQL registers the build with a lease of ? seconds, or renews
-// it.
-const publishBuildSQL = `INSERT INTO web_asset_builds(build_id,lease_until) VALUES(?,clock_timestamp()+make_interval(secs=>?))
-	ON CONFLICT(build_id) DO UPDATE SET lease_until=EXCLUDED.lease_until,last_seen=clock_timestamp()`
 
 // renewBuild extends the lease of build by secs seconds.
 func renewBuild(g *gorm.DB, build string, secs float64) *gorm.DB {
@@ -180,32 +164,43 @@ func renewBuild(g *gorm.DB, build string, secs float64) *gorm.DB {
 		})
 }
 
-// putAssetsSQL stores the files of a build in one statement and one round
-// trip, whatever their number: the paths, hashes and bodies are an array
-// parameter each, which unnest turns back into rows, written in the files'
-// order (WITH ORDINALITY). Each blob is stored, or the stored one kept when
-// it has the same hash; a retained immutable path is never replaced with
-// different bytes, so put returns no row for it. Each path put returns is
-// listed among the files of the build (the last parameter). The statement
-// returns the paths put returned: a file missing from them is a collision,
-// which fails the publication (its transaction rolls back what the
-// statement wrote).
-const putAssetsSQL = `WITH put AS (
-	INSERT INTO web_assets(path,sha256,body,size)
-	SELECT path,sha256,body,octet_length(body) FROM unnest(?::text[],?::text[],?::bytea[]) WITH ORDINALITY AS f(path,sha256,body,o) ORDER BY o
-	ON CONFLICT(path) DO UPDATE SET sha256=web_assets.sha256 WHERE web_assets.sha256=EXCLUDED.sha256 RETURNING path
-), listed AS (
-	INSERT INTO web_asset_build_files(build_id,path) SELECT ?,path FROM put ON CONFLICT DO NOTHING
-)
-SELECT path FROM put`
+// putBatch is the most files one INSERT writes: four parameters each, well
+// under PostgreSQL's 65535.
+const putBatch = 1000
 
-// putAssets runs putAssetsSQL for files, of build.
-func putAssets(g *gorm.DB, build string, files []publicFile) *gorm.DB {
-	paths, hashes, bodies := make(store.Strings, len(files)), make(store.Strings, len(files)), make(store.Array[store.Bytes], len(files))
-	for i, f := range files {
-		paths[i], hashes[i], bodies[i] = f.name, f.hash, f.body
+// putAssets stores the files of build and lists them among its files. Each
+// blob is stored, or the stored one kept when it has the same hash; a
+// retained immutable path is never replaced with different bytes: a file
+// whose path holds another hash is a collision, which fails the publication
+// (its transaction rolls back what was written).
+func putAssets(g *gorm.DB, build string, files []publicFile) error {
+	if len(files) == 0 {
+		return nil
 	}
-	return g.Raw(putAssetsSQL, paths, hashes, bodies, build)
+	assets, listed := make([]model.WebAsset, len(files)), make([]model.WebAssetBuildFile, len(files))
+	paths := make(store.Strings, len(files))
+	for i, f := range files {
+		assets[i] = model.WebAsset{Path: f.name, Sha256: f.hash, Body: f.body, Size: int64(len(f.body))}
+		listed[i] = model.WebAssetBuildFile{BuildID: build, Path: f.name}
+		paths[i] = f.name
+	}
+	if err := g.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "path"}}, DoNothing: true}).CreateInBatches(&assets, putBatch).Error; err != nil {
+		return err
+	}
+	var stored []model.WebAsset
+	if err := g.Select("path", "sha256").Where("path = ANY(?)", paths).Find(&stored).Error; err != nil {
+		return err
+	}
+	hashes := make(map[string]string, len(stored))
+	for _, a := range stored {
+		hashes[a.Path] = a.Sha256
+	}
+	for _, f := range files {
+		if hashes[f.name] != f.hash {
+			return fmt.Errorf("asset %s: %w", f.name, sql.ErrNoRows)
+		}
+	}
+	return g.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&listed, putBatch).Error
 }
 
 // storeUsage selects the bytes and files of the shared assets and the
@@ -219,24 +214,23 @@ func (s *SharedAssets) Publish(ctx context.Context) error {
 	defer s.mu.Unlock()
 	start := time.Now()
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
-		if err := lockAssets(g); err != nil {
+		if err := store.XactLockID(ctx, tx, assetLockKey); err != nil {
 			return err
 		}
 		if err := s.collect(ctx, tx); err != nil {
 			return err
 		}
-		if err := g.Exec(publishBuildSQL, s.buildID, s.opts.Lease.Seconds()).Error; err != nil {
+		g := store.G(ctx, tx)
+		// Register the build with its lease, or renew it.
+		renew := append(clause.AssignmentColumns([]string{"lease_until"}),
+			clause.Assignment{Column: clause.Column{Name: "last_seen"}, Value: gorm.Expr("clock_timestamp()")})
+		if err := g.Table(model.WebAssetBuild{}.TableName()).
+			Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "build_id"}}, DoUpdates: renew}).
+			Create(map[string]any{"build_id": s.buildID, "lease_until": gorm.Expr("clock_timestamp() + make_interval(secs => ?)", s.opts.Lease.Seconds())}).Error; err != nil {
 			return err
 		}
-		var put []string
-		if err := putAssets(g, s.buildID, s.files).Scan(&put).Error; err != nil {
+		if err := putAssets(g, s.buildID, s.files); err != nil {
 			return fmt.Errorf("immutable console asset collision or write failure: %w", err)
-		}
-		for _, f := range s.files {
-			if !slices.Contains(put, f.name) {
-				return fmt.Errorf("immutable console asset collision or write failure (%s): %w", f.name, sql.ErrNoRows)
-			}
 		}
 		var size int64
 		var files, builds int
@@ -259,11 +253,10 @@ func (s *SharedAssets) renew(ctx context.Context) error {
 	start := time.Now()
 	found := false
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
-		if err := lockAssets(g); err != nil {
+		if err := store.XactLockID(ctx, tx, assetLockKey); err != nil {
 			return err
 		}
-		res := renewBuild(g, s.buildID, s.opts.Lease.Seconds())
+		res := renewBuild(store.G(ctx, tx), s.buildID, s.opts.Lease.Seconds())
 		if res.Error != nil {
 			return res.Error
 		}

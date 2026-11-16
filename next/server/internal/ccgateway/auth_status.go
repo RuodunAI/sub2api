@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -128,7 +129,7 @@ func recordRateLimitTier(ctx context.Context, q *gorm.DB, accountID int64, value
 // accountID to value unless it holds that already, so an unchanged report
 // writes no row. updated_at is left alone, as these updates always did.
 func recordAccountFact(db *gorm.DB, accountID int64, column, value string) *gorm.DB {
-	return db.Model(&model.Account{}).Where("id = ? AND "+column+" IS DISTINCT FROM ?", accountID, value).Update(column, value)
+	return db.Model(&model.Account{}).Where("id = ? AND ? IS DISTINCT FROM ?", accountID, clause.Column{Name: column}, value).Update(column, value)
 }
 
 // factsObserved runs the FactsObserved hook, when any, once what the

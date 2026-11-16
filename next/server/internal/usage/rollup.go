@@ -271,7 +271,7 @@ func (s *Service) refreshRollup(ctx context.Context) (int, error) {
 // rollupTx runs fn under the rollup's lock with its state, saved after fn.
 func (s *Service) rollupTx(ctx context.Context, fn func(*gorm.DB, *rollupState) error) error {
 	return s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := store.XactLock32(ctx, tx, "usage_hourly"); err != nil {
+		if err := store.XactLockHashtext(ctx, tx, "usage_hourly"); err != nil {
 			return err
 		}
 		if err := store.SetLocal(ctx, tx, "statement_timeout", rollupStatementTimeout); err != nil {

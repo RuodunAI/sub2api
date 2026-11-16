@@ -6,7 +6,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
@@ -35,20 +34,22 @@ func scan(q *gorm.DB) *gorm.DB {
 	return q.Scan(&dest)
 }
 
-// The version: Bump locks and increments it (every authz write), SyncCore
-// locks it without a bump; the readers select it with store.AuthzVersion.
+// The versions: Bump locks and increments the authz version (a user
+// write), bumpPolicy both (a policy write), SyncCore locks them without a
+// bump; the readers select them with store.AuthzVersions.
 func TestSQLAuthzVersion(t *testing.T) {
 	assertCases(t, []sqlCase{
 		{"bump", func(db *gorm.DB) *gorm.DB { return scan(bumpVersion(db)) }},
+		{"bump_policy", func(db *gorm.DB) *gorm.DB { return scan(bumpPolicyVersion(db)) }},
 		{"lock", lockVersion},
 	})
 }
 
-// The reads of an authorization check (loadPermissionSet, ensureCatalog)
-// and of the grant view (RolesPermissions, usersRoles, grantOf).
+// The active permissions of a superuser's /me (ActivePermissionKeys) and
+// the reads of the grant view (RolesPermissions, usersRoles, grantOf).
 func TestSQLAuthzPermissionLoad(t *testing.T) {
 	assertCases(t, []sqlCase{
-		{"catalog", func(db *gorm.DB) *gorm.DB { return scan(catalogRows(db)) }},
+		{"active", func(db *gorm.DB) *gorm.DB { return scan(activePermissions(db)) }},
 		{"role_grants", func(db *gorm.DB) *gorm.DB { return scan(roleGrants(db, []string{RoleAdmin, "custom"})) }},
 		{"role_assignables", func(db *gorm.DB) *gorm.DB { return scan(roleAssignables(db, []string{RoleAdmin})) }},
 		{"custom_roles", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeys(db)) }},
@@ -92,13 +93,16 @@ func TestSQLAuthzPermissionReads(t *testing.T) {
 	})
 }
 
-// ClearScopeGrants: whether a scoped grant names the deleted rows, then
-// the delete, its audit and the version; the patterns and ids are one
-// array parameter each.
+// ClearScopeGrants: the delete, its audit, the roles' revisions and the
+// versions, the patterns and ids one array parameter each; and the check
+// of a grant write that the rows its scopes name exist.
 func TestSQLAuthzClearScopeGrants(t *testing.T) {
 	patterns, actor := []string{`(^|/)account/3$`, `(^|/)account/4$`}, int64(9)
 	assertCases(t, []sqlCase{
-		{"exists", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, casbinrule.ScopedGrants(db, patterns))) }},
+		{"missing_refs", func(db *gorm.DB) *gorm.DB {
+			return scan(missingScopeRefs(db, []string{"account:read:group/2/account/3", "account:read:group/2/account/3", "proxy:read:proxy/4"},
+				[]string{core.ScopeRefGroup, core.ScopeRefAccount, core.ScopeRefProxy}, []int64{2, 3, 4}))
+		}},
 		{"clear", func(db *gorm.DB) *gorm.DB {
 			return scan(clearScopeGrants(db, patterns, &actor, core.ScopeRefAccount, []int64{3, 4}))
 		}},
@@ -122,6 +126,7 @@ func TestSQLAuthzRoleWrites(t *testing.T) {
 		}},
 		{"defaults_rev", func(db *gorm.DB) *gorm.DB { return setDefaultsRev(db, 3, 4) }},
 		{"touch", func(db *gorm.DB) *gorm.DB { return touchRole(db, 3) }},
+		{"revise", func(db *gorm.DB) *gorm.DB { return reviseRole(db, 3) }},
 		{"drop_assignable", func(db *gorm.DB) *gorm.DB { return dropAssignable(db, 3, store.Int64s{4, 5}) }},
 		{"add_assignable", func(db *gorm.DB) *gorm.DB { return addAssignable(db, 3, store.Int64s{4, 5}) }},
 		{"assign_custom", func(db *gorm.DB) *gorm.DB { return setAssignCustom(db, 3, false) }},

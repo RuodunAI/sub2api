@@ -48,7 +48,7 @@ func (s *Service) housekeeping(ctx context.Context, _ core.TaskRun) (core.TaskRe
 	if removed.Error != nil {
 		return core.TaskResult{}, fmt.Errorf("remove stale tasks: %w", removed.Error)
 	}
-	cleared := releaseLeases(g, "now()", "lease_until < now()")
+	cleared := releaseLeases(g.Where("lease_until < now()"), gorm.Expr("now()"))
 	if cleared.Error != nil {
 		return core.TaskResult{}, fmt.Errorf("clear expired leases: %w", cleared.Error)
 	}

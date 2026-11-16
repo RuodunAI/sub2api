@@ -138,7 +138,30 @@ func (CoreTracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, 
 	for _, r := range rows {
 		m[r.ID] = r.Checksum
 	}
-	return renameApplied(m), nil
+	return supersedeApplied(renameApplied(m)), nil
+}
+
+// supersededCoreMigrations maps a core migration to the checksums of earlier
+// contents of it that a development build applied and that a later
+// migration completes, to its current checksum: a database holding one is
+// not refused as modified, and is not run again. Only for differences a
+// later migration repairs (0099's first form lacked the staged status in
+// its COMMENT on permissions.status, which 0100 sets again).
+var supersededCoreMigrations = map[string]map[string]string{
+	"0099_plugin_permission_meta.sql": {
+		"213799f5dda8b6dfc88e1edcf287626dd55f39a17ec6c1fabc87d58d017eed15": "7006bfdce4b89d9ae24657f37521ed4ba65660e23f949d3ebaf6862cc56e2e1b",
+	},
+}
+
+// supersedeApplied reports the applied migrations of a superseded content
+// with their current checksum.
+func supersedeApplied(m map[string]string) map[string]string {
+	for id, sums := range supersededCoreMigrations {
+		if cur, ok := sums[m[id]]; ok {
+			m[id] = cur
+		}
+	}
+	return m
 }
 
 // renamedCoreMigrations maps the id of a core migration renamed after a build

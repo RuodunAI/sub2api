@@ -187,9 +187,12 @@ func (s insertSelect) Build(b clause.Builder) {
 	}
 }
 
-// UpdateFrom is the FROM list of an UPDATE, for db.Clauses: UPDATE t SET ...
-// FROM sql WHERE ..., sql taking vars at its ? placeholders (a set of rows
-// to join, such as unnest(?::bigint[], ?::timestamptz[]) AS v(id, at)).
+// UpdateFrom is the FROM list of an UPDATE, for db.Clauses: UPDATE t SET
+// ... FROM <sql> WHERE ..., which GORM's PostgreSQL dialect places but only
+// builds from table names. sql, a constant, takes vars as Where does
+// (array parameters are Int64s, Strings, Times); it typically turns arrays
+// into rows (unnest), so that one statement writes each row its own values,
+// joined to the table in Where.
 func UpdateFrom(sql string, vars ...any) clause.Interface {
 	return updateFrom{clause.Expr{SQL: sql, Vars: vars}}
 }

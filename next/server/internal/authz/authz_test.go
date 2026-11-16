@@ -14,6 +14,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -344,11 +345,11 @@ func TestResetBuiltinRole(t *testing.T) {
 	mustCan(t, s, opUser, "account:update", false)
 
 	// The operator holds less than the admin role: it cannot reset it.
-	if _, err := s.ResetRole(ctx, opUser, roleID(t, s, RoleAdmin)); !isCode(err, "permission_denied") {
+	if _, err := s.ResetRole(ctx, opUser, roleID(t, s, RoleAdmin), nil); !isCode(err, "permission_denied") {
 		t.Fatalf("operator resets admin: %v", err)
 	}
 
-	r, err := s.ResetRole(ctx, root, opID)
+	r, err := s.ResetRole(ctx, root, opID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,10 +368,10 @@ func TestResetBuiltinRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResetRole(ctx, root, custom.ID); !isCode(err, "conflict") {
+	if _, err := s.ResetRole(ctx, root, custom.ID, nil); !isCode(err, "conflict") {
 		t.Fatalf("reset custom: %v", err)
 	}
-	if _, err := s.ResetRole(ctx, root, 999999); !isCode(err, "not_found") {
+	if _, err := s.ResetRole(ctx, root, 999999, nil); !isCode(err, "not_found") {
 		t.Fatalf("reset missing: %v", err)
 	}
 }
@@ -1360,4 +1361,27 @@ func unscoped(roles ...string) map[string][]string {
 		out[r] = []string{""}
 	}
 	return out
+}
+
+// scopeRows creates the groups, accounts and proxies the scopes of keys
+// name, with those ids (checkScopeRefs refuses a grant naming a row that
+// does not exist).
+func scopeRows(t *testing.T, db *store.DB, keys ...string) {
+	t.Helper()
+	insert := map[string]string{
+		core.ScopeRefGroup:   `INSERT INTO groups (id, name) VALUES ($1::bigint, 'g' || $1::bigint) ON CONFLICT DO NOTHING`,
+		core.ScopeRefAccount: `INSERT INTO accounts (id, name, plugin_key, type, credentials_enc) VALUES ($1::bigint, 'a' || $1::bigint, 'anthropic', 'apikey', '\x00') ON CONFLICT DO NOTHING`,
+		core.ScopeRefProxy:   `INSERT INTO proxies (id, name, protocol, host, port) VALUES ($1::bigint, 'p' || $1::bigint, 'http', 'proxy.example', 3128) ON CONFLICT DO NOTHING`,
+	}
+	for _, k := range keys {
+		p, err := perm.Parse(k)
+		if err != nil {
+			t.Fatal(k, err)
+		}
+		for kind, id := range scopeRefsOf(p) {
+			if _, err := db.SQL.Exec(insert[kind], id); err != nil {
+				t.Fatal(kind, id, err)
+			}
+		}
+	}
 }

@@ -187,6 +187,9 @@ type checker struct {
 	// passed adapterTurnedOff.
 	bodies        []*ast.BlockStmt
 	adapterVetted map[*ast.SelectorExpr]bool
+	// casbinCtorVetted are the enforcer constructors casbinCall saw called
+	// as casbinx may call them (casbinCtor).
+	casbinCtorVetted map[*ast.SelectorExpr]bool
 
 	// [raw-sql] and [sql-const] (rawsql_test.go): the module, the package
 	// relative to it, the policy and what constSQL follows.
@@ -218,6 +221,7 @@ func (c *checker) index(files []*ast.File) {
 	c.rawFns = map[*types.Func]bool{}
 	c.lockFns = map[*types.Func]bool{}
 	c.adapterVetted = map[*ast.SelectorExpr]bool{}
+	c.casbinCtorVetted = map[*ast.SelectorExpr]bool{}
 	fieldReads := map[*ast.Ident]bool{}
 	assign := func(at token.Pos, lhs []ast.Expr, rhs []ast.Expr) {
 		for i, l := range lhs {

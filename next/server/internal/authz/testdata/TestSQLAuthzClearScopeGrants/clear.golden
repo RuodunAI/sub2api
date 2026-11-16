@@ -1,5 +1,5 @@
 -- sql
-WITH cleared AS (
+WITH changed AS (
     DELETE FROM casbin_rule cr USING roles r
     WHERE cr.ptype = 'p' AND cr.v2 ~ ANY($1) AND r.key = substr(cr.v0, 3)
     RETURNING r.id AS role_id, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
@@ -7,10 +7,12 @@ WITH cleared AS (
     INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
     SELECT $2, 'authz.scope.clear', 'role', role_id::text,
         jsonb_build_object('kind', $3::text, 'ids', to_jsonb($4::bigint[]), 'keys', to_jsonb(array_agg(key ORDER BY key)))
-    FROM cleared GROUP BY role_id
+    FROM changed GROUP BY role_id
+), revised AS (
+    UPDATE roles SET revision = revision + 1 WHERE id IN (SELECT role_id FROM changed)
 )
-UPDATE authz_meta SET version = version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM cleared)
-RETURNING version
+UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM changed)
+RETURNING version, policy_version
 -- vars
 $1 store.Strings [(^|/)account/3$ (^|/)account/4$]
 $2 *int64 9

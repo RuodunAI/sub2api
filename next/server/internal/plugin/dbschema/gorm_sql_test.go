@@ -14,8 +14,8 @@ import (
 // The marker comes first: the arguments follow the placeholders' order.
 func TestSQLRoleOwned(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		var owned bool
-		return roleOwnedQuery(tx, "plg_demo", "plg_demo", "sub2api plugin role; database=app; plugin=demo").Scan(&owned)
+		var owned []bool
+		return roleOwnedQuery(tx, "plg_demo", "plg_demo", "sub2api plugin role; database=app; plugin=demo").Find(&owned)
 	})
 }
 
@@ -57,7 +57,7 @@ func TestSQLRecordAsPluginRole(t *testing.T) {
 // A statement without arguments reaches the server as written, a "?" or
 // "@name" inside a literal included: DDL is built by quoting, not binding.
 func TestSQLDDLVerbatim(t *testing.T) {
-	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		return tx.Exec("COMMENT ON ROLE \"plg_demo\" IS " + quoteLiteral("database=a?b@c d; it's"))
+	gormtest.AssertRun(t, func(tx *gorm.DB) error {
+		return store.DDL(tx, "COMMENT ON ROLE %s IS %s", store.Ident("plg_demo"), store.Literal("database=a?b@c d; it's"))
 	})
 }

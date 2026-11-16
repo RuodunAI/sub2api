@@ -34,12 +34,15 @@ func TestRequireTx(t *testing.T) {
 }
 
 // XactLock takes its lock in a transaction only, where it holds until the
-// end: a second transaction waits for it (core.OpenDraftsLock is one).
+// end: a second transaction waits for it (core.OpenDraftsLock is one), and
+// TryXactLock does not get it meanwhile.
 func TestXactLock(t *testing.T) {
 	db, _ := widgetDB(t)
 	ctx := context.Background()
 	const key = "store-test:xact-lock"
 	require.ErrorIs(t, store.XactLock(ctx, db.Gorm, key), store.ErrNoTx)
+	_, err := store.TryXactLock(ctx, db.Gorm, key)
+	require.ErrorIs(t, err, store.ErrNoTx)
 
 	held := make(chan struct{})
 	release := make(chan struct{})
@@ -56,14 +59,16 @@ func TestXactLock(t *testing.T) {
 	}()
 	<-held
 	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error {
-		var free bool
-		if err := store.G(ctx, tx).Raw(`SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))`, key).Scan(&free).Error; err != nil {
-			return err
-		}
+		free, err := store.TryXactLock(ctx, tx, key)
 		assert.False(t, free, "the lock is held until the first transaction ends")
-		return nil
+		return err
 	}))
 	close(release)
 	require.NoError(t, <-done)
 	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error { return store.XactLock(ctx, tx, key) }))
+	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error {
+		free, err := store.TryXactLock(ctx, tx, key)
+		assert.True(t, free, "a free lock is taken")
+		return err
+	}))
 }

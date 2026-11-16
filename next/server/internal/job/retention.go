@@ -55,12 +55,10 @@ func abandonStaleRuns(g *gorm.DB, staleAfter time.Duration) *gorm.DB {
 		})
 }
 
-// trimRuns deletes all but the newest keep runs of every (plugin, job). Raw
-// SQL: the rank comes from a window function.
+// trimRuns deletes all but the newest keep runs of every (plugin, job): the
+// rank comes from a window function.
 func trimRuns(g *gorm.DB, keep int) *gorm.DB {
-	return g.Exec(`DELETE FROM plugin_job_runs WHERE id IN (
-		SELECT id FROM (
-			SELECT id, row_number() OVER (PARTITION BY plugin_key, job_id ORDER BY id DESC) AS rn
-			FROM plugin_job_runs) r
-		WHERE rn > ?)`, keep)
+	ranked := g.Model(&model.PluginJobRun{}).Select("id, row_number() OVER (PARTITION BY plugin_key, job_id ORDER BY id DESC) AS rn")
+	old := g.Table("(?) AS r", ranked).Select("id").Where("rn > ?", keep)
+	return g.Where("id IN (?)", old).Delete(&model.PluginJobRun{})
 }

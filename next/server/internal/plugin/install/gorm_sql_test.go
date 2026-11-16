@@ -38,10 +38,7 @@ func TestSQLBumpPlugin(t *testing.T) {
 
 func TestSQLBumpPluginReturningTrust(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		var row struct {
-			Status string
-		}
-		return bumpPluginReturningTrust(db, "demo").Scan(&row)
+		return bumpPluginReturningTrust(db, "demo", &bumpedTrust{})
 	})
 }
 
@@ -111,8 +108,7 @@ func TestSQLBeginUninstallNoLiveNode(t *testing.T) {
 
 func TestSQLAddUninstallTargets(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		var stopped bool
-		return addUninstallTargets(db, "demo", []string{"boot-a", "boot-b"}).Scan(&stopped)
+		return addUninstallTargets(db, "demo", []string{"boot-a", "boot-b"}, &uninstallTargets{})
 	})
 }
 

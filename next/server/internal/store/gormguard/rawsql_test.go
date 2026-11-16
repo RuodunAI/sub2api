@@ -33,25 +33,30 @@ var rawSQLAllowed = map[string]string{
 	"internal/billing.releaseStmt":   "ledger CTE: release a request precharge and refund it in one statement",
 	"internal/billing.settleStmt":    "ledger CTE: settle (release the precharge, apply the charge) in one statement",
 	"internal/billing.writeRules":    "price rules: history, lock, delete and both partial-index upserts of any number of changes in one data-modifying CTE and one round trip (lock order = change order); GORM needs five statements",
-	"internal/testutil.GrantKeys":    "test infrastructure over casbinrule.GrantsOf's SQL text; casbinrule belongs to the authz rewrite",
 	// store: the runners of those statements and the helpers for what is
 	// no data statement.
-	"internal/store.Numbered.Raw":            "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
-	"internal/store.Numbered.Exec":           "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
-	"internal/store.ExistsQuery":             "thin combinator: SELECT EXISTS (sub) around a builder query",
-	"internal/store.InsertSelect":            "thin combinator: INSERT INTO t (cols) <builder query> [ON CONFLICT], which GORM's Create cannot express",
-	"internal/store.InsertSelectReturning":   "thin combinator: InsertSelect with RETURNING, scanned into the caller's rows",
-	"internal/store.NextIDs":                 "nextval of a table's id sequence, for a batch insert that needs its ids first",
-	"internal/store.xactLock":                "pg_advisory_xact_lock: a transaction-scoped advisory lock",
-	"internal/store.XactLock32":              "pg_advisory_xact_lock(hashtext(key)): the 32-bit lock ids existing deployments already hold",
-	"internal/store.SetLocal":                "SET LOCAL of a run-time setting (statement_timeout ...) for the transaction",
-	"internal/store.SetConfig":               "set_config of a transaction-local custom setting read by triggers",
-	"internal/store.ClockTimestamp":          "clock_timestamp(): the database clock, outside any table",
-	"internal/store.Migrate":                 "the migrations runner: session advisory lock and unlock",
-	"internal/store.migrateFile":             "the migrations runner: SET LOCAL search_path and the migration files' DDL",
-	"internal/store.CoreTracker.Ensure":      "the migrations runner: DDL of schema_migrations",
-	"internal/store/modelgen.FromMigrations": "dev tool: CREATE / DROP DATABASE of a scratch database",
-	"internal/store/modelgen.readTables":     "dev tool: reads the system catalog (pg_catalog)",
+	"internal/store.Numbered.Raw":                  "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
+	"internal/store.Numbered.Exec":                 "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
+	"internal/store.ExistsQuery":                   "thin combinator: SELECT EXISTS (sub) around a builder query",
+	"internal/store.InsertSelect":                  "thin combinator: INSERT INTO t (cols) <builder query> [ON CONFLICT], which GORM's Create cannot express",
+	"internal/store.InsertSelectReturning":         "thin combinator: InsertSelect with RETURNING, scanned into the caller's rows",
+	"internal/store.NextIDs":                       "nextval of a table's id sequence, for a batch insert that needs its ids first",
+	"internal/store.xactLock":                      "pg_advisory_xact_lock: a transaction-scoped advisory lock",
+	"internal/store.TryXactLock":                   "pg_try_advisory_xact_lock: XactLock without the wait",
+	"internal/store.XactLockID":                    "pg_advisory_xact_lock of a lock named by its id",
+	"internal/store.DDL":                           "DDL and SET take no parameters: a constant format with quoted identifiers and literals (the format is checked where DDL is called)",
+	"internal/store.CurrentSnapshot":               "pg_current_snapshot(): server state, no table",
+	"internal/store.CurrentDatabase":               "current_database(): server state, no table",
+	"internal/store.RelationExists":                "to_regclass: a catalog lookup",
+	"internal/plugin/dbschema.Tracker.recordQuery": "call of the void SECURITY DEFINER function plugin_migration_record as the plugin role",
+	"internal/store.XactLockHashtext":              "pg_advisory_xact_lock(hashtext(key)): the 32-bit lock ids existing deployments already hold",
+	"internal/store.SetConfig":                     "set_config of a transaction-local custom setting read by triggers",
+	"internal/store.ClockTimestamp":                "clock_timestamp(): the database clock, outside any table",
+	"internal/store.Migrate":                       "the migrations runner: session advisory lock and unlock",
+	"internal/store.migrateFile":                   "the migrations runner: SET LOCAL search_path and the migration files' DDL",
+	"internal/store.CoreTracker.Ensure":            "the migrations runner: DDL of schema_migrations",
+	"internal/store/modelgen.FromMigrations":       "dev tool: CREATE / DROP DATABASE of a scratch database",
+	"internal/store/modelgen.readTables":           "dev tool: reads the system catalog (pg_catalog)",
 }
 
 // sqlConstAllowed lists the declarations whose SQL text may be built from
@@ -60,9 +65,9 @@ var sqlConstAllowed = map[string]string{
 	"internal/store.Numbered.Raw":            "the text NewNumbered rewrote; NewNumbered's argument is checked",
 	"internal/store.Numbered.Exec":           "the text NewNumbered rewrote; NewNumbered's argument is checked",
 	"internal/store/modelgen.FromMigrations": "dev tool: the scratch database's name, generated and quoted",
-	"internal/testutil.GrantKeys":            "test infrastructure over casbinrule.GrantsOf's SQL text; casbinrule belongs to the authz rewrite",
 	"internal/usage.statRows":                "the measure columns are joined from the constant statMeasures table by measureList, whose callback [sql-const] cannot follow",
 	"internal/usage.rollupHours":             "the measure columns are joined from the constant statMeasures table by measureList, whose callback [sql-const] cannot follow",
+	"internal/store.DDL":                     "the format is checked where DDL is called; its arguments are quoted (Ident, Literal)",
 	"internal/store.Conds.And":               "the text is checked where Conds.And is called",
 	"internal/store.UpdateFrom":              "the text is checked where UpdateFrom is called",
 }
@@ -72,7 +77,6 @@ var sqlConstAllowed = map[string]string{
 // wherever constant text is required, whatever their argument.
 var sqlQuoting = map[string]string{
 	"internal/store.QuoteIdent":             "a quoted identifier",
-	"internal/store.quoteLiteral":           "a quoted string literal",
 	"internal/plugin/dbschema.quoteLiteral": "a quoted string literal",
 }
 
@@ -81,19 +85,7 @@ var sqlQuoting = map[string]string{
 //
 // ---- PENDING OTHER TEAMS: the lead removes this block after merging ----
 var sqlPending = map[string]string{
-	"internal/authz":       "authz rewrite (Casbin)",
-	"internal/plugin":      "plugin team",
-	"internal/event":       "plugin team",
-	"internal/job":         "plugin team",
-	"internal/task":        "plugin team",
-	"internal/cluster":     "plugin team",
-	"internal/app":         "server team",
-	"internal/webui":       "server team",
-	"internal/devenv":      "server team",
-	"internal/notify":      "server team",
-	"internal/environment": "server team",
-	"internal/ccgateway":   "gateway team",
-	"internal/gateway":     "gateway team",
+	"internal/authz": "authz rewrite (Casbin)",
 }
 
 // ---- end of PENDING OTHER TEAMS ----
@@ -277,7 +269,7 @@ func (c *checker) constCallSQL(n *ast.CallExpr, key string) {
 	case isGormMethod(fn) && sqlTextMethods[fn.Name()],
 		isGormFunc(fn, "Expr"),
 		fn.Name() == "And" && isMethodOf(fn, c.storePkg, "Conds"),
-		c.isStoreFunc(fn, "NewNumbered"), c.isStoreFunc(fn, "UpdateFrom"):
+		c.isStoreFunc(fn, "NewNumbered"), c.isStoreFunc(fn, "UpdateFrom"), c.isStoreFunc(fn, "DDL"):
 	default:
 		return
 	}

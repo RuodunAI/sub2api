@@ -1,12 +1,7 @@
 -- sql
-UPDATE plugin_egress_logs l SET result = u.result, error = u.error,
-			duration_ms = CASE WHEN u.duration_ms > 0 THEN u.duration_ms
-				ELSE LEAST(EXTRACT(EPOCH FROM (u.closed_at - l.started_at)) * 1000, 2147483647)::int END,
-			bytes_in = GREATEST(l.bytes_in, u.bytes_in), bytes_out = GREATEST(l.bytes_out, u.bytes_out),
-			closed_at = u.closed_at
-		FROM unnest($1::bigint[], $2::text[], $3::text[], $4::int[], $5::bigint[], $6::bigint[], $7::timestamptz[])
-			AS u(id, result, error, duration_ms, bytes_in, bytes_out, closed_at)
-		WHERE l.id = u.id AND l.result = 'open'
+UPDATE plugin_egress_logs AS l SET "bytes_in"=GREATEST(l.bytes_in, u.bytes_in),"bytes_out"=GREATEST(l.bytes_out, u.bytes_out),"closed_at"=u.closed_at,"duration_ms"=CASE WHEN u.duration_ms > 0 THEN u.duration_ms
+				ELSE LEAST(EXTRACT(EPOCH FROM (u.closed_at - l.started_at)) * 1000, 2147483647)::int END,"error"=u.error,"result"=u.result FROM unnest($1::bigint[], $2::text[], $3::text[], $4::int[], $5::bigint[], $6::bigint[], $7::timestamptz[])
+			AS u(id, result, error, duration_ms, bytes_in, bytes_out, closed_at) WHERE l.id = u.id AND l.result = 'open'
 -- vars
 $1 store.Int64s [7 8]
 $2 store.Strings [ok dial_error]

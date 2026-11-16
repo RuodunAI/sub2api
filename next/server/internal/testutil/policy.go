@@ -76,7 +76,7 @@ func RoleKeys(tb testing.TB, db *store.DB, userID int64) []string {
 func GrantKeys(tb testing.TB, db *store.DB, role string) []string {
 	tb.Helper()
 	keys := []string{}
-	if err := db.Gorm.Raw(`SELECT key FROM (`+casbinrule.GrantsOf("?")+`) g ORDER BY key`, role).Scan(&keys).Error; err != nil {
+	if err := db.Gorm.Table("("+casbinrule.Grants+") g").Where("g.role = ?", role).Order("key").Pluck("key", &keys).Error; err != nil {
 		tb.Fatal(err)
 	}
 	return keys
@@ -116,7 +116,8 @@ func PolicyOrphans(tb testing.TB, db *store.DB) []string {
 // the caches read again what a fixture changed.
 func BumpAuthz(tb testing.TB, db *store.DB) {
 	tb.Helper()
-	if err := db.Gorm.Model(&model.AuthzMeta{}).Where("id = 1").Update("version", gorm.Expr("version + 1")).Error; err != nil {
+	if err := db.Gorm.Model(&model.AuthzMeta{}).Where("id = 1").
+		Updates(map[string]any{"version": gorm.Expr("version + 1"), "policy_version": gorm.Expr("policy_version + 1")}).Error; err != nil {
 		tb.Fatal(err)
 	}
 }

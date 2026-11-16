@@ -21,6 +21,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // SettingsKey is the settings row of the global layer.
@@ -190,9 +191,9 @@ type layerRows struct {
 // layersQuery reads into dst the layers of a group and a live account, {}
 // for a row that is not there.
 func layersQuery(db *gorm.DB, groupID, accountID int64, dst *layerRows) *gorm.DB {
-	return db.Raw(`SELECT
-		COALESCE((SELECT environment FROM groups WHERE id = ?), '{}') AS group_env,
-		COALESCE((SELECT environment FROM accounts WHERE id = ? AND deleted_at IS NULL), '{}') AS account_env`, groupID, accountID).Scan(dst)
+	group := db.Model(&model.Group{}).Select("environment").Where("id = ?", groupID)
+	account := db.Model(&model.Account{}).Select("environment").Where("id = ? AND deleted_at IS NULL", accountID)
+	return store.OneRow(db).Select("COALESCE((?), '{}') AS group_env, COALESCE((?), '{}') AS account_env", group, account).Scan(dst)
 }
 
 func loadGlobal(ctx context.Context, q *gorm.DB) (core.EnvironmentValues, error) {

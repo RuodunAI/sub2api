@@ -33,10 +33,7 @@ func loadFailurePolicy(ctx context.Context, q *gorm.DB) (*FailurePolicy, error) 
 
 // Serialize legacy settings and policy publication, including the first insert.
 func lockFailureSettings(ctx context.Context, tx *gorm.DB) error {
-	if err := store.RequireTx(tx); err != nil {
-		return err
-	}
-	return store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtext('gateway.failure_policy'))`).Error
+	return store.XactLock(ctx, tx, "gateway.failure_policy")
 }
 
 func (g *Gateway) getFailurePolicy(c *gin.Context) {

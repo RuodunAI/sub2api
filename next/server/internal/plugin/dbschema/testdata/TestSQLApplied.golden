@@ -1,4 +1,4 @@
 -- sql
-SELECT migration_id, checksum FROM public.plugin_migrations WHERE plugin_key = $1
+SELECT migration_id, checksum FROM "public"."plugin_migrations" WHERE plugin_key = $1
 -- vars
 $1 string "demo"

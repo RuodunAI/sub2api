@@ -36,10 +36,10 @@ type Role struct {
 	UserCount          int64     `json:"user_count"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
-	// Version is the authz version the role was read at (authz_meta, in the
-	// same statement): PUT /roles/:id/permissions sends it back to be
-	// refused (version_conflict) when someone changed grants since.
-	Version int64 `json:"version"`
+	// Revision moves with every change to the role (roles.revision): its
+	// writes send it back to be refused (version_conflict) when the role
+	// changed since it was read.
+	Revision int64 `json:"revision"`
 }
 
 var roleKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,49}$`)
@@ -61,49 +61,43 @@ func errRoleKeyImmutable(ctx context.Context) error {
 
 // roleSelect reads roles as the console shows and edits them; a grant of a
 // staged permission (core.PermissionDef.Staged) is no editor's to see.
-var roleSelect = `
+const roleSelect = `
 SELECT r.id, r.key, r.name, r.description, r.builtin, r.superuser, r.created_at, r.updated_at,
-    COALESCE((SELECT array_agg(rg.key ORDER BY p.sort, rg.key) FROM (` + casbinrule.GrantsOf("r.key") + `) rg
+    COALESCE((SELECT array_agg(rg.key ORDER BY p.sort, rg.key) FROM (` + casbinrule.GrantsOfRole + `) rg
         JOIN permissions p ON p.key = rg.action AND p.status <> 'staged'), '{}'),
     COALESCE((SELECT array_agg(ar.key ORDER BY ar.key) FROM role_assignable_roles ra
         JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser WHERE ra.role_id = r.id), '{}'),
     r.assign_custom,
     ` + roleHolders + `,
-    (SELECT version FROM authz_meta WHERE id = 1)
+    r.revision
 FROM roles r`
 
 // roleHolders counts the holders of role r, soft-deleted users aside: the
 // roles page's user count, and what SyncCore judges a built-in role behind
 // its rev by (held: filled in; nobody: reset).
-var roleHolders = `(SELECT count(*) FROM users u WHERE u.id IN (` + casbinrule.MembersOf("r.key") + `) AND u.deleted_at IS NULL)`
-
-// selectRoles selects roleSelect followed by tail (conditions, order,
-// lock), whose placeholders take args.
-func selectRoles(db *gorm.DB, tail string, args ...any) *gorm.DB {
-	return db.Raw(roleSelect+tail, args...)
-}
+const roleHolders = `(SELECT count(*) FROM users u WHERE u.id IN (` + casbinrule.MembersOfRole + `) AND u.deleted_at IS NULL)`
 
 // listedRoles selects every role, built-in first.
 func listedRoles(db *gorm.DB) *gorm.DB {
-	return selectRoles(db, ` ORDER BY r.builtin DESC, r.id`)
+	return db.Raw(roleSelect + ` ORDER BY r.builtin DESC, r.id`)
 }
 
 // roleByID selects role id.
 func roleByID(db *gorm.DB, id int64) *gorm.DB {
-	return selectRoles(db, ` WHERE r.id = ?`, id)
+	return db.Raw(roleSelect+` WHERE r.id = ?`, id)
 }
 
 // roleByKey selects the role key.
 func roleByKey(db *gorm.DB, key string) *gorm.DB {
-	return selectRoles(db, ` WHERE r.key = ?`, key)
+	return db.Raw(roleSelect+` WHERE r.key = ?`, key)
 }
 
 // rolesByKeys selects the roles of keys, by key.
 func rolesByKeys(db *gorm.DB, keys []string) *gorm.DB {
-	return selectRoles(db, ` WHERE r.key = ANY(?) ORDER BY r.key`, store.Strings(keys))
+	return db.Raw(roleSelect+` WHERE r.key = ANY(?) ORDER BY r.key`, store.Strings(keys))
 }
 
-// readRoles reads the roles q, a selectRoles query, returns (never nil).
+// readRoles reads the roles q, a roleSelect query, returns (never nil).
 func readRoles(q *gorm.DB) ([]*Role, error) {
 	return store.CollectRows(q, scanRole)
 }
@@ -125,7 +119,7 @@ func scanRole(rows *sql.Rows) (*Role, error) {
 	var r Role
 	var name, desc store.JSON[core.LocalizedText]
 	var perms, assignable store.Strings
-	err := rows.Scan(&r.ID, &r.Key, &name, &desc, &r.Builtin, &r.Superuser, &r.CreatedAt, &r.UpdatedAt, &perms, &assignable, &r.AssignCustom, &r.UserCount, &r.Version)
+	err := rows.Scan(&r.ID, &r.Key, &name, &desc, &r.Builtin, &r.Superuser, &r.CreatedAt, &r.UpdatedAt, &perms, &assignable, &r.AssignCustom, &r.UserCount, &r.Revision)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +157,9 @@ func (s *Service) getRole(ctx context.Context, q *gorm.DB, id int64) (*Role, err
 }
 
 // editableRole locks role id inside tx, which has called Bump, and returns
-// it when actorID may change it: the super admin role is frozen for everyone
+// it, its revision moved, when actorID may change it and rev, when set, is
+// its revision (else version_conflict: the editor read the role before
+// someone else changed it): the super admin role is frozen for everyone
 // (name, description, permissions, assignable list, reset, delete); any
 // other role must be within the actor's grantSet (cannotActOnRole, M5: an
 // actor who could weaken a role above it could then act on that role's
@@ -173,7 +169,7 @@ func (s *Service) getRole(ctx context.Context, q *gorm.DB, id int64) (*Role, err
 // assign_custom never covers the actor's own roles). With the default lists
 // an admin thus changes operator, supplier and user but not admin. The
 // system (actor 0) passes. Every role write goes through it.
-func (s *Service) editableRole(ctx context.Context, tx *gorm.DB, actorID, id int64) (*Role, error) {
+func (s *Service) editableRole(ctx context.Context, tx *gorm.DB, actorID, id int64, rev *int64) (*Role, error) {
 	if err := store.RequireTx(tx); err != nil {
 		return nil, err
 	}
@@ -185,29 +181,48 @@ func (s *Service) editableRole(ctx context.Context, tx *gorm.DB, actorID, id int
 		return nil, err
 	case r.Superuser:
 		return nil, errSuperuserRoleFrozen
-	case actorID == 0:
-		return r, nil
+	case rev != nil && *rev != r.Revision:
+		return nil, errVersionConflict(ctx, r.Revision)
 	}
+	if actorID != 0 {
+		if err := s.mayEdit(ctx, tx, actorID, r); err != nil {
+			return nil, err
+		}
+	}
+	if err := reviseRole(store.G(ctx, tx), id).Error; err != nil {
+		return nil, err
+	}
+	r.Revision++
+	return r, nil
+}
+
+// mayEdit fails unless actorID may change role r (editDenial).
+func (s *Service) mayEdit(ctx context.Context, tx *gorm.DB, actorID int64, r *Role) error {
 	actor, err := s.grantSet(ctx, tx, actorID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	cur, err := s.RolesPermissions(ctx, tx, []string{r.Key})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	switch reason, missing := editDenial(actor, cur, r); reason {
 	case core.GrantDenyNotEditable:
-		return nil, cannotActOnRole(ctx).WithDetails(missing.Details())
+		return cannotActOnRole(ctx).WithDetails(missing.Details())
 	case core.GrantDenyNotAssignable:
-		return nil, notAssignable(ctx, r.Key)
+		return notAssignable(ctx, r.Key)
 	}
-	return r, nil
+	return nil
+}
+
+// reviseRole moves the revision of role id: every change to it does.
+func reviseRole(db *gorm.DB, id int64) *gorm.DB {
+	return db.Model(&model.Role{}).Where("id = ?", id).Update("revision", gorm.Expr("revision + 1"))
 }
 
 // lockRole selects role id and locks its roles row.
 func lockRole(db *gorm.DB, id int64) *gorm.DB {
-	return selectRoles(db, ` WHERE r.id = ? FOR UPDATE OF r`, id)
+	return db.Raw(roleSelect+` WHERE r.id = ? FOR UPDATE OF r`, id)
 }
 
 // editDenial is why actor (its grantSet) may not change role r, whose
@@ -279,6 +294,9 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 		if err := s.stepUpCritical(ctx, grants, keys); err != nil {
 			return err
 		}
+		if err := checkScopeRefs(ctx, tx, keys); err != nil {
+			return err
+		}
 		err = insertRole(store.G(ctx, tx), in).Row().Scan(&id)
 		if store.IsUniqueViolation(err, "") {
 			return core.ErrConflict.WithMessage("role key already exists")
@@ -309,6 +327,9 @@ func insertRole(db *gorm.DB, in CreateRoleInput) *gorm.DB {
 
 // UpdateRoleInput is the body of PATCH /roles/:id.
 type UpdateRoleInput struct {
+	// Revision, when sent, must be the role's (Role.Revision), else
+	// version_conflict.
+	Revision *int64 `json:"revision,omitempty"`
 	// Key, when sent, must be the role's key: a key never changes
 	// (errRoleKeyImmutable).
 	Key         *string            `json:"key,omitempty"`
@@ -324,7 +345,7 @@ func (s *Service) UpdateRole(ctx context.Context, actorID, id int64, in UpdateRo
 		return nil, core.InvalidFields(core.FieldError{Field: "name", Code: "required", Message: "name is required"})
 	}
 	err := s.mutate(ctx, func(tx *gorm.DB) error {
-		r, err := s.editableRole(ctx, tx, actorID, id)
+		r, err := s.editableRole(ctx, tx, actorID, id, in.Revision)
 		if err != nil {
 			return err
 		}
@@ -364,7 +385,7 @@ func nilIfEmpty(t core.LocalizedText) any {
 // assignable list) with its grants and assignments.
 func (s *Service) DeleteRole(ctx context.Context, actorID, id int64) error {
 	return s.mutate(ctx, func(tx *gorm.DB) error {
-		r, err := s.editableRole(ctx, tx, actorID, id)
+		r, err := s.editableRole(ctx, tx, actorID, id, nil)
 		if err != nil {
 			return err
 		}
@@ -391,10 +412,11 @@ func deleteRole(db *gorm.DB, id int64) *gorm.DB {
 // defaults (builtinRoles): name, description and what resetDefaults
 // writes. The actor must hold every default, as for SetRolePermissions and
 // SetRoleAssignable; what the reset drops is within the actor already
-// (editableRole), so it cannot weaken a role above the actor (C-L2).
-func (s *Service) ResetRole(ctx context.Context, actorID, id int64) (*Role, error) {
+// (editableRole), so it cannot weaken a role above the actor (C-L2). rev,
+// when set, must be the role's revision, else version_conflict.
+func (s *Service) ResetRole(ctx context.Context, actorID, id int64, rev *int64) (*Role, error) {
 	err := s.mutate(ctx, func(tx *gorm.DB) error {
-		r, err := s.editableRole(ctx, tx, actorID, id)
+		r, err := s.editableRole(ctx, tx, actorID, id, rev)
 		if err != nil {
 			return err
 		}
@@ -473,11 +495,11 @@ func roleDetail(r *Role) map[string]any {
 }
 
 // SetRolePermissions replaces the permissions of a role actorID may edit
-// (editableRole), as setRolePart does. version, when set, must be the authz
-// version the editor read (Role.Version), else version_conflict.
-func (s *Service) SetRolePermissions(ctx context.Context, actorID, id int64, keys []string, version *int64) (*Role, error) {
-	err := s.mutateAt(ctx, version, func(tx *gorm.DB) error {
-		r, err := s.editableRole(ctx, tx, actorID, id)
+// (editableRole), as setRolePart does. rev, when set, must be the role's
+// revision the editor read (Role.Revision), else version_conflict.
+func (s *Service) SetRolePermissions(ctx context.Context, actorID, id int64, keys []string, rev *int64) (*Role, error) {
+	err := s.mutate(ctx, func(tx *gorm.DB) error {
+		r, err := s.editableRole(ctx, tx, actorID, id, rev)
 		if err != nil {
 			return err
 		}
@@ -509,6 +531,9 @@ func (s *Service) setRolePart(ctx context.Context, tx *gorm.DB, actorID int64, r
 		return err
 	}
 	if err := s.stepUpCritical(ctx, grants, added); err != nil {
+		return err
+	}
+	if err := checkScopeRefs(ctx, tx, added); err != nil {
 		return err
 	}
 	if err := writeGrants(ctx, tx, r.Key, grants, part); err != nil {
@@ -553,6 +578,8 @@ func (s *Service) stepUpCritical(ctx context.Context, grants []grant, added []st
 type AssignableInput struct {
 	RoleKeys     []string `json:"role_keys"`
 	AssignCustom bool     `json:"assign_custom"`
+	// Revision, when sent, must be the role's, else version_conflict.
+	Revision *int64 `json:"revision,omitempty"`
 }
 
 // SetRoleAssignable replaces the assignable list of a role actorID may edit
@@ -561,7 +588,7 @@ type AssignableInput struct {
 // already.
 func (s *Service) SetRoleAssignable(ctx context.Context, actorID, id int64, in AssignableInput) (*Role, error) {
 	err := s.mutate(ctx, func(tx *gorm.DB) error {
-		r, err := s.editableRole(ctx, tx, actorID, id)
+		r, err := s.editableRole(ctx, tx, actorID, id, in.Revision)
 		if err != nil {
 			return err
 		}
@@ -664,7 +691,7 @@ func setAssignCustom(db *gorm.DB, id int64, custom bool) *gorm.DB {
 // acting user (0 = system); checkAssignment judges what the change adds and
 // removes, and a change is audited as user.roles.
 func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID int64, roleKeys []string) (int64, error) {
-	v, err := s.Bump(ctx, tx)
+	v, err := s.Bump(ctx, tx, userID)
 	if err != nil {
 		return 0, err
 	}
@@ -832,7 +859,7 @@ func (s *Service) ensureOtherSuperuser(ctx context.Context, tx *gorm.DB, userID 
 // superuser role.
 func otherSuperusers(db *gorm.DB, userID int64) *gorm.DB {
 	return db.Raw(`SELECT count(DISTINCT u.id) FROM roles r, users u
-        WHERE r.superuser AND u.id IN (`+casbinrule.MembersOf("r.key")+`)
+        WHERE r.superuser AND u.id IN (`+casbinrule.MembersOfRole+`)
           AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> ?`, userID)
 }
 
@@ -862,15 +889,23 @@ func (s *Service) AssignableRoles(ctx context.Context, actorID int64) ([]Assigna
 	if err := assignableRoleRows(store.G(ctx, q)).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
+	rows = slices.DeleteFunc(rows, func(r assignableRoleRow) bool { return !actor.CanAssign(r.Key) })
+	keys := make([]string, len(rows))
+	for i, r := range rows {
+		keys[i] = r.Key
+	}
+	// What each role carries, in one reading (as RolesPermissions of it
+	// alone: the wildcard leaves only the role itself out).
+	sets, err := s.eachRolePermissions(ctx, q, keys)
+	if err != nil {
+		return nil, err
+	}
 	out := []AssignableRole{}
 	for _, row := range rows {
 		r := AssignableRole{Key: row.Key, Name: row.Name.V, Builtin: row.Builtin}
-		if !actor.CanAssign(r.Key) {
-			continue
-		}
-		grant, err := s.RolesPermissions(ctx, q, []string{r.Key})
-		if err != nil {
-			return nil, err
+		grant, ok := sets[r.Key]
+		if !ok {
+			continue // deleted meanwhile
 		}
 		m := actor.Missing(grant)
 		r.Grantable = m.Empty()
@@ -1070,9 +1105,6 @@ type PluginRoleMatrix struct {
 	PluginKey string            `json:"plugin_key"`
 	Module    *PermissionModule `json:"module"`
 	Roles     []PluginRoleRow   `json:"roles"`
-	// Version is the authz version all of it was read at: the PUT sends it
-	// back to be refused (version_conflict) when grants changed since.
-	Version int64 `json:"version"`
 }
 
 // PluginRoleRow is one role of a PluginRoleMatrix, as the caller may change
@@ -1085,20 +1117,22 @@ type PluginRoleRow struct {
 	Superuser bool               `json:"superuser"`
 	Editable  bool               `json:"editable"`
 	Denied    string             `json:"denied,omitempty"` // editDenial
+	// Revision is the role's (Role.Revision): the PUT sends it back, per
+	// role, to be refused (version_conflict) when the role changed since.
+	Revision int64 `json:"revision"`
 	// PermissionKeys: the role's grants of this plugin, removed ones included.
 	PermissionKeys []string `json:"permission_keys"`
 }
 
 // PluginRoleGrants is the plugin's catalog module (as ListPermissions lists
 // it) and every role's grants of it, each with whether actorID may change
-// the role (editDenial), all read in one snapshot whose authz version it
-// carries.
+// the role (editDenial) and its revision, all read in one snapshot.
 func (s *Service) PluginRoleGrants(ctx context.Context, actorID int64, pluginKey string) (*PluginRoleMatrix, error) {
 	if pluginKey == "" {
 		return nil, errPluginNotFound
 	}
 	var out *PluginRoleMatrix
-	v, err := s.readSnapshot(ctx, func(tx *gorm.DB) error {
+	err := s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		var err error
 		out, err = s.pluginRoleGrants(ctx, tx, actorID, pluginKey)
 		return err
@@ -1106,7 +1140,6 @@ func (s *Service) PluginRoleGrants(ctx context.Context, actorID int64, pluginKey
 	if err != nil {
 		return nil, err
 	}
-	out.Version = v
 	return out, nil
 }
 
@@ -1139,7 +1172,7 @@ func (s *Service) pluginRoleGrants(ctx context.Context, q *gorm.DB, actorID int6
 	for _, r := range roles {
 		denied, _ := editDenial(actor, sets[r.Key], r)
 		out.Roles = append(out.Roles, PluginRoleRow{ID: r.ID, Key: r.Key, Name: r.Name, Builtin: r.Builtin, Superuser: r.Superuser,
-			Editable: denied == "", Denied: denied, PermissionKeys: part.of(r.PermissionKeys)})
+			Editable: denied == "", Denied: denied, Revision: r.Revision, PermissionKeys: part.of(r.PermissionKeys)})
 	}
 	return out, nil
 }
@@ -1148,11 +1181,11 @@ func (s *Service) pluginRoleGrants(ctx context.Context, q *gorm.DB, actorID int6
 // permissions, for each role listed; other roles and the roles' other
 // grants stay. Each role is changed as SetRolePermissions changes it
 // (editableRole, setRolePart), in key order, all or none; a key of another
-// plugin is foreign, and a refusal names its role (details.role). version,
-// when set, must be the matrix's (PluginRoleMatrix.Version), else
+// plugin is foreign, and a refusal names its role (details.role). revs[k],
+// when set, must be role k's revision (PluginRoleRow.Revision), else
 // version_conflict.
-func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, pluginKey string, roles map[string][]string, version *int64) (*PluginRoleMatrix, error) {
-	err := s.mutateAt(ctx, version, func(tx *gorm.DB) error {
+func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, pluginKey string, roles map[string][]string, revs map[string]int64) (*PluginRoleMatrix, error) {
+	err := s.mutate(ctx, func(tx *gorm.DB) error {
 		db := store.G(ctx, tx)
 		found, err := store.Exists(db, permissionsOfPlugin(db, pluginKey))
 		if err != nil {
@@ -1171,7 +1204,11 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 			if i < 0 {
 				return core.InvalidFields(core.FieldError{Field: "roles." + k, Code: "unknown", Message: "unknown role " + k})
 			}
-			if err := s.setPluginRole(ctx, tx, actorID, refs[i].id, pluginKey, roles[k]); err != nil {
+			var rev *int64
+			if r, ok := revs[k]; ok {
+				rev = &r
+			}
+			if err := s.setPluginRole(ctx, tx, actorID, refs[i].id, rev, pluginKey, roles[k]); err != nil {
 				var ce *core.Error
 				if errors.As(err, &ce) {
 					return ce.WithDetails(map[string]any{"role": k})
@@ -1188,9 +1225,10 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 }
 
 // setPluginRole makes keys, which must all be permissions of plugin
-// pluginKey, the grants of role id of that plugin's permissions.
-func (s *Service) setPluginRole(ctx context.Context, tx *gorm.DB, actorID, id int64, pluginKey string, keys []string) error {
-	r, err := s.editableRole(ctx, tx, actorID, id)
+// pluginKey, the grants of role id (at revision rev, when set) of that
+// plugin's permissions.
+func (s *Service) setPluginRole(ctx context.Context, tx *gorm.DB, actorID, id int64, rev *int64, pluginKey string, keys []string) error {
+	r, err := s.editableRole(ctx, tx, actorID, id, rev)
 	if err != nil {
 		return err
 	}

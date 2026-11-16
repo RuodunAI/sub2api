@@ -1,4 +1,4 @@
 -- sql
-SELECT substr(cr.v0, 3)::bigint FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v1 = ('r:' || $1)
+SELECT m FROM roles r, LATERAL (SELECT substr(cr.v0, 3)::bigint FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v1 = ('r:' || r.key)) rm(m) WHERE r.key = $1
 -- vars
 $1 string "admin"

@@ -128,7 +128,7 @@ func TestGroupScopedAccounts(t *testing.T) {
 }
 
 // Deleting an account or a group clears the scoped grants naming it, audited
-// per role, and moves the authz version.
+// per role, and moves the authz version (announced by authz, not here).
 func TestDeleteClearsScopedGrants(t *testing.T) {
 	az := fakeAuthz{keys: map[int64][]string{}}
 	e := setupWith(t, az)
@@ -156,16 +156,12 @@ func TestDeleteClearsScopedGrants(t *testing.T) {
 	code, _ := e.doAs(e.uid, "DELETE", "/accounts/"+strconv.FormatInt(acc, 10), nil)
 	require.Equal(t, 204, code)
 	require.Equal(t, []string{keep, fmt.Sprintf("group/%d", g), "own"}, scopes())
-	require.Equal(t, v+1, version())
-	e.bus.mu.Lock()
-	announced := slices.Contains(e.bus.sent, core.ChannelAuthzChanged)
-	e.bus.mu.Unlock()
-	require.True(t, announced, "authz:changed published after commit")
+	require.Equal(t, v+1, version()) // authz announces it itself (its tests)
 	var n int
 	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'authz.scope.clear' AND target_id = $1`, strconv.FormatInt(role, 10)).Scan(&n))
 	require.Equal(t, 1, n)
 
-	// The new version comes back for the caller to announce after commit.
+	// The new version comes back.
 	clear := func() (got int64) {
 		require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) (err error) {
 			got, err = e.svc.d.ScopeGrants.ClearScopeGrants(ctx, tx, 0, core.ScopeRefGroup, []int64{g})

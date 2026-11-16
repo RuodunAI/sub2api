@@ -1,9 +1,6 @@
 -- sql
-SELECT COALESCE(p.active_version, p.desired_version,
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved'
-		     ORDER BY uploaded_at DESC LIMIT 1),
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status <> 'rejected'
-		     ORDER BY uploaded_at DESC LIMIT 1), '')
-		FROM plugins p WHERE p.key = $1
+SELECT COALESCE(p.active_version, p.desired_version, (SELECT "version" FROM "plugin_versions" WHERE plugin_key = p.key AND consent_status = 'approved' ORDER BY uploaded_at DESC LIMIT $1), (SELECT "version" FROM "plugin_versions" WHERE plugin_key = p.key AND consent_status <> 'rejected' ORDER BY uploaded_at DESC LIMIT $2), '') FROM plugins AS p WHERE p.key = $3
 -- vars
-$1 string "demo"
+$1 int 1
+$2 int 1
+$3 string "demo"

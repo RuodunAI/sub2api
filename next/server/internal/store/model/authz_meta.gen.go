@@ -6,6 +6,8 @@ package model
 type AuthzMeta struct {
 	ID      int   `gorm:"column:id;primaryKey;autoIncrement:false"` // integer
 	Version int64 `gorm:"column:version"`                           // bigint
+	// moved with version by the writes of grants, permission statuses and role definitions only (CONTRACTS §99.4)
+	PolicyVersion int64 `gorm:"column:policy_version;default:(-)"` // bigint default 0
 }
 
 // TableName implements gorm's schema.Tabler.

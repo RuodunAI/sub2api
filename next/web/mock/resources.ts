@@ -180,6 +180,8 @@ interface MockRole {
   assign_custom: boolean
   created_at: string
   updated_at: string
+  /** Moved by every change to the role (roles.revision, C1). */
+  revision?: number
 }
 
 const CORE_KEYS = ALL_PERMISSIONS.filter((k) => !k.startsWith('plugin.'))
@@ -227,19 +229,24 @@ const roles: MockRole[] = [
   ])
 ]
 
-/**
- * The global authz version (authz_meta, C1): every role or grant write bumps
- * it; roles and the plugin matrix carry it, and their PUTs given another one
- * fail with 409 version_conflict (without one they are not checked).
- */
-let authzVersion = 1
+/** The global authz version (authz_meta): every role or grant write bumps it. */
+export let authzVersion = 1
 export function bumpAuthz() {
   authzVersion++
 }
-function versionConflict(req: MockRequest) {
-  const v = req.body?.version
-  if (v === undefined || v === authzVersion) return null
-  return fail(409, 'version_conflict', 'the roles changed since they were read', { version: authzVersion })
+/**
+ * A role's revision (roles.revision, C1): every change to the role moves
+ * it; roles and each role of the plugin matrix carry it, and a write given
+ * another one fails with 409 version_conflict (without one it is not
+ * checked).
+ */
+function revisionConflict(r: MockRole, rev: unknown) {
+  if (rev === undefined || rev === (r.revision ?? 0)) return null
+  return fail(409, 'version_conflict', 'the role changed since it was read', { revision: r.revision ?? 0 })
+}
+function revise(r: MockRole) {
+  r.revision = (r.revision ?? 0) + 1
+  r.updated_at = now()
 }
 
 /** The roles the caller manages (CONTRACTS §43.6): all but super_admin for the super admin; else what its roles may assign, the custom ones with assign_custom. */
@@ -280,11 +287,11 @@ export function addRoleKeys(roleKey: string, keys: string[]) {
   const r = roles.find((x) => x.key === roleKey)
   if (!r) return
   r.permission_keys = canonicalSet([...r.permission_keys, ...keys])
-  r.updated_at = now()
+  revise(r)
 }
 
 function roleOut(r: MockRole) {
-  return { ...r, user_count: users.filter((u) => u.roles.includes(r.key)).length, version: authzVersion }
+  return { ...r, user_count: users.filter((u) => u.roles.includes(r.key)).length, revision: r.revision ?? 0 }
 }
 
 on('GET', '/roles', (req) => paginate(roles.map(roleOut), req.query))
@@ -306,9 +313,11 @@ on('PATCH', '/roles/:id', (req) => {
   const r = roles.find((x) => x.id === Number(req.params.id))
   if (!r) return fail(404, 'not_found', 'role not found')
   if (r.superuser) return fail(403, 'permission_denied', 'superuser role cannot be edited')
+  const conflict = revisionConflict(r, req.body?.revision)
+  if (conflict) return conflict
   if (req.body?.name) r.name = req.body.name
   if (req.body?.description !== undefined) r.description = req.body.description
-  r.updated_at = now()
+  revise(r)
   bumpAuthz()
   return roleOut(r)
 })
@@ -327,7 +336,7 @@ on('PUT', '/roles/:id/permissions', (req) => {
   if (r.superuser) return fail(403, 'permission_denied', 'superuser role cannot be edited')
   const who = caller(req)
   if (!editableBy(who, r)) return fail(403, 'permission_denied', 'you cannot change this role', { role: r.key })
-  const conflict = versionConflict(req)
+  const conflict = revisionConflict(r, req.body?.revision)
   if (conflict) return conflict
   const keys: string[] = Array.isArray(req.body?.permission_keys) ? req.body.permission_keys : []
   // Any spelling (aliases, trailing /*) is taken and stored canonical; the actions must be in the catalog, at a scope they take.
@@ -343,7 +352,7 @@ on('PUT', '/roles/:id/permissions', (req) => {
     if (verify) return verify
   }
   r.permission_keys = canonical
-  r.updated_at = now()
+  revise(r)
   bumpAuthz()
   return roleOut(r)
 })
@@ -351,24 +360,25 @@ on('PUT', '/roles/:id/assignable', (req) => {
   const r = roles.find((x) => x.id === Number(req.params.id))
   if (!r) return fail(404, 'not_found', 'role not found')
   if (r.superuser) return fail(409, 'conflict', 'superuser role cannot be edited')
+  const conflict = revisionConflict(r, req.body?.revision)
+  if (conflict) return conflict
   const keys: string[] = Array.isArray(req.body?.role_keys) ? req.body.role_keys : []
   const bad = keys.find((k) => !roles.some((x) => x.key === k && !x.superuser))
   if (bad) return invalid('role_keys', `unknown role ${bad}`, 'unknown')
   r.assignable_role_keys = [...new Set(keys)].sort()
   r.assign_custom = !!req.body?.assign_custom
-  r.updated_at = now()
+  revise(r)
   bumpAuthz()
   return roleOut(r)
 })
 // A plugin's permissions × roles (GET/PUT /permissions/plugins/:plugin, UI 3.16):
-// the roles the caller manages are editable, the others read-only; with the
-// global version the PUT checks (C1).
+// the roles the caller manages are editable, the others read-only; each with
+// the revision the PUT checks (C1).
 function pluginRoleMatrix(req: MockRequest, m: ModuleDef) {
   const prefix = `${m.module}:`
   const who = caller(req)
   return {
     plugin_key: m.plugin_key,
-    version: authzVersion,
     module: moduleOut(m),
     roles: roles.map((r) => {
       const editable = !r.superuser && editableBy(who, r)
@@ -380,6 +390,7 @@ function pluginRoleMatrix(req: MockRequest, m: ModuleDef) {
         superuser: r.superuser,
         editable,
         denied: r.superuser ? 'superuser_role' : editable ? undefined : 'not_assignable',
+        revision: r.revision ?? 0,
         permission_keys: r.permission_keys.filter((k) => k.startsWith(prefix))
       }
     })
@@ -395,8 +406,7 @@ on('PUT', '/permissions/plugins/:plugin', (req) => {
   const m = pluginModule(req.params.plugin)
   if (!m) return fail(404, 'not_found', 'plugin not found')
   const who = caller(req)
-  const conflict = versionConflict(req)
-  if (conflict) return conflict
+  const revisions: Record<string, number> = req.body?.revisions ?? {}
   const removed = new Set(m.permissions.filter((p) => (p.status || m.status) === 'removed').map((p) => p.key))
   const body: Record<string, string[]> = req.body?.roles ?? {}
   // Every role is checked before any is written: one refusal leaves them all as they were.
@@ -406,6 +416,8 @@ on('PUT', '/permissions/plugins/:plugin', (req) => {
     const r = roles.find((x) => x.key === key)
     if (!r) return invalid(`roles.${key}`, `unknown role ${key}`, 'unknown')
     if (r.superuser || !editableBy(who, r)) return fail(403, 'permission_denied', 'you cannot change this role', { role: key })
+    const conflict = revisionConflict(r, revisions[key])
+    if (conflict) return conflict
     const keys = Array.isArray(body[key]) ? body[key] : []
     const foreign = keys.find((k) => !k.startsWith(`${m.module}:`))
     if (foreign) return invalid(`roles.${key}`, `${foreign} is not a permission of ${m.plugin_key}`, 'foreign')
@@ -426,7 +438,7 @@ on('PUT', '/permissions/plugins/:plugin', (req) => {
   }
   for (const [r, next] of writes) {
     r.permission_keys = [...r.permission_keys.filter((k) => !k.startsWith(`${m.module}:`)), ...next].sort()
-    r.updated_at = now()
+    revise(r)
   }
   if (writes.length) bumpAuthz()
   return pluginRoleMatrix(req, m)
@@ -477,6 +489,8 @@ on('POST', '/roles/:id/reset', (req) => {
   if (!r) return fail(404, 'not_found', 'role not found')
   const d = BUILTIN_DEFAULTS[r.key]
   if (!r.builtin || (!d && !r.superuser)) return fail(409, 'conflict', 'only built-in roles can be reset')
+  const conflict = revisionConflict(r, req.body?.revision)
+  if (conflict) return conflict
   if (d) {
     // Plugin permissions on the role are kept.
     r.permission_keys = [...d.keys, ...r.permission_keys.filter((k) => k.startsWith('plugin.'))]
@@ -485,7 +499,7 @@ on('POST', '/roles/:id/reset', (req) => {
     r.name = d.name
     r.description = d.description
   }
-  r.updated_at = now()
+  revise(r)
   bumpAuthz()
   return roleOut(r)
 })

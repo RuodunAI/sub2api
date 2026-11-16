@@ -1,5 +1,0 @@
--- sql
-SELECT EXISTS (SELECT 1 FROM "casbin_rule" WHERE ptype = $1 AND v2 ~ ANY($2))
--- vars
-$1 string "p"
-$2 store.Strings [(^|/)account/3$ (^|/)account/4$]

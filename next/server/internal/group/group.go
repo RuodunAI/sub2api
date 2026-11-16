@@ -463,7 +463,6 @@ func (s *Service) delete(c *gin.Context) {
 		moveTo = &n
 	}
 	var hashes []string
-	var authzVersion int64
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		// Lock the group and the move target in id order, so two deletes
 		// moving keys into each other's group cannot deadlock.
@@ -498,15 +497,13 @@ func (s *Service) delete(c *gin.Context) {
 			return err
 		}
 		uid, _ := core.UserID(ctx)
-		var err error
-		authzVersion, err = s.grants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefGroup, []int64{id})
+		_, err := s.grants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefGroup, []int64{id})
 		return err
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	core.AnnounceAuthzChanged(ctx, s.bus, authzVersion)
 	s.delKeys(ctx, hashes)
 	s.announceAccounts(ctx)
 	httpapi.NoContent(c)

@@ -33,7 +33,11 @@ func BenchmarkHotGrantHolds(b *testing.B) {
 	}{
 		{"sql", func() (bool, error) {
 			var ok bool
-			err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM `+VersionRows+`
+			err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM (
+				SELECT permission, scope, status FROM plugin_staged_grants WHERE plugin_key = $1 AND version = $2
+				UNION ALL
+				SELECT permission, scope, status FROM plugin_permission_grants WHERE plugin_key = $1
+				  AND NOT EXISTS (SELECT 1 FROM plugin_staged_grants WHERE plugin_key = $1 AND version = $2)) g
 				WHERE permission = $3 AND status = 'granted' AND ($4::jsonb IS NULL OR scope = $4::jsonb))`, "bench", "1.0.0", "kv", scope).Scan(&ok)
 			return ok, err
 		}},

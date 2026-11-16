@@ -1,6 +1,7 @@
 package casbinrule
 
 import (
+	"strconv"
 	"testing"
 
 	"gorm.io/gorm"
@@ -23,21 +24,21 @@ func TestSQLCasbinRuleReads(t *testing.T) {
 	var dest []map[string]any
 	assertRuns(t, map[string]func(*gorm.DB) error{
 		"role_keys_of": func(db *gorm.DB) error { return RoleKeysOf(db, []int64{7, 8}).Scan(&dest).Error },
-		"user_role_subs": func(db *gorm.DB) error {
-			_, err := UserRoleSubs(db, 7)
-			return err
+		"role_subs_of": func(db *gorm.DB) error {
+			return db.Raw(RoleSubsOfUID, map[string]any{"uid": 7}).Scan(&dest).Error
 		},
 		"lock_members": func(db *gorm.DB) error {
 			_, err := LockMembers(db, "super_admin")
 			return err
 		},
-		"scoped_grants": func(db *gorm.DB) error {
-			return ScopedGrants(db, []string{`^group:5(:|$)`}).Find(&dest).Error
+		"grants_of": func(db *gorm.DB) error {
+			return db.Raw(`SELECT g.key FROM roles r, LATERAL (`+GrantsOfRole+`) g WHERE r.key = ?`, "admin").Scan(&dest).Error
 		},
-		"grants_of": func(db *gorm.DB) error { return db.Raw(GrantsOf("?"), "admin").Scan(&dest).Error },
-		"roles_of":  func(db *gorm.DB) error { return db.Raw(RolesOf("?"), 7).Scan(&dest).Error },
+		"roles_of": func(db *gorm.DB) error {
+			return db.Raw(`SELECT k FROM users u, LATERAL (`+RolesOfUser+`) ur(k) WHERE u.id = ?`, 7).Scan(&dest).Error
+		},
 		"members_of": func(db *gorm.DB) error {
-			return db.Raw(MembersOf("?"), "admin").Scan(&dest).Error
+			return db.Raw(`SELECT m FROM roles r, LATERAL (`+MembersOfRole+`) rm(m) WHERE r.key = ?`, "admin").Scan(&dest).Error
 		},
 		"delete_scoped": func(db *gorm.DB) error {
 			return db.Raw(DeleteScopedSQL, store.Strings{`^group:5(:|$)`}).Scan(&dest).Error
@@ -74,4 +75,14 @@ func TestSQLCasbinRuleWrites(t *testing.T) {
 		"add_members":    func(db *gorm.DB) error { return AddMembers(db, "admin", []int64{7, 8}) },
 		"remove_members": func(db *gorm.DB) error { return RemoveMembers(db, "super_admin", []int64{7}) },
 	})
+}
+
+// keyStart, where substr reads a key or an id out of a subject, is one past
+// both prefixes.
+func TestKeyStart(t *testing.T) {
+	for _, prefix := range []string{rolePrefix, userPrefix} {
+		if want := strconv.Itoa(len(prefix) + 1); keyStart != want {
+			t.Fatalf("keyStart %s, want %s for %q", keyStart, want, prefix)
+		}
+	}
 }

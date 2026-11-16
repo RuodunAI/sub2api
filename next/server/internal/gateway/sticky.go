@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Rule sources: the core's defaults of the built-in platforms and the
@@ -299,22 +301,10 @@ func (r *stickyRule) decodeDocuments(match, sources, includes []byte) {
 }
 
 // listRules reads every rule in rank order. The rules cache reloads it on
-// the request path: Raw SQL scanned row by row (scanRule).
+// the request path: the columns scanned row by row (scanRule).
 func listRules(ctx context.Context, q *gorm.DB) ([]*stickyRule, error) {
-	rows, err := store.G(ctx, q).Raw(`SELECT ` + ruleColumns + ` FROM sticky_rules ORDER BY priority, id`).Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*stickyRule
-	for rows.Next() {
-		r, err := scanRule(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return store.CollectRows(store.G(ctx, q).Model(&model.StickyRule{}).Select(ruleColumns).Order("priority, id"),
+		func(rows *sql.Rows) (*stickyRule, error) { return scanRule(rows) })
 }
 
 // ---------------------------------------------------------------- per-request state

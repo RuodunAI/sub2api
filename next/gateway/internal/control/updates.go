@@ -346,15 +346,13 @@ func (s *Store) importGitHub(ctx context.Context, repository, tag string) (Relea
 	if err = s.withTx(ctx, func(tx *gorm.DB) error {
 		var actual string
 		var revision int64
-		if err := tx.Raw(`SELECT update_repository,update_source_revision FROM updater.clusters WHERE cluster_id=? FOR SHARE`, s.Cluster).Row().Scan(&actual, &revision); err != nil {
+		if err := s.clusterRow(tx).Clauses(forShare()).Select("update_repository,update_source_revision").Row().Scan(&actual, &revision); err != nil {
 			return err
 		}
 		if actual != repository || revision != source.Revision {
 			return ErrConflict
 		}
-		manifest, _ := json.Marshal(out.Manifest)
-		signed, _ := json.Marshal(out.Signed)
-		if err := tx.Exec(`INSERT INTO updater.releases(digest,release_id,manifest,signed_manifest,bundle_base) VALUES(?,?,?,?,?) ON CONFLICT(digest) DO NOTHING`, out.Digest, out.Manifest.ReleaseID, manifest, signed, out.BundleBase).Error; err != nil {
+		if err := createRelease(tx, out).Error; err != nil {
 			return err
 		}
 		var storedBase string

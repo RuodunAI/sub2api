@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -14,6 +15,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // SetGrant sets the active version's grant of one host permission (nil
@@ -32,16 +34,17 @@ func (s *Service) SetGrant(ctx context.Context, key, permission string, scope ma
 		// The plugin row first, as RevokeGrant, consent and the rollout
 		// commit lock it before the grant rows (no lock-order deadlock).
 		g := store.G(ctx, tx)
-		var (
-			status, trust string
-			hasPub        bool
-		)
-		err := bumpPluginReturningTrust(g, key).Row().Scan(&status, &hasPub, &trust)
-		if store.IsNoRows(err) {
+		var bumped bumpedTrust
+		res := bumpPluginReturningTrust(g, key, &bumped)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
 			return core.ErrNotFound.WithMessage("plugin not found")
 		}
-		if err != nil {
-			return err
+		status, hasPub, trust := bumped.Status, bumped.Published, pkg.TrustUnsigned
+		if bumped.Trust != nil {
+			trust = *bumped.Trust
 		}
 		if status == StatusAwaitingConsent {
 			return core.ErrConflict.WithMessage("the plugin is awaiting consent")
@@ -127,10 +130,21 @@ func (s *Service) requireInstall(ctx context.Context, actorID int64) error {
 		WithDetails(map[string]any{"permission": string(perm.PluginInstall)})
 }
 
-// bumpPluginReturningTrust is bumpPlugin returning the plugin's status,
-// whether it has a publisher, and its trust level.
-func bumpPluginReturningTrust(db *gorm.DB, key string) *gorm.DB {
-	return db.Raw(`UPDATE plugins p SET row_version = row_version + 1, updated_at = now() WHERE key = ?
-			RETURNING status, publisher_id IS NOT NULL, COALESCE((SELECT trust_level FROM publishers WHERE id = p.publisher_id), ?)`,
-		key, pkg.TrustUnsigned)
+// bumpedTrust is what bumpPluginReturningTrust reads back of the plugin.
+type bumpedTrust struct {
+	Status    string  `gorm:"column:status;->"`
+	Published bool    `gorm:"column:published;->"`
+	Trust     *string `gorm:"column:trust;->"` // nil: no publisher row
+}
+
+func (bumpedTrust) TableName() string { return model.Plugin{}.TableName() }
+
+// bumpPluginReturningTrust is bumpPlugin reading into dst the plugin's
+// status, whether it has a publisher, and its trust level (RowsAffected 0:
+// no plugin).
+func bumpPluginReturningTrust(db *gorm.DB, key string, dst *bumpedTrust) *gorm.DB {
+	return db.Model(dst).Clauses(clause.Returning{Columns: []clause.Column{{Name: "status"},
+		{Name: "publisher_id IS NOT NULL AS published", Raw: true},
+		{Name: "(SELECT trust_level FROM publishers WHERE id = plugins.publisher_id) AS trust", Raw: true}}}).
+		Where("key = ?", key).Updates(map[string]any{"row_version": gorm.Expr("row_version + 1"), "updated_at": gorm.Expr("now()")})
 }

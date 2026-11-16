@@ -1,6 +1,5 @@
 -- sql
-UPDATE plugin_uninstalls SET target_boot_ids=ARRAY(SELECT DISTINCT unnest(target_boot_ids || $1::text[]))
-			WHERE plugin_key=$2 RETURNING target_boot_ids <@ stopped_boot_ids
+UPDATE "plugin_uninstalls" SET "target_boot_ids"=ARRAY(SELECT DISTINCT unnest(target_boot_ids || $1::text[])) WHERE plugin_key = $2 RETURNING target_boot_ids <@ stopped_boot_ids AS stopped
 -- vars
 $1 store.Strings [boot-a boot-b]
 $2 string "demo"

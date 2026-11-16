@@ -16,7 +16,7 @@
 
 **升级停在中途**（例如 0100 因为多个超管被拒，此时 0099 已提交）：托管部署里 0.1.288 和 0.1.290 都不在这个库上提供服务，集群停在维护状态；按报错修复数据后，用同一个计划继续（`sub2api-gateway resume`），或者从备份恢复。
 
-**回退**：目标是 0.1.288，只能从升级前的备份恢复，升级后的写入全部丢失；恢复后清掉 Valkey 的 `authz:c:ur:*`。没有反向脚本，也没有运行时开关；网关不允许跨 schema 回退，线上出问题首选修复前进。`.env` 里的 `SUB2API_JWT_SECRET` 不要删，回退后的 0.1.288 要用。
+**回退**：目标是 0.1.288，只能从升级前的备份恢复，升级后的写入全部丢失；Valkey 里没有授权的键，不用清理。没有反向脚本，也没有运行时开关；网关不允许跨 schema 回退，线上出问题首选修复前进。`.env` 里的 `SUB2API_JWT_SECRET` 不要删，回退后的 0.1.288 要用。
 
 #### 插件权限声明与角色分配（迁移 0099）
 
@@ -36,7 +36,7 @@
 - 角色编辑页禁用编辑者自己没有的权限，核心权限也一样（以前能勾选，保存时才被拒）。插件停用期间它的权限不生效，但授予照常算持有：持有者仍可在矩阵、角色页授出和修改。
 - 插件菜单、页面、slot 按“任意范围持有”显示；iframe 桥 `permissions.check(本地 key)` 对不带范围的 key 只要持有任一范围即为 true，带范围的 key 按蕴含判断（持有全部范围也为 true，与服务端一致）。
 - 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。没有 `role:read` 的查看者看不到旧 key 由哪些角色持有（`removed_user_permissions[].holders`、复活和改名行的格子初值与“会挂起”标记、继承来的 `new_role_grants`、插件列表与详情里继承来的待复核授予都省略）。
-- **并发保存不再互相覆盖**：角色对象和插件权限矩阵带 `version`（全局授权版本）；`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin` 带上读到的 `version` 时，期间别人改过授权就返回 409 `version_conflict`（`details.version` 为当前版本），不写入；不带不检查。控制台收到后自动重读、合并本地改动，再提示保存。
+- **并发保存不再互相覆盖**：角色对象和插件权限矩阵带每个角色的修订号 `revision`；保存时带上读到的修订号，期间别人改过这个角色就返回 409 `version_conflict`，不写入；不带不检查。控制台收到后自动重读、合并本地改动，再提示保存。细节见下文 Casbin 一节的“并发保存角色”。
 - 通过角色编辑（新建角色、改角色权限、插件权限矩阵）**新授出关键（critical）插件权限**要二次验证，与安装同意、复核确认一致；只保留或撤销不需要。
 - 角色权限保存的审计（`role.permissions`）记下删掉的权限（`removed`，含已移除的插件权限），插件矩阵保存另记该插件上的 `before`/`after`。
 - 同意请求的 `new_permission_roles` 列出的权限，对改名继承同样生效：列出的角色以覆盖为准，没列的角色不继承（以前继承一律照常）；确认页上继承来的格子可以逐格修改。
@@ -56,11 +56,13 @@
 契约见 CONTRACTS §99。用户可见的权限不变：同样的角色、授予得到同样的结果。
 
 - **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
-- **判断**：每个权限版本一份 Casbin 策略快照，请求用由它算出的权限集合，不逐条跑 matcher。用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。**从数据库备份恢复后要清掉这些键**（命令见 CONTRACTS §99.4）。
+- **判断**：每个节点一个 Casbin enforcer（`SyncedCachedEnforcer`，Casbin 自带的角色管理器），装入 active 权限的授予、超管行和 active 用户的角色；每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存，命中约 0.2–0.4 µs），`/me`、菜单、访问密钥收窄用到的授予列表来自 Casbin（`GetImplicitPermissionsForUser`）。改授予、权限状态、角色定义（`authz_meta.policy_version` 随之变化）时各节点重新装入；给用户指派角色、改用户状态时各节点只在内存里换掉这个用户的角色、作废这个用户的决策缓存。`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`（只有版本数字的旧格式按全部变化处理）。不再使用 Valkey 缓存用户角色（原 `authz:c:ur:{uid}`），从备份恢复数据库后也不用清 Valkey。
 - **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
+- **并发保存角色**：角色与插件角色矩阵带每个角色自己的修订号 `revision`（`roles.revision`，取代开发中按全局授权版本 `version` 比较的做法），PATCH、PUT permissions、PUT assignable、reset、插件矩阵都可带回读到的修订号，不一致 409 `version_conflict`（`details.revision`）；别的角色或用户的写入不会造成 409（CONTRACTS §5.2）。
+- **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 422 `unknown_scope`；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
 - **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。停在 0097 的库上 `sub2api admin recover-superadmin` 只做移交（目标须已启用，不接受 `--reset-password`、`--reset-2fa`），迁移完成后再跑一次带上它们。
 
-迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099。
+迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099（0099 在 develop 上的两种内容核心都接受）。
 
 #### 控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101）
 
@@ -87,8 +89,9 @@
 - **`sub2api-plugin pack` 默认执行 `db check`**：有 `internal/model` 和 `database` 声明的插件，打包前会在临时 schema 上核对 GORM 模型与迁移是否一致（按系统目录比对列类型、NOT NULL、默认值、主键、索引和约束定义；迁移以受限角色执行；迁移里的函数、视图、序列等要在模型包的 `Unmanaged()` 里声明），这一步需要 PostgreSQL（`TEST_DATABASE_URL`；没设置时启动本机 testpg）。`--skip-db-check` 可以关闭。`sub2api-plugin db diff` 可以从模型生成下一个迁移（CONTRACTS §2）。
 - **River 只轮询**：集群任务改由 `database/sql` 驱动的 River 执行，没有 LISTEN。事务里投递的运行、其他节点投递的运行，最多晚 1 秒被取走（CONTRACTS §77.1）。
 - **连接与 DSN 里的连接池参数**：核心、网关、插件 SDK 用同一份 `runtime-contract/gormpg` 打开数据库，DSN 由 pgx 解析（取代手写的 `runtime-contract/pgdsn`）。`pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效（核心的 `SUB2API_PG_MAX_CONNS`、网关的 `SUB2API_GATEWAY_POOL_MAX_CONNS` 仍然优先）。`pool_min_conns`、`pool_min_idle_conns`、`pool_health_check_period`、`pool_max_conn_lifetime_jitter` 不再生效，启动时记一条 WARN `database DSN pool parameters ignored`。核心和网关都是这样；插件的连接池只按 SDK 的选项（`pluginsdk.WithDBPoolSize`）确定，DSN 里的 `pool_*` 一律去掉。所有连接固定 `DateStyle=ISO`、`IntervalStyle=postgres`（数组列按这两种格式解析）。
-- **出口日志**：插件出口连接的日志行一次插入后按行序（`WITH ORDINALITY`）取回 id；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。
+- **出口日志**：插件出口连接的日志行先按条数预留 id（`store.NextIDs`，升序），写进各自的行再插入，id 与行一一对应；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。插件管理、任务、事件、控制台资源等模块的语句全部改由 GORM 构造（插件迁移记录调用 `plugin_migration_record` 的函数调用除外），DDL、advisory 锁、系统目录查询只经 `store` 的小助手（`store.DDL`、`XactLockID`、`XactLockHashtext`、`CurrentSnapshot` 等）。
 - **网关**：升级协调的一步（Coordinate）和节点准入各在一个事务里完成，进度在提交后才计。
+- **网关控制器与核心的 CCGateway、网关包不再手写整条 SQL**：改用 GORM 模型与查询构造器，生成的谓词、锁（含 `SKIP LOCKED`）、`RETURNING` 与往返次数不变；CCGateway 的运行时锁、重新授权锁和故障策略锁改用 `store.XactLock` / 新增的 `store.TryXactLock`。网关新增 `internal/sqlguard` 测试：允许列表之外的 `Raw`/`Exec`、交给 GORM 的非常量 SQL 文本都会失败（CONTRACTS §39）。
 - **开发约束**（核心）：需要事务的函数（行锁、事务级 advisory 锁）在连接池上调用直接返回错误（`store.RequireTx`，gormguard `[tx-lock]` 检查）；`store.ForUpdate()` 改为函数，返回不可变的行锁（`.Of`、`.SkipLocked`），共享锁用 `store.Lock`；禁止 `Debug()` 与覆盖会话配置的 `Session`；`core` 不再 import `store`（`[core-store]`）。
 
 #### 插件版本

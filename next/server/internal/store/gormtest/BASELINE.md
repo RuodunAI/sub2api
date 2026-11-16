@@ -610,6 +610,26 @@ TestSQLAccountUsageOverview, TestSQLWriteRules, TestSQLAssetPut):
   build in one statement of arrays, in file order; a file whose path it
   did not return is the immutable collision that fails the publication.
 
+## gorm-raw: the outbox and the shared assets on the builder
+
+The hand-written statements of `event`, `webui`, `task`, `job` and
+`plugin/**` are GORM builder statements (same rows, locks and results).
+Two of the gorm-5fix choices above are given up for that:
+
+- `event.Publisher.Emit` writes column maps with `Table("events")
+  .CreateInBatches` (1000 rows per INSERT, nothing read back): one
+  statement in the caller's transaction as before, the ids in event order
+  as each `VALUES` row takes the next one in list order. The text again
+  depends on the count, so a connection prepares one text per event count
+  it sees, once (counts are 1 and 2 on the settle path); TestSettleRoundTrips
+  still sees 4 statements. BenchmarkHotEmit (allocs/op, gorm-5fix → gorm-raw,
+  ns/op within noise): 1 event 41 → 121, 2 events 66 → 187, 10 events
+  189 → 725.
+- `webui` `Publish` writes the blobs (`ON CONFLICT (path) DO NOTHING`),
+  reads back the hashes of the build's paths to find the immutable
+  collision, then lists the files in the build: 3 statements up to 1000
+  files (was 1), at publication only.
+
 ## Batch 3a: console authentication (iam)
 
 From batch 3 on every statement moves to GORM, hot or not; the numbers are

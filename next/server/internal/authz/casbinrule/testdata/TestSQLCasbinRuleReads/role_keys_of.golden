@@ -1,4 +1,4 @@
 -- sql
-SELECT DISTINCT substr(v1, 3) FROM casbin_rule WHERE ptype = 'g' AND v0 = ANY($1) ORDER BY 1
+SELECT DISTINCT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ANY($1) ORDER BY 1
 -- vars
 $1 store.Strings [u:7 u:8]

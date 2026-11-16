@@ -1,3 +1,0 @@
--- sql
-SELECT key, status FROM permissions
--- vars

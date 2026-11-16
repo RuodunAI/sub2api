@@ -1,0 +1,4 @@
+-- sql
+SELECT cr.v1 FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || CAST($1 AS bigint))
+-- vars
+$1 int 7

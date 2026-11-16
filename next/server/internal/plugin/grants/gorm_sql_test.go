@@ -1,8 +1,7 @@
 package grants
 
 import (
-	"regexp"
-	"slices"
+	"context"
 	"testing"
 
 	"gorm.io/gorm"
@@ -21,22 +20,13 @@ func TestSQLGrantsGranted(t *testing.T) {
 	})
 }
 
-// The per-call check (Holds), with a scope and without one (NULL).
+// The per-call check (Holds), with a scope and without one (any scope).
 func TestSQLGrantsHolds(t *testing.T) {
 	for name, scope := range map[string][]byte{"scope": []byte(`{"prefix":"a"}`), "any": nil} {
 		t.Run(name, func(t *testing.T) {
 			var ok bool
 			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return holdsQuery(db, "demo", "1.2.0", "kv", scope).Scan(&ok) })
 		})
-	}
-}
-
-// holdsQuery passes the key and version in the order VersionRows numbers
-// them.
-func TestVersionRowsPlaceholderOrder(t *testing.T) {
-	got := regexp.MustCompile(`\$\d`).FindAllString(VersionRows, -1)
-	if want := []string{"$1", "$2", "$1", "$1", "$2"}; !slices.Equal(got, want) {
-		t.Fatalf("VersionRows placeholders %v, holdsQuery passes %v", got, want)
 	}
 }
 
@@ -47,23 +37,23 @@ func TestSQLGrantsRecord(t *testing.T) {
 			name = "staged"
 		}
 		t.Run(name, func(t *testing.T) {
-			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-				return db.Exec(recordSQL(staged), "demo", "1.2.0", "hash", by, "kv", []byte(`{"prefix":"a"}`), "granted")
+			gormtest.AssertRun(t, func(db *gorm.DB) error {
+				return Record(db.Statement.Context, db, "demo", "1.2.0", "hash", by, staged,
+					[]Decision{{Permission: "kv", Scope: []byte(`{"prefix":"a"}`), Status: "granted"}})
 			})
 		})
 	}
 }
 
+// Promote and Withdraw take the staged set out with its rows (DryRun
+// returns none, so the runs stop there).
 func TestSQLGrantsPromote(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return db.Exec(promoteSQL, "demo", "1.2.0") })
+	gormtest.AssertRun(t, func(db *gorm.DB) error { return Promote(db.Statement.Context, db, "demo", "1.2.0") })
 }
 
 func TestSQLGrantsWithdraw(t *testing.T) {
 	t.Run("delete", func(t *testing.T) {
-		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-			var n int
-			return withdrawn(db, "demo", "1.2.0").Scan(&n)
-		})
+		gormtest.AssertRun(t, func(db *gorm.DB) error { return Withdraw(db.Statement.Context, db, "demo", "1.2.0", "failed") })
 	})
 	// plugin_versions has no updated_at: only consent_status moves.
 	t.Run("await_consent", func(t *testing.T) {
@@ -72,20 +62,24 @@ func TestSQLGrantsWithdraw(t *testing.T) {
 }
 
 func TestSQLGrantsRevoke(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		var n int
-		return revoke(db, "demo", "kv", by).Scan(&n)
+	gormtest.AssertRun(t, func(db *gorm.DB) error {
+		_, err := Revoke(db.Statement.Context, db, "demo", "kv", by)
+		return err
 	})
 }
 
 // Narrow and Reinstate lock the staged rows they read.
 func TestSQLGrantsStagedScopes(t *testing.T) {
-	for name, sel := range map[string]string{"narrow": narrowedSQL, "reinstate": reinstatedSQL} {
+	for name, run := range map[string]func(context.Context, *gorm.DB) error{
+		"narrow": func(ctx context.Context, db *gorm.DB) error {
+			return Narrow(ctx, db, "demo", "kv", map[string]any{"prefix": "a"}, by)
+		},
+		"reinstate": func(ctx context.Context, db *gorm.DB) error {
+			return Reinstate(ctx, db, "demo", "kv", map[string]any{"prefix": "a"}, by)
+		},
+	} {
 		t.Run(name, func(t *testing.T) {
-			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-				var rows []scopeRow
-				return db.Raw(sel, map[string]any{"key": "demo", "permission": "kv"}).Scan(&rows)
-			})
+			gormtest.AssertRun(t, func(db *gorm.DB) error { return run(db.Statement.Context, db) })
 		})
 	}
 }
