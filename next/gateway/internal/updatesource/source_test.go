@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -117,6 +118,66 @@ func TestGitHubReleasesListStableLinesNewestFirst(t *testing.T) {
 	}
 	if auth := log.seen[0].Header.Get("Authorization"); auth != "Bearer "+testSecret {
 		t.Fatalf("API request auth %q", auth)
+	}
+}
+
+// pagedGitHub serves pages of 50 core releases, newest first, and then
+// lastPage, which holds the only gateway release; full pages never end when
+// lastPage is nil.
+func pagedGitHub(t *testing.T, fullPages int, lastPage []map[string]any) (*httptest.Server, *requests) {
+	t.Helper()
+	log := &requests{}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.add(r)
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if r.Host != "api.github.com" || r.URL.Path != "/repos/owner/repo/releases" || r.URL.Query().Get("per_page") != "50" || page < 1 {
+			http.Error(w, "unexpected", http.StatusTeapot)
+			return
+		}
+		if lastPage != nil && page > fullPages {
+			_ = json.NewEncoder(w).Encode(lastPage)
+			return
+		}
+		out := make([]map[string]any, 50)
+		for i := range out {
+			out[i] = map[string]any{"tag_name": fmt.Sprintf("core-v1.%d.%d", 1000-page, 50-i)}
+		}
+		// The newest release of the page before slid onto this one.
+		if page > 1 {
+			out[0]["tag_name"] = fmt.Sprintf("core-v1.%d.1", 1000-page+1)
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, log
+}
+
+func TestGitHubReleasesFollowPagesWithinACap(t *testing.T) {
+	srv, log := pagedGitHub(t, 2, []map[string]any{{"tag_name": "gateway-v0.1.136"}, {"tag_name": "core-v0.9.0"}})
+	src, _ := New(Config{Kind: GitHub, Repository: "owner/repo", Secret: testSecret}, Options{Client: routed(srv)})
+	ls, err := src.Releases(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l, ok := Latest(ls, LineGateway); !ok || l.Version != "0.1.136" {
+		t.Fatalf("the gateway line on the third page: %+v", l)
+	}
+	if len(ls) != 50+49+2 {
+		t.Fatalf("%d listings: a release repeated across pages is listed once", len(ls))
+	}
+	if len(log.seen) != 3 {
+		t.Fatalf("%d requests: a short page ends the listing", len(log.seen))
+	}
+	for _, r := range log.seen {
+		if r.Host != "api.github.com" || r.Header.Get("Authorization") != "Bearer "+testSecret {
+			t.Fatalf("page request to %s with %q", r.Host, r.Header.Get("Authorization"))
+		}
+	}
+
+	endless, log := pagedGitHub(t, 0, nil)
+	src, _ = New(Config{Kind: GitHub, Repository: "owner/repo"}, Options{Client: routed(endless)})
+	if ls, err = src.Releases(context.Background()); err != nil || len(log.seen) != githubMaxPages || len(ls) != MaxGitHubReleases-githubMaxPages+1 {
+		t.Fatalf("endless pages: %d requests, %d listings, %v", len(log.seen), len(ls), err)
 	}
 }
 
@@ -355,13 +416,18 @@ func TestNewRejectsUnnormalizedConfig(t *testing.T) {
 }
 
 func TestClientAddressPolicy(t *testing.T) {
-	for _, s := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "100.64.0.1", "192.0.2.1", "::1", "fd00::1", "::ffff:127.0.0.1"} {
+	for _, s := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "100.64.0.1", "192.0.2.1", "::1", "fd00::1", "::ffff:127.0.0.1",
+		// NAT64 and 6to4 of private IPv4, local-use NAT64, Teredo.
+		"64:ff9b::a9fe:a9fe", "64:ff9b::7f00:1", "2002:a00:1::1", "2002:7f00:1::", "64:ff9b:1::808:808", "2001:0:4136:e378::1"} {
 		if publicIP(netip.MustParseAddr(s)) {
 			t.Fatalf("unsafe address accepted: %s", s)
 		}
 	}
-	if !publicIP(netip.MustParseAddr("1.1.1.1")) {
-		t.Fatal("public address rejected")
+	// IPv6-only nodes reach IPv4-only hosts through well-known NAT64.
+	for _, s := range []string{"1.1.1.1", "2606:4700::1111", "64:ff9b::8c52:7904", "2002:808:808::1"} {
+		if !publicIP(netip.MustParseAddr(s)) {
+			t.Fatalf("public address rejected: %s", s)
+		}
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

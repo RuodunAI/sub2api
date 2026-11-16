@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 )
 
 // IndexSchema names the releases.json format of a url source.
@@ -75,7 +77,7 @@ func (s *index) Releases(ctx context.Context) ([]Listing, error) {
 		seen[tag] = true
 		l := Listing{Line: line, Version: version, Tag: tag, PublishedAt: r.PublishedAt, Notes: r.Notes, Page: httpsPage(r.Page), Assets: map[string]Asset{}}
 		for name, a := range r.Assets {
-			if !validAssetName(name) || a.Size <= 0 {
+			if !release.ValidFileName(name) || a.Size <= 0 {
 				return nil, fmt.Errorf("releases.json: invalid asset in %s", tag)
 			}
 			if _, err := s.resolve(a.Path); err != nil {

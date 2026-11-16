@@ -27,7 +27,7 @@ import (
 const (
 	gatewayDir    = "gateway"
 	gatewayBinary = "sub2api-gateway"
-	// MaxGatewayBinaryBytes bounds the binary extracted from an archive.
+	// MaxGatewayBinaryBytes bounds the binary a gateway archive holds.
 	MaxGatewayBinaryBytes = 512 << 20
 	// maxHandoffAttempts is how often a startup hands off to an installed
 	// gateway that never reaches serving before it stays on the bundled one.
@@ -117,7 +117,7 @@ func (m *Manager) InstallGateway(ctx context.Context, s rc.SignedManifest, open 
 		return digest, v, err
 	}
 	bin := filepath.Join(dir, gatewayBinary)
-	if err = extractGateway(ctx, archive, bin, MaxGatewayBinaryBytes); err != nil {
+	if err = extractGateway(ctx, archive, bin); err != nil {
 		return digest, v, err
 	}
 	if err = verifyBinary(bin, p.BinaryDigest); err != nil {
@@ -139,15 +139,15 @@ func (m *Manager) InstallGateway(ctx context.Context, s rc.SignedManifest, open 
 	return digest, v, syncDir(filepath.Dir(dest))
 }
 
-// extractGateway writes the archive's only entry, a regular file named
-// sub2api-gateway of at most max bytes, to dst with mode 0755.
-func extractGateway(ctx context.Context, archive, dst string, max int64) error {
-	f, err := os.Open(archive)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	gz, err := gzip.NewReader(f)
+// errOneBinary rejects a gateway archive that holds anything but its binary.
+var errOneBinary = errors.New("gateway archive must hold only the executable regular file " + gatewayBinary)
+
+// CopyGatewayBinary copies the binary of a gateway archive (tar.gz) to dst.
+// The archive must hold one entry, the executable regular file
+// sub2api-gateway of at most MaxGatewayBinaryBytes. pack-gateway applies the
+// same check, so a release it signs installs.
+func CopyGatewayBinary(archive io.Reader, dst io.Writer) error {
+	gz, err := gzip.NewReader(archive)
 	if err != nil {
 		return err
 	}
@@ -157,20 +157,33 @@ func extractGateway(ctx context.Context, archive, dst string, max int64) error {
 	if err != nil {
 		return fmt.Errorf("gateway archive is unreadable: %w", err)
 	}
-	if hdr.Typeflag != tar.TypeReg || hdr.Name != gatewayBinary {
-		return errors.New("gateway archive must hold only the regular file sub2api-gateway")
+	if hdr.Typeflag != tar.TypeReg || hdr.Name != gatewayBinary || hdr.Mode&0111 == 0 {
+		return errOneBinary
 	}
-	if hdr.Size <= 0 || hdr.Size > max {
-		return fmt.Errorf("gateway binary exceeds %d bytes", max)
+	if hdr.Size <= 0 || hdr.Size > MaxGatewayBinaryBytes {
+		return fmt.Errorf("gateway binary exceeds %d bytes", MaxGatewayBinaryBytes)
 	}
+	if _, err = io.Copy(dst, tr); err != nil {
+		return err
+	}
+	if _, err = tr.Next(); err != io.EOF {
+		return errOneBinary
+	}
+	return nil
+}
+
+// extractGateway writes the binary of the archive file to dst, mode 0755.
+func extractGateway(ctx context.Context, archive, dst string) error {
+	f, err := os.Open(archive)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
 	if err != nil {
 		return err
 	}
-	n, err := io.Copy(out, io.LimitReader(tr, hdr.Size))
-	if err == nil && n != hdr.Size {
-		err = io.ErrUnexpectedEOF
-	}
+	err = CopyGatewayBinary(f, out)
 	if err == nil {
 		err = out.Chmod(0755)
 	}
@@ -180,16 +193,10 @@ func extractGateway(ctx context.Context, archive, dst string, max int64) error {
 	if ce := out.Close(); err == nil {
 		err = ce
 	}
-	if err != nil {
-		return err
+	if err == nil {
+		err = ctx.Err()
 	}
-	if err = ctx.Err(); err != nil {
-		return err
-	}
-	if _, err = tr.Next(); err != io.EOF {
-		return errors.New("gateway archive must hold only the regular file sub2api-gateway")
-	}
-	return nil
+	return err
 }
 
 // verifyBinary checks that path is a regular 0755 file with the digest.
@@ -340,12 +347,17 @@ func (m *Manager) PruneGateways() error {
 	return nil
 }
 
+// ErrStaleGateway is why a binary newer than the installed gateway keeps
+// running: the image moved past the installed version. It is expected after
+// an image upgrade and lasts until the next swap.
+var ErrStaleGateway = errors.New("the installed gateway is not newer than this binary")
+
 // HandoffTarget decides at startup whether a gateway running version should
 // replace itself with the installed one p names (read with err): only a
 // newer installed version, and never the one marker says this process was
 // started as, so a binary that reports another version cannot exec itself
 // in a loop. It returns the version to start, or "" with the reason to keep
-// running when that deserves a warning.
+// running (ErrStaleGateway for an older installed version).
 func HandoffTarget(p GatewayPointer, err error, running, marker string) (string, error) {
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -359,7 +371,7 @@ func HandoffTarget(p GatewayPointer, err error, running, marker string) (string,
 	}
 	v, _ := semver.StrictNewVersion(p.Version)
 	if r, perr := semver.NewVersion(running); perr == nil && !v.GreaterThan(r) {
-		return "", fmt.Errorf("installed gateway %s is not newer than this binary %s", p.Version, running)
+		return "", fmt.Errorf("%w: installed %s, running %s", ErrStaleGateway, p.Version, running)
 	}
 	return p.Version, nil
 }

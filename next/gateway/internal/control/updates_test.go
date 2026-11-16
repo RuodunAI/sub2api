@@ -542,9 +542,9 @@ func TestVerifyGatewayRequiresKindVersionAndArchives(t *testing.T) {
 			m.Kind = "sub2api-core"
 			src.files["gateway/"+gatewayManifestAsset] = f.sign(m)
 		},
-		"unknown field": func(_ *updatesource.Listing, src memSource) {
+		"trailing data": func(_ *updatesource.Listing, src memSource) {
 			b, _ := json.Marshal(f.gateway)
-			payload := append(b[:len(b)-1], []byte(`,"extra":1}`)...)
+			payload := append(b, []byte(` {}`)...)
 			src.files["gateway/"+gatewayManifestAsset], _ = json.Marshal(rc.SignedManifest{KeyID: "test", Payload: payload, Signature: ed25519.Sign(f.priv, payload)})
 		},
 	} {

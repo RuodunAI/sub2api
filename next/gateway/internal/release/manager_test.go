@@ -54,6 +54,27 @@ func TestVerifyRejectsTamperingAndUnknownKey(t *testing.T) {
 		t.Fatal("wrong signing key accepted")
 	}
 }
+
+// TestVerifyIgnoresNewFieldsButNotTrailingData: a field a later release adds
+// must not stop the deployed gateways from installing it.
+func TestVerifyIgnoresNewFieldsButNotTrailingData(t *testing.T) {
+	s, _, _ := fixture(t)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]ed25519.PublicKey{"test": pub}
+	sign := func(p []byte) rc.SignedManifest {
+		return rc.SignedManifest{KeyID: "test", Payload: p, Signature: ed25519.Sign(priv, p)}
+	}
+	extra := append(s.Payload[:len(s.Payload)-1:len(s.Payload)-1], []byte(`,"rollout_hint":"later"}`)...)
+	if _, _, err := Verify(sign(extra), keys); err != nil {
+		t.Fatalf("manifest with a new optional field: %v", err)
+	}
+	if _, _, err := Verify(sign(append(append([]byte{}, s.Payload...), []byte(` {}`)...)), keys); err == nil {
+		t.Fatal("manifest with trailing data accepted")
+	}
+}
 func TestExtractRejectsUnsafeEntries(t *testing.T) {
 	for _, tc := range []struct {
 		name string

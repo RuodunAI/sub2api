@@ -177,17 +177,21 @@ func TestInstallGatewayRejectsUnsafeArchives(t *testing.T) {
 			}
 		})
 	}
-	// The binary's size is bounded before a byte of it is written.
-	dir := t.TempDir()
-	archive := filepath.Join(dir, "a.tar.gz")
-	if err := os.WriteFile(archive, tarGz(t, reg("sub2api-gateway", 8)), 0600); err != nil {
+	// The binary's size is bounded before a byte of it is written: the
+	// header claims more than MaxGatewayBinaryBytes.
+	var huge bytes.Buffer
+	gz := gzip.NewWriter(&huge)
+	if err := tar.NewWriter(gz).WriteHeader(&tar.Header{Name: "sub2api-gateway", Mode: 0755, Size: MaxGatewayBinaryBytes + 1, Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
 	}
-	if err := extractGateway(context.Background(), archive, filepath.Join(dir, "bin"), 7); err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("oversized binary: %v", err)
+	_ = gz.Close()
+	var written bytes.Buffer
+	if err := CopyGatewayBinary(&huge, &written); err == nil || !strings.Contains(err.Error(), "exceeds") || written.Len() != 0 {
+		t.Fatalf("oversized binary: %v (%d bytes written)", err, written.Len())
 	}
-	if _, err := os.Stat(filepath.Join(dir, "bin")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("an oversized binary was written")
+	// Not executable: pack-gateway would not have signed it either.
+	if err := CopyGatewayBinary(bytes.NewReader(tarGz(t, &tar.Header{Name: "sub2api-gateway", Mode: 0644, Size: 1, Typeflag: tar.TypeReg})), io.Discard); err == nil {
+		t.Fatal("a non-executable binary was accepted")
 	}
 	f := newInstallFixture(t, "0.1.136", nil)
 	s := f.signed
@@ -311,7 +315,7 @@ func TestHandoffTarget(t *testing.T) {
 	}
 	for _, c := range cases {
 		got, err := HandoffTarget(c.p, c.err, c.running, c.marker)
-		if got != c.want || (err != nil) != c.warn {
+		if got != c.want || (err != nil) != c.warn || errors.Is(err, ErrStaleGateway) != (c.name == "older installed") {
 			t.Errorf("%s: %q %v", c.name, got, err)
 		}
 	}

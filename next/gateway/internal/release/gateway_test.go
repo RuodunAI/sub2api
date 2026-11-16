@@ -86,12 +86,14 @@ func TestVerifyGateway(t *testing.T) {
 			}
 		})
 	}
+	// A field a later release adds is ignored; data after the document is not.
 	extra := append(payload[:len(payload)-1:len(payload)-1], []byte(`,"extra":true}`)...)
+	if _, _, err := VerifyGateway(signPayload(priv, extra), keys); err != nil {
+		t.Fatalf("payload with a new optional field: %v", err)
+	}
 	trailing := append(append([]byte{}, payload...), []byte(` {}`)...)
-	for _, p := range [][]byte{extra, trailing} {
-		if _, _, err := VerifyGateway(signPayload(priv, p), keys); err == nil {
-			t.Fatalf("non-strict payload accepted: %s", p)
-		}
+	if _, _, err := VerifyGateway(signPayload(priv, trailing), keys); err == nil {
+		t.Fatal("payload with trailing data accepted")
 	}
 	tampered := signPayload(priv, payload)
 	tampered.Signature[0] ^= 1

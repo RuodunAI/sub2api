@@ -34,7 +34,7 @@ func mirror(args []string, out io.Writer) error {
 	base := f.String("url", "", "source url update source: the https directory of its "+releasesIndex)
 	secretEnv := f.String("token-env", "", "environment variable holding the GitHub token or the url source's Bearer secret")
 	tags := f.String("tags", "", "comma separated tags, e.g. core-v0.1.291,gateway-v0.1.136")
-	latest := f.Int("latest", 0, "mirror the newest N stable releases of each line (GitHub: among its 50 newest releases)")
+	latest := f.Int("latest", 0, fmt.Sprintf("mirror the newest N stable releases of each line (GitHub: among its %d newest releases)", updatesource.MaxGitHubReleases))
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -157,22 +157,35 @@ func fetch(ctx context.Context, src updatesource.Source, a updatesource.Asset, d
 		return err
 	}
 	defer body.Close()
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".mirror-*")
+	return publish(dst, func(w io.Writer) error {
+		n, err := io.Copy(w, body)
+		if err == nil && n != a.Size {
+			err = fmt.Errorf("downloaded %d bytes, the source lists %d", n, a.Size)
+		}
+		return err
+	})
+}
+
+// publish writes path through a temporary file in its directory, made
+// world-readable like the rest of the served directory, and renames it into
+// place, so that a reader never sees a partial file.
+func publish(path string, write func(io.Writer) error) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".mirror-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	n, err := io.Copy(tmp, body)
+	err = write(tmp)
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
+	}
+	if err == nil {
+		err = os.Chmod(tmp.Name(), 0644)
 	}
 	if err != nil {
 		return err
 	}
-	if n != a.Size {
-		return fmt.Errorf("downloaded %d bytes, the source lists %d", n, a.Size)
-	}
-	return os.Rename(tmp.Name(), dst)
+	return os.Rename(tmp.Name(), path)
 }
 
 // compareReleases orders by line, then newest version first.
@@ -209,20 +222,8 @@ func mergeIndex(path string, entries []updatesource.IndexRelease) error {
 	if data, err = json.MarshalIndent(idx, "", "  "); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".releases-*.json")
-	if err != nil {
+	return publish(path, func(w io.Writer) error {
+		_, err := w.Write(append(data, '\n'))
 		return err
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(append(data, '\n'))
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Chmod(tmp.Name(), 0644)
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	})
 }

@@ -35,7 +35,7 @@ const (
 // DefaultRepository is the official release repository.
 const DefaultRepository = "Sub2API-Devs/sup2api"
 
-// MaxListingBytes bounds a release list or index.
+// MaxListingBytes bounds a release index or one page of a release list.
 const MaxListingBytes = 2 << 20
 
 // metadataTimeout bounds one listing request.
@@ -187,11 +187,6 @@ func sortListings(ls []Listing) {
 		}
 		return semver.MustParse(ls[i].Version).GreaterThan(semver.MustParse(ls[j].Version))
 	})
-}
-
-// validAssetName accepts a plain file name.
-func validAssetName(name string) bool {
-	return name != "" && len(name) <= 255 && name != "." && name != ".." && !strings.ContainsAny(name, "/\\\x00")
 }
 
 const maxRedirects = 3

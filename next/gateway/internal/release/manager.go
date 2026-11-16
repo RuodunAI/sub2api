@@ -75,7 +75,7 @@ func Verify(s rc.SignedManifest, keys map[string]ed25519.PublicKey) (rc.Manifest
 	if err := verifySignature(s, keys); err != nil {
 		return m, "", err
 	}
-	if err := decodeStrict(s.Payload, &m); err != nil {
+	if err := decodeManifest(s.Payload, &m); err != nil {
 		return m, "", err
 	}
 	if m.ManifestVersion != 1 || m.ReleaseID == "" || m.BuildID == "" || !m.ShellProtocol.Contains(rc.Protocol) || !m.CoreControlProtocol.Contains(rc.Protocol) {
