@@ -42,11 +42,21 @@ export interface UpdateCheck {
   gateway: GatewayCheck
 }
 
+/**
+ * A preflight blocker or an apply confirmation reason: a code the console
+ * words (useIssueText) with its params, and the gateway's English message.
+ */
+export interface UpdateIssue {
+  code: string
+  params?: Record<string, string>
+  message: string
+}
+
 /** POST /system/updates/apply. */
 export interface ApplyResult {
   status: 'started' | 'needs_confirmation'
   plan_id?: string
-  reasons?: string[]
+  reason_codes?: UpdateIssue[]
 }
 
 export type LineStatus = 'unchecked' | 'disabled' | 'failed' | 'noRelease' | 'available' | 'blocked' | 'upToDate'

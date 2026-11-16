@@ -29,7 +29,7 @@ on('GET', '/system/update-check', () => ({
   }
 }))
 on('POST', '/system/updates/apply', stepUp('system.update', req => {
-  if (req.body?.line === 'core' && !req.body?.confirm) return { status: 'needs_confirmation', reasons: ['此版本改动数据库，按主节点优先策略升级，期间服务会短暂停止'], preflight: {} }
+  if (req.body?.line === 'core' && !req.body?.confirm) return { status: 'needs_confirmation', reason_codes: [{ code: 'schema_change', message: 'the release changes the database schema' }], preflight: {} }
   return { status: 'started', plan_id: 'plan-1' }
 }))
 on('GET', '/system/releases', () => ({ releases: ['old', 'new'].map((v, i) => ({ digest: `release-${v}`, manifest: { release_id: `0.1.${7 + i}`, build_id: v, source_commit: 'demo', created_at: now(-100) } })) }))

@@ -2,15 +2,17 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter, type RouteLocationRaw } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { api } from '@sub2api/host'
-import { confirm, SAlert, SButton, SHint, SModal, SStatusDot } from '@sub2api/ui'
+import { api, isApiError } from '@sub2api/host'
+import { confirm, toast, SAlert, SButton, SHint, SModal, SStatusDot } from '@sub2api/ui'
 import { useAuthStore } from '@/stores/auth'
-import { lineStatus, UPDATE_LINES, useUpdatesStore, type UpdateLine } from '@/stores/updates'
+import { lineStatus, UPDATE_LINES, useUpdatesStore, type UpdateIssue, type UpdateLine } from '@/stores/updates'
 import { notifyError } from '@/utils/errors'
+import { useIssueText } from '@/views/upgrades/upgrades'
 import UpdateLinePanel from './updates/UpdateLinePanel.vue'
 
 defineProps<{ compact?: boolean }>()
 const { t } = useI18n()
+const issueText = useIssueText()
 const auth = useAuthStore(), updates = useUpdatesStore(), router = useRouter()
 const open = ref(false), applying = ref<UpdateLine | ''>('')
 const basic = ref<{ version: string; managed: boolean } | null>(null)
@@ -34,13 +36,20 @@ async function apply(line: UpdateLine) {
   try {
     let result = await updates.apply(line, target)
     if (result.status === 'needs_confirmation') {
-      const reasons = (result.reasons || []).map(r => `• ${r}`).join('\n')
+      const reasons = (result.reason_codes || []).map(r => `• ${issueText(r)}`).join('\n')
       const message = t('coreUpdates.applyConfirm', { line: t(`coreUpdates.lines.${line}`), version: target, reasons })
       if (!(await confirm({ title: t('coreUpdates.applyConfirmTitle'), message, confirmText: t('coreUpdates.applyAnyway'), danger: true }))) return
       result = await updates.apply(line, target, true)
     }
     if (result.status === 'started' && result.plan_id) go({ path: '/system/upgrades', query: { upgrade: result.plan_id } })
-  } catch (e) { notifyError(e) } finally { applying.value = '' }
+  } catch (e) { failed(e) } finally { applying.value = '' }
+}
+
+/** A refusal by the preflight lists its blockers, worded like the reasons. */
+function failed(e: unknown) {
+  if (!isApiError(e) || e.code !== 'preflight_blocked') return notifyError(e)
+  const blockers: UpdateIssue[] = e.details.blocker_codes || []
+  toast(t('coreUpdates.applyBlocked', { blockers: blockers.map(issueText).join(' · ') }), 'error')
 }
 </script>
 

@@ -11,6 +11,7 @@ export default {
   applyConfirmTitle: '确认更新',
   applyConfirm: '将{line}更新到 {version} 前请确认：\n{reasons}',
   applyAnyway: '仍然更新',
+  applyBlocked: '预检未通过，无法更新：{blockers}',
   gatewayManual: '部分节点的网关版本过旧，无法自行更新：请用上面的镜像替换这些节点的网关。',
   sourceTitle: '在线更新', sourceDescription: '从 GitHub 仓库或自定义发布地址检测核心与网关的新稳定版本，由管理员手动更新。',
   enabled: '检测新版本', enabledHint: '关闭后不再检测，也不会提示新版本。',

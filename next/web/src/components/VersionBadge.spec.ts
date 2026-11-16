@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
+import { ApiError } from '@sub2api/host'
 import { i18n } from '@/i18n'
 import { updateCheck } from '@/stores/__fixtures__/updateCheck'
 import type { UpdateCheck } from '@/stores/updates'
 import VersionBadge from './VersionBadge.vue'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
-const ui = vi.hoisted(() => ({ confirm: vi.fn() }))
+const ui = vi.hoisted(() => ({ confirm: vi.fn(), toast: vi.fn() }))
 const router = vi.hoisted(() => ({ push: vi.fn() }))
 vi.mock('@sub2api/host', async orig => ({ ...(await orig<object>()), api }))
-vi.mock('@sub2api/ui', async orig => ({ ...(await orig<object>()), confirm: ui.confirm }))
+vi.mock('@sub2api/ui', async orig => ({ ...(await orig<object>()), confirm: ui.confirm, toast: ui.toast }))
 vi.mock('vue-router', () => ({ useRouter: () => router }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: () => true }) }))
 enableAutoUnmount(afterEach)
@@ -23,6 +24,7 @@ beforeEach(() => {
   api.get.mockReset().mockImplementation((path: string) => Promise.resolve(path === '/system/version' ? { version: '0.1.290', managed: true } : check))
   api.post.mockReset()
   ui.confirm.mockReset()
+  ui.toast.mockReset()
   router.push.mockReset()
 })
 
@@ -60,14 +62,18 @@ describe('version badge', () => {
     expect(section(w, 'core').text()).toContain('GitHub API rate limited')
   })
 
-  it('confirms the reasons, resends with confirm and opens the started plan', async () => {
+  it('confirms the reasons in Chinese, resends with confirm and opens the started plan', async () => {
     check = updateCheck({ core: { has_update: true, latest_version: '0.1.291' } })
-    api.post.mockResolvedValueOnce({ status: 'needs_confirmation', reasons: ['primary-first stops the service'] }).mockResolvedValueOnce({ status: 'started', plan_id: 'plan-9' })
+    const reason_codes = [
+      { code: 'schema_change', message: 'the release changes the database schema' },
+      { code: 'too_few_serving', params: { min: '2' }, message: 'fewer than 2 nodes serve, so no node can take over another\'s traffic' }
+    ]
+    api.post.mockResolvedValueOnce({ status: 'needs_confirmation', reason_codes }).mockResolvedValueOnce({ status: 'started', plan_id: 'plan-9' })
     ui.confirm.mockResolvedValue(true)
     const w = await open()
     await section(w, 'core').get('[data-testid="update-apply"]').trigger('click')
     await flushPromises()
-    expect(ui.confirm.mock.calls[0][0].message).toContain('primary-first stops the service')
+    expect(ui.confirm.mock.calls[0][0].message).toBe('将核心更新到 0.1.291 前请确认：\n• 此版本改动数据库结构，不能滚动更新\n• 提供服务的节点少于 2 个，没有节点能接管其他节点的流量，不能滚动更新')
     expect(api.post.mock.calls.map(c => c[1])).toEqual([
       { line: 'core', version: '0.1.291', confirm: false },
       { line: 'core', version: '0.1.291', confirm: true }
@@ -77,12 +83,23 @@ describe('version badge', () => {
 
   it('stops when the confirmation is declined', async () => {
     check = updateCheck({ core: { has_update: true } })
-    api.post.mockResolvedValueOnce({ status: 'needs_confirmation', reasons: ['single node'] })
+    api.post.mockResolvedValueOnce({ status: 'needs_confirmation', reason_codes: [{ code: 'single_node', params: { seconds: '10' }, message: 'single node' }] })
     ui.confirm.mockResolvedValue(false)
     const w = await open()
     await section(w, 'core').get('[data-testid="update-apply"]').trigger('click')
     await flushPromises()
     expect(api.post).toHaveBeenCalledTimes(1)
+    expect(router.push).not.toHaveBeenCalled()
+  })
+
+  it('words the blockers of a refused preflight', async () => {
+    check = updateCheck({ gateway: { has_update: true, latest_version: '0.1.136', self_update: true } })
+    const blocker_codes = [{ code: 'node_not_ready', params: { node: 'n2' }, message: 'node not locally ready: n2' }, { code: 'upgrade_active', message: 'another upgrade is active' }]
+    api.post.mockRejectedValueOnce(new ApiError(409, { code: 'preflight_blocked', message: 'node not locally ready: n2; another upgrade is active', details: { blocker_codes } }))
+    const w = await open()
+    await section(w, 'gateway').get('[data-testid="update-apply"]').trigger('click')
+    await flushPromises()
+    expect(ui.toast).toHaveBeenCalledWith('预检未通过，无法更新：节点 n2 没有在本地提供服务 · 已有未完成的升级任务', 'error')
     expect(router.push).not.toHaveBeenCalled()
   })
 

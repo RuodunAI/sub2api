@@ -11,6 +11,7 @@ export default {
   applyConfirmTitle: 'Confirm update',
   applyConfirm: 'Before updating the {line} to {version}, please confirm:\n{reasons}',
   applyAnyway: 'Update anyway',
+  applyBlocked: 'The preflight blocks this update: {blockers}',
   gatewayManual: 'Some nodes run a gateway too old to update itself: replace the gateway on those nodes with the image above.',
   sourceTitle: 'Online updates', sourceDescription: 'Check a GitHub repository or your own release URL for new stable core and gateway releases; an admin applies them.',
   enabled: 'Check for new releases', enabledHint: 'When off, nothing is checked and no update is shown.',
