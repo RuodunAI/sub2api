@@ -75,6 +75,18 @@ func (d *fakeDB) UserRoles(_ context.Context, uid int64) (UserRoles, error) {
 	return ur, nil
 }
 
+// enforce runs key through the matcher for uid, at version min or newer,
+// and returns the version it decided at (the one Grants labels its set
+// with).
+func (r *resolver) enforce(ctx context.Context, uid int64, key string, min int64) (bool, int64, error) {
+	s, ur, err := r.resolve(ctx, uid, min)
+	if err != nil {
+		return false, 0, err
+	}
+	ok, err := s.enforce(ur, key)
+	return ok, s.version, err
+}
+
 // testResolver is the resolver over d with the real role cache (no L2).
 func testResolver(d *fakeDB, self ...string) (*resolver, *roleCache) {
 	rc := newRoleCache(d, nil, roleCacheOptions{})
@@ -99,10 +111,10 @@ func TestResolverGrants(t *testing.T) {
 	if set, err := r.Grants(ctx, 2, 3); err != nil || len(set.KeyList()) != 0 || set.Version != 4 {
 		t.Fatalf("inactive user: %+v, %v", set, err)
 	}
-	if ok, v, err := Enforce(ctx, r, 1, "account:read:own", 3); !ok || v != 4 || err != nil {
+	if ok, v, err := r.enforce(ctx, 1, "account:read:own", 3); !ok || v != 4 || err != nil {
 		t.Fatalf("Enforce = %v at %d, %v", ok, v, err)
 	}
-	if ok, _, err := Enforce(ctx, r, 2, "self:profile", 3); ok || err != nil {
+	if ok, _, err := r.enforce(ctx, 2, "self:profile", 3); ok || err != nil {
 		t.Fatalf("Enforce of an inactive user = %v, %v", ok, err)
 	}
 	// A snapshot below min, never reaching it: fail closed.
@@ -151,7 +163,7 @@ func TestResolverTornRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("snapshot older", grantsOf(ctx, r, uid, 5), 6, nil)
-	if ok, v, err := Enforce(ctx, r, uid, "user:read", 5); ok || v != 6 || err != nil {
+	if ok, v, err := r.enforce(ctx, uid, "user:read", 5); ok || v != 6 || err != nil {
 		t.Fatalf("Enforce(user:read) = %v at v%d, %v", ok, v, err)
 	}
 }
@@ -178,7 +190,7 @@ func TestResolverSkewFailsClosed(t *testing.T) {
 	if _, err := r.Grants(ctx, 1, 1); !errors.Is(err, ErrSkew) {
 		t.Fatalf("Grants = %v, want ErrSkew", err)
 	}
-	if _, _, err := Enforce(ctx, r, 1, "account:read", 1); !errors.Is(err, ErrSkew) {
+	if _, _, err := r.enforce(ctx, 1, "account:read", 1); !errors.Is(err, ErrSkew) {
 		t.Fatalf("Enforce = %v, want ErrSkew", err)
 	}
 	// Quiet again: both reads meet.
@@ -213,7 +225,7 @@ func TestResolverRidesOutSkew(t *testing.T) {
 	d.mu.Lock()
 	d.churnLeft = 12
 	d.mu.Unlock()
-	if ok, _, err := Enforce(ctx, r, 1, "account:read", set.Version); !ok || err != nil {
+	if ok, _, err := r.enforce(ctx, 1, "account:read", set.Version); !ok || err != nil {
 		t.Fatalf("Enforce = %v, %v", ok, err)
 	}
 	// Writes without end: a caller's end still ends the wait.
@@ -279,22 +291,5 @@ func TestResolverUnderSustainedWrites(t *testing.T) {
 	<-writer
 	if len(failures) > 0 {
 		t.Fatalf("%d of %d resolutions failed under writes, the first: %v", len(failures), calls, failures[0])
-	}
-}
-
-// foreign is a Resolver of another package's making (a test double).
-type foreign struct{}
-
-func (foreign) Grants(context.Context, int64, int64) (core.PermissionSet, error) {
-	return core.PermissionSetOf("account:read"), nil
-}
-func (foreign) Prewarm(int64) {}
-
-// Enforce refuses a Resolver it did not make, with an error rather than a
-// panic: only its own has a matcher path, and a double's Grants is not one.
-func TestEnforceForeignResolver(t *testing.T) {
-	t.Parallel()
-	if ok, _, err := Enforce(context.Background(), foreign{}, 1, "account:read", 0); ok || !errors.Is(err, ErrForeignResolver) {
-		t.Fatalf("Enforce on a foreign Resolver = %v, %v", ok, err)
 	}
 }

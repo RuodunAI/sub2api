@@ -28,19 +28,21 @@ func (s *Service) TransferSuperAdmin(ctx context.Context, actorID, targetID int6
 	if !su {
 		return authz.ErrNotTheSuperAdmin
 	}
-	return s.transferSuperAdmin(ctx, actorID, targetID)
+	return s.transferSuperAdmin(ctx, actorID, targetID, s.authz.TransferSuperAdmin)
 }
 
-// transferSuperAdmin runs authz.TransferSuperAdmin and ends every session of
-// the demoted holders and the target in one transaction (authz -> user lock
-// order), so each signs in again under its new roles.
-func (s *Service) transferSuperAdmin(ctx context.Context, actorID, targetID int64) error {
+// transferSuperAdmin runs transfer (authz.Service.TransferSuperAdmin, or its
+// Legacy form for the CLI on a database before migration 0100) and ends
+// every session of the demoted holders and the target in one transaction
+// (authz -> user lock order), so each signs in again under its new roles.
+func (s *Service) transferSuperAdmin(ctx context.Context, actorID, targetID int64,
+	transfer func(ctx context.Context, tx *gorm.DB, actorID, targetID int64) (int64, []int64, error)) error {
 	var v int64
 	var ended []int64
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var demoted []int64
 		var err error
-		if v, demoted, err = s.authz.TransferSuperAdmin(ctx, tx, actorID, targetID); err != nil {
+		if v, demoted, err = transfer(ctx, tx, actorID, targetID); err != nil {
 			return err
 		}
 		ended = append(demoted, targetID)
@@ -101,7 +103,11 @@ func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts Reco
 			return "", err
 		}
 	}
-	if err := s.transferSuperAdmin(ctx, 0, id); err != nil {
+	transfer := s.authz.TransferSuperAdmin
+	if legacy {
+		transfer = s.authz.TransferSuperAdminLegacy
+	}
+	if err := s.transferSuperAdmin(ctx, 0, id, transfer); err != nil {
 		return "", err
 	}
 	if opts.ResetPassword {

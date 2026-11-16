@@ -5,4 +5,4 @@ RETURNING r.id AS role_id, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || c
 -- vars
 $1 string "p"
 $2 string "plugin:demo:read"
-$3 store.Strings [own]
+$3 store.Strings [own *]

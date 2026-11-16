@@ -67,6 +67,18 @@ func grants(t testing.TB, s *snapshot, ur UserRoles) core.PermissionSet {
 	return set
 }
 
+// enforce runs key through the matcher for a user holding ur: allowed when
+// one of its subjects is (some(where p.eft == allow) over the union). The
+// tests check the sets of grants against it; requests never run it.
+func (s *snapshot) enforce(ur UserRoles, key string) (bool, error) {
+	for _, sub := range subjects(ur) {
+		if ok, err := s.e.Enforce(sub, key); ok || err != nil {
+			return ok, err
+		}
+	}
+	return false, nil
+}
+
 func enforce(t testing.TB, s *snapshot, ur UserRoles, key string) bool {
 	t.Helper()
 	ok, err := s.enforce(ur, key)

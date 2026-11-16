@@ -1,6 +1,0 @@
--- sql
-SELECT "p"."id","p"."key","p"."module","p"."label","p"."description","p"."source","p"."plugin_key","p"."sensitive","p"."status","p"."sort","p"."created_at","p"."scope_type","p"."risk","p"."requires","p"."group_key","p"."group_label","p"."group_sort","p"."scope","p"."defaults" FROM permissions p WHERE p.status <> 'staged' AND (NOT $1::bool OR (p.source = 'core' AND p.status <> 'removed')) AND ($2::text = '' OR p.plugin_key = $3::text)
--- vars
-$1 bool false
-$2 string "demo"
-$3 string "demo"

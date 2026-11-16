@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -168,7 +169,7 @@ func TestDeleteClearsScopedGrants(t *testing.T) {
 	// The new version comes back for the caller to announce after commit.
 	clear := func() (got int64) {
 		require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) (err error) {
-			got, err = core.ClearScopeGrants(ctx, tx, 0, core.ScopeRefGroup, []int64{g})
+			got, err = authz.ClearScopeGrants(ctx, tx, 0, core.ScopeRefGroup, []int64{g})
 			return err
 		}))
 		return got

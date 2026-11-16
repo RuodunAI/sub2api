@@ -2,6 +2,8 @@
 
 > 基于 `touwaeriol/sup2api` develop @ dae6ba57（只读）。路径相对 `next/server/internal/`，除非另写。
 > 本章只写安装侧（`plugin/install`、`plugin/api`、e2e 辅助）。authz 目录、`SyncPlugin`、`CanGrantToRoles`、`PluginGrantees`、按插件矩阵读写接口属于第 2 章；manifest 字段与校验属于第 1 章；运行时 `scopeFrom` 属于第 4 章；前端属于第 5 章。本章用到的跨章接口已经和对应章节对齐过，见 §3.8。
+>
+> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。
 
 ---
 

@@ -71,10 +71,9 @@ type rules struct {
 	owners    map[string]string // packages that own the instance, relative to the module
 	sqlOwners map[string]string // packages that may use store.DB.SQL, relative to the module
 	pgxFiles  map[string]string // the files that may import pgx, relative to the module
-	// casbinOwners may import gorm-adapter and call Casbin's Enforce;
-	// enforceOwners (packages or files) may call casbinx's (casbin_test.go).
-	casbinOwners  map[string]string
-	enforceOwners map[string]string
+	// casbinOwners may import gorm-adapter and call Casbin's Enforce
+	// (casbin_test.go).
+	casbinOwners map[string]string
 }
 
 // check returns the findings of one type-checked package as
@@ -86,13 +85,12 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 	_, owner := r.owners[rel]
 	_, sqlOwner := r.sqlOwners[rel]
 	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/internal/store",
-		casbinxPkg: r.module + "/" + casbinxPkg, casbinOwner: listedWithin(r.casbinOwners, rel)}
+		casbinOwner: listedWithin(r.casbinOwners, rel)}
 	c.index(files)
 	for _, f := range files {
 		name := filepath.Base(fset.Position(f.Package).Filename)
 		test := strings.HasSuffix(name, "_test.go")
 		c.sqlOwner = sqlOwner || test
-		c.enforceOwner = test || listedWithin(r.enforceOwners, rel) || listedWithin(r.enforceOwners, rel+"/"+name)
 		ast.Inspect(f, c.visit)
 	}
 	return c.out
@@ -139,10 +137,8 @@ type checker struct {
 	storePkg        string // import path of package store
 	out             []string
 
-	// [casbin-api]: the import path of casbinx, whether the package owns
-	// Casbin and whether the file being visited may call casbinx's Enforce.
-	casbinxPkg                string
-	casbinOwner, enforceOwner bool
+	// [casbin-api]: whether the package owns Casbin.
+	casbinOwner bool
 
 	// What [gorm-raw-unrun] follows a Raw statement through: the functions
 	// of the package, the assignments and uses of its local variables, and

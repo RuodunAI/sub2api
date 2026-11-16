@@ -42,7 +42,6 @@ func TestSQLCasbinRuleReads(t *testing.T) {
 		"delete_scoped": func(db *gorm.DB) error {
 			return db.Raw(DeleteScopedSQL, store.Strings{`^group:5(:|$)`}).Scan(&dest).Error
 		},
-		"orphans": func(db *gorm.DB) error { return db.Raw(OrphansSQL).Scan(&dest).Error },
 	})
 }
 
@@ -50,14 +49,19 @@ func TestSQLCasbinRuleWrites(t *testing.T) {
 	grants := []Grant{{Role: "admin", Action: "account:read"}, {Role: "operator", Action: "account:read", Suffix: "own"}}
 	assertRuns(t, map[string]func(*gorm.DB) error{
 		"add_grants": func(db *gorm.DB) error {
-			_, err := AddGrants(db, grants, gorm.Expr("p.source = ?", "core"))
+			_, err := AddGrants(db, grants, Filter{})
+			return err
+		},
+		"add_grants_filtered": func(db *gorm.DB) error {
+			_, err := AddGrants(db, grants, Filter{Source: "plugin", Skip: []string{"removed"}, NoSuperuser: true})
 			return err
 		},
 		"drop_grants": func(db *gorm.DB) error {
-			return DropGrants(db, "admin", gorm.Expr("p.plugin_key = ?", "demo"), grants[:1])
+			return DropGrants(db, "admin", Filter{Plugin: "demo", Action: "plugin.demo:read", Skip: []string{"staged"}}, grants[:1])
 		},
+		"drop_grants_all": func(db *gorm.DB) error { return DropGrants(db, "admin", Filter{}, nil) },
 		"revoke_scopes": func(db *gorm.DB) error {
-			_, err := RevokeScopes(db, "plugin:demo:read", []string{"own"})
+			_, err := RevokeScopes(db, "plugin:demo:read", []string{"own", ""})
 			return err
 		},
 		"drop_permissions": func(db *gorm.DB) error { return DropPermissions(db, []string{"plugin:demo:read"}) },

@@ -107,7 +107,12 @@ func migrateFile(ctx context.Context, conn *gorm.DB, fsys fs.FS, name string, ap
 		// The file goes to the driver as written, past GORM's placeholder
 		// parsing ("?", "@name"): without arguments pgx sends it with the
 		// simple protocol, which runs the several statements of a file.
+		// A file's HINT (how to fix what it refused) ends up in the
+		// start-up log with the message.
 		if _, err := tx.Statement.ConnPool.ExecContext(ctx, sqlBody); err != nil {
+			if hint := Hint(err); hint != "" {
+				return fmt.Errorf("migration %s: %w; hint: %s", name, err, hint)
+			}
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
 		return tr.Record(ctx, tx, name, checksum)

@@ -446,7 +446,7 @@ func (s *Service) grantPlugin(ctx context.Context, tx *gorm.DB, via, key string,
 			grants = append(grants, casbinrule.Grant{Role: role, Action: key, Suffix: sfx})
 		}
 	}
-	added, err := casbinrule.AddGrants(store.G(ctx, tx), grants, gorm.Expr("NOT r.superuser AND p.source = 'plugin' AND p.status <> 'removed'"))
+	added, err := casbinrule.AddGrants(store.G(ctx, tx), grants, casbinrule.Filter{Source: "plugin", Skip: []string{"removed"}, NoSuperuser: true})
 	if err != nil {
 		return err
 	}

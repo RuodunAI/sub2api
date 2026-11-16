@@ -103,10 +103,9 @@
 //     LoadPolicy, the other constructors and the rest are reported. The
 //     in-memory model (model.Model's AddPolicies, how a snapshot is built)
 //     and the role manager are not covered. Casbin's own Enforce* is called
-//     in casbinx alone, and casbinx.Enforce only there (enforceOwners; test
-//     files exempt): it runs every policy through the matcher, so a request
-//     answers with PermissionSet.Has. Packages that depend on Casbin are
-//     checked as well as those that depend on GORM.
+//     in casbinx alone: it runs every policy through the matcher, so a
+//     request answers with PermissionSet.Has. Packages that depend on
+//     Casbin are checked as well as those that depend on GORM.
 //
 // Why empty lists matter (gorm v1.31; gormtest's TestExpansionTraps keeps
 // the shapes): GORM turns an expanded empty list into NULL, and the result

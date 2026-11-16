@@ -35,10 +35,15 @@ SELECT 1 FROM authz_meta WHERE id = 1 FOR UPDATE;
 -- every active user holds (casbinx.SelfRole), so its grants would reach
 -- everyone; a permission keyed * is the action of a superuser row, so its
 -- grants would make superusers. The one superuser role is super_admin:
--- the one-holder index below names it. The API writes none of these.
+-- the one-holder index below names it. The API writes none of these. Nor
+-- does it write a second holder of the role, which that index refuses:
+-- 0097 asked for one and its trigger kept it so, but a repair that bypassed
+-- the trigger may have left several (a deleted holder counts, as its row
+-- is converted too); the server CLI keeps one on this schema.
 DO $$
 DECLARE
     bad text;
+    holders bigint[];
 BEGIN
     IF EXISTS (SELECT 1 FROM roles WHERE key = '_self') THEN
         RAISE EXCEPTION 'roles.key _self is reserved: its Casbin subject is the virtual self role'
@@ -52,6 +57,14 @@ BEGIN
     IF bad IS NOT NULL THEN
         RAISE EXCEPTION 'only the role super_admin may be a superuser role, not %', bad
             USING ERRCODE = 'check_violation', HINT = 'clear the flag (UPDATE roles SET superuser = false WHERE key <> ''super_admin'') and start again';
+    END IF;
+    IF to_regclass('public.user_roles') IS NOT NULL THEN
+        SELECT array_agg(DISTINCT ur.user_id ORDER BY ur.user_id) INTO holders
+        FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE r.superuser;
+        IF cardinality(holders) > 1 THEN
+            RAISE EXCEPTION 'several super admins: user ids %', array_to_string(holders, ', ')
+                USING ERRCODE = 'check_violation', HINT = 'keep one with "sub2api admin recover-superadmin --email <the email of the one to keep>" (the others become admins) and start again';
+        END IF;
     END IF;
 END $$;
 

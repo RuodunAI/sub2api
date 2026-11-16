@@ -111,7 +111,7 @@ func (f *fakePerms) GrantPluginPermission(_ context.Context, tx *gorm.DB, key st
 		}
 	}
 	f.granted = append(f.granted, key+"="+strings.Join(rec, ","))
-	_, err := casbinrule.AddGrants(tx, add, gorm.Expr("true"))
+	_, err := casbinrule.AddGrants(tx, add, casbinrule.Filter{})
 	return err
 }
 func (f *fakePerms) SetPluginActive(context.Context, *gorm.DB, string, bool) error { return nil }

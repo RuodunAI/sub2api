@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
@@ -829,7 +830,7 @@ func (s *Service) delete(c *gin.Context) {
 		if err := store.G(ctx, tx).Where("id = ?", id).Delete(&model.Proxy{}).Error; err != nil {
 			return err
 		}
-		if authzVersion, err = core.ClearScopeGrants(ctx, tx, uid, core.ScopeRefProxy, []int64{id}); err != nil {
+		if authzVersion, err = authz.ClearScopeGrants(ctx, tx, uid, core.ScopeRefProxy, []int64{id}); err != nil {
 			return err
 		}
 		return audit.Audit(ctx, tx, uid, "proxy.delete", "proxy", strconv.FormatInt(id, 10), map[string]any{"name": name})

@@ -6,6 +6,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
@@ -91,16 +92,17 @@ func TestSQLAuthzPermissionReads(t *testing.T) {
 	})
 }
 
-// The part a role's grant write replaces (grantPart.within); the writes are
-// casbinrule's (its TestSQLCasbinRuleWrites).
-func TestSQLAuthzGrantWrites(t *testing.T) {
-	for name, part := range map[string]grantPart{"all": {}, "core": {coreOnly: true}, "plugin": {plugin: "demo"}} {
-		t.Run(name, func(t *testing.T) {
-			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-				return db.Table("permissions p").Where("?", part.within()).Find(&[]model.Permission{})
-			})
-		})
-	}
+// ClearScopeGrants: whether a scoped grant names the deleted rows, then
+// the delete, its audit and the version; the patterns and ids are one
+// array parameter each.
+func TestSQLAuthzClearScopeGrants(t *testing.T) {
+	patterns, actor := []string{`(^|/)account/3$`, `(^|/)account/4$`}, int64(9)
+	assertCases(t, []sqlCase{
+		{"exists", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, casbinrule.ScopedGrants(db, patterns))) }},
+		{"clear", func(db *gorm.DB) *gorm.DB {
+			return scan(clearScopeGrants(db, patterns, &actor, core.ScopeRefAccount, []int64{3, 4}))
+		}},
+	})
 }
 
 // The role writes. updated_at moves where the raw SQL moved it (update,

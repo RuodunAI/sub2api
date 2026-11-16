@@ -11,8 +11,8 @@ import (
 )
 
 // snapshot is one immutable enforcer, built from one consistent read of the
-// policy. Nothing mutates it after build, so concurrent grants and enforce
-// need no lock; a newer version replaces it whole (snapshots).
+// policy. Nothing mutates it after build, so concurrent grants need no
+// lock; a newer version replaces it whole (snapshots).
 type snapshot struct {
 	version int64
 	e       *casbin.Enforcer
@@ -103,15 +103,4 @@ func (s *snapshot) grants(ur UserRoles) (core.PermissionSet, error) {
 		}
 	}
 	return set, nil
-}
-
-// enforce runs key through the matcher for a user holding ur: allowed when
-// one of its subjects is (some(where p.eft == allow) over the union).
-func (s *snapshot) enforce(ur UserRoles, key string) (bool, error) {
-	for _, sub := range subjects(ur) {
-		if ok, err := s.e.Enforce(sub, key); ok || err != nil {
-			return ok, err
-		}
-	}
-	return false, nil
 }

@@ -1,6 +1,8 @@
 # 第 4 章 运行时鉴权：路由范围与插件查询接口
 
 > 基于 `sup2api-dev` develop @ dae6ba57（只读）。下文路径都相对 `next/`。核实过的代码引用写作 `path:line`；没有核实的写明“推测”。
+>
+> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。
 
 ## 4.1 本章范围
 

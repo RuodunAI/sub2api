@@ -41,15 +41,6 @@ func (r *resolver) Grants(ctx context.Context, uid, min int64) (core.PermissionS
 	return s.grants(ur)
 }
 
-func (r *resolver) enforce(ctx context.Context, uid int64, key string, min int64) (bool, int64, error) {
-	s, ur, err := r.resolve(ctx, uid, min)
-	if err != nil {
-		return false, 0, err
-	}
-	ok, err := s.enforce(ur, key)
-	return ok, s.version, err
-}
-
 func (r *resolver) Prewarm(min int64) { r.snaps.prewarm(min) }
 
 // Pauses between two reads of a resolution whose halves met different

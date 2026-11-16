@@ -13,14 +13,13 @@
 //
 // Requests read the PermissionSet Grants returns and test it with
 // PermissionSet.Has (perm.Implies, the same function permMatch registers);
-// Enforce runs every policy through the matcher (8-230 µs) and is for this
-// package's tests and diagnostics only.
+// the matcher itself only answers this package's tests, which check the
+// sets against it.
 package casbinx
 
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -39,12 +38,6 @@ const (
 	// stored row of it is not loaded (loadable).
 	SelfRole = casbinrule.SelfRole
 )
-
-// UserSub is the Casbin subject of a user, RoleSub of a role.
-func UserSub(id int64) string { return casbinrule.UserSub(id) }
-
-// RoleSub is the Casbin subject of the role with key key.
-func RoleSub(key string) string { return casbinrule.RoleSub(key) }
 
 // Rule is one casbin_rule row: p (role subject, action, scope) or g (user
 // subject, role subject, ""); v3..v5 are unused.
@@ -95,11 +88,6 @@ type RoleCache interface {
 // snapshot (built if needed, blocking, failing closed after a timeout) and
 // the user's roles, both read at the set's Version. When they cannot be
 // had at one version it fails with ErrSkew.
-//
-// Its matcher path is the package function Enforce, not a method: an
-// interface declared elsewhere cannot take it over, so gormguard
-// [casbin-api] sees every call. Other implementations (test doubles) are
-// welcome: Enforce refuses them with ErrForeignResolver.
 type Resolver interface {
 	Grants(ctx context.Context, uid, min int64) (core.PermissionSet, error)
 	// Prewarm starts building the snapshot of version min, off the caller,
@@ -113,20 +101,3 @@ type Resolver interface {
 // writes kept landing in between. The caller must not combine them (casbin
 // fails closed).
 var ErrSkew = errors.New("casbinx: the policy and the user's roles were read at different versions")
-
-// ErrForeignResolver is Enforce's error for a Resolver NewResolver did not
-// make (a test double): only casbinx's own has a matcher path.
-var ErrForeignResolver = errors.New("casbinx: Enforce needs a Resolver of NewResolver")
-
-// Enforce runs key through the matcher for uid, at version min or newer,
-// and returns the version it decided at (the same as Grants would label
-// its set). It runs every policy row through the matcher (8-230 µs at 400
-// rows): for this package's tests and diagnostics only; requests ask
-// Grants' PermissionSet.Has.
-func Enforce(ctx context.Context, r Resolver, uid int64, key string, min int64) (ok bool, version int64, err error) {
-	own, isOwn := r.(*resolver)
-	if !isOwn {
-		return false, 0, fmt.Errorf("%w, not %T", ErrForeignResolver, r)
-	}
-	return own.enforce(ctx, uid, key, min)
-}

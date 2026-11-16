@@ -1,6 +1,8 @@
 # 第 2 章 权限目录与授权（authz）
 
 > 基于 `/home/claude/sup2api-dev` develop @ dae6ba57。下文 `path:line` 以 `next/server/internal/` 为根（另注明的除外），都是在代码里核对过的；标“推测”的是没有核实的判断。
+>
+> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。
 
 ## 2.1 本章范围
 

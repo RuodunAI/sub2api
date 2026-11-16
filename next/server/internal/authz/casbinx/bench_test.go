@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 )
 
 // benchPolicy is a production-sized policy: 10 roles of 40 grants each
@@ -13,7 +15,7 @@ import (
 func benchPolicy() Policy {
 	var rules []Rule
 	for r := range 10 {
-		role := RoleSub(fmt.Sprintf("role%d", r))
+		role := casbinrule.RoleSub(fmt.Sprintf("role%d", r))
 		for k := range 40 {
 			var key string
 			switch k % 4 {

@@ -31,19 +31,25 @@ func transferTargetError(code, message string) *core.Error {
 // deleted one, which only loses the role (as 0097 does). actorID must hold
 // it; 0 is the server CLI, which also repairs a database with no or several
 // holders. It returns the bumped version (call Committed after commit) and
-// the demoted users. Besides authz_meta and the audit it reads and writes
-// the holders (superAdminHolders) and users only, so the CLI runs on the
-// schema before migration 0100 too (whose 0097 asks for it).
+// the demoted users.
 func (s *Service) TransferSuperAdmin(ctx context.Context, tx *gorm.DB, actorID, targetID int64) (int64, []int64, error) {
+	return s.transferSuperAdmin(ctx, tx, policyHolders{}, actorID, targetID)
+}
+
+// TransferSuperAdminLegacy is TransferSuperAdmin for the server CLI on a
+// database the migrations stopped before 0100 (LegacySchema), whose 0097
+// asks for it: the holders are user_roles rows there. Besides authz_meta
+// and the audit it reads and writes them and users only.
+func (s *Service) TransferSuperAdminLegacy(ctx context.Context, tx *gorm.DB, actorID, targetID int64) (int64, []int64, error) {
+	return s.transferSuperAdmin(ctx, tx, legacyHolders{}, actorID, targetID)
+}
+
+func (s *Service) transferSuperAdmin(ctx context.Context, tx *gorm.DB, h holderStore, actorID, targetID int64) (int64, []int64, error) {
 	v, err := s.Bump(ctx, tx)
 	if err != nil {
 		return 0, nil, err
 	}
 	db := store.G(ctx, tx)
-	h, err := superAdminHolders(db)
-	if err != nil {
-		return 0, nil, err
-	}
 	holders, err := h.lock(db)
 	if err != nil {
 		return 0, nil, err
@@ -88,7 +94,7 @@ func undeleted(db *gorm.DB, ids []int64) ([]int64, error) {
 // holderStore is where the super admin role's holders are: casbin_rule, or
 // user_roles on a database the 0.1.290 migrations have not reached past
 // 0097, whose check of one holder points the operator at the CLI before
-// 0100 replaces the table.
+// 0100 replaces the table (TransferSuperAdminLegacy).
 type holderStore interface {
 	// lock returns the holders, by id, and locks their rows.
 	lock(db *gorm.DB) ([]int64, error)
@@ -98,21 +104,12 @@ type holderStore interface {
 
 // LegacySchema reports whether the database db reads is one the
 // migrations stopped before 0100 (user_roles still holds the roles): where
-// the server CLI recovers a super admin for 0097, and nothing else of this
-// core runs.
+// the server CLI recovers a super admin for 0097 (TransferSuperAdminLegacy),
+// and nothing else of this core runs.
 func LegacySchema(db *gorm.DB) (bool, error) {
 	var legacy bool
 	err := db.Raw(`SELECT to_regclass('public.user_roles') IS NOT NULL`).Scan(&legacy).Error
 	return legacy, err
-}
-
-// superAdminHolders is the holderStore of the database db reads.
-func superAdminHolders(db *gorm.DB) (holderStore, error) {
-	legacy, err := LegacySchema(db)
-	if err != nil || !legacy {
-		return policyHolders{}, err
-	}
-	return legacyHolders{}, nil
 }
 
 // policyHolders are casbin_rule's g rows of the super admin role (the one

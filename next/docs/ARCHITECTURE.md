@@ -226,10 +226,9 @@ flowchart LR
 
 ```mermaid
 erDiagram
-  users ||--o{ user_roles : has
-  roles ||--o{ user_roles : assigned
-  roles ||--o{ role_permissions : grants
-  permissions ||--o{ role_permissions : granted
+  users ||--o{ casbin_rule : "g u:id"
+  roles ||--o{ casbin_rule : "p and g r:key"
+  permissions ||--o{ casbin_rule : "p action"
   plugins ||--o{ permissions : registers
   users ||--|| user_balances : owns
   users ||--o{ balance_ledger : entries
@@ -388,7 +387,9 @@ erDiagram
   }
 ```
 
-`roles`、`user_roles`、`role_permissions`、`proxies`、`account_groups`、`segments`、`segment_groups`、`price_rules`、`plugin_permission_grants`、`plugin_migrations`、`plugin_rollouts`、`events`、`plugin_event_cursors`、`plugin_event_deadletters`、`plugin_job_runs`、`plugin_egress_logs` 的字段见各章节。
+`roles`、`casbin_rule`、`proxies`、`account_groups`、`segments`、`segment_groups`、`price_rules`、`plugin_permission_grants`、`plugin_migrations`、`plugin_rollouts`、`events`、`plugin_event_cursors`、`plugin_event_deadletters`、`plugin_job_runs`、`plugin_egress_logs` 的字段见各章节。
+
+授予与角色指派只存在 `casbin_rule`（0.1.290 起，迁移 0100，CONTRACTS §99.1）：p 行是角色的授予，g 行是用户的角色；它没有外键，按角色 key、权限 key、用户 id 引用，上图的连线是这些引用而不是外键。原来的 `user_roles`、`role_permissions`、`role_permission_scopes` 已由 0100 转换后删除。
 
 用户组三张表（`segments`、`segment_groups`、`price_rules`）和 `users.segment_id` 是 2026-11-12 加的（迁移 0095，7.1、7.3，CONTRACTS §97）：每个用户属于一个用户组，私有分组授权给用户组，用户组在分组里可以有专属倍率和专属价。原来的“用户 ↔ 分组”授权表 `user_groups` 由它们取代，表还在，但不再读写。
 

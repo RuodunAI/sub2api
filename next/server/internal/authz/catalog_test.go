@@ -317,8 +317,13 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 		t.Fatalf("a refused sync bumped the version: %d -> %d", v1, v2)
 	}
 
+	// The fix moves the version itself, so that running nodes drop what
+	// they cached of the old key.
 	if _, err := db.SQL.ExecContext(ctx, fix); err != nil {
 		t.Fatal(err)
+	}
+	if v2, err := s.currentVersion(ctx); err != nil || v2 != v1+1 {
+		t.Fatalf("the rename moved the version %d -> %d, %v", v1, v2, err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
 		t.Fatal(err)

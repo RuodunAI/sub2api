@@ -226,7 +226,7 @@ func grantDefaultPermissions(db *gorm.DB, roleKey string, keys []string) ([]casb
 	for i, k := range keys {
 		grants[i] = casbinrule.Grant{Role: roleKey, Action: k}
 	}
-	return casbinrule.AddGrants(db, grants, gorm.Expr("true"))
+	return casbinrule.AddGrants(db, grants, casbinrule.Filter{})
 }
 
 // grantDefaultAssignable adds to the assignable list of the role roleKey
@@ -374,7 +374,7 @@ func (s *Service) grantScopedDefaults(ctx context.Context, tx *gorm.DB, roleKey 
 		}
 		grants = append(grants, casbinrule.Grant{Role: roleKey, Action: string(p.Action), Suffix: p.Suffix()})
 	}
-	added, err := casbinrule.AddGrants(store.G(ctx, tx), grants, gorm.Expr("p.source = 'core'"))
+	added, err := casbinrule.AddGrants(store.G(ctx, tx), grants, casbinrule.Filter{Source: "core"})
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -190,10 +191,10 @@ func TestPluginScopesViaCasbin(t *testing.T) {
 }
 
 // Equivalence with core's sets, offline: random roles over the vector keys
-// and random users. For every key Enforce must answer as the set built
+// and random users. For every key the matcher must answer as the set built
 // directly from the user's roles (core's PermissionSet.Has), and Grants
 // must hold the same keys and superuser flag.
-func TestShadowEquivalenceRandom(t *testing.T) {
+func TestCasbinEquivalenceRandom(t *testing.T) {
 	t.Parallel()
 	v := loadVectors(t)
 	var pool []string
@@ -209,7 +210,7 @@ func TestShadowEquivalenceRandom(t *testing.T) {
 		roleKeys := map[string][]string{}
 		var rules []Rule
 		for ri := range 4 {
-			role := RoleSub(string(rune('a' + ri)))
+			role := casbinrule.RoleSub(string(rune('a' + ri)))
 			for range r.IntN(6) {
 				key := pool[r.IntN(len(pool))]
 				roleKeys[role] = append(roleKeys[role], key)
@@ -273,7 +274,7 @@ func TestRolesComeWithEachCall(t *testing.T) {
 		if !enforce(t, s, held("r:admin"), "settings:manage") || enforce(t, s, held(), "settings:manage") {
 			t.Fatalf("memo %v: the roles of the call are not what decides", memo)
 		}
-		if ok, err := s.e.Enforce(UserSub(1), "settings:manage"); ok || err != nil {
+		if ok, err := s.e.Enforce(casbinrule.UserSub(1), "settings:manage"); ok || err != nil {
 			t.Fatalf("memo %v: a user subject links to a role: %v, %v", memo, ok, err)
 		}
 	}
@@ -286,7 +287,7 @@ func TestRoleManagerReadOnly(t *testing.T) {
 	if ok, _ := m.HasLink("r:a", "r:a"); !ok {
 		t.Fatal("HasLink of a role to itself")
 	}
-	if ok, _ := m.HasLink(UserSub(1), "r:a"); ok {
+	if ok, _ := m.HasLink(casbinrule.UserSub(1), "r:a"); ok {
 		t.Fatal("a user links to a role")
 	}
 	if got, err := m.GetImplicitRoles("r:a"); err != nil || len(got) != 0 {

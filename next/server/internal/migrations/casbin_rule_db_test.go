@@ -2,6 +2,7 @@ package migrations_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -182,6 +183,21 @@ func TestCasbinRuleReservedKeys(t *testing.T) {
 		require.ErrorContains(t, old.migrate(), c.want)
 		require.Equal(t, "false true", old.text(`SELECT (to_regclass('casbin_rule') IS NOT NULL)::text || ' ' || (to_regclass('user_roles') IS NOT NULL)::text`), "the migration rolled back")
 	}
+}
+
+// Several holders of the super admin role (0097's trigger bypassed by a
+// repair) stop the upgrade before the one-holder index would, naming them
+// and the CLI that keeps one.
+func TestCasbinRuleSeveralSuperAdmins(t *testing.T) {
+	h := &hardeningDB{t: t, db: testutil.DBThrough(t, beforeCasbin), ctx: context.Background()}
+	h.exec(`INSERT INTO roles (key, name, superuser) VALUES ('super_admin', '{}', true)`)
+	a, b := testutil.InsertUser(t, h.db, "a@x"), testutil.InsertUser(t, h.db, "b@x")
+	testutil.ExecWithoutTrigger(t, h.db, "user_roles", "user_roles_one_superuser",
+		`INSERT INTO user_roles (user_id, role_id) SELECT u, r.id FROM unnest($1::bigint[]) u, roles r WHERE r.key = 'super_admin'`, []int64{a, b})
+	err := h.migrate()
+	require.ErrorContains(t, err, fmt.Sprintf("several super admins: user ids %d, %d", a, b))
+	require.ErrorContains(t, err, `hint: keep one with "sub2api admin recover-superadmin --email`)
+	require.Equal(t, "false true", h.text(`SELECT (to_regclass('casbin_rule') IS NOT NULL)::text || ' ' || (to_regclass('user_roles') IS NOT NULL)::text`), "the migration rolled back")
 }
 
 // The one-holder index across transactions: of two giving the super admin

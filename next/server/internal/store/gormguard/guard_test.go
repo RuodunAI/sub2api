@@ -142,7 +142,7 @@ func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*as
 func TestRepositoryFollowsGORMRules(t *testing.T) {
 	root, module := moduleRoot(t)
 	r := rules{module: module, owners: instanceOwners, sqlOwners: sqlOwners, pgxFiles: pgxFiles,
-		casbinOwners: casbinOwners, enforceOwners: enforceOwners}
+		casbinOwners: casbinOwners}
 	known := map[string]bool{} // packages and their files, relative to the module
 	var targets []listed
 	for _, p := range goList(t, root, "./...") {
@@ -155,7 +155,7 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 			targets = append(targets, p)
 		}
 	}
-	for _, list := range []map[string]string{instanceOwners, sqlOwners, pgxFiles, casbinOwners, enforceOwners} {
+	for _, list := range []map[string]string{instanceOwners, sqlOwners, pgxFiles, casbinOwners} {
 		for rel := range list {
 			if !known[rel] {
 				t.Errorf("%s is listed but is no package or Go file of %s; drop its entry", rel, module)

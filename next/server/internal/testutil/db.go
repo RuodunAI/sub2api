@@ -132,10 +132,10 @@ func cloneTemplate(t testing.TB, base, tpl string) *store.DB {
 }
 
 // checkCasbinOrphans fails t when casbin_rule holds a row naming a user,
-// role or permission the test left the database dsn without
-// (casbinrule.OrphansSQL): no foreign key cascades to it, so every delete
-// path clears its rows itself, which every DB test thereby looks for. A
-// database without the table (DBThrough an older migration) is not checked.
+// role or permission the test left the database dsn without (orphansSQL):
+// no foreign key cascades to it, so every delete path clears its rows
+// itself, which every DB test thereby looks for. A database without the
+// table (DBThrough an older migration) is not checked.
 func checkCasbinOrphans(t testing.TB, dsn string) {
 	const failed = "%s orphan check: %v"
 	ctx := context.Background()
@@ -152,7 +152,7 @@ func checkCasbinOrphans(t testing.TB, dsn string) {
 		}
 		return
 	}
-	rows, err := conn.QueryContext(ctx, casbinrule.OrphansSQL)
+	rows, err := conn.QueryContext(ctx, orphansSQL)
 	if err != nil {
 		t.Errorf(failed, casbinrule.Table, err)
 		return

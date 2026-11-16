@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
@@ -496,7 +497,7 @@ func (s *Service) delete(c *gin.Context) {
 		}
 		uid, _ := core.UserID(ctx)
 		var err error
-		authzVersion, err = core.ClearScopeGrants(ctx, tx, uid, core.ScopeRefGroup, []int64{id})
+		authzVersion, err = authz.ClearScopeGrants(ctx, tx, uid, core.ScopeRefGroup, []int64{id})
 		return err
 	})
 	if err != nil {

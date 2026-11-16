@@ -32,6 +32,15 @@ func ConstraintName(err error) string {
 	return ""
 }
 
+// Hint is the HINT of a PostgreSQL error in err's chain, "" when there is
+// none.
+func Hint(err error) string {
+	if pg := pgError(err); pg != nil {
+		return pg.Hint
+	}
+	return ""
+}
+
 // IsUniqueViolation reports a 23505 error (optionally on a named constraint).
 func IsUniqueViolation(err error, constraint string) bool {
 	pg := pgError(err)

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -94,7 +95,7 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 			return err
 		}
 		var err error
-		if authzVersion, err = core.ClearScopeGrants(ctx, tx, 0, core.ScopeRefAccount, ids); err != nil {
+		if authzVersion, err = authz.ClearScopeGrants(ctx, tx, 0, core.ScopeRefAccount, ids); err != nil {
 			return err
 		}
 		if deletion := s.deletionResource(pluginKey); deletion != nil {

@@ -1,0 +1,24 @@
+-- sql
+WITH g AS (
+    SELECT DISTINCT r.id AS role_id, ('r:' || r.key)::text AS v0, p.key::text AS v1, t.v2
+    FROM unnest($1::text[], $2::text[], $3::text[]) AS t(role, action, v2)
+    JOIN roles r ON r.key = t.role
+    JOIN permissions p ON p.key = t.action
+    WHERE p.source = $4 AND p.status <> ALL($5) AND r.superuser = $6),
+ins AS (
+    INSERT INTO casbin_rule (ptype, v0, v1, v2)
+    SELECT 'p', v0, v1, v2 FROM g
+    WHERE v2 = '*' OR NOT EXISTS (SELECT 1 FROM casbin_rule f
+        WHERE f.ptype = 'p' AND f.v0 = g.v0 AND f.v1 = g.v1 AND f.v2 = '*')
+    ON CONFLICT (ptype, v0, v1, v2, v3, v4, v5) DO NOTHING
+    RETURNING v0, v1, v2)
+SELECT g.role_id, CASE g.v2 WHEN '*' THEN g.v1 ELSE g.v1 || ':' || g.v2 END AS key
+FROM ins JOIN g ON g.v0 = ins.v0 AND g.v1 = ins.v1 AND g.v2 = ins.v2
+ORDER BY 1, 2
+-- vars
+$1 store.Strings [admin operator]
+$2 store.Strings [account:read account:read]
+$3 store.Strings [* own]
+$4 string "plugin"
+$5 store.Strings [removed]
+$6 bool false

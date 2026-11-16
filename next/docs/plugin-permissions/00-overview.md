@@ -1,6 +1,8 @@
 # 总览：插件权限声明与角色分配
 
 > 基于 `touwaeriol/sup2api` develop @ dae6ba57（只读）。路径相对 `next/`，另注明的除外。本文是 5 章设计的入口：一页摘要、章节导航、跨章接口约定、定案清单、风险与回滚，以及交给子代理并行实现的任务拆分。各章细节以章节为准；本文与章节冲突时，以本文“定案清单”为准，并回头修章节。
+>
+> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。
 
 ## 1. 一页摘要
 
@@ -9,7 +11,7 @@
 | | ① 插件申请的访问权限 | ② 插件声明给用户的权限 |
 |---|---|---|
 | 清单字段 | `hostPermissions` | `userPermissions`（本次重点） |
-| 授权对象 | 插件本身（`plugin_permission_grants`） | 角色（`role_permissions` / `role_permission_scopes`） |
+| 授权对象 | 插件本身（`plugin_permission_grants`） | 角色（`casbin_rule` 的 p 行，CONTRACTS §99.1；设计时为 `role_permissions` / `role_permission_scopes`） |
 | 本次改动 | 语义不变；插件详情“权限”标签里展示、撤销，新增**收窄 / 重新授予**（`PUT /plugins/:key/grants/:permission`） | 清单新字段、目录新列、D2 挂起、D6 软删除、插件资源范围、三个入口共用矩阵 |
 
 ② 的主线：
