@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 
 	"gorm.io/gorm"
 
@@ -12,7 +13,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-const reauthLockSQL = `SELECT pg_advisory_xact_lock(hashtextextended('ccg-reauth:' || ?::bigint::text, 0))`
+// reauthLock names the advisory lock of an account's re-authorization
+// (store.XactLock): the account id after this prefix.
+const reauthLock = "ccg-reauth:"
 
 // ReauthDraft keeps its compatibility name, but returns the existing runtime.
 // It never creates a draft, copies credentials, or replaces Docker resources.
@@ -71,10 +74,10 @@ func (s *Service) CommitReauth(ctx context.Context, accountID int64, key string,
 	subscriptionChanged := false
 	var observed core.AccountPreparationFacts
 	err := s.lockedTx(ctx, key, true, func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
-		if err := g.Exec(reauthLockSQL, accountID).Error; err != nil {
+		if err := store.XactLock(ctx, tx, reauthLock+strconv.FormatInt(accountID, 10)); err != nil {
 			return err
 		}
+		g := store.G(ctx, tx)
 		// The runtime key of the managed account, which stays locked.
 		var current string
 		err := g.Table("accounts a").Joins("LEFT JOIN ccgateway_runtimes r ON r.account_id = a.id").

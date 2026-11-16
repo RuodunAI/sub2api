@@ -170,17 +170,17 @@ func (s *Service) desiredIn(ctx context.Context, q *gorm.DB, id int64, credentia
 	// The version covers what configures the runtime. The plugin's read-only
 	// extension account_email (CONTRACTS §59.6) is a fact about its login, not
 	// configuration: recording it never makes the controller re-apply.
-	err := store.G(ctx, q).Raw(`SELECT
-  a.deleted_at IS NOT NULL,
+	err := store.G(ctx, q).Table("accounts a").
+		Joins("LEFT JOIN proxies p ON p.id=a.proxy_id").Joins("LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id").
+		Select(`a.deleted_at IS NOT NULL,
   r.retired_at IS NOT NULL,
   `+sqlInRetention+`,
   r.purged_at IS NOT NULL,
   a.proxy_id IS NOT NULL AND (p.id IS NULL OR p.protocol NOT IN ('http','https','socks5')),
   concat_ws('|',a.id,a.type,a.proxy_id,a.deleted_at,p.updated_at,encode(a.credentials_enc,'hex'),(a.settings - 'account_email')::text,r.retired_at),
   COALESCE(p.protocol,''),COALESCE(p.host,''),COALESCE(p.port,0),COALESCE(p.username,''),p.password_enc,a.type,a.credentials_enc,
-  COALESCE(r.key, a.id::text), a.settings, COALESCE(`+sqlRuntimeParked+`, false)
-  FROM accounts a LEFT JOIN proxies p ON p.id=a.proxy_id LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id
-  WHERE a.id=? AND a.plugin_key='ccgateway' AND a.type IN ('managed','apikey')`, id).
+  COALESCE(r.key, a.id::text), a.settings, COALESCE(`+sqlRuntimeParked+`, false)`).
+		Where("a.id=? AND a.plugin_key='ccgateway' AND a.type IN ('managed','apikey')", id).
 		Row().Scan(&d.Deleted, &d.PurgeRequested, &d.Retained, &d.Purged, &d.ProxyUnusable, &version, &spec.Protocol, &spec.Host, &spec.Port, &spec.Username, &password, &d.Kind, &accountCredentials, &d.Key, &settings, &d.Parked)
 	if err != nil {
 		return d, err
@@ -231,12 +231,11 @@ func (s *Service) draftDesiredIn(ctx context.Context, q *gorm.DB, key string, cr
 	var version string
 	var spec core.ProxySpec
 	var password, settings []byte
-	err := store.G(ctx, q).Raw(`SELECT
-  r.proxy_id IS NOT NULL AND (p.id IS NULL OR p.protocol NOT IN ('http','https','socks5')),
+	err := store.G(ctx, q).Table("ccgateway_runtimes r").Joins("LEFT JOIN proxies p ON p.id=r.proxy_id").
+		Select(`r.proxy_id IS NOT NULL AND (p.id IS NULL OR p.protocol NOT IN ('http','https','socks5')),
   concat_ws('|','draft',r.key,r.proxy_id,p.updated_at),
-  COALESCE(p.protocol,''),COALESCE(p.host,''),COALESCE(p.port,0),COALESCE(p.username,''),p.password_enc,r.initial_settings
-  FROM ccgateway_runtimes r LEFT JOIN proxies p ON p.id=r.proxy_id
-  WHERE r.key=? AND r.account_id IS NULL AND r.retired_at IS NULL`, key).
+  COALESCE(p.protocol,''),COALESCE(p.host,''),COALESCE(p.port,0),COALESCE(p.username,''),p.password_enc,r.initial_settings`).
+		Where("r.key=? AND r.account_id IS NULL AND r.retired_at IS NULL", key).
 		Row().Scan(&d.ProxyUnusable, &version, &spec.Protocol, &spec.Host, &spec.Port, &spec.Username, &password, &settings)
 	if err != nil {
 		return d, err
@@ -344,13 +343,11 @@ func (s *Service) runtimeRequestIn(ctx context.Context, q *gorm.DB, key, method,
 	return res, close, nil
 }
 
-// lockSQL takes the per-runtime advisory lock of the current transaction.
-// The key text is the account id for runtimes named after their account, as
-// before runtime keys existed, so mixed-version nodes still serialize.
-const (
-	tryLockSQL = `SELECT pg_try_advisory_xact_lock(hashtextextended('ccg-account:' || ?::text,0))`
-	lockSQL    = `SELECT true FROM (SELECT pg_advisory_xact_lock(hashtextextended('ccg-account:' || ?::text,0))) l`
-)
+// runtimeLock names the per-runtime advisory lock of a transaction
+// (store.XactLock): the runtime key after this prefix. The key text is the
+// account id for runtimes named after their account, as before runtime keys
+// existed, so mixed-version nodes still serialize.
+const runtimeLock = "ccg-account:"
 
 // Reconcile is a control-plane operation for one runtime: key is a runtime
 // key or an account id (resolved to the account's runtime key). Multiple
@@ -372,8 +369,7 @@ func (s *Service) reconcileLocked(ctx context.Context, tx *gorm.DB, key string) 
 	if err := store.RequireTx(tx); err != nil {
 		return err
 	}
-	var locked bool
-	if e := store.G(ctx, tx).Raw(tryLockSQL, key).Row().Scan(&locked); e != nil || !locked {
+	if locked, e := store.TryXactLock(ctx, tx, runtimeLock+key); e != nil || !locked {
 		return e
 	}
 	d, e := s.desiredKey(ctx, tx, key, true)
@@ -626,11 +622,10 @@ var (
 // the sweep deletes them.
 func (s *Service) runtimeKeys(ctx context.Context) ([]string, error) {
 	var keys []string
-	e := store.G(ctx, s.DB.Gorm).Raw(`SELECT COALESCE(r.key, a.id::text) FROM accounts a
-  LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id
-  WHERE a.plugin_key='ccgateway' AND a.type IN ('managed','apikey') AND r.purged_at IS NULL
-  UNION ALL SELECT key FROM ccgateway_runtimes WHERE account_id IS NULL AND retired_at IS NULL
-  ORDER BY 1`).Scan(&keys).Error
+	g := store.G(ctx, s.DB.Gorm)
+	accounts := g.Table("accounts a").Joins("LEFT JOIN ccgateway_runtimes r ON r.account_id=a.id").Select("COALESCE(r.key, a.id::text)").
+		Where("a.plugin_key='ccgateway' AND a.type IN ('managed','apikey') AND r.purged_at IS NULL")
+	e := g.Raw("(?) UNION ALL (?) ORDER BY 1", accounts, openDrafts(g).Select("key")).Scan(&keys).Error
 	return keys, e
 }
 

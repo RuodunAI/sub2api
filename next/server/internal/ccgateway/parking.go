@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -63,6 +64,12 @@ const sqlAccountRed = `(a.status = 'disabled'
 // status change makes the mark stale without clearing it.
 const sqlRuntimeParked = `(r.parked_at IS NOT NULL AND a.deleted_at IS NULL AND a.status_changed_at IS NOT NULL
 	AND r.parked_at >= a.status_changed_at AND ` + sqlAccountRed + `)`
+
+// runtimeAccount is the account a of the runtime r of the statement it is a
+// subquery of.
+func runtimeAccount(db *gorm.DB) *gorm.DB {
+	return db.Table("accounts a").Select("1").Where("a.id = r.account_id")
+}
 
 // wakeWait bounds how long a wake waits for the runtime to be ready.
 var (
@@ -124,8 +131,9 @@ func (s *Service) parkRuntimes(ctx context.Context, _ core.TaskRun) (core.TaskRe
 	}
 	// Stale marks (the account changed status since) are cleared for tidiness:
 	// they never count (sqlRuntimeParked).
-	if err := store.G(ctx, s.DB.Gorm).Exec(`UPDATE ccgateway_runtimes r SET parked_at = NULL
-		FROM accounts a WHERE a.id = r.account_id AND r.parked_at IS NOT NULL AND NOT ` + sqlRuntimeParked).Error; err != nil {
+	g := store.G(ctx, s.DB.Gorm)
+	if err := g.Table("ccgateway_runtimes r").Where("r.parked_at IS NOT NULL AND EXISTS (?)", runtimeAccount(g).Where("NOT "+sqlRuntimeParked)).
+		Update("parked_at", nil).Error; err != nil {
 		return core.TaskResult{}, fmt.Errorf("clear stale marks: %w", err)
 	}
 	after := cfg.ParkAfter()
@@ -134,15 +142,18 @@ func (s *Service) parkRuntimes(ctx context.Context, _ core.TaskRun) (core.TaskRe
 	}
 	var parked []parkedRuntime
 	err = s.DB.Tx(ctx, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
+		// The runtimes of accounts red for longer than after, a batch at a
+		// time; rows another run holds are left to it.
+		due := g.Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").Select("r.key").
+			Where(`a.plugin_key = 'ccgateway' AND a.type IN ('managed', 'apikey') AND a.deleted_at IS NULL
+				AND r.retired_at IS NULL AND r.purged_at IS NULL AND r.parked_at IS NULL
+				AND a.status_changed_at IS NOT NULL AND `+sqlAccountRed+`
+				AND greatest(a.status_changed_at, r.woken_at) <= clock_timestamp() - ?::interval`, after.String()).
+			Order("r.key").Limit(parkBatch).Clauses(store.ForUpdate().Of("r").SkipLocked())
 		var rows []model.CcgatewayRuntime
-		err := store.G(ctx, tx).Raw(`UPDATE ccgateway_runtimes r SET parked_at = clock_timestamp()
-			FROM (SELECT r.key FROM ccgateway_runtimes r JOIN accounts a ON a.id = r.account_id
-				WHERE a.plugin_key = 'ccgateway' AND a.type IN ('managed', 'apikey') AND a.deleted_at IS NULL
-					AND r.retired_at IS NULL AND r.purged_at IS NULL AND r.parked_at IS NULL
-					AND a.status_changed_at IS NOT NULL AND `+sqlAccountRed+`
-					AND greatest(a.status_changed_at, r.woken_at) <= clock_timestamp() - ?::interval
-				ORDER BY r.key LIMIT ? FOR UPDATE OF r SKIP LOCKED) due
-			WHERE r.key = due.key RETURNING r.key, r.account_id`, after.String(), parkBatch).Scan(&rows).Error
+		err := g.Model(&rows).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key"}, {Name: "account_id"}}}).
+			Where("key IN (?)", due).Update("parked_at", gorm.Expr("clock_timestamp()")).Error
 		if err != nil {
 			return err
 		}
@@ -222,15 +233,15 @@ func (s *Service) WakeRuntime(ctx context.Context, id int64) error {
 func (s *Service) wake(ctx context.Context, id int64) (bool, error) {
 	var woke bool
 	err := s.DB.Tx(ctx, func(tx *gorm.DB) error {
-		var key string
-		err := store.G(ctx, tx).Raw(`UPDATE ccgateway_runtimes r SET parked_at = NULL, woken_at = clock_timestamp()
-			FROM accounts a WHERE a.id = r.account_id AND a.id = ? AND `+sqlRuntimeParked+` RETURNING r.key`, id).Row().Scan(&key)
-		if store.IsNoRows(err) {
-			return nil
+		g := store.G(ctx, tx)
+		var row model.CcgatewayRuntime
+		res := g.Model(&row).Table("ccgateway_runtimes r").Clauses(clause.Returning{Columns: []clause.Column{{Name: "key"}}}).
+			Where("r.account_id = ? AND EXISTS (?)", id, runtimeAccount(g).Where(sqlRuntimeParked)).
+			Updates(map[string]any{"parked_at": nil, "woken_at": gorm.Expr("clock_timestamp()")})
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error
 		}
-		if err != nil {
-			return err
-		}
+		key := row.Key
 		woke = true
 		uid, _ := core.UserID(ctx)
 		return audit.Audit(ctx, tx, uid, actionRuntimeWoken, "account", strconv.FormatInt(id, 10), map[string]any{"runtime": key})

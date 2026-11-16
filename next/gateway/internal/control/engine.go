@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Engine struct {
@@ -436,7 +438,8 @@ func (e *Engine) Coordinate(ctx context.Context) error {
 func (e *Engine) coordinateTx(ctx context.Context, tx *gorm.DB, primary string) (bool, error) {
 	var p Plan
 	var raw []byte
-	err := tx.Raw(`SELECT id,release_digest,nodes,cursor,strategy FROM updater.upgrades WHERE cluster_id=? AND status='running' FOR UPDATE`, e.Store.Cluster).Row().Scan(&p.ID, &p.ReleaseDigest, &raw, &p.Cursor, &p.Strategy)
+	err := tx.Table("updater.upgrades").Where("cluster_id = ? AND status = 'running'", e.Store.Cluster).Clauses(forUpdate()).
+		Select("id,release_digest,nodes,cursor,strategy").Row().Scan(&p.ID, &p.ReleaseDigest, &raw, &p.Cursor, &p.Strategy)
 	if gormpg.IsNoRows(err) {
 		return false, nil
 	}
@@ -475,11 +478,11 @@ func (e *Engine) completePlan(ctx context.Context, tx *gorm.DB, p Plan) (bool, e
 	if err := e.requireFreshNodes(ctx, p.Nodes); err != nil {
 		return false, err
 	}
-	var verified int
-	if err := tx.Raw(`SELECT count(*) FROM updater.nodes WHERE cluster_id=? AND node_id=ANY(?) AND ready AND mode='local' AND release_digest=?`, e.Store.Cluster, gormpg.Array[string](p.Nodes), p.ReleaseDigest).Row().Scan(&verified); err != nil {
+	var verified int64
+	if err := e.Store.nodes(tx).Where("node_id = ANY(?) AND ready AND mode = 'local' AND release_digest = ?", gormpg.Array[string](p.Nodes), p.ReleaseDigest).Count(&verified).Error; err != nil {
 		return false, err
 	}
-	if verified != len(p.Nodes) {
+	if verified != int64(len(p.Nodes)) {
 		reason := "waiting for all planned nodes to verify the target release"
 		return false, &blocked{p.ID, reason, errors.New(reason)}
 	}
@@ -508,7 +511,11 @@ func (e *Engine) settleExistingStep(ctx context.Context, tx *gorm.DB, p Plan, st
 	}
 	if state != "done" && st.Action == "stop" {
 		var safetyStopped bool
-		if err = tx.Raw(`SELECT EXISTS(SELECT 1 FROM updater.nodes n JOIN updater.stop_confirmations c ON c.cluster_id=n.cluster_id AND c.node_id=n.node_id AND c.shell_boot_id=n.shell_boot_id WHERE n.cluster_id=? AND n.node_id=? AND NOT n.enabled AND n.stopped AND c.upgrade_id=? AND c.step_id=?)`, e.Store.Cluster, st.NodeID, p.ID, st.ID).Row().Scan(&safetyStopped); err != nil {
+		// A disabled node that confirmed this stop for its current shell boot.
+		confirmed := tx.Table("updater.nodes n").
+			Joins("JOIN updater.stop_confirmations c ON c.cluster_id=n.cluster_id AND c.node_id=n.node_id AND c.shell_boot_id=n.shell_boot_id").
+			Where("n.cluster_id=? AND n.node_id=? AND NOT n.enabled AND n.stopped AND c.upgrade_id=? AND c.step_id=?", e.Store.Cluster, st.NodeID, p.ID, st.ID)
+		if err = existsQuery(tx, confirmed).Row().Scan(&safetyStopped); err != nil {
 			return true, false, err
 		}
 		if safetyStopped && e.requireFreshNodes(ctx, []string{st.NodeID}) == nil {
@@ -538,7 +545,8 @@ func (e *Engine) insertNextStep(tx *gorm.DB, p Plan, st Step) (bool, error) {
 			return err == nil, err
 		}
 	}
-	if err := tx.Exec(`INSERT INTO updater.steps(upgrade_id,step_id,node_id,action,target_digest,peer_node) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING`, p.ID, st.ID, st.NodeID, st.Action, st.TargetDigest, st.PeerNode).Error; err != nil {
+	step := stepRecord{UpgradeID: p.ID, StepID: st.ID, NodeID: st.NodeID, Action: st.Action, TargetDigest: st.TargetDigest, PeerNode: st.PeerNode}
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&step).Error; err != nil {
 		return false, err
 	}
 	err := insertEvents(tx, eventRow{p.ID, "step", st.NodeID + ": " + st.Action})
@@ -555,13 +563,18 @@ func (e *Engine) Work(ctx context.Context) error {
 		return err
 	}
 	var st Step
-	err := e.Store.db(ctx).Raw(`SELECT s.upgrade_id,s.step_id,s.node_id,s.action,s.target_digest,s.peer_node,s.status FROM updater.steps s JOIN updater.upgrades u ON u.id=s.upgrade_id WHERE u.cluster_id=? AND u.status='running' AND u.strategy=ANY(?) AND u.cursor=s.step_id AND s.node_id=? AND s.status IN ('pending','running')`, e.Store.Cluster, knownStrategies, e.Node.ID).Row().Scan(&st.UpgradeID, &st.ID, &st.NodeID, &st.Action, &st.TargetDigest, &st.PeerNode, &st.Status)
+	db := e.Store.db(ctx)
+	// This node's step at the cursor of the running plan, when not finished.
+	err := db.Table("updater.steps s").Joins("JOIN updater.upgrades u ON u.id=s.upgrade_id").
+		Select("s.upgrade_id,s.step_id,s.node_id,s.action,s.target_digest,s.peer_node,s.status").
+		Where("u.cluster_id=? AND u.status='running' AND u.strategy=ANY(?) AND u.cursor=s.step_id AND s.node_id=? AND s.status IN ('pending','running')", e.Store.Cluster, knownStrategies, e.Node.ID).
+		Row().Scan(&st.UpgradeID, &st.ID, &st.NodeID, &st.Action, &st.TargetDigest, &st.PeerNode, &st.Status)
 	if gormpg.IsNoRows(err) {
 		// When there is no active command, a crashed stable core may restart
 		// only from the persisted route/release, never from a local symlink.
 		state, _, statusErr := e.Runtime.Status(ctx)
 		var active, outside bool
-		if err := e.Store.db(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused')),EXISTS(SELECT 1 FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused') AND NOT jsonb_exists(nodes, ?))`, e.Store.Cluster, e.Store.Cluster, e.Node.ID).Row().Scan(&active, &outside); err != nil {
+		if err := existsQuery(db, e.Store.activeUpgrade(db), e.Store.activeUpgrade(db).Where("NOT jsonb_exists(nodes, ?)", e.Node.ID)).Row().Scan(&active, &outside); err != nil {
 			return err
 		}
 		e.busy.Store(active)
@@ -602,7 +615,8 @@ func (e *Engine) Work(ctx context.Context) error {
 	}
 	e.busy.Store(true)
 	// Running is a journal state, not an ownership lease: Redis governs execution.
-	started := e.Store.db(ctx).Exec(`UPDATE updater.steps s SET status='running',updated_at=now() FROM updater.upgrades u WHERE s.upgrade_id=? AND s.step_id=? AND u.id=s.upgrade_id AND u.status='running' AND u.strategy=ANY(?) AND u.cursor=s.step_id`, st.UpgradeID, st.ID, knownStrategies)
+	started := cursorStep(db, st).Where("u.status='running' AND u.strategy=ANY(?)", knownStrategies).
+		Updates(map[string]any{"status": "running", "updated_at": gorm.Expr("now()")})
 	if started.Error != nil {
 		return started.Error
 	}
@@ -636,10 +650,11 @@ func (e *Engine) Work(ctx context.Context) error {
 		// of its status in UPDATE ... FROM. This keeps inherited step history
 		// immutable even when a late outcome races the rollback transaction.
 		var currentStatus string
-		if err := tx.Raw(`SELECT status FROM updater.upgrades WHERE id=? FOR UPDATE`, st.UpgradeID).Row().Scan(&currentStatus); err != nil {
+		if err := upgradeRow(tx, st.UpgradeID).Clauses(forUpdate()).Select("status").Row().Scan(&currentStatus); err != nil {
 			return err
 		}
-		finished := tx.Exec(`UPDATE updater.steps s SET status=?,error=?,updated_at=now() FROM updater.upgrades u WHERE s.upgrade_id=? AND s.step_id=? AND u.id=s.upgrade_id AND u.status IN ('running','paused') AND u.cursor=s.step_id`, status, message, st.UpgradeID, st.ID)
+		finished := cursorStep(tx, st).Where("u.status IN ('running','paused')").
+			Updates(map[string]any{"status": status, "error": message, "updated_at": gorm.Expr("now()")})
 		if finished.Error != nil {
 			return finished.Error
 		}
@@ -665,6 +680,14 @@ func (e *Engine) Work(ctx context.Context) error {
 	// on its first wake. Report/publication failures are repaired by polling.
 	e.Store.NotifyUpgrade(ctx)
 	return execErr
+}
+
+// cursorStep is step st while it is the step at the cursor of its plan (u):
+// an UPDATE of it joins its plan (UPDATE updater.steps s ... FROM
+// updater.upgrades u).
+func cursorStep(db *gorm.DB, st Step) *gorm.DB {
+	return db.Table("updater.steps s").Clauses(clause.From{Tables: []clause.Table{{Name: "updater.upgrades", Alias: "u"}}}).
+		Where("s.upgrade_id=? AND s.step_id=? AND u.id=s.upgrade_id AND u.cursor=s.step_id", st.UpgradeID, st.ID)
 }
 func (e *Engine) Execute(ctx context.Context, st Step) error {
 	if err := ctx.Err(); err != nil {
@@ -791,7 +814,7 @@ func (e *Engine) Admit(ctx context.Context, digest string) error {
 	var rev int64
 	err = e.Store.withTx(ctx, func(tx *gorm.DB) error {
 		var allowed bool
-		if err := tx.Raw(`SELECT enabled AND shell_boot_id=? FROM updater.nodes WHERE cluster_id=? AND node_id=? FOR UPDATE`, e.Node.ShellBootID, e.Store.Cluster, e.Node.ID).Row().Scan(&allowed); err != nil {
+		if err := e.Store.nodeRow(tx, e.Node.ID).Clauses(forUpdate()).Select("enabled AND shell_boot_id = ?", e.Node.ShellBootID).Row().Scan(&allowed); err != nil {
 			return err
 		}
 		if !allowed {
@@ -800,7 +823,20 @@ func (e *Engine) Admit(ctx context.Context, digest string) error {
 		if err := e.planAuthorizesTx(ctx, tx, digest); err != nil {
 			return err
 		}
-		return tx.Raw(`INSERT INTO updater.node_admissions(node_id,cluster_id,core_boot_id,release_digest,revision,serve_http,claim_background,coordinate_plugins) VALUES(?,?,?,?,1,true,true,true) ON CONFLICT(node_id) DO UPDATE SET core_boot_id=EXCLUDED.core_boot_id,release_digest=EXCLUDED.release_digest,revision=updater.node_admissions.revision+1,serve_http=true,claim_background=true,coordinate_plugins=true WHERE updater.node_admissions.cluster_id=EXCLUDED.cluster_id RETURNING revision`, e.Node.ID, e.Store.Cluster, st.BootID, digest).Row().Scan(&rev)
+		// The admission of this node, granted anew: a new revision, every
+		// permission. A row of another cluster is not taken over.
+		admission := admissionRecord{NodeID: e.Node.ID, ClusterID: e.Store.Cluster, CoreBootID: st.BootID, ReleaseDigest: digest,
+			Revision: 1, ServeHTTP: true, ClaimBackground: true, CoordinatePlugins: true}
+		set := append(clause.AssignmentColumns([]string{"core_boot_id", "release_digest", "serve_http", "claim_background", "coordinate_plugins"}),
+			clause.Assignment{Column: clause.Column{Name: "revision"}, Value: gorm.Expr("updater.node_admissions.revision+1")})
+		res := tx.Clauses(clause.OnConflict{Columns: columns("node_id"), DoUpdates: set,
+			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "updater.node_admissions.cluster_id=EXCLUDED.cluster_id"}}}},
+			clause.Returning{Columns: columns("revision")}).Create(&admission)
+		if res.Error == nil && res.RowsAffected == 0 {
+			return sql.ErrNoRows
+		}
+		rev = admission.Revision
+		return res.Error
 	})
 	if err != nil {
 		return err
@@ -836,7 +872,7 @@ func (e *Engine) checkPeer(ctx context.Context) error {
 // or drain an otherwise valid core.
 func (e *Engine) identityRevoked(ctx context.Context) bool {
 	var revoked bool
-	err := e.Store.db(ctx).Raw(`SELECT NOT enabled OR shell_boot_id<>? FROM updater.nodes WHERE cluster_id=? AND node_id=?`, e.Node.ShellBootID, e.Store.Cluster, e.Node.ID).Row().Scan(&revoked)
+	err := e.Store.nodeRow(e.Store.db(ctx), e.Node.ID).Select("NOT enabled OR shell_boot_id <> ?", e.Node.ShellBootID).Row().Scan(&revoked)
 	return err == nil && revoked
 }
 
@@ -885,14 +921,16 @@ func (e *Engine) followersStopped(ctx context.Context) error {
 			return errors.New("waiting for fresh follower observations")
 		}
 	}
-	var unsafe int
-	err = e.Store.db(ctx).Raw(`SELECT count(*) FROM updater.nodes n
- JOIN updater.upgrades p ON p.cluster_id=n.cluster_id AND p.status IN ('running','paused')
- LEFT JOIN updater.stop_confirmations c ON c.cluster_id=n.cluster_id AND c.node_id=n.node_id AND c.upgrade_id=p.id AND c.shell_boot_id=n.shell_boot_id
- WHERE n.cluster_id=? AND n.node_id<>? AND
+	// The followers of the active plan without a confirmed stop of their
+	// current boot bound to it (by a done stop step of a member).
+	var unsafe int64
+	err = e.Store.db(ctx).Table("updater.nodes n").
+		Joins("JOIN updater.upgrades p ON p.cluster_id=n.cluster_id AND p.status IN ('running','paused')").
+		Joins("LEFT JOIN updater.stop_confirmations c ON c.cluster_id=n.cluster_id AND c.node_id=n.node_id AND c.upgrade_id=p.id AND c.shell_boot_id=n.shell_boot_id").
+		Where(`n.cluster_id=? AND n.node_id<>? AND
  (NOT n.stopped OR c.node_id IS NULL OR n.peer_protocol<>? OR n.strategy<>? OR
  (jsonb_exists(p.nodes, n.node_id) AND NOT EXISTS(SELECT 1 FROM updater.steps st WHERE st.upgrade_id=p.id AND st.node_id=n.node_id AND st.step_id=c.step_id AND st.action='stop' AND st.status='done')) OR
- (NOT jsonb_exists(p.nodes, n.node_id) AND c.step_id IS NOT NULL))`, e.Store.Cluster, primary, PeerProtocol, PrimaryFirst).Row().Scan(&unsafe)
+ (NOT jsonb_exists(p.nodes, n.node_id) AND c.step_id IS NOT NULL))`, e.Store.Cluster, primary, PeerProtocol, PrimaryFirst).Count(&unsafe).Error
 	if err != nil {
 		return err
 	}
@@ -1008,7 +1046,8 @@ func (e *Engine) Recover(ctx context.Context, bootstrap bool) error {
 	}
 	if bootstrap {
 		var admitted bool
-		if err = e.Store.db(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM updater.node_admissions WHERE cluster_id=?)`, e.Store.Cluster).Row().Scan(&admitted); err != nil {
+		db := e.Store.db(ctx)
+		if err = existsQuery(db, db.Table("updater.node_admissions").Where("cluster_id = ?", e.Store.Cluster)).Row().Scan(&admitted); err != nil {
 			return err
 		}
 		bootstrap = !admitted && e.Node.ID == primary
@@ -1237,7 +1276,7 @@ func (e *Engine) admissionAllowed(ctx context.Context, digest string) error {
 		return errors.New("active plan does not authorize this release")
 	}
 	var localDone, started bool
-	err = e.Store.db(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM updater.steps WHERE upgrade_id=? AND node_id=? AND action='local' AND status='done'),EXISTS(SELECT 1 FROM updater.steps WHERE upgrade_id=? AND node_id=? AND action IN ('start','start-primary') AND status='done')`, id, e.Node.ID, id, e.Node.ID).Row().Scan(&localDone, &started)
+	err = e.admissionSteps(e.Store.db(ctx), id).Row().Scan(&localDone, &started)
 	if err != nil {
 		return err
 	}
@@ -1258,7 +1297,7 @@ func (e *Engine) admissionAllowed(ctx context.Context, digest string) error {
 	if err = e.requireFreshNodes(ctx, []string{primary}); err != nil {
 		return err
 	}
-	err = e.Store.db(ctx).Raw(`SELECT ready AND mode='local' AND release_digest=? FROM updater.nodes WHERE cluster_id=? AND node_id=?`, digest, e.Store.Cluster, primary).Row().Scan(&ready)
+	err = e.Store.nodeRow(e.Store.db(ctx), primary).Select("ready AND mode = 'local' AND release_digest = ?", digest).Row().Scan(&ready)
 	if err != nil {
 		return err
 	}
@@ -1293,18 +1332,18 @@ func (e *Engine) requireFreshNodes(ctx context.Context, ids []string) error {
 // matching Coordinate and rollback) serialize the admission write with them.
 func (e *Engine) planAuthorizesTx(ctx context.Context, tx *gorm.DB, digest string) error {
 	var id, status, target, strategy string
-	planErr := tx.Raw(`SELECT id,status,release_digest,strategy FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused') FOR SHARE`, e.Store.Cluster).Row().Scan(&id, &status, &target, &strategy)
+	planErr := e.Store.activeUpgrade(tx).Clauses(forShare()).Select("id,status,release_digest,strategy").Row().Scan(&id, &status, &target, &strategy)
 	if planErr != nil && !gormpg.IsNoRows(planErr) {
 		return planErr
 	}
 	var baseline string
-	if err := tx.Raw(`SELECT baseline FROM updater.clusters WHERE cluster_id=? FOR SHARE`, e.Store.Cluster).Row().Scan(&baseline); err != nil {
+	if err := e.Store.clusterRow(tx).Clauses(forShare()).Select("baseline").Row().Scan(&baseline); err != nil {
 		return err
 	}
 	if gormpg.IsNoRows(planErr) {
 		// A plan created before the cluster row lock was granted is visible now.
 		var active bool
-		if err := tx.Raw(`SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused'))`, e.Store.Cluster).Row().Scan(&active); err != nil {
+		if err := existsQuery(tx, e.Store.activeUpgrade(tx)).Row().Scan(&active); err != nil {
 			return err
 		}
 		if active || digest != baseline {
@@ -1316,13 +1355,23 @@ func (e *Engine) planAuthorizesTx(ctx context.Context, tx *gorm.DB, digest strin
 		return ErrConflict
 	}
 	var localDone, started bool
-	if err := tx.Raw(`SELECT EXISTS(SELECT 1 FROM updater.steps WHERE upgrade_id=? AND node_id=? AND action='local' AND status='done'),EXISTS(SELECT 1 FROM updater.steps WHERE upgrade_id=? AND node_id=? AND action IN ('start','start-primary') AND status='done')`, id, e.Node.ID, id, e.Node.ID).Row().Scan(&localDone, &started); err != nil {
+	if err := e.admissionSteps(tx, id).Row().Scan(&localDone, &started); err != nil {
 		return err
 	}
 	if localDone || (status == "running" && started) {
 		return nil
 	}
 	return errors.New("plan changed before admission commit")
+}
+
+// admissionSteps selects whether this node finished its local step of plan
+// id, and whether it finished a start: the two facts that let it admit
+// its core under the plan.
+func (e *Engine) admissionSteps(db *gorm.DB, id string) *gorm.DB {
+	done := func() *gorm.DB {
+		return db.Table("updater.steps").Where("upgrade_id = ? AND node_id = ? AND status = 'done'", id, e.Node.ID)
+	}
+	return existsQuery(db, done().Where("action = 'local'"), done().Where("action IN ('start','start-primary')"))
 }
 
 // recordBlockedReason writes waiting errors to upgrades.blocked_reason with

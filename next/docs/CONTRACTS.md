@@ -2633,6 +2633,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 - `updater:wakeup:<cluster_id>` Pub/Sub 仅发送提交后的唤醒提示，不承载可执行命令或可靠事件。计划创建、操作、启禁及升级状态变更在 PG 提交后通知；节点步骤完成先提交结果并刷新状态，再通知。通知丢失依靠轮询补查（有 running/paused 计划时 1 秒，空闲 30 秒，2026-11-08 起见 §82.4），重复通知合并，不重放已完成步骤；Redis 断连恢复后重新订阅。
 - 每轮最多连续推进 16 次，每次重新取得 Redis 执行锁并读取 PG，空提交不算进展；提示驱动的外循环有 50 ms 让出，避免内部自激忙循环。独立 3 秒心跳在长下载或排空时继续运行。PG 事务内的计划与准入校验、租约丢失取消语义不变。
 - 此变化属于网关二进制，单发核心安装包不会生效；需在无 running/paused 核心计划时逐个更换网关，从节点先、主节点最后，保留状态卷与旧镜像。核心版本无需仅为此变更而升级。控制台仍按既有轮询周期刷新，本次不新增浏览器推送。
+- 网关控制器（`gateway/internal/control`）的 PG 语句由 GORM 的模型与查询构造器生成（2026-11-16，0.1.290）：谓词、行锁、`ON CONFLICT`、`RETURNING` 与往返次数不变。整条手写的只剩 schema 脚本（`EnsureSchema`）、心跳的 data-modifying CTE（条件更新与身份检查一次往返）、`to_regclass` 查询与 `SELECT EXISTS` 组合器；`gateway/internal/sqlguard` 的测试按允许列表（文件:函数 + 理由）检查 `(*gorm.DB).Raw/Exec`（`[raw-sql]`），并要求交给 GORM 的 SQL 文本是常量，值只走 `?` 参数（`[sql-const]`）。
 
 ## 40. 核心版本提示、GitHub 更新源及拓扑视角（2026-10-03）
 
