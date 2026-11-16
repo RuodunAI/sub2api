@@ -28,14 +28,18 @@ import (
 // set staged for that version when there is one (it is complete), else the
 // plugin's grants.
 func versionGrants(db *gorm.DB, key, version string) *gorm.DB {
-	staged := func() *gorm.DB {
-		return db.Model(&model.PluginStagedGrant{}).Where("plugin_key = ? AND version = ?", key, version)
-	}
+	staged := db.Model(&model.PluginStagedGrant{}).Select("permission, scope, status, version AS plugin_version, granted_by, granted_at").
+		Where("plugin_key = ? AND version = ?", key, version)
 	plugin := db.Model(&model.PluginPermissionGrant{}).Select("permission, scope, status, plugin_version, granted_by, granted_at").
-		Where("plugin_key = ? AND NOT EXISTS (?)", key, staged().Select("1"))
-	return db.Table("((?) UNION ALL (?)) AS g",
-		staged().Select("permission, scope, status, version AS plugin_version, granted_by, granted_at"), plugin)
+		Where(unstagedGrants, key, key, version)
+	return db.Table("((?) UNION ALL (?)) AS g", staged, plugin)
 }
+
+// unstagedGrants are the plugin_permission_grants rows of a plugin
+// (plugin_key = $1) that its instances of a version run with: all of them
+// when the version (plugin_key = $2, version = $3) has no staged set.
+const unstagedGrants = `plugin_key = ? AND NOT EXISTS (
+	SELECT 1 FROM plugin_staged_grants WHERE plugin_key = ? AND version = ?)`
 
 // VersionGrantsQuery selects the grant rows key@version runs with, in the
 // columns permission, scope, status, plugin_version, granted_by and
@@ -85,25 +89,32 @@ func grantedRows(db *gorm.DB, key, version string, ids []string) *gorm.DB {
 // Holds reports whether key@version is granted permission now, with exactly
 // scope unless it is nil: the per-call check behind an instance's cached
 // grants, and the rollout's check of db.schema before migrating. Every
-// HostService call that needs a permission runs it
-// (BenchmarkHotGrantHolds, gormtest/BASELINE.md).
+// HostService call that needs a permission runs it (BenchmarkHotGrantHolds,
+// gormtest/BASELINE.md).
 func Holds(ctx context.Context, q *gorm.DB, key, version, permission string, scope []byte) (bool, error) {
 	var one int
-	err := holdsQuery(store.G(ctx, q), key, version, permission, scope).Select("1").Limit(1).Row().Scan(&one)
+	err := holdsQuery(store.G(ctx, q), key, version, permission, scope).Row().Scan(&one)
 	if store.IsNoRows(err) {
 		return false, nil
 	}
 	return err == nil, err
 }
 
-// holdsQuery selects the grant of permission to key@version, with exactly
-// scope unless it is nil.
+// holdsQuery selects a row when key@version is granted permission, with
+// exactly scope unless it is nil: versionGrants with the grant's conditions
+// in each branch and no outer query. The permission is in each table's
+// primary key, so a branch has one row at most and no LIMIT is needed.
 func holdsQuery(db *gorm.DB, key, version, permission string, scope []byte) *gorm.DB {
-	q := versionGrants(db, key, version).Where("permission = ? AND status = 'granted'", permission)
+	match, args := " AND permission = ? AND status = 'granted'", []any{permission}
 	if scope != nil {
-		q = q.Where("scope = ?::jsonb", store.Bytes(scope))
+		match, args = match+" AND scope = ?::jsonb", append(args, store.Bytes(scope))
 	}
-	return q
+	// Values, not pointers: nothing is read into the models.
+	staged := db.Model(model.PluginStagedGrant{}).Select("1").
+		Where("plugin_key = ? AND version = ?"+match, append([]any{key, version}, args...)...)
+	plugin := db.Model(model.PluginPermissionGrant{}).Select("1").
+		Where(unstagedGrants+match, append([]any{key, key, version}, args...)...)
+	return db.Raw("(?) UNION ALL (?)", staged, plugin)
 }
 
 // Decision is one host permission decision of a consent.

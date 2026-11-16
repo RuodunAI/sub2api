@@ -668,7 +668,7 @@ func (s *Service) settleReconciled(ctx context.Context, e *settleEntry, row *res
 		}
 		// The real usage and its price make the row an ordinary billed one.
 		g, tk := store.G(ctx, tx), p.Tokens
-		if err := g.Model(&usageLogRow{}).Where("id = ?", e.usageLogID).Updates(map[string]any{
+		if err := g.Model(&model.UsageLog{}).Where("id = ?", e.usageLogID).Updates(map[string]any{
 			"input_tokens": tk.Input, "output_tokens": tk.Output, "cache_read_tokens": tk.CacheRead,
 			"cache_creation_tokens": tk.CacheCreation, "cache_creation_1h_tokens": tk.CacheCreation1h,
 			"metrics": store.Bytes(jsonOr(p.Metrics, "{}")), "total_cost": cost.total, "billing_status": StatusBilled,
@@ -735,7 +735,7 @@ func (s *Service) refundFailed(ctx context.Context, e *settleEntry, row *reserve
 		// owed. It is also not in usage_logs_billing_pending_idx, so the
 		// settlement retry loop will not pick the row up and bill it again.
 		g := store.G(ctx, tx)
-		if err := g.Model(&usageLogRow{}).Where("id = ?", e.usageLogID).Updates(map[string]any{
+		if err := g.Model(&model.UsageLog{}).Where("id = ?", e.usageLogID).Updates(map[string]any{
 			"total_cost": 0, "base_cost": 0, "billing_status": StatusFree, "success": false,
 			"error_type": trunc(reason, 50), "error_message": trunc(reason, 1000),
 		}).Error; err != nil {

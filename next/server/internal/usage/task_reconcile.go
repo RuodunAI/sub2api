@@ -29,39 +29,41 @@ var errTaskDeferred = errors.New("original task account is unavailable or busy")
 
 func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, error) {
 	// The due task observations are leased to a new token (leaving
-	// updated_at alone) and read with their legacy entry, if any.
+	// updated_at alone) and read back with their legacy entry, if any, in
+	// the one statement.
 	g := store.G(ctx, s.db.Gorm)
 	due := g.Model(&model.AsyncTask{}).Select("public_id").
 		Where("observation_status='pending' AND next_check_at<=now() AND (lease_until IS NULL OR lease_until<=now())").
 		Order("next_check_at, public_id").Limit(limit).Clauses(store.ForUpdate().SkipLocked())
-	var claimed []model.AsyncTask
-	if err := g.Model(&claimed).Clauses(clause.Returning{}).Where("public_id IN (?)", due).Updates(map[string]any{
+	var claimed []claimedTask
+	if err := g.Model(&claimed).Clauses(claimedColumns).Where("public_id IN (?)", due).Updates(map[string]any{
 		"claim_token": uuid.NewString(), "lease_until": gorm.Expr("now()+make_interval(secs=>?)", int(reconcileLease/time.Second)),
-	}).Error; err != nil || len(claimed) == 0 {
+	}).Error; err != nil {
 		return nil, err
-	}
-	// The legacy settlement entry of each task, if any.
-	ids := make([]string, len(claimed))
-	for i, t := range claimed {
-		ids[i] = t.PublicID
-	}
-	var entries []model.PendingSettlement
-	if err := g.Select("id, task_public_id").Where("task_public_id = ANY(?)", store.Strings(ids)).Find(&entries).Error; err != nil {
-		return nil, err
-	}
-	entryOf := make(map[string]int64, len(entries))
-	for _, p := range entries {
-		entryOf[*p.TaskPublicID] = p.ID
 	}
 	out := make([]*settleEntry, len(claimed))
 	for i, t := range claimed {
 		accountID := t.AccountID
 		out[i] = &settleEntry{task: &taskClaim{id: t.PublicID, token: t.ClaimToken, kind: t.Kind, state: core.ValueOr(t.State, ""), groupID: t.GroupID},
 			pluginKey: t.PluginKey, refID: t.UpstreamRefID, usageLogID: t.UsageLogID, accountID: &accountID,
-			attempts: t.Attempts, pollFailures: t.PollFailures, createdAt: t.CreatedAt, deadlineAt: t.DeadlineAt, id: entryOf[t.PublicID]}
+			attempts: t.Attempts, pollFailures: t.PollFailures, createdAt: t.CreatedAt, deadlineAt: t.DeadlineAt, id: t.EntryID}
 	}
 	return out, nil
 }
+
+// claimedTask is an async_tasks row claimTasks leased, in the columns of
+// claimedColumns, and the id of its legacy settlement entry (0: none).
+type claimedTask struct {
+	model.AsyncTask
+	EntryID int64 `gorm:"column:entry_id;->"`
+}
+
+// claimedColumns are the columns claimTasks reads back: what the reconcile
+// loop needs of a task, not its snapshot.
+var claimedColumns = clause.Returning{Columns: []clause.Column{{Name: "public_id"}, {Name: "claim_token"}, {Name: "kind"},
+	{Name: "state"}, {Name: "plugin_key"}, {Name: "upstream_ref_id"}, {Name: "usage_log_id"}, {Name: "account_id"},
+	{Name: "attempts"}, {Name: "poll_failures"}, {Name: "created_at"}, {Name: "deadline_at"}, {Name: "group_id"},
+	{Name: `COALESCE((SELECT min(p.id) FROM pending_settlements p WHERE p.task_public_id = async_tasks.public_id), 0) AS entry_id`, Raw: true}}}
 
 func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (context.Context, *pluginv1.Account, *int64, func(), error) {
 	if e.accountID == nil {

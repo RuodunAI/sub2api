@@ -1,0 +1,4 @@
+-- sql
+SELECT pg_advisory_xact_lock(hashtext($1))
+-- vars
+$1 string "gateway.failure_policy"

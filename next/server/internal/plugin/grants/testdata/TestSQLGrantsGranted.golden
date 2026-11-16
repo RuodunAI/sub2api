@@ -1,5 +1,6 @@
 -- sql
-SELECT permission, scope FROM ((SELECT permission, scope, status, version AS plugin_version, granted_by, granted_at FROM "plugin_staged_grants" WHERE plugin_key = $1 AND version = $2) UNION ALL (SELECT permission, scope, status, plugin_version, granted_by, granted_at FROM "plugin_permission_grants" WHERE plugin_key = $3 AND NOT EXISTS (SELECT 1 FROM "plugin_staged_grants" WHERE plugin_key = $4 AND version = $5))) AS g WHERE status = 'granted' AND permission = ANY($6)
+SELECT permission, scope FROM ((SELECT permission, scope, status, version AS plugin_version, granted_by, granted_at FROM "plugin_staged_grants" WHERE plugin_key = $1 AND version = $2) UNION ALL (SELECT permission, scope, status, plugin_version, granted_by, granted_at FROM "plugin_permission_grants" WHERE plugin_key = $3 AND NOT EXISTS (
+	SELECT 1 FROM plugin_staged_grants WHERE plugin_key = $4 AND version = $5))) AS g WHERE status = 'granted' AND permission = ANY($6)
 -- vars
 $1 string "demo"
 $2 string "1.2.0"

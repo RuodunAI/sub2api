@@ -13,10 +13,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/account"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
 
 func testFailurePolicy() FailurePolicy {
@@ -519,4 +521,11 @@ func TestDefaultRetryRulesOnlyRetryUsefulRateLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The failure policy lock is the one releases before 0.1.290 took
+// (hashtext of its key): a node of the previous release still excludes a
+// new one during a rolling upgrade.
+func TestSQLLockFailureSettings(t *testing.T) {
+	gormtest.AssertRun(t, func(db *gorm.DB) error { return lockFailureSettings(db.Statement.Context, db) })
 }

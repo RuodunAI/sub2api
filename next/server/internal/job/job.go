@@ -834,12 +834,11 @@ func (b *Bridge) insertRun(ctx context.Context, key, jobID string, scope core.Ta
 
 // insertRunRow inserts the running row of a run and returns its id. With
 // claim, a scheduled run's slot that already has a run (the slot index)
-// keeps it and the id is 0. started_at is the database's now(), which a
-// model's time.Time cannot carry, so the row is a column map.
+// keeps it and the id is 0.
 func insertRunRow(g *gorm.DB, key, jobID, nodeID string, scope core.TaskScope, run core.TaskRun, claim bool) (int64, error) {
-	row := map[string]any{"plugin_key": key, "job_id": jobID, "node_id": nodeID, "scheduled_at": run.ScheduledAt,
-		"started_at": gorm.Expr("now()"), "status": StatusRunning, "manual": run.Manual, "scope": string(scope)}
-	q := g.Table(model.PluginJobRun{}.TableName()).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}})
+	row := &startedRun{PluginKey: key, JobID: jobID, NodeID: nodeID, ScheduledAt: run.ScheduledAt, Status: StatusRunning,
+		Manual: run.Manual, Scope: string(scope)}
+	q := g.Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}})
 	if claim {
 		q = q.Clauses(clause.OnConflict{
 			Columns:     []clause.Column{{Name: "plugin_key"}, {Name: "job_id"}, {Name: "scheduled_at"}},
@@ -847,12 +846,26 @@ func insertRunRow(g *gorm.DB, key, jobID, nodeID string, scope core.TaskScope, r
 			DoNothing:   true,
 		})
 	}
-	if err := q.Create(row).Error; err != nil {
-		return 0, err
-	}
-	id, _ := row["id"].(int64)
-	return id, nil
+	err := q.Create(row).Error
+	return row.ID, err
 }
+
+// startedRun is the plugin_job_runs row of a run that starts: every column
+// written as given, started_at the database's now(), and the id read back
+// (RETURNING; none when the slot is taken).
+type startedRun struct {
+	ID          int64       `gorm:"column:id;->"`
+	PluginKey   string      `gorm:"column:plugin_key"`
+	JobID       string      `gorm:"column:job_id"`
+	NodeID      string      `gorm:"column:node_id"`
+	ScheduledAt time.Time   `gorm:"column:scheduled_at"`
+	StartedAt   store.DBNow `gorm:"column:started_at"`
+	Status      string      `gorm:"column:status"`
+	Manual      bool        `gorm:"column:manual"`
+	Scope       string      `gorm:"column:scope"`
+}
+
+func (startedRun) TableName() string { return model.PluginJobRun{}.TableName() }
 
 func (b *Bridge) finishRun(id int64, status, msg string) {
 	if id == 0 {

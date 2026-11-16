@@ -250,12 +250,12 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	}
 }
 
-// Any batch, 300 records here, is two statements and round trips: its ids,
-// then one INSERT of its rows.
-func TestInsertBatchOneStatement(t *testing.T) {
+// A batch, 250 records here, is its ids, then an INSERT per store.InsertChunk
+// rows, the full chunks in one statement text.
+func TestInsertBatchChunks(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	batch := make([]*core.UsageRecord, 300)
+	batch := make([]*core.UsageRecord, 2*store.InsertChunk+50)
 	for i := range batch {
 		batch[i] = f.record(fmt.Sprintf("one-%03d", i), i%2 == 0)
 	}
@@ -275,7 +275,7 @@ func TestInsertBatchOneStatement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statements) != 2 {
-		t.Fatalf("%d statements for a batch of %d", len(statements), len(batch))
+	if len(statements) != 4 || statements[1] != statements[2] || statements[2] == statements[3] {
+		t.Fatalf("a batch of %d: want the ids, two full chunks of one text and the rest, got %d statements", len(batch), len(statements))
 	}
 }

@@ -31,9 +31,11 @@ func loadFailurePolicy(ctx context.Context, q *gorm.DB) (*FailurePolicy, error) 
 	return &p, nil
 }
 
-// Serialize legacy settings and policy publication, including the first insert.
+// Serialize legacy settings and policy publication, including the first
+// insert. The lock keeps its hashtext id, which nodes of the previous
+// release take during a rolling upgrade.
 func lockFailureSettings(ctx context.Context, tx *gorm.DB) error {
-	return store.XactLock(ctx, tx, "gateway.failure_policy")
+	return store.XactLockHashtext(ctx, tx, "gateway.failure_policy")
 }
 
 func (g *Gateway) getFailurePolicy(c *gin.Context) {

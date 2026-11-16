@@ -654,27 +654,16 @@ func failRollout(g *gorm.DB, r *rolloutRow, phase, msg string, fenced bool, boot
 }
 
 // Mark every boot which could own an instance, including disconnected boots.
-// Liveness expiry is not evidence that an old version has stopped.
+// Liveness expiry is not evidence that an old version has stopped. One
+// statement: a cleanup row for each boot running the plugin, pending again
+// if it was there.
 func (c *Controller) markCleanup(ctx context.Context, tx *gorm.DB, r *rolloutRow) error {
-	return markCleanupRows(store.G(ctx, tx), r).Error
-}
-
-// markCleanupRows is markCleanup's statements: the boots running the
-// plugin, then a cleanup row for each, pending again if it was there.
-func markCleanupRows(g *gorm.DB, r *rolloutRow) *gorm.DB {
-	var boots []string
-	if res := g.Model(&model.PluginRuntimeNode{}).Where("plugin_key = ? AND NOT stopped", r.key).Pluck("boot_id", &boots); res.Error != nil || len(boots) == 0 {
-		return res
-	}
-	rows := make([]model.PluginRolloutCleanup, len(boots))
-	for i, b := range boots {
-		rows[i] = model.PluginRolloutCleanup{RolloutID: r.id, BootID: b, State: "cleanup_pending"}
-	}
-	return g.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "rollout_id"}, {Name: "boot_id"}},
-		DoUpdates: clause.Set{{Column: clause.Column{Name: "state"}, Value: "cleanup_pending"},
-			{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}},
-	}).Create(&rows)
+	g := store.G(ctx, tx)
+	return gormpg.InsertSelect(g, model.PluginRolloutCleanup{}.TableName(), []string{"rollout_id", "boot_id", "state"},
+		g.Model(&model.PluginRuntimeNode{}).Select("?::bigint, boot_id, 'cleanup_pending'", r.id).Where("plugin_key = ? AND NOT stopped", r.key),
+		clause.OnConflict{Columns: []clause.Column{{Name: "rollout_id"}, {Name: "boot_id"}},
+			DoUpdates: clause.Set{{Column: clause.Column{Name: "state"}, Value: "cleanup_pending"},
+				{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}}}).Error
 }
 
 // writeNodes records the per-node outcome from the live node reports.

@@ -80,12 +80,27 @@ func (d *DB) UpsertBalance(ctx context.Context, b *BalanceSnapshot) error {
 }
 
 func upsertBalance(db *gorm.DB, b *BalanceSnapshot) *gorm.DB {
-	return db.Table(balanceTable).Clauses(clause.OnConflict{
+	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "account_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"amount_micros", "currency", "source", "updated_at", "error", "error_at"}),
-	}).Create(map[string]any{"account_id": b.AccountID, "amount_micros": b.AmountMicros, "currency": b.Currency, "source": b.Source,
-		"updated_at": b.UpdatedAt, "error": b.Error, "error_at": b.ErrorAt})
+	}).Create(&balanceRow{AccountID: b.AccountID, AmountMicros: b.AmountMicros, Currency: b.Currency, Source: b.Source,
+		UpdatedAt: b.UpdatedAt, Error: b.Error, ErrorAt: b.ErrorAt})
 }
+
+// balanceRow is the account_balances row of a snapshot, every column
+// written as given. updated_at is a pointer: a time.Time updated_at would
+// be stamped (and read back) by store when zero.
+type balanceRow struct {
+	AccountID    int64      `gorm:"column:account_id"`
+	AmountMicros int64      `gorm:"column:amount_micros"`
+	Currency     string     `gorm:"column:currency"`
+	Source       string     `gorm:"column:source"`
+	UpdatedAt    *time.Time `gorm:"column:updated_at;autoUpdateTime:false"`
+	Error        string     `gorm:"column:error"`
+	ErrorAt      *time.Time `gorm:"column:error_at"`
+}
+
+func (balanceRow) TableName() string { return balanceTable }
 
 // DeleteBalance removes the balance snapshot of one account.
 func (d *DB) DeleteBalance(ctx context.Context, accountID int64) error {

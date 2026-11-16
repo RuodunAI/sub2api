@@ -92,6 +92,8 @@ func TestSQLInsertUsageRow(t *testing.T) {
 	t.Run("batch", func(t *testing.T) {
 		rows := []usageLogRow{newUsageLogRow(rec), newUsageLogRow(&second)}
 		rows[0].ID, rows[1].ID = 101, 102
-		gormtest.AssertRun(t, func(db *gorm.DB) error { return db.Clauses(skipLoggedRequest).Create(&rows).Error })
+		gormtest.AssertRun(t, func(db *gorm.DB) error {
+			return db.Clauses(skipLoggedRequest).CreateInBatches(&rows, store.InsertChunk).Error
+		})
 	})
 }

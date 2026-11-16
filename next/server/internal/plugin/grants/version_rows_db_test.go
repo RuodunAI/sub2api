@@ -9,7 +9,7 @@ import (
 )
 
 // VersionGrantsQuery reads the set staged for a version when there is one,
-// else the plugin's grants, as VersionRows does on pgx.
+// else the plugin's grants.
 func TestVersionGrantsQueryPicksStagedSet(t *testing.T) {
 	ctx := context.Background()
 	db := testutil.DB(t)
@@ -51,6 +51,12 @@ func TestHoldsReadsTheVersionSet(t *testing.T) {
 			VALUES ('demo', '2.0.0', '{}', 'y', 'z', 1, 'unsigned')`,
 		`INSERT INTO plugin_staged_grants (plugin_key, version, permission, scope, status, manifest_hash)
 			VALUES ('demo', '2.0.0', 'lock', '{}', 'granted', 'y')`,
+		// Another plugin's staged set of the same version number.
+		`INSERT INTO plugins (key, name, status) VALUES ('other', '{"en":"other"}', 'enabled')`,
+		`INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status)
+			VALUES ('other', '1.0.0', '{}', 'y', 'z', 1, 'unsigned')`,
+		`INSERT INTO plugin_staged_grants (plugin_key, version, permission, scope, status, manifest_hash)
+			VALUES ('other', '1.0.0', 'lock', '{}', 'granted', 'y')`,
 	} {
 		if _, err := db.SQL.ExecContext(ctx, sql); err != nil {
 			t.Fatal(err)
@@ -61,7 +67,7 @@ func TestHoldsReadsTheVersionSet(t *testing.T) {
 		scope               []byte
 		want                bool
 	}{
-		{"1.0.0", "kv", nil, true},
+		{"1.0.0", "kv", nil, true}, // other's staged 1.0.0 is not demo's
 		{"1.0.0", "kv", []byte(`{"prefix":"a"}`), true},
 		{"1.0.0", "kv", []byte(`{"prefix":"b"}`), false},
 		{"1.0.0", "lock", nil, false}, // revoked

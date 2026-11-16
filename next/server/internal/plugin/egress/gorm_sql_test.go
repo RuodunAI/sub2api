@@ -32,7 +32,7 @@ func TestSQLCloseLogRows(t *testing.T) {
 
 func TestSQLUpsertDomainRows(t *testing.T) {
 	ds := []domainDelta{{PluginKey: "demo", Host: "api.example.com", FirstSeen: sqlFrom, LastSeen: sqlTo, Connections: 3}}
-	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { _, res := upsertDomainRows(tx, ds); return res })
+	gormtest.AssertRun(t, func(tx *gorm.DB) error { _, res := upsertDomainRows(tx, ds); return res.Error })
 }
 
 func TestSQLDomains(t *testing.T) {

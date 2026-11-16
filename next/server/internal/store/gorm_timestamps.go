@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"reflect"
 	"time"
 
@@ -43,12 +44,27 @@ var (
 	timeType = reflect.TypeFor[time.Time]()
 )
 
+// DBNow is a column of a typed row that the INSERT writes as the
+// database's now(), the transaction's start time, where a column map had
+// gorm.Expr("now()"): GORM binds a gorm.Valuer as the expression it gives.
+// A nil *DBNow is NULL.
+type DBNow struct{}
+
+// GormDataType makes the field a column for GORM's schema.
+func (DBNow) GormDataType() string { return "timestamptz" }
+
+// GormValue is now().
+func (DBNow) GormValue(context.Context, *gorm.DB) clause.Expr { return dbNow }
+
 func registerTimestamps(g *gorm.DB) error {
 	g.ClauseBuilders["VALUES"] = buildValues
 	return g.Callback().Create().Before("gorm:create").Register("store:return_stamped", returnStamped)
 }
 
-// stampedOnInsert reports a column that the INSERT stamps.
+// stampedOnInsert reports a column that the INSERT stamps. Callers look the
+// field up in FieldsByDBName: Schema.LookUpField derives a column name for
+// a model without the column (most have no updated_at), allocating on every
+// INSERT.
 func stampedOnInsert(f *schema.Field) bool {
 	return f != nil && (f.DBName == createdAtColumn || f.DBName == updatedAtColumn) &&
 		f.FieldType == timeType && !f.HasDefaultValue && f.Creatable
@@ -67,7 +83,7 @@ func buildValues(c clause.Clause, b clause.Builder) {
 	values, ok := c.Expression.(clause.Values)
 	if _, s := statementSchema(b); ok && s != nil {
 		for i, col := range values.Columns {
-			if stampedOnInsert(s.LookUpField(col.Name)) {
+			if stampedOnInsert(s.FieldsByDBName[col.Name]) {
 				stampZero(values.Values, i)
 			}
 		}
@@ -98,7 +114,7 @@ func returnStamped(db *gorm.DB) {
 	}
 	var stamped []clause.Column
 	for _, name := range [...]string{createdAtColumn, updatedAtColumn} {
-		if stampedOnInsert(s.LookUpField(name)) {
+		if stampedOnInsert(s.FieldsByDBName[name]) {
 			stamped = append(stamped, clause.Column{Name: name})
 		}
 	}

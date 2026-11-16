@@ -61,16 +61,34 @@ func RecordAccountRefresh(ctx context.Context, q *gorm.DB, s RefreshState) error
 }
 
 func recordAccountRefresh(db *gorm.DB, s RefreshState) *gorm.DB {
-	return db.Table(refreshTable).Clauses(clause.OnConflict{
+	row := &refreshRow{AccountID: s.AccountID, ExpiresAt: s.ExpiresAt, ErrorType: s.ErrorType, Error: s.Error,
+		RejectedCredHash: s.RejectedCredHash}
+	if s.ErrorType == "" {
+		row.LastSuccessAt = &DBNow{}
+	}
+	return db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "account_id"}},
 		DoUpdates: append(clause.AssignmentColumns([]string{"last_attempt_at", "error_type", "error", "rejected_cred_hash"}),
 			clause.Assignments(map[string]any{
 				"expires_at":      gorm.Expr("COALESCE(EXCLUDED.expires_at, account_credential_refresh.expires_at)"),
 				"last_success_at": gorm.Expr("COALESCE(EXCLUDED.last_success_at, account_credential_refresh.last_success_at)"),
 			})...),
-	}).Create(map[string]any{"account_id": s.AccountID, "expires_at": s.ExpiresAt, "last_attempt_at": gorm.Expr("now()"),
-		"last_success_at": gorm.Expr("CASE WHEN ? = '' THEN now() END", s.ErrorType), "error_type": s.ErrorType, "error": s.Error,
-		"rejected_cred_hash": s.RejectedCredHash})
+	}).Create(row)
 }
+
+// refreshRow is the account_credential_refresh row of an attempt, every
+// column written as given: the attempt at the database's now(), and so the
+// success when it is one (else NULL, and the row keeps its last success).
+type refreshRow struct {
+	AccountID        int64      `gorm:"column:account_id"`
+	ExpiresAt        *time.Time `gorm:"column:expires_at"`
+	LastAttemptAt    DBNow      `gorm:"column:last_attempt_at"`
+	LastSuccessAt    *DBNow     `gorm:"column:last_success_at"`
+	ErrorType        string     `gorm:"column:error_type"`
+	Error            string     `gorm:"column:error"`
+	RejectedCredHash []byte     `gorm:"column:rejected_cred_hash"`
+}
+
+func (refreshRow) TableName() string { return refreshTable }
 
 const refreshTable = "account_credential_refresh"

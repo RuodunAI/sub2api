@@ -284,9 +284,9 @@ func (d *DB) ApplyAccountQuotaObservation(ctx context.Context, accountID, expect
 
 // applyQuotaObservation merges the windows document into the account's
 // snapshot if the generation and the account's plugin still match. Every
-// upstream answer with a quota observation runs it: Raw SQL through Exec,
-// the GORM form that allocates least (BenchmarkHotQuotaObservation). It
-// leaves updated_at as it is, as it always did.
+// upstream answer with a quota observation runs it
+// (BenchmarkHotQuotaObservation, gormtest/BASELINE.md). It leaves
+// updated_at as it is, as it always did.
 func applyQuotaObservation(db *gorm.DB, accountID, expectedGeneration int64, pluginKey, accountType, pluginVersion, windows string, next *time.Time) *gorm.DB {
 	return quotaRows(db).Where(`q.account_id=? AND q.generation=? AND EXISTS(
 			SELECT 1 FROM accounts a JOIN plugins p ON p.key=a.plugin_key
