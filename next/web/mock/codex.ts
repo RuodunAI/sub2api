@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { join, normalize } from 'node:path'
 import { randomBytes, randomUUID } from 'node:crypto'
+import { nextPath } from './paths'
 import { fail, on } from './router'
 
 // Mock of the codex plugin (docs/PLUGIN-CODEX.md §4): its admin routes
@@ -20,7 +20,7 @@ import { fail, on } from './router'
 // (state_mismatch, session_expired, ...) for a refused flow; every message
 // "English / 中文".
 
-const CODEX_DIR = fileURLToPath(new URL('../../plugins/codex/', import.meta.url))
+const CODEX_DIR = nextPath('plugins', 'codex')
 const CODEX_DIST = join(CODEX_DIR, 'ui/native/dist')
 
 export function codexAsset(path: string): { type: string; body: Buffer } | null {

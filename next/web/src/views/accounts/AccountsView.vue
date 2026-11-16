@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { api, MAX_ACCOUNT_BATCH } from '@sub2api/host'
 import { SAutoRefresh, SBadge, SBulkBar, SButton, SChip, SCode, SCopyButton, SDescItem, SDescriptions, SDropdown, SHint, SIcon, SInput, SLink, SModal, SPageHeader, SPagination, SSectionTitle, SSelect, SSpinner, SSwitch, STable, STabs, STooltip, confirm, toast, useAutoRefresh, type SelectOption, type TableColumn } from '@sub2api/ui'
 import type { Account, AccountLastTest, AccountType } from '@/api/types'
-import { activeFilterCount, useList } from '@/composables/useList'
+import { activeFilterCount, filterFlag, useList } from '@/composables/useList'
 import { useGroupsLookup } from '@/composables/lookups'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
 import { P } from '@/generated/permissions'
@@ -20,6 +20,7 @@ import AccountTypeEndpoints from './AccountTypeEndpoints.vue'
 import AccountTypePlatforms from './AccountTypePlatforms.vue'
 import PlatformIcon from '@/components/platform/PlatformIcon.vue'
 import EntityPicker from '@/components/EntityPicker.vue'
+import UserRef from '@/components/entity/UserRef.vue'
 import AccountGroupsCell from './AccountGroupsCell.vue'
 import AccountEditor from './AccountEditor.vue'
 import AccountNumberCell from './AccountNumberCell.vue'
@@ -114,16 +115,8 @@ const idsCommon = computed(() => {
 watch(idsCommon, (c) => {
   list.filters.ids = !c ? '' : c.ids.length ? c.ids.join(',') : '0'
 })
-/** A filter switch: `key=true` while on. */
-const flag = (key: 'mine' | 'subordinates') =>
-  computed({
-    get: () => list.filters[key] === 'true',
-    set: (v: boolean) => {
-      list.filters[key] = v ? 'true' : ''
-    }
-  })
-const onlyMine = flag('mine')
-const onlySubordinates = flag('subordinates')
+const onlyMine = filterFlag(list.filters, 'mine')
+const onlySubordinates = filterFlag(list.filters, 'subordinates')
 // Accounts of disabled/uninstalled plugins are hidden by default; the switch
 // asks for `orphaned=all`.
 const showOrphaned = computed({
@@ -679,16 +672,8 @@ function resetFilters() {
         </div>
       </template>
       <template #cell-groups="{ row }"><AccountGroupsCell :groups="groupTags(row)" /></template>
-      <template #cell-owner="{ row }">
-        <span v-if="row.owner_email" class="text-xs" :title="`#${row.owner_id}`">{{ row.owner_email }}</span>
-        <SHint v-else-if="row.owner_id" inline size="xs">#{{ row.owner_id }}</SHint>
-        <SHint v-else inline>-</SHint>
-      </template>
-      <template #cell-created_by="{ row }">
-        <span v-if="row.created_by_email" class="text-xs" :title="row.created_by ? `#${row.created_by}` : ''">{{ row.created_by_email }}</span>
-        <SHint v-else-if="row.created_by" inline size="xs">#{{ row.created_by }}</SHint>
-        <SHint v-else inline>-</SHint>
-      </template>
+      <template #cell-owner="{ row }"><UserRef :id="row.owner_id" :email="row.owner_email" /></template>
+      <template #cell-created_by="{ row }"><UserRef :id="row.created_by" :email="row.created_by_email" /></template>
       <template #cell-status="{ row }">
         <STooltip :content="statusOf(row).detail" :disabled="!statusOf(row).detail" placement="bottom" :delay="150" max-width="24rem">
           <!-- Focusable when there is a reason: keyboard focus shows it too, not only hover (§73.4); the detail drawer lists it for touch. -->

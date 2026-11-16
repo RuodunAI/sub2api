@@ -199,7 +199,9 @@ export const rowOwner = (row: ScopedRow): number | null | undefined => (row.owne
 
 /**
  * Whether a scope reaches row for the caller me (core.DataScope.AllowsRow).
- * Only the server knows a team (core.ResolveScope): here it reaches what own does.
+ * Only the server knows a team (core.ResolveScope): here it reaches what own
+ * does (the mock adds the team it holds; the console, useScope.can, takes
+ * any row the server listed).
  */
 export function scopeAllowsRow(s: Scope, row: ScopedRow | null | undefined, me: number | undefined): boolean {
   if (s.all) return true

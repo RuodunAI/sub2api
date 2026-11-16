@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { fail, nextId, noContent, now, on, paginate, type MockRequest } from './router'
 import { accounts } from './accounts'
 import { caller, inScope, ownerScope } from './core'
+import type { UsageView } from '../src/views/usage/view'
 
 type PriceMode = 'per_request' | 'per_token' | 'expression'
 type LText = { en: string; zh: string }
@@ -1444,13 +1445,10 @@ function callChain(u: any, self: boolean, zh: boolean): string {
   return [...runs.map((r) => `#${r.id}${r.times > 1 ? `×${r.times}` : ''}`), ...omitted].join(' → ')
 }
 
-/** Who exports: an operator (/usage), the caller's own records (/me/usage), or the accounts' (/account-usage, CONTRACTS §102.5). */
-type CSVView = 'all' | 'self' | 'account'
-
 /** GET …/usage/export (CONTRACTS §66.5): a short CSV with the BOM, like the server. */
-function usageCSV(rows: any[], q: Record<string, string>, view: CSVView) {
+function usageCSV(rows: any[], q: Record<string, string>, view: UsageView) {
   const zh = q.lang === 'zh'
-  const cols: Array<[string, string, (u: any) => unknown, CSVView[]?]> = [
+  const cols: Array<[string, string, (u: any) => unknown, UsageView[]?]> = [
     ['时间', 'Time', (u) => u.created_at],
     ['请求 ID', 'Request ID', (u) => u.request_id],
     ['用户', 'User', (u) => u.user_email, ['all']],
@@ -1562,20 +1560,25 @@ function accountRecord(u: any, reaches: AccountReach) {
   return { ...row, attempt_trail: { ...u.attempt_trail, steps } }
 }
 
-/** Registers GET /account-usage<path>: a parameter beyond `params` is 400, and `handler` gets the records in reach. */
-function accountUsageRoute(path: string, params: string[], handler: (rows: any[], reaches: AccountReach, req: MockRequest) => unknown) {
+/**
+ * Registers GET /account-usage<path>, as the server checks it: 403 without
+ * usage:account:read, then a parameter beyond `params` is 400 (by name; a
+ * route without `params` reads none and ignores them), and `handler` gets the
+ * records in reach.
+ */
+function accountUsageRoute(path: string, params: string[] | null, handler: (rows: any[], reaches: AccountReach, req: MockRequest) => unknown) {
   on('GET', `/account-usage${path}`, (req) => {
-    const extra = Object.keys(req.query).filter((k) => !params.includes(k))
-    if (extra.length) return fieldFail(extra.map((field) => ({ field, code: 'not_allowed', message: 'not accepted here' })))
     const who = caller(req)
     const scope = ownerScope(who, 'usage:account:read')
     if (!scope) return fail(403, 'permission_denied', 'Permission denied')
+    const extra = params ? Object.keys(req.query).filter((k) => !params.includes(k)).sort() : []
+    if (extra.length) return fieldFail(extra.map((field) => ({ field, code: 'not_allowed', message: 'not accepted here' })))
     const reaches: AccountReach = (id) => accounts.some((a) => a.id === id && inScope(scope, who, a))
     return handler(usageRows.filter((u) => reaches(u.account_id)), reaches, req)
   })
 }
 
-accountUsageRoute('', [...ACCOUNT_USAGE_FILTERS, 'page', 'page_size', 'cursor', 'limit'], (rows, reaches, req) =>
+accountUsageRoute('', [...ACCOUNT_USAGE_FILTERS, 'page', 'page_size', 'cursor'], (rows, reaches, req) =>
   paginate(usageFilter(rows, req.query).map((u) => accountRecord(u, reaches)), req.query)
 )
 accountUsageRoute('/summary', [...ACCOUNT_USAGE_FILTERS, 'group_by', 'order', 'limit'], (rows, _, req) => {
@@ -1592,7 +1595,7 @@ accountUsageRoute('/overview', ['tz'], (rows, reaches, req) => {
 })
 accountUsageRoute('/realtime', ACCOUNT_USAGE_FILTERS, (rows, _, req) => realtimeOf(rows, req.query))
 accountUsageRoute('/export', [...ACCOUNT_USAGE_FILTERS, 'lang'], (rows, _, req) => usageCSV(rows, req.query, 'account'))
-accountUsageRoute('/:id', [], (rows, reaches, req) => {
+accountUsageRoute('/:id', null, (rows, reaches, req) => {
   const u = rows.find((x) => x.id === Number(req.params.id))
   return u ? { ...accountRecord(u, reaches), metrics: usageMetrics(u) } : fail(404, 'not_found', 'usage record not found')
 })

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// The usage statistics, for an operator (`admin`: all users), for the caller,
-// or of the accounts in the caller's reach (`accountView`, CONTRACTS §102.5:
-// by account instead of by group or key, costs at the list price): the search
-// bar (time range, granularity, filters), the four totals and the charts.
+// The usage statistics of the `view`: all users' (an operator's), the
+// caller's, or those of the accounts in the caller's reach (`account`,
+// CONTRACTS §102.5: by account instead of by group or key, costs at the list
+// price): the search bar (time range, granularity, filters), the four totals
+// and the charts.
 // Every part follows the same filters, which a link may preset (?user_id=,
 // ?from=, …). The page header (title, refresh) stays with the view and bumps
 // `revision`. The requests themselves are on the usage records page.
@@ -11,34 +12,34 @@ import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { api } from '@sub2api/host'
 import { SDateRange, SSegmented, type RangeKey } from '@sub2api/ui'
+import type { UsageSummaryRow } from '@/api/types'
 import UsageSummaryCards from '@/components/UsageSummaryCards.vue'
 import UsageCharts from '@/components/stats/UsageCharts.vue'
 import { autoGranularity, hourAllowed, type Granularity } from '@/components/stats/stats'
 import { useAuthStore } from '@/stores/auth'
-import { useEntityNames } from '@/components/entity/lookup'
 import UsageFilters from './UsageFilters.vue'
 import { baseUsageFilters, entityPatch, queryUsageFilters } from './usageFilters'
 import { useUsageSummary } from './useUsageSummary'
+import type { UsageView } from './view'
 
 const props = withDefaults(
   defineProps<{
     summaryPath: string
     defaultRange: RangeKey
-    admin?: boolean
-    accountView?: boolean
+    view: UsageView
     /** Bumped by the page's refresh button: reload everything (the page owns the header). */
     revision?: number
   }>(),
-  { admin: false, accountView: false, revision: 0 }
+  { revision: 0 }
 )
 const emit = defineEmits<{ (e: 'update:loading', value: boolean): void }>()
 const { t } = useI18n()
 const route = useRoute()
 const auth = useAuthStore()
 
-const showAccount = computed(() => props.accountView || (props.admin && auth.has('account:read')))
+const showAccount = computed(() => props.view === 'account' || (props.view === 'all' && auth.has('account:read')))
 
-const fromQuery = queryUsageFilters(route.query, props.admin, showAccount.value, props.accountView)
+const fromQuery = queryUsageFilters(route.query, props.view, showAccount.value)
 const range = ref<RangeKey>(fromQuery.from || fromQuery.to ? 'custom' : props.defaultRange)
 const filters = reactive<Record<string, string>>({ ...baseUsageFilters(props.defaultRange), ...fromQuery })
 
@@ -66,25 +67,27 @@ const modelOptions = computed(() => models.rows.value.map((r) => r.key).filter((
 
 // The caller's API key names for the "by API key" breakdown (keyed by id).
 const keyNames = reactive(new Map<string, string>())
-if (!props.admin && !props.accountView && auth.has('apikey:self:manage')) {
+if (props.view === 'self' && auth.has('apikey:self:manage')) {
   api
     .list<{ id: number; name: string }>('/me/api-keys', { page_size: 200 })
     .then((res) => res.items.forEach((k) => keyNames.set(String(k.id), k.name)))
     .catch(() => {})
 }
-const names = useEntityNames()
-const secondary = computed(() => {
-  if (props.accountView) return { groupBy: 'account', title: t('stats.accountDist'), keyLabel: t('common.account'), labelOf: (k: string) => names.label('account', k) }
-  return props.admin
-    ? { groupBy: 'group', title: t('stats.groupDist'), keyLabel: t('stats.group') }
-    : { groupBy: 'api_key', title: t('stats.keyDist'), keyLabel: t('stats.apiKey'), labelOf: (k: string) => keyNames.get(k) || `#${k}` }
-})
+// The account view names an account as its rows do: a deleted account, or one
+// read under the usage scope only (no account:read), keeps its name.
+const secondary = computed(() => ({
+  all: { groupBy: 'group', title: t('stats.groupDist'), keyLabel: t('stats.group') },
+  self: { groupBy: 'api_key', title: t('stats.keyDist'), keyLabel: t('stats.apiKey'), labelOf: (r: UsageSummaryRow) => keyNames.get(r.key) || `#${r.key}` },
+  account: { groupBy: 'account', title: t('stats.accountDist'), keyLabel: t('common.account'), labelOf: (r: UsageSummaryRow) => r.account_name || `#${r.key}` }
+})[props.view])
 /** The filter a picked slice of the second breakdown sets. */
 function secondaryFilter(k: string): Record<string, string> {
-  if (props.accountView) return entityPatch('account', { id: k })
-  return props.admin ? { group_name: k } : entityPatch('api_key', { id: k })
+  if (props.view === 'account') return entityPatch('account', { id: k })
+  return props.view === 'all' ? { group_name: k } : entityPatch('api_key', { id: k })
 }
 
+/** Where each view keeps the charts' settings. */
+const CHART_GROUPS: Record<UsageView, string> = { all: 'usage-admin', self: 'usage-mine', account: 'usage-account' }
 const revisionCharts = ref(0)
 watch(
   () => props.revision,
@@ -104,7 +107,7 @@ function filterBy(patch: Record<string, string>) {
 
 <template>
   <div class="flex flex-col gap-4">
-    <UsageFilters class="!mb-0" :model-value="filters" :admin="admin" :accounts="showAccount" :account-view="accountView" :protocol-options="protocolOptions" :model-options="modelOptions" @update:model-value="Object.assign(filters, $event)">
+    <UsageFilters class="!mb-0" :model-value="filters" :view="view" :accounts="showAccount" :protocol-options="protocolOptions" :model-options="modelOptions" @update:model-value="Object.assign(filters, $event)">
       <template #range>
         <div class="flex flex-wrap items-center gap-2">
           <SDateRange v-model:range="range" v-model:from="filters.from" v-model:to="filters.to" size="sm" :label="false" />
@@ -129,9 +132,9 @@ function filterBy(patch: Record<string, string>) {
       :granularity="granularity"
       :secondary="secondary"
       :revision="revisionCharts"
-      :group="admin ? 'usage-admin' : accountView ? 'usage-account' : 'usage-mine'"
-      :model-sources="admin"
-      @select-model="filterBy(entityPatch('model', accountView ? { id: $event } : { text: $event }))"
+      :group="CHART_GROUPS[view]"
+      :model-sources="view === 'all'"
+      @select-model="filterBy(entityPatch('model', view === 'account' ? { id: $event } : { text: $event }))"
       @select-secondary="(k: string) => filterBy(secondaryFilter(k))"
     />
   </div>

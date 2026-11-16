@@ -18,8 +18,11 @@ export function isPlainUser(roles: string[] | undefined): boolean {
 }
 
 /**
- * Role keys with the default role added when supplier is among them, where
- * the caller may grant it (`withDefault`; a supplier agent may not).
+ * Role keys with the default role added when supplier is among them and the
+ * caller may give it (`withDefault`): to a new user any creator whose grants
+ * cover it (managed.defaultWithin(), as the server lets any creator give a
+ * role-less user the default role), to an existing user only a caller listing
+ * it (managed.assignable; a supplier agent does not).
  */
 export function withSupplierUser(keys: string[], withDefault: boolean): string[] {
   return withDefault && keys.includes(SUPPLIER_ROLE) && !keys.includes(DEFAULT_ROLE) ? [...keys, DEFAULT_ROLE] : keys

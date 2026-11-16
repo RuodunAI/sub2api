@@ -14,6 +14,7 @@ export default {
   live: {
     cost: '消耗',
     standard: '基础额度',
+    listPrice: '原价',
     cacheHit: '缓存命中',
     successRate: '成功率',
     rangeHint: '跟随上方时间范围与筛选',

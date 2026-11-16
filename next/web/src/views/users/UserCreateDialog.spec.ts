@@ -89,15 +89,30 @@ describe('user create dialog', () => {
   })
 
   it.each([
-    ['the default role first', [managed('user'), managed('supplier')], ['user']],
-    ['supplier where the default role is not on the list', [managed('supplier'), managed('supplier_agent')], ['supplier']],
-    ['the first grantable role otherwise', [managed('supplier', false), managed('operator')], ['operator']],
-    ['none, leaving the default to the server', [managed('supplier', false)], []]
+    ['the default role', [managed('user'), managed('supplier')], ['user']],
+    ['the default role where it is not on the list', [managed('supplier'), managed('supplier_agent')], ['user']],
+    ['no other role by fallback', [managed('supplier', false), managed('operator')], ['user']],
+    ['none where the default role is beyond the caller', [managed('user', false), managed('operator')], []]
   ])('sends the roles explicitly, preselecting %s', async (_, list, keys) => {
     mocks.get.mockResolvedValue(list)
     const { submit } = await render()
     await submit()
     expect(mocks.post.mock.calls[0][1].role_keys).toEqual(keys)
+  })
+
+  it('preselects the default role and supplier for a team holder (a supplier agent), and keeps them together', async () => {
+    mocks.denied.add('user:create')
+    mocks.get.mockResolvedValue([managed('supplier'), managed('supplier_agent')])
+    const { w, submit } = await render([{ key: 'user', name: { en: 'User' } } as unknown as Role])
+    await submit()
+    expect(mocks.post.mock.calls[0][1].role_keys).toEqual(['user', 'supplier'])
+    // Supplier checked again brings the default role back: the server gives it to a role-less new user from any creator.
+    const box = (k: string) => w.get(`input[data-role="${k}"]`)
+    await box('supplier').setValue(false)
+    await box('user').setValue(false)
+    await box('supplier').setValue(true)
+    await submit()
+    expect(mocks.post.mock.calls[1][1].role_keys).toEqual(['supplier', 'user'])
   })
 
   it('names the owner only for a caller holding user:create over every user', async () => {

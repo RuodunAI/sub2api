@@ -29,7 +29,7 @@ import {
 } from '@sub2api/ui'
 import type { Role, User } from '@/api/types'
 import { deleteWithConfirm, useStatusOptions } from '@/composables/crud'
-import { activeFilterCount, useList } from '@/composables/useList'
+import { activeFilterCount, filterFlag, useList } from '@/composables/useList'
 import { useSelection } from '@/composables/useSelection'
 import { DEFAULT_ROLE, SUPPLIER_ROLE, isPlainUser, useAssignableRoles, withSupplierUser } from '@/composables/useAssignableRoles'
 import { useScope } from '@/composables/useScope'
@@ -39,6 +39,7 @@ import { notifyError } from '@/utils/errors'
 import { applyFormError } from '@/utils/formErrors'
 import { formatMoney } from '@/utils/format'
 import EntityPicker from '@/components/EntityPicker.vue'
+import UserRef from '@/components/entity/UserRef.vue'
 import SegmentBadge from '@/components/pricing/SegmentBadge.vue'
 import AdjustBalanceModal from '@/views/ledger/AdjustBalanceModal.vue'
 import ResetPasswordDialog from './ResetPasswordDialog.vue'
@@ -63,12 +64,7 @@ const scope = useScope()
 // those directly under the caller.
 const list = useList<User>('/users', { q: '', status: '', role: fromQuery('role'), segment: fromQuery('segment'), owner_id: '', direct: '' })
 const teamOnly = computed(() => scope.level(P.UserRead) === 'team')
-const onlyDirect = computed({
-  get: () => list.filters.direct === 'true',
-  set: (v: boolean) => {
-    list.filters.direct = v ? 'true' : ''
-  }
-})
+const onlyDirect = filterFlag(list.filters, 'direct')
 
 // ------------------------------------------------------------------ roles lookup
 
@@ -105,7 +101,6 @@ const segmentOptions = computed(() => segmentFilterOptions(segments.value, { all
 // ------------------------------------------------------------------ table
 
 const showBalance = computed(() => list.items.value.some((u) => u.balance !== undefined && u.balance !== null))
-const showOwner = computed(() => list.items.value.some((u) => u.owner_id))
 
 const columns = computed<TableColumn[]>(() => {
   const cols: TableColumn[] = [
@@ -113,9 +108,10 @@ const columns = computed<TableColumn[]>(() => {
     { key: 'email', label: t('users.email'), mobile: 'title' },
     { key: 'display_name', label: t('users.displayName'), mobile: 'subtitle' },
     { key: 'roles', label: t('users.roles'), mobile: 'meta' },
-    { key: 'segment', label: t('users.segment'), mobile: 'meta' }
+    { key: 'segment', label: t('users.segment'), mobile: 'meta' },
+    // The owner (所属) always: user:read reaches every user or a team, past one's own, as the accounts list's does.
+    { key: 'owner', label: t('users.owner'), mobile: 'meta' }
   ]
-  if (showOwner.value) cols.push({ key: 'owner', label: t('users.owner'), mobile: 'meta' })
   if (showBalance.value) cols.push({ key: 'balance', label: t('users.balance'), align: 'right', mobile: 'meta' })
   cols.push(
     { key: 'status', label: t('common.status'), mobile: 'status' },
@@ -391,11 +387,7 @@ function remove(u: User) {
       <template #cell-segment="{ row }">
         <SegmentBadge :segment="row.segment" />
       </template>
-      <template #cell-owner="{ row }">
-        <span v-if="row.owner_email" class="text-xs" :title="`#${row.owner_id}`">{{ row.owner_email }}</span>
-        <SHint v-else-if="row.owner_id" inline size="xs">#{{ row.owner_id }}</SHint>
-        <SHint v-else inline>—</SHint>
-      </template>
+      <template #cell-owner="{ row }"><UserRef :id="row.owner_id" :email="row.owner_email" /></template>
       <template #cell-balance="{ row }">
         <span class="font-mono">{{ formatMoney(row.balance) }}</span>
       </template>

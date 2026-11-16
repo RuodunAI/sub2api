@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { nextPath } from './paths'
 import { fail } from './router'
 
 // Mock of the built-in custom upstream plugin (docs/UPSTREAM-DECLARATIVE.md
@@ -13,7 +13,7 @@ import { fail } from './router'
 
 const read = (path: string): any => {
   try {
-    return JSON.parse(readFileSync(fileURLToPath(new URL(`../../${path}`, import.meta.url)), 'utf8'))
+    return JSON.parse(readFileSync(nextPath(path), 'utf8'))
   } catch {
     return {}
   }

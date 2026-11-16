@@ -27,31 +27,31 @@ describe('entity search fields', () => {
   })
 
   it('a link presets the exact model or the model search, the exact one alone when it brings both', () => {
-    expect(queryUsageFilters({ model: 'gpt-4o', account_name: 'main' }, true)).toEqual({ model: 'gpt-4o' })
-    expect(queryUsageFilters({ model_contains: 'gpt' }, false)).toEqual({ model_contains: 'gpt' })
-    expect(queryUsageFilters({ model: 'gpt-4o', model_contains: 'opus' }, true)).toEqual({ model: 'gpt-4o' })
+    expect(queryUsageFilters({ model: 'gpt-4o', account_name: 'main' }, 'all')).toEqual({ model: 'gpt-4o' })
+    expect(queryUsageFilters({ model_contains: 'gpt' }, 'self')).toEqual({ model_contains: 'gpt' })
+    expect(queryUsageFilters({ model: 'gpt-4o', model_contains: 'opus' }, 'all')).toEqual({ model: 'gpt-4o' })
   })
 
   it('a link presets the entities by id: the group for anyone, the user for an operator, the account for one who reads accounts', () => {
     const link = { user_id: '3', group_id: '7', api_key_id: '104', account_id: '25' }
-    expect(queryUsageFilters(link, true, true)).toEqual(link)
-    expect(queryUsageFilters(link, true)).toEqual({ user_id: '3', group_id: '7', api_key_id: '104' })
-    expect(queryUsageFilters(link, false)).toEqual({ group_id: '7', api_key_id: '104' })
+    expect(queryUsageFilters(link, 'all', true)).toEqual(link)
+    expect(queryUsageFilters(link, 'all')).toEqual({ user_id: '3', group_id: '7', api_key_id: '104' })
+    expect(queryUsageFilters(link, 'self')).toEqual({ group_id: '7', api_key_id: '104' })
   })
 
   it('a link presets the retried filter for anyone, as true or false only (CONTRACTS §98)', () => {
-    expect(queryUsageFilters({ retried: 'true' }, false)).toEqual({ retried: 'true' })
-    expect(queryUsageFilters({ retried: 'false' }, true)).toEqual({ retried: 'false' })
-    for (const retried of ['1', 'yes', 'TRUE']) expect(queryUsageFilters({ retried }, true)).toEqual({})
+    expect(queryUsageFilters({ retried: 'true' }, 'self')).toEqual({ retried: 'true' })
+    expect(queryUsageFilters({ retried: 'false' }, 'all')).toEqual({ retried: 'false' })
+    for (const retried of ['1', 'yes', 'TRUE']) expect(queryUsageFilters({ retried }, 'all')).toEqual({})
   })
 
   it('a link presets the account view with its own filters only', () => {
     const link = { user_id: '3', group_id: '7', api_key_id: '104', account_id: '25', model: 'gpt-4o', model_contains: 'gpt', retried: 'true', client_ip: '1.2.3.4' }
-    expect(queryUsageFilters(link, false, true, true)).toEqual({ account_id: '25', model: 'gpt-4o', retried: 'true' })
+    expect(queryUsageFilters(link, 'account', true)).toEqual({ account_id: '25', model: 'gpt-4o', retried: 'true' })
   })
 
   it.each(['abc', '0', '007', '-1', '1.5', ' 7'])('a link id that is not one (%o) is dropped; a model, being a name, is kept', id => {
-    expect(queryUsageFilters({ user_id: id, group_id: id, api_key_id: id, account_id: id, model: id }, true, true)).toEqual({ model: id })
+    expect(queryUsageFilters({ user_id: id, group_id: id, api_key_id: id, account_id: id, model: id }, 'all', true)).toEqual({ model: id })
   })
 })
 
@@ -86,8 +86,8 @@ describe('the API key under a new user', () => {
 })
 
 describe('usageSearchLayout', () => {
-  const admin = { admin: true, accounts: true, errors: false }
-  const self = { admin: false, accounts: false, errors: false }
+  const admin = { view: 'all' as const, accounts: true, errors: false }
+  const self = { view: 'self' as const, accounts: false, errors: false }
 
   it('puts the model, user and API key on an operator\'s first row and the rest behind More filters', () => {
     const { primary, advanced } = usageSearchLayout(admin)
@@ -129,7 +129,7 @@ describe('usageSearchLayout', () => {
   })
 
   it('gives the account view the account\'s facts only: no user, key, group, IP, conversion or billing (CONTRACTS §102.5)', () => {
-    const view = { ...self, accountView: true }
+    const view = { ...self, view: 'account' as const }
     const { primary, advanced, params } = usageSearchLayout(view)
     expect(primary).toEqual(['model', 'account'])
     expect(advanced).toEqual(['request_id', 'protocol', 'success', 'retried'])

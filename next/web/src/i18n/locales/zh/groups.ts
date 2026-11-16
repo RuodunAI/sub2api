@@ -51,7 +51,7 @@ export default {
     none: '没有账号',
     selected: '已选 {n} 个',
     saveFailed: '分组已保存，但以下账号更新失败：{names}',
-    notEditable: '没有修改该账号的权限（只能修改自己创建的账号）'
+    notEditable: '没有修改该账号的权限（只能修改所属是自己的账号）'
   },
   whoCanUse: '谁能用',
   modelPricing: '模型定价',

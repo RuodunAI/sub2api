@@ -44,9 +44,13 @@ describe('account usage in the mock', () => {
     expect((await call('GET', `/account-usage/${outside.id}`, undefined, vendor)).status).toBe(404)
   })
 
-  it('refuses a parameter the account view does not take', async () => {
+  it('refuses a parameter the account view does not take, by name, after the permission; the detail reads none', async () => {
     const r = await call('GET', '/account-usage?user_id=1&client_ip=1.2.3.4', undefined, vendor)
-    expect([r.status, fields(r)]).toEqual([400, ['user_id', 'client_ip']])
+    expect([r.status, fields(r)]).toEqual([400, ['client_ip', 'user_id']])
+    expect(fields(await call('GET', '/account-usage?limit=5', undefined, vendor))).toEqual(['limit'])
+    expect((await call('GET', '/account-usage?user_id=1', undefined, await signIn('pricer@example.com'))).status).toBe(403)
+    const id = (await call('GET', '/account-usage', undefined, vendor)).body.data.data[0].id
+    expect((await call('GET', `/account-usage/${id}?user_id=1`, undefined, vendor)).status).toBe(200)
     expect((await call('GET', '/account-usage/overview?model=x', undefined, vendor)).status).toBe(400)
     expect((await call('GET', '/account-usage/summary?group_by=user', undefined, vendor)).status).toBe(400)
     expect((await call('GET', '/account-usage/summary?group_by=model&order=cost', undefined, vendor)).status).toBe(400)

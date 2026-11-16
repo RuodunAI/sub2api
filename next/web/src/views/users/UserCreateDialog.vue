@@ -10,6 +10,7 @@ import { P } from '@/generated/permissions'
 import { lt } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useAssignableRoles, withSupplierUser, DEFAULT_ROLE, SUPPLIER_ROLE } from '@/composables/useAssignableRoles'
+import { useScope } from '@/composables/useScope'
 import { applyFormError } from '@/utils/formErrors'
 import { OWNER_ERRORS } from './userOwner'
 import { useNamedSegments } from './userSegments'
@@ -26,6 +27,7 @@ const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'created'):
 const { t } = useI18n()
 const auth = useAuthStore()
 const managed = useAssignableRoles()
+const scope = useScope()
 const segments = useNamedSegments()
 const defaultSegmentId = computed(() => segments.value.find((s) => s.is_default)?.id ?? null)
 const canPlace = computed(() => auth.has('segment:read') && auth.has('segment:manage'))
@@ -36,15 +38,14 @@ const errors = ref<Record<string, string>>({})
 const form = reactive({ email: '', display_name: '', password: '', role_keys: [] as string[], segment_id: null as number | null, owner_id: '' })
 
 /**
- * The role a new user starts with, sent explicitly: the first of the default
- * role, supplier and any other the caller may grant (a supplier agent's list
- * leaves the default role out, CONTRACTS §102.1); none, and the server's
- * default applies.
+ * The roles a new user starts with, sent explicitly: the default role where
+ * the caller may give it (roleSelectable's rule); a team holder (a supplier
+ * agent, CONTRACTS §102.1) makes suppliers, so supplier too where it may
+ * assign it. Never another role by fallback.
  */
 function startingRoles(): string[] {
-  const grantable = managed.roles.value.filter((r) => r.grantable).map((r) => r.key)
-  const first = [DEFAULT_ROLE, SUPPLIER_ROLE].find((k) => grantable.includes(k)) ?? grantable[0]
-  return first ? [first] : []
+  const keys = managed.defaultWithin() ? [DEFAULT_ROLE] : []
+  return scope.level(P.UserCreate) === 'team' && managed.assignable(SUPPLIER_ROLE) ? [...keys, SUPPLIER_ROLE] : keys
 }
 
 watch(
@@ -74,7 +75,7 @@ function roleSelectable(key: string) {
 /** Supplier is an add-on role: checking it checks the default role with it. */
 function toggleRole(key: string) {
   const keys = form.role_keys.includes(key) ? form.role_keys.filter((k) => k !== key) : [...form.role_keys, key]
-  form.role_keys = key === SUPPLIER_ROLE ? withSupplierUser(keys, managed.assignable(DEFAULT_ROLE)) : keys
+  form.role_keys = key === SUPPLIER_ROLE ? withSupplierUser(keys, managed.defaultWithin()) : keys
 }
 
 async function submit() {

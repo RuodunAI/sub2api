@@ -15,6 +15,7 @@ import DistributionCard from './DistributionCard.vue'
 import MetricStrip from './MetricStrip.vue'
 import TokenTrendChart from './TokenTrendChart.vue'
 import { bucketKeys, type Granularity } from './stats'
+import type { UsageSummaryRow } from '@/api/types'
 
 const props = withDefaults(
   defineProps<{
@@ -22,7 +23,7 @@ const props = withDefaults(
     filters: Record<string, unknown>
     granularity: Granularity
     /** Second breakdown beside the models; none on the dashboard layout. */
-    secondary?: { groupBy: string; title: string; keyLabel: string; labelOf?: (key: string) => string } | null
+    secondary?: { groupBy: string; title: string; keyLabel: string; labelOf?: (row: UsageSummaryRow) => string } | null
     layout?: 'records' | 'dashboard'
     enabled?: boolean
     /** Bumped by the page's refresh button. */

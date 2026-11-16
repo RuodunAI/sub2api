@@ -11,6 +11,7 @@ import { useAccountTypes } from '@/views/accounts/accountTypes'
 import ModelBadge from '@/components/platform/ModelBadge.vue'
 import PlatformBadge from '@/components/platform/PlatformBadge.vue'
 import { accountLabel, availabilityTrace, factText, hookTone, isConverted, knownUsageRounds, schedulingTrace, seconds, type UsageRow } from './usage'
+import type { UsageView } from './view'
 import UsageAccountMark from './UsageAccountMark.vue'
 import UsageAvailabilityTrace from './UsageAvailabilityTrace.vue'
 import UsageSchedulingTrace from './UsageSchedulingTrace.vue'
@@ -26,10 +27,11 @@ import FailureDecisionDetails from '@/views/settings/FailureDecisionDetails.vue'
 import type { FailureDecision } from '@/views/settings/failurePolicy'
 
 // Expanded usage record: billing detail (A.14), request info, tokens, hooks, sticky.
-// `mine`: the caller's own records, whose attempts show no accounts.
-// `accountView`: the account's facts only (CONTRACTS §102.5): no billing, no
+// `view` `self`: the caller's own records, whose attempts show no accounts;
+// `account`: the account's facts only (CONTRACTS §102.5): no billing, no
 // group, key, client or user agent; the cost at the list price.
-const props = defineProps<{ row: UsageRow; path?: string; mine?: boolean; accountView?: boolean }>()
+const props = defineProps<{ row: UsageRow; path?: string; view: UsageView }>()
+const accountView = computed(() => props.view === 'account')
 const { t } = useI18n()
 const auth = useAuthStore()
 const accountTypes = useAccountTypes()
@@ -53,7 +55,7 @@ onMounted(async () => {
 
 const u = computed<UsageRow>(() => ({ ...props.row, ...(detail.value || {}) }))
 const summary = computed(() => [
-  { label: t('usage.cols.cost'), value: u.value.billing_status === 'free' ? t('usage.free') : formatMoney(props.accountView ? u.value.standard_cost : u.value.total_cost, 8) },
+  { label: t('usage.cols.cost'), value: u.value.billing_status === 'free' ? t('usage.free') : formatMoney(accountView.value ? u.value.standard_cost : u.value.total_cost, 8) },
   { label: t('usage.request.latency'), value: seconds(u.value.latency_ms) },
   { label: t('usage.request.firstToken'), value: u.value.stream && u.value.first_token_ms != null ? seconds(u.value.first_token_ms) : '—' },
   { label: t('usage.request.upload'), value: u.value.upload_ms ? seconds(u.value.upload_ms) : '—' }
@@ -212,7 +214,7 @@ const schedulingHint = computed(() => u.value.error_type === 'no_account' && !!s
         </SDisclosure>
       </SCard>
     </SGrid>
-    <UsageAttemptTrace :row="u" :mine="mine" />
+    <UsageAttemptTrace :row="u" :mine="view === 'self'" />
     <UsageSchedulingTrace :row="u" />
     <UsageAvailabilityTrace :row="u" />
     <UsageConversionTrace :row="u" />

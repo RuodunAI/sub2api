@@ -1097,6 +1097,8 @@ export interface UsageSummaryRow {
   last_at?: string
   /** group_by=user: the user's email. */
   user_email?: string
+  /** group_by=account in the account view (CONTRACTS §102.5): the account's name. */
+  account_name?: string
   /** Rows carrying an observability marker (CONTRACTS §25.4). */
   anomalies?: number
   /** Rows billed at a plugin's estimate, and what they contribute to total_cost. */
