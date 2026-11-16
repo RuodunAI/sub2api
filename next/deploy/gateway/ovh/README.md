@@ -41,7 +41,7 @@
 - 测试与验证：`test.sh` TEST-OK（server 59 包、-race 11 包、sdk、7 个插件、控制台 2340 条与三个原生界面）；本机生产快照验证；worker 在 11-14 生产快照上用 stage 产物独立验证 r3 全部 17 项（211 条）通过，r4 复验第 1–3 项与插件运行时授予一致性通过（其余项发布时仍在进行）。
 - 发布前只读确认：线上 0.1.285、schema 0096、超管 1 个、网关 revision 544、预检无 blocker；线上 10 个插件的宿主权限授予全部在新 manifest 声明内。按用户 11-12 的要求没有关闭 new-api 渠道。
 - 核验（`~/rel286/`，只读）：两节点 0.1.286；10 个插件 enabled 且两节点 ready（版本同上）；超管 1 个；内置角色等于默认值（admin 51 + 可分配 operator/supplier/user 与 assign_custom，operator 27 + 1 范围、可分配 supplier/user，supplier 1 + 8 范围，user 4），旧 own 键与 `role:manage` 为 0；`smoke286.py` 超管只读接口全部 200；`errs.sh` 19:39–19:42 共 80 次请求 0 个 5xx（sup2api-1 11 个 499 为停服窗口客户端断开），19:41 起 0 个 5xx；sup2api-1 日志只有停服时的 `local core unreachable` WARN。
-- 回滚：网关不允许跨 schema 回退（升级计划与 `sub2api-gateway rollback` 都会拒绝），线上出问题修复前进（0.1.287，新迁移接在 0098 之后）或从数据库自动备份恢复；`deploy/rollback/0.1.286-authz-down.sql/.md` 只用于不经网关的环境。
+- 回滚：网关不允许跨 schema 回退（升级计划与 `sub2api-gateway rollback` 都会拒绝），线上出问题修复前进（0.1.287，新迁移接在 0098 之后）或从数据库自动备份恢复；`deploy/rollback/0.1.286-authz-down.sql/.md` 只用于不经网关的环境（0.1.290 后已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.286-authz-down.sql`）。
 - 上游同步 PR 未提，未合入 develop（等用户决定）。
 
 2026-11-14 核心 **0.1.285**（`b12c9aede`，develop 头，合并了 `fix/disconnect-wait-and-claude-max-tokens` `bdbb2875e`；北京时间 05:21–05:23；计划 `db8e5317a6b261e70cf08175c44864f4` rolling-v1 completed，05:21:39→05:23:39 约 120 秒，两节点轮流让出（先 ccp 后 ovh），`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移，schema 仍 `a9befa8c…1e11`；Host API 仍 9）：

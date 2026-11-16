@@ -1600,7 +1600,7 @@ next/
 │       ├── host/                  # @sub2api/host 宿主 API
 │       └── vite-preset/           # 插件前端构建预设
 ├── deploy/                        # 镜像构建脚本（docker/）、网关托管部署（gateway/）、单机栈（single/）、
-│                                  # e2e 栈（e2e/）、mock-upstream、发布与回退手册（rollback/）
+│                                  # e2e 栈（e2e/）、mock-upstream、单向发布进行中的发布与回退手册（rollback/，平时没有）
 ├── Dockerfile                     # 核心、插件与控制台的镜像构建
 └── docs/
 ```

@@ -7,8 +7,9 @@ the primary-first or rolling upgrade flow and Redis per-node peer keys described
 in the [multi-node protocol](../docs/MULTINODE-SYNC-PROTOCOL.md). Building and
 publishing releases and configuring nodes: [gateway/README.md](gateway/README.md);
 each environment's deployment record: `gateway/<environment>/README.md`.
-One-way releases (migrations that cannot be undone) have their upgrade and
-rollback runbooks in [rollback/](rollback/).
+One-way releases (migrations that cannot be undone) keep their upgrade and
+rollback runbooks in `rollback/` until the release is live everywhere and
+rollback is no longer possible; then they are deleted (none is open now).
 
 `single/` runs the core directly, without the gateway (services `app` and
 `app-2` sharing their own PostgreSQL and Valkey). It is no longer the long-running deployment (see the
@@ -25,7 +26,7 @@ run these destructive tests against a production stack or the unit-test
 ```
 deploy/
 ├── gateway/               # gateway image, release packaging, node config; one README per environment
-├── rollback/              # upgrade and rollback runbooks (and SQL) of one-way releases
+├── rollback/              # runbooks (and SQL) of a one-way release in progress; absent otherwise
 ├── single/                # compose.yml + deploy.sh of a core-only stack without the gateway
 ├── e2e/                   # isolated two-node stack + Caddy + opt-in Go test runner
 ├── docker/                # build and entrypoint scripts used by ../Dockerfile
