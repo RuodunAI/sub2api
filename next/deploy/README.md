@@ -4,8 +4,11 @@ The long-running deployment is gateway-managed: since 2026-10-02 every node runs
 `sub2api-gateway` (`next/gateway`) as its public entry, which supervises the
 local core (listening on loopback only) and installs signed core releases with
 the primary-first or rolling upgrade flow and Redis per-node peer keys described
-in the [multi-node protocol](../docs/MULTINODE-SYNC-PROTOCOL.md). Building and
-publishing releases and configuring nodes: [gateway/README.md](gateway/README.md);
+in the [multi-node protocol](../docs/MULTINODE-SYNC-PROTOCOL.md). Core and
+gateway releases are built and signed by GitHub Actions; the gateway detects
+them from the configured update source and applies them when an administrator
+clicks "update" in the console (CONTRACTS §102). Publishing releases and
+configuring nodes: [gateway/README.md](gateway/README.md);
 each environment's deployment record: `gateway/<environment>/README.md`.
 One-way releases (migrations that cannot be undone) have their upgrade and
 rollback runbooks in [rollback/](rollback/).

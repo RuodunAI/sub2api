@@ -932,13 +932,12 @@
 
 ## 更新原则
 
-1. 本地审查、提交、推送；服务器Git fetch精确SHA，clean detached工作树构建，禁止scp/rsync上传源码。
-2. 从仓库内执行`prepare-core-release.sh VERSION FULL_GIT_SHA`。它在Docker主机上构建CCGateway运行环境镜像（缓存在`~/sup2api-managed/ccgateway-images/<插件版本>/`，每版本只构建一次）和核心（REQUIRE_CCGATEWAY_IMAGES=1，镜像随ccgateway插件包分发），准备签名制品、备份和预检，不创建升级计划或切服务；版本/制品不可覆盖。
-3. 核固定Go编译器、六builtin不可变包、签名/hash、原schema、备份和fresh preflight，再由正常primary-first updater升级。四节点独立核版本/hash/ready，真实服务验收另记。
+1. 本地审查、提交、推送。
+2. 核心与网关的发布包只由 GitHub Actions 按 tag `core-v*`、`gateway-v*` 构建和签名（[github/README.md](../github/README.md)），不在本机或服务器上构建、签名发布包。节点 `trusted_keys` 要有流水线的发布公钥。
+3. 上线用控制台“版本与更新”的一键更新（[网关手册“更新源与一键更新”](../README.md#更新源与一键更新)）；服务器连不上 GitHub 时用 `sub2api-release mirror` 转存成 `url` 来源。发布前照常核对 schema、备份和预检结果；各节点各自核对版本、hash、ready，真实服务验收另记。
 4. 服务端既有`~/sup2api-managed/upgrade_observe.py`节点映射为`sup2api-*`。仓库同名旧脚本映射不同，**不能直接覆盖服务端脚本或不核映射就运行**；不要传故障注入的第二参数。
-5. CCGateway保存未来镜像配置不替换现有账号。#21/#22保留原容器/数据/授权，Worker需显式备份和原子替换程序；Controller更新另走明确步骤。
 
-不要再使用`deploy/single/deploy.sh`，会与管理节点争用3130/3131。也**不要在本目录（或服务器上任何 `release-*/next/deploy/gateway/ovh`）执行 `docker compose up`**：线上节点由 `/home/debian/sup2api-managed/compose.yml` 管理（容器 `sup2api-1..4`/`releases`，卷 `sup2api-managed_sup2api-N-data`，证书挂载路径也不同），本目录的 `compose.yml` 卷名为 `state-N`，起出来是一套用旧状态卷、不心跳、发布服务器缺证书的错误节点（2026-10-09 07:44 发生过）。核心升级只走 `~/sup2api-managed/build-core.sh VERSION` → 主节点 `sub2api-shell import` → `upgrade_observe.py DIGEST`。不要把正常核心升级写成零中断，最近维护窗口约30–38秒。禁止生产DB运行测试fixture；测试使用隔离45432库。
+不要再使用`deploy/single/deploy.sh`，会与管理节点争用3130/3131。也**不要在本目录（或服务器上任何 `release-*/next/deploy/gateway/ovh`）执行 `docker compose up`**：线上节点由 `/home/debian/sup2api-managed/compose.yml` 管理（容器 `sup2api-1..4`/`releases`，卷 `sup2api-managed_sup2api-N-data`，证书挂载路径也不同），本目录的 `compose.yml` 卷名为 `state-N`，起出来是一套用旧状态卷、不心跳、发布服务器缺证书的错误节点（2026-10-09 07:44 发生过）。主节点优先（改库）的核心升级不是零中断，最近维护窗口约30–38秒。禁止生产DB运行测试fixture；测试使用隔离45432库。
 
 `.env`、keys/certs/stage/publish及私有备份仅留服务器；不要提交或打印鉴权、密码、DSN、完整inspect。更详命令和恢复路径见环境指南。此文替代此前自动踢账号换镜像和tools/ccgateway旧路径说明。
 

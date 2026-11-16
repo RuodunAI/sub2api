@@ -1,6 +1,6 @@
 # 用 GitHub Actions 发布核心与网关
 
-核心与网关两条版本线都由 `.github/workflows/next-release.yml` 在 GitHub Actions 里构建、签名并发布成 GitHub Release；节点的版本检测与一键更新以 Release 里的签名清单为准（接口契约见 `next/docs/DESIGN-2026-11-17-UPDATE-SOURCES.md` §2、§3、§10）。插件仍走各自的批准与独立发布，内置插件随核心包发布。
+核心与网关两条版本线都由 `.github/workflows/next-release.yml` 在 GitHub Actions 里构建、签名并发布成 GitHub Release；节点的版本检测与一键更新以 Release 里的签名清单为准（契约见 [CONTRACTS §102](../../../docs/CONTRACTS.md)，节点上的配置见 [网关手册“更新源与一键更新”](../README.md#更新源与一键更新)）。插件仍走各自的批准与独立发布，内置插件随核心包发布。
 
 | 版本线 | tag | 签名清单 | 安装物 |
 |---|---|---|---|
@@ -71,7 +71,6 @@ git push origin core-v0.1.291
 
 - **第一个 `core-v*` 发布**没有上一版清单可读：推 tag 触发的运行会在 validate tag 失败。在 Actions 里手动运行本工作流，填这个 tag、取消 `dry_run`，`schema_before` 填它要升级的线上核心的 `sub2api schema-contract` 输出（64 位十六进制）；与本版相同时策略记为 `rolling`，不同时为 `maintenance`（主节点优先升级）。
 - 镜像按摘要推送发生在审批之前；审批被拒时 GHCR 里只留下一个无标签的版本，可在包设置里删掉。节点只认清单里记录的镜像摘要。
-- 旧网关（本流水线之前的版本）只认 `v*` tag 的 `releases/latest`，会把新 tag 当成检测失败，不会误装。
 
 ## 镜像源：`sub2api-release mirror`
 
@@ -88,7 +87,7 @@ sub2api-release mirror --github owner/repo --tags core-v0.1.291,gateway-v0.1.135
 MIRROR_SECRET=… sub2api-release mirror --url https://releases.example.com/sub2api/ --token-env MIRROR_SECRET --latest 5 --out /srv/sub2api-releases
 ```
 
-令牌只发给 `api.github.com`（或 url 来源本身的源站），跳转到其他源站时去掉。用任意 HTTPS 服务器发布这个目录，在控制台把更新源设为 `url`，地址填目录 URL（以 `/` 结尾）。
+令牌只发给 `api.github.com`（或 url 来源本身的源站），跳转到其他源站时去掉。用任意 HTTPS 服务器发布这个目录，在控制台把更新源设为 `url`，地址填目录 URL（以 `/` 结尾）；目录在内网时各节点网关要配置 `allow_private_update_sources: true`。
 
 ## 离线与手工发布
 
