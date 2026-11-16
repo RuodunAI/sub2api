@@ -10,7 +10,7 @@
 
 ### 核心 0.1.290 + 插件：插件权限声明、Casbin 权限存储、Valkey 控制台会话、GORM（迁移 0099–0101，单向，停服发布，所有人重新登录）
 
-一个发布单元，从线上 0.1.288（schema 0098）直接升级，三个迁移在同一次升级里依次执行。插件权限这部分开发时按 0.1.289 规划，**0.1.289 没有单独发布**：相关的版本下限（`PluginPermissionsFirstCore`、UI 3.16 与 3.17 的核心下限、内置插件的 `hostCompat`）都是 0.1.290。步骤见 `next/deploy/rollback/0.1.290-release.md`。
+一个发布单元，从线上 0.1.288（schema 0098）直接升级，三个迁移在同一次升级里依次执行。插件权限这部分开发时按 0.1.289 规划，**0.1.289 没有单独发布**。全部内置插件的 `hostCompat` 都是 `>=0.1.290 <0.2.0`；清单检查不再按用到的功能核对 `hostCompat`/`hostUICompat` 的核心下限，SDK 也不再为旧核心降级或报 `Unimplemented`（0.1.290 之前的核心不会与它同时运行）。步骤见 `next/deploy/rollback/0.1.290-release.md`。
 
 **发布**：单向，停服。发布前在生产副本上演练，用 `0.1.290-effective-permissions.sql` 逐个用户比较升级前后的有效权限，结果必须完全相同。托管部署在建升级计划**之前**备份整个数据库，然后建 `primary-first-v1` 计划：各从节点先把入口转发到主节点再停掉核心，主节点最后进入维护（停服从这里开始）、停掉旧核心，带迁移许可启动新版本，执行 0099–0101 并恢复服务（停服到这里结束），最后从节点启动新版本。计划从停从节点到迁移之间不停顿，备份之后、维护开始之前的写入在回退时会丢失。非托管部署先停掉全部节点（顺序不限），再备份，然后启动一个节点执行迁移，再启动其余节点。上一版签发的登录全部作废，所有人重新登录。
 
@@ -47,7 +47,7 @@
 
 **迁移 0099**（`0099_plugin_permission_meta.sql`，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填（`sensitive` 列由 0100 删除）。
 
-**第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.290（`below_feature_core`；声明 `hostUICompat` `^3.16` 或 `^3.17` 的也一样，`below_ui_core`）。清单检查另要求：权限声明了 `scope` 的非 GET 路由必须写 `scopeFrom`（`required`）；`inheritFrom` 只能指向本清单已不再声明的 key（`invalid_value`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
+**第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的插件只能装在 0.1.290 及以后的核心上。清单检查另要求：权限声明了 `scope` 的非 GET 路由必须写 `scopeFrom`（`required`）；`inheritFrom` 只能指向本清单已不再声明的 key（`invalid_value`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
 
 **内置插件**：9 个声明了用户权限的插件（anthropic、claude-oauth、codex、dynweight、growth、guard、moderation、payment、volcengine）的清单已改用 `risk`/`defaults`，`hostCompat` 升到 `>=0.1.290 <0.2.0`，需要核心 ≥0.1.290；版本见下文“插件版本”。被管理员停用的内置插件不会自动升级（只升级已启用的），重新启用之前目录停在迁移回填的状态（风险只按旧的 `sensitive` 回填，没有 `defaults` 和分组，`moderation:exempt` 仍是 low）；已安装的旧格式版本再次同意或激活时风险按 low 写入，内置插件也一样（暂存同意取新旧较高的风险，不受影响）。
 
@@ -108,11 +108,12 @@
 | dynweight（内置） | 0.5.9 | 0.5.10 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
 | moderation（内置） | 0.12.0 | 0.12.1 | 清单改用 `risk`/`defaults`（`moderation:exempt` 改为 critical，`moderation:read` 提为 sensitive），`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
 | volcengine（内置） | 0.12.7 | 0.12.8 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；素材索引与视频账本改用 GORM，功能不变 |
-| ccgateway、mailer、openai、gemini、custom（内置） | 0.1.133、0.1.2、0.4.0、0.3.0、0.1.0 | 不变 | 源码不变，只换了 SDK 依赖；发布时一律沿用线上包的字节（用新 SDK 重新编译的包内容不同、版本号相同，内置同步会跳过并记 WARN） |
+| ccgateway、mailer、openai、gemini、custom（内置） | 0.1.133、0.1.2、0.4.0、0.3.0、0.1.0 | 0.1.134、0.1.3、0.4.1、0.3.1、0.1.1 | `hostCompat >=0.1.290`，用 SDK 0.2.0 重新编译（ccgateway 去掉了旧核心的 Host API 版本检查），功能不变 |
 | claude-oauth | — | 0.2.4 | 清单改用 `risk`/`defaults`（`claude_oauth:manage` 提为 sensitive），`hostCompat >=0.1.290` |
 | growth | — | 0.2.1 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
 | guard | — | 0.2.10 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；规则、统计、事件改用 GORM，功能不变 |
 | payment | — | 0.1.2 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；订单与通知改用 GORM，功能不变 |
+| relay | — | 0.3.1 | `hostCompat >=0.1.290`，用 SDK 0.2.0 重新编译，功能不变 |
 
 `tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` 对照 `next/plugins/released.json`（线上各插件的版本和源码摘要，取自 0.1.286 打包的 `951525943`），发现内容变了而版本没升的插件就失败；每次发布后按该测试的说明重写这个文件。
 

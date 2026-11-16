@@ -6,11 +6,11 @@
     "en": "Adds account types for any OpenAI-, Anthropic- or Gemini-compatible API: your own Base URL and key, served by the core on the built-in openai, anthropic and gemini platforms. Each account can change how the key is sent, add headers, change the path of each protocol and let through request fields filtered by default. Declares no platform, no endpoints and no prices.",
     "zh": "为任意 OpenAI、Anthropic 或 Gemini 兼容接口新增账号类型：自定义 Base URL 和 Key，由核心在内置的 openai、anthropic、gemini 平台上提供服务。每个账号可以修改 Key 的发送方式、追加请求头、修改各协议的路径，并放开默认过滤的请求字段。不声明平台、端点和价格。"
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "sub2api",
   "icon": "assets/custom.svg",
   "runtime": "none",
-  "hostCompat": ">=0.1.262 <0.2.0",
+  "hostCompat": ">=0.1.290 <0.2.0",
 
   "capabilities": [
     { "id": "platform.adapter.v1" },

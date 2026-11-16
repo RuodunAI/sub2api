@@ -161,10 +161,6 @@ var CommonControlSpecs = map[string]CommonControlSpec{
 	"proxy":              {Kind: ControlProxy},
 }
 
-// LegacyCommonControls are the controls cores before CommonControlsFirstCore
-// already enforce (configurable and default only).
-var LegacyCommonControls = []string{"schedulable", "auto_disable"}
-
 // ModelLimitValue is one model limit list in the account API shape
 // (model_limits[]). SPMWindowSeconds is the list's session window, 0 for
 // the default (CONTRACTS §71.1); a DefaultModelLimit has none.

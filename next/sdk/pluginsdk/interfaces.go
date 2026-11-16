@@ -71,7 +71,7 @@ type TaskSubmissionParser interface {
 // next-check delay; the host owns retries, leases, persistence and billing.
 // The invocation permission expires when Poll returns or its context is
 // cancelled. Never cache the context/token or start a background polling loop.
-// Requires platform.poll.v1 and host API 3.
+// Requires platform.poll.v1.
 type Poller interface {
 	Poll(context.Context, *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error)
 }

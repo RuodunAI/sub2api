@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
@@ -136,8 +134,6 @@ func (p *Plugin) quote(ctx context.Context, ch *liveChannel, u EngineUsage) Call
 	q, err := p.host.PriceUsage(ctx, pluginsdk.PriceUsage{Model: c.BillingModel, Semantics: sem,
 		Input: u.InputTokens, Output: u.OutputTokens, CacheRead: u.CacheRead, CacheCreation: u.CacheCreation})
 	switch {
-	case err != nil && status.Code(err) == codes.Unimplemented:
-		c.Mode, c.Reason = PriceUnpriced, "host_too_old"
 	case err != nil:
 		c.Mode, c.Reason = PriceUnpriced, "unavailable"
 	case !q.Priced:

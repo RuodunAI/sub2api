@@ -282,8 +282,8 @@
 
 ### 5.8 插件自己的接口与静态资源（C）
 
-- `ANY /api/v1/p/:key/*path`：按 manifest `routes` 匹配；`scope=admin|user` 需要登录（会话或访问密钥）并检查 `plugin.<key>:<permission>`（访问密钥按其权限收窄，须勾选该插件权限，2026-11-13 期 4 S4；此前访问密钥一律 403；插件拿到的仍是用户 id，不知道经由密钥；未声明 permission 的路由对所有人 403，2026-11-12 权限加固 W5-A1/W1-F15）；`webhook` 和 `public` 不鉴权；转发给插件 `HTTPService.HandleHTTP`。admin/user 路由可声明 `accounts: {action: read|update|test, from?: ["path:<参数>"|"query:<名>"|"body:<顶层字段>"]}`（`manifest.RouteAccounts`，只有这三种前缀，`path:` 必须是该路由的参数）声明它作用的账号；被 `ui.accountActions` 指向的路由未声明时推断为 `{update（指向它的操作都是 visibleFor=all 时 read）, ["body:account_ids"]}`，显式声明则必须含 `body:account_ids`（校验码 `accounts_mismatch`），见 `manifest.EffectiveRouteAccounts`。核心转发前按 `core.AuthorizeAccounts` 检查：全部范围的 `account:<action>` 放行；只有更窄的范围（own、分组、指定账号，§21.0）时请求须带账号 id 且全部落在范围内（否则 404，不带 id 403）；任何范围都没有 403。旧核心解析 manifest 时忽略 `accounts`、不检查账号就转发，所以声明了 `accounts` 的插件 `hostCompat` 下限须 ≥0.1.286（`check.RouteAccountsFirstCore`，低了报 `below_feature_core`）；由 `ui.accountActions` 推断的检查没有字段可查，靠插件自己的 `hostCompat`。id 取自 from 指向的 path 参数、query 参数（全部取值）或 JSON 顶层字段（字段名大小写不敏感），可以是数字、数字数组或逗号分隔字符串，格式不对 400，去重后超过 `MaxAccountBatch` 400；未接入账号检查的节点对这些路由一律 503（2026-11-12 权限加固 M1）。manifest 说不出账号 id 的路由（id 在请求体深处、来自插件自己的表）由插件自己问核心：`HostService.AccountScopeCheck{user_id, action, account_ids≤500}` → `{all, allowed_ids}`（需要宿主授权 `accounts.read`，且 `user_id` 必须是该插件此刻正在处理的某个 `HandleHTTP` 请求的 `Caller.user_id`——宿主在转发请求期间按实例记下调用者，请求结束即失效，所以只能在处理请求的过程中调用，不能在后台任务里或替别的用户问；两条任一不满足 `PERMISSION_DENIED`，不进入账号模块。通过后转给 `core.AccountAccess`，错误码与其他核心错误同一映射：任何范围都没有 `PERMISSION_DENIED`，未知 action `INVALID_ARGUMENT`）；SDK `pluginsdk.ResolveAccountScope`（得到 `AccountScope`，`Allows`/`Filter`，用于列表过滤）与 `pluginsdk.RequireAccounts`（与核心同样的回答：无登录 401，任何范围都没有 403，只有窄范围时不带 id 403，含范围外的账号 404；未知 action 或非正数 id 400，宿主答不了 503）。插件没有 `accounts.read` 或请求已结束时 `RequireAccounts` 同样回 403（失败收紧）。另有 `pluginsdk.RequirePermission(host, perm, next)` 给单个路由追加权限检查（401/403/503）（2026-11-12 权限加固 M1-b）。`webhook`/`public` 路由不带调用者，声明 `permission` 或 `accounts` 打包校验报 `unsupported`（2026-11-12 权限加固 W5-C6）
-- **插件资源范围**（0.1.290，§21.0“插件资源范围”）：路由的 `permission` 若声明了 `scope`，持有它的**任意范围**即放行（`PermissionSet.HasSome`；全部范围照旧记入 `Granted`），核心把调用者在该权限上的范围随请求交给插件（`HTTPRequest.action_scope`）。admin/user 路由可声明 `scopeFrom: "path:<参数>"|"query:<名>"|"body:<顶层字段>"`（与 `accounts.from` 同一写法，`manifest.ParseAccountsFrom`；只能用在 permission 声明了 scope 的路由上，否则 `unsupported`；`path:` 必须是该路由的参数，否则 `unknown_param`；webhook/public 路由声明报 `unsupported`），核心转发前按 `core.AuthorizePluginScope` 判它指向的值：全部范围放行；否则请求须带值（不带 403 `details.permission`），持有 own 时一律放行、由插件按 `created_by` 判，只有列出的值时每个值都须在其中（否则 404）。值可以是字符串、数字、它们的数组或逗号分隔串；query 参数名与 body 顶层字段名都不分大小写匹配（与插件用 encoding/json 解码一致），query 的每个值都校验，body 同名字段（不分大小写）出现多次 400 `duplicate`（`accounts.from` 同样，二审 security #1/#3）；每个须是合法范围值（`[A-Za-z0-9_.-]{1,64}`，否则 400），去重后至多 `MaxAccountBatch` 个。不带值就只有全部范围能过，所以**列表路由不要声明 `scopeFrom`**，应读 `action_scope` 自己过滤（check 不猜哪些是列表路由）。反过来，permission 声明了 scope 的非 GET 路由必须写 `scopeFrom`（check 报 `required`）：任意范围都能进来，不写就只能靠插件拦住只持有一行的人改所有行；不针对具体行的写路由（如新建）改用不带 scope 的权限。旧核心忽略这些声明，所以用了 `userPermissions[].group/risk/requires/scope/defaults`、`permissionGroups` 或 `routes[].scopeFrom` 的清单 `hostCompat` 下限须 ≥0.1.290（`check.PluginPermissionsFirstCore`，低了报 `below_feature_core`；UI 3.16、3.17 随同一核心发布，0.1.289 没有发布，下限按 0.1.290 算）
+- `ANY /api/v1/p/:key/*path`：按 manifest `routes` 匹配；`scope=admin|user` 需要登录（会话或访问密钥）并检查 `plugin.<key>:<permission>`（访问密钥按其权限收窄，须勾选该插件权限，2026-11-13 期 4 S4；此前访问密钥一律 403；插件拿到的仍是用户 id，不知道经由密钥；未声明 permission 的路由对所有人 403，2026-11-12 权限加固 W5-A1/W1-F15）；`webhook` 和 `public` 不鉴权；转发给插件 `HTTPService.HandleHTTP`。admin/user 路由可声明 `accounts: {action: read|update|test, from?: ["path:<参数>"|"query:<名>"|"body:<顶层字段>"]}`（`manifest.RouteAccounts`，只有这三种前缀，`path:` 必须是该路由的参数）声明它作用的账号；被 `ui.accountActions` 指向的路由未声明时推断为 `{update（指向它的操作都是 visibleFor=all 时 read）, ["body:account_ids"]}`，显式声明则必须含 `body:account_ids`（校验码 `accounts_mismatch`），见 `manifest.EffectiveRouteAccounts`。核心转发前按 `core.AuthorizeAccounts` 检查：全部范围的 `account:<action>` 放行；只有更窄的范围（own、分组、指定账号，§21.0）时请求须带账号 id 且全部落在范围内（否则 404，不带 id 403）；任何范围都没有 403。（核心 0.1.286 起）。id 取自 from 指向的 path 参数、query 参数（全部取值）或 JSON 顶层字段（字段名大小写不敏感），可以是数字、数字数组或逗号分隔字符串，格式不对 400，去重后超过 `MaxAccountBatch` 400；未接入账号检查的节点对这些路由一律 503（2026-11-12 权限加固 M1）。manifest 说不出账号 id 的路由（id 在请求体深处、来自插件自己的表）由插件自己问核心：`HostService.AccountScopeCheck{user_id, action, account_ids≤500}` → `{all, allowed_ids}`（需要宿主授权 `accounts.read`，且 `user_id` 必须是该插件此刻正在处理的某个 `HandleHTTP` 请求的 `Caller.user_id`——宿主在转发请求期间按实例记下调用者，请求结束即失效，所以只能在处理请求的过程中调用，不能在后台任务里或替别的用户问；两条任一不满足 `PERMISSION_DENIED`，不进入账号模块。通过后转给 `core.AccountAccess`，错误码与其他核心错误同一映射：任何范围都没有 `PERMISSION_DENIED`，未知 action `INVALID_ARGUMENT`）；SDK `pluginsdk.ResolveAccountScope`（得到 `AccountScope`，`Allows`/`Filter`，用于列表过滤）与 `pluginsdk.RequireAccounts`（与核心同样的回答：无登录 401，任何范围都没有 403，只有窄范围时不带 id 403，含范围外的账号 404；未知 action 或非正数 id 400，宿主答不了 503）。插件没有 `accounts.read` 或请求已结束时 `RequireAccounts` 同样回 403（失败收紧）。另有 `pluginsdk.RequirePermission(host, perm, next)` 给单个路由追加权限检查（401/403/503）（2026-11-12 权限加固 M1-b）。`webhook`/`public` 路由不带调用者，声明 `permission` 或 `accounts` 打包校验报 `unsupported`（2026-11-12 权限加固 W5-C6）
+- **插件资源范围**（0.1.290，§21.0“插件资源范围”）：路由的 `permission` 若声明了 `scope`，持有它的**任意范围**即放行（`PermissionSet.HasSome`；全部范围照旧记入 `Granted`），核心把调用者在该权限上的范围随请求交给插件（`HTTPRequest.action_scope`）。admin/user 路由可声明 `scopeFrom: "path:<参数>"|"query:<名>"|"body:<顶层字段>"`（与 `accounts.from` 同一写法，`manifest.ParseAccountsFrom`；只能用在 permission 声明了 scope 的路由上，否则 `unsupported`；`path:` 必须是该路由的参数，否则 `unknown_param`；webhook/public 路由声明报 `unsupported`），核心转发前按 `core.AuthorizePluginScope` 判它指向的值：全部范围放行；否则请求须带值（不带 403 `details.permission`），持有 own 时一律放行、由插件按 `created_by` 判，只有列出的值时每个值都须在其中（否则 404）。值可以是字符串、数字、它们的数组或逗号分隔串；query 参数名与 body 顶层字段名都不分大小写匹配（与插件用 encoding/json 解码一致），query 的每个值都校验，body 同名字段（不分大小写）出现多次 400 `duplicate`（`accounts.from` 同样，二审 security #1/#3）；每个须是合法范围值（`[A-Za-z0-9_.-]{1,64}`，否则 400），去重后至多 `MaxAccountBatch` 个。不带值就只有全部范围能过，所以**列表路由不要声明 `scopeFrom`**，应读 `action_scope` 自己过滤（check 不猜哪些是列表路由）。反过来，permission 声明了 scope 的非 GET 路由必须写 `scopeFrom`（check 报 `required`）：任意范围都能进来，不写就只能靠插件拦住只持有一行的人改所有行；不针对具体行的写路由（如新建）改用不带 scope 的权限。这些声明（`userPermissions[].group/risk/requires/scope/defaults`、`permissionGroups`、`routes[].scopeFrom`）与 UI 3.16、3.17 都随核心 0.1.290 发布（0.1.289 没有发布）
 - `GET /plugin-ui/:key/:version_hash/*path`：插件包内 `ui/`、`forms/`、`i18n/` 下的文件；带长缓存头
 
 ### 5.9 网关端点（G）
@@ -1305,7 +1305,7 @@ type ProxyResolver interface {
 
 ### 23.1 加载方式与 import map
 
-- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.17.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。所以 `hostUICompat` 需要 3.4 或更高的插件，`hostCompat` 下限必须至少是 0.1.229，否则 `sdk/manifest` 校验报 `hostCompat / below_ui_core`（dynweight 0.4.1、growth 0.1.6 的下限因此提到 0.1.229）。
+- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.17.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
 - `entry.js` 的形状是 `NativePluginModule`：`register(host: PluginHost): void | Promise<void>`、`unregister?(): void | Promise<void>`。`register` 里用 `host.registerComponent(name, comp)` 注册 manifest `ui.pages[].component`、`ui.slots[].component` 引用的组件名，用 `host.addMessages({en, zh})` 注册文案；`unregister` 释放模块级状态（moderation 的 `entry.ts` 是最小样例）。
 - **import map**：控制台 `index.html` 注入 `<script type="importmap">`，把 `vue`、`vue-router`、`pinia`、`vue-i18n`、`@sub2api/ui`、`@sub2api/host` 映射到控制台自己构建出的 chunk（`web/vite.config.ts` 的 `SHARED`，`preserveEntrySignatures: 'strict'`，所有导出都保留；dev 下映射到源码，复用同样的预打包依赖）。插件用 `@sub2api/vite-preset` 构建时这些模块（`SHARED_MODULES`，前缀匹配 `vue/*` 之类的子路径）全部 external，**不得打进插件包**，否则页面里会出现第二份 Vue 运行时和第二套组件/状态：`toast`、`confirm`、i18n、路由、`theme` 都不再与控制台共享，组件的 `provide/inject` 也会失效。
 - 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（官方插件 growth、guard 用 `^3.4`，因为它们用到 3.4 的 `lazyPage`；dynweight 0.5.7、moderation 0.9.1 起用 `^3.11`，因为它们用到 `host.components.EntityPicker`（§96.6）；moderation 0.9.2 起用 `^3.12`（§96.7）；`sdk/manifest`：声明了 `ui.native` 时必填）。
@@ -2764,7 +2764,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 - 手工“重置状态”同时清除自动解除时间；管理员显式修改 `status` 时取消旧期限。成功重新授权会恢复 `error/auto_disabled`，但不恢复管理员 `disabled`，也不改变调度开关。
 - CCGateway 0.1.37：托管 OAuth 账号收到上游 429 后，插件声明到期自动禁用建议；2026-10-12 起核心仅在命中管理员禁用规则时执行，未配置 429 且关键词未命中时只冷却。取所有已耗尽窗口中最晚的 reset，与 Retry-After 同时存在时取较晚值；没有这两类信息时用未标明耗尽窗口的最近 reset，再无时间信息时使用 60 秒。旧 Worker relay 曾隐藏订阅额度明细并把耗尽窗口 reset 转为 Retry-After，这是归档行为；当前 native-only 从 CLI rate_limit_event 的有效重置时间生成有界提示，不再观察原始模型 HTTP 限额头（§53.14）。Worker 满载的 `Gateway concurrency limit reached` 保留短冷却，不标记配额耗尽；401/403 不附解除时间。自动禁用不关闭 Worker，额度查询、重新授权仍可用，模型调度继续被核心阻断。
 - 到期解除表示恢复调度资格，不等于已向上游验证额度；不发送收费模型探活。上游仍限流时，插件可再次指定新期限；插件观察到额度提前恢复时可主动 `ACTION_CLEAR`。
-- 新接口要求 Host API 6；CCGateway 在初始化时拒绝旧 Host API，避免旧核心忽略新字段而造成永久禁用。发布必须同步 SDK、核心与外壳 Host API 声明。账号列表区分自动禁用并展示解除时间。
+- 新接口随 Host API 6 发布（0.1.290 起 CCGateway 不再在初始化时检查 Host API，§101）。账号列表区分自动禁用并展示解除时间。
 
 ## 43. 第一轮审计合并：插件调用分级并发、令牌失效与越权加固（2026-10-04 合并，2026-10-05 补记）
 
@@ -2977,7 +2977,7 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 
 - `accountTypes[].modelAvailability` 是可选准入声明。核心在粘性命中及排序前调用账号类型所属插件的 `CheckModelAvailability`；HTTP 换号、映射后的模型以及 WebSocket 已有连接的新轮次同样受约束。不声明能力的旧插件不增加额外限制。2026-11-02 起（用户决定，原规则「已经声明而超时、返回空结果、缺少结果、重复或越界结果时不能放行」作废）：只有插件明确返回 `UNAVAILABLE` 才拦截；快照读取失败或缺失、插件超时、调用出错（含插件不可用、`Unimplemented`）、返回空结果、缺少结果、重复或越界结果，以及 `UNKNOWN`（含漏填 state），一律放行并记 WARN，账号照常参与选号。分批调用时坏掉的那一批整批放行，已完成且合法的批次照常生效。全部候选被拦只可能是全部 `UNAVAILABLE`，返回 429 `model_quota_exhausted`；预检本身不再产生 503。读快照与调插件各有时限（500 ms、1 s，后者为一次预检的所有分组与批次共用；此前两者共用 200 ms，sup2api-ccp 新建数据库连接约 430 ms 即超时，高峰每小时数个到二十余个 503）。节点级熔断：某插件的可用性调用失败后 10 s 内，本节点对它直接按失败放行、不发调用，之后放一个请求试探。同一请求里已经失败放行过的，执行前检查不再调用插件。客户端已断开时预检不放行，直接按取消结束。设计与取舍见 `MODEL-AVAILABILITY-PRECHECK-DESIGN.md`。
 - 请求按插件批量携带 `ModelAvailabilityCandidate{account_id, account_type, model, client_model, quota}` 与 `now_unix`。`model` 为上游模型，`quota` 为持久化快照，不携带凭据或任意账号配置。结果逐账号、逐模型返回 `AVAILABLE`、`UNAVAILABLE` 或 `UNKNOWN`，可附原因及可信重试时间。核心不认识供应商模型前缀、套餐窗口和耗尽阈值。
-- SDK 提供可选 `ModelAvailabilityChecker`；启用模型准入或自动配额查询的插件需要 Host API 7。wire protocol 仍为 1，旧插件不需要实现新接口。新插件必须在不支持能力的旧核心上拒绝初始化，不能静默忽略准入限制。
+- SDK 提供可选 `ModelAvailabilityChecker`；随 Host API 7 发布。wire protocol 仍为 1，插件不需要实现新接口。
 - 权重、优先级及粘性规则保持原有行为。有效粘性绑定不参加权重抽选，也不累计分配补偿；模型不可用是硬准入，不可用 `scheduler.rank` 的权重 0 代替，不可被排序插件 fail-open 恢复。（「硬准入」只针对插件明确返回的 `UNAVAILABLE`；核心侧检查本身失败时放行，见上一条。）
 - `quota.autoRefresh` 依赖 `quota.query`。录入事务记录待查询状态，提交并且账号生命周期资源就绪后执行首次查询；网络请求不在账号事务内。「就绪」指 `account_lifecycle_sync` 为 `applied`，或为 `pending` 且 `code = environment_requires_new_runtime`（只有新语言／时区等新容器生效，现有容器照常服务，2026-10-20；ccgateway 0.1.69 起控制器经 Worker `PUT /admin/environment` 原地生效，只有旧 Worker 或要清空容器创建时写入的值才停在这个状态）；其余 `pending`／`failed` 后台跳过、手动刷新回 409 `runtime_not_ready`。这个状态不只由事件投递写入：非 `applied` 且 30 秒内未更新的行，核心每分钟经资源的 `AccountSynchronization` 重读一次并写回（每页 50 行、最旧的先读；读取失败保持原状；按 generation 与账号 `updated_at` 防止覆盖更新的变更，2026-10-21）。此前投递时运行环境未就绪的账号会一直停在 `pending`／`failed`，即使后续对账已让它就绪。后台正常复查默认 30 分钟；插件可建议更早的复查（窗口重置），失败后按 1、2、4、8、16 分钟退避，之后每 30 分钟；任何非强制查询之间至少隔 1 分钟（PG 中执行，只防突发），较晚的调度时间仍保留（最多 24 小时）。此前下限为 30 分钟，窗口重置后的复查和失败重试都被推迟到 30 分钟后，期间账号不可调度（2026-10-21）；手动强制刷新跳过时间限制，但共用租约。失败保留账号及调度开关并记录错误；不得为额度查询启用停用账号、注销或刷新 OAuth 授权（停用账号的运行时照常运行，见 §49.22，但额度查询仍只针对启用的账号）。
 - `QuotaResult.next_check_at_unix` 由插件建议，核心限定调用频率并维护持久化检查计划。查询完成必须校验租约、身份代次和快照版本，旧任务不能覆盖重新授权后的身份或新收到的限额事实。没有首次成功快照时插件可返回 `UNKNOWN`，不得伪造 0% 或默认为已确认可用。（2026-11-02 起核心对 `UNKNOWN` 放行：它表示插件无法判断，插件要拦截必须返回 `UNAVAILABLE`。）例外（2026-10-14）：快照错误为 `transient: token_expired: …`（CCGateway 容器报访问令牌过期且存有刷新令牌）时 CCGateway 插件返回 `AVAILABLE`（原因 `quota_auth_refresh_on_request`）——容器内 Claude Code 只在模型请求时刷新令牌，按 UNKNOWN 拦截会让空闲超过令牌有效期的账号永远不可调度；已知耗尽窗口仍拦截、无效快照仍为 `UNKNOWN`。真的未登录（`auth_rejected: not_logged_in: …`）与令牌被拒且无法续期（`auth_rejected: token_revoked: …`）返回 `UNKNOWN`（原因 `authorization_required`），重新授权后恢复。（CCGateway 部分为历史，0.1.112 起见本节「用量窗口不再拦截」一条。）
@@ -5168,7 +5168,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 | `rate_usage.sessions`、`rate_usage.models[].sessions` | 只读 | 该层会话周期内被准入过的会话数（20 段计数，见 71.2；不等于进行中的会话，§78.1） |
 
 - POST / PATCH `/accounts` 可带 `spm_limit`、`spm_window_seconds`；字段错误 `spm_limit: invalid`、`spm_window_seconds: invalid`、`model_limits[i].spm_limit: invalid`、`model_limits[i].spm_window_seconds: invalid`。
-- `spm_window_seconds` 也是通用配置项（§87，`manifest.CommonControlSpecs`，int 60–86400，核心默认 60），账号类型可声明默认值或锁定。插件 proto（`AccountProperties`、`ModelLimit`、`AccountPatch`）和 manifest `defaultLimits` **不带**这个字段：插件建的账号是 60；插件经 `account_patch` 改 `model_limits` 时，模型相同的列表（按去空格、去重后的模型比较）保留管理员设的周期（`keepSPMWindows`），新列表为 60。`GET /account-types` 的 `default_limits.model_limits[]` 带 `spm_window_seconds: 60`。`commonControls.model_limits.default` 是账号接口的形状，各列表可带 `spm_window_seconds`（`manifest.ModelLimitValue`，check 按 60–86400 校验，0 或缺省 = 60；与 `defaultLimits` 比冲突时 60 与缺省相同）。声明 `commonControls.spm_window_seconds` 或带周期的 `model_limits` 默认值的插件，`hostCompat` 下限须 ≥0.1.276（`check.SPMWindowFirstCore`，否则 `below_feature_core`）：更早的核心安装时不认识它们、拒绝安装。
+- `spm_window_seconds` 也是通用配置项（§87，`manifest.CommonControlSpecs`，int 60–86400，核心默认 60），账号类型可声明默认值或锁定。插件 proto（`AccountProperties`、`ModelLimit`、`AccountPatch`）和 manifest `defaultLimits` **不带**这个字段：插件建的账号是 60；插件经 `account_patch` 改 `model_limits` 时，模型相同的列表（按去空格、去重后的模型比较）保留管理员设的周期（`keepSPMWindows`），新列表为 60。`GET /account-types` 的 `default_limits.model_limits[]` 带 `spm_window_seconds: 60`。`commonControls.model_limits.default` 是账号接口的形状，各列表可带 `spm_window_seconds`（`manifest.ModelLimitValue`，check 按 60–86400 校验，0 或缺省 = 60；与 `defaultLimits` 比冲突时 60 与缺省相同）（核心 0.1.276 起）。
 - 迁移 0094：`ADD COLUMN IF NOT EXISTS spm_window_seconds int NOT NULL DEFAULT 60`，约束先 DROP IF EXISTS 再 ADD；已有账号仍按 60 秒计。旧核心忽略该列、按 60 秒计。
 - 迁移 0063：列在 0009 就存在（早期 SPM 的残留），首次执行时清零旧值，避免它们突然变成生效的上限；之后用列注释 `CONTRACTS §71` 标记已执行，重跑不会清掉管理员新设的值。加约束 `accounts_spm_limit_chk`（0–10000000，先 DROP IF EXISTS 再 ADD）。旧核心忽略该列。
 
@@ -5800,7 +5800,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - 宿主调用 `PriceUsage`（权限 `prices`，风险 low，插件升级时自动授予）：请求 `{model, semantics: inclusive|exclusive, input, output, cache_read, cache_creation, cache_creation_1h}`，响应 `{priced, cost, reason}`。
   - `cost` 是十进制字符串（美元，8 位小数），按核心模型价格表（`model_prices`，只看完整模型名）和网关结算同一套表达式计算，不乘分组倍率。
   - `reason` 取值：`no_price`（没有启用的价格；与"缺价格时按免费"的全局设置无关）、`video_only`（视频价格不能按 token 计）、`eval_error`。`priced=false` 时 `cost` 为空。
-  - 只读，不扣费、不写用量记录。SDK：`Host.PriceUsage`；`FakeHost` 用可注入的价格表实现。旧核心返回 Unimplemented，插件把它当作未定价。
+  - 只读，不扣费、不写用量记录。SDK：`Host.PriceUsage`；`FakeHost` 用可注入的价格表实现。
 - 内置插件目录换成 moderation 0.3.0。
 
 **72.13.2 三种 LLM 协议**
@@ -5821,7 +5821,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
   - 来源：`audit`（钩子的 pre/post）、`analysis`、`test`、`try`、`simulate`。
   - 没有价格的调用不计金额，只计次数和 token（`unpriced_calls` / `unpriced_tokens`），页面提示"有 N 次调用未定价"。
 - 单次费用只出现在以下响应里：渠道测试、审核器试跑（`cost`）、`/test` 和流程模拟（`cost`，所有调用之和），以及单次分析（`user_analyses.cost`，字符串或 null，另有 `unpriced_calls`）。审核记录上不保存单次费用。
-  - 前四者的 `cost` 是对象 `{mode: priced|unpriced|free, cost?, reason?, billing_model, tokens_in, tokens_out}`。`mode=unpriced` 时 `reason` 取 `no_price`、`video_only`、`eval_error`、`host_too_old`（核心没有 PriceUsage）或 `unavailable`。
+  - 前四者的 `cost` 是对象 `{mode: priced|unpriced|free, cost?, reason?, billing_model, tokens_in, tokens_out}`。`mode=unpriced` 时 `reason` 取 `no_price`、`video_only`、`eval_error` 或 `unavailable`。
 - 接口：
   - `GET /costs?range=24h|7d|30d`（read）→ `{range, from, to, bucket, totals, by_channel:[{channel_id, name, type, model, billing_model, deleted, summary}], by_source:[{source, summary}], trend:[{bucket, cost}]}`。
   - `summary` = `{cost, calls, priced_calls, unpriced_calls, unpriced_tokens, free_calls, tokens_in, tokens_out}`，其中 `cost` 是字符串。
@@ -6170,7 +6170,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - 流程取决于账号的分组改在调度后审核。pre（同步）审核期间占着该账号的并发名额；在发往账号之前就失败的请求（没有可用账号、余额不足）不会被这类分组审核。
 - 封禁检查仍在请求钩子里，与以前一样在调度前执行。
 
-**发布**：先发含 §85 的核心（`hostCompat >=0.1.258`，`check.AttemptHookFirstCore`），再发插件 0.7.0。
+**发布**：先发含 §85 的核心（0.1.258），再发插件 0.7.0。
 
 测试：`account_binding_test.go`（`TestFlowForAccount` 与界面的 `bindingOps.spec.ts` 用同一组用例；还有 `TestAttemptRuns`、`TestAttemptHookGranted`、`TestUpgradeKeepsGroupBindings`、`TestAccountBindingsModerateEachAttempt`，0.8.0 加 `TestInactiveAccountBindingDoesNotDeferToAttempt` 和 `TestBindingInactiveFollowsSnapshot`）、`manifest_test.go`。
 
@@ -6558,7 +6558,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 用途：校验手动加入名单的用户是否存在、在界面和通知里显示用户名。
   - **插件不得把用户数据转给权限更弱的调用方**：`users.read` 是管理员授予插件的，不是授予插件的每个用户的。插件通过自己的路由返回用户信息时，要么要求足以查看用户的插件权限，要么只回答与调用方的工作相关的用户（例如只回答插件自己的记录里出现过的用户），不能让调用方借插件枚举核心用户。
 - **授权**：`users.read`（风险等级 High，原来就在授权表里，现在才有调用）。
-- **Host API**：仍是 8。Host API 8 还没有发布（§74.6），GetUsers 跟它一起发布；`protocol.UsersHostAPIVersion = 8`。
+- **Host API**：仍是 8。Host API 8 还没有发布（§74.6），GetUsers 跟它一起发布。
 - **SDK**：`pluginsdk.GetUsers(ctx, host, ids)`：先去重，再按每批 500 个分批调用，所以 ids 不限个数；测试用 `pluginsdktest.FakeHost.Users`（`map[int64]*pluginv1.UserInfo`）。
 - **核心**：`core.UserDirectory`（`iam` 实现，回答 `core.UserSummary`，由 `grpcruntime` 转成 `UserInfo`；`iam` 不依赖 proto），`grpcruntime.Options.Users`。
 
@@ -6868,7 +6868,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | `scope` | `cluster`（默认，不写就是它，现有插件不用重发）或 `node` |
 | `title` | 控制台显示的名称（多语言），没有时显示“插件名 · id” |
 
-- `node` 任务：每个加载了这个插件的节点各跑一次，用自己的插件实例；最多 10 个，间隔不小于 5 秒，超时不超过 600 秒；需要后台许可（`RequireWork`）。声明了 `node` 任务的插件，`hostCompat` 不能包含 0.1.236 及更早的核心（旧核心会把它当全集群任务跑），打包检查报 `below_node_jobs_core`。
+- `node` 任务：每个加载了这个插件的节点各跑一次，用自己的插件实例；最多 10 个，间隔不小于 5 秒，超时不超过 600 秒；需要后台许可（`RequireWork`）。
 - `cluster` 任务：任务名 `plugin.<key>.<id>`，`scheduled_tasks.source = 'plugin_manifest'`。行由运行着插件当前版本的节点按 manifest 写入，所有节点从行登记（River 主节点不一定装了这个插件）；执行节点本机没有这个插件时每 5 秒推迟一次，超过任务超时才记失败。插件停用或卸载时删行，换版本时按新版本改写。
 - **上限（0.1.238 起上传时检查）**：全集群任务超时不超过 3600 秒、每节点任务不超过 600 秒，不写为 60 秒；间隔不小于 5 秒（`manifest.MaxClusterJobTimeoutSec` 等常量，与框架的 `task.MaxClusterTimeout` 等由测试保持一致）。超出的新上传、市场安装返回 `jobs[i].timeoutSec`/`schedule` `out_of_range`。早先上传、已存的版本不再检查：照常加载、启用、升级、回滚，超出部分在登记任务时截断并记 WARN；内容完全相同的包重新上传（含市场重装）跳过检查。
 - 插件 API `GET /plugins/:key/jobs` 每个任务带 `effective_schedule`、`effective_timeout_sec`（核心实际使用的值）和 `adjusted`（被截断的说明，没有则省略）；插件“任务”页签显示实际超时，被调整的标“已按上限调整”。
@@ -6903,7 +6903,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 **SDK**
 
 - `pluginsdk.JobMux`：`HandleJob(id, func(ctx, JobRun) (JobResult, error))`，实现 `JobRunner`；没有处理函数的 id 返回 `NOT_FOUND`（记为失败，不会静默成功）。
-- `host.Tasks()`：`Sync`、`Upsert`、`Delete`、`List`、`Enqueue(ctx, id, args, RunAt(t), UniqueKey(k))`。核心早于 Host API 9 时返回 `ErrTasksUnimplemented`，插件应当当作非致命错误。
+- `host.Tasks()`：`Sync`、`Upsert`、`Delete`、`List`、`Enqueue(ctx, id, args, RunAt(t), UniqueKey(k))`。
 
 **控制台**
 
@@ -7242,18 +7242,13 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 目前唯一的同平台转换器是 `openai.chat → openai.responses`：codex 账号类型（子集 `responses`、`responses_websocket`）因此服务 `/v1/chat/completions`；非流式 chat 经 83.1 走流式上游再合成 JSON、转回 chat JSON。
 - 使用记录 `protocol = openai.chat`、`upstream_protocol = openai.responses`，用量规则取上游 `openai.responses` 端点的（`usage.json` / `usage.sse` 的 `response.completed` 规则，`inclusive`），计费照常。插件 `BuildUpstreamRequest` 的 `meta.protocol` 为 `openai.responses`、`meta.client_protocol` 为 `openai.chat`。
 
-### 83.4 版本与 hostCompat 下限
+### 83.4 版本
 
-没有 proto、Host API（仍为 9）、UI SDK 变化，也没有迁移。旧核心解析 manifest 时忽略未知字段（`plugin/pkg.ParseManifest`），会装上依赖本节的插件却不执行它（非流式请求被上游拒绝、chat 不被调度）。`sdk/manifest/check/corefloor.go` 仿照 `uiFloors` 新增 `coreFloors` 表：manifest 用到表中某项时，`hostCompat` 若仍接受该项首个核心的前一个版本，报 `hostCompat` `below_feature_core`（安装和 `sub2api-plugin` 工具都检查）。目前两项，首个核心都是常量 `check.StreamOnlyFirstCore`：
-
-- 声明了任何 `streamOnly`；
-- 某个账号类型的端点子集漏掉了一个只能经同平台转换服务的端点（对照 `check.SamePlatformConversions`，目前只有 `openai.chat → openai.responses`；`convert` 包的测试保证它与 `convert.Default()` 的同平台转换器一致），例如 openai 只留 `responses`。
-
-`StreamOnlyFirstCore` 是 `0.1.257`（包含本节的核心，2026-11-09 发布）；依赖本节的插件（codex）的 `hostCompat` 下限是同一个版本。
+没有 proto、Host API（仍为 9）、UI SDK 变化，也没有迁移。第一个带本节的核心是 0.1.257（2026-11-09 发布）。
 
 ### 83.5 测试
 
-`sdk/manifest/check/streamonly_test.go`（各类合法/非法声明、hostCompat 下限）；`server/internal/gateway/convert/openai_chat_responses_test.go`（请求映射、旧式 functions、custom 工具与 allowed_tools、web_search_options、共有参数与 cache breakpoint、各类丢弃及 Dropped 列表、各类拒绝、JSON 与 SSE 响应含 custom 调用、跨部件注解、被忽略与无法表示的输出项、未知 incomplete 原因为 length、与 check 的同平台列表一致）；`server/internal/account/samplatform_test.go`（`/account-types` 的可服务端点）；`server/internal/gateway/streamonly_test.go`：Responses 非流式（上游收到 `stream:true`、JSON 正文、用量、记录 `stream=false`）、插件 patch 改回 false 被覆盖、`response.incomplete`、`output` 按 `output_index` 补齐、流式客户端不受影响、未声明 `streamOnly` 或声明了其他协议时不变、`response.failed`（502、插件分类、冷却）、带 `status` 的 `error` 事件（429）与扁平 `error` 事件、无终止事件、经转换的 chat 非流式与流式、`platform.execute.v1` 路径的成功与错误事件、SSE 帧解析与错误正文形状。；同平台转换：非流式 chat 经流式上游合成 JSON 再转回 chat（记录 `openai.chat`/`openai.responses`、用量与计费）、流式 chat（含末块 usage、`[DONE]`）、未声明 `streamOnly` 时直接转换、无法转换的字段（`n: 2`）400 不发往上游、可丢弃字段（`stop`、`seed`、罚分、冲突的 `max_tokens`、消息 `name`、未知字段）在非流式与流式下都被丢弃且返回 200、原生优先与转换范围（不转到其他平台、无转换器不服务）。
+`sdk/manifest/check/streamonly_test.go`（各类合法/非法声明）；`server/internal/gateway/convert/openai_chat_responses_test.go`（请求映射、旧式 functions、custom 工具与 allowed_tools、web_search_options、共有参数与 cache breakpoint、各类丢弃及 Dropped 列表、各类拒绝、JSON 与 SSE 响应含 custom 调用、跨部件注解、被忽略与无法表示的输出项、未知 incomplete 原因为 length）；`server/internal/account/samplatform_test.go`（`/account-types` 的可服务端点）；`server/internal/gateway/streamonly_test.go`：Responses 非流式（上游收到 `stream:true`、JSON 正文、用量、记录 `stream=false`）、插件 patch 改回 false 被覆盖、`response.incomplete`、`output` 按 `output_index` 补齐、流式客户端不受影响、未声明 `streamOnly` 或声明了其他协议时不变、`response.failed`（502、插件分类、冷却）、带 `status` 的 `error` 事件（429）与扁平 `error` 事件、无终止事件、经转换的 chat 非流式与流式、`platform.execute.v1` 路径的成功与错误事件、SSE 帧解析与错误正文形状。；同平台转换：非流式 chat 经流式上游合成 JSON 再转回 chat（记录 `openai.chat`/`openai.responses`、用量与计费）、流式 chat（含末块 usage、`[DONE]`）、未声明 `streamOnly` 时直接转换、无法转换的字段（`n: 2`）400 不发往上游、可丢弃字段（`stop`、`seed`、罚分、冲突的 `max_tokens`、消息 `name`、未知字段）在非流式与流式下都被丢弃且返回 200、原生优先与转换范围（不转到其他平台、无转换器不服务）。
 
 ### 83.6 WebSocket 每轮消息的插件 body patch（2026-11-08，用户要求兼容层兜住客户端差异；codex 插件 0.1.1）
 
@@ -7266,7 +7261,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **后续轮次**：沿用首轮的账号、连接和建连时加载的账号对象，每轮调用一次，只取 `patches`（以及 `upstream_model`，仅在本轮记录尚未有上游模型时写入记录）；URL、方法、头一律忽略，返回的 URL 与握手不同也**不**重连。
 - **性能**：插件返回空 `patches` 时消息字节不变、不解析、不复制（`applyPatches` 直接返回原切片）；只有非空且确实改变了字节时才对比模型引用。没有 `requestFields` 的路由传空 `fields`。
 - **失败**：后续轮调用失败（gRPC 错误、空响应）或任一轮的 patch 无法应用（`value_json` 非法、路径非法等，全部或全不）时，本轮回一条错误事件（503 `plugin_unavailable`，记录 `error_type = plugin_unavailable`），释放该轮的并发位与预占，连接保持，下一轮照常；首轮在建连成功之后才失败的，上游连接同样保留给下一轮。patch 改动了模型引用（端点与路由的 `modelReferences`，与 HTTP `validatePatches` 相同的检查）时本轮以模型引用错误失败。调用受 `platform_call_timeout_ms` 约束。
-- **兼容**：旧插件（WebSocket 协议返回空 `patches`，如 openai 插件 0.3.x）发往上游的消息与以前逐字节相同，只是每个后续轮多一次 `BuildUpstreamRequest` 调用（它与握手时的调用相同，确定性地成功）。没有 manifest 字段或能力变化，`sdk/manifest/check/corefloor.go` 无需登记：依赖本节的插件（codex）已因 `streamOnly` 要求 `hostCompat ≥ StreamOnlyFirstCore`，本节属于同一个核心 0.1.257。
+- **兼容**：旧插件（WebSocket 协议返回空 `patches`，如 openai 插件 0.3.x）发往上游的消息与以前逐字节相同，只是每个后续轮多一次 `BuildUpstreamRequest` 调用（它与握手时的调用相同，确定性地成功）。没有 manifest 字段或能力变化，随核心 0.1.257 发布。
 
 **`requestFields` 的取值与大小**：HTTP（`dispatch.go` `attempt`）与 WebSocket（首轮 `dial`、后续轮 `turnPatches`）都经同一个函数 `requestFieldValues`（`gateway/util.go`）读取，取值方式相同。核心对单个字段和字段总和都不设上限，只受请求体/消息大小上限（`maxBodyBytes`，默认 128 MiB，WebSocket 为单条消息）和插件 gRPC 接收上限（默认 4 MiB，`pluginsdk.WithMaxRecvMsgSize` 可调；超过时该次调用失败，HTTP 换号、WebSocket 首轮换号、后续轮报该轮错误）约束。插件应使用只返回所需信息的 gjson 查询，不要索取大字段。
 
@@ -7331,7 +7326,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
   - 拒绝时整个请求结束，不再换账号：拒绝针对的是请求，而不是账号。账号不受惩罚，粘性绑定按失败收尾。
 - **`skip_attempt_hooks`**（`GatewayRequestHookResponse` 新字段 7）：插件的 `gateway.request` 钩子放行时可以带上它，表示这个请求已经处理完，核心不再为它调用**这个插件**的任何 `gateway.attempt` 钩子，其他插件不受影响。拒绝时和在 `gateway.attempt` 里带上它都没有作用。请求钩子出错放行或被熔断跳过时没有这个标记，attempt 钩子照常调用。
 - **记录**：`usage_logs.hook_decisions` 的每一项加 `account_id`（只有 attempt 钩子有），按执行顺序与请求钩子的记录排在一起。
-- **授权与校验**：`hooks[].point` 可取 `gateway.request` 或 `gateway.attempt`（`manifest.HookPointRequest` / `HookPointAttempt`），必须列在 `gateway.hook` 的 `scope.points` 里，注册表只登记批准了的点。旧核心在安装时就拒绝这个钩子点；SDK 的版本下限 `check.AttemptHookFirstCore = "0.1.258"` 把它变成明确的 `hostCompat` 错误。
+- **授权与校验**：`hooks[].point` 可取 `gateway.request` 或 `gateway.attempt`（`manifest.HookPointRequest` / `HookPointAttempt`），必须列在 `gateway.hook` 的 `scope.points` 里，注册表只登记批准了的点。这个钩子点随核心 0.1.258 发布。
 - **其他调用里的 `meta.account_id`**：同一次尝试里核心给插件的其他调用（build、execute、classify、用量提取，`metaFor`）也带上账号 ID。选定账号之前的调用为 0。
 - **代价**：没有插件声明这个点时没有任何开销。声明了的插件每次尝试多一次 RPC，在钩子内同步执行期间占着账号的并发名额，所以插件应该尽量用 `skip_attempt_hooks` 在请求钩子里结束。
 - 测试：`gateway/attempt_hook_test.go`（每次尝试都调用并带账号、拒绝不换账号、`skip_attempt_hooks` 只跳过本插件、补丁被拒、WebSocket 每条消息）、`sdk/manifest/check/attempt_hook_test.go`。
@@ -7394,7 +7389,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 - 账号类型 id、plugin_key 不变，现有账号和数据不迁移；没声明 upstream 的插件不受影响。
 - 参数覆盖的请求体位置与 0.1.262 之前相同（插件之前）；请求头改为插件的头盖过参数覆盖的头：老插件自己构造的头（如 codex 的头、代码插件转发的客户端头）不能再被账号参数覆盖改掉，声明式类型的头仍可以。
-- 第一个带本节功能的核心是 0.1.262：声明了 `upstream` 的插件 `hostCompat` 下限须 ≥0.1.262（`check.UpstreamFirstCore`，低了报 `below_feature_core`），openai 0.4.0、gemini/relay/anthropic 0.3.0、custom 0.1.0 已定为 `>=0.1.262 <0.2.0`。旧核心会忽略 `upstream` 字段，所以这几个只有清单的插件必须随 0.1.262 一起发；内置插件在核心计划完成、所有节点都换上新核心后才升级（§37）。
+- 第一个带本节功能的核心是 0.1.262，openai 0.4.0、gemini/relay/anthropic 0.3.0、custom 0.1.0 随它一起发布；内置插件在核心计划完成、所有节点都换上新核心后才升级（§37）。
 
 ## 87. 账号通用配置项按类型声明、核心编辑器开放给插件（2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”第 2 期，规格见 [COMMON-CONTROLS.md](COMMON-CONTROLS.md)；核心 0.1.262）
 
@@ -7405,7 +7400,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - `accountTypes[].commonControls.<名>`：`{visible?, configurable?, default?, locked?, required?}`；名称与取值类型见 `sdk/manifest/common_controls.go` 的 `CommonControlSpecs`（schedulable、auto_disable、priority、weight、max_concurrency、rpm_limit、tpm_limit、spm_limit、spm_window_seconds（0.1.276 起，§71.1）、model_limits、usage_limit、model_mapping、param_override、header_passthrough、environment、proxy）。`default` 是账号接口该字段的 JSON，范围与账号接口相同（常量在 sdk，核心、校验共用）。老的 `{"configurable":…, "default":…}` 写法照旧有效。
 - 语义：新账号缺省值取 `default`（再缺省取核心默认，自己级用户的并发默认 10 照旧，有声明时声明优先）；`configurable: false` 新建只接受默认值、更新只接受原值；`locked` 新老账号都只接受 `default`；不符报 `read_only`。值按 JSON 比较（格式、键序、数字写法、null 与空不影响）。`proxy` 只能写 `required`：新建没有代理、或更新清掉了代理时报 `proxy_id: required`，老账号没代理时其他修改照常。`visible` 只影响界面。
 - 执行点：`account/common_controls.go`，更新在锁行之后；`PUT /accounts/:id/usage-limit` 同样检查（`usage_limit: read_only`）；插件生命周期返回的 `account_patch` 不能改固定项（固定项从可改字段中移除，可改的照常）。
-- 校验（`sdk/manifest/check/common_controls.go`）：未知名称、类型或范围不符、`required` 用在 proxy 之外、proxy 写了 `required` 以外的字段、`locked` 没有 `default` 或同时写 `configurable: true`、与 `defaultLimits` 的值冲突（`conflict`）。用到新名称或 `visible`/`locked`/`required` 的插件 `hostCompat` 下限须 ≥0.1.262（`check.CommonControlsFirstCore`）。
+- 校验（`sdk/manifest/check/common_controls.go`）：未知名称、类型或范围不符、`required` 用在 proxy 之外、proxy 写了 `required` 以外的字段、`locked` 没有 `default` 或同时写 `configurable: true`、与 `defaultLimits` 的值冲突（`conflict`）（核心 0.1.262 起）。
 - 锁定值收敛：更新账号时，请求没带锁定字段而存储值与锁定值不同，就写入锁定值（锁定的用量限制同样在更新事务里写入）；老账号在下次保存时收敛，不做后台迁移。控制台对已保存账号显示存储值，不同于锁定值时提示“保存后改为锁定值 X”。
 - 自己级用户：新建时，省略的字段或等于预填默认值（声明的、否则 `default_limits`）的字段收进自己级上限（priority 0–100、weight 1–100、并发 1–1000，0 变 10）；其他越界值仍报 `restricted`；固定项（不可改或锁定）以声明为准、不收。更新时不收。控制台预填同样的收后值。
 - `GET /account-types` 返回 `common_controls`，`default` 按核心存储的形式规范化（例如头名小写），便于和账号存储值比较。
@@ -7482,7 +7477,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 88.7 版本与兼容
 
-- `sdk/manifest/check`：`SamePlatformConversions` 增加 `openai.responses → openai.chat`，hostCompat 下限 `ConvertMatrixFirstCore = "0.1.262"`（子集保留 chat_completions 而不含 responses 的 openai 账号类型依赖它）；原有的 chat → responses 仍为 `StreamOnlyFirstCore`。
+- 同平台转换增加 `openai.responses → openai.chat`（核心 0.1.262 起；子集保留 chat_completions 而不含 responses 的 openai 账号类型依赖它）。
 - 行为变化（发布说明）：转换“不可能”时跳过该类型而不是立即 400，都不行才 400 且不计尝试；同一优先级内原生先于转换先于 local；`/account-types` 多出转换端点、`grade`、`via`；chat → Anthropic 等原来被拒的请求改为有损成功（需要原行为的账号或分组设为 `strict`）；codex 的 chat 路径响应多出 `reasoning_content`；Responses 客户端经 Anthropic 上游不再收到 `sup2api-anthropic-thinking-v1:` 推理信封。
 
 ### 88.8 控制台
@@ -7654,7 +7649,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 校验（SDK `check`）：只有 `type: "native"` 的页面能声明；至少一组；组和项的 `key` 符合 `^[a-z][a-z0-9_-]{0,31}$`，组 key 不重复，项 key 在整个页面内不重复（`?tab=` 不带组名）；标签不能为空；`icon` 必须是控制台图标集里的名字；`permission` 必须是 `userPermissions` 里声明的插件权限；`corePermission` 是核心权限 key，SDK 不认识核心权限，只检查不能是空白。
 - 权限过滤由核心做：`GET /ui/plugins` 返回页面前去掉调用者看不到的项。一项同时声明 `permission` 和 `corePermission` 时，持有任意一个就显示；两个都没有的项对能看到这个页面的人都显示。去掉后空的组不返回，一项都不剩时整个 `nav` 不返回。共享的清单不被改动。
 - 混跑：UI 3.13 及更早的控制台忽略 `nav`，所以插件页面自己要保留页内的分区切换（标签页等）作为回退；声明 `nav` 不提高插件要求的核心版本，`hostCompat` 不必因此改到 0.1.284 以上。UI 3.14 从核心 0.1.284 开始（0.1.283 是最后一个带 UI 3.13 的核心），`hostUICompat` 写 `^3.14` 时 `hostCompat` 要排除 0.1.283 及更早的核心。
-- 实现位置：`sdk/manifest/manifest.go`（`PageNav`、`NavGroup`、`NavItem`）、`sdk/manifest/check/ui.go`（`pageNav`、`uiFloors`）、`sdk/manifest/visible_ui.go`（`FilterUI` 的 `visibleNav`）；控制台见 `web/src/layouts/sidebarViews.ts`。
+- 实现位置：`sdk/manifest/manifest.go`（`PageNav`、`NavGroup`、`NavItem`）、`sdk/manifest/check/ui.go`（`pageNav`）、`sdk/manifest/visible_ui.go`（`FilterUI` 的 `visibleNav`）；控制台见 `web/src/layouts/sidebarViews.ts`。
 
 ## 91. 插件经账号代理发请求、CLEAR 清冷却（2026-11-10，codex 官方重置次数需要；核心 0.1.269）
 
@@ -7686,7 +7681,7 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 ### 91.3 兼容与版本
 
 - Host API 不升，仍是 9。升版会让 rolling-v1 滚动更新不可用：`gateway/internal/control` 要求前后两个版本的 `HostAPIVersion` 相同（§82），而这次只是加一个 RPC。
-- 旧核心对未知 RPC 回 `UNIMPLEMENTED`（`UnimplementedHostServiceServer`），旧核心的 CLEAR 也不清冷却。依赖本节的插件靠 `hostCompat: ">=0.1.269"` 保证核心版本；这不是 manifest 字段，`coreFloors` 查不到，要插件自己声明。
+- 旧核心对未知 RPC 回 `UNIMPLEMENTED`（`UnimplementedHostServiceServer`），旧核心的 CLEAR 也不清冷却。依赖本节的插件靠 `hostCompat: ">=0.1.269"` 保证核心版本。
 - 没有迁移。
 
 ## 91b. 插件标签页与行操作按账号类型显示（UI 3.8，2026-11-10，codex 官方重置次数需要；核心 0.1.269）
@@ -7715,12 +7710,12 @@ codex 插件要给 `codex_device` 账号加一个详情标签页、一个行操�
 ### 91b.4 版本与老核心
 
 - `HOST_UI_VERSION` 3.8.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.8.0（`ui-contract.spec.ts` 锁定）。
-- 用到 `account.detail.tabs` 的 `accountTypes`、`account.list.quota` 插槽，或 `ui.accountActions[].accountTypes` 的插件要声明 `hostUICompat: "^3.8"`，`hostCompat` 要求核心 `>=0.1.269`（0.1.268 是最后一个带 UI 3.7 的核心）。`sdk/manifest/check/ui.go` 的 UI 下限表 `uiFloors` 为此加了 3.8 一行（`usesUI38`）：manifest 用到其中任一项（不管 `hostUICompat` 怎么写），或 `hostUICompat` 要求 3.8 及以上时，`hostCompat` 不能包含 0.1.268，否则报 `hostCompat` `below_ui_core`。
+- 用到 `account.detail.tabs` 的 `accountTypes`、`account.list.quota` 插槽，或 `ui.accountActions[].accountTypes` 的插件要声明 `hostUICompat: "^3.8"`，`hostCompat` 要求核心 `>=0.1.269`（0.1.268 是最后一个带 UI 3.7 的核心）。
 - 下限必须提高，因为老核心会在所有行上显示：老控制台不认识 `accountTypes`，类型限定的操作出现在每个可见行的行菜单里（`ParseManifest` 不拒绝未知字段，所以老核心能装上这样的插件），批量栏也按所有所选行计数。老核心的 manifest 校验会拒绝带 `accountTypes` 的 `account.detail.tabs`（`unsupported`）和 `account.list.quota`（未知插槽，`invalid`）。只有声明式操作、没有 `ui.native` 的插件，控制台不检查它的 `hostUICompat`，真正拦住老核心的是 `hostCompat` 下限。
 
 ### 91b.5 实现位置
 
-- manifest：`sdk/manifest/manifest.go`（`Slot.AccountTypes`、`AccountAction.AccountTypes`、`SlotAccountDetailTabs`、`SlotAccountListQuota`）、`sdk/manifest/check/ui.go`（`uiSlots`、`ownAccountTypes`、`uiAccountActions`、`uiFloors`）
+- manifest：`sdk/manifest/manifest.go`（`Slot.AccountTypes`、`AccountAction.AccountTypes`、`SlotAccountDetailTabs`、`SlotAccountListQuota`）、`sdk/manifest/check/ui.go`（`uiSlots`、`ownAccountTypes`、`uiAccountActions`）
 - 服务端：`server/internal/plugin/api/ui.go`（原样下发，无代码改动；测试在 `api_test.go` `TestUIPluginsAccountActions`）
 - 控制台：`web/src/components/plugin/slots.ts`（`forAccountType`）、`web/src/views/accounts/accountRowActions.ts`（`actionAppliesTo`）、`web/src/views/accounts/AccountsView.vue`（详情标签、批量栏、额度列）、`web/src/api/types.ts`
 
@@ -7899,18 +7894,16 @@ type KVBatch interface {
 
 - 插件调用包级函数，把 `host.KV()` 传进去：`pluginsdk.KVGetMany(ctx, host.KV(), ns, keys)`。`KV` 接口没有加方法，已有的实现（测试替身、包了一层的 KV）照常编译。
 - 传进来的 `KV` 实现了 `KVBatch` 就用它，否则用这个 `KV` 的 `Get` / `Set` / `Delete` 逐个完成。所以只实现了四个单键方法的测试替身也能用，它注入的故障照样生效。这样的 `KV` 会被最多 8 个 goroutine 同时调用，必须能并发使用（`KVBatch` 和三个函数的导出注释里写了）。
-- **旧核心自动回退**：`Host.KV()` 的实现在核心回 `UNIMPLEMENTED` 时改用单键调用，并记住这个结果（记在这条宿主连接上，即一个插件进程一份）。旧核心只多付一次被拒的调用，不是每批一次。核心升级时插件进程随核心重启，标记自然重置。只有 `UNIMPLEMENTED` 触发回退，其他错误（`PERMISSION_DENIED`、`UNAVAILABLE`、`INVALID_ARGUMENT`、`RESOURCE_EXHAUSTED` 等）原样返回。
-- 回退时单键调用最多 8 个并发（`kvSinglesParallel`）；有一个失败就不再发新的，返回这个错误。同一个键在一批写里出现多次时只写最后一项，结果与批量调用一致。
-- **规则在两种核心上相同**：SDK 在发出任何调用之前用核心的那几个函数校验（`protocol.CheckKVBatchKeys`、`protocol.CheckKVBatchItems`，93.2），不合规则时回的就是核心会回的 `codes.InvalidArgument`——同一个下标、同一句话——什么都不发。回退路径上读到的值合计超过 3 MiB 时同样回 `codes.ResourceExhausted`（`protocol.CheckKVBatchAnswer`）。
+- `Host.KV()` 总是用批量 RPC，错误原样返回（0.1.290 起不再为旧核心回退到单键调用，§101）。
+- 逐个完成时单键调用最多 8 个并发（`kvSinglesParallel`）；有一个失败就不再发新的，返回这个错误。同一个键在一批写里出现多次时只写最后一项，结果与批量调用一致。
+- **规则与核心相同**：SDK 在发出任何调用之前用核心的那几个函数校验（`protocol.CheckKVBatchKeys`、`protocol.CheckKVBatchItems`，93.2），不合规则时回的就是核心会回的 `codes.InvalidArgument`——同一个下标、同一句话——什么都不发。逐个读到的值合计超过 3 MiB 时同样回 `codes.ResourceExhausted`（`protocol.CheckKVBatchAnswer`）。
 - **负的 TTL 一律拒绝，不论多小**（随核心 0.1.275 的 SDK 起；SDK 编在插件里，所以对一个插件来说是从用这版 SDK 构建的版本起，moderation 是 0.8.2）：SDK 把 TTL 换算成整秒再发，负值在 `KVSetMany` 和单键的 `KV.Set` 里都在发送之前回 `codes.InvalidArgument`（`ttl_seconds must be 0..9223372036`）。此前 -1 ns 到 -999 ms 被截成 0，也就是不过期。
-- 回退给不了两样东西：开销（仍是每个键一次授权复核加一次往返）和写的原子性（中途失败时，之前的项已经写入）。需要其中任何一样的插件声明 `hostCompat: ">=0.1.273"`。
-- 测试替身 `pluginsdktest.FakeHost` 实现了这三个 RPC，校验用的是同一组函数，所以规则、上限和错误信息与宿主相同，写入是原子的（它没有授权这一层）。它的单键调用（`KVGet` / `KVSet` / `KVDelete` / `KVList`）也用这组函数校验 namespace、key、value 和 ttl，回宿主的错误信息（0.1.275 的 SDK 起；此前单键 `KVSet` 只查值的大小，过大的 ttl 溢出后存成一个已过期的项）。`KVBatchUnimplemented`（或运行中调用 `SetKVBatchUnimplemented(true)`）让它像旧核心一样回 `UNIMPLEMENTED`；`KVCalls()` 返回每个 KV RPC 被调用的次数，用来断言“这批键只用了一次调用”。
+- 逐个完成给不了两样东西：开销（每个键一次往返）和写的原子性（中途失败时，之前的项已经写入）。
+- 测试替身 `pluginsdktest.FakeHost` 实现了这三个 RPC，校验用的是同一组函数，所以规则、上限和错误信息与宿主相同，写入是原子的（它没有授权这一层）。它的单键调用（`KVGet` / `KVSet` / `KVDelete` / `KVList`）也用这组函数校验 namespace、key、value 和 ttl，回宿主的错误信息（0.1.275 的 SDK 起；此前单键 `KVSet` 只查值的大小，过大的 ttl 溢出后存成一个已过期的项）。`KVCalls()` 返回每个 KV RPC 被调用的次数，用来断言“这批键只用了一次调用”。
 
 ### 93.7 兼容与版本
 
 - Host API 不升，仍是 9，理由同 91.3：升版会让 rolling-v1 滚动更新不可用（`gateway/internal/control` 要求前后两个版本的 `HostAPIVersion` 相同，§82），而这次只是加 RPC。
-- 旧核心对未知 RPC 回 `UNIMPLEMENTED`（`UnimplementedHostServiceServer`）。用 SDK 函数的插件在旧核心上自动回退（93.6），不需要提高 `hostCompat`；直接用生成的 gRPC 客户端的插件要自己处理 `UNIMPLEMENTED`。依赖一次往返的开销或原子写的插件声明 `hostCompat: ">=0.1.273"`。
-- 滚动更新期间新旧核心并存没有问题：两种核心读写同一批 Redis 键、同一种值，批量调用和单键调用的结果可以互相读到。
 - 版本号：这三个 RPC 进了核心 0.1.273 的构建，但 0.1.273 构建、签名之后没有导入也没有发布；2026-11-11 发布的 0.1.274 带着它的全部内容，是第一个发布的有这三个 RPC 的核心。`host.proto`、SDK 的注释和插件的 `hostCompat` 仍写 0.1.273，这仍然是对的：0.1.273 的构建确实有这些调用，而 0.1.272 和 0.1.274 之间没有发布过别的核心，所以 `>=0.1.273` 在已发布的核心里就是"0.1.274 及以后"。93.2 的规则统一、单键 TTL 上界和 `KVGetMany` 的提前拒绝是核心 0.1.275 的，不改这三个 RPC 的协议，新旧核心和新旧 SDK 可以任意搭配。
 - 没有迁移，没有新的宿主权限，manifest 不变。
 
@@ -7921,7 +7914,7 @@ type KVBatch interface {
 - SDK：`sdk/protocol/kv.go`（规则，93.2），`sdk/pluginsdk/kvbatch.go`，`sdk/pluginsdk/host.go`（`KV.Set` 的 TTL），`sdk/pluginsdk/pluginsdktest/kvbatch.go`。
 - 宿主测试 `grpcruntime/host_kv_batch_internal_test.go`：顺序与缺失的键；每项自己的 TTL；一项不合法时什么都不写；键数和数据量上限；两个插件、两个 namespace 之间互不可见；授权（含 PG 里撤销）；每次调用恰好一次授权查询和一条 Redis 命令（pgx tracer 和 go-redis hook 计数）；Redis 不可用；单键 `KVSet` 拒绝会溢出的 TTL（`TestKVSetRefusesATTLThatOverflows`）；脚本在第一次写入之前检查自己的参数（`TestKVSetManyScriptChecksItsArguments`，在 miniredis 上）。`TestKVBatchRealRedis` 在设置了 `TEST_REDIS_URL` 时对真实的 Valkey / Redis 运行（CI 设置；本地跳过）：真实 Lua 引擎上的脚本和它的参数检查、512 个键、真实过期。`grpcruntime/kv_batch_test.go` 用真实插件进程（`testdata/testplugin` 的 `/kvbatch`）走 broker 连接，并验证 4 MiB 的连接上限。
 - 规则本身的测试在 `sdk/protocol/kv_test.go`（`TestKVEntryRules`、`TestKVBatchRules`：每条规则的边界、校验顺序和错误信息）。
-- SDK 测试 `sdk/pluginsdk/kvbatch_internal_test.go`（新核心一批一次调用；旧核心回退、只被拒一次、结果相同；不吞其他错误；规则在两种核心上相同；并发上限；`KV.Set` 拒绝负的 TTL，`TestKVSetRefusesANegativeTTL`）和 `sdk/pluginsdk/pluginsdktest/kvbatch_test.go`（FakeHost 的规则、单键调用同样校验 `TestFakeHostKVSingleCallsFollowTheHostRules`、原子写、旧核心开关、经 SDK 的端到端）。
+- SDK 测试 `sdk/pluginsdk/kvbatch_internal_test.go`（一批一次调用；没有批量方法的 `KV` 逐个完成、结果相同；不吞其他错误；规则相同；并发上限；`KV.Set` 拒绝负的 TTL，`TestKVSetRefusesANegativeTTL`）和 `sdk/pluginsdk/pluginsdktest/kvbatch_test.go`（FakeHost 的规则、单键调用同样校验 `TestFakeHostKVSingleCallsFollowTheHostRules`、原子写、经 SDK 的端到端）。
 
 ## 94. 页头统一进顶栏（UI 3.9，2026-11-11，用户要求：每个页面的标题和说明都像 API 密钥页那样显示在顶栏，不在页面里另占一行；菜单名与页面标题各自独立；无迁移）
 
@@ -7951,7 +7944,7 @@ UI 3.8 及以前，`SPageHeader` 只有在自己的 `title` 与路由标题文�
 ### 95.2 版本与插件声明
 
 - `HOST_UI_VERSION` 3.10.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.10.0（`ui-contract.spec.ts` 锁定，并检查 `^3.9`、`^3.10` 的判断与新导出）。
-- 原生插件用到 95.1 任一项时声明 `hostUICompat: "^3.10"`，`hostCompat` 要求核心 `>=0.1.277`（0.1.276 是最后一个带 UI 3.9 的核心）。`sdk/manifest/check/ui.go` 的 UI 下限表 `uiFloors` 为此加了 3.10 一行（`lastUI` 3.9.0、`lastCore` 0.1.276、`firstCore` 0.1.277，无 `uses`：3.10 没有新增 manifest 字段，只按 `hostUICompat` 判断）：`hostUICompat` 要求 3.10 及以上而 `hostCompat` 包含 0.1.276 时报 `hostCompat` `below_ui_core`（`TestHostUICompatNeedsMatchingHostCompat`）。
+- 原生插件用到 95.1 任一项时声明 `hostUICompat: "^3.10"`，`hostCompat` 要求核心 `>=0.1.277`（0.1.276 是最后一个带 UI 3.9 的核心）。
 - 旧插件不受影响：`^3.0`–`^3.9` 的声明都满足 3.10；它们看到的唯一变化是 `STimeRange` 预设“全部”显示为“全部时间”。
 
 ### 95.3 控制台使用日志 / 全站日志的筛选
@@ -8043,7 +8036,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 - `HOST_UI_VERSION` 3.11.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.11.0（`ui-contract.spec.ts` 锁定）。3.11 只加不改：`SSelect` 的可搜索形态新增 `icon`、`clearable`、`tinted`、`remote`（+ `search` 事件）、`loading`、`selected`、`note`、`footer`，选项新增 `hint`、`description`、`tag`、`muted`、`accent`（`web/packages/ui/README.md` 的 3.11 一节）；`SDateRange` 的 `time` 模式在任何宽度都完整显示起止时间到秒，放不下时起止各占一行；`HOST_COMPONENT_NAMES` 新增 `EntityPicker`。
 - `EntityPicker`（`web/src/components/EntityPicker.vue`，用法和行为见 `COMMON-CONTROLS.md` §6）是这条查找接口在控制台的唯一入口：`v-model:id` 加可选的 `v-model:text`（“名称包含”），选中即发 `change`；没有查找权限或接口返回 403 / 404 时自己退化成文本框。页面只描述“这是哪种实体、id 和名称各写到哪个参数”，不再各写一套“ID 或名称”的拆分。把 id 显示成名称用 `useEntityNames`（同一 kind 的反查合并成一次 `ids=` 请求，本次登录内缓存）。
 - 接入的页面：使用记录三页（模型、用户、API Key、分组、账号；选中即查询，手输的文本仍等回车或“搜索”；换用户后 API Key 不属于新用户就清掉；链接参数新增 `model`、`group_id`、`account_id`（后者只对能读账号的管理员），链接里不是正整数的 id 直接丢弃）、账号列表（分组、模型、创建人）、代理列表（创建人）、余额流水和调整余额弹窗（用户）、ccgateway 请求日志（模型）。
-- 原生插件用到 3.11 任一项时声明 `hostUICompat: "^3.11"`，`hostCompat` 要求核心 `>=0.1.279`（0.1.278 是最后一个带 UI 3.10 的核心；`sdk/manifest/check/ui.go` 的 `uiFloors`）。moderation 0.9.1、dynweight 0.5.7 是头两个使用者。
+- 原生插件用到 3.11 任一项时声明 `hostUICompat: "^3.11"`，`hostCompat` 要求核心 `>=0.1.279`（0.1.278 是最后一个带 UI 3.10 的核心）。moderation 0.9.1、dynweight 0.5.7 是头两个使用者。
 - 回滚顺序：两个插件的 `hostCompat` 都抬到了 `>=0.1.279`，核心退回 0.1.278 之前先把 moderation 退回 0.9.0、dynweight 退回 0.5.6。
 
 ### 96.7 控制台：UI 3.12，表单里的实体选择器（2026-11-12，用户要求）
@@ -8059,7 +8052,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 - `GroupPicker`、`ProxyPicker`（后者也是宿主组件）和 `group-select` / `proxy-select` 部件对外不变，内部改成上面这套：候选和名称来自查找接口，不再只取 `/groups`、`/proxies` 的前 200 条；`ProxyPicker` 的 `null` 仍是“不使用代理”（占位文案不变，点 × 清除），调用者看不到的已选代理仍显示 `#id` 并保持选中。提交给后端的字段名、类型、空值都不变。接入处：账号编辑器（分组、代理）、批量编辑账号（分组、代理）、用户的“分配分组”、价格试算的分组。删除带 API Key 的分组时“迁移到哪个分组”也改成 `EntityPicker`（排除被删的分组自己，仍提交 `move_keys_to=<数字 id>`；“有没有别的分组可迁”仍看分组列表的第一页）。
 - 查找权限：分组要 `group:read`，代理要 `proxy:read` 或 `proxy:own:read`（§96.2）。没有权限、或核心没有这条路由（滚动更新中的旧核心返回 404）时是文本框，直接输入 id；改造前这种情况下拉是空的，只能保留或清除已有值。
 - 页面改了分组或代理后（`useGroupsLookup(true)` / `useProxiesLookup(true)`），选择器缓存的这类实体名称一并作废（`forgetEntityNames`），再显示时重新反查。
-- 原生插件用到 3.12 任一项时声明 `hostUICompat: "^3.12"`，`hostCompat` 要求核心 `>=0.1.280`（0.1.279 是最后一个带 UI 3.11 的核心；`sdk/manifest/check/ui.go` 的 `uiFloors`）。moderation 0.9.2 是第一个使用者（`hostUICompat: "^3.12"`、`hostCompat: ">=0.1.280 <0.2.0"`；设置表单用到 `entity-select`，见 §72 的版本记录）。`sdk/manifest/check` 不校验 `ui:widget` 的名字；UI 3.11 及更早的控制台遇到 `entity-select` 按 schema 类型推断控件（整数 → 数字框，字符串 → 文本框，数组 → 标签输入框，后者写字符串），所以用它的插件靠 `hostCompat` 下限挡住旧核心。
+- 原生插件用到 3.12 任一项时声明 `hostUICompat: "^3.12"`，`hostCompat` 要求核心 `>=0.1.280`（0.1.279 是最后一个带 UI 3.11 的核心）。moderation 0.9.2 是第一个使用者（`hostUICompat: "^3.12"`、`hostCompat: ">=0.1.280 <0.2.0"`；设置表单用到 `entity-select`，见 §72 的版本记录）。`sdk/manifest/check` 不校验 `ui:widget` 的名字；UI 3.11 及更早的控制台遇到 `entity-select` 按 schema 类型推断控件（整数 → 数字框，字符串 → 文本框，数组 → 标签输入框，后者写字符串），所以用它的插件靠 `hostCompat` 下限挡住旧核心。
 - 回滚顺序：核心退回 0.1.279 之前先把 moderation 退回 0.9.1。
 
 
@@ -8367,7 +8360,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 **接口与控制台**
 
 - 接口：GET / PUT `/users/:id/groups` 和用户的 `group_ids` 已删除，仍在用它们的旧控制台（滚动窗口内）或脚本会得到 404 或读不到字段；`GET /me/prices` 不带 `group_id` 时不再返回第一个可见分组的价格（§79.5）。
-- 控制台：`STable` 的行展开（`expanded` / `toggleExpand`、`expandToggle`、`expandSingle`）计入 UI 3.13，见 `web/packages/ui/README.md`。`HOST_UI_VERSION` 3.13.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.13.0（`ui-contract.spec.ts` 锁定）。3.13 只加不改，`hostUICompat: "^3.x"` 的现有声明都满足。原生插件用到 3.13 任一项时声明 `hostUICompat: "^3.13"`，`hostCompat` 要求核心 `>=0.1.281`（0.1.280 是最后一个带 UI 3.12 的核心，3.12 见 §96.7；`sdk/manifest/check/ui.go` 的 `uiFloors`）。
+- 控制台：`STable` 的行展开（`expanded` / `toggleExpand`、`expandToggle`、`expandSingle`）计入 UI 3.13，见 `web/packages/ui/README.md`。`HOST_UI_VERSION` 3.13.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.13.0（`ui-contract.spec.ts` 锁定）。3.13 只加不改，`hostUICompat: "^3.x"` 的现有声明都满足。原生插件用到 3.13 任一项时声明 `hostUICompat: "^3.13"`，`hostCompat` 要求核心 `>=0.1.281`（0.1.280 是最后一个带 UI 3.12 的核心，3.12 见 §96.7）。
 
 **本节用到的 SQL**
 
@@ -8708,3 +8701,18 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 - `internal/migrations`（`migrations_db_test.go`）：0101 之后三张表不存在，再跑一遍不改变结果（`TestMigration0101DropsJWTSessions`）。
 - 网关 `internal/supervisor`：白名单里核心不读的 `SUB2API_` 名字报错（`allowlist_test.go`）。
 - 控制台：`packages/host/src/http.spec.ts`（401 即登出、令牌已换时重试一次、不清更新的登录、跟随其他标签页登出、采用其他标签页的令牌、step-up 换令牌后重放用新令牌、5xx 不登出、`fetchWithSession` 带令牌并按同一规则处理 401、`session.adoptRotated` 只替换发请求时的令牌、重发后 `onSentWith` 报回重发用的令牌并据此采用轮换）；`StepUpDialog.spec.ts`、`SessionsCard.spec.ts`（采用轮换的令牌，不覆盖其他标签页更新的令牌；没有其他会话时也能结束其他会话）。
+
+## 101. 删除旧版本兼容（核心 0.1.290）
+
+0.1.290 单向、停服发布：迁移前旧核心全部停止，之后不会有更早的核心、网关外壳或插件宿主和它同时运行；回退只能恢复备份并把核心、外壳一起退回 0.1.288（CHANGELOG 0.1.290）。所以只为与旧版本混跑而保留的代码一并删除。本文前面各节里“旧核心”“滚动窗口内的旧核心”“回滚到旧核心”的兼容说明是当时那次发布的记录，0.1.290 起不再适用。外部协议、客户端、上游与浏览器的兼容不在此列。
+
+### 101.1 插件 SDK 与清单检查
+
+- 插件不再在 `InitHost` 检查 Host API 版本：SDK 删除各功能的 `protocol.*HostAPIVersion` 常量与对应检查（`HostAPIVersion` 只随 `InitHostRequest` 发送），CCGateway 删除初始化时的 Host API 检查。插件能装在哪些核心上只由清单的 `hostCompat` 决定。
+- `Host.KV()` 的批量函数总是调用批量 RPC，不再在 `UNIMPLEMENTED` 时回退到单键调用（93.6）；`pluginsdktest.FakeHost` 的 `KVBatchUnimplemented` / `SetKVBatchUnimplemented` 删除。`Host.Tasks()` 不再返回 `ErrTasksUnimplemented`（该错误删除）。审核插件不再把 `PriceUsage`、`GetUsers` 的 `UNIMPLEMENTED` 当作旧核心（`host_too_old` 删除）。
+- `sdk/manifest/check` 删除按功能核对核心下限的机制：`corefloor.go`（各 `*FirstCore` 常量、`SamePlatformConversions`）、`ui.go` 的 `uiFloors`，以及 `node` 任务的下限；错误码 `below_feature_core`、`below_ui_core`、`below_node_jobs_core` 不再出现。`manifest.LegacyCommonControls` 删除。
+- 全部内置插件 `hostCompat: ">=0.1.290 <0.2.0"`，版本见 CHANGELOG 0.1.290“插件版本”。
+
+### 101.2 数据库连接
+
+- `DATABASE_URL` 不再解析 pgxpool 的 `pool_*` 参数，连接池只由环境变量与默认值决定（§2“插件数据库”、§11.2）；PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`SQLState` 等）只在 `runtime-contract/gormpg`，核心不再 import pgx。

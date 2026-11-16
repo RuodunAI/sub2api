@@ -8,8 +8,6 @@ import (
 	"testing"
 
 	"github.com/tidwall/gjson"
-
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 )
 
 func chatResponsesPrepared(t *testing.T, body string) (*chatResponses, string) {
@@ -695,21 +693,5 @@ func TestChatResponsesNumbersVerbatim(t *testing.T) {
 	_ = json.Unmarshal([]byte(out), &v)
 	if string(v["temperature"]) != "0.30000000000000004" {
 		t.Fatalf("temperature = %s", v["temperature"])
-	}
-}
-
-// sdk/manifest/check keeps its own list of same-platform pairs for the
-// hostCompat floor (CONTRACTS §83.4); it must name every built-in one.
-func TestSamePlatformPairsKnownToManifestCheck(t *testing.T) {
-	for _, p := range Default().Pairs() {
-		pair := [2]string{p.From, p.To}
-		from, _, _ := strings.Cut(pair[0], ".")
-		to, _, _ := strings.Cut(pair[1], ".")
-		if from != to {
-			continue
-		}
-		if !slices.Contains(check.SamePlatformConversions, pair) {
-			t.Errorf("%s -> %s missing from check.SamePlatformConversions", pair[0], pair[1])
-		}
 	}
 }

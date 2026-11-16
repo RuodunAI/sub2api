@@ -20,12 +20,10 @@ import (
 )
 
 // kvStub is a HostService client with an in-memory kv store that counts
-// every call. old makes it refuse the batch calls like a core before
-// 0.1.273; fail, when set, decides the error of a call by RPC name and key
-// ("" for a batch call).
+// every call. fail, when set, decides the error of a call by RPC name and
+// key ("" for a batch call).
 type kvStub struct {
 	pluginv1.HostServiceClient
-	old   bool
 	fail  func(rpc, key string) error
 	delay time.Duration
 
@@ -38,12 +36,16 @@ type kvStub struct {
 	peak     int
 }
 
-func newKVStub(old bool) *kvStub {
-	return &kvStub{old: old, data: map[string][]byte{}, ttl: map[string]int64{}, calls: map[string]int{}}
+func newKVStub() *kvStub {
+	return &kvStub{data: map[string][]byte{}, ttl: map[string]int64{}, calls: map[string]int{}}
 }
 
 // kv is the KV a plugin gets from a host connected to s.
 func (s *kvStub) kv() KV { return newHost(HostInfo{}, s, nil, false, 0).KV() }
+
+// plain is s's KV behind a wrapper without batch calls: the batch helpers
+// serve it with the single calls.
+func (s *kvStub) plain() *plainKV { return &plainKV{KV: s.kv()} }
 
 // begin counts one call and returns its injected error; done ends it.
 func (s *kvStub) begin(rpc, key string) error {
@@ -66,16 +68,6 @@ func (s *kvStub) done() {
 	s.mu.Lock()
 	s.inFlight--
 	s.mu.Unlock()
-}
-
-func (s *kvStub) batch(rpc string) error {
-	if err := s.begin(rpc, ""); err != nil {
-		return err
-	}
-	if s.old {
-		return status.Errorf(codes.Unimplemented, "method %s not implemented", rpc)
-	}
-	return nil
 }
 
 func (s *kvStub) count(rpc string) int {
@@ -128,7 +120,7 @@ func (s *kvStub) KVDelete(_ context.Context, in *pluginv1.KVDeleteRequest, _ ...
 
 func (s *kvStub) KVGetMany(_ context.Context, in *pluginv1.KVGetManyRequest, _ ...grpc.CallOption) (*pluginv1.KVGetManyResponse, error) {
 	defer s.done()
-	if err := s.batch("KVGetMany"); err != nil {
+	if err := s.begin("KVGetMany", ""); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -143,7 +135,7 @@ func (s *kvStub) KVGetMany(_ context.Context, in *pluginv1.KVGetManyRequest, _ .
 
 func (s *kvStub) KVSetMany(_ context.Context, in *pluginv1.KVSetManyRequest, _ ...grpc.CallOption) (*pluginv1.KVSetManyResponse, error) {
 	defer s.done()
-	if err := s.batch("KVSetMany"); err != nil {
+	if err := s.begin("KVSetMany", ""); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -157,7 +149,7 @@ func (s *kvStub) KVSetMany(_ context.Context, in *pluginv1.KVSetManyRequest, _ .
 
 func (s *kvStub) KVDeleteMany(_ context.Context, in *pluginv1.KVDeleteManyRequest, _ ...grpc.CallOption) (*pluginv1.KVDeleteManyResponse, error) {
 	defer s.done()
-	if err := s.batch("KVDeleteMany"); err != nil {
+	if err := s.begin("KVDeleteMany", ""); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -222,7 +214,7 @@ func kvScenario(t *testing.T, kv KV) string {
 const kvScenarioWant = "- - | () - (last) (last) (2) | (last) - () | "
 
 func TestKVBatchIsOneHostCallPerBatch(t *testing.T) {
-	s := newKVStub(false)
+	s := newKVStub()
 	if got := kvScenario(t, s.kv()); got != kvScenarioWant {
 		t.Fatalf("results = %q, want %q", got, kvScenarioWant)
 	}
@@ -235,43 +227,10 @@ func TestKVBatchIsOneHostCallPerBatch(t *testing.T) {
 	}
 }
 
-func TestKVBatchFallsBackToSingleCallsOnAnOlderHostAndRemembersIt(t *testing.T) {
-	s := newKVStub(true)
-	kv := s.kv()
-	if got := kvScenario(t, kv); got != kvScenarioWant {
-		t.Fatalf("results on an older host = %q, want %q", got, kvScenarioWant)
-	}
-	// The older host refuses one batch call; every later batch goes straight
-	// to the single calls.
-	if s.batchCalls() != 1 || s.count("KVGetMany") != 1 {
-		t.Fatalf("batch calls sent to an older host = %v, want one KVGetMany", s.calls)
-	}
-	// Reads 2+5+3 keys, writes 3 of the 4 items (the repeated key once),
-	// deletes 3 keys.
-	if s.count("KVGet") != 10 || s.count("KVSet") != 3 || s.count("KVDelete") != 3 {
-		t.Fatalf("single calls = %v", s.calls)
-	}
-	if s.ttl["ns/a"] != 3600 || s.ttl["ns/c"] != 90 || s.ttl["ns/b"] != 0 {
-		t.Fatalf("ttl sent = %v", s.ttl)
-	}
-	// The answer belongs to the host connection: another KV of the same host
-	// knows it, a new connection asks again.
-	h := newHost(HostInfo{}, s, nil, false, 0)
-	before := s.batchCalls()
-	for range 3 {
-		if _, err := KVGetMany(context.Background(), h.KV(), "ns", []string{"a"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := s.batchCalls() - before; got != 1 {
-		t.Fatalf("a new host connection sent %d batch calls for three reads, want 1", got)
-	}
-}
-
-func TestKVSetManyOnAnOlderHostWritesARepeatedKeyOnce(t *testing.T) {
-	s := newKVStub(true)
+func TestKVSetManyWithoutBatchCallsWritesARepeatedKeyOnce(t *testing.T) {
+	s := newKVStub()
 	items := []KVItem{{Key: "a", Value: []byte("1")}, {Key: "b", Value: []byte("2")}, {Key: "a", Value: []byte("3")}, {Key: "a", Value: []byte("4")}}
-	if err := KVSetMany(context.Background(), s.kv(), "ns", items); err != nil {
+	if err := KVSetMany(context.Background(), s.plain(), "ns", items); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.sets) != 2 || string(s.data["ns/a"]) != "4" || string(s.data["ns/b"]) != "2" {
@@ -281,7 +240,7 @@ func TestKVSetManyOnAnOlderHostWritesARepeatedKeyOnce(t *testing.T) {
 
 func TestKVBatchDoesNotHideTheErrorsOfTheBatchCall(t *testing.T) {
 	for _, code := range []codes.Code{codes.Unavailable, codes.PermissionDenied, codes.InvalidArgument, codes.ResourceExhausted, codes.DeadlineExceeded} {
-		s := newKVStub(false)
+		s := newKVStub()
 		s.fail = func(rpc, _ string) error { return status.Error(code, "from the host: "+rpc) }
 		kv, ctx := s.kv(), context.Background()
 		_, e1 := KVGetMany(ctx, kv, "ns", []string{"a"})
@@ -292,29 +251,24 @@ func TestKVBatchDoesNotHideTheErrorsOfTheBatchCall(t *testing.T) {
 				t.Errorf("%v, call %d: got %v", code, i, err)
 			}
 		}
-		if s.singleCalls() != 0 {
-			t.Errorf("%v: fell back to single calls: %v", code, s.calls)
-		}
-		// Nothing was remembered: the next batch is one batch call again.
-		s.fail = nil
-		if _, err := KVGetMany(ctx, kv, "ns", []string{"a"}); err != nil || s.count("KVGetMany") != 2 || s.singleCalls() != 0 {
-			t.Errorf("%v: after the error: %v %v", code, err, s.calls)
+		if s.batchCalls() != 3 || s.singleCalls() != 0 {
+			t.Errorf("%v: host calls = %v, want the three batch calls", code, s.calls)
 		}
 	}
 }
 
-func TestKVBatchOnAnOlderHostReturnsTheErrorOfASingleCall(t *testing.T) {
+func TestKVBatchWithoutBatchCallsReturnsTheErrorOfASingleCall(t *testing.T) {
 	boom := status.Error(codes.Unavailable, "kv unavailable")
 	keys := manyKeys(40)
 	for _, rpc := range []string{"KVGet", "KVSet", "KVDelete"} {
-		s := newKVStub(true)
+		s := newKVStub()
 		s.fail = func(got, key string) error {
 			if got == rpc && key == keys[20] {
 				return boom
 			}
 			return nil
 		}
-		kv, ctx := s.kv(), context.Background()
+		kv, ctx := s.plain(), context.Background()
 		var err error
 		switch rpc {
 		case "KVGet":
@@ -340,8 +294,8 @@ func TestKVBatchOnAnOlderHostReturnsTheErrorOfASingleCall(t *testing.T) {
 
 // After a failed single call no further one starts: the calls in flight
 // finish (at most eight), the rest of the batch is not sent.
-func TestKVBatchOnAnOlderHostStopsAfterAFailedSingleCall(t *testing.T) {
-	s := newKVStub(true)
+func TestKVBatchWithoutBatchCallsStopsAfterAFailedSingleCall(t *testing.T) {
+	s := newKVStub()
 	s.delay = 5 * time.Millisecond
 	keys := manyKeys(400)
 	s.fail = func(rpc, key string) error {
@@ -350,7 +304,7 @@ func TestKVBatchOnAnOlderHostStopsAfterAFailedSingleCall(t *testing.T) {
 		}
 		return nil
 	}
-	if err := KVDeleteMany(context.Background(), s.kv(), "ns", keys); status.Code(err) != codes.Unavailable {
+	if err := KVDeleteMany(context.Background(), s.plain(), "ns", keys); status.Code(err) != codes.Unavailable {
 		t.Fatalf("got %v, want Unavailable", err)
 	}
 	// Eight are in flight when the first fails, and each other worker may
@@ -361,10 +315,10 @@ func TestKVBatchOnAnOlderHostStopsAfterAFailedSingleCall(t *testing.T) {
 	}
 }
 
-func TestKVBatchOnAnOlderHostRunsAFewSingleCallsAtATime(t *testing.T) {
-	s := newKVStub(true)
+func TestKVBatchWithoutBatchCallsRunsAFewSingleCallsAtATime(t *testing.T) {
+	s := newKVStub()
 	s.delay = 2 * time.Millisecond
-	vs, err := KVGetMany(context.Background(), s.kv(), "ns", manyKeys(64))
+	vs, err := KVGetMany(context.Background(), s.plain(), "ns", manyKeys(64))
 	if err != nil || len(vs) != 64 {
 		t.Fatalf("%d values, %v", len(vs), err)
 	}
@@ -378,8 +332,8 @@ func TestKVBatchOnAnOlderHostRunsAFewSingleCallsAtATime(t *testing.T) {
 }
 
 // The rules are checked by the SDK before anything is sent, so they are the
-// same on a current and on an older host, and a rejected write writes
-// nothing on either. The rules themselves are the host's
+// same for the host's KV and for a KV without batch calls, and a rejected
+// write writes nothing on either. The rules themselves are the host's
 // (protocol.CheckKVBatchKeys, protocol.CheckKVBatchItems; their tables are
 // in sdk/protocol): this test has one case of each kind.
 func TestKVBatchRulesAreTheSameOnEveryHost(t *testing.T) {
@@ -394,13 +348,16 @@ func TestKVBatchRulesAreTheSameOnEveryHost(t *testing.T) {
 		}
 		return items
 	}
-	for _, old := range []bool{false, true} {
-		s := newKVStub(old)
+	for _, wrapped := range []bool{false, true} { // wrapped: a KV without batch calls
+		s := newKVStub()
 		kv, ctx := s.kv(), context.Background()
+		if wrapped {
+			kv = s.plain()
+		}
 		check := func(what string, err error) {
 			t.Helper()
 			if status.Code(err) != codes.InvalidArgument {
-				t.Errorf("older host %v, %s: got %v, want InvalidArgument", old, what, err)
+				t.Errorf("wrapped %v, %s: got %v, want InvalidArgument", wrapped, what, err)
 			}
 		}
 		for _, ns := range []string{"", "a:b"} {
@@ -429,32 +386,32 @@ func TestKVBatchRulesAreTheSameOnEveryHost(t *testing.T) {
 		// rule, with the host's words.
 		err = KVSetMany(ctx, kv, "ns", []KVItem{{Key: "first"}, {Key: "big", Value: append(big, 'x')}, {Key: ""}})
 		if got, want := status.Convert(err).Message(), "items[1]: value exceeds 65536 bytes"; got != want {
-			t.Errorf("older host %v, two invalid items: %q, want %q", old, got, want)
+			t.Errorf("wrapped %v, two invalid items: %q, want %q", wrapped, got, want)
 		}
 		check("write, two invalid items", err)
 		if s.batchCalls()+s.singleCalls() != 0 || len(s.data) != 0 {
-			t.Fatalf("older host %v: a rejected batch was sent: %v, %d entries written", old, s.calls, len(s.data))
+			t.Fatalf("wrapped %v: a rejected batch was sent: %v, %d entries written", wrapped, s.calls, len(s.data))
 		}
 
 		// The limits themselves are accepted: 512 keys, a value of 64 KiB.
 		if _, err := KVGetMany(ctx, kv, "ns", manyKeys(protocol.KVBatchMaxKeys)); err != nil {
-			t.Errorf("older host %v: %d keys: %v", old, protocol.KVBatchMaxKeys, err)
+			t.Errorf("wrapped %v: %d keys: %v", wrapped, protocol.KVBatchMaxKeys, err)
 		}
 		// A read whose values exceed the payload limit: 49 values of 64 KiB.
 		n := protocol.KVBatchMaxBytes/protocol.KVMaxValueBytes + 1
 		for _, part := range [][]KVItem{fill(n)[:n/2], fill(n)[n/2:]} {
 			if err := KVSetMany(ctx, kv, "ns", part); err != nil {
-				t.Fatalf("older host %v: write: %v", old, err)
+				t.Fatalf("wrapped %v: write: %v", wrapped, err)
 			}
 		}
 		if vs, err := KVGetMany(ctx, kv, "ns", manyKeys(n-1)); err != nil || len(vs) != n-1 {
-			t.Errorf("older host %v: read at the payload limit: %v", old, err)
+			t.Errorf("wrapped %v: read at the payload limit: %v", wrapped, err)
 		}
-		if !old {
+		if !wrapped {
 			continue // a current host answers RESOURCE_EXHAUSTED itself (the stub does not)
 		}
 		if _, err := KVGetMany(ctx, kv, "ns", manyKeys(n)); status.Code(err) != codes.ResourceExhausted {
-			t.Errorf("older host: read above the payload limit: %v, want ResourceExhausted", err)
+			t.Errorf("wrapped: read above the payload limit: %v, want ResourceExhausted", err)
 		}
 	}
 }
@@ -463,7 +420,7 @@ func TestKVBatchRulesAreTheSameOnEveryHost(t *testing.T) {
 // anything is sent, however small. Whole seconds used to turn -1 ns ..
 // -999 ms into 0, no expiry.
 func TestKVSetRefusesANegativeTTL(t *testing.T) {
-	s := newKVStub(false)
+	s := newKVStub()
 	kv, ctx := s.kv(), context.Background()
 	for _, ttl := range []time.Duration{-time.Nanosecond, -time.Millisecond, -999 * time.Millisecond, -time.Second, -time.Hour} {
 		err := kv.Set(ctx, "ns", "k", []byte("v"), ttl)
@@ -496,8 +453,8 @@ func (p *plainKV) Get(ctx context.Context, ns, key string) ([]byte, bool, error)
 }
 
 func TestKVBatchHelpersServeAKVWithoutBatchCalls(t *testing.T) {
-	s := newKVStub(false)
-	plain := &plainKV{KV: s.kv()}
+	s := newKVStub()
+	plain := s.plain()
 	if _, ok := KV(plain).(KVBatch); ok {
 		t.Fatal("plainKV must not implement KVBatch for this test")
 	}
@@ -506,6 +463,14 @@ func TestKVBatchHelpersServeAKVWithoutBatchCalls(t *testing.T) {
 	}
 	if plain.gets.Load() != 10 || s.batchCalls() != 0 {
 		t.Fatalf("wrapper reads = %d, batch calls = %d; want every read through the wrapper", plain.gets.Load(), s.batchCalls())
+	}
+	// Reads 2+5+3 keys, writes 3 of the 4 items (the repeated key once),
+	// deletes 3 keys.
+	if s.count("KVGet") != 10 || s.count("KVSet") != 3 || s.count("KVDelete") != 3 {
+		t.Fatalf("single calls = %v", s.calls)
+	}
+	if s.ttl["ns/a"] != 3600 || s.ttl["ns/c"] != 90 || s.ttl["ns/b"] != 0 {
+		t.Fatalf("ttl sent = %v", s.ttl)
 	}
 	if _, err := KVGetMany(context.Background(), plain, "bad:ns", []string{"k"}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("bad namespace: %v", err)
@@ -527,7 +492,7 @@ func (w wrongCount) KVGetMany(ctx context.Context, in *pluginv1.KVGetManyRequest
 }
 
 func TestKVGetManyRejectsAnAnswerOfTheWrongLength(t *testing.T) {
-	kv := newHost(HostInfo{}, wrongCount{newKVStub(false)}, nil, false, 0).KV()
+	kv := newHost(HostInfo{}, wrongCount{newKVStub()}, nil, false, 0).KV()
 	if vs, err := KVGetMany(context.Background(), kv, "ns", []string{"a", "b"}); status.Code(err) != codes.Internal || vs != nil {
 		t.Fatalf("got %v %v, want an Internal error", vs, err)
 	}

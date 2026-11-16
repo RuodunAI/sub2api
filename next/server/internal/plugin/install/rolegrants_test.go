@@ -12,7 +12,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
@@ -51,16 +50,9 @@ VALUES ('plugin.guard:rules:old', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard
 	return e, ctx
 }
 
-// permModel raises m's hostCompat to the first core of the permission
-// model, which defaults, risks and scopes need.
-func permModel(m *manifest.Manifest) *manifest.Manifest {
-	m.HostCompat = ">=" + check.PluginPermissionsFirstCore + " <0.2.0"
-	return m
-}
-
 // guardWith is guard at version with ups added to its permissions.
 func guardWith(version string, ups ...manifest.UserPermission) *manifest.Manifest {
-	m := permModel(pkgtest.Guard("guard", version, "sub2api"))
+	m := pkgtest.Guard("guard", version, "sub2api")
 	m.UserPermissions = append(m.UserPermissions, ups...)
 	return m
 }

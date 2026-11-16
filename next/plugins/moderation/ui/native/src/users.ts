@@ -7,7 +7,7 @@ import type { CoreUser } from './types'
 // Users of the core, cached for the page. The ids a render asks for are
 // looked up together through the plugin (GET /users, grant users.read),
 // which works for every moderator and gives display name and status only.
-// When the plugin cannot (503 users_unavailable: no grant, older core) each
+// When the plugin cannot (503 users_unavailable: no users.read grant) each
 // id goes to the core's GET /users/:id, which needs user:read and adds email
 // and roles; it stops after the first 403 (the views then show #id). Other
 // plugin errors leave the batch unknown for RETRY_MS, then a render asks again.

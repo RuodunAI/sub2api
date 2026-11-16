@@ -66,20 +66,9 @@ func TestManifest(t *testing.T) {
 	if fields, ok := check.Fields(check.Validate(&m, files, check.ValidateOptions{Tooling: true})); ok {
 		t.Fatalf("manifest check: %+v", fields)
 	}
-	// hostCompat: risk and defaults need the plugin permission core,
-	// 0.1.290 (check.PluginPermissionsFirstCore; an older one would grant
-	// the critical exempt to admin); inheritFrom needed the authz-hardening
-	// core, 0.1.286, which also ships UI 3.15 (permissions.hasAction,
-	// resource scopes; the UI feature-detects it, so ^3.15 is declared for
-	// clarity, not need); before that, the blocked
-	// users table opens a row from its reason cell
-	// (STable expandToggle false + toggleExpand, UI 3.13, 0.11.1), first
-	// shipped with core 0.1.281; the settings form uses UI 3.12 (the
-	// entity-select schema widget for the allowlist and the blocklist), first
-	// shipped with core 0.1.280; UI 3.11 (host.components.EntityPicker in the filter bars and
-	// the forms) came with 0.1.279, UI 3.10 (SFilterBar more filters,
-	// SFilterChips, SChipList, TableColumn.grow) with 0.1.277, the verdict
-	// cache's batch KV calls with 0.1.273.
+	// hostCompat: the core of SDK 0.2.0 and of risk and defaults, 0.1.290.
+	// UI 3.15 (permissions.hasAction, resource scopes; the UI feature-detects
+	// it, so ^3.15 is declared for clarity, not need).
 	if m.Key != "moderation" || m.Version != "0.12.1" || m.HostCompat != ">=0.1.290 <0.2.0" || m.HostUICompat != "^3.15" || m.UI == nil || m.UI.Native == nil ||
 		m.UI.Native.Entry != "ui/native/entry.js" || m.Database == nil || m.Database.Schema != "plg_moderation" {
 		t.Fatalf("manifest = %+v", m)

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
@@ -87,7 +86,7 @@ func newStagedEnv(t *testing.T) *stagedEnv {
 	defaults := install.NewDefaultsApplier(h.rec)
 	e.svc = install.New(install.Deps{DB: h.db, Trust: ts, Authz: allowAll{}, Permissions: h.rec, Defaults: defaults,
 		Packages: registrytest.Source()},
-		install.Options{HostVersion: check.UpstreamFirstCore, Plugins: config.PluginConfig{MaxPackageBytes: 10 << 20, MaxMemoryMB: 1024}})
+		install.Options{HostVersion: "0.1.290", Plugins: config.PluginConfig{MaxPackageBytes: 10 << 20, MaxMemoryMB: 1024}})
 	cipher, _ := secret.New(make([]byte, 32))
 	nd := &registrytest.Node{RDB: h.rdb, ID: "solo", Boot: "boot-solo"}
 	nd.Heartbeat(ctx)

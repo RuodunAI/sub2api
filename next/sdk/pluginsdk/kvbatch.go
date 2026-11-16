@@ -39,15 +39,6 @@ import (
 // (protocol.CheckKVBatchKeys, protocol.CheckKVBatchItems): the error names
 // the first key or item that breaks one, "items[2]: value exceeds 65536
 // bytes".
-//
-// Older hosts (before core 0.1.273) answer codes.Unimplemented to the batch
-// calls. The KV of Host.KV then does the work with the single calls, at
-// most 8 at a time, and remembers the answer, so an older host costs one
-// refused call per plugin process and not one per batch.
-// Results, rules and errors are the same; what the single calls cannot give
-// is the cost and the atomic write: on such a host a failure in the middle
-// of KVSetMany leaves the items written so far. A plugin that needs either
-// declares hostCompat ">=0.1.273" in its manifest.
 
 // KVValue is the answer for one key of a batch read.
 type KVValue struct {
@@ -128,69 +119,43 @@ func KVDeleteMany(ctx context.Context, kv KV, namespace string, keys []string) e
 
 // ---------------------------------------------------------------- host
 
-// batchRefused reports whether err is an older host refusing a batch call,
-// and remembers it for the calls that follow on this host connection. Any
-// other error is the call's own and is returned to the plugin.
-func (k hostKV) batchRefused(err error) bool {
-	if status.Code(err) != codes.Unimplemented {
-		return false
-	}
-	k.noBatch.Store(true)
-	return true
-}
-
 func (k hostKV) GetMany(ctx context.Context, ns string, keys []string) ([]KVValue, error) {
 	if err := protocol.CheckKVBatchKeys(ns, keys); err != nil {
 		return nil, err
 	}
-	if !k.noBatch.Load() {
-		r, err := k.c.KVGetMany(ctx, &pluginv1.KVGetManyRequest{Namespace: ns, Keys: keys})
-		if err == nil {
-			items := r.GetItems()
-			if len(items) != len(keys) {
-				return nil, status.Errorf(codes.Internal, "pluginsdk: host answered %d items for %d keys", len(items), len(keys))
-			}
-			out := make([]KVValue, len(items))
-			for i, it := range items {
-				out[i] = KVValue{Value: it.GetValue(), Found: it.GetFound()}
-			}
-			return out, nil
-		}
-		if !k.batchRefused(err) {
-			return nil, err
-		}
+	r, err := k.c.KVGetMany(ctx, &pluginv1.KVGetManyRequest{Namespace: ns, Keys: keys})
+	if err != nil {
+		return nil, err
 	}
-	return kvGetSingles(ctx, k, ns, keys)
+	items := r.GetItems()
+	if len(items) != len(keys) {
+		return nil, status.Errorf(codes.Internal, "pluginsdk: host answered %d items for %d keys", len(items), len(keys))
+	}
+	out := make([]KVValue, len(items))
+	for i, it := range items {
+		out[i] = KVValue{Value: it.GetValue(), Found: it.GetFound()}
+	}
+	return out, nil
 }
 
 func (k hostKV) SetMany(ctx context.Context, ns string, items []KVItem) error {
 	if err := kvCheckItems(ns, items); err != nil {
 		return err
 	}
-	if !k.noBatch.Load() {
-		req := &pluginv1.KVSetManyRequest{Namespace: ns, Items: make([]*pluginv1.KVSetManyItem, len(items))}
-		for i, it := range items {
-			req.Items[i] = &pluginv1.KVSetManyItem{Key: it.Key, Value: it.Value, TtlSeconds: kvTTLSeconds(it.TTL)}
-		}
-		_, err := k.c.KVSetMany(ctx, req)
-		if err == nil || !k.batchRefused(err) {
-			return err
-		}
+	req := &pluginv1.KVSetManyRequest{Namespace: ns, Items: make([]*pluginv1.KVSetManyItem, len(items))}
+	for i, it := range items {
+		req.Items[i] = &pluginv1.KVSetManyItem{Key: it.Key, Value: it.Value, TtlSeconds: kvTTLSeconds(it.TTL)}
 	}
-	return kvSetSingles(ctx, k, ns, items)
+	_, err := k.c.KVSetMany(ctx, req)
+	return err
 }
 
 func (k hostKV) DeleteMany(ctx context.Context, ns string, keys []string) error {
 	if err := protocol.CheckKVBatchKeys(ns, keys); err != nil {
 		return err
 	}
-	if !k.noBatch.Load() {
-		_, err := k.c.KVDeleteMany(ctx, &pluginv1.KVDeleteManyRequest{Namespace: ns, Keys: keys})
-		if err == nil || !k.batchRefused(err) {
-			return err
-		}
-	}
-	return kvDeleteSingles(ctx, k, ns, keys)
+	_, err := k.c.KVDeleteMany(ctx, &pluginv1.KVDeleteManyRequest{Namespace: ns, Keys: keys})
+	return err
 }
 
 // ---------------------------------------------------------------- rules
@@ -218,7 +183,7 @@ func kvCheckItems(ns string, items []KVItem) error {
 // ---------------------------------------------------------------- single calls
 
 // kvSinglesParallel bounds the single calls in flight for one batch that a
-// kv without batch calls serves. The documentation of KVBatch, KVGetMany,
+// kv without batch calls (a test double, a wrapper) serves. The documentation of KVBatch, KVGetMany,
 // KVSetMany and KVDeleteMany says 8.
 const kvSinglesParallel = 8
 

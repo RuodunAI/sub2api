@@ -12,7 +12,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
-// Users of the core (HostService.GetUsers, grant users.read, host API 8,
+// Users of the core (HostService.GetUsers, grant users.read,
 // CONTRACTS §75.3): a user must exist before it is put on the watch list or
 // banned (new-api AddModerationWatch), and the console shows names for the
 // ids of a page with one call (GET /users?ids=).
@@ -26,8 +26,8 @@ type CoreUser struct {
 }
 
 // lookupUsers returns the core users among ids; unknown and deleted users
-// are left out. ok=false: the host cannot tell (users.read not granted, or
-// a host before API 8), and the callers skip what needs it.
+// are left out. ok=false: the host cannot tell (users.read not granted),
+// and the callers skip what needs it.
 func (p *Plugin) lookupUsers(ctx context.Context, ids []int64) (users []*pluginv1.UserInfo, ok bool, err error) {
 	if p.host == nil {
 		return nil, false, nil
@@ -36,7 +36,7 @@ func (p *Plugin) lookupUsers(ctx context.Context, ids []int64) (users []*pluginv
 	switch status.Code(err) {
 	case codes.OK:
 		return users, true, nil
-	case codes.PermissionDenied, codes.FailedPrecondition, codes.Unimplemented:
+	case codes.PermissionDenied, codes.FailedPrecondition:
 		return nil, false, nil
 	}
 	return nil, false, err
@@ -91,7 +91,7 @@ func (p *Plugin) getUsers(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	}
 	if !ok {
 		return pluginsdk.ErrorResponse(http.StatusServiceUnavailable, "users_unavailable",
-			"user lookup needs the users.read grant and host API 8 / 查询用户需要 users.read 授权和 Host API 8"), nil
+			"user lookup needs the users.read grant / 查询用户需要 users.read 授权"), nil
 	}
 	out := make([]CoreUser, len(users))
 	for i, u := range users {

@@ -105,11 +105,6 @@ type FakeHost struct {
 	Locks                *LockTable
 	LockErr              error
 	LockAcquireLostReply error
-	// KVBatchUnimplemented makes the fake answer KVGetMany, KVSetMany and
-	// KVDeleteMany like a core before 0.1.273: UNIMPLEMENTED, so the SDK
-	// does the batch with the single calls. Set it before Start, or with
-	// SetKVBatchUnimplemented while the plugin runs. See KVCalls.
-	KVBatchUnimplemented bool
 
 	serving   map[int64]int // console users of the requests in flight
 	logs      []LogEntry

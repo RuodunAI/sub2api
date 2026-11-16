@@ -13,38 +13,13 @@ import (
 // equal GetInfoResponse.protocol_version.
 const ProtocolVersion = 1
 
-// HostAPIVersion is sent in InitHostRequest.host_api_version. Version 6 adds
-// automatic account state changes and timed recovery; version 8 adds sticky
-// binding clearing, notifications, environment variables (CONTRACTS §74) and
-// user lookup (§75.3); version 9 adds runtime tasks (SyncTasks, UpsertTask,
-// DeleteTask, ListTasks, EnqueueTask, CONTRACTS §77.8); the wire protocol
-// stays at 1.
+// HostAPIVersion is sent in InitHostRequest.host_api_version (HostInfo).
+// Which cores a plugin runs on is its manifest's hostCompat; the wire
+// protocol stays at 1.
 const HostAPIVersion = 9
-
-const TasksHostAPIVersion = 9
-
-const StickyClearHostAPIVersion = 8
-const NotificationHostAPIVersion = 8
-const EnvironmentHostAPIVersion = 8
-const UsersHostAPIVersion = 8
 
 // GetUsersMaxIDs caps the user ids of one HostService.GetUsers call.
 const GetUsersMaxIDs = 500
-
-const ModelAvailabilityHostAPIVersion = 7
-const AccountAutomaticStateHostAPIVersion = 6
-const ObservationHostAPIVersion = 5
-
-// ExecutionHostAPIVersion is the first host with Execute/Monitor callbacks.
-const ExecutionHostAPIVersion = 4
-
-// ManagedTasksHostAPIVersion is the first host API that owns task submission,
-// query snapshots and polling. Task plugins must reject older hosts at InitHost,
-// including hosts loading an already-approved package from a shared database.
-const ManagedTasksHostAPIVersion = 2
-
-// PollHostAPIVersion is the first host API with invocation-bound ExecuteHTTP.
-const PollHostAPIVersion = 3
 
 // Handshake is the go-plugin handshake. A binary started without the magic
 // cookie prints a hint and exits.

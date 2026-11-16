@@ -4,9 +4,6 @@ import (
 	"context"
 	"slices"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
@@ -15,7 +12,7 @@ import (
 // point at an account and could serve (group, model). It needs the
 // "sticky.clear" grant (CONTRACTS §74.2).
 func ClearStickyBindings(ctx context.Context, h Host, in *pluginv1.ClearStickyBindingsRequest) (*pluginv1.ClearStickyBindingsResponse, error) {
-	if err := requireHostAPI(h, protocol.StickyClearHostAPIVersion, "sticky binding clearing"); err != nil {
+	if err := requireHost(h); err != nil {
 		return nil, err
 	}
 	return h.Client().ClearStickyBindings(ctx, in)
@@ -25,7 +22,7 @@ func ClearStickyBindings(ctx context.Context, h Host, in *pluginv1.ClearStickyBi
 // optionally an account (CONTRACTS §74.3). Gateway requests already carry
 // theirs in RequestMeta.environment; this is for background work.
 func GetEnvironment(ctx context.Context, h Host, groupID, accountID int64) (map[string]int64, error) {
-	if err := requireHostAPI(h, protocol.EnvironmentHostAPIVersion, "environment variables"); err != nil {
+	if err := requireHost(h); err != nil {
 		return nil, err
 	}
 	resp, err := h.Client().GetEnvironment(ctx, &pluginv1.GetEnvironmentRequest{GroupId: groupID, AccountId: accountID})
@@ -38,7 +35,7 @@ func GetEnvironment(ctx context.Context, h Host, groupID, accountID int64) (map[
 // ListNotificationChannels lists the notification channels of the enabled
 // plugins; it needs the "notify.send" grant (CONTRACTS §74.4).
 func ListNotificationChannels(ctx context.Context, h Host) ([]*pluginv1.NotificationChannel, error) {
-	if err := requireHostAPI(h, protocol.NotificationHostAPIVersion, "notifications"); err != nil {
+	if err := requireHost(h); err != nil {
 		return nil, err
 	}
 	resp, err := h.Client().ListNotificationChannels(ctx, &pluginv1.ListNotificationChannelsRequest{})
@@ -51,7 +48,7 @@ func ListNotificationChannels(ctx context.Context, h Host) ([]*pluginv1.Notifica
 // Notify queues a notification on a channel by its id; the core delivers it
 // through the plugin declaring the channel. It needs the "notify.send" grant.
 func Notify(ctx context.Context, h Host, in *pluginv1.NotifyRequest) (*pluginv1.NotifyResponse, error) {
-	if err := requireHostAPI(h, protocol.NotificationHostAPIVersion, "notifications"); err != nil {
+	if err := requireHost(h); err != nil {
 		return nil, err
 	}
 	return h.Client().Notify(ctx, in)
@@ -61,7 +58,7 @@ func Notify(ctx context.Context, h Host, in *pluginv1.NotifyRequest) (*pluginv1.
 // of ids, asking the host protocol.GetUsersMaxIDs ids at a time. It needs
 // the "users.read" grant (CONTRACTS §75.3).
 func GetUsers(ctx context.Context, h Host, ids []int64) ([]*pluginv1.UserInfo, error) {
-	if err := requireHostAPI(h, protocol.UsersHostAPIVersion, "user lookup"); err != nil {
+	if err := requireHost(h); err != nil {
 		return nil, err
 	}
 	seen := make(map[int64]bool, len(ids))
@@ -83,14 +80,10 @@ func GetUsers(ctx context.Context, h Host, ids []int64) ([]*pluginv1.UserInfo, e
 	return out, nil
 }
 
-// requireHostAPI fails a host call the host cannot serve yet: no host, or
-// one older than the host API version that introduced `what`.
-func requireHostAPI(h Host, version int32, what string) error {
+// requireHost fails a host call made before the plugin has a host.
+func requireHost(h Host) error {
 	if h == nil || h.Client() == nil {
 		return ErrHostNotReady
-	}
-	if h.Info().HostAPIVersion < version {
-		return status.Errorf(codes.FailedPrecondition, "%s requires host API %d", what, version)
 	}
 	return nil
 }
@@ -100,12 +93,10 @@ func requireHostAPI(h Host, version int32, what string) error {
 // "accounts.credentials" with scope {"types":"own"}; the URL's host must be
 // one of the manifest's externalServices; CONTRACTS §91). A transport
 // failure comes back in the answer's transport_error with status 0, not as
-// an error. Hosts before core 0.1.269 answer codes.Unimplemented; the Host
-// API version is not raised (that would rule out rolling updates), so a
-// plugin relying on it declares hostCompat ">=0.1.269".
+// an error.
 func SendAccountRequest(ctx context.Context, h Host, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error) {
-	if h == nil || h.Client() == nil {
-		return nil, ErrHostNotReady
+	if err := requireHost(h); err != nil {
+		return nil, err
 	}
 	return h.Client().SendAccountRequest(ctx, in)
 }

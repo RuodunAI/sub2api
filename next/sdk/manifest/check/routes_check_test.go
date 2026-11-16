@@ -112,25 +112,3 @@ func TestRouteScopeFrom(t *testing.T) {
 		assert.Equal(t, tc.code, uiCodes(m)[tc.field], tc.name)
 	}
 }
-
-// An older core ignores routes[].accounts and forwards with no account
-// check, so hostCompat must keep it out.
-func TestRouteAccountsCoreFloor(t *testing.T) {
-	good := manifest.AccountAction{ID: "reset", Label: manifest.LocalizedText{"en": "Reset"},
-		Permission: "assets:manage", Route: "POST /assets/reset"}
-	for _, tc := range []struct {
-		hostCompat string
-		accounts   *manifest.RouteAccounts
-		floor      bool
-	}{
-		{">=0.1.285 <0.2.0", &manifest.RouteAccounts{Action: "read"}, true},
-		{">=0.1.286 <0.2.0", &manifest.RouteAccounts{Action: "read"}, false},
-		{">=0.1.256 <0.2.0", nil, false},
-	} {
-		m := withAccountAction(tc.hostCompat, good)
-		m.Routes[3].Accounts = tc.accounts
-		if got := uiCodes(m)["hostCompat"] == "below_feature_core"; got != tc.floor {
-			t.Errorf("%s accounts=%v: below_feature_core = %v, want %v", tc.hostCompat, tc.accounts != nil, got, tc.floor)
-		}
-	}
-}

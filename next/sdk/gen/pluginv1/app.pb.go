@@ -128,13 +128,11 @@ type RunJobRequest struct {
 
 	JobId           string `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	ScheduledAtUnix int64  `protobuf:"varint,2,opt,name=scheduled_at_unix,json=scheduledAtUnix,proto3" json:"scheduled_at_unix,omitempty"`
-	Manual          bool   `protobuf:"varint,3,opt,name=manual,proto3" json:"manual,omitempty"` // triggered from the console
-	// Fields 4-7 are sent by core 0.1.237 and later; older cores leave them
-	// empty.
-	Args    []byte `protobuf:"bytes,4,opt,name=args,proto3" json:"args,omitempty"`                // JSON arguments of a one-off run; empty for a periodic run
-	Scope   string `protobuf:"bytes,5,opt,name=scope,proto3" json:"scope,omitempty"`              // "cluster" | "node"
-	Attempt int32  `protobuf:"varint,6,opt,name=attempt,proto3" json:"attempt,omitempty"`         // from 1; always 1 for node jobs
-	RunId   string `protobuf:"bytes,7,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"` // identifies the run on the console
+	Manual          bool   `protobuf:"varint,3,opt,name=manual,proto3" json:"manual,omitempty"`           // triggered from the console
+	Args            []byte `protobuf:"bytes,4,opt,name=args,proto3" json:"args,omitempty"`                // JSON arguments of a one-off run; empty for a periodic run
+	Scope           string `protobuf:"bytes,5,opt,name=scope,proto3" json:"scope,omitempty"`              // "cluster" | "node"
+	Attempt         int32  `protobuf:"varint,6,opt,name=attempt,proto3" json:"attempt,omitempty"`         // from 1; always 1 for node jobs
+	RunId           string `protobuf:"bytes,7,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"` // identifies the run on the console
 }
 
 func (x *RunJobRequest) Reset() {
@@ -224,15 +222,13 @@ type RunJobResponse struct {
 	unknownFields protoimpl.UnknownFields
 
 	Message string `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"` // stored in plugin_job_runs
-	// Fields 2-3 are read by core 0.1.237 and later.
-	Count int32 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"` // items handled, shown with the run
+	Count   int32  `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`    // items handled, shown with the run
 	// > 0: the run did nothing yet; a cluster job is run again after this
 	// delay without counting as a failure, a node job is recorded as skipped.
 	RetryAfterMs int64 `protobuf:"varint,3,opt,name=retry_after_ms,json=retryAfterMs,proto3" json:"retry_after_ms,omitempty"`
 	// > 0: the run did part of the work and stopped before its deadline; it
 	// runs again after this delay with the same args (recorded as
-	// "continued", not a failure). Read by core 0.1.238 and later; older
-	// cores record a success and the next slot continues.
+	// "continued", not a failure).
 	// retry_after_ms wins when both are set.
 	ContinueAfterMs int64 `protobuf:"varint,4,opt,name=continue_after_ms,json=continueAfterMs,proto3" json:"continue_after_ms,omitempty"`
 }
@@ -528,8 +524,7 @@ type HTTPRequest struct {
 	// userPermissions[].scope): the caller's scope of that permission, already
 	// narrowed by an access key. With scopeFrom the core has checked the named
 	// values, except those only own may reach (own: the plugin checks). Absent
-	// on routes whose permission has no scope (a manifest declaring one needs
-	// core >= PluginPermissionsFirstCore, which always sets it).
+	// on routes whose permission has no scope.
 	ActionScope *ActionScope `protobuf:"bytes,9,opt,name=action_scope,json=actionScope,proto3" json:"action_scope,omitempty"`
 }
 

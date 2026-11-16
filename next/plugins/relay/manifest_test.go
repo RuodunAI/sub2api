@@ -34,7 +34,7 @@ const declaration = `{
 // with its own client headers and the replayed declaration.
 func TestManifest(t *testing.T) {
 	m := load(t)
-	if m.Key != "relay" || m.Version != "0.3.0" || m.Publisher != "sub2api" || m.Runtime != manifest.RuntimeNone {
+	if m.Key != "relay" || m.Version != "0.3.1" || m.Publisher != "sub2api" || m.Runtime != manifest.RuntimeNone {
 		t.Fatalf("identity = %s %s %s %s", m.Key, m.Version, m.Publisher, m.Runtime)
 	}
 	if len(m.Platforms) != 0 || len(m.AccountTypes) != 1 {

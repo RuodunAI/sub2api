@@ -3,7 +3,6 @@ package pluginsdk
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -81,15 +80,5 @@ func TestTasksClient(t *testing.T) {
 	}
 	if len(list) != 2 || list[0].Every != 10*time.Second || list[0].Timeout != time.Minute || !list[0].Enabled || list[1].Cron != "0 3 * * *" || list[1].Enabled {
 		t.Fatalf("list %+v", list)
-	}
-}
-
-func TestTasksNeedHostAPI9(t *testing.T) {
-	h := newHost(HostInfo{HostAPIVersion: 8}, &taskHost{}, nil, false, 0)
-	if err := h.Tasks().Sync(context.Background(), nil); !errors.Is(err, ErrTasksUnimplemented) {
-		t.Fatalf("host API 8: %v", err)
-	}
-	if err := h.Tasks().Enqueue(context.Background(), "a", nil); !errors.Is(err, ErrTasksUnimplemented) {
-		t.Fatalf("host API 8: %v", err)
 	}
 }

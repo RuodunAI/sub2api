@@ -18,11 +18,11 @@ service PlatformService {
   // Plugin-driven request execution. The host selected the account and owns
   // the request body. The plugin builds and forwards it through the scoped
   // host API, then records usage or atomically reserves and registers a task.
-  // Requires platform.execute.v1 and host API 4.
+  // Requires platform.execute.v1.
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
   // One scheduled observation, completed by ReportTaskProgress. Scheduling,
   // fencing, snapshots and financial transactions remain host-owned.
-  // Requires platform.monitor.v1 and host API 4.
+  // Requires platform.monitor.v1.
   rpc Monitor(PollRequest) returns (MonitorResponse);
   rpc ValidateCredentials(ValidateCredentialsRequest) returns (ValidateCredentialsResponse);
   // Hot path: called once per upstream attempt. Keep it fast (< 2s timeout).
@@ -98,7 +98,7 @@ service PlatformService {
   // Executes one observation. The host owns scheduling, account selection,
   // leases and persistence; the plugin initiates its HTTP request through
   // HostService.ExecuteHTTP using the invocation's short-lived permission.
-  // Requires platform.poll.v1 and host API 3. No plugin timer or net grant.
+  // Requires platform.poll.v1. No plugin timer or net grant.
   rpc Poll(PollRequest) returns (ReconcileResult);
   // Builds the request that observes a pre-charged entry or a host-managed
   // asynchronous task. Legacy endpoints arm it through Reservation; task

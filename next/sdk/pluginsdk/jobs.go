@@ -25,28 +25,25 @@ import (
 // JobRun describes the run RunJob is called for.
 type JobRun struct {
 	JobID       string
-	ScheduledAt time.Time // the planned slot; the request time for a manual run
-	Manual      bool      // started from the console
-	// Scope, Attempt, RunID and Args are set by core 0.1.237 and later; an
-	// older core leaves them empty (Attempt 0).
-	Scope   string          // manifest.JobScopeCluster or manifest.JobScopeNode
-	Attempt int             // from 1; always 1 for node jobs
-	RunID   string          // the run's id on the console
-	Args    json.RawMessage // the arguments of a one-off run; nil for a periodic run
+	ScheduledAt time.Time       // the planned slot; the request time for a manual run
+	Manual      bool            // started from the console
+	Scope       string          // manifest.JobScopeCluster or manifest.JobScopeNode
+	Attempt     int             // from 1; always 1 for node jobs
+	RunID       string          // the run's id on the console
+	Args        json.RawMessage // the arguments of a one-off run; nil for a periodic run
 }
 
 // JobResult is what one run reports.
 type JobResult struct {
 	Message string // shown with the run; at most 2000 characters are kept
-	Count   int    // items handled (core 0.1.237+)
+	Count   int    // items handled
 	// RetryAfter > 0 says the run did nothing yet: a cluster job runs again
 	// after it without counting as a failure, a node job is recorded as
-	// skipped (core 0.1.237+; older cores record a success).
+	// skipped.
 	RetryAfter time.Duration
 	// ContinueAfter > 0 says the run did part of the work and has more: it
 	// runs again after this delay with the same args, recorded as
-	// "continued" (core 0.1.238+; older cores record a success and the next
-	// scheduled run continues). Use it for work that may outlast the run's
+	// "continued". Use it for work that may outlast the run's
 	// timeout, see JobFunc.
 	ContinueAfter time.Duration
 }

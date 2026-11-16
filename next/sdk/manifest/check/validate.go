@@ -248,7 +248,6 @@ func Validate(m *manifest.Manifest, files map[string][]byte, opt ValidateOptions
 	v.platforms()
 	v.taskPairs(v.m.Platforms)
 	v.accountTypes()
-	v.checkCoreFloors()
 	v.pricing()
 	v.hooks()
 	v.scheduler()
@@ -725,23 +724,11 @@ func (v *validator) jobs() {
 	if nodeJobs > manifest.MaxNodeJobs {
 		v.add("jobs", "out_of_range", "at most %d node jobs", manifest.MaxNodeJobs)
 	}
-	// Older cores ignore scope and would run a node job once per cluster.
-	if nodeJobs > 0 {
-		if ok, err := HostCompatible(v.m.HostCompat, lastClusterOnlyJobsCore); err == nil && ok {
-			v.add("hostCompat", "below_node_jobs_core", "hostCompat %q admits core %s, which runs node jobs once per cluster (node jobs start at core %s)",
-				v.m.HostCompat, lastClusterOnlyJobsCore, firstNodeJobsCore)
-		}
-	}
 }
 
-// The cores that run node jobs: 0.1.236 is the last core that runs every job
-// once per cluster. The job limits are manifest.MaxClusterJobTimeoutSec and
-// its neighbours.
-const (
-	maxJobTitle             = 100
-	lastClusterOnlyJobsCore = "0.1.236"
-	firstNodeJobsCore       = "0.1.237"
-)
+// maxJobTitle bounds a job's title. The job limits are
+// manifest.MaxClusterJobTimeoutSec and its neighbours.
+const maxJobTitle = 100
 
 func (v *validator) database() {
 	d := v.m.Database

@@ -215,33 +215,3 @@ func TestUserPermissionScope(t *testing.T) {
 		assert.Equal(t, c.want, fieldCodes(Validate(m, nil, ValidateOptions{Tooling: true}), "userPermissions"), c.name)
 	}
 }
-
-// An older core ignores the new fields (granting admin by default and
-// forwarding scopeFrom routes unchecked), so hostCompat must keep it out;
-// a manifest with keys and labels only keeps its floor.
-func TestPluginPermissionsFloor(t *testing.T) {
-	onlyDefaults := func(hostCompat string) *manifest.Manifest {
-		m := minimal()
-		m.HostCompat = hostCompat
-		m.UserPermissions = []manifest.UserPermission{{Key: "x:use", Label: label("Use"), Defaults: map[string]manifest.RoleDefault{"admin": {Unscoped: true}}}}
-		return m
-	}
-	assert.Equal(t, "below_feature_core", codes(Validate(onlyDefaults(">=0.1.286 <0.2.0"), nil, ValidateOptions{Tooling: true}))["hostCompat"])
-	// 0.1.289 was never released: the floor is the release, 0.1.290.
-	assert.Equal(t, "below_feature_core", codes(Validate(onlyDefaults(">=0.1.289 <0.2.0"), nil, ValidateOptions{Tooling: true}))["hostCompat"])
-	assert.Empty(t, codes(Validate(onlyDefaults(">=0.1.290 <0.2.0"), nil, ValidateOptions{Tooling: true})))
-	plain := minimal()
-	plain.UserPermissions = []manifest.UserPermission{{Key: "x:use", Label: label("Use")}}
-	assert.Empty(t, codes(Validate(plain, nil, ValidateOptions{Tooling: true})))
-	scopeFrom := permissionManifest()
-	scopeFrom.PermissionGroups, scopeFrom.UserPermissions[0].Group, scopeFrom.UserPermissions[1].Group, scopeFrom.UserPermissions[2].Group = nil, "", "", ""
-	scopeFrom.HostCompat = ">=0.1.288 <0.2.0"
-	assert.Equal(t, "below_feature_core", codes(Validate(scopeFrom, nil, ValidateOptions{Tooling: true}))["hostCompat"])
-
-	m := uiManifest()
-	m.HostUICompat = "^3.16"
-	m.HostCompat = ">=0.1.286 <0.2.0"
-	assert.Equal(t, map[string]string{"hostCompat": "below_ui_core"}, codes(Validate(m, nil, ValidateOptions{Tooling: true})))
-	m.HostCompat = ">=0.1.290 <0.2.0"
-	assert.Empty(t, codes(Validate(m, nil, ValidateOptions{Tooling: true})))
-}

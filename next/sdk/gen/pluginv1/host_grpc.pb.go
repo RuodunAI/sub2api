@@ -67,23 +67,19 @@ type HostServiceClient interface {
 	// (MGET, one host-owned script, DEL), so the cost does not grow with the
 	// number of keys the way N single calls do.
 	//
-	//   * Namespace, key, value and ttl rules are those of the single calls.
+	//   - Namespace, key, value and ttl rules are those of the single calls.
 	//     At most 512 keys or items per call, and at most 3 MiB of keys plus
 	//     values in one KVSetMany; otherwise INVALID_ARGUMENT. A key may
 	//     repeat: KVGetMany answers every occurrence, KVSetMany keeps the
 	//     last one. No keys is valid and does nothing.
-	//   * KVGetMany answers one item per requested key, in request order.
+	//   - KVGetMany answers one item per requested key, in request order.
 	//     When the values found add up to more than 3 MiB the call fails with
 	//     RESOURCE_EXHAUSTED and the caller asks for fewer keys (48 keys
 	//     always fit).
-	//   * KVSetMany is all or nothing: when any item is invalid nothing is
+	//   - KVSetMany is all or nothing: when any item is invalid nothing is
 	//     written, otherwise every item is written with its own ttl in one
 	//     atomic step. ttl_seconds is 0 (no expiry) up to 9223372036.
-	//   * The script is the host's own. Plugins cannot submit scripts.
-	//
-	// Hosts before core 0.1.273 answer UNIMPLEMENTED (the Host API version is
-	// not raised); the SDK (pluginsdk.KVGetMany, KVSetMany, KVDeleteMany)
-	// then does the batch with the single calls.
+	//   - The script is the host's own. Plugins cannot submit scripts.
 	KVGetMany(ctx context.Context, in *KVGetManyRequest, opts ...grpc.CallOption) (*KVGetManyResponse, error)
 	KVSetMany(ctx context.Context, in *KVSetManyRequest, opts ...grpc.CallOption) (*KVSetManyResponse, error)
 	KVDeleteMany(ctx context.Context, in *KVDeleteManyRequest, opts ...grpc.CallOption) (*KVDeleteManyResponse, error)
@@ -119,7 +115,7 @@ type HostServiceClient interface {
 	// instances on every other live node (AppService.OnBroadcast), best
 	// effort, e.g. "rules changed, reload". Payload at most 64 KiB.
 	Publish(ctx context.Context, in *PublishRequest, opts ...grpc.CallOption) (*PublishResponse, error)
-	// jobs (grant "jobs", Host API 9): runtime tasks, the plugin's own
+	// jobs (grant "jobs"): runtime tasks, the plugin's own
 	// scheduled tasks besides manifest jobs[] (CONTRACTS §77.8). Each is the
 	// cluster task plugin.<key>.<id>; a run calls AppService.RunJob with its
 	// id, scope "cluster" and the task's args. Only the instance of the
@@ -142,19 +138,19 @@ type HostServiceClient interface {
 	// Redis, for work that must not run on two nodes at once. Periodic work
 	// belongs in manifest jobs[] instead (each trigger runs once cluster-wide).
 	//
-	//   * The host prefixes every name: the Redis key is
+	//   - The host prefixes every name: the Redis key is
 	//     lock:plugin:{plugin_key}:{name}, so plugins never see each other's
 	//     locks. name must match ^[A-Za-z0-9._:/-]{1,128}$ and ttl_ms must be
 	//     1000..300000, otherwise INVALID_ARGUMENT.
-	//   * Validity is reported as a DURATION (valid_ms), counted by the host on
+	//   - Validity is reported as a DURATION (valid_ms), counted by the host on
 	//     its own clock from when it took or extended the lock, minus a drift
 	//     margin - never as an absolute time, so plugin and host clocks do not
 	//     have to agree. The plugin should count it from BEFORE it sent the
 	//     request.
-	//   * The locks are NOT fenced: a holder that stalls past its validity may
+	//   - The locks are NOT fenced: a holder that stalls past its validity may
 	//     find another node has taken the lock meanwhile, so the guarded work
 	//     must still be idempotent.
-	//   * The PLUGIN chooses the owner token: a fresh random value for every
+	//   - The PLUGIN chooses the owner token: a fresh random value for every
 	//     LockAcquire (at least 16 random bytes, e.g. from a CSPRNG, encoded
 	//     as URL-safe base64 or hex), matching ^[A-Za-z0-9_-]{16,128}$. The
 	//     host stores it as the lock's value in Redis. Because the plugin
@@ -162,14 +158,14 @@ type HostServiceClient interface {
 	//     unknown (UNAVAILABLE, a deadline, a broken connection) can be undone
 	//     with LockRelease(name, token) instead of blocking every other node
 	//     until the ttl runs out.
-	//   * Never reuse a token: a LockAcquire with the token of a lock this
+	//   - Never reuse a token: a LockAcquire with the token of a lock this
 	//     plugin ALREADY holds under that name fails the SET NX, and the
 	//     cleanup of the failed attempt (a compare-and-delete with the same
 	//     token) then deletes the held lock. The call answers acquired=false
 	//     and nobody holds the lock afterwards.
-	//   * The host keeps no state per lock: when the plugin process dies its
+	//   - The host keeps no state per lock: when the plugin process dies its
 	//     locks lapse after their ttl.
-	//   * Errors: no "lock" grant -> PERMISSION_DENIED; bad name, ttl or token
+	//   - Errors: no "lock" grant -> PERMISSION_DENIED; bad name, ttl or token
 	//     -> INVALID_ARGUMENT; Redis unavailable or outcome unknown ->
 	//     UNAVAILABLE (the lock may or may not be held - treat it as not held;
 	//     after a LockAcquire, call LockRelease with the same token).
@@ -209,7 +205,7 @@ type HostServiceClient interface {
 	// the answer body is capped at 64 KiB (truncated set). A transport failure
 	// is not an RPC error: it comes back in transport_error with status 0.
 	// Audited on every call (account, method, host and path; never headers or
-	// bodies). Hosts before core 0.1.269 answer UNIMPLEMENTED.
+	// bodies).
 	SendAccountRequest(ctx context.Context, in *SendAccountRequestRequest, opts ...grpc.CallOption) (*ExecutionHTTPResponse, error)
 }
 
@@ -639,23 +635,19 @@ type HostServiceServer interface {
 	// (MGET, one host-owned script, DEL), so the cost does not grow with the
 	// number of keys the way N single calls do.
 	//
-	//   * Namespace, key, value and ttl rules are those of the single calls.
+	//   - Namespace, key, value and ttl rules are those of the single calls.
 	//     At most 512 keys or items per call, and at most 3 MiB of keys plus
 	//     values in one KVSetMany; otherwise INVALID_ARGUMENT. A key may
 	//     repeat: KVGetMany answers every occurrence, KVSetMany keeps the
 	//     last one. No keys is valid and does nothing.
-	//   * KVGetMany answers one item per requested key, in request order.
+	//   - KVGetMany answers one item per requested key, in request order.
 	//     When the values found add up to more than 3 MiB the call fails with
 	//     RESOURCE_EXHAUSTED and the caller asks for fewer keys (48 keys
 	//     always fit).
-	//   * KVSetMany is all or nothing: when any item is invalid nothing is
+	//   - KVSetMany is all or nothing: when any item is invalid nothing is
 	//     written, otherwise every item is written with its own ttl in one
 	//     atomic step. ttl_seconds is 0 (no expiry) up to 9223372036.
-	//   * The script is the host's own. Plugins cannot submit scripts.
-	//
-	// Hosts before core 0.1.273 answer UNIMPLEMENTED (the Host API version is
-	// not raised); the SDK (pluginsdk.KVGetMany, KVSetMany, KVDeleteMany)
-	// then does the batch with the single calls.
+	//   - The script is the host's own. Plugins cannot submit scripts.
 	KVGetMany(context.Context, *KVGetManyRequest) (*KVGetManyResponse, error)
 	KVSetMany(context.Context, *KVSetManyRequest) (*KVSetManyResponse, error)
 	KVDeleteMany(context.Context, *KVDeleteManyRequest) (*KVDeleteManyResponse, error)
@@ -691,7 +683,7 @@ type HostServiceServer interface {
 	// instances on every other live node (AppService.OnBroadcast), best
 	// effort, e.g. "rules changed, reload". Payload at most 64 KiB.
 	Publish(context.Context, *PublishRequest) (*PublishResponse, error)
-	// jobs (grant "jobs", Host API 9): runtime tasks, the plugin's own
+	// jobs (grant "jobs"): runtime tasks, the plugin's own
 	// scheduled tasks besides manifest jobs[] (CONTRACTS §77.8). Each is the
 	// cluster task plugin.<key>.<id>; a run calls AppService.RunJob with its
 	// id, scope "cluster" and the task's args. Only the instance of the
@@ -714,19 +706,19 @@ type HostServiceServer interface {
 	// Redis, for work that must not run on two nodes at once. Periodic work
 	// belongs in manifest jobs[] instead (each trigger runs once cluster-wide).
 	//
-	//   * The host prefixes every name: the Redis key is
+	//   - The host prefixes every name: the Redis key is
 	//     lock:plugin:{plugin_key}:{name}, so plugins never see each other's
 	//     locks. name must match ^[A-Za-z0-9._:/-]{1,128}$ and ttl_ms must be
 	//     1000..300000, otherwise INVALID_ARGUMENT.
-	//   * Validity is reported as a DURATION (valid_ms), counted by the host on
+	//   - Validity is reported as a DURATION (valid_ms), counted by the host on
 	//     its own clock from when it took or extended the lock, minus a drift
 	//     margin - never as an absolute time, so plugin and host clocks do not
 	//     have to agree. The plugin should count it from BEFORE it sent the
 	//     request.
-	//   * The locks are NOT fenced: a holder that stalls past its validity may
+	//   - The locks are NOT fenced: a holder that stalls past its validity may
 	//     find another node has taken the lock meanwhile, so the guarded work
 	//     must still be idempotent.
-	//   * The PLUGIN chooses the owner token: a fresh random value for every
+	//   - The PLUGIN chooses the owner token: a fresh random value for every
 	//     LockAcquire (at least 16 random bytes, e.g. from a CSPRNG, encoded
 	//     as URL-safe base64 or hex), matching ^[A-Za-z0-9_-]{16,128}$. The
 	//     host stores it as the lock's value in Redis. Because the plugin
@@ -734,14 +726,14 @@ type HostServiceServer interface {
 	//     unknown (UNAVAILABLE, a deadline, a broken connection) can be undone
 	//     with LockRelease(name, token) instead of blocking every other node
 	//     until the ttl runs out.
-	//   * Never reuse a token: a LockAcquire with the token of a lock this
+	//   - Never reuse a token: a LockAcquire with the token of a lock this
 	//     plugin ALREADY holds under that name fails the SET NX, and the
 	//     cleanup of the failed attempt (a compare-and-delete with the same
 	//     token) then deletes the held lock. The call answers acquired=false
 	//     and nobody holds the lock afterwards.
-	//   * The host keeps no state per lock: when the plugin process dies its
+	//   - The host keeps no state per lock: when the plugin process dies its
 	//     locks lapse after their ttl.
-	//   * Errors: no "lock" grant -> PERMISSION_DENIED; bad name, ttl or token
+	//   - Errors: no "lock" grant -> PERMISSION_DENIED; bad name, ttl or token
 	//     -> INVALID_ARGUMENT; Redis unavailable or outcome unknown ->
 	//     UNAVAILABLE (the lock may or may not be held - treat it as not held;
 	//     after a LockAcquire, call LockRelease with the same token).
@@ -781,7 +773,7 @@ type HostServiceServer interface {
 	// the answer body is capped at 64 KiB (truncated set). A transport failure
 	// is not an RPC error: it comes back in transport_error with status 0.
 	// Audited on every call (account, method, host and path; never headers or
-	// bodies). Hosts before core 0.1.269 answer UNIMPLEMENTED.
+	// bodies).
 	SendAccountRequest(context.Context, *SendAccountRequestRequest) (*ExecutionHTTPResponse, error)
 	mustEmbedUnimplementedHostServiceServer()
 }

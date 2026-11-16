@@ -76,17 +76,3 @@ func TestNodeJobsLimit(t *testing.T) {
 		t.Fatalf("ten node jobs are allowed: %v", c)
 	}
 }
-
-// Core 0.1.236 and older ignore scope: a node job would run once per cluster
-// there, so hostCompat must keep those cores out.
-func TestNodeJobsNeedNodeJobsCore(t *testing.T) {
-	m := jobsManifest(manifest.Job{ID: "refresh", Schedule: "@every 30s", Scope: manifest.JobScopeNode})
-	m.HostCompat = ">=0.1.229 <0.2.0"
-	if c := jobCodes(m); c["hostCompat"] != "below_node_jobs_core" {
-		t.Fatalf("hostCompat admitting 0.1.236 must be rejected: %v", c)
-	}
-	m.Jobs[0].Scope = manifest.JobScopeCluster
-	if c := jobCodes(m); len(c) > 0 {
-		t.Fatalf("cluster jobs run on any core: %v", c)
-	}
-}

@@ -29,11 +29,11 @@ type PlatformServiceClient interface {
 	// Plugin-driven request execution. The host selected the account and owns
 	// the request body. The plugin builds and forwards it through the scoped
 	// host API, then records usage or atomically reserves and registers a task.
-	// Requires platform.execute.v1 and host API 4.
+	// Requires platform.execute.v1.
 	Execute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
 	// One scheduled observation, completed by ReportTaskProgress. Scheduling,
 	// fencing, snapshots and financial transactions remain host-owned.
-	// Requires platform.monitor.v1 and host API 4.
+	// Requires platform.monitor.v1.
 	Monitor(ctx context.Context, in *PollRequest, opts ...grpc.CallOption) (*MonitorResponse, error)
 	ValidateCredentials(ctx context.Context, in *ValidateCredentialsRequest, opts ...grpc.CallOption) (*ValidateCredentialsResponse, error)
 	// Hot path: called once per upstream attempt. Keep it fast (< 2s timeout).
@@ -109,7 +109,7 @@ type PlatformServiceClient interface {
 	// Executes one observation. The host owns scheduling, account selection,
 	// leases and persistence; the plugin initiates its HTTP request through
 	// HostService.ExecuteHTTP using the invocation's short-lived permission.
-	// Requires platform.poll.v1 and host API 3. No plugin timer or net grant.
+	// Requires platform.poll.v1. No plugin timer or net grant.
 	Poll(ctx context.Context, in *PollRequest, opts ...grpc.CallOption) (*ReconcileResult, error)
 	// Builds the request that observes a pre-charged entry or a host-managed
 	// asynchronous task. Legacy endpoints arm it through Reservation; task
@@ -126,6 +126,7 @@ type PlatformServiceClient interface {
 	//   - no "app.jobs.v1" timer of its own: the host drives the schedule,
 	//     with the backoff, the deadline and the multi-node locking that a
 	//     plugin would otherwise each have to reinvent.
+	//
 	// Legacy compatibility path. New plugins use Poll and the host's scoped
 	// ExecuteHTTP callback, which preserves these account/network constraints.
 	//
@@ -415,11 +416,11 @@ type PlatformServiceServer interface {
 	// Plugin-driven request execution. The host selected the account and owns
 	// the request body. The plugin builds and forwards it through the scoped
 	// host API, then records usage or atomically reserves and registers a task.
-	// Requires platform.execute.v1 and host API 4.
+	// Requires platform.execute.v1.
 	Execute(context.Context, *ExecuteRequest) (*ExecuteResponse, error)
 	// One scheduled observation, completed by ReportTaskProgress. Scheduling,
 	// fencing, snapshots and financial transactions remain host-owned.
-	// Requires platform.monitor.v1 and host API 4.
+	// Requires platform.monitor.v1.
 	Monitor(context.Context, *PollRequest) (*MonitorResponse, error)
 	ValidateCredentials(context.Context, *ValidateCredentialsRequest) (*ValidateCredentialsResponse, error)
 	// Hot path: called once per upstream attempt. Keep it fast (< 2s timeout).
@@ -495,7 +496,7 @@ type PlatformServiceServer interface {
 	// Executes one observation. The host owns scheduling, account selection,
 	// leases and persistence; the plugin initiates its HTTP request through
 	// HostService.ExecuteHTTP using the invocation's short-lived permission.
-	// Requires platform.poll.v1 and host API 3. No plugin timer or net grant.
+	// Requires platform.poll.v1. No plugin timer or net grant.
 	Poll(context.Context, *PollRequest) (*ReconcileResult, error)
 	// Builds the request that observes a pre-charged entry or a host-managed
 	// asynchronous task. Legacy endpoints arm it through Reservation; task
@@ -512,6 +513,7 @@ type PlatformServiceServer interface {
 	//   - no "app.jobs.v1" timer of its own: the host drives the schedule,
 	//     with the backoff, the deadline and the multi-node locking that a
 	//     plugin would otherwise each have to reinvent.
+	//
 	// Legacy compatibility path. New plugins use Poll and the host's scoped
 	// ExecuteHTTP callback, which preserves these account/network constraints.
 	//

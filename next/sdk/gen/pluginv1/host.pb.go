@@ -4027,6 +4027,7 @@ type EgressFrame struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Kind:
+	//
 	//	*EgressFrame_Open
 	//	*EgressFrame_Result
 	//	*EgressFrame_Data

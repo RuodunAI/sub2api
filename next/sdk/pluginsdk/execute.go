@@ -13,7 +13,7 @@ import (
 // Executor owns one request's execution after the host has selected an account.
 // ExecuteDefault implements the normal Build -> Forward -> Record/Watch flow.
 // Forwarding still uses the host's transport, conversions, limits and proxy.
-// Requires platform.execute.v1 and host API 4.
+// Requires platform.execute.v1.
 type Executor interface {
 	Execute(context.Context, *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error)
 }
@@ -21,7 +21,7 @@ type Executor interface {
 // TaskMonitor observes one task and calls ReportTaskProgress before returning.
 // The host chooses the node, time and original account, and owns retries,
 // leases and atomic financial settlement. No plugin timer is needed.
-// Requires platform.monitor.v1 and host API 4.
+// Requires platform.monitor.v1.
 type TaskMonitor interface {
 	Monitor(context.Context, *pluginv1.PollRequest) error
 }

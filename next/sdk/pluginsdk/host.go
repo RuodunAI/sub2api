@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -90,8 +89,7 @@ type Host interface {
 	// the guarded work must still be idempotent. See Locks.
 	Locks() Locks
 	// Tasks manages the plugin's runtime tasks, scheduled tasks it registers
-	// while running besides manifest jobs[] (grant "jobs", Host API 9; on an
-	// older core every call returns ErrTasksUnimplemented). See Tasks.
+	// while running besides manifest jobs[] (grant "jobs"). See Tasks.
 	Tasks() Tasks
 	// ListAccounts returns one page of the accounts of THIS plugin's own
 	// account types (grant "accounts.read"), ordered by id and never
@@ -231,10 +229,6 @@ type host struct {
 	logger    *slog.Logger
 	poolSize  int32
 
-	// kvNoBatch is set once the host answered UNIMPLEMENTED to a batch KV
-	// call: a host before core 0.1.273 (KVBatch).
-	kvNoBatch atomic.Bool
-
 	mu sync.Mutex
 	db *gorm.DB
 }
@@ -247,7 +241,7 @@ func newHost(info HostInfo, c pluginv1.HostServiceClient, e pluginv1.EgressServi
 
 func (h *host) Info() HostInfo                       { return h.info }
 func (h *host) Logger() *slog.Logger                 { return h.logger }
-func (h *host) KV() KV                               { return hostKV{c: h.client, noBatch: &h.kvNoBatch} }
+func (h *host) KV() KV                               { return hostKV{c: h.client} }
 func (h *host) Client() pluginv1.HostServiceClient   { return h.client }
 func (h *host) Egress() pluginv1.EgressServiceClient { return h.egress }
 func (h *host) EgressInstalled() bool                { return h.installed }
@@ -430,12 +424,8 @@ func ledgerResult(r *pluginv1.LedgerChangeResponse, err error) (*LedgerResult, e
 	return &LedgerResult{LedgerID: r.GetLedgerId(), BalanceAfter: r.GetBalanceAfter(), Duplicate: r.GetDuplicate()}, nil
 }
 
-// hostKV is the KV of Host.KV. It also implements KVBatch (kvbatch.go);
-// noBatch is the host's kvNoBatch.
-type hostKV struct {
-	c       pluginv1.HostServiceClient
-	noBatch *atomic.Bool
-}
+// hostKV is the KV of Host.KV. It also implements KVBatch (kvbatch.go).
+type hostKV struct{ c pluginv1.HostServiceClient }
 
 func (k hostKV) Get(ctx context.Context, ns, key string) ([]byte, bool, error) {
 	r, err := k.c.KVGet(ctx, &pluginv1.KVGetRequest{Namespace: ns, Key: key})

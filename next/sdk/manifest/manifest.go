@@ -841,8 +841,7 @@ type Job struct {
 	// Older manifests may declare more; the core cuts it to the limit.
 	TimeoutSec int `json:"timeoutSec,omitempty"`
 	// Scope is JobScopeCluster (the default: one run per slot in the
-	// cluster) or JobScopeNode (every node runs it on its own instance;
-	// core 0.1.237 and later).
+	// cluster) or JobScopeNode (every node runs it on its own instance).
 	Scope string `json:"scope,omitempty"`
 	// Title names the job on the console's scheduled task page; without it
 	// the console shows the plugin name and the job id.
@@ -957,7 +956,7 @@ type UI struct {
 	Settings *Form           `json:"settings,omitempty"`
 	// AccountActions are entries the console adds to every account row's
 	// action menu (and, with Bulk, to the bulk bar); clicking one posts to
-	// Route (UI 3.6, core 0.1.256).
+	// Route (UI 3.6).
 	AccountActions []AccountAction `json:"accountActions,omitempty"`
 }
 
@@ -1055,8 +1054,7 @@ type Page struct {
 	// Nav lists the sections of a native page so the console can draw them
 	// in its left sidebar, the way it draws the core system settings
 	// (UI 3.14). The page shows the section named by ?tab=<item key>, and
-	// the first item the caller may see is the default. An older console
-	// ignores it, so the page must keep an in-page way to switch sections.
+	// the first item the caller may see is the default.
 	Nav *PageNav `json:"nav,omitempty"`
 }
 

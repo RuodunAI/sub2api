@@ -1,13 +1,9 @@
 package pluginsdktest
 
 import (
-	"cmp"
 	"context"
 	"maps"
 	"time"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
@@ -19,18 +15,8 @@ import (
 // answer has one item per key in request order and a write is all or
 // nothing. The fake has no grants.
 
-// SetKVBatchUnimplemented switches the batch KV calls between a current core
-// (false) and a core before 0.1.273, which answers UNIMPLEMENTED (true),
-// while the plugin runs. The SDK remembers an UNIMPLEMENTED answer for the
-// rest of the host connection, as it would on a real older core.
-func (f *FakeHost) SetKVBatchUnimplemented(v bool) {
-	f.mu.Lock()
-	f.KVBatchUnimplemented = v
-	f.mu.Unlock()
-}
-
 // KVCalls returns how many times each KV call was received, by RPC name
-// ("KVGet", "KVGetMany", ...), refused batch calls included. Use it to check
+// ("KVGet", "KVGetMany", ...), refused calls included. Use it to check
 // that a plugin reads its keys in one call.
 func (f *FakeHost) KVCalls() map[string]int {
 	f.mu.Lock()
@@ -38,20 +24,11 @@ func (f *FakeHost) KVCalls() map[string]int {
 	return maps.Clone(f.kvCalls)
 }
 
-// kvBatchStart counts one batch call and refuses it when the fake plays an
-// older core. The caller holds f.mu.
-func (f *FakeHost) kvBatchStart(rpc string) error {
-	f.kvCalls[rpc]++
-	if f.KVBatchUnimplemented {
-		return status.Errorf(codes.Unimplemented, "method %s not implemented", rpc)
-	}
-	return nil
-}
-
 func (f *FakeHost) KVGetMany(_ context.Context, in *pluginv1.KVGetManyRequest) (*pluginv1.KVGetManyResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := cmp.Or(f.kvBatchStart("KVGetMany"), protocol.CheckKVBatchKeys(in.GetNamespace(), in.GetKeys())); err != nil {
+	f.kvCalls["KVGetMany"]++
+	if err := protocol.CheckKVBatchKeys(in.GetNamespace(), in.GetKeys()); err != nil {
 		return nil, err
 	}
 	out := &pluginv1.KVGetManyResponse{Items: make([]*pluginv1.KVGetManyItem, len(in.GetKeys()))}
@@ -73,9 +50,7 @@ func (f *FakeHost) KVGetMany(_ context.Context, in *pluginv1.KVGetManyRequest) (
 func (f *FakeHost) KVSetMany(_ context.Context, in *pluginv1.KVSetManyRequest) (*pluginv1.KVSetManyResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.kvBatchStart("KVSetMany"); err != nil {
-		return nil, err
-	}
+	f.kvCalls["KVSetMany"]++
 	// Every item is checked before the first one is stored.
 	items := in.GetItems()
 	if err := protocol.CheckKVBatchItems(in.GetNamespace(), len(items), func(i int) (string, int, int64) {
@@ -97,7 +72,8 @@ func (f *FakeHost) KVSetMany(_ context.Context, in *pluginv1.KVSetManyRequest) (
 func (f *FakeHost) KVDeleteMany(_ context.Context, in *pluginv1.KVDeleteManyRequest) (*pluginv1.KVDeleteManyResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := cmp.Or(f.kvBatchStart("KVDeleteMany"), protocol.CheckKVBatchKeys(in.GetNamespace(), in.GetKeys())); err != nil {
+	f.kvCalls["KVDeleteMany"]++
+	if err := protocol.CheckKVBatchKeys(in.GetNamespace(), in.GetKeys()); err != nil {
 		return nil, err
 	}
 	for _, key := range in.GetKeys() {

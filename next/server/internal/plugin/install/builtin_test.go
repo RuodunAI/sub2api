@@ -18,7 +18,7 @@ func TestEnsureBuiltinInstallsEnablesAndBlocksUninstall(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	dir := t.TempDir()
-	m := permModel(pkgtest.Guard("guard", "0.1.0", "sub2api"))
+	m := pkgtest.Guard("guard", "0.1.0", "sub2api")
 	for i := range m.UserPermissions {
 		m.UserPermissions[i].Defaults = map[string]manifest.RoleDefault{"operator": {Unscoped: true}, "user": {Unscoped: true}}
 	}

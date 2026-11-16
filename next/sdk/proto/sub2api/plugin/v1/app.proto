@@ -33,8 +33,6 @@ message RunJobRequest {
   string job_id = 1;
   int64 scheduled_at_unix = 2;
   bool manual = 3;                     // triggered from the console
-  // Fields 4-7 are sent by core 0.1.237 and later; older cores leave them
-  // empty.
   bytes args = 4;                      // JSON arguments of a one-off run; empty for a periodic run
   string scope = 5;                    // "cluster" | "node"
   int32 attempt = 6;                   // from 1; always 1 for node jobs
@@ -43,15 +41,13 @@ message RunJobRequest {
 
 message RunJobResponse {
   string message = 1;                  // stored in plugin_job_runs
-  // Fields 2-3 are read by core 0.1.237 and later.
   int32 count = 2;                     // items handled, shown with the run
   // > 0: the run did nothing yet; a cluster job is run again after this
   // delay without counting as a failure, a node job is recorded as skipped.
   int64 retry_after_ms = 3;
   // > 0: the run did part of the work and stopped before its deadline; it
   // runs again after this delay with the same args (recorded as
-  // "continued", not a failure). Read by core 0.1.238 and later; older
-  // cores record a success and the next slot continues.
+  // "continued", not a failure).
   // retry_after_ms wins when both are set.
   int64 continue_after_ms = 4;
 }
@@ -97,8 +93,7 @@ message HTTPRequest {
   // userPermissions[].scope): the caller's scope of that permission, already
   // narrowed by an access key. With scopeFrom the core has checked the named
   // values, except those only own may reach (own: the plugin checks). Absent
-  // on routes whose permission has no scope (a manifest declaring one needs
-  // core >= PluginPermissionsFirstCore, which always sets it).
+  // on routes whose permission has no scope.
   ActionScope action_scope = 9;
 }
 
