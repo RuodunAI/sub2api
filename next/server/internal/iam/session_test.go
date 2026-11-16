@@ -209,7 +209,7 @@ func TestAdminPasswordResetBroadcasts(t *testing.T) {
 	if err := az2.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	node2 := New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: az2, Owners: &fakeOwners{}, Bus: e.bus, BcryptCost: bcrypt.MinCost})
+	node2 := New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: az2, Owners: az2, Bus: e.bus, BcryptCost: bcrypt.MinCost})
 
 	p := mustLogin(t, s, u.Email, pw)
 	if _, _, err := node2.VerifySession(ctx, p.AccessToken); err != nil {
@@ -460,7 +460,7 @@ func TestRolledBackStampDoesNotSurviveABump(t *testing.T) {
 	require.NoError(t, s.sessions.Revoke(ctx, uid, tokenstore.Selection{Only: "none"}, tokenstore.Bump{From: tv, To: tv + 1}))
 	live(t, s, a.AccessToken)
 
-	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: e.authz, Owners: &fakeOwners{}, BcryptCost: bcrypt.MinCost})
+	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: e.authz, Owners: e.authz, BcryptCost: bcrypt.MinCost})
 	require.NoError(t, cli.ChangePassword(ctx, uid, "", "another-password-1"))
 	s.forgetStatus(uid)
 	ended(t, s, a.AccessToken)
@@ -558,7 +558,7 @@ func TestFailedRotationLeavesNothingBehind(t *testing.T) {
 // there (as when the cleanup after the commit fails).
 func endWithoutValkey(t *testing.T, e *env, uid int64, password string) {
 	t.Helper()
-	cli := New(Deps{DB: e.svc.db, Config: e.cfg, Authz: e.authz, Owners: &fakeOwners{}, BcryptCost: bcrypt.MinCost})
+	cli := New(Deps{DB: e.svc.db, Config: e.cfg, Authz: e.authz, Owners: e.authz, BcryptCost: bcrypt.MinCost})
 	require.NoError(t, cli.ChangePassword(context.Background(), uid, "", password))
 	e.svc.forgetStatus(uid)
 }
@@ -773,10 +773,10 @@ func TestEndedSessionsStayEndedInAnyOrder(t *testing.T) {
 	s, ctx := e.svc, context.Background()
 	root := rootID(t, s)
 	node := func() *Service {
-		return New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: e.authz, Owners: &fakeOwners{}, Bus: e.bus, BcryptCost: bcrypt.MinCost})
+		return New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: e.authz, Owners: e.authz, Bus: e.bus, BcryptCost: bcrypt.MinCost})
 	}
 	nodes := &walkNodes{t: t, ctx: ctx, s: s, other: node(), observer: node(), valkey: &outage{},
-		cli: New(Deps{DB: s.db, Config: e.cfg, Authz: e.authz, Owners: &fakeOwners{}, BcryptCost: bcrypt.MinCost}),
+		cli: New(Deps{DB: s.db, Config: e.cfg, Authz: e.authz, Owners: e.authz, BcryptCost: bcrypt.MinCost}),
 		rdb: redis.NewClient(&redis.Options{Addr: e.redis.Addr()})}
 	nodes.valkey.on(e, s)
 	nodes.valkey.on(e, nodes.other)
@@ -1174,7 +1174,7 @@ func TestEndedSessionsStayEndedConcurrently(t *testing.T) {
 	e := setupAdmin(t)
 	s, ctx := e.svc, context.Background()
 	root := rootID(t, s)
-	other := New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: e.authz, Owners: &fakeOwners{}, Bus: e.bus, BcryptCost: bcrypt.MinCost})
+	other := New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: e.authz, Owners: e.authz, Bus: e.bus, BcryptCost: bcrypt.MinCost})
 	for round := range 3 {
 		email := fmt.Sprintf("race-%d@example.com", round)
 		u, err := s.CreateUser(ctx, root, CreateUserInput{Email: email, Password: adminPassword})

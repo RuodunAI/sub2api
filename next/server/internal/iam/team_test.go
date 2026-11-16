@@ -168,7 +168,7 @@ func TestUserOwner(t *testing.T) {
 		t.Fatalf("agent creates: %d %v", code, out)
 	}
 	made := int64(out["data"].(map[string]any)["id"].(float64))
-	if c := lastCall(); !c.create || c.actor != e.agent || c.user != made || c.owner == nil || *c.owner != e.agent {
+	if c := lastCall(); !c.create || c.actor != e.agent || c.user != made || c.owner != nil {
 		t.Fatalf("CheckOwner on create: %+v", c)
 	}
 	equalIDs(t, "team with the new user", e.ids(t, e.agentTok, "/users"), e.sub, made)
@@ -194,6 +194,15 @@ func TestUserOwner(t *testing.T) {
 	var n int
 	if err := e.s.db.SQL.QueryRow(`SELECT count(*) FROM users WHERE email = 'escape@example.com'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("refused create left %d users (%v)", n, err)
+	}
+	// Naming anyone but itself is refused before the owner is looked up: a
+	// team-only creator cannot tell a user id that exists from one that
+	// does not.
+	for _, owner := range []int64{e.other, 999999} {
+		code, out := e.call(e.agentTok, "POST", "/users", map[string]any{"email": "probe@example.com", "password": adminPassword, "owner_id": owner})
+		if code != 403 || errCode(out) != "permission_denied" {
+			t.Fatalf("agent names %d: %d %v", owner, code, out)
+		}
 	}
 	for owner, code := range map[int64]string{-1: "invalid", 999999: "not_found"} {
 		_, out := e.call(e.rootTok, "POST", "/users", map[string]any{"email": "bad-owner@example.com", "password": adminPassword, "owner_id": owner})

@@ -65,10 +65,10 @@ func TestSQLUserWrites(t *testing.T) {
 	segment, owner, none := int64(3), int64(5), int64(0)
 	snap(t, map[string]func(*gorm.DB) *gorm.DB{
 		"insert": func(db *gorm.DB) *gorm.DB {
-			return read(insertUser(db, "a@example.com", "Ann", "$2a$hash", &segment, &owner))
+			return insertUser(db, 9, "a@example.com", "Ann", "$2a$hash", &segment, &owner)
 		},
 		"insert_default_segment": func(db *gorm.DB) *gorm.DB {
-			return read(insertUser(db, "a@example.com", "", "$2a$hash", nil, nil))
+			return insertUser(db, 9, "a@example.com", "", "$2a$hash", nil, nil)
 		},
 		"update_all": func(db *gorm.DB) *gorm.DB {
 			return updateUser(db, 7, userChanges(UpdateUserInput{DisplayName: &name, Status: &status}, "b@example.com", []byte("$2a$new"), &owner))

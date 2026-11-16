@@ -163,9 +163,16 @@ const Grants = `SELECT ` + grantColumns + ` FROM ` + Table + ` cr WHERE ` + gran
 // unique index.
 const GrantsOfRole = Grants + ` AND cr.v0 = ` + roleSubOfR
 
+// rolesOf is RolesOfUser but for the user's id, which closes it.
+const rolesOf = `SELECT substr(cr.v1, ` + keyStart + `) FROM ` + Table + ` cr WHERE ` + roleIs + ` AND cr.v0 = ('` + userPrefix + `' || `
+
 // RolesOfUser is a subquery of the keys of the roles the outer query's user
 // u (u.id) holds.
-const RolesOfUser = `SELECT substr(cr.v1, ` + keyStart + `) FROM ` + Table + ` cr WHERE ` + roleIs + ` AND cr.v0 = ('` + userPrefix + `' || u.id)`
+const RolesOfUser = rolesOf + `u.id)`
+
+// RolesOfOwner is RolesOfUser of the outer query's user o (o.id), the owner
+// of its u.
+const RolesOfOwner = rolesOf + `o.id)`
 
 // MembersOfRole is a subquery of the ids of the users holding the outer
 // query's role r (r.key), soft-deleted ones included.

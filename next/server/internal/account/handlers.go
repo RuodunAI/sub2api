@@ -193,14 +193,20 @@ func notFound(ctx context.Context) error {
 }
 
 // scopeOf is the accounts the caller reaches with action (core.Scope,
-// CONTRACTS §21); an error reaches none (logged). Every scoped statement
-// carries core.AccountRows() with it.
-func (s *Service) scopeOf(ctx context.Context, action perm.Key) core.DataScope {
-	scope, err := core.Scope(ctx, s.d.Authorizer, action)
+// CONTRACTS §21). A scope that cannot be read is an error (503), never no
+// accounts. Every scoped statement carries core.AccountRows() with it.
+func (s *Service) scopeOf(ctx context.Context, action perm.Key) (core.DataScope, error) {
+	return core.Scope(ctx, s.d.Authorizer, action)
+}
+
+// loadIn is loadRow of account id, unlocked, in the caller's scope of
+// action.
+func (s *Service) loadIn(ctx context.Context, id int64, action perm.Key) (*row, error) {
+	scope, err := s.scopeOf(ctx, action)
 	if err != nil {
-		slog.WarnContext(ctx, "account scope", "action", action, "err", err)
+		return nil, err
 	}
-	return scope
+	return s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
 }
 
 // inScope reports whether account id is in scope now, its groups as they
@@ -553,7 +559,11 @@ func (s *Service) list(c *gin.Context) {
 	// accounts, subordinates=true to those of the users below it (none
 	// without a team scope), owner_id=<id> and created_by=<id> to that
 	// owner's and that creator's.
-	scope := s.scopeOf(ctx, perm.AccountRead)
+	scope, err := s.scopeOf(ctx, perm.AccountRead)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	conds = append(conds, core.AccountRows().Scope(scope))
 	uid, _ := core.UserID(ctx)
 	if mine, _ := strconv.ParseBool(c.Query("mine")); mine {
@@ -728,7 +738,11 @@ func (s *Service) get(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	v, err := s.fullView(ctx, id, s.scopeOf(ctx, perm.AccountRead))
+	scope, err := s.scopeOf(ctx, perm.AccountRead)
+	var v *View
+	if err == nil {
+		v, err = s.fullView(ctx, id, scope)
+	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -1374,7 +1388,10 @@ type proxyByURL struct {
 // proxy:manage:own) or the
 // invalid_argument of core.ParseProxyURL (never echoing the address).
 func (s *Service) parseProxyURL(ctx context.Context, raw string) (*proxyByURL, error) {
-	scope := s.scopeOf(ctx, perm.ProxyManage)
+	scope, err := s.scopeOf(ctx, perm.ProxyManage)
+	if err != nil {
+		return nil, err
+	}
 	if scope.Empty() {
 		return nil, core.ErrPermissionDenied.WithDetails(map[string]any{"permission": "proxy:manage:own"})
 	}
@@ -1444,7 +1461,11 @@ func (s *Service) create(c *gin.Context) {
 			Message: t(ctx, "unknown account type (is its plugin enabled?)", "未知的账号类型（插件是否已启用？）")}))
 		return
 	}
-	scope := s.scopeOf(ctx, perm.AccountCreate)
+	scope, err := s.scopeOf(ctx, perm.AccountCreate)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	controls, err := planControls(ctx, bt.Type)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -1572,8 +1593,11 @@ func (s *Service) update(c *gin.Context) {
 		enabled := true
 		in.Schedulable = &enabled
 	}
-	scope := s.scopeOf(ctx, perm.AccountUpdate)
-	cur, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
+	scope, err := s.scopeOf(ctx, perm.AccountUpdate)
+	var cur *row
+	if err == nil {
+		cur, err = s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
+	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -1785,10 +1809,14 @@ func (s *Service) resetStatus(c *gin.Context) {
 	if !ok {
 		return
 	}
-	scope := s.scopeOf(ctx, perm.AccountUpdate)
+	scope, err := s.scopeOf(ctx, perm.AccountUpdate)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	uid, _ := core.UserID(ctx)
 	var a *row
-	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		loaded, err := s.loadRow(ctx, tx, id, scope, true)
 		if err != nil {
 			return err
@@ -1871,9 +1899,13 @@ func (s *Service) delete(c *gin.Context) {
 	if !ok {
 		return
 	}
-	scope := s.scopeOf(ctx, perm.AccountDelete)
+	scope, err := s.scopeOf(ctx, perm.AccountDelete)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	uid, _ := core.UserID(ctx)
-	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var deleted model.Account
 		res := store.G(ctx, tx).Model(&deleted).Table("accounts a").
 			Clauses(clause.Returning{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "type"}, {Name: "name"}}}).
@@ -1978,7 +2010,7 @@ func (s *Service) reveal(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountCredentialView), false)
+	a, err := s.loadIn(ctx, id, perm.AccountCredentialView)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
