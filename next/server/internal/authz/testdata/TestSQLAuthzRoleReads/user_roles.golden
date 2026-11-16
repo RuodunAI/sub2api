@@ -1,4 +1,4 @@
 -- sql
-SELECT r.id, r.key, r.superuser FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1 ORDER BY r.key
+SELECT id, key, superuser FROM roles WHERE key IN (SELECT DISTINCT substr(v1, 3) FROM casbin_rule WHERE ptype = 'g' AND v0 = ANY($1) ORDER BY 1) ORDER BY key
 -- vars
-$1 int64 7
+$1 store.Strings [u:7]

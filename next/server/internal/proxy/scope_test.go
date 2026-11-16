@@ -72,17 +72,13 @@ func TestProxyIDScope(t *testing.T) {
 		require.Equal(t, 404, code, route)
 	}
 
-	role := scalar(t, db, `INSERT INTO roles (key, name) VALUES ('keeper', '{}') RETURNING id`)
-	permID := scalar(t, db, `INSERT INTO permissions (key, module, label, source) VALUES ('proxy:manage', 'proxy', '{}', 'core')
+	scalar(t, db, `INSERT INTO roles (key, name) VALUES ('keeper', '{}') RETURNING id`)
+	scalar(t, db, `INSERT INTO permissions (key, module, label, source) VALUES ('proxy:manage', 'proxy', '{}', 'core')
 		ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key RETURNING id`)
-	_, err := db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) VALUES ($1, $2, $3), ($1, $2, $4)`,
-		role, permID, fmt.Sprintf("proxy/%d", mine), fmt.Sprintf("proxy/%d", other))
-	require.NoError(t, err)
+	testutil.Grant(t, db, "keeper", "proxy:manage", fmt.Sprintf("proxy/%d", mine), fmt.Sprintf("proxy/%d", other))
 	code, _ = do(t, engine, admin, "DELETE", fmt.Sprintf("/proxies/%d", mine), nil)
 	require.Equal(t, 204, code)
-	var left []string
-	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT array_agg(scope) FROM role_permission_scopes WHERE role_id = $1`, role).Scan(&left))
-	require.Equal(t, []string{fmt.Sprintf("proxy/%d", other)}, left)
+	require.Equal(t, []string{fmt.Sprintf("proxy:manage:proxy/%d", other)}, testutil.GrantKeys(t, db, "keeper"))
 }
 
 func ids(out map[string]any) string {

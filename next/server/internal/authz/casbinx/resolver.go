@@ -52,11 +52,6 @@ func (r *resolver) enforce(ctx context.Context, uid int64, key string, min int64
 
 func (r *resolver) Prewarm(min int64) { r.snaps.prewarm(min) }
 
-func (r *resolver) Reread(ctx context.Context, uid int64) error {
-	_, err := r.rc.Reload(ctx, uid)
-	return err
-}
-
 // Pauses between two reads of a resolution whose halves met different
 // versions (resolve): the first retry is at once, the next ones back off.
 const (

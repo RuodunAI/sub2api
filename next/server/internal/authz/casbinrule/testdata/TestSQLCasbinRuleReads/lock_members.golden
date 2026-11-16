@@ -1,0 +1,4 @@
+-- sql
+SELECT substr(v0, 3)::bigint FROM casbin_rule WHERE ptype = 'g' AND v1 = $1 ORDER BY 1 FOR UPDATE
+-- vars
+$1 string "r:super_admin"

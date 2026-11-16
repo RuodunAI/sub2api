@@ -98,9 +98,8 @@ services:
       SUB2API_PLUGIN_OFFICIAL_KEYS: ${SUB2API_PLUGIN_OFFICIAL_KEYS:-}
       SUB2API_MARKET_SOURCES: ${SUB2API_MARKET_SOURCES:-}
       SUB2API_DEV_MARKET_URL: http://market:8080/index.json
-      # Emergency pins of the run-time switches (empty = follow the
-      # setting): SUB2API_AUTHZ_ENGINE=legacy, SUB2API_SESSION_ISSUE=jwt.
-      SUB2API_AUTHZ_ENGINE: ${SUB2API_AUTHZ_ENGINE:-}
+      # Emergency pin of the run-time switch (empty = follow the setting):
+      # SUB2API_SESSION_ISSUE=jwt.
       SUB2API_SESSION_ISSUE: ${SUB2API_SESSION_ISSUE:-}
     volumes:
       - appdata:/var/lib/sub2api

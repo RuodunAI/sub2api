@@ -1,0 +1,10 @@
+-- sql
+SELECT concat_ws(' ', cr.ptype, cr.v0, cr.v1, NULLIF(cr.v2, '')) FROM casbin_rule cr
+WHERE (cr.ptype = 'p' AND (
+        NOT EXISTS (SELECT 1 FROM roles r WHERE ('r:' || r.key) = cr.v0)
+        OR (cr.v1 <> '*' AND NOT EXISTS (SELECT 1 FROM permissions p WHERE p.key = cr.v1))))
+   OR (cr.ptype = 'g' AND (
+        NOT EXISTS (SELECT 1 FROM users u WHERE ('u:' || u.id) = cr.v0)
+        OR NOT EXISTS (SELECT 1 FROM roles r WHERE ('r:' || r.key) = cr.v1)))
+ORDER BY 1
+-- vars

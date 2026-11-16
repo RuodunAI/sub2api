@@ -1,8 +1,8 @@
 -- sql
 WITH cleared AS (
-    DELETE FROM role_permission_scopes rs USING permissions p
-    WHERE p.id = rs.permission_id AND rs.scope ~ ANY($1)
-    RETURNING rs.role_id, p.key || ':' || rs.scope AS key
+    DELETE FROM casbin_rule cr USING roles r
+    WHERE cr.ptype = 'p' AND cr.v2 ~ ANY($1) AND r.key = substr(cr.v0, 3)
+    RETURNING r.id AS role_id, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
 ), audited AS (
     INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
     SELECT $2, 'authz.scope.clear', 'role', role_id::text,

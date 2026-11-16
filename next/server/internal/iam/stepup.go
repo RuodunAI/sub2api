@@ -74,7 +74,6 @@ var stepUpScopes = map[string]bool{
 	core.StepUpPluginGrant:        false,
 	core.StepUpPublisherManage:    false,
 	core.StepUpSystemUpdate:       false,
-	core.StepUpAuthzEngine:        false,
 	core.StepUpSessionIssue:       false,
 	core.StepUpHostInstall:        false,
 	core.StepUpAccessKeyWrite:     false,

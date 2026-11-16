@@ -3,16 +3,16 @@
 package model
 
 // CasbinRule is a row of table casbin_rule.
-// Casbin policy (gorm-adapter layout): the projection of the role tables, kept by the migration 0100 triggers; the core only reads it
+// Casbin policy (gorm-adapter layout): p = a role's grants (scope * every row; action * a superuser role), g = a user's roles. Written by internal/authz/casbinrule only
 type CasbinRule struct {
 	ID    int64  `gorm:"column:id;primaryKey;default:(-)"` // bigint default nextval('casbin_rule_id_seq'::regclass)
-	Ptype string `gorm:"column:ptype;default:(-)"`         // character varying(100) default ''::character varying
-	V0    string `gorm:"column:v0;default:(-)"`            // character varying(100) default ''::character varying
+	Ptype string `gorm:"column:ptype;default:(-)"`         // character varying(1) default ''::character varying
+	V0    string `gorm:"column:v0;default:(-)"`            // character varying(52) default ''::character varying
 	V1    string `gorm:"column:v1;default:(-)"`            // character varying(150) default ''::character varying
 	V2    string `gorm:"column:v2;default:(-)"`            // character varying(200) default ''::character varying
-	V3    string `gorm:"column:v3;default:(-)"`            // character varying(100) default ''::character varying
-	V4    string `gorm:"column:v4;default:(-)"`            // character varying(100) default ''::character varying
-	V5    string `gorm:"column:v5;default:(-)"`            // character varying(100) default ''::character varying
+	V3    string `gorm:"column:v3;default:(-)"`            // character varying(1) default ''::character varying
+	V4    string `gorm:"column:v4;default:(-)"`            // character varying(1) default ''::character varying
+	V5    string `gorm:"column:v5;default:(-)"`            // character varying(1) default ''::character varying
 }
 
 // TableName implements gorm's schema.Tabler.

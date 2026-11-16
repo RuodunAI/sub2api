@@ -1,9 +1,0 @@
--- sql
-DELETE FROM role_permissions rp USING permissions p
-WHERE rp.role_id = $1 AND p.id = rp.permission_id AND p.status <> 'staged' AND (NOT $2::bool OR (p.source = 'core' AND p.status <> 'removed')) AND ($3::text = '' OR p.plugin_key = $4::text) AND rp.permission_id <> ALL($5)
--- vars
-$1 int64 3
-$2 bool false
-$3 string ""
-$4 string ""
-$5 store.Int64s [11 12]

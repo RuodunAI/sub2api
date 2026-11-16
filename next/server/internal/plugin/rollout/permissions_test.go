@@ -8,7 +8,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
@@ -23,7 +22,7 @@ import (
 func TestPermissionCatalogFollowsRollouts(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	az := authz.New(authz.Deps{DB: h.db, Shadow: authztest.Shadow()})
+	az := authz.New(authz.Deps{DB: h.db})
 	if err := az.SyncCore(ctx); err != nil {
 		t.Fatal(err)
 	}

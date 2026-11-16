@@ -478,17 +478,13 @@ func Source() *blobs.Source {
 // sourceDir is the directory of Source, once made.
 var sourceDir string
 
-// Run runs a package's tests (m.Run) and then removes Source's directory,
-// about 125 MB that each test process would otherwise leave in the
-// temporary directory; it returns m.Run's code (for testutil.Exit, which
-// this package may not import: it is no test file).
-func Run(m *testing.M) int {
+// Main runs a package's tests (TestMain) and then removes Source's
+// directory, about 125 MB that each test process would otherwise leave in
+// the temporary directory.
+func Main(m *testing.M) {
 	code := m.Run()
 	if sourceDir != "" {
 		_ = os.RemoveAll(sourceDir)
 	}
-	return code
+	os.Exit(code)
 }
-
-// Main is a TestMain that only runs the tests (Run).
-func Main(m *testing.M) { os.Exit(Run(m)) }

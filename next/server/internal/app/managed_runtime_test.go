@@ -21,6 +21,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -35,9 +36,20 @@ func TestManagedRuntimeMigrationDoesNotBootstrap(t *testing.T) {
 	testManagedRuntime(t, true)
 }
 
+// managedRuntimeDB is a migrated database; through 0099 when the run
+// replays migrations: 0100 drops the role tables the migrations before it
+// write, so they replay on the schema before it (0100 then runs for the
+// first time).
+func managedRuntimeDB(t *testing.T, migrate bool) *store.DB {
+	if migrate {
+		return testutil.DBThrough(t, "0099_plugin_permission_meta.sql")
+	}
+	return testutil.DB(t)
+}
+
 func testManagedRuntime(t *testing.T, migrate bool) {
 	t.Helper()
-	db := testutil.DB(t)
+	db := managedRuntimeDB(t, migrate)
 	mr := miniredis.RunT(t)
 	dir, err := os.MkdirTemp("", "s2core-")
 	if err != nil {
@@ -200,7 +212,7 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 	}
 	// Every module registered its cluster tasks (TASK-FRAMEWORK-DESIGN §14.1).
 	wantTasks := []string{"core.account.automatic_recovery", "core.account.credential_refresh", "core.account.lifecycle_status", "core.account.preparation_cleanup", "core.account.usage_limits",
-		"core.audit.plugin_writes_purge", "core.authz.casbin_drift", "core.ccgateway.draft_sweep", "core.ccgateway.park_runtimes", "core.ccgateway.runtime_sync", "core.egress.logs_prune",
+		"core.audit.plugin_writes_purge", "core.ccgateway.draft_sweep", "core.ccgateway.park_runtimes", "core.ccgateway.runtime_sync", "core.egress.logs_prune",
 		"core.events.retention", "core.helper.payload_expiry", "core.helper.usage_replay", "core.jobs.retention", "core.notify.purge", "core.task.housekeeping", "core.usage.reconcile", "core.usage.rollup"}
 	var gotTasks []string
 	if err = db.SQL.QueryRowContext(ctx, `SELECT coalesce(array_agg(name ORDER BY name), '{}') FROM scheduled_tasks WHERE source = 'core'`).Scan(&gotTasks); err != nil || !slices.Equal(gotTasks, wantTasks) {

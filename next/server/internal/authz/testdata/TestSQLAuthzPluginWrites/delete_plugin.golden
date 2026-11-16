@@ -1,4 +1,0 @@
--- sql
-DELETE FROM "permissions" WHERE plugin_key = $1
--- vars
-$1 string "demo"

@@ -1,0 +1,11 @@
+-- sql
+WITH want AS (SELECT ('r:' || key)::text AS v0 FROM roles WHERE superuser),
+gone AS (
+    DELETE FROM casbin_rule WHERE ptype = 'p' AND v1 = '*' AND v0 NOT IN (SELECT v0 FROM want)
+    RETURNING 1),
+added AS (
+    INSERT INTO casbin_rule (ptype, v0, v1, v2) SELECT 'p', v0, '*', '*' FROM want
+    ON CONFLICT (ptype, v0, v1, v2, v3, v4, v5) DO NOTHING
+    RETURNING 1)
+SELECT (SELECT count(*) FROM gone) + (SELECT count(*) FROM added)
+-- vars

@@ -1,5 +1,5 @@
 -- sql
-SELECT COALESCE(array_agg(DISTINCT rs.scope), '{}') FROM role_permission_scopes rs
-JOIN permissions p ON p.id = rs.permission_id WHERE p.key = $1
+SELECT COALESCE(array_agg(DISTINCT g.scope), '{}') FROM (SELECT substr(cr.v0, 3) AS role, cr.v1 AS action, CASE cr.v2 WHEN '*' THEN '' ELSE cr.v2 END AS scope, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
+FROM casbin_rule cr WHERE cr.ptype = 'p' AND cr.v1 <> '*') g WHERE g.action = $1 AND g.scope <> ''
 -- vars
 $1 string "plugin:demo:read"

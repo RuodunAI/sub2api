@@ -14,20 +14,31 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// rolePermissionKeys is every grant row of a role, removed permissions
-// included, sorted.
+// rolePermissionKeys is every grant of a role for every row, removed
+// permissions included, sorted.
 func rolePermissionKeys(t *testing.T, s *Service, id int64) []string {
 	t.Helper()
-	var keys []string
-	if err := s.db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(array_agg(p.key ORDER BY p.key), '{}')
-FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1`, id).Scan(&keys); err != nil {
+	plain, _ := grantRows(t, s, id)
+	return plain
+}
+
+// grantRows are the grants of the role id as stored, removed permissions
+// included: plain those for every row, scoped the others, each sorted by
+// canonical key.
+func grantRows(t *testing.T, s *Service, id int64) (plain, scoped []string) {
+	t.Helper()
+	err := s.db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(array_agg(key ORDER BY key) FILTER (WHERE scope = ''), '{}'),
+    COALESCE(array_agg(key ORDER BY key) FILTER (WHERE scope <> ''), '{}')
+FROM (`+casbinrule.GrantsOf("(SELECT key FROM roles WHERE id = $1)")+`) g`, id).Scan(&plain, &scoped)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return keys
+	return plain, scoped
 }
 
 // Nobody, the super admin and the system included, changes the super admin

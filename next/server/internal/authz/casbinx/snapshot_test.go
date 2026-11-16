@@ -189,8 +189,8 @@ func TestPluginScopesViaCasbin(t *testing.T) {
 	}
 }
 
-// The shadow comparison, offline: random roles over the vector keys and
-// random users. For every key Enforce must answer as the set built
+// Equivalence with core's sets, offline: random roles over the vector keys
+// and random users. For every key Enforce must answer as the set built
 // directly from the user's roles (core's PermissionSet.Has), and Grants
 // must hold the same keys and superuser flag.
 func TestShadowEquivalenceRandom(t *testing.T) {
@@ -258,7 +258,7 @@ func TestShadowEquivalenceRandom(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("%d shadow comparisons, 0 mismatches", checks)
+	t.Logf("%d comparisons, 0 mismatches", checks)
 }
 
 // A user's links are the roles each call brings (read by RoleCache at the

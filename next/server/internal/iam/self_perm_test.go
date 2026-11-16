@@ -6,14 +6,14 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // The self permissions: every signed-in user holds them, roles or not; an
 // access key holds them only when chosen; the role editor does not list them.
 func TestSelfPermissions(t *testing.T) {
 	t.Parallel()
-	k := newKeyEnv(t, authztest.AcceptStaleCache) // disables a user with a raw UPDATE
+	k := newKeyEnv(t)
 	ctx := context.Background()
 	set, err := k.authz.PermissionSet(ctx, k.userID)
 	if err != nil {
@@ -25,9 +25,7 @@ func TestSelfPermissions(t *testing.T) {
 		}
 	}
 	roleless := mustCreateUser(t, k.s, "roleless@example.com")
-	if _, err := k.s.db.SQL.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = $1`, roleless); err != nil {
-		t.Fatal(err)
-	}
+	testutil.UnassignRoles(t, k.s.db, roleless)
 	k.bump(t)
 	if set, err := k.authz.PermissionSet(ctx, roleless); err != nil || !set.Has("self:profile") {
 		t.Fatalf("a user without roles: %v %v", set.Keys, err)

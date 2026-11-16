@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // A group-range administrator (CONTRACTS §21.0) reaches the accounts bound
@@ -135,16 +137,15 @@ func TestDeleteClearsScopedGrants(t *testing.T) {
 	g := e.exec1(`INSERT INTO groups (name) VALUES ('g') RETURNING id`)
 	acc := int64(e.createAs(e.uid, "a", map[string]any{"group_ids": []int64{g}})["id"].(float64))
 	role := e.exec1(`INSERT INTO roles (key, name) VALUES ('mgr', '{}') RETURNING id`)
-	perm := e.exec1(`INSERT INTO permissions (key, module, label, source) VALUES ('account:read', 'account', '{}', 'core')
+	e.exec1(`INSERT INTO permissions (key, module, label, source) VALUES ('account:read', 'account', '{}', 'core')
 		ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key RETURNING id`)
 	keep := fmt.Sprintf("account/%d1", acc) // another id with the same prefix
-	for _, sc := range []string{fmt.Sprintf("account/%d", acc), fmt.Sprintf("group/%d/account/%d", g, acc), fmt.Sprintf("group/%d", g), keep, "own"} {
-		_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) VALUES ($1, $2, $3)`, role, perm, sc)
-		require.NoError(t, err)
-	}
+	testutil.Grant(t, e.db, "mgr", "account:read", fmt.Sprintf("account/%d", acc), fmt.Sprintf("group/%d/account/%d", g, acc), fmt.Sprintf("group/%d", g), keep, "own")
 	scopes := func() []string {
 		var out []string
-		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT array_agg(scope ORDER BY scope) FROM role_permission_scopes WHERE role_id = $1`, role).Scan(&out))
+		for _, k := range testutil.GrantKeys(t, e.db, "mgr") {
+			out = append(out, strings.TrimPrefix(k, "account:read:"))
+		}
 		return out
 	}
 	version := func() (v int64) {

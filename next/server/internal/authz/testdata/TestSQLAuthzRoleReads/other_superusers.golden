@@ -1,6 +1,6 @@
 -- sql
-SELECT count(DISTINCT u.id) FROM users u
-        JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
-        WHERE r.superuser AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> $1
+SELECT count(DISTINCT u.id) FROM roles r, users u
+        WHERE r.superuser AND u.id IN (SELECT substr(cr.v0, 3)::bigint FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v1 = ('r:' || r.key))
+          AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> $1
 -- vars
 $1 int64 7

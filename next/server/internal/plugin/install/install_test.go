@@ -13,7 +13,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
@@ -103,18 +103,15 @@ func (f *fakePerms) PluginGrantees(ctx context.Context, tx *gorm.DB, actorID int
 func (f *fakePerms) GrantPluginPermission(_ context.Context, tx *gorm.DB, key string, grants map[string][]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var rec, roles, scopes []string
+	var rec []string
+	var add []casbinrule.Grant
 	for _, role := range grantRoleKeys(grants) {
 		for _, sc := range grants[role] {
-			rec, roles, scopes = append(rec, strings.TrimSuffix(role+":"+sc, ":")), append(roles, role), append(scopes, sc)
+			rec, add = append(rec, strings.TrimSuffix(role+":"+sc, ":")), append(add, casbinrule.Grant{Role: role, Action: key, Suffix: sc})
 		}
 	}
 	f.granted = append(f.granted, key+"="+strings.Join(rec, ","))
-	_, err := store.SQLTx(tx).ExecContext(context.Background(), `
-WITH g AS (SELECT r.id AS role_id, p.id AS permission_id, t.scope FROM unnest($1::text[], $2::text[]) t(role, scope)
-    JOIN roles r ON r.key = t.role JOIN permissions p ON p.key = $3),
-ins AS (INSERT INTO role_permissions (role_id, permission_id) SELECT role_id, permission_id FROM g WHERE scope = '' ON CONFLICT DO NOTHING)
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT * FROM g WHERE scope <> '' ON CONFLICT DO NOTHING`, roles, scopes, key)
+	_, err := casbinrule.AddGrants(tx, add, gorm.Expr("true"))
 	return err
 }
 func (f *fakePerms) SetPluginActive(context.Context, *gorm.DB, string, bool) error { return nil }
@@ -201,7 +198,7 @@ func newEnv(t *testing.T) *env {
 	t.Helper()
 	db := testutil.DB(t)
 	ctx := context.Background()
-	e := &env{db: db, perms: &fakePerms{reader: authz.New(authz.Deps{DB: db, Shadow: authztest.Shadow()})}, schemas: &fakeSchemas{},
+	e := &env{db: db, perms: &fakePerms{reader: authz.New(authz.Deps{DB: db})}, schemas: &fakeSchemas{},
 		accounts: &fakeAccounts{}, root: pkgtest.NewKey("root-1")}
 	e.rollout = &fakeRollout{db: db}
 	// The built-in roles a consent may name (the authz sync is not run).
@@ -564,6 +561,11 @@ func TestRejectAndCommunityTrust(t *testing.T) {
 	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugins WHERE key = 'acme_tool'`).Scan(&n)
 	if n != 0 {
 		t.Fatal("rejected new plugin should be removed")
+	}
+	// Its permissions go first, with their grants: the plugin row's foreign
+	// key cascades to permissions, not to casbin_rule.
+	if !slices.Contains(e.perms.deleted, "acme_tool") {
+		t.Fatalf("rejecting the plugin left its permissions to the cascade: deleted %v", e.perms.deleted)
 	}
 	// Market pinning.
 	if _, err := e.svc.Upload(ctx, pkgtest.Build(mini, k), e.admin, UploadOptions{ExpectKey: "other"}); core.AsError(err).Code != "invalid_argument" {

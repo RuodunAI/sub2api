@@ -7,12 +7,13 @@ import (
 	gormadapter "github.com/casbin/gorm-adapter/v3"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-// table is the policy table, created by migration 0100 with wider v1 and v2
-// than gorm-adapter's own struct declares.
-const table = "casbin_rule"
+// table is the policy table, whose columns migration 0100 sizes to what
+// they hold rather than to gorm-adapter's own struct.
+const table = casbinrule.Table
 
 // pgLoader reads the policy from PostgreSQL, each read in one read-only
 // repeatable-read transaction of store.DB.TxOptions.
@@ -22,7 +23,7 @@ type pgLoader struct{ db *store.DB }
 func NewLoader(db *store.DB) Loader { return &pgLoader{db: db} }
 
 // Policy reads the authz version, the active actions and the p rows in one
-// snapshot, as authz's readSnapshot reads the legacy tables.
+// snapshot.
 func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 	var p Policy
 	err := l.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
@@ -51,7 +52,7 @@ func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 // loadPolicyRows reads the p rows through gorm-adapter, bound to tx and
 // used for this one read only:
 //   - TurnOffAutoMigrate first: otherwise the constructor AutoMigrates the
-//     table to the adapter's struct, which would narrow v1 and v2 back to
+//     table to the adapter's struct, which would retype every column to
 //     varchar(100) (and needs DDL rights);
 //   - NewAdapterByDBUseTableName then only scopes a session of tx to the
 //     table (no connection, transaction or finalizer of its own);
@@ -88,9 +89,9 @@ func loadPolicyRows(tx *gorm.DB) ([]Rule, error) {
 }
 
 // UserRoles reads uid's role subjects (its g rows) and whether it is
-// active (not deleted, status active: as the legacy loader's userGrantsSQL
-// counts users), at the version of the same snapshot. An inactive user's
-// roles are not read: it holds nothing.
+// active (not deleted, status active), at the version of the same
+// snapshot. An inactive user's roles are not read: it holds nothing, even
+// while its g rows stay (a disabled user's, a soft-deleted user's).
 func (l *pgLoader) UserRoles(ctx context.Context, uid int64) (UserRoles, error) {
 	var ur UserRoles
 	err := l.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
@@ -106,7 +107,8 @@ func (l *pgLoader) UserRoles(ctx context.Context, uid int64) (UserRoles, error) 
 		if !ur.Active {
 			return nil
 		}
-		return q.Table(table).Where("ptype = 'g' AND v0 = ?", UserSub(uid)).Order("v1").Pluck("v1", &ur.Roles).Error
+		ur.Roles, err = casbinrule.UserRoleSubs(q, uid)
+		return err
 	})
 	if err != nil {
 		return UserRoles{}, fmt.Errorf("casbinx: read the roles of user %d: %w", uid, err)

@@ -1,0 +1,8 @@
+-- sql
+DELETE FROM casbin_rule cr USING roles r
+WHERE cr.ptype = $1 AND cr.v1 = $2 AND cr.v2 = ANY($3) AND r.key = substr(cr.v0, 3)
+RETURNING r.id AS role_id, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
+-- vars
+$1 string "p"
+$2 string "plugin:demo:read"
+$3 store.Strings [own]

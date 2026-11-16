@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -258,9 +259,8 @@ WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL A
 			}
 		}
 	}
-	var held bool
-	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1 AND p.key = 'role:probe')`, custom).Scan(&held); err != nil || held {
-		t.Fatalf("a custom role got a new core permission: %v, %v", held, err)
+	if held := rolePermissionKeys(t, s, custom); slices.Contains(held, "role:probe") {
+		t.Fatalf("a custom role got a new core permission: %v", held)
 	}
 
 	mods, err := s.ListPermissions(ctx)
@@ -280,8 +280,8 @@ WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL A
 
 // A custom role holding a built-in role key stops the sync (decision D5): it
 // is neither turned into the built-in role nor skipped, and the error names
-// the row and how to rename it. Once renamed, the sync creates the built-in
-// role. The first sync runs before the service starts here, as on an upgrade
+// the row and how to rename it, with its grants and holders (casbin_rule
+// names a role by key). Once renamed, the sync creates the built-in role. The first sync runs before the service starts here, as on an upgrade
 // that brings the supplier role to a database with a custom one of that key.
 func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	t.Parallel()
@@ -291,7 +291,13 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}')`, key); err != nil {
 		t.Fatal(err)
 	}
-	s := New(Deps{DB: db, Shadow: testShadow})
+	holder := testutil.InsertUser(t, db, "holder@x.com")
+	testutil.AssignRoles(t, db, holder, key)
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO permissions (key, module, label, source) VALUES ('probe:read', 'probe', '{}', 'core')`); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Grant(t, db, key, "probe:read", "own")
+	s := New(Deps{DB: db})
 	id := roleID(t, s, key)
 	v1, err := s.currentVersion(ctx)
 	if err != nil {
@@ -299,7 +305,7 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	}
 
 	err = s.Start(ctx)
-	fix := fmt.Sprintf("UPDATE roles SET key = 'supplier_custom' WHERE id = %d;", id)
+	fix := casbinrule.RenameRoleSQL(id, key, "supplier_custom")
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("role id %d key %q", id, key)) || !strings.Contains(err.Error(), fix) {
 		t.Fatalf("start with a custom role on a built-in key: %v", err)
 	}
@@ -323,6 +329,12 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	}
 	if err := db.SQL.QueryRowContext(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
 		t.Fatalf("renamed custom role: built-in %v, %v", builtin, err)
+	}
+	if got := testutil.GrantKeys(t, db, "supplier_custom"); !slices.Equal(got, []string{"probe:read:own"}) {
+		t.Fatalf("renamed role's grants: %v", got)
+	}
+	if got := testutil.RoleKeys(t, db, holder); !slices.Equal(got, []string{"supplier_custom"}) {
+		t.Fatalf("renamed role's holder: %v", got)
 	}
 }
 

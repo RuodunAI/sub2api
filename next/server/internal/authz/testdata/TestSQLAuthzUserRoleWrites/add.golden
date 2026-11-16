@@ -1,5 +1,0 @@
--- sql
-INSERT INTO user_roles (user_id, role_id) SELECT $1, unnest($2::bigint[]) ON CONFLICT DO NOTHING
--- vars
-$1 int64 7
-$2 store.Int64s [2 3]

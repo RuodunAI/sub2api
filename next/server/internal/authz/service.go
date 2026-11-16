@@ -1,17 +1,19 @@
 // Package authz implements RBAC: the permission catalog (core and plugin
 // permissions), built-in roles, role management, the cached core.Authorizer,
-// core.PermissionCatalog for the plugin runtime and the console menu.
+// core.PermissionCatalog for the plugin runtime and the console menu. Who
+// holds which grant is casbin_rule (CONTRACTS §99), read and written through
+// package casbinrule; effective permission sets come from casbinx.
 package authz
 
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -33,9 +35,6 @@ type Deps struct {
 	// Redis is the second level of the Casbin user-role cache, shared by the
 	// nodes; nil keeps it in the process only.
 	Redis redis.UniversalClient
-	// Shadow tunes the shadow comparison of the legacy loader and Casbin;
-	// the zero value is production's (tests: authz/authztest.Shadow).
-	Shadow ShadowOptions
 }
 
 // Service is the authz module. It implements core.Authorizer and
@@ -55,14 +54,9 @@ type Service struct {
 	// menuKeys are the permissions of each core menu item (BindMenuRoutes).
 	menuKeys map[string][]string
 
-	// casbin resolves permission sets with Casbin (nil without a database);
-	// engine says whether it answers (authz.engine; replaced under mu),
-	// engineEnv that EngineEnv pinned it; shadow compares it with the
-	// legacy loader.
-	casbin    casbinx.Resolver
-	engine    atomic.Pointer[engineState]
-	engineEnv bool
-	shadow    *shadow
+	// casbin resolves permission sets (nil without a database: tests that
+	// seed users and are answered from it).
+	casbin casbinx.Resolver
 }
 
 type permMeta struct {
@@ -85,19 +79,11 @@ func New(d Deps) *Service {
 	if d.PollInterval <= 0 {
 		d.PollInterval = 30 * time.Second
 	}
-	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, users: map[int64]core.PermissionSet{}, shadow: newShadow(d.Shadow)}
+	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, users: map[int64]core.PermissionSet{}}
 	if d.DB != nil {
 		loader := casbinx.NewLoader(d.DB)
 		s.casbin = casbinx.NewResolver(loader, casbinx.NewRoleCache(loader, d.Redis), SelfPermissionKeys())
 	}
-	e := engineState{mode: EngineShadow}
-	if env, ok := envEngine(); ok {
-		e.mode, s.engineEnv = env, true
-	}
-	if s.casbin == nil {
-		e.mode = EngineLegacy // no database: no Casbin side, nothing to switch
-	}
-	s.engine.Store(&e)
 	return s
 }
 
@@ -110,7 +96,6 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	// Version answers from the first request on, not from the first change.
 	s.refreshVersion(ctx)
-	s.refreshEngine(ctx)
 	s.prewarm(s.Version())
 	if s.bus == nil {
 		return nil
@@ -122,7 +107,7 @@ func (s *Service) Start(ctx context.Context) error {
 			return
 		}
 		s.invalidate(v)
-	}), s.bus.Subscribe(core.ChannelConfigChanged, s.onConfigChanged)}
+	})}
 	if r, ok := s.bus.(core.BusReconnects); ok {
 		// Broadcasts sent while disconnected are lost: read the version again
 		// (off the bus goroutine, which must not block).
@@ -142,10 +127,9 @@ func (s *Service) Start(ctx context.Context) error {
 const VersionPollTask = "core.authz.version_poll"
 
 // RegisterTasks registers the version poll (every PollInterval, on every
-// node from start; it also reads authz.engine again, in case its
-// config:changed was missed) and the Casbin drift check (CasbinDriftTask).
+// node from start).
 func (s *Service) RegisterTasks(tasks core.Tasks) error {
-	err := tasks.Register(core.TaskSpec{
+	return tasks.Register(core.TaskSpec{
 		Name:  VersionPollTask,
 		Title: core.LocalizedText{"en": "Refresh the permission version", "zh": "刷新权限版本"},
 		Description: core.LocalizedText{
@@ -161,14 +145,9 @@ func (s *Service) RegisterTasks(tasks core.Tasks) error {
 				return core.TaskResult{}, err
 			}
 			s.invalidate(v)
-			s.refreshEngine(ctx)
 			return core.TaskResult{}, nil
 		},
 	})
-	if err != nil {
-		return err
-	}
-	return tasks.Register(s.casbinDriftSpec())
 }
 
 // OnChange registers fn to run (asynchronously) whenever the authz version
@@ -316,11 +295,11 @@ func (s *Service) invalidate(version int64) {
 	s.prewarm(version)
 }
 
-// prewarm has Casbin build the snapshot of version off the request, when it
-// takes part (shadow or casbin): the first requests after a change then
-// find it built instead of waiting for it, or failing past its timeout.
+// prewarm has Casbin build the snapshot of version off the request: the
+// first requests after a change then find it built instead of waiting for
+// it, or failing past its timeout.
 func (s *Service) prewarm(version int64) {
-	if s.EngineMode() != EngineLegacy {
+	if s.casbin != nil {
 		s.casbin.Prewarm(version)
 	}
 }
@@ -332,7 +311,6 @@ func (s *Service) Can(ctx context.Context, userID int64, permission string) (boo
 	if err != nil {
 		return false, err
 	}
-	s.sampleEnforce(userID, permission)
 	return set.Has(permission), nil
 }
 
@@ -353,19 +331,16 @@ func (s *Service) userPermissionSet(ctx context.Context, userID int64) (core.Per
 	s.mu.RLock()
 	set, ok := s.users[userID]
 	min := s.minVersion
-	eng := s.engine.Load()
 	s.mu.RUnlock()
 	if ok && set.Version >= min {
 		return set, nil
 	}
-	set, err := s.loadPermissionSet(ctx, eng.mode, userID)
+	set, err := s.loadPermissionSet(ctx, userID)
 	if err != nil {
 		return core.PermissionSet{}, err
 	}
 	s.mu.Lock()
-	// Not when the engine switched meanwhile: the set is the answer of the
-	// engine left (engineState).
-	if set.Version >= s.minVersion && s.engine.Load().gen == eng.gen {
+	if set.Version >= s.minVersion {
 		s.users[userID] = set
 	}
 	s.mu.Unlock()
@@ -388,78 +363,19 @@ func (s *Service) readSnapshot(ctx context.Context, fn func(tx *gorm.DB) error) 
 	return v, nil
 }
 
-// loadPermissionSet resolves userID's set with engine (authz.engine,
-// CONTRACTS §99): legacy alone; legacy answering, Casbin compared beside
-// it off the request (shadow); or Casbin answering, failing closed, with
-// the legacy loader recomputing a sample off the request (casbin).
-func (s *Service) loadPermissionSet(ctx context.Context, engine EngineMode, userID int64) (core.PermissionSet, error) {
-	switch engine {
-	case EngineCasbin:
-		set, err := s.casbin.Grants(ctx, userID, s.Version())
-		if err == nil {
-			s.sampleLegacy(userID, set)
-		}
-		return set, err
-	case EngineShadow:
-		set, err := s.legacyPermissionSet(ctx, userID)
-		if err == nil {
-			s.shadowCompare(userID, set)
-		}
-		return set, err
+// errNoResolver is the answer of a service without a database for a user
+// its tests did not seed.
+var errNoResolver = errors.New("authz: no database to resolve permissions with")
+
+// loadPermissionSet resolves userID's set with Casbin at this node's version
+// or newer: the snapshot of the policy and the user's roles, both read at
+// the set's version, failing closed (casbinx.ErrSkew, a snapshot not had in
+// time) rather than answering from either alone.
+func (s *Service) loadPermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
+	if s.casbin == nil {
+		return core.PermissionSet{}, errNoResolver
 	}
-	return s.legacyPermissionSet(ctx, userID)
-}
-
-// legacyPermissionSet reads userID's set from the role tables in one
-// read-only snapshot.
-func (s *Service) legacyPermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
-	set := core.PermissionSet{Keys: map[string]struct{}{}}
-	v, err := s.readSnapshot(ctx, func(tx *gorm.DB) error {
-		// One row at least for an active user, roles or not: a signed-in
-		// user holds the self permissions (withSelf).
-		active := false
-		var su bool
-		var key sql.NullString
-		if err := store.EachRow(userGrants(store.G(ctx, tx), userID), func(rows *sql.Rows) error {
-			if err := rows.Scan(&su, &key); err != nil {
-				return err
-			}
-			active = true
-			if su {
-				set.Superuser = true
-			}
-			if key.Valid {
-				set.Add(key.String)
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-		if active {
-			set = withSelf(set)
-		}
-		return nil
-	})
-	if err != nil {
-		return core.PermissionSet{}, err
-	}
-	set.Version = v
-	return set, nil
-}
-
-// userGrantsSQL selects a row for each grant of each role of an active
-// user (canonical keys of active permissions) with whether the role is a
-// superuser one: one row of NULLs, superuser false, for a user without
-// roles, none for a user who is not active.
-var userGrantsSQL = `
-SELECT COALESCE(r.superuser, false), g.key
-FROM users u
-LEFT JOIN user_roles ur ON ur.user_id = u.id
-LEFT JOIN roles r ON r.id = ur.role_id` + roleGrantsJoin(`p.status = 'active'`) + `
-WHERE u.id = ? AND u.deleted_at IS NULL AND u.status = 'active'`
-
-func userGrants(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Raw(userGrantsSQL, userID)
+	return s.casbin.Grants(ctx, userID, s.Version())
 }
 
 // RolesPermissions returns the union of all permissions granted by the given

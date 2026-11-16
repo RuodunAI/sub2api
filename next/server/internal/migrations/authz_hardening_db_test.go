@@ -2,15 +2,17 @@ package migrations_test
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -51,6 +53,25 @@ func (h *hardeningDB) text(sql string, args ...any) (v string) {
 
 func (h *hardeningDB) migrate() error {
 	_, err := store.Migrate(h.ctx, h.db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+	return err
+}
+
+// migrateThrough applies the core migrations up to last and no further:
+// the release whose rollback script a test runs (0100 has none: its way
+// back is a backup).
+func (h *hardeningDB) migrateThrough(last string) error {
+	h.t.Helper()
+	upTo := fstest.MapFS{}
+	names, err := fs.Glob(migrations.FS, "*.sql")
+	require.NoError(h.t, err)
+	for _, n := range names {
+		if n <= last {
+			b, err := fs.ReadFile(migrations.FS, n)
+			require.NoError(h.t, err)
+			upTo[n] = &fstest.MapFile{Data: b}
+		}
+	}
+	_, err = store.Migrate(h.ctx, h.db, upTo, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 	return err
 }
 
@@ -96,9 +117,12 @@ SELECT u.id, u.email, md5(u.email), '0000', k.perms FROM users u JOIN (VALUES
 }
 
 // grants lists "<role> <grant>" for every grant (scoped ones as
-// <action>:<scope>), sorted.
+// <action>:<scope>), sorted: from casbin_rule once 0100 made it the store.
 func (h *hardeningDB) grants() string {
 	h.t.Helper()
+	if h.text(`SELECT (to_regclass('casbin_rule') IS NOT NULL)::text`) == "true" {
+		return h.text(`SELECT COALESCE(string_agg(role || ' ' || key, ', ' ORDER BY role || ' ' || key), '') FROM (` + casbinrule.Grants + `) g`)
+	}
 	scoped := ""
 	if h.text(`SELECT (to_regclass('role_permission_scopes') IS NOT NULL)::text`) == "true" {
 		scoped = `UNION ALL SELECT r.key || ' ' || p.key || ':' || rs.scope FROM role_permission_scopes rs
@@ -175,7 +199,7 @@ func (h *hardeningDB) down(name string) error {
 
 func (h *hardeningDB) syncCore() {
 	h.t.Helper()
-	require.NoError(h.t, authz.New(authz.Deps{DB: h.db, Shadow: authztest.Shadow()}).SyncCore(h.ctx))
+	require.NoError(h.t, authz.New(authz.Deps{DB: h.db}).SyncCore(h.ctx))
 }
 
 // The migration on a 0.1.285 database writes the final state: former
@@ -193,7 +217,7 @@ func (h *hardeningDB) syncCore() {
 func TestAuthzHardeningMigration(t *testing.T) {
 	h := newHardeningDB(t)
 	version := h.text(`SELECT version::text FROM authz_meta`)
-	require.NoError(t, h.migrate())
+	require.NoError(t, h.migrateThrough(beforeCasbin))
 
 	require.Equal(t, "", h.text(`SELECT COALESCE(string_agg(key, ','), '') FROM permissions WHERE key LIKE '%:own:%' OR key = 'role:manage'`))
 	require.Equal(t, "seller account:credential:view:own, seller account:read:own, seller account:update:own, seller proxy:manage:own", h.roleGrants("seller"))
@@ -210,7 +234,7 @@ func TestAuthzHardeningMigration(t *testing.T) {
 	require.Equal(t, "delegator=true:operator,user", h.assignable(), "built-in lists are the core sync's")
 	require.Equal(t, "0", h.text(`SELECT max(defaults_rev)::text FROM roles`))
 	require.Equal(t, "op@x=account:read,account:update:own root@x=account:read:own,role:assign,role:define,user:read seller@x=account:read:own,proxy:manage:own", h.accessKeys())
-	require.Equal(t, version, h.text(`SELECT (version - 2)::text FROM authz_meta`), "the version moves once, and once more for 0100's backfill")
+	require.Equal(t, version, h.text(`SELECT (version - 1)::text FROM authz_meta`), "the version moves once")
 	require.Equal(t, "authz.grant.migrate=28 authz.reclaim.super_only=7 role.assignable=1 user.access_key.migrate=3",
 		h.text(`SELECT string_agg(action || '=' || n, ' ' ORDER BY action) FROM (
             SELECT action, count(*) AS n FROM audit_logs WHERE user_id IS NULL AND detail->>'via' = 'migration 0097' GROUP BY action) a`))
@@ -220,8 +244,11 @@ func TestAuthzHardeningMigration(t *testing.T) {
 	// Again (only a forgotten migration row does that): nothing changes.
 	migrated := h.state()
 	h.exec(`DELETE FROM schema_migrations WHERE id = $1`, hardening)
-	require.NoError(t, h.migrate())
+	require.NoError(t, h.migrateThrough(beforeCasbin))
 	require.Equal(t, migrated, h.state())
+	// 0100 turns the grants into casbin_rule rows, unchanged.
+	require.NoError(t, h.migrate())
+	require.Equal(t, strings.SplitN(migrated, "\n", 2)[0], h.grants())
 
 	lastSeeded := h.text(`SELECT max(id)::text FROM permissions`)
 	// The core sync creates the supplier role, resets the admin and the
@@ -263,8 +290,8 @@ func TestAuthzHardeningMigration(t *testing.T) {
 
 	// A restart neither fills nor resets again: what an administrator
 	// removes stays removed.
-	h.exec(`DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE key IN ('user', 'admin'))
-        AND permission_id IN (SELECT id FROM permissions WHERE key IN ('balance:self:read', 'role:define'))`)
+	testutil.Revoke(t, h.db, "user", "balance:self:read")
+	testutil.Revoke(t, h.db, "admin", "role:define")
 	synced := h.state()
 	h.syncCore()
 	require.Equal(t, synced, h.state())
@@ -306,18 +333,15 @@ func TestAuthzHardeningNeedsOneSuperAdmin(t *testing.T) {
 // the schema of a database migrated through 0096, the former grants of
 // every role and access key (own scopes, the redundant ones the migration
 // only audited, role:manage, the super-only permissions taken back), with
-// group scopes written since dropped and audited. What the core sync's
-// first pass changed on a built-in role stays: what it filled in (here the
-// user role's balance:self:read, one of its 0.1.285 defaults too) and what
-// a reset took from a role nobody held (here the operator's
-// account:credential:view and system:update:read). Upgrading again then
-// gives the same grants as the first upgrade.
+// group scopes written since dropped and audited. Upgrading again then
+// gives the same grants as the first upgrade. The upgrade stops at 0.1.289
+// (0099): 0.1.290's 0100 is one way, and this tree's core sync writes
+// casbin_rule, so what a 0.1.289 sync changed is not part of it.
 func TestAuthzHardeningRollback(t *testing.T) {
 	h := newHardeningDB(t)
 	schema, grants, keys := h.schema(), h.grants(), h.accessKeys()
 
-	require.NoError(t, h.migrate())
-	h.syncCore()
+	require.NoError(t, h.migrateThrough(beforeCasbin))
 	upgraded := h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater")
 	// Written after the upgrade: a group scope, which 0.1.285 cannot express.
 	h.exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope)
@@ -330,18 +354,14 @@ func TestAuthzHardeningRollback(t *testing.T) {
         VALUES ('stg', '1.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved'), ('stg', '2.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved')`)
 	h.exec(`INSERT INTO plugin_staged_grants (plugin_key, version, permission, status, manifest_hash) VALUES ('stg', '2.0.0', 'lock', 'granted', 'h')`)
 
-	// The upgrade went on through 0100: 0.1.290 and 0.1.289 are rolled back
-	// first.
-	require.NoError(t, h.down("0.1.290-casbin-down.sql"))
+	// The upgrade went on through 0099: 0.1.289 is rolled back first.
 	require.NoError(t, h.down("0.1.289-plugin-perm-down.sql"))
 	require.NoError(t, h.down("0.1.286-authz-down.sql"))
 
 	require.Equal(t, schema, h.schema())
 	// 0.1.285 grants nothing for the permissions only 0.1.286 has (its sync
-	// marks them removed); the supplier role is new and left alone.
-	want := strings.NewReplacer("user apikey:self:manage", "user apikey:self:manage, user balance:self:read",
-		"operator account:credential:view, ", "", "operator system:update:read, ", "").Replace(grants)
-	require.Equal(t, want,
+	// marks them removed).
+	require.Equal(t, grants,
 		filterGrants(h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater", "super_admin"), grants))
 	require.Equal(t, keys, h.accessKeys())
 	require.Equal(t, "1", h.text(`SELECT count(*)::text FROM audit_logs WHERE detail->>'via' = 'rollback 0.1.286' AND detail->>'dropped' = 'account:test:group/12'`))
@@ -350,8 +370,7 @@ func TestAuthzHardeningRollback(t *testing.T) {
 
 	require.ErrorContains(t, h.down("0.1.286-authz-down.sql"), "nothing to roll back")
 
-	require.NoError(t, h.migrate())
-	h.syncCore()
+	require.NoError(t, h.migrateThrough(beforeCasbin))
 	require.Equal(t, upgraded, h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater"))
 }
 
@@ -371,7 +390,7 @@ INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
     ('plugin.pm:purge', 'plugin.pm', '{}', 'plugin', 'pm'), ('plugin.pm:next', 'plugin.pm', '{}', 'plugin', 'pm')`)
 	const statusComment = `SELECT COALESCE(col_description(attrelid, attnum), '') FROM pg_attribute WHERE attrelid = 'permissions'::regclass AND attname = 'status'`
 	schema, comment := h.schema(), h.text(statusComment)
-	require.NoError(t, h.migrate())
+	require.NoError(t, h.migrateThrough(beforeCasbin))
 
 	// What 0.1.289 writes: a key its plugin no longer declares, kept with its
 	// grants, a key a version not activated yet declares (staged), a plugin scope with a resource longer than 0.1.288 allows, and
@@ -395,8 +414,6 @@ WHERE r.key = 'editor' AND p.key IN ('plugin.pm:flow:manage', 'plugin.pm:old', '
 INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, s.scope FROM roles r, permissions p
 JOIN (VALUES ('account:read', 'own'), ('plugin.pm:flow:manage', 'flow/3'), ('plugin.pm:old', 'flow/1')) s(key, scope) ON s.key = p.key
 WHERE r.key = 'editor'`)
-	// The upgrade went on through 0100: 0.1.290 is rolled back first.
-	require.NoError(t, h.down("0.1.290-casbin-down.sql"))
 	version := h.text(`SELECT version::text FROM authz_meta`)
 
 	require.NoError(t, h.down("0.1.289-plugin-perm-down.sql"))
@@ -416,7 +433,7 @@ WHERE r.key = 'editor'`)
         WHERE user_id IS NULL AND action = 'plugin.role_grants.reject' AND target_id = 'pm' AND detail->>'via' = 'rollback 0.1.289'`))
 
 	require.ErrorContains(t, h.down("0.1.289-plugin-perm-down.sql"), "nothing to roll back")
-	require.NoError(t, h.migrate())
+	require.NoError(t, h.migrateThrough(beforeCasbin))
 }
 
 // filterGrants keeps the grants of got whose permission appears in want: the

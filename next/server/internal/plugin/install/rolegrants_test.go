@@ -13,8 +13,10 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // roleGrantsEnv installs guard 0.1.0 with every host permission and gives the catalog its three
@@ -42,10 +44,10 @@ ON CONFLICT (key) DO NOTHING;
 INSERT INTO permissions (key, module, label, source, plugin_key, status)
 SELECT 'plugin.guard:' || k, 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'disabled' FROM unnest(ARRAY['rules:read','rules:manage','stats:read']) k;
 INSERT INTO permissions (key, module, label, source, plugin_key, status, risk)
-VALUES ('plugin.guard:rules:old', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low');
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'auditor' AND p.key IN ('plugin.guard:rules:manage', 'plugin.guard:rules:old')`)
+VALUES ('plugin.guard:rules:old', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low')`)
 	require.NoError(t, err)
+	testutil.Grant(t, e.db, "auditor", "plugin.guard:rules:manage")
+	testutil.Grant(t, e.db, "auditor", "plugin.guard:rules:old")
 	return e, ctx
 }
 
@@ -310,13 +312,11 @@ WHERE key = 'plugin.guard:input:check'`, values)
 		_, err := e.db.SQL.ExecContext(ctx, sql)
 		require.NoError(t, err)
 	}
-	grant(`INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'value/input' FROM roles r, permissions p
-WHERE r.key = 'user' AND p.key = 'plugin.guard:input:check'`)
+	testutil.Grant(t, e.db, "user", "plugin.guard:input:check", "value/input")
 	assert.Equal(t, []string{"user:value/output"}, scopes())
-	grant(`INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
-WHERE r.key = 'user' AND p.key = 'plugin.guard:input:check'`)
+	testutil.Grant(t, e.db, "user", "plugin.guard:input:check")
 	assert.Empty(t, scopes())
-	grant(`DELETE FROM role_permissions; DELETE FROM role_permission_scopes`)
+	testutil.Revoke(t, e.db, "user", "plugin.guard:input:check")
 	assert.Len(t, scopes(), 2)
 	declare(`[{"key":"input"}]`)
 	assert.Equal(t, []string{"user:value/input"}, scopes())
@@ -371,6 +371,7 @@ func TestRejectWithheldGrantAcrossVersions(t *testing.T) {
 	assert.Empty(t, e.perms.granted)
 	// rules:view new again (gone from the catalog meanwhile): 0.1.3
 	// withholds it after the reject, so it is listed again.
+	require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) error { return casbinrule.DropPermissions(tx, []string{"plugin.guard:rules:view"}) }))
 	_, err = e.db.SQL.ExecContext(ctx, `DELETE FROM permissions WHERE key = 'plugin.guard:rules:view'`)
 	require.NoError(t, err)
 	upgrade("0.1.3", newPerm("rules:view", "", "admin", "user"), newPerm("stats:export", "", "user"))

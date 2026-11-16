@@ -64,7 +64,7 @@ func TestBindMenuRoutes(t *testing.T) {
 		t.Fatalf("missing route: %v", err)
 	}
 
-	unbound := New(Deps{DB: db, Bus: newMemBus(), Shadow: testShadow})
+	unbound := New(Deps{DB: db, Bus: newMemBus()})
 	menus, err := unbound.Menus(context.Background(), operator)
 	if err != nil {
 		t.Fatal(err)

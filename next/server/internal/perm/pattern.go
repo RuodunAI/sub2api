@@ -206,8 +206,8 @@ func id(raw string, wildcard bool) (int64, error) {
 	return n, nil
 }
 
-// Suffix is the canonical scope text of p, "" for everything (stored in
-// role_permission_scopes.scope).
+// Suffix is the canonical scope text of p, "" for everything (a p row's
+// scope in casbin_rule, AllRows for "").
 func (p Pattern) Suffix() string {
 	s := p.Scope
 	switch {

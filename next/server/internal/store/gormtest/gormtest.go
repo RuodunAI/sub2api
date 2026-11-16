@@ -71,7 +71,59 @@ func Assert(t testing.TB, build func(*gorm.DB) *gorm.DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := Render(query, vars)
+	compare(t, Render(query, vars))
+}
+
+// AssertRun is Assert for a function that runs its statements rather than
+// returning one, or runs several: every statement run sends to its DryRun
+// session, in order. A read ends in gorm.ErrDryRunModeUnsupported (DryRun
+// returns no rows), which is not a failure here.
+func AssertRun(t testing.TB, run func(*gorm.DB) error) {
+	t.Helper()
+	rec := &recorder{}
+	err := run(DB().Session(&gorm.Session{NewDB: true, Context: context.WithValue(context.Background(), recorderKey{}, rec)}))
+	if err != nil && !errors.Is(err, gorm.ErrDryRunModeUnsupported) {
+		t.Fatal(err)
+	}
+	if len(rec.stmts) == 0 {
+		t.Fatal("gormtest: run sent no statement")
+	}
+	compare(t, strings.Join(rec.stmts, "\n"))
+}
+
+// recorder collects the statements of the session whose context holds it.
+type recorder struct{ stmts []string }
+
+type recorderKey struct{}
+
+// init adds a callback after each finisher of the DryRun instance that
+// appends the statement to the recorder of its context; a session without
+// one (Assert's) is untouched. At init, since registering recompiles the
+// callback chains other (parallel) tests run.
+func init() {
+	record := func(db *gorm.DB) {
+		if rec, ok := db.Statement.Context.Value(recorderKey{}).(*recorder); ok && db.Statement.SQL.Len() > 0 {
+			rec.stmts = append(rec.stmts, Render(db.Statement.SQL.String(), db.Statement.Vars))
+		}
+	}
+	cb := DB().Callback()
+	for name, p := range map[string]interface {
+		Register(string, func(*gorm.DB)) error
+	}{
+		"create": cb.Create().After("gorm:create"), "query": cb.Query().After("gorm:query"),
+		"update": cb.Update().After("gorm:update"), "delete": cb.Delete().After("gorm:delete"),
+		"row": cb.Row().After("gorm:row"), "raw": cb.Raw().After("gorm:raw"),
+	} {
+		if err := p.Register("gormtest:record_"+name, record); err != nil {
+			panic("gormtest: register the recorder: " + err.Error())
+		}
+	}
+}
+
+// compare checks got against testdata/<t.Name()>.golden, or rewrites the
+// file under -update.
+func compare(t testing.TB, got string) {
+	t.Helper()
 	path := filepath.Join("testdata", filepath.FromSlash(t.Name())+".golden")
 	if *update {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

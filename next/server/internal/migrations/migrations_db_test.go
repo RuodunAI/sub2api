@@ -102,7 +102,7 @@ func TestLegacyProxyRealIPReplayPreservesDataAndChecksum(t *testing.T) {
 	const checksum = "1b0719bb3a07caa74ca6ad5d92e8c605e9c4f0ebea3097b96a1226ef99c4897f"
 	for _, missing := range []string{"none", "real_ip", "real_ip_updated_at", "both"} {
 		t.Run(missing, func(t *testing.T) {
-			db := testutil.DB(t)
+			db := replayDB(t)
 			ctx := context.Background()
 			ip := "198.51.100.46"
 			stamp := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -179,35 +179,59 @@ func TestLegacyProxyRealIPCompatibilityRequiresExactIdentity(t *testing.T) {
 	}
 }
 
+// replayDB is a fresh database for the tests that forget applied
+// migrations and run them again: through 0099, since 0100 drops the role
+// tables the migrations before it write. None of those runs again after
+// 0100 outside a test: a migration is recorded in its own transaction.
+func replayDB(t *testing.T) *store.DB {
+	t.Helper()
+	return testutil.DBThrough(t, beforeCasbin)
+}
+
 // Every migration from FirstIdempotentMigration on must survive a second
 // run on a database that already has it: forget them and migrate again.
+// Those before 0100 run again on the schema before it (replayDB), 0100 and
+// later on the full one.
 func TestMigrationsFromFirstIdempotentRunTwice(t *testing.T) {
-	db := testutil.DB(t)
-	ctx := context.Background()
-	tag, err := db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id >= $1`, migrations.FirstIdempotentMigration)
-	if err != nil {
-		t.Fatal(err)
+	for _, c := range []struct {
+		name, from string
+		db         func(*testing.T) *store.DB
+	}{
+		{"before casbin_rule", migrations.FirstIdempotentMigration, replayDB},
+		{"from casbin_rule", casbinRule, func(t *testing.T) *store.DB { return testutil.DB(t) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db := c.db(t)
+			ctx := context.Background()
+			tag, err := db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id >= $1`, c.from)
+			require.NoError(t, err)
+			forgot, err := tag.RowsAffected()
+			require.NoError(t, err)
+			require.NotZero(t, forgot, "%s is not among the applied migrations", c.from)
+			again, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+			require.NoError(t, err, "second run")
+			// Through 0099, the second run applies 0100 and later for the
+			// first time too.
+			require.Equal(t, migrationsAfter(t, migrationBefore(t, c.from)), again)
+		})
 	}
-	forgot, err := tag.RowsAffected()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if forgot == 0 {
-		t.Fatalf("%s is not among the applied migrations", migrations.FirstIdempotentMigration)
-	}
-	again, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
-	if err != nil {
-		t.Fatalf("second run: %v", err)
-	}
-	if int64(len(again)) != forgot {
-		t.Fatalf("re-applied %v, want the %d forgotten migrations", again, forgot)
-	}
+}
+
+// migrationBefore is the core migration applied just before id.
+func migrationBefore(t *testing.T, id string) string {
+	t.Helper()
+	names, err := fs.Glob(migrations.FS, "*.sql")
+	require.NoError(t, err)
+	slices.Sort(names)
+	i, found := slices.BinarySearch(names, id)
+	require.True(t, found && i > 0, "no migration before %s", id)
+	return names[i-1]
 }
 
 // 0048 removes what plugins brought into sticky sessions and keeps it out:
 // only built-in and admin rules, never a plugin-computed session value.
 func TestStickyRulesCoreOnly(t *testing.T) {
-	db := testutil.DB(t)
+	db := replayDB(t)
 	ctx := context.Background()
 	if _, err := db.SQL.ExecContext(ctx, `
 		ALTER TABLE sticky_rules DROP CONSTRAINT sticky_rules_core_only;
@@ -250,7 +274,7 @@ func TestStickyRulesCoreOnly(t *testing.T) {
 // 0027 keeps proxies that existed before it working, once: a re-run must not
 // let proxies saved since reach private addresses.
 func TestSecurityHardeningDoesNotReopenPrivateProxies(t *testing.T) {
-	db := testutil.DB(t)
+	db := replayDB(t)
 	ctx := context.Background()
 	var id int64
 	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies (name, protocol, host, port, allow_private)
@@ -619,8 +643,10 @@ func TestSegmentsMigrationBackfill(t *testing.T) {
 // Two transactions each adding a different holder and committing together:
 // the advisory lock makes the later commit count the earlier holder, so
 // exactly one commits. Both commits are held at the lock until both wait.
+// 0097's trigger on user_roles, which 0100 replaces with
+// casbin_rule_one_superuser (TestCasbinRuleOneSuperuserConcurrent).
 func TestOneSuperAdminConcurrentCommits(t *testing.T) {
-	db := testutil.DB(t)
+	db := testutil.DBThrough(t, beforeCasbin)
 	ctx := t.Context()
 	_, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{}', true, true);
 		INSERT INTO users (email, password_hash) VALUES ('a@su', ''), ('b@su', '')`)

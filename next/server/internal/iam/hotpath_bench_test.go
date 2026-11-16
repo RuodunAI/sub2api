@@ -30,9 +30,7 @@ func hotFixture(b *testing.B) (*Service, int64, string) {
 	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ('bench', '{"en":"Bench"}')`); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = 'bench'`, user); err != nil {
-		b.Fatal(err)
-	}
+	testutil.AssignRoles(b, db, user, "bench")
 	hash := tokenstore.Hash("bench-key")
 	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO user_access_keys (user_id, name, token_hash, token_hint, permissions, last_used_at)
 		VALUES ($1, 'k', $2, 'abcd', '{account:read:own,user:read:all}', now())`, user, hash); err != nil {

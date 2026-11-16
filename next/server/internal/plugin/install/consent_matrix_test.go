@@ -12,6 +12,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // Whether a consenter may name a role for a new permission: role:define
@@ -145,10 +146,9 @@ func TestRevivedKeyGetsNoDefaults(t *testing.T) {
 	e, ctx := roleGrantsEnv(t)
 	_, err := e.db.SQL.ExecContext(ctx, `
 INSERT INTO permissions (key, module, label, source, plugin_key, status, risk, scope_type)
-VALUES ('plugin.guard:flow:manage', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'sensitive', 'plugin:flow');
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'flow/3' FROM roles r, permissions p
- WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:manage'`)
+VALUES ('plugin.guard:flow:manage', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'sensitive', 'plugin:flow')`)
 	require.NoError(t, err)
+	testutil.Grant(t, e.db, "operator", "plugin.guard:flow:manage", "flow/3")
 	m := flowGuard("0.1.1")
 	existing, err := loadCatalogPerms(ctx, e.svc.d.Permissions, e.db.Gorm, m.Key)
 	require.NoError(t, err)
@@ -190,12 +190,11 @@ func TestReviewMatrixCells(t *testing.T) {
 	_, err := e.db.SQL.ExecContext(ctx, `
 INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{"en":"Super"}', true, true);
 INSERT INTO permissions (key, module, label, source, plugin_key, status, sort)
-VALUES ('plugin.guard:old:gone', 'plugin.guard', '{"en":"Gone"}', 'plugin', 'guard', 'active', 40);
-INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
- WHERE r.key IN ('auditor', 'super_admin') AND p.key = 'plugin.guard:old:gone';
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'own' FROM roles r, permissions p
- WHERE r.key = 'operator' AND p.key = 'plugin.guard:old:gone'`)
+VALUES ('plugin.guard:old:gone', 'plugin.guard', '{"en":"Gone"}', 'plugin', 'guard', 'active', 40)`)
 	require.NoError(t, err)
+	testutil.Grant(t, e.db, "auditor", "plugin.guard:old:gone")
+	testutil.Grant(t, e.db, "super_admin", "plugin.guard:old:gone")
+	testutil.Grant(t, e.db, "operator", "plugin.guard:old:gone", "own")
 	denyAdmin(e)
 	m := flowGuard("0.1.1")
 	m.UserPermissions = append(m.UserPermissions, newPerm("rules:exempt", manifest.RiskCritical))

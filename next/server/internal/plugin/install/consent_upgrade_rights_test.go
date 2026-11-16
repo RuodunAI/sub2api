@@ -9,7 +9,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 )
 
@@ -23,7 +22,7 @@ import (
 func TestUpgradeConsentNeedsRightsOverTheRoles(t *testing.T) {
 	for _, superAdmin := range []bool{false, true} {
 		e, ctx := roleGrantsEnv(t)
-		cat := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
+		cat := authz.New(authz.Deps{DB: e.db})
 		require.NoError(t, cat.Start(ctx))
 		e.perms.canGrant = cat.CanGrantToRoles
 		e.perms.grantees = cat.PluginGrantees

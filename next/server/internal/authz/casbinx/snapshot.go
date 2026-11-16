@@ -57,11 +57,9 @@ func build(policy Policy, self []string) (*snapshot, error) {
 // stay stored and come back with their action. Not loaded:
 //   - a row with an empty column: an empty scope must not read as every
 //     row;
-//   - a stored row of SelfRole (a role keyed "_self": the triggers of
-//     migration 0100 reject one, so only a write with them disabled makes
-//     it): every active user holds SelfRole, so its grants would reach
-//     everyone, where the legacy loader gives them to the role's holders
-//     only.
+//   - a stored row of SelfRole (casbin_rule_shape and roles_key_reserved
+//     refuse one; this holds even past them): every active user holds
+//     SelfRole, so its grants would reach everyone, not a role's holders.
 func loadable(r Rule, active map[string]bool) bool {
 	if r.Ptype != "p" || r.V0 == "" || r.V1 == "" || r.V2 == "" || r.V0 == SelfRole {
 		return false

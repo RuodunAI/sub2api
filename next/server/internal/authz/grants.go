@@ -7,22 +7,25 @@ import (
 	"strings"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-// Grants of a role (CONTRACTS §21): an unscoped key is a role_permissions
-// row; a scoped one (account:read:group/12) a role_permission_scopes row of
-// the action and the scope.
+// Grants of a role (CONTRACTS §21): a p row of casbin_rule per key, an
+// unscoped one (account:read) of scope every row, a scoped one
+// (account:read:group/12) of the action and the scope (casbinrule).
 
 // grant is a resolved grant: the permission and its scope, "" for every row.
 type grant struct {
 	key      string // canonical
-	id       int64
+	action   string // the permission's key
 	scope    string
+	removed  bool // of a removed permission: kept when held, never added
 	critical bool // of a critical plugin permission (stepUpCritical)
 }
 
@@ -51,7 +54,6 @@ func resolvePermissions(ctx context.Context, tx *gorm.DB, keys []string) ([]stri
 		actions = append(actions, string(p.Action))
 	}
 	type row struct {
-		id      int64
 		removed bool
 		risk    string
 		scope   manifest.PermissionScope
@@ -63,7 +65,7 @@ func resolvePermissions(ctx context.Context, tx *gorm.DB, keys []string) ([]stri
 		var k, scopeType string
 		var scope store.JSON[manifest.PermissionScope]
 		var r row
-		if err := rows.Scan(&k, &r.id, &r.removed, &r.risk, &scopeType, &scope); err != nil {
+		if err := rows.Scan(&k, &r.removed, &r.risk, &scopeType, &scope); err != nil {
 			return err
 		}
 		r.scope = core.ReadPluginScope(scopeType, &scope.V)
@@ -86,7 +88,7 @@ func resolvePermissions(ctx context.Context, tx *gorm.DB, keys []string) ([]stri
 				live = append(live, string(p.Key()))
 			}
 			critical := isPluginAction(p.Action) && r.risk == manifest.RiskCritical
-			grants = append(grants, grant{key: string(p.Key()), id: r.id, scope: p.Suffix(), critical: critical})
+			grants = append(grants, grant{key: string(p.Key()), action: string(p.Action), scope: p.Suffix(), removed: r.removed, critical: critical})
 		}
 	}
 	if len(invalid) > 0 {
@@ -98,10 +100,10 @@ func resolvePermissions(ctx context.Context, tx *gorm.DB, keys []string) ([]stri
 	return live, grants, nil
 }
 
-// grantablePermissions selects the key, id, whether removed, risk, scope
-// type and scope of the permissions keys names, staged ones aside.
+// grantablePermissions selects the key, whether removed, risk, scope type
+// and scope of the permissions keys names, staged ones aside.
 func grantablePermissions(db *gorm.DB, keys []string) *gorm.DB {
-	return db.Raw(`SELECT key, id, status = 'removed', risk, scope_type, scope FROM permissions
+	return db.Raw(`SELECT key, status = 'removed', risk, scope_type, scope FROM permissions
 WHERE key = ANY(?) AND status <> 'staged'`, store.Strings(keys))
 }
 
@@ -135,72 +137,36 @@ func (part grantPart) of(keys []string) []string {
 	return out
 }
 
-// grantsInPart is the SQL condition on p, a granted permission, of the
-// grants a write of part replaces; its placeholders take part.coreOnly and
-// part.plugin twice. A reset keeps the grants of removed permissions, to
-// come back with the key; any other write drops them unless listed, so an
-// editor can untick them. No write touches the grants of a staged
-// permission, which no editor sees: its version's consent made them.
-const grantsInPart = `p.status <> 'staged' AND (NOT ?::bool OR (p.source = 'core' AND p.status <> 'removed')) AND (?::text = '' OR p.plugin_key = ?::text)`
+// within is the SQL condition on p, a granted permission, of the
+// grants a write of part replaces. A reset keeps the grants of removed
+// permissions, to come back with the key; any other write drops them unless
+// listed, so an editor can untick them. No write touches the grants of a
+// staged permission, which no editor sees: its version's consent made them.
+func (part grantPart) within() clause.Expr {
+	return gorm.Expr(`p.status <> 'staged' AND (NOT ?::bool OR (p.source = 'core' AND p.status <> 'removed')) AND (?::text = '' OR p.plugin_key = ?::text)`,
+		part.coreOnly, part.plugin, part.plugin)
+}
 
-// writeGrants makes grants the role's grants within part. It never adds a
-// grant of a removed permission: listing one keeps it when the role holds
-// it, and is ignored when not (it can only be unticked). Nor of a staged
-// one (resolvePermissions refuses it as unknown first).
-func writeGrants(ctx context.Context, tx *gorm.DB, roleID int64, grants []grant, part grantPart) error {
-	// Never nil: a NULL array would make "<> ALL" delete nothing (Int64s and
-	// Strings are never NULL either).
-	ids, scopedIDs, scopes := store.Int64s{}, store.Int64s{}, store.Strings{}
+// writeGrants makes grants the grants of the role key within part. It never
+// adds a grant of a removed permission: listing one keeps it when the role
+// holds it, and is ignored when not (it can only be unticked). Nor of a
+// staged one (resolvePermissions refuses it as unknown first, in the same
+// transaction, after Bump: no status changes in between).
+func writeGrants(ctx context.Context, tx *gorm.DB, key string, grants []grant, part grantPart) error {
+	keep, add := make([]casbinrule.Grant, 0, len(grants)), make([]casbinrule.Grant, 0, len(grants))
 	for _, g := range grants {
-		if g.scope == "" {
-			ids = append(ids, g.id)
-		} else {
-			scopedIDs, scopes = append(scopedIDs, g.id), append(scopes, g.scope)
+		rg := casbinrule.Grant{Role: key, Action: g.action, Suffix: g.scope}
+		keep = append(keep, rg)
+		if !g.removed {
+			add = append(add, rg)
 		}
 	}
 	db := store.G(ctx, tx)
-	if err := dropGrants(db, roleID, part, ids).Error; err != nil {
+	if err := casbinrule.DropGrants(db, key, part.within(), keep); err != nil {
 		return err
 	}
-	if err := addGrants(db, roleID, ids).Error; err != nil {
-		return err
-	}
-	if err := dropScopedGrants(db, roleID, part, scopedIDs, scopes).Error; err != nil {
-		return err
-	}
-	return addScopedGrants(db, roleID, scopedIDs, scopes).Error
-}
-
-// dropGrants deletes the role's unscoped grants within part but those of
-// ids.
-func dropGrants(db *gorm.DB, roleID int64, part grantPart, ids store.Int64s) *gorm.DB {
-	return db.Exec(`DELETE FROM role_permissions rp USING permissions p
-WHERE rp.role_id = ? AND p.id = rp.permission_id AND `+grantsInPart+` AND rp.permission_id <> ALL(?)`,
-		roleID, part.coreOnly, part.plugin, part.plugin, ids)
-}
-
-// addGrants grants the role the permissions ids, removed and staged ones
-// aside.
-func addGrants(db *gorm.DB, roleID int64, ids store.Int64s) *gorm.DB {
-	return db.Exec(`INSERT INTO role_permissions (role_id, permission_id)
-SELECT ?, id FROM permissions WHERE id = ANY(?) AND status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING`, roleID, ids)
-}
-
-// dropScopedGrants deletes the role's scoped grants within part but the
-// (permission, scope) pairs of ids and scopes.
-func dropScopedGrants(db *gorm.DB, roleID int64, part grantPart, ids store.Int64s, scopes store.Strings) *gorm.DB {
-	return db.Exec(`DELETE FROM role_permission_scopes rs USING permissions p
-WHERE rs.role_id = ? AND p.id = rs.permission_id AND `+grantsInPart+`
-  AND (rs.permission_id, rs.scope) NOT IN (SELECT * FROM unnest(?::bigint[], ?::text[]))`,
-		roleID, part.coreOnly, part.plugin, part.plugin, ids, scopes)
-}
-
-// addScopedGrants grants the role the (permission, scope) pairs of ids and
-// scopes, removed and staged permissions aside.
-func addScopedGrants(db *gorm.DB, roleID int64, ids store.Int64s, scopes store.Strings) *gorm.DB {
-	return db.Exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-SELECT ?, g.id, g.scope FROM unnest(?::bigint[], ?::text[]) g (id, scope)
-JOIN permissions p ON p.id = g.id AND p.status NOT IN ('removed', 'staged') ON CONFLICT DO NOTHING`, roleID, ids, scopes)
+	_, err := casbinrule.AddGrants(db, add, gorm.Expr("true"))
+	return err
 }
 
 // roleGrantsJoin joins, to each role r, g.key: the canonical grants of r
@@ -208,10 +174,7 @@ JOIN permissions p ON p.id = g.id AND p.status NOT IN ('removed', 'staged') ON C
 func roleGrantsJoin(status string) string {
 	return `
 LEFT JOIN LATERAL (
-    SELECT p.key FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id AND ` + status + ` WHERE rp.role_id = r.id
-    UNION ALL
-    SELECT p.key || ':' || rs.scope FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id AND ` + status + `
-    WHERE rs.role_id = r.id
+    SELECT rg.key FROM (` + casbinrule.GrantsOf("r.key") + `) rg JOIN permissions p ON p.key = rg.action AND ` + status + `
 ) g ON true`
 }
 

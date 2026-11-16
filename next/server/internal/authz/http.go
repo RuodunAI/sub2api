@@ -10,7 +10,7 @@ import (
 )
 
 // RegisterRoutes mounts /roles, /permissions (with a plugin's role matrix),
-// /me/menus, /me/assignable-roles and /settings/authz.
+// /me/menus and /me/assignable-roles.
 func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.AuthedRead("/me/menus", s.handleMenus)
 	r.AuthedRead("/me/assignable-roles", s.handleAssignableRoles)
@@ -25,7 +25,6 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.Perm(http.MethodGet, "/permissions", "role:read", s.handleListPermissions)
 	r.Perm(http.MethodGet, "/permissions/plugins/:plugin", "role:read", s.handlePluginRoleGrants)
 	r.Perm(http.MethodPut, "/permissions/plugins/:plugin", "role:define", s.handleSetPluginRoleGrants)
-	s.registerEngineRoutes(r)
 }
 
 func (s *Service) handleMenus(c *gin.Context) {

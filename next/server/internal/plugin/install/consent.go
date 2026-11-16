@@ -826,6 +826,13 @@ func (s *Service) Reject(ctx context.Context, key, version string, actorID int64
 				return err
 			}
 			if pending == 0 {
+				// The staged permissions' grants first: the plugin row's
+				// foreign key cascades to permissions, not to casbin_rule.
+				if s.d.Permissions != nil {
+					if err := s.d.Permissions.DeletePlugin(ctx, tx, key); err != nil {
+						return err
+					}
+				}
 				if err := g.Where("key = ?", key).Delete(&model.Plugin{}).Error; err != nil {
 					return err
 				}

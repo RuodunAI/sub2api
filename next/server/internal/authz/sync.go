@@ -11,6 +11,8 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -91,6 +93,13 @@ func (s *Service) SyncCore(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// The superuser role's grant of every key follows the flag the
+		// roles were just given (an unchanged database changes nothing).
+		supers, err := casbinrule.SyncSuperusers(db)
+		if err != nil {
+			return err
+		}
+		changed = changed || supers > 0
 		// The roles getting every default they lack, with what the audit
 		// says of why: created now, or behind their rev and held; and
 		// those behind their rev that nobody holds, reset to them.
@@ -211,26 +220,27 @@ RETURNING key, (xmax = 0)`, keys, modules, labels, descs, risks, requires, sorts
 }
 
 // grantDefaultPermissions grants the role roleKey the permissions of keys
-// it lacks, returning what syncGrant reads.
-func grantDefaultPermissions(db *gorm.DB, roleKey string, keys []string) *gorm.DB {
-	return db.Raw(`
-WITH ins AS (
-    INSERT INTO role_permissions (role_id, permission_id)
-    SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = ? AND p.key = ANY(?)
-    ON CONFLICT DO NOTHING RETURNING role_id, permission_id)
-SELECT ins.role_id, p.key FROM ins JOIN permissions p ON p.id = ins.permission_id`, roleKey, store.Strings(keys))
+// (for every row) it lacks, returning what it granted.
+func grantDefaultPermissions(db *gorm.DB, roleKey string, keys []string) ([]casbinrule.Added, error) {
+	grants := make([]casbinrule.Grant, len(keys))
+	for i, k := range keys {
+		grants[i] = casbinrule.Grant{Role: roleKey, Action: k}
+	}
+	return casbinrule.AddGrants(db, grants, gorm.Expr("true"))
 }
 
 // grantDefaultAssignable adds to the assignable list of the role roleKey
-// the built-in, non-superuser roles of keys it lacks, returning what
-// syncGrant reads.
-func grantDefaultAssignable(db *gorm.DB, roleKey string, keys []string) *gorm.DB {
-	return db.Raw(`
+// the built-in, non-superuser roles of keys it lacks, returning them by
+// role id and key.
+func grantDefaultAssignable(db *gorm.DB, roleKey string, keys []string) ([]casbinrule.Added, error) {
+	var out []casbinrule.Added
+	err := db.Raw(`
 WITH ins AS (
     INSERT INTO role_assignable_roles (role_id, assignable_role_id)
     SELECT r.id, a.id FROM roles r, roles a WHERE r.key = ? AND a.key = ANY(?) AND a.builtin AND NOT a.superuser
     ON CONFLICT DO NOTHING RETURNING role_id, assignable_role_id)
-SELECT ins.role_id, a.key FROM ins JOIN roles a ON a.id = ins.assignable_role_id`, roleKey, store.Strings(keys))
+SELECT ins.role_id, a.key FROM ins JOIN roles a ON a.id = ins.assignable_role_id`, roleKey, store.Strings(keys)).Scan(&out).Error
+	return out, err
 }
 
 // removeUndeclaredCore marks removed the core permissions but keys.
@@ -249,7 +259,7 @@ func builtinKeyConflict(ctx context.Context, q *gorm.DB, builtinKeys []string) e
 	}
 	msg := "authz: custom roles hold keys reserved for built-in roles; rename each one (any free key will do) and start again:"
 	for _, r := range roles {
-		msg += fmt.Sprintf("\n  role id %d key %q: UPDATE roles SET key = '%s_custom' WHERE id = %d;", r.id, r.key, r.key, r.id)
+		msg += fmt.Sprintf("\n  role id %d key %q: %s", r.id, r.key, casbinrule.RenameRoleSQL(r.id, r.key, r.key+"_custom"))
 	}
 	return errors.New(msg)
 }
@@ -327,14 +337,18 @@ func (s *Service) resetUnheld(ctx context.Context, tx *gorm.DB, def builtinRole)
 // defaults_rev), so a role the sync creates or fills in on an upgrade shows
 // what it was given.
 func (s *Service) grantDefaults(ctx context.Context, tx *gorm.DB, roleKey string, fill map[string]any, defaults []string, created func(string) bool, via string,
-	grant func(db *gorm.DB, roleKey string, keys []string) *gorm.DB) error {
+	grant func(db *gorm.DB, roleKey string, keys []string) ([]casbinrule.Added, error)) error {
 	if fill == nil {
 		defaults = slices.DeleteFunc(slices.Clone(defaults), func(k string) bool { return !created(k) })
 	}
 	if len(defaults) == 0 {
 		return nil
 	}
-	return s.syncGrant(ctx, tx, withVia(fill, via), grant(store.G(ctx, tx), roleKey, defaults))
+	added, err := grant(store.G(ctx, tx), roleKey, defaults)
+	if err != nil {
+		return err
+	}
+	return s.syncGrant(ctx, tx, withVia(fill, via), added)
 }
 
 // withVia is the audit detail of a sync grant: via plus the fill's detail.
@@ -352,47 +366,29 @@ func withVia(fill map[string]any, via string) map[string]any {
 // and the fill's detail). One the role's unscoped grant of the same action
 // implies is left out, as migration 0097 leaves out a redundant own scope.
 func (s *Service) grantScopedDefaults(ctx context.Context, tx *gorm.DB, roleKey string, keys []string, fill map[string]any) error {
-	return s.syncGrant(ctx, tx, withVia(fill, "default"), grantScopedDefaultsTo(store.G(ctx, tx), roleKey, keys))
-}
-
-// grantScopedDefaultsTo grants the role roleKey the scoped defaults of keys
-// (canonical keys) it lacks, those its unscoped grant of the action implies
-// aside, returning what syncGrant reads.
-func grantScopedDefaultsTo(db *gorm.DB, roleKey string, keys []string) *gorm.DB {
-	// The keys come first in the text, the role key second.
-	return db.Raw(`
-WITH ins AS (
-    INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-    SELECT r.id, p.id, d.scope FROM roles r,
-        (SELECT substring(k FROM '^(.*):[^:]*$') AS action, substring(k FROM '[^:]*$') AS scope FROM unnest(?::text[]) k) d
-    JOIN permissions p ON p.key = d.action AND p.source = 'core'
-    WHERE r.key = ?
-      AND NOT EXISTS (SELECT 1 FROM role_permissions f WHERE f.role_id = r.id AND f.permission_id = p.id)
-    ON CONFLICT DO NOTHING RETURNING role_id, permission_id, scope)
-SELECT ins.role_id, p.key || ':' || ins.scope FROM ins JOIN permissions p ON p.id = ins.permission_id`, store.Strings(keys), roleKey)
-}
-
-// syncGrant runs q, an automatic grant on tx returning the role id and the
-// granted key (a permission, or an assignable role) of each row it adds,
-// and audits each row as authz.sync.grant by the system with via plus the
-// key as detail.
-func (s *Service) syncGrant(ctx context.Context, tx *gorm.DB, via map[string]any, q *gorm.DB) error {
-	type grant struct {
-		role int64
-		key  string
+	grants := make([]casbinrule.Grant, 0, len(keys))
+	for _, k := range keys {
+		p, err := perm.Parse(k)
+		if err != nil {
+			return fmt.Errorf("authz: scoped default %q of role %s: %w", k, roleKey, err)
+		}
+		grants = append(grants, casbinrule.Grant{Role: roleKey, Action: string(p.Action), Suffix: p.Suffix()})
 	}
-	grants, err := store.CollectRows(q, func(rows *sql.Rows) (grant, error) {
-		var g grant
-		err := rows.Scan(&g.role, &g.key)
-		return g, err
-	})
+	added, err := casbinrule.AddGrants(store.G(ctx, tx), grants, gorm.Expr("p.source = 'core'"))
 	if err != nil {
 		return err
 	}
-	for _, g := range grants {
+	return s.syncGrant(ctx, tx, withVia(fill, "default"), added)
+}
+
+// syncGrant audits each automatic grant of added (by role id, of a
+// permission or an assignable role key) as authz.sync.grant by the system
+// with via plus the key as detail.
+func (s *Service) syncGrant(ctx context.Context, tx *gorm.DB, via map[string]any, added []casbinrule.Added) error {
+	for _, g := range added {
 		detail := maps.Clone(via)
-		detail["key"] = g.key
-		if err := s.audit(ctx, tx, 0, "authz.sync.grant", "role", g.role, detail); err != nil {
+		detail["key"] = g.Key
+		if err := s.audit(ctx, tx, 0, "authz.sync.grant", "role", g.RoleID, detail); err != nil {
 			return err
 		}
 	}

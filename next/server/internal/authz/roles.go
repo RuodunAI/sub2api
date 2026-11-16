@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -62,12 +63,8 @@ func errRoleKeyImmutable(ctx context.Context) error {
 // staged permission (core.PermissionDef.Staged) is no editor's to see.
 var roleSelect = `
 SELECT r.id, r.key, r.name, r.description, r.builtin, r.superuser, r.created_at, r.updated_at,
-    COALESCE((SELECT array_agg(g.key ORDER BY g.sort, g.key) FROM (
-        SELECT p.key, p.sort FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id AND p.status <> 'staged'
-        WHERE rp.role_id = r.id
-        UNION ALL
-        SELECT p.key || ':' || rs.scope, p.sort FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id AND p.status <> 'staged'
-        WHERE rs.role_id = r.id) g), '{}'),
+    COALESCE((SELECT array_agg(rg.key ORDER BY p.sort, rg.key) FROM (` + casbinrule.GrantsOf("r.key") + `) rg
+        JOIN permissions p ON p.key = rg.action AND p.status <> 'staged'), '{}'),
     COALESCE((SELECT array_agg(ar.key ORDER BY ar.key) FROM role_assignable_roles ra
         JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser WHERE ra.role_id = r.id), '{}'),
     r.assign_custom,
@@ -78,8 +75,7 @@ FROM roles r`
 // roleHolders counts the holders of role r, soft-deleted users aside: the
 // roles page's user count, and what SyncCore judges a built-in role behind
 // its rev by (held: filled in; nobody: reset).
-const roleHolders = `(SELECT count(*) FROM user_roles ur JOIN users u ON u.id = ur.user_id
-        WHERE ur.role_id = r.id AND u.deleted_at IS NULL)`
+var roleHolders = `(SELECT count(*) FROM users u WHERE u.id IN (` + casbinrule.MembersOf("r.key") + `) AND u.deleted_at IS NULL)`
 
 // selectRoles selects roleSelect followed by tail (conditions, order,
 // lock), whose placeholders take args.
@@ -287,7 +283,7 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 		if err != nil {
 			return err
 		}
-		if err := writeGrants(ctx, tx, id, grants, grantPart{}); err != nil {
+		if err := writeGrants(ctx, tx, in.Key, grants, grantPart{}); err != nil {
 			return err
 		}
 		if err := setRoleAssignable(ctx, tx, id, assign, in.AssignCustom); err != nil {
@@ -362,7 +358,7 @@ func nilIfEmpty(t core.LocalizedText) any {
 
 // DeleteRole deletes a custom role actorID may edit (editableRole: while it
 // has holders, deleting it revokes it, and the role must be on the actor's
-// assignable list); its assignments cascade.
+// assignable list) with its grants and assignments.
 func (s *Service) DeleteRole(ctx context.Context, actorID, id int64) error {
 	return s.mutate(ctx, func(tx *gorm.DB) error {
 		r, err := s.editableRole(ctx, tx, actorID, id)
@@ -372,6 +368,9 @@ func (s *Service) DeleteRole(ctx context.Context, actorID, id int64) error {
 		if r.Builtin {
 			return errBuiltinRole
 		}
+		if err := casbinrule.DeleteRole(store.G(ctx, tx), r.Key); err != nil {
+			return err
+		}
 		if err := deleteRole(store.G(ctx, tx), id).Error; err != nil {
 			return err
 		}
@@ -379,8 +378,8 @@ func (s *Service) DeleteRole(ctx context.Context, actorID, id int64) error {
 	})
 }
 
-// deleteRole deletes role id; its grants, assignable lists and assignments
-// cascade.
+// deleteRole deletes role id; its assignable lists cascade (its grants and
+// assignments are casbin_rule's, deleted first).
 func deleteRole(db *gorm.DB, id int64) *gorm.DB {
 	return db.Delete(&model.Role{}, id)
 }
@@ -448,7 +447,7 @@ func (s *Service) resetDefaults(ctx context.Context, tx *gorm.DB, actorID int64,
 	if err := setDefaultsRev(store.G(ctx, tx), r.ID, def.rev).Error; err != nil {
 		return err
 	}
-	if err := writeGrants(ctx, tx, r.ID, grants, grantPart{coreOnly: true}); err != nil {
+	if err := writeGrants(ctx, tx, r.Key, grants, grantPart{coreOnly: true}); err != nil {
 		return err
 	}
 	after, err := s.getRole(ctx, tx, r.ID)
@@ -509,7 +508,7 @@ func (s *Service) setRolePart(ctx context.Context, tx *gorm.DB, actorID int64, r
 	if err := s.stepUpCritical(ctx, grants, added); err != nil {
 		return err
 	}
-	if err := writeGrants(ctx, tx, r.ID, grants, part); err != nil {
+	if err := writeGrants(ctx, tx, r.Key, grants, part); err != nil {
 		return err
 	}
 	if err := touchRole(store.G(ctx, tx), r.ID).Error; err != nil {
@@ -740,7 +739,7 @@ type roleRef struct {
 
 // userRoleRefs selects the roles userID holds, by key.
 func userRoleRefs(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Raw(`SELECT r.id, r.key, r.superuser FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? ORDER BY r.key`, userID)
+	return db.Raw(`SELECT id, key, superuser FROM roles WHERE key IN (?) ORDER BY key`, casbinrule.RoleKeysOf(db, []int64{userID}))
 }
 
 // roleRefsByKeys selects the roles of keys, by key.
@@ -801,22 +800,7 @@ func roleIDsOf(roles []roleRef) []int64 {
 
 // writeUserRoles makes roles the user's roles.
 func writeUserRoles(ctx context.Context, tx *gorm.DB, userID int64, roles []roleRef) error {
-	ids := roleIDsOf(roles)
-	db := store.G(ctx, tx)
-	if err := dropUserRoles(db, userID, ids).Error; err != nil {
-		return err
-	}
-	return addUserRoles(db, userID, ids).Error
-}
-
-// dropUserRoles revokes the user's roles but ids.
-func dropUserRoles(db *gorm.DB, userID int64, ids store.Int64s) *gorm.DB {
-	return db.Where("user_id = ? AND role_id <> ALL(?)", userID, ids).Delete(&model.UserRole{})
-}
-
-// addUserRoles assigns the user the roles ids.
-func addUserRoles(db *gorm.DB, userID int64, ids store.Int64s) *gorm.DB {
-	return db.Exec(`INSERT INTO user_roles (user_id, role_id) SELECT ?, unnest(?::bigint[]) ON CONFLICT DO NOTHING`, userID, ids)
+	return casbinrule.SetRoles(store.G(ctx, tx), userID, roleKeysOf(roles))
 }
 
 // EnsureNotLastSuperAdmin fails with conflict when userID is a superuser and
@@ -844,9 +828,9 @@ func (s *Service) ensureOtherSuperuser(ctx context.Context, tx *gorm.DB, userID 
 // otherSuperusers counts the active, undeleted users but userID holding a
 // superuser role.
 func otherSuperusers(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Raw(`SELECT count(DISTINCT u.id) FROM users u
-        JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
-        WHERE r.superuser AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> ?`, userID)
+	return db.Raw(`SELECT count(DISTINCT u.id) FROM roles r, users u
+        WHERE r.superuser AND u.id IN (`+casbinrule.MembersOf("r.key")+`)
+          AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> ?`, userID)
 }
 
 // AssignableRole is one role in GET /me/assignable-roles.
@@ -1246,7 +1230,7 @@ func (s *Service) IsSuperuser(ctx context.Context, q *gorm.DB, userID int64) (bo
 	return store.Exists(db, superuserGrants(db, userID))
 }
 
-// superuserGrants selects the assignments of a superuser role to userID.
+// superuserGrants selects the superuser roles userID holds.
 func superuserGrants(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Table("user_roles ur").Joins("JOIN roles r ON r.id = ur.role_id").Where("ur.user_id = ? AND r.superuser", userID)
+	return db.Model(&model.Role{}).Where("superuser AND key IN (?)", casbinrule.RoleKeysOf(db, []int64{userID}))
 }

@@ -72,6 +72,12 @@ type RecoverOptions struct {
 // returns the new password when ResetPassword is set. Without a bus the other
 // nodes catch up through the version poll and the status cache TTL. ctx
 // should carry audit.WithSource.
+//
+// On a database the migrations stopped before 0100 (0097 refuses to run
+// without exactly one super admin and asks for this command) it only
+// transfers: the user reads of the other steps need casbin_rule, so it
+// refuses a disabled user and the resets, which the operator runs once the
+// core has migrated.
 func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts RecoverOptions) (password string, err error) {
 	var id int64
 	var status string
@@ -81,6 +87,13 @@ func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts Reco
 	}
 	if err != nil {
 		return "", err
+	}
+	legacy, err := authz.LegacySchema(store.G(ctx, s.db.Gorm))
+	if err != nil {
+		return "", err
+	}
+	if legacy && (status != StatusActive || opts.ResetPassword || opts.ResetTwoFactor) {
+		return "", errLegacyRecover
 	}
 	if status != StatusActive {
 		active := StatusActive
@@ -104,6 +117,11 @@ func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts Reco
 	}
 	return password, nil
 }
+
+// errLegacyRecover is RecoverSuperAdmin's refusal of what it cannot do
+// before migration 0100.
+var errLegacyRecover = core.ErrConflict.WithMessage("the database is before migration 0100_casbin_rule.sql: recover an active user without " +
+	"--reset-password and --reset-2fa, start the core so that it migrates, then run the command again with them")
 
 // randomPassword returns 24 URL-safe characters (144 random bits).
 func randomPassword() string {

@@ -9,6 +9,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -27,13 +28,16 @@ func transfer(s *Service, actor, target int64) ([]int64, error) {
 	return demoted, err
 }
 
-// superAdminsNow lists the holders of a superuser role.
+// superAdminsNow lists the holders of the super admin role, as the
+// transfer reads them.
 func superAdminsNow(t *testing.T, s *Service) []int64 {
 	t.Helper()
 	var ids []int64
 	err := s.db.Tx(context.Background(), func(tx *gorm.DB) error {
-		var err error
-		ids, err = superAdmins(context.Background(), tx)
+		h, err := superAdminHolders(tx)
+		if err == nil {
+			ids, err = h.lock(tx)
+		}
 		return err
 	})
 	if err != nil {
@@ -44,11 +48,7 @@ func superAdminsNow(t *testing.T, s *Service) []int64 {
 
 func userRoleKeys(t *testing.T, s *Service, uid int64) []string {
 	t.Helper()
-	var keys []string
-	if err := s.db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`, uid).Scan(&keys); err != nil {
-		t.Fatal(err)
-	}
-	return keys
+	return testutil.RoleKeys(t, s.db, uid)
 }
 
 func TestTransferSuperAdmin(t *testing.T) {
@@ -112,36 +112,28 @@ func TestTransferSuperAdmin(t *testing.T) {
 	}
 }
 
-// The CLI (actor 0) also repairs a database with several holders or none. A
-// deleted holder loses the role without becoming an admin, so restoring the
-// user later brings back no privileges.
+// The CLI (actor 0) also repairs a database with no holder, or one that
+// is deleted: a deleted holder loses the role without becoming an admin, so
+// restoring the user later brings back no privileges.
 func TestTransferSuperAdminRepairs(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	a := addUser(t, s, "a@x.com", RoleSuperAdmin)
+	a := addUser(t, s, "a@x.com", RoleSuperAdmin, RoleUser)
 	b := addUser(t, s, "b@x.com", RoleUser)
 	c := addUser(t, s, "c@x.com", RoleUser)
-	d := addUser(t, s, "d@x.com", RoleUser)
-	for _, uid := range []int64{b, d} {
-		testutil.ExecWithoutTrigger(t, db, "user_roles", "user_roles_one_superuser",
-			`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, uid, roleID(t, s, RoleSuperAdmin))
-	}
-	if _, err := db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, d); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, a); err != nil {
 		t.Fatal(err)
 	}
 	demoted, err := transfer(s, 0, b)
-	if err != nil || !slices.Equal(demoted, []int64{a, d}) || !slices.Equal(superAdminsNow(t, s), []int64{b}) {
-		t.Fatalf("several holders: demoted %v, holders %v, %v", demoted, superAdminsNow(t, s), err)
+	if err != nil || !slices.Equal(demoted, []int64{a}) || !slices.Equal(superAdminsNow(t, s), []int64{b}) {
+		t.Fatalf("deleted holder: demoted %v, holders %v, %v", demoted, superAdminsNow(t, s), err)
 	}
-	if got := userRoleKeys(t, s, a); !slices.Equal(got, []string{RoleAdmin}) {
-		t.Fatalf("demoted holder roles: %v", got)
-	}
-	if got := userRoleKeys(t, s, d); !slices.Equal(got, []string{RoleUser}) {
+	if got := userRoleKeys(t, s, a); !slices.Equal(got, []string{RoleUser}) {
 		t.Fatalf("deleted holder roles: %v", got)
 	}
-	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2`, b, roleID(t, s, RoleSuperAdmin)); err != nil {
+	if err := casbinrule.RemoveMembers(db.Gorm, RoleSuperAdmin, []int64{b}); err != nil {
 		t.Fatal(err)
 	}
 	demoted, err = transfer(s, 0, c)
@@ -151,6 +143,47 @@ func TestTransferSuperAdminRepairs(t *testing.T) {
 	var via string
 	if err := db.SQL.QueryRowContext(ctx, `SELECT detail->>'via' FROM audit_logs WHERE action = 'superadmin.transfer' AND target_id = $1`, strconv.FormatInt(c, 10)).Scan(&via); err != nil || via != "cli" {
 		t.Fatalf("via %q %v", via, err)
+	}
+}
+
+// On the schema before migration 0100 (user_roles, whose 0097 check of one
+// holder points the operator at the CLI), the CLI repairs several holders:
+// every other one becomes an admin, a deleted one only loses the role.
+func TestTransferSuperAdminRepairsLegacy(t *testing.T) {
+	t.Parallel()
+	db := testutil.DBThrough(t, "0099_plugin_permission_meta.sql")
+	s := New(Deps{DB: db})
+	ctx := context.Background()
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name, superuser) VALUES ($1, '{}', true), ($2, '{}', false), ($3, '{}', false)`,
+		RoleSuperAdmin, RoleAdmin, RoleUser); err != nil {
+		t.Fatal(err)
+	}
+	users := map[string]int64{}
+	for _, name := range []string{"a", "b", "c", "d"} {
+		users[name] = testutil.InsertUser(t, db, name+"@x.com")
+	}
+	a, b, d := users["a"], users["b"], users["d"]
+	testutil.ExecWithoutTrigger(t, db, "user_roles", "user_roles_one_superuser",
+		`INSERT INTO user_roles (user_id, role_id) SELECT u, r.id FROM unnest($1::bigint[]) u, roles r WHERE r.key = $2`, []int64{a, b, d}, RoleSuperAdmin)
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, d); err != nil {
+		t.Fatal(err)
+	}
+	demoted, err := transfer(s, 0, b)
+	if err != nil || !slices.Equal(demoted, []int64{a, d}) || !slices.Equal(superAdminsNow(t, s), []int64{b}) {
+		t.Fatalf("several holders: demoted %v, holders %v, %v", demoted, superAdminsNow(t, s), err)
+	}
+	roles := func(uid int64) []string {
+		var keys []string
+		if err := db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`, uid).Scan(&keys); err != nil {
+			t.Fatal(err)
+		}
+		return keys
+	}
+	if got := roles(a); !slices.Equal(got, []string{RoleAdmin}) {
+		t.Fatalf("demoted holder roles: %v", got)
+	}
+	if got := roles(d); len(got) != 0 {
+		t.Fatalf("deleted holder roles: %v", got)
 	}
 }
 

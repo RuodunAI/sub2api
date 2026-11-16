@@ -6,8 +6,10 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 var (
@@ -26,17 +28,23 @@ func transferTargetError(code, message string) *core.Error {
 
 // TransferSuperAdmin hands the super admin role to targetID inside tx, the
 // only way it changes hands; every other holder becomes an admin, except a
-// deleted one, which only loses the role (as 0098 does). actorID must hold
+// deleted one, which only loses the role (as 0097 does). actorID must hold
 // it; 0 is the server CLI, which also repairs a database with no or several
-// holders. It returns the bumped version (call Committed after
-// commit) and the demoted users. Only roles, user_roles and users are read
-// and written, so the CLI runs on any schema it may meet.
+// holders. It returns the bumped version (call Committed after commit) and
+// the demoted users. Besides authz_meta and the audit it reads and writes
+// the holders (superAdminHolders) and users only, so the CLI runs on the
+// schema before migration 0100 too (whose 0097 asks for it).
 func (s *Service) TransferSuperAdmin(ctx context.Context, tx *gorm.DB, actorID, targetID int64) (int64, []int64, error) {
 	v, err := s.Bump(ctx, tx)
 	if err != nil {
 		return 0, nil, err
 	}
-	holders, err := superAdmins(ctx, tx)
+	db := store.G(ctx, tx)
+	h, err := superAdminHolders(db)
+	if err != nil {
+		return 0, nil, err
+	}
+	holders, err := h.lock(db)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -46,17 +54,20 @@ func (s *Service) TransferSuperAdmin(ctx context.Context, tx *gorm.DB, actorID, 
 	if err := checkTransferTarget(ctx, tx, actorID, targetID); err != nil {
 		return 0, nil, err
 	}
-	// Delete before insert, so a one-holder constraint never sees two.
+	// Revoke before grant: the one-holder index never sees two.
 	demoted := slices.DeleteFunc(slices.Clone(holders), func(id int64) bool { return id == targetID })
-	db := store.G(ctx, tx)
-	if err := revokeSuperuser(db, demoted).Error; err != nil {
+	if err := h.revoke(db, demoted); err != nil {
 		return 0, nil, err
 	}
-	if err := grantAdmin(db, demoted).Error; err != nil {
+	live, err := undeleted(db, demoted)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err := h.grant(db, RoleAdmin, live); err != nil {
 		return 0, nil, err
 	}
 	if !slices.Contains(holders, targetID) {
-		if err := grantSuperuser(db, targetID).Error; err != nil {
+		if err := h.grant(db, RoleSuperAdmin, []int64{targetID}); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -67,36 +78,76 @@ func (s *Service) TransferSuperAdmin(ctx context.Context, tx *gorm.DB, actorID, 
 	return v, demoted, s.audit(ctx, tx, actorID, "superadmin.transfer", "user", targetID, map[string]any{"from": holders, "to": targetID, "via": via})
 }
 
-// revokeSuperuser revokes the superuser roles of userIDs.
-func revokeSuperuser(db *gorm.DB, userIDs []int64) *gorm.DB {
-	return db.Exec(`DELETE FROM user_roles ur USING roles r WHERE r.id = ur.role_id AND r.superuser AND ur.user_id = ANY(?)`, store.Int64s(userIDs))
+// undeleted returns the users of ids not soft-deleted, by id (never nil).
+func undeleted(db *gorm.DB, ids []int64) ([]int64, error) {
+	out := []int64{}
+	err := db.Model(&model.User{}).Where("id = ANY(?) AND deleted_at IS NULL", store.Int64s(ids)).Order("id").Pluck("id", &out).Error
+	return out, err
 }
 
-// grantAdmin assigns the admin role to the undeleted users of userIDs.
-func grantAdmin(db *gorm.DB, userIDs []int64) *gorm.DB {
-	return db.Exec(`INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r
-		WHERE u.id = ANY(?) AND u.deleted_at IS NULL AND r.key = ? ON CONFLICT DO NOTHING`, store.Int64s(userIDs), RoleAdmin)
+// holderStore is where the super admin role's holders are: casbin_rule, or
+// user_roles on a database the 0.1.290 migrations have not reached past
+// 0097, whose check of one holder points the operator at the CLI before
+// 0100 replaces the table.
+type holderStore interface {
+	// lock returns the holders, by id, and locks their rows.
+	lock(db *gorm.DB) ([]int64, error)
+	revoke(db *gorm.DB, userIDs []int64) error
+	grant(db *gorm.DB, role string, userIDs []int64) error
 }
 
-// grantSuperuser assigns the superuser roles to userID.
-func grantSuperuser(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Exec(`INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE superuser`, userID)
+// LegacySchema reports whether the database db reads is one the
+// migrations stopped before 0100 (user_roles still holds the roles): where
+// the server CLI recovers a super admin for 0097, and nothing else of this
+// core runs.
+func LegacySchema(db *gorm.DB) (bool, error) {
+	var legacy bool
+	err := db.Raw(`SELECT to_regclass('public.user_roles') IS NOT NULL`).Scan(&legacy).Error
+	return legacy, err
 }
 
-// superAdmins locks the rows of superuser roles and returns their holders
-// (never nil).
-func superAdmins(ctx context.Context, tx *gorm.DB) ([]int64, error) {
-	ids := []int64{}
-	if err := lockSuperAdmins(store.G(ctx, tx)).Scan(&ids).Error; err != nil {
-		return nil, err
+// superAdminHolders is the holderStore of the database db reads.
+func superAdminHolders(db *gorm.DB) (holderStore, error) {
+	legacy, err := LegacySchema(db)
+	if err != nil || !legacy {
+		return policyHolders{}, err
 	}
-	return slices.Compact(ids), nil
+	return legacyHolders{}, nil
 }
 
-// lockSuperAdmins selects the holders of superuser roles, by id, and locks
-// their user_roles rows.
-func lockSuperAdmins(db *gorm.DB) *gorm.DB {
-	return db.Raw(`SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.superuser ORDER BY 1 FOR UPDATE OF ur`)
+// policyHolders are casbin_rule's g rows of the super admin role (the one
+// superuser role, roles_superuser_key).
+type policyHolders struct{}
+
+func (policyHolders) lock(db *gorm.DB) ([]int64, error) {
+	return casbinrule.LockMembers(db, RoleSuperAdmin)
+}
+
+func (policyHolders) revoke(db *gorm.DB, userIDs []int64) error {
+	return casbinrule.RemoveMembers(db, RoleSuperAdmin, userIDs)
+}
+
+func (policyHolders) grant(db *gorm.DB, role string, userIDs []int64) error {
+	return casbinrule.AddMembers(db, role, userIDs)
+}
+
+// legacyHolders are the user_roles rows of the superuser role, on a schema
+// before migration 0100 only.
+type legacyHolders struct{}
+
+func (legacyHolders) lock(db *gorm.DB) ([]int64, error) {
+	ids := []int64{}
+	err := db.Raw(`SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.superuser ORDER BY 1 FOR UPDATE OF ur`).Scan(&ids).Error
+	return slices.Compact(ids), err
+}
+
+func (legacyHolders) revoke(db *gorm.DB, userIDs []int64) error {
+	return db.Exec(`DELETE FROM user_roles ur USING roles r WHERE r.id = ur.role_id AND r.superuser AND ur.user_id = ANY(?)`, store.Int64s(userIDs)).Error
+}
+
+func (legacyHolders) grant(db *gorm.DB, role string, userIDs []int64) error {
+	return db.Exec(`INSERT INTO user_roles (user_id, role_id) SELECT u, r.id FROM unnest(?::bigint[]) u, roles r WHERE r.key = ? ON CONFLICT DO NOTHING`,
+		store.Int64s(userIDs), role).Error
 }
 
 // checkTransferTarget fails unless targetID is an active, undeleted user

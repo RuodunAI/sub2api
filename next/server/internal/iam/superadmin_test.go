@@ -8,15 +8,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestTransferSuperAdminHTTP(t *testing.T) {
-	k := newKeyEnv(t, authztest.AcceptStaleCache) // disables a user with a raw UPDATE
+	k := newKeyEnv(t)
 	s, ctx := k.s, context.Background()
 	const path = "/system/super-admin/transfer"
 	rootLogin := mustLogin(t, s, adminEmail, adminPassword)
@@ -97,23 +101,20 @@ func TestTransferSuperAdminHTTP(t *testing.T) {
 }
 
 // RecoverSuperAdmin leaves the target the only holder from any start: no
-// holder, one, or several (what the one-super-admin migration refuses; set
-// up past its trigger, which then checks the recovery).
+// holder or one (casbin_rule_one_superuser allows no more; several are
+// TestRecoverSuperAdminBeforeCasbinRule's).
 func TestRecoverSuperAdmin(t *testing.T) {
-	for _, holders := range []int{0, 1, 2} {
+	for _, holders := range []int{0, 1} {
 		t.Run(strconv.Itoa(holders), func(t *testing.T) {
-			e := setupAdmin(t, authztest.AcceptStaleCache) // disables users with raw UPDATEs
+			e := setupAdmin(t)
 			s, ctx := e.svc, audit.WithSource(context.Background(), "cli")
 			root := mustLogin(t, s, adminEmail, adminPassword).User.ID
 			other := mustCreateUser(t, s, "other@example.com")
 			target := mustCreateUser(t, s, "target@example.com")
 			targetLogin := mustLogin(t, s, "target@example.com", adminPassword)
 			enableTwoFactor(t, s, target)
-			switch holders {
-			case 0:
-				setSuperAdmin(t, s, root, false)
-			case 2:
-				setSuperAdmin(t, s, other, true)
+			if holders == 0 {
+				require.NoError(t, casbinrule.RemoveMembers(s.db.Gorm, authz.RoleSuperAdmin, []int64{root}))
 			}
 			if _, err := s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, target); err != nil {
 				t.Fatal(err)
@@ -126,9 +127,6 @@ func TestRecoverSuperAdmin(t *testing.T) {
 			wantRoles := map[int64][]string{root: {authz.RoleAdmin}, other: {authz.RoleUser}, target: {authz.RoleSuperAdmin, authz.RoleUser}}
 			if holders == 0 {
 				wantRoles[root] = nil
-			}
-			if holders == 2 {
-				wantRoles[other] = []string{authz.RoleAdmin, authz.RoleUser}
 			}
 			for id, want := range wantRoles {
 				u, err := s.GetUser(ctx, id)
@@ -170,7 +168,7 @@ func TestRecoverSuperAdminNewSignInWorksOnARunningNode(t *testing.T) {
 		}
 	}
 
-	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: authz.New(authz.Deps{DB: s.db, Shadow: authztest.Shadow()})}) // as cmd/sub2api/admin.go
+	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: authz.New(authz.Deps{DB: s.db})}) // as cmd/sub2api/admin.go
 	for _, email := range []string{"target@example.com", adminEmail} {
 		if _, err := cli.RecoverSuperAdmin(ctx, email, RecoverOptions{}); err != nil {
 			t.Fatal(err)
@@ -188,7 +186,7 @@ func TestRecoverSuperAdminNewSignInWorksOnARunningNode(t *testing.T) {
 // carries: the row is not read on every request (a token's version is above
 // anything a missing row could otherwise be cached with).
 func TestStatusCacheKeepsADeletedUser(t *testing.T) {
-	s, ctx := setupAdmin(t, authztest.AcceptStaleCache).svc, context.Background() // deletes the user with raw UPDATEs
+	s, ctx := setupAdmin(t).svc, context.Background()
 	uid := mustCreateUser(t, s, "gone@example.com")
 	exec := func(q string) {
 		t.Helper()
@@ -224,12 +222,42 @@ func mustCreateUser(t *testing.T, s *Service, email string) int64 {
 	return u.ID
 }
 
-// setSuperAdmin adds or removes the super admin role behind the API's back.
-func setSuperAdmin(t *testing.T, s *Service, uid int64, on bool) {
-	t.Helper()
-	q := `DELETE FROM user_roles ur USING roles r WHERE r.id = ur.role_id AND r.superuser AND ur.user_id = $1`
-	if on {
-		q = `INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE superuser`
+// On a 0.1.285 database with two super admins 0097 stops the upgrade and
+// asks for the CLI, which runs before the migrations reach casbin_rule: it
+// makes the user the only holder (the other an admin), refusing a disabled
+// user and the resets until the core has migrated; the migrations then go
+// through, casbin_rule naming the one holder.
+func TestRecoverSuperAdminBeforeCasbinRule(t *testing.T) {
+	e := setupAdmin(t) // its configuration
+	db := testutil.DBThrough(t, "0096_usage_base_cost.sql")
+	ctx := audit.WithSource(context.Background(), "cli")
+	_, err := db.SQL.ExecContext(ctx, `
+INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{}', true, true), ('admin', '{}', true, false), ('user', '{}', true, false);
+INSERT INTO users (email, password_hash, status) VALUES ('a@x', '', 'active'), ('b@x', '', 'active'), ('c@x', '', 'disabled');
+INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE r.key = 'super_admin' AND u.email IN ('a@x', 'b@x')`)
+	require.NoError(t, err)
+	migrate := func() error {
+		_, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		return err
 	}
-	testutil.ExecWithoutTrigger(t, s.db, "user_roles", "user_roles_one_superuser", q, uid)
+	require.ErrorContains(t, migrate(), "several super admins")
+
+	cli := New(Deps{DB: db, Config: e.cfg, Authz: authz.New(authz.Deps{DB: db})}) // as cmd/sub2api/admin.go
+	for _, c := range []struct {
+		email string
+		opts  RecoverOptions
+	}{{"a@x", RecoverOptions{ResetPassword: true}}, {"a@x", RecoverOptions{ResetTwoFactor: true}}, {"c@x", RecoverOptions{}}} {
+		_, err := cli.RecoverSuperAdmin(ctx, c.email, c.opts)
+		require.True(t, isCode(err, "conflict"), "%s %+v: %v", c.email, c.opts, err)
+	}
+	_, err = cli.RecoverSuperAdmin(ctx, "a@x", RecoverOptions{})
+	require.NoError(t, err)
+
+	require.NoError(t, migrate())
+	id := func(email string) (v int64) {
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT id FROM users WHERE email = $1`, email).Scan(&v))
+		return v
+	}
+	require.Equal(t, []string{authz.RoleSuperAdmin}, testutil.RoleKeys(t, db, id("a@x")))
+	require.Equal(t, []string{authz.RoleAdmin}, testutil.RoleKeys(t, db, id("b@x")))
 }

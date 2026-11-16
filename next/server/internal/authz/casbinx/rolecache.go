@@ -175,17 +175,6 @@ func (c *roleCache) shared(ctx context.Context, uid, min int64) (UserRoles, erro
 	}
 }
 
-// Reload reads uid's roles from the Loader and keeps them in L1 (and L2,
-// off the caller), replacing an entry of the same version.
-func (c *roleCache) Reload(ctx context.Context, uid int64) (UserRoles, error) {
-	ur, err := c.load.UserRoles(ctx, uid)
-	if err != nil {
-		return UserRoles{}, err
-	}
-	c.setL2(uid, ur)
-	return c.store(uid, ur), nil
-}
-
 // fill reads uid's roles from L2 or, when L2 has none at version min, from
 // the Loader (writing them back to L2 off the caller), and stores them in
 // L1.
@@ -262,8 +251,7 @@ func (c *roleCache) l2() bool {
 // and once the restored database's own writes bring it back to the version
 // of an entry written before the restore (within the TTL), that entry
 // names another state. Restoring a backup therefore deletes the keys
-// (CONTRACTS §99.4); the shadow comparison reports what one left behind
-// (stale_cache). The resolver asks Warm at its snapshot's version, so the
+// (CONTRACTS §99.4). The resolver asks Warm at its snapshot's version, so the
 // entries a node can use are those of the current version, the ones the
 // other nodes write.
 func (c *roleCache) getL2(ctx context.Context, uid, min int64) (UserRoles, bool) {

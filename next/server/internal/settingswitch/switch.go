@@ -1,5 +1,5 @@
 // Package settingswitch is a site-wide mode that the super admin flips at
-// run time: authz.engine (CONTRACTS §99.3) and session.issue (§100.5).
+// run time: session.issue (CONTRACTS §100.5).
 package settingswitch
 
 import (

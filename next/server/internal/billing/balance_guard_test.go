@@ -9,9 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // keyTokens is allowAll that also answers "sak_<name>" with keys[name].
@@ -41,15 +41,13 @@ func (k keyTokens) VerifyAccessKey(_ context.Context, raw, _ string) (core.Acces
 func TestAdjustBalanceManagedUsers(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	az := authz.New(authz.Deps{DB: e.db, Bus: e.bus, Shadow: authztest.Shadow()})
+	az := authz.New(authz.Deps{DB: e.db, Bus: e.bus})
 	if err := az.SyncCore(ctx); err != nil {
 		t.Fatal(err)
 	}
 	withRoles := func(email string, roles ...string) int64 {
 		id := e.user(email)
-		for _, role := range roles {
-			e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, id, role)
-		}
+		testutil.AssignRoles(t, e.db, id, roles...)
 		return id
 	}
 	super := withRoles("super@example.com", authz.RoleSuperAdmin)

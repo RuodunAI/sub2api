@@ -1,50 +1,50 @@
 // Package casbinx resolves effective permissions with Casbin (CONTRACTS
-// §99, Mode P).
+// §99).
 //
-// The legacy role tables stay the source of truth; casbin_rule is their
-// projection, kept in the same transaction by database triggers (migration
-// 0100). This package only reads it: one immutable enforcer per authz
-// version (snapshot), built from the p rows of active permissions and no g
-// row; a user's roles come from the two-level user-role cache (RoleCache)
-// at the snapshot's version, and the read-only role manager links each
-// role subject to itself only. Nothing here writes policy, opens a transaction of its own or
-// calls the gorm-adapter / Casbin management APIs (AddPolicy, SavePolicy,
-// Transaction, TransactionalEnforcer): gormguard rejects them.
+// casbin_rule is the one store of the grants and the users' roles; its
+// writes are package casbinrule's, in the business transactions. This
+// package only reads it: one immutable enforcer per authz version
+// (snapshot), built from the p rows of active permissions and no g row; a
+// user's roles come from the two-level user-role cache (RoleCache) at the
+// snapshot's version, and the read-only role manager links each role
+// subject to itself only. Nothing here writes policy, opens a transaction
+// of its own or calls the gorm-adapter / Casbin management APIs (AddPolicy,
+// SavePolicy, Transaction, TransactionalEnforcer): gormguard rejects them.
 //
-// Hot paths read the PermissionSet Grants returns and test it with
+// Requests read the PermissionSet Grants returns and test it with
 // PermissionSet.Has (perm.Implies, the same function permMatch registers);
-// Enforce runs every policy through the matcher (8-230 µs) and is for the
-// shadow comparison and diagnostics only.
+// Enforce runs every policy through the matcher (8-230 µs) and is for this
+// package's tests and diagnostics only.
 package casbinx
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// Subjects and the reserved policy values.
+// Subjects and the reserved policy values, casbinrule's: the store and the
+// resolver read the rows the same way.
 const (
 	// SuperKey as the action of a p row grants every key, future ones
-	// included: the projection of roles.superuser.
-	SuperKey = "*"
-	// AllRows is the scope of an unscoped grant (never empty: gorm-adapter
-	// drops trailing empty columns when it loads a row).
-	AllRows = "*"
+	// included: a superuser role's row.
+	SuperKey = casbinrule.SuperKey
+	// AllRows is the scope of an unscoped grant.
+	AllRows = casbinrule.AllRows
 	// SelfRole is the virtual role of every active user, holding the self
 	// permissions (authz.SelfPermissionKeys); it is never stored, and a
 	// stored row of it is not loaded (loadable).
-	SelfRole = "r:_self"
+	SelfRole = casbinrule.SelfRole
 )
 
 // UserSub is the Casbin subject of a user, RoleSub of a role.
-func UserSub(id int64) string { return "u:" + strconv.FormatInt(id, 10) }
+func UserSub(id int64) string { return casbinrule.UserSub(id) }
 
 // RoleSub is the Casbin subject of the role with key key.
-func RoleSub(key string) string { return "r:" + key }
+func RoleSub(key string) string { return casbinrule.RoleSub(key) }
 
 // Rule is one casbin_rule row: p (role subject, action, scope) or g (user
 // subject, role subject, ""); v3..v5 are unused.
@@ -88,9 +88,6 @@ type Loader interface {
 // halves of a set cannot come from different versions.
 type RoleCache interface {
 	Warm(ctx context.Context, uid, min int64) (UserRoles, error)
-	// Reload reads uid's roles from the Loader, past both levels, and
-	// keeps them (in place of an entry of the same version).
-	Reload(ctx context.Context, uid int64) (UserRoles, error)
 }
 
 // Resolver is what authz.Service calls. Grants is uid's effective
@@ -109,20 +106,12 @@ type Resolver interface {
 	// when the current one is older: the node learnt of a new version, and
 	// the requests that follow should find it built.
 	Prewarm(min int64)
-	// Reread reads uid's roles again past the role cache (Reload), for the
-	// Grants and Enforce that follow: the shadow comparison checks a
-	// difference against reads made after it. The fresh read replaces the
-	// cached entry: one a write the version does not record left behind
-	// (a missed Bump, a restored database's L2 entry, a raw UPDATE in a
-	// test) must not go on answering; the comparison still reports it
-	// (stale_cache).
-	Reread(ctx context.Context, uid int64) error
 }
 
 // ErrSkew is the error of a resolution whose snapshot and roles were read
 // at different versions in every round until the snapshot wait ran out:
 // writes kept landing in between. The caller must not combine them (casbin
-// fails closed; the shadow comparison skips).
+// fails closed).
 var ErrSkew = errors.New("casbinx: the policy and the user's roles were read at different versions")
 
 // ErrForeignResolver is Enforce's error for a Resolver NewResolver did not
@@ -132,7 +121,7 @@ var ErrForeignResolver = errors.New("casbinx: Enforce needs a Resolver of NewRes
 // Enforce runs key through the matcher for uid, at version min or newer,
 // and returns the version it decided at (the same as Grants would label
 // its set). It runs every policy row through the matcher (8-230 µs at 400
-// rows): for the shadow comparison and diagnostics only; hot paths ask
+// rows): for this package's tests and diagnostics only; requests ask
 // Grants' PermissionSet.Has.
 func Enforce(ctx context.Context, r Resolver, uid int64, key string, min int64) (ok bool, version int64, err error) {
 	own, isOwn := r.(*resolver)

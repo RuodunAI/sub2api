@@ -21,6 +21,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -120,42 +121,43 @@ func cloneTemplate(t testing.TB, base, tpl string) *store.DB {
 	})
 	// Registered last, so it runs first; on a connection of its own, as a
 	// test may have closed db.
-	t.Cleanup(func() { checkCasbinDrift(t, dsn) })
+	t.Cleanup(func() { checkCasbinOrphans(t, dsn) })
 	return db
 }
 
-// checkCasbinDrift fails t when casbin_rule is not exactly the projection
-// of the role tables (authz_casbin_drift, migration 0100) as the test left
-// the database dsn: some writer the triggers miss, which every DB test
-// thereby looks for. A database without the view (DBThrough an older
-// migration) is not checked.
-func checkCasbinDrift(t testing.TB, dsn string) {
+// checkCasbinOrphans fails t when casbin_rule holds a row naming a user,
+// role or permission the test left the database dsn without
+// (casbinrule.OrphansSQL): no foreign key cascades to it, so every delete
+// path clears its rows itself, which every DB test thereby looks for. A
+// database without the table (DBThrough an older migration) is not checked.
+func checkCasbinOrphans(t testing.TB, dsn string) {
+	const failed = "%s orphan check: %v"
 	ctx := context.Background()
 	conn, done, err := Connect(ctx, dsn)
 	if err != nil {
-		t.Errorf("casbin_rule drift check: %v", err)
+		t.Errorf(failed, casbinrule.Table, err)
 		return
 	}
 	defer done()
-	var view bool
-	if err := conn.QueryRowContext(ctx, `SELECT to_regclass('authz_casbin_drift') IS NOT NULL`).Scan(&view); err != nil || !view {
+	var table bool
+	if err := conn.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, casbinrule.Table).Scan(&table); err != nil || !table {
 		if err != nil {
-			t.Errorf("casbin_rule drift check: %v", err)
+			t.Errorf(failed, casbinrule.Table, err)
 		}
 		return
 	}
-	rows, err := conn.QueryContext(ctx, `SELECT concat_ws(' ', kind, ptype, v0, v1, v2) FROM authz_casbin_drift ORDER BY 1`)
+	rows, err := conn.QueryContext(ctx, casbinrule.OrphansSQL)
 	if err != nil {
-		t.Errorf("casbin_rule drift check: %v", err)
+		t.Errorf(failed, casbinrule.Table, err)
 		return
 	}
-	drift, err := Column[string](rows)
+	orphans, err := Column[string](rows)
 	if err != nil {
-		t.Errorf("casbin_rule drift check: %v", err)
+		t.Errorf(failed, casbinrule.Table, err)
 		return
 	}
-	if len(drift) > 0 {
-		t.Errorf("casbin_rule drifted from the role tables (a write the migration 0100 triggers missed):\n  %s", strings.Join(drift, "\n  "))
+	if len(orphans) > 0 {
+		t.Errorf("%s rows name a deleted user, role or permission (a delete path that does not clear them):\n  %s", casbinrule.Table, strings.Join(orphans, "\n  "))
 	}
 }
 

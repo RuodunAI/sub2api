@@ -28,17 +28,17 @@ import (
 	"github.com/pquerna/otp/hotp"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-func setupAdmin(t *testing.T, opts ...authztest.Option) *env {
+func setupAdmin(t *testing.T) *env {
 	t.Helper()
-	e := setup(t, opts...)
+	e := setup(t)
 	if err := e.svc.Bootstrap(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -726,7 +726,7 @@ func TestPasskeyRegistrationAndLogin(t *testing.T) {
 }
 
 func TestPasskeyLoginRejects(t *testing.T) {
-	e := setupAdmin(t, authztest.AcceptStaleCache) // disables the user with a raw UPDATE
+	e := setupAdmin(t)
 	s, ctx := e.svc, context.Background()
 	id := mustLogin(t, s, adminEmail, adminPassword).User.ID
 	a := newAuthenticator(t, consoleOrigin, consoleHost)
@@ -866,9 +866,9 @@ type keyEnv struct {
 	userID int64
 }
 
-func newKeyEnv(t *testing.T, opts ...authztest.Option) *keyEnv {
+func newKeyEnv(t *testing.T) *keyEnv {
 	t.Helper()
-	e := setupAdmin(t, opts...)
+	e := setupAdmin(t)
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	r := httpapi.NewRouter(engine, e.svc, e.authz)
@@ -941,19 +941,9 @@ func (k *keyEnv) grantRole(t *testing.T, userID int64, key string, perms ...stri
 		if err != nil {
 			t.Fatal(err)
 		}
-		sql := `INSERT INTO role_permissions (role_id, permission_id) SELECT $1, id FROM permissions WHERE key = $2`
-		args := []any{id, string(pat.Action)}
-		if scope := pat.Suffix(); scope != "" {
-			sql = `INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT $1, id, $3 FROM permissions WHERE key = $2`
-			args = append(args, scope)
-		}
-		if _, err := k.s.db.SQL.ExecContext(ctx, sql, args...); err != nil {
-			t.Fatal(err)
-		}
+		testutil.Grant(t, k.s.db, key, string(pat.Action), pat.Suffix())
 	}
-	if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, userID, id); err != nil {
-		t.Fatal(err)
-	}
+	testutil.AssignRoles(t, k.s.db, userID, key)
 	k.bump(t)
 	return id
 }
@@ -1010,9 +1000,7 @@ func TestAccessKeyIsASubsetOfItsUser(t *testing.T) {
 	}
 
 	// When the user loses a permission, so does the key, at once, and it says so.
-	if _, err := k.s.db.SQL.ExecContext(ctx, `DELETE FROM role_permissions WHERE permission_id = (SELECT id FROM permissions WHERE key = 'user:read')`); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Revoke(t, k.s.db, "reader", "user:read")
 	k.bump(t)
 	if code, _ := k.call(key.Key, "GET", "/users", nil); code != 403 {
 		t.Fatalf("a permission the user lost: %d", code)
@@ -1083,9 +1071,7 @@ func TestSuperuserKeyCannotGrantSuperAdmin(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A target without roles, so acting on it needs nothing.
-	if _, err := k.s.db.SQL.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = $1`, k.userID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.UnassignRoles(t, k.s.db, k.userID)
 	k.bump(t)
 	path := "/users/" + strconv.FormatInt(k.userID, 10) + "/roles"
 	grant := map[string]any{"role_keys": []string{authz.RoleSuperAdmin}}
@@ -1166,9 +1152,7 @@ func TestRoleRoutesSplitDefineAndAssign(t *testing.T) {
 	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE roles SET assign_custom = true WHERE key = 'assigner'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.s.db.SQL.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = $1`, target); err != nil {
-		t.Fatal(err)
-	}
+	testutil.UnassignRoles(t, k.s.db, target)
 	k.bump(t)
 	definer := mustLogin(t, k.s, "key-user@example.com", adminPassword).AccessToken
 	assigner := mustLogin(t, k.s, "assigner@example.com", adminPassword).AccessToken
@@ -1226,7 +1210,7 @@ func TestAccessKeyCannotManageSignIn(t *testing.T) {
 }
 
 func TestAccessKeyLifecycle(t *testing.T) {
-	k := newKeyEnv(t, authztest.AcceptStaleCache) // disables the user with a raw UPDATE
+	k := newKeyEnv(t)
 	ctx := context.Background()
 	root := mustLogin(t, k.s, adminEmail, adminPassword).User.ID
 
@@ -1289,7 +1273,7 @@ func TestAccessKeyLifecycle(t *testing.T) {
 func ptr[T any](v T) *T { return &v }
 
 func TestAccessKeyCatalogHasOnlyWhatTheUserHolds(t *testing.T) {
-	k := newKeyEnv(t, authztest.AcceptStaleCache) // disables a permission with a raw UPDATE
+	k := newKeyEnv(t)
 	ctx := context.Background()
 	k.grantRole(t, k.userID, "reader", "user:read")
 	mods, err := k.s.AccessKeyPermissions(ctx, k.userID)
@@ -1511,10 +1495,7 @@ func TestAccessKeyScopes(t *testing.T) {
 	}
 	// A group-range user's key takes a subset of its groups.
 	k.grantRole(t, k.userID, "grouped", "user:read")
-	if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-		SELECT r.id, p.id, 'group/12' FROM roles r, permissions p WHERE r.key = 'grouped' AND p.key = 'account:test'`); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Grant(t, k.s.db, "grouped", "account:test", "group/12")
 	k.bump(t)
 	if sub := k.createKey(t, k.userID, "account:test:group/12/account/5"); fmt.Sprint(sub.Permissions) != "[account:test:group/12/account/5]" {
 		t.Fatalf("subset key = %v", sub.Permissions)

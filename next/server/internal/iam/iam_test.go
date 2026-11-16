@@ -20,7 +20,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -93,16 +92,14 @@ const adminEmail, adminPassword = "root@example.com", "root-password-1"
 
 const testIP = "192.0.2.1"
 
-// setup is the service on a fresh database, its authz service on
-// authztest's shadow comparison with opts (AcceptStaleCache for the tests
-// that write the role tables or users behind the authz version).
-func setup(t *testing.T, opts ...authztest.Option) *env {
+// setup is the service on a fresh database with its authz service.
+func setup(t *testing.T) *env {
 	t.Helper()
 	db := testutil.DB(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	bus := &memBus{}
-	az := authz.New(authz.Deps{DB: db, Bus: bus, Shadow: authztest.Shadow(opts...)})
+	az := authz.New(authz.Deps{DB: db, Bus: bus})
 	if err := az.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -3,13 +3,8 @@ package install
 import (
 	"testing"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// TestMain removes registrytest's shared package directory after the run
-// and fails it on what the shadow comparison of the legacy loader and
-// Casbin found in the services its tests make with authztest.Shadow
-// (authztest.Check).
-func TestMain(m *testing.M) { testutil.Exit(registrytest.Run(m), authztest.Check) }
+// TestMain removes registrytest's shared package directory after the run.
+func TestMain(m *testing.M) { registrytest.Main(m) }

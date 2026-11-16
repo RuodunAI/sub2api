@@ -11,10 +11,11 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // Handing a version's new permissions to roles the request names needs
@@ -109,10 +110,8 @@ func TestConsentRenameInheritsOnly(t *testing.T) {
 INSERT INTO permissions (key, module, label, source, plugin_key, status, scope_type)
 VALUES ('plugin.guard:rules:view', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', $1)`, old)
 			require.NoError(t, err)
-			_, err = e.db.SQL.ExecContext(ctx, `
-INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:rules:view';
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'flow/3' FROM roles r, permissions p WHERE r.key = 'supplier' AND p.key = 'plugin.guard:rules:view'`)
-			require.NoError(t, err)
+			testutil.Grant(t, e.db, "operator", "plugin.guard:rules:view")
+			testutil.Grant(t, e.db, "supplier", "plugin.guard:rules:view", "flow/3")
 			want = map[string][]string{"operator": {""}}
 			if old == "plugin:flow" {
 				want["supplier"] = []string{"flow/3"}
@@ -142,12 +141,12 @@ func TestConsentInheritRules(t *testing.T) {
 INSERT INTO permissions (key, module, label, source, plugin_key, status, risk, scope_type)
 VALUES ('plugin.guard:old:exempt', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'critical', ''),
        ('plugin.guard:old:low', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', ''),
-       ('plugin.guard:old:flow', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', 'plugin:ticket');
-INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
- WHERE r.key = 'auditor' AND p.key IN ('plugin.guard:old:exempt', 'plugin.guard:old:low', 'plugin.guard:old:flow');
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'ticket/9' FROM roles r, permissions p
- WHERE r.key = 'operator' AND p.key = 'plugin.guard:old:flow'`)
+       ('plugin.guard:old:flow', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', 'plugin:ticket')`)
 	require.NoError(t, err)
+	for _, k := range []string{"old:exempt", "old:low", "old:flow"} {
+		testutil.Grant(t, e.db, "auditor", "plugin.guard:"+k)
+	}
+	testutil.Grant(t, e.db, "operator", "plugin.guard:old:flow", "ticket/9")
 	exempt := newPerm("rules:exempt", manifest.RiskCritical)
 	exempt.InheritFrom = []string{"old:exempt"}
 	strict := newPerm("rules:strict", manifest.RiskCritical)
@@ -176,7 +175,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 // that syncs and grants run the catalog's own checks.
 func realCatalog(t *testing.T, e *env, ctx context.Context) {
 	t.Helper()
-	cat := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
+	cat := authz.New(authz.Deps{DB: e.db})
 	require.NoError(t, cat.Start(ctx))
 	require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := cat.SetUserRoles(ctx, tx, 0, e.admin, []string{authz.RoleSuperAdmin})
@@ -190,9 +189,8 @@ func realCatalog(t *testing.T, e *env, ctx context.Context) {
 func scopeGrants(t *testing.T, e *env, ctx context.Context, role, local string) []string {
 	t.Helper()
 	var out []string
-	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(rs.scope ORDER BY rs.scope), '{}') FROM role_permission_scopes rs
-JOIN roles r ON r.id = rs.role_id JOIN permissions p ON p.id = rs.permission_id
-WHERE r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local).Scan(&out))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(scope ORDER BY scope), '{}') FROM (`+casbinrule.Grants+`) g
+WHERE role = $1 AND action = $2 AND scope <> ''`, role, "plugin.guard:"+local).Scan(&out))
 	return out
 }
 
@@ -207,13 +205,10 @@ func TestConsentInheritsOnlyScopesTheNewKeyTakes(t *testing.T) {
 INSERT INTO permissions (key, module, label, source, plugin_key, status, risk, scope_type, scope)
 VALUES ('plugin.guard:old:flow', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', 'plugin:flow', '{"resource":"flow","own":true}'),
        ('plugin.guard:old:kind', 'plugin.guard', '{"en":"x"}', 'plugin', 'guard', 'removed', 'low', 'plugin:value',
-        '{"resource":"value","values":[{"key":"a"},{"key":"b"}]}');
-INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-SELECT r.id, p.id, v.scope FROM roles r, permissions p,
-    (VALUES ('plugin.guard:old:flow', 'own'), ('plugin.guard:old:flow', 'flow/3'),
-            ('plugin.guard:old:kind', 'value/a'), ('plugin.guard:old:kind', 'value/b')) v(key, scope)
-WHERE r.key = 'auditor' AND p.key = v.key`)
+        '{"resource":"value","values":[{"key":"a"},{"key":"b"}]}')`)
 	require.NoError(t, err)
+	testutil.Grant(t, e.db, "auditor", "plugin.guard:old:flow", "own", "flow/3")
+	testutil.Grant(t, e.db, "auditor", "plugin.guard:old:kind", "value/a", "value/b")
 	flow := newPerm("flow:edit", "")
 	flow.Scope = &manifest.PermissionScope{Resource: "flow", Options: "/rules"} // own dropped
 	flow.InheritFrom = []string{"old:flow"}
@@ -270,9 +265,7 @@ func TestStagedUpgradePrunesScopesAtActivation(t *testing.T) {
 	v1, v2, v3 := flowAt("0.1.1", true), flowAt("0.1.2", false), flowAt("0.1.3", true)
 	upload(v1)
 	activate(v1)
-	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:manage'`)
-	require.NoError(t, err)
+	testutil.Grant(t, e.db, "operator", "plugin.guard:flow:manage", "own")
 
 	upload(v2)
 	assert.Equal(t, []string{"own"}, scopeGrants(t, e, ctx, "operator", "flow:manage"), "v1 still serves own")
@@ -293,15 +286,14 @@ SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'operator' AN
 // name still waits for review (D2).
 func TestConsentOverrideDecidesInheritance(t *testing.T) {
 	e, ctx := roleGrantsEnv(t) // auditor holds the removed rules:old
-	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
-WHERE r.key IN ('operator', 'supplier') AND p.key = 'plugin.guard:rules:old'`)
-	require.NoError(t, err)
+	testutil.Grant(t, e.db, "operator", "plugin.guard:rules:old")
+	testutil.Grant(t, e.db, "supplier", "plugin.guard:rules:old")
 	e.perms.grantees = func(context.Context, *gorm.DB, int64, []string) (core.PluginGrantees, error) {
 		return core.PluginGrantees{Denied: map[string]string{"supplier": core.GrantDenyHeld}}, nil
 	}
 	edit := newPerm("rules:edit", "")
 	edit.InheritFrom = []string{"rules:old"}
-	_, err = e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", edit), e.root), e.admin, UploadOptions{})
+	_, err := e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", edit), e.root), e.admin, UploadOptions{})
 	require.NoError(t, err)
 	r, err := e.svc.Review(ctx, "guard", "0.1.1", e.admin)
 	require.NoError(t, err)
@@ -392,17 +384,13 @@ func (g guardRollout) state(local string) [2]string {
 // grant gives role every row of the guard permission local.
 func (g guardRollout) grant(role, local string) {
 	g.t.Helper()
-	_, err := g.e.db.SQL.ExecContext(g.ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p
-WHERE r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local)
-	require.NoError(g.t, err)
+	testutil.Grant(g.t, g.e.db, role, "plugin.guard:"+local)
 }
 
 // revoke takes every row of the guard permission local from role.
 func (g guardRollout) revoke(role, local string) {
 	g.t.Helper()
-	_, err := g.e.db.SQL.ExecContext(g.ctx, `DELETE FROM role_permissions rp USING permissions p, roles r
-WHERE p.id = rp.permission_id AND r.id = rp.role_id AND r.key = $1 AND p.key = $2`, role, "plugin.guard:"+local)
-	require.NoError(g.t, err)
+	testutil.Revoke(g.t, g.e.db, role, "plugin.guard:"+local)
 }
 
 // pending is the role grants guard has to review, as viewer sees them.
@@ -460,9 +448,7 @@ func TestStagedKeysOfAVersionNeverActivated(t *testing.T) {
 	v1 := guardWith("0.1.1", read, old)
 	g.upload(v1)
 	g.activate(v1)
-	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'own'
-FROM roles r, permissions p WHERE r.key = 'operator' AND p.key = 'plugin.guard:flow:old'`)
-	require.NoError(t, err)
+	testutil.Grant(t, e.db, "operator", "plugin.guard:flow:old", "own")
 	v2 := guardWith("0.1.2", read)
 	g.upload(v2)
 	g.activate(v2)
@@ -540,7 +526,7 @@ func TestActivationListsLateHoldersOfRenamedKeys(t *testing.T) {
 func permissionRoles(t *testing.T, e *env, ctx context.Context, key string) []string {
 	t.Helper()
 	var out []string
-	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM role_permissions rp
-JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1`, key).Scan(&out))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT COALESCE(array_agg(role ORDER BY role), '{}') FROM (`+casbinrule.Grants+`) g
+WHERE action = $1 AND scope = ''`, key).Scan(&out))
 	return out
 }

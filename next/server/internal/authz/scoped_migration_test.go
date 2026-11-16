@@ -23,7 +23,7 @@ var scopableActions = []perm.Key{perm.AccountRead, perm.AccountCreate, perm.Acco
 func reach(t *testing.T, db *store.DB, users []int64) map[string][]int64 {
 	t.Helper()
 	ctx := context.Background()
-	s := New(Deps{DB: db, Shadow: testShadow})
+	s := New(Deps{DB: db})
 	out := map[string][]int64{}
 	collect := func(name string, ctx context.Context, uid int64) {
 		set, err := s.PermissionSet(ctx, uid)

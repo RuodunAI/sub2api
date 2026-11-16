@@ -9,6 +9,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The SQL of the authz statements built with GORM (see package gormtest):
@@ -46,13 +47,11 @@ func TestSQLAuthzVersion(t *testing.T) {
 // and of the grant view (RolesPermissions, usersRoles, grantOf).
 func TestSQLAuthzPermissionLoad(t *testing.T) {
 	assertCases(t, []sqlCase{
-		{"user_grants", func(db *gorm.DB) *gorm.DB { return scan(userGrants(db, 7)) }},
 		{"catalog", func(db *gorm.DB) *gorm.DB { return scan(catalogRows(db)) }},
 		{"role_grants", func(db *gorm.DB) *gorm.DB { return scan(roleGrants(db, []string{RoleAdmin, "custom"})) }},
 		{"role_assignables", func(db *gorm.DB) *gorm.DB { return scan(roleAssignables(db, []string{RoleAdmin})) }},
 		{"custom_roles", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeys(db)) }},
 		{"custom_roles_but", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeysBut(db, "custom")) }},
-		{"users_role_keys", func(db *gorm.DB) *gorm.DB { return scan(usersRoleKeys(db, []int64{7, 8})) }},
 	})
 }
 
@@ -74,7 +73,6 @@ func TestSQLAuthzRoleReads(t *testing.T) {
 		{"assignable", func(db *gorm.DB) *gorm.DB { return scan(assignableRoleRows(db)) }},
 		{"is_superuser", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, superuserGrants(db, 7))) }},
 		{"other_superusers", func(db *gorm.DB) *gorm.DB { return scan(otherSuperusers(db, 7)) }},
-		{"lock_super_admins", func(db *gorm.DB) *gorm.DB { return scan(lockSuperAdmins(db)) }},
 		{"lock_transfer_target", func(db *gorm.DB) *gorm.DB { return scan(lockTransferTarget(db, 9)) }},
 	})
 }
@@ -93,22 +91,16 @@ func TestSQLAuthzPermissionReads(t *testing.T) {
 	})
 }
 
-// A role's grants: every write replaces them within a part.
+// The part a role's grant write replaces (grantPart.within); the writes are
+// casbinrule's (its TestSQLCasbinRuleWrites).
 func TestSQLAuthzGrantWrites(t *testing.T) {
 	for name, part := range map[string]grantPart{"all": {}, "core": {coreOnly: true}, "plugin": {plugin: "demo"}} {
 		t.Run(name, func(t *testing.T) {
-			assertCases(t, []sqlCase{
-				{"drop", func(db *gorm.DB) *gorm.DB { return dropGrants(db, 3, part, store.Int64s{11, 12}) }},
-				{"drop_scoped", func(db *gorm.DB) *gorm.DB {
-					return dropScopedGrants(db, 3, part, store.Int64s{13}, store.Strings{"own"})
-				}},
+			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+				return db.Table("permissions p").Where("?", part.within()).Find(&[]model.Permission{})
 			})
 		})
 	}
-	assertCases(t, []sqlCase{
-		{"add", func(db *gorm.DB) *gorm.DB { return addGrants(db, 3, store.Int64s{11, 12}) }},
-		{"add_scoped", func(db *gorm.DB) *gorm.DB { return addScopedGrants(db, 3, store.Int64s{13}, store.Strings{"own"}) }},
-	})
 }
 
 // The role writes. updated_at moves where the raw SQL moved it (update,
@@ -134,17 +126,6 @@ func TestSQLAuthzRoleWrites(t *testing.T) {
 	})
 }
 
-// Role assignment and the super admin transfer.
-func TestSQLAuthzUserRoleWrites(t *testing.T) {
-	assertCases(t, []sqlCase{
-		{"drop", func(db *gorm.DB) *gorm.DB { return dropUserRoles(db, 7, store.Int64s{}) }},
-		{"add", func(db *gorm.DB) *gorm.DB { return addUserRoles(db, 7, store.Int64s{2, 3}) }},
-		{"revoke_superuser", func(db *gorm.DB) *gorm.DB { return revokeSuperuser(db, []int64{7}) }},
-		{"grant_admin", func(db *gorm.DB) *gorm.DB { return grantAdmin(db, []int64{7}) }},
-		{"grant_superuser", func(db *gorm.DB) *gorm.DB { return grantSuperuser(db, 9) }},
-	})
-}
-
 // The plugin catalog writes.
 func TestSQLAuthzPluginWrites(t *testing.T) {
 	assertCases(t, []sqlCase{
@@ -158,17 +139,14 @@ func TestSQLAuthzPluginWrites(t *testing.T) {
 			}).Scan(&row)
 		}},
 		{"remove_undeclared", func(db *gorm.DB) *gorm.DB { return scan(removeUndeclared(db, "demo", []string{"plugin:demo:read"})) }},
-		{"revoke_scopes", func(db *gorm.DB) *gorm.DB { return scan(revokeScopes(db, "plugin:demo:read", store.Strings{"own"})) }},
-		{"grant", func(db *gorm.DB) *gorm.DB {
-			return scan(grantPluginTo(db, "plugin:demo:read", []string{RoleAdmin, RoleOperator}, []string{"", "own"}))
-		}},
 		{"set_status", func(db *gorm.DB) *gorm.DB { return setPluginStatus(db, "demo", "active") }},
 		{"lock_staged", func(db *gorm.DB) *gorm.DB {
 			var keys []string
 			return lockStaged(db, "demo").Pluck("key", &keys)
 		}},
-		{"delete_keys", func(db *gorm.DB) *gorm.DB { return deletePermissions(db, []string{"plugin:demo:read"}) }},
-		{"delete_plugin", func(db *gorm.DB) *gorm.DB { return deletePluginPermissions(db, "demo") }},
+		{"delete_keys", func(db *gorm.DB) *gorm.DB {
+			return db.Where("key = ANY(?)", store.Strings{"plugin:demo:read"}).Delete(&model.Permission{})
+		}},
 	})
 }
 
@@ -186,15 +164,12 @@ func TestSQLAuthzSyncWrites(t *testing.T) {
 		{"advance", func(db *gorm.DB) *gorm.DB {
 			return scan(advanceRoles(db, store.Strings{RoleAdmin}, store.Int64s{2}, store.Bools{true}))
 		}},
-		{"default_permissions", func(db *gorm.DB) *gorm.DB {
-			return scan(grantDefaultPermissions(db, RoleAdmin, []string{"account:read"}))
-		}},
-		{"default_assignable", func(db *gorm.DB) *gorm.DB {
-			return scan(grantDefaultAssignable(db, RoleAdmin, []string{RoleUser}))
-		}},
-		{"scoped_defaults", func(db *gorm.DB) *gorm.DB {
-			return scan(grantScopedDefaultsTo(db, RoleOperator, []string{"account:read:own"}))
-		}},
 		{"remove_undeclared", func(db *gorm.DB) *gorm.DB { return removeUndeclaredCore(db, store.Strings{"account:read"}) }},
+	})
+	t.Run("default_assignable", func(t *testing.T) {
+		gormtest.AssertRun(t, func(db *gorm.DB) error {
+			_, err := grantDefaultAssignable(db, RoleAdmin, []string{RoleUser})
+			return err
+		})
 	})
 }

@@ -1,0 +1,4 @@
+-- sql
+SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || $1)
+-- vars
+$1 int 7

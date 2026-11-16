@@ -34,7 +34,7 @@ const (
 const IssueEnv = "SUB2API_SESSION_ISSUE"
 
 // issueSwitch is session.issue: the settings row "session" holding
-// {"issue": ...}, flipped the way authz.engine is.
+// {"issue": ...} (package settingswitch).
 var issueSwitch = settingswitch.Switch{
 	Key: "session", Field: "issue", Env: IssueEnv,
 	Values: []string{IssueJWT, IssueOpaque}, Default: IssueJWT, Action: "session.issue.set", Log: "iam",

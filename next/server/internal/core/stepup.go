@@ -41,10 +41,6 @@ const (
 	StepUpPluginGrant        = "plugin.grant"
 	StepUpPublisherManage    = "publisher.manage"
 	StepUpSystemUpdate       = "system.update"
-	// StepUpAuthzEngine: switching the authorization engine (PUT
-	// /settings/authz, CONTRACTS §99), which decides who answers every
-	// permission check of the site.
-	StepUpAuthzEngine = "authz.engine"
 	// StepUpSessionIssue: switching what a login issues, JWTs or opaque
 	// sessions (PUT /settings/session, CONTRACTS §100), which decides how
 	// every console user stays signed in.

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // Whose user group a caller may choose is authz's CanActOnUsers: the users
@@ -15,17 +15,17 @@ import (
 // both hold segment:manage; the roles decide.
 func TestMembershipActsOnOthers(t *testing.T) {
 	e := setup(t)
-	az := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
+	az := authz.New(authz.Deps{DB: e.db})
 	require.NoError(t, az.SyncCore(context.Background()))
 	e.svc.users = az
 	super := e.user("super@x.com")
 	for user, role := range map[int64]string{e.admin: authz.RoleAdmin, e.masked: authz.RoleOperator, super: authz.RoleSuperAdmin} {
-		e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, user, role)
+		testutil.AssignRoles(t, e.db, user, role)
 	}
 	operator, vip := e.masked, e.segment("VIP", "1")
 	operator2, supplier := e.user("op2@x.com"), e.user("supplier@x.com")
-	e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, operator2, authz.RoleOperator)
-	e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = ANY($2)`, supplier, []string{authz.RoleUser, authz.RoleSupplier})
+	testutil.AssignRoles(t, e.db, operator2, authz.RoleOperator)
+	testutil.AssignRoles(t, e.db, supplier, authz.RoleUser, authz.RoleSupplier)
 	add := func(users ...int64) response {
 		return e.do(operator, "POST", path("/segments/%d/members", vip), map[string]any{"user_ids": users})
 	}
@@ -62,10 +62,10 @@ func TestMembershipActsOnOthers(t *testing.T) {
 // time leaves an audit row (FU6).
 func TestSuperuserChoosesOwnSegment(t *testing.T) {
 	e := setup(t)
-	az := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
+	az := authz.New(authz.Deps{DB: e.db})
 	require.NoError(t, az.SyncCore(context.Background()))
 	e.svc.users = az
-	e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, e.admin, authz.RoleSuperAdmin)
+	testutil.AssignRoles(t, e.db, e.admin, authz.RoleSuperAdmin)
 	vip := e.segment("VIP", "1")
 	e.do(e.admin, "POST", path("/segments/%d/members", vip), map[string]any{"user_ids": []int64{e.admin, e.plain}}).ok(200)
 	require.Equal(t, vip, e.segmentOf(e.admin))
@@ -90,10 +90,10 @@ func TestMembershipWithoutGuardIsRefused(t *testing.T) {
 // changes its own (FU2).
 func TestSettingsOfOwnSegment(t *testing.T) {
 	e := setup(t)
-	az := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
+	az := authz.New(authz.Deps{DB: e.db})
 	require.NoError(t, az.SyncCore(context.Background()))
 	e.svc.users = az
-	e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, e.masked, authz.RoleOperator)
+	testutil.AssignRoles(t, e.db, e.masked, authz.RoleOperator)
 	operator, own, other := e.masked, e.segment("Own", "1"), e.segment("Other", "1")
 	grp := e.group("g", "public", "1")
 	e.exec(`UPDATE users SET segment_id = $2 WHERE id = $1`, operator, own)
@@ -130,7 +130,7 @@ func TestSettingsOfOwnSegment(t *testing.T) {
 	grant(personal).failed(409, "conflict")
 
 	// A superuser changes its own user group, audited.
-	e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, e.admin, authz.RoleSuperAdmin)
+	testutil.AssignRoles(t, e.db, e.admin, authz.RoleSuperAdmin)
 	e.exec(`UPDATE users SET segment_id = $2 WHERE id = $1`, e.admin, other)
 	e.do(e.admin, "PATCH", path("/segments/%d", other), map[string]any{"discount": "0.7"}).ok(200)
 	e.do(e.admin, "PUT", path("/segments/%d/groups", other), map[string]any{"items": []map[string]any{{"group_id": grp, "granted": false}}}).ok(200)

@@ -86,8 +86,7 @@ func newService(t *testing.T, db *store.DB, bus core.Bus, reg core.PluginRegistr
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	s := New(Deps{DB: db, Bus: bus, Plugins: reg, PollInterval: 100 * time.Millisecond, Shadow: testShadow})
-	failOnShadowMismatch(t, s)
+	s := New(Deps{DB: db, Bus: bus, Plugins: reg, PollInterval: 100 * time.Millisecond})
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -431,7 +430,7 @@ func bump(t *testing.T, s *Service) int64 { return bumpWith(t, s, "") }
 // bumpWith moves the authz version on in a transaction that also runs sql
 // (with args; "" = none): a write the version records, as the service's
 // own writes are. A raw write outside one leaves the caches stale at the
-// same version, which the shadow comparison reports.
+// same version.
 func bumpWith(t *testing.T, s *Service, sql string, args ...any) int64 {
 	var v int64
 	err := s.db.Tx(context.Background(), func(tx *gorm.DB) error {

@@ -4,8 +4,9 @@
 // the driver under database/sql, and Casbin only reads the policy. The checks are tests (in the style of
 // the ticker and permission guards), type-checked so that they see through
 // aliases, embedding and variables. Package store is the owner below;
-// internal/testutil, test infrastructure, is one as well (instanceOwners in
-// guard_test.go gives the reasons).
+// internal/testutil, test infrastructure, is one as well, and
+// internal/store/gormtest for the callback recording its DryRun
+// statements (instanceOwners in guard_test.go gives the reasons).
 //
 //   - [gorm-tx] outside the owners, no gorm (*DB).Transaction, Begin,
 //     Commit, Rollback, SavePoint, RollbackTo, Connection, AutoMigrate or
@@ -83,9 +84,9 @@
 //     module) but internal/store/pgerror.go (pgxFiles), which reads the
 //     SQLSTATE and constraint name of the *pgconn.PgError that GORM's
 //     driver returns;
-//   - [casbin-api] Casbin only reads the policy (CONTRACTS §99): casbin_rule
-//     is the projection of the role tables, which their triggers write in
-//     the writer's transaction. gorm-adapter is imported by
+//   - [casbin-api] Casbin only reads the policy (CONTRACTS §99): the core
+//     writes casbin_rule with GORM in the business transaction
+//     (internal/authz/casbinrule). gorm-adapter is imported by
 //     internal/authz/casbinx alone (casbinOwners; test files included).
 //     Nowhere, casbinx included, is a write, transaction or self-reloading
 //     API of Casbin's enforcers, its persist interfaces or gorm-adapter
@@ -102,8 +103,7 @@
 //     LoadPolicy, the other constructors and the rest are reported. The
 //     in-memory model (model.Model's AddPolicies, how a snapshot is built)
 //     and the role manager are not covered. Casbin's own Enforce* is called
-//     in casbinx alone, and casbinx.Enforce only there, in
-//     internal/authz/shadow.go and in cmd/sub2api (enforceOwners; test
+//     in casbinx alone, and casbinx.Enforce only there (enforceOwners; test
 //     files exempt): it runs every policy through the matcher, so a request
 //     answers with PermissionSet.Has. Packages that depend on Casbin are
 //     checked as well as those that depend on GORM.

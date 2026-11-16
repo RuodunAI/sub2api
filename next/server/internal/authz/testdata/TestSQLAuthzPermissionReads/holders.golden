@@ -1,12 +1,7 @@
 -- sql
-SELECT p.key, r.key, '' FROM role_permissions rp
-  JOIN permissions p ON p.id = rp.permission_id JOIN roles r ON r.id = rp.role_id
- WHERE p.key = ANY($1) AND NOT r.superuser
-UNION ALL
-SELECT p.key, r.key, rs.scope FROM role_permission_scopes rs
-  JOIN permissions p ON p.id = rs.permission_id JOIN roles r ON r.id = rs.role_id
- WHERE p.key = ANY($2) AND NOT r.superuser
+SELECT g.action, g.role, g.scope FROM (SELECT substr(cr.v0, 3) AS role, cr.v1 AS action, CASE cr.v2 WHEN '*' THEN '' ELSE cr.v2 END AS scope, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
+FROM casbin_rule cr WHERE cr.ptype = 'p' AND cr.v1 <> '*') g JOIN roles r ON r.key = g.role AND NOT r.superuser
+WHERE g.action = ANY($1)
 ORDER BY 1, 2, 3
 -- vars
 $1 store.Strings [plugin:demo:read]
-$2 store.Strings [plugin:demo:read]

@@ -34,8 +34,9 @@ const (
 // callbacks and plugins, reach its *sql.DB, set its configuration and
 // start transactions with GORM's own Transaction and Begin.
 var instanceOwners = map[string]string{
-	"internal/store":    "the pool and its GORM instance (Open, with its timestamp hooks), Tx, TxOptions, WithConn and the migrator",
-	"internal/testutil": "test infrastructure: Begin for a test that ends its transaction itself, Traced's logging connection pool",
+	"internal/store":          "the pool and its GORM instance (Open, with its timestamp hooks), Tx, TxOptions, WithConn and the migrator",
+	"internal/testutil":       "test infrastructure: Begin for a test that ends its transaction itself, Traced's logging connection pool",
+	"internal/store/gormtest": "SQL snapshots: AssertRun's statement recorder, a callback on the DryRun instance (no database behind it)",
 }
 
 // sqlOwners lists the packages, relative to the module, besides the test

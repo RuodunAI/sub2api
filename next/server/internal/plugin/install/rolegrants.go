@@ -56,8 +56,8 @@ type RoleGrant struct {
 	// Permission is the qualified permission key.
 	Permission string `json:"permission"`
 	Role       string `json:"role"`
-	// Scope is the canonical suffix: "" every row (a role_permissions
-	// row); "own", "value/input", "flow/3" go to role_permission_scopes.
+	// Scope is the canonical suffix: "" every row, or "own", "value/input",
+	// "flow/3" (casbin_rule's scope column, CONTRACTS §99).
 	Scope string `json:"scope"`
 	Risk  string `json:"risk"` // manifest.RiskLow | RiskSensitive | RiskCritical
 	// Via is "default" (manifest defaults), "override" (the consent named

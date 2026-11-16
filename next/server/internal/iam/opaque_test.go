@@ -22,7 +22,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/cluster"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
@@ -116,7 +115,7 @@ func TestIssueSwitch(t *testing.T) {
 	}
 
 	// A second node follows config:changed.
-	az2 := authz.New(authz.Deps{DB: s.db, Bus: e.bus, Shadow: authztest.Shadow()})
+	az2 := authz.New(authz.Deps{DB: s.db, Bus: e.bus})
 	if err := az2.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

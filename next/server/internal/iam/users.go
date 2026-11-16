@@ -16,6 +16,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
@@ -48,8 +49,8 @@ type User struct {
 
 // userColumns are what scanUser reads, from usersFrom. They are read by
 // position: the segment's id has the name of the user's.
-const userColumns = `u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
-    COALESCE((SELECT array_agg(r.key ORDER BY r.key) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id), '{}'),
+var userColumns = `u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
+    COALESCE((SELECT array_agg(k ORDER BY k) FROM (` + casbinrule.RolesOf("u.id") + `) ur(k)), '{}'),
     ` + segment.RefColumns + `,
     COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text`
 
@@ -158,7 +159,7 @@ func usersFilter(f ListUsersFilter) store.Conds {
 		filter.And("u.status = ?", f.Status)
 	}
 	if f.Role != "" {
-		filter.And(`EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.key = ?)`, f.Role)
+		filter.And(`? IN (`+casbinrule.RolesOf("u.id")+`)`, f.Role)
 	}
 	switch {
 	case f.Segment == core.SegmentPersonal:

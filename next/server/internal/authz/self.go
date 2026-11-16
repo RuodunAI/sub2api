@@ -4,12 +4,12 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
 
 // selfModule holds the virtual permissions of one's own account (CONTRACTS
-// §80): every signed-in user holds them implicitly (PermissionSet), so they
+// §80): every signed-in user holds them implicitly (casbinx's virtual self
+// role, from SelfPermissionKeys), so they
 // are not in the permissions table, no role grants them and the role editor
 // does not list them. They exist to be chosen for an access key, whose
 // routes of the caller's own account (httpapi.Router.Self) they open.
@@ -32,12 +32,6 @@ var selfKeys = func() map[string]struct{} {
 
 // SelfPermissionKeys lists the self permissions.
 func SelfPermissionKeys() []string { return slices.Sorted(maps.Keys(selfKeys)) }
-
-// withSelf adds the self permissions to the set of a signed-in user.
-func withSelf(set core.PermissionSet) core.PermissionSet {
-	maps.Copy(set.Keys, selfKeys)
-	return set
-}
 
 // SelfPermissionModule is the self module as the access key selector lists it.
 func SelfPermissionModule() *PermissionModule {

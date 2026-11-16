@@ -1,0 +1,10 @@
+-- sql
+DELETE FROM casbin_rule cr USING permissions p
+WHERE cr.ptype = $1 AND cr.v0 = $2 AND p.key = cr.v1 AND p.plugin_key = $3
+  AND (cr.v1, cr.v2) NOT IN (SELECT * FROM unnest($4::text[], $5::text[]))
+-- vars
+$1 string "p"
+$2 string "r:admin"
+$3 string "demo"
+$4 store.Strings [account:read]
+$5 store.Strings [*]

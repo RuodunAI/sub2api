@@ -1,9 +1,0 @@
--- sql
-WITH ins AS (
-    INSERT INTO role_permissions (role_id, permission_id)
-    SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = $1 AND p.key = ANY($2)
-    ON CONFLICT DO NOTHING RETURNING role_id, permission_id)
-SELECT ins.role_id, p.key FROM ins JOIN permissions p ON p.id = ins.permission_id
--- vars
-$1 string "admin"
-$2 store.Strings [account:read]

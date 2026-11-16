@@ -13,8 +13,9 @@ import (
 	"testing"
 )
 
-// [casbin-api]: Casbin only reads the policy, which the role tables'
-// triggers write in the writer's transaction (CONTRACTS §99).
+// [casbin-api]: Casbin only reads the policy, which the core writes with
+// GORM in the business transaction (internal/authz/casbinrule; CONTRACTS
+// §99).
 
 const (
 	// casbinxPkg, relative to the module, resolves permissions with Casbin.
@@ -30,14 +31,12 @@ var casbinOwners = map[string]string{
 }
 
 // enforceOwners (packages or files) may call casbinx.Enforce: the matcher
-// path, never a request's answer. casbinx has no Enforce method to take
+// path, never a request's answer (casbinx's own tests of it). casbinx has no Enforce method to take
 // over through an interface declared elsewhere (Enforce reaches its own
 // resolver's unexported one, and refuses any other Resolver), so naming the
 // function is the only way to the matcher.
 var enforceOwners = map[string]string{
-	casbinxPkg:                 "the resolver itself and its tests of the matcher",
-	"internal/authz/shadow.go": "the shadow comparison samples the matcher path against PermissionSet.Has",
-	"cmd/sub2api":              "admin authz-verify compares the matcher path with the legacy loader",
+	casbinxPkg: "the resolver itself and its tests of the matcher",
 }
 
 var (
@@ -117,7 +116,7 @@ func (c *checker) casbinSelector(n *ast.SelectorExpr, fn *types.Func) {
 	pkg := funcPkg(fn)
 	switch {
 	case casbinWritePkg.MatchString(pkg) && casbinWriteAPI.MatchString(fn.Name()):
-		c.report(n, "%s Casbin %s: the policy is the role tables' projection, written by their triggers in the writer's transaction; Casbin and gorm-adapter only read it", ruleCasbin, fn.Name())
+		c.report(n, "%s Casbin %s: the core writes the policy with GORM in the business transaction (internal/authz/casbinrule); Casbin and gorm-adapter only read it", ruleCasbin, fn.Name())
 	case casbinRootPkg.MatchString(pkg) && casbinEnforce.MatchString(fn.Name()) && !c.casbinOwner:
 		c.report(n, "%s Casbin %s outside %s: enforcers belong to the resolver", ruleCasbin, fn.Name(), casbinxPkg)
 	case adapterPkg.MatchString(pkg) && fn.Name() == adapterReadOnly && !c.adapterVetted[n]:
@@ -125,7 +124,7 @@ func (c *checker) casbinSelector(n *ast.SelectorExpr, fn *types.Func) {
 	case adapterPkg.MatchString(pkg) && fn.Name() != adapterReadOnly && !adapterAllowed[fn.Name()]:
 		c.report(n, "%s gorm-adapter %s: only %s, %s (after it, on the same handle) and LoadFilteredPolicy are used; the rest AutoMigrates the table, opens pools of its own, hands out the adapter's handle, loads the g rows or writes", ruleCasbin, fn.Name(), adapterTurnOffFun, adapterReadOnly)
 	case fn.Name() == "Enforce" && within(pkg, c.casbinxPkg) && !c.enforceOwner:
-		c.report(n, "%s casbinx Enforce outside the shadow comparison, casbinx and authz-verify: it runs every policy through the matcher (8-230 µs); a request asks PermissionSet.Has", ruleCasbin)
+		c.report(n, "%s casbinx Enforce outside casbinx: it runs every policy through the matcher (8-230 µs); a request asks PermissionSet.Has", ruleCasbin)
 	}
 }
 
@@ -214,11 +213,9 @@ func f(ctx context.Context, r casbinx.Resolver) {
 }`},
 		{name: "another file of authz", pkg: "internal/authz", file: "service.go", want: []string{ruleCasbin}, src: `
 func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
-		{name: "the shadow comparison", pkg: "internal/authz", file: "shadow.go", src: `
-func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
 		{name: "a package of casbinx", pkg: casbinxPkg + "/x", src: `
 func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
-		{name: "authz-verify", pkg: "cmd/sub2api", src: `
+		{name: "the server CLI", pkg: "cmd/sub2api", want: []string{ruleCasbin}, src: `
 func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
 		{name: "a test file", pkg: "internal/httpapi", file: "x_test.go", src: `
 func f(ctx context.Context, r casbinx.Resolver) { _, _, _ = casbinx.Enforce(ctx, r, 1, "x", 0) }`},
@@ -365,7 +362,7 @@ func later(db *gorm.DB) {
 	gormadapter.TurnOffAutoMigrate(db)
 }`, want: []string{ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin,
 			ruleCasbin, ruleCasbin}},
-		{name: "Casbin's Enforce outside casbinx", pkg: "internal/authz", file: "shadow.go", imports: imports, src: uses + `
+		{name: "Casbin's Enforce outside casbinx", pkg: "internal/authz", file: "service.go", imports: imports, src: uses + `
 func f(e *casbin.Enforcer) {
 	_, _ = e.Enforce("u:1", "a")
 	_, _, _ = e.EnforceEx("u:1", "a")

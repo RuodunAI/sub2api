@@ -2,11 +2,7 @@ package migrations_test
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"io/fs"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,46 +11,30 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-const casbinRule = "0100_casbin_rule.sql"
+const (
+	// beforeCasbin is the last core migration of 0.1.289, whose role tables
+	// 0100 turns into casbin_rule.
+	beforeCasbin = "0099_plugin_permission_meta.sql"
+	casbinRule   = "0100_casbin_rule.sql"
+)
 
 // policy lists casbin_rule as "<ptype> <v0> <v1> <v2>", sorted bytewise;
 // with role keys, the rows of those roles only (p rows by subject, g rows
 // by role).
 func (h *hardeningDB) policy(roles ...string) string {
 	h.t.Helper()
+	subs := make([]string, len(roles))
+	for i, k := range roles {
+		subs[i] = casbinrule.RoleSub(k)
+	}
 	return h.text(`SELECT COALESCE(string_agg(concat_ws(' ', ptype, v0, v1, NULLIF(v2, '')), ', ' ORDER BY ptype COLLATE "C", v0 COLLATE "C", v1 COLLATE "C", v2 COLLATE "C"), '')
         FROM casbin_rule WHERE cardinality($1::text[]) = 0 OR CASE ptype WHEN 'p' THEN v0 ELSE v1 END = ANY($1::text[])`,
-		store.Strings(roleSubs(roles)))
-}
-
-func roleSubs(keys []string) []string {
-	out := make([]string, len(keys))
-	for i, k := range keys {
-		out[i] = "r:" + k
-	}
-	return out
-}
-
-// noDrift fails unless casbin_rule is exactly the projection of the role
-// tables after step.
-func (h *hardeningDB) noDrift(step string) {
-	h.t.Helper()
-	require.Equal(h.t, "", h.drift(), "drift after %s", step)
-}
-
-// drift lists authz_casbin_drift as "<kind> <ptype> <v0> <v1> <v2>".
-func (h *hardeningDB) drift() string {
-	h.t.Helper()
-	return h.text(`SELECT COALESCE(string_agg(concat_ws(' ', kind, ptype, v0, v1, NULLIF(v2, '')), ', ' ORDER BY kind COLLATE "C", ptype COLLATE "C", v0 COLLATE "C", v1 COLLATE "C", v2 COLLATE "C"), '') FROM authz_casbin_drift`)
+		store.Strings(subs))
 }
 
 func (h *hardeningDB) id(sql string, args ...any) (id int64) {
@@ -63,294 +43,46 @@ func (h *hardeningDB) id(sql string, args ...any) (id int64) {
 	return id
 }
 
-// tx runs fn in a transaction, as the callers of the tx-taking authz
-// methods do.
-func (h *hardeningDB) tx(fn func(tx *gorm.DB) error) {
-	h.t.Helper()
-	require.NoError(h.t, h.db.Tx(h.ctx, fn))
-}
-
 // casbinService is a started authz service on a fresh database (the core
 // sync wrote the catalog and the built-in roles) whose super admin is root.
 func casbinService(t *testing.T) (h *hardeningDB, s *authz.Service, root int64) {
 	h = &hardeningDB{t: t, db: testutil.DB(t), ctx: context.Background()}
-	s = authz.New(authz.Deps{DB: h.db, Shadow: authztest.Shadow()})
+	s = authz.New(authz.Deps{DB: h.db})
 	require.NoError(t, s.Start(h.ctx))
-	h.noDrift("core sync")
 	root = h.id(`INSERT INTO users (email, password_hash) VALUES ('root@x', '') RETURNING id`)
-	h.tx(func(tx *gorm.DB) error { _, _, err := s.TransferSuperAdmin(h.ctx, tx, 0, root); return err })
+	require.NoError(t, h.db.Tx(h.ctx, func(tx *gorm.DB) error { _, _, err := s.TransferSuperAdmin(h.ctx, tx, 0, root); return err }))
 	return h, s, root
 }
 
-// Every kind of authz write, through the Go write path where there is one,
-// leaves casbin_rule exactly the projection of the role tables: what each
-// step writes is there, what it removes is gone, and the drift view is
-// empty after each.
-func TestCasbinRuleFollowsWriters(t *testing.T) {
-	h, s, root := casbinService(t)
-	ctx := h.ctx
-	sub := func(uid int64) string { return "u:" + strconv.FormatInt(uid, 10) }
-	require.Equal(t, "g "+sub(root)+" r:super_admin, p r:super_admin * *", h.policy(authz.RoleSuperAdmin))
-	alice := h.id(`INSERT INTO users (email, password_hash) VALUES ('alice@x', '') RETURNING id`)
-	bob := h.id(`INSERT INTO users (email, password_hash) VALUES ('bob@x', '') RETURNING id`)
-
-	// A new role with unscoped and scoped grants.
-	r, err := s.CreateRole(ctx, root, authz.CreateRoleInput{Key: "auditor", Name: core.LocalizedText{"en": "Auditor"},
-		PermissionKeys: []string{"account:read", "account:test:group/12", "account:update:group/12/account/5", "proxy:read:own"}})
-	require.NoError(t, err)
-	require.Equal(t, "p r:auditor account:read *, p r:auditor account:test group/12, p r:auditor account:update group/12/account/5, p r:auditor proxy:read own",
-		h.policy("auditor"))
-	h.noDrift("create role")
-
-	// Setting a user's roles, then assigning more and taking one away.
-	setRoles := func(uid int64, keys ...string) {
-		h.tx(func(tx *gorm.DB) error { _, err := s.SetUserRoles(ctx, tx, root, uid, keys); return err })
-	}
-	setRoles(alice, authz.RoleUser, "auditor")
-	setRoles(bob, authz.RoleUser)
-	h.noDrift("set user roles")
-	setRoles(bob, authz.RoleUser, authz.RoleOperator, "auditor")
-	setRoles(alice, "auditor")
-	require.Equal(t, "g "+sub(alice)+" r:auditor, g "+sub(bob)+" r:auditor, p r:auditor account:read *, p r:auditor account:test group/12, "+
-		"p r:auditor account:update group/12/account/5, p r:auditor proxy:read own", h.policy("auditor"))
-	require.NotContains(t, h.policy(authz.RoleUser), sub(alice))
-	h.noDrift("assign roles")
-
-	// Clearing the grants naming a deleted group.
-	h.tx(func(tx *gorm.DB) error {
-		_, err := core.ClearScopeGrants(ctx, tx, root, core.ScopeRefGroup, []int64{12})
-		return err
-	})
-	require.NotContains(t, h.policy("auditor"), "group/12")
-	h.noDrift("clear scope grants")
-
-	// Revoking a grant.
-	_, err = s.SetRolePermissions(ctx, root, r.ID, []string{"account:read"}, nil)
-	require.NoError(t, err)
-	require.Equal(t, "p r:auditor account:read *", h.text(`SELECT string_agg(concat_ws(' ', ptype, v0, v1, v2), ', ') FROM casbin_rule WHERE ptype = 'p' AND v0 = 'r:auditor'`))
-	h.noDrift("revoke grant")
-
-	// Handing the super admin role over: root becomes an admin.
-	h.tx(func(tx *gorm.DB) error { _, _, err := s.TransferSuperAdmin(ctx, tx, root, alice); return err })
-	require.Equal(t, "g "+sub(alice)+" r:super_admin, p r:super_admin * *", h.policy(authz.RoleSuperAdmin))
-	require.Contains(t, h.policy(authz.RoleAdmin), "g "+sub(root)+" r:admin")
-	h.noDrift("transfer super admin")
-
-	// Deleting a custom role: its grants and assignments cascade.
-	require.NoError(t, s.DeleteRole(ctx, alice, r.ID))
-	require.Equal(t, "", h.policy("auditor"))
-	h.noDrift("delete role")
-
-	// Deleting a user for good (nothing in Go does; the FK cascades).
-	h.exec(`DELETE FROM users WHERE id = $1`, bob)
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM casbin_rule WHERE ptype = 'g' AND v0 = $1`, sub(bob)))
-	h.noDrift("hard delete user")
-
-	// Plugin permissions: created with grants by the sync, scoped too; one
-	// plugin's are deleted by the catalog, the other's cascade from its row
-	// (uninstall), with their grants.
-	for _, key := range []string{"pa", "pb"} {
-		h.exec(`INSERT INTO plugins (key, name, status) VALUES ($1, '{}', 'enabled')`, key)
-		h.tx(func(tx *gorm.DB) error {
-			return s.SyncPlugin(ctx, tx, key, []core.PermissionDef{{Key: "run", Module: "plugin." + key, Label: core.LocalizedText{"en": "Run"},
-				GrantRoles: map[string][]string{authz.RoleOperator: {""}, authz.RoleUser: {""}}}})
-		})
-		h.exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-            SELECT r.id, p.id, 'flow/3' FROM roles r, permissions p WHERE r.key = 'admin' AND p.key = $1`, "plugin."+key+":run")
-	}
-	require.Contains(t, h.policy(authz.RoleAdmin), "p r:admin plugin.pb:run flow/3")
-	require.Contains(t, h.policy(authz.RoleOperator), "p r:operator plugin.pa:run *")
-	h.noDrift("plugin sync")
-	h.tx(func(tx *gorm.DB) error { return s.DeletePlugin(ctx, tx, "pa") })
-	h.tx(func(tx *gorm.DB) error {
-		return store.G(ctx, tx).Where("key = ? AND NOT builtin", "pb").Delete(&model.Plugin{}).Error
-	})
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM casbin_rule WHERE v1 LIKE 'plugin.%'`))
-	h.noDrift("uninstall plugins")
-
-	// The core sync again and a reset of a built-in role.
-	require.NoError(t, s.SyncCore(ctx))
-	_, err = s.ResetRole(ctx, alice, h.id(`SELECT id FROM roles WHERE key = 'operator'`))
-	require.NoError(t, err)
-	h.noDrift("core sync, reset role")
-}
-
-// Writes no Go path makes but SQL may: updates of grant and assignment rows,
-// the superuser flag, a grant held both unscoped and as a '*' scope row
-// (and moved between the two in one statement), a role rename (SyncCore's
-// start-up error asks for one), a same-key upsert of a permission; a
-// permission rename is refused.
-func TestCasbinRuleFollowsSQL(t *testing.T) {
-	h, _, root := casbinService(t)
-	h.exec(`INSERT INTO roles (key, name) VALUES ('ed', '{}'), ('vw', '{}');
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'ed' AND p.key = 'account:read';
-INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE u.email = 'root@x' AND r.key = 'ed'`)
-	h.noDrift("insert")
-
-	h.exec(`UPDATE role_permission_scopes SET scope = 'group/7' WHERE scope = 'own'`)
-	h.exec(`UPDATE user_roles SET role_id = (SELECT id FROM roles WHERE key = 'vw') WHERE role_id = (SELECT id FROM roles WHERE key = 'ed')`)
-	require.Equal(t, "p r:ed account:read group/7", h.policy("ed"))
-	require.Equal(t, "g u:"+strconv.FormatInt(root, 10)+" r:vw", h.policy("vw"))
-	h.noDrift("update rows")
-
-	h.exec(`UPDATE roles SET superuser = false WHERE key = 'super_admin'`)
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM casbin_rule WHERE v1 = '*'`))
-	h.exec(`UPDATE roles SET superuser = true WHERE key = 'super_admin'`)
-	require.Equal(t, "1", h.text(`SELECT count(*)::text FROM casbin_rule WHERE v1 = '*'`))
-	h.noDrift("superuser flag")
-
-	// Both an unscoped grant and a '*' scope row project to one p row,
-	// which stays until neither holds it, whatever the order.
-	both := `INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'ed' AND p.key = 'account:test';
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, '*' FROM roles r, permissions p WHERE r.key = 'ed' AND p.key = 'account:test'`
-	ed := `role_id = (SELECT id FROM roles WHERE key = 'ed') AND permission_id = (SELECT id FROM permissions WHERE key = 'account:test')`
-	for _, order := range [][2]string{{"role_permissions", "role_permission_scopes"}, {"role_permission_scopes", "role_permissions"}} {
-		h.exec(both)
-		h.exec(`DELETE FROM ` + order[0] + ` WHERE ` + ed)
-		require.Contains(t, h.policy("ed"), "p r:ed account:test *", "after deleting from %s", order[0])
-		h.noDrift("one of two")
-		h.exec(`DELETE FROM ` + order[1] + ` WHERE ` + ed)
-		require.NotContains(t, h.policy("ed"), "account:test")
-		h.noDrift("both")
-	}
-
-	// One statement moving that grant from one source to the other keeps
-	// the row. An unreferenced data-modifying CTE runs after its main
-	// statement, so the insert's event comes before the delete's: a trigger
-	// replaying the events would drop the row the insert keeps; one
-	// reconciling with the tables keeps it.
-	h.exec(both)
-	h.exec(`DELETE FROM role_permission_scopes WHERE ` + ed)
-	for _, move := range [][2]string{{"role_permissions", "role_permission_scopes"}, {"role_permission_scopes", "role_permissions"}} {
-		cols, from := "role_id, permission_id", "SELECT r.id, p.id"
-		if move[1] == "role_permission_scopes" {
-			cols, from = cols+", scope", from+", '*'"
-		}
-		h.exec(`WITH d AS (DELETE FROM ` + move[0] + ` WHERE ` + ed + `)
-        INSERT INTO ` + move[1] + ` (` + cols + `) ` + from + ` FROM roles r, permissions p WHERE r.key = 'ed' AND p.key = 'account:test'`)
-		require.Contains(t, h.policy("ed"), "p r:ed account:test *", "moved from %s", move[0])
-		h.noDrift("move between sources in one statement")
-	}
-
-	h.exec(`UPDATE roles SET key = 'vw_custom' WHERE key = 'vw'`)
-	require.Equal(t, "", h.policy("vw"))
-	require.Equal(t, "g u:"+strconv.FormatInt(root, 10)+" r:vw_custom", h.policy("vw_custom"))
-	h.noDrift("role rename")
-
-	h.exec(`INSERT INTO permissions (key, module, label, source) VALUES ('account:read', 'account', '{}', 'core')
-        ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key`)
-	_, err := h.db.SQL.ExecContext(h.ctx, `UPDATE permissions SET key = 'account:peek' WHERE key = 'account:read'`)
-	require.ErrorContains(t, err, "permissions.key is immutable")
-	h.noDrift("permission rename refused")
-}
-
-// A rolled back write leaves no policy row behind, nor takes one away.
-func TestCasbinRuleRollback(t *testing.T) {
-	h, s, root := casbinService(t)
-	before := h.policy()
-	errRollback := errors.New("rollback")
-	err := h.db.Tx(h.ctx, func(tx *gorm.DB) error {
-		if _, err := s.SetUserRoles(h.ctx, tx, root, root, []string{authz.RoleSuperAdmin, authz.RoleUser, authz.RoleOperator}); err != nil {
-			return err
-		}
-		if err := store.G(h.ctx, tx).Exec(`DELETE FROM role_permissions WHERE role_id = (SELECT id FROM roles WHERE key = 'user')`).Error; err != nil {
-			return err
-		}
-		if err := store.G(h.ctx, tx).Exec(`INSERT INTO roles (key, name, superuser) VALUES ('ghost', '{}', false)`).Error; err != nil {
-			return err
-		}
-		var n int64
-		if err := store.G(h.ctx, tx).Raw(`SELECT count(*) FROM casbin_rule WHERE v1 = 'r:operator' OR v0 = 'r:user'`).Scan(&n).Error; err != nil {
-			return err
-		}
-		require.EqualValues(t, 1, n, "inside the transaction: the new assignment, no user grants")
-		return errRollback
-	})
-	require.ErrorIs(t, err, errRollback)
-	require.Equal(t, before, h.policy())
-	h.noDrift("rollback")
-}
-
-// TRUNCATE fires no row trigger: the statement trigger rebuilds the
-// projection of whatever was truncated, casbin_rule itself included, and
-// a parent's TRUNCATE ... CASCADE works.
-func TestCasbinRuleTruncate(t *testing.T) {
-	h, _, _ := casbinService(t)
-	all := h.policy()
-	require.NotEqual(t, "", all)
-
-	h.exec(`TRUNCATE casbin_rule`)
-	require.Equal(t, all, h.policy(), "casbin_rule is rebuilt")
-	h.exec(`TRUNCATE role_permission_scopes`)
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM casbin_rule WHERE ptype = 'p' AND v2 <> '*'`))
-	h.noDrift("truncate role_permission_scopes")
-	h.exec(`TRUNCATE user_roles`)
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM casbin_rule WHERE ptype = 'g'`))
-	h.noDrift("truncate user_roles")
-	// users has no trigger: TRUNCATE users needs CASCADE, which truncates
-	// user_roles, whose trigger rebuilds.
-	h.exec(`INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE r.key = 'user'`)
-	require.NotEqual(t, "0", h.text(`SELECT count(*)::text FROM casbin_rule WHERE ptype = 'g'`))
-	_, err := h.db.SQL.ExecContext(h.ctx, `TRUNCATE users`)
-	require.ErrorContains(t, err, "cannot truncate a table referenced in a foreign key constraint")
-	h.exec(`TRUNCATE users CASCADE`)
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM casbin_rule WHERE ptype = 'g'`))
-	h.noDrift("truncate users")
-	h.exec(`TRUNCATE plugins CASCADE`) // permissions, so every grant, with it
-	require.Equal(t, "p r:super_admin * *", h.policy())
-	h.exec(`TRUNCATE roles CASCADE`)
-	require.Equal(t, "", h.policy())
-	h.noDrift("truncate roles")
-}
-
-// The drift view tells rows missing from casbin_rule from extra ones, and
-// authz_casbin_repair fixes both, returning how many rows it changed.
-func TestCasbinRuleRepair(t *testing.T) {
-	h, _, _ := casbinService(t)
-	all := h.policy()
-	// casbin_rule has no row triggers: these bypass the projection, as
-	// would a write with session_replication_role = replica.
-	h.exec(`DELETE FROM casbin_rule WHERE ptype = 'p' AND v0 = 'r:user' AND v1 = 'gateway:use'`)
-	h.exec(`INSERT INTO casbin_rule (ptype, v0, v1, v2) VALUES ('p', 'r:user', 'account:delete', '*'), ('g', 'u:999', 'r:admin', '')`)
-	h.tx(func(tx *gorm.DB) error {
-		return store.G(h.ctx, tx).Exec(`SET LOCAL session_replication_role = replica;
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'user' AND p.key = 'proxy:read'`).Error
-	})
-	require.Equal(t, "extra g u:999 r:admin, extra p r:user account:delete *, missing p r:user gateway:use *, missing p r:user proxy:read own", h.drift())
-
-	require.Equal(t, "4", h.text(`SELECT authz_casbin_repair()::text`))
-	h.noDrift("repair")
-	require.Equal(t, strings.Join(sorted(append(strings.Split(all, ", "), "p r:user proxy:read own")...), ", "), h.policy())
-	require.Equal(t, "0", h.text(`SELECT authz_casbin_repair()::text`))
-}
-
-// casbin_rule's columns hold the longest key, role subject and scope the
-// role tables allow (a widened source column must widen them too).
+// casbin_rule's columns hold the longest role subject, permission key and
+// scope (role_permission_scopes.scope was varchar(200)): a widened
+// roles.key or permissions.key must widen them too.
 func TestCasbinRuleColumnWidths(t *testing.T) {
-	h, _, _ := casbinService(t)
+	h, _, root := casbinService(t)
 	width := func(table, column string) int64 {
 		return h.id(`SELECT character_maximum_length FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`, table, column)
 	}
-	role, key, scope := width("roles", "key"), width("permissions", "key"), width("role_permission_scopes", "scope")
-	require.GreaterOrEqual(t, width("casbin_rule", "v0"), 2+role)
+	const scope = 200
+	role, key := width("roles", "key"), width("permissions", "key")
+	require.GreaterOrEqual(t, width("casbin_rule", "v0"), max(2+role, int64(len(casbinrule.UserSub(1<<62)))))
 	require.GreaterOrEqual(t, width("casbin_rule", "v1"), max(key, 2+role))
-	require.GreaterOrEqual(t, width("casbin_rule", "v2"), scope)
+	require.GreaterOrEqual(t, width("casbin_rule", "v2"), int64(scope))
 
-	rk, pk, sc := strings.Repeat("r", int(role)), strings.Repeat("k", int(key)), strings.Repeat("s", int(scope))
+	rk, pk, sc := strings.Repeat("r", int(role)), strings.Repeat("k", int(key)), strings.Repeat("s", scope)
 	h.exec(`INSERT INTO roles (key, name, superuser) VALUES ($1, '{}', false)`, rk)
 	h.exec(`INSERT INTO permissions (key, module, label, source) VALUES ($1, 'k', '{}', 'core')`, pk)
-	h.exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, $3 FROM roles r, permissions p WHERE r.key = $1 AND p.key = $2`, rk, pk, sc)
-	h.exec(`INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r WHERE u.email = 'root@x' AND r.key = $1`, rk)
-	require.Equal(t, "g u:"+h.text(`SELECT id::text FROM users WHERE email = 'root@x'`)+" r:"+rk+", p r:"+rk+" "+pk+" "+sc, h.policy(rk))
-	h.noDrift("longest values")
+	testutil.Grant(t, h.db, rk, pk, sc)
+	testutil.AssignRoles(t, h.db, root, rk)
+	require.Equal(t, "g "+casbinrule.UserSub(root)+" r:"+rk+", p r:"+rk+" "+pk+" "+sc, h.policy(rk))
 }
 
 // An upgrade: a database as 0.1.289 leaves it (through 0099) gets the
-// projection of what it holds, grants of removed, disabled and staged
-// permissions and soft-deleted users included; the version moves once; a
-// second run changes nothing.
+// rows of what it holds, grants of removed, disabled and staged
+// permissions and soft-deleted users included, a grant held both for every
+// row and as a scope * row once; the role tables and 0097's one-holder
+// trigger go; the version moves once; a second run changes nothing.
 func TestCasbinRuleMigration(t *testing.T) {
-	h := &hardeningDB{t: t, db: testutil.DBThrough(t, "0099_plugin_permission_meta.sql"), ctx: context.Background()}
+	h := &hardeningDB{t: t, db: testutil.DBThrough(t, beforeCasbin), ctx: context.Background()}
 	h.exec(`
 INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{}', true, true), ('user', '{}', true, false), ('editor', '{}', false, false);
 INSERT INTO plugins (key, name, status) VALUES ('pm', '{}', 'disabled');
@@ -361,8 +93,9 @@ INSERT INTO permissions (key, module, label, source, plugin_key, status) VALUES
 INSERT INTO users (email, password_hash, status, deleted_at) VALUES ('root@x', '', 'active', NULL), ('off@x', '', 'disabled', NULL), ('gone@x', '', 'active', now());
 INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r JOIN permissions p ON (r.key, p.key) IN (
     ('user', 'gateway:use'), ('editor', 'core:gone'), ('editor', 'plugin.pm:run'), ('editor', 'plugin.pm:next'));
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, s FROM roles r JOIN permissions p ON p.key = 'account:read'
-    CROSS JOIN (VALUES ('own'), ('group/12/account/5')) v(s) WHERE r.key = 'editor';
+INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, s FROM roles r JOIN permissions p ON (r.key, p.key) IN (
+    ('editor', 'account:read'), ('user', 'gateway:use'))
+    CROSS JOIN (VALUES ('own'), ('group/12/account/5'), ('*')) v(s) WHERE r.key = 'editor' OR s = '*';
 INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u JOIN roles r ON (u.email, r.key) IN (
     ('root@x', 'super_admin'), ('off@x', 'user'), ('off@x', 'editor'), ('gone@x', 'user'))`)
 	uid := func(email string) string { return h.text(`SELECT id::text FROM users WHERE email = $1`, email) }
@@ -371,10 +104,12 @@ INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u JOIN ro
 	require.NoError(t, h.migrate())
 	want := strings.Join(sorted(
 		"g u:"+uid("gone@x")+" r:user", "g u:"+uid("off@x")+" r:editor", "g u:"+uid("off@x")+" r:user", "g u:"+uid("root@x")+" r:super_admin",
-		"p r:editor account:read group/12/account/5", "p r:editor account:read own", "p r:editor core:gone *",
+		"p r:editor account:read *", "p r:editor account:read group/12/account/5", "p r:editor account:read own", "p r:editor core:gone *",
 		"p r:editor plugin.pm:next *", "p r:editor plugin.pm:run *", "p r:super_admin * *", "p r:user gateway:use *"), ", ")
 	require.Equal(t, want, h.policy())
-	h.noDrift("migration")
+	require.Equal(t, "", h.text(`SELECT concat_ws(' ', to_regclass('role_permissions'), to_regclass('role_permission_scopes'), to_regclass('user_roles'),
+        to_regprocedure('user_roles_one_superuser()'))`), "the role tables and their trigger function are gone")
+	require.Equal(t, "", h.text(`SELECT COALESCE(string_agg(proname, ', '), '') FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND proname LIKE 'authz_casbin%'`))
 	require.Equal(t, version, h.text(`SELECT (version - 1)::text FROM authz_meta`), "the version moves once")
 
 	migrated := h.text(`SELECT version::text FROM authz_meta`)
@@ -382,7 +117,10 @@ INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u JOIN ro
 	require.NoError(t, h.migrate())
 	require.Equal(t, want, h.policy())
 	require.Equal(t, migrated, h.text(`SELECT version::text FROM authz_meta`), "a second run moved the version")
-	h.noDrift("second run")
+
+	// One super admin, as user_roles_one_superuser kept it.
+	err := casbinrule.AddMembers(h.db.Gorm, authz.RoleSuperAdmin, []int64{h.id(`SELECT id FROM users WHERE email = 'off@x'`)})
+	require.True(t, store.IsUniqueViolation(err, "casbin_rule_one_superuser"), "a second super admin: %v", err)
 }
 
 // sorted is the strings ss, sorted (as policy lists them).
@@ -391,212 +129,85 @@ func sorted(ss ...string) []string {
 	return ss
 }
 
-// The rollback script puts the database back in the shape 0.1.289 runs on
-// (the schema of a database migrated through 0099, function definitions
-// included), the role tables as they were, without the authz.engine
-// setting (an upgrade starts over in shadow); once only, and upgrading
-// again projects them anew.
-func TestCasbinRuleDown(t *testing.T) {
-	h := &hardeningDB{t: t, db: testutil.DBThrough(t, "0099_plugin_permission_meta.sql"), ctx: context.Background()}
-	h.exec(`INSERT INTO roles (key, name, superuser) VALUES ('super_admin', '{}', true), ('editor', '{}', false);
-INSERT INTO permissions (key, module, label, source) VALUES ('account:read', 'account', '{}', 'core');
-INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, p.id, 'own' FROM roles r, permissions p WHERE r.key = 'editor'`)
-	schema := h.schema()
-	require.NoError(t, h.migrate())
-	h.exec(`INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'editor'`)
-	h.exec(`INSERT INTO settings (key, value) VALUES ('authz', '{"engine": "casbin"}')`)
-	grants, policy := h.grants(), h.policy()
-	version := h.text(`SELECT version::text FROM authz_meta`)
-
-	require.NoError(t, h.down("0.1.290-casbin-down.sql"))
+// The migration is one way: the old down script only says so and changes
+// nothing (the way back is the backup taken before it).
+func TestCasbinRuleOneWay(t *testing.T) {
+	h, _, _ := casbinService(t)
+	schema, policy := h.schema(), h.policy()
+	require.ErrorContains(t, h.down("0.1.290-casbin-down.sql"), "restore the backup")
 	require.Equal(t, schema, h.schema())
-	require.Equal(t, grants, h.grants())
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM settings WHERE key = 'authz'`), "the engine setting is dropped")
-	require.Equal(t, version, h.text(`SELECT (version - 1)::text FROM authz_meta`), "the version moves once")
-	require.ErrorContains(t, h.down("0.1.290-casbin-down.sql"), "nothing to roll back")
-
-	require.NoError(t, h.migrate())
 	require.Equal(t, policy, h.policy())
 }
 
-// The mapping functions of the migration are casbinx's constants: the
-// projection the triggers write is what the resolver reads.
-func TestCasbinRuleMappingMatchesCasbinx(t *testing.T) {
-	h := &hardeningDB{t: t, db: testutil.DB(t), ctx: context.Background()}
-	for sql, want := range map[string]string{
-		`SELECT authz_casbin_user_sub(42)`:       casbinx.UserSub(42),
-		`SELECT authz_casbin_role_sub('editor')`: casbinx.RoleSub("editor"),
-		`SELECT authz_casbin_super_key()`:        casbinx.SuperKey,
-		`SELECT authz_casbin_all_rows()`:         casbinx.AllRows,
-		`SELECT authz_casbin_self_sub()`:         casbinx.SelfRole,
-	} {
-		require.Equal(t, want, h.text(sql), sql)
-	}
-}
-
-// Keys whose rows would read as reserved policy values are refused: a role
-// key _self (subject r:_self, the virtual role every active user holds in
-// casbinx) and a permission key * (the action of a superuser row).
+// Keys and rows that would read as reserved policy values are refused: a
+// role key _self (subject r:_self, the virtual role every active user holds
+// in casbinx), a permission key * (the action of a superuser row), a
+// superuser role but super_admin (the one-holder index names it), and a
+// row of another shape than the core reads. Rows written before the
+// migration stop the upgrade, saying which and how to fix it.
 func TestCasbinRuleReservedKeys(t *testing.T) {
-	h, _, _ := casbinService(t)
-	refused := func(sql, want string) {
+	h, _, root := casbinService(t)
+	refused := func(sql, constraint string, args ...any) {
 		t.Helper()
-		_, err := h.db.SQL.ExecContext(h.ctx, sql)
-		require.ErrorContains(t, err, want)
+		_, err := h.db.SQL.ExecContext(h.ctx, sql, args...)
+		require.ErrorContains(t, err, constraint)
 	}
-	refused(`INSERT INTO roles (key, name) VALUES ('_self', '{}')`, "roles.key _self is reserved")
-	refused(`UPDATE roles SET key = '_self' WHERE key = 'user'`, "roles.key _self is reserved")
-	refused(`INSERT INTO permissions (key, module, label, source) VALUES ('*', 'x', '{}', 'core')`, "permissions.key * is reserved")
-	refused(`INSERT INTO permissions (key, module, label, source) VALUES ('plugin.x:run', 'x', '{}', 'core') ON CONFLICT (key) DO NOTHING;
-UPDATE permissions SET key = '*' WHERE key = 'plugin.x:run'`, "permissions.key is immutable")
+	refused(`INSERT INTO roles (key, name) VALUES ('_self', '{}')`, "roles_key_reserved")
+	refused(`UPDATE roles SET key = '_self' WHERE key = 'user'`, "roles_key_reserved")
+	refused(`INSERT INTO permissions (key, module, label, source) VALUES ('*', 'x', '{}', 'core')`, "permissions_key_reserved")
+	refused(`INSERT INTO roles (key, name, superuser) VALUES ('root2', '{}', true)`, "roles_superuser_key")
+	refused(`UPDATE roles SET superuser = true WHERE key = 'admin'`, "roles_superuser_key")
 	h.exec(`INSERT INTO roles (key, name) VALUES ('self_service', '{}')`) // only the whole subject is reserved
-	h.noDrift("reserved keys")
+	h.exec(`DELETE FROM roles WHERE key = 'self_service'`)
+	for _, row := range [][4]string{
+		{"p", "r:_self", "account:read", "*"},          // the virtual role
+		{"p", "u:1", "account:read", "*"},              // a user's grant
+		{"p", "r:user", "account:read", ""},            // no scope
+		{"p", "r:user", "*", "own"},                    // a scoped superuser row
+		{"g", "u:x", "r:user", ""},                     // not a user id
+		{"g", casbinrule.UserSub(root), "r:_self", ""}, // the virtual role
+		{"g", casbinrule.UserSub(root), "r:user", "own"},
+		{"x", "r:user", "account:read", "*"},
+	} {
+		refused(`INSERT INTO casbin_rule (ptype, v0, v1, v2) VALUES ($1, $2, $3, $4)`, "casbin_rule_shape", row[0], row[1], row[2], row[3])
+	}
 
-	// Rows written before the migration stop the upgrade, naming the key.
 	for _, c := range []struct{ seed, want string }{
 		{`INSERT INTO roles (key, name) VALUES ('_self', '{}')`, "roles.key _self is reserved"},
 		{`INSERT INTO permissions (key, module, label, source) VALUES ('*', 'x', '{}', 'core')`, "permissions.key * is reserved"},
+		{`INSERT INTO roles (key, name, superuser) VALUES ('root2', '{}', true)`, "only the role super_admin may be a superuser role, not root2"},
 	} {
-		old := &hardeningDB{t: t, db: testutil.DBThrough(t, "0099_plugin_permission_meta.sql"), ctx: context.Background()}
+		old := &hardeningDB{t: t, db: testutil.DBThrough(t, beforeCasbin), ctx: context.Background()}
 		old.exec(c.seed)
 		require.ErrorContains(t, old.migrate(), c.want)
-		require.Equal(t, "false", old.text(`SELECT (to_regclass('casbin_rule') IS NOT NULL)::text`), "the migration rolled back")
+		require.Equal(t, "false true", old.text(`SELECT (to_regclass('casbin_rule') IS NOT NULL)::text || ' ' || (to_regclass('user_roles') IS NOT NULL)::text`), "the migration rolled back")
 	}
 }
 
-// The trigger functions run with search_path public: a session on a plugin
-// schema (plugin connections and migrations set one) writing the core
-// tables neither fails nor reads the plugin's tables of the same name, and
-// 0097's superuser check counts the core roles too.
-func TestCasbinRuleSearchPath(t *testing.T) {
-	h, _, root := casbinService(t)
-	bob := h.id(`INSERT INTO users (email, password_hash) VALUES ('bob@x', '') RETURNING id`)
-	h.exec(`CREATE SCHEMA plug;
-CREATE TABLE plug.roles AS SELECT id, 'impostor_' || key AS key, false AS superuser FROM public.roles;
-CREATE TABLE plug.permissions AS SELECT id, 'plugin.plug:' || id AS key FROM public.permissions;
-CREATE TABLE plug.user_roles (user_id bigint, role_id bigint);
-CREATE TABLE plug.casbin_rule (LIKE public.casbin_rule)`)
-	onPlug := func(sql string, args ...any) error {
-		return h.db.Tx(h.ctx, func(tx *gorm.DB) error {
-			g := store.G(h.ctx, tx)
-			if err := g.Exec(`SET LOCAL search_path TO plug`).Error; err != nil {
-				return err
-			}
-			return g.Exec(sql, args...).Error
-		})
-	}
-	require.NoError(t, onPlug(`INSERT INTO public.user_roles (user_id, role_id) SELECT ?, id FROM public.roles WHERE key = 'operator'`, bob))
-	require.NoError(t, onPlug(`DELETE FROM public.role_permissions WHERE role_id = (SELECT id FROM public.roles WHERE key = 'user')`))
-	require.NoError(t, onPlug(`INSERT INTO public.role_permission_scopes (role_id, permission_id, scope)
-    SELECT r.id, p.id, 'own' FROM public.roles r, public.permissions p WHERE r.key = 'user' AND p.key = 'account:read'`))
-	require.NoError(t, onPlug(`UPDATE public.roles SET key = 'op' WHERE key = 'operator'`))
-	require.NoError(t, onPlug(`DELETE FROM public.permissions WHERE key = 'account:read'`))
-	require.Contains(t, h.policy("op"), "g u:"+strconv.FormatInt(bob, 10)+" r:op")
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM casbin_rule WHERE v0 LIKE 'r:impostor%' OR v1 LIKE 'r:impostor%' OR v1 LIKE 'plugin.plug:%'`))
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM plug.casbin_rule`))
-	h.noDrift("writes on a plugin search_path")
-
-	err := onPlug(`INSERT INTO public.user_roles (user_id, role_id) SELECT ?, id FROM public.roles WHERE superuser`, bob)
-	require.ErrorContains(t, err, "only one user may hold the super admin role")
-	require.Equal(t, "g u:"+strconv.FormatInt(root, 10)+" r:super_admin, p r:super_admin * *", h.policy(authz.RoleSuperAdmin))
-}
-
-// The migration, run first and run again, takes nothing stronger than
-// SHARE ROW EXCLUSIVE (CREATE OR REPLACE TRIGGER) on the role tables, so
-// readers never wait for it, and no lock on users, which iam's
-// createUserTx writes before it takes the authz lock.
-func TestCasbinRuleMigrationLocks(t *testing.T) {
-	body, err := fs.ReadFile(migrations.FS, casbinRule)
+// The one-holder index across transactions: of two giving the super admin
+// role to different users, the second waits at its insert for the first
+// and, once that commits, fails with unique_violation.
+func TestCasbinRuleOneSuperuserConcurrent(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := t.Context()
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{}', true, true)`)
 	require.NoError(t, err)
-	locks := func(h *hardeningDB) string {
-		t.Helper()
-		conn, err := h.db.SQL.Conn(h.ctx)
-		require.NoError(t, err)
-		defer conn.Close()
-		tx, err := conn.BeginTx(h.ctx, nil)
-		require.NoError(t, err)
-		defer func() { _ = tx.Rollback() }()
-		_, err = tx.ExecContext(h.ctx, string(body))
-		require.NoError(t, err)
-		var held string
-		require.NoError(t, tx.QueryRowContext(h.ctx, `SELECT COALESCE(string_agg(c.relname || '=' || l.mode, ' ' ORDER BY c.relname, l.mode), '')
-            FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-            WHERE l.pid = pg_backend_pid() AND c.relname IN ('users', 'roles', 'permissions', 'role_permissions', 'role_permission_scopes', 'user_roles')
-              AND l.mode NOT IN ('AccessShareLock')`).Scan(&held))
-		return held
-	}
-	const want = "permissions=ShareRowExclusiveLock role_permission_scopes=ShareRowExclusiveLock role_permissions=ShareRowExclusiveLock " +
-		"roles=ShareRowExclusiveLock user_roles=ShareRowExclusiveLock"
-	first := &hardeningDB{t: t, db: testutil.DBThrough(t, "0099_plugin_permission_meta.sql"), ctx: context.Background()}
-	require.Equal(t, want, locks(first), "first run")
-	h, _, _ := casbinService(t)
-	require.Equal(t, want, locks(h), "second run")
-	require.Equal(t, "0", h.text(`SELECT count(*)::text FROM pg_trigger WHERE tgrelid = 'users'::regclass AND tgname LIKE 'casbin%'`))
-}
+	a, b := testutil.InsertUser(t, db, "a@su"), testutil.InsertUser(t, db, "b@su")
 
-// The migration next to writers that take no authz lock first: it neither
-// waits for a transaction holding a new users row (iam's createUserTx
-// inserts it, then takes the authz lock to assign roles; the migration
-// once locked users and deadlocked with it), nor deadlocks with one writing
-// a parent role table, then its children (as an FK cascade does, and
-// rejecting a plugin's consent deletes the plugin with its staged
-// permissions and their grants, no authz lock taken); what those commit is
-// projected.
-func TestCasbinRuleMigrationConcurrentWriters(t *testing.T) {
-	h := &hardeningDB{t: t, db: testutil.DBThrough(t, "0099_plugin_permission_meta.sql"), ctx: context.Background()}
-	h.exec(`INSERT INTO roles (key, name, superuser) VALUES ('super_admin', '{}', true), ('user', '{}', false);
-INSERT INTO permissions (key, module, label, source) VALUES ('gateway:use', 'gateway', '{}', 'core'), ('account:read', 'account', '{}', 'core');
-INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'user'`)
-	migrated := make(chan error, 1)
-	start := func() { go func() { migrated <- h.migrate() }() }
-	wait := func(what string) {
-		t.Helper()
-		select {
-		case err := <-migrated:
-			require.NoError(t, err, what)
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the migration is still running: %s", what)
-		}
-	}
-	begin := func() *sql.Tx {
-		t.Helper()
-		tx, err := h.db.SQL.BeginTx(h.ctx, nil)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = tx.Rollback() })
-		return tx
-	}
-	exec := func(tx *sql.Tx, q string, args ...any) {
-		t.Helper()
-		_, err := tx.ExecContext(h.ctx, q, args...)
-		require.NoError(t, err)
-	}
-
-	// createUserTx: the users row, then (while the migration runs) the
-	// authz lock and the roles.
-	a := begin()
-	var uid int64
-	require.NoError(t, a.QueryRowContext(h.ctx, `INSERT INTO users (email, password_hash) VALUES ('new@x', '') RETURNING id`).Scan(&uid))
-	start()
-	wait("with a transaction holding a new users row open")
-	exec(a, `UPDATE authz_meta SET version = version + 1 WHERE id = 1`)
-	exec(a, `INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = 'user'`, uid)
-	require.NoError(t, a.Commit())
-	require.Contains(t, h.policy("user"), "g u:"+strconv.FormatInt(uid, 10)+" r:user")
-	h.noDrift("migration next to a new user")
-
-	// A parent, then its children: the migration, back to 0099, waits for
-	// the parent's lock holding none of the children's.
-	require.NoError(t, h.down("0.1.290-casbin-down.sql"))
-	b := begin()
-	exec(b, `UPDATE permissions SET sort = sort + 1 WHERE key = 'gateway:use'`)
-	start()
+	first, err := testutil.Begin(ctx, db)
+	require.NoError(t, err)
+	require.NoError(t, casbinrule.AddMembers(first, authz.RoleSuperAdmin, []int64{a}))
+	second, err := testutil.Begin(ctx, db)
+	require.NoError(t, err)
+	defer second.Rollback()
+	errs := make(chan error, 1)
+	go func() { errs <- casbinrule.AddMembers(second, authz.RoleSuperAdmin, []int64{b}) }()
 	require.Eventually(t, func() bool {
-		return h.text(`SELECT count(*)::text FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`) == "1"
-	}, 30*time.Second, 10*time.Millisecond, "the migration waits for the permissions lock")
-	exec(b, `DELETE FROM role_permissions WHERE permission_id = (SELECT id FROM permissions WHERE key = 'gateway:use')`)
-	require.NoError(t, b.Commit())
-	wait("after a writer of permissions, then role_permissions")
-	require.Equal(t, "p r:super_admin * *", h.policy("super_admin"))
-	require.NotContains(t, h.policy("user"), "gateway:use")
-	h.noDrift("migration next to a cascade")
+		var n int
+		return db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+			WHERE a.datname = current_database() AND l.locktype = 'transactionid' AND NOT l.granted`).Scan(&n) == nil && n > 0
+	}, 10*time.Second, 20*time.Millisecond, "the second insert waits for the first transaction")
+	require.NoError(t, first.Commit().Error)
+	err = <-errs
+	require.True(t, store.IsUniqueViolation(err, "casbin_rule_one_superuser"), "the second holder: %v", err)
 }

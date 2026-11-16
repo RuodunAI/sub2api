@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
@@ -66,16 +67,14 @@ func ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind stri
 
 // scopeGrants selects the scoped grants matching patterns.
 func scopeGrants(db *gorm.DB, patterns []string) *gorm.DB {
-	return db.Table("role_permission_scopes").Where("scope ~ ANY(?)", store.Strings(patterns))
+	return casbinrule.ScopedGrants(db, patterns)
 }
 
 // clearScopeGrants deletes the scoped grants matching patterns, audits them
 // per role and moves the authz version, returning it when any went.
 func clearScopeGrants(db *gorm.DB, patterns []string, actor *int64, kind string, ids []int64) *gorm.DB {
 	return db.Raw(`WITH cleared AS (
-    DELETE FROM role_permission_scopes rs USING permissions p
-    WHERE p.id = rs.permission_id AND rs.scope ~ ANY(?)
-    RETURNING rs.role_id, p.key || ':' || rs.scope AS key
+    `+casbinrule.DeleteScopedSQL+`
 ), audited AS (
     INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
     SELECT ?, 'authz.scope.clear', 'role', role_id::text,

@@ -1,6 +1,0 @@
--- sql
-DELETE FROM role_permission_scopes rs USING permissions p
-WHERE p.id = rs.permission_id AND p.key = $1 AND rs.scope = ANY($2) RETURNING rs.role_id, rs.scope
--- vars
-$1 string "plugin:demo:read"
-$2 store.Strings [own]

@@ -288,8 +288,7 @@ type foreign struct{}
 func (foreign) Grants(context.Context, int64, int64) (core.PermissionSet, error) {
 	return core.PermissionSetOf("account:read"), nil
 }
-func (foreign) Prewarm(int64)                       {}
-func (foreign) Reread(context.Context, int64) error { return nil }
+func (foreign) Prewarm(int64) {}
 
 // Enforce refuses a Resolver it did not make, with an error rather than a
 // panic: only its own has a matcher path, and a double's Grants is not one.

@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -261,30 +262,22 @@ func (s *Service) pruneScopes(ctx context.Context, tx *gorm.DB, key string, ps m
 	if len(stale) == 0 {
 		return nil
 	}
-	var gone []model.RolePermissionScope
-	if err := revokeScopes(db, key, stale).Scan(&gone).Error; err != nil {
+	gone, err := casbinrule.RevokeScopes(db, key, stale)
+	if err != nil {
 		return err
 	}
 	for _, g := range gone {
-		if err := s.audit(ctx, tx, 0, "authz.sync.revoke", "role", g.RoleID, map[string]any{"via": "scope_changed", "key": key + ":" + g.Scope}); err != nil {
+		if err := s.audit(ctx, tx, 0, "authz.sync.revoke", "role", g.RoleID, map[string]any{"via": "scope_changed", "key": g.Key}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// grantedScopes selects the distinct scopes the permission key is granted
-// at, as one array.
+// grantedScopes selects the distinct scopes (canonical suffixes, every row
+// aside) the permission key is granted at, as one array.
 func grantedScopes(db *gorm.DB, key string) *gorm.DB {
-	return db.Raw(`SELECT COALESCE(array_agg(DISTINCT rs.scope), '{}') FROM role_permission_scopes rs
-JOIN permissions p ON p.id = rs.permission_id WHERE p.key = ?`, key)
-}
-
-// revokeScopes deletes the grants of the permission key at scopes and
-// returns their role_id and scope.
-func revokeScopes(db *gorm.DB, key string, scopes store.Strings) *gorm.DB {
-	return db.Raw(`DELETE FROM role_permission_scopes rs USING permissions p
-WHERE p.id = rs.permission_id AND p.key = ? AND rs.scope = ANY(?) RETURNING rs.role_id, rs.scope`, key, scopes)
+	return db.Raw(`SELECT COALESCE(array_agg(DISTINCT g.scope), '{}') FROM (`+casbinrule.Grants+`) g WHERE g.action = ? AND g.scope <> ''`, key)
 }
 
 // CanGrantToRoles implements core.PermissionCatalog: actorID may hand new
@@ -443,46 +436,21 @@ func pluginPermissionScope(db *gorm.DB, key string) *gorm.DB {
 // grantPlugin grants the plugin permission key to roles (role -> scope
 // suffixes, "" every row, which makes the role's others redundant) but super
 // admin ones (which hold every permission), audited with via and the
-// granted key, its scope included. A removed key grants nothing. Callers
-// check the scopes (checkScopes).
+// granted key, its scope included. A removed key grants nothing; a scoped
+// grant next to the role's every row grant is redundant and left out.
+// Callers check the scopes (checkScopes).
 func (s *Service) grantPlugin(ctx context.Context, tx *gorm.DB, via, key string, roles map[string][]string) error {
-	var roleKeys, scopes []string
+	var grants []casbinrule.Grant
 	for _, role := range slices.Sorted(maps.Keys(roles)) {
 		for _, sfx := range manifest.CanonicalSuffixes(roles[role]) {
-			roleKeys, scopes = append(roleKeys, role), append(scopes, sfx)
+			grants = append(grants, casbinrule.Grant{Role: role, Action: key, Suffix: sfx})
 		}
 	}
-	if len(roleKeys) == 0 {
-		return nil
+	added, err := casbinrule.AddGrants(store.G(ctx, tx), grants, gorm.Expr("NOT r.superuser AND p.source = 'plugin' AND p.status <> 'removed'"))
+	if err != nil {
+		return err
 	}
-	return s.syncGrant(ctx, tx, map[string]any{"via": via}, grantPluginTo(store.G(ctx, tx), key, roleKeys, scopes))
-}
-
-// grantPluginTo grants the plugin permission key to the roles of the
-// (role, scope suffix) pairs of roleKeys and scopes, superuser roles aside,
-// an every row grant ("") as a role_permissions row and a scoped one,
-// unless the role has the every row grant, as a role_permission_scopes row;
-// it returns each grant added (syncGrant).
-func grantPluginTo(db *gorm.DB, key string, roleKeys, scopes []string) *gorm.DB {
-	// The pairs come first in the text, the key third.
-	return db.Raw(`
-WITH g AS (
-    SELECT r.id AS role_id, p.id AS permission_id, t.scope
-    FROM unnest(?::text[], ?::text[]) AS t(role, scope)
-    JOIN roles r ON r.key = t.role AND NOT r.superuser
-    JOIN permissions p ON p.key = ? AND p.source = 'plugin' AND p.status <> 'removed'),
-ins AS (
-    INSERT INTO role_permissions (role_id, permission_id)
-    SELECT role_id, permission_id FROM g WHERE scope = ''
-    ON CONFLICT DO NOTHING RETURNING role_id, permission_id, ''::varchar AS scope),
-ins_scoped AS (
-    INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-    SELECT role_id, permission_id, scope FROM g WHERE scope <> ''
-      AND NOT EXISTS (SELECT 1 FROM role_permissions f WHERE f.role_id = g.role_id AND f.permission_id = g.permission_id)
-    ON CONFLICT DO NOTHING RETURNING role_id, permission_id, scope)
-SELECT i.role_id, p.key || CASE WHEN i.scope = '' THEN '' ELSE ':' || i.scope END
-FROM (SELECT * FROM ins UNION ALL SELECT * FROM ins_scoped) i JOIN permissions p ON p.id = i.permission_id`,
-		store.Strings(roleKeys), store.Strings(scopes), key)
+	return s.syncGrant(ctx, tx, map[string]any{"via": via}, added)
 }
 
 // PluginPermissions implements core.PermissionCatalog.
@@ -521,8 +489,8 @@ func pluginPermissions(db *gorm.DB, pluginKey string) *gorm.DB {
 }
 
 // PermissionHolders implements core.PermissionCatalog: a role holds a key
-// by a role_permissions row (every row) or role_permission_scopes rows
-// (each scope), whatever the permission's status.
+// by its grants of every row (scope "") or of each scope, whatever the
+// permission's status.
 func (s *Service) PermissionHolders(ctx context.Context, q *gorm.DB, keys []string) (map[string][]core.PermissionHolder, error) {
 	out := map[string][]core.PermissionHolder{}
 	if len(keys) == 0 {
@@ -543,16 +511,10 @@ func (s *Service) PermissionHolders(ctx context.Context, q *gorm.DB, keys []stri
 // holderRows selects the (key, role, scope) grants of the permissions
 // keys, superuser roles aside, in that order.
 func holderRows(db *gorm.DB, keys []string) *gorm.DB {
-	ks := store.Strings(keys)
 	return db.Raw(`
-SELECT p.key, r.key, '' FROM role_permissions rp
-  JOIN permissions p ON p.id = rp.permission_id JOIN roles r ON r.id = rp.role_id
- WHERE p.key = ANY(?) AND NOT r.superuser
-UNION ALL
-SELECT p.key, r.key, rs.scope FROM role_permission_scopes rs
-  JOIN permissions p ON p.id = rs.permission_id JOIN roles r ON r.id = rs.role_id
- WHERE p.key = ANY(?) AND NOT r.superuser
-ORDER BY 1, 2, 3`, ks, ks)
+SELECT g.action, g.role, g.scope FROM (`+casbinrule.Grants+`) g JOIN roles r ON r.key = g.role AND NOT r.superuser
+WHERE g.action = ANY(?)
+ORDER BY 1, 2, 3`, store.Strings(keys))
 }
 
 // SetPluginActive implements core.PermissionCatalog.
@@ -579,8 +541,8 @@ func setPluginStatus(db *gorm.DB, pluginKey, status string) *gorm.DB {
 }
 
 // DiscardStaged implements core.PermissionCatalog: the plugin's staged keys
-// and, cascading, their grants go, audited as authz.sync.discard with the
-// roles that held them; nothing happens without any.
+// and their grants go, audited as authz.sync.discard with the roles that
+// held them; nothing happens without any.
 func (s *Service) DiscardStaged(ctx context.Context, tx *gorm.DB, pluginKey string) error {
 	db := store.G(ctx, tx)
 	var keys []string
@@ -594,7 +556,7 @@ func (s *Service) DiscardStaged(ctx context.Context, tx *gorm.DB, pluginKey stri
 	if err := s.auditKeyStatus(ctx, tx, "authz.sync.discard", pluginKey, keys); err != nil {
 		return err
 	}
-	if err := deletePermissions(db, keys).Error; err != nil {
+	if err := deletePermissions(db, keys); err != nil {
 		return err
 	}
 	s.committedLater(v)
@@ -607,26 +569,31 @@ func lockStaged(db *gorm.DB, pluginKey string) *gorm.DB {
 	return db.Model(&model.Permission{}).Where("plugin_key = ? AND status = 'staged'", pluginKey).Order("key").Clauses(store.ForUpdate)
 }
 
-// deletePermissions deletes the permissions keys; their grants cascade.
-func deletePermissions(db *gorm.DB, keys []string) *gorm.DB {
-	return db.Where("key = ANY(?)", store.Strings(keys)).Delete(&model.Permission{})
+// deletePermissions deletes the permissions keys with their grants (no
+// foreign key cascades them: casbin_rule names a permission by key).
+func deletePermissions(db *gorm.DB, keys []string) error {
+	if err := casbinrule.DropPermissions(db, keys); err != nil {
+		return err
+	}
+	return db.Where("key = ANY(?)", store.Strings(keys)).Delete(&model.Permission{}).Error
 }
 
-// DeletePlugin implements core.PermissionCatalog; role grants cascade.
+// DeletePlugin implements core.PermissionCatalog: the plugin's permissions
+// go with their grants. Whoever deletes the plugin's row calls it first:
+// the row's foreign key cascades to permissions, not to casbin_rule.
 func (s *Service) DeletePlugin(ctx context.Context, tx *gorm.DB, pluginKey string) error {
 	v, err := s.Bump(ctx, tx)
 	if err != nil {
 		return err
 	}
-	if err := deletePluginPermissions(store.G(ctx, tx), pluginKey).Error; err != nil {
+	db := store.G(ctx, tx)
+	var keys []string
+	if err := permissionsOfPlugin(db, pluginKey).Pluck("key", &keys).Error; err != nil {
+		return err
+	}
+	if err := deletePermissions(db, keys); err != nil {
 		return err
 	}
 	s.committedLater(v)
 	return nil
-}
-
-// deletePluginPermissions deletes the permissions of the plugin; their
-// grants cascade.
-func deletePluginPermissions(db *gorm.DB, pluginKey string) *gorm.DB {
-	return permissionsOfPlugin(db, pluginKey).Delete(&model.Permission{})
 }

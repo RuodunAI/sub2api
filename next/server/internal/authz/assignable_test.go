@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -122,6 +123,9 @@ func TestSyncCoreAddsSupplierToExistingRoles(t *testing.T) {
 	ctx := context.Background()
 	// The database before the supplier role existed (and without the audit
 	// of the first sync, which created every built-in role).
+	if err := casbinrule.DeleteRole(db.Gorm, RoleSupplier); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM roles WHERE key = 'supplier';
 DELETE FROM audit_logs;
 UPDATE roles SET assign_custom = true WHERE key = 'operator';

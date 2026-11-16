@@ -2,10 +2,8 @@
 SELECT r.key, r.superuser, r.assign_custom, g.key
 FROM roles r
 LEFT JOIN LATERAL (
-    SELECT p.key FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id AND p.status NOT IN ('removed', 'staged') WHERE rp.role_id = r.id
-    UNION ALL
-    SELECT p.key || ':' || rs.scope FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id AND p.status NOT IN ('removed', 'staged')
-    WHERE rs.role_id = r.id
+    SELECT rg.key FROM (SELECT substr(cr.v0, 3) AS role, cr.v1 AS action, CASE cr.v2 WHEN '*' THEN '' ELSE cr.v2 END AS scope, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
+FROM casbin_rule cr WHERE cr.ptype = 'p' AND cr.v1 <> '*' AND cr.v0 = ('r:' || r.key)) rg JOIN permissions p ON p.key = rg.action AND p.status NOT IN ('removed', 'staged')
 ) g ON true
 WHERE r.key = ANY($1)
 -- vars

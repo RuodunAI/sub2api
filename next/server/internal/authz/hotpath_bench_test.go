@@ -38,9 +38,9 @@ func BenchmarkHotAuthz(b *testing.B) {
 		name string
 		run  func() error
 	}{
-		// An admin: one row per granted permission.
+		// An admin, through the Casbin resolver (its snapshot and role cache warm).
 		{"permission_set", func() error {
-			set, err := s.loadPermissionSet(ctx, EngineLegacy, uid)
+			set, err := s.loadPermissionSet(ctx, uid)
 			if err == nil && len(set.Keys) == 0 {
 				b.Fatal("empty permission set")
 			}

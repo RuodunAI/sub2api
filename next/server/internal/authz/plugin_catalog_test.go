@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -41,8 +42,7 @@ func permissionHolders(t *testing.T, db *store.DB, key string) []string {
 	t.Helper()
 	var roles []string
 	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `
-SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM role_permissions rp
-JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1`, key).Scan(&roles))
+SELECT COALESCE(array_agg(role ORDER BY role), '{}') FROM (`+casbinrule.Grants+`) g WHERE action = $1 AND scope = ''`, key).Scan(&roles))
 	return roles
 }
 
@@ -334,8 +334,7 @@ func scopedHolders(t *testing.T, db *store.DB, key string) []string {
 	t.Helper()
 	var out []string
 	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `
-SELECT COALESCE(array_agg(r.key || ':' || rs.scope ORDER BY r.key, rs.scope), '{}') FROM role_permission_scopes rs
-JOIN roles r ON r.id = rs.role_id JOIN permissions p ON p.id = rs.permission_id WHERE p.key = $1`, key).Scan(&out))
+SELECT COALESCE(array_agg(role || ':' || scope ORDER BY role, scope), '{}') FROM (`+casbinrule.Grants+`) g WHERE action = $1 AND scope <> ''`, key).Scan(&out))
 	return out
 }
 
@@ -405,10 +404,7 @@ func TestSyncPluginRemovesAndRevives(t *testing.T) {
 	must(db.Tx(ctx, func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", true) }))
 
 	// Revoked while removed: stays revoked; the revival grants nothing new.
-	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM role_permissions rp USING roles r, permissions p
-WHERE r.id = rp.role_id AND p.id = rp.permission_id AND r.key = $1 AND p.key = $2`, RoleOperator, b); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Revoke(t, db, RoleOperator, b)
 	must(sync(core.PermissionDef{Key: "a:read"}, core.PermissionDef{Key: "b:read", GrantRoles: unscoped(RoleUser)}))
 	if got := permissionStatus(t, db, b); got != "active" {
 		t.Fatalf("revived %s: %s", b, got)
@@ -440,9 +436,9 @@ WHERE r.id = rp.role_id AND p.id = rp.permission_id AND r.key = $1 AND p.key = $
 }
 
 // A new plugin permission stores its risk, scope, group, requires and
-// defaults, and is granted its GrantRoles scopes and all: every row as a
-// role_permissions row (making the role's other scopes redundant), the
-// others as scope rows, audited with the scoped key. Scopes the permission
+// defaults, and is granted its GrantRoles scopes and all: every row as the
+// grant of scope * (making the role's other scopes redundant), the others
+// as scoped grants, audited with the scoped key. Scopes the permission
 // does not take, a risk out of the three levels and a critical permission
 // with defaults are refused.
 func TestSyncPluginScopedGrants(t *testing.T) {
