@@ -22,19 +22,26 @@ type index struct {
 	client *http.Client
 }
 
-type indexFile struct {
-	Schema   string `json:"schema"`
-	Releases []struct {
-		Line        string    `json:"line"`
-		Version     string    `json:"version"`
-		PublishedAt time.Time `json:"published_at"`
-		Notes       string    `json:"notes"`
-		Page        string    `json:"page"`
-		Assets      map[string]struct {
-			Path string `json:"path"`
-			Size int64  `json:"size"`
-		} `json:"assets"`
-	} `json:"releases"`
+// Index is the releases.json document of a url source. sub2api-release
+// mirror writes it; the index source reads it.
+type Index struct {
+	Schema   string         `json:"schema"`
+	Releases []IndexRelease `json:"releases"`
+}
+
+type IndexRelease struct {
+	Line        string                `json:"line"`
+	Version     string                `json:"version"`
+	PublishedAt time.Time             `json:"published_at"`
+	Notes       string                `json:"notes"`
+	Page        string                `json:"page"`
+	Assets      map[string]IndexAsset `json:"assets"`
+}
+
+// IndexAsset locates an asset by a path relative to the index.
+type IndexAsset struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
 }
 
 func (s *index) Releases(ctx context.Context) ([]Listing, error) {
@@ -49,7 +56,7 @@ func (s *index) Releases(ctx context.Context) ([]Listing, error) {
 	if err != nil {
 		return nil, fmt.Errorf("releases.json: %w", err)
 	}
-	var f indexFile
+	var f Index
 	if err = json.Unmarshal(body, &f); err != nil || f.Schema != IndexSchema {
 		return nil, errors.New("releases.json: not a " + IndexSchema + " index")
 	}

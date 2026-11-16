@@ -2,30 +2,39 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/updatesource"
 )
 
 var mirrorBlobs = map[int]string{1: `{"key_id":"k"}`, 2: "core bundle", 3: "old manifest", 4: "gateway manifest", 5: "gateway archive"}
 
-// fakeGitHub serves a release listing whose assets redirect to a CDN origin,
-// like api.github.com does; the CDN fails the test if it receives the token.
-func fakeGitHub(t *testing.T) (api *httptest.Server) {
-	cdn := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "" {
-			t.Error("token sent to the asset CDN")
-		}
-		var id int
-		fmt.Sscanf(r.URL.Path, "/blob/%d", &id)
-		_, _ = w.Write([]byte(mirrorBlobs[id]))
-	}))
-	t.Cleanup(cdn.Close)
+// routed sends every request, whatever its host, to srv; the handler sees the
+// requested host in r.Host.
+func routed(srv *httptest.Server) *http.Client {
+	pool := x509.NewCertPool()
+	pool.AddCert(srv.Certificate())
+	return &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "example.com"},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+		},
+	}}
+}
+
+// fakeGitHub serves api.github.com, whose assets redirect to GitHub's asset
+// CDN like the real API; the CDN fails the test if it receives the token.
+func fakeGitHub(t *testing.T) *http.Client {
 	asset := func(id int, name string) map[string]any {
 		return map[string]any{"id": id, "name": name, "size": len(mirrorBlobs[id])}
 	}
@@ -38,34 +47,50 @@ func fakeGitHub(t *testing.T) (api *httptest.Server) {
 		{"tag_name": "core-v0.1.290", "published_at": "2026-11-17T08:00:00Z", "assets": []any{asset(3, "next-core-manifest.json")}},
 		{"tag_name": "v0.1.8", "assets": []any{asset(3, "next-core-manifest.json")}},
 	}
-	api = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer tok" {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var id int
+		if r.Host == "release-assets.githubusercontent.com" {
+			if r.Header.Get("Authorization") != "" {
+				t.Error("token sent to the asset CDN")
+			}
+			fmt.Sscanf(r.URL.Path, "/blob/%d", &id)
+			_, _ = w.Write([]byte(mirrorBlobs[id]))
+			return
+		}
+		if r.Host != "api.github.com" || r.Header.Get("Authorization") != "Bearer tok" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		var id int
 		switch {
-		case r.URL.Path == "/repos/o/r/releases" && r.URL.Query().Get("page") == "1":
-			_ = json.NewEncoder(w).Encode(listing)
 		case r.URL.Path == "/repos/o/r/releases":
-			_, _ = w.Write([]byte("[]"))
+			_ = json.NewEncoder(w).Encode(listing)
 		case r.Header.Get("Accept") == "application/octet-stream" && func() bool { _, err := fmt.Sscanf(r.URL.Path, "/repos/o/r/releases/assets/%d", &id); return err == nil }():
-			http.Redirect(w, r, fmt.Sprintf("%s/blob/%d", cdn.URL, id), http.StatusFound)
+			http.Redirect(w, r, fmt.Sprintf("https://release-assets.githubusercontent.com/blob/%d", id), http.StatusFound)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(api.Close)
-	return api
+	t.Cleanup(srv.Close)
+	return routed(srv)
 }
 
-func readIndex(t *testing.T, dir string) releaseIndex {
+func source(t *testing.T, cfg updatesource.Config, client *http.Client) updatesource.Source {
+	t.Helper()
+	cfg.Enabled = true
+	src, err := updatesource.New(cfg, updatesource.Options{Client: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return src
+}
+
+func readIndex(t *testing.T, dir string) updatesource.Index {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, releasesIndex))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var idx releaseIndex
+	var idx updatesource.Index
 	if err = json.Unmarshal(raw, &idx); err != nil {
 		t.Fatal(err)
 	}
@@ -73,13 +98,14 @@ func readIndex(t *testing.T, dir string) releaseIndex {
 }
 
 func TestMirrorGitHubLatestThenTagsMerges(t *testing.T) {
-	api := fakeGitHub(t)
+	client := fakeGitHub(t)
+	gh := updatesource.Config{Kind: updatesource.GitHub, Repository: "o/r", Secret: "tok"}
+	src := source(t, gh, client)
 	dest := t.TempDir()
-	src := mirrorSource{client: api.Client(), api: api.URL, repo: "o/r", secret: "tok"}
-	if n, err := src.mirror(context.Background(), dest, nil, 1); err != nil || n != 2 {
+	if n, err := mirrorReleases(context.Background(), src, dest, nil, 1); err != nil || n != 2 {
 		t.Fatalf("latest: %d %v", n, err)
 	}
-	if n, err := src.mirror(context.Background(), dest, []string{"core-v0.1.290", "core-v0.1.291"}, 0); err != nil || n != 2 {
+	if n, err := mirrorReleases(context.Background(), src, dest, []string{"core-v0.1.290", "core-v0.1.291"}, 0); err != nil || n != 2 {
 		t.Fatalf("tags: %d %v", n, err)
 	}
 	idx := readIndex(t, dest)
@@ -87,7 +113,7 @@ func TestMirrorGitHubLatestThenTagsMerges(t *testing.T) {
 	for _, r := range idx.Releases {
 		got = append(got, r.Line+"-"+r.Version)
 	}
-	if idx.Schema != releasesSchema || strings.Join(got, ",") != "core-0.1.291,core-0.1.290,gateway-0.1.136" {
+	if idx.Schema != updatesource.IndexSchema || strings.Join(got, ",") != "core-0.1.291,core-0.1.290,gateway-0.1.136" {
 		t.Fatalf("index %s %v", idx.Schema, got)
 	}
 	core := idx.Releases[0]
@@ -103,20 +129,19 @@ func TestMirrorGitHubLatestThenTagsMerges(t *testing.T) {
 	if err != nil || string(b) != mirrorBlobs[1] {
 		t.Fatalf("manifest copy %q %v", b, err)
 	}
-	if _, err := src.mirror(context.Background(), dest, []string{"core-v0.1.292"}, 0); err == nil {
+	if _, err := mirrorReleases(context.Background(), src, dest, []string{"core-v0.1.292"}, 0); err == nil {
 		t.Fatal("mirrored a draft")
 	}
-	src.secret = ""
-	if _, err := src.mirror(context.Background(), t.TempDir(), nil, 1); err == nil {
+	gh.Secret = ""
+	if _, err := mirrorReleases(context.Background(), source(t, gh, client), t.TempDir(), nil, 1); err == nil {
 		t.Fatal("listing without the token succeeded")
 	}
 }
 
 func TestMirrorURLSourceCopiesAMirror(t *testing.T) {
-	api := fakeGitHub(t)
 	first := t.TempDir()
-	gh := mirrorSource{client: api.Client(), api: api.URL, repo: "o/r", secret: "tok"}
-	if _, err := gh.mirror(context.Background(), first, nil, 5); err != nil {
+	gh := source(t, updatesource.Config{Kind: updatesource.GitHub, Repository: "o/r", Secret: "tok"}, fakeGitHub(t))
+	if _, err := mirrorReleases(context.Background(), gh, first, nil, 5); err != nil {
 		t.Fatal(err)
 	}
 	files := http.FileServer(http.Dir(first))
@@ -128,13 +153,13 @@ func TestMirrorURLSourceCopiesAMirror(t *testing.T) {
 		http.StripPrefix("/rel", files).ServeHTTP(w, r)
 	}))
 	defer origin.Close()
-	second := t.TempDir()
-	base, err := normalizeBase(origin.URL + "/rel")
+	base, err := updatesource.NormalizeURL("https://mirror.example.com/rel")
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := mirrorSource{client: origin.Client(), base: base, secret: "s3cret"}
-	if n, err := src.mirror(context.Background(), second, nil, 5); err != nil || n != 3 {
+	src := source(t, updatesource.Config{Kind: updatesource.URL, URL: base, Secret: "s3cret"}, routed(origin))
+	second := t.TempDir()
+	if n, err := mirrorReleases(context.Background(), src, second, nil, 5); err != nil || n != 3 {
 		t.Fatalf("url mirror: %d %v", n, err)
 	}
 	a, b := readIndex(t, first), readIndex(t, second)
@@ -149,17 +174,17 @@ func TestMirrorURLSourceCopiesAMirror(t *testing.T) {
 	}
 
 	// An index naming a path outside the source base is refused.
-	a.Releases[0].Assets["next-core-manifest.json"] = indexAsset{Path: "../escape", Size: 1}
+	a.Releases[0].Assets["next-core-manifest.json"] = updatesource.IndexAsset{Path: "../escape", Size: 1}
 	raw, _ := json.Marshal(a)
 	if err := os.WriteFile(filepath.Join(first, releasesIndex), raw, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := src.mirror(context.Background(), t.TempDir(), nil, 5); err == nil {
+	if _, err := mirrorReleases(context.Background(), src, t.TempDir(), nil, 5); err == nil {
 		t.Fatal("accepted a path outside the base")
 	}
 }
 
-func TestMirrorFlagsAndPaths(t *testing.T) {
+func TestMirrorFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"mirror", "--out", "x", "--latest", "1"},
 		{"mirror", "--out", "x", "--github", "o/r", "--url", "https://h/", "--latest", "1"},
@@ -171,11 +196,6 @@ func TestMirrorFlagsAndPaths(t *testing.T) {
 	} {
 		if err := run(args, nil); err == nil {
 			t.Errorf("%v accepted", args)
-		}
-	}
-	for p, ok := range map[string]bool{"core/0.1.291/a.json": true, "../a": false, "/a": false, "a//b": false, "a/./b": false, ".hidden": false, "a%2e": false, "https://h/a": false, `a\b`: false} {
-		if validPath(p) != ok {
-			t.Errorf("validPath(%q) = %v", p, !ok)
 		}
 	}
 }
