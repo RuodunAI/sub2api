@@ -10,6 +10,10 @@
 # Every step is skipped when its sources do not exist yet, so the skeleton
 # image builds from day one. The dev key lives in <keydir> (a BuildKit cache
 # mount) and is created on first use; it must never be copied into the image.
+#
+# GO_BINARIES_ONLY=1 stops after bin/ (cross builds with GOARCH set, whose
+# plugin CLI cannot run here). SKIP_DB_CHECK=0 packs plugins with the GORM
+# model check (needs PostgreSQL, see build-demo.sh); the image build has none.
 set -eu
 SRC=$1
 OUT=$2
@@ -43,6 +47,7 @@ if [ -f tools/sub2api-plugin/go.mod ]; then
   (cd tools/sub2api-plugin && go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o "$OUT/bin/sub2api-plugin" .)
   CLI="$OUT/bin/sub2api-plugin"
 fi
+[ "${GO_BINARIES_ONLY:-0}" = 1 ] && exit 0
 export PATH="$OUT/bin:$PATH"
 
 write_empty_index() {
@@ -75,8 +80,9 @@ if [ -f tools/sub2api-plugin/scripts/build-demo.sh ]; then
   # built into the image.
   echo "==> tools/sub2api-plugin/scripts/build-demo.sh"
   # No PostgreSQL in the image build (initdb refuses root): the GORM models
-  # are compared with migrations/ by TestDBCheck in CI instead.
-  SKIP_DB_CHECK=1 sh tools/sub2api-plugin/scripts/build-demo.sh "$OUT/market" "$KEYS" "$KEY_ID"
+  # are compared with migrations/ by TestDBCheck in CI instead. The release
+  # workflow has one and passes SKIP_DB_CHECK=0.
+  SKIP_DB_CHECK=${SKIP_DB_CHECK:-1} sh tools/sub2api-plugin/scripts/build-demo.sh "$OUT/market" "$KEYS" "$KEY_ID"
 else
   # Generic fallback: one package per plugins/<name>/manifest.json.
   TMP=$(mktemp -d)
