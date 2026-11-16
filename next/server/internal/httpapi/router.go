@@ -301,7 +301,8 @@ func Authenticate(c *gin.Context, tokens core.TokenVerifier) bool {
 		Fail(c, core.ErrUnauthenticated)
 		return false
 	}
-	ctx, _, err := core.AuthenticateBearer(c.Request.Context(), tokens, token, c.ClientIP())
+	ctx := core.WithUserAgent(c.Request.Context(), c.Request.UserAgent())
+	ctx, _, err := core.AuthenticateBearer(ctx, tokens, token, c.ClientIP())
 	if err != nil {
 		Fail(c, authFailure(err))
 		return false

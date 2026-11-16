@@ -144,6 +144,95 @@ func TestTouchThrottled(t *testing.T) {
 	}
 }
 
+// A written use records where the session was used from, so the sessions
+// list shows a copy of a token in use elsewhere; an unwritten one does not.
+func TestTouchRecordsWhereUsed(t *testing.T) {
+	v, c := newStore(t)
+	tok := create(t, v, 7, "fam")
+	from := func(ip, ua string) Session {
+		s := mustLookup(t, v, tok)
+		s.IP, s.UserAgent = ip, ua
+		return s
+	}
+	c.advance(time.Minute)
+	require.NoError(t, v.Touch(ctx, tok, from("198.51.100.7", "elsewhere")))
+	if s := mustLookup(t, v, tok); s.IP != "192.0.2.1" || s.UserAgent != "ua" {
+		t.Fatalf("written before TouchEvery: %+v", s)
+	}
+	c.advance(5 * time.Minute)
+	require.NoError(t, v.Touch(ctx, tok, from("198.51.100.7", "elsewhere")))
+	s := mustLookup(t, v, tok)
+	assert.Equal(t, "198.51.100.7", s.IP)
+	assert.Equal(t, "elsewhere", s.UserAgent)
+	assert.True(t, s.LastSeen.Equal(c.now))
+	assert.Equal(t, "password", s.Method)
+	l, err := v.List(ctx, 7)
+	require.NoError(t, err)
+	require.Len(t, l, 1)
+	assert.Equal(t, "198.51.100.7", l[0].IP)
+}
+
+// A rotation starts from the token the caller presented: one another
+// rotation already left in its grace (another tab verified first) rotates
+// nothing, so the token that rotation issued is neither ended nor cut to
+// the grace.
+func TestRotateFromSupersededToken(t *testing.T) {
+	v, c := newStore(t)
+	t0 := create(t, v, 7, "fam")
+	t1, err := v.Rotate(ctx, 7, "fam", t0)
+	require.NoError(t, err)
+	_, err = v.Rotate(ctx, 7, "fam", t0)
+	require.ErrorIs(t, err, ErrSuperseded)
+	assert.Greater(t, c.mr.TTL(sessKey(Hash(t1))), DefaultRotateGrace)
+	mustLookup(t, v, t0) // still in its grace
+	t2, err := v.Rotate(ctx, 7, "fam", t1)
+	require.NoError(t, err)
+	gone(t, v, t0)
+	mustLookup(t, v, t2)
+}
+
+// Drop checks the stamp again: a session a keeping bump restamped after it
+// was read (the version is the bump's) stays, both tokens of a rotation;
+// one still stamped below goes.
+func TestDropSparesARestampedSession(t *testing.T) {
+	v, _ := newStore(t)
+	t0 := create(t, v, 7, "keep") // tv 3
+	t1, err := v.Rotate(ctx, 7, "keep", t0)
+	require.NoError(t, err)
+	read0, read1 := mustLookup(t, v, t0), mustLookup(t, v, t1)
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Keep: "keep"}, Bump{From: 3, To: 4}))
+	for _, x := range []struct {
+		tok string
+		s   Session
+	}{{t0, read0}, {t1, read1}} {
+		dropped, err := v.Drop(ctx, x.tok, x.s, 4)
+		require.NoError(t, err)
+		assert.False(t, dropped)
+		mustLookup(t, v, x.tok)
+	}
+	dropped, err := v.Drop(ctx, t1, read1, 5)
+	require.NoError(t, err)
+	assert.True(t, dropped)
+	gone(t, v, t1)
+}
+
+// Prune ends what is stamped below the version whatever the clocks say: a
+// session another node (its clock ahead) created is not taken for one
+// issued after the call.
+func TestPruneIgnoresClocks(t *testing.T) {
+	v, c := newStore(t)
+	ahead := NewValkey(v.rdb, Options{Now: func() time.Time { return c.now.Add(time.Hour) }})
+	stale := create(t, ahead, 7, "stale") // tv 3, created an hour "later"
+	kept, err := v.Create(ctx, Session{ID: "kept", UserID: 7, TokenVersion: 4})
+	require.NoError(t, err)
+	keptNext, err := v.Rotate(ctx, 7, "kept", kept)
+	require.NoError(t, err)
+	require.NoError(t, v.Prune(ctx, 7, 4))
+	gone(t, v, stale)
+	mustLookup(t, v, kept)
+	mustLookup(t, v, keptNext)
+}
+
 // Revoking one session ends it at once; a touch does not bring it back.
 func TestRevokeOne(t *testing.T) {
 	v, c := newStore(t)
@@ -249,10 +338,10 @@ func TestRotate(t *testing.T) {
 	v, c := newStore(t)
 	old := create(t, v, 7, "fam")
 	c.advance(6 * time.Minute) // a use of old would be written now
-	if _, err := v.Rotate(ctx, 8, "fam"); !errors.Is(err, ErrNotFound) {
+	if _, err := v.Rotate(ctx, 8, "fam", old); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("rotated another user's session: %v", err)
 	}
-	fresh, err := v.Rotate(ctx, 7, "fam")
+	fresh, err := v.Rotate(ctx, 7, "fam", old)
 	if err != nil || fresh == old {
 		t.Fatalf("rotate: %q, %v", fresh, err)
 	}
@@ -271,7 +360,7 @@ func TestRotate(t *testing.T) {
 	mustLookup(t, v, fresh)
 
 	again := create(t, v, 7, "fam2")
-	next, err := v.Rotate(ctx, 7, "fam2")
+	next, err := v.Rotate(ctx, 7, "fam2", again)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +452,7 @@ func TestUnavailable(t *testing.T) {
 	_, err = v.Lookup(ctx, tok)
 	check("lookup", err)
 	check("touch", v.Touch(ctx, tok, s))
-	_, err = v.Rotate(ctx, 7, "fam")
+	_, err = v.Rotate(ctx, 7, "fam", tok)
 	check("rotate", err)
 	_, err = v.List(ctx, 7)
 	check("list", err)
@@ -371,7 +460,8 @@ func TestUnavailable(t *testing.T) {
 	check("has", err)
 	check("revoke", v.Revoke(ctx, 7, Selection{}, Bump{From: 0, To: 1}))
 	check("prune", v.Prune(ctx, 7, 1))
-	check("drop", v.Drop(ctx, tok, s))
+	_, err = v.Drop(ctx, tok, s, 9)
+	check("drop", err)
 	_, err = v.PutFlow(ctx, "p", Flow{})
 	check("put flow", err)
 	_, err = v.PeekFlow(ctx, "p", "t")
@@ -388,9 +478,9 @@ func TestUnavailable(t *testing.T) {
 func TestRotateTwiceThenRevoke(t *testing.T) {
 	v, _ := newStore(t)
 	t0 := create(t, v, 7, "fam")
-	t1, err := v.Rotate(ctx, 7, "fam")
+	t1, err := v.Rotate(ctx, 7, "fam", t0)
 	require.NoError(t, err)
-	t2, err := v.Rotate(ctx, 7, "fam")
+	t2, err := v.Rotate(ctx, 7, "fam", t1)
 	require.NoError(t, err)
 	gone(t, v, t0)
 	mustLookup(t, v, t1) // in its grace
@@ -404,7 +494,7 @@ func TestRotateTwiceThenRevoke(t *testing.T) {
 func TestRevokeStampsTheRotatedToken(t *testing.T) {
 	v, _ := newStore(t)
 	t0 := create(t, v, 7, "keep")
-	t1, err := v.Rotate(ctx, 7, "keep")
+	t1, err := v.Rotate(ctx, 7, "keep", t0)
 	require.NoError(t, err)
 	create(t, v, 7, "other")
 	require.NoError(t, v.Revoke(ctx, 7, Selection{Keep: "keep"}, Bump{From: 3, To: 9}))
@@ -420,7 +510,7 @@ func TestRevokeStampsTheRotatedToken(t *testing.T) {
 func TestBumpEndsWhatAnEarlierBumpEnded(t *testing.T) {
 	v, _ := newStore(t)
 	stale := create(t, v, 7, "stale") // tv 3
-	staleNext, err := v.Rotate(ctx, 7, "stale")
+	staleNext, err := v.Rotate(ctx, 7, "stale", stale)
 	require.NoError(t, err)
 	fresh, err := v.Create(ctx, Session{ID: "fresh", UserID: 7, TokenVersion: 5})
 	require.NoError(t, err)
@@ -447,13 +537,17 @@ func TestBumpEndsWhatAnEarlierBumpEnded(t *testing.T) {
 // through a token a rotation left behind.
 func TestDrop(t *testing.T) {
 	v, c := newStore(t)
-	t0 := create(t, v, 7, "fam")
-	t1, err := v.Rotate(ctx, 7, "fam")
+	t0 := create(t, v, 7, "fam") // tv 3
+	t1, err := v.Rotate(ctx, 7, "fam", t0)
 	require.NoError(t, err)
-	require.NoError(t, v.Drop(ctx, t0, mustLookup(t, v, t0)))
+	dropped, err := v.Drop(ctx, t0, mustLookup(t, v, t0), 4)
+	require.NoError(t, err)
+	assert.True(t, dropped)
 	gone(t, v, t0)
 	mustLookup(t, v, t1)
-	require.NoError(t, v.Drop(ctx, t1, mustLookup(t, v, t1)))
+	dropped, err = v.Drop(ctx, t1, mustLookup(t, v, t1), 4)
+	require.NoError(t, err)
+	assert.True(t, dropped)
 	gone(t, v, t1)
 	assert.False(t, c.mr.Exists(sidKey("fam")))
 	ids, _ := c.mr.ZMembers(userKey(7))
@@ -656,7 +750,7 @@ func TestRotateRetriedIsMadeOnce(t *testing.T) {
 	v := NewValkey(rdb, Options{})
 	t0 := create(t, v, 7, "fam")
 	p.armed.Store(true)
-	t1, err := v.Rotate(ctx, 7, "fam")
+	t1, err := v.Rotate(ctx, 7, "fam", t0)
 	require.NoError(t, err)
 	require.False(t, p.armed.Load(), "no answer was lost")
 	mustLookup(t, v, t0)

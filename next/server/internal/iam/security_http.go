@@ -288,11 +288,19 @@ func (s *Service) handleSessionRevoke(c *gin.Context) {
 }
 
 func (s *Service) handleSessionsRevokeOthers(c *gin.Context) {
-	if err := s.RevokeOtherSessions(audit.Context(c), actor(c), s.currentSession(c)); err != nil {
+	token, err := s.RevokeOtherSessions(audit.Context(c), actor(c), s.currentSession(c), bearerToken(c.Request))
+	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	httpapi.NoContent(c)
+	httpapi.OK(c, sessionRenewed{AccessToken: token})
+}
+
+// sessionRenewed answers a change that gives the caller's session a new
+// token (POST /me/sessions/revoke-others): the console uses it from then
+// on, the old one works for a few seconds more. Empty when there is none.
+type sessionRenewed struct {
+	AccessToken string `json:"access_token,omitempty"`
 }
 
 func (s *Service) handleResetSecurity(c *gin.Context) {

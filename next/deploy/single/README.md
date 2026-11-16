@@ -8,8 +8,15 @@ One sub2api-next node with its own PostgreSQL 16, a Valkey 9 cache and the signe
 market bundled in the image, all started by docker compose (project `sup2api`).
 The cache is any Redis-protocol server: set `CACHE_IMAGE=redis:7` to run Redis
 instead (the service keeps the name `redis`, and `SUB2API_REDIS_URL` accepts
-`redis://` as well as `valkey://`). It holds real-time state only, so switching
-images loses nothing.
+`redis://` as well as `valkey://`). Besides real-time state it holds the console
+sign-ins (login sessions and auth flows, CONTRACTS §100.5), so it keeps an
+append-only file (`--appendonly yes --appendfsync everysec`) in the `redisdata`
+volume: a restart of the cache (host reboot, image update, OOM kill) keeps
+everyone signed in, losing at most the last second of writes. Without it, every
+restart signs every console user out, with no alert. Switching images: Valkey
+9 writes a file Redis 7 may not read, so remove the `redisdata` volume when
+switching (`docker compose ... down redis && docker volume rm sup2api_redisdata`);
+everyone then signs in again.
 PostgreSQL, the cache and the market are reachable only inside the project network;
 the service is published on `127.0.0.1:3130` by default; set
 `SUP2API_BIND=0.0.0.0` in `.env` to expose it on all interfaces.

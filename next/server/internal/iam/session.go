@@ -43,11 +43,28 @@ type sessionMeta struct {
 type sessionMetaKey struct{}
 
 func sessionContext(c *gin.Context, method string) context.Context {
-	ua := c.Request.UserAgent()
+	return context.WithValue(c.Request.Context(), sessionMetaKey{}, sessionMeta{method: method, ip: c.ClientIP(), userAgent: clipUserAgent(c.Request.UserAgent())})
+}
+
+// clipUserAgent is ua as a session keeps it: 512 characters at most.
+func clipUserAgent(ua string) string {
 	if utf8.RuneCountInString(ua) > 512 {
-		ua = string([]rune(ua)[:512])
+		return string([]rune(ua)[:512])
 	}
-	return context.WithValue(c.Request.Context(), sessionMetaKey{}, sessionMeta{method: method, ip: c.ClientIP(), userAgent: ua})
+	return ua
+}
+
+// usedFrom is where the request using sess comes from (core.ClientIP,
+// core.UserAgent), what sess last recorded where the request does not say.
+func usedFrom(ctx context.Context, sess tokenstore.Session) (ip, userAgent string) {
+	ip, userAgent = core.ClientIP(ctx), clipUserAgent(core.UserAgent(ctx))
+	if ip == "" {
+		ip = sess.IP
+	}
+	if userAgent == "" {
+		userAgent = sess.UserAgent
+	}
+	return ip, userAgent
 }
 
 func withLoginMethod(ctx context.Context, method string) context.Context {
@@ -128,11 +145,30 @@ func (s *Service) hasSession(ctx context.Context, g *gorm.DB, userID int64, id s
 	return s.sessions.Has(ctx, userID, id, version)
 }
 
-// RevokeOtherSessions ends every session of the user but keepSession.
-func (s *Service) RevokeOtherSessions(ctx context.Context, userID int64, keepSession string) error {
-	return s.changeSessions(ctx, userID, otherSessions(keepSession), func(tx *gorm.DB) error {
+// RevokeOtherSessions ends every session of the user but keepSession, the
+// caller's, and then gives that one a new token in place of presented (the
+// one the caller sent), which it returns: a copy of the caller's token,
+// which the sessions list cannot tell from the caller, stops working with
+// the grace of a rotation, as after a step-up. "" when there is no new
+// token: the caller's session ended meanwhile, or another tab's rotation
+// left presented behind (that tab's token is the one to use). The
+// revocation commits first. When Valkey cannot be reached for the
+// rotation, the caller's session ends too, as every session does when the
+// revocation itself cannot reach it (a stampless bump): a copy of its token
+// does not outlive the request.
+func (s *Service) RevokeOtherSessions(ctx context.Context, userID int64, keepSession, presented string) (string, error) {
+	err := s.changeSessions(ctx, userID, otherSessions(keepSession), func(tx *gorm.DB) error {
 		return audit.Audit(ctx, tx, userID, "user.session.revoke_others", "user", strconv.FormatInt(userID, 10), nil)
 	})
+	if err != nil {
+		return "", err
+	}
+	token, err := s.rotateSession(ctx, userID, keepSession, presented)
+	if !tokenstore.IsUnavailable(err) {
+		return token, err
+	}
+	slog.WarnContext(ctx, "iam: the caller's session not renewed, a token_version bump ends it", "user_id", userID, "err", err)
+	return "", s.changeSessions(ctx, userID, allSessions, nil)
 }
 
 // sessionsToEnd picks the sessions a change ends: only that one, or every
@@ -182,7 +218,7 @@ func (s *Service) endSomeSessions(ctx context.Context, tx *gorm.DB, userID int64
 // Valkey cannot be reached, a stampless bump ends it with every other
 // session: the change goes through, erring on the safe side.
 func (s *Service) endOneSession(ctx context.Context, g *gorm.DB, userID int64, id string) error {
-	return s.reviseOrBump(ctx, g, userID, tokenstore.Selection{Only: id}, tokenstore.Bump{}, stamplessStep)
+	return s.reviseOrBump(ctx, g, userID, tokenstore.Selection{Only: id}, tokenstore.Bump{})
 }
 
 // keepingBump ends every session of userID but keep, with a bump by 1 that
@@ -208,14 +244,14 @@ func (s *Service) keepingBump(ctx context.Context, g *gorm.DB, userID int64, kee
 	if err := bumpTokenVersion(g, userID, 1).Error; err != nil {
 		return err
 	}
-	return s.reviseOrBump(ctx, g, userID, tokenstore.Selection{Keep: keep},
-		tokenstore.Bump{From: from, To: from + 1}, stamplessStep-1)
+	return s.reviseOrBump(ctx, g, userID, tokenstore.Selection{Keep: keep}, tokenstore.Bump{From: from, To: from + 1})
 }
 
-// reviseOrBump runs a tokenstore Revoke. When Valkey cannot be reached (or
-// there is no store: the server CLI) it bumps token_version by step
-// instead, which with the caller's own bump makes a stampless one.
-func (s *Service) reviseOrBump(ctx context.Context, g *gorm.DB, userID int64, sel tokenstore.Selection, b tokenstore.Bump, step int) error {
+// reviseOrBump runs a tokenstore Revoke, whose bump b the caller has
+// already made in tx. When Valkey cannot be reached (or there is no store:
+// the server CLI) it bumps token_version on to a stampless bump in all:
+// stamplessStep less what b already stepped.
+func (s *Service) reviseOrBump(ctx context.Context, g *gorm.DB, userID int64, sel tokenstore.Selection, b tokenstore.Bump) error {
 	if s.sessions != nil {
 		err := s.sessions.Revoke(ctx, userID, sel, b)
 		if !tokenstore.IsUnavailable(err) {
@@ -223,7 +259,7 @@ func (s *Service) reviseOrBump(ctx context.Context, g *gorm.DB, userID int64, se
 		}
 		slog.WarnContext(ctx, "iam: sessions not revised, a token_version bump ends them", "user_id", userID, "err", err)
 	}
-	return bumpTokenVersion(g, userID, step).Error
+	return bumpTokenVersion(g, userID, stamplessStep-(b.To-b.From)).Error
 }
 
 // bumpTokenVersion ends every session of userID stamped below the new

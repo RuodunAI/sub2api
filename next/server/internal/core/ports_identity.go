@@ -172,8 +172,10 @@ type AccessKeyVerifier interface {
 
 // AuthenticateBearer resolves a console bearer token to its user: a login
 // session, whose id then travels in the returned context, or an access key,
-// whose limits do.
+// whose limits do. The client's ip goes in the context first (ClientIP): a
+// session records where it is used from.
 func AuthenticateBearer(ctx context.Context, tokens TokenVerifier, token, ip string) (context.Context, int64, error) {
+	ctx = WithClientIP(ctx, ip)
 	if !strings.HasPrefix(token, AccessKeyPrefix) {
 		uid, session, err := tokens.VerifySession(ctx, token)
 		if err != nil {

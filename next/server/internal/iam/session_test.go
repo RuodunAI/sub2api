@@ -109,9 +109,10 @@ func TestRevocation(t *testing.T) {
 	assert.True(t, isCode(err, "not_found"), "revoked another user's session: %v", err)
 	live(t, s, b.AccessToken)
 
-	require.NoError(t, s.RevokeOtherSessions(ctx, id, sid(t, s, b.AccessToken)))
+	renewed, err := s.RevokeOtherSessions(ctx, id, sid(t, s, b.AccessToken), b.AccessToken)
+	require.NoError(t, err)
 	ended(t, s, c.AccessToken)
-	live(t, s, b.AccessToken)
+	live(t, s, b.AccessToken, renewed) // b for the grace of the rotation
 	list, err := s.Sessions(ctx, id, sid(t, s, b.AccessToken))
 	require.NoError(t, err)
 	require.Len(t, list, 1)
@@ -121,13 +122,13 @@ func TestRevocation(t *testing.T) {
 	d := mustLogin(t, s, u.Email, adminPassword)
 	require.NoError(t, s.ChangePassword(ctx, id, sid(t, s, b.AccessToken), "another-password-1"))
 	ended(t, s, d.AccessToken)
-	live(t, s, b.AccessToken)
+	live(t, s, b.AccessToken, renewed)
 
 	// A token_version bump that did not go through Valkey (the server CLI)
 	// still ends them, and they leave the list.
 	require.NoError(t, s.db.Gorm.Exec(`UPDATE users SET token_version = token_version + 1 WHERE id = ?`, id).Error)
 	s.forgetStatus(id)
-	ended(t, s, b.AccessToken)
+	ended(t, s, b.AccessToken, renewed)
 	stored, err := s.sessions.List(ctx, id)
 	require.NoError(t, err)
 	assert.Empty(t, stored)
@@ -449,12 +450,12 @@ func TestKeptSessionKeepsItsRotatedToken(t *testing.T) {
 	s, ctx := e.svc, context.Background()
 	t0 := mustLogin(t, s, adminEmail, adminPassword)
 	id, uid := sid(t, s, t0.AccessToken), t0.User.ID
-	t1, err := s.sessions.Rotate(ctx, uid, id)
+	t1, err := s.sessions.Rotate(ctx, uid, id, t0.AccessToken)
 	require.NoError(t, err)
 	require.NoError(t, s.ChangePassword(ctx, uid, id, "another-password-1"))
 	live(t, s, t0.AccessToken, t1)
 
-	t2, err := s.sessions.Rotate(ctx, uid, id)
+	t2, err := s.sessions.Rotate(ctx, uid, id, t1)
 	require.NoError(t, err)
 	ended(t, s, t0.AccessToken)
 	e.redis.HSet(sessKey(t1), "tv", "0")
@@ -544,7 +545,7 @@ func TestFailedLoginLeavesNothingBehind(t *testing.T) {
 // rotateFails is a session store whose rotations fail as Valkey down does.
 type rotateFails struct{ tokenstore.SessionStore }
 
-func (rotateFails) Rotate(context.Context, int64, string) (string, error) {
+func (rotateFails) Rotate(context.Context, int64, string, string) (string, error) {
 	return "", tokenstore.ErrUnavailable
 }
 
@@ -633,7 +634,7 @@ func TestEndedSessionStaysEnded(t *testing.T) {
 		name string
 		run  func(keep, password string) error
 	}{
-		{"revoke others", func(keep, _ string) error { return s.RevokeOtherSessions(ctx, uid, keep) }},
+		{"revoke others", func(keep, _ string) error { _, err := s.RevokeOtherSessions(ctx, uid, keep, ""); return err }},
 		{"password change", func(keep, password string) error { return s.ChangePassword(ctx, uid, keep, password) }},
 	}
 	password := adminPassword
@@ -677,7 +678,7 @@ func TestKeepingBumpWithValkeyDownEndsAheadStamps(t *testing.T) {
 	e.redis.HSet(sessKey(a.AccessToken), "tv", strconv.Itoa(tv+1))
 	var valkey outage
 	valkey.on(e, s)
-	require.NoError(t, valkey.during(func() error { return s.RevokeOtherSessions(ctx, uid, keep) }))
+	require.NoError(t, valkey.during(func() error { _, err := s.RevokeOtherSessions(ctx, uid, keep, ""); return err }))
 	s.forgetStatus(uid)
 	ended(t, s, a.AccessToken)
 }
@@ -704,7 +705,9 @@ func TestSessionsLeaveOutEndedOnes(t *testing.T) {
 // chance to revive it, which it must not.
 type keepEnded struct{ tokenstore.SessionStore }
 
-func (keepEnded) Drop(context.Context, string, tokenstore.Session) error { return nil }
+func (keepEnded) Drop(context.Context, string, tokenstore.Session, int) (bool, error) {
+	return true, nil
+}
 
 // walkNodes are the nodes the walks run on: s and other serve the console
 // and share a bus; observer checks ended tokens without removing them; cli
@@ -914,7 +917,7 @@ func (w *sessionWalk) rotate() {
 	if id == "" {
 		return
 	}
-	token, err := w.s.sessions.Rotate(w.ctx, w.uid, id)
+	token, err := w.s.sessions.Rotate(w.ctx, w.uid, id, w.current[id])
 	if w.ended[id] && errors.Is(err, tokenstore.ErrNotFound) {
 		return
 	}
@@ -970,13 +973,20 @@ func (w *sessionWalk) revokeOthers(down bool) {
 	var from int
 	w.ok(userTokenVersion(w.s.db.Gorm, w.uid).Row().Scan(&from))
 	at := time.Now()
-	w.ok(w.during(down, func() error { return w.s.RevokeOtherSessions(w.ctx, w.uid, keep) }))
+	var renewed string
+	w.ok(w.during(down, func() (err error) {
+		renewed, err = w.s.RevokeOtherSessions(w.ctx, w.uid, keep, w.current[keep])
+		return err
+	}))
 	if down {
 		w.endSessions("")
 		w.late = &lateRevoke{keep: keep, from: from, at: at}
 		return
 	}
 	w.endSessions(keep)
+	if renewed != "" {
+		w.issued(keep, renewed)
+	}
 }
 
 // revokeOthersRolledBack ends the other sessions and restamps the one kept
@@ -985,7 +995,7 @@ func (w *sessionWalk) revokeOthers(down bool) {
 func (w *sessionWalk) revokeOthersRolledBack() {
 	keep := w.pickSession()
 	restore := failAudit(w.t, w.s, "user.session.revoke_others", true)
-	err := w.s.RevokeOtherSessions(w.ctx, w.uid, keep)
+	_, err := w.s.RevokeOtherSessions(w.ctx, w.uid, keep, w.current[keep])
 	restore()
 	require.Error(w.t, err, w.where())
 	w.endSessions(keep)
@@ -1056,6 +1066,14 @@ type raceSession struct {
 	born   [2]int64
 }
 
+// current is the token x was last given, "" without x.
+func current(x *raceSession) string {
+	if x == nil {
+		return ""
+	}
+	return x.tokens[len(x.tokens)-1]
+}
+
 // raceChange ended the session only, or every one but keep.
 type raceChange struct {
 	only, keep string
@@ -1089,9 +1107,10 @@ func (r *sessionRace) work(t *testing.T, seed uint64, steps int) []string {
 	var own []*raceSession
 	var trail []string
 	for range steps {
-		some := "" // one of its sessions, if any
+		some, mine := "", (*raceSession)(nil) // one of its sessions, if any
 		if len(own) > 0 {
-			some = own[rng.IntN(len(own))].sid
+			mine = own[rng.IntN(len(own))]
+			some = mine.sid
 		}
 		var err error
 		switch op := rng.IntN(6); op {
@@ -1124,14 +1143,20 @@ func (r *sessionRace) work(t *testing.T, seed uint64, steps int) []string {
 			}
 			x := own[rng.IntN(len(own))]
 			var token string
-			if token, err = r.s.sessions.Rotate(r.ctx, r.uid, x.sid); err == nil {
+			if token, err = r.s.sessions.Rotate(r.ctx, r.uid, x.sid, x.tokens[len(x.tokens)-1]); err == nil {
 				x.tokens = append(x.tokens, token)
 			} else if errors.Is(err, tokenstore.ErrNotFound) {
 				err = nil
 			}
 		case 2:
 			trail = append(trail, "revoke others")
-			err = r.change(raceChange{keep: some}, func() error { return r.s.RevokeOtherSessions(r.ctx, r.uid, some) })
+			err = r.change(raceChange{keep: some}, func() error {
+				token, err := r.s.RevokeOtherSessions(r.ctx, r.uid, some, current(mine))
+				if token != "" {
+					mine.tokens = append(mine.tokens, token)
+				}
+				return err
+			})
 		case 3:
 			trail = append(trail, "revoke one")
 			if some == "" {
