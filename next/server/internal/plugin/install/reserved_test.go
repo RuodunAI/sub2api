@@ -262,6 +262,20 @@ func TestReservedCoverRepo(t *testing.T) {
 	}
 }
 
+// A removed plugin installs from no source, officially signed or not: the
+// check comes before the retired key is claimed.
+func TestRemovedKeyRefused(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	official := pkgtest.Build(pkgtest.Minimal("ccgateway", "0.1.133", "sub2api"), e.root)
+	for _, source := range []string{"", "builtin", "market:1"} {
+		_, err := e.svc.Upload(ctx, official, e.admin, UploadOptions{Source: source})
+		if errCode(err) != "plugin_key_reserved" || !strings.Contains(err.Error(), "removed in core 0.1.290") {
+			t.Errorf("source %q: %v", source, err)
+		}
+	}
+}
+
 func TestReservedChannel(t *testing.T) {
 	m := &manifest.Manifest{Key: "acme", Notifications: &manifest.Notifications{Channels: []manifest.NotificationChannel{{ID: "email"}}}}
 	if err := checkReserved(m, "upload", pkg.TrustOfficial, true); err == nil {

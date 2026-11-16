@@ -21,13 +21,16 @@ import (
 // installs and configured market sources are trusted channels. A platform or
 // notification channel id is reserved for its own plugin whatever the source:
 // the channel's provider reads every notification sent on it.
-// TestReservedCoverRepo keeps the lists in step with next/plugins; ccgateway
-// stays reserved after its removal (0.1.290), like any retired key.
+// TestReservedCoverRepo keeps the lists in step with next/plugins.
 var (
 	reservedKeys = map[string]bool{
-		"anthropic": true, "ccgateway": true, "claude_oauth": true, "codex": true, "custom": true, "dynweight": true, "gemini": true, "growth": true,
+		"anthropic": true, "claude_oauth": true, "codex": true, "custom": true, "dynweight": true, "gemini": true, "growth": true,
 		"guard": true, "mailer": true, "moderation": true, "openai": true, "payment": true, "relay": true, "volcengine": true,
 	}
+	// removedKeys maps the key of a first-party plugin the core no longer
+	// supports to the release that removed it: no package of it installs,
+	// whatever its signature or source, since the core side it needs is gone.
+	removedKeys = map[string]string{"ccgateway": "0.1.290"}
 	// reservedPlatforms maps a platform id to the plugin it belongs to.
 	reservedPlatforms = map[string]string{"volcengine": "volcengine"}
 	// reservedChannels maps a notification channel id to the plugin it
@@ -94,8 +97,11 @@ func (s *Service) checkResources(ctx context.Context, q *gorm.DB, m *manifest.Ma
 // checkReserved applies the reservations to a package from source with the
 // given trust level. claim is true when the key is not installed yet: only a
 // new claim of a reserved key needs a trusted channel (an installed plugin
-// keeps its publisher check).
+// keeps its publisher check). A removed key is refused from any source.
 func checkReserved(m *manifest.Manifest, source, trust string, claim bool) error {
+	if release, ok := removedKeys[m.Key]; ok {
+		return ErrReservedKey.WithMessage(fmt.Sprintf("plugin %q was removed in core %s and cannot be installed (see CHANGELOG %s)", m.Key, release, release))
+	}
 	if field, msg := reservedUse(m); field != "" {
 		return ErrReservedKey.WithMessage(msg)
 	}
