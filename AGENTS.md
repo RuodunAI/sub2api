@@ -26,7 +26,7 @@
 | `next/web` | 控制台（Vue 3 + Vite + TS + Pinia + Tailwind），`packages/` 下是共享给插件的 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` |
 | `next/deploy` | 镜像构建脚本、网关托管部署（`gateway/`）、单机栈（`single/`）、e2e 栈、发布与回退手册（`rollback/`） |
 | `next/e2e` | 验收测试，需要部署好的栈；CI 只编译不运行 |
-| `next/protocol-codec` | 早期为 ccgateway 引入的协议转换库。目前没有任何模块 import 它，CI 也不检查；CONVERT-MATRIX.md 计划删除。不要在新代码里引用 |
+| `next/protocol-codec` | 早期为 ccgateway 引入的协议转换库。`next/` 里没有模块 import 它，next CI 也不检查；但根目录旧版 `backend/` 经 `replace` 依赖它（根目录 `Dockerfile` 也复制它），所以暂不能删（CONVERT-MATRIX.md 开头）。不要在新代码里引用 |
 | `next/docs` | 契约、架构、设计稿、交接、审计记录 |
 
 **仓库根目录的 `backend/`、`frontend/` 是旧版 Sub2API**（Ent ORM + Gin，前端用 pnpm），连同根目录的 `Dockerfile`、`Makefile`、`deploy/`、`docs/`、`openspec/`、`DEV_GUIDE.md` 以及 `.github/workflows/backend-ci.yml`、`release.yml`。它们只作参考保留（ARCHITECTURE §16.1）：`next/` 不引用它们，`go.work` 不包含它们，2026-11-05 导入以来没有提交改动过它们。除非用户明确要求，不要改动、不要在它们上面开发新功能。`DEV_GUIDE.md` 描述的就是这套旧代码。
