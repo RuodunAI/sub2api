@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/httpfacts"
 	"io"
 	"log/slog"
 	"net/http"
@@ -49,7 +48,7 @@ func (e *convertError) Unwrap() error { return e.err }
 // read from it, at the end, and the body itself is not kept.
 func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Account, resp *http.Response, upBody []byte) attemptResult {
 	defer c.limitClientWrites()()
-	httpfacts.Apply(c.c.Writer.Header(), resp.Header)
+	core.ApplyProviderHeaders(c.c.Writer.Header(), resp.Header)
 	u := newUsageAcc(rt.usage).WithLog("request_id", c.rid, "plugin", rt.binding.Plugin.Key,
 		"platform", rt.platform, "protocol", rt.upstream)
 	u.WithPrimaryModel(c.upstreamPrimaryModel)
@@ -64,10 +63,6 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 	sse := isSSE(resp.Header.Get("Content-Type"))
 	c.checkResponseShape(ctx, rt, resp, sse)
 	switch {
-	case c.creditStreams(rt, sse):
-		err = c.forwardCreditSSE(ctx, rt, resp, u, cap)
-	case c.resourceAccess != nil && c.resourceAccess.outputs || c.creditAccess != nil:
-		err = c.forwardResourceResponse(ctx, rt, resp, u, cap)
 	case sse:
 		c.drain.arm()
 		err = c.forwardSSE(ctx, resp, u, rt.conv, cap)
@@ -96,22 +91,12 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 		c.rec.UpstreamModel = u.Model
 	}
 	var cerr *convertError
-	var creditErr *creditStorageError
-	responseCommitted := c.c.Writer.Written()
 	switch {
 	case err == nil:
 		if u.StreamError != "" {
 			c.rec.Success = false
 			c.rec.ErrorType = errTypeUpstream
 			c.rec.ErrorMessage = truncateUTF8(u.StreamError, 1000)
-		}
-	case errors.As(err, &creditErr):
-		c.rec.Success = false
-		c.rec.ErrorType = "gateway_credit_storage"
-		c.rec.ErrorMessage = creditErr.Error()
-		if !c.c.Writer.Written() {
-			c.rec.StatusCode = http.StatusServiceUnavailable
-			writeError(c.c, c.format, &gwError{Status: http.StatusServiceUnavailable, Code: "gateway_credit_storage", Message: creditErr.Error()})
 		}
 	case errors.As(err, &cerr):
 		c.rec.Success = false
@@ -146,12 +131,6 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 		c.recordStreamFailure(ctx, acct.GetId(), u.StreamError)
 	}
 	c.armUsageExtraction(rt, acct, resp, cap, upBody)
-	var ended *streamEndedError
-	if err != nil && ctx.Err() == nil && !errors.Is(err, errClientGone) && !errors.As(err, &ended) && responseCommitted && rt.binding.Plugin.Key == "ccgateway" {
-		// Preserve the Worker's interrupted framing all the way to the client.
-		// dispatch completes partial usage/account bookkeeping before aborting.
-		c.abortResponse = true
-	}
 	return attemptResult{kind: attemptDone}
 }
 

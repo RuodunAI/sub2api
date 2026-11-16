@@ -23,7 +23,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -79,9 +78,7 @@ type row struct {
 	LastTestErrorSource *string
 	// SubscriptionType is the plan the runtime reported (CONTRACTS §59); nil while unknown.
 	SubscriptionType *string
-	// RateLimitTier is the tier the runtime reported, as the upstream names it.
-	RateLimitTier *string
-	AutoModels    *bool
+	AutoModels       *bool
 	// AutoDisabledSource says who wrote an automatic disable (0070):
 	// usageLimitSource or '' (plugins and failure policies).
 	AutoDisabledSource string
@@ -98,7 +95,7 @@ const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.set
 	a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment, a.last_used_at,
 	a.created_by, u.email, a.created_at, a.updated_at,
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
-	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.rate_limit_tier,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
+	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
 
 // selectRows reads rowColumns, for scanRow over its Row().
 func selectRows(db *gorm.DB) *gorm.DB {
@@ -116,7 +113,7 @@ func scanRow(r interface{ Scan(dest ...any) error }) (*row, error) {
 		(*store.Strings)(&a.Models), &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &env, &a.LastUsedAt,
 		&a.CreatedBy, &a.CreatedByEmail, &a.CreatedAt, &a.UpdatedAt,
 		&a.LastTestAt, &a.LastTestOK, &a.LastTestLatencyMs, &a.LastTestModel, &a.LastTestMessage, &a.AutoDisabledUntil,
-		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.SubscriptionType, &a.RateLimitTier, &a.AutoModels, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
+		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.SubscriptionType, &a.AutoModels, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
 	a.Environment = env.V
 	return &a, err
 }
@@ -214,11 +211,10 @@ type GroupRef struct {
 
 // View is the API representation of an account.
 type View struct {
-	CCFeaturePolicy *ccgateway.AccountFeaturePolicy `json:"cc_feature_policy,omitempty"`
-	ID              int64                           `json:"id"`
-	Name            string                          `json:"name"`
-	PluginKey       string                          `json:"plugin_key"`
-	Type            string                          `json:"type"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	PluginKey string `json:"plugin_key"`
+	Type      string `json:"type"`
 	// TypeLabel is the account type label; null when the type is no longer
 	// registered (plugin disabled or uninstalled).
 	TypeLabel    manifest.LocalizedText `json:"type_label"`
@@ -287,15 +283,9 @@ type View struct {
 	limitDisabled bool
 	// LastTest is the last console test (CONTRACTS §50); null until tested.
 	LastTest *LastTest `json:"last_test"`
-	// RuntimeParked (CCGateway accounts only): the account stayed red for
-	// the configured hours and its container is stopped; testing or
-	// re-authorizing it starts it again.
-	RuntimeParked *bool `json:"runtime_parked,omitempty"`
 	// SubscriptionType is the plan the account's runtime reported ("max",
 	// "pro" ...), CONTRACTS §59; null while unknown.
 	SubscriptionType *string `json:"subscription_type"`
-	// RateLimitTier is the tier the runtime reported, as the upstream names it.
-	RateLimitTier *string `json:"rate_limit_tier"`
 	// Orphaned is true when the plugin declaring the account type is not
 	// enabled (disabled or uninstalled).
 	Orphaned      bool                         `json:"orphaned"`
@@ -348,7 +338,6 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 			LastUsedAt: a.LastUsedAt, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 			LastTest:         a.lastTest(),
 			SubscriptionType: a.SubscriptionType,
-			RateLimitTier:    a.RateLimitTier,
 			limitDisabled:    limitDisabled(a.Status, a.AutoDisabledSource),
 		}
 		out[i], ids[i], byID[a.ID] = v, a.ID, v
@@ -400,7 +389,6 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 		},
 		func() { s.fillUsage(ctx, out) },
 		func() { s.fillRefresh(ctx, rows, out) },
-		func() { s.fillRuntimeParked(ctx, out) },
 		func() {
 			lifecycleErr = errViewPanicked
 			lifecycleErr = s.fillLifecycleStatus(ctx, out)
@@ -528,13 +516,6 @@ func (s *Service) fullView(ctx context.Context, id int64, scope core.DataScope) 
 	}
 	if vs[0].Credentials, err = s.credentialView(a); err != nil {
 		return nil, err
-	}
-	if a.PluginKey == "ccgateway" && (a.Type == "managed" || a.Type == "apikey") {
-		p, err := ccgateway.LoadAccountFeaturePolicy(ctx, s.d.DB.Gorm, id)
-		if err != nil {
-			return nil, err
-		}
-		vs[0].CCFeaturePolicy = &p
 	}
 	return vs[0], nil
 }
@@ -726,12 +707,11 @@ func (n *nullable[T]) UnmarshalJSON(b []byte) error {
 }
 
 type input struct {
-	CCFeaturePolicy *ccgateway.AccountFeaturePolicy `json:"cc_feature_policy"`
-	Name            *string                         `json:"name"`
-	PluginKey       string                          `json:"plugin_key"`
-	Type            string                          `json:"type"`
-	GroupIDs        *[]int64                        `json:"group_ids"`
-	ProxyID         nullable[int64]                 `json:"proxy_id"`
+	Name      *string         `json:"name"`
+	PluginKey string          `json:"plugin_key"`
+	Type      string          `json:"type"`
+	GroupIDs  *[]int64        `json:"group_ids"`
+	ProxyID   nullable[int64] `json:"proxy_id"`
 	// ProxyURL names a proxy by address instead of id (CONTRACTS §21.4); it
 	// is looked up or created when the account is saved. Blank means absent.
 	ProxyURL       *string            `json:"proxy_url"`
@@ -763,9 +743,6 @@ type input struct {
 	Credentials          json.RawMessage      `json:"credentials"`
 	Settings             json.RawMessage      `json:"settings"`
 	PreparationKey       *string              `json:"preparation_key"`
-	// CCGatewayRuntime is the draft runtime key a new ccgateway/managed
-	// account adopts (CONTRACTS §49.10); create only. Blank means absent.
-	CCGatewayRuntime *string `json:"ccgateway_runtime"`
 }
 
 // hasCredentials reports whether the request carries a credentials object
@@ -865,7 +842,6 @@ func (in *input) changedFields() []string {
 	set("conversion_loss_policy", in.ConversionLossPolicy.Set)
 	set("credentials", in.hasCredentials())
 	set("settings", len(in.Settings) > 0)
-	set("cc_feature_policy", in.CCFeaturePolicy != nil)
 	return out
 }
 
@@ -940,31 +916,11 @@ func (in *input) validate(ctx context.Context, create bool) []core.FieldError {
 			}
 		}
 	}
-	if in.CCFeaturePolicy != nil {
-		if create {
-			add("cc_feature_policy", "invalid", "configure CC features after account creation", "请在账号创建后配置 CC 特性")
-		} else if err := in.CCFeaturePolicy.Validate(); err != nil {
-			add("cc_feature_policy", "invalid", err.Error(), "CC 特性配置无效")
-		}
-	}
 	if create && len(in.Credentials) == 0 {
 		add("credentials", "required", "credentials are required", "凭证必填")
 	}
 	if in.PreparationKey != nil && (!create || len(*in.PreparationKey) == 0 || len(*in.PreparationKey) > 64) {
 		add("preparation_key", "invalid", "preparation_key is only accepted when creating an account", "preparation_key 只能在创建账号时提供")
-	}
-	if in.CCGatewayRuntime != nil {
-		k := strings.TrimSpace(*in.CCGatewayRuntime)
-		switch {
-		case k == "":
-			in.CCGatewayRuntime = nil
-		case !create:
-			add("ccgateway_runtime", "invalid", "ccgateway_runtime is only accepted when creating an account", "ccgateway_runtime 只能在新建账号时提供")
-		case in.PluginKey != "ccgateway" || in.Type != "managed":
-			add("ccgateway_runtime", "invalid", "ccgateway_runtime is only for ccgateway managed accounts", "ccgateway_runtime 只用于 ccgateway managed 账号")
-		default:
-			in.CCGatewayRuntime = &k
-		}
 	}
 	return fe
 }
@@ -1489,15 +1445,6 @@ func (s *Service) create(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	// A Claude Code account authorized before saving adopts its draft
-	// runtime in the insert transaction (CONTRACTS §49.10).
-	var draftScope *int64
-	if in.CCGatewayRuntime != nil {
-		if draftScope, facts, err = s.checkCCGatewayRuntime(ctx, *in.CCGatewayRuntime); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-	}
 	// Declared defaults apply after the own-level restrictions: the
 	// declaration, not the caller, chose them.
 	controls.fillDefaults(&in, scope)
@@ -1573,11 +1520,6 @@ func (s *Service) create(c *gin.Context) {
 				return err
 			}
 		}
-		if in.CCGatewayRuntime != nil {
-			if err := ccgateway.AdoptDraft(ctx, tx, *in.CCGatewayRuntime, id, draftScope); err != nil {
-				return err
-			}
-		}
 		if proxyID != nil {
 			if err := s.auditProxy(ctx, tx, proxyCreated, *proxyID, uid, id); err != nil {
 				return err
@@ -1600,7 +1542,6 @@ func (s *Service) create(c *gin.Context) {
 		return
 	}
 	s.changed(ctx, id)
-	s.kickCCGateway(id, bt.Plugin.Key, bt.Type.ID)
 	// The row was just created by the caller: no scope needed.
 	v, err := s.fullView(ctx, id, core.AllScope)
 	if err != nil {
@@ -1637,11 +1578,6 @@ func (s *Service) update(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if in.CCFeaturePolicy != nil && (cur.PluginKey != "ccgateway" || (cur.Type != "managed" && cur.Type != "apikey")) {
-		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "cc_feature_policy", Code: "invalid", Message: "CC features are only available for CCGateway accounts."}))
-		return
-	}
-	featureOnly := in.CCFeaturePolicy != nil && len(in.changedFields()) == 1
 	groupIDs, proxyID, byURL, err := s.resolveWriteRefs(ctx, &in, perm.AccountUpdate)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -1667,8 +1603,7 @@ func (s *Service) update(c *gin.Context) {
 			return
 		}
 		// Unchanged credentials keep their ciphertext: a fresh nonce would
-		// look like a credential change to whatever compares the stored bytes
-		// (CCGateway reapplies the account runtime on it).
+		// look like a credential change to whatever compares the stored bytes.
 		if stored, err := parseObject(base.secret); err == nil && bytes.Equal(mustJSON(stored), p.secret) {
 			p.enc = cur.CredEnc
 		}
@@ -1852,14 +1787,6 @@ func (s *Service) update(c *gin.Context) {
 				return err
 			}
 		}
-		if in.CCFeaturePolicy != nil {
-			if s.d.CCGateway == nil {
-				return core.ErrUnavailable.WithMessage("CC feature configuration unavailable.")
-			}
-			if err := s.d.CCGateway.SaveAccountFeatures(ctx, tx, id, *in.CCFeaturePolicy); err != nil {
-				return err
-			}
-		}
 		if proxyID != nil {
 			if err := s.auditProxy(ctx, tx, proxyCreated, *proxyID, uid, id); err != nil {
 				return err
@@ -1873,7 +1800,7 @@ func (s *Service) update(c *gin.Context) {
 		if in.Name != nil {
 			name = *in.Name
 		}
-		if bt.Type.Lifecycle != nil && !featureOnly {
+		if bt.Type.Lifecycle != nil {
 			if err := markLifecyclePending(ctx, tx, id); err != nil {
 				return err
 			}
@@ -1901,9 +1828,6 @@ func (s *Service) update(c *gin.Context) {
 		}
 	}
 	s.changed(ctx, id)
-	if !featureOnly {
-		s.kickCCGateway(id, cur.PluginKey, cur.Type)
-	}
 	v, err := s.fullView(ctx, id, scope)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -1921,7 +1845,6 @@ func (s *Service) update(c *gin.Context) {
 // active again, while the administrator's schedulable switch is preserved.
 // The quota snapshot remains an upstream observation, and credentials,
 // configured limits and live concurrency leases are never reset here.
-// CCGateway runtimes reconcile immediately after the committed change.
 func (s *Service) resetStatus(c *gin.Context) {
 	ctx := audit.Context(c)
 	id, ok := httpapi.PathID(c, "id")
@@ -1981,7 +1904,6 @@ func (s *Service) resetStatus(c *gin.Context) {
 	s.evictQuotaCache(ctx, id)
 	s.evictBalanceCache(ctx, id)
 	s.changed(ctx, id)
-	s.kickCCGateway(id, a.PluginKey, a.Type)
 	v, err := s.fullView(ctx, id, scope)
 	if err != nil {
 		httpapi.Fail(c, err)

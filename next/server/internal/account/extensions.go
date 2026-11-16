@@ -14,7 +14,7 @@ import (
 
 func extensionKeys(bt core.AccountTypeBinding) []string {
 	if len(bt.Type.ExtensionsSchema) == 0 {
-		return containerSettingKeys(bt.Plugin.Key)
+		return nil
 	}
 	var schema struct {
 		Properties map[string]json.RawMessage `json:"properties"`
@@ -32,7 +32,10 @@ func extensionKeys(bt core.AccountTypeBinding) []string {
 
 func (s *Service) mergeExtensions(ctx context.Context, bt core.AccountTypeBinding, base, patch []byte) ([]byte, error) {
 	if len(bt.Type.ExtensionsSchema) == 0 {
-		return mergeContainerSettings(ctx, bt.Plugin.Key, base, patch)
+		if len(patch) > 0 {
+			return nil, core.InvalidFields(core.FieldError{Field: "settings", Code: "unsupported", Message: "The account type declares no extensions"})
+		}
+		return base, nil
 	}
 	settings, err := parseObject(base)
 	if err != nil {

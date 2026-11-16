@@ -121,12 +121,6 @@ type FlowStore interface {
 	PeekFlow(ctx context.Context, purpose, token string) (Flow, error)
 	// TakeFlow reads and deletes a live flow at once: only one caller gets it.
 	TakeFlow(ctx context.Context, purpose, token string) (Flow, error)
-	// OpenWindow starts the window name afresh: it stays open idle after
-	// each use, and never longer than max after it was opened.
-	OpenWindow(ctx context.Context, name string, idle time.Duration) error
-	// ContinueWindow extends the open window name to idle, capped at max
-	// after it was opened; false when it is not open.
-	ContinueWindow(ctx context.Context, name string, idle, max time.Duration) (bool, error)
 }
 
 // NewToken returns a random token with prefix and the hash it is stored by

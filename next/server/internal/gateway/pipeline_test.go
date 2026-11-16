@@ -7,11 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/tidwall/gjson"
 
@@ -29,13 +30,13 @@ func (a *clientIPAuth) Authenticate(ctx context.Context, _ string) (*core.APIKey
 }
 
 func TestGatewayAuthenticationReceivesTrustedClientIP(t *testing.T) {
-	for _, path := range []string{"/v1/messages", "/v1/responses", "/v1/files"} {
+	for _, path := range []string{"/v1/messages", "/v1/responses"} {
 		t.Run(path, func(t *testing.T) {
 			var e *env
 			if path == "/v1/responses" {
 				e = newWSEnv(t).env
 			} else {
-				e, _, _ = resourceTestEnv(t)
+				e = newEnv(t)
 			}
 			auth := &clientIPAuth{}
 			e.gw.d.Auth = auth
@@ -44,7 +45,7 @@ func TestGatewayAuthenticationReceivesTrustedClientIP(t *testing.T) {
 			engine.Use(e.gw.Middleware())
 			for _, test := range []struct{ peer, want string }{{"198.51.100.1:1234", "198.51.100.1"}, {"10.0.0.1:1234", "192.0.2.7"}} {
 				method := "POST"
-				if path != "/v1/messages" {
+				if path == "/v1/responses" {
 					method = "GET"
 				}
 				req := httptest.NewRequest(method, path, nil)

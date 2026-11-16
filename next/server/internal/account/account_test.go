@@ -1190,7 +1190,7 @@ func TestDirectory(t *testing.T) {
 	for _, c := range []struct {
 		types []core.AccountTypeKey
 		want  bool
-	}{{apikey, true}, {[]core.AccountTypeKey{{PluginKey: "relay", Type: "relay_key"}}, true}, {[]core.AccountTypeKey{{PluginKey: "ccgateway", Type: "managed"}}, false}, {nil, false}} {
+	}{{apikey, true}, {[]core.AccountTypeKey{{PluginKey: "relay", Type: "relay_key"}}, true}, {[]core.AccountTypeKey{{PluginKey: "absent", Type: "managed"}}, false}, {nil, false}} {
 		if got, err := e.svc.GroupHasType(ctx, g, c.types); err != nil || got != c.want {
 			t.Fatalf("GroupHasType %v = %v %v", c.types, got, err)
 		}

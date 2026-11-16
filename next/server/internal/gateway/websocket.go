@@ -837,9 +837,8 @@ func (s *wsSession) turnPatches(ctx context.Context, cl *call, payload []byte) (
 // applyTurnPatches applies the plugin's body patches to a turn's message.
 // No patch leaves the message as it is (same bytes, nothing parsed); patches
 // that cannot be applied, or that change a model reference, fail the turn,
-// as they fail an HTTP attempt (validatePatches). WebSocket messages carry
-// no resource references and are not converted, so those guards do not
-// apply here.
+// as they fail an HTTP attempt (validatePatches). WebSocket messages are
+// not converted, so that guard does not apply here.
 func (c *call) applyTurnPatches(rt *typeRoute, payload []byte, patches []*pluginv1.BodyPatch) ([]byte, *gwError) {
 	if len(patches) == 0 {
 		return payload, nil

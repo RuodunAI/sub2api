@@ -34,19 +34,23 @@ a later change replaced what a section names, the section says so; the
 current numbers are in "0.1.290 round 2" and the current statements in
 "What every request runs", at the end. 0.1.290 inlined the single-caller
 query functions that existed for SQL snapshots and dropped the benchmarks
-that timed them next to their pgx form. Those the sections still name:
+that timed them next to their pgx form, and removed CCGateway with the
+helper history it alone used (last source 317b0c331): batches 1 and 2b,
+and their rows in batch 6, name code that is gone. The dropped benchmarks
+the sections still name:
 
 | Benchmark | Dropped in | The path's benchmark now |
 |---|---|---|
 | `account` HotGroupSnapshot, HotLoadRow | fcc847b62 | none: the group snapshot is cached (30 s), a miss only |
-| `ccgateway` HotSharedAccountType | c53893903 | none: one builder read (`sharedAccountType`), shared-runtime requests only |
+| `ccgateway` HotSharedAccountType | c53893903 | none: CCGateway is removed (0.1.290) |
+| `helperhistory` HotHelperPrefix | 0.1.290 | none: the helper history is removed with CCGateway |
 | `gateway` HotSettingsRow, HotStickyRules | 3a06fe721 | none: cached (`settingsTTL`, `rulesTTL`), a miss only |
 | `billing` HotReleasePrecharge | d53ea00a5 | `usage` HotSettlerInsertFree (a free row's release) |
 | `usage` HotStmtSettleLock, HotStmtSettleUpdate | b36dc6677 | `usage` HotSettle |
 | `usage` HotStmtReserveUpdate, HotStmtReserveEntry | b36dc6677 | none: requests a plugin reserves |
 | `usage` HotExecution, HotTaskFind/Begin/Receive/Register | b36dc6677 | `usage` HotExecution and HotTask since 0.1.290 round 2, through the Service methods |
 
-## Batch 1: the helper history prefix probe
+## Batch 1: the helper history prefix probe (removed in 0.1.290)
 
 `helperhistory.(*Service).anyPrefix` runs for every gateway request that
 carries helper prefixes (`Lookup`, before any lock), most of which it
@@ -110,7 +114,7 @@ and the list's usage overview (a pgx.Batch of `usageTotals`, `usageIn` and
 `usageLimits`) runs those three GORM reads one after the other: both serve
 the console, not the request path.
 
-## Batch 2b: the CCGateway shared-runtime account read
+## Batch 2b: the CCGateway shared-runtime account read (removed in 0.1.290)
 
 `ccgateway.(*Service).sharedAccountType` runs for every model request
 forwarded to the shared runtime (a configuration saved without per-account
@@ -896,8 +900,8 @@ and the integration head 9e0350847. Round 2 changes:
   the database clock) instead of a map with `Table`, which fails GORM's
   schema parse on every call and formats the map into the discarded
   error: the user's balance row (`ensureBalanceRow`), the audit row, the
-  synced price, the balance and refresh rows of package store, the
-  CCGateway draft, the job run. The event cursor and the rollout's
+  synced price, the balance and refresh rows of package store, the job
+  run. The event cursor and the rollout's
   cleanup rows are `gormpg.InsertSelect`.
 - The settler's update of a settled row and its lock use a model value
   (`model.UsageLog{}`): through a pointer, GORM copies every assigned

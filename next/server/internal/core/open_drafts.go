@@ -2,9 +2,8 @@ package core
 
 import "strconv"
 
-// MaxOpenDrafts is how many open account drafts one user may hold at a time
-// (W1-F13): ccgateway draft runtimes and account preparations, each counted
-// on its own. Callers with the full scope of the route are not limited.
+// MaxOpenDrafts is how many open account preparations one user may hold at
+// a time (W1-F13). Callers with the full scope of the route are not limited.
 const MaxOpenDrafts = 3
 
 // OpenDraftsLock is the advisory lock (store.XactLock) that serializes,

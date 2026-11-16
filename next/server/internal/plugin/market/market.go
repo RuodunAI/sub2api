@@ -40,8 +40,7 @@ const (
 )
 
 // PackageDownloadTimeout bounds one package download: packages may be up to
-// 1 GiB (the ccgateway package carries its runtime images, CONTRACTS
-// §53.10), far more than an index request needs.
+// 1 GiB (pkg.DefaultMaxPackageBytes), far more than an index request needs.
 const PackageDownloadTimeout = 30 * time.Minute
 
 // Source is a market_sources row.

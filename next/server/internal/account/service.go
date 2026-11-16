@@ -17,7 +17,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -27,7 +26,6 @@ import (
 
 // Deps are the collaborators of the account service.
 type Deps struct {
-	CCGateway          *ccgateway.Service
 	LifecycleResources map[string]core.AccountLifecycleResource
 	DB                 *store.DB
 	Redis              redis.UniversalClient
@@ -157,10 +155,6 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("GET", "/accounts/stats", s.getAccountStats, perm.AccountRead)
 	r.PermScoped("GET", "/accounts/summary", s.summary, perm.AccountRead)
 	r.PermScoped("GET", "/accounts/:id/stats", s.getAccountStats, perm.AccountRead)
-	// Re-authorizing a Claude Code account (CONTRACTS §49.17), next to the
-	// ccgateway module's /system/ccgateway/accounts/:id/:action.
-	r.PermScoped("POST", "/system/ccgateway/accounts/:id/reauthorize", s.reauthorizeCCGateway, perm.AccountUpdate)
-	r.PermScoped("POST", "/system/ccgateway/accounts/:id/reauthorize/:key/commit", s.commitCCGatewayReauth, perm.AccountUpdate)
 	// Browsing platforms and types: whoever reads or creates some accounts.
 	browse := []perm.Key{perm.AccountRead, perm.AccountCreate}
 	r.PermScoped("GET", "/platforms", s.listPlatforms, browse...)
@@ -171,8 +165,7 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	// Group binding, custom upstreams and guarded settings are checked per
 	// field (checkOwnChange, customSettings).
 	fieldKeys := []perm.Key{perm.GroupManage, perm.AccountGroupBind, perm.AccountRelay, perm.AccountSettingsCustom}
-	// settings:manage: a Claude Code runtime of anyone's (checkCCGatewayRuntime).
-	r.PermScoped("POST", "/accounts", s.create, perm.AccountCreate).Uses(fieldKeys...).Uses(perm.SettingsManage)
+	r.PermScoped("POST", "/accounts", s.create, perm.AccountCreate).Uses(fieldKeys...)
 	r.PermScoped("GET", "/accounts/:id", s.get, perm.AccountRead)
 	r.PermScoped("PATCH", "/accounts/:id", s.update, perm.AccountUpdate).Uses(fieldKeys...)
 	r.PermScoped("DELETE", "/accounts/:id", s.delete, perm.AccountDelete)
@@ -297,7 +290,7 @@ func (s *Service) changed(ctx context.Context, id int64) {
 
 // quotaChanged follows a written quota snapshot of account id: only the
 // quota mirrors are told (account:changed of kind "quota"); the directory
-// snapshots and CCGateway's request cache hold no quota data.
+// snapshots hold no quota data.
 func (s *Service) quotaChanged(ctx context.Context, id int64) {
 	s.invalidateQuota(id)
 	if err := core.PublishAccountQuotaChanged(ctx, s.d.Bus, id); err != nil {
@@ -307,13 +300,11 @@ func (s *Service) quotaChanged(ctx context.Context, id int64) {
 
 // invalidateNode drops what this node keeps of account id (0: of every
 // account), so the node that changed it does not depend on receiving its
-// own account:changed: the directory snapshots, the mirrored quota snapshot,
-// and what CCGateway's request path read (the desired state and CC feature
-// policy).
+// own account:changed: the directory snapshots and the mirrored quota
+// snapshot.
 func (s *Service) invalidateNode(id int64) {
 	s.invalidate()
 	s.invalidateQuota(id)
-	s.d.CCGateway.AccountChanged(id)
 }
 
 func (s *Service) gen() core.Generation {

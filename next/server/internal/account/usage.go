@@ -933,7 +933,7 @@ func (s *Service) writeUsageLimitState(ctx context.Context, c usageCandidate, ch
 		return s.writeAutomaticStatus(ctx, tx, "account.usage_limit_state", ch)
 	})
 	if err == nil && changed {
-		s.afterStatusChange(ctx, ch.id, ch.pluginKey, ch.typ)
+		s.changed(ctx, ch.id)
 	}
 	return err
 }

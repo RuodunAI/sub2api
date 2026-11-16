@@ -1,4 +1,0 @@
--- sql
-SELECT EXISTS (SELECT 1 FROM "provider_skill_versions" WHERE parent_id = $1 AND state IN ('pending','uncertain','deleting','delete_uncertain'))
--- vars
-$1 string "s2res_1"

@@ -1,7 +1,0 @@
--- sql
-SELECT count(*) FROM provider_resource_contexts c JOIN provider_resources r ON r.public_id=c.resource_id WHERE c.user_id=$1 AND c.group_id=$2 AND r.kind='container' AND r.state='ready' AND (r.expires_at>$3 OR r.public_id=$4)
--- vars
-$1 int64 7
-$2 int64 3
-$3 time.Time 2026-11-15 08:00:00 +0000 UTC
-$4 string "s2res_1"

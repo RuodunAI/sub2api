@@ -12,7 +12,7 @@ import (
 
 // readOnlyExtensionsFixture is the preparation fixture whose type declares a
 // read-only extension, login, which its plugin fills from the observed
-// account email, as the ccgateway plugin keeps its login email.
+// account email.
 func readOnlyExtensionsFixture(t *testing.T) (*env, *preparationResource, int64, *preparationPlugin) {
 	t.Helper()
 	e, resource, proxy, plugin := preparationPluginFixture(t)
@@ -42,11 +42,10 @@ func savedSettings(t *testing.T, e *env, id int64) map[string]any {
 }
 
 // A read-only extension is the plugin's (CONTRACTS §59): set on create from
-// the preparation's facts and on each later observation, never by the admin,
-// and kept through the admin's own extension edits.
+// the preparation's facts, never by the admin, and kept through the admin's
+// own extension edits.
 func TestReadOnlyExtensionsArePluginOwned(t *testing.T) {
 	e, resource, proxy, _ := readOnlyExtensionsFixture(t)
-	ctx := t.Context()
 	code, out := e.do("POST", "/account-types/fixture/managed/preparations", map[string]any{"proxy_id": proxy, "settings": map[string]string{"region": "jp"}, "idempotency_key": "ro-1"})
 	if code != 201 {
 		t.Fatalf("prepare: %d %v", code, out)
@@ -78,30 +77,6 @@ func TestReadOnlyExtensionsArePluginOwned(t *testing.T) {
 	}
 	if s := savedSettings(t, e, id); s["login"] != "first@example.test" || s["region"] != "us" {
 		t.Fatalf("after an admin edit %v", s)
-	}
-
-	audits := func() int64 {
-		return e.exec1(`SELECT count(*) FROM audit_logs WHERE action='account.extensions.plugin' AND target_id=$1`, strconv.FormatInt(id, 10))
-	}
-	// An observation of another login updates it, once; the same one again
-	// writes nothing. Manual models do not stop it.
-	e.exec1(`UPDATE accounts SET auto_models=false WHERE id=$1 RETURNING id`, id)
-	e.svc.FactsObserved(ctx, id, core.AccountPreparationFacts{AccountEmail: "second@example.test"}, false)
-	if s := savedSettings(t, e, id); s["login"] != "second@example.test" || s["region"] != "us" {
-		t.Fatalf("after another login %v", s)
-	}
-	e.svc.FactsObserved(ctx, id, core.AccountPreparationFacts{AccountEmail: "second@example.test"}, false)
-	if n := audits(); n != 1 {
-		t.Fatalf("audit rows %d", n)
-	}
-	var detail string
-	if err := e.db.SQL.QueryRowContext(ctx, `SELECT detail::text FROM audit_logs WHERE action='account.extensions.plugin' AND target_id=$1`, strconv.FormatInt(id, 10)).Scan(&detail); err != nil || detail != `{"keys": ["login"]}` {
-		t.Fatalf("audit detail %q %v (values are not audited)", detail, err)
-	}
-	// An unknown email leaves the value alone.
-	e.svc.FactsObserved(ctx, id, core.AccountPreparationFacts{}, false)
-	if s := savedSettings(t, e, id); s["login"] != "second@example.test" {
-		t.Fatalf("an unknown email removed the login %v", s)
 	}
 }
 

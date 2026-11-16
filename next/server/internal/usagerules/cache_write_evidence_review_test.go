@@ -1,8 +1,6 @@
 package usagerules
 
 import (
-	"bytes"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -74,31 +72,6 @@ func TestReviewCacheEvidenceInvalidAndSourceIsolation(t *testing.T) {
 	foreign.ApplyJSON([]byte(`{"other":{"total":10,"hour":3},"usage":{"cache_creation_input_tokens":999}}`))
 	if foreign.Metrics[core.CacheWriteEvidenceKey] != nil || foreign.Tokens().CacheCreation != 7 {
 		t.Fatal("foreign source interpreted as Anthropic")
-	}
-}
-
-func TestReviewCacheEvidenceExactFrozenReplay(t *testing.T) {
-	u := reviewCacheAcc()
-	u.ApplyJSON([]byte(`{"usage":{"cache_creation_input_tokens":9007199254740993,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}`))
-	rec := &core.UsageRecord{RequestID: "review-exact-cache", Metrics: core.CloneUsageMetrics(u.Metrics), Tokens: u.Tokens()}
-	frozen, hash, err := core.HelperHistoryUsageBytes(rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded, got, err := core.DecodeHelperHistoryUsage(frozen)
-	if err != nil || got != hash {
-		t.Fatal(err)
-	}
-	round, hash2, err := core.HelperHistoryUsageBytes(decoded)
-	if err != nil || hash2 != hash || !bytes.Equal(round, frozen) {
-		t.Fatal("typed/cold envelope changed")
-	}
-	cloned := core.CloneUsageMetrics(decoded.Metrics)
-	value := cloned[core.CacheWriteEvidenceKey].(map[string]any)["total"].(map[string]any)
-	value["value"] = json.Number("1")
-	old := decoded.Metrics[core.CacheWriteEvidenceKey].(map[string]any)["total"].(map[string]any)["value"]
-	if old != json.Number("9007199254740993") {
-		t.Fatal("decoded clone rounded or shared")
 	}
 }
 

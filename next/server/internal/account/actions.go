@@ -90,46 +90,11 @@ func (s *Service) executeAccountAction(c *gin.Context) {
 		httpapi.OK(c, output)
 		return
 	}
-	// Special handling for ccgateway refresh_auth action.
-	if pluginKey == "ccgateway" && actionID == "refresh_auth" {
-		s.handleCCGatewayRefreshAuth(c, ctx, id)
-		return
-	}
 
 	// Future: plugin RPC call to execute custom actions.
 	httpapi.Fail(c, core.ErrUnsupported.WithMessage(t(ctx,
 		"this action is not implemented",
 		"此操作未实现")))
-}
-
-// handleCCGatewayRefreshAuth handles the refresh_auth action for CCGateway accounts
-// by initiating a re-authorization flow.
-func (s *Service) handleCCGatewayRefreshAuth(c *gin.Context, ctx context.Context, id int64) {
-	if s.d.CCGateway == nil {
-		httpapi.Fail(c, core.ErrUnavailable.WithMessage("Account runtimes are not configured.").
-			WithDetails(map[string]any{"reason": "not_configured"}))
-		return
-	}
-
-	// Re-authorization runs in place: this returns the account's runtime.
-	key, created, err := s.d.CCGateway.ReauthDraft(ctx, id)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-
-	status := 200
-	if created {
-		status = 201
-	}
-
-	c.JSON(status, gin.H{
-		"key":     key,
-		"created": created,
-		"message": t(ctx,
-			"Re-authorize in the existing account container.",
-			"请在当前账号容器中完成重新授权。"),
-	})
 }
 
 // listAccountActions returns the available actions for an account type.
@@ -139,21 +104,7 @@ func (s *Service) listAccountActions(ctx context.Context, pluginKey, accountType
 		for _, action := range binding.Type.Lifecycle.Actions {
 			actions = append(actions, AccountAction{ID: action.ID, Label: action.Label, Icon: action.Icon, PluginKey: pluginKey, AccountType: accountType, Permission: "account:update"})
 		}
-		return actions
 	}
-
-	// CCGateway managed accounts support refresh_auth.
-	if pluginKey == "ccgateway" && accountType == "managed" {
-		actions = append(actions, AccountAction{
-			ID:          "refresh_auth",
-			Label:       map[string]string{"en": "Refresh Authorization", "zh": "刷新授权"},
-			Icon:        "refresh",
-			PluginKey:   "ccgateway",
-			AccountType: "managed",
-			Permission:  "account:update",
-		})
-	}
-
 	return actions
 }
 

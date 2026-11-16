@@ -20,14 +20,12 @@ import (
 //	s2a:usess:{uid}         ZSET of the user's session ids by last use: the
 //	                        sessions list and the bulk revocations
 //	s2a:flow:{purpose}:{hash}  a flow, TTL FlowTTL, taken with GETDEL
-//	s2a:flow:window:{name}  a step-up window: when it was opened
 const keyPrefix = "s2a:"
 
 func sessKey(hash string) string       { return keyPrefix + "sess:" + hash }
 func sidKey(id string) string          { return keyPrefix + "sid:" + id }
 func userKey(uid int64) string         { return keyPrefix + "usess:" + strconv.FormatInt(uid, 10) }
 func flowKey(purpose, h string) string { return keyPrefix + "flow:" + purpose + ":" + h }
-func windowKey(name string) string     { return keyPrefix + "flow:window:" + name }
 
 // Defaults of Options.
 const (
@@ -533,34 +531,4 @@ func (v *Valkey) readFlow(ctx context.Context, op string, cmd *redis.StringCmd) 
 		return Flow{}, ErrNotFound // not written by PutFlow
 	}
 	return Flow{UserID: r.UserID, Payload: r.Payload}, nil
-}
-
-// OpenWindow implements FlowStore: the value is when it was opened.
-func (v *Valkey) OpenWindow(ctx context.Context, name string, idle time.Duration) error {
-	if err := v.rdb.Set(ctx, windowKey(name), ms(v.o.Now()), idle).Err(); err != nil {
-		return fail(ctx, "open window", err)
-	}
-	return nil
-}
-
-// continueScript extends an open window to idle, capped at max after it
-// was opened. KEYS: window. ARGV: now ms, idle ms, max ms.
-var continueScript = redis.NewScript(`
-local opened = tonumber(redis.call('GET', KEYS[1]))
-if not opened then return 0 end
-local left = opened + tonumber(ARGV[3]) - tonumber(ARGV[1])
-if left <= 0 then
-  redis.call('DEL', KEYS[1])
-  return 0
-end
-redis.call('PEXPIRE', KEYS[1], math.min(tonumber(ARGV[2]), left))
-return 1`)
-
-// ContinueWindow implements FlowStore.
-func (v *Valkey) ContinueWindow(ctx context.Context, name string, idle, max time.Duration) (bool, error) {
-	n, err := continueScript.Run(ctx, v.rdb, []string{windowKey(name)}, ms(v.o.Now()), idle.Milliseconds(), max.Milliseconds()).Int()
-	if err != nil {
-		return false, fail(ctx, "continue window", err)
-	}
-	return n == 1, nil
 }

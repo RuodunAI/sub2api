@@ -29,11 +29,9 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -1373,11 +1371,6 @@ func TestAccessKeyCatalogHasOnlyWhatTheUserHolds(t *testing.T) {
 func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 	k := newKeyEnv(t)
 	ctx := context.Background()
-	cipher, err := secret.New(make([]byte, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ccgateway.New(k.s.db, cipher).RegisterRoutes(k.r)
 	login := mustLogin(t, k.s, adminEmail, adminPassword)
 	root := login.User.ID
 	former := []string{"role:define", "role:assign", "settings:manage", "user:password:reset",
@@ -1407,14 +1400,6 @@ func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 	if list, err := k.s.AccessKeys(ctx, root); err != nil || len(list[0].Lost) != 0 {
 		t.Fatalf("lost = %+v, %v", list, err)
 	}
-	// Pointing the ccgateway at a host takes a host.install proof (R0).
-	if code, out := k.call(key.Key, "PUT", "/system/ccgateway/remote-config", map[string]any{"mode": "disabled"}); code != 403 || errCode(out) != "verification_required" {
-		t.Fatalf("key with settings:manage, no proof: %d %v", code, out)
-	}
-	hostProof := k.proof(t, &key.Key, core.StepUpHostInstall, "PUT", "/system/ccgateway/remote-config", map[string]any{"method": "password", "password": adminPassword})
-	if code, out := k.callProof(key.Key, hostProof, "PUT", "/system/ccgateway/remote-config", map[string]any{"mode": "disabled"}); code != 200 {
-		t.Fatalf("key with settings:manage and a proof: %d %v", code, out)
-	}
 	if code, out := k.call(key.Key, "POST", "/plugins/upload", nil); code != 403 || errCode(out) != "verification_required" {
 		t.Fatalf("key with plugin:install, no proof: %d %v", code, out)
 	}
@@ -1429,58 +1414,6 @@ func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 	if code, out := k.callProof(narrow.Key, k.proof(t, &narrow.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword}), "POST", "/plugins/upload", nil); code != 403 || errCode(out) != "permission_denied" {
 		t.Fatalf("key without plugin:install: %d %v", code, out)
 	}
-}
-
-// One proof covers an operation of several requests (CONTRACTS §80.2, the
-// ccgateway image upload): the request that spent it opens a step-up
-// session, and only the same user through the same access key or login
-// session continues it, until it has been idle for an hour or a day has
-// passed since the proof.
-func TestStepUpSessions(t *testing.T) {
-	k := newKeyEnv(t)
-	login := mustLogin(t, k.s, adminEmail, adminPassword)
-	keyA := k.createKey(t, login.User.ID, "settings:manage")
-	keyB := k.createKey(t, login.User.ID, "settings:manage")
-	// Stand-ins for the upload routes, guarded the same way.
-	k.r.StepUp(core.StepUpHostInstall).Perm(http.MethodPost, "/x/uploads", "settings:manage", func(c *gin.Context) {
-		if err := httpapi.OpenStepUpSession(c, "x/1"); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-	k.r.StepUpSession(core.StepUpHostInstall, func(c *gin.Context) string { return "x/" + c.Param("id") }).
-		Perm(http.MethodPut, "/x/uploads/:id", "settings:manage", func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	refused := func(token, path, want string) {
-		t.Helper()
-		if code, out := k.call(token, "PUT", path, nil); code != 403 || errCode(out) != want {
-			t.Fatalf("PUT %s: %d %v, want %s", path, code, out, want)
-		}
-	}
-	if code, out := k.call(keyA.Key, "POST", "/x/uploads", nil); code != 403 || errCode(out) != "verification_required" {
-		t.Fatalf("open without a proof: %d %v", code, out)
-	}
-	refused(keyA.Key, "/x/uploads/1", "verification_expired")
-	proof := k.proof(t, &keyA.Key, core.StepUpHostInstall, "POST", "/x/uploads", map[string]any{"method": "password", "password": adminPassword})
-	if code, out := k.callProof(keyA.Key, proof, "POST", "/x/uploads", nil); code != 204 {
-		t.Fatalf("open with a proof: %d %v", code, out)
-	}
-	for range 2 {
-		if code, out := k.call(keyA.Key, "PUT", "/x/uploads/1", nil); code != 204 {
-			t.Fatalf("continued: %d %v", code, out)
-		}
-	}
-	refused(keyA.Key, "/x/uploads/2", "verification_expired")
-	refused(keyB.Key, "/x/uploads/1", "verification_expired")
-	refused(login.AccessToken, "/x/uploads/1", "verification_expired")
-	// A request keeps the session open StepUpSessionIdle from it (the cap a
-	// day after the proof: tokenstore TestWindow).
-	k.redis.FastForward(core.StepUpSessionIdle - time.Minute)
-	if code, out := k.call(keyA.Key, "PUT", "/x/uploads/1", nil); code != 204 {
-		t.Fatalf("continued within the hour: %d %v", code, out)
-	}
-	k.redis.FastForward(core.StepUpSessionIdle + time.Second)
-	refused(keyA.Key, "/x/uploads/1", "verification_expired")
 }
 
 // An access key's scopes are within its user's (CONTRACTS §21.0, R6): a key

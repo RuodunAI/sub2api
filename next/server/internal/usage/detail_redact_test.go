@@ -115,7 +115,7 @@ func TestRedactForSelfClearsEveryInternalField(t *testing.T) {
 		HookDecisions: json.RawMessage(`[{"hook_id":"a","account_id":7}]`),
 		BillingDetail: json.RawMessage(`{"inputs":{"pricing":{"base":{"expression":"p","expr_hash":"h"}}}}`),
 		PluginDetail:  json.RawMessage(`{}`), Anomalies: json.RawMessage(`{}`),
-		Settlement: &Settlement{AccountID: &account}, RequestLogAccountID: &account,
+		Settlement: &Settlement{AccountID: &account},
 	}
 	d.redactForSelf()
 	require.Equal(t, Detail{HookDecisions: json.RawMessage(`[{"hook_id":"a"}]`),

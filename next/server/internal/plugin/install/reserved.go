@@ -21,7 +21,8 @@ import (
 // installs and configured market sources are trusted channels. A platform or
 // notification channel id is reserved for its own plugin whatever the source:
 // the channel's provider reads every notification sent on it.
-// TestReservedCoverRepo keeps the lists in step with next/plugins.
+// TestReservedCoverRepo keeps the lists in step with next/plugins; ccgateway
+// stays reserved after its removal (0.1.290), like any retired key.
 var (
 	reservedKeys = map[string]bool{
 		"anthropic": true, "ccgateway": true, "claude_oauth": true, "codex": true, "custom": true, "dynweight": true, "gemini": true, "growth": true,

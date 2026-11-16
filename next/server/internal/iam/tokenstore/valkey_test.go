@@ -400,39 +400,6 @@ func TestFlowsOnce(t *testing.T) {
 	}
 }
 
-// A window stays open idle after each use, at most max after it opened.
-func TestWindow(t *testing.T) {
-	v, c := newStore(t)
-	idle, max := time.Hour, 3*time.Hour
-	if ok, err := v.ContinueWindow(ctx, "w", idle, max); err != nil || ok {
-		t.Fatalf("unopened window: %v %v", ok, err)
-	}
-	if err := v.OpenWindow(ctx, "w", idle); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		c.advance(50 * time.Minute)
-		if ok, err := v.ContinueWindow(ctx, "w", idle, max); err != nil || !ok {
-			t.Fatalf("continue %d: %v %v", i, ok, err)
-		}
-	}
-	c.advance(50 * time.Minute) // 2.5h in: capped at 3h
-	if ok, _ := v.ContinueWindow(ctx, "w", idle, max); !ok || c.mr.TTL(windowKey("w")) != 30*time.Minute {
-		t.Fatalf("not capped: ttl %v", c.mr.TTL(windowKey("w")))
-	}
-	c.advance(31 * time.Minute)
-	if ok, _ := v.ContinueWindow(ctx, "w", idle, max); ok {
-		t.Fatal("continued past max")
-	}
-	// Opening again starts afresh.
-	if err := v.OpenWindow(ctx, "w", idle); err != nil {
-		t.Fatal(err)
-	}
-	if ok, _ := v.ContinueWindow(ctx, "w", idle, max); !ok {
-		t.Fatal("reopened window")
-	}
-}
-
 // Valkey down: every call fails with ErrUnavailable, a 503, never with
 // ErrNotFound (which would sign the user out).
 func TestUnavailable(t *testing.T) {
@@ -468,9 +435,6 @@ func TestUnavailable(t *testing.T) {
 	check("peek flow", err)
 	_, err = v.TakeFlow(ctx, "p", "t")
 	check("take flow", err)
-	check("open window", v.OpenWindow(ctx, "w", time.Hour))
-	_, err = v.ContinueWindow(ctx, "w", time.Hour, time.Hour)
-	check("continue window", err)
 }
 
 // Two rotations within the grace: the first token ends at the second, so

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -42,7 +43,9 @@ func TestAPIKeyIPAllowlistMigrationPreservesKeys(t *testing.T) {
 }
 
 func TestAccountLifecycleMigrationPreservesExistingRuntimes(t *testing.T) {
-	db := testutil.DB(t)
+	// Through 0101: 0102 drops ccgateway_runtimes.
+	const last = "0101_drop_jwt_sessions.sql"
+	db, through := testutil.DBThrough(t, last), testutil.MigrationsThrough(t, last)
 	ctx := t.Context()
 	_, err := db.SQL.ExecContext(ctx, `DROP TABLE account_lifecycle_sync,account_preparations;
 		ALTER TABLE ccgateway_runtimes DROP COLUMN initial_settings;
@@ -54,7 +57,7 @@ func TestAccountLifecycleMigrationPreservesExistingRuntimes(t *testing.T) {
 	var before, after string
 	require.NoError(t, db.SQL.QueryRowContext(ctx, query).Scan(&before))
 	for i := range 2 {
-		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		done, err := store.Migrate(ctx, db, through, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 		require.NoError(t, err)
 		if i == 0 {
 			require.Equal(t, []string{"0051_account_preparations.sql"}, done)
@@ -484,6 +487,73 @@ func TestMigration0101DropsJWTSessions(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{id}, migrate())
 	require.Empty(t, tables(), "a rerun recreated tables")
+}
+
+// 0102 removes CCGateway (deploy/rollback/0.1.290-release.md): its tables,
+// columns, settings and tasks, and the plugin as an uninstall with purge
+// would, its permissions and their grants included. Its accounts, their
+// usage and other plugins stay; a rerun changes nothing.
+func TestMigration0102DropsCCGateway(t *testing.T) {
+	const id = "0102_drop_ccgateway.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		require.NoError(t, err)
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	exec(`INSERT INTO users (email, password_hash) VALUES ('u@x', '');
+		INSERT INTO groups (name) VALUES ('g');
+		INSERT INTO roles (key, name, superuser) VALUES ('ops', '{}', false), ('other', '{}', false);
+		INSERT INTO plugins (key, name, status, builtin) VALUES ('ccgateway', '{"en":"CCGateway"}', 'enabled', true), ('guard', '{"en":"Guard"}', 'enabled', false);
+		INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
+			('ccgateway:x', 'ccgateway', '{}', 'plugin', 'ccgateway'), ('guard:x', 'guard', '{}', 'plugin', 'guard');
+		INSERT INTO casbin_rule (ptype, v0, v1, v2) VALUES ('p', 'r:ops', 'ccgateway:x', '*'), ('p', 'r:other', 'guard:x', '*');
+		INSERT INTO plugin_egress_domains (plugin_key, host) VALUES ('ccgateway', 'example.com');
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc, status, schedulable, rate_limit_tier, deleted_at) VALUES
+			('gone', 'ccgateway', 'managed', '', 'disabled', false, 'default_claude_max_20x', now()),
+			('live', 'ccgateway', 'managed', '', 'active', true, NULL, NULL);
+		INSERT INTO ccgateway_runtimes (key, account_id) SELECT id::text, id FROM accounts;
+		INSERT INTO ccgateway_account_feature_policies (account_id, mode) SELECT id, 'follow' FROM accounts WHERE name = 'live';
+		INSERT INTO provider_fallback_credits (token_hash, user_id, group_id, account_id, principal_id, generation, plugin_key, source_model, prompt_digests, observed_at, expires_at)
+			SELECT 'h', u.id, g.id, 1, 'p', 'g', 'ccgateway', 'm', '[]', now(), now() + interval '1 minute' FROM users u, groups g;
+		INSERT INTO settings (key, value) VALUES ('ccgateway_remote', '{}'), ('kept', '{}');
+		INSERT INTO scheduled_tasks (name, source, timeout_ms) VALUES ('core.ccgateway.runtime_sync', 'core', 1000), ('core.helper.usage_replay', 'core', 1000), ('core.usage.rollup', 'core', 1000)`)
+	revisions := `SELECT string_agg(key || '=' || revision, ' ' ORDER BY key) FROM roles WHERE key IN ('ops', 'other')`
+	before, version := read(revisions), read(`SELECT policy_version::text FROM authz_meta`)
+
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Empty(t, read(`SELECT concat_ws(' ', to_regclass('ccgateway_runtimes'), to_regclass('ccgateway_account_feature_policies'),
+		to_regclass('ccgateway_account_request_logs'), to_regclass('provider_resources'), to_regclass('provider_fallback_credits'),
+		to_regclass('provider_helper_records'), to_regclass('provider_helper_usage_receipts'), to_regclass('provider_diagnostic_messages'))`), "tables left")
+	require.Equal(t, "0", read(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'accounts' AND column_name IN ('status_changed_at', 'rate_limit_tier')`))
+	require.Equal(t, "guard", read(`SELECT string_agg(key, ' ') FROM plugins`))
+	require.Equal(t, "guard:x", read(`SELECT string_agg(key, ' ') FROM permissions WHERE plugin_key IS NOT NULL`))
+	require.Equal(t, "r:other guard:x", read(`SELECT string_agg(v0 || ' ' || v1, ' ') FROM casbin_rule`))
+	after := read(revisions)
+	require.NotEqual(t, before, after, "the role that held the permission keeps its revision")
+	require.Equal(t, strings.Split(before, " ")[1], strings.Split(after, " ")[1], "another role moved")
+	require.NotEqual(t, version, read(`SELECT policy_version::text FROM authz_meta`))
+	require.Equal(t, "ccgateway", read(`SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements`))
+	require.Equal(t, "0", read(`SELECT count(*)::text FROM plugin_egress_domains`))
+	require.Equal(t, "kept", read(`SELECT string_agg(key, ' ') FROM settings WHERE key IN ('ccgateway_remote', 'kept')`))
+	require.Equal(t, "core.usage.rollup", read(`SELECT string_agg(name, ' ') FROM scheduled_tasks`))
+	require.Equal(t, "gone live", read(`SELECT string_agg(name, ' ' ORDER BY name) FROM accounts WHERE plugin_key = 'ccgateway'`), "accounts are kept")
+
+	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, "ccgateway", read(`SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements`))
 }
 
 // 0064 and 0068 sum an account's usage (CONTRACTS §73): existing rows are

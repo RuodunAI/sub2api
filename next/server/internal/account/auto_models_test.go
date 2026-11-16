@@ -15,7 +15,7 @@ var (
 	autoProModels = []string{"claude-opus-5", "claude-sonnet-5"}
 )
 
-// autoModelsPatch answers save hooks like the ccgateway plugin: unless
+// autoModelsPatch answers save hooks like a subscription plugin: unless
 // auto_models is false, the list follows the subscription type.
 func autoModelsPatch(in *pluginv1.AccountLifecycleRequest) *pluginv1.AccountPatch {
 	if p := in.GetAccount().GetProperties(); p.AutoModels != nil && !p.GetAutoModels() {
@@ -50,24 +50,6 @@ func anyStrings(v any) []string {
 // before_update receives the recorded subscription type and its
 // account_patch replaces the models about to be saved; auto_models is saved
 // and read back (CONTRACTS §41.4, §59).
-// The account view carries the tier as the upstream names it.
-func TestAccountViewRateLimitTier(t *testing.T) {
-	e, _, _, _ := preparationPluginFixture(t)
-	enc, err := e.svc.d.Cipher.Encrypt([]byte(`{}`), aad("fixture"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := e.exec1(`INSERT INTO accounts(name,plugin_key,type,credentials_enc,settings,subscription_type,rate_limit_tier)
-		VALUES('tier','fixture','managed',$1,'{}','max','default_claude_max_20x') RETURNING id`, enc)
-	code, out := e.do("GET", "/accounts/"+strconv.FormatInt(id, 10), nil)
-	if code != 200 {
-		t.Fatalf("get: %d %v", code, out)
-	}
-	if got := data(out); got["rate_limit_tier"] != "default_claude_max_20x" || got["subscription_type"] != "max" {
-		t.Fatalf("view %v", got)
-	}
-}
-
 func TestBeforeUpdateAccountPatchAndAutoModels(t *testing.T) {
 	e, _, _, plugin := preparationPluginFixture(t)
 	plugin.patch = autoModelsPatch
@@ -121,57 +103,5 @@ func TestBeforeUpdateAccountPatchAndAutoModels(t *testing.T) {
 	}
 	if models, auto := savedModels(t, e, id); !slices.Equal(models, autoProModels) || auto == nil || !*auto {
 		t.Fatalf("stored %v %v", models, auto)
-	}
-}
-
-// A changed subscription type recomputes the models of an automatic account
-// through before_update; a manual account is left alone (CONTRACTS §59).
-func TestSubscriptionChangedRecomputesAutomaticModels(t *testing.T) {
-	e, _, _, plugin := preparationPluginFixture(t)
-	plugin.patch = autoModelsPatch
-	ctx := t.Context()
-	id := e.exec1(`INSERT INTO accounts(name,plugin_key,type,credentials_enc,settings,models,subscription_type)
-		VALUES('auto','fixture','managed',''::bytea,'{"region":"jp"}',$1,'pro') RETURNING id`, autoProModels)
-	audits := func() int64 {
-		return e.exec1(`SELECT count(*) FROM audit_logs WHERE action='account.models.auto' AND target_id=$1`, strconv.FormatInt(id, 10))
-	}
-
-	e.exec1(`UPDATE accounts SET subscription_type='max' WHERE id=$1 RETURNING id`, id)
-	e.svc.FactsObserved(ctx, id, core.AccountPreparationFacts{}, true)
-	if models, _ := savedModels(t, e, id); !slices.Equal(models, autoMaxModels) {
-		t.Fatalf("automatic models after the change to max %v", models)
-	}
-	if plugin.facts != `{"subscription_type":"max"}` || !slices.Equal(plugin.changed, []string{"subscription_type"}) {
-		t.Fatalf("before_update facts %q changed %v", plugin.facts, plugin.changed)
-	}
-	if n := audits(); n != 1 {
-		t.Fatalf("audit rows %d", n)
-	}
-	var detail string
-	if err := e.db.SQL.QueryRowContext(ctx, `SELECT detail::text FROM audit_logs WHERE action='account.models.auto' ORDER BY id DESC LIMIT 1`).Scan(&detail); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(detail, `"subscription_type": "max"`) || !strings.Contains(detail, `"plugin_changed": ["models"]`) {
-		t.Fatalf("audit detail %s", detail)
-	}
-	var state string
-	if err := e.db.SQL.QueryRowContext(ctx, `SELECT status FROM account_lifecycle_sync WHERE account_id=$1`, id).Scan(&state); err != nil || state != "pending" {
-		t.Fatalf("lifecycle state %q %v", state, err)
-	}
-
-	// Nothing to change: nothing written.
-	e.svc.FactsObserved(ctx, id, core.AccountPreparationFacts{}, true)
-	if n := audits(); n != 1 {
-		t.Fatalf("unchanged models audited again: %d", n)
-	}
-
-	// Manual mode: the subscription type no longer touches the list.
-	e.exec1(`UPDATE accounts SET auto_models=false, subscription_type='pro' WHERE id=$1 RETURNING id`, id)
-	e.svc.FactsObserved(ctx, id, core.AccountPreparationFacts{}, true)
-	if models, _ := savedModels(t, e, id); !slices.Equal(models, autoMaxModels) {
-		t.Fatalf("manual models changed %v", models)
-	}
-	if n := audits(); n != 1 {
-		t.Fatalf("manual account audited: %d", n)
 	}
 }

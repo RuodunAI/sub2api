@@ -108,8 +108,7 @@ func readUpdaterToken() (string, error) {
 	return tok, nil
 }
 
-// DefaultPluginMaxPackageBytes is the default plugin package size limit:
-// the ccgateway package carries its runtime images (CONTRACTS §53.10).
+// DefaultPluginMaxPackageBytes is the default plugin package size limit.
 // It equals pkg.DefaultMaxPackageBytes (checked by a pkg test).
 const DefaultPluginMaxPackageBytes = 1 << 30
 

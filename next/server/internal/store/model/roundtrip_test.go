@@ -168,22 +168,6 @@ func TestAccountRoundTrip(t *testing.T) {
 	require.Equal(t, ptr(false), back.AutoDisable)
 }
 
-// A -infinity default reads back as such, and created_at, which has no
-// default, is stamped from the database clock.
-func TestOutboxInfinityDefault(t *testing.T) {
-	g := openGorm(t)
-	row := model.ProviderHelperUsageOutbox{RequestID: "r1", AttemptID: "a", UserID: 1, GroupID: 1, Digest: "d", Payload: []byte("x")}
-	require.NoError(t, g.Create(&row).Error)
-	require.Equal(t, store.InfTime{Infinity: store.NegativeInfinity, Valid: true}, row.NextAttemptAt)
-	require.WithinDuration(t, time.Now(), row.CreatedAt, time.Minute)
-
-	var got []model.ProviderHelperUsageOutbox
-	require.NoError(t, g.Find(&got).Error)
-	require.Len(t, got, 1)
-	require.Equal(t, store.NegativeInfinity, got[0].NextAttemptAt.Infinity)
-	require.True(t, row.CreatedAt.Equal(got[0].CreatedAt))
-}
-
 // The INSERT of a pointer to a zero value carries the column; a nil
 // pointer leaves it to the default and reads it back.
 func TestSnapshotPointerDefaults(t *testing.T) {

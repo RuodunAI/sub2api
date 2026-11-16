@@ -480,9 +480,6 @@ const (
 	// The account type does not account for a usage the request asks for
 	// (Detail: the usage kind).
 	SchedUsageUnsupported = "usage_unsupported"
-	// The request's file, helper history or fallback credit belongs to
-	// another account (Detail: "resource", "helper_history", "fallback_credit").
-	SchedBoundElsewhere = "bound_elsewhere"
 	// The model availability precheck blocked the account (see availability).
 	SchedAvailabilityBlocked = "availability_blocked"
 	// The failure policy narrowed the retry to other accounts.

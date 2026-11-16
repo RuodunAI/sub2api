@@ -54,8 +54,6 @@ type Account struct {
 	DeferredAutoDisable       bool            `gorm:"column:deferred_auto_disable;default:(-)"`        // boolean default false
 	DeferredAutoDisableReason string          `gorm:"column:deferred_auto_disable_reason;default:(-)"` // text default ''::text
 	DeferredAutoDisabledUntil *time.Time      `gorm:"column:deferred_auto_disabled_until"`             // timestamp with time zone
-	StatusChangedAt           *time.Time      `gorm:"column:status_changed_at"`                        // timestamp with time zone
-	RateLimitTier             *string         `gorm:"column:rate_limit_tier"`                          // text
 	HeaderPassthrough         store.Strings   `gorm:"column:header_passthrough;default:(-)"`           // text[] default '{}'::text[]
 	ParamOverride             json.RawMessage `gorm:"column:param_override"`                           // jsonb
 	ConversionLossPolicy      *string         `gorm:"column:conversion_loss_policy"`                   // character varying(10)

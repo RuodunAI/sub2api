@@ -1,7 +1,0 @@
--- sql
-UPDATE "provider_helper_usage_outbox" SET "failure_code"=$1,"next_attempt_at"=GREATEST(next_attempt_at, $2),"retry_count"=LEAST(retry_count, 2147483646) + 1 WHERE request_id = $3 AND digest = $4
--- vars
-$1 string "integrity"
-$2 time.Time 2026-01-02 03:04:05 +0000 UTC
-$3 string "req"
-$4 string "digest"

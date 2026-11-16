@@ -12,8 +12,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/resources"
-
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 
@@ -67,8 +65,8 @@ type call struct {
 	// request path. nil when not started or already joined.
 	prompt *promptCount
 	// bodyVersion counts hook body replacements. scanned/scannedBodyVersion
-	// remember the version whose model, resource and fallback-credit checks
-	// passed, so the second checkModel can reuse them; doc and digest cache
+	// remember the version whose referenced-model check passed, so the
+	// second checkModel can reuse it; doc and digest cache
 	// the parsed document and the SHA-256 of that same version (body_state.go).
 	bodyVersion        uint64
 	scanned            bool
@@ -88,16 +86,6 @@ type call struct {
 	// billing: the model's global price (nil = free policy or free endpoint)
 	price                *core.PriceRule
 	modelRefs            []modelReference
-	resourceRefs         []approvedResource
-	resourceScans        resourceScanCache
-	resourceInfo         resources.RequestInfo
-	resourceVersions     []approvedSkillVersion
-	resourceAccess       *modelResourceAccess
-	creditRequest        *modelCreditRequest
-	creditAccess         *modelCreditAccess
-	creditDispatched     bool
-	helperHistory        *helperHistoryRequest
-	helperPersisted      bool
 	upstreamRefs         map[string]core.PricedUsage
 	upstreamPrimaryModel string
 
@@ -194,14 +182,12 @@ type call struct {
 	observationAttemptAt     time.Time
 	observationResponseAt    time.Time
 	observationFirstStreamAt time.Time
-	observationUpstreamCode  int  // status the upstream answered the attempt with, 0 = none yet
-	abortResponse            bool // A committed CCGateway response ended incompletely.
+	observationUpstreamCode  int // status the upstream answered the attempt with, 0 = none yet
 	errorBodies              []*os.File
 }
 
 // serve runs the proxy pipeline (ARCHITECTURE 6.1) for one request.
 func (g *Gateway) serve(c *gin.Context, gen core.Generation, b core.EndpointBinding, params map[string]string) {
-	stripHelperHistoryHeaders(c.Request.Header)
 	// The request id is always generated here: it is the usage_logs key and
 	// the ledger idempotency key, so a client-chosen id could dodge billing.
 	rid := httpapi.NewRequestID()
@@ -259,7 +245,6 @@ func (c *call) run(ctx context.Context) {
 	c.principal = p
 	c.rec = c.newRecord()
 	defer c.submit()
-	defer c.finishHelperHistory()
 
 	// 2. Body, model, stream.
 	if e := c.readBody(); e != nil {
@@ -314,15 +299,11 @@ func (c *call) run(ctx context.Context) {
 		return
 	}
 	// The body is final from here on: the local precharge estimate is the
-	// slowest part of preparing a large request, so it runs while the helper
-	// history lookup and the balance check wait on the database. The defer
-	// joins it on every path, so no goroutine outlives the handler.
+	// slowest part of preparing a large request, so it runs while the
+	// balance check waits on the database. The defer joins it on every path,
+	// so no goroutine outlives the handler.
 	c.startPromptCount(ctx)
 	defer c.joinPromptCount()
-	if e := c.discoverHelperHistory(ctx); e != nil {
-		c.fail(e)
-		return
-	}
 
 	// Check the final model against the plugin's billing declaration before
 	// route planning, account scheduling or any upstream request.
@@ -528,21 +509,14 @@ func (c *call) checkModel(ctx context.Context) *gwError {
 	if !c.principal.Group.AllowsModel(c.model) {
 		return fromCore(core.ErrModelNotFound.WithDetails(map[string]any{"model": c.model}), errTypeModelNotAllowed)
 	}
-	// The three checks below walk the whole body and may hit the database.
-	// Hooks do not change headers, and they replace the body only through
-	// setBody, which bumps bodyVersion; an unchanged version therefore left
-	// every input of the first pass identical, and repeating it would only
-	// repeat the scans (and, for a fallback-credit token, the registry read).
+	// The check below walks the whole body. Hooks replace the body only
+	// through setBody, which bumps bodyVersion; an unchanged version
+	// therefore left the input of the first pass identical, and repeating it
+	// would only repeat the scan.
 	if c.scanned && c.scannedBodyVersion == c.bodyVersion {
 		return nil
 	}
 	if err := c.checkReferencedModels(); err != nil {
-		return err
-	}
-	if err := c.checkResourceReferences(ctx); err != nil {
-		return err
-	}
-	if err := c.checkFallbackCredit(ctx); err != nil {
 		return err
 	}
 	c.scanned, c.scannedBodyVersion = true, c.bodyVersion
@@ -860,7 +834,7 @@ func (c *call) submit() {
 	c.statsCompletedAt = c.g.now()
 	c.statsCanceled = c.c.Request.Context().Err() != nil
 	c.observeRequest(observation.Completed, rec)
-	if c.taskPersisted || c.helperWasDispatched() {
+	if c.taskPersisted {
 		c.observeRequest(observation.UsageFinalized, rec)
 		return
 	}

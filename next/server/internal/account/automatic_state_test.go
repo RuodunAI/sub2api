@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -141,58 +140,6 @@ func TestAccountAutoDisablePolicy(t *testing.T) {
 		require.Equal(t, 200, status)
 		require.Equal(t, map[string]any{"enabled": tc.enabled}, data(result))
 	}
-}
-
-func TestReauthorizationClearsOnlyAutomaticAccountBlocks(t *testing.T) {
-	e := setup(t)
-	for _, state := range []string{"auto_disabled", "disabled"} {
-		id := e.mkRawAccount("ccgateway", "managed", "reauth-"+state, "unused", true)
-		if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET status=$2,status_reason='blocked',schedulable=false,auto_disabled_until=clock_timestamp()+interval '1 hour' WHERE id=$1`, id, state); err != nil {
-			t.Fatal(err)
-		}
-		err := e.db.Tx(t.Context(), func(tx *gorm.DB) error {
-			changed, err := e.svc.resetForReauth(t.Context(), tx, &row{ID: id, Status: state})
-			if changed != (state != "disabled") {
-				t.Fatalf("reauth changed=%t for %s", changed, state)
-			}
-			return err
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var status, reason string
-		var schedulable bool
-		var until *time.Time
-		if err := e.db.SQL.QueryRowContext(t.Context(), `SELECT status,status_reason,schedulable,auto_disabled_until FROM accounts WHERE id=$1`, id).Scan(&status, &reason, &schedulable, &until); err != nil {
-			t.Fatal(err)
-		}
-		if schedulable || until != nil {
-			t.Fatal("reauth changed manual scheduling or retained the deadline")
-		}
-		if state == "disabled" {
-			if status != state || reason != "blocked" {
-				t.Fatal("reauth overrode manual disable")
-			}
-		} else if status != "active" || reason != "" {
-			t.Fatal("reauth retained the automatic block")
-		}
-	}
-
-	// New credentials do not lower the usage: the usage limit's disable stays.
-	id := e.mkRawAccount("ccgateway", "managed", "reauth-usage-limit", "unused", true)
-	_, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET status='auto_disabled',status_reason='usage limit reached',auto_disabled_source='usage_limit',
-		auto_disabled_until=clock_timestamp()+interval '1 hour' WHERE id=$1`, id)
-	require.NoError(t, err)
-	require.NoError(t, e.db.Tx(t.Context(), func(tx *gorm.DB) error {
-		changed, err := e.svc.resetForReauth(t.Context(), tx, &row{ID: id, Status: "auto_disabled", AutoDisabledSource: usageLimitSource})
-		assert.False(t, changed)
-		return err
-	}))
-	var status string
-	var until *time.Time
-	require.NoError(t, e.db.SQL.QueryRowContext(t.Context(), `SELECT status,auto_disabled_until FROM accounts WHERE id=$1`, id).Scan(&status, &until))
-	assert.Equal(t, "auto_disabled", status)
-	assert.NotNil(t, until, "released when its period ends")
 }
 
 func TestAutomaticStateActionsAndTimeForms(t *testing.T) {

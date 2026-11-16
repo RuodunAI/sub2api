@@ -54,7 +54,7 @@ func TestRunDirReplacesSharedTemp(t *testing.T) {
 // the allow list: no database, Redis, key, token or other secret.
 func TestCommandEnvIsAllowList(t *testing.T) {
 	for _, k := range []string{"DATABASE_URL", "REDIS_URL", "SUB2API_MASTER_KEY",
-		"SUB2API_CONTROL_TOKEN", "SUB2API_BOOTSTRAP_ADMIN_PASSWORD", "CCG_ADMIN_KEY", "AWS_SECRET_ACCESS_KEY", "UPDATER_SOCKET"} {
+		"SUB2API_CONTROL_TOKEN", "SUB2API_BOOTSTRAP_ADMIN_PASSWORD", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY", "UPDATER_SOCKET"} {
 		t.Setenv(k, "secret-"+k)
 	}
 	for _, wrap := range []bool{false, true} {

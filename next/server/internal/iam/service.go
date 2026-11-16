@@ -94,7 +94,6 @@ var (
 	_ core.TokenVerifier     = (*Service)(nil)
 	_ core.AccessKeyVerifier = (*Service)(nil)
 	_ core.StepUpVerifier    = (*Service)(nil)
-	_ core.StepUpSessions    = (*Service)(nil)
 )
 
 // New creates the service. The authz service must be started before

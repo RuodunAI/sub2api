@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -91,21 +90,6 @@ func TestAccountStatsExecuteAndHelper(t *testing.T) {
 		n, _ := e.slots.InUse(context.Background(), "account", 1)
 		require.Zero(t, n)
 	})
-	for _, fail := range []bool{false, true} {
-		t.Run(fmt.Sprint("helper/", fail), func(t *testing.T) {
-			e, history, _ := helperHTTPFixture(t)
-			history.commitErr = fail
-			capture := &statsCapture{ch: make(chan accountStatsSample, 8)}
-			e.gw.d.Observations = capture
-			e.messages(helperRequestBody())
-			v := capture.next(t)
-			require.Equal(t, !fail, v.Success)
-			require.EqualValues(t, 18, v.Tokens)
-			require.Empty(t, capture.ch)
-			n, _ := e.slots.InUse(context.Background(), "account", v.AccountID)
-			require.Zero(t, n)
-		})
-	}
 }
 
 func TestAccountStatsTokenSources(t *testing.T) {

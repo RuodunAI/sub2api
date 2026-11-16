@@ -23,9 +23,8 @@ type Limits struct {
 	MaxFiles         int   // number of regular files
 }
 
-// Default limits used when a field is zero. Packages may carry the
-// CCGateway runtime images (CONTRACTS §53.10, about 400 MB compressed), and
-// are still read whole into memory.
+// Default limits used when a field is zero. Packages are read whole into
+// memory.
 const (
 	DefaultMaxPackageBytes  = 1 << 30
 	DefaultMaxUnpackedBytes = 2 << 30

@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/httpfacts"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 // Keep only the classification prefix in memory. Larger HTTP error responses
@@ -58,7 +58,7 @@ func (c *call) preserveHTTPError(e *gwError, status int, h http.Header, body *up
 	}
 	e.Status, e.RawResponse = status, true
 	e.Raw, e.RawFile = body.prefix, body.file
-	e.ContentType, e.Headers = h.Get("Content-Type"), httpfacts.Select(h)
+	e.ContentType, e.Headers = h.Get("Content-Type"), core.ProviderHeaders(h)
 	e.Message = upstreamErrorMessage(body.prefix)
 	if c.rec != nil {
 		c.rec.ErrorMessage = truncateUTF8(e.Message, 1000)

@@ -9,9 +9,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 )
 
-// The ccgateway package carries its runtime images (CONTRACTS §53.10):
-// packages up to 1 GiB compressed and 2 GiB unpacked.
-func TestDefaultLimitsFitBundledImages(t *testing.T) {
+// Packages may be up to 1 GiB compressed and 2 GiB unpacked, and the
+// configuration default matches the unpack default.
+func TestDefaultLimits(t *testing.T) {
 	if DefaultMaxPackageBytes != 1<<30 || DefaultMaxUnpackedBytes != 2<<30 {
 		t.Fatalf("defaults: %d / %d", DefaultMaxPackageBytes, DefaultMaxUnpackedBytes)
 	}

@@ -5,12 +5,10 @@ import (
 	"cmp"
 	"context"
 	"errors"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptrace"
-	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -57,18 +55,12 @@ func (c *call) dispatch(ctx context.Context) {
 	}
 	c.sched.candidates = len(all)
 	cands := make([]core.AccountRef, 0, len(all))
-	creditExcluded := false
 	for i := range all {
 		if reason, detail, ok := c.ineligibleReason(&all[i]); !ok {
 			c.skipAccount(all[i].ID, reason, detail)
-			creditExcluded = creditExcluded || detail == schedDetailCredit
 			continue
 		}
 		cands = append(cands, all[i])
-	}
-	if len(cands) == 0 && creditExcluded && c.creditRequest != nil && c.creditRequest.lookupError != nil {
-		c.fail(c.creditRequest.lookupError)
-		return
 	}
 	eligible := cands
 	cands, availabilityErr := c.filterAvailability(ctx, cands)
@@ -173,9 +165,6 @@ func (c *call) dispatch(ctx context.Context) {
 			if c.rec.Success {
 				c.g.d.Accounts.TouchLastUsed(context.WithoutCancel(ctx), ref.ID)
 			}
-			if c.abortResponse {
-				panic(http.ErrAbortHandler)
-			}
 			return
 		case attemptCanceled:
 			c.fail(res.err)
@@ -189,11 +178,6 @@ func (c *call) dispatch(ctx context.Context) {
 			if c.failurePolicy != nil {
 				last = res.err
 				continue
-			}
-			if c.creditDispatched || c.helperWasDispatched() {
-				c.fail(res.err)
-				c.finishSticky(ctx, ref.ID, false)
-				return
 			}
 			excluded[ref.ID] = true
 			c.skipAccount(ref.ID, core.SchedAttemptFailed, attemptFailureDetail(res.err))
@@ -611,10 +595,6 @@ func (c *call) attempt(ctx context.Context, ref *core.AccountRef, n int) attempt
 	if err != nil {
 		return attemptResult{kind: attemptFailover, err: invalidModelReference(err.Error())}
 	}
-	upBody, err = c.mapResourceReferences(ctx, upBody, ref, rt)
-	if err != nil {
-		return attemptResult{kind: attemptReturn, err: fromCore(core.AsError(err), errTypeInvalidRequest)}
-	}
 	// An upstream that only streams (CONTRACTS §83) gets stream: true before
 	// the plugin sees the request, so the fields it reads and the body its
 	// patches apply to already say what goes upstream.
@@ -728,22 +708,15 @@ func writeDeclaredAuth(h http.Header, rt *typeRoute, pacct *pluginv1.Account, bu
 
 // validatePatches runs the guards that a plugin-built upstream request must
 // pass before it is sent: the plugin's patches (upBody to body) must keep
-// resource and model references consistent with the original body, and the
-// account's usage rules must be able to meter the operation and attempts of
-// body, the one that goes upstream.
-// The kind differs per guard on purpose: an unaddressable resource reference
-// is the client's mistake and is returned (attemptReturn), everything else
-// fails over.
+// the model references consistent with the original body, and the account's
+// usage rules must be able to meter the operation and attempts of body, the
+// one that goes upstream. A failed guard fails over.
 func (c *call) validatePatches(rt *typeRoute, upBody, body []byte) (attemptKind, *gwError) {
 	// applyPatches returns upBody itself when the plugin asked for no patch,
-	// and then the three comparisons below compare the request with itself:
-	// they cannot fail, yet each walks the whole body (four scans and two
-	// hashes). Compare the bytes instead — never with a substring pre-check,
+	// and then the comparisons below compare the request with itself: they
+	// cannot fail, yet each walks the whole body. Compare the bytes instead — never with a substring pre-check,
 	// which a \u escape would defeat — and run the guards only when they differ.
 	if !bytes.Equal(upBody, body) {
-		if err := c.validateResourceReferencePatches(rt.upstream, upBody, body); err != nil {
-			return attemptReturn, invalidModelReference(err.Error())
-		}
 		// The body is the one this call already parsed; the patched copy is
 		// parsed once and both rule sets read it.
 		before, after := c.rootFor(upBody), c.rootFor(body)
@@ -788,13 +761,7 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	if failure != nil {
 		return *failure
 	}
-	managedCCG := ccgateway.IsManaged(acc.PluginKey, acc.Type, rawURL) && c.g.d.CCGateway != nil
-	var target *url.URL
-	if managedCCG {
-		target, err = url.Parse(rawURL)
-	} else {
-		target, err = c.g.checkUpstreamURL(prepareCtx, rawURL)
-	}
+	target, err := c.g.checkUpstreamURL(prepareCtx, rawURL)
 	if err != nil {
 		slog.WarnContext(ctx, "gateway: upstream url rejected", "plugin", rt.binding.Plugin.Key, "account", acc.ID, "err", err)
 		return attemptResult{kind: attemptFailover, err: fromCore(core.ErrUnavailable.WithMessage("upstream address rejected"), errTypeInternal)}
@@ -814,12 +781,7 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	if kind, err := c.validatePatches(rt, upBody, body); err != nil {
 		return attemptResult{kind: kind, err: err}
 	}
-	var client *http.Client
-	if managedCCG {
-		client = c.g.d.CCGateway.ModelClientForRequest(ccgateway.ModelRequestContext{AccountID: acc.ID, ProxyID: acc.ProxyID, GroupID: c.principal.Group.ID})
-	} else {
-		client, err = c.g.d.Proxies.HTTPClient(prepareCtx, acc.ProxyID)
-	}
+	client, err := c.g.d.Proxies.HTTPClient(prepareCtx, acc.ProxyID)
 	if err != nil || client == nil {
 		return attemptResult{kind: attemptFailover, err: fromCore(core.ErrUnavailable.WithCause(err), errTypeInternal)}
 	}
@@ -861,33 +823,6 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	if req.Header.Get("Content-Type") == "" && reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if err := c.applyResourceHeaders(prepareCtx, req, acc, body); err != nil {
-		if res, ok := c.accountRefused(ctx, rt, pacct, execution, err); ok {
-			return res
-		}
-		return c.resourcePreparationFailure(err)
-	}
-	if err := c.applyCreditHeaders(prepareCtx, req, acc, body); err != nil {
-		if res, ok := c.accountRefused(ctx, rt, pacct, execution, err); ok {
-			return res
-		}
-		return c.resourcePreparationFailure(err)
-	}
-	if err := c.wrapHelperHistoryRequest(prepareCtx, req, acc, rt, body); err != nil {
-		if res, ok := c.accountRefused(ctx, rt, pacct, execution, err); ok {
-			return res
-		}
-		var eligibility *resourceEligibilityError
-		if errors.As(err, &eligibility) {
-			return c.resourcePreparationFailure(err)
-		}
-		var typed *core.Error
-		if errors.As(err, &typed) && typed.Code == core.ErrUnavailable.Code {
-			return attemptResult{kind: attemptReturn, err: fromCore(typed, errTypeInternal)}
-		}
-		return attemptResult{kind: attemptReturn, err: invalidModelReference(err.Error())}
-	}
-
 	if failure := c.guardAvailability(prepareCtx, &acc.AccountRef); failure != nil {
 		return attemptResult{kind: attemptFailover, err: failure}
 	}
@@ -926,9 +861,6 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	if execution != nil {
 		execution.sent = true
 	}
-	if c.creditRequest != nil && c.creditRequest.tokenPresent {
-		c.creditDispatched = true
-	}
 	var requestWritten atomic.Bool
 	if c.failurePolicy != nil {
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { requestWritten.Store(true) }}))
@@ -962,9 +894,6 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 		rec := *c.rec
 		rec.StatusCode = resp.StatusCode
 		c.observeRequest(observation.ResponseStarted, &rec)
-	}
-	if err := c.unwrapHelperHistoryResponse(resp, rt); err != nil {
-		return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("helper history response could not be verified").WithCause(err), errTypeInternal)}
 	}
 	c.g.observeQuota(rt, acc.ID, resp.StatusCode, resp.Header)
 
@@ -1185,7 +1114,7 @@ func (c *call) applyAccountEffect(ctx context.Context, acct *pluginv1.Account, s
 }
 
 // pluginAutoDisable applies a plugin's temporary disable (automatic_state
-// DISABLE with a release time, e.g. CCGateway's 429 until the quota resets):
+// DISABLE with a release time, e.g. a 429 until the quota resets):
 // the account is auto_disabled until then, so neither another attempt of this
 // request nor a sticky session picks it, and the core's sweep makes it active
 // again at the release time (CONTRACTS §69). A disable without a release time

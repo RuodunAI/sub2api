@@ -172,8 +172,7 @@ func TestPluginEnvHasNoCoreSecrets(t *testing.T) {
 		"SUB2API_CONTROL_TOKEN":            strings.Repeat("t", 40),
 		"SUB2API_CONTROL_SOCKET":           "/run/control.sock",
 		"UPDATER_SOCKET":                   "/run/updater.sock",
-		"CCG_ADMIN_KEY":                    "admin",
-		"CCG_API_KEY":                      "api",
+		"ANTHROPIC_API_KEY":                "api",
 		"AWS_SECRET_ACCESS_KEY":            "aws",
 	}
 	for k, v := range secrets {

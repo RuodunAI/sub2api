@@ -48,7 +48,6 @@ const (
 const (
 	flowStepUpProof   = "step_up_proof"
 	flowStepUpPasskey = "step_up_passkey"
-	flowStepUpSession = "step_up_session"
 )
 
 // stepUpScopes are the scopes a proof can be issued for; true marks the
@@ -74,7 +73,6 @@ var stepUpScopes = map[string]bool{
 	core.StepUpPluginGrant:        false,
 	core.StepUpPublisherManage:    false,
 	core.StepUpSystemUpdate:       false,
-	core.StepUpHostInstall:        false,
 	core.StepUpAccessKeyWrite:     false,
 	core.StepUpSuperAdminIdentity: false,
 }
@@ -461,53 +459,6 @@ func (s *Service) ConsumeStepUp(ctx context.Context, scope string) error {
 		}
 	}
 	return s.verificationRequired(ctx, s.db.Gorm, uid, scope, operation)
-}
-
-// stepUpSessionToken names the window of a step-up session: one per scope,
-// session, user and login session or access key, so the request of anyone
-// else names a window that does not exist.
-func stepUpSessionToken(ctx context.Context, userID int64, scope, session string) string {
-	return strings.Join([]string{flowStepUpSession, scope, session, strconv.FormatInt(userID, 10), stepUpSubject(ctx)}, "\n")
-}
-
-// OpenStepUpSession implements core.StepUpSessions: the request must have
-// spent its proof on scope. Opening it again, with a new proof, starts it
-// afresh.
-func (s *Service) OpenStepUpSession(ctx context.Context, scope, session string) error {
-	uid, _ := core.UserID(ctx)
-	if uid == 0 || session == "" || core.StepUpSpent(ctx) != scope {
-		return core.ErrVerificationRequired.WithDetails(map[string]any{"scope": scope})
-	}
-	if s.flows == nil {
-		return tokenstore.ErrUnavailable
-	}
-	return s.flows.OpenWindow(ctx, tokenstore.Hash(stepUpSessionToken(ctx, uid, scope, session)), core.StepUpSessionIdle)
-}
-
-// ContinueStepUpSession implements core.StepUpSessions.
-func (s *Service) ContinueStepUpSession(ctx context.Context, scope, session string) error {
-	uid, _ := core.UserID(ctx)
-	if uid == 0 || session == "" {
-		return errStepUpSessionExpired(ctx, scope)
-	}
-	if s.flows == nil {
-		return tokenstore.ErrUnavailable
-	}
-	ok, err := s.flows.ContinueWindow(ctx, tokenstore.Hash(stepUpSessionToken(ctx, uid, scope, session)), core.StepUpSessionIdle, core.StepUpSessionMax)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errStepUpSessionExpired(ctx, scope)
-	}
-	return nil
-}
-
-// errStepUpSessionExpired is the 403 of a step-up session that is not open
-// for the caller: the console does not ask to verify, it starts over.
-func errStepUpSessionExpired(ctx context.Context, scope string) error {
-	return core.ErrVerificationExpired.WithMessage(t(ctx, "this verified operation has expired or belongs to another session; start it again",
-		"这次操作的二次验证已过期或属于其他会话，请重新开始")).WithDetails(map[string]any{"scope": scope})
 }
 
 // proofStillEnough applies the policy again when the proof is spent: the

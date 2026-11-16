@@ -21,9 +21,8 @@ import (
 
 // TestEveryModelStoresAndReadsValues writes rows into the table of every
 // model and reads them back through store.G, so that each column's mapping
-// and default meets real values: the -infinity default of
-// provider_helper_usage_outbox.next_attempt_at, for one, which a LIMIT 0
-// select never decodes. Each table gets two rows, one at a time:
+// and default meets real values, which a LIMIT 0 select never decodes.
+// Each table gets two rows, one at a time:
 //
 //   - "defaults": only the NOT NULL columns without a default are set, so
 //     the database fills the rest and RETURNING brings it back (stamped

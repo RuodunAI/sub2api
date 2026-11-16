@@ -19,12 +19,11 @@ type promptCount struct {
 }
 
 // startPromptCount launches the local tokenizer count of the final request
-// body. It is started just before the helper-history lookup and the balance
-// check, so 60–70 ms of counting a ~1 MB prompt overlaps their database round
-// trips instead of delaying precharge. It runs only where precharge will
-// certainly take the local path: a built-in platform (no plugin estimator), a
-// billing endpoint that is not free, and not task.submit (which refuses a
-// local estimate). A platform plugin is never affected: its EstimateUsage
+// body. It is started just before the balance check, so 60–70 ms of counting
+// a ~1 MB prompt overlaps its database round trips instead of delaying
+// precharge. It runs only where precharge will certainly take the local
+// path: a built-in platform (no plugin estimator), a billing endpoint that is
+// not free, and not task.submit (which refuses a local estimate). A platform plugin is never affected: its EstimateUsage
 // request is built and sent exactly as before.
 //
 // The one case it cannot rule out from here is a model the price policy

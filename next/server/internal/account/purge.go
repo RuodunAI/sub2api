@@ -125,7 +125,7 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 	return len(ids), nil
 }
 
-// purged invalidates local caches (CCGateway's request path included) and
+// purged invalidates local caches and
 // broadcasts one account:changed for a bulk deletion.
 func (s *Service) purged(ctx context.Context, pluginKey string, n int) {
 	s.invalidateNode(0)

@@ -447,13 +447,13 @@ func (s *Service) disposePreparation(ctx context.Context, p core.AccountPreparat
 func (s *Service) checkPreparationForCreate(ctx context.Context, bt core.AccountTypeBinding, in *input, settings []byte) (*core.AccountPreparation, core.AccountPreparationFacts, error) {
 	var none core.AccountPreparationFacts
 	if in.PreparationKey == nil {
-		if bt.Type.Lifecycle != nil && bt.Type.Lifecycle.Required && in.CCGatewayRuntime == nil {
+		if bt.Type.Lifecycle != nil && bt.Type.Lifecycle.Required {
 			return nil, none, core.ErrInvalidArgument.WithMessage("Account preparation is required")
 		}
 		return nil, none, nil
 	}
-	if in.CCGatewayRuntime != nil || in.ProxyURL != nil {
-		return nil, none, core.ErrInvalidArgument.WithMessage("Preparation cannot be combined with another runtime or proxy URL")
+	if in.ProxyURL != nil {
+		return nil, none, core.ErrInvalidArgument.WithMessage("Preparation cannot be combined with a proxy URL")
 	}
 	p, err := s.loadPreparation(ctx, *in.PreparationKey)
 	if err != nil {

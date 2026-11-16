@@ -295,33 +295,27 @@ func TestTruncClientRequestID(t *testing.T) {
 	}
 }
 
-// The CCGateway request log of a row stays reachable for an operator with
-// settings:read but without account:read: request_log_account_id carries the
-// account the log is filed under while account_id stays hidden.
-func TestRequestLogAccountWithoutAccountRead(t *testing.T) {
+// The rows of a removed plugin (CCGateway, 0.1.290) stay billing history:
+// they read like any other, with the plugin key they were recorded under,
+// and the account still hidden from a caller without account:read.
+func TestRemovedPluginRowStillReads(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	var accountID int64
-	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('CCG Account','ccgateway','oauth','') RETURNING id`).Scan(&accountID))
-	rec := f.record("ccg-log", false)
+	require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc) VALUES('Removed','ccgateway','managed','') RETURNING id`).Scan(&accountID))
+	rec := f.record("removed-plugin", false)
 	rec.PluginKey, rec.AccountID = "ccgateway", &accountID
 	f.svc.process(ctx, []*core.UsageRecord{rec})
-	path := "/usage/" + f.scalar(`SELECT id::text FROM usage_logs WHERE request_id = 'ccg-log'`)
+	path := "/usage/" + f.scalar(`SELECT id::text FROM usage_logs WHERE request_id = 'removed-plugin'`)
 
 	d := f.get(f.user, path, 200)["data"].(map[string]any)
+	require.Equal(t, "ccgateway", d["plugin_key"])
 	require.Equal(t, float64(accountID), d["account_id"])
-	require.Equal(t, float64(accountID), d["request_log_account_id"])
 
 	f.svc.Authz = denyPerms{keys: []string{"account:read"}}
 	d = f.get(f.user, path, 200)["data"].(map[string]any)
 	require.Nil(t, d["account_id"])
 	require.NotContains(t, d, "account_name")
-	require.Equal(t, float64(accountID), d["request_log_account_id"])
-
-	f.svc.Authz = denyPerms{keys: []string{"account:read", "settings:read"}}
-	d = f.get(f.user, path, 200)["data"].(map[string]any)
-	require.Nil(t, d["account_id"])
-	require.NotContains(t, d, "request_log_account_id")
 }
 
 // Self-service views hide upstream fields but keep the recorded error

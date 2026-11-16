@@ -351,23 +351,6 @@ func TestFlowsTakenOnce(t *testing.T) {
 	assert.Equal(t, "x", p.Sealed)
 }
 
-// A step-up window continues for the scope and name it was opened with,
-// until it idles out.
-func TestStepUpWindows(t *testing.T) {
-	e := setupAdmin(t)
-	s := e.svc
-	ctx := core.WithSession(core.WithUserID(context.Background(), rootID(t, s)), "session-1")
-	ctx = core.WithStepUp(ctx, "", testOperation)
-	core.MarkStepUpSpent(ctx, core.StepUpHostInstall, false)
-	require.NoError(t, s.OpenStepUpSession(ctx, core.StepUpHostInstall, "x/1"))
-	require.NoError(t, s.ContinueStepUpSession(ctx, core.StepUpHostInstall, "x/1"))
-	err := s.ContinueStepUpSession(ctx, core.StepUpHostInstall, "x/2")
-	assert.True(t, isCode(err, "verification_expired"), "another window: %v", err)
-	e.redis.FastForward(core.StepUpSessionIdle + time.Second)
-	err = s.ContinueStepUpSession(ctx, core.StepUpHostInstall, "x/1")
-	assert.True(t, isCode(err, "verification_expired"), "idle window: %v", err)
-}
-
 // Valkey down: sessions and logins fail with 503 (never 401, which signs
 // the console out). An operator still disables a user: the bump ends the
 // user's sessions without Valkey.

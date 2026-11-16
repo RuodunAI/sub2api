@@ -242,8 +242,8 @@ func (s *Service) listTypes(c *gin.Context) {
 			out = append(out, typeView(g, b, s.d.Converters))
 		}
 	}
-	// The generation lists a plugin's types in manifest order (OAuth before
-	// API key for ccgateway); keep it within each plugin.
+	// The generation lists a plugin's types in manifest order; keep it
+	// within each plugin.
 	sort.SliceStable(out, func(i, j int) bool { return out[i].PluginKey < out[j].PluginKey })
 	httpapi.OK(c, out)
 }

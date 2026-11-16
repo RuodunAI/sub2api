@@ -183,7 +183,7 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 	}
 	out.Changed = out.Changed || cooldownCleared
 	if out.Changed {
-		s.afterStatusChange(ctx, id, pluginKey, typ)
+		s.changed(ctx, id)
 	}
 	return out, nil
 }
@@ -223,7 +223,7 @@ type automaticChange struct {
 
 // writeAutomaticStatus writes an automatic change of an account the caller
 // locked in tx, with its audit row and account.status_changed event; the
-// caller runs afterStatusChange once tx commits. It declares that tx writes
+// caller runs changed once tx commits. It declares that tx writes
 // auto_disabled_source: the 0070 trigger otherwise takes a reason or release
 // time change of an automatic disable for a writer that does not know the
 // source (an older core) and clears the mark.
@@ -248,13 +248,8 @@ func (s *Service) writeAutomaticStatus(ctx context.Context, tx *gorm.DB, action 
 	return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountStatusChanged, Payload: payload})
 }
 
-// afterStatusChange tells the routing cache and the CCGateway runtime of a
-// committed status change.
-func (s *Service) afterStatusChange(ctx context.Context, id int64, pluginKey, typ string) {
-	s.changed(ctx, id)
-	s.kickCCGateway(id, pluginKey, typ)
-}
-
+// SweepAutomaticState re-enables the accounts whose timed automatic disable
+// ended and tells the routing cache.
 func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
 	var accounts []recoveredAccount
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
@@ -285,7 +280,6 @@ func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
 	}
 	for _, a := range accounts {
 		s.changed(ctx, a.ID)
-		s.kickCCGateway(a.ID, a.PluginKey, a.Type)
 	}
 	return len(accounts), nil
 }

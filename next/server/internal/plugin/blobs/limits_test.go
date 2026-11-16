@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// Packages may be 1 GiB (the ccgateway runtime images, CONTRACTS §53.10).
+// Packages may be 1 GiB (pkg.DefaultMaxPackageBytes).
 func TestLimitsDefaultToOneGiB(t *testing.T) {
 	s := NewShell("unused.sock", "", 0)
 	if s.max != 1<<30 || s.client.Timeout != shellTimeout || shellTimeout.Minutes() < 30 {

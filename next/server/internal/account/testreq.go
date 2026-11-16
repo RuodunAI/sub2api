@@ -18,11 +18,8 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/httpfacts"
-	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/requestfailure"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
@@ -41,8 +38,6 @@ type TestResult struct {
 	Message         string            `json:"message"`
 	ErrorCode       string            `json:"error_code,omitempty"`
 	ErrorSource     string            `json:"error_source,omitempty"`
-	TestMode        string            `json:"test_mode,omitempty"`
-	PolicyScope     string            `json:"policy_scope,omitempty"` // CCGateway: the policy layers the test used, "global" (audit A10)
 	ResponseHeaders map[string]string `json:"response_headers,omitempty"`
 	// Model actually requested: the model the plugin reported, else the
 	// requested model after the account's mapping.
@@ -115,11 +110,6 @@ func (s *Service) test(c *gin.Context) {
 	}
 	plain, err := s.decrypt(a.PluginKey, a.CredEnc)
 	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	// A stopped CCGateway runtime is started first (up to a minute).
-	if err := s.wakeCCGateway(ctx, a.ID, a.PluginKey); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -230,15 +220,9 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 		return res
 	}
 	res.Upstream = upstreamAddr(u)
-	managedCCG := ccgateway.IsManaged(bt.Plugin.Key, bt.Type.ID, tr.GetUrl()) && s.d.CCGateway != nil
-	if managedCCG && tr.GetUrl() == ccgateway.VirtualTestURL {
-		res.TestMode = "native_build"
-	}
-	if !managedCCG {
-		if err := s.guardUpstream(ctx, u, proxyID != nil); err != nil {
-			res.Message, res.ErrorCode = err.Error(), "upstream_validation_failed"
-			return res
-		}
+	if err := s.guardUpstream(ctx, u, proxyID != nil); err != nil {
+		res.Message, res.ErrorCode = err.Error(), "upstream_validation_failed"
+		return res
 	}
 	method := strings.ToUpper(tr.GetMethod())
 	if method == "" {
@@ -259,13 +243,7 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	var hc *http.Client
-	if managedCCG {
-		hc = s.d.CCGateway.ModelClientFor(acct.GetId(), proxyID)
-		res.PolicyScope = ccgateway.ModelPolicyScope
-	} else {
-		hc, err = s.d.Proxies.HTTPClient(ctx, proxyID)
-	}
+	hc, err := s.d.Proxies.HTTPClient(ctx, proxyID)
 	if err != nil {
 		res.Message, res.ErrorCode = core.AsError(err).Message, core.AsError(err).Code
 		return res
@@ -295,7 +273,7 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 	res.OK = resp.StatusCode >= 200 && resp.StatusCode < 300
 	res.Status = resp.StatusCode
 	res.ResponseHeaders = map[string]string{}
-	for k, values := range httpfacts.Select(resp.Header) {
+	for k, values := range core.ProviderHeaders(resp.Header) {
 		if len(res.ResponseHeaders) >= 32 {
 			break
 		}
@@ -321,22 +299,6 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 		if (code.Type == gjson.String || code.Type == gjson.Number) && code.String() != "" {
 			res.ErrorCode = cutBytes(code.String(), 128)
 			break
-		}
-	}
-	// The managed Worker reports the actual CLI failure source. Keep its
-	// code/message/status intact, without a plugin's inferred explanation.
-	// Ordinary providers cannot assert this internal marker.
-	if managedCCG {
-		if source := requestfailure.Source(resp.Header); source != "" {
-			if source != "http" {
-				res.ErrorSource = source
-			}
-			// The gateway's own refusal (core or Worker) names its reason in a
-			// header; that is the code worth keeping, not the body's api_error.
-			if reason := requestfailure.Reason(resp.Header); reason != "" && requestfailure.Local(source) {
-				res.ErrorCode = reason
-			}
-			return res
 		}
 	}
 	reason, effect, local := s.classifyTest(ctx, bt, acct, res.Model, resp.StatusCode, resp.Header, snippet, "")

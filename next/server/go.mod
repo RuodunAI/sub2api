@@ -6,11 +6,8 @@ replace github.com/Sub2API-Devs/sup2api/next/sdk => ../sdk
 
 replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => ../runtime-contract
 
-replace github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts => ../plugins/ccgateway/companions/contracts
-
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
-	github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts v0.0.0
 	github.com/Sub2API-Devs/sup2api/next/runtime-contract v0.0.0
 	github.com/Sub2API-Devs/sup2api/next/sdk v0.0.0-00010101000000-000000000000
 	github.com/alicebob/miniredis/v2 v2.39.0
@@ -46,7 +43,6 @@ require (
 	golang.org/x/text v0.42.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
-	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
 )

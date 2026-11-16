@@ -1056,7 +1056,6 @@ func TestSettlementHidesAccountWithoutAccountRead(t *testing.T) {
 	d = rf.get(rf.user, "/usage/"+id, 200)["data"].(map[string]any)
 	require.Nil(t, d["account_id"])
 	require.Nil(t, d["settlement"].(map[string]any)["account_id"])
-	require.NotContains(t, d, "request_log_account_id") // not a ccgateway row
 
 	if _, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute'`); err != nil {
 		t.Fatal(err)

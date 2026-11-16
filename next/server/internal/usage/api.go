@@ -116,14 +116,9 @@ type Detail struct {
 	// whose usage was final when its response ended. Hidden from
 	// self-service views like the rest of the upstream side.
 	Settlement *Settlement `json:"settlement,omitempty"`
-	// RequestLogAccountID opens the CCGateway request log of this request
-	// (GET /system/ccgateway/accounts/:id/request-logs, settings:read or
-	// account:read): set for a ccgateway row when the caller may read that
-	// log, also when account_id is hidden from a caller without account:read.
-	RequestLogAccountID *int64 `json:"request_log_account_id,omitempty"`
-	LedgerID            *int64 `json:"ledger_id"`
-	UserAgent           string `json:"user_agent"`
-	NodeID              string `json:"node_id"`
+	LedgerID   *int64      `json:"ledger_id"`
+	UserAgent  string      `json:"user_agent"`
+	NodeID     string      `json:"node_id"`
 }
 
 // RegisterRoutes mounts the usage console API.
@@ -328,7 +323,7 @@ func (d *Detail) redactForSelf() {
 	d.hideAccounts()
 	d.PluginVersion, d.StickyRule, d.ExprHash, d.NodeID = "", "", "", ""
 	d.BillingDetail = withoutExpressions(d.BillingDetail)
-	d.PluginDetail, d.Anomalies, d.Settlement, d.RequestLogAccountID = nil, nil, nil, nil
+	d.PluginDetail, d.Anomalies, d.Settlement = nil, nil, nil
 }
 
 // seesAccounts reports whether the caller may see the account of a usage
@@ -340,10 +335,6 @@ func (s *Service) seesAccounts(ctx context.Context, self *int64) (bool, error) {
 	}
 	return core.Can(ctx, s.Authz, "account:read")
 }
-
-// requestLogPlugin is the plugin whose rows have a request log in the core
-// (internal/ccgateway's request log viewer).
-const requestLogPlugin = "ccgateway"
 
 // parseFilter reads the common query parameters. self restricts to userID;
 // accounts allows the account filters (seesAccounts).
@@ -677,16 +668,6 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 	if self != nil {
 		d.redactForSelf()
 	} else {
-		if d.PluginKey == requestLogPlugin && d.AccountID != nil {
-			settings, err := core.Can(ctx, s.Authz, "settings:read")
-			if err != nil {
-				httpapi.Fail(c, err)
-				return
-			}
-			if accounts || settings {
-				d.RequestLogAccountID = d.AccountID
-			}
-		}
 		if e, err := s.loadSettlement(ctx, s.db.Gorm, d.ID); err == nil {
 			d.Settlement = e
 		}

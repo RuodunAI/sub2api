@@ -1,7 +1,0 @@
--- sql
-UPDATE "provider_resources" SET "bytes"=$1,"expires_at"=$2,"metadata"=$3,"updated_at"=now() WHERE public_id = $4
--- vars
-$1 int64 42
-$2 *time.Time nil
-$3 jsontext.Value {}
-$4 string "s2res_1"

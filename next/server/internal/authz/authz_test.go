@@ -1129,7 +1129,7 @@ func TestMenus(t *testing.T) {
 	if got := menuPaths(byKey["overview"]); got != "/dashboard,/me/api-keys,/me/models,/me/usage/overview,/me/usage,/usage/overview,/usage" {
 		t.Fatalf("admin console = %s", got)
 	}
-	// No groups, model prices or CCGateway page: the settings view lists them.
+	// No groups or model prices: the settings view lists them.
 	if got := menuPaths(byKey["gateway"]); got != "/accounts,/proxies,/p/mod/rules" {
 		t.Fatalf("core section with plugin item = %s", got)
 	}
