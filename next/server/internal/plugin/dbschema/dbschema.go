@@ -143,12 +143,17 @@ func roleOwnedQuery(g *gorm.DB, role, schema, marker string) *gorm.DB {
 // runs for its own migration bookkeeping (0003 migration).
 const grantMigrationFuncsSQL = "GRANT EXECUTE ON FUNCTION public.plugin_migrations_applied(varchar), public.plugin_migration_record(varchar, varchar, varchar) TO %s"
 
-// sharedACLLockKey serializes changes to the ACL of the migration functions
-// (grantMigrationFuncsSQL). Every plugin role is granted on the same two
-// pg_proc rows, so two plugins' Ensure (or Drop) at once - every node starts
-// its plugins together - would otherwise fail with "tuple concurrently
-// updated". It is always taken after a plugin's own lock, never before.
-var sharedACLLockKey = store.PluginMigrationLockKey("*shared-migration-function-acl*")
+// sharedACLLock (store.XactLock) serializes changes to the ACL of the
+// migration functions (grantMigrationFuncsSQL). Every plugin role is granted
+// on the same two pg_proc rows, so two plugins' Ensure (or Drop) at once -
+// every node starts its plugins together - would otherwise fail with "tuple
+// concurrently updated". It is always taken after a plugin's own lock, never
+// before.
+const sharedACLLock = "plugin-migration-function-acl"
+
+// schemaLock (store.XactLock) serializes Ensure and Drop of one plugin's
+// schema across the nodes.
+func schemaLock(pluginKey string) string { return "plugin-schema:" + pluginKey }
 
 // grantMigrationFuncs lets role run the migration functions. Most Ensure
 // calls find the grant in place and write nothing.
@@ -164,7 +169,7 @@ func grantMigrationFuncs(ctx context.Context, tx *gorm.DB, role string) error {
 	if ok, err := granted(); err != nil || ok {
 		return err
 	}
-	if err := store.XactLockID(ctx, tx, sharedACLLockKey); err != nil {
+	if err := store.XactLock(ctx, tx, sharedACLLock); err != nil {
 		return err
 	}
 	if ok, err := granted(); err != nil || ok {
@@ -192,11 +197,10 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 	}
 	isolate := m.roleIsolation
 	sid := store.Ident(schema)
-	lockKey := store.PluginMigrationLockKey(pluginKey)
 	err := m.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
-		// Serialize with migrations and other nodes ensuring the same schema.
-		if err := store.XactLockID(ctx, tx, lockKey^0x5a5a); err != nil {
+		// Serialize with other nodes ensuring or dropping the same schema.
+		if err := store.XactLock(ctx, tx, schemaLock(pluginKey)); err != nil {
 			return err
 		}
 		if !isolate {
@@ -405,7 +409,7 @@ func (m *Manager) DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) err
 	sid := store.Ident(schema)
 	g := store.G(ctx, tx)
 	err := func() error {
-		if err := store.XactLockID(ctx, tx, store.PluginMigrationLockKey(pluginKey)^0x5a5a); err != nil {
+		if err := store.XactLock(ctx, tx, schemaLock(pluginKey)); err != nil {
 			return err
 		}
 		if err := store.XactLockID(ctx, tx, store.PluginMigrationLockKey(pluginKey)); err != nil {
@@ -430,7 +434,7 @@ func (m *Manager) DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) err
 		// the cluster, an operator's role) is left alone.
 		if owned {
 			// DROP OWNED revokes the role's grant on the migration functions.
-			if err := store.XactLockID(ctx, tx, sharedACLLockKey); err != nil {
+			if err := store.XactLock(ctx, tx, sharedACLLock); err != nil {
 				return err
 			}
 			if err := store.DDL(g, "DROP OWNED BY %s", sid); err != nil {

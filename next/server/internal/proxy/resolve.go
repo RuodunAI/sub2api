@@ -36,7 +36,7 @@ func (s *Service) FindOrCreate(ctx context.Context, tx *gorm.DB, spec Spec, owne
 	// transaction; the lock key ignores the password on purpose (same key
 	// space as the SQL pre-filter).
 	lockKey := spec.Protocol + "|" + spec.Host + "|" + strconv.Itoa(spec.Port) + "|" + spec.Username
-	if err := store.XactLockHashtext(ctx, tx, lockKey); err != nil {
+	if err := store.XactLock(ctx, tx, lockKey); err != nil {
 		return 0, false, err
 	}
 	g := store.G(ctx, tx)

@@ -41,7 +41,6 @@ var sqlPolicy = sqlcheck.Policy{
 		"internal/store.Numbered.Exec":           "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
 		"internal/store.XactLock":                "pg_advisory_xact_lock: a transaction-scoped advisory lock",
 		"internal/store.XactLockID":              "pg_advisory_xact_lock of a lock named by its id",
-		"internal/store.XactLockHashtext":        "pg_advisory_xact_lock(hashtext(key)): the 32-bit lock ids existing deployments already hold",
 		"internal/store.SetLocal":                "set_config(name, value, true): a setting for the rest of the transaction",
 		"internal/store.DDL":                     "DDL takes no parameters: a constant format with quoted identifiers and literals (its format is checked where DDL is called)",
 		"internal/store.CurrentSnapshot":         "pg_current_snapshot(): server state, no table",

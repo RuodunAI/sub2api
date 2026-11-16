@@ -281,7 +281,7 @@ func (s *Service) Bootstrap(ctx context.Context) error {
 	var version int64
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		// One bootstrap at a time across the nodes.
-		if err := store.XactLockHashtext(ctx, tx, "sub2api:iam:bootstrap"); err != nil {
+		if err := store.XactLock(ctx, tx, "sub2api:iam:bootstrap"); err != nil {
 			return err
 		}
 		g := store.G(ctx, tx)

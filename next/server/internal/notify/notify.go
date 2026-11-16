@@ -126,7 +126,7 @@ func (s *Service) Notify(ctx context.Context, source string, n core.Notification
 		db := store.G(ctx, tx)
 		// One sender at a time per source, so the dedupe and rate checks
 		// below see each other's rows.
-		if err := store.XactLockHashtext(ctx, tx, "notify:"+source); err != nil {
+		if err := store.XactLock(ctx, tx, "notify:"+source); err != nil {
 			return err
 		}
 		if n.DedupeKey != "" {

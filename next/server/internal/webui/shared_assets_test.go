@@ -146,7 +146,7 @@ func TestSharedAssetCollectionProtectsLeasesRetentionAndRecentBuilds(t *testing.
 		}
 	}
 	err = db.Tx(ctx, func(tx *gorm.DB) error {
-		if _, err := store.SQLTx(tx).ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, assetLockKey); err != nil {
+		if err := store.XactLock(ctx, tx, assetLock); err != nil {
 			return err
 		}
 		return s.collect(ctx, tx)

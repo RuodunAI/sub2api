@@ -24,7 +24,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-const assetLockKey int64 = 0x5745424153534554 // WEBASSET; publish, renew and GC share this order.
+const assetLock = "webui:shared-assets" // store.XactLock; publish, renew and GC share this order.
 var hashedAssetName = regexp.MustCompile(`-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9.]+$`)
 
 func publicAsset(name string) bool {
@@ -139,7 +139,7 @@ func (s *SharedAssets) markReady(start time.Time) {
 	s.readyUntil.Store(&until)
 }
 
-// collect runs under assetLockKey. A lease, seven-day retention and the newest
+// collect runs under assetLock. A lease, seven-day retention and the newest
 // three builds independently protect references; only unreferenced blobs go.
 func (s *SharedAssets) collect(ctx context.Context, tx *gorm.DB) error {
 	g := store.G(ctx, tx)
@@ -214,7 +214,7 @@ func (s *SharedAssets) Publish(ctx context.Context) error {
 	defer s.mu.Unlock()
 	start := time.Now()
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := store.XactLockID(ctx, tx, assetLockKey); err != nil {
+		if err := store.XactLock(ctx, tx, assetLock); err != nil {
 			return err
 		}
 		if err := s.collect(ctx, tx); err != nil {
@@ -253,7 +253,7 @@ func (s *SharedAssets) renew(ctx context.Context) error {
 	start := time.Now()
 	found := false
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := store.XactLockID(ctx, tx, assetLockKey); err != nil {
+		if err := store.XactLock(ctx, tx, assetLock); err != nil {
 			return err
 		}
 		res := renewBuild(store.G(ctx, tx), s.buildID, s.opts.Lease.Seconds())
