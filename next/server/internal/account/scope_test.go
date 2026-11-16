@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // A group-range administrator (CONTRACTS §21.0) reaches the accounts bound
@@ -19,7 +21,7 @@ import (
 // binds its own groups without account:group:bind, cannot move an account
 // out of its range, and keeps every own-level limit.
 func TestGroupScopedAccounts(t *testing.T) {
-	az := fakeAuthz{keys: map[int64][]string{}}
+	az := fakeAuthz{keys: map[int64][]string{}, undecided: map[string]bool{}}
 	e := setupWith(t, az)
 	ctx := context.Background()
 	admin := e.uid
@@ -67,6 +69,11 @@ func TestGroupScopedAccounts(t *testing.T) {
 	require.Equal(t, 200, code, out)
 	code, out = e.doAs(mgr, "PATCH", path(inG), map[string]any{"group_ids": []int64{g, h}})
 	require.Equal(t, 403, code, out)
+	// A check that cannot be decided is 503, not a refusal.
+	az.undecided["account:group:bind"] = true
+	code, out = e.doAs(mgr, "PATCH", path(inG), map[string]any{"group_ids": []int64{g, h}})
+	require.Equal(t, 503, code, out)
+	delete(az.undecided, "account:group:bind")
 	// Holding account:group:bind does not let it drop its last own group.
 	az.keys[mgr] = append(mgrKeys, "account:group:bind")
 	code, out = e.doAs(mgr, "PATCH", path(inGH), map[string]any{"group_ids": []int64{h}})
@@ -78,7 +85,7 @@ func TestGroupScopedAccounts(t *testing.T) {
 	require.Equal(t, 403, code, out)
 	require.Equal(t, "would_leave_scope", out["error"].(map[string]any)["code"])
 	var groups []int64
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT array_agg(group_id ORDER BY group_id) FROM account_groups WHERE account_id = $1`, inGH).Scan(&groups))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT array_agg(group_id ORDER BY group_id) FROM account_groups WHERE account_id = $1`, inGH).Scan(&groups))
 	require.Equal(t, []int64{g, h}, groups, "the refused change was rolled back")
 
 	// Creating: into one of its groups only, with the own-level defaults.
@@ -116,7 +123,7 @@ func TestGroupScopedAccounts(t *testing.T) {
 	require.Error(t, core.AuthorizeAccounts(ctx, e.svc, mgr, "update", nil), "no ids: every account needed")
 
 	// A rebinding by someone else moves the account at once (no cache).
-	_, err = e.db.Pool.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, inH, k)
+	_, err = e.db.SQL.ExecContext(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, inH, k)
 	require.NoError(t, err)
 	code, _ = e.doAs(mgr, "GET", path(inH), nil)
 	require.Equal(t, 200, code)
@@ -126,7 +133,7 @@ func TestGroupScopedAccounts(t *testing.T) {
 }
 
 // Deleting an account or a group clears the scoped grants naming it, audited
-// per role, and moves the authz version.
+// per role, and moves the authz version (announced by authz, not here).
 func TestDeleteClearsScopedGrants(t *testing.T) {
 	az := fakeAuthz{keys: map[int64][]string{}}
 	e := setupWith(t, az)
@@ -135,39 +142,34 @@ func TestDeleteClearsScopedGrants(t *testing.T) {
 	g := e.exec1(`INSERT INTO groups (name) VALUES ('g') RETURNING id`)
 	acc := int64(e.createAs(e.uid, "a", map[string]any{"group_ids": []int64{g}})["id"].(float64))
 	role := e.exec1(`INSERT INTO roles (key, name) VALUES ('mgr', '{}') RETURNING id`)
-	perm := e.exec1(`INSERT INTO permissions (key, module, label, source) VALUES ('account:read', 'account', '{}', 'core')
+	e.exec1(`INSERT INTO permissions (key, module, label, source) VALUES ('account:read', 'account', '{}', 'core')
 		ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key RETURNING id`)
 	keep := fmt.Sprintf("account/%d1", acc) // another id with the same prefix
-	for _, sc := range []string{fmt.Sprintf("account/%d", acc), fmt.Sprintf("group/%d/account/%d", g, acc), fmt.Sprintf("group/%d", g), keep, "own"} {
-		_, err := e.db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) VALUES ($1, $2, $3)`, role, perm, sc)
-		require.NoError(t, err)
-	}
+	testutil.Grant(t, e.db, "mgr", "account:read", fmt.Sprintf("account/%d", acc), fmt.Sprintf("group/%d/account/%d", g, acc), fmt.Sprintf("group/%d", g), keep, "own")
 	scopes := func() []string {
 		var out []string
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT array_agg(scope ORDER BY scope) FROM role_permission_scopes WHERE role_id = $1`, role).Scan(&out))
+		for _, k := range testutil.GrantKeys(t, e.db, "mgr") {
+			out = append(out, strings.TrimPrefix(k, "account:read:"))
+		}
 		return out
 	}
 	version := func() (v int64) {
-		require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v))
+		require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v))
 		return v
 	}
 	v := version()
 	code, _ := e.doAs(e.uid, "DELETE", "/accounts/"+strconv.FormatInt(acc, 10), nil)
 	require.Equal(t, 204, code)
 	require.Equal(t, []string{keep, fmt.Sprintf("group/%d", g), "own"}, scopes())
-	require.Equal(t, v+1, version())
-	e.bus.mu.Lock()
-	announced := slices.Contains(e.bus.sent, core.ChannelAuthzChanged)
-	e.bus.mu.Unlock()
-	require.True(t, announced, "authz:changed published after commit")
+	require.Equal(t, v+1, version()) // authz announces it itself (its tests)
 	var n int
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'authz.scope.clear' AND target_id = $1`, strconv.FormatInt(role, 10)).Scan(&n))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'authz.scope.clear' AND target_id = $1`, strconv.FormatInt(role, 10)).Scan(&n))
 	require.Equal(t, 1, n)
 
-	// The new version comes back for the caller to announce after commit.
+	// The new version comes back.
 	clear := func() (got int64) {
-		require.NoError(t, e.db.Tx(ctx, func(tx pgx.Tx) (err error) {
-			got, err = core.ClearScopeGrants(ctx, tx, 0, core.ScopeRefGroup, []int64{g})
+		require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) (err error) {
+			got, err = e.svc.d.ScopeGrants.ClearScopeGrants(ctx, tx, 0, core.ScopeRefGroup, []int64{g})
 			return err
 		}))
 		return got

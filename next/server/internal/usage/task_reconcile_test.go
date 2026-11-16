@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func (s *taskTestSlots) InUseMany(context.Context, string, []int64) (map[int64]i
 	return nil, nil
 }
 
-func TestManagedTaskFencingFreePollingAndLegacyTransfer(t *testing.T) {
+func TestManagedTaskFencingAndFreePolling(t *testing.T) {
 	rf := reconcileFixtureWith(t, &core.Account{AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key"}, Status: "active"})
 	f := rf.fixture
 	ctx := context.Background()
@@ -54,7 +55,7 @@ func TestManagedTaskFencingFreePollingAndLegacyTransfer(t *testing.T) {
 	}
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := f.db.Pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := f.db.SQL.ExecContext(ctx, sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -74,6 +75,9 @@ func TestManagedTaskFencingFreePollingAndLegacyTransfer(t *testing.T) {
 	id := prepare("managed-fence", "up-fence", false)
 	due(id)
 	old := claim()
+	if entry := f.scalar(`SELECT id FROM pending_settlements WHERE task_public_id=$1`, id); fmt.Sprint(old.id) != entry {
+		t.Fatalf("claim read entry %d, want the task's entry %s", old.id, entry)
+	}
 	row, err := f.svc.loadReserved(ctx, old.usageLogID)
 	if err != nil {
 		t.Fatal(err)
@@ -169,45 +173,4 @@ func TestManagedTaskFencingFreePollingAndLegacyTransfer(t *testing.T) {
 		t.Fatal("stored path contract lost", err)
 	}
 
-	legacy := f.reserved("legacy-transfer", "legacy-raw", core.UsageTokens{Input: 1000, Output: 100})
-	f.svc.process(ctx, []*core.UsageRecord{legacy})
-	f.due()
-	es, err := f.svc.claimDue(ctx, 10)
-	if err != nil || len(es) != 1 {
-		t.Fatal("legacy claim", err, len(es))
-	}
-	stale := es[0]
-	legacyRow, err := f.svc.loadReserved(ctx, stale.usageLogID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	imported, err := f.svc.FindTask(ctx, q("legacy-raw"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(imported.Body) != 0 {
-		t.Fatal("legacy import invented a snapshot")
-	}
-	balance = f.balance()
-	f.svc.refundFailed(ctx, stale, legacyRow, "late old worker")
-	if !f.balance().Equal(balance) || f.scalar(`SELECT billing_status FROM usage_logs WHERE request_id='legacy-transfer'`) != "reserved" {
-		t.Fatal("legacy claim changed billing after task transfer")
-	}
-	if es, err := f.svc.claimDue(ctx, 10); err != nil || len(es) != 0 {
-		t.Fatal("legacy loop reclaimed managed task")
-	}
-	if es, err := f.svc.claimTasks(ctx, 10); err != nil || len(es) != 0 {
-		t.Fatal("import did not preserve in-flight legacy lease")
-	}
-	// An expired legacy deadline is never extended merely by reading its ID.
-	expired := f.reserved("legacy-expired", "expired-raw", core.UsageTokens{Input: 1000})
-	f.svc.process(ctx, []*core.UsageRecord{expired})
-	exec(`UPDATE pending_settlements SET deadline_at=now()-interval '1 minute' WHERE ref_id='expired-raw'`)
-	expiredSnap, err := f.svc.FindTask(ctx, q("expired-raw"))
-	if err != nil || expiredSnap.ObservationStatus != "abandoned" {
-		t.Fatal("expired legacy task was reopened", err)
-	}
-	if f.scalar(`SELECT deadline_at<=now() FROM async_tasks WHERE public_id=$1`, expiredSnap.PublicID) != "true" {
-		t.Fatal("legacy import extended deadline")
-	}
 }

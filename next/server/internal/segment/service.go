@@ -3,11 +3,13 @@ package segment
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Deps is what the segment service needs of the rest of the server.
@@ -89,18 +91,18 @@ func errOwnSegment(ctx context.Context) *core.Error {
 // prices, as price:manage and group:manage do, not one's own; dropping the
 // is_default condition tightens it. q is the writer's transaction or the
 // pool.
-func GuardOwnSegments(ctx context.Context, q store.Querier, users core.UserGuard, segmentIDs []int64) error {
+func GuardOwnSegments(ctx context.Context, q *gorm.DB, users core.UserGuard, segmentIDs []int64) error {
 	actor, _ := core.UserID(ctx)
 	if actor == 0 || len(segmentIDs) == 0 {
 		return nil
 	}
-	var member bool
-	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users u JOIN segments s ON s.id = u.segment_id
-		WHERE u.id = $1 AND s.id = ANY($2) AND NOT s.is_default)`,
-		actor, segmentIDs).Scan(&member); err != nil || !member {
+	g := store.G(ctx, q)
+	member, err := gormpg.Exists(g, g.Table("users u").Joins("JOIN segments s ON s.id = u.segment_id").
+		Where("u.id = ? AND s.id = ANY(?) AND NOT s.is_default", actor, store.Int64s(segmentIDs)))
+	if err != nil || !member {
 		return err
 	}
-	err := users.CanActOnUsers(ctx, actor, core.ActOnData, actor)
+	err = users.CanActOnUsers(ctx, actor, core.ActOnData, actor)
 	if err != nil && core.AsError(err).Code == core.ErrPermissionDenied.Code {
 		return errOwnSegment(ctx).WithCause(err)
 	}
@@ -129,7 +131,7 @@ func UserNotFound(ctx context.Context) error {
 // tx runs fn in a transaction. A row the writes refer to that was deleted
 // meanwhile (a foreign key violation) is a conflict, not a failure, and so is
 // a deadlock with another writer, should the lock order leave one possible.
-func (s *Service) tx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+func (s *Service) tx(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	err := s.db.Tx(ctx, fn)
 	if store.IsForeignKeyViolation(err) || store.IsDeadlock(err) {
 		return core.ErrConflict.WithMessage(t(ctx, "the data changed meanwhile, try again", "数据已被其他操作修改，请重试")).WithCause(err)
@@ -138,11 +140,21 @@ func (s *Service) tx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 }
 
 // segmentKind returns the kind of a segment and whether it is the default
-// one, locking the row as lock says ("" = not at all).
-func segmentKind(ctx context.Context, q store.Querier, id int64, lock string) (kind string, isDefault bool, err error) {
-	err = q.QueryRow(ctx, `SELECT kind, is_default FROM segments WHERE id = $1 `+lock, id).Scan(&kind, &isDefault)
+// one, locking the row with the lock strength ("" = not at all).
+func segmentKind(ctx context.Context, q *gorm.DB, id int64, lock string) (kind string, isDefault bool, err error) {
+	if lock != "" {
+		if err := store.RequireTx(q); err != nil {
+			return "", false, err
+		}
+	}
+	db := store.G(ctx, q).Model(&model.Segment{}).Select("kind", "is_default").Where("id = ?", id)
+	if lock != "" {
+		db = db.Clauses(store.Lock(lock))
+	}
+	var row model.Segment
+	err = db.Take(&row).Error
 	if store.IsNoRows(err) {
 		return "", false, NotFound(ctx)
 	}
-	return kind, isDefault, err
+	return core.ValueOr(row.Kind, ""), row.IsDefault, err
 }

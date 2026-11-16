@@ -192,10 +192,6 @@ func TestAccountLayer(t *testing.T) {
 	assert.Equal(t, upstream.SettingsField+".classify", v.GetErrors()[0].GetField(), "a problem is reported at its path in the layer")
 }
 
-func (e *extender) OnAccountLifecycle(context.Context, *pluginv1.AccountLifecycleRequest) (*pluginv1.AccountLifecycleResponse, error) {
-	return &pluginv1.AccountLifecycleResponse{SettingsJson: `{"from":"plugin"}`}, nil
-}
-
 func (e *extender) CheckModelAvailability(context.Context, *pluginv1.CheckModelAvailabilityRequest) (*pluginv1.CheckModelAvailabilityResponse, error) {
 	return &pluginv1.CheckModelAvailabilityResponse{}, nil
 }
@@ -206,17 +202,12 @@ func (e *extender) CheckModelAvailability(context.Context, *pluginv1.CheckModelA
 func TestOptionalHooksGoToThePlugin(t *testing.T) {
 	p := profile(t, `{"preset":"anthropic"}`)
 	c := New(p, &extender{})
-	life, err := c.OnAccountLifecycle(context.Background(), &pluginv1.AccountLifecycleRequest{})
-	require.NoError(t, err)
-	assert.Equal(t, `{"from":"plugin"}`, life.GetSettingsJson())
-	_, err = c.CheckModelAvailability(context.Background(), &pluginv1.CheckModelAvailabilityRequest{})
+	_, err := c.CheckModelAvailability(context.Background(), &pluginv1.CheckModelAvailabilityRequest{})
 	require.NoError(t, err)
 
-	// Only the PlatformPlugin methods: no lifecycle, no availability check.
+	// Only the PlatformPlugin methods: no availability check.
 	bare := struct{ core.PlatformPlugin }{pluginv1.UnimplementedPlatformServiceServer{}}
 	for _, c := range []*Client{New(p, nil), New(p, bare)} {
-		_, err = c.OnAccountLifecycle(context.Background(), &pluginv1.AccountLifecycleRequest{})
-		assert.Equal(t, codes.Unimplemented, status.Code(err))
 		_, err = c.CheckModelAvailability(context.Background(), &pluginv1.CheckModelAvailabilityRequest{})
 		assert.Equal(t, codes.Unimplemented, status.Code(err))
 	}

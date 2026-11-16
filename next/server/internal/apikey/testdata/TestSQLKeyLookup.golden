@@ -1,0 +1,12 @@
+-- sql
+SELECT k.id, k.user_id, k.status, k.expires_at,
+		(u.status = 'active' AND u.deleted_at IS NULL),
+		COALESCE(g.id, 0), COALESCE(g.name, ''), COALESCE(g.status, 'deleted'), COALESCE(g.rate_multiplier, 1),
+		COALESCE(g.model_allowlist, '[]'), COALESCE(g.model_filter_mode, 'blacklist'), COALESCE(g.environment, '{}'),
+		COALESCE((g.visibility = 'public' OR EXISTS (SELECT 1 FROM segment_groups sg
+		JOIN users su ON su.segment_id = sg.segment_id
+		WHERE sg.group_id = g.id AND sg.granted AND su.id = k.user_id)), false), k.allowed_ips,
+		k.rpm_limit, k.tpm_limit, k.max_concurrency, k.quota_limit, k.quota_used, COALESCE(g.conversion_loss_policy, ''),
+		s.id, s.discount, sg.rate_override FROM api_keys k JOIN users u ON u.id = k.user_id JOIN segments s ON s.id = u.segment_id LEFT JOIN groups g ON g.id = k.group_id LEFT JOIN segment_groups sg ON sg.segment_id = s.id AND sg.group_id = g.id WHERE k.key_hash = $1 AND k.deleted_at IS NULL
+-- vars
+$1 string "hash"

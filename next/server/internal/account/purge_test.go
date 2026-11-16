@@ -99,7 +99,7 @@ func TestPurgePluginAccounts(t *testing.T) {
 		ids = append(ids, int64(out["data"].(map[string]any)["id"].(float64)))
 	}
 	relay := e.exec1(`INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('r1', 'relay', 'relay_key', '\x00') RETURNING id`)
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, relay, g1); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, relay, g1); err != nil {
 		t.Fatal(err)
 	}
 	// An already deleted account of the plugin is not counted again.
@@ -116,23 +116,23 @@ func TestPurgePluginAccounts(t *testing.T) {
 		t.Fatalf("purge: %d %v", n, err)
 	}
 	var live, links int64
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM accounts WHERE plugin_key = 'anthropic' AND deleted_at IS NULL`).Scan(&live)
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM account_groups WHERE account_id = ANY($1)`, ids).Scan(&links)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE plugin_key = 'anthropic' AND deleted_at IS NULL`).Scan(&live)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM account_groups WHERE account_id = ANY($1)`, ids).Scan(&links)
 	if live != 0 || links != 0 {
 		t.Fatalf("live=%d links=%d", live, links)
 	}
 	var relayLinks int64
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM account_groups WHERE account_id = $1`, relay).Scan(&relayLinks)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM account_groups WHERE account_id = $1`, relay).Scan(&relayLinks)
 	if relayLinks != 1 {
 		t.Fatal("other plugin's account touched")
 	}
 	var deleted int64
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type = 'account.deleted' AND payload->>'plugin_key' = 'anthropic'
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE type = 'account.deleted' AND payload->>'plugin_key' = 'anthropic'
 		AND (payload->>'account_id')::bigint = ANY($1) AND payload->>'type' = 'apikey'`, ids).Scan(&deleted)
 	if deleted != 2 {
 		t.Fatalf("account.deleted events = %d", deleted)
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE (payload->>'account_id')::bigint = $1`, gone).Scan(&deleted)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE (payload->>'account_id')::bigint = $1`, gone).Scan(&deleted)
 	if deleted != 0 {
 		t.Fatal("event for an account deleted earlier")
 	}

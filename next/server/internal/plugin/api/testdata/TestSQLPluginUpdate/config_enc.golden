@@ -1,0 +1,5 @@
+-- sql
+UPDATE "plugins" SET "config_enc"=$1,"row_version"=row_version + 1,"updated_at"=now() WHERE key = $2
+-- vars
+$1 []uint8 [1 2 3]
+$2 string "demo"

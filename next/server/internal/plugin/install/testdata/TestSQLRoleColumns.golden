@@ -1,0 +1,3 @@
+-- sql
+SELECT key, name, builtin, superuser FROM "roles" ORDER BY superuser DESC, builtin DESC, id
+-- vars

@@ -1,0 +1,7 @@
+-- sql
+UPDATE "plugins" SET "desired_version"=$1,"row_version"=row_version + 1,"status"=$2,"status_reason"=$3,"updated_at"=now() WHERE key = $4
+-- vars
+$1 string "1.1.0"
+$2 string "enabling"
+$3 string ""
+$4 string "demo"

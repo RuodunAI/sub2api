@@ -3,6 +3,7 @@ package check
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -23,7 +24,6 @@ var (
 	userPermKeyRe   = regexp.MustCompile(`^[a-z0-9_]+(:[a-z0-9_]+)+$`)
 	idRe            = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 	accountTypeIDRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,49}$`)
-	subscriptionRe  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	protocolRe      = regexp.MustCompile(`^[a-z0-9_.-]+$`)
 	// coreKeys name the core itself where a plugin key is recorded (the
 	// source of a notification, an audit actor): no plugin may take them.
@@ -46,7 +46,6 @@ var KnownCapabilities = map[string]bool{
 	manifest.CapGatewayHook:       true,
 	manifest.CapGatewayObserve:    true,
 	manifest.CapAppJobs:           true,
-	manifest.CapAccountLifecycle:  true,
 	manifest.CapAppEvents:         true,
 	manifest.CapHTTPRoutes:        true,
 	manifest.CapMigrationData:     true,
@@ -247,7 +246,6 @@ func Validate(m *manifest.Manifest, files map[string][]byte, opt ValidateOptions
 	v.platforms()
 	v.taskPairs(v.m.Platforms)
 	v.accountTypes()
-	v.checkCoreFloors()
 	v.pricing()
 	v.hooks()
 	v.scheduler()
@@ -257,6 +255,7 @@ func Validate(m *manifest.Manifest, files map[string][]byte, opt ValidateOptions
 	v.jobs()
 	v.database()
 	v.userPermissions()
+	v.retiredUserPermissionFields()
 	v.routes()
 	v.ui()
 	v.resources()
@@ -518,6 +517,10 @@ func (v *validator) form(field string, f manifest.Form, settings bool) {
 		v.add(field+".permission", "unsupported", "only ui.settings takes a permission")
 	} else if f.Permission != "" && !v.userPerm(f.Permission) {
 		v.add(field+".permission", "unknown", "permission %q is not declared in userPermissions", f.Permission)
+	} else if f.Permission != "" && v.m.UserPermissionScope(f.Permission) != nil {
+		// The core authorizes the settings form on the permission as a
+		// whole, so a scope would mean nothing there.
+		v.add(field+".permission", "unsupported", "permission %q declares a scope; settings take an unscoped permission", f.Permission)
 	}
 	if settings {
 		v.maskableSecrets(field+".schema", f.Schema)
@@ -719,23 +722,11 @@ func (v *validator) jobs() {
 	if nodeJobs > manifest.MaxNodeJobs {
 		v.add("jobs", "out_of_range", "at most %d node jobs", manifest.MaxNodeJobs)
 	}
-	// Older cores ignore scope and would run a node job once per cluster.
-	if nodeJobs > 0 {
-		if ok, err := HostCompatible(v.m.HostCompat, lastClusterOnlyJobsCore); err == nil && ok {
-			v.add("hostCompat", "below_node_jobs_core", "hostCompat %q admits core %s, which runs node jobs once per cluster (node jobs start at core %s)",
-				v.m.HostCompat, lastClusterOnlyJobsCore, firstNodeJobsCore)
-		}
-	}
 }
 
-// The cores that run node jobs: 0.1.236 is the last core that runs every job
-// once per cluster. The job limits are manifest.MaxClusterJobTimeoutSec and
-// its neighbours.
-const (
-	maxJobTitle             = 100
-	lastClusterOnlyJobsCore = "0.1.236"
-	firstNodeJobsCore       = "0.1.237"
-)
+// maxJobTitle bounds a job's title. The job limits are
+// manifest.MaxClusterJobTimeoutSec and its neighbours.
+const maxJobTitle = 100
 
 func (v *validator) database() {
 	d := v.m.Database
@@ -776,7 +767,18 @@ func validUserPermKey(k string) bool {
 	return userPermKeyRe.MatchString(k) && !strings.HasSuffix(k, ":own")
 }
 
+// maxDeclaredScopeValues bounds the values a values scope declares: the
+// role editor lists every value. Not the values one request may name (the
+// runtime's maxRequestScopeValues).
+const maxDeclaredScopeValues = 50
+
+var (
+	scopeResourceRe = regexp.MustCompile(manifest.ScopeResourcePattern)
+	scopeValueRe    = regexp.MustCompile(manifest.ScopeValuePattern)
+)
+
 func (v *validator) userPermissions() {
+	groups := v.permissionGroups()
 	seen := map[string]bool{}
 	for i, up := range v.m.UserPermissions {
 		f := fmt.Sprintf("userPermissions[%d]", i)
@@ -789,27 +791,164 @@ func (v *validator) userPermissions() {
 		if firstText(up.Label) == "" {
 			v.add(f+".label", "required", "label is required")
 		}
-		for j, r := range up.DefaultRoles {
-			if !slices.Contains(manifest.BuiltinRoleKeys, r) {
-				v.add(fmt.Sprintf("%s.defaultRoles[%d]", f, j), "invalid_value", "role %q is not one of %v", r, manifest.BuiltinRoleKeys)
+		if up.Group != "" && !groups[up.Group] {
+			v.add(f+".group", "unknown", "group %q is not declared in permissionGroups", up.Group)
+		}
+		if up.Risk != "" && !slices.Contains(manifest.UserPermissionRisks, up.Risk) {
+			v.add(f+".risk", "invalid_value", "risk must be one of %v", manifest.UserPermissionRisks)
+		}
+		for j, r := range up.Requires {
+			if r == up.Key || !v.userPerm(r) {
+				v.add(fmt.Sprintf("%s.requires[%d]", f, j), "unknown", "requires %q must be another permission declared here", r)
 			}
 		}
-		// Old keys are usually no longer declared (a rename or a split).
-		for j, from := range up.InheritFrom {
-			if from == up.Key || !validUserPermKey(from) {
-				v.add(fmt.Sprintf("%s.inheritFrom[%d]", f, j), "invalid_value", "inheritFrom %q must be a local permission key other than the permission's own", from)
+		v.inheritFrom(f, up)
+		v.permissionScope(f+".scope", up.Scope)
+		v.permissionDefaults(f+".defaults", up)
+	}
+}
+
+// retiredUserPermissionFields rejects the userPermissions fields the
+// permission model replaced, which would otherwise decode to nothing: a
+// permission still declaring them would silently lose its defaults and risk.
+func (v *validator) retiredUserPermissionFields() {
+	var raw struct {
+		UserPermissions []map[string]json.RawMessage `json:"userPermissions"`
+	}
+	if json.Unmarshal(v.files["manifest.json"], &raw) != nil {
+		return
+	}
+	for i, up := range raw.UserPermissions {
+		for _, field := range []struct{ old, repl string }{{"sensitive", "risk"}, {"defaultRoles", "defaults"}} {
+			if _, ok := up[field.old]; ok {
+				v.add(fmt.Sprintf("userPermissions[%d].%s", i, field.old), "unsupported", "%s was removed; use %s", field.old, field.repl)
+			}
+		}
+	}
+}
+
+// permissionGroups validates permissionGroups and returns the declared keys.
+func (v *validator) permissionGroups() map[string]bool {
+	groups := map[string]bool{}
+	for i, g := range v.m.PermissionGroups {
+		f := fmt.Sprintf("permissionGroups[%d]", i)
+		if !keyRe.MatchString(g.Key) {
+			v.add(f+".key", "invalid_format", "group key %q must match %s", g.Key, keyRe.String())
+		} else if groups[g.Key] {
+			v.add(f+".key", "duplicate", "group %q declared twice", g.Key)
+		}
+		groups[g.Key] = true
+		if firstText(g.Label) == "" {
+			v.add(f+".label", "required", "label is required")
+		}
+	}
+	return groups
+}
+
+// inheritFrom validates a user permission's inheritFrom: local keys no
+// longer declared here (a rename or a split). A key still declared keeps
+// its holders, who would get the new permission besides, unseen; the risk
+// of the old key is checked at consent against the catalog.
+func (v *validator) inheritFrom(f string, up manifest.UserPermission) {
+	for j, from := range up.InheritFrom {
+		ff := fmt.Sprintf("%s.inheritFrom[%d]", f, j)
+		if _, declared := v.m.FindUserPermission(from); declared || !validUserPermKey(from) {
+			v.add(ff, "invalid_value", "inheritFrom %q must be a local permission key this manifest no longer declares", from)
+		}
+	}
+}
+
+// permissionScope validates a user permission's scope: either a values list
+// or a resource of the plugin's own offering options, own or both (a
+// resource granted only whole needs no scope).
+func (v *validator) permissionScope(f string, s *manifest.PermissionScope) {
+	if s == nil {
+		return
+	}
+	if len(s.Values) > 0 {
+		if s.Resource != "" || s.Options != "" || s.Own {
+			v.add(f, "mutually_exclusive", "values excludes resource, options and own")
+		}
+		v.scopeValues(f+".values", s.Values)
+		return
+	}
+	switch {
+	case s.Resource == "":
+		v.add(f, "required", "scope declares a resource or values")
+		return
+	case !scopeResourceRe.MatchString(s.Resource):
+		v.add(f+".resource", "invalid_format", "resource %q must match %s", s.Resource, manifest.ScopeResourcePattern)
+	case slices.Contains(manifest.ReservedScopeResources, s.Resource):
+		v.add(f+".resource", "reserved", "resource %q is reserved (%v); accounts are scoped by routes[].accounts", s.Resource, manifest.ReservedScopeResources)
+	}
+	if s.Options == "" {
+		if !s.Own {
+			v.add(f, "required", "a resource scope offers options, own or both")
+		}
+		return
+	}
+	// The core calls the options route itself, with nothing to fill a path
+	// parameter with.
+	r := v.routeRef(f+".options", s.Options, "GET")
+	if r != nil && (strings.ToUpper(r.Method) != "GET" || r.Scope != "admin" || hasPathParam(r.Path)) {
+		v.add(f+".options", "invalid", "options route %s %s must be a GET admin route without path parameters", r.Method, r.Path)
+	}
+}
+
+// scopeValues validates the values of a values scope.
+func (v *validator) scopeValues(f string, values []manifest.ScopeValue) {
+	if len(values) > maxDeclaredScopeValues {
+		v.add(f, "too_many", "at most %d values", maxDeclaredScopeValues)
+	}
+	seen := map[string]bool{}
+	for j, sv := range values {
+		ff := fmt.Sprintf("%s[%d]", f, j)
+		if !scopeValueRe.MatchString(sv.Key) {
+			v.add(ff+".key", "invalid_format", "value key %q must match %s", sv.Key, manifest.ScopeValuePattern)
+		} else if seen[sv.Key] {
+			v.add(ff+".key", "duplicate", "value %q declared twice", sv.Key)
+		}
+		seen[sv.Key] = true
+		if firstText(sv.Label) == "" {
+			v.add(ff+".label", "required", "label is required")
+		}
+	}
+}
+
+// permissionDefaults validates a user permission's defaults; roles are
+// visited in sorted order so the errors are stable.
+func (v *validator) permissionDefaults(f string, up manifest.UserPermission) {
+	if len(up.Defaults) == 0 {
+		return
+	}
+	if up.RiskLevel() == manifest.RiskCritical {
+		v.add(f, "unsupported", "critical permissions take no defaults; only the super admin grants them")
+		return
+	}
+	for _, role := range slices.Sorted(maps.Keys(up.Defaults)) {
+		d, ff := up.Defaults[role], f+"."+role
+		switch {
+		case !slices.Contains(manifest.BuiltinRoleKeys, role):
+			v.add(ff, "invalid_value", "role %q is not one of %v", role, manifest.BuiltinRoleKeys)
+		case !d.Unscoped && len(d.Scopes) == 0:
+			v.add(ff, "invalid_value", "leave the role out instead of false or []")
+		case up.Scope == nil && !d.Unscoped:
+			v.add(ff, "invalid_value", "an unscoped permission's default is true")
+		case up.Scope != nil && d.Unscoped:
+			v.add(ff, "invalid_value", `a scoped permission's default is a list of scopes, e.g. ["*"]`)
+		default:
+			for j, s := range d.Scopes {
+				if _, ok := up.Scope.GrantSuffix(s); !ok {
+					v.add(fmt.Sprintf("%s[%d]", ff, j), "invalid_value", `scope %q is not "*", an allowed "own" or a declared value`, s)
+				}
 			}
 		}
 	}
 }
 
 func (v *validator) userPerm(p string) bool {
-	for _, up := range v.m.UserPermissions {
-		if up.Key == p {
-			return true
-		}
-	}
-	return false
+	_, ok := v.m.FindUserPermission(p)
+	return ok
 }
 
 func (v *validator) resources() {

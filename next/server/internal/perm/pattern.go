@@ -2,9 +2,12 @@ package perm
 
 import (
 	"errors"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
 // Scoped permission keys (CONTRACTS §21, wildcard permissions): an action
@@ -14,6 +17,7 @@ import (
 //	scope = "*" | "own" | path
 //	path  = account actions: "group/" seg [ "/account/" seg ] | "account/" id
 //	        proxy actions:   "proxy/" id
+//	        plugin actions:  resource "/" value
 //	seg   = id | "*"
 //
 // A missing scope is "*": every row, so every unscoped key keeps its
@@ -40,6 +44,24 @@ var scopable = map[Key]Resource{
 	ProxyManage:           ResourceProxy,
 }
 
+// PluginPrefix starts the action of every plugin permission
+// (manifest.PermissionModule). Such an action takes the plugin scope
+// grammar; whether it takes a scope at all, and which resource, own or
+// values, is the catalog's to say (permissions.scope_type), checked by
+// authz when a grant is written.
+const PluginPrefix = "plugin."
+
+// The plugin scope "<resource>/<value>", as a manifest declares it.
+var (
+	scopeResourceRe = regexp.MustCompile(manifest.ScopeResourcePattern)
+	scopeValueRe    = regexp.MustCompile(manifest.ScopeValuePattern)
+)
+
+// ValidScopeValue reports whether v may be a plugin scope value (a row id
+// or a values key); the runtime checks a scopeFrom value with it before
+// building a key.
+func ValidScopeValue(v string) bool { return scopeValueRe.MatchString(v) }
+
 // ScopeType is the resource the scope of action ranges over, "" when the
 // action takes no scope (the permissions.scope_type column).
 func ScopeType(action Key) Resource { return scopable[action] }
@@ -52,19 +74,23 @@ var ErrInvalidKey = errors.New("invalid permission key")
 const Wildcard int64 = -1
 
 // Scope is a parsed, canonical scope. At most one of All and Own is set,
-// and then Group and ID are 0. Otherwise:
+// and then the rest is zero. A plugin scope sets Res and Value only.
+// Otherwise:
 //   - Group > 0: group/<Group>; Group == Wildcard: group/*; 0: no group part.
 //   - ID > 0: the row id, account/<ID> or proxy/<ID> (after a group part,
 //     group/<g>/account/<ID>).
+//
+// Scope stays comparable: PermissionSet compares scopes with ==.
 type Scope struct {
-	All, Own  bool
-	Group, ID int64
+	All, Own   bool
+	Group, ID  int64
+	Res, Value string // a plugin scope "<Res>/<Value>"
 }
 
 // Pattern is a canonical permission key split into action and scope; build
 // it with Parse (a zero Scope is not a valid one).
-// Unscoped keys (every action that takes no scope, plugin keys) have
-// Scope.All set.
+// Unscoped keys (every action that takes no scope, plugin keys without a
+// scope) have Scope.All set.
 type Pattern struct {
 	Action Key
 	Scope  Scope
@@ -82,7 +108,7 @@ func Parse(k string) (Pattern, error) {
 		return Pattern{Action: Key(k), Scope: Scope{All: true}}, nil
 	}
 	res := scopable[action]
-	if res == "" {
+	if res == "" && !strings.HasPrefix(string(action), PluginPrefix) {
 		return Pattern{}, ErrInvalidKey
 	}
 	s, err := parseScope(res, action == AccountCreate, last)
@@ -108,6 +134,13 @@ func parseScope(res Resource, create bool, raw string) (Scope, error) {
 		return Scope{All: true}, nil
 	case "own":
 		return Scope{Own: true}, nil
+	}
+	if res == "" { // a plugin action: "<resource>/<value>", nothing else
+		r, val, _ := strings.Cut(raw, "/")
+		if !scopeResourceRe.MatchString(r) || !ValidScopeValue(val) {
+			return Scope{}, ErrInvalidKey
+		}
+		return Scope{Res: r, Value: val}, nil
 	}
 	parts := trimWildcards(res, strings.Split(raw, "/"))
 	if len(parts)%2 != 0 {
@@ -173,8 +206,8 @@ func id(raw string, wildcard bool) (int64, error) {
 	return n, nil
 }
 
-// Suffix is the canonical scope text of p, "" for everything (stored in
-// role_permission_scopes.scope).
+// Suffix is the canonical scope text of p, "" for everything (a p row's
+// scope in casbin_rule, AllRows for "").
 func (p Pattern) Suffix() string {
 	s := p.Scope
 	switch {
@@ -182,6 +215,8 @@ func (p Pattern) Suffix() string {
 		return ""
 	case s.Own:
 		return "own"
+	case s.Res != "":
+		return s.Res + "/" + s.Value
 	}
 	seg := func(n int64) string {
 		if n == Wildcard {
@@ -224,8 +259,8 @@ func Implies(have, want Pattern) bool {
 		return false
 	case h.Own || w.Own:
 		return h.Own && w.Own
-	case h.Group == 0: // account/X or proxy/X: that row, with or without a group
-		return h.ID == w.ID
+	case h.Group == 0: // account/X, proxy/X or a plugin <res>/<value>: that row, with or without a group
+		return h.ID == w.ID && h.Res == w.Res && h.Value == w.Value
 	case w.Group == 0: // a group range never covers an ungrouped id
 		return false
 	case h.Group != Wildcard && h.Group != w.Group:

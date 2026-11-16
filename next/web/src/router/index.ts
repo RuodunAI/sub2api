@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import { ACCOUNT_ACTIONS, PROXY_ACTIONS } from '@/composables/useScope'
 import AppLayout from '@/layouts/AppLayout.vue'
 import type { SidebarViewKey } from '@/layouts/sidebarViews'
-import { CCGATEWAY_PAGE, isPluginKey, pluginSettingsPath } from '@/views/plugins/pluginUtil'
+import { isPluginKey, pluginSettingsPath } from '@/views/plugins/pluginUtil'
 import { settingsLanding } from '@/views/settings/settingsNav'
 import { closeLayersOnBack } from './layerBack'
 import { deniedRoute } from './guard'
@@ -92,8 +92,6 @@ const children: RouteRecordRaw[] = [
     }
   },
 
-  // The settings, or the account containers alone for an account reader (the core checks them by account:*, not settings:*).
-  { path: CCGATEWAY_PAGE, component: () => import('@/views/ccgateway/CCGatewayView.vue'), meta: { perm: 'settings:read', action: ACCOUNT_ACTIONS.read, title: 'ccgateway.title', parent: '/plugins' } },
   { path: 'plugins', component: () => import('@/views/plugins/PluginsView.vue'), meta: { perm: 'plugin:read', title: 'nav.items.plugins' } },
   {
     path: 'plugins/:key/versions/:version/consent',
@@ -112,8 +110,6 @@ const children: RouteRecordRaw[] = [
       deniedRedirect: to => (to.query.tab === 'settings' ? { path: pluginSettingsPath(String(to.params.key)), hash: to.hash } : undefined)
     }
   },
-  // ccgateway's settings are a core page of its own.
-  { path: 'plugins/ccgateway/settings', redirect: CCGATEWAY_PAGE },
   // Access is the plugin's settings permission or plugin:read, checked by the core: no meta.perm
   // here or on p/:plugin/:page, whose views handle 403 and hidden pages themselves.
   {

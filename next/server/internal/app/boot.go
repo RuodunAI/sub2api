@@ -15,7 +15,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/background"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/cluster"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/environment"
@@ -55,10 +54,12 @@ type boot struct {
 	stopper *teardown
 
 	// storage and cluster
-	db     *store.DB
-	rdb    redis.UniversalClient
-	cipher *secret.Cipher
-	cl     *cluster.Cluster
+	db  *store.DB
+	rdb redis.UniversalClient
+	// sessRdb keeps the console sessions (tokenstore.NewClient).
+	sessRdb redis.Cmdable
+	cipher  *secret.Cipher
+	cl      *cluster.Cluster
 
 	// core services
 	events  *event.Publisher
@@ -76,7 +77,6 @@ type boot struct {
 	keys    *apikey.Service
 	prx     *proxy.Service
 	stats   *account.Stats
-	ccg     *ccgateway.Service
 	acc     *account.Service
 
 	converters   *convert.Registry

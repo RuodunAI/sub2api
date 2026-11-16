@@ -88,7 +88,8 @@ func (s *Store) reportTelemetry(ctx context.Context, n Node, observedLocally tim
 
 // RefreshTelemetry merges only observations matching the accepted PG boot and
 // control snapshot. Missing/expired Redis data means unknown, never a fallback
-// to stale PG state. Legacy boots retain their PG heartbeat until replaced.
+// to stale PG state. A boot that has not reported yet (registered, first
+// heartbeat pending) keeps the liveness its registration wrote.
 func (s *Store) RefreshTelemetry(ctx context.Context, nodes []Node) error {
 	var keys []string
 	var indexes []int

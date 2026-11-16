@@ -46,10 +46,13 @@ type Manifest struct {
 	// Notifications declares the notification channels the plugin delivers.
 	Notifications *Notifications `json:"notifications,omitempty"`
 
-	UserPermissions []UserPermission `json:"userPermissions,omitempty"`
-	Routes          []Route          `json:"routes,omitempty"`
-	UI              *UI              `json:"ui,omitempty"`
-	Resources       *Resources       `json:"resources,omitempty"`
+	// PermissionGroups are the groups userPermissions[].group names; the role
+	// editor shows plugin, group, permission in this order (UI 3.16).
+	PermissionGroups []PermissionGroup `json:"permissionGroups,omitempty"`
+	UserPermissions  []UserPermission  `json:"userPermissions,omitempty"`
+	Routes           []Route           `json:"routes,omitempty"`
+	UI               *UI               `json:"ui,omitempty"`
+	Resources        *Resources        `json:"resources,omitempty"`
 
 	HostPermissions  []HostPermission `json:"hostPermissions,omitempty"`
 	ExternalServices []string         `json:"externalServices,omitempty"` // shown at review; the hosts SendAccountRequest may reach (CONTRACTS §91)
@@ -81,7 +84,6 @@ const (
 	CapGatewayHook       = "gateway.hook.v1"
 	CapGatewayObserve    = "gateway.observe.v1"
 	CapAppJobs           = "app.jobs.v1"
-	CapAccountLifecycle  = "account.lifecycle.v1"
 	CapAppEvents         = "app.events.v1"
 	CapHTTPRoutes        = "http.routes.v1"
 	CapMigrationData     = "migration.data.v1"
@@ -354,22 +356,17 @@ type AccountType struct {
 	// (ValidModelID), at most MaxDefaultModels each; every mapping key must
 	// be in DefaultModels when that list is not empty, or the mapped model
 	// could never be scheduled.
-	DefaultModels []string `json:"defaultModels,omitempty"`
-	// Optional UI presets by runtime-reported subscription type. Business
-	// enforcement still belongs to the plugin's account lifecycle hooks.
-	DefaultModelsBySubscription map[string][]string `json:"defaultModelsBySubscription,omitempty"`
-	DefaultModelMapping         map[string]string   `json:"defaultModelMapping,omitempty"`
+	DefaultModels       []string          `json:"defaultModels,omitempty"`
+	DefaultModelMapping map[string]string `json:"defaultModelMapping,omitempty"`
 	// DefaultLimits prefill the scheduling and limit fields of a new account
 	// of this type in the console (CONTRACTS §68.5), like DefaultModels:
-	// suggestions only. To set them on the account itself the plugin answers
-	// before_create / before_update with an account_patch.
+	// suggestions only.
 	DefaultLimits *AccountDefaultLimits `json:"defaultLimits,omitempty"`
 	// CommonControls declare, per common account setting the core edits and
 	// enforces (CommonControlSpecs), its default and whether an operator may
 	// see and change it (CONTRACTS §87).
 	CommonControls    map[string]AccountCommonControl `json:"commonControls,omitempty"`
 	ExtensionsSchema  json.RawMessage                 `json:"extensionsSchema,omitempty"`
-	Lifecycle         *AccountLifecycle               `json:"lifecycle,omitempty"`
 	ModelAvailability bool                            `json:"modelAvailability,omitempty"`
 	// Quota declares that accounts of this type have subscription quota
 	// windows (5-hour / weekly limits and the like) the host can track
@@ -419,34 +416,6 @@ func (at AccountType) CustomUpstream() bool {
 	return slices.ContainsFunc(fields, func(f string) bool {
 		return !slices.ContainsFunc(at.GuardedSettings, func(g GuardedSetting) bool { return g.Field == f })
 	})
-}
-
-type AccountLifecycle struct {
-	Preparation bool                     `json:"preparation,omitempty"`
-	Required    bool                     `json:"required,omitempty"`
-	Actions     []AccountLifecycleAction `json:"actions,omitempty"`
-	// Deletion offers keeping an account's runtime resources for a while after
-	// the account is deleted, before they are removed.
-	Deletion *AccountDeletion `json:"deletion,omitempty"`
-}
-
-// AccountDeletion is what deleting an account of the type may keep. The
-// operator chooses per deletion; the days come from the manifest only.
-type AccountDeletion struct {
-	// RetentionDays is how long the runtime resources are kept, in days.
-	// It is inclusive of both ends: 1 to MaxRetentionDays. Values outside
-	// that range are rejected by manifest/check (code "invalid" on
-	// accountTypes[].lifecycle.deletion.retentionDays).
-	RetentionDays int `json:"retentionDays"`
-}
-
-// MaxRetentionDays bounds AccountDeletion.RetentionDays.
-const MaxRetentionDays = 30
-
-type AccountLifecycleAction struct {
-	ID    string        `json:"id"`
-	Label LocalizedText `json:"label"`
-	Icon  string        `json:"icon,omitempty"`
 }
 
 // AccountRefresh tells the host when to renew the credentials of an
@@ -838,8 +807,7 @@ type Job struct {
 	// Older manifests may declare more; the core cuts it to the limit.
 	TimeoutSec int `json:"timeoutSec,omitempty"`
 	// Scope is JobScopeCluster (the default: one run per slot in the
-	// cluster) or JobScopeNode (every node runs it on its own instance;
-	// core 0.1.237 and later).
+	// cluster) or JobScopeNode (every node runs it on its own instance).
 	Scope string `json:"scope,omitempty"`
 	// Title names the job on the console's scheduled task page; without it
 	// the console shows the plugin name and the job id.
@@ -873,27 +841,57 @@ type Database struct {
 
 // ---------------------------------------------------------------- permissions, routes, ui
 
+// PermissionGroup is one group of a plugin's permissions; its position in
+// permissionGroups is its order.
+type PermissionGroup struct {
+	Key   string        `json:"key"`
+	Label LocalizedText `json:"label"`
+}
+
 // UserPermission is registered into the RBAC catalog as
 // "plugin.<key>:<Key>".
 type UserPermission struct {
-	Key         string        `json:"key"` // ^[a-z0-9_]+(:[a-z0-9_]+)+$
+	Key         string        `json:"key"` // ^[a-z0-9_]+(:[a-z0-9_]+)+$, not ending in :own
 	Label       LocalizedText `json:"label"`
 	Description LocalizedText `json:"description,omitempty"`
-	Sensitive   bool          `json:"sensitive,omitempty"`
-	// DefaultRoles are the built-in roles (BuiltinRoleKeys) the permission
-	// is granted to when the catalog first creates it: omitted (or null)
-	// means DefaultPermissionRoles, an empty list none. The core skips them
-	// for a rename (an inheritFrom key the catalog has), which only keeps
-	// the old key's holders. The super admin role holds every permission
-	// and is never listed. Not omitempty, so that marshalling keeps [] apart
-	// from omitted.
-	DefaultRoles []string `json:"defaultRoles"`
+	Group       string        `json:"group,omitempty"` // a permissionGroups key
+	// Risk is RiskLow (the default), RiskSensitive or RiskCritical. A
+	// critical permission is super-admin only: no defaults, and only a
+	// holder may grant it (initially only the super admin).
+	Risk string `json:"risk,omitempty"`
+	// Requires are local keys of this manifest the permission is of little
+	// use without; the role editor hints at them, authorization ignores them.
+	Requires []string `json:"requires,omitempty"`
+	// Scope lets a grant reach part of the plugin's data; nil is unscoped.
+	Scope *PermissionScope `json:"scope,omitempty"`
+	// Defaults are the built-in roles (BuiltinRoleKeys) the permission is
+	// suggested for when the catalog first creates it: true for an unscoped
+	// permission, a list of scopes ("*", "own" or a values key) for a scoped
+	// one. A role left out gets nothing; the super admin is never listed.
+	Defaults map[string]RoleDefault `json:"defaults,omitempty"`
 	// InheritFrom are local keys of this plugin's permissions whose holders
 	// get this permission when the catalog first creates it: a renamed or
 	// split permission keeps its holders. Only grants that exist before the
 	// sync count, so a chain through another permission created in the same
 	// sync is not followed.
 	InheritFrom []string `json:"inheritFrom,omitempty"`
+}
+
+// PermissionScope is where the scopes of a permission come from: the
+// plugin's own resource (Resource, with candidate ids from the Options route
+// and/or Own), or a fixed list of Values. Never a core resource: a plugin
+// scopes accounts through routes[].accounts.
+type PermissionScope struct {
+	Resource string       `json:"resource,omitempty"` // ScopeResourcePattern, not reserved
+	Options  string       `json:"options,omitempty"`  // "/path" of a declared GET admin route
+	Own      bool         `json:"own,omitempty"`      // "own" (created by the holder) may be granted
+	Values   []ScopeValue `json:"values,omitempty"`
+}
+
+// ScopeValue is one value of a values scope.
+type ScopeValue struct {
+	Key   string        `json:"key"` // ScopeValuePattern
+	Label LocalizedText `json:"label"`
 }
 
 // Route is a plugin-owned console endpoint under /api/v1/p/<key>.
@@ -906,6 +904,12 @@ type Route struct {
 	// act on the accounts the request names (admin/user routes only; see
 	// EffectiveRouteAccounts for the routes account actions post to).
 	Accounts *RouteAccounts `json:"accounts,omitempty"`
+	// ScopeFrom names where the request carries the id the core checks
+	// against the caller's scope of Permission before forwarding:
+	// "path:<param>", "query:<name>" or "body:<field>" (the accounts.from
+	// DSL, ParseAccountsFrom). Admin/user routes whose permission declares a
+	// scope only (UI 3.16).
+	ScopeFrom string `json:"scopeFrom,omitempty"`
 }
 
 type UI struct {
@@ -918,7 +922,7 @@ type UI struct {
 	Settings *Form           `json:"settings,omitempty"`
 	// AccountActions are entries the console adds to every account row's
 	// action menu (and, with Bulk, to the bulk bar); clicking one posts to
-	// Route (UI 3.6, core 0.1.256).
+	// Route (UI 3.6).
 	AccountActions []AccountAction `json:"accountActions,omitempty"`
 }
 
@@ -1016,8 +1020,7 @@ type Page struct {
 	// Nav lists the sections of a native page so the console can draw them
 	// in its left sidebar, the way it draws the core system settings
 	// (UI 3.14). The page shows the section named by ?tab=<item key>, and
-	// the first item the caller may see is the default. An older console
-	// ignores it, so the page must keep an in-page way to switch sections.
+	// the first item the caller may see is the default.
 	Nav *PageNav `json:"nav,omitempty"`
 }
 
@@ -1134,6 +1137,9 @@ const (
 	RiskMedium   = "medium"
 	RiskHigh     = "high"
 	RiskCritical = "critical"
+	// RiskSensitive is a userPermissions risk only (UserPermissionRisks);
+	// host permissions keep the four levels above.
+	RiskSensitive = "sensitive"
 )
 
 var HostPermissionRisk = map[string]string{

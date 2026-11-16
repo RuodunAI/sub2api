@@ -12,20 +12,24 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Step-up verification (CONTRACTS §80.2, docs/DESIGN-2026-11-12-AUTHZ-HARDENING.md
 // 期 4): the one implementation of core.StepUpVerifier. A caller verifies
 // once (VerifyStepUp) and gets a proof: five minutes, one use, bound to the
 // user, the session or access key, the scope and the operation. Proofs are
-// auth_flows rows like the other short steps (§79.1): shared by the nodes,
-// taken once by DELETE ... RETURNING, and they need no Redis.
+// flows like the other short steps (§79.1, flow.go): shared by the nodes and
+// taken once. A session that verifies gets a new token of the same session
+// (§100.4), so the proof's binding to the session holds.
 
 // The verification methods.
 const (
@@ -44,7 +48,6 @@ const (
 const (
 	flowStepUpProof   = "step_up_proof"
 	flowStepUpPasskey = "step_up_passkey"
-	flowStepUpSession = "step_up_session"
 )
 
 // stepUpScopes are the scopes a proof can be issued for; true marks the
@@ -70,7 +73,6 @@ var stepUpScopes = map[string]bool{
 	core.StepUpPluginGrant:        false,
 	core.StepUpPublisherManage:    false,
 	core.StepUpSystemUpdate:       false,
-	core.StepUpHostInstall:        false,
 	core.StepUpAccessKeyWrite:     false,
 	core.StepUpSuperAdminIdentity: false,
 }
@@ -114,19 +116,24 @@ func unknownScope() error {
 // super admin removing its last factor (lastSuperFactor), ask for the
 // password with it.
 func (s *Service) StepUpMethods(ctx context.Context, userID int64, scope, operation string) (*VerifyMethods, error) {
+	return s.stepUpMethods(ctx, s.db.Gorm, userID, scope, operation)
+}
+
+// stepUpMethods is StepUpMethods read through q: the pool, or the
+// transaction of a caller that holds one.
+func (s *Service) stepUpMethods(ctx context.Context, q *gorm.DB, userID int64, scope, operation string) (*VerifyMethods, error) {
 	passwordToo, ok := stepUpScopes[scope]
 	if !ok {
 		return nil, unknownScope()
 	}
 	var totp bool
 	var passkeys int
-	err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1),
-		(SELECT count(*) FROM user_passkeys WHERE user_id = $1)`, userID).Scan(&totp, &passkeys)
+	err := userFactors(store.G(ctx, q), userID).Row().Scan(&totp, &passkeys)
 	if err != nil {
 		return nil, err
 	}
 	if !passwordToo {
-		if passwordToo, err = s.lastSuperFactor(ctx, userID, scope, operation, totp, passkeys); err != nil {
+		if passwordToo, err = s.lastSuperFactor(ctx, q, userID, scope, operation, totp, passkeys); err != nil {
 			return nil, err
 		}
 	}
@@ -149,13 +156,19 @@ func (s *Service) StepUpMethods(ctx context.Context, userID int64, scope, operat
 	return &VerifyMethods{Scope: scope, PasswordRequired: passwordToo, Methods: []VerifyMethod{pk, code, pw}}, nil
 }
 
+// userFactors reads whether userID has two-factor and how many passkeys.
+func userFactors(db *gorm.DB, userID int64) *gorm.DB {
+	passkeys := db.Model(&model.UserPasskey{}).Select("count(*)").Where("user_id = ?", userID)
+	return store.OneRow(db).Select("EXISTS (?), (?)", totpOf(db, userID).Select("1"), passkeys)
+}
+
 // lastSuperFactor reports the super admin about to remove the last of its
 // strong factors (passkeys, two-factor): its own security reset, disabling
 // two-factor without a passkey, deleting its only passkey without
 // two-factor. Like the transfer, that takes the password as well as a
 // factor: one factor alone must not be enough to leave the account to the
 // password. Other users are not affected.
-func (s *Service) lastSuperFactor(ctx context.Context, userID int64, scope, operation string, totp bool, passkeys int) (bool, error) {
+func (s *Service) lastSuperFactor(ctx context.Context, q *gorm.DB, userID int64, scope, operation string, totp bool, passkeys int) (bool, error) {
 	var last bool
 	switch scope {
 	case core.StepUpUserSecurityReset:
@@ -168,7 +181,7 @@ func (s *Service) lastSuperFactor(ctx context.Context, userID int64, scope, oper
 	if !last {
 		return false, nil
 	}
-	return s.authz.IsSuperuser(ctx, s.db.Pool, userID)
+	return s.authz.IsSuperuser(ctx, q, userID)
 }
 
 // resetTarget is the user a DELETE /users/:id/security operation acts on,
@@ -214,13 +227,16 @@ type VerifyInput struct {
 	Credential json.RawMessage `json:"credential"`
 }
 
-// StepUpProof is the response of POST /me/verify.
+// StepUpProof is the response of POST /me/verify. AccessToken is the new
+// token of a caller signed in with a session: the console uses it from
+// then on (the old one works for a few seconds more).
 type StepUpProof struct {
-	Proof     string    `json:"proof"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Method    string    `json:"method"`
-	Scope     string    `json:"scope"`
-	Context   string    `json:"context"`
+	Proof       string    `json:"proof"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Method      string    `json:"method"`
+	Scope       string    `json:"scope"`
+	Context     string    `json:"context"`
+	AccessToken string    `json:"access_token,omitempty"`
 }
 
 var errMethodUnavailable = core.InvalidFields(core.FieldError{Field: "method", Code: "unavailable", Message: "this verification method is not available"})
@@ -256,18 +272,67 @@ func (s *Service) VerifyStepUp(ctx context.Context, r *http.Request, userID int6
 	}
 	payload := proofPayload{Scope: in.Scope, Operation: in.Context, Subject: stepUpSubject(ctx), Method: in.Method,
 		Password: methods.PasswordRequired || in.Method == methodPassword}
-	token, err := s.createFlow(ctx, flowStepUpProof, userID, payload)
-	if err != nil {
-		return nil, err
-	}
 	detail := map[string]any{"method": in.Method, "scope": in.Scope, "context": in.Context, "via": "session"}
 	if k, ok := core.AccessKey(ctx); ok {
 		detail["via"], detail["access_key_id"] = "access_key", k.KeyID
 	}
-	if err := audit.Audit(ctx, s.db.Pool, userID, "user.security_verify", "user", strconv.FormatInt(userID, 10), detail); err != nil {
+	// The proof, its audit and the new token of a session go together: the session is rotated last, and when it fails neither the
+	// audit nor the proof stays. The price is the commit failing after the
+	// rotation: the new token is lost and the old one ends with its grace,
+	// signing the console out. Only the commit itself fails there, and
+	// signing in again is the safe outcome of a verification that left no
+	// record.
+	var token, access string
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
+		var err error
+		if token, err = s.createFlow(ctx, flowStepUpProof, userID, payload); err != nil {
+			return err
+		}
+		if err := audit.Audit(ctx, tx, userID, "user.security_verify", "user", strconv.FormatInt(userID, 10), detail); err != nil {
+			return err
+		}
+		access, err = s.rotateSession(ctx, userID, core.Session(ctx), bearerToken(r))
+		return err
+	})
+	if err != nil {
+		if token != "" { // a proof in Valkey does not roll back
+			_, _ = s.flows.TakeFlow(context.WithoutCancel(ctx), flowStepUpProof, token)
+		}
 		return nil, err
 	}
-	return &StepUpProof{Proof: token, ExpiresAt: time.Now().Add(flowTTL), Method: in.Method, Scope: in.Scope, Context: in.Context}, nil
+	return &StepUpProof{Proof: token, ExpiresAt: time.Now().Add(flowTTL), Method: in.Method, Scope: in.Scope, Context: in.Context,
+		AccessToken: access}, nil
+}
+
+// rotateSession gives the caller's session id a new token in place of
+// presented, the one the request carried, so a token taken before is not
+// the one that carries on (session fixation, a copied token); the session
+// id, which proofs and step-up windows are bound to, stays. "" for an
+// access key (no id), which never reaches Valkey here, for a session that
+// ended meanwhile, and for a presented token another rotation left behind
+// since the request was sent (another tab verified first): the token that
+// rotation issued is the caller's to use, and rotating it would end it.
+func (s *Service) rotateSession(ctx context.Context, userID int64, id, presented string) (string, error) {
+	if id == "" {
+		return "", nil
+	}
+	if s.sessions == nil {
+		return "", tokenstore.ErrUnavailable
+	}
+	token, err := s.sessions.Rotate(ctx, userID, id, presented)
+	if errors.Is(err, tokenstore.ErrNotFound) || errors.Is(err, tokenstore.ErrSuperseded) {
+		return "", nil
+	}
+	return token, err
+}
+
+// bearerToken is the token r authenticated with; "" without one.
+func bearerToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return token
 }
 
 // confirmCode checks a TOTP or backup code of userID; a wrong one counts
@@ -276,8 +341,8 @@ func (s *Service) confirmCode(ctx context.Context, userID int64, code string) er
 	if strings.TrimSpace(code) == "" {
 		return errSecondFactorRequired
 	}
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if err := lockRefreshUser(ctx, tx, userID); err != nil {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := lockUserRow(ctx, tx, userID); err != nil {
 			return err
 		}
 		return s.checkSecondFactor(ctx, tx, userID, code)
@@ -339,7 +404,7 @@ func (s *Service) finishStepUpPasskey(ctx context.Context, r *http.Request, user
 		return rateLimitedError(ctx, wait)
 	}
 	var session webauthn.SessionData
-	if _, err := s.takeFlow(ctx, s.db.Pool, flowToken, flowStepUpPasskey, userID, &session); err != nil {
+	if _, err := s.takeFlow(ctx, flowToken, flowStepUpPasskey, userID, &session); err != nil {
 		return err
 	}
 	wa, err := s.webAuthnFor(r, session.RelyingPartyID)
@@ -363,8 +428,7 @@ func (s *Service) finishStepUpPasskey(ctx context.Context, r *http.Request, user
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Pool.Exec(ctx, `UPDATE user_passkeys SET credential = $3, last_used_at = now() WHERE user_id = $1 AND credential_id = $2`, userID, used.ID, raw)
-	return err
+	return usePasskey(userPasskeyByCredential(store.G(ctx, s.db.Gorm), userID, used.ID), raw).Error
 }
 
 // ConsumeStepUp implements core.StepUpVerifier.
@@ -379,7 +443,7 @@ func (s *Service) ConsumeStepUp(ctx context.Context, scope string) error {
 	}
 	if proof != "" {
 		var p proofPayload
-		_, err := s.takeFlow(ctx, s.db.Pool, proof, flowStepUpProof, uid, &p)
+		_, err := s.takeFlow(ctx, proof, flowStepUpProof, uid, &p)
 		if err != nil && !errors.Is(err, errFlowExpired) {
 			return err
 		}
@@ -394,52 +458,7 @@ func (s *Service) ConsumeStepUp(ctx context.Context, scope string) error {
 			}
 		}
 	}
-	return s.verificationRequired(ctx, uid, scope, operation)
-}
-
-// stepUpSessionToken names the auth_flows row of a step-up session: one per
-// scope, session, user and login session or access key, so the request of
-// anyone else names a row that does not exist.
-func stepUpSessionToken(ctx context.Context, userID int64, scope, session string) string {
-	return strings.Join([]string{flowStepUpSession, scope, session, strconv.FormatInt(userID, 10), stepUpSubject(ctx)}, "\n")
-}
-
-// OpenStepUpSession implements core.StepUpSessions: the request must have
-// spent its proof on scope. Opening it again, with a new proof, starts it
-// afresh.
-func (s *Service) OpenStepUpSession(ctx context.Context, scope, session string) error {
-	uid, _ := core.UserID(ctx)
-	if uid == 0 || session == "" || core.StepUpSpent(ctx) != scope {
-		return core.ErrVerificationRequired.WithDetails(map[string]any{"scope": scope})
-	}
-	payload, err := json.Marshal(map[string]string{"scope": scope, "session": session, "subject": stepUpSubject(ctx)})
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Pool.Exec(ctx, `INSERT INTO auth_flows (token_hash, purpose, user_id, payload, expires_at) VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (token_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at, created_at = now()`,
-		hashToken(stepUpSessionToken(ctx, uid, scope, session)), flowStepUpSession, uid, payload, time.Now().Add(core.StepUpSessionIdle))
-	return err
-}
-
-// ContinueStepUpSession implements core.StepUpSessions.
-func (s *Service) ContinueStepUpSession(ctx context.Context, scope, session string) error {
-	uid, _ := core.UserID(ctx)
-	continued := false
-	if uid != 0 && session != "" {
-		tag, err := s.db.Pool.Exec(ctx, `UPDATE auth_flows SET expires_at = LEAST($3, created_at + make_interval(secs => $4))
-			WHERE token_hash = $1 AND purpose = $2 AND expires_at > now() AND created_at > now() - make_interval(secs => $4)`,
-			hashToken(stepUpSessionToken(ctx, uid, scope, session)), flowStepUpSession, time.Now().Add(core.StepUpSessionIdle), core.StepUpSessionMax.Seconds())
-		if err != nil {
-			return err
-		}
-		continued = tag.RowsAffected() == 1
-	}
-	if !continued {
-		return core.ErrVerificationExpired.WithMessage(t(ctx, "this verified operation has expired or belongs to another session; start it again",
-			"这次操作的二次验证已过期或属于其他会话，请重新开始")).WithDetails(map[string]any{"scope": scope})
-	}
-	return nil
+	return s.verificationRequired(ctx, s.db.Gorm, uid, scope, operation)
 }
 
 // proofStillEnough applies the policy again when the proof is spent: the
@@ -471,33 +490,42 @@ func passwordChecked(p proofPayload) bool {
 // once, each leaving the other's factor, cannot both pass the check made
 // when their proofs were spent. A request whose proof was issued with the
 // password passes; so do calls outside a console request.
-func (s *Service) keepLastFactor(ctx context.Context, tx pgx.Tx, userID int64, scope string) error {
+func (s *Service) keepLastFactor(ctx context.Context, tx *gorm.DB, userID int64, scope string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	_, operation, ok := core.StepUpRequest(ctx)
 	if !ok || core.StepUpPassword(ctx) {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, userID); err != nil {
+	g := store.G(ctx, tx)
+	if err := lockUserIfAny(g, userID).Error; err != nil {
 		return err
 	}
 	// A statement of its own after the lock: under READ COMMITTED (store.DB.Tx)
 	// it sees a removal the lock waited for.
 	var totp bool
 	var passkeys int
-	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1),
-		(SELECT count(*) FROM user_passkeys WHERE user_id = $1)`, userID).Scan(&totp, &passkeys); err != nil {
+	if err := userFactors(g, userID).Row().Scan(&totp, &passkeys); err != nil {
 		return err
 	}
-	last, err := s.lastSuperFactor(ctx, userID, scope, operation, totp, passkeys)
+	last, err := s.lastSuperFactor(ctx, tx, userID, scope, operation, totp, passkeys)
 	if err != nil || !last {
 		return err
 	}
-	return s.verificationRequired(ctx, userID, scope, operation)
+	return s.verificationRequired(ctx, tx, userID, scope, operation)
+}
+
+// lockUserIfAny locks the row of userID: unlike lockUser, a user without a
+// row is no error.
+func lockUserIfAny(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.User{}).Select("1").Where("id = ?", userID).Clauses(store.ForUpdate()).Find(&[]int{})
 }
 
 // verificationRequired is the 403 that tells the console what to verify:
 // the scope, the operation to bind the proof to and the methods.
-func (s *Service) verificationRequired(ctx context.Context, userID int64, scope, operation string) error {
-	methods, err := s.StepUpMethods(ctx, userID, scope, operation)
+func (s *Service) verificationRequired(ctx context.Context, q *gorm.DB, userID int64, scope, operation string) error {
+	methods, err := s.stepUpMethods(ctx, q, userID, scope, operation)
 	if err != nil {
 		return err
 	}
@@ -513,19 +541,26 @@ func (s *Service) RenamePasskey(ctx context.Context, userID, id int64, name stri
 		return nil, err
 	}
 	p := &Passkey{ID: id}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `UPDATE user_passkeys SET name = $3 WHERE id = $1 AND user_id = $2 RETURNING name, rp_id, created_at, last_used_at`,
-			id, userID, name).Scan(&p.Name, &p.RPID, &p.CreatedAt, &p.LastUsedAt)
-		if store.IsNoRows(err) {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
+		var row model.UserPasskey
+		res := renamePasskey(store.G(ctx, tx), id, userID, name, &row)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
 			return core.ErrNotFound
 		}
-		if err != nil {
-			return err
-		}
+		p.Name, p.RPID, p.CreatedAt, p.LastUsedAt = row.Name, row.RpID, row.CreatedAt, row.LastUsedAt
 		return audit.Audit(ctx, tx, userID, "user.passkey.rename", "user", strconv.FormatInt(userID, 10), map[string]any{"passkey_id": id, "name": name})
 	})
 	if err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+// renamePasskey renames the passkey id of userID and reads it into dst.
+func renamePasskey(db *gorm.DB, id, userID int64, name string, dst *model.UserPasskey) *gorm.DB {
+	return db.Model(dst).Clauses(clause.Returning{Columns: []clause.Column{{Name: "name"}, {Name: "rp_id"}, {Name: "created_at"}, {Name: "last_used_at"}}}).
+		Where("id = ? AND user_id = ?", id, userID).Update("name", name)
 }

@@ -139,12 +139,12 @@ func (s *Service) handleLogin2FA(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	pair, err := s.LoginSecondFactor(sessionContext(c, loginMethodTwoFactor), in.FlowToken, in.Code, c.ClientIP())
+	result, err := s.LoginSecondFactor(sessionContext(c, loginMethodTwoFactor), in.FlowToken, in.Code, c.ClientIP())
 	if err != nil {
 		failLogin(c, err)
 		return
 	}
-	httpapi.OK(c, pair)
+	httpapi.OK(c, result)
 }
 
 func (s *Service) handlePasskeyLoginBegin(c *gin.Context) {
@@ -164,12 +164,12 @@ func (s *Service) handlePasskeyLoginFinish(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	pair, err := s.FinishPasskeyLogin(sessionContext(c, loginMethodPasskey), c.Request, in.FlowToken, in.Credential, c.ClientIP())
+	result, err := s.FinishPasskeyLogin(sessionContext(c, loginMethodPasskey), c.Request, in.FlowToken, in.Credential, c.ClientIP())
 	if err != nil {
 		failLogin(c, err)
 		return
 	}
-	httpapi.OK(c, pair)
+	httpapi.OK(c, result)
 }
 
 func (s *Service) handleTwoFactor(c *gin.Context) {
@@ -271,7 +271,7 @@ func (s *Service) handlePasskeyDelete(c *gin.Context) {
 }
 
 func (s *Service) handleSessions(c *gin.Context) {
-	out, err := s.Sessions(c.Request.Context(), actor(c), s.currentFamily(c))
+	out, err := s.Sessions(c.Request.Context(), actor(c), s.currentSession(c))
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -288,17 +288,19 @@ func (s *Service) handleSessionRevoke(c *gin.Context) {
 }
 
 func (s *Service) handleSessionsRevokeOthers(c *gin.Context) {
-	current := s.currentFamily(c)
-	if current == "" {
-		// A token from before sessions had ids cannot say which one to keep.
-		httpapi.Fail(c, core.ErrConflict.WithMessage("sign in again before ending other sessions"))
-		return
-	}
-	if err := s.RevokeOtherSessions(audit.Context(c), actor(c), current); err != nil {
+	token, err := s.RevokeOtherSessions(audit.Context(c), actor(c), s.currentSession(c), bearerToken(c.Request))
+	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	httpapi.NoContent(c)
+	httpapi.OK(c, sessionRenewed{AccessToken: token})
+}
+
+// sessionRenewed answers a change that gives the caller's session a new
+// token (POST /me/sessions/revoke-others): the console uses it from then
+// on, the old one works for a few seconds more. Empty when there is none.
+type sessionRenewed struct {
+	AccessToken string `json:"access_token,omitempty"`
 }
 
 func (s *Service) handleResetSecurity(c *gin.Context) {

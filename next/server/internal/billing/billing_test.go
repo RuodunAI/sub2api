@@ -36,7 +36,7 @@ func TestResolveExactModel(t *testing.T) {
 		`INSERT INTO model_prices (model, mode, expression, expr_hash, source) VALUES ('claude-*', 'per_token', 'tier("base", p)', 'h4', 'manual')`,
 		`INSERT INTO model_prices (model, mode, expression, expr_hash, source) VALUES ('m1', 'per_token', 'tier("base", p)', 'h4', 'plugin_default')`,
 	} {
-		if _, err := e.db.Pool.Exec(ctx, sql); err == nil {
+		if _, err := e.db.SQL.ExecContext(ctx, sql); err == nil {
 			t.Fatalf("accepted: %s", sql)
 		}
 	}
@@ -115,12 +115,12 @@ func TestLedger(t *testing.T) {
 		t.Fatalf("duplicate: %+v %v", dup, err)
 	}
 	var bal decimal.Decimal
-	_ = e.db.Pool.QueryRow(ctx, `SELECT balance FROM user_balances WHERE user_id = $1`, uid).Scan(&bal)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT balance FROM user_balances WHERE user_id = $1`, uid).Scan(&bal)
 	if !bal.Equal(decimal.RequireFromString("19.9842")) {
 		t.Fatalf("balance %s", bal)
 	}
 	var events int
-	_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM events WHERE type = 'balance.changed'`).Scan(&events)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE type = 'balance.changed'`).Scan(&events)
 	if events != 2 {
 		t.Fatalf("balance.changed events = %d", events)
 	}

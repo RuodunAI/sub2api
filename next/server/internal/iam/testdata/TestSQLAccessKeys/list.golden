@@ -1,0 +1,4 @@
+-- sql
+SELECT id, name, token_hint, permissions, expires_at, last_used_at, last_used_ip, created_at FROM "user_access_keys" WHERE user_id = $1 ORDER BY created_at DESC
+-- vars
+$1 int64 7

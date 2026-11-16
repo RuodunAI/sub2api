@@ -25,8 +25,8 @@ import (
 // as an access key of that user limited to permissions a and b.
 type fakeTokens struct{}
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(tok, 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "")
 }
 
 func (fakeTokens) VerifyAccessKey(_ context.Context, raw, _ string) (core.AccessKeyIdentity, error) {
@@ -134,7 +134,7 @@ func newFixture(t *testing.T) *fixture {
 	r := httpapi.NewRouter(engine, fakeTokens{}, authz)
 	New(f.db, authz).RegisterRoutes(r)
 	// The self-service lists that mine=true is defined by.
-	group.New(f.db, nil, nil, nil).RegisterRoutes(r)
+	group.New(f.db, nil, nil, nil, nil).RegisterRoutes(r)
 	billing.New(f.db, nil, nil, nil, nil).RegisterRoutes(r)
 	f.h = engine
 	return f
@@ -143,7 +143,7 @@ func newFixture(t *testing.T) *fixture {
 // insert runs a statement that returns one id.
 func (f *fixture) insert(sql string, args ...any) (id int64) {
 	f.t.Helper()
-	require.NoError(f.t, f.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id))
+	require.NoError(f.t, f.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id))
 	return id
 }
 

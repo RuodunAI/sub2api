@@ -6,13 +6,14 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pkgsig"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
@@ -61,46 +62,29 @@ type RevokeResult struct {
 
 // ListPublishers returns all publishers with keys.
 func (s *Service) ListPublishers(ctx context.Context) ([]Publisher, error) {
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT id, name, trust_level, status, created_at, revoked_at FROM publishers ORDER BY name`)
-	if err != nil {
+	g := store.G(ctx, s.d.DB.Gorm)
+	var pubs []model.Publisher
+	if err := g.Order("name").Find(&pubs).Error; err != nil {
 		return nil, err
 	}
-	var out []Publisher
-	idx := map[int64]int{}
-	for rows.Next() {
-		var p Publisher
-		if err := rows.Scan(&p.ID, &p.Name, &p.TrustLevel, &p.Status, &p.CreatedAt, &p.RevokedAt); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		p.Keys = []PublisherKey{}
-		idx[p.ID] = len(out)
-		out = append(out, p)
+	out := make([]Publisher, len(pubs))
+	idx := make(map[int64]int, len(pubs))
+	for i, p := range pubs {
+		out[i] = Publisher{ID: p.ID, Name: p.Name, TrustLevel: p.TrustLevel, Status: core.ValueOr(p.Status, ""),
+			CreatedAt: p.CreatedAt, RevokedAt: p.RevokedAt, Keys: []PublisherKey{}}
+		idx[p.ID] = i
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	var keys []model.PublisherKey
+	if err := g.Order("created_at").Find(&keys).Error; err != nil {
 		return nil, err
 	}
-	krows, err := s.d.DB.Pool.Query(ctx, `SELECT publisher_id, key_id, public_key, status, not_before, not_after, created_at
-		FROM publisher_keys ORDER BY created_at`)
-	if err != nil {
-		return nil, err
-	}
-	defer krows.Close()
-	for krows.Next() {
-		var pid int64
-		var k PublisherKey
-		if err := krows.Scan(&pid, &k.KeyID, &k.PublicKey, &k.Status, &k.NotBefore, &k.NotAfter, &k.CreatedAt); err != nil {
-			return nil, err
-		}
-		if i, ok := idx[pid]; ok {
-			out[i].Keys = append(out[i].Keys, k)
+	for _, k := range keys {
+		if i, ok := idx[k.PublisherID]; ok {
+			out[i].Keys = append(out[i].Keys, PublisherKey{KeyID: k.KeyID, PublicKey: k.PublicKey, Status: core.ValueOr(k.Status, ""),
+				NotBefore: k.NotBefore, NotAfter: k.NotAfter, CreatedAt: k.CreatedAt})
 		}
 	}
-	if out == nil {
-		out = []Publisher{}
-	}
-	return out, krows.Err()
+	return out, nil
 }
 
 func validateKey(i int, k KeyInput) []core.FieldError {
@@ -139,10 +123,12 @@ func (s *Service) CreatePublisher(ctx context.Context, in CreatePublisherInput, 
 		return nil, core.InvalidFields(errs...)
 	}
 	var id int64
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `INSERT INTO publishers (name, trust_level) VALUES ($1, $2) RETURNING id`, in.Name, in.TrustLevel).Scan(&id); err != nil {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+		pub := model.Publisher{Name: in.Name, TrustLevel: in.TrustLevel}
+		if err := store.G(ctx, tx).Create(&pub).Error; err != nil {
 			return err
 		}
+		id = pub.ID
 		for _, k := range in.Keys {
 			if err := insertKey(ctx, tx, id, k); err != nil {
 				return err
@@ -159,10 +145,14 @@ func (s *Service) CreatePublisher(ctx context.Context, in CreatePublisherInput, 
 	return s.getPublisher(ctx, id)
 }
 
-func insertKey(ctx context.Context, tx pgx.Tx, pubID int64, k KeyInput) error {
-	_, err := tx.Exec(ctx, `INSERT INTO publisher_keys (key_id, publisher_id, public_key, not_before, not_after)
-		VALUES ($1, $2, $3, $4, $5)`, k.KeyID, pubID, k.PublicKey, k.NotBefore, k.NotAfter)
-	return err
+func insertKey(ctx context.Context, tx *gorm.DB, pubID int64, k KeyInput) error {
+	return store.G(ctx, tx).Create(newPublisherKey(pubID, k)).Error
+}
+
+// newPublisherKey is the publisher_keys row of k; status takes the
+// column's default (active).
+func newPublisherKey(pubID int64, k KeyInput) *model.PublisherKey {
+	return &model.PublisherKey{KeyID: k.KeyID, PublisherID: pubID, PublicKey: k.PublicKey, NotBefore: k.NotBefore, NotAfter: k.NotAfter}
 }
 
 // AddPublisherKey adds a signing key (key rotation).
@@ -170,9 +160,9 @@ func (s *Service) AddPublisherKey(ctx context.Context, pubID int64, k KeyInput, 
 	if errs := validateKey(-1, k); len(errs) > 0 {
 		return nil, core.InvalidFields(errs...)
 	}
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var status string
-		err := tx.QueryRow(ctx, `SELECT status FROM publishers WHERE id = $1 FOR UPDATE`, pubID).Scan(&status)
+		err := store.G(ctx, tx).Model(&model.Publisher{}).Select("status").Where("id = ?", pubID).Clauses(store.ForUpdate()).Take(&status).Error
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("publisher not found")
 		}
@@ -214,28 +204,29 @@ func (s *Service) getPublisher(ctx context.Context, id int64) (*Publisher, error
 func (s *Service) RevokePublisher(ctx context.Context, pubID int64, reason string, actorID int64) (*RevokeResult, error) {
 	res := &RevokeResult{DisabledPlugins: []string{}}
 	var toDisable []string
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE publishers SET status = 'revoked', revoked_at = now() WHERE id = $1`, pubID)
-		if err != nil {
-			return err
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
+		r := g.Model(&model.Publisher{}).Where("id = ?", pubID).
+			Updates(map[string]any{"status": publisherRevoked, "revoked_at": gorm.Expr("now()")})
+		if r.Error != nil {
+			return r.Error
 		}
-		if tag.RowsAffected() == 0 {
+		if r.RowsAffected == 0 {
 			return core.ErrNotFound.WithMessage("publisher not found")
 		}
-		if _, err := tx.Exec(ctx, `UPDATE publisher_keys SET status = 'revoked' WHERE publisher_id = $1`, pubID); err != nil {
+		if err := g.Model(&model.PublisherKey{}).Where("publisher_id = ?", pubID).Update("status", publisherRevoked).Error; err != nil {
 			return err
 		}
-		tag, err = tx.Exec(ctx, `UPDATE plugin_versions SET signature_status = 'revoked' WHERE publisher_id = $1`, pubID)
-		if err != nil {
+		r = g.Model(&model.PluginVersion{}).Where("publisher_id = ?", pubID).Update("signature_status", pkg.SigRevoked)
+		if r.Error != nil {
+			return r.Error
+		}
+		res.RevokedVersions = r.RowsAffected
+		if err := g.Model(&model.Plugin{}).Where("publisher_id = ? AND status IN ('enabled', 'enabling', 'upgrading')", pubID).
+			Pluck("key", &toDisable).Error; err != nil {
 			return err
 		}
-		res.RevokedVersions = tag.RowsAffected()
-		if toDisable, err = collectKeys(ctx, tx, `SELECT key FROM plugins WHERE publisher_id = $1
-			AND status IN ('enabled', 'enabling', 'upgrading')`, pubID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET status_reason = $2, updated_at = now() WHERE publisher_id = $1`,
-			pubID, "publisher revoked: "+reason); err != nil {
+		if err := setPublisherPluginsReason(g, pubID, "publisher revoked: "+reason).Error; err != nil {
 			return err
 		}
 		return audit.Audit(ctx, tx, actorID, "publisher.revoke", "publisher", strconv.FormatInt(pubID, 10), map[string]any{"reason": reason, "revoked_versions": res.RevokedVersions})
@@ -252,24 +243,21 @@ func (s *Service) RevokePublisher(ctx context.Context, pubID int64, reason strin
 func (s *Service) RevokeKey(ctx context.Context, keyID, reason string, actorID int64) (*RevokeResult, error) {
 	res := &RevokeResult{DisabledPlugins: []string{}}
 	var toDisable []string
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE publisher_keys SET status = 'revoked' WHERE key_id = $1`, keyID)
-		if err != nil {
-			return err
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
+		r := g.Model(&model.PublisherKey{}).Where("key_id = ?", keyID).Update("status", publisherRevoked)
+		if r.Error != nil {
+			return r.Error
 		}
-		if tag.RowsAffected() == 0 {
+		if r.RowsAffected == 0 {
 			return core.ErrNotFound.WithMessage("key not found")
 		}
-		tag, err = tx.Exec(ctx, `UPDATE plugin_versions SET signature_status = 'revoked' WHERE key_id = $1`, keyID)
-		if err != nil {
-			return err
+		r = g.Model(&model.PluginVersion{}).Where("key_id = ?", keyID).Update("signature_status", pkg.SigRevoked)
+		if r.Error != nil {
+			return r.Error
 		}
-		res.RevokedVersions = tag.RowsAffected()
-		if toDisable, err = collectKeys(ctx, tx, `
-			SELECT p.key FROM plugins p
-			WHERE p.status IN ('enabled', 'enabling', 'upgrading')
-			  AND EXISTS (SELECT 1 FROM plugin_versions v WHERE v.plugin_key = p.key AND v.key_id = $1
-			              AND (v.version = p.active_version OR v.version = p.desired_version))`, keyID); err != nil {
+		res.RevokedVersions = r.RowsAffected
+		if err := runningSignedBy(g, keyID).Scan(&toDisable).Error; err != nil {
 			return err
 		}
 		return audit.Audit(ctx, tx, actorID, "publisher_key.revoke", "publisher_key", keyID, map[string]any{"reason": reason, "revoked_versions": res.RevokedVersions})
@@ -281,19 +269,21 @@ func (s *Service) RevokeKey(ctx context.Context, keyID, reason string, actorID i
 	return res, nil
 }
 
-func collectKeys(ctx context.Context, q store.Querier, sql string, args ...any) ([]string, error) {
-	rows, err := q.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var k string
-		if err := rows.Scan(&k); err != nil {
-			return nil, err
-		}
-		out = append(out, k)
-	}
-	return out, rows.Err()
+// publisherRevoked is the status of a revoked publisher or key.
+const publisherRevoked = "revoked"
+
+// setPublisherPluginsReason sets the status reason of every plugin of
+// publisher pubID.
+func setPublisherPluginsReason(db *gorm.DB, pubID int64, reason string) *gorm.DB {
+	return db.Model(&model.Plugin{}).Where("publisher_id = ?", pubID).
+		Updates(map[string]any{"status_reason": reason, "updated_at": gorm.Expr("now()")})
+}
+
+// runningSignedBy selects the keys of the running plugins whose active or
+// desired version key keyID signed.
+func runningSignedBy(db *gorm.DB, keyID string) *gorm.DB {
+	signed := db.Table("plugin_versions AS v").Select("1").
+		Where("v.plugin_key = p.key AND v.key_id = ? AND (v.version = p.active_version OR v.version = p.desired_version)", keyID)
+	return db.Table("plugins AS p").Select("p.key").
+		Where("p.status IN ('enabled', 'enabling', 'upgrading') AND EXISTS (?)", signed)
 }

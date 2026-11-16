@@ -17,7 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
-func sdkOpts() []pluginsdk.Option { return []pluginsdk.Option{pluginsdk.WithInfo("guard", "0.2.9")} }
+func sdkOpts() []pluginsdk.Option { return []pluginsdk.Option{pluginsdk.WithInfo("guard", "0.2.10")} }
 
 func hookReq(prompt string) *pluginv1.GatewayRequestHookRequest {
 	return &pluginv1.GatewayRequestHookRequest{
@@ -209,16 +209,18 @@ func TestRulesStatsEventsJobs(t *testing.T) {
 	}
 	demoID := list.Data[0].ID
 
-	// Replace: keep the demo rule (disabled), add a regex rule.
+	// Replace: keep the demo rule (disabled), add a regex rule and a
+	// disabled one (the column defaults to true).
 	resp = h.Do("PUT", "/rules", nil, map[string]any{"rules": []map[string]any{
 		{"id": demoID, "name": "demo", "kind": "keyword", "pattern": "GUARD_TEST_BLOCK", "enabled": false},
 		{"name": "no-ssn", "kind": "regex", "pattern": `\d{3}-\d{2}-\d{4}`, "enabled": true},
+		{"name": "off", "kind": "keyword", "pattern": "GUARD_OFF", "enabled": false},
 	}})
 	if resp.GetStatus() != 200 {
 		t.Fatalf("PUT = %d %s", resp.GetStatus(), resp.GetBody())
 	}
 	_ = json.Unmarshal(resp.GetBody(), &list)
-	if len(list.Data) != 2 || list.Data[0].ID != demoID || list.Data[0].Enabled || list.Data[1].Kind != KindRegex {
+	if len(list.Data) != 3 || list.Data[0].ID != demoID || list.Data[0].Enabled || list.Data[1].Kind != KindRegex || list.Data[2].Enabled {
 		t.Fatalf("after PUT = %s", resp.GetBody())
 	}
 	ssnID := list.Data[1].ID
@@ -307,7 +309,7 @@ func TestRulesStatsEventsJobs(t *testing.T) {
 
 	// Rule changes made on another node are picked up on reload.
 	db, _ := p.db(ctx)
-	if _, err := db.Exec(ctx, `UPDATE rules SET enabled = true WHERE id = $1`, demoID); err != nil {
+	if err := db.Exec(`UPDATE rules SET enabled = true WHERE id = ?`, demoID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := p.reloadRules(ctx); err != nil {

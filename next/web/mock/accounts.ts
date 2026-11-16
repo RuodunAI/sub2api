@@ -154,8 +154,6 @@ interface MockAccountType {
   common_controls?: Record<string, any>
 }
 
-// Built-in model list of the Claude Code account types (plugins/ccgateway/manifest.json).
-const CC_MODELS = ['claude-fable-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']
 
 // Account types (CONTRACTS §13): identified by (plugin_key, type); each
 // declares the platforms it supports. GET /account-types adds `platforms`
@@ -213,23 +211,6 @@ const accountTypeDecls: MockAccountType[] = [
     description: { en: 'Key of an Anthropic-compatible relay', zh: 'Anthropic 兼容中转站的 Key' },
     form: { mode: 'schema' },
     sensitive_fields: ['api_key'],
-    supports: ['anthropic']
-  },
-  {
-    plugin_key: 'ccgateway',
-    plugin_name: { en: 'Claude Code', zh: 'Claude Code' },
-    plugin_version: '0.1.5',
-    asset_base: '/plugin-ui/ccgateway/0.1.5-dev',
-    trust: 'official',
-    type: 'managed',
-    label: { en: 'Claude Code', zh: 'Claude Code' },
-    description: { en: 'Managed Claude Code account (OAuth); no credential fields', zh: '托管 Claude Code 账号（OAuth），无需填写凭证' },
-    form: { mode: 'schema' },
-    sensitive_fields: [],
-    default_models: CC_MODELS,
-    default_model_mapping: {},
-    // manifest.json: the login email is the plugin's read-only extension.
-    extensions_schema: { type: 'object', properties: { locale: { type: 'string', maxLength: 32 }, timezone: { type: 'string', maxLength: 128 }, account_email: { type: 'string', maxLength: 320, readOnly: true, 'x-label': { en: 'Login email', zh: '登录邮箱' } } } },
     supports: ['anthropic']
   },
   {
@@ -371,13 +352,6 @@ export const accounts: any[] = [
   { id: 22, name: 'claude-max-2', plugin_key: 'claude_oauth', type: 'claude_oauth', created_by: 1, group_ids: [1], proxy_id: null, priority: 1, weight: 1, max_concurrency: 5, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: now(5400), cooldown_reason: '429 rate_limit: 5h window rejected', orphaned: false, last_used_at: now(-600), created_at: now(-86400 * 30), credentials: { access_token: '******', refresh_token: '******', email_address: 'max2@example.com' } },
   { id: 23, name: 'claude-pro-3', plugin_key: 'claude_oauth', type: 'claude_setup_token', created_by: 6, group_ids: [2], proxy_id: null, priority: 2, weight: 1, max_concurrency: 3, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: now(-95), created_at: now(-86400 * 6), credentials: { access_token: '******' } },
   { id: 24, name: 'claude-max-new', plugin_key: 'claude_oauth', type: 'claude_oauth', created_by: 1, group_ids: [1], proxy_id: null, priority: 3, weight: 1, max_concurrency: 5, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-600), credentials: { access_token: '******', refresh_token: '******' } },
-  // Claude Code (CCGateway) managed accounts, one container each (mock/ccgateway.ts with SUB2API_MOCK_CCGATEWAY): authorized / not yet.
-  { id: 25, name: 'cc-main', plugin_key: 'ccgateway', type: 'managed', created_by: 1, subscription_type: 'max', settings: { locale: 'en-US', timezone: 'America/New_York', account_email: 'cc-main@example.com' }, group_ids: [1], proxy_id: 1, priority: 2, weight: 1, max_concurrency: 4, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: now(-420), created_at: now(-86400 * 4), credentials: {} },
-  { id: 26, name: 'cc-pending', plugin_key: 'ccgateway', type: 'managed', created_by: 1, group_ids: [1], proxy_id: 1, priority: 5, weight: 1, max_concurrency: 4, schedulable: true, models: ['claude-sonnet-4-5'], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-3600), credentials: {} },
-  // Row without a proxy: its container egresses directly.
-  { id: 27, name: 'cc-noproxy', plugin_key: 'ccgateway', type: 'managed', created_by: 1, group_ids: [1], proxy_id: null, priority: 6, weight: 1, max_concurrency: 4, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-7200), credentials: {} },
-  // Disabled for longer than park_after_hours: its container is stopped (mock/ccgateway.ts reports account_parked until started).
-  { id: 28, name: 'cc-parked', plugin_key: 'ccgateway', type: 'managed', created_by: 1, group_ids: [1], proxy_id: 1, priority: 7, weight: 1, max_concurrency: 4, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'disabled', status_reason: 'disabled by an operator', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: now(-86400), created_at: now(-86400 * 10), credentials: {}, runtime_parked: true },
   // ChatGPT subscriptions (codex plugin, native form): device code and Sign in with ChatGPT; edit one to see "Re-authorize".
   { id: 29, name: 'chatgpt-plus', plugin_key: 'codex', type: 'codex_device', created_by: 1, group_ids: [1], proxy_id: 1, priority: 2, weight: 1, max_concurrency: 3, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'auto_disabled', status_reason: 'Codex usage limit reached', auto_disabled_until: now(2 * 3600 + 1200), in_use: 0, cooldown_until: now(2 * 3600 + 1200), orphaned: false, last_used_at: now(-1200), created_at: now(-86400 * 5), credentials: { access_token: '******', refresh_token: '******', id_token: '******', expires_at: Math.floor(Date.now() / 1000) + 2400, email: 'owner@example.com', chatgpt_account_id: '5d1c2b9e-7f3a-4e1b-9a0c-2f6d8e4b1a73', plan_type: 'plus' } },
   { id: 30, name: 'chatgpt-siwc', plugin_key: 'codex', type: 'chatgpt_siwc', created_by: 1, group_ids: [1], proxy_id: null, priority: 3, weight: 1, max_concurrency: 3, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-86400), credentials: { access_token: '******', refresh_token: '******', id_token: '******', expires_at: Math.floor(Date.now() / 1000) - 600, email: 'owner@example.com', client_id: 'agent_3f9a1c7e5b2d4086', ext_agent_host_id: 'urn:uuid:8b0e6f2a-1c4d-4e9b-a7f3-5d2c9e1b0a64', scopes: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct' } },
@@ -398,8 +372,6 @@ seedTest(12, true, 640, 'claude-haiku-4-5', 'model claude-haiku-4-5 answered', 1
 seedTest(13, true, 3820, 'claude-sonnet-4-5', 'model claude-sonnet-4-5 answered', 7200)
 seedTest(14, false, 212, 'claude-haiku-4-5', 'authentication_error: invalid x-api-key', 86400)
 seedTest(19, true, 1450, 'gpt-4o-mini', 'model gpt-4o-mini answered', 600)
-// Claude Code account with a failed last test: re-authorizing it (mock/ccgateway.ts) clears it.
-seedTest(25, false, 820, 'claude-sonnet-4-5', 'authentication_error: OAuth token has expired', 5400)
 
 // ---------------------------------------------------------------- subscription quota
 // Plan windows of subscription accounts (QuotaSnapshot). Types without plan
@@ -577,51 +549,6 @@ const GROUP_NAMES: Record<number, string> = { 1: 'default', 2: 'vip', 3: 'haiku-
 const statusKey = (a: { status: string; schedulable: boolean }) =>
   a.status === 'disabled' ? 'disabled' : a.status === 'active' && a.schedulable ? 'active' : 'auto_disabled'
 
-/** The stored mock account (for other fixtures, e.g. the CCGateway containers); undefined when missing. */
-export function mockAccount(id: number): { status: string; proxy_id: number | null; plugin_key: string; type: string; runtime_parked?: boolean } | undefined {
-  return accounts.find((a) => a.id === id)
-}
-
-/**
- * Draft runtimes of new Claude Code accounts (docs/CCGATEWAY-DRAFT-RUNTIMES.md
- * §4), provided by mock/ccgateway.ts when SUB2API_MOCK_CCGATEWAY is set:
- * POST /accounts checks and adopts `ccgateway_runtime` through it.
- */
-export interface MockCcgDrafts {
-  /** '' when the caller may adopt the draft, else the refusal reason. */
-  check(key: string, who: Identity): '' | 'draft_not_found' | 'draft_not_authorized'
-  adopt(key: string, accountId: number): void
-}
-let ccgDrafts: MockCcgDrafts | null = null
-export function registerCcgDrafts(d: MockCcgDrafts) {
-  ccgDrafts = d
-}
-
-/**
- * Re-authorization of a Claude Code account (docs/CCGATEWAY-REAUTH.md): the
- * account when the caller may re-authorize it (settings:manage, or a scope of
- * account:update that reaches it), else the error response.
- */
-export function mockCcgReauthAccount(req: MockRequest): { a: any } | { __status: number; body: unknown } {
-  if (hasPerm(caller(req), 'settings:manage')) {
-    const a = accounts.find((x) => x.id === Number(req.params.id))
-    return a ? { a } : fail(404, 'not_found', 'account not found')
-  }
-  return scopedAccount(req, 'update')
-}
-
-/** Commit of a re-authorization: the account's core state starts over; returns the account view. */
-export function mockClearAccountHistory(a: any) {
-  if (a.status === 'error') a.status = 'active'
-  a.status_reason = ''
-  a.cooldown_until = null
-  a.cooldown_reason = ''
-  a.last_test = null
-  delete a.refresh_state
-  quotaState.delete(a.id)
-  return withGroups(a)
-}
-
 /** Accounts in a group (any status). */
 export function groupAccountCount(gid: number): number {
   return accounts.filter((a) => (a.group_ids || []).includes(gid)).length
@@ -693,7 +620,6 @@ on('GET', '/account-types/:plugin_key/:type/form', (req) => {
   if (k === 'videogen') return { schema: videoSchema, ui_schema: { api_key: { 'ui:widget': 'secret' } } }
   if (k === 'openai') return guardForm(who, k, openaiForm)
   if (k === 'gemini') return guardForm(who, k, geminiForm)
-  if (k === 'ccgateway') return { schema: { type: 'object', properties: {} }, ui_schema: {} }
   if (k === 'custom') return customForm()
   if (k === 'controls_demo') return controlsForm
   if (k === 'claude_oauth') {
@@ -873,20 +799,11 @@ on('POST', '/accounts', (req) => {
   const guarded = checkGuarded(who, b.plugin_key, creds)
   if (guarded) return guarded
   if (accounts.some((a) => a.name === b.name)) return fail(400, 'invalid_argument', 'name taken', { fields: [{ field: 'name', code: 'conflict', message: 'Name already used' }] })
-  // A new Claude Code account adopts its authorized draft runtime (the insert and the adoption are one step).
-  const runtime = b.ccgateway_runtime
-  if (runtime !== undefined) {
-    if (b.plugin_key !== 'ccgateway' || b.type !== 'managed' || typeof runtime !== 'string') {
-      return fail(400, 'invalid_argument', 'ccgateway_runtime only applies to ccgateway managed accounts', { fields: [{ field: 'ccgateway_runtime', code: 'invalid', message: 'Not allowed for this account type' }] })
-    }
-    const reason = ccgDrafts ? ccgDrafts.check(runtime, who) : 'draft_not_found'
-    if (reason) return fail(400, 'invalid_argument', reason === 'draft_not_found' ? 'The draft runtime does not exist' : 'The draft runtime is not signed in to Claude', { reason })
-  }
   const proxy = resolveProxy(req, b)
   if ('__status' in proxy) return proxy
   const masked = { ...creds }
   for (const f of at.sensitive_fields) if (masked[f]) masked[f] = '******'
-  const { proxy_url: _u, ccgateway_runtime: _r, ...fields } = b
+  const { proxy_url: _u, ...fields } = b
   const a = {
     id: nextId(),
     status: 'active',
@@ -910,13 +827,7 @@ on('POST', '/accounts', (req) => {
     type_label: at.label,
     credentials: masked
   }
-  if (typeof runtime === 'string') {
-    // The draft reports a Pro subscription; the plugin drops the Fable models from the built-in list (CONTRACTS §59).
-    a.subscription_type = 'pro'
-    if ([...a.models].sort().join() === [...CC_MODELS].sort().join()) a.models = CC_MODELS.filter((m) => !m.startsWith('claude-fable-'))
-  }
   accounts.unshift(a)
-  if (typeof runtime === 'string') ccgDrafts?.adopt(runtime, a.id)
   return { ...withGroups(a), proxy_created: !!proxy.proxy_created }
 })
 on('PATCH', '/accounts/:id', (req) => {
@@ -1066,7 +977,7 @@ on('GET', '/accounts/:id/usage-limit', (req) => {
   const r = scopedAccount(req, 'read')
   if (!('a' in r)) return r
   const { waived: _waived, ...l } = usageLimits.get(r.a.id) || defaultLimit()
-  return l
+  return { ...l, configured: usageLimits.has(r.a.id) }
 })
 // Same checks and error shape as the core's validateUsageLimit: 400
 // invalid_argument with one field error per problem. A switched-off limit may

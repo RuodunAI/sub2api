@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
@@ -21,7 +21,7 @@ import (
 // the route (step-up superadmin.transfer: the password and a second
 // factor). The caller becomes an admin.
 func (s *Service) TransferSuperAdmin(ctx context.Context, actorID, targetID int64) error {
-	su, err := s.authz.IsSuperuser(ctx, s.db.Pool, actorID)
+	su, err := s.authz.IsSuperuser(ctx, s.db.Gorm, actorID)
 	if err != nil {
 		return err
 	}
@@ -31,13 +31,13 @@ func (s *Service) TransferSuperAdmin(ctx context.Context, actorID, targetID int6
 	return s.transferSuperAdmin(ctx, actorID, targetID)
 }
 
-// transferSuperAdmin runs authz.TransferSuperAdmin and ends every session of
-// the demoted holders and the target in one transaction (authz -> user lock
-// order), so each signs in again under its new roles.
+// transferSuperAdmin runs authz.Service.TransferSuperAdmin and ends every
+// session of the demoted holders and the target in one transaction (authz
+// -> user lock order), so each signs in again under its new roles.
 func (s *Service) transferSuperAdmin(ctx context.Context, actorID, targetID int64) error {
 	var v int64
 	var ended []int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var demoted []int64
 		var err error
 		if v, demoted, err = s.authz.TransferSuperAdmin(ctx, tx, actorID, targetID); err != nil {
@@ -45,7 +45,7 @@ func (s *Service) transferSuperAdmin(ctx context.Context, actorID, targetID int6
 		}
 		ended = append(demoted, targetID)
 		for _, uid := range ended {
-			if _, err := invalidateSessions(ctx, tx, uid, allSessions); err != nil {
+			if err := s.endAllSessions(ctx, tx, uid); err != nil {
 				return err
 			}
 		}
@@ -55,7 +55,7 @@ func (s *Service) transferSuperAdmin(ctx context.Context, actorID, targetID int6
 		return err
 	}
 	s.authz.Committed(ctx, v)
-	s.sessionsChanged(ctx, ended...)
+	s.sessionsEnded(ctx, ended...)
 	return nil
 }
 
@@ -75,8 +75,7 @@ type RecoverOptions struct {
 func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts RecoverOptions) (password string, err error) {
 	var id int64
 	var status string
-	err = s.db.Pool.QueryRow(ctx, `SELECT id, status FROM users WHERE lower(email) = lower($1) AND deleted_at IS NULL`,
-		strings.TrimSpace(email)).Scan(&id, &status)
+	err = userByEmail(store.G(ctx, s.db.Gorm), strings.TrimSpace(email), "id, status").Row().Scan(&id, &status)
 	if store.IsNoRows(err) {
 		return "", core.ErrNotFound.WithMessage("user not found")
 	}

@@ -15,7 +15,7 @@ manifest `accountTypes[].commonControls`：键 = 通用项名，值 = 声明。
 | `weight` | `weight` | int |
 | `max_concurrency` | `max_concurrency` | int |
 | `rpm_limit`、`tpm_limit`、`spm_limit` | 同名 | int |
-| `spm_window_seconds` | `spm_window_seconds`（会话周期，CONTRACTS §71.1） | int，60–86400，核心默认 60；声明它需 `hostCompat` 下限 ≥0.1.276（`check.SPMWindowFirstCore`） |
+| `spm_window_seconds` | `spm_window_seconds`（会话周期，CONTRACTS §71.1） | int，60–86400，核心默认 60（核心 0.1.276 起） |
 | `model_limits` | `model_limits` | 数组（同账号接口；各列表可带 `spm_window_seconds`，带了同样需下限 ≥0.1.276） |
 | `usage_limit` | 账号用量限制（§73） | 对象（同账号接口） |
 | `model_mapping` | `model_mapping` | 对象 |
@@ -60,7 +60,7 @@ manifest `accountTypes[].commonControls`：键 = 通用项名，值 = 声明。
 
 ## 5. ccgateway
 
-第 2 期不动 ccgateway 的核心内集成（CC 授权流程、CC 特性、语言、自动模型），等用户决定是否整体搬进插件（见 2026-11-09 线程）。新的通用机制（`proxy.required`、分区插槽）就绪后，搬迁时可直接使用。
+ccgateway 已在 0.1.290 整体删除（最后源码 `317b0c331`），核心里没有它的集成需要搬迁。
 
 ## 6. 实体选择器 EntityPicker（UI 3.11；表单用法 UI 3.12）
 

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -58,11 +58,11 @@ func TestPlugin_OrderCreationAndFulfillment(t *testing.T) {
 	}
 
 	// Mock: directly update order and execute fulfillment
-	_, err = mustDB(t, p).Exec(ctx, `
+	err = mustDB(t, p).Exec(`
 		UPDATE payment_orders
-		SET status = $1, payment_trade_no = $2, paid_at = $3
-		WHERE out_trade_no = $4
-	`, StatusPaid, notification.TradeNo, time.Now(), notification.OutTradeNo)
+		SET status = ?, payment_trade_no = ?, paid_at = ?
+		WHERE out_trade_no = ?
+	`, StatusPaid, notification.TradeNo, time.Now(), notification.OutTradeNo).Error
 	if err != nil {
 		t.Fatalf("Update order to paid failed: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestPlugin_OrderCreationAndFulfillment(t *testing.T) {
 
 	// Verify order status is completed
 	var status string
-	err = mustDB(t, p).QueryRow(ctx, `SELECT status FROM payment_orders WHERE id = $1`, order.OrderID).Scan(&status)
+	err = mustDB(t, p).Raw(`SELECT status FROM payment_orders WHERE id = ?`, order.OrderID).Row().Scan(&status)
 	if err != nil {
 		t.Fatalf("Query order status failed: %v", err)
 	}
@@ -240,9 +240,9 @@ func TestPlugin_RedeemCodeConcurrency(t *testing.T) {
 	// Verify the code is marked as used by the successful user
 	var usedBy *int64
 	var status string
-	err = mustDB(t, p).QueryRow(ctx, `
-		SELECT status, used_by FROM redeem_codes WHERE code_hash = $1
-	`, HashRedeemCode(code)).Scan(&status, &usedBy)
+	err = mustDB(t, p).Raw(`
+		SELECT status, used_by FROM redeem_codes WHERE code_hash = ?
+	`, HashRedeemCode(code)).Row().Scan(&status, &usedBy)
 	if err != nil {
 		t.Fatalf("Query code failed: %v", err)
 	}
@@ -377,10 +377,10 @@ func TestPlugin_PaymentNotificationAmountMismatch(t *testing.T) {
 	}
 
 	// Update to paid
-	_, err = mustDB(t, p).Exec(ctx, `
-		UPDATE payment_orders SET status = $1, payment_trade_no = $2
-		WHERE id = $3
-	`, StatusPaid, "test_trade", order.OrderID)
+	err = mustDB(t, p).Exec(`
+		UPDATE payment_orders SET status = ?, payment_trade_no = ?
+		WHERE id = ?
+	`, StatusPaid, "test_trade", order.OrderID).Error
 	if err != nil {
 		t.Fatalf("Update order failed: %v", err)
 	}
@@ -419,7 +419,7 @@ func startDB(t *testing.T) (*Plugin, *pluginsdktest.FakeHost) {
 		Grants: []*pluginv1.Grant{
 			{Permission: "ledger.credit", ScopeJson: `{"maxPerTx":"100000","maxPerDay":"1000000"}`},
 		},
-		SDK: []pluginsdk.Option{pluginsdk.WithInfo("payment", "0.1.1")},
+		SDK: []pluginsdk.Option{pluginsdk.WithInfo("payment", "0.1.2")},
 	})
 	return p, fh
 }
@@ -435,11 +435,11 @@ func hostCredits(fh *pluginsdktest.FakeHost) []*pluginv1.LedgerChangeRequest {
 	return out
 }
 
-func mustDB(t *testing.T, p *Plugin) *pgxpool.Pool {
+func mustDB(t *testing.T, p *Plugin) *gorm.DB {
 	t.Helper()
-	pool, err := p.db(context.Background())
+	db, err := p.db(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pool
+	return db
 }

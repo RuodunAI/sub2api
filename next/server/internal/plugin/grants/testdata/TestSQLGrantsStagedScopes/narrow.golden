@@ -1,0 +1,5 @@
+-- sql
+SELECT version, scope FROM "plugin_staged_grants" WHERE plugin_key = $1 AND permission = $2 AND status = 'granted' FOR UPDATE
+-- vars
+$1 string "demo"
+$2 string "kv"

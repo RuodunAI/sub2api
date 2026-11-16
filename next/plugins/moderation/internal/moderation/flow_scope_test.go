@@ -71,7 +71,7 @@ func TestFlowScopeAPI(t *testing.T) {
 	// A flow of before 0.10.0: null, and it moderates the input only (0.11.1).
 	ctx := context.Background()
 	db, _ := p.db(ctx)
-	if _, err := db.Exec(ctx, `UPDATE flows SET scope = NULL WHERE id = $1`, f.ID); err != nil {
+	if err := db.Exec(`UPDATE flows SET scope = NULL WHERE id = ?`, f.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := p.reloadConfig(ctx); err != nil {
@@ -125,7 +125,7 @@ func TestRecordFlowSource(t *testing.T) {
 	// A record of before 0.10.0 has neither field.
 	ctx := context.Background()
 	db, _ := p.db(ctx)
-	if _, err := db.Exec(ctx, `UPDATE events SET flow_source = NULL WHERE request_id = 'g'`); err != nil {
+	if err := db.Exec(`UPDATE events SET flow_source = NULL WHERE request_id = 'g'`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if old := gjson.GetBytes(h.Do("GET", "/events", map[string]string{"request_id": "g"}, nil).GetBody(), "data.0"); old.Get("flow_source").Exists() {

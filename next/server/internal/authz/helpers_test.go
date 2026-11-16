@@ -7,17 +7,58 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-func TestCanGrant(t *testing.T) {
-	s := &Service{
-		users: map[int64]core.PermissionSet{
-			1: {Keys: map[string]struct{}{"users:read": {}, "users:write": {}}, Version: 1},
-			2: {Superuser: true, Version: 1},
-			3: {Keys: map[string]struct{}{"users:read": {}}, Version: 1},
-		},
-		minVersion: 1,
+// guardFixture is the users the grant and act-on checks below compare,
+// by the numbers the cases name them by (0 is the system): 1 holds
+// user:read and user:update, 2 is the super admin, 3 holds user:read, 4
+// holds user:read, user:update and settings:manage, 5 holds role:assign.
+// Each custom role may assign 1's, 3's and 4's roles, so that only what
+// the roles grant decides.
+func guardFixture(t *testing.T) (*Service, func(int64) int64) {
+	t.Helper()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	roles := map[string][]string{
+		"ga": {"user:read", "user:update"},
+		"gc": {"user:read"},
+		"gd": {"user:read", "user:update", "settings:manage"},
+		"gk": {"role:assign"},
 	}
+	for _, k := range []string{"ga", "gc", "gd", "gk"} {
+		if _, err := s.CreateRole(ctx, 0, CreateRoleInput{Key: k, Name: lt(k, k), PermissionKeys: roles[k]}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, k := range []string{"ga", "gc", "gd", "gk"} {
+		if _, err := s.SetRoleAssignable(ctx, 0, roleID(t, s, k), AssignableInput{RoleKeys: []string{"ga", "gc", "gd"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := map[int64]int64{
+		1: addUser(t, s, "g1@x.com", "ga"),
+		2: addUser(t, s, "g2@x.com", RoleSuperAdmin),
+		3: addUser(t, s, "g3@x.com", "gc"),
+		4: addUser(t, s, "g4@x.com", "gd"),
+		5: addUser(t, s, "g5@x.com", "gk"),
+	}
+	return s, func(n int64) int64 { return ids[n] }
+}
+
+// ids maps id over ns.
+func idsOf(id func(int64) int64, ns []int64) []int64 {
+	out := make([]int64, len(ns))
+	for i, n := range ns {
+		out[i] = id(n)
+	}
+	return out
+}
+
+func TestCanGrant(t *testing.T) {
+	t.Parallel()
+	s, id := guardFixture(t)
 
 	tests := []struct {
 		name    string
@@ -28,31 +69,31 @@ func TestCanGrant(t *testing.T) {
 		{
 			name:    "superuser can grant anything",
 			actorID: 2,
-			perms:   []string{"users:read", "users:write", "settings:manage"},
+			perms:   []string{"user:read", "user:update", "settings:manage"},
 			wantErr: false,
 		},
 		{
 			name:    "can grant subset of own permissions",
 			actorID: 1,
-			perms:   []string{"users:read"},
+			perms:   []string{"user:read"},
 			wantErr: false,
 		},
 		{
 			name:    "can grant all own permissions",
 			actorID: 1,
-			perms:   []string{"users:read", "users:write"},
+			perms:   []string{"user:read", "user:update"},
 			wantErr: false,
 		},
 		{
 			name:    "cannot grant permission not held",
 			actorID: 3,
-			perms:   []string{"users:write"},
+			perms:   []string{"user:update"},
 			wantErr: true,
 		},
 		{
 			name:    "cannot grant mix of held and not held",
 			actorID: 3,
-			perms:   []string{"users:read", "users:write"},
+			perms:   []string{"user:read", "user:update"},
 			wantErr: true,
 		},
 		{
@@ -65,7 +106,7 @@ func TestCanGrant(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := s.CanGrant(context.Background(), tt.actorID, tt.perms)
+			err := s.CanGrant(context.Background(), id(tt.actorID), tt.perms)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("CanGrant() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -76,15 +117,10 @@ func TestCanGrant(t *testing.T) {
 // H1: granting a superuser role needs the superuser flag, which an access
 // key never carries, even one of a superuser.
 func TestCoversSuperuser(t *testing.T) {
-	s := &Service{
-		users: map[int64]core.PermissionSet{
-			1: {Keys: map[string]struct{}{"role:assign": {}}, Version: 1},
-			2: {Superuser: true, Version: 1},
-		},
-		minVersion: 1,
-	}
+	t.Parallel()
+	s, id := guardFixture(t)
 	want := core.PermissionSet{Superuser: true, Keys: map[string]struct{}{}}
-	keyed := core.WithAccessKey(context.Background(), core.AccessKeyIdentity{UserID: 2, Permissions: []string{"role:assign"}})
+	keyed := core.WithAccessKey(context.Background(), core.AccessKeyIdentity{UserID: id(2), Permissions: []string{"role:assign"}})
 	tests := []struct {
 		name    string
 		ctx     context.Context
@@ -94,11 +130,11 @@ func TestCoversSuperuser(t *testing.T) {
 		{"system", context.Background(), 0, false},
 		{"superuser", context.Background(), 2, false},
 		{"superuser's access key", keyed, 2, true},
-		{"not a superuser", context.Background(), 1, true},
+		{"not a superuser", context.Background(), 5, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := s.covers(tt.ctx, nil, tt.actorID, want, cannotGrant(tt.ctx))
+			err := s.covers(tt.ctx, s.querier(), id(tt.actorID), want, cannotGrant(tt.ctx))
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("covers() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -111,15 +147,8 @@ func TestCoversSuperuser(t *testing.T) {
 }
 
 func TestCanActOn(t *testing.T) {
-	s := &Service{
-		users: map[int64]core.PermissionSet{
-			1: {Keys: map[string]struct{}{"users:read": {}, "users:write": {}}, Version: 1},
-			2: {Superuser: true, Version: 1},
-			3: {Keys: map[string]struct{}{"users:read": {}}, Version: 1},
-			4: {Keys: map[string]struct{}{"users:read": {}, "users:write": {}, "settings:manage": {}}, Version: 1},
-		},
-		minVersion: 1,
-	}
+	t.Parallel()
+	s, id := guardFixture(t)
 
 	tests := []struct {
 		name     string
@@ -187,7 +216,7 @@ func TestCanActOn(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := s.CanActOnUser(context.Background(), tt.actorID, core.ActOnIdentity, tt.targetID)
+			err := s.CanActOnUser(context.Background(), id(tt.actorID), core.ActOnIdentity, id(tt.targetID))
 			if (err != nil) != tt.wantErr {
 				t.Errorf("CanActOnUser() error = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -198,18 +227,10 @@ func TestCanActOn(t *testing.T) {
 var _ core.UserGuard = (*Service)(nil)
 
 func TestCanActOnUsers(t *testing.T) {
-	s := &Service{
-		users: map[int64]core.PermissionSet{
-			1: {Keys: map[string]struct{}{"users:read": {}, "users:write": {}}, Version: 1},
-			2: {Superuser: true, Version: 1},
-			3: {Keys: map[string]struct{}{"users:read": {}}, Version: 1},
-			4: {Keys: map[string]struct{}{"users:read": {}, "settings:manage": {}}, Version: 1},
-			5: {Superuser: true, Version: 1},
-		},
-		minVersion: 1,
-	}
-	keyed := core.WithAccessKey(context.Background(), core.AccessKeyIdentity{UserID: 2, Permissions: []string{"users:read"}})
-	ownKey := core.WithAccessKey(context.Background(), core.AccessKeyIdentity{UserID: 1, Permissions: []string{"users:read"}})
+	t.Parallel()
+	s, id := guardFixture(t)
+	keyed := core.WithAccessKey(context.Background(), core.AccessKeyIdentity{UserID: id(2), Permissions: []string{"user:read"}})
+	ownKey := core.WithAccessKey(context.Background(), core.AccessKeyIdentity{UserID: id(1), Permissions: []string{"user:read"}})
 	bg := context.Background()
 	// No step-up verifier is set: a superuser's account through a key is
 	// refused for want of a proof; one the request already spent passes.
@@ -217,10 +238,9 @@ func TestCanActOnUsers(t *testing.T) {
 	spent := core.WithStepUp(keyed, "p", "op")
 	core.MarkStepUpSpent(spent, core.StepUpUserSecurityReset, false)
 	data, identity := core.ActOnData, core.ActOnIdentity
-	// Without a database there are no role keys: these cases judge only what
-	// the roles grant and the access key rule (FU6), so a non-superuser on
-	// itself passes here. Roles, peers and oneself as they really are:
-	// TestCanActOnUsersPeerProtection.
+	// Every custom role here may assign the others and itself: these cases
+	// judge what the roles grant and the access key rule (FU6). Peers and
+	// oneself under the default lists: TestCanActOnUsersPeerProtection.
 	tests := []struct {
 		name    string
 		ctx     context.Context
@@ -241,7 +261,6 @@ func TestCanActOnUsers(t *testing.T) {
 		{"superuser's key on a wider user", keyed, 2, identity, []int64{1}, ""},
 		{"superuser's key on its owner's data", keyed, 2, data, []int64{2}, ""},
 		{"superuser's key on its owner's account", keyed, 2, identity, []int64{2}, needsProof},
-		{"superuser's key on another superuser's account", keyed, 2, identity, []int64{3, 5}, needsProof},
 		{"superuser's key on its account after a proof", spent, 2, identity, []int64{2}, ""},
 		{"another user's key leaves the actor alone", keyed, 3, data, []int64{3}, ""},
 		{"a narrower key on its owner", ownKey, 1, identity, []int64{1}, ""},
@@ -249,7 +268,7 @@ func TestCanActOnUsers(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := s.CanActOnUsers(tt.ctx, tt.actorID, tt.action, tt.targets...)
+			err := s.CanActOnUsers(tt.ctx, id(tt.actorID), tt.action, idsOf(id, tt.targets)...)
 			var e *core.Error
 			switch {
 			case tt.wantErr == "" && err != nil:
@@ -261,7 +280,7 @@ func TestCanActOnUsers(t *testing.T) {
 	}
 }
 
-func TestAddedKeys(t *testing.T) {
+func TestKeysNotIn(t *testing.T) {
 	tests := []struct {
 		name       string
 		want, have []string
@@ -274,8 +293,8 @@ func TestAddedKeys(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := addedKeys(tt.want, tt.have); !slices.Equal(got, tt.added) {
-				t.Errorf("addedKeys(%v, %v) = %v, want %v", tt.want, tt.have, got, tt.added)
+			if got := keysNotIn(tt.want, tt.have); !slices.Equal(got, tt.added) {
+				t.Errorf("keysNotIn(%v, %v) = %v, want %v", tt.want, tt.have, got, tt.added)
 			}
 		})
 	}

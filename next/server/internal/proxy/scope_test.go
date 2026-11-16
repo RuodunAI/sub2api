@@ -7,9 +7,10 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -24,7 +25,7 @@ func TestProxyIDScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := testutil.DB(t)
 	ctx := context.Background()
-	svc := New(db, testCipher(t), nil, Options{ProbeURL: "http://probe.example.invalid/generate_204"})
+	svc := New(db, testCipher(t), nil, Options{ProbeURL: "http://probe.example.invalid/generate_204", ScopeGrants: authz.New(authz.Deps{})})
 	admin, keeper := addUser(t, db, "admin@x.com"), addUser(t, db, "keeper@x.com")
 	az := fakeAuthz{keys: map[int64][]string{admin: {"proxy:read", "proxy:manage"}}}
 	engine := gin.New()
@@ -56,13 +57,13 @@ func TestProxyIDScope(t *testing.T) {
 	// It matches its proxy by address (an account's proxy_url) without
 	// creating one; another address it may not create.
 	keeperScope := core.DataScope{IDs: []int64{mine}}
-	require.NoError(t, db.Tx(ctx, func(tx pgx.Tx) error {
+	require.NoError(t, db.Tx(ctx, func(tx *gorm.DB) error {
 		id, created, err := svc.FindOrCreate(ctx, tx, Spec{Protocol: "http", Host: "h.example", Port: 8080}, keeper, keeperScope)
 		require.Equal(t, mine, id)
 		require.False(t, created)
 		return err
 	}))
-	require.Error(t, db.Tx(ctx, func(tx pgx.Tx) error {
+	require.Error(t, db.Tx(ctx, func(tx *gorm.DB) error {
 		_, _, err := svc.FindOrCreate(ctx, tx, Spec{Protocol: "http", Host: "other.example", Port: 8080}, keeper, keeperScope)
 		return err
 	}))
@@ -72,17 +73,13 @@ func TestProxyIDScope(t *testing.T) {
 		require.Equal(t, 404, code, route)
 	}
 
-	role := scalar(t, db, `INSERT INTO roles (key, name) VALUES ('keeper', '{}') RETURNING id`)
-	permID := scalar(t, db, `INSERT INTO permissions (key, module, label, source) VALUES ('proxy:manage', 'proxy', '{}', 'core')
+	scalar(t, db, `INSERT INTO roles (key, name) VALUES ('keeper', '{}') RETURNING id`)
+	scalar(t, db, `INSERT INTO permissions (key, module, label, source) VALUES ('proxy:manage', 'proxy', '{}', 'core')
 		ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key RETURNING id`)
-	_, err := db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope) VALUES ($1, $2, $3), ($1, $2, $4)`,
-		role, permID, fmt.Sprintf("proxy/%d", mine), fmt.Sprintf("proxy/%d", other))
-	require.NoError(t, err)
+	testutil.Grant(t, db, "keeper", "proxy:manage", fmt.Sprintf("proxy/%d", mine), fmt.Sprintf("proxy/%d", other))
 	code, _ = do(t, engine, admin, "DELETE", fmt.Sprintf("/proxies/%d", mine), nil)
 	require.Equal(t, 204, code)
-	var left []string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT array_agg(scope) FROM role_permission_scopes WHERE role_id = $1`, role).Scan(&left))
-	require.Equal(t, []string{fmt.Sprintf("proxy/%d", other)}, left)
+	require.Equal(t, []string{fmt.Sprintf("proxy:manage:proxy/%d", other)}, testutil.GrantKeys(t, db, "keeper"))
 }
 
 func ids(out map[string]any) string {
@@ -106,6 +103,6 @@ func permission(out map[string]any) string {
 
 func scalar(t *testing.T, db *store.DB, sql string) (v int64) {
 	t.Helper()
-	require.NoError(t, db.Pool.QueryRow(context.Background(), sql).Scan(&v))
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), sql).Scan(&v))
 	return v
 }

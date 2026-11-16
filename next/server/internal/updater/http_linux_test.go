@@ -12,10 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"github.com/gin-gonic/gin"
 )
 
 type bridgeAuth struct {
@@ -23,8 +24,10 @@ type bridgeAuth struct {
 	id int64
 }
 
-func (a bridgeAuth) VerifyAccessToken(context.Context, string) (int64, error) { return a.id, nil }
-func (a bridgeAuth) Can(context.Context, int64, string) (bool, error)         { return true, nil }
+func (a bridgeAuth) VerifySession(context.Context, string) (int64, string, error) {
+	return a.id, "", nil
+}
+func (a bridgeAuth) Can(context.Context, int64, string) (bool, error) { return true, nil }
 func (a bridgeAuth) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
 	return core.PermissionSet{Superuser: true}, nil
 }
@@ -34,7 +37,7 @@ func TestBridgeAuditsOnlySuccessfulMutations(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	var uid int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users(email,password_hash) VALUES('updater-audit@test','test') RETURNING id`).Scan(&uid); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('updater-audit@test','test') RETURNING id`).Scan(&uid); err != nil {
 		t.Fatal(err)
 	}
 	socket := filepath.Join(t.TempDir(), "shell.sock")
@@ -85,17 +88,17 @@ func TestBridgeAuditsOnlySuccessfulMutations(t *testing.T) {
 		}
 		if tc.action != "" {
 			var count int
-			if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action=$1 AND user_id=$2`, tc.action, uid).Scan(&count); err != nil || count != 1 {
+			if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action=$1 AND user_id=$2`, tc.action, uid).Scan(&count); err != nil || count != 1 {
 				t.Fatal(tc.action, count, err)
 			}
 		}
 	}
 	var count int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs`).Scan(&count); err != nil || count != 10 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs`).Scan(&count); err != nil || count != 10 {
 		t.Fatal(count, err)
 	}
 	var imported bool
-	if err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE action='system.release.import' AND target_id='verified-digest' AND detail->>'tag'='v0.2.0' AND detail->>'repository'='owner/repo' AND detail->>'digest'='verified-digest')`).Scan(&imported); err != nil || !imported {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE action='system.release.import' AND target_id='verified-digest' AND detail->>'tag'='v0.2.0' AND detail->>'repository'='owner/repo' AND detail->>'digest'='verified-digest')`).Scan(&imported); err != nil || !imported {
 		t.Fatal("missing import audit details", err)
 	}
 }

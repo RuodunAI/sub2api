@@ -1,0 +1,5 @@
+-- sql
+SELECT status, active_version, COALESCE(active_version, desired_version) AS live, publisher_id FROM "plugins" WHERE key = $1 LIMIT $2 FOR UPDATE
+-- vars
+$1 string "demo"
+$2 int 1

@@ -14,7 +14,7 @@ describe('host UI 3 contract', () => {
     expect('TabBar' in ui).toBe(false)
   })
   it('rejects unported UI 1 plugins and accepts the migrated compatibility range', () => {
-    expect(HOST_UI_VERSION).toBe('3.15.0')
+    expect(HOST_UI_VERSION).toBe('3.17.0')
     expect(satisfiesRange(HOST_UI_VERSION, '^1.0')).toBe(false)
     expect(satisfiesRange(HOST_UI_VERSION, '^2.0')).toBe(false)
     expect(satisfiesRange(HOST_UI_VERSION, '^3.0')).toBe(true)
@@ -47,13 +47,17 @@ describe('host UI 3 contract', () => {
     expect(satisfiesRange('3.13.0', '^3.14')).toBe(false)
     expect(satisfiesRange(HOST_UI_VERSION, '^3.15')).toBe(true)
     expect(satisfiesRange('3.14.0', '^3.15')).toBe(false)
+    expect(satisfiesRange(HOST_UI_VERSION, '^3.16')).toBe(true)
+    expect(satisfiesRange('3.15.0', '^3.16')).toBe(false)
+    expect(satisfiesRange(HOST_UI_VERSION, '^3.17')).toBe(true)
+    expect(satisfiesRange('3.16.0', '^3.17')).toBe(false)
   })
   it('declares in each README section of UI 3.N the range ^3.N and the UI it follows', () => {
     const sections = readme.split(/^## /m).flatMap((body) => {
       const minor = /^[^\n]*（UI SDK 3\.(\d+)）/.exec(body)?.[1]
       return minor ? [{ minor: Number(minor), body }] : []
     })
-    expect(sections.map((s) => s.minor)).toContain(15)
+    expect(sections.map((s) => s.minor)).toContain(17)
     for (const { minor, body } of sections) {
       for (const m of body.matchAll(/hostUICompat: "\^3\.(\d+)"/g)) expect(Number(m[1]), `UI 3.${minor}`).toBe(minor)
       for (const m of body.matchAll(/(?:与 3\.(\d+) 相同|最后一个带 UI 3\.(\d+) 的核心)/g)) expect(Number(m[1] ?? m[2]), `UI 3.${minor}`).toBe(minor - 1)
@@ -62,6 +66,9 @@ describe('host UI 3 contract', () => {
   it('keeps the plugin preset and the shared packages on the host UI version', () => {
     expect(PRESET_UI_VERSION).toBe(HOST_UI_VERSION)
     expect([hostPackage.version, uiPackage.version, presetPackage.version]).toEqual([HOST_UI_VERSION, HOST_UI_VERSION, HOST_UI_VERSION])
+  })
+  it('exports the horizontal clip probe the permission matrix uses (UI 3.16)', () => {
+    expect(ui.useScrollClip).toBeDefined()
   })
   it('exports more filters, applied filter chips and one-line chip lists (UI 3.10)', () => {
     expect(ui.SFilterChips).toBeDefined()

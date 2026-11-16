@@ -237,16 +237,8 @@ func TestMonitorScopeClonesReportAndExpires(t *testing.T) {
 	}
 }
 
-func TestExecutionCapabilitiesRejectOldHostsAndMissingImplementation(t *testing.T) {
+func TestExecutionCapabilitiesRequireImplementation(t *testing.T) {
 	for _, capability := range []string{manifest.CapPlatformExecute, manifest.CapPlatformMonitor} {
-		for _, inited := range []bool{false, true} {
-			for version := int32(0); version < 4; version++ {
-				rt := runtime{capabilities: []string{capability}, inited: inited}
-				if _, err := rt.InitHost(context.Background(), &pluginv1.InitHostRequest{HostApiVersion: version}); status.Code(err) != codes.FailedPrecondition {
-					t.Fatalf("host %d accepted %s", version, capability)
-				}
-			}
-		}
 		caps := map[string]bool{capability: true, manifest.CapPlatformAdapter: true}
 		if err := checkTaskManifest(ordinaryTestPlatform{}, &manifest.Manifest{}, caps); err == nil {
 			t.Fatalf("missing %s implementation accepted", capability)

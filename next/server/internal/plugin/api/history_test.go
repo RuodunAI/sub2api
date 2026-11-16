@@ -8,7 +8,7 @@ import (
 func TestHistoryEndpointsPaginationValidationAndPermissions(t *testing.T) {
 	h, _ := newHarness(t)
 	ctx := context.Background()
-	if _, err := h.db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status) VALUES('history','{}','enabled');
+	if _, err := h.db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status) VALUES('history','{}','enabled');
         INSERT INTO plugin_rollouts(plugin_key,action,phase,target_version) VALUES('history','enable','active','1.0.0'),('history','upgrade','active','2.0.0')`); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestHistoryEndpointsPaginationValidationAndPermissions(t *testing.T) {
 			t.Fatal(path, code, out)
 		}
 	}
-	if _, err := h.db.Pool.Exec(ctx, `DELETE FROM plugins WHERE key='history'`); err != nil {
+	if _, err := h.db.SQL.ExecContext(ctx, `DELETE FROM plugins WHERE key='history'`); err != nil {
 		t.Fatal(err)
 	}
 	if code, out := h.do("GET", "/plugins/history/history", "admin", nil); code != 200 || len(out["data"].([]any)) != 2 {

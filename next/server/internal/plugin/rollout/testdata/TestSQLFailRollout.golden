@@ -1,0 +1,11 @@
+-- sql
+UPDATE "plugin_rollouts" SET "error"=$1,"phase"=$2,"row_version"=row_version + 1,"updated_at"=now() WHERE id = $3 AND phase = 'preparing'
+			AND (NOT $4::boolean OR (row_version = $5 AND coordinator_boot_id = $6
+				AND coordinator_lease_until > clock_timestamp()))
+-- vars
+$1 string "cancelled by user 1"
+$2 string "cancelled"
+$3 int64 42
+$4 bool true
+$5 int64 7
+$6 string "boot-a"

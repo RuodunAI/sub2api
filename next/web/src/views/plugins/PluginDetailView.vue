@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
@@ -12,10 +12,10 @@ import { useAuthStore } from '@/stores/auth'
 import { refreshShell } from '@/stores/app'
 import { consentPath } from './reviewCache'
 import RoleGrantsReview from './parts/RoleGrantsReview.vue'
-import { compareVersions, conflictLines, consoleSettings, hasCoreSettings, isPendingConsent, shownStatus, type PluginDetail, type PluginSettings } from './pluginUtil'
+import { compareVersions, conflictLines, consoleSettings, isPendingConsent, shownStatus, tabOf, type PluginDetail, type PluginSettings } from './pluginUtil'
 import TrustBadge from './parts/TrustBadge.vue'
 import OverviewTab from './detail/OverviewTab.vue'
-import GrantsTab from './detail/GrantsTab.vue'
+import PermissionsTab from './detail/PermissionsTab.vue'
 import NodesTab from './detail/NodesTab.vue'
 import HooksTab from './detail/HooksTab.vue'
 import JobsTab from './detail/JobsTab.vue'
@@ -30,8 +30,6 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const CCGatewaySettings = defineAsyncComponent(() => import('@/views/ccgateway/CCGatewayView.vue'))
-const isCCGatewaySettings = computed(() => hasCoreSettings(key.value, (p) => auth.has(p)) && status.value !== 'awaiting_consent')
 
 const key = computed(() => String(route.params.key))
 const detail = ref<PluginDetail | null>(null)
@@ -39,7 +37,6 @@ const settings = ref<PluginSettings | null>(null)
 const loading = ref(true)
 const loadError = ref('')
 const notFound = ref(false)
-const tab = ref(typeof route.query.tab === 'string' ? route.query.tab : 'overview')
 const acting = ref('')
 const uninstallOpen = ref(false)
 const upgradeOpen = ref(false)
@@ -71,7 +68,8 @@ const tabs = computed<TabItem[]>(() => {
   const d = detail.value
   const list: TabItem[] = [
     { key: 'overview', label: t('plugins.detail.tabs.overview') },
-    { key: 'grants', label: t('plugins.detail.tabs.grants'), badge: d?.grants?.length },
+    // The host permissions in force: the user permissions below them are counted per role, not here.
+    { key: 'permissions', label: t('plugins.detail.tabs.permissions'), badge: d?.grants?.filter((g) => g.status === 'active').length },
     { key: 'nodes', label: t('plugins.detail.tabs.nodes'), badge: d?.nodes?.length },
     { key: 'hooks', label: t('plugins.detail.tabs.hooks'), badge: d?.hooks?.length },
     { key: 'jobs', label: t('plugins.detail.tabs.jobs'), badge: d?.jobs?.length },
@@ -79,15 +77,18 @@ const tabs = computed<TabItem[]>(() => {
   ]
   if (auth.has(['plugin:egress:read', 'plugin:manage'])) list.push({ key: 'egress', label: t('plugins.detail.tabs.egress') })
   list.push({ key: 'resources', label: t('plugins.detail.tabs.resources') })
-  if (settings.value?.schema || isCCGatewaySettings.value) list.push({ key: 'settings', label: t('plugins.detail.tabs.settings') })
+  if (settings.value?.schema) list.push({ key: 'settings', label: t('plugins.detail.tabs.settings') })
   if (auth.has('audit:read')) list.push({ key: 'audit', label: t('plugins.detail.tabs.audit') })
   return list
 })
 
-watch(tab, (v) => {
-  if (route.query.tab !== v) router.replace({ query: { ...route.query, tab: v } })
-})
-watch(() => route.query.tab, (v) => { tab.value = typeof v === 'string' ? v : 'overview' })
+/** The tab is the address's (?tab=): a click, a link and the history alike pass the tabs' own leave guards (PermissionsTab). */
+const tab = computed(() => tabOf(route.query.tab))
+function switchTab(v: string) {
+  router.replace({ query: { ...route.query, tab: v } })
+}
+// An old link (?tab=grants) shows the tab it now opens in the address bar.
+if (route.query.tab !== undefined && route.query.tab !== tab.value) switchTab(tab.value)
 
 const moreActions = computed<MenuAction[]>(() => [
   { key: 'refresh', label: t('common.refresh') },
@@ -124,7 +125,7 @@ async function load() {
   }
   if (detail.value) {
     await loadSettings()
-    if (!tabs.value.some((x) => x.key === tab.value)) tab.value = 'overview'
+    if (!tabs.value.some((x) => x.key === tab.value)) switchTab('overview')
   }
 }
 
@@ -269,17 +270,16 @@ onMounted(load)
         </template>
       </SAlert>
 
-      <STabs v-model="tab" :tabs="tabs">
+      <STabs :model-value="tab" :tabs="tabs" @update:model-value="switchTab">
 
         <OverviewTab v-if="tab === 'overview'" :detail="detail" />
-        <GrantsTab v-else-if="tab === 'grants'" :detail="detail" @changed="load" />
+        <PermissionsTab v-else-if="tab === 'permissions'" :key="detail.key" :detail="detail" @changed="load" />
         <NodesTab v-else-if="tab === 'nodes'" :detail="detail" />
         <HooksTab v-else-if="tab === 'hooks'" :detail="detail" />
         <JobsTab v-else-if="tab === 'jobs'" :detail="detail" />
         <EventsTab v-else-if="tab === 'events'" :detail="detail" />
         <EgressTab v-else-if="tab === 'egress'" :detail="detail" @changed="load" />
         <ResourcesTab v-else-if="tab === 'resources'" :detail="detail" @changed="load" />
-        <CCGatewaySettings v-else-if="tab === 'settings' && isCCGatewaySettings" embedded />
         <SettingsTab v-else-if="tab === 'settings' && settings" :plugin-key="detail.key" :settings="settings" @saved="loadSettings" />
         <div v-else-if="tab === 'audit'" class="space-y-3">
           <SHint>{{ t('plugins.detail.auditHint') }}</SHint>

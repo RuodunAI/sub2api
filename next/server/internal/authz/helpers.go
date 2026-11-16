@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"slices"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -15,11 +18,11 @@ func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh
 
 // querier is the pool checks read through outside a transaction; nil for
 // tests without a database, which never query.
-func (s *Service) querier() store.Querier {
+func (s *Service) querier() *gorm.DB {
 	if s.db == nil {
 		return nil
 	}
-	return s.db.Pool
+	return s.db.Gorm
 }
 
 // usersRoleSet is the union of what the roles of userIDs grant (the grant
@@ -27,40 +30,24 @@ func (s *Service) querier() store.Querier {
 // an access key: the measure of a TARGET in SEC-H2 comparisons, and the base
 // of grantSet. PermissionSet, the effective set, is empty for a disabled
 // user, which is right for authorizing that user and wrong for deciding who
-// may act on it. Tests without a database seed the cache and are answered
-// from it.
-func (s *Service) usersRoleSet(ctx context.Context, q store.Querier, userIDs []int64) (core.PermissionSet, error) {
+// may act on it.
+func (s *Service) usersRoleSet(ctx context.Context, q *gorm.DB, userIDs []int64) (core.PermissionSet, error) {
 	set, _, err := s.usersRoles(ctx, q, userIDs)
 	return set, err
 }
 
-// usersRoles is usersRoleSet with the keys of those roles, sorted; tests
-// without a database have no role keys.
-func (s *Service) usersRoles(ctx context.Context, q store.Querier, userIDs []int64) (core.PermissionSet, []string, error) {
+// usersRoles is usersRoleSet with the keys of those roles, sorted; a
+// service without a database (tests) reads no roles.
+func (s *Service) usersRoles(ctx context.Context, q *gorm.DB, userIDs []int64) (core.PermissionSet, []string, error) {
 	if s.db == nil {
-		return s.cachedUnion(userIDs), nil, nil
+		return core.PermissionSet{Keys: map[string]struct{}{}}, nil, nil
 	}
-	var keys []string
-	if err := q.QueryRow(ctx, `SELECT COALESCE(array_agg(DISTINCT r.key ORDER BY r.key), '{}') FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ANY($1)`, userIDs).Scan(&keys); err != nil {
+	keys := []string{}
+	if err := casbinrule.RoleKeysOf(store.G(ctx, q), userIDs).Scan(&keys).Error; err != nil {
 		return core.PermissionSet{}, nil, err
 	}
 	set, err := s.RolesPermissions(ctx, q, keys)
 	return set, keys, err
-}
-
-// cachedUnion is usersRoleSet for tests without a database.
-func (s *Service) cachedUnion(userIDs []int64) core.PermissionSet {
-	set := core.PermissionSet{Keys: map[string]struct{}{}}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, id := range userIDs {
-		u := s.users[id]
-		set.Superuser = set.Superuser || u.Superuser
-		for _, k := range u.KeyList() {
-			set.Add(k)
-		}
-	}
-	return set
 }
 
 // grantSet is what actorID may hand out (grants and role assignment): what
@@ -68,7 +55,7 @@ func (s *Service) cachedUnion(userIDs []int64) core.PermissionSet {
 // superuser. Whom it acts on is its roles alone (canActOnUsers, FU6). It reads
 // through q, so a check inside a transaction sees that transaction and never
 // this node's cache, which may lag another node's change (C-L4).
-func (s *Service) grantSet(ctx context.Context, q store.Querier, actorID int64) (core.PermissionSet, error) {
+func (s *Service) grantSet(ctx context.Context, q *gorm.DB, actorID int64) (core.PermissionSet, error) {
 	set, err := s.usersRoleSet(ctx, q, []int64{actorID})
 	if err != nil {
 		return core.PermissionSet{}, err
@@ -79,7 +66,7 @@ func (s *Service) grantSet(ctx context.Context, q store.Querier, actorID int64) 
 // covers fails with deny, detailed by what is missing, unless actorID's
 // grantSet holds all of want, the superuser flag included. The system (actor
 // 0) is always covered.
-func (s *Service) covers(ctx context.Context, q store.Querier, actorID int64, want core.PermissionSet, deny *core.Error) error {
+func (s *Service) covers(ctx context.Context, q *gorm.DB, actorID int64, want core.PermissionSet, deny *core.Error) error {
 	if actorID == 0 {
 		return nil
 	}
@@ -160,7 +147,7 @@ func cannotActOnRole(ctx context.Context) *core.Error {
 
 // audit records one audit_logs row of an authz change through q, the
 // change's transaction.
-func (s *Service) audit(ctx context.Context, q store.Querier, actorID int64, action, targetType string, id any, detail any) error {
+func (s *Service) audit(ctx context.Context, q *gorm.DB, actorID int64, action, targetType string, id any, detail any) error {
 	return audit.Audit(ctx, q, actorID, action, targetType, fmt.Sprint(id), detail)
 }
 
@@ -204,7 +191,7 @@ func (s *Service) CanActOnUsers(ctx context.Context, actorID int64, action core.
 
 // canActOnUsers is CanActOnUsers reading through q, the transaction of the
 // change when there is one.
-func (s *Service) canActOnUsers(ctx context.Context, q store.Querier, actorID int64, action core.UserAction, targetIDs ...int64) error {
+func (s *Service) canActOnUsers(ctx context.Context, q *gorm.DB, actorID int64, action core.UserAction, targetIDs ...int64) error {
 	ids := slices.Compact(slices.Sorted(slices.Values(targetIDs)))
 	if actorID == 0 || len(ids) == 0 {
 		return nil
@@ -245,7 +232,7 @@ func (s *Service) canActOnUsers(ctx context.Context, q store.Querier, actorID in
 
 // auditSelf records an action of actorID on itself that CanActOnUsers let
 // through: self, and the session or access key it came by.
-func (s *Service) auditSelf(ctx context.Context, q store.Querier, actorID int64) error {
+func (s *Service) auditSelf(ctx context.Context, q *gorm.DB, actorID int64) error {
 	if s.db == nil {
 		return nil // tests without a database: nowhere to audit
 	}

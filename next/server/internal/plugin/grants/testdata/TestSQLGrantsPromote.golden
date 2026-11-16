@@ -1,0 +1,5 @@
+-- sql
+DELETE FROM "plugin_staged_grants" WHERE plugin_key = $1 AND version = $2 RETURNING *
+-- vars
+$1 string "demo"
+$2 string "1.2.0"

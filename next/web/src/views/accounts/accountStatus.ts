@@ -1,6 +1,6 @@
 // The console shows an account in one of three statuses: enabled, disabled
-// (by an operator) or auto-disabled. A legacy "error" status and an active
-// account taken out of scheduling both read as auto-disabled; a cooldown or an
+// (by an operator) or auto-disabled. An active account taken out of
+// scheduling reads as auto-disabled; a cooldown or an
 // orphaned plugin is a note on the status, not a status of its own.
 import type { Account } from '@/api/types'
 

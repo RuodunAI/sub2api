@@ -24,13 +24,13 @@ func TestIndexOperationsKeepUpstreamOrder(t *testing.T) {
 				p, h, f := startRoutes(t)
 				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 				defer cancel()
-				gid, err := insertGroup(ctx, h.pool, 1, UpstreamGroup{ID: "g-order", Name: "old"})
+				gid, err := insertGroup(h.db, 1, UpstreamGroup{ID: "g-order", Name: "old"})
 				if err != nil {
 					t.Fatal(err)
 				}
 				id, route, table := gid, "/asset-groups/:id", "asset_groups"
 				if resource == "asset" {
-					id, err = insertAsset(ctx, h.pool, 1, gid, UpstreamAsset{ID: "a-order", Name: "old"})
+					id, err = insertAsset(h.db, 1, gid, UpstreamAsset{ID: "a-order", Name: "old"})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -97,8 +97,8 @@ func TestIndexOperationsKeepUpstreamOrder(t *testing.T) {
 				// blocked on the DB lock, or has incorrectly reached upstream.
 				for {
 					var waiting bool
-					if err := h.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_locks
-						WHERE relation = $1::regclass AND cardinality(pg_blocking_pids(pid)) > 0)`, table).Scan(&waiting); err != nil {
+					if err := h.db.Raw(`SELECT EXISTS(SELECT 1 FROM pg_locks
+						WHERE relation = ?::regclass AND cardinality(pg_blocking_pids(pid)) > 0)`, table).Scan(&waiting).Error; err != nil {
 						t.Fatal(err)
 					}
 					if waiting {
@@ -130,7 +130,7 @@ func TestIndexOperationsKeepUpstreamOrder(t *testing.T) {
 					}
 				}
 				var indexed string
-				if err := h.pool.QueryRow(ctx, `SELECT name FROM `+table+` WHERE id=$1`, id).Scan(&indexed); err != nil {
+				if err := h.db.Raw(`SELECT name FROM `+table+` WHERE id=?`, id).Scan(&indexed).Error; err != nil {
 					t.Fatal(err)
 				}
 				mu.Lock()
@@ -146,24 +146,23 @@ func TestIndexOperationsKeepUpstreamOrder(t *testing.T) {
 
 func TestRepeatedCreateDoesNotOverwriteExistingIndex(t *testing.T) {
 	_, h, _ := startRoutes(t)
-	ctx := context.Background()
-	gid, err := insertGroup(ctx, h.pool, 1, UpstreamGroup{ID: "g-repeat", Name: "new"})
+	gid, err := insertGroup(h.db, 1, UpstreamGroup{ID: "g-repeat", Name: "new"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again, err := insertGroup(ctx, h.pool, 1, UpstreamGroup{ID: "g-repeat", Name: "old"}); err != nil || again != gid {
+	if again, err := insertGroup(h.db, 1, UpstreamGroup{ID: "g-repeat", Name: "old"}); err != nil || again != gid {
 		t.Fatalf("duplicate group: %d %v", again, err)
 	}
-	aid, err := insertAsset(ctx, h.pool, 1, gid, UpstreamAsset{ID: "a-repeat", Name: "new"})
+	aid, err := insertAsset(h.db, 1, gid, UpstreamAsset{ID: "a-repeat", Name: "new"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again, err := insertAsset(ctx, h.pool, 1, gid, UpstreamAsset{ID: "a-repeat", Name: "old"}); err != nil || again != aid {
+	if again, err := insertAsset(h.db, 1, gid, UpstreamAsset{ID: "a-repeat", Name: "old"}); err != nil || again != aid {
 		t.Fatalf("duplicate asset: %d %v", again, err)
 	}
 	for _, table := range []string{"asset_groups", "assets"} {
 		var name string
-		if err := h.pool.QueryRow(ctx, `SELECT name FROM `+table).Scan(&name); err != nil || name != "new" {
+		if err := h.db.Raw(`SELECT name FROM ` + table).Scan(&name).Error; err != nil || name != "new" {
 			t.Fatalf("%s lost the newer index: %q %v", table, name, err)
 		}
 	}
@@ -173,16 +172,16 @@ func TestCreateAssetCompensatesCommitFailure(t *testing.T) {
 	p, h, f := startRoutes(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	gid, err := insertGroup(ctx, h.pool, 1, UpstreamGroup{ID: "g-commit", Name: "group"})
+	gid, err := insertGroup(h.db, 1, UpstreamGroup{ID: "g-commit", Name: "group"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The INSERT succeeds. Only COMMIT fails, exercising the transaction
 	// boundary added when group deletion and asset creation were serialized.
-	if _, err := h.pool.Exec(ctx, `CREATE FUNCTION fail_asset_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+	if err := h.db.Exec(`CREATE FUNCTION fail_asset_commit() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN RAISE EXCEPTION 'test commit failure'; END $$;
 		CREATE CONSTRAINT TRIGGER fail_asset_commit AFTER INSERT ON assets
-		DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_asset_commit()`); err != nil {
+		DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fail_asset_commit()`).Error; err != nil {
 		t.Fatal(err)
 	}
 	arkResult(f, map[string]string{ActionCreateAsset: `{"Id":"a-commit","Name":"new"}`})
@@ -196,7 +195,7 @@ func TestCreateAssetCompensatesCommitFailure(t *testing.T) {
 		t.Fatalf("created upstream asset was not compensated after commit failure: %+v", last)
 	}
 	var n int
-	if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM assets`).Scan(&n); err != nil || n != 0 {
+	if err := h.db.Raw(`SELECT count(*) FROM assets`).Scan(&n).Error; err != nil || n != 0 {
 		t.Fatalf("failed transaction left an index row: %d %v", n, err)
 	}
 }

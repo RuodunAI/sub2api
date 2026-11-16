@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/permvectors"
 )
 
@@ -63,25 +67,63 @@ func TestImpliesVectors(t *testing.T) {
 	}
 }
 
-// Implies is a preorder on the parsed scopes: reflexive and transitive.
+// Implies is a preorder on the parsed scopes of each action (core and
+// plugin alike): reflexive and transitive.
 func TestImpliesPreorder(t *testing.T) {
 	t.Parallel()
-	var pats []Pattern
-	for _, c := range loadVectors(t).Canonical {
-		if p, err := Parse(c.In); err == nil && p.Action == AccountUpdate {
-			pats = append(pats, p)
+	v := loadVectors(t)
+	var keys []string
+	for _, c := range v.Canonical {
+		keys = append(keys, c.In)
+	}
+	for _, c := range v.Implies {
+		keys = append(keys, c.Have, c.Want)
+	}
+	byAction := map[Key][]Pattern{}
+	for _, k := range keys {
+		if p, err := Parse(k); err == nil {
+			byAction[p.Action] = append(byAction[p.Action], p)
 		}
 	}
-	for _, a := range pats {
-		if !Implies(a, a) {
-			t.Errorf("%s does not imply itself", a.Key())
-		}
-		for _, b := range pats {
-			for _, c := range pats {
-				if Implies(a, b) && Implies(b, c) && !Implies(a, c) {
-					t.Errorf("%s ⇒ %s ⇒ %s but not %s ⇒ %s", a.Key(), b.Key(), c.Key(), a.Key(), c.Key())
+	require.NotEmpty(t, byAction[AccountUpdate])
+	require.NotEmpty(t, byAction["plugin.m:f:m"])
+	for _, pats := range byAction {
+		for _, a := range pats {
+			if !Implies(a, a) {
+				t.Errorf("%s does not imply itself", a.Key())
+			}
+			for _, b := range pats {
+				for _, c := range pats {
+					if Implies(a, b) && Implies(b, c) && !Implies(a, c) {
+						t.Errorf("%s ⇒ %s ⇒ %s but not %s ⇒ %s", a.Key(), b.Key(), c.Key(), a.Key(), c.Key())
+					}
 				}
 			}
 		}
 	}
+}
+
+// A plugin action takes "*", "own" or "<res>/<value>" by syntax alone; a
+// core scope never sets Res.
+func TestParsePluginScope(t *testing.T) {
+	t.Parallel()
+	for k, want := range map[string]Scope{
+		"plugin.m:flow:manage:flow/3":     {Res: "flow", Value: "3"},
+		"plugin.m:rule:apply:value/input": {Res: "value", Value: "input"},
+		"plugin.m:flow:manage:own":        {Own: true},
+		"plugin.m:flow:manage":            {All: true},
+		"account:update:account/5":        {ID: 5},
+	} {
+		p, err := Parse(k)
+		require.NoError(t, err, k)
+		assert.Equal(t, want, p.Scope, k)
+		assert.Equal(t, Key(k), p.Key(), k)
+	}
+}
+
+// PluginPrefix, a constant, repeats the manifest's plugin module spelling;
+// the two must agree.
+func TestPluginPrefixMatchesManifest(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, PluginPrefix+"k", manifest.PermissionModule("k"))
 }

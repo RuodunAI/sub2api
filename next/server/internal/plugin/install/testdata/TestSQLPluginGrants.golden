@@ -1,0 +1,4 @@
+-- sql
+SELECT permission, scope, status, plugin_version, granted_by, granted_at FROM "plugin_permission_grants" WHERE plugin_key = $1
+-- vars
+$1 string "demo"

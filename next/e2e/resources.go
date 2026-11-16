@@ -72,6 +72,16 @@ func (e *Env) CreateRole(admin *Session, key, name string, perms []string) int64
 	return id
 }
 
+// RolePermissionKeys returns the permission_keys of role key (GET /roles).
+func (e *Env) RolePermissionKeys(admin *Session, key string) map[string]bool {
+	e.T.Helper()
+	r, ok := Find(admin.OK(e.T, http.MethodGet, "/roles", nil).Array(), "key", key)
+	if !ok {
+		e.T.Fatalf("role %s not listed", key)
+	}
+	return Set(r.Get("permission_keys"))
+}
+
 // SetUserRoles replaces a user's roles.
 func (e *Env) SetUserRoles(admin *Session, userID int64, roles []string) {
 	e.T.Helper()

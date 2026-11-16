@@ -1,7 +1,6 @@
 package usagerules
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -101,25 +100,6 @@ func TestCacheEvidenceAdditionalAndReplacementFrozen(t *testing.T) {
 	}
 	if items[0].Metrics[core.CacheWriteEvidenceKey] == nil || items[1].Metrics[core.CacheWriteEvidenceKey] != nil {
 		t.Fatal(items)
-	}
-	rec := &core.UsageRecord{RequestID: "cache-evidence", Metrics: u.Additional()[0].Metrics, Replacement: []core.PricedUsage{{Model: items[0].Model, Metrics: items[0].Metrics, Tokens: items[0].Tokens}}}
-	bytes, digest, err := core.HelperHistoryUsageBytes(rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded, d2, err := core.DecodeHelperHistoryUsage(bytes)
-	if err != nil || d2 != digest {
-		t.Fatal(err)
-	}
-	b1, _ := json.Marshal(rec.Metrics)
-	var normalized any
-	if err := json.Unmarshal(b1, &normalized); err != nil {
-		t.Fatal(err)
-	}
-	b1, _ = json.Marshal(normalized)
-	b2, _ := json.Marshal(decoded.Metrics)
-	if string(b1) != string(b2) || decoded.Replacement[0].Tokens != rec.Replacement[0].Tokens {
-		t.Fatal("frozen evidence changed")
 	}
 }
 

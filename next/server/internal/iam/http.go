@@ -1,8 +1,6 @@
 package iam
 
 import (
-	"errors"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -19,7 +17,6 @@ import (
 // a segment, which are a users list, and the super admin transfer.
 func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.Public(http.MethodPost, "/auth/login", s.handleLogin)
-	r.Public(http.MethodPost, "/auth/refresh", s.handleRefresh)
 	r.SessionOnly().Handle(http.MethodPost, "/auth/logout", s.handleLogout)
 	r.AuthedRead("/me", s.handleMe)
 	r.Self(http.MethodPut, "/me", "self:profile", s.handleUpdateMe)
@@ -52,7 +49,7 @@ func (s *Service) handleLogin(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	pair, err := s.Login(sessionContext(c, loginMethodPassword), in.Email, in.Password, c.ClientIP())
+	result, err := s.Login(sessionContext(c, loginMethodPassword), in.Email, in.Password, c.ClientIP())
 	if err != nil {
 		if e := core.AsError(err); e.Code == core.ErrRateLimited.Code {
 			if secs, ok := e.Details["retry_after_seconds"].(int64); ok {
@@ -62,34 +59,11 @@ func (s *Service) handleLogin(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	httpapi.OK(c, pair)
-}
-
-func (s *Service) handleRefresh(c *gin.Context) {
-	var in struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if !httpapi.BindJSON(c, &in) {
-		return
-	}
-	pair, err := s.Refresh(sessionContext(c, ""), in.RefreshToken)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	httpapi.OK(c, pair)
+	httpapi.OK(c, result)
 }
 
 func (s *Service) handleLogout(c *gin.Context) {
-	var in struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	// The body is optional: without a refresh token every session is revoked.
-	if err := c.ShouldBindJSON(&in); err != nil && !errors.Is(err, io.EOF) {
-		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage(err.Error()))
-		return
-	}
-	if err := s.Logout(c.Request.Context(), actor(c), in.RefreshToken); err != nil {
+	if err := s.Logout(c.Request.Context(), actor(c)); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -134,7 +108,7 @@ func (s *Service) handleChangePassword(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if err := s.ChangePassword(c.Request.Context(), actor(c), s.currentFamily(c), in.NewPassword); err != nil {
+	if err := s.ChangePassword(c.Request.Context(), actor(c), s.currentSession(c), in.NewPassword); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -170,7 +144,7 @@ func (s *Service) handleSegmentMembers(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := segment.Ref(c.Request.Context(), s.db.Pool, id, true); err != nil {
+	if _, err := segment.Ref(c.Request.Context(), s.db.Gorm, id, true); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

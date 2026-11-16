@@ -22,26 +22,3 @@ func TestValidatePatchesComparesOnlyWhenBytesDiffer(t *testing.T) {
 		t.Fatalf("changed references accepted: kind %v err %v", kind, e)
 	}
 }
-
-func TestHelperBudgetRequestedMatchesJSONPresence(t *testing.T) {
-	cases := []struct {
-		body string
-		want bool
-	}{
-		{`{}`, false},
-		{`{"output_config":{}}`, false},
-		{`{"output_config":{"task_budget":null}}`, false},
-		{`{"output_config":{"task_budget":0}}`, true},
-		{`{"output_config":{"task_budget":false}}`, true},
-		{`{"output_config":{"task_budget":""}}`, true},
-		{`{"output_config":{"task_budget":{"limit":1}}}`, true},
-		{`{"output_config":"text"}`, false},
-		{`{"output_config":[{"task_budget":1}]}`, false},
-		{`not json`, false},
-	}
-	for _, tc := range cases {
-		if got := helperBudgetRequested([]byte(tc.body)); got != tc.want {
-			t.Errorf("helperBudgetRequested(%s) = %v, want %v", tc.body, got, tc.want)
-		}
-	}
-}

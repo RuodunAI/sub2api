@@ -1,0 +1,13 @@
+-- sql
+(SELECT 1 FROM "plugin_staged_grants" WHERE plugin_key = $1 AND version = $2 AND permission = $3 AND status = 'granted' AND scope = $4::jsonb) UNION ALL (SELECT 1 FROM "plugin_permission_grants" WHERE plugin_key = $5 AND NOT EXISTS (
+	SELECT 1 FROM plugin_staged_grants WHERE plugin_key = $6 AND version = $7) AND permission = $8 AND status = 'granted' AND scope = $9::jsonb)
+-- vars
+$1 string "demo"
+$2 string "1.2.0"
+$3 string "kv"
+$4 store.Bytes [123 34 112 114 101 102 105 120 34 58 34 97 34 125]
+$5 string "demo"
+$6 string "demo"
+$7 string "1.2.0"
+$8 string "kv"
+$9 store.Bytes [123 34 112 114 101 102 105 120 34 58 34 97 34 125]

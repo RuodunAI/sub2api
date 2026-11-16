@@ -11,7 +11,6 @@ import (
 	"sort"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pkgsig"
 )
 
@@ -187,7 +186,7 @@ func Declared(key, version, publisher string) *manifest.Manifest {
 		Version:      version,
 		Publisher:    publisher,
 		Runtime:      manifest.RuntimeNone,
-		HostCompat:   ">=" + check.UpstreamFirstCore + " <0.2.0",
+		HostCompat:   ">=0.1.290 <0.2.0",
 		Capabilities: []manifest.Capability{{ID: manifest.CapPlatformAdapter}, {ID: manifest.CapPlatformWebSocket}},
 		AccountTypes: []manifest.AccountType{{
 			ID: "apikey", Label: manifest.LocalizedText{"en": "API Key"},

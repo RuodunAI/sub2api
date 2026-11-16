@@ -168,9 +168,10 @@ func (h *Handler) serveAPI(c *gin.Context) {
 		return
 	}
 
+	var set core.PermissionSet // the caller's, on admin and user routes
 	switch chosen.Route.Scope {
 	case "admin", "user":
-		// A JWT or an access key; the route's permission is checked as the
+		// A session or an access key; the route's permission is checked as the
 		// key narrows it (CONTRACTS §80). A route without a permission
 		// matches nothing and is denied. The plugin is not told the call
 		// came through a key: the admin write audit records it, and the
@@ -179,7 +180,8 @@ func (h *Handler) serveAPI(c *gin.Context) {
 			return
 		}
 		httpapi.StampAuthzVersion(c, h.authz)
-		if !httpapi.CanAny(c, h.authz, manifest.PermissionKey(key, chosen.Route.Permission)) {
+		var ok bool
+		if set, ok = h.authorizeRoute(c, manifest.PermissionKey(key, chosen.Route.Permission)); !ok {
 			return
 		}
 	case "public", "webhook":
@@ -203,21 +205,21 @@ func (h *Handler) serveAPI(c *gin.Context) {
 	if acc := chosen.Route.Accounts; acc != nil && !h.authorizeAccounts(c, acc, params, body) {
 		return
 	}
+	actionScope, ok := h.authorizeScope(c, chosen, set, params, body)
+	if !ok {
+		return
+	}
 
 	req := &pluginv1.HTTPRequest{
-		Caller: &pluginv1.Caller{
-			UserId:    userID,
-			RequestId: core.RequestID(ctx),
-			ClientIp:  c.ClientIP(),
-			Locale:    core.Locale(ctx),
-		},
-		Method:     c.Request.Method,
-		Path:       sub,
-		RoutePath:  chosen.Route.Path,
-		PathParams: params,
-		Query:      map[string]*pluginv1.HeaderValues{},
-		Headers:    map[string]*pluginv1.HeaderValues{},
-		Body:       body,
+		Caller:      CallerOf(c),
+		Method:      c.Request.Method,
+		Path:        sub,
+		RoutePath:   chosen.Route.Path,
+		PathParams:  params,
+		Query:       map[string]*pluginv1.HeaderValues{},
+		Headers:     map[string]*pluginv1.HeaderValues{},
+		Body:        body,
+		ActionScope: actionScope,
 	}
 	for k, v := range c.Request.URL.Query() {
 		req.Query[k] = &pluginv1.HeaderValues{Values: v}
@@ -251,6 +253,14 @@ func (h *Handler) serveAPI(c *gin.Context) {
 		writeResponse(c, resp)
 	}
 	answered = true
+}
+
+// CallerOf is the plugin's view of c's caller: user 0 on public and webhook
+// routes.
+func CallerOf(c *gin.Context) *pluginv1.Caller {
+	ctx := c.Request.Context()
+	userID, _ := core.UserID(ctx)
+	return &pluginv1.Caller{UserId: userID, RequestId: core.RequestID(ctx), ClientIp: c.ClientIP(), Locale: core.Locale(ctx)}
 }
 
 // auditedMethods are the writes WithAudit records.

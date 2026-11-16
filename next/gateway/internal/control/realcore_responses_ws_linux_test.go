@@ -82,8 +82,8 @@ func TestRealCoreResponsesWebSocket(t *testing.T) {
 	}
 	wait("openai plugin with websocket support enabled", 3*time.Minute, func() bool {
 		var ok bool
-		_ = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM plugins p JOIN plugin_versions v ON v.plugin_key=p.key AND v.version=p.active_version
-			WHERE p.key='openai' AND p.status='enabled' AND v.manifest::text LIKE '%platform.websocket.v1%')`).Scan(&ok)
+		_ = db.WithContext(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM plugins p JOIN plugin_versions v ON v.plugin_key=p.key AND v.version=p.active_version
+			WHERE p.key='openai' AND p.status='enabled' AND v.manifest::text LIKE '%platform.websocket.v1%')`).Row().Scan(&ok)
 		return ok
 	})
 
@@ -133,9 +133,9 @@ func TestRealCoreResponsesWebSocket(t *testing.T) {
 		}
 	}
 	rows := func() (n int, nodes string) {
-		_ = db.QueryRow(ctx, `SELECT count(*), coalesce(string_agg(DISTINCT node_id, ','), '') FROM usage_logs
-			WHERE user_id=$1 AND protocol='openai.responses_ws' AND success AND account_id=$2 AND input_tokens=120 AND output_tokens=42
-			AND cache_read_tokens=50 AND stream AND total_cost > 0`, userID, goodID).Scan(&n, &nodes)
+		_ = db.WithContext(ctx).Raw(`SELECT count(*), coalesce(string_agg(DISTINCT node_id, ','), '') FROM usage_logs
+			WHERE user_id=? AND protocol='openai.responses_ws' AND success AND account_id=? AND input_tokens=120 AND output_tokens=42
+			AND cache_read_tokens=50 AND stream AND total_cost > 0`, userID, goodID).Row().Scan(&n, &nodes)
 		return
 	}
 
@@ -154,7 +154,7 @@ func TestRealCoreResponsesWebSocket(t *testing.T) {
 		t.Fatalf("turns recorded on %q", nodes)
 	}
 	var disabled bool
-	if err := db.QueryRow(ctx, `SELECT status <> 'active' FROM accounts WHERE id=$1`, badID).Scan(&disabled); err != nil || !disabled {
+	if err := db.WithContext(ctx).Raw(`SELECT status <> 'active' FROM accounts WHERE id=?`, badID).Row().Scan(&disabled); err != nil || !disabled {
 		t.Fatalf("account with the rejected key still active: %v", err)
 	}
 	handshakes, messages := mockWS(t, mock, goodKey)

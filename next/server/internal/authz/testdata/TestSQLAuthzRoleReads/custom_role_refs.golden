@@ -1,0 +1,4 @@
+-- sql
+SELECT "id","key" FROM "roles" WHERE key = ANY($1) AND NOT builtin ORDER BY id
+-- vars
+$1 store.Strings [super_admin admin operator supplier user]

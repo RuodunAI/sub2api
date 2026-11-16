@@ -11,7 +11,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/app"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/sandbox"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/procguard"
@@ -85,8 +84,7 @@ var runPluginExec = sandbox.RunExec
 // A failure to blank the initial environment block is logged; a failure to
 // clear the dumpable flag stops the start.
 func hardenProcess(log *slog.Logger) error {
-	keys := append(append([]string(nil), config.SensitiveEnv...), ccgateway.SensitiveEnv...)
-	if err := procguard.ScrubEnv(keys); err != nil {
+	if err := procguard.ScrubEnv(config.SensitiveEnv); err != nil {
 		log.Warn("could not blank secrets in the initial environment block", "err", err)
 	}
 	return procguard.DisableDumping()

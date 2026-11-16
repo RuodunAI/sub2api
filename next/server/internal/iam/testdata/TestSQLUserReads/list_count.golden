@@ -1,0 +1,8 @@
+-- sql
+SELECT count(*) FROM users u WHERE u.deleted_at IS NULL AND ((u.email ILIKE $1 OR u.display_name ILIKE $2)) AND u.status = $3 AND ($4 IN (SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || u.id))) AND u.segment_id = $5
+-- vars
+$1 string "%ann%"
+$2 string "%ann%"
+$3 string "active"
+$4 string "admin"
+$5 int64 3

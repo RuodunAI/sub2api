@@ -8,11 +8,12 @@ import (
 	"strconv"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 var _ core.ProxyResolver = (*Service)(nil)
@@ -24,49 +25,39 @@ var _ core.ProxyResolver = (*Service)(nil)
 // then each stored password is decrypted and compared in constant time.
 // Several matches (possible for rows created before this resolver existed)
 // resolve to the smallest id.
-func (s *Service) FindOrCreate(ctx context.Context, tx pgx.Tx, spec Spec, ownerID int64, scope core.DataScope) (int64, bool, error) {
+func (s *Service) FindOrCreate(ctx context.Context, tx *gorm.DB, spec Spec, ownerID int64, scope core.DataScope) (int64, bool, error) {
 	if err := checkSpec(spec); err != nil {
+		return 0, false, err
+	}
+	if err := store.RequireTx(tx); err != nil {
 		return 0, false, err
 	}
 	// Serialise concurrent saves of the same URL for the rest of the
 	// transaction; the lock key ignores the password on purpose (same key
 	// space as the SQL pre-filter).
 	lockKey := spec.Protocol + "|" + spec.Host + "|" + strconv.Itoa(spec.Port) + "|" + spec.Username
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+	if err := store.XactLock(ctx, tx, lockKey); err != nil {
 		return 0, false, err
 	}
-	rows, err := tx.Query(ctx, `SELECT p.id, p.password_enc FROM proxies p
-		WHERE p.protocol = $1 AND lower(p.host) = $2 AND p.port = $3 AND p.username = $4
-		  AND (p.password_enc IS NULL) = $5 AND p.status <> 'disabled'
-		  AND `+core.ProxyRows.SQL(6)+`
-		ORDER BY p.id`, append([]any{spec.Protocol, spec.Host, spec.Port, spec.Username, spec.Password == ""}, core.ProxyRows.Args(scope)...)...)
-	if err != nil {
+	g := store.G(ctx, tx)
+	var found []row
+	if err := candidates(g, spec, scope).Find(&found).Error; err != nil {
 		return 0, false, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		var enc []byte
-		if err := rows.Scan(&id, &enc); err != nil {
-			return 0, false, err
-		}
+	for _, r := range found {
 		if spec.Password == "" {
 			// Pre-filter already guaranteed password_enc IS NULL.
-			return id, false, nil
+			return r.ID, false, nil
 		}
-		pw, err := s.cipher.Decrypt(enc, passwordAAD)
+		pw, err := s.cipher.Decrypt(r.PasswordEnc, passwordAAD)
 		if err != nil {
 			// Undecryptable rows (rotated key) never match; keep looking.
 			continue
 		}
 		if subtle.ConstantTimeCompare(pw, []byte(spec.Password)) == 1 {
-			return id, false, nil
+			return r.ID, false, nil
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return 0, false, err
-	}
-	rows.Close()
 
 	// Creating: every-row or own scopes only, and a restricted one never at
 	// a private address (CONTRACTS §43.3). A proxy already in scope matches
@@ -82,14 +73,23 @@ func (s *Service) FindOrCreate(ctx context.Context, tx pgx.Tx, spec Spec, ownerI
 	if err != nil {
 		return 0, false, err
 	}
-	name := autoName(spec)
-	var id int64
-	if err := tx.QueryRow(ctx, `INSERT INTO proxies (name, protocol, host, port, username, password_enc, status, allow_private, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8) RETURNING id`,
-		name, spec.Protocol, spec.Host, spec.Port, spec.Username, enc, allowPriv, ownerID).Scan(&id); err != nil {
+	p := newProxy(autoName(spec), spec.Protocol, spec.Host, spec.Port, spec.Username, enc, "active", allowPriv, ownerID)
+	if err := g.Create(p).Error; err != nil {
 		return 0, false, err
 	}
-	return id, true, nil
+	return p.ID, true, nil
+}
+
+// candidates selects the id and password of the proxies in scope that
+// FindOrCreate compares with spec, by id: same protocol, host (against the
+// stored one lower-cased), port and username, a password or none like spec,
+// and not disabled.
+func candidates(db *gorm.DB, spec Spec, scope core.DataScope) *gorm.DB {
+	return db.Table("proxies p").Select("p.id, p.password_enc").
+		Where("p.protocol = ? AND lower(p.host) = ? AND p.port = ? AND p.username = ?", spec.Protocol, spec.Host, spec.Port, spec.Username).
+		Where("(p.password_enc IS NULL) = ? AND p.status <> 'disabled'", spec.Password == "").
+		Scopes(core.ProxyRows().Scope(scope)).
+		Order("p.id")
 }
 
 // autoName is the name of an automatically created proxy:
@@ -107,7 +107,7 @@ func autoName(spec Spec) string {
 // on config:changed. The broadcast may precede the commit: no node can have
 // cached a proxy that did not exist a moment ago, so listeners only drop
 // nothing.
-func (s *Service) AuditAutoCreate(ctx context.Context, tx pgx.Tx, proxyID, ownerID, accountID int64) error {
+func (s *Service) AuditAutoCreate(ctx context.Context, tx *gorm.DB, proxyID, ownerID, accountID int64) error {
 	if err := audit.Audit(ctx, tx, ownerID, "proxy.create", "proxy", strconv.FormatInt(proxyID, 10),
 		map[string]any{"auto": true, "account_id": accountID}); err != nil {
 		return err

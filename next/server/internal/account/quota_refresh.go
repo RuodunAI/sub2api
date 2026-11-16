@@ -10,19 +10,21 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const quotaSweepPage = 64
 
 func quotaPluginRevision(bt core.AccountTypeBinding) string {
 	raw, _ := json.Marshal(struct {
-		Version   string
-		Quota     any
-		Lifecycle any
-	}{bt.Plugin.Version, bt.Type.Quota, bt.Type.Lifecycle})
+		Version string
+		Quota   any
+	}{bt.Plugin.Version, bt.Type.Quota})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
@@ -31,62 +33,12 @@ func quotaPluginRevision(bt core.AccountTypeBinding) string {
 // queries its quota automatically, in q. It reports whether a row was written;
 // a caller outside a transaction announces it (quotaChanged), one inside
 // announces the account change after committing.
-func (s *Service) initializeQuota(ctx context.Context, q store.Querier, id int64, bt core.AccountTypeBinding) (bool, error) {
+func (s *Service) initializeQuota(ctx context.Context, q *gorm.DB, id int64, bt core.AccountTypeBinding) (bool, error) {
 	decl := bt.Type.Quota
 	if decl == nil || !decl.Query || !decl.AutoRefresh {
 		return false, nil
 	}
 	return store.EnsureAccountQuota(ctx, q, id, quotaPluginRevision(bt), true)
-}
-
-// lifecycleQuotaReady is the SQL condition (on account_lifecycle_sync l)
-// under which a lifecycle account may be queried for its quota: the runtime
-// configuration is applied, or only a new environment (locale / timezone)
-// waits for the next runtime while the existing container keeps serving.
-const lifecycleQuotaReady = `(l.status='applied' OR (l.status='pending' AND l.code='environment_requires_new_runtime'))`
-
-// quotaBlocked is why an active quota query of the account cannot run now
-// ("" when it can): runtime_not_ready while the lifecycle plugin has not
-// synchronized the account's runtime. A disabled account is only kept out of
-// scheduling (2026-10-22 user decision); its quota is queried like any other.
-func (s *Service) quotaBlocked(ctx context.Context, a *row, bt core.AccountTypeBinding) (string, error) {
-	// A stopped runtime cannot be asked; this is not a failed query.
-	parked, err := s.runtimeParked(ctx, a.ID, a.PluginKey)
-	if err != nil {
-		return "", err
-	}
-	if parked {
-		return "runtime_parked", nil
-	}
-	if bt.Type.Lifecycle == nil {
-		return "", nil
-	}
-	var ready bool
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT `+lifecycleQuotaReady+` FROM account_lifecycle_sync l WHERE l.account_id=$1),true)`, a.ID).Scan(&ready); err != nil {
-		return "", err
-	}
-	if !ready {
-		return "runtime_not_ready", nil
-	}
-	return "", nil
-}
-
-var quotaBlockedMessages = map[string]string{
-	"runtime_not_ready": "The account runtime is not synchronized yet; the quota can be refreshed once it is.",
-	"runtime_parked":    "The account's container is stopped (disabled for the configured hours); test or re-authorize the account to start it.",
-}
-
-// quotaNotReady answers a query the account cannot take now: the background
-// refresh keeps the stored snapshot, a manual refresh is told why (409 with
-// details.reason) instead of silently getting the old snapshot.
-func (s *Service) quotaNotReady(ctx context.Context, id int64, manual bool, reason string, err error) (*store.QuotaSnapshot, error) {
-	if !manual {
-		return s.d.DB.AccountQuota(ctx, id)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return nil, core.ErrConflict.WithMessage(quotaBlockedMessages[reason]).WithDetails(map[string]any{"reason": reason})
 }
 
 func quotaNextCheck(now time.Time, res *pluginv1.QuotaResult, failures int, failed bool) time.Time {
@@ -108,15 +60,12 @@ func quotaNextCheck(now time.Time, res *pluginv1.QuotaResult, failures int, fail
 }
 
 func (s *Service) executeQuotaQuery(ctx context.Context, bt core.AccountTypeBinding, a *row, manual bool, floor time.Duration) (*store.QuotaSnapshot, error) {
-	if reason, err := s.quotaBlocked(ctx, a, bt); err != nil || reason != "" {
-		return s.quotaNotReady(ctx, a.ID, manual, reason, err)
-	}
 	revision := quotaPluginRevision(bt)
 	current, ok := s.accountType(a.PluginKey, a.Type)
 	if !ok || quotaPluginRevision(current) != revision {
 		return s.d.DB.AccountQuota(ctx, a.ID)
 	}
-	created, err := store.EnsureAccountQuota(ctx, s.d.DB.Pool, a.ID, revision, bt.Type.Quota.AutoRefresh)
+	created, err := store.EnsureAccountQuota(ctx, s.d.DB.Gorm, a.ID, revision, bt.Type.Quota.AutoRefresh)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +79,7 @@ func (s *Service) executeQuotaQuery(ctx context.Context, bt core.AccountTypeBind
 	if claim == nil {
 		return s.d.DB.AccountQuota(ctx, a.ID)
 	}
-	a, err = s.loadRow(ctx, s.d.DB.Pool, a.ID, core.AllScope, false)
+	a, err = s.loadRow(ctx, s.d.DB.Gorm, a.ID, core.AllScope, false)
 	if err != nil {
 		return nil, err
 	}
@@ -140,9 +89,6 @@ func (s *Service) executeQuotaQuery(ctx context.Context, bt core.AccountTypeBind
 	}
 	if !valid || (!manual && !claim.Initial && !a.Schedulable) {
 		return s.d.DB.AccountQuota(ctx, a.ID)
-	}
-	if reason, err := s.quotaBlocked(ctx, a, bt); err != nil || reason != "" {
-		return s.quotaNotReady(ctx, a.ID, manual, reason, err)
 	}
 	qctx, cancel := context.WithTimeout(ctx, quotaQueryTimeout)
 	done := make(chan struct{})
@@ -251,40 +197,23 @@ func quotaSweepTypes(g core.Generation) []string {
 // initializeQuotaPage walks one cursor page of accounts and creates the quota
 // snapshot rows they are missing, advancing the sweep cursor.
 func (s *Service) initializeQuotaPage(ctx context.Context, keys []string) error {
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id,a.plugin_key,a.type FROM accounts a WHERE a.deleted_at IS NULL
-  AND a.plugin_key||'/'||a.type=ANY($1) AND a.id>$2 ORDER BY a.id LIMIT $3`, keys, s.quotaSweepAfter, quotaSweepPage)
-	if err != nil {
-		return err
-	}
-	type entry struct {
-		id          int64
-		plugin, typ string
-	}
-	entries := []entry{}
-	for rows.Next() {
-		var e entry
-		if err := rows.Scan(&e.id, &e.plugin, &e.typ); err != nil {
-			rows.Close()
-			return err
-		}
-		entries = append(entries, e)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+	var entries []model.Account
+	if err := accountsOfTypes(store.G(ctx, s.d.DB.Gorm), keys, s.quotaSweepAfter, quotaSweepPage).Select("id, plugin_key, type").
+		Find(&entries).Error; err != nil {
 		return err
 	}
 	for _, e := range entries {
-		bt, ok := s.accountType(e.plugin, e.typ)
+		bt, ok := s.accountType(e.PluginKey, e.Type)
 		if ok {
-			created, err := s.initializeQuota(ctx, s.d.DB.Pool, e.id, bt)
+			created, err := s.initializeQuota(ctx, s.d.DB.Gorm, e.ID, bt)
 			if err != nil {
 				return err
 			}
 			if created {
-				s.quotaChanged(ctx, e.id)
+				s.quotaChanged(ctx, e.ID)
 			}
 		}
-		s.quotaSweepAfter = e.id
+		s.quotaSweepAfter = e.ID
 	}
 	if len(entries) < quotaSweepPage {
 		s.quotaSweepAfter = 0
@@ -292,28 +221,24 @@ func (s *Service) initializeQuotaPage(ctx context.Context, keys []string) error 
 	return nil
 }
 
+// accountsOfTypes is the page of live accounts of the types keys
+// ("plugin/type") after id after, by id.
+func accountsOfTypes(db *gorm.DB, keys []string, after int64, limit int) *gorm.DB {
+	return db.Model(&model.Account{}).Where("deleted_at IS NULL AND plugin_key || '/' || type = ANY(?) AND id > ?", store.Strings(keys), after).
+		Order("id").Limit(limit)
+}
+
 // dueQuotaIDs selects the accounts whose quota is due for a refresh now.
 func (s *Service) dueQuotaIDs(ctx context.Context, keys []string) ([]int64, error) {
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT q.account_id FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
-  WHERE q.auto_refresh AND q.next_check_at<=now() AND (q.lease_until IS NULL OR q.lease_until<=now())
-  AND (q.last_active_at IS NULL OR q.last_active_at<=now()-make_interval(secs=>$3::float8))
-  AND (a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key||'/'||a.type=ANY($1)
-  AND NOT EXISTS(SELECT 1 FROM account_lifecycle_sync l WHERE l.account_id=a.id AND NOT `+lifecycleQuotaReady+`)
-  ORDER BY q.next_check_at,q.account_id LIMIT $2`, keys, quotaSweepPage, quotaQueryFloor.Seconds())
-	if err != nil {
-		return nil, err
-	}
 	ids := []int64{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	return ids, rows.Err()
+	g := store.G(ctx, s.d.DB.Gorm)
+	err := g.Table("account_quota_snapshots q").Joins("JOIN accounts a ON a.id = q.account_id").
+		Where(`q.auto_refresh AND q.next_check_at <= now() AND (q.lease_until IS NULL OR q.lease_until <= now())
+			AND (q.last_active_at IS NULL OR q.last_active_at <= now() - make_interval(secs => ?::float8))
+			AND (a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key || '/' || a.type = ANY(?)`,
+			quotaQueryFloor.Seconds(), store.Strings(keys)).
+		Order("q.next_check_at, q.account_id").Limit(quotaSweepPage).Pluck("q.account_id", &ids).Error
+	return ids, err
 }
 
 // queryDueQuotas queries the selected accounts concurrently, four at a time,
@@ -337,7 +262,7 @@ func (s *Service) queryDueQuotas(ctx context.Context, ids []int64) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 			_, err, _ := s.quotaFlight.Do(itoa(id), func() (any, error) {
-				a, err := s.loadRow(ctx, s.d.DB.Pool, id, core.AllScope, false)
+				a, err := s.loadRow(ctx, s.d.DB.Gorm, id, core.AllScope, false)
 				if err != nil {
 					return nil, err
 				}
@@ -365,7 +290,8 @@ func (s *Service) ApplyAccountQuotaObservation(ctx context.Context, id, expected
 		return err
 	}
 	var pluginKey, accountType string
-	err = s.d.DB.Pool.QueryRow(ctx, `SELECT plugin_key,type FROM accounts WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&pluginKey, &accountType)
+	err = store.G(ctx, s.d.DB.Gorm).Model(&model.Account{}).Select("plugin_key, type").Where("id = ? AND deleted_at IS NULL", id).
+		Row().Scan(&pluginKey, &accountType)
 	if store.IsNoRows(err) {
 		return nil
 	}

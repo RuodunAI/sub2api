@@ -4,20 +4,25 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -55,10 +60,10 @@ const (
 // because the ledger row and the usage row must commit together.
 type TxLedger interface {
 	core.PrechargeReleaser
-	ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error)
+	ApplyTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange) (*core.LedgerResult, error)
 	// SettleTx releases the request's precharge and applies the final charge
 	// (nil: none) in one batch under the user's balance lock.
-	SettleTx(ctx context.Context, tx pgx.Tx, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error)
+	SettleTx(ctx context.Context, tx *gorm.DB, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error)
 	// CacheBalance refreshes the balance cache after commit.
 	CacheBalance(ctx context.Context, userID, ledgerID int64, balance decimal.Decimal)
 }
@@ -413,9 +418,13 @@ func conversionJSON(t *core.ConversionTrace) []byte {
 // lockUsageRow locks the usage row inside the caller's transaction and reads
 // its billing status. Every settlement path takes this lock first, so the
 // SQL and the lock order live here once.
-func lockUsageRow(ctx context.Context, tx pgx.Tx, id int64) (string, error) {
+func lockUsageRow(ctx context.Context, tx *gorm.DB, id int64) (string, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return "", err
+	}
 	var status string
-	err := tx.QueryRow(ctx, `SELECT billing_status FROM usage_logs WHERE id=$1 FOR UPDATE`, id).Scan(&status)
+	err := store.G(ctx, tx).Model(&model.UsageLog{}).Select("billing_status").Where("id = ?", id).
+		Clauses(store.ForUpdate()).Row().Scan(&status)
 	return status, err
 }
 
@@ -433,11 +442,11 @@ func (s *Service) insert(ctx context.Context, batch []*core.UsageRecord) ([]*cor
 	return s.insertAtomic(ctx, batch, nil, nil, false)
 }
 
-func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, before func(pgx.Tx) error, after func(pgx.Tx, map[string]int64) error, settleNow bool) ([]*core.UsageRecord, error) {
+func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, before func(*gorm.DB) error, after func(*gorm.DB, map[string]int64) error, settleNow bool) ([]*core.UsageRecord, error) {
 	var inserted []*core.UsageRecord
 	var reserved []reservedRow
 	var cached []balanceUpdate
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if before != nil {
 			if err := before(tx); err != nil {
 				return err
@@ -446,75 +455,15 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 		ids := make(map[string]int64, len(batch))
 		inserted = inserted[:0]
 		reserved, cached = reserved[:0], cached[:0]
-		b := &pgx.Batch{}
-		for _, rec := range batch {
-			status := initialStatus(rec)
-			var priceID *int64
-			var exprHash, mode string
-			// Free requests also need their token semantics for usage summaries.
-			// Only billable requests retain pricing headers and parameters below.
-			detail := jsonOr(pendingDetail{Inputs: pendingInputs{Semantics: rec.UsageSemantics}}, "{}")
-			if status == StatusPending || status == StatusReserved {
-				if rec.Price != nil {
-					exprHash, mode = rec.Price.ExprHash, rec.Price.Mode
-					if rec.Price.ID > 0 {
-						priceID = &rec.Price.ID
-					}
-					if exprHash == "" {
-						exprHash = expr.Hash(rec.Price.Expression)
-					}
-				}
-				detail = jsonOr(pendingDetail{Inputs: recordInputs(rec)}, "{}")
-			}
-			// The observability markers have their own column, so they are
-			// written once here and never touched again: settle() rewrites
-			// billing_detail wholesale, and used to have to carry them
-			// through the unbilled phase to put them back.
-			anomalies := jsonOr(rec.Anomalies(), "{}")
-			created := rec.CreatedAt
-			if created.IsZero() {
-				created = time.Now()
-			}
-			attempts := rec.Attempts
-			if attempts <= 0 {
-				attempts = 1
-			}
-			rate := rec.RateMultiplier
-			t := rec.Tokens
-			b.Queue(`
-				INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, plugin_key, plugin_version,
-					platform, protocol, endpoint, model, upstream_model, stream, status_code, success, error_type,
-					error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-					cache_creation_1h_tokens, metrics, sticky_rule, sticky_hit, hook_decisions, rate_multiplier,
-					price_id, expr_hash, billing_mode, billing_detail, billing_status, latency_ms, first_token_ms,
-					client_ip, user_agent, node_id, created_at, account_type, upstream_protocol, client_request_id,
-					sched_decisions, plugin_detail, anomalies, upload_ms, conversion)
-				VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
-					$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47)
-				ON CONFLICT (request_id) DO NOTHING
-				RETURNING id`,
-				trunc(rec.RequestID, 64), rec.UserID, rec.APIKeyID, rec.GroupID, rec.AccountID,
-				trunc(rec.PluginKey, 30), trunc(rec.PluginVersion, 50), trunc(rec.Platform, 50),
-				trunc(rec.Protocol, 100), trunc(rec.Endpoint, 200), trunc(rec.Model, 200), trunc(rec.UpstreamModel, 200),
-				rec.Stream, rec.StatusCode, rec.Success, trunc(rec.ErrorType, 50), rec.ErrorMessage, attempts,
-				t.Input, t.Output, t.CacheRead, t.CacheCreation, t.CacheCreation1h,
-				jsonOr(rec.Metrics, "{}"), trunc(rec.StickyRule, 100), rec.StickyHit, jsonOr(rec.HookDecisions, "[]"),
-				rate, priceID, exprHash, mode, detail, status, rec.LatencyMs, rec.FirstTokenMs,
-				trunc(rec.ClientIP, 64), trunc(rec.UserAgent, 500), trunc(rec.NodeID, 100), created,
-				trunc(rec.AccountType, 50), trunc(rec.UpstreamProtocol, 100), trunc(rec.ClientRequestID, 128),
-				jsonOr(rec.SchedDecisions, "[]"), pluginDetailJSON(rec.PluginDetail), anomalies, rec.UploadMs, conversionJSON(rec.Conversion))
+		added, err := insertUsageRows(store.G(ctx, tx), batch)
+		if err != nil {
+			return err
 		}
-		br := tx.SendBatch(ctx, b)
 		var free []core.Event
-		for _, rec := range batch {
-			var id int64
-			err := br.QueryRow().Scan(&id)
-			if store.IsNoRows(err) {
+		for i, rec := range batch {
+			id := added[i]
+			if id == 0 {
 				continue // duplicate request id
-			}
-			if err != nil {
-				_ = br.Close()
-				return err
 			}
 			inserted = append(inserted, rec)
 			ids[rec.RequestID] = id
@@ -524,9 +473,6 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 			case StatusReserved:
 				reserved = append(reserved, reservedRow{rec: rec, id: id})
 			}
-		}
-		if err := br.Close(); err != nil {
-			return err
 		}
 		for _, rec := range inserted {
 			if initialStatus(rec) != StatusFree {
@@ -585,6 +531,167 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 	return inserted, err
 }
 
+// usageLogRow is the usage_logs row the settler inserts: every column it
+// writes, each always written, so the INSERT has one text per row count
+// whatever the values. It cannot be model.UsageLog, whose columns with a
+// database default go into an INSERT only when some row's value is not
+// zero (Select("*") does not change that) and come back with RETURNING;
+// everything else on usage_logs (the UPDATEs, the reads) uses the model.
+type usageLogRow struct {
+	ID                    int64           `gorm:"column:id;primaryKey;autoIncrement:false"`
+	RequestID             string          `gorm:"column:request_id"`
+	UserID                int64           `gorm:"column:user_id"`
+	APIKeyID              int64           `gorm:"column:api_key_id"`
+	GroupID               int64           `gorm:"column:group_id"`
+	AccountID             *int64          `gorm:"column:account_id"`
+	PluginKey             string          `gorm:"column:plugin_key"`
+	PluginVersion         string          `gorm:"column:plugin_version"`
+	Platform              string          `gorm:"column:platform"`
+	Protocol              string          `gorm:"column:protocol"`
+	Endpoint              string          `gorm:"column:endpoint"`
+	Model                 string          `gorm:"column:model"`
+	UpstreamModel         string          `gorm:"column:upstream_model"`
+	Stream                bool            `gorm:"column:stream"`
+	StatusCode            int             `gorm:"column:status_code"`
+	Success               bool            `gorm:"column:success"`
+	ErrorType             string          `gorm:"column:error_type"`
+	ErrorMessage          string          `gorm:"column:error_message"`
+	Attempts              int             `gorm:"column:attempts"`
+	InputTokens           int64           `gorm:"column:input_tokens"`
+	OutputTokens          int64           `gorm:"column:output_tokens"`
+	CacheReadTokens       int64           `gorm:"column:cache_read_tokens"`
+	CacheCreationTokens   int64           `gorm:"column:cache_creation_tokens"`
+	CacheCreation1hTokens int64           `gorm:"column:cache_creation_1h_tokens"`
+	Metrics               store.Bytes     `gorm:"column:metrics"`
+	StickyRule            string          `gorm:"column:sticky_rule"`
+	StickyHit             bool            `gorm:"column:sticky_hit"`
+	HookDecisions         store.Bytes     `gorm:"column:hook_decisions"`
+	RateMultiplier        decimal.Decimal `gorm:"column:rate_multiplier"`
+	PriceID               *int64          `gorm:"column:price_id"`
+	ExprHash              string          `gorm:"column:expr_hash"`
+	BillingMode           string          `gorm:"column:billing_mode"`
+	BillingDetail         store.Bytes     `gorm:"column:billing_detail"`
+	BillingStatus         string          `gorm:"column:billing_status"`
+	LatencyMs             int             `gorm:"column:latency_ms"`
+	FirstTokenMs          int             `gorm:"column:first_token_ms"`
+	ClientIP              string          `gorm:"column:client_ip"`
+	UserAgent             string          `gorm:"column:user_agent"`
+	NodeID                string          `gorm:"column:node_id"`
+	// Created is a pointer, never nil: store stamps (and reads back) a
+	// zero time.Time created_at, which this row never holds.
+	Created          *time.Time  `gorm:"column:created_at"`
+	AccountType      string      `gorm:"column:account_type"`
+	UpstreamProtocol string      `gorm:"column:upstream_protocol"`
+	ClientRequestID  string      `gorm:"column:client_request_id"`
+	SchedDecisions   store.Bytes `gorm:"column:sched_decisions"`
+	PluginDetail     store.Bytes `gorm:"column:plugin_detail"`
+	Anomalies        store.Bytes `gorm:"column:anomalies"`
+	UploadMs         int         `gorm:"column:upload_ms"`
+	Conversion       store.Bytes `gorm:"column:conversion"`
+}
+
+func (usageLogRow) TableName() string { return "usage_logs" }
+
+// skipLoggedRequest skips a row whose request id is there already, or taken
+// by an earlier row of the same INSERT.
+var skipLoggedRequest = clause.OnConflict{Columns: []clause.Column{{Name: "request_id"}}, DoNothing: true}
+
+// insertUsageRows inserts the rows of batch on db, in batch order, and
+// returns the id of each record's new row: 0 where its request id was
+// already there, or taken by an earlier record of the batch (the rows of an
+// INSERT go in in order, so the first record of a request id keeps it).
+//
+// A batch of one, the settler's usual one when it is not busy, is one
+// INSERT that returns the new row's id. A larger batch reserves its ids
+// first (gormpg.NextIDs, ascending in batch order) and inserts the rows with
+// them, store.InsertChunk rows per INSERT: every full chunk has the same
+// text whatever the batch size. Only when some row was skipped does a last
+// read find which ids made it.
+func insertUsageRows(db *gorm.DB, batch []*core.UsageRecord) ([]int64, error) {
+	if len(batch) == 0 {
+		return nil, nil
+	}
+	rows := make([]usageLogRow, len(batch))
+	for i, rec := range batch {
+		rows[i] = newUsageLogRow(rec)
+	}
+	if len(rows) == 1 {
+		err := db.Omit("id").Clauses(skipLoggedRequest, clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(&rows[0]).Error
+		return []int64{rows[0].ID}, err
+	}
+	ids, err := gormpg.NextIDs(db, "usage_logs", len(rows))
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		rows[i].ID = ids[i]
+	}
+	res := db.Clauses(skipLoggedRequest).CreateInBatches(&rows, store.InsertChunk)
+	if res.Error != nil || res.RowsAffected == int64(len(rows)) {
+		return ids, res.Error
+	}
+	var written []int64
+	if err := db.Model(&model.UsageLog{}).Where("id = ANY(?)", store.Int64s(ids)).Pluck("id", &written).Error; err != nil {
+		return nil, err
+	}
+	for i, id := range ids {
+		if !slices.Contains(written, id) {
+			ids[i] = 0
+		}
+	}
+	return ids, nil
+}
+
+// newUsageLogRow is rec's new row.
+func newUsageLogRow(rec *core.UsageRecord) usageLogRow {
+	status := initialStatus(rec)
+	var priceID *int64
+	var exprHash, mode string
+	// Free requests also need their token semantics for usage summaries.
+	// Only billable requests retain pricing headers and parameters below.
+	detail := jsonOr(pendingDetail{Inputs: pendingInputs{Semantics: rec.UsageSemantics}}, "{}")
+	if status == StatusPending || status == StatusReserved {
+		if rec.Price != nil {
+			exprHash, mode = rec.Price.ExprHash, rec.Price.Mode
+			if rec.Price.ID > 0 {
+				priceID = &rec.Price.ID
+			}
+			if exprHash == "" {
+				exprHash = expr.Hash(rec.Price.Expression)
+			}
+		}
+		detail = jsonOr(pendingDetail{Inputs: recordInputs(rec)}, "{}")
+	}
+	// The observability markers have their own column, so they are
+	// written once here and never touched again: settle() rewrites
+	// billing_detail wholesale, and used to have to carry them
+	// through the unbilled phase to put them back.
+	anomalies := jsonOr(rec.Anomalies(), "{}")
+	created := rec.CreatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
+	attempts := rec.Attempts
+	if attempts <= 0 {
+		attempts = 1
+	}
+	t := rec.Tokens
+	return usageLogRow{
+		RequestID: trunc(rec.RequestID, 64), UserID: rec.UserID, APIKeyID: rec.APIKeyID, GroupID: rec.GroupID, AccountID: rec.AccountID,
+		PluginKey: trunc(rec.PluginKey, 30), PluginVersion: trunc(rec.PluginVersion, 50), Platform: trunc(rec.Platform, 50),
+		Protocol: trunc(rec.Protocol, 100), Endpoint: trunc(rec.Endpoint, 200), Model: trunc(rec.Model, 200), UpstreamModel: trunc(rec.UpstreamModel, 200),
+		Stream: rec.Stream, StatusCode: rec.StatusCode, Success: rec.Success, ErrorType: trunc(rec.ErrorType, 50), ErrorMessage: rec.ErrorMessage, Attempts: attempts,
+		InputTokens: t.Input, OutputTokens: t.Output, CacheReadTokens: t.CacheRead, CacheCreationTokens: t.CacheCreation, CacheCreation1hTokens: t.CacheCreation1h,
+		Metrics: jsonOr(rec.Metrics, "{}"), StickyRule: trunc(rec.StickyRule, 100), StickyHit: rec.StickyHit, HookDecisions: jsonOr(rec.HookDecisions, "[]"),
+		RateMultiplier: rec.RateMultiplier, PriceID: priceID, ExprHash: exprHash, BillingMode: mode, BillingDetail: detail, BillingStatus: status,
+		LatencyMs: rec.LatencyMs, FirstTokenMs: rec.FirstTokenMs,
+		ClientIP: trunc(rec.ClientIP, 64), UserAgent: trunc(rec.UserAgent, 500), NodeID: trunc(rec.NodeID, 100), Created: &created,
+		AccountType: trunc(rec.AccountType, 50), UpstreamProtocol: trunc(rec.UpstreamProtocol, 100), ClientRequestID: trunc(rec.ClientRequestID, 128),
+		SchedDecisions: jsonOr(rec.SchedDecisions, "[]"), PluginDetail: pluginDetailJSON(rec.PluginDetail), Anomalies: anomalies,
+		UploadMs: rec.UploadMs, Conversion: conversionJSON(rec.Conversion),
+	}
+}
+
 // reservedRow is one inserted usage row whose cost was estimated by a plugin.
 type reservedRow struct {
 	rec *core.UsageRecord
@@ -606,7 +713,7 @@ type balanceUpdate struct {
 // used, so a reservation and a later settlement of the same request can never
 // both take the base amount. What is new is only the row's status and the
 // pending_settlements entry.
-func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*core.LedgerResult, error) {
+func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*core.LedgerResult, error) {
 	rec := r.rec
 	p := fromRecord(rec)
 	cost, detail, _, err := s.priceOf(ctx, p)
@@ -621,27 +728,27 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 	if total.Sign() > 0 {
 		detail.LedgerID = &res.LedgerID
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE usage_logs SET total_cost = $2, base_cost = $5, billing_detail = $3, matched_tier = $4
-		WHERE id = $1`, r.id, total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), cost.base); err != nil {
+	if err := store.G(ctx, tx).Model(&model.UsageLog{}).Where("id = ?", r.id).Updates(map[string]any{
+		"total_cost": cost.total, "base_cost": cost.base, "billing_detail": store.Bytes(jsonOr(detail, "{}")), "matched_tier": trunc(detail.Tier, 100),
+	}).Error; err != nil {
 		return nil, err
 	}
 	rv := rec.Reservation
-	rs := s.reconcileSettings(ctx)
+	rs := s.reconcileSettingsIn(ctx, tx)
 	now := time.Now()
 	deadlineAt := now.Add(rs.clampDeadline(rv.Deadline))
 	nextAt := now.Add(rs.clampDelay(rv.NextCheckAfter, 0))
 	if nextAt.After(deadlineAt) {
 		nextAt = deadlineAt
 	}
-	var entryID int64
-	err = tx.QueryRow(ctx, `
-		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (plugin_key, ref_id) DO NOTHING
-		RETURNING id`,
-		trunc(rv.PluginKey, 30), trunc(rv.RefID, 200), r.id, rec.AccountID, nextAt, deadlineAt).Scan(&entryID)
-	if store.IsNoRows(err) {
+	// The reconcile entry of the row; no row when the plugin's ref_id is
+	// registered already.
+	entry := model.PendingSettlement{PluginKey: trunc(rv.PluginKey, 30), RefID: trunc(rv.RefID, 200), UsageLogID: r.id,
+		AccountID: rec.AccountID, NextCheckAt: nextAt, DeadlineAt: deadlineAt}
+	ins := store.G(ctx, tx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "ref_id"}}, DoNothing: true}).
+		Create(&entry)
+	err = ins.Error
+	if err == nil && ins.RowsAffected == 0 {
 		// The plugin reused a ref_id that is already being reconciled, so
 		// this row would never be looked at again: it would sit "reserved"
 		// forever, charged and invisible to both loops. Close it here, the
@@ -661,17 +768,13 @@ func (s *Service) reserveTx(ctx context.Context, tx pgx.Tx, r reservedRow) (*cor
 // correct it. Same shape as the reconcile loop's abandon path, and for the
 // same reason it writes 'billed' and never 'failed' - the money has already
 // moved, and usage_logs_billing_pending_idx covers ('pending','failed').
-func (s *Service) closeUnreconcilable(ctx context.Context, tx pgx.Tx, usageLogID int64, reason string) error {
+func (s *Service) closeUnreconcilable(ctx context.Context, tx *gorm.DB, usageLogID int64, reason string) error {
 	slog.ErrorContext(ctx, "usage: a reserved row cannot be reconciled, billing the estimate",
 		"usage_log_id", usageLogID, "reason", reason)
-	marker, _ := json.Marshal(map[string]string{
+	return markUsageRow(store.G(ctx, tx), usageLogID, StatusBilled, nil, map[string]string{
 		core.AnomalyReconcile:      core.ReconcileAbandoned,
 		core.AnomalyReconcileError: trunc(reason, 500),
-	})
-	_, err := tx.Exec(ctx, `
-		UPDATE usage_logs SET billing_status = 'billed', anomalies = anomalies || $2::jsonb
-		WHERE id = $1`, usageLogID, marker)
-	return err
+	}).Error
 }
 
 // pending is everything needed to settle one usage row.
@@ -867,7 +970,7 @@ func baseCost(base *core.PriceBase, p *pending) (decimal.Decimal, error) {
 func (s *Service) settle(ctx context.Context, p *pending, skipLocked bool) error {
 	var err error
 	var ledgerRes *core.LedgerResult
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		ledgerRes, err = s.settleTx(ctx, tx, p, skipLocked)
 		return err
@@ -889,10 +992,13 @@ func (s *Service) markFailed(ctx context.Context, p *pending, cause error) {
 		slog.ErrorContext(ctx, "usage: settlement gave up", "request_id", p.RequestID, "attempts", attempts, "err", cause)
 	}
 	patch := jsonOr(map[string]any{"attempts": attempts, "error": trunc(cause.Error(), 1000), "inputs": p.Inputs}, "{}")
-	_, err := s.db.Pool.Exec(ctx, `
-		UPDATE usage_logs SET billing_status = 'failed', billing_detail = billing_detail || $2::jsonb
-		WHERE request_id = $1 AND billing_status IN ('pending', 'failed')`, p.RequestID, patch)
-	if err != nil {
+	// Only a row still unsettled; patch is merged into its billing detail.
+	if err := store.G(ctx, s.db.Gorm).Model(&model.UsageLog{}).
+		Where("request_id = ? AND billing_status IN ('pending', 'failed')", p.RequestID).
+		Updates(map[string]any{
+			"billing_status": StatusFailed,
+			"billing_detail": gorm.Expr("billing_detail || ?::jsonb", patch),
+		}).Error; err != nil {
 		slog.ErrorContext(ctx, "usage: mark failed", "request_id", p.RequestID, "err", err)
 	}
 }
@@ -941,17 +1047,43 @@ func (s *Service) RetryTaskSpec() core.TaskSpec {
 	}
 }
 
-// frozenPriceJoins is the FROM clause of a query that reads usage_logs u
-// back for pricing: h holds the expression the row froze, by its hash in the
-// price history, and mp the current expression of its price for a row whose
-// hash is not there. A row under a custom price rule gets no mp: its
-// price_id is the global price, not what it was priced at, so without its
-// history it has no expression and priceOne refuses it.
-const frozenPriceJoins = `
-		FROM usage_logs u
-		LEFT JOIN model_price_history h ON h.expr_hash = u.expr_hash
-		LEFT JOIN model_prices mp ON mp.id = u.price_id AND h.expr_hash IS NULL
-			AND u.billing_detail #> '{inputs,pricing,base}' IS NULL`
+// frozenPrice reads usage_logs u back for pricing, the pendingColumns and
+// more: h holds the expression the row froze, by its hash in the price
+// history, and mp the current expression of its price for a row whose hash
+// is not there. A row under a custom price rule gets no mp: its price_id is
+// the global price, not what it was priced at, so without its history it
+// has no expression and priceOne refuses it.
+func frozenPrice(db *gorm.DB, more string) *gorm.DB {
+	return db.Table("usage_logs u").Select(pendingColumns + more + ", COALESCE(h.expression, mp.expression, '')").
+		Joins("LEFT JOIN model_price_history h ON h.expr_hash = u.expr_hash").
+		Joins(`LEFT JOIN model_prices mp ON mp.id = u.price_id AND h.expr_hash IS NULL
+			AND u.billing_detail #> '{inputs,pricing,base}' IS NULL`)
+}
+
+// pendingColumns are the usage_logs u columns of a pending, in scanPending's
+// order.
+const pendingColumns = `u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
+		u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
+		u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens, u.cache_creation_1h_tokens,
+		u.metrics, u.latency_ms, u.created_at, u.rate_multiplier, COALESCE(u.price_id, 0), u.billing_mode, u.billing_detail`
+
+// scanPending reads a frozenPrice row into p: pendingColumns, then more,
+// then the expression.
+func scanPending(row store.RowScanner, p *pending, more ...any) error {
+	var metrics, detail []byte
+	dest := append([]any{&p.RequestID, &p.UserID, &p.APIKeyID, &p.GroupID, &p.AccountID, &p.PluginKey, &p.Platform,
+		&p.Protocol, &p.AccountType, &p.UpstreamProtocol, &p.Model, &p.Success, &p.StatusCode, &p.ErrorType,
+		&p.Tokens.Input, &p.Tokens.Output, &p.Tokens.CacheRead, &p.Tokens.CacheCreation, &p.Tokens.CacheCreation1h,
+		&metrics, &p.LatencyMs, &p.CreatedAt, &p.Rate, &p.PriceID, &p.Mode, &detail}, more...)
+	if err := row.Scan(append(dest, &p.Expression)...); err != nil {
+		return err
+	}
+	_ = json.Unmarshal(metrics, &p.Metrics)
+	var pd pendingDetail
+	_ = json.Unmarshal(detail, &pd)
+	p.Inputs, p.Attempts = pd.Inputs, pd.Attempts
+	return nil
+}
 
 // RetryPending settles pending/failed rows older than Options.RetryAfter
 // that have not exhausted their attempts. It returns the rows examined.
@@ -968,40 +1100,15 @@ func (s *Service) RetryPending(ctx context.Context) (int, error) {
 	if err := s.recoverExecutions(ctx); err != nil {
 		slog.WarnContext(ctx, "usage: recover execution observations", "err", err)
 	}
-	rows, err := s.db.Pool.Query(ctx, `
-		SELECT u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
-		       u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
-		       u.input_tokens, u.output_tokens,
-		       u.cache_read_tokens, u.cache_creation_tokens, u.cache_creation_1h_tokens, u.metrics, u.latency_ms,
-		       u.created_at, u.rate_multiplier, COALESCE(u.price_id, 0), u.billing_mode, u.billing_detail,
-		       COALESCE(h.expression, mp.expression, '')`+frozenPriceJoins+`
-		WHERE u.billing_status IN ('pending', 'failed')
-		  AND u.created_at < now() - make_interval(secs => $1)
-		  AND COALESCE((u.billing_detail->>'attempts')::int, 0) < $2
-		ORDER BY u.id LIMIT 500`, s.opts.RetryAfter.Seconds(), s.opts.MaxAttempts)
-	if err != nil {
-		return 0, err
-	}
-	var list []*pending
-	for rows.Next() {
+	list, err := store.CollectRows(frozenPrice(store.G(ctx, s.db.Gorm), "").
+		Where(`u.billing_status IN ('pending', 'failed')
+		  AND u.created_at < now() - make_interval(secs => ?)
+		  AND COALESCE((u.billing_detail->>'attempts')::int, 0) < ?`, s.opts.RetryAfter.Seconds(), s.opts.MaxAttempts).
+		Order("u.id").Limit(500), func(rows *sql.Rows) (*pending, error) {
 		p := &pending{}
-		var metrics, detail []byte
-		if err := rows.Scan(&p.RequestID, &p.UserID, &p.APIKeyID, &p.GroupID, &p.AccountID, &p.PluginKey, &p.Platform,
-			&p.Protocol, &p.AccountType, &p.UpstreamProtocol, &p.Model, &p.Success, &p.StatusCode, &p.ErrorType,
-			&p.Tokens.Input, &p.Tokens.Output,
-			&p.Tokens.CacheRead, &p.Tokens.CacheCreation, &p.Tokens.CacheCreation1h, &metrics, &p.LatencyMs,
-			&p.CreatedAt, &p.Rate, &p.PriceID, &p.Mode, &detail, &p.Expression); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		_ = json.Unmarshal(metrics, &p.Metrics)
-		var pd pendingDetail
-		_ = json.Unmarshal(detail, &pd)
-		p.Inputs, p.Attempts = pd.Inputs, pd.Attempts
-		list = append(list, p)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		return p, scanPending(rows, p)
+	})
+	if err != nil {
 		return 0, err
 	}
 	for _, p := range list {
@@ -1015,19 +1122,27 @@ func (s *Service) RetryPending(ctx context.Context) (int, error) {
 	return len(list), nil
 }
 
-func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocked bool) (*core.LedgerResult, error) {
+func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLocked bool) (*core.LedgerResult, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	cost, detail, exprHash, err := s.priceOf(ctx, p)
 	if err != nil {
 		return nil, err
 	}
 	total := cost.total
 	var ledgerRes *core.LedgerResult
-	lock := `SELECT billing_status FROM usage_logs WHERE request_id = $1 FOR UPDATE`
+	// skipLocked passes over a row another settlement holds (no row).
+	lock := store.ForUpdate()
 	if skipLocked {
-		lock += ` SKIP LOCKED`
+		lock = lock.SkipLocked()
 	}
+	// The model is a value: an UPDATE through a pointer to one copies each
+	// assigned value into it, on every settlement, for nobody to read.
+	g, row := store.G(ctx, tx), model.UsageLog{}
 	var status string
-	if err := tx.QueryRow(ctx, lock, p.RequestID).Scan(&status); err != nil {
+	if err := g.Model(row).Select("billing_status").Where("request_id = ?", p.RequestID).
+		Clauses(lock).Row().Scan(&status); err != nil {
 		if store.IsNoRows(err) {
 			return nil, errNotPending
 		}
@@ -1047,11 +1162,11 @@ func (s *Service) settleTx(ctx context.Context, tx pgx.Tx, p *pending, skipLocke
 	if p.PriceID > 0 {
 		priceID = &p.PriceID
 	}
-	_, err = tx.Exec(ctx, `
-			UPDATE usage_logs SET total_cost = $2, billing_status = 'billed', billing_detail = $3, matched_tier = $4,
-				expr_hash = $5, billing_mode = $6, price_id = $7, rate_multiplier = $8, base_cost = $9
-			WHERE request_id = $1`,
-		p.RequestID, total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, p.Mode, priceID, p.Rate, cost.base)
+	err = g.Model(row).Where("request_id = ?", p.RequestID).Updates(map[string]any{
+		"total_cost": cost.total, "billing_status": StatusBilled, "billing_detail": store.Bytes(jsonOr(detail, "{}")),
+		"matched_tier": trunc(detail.Tier, 100), "expr_hash": exprHash, "billing_mode": p.Mode, "price_id": priceID,
+		"rate_multiplier": p.Rate, "base_cost": cost.base,
+	}).Error
 	if err != nil {
 		return nil, err
 	}

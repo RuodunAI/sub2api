@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -20,9 +20,10 @@ import (
 
 // ============================================================ identity & authz (owner: A core-data)
 
-// TokenVerifier validates console access tokens (JWT).
+// TokenVerifier validates console session tokens (s2s_, CONTRACTS §100):
+// the user and the login session of the token.
 type TokenVerifier interface {
-	VerifyAccessToken(ctx context.Context, token string) (userID int64, err error)
+	VerifySession(ctx context.Context, token string) (userID int64, session string, err error)
 }
 
 // PermissionSet is a user's effective permissions at a given authz version.
@@ -33,6 +34,11 @@ type TokenVerifier interface {
 // Keys holds the unscoped keys, a scope of everything included (canonical,
 // perm.Canonical); Scoped the narrower scopes per action (CONTRACTS §21).
 // Build sets with Add or PermissionSetOf, which canonicalize.
+//
+// A user's set as the Authorizer resolves it (PermissionSet) is decided:
+// its lists are what Casbin lists for the user, and Has is Casbin's
+// Enforce (CONTRACTS §99.3). A set built from keys (a role's grants, an
+// access key's list) compares keys.
 type PermissionSet struct {
 	Superuser    bool
 	Keys         map[string]struct{}
@@ -40,6 +46,16 @@ type PermissionSet struct {
 	Assignable   map[string]struct{}
 	AssignCustom bool
 	Version      int64
+	// decide answers Has for a decided set (Decided), nil for one built
+	// from keys.
+	decide func(string) bool
+}
+
+// Decided returns s answering Has with decide: the authorizer's decision
+// for the holder, whose grants s lists.
+func (s PermissionSet) Decided(decide func(string) bool) PermissionSet {
+	s.decide = decide
+	return s
 }
 
 // Add grants k (any spelling: trailing wildcards included). A key that does
@@ -68,10 +84,20 @@ func (s *PermissionSet) add(p perm.Pattern) {
 	}
 }
 
-// Has reports whether the set implies k: a superuser, k held unscoped, or a
-// held scope implying k's. An unscoped k asks for every row, so
-// Has("account:read") is false for a holder of account:read:own only.
+// Has reports whether the set implies k: for a decided set, the
+// authorizer's decision; else a superuser, k held unscoped, or a held scope
+// implying k's. An unscoped k asks for every row, so Has("account:read") is
+// false for a holder of account:read:own only.
 func (s PermissionSet) Has(k string) bool {
+	if s.decide != nil {
+		return s.decide(k)
+	}
+	return s.lists(k)
+}
+
+// lists reports whether the lists of the set imply k (Has of a set built
+// from keys).
+func (s PermissionSet) lists(k string) bool {
 	if s.Superuser {
 		return true
 	}
@@ -110,7 +136,7 @@ func (s PermissionSet) DataScope(uid int64, action perm.Key) DataScope {
 
 // ScopeGroups lists the groups its scopes name (group/G, group/G/account/X)
 // under any action, sorted: the groups whose names the holder's own grants
-// show (lookup.Entity.Named).
+// show (lookup's entity.named).
 func (s PermissionSet) ScopeGroups() []int64 {
 	var out []int64
 	for _, scopes := range s.Scoped {
@@ -154,7 +180,7 @@ func (s PermissionSet) CanAssign(roleKey string) bool {
 }
 
 // AccessKeyPrefix starts every access key, so a bearer token can be told from
-// a console JWT without parsing it.
+// a console session token without a lookup.
 const AccessKeyPrefix = "sak_"
 
 // AccessKeyIdentity is who an access key acts for and what it was given.
@@ -169,22 +195,18 @@ type AccessKeyVerifier interface {
 	VerifyAccessKey(ctx context.Context, raw, ip string) (AccessKeyIdentity, error)
 }
 
-// AuthenticateBearer resolves a console bearer token to its user: a JWT, or an
-// access key, whose limits then travel in the returned context.
+// AuthenticateBearer resolves a console bearer token to its user: a login
+// session, whose id then travels in the returned context, or an access key,
+// whose limits do. The client's ip goes in the context first (ClientIP): a
+// session records where it is used from.
 func AuthenticateBearer(ctx context.Context, tokens TokenVerifier, token, ip string) (context.Context, int64, error) {
+	ctx = WithClientIP(ctx, ip)
 	if !strings.HasPrefix(token, AccessKeyPrefix) {
-		if sv, ok := tokens.(SessionVerifier); ok {
-			uid, session, err := sv.VerifySession(ctx, token)
-			if err != nil {
-				return ctx, 0, err
-			}
-			return WithSession(WithUserID(ctx, uid), session), uid, nil
-		}
-		uid, err := tokens.VerifyAccessToken(ctx, token)
+		uid, session, err := tokens.VerifySession(ctx, token)
 		if err != nil {
 			return ctx, 0, err
 		}
-		return WithUserID(ctx, uid), uid, nil
+		return WithSession(WithUserID(ctx, uid), session), uid, nil
 	}
 	keys, ok := tokens.(AccessKeyVerifier)
 	if !ok {
@@ -272,14 +294,25 @@ func missingKeys(have, want map[string]struct{}) []string {
 // true for anything. The loss of the flag is deliberate: an access key never
 // acts as a superuser, so it cannot grant or act on what only a superuser
 // may (Missing). Assignable roles are not copied, also deliberately: an
-// access key never assigns roles.
+// access key never assigns roles. On a decided set, Has of the result is
+// the narrowed lists' and the holder's decision both.
 func (s PermissionSet) Restrict(keys []string) PermissionSet {
+	out := s.restrict(keys)
+	if s.decide != nil {
+		lists, decide := out, s.decide
+		out.decide = func(k string) bool { return lists.lists(k) && decide(k) }
+	}
+	return out
+}
+
+// restrict is Restrict on the lists of the set.
+func (s PermissionSet) restrict(keys []string) PermissionSet {
 	out := PermissionSet{Keys: make(map[string]struct{}, len(keys)), Version: s.Version}
 	for _, k := range keys {
 		p, err := perm.Parse(k)
 		switch {
 		case err != nil:
-		case s.Has(k):
+		case s.lists(k):
 			out.add(p)
 		default:
 			for _, sc := range s.Scoped[p.Action] {
@@ -358,48 +391,182 @@ func (denyAllUsers) CanActOnUsers(context.Context, int64, UserAction, ...int64) 
 	return ErrInternal
 }
 
+// PluginScopeTypePrefix starts the scope_type of a scoped plugin permission:
+// "plugin:" + its manifest scope's ResourceName().
+const PluginScopeTypePrefix = "plugin:"
+
+// The one encoding of a plugin permission's scope in the catalog: written
+// as StoredPluginScope with PluginScopeType, read back with ReadPluginScope.
+
+// StoredPluginScope is manifest scope s as the catalog stores it and the
+// console reads it (PermissionDef.Scope, GET /permissions, the review):
+// Resource set to ResourceName(), the values resource for a values scope;
+// nil for nil.
+func StoredPluginScope(s *manifest.PermissionScope) *manifest.PermissionScope {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	out.Resource = s.ResourceName()
+	return &out
+}
+
+// PluginScopeType is the scope_type of a plugin permission of manifest
+// scope s, "" for none.
+func PluginScopeType(s *manifest.PermissionScope) string {
+	if s == nil {
+		return ""
+	}
+	return PluginScopeTypePrefix + s.ResourceName()
+}
+
+// ReadPluginScope reads a stored plugin permission's scope_type and scope
+// as the scope its grants may name (manifest.PermissionScope.Takes): the
+// zero scope (every row only) for an unscoped one, the resource always
+// that of scope_type.
+func ReadPluginScope(scopeType string, s *manifest.PermissionScope) manifest.PermissionScope {
+	res, ok := strings.CutPrefix(scopeType, PluginScopeTypePrefix)
+	if !ok {
+		return manifest.PermissionScope{}
+	}
+	var out manifest.PermissionScope
+	if s != nil {
+		out = *s
+	}
+	out.Resource = res
+	return out
+}
+
+// PluginScopeSuffix is the canonical form of sfx, a scope suffix of the
+// plugin permission key ("own", "flow/3", "value/input"); ok is false when
+// key:sfx is not a scope of key. Whether the permission takes it is
+// ReadPluginScope's Takes.
+func PluginScopeSuffix(key, sfx string) (string, bool) {
+	p, err := perm.Parse(key + ":" + sfx)
+	if err != nil || string(p.Action) != key {
+		return "", false
+	}
+	return p.Suffix(), true
+}
+
 // PermissionDef describes one permission in the catalog.
 type PermissionDef struct {
 	Key    string
 	Module string
-	// ScopeType is the resource the action's scope ranges over
-	// (perm.ScopeType), "" for an action that takes none.
-	ScopeType   string
+	// ScopeType is the resource the action's scope ranges over: core
+	// "account"/"proxy" (perm.ScopeType), plugin PluginScopeTypePrefix + the
+	// manifest scope's ResourceName(); "" for an action that takes none.
+	ScopeType string
+	// Scope is a plugin permission's manifest scope (Resource set to
+	// ResourceName()); nil for core and unscoped ones.
+	Scope       *manifest.PermissionScope
 	Label       LocalizedText
 	Description LocalizedText
-	Sensitive   bool
+	Risk        string // manifest.RiskLow (also when empty) | RiskSensitive | RiskCritical
 	Sort        int
-	// GrantRoles are the roles a plugin permission is granted to when the
-	// catalog first creates it (super admin roles are skipped).
-	GrantRoles []string
-	// InheritFrom are keys of the same plugin's permissions (local or
-	// qualified) whose holders get a plugin permission when the catalog
-	// first creates it; only grants that exist before this sync count.
-	InheritFrom []string
+	// Group of a plugin permission (manifest permissionGroups[]).
+	Group      string
+	GroupLabel LocalizedText
+	GroupSort  int
+	// Requires are soft dependencies, qualified keys; never authorization.
+	Requires []string
+	// Defaults is the manifest's suggestion, role -> canonical scope
+	// suffixes ("" every row): stored for the console's "restore plugin
+	// suggestion", never granted by itself. Nil for a critical permission.
+	Defaults map[string][]string
+	// GrantRoles are what the catalog grants when it first creates the
+	// permission, role -> suffixes as Defaults (super admin roles skipped):
+	// the consent's decision, not the manifest's.
+	GrantRoles map[string][]string
+	// Staged: declared only by a version approved while another runs. The
+	// catalog creates it with status staged (granting nothing, untouched by
+	// SetPluginActive) and leaves it removed, scope grants unpruned, when it
+	// is, so it means nothing before that version's activation syncs it
+	// again.
+	Staged bool
 }
+
+// PluginPermission is a plugin permission as the catalog holds it
+// (PermissionCatalog.PluginPermissions).
+type PluginPermission struct {
+	Key    string // qualified
+	Label  LocalizedText
+	Status string // active | disabled | removed
+	Risk   string // manifest.RiskLow | RiskSensitive | RiskCritical
+	// ScopeType and Scope as stored; Scope read back with ReadPluginScope
+	// (the zero scope for an unscoped key).
+	ScopeType string
+	Scope     manifest.PermissionScope
+}
+
+// PermissionHolder is one grant of a permission
+// (PermissionCatalog.PermissionHolders): the role and the scope.
+type PermissionHolder struct {
+	Role  string
+	Scope string // canonical suffix; "" every row
+}
+
+// PluginGrantees is which roles an actor may hand new plugin permissions
+// (PermissionCatalog.PluginGrantees): Denied maps a role to why not.
+type PluginGrantees struct {
+	Superuser bool              `json:"superuser"` // may grant critical ones
+	Denied    map[string]string `json:"denied"`    // a GrantDeny* reason
+}
+
+// Why an actor may not change a role or hand it new plugin permissions:
+// PluginGrantees.Denied, the role matrix's denied, the consent review's
+// reasons and a critical refusal's details.reason. The console reads them.
+const (
+	GrantDenySuperuserRole = "superuser_role" // a super admin role: frozen, it holds everything
+	GrantDenyNotEditable   = "not_editable"   // the role holds what the actor lacks
+	GrantDenyNotAssignable = "not_assignable" // not on the actor's assignable list
+	GrantDenyHeld          = "held"           // the actor holds the role
+	GrantDenyRoleDefine    = "role_define"    // the actor lacks role:define
+	GrantDenyCritical      = "critical"       // a critical permission, the actor no superuser
+)
 
 // PermissionCatalog is used by the plugin runtime to manage plugin-owned
 // permissions ("plugin.<key>:<local>"). Every mutation bumps the authz version
 // and broadcasts authz:changed.
 type PermissionCatalog interface {
-	// SyncPlugin upserts the plugin's permissions (install/upgrade), grants
-	// newly created ones to their GrantRoles and to the holders of their
-	// InheritFrom keys, then deletes ones no longer declared.
-	SyncPlugin(ctx context.Context, tx pgx.Tx, pluginKey string, defs []PermissionDef) error
+	// SyncPlugin upserts the plugin's permissions (install/upgrade),
+	// revives removed ones it declares again (grants as they were, no
+	// GrantRoles), grants newly created ones their GrantRoles (scopes
+	// included; the consent resolved inheritance into them), drops scope
+	// grants the declared scope no longer takes, and marks keys no longer
+	// declared removed (their grants stay, granting nothing).
+	SyncPlugin(ctx context.Context, tx *gorm.DB, pluginKey string, defs []PermissionDef) error
 	// CanGrantToRoles fails unless actorID may change every role of
 	// roleKeys (super admin roles never), as handing them a plugin's new
-	// permissions does, and each is on its assignable list and, but for a
-	// superuser, not held by actorID.
-	CanGrantToRoles(ctx context.Context, tx pgx.Tx, actorID int64, roleKeys []string) error
+	// permissions of risk at most risk does, and each is on its assignable
+	// list and, but for a superuser, not held by actorID. A critical risk
+	// also needs a superuser actor.
+	CanGrantToRoles(ctx context.Context, tx *gorm.DB, actorID int64, roleKeys []string, risk string) error
+	// PluginGrantees is CanGrantToRoles read-only: no version bump, no
+	// locks, a refusal is a Denied entry rather than an error.
+	PluginGrantees(ctx context.Context, tx *gorm.DB, actorID int64, roleKeys []string) (PluginGrantees, error)
 	// GrantPluginPermission grants the existing plugin permission key to
-	// roleKeys (super admin roles skipped), each grant audited as
+	// roles (role -> scope suffixes as PermissionDef.GrantRoles; removed
+	// keys and super admin roles skipped), each grant audited as
 	// authz.sync.grant: the role grants an upgrade withheld until someone
 	// confirmed them. Callers check the rights (CanGrantToRoles).
-	GrantPluginPermission(ctx context.Context, tx pgx.Tx, key string, roleKeys []string) error
-	// SetPluginActive flips status active/disabled (enable/disable).
-	SetPluginActive(ctx context.Context, tx pgx.Tx, pluginKey string, active bool) error
+	GrantPluginPermission(ctx context.Context, tx *gorm.DB, key string, roles map[string][]string) error
+	// PluginPermissions lists the plugin's permissions, removed ones
+	// included, by their sort.
+	PluginPermissions(ctx context.Context, q *gorm.DB, pluginKey string) ([]PluginPermission, error)
+	// PermissionHolders maps each key of keys to its grants, every row and
+	// scoped ones, by role then scope; super admin roles aside, removed
+	// keys keeping theirs (D6).
+	PermissionHolders(ctx context.Context, q *gorm.DB, keys []string) (map[string][]PermissionHolder, error)
+	// SetPluginActive flips status active/disabled (enable/disable); removed
+	// and staged permissions stay as they are.
+	SetPluginActive(ctx context.Context, tx *gorm.DB, pluginKey string, active bool) error
+	// DiscardStaged deletes the plugin's staged permissions (PermissionDef.
+	// Staged) and their grants: a consent supersedes what an earlier one,
+	// of a version not activated, created for it.
+	DiscardStaged(ctx context.Context, tx *gorm.DB, pluginKey string) error
 	// DeletePlugin removes the plugin's permissions and grants (uninstall).
-	DeletePlugin(ctx context.Context, tx pgx.Tx, pluginKey string) error
+	DeletePlugin(ctx context.Context, tx *gorm.DB, pluginKey string) error
 }
 
 // ============================================================ api keys & groups (owner: A)
@@ -885,11 +1052,11 @@ type ProxyResolver interface {
 	// audit detail needs does not exist yet when the account is being
 	// created. After the account row is written, callers pass created ==
 	// true rows to AuditAutoCreate in the same transaction.
-	FindOrCreate(ctx context.Context, tx pgx.Tx, spec ProxySpec, ownerID int64, scope DataScope) (id int64, created bool, err error)
+	FindOrCreate(ctx context.Context, tx *gorm.DB, spec ProxySpec, ownerID int64, scope DataScope) (id int64, created bool, err error)
 	// AuditAutoCreate records the audit row proxy.create {auto:true,
 	// account_id} (actor = ownerID, ip from audit.WithClientIP on ctx) for a
 	// proxy FindOrCreate just inserted, and announces the new proxy on
 	// config:changed. Call it once per created proxy, in the same
 	// transaction, after the account id is known.
-	AuditAutoCreate(ctx context.Context, tx pgx.Tx, proxyID, ownerID, accountID int64) error
+	AuditAutoCreate(ctx context.Context, tx *gorm.DB, proxyID, ownerID, accountID int64) error
 }

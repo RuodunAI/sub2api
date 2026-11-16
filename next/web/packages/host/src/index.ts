@@ -12,7 +12,7 @@ export * from './bridge-protocol'
 export { useList, type UseListOptions, type UseListResult } from './useList'
 
 /** Version of the host UI contract; plugins declare hostUICompat against it. */
-export const HOST_UI_VERSION = '3.15.0'
+export const HOST_UI_VERSION = '3.17.0'
 
 /**
  * Accounts per plugin account action request and per `GET /accounts?ids=`
@@ -46,6 +46,13 @@ export interface HostI18n {
   formatDateTime(v: string | number | Date | null | undefined): string
 }
 
+/**
+ * The caller's permissions. Plugin keys take scopes as core ones do (UI 3.16):
+ * has("plugin.p:flow:manage") needs every row, hasAction any scope, and
+ * scope() lists "plugin.p:flow:manage:own", "plugin.p:flow:manage:flow/2"...
+ * A 3.15 console does not parse plugin scopes: a page relying on them
+ * declares hostUICompat ^3.16.
+ */
 export interface HostPermissions {
   superuser(): boolean
   /** The key is held: implied by a held key (CONTRACTS §21), so has("account:read") asks for every account. */

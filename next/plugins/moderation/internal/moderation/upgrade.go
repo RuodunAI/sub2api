@@ -7,8 +7,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
+	"gorm.io/gorm"
 )
 
 // upgradeOnce runs the one-time steps of the 0.11.0 upgrade (CONTRACTS §72
@@ -29,16 +29,16 @@ func (p *Plugin) upgradeOnce(ctx context.Context) {
 		return
 	}
 	c := p.cfg.Load()
-	var imported, converted bool
-	if err := db.QueryRow(ctx, `SELECT lists_imported, legacy_converted FROM config_state WHERE id = 1`).Scan(&imported, &converted); err != nil {
+	var st model.ConfigState
+	if err := configState(db).Select("lists_imported, legacy_converted").Take(&st).Error; err != nil {
 		p.log.Warn("moderation: reading the upgrade state failed, retrying later", "error", err.Error())
 		return
 	}
-	if !imported {
-		fixed, err := p.importLists(ctx, db, c.lists)
+	if !st.ListsImported {
+		fixed, err := p.importLists(db, c.lists)
 		if err == nil {
 			// Another node may have set it first: setting it again is harmless.
-			_, err = db.Exec(ctx, `UPDATE config_state SET lists_imported = true WHERE id = 1`)
+			err = configState(db).Update("lists_imported", true).Error
 		}
 		if fixed > 0 {
 			p.watchChanged(ctx)
@@ -50,7 +50,7 @@ func (p *Plugin) upgradeOnce(ctx context.Context) {
 		p.log.Info("moderation: imported the user lists of the settings into the watch list",
 			"allowlist", len(c.lists.allow), "blocklist", len(c.lists.block), "invalid", c.lists.invalid, "fixed", fixed)
 	}
-	if !converted && c.setup01 {
+	if !st.LegacyConverted && c.setup01 {
 		p.log.Error("moderation: the settings hold a 0.1 single-model setup that was never converted, and 0.11.0 no longer converts it: upgrade through moderation <= 0.10 first")
 	}
 	p.upgraded.Store(true)
@@ -62,13 +62,9 @@ func (p *Plugin) upgradeOnce(ctx context.Context) {
 // the user's lock, so nodes importing at the same time fix each entry once.
 // Every fix writes a history row and a log line. fixed counts the fixes,
 // also when it stops at an error.
-func (p *Plugin) importLists(ctx context.Context, db *pgxpool.Pool, l retiredLists) (fixed int, err error) {
-	rows, err := db.Query(ctx, `SELECT user_id FROM watchlist WHERE locked`)
-	if err != nil {
-		return 0, err
-	}
-	locked, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	if err != nil {
+func (p *Plugin) importLists(db *gorm.DB, l retiredLists) (fixed int, err error) {
+	var locked []int64
+	if err := db.Model(&model.Watch{}).Where("locked").Pluck("user_id", &locked).Error; err != nil {
 		return 0, err
 	}
 	lists := map[int64]string{} // "" = neither list
@@ -83,7 +79,7 @@ func (p *Plugin) importLists(ctx context.Context, db *pgxpool.Pool, l retiredLis
 	}
 	now := p.now().UTC()
 	for _, uid := range slices.Sorted(maps.Keys(lists)) {
-		was, changed, err := importEntry(ctx, db, uid, lists[uid], now)
+		was, changed, err := importEntry(db, uid, lists[uid], now)
 		if err != nil {
 			return fixed, err
 		}
@@ -98,36 +94,36 @@ func (p *Plugin) importLists(ctx context.Context, db *pgxpool.Pool, l retiredLis
 // importEntry makes uid's entry a locked entry of list, or, for list "",
 // removes uid's locked entry; was describes the entry before (changed = it
 // wrote).
-func importEntry(ctx context.Context, db *pgxpool.Pool, uid int64, list string, now time.Time) (was string, changed bool, err error) {
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		if err := lockBlockSubject(ctx, tx, uid); err != nil {
+func importEntry(db *gorm.DB, uid int64, list string, now time.Time) (was string, changed bool, err error) {
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := lockBlockSubject(tx, uid); err != nil {
 			return err
 		}
-		w, found, expired, err := liveWatchEntry(ctx, tx, uid, now)
+		w, found, expired, err := liveWatchEntry(tx, uid, now)
 		if err != nil {
 			return err
 		}
 		was = entryState(w, found)
 		if list == "" {
-			changed, err = importUnlock(ctx, tx, w, found)
+			changed, err = importUnlock(tx, w, found)
 		} else {
-			_, changed, err = lockEntry(ctx, tx, w, found, list, now, watchChange{uid: uid, reason: lockLists[list].imported})
+			_, changed, err = lockEntry(tx, w, found, list, now, watchChange{uid: uid, reason: lockLists[list].imported})
 		}
 		if err != nil || !(changed || expired) {
 			return err
 		}
-		return bumpWatch(ctx, tx)
+		return bumpWatch(tx)
 	})
 	return was, changed && err == nil, err
 }
 
 // importUnlock removes w, the entry of a user on neither list, if it is
 // locked (changed = it did).
-func importUnlock(ctx context.Context, tx pgx.Tx, w Watch, found bool) (bool, error) {
+func importUnlock(tx *gorm.DB, w Watch, found bool) (bool, error) {
 	if !found || !w.Locked {
 		return false, nil
 	}
-	return true, unlockEntry(ctx, tx, w, lockLists[w.Lock].unlisted, nil)
+	return true, unlockEntry(tx, w, lockLists[w.Lock].unlisted, nil)
 }
 
 // entryState describes an entry for the log: "none", or its level, whether

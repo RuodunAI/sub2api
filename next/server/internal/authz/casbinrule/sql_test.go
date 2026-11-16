@@ -1,0 +1,90 @@
+package casbinrule
+
+import (
+	"strconv"
+	"testing"
+
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
+)
+
+// The SQL of every statement on casbin_rule (see package gormtest): the
+// review surface of the policy's mapping.
+
+func assertRuns(t *testing.T, cases map[string]func(*gorm.DB) error) {
+	t.Helper()
+	for name, run := range cases {
+		t.Run(name, func(t *testing.T) { gormtest.AssertRun(t, run) })
+	}
+}
+
+func TestSQLCasbinRuleReads(t *testing.T) {
+	var dest []map[string]any
+	assertRuns(t, map[string]func(*gorm.DB) error{
+		"role_keys_of": func(db *gorm.DB) error { return RoleKeysOf(db, []int64{7, 8}).Scan(&dest).Error },
+		"role_subs_of": func(db *gorm.DB) error { return RoleSubsOf(db, 7).Scan(&dest).Error },
+		"lock_members": func(db *gorm.DB) error {
+			_, err := LockMembers(db, "super_admin")
+			return err
+		},
+		"grants_of": func(db *gorm.DB) error {
+			return db.Raw(`SELECT g.key FROM roles r, LATERAL (`+GrantsOfRole+`) g WHERE r.key = ?`, "admin").Scan(&dest).Error
+		},
+		"roles_of": func(db *gorm.DB) error {
+			return db.Raw(`SELECT k FROM users u, LATERAL (`+RolesOfUser+`) ur(k) WHERE u.id = ?`, 7).Scan(&dest).Error
+		},
+		"members_of": func(db *gorm.DB) error {
+			return db.Raw(`SELECT m FROM roles r, LATERAL (`+MembersOfRole+`) rm(m) WHERE r.key = ?`, "admin").Scan(&dest).Error
+		},
+		"scopes": func(db *gorm.DB) error {
+			_, err := Scopes(db, "plugin:demo:read")
+			return err
+		},
+	})
+}
+
+func TestSQLCasbinRuleWrites(t *testing.T) {
+	grants := []Grant{{Role: "admin", Action: "account:read"}, {Role: "operator", Action: "account:read", Suffix: "own"}}
+	assertRuns(t, map[string]func(*gorm.DB) error{
+		"add_grants": func(db *gorm.DB) error {
+			_, err := AddGrants(db, grants, Filter{})
+			return err
+		},
+		"add_grants_filtered": func(db *gorm.DB) error {
+			_, err := AddGrants(db, grants, Filter{Source: "plugin", Skip: []string{"removed"}, NoSuperuser: true})
+			return err
+		},
+		"drop_grants": func(db *gorm.DB) error {
+			return DropGrants(db, "admin", Filter{Plugin: "demo", Action: "plugin.demo:read", Skip: []string{"staged"}}, grants[:1])
+		},
+		"drop_grants_all": func(db *gorm.DB) error { return DropGrants(db, "admin", Filter{}, nil) },
+		"revoke_scopes": func(db *gorm.DB) error {
+			_, err := RevokeScopes(db, "plugin:demo:read", []string{"own", ""})
+			return err
+		},
+		"drop_permissions": func(db *gorm.DB) error { return DropPermissions(db, []string{"plugin:demo:read"}) },
+		"clear_scopes": func(db *gorm.DB) error {
+			_, err := ClearScopes(db, []string{`(^|/)group/5(/|$)`})
+			return err
+		},
+		"sync_superusers": func(db *gorm.DB) error {
+			_, err := SyncSuperusers(db)
+			return err
+		},
+		"delete_role":    func(db *gorm.DB) error { return DeleteRole(db, "custom") },
+		"set_roles":      func(db *gorm.DB) error { return SetRoles(db, 7, []string{"admin", "user"}) },
+		"add_members":    func(db *gorm.DB) error { return AddMembers(db, "admin", []int64{7, 8}) },
+		"remove_members": func(db *gorm.DB) error { return RemoveMembers(db, "super_admin", []int64{7}) },
+	})
+}
+
+// keyStart, where substr reads a key or an id out of a subject, is one past
+// both prefixes.
+func TestKeyStart(t *testing.T) {
+	for _, prefix := range []string{rolePrefix, userPrefix} {
+		if want := strconv.Itoa(len(prefix) + 1); keyStart != want {
+			t.Fatalf("keyStart %s, want %s for %q", keyStart, want, prefix)
+		}
+	}
+}

@@ -1,0 +1,6 @@
+-- sql
+UPDATE "users" SET "segment_id"=$1 WHERE id = $2 AND segment_id = $3 AND deleted_at IS NULL
+-- vars
+$1 int64 9
+$2 int64 5
+$3 int64 2

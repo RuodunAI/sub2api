@@ -74,17 +74,17 @@ func TestRealCorePluginPackagesTravelBetweenNodes(t *testing.T) {
 	}
 	digestOf := func(key string) string {
 		var sum string
-		_ = db.QueryRow(ctx, `SELECT lower(package_sha256) FROM plugin_versions v JOIN plugins p ON p.key=v.plugin_key AND p.active_version=v.version WHERE p.key=$1`, key).Scan(&sum)
+		_ = db.WithContext(ctx).Raw(`SELECT lower(package_sha256) FROM plugin_versions v JOIN plugins p ON p.key=v.plugin_key AND p.active_version=v.version WHERE p.key=?`, key).Row().Scan(&sum)
 		return sum
 	}
 	// Every current core boot of the cluster runs an instance of key.
 	enabledEverywhere := func(key string) bool {
 		var status string
 		var running, cores int
-		_ = db.QueryRow(ctx, `SELECT p.status,
-			(SELECT count(*) FROM plugin_runtime_nodes r JOIN updater.nodes n ON n.core_boot_id=r.boot_id AND n.cluster_id=$2 WHERE r.plugin_key=p.key AND NOT r.stopped AND n.ready),
-			(SELECT count(*) FROM updater.nodes WHERE cluster_id=$2 AND ready)
-			FROM plugins p WHERE p.key=$1`, key, c.dbname).Scan(&status, &running, &cores)
+		_ = db.WithContext(ctx).Raw(`SELECT p.status,
+			(SELECT count(*) FROM plugin_runtime_nodes r JOIN updater.nodes n ON n.core_boot_id=r.boot_id AND n.cluster_id=? WHERE r.plugin_key=p.key AND NOT r.stopped AND n.ready),
+			(SELECT count(*) FROM updater.nodes WHERE cluster_id=? AND ready)
+			FROM plugins p WHERE p.key=?`, c.dbname, c.dbname, key).Row().Scan(&status, &running, &cores)
 		return status == "enabled" && cores >= 3 && running == cores
 	}
 	probe := func(n *realNode) int {
@@ -114,7 +114,7 @@ func TestRealCorePluginPackagesTravelBetweenNodes(t *testing.T) {
 		c.run(n)
 	}
 	var column bool
-	if err = db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='plugin_versions' AND column_name='package')`).Scan(&column); err != nil || column {
+	if err = db.WithContext(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='plugin_versions' AND column_name='package')`).Row().Scan(&column); err != nil || column {
 		t.Fatalf("plugin_versions still has a package column: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestRealCorePluginPackagesTravelBetweenNodes(t *testing.T) {
 	}
 	uploadKey, _ := adminB.consentAll(review)
 	var uploadSum string
-	if err = db.QueryRow(ctx, `SELECT lower(package_sha256) FROM plugin_versions WHERE plugin_key=$1`, uploadKey).Scan(&uploadSum); err != nil {
+	if err = db.WithContext(ctx).Raw(`SELECT lower(package_sha256) FROM plugin_versions WHERE plugin_key=?`, uploadKey).Row().Scan(&uploadSum); err != nil {
 		t.Fatal(err)
 	}
 	if !held("a", uploadSum) {
@@ -169,7 +169,7 @@ func TestRealCorePluginPackagesTravelBetweenNodes(t *testing.T) {
 	adminC.ok(http.MethodPost, "/plugins/"+marketKey2+"/enable", nil)
 	wait(marketKey2+" enabled on every node", 3*time.Minute, func() bool { return enabledEverywhere(marketKey2) })
 	var marketSum, packageURL string
-	if err = db.QueryRow(ctx, `SELECT lower(package_sha256),package_url FROM plugin_versions WHERE plugin_key=$1 AND version=$2`, marketKey2, marketVersion).Scan(&marketSum, &packageURL); err != nil {
+	if err = db.WithContext(ctx).Raw(`SELECT lower(package_sha256),package_url FROM plugin_versions WHERE plugin_key=? AND version=?`, marketKey2, marketVersion).Row().Scan(&marketSum, &packageURL); err != nil {
 		t.Fatal(err)
 	}
 	gets := marketPackageGets.Load() - before

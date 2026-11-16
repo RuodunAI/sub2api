@@ -130,14 +130,14 @@ func TestPostgresUpdateSourceImportBindingAndCache(t *testing.T) {
 	if _, err = s.Release(ctx, out.Digest); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.DB.Exec(ctx, `UPDATE updater.clusters SET baseline=$2 WHERE cluster_id=$1`, s.Cluster, out.Digest); err != nil {
+	if err = s.db(ctx).Exec(`UPDATE updater.clusters SET baseline=? WHERE cluster_id=?`, out.Digest, s.Cluster).Error; err != nil {
 		t.Fatal(err)
 	}
 	installed, err := s.checkUpdate(ctx, true)
 	if err != nil || installed.HasUpdate || !installed.Compatible || installed.Reason != "" || installed.Cached {
 		t.Fatalf("installed latest: %+v %v", installed, err)
 	}
-	if _, err = s.DB.Exec(ctx, `UPDATE updater.releases SET bundle_base='https://previous.example/release' WHERE digest=$1`, out.Digest); err != nil {
+	if err = s.db(ctx).Exec(`UPDATE updater.releases SET bundle_base='https://previous.example/release' WHERE digest=?`, out.Digest).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.importGitHub(ctx, "owner/repo", "v0.2.0"); err == nil || !strings.Contains(err.Error(), "existing source was retained") {
@@ -180,7 +180,7 @@ func TestPostgresImportRejectsSourceChangeDuringFetch(t *testing.T) {
 	}
 	original := u.Client.Transport
 	u.Client = &http.Client{Transport: updateTransport(func(r *http.Request) (*http.Response, error) {
-		if _, err := s.DB.Exec(ctx, `UPDATE updater.clusters SET update_repository='other/repo' WHERE cluster_id=$1`, s.Cluster); err != nil {
+		if err := s.db(ctx).Exec(`UPDATE updater.clusters SET update_repository='other/repo' WHERE cluster_id=?`, s.Cluster).Error; err != nil {
 			t.Fatal(err)
 		}
 		return original.RoundTrip(r)

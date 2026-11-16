@@ -9,7 +9,7 @@ mkdir -p "$DST/server/web" "$DST/deploy/docker"
 cp -a "$CTX/deploy/docker/build-ui.sh" "$DST/deploy/docker/"
 cp -a "$CTX/server/web/dist" "$DST/server/web/dist"
 # Data files outside web/ that the console imports (vue-tsc -b also checks specs).
-for f in plugins/ccgateway/companions/contracts/environment/locales.json sdk/permvectors/vectors.json; do
+for f in sdk/permvectors/vectors.json; do
   mkdir -p "$DST/$(dirname "$f")"
   cp -a "$CTX/$f" "$DST/$f"
 done

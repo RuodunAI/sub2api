@@ -204,8 +204,8 @@ func recordCounts(t *testing.T, p *Plugin) (records, suspicious, replays, violat
 	ctx := context.Background()
 	p.flushStats(ctx)
 	db, _ := p.db(ctx)
-	if err := db.QueryRow(ctx, `SELECT (SELECT count(*) FROM events), (SELECT count(*) FROM events WHERE `+suspiciousResult+`),
-		(SELECT count(*) FROM events WHERE replayed), (SELECT coalesce(sum(suspicious), 0) FROM user_daily)`).Scan(&records, &suspicious, &replays, &violations); err != nil {
+	if err := db.Raw(`SELECT (SELECT count(*) FROM events), (SELECT count(*) FROM events WHERE `+suspiciousResult+`),
+		(SELECT count(*) FROM events WHERE replayed), (SELECT coalesce(sum(suspicious), 0) FROM user_daily)`).Row().Scan(&records, &suspicious, &replays, &violations); err != nil {
 		t.Fatal(err)
 	}
 	return records, suspicious, replays, violations

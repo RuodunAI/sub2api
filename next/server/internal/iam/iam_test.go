@@ -15,14 +15,15 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -59,7 +60,7 @@ type fakeEvents struct {
 	events []core.Event
 }
 
-func (f *fakeEvents) Emit(_ context.Context, tx pgx.Tx, events ...core.Event) error {
+func (f *fakeEvents) Emit(_ context.Context, tx *gorm.DB, events ...core.Event) error {
 	if tx == nil {
 		return errors.New("Emit needs a transaction")
 	}
@@ -92,6 +93,7 @@ const adminEmail, adminPassword = "root@example.com", "root-password-1"
 
 const testIP = "192.0.2.1"
 
+// setup is the service on a fresh database with its authz service.
 func setup(t *testing.T) *env {
 	t.Helper()
 	db := testutil.DB(t)
@@ -104,9 +106,8 @@ func setup(t *testing.T) *env {
 	}
 	mr := miniredis.RunT(t)
 	cfg := &config.Config{
-		JWTSecret:              []byte("0123456789abcdef0123456789abcdef"),
-		AccessTokenTTL:         time.Hour,
-		RefreshTokenTTL:        24 * time.Hour,
+		SessionIdleTTL:         7 * 24 * time.Hour,
+		SessionMaxTTL:          30 * 24 * time.Hour,
 		BootstrapAdminEmail:    adminEmail,
 		BootstrapAdminPassword: adminPassword,
 	}
@@ -124,18 +125,23 @@ func isCode(err error, code string) bool {
 	return errors.As(err, &e) && e.Code == code
 }
 
-func mustLogin(t *testing.T, s *Service, email, password string) *TokenPair {
+// mustLogin signs in: a session token, or the second step of an account
+// with two-factor.
+func mustLogin(t *testing.T, s *Service, email, password string) *LoginResult {
 	t.Helper()
 	p, err := s.Login(context.Background(), email, password, testIP)
 	if err != nil {
 		t.Fatalf("login %s: %v", email, err)
+	}
+	if !p.TwoFactorRequired && !strings.HasPrefix(p.AccessToken, tokenstore.SessionPrefix) {
+		t.Fatalf("login %s gave %+v", email, p)
 	}
 	return p
 }
 
 // ------------------------------------------------------------ tests
 
-func TestBootstrapLoginRefreshLogout(t *testing.T) {
+func TestBootstrapLoginLogout(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
 	s, ctx := e.svc, context.Background()
@@ -166,14 +172,14 @@ func TestBootstrapLoginRefreshLogout(t *testing.T) {
 		t.Fatalf("unknown user: %v", err)
 	}
 	p := mustLogin(t, s, "ROOT@example.com ", adminPassword)
-	if p.ExpiresIn != 3600 || p.User.Email != adminEmail || p.User.Roles[0] != authz.RoleSuperAdmin || p.User.LastLoginAt == nil {
-		t.Fatalf("pair: %+v user %+v", p, p.User)
+	if p.ExpiresIn != int64(e.cfg.SessionIdleTTL/time.Second) || p.User.Email != adminEmail || p.User.Roles[0] != authz.RoleSuperAdmin || p.User.LastLoginAt == nil {
+		t.Fatalf("result: %+v user %+v", p, p.User)
 	}
-	uid, err := s.VerifyAccessToken(ctx, p.AccessToken)
+	uid, _, err := s.VerifySession(ctx, p.AccessToken)
 	if err != nil || uid != p.User.ID {
 		t.Fatalf("verify: %d %v", uid, err)
 	}
-	if _, err := s.VerifyAccessToken(ctx, p.AccessToken+"x"); err == nil {
+	if _, _, err := s.VerifySession(ctx, p.AccessToken+"x"); err == nil {
 		t.Fatal("tampered token accepted")
 	}
 	me, err := s.GetMe(ctx, uid)
@@ -181,23 +187,19 @@ func TestBootstrapLoginRefreshLogout(t *testing.T) {
 		t.Fatalf("me: %+v %v", me, err)
 	}
 
-	// Refresh rotates: the old refresh token stops working.
-	p2, err := s.Refresh(ctx, p.RefreshToken)
+	// Logging out ends that session.
+	_, id, err := s.VerifySession(ctx, p.AccessToken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ageRotation(t, s, p.RefreshToken)
-	if _, err := s.Refresh(ctx, p.RefreshToken); !isCode(err, "unauthenticated") {
-		t.Fatalf("reused refresh token: %v", err)
-	}
-	if err := s.Logout(ctx, uid, p2.RefreshToken); err != nil {
+	if err := s.Logout(core.WithSession(ctx, id), uid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Refresh(ctx, p2.RefreshToken); !isCode(err, "unauthenticated") {
-		t.Fatalf("refresh after logout: %v", err)
+	if _, _, err := s.VerifySession(ctx, p.AccessToken); !isCode(err, "unauthenticated") {
+		t.Fatalf("session after logout: %v", err)
 	}
 
-	// Password change revokes refresh tokens (the route verifies the caller).
+	// A password change ends the sessions (the route verifies the caller).
 	p3 := mustLogin(t, s, adminEmail, adminPassword)
 	if err := s.ChangePassword(ctx, uid, "", "short"); !isCode(err, "invalid_argument") {
 		t.Fatalf("short password: %v", err)
@@ -205,8 +207,8 @@ func TestBootstrapLoginRefreshLogout(t *testing.T) {
 	if err := s.ChangePassword(ctx, uid, "", "new-password-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Refresh(ctx, p3.RefreshToken); err == nil {
-		t.Fatal("refresh token survived password change")
+	if _, _, err := s.VerifySession(ctx, p3.AccessToken); err == nil {
+		t.Fatal("session survived password change")
 	}
 	mustLogin(t, s, adminEmail, "new-password-1")
 }
@@ -253,7 +255,7 @@ func TestUserLifecycle(t *testing.T) {
 	}
 
 	// Disable: login and access tokens stop working.
-	pair := mustLogin(t, s, "alice@example.com", "password-1")
+	result := mustLogin(t, s, "alice@example.com", "password-1")
 	disabled := StatusDisabled
 	if u, err = s.UpdateUser(ctx, root, u.ID, UpdateUserInput{Status: &disabled}); err != nil || u.Status != StatusDisabled {
 		t.Fatalf("disable: %+v %v", u, err)
@@ -261,11 +263,8 @@ func TestUserLifecycle(t *testing.T) {
 	if _, err := s.Login(ctx, "alice@example.com", "password-1", testIP); !isCode(err, "permission_denied") {
 		t.Fatalf("login disabled: %v", err)
 	}
-	if _, err := s.VerifyAccessToken(ctx, pair.AccessToken); err == nil {
+	if _, _, err := s.VerifySession(ctx, result.AccessToken); err == nil {
 		t.Fatal("disabled user's token accepted")
-	}
-	if _, err := s.Refresh(ctx, pair.RefreshToken); err == nil {
-		t.Fatal("disabled user's refresh accepted")
 	}
 	if ok, _ := e.authz.Can(ctx, u.ID, "gateway:use"); ok {
 		t.Fatal("disabled user keeps permissions")
@@ -451,7 +450,6 @@ func TestHTTP(t *testing.T) {
 	joeID := int64(out["data"].(map[string]any)["id"].(float64))
 	_, out = c.do("POST", "/auth/login", "", map[string]any{"email": "joe@example.com", "password": "password-1"})
 	joe := out["data"].(map[string]any)["access_token"].(string)
-	joeRefresh := out["data"].(map[string]any)["refresh_token"].(string)
 	if code, out = c.do("GET", "/users", joe, nil); code != 403 || errCode(out) != "permission_denied" {
 		t.Fatalf("joe lists users: %d %v", code, out)
 	}
@@ -477,9 +475,6 @@ func TestHTTP(t *testing.T) {
 	if code, _ = c.do("GET", "/me", joe, nil); code != 401 {
 		t.Fatalf("deleted user's token: %d", code)
 	}
-	if code, _ = c.do("POST", "/auth/refresh", "", map[string]any{"refresh_token": joeRefresh}); code != 401 {
-		t.Fatalf("deleted user's refresh: %d", code)
-	}
 
 	// Roles endpoints.
 	if code, out = c.do("PUT", "/users/"+strconv.FormatInt(opsID, 10)+"/roles", ops, map[string]any{"role_keys": []string{"super_admin"}}); code != 403 || errCode(out) != "permission_denied" {
@@ -492,28 +487,25 @@ func TestHTTP(t *testing.T) {
 		t.Fatalf("list roles: %d %v", code, out)
 	}
 
-	// Logout ends that session; the others renew on their next 401.
+	// A session has nothing to renew it with (CONTRACTS §100).
+	if code, _ = c.do("POST", "/auth/refresh", "", map[string]any{"refresh_token": "x"}); code != 404 {
+		t.Fatalf("refresh endpoint still mounted: %d", code)
+	}
+	// Logout ends that session only.
 	_, out = c.do("POST", "/auth/login", "", map[string]any{"email": adminEmail, "password": adminPassword})
-	rt := out["data"].(map[string]any)["refresh_token"].(string)
-	if code, _ = c.do("POST", "/auth/logout", tok, map[string]any{"refresh_token": rt}); code != 204 {
+	other := out["data"].(map[string]any)["access_token"].(string)
+	if code, _ = c.do("POST", "/auth/logout", other, nil); code != 204 {
 		t.Fatalf("logout: %d", code)
 	}
-	if code, _ = c.do("POST", "/auth/refresh", "", map[string]any{"refresh_token": rt}); code != 401 {
-		t.Fatalf("refresh after logout: %d", code)
+	if code, _ = c.do("GET", "/me", other, nil); code != 401 {
+		t.Fatalf("session after its logout: %d", code)
 	}
-	if code, _ = c.do("GET", "/me", tok, nil); code != 401 {
-		t.Fatalf("access token after another session's logout: %d", code)
+	if code, _ = c.do("GET", "/me", tok, nil); code != 200 {
+		t.Fatalf("session after another one's logout: %d", code)
 	}
-	renew := func(refresh string) (access, next string) {
-		code, out := c.do("POST", "/auth/refresh", "", map[string]any{"refresh_token": refresh})
-		if code != 200 {
-			t.Fatalf("renew: %d %v", code, out)
-		}
-		d := out["data"].(map[string]any)
-		return d["access_token"].(string), d["refresh_token"].(string)
-	}
-	tok, rt = renew(data["refresh_token"].(string))
-	// Changing the password keeps the caller's own session.
+	// Changing the password keeps the caller's own session only.
+	_, out = c.do("POST", "/auth/login", "", map[string]any{"email": adminEmail, "password": adminPassword})
+	other = out["data"].(map[string]any)["access_token"].(string)
 	if code, out = c.do("PUT", "/me/password", tok, map[string]any{"new_password": "another-pass-1"}); code != 403 || errCode(out) != "verification_required" {
 		t.Fatalf("change password without a proof: %d %v", code, out)
 	}
@@ -524,7 +516,12 @@ func TestHTTP(t *testing.T) {
 	if code, out = c.doProof("PUT", "/me/password", tok, proof, map[string]any{"new_password": "another-pass-1"}); code != 204 {
 		t.Fatalf("change password: %d %v", code, out)
 	}
-	renew(rt)
+	if code, _ = c.do("GET", "/me", other, nil); code != 401 {
+		t.Fatalf("another session after the password change: %d", code)
+	}
+	if code, _ = c.do("GET", "/me", tok, nil); code != 200 {
+		t.Fatalf("the caller's session after its password change: %d", code)
+	}
 }
 
 // sectionKeys lists the section keys of a /me/menus response, in order.
@@ -534,4 +531,35 @@ func sectionKeys(data any) string {
 		keys = append(keys, sec.(map[string]any)["section"].(string))
 	}
 	return strings.Join(keys, ",")
+}
+
+// ListUsers keeps the page and size within httpapi.Pagination's bounds: a
+// size of 0 or less, or a page before the first, would otherwise reach
+// GORM, which leaves such a LIMIT or OFFSET out and reads every user.
+func TestListUsersPageBounds(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	if _, err := e.svc.db.SQL.ExecContext(ctx, `INSERT INTO users (email, password_hash)
+		SELECT 'user' || n || '@example.com', 'x' FROM generate_series(1, 25) n`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ page, size, want int }{
+		{1, 0, 20},  // no size: the default
+		{0, -5, 20}, // a negative size: the default
+		{-3, 2, 2},  // a page before the first: the first
+		{1, 1000, 25},
+	} {
+		list, total, err := e.svc.ListUsers(ctx, ListUsersFilter{Page: c.page, PageSize: c.size})
+		if err != nil || total != 25 || len(list) != c.want {
+			t.Errorf("page %d size %d: %d users of %d, %v; want %d of 25", c.page, c.size, len(list), total, err, c.want)
+		}
+	}
+	first, _, err := e.svc.ListUsers(ctx, ListUsersFilter{Page: 1, PageSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := e.svc.ListUsers(ctx, ListUsersFilter{Page: -3, PageSize: 2})
+	if len(before) != 2 || before[0].ID != first[0].ID || before[1].ID != first[1].ID {
+		t.Errorf("a page before the first lists %v, want the first page", before)
+	}
 }

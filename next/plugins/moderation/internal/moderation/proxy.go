@@ -9,7 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
+	"gorm.io/gorm"
 )
 
 // Channel proxies (new-api service/moderation/channel.go). The proxy URL may
@@ -117,19 +118,17 @@ func (p *Plugin) openProxy(ctx context.Context, id int64, enc []byte) (string, e
 }
 
 // storeProxy seals and stores the proxy: nil keeps it, "" removes it.
-func (p *Plugin) storeProxy(ctx context.Context, tx pgx.Tx, id int64, proxy *string) error {
+func (p *Plugin) storeProxy(ctx context.Context, tx *gorm.DB, id int64, proxy *string) error {
 	if proxy == nil {
 		return nil
 	}
 	v := strings.TrimSpace(*proxy)
 	if v == "" {
-		_, err := tx.Exec(ctx, `UPDATE channels SET proxy_enc = NULL WHERE id = $1`, id)
-		return err
+		return tx.Model(&model.Channel{}).Where("id = ?", id).Update("proxy_enc", nil).Error
 	}
 	enc, err := p.host.SealSecret(ctx, secretContext(id, "proxy"), []byte(v))
 	if err != nil {
 		return fmt.Errorf("seal channel proxy: %w", err)
 	}
-	_, err = tx.Exec(ctx, `UPDATE channels SET proxy_enc = $2 WHERE id = $1`, id, enc)
-	return err
+	return tx.Model(&model.Channel{}).Where("id = ?", id).Update("proxy_enc", enc).Error
 }

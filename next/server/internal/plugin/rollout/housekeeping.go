@@ -2,7 +2,14 @@ package rollout
 
 import (
 	"context"
+	"errors"
 	"sort"
+
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // drainAsync drains (or stops) an instance that left the slot. While it
@@ -65,7 +72,11 @@ func (c *Controller) sweepPackages() {
 		if c.packageInUse(ref.Key, ref.Version) {
 			continue
 		}
-		if err := c.o.Packages.Release(ref.Key, ref.Version); err != nil {
+		err := c.o.Packages.Release(ref.Key, ref.Version)
+		if errors.Is(err, registry.ErrPackageInUse) {
+			continue // read right now (a migration); the next sweep retries
+		}
+		if err != nil {
 			c.log.Warn("remove unused plugin package failed", "plugin", ref.Key, "version", ref.Version, "err", err)
 			continue
 		}
@@ -118,28 +129,28 @@ func (c *Controller) pruneOrphans(ctx context.Context) {
 // referencedPackages returns "key@version-hash8" of every package version
 // named by plugins.active_version/desired_version or an open rollout.
 func (c *Controller) referencedPackages(ctx context.Context) (map[string]bool, error) {
-	rows, err := c.o.DB.Pool.Query(ctx, `
-		SELECT v.plugin_key, v.version, v.package_sha256 FROM plugin_versions v
-		WHERE EXISTS (SELECT 1 FROM plugins p WHERE p.key = v.plugin_key
+	var rows []model.PluginVersion
+	if err := referencedVersions(store.G(ctx, c.o.DB.Gorm)).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, v := range rows {
+		if sum := v.PackageSha256; len(sum) >= 8 {
+			out[v.PluginKey+"@"+v.Version+"-"+lower(sum[:8])] = true
+		}
+	}
+	return out, nil
+}
+
+// referencedVersions selects the package of every version a plugin or an
+// open rollout names.
+func referencedVersions(g *gorm.DB) *gorm.DB {
+	return g.Table("plugin_versions v").Select("v.plugin_key, v.version, v.package_sha256").
+		Where(`EXISTS (SELECT 1 FROM plugins p WHERE p.key = v.plugin_key
 				AND (v.version = p.active_version OR v.version = p.desired_version))
 			OR EXISTS (SELECT 1 FROM plugin_rollouts r WHERE r.plugin_key = v.plugin_key
 				AND r.phase IN ('preparing','activating')
 				AND (v.version = r.from_version OR v.version = r.target_version))`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]bool{}
-	for rows.Next() {
-		var key, version, sum string
-		if err := rows.Scan(&key, &version, &sum); err != nil {
-			return nil, err
-		}
-		if len(sum) >= 8 {
-			out[key+"@"+version+"-"+lower(sum[:8])] = true
-		}
-	}
-	return out, rows.Err()
 }
 
 func lower(s string) string {

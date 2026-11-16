@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
 
@@ -60,8 +60,8 @@ func (s *OrderService) RegisterVerifier(providerKey string, v NotificationVerifi
 
 // verifyNotification returns the notification that one enabled instance of the
 // provider verified.
-func (s *OrderService) verifyNotification(ctx context.Context, db *pgxpool.Pool, providerKey string, req *pluginv1.HTTPRequest) (*PaymentNotification, error) {
-	configs, err := enabledProviders(ctx, db, providerKey)
+func (s *OrderService) verifyNotification(ctx context.Context, db *gorm.DB, providerKey string, req *pluginv1.HTTPRequest) (*PaymentNotification, error) {
+	configs, err := enabledProviders(db, providerKey)
 	if err != nil {
 		return nil, err
 	}
@@ -87,23 +87,12 @@ func (s *OrderService) verifyNotification(ctx context.Context, db *pgxpool.Pool,
 }
 
 // enabledProviders lists the enabled instances of a provider key.
-func enabledProviders(ctx context.Context, db *pgxpool.Pool, providerKey string) ([]ProviderConfig, error) {
-	rows, err := db.Query(ctx, `
-		SELECT id, provider_key, config
-		FROM payment_provider_instances
-		WHERE provider_key = $1 AND enabled
-		ORDER BY sort_order, id
-	`, providerKey)
+func enabledProviders(db *gorm.DB, providerKey string) ([]ProviderConfig, error) {
+	var configs []ProviderConfig
+	err := db.Model(&model.ProviderInstance{}).Select("id, provider_key, config").
+		Where("provider_key = ? AND enabled", providerKey).Order("sort_order, id").Find(&configs).Error
 	if err != nil {
 		return nil, fmt.Errorf("query provider instances: %w", err)
-	}
-	configs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ProviderConfig, error) {
-		var c ProviderConfig
-		err := row.Scan(&c.ID, &c.ProviderKey, &c.Config)
-		return c, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("scan provider instances: %w", err)
 	}
 	return configs, nil
 }

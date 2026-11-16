@@ -22,7 +22,7 @@ import (
 )
 
 // SDKVersion is reported in GetInfoResponse.sdk_version.
-const SDKVersion = "0.1.0"
+const SDKVersion = "0.2.0"
 
 // Build-time overrides, set by `sub2api-plugin build` with
 //
@@ -74,7 +74,7 @@ func WithInfo(key, version string) Option {
 // WithStrictNetwork overrides when the egress tunnel is installed.
 func WithStrictNetwork(m StrictMode) Option { return func(o *options) { o.strict = m } }
 
-// WithDBPoolSize sets the maximum size of the Host.DB pool (default 4).
+// WithDBPoolSize sets the maximum number of Host.DB connections (default 4).
 func WithDBPoolSize(n int32) Option { return func(o *options) { o.poolSize = n } }
 
 // WithMaxRecvMsgSize raises the largest host call the plugin accepts (gRPC
@@ -184,9 +184,6 @@ func buildOptions(opts []Option) options {
 // Capabilities lists the capability ids p implements.
 func Capabilities(p any) []string {
 	var caps []string
-	if _, ok := p.(AccountLifecycle); ok {
-		caps = append(caps, manifest.CapAccountLifecycle)
-	}
 	if _, ok := p.(Executor); ok {
 		caps = append(caps, manifest.CapPlatformExecute)
 	}
@@ -237,13 +234,12 @@ func Capabilities(p any) []string {
 type runtime struct {
 	pluginv1.UnimplementedPluginServiceServer
 
-	p                 any
-	opts              options
-	dial              HostDialer
-	key, version      string
-	capabilities      []string
-	taskProtocols     map[string]bool
-	quotaCapabilities bool
+	p             any
+	opts          options
+	dial          HostDialer
+	key, version  string
+	capabilities  []string
+	taskProtocols map[string]bool
 
 	mu     sync.Mutex
 	host   *host
@@ -285,11 +281,6 @@ func (rt *runtime) parseManifest() (map[string]bool, error) {
 		return nil, fmt.Errorf("parse embedded manifest: %w", err)
 	}
 	rt.key, rt.version = m.Key, m.Version
-	for _, accountType := range m.AccountTypes {
-		if accountType.ModelAvailability || accountType.Quota != nil && accountType.Quota.AutoRefresh {
-			rt.quotaCapabilities = true
-		}
-	}
 	rt.taskProtocols = map[string]bool{}
 	for _, platform := range m.Platforms {
 		for _, endpoint := range platform.Endpoints {
@@ -378,23 +369,6 @@ func (rt *runtime) strictWanted() bool {
 func (rt *runtime) InitHost(ctx context.Context, in *pluginv1.InitHostRequest) (*pluginv1.InitHostResponse, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rt.quotaCapabilities && in.GetHostApiVersion() < protocol.ModelAvailabilityHostAPIVersion {
-		return nil, status.Errorf(codes.FailedPrecondition, "quota capabilities require host API version %d or newer", protocol.ModelAvailabilityHostAPIVersion)
-	}
-	for _, capability := range rt.capabilities {
-		if capability == manifest.CapGatewayObserve && in.GetHostApiVersion() < protocol.ObservationHostAPIVersion {
-			return nil, status.Errorf(codes.FailedPrecondition, "observations require host API version %d or newer", protocol.ObservationHostAPIVersion)
-		}
-		if (capability == manifest.CapPlatformExecute || capability == manifest.CapPlatformMonitor) && in.GetHostApiVersion() < protocol.ExecutionHostAPIVersion {
-			return nil, status.Errorf(codes.FailedPrecondition, "execution callbacks require host API version %d or newer", protocol.ExecutionHostAPIVersion)
-		}
-		if capability == manifest.CapPlatformPoll && in.GetHostApiVersion() < protocol.PollHostAPIVersion {
-			return nil, status.Errorf(codes.FailedPrecondition, "polling requires host API version %d or newer", protocol.PollHostAPIVersion)
-		}
-		if capability == manifest.CapPlatformTasks && in.GetHostApiVersion() < protocol.ManagedTasksHostAPIVersion {
-			return nil, status.Errorf(codes.FailedPrecondition, "managed tasks require host API version %d or newer", protocol.ManagedTasksHostAPIVersion)
-		}
-	}
 	if rt.inited {
 		return &pluginv1.InitHostResponse{Ready: true, Message: "already initialised"}, nil
 	}
@@ -421,7 +395,7 @@ func (rt *runtime) InitHost(ctx context.Context, in *pluginv1.InitHostRequest) (
 	}, hc, ec, installed, rt.opts.poolSize)
 	if init, ok := rt.p.(Initializer); ok {
 		if err := init.Init(ctx, h); err != nil {
-			h.closePool()
+			h.closeDB()
 			_ = conn.Close()
 			return &pluginv1.InitHostResponse{Ready: false, Message: err.Error()}, nil
 		}
@@ -464,7 +438,7 @@ func (rt *runtime) Shutdown(ctx context.Context, _ *pluginv1.ShutdownRequest) (*
 	}
 	rt.mu.Lock()
 	if rt.host != nil {
-		rt.host.closePool()
+		rt.host.closeDB()
 	}
 	rt.mu.Unlock()
 	if err != nil {
@@ -479,13 +453,6 @@ type platformServer struct {
 	pluginv1.UnimplementedPlatformServiceServer
 	impl    Platform
 	runtime *runtime
-}
-
-func (s platformServer) OnAccountLifecycle(ctx context.Context, in *pluginv1.AccountLifecycleRequest) (*pluginv1.AccountLifecycleResponse, error) {
-	if lifecycle, ok := s.impl.(AccountLifecycle); ok {
-		return lifecycle.OnAccountLifecycle(ctx, in)
-	}
-	return nil, status.Error(codes.Unimplemented, "account lifecycle is not implemented")
 }
 
 func (s platformServer) ValidateCredentials(ctx context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {

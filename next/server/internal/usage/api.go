@@ -11,14 +11,16 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -114,14 +116,9 @@ type Detail struct {
 	// whose usage was final when its response ended. Hidden from
 	// self-service views like the rest of the upstream side.
 	Settlement *Settlement `json:"settlement,omitempty"`
-	// RequestLogAccountID opens the CCGateway request log of this request
-	// (GET /system/ccgateway/accounts/:id/request-logs, settings:read or
-	// account:read): set for a ccgateway row when the caller may read that
-	// log, also when account_id is hidden from a caller without account:read.
-	RequestLogAccountID *int64 `json:"request_log_account_id,omitempty"`
-	LedgerID            *int64 `json:"ledger_id"`
-	UserAgent           string `json:"user_agent"`
-	NodeID              string `json:"node_id"`
+	LedgerID   *int64      `json:"ledger_id"`
+	UserAgent  string      `json:"user_agent"`
+	NodeID     string      `json:"node_id"`
 }
 
 // RegisterRoutes mounts the usage console API.
@@ -155,8 +152,7 @@ const recordColumns = `u.id, u.request_id, u.client_request_id, u.created_at, u.
 	u.billing_mode, u.matched_tier, u.latency_ms, u.first_token_ms, u.upload_ms, u.sticky_hit, u.client_ip, u.conversion,
 	CASE WHEN u.attempts > 1 THEN u.anomalies->>'` + core.AnomalyAttempts + `' END, ` + standardCost
 
-const recordJoins = ` FROM usage_logs u
-	LEFT JOIN users us ON us.id = u.user_id
+const recordJoins = `LEFT JOIN users us ON us.id = u.user_id
 	LEFT JOIN api_keys k ON k.id = u.api_key_id
 	LEFT JOIN groups g ON g.id = u.group_id
 	LEFT JOIN accounts a ON a.id = u.account_id`
@@ -168,8 +164,14 @@ func (r *Record) scanTargets() []any {
 		&r.Endpoint, &r.Model, &r.UpstreamModel, &r.Stream, &r.StatusCode, &r.Success, &r.ErrorType,
 		&r.ErrorMessage, &r.Attempts, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens,
 		&r.CacheCreationTokens, &r.CacheCreation1hTokens, &r.TotalCost, &r.RateMultiplier, &r.BillingStatus,
-		&r.BillingMode, &r.MatchedTier, &r.LatencyMs, &r.FirstTokenMs, &r.UploadMs, &r.StickyHit, &r.ClientIP, &r.Conversion,
-		&r.AttemptTrail, &r.StandardCost}
+		&r.BillingMode, &r.MatchedTier, &r.LatencyMs, &r.FirstTokenMs, &r.UploadMs, &r.StickyHit, &r.ClientIP, (*store.Bytes)(&r.Conversion),
+		(*store.Bytes)(&r.AttemptTrail), &r.StandardCost}
+}
+
+// recordQuery selects the records f keeps, newest first.
+func recordQuery(db *gorm.DB, f store.Conds) *gorm.DB {
+	return db.Table("usage_logs u").Select(recordColumns).Joins(recordJoins).Scopes(f.Scope()).
+		Order("u.created_at DESC, u.id DESC")
 }
 
 // hideUpstream removes upstream account details (account, account type,
@@ -321,24 +323,23 @@ func (d *Detail) redactForSelf() {
 	d.hideAccounts()
 	d.PluginVersion, d.StickyRule, d.ExprHash, d.NodeID = "", "", "", ""
 	d.BillingDetail = withoutExpressions(d.BillingDetail)
-	d.PluginDetail, d.Anomalies, d.Settlement, d.RequestLogAccountID = nil, nil, nil, nil
+	d.PluginDetail, d.Anomalies, d.Settlement = nil, nil, nil
 }
 
 // seesAccounts reports whether the caller may see the account of a usage
 // record: operator views only, and only with account:read (CONTRACTS §66.5),
 // like the accounts section of the overview.
-func (s *Service) seesAccounts(ctx context.Context, self *int64) bool {
-	return self == nil && core.Can(ctx, s.Authz, "account:read")
+func (s *Service) seesAccounts(ctx context.Context, self *int64) (bool, error) {
+	if self != nil {
+		return false, nil
+	}
+	return core.Can(ctx, s.Authz, "account:read")
 }
-
-// requestLogPlugin is the plugin whose rows have a request log in the core
-// (internal/ccgateway's request log viewer).
-const requestLogPlugin = "ccgateway"
 
 // parseFilter reads the common query parameters. self restricts to userID;
 // accounts allows the account filters (seesAccounts).
-func parseFilter(c *gin.Context, self *int64, accounts bool) (*store.Filter, error) {
-	var f store.Filter
+func parseFilter(c *gin.Context, self *int64, accounts bool) (store.Conds, error) {
+	var f store.Conds
 	if self != nil {
 		f.And("u.user_id = ?", *self)
 	}
@@ -428,15 +429,15 @@ func parseFilter(c *gin.Context, self *int64, accounts bool) (*store.Filter, err
 		}
 		f.And("u.client_ip = ?", ip.Unmap().String())
 	}
-	contains := []struct{ q, cond string }{
+	contains := []queryFilter{
 		{"model_contains", "u.model ILIKE ? ESCAPE E'\\\\'"},
 		{"api_key_name", "EXISTS (SELECT 1 FROM api_keys fk WHERE fk.id=u.api_key_id AND fk.name ILIKE ? ESCAPE E'\\\\')"},
 		{"group_name", "EXISTS (SELECT 1 FROM groups fg WHERE fg.id=u.group_id AND fg.name ILIKE ? ESCAPE E'\\\\')"},
 	}
 	if self == nil {
-		contains = append(contains, struct{ q, cond string }{"user_email", "EXISTS (SELECT 1 FROM users fu WHERE fu.id=u.user_id AND fu.email ILIKE ? ESCAPE E'\\\\')"})
+		contains = append(contains, queryFilter{"user_email", "EXISTS (SELECT 1 FROM users fu WHERE fu.id=u.user_id AND fu.email ILIKE ? ESCAPE E'\\\\')"})
 		if accounts {
-			contains = append(contains, struct{ q, cond string }{"account_name", "EXISTS (SELECT 1 FROM accounts fa WHERE fa.id=u.account_id AND fa.name ILIKE ? ESCAPE E'\\\\')"})
+			contains = append(contains, queryFilter{"account_name", "EXISTS (SELECT 1 FROM accounts fa WHERE fa.id=u.account_id AND fa.name ILIKE ? ESCAPE E'\\\\')"})
 		}
 		for _, name := range []string{"node_id", "upstream_model", "upstream_protocol"} {
 			if v := c.Query(name); v != "" {
@@ -458,7 +459,7 @@ func parseFilter(c *gin.Context, self *int64, accounts bool) (*store.Filter, err
 	if err := addTimeRange(c, &f); err != nil {
 		return nil, err
 	}
-	return &f, nil
+	return f, nil
 }
 
 // conversionFilters are the conditions of the conversion= filter
@@ -474,9 +475,13 @@ var conversionFilters = map[string]string{
 	"lossy":       "(u.conversion->'lost' IS NOT NULL OR u.conversion->'response_lost' IS NOT NULL)",
 }
 
+// queryFilter is a condition the query parameter q sets: its value
+// takes the condition's ? placeholder.
+type queryFilter struct{ q, cond string }
+
 // addContainsFilters adds the ILIKE filters. Each value is trimmed, capped and
 // escaped for the pattern, so a user cannot smuggle wildcards.
-func addContainsFilters(c *gin.Context, f *store.Filter, contains []struct{ q, cond string }) error {
+func addContainsFilters(c *gin.Context, f *store.Conds, contains []queryFilter) error {
 	for _, x := range contains {
 		v := strings.TrimSpace(c.Query(x.q))
 		if v == "" {
@@ -492,9 +497,9 @@ func addContainsFilters(c *gin.Context, f *store.Filter, contains []struct{ q, c
 
 // addTimeRange adds the RFC 3339 created_at bounds, rejecting an empty or
 // inverted range.
-func addTimeRange(c *gin.Context, f *store.Filter) error {
+func addTimeRange(c *gin.Context, f *store.Conds) error {
 	var from time.Time
-	for _, x := range []struct{ q, cond string }{{"from", "u.created_at >= ?"}, {"to", "u.created_at < ?"}} {
+	for _, x := range []queryFilter{{"from", "u.created_at >= ?"}, {"to", "u.created_at < ?"}} {
 		v := c.Query(x.q)
 		if v == "" {
 			continue
@@ -527,7 +532,11 @@ func (s *Service) allUsage(c *gin.Context) { s.list(c, nil) }
 // page.next_cursor while there is more.
 func (s *Service) list(c *gin.Context, self *int64) {
 	ctx := c.Request.Context()
-	accounts := s.seesAccounts(ctx, self)
+	accounts, err := s.seesAccounts(ctx, self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	f, err := parseFilter(c, self, accounts)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -535,6 +544,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 	}
 	page, size := httpapi.Pagination(c)
 	cursor, keyset := c.GetQuery("cursor")
+	g := store.G(ctx, s.db.Gorm)
 	var total int64
 	if keyset {
 		if cursor != "" {
@@ -545,7 +555,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 			}
 			f.And("(u.created_at, u.id) < (?, ?)", at, id)
 		}
-	} else if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()...).Scan(&total); err != nil {
+	} else if err := g.Table("usage_logs u").Scopes(f.Scope()).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -553,10 +563,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 	if keyset {
 		limit, offset = size+1, 0 // one extra row tells whether there is more
 	}
-	n := f.Len()
-	args := append(f.Args(), limit, offset)
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+recordColumns+recordJoins+f.Cond()+
-		` ORDER BY u.created_at DESC, u.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2), args...)
+	rows, err := recordQuery(g, f).Limit(limit).Offset(offset).Rows()
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -622,12 +629,13 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 		return
 	}
 	var d Detail
-	targets := append(d.Record.scanTargets(), &d.PluginVersion, &d.Metrics, &d.StickyRule, &d.HookDecisions,
-		&d.PriceID, &d.ExprHash, &d.BillingDetail, &d.UserAgent, &d.NodeID, &d.PluginDetail, &d.Anomalies)
-	err := s.db.Pool.QueryRow(ctx, `SELECT `+recordColumns+`, u.plugin_version, u.metrics, u.sticky_rule,
+	targets := append(d.Record.scanTargets(), &d.PluginVersion, (*store.Bytes)(&d.Metrics), &d.StickyRule, (*store.Bytes)(&d.HookDecisions),
+		&d.PriceID, &d.ExprHash, (*store.Bytes)(&d.BillingDetail), &d.UserAgent, &d.NodeID, (*store.Bytes)(&d.PluginDetail), (*store.Bytes)(&d.Anomalies))
+	g := store.G(ctx, s.db.Gorm)
+	// The list's columns and the detail's own.
+	err := g.Table("usage_logs u").Select(recordColumns+`, u.plugin_version, u.metrics, u.sticky_rule,
 		u.hook_decisions, u.price_id, u.expr_hash, u.billing_detail, u.user_agent, u.node_id,
-		u.plugin_detail, u.anomalies`+
-		recordJoins+` WHERE u.id = $1`, id).Scan(targets...)
+		u.plugin_detail, u.anomalies`).Joins(recordJoins).Where("u.id = ?", id).Row().Scan(targets...)
 	if store.IsNoRows(err) || (err == nil && self != nil && d.UserID != *self) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("usage record not found"))
 		return
@@ -638,17 +646,21 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 	}
 	if d.PriceID != nil {
 		var p PriceRef
-		err := s.db.Pool.QueryRow(ctx, `SELECT id, model, source FROM model_prices WHERE id = $1`, *d.PriceID).
+		err := g.Model(&model.ModelPrice{}).Select("id, model, source").Where("id = ?", *d.PriceID).Row().
 			Scan(&p.ID, &p.Model, &p.Source)
 		if err == nil {
 			d.Price = &p
 		}
 	}
 	var ledgerID int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT id FROM balance_ledger WHERE idempotency_key = $1`, "usage:"+d.RequestID).Scan(&ledgerID); err == nil {
+	if err := g.Model(&model.BalanceLedger{}).Select("id").Where("idempotency_key = ?", "usage:"+d.RequestID).Row().Scan(&ledgerID); err == nil {
 		d.LedgerID = &ledgerID
 	}
-	accounts := s.seesAccounts(ctx, self)
+	accounts, err := s.seesAccounts(ctx, self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	if tr := d.shapeTrail(trailViewFor(self, accounts)); tr != nil && accounts {
 		s.nameTrail(ctx, tr)
 		d.AttemptTrail, _ = json.Marshal(tr)
@@ -656,10 +668,7 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 	if self != nil {
 		d.redactForSelf()
 	} else {
-		if d.PluginKey == requestLogPlugin && d.AccountID != nil && (accounts || core.Can(ctx, s.Authz, "settings:read")) {
-			d.RequestLogAccountID = d.AccountID
-		}
-		if e, err := s.loadSettlement(ctx, s.db.Pool, d.ID); err == nil {
+		if e, err := s.loadSettlement(ctx, s.db.Gorm, d.ID); err == nil {
 			d.Settlement = e
 		}
 		if !accounts {
@@ -802,7 +811,7 @@ func (s *Service) accountNames(ctx context.Context, ids []int64) (map[int64]stri
 	if len(ids) == 0 {
 		return names, true
 	}
-	rows, err := s.db.Pool.Query(ctx, `SELECT id, name FROM accounts WHERE id = ANY($1)`, ids)
+	rows, err := store.G(ctx, s.db.Gorm).Model(&model.Account{}).Select("id, name").Where("id = ANY(?)", store.Int64s(ids)).Rows()
 	if err != nil {
 		return nil, false
 	}
@@ -935,7 +944,12 @@ func (s *Service) mySummary(c *gin.Context) {
 
 func (s *Service) summarize(c *gin.Context, self *int64) {
 	ctx := c.Request.Context()
-	f, err := parseFilter(c, self, s.seesAccounts(ctx, self))
+	accounts, err := s.seesAccounts(ctx, self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	f, err := parseFilter(c, self, accounts)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -951,25 +965,22 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	}
 	end := cmp.Or(to, time.Now())
 	groupKey := c.DefaultQuery("group_by", "day")
-	// The time zone of day and hour buckets is appended after the filter's
-	// own arguments; spanTZ says the rollup must be aligned with it.
-	args := f.Args()
+	// Day and hour buckets bind the time zone (keyVars); spanTZ says the
+	// rollup must be aligned with it.
+	var keyVars []any
 	var spanTZ *time.Location
-	inTZ := func() string {
-		spanTZ = loc
-		return `u.created_at AT TIME ZONE ` + addArg(&args, tz) + `::text`
-	}
+	const inTZ = `u.created_at AT TIME ZONE ?::text`
 	var key, join, extra string
-	order, lastAt, groupBy := ` ORDER BY k`, `NULL::timestamptz`, ` GROUP BY k`
+	order, lastAt, groupBy, limit := `k`, `NULL::timestamptz`, `k`, 0
 	switch groupKey {
 	case "day":
-		key = `to_char(` + inTZ() + `, 'YYYY-MM-DD')`
+		key, spanTZ, keyVars = `to_char(`+inTZ+`, 'YYYY-MM-DD')`, loc, []any{tz}
 	case "hour":
 		if end.Sub(from) > maxHourSpan {
 			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("group_by=hour covers at most 31 days"))
 			return
 		}
-		key = `to_char(date_trunc('hour', ` + inTZ() + `), 'YYYY-MM-DD HH24:00')`
+		key, spanTZ, keyVars = `to_char(date_trunc('hour', `+inTZ+`), 'YYYY-MM-DD HH24:00')`, loc, []any{tz}
 	case "none":
 		key, groupBy = `''`, ``
 	case "model":
@@ -990,7 +1001,7 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	case "ip":
 		key = `u.client_ip`
 		lastAt = `max(u.at)`
-		order = ` ORDER BY sum(u.requests) DESC, k LIMIT ` + strconv.Itoa(maxIPGroups)
+		order, limit = `sum(u.requests) DESC, k`, maxIPGroups
 	case "user":
 		if self != nil {
 			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("group_by must be day, hour, none, model, api_key, group, endpoint, platform, protocol or ip"))
@@ -1022,8 +1033,7 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	rankOrder, rankLimit := c.Query("order"), c.Query("limit")
 	load := func(ctx context.Context) ([]SummaryRow, error) {
 		out := []SummaryRow{}
-		err := s.statsTx(ctx, statsLimitsFor(self), func(tx pgx.Tx) error {
-			args := slices.Clone(args)
+		err := s.statsTx(ctx, statsLimitsFor(self), func(tx *gorm.DB) error {
 			var span *hourSpan
 			if rollable {
 				var err error
@@ -1031,10 +1041,9 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 					return err
 				}
 			}
-			rows, err := tx.Query(ctx, `
-				SELECT `+outKey+` AS k, COALESCE(max(u.e), ''), `+totalsColumns("", true)+`,
-				       `+sumOf("u.anomalous_rows", "")+`, `+sumOf("u.estimated_rows", "")+`, `+sumOf("u.estimated_cost", "")+`, `+lastAt+`
-				FROM `+statRows(key+` AS k, `+extra+` AS e, u.created_at AS at`, join, f.Cond(), span, &args)+groupBy+order, args...)
+			sh := summaryShape{outKey: outKey, key: clause.Expr{SQL: key, Vars: keyVars}, extra: extra, join: join, lastAt: lastAt,
+				groupBy: groupBy, order: order, limit: limit}
+			rows, err := summaryQuery(store.G(ctx, tx), sh, f, span).Rows()
 			if err != nil {
 				return err
 			}
@@ -1072,6 +1081,33 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 		return
 	}
 	httpapi.OK(c, out)
+}
+
+// summaryShape is what the group_by of a summary makes of its query: the
+// output key and the per-row key, extra column and join under statRows, the
+// last-request column, the GROUP BY ("" for none) and ORDER BY, and the
+// LIMIT (0 for none).
+type summaryShape struct {
+	key                                         clause.Expr
+	outKey, extra, join, lastAt, groupBy, order string
+	limit                                       int
+}
+
+// summaryQuery selects the summary rows of the records f keeps through
+// statRows, which reads span from the rollup.
+func summaryQuery(db *gorm.DB, sh summaryShape, f store.Conds, span *hourSpan) *gorm.DB {
+	cols := clause.Expr{SQL: sh.key.SQL + ` AS k, ` + sh.extra + ` AS e, u.created_at AS at`, Vars: sh.key.Vars}
+	q := db.Table("?", statRows(db, cols, sh.join, f, span)).
+		Select(sh.outKey + ` AS k, COALESCE(max(u.e), ''), ` + totalsColumns("", true) + `, ` +
+			sumOf("u.anomalous_rows", "") + `, ` + sumOf("u.estimated_rows", "") + `, ` + sumOf("u.estimated_cost", "") + `, ` + sh.lastAt).
+		Order(sh.order)
+	if sh.groupBy != "" {
+		q = q.Group(sh.groupBy)
+	}
+	if sh.limit > 0 {
+		q = q.Limit(sh.limit)
+	}
+	return q
 }
 
 // summaryRange is the summary's range: from (default 30 days ago) to to

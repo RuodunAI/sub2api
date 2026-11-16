@@ -7,9 +7,13 @@ import (
 	"log/slog"
 	"time"
 
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Start runs the delivery loop until ctx ends or Stop. Every node may run it:
@@ -105,21 +109,37 @@ type queued struct {
 // provider never lets the lease of a waiting row run out and another node
 // send it again.
 func (s *Service) step(ctx context.Context) bool {
-	var q queued
-	err := s.db.Pool.QueryRow(ctx, `UPDATE notifications SET status = 'sending', attempts = attempts + 1,
-			next_attempt_at = now() + make_interval(secs => $1)
-		WHERE id = (SELECT id FROM notifications WHERE status IN ('pending', 'sending') AND next_attempt_at <= now()
-			AND attempts < $2 ORDER BY next_attempt_at, id LIMIT 1 FOR UPDATE SKIP LOCKED)
-		RETURNING id, source, channel, provider, recipients, subject, body, severity, attempts`, s.opts.Lease.Seconds(), s.opts.MaxAttempts).
-		Scan(&q.id, &q.source, &q.channel, &q.provider, &q.recipients, &q.subject, &q.body, &q.severity, &q.attempt)
-	if err != nil {
-		if !store.IsNoRows(err) && ctx.Err() == nil {
-			slog.WarnContext(ctx, "notify: claim", "err", err)
+	var row model.Notification
+	res := s.claim(store.G(ctx, s.db.Gorm), &row)
+	if res.Error != nil || res.RowsAffected == 0 {
+		if res.Error != nil && ctx.Err() == nil {
+			slog.WarnContext(ctx, "notify: claim", "err", res.Error)
 		}
 		return false
 	}
+	q := queued{id: row.ID, source: row.Source, channel: row.Channel, provider: row.Provider, recipients: row.Recipients,
+		subject: row.Subject, body: row.Body, severity: core.ValueOr(row.Severity, ""), attempt: int32(row.Attempts)}
 	s.finish(ctx, q, s.deliver(ctx, q))
 	return true
+}
+
+// claimedColumns are the columns a delivery needs, read back from the claim.
+var claimedColumns = []clause.Column{{Name: "id"}, {Name: "source"}, {Name: "channel"}, {Name: "provider"}, {Name: "recipients"},
+	{Name: "subject"}, {Name: "body"}, {Name: "severity"}, {Name: "attempts"}}
+
+// claim leases the next due row into dst, if any (RowsAffected tells): it
+// counts an attempt and holds the row for Lease. SKIP LOCKED lets every
+// node claim at once without waiting on each other's rows.
+func (s *Service) claim(db *gorm.DB, dst *model.Notification) *gorm.DB {
+	next := db.Model(&model.Notification{}).Select("id").
+		Where("status IN ('pending', 'sending') AND next_attempt_at <= now() AND attempts < ?", s.opts.MaxAttempts).
+		Order("next_attempt_at, id").Limit(1).
+		Clauses(store.ForUpdate().SkipLocked())
+	return db.Model(dst).Clauses(clause.Returning{Columns: claimedColumns}).Where("id = (?)", next).Updates(map[string]any{
+		"status":          "sending",
+		"attempts":        gorm.Expr("attempts + 1"),
+		"next_attempt_at": gorm.Expr("now() + make_interval(secs => ?)", s.opts.Lease.Seconds()),
+	})
 }
 
 // errRejected marks a final refusal by the provider.
@@ -165,35 +185,41 @@ func (s *Service) deliver(ctx context.Context, q queued) error {
 func (s *Service) finish(ctx context.Context, q queued, err error) {
 	stopping := ctx.Err() != nil
 	ctx = context.WithoutCancel(ctx)
+	if exec := s.record(store.G(ctx, s.db.Gorm), q, err, stopping).Error; exec != nil {
+		slog.WarnContext(ctx, "notify: record outcome", "id", q.id, "err", exec)
+	}
+}
+
+// record writes the outcome err of delivering q, guarded by the attempt
+// count so that a row claimed again after its lease is left alone.
+func (s *Service) record(db *gorm.DB, q queued, err error, stopping bool) *gorm.DB {
+	leased := db.Model(&model.Notification{}).Where("id = ? AND status = 'sending' AND attempts = ?", q.id, q.attempt)
 	var rejected errRejected
-	var exec error
 	switch {
 	case err != nil && stopping:
 		// Cut off by shutdown: not the provider's failure, so the attempt
 		// is given back.
-		_, exec = s.db.Pool.Exec(ctx, `UPDATE notifications SET status = 'pending', attempts = attempts - 1, next_attempt_at = now()
-			WHERE id = $1 AND status = 'sending' AND attempts = $2`, q.id, q.attempt)
+		return leased.Updates(map[string]any{"status": "pending", "attempts": gorm.Expr("attempts - 1"), "next_attempt_at": gorm.Expr("now()")})
 	case err == nil:
-		_, exec = s.db.Pool.Exec(ctx, `UPDATE notifications SET status = 'sent', sent_at = now(), last_error = ''
-			WHERE id = $1 AND status = 'sending' AND attempts = $2`, q.id, q.attempt)
+		return leased.Updates(map[string]any{"status": "sent", "sent_at": gorm.Expr("now()"), "last_error": ""})
 	case errors.Is(err, errUnbound) || providerNotRunning(err):
 		// The attempt is given back and the row is tried again after
 		// BackoffMin; it fails only once it waited UnboundFor since it was
 		// queued, so a plugin that never comes back does not keep it forever.
-		_, exec = s.db.Pool.Exec(ctx, `UPDATE notifications SET attempts = attempts - 1, last_error = $3,
-				status = CASE WHEN created_at < now() - make_interval(secs => $4) THEN 'failed' ELSE 'pending' END,
-				next_attempt_at = now() + make_interval(secs => $5)
-			WHERE id = $1 AND status = 'sending' AND attempts = $2`, q.id, q.attempt, truncate(err.Error()), s.opts.UnboundFor.Seconds(), s.opts.BackoffMin.Seconds())
+		return leased.Updates(map[string]any{
+			"attempts":        gorm.Expr("attempts - 1"),
+			"last_error":      truncate(err.Error()),
+			"status":          gorm.Expr("CASE WHEN created_at < now() - make_interval(secs => ?) THEN 'failed' ELSE 'pending' END", s.opts.UnboundFor.Seconds()),
+			"next_attempt_at": gorm.Expr("now() + make_interval(secs => ?)", s.opts.BackoffMin.Seconds()),
+		})
 	case errors.As(err, &rejected) || int(q.attempt) >= s.opts.MaxAttempts:
-		_, exec = s.db.Pool.Exec(ctx, `UPDATE notifications SET status = 'failed', last_error = $3
-			WHERE id = $1 AND status = 'sending' AND attempts = $2`, q.id, q.attempt, truncate(err.Error()))
+		return leased.Updates(map[string]any{"status": "failed", "last_error": truncate(err.Error())})
 	default:
-		_, exec = s.db.Pool.Exec(ctx, `UPDATE notifications SET status = 'pending', last_error = $3,
-				next_attempt_at = now() + make_interval(secs => $4)
-			WHERE id = $1 AND status = 'sending' AND attempts = $2`, q.id, q.attempt, truncate(err.Error()), s.backoff(int(q.attempt)).Seconds())
-	}
-	if exec != nil {
-		slog.WarnContext(ctx, "notify: record outcome", "id", q.id, "err", exec)
+		return leased.Updates(map[string]any{
+			"status":          "pending",
+			"last_error":      truncate(err.Error()),
+			"next_attempt_at": gorm.Expr("now() + make_interval(secs => ?)", s.backoff(int(q.attempt)).Seconds()),
+		})
 	}
 }
 
@@ -232,16 +258,17 @@ func (s *Service) PurgeTaskSpec() core.TaskSpec {
 // its node died mid-delivery), which step no longer claims, and deletes the
 // finished rows past the retention; it returns how many it deleted.
 func (s *Service) purge(ctx context.Context) (int64, error) {
-	if _, err := s.db.Pool.Exec(ctx, `UPDATE notifications SET status = 'failed', last_error = 'the last attempt did not finish'
-		WHERE status = 'sending' AND attempts >= $1 AND next_attempt_at <= now()`, s.opts.MaxAttempts); err != nil {
+	db := store.G(ctx, s.db.Gorm)
+	if err := db.Model(&model.Notification{}).Where("status = 'sending' AND attempts >= ? AND next_attempt_at <= now()", s.opts.MaxAttempts).
+		Updates(map[string]any{"status": "failed", "last_error": "the last attempt did not finish"}).Error; err != nil {
 		return 0, fmt.Errorf("fail expired rows: %w", err)
 	}
-	tag, err := s.db.Pool.Exec(ctx, `DELETE FROM notifications WHERE status IN ('sent', 'failed')
-		AND created_at < now() - make_interval(secs => $1)`, s.opts.Retention.Seconds())
-	if err != nil {
-		return 0, fmt.Errorf("delete old rows: %w", err)
+	res := db.Where("status IN ('sent', 'failed') AND created_at < now() - make_interval(secs => ?)", s.opts.Retention.Seconds()).
+		Delete(&model.Notification{})
+	if res.Error != nil {
+		return 0, fmt.Errorf("delete old rows: %w", res.Error)
 	}
-	return tag.RowsAffected(), nil
+	return res.RowsAffected, nil
 }
 
 func truncate(s string) string {

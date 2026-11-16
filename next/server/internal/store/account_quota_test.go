@@ -76,7 +76,7 @@ func TestAccountQuota(t *testing.T) {
 
 	// AccountQuotasAt reads the same rows plus the database time of the read.
 	var before time.Time
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&before))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&before))
 	at1, stamp, err := db.AccountQuotasAt(ctx, []int64{id, other})
 	require.NoError(t, err)
 	assert.Len(t, at1, 1)
@@ -121,7 +121,7 @@ func TestQuotaManualRefreshWithoutCooldownPreservesLease(t *testing.T) {
 	released, err := db.ReleaseAccountQuotaQuery(ctx, claim, time.Now().Add(time.Minute))
 	require.NoError(t, err)
 	require.True(t, released)
-	_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET last_active_at=now()+interval '1 hour' WHERE account_id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET last_active_at=now()+interval '1 hour' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	claim, err = db.LeaseAccountQuota(ctx, id, "v1", 0, time.Minute, true)
 	require.NoError(t, err)
@@ -139,7 +139,7 @@ func TestQuotaLeaseFencesIdentityAndLateCompletion(t *testing.T) {
 	other, err := db.LeaseAccountQuota(ctx, id, "v1", 0, time.Minute, true)
 	require.NoError(t, err)
 	require.Nil(t, other)
-	_, err = db.Pool.Exec(ctx, `UPDATE accounts SET credentials_enc='new'::bytea WHERE id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET credentials_enc='new'::bytea WHERE id=$1`, id)
 	require.NoError(t, err)
 	ok, err := db.CompleteAccountQuota(ctx, claim, map[string]store.QuotaWindow{"daily": {Utilization: 100}}, "", time.Now().Add(time.Minute))
 	require.NoError(t, err)
@@ -148,12 +148,12 @@ func TestQuotaLeaseFencesIdentityAndLateCompletion(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, q.Windows)
 	require.Equal(t, "pending", q.RefreshStatus)
-	_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET last_active_at=now()-interval '31 seconds' WHERE account_id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET last_active_at=now()-interval '31 seconds' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	claim, err = db.LeaseAccountQuota(ctx, id, "v1", 30*time.Second, time.Minute, true)
 	require.NoError(t, err)
 	require.NotNil(t, claim)
-	_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET lease_until=now()-interval '1 second' WHERE account_id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET lease_until=now()-interval '1 second' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	ok, err = db.CompleteAccountQuota(ctx, claim, nil, "late", time.Now())
 	require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestQuotaClaimInvalidationAndManualControls(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			db := testutil.DB(t)
 			ctx := t.Context()
-			_, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status) VALUES('test','{"en":"Test"}','enabled')`)
+			_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status) VALUES('test','{"en":"Test"}','enabled')`)
 			require.NoError(t, err)
 			id := createTestAccount(t, db)
 			ensureQuota(t, db, id, "v1", true)
@@ -174,15 +174,15 @@ func TestQuotaClaimInvalidationAndManualControls(t *testing.T) {
 			require.NotNil(t, claim)
 			switch change {
 			case "deleted":
-				_, err = db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id)
 			case "disabled":
-				_, err = db.Pool.Exec(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id)
 			case "plugin_disabled":
-				_, err = db.Pool.Exec(ctx, `UPDATE plugins SET status='disabled' WHERE key='test'`)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE plugins SET status='disabled' WHERE key='test'`)
 			case "plugin_revision":
-				_, err = store.EnsureAccountQuota(ctx, db.Pool, id, "v2", true)
+				_, err = store.EnsureAccountQuota(ctx, db.Gorm, id, "v2", true)
 			case "name":
-				_, err = db.Pool.Exec(ctx, `UPDATE accounts SET name='renamed' WHERE id=$1`, id)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET name='renamed' WHERE id=$1`, id)
 			}
 			require.NoError(t, err)
 			applied, err := db.CompleteAccountQuota(ctx, claim, map[string]store.QuotaWindow{"daily": {Utilization: 100}}, "", time.Now().Add(time.Minute))
@@ -210,7 +210,7 @@ func TestQuotaLegacyPassiveFreshness(t *testing.T) {
 			before, err := db.AccountQuota(ctx, id)
 			require.NoError(t, err)
 			require.NotNil(t, before.UpdatedAt)
-			_, err = db.Pool.Exec(ctx, `SELECT pg_sleep(0.005)`)
+			_, err = db.SQL.ExecContext(ctx, `SELECT pg_sleep(0.005)`)
 			require.NoError(t, err)
 			require.NoError(t, db.SaveAccountQuota(ctx, id, store.QuotaPassive, map[string]store.QuotaWindow{"daily": {Utilization: 20}}))
 			after, err := db.AccountQuota(ctx, id)
@@ -226,13 +226,13 @@ func TestQuotaLegacyPassiveFreshness(t *testing.T) {
 func TestQuotaObservationGenerationAndFreshness(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
-	_, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('test','{"en":"Test"}','enabled','v1')`)
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('test','{"en":"Test"}','enabled','v1')`)
 	require.NoError(t, err)
 	id := createTestAccount(t, db)
 	ensureQuota(t, db, id, "v1", true)
 	require.NoError(t, db.SaveAccountQuota(ctx, id, store.QuotaActive, map[string]store.QuotaWindow{"shared": {Utilization: 20}, "scoped": {Utilization: 10}}))
 	require.NoError(t, db.SetAccountQuotaError(ctx, id, "active query failed"))
-	_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET updated_at=now()-interval '1 hour' WHERE account_id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET updated_at=now()-interval '1 hour' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	before, err := db.AccountQuota(ctx, id)
 	require.NoError(t, err)
@@ -257,7 +257,7 @@ func TestQuotaObservationGenerationAndFreshness(t *testing.T) {
 	require.Equal(t, "active query failed", after.Error)
 	require.Equal(t, before.Windows["shared"], after.Windows["shared"])
 	require.Equal(t, "rejected", after.Windows["scoped"].Status)
-	require.NoError(t, store.ResetAccountQuota(ctx, db.Pool, id))
+	require.NoError(t, store.ResetAccountQuota(ctx, db.Gorm, id))
 	require.NoError(t, db.SaveAccountQuota(ctx, id, store.QuotaActive, map[string]store.QuotaWindow{"shared": {Utilization: 40}, "scoped": {Utilization: 50, Status: "allowed"}}))
 	fresh, err := db.AccountQuota(ctx, id)
 	require.NoError(t, err)
@@ -270,7 +270,7 @@ func TestQuotaObservationGenerationAndFreshness(t *testing.T) {
 	after, err = db.AccountQuota(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, fresh, after)
-	_, err = db.Pool.Exec(ctx, `DELETE FROM accounts WHERE id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, id)
 	require.NoError(t, err)
 	applied, err = apply(fresh.Generation, "rejected")
 	require.NoError(t, err)
@@ -287,23 +287,23 @@ func TestQuotaObservationRequiresCurrentIdentityAndEligibility(t *testing.T) {
 		t.Run(change, func(t *testing.T) {
 			db := testutil.DB(t)
 			ctx := t.Context()
-			_, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('test','{"en":"Test"}','enabled','v1')`)
+			_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('test','{"en":"Test"}','enabled','v1')`)
 			require.NoError(t, err)
 			id := createTestAccount(t, db)
 			ensureQuota(t, db, id, "v1", true)
 			switch change {
 			case "account_disabled":
-				_, err = db.Pool.Exec(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id)
 			case "deleted":
-				_, err = db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id)
 			case "plugin_disabled":
-				_, err = db.Pool.Exec(ctx, `UPDATE plugins SET status='disabled' WHERE key='test'`)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE plugins SET status='disabled' WHERE key='test'`)
 			case "plugin_version":
-				_, err = db.Pool.Exec(ctx, `UPDATE plugins SET active_version='v2' WHERE key='test'`)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE plugins SET active_version='v2' WHERE key='test'`)
 			case "account_type":
-				_, err = db.Pool.Exec(ctx, `UPDATE accounts SET type='other' WHERE id=$1`, id)
+				_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET type='other' WHERE id=$1`, id)
 			case "plugin_missing":
-				_, err = db.Pool.Exec(ctx, `DELETE FROM plugins WHERE key='test'`)
+				_, err = db.SQL.ExecContext(ctx, `DELETE FROM plugins WHERE key='test'`)
 			}
 			require.NoError(t, err)
 			before, err := db.AccountQuota(ctx, id)
@@ -346,7 +346,7 @@ func TestQuotaReleasePreservesFactsAndFencesLease(t *testing.T) {
 	blocked, err := db.LeaseAccountQuota(ctx, id, "v1", 30*time.Second, time.Minute, true)
 	require.NoError(t, err)
 	require.Nil(t, blocked)
-	_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET last_active_at=now()-interval '31 seconds' WHERE account_id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET last_active_at=now()-interval '31 seconds' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	current, err := db.LeaseAccountQuota(ctx, id, "v1", 30*time.Second, time.Minute, true)
 	require.NoError(t, err)
@@ -357,14 +357,14 @@ func TestQuotaReleasePreservesFactsAndFencesLease(t *testing.T) {
 	valid, err := db.AccountQuotaClaimValid(ctx, current)
 	require.NoError(t, err)
 	require.True(t, valid)
-	require.NoError(t, store.ResetAccountQuota(ctx, db.Pool, id))
+	require.NoError(t, store.ResetAccountQuota(ctx, db.Gorm, id))
 	released, err = db.ReleaseAccountQuotaQuery(ctx, current, next)
 	require.NoError(t, err)
 	require.False(t, released)
 	fresh, err := db.LeaseAccountQuota(ctx, id, "v1", 0, time.Minute, true)
 	require.NoError(t, err)
 	require.NotNil(t, fresh)
-	_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET lease_until=now()-interval '1 second' WHERE account_id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET lease_until=now()-interval '1 second' WHERE account_id=$1`, id)
 	require.NoError(t, err)
 	released, err = db.ReleaseAccountQuotaQuery(ctx, fresh, next)
 	require.NoError(t, err)
@@ -376,12 +376,12 @@ func TestQuotaObsoleteActiveResultPreservesNewerMetadata(t *testing.T) {
 		t.Run("message="+message, func(t *testing.T) {
 			db := testutil.DB(t)
 			ctx := t.Context()
-			_, err := db.Pool.Exec(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('test','{"en":"Test"}','enabled','v1')`)
+			_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status,active_version) VALUES('test','{"en":"Test"}','enabled','v1')`)
 			require.NoError(t, err)
 			id := createTestAccount(t, db)
 			ensureQuota(t, db, id, "v1", true)
 			require.NoError(t, db.SaveAccountQuota(ctx, id, store.QuotaActive, map[string]store.QuotaWindow{"shared": {Utilization: 20}}))
-			_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET next_check_at=now()+interval '1 hour' WHERE account_id=$1`, id)
+			_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET next_check_at=now()+interval '1 hour' WHERE account_id=$1`, id)
 			require.NoError(t, err)
 			claim, err := db.LeaseAccountQuota(ctx, id, "v1", 30*time.Second, time.Minute, true)
 			require.NoError(t, err)
@@ -391,7 +391,7 @@ func TestQuotaObsoleteActiveResultPreservesNewerMetadata(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, applied)
 			require.NoError(t, db.SetAccountQuotaError(ctx, id, "newer failure"))
-			_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET failures=4 WHERE account_id=$1`, id)
+			_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET failures=4 WHERE account_id=$1`, id)
 			require.NoError(t, err)
 			before, err := db.AccountQuota(ctx, id)
 			require.NoError(t, err)
@@ -412,7 +412,7 @@ func TestQuotaObsoleteActiveResultPreservesNewerMetadata(t *testing.T) {
 			require.Equal(t, before.RefreshStatus, after.RefreshStatus)
 			var failures int
 			var lease *time.Time
-			require.NoError(t, db.Pool.QueryRow(ctx, `SELECT failures,lease_until FROM account_quota_snapshots WHERE account_id=$1`, id).Scan(&failures, &lease))
+			require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT failures,lease_until FROM account_quota_snapshots WHERE account_id=$1`, id).Scan(&failures, &lease))
 			require.Equal(t, 4, failures)
 			require.Nil(t, lease)
 		})
@@ -423,7 +423,7 @@ var testAccountSeq int
 
 func ensureQuota(t *testing.T, db *store.DB, id int64, revision string, automatic bool) {
 	t.Helper()
-	_, err := store.EnsureAccountQuota(t.Context(), db.Pool, id, revision, automatic)
+	_, err := store.EnsureAccountQuota(t.Context(), db.Gorm, id, revision, automatic)
 	require.NoError(t, err)
 }
 
@@ -438,26 +438,26 @@ func TestEnsureAccountQuotaReportsWrites(t *testing.T) {
 		require.NoError(t, err)
 		return q.Generation
 	}
-	created, err := store.EnsureAccountQuota(ctx, db.Pool, id, "v1", true)
+	created, err := store.EnsureAccountQuota(ctx, db.Gorm, id, "v1", true)
 	require.NoError(t, err)
 	require.True(t, created, "inserted")
 	first := generation()
-	created, err = store.EnsureAccountQuota(ctx, db.Pool, id, "v1", true)
+	created, err = store.EnsureAccountQuota(ctx, db.Gorm, id, "v1", true)
 	require.NoError(t, err)
 	require.False(t, created, "unchanged")
-	created, err = store.EnsureAccountQuota(ctx, db.Pool, id, "v2", true)
+	created, err = store.EnsureAccountQuota(ctx, db.Gorm, id, "v2", true)
 	require.NoError(t, err)
 	require.True(t, created, "new plugin revision")
 	require.NotEqual(t, first, generation())
-	created, err = store.EnsureAccountQuota(ctx, db.Pool, id, "v2", false)
+	created, err = store.EnsureAccountQuota(ctx, db.Gorm, id, "v2", false)
 	require.NoError(t, err)
 	require.True(t, created, "auto_refresh changed (the revision moves)")
-	_, err = db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id)
 	require.NoError(t, err)
 	other := createTestAccount(t, db)
-	_, err = db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, other)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, other)
 	require.NoError(t, err)
-	created, err = store.EnsureAccountQuota(ctx, db.Pool, other, "v1", true)
+	created, err = store.EnsureAccountQuota(ctx, db.Gorm, other, "v1", true)
 	require.NoError(t, err)
 	require.False(t, created, "a deleted account gets no row")
 }
@@ -475,12 +475,12 @@ func TestReadAccountQuotas(t *testing.T) {
 		ensureQuota(t, db, id, "v1", true)
 	}
 	require.NoError(t, db.SaveAccountQuota(ctx, good, store.QuotaPassive, map[string]store.QuotaWindow{"5h": {Utilization: 42}}))
-	_, err := db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET windows='{"5h":"invalid"}'::jsonb WHERE account_id=$1`, bad)
+	_, err := db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET windows='{"5h":"invalid"}'::jsonb WHERE account_id=$1`, bad)
 	require.NoError(t, err)
-	_, err = db.Pool.Exec(ctx, `UPDATE account_quota_snapshots SET windows='null'::jsonb WHERE account_id=$1`, null)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE account_quota_snapshots SET windows='null'::jsonb WHERE account_id=$1`, null)
 	require.NoError(t, err)
 	var before time.Time
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&before))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&before))
 	read, err := db.ReadAccountQuotas(ctx, []int64{good, bad, null, none})
 	require.NoError(t, err)
 	require.False(t, read.At.Before(before))
@@ -500,10 +500,10 @@ func TestReadAccountQuotas(t *testing.T) {
 	// without a row.
 	deleted := createTestAccount(t, db)
 	ensureQuota(t, db, deleted, "v1", true)
-	_, err = db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, deleted)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, deleted)
 	require.NoError(t, err)
 	foreign := createTestAccount(t, db)
-	_, err = db.Pool.Exec(ctx, `UPDATE accounts SET type='other' WHERE id=$1`, foreign)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE accounts SET type='other' WHERE id=$1`, foreign)
 	require.NoError(t, err)
 	ensureQuota(t, db, foreign, "v1", true)
 	scoped, err := db.ReadAccountQuotasOfTypes(ctx, []string{"test/test_type"})
@@ -524,7 +524,7 @@ func createTestAccount(t *testing.T, db *store.DB) int64 {
 	t.Helper()
 	testAccountSeq++
 	var id int64
-	err := db.Pool.QueryRow(context.Background(), `INSERT INTO accounts (name, plugin_key, type, credentials_enc)
+	err := db.SQL.QueryRowContext(context.Background(), `INSERT INTO accounts (name, plugin_key, type, credentials_enc)
 		VALUES ($1, 'test', 'test_type', $2) RETURNING id`,
 		"quota-test-"+time.Now().Format("150405.000000")+"-"+string(rune('a'+testAccountSeq)), []byte("x")).Scan(&id)
 	require.NoError(t, err)

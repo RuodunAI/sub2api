@@ -355,8 +355,7 @@ func (s *Stats) flush(ctx context.Context, samples []core.ObservationMetricSampl
 func (s *Stats) Settings(ctx context.Context) (StatsSettings, error) {
 	v := StatsSettings{WindowSeconds: 60}
 	if s.db != nil {
-		var raw []byte
-		err := s.db.Pool.QueryRow(ctx, `SELECT value FROM settings WHERE key=$1`, statsSettingsKey).Scan(&raw)
+		raw, err := store.SettingValue(store.G(ctx, s.db.Gorm), statsSettingsKey)
 		if err != nil && !store.IsNoRows(err) {
 			return v, err
 		}

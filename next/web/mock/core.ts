@@ -113,7 +113,35 @@ export const pricerUser: Identity = {
   superuser: false
 }
 
-const identities = [me, plainUser, vendorUser, readonlyUser, moderatorUser, pricerUser]
+/** The core's super-only keys (authz/catalog.go): critical, and not among admin's defaults. */
+export const SUPER_ONLY_KEYS = new Set(['balance:adjust:any', 'plugin:grant:critical', 'plugin:grant:db_schema_unconfined', 'publisher:manage', 'system:update:execute', 'system:update:recover'])
+
+/**
+ * The guard keys of the built-in admin role in the mock: rules:manage at the
+ * own scope only, no alerts:mute or bypass. The role also holds the disabled
+ * foo plugin's key, which /me leaves out and the role editor's grant view
+ * keeps grantable.
+ */
+export const MANAGER_PLUGIN_KEYS = ['plugin.guard:rules:read', 'plugin.guard:rules:manage:own', 'plugin.guard:stats:read']
+
+/**
+ * Sign in as manager@example.com (password admin): the built-in admin role,
+ * not the super admin. It holds no super-only key, manages the roles admin
+ * may assign (operator, supplier, user and the custom ones) but not admin
+ * itself, so an install's suggestions to admin go to review (D2), holds
+ * rules:manage at the own scope only (no "All" to offer), and lacks the
+ * guard's alerts:mute and bypass, which the role editor offers greyed out.
+ */
+export const managerUser: Identity = {
+  id: 10,
+  email: 'manager@example.com',
+  display_name: 'Manager',
+  roles: ['admin'],
+  permissions: [...ALL_PERMISSIONS.filter((k) => !SUPER_ONLY_KEYS.has(k) && !k.startsWith('plugin.guard:')), ...MANAGER_PLUGIN_KEYS],
+  superuser: false
+}
+
+const identities = [me, plainUser, vendorUser, readonlyUser, moderatorUser, pricerUser, managerUser]
 
 /** Email of a (possibly deleted) user id, for created_by_email. */
 export function userEmail(id: number | null | undefined): string | null {
@@ -163,36 +191,31 @@ export function filterOwned<T extends ScopedRow>(rows: T[], scope: Reach | null,
   return out
 }
 
-// Sessions (CONTRACTS §14.2). Refresh tokens belong to a family created at
-// login and rotate on every refresh; presenting a rotated (or revoked) token
-// again revokes the whole family. Access tokens carry their family, so a
-// revoked family also fails with 401 on the next request.
-interface Family {
-  current: string
+// Sessions (CONTRACTS §100): a login is a session the server renews while it
+// is used. Its token names it ("s2s_mock-<id>-..."), so a revoked session
+// (logout) fails with 401 on the next request.
+interface MockSession {
   revoked: boolean
-  seq: number
   user: Identity
 }
-const families = new Map<string, Family>()
-let familySeq = 0
+const sessions = new Map<string, MockSession>()
+let sessionSeq = 0
 
-function issue(fam: string) {
-  const f = families.get(fam)!
-  f.seq++
-  f.current = `mock-refresh-${fam}-${f.seq}`
-  return { access_token: `mock-access-${fam}-${f.seq}-${Date.now()}`, refresh_token: f.current, expires_in: 7200, user: f.user }
+function newSession(user: Identity = me) {
+  const id = `m${++sessionSeq}`
+  sessions.set(id, { revoked: false, user })
+  return { access_token: `s2s_mock-${id}-${Date.now()}`, expires_in: 604800, user }
 }
 
-function newFamily(user: Identity = me) {
-  const fam = `f${++familySeq}`
-  families.set(fam, { current: '', revoked: false, seq: 0, user })
-  return issue(fam)
+/** The session of a bearer token; undefined for one issued before a mock restart. */
+function sessionOf(auth: string | undefined): MockSession | undefined {
+  const m = /^Bearer\s+s2s_mock-(m\d+)-/i.exec(auth || '')
+  return m ? sessions.get(m[1]) : undefined
 }
 
-/** The signed-in identity of a request (admin for tokens of unknown families). */
+/** The signed-in identity of a request (admin for tokens of unknown sessions). */
 function whoAmI(auth: string | undefined): Identity {
-  const m = /^Bearer\s+mock-access-(f\d+)-/i.exec(auth || '')
-  return (m && families.get(m[1])?.user) || me
+  return sessionOf(auth)?.user || me
 }
 
 /** The signed-in identity of a mock request. */
@@ -201,18 +224,14 @@ export function caller(req: MockRequest): Identity {
 }
 
 /**
- * Checks the bearer token of a console request: "mock-access-<family>-..."
- * tokens are rejected once their family is revoked; tokens of an unknown
- * family (issued before a mock restart) stay valid; "expired" always fails.
+ * Checks the bearer token of a console request: a revoked session's token
+ * is rejected; other tokens (issued before a mock restart) stay valid;
+ * "expired" always fails.
  */
 export function accessTokenValid(auth: string | undefined): boolean {
   if (!auth) return true
-  const tok = auth.replace(/^Bearer\s+/i, '')
-  if (tok === 'expired') return false
-  const m = /^mock-access-(f\d+)-/.exec(tok)
-  if (!m) return true
-  const f = families.get(m[1])
-  return !f || !f.revoked
+  if (auth.replace(/^Bearer\s+/i, '') === 'expired') return false
+  return !sessionOf(auth)?.revoked
 }
 
 // Login rate limit (CONTRACTS §14.2, shortened for the mock): 5 failures for
@@ -236,27 +255,11 @@ on('POST', '/auth/login', (req) => {
     return fail(401, 'unauthenticated', 'invalid email or password (mock password: admin)')
   }
   loginFailures.delete(email)
-  return newFamily(identities.find((u) => u.email === email) || me)
-})
-on('POST', '/auth/refresh', (req) => {
-  const tok = String(req.body?.refresh_token || '')
-  // Legacy tokens from before this mock version: start a new family.
-  if (tok === 'mock-refresh') return newFamily()
-  const m = /^mock-refresh-(f\d+)-\d+$/.exec(tok)
-  const f = m ? families.get(m[1]) : undefined
-  if (!f) return fail(401, 'unauthenticated', 'invalid refresh token')
-  if (f.revoked) return fail(401, 'unauthenticated', 'refresh token revoked')
-  if (f.current !== tok) {
-    // Reuse of a rotated token: revoke the whole login.
-    f.revoked = true
-    return fail(401, 'unauthenticated', 'refresh token reuse detected; session revoked')
-  }
-  return issue(m![1])
+  return newSession(identities.find((u) => u.email === email) || me)
 })
 on('POST', '/auth/logout', (req) => {
-  const m = /^mock-refresh-(f\d+)-\d+$/.exec(String(req.body?.refresh_token || ''))
-  const f = m ? families.get(m[1]) : undefined
-  if (f) f.revoked = true
+  const ended = sessionOf(req.headers.authorization)
+  if (ended) ended.revoked = true
   return {}
 })
 on('GET', '/me', (req) => whoAmI(req.headers.authorization))
@@ -297,14 +300,15 @@ on('POST', '/me/verify', (req) => {
   proofs.add(proof)
   return { proof, expires_at: now(300), method, scope, context }
 })
-/** handler behind a one-time proof of scope, as Router.StepUp(scope). */
-export const stepUp = (scope: string, handler: MockHandler): MockHandler => (req) => {
+/** The 403 verification_required of a request without a valid one-time proof of scope (spent when valid); null when it has one. */
+export function stepUpRequired(req: MockRequest, scope: string): ReturnType<typeof fail> | null {
   const proof = req.headers['x-verify-proof']
-  if (!proof || !proofs.delete(proof)) {
-    return fail(403, 'verification_required', "verify it's you to continue", { ...verifyMethods(scope, `${req.method} /api/v1${req.path}`), context: `${req.method} /api/v1${req.path}` })
-  }
-  return handler(req)
+  if (proof && proofs.delete(proof)) return null
+  const context = `${req.method} /api/v1${req.path}`
+  return fail(403, 'verification_required', "verify it's you to continue", { ...verifyMethods(scope, context), context })
 }
+/** handler behind a one-time proof of scope, as Router.StepUp(scope). */
+export const stepUp = (scope: string, handler: MockHandler): MockHandler => (req) => stepUpRequired(req, scope) ?? handler(req)
 on('POST', '/me/two-factor/setup', stepUp('self.2fa.enable', () => ({
   flow_token: 'mock-totp', expires_in: 300, secret: 'MOCKSECRETMOCKSECRET', otpauth_url: 'otpauth://totp/mock',
   qr_code: 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=='
@@ -519,11 +523,11 @@ let failurePolicy = {
   egress: 'account_configured', backoff_ms: 200, max_wait_ms: 0, respect_retry_after: false, account_enabled: true,
   retry_rules: [
     failureRule('http-transient', 'HTTP transient errors', '408,500-599', [], false),
-    failureRule('rate-limit', 'Account quota and gateway concurrency (429)', '429', ["exceed your account's rate limit", 'gateway concurrency limit reached'], false)
+    failureRule('rate-limit', 'Account quota (429)', '429', ["exceed your account's rate limit"], false)
   ],
   account_rules: [
-    failureRule('login-invalid', 'Login invalid (401)', '401', ['oauth access token has been revoked', 'oauth token has been revoked', 'oauth refresh token is no longer valid'], true),
-    failureRule('account-on-hold', 'Account on hold (403)', '403', ['oauth_account_on_hold', 'oauth authentication is currently not allowed for this organization'], true),
+    failureRule('login-invalid', 'Login invalid (401)', '401', ['oauth access token has been revoked', 'oauth token has been revoked', 'invalid x-api-key'], true),
+    failureRule('account-on-hold', 'Account on hold (403)', '403', ['oauth authentication is currently not allowed for this organization'], true),
     failureRule('migrated-disable', 'Existing automatic disable', '', ['your credit balance is too low', 'this organization has been disabled.', 'you exceeded your current quota'], true)
   ]
 }

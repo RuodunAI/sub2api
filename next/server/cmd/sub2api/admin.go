@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/app"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
@@ -20,7 +21,8 @@ const adminUsage = "usage: sub2api admin recover-superadmin --email <existing us
 
 // runAdmin is `sub2api admin <command>`: repairs run on the server against
 // the configured database while the core may be down. It runs no migrations
-// and connects no Redis, and there is no HTTP counterpart.
+// and connects no Redis, and there is no HTTP counterpart. The database must
+// hold exactly this version's migrations (app.VerifyCoreSchema).
 func runAdmin(args []string) int {
 	if len(args) == 0 || args[0] != "recover-superadmin" {
 		fmt.Fprintln(os.Stderr, adminUsage)
@@ -30,8 +32,7 @@ func runAdmin(args []string) int {
 }
 
 // runRecoverSuperAdmin makes an existing user the only super admin (the
-// others become admins), for a lost super admin or the several holders the
-// one-super-admin migration refuses.
+// other holder becomes an admin), for a lost super admin.
 func runRecoverSuperAdmin(args []string) int {
 	fs := flag.NewFlagSet("admin recover-superadmin", flag.ContinueOnError)
 	email := fs.String("email", "", "existing user who becomes the only super admin")
@@ -57,6 +58,10 @@ func runRecoverSuperAdmin(args []string) int {
 		return 1
 	}
 	defer db.Close()
+	if err := app.VerifyCoreSchema(ctx, db); err != nil {
+		fmt.Fprintln(os.Stderr, "sub2api admin: the database is not at this version's schema:", err)
+		return 1
+	}
 	idm := iam.New(iam.Deps{DB: db, Config: cfg, Authz: authz.New(authz.Deps{DB: db})})
 	password, err := idm.RecoverSuperAdmin(audit.WithSource(ctx, "cli"), *email,
 		iam.RecoverOptions{ResetPassword: *resetPassword, ResetTwoFactor: *resetTwoFactor})

@@ -13,7 +13,6 @@ import { pluginAsset } from './pluginui'
 import { accessTokenValid } from './core'
 import './core'
 import './topology'
-import './ccgateway'
 import './volcengine'
 import './accounts'
 import './resources'
@@ -102,8 +101,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, next: () => voi
   if (!url.pathname.startsWith('/api/v1/')) return next()
   const path = url.pathname.slice('/api/v1'.length)
   const method = (req.method || 'GET').toUpperCase()
-  if (!path.startsWith('/auth/login') && !path.startsWith('/auth/refresh') && !accessTokenValid(req.headers.authorization)) {
-    return send(res, 401, { error: { code: 'unauthenticated', message: 'access token expired or revoked' } })
+  if (!path.startsWith('/auth/login') && !accessTokenValid(req.headers.authorization)) {
+    return send(res, 401, { error: { code: 'unauthenticated', message: 'session has ended' } })
   }
   for (const r of routes) {
     if (r.method !== method && r.method !== 'ANY') continue

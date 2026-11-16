@@ -1,0 +1,7 @@
+-- sql
+INSERT INTO "role_assignable_roles" ("role_id","assignable_role_id") VALUES ($1,$2),($3,$4) ON CONFLICT DO NOTHING
+-- vars
+$1 int64 3
+$2 int64 4
+$3 int64 3
+$4 int64 5

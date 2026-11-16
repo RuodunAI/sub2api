@@ -10,12 +10,13 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // core.PluginAccountReader: the accounts a plugin may read about its own
@@ -59,27 +60,39 @@ func (s *Service) ListPluginAccounts(ctx context.Context, pluginKey string, q co
 	if limit <= 0 || limit > PluginAccountsMaxLimit {
 		limit = PluginAccountsDefaultLimit
 	}
-	sql := `SELECT a.id, a.name, a.type, a.status, a.schedulable, a.settings
-		FROM accounts a
-		WHERE a.plugin_key = $1 AND a.deleted_at IS NULL AND a.id > $2
-		  AND ($3 = '' OR a.type = $3)`
-	if !q.IncludeInactive {
-		sql += ` AND a.status = 'active' AND a.schedulable`
-	}
-	sql += ` ORDER BY a.id LIMIT $4`
-	rows, err := s.d.DB.Pool.Query(ctx, sql, pluginKey, q.AfterID, q.Type, limit)
-	if err != nil {
+	var rows []pluginAccount
+	if err := pluginAccountsPage(store.G(ctx, s.d.DB.Gorm), pluginKey, q, limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (core.PluginAccountSummary, error) {
-		var a core.PluginAccountSummary
-		var settings []byte
-		if err := r.Scan(&a.ID, &a.Name, &a.Type, &a.Status, &a.Schedulable, &settings); err != nil {
-			return a, err
-		}
-		a.Settings = settingsOrEmpty(settings)
-		return a, nil
-	})
+	out := make([]core.PluginAccountSummary, len(rows))
+	for i, r := range rows {
+		out[i] = core.PluginAccountSummary{ID: r.ID, Name: r.Name, Type: r.Type, Status: r.Status, Schedulable: r.Schedulable,
+			Settings: settingsOrEmpty(r.Settings)}
+	}
+	return out, nil
+}
+
+// pluginAccountsPage selects the page of ListPluginAccounts.
+func pluginAccountsPage(db *gorm.DB, pluginKey string, q core.PluginAccountQuery, limit int) *gorm.DB {
+	db = db.Model(&model.Account{}).Select("id, name, type, status, schedulable, settings").
+		Where("plugin_key = ? AND deleted_at IS NULL AND id > ?", pluginKey, q.AfterID)
+	if q.Type != "" {
+		db = db.Where("type = ?", q.Type)
+	}
+	if !q.IncludeInactive {
+		db = db.Where("status = 'active' AND schedulable")
+	}
+	return db.Order("id").Limit(limit)
+}
+
+// pluginAccount is a row of pluginAccountsPage: no credential column.
+type pluginAccount struct {
+	ID          int64
+	Name        string
+	Type        string
+	Status      string
+	Schedulable bool
+	Settings    []byte
 }
 
 // ReadPluginAccountCredentials returns one account of pluginKey's own account
@@ -99,9 +112,7 @@ func (s *Service) ReadPluginAccountCredentials(ctx context.Context, pluginKey st
 		enc      []byte
 		settings []byte
 	)
-	err := s.d.DB.Pool.QueryRow(ctx, `SELECT a.id, a.name, a.type, a.status, a.schedulable, a.settings, a.credentials_enc
-		FROM accounts a
-		WHERE a.id = $1 AND a.plugin_key = $2 AND a.deleted_at IS NULL`, id, pluginKey).
+	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("id, name, type, status, schedulable, settings, credentials_enc").Row().
 		Scan(&out.ID, &out.Name, &out.Type, &out.Status, &out.Schedulable, &settings, &enc)
 	if store.IsNoRows(err) {
 		// Deliberately the same answer for "no such account" and "an account
@@ -117,7 +128,7 @@ func (s *Service) ReadPluginAccountCredentials(ctx context.Context, pluginKey st
 	if err != nil {
 		return nil, err
 	}
-	if err := audit.Audit(ctx, s.d.DB.Pool, 0, AuditPluginCredentialsRead, "account", itoa(id), map[string]any{
+	if err := audit.Audit(ctx, s.d.DB.Gorm, 0, AuditPluginCredentialsRead, "account", itoa(id), map[string]any{
 		// No console user is in this chain: the plugin process asks the host
 		// directly, so the actor is the plugin, recorded here.
 		"plugin_key":   pluginKey,
@@ -147,8 +158,7 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 	}
 	id := in.GetAccountId()
 	var proxyID *int64
-	err := s.d.DB.Pool.QueryRow(ctx, `SELECT a.proxy_id FROM accounts a
-		WHERE a.id = $1 AND a.plugin_key = $2 AND a.deleted_at IS NULL`, id, pluginKey).Scan(&proxyID)
+	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("proxy_id").Row().Scan(&proxyID)
 	if store.IsNoRows(err) {
 		// The same answer as for a missing id (ReadPluginAccountCredentials).
 		return nil, notFound(ctx)
@@ -167,11 +177,16 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 		// the request sent without its row.
 		detail["host"], detail["path"] = u.Host, u.EscapedPath()
 	}
-	if err := audit.Audit(context.WithoutCancel(ctx), s.d.DB.Pool, 0, AuditPluginAccountRequest, "account", itoa(id), detail); err != nil {
+	if err := audit.Audit(context.WithoutCancel(ctx), s.d.DB.Gorm, 0, AuditPluginAccountRequest, "account", itoa(id), detail); err != nil {
 		slog.WarnContext(ctx, "account: audit plugin account request", "plugin", pluginKey, "account", id, "err", err)
 	}
 	return &pluginv1.ExecutionHTTPResponse{Status: ans.status, Headers: ans.headers, Body: ans.body,
 		TransportError: ans.transportError, Truncated: ans.truncated}, nil
+}
+
+// pluginAccountByID is live account id if it is of pluginKey's own types.
+func pluginAccountByID(db *gorm.DB, id int64, pluginKey string) *gorm.DB {
+	return db.Model(&model.Account{}).Where("id = ? AND plugin_key = ? AND deleted_at IS NULL", id, pluginKey)
 }
 
 func settingsOrEmpty(b []byte) json.RawMessage {

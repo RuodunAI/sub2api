@@ -1,7 +1,6 @@
 // DTOs of the console REST API (docs/CONTRACTS.md §5). Fields marked
 // "assumed" are not spelled out in the contract; views must tolerate their
 // absence.
-import type { AccountFeaturePolicy, FeatureGroup } from '@/views/ccgateway/requestPolicy'
 import type { GroupPricingSummary, MyGroupPricing, SegmentRef } from './pricing'
 
 export type LText = string | Record<string, string>
@@ -12,8 +11,9 @@ export type Money = string
 // ------------------------------------------------------------------ auth / me
 
 export interface TokenResponse {
+  /** A session token (s2s_, CONTRACTS §100); the server renews it while used. */
   access_token: string
-  refresh_token: string
+  /** The session's idle timeout, seconds (a second step's flow lifetime). */
   expires_in: number
   user?: Me
   /** A correct password on an account with two-factor: POST /auth/login/2fa finishes the login. */
@@ -75,6 +75,12 @@ export interface Role {
   assign_custom?: boolean
   user_count?: number
   member_count?: number // deprecated alias
+  /**
+   * The role's revision (C1), moved by every change to the role: its writes
+   * (permissions, name, assignable list, reset) carry it back and are
+   * refused with 409 version_conflict once the role changed meanwhile.
+   */
+  revision?: number
 }
 
 /** One role of GET /me/assignable-roles: on the caller's managed list (CONTRACTS §43.6). */
@@ -89,19 +95,61 @@ export interface AssignableRole {
   missing_assign_custom?: boolean
 }
 
+/**
+ * How much a user permission lets its holder do (UI 3.16): sensitive touches
+ * money, credentials, users' own text or bans; critical gets around a
+ * security control and only the super admin grants it at install (the core's
+ * super-only keys). Plugin host permissions rank risk on their own scale
+ * (HostPermissionReview.risk).
+ */
+export type PermRisk = 'low' | 'sensitive' | 'critical'
+
+/** A plugin's permissionGroups entry: the heading its permissions show under in the editors. */
+export interface PermissionGroup {
+  key: string
+  label: LText
+  sort: number
+}
+
+/**
+ * The scope a plugin permission declares (manifest.PermissionScope as is),
+ * the same in GET /permissions and the consent review: the action takes "*",
+ * "own" (when own) or "<resource>/<value>".
+ */
+export interface PluginScopeDecl {
+  /** The resource, without "plugin:"; "value" for a static enum (the server always fills it). */
+  resource: string
+  /** The rows the holder created can be granted ("own"). */
+  own?: boolean
+  /** The plugin route listing candidates; shown only: the console asks GET /plugins/:key/scope-options. */
+  options?: string
+  /** A static enum: granted as "value/<key>". */
+  values?: Array<{ key: string; label: LText }>
+}
+
 export interface PermissionItem {
   key: string
   label: LText
   /** What it allows (core catalog); shown as a hint. */
   description?: LText
-  sensitive: boolean
+  /** Core keys: super-only → critical, sensitive → sensitive, the rest low. */
+  risk: PermRisk
   /** Using it needs a step-up verification each time (CONTRACTS §80.2); shown only. */
   step_up?: boolean
-  /** The resource its scope ranges over ("account", "proxy"; CONTRACTS §21), "" for none. */
+  /**
+   * The resource its scope ranges over: "account", "proxy" (CONTRACTS §21),
+   * "plugin:<resource>" ("plugin:value" for an enum); "" for none.
+   */
   scope_type?: string
-  /** Soft dependencies: keys it is of little use without, of the same scope; editor hints only. */
+  /** Plugin scoped keys only. */
+  scope?: PluginScopeDecl
+  /** The plugin's permission group key (plugin keys only). */
+  group?: string
+  /** Soft dependencies (full keys): keys it is of little use without, of the same scope; editor hints only. */
   requires?: string[]
-  status: string // active | disabled | removed
+  /** The plugin's suggestion (plugin keys only, never critical ones): built-in role → full canonical keys, comparable with permission_keys as is. */
+  defaults?: Partial<Record<'admin' | 'operator' | 'supplier' | 'user', string[]>>
+  status: string // active | disabled | removed | staged
 }
 
 export interface PermissionModule {
@@ -110,7 +158,36 @@ export interface PermissionModule {
   source: string // core | plugin
   plugin_key?: string | null
   status: string
+  /** Plugin modules only, sorted; the permissions come ordered by group, then sort. */
+  groups?: PermissionGroup[]
   permissions: PermissionItem[]
+}
+
+/** One role of GET/PUT /permissions/plugins/:plugin (authz PluginRoleRow). */
+export interface PluginRoleRow {
+  id: number
+  key: string
+  name: LText
+  builtin: boolean
+  superuser: boolean
+  /** The caller may change the role (editableRole); the super admin role never is. */
+  editable: boolean
+  denied?: 'superuser_role' | 'not_editable' | 'not_assignable'
+  /** The role's revision (C1): the PUT carries it back per role (409 version_conflict once the role changed). */
+  revision?: number
+  /** The role's keys of this plugin, removed ones included. */
+  permission_keys: string[]
+}
+
+/**
+ * GET /permissions/plugins/:plugin (role:read), and the answer of its PUT
+ * (role:define, body {roles: {role: keys[]}}: replaces only the listed roles'
+ * keys of this plugin; a 403 adds details.role).
+ */
+export interface PluginRoleMatrix {
+  plugin_key: string
+  module: PermissionModule
+  roles: PluginRoleRow[]
 }
 
 // ------------------------------------------------------------------ keys, groups, proxies
@@ -348,15 +425,6 @@ export interface ProxyProbeResult {
 
 // ------------------------------------------------------------------ accounts
 
-export interface AccountAction {
-  id: string
-  label: LText
-  icon?: string
-  plugin_key: string
-  account_type?: string
-  permission?: string
-}
-
 export interface AccountFormRef {
   mode: 'schema' | 'iframe' | 'native'
   page?: string
@@ -412,13 +480,11 @@ export interface AccountType {
   custom_upstream?: boolean
   /** Plugin suggestions prefilled into a new account's models / model_mapping (CONTRACTS §41). */
   default_models?: string[]
-  default_models_by_subscription?: Record<string, string[]>
   default_model_mapping?: Record<string, string>
   default_limits?: AccountDefaultLimits
   /** How the editor shows the common controls (docs/COMMON-CONTROLS.md §1); absent names keep the core behaviour. */
   common_controls?: Partial<Record<CommonControlName, CommonControlDecl>>
   extensions_schema?: { type: 'object'; properties: Record<string, unknown> }
-  lifecycle?: AccountLifecycle
   /** Platforms the type supports (built-in or plugin platforms). */
   platforms: AccountTypePlatform[]
   /** Endpoints of available supported platforms (native) plus converted ones. */
@@ -478,26 +544,6 @@ export interface UpstreamAccountLayer {
   routes?: Record<string, { path: string }>
   /** filterFields the account lets through. */
   allowFields?: string[]
-}
-
-/** manifest.AccountLifecycle: preparation, required lifecycle, row actions and deletion. */
-export interface AccountLifecycle {
-  preparation?: boolean
-  required?: boolean
-  actions?: AccountLifecycleAction[]
-  deletion?: AccountDeletion
-}
-
-/** manifest.AccountLifecycleAction: a plugin action on the account row. */
-export interface AccountLifecycleAction {
-  id: string
-  label: LText
-  icon?: string
-}
-
-/** manifest.AccountDeletion: runtime resources may be kept 1..30 days after the account is deleted. */
-export interface AccountDeletion {
-  retentionDays: number
 }
 
 /** Caps of a list of client models on one account; its models share one set of counters, 0 = unlimited (CONTRACTS §68, §71). */
@@ -628,9 +674,9 @@ export interface AccountUsageLimit {
   period_count: number
   /** Periods are counted from here (whole hours, from 2000 up to 2100); null = 2024-01-01 00:00 in `timezone`. */
   anchor: string | null
-  /** IANA time zone of the periods' boundaries ("" while never saved; an older core sends "UTC"); the console saves the browser's. */
+  /** IANA time zone of the periods' boundaries ("" while never saved); the console saves the browser's. */
   timezone: string
-  /** Whether the account ever saved a limit (sent by GET; ignored by PUT); absent from an older core. */
+  /** Whether the account ever saved a limit (sent by GET; ignored by PUT). */
   configured?: boolean
 }
 
@@ -641,8 +687,6 @@ export interface AccountOutcomes {
 }
 
 export interface Account {
-  cc_feature_policy?: AccountFeaturePolicy
-  lifecycle_sync?: { status: 'pending' | 'applied' | 'failed'; code?: string }
   id: number
   name: string
   /** Plugin that declares the account type. */
@@ -661,8 +705,6 @@ export interface Account {
   auto_disable: boolean
   /** Models this account can serve; empty = all models. */
   models: string[]
-  /** Null/absent follows the account plugin's default. */
-  auto_models?: boolean | null
   /** Client model -> upstream model, rewritten before the plugin builds the request. */
   model_mapping: Record<string, string>
   /** 0 = unlimited. */
@@ -701,8 +743,6 @@ export interface Account {
   cooldown_until?: string | null
   cooldown_reason?: string // assumed
   orphaned?: boolean
-  /** CCGateway only: the account stayed red long enough and its container is stopped; testing or re-authorizing starts it. */
-  runtime_parked?: boolean
   /** Owner (CONTRACTS §21.2); null for legacy rows, which only all-level keys can see. */
   created_by?: number | null
   /** Email of the owner, kept after the user was deleted. */
@@ -726,189 +766,8 @@ export interface Account {
   refresh?: AccountRefresh | null
   /** Outcome of the latest test of the account (any model); null when never tested. */
   last_test?: AccountLastTest | null
-  /** Plan the account's runtime reported ("max", "pro" ...), CONTRACTS §59; null while unknown. */
-  subscription_type?: string | null
-  /** Rate limit tier the runtime reported, as the upstream names it. */
-  rate_limit_tier?: string | null
   /** Balance of the account (CONTRACTS §52); null when the type does not support balance. */
   balance?: AccountBalance | null
-  /** Plugin-registered custom actions available for this account (CONTRACTS §52). */
-  actions?: AccountAction[]
-}
-
-// ---------------------------------------------------------------- CCGateway runtimes (docs/CCGATEWAY-DRAFT-RUNTIMES.md)
-
-/**
- * Extra field of POST /accounts for plugin_key=ccgateway, type=managed: the
- * key of an authorized draft runtime the new account adopts (§4). Refused
- * with 400 details.reason = draft_not_found / draft_not_authorized.
- */
-export interface CcgAccountCreateExtras {
-  ccgateway_runtime?: string
-}
-
-/** POST /system/ccgateway/drafts {proxy_id} → 201; PUT drafts/:key {proxy_id} → the same. */
-export interface CcgDraft {
-  /** `d` + 16 lowercase hex characters. */
-  key: string
-}
-
-/** GET .../status of a draft or account runtime; status and reason are English codes (ccgateway.status.* / ccgateway.reason.*). */
-export interface CcgRuntimeStatus {
-  /** Runtime key (the account id, or the draft key it adopted): POST /system/ccgateway/runtimes/:key/worker updates its worker. */
-  key?: string
-	current_image?: string
-	target_image?: string
-	image_update_available?: boolean
-	target_image_available?: boolean
-  status: 'creating' | 'ready' | 'blocked' | 'pending' | (string & {})
-  /** Why a blocked runtime is stopped: account_deleted, or account_parked (the account stayed red for park_after_hours). */
-  reason?: string
-  container?: string
-}
-
-/** GET .../health: the Claude login state inside the container. */
-export interface CcgRuntimeHealth {
-  subscription_type?: string
-  healthy: boolean
-  logged_in: boolean
-  auth_method?: string
-  status_source?: 'local_snapshot'
-  online_verified?: false
-  selection_verified?: false
-  credential_present?: boolean
-  credential_sources?: Array<'api_key_env' | 'bearer_env' | 'oauth_token_env' | 'stored_oauth' | 'managed_api_key' | 'external_credential_source' | 'credential_helper_configured'>
-  credential_source_unresolved?: boolean
-  access_token_expired?: boolean
-  /** Accounts only: the Claude Code version the Worker observed (e.g. 2.1.292); absent when unknown. */
-  cli_version?: string
-}
-
-/** POST .../start and GET .../session (null when no login is pending). */
-export interface CcgAuthSession {
-  session_id: string
-  url: string
-  expires_at: string
-}
-
-/** POST .../sync */
-export interface CcgSyncResult {
-  synced?: boolean
-  status?: string
-  reason?: string
-}
-
-/**
- * GET /system/ccgateway/runtime: the container images and controller the core
- * expects (published on GHCR) and what the Docker host runs; POST
- * .../runtime/install installs or upgrades them over SSH.
- */
-export interface CcgRuntimeImages {
-  expected: { app: string; egress: string; controller: string }
-  /** null: nothing installed yet. */
-  installed: { controller_image: string; app_image: string; egress_image: string; version?: string } | null
-  up_to_date: boolean
-  /** Why the installed state could not be read (ssh_failed, controller_unhealthy, ...). */
-  reason?: string
-  /**
-   * Images bundled in the enabled ccgateway plugin package (CONTRACTS §53.10), role -> ref;
-   * null: the package carries none. Absent from cores older than §53.10.
-   */
-  bundled?: CcgBundledImages | null
-}
-
-export type CcgBundledRole = 'app' | 'egress' | 'controller' | 'gateway'
-export interface CcgBundledImages {
-  /** ccgateway plugin version the images were built for. */
-  version: string
-  images: Partial<Record<CcgBundledRole, string>>
-}
-/** loaded: uploaded, loaded and applied; present: the controller already had the ref (skipped). */
-export type CcgBundledStatus = 'loaded' | 'present' | 'failed'
-export interface CcgBundledResult {
-  role: string
-  ref: string
-  status: CcgBundledStatus
-  reason?: string
-}
-/** POST /system/ccgateway/runtime/bundled (CONTRACTS §53.10). */
-export interface CcgBundledReport {
-  results: CcgBundledResult[]
-  /** An app image applied with update_existing: the in-place worker update of the existing runtimes (§53.7). */
-  workers?: CcgWorkersReport
-  runtime?: CcgRuntimeImages
-}
-
-/** Outcome of one runtime's in-place worker update (CONTRACTS §53.7); `failed` carries the controller's error code, `unreachable` or `timeout` as reason. */
-export type CcgWorkerStatus = 'updated' | 'unchanged' | 'busy' | 'not_running' | 'rolled_back' | 'failed'
-export interface CcgWorkerResult {
-  key: string
-  /** Absent for a draft runtime no account adopted yet. */
-  account_id?: number
-  status: CcgWorkerStatus
-  sha256?: string
-  previous_sha256?: string
-  reason?: string
-  cli_version?: string
-  cli_patch?: string
-  cli_sha256?: string
-  online?: boolean
-}
-/** POST /system/ccgateway/runtime/workers, POST .../runtimes/:key/worker (one runtime), and `workers` of an app image applied with update_existing; `reason` set (results empty) when the runtimes could not be listed. */
-export interface CcgWorkersReport {
-  image: string
-  /** Set for the update of one runtime (POST /system/ccgateway/runtimes/:key/worker). */
-  key?: string
-  results: CcgWorkerResult[]
-  reason?: string
-  components?: string[]
-  cli_version?: string
-}
-
-/** Image overrides of the CCGateway connection; '' uses the core's fixed reference. `gateway` is the Caddy image of the control panel (§53.3), `guard` the ccgateway guard of a compose install (§76). */
-export interface CcgRemoteImages {
-  app: string
-  egress: string
-  controller: string
-  gateway?: string
-  guard?: string
-}
-
-/**
- * Public view of GET/PUT /system/ccgateway/remote-config (CONTRACTS §49.16,
- * §53.2). Secrets are write-only: only has_* flags come back. In `controller`
- * mode host/port are the control panel's HTTPS address and the SSH fields are empty.
- */
-export interface CcgRemoteConfig {
-  cc_feature_groups?: Record<string, FeatureGroup>
-  feature_revision?: number
-  /** Always true for configurations saved by this console: per-account containers are the only mode. */
-  account_runtimes: boolean
-  /** Hours an account stays red before its container is stopped; 0 never stops it (default 3). */
-  park_after_hours?: number
-  /** controller: connected to a controller endpoint; ssh / local: legacy connections still honored (CONTRACTS §53.9). */
-  mode: 'disabled' | 'local' | 'ssh' | 'controller'
-  /** Controller endpoint protocol; '' or absent means https (§53.9). */
-  scheme?: '' | 'https' | 'http'
-  /** Path prefix of the controller behind a reverse proxy: '' (none) or '/seg[/seg…]' (§53.9). */
-  base_path?: string
-  host: string
-  port: number
-  user: string
-  auth_mode: 'password' | 'private_key'
-  host_key_fingerprint: string
-  has_password: boolean
-  has_private_key: boolean
-  has_passphrase: boolean
-  has_admin_key: boolean
-  has_api_key: boolean
-  /** Control panel mode: root certificates are pinned (controller_ca); the PEM itself is never returned. */
-  has_controller_ca?: boolean
-  /** SHA-256 (lowercase hex) of the DER of the first pinned certificate. */
-  controller_ca_fingerprint?: string
-  images?: Partial<CcgRemoteImages> | null
-  effective_images?: Partial<CcgRemoteImages>
-  network?: { pool: string; allocation: 'random' | 'sequential' }
 }
 
 /** Latest test of an account, kept on the account (POST /accounts/:id/test). */
@@ -1000,9 +859,6 @@ export interface AccountTestUsage {
 }
 
 export interface AccountTestResult {
-  test_mode?: 'native_build'
-  /** CCGateway: the test ran with the global CC feature policy, not the account's groups. */
-  policy_scope?: 'global'
   response_headers?: Record<string, string>
   error_code?: string
   error_source?: string
@@ -1325,8 +1181,6 @@ export type GatewayNumberSetting = Exclude<keyof GatewaySettings, 'claude_max_to
 
 /** Core load balancing of new sessions within a tier (GET/PUT /settings/scheduling, CONTRACTS §89). */
 export interface SchedulingSettings {
-  /** Always "traffic" since 2026-11-12; still sent so the cores before it balance by traffic too. */
-  mode: 'traffic'
   /** The usage both the traffic balance and the limit load are computed on. */
   metric: 'rpm' | 'concurrency' | 'tpm' | 'sessions'
   /** Lower the weight as the metric nears the account's limit. */
@@ -1477,12 +1331,18 @@ export interface PluginReview {
   routes: Array<Record<string, any>>
   menus: Array<Record<string, any>>
   user_permissions: ReviewUserPermission[]
+  /** The plugin's permissionGroups, sorted. */
+  permission_groups?: PermissionGroup[]
+  /** The matrix columns, worked out for the viewer: a review differs per caller. */
+  role_columns?: ReviewRoleColumn[]
+  /** Upgrades: the keys this version no longer declares (kept on their holders, not in force); holders left out for a viewer without role:read (C4). */
+  removed_user_permissions?: Array<{ key: string; label: LText; holders?: string[] }>
   database?: { schema: string; migrations: string[] } | null
   resources?: Record<string, any> | null
   external_services: string[]
   host_permissions: HostPermissionReview[]
   diff?: { added: ReviewDiffItem[]; widened: ReviewDiffItem[]; removed: ReviewDiffItem[] } | null
-  /** Role grants the new permissions get without overrides (defaultRoles, inheritFrom holders). */
+  /** Role grants the new permissions get without overrides (defaults, inheritFrom holders). */
   new_role_grants?: PluginRoleGrant[]
   /** One of them needs consent: the upgrade is not carried over. */
   role_grants_need_consent?: boolean
@@ -1490,17 +1350,58 @@ export interface PluginReview {
   needs_db_schema_unconfined?: boolean
 }
 
+/** A role column of the consent matrix (review role_columns), for the viewer. */
+export interface ReviewRoleColumn {
+  key: string
+  name: LText
+  builtin: boolean
+  superuser: boolean
+  /** The viewer may name the role in the consent. */
+  nameable: boolean
+  reason?: ConsentDenyReason
+}
+
+/** Why the viewer may not name a role (column) or cell of the consent matrix. */
+export type ConsentDenyReason = 'superuser_role' | 'not_editable' | 'not_assignable' | 'held' | 'role_define' | 'critical'
+
+/** One permission × role cell of the consent review, for the viewer. */
+export interface ReviewCell {
+  /**
+   * Canonical suffixes granted when the consent does not override the row: []
+   * none, [""] all, "own", "value/input", "flow/3". Left out on revived and
+   * renamed rows for a viewer without role:read (C4: they would tell who
+   * holds the old key).
+   */
+  grant?: string[]
+  /** The viewer may name this cell (critical rows included in the server's answer). */
+  nameable: boolean
+  reason?: ConsentDenyReason
+  /** Its default or inherited grant waits for a super admin's review (D2). */
+  withheld: boolean
+}
+
 /** A user permission a plugin version declares (consent review). */
 export interface ReviewUserPermission {
+  /** Local key. */
   key: string
   label: LText
   description?: LText
-  sensitive?: boolean
-  /** Roles it goes to when created, unless the consent names others. */
-  default_roles?: string[]
+  risk: PermRisk
+  group?: string
+  /** Local keys. */
+  requires?: string[]
+  scope?: PluginScopeDecl
+  /** The plugin's suggestion: role → canonical suffixes ("" all), shaped as cells[].grant. */
+  defaults?: Record<string, string[]>
   inherit_from?: string[]
   /** Not in the catalog yet: the consent creates it, and only then do roles named for it apply. */
   new?: boolean
+  /** Removed in the version before, declared again: comes back with its grants (D6); shown only. */
+  revived?: boolean
+  /** inheritFrom names a held key: granted by inheritance, not by defaults. */
+  renamed?: boolean
+  /** Every role of role_columns. */
+  cells?: Record<string, ReviewCell>
 }
 
 /** One role grant of a plugin permission (CONTRACTS P4C). */
@@ -1510,9 +1411,34 @@ export interface PluginRoleGrant {
   /** Qualified permission key. */
   permission: string
   role: string
-  sensitive: boolean
-  via: 'default' | 'inherit'
+  /** Canonical suffix, "" for all. */
+  scope?: string
+  risk: PermRisk
+  via: 'default' | 'inherit' | 'override'
   needs_consent: boolean
+  /** The caller may name the role. */
+  nameable?: boolean
+  /** Held back for a super admin's review (D2). */
+  withheld?: boolean
+}
+
+/**
+ * A cell of POST …/consent new_permission_roles: true for an unscoped
+ * permission, else its scopes: "*", "own", "value/<key>", "<resource>/<id>".
+ */
+export type ManifestGrant = true | string[]
+
+/**
+ * POST …/consent new_permission_roles: local key → role → grant. A listed key
+ * overrides its whole row for the roles the caller may name: a role left out
+ * gets nothing, {} gives it to none.
+ */
+export type NewPermissionRoles = Record<string, Record<string, ManifestGrant>>
+
+/** The answer of POST …/consent. */
+export interface ConsentResult {
+  /** The grants this consent held back for a super admin's review (D2). */
+  withheld?: PluginRoleGrant[]
 }
 
 export interface RolloutNode {
@@ -1677,8 +1603,8 @@ export interface MarketVersion {
   sha256?: string
   size?: number
   host_compat?: string
-  /** host_compat satisfied by the running core version; absent on old servers. */
-  compatible?: boolean
+  /** host_compat satisfied by the running core version. */
+  compatible: boolean
 }
 
 // ------------------------------------------------------------------ plugin egress (CONTRACTS §14.2)
@@ -1750,8 +1676,8 @@ export interface ReleaseRetiredKeyResult {
   kv_deleted: number
 }
 
-/** Response of DELETE /plugins/:key (CONTRACTS §14.3); 204 on older servers. */
+/** Response of DELETE /plugins/:key (CONTRACTS §14.3). */
 export interface UninstallResult {
   /** Accounts soft-deleted with purge_accounts=true. */
-  accounts_deleted?: number
+  accounts_deleted: number
 }

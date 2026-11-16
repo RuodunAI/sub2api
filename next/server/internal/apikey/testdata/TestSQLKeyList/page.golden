@@ -1,0 +1,16 @@
+-- sql
+SELECT k.id, k.user_id, u.email AS user_email, k.name, k.key_prefix, g.id AS group_id, COALESCE(g.name, '') AS group_name,
+		CASE WHEN g.id IS NULL THEN 'deleted'
+			WHEN g.status <> 'active' THEN 'disabled'
+			WHEN (g.visibility = 'public' OR EXISTS (SELECT 1 FROM segment_groups sg
+		JOIN users su ON su.segment_id = sg.segment_id
+		WHERE sg.group_id = g.id AND sg.granted AND su.id = k.user_id)) THEN 'active'
+			ELSE 'unavailable' END AS group_status,
+		k.status, k.expires_at, k.last_used_at, k.created_at, k.key_cipher IS NOT NULL AS copyable, k.allowed_ips,
+		k.rpm_limit, k.tpm_limit, k.max_concurrency, k.quota_limit, k.quota_used FROM api_keys k JOIN users u ON u.id = k.user_id LEFT JOIN groups g ON g.id = k.group_id WHERE (k.deleted_at IS NULL AND k.user_id = $1) AND ((k.name ILIKE $2 OR k.key_prefix ILIKE $3)) AND (k.status = 'active' AND (k.expires_at IS NULL OR k.expires_at > now())) AND k.group_id = $4 ORDER BY k.id DESC LIMIT $5
+-- vars
+$1 int64 7
+$2 string "%sk-s2a-AbCdEfGh%"
+$3 string "sk-s2a-AbCdE%"
+$4 int64 3
+$5 int 20

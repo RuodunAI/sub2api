@@ -4,33 +4,37 @@ import (
 	"context"
 	"sort"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // groupTypes returns the distinct account types (plugin key + type id) of the
 // live accounts in each of the groups, in one query.
-func groupTypes(ctx context.Context, q store.Querier, ids []int64) (map[int64][]core.AccountTypeKey, error) {
+func groupTypes(ctx context.Context, q *gorm.DB, ids []int64) (map[int64][]core.AccountTypeKey, error) {
 	out := map[int64][]core.AccountTypeKey{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := q.Query(ctx, `SELECT DISTINCT ag.group_id, a.plugin_key, a.type
-		FROM account_groups ag JOIN accounts a ON a.id = ag.account_id
-		WHERE ag.group_id = ANY($1) AND a.deleted_at IS NULL`, ids)
-	if err != nil {
+	var rows []struct {
+		GroupID int64 `gorm:"column:group_id"`
+		core.AccountTypeKey
+	}
+	if err := liveAccounts(store.G(ctx, q), ids).Distinct("ag.group_id", "a.plugin_key", "a.type").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		var k core.AccountTypeKey
-		if err := rows.Scan(&id, &k.PluginKey, &k.Type); err != nil {
-			return nil, err
-		}
-		out[id] = append(out[id], k)
+	for _, r := range rows {
+		out[r.GroupID] = append(out[r.GroupID], r.AccountTypeKey)
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// liveAccounts joins the groups of ids (account_groups ag) to their live
+// accounts (a).
+func liveAccounts(db *gorm.DB, ids []int64) *gorm.DB {
+	return db.Table("account_groups ag").Joins("JOIN accounts a ON a.id = ag.account_id").
+		Where("ag.group_id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids))
 }
 
 // platformResolver maps account types to the platforms they serve in one
@@ -97,7 +101,7 @@ func (s *Service) Platforms(ctx context.Context, ids []int64) (map[int64][]strin
 		}
 		return out, nil
 	}
-	types, err := groupTypes(ctx, s.db.Pool, ids)
+	types, err := groupTypes(ctx, s.db.Gorm, ids)
 	if err != nil {
 		return nil, err
 	}

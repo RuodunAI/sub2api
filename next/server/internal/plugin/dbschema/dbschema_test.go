@@ -11,9 +11,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -27,12 +26,12 @@ func TestSchemaRoleMigrateDSNDrop(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	key := randKey()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'installed')`, key); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'installed')`, key); err != nil {
 		t.Fatal(err)
 	}
 	mk := make([]byte, 32)
 	_, _ = rand.Read(mk)
-	m := dbschema.New(db, db.Pool.Config().ConnString(), mk, true)
+	m := dbschema.New(db, testutil.DSN(db), mk, true)
 	t.Cleanup(func() { _ = m.Drop(context.Background(), key) })
 
 	st, err := m.Ensure(ctx, key)
@@ -65,7 +64,7 @@ func TestSchemaRoleMigrateDSNDrop(t *testing.T) {
 		t.Fatal("0002 should be pending")
 	}
 	var owner string
-	if err := db.Pool.QueryRow(ctx, `SELECT tableowner FROM pg_tables WHERE schemaname = $1 AND tablename = 'items'`, "plg_"+key).Scan(&owner); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT tableowner FROM pg_tables WHERE schemaname = $1 AND tablename = 'items'`, "plg_"+key).Scan(&owner); err != nil {
 		t.Fatal(err)
 	}
 	if owner != "plg_"+key {
@@ -81,7 +80,7 @@ func TestSchemaRoleMigrateDSNDrop(t *testing.T) {
 		t.Fatalf("changed script: %v %v", again, err)
 	}
 	var rows int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM `+pgx.Identifier{"plg_" + key, "items"}.Sanitize()).Scan(&rows); err != nil || rows != 2 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM `+store.QuoteIdent("plg_"+key, "items")).Scan(&rows); err != nil || rows != 2 {
 		t.Fatalf("items after the re-run = %d %v", rows, err)
 	}
 	if again, err := m.Migrate(ctx, key, fsys); err != nil || len(again) != 0 {
@@ -93,32 +92,32 @@ func TestSchemaRoleMigrateDSNDrop(t *testing.T) {
 	if err != nil || !st2.RoleIsolated {
 		t.Fatalf("dsn: %v %+v", err, st2)
 	}
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, done, err := testutil.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect as plugin role: %v", err)
 	}
-	defer conn.Close(ctx)
+	defer done()
 	var who string
 	var n int
-	if err := conn.QueryRow(ctx, `SELECT current_user, (SELECT count(*) FROM items)`).Scan(&who, &n); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT current_user, (SELECT count(*) FROM items)`).Scan(&who, &n); err != nil {
 		t.Fatal(err)
 	}
 	if who != "plg_"+key || n != 2 {
 		t.Fatalf("who=%s n=%d", who, n)
 	}
-	if _, err := conn.Exec(ctx, `SELECT count(*) FROM public.users`); err == nil || !strings.Contains(err.Error(), "permission denied") {
+	if _, err := conn.ExecContext(ctx, `SELECT count(*) FROM public.users`); err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("plugin role reads core tables: %v", err)
 	}
-	if _, err := conn.Exec(ctx, `CREATE TABLE public.evil (id int)`); err == nil {
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE public.evil (id int)`); err == nil {
 		t.Fatal("plugin role can create tables in public")
 	}
-	conn.Close(ctx)
+	done()
 
 	if err := m.Drop(ctx, key); err != nil {
 		t.Fatal(err)
 	}
 	var exists bool
-	_ = db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)
 		OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)
 		OR EXISTS (SELECT 1 FROM plugin_migrations WHERE plugin_key = $2)`, "plg_"+key, key).Scan(&exists)
 	if exists {
@@ -130,10 +129,10 @@ func TestSchemaWithoutRoleIsolation(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	key := randKey()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'installed')`, key); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'installed')`, key); err != nil {
 		t.Fatal(err)
 	}
-	m := dbschema.New(db, db.Pool.Config().ConnString(), make([]byte, 32), false)
+	m := dbschema.New(db, testutil.DSN(db), make([]byte, 32), false)
 	t.Cleanup(func() { _ = m.Drop(context.Background(), key) })
 	if _, err := m.Migrate(ctx, key, fstest.MapFS{"0001.sql": {Data: []byte(`CREATE TABLE t (id int);`)}}); err != nil {
 		t.Fatal(err)
@@ -142,19 +141,19 @@ func TestSchemaWithoutRoleIsolation(t *testing.T) {
 	if err != nil || st.RoleIsolated {
 		t.Fatalf("%v %+v", err, st)
 	}
-	conn, err := pgx.Connect(ctx, dsn)
+	conn, done, err := testutil.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close(ctx)
+	defer done()
 	var sp string
-	if err := conn.QueryRow(ctx, `SHOW search_path`).Scan(&sp); err != nil {
+	if err := conn.QueryRowContext(ctx, `SHOW search_path`).Scan(&sp); err != nil {
 		t.Fatal(err)
 	}
 	if sp != "plg_"+key {
 		t.Fatalf("search_path = %q", sp)
 	}
-	if _, err := conn.Exec(ctx, `SELECT * FROM t`); err != nil {
+	if _, err := conn.ExecContext(ctx, `SELECT * FROM t`); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -166,13 +165,13 @@ func TestMigrationCannotEscalate(t *testing.T) {
 	ctx := context.Background()
 	key, other := randKey(), randKey()
 	for _, k := range []string{key, other} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'installed')`, k); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'installed')`, k); err != nil {
 			t.Fatal(err)
 		}
 	}
 	mk := make([]byte, 32)
 	_, _ = rand.Read(mk)
-	m := dbschema.New(db, db.Pool.Config().ConnString(), mk, true)
+	m := dbschema.New(db, testutil.DSN(db), mk, true)
 	t.Cleanup(func() { _ = m.Drop(context.Background(), key) })
 
 	cases := map[string]string{
@@ -188,10 +187,10 @@ func TestMigrationCannotEscalate(t *testing.T) {
 		}
 	}
 	var n int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename = 'escalated'`).Scan(&n); err != nil || n != 0 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename = 'escalated'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("escalated table exists: n=%d err=%v", n, err)
 	}
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1`, other).Scan(&n); err != nil || n != 0 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1`, other).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("records for other plugin: n=%d err=%v", n, err)
 	}
 	// A normal migration still works and is recorded under its own key.
@@ -231,13 +230,13 @@ func TestOfficialPluginMigrationsAreIdempotent(t *testing.T) {
 		}
 		for _, files := range sets {
 			t.Run(plugin+"/"+strings.Join(names(files), ","), func(t *testing.T) {
-				tx, err := db.Pool.Begin(ctx)
+				tx, err := testutil.Begin(ctx, db)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback(ctx)
-				schema := pgx.Identifier{"idem_" + randKey()}.Sanitize()
-				if _, err = tx.Exec(ctx, "CREATE SCHEMA "+schema+"; SET LOCAL search_path TO "+schema); err != nil {
+				defer tx.Rollback()
+				schema := store.QuoteIdent("idem_" + randKey())
+				if _, err = store.SQLTx(tx).ExecContext(ctx, "CREATE SCHEMA "+schema+"; SET LOCAL search_path TO "+schema); err != nil {
 					t.Fatal(err)
 				}
 				for pass := 1; pass <= 2; pass++ {
@@ -246,7 +245,7 @@ func TestOfficialPluginMigrationsAreIdempotent(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						if _, err = tx.Exec(ctx, string(body)); err != nil {
+						if _, err = store.SQLTx(tx).ExecContext(ctx, string(body)); err != nil {
 							t.Fatalf("pass %d of %s: %v", pass, filepath.Base(f), err)
 						}
 					}

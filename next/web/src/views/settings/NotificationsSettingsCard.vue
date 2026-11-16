@@ -29,7 +29,7 @@ const statusOptions = computed(() => [
 ])
 const STATUS_TONE: Record<NotificationStatus, Tone> = { pending: 'gray', sending: 'primary', sent: 'success', failed: 'danger' }
 const SEVERITY_TONE: Record<NotificationRecord['severity'], Tone> = { info: 'gray', warning: 'warning', critical: 'danger' }
-/** Field error codes of a test send (§74.4); another code (an older core sends "invalid") shows the server's message. */
+/** Field error codes of a test send (§74.4); another code shows the server's message. */
 const TEST_ERROR_CODES = {
   unknown_channel: 'settings.notifications.errors.unknown_channel',
   recipients_count: 'settings.notifications.errors.recipients_count',

@@ -3,6 +3,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { i18n } from '@/i18n'
 import { ApiError } from '@sub2api/host'
+import { toastState } from '@sub2api/ui'
 import RolesView from './RolesView.vue'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(async (_path: string): Promise<unknown> => []), post: vi.fn(async (_path: string) => ({ id: 1 })), put: vi.fn(async () => ({})), patch: vi.fn(async () => ({})), list: vi.fn(async () => ({ items: [], page: { total: 0 } })) }))
@@ -17,6 +18,7 @@ vi.mock('@/stores/auth', () => ({
     get me() { return auth.me },
     get permissionsEpoch() { return 0 },
     has: (p: string | string[]) => !auth.perms || [p].flat().some(k => auth.perms!.includes(k)),
+    hasDynamic: (k: string) => !auth.perms || auth.perms.includes(k),
     refreshPermissions: async () => undefined
   })
 }))
@@ -104,14 +106,16 @@ describe('RolesView permissions (T77)', () => {
   ]
 
   let meID = 100
-  async function open(id: number, { superuser = false, perms = ['role:define'], manages = [] as string[], list = roles as object[] } = {}) {
+  async function open(id: number, { superuser = false, perms = ['role:define'], manages = [] as string[], list = roles as object[], stubs = {}, mine = [] as string[], modules = [] as object[] } = {}) {
     // A new identity each time: the managed-roles list is cached per user.
-    auth.me = { id: ++meID, roles: [], superuser }
+    auth.me = { id: ++meID, roles: mine, superuser, permissions: perms }
     mocks.get.mockImplementation(async (path: string) =>
-      path === '/me/assignable-roles' ? manages.map(key => ({ key, name: key, builtin: true, grantable: true, missing: [], missing_assignable: [], missing_assign_custom: false })) : [])
+      path === '/me/assignable-roles'
+        ? manages.map(key => ({ key, name: key, builtin: true, grantable: true, missing: [], missing_assignable: [], missing_assign_custom: false }))
+        : path === '/permissions' ? modules : [])
     auth.perms = perms
     lookups.roles = list
-    const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true } } })
+    const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true, ...stubs } } })
     await flushPromises()
     const target = (list as typeof roles).find(r => r.id === id)!
     await w.findAll('button').find(b => b.text().includes(target.key))!.trigger('click')
@@ -175,6 +179,50 @@ describe('RolesView permissions (T77)', () => {
     await w.get('[data-testid="role-save"]').trigger('click')
     await flushPromises()
     expect(w.get('[data-testid="role-save-missing"]').text()).toContain('admin')
+  })
+
+  it('names the role a refused save was refused for', async () => {
+    mocks.put.mockRejectedValueOnce(new ApiError(403, { code: 'permission_denied', message: 'no', details: { missing: ['plugin.guard:bypass'], role: 'lead' } }))
+    const w = await open(2)
+    await w.get('[data-testid="role-assignable"] input[data-role="admin"]').setValue(true)
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    const missing = i18n.global.t('roles.missingPermissions', { keys: 'plugin.guard:bypass' })
+    expect(w.get('[data-testid="role-save-missing"]').text()).toBe(i18n.global.t('roles.missingFor', { role: 'lead', text: missing }))
+  })
+
+  describe('plugin permissions', () => {
+    const PermissionTree = { name: 'PermissionTree', props: ['granted', 'modules', 'allGranted', 'readOnly', 'scopeLimit', 'roleKey', 'grantable'], emits: ['update:granted'], template: '<i />' }
+
+    it('passes the role key and what the editor may grant to the tree', async () => {
+      const w = await open(2, { perms: ['role:define', 'plugin.guard:rules:read'], stubs: { PermissionTree } })
+      const tree = w.getComponent(PermissionTree)
+      expect(tree.props('roleKey')).toBe('lead')
+      const grantable = tree.props('grantable') as (k: string) => boolean
+      expect([grantable('plugin.guard:rules:read'), grantable('plugin.guard:bypass')]).toEqual([true, false])
+    })
+
+    it('lets the editor grant a disabled plugin\'s key its own role holds, though /me leaves it out', async () => {
+      const list = [...roles, role({ id: 5, key: 'mgr', permission_keys: ['plugin.foo:dashboard:read', 'plugin.foo:gone'] })]
+      const modules = [{ module: 'plugin.foo', label: 'Foo', source: 'plugin', status: 'disabled', permissions: [
+        { key: 'plugin.foo:dashboard:read', label: 'View', risk: 'low', status: 'disabled' },
+        { key: 'plugin.foo:gone', label: 'Gone', risk: 'low', status: 'removed' }
+      ] }]
+      const w = await open(2, { perms: ['role:define'], mine: ['mgr'], list, modules, stubs: { PermissionTree } })
+      const grantable = w.getComponent(PermissionTree).props('grantable') as (k: string) => boolean
+      // A removed permission's keys do not count, as on the server.
+      expect([grantable('plugin.foo:dashboard:read'), grantable('plugin.foo:gone'), grantable('plugin.foo:other')]).toEqual([true, false, false])
+    })
+
+    it('saves plugin scoped keys with the rest through PUT /roles/:id/permissions', async () => {
+      mocks.put.mockClear()
+      const w = await open(2, { stubs: { PermissionTree } })
+      w.getComponent(PermissionTree).vm.$emit('update:granted', new Set(['user:read', 'plugin.guard:rules:read', 'plugin.guard:rules:manage:own']))
+      await flushPromises()
+      await w.get('[data-testid="role-save"]').trigger('click')
+      await flushPromises()
+      expect(mocks.put).toHaveBeenCalledWith('/roles/2/permissions', { permission_keys: ['plugin.guard:rules:manage:own', 'plugin.guard:rules:read', 'user:read'] })
+    })
   })
 
   it('without role:define: no create button and no editing', async () => {
@@ -282,5 +330,122 @@ describe('RolesView permissions (T77)', () => {
     // The edit stays for another try.
     expect((w.get('[data-testid="role-name"]').element as HTMLInputElement).value).toBe('Lead 2')
     i18n.global.locale.value = prev
+  })
+})
+
+describe('RolesView saving permissions', () => {
+  const role = (over: object) => ({ id: 2, key: 'lead', name: 'Lead', builtin: false, superuser: false, permission_keys: ['user:read'], assignable_role_keys: [], assign_custom: false, revision: 7, ...over })
+  const modules = [
+    { module: 'user', label: 'Users', source: 'core', status: 'active', permissions: [{ key: 'user:read', label: 'View', risk: 'low', status: 'active' }, { key: 'user:delete', label: 'Delete', risk: 'sensitive', status: 'active' }] },
+    { module: 'plugin.g', label: 'G', source: 'plugin', plugin_key: 'g', status: 'active', permissions: [{ key: 'plugin.g:bypass', label: 'Bypass', risk: 'critical', status: 'active' }, { key: 'plugin.g:read', label: 'Read', risk: 'low', status: 'active' }] }
+  ]
+  const PermissionTree = { name: 'PermissionTree', props: ['granted', 'modules', 'allGranted', 'readOnly', 'scopeLimit', 'roleKey', 'grantable'], emits: ['update:granted'], template: '<i />' }
+
+  async function open(list: object[]) {
+    auth.me = { id: 900 + Math.random(), roles: [], superuser: true, permissions: [] }
+    auth.perms = ['role:define']
+    lookups.roles = list
+    mocks.get.mockImplementation(async (path: string) => (path === '/permissions' ? modules : []))
+    const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true, PermissionTree } } })
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('lead'))!.trigger('click')
+    await flushPromises()
+    return w
+  }
+  const grant = async (w: Awaited<ReturnType<typeof open>>, keys: string[]) => {
+    w.getComponent(PermissionTree).vm.$emit('update:granted', new Set(keys))
+    await flushPromises()
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+  }
+
+  it('asks before granting sensitive or critical permissions, naming them, and sends the revision read', async () => {
+    mocks.put.mockClear()
+    ui.confirm.mockClear()
+    ui.confirm.mockResolvedValueOnce(false)
+    const w = await open([role({})])
+    await grant(w, ['user:read', 'user:delete', 'plugin.g:bypass', 'plugin.g:read'])
+    const asked = ui.confirm.mock.calls[0][0] as { message: string; danger: boolean }
+    expect(asked.message).toMatch(/Bypass[\s\S]*Delete/)
+    expect(asked.message).not.toContain('Read')
+    expect(asked.danger).toBe(true)
+    expect(mocks.put).not.toHaveBeenCalled()
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenCalledWith('/roles/2/permissions', { permission_keys: ['plugin.g:bypass', 'plugin.g:read', 'user:delete', 'user:read'], revision: 7 })
+  })
+
+  it('carries the revision each part answered with into the next part it saves', async () => {
+    mocks.put.mockClear()
+    mocks.patch.mockClear()
+    mocks.put.mockResolvedValueOnce(role({ revision: 8 }))
+    const w = await open([role({})])
+    await w.get('[data-testid="role-name"]').setValue('Lead 2')
+    await grant(w, ['user:read', 'plugin.g:read'])
+    expect(mocks.put).toHaveBeenCalledWith('/roles/2/permissions', expect.objectContaining({ revision: 7 }))
+    expect(mocks.patch).toHaveBeenCalledWith('/roles/2', expect.objectContaining({ revision: 8 }))
+  })
+
+  it('a version conflict that left the role as it was saves again at once with the new revision (N2)', async () => {
+    mocks.put.mockClear()
+    toastState.items.splice(0)
+    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 9 } }))
+    const w = await open([role({})])
+    // Meanwhile the role changed otherwise: its permissions read the same, at a new revision.
+    lookups.roles = [role({ revision: 9 })]
+    await grant(w, ['user:delete'])
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenCalledTimes(2)
+    expect(mocks.put).toHaveBeenLastCalledWith('/roles/2/permissions', expect.objectContaining({ revision: 9 }))
+    expect(toastState.items.map((x) => x.message)).not.toContain(i18n.global.t('roles.roleConflictMerged'))
+  })
+
+  it('a version conflict over a part someone else changed too is not saved again at once; a part the editor left alone takes what is read', async () => {
+    mocks.patch.mockClear()
+    mocks.put.mockClear()
+    toastState.items.splice(0)
+    mocks.patch.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 9 } }))
+    const w = await open([role({ assignable_role_keys: ['user'] })])
+    // Meanwhile someone renamed the role and took the user role off its list.
+    lookups.roles = [role({ name: 'Leader', assignable_role_keys: [], revision: 9 })]
+    await w.get('[data-testid="role-name"]').setValue('Lead 2')
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledTimes(1)
+    expect((w.get('[data-testid="role-name"]').element as HTMLInputElement).value).toBe('Lead 2')
+    expect(toastState.items.map((x) => x.message)).toContain(i18n.global.t('roles.roleConflictClashes', { list: i18n.global.t('common.name') }))
+    // Saved again, it sends the name at the revision read; the managed roles, untouched here, stay as read.
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.patch).toHaveBeenLastCalledWith('/roles/2', expect.objectContaining({ revision: 9 }))
+    expect(mocks.put).not.toHaveBeenCalled()
+  })
+
+  it('a version conflict over parts the editor left alone saves its own part again at once', async () => {
+    mocks.patch.mockClear()
+    toastState.items.splice(0)
+    mocks.patch.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 9 } }))
+    const w = await open([role({})])
+    lookups.roles = [role({ description: 'Theirs', assignable_role_keys: ['user'], revision: 9 })]
+    await w.get('[data-testid="role-name"]').setValue('Lead 2')
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledTimes(2)
+    expect(mocks.patch).toHaveBeenLastCalledWith('/roles/2', { name: expect.anything(), revision: 9 })
+    expect(toastState.items.map((x) => x.message)).not.toContain(i18n.global.t('roles.roleConflictMerged'))
+  })
+
+  it('a version conflict reads the role again and keeps the edited cells on top', async () => {
+    mocks.put.mockClear()
+    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 9 } }))
+    const w = await open([role({})])
+    // Meanwhile someone granted plugin.g:read; the editor adds user:delete and drops user:read.
+    lookups.roles = [role({ permission_keys: ['plugin.g:read', 'user:read'], revision: 9 })]
+    await grant(w, ['user:delete'])
+    expect(w.getComponent(PermissionTree).props('granted')).toEqual(new Set(['plugin.g:read', 'user:delete']))
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenLastCalledWith('/roles/2/permissions', { permission_keys: ['plugin.g:read', 'user:delete'], revision: 9 })
   })
 })

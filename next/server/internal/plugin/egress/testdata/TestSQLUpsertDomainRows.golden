@@ -1,0 +1,8 @@
+-- sql
+INSERT INTO "plugin_egress_domains" ("plugin_key","host","first_seen_at","last_seen_at","connections") VALUES ($1,$2,$3,$4,$5) ON CONFLICT ("plugin_key","host") DO UPDATE SET "last_seen_at"=GREATEST(plugin_egress_domains.last_seen_at, EXCLUDED.last_seen_at),"connections"=plugin_egress_domains.connections + EXCLUDED.connections RETURNING "plugin_key","host","first_seen_at",(xmax = 0) AS inserted
+-- vars
+$1 string "demo"
+$2 string "api.example.com"
+$3 time.Time 2026-11-15 08:00:00 +0000 UTC
+$4 time.Time 2026-11-15 09:00:00 +0000 UTC
+$5 int64 3

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"reflect"
 	"slices"
 	"testing"
@@ -212,6 +214,24 @@ func TestRestrictScoped(t *testing.T) {
 	}
 }
 
+// A plugin key carries its scope by syntax alone: held, implied, listed,
+// restricted and missing like a core scoped key, and never an account
+// data scope.
+func TestPermissionSetPluginScopes(t *testing.T) {
+	t.Parallel()
+	const action = "plugin.m:f:m"
+	set := PermissionSetOf(action + ":flow/2")
+	assert.True(t, set.Has(action+":flow/2"))
+	assert.False(t, set.Has(action+":flow/3"))
+	assert.False(t, set.Has(action))
+	assert.True(t, set.HasAction(action))
+	assert.Equal(t, []string{action + ":flow/2"}, set.KeyList())
+	assert.Equal(t, []string{action + ":flow/2"}, set.Restrict([]string{action}).KeyList())
+	assert.Equal(t, []string{action + ":flow/3"}, set.Missing(PermissionSetOf(action+":flow/3")).Keys)
+	assert.Empty(t, PermissionSetOf(action, action+":own").Missing(set).Keys)
+	assert.Equal(t, DataScope{}, set.DataScope(7, action))
+}
+
 // ScopeGroups lists the groups named by group scopes of any action, once,
 // sorted; group/*, own, row ids and unscoped keys name none.
 func TestScopeGroups(t *testing.T) {
@@ -224,4 +244,21 @@ func TestScopeGroups(t *testing.T) {
 	if got := PermissionSetOf("account:read", "proxy:read:own").ScopeGroups(); len(got) != 0 {
 		t.Fatalf("no group scope: %v", got)
 	}
+}
+
+// sessionVerifier answers every token with user 7 and session "sid".
+type sessionVerifier struct{}
+
+func (sessionVerifier) VerifySession(context.Context, string) (int64, string, error) {
+	return 7, "sid", nil
+}
+
+// A session token's id travels with the request: step-up proofs and the
+// sessions list ask the context, not the session store.
+func TestAuthenticateBearerRecordsTheSession(t *testing.T) {
+	ctx, uid, err := AuthenticateBearer(context.Background(), sessionVerifier{}, "s2s_abc", "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), uid)
+	assert.Equal(t, "sid", Session(ctx))
+	assert.Equal(t, "", Session(context.Background()))
 }

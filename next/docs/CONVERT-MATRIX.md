@@ -29,7 +29,7 @@
 - 响应侧统一用一个内部表示（IR）：每个协议一个 reader（上游 → IR）和一个 writer（IR → 客户端），请求侧逐对实现。两跳只在注册表里做通用组合。
 - 转换器不判断策略：只把每个字段归为“映射 / 有损（带类别）/ 不可能”，策略由网关按账号判断。
 - 推理内容跨协议只传文本，签名和加密推理状态不跨协议携带（参考 new-api，§3.2）。
-- 现有两个严格转换（chat/responses → anthropic）重写为宽松转换；`protocol-codec`（含 `strict`）在本期末删除。
+- 现有两个严格转换（chat/responses → anthropic）重写为宽松转换；`protocol-codec`（含 `strict`）在本期末删除。现状（2026-11-16）：`a853227ff` 已删掉 `protocol-codec/strict` 和 `convert/openai_anthropic.go`，`server/go.mod` 不再引用 `protocol-codec`，`next/` 里也没有别的模块 import 它；模块本身和 `go.work` 里的条目仍保留，因为根目录旧版 `backend/` 经 `replace` import 它的根包和 `modelpolicy`（`backend/internal/pkg/apicompat`、`claude`、`openai`），根目录 `Dockerfile`、`deploy/Dockerfile`、`backend/Dockerfile` 也复制它，`backend-ci.yml` 每次推送都会构建。要删它，得先让旧代码不再依赖它（需要用户决定是否动旧代码）。
 
 ## 1. 现状
 
@@ -48,7 +48,7 @@
 - 设置：网关设置行 `gateway`（`gateway/settings.go` `GatewaySettings`，`GET/PUT /settings/gateway`，控制台 `GatewaySettingsCard.vue`）。SSRF 检查在 `internal/netguard`（`gateway/ssrf.go` 调用）。
 - 账号/分组：`accounts` 已有 `header_passthrough`（0089）、`param_override`（0091）等列；`groups` 有 `model_filter_mode`、`environment`。调度快照 `core.AccountRef`（`account/directory.go` `groupSnapshot`），分组随 API Key 认证带入 `core.GroupInfo`（`apikey/apikey.go`）。迁移只要求编号唯一。
 - 账号类型接口 `account/types.go`：`endpoints[].native=false` 表示经转换，靠 `CanConvert`。`sdk/manifest/check/corefloor.go` 的 `SamePlatformConversions` 只有 `chat → responses`。
-- 插件声明（develop）：codex 只声明 openai `responses`/`responses_websocket`（streamOnly）；ccgateway 只声明 anthropic `messages`/`count_tokens`；volcengine 声明 openai+anthropic+volcengine；custom 三类各声明一家全部端点。
+- 插件声明（develop）：codex 只声明 openai `responses`/`responses_websocket`（streamOnly）；volcengine 声明 openai+anthropic+volcengine；custom 三类各声明一家全部端点。
 
 ### 1.2 每对的复用与改造
 

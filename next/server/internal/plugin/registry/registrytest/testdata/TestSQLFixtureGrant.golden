@@ -1,0 +1,10 @@
+-- sql
+INSERT INTO "plugin_permission_grants" ("plugin_key","permission","status","plugin_version","manifest_hash","granted_by","scope") VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING "scope","granted_at"
+-- vars
+$1 string "demo"
+$2 string "kv"
+$3 string "granted"
+$4 string "1.2.0"
+$5 string "x"
+$6 *int64 nil
+$7 jsontext.Value {}

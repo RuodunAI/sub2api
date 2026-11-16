@@ -1,0 +1,8 @@
+-- sql
+UPDATE "account_quota_snapshots" SET "error"=$1,"failures"=$2,"generation"=nextval('account_quota_generation_seq'),"last_passive_at"=NULL,"lease_until"=NULL,"next_check_at"=CASE WHEN auto_refresh THEN now() END,"refresh_status"=$3,"revision"=revision+1,"source"=$4,"updated_at"=NULL,"windows"='{}' WHERE account_id=$5
+-- vars
+$1 string ""
+$2 int 0
+$3 string "pending"
+$4 string ""
+$5 int64 11

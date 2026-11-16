@@ -1,0 +1,10 @@
+-- sql
+INSERT INTO "scheduled_tasks" ("max_attempts","name","plugin_key","schedule","seen_at","seen_version","source","timeout_ms") VALUES ($1,$2,$3,$4,now(),$5,$6,$7) ON CONFLICT ("name") DO UPDATE SET "plugin_key"="excluded"."plugin_key","schedule"="excluded"."schedule","timeout_ms"="excluded"."timeout_ms","max_attempts"="excluded"."max_attempts","seen_version"="excluded"."seen_version","seen_at"=now(),"updated_at"=now() WHERE scheduled_tasks.source = EXCLUDED.source
+-- vars
+$1 int 3
+$2 string "plugin.demo.sync"
+$3 string "demo"
+$4 string "@every 5m"
+$5 string ""
+$6 string "plugin_manifest"
+$7 int64 90000

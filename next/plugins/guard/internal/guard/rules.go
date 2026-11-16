@@ -10,11 +10,14 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/textutil"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/model"
 )
 
 // Rule kinds.
@@ -147,15 +150,9 @@ func (p *Plugin) loadRules(ctx context.Context) ([]Rule, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `SELECT id, name, kind, pattern, enabled, updated_at FROM rules ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Rule, error) {
-		var r Rule
-		err := row.Scan(&r.ID, &r.Name, &r.Kind, &r.Pattern, &r.Enabled, &r.UpdatedAt)
-		return r, err
-	})
+	var rules []Rule // Find makes it [] when there is no rule
+	err = db.Model(&model.Rule{}).Select("id, name, kind, pattern, enabled, updated_at").Order("id").Find(&rules).Error
+	return rules, err
 }
 
 // reloadRules reads the rules table and swaps the matcher snapshot.
@@ -225,8 +222,8 @@ func (p *Plugin) putRules(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	if err != nil {
 		return pluginsdk.ErrorResponse(http.StatusServiceUnavailable, "unavailable", err.Error()), nil
 	}
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		return replaceRules(ctx, tx, rules)
+	err = db.Transaction(func(tx *gorm.DB) error {
+		return replaceRules(tx, rules)
 	})
 	if err != nil {
 		return nil, err
@@ -258,42 +255,48 @@ func (p *Plugin) putRules(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 // by the transaction itself and released on commit or rollback, exactly the
 // span to protect. Not pg_advisory_xact_lock either: advisory keys are
 // database-wide, shared with the core and every other plugin.
-func replaceRules(ctx context.Context, tx pgx.Tx, rules []Rule) error {
-	if _, err := tx.Exec(ctx, `LOCK TABLE rules IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+func replaceRules(tx *gorm.DB, rules []Rule) error {
+	if err := pgdb.LockTable(tx, "rules"); err != nil {
 		return err
 	}
-	keep := make([]int64, 0, len(rules))
+	// Never nil: a NULL array matches no row, and nothing would be deleted.
+	keep := make(pgdb.Array[int64], 0, len(rules))
 	for _, r := range rules {
 		if r.ID > 0 {
 			keep = append(keep, r.ID)
 		}
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM rules WHERE NOT (id = ANY($1))`, keep); err != nil {
+	if err := tx.Where("NOT (id = ANY(?))", keep).Delete(&model.Rule{}).Error; err != nil {
 		return err
 	}
 	for _, r := range rules {
-		if err := upsertRule(ctx, tx, r); err != nil {
+		if err := upsertRule(tx, r); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// columns are the stored fields of r as a map: created from a model.Rule,
+// a disabled rule would get the column default (true) instead.
+func (r Rule) columns() map[string]any {
+	return map[string]any{"name": r.Name, "kind": r.Kind, "pattern": r.Pattern, "enabled": r.Enabled}
+}
+
 // upsertRule updates an existing rule, creating it when its id is unknown
 // (deleted meanwhile) and skipping the write when nothing changed.
-func upsertRule(ctx context.Context, tx pgx.Tx, r Rule) error {
+func upsertRule(tx *gorm.DB, r Rule) error {
 	if r.ID > 0 {
-		tag, err := tx.Exec(ctx, `UPDATE rules SET name=$2, kind=$3, pattern=$4, enabled=$5, updated_at=now()
-			WHERE id=$1 AND (name, kind, pattern, enabled) IS DISTINCT FROM ($2, $3, $4, $5)`,
-			r.ID, r.Name, r.Kind, r.Pattern, r.Enabled)
+		set := r.columns()
+		set["updated_at"] = gorm.Expr("now()")
+		res := tx.Model(&model.Rule{}).
+			Where("id = ? AND (name, kind, pattern, enabled) IS DISTINCT FROM (?, ?, ?, ?)", r.ID, r.Name, r.Kind, r.Pattern, r.Enabled).
+			Updates(set)
+		if res.Error != nil || res.RowsAffected > 0 {
+			return res.Error
+		}
+		exists, err := pgdb.Exists(tx, tx.Model(&model.Rule{}).Where("id = ?", r.ID))
 		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() > 0 {
-			return nil
-		}
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM rules WHERE id=$1)`, r.ID).Scan(&exists); err != nil {
 			return err
 		}
 		if exists {
@@ -301,7 +304,5 @@ func upsertRule(ctx context.Context, tx pgx.Tx, r Rule) error {
 		}
 		// Unknown id (deleted meanwhile): create it as a new rule.
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO rules (name, kind, pattern, enabled) VALUES ($1, $2, $3, $4)`,
-		r.Name, r.Kind, r.Pattern, r.Enabled)
-	return err
+	return tx.Model(&model.Rule{}).Create(r.columns()).Error
 }

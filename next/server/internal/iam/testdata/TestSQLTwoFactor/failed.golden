@@ -1,0 +1,7 @@
+-- sql
+UPDATE "user_totp" SET "failed_attempts"=CASE WHEN failed_attempts + 1 >= $1 THEN 0 ELSE failed_attempts + 1 END,"locked_until"=CASE WHEN failed_attempts + 1 >= $2 THEN $3::timestamptz ELSE locked_until END WHERE user_id = $4
+-- vars
+$1 int 5
+$2 int 5
+$3 time.Time 2026-11-15 08:00:00 +0000 UTC
+$4 int64 7

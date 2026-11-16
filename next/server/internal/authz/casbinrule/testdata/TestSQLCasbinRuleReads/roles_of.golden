@@ -1,0 +1,4 @@
+-- sql
+SELECT k FROM users u, LATERAL (SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || u.id)) ur(k) WHERE u.id = $1
+-- vars
+$1 int 7

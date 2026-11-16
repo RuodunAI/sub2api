@@ -340,6 +340,13 @@ func TestSettingsPermission(t *testing.T) {
 	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); c["ui.settings.permission"] != "unknown" {
 		t.Fatalf("an undeclared permission must be rejected: %v", c)
 	}
+	// The settings form is authorized on the permission as a whole.
+	m.UI.Settings.Permission = "assets:read"
+	m.UserPermissions[0].Scope = &manifest.PermissionScope{Resource: "asset", Own: true}
+	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); c["ui.settings.permission"] != "unsupported" {
+		t.Fatalf("a scoped permission must be rejected: %v", c)
+	}
+	m.UserPermissions[0].Scope = nil
 	m.UI.Settings.Permission = ""
 	m.AccountTypes = []manifest.AccountType{{Form: manifest.Form{Permission: "assets:read"}}}
 	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); c["accountTypes[0].form.permission"] != "unsupported" {
@@ -377,72 +384,6 @@ func TestNativeSettingsWithSchema(t *testing.T) {
 	}
 }
 
-// The core installs on hostCompat alone, so a native UI that needs UI 3.4
-// must not admit core 0.1.228 (UI 3.3), where the console would refuse it.
-func TestHostUICompatNeedsMatchingHostCompat(t *testing.T) {
-	cases := []struct {
-		ui, host string
-		bad      bool
-	}{
-		{"^3.4", ">=0.1.222 <0.2.0", true},
-		{"^3.5", ">=0.1.154 <0.2.0", true},
-		{"^3.4", ">=0.1.229 <0.2.0", false},
-		{"^3.4", ">=0.1.230 <0.2.0", false},
-		{"^3.3", ">=0.1.222 <0.2.0", false},
-		{"~3.4.2", ">=0.1.222 <0.2.0", true},
-		{"^3.0", ">=0.1.0 <0.2.0", false},
-		{">=0.1.0 <0.2.0", ">=0.1.0 <0.2.0", false},
-		// UI 3.6 starts at core 0.1.256; 0.1.255 is the last core with 3.5.
-		{"^3.6", ">=0.1.229 <0.2.0", true},
-		{"^3.6", ">=0.1.254 <0.2.0", true},
-		{"^3.6", ">=0.1.255 <0.2.0", true},
-		{"^3.6", ">=0.1.256 <0.2.0", false},
-		{"~3.6.1", ">=0.1.240 <0.2.0", true},
-		{"^3.5", ">=0.1.229 <0.2.0", false},
-		// UI 3.8 starts at core 0.1.269; 0.1.268 is the last core with 3.7.
-		{"^3.8", ">=0.1.262 <0.2.0", true},
-		{"^3.8", ">=0.1.268 <0.2.0", true},
-		{"^3.8", ">=0.1.269 <0.2.0", false},
-		{"^3.7", ">=0.1.262 <0.2.0", false},
-		// UI 3.10 starts at core 0.1.277; 0.1.276 is the last core with 3.9.
-		{"^3.10", ">=0.1.269 <0.2.0", true},
-		{"^3.10", ">=0.1.276 <0.2.0", true},
-		{"^3.10", ">=0.1.277 <0.2.0", false},
-		{"~3.10.1", ">=0.1.270 <0.2.0", true},
-		{"^3.9", ">=0.1.269 <0.2.0", false},
-		// UI 3.11 starts at core 0.1.279; 0.1.278 is the last core with 3.10.
-		{"^3.11", ">=0.1.277 <0.2.0", true},
-		{"^3.11", ">=0.1.278 <0.2.0", true},
-		{"^3.11", ">=0.1.279 <0.2.0", false},
-		// UI 3.12 starts at core 0.1.280; 0.1.279 is the last core with 3.11.
-		{"^3.12", ">=0.1.278 <0.2.0", true},
-		{"^3.12", ">=0.1.279 <0.2.0", true},
-		{"^3.12", ">=0.1.280 <0.2.0", false},
-		{"~3.12.1", ">=0.1.279 <0.2.0", true},
-		// UI 3.13 starts at core 0.1.281; 0.1.280 is the last core with 3.12.
-		{"^3.13", ">=0.1.279 <0.2.0", true},
-		{"^3.13", ">=0.1.280 <0.2.0", true},
-		{"^3.13", ">=0.1.281 <0.2.0", false},
-		// UI 3.14 starts at core 0.1.284; 0.1.283 is the last core with 3.13.
-		{"^3.14", ">=0.1.281 <0.2.0", true},
-		{"^3.14", ">=0.1.283 <0.2.0", true},
-		{"^3.14", ">=0.1.284 <0.2.0", false},
-		// UI 3.15 starts at core 0.1.286; 0.1.285 is the last core with 3.14.
-		{"^3.15", ">=0.1.283 <0.2.0", true},
-		{"^3.15", ">=0.1.285 <0.2.0", true},
-		{"^3.15", ">=0.1.286 <0.2.0", false},
-	}
-	for _, tc := range cases {
-		c := uiCodes(uiNativeManifest(tc.ui, tc.host))
-		if got := c["hostCompat"] == "below_ui_core"; got != tc.bad {
-			t.Errorf("hostUICompat %s, hostCompat %s: below_ui_core = %v, want %v (%v)", tc.ui, tc.host, got, tc.bad, c)
-		}
-		if !tc.bad && len(c) > 0 {
-			t.Errorf("hostUICompat %s, hostCompat %s must be valid: %v", tc.ui, tc.host, c)
-		}
-	}
-}
-
 // uiNativeManifest is uiManifest with a native UI on the given hostUICompat
 // and hostCompat, the shape slot declarations need.
 func uiNativeManifest(uiCompat, hostCompat string) *manifest.Manifest {
@@ -453,9 +394,7 @@ func uiNativeManifest(uiCompat, hostCompat string) *manifest.Manifest {
 	return m
 }
 
-// account.list.toolbar is a UI 3.6 slot: a core before 0.1.256 would ignore
-// it, so declaring it holds hostCompat to the 3.6 floor whatever hostUICompat
-// says. Unknown slot names stay rejected.
+// The known slots are accepted, unknown slot names rejected.
 func TestSlotNames(t *testing.T) {
 	for _, slot := range []string{"dashboard.widgets", "account.detail.tabs", "account.form.widgets", "account.list.weight", "account.list.toolbar"} {
 		m := uiNativeManifest("^3.3", ">=0.1.256 <0.2.0")
@@ -469,34 +408,16 @@ func TestSlotNames(t *testing.T) {
 	if c := uiCodes(m); c["ui.slots[0].slot"] != "invalid" {
 		t.Fatalf("an unknown slot must be rejected: %v", c)
 	}
-	m = uiNativeManifest("^3.3", ">=0.1.229 <0.2.0")
-	m.UI.Slots = []manifest.Slot{{Slot: "account.list.toolbar", Component: "X"}}
-	if c := uiCodes(m); c["hostCompat"] != "below_ui_core" {
-		t.Fatalf("account.list.toolbar needs core 0.1.256: %v", c)
-	}
-	m.UI.Slots[0].Slot = "account.list.weight"
-	if c := uiCodes(m); len(c) > 0 {
-		t.Fatalf("a UI 3.4 slot is fine on core 0.1.229: %v", c)
-	}
 }
 
 // account.editor.section (UI 3.7) carries a label, a known icon and
-// optional account type ids, and holds hostCompat to core 0.1.262; the other
-// slots take none of these fields.
+// optional account type ids; the other slots take none of these fields.
 func TestEditorSectionSlot(t *testing.T) {
 	section := manifest.Slot{Slot: manifest.SlotAccountEditorSection, Component: "X", Label: manifest.LocalizedText{"en": "Extras"}, Icon: "refresh"}
 	m := uiNativeManifest("^3.7", ">=0.1.262 <0.2.0")
 	m.UI.Slots = []manifest.Slot{section}
 	if c := uiCodes(m); len(c) > 0 {
 		t.Fatalf("a valid editor section must be accepted: %v", c)
-	}
-	m.HostCompat = ">=0.1.261 <0.2.0"
-	if c := uiCodes(m); c["hostCompat"] != "below_ui_core" {
-		t.Fatalf("an editor section needs core 0.1.262: %v", c)
-	}
-	m.HostUICompat = "^3.3"
-	if c := uiCodes(m); c["hostCompat"] != "below_ui_core" {
-		t.Fatalf("an editor section needs core 0.1.262 whatever hostUICompat says: %v", c)
 	}
 	m = uiNativeManifest("^3.7", ">=0.1.262 <0.2.0")
 	m.UI.Slots = []manifest.Slot{{Slot: manifest.SlotAccountEditorSection, Component: "X", Icon: "no-such-icon", AccountTypes: []string{"apikey"}}}
@@ -520,10 +441,6 @@ func TestEditorSectionSlot(t *testing.T) {
 	m.UI.Slots = []manifest.Slot{{Slot: "account.detail.tabs", Component: "X", Label: manifest.LocalizedText{"en": "Tab"}}}
 	if c := uiCodes(m); c["ui.slots[0]"] != "unsupported" {
 		t.Fatalf("label on another slot must be refused: %v", c)
-	}
-	m = uiNativeManifest("^3.7", ">=0.1.261 <0.2.0")
-	if c := uiCodes(m); c["hostCompat"] != "below_ui_core" {
-		t.Fatalf("hostUICompat ^3.7 needs core 0.1.262: %v", c)
 	}
 }
 
@@ -551,9 +468,7 @@ func typedManifest(hostCompat string) *manifest.Manifest {
 
 // account.detail.tabs, account.list.quota and ui.accountActions take
 // accountTypes (UI 3.8) under the editor section's rules - the plugin's own
-// types, once each - and hold hostCompat to core 0.1.269, where the console
-// honours them (an older console would offer the tab or action on every
-// account, and never renders the quota decoration).
+// types, once each.
 func TestUI38TypedExtensions(t *testing.T) {
 	if c := controlCodes(typedManifest(">=0.1.269 <0.2.0")); len(c) > 0 {
 		t.Fatalf("typed UI 3.8 declarations must be accepted: %v", c)
@@ -586,31 +501,6 @@ func TestUI38TypedExtensions(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", tc.name, c, tc.want)
 		}
 	}
-	// Each declaration alone needs core 0.1.269, whatever hostUICompat says;
-	// the quota decoration even without accountTypes.
-	for name, keep := range map[string]func(*manifest.UI){
-		"typed detail tab": func(u *manifest.UI) { u.Slots, u.AccountActions[0].AccountTypes = u.Slots[:1], nil },
-		"typed action":     func(u *manifest.UI) { u.Slots = nil },
-		"quota decoration": func(u *manifest.UI) {
-			u.Slots, u.AccountActions = u.Slots[1:], nil
-			u.Slots[0].AccountTypes = nil
-		},
-	} {
-		m := typedManifest(">=0.1.268 <0.2.0")
-		m.HostUICompat = "^3.3"
-		keep(m.UI)
-		if c := controlCodes(m); c["hostCompat"] != "below_ui_core" || len(c) != 1 {
-			t.Errorf("a %s needs core 0.1.269: %v", name, c)
-		}
-	}
-	// Without accountTypes a detail tab and an action keep their old floors.
-	m := typedManifest(">=0.1.262 <0.2.0")
-	m.HostUICompat = "^3.7"
-	m.UI.Slots = m.UI.Slots[:1]
-	m.UI.Slots[0].AccountTypes, m.UI.AccountActions[0].AccountTypes = nil, nil
-	if c := controlCodes(m); len(c) > 0 {
-		t.Fatalf("an untyped detail tab and action keep their old floors: %v", c)
-	}
 }
 
 // withAccountAction adds a POST /assets/reset admin route (plus two
@@ -637,10 +527,6 @@ func TestAccountActions(t *testing.T) {
 		Permission: "assets:manage", Route: "POST /assets/reset", Bulk: true, Confirm: manifest.LocalizedText{"en": "Reset {n}?"}}
 	if c := uiCodes(withAccountAction(">=0.1.256 <0.2.0", good)); len(c) > 0 {
 		t.Fatalf("a valid action was rejected: %v", c)
-	}
-	// Declaring one needs the UI 3.6 core even without ui.native.
-	if c := uiCodes(withAccountAction(">=0.1.229 <0.2.0", good)); c["hostCompat"] != "below_ui_core" {
-		t.Fatalf("an action needs core 0.1.256: %v", c)
 	}
 	m := withAccountAction(">=0.1.256 <0.2.0", good)
 	m.UI.AccountActions = append(m.UI.AccountActions, good)
@@ -673,6 +559,13 @@ func TestAccountActions(t *testing.T) {
 		if c := uiCodes(withAccountAction(">=0.1.256 <0.2.0", act)); c["ui.accountActions[0]."+tc.field] != tc.code {
 			t.Errorf("%s: want %s = %s, got %v", tc.name, tc.field, tc.code, c)
 		}
+	}
+	// The core checks an action on accounts alone, so a plugin scope on its
+	// permission would mean nothing.
+	m = withAccountAction(">=0.1.290 <0.2.0", good)
+	m.UserPermissions[1].Scope = &manifest.PermissionScope{Resource: "asset", Own: true}
+	if c := uiCodes(m); c["ui.accountActions[0].permission"] != "unsupported" {
+		t.Errorf("an action over a scoped permission must be rejected: %v", c)
 	}
 	// Like a form submit, the method may be left out and means POST.
 	act := good

@@ -465,30 +465,6 @@ describe('API key selection and bulk actions', () => {
     expect(mocks.patch).toHaveBeenCalledTimes(23)
   })
 
-  it('selects only the keys the filters match when an older server ignores them and sends every key', async () => {
-    stored = [
-      ...Array.from({ length: 21 }, (_, i) => key({ id: i + 1, name: `key-${i + 1}`, group_id: 1 })),
-      key({ id: 30, name: 'key-off', status: 'disabled' }),
-      key({ id: 31, name: 'key-late', expires_at: '2020-01-01T00:00:00Z' }),
-      key({ id: 32, name: 'key-vip', group_id: 2 }),
-      key({ id: 33, name: 'other', key_prefix: 'sk-s2a-other' })
-    ]
-    const w = await render()
-    await choose(w, 'key-status-filter', '已启用')
-    await choose(w, 'key-group-filter', 'default')
-    await w.get(tid('key-search')).setValue('key')
-    await reloaded({ status: 'active', group_id: 1, q: 'key' })
-    await flushPromises()
-    await tick(rows(w)[0])
-    await click(w, 'bulk-select-all')
-    expect(bar(w).text()).toContain('已选全部 21 项')
-    mocks.del.mockResolvedValue(undefined)
-    await click(w, 'bulk-delete-keys')
-    expect(mocks.del.mock.calls.map(([path]) => Number(path.split('/').pop())).sort((a, b) => a - b)).toEqual(
-      Array.from({ length: 21 }, (_, i) => i + 1)
-    )
-  })
-
   it('starts a new selection when a filter changes: rows it hides would be acted on unseen', async () => {
     const w = await render()
     await tick(rowOf(w, 'laptop'))

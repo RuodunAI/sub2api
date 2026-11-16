@@ -10,10 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/task"
 )
 
@@ -46,13 +48,12 @@ type runtimeRow struct {
 
 // activeVersion reports whether version is the plugin's active version; an
 // unknown plugin is not_found.
-func (b *Bridge) activeVersion(ctx context.Context, q store.Querier, key, version string) (bool, error) {
-	var active string
-	err := q.QueryRow(ctx, `SELECT COALESCE(active_version, '') FROM plugins WHERE key = $1`, key).Scan(&active)
+func (b *Bridge) activeVersion(ctx context.Context, q *gorm.DB, key, version string) (bool, error) {
+	p, err := readPlugin(ctx, q, key)
 	if store.IsNoRows(err) {
 		return false, core.ErrNotFound.WithMessage("plugin not found")
 	}
-	return err == nil && active == version, err
+	return err == nil && p.active == version, err
 }
 
 // manifestJobIDs are the job ids of the plugin's active manifest: runtime
@@ -192,9 +193,10 @@ func (b *Bridge) writeRuntime(ctx context.Context, key, version string,
 	plan func(have map[string]runtimeRow) (map[string]runtimeRow, []string, error)) (bool, error) {
 	changed := false
 	ignored := false
-	err := b.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := b.db.Tx(ctx, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
 		// Two nodes syncing the same plugin at once take turns.
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('plugin_runtime_tasks:' || $1))`, key); err != nil {
+		if err := store.XactLock(ctx, tx, "plugin_runtime_tasks:"+key); err != nil {
 			return err
 		}
 		active, err := b.activeVersion(ctx, tx, key, version)
@@ -214,7 +216,7 @@ func (b *Bridge) writeRuntime(ctx context.Context, key, version string,
 			return err
 		}
 		for _, name := range drop {
-			if _, err := tx.Exec(ctx, `DELETE FROM scheduled_tasks WHERE name = $1 AND source = $2`, name, string(task.SourcePluginRuntime)); err != nil {
+			if err := deleteTaskRow(ctx, tx, name, task.SourcePluginRuntime); err != nil {
 				return err
 			}
 			changed = true
@@ -223,17 +225,15 @@ func (b *Bridge) writeRuntime(ctx context.Context, key, version string,
 			if old, ok := have[name]; ok && old.schedule == r.schedule && old.timeoutMS == r.timeoutMS && old.attempts == r.attempts && jsonEqual(old.args, r.args) {
 				continue
 			}
-			tag, err := tx.Exec(ctx, `INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, args, seen_version, seen_at)
-				VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, '')::jsonb, $8, now())
-				ON CONFLICT (name) DO UPDATE SET schedule = EXCLUDED.schedule, timeout_ms = EXCLUDED.timeout_ms,
-					max_attempts = EXCLUDED.max_attempts, args = EXCLUDED.args, seen_version = EXCLUDED.seen_version,
-					seen_at = now(), updated_at = now()
-				WHERE scheduled_tasks.source = EXCLUDED.source AND scheduled_tasks.plugin_key = EXCLUDED.plugin_key`,
-				name, string(task.SourcePluginRuntime), key, r.schedule, r.timeoutMS, r.attempts, r.args, b.opts.Version)
-			if err != nil {
-				return err
+			res := task.UpsertRow(g, map[string]any{"name": name, "source": string(task.SourcePluginRuntime), "plugin_key": key,
+				"schedule": r.schedule, "timeout_ms": r.timeoutMS, "max_attempts": r.attempts,
+				"args": gorm.Expr("NULLIF(?, '')::jsonb", r.args), "seen_version": b.opts.Version},
+				[]string{"schedule", "timeout_ms", "max_attempts", "args", "seen_version"},
+				clause.Expr{SQL: "scheduled_tasks.source = EXCLUDED.source AND scheduled_tasks.plugin_key = EXCLUDED.plugin_key"})
+			if res.Error != nil {
+				return res.Error
 			}
-			if tag.RowsAffected() == 0 {
+			if res.RowsAffected == 0 {
 				return core.ErrConflict.WithMessage(fmt.Sprintf("task %s is taken by a manifest job", name))
 			}
 			changed = true
@@ -256,28 +256,24 @@ func (b *Bridge) writeRuntime(ctx context.Context, key, version string,
 	return false, nil
 }
 
-func readRuntime(ctx context.Context, q store.Querier, key string) (map[string]runtimeRow, error) {
-	rows, err := q.Query(ctx, `SELECT name, schedule, timeout_ms, max_attempts, COALESCE(args::text, ''), enabled
-		FROM scheduled_tasks WHERE source = $1 AND plugin_key = $2`, string(task.SourcePluginRuntime), key)
-	if err != nil {
+func readRuntime(ctx context.Context, q *gorm.DB, key string) (map[string]runtimeRow, error) {
+	var rows []model.ScheduledTask
+	if err := store.G(ctx, q).Select("name", "schedule", "timeout_ms", "max_attempts", "args", "enabled").
+		Where("source = ? AND plugin_key = ?", string(task.SourcePluginRuntime), key).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]runtimeRow{}
-	for rows.Next() {
-		var name string
-		var r runtimeRow
-		if err := rows.Scan(&name, &r.schedule, &r.timeoutMS, &r.attempts, &r.args, &r.enabled); err != nil {
-			return nil, err
-		}
-		out[name] = r
+	out := make(map[string]runtimeRow, len(rows))
+	for _, r := range rows {
+		// args arrive in jsonb's text form, as args::text gave them; NULL is "".
+		out[r.Name] = runtimeRow{schedule: r.Schedule, timeoutMS: int64(r.TimeoutMs), attempts: r.MaxAttempts,
+			args: string(r.Args), enabled: core.ValueOr(r.Enabled, false)}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ListPluginTasks implements core.PluginTasks.
 func (b *Bridge) ListPluginTasks(ctx context.Context, key string) ([]core.PluginTask, error) {
-	have, err := readRuntime(ctx, b.db.Pool, key)
+	have, err := readRuntime(ctx, b.db.Gorm, key)
 	if err != nil {
 		return nil, err
 	}
@@ -320,9 +316,12 @@ func (b *Bridge) EnqueuePluginTask(ctx context.Context, key, id string, args jso
 	if !ok || reg.scope != core.TaskCluster {
 		return core.ErrNotFound.WithMessage(fmt.Sprintf("no enabled cluster task %q", id))
 	}
-	var queued int
-	if err := b.db.Pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'sup2api.task' AND args->>'name' = ANY($1)
-		AND state IN ('available', 'scheduled', 'pending', 'retryable')`, names).Scan(&queued); err != nil {
+	// river_job is River's table, read here with plain SQL; only River's own
+	// client writes it.
+	var queued int64
+	if err := store.G(ctx, b.db.Gorm).Table("river_job").
+		Where("kind = 'sup2api.task' AND args->>'name' = ANY(?) AND state IN ('available', 'scheduled', 'pending', 'retryable')", store.Strings(names)).
+		Count(&queued).Error; err != nil {
 		return err
 	}
 	if queued >= MaxQueuedRuns {

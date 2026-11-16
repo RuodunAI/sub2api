@@ -153,7 +153,7 @@ func newEnv(t *testing.T) env { return env{db: testutil.DB(t), bus: &memBus{}} }
 // plugin records plugin key as enabled at version and returns its info.
 func (e env) plugin(t *testing.T, key, version string, jobs ...manifest.Job) *core.PluginInfo {
 	t.Helper()
-	_, err := e.db.Pool.Exec(context.Background(), `INSERT INTO plugins (key, name, status, active_version)
+	_, err := e.db.SQL.ExecContext(context.Background(), `INSERT INTO plugins (key, name, status, active_version)
 		VALUES ($1, '{"en":"Demo","zh":"演示"}', 'enabled', $2)
 		ON CONFLICT (key) DO UPDATE SET status = 'enabled', active_version = EXCLUDED.active_version`, key, version)
 	require.NoError(t, err)
@@ -204,7 +204,7 @@ type runRow struct {
 
 func runRows(t *testing.T, db *store.DB, key, jobID string) []runRow {
 	t.Helper()
-	rows, err := db.Pool.Query(context.Background(), `SELECT scope, node_id, status, message, manual, scheduled_at
+	rows, err := db.SQL.QueryContext(context.Background(), `SELECT scope, node_id, status, message, manual, scheduled_at
 		FROM plugin_job_runs WHERE plugin_key = $1 AND job_id = $2 ORDER BY id`, key, jobID)
 	require.NoError(t, err)
 	defer rows.Close()
@@ -227,7 +227,7 @@ type scheduledRow struct {
 func readTask(t *testing.T, db *store.DB, name string) (scheduledRow, bool) {
 	t.Helper()
 	var r scheduledRow
-	err := db.Pool.QueryRow(context.Background(), `SELECT source, schedule, timeout_ms, max_attempts
+	err := db.SQL.QueryRowContext(context.Background(), `SELECT source, schedule, timeout_ms, max_attempts
 		FROM scheduled_tasks WHERE name = $1`, name).Scan(&r.Source, &r.Schedule, &r.TimeoutMS, &r.MaxAttempts)
 	if store.IsNoRows(err) {
 		return r, false
@@ -301,7 +301,7 @@ func TestClusterJobSkipsASlotRecordedElsewhere(t *testing.T) {
 	app := &fakeApp{}
 	n := e.node(t, "node-a", p, app)
 	slot := time.Now().UTC().Truncate(time.Hour)
-	_, err := e.db.Pool.Exec(context.Background(), `INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual)
+	_, err := e.db.SQL.ExecContext(context.Background(), `INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual)
 		VALUES ('demo', 'sync', 'old-core', $1, now(), 'succeeded', false)`, slot)
 	require.NoError(t, err)
 	_, err = n.bridge.run(context.Background(), "demo", "sync", core.TaskCluster, time.Minute, false,
@@ -331,7 +331,7 @@ func TestManualRunAndPluginResult(t *testing.T) {
 	waitFor(t, "the task row", 5*time.Second, func() bool {
 		var status *string
 		var count *int
-		require.NoError(t, e.db.Pool.QueryRow(context.Background(), `SELECT last_status, last_count FROM scheduled_tasks
+		require.NoError(t, e.db.SQL.QueryRowContext(context.Background(), `SELECT last_status, last_count FROM scheduled_tasks
 			WHERE name = 'plugin.demo.report'`).Scan(&status, &count))
 		return status != nil && *status == "succeeded" && count != nil && *count == 3
 	})
@@ -393,7 +393,7 @@ func TestNodeWithoutThePlugin(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, errors.As(err, &retry))
 
-	_, err = e.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'demo'`)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'demo'`)
 	require.NoError(t, err)
 	_, err = b.bridge.run(ctx, "demo", "sync", core.TaskCluster, 30*time.Second, false, run)
 	var skip *core.TaskSkippedError
@@ -411,7 +411,7 @@ func TestPluginChangesFollowTheActiveVersion(t *testing.T) {
 	n := e.node(t, "node-a", p, app)
 	require.True(t, registered(n, "plugin.demo.old"))
 
-	_, err := e.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'demo'`)
+	_, err := e.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'demo'`)
 	require.NoError(t, err)
 	require.NoError(t, n.bridge.reconcile(ctx))
 	_, ok := readTask(t, e.db, "plugin.demo.sync")
@@ -420,7 +420,7 @@ func TestPluginChangesFollowTheActiveVersion(t *testing.T) {
 
 	// Version 2.0.0: "old" is gone, "sync" runs every 30 minutes, and a
 	// lagging node still on 1.0.0 does not write its rows back.
-	_, err = e.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabled', active_version = '2.0.0' WHERE key = 'demo'`)
+	_, err = e.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'enabled', active_version = '2.0.0' WHERE key = 'demo'`)
 	require.NoError(t, err)
 	require.NoError(t, n.bridge.reconcile(ctx))
 	_, ok = readTask(t, e.db, "plugin.demo.sync")

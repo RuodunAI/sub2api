@@ -7,11 +7,14 @@ import (
 	"sort"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Review is the consent screen payload (CONTRACTS §5.7).
@@ -47,10 +50,20 @@ type Review struct {
 	ExternalServices []string            `json:"external_services"`
 	HostPermissions  []ReviewHostPerm    `json:"host_permissions"`
 	Diff             *ReviewDiff         `json:"diff,omitempty"`
-	// NewRoleGrants are the roles the permissions this version creates go
-	// to without overrides (manifest defaultRoles and the holders of their
-	// inheritFrom keys now); RoleGrantsNeedConsent is set when one of them
-	// needs consent, so an upgrade is not carried over (rolegrants.go).
+	// PermissionGroups and RoleColumns lay out the consent matrix of
+	// UserPermissions: its rows' groups and its columns, every role, as the
+	// viewer may name them.
+	PermissionGroups []manifest.PermissionGroup `json:"permission_groups"`
+	RoleColumns      []ReviewRoleColumn         `json:"role_columns"`
+	// RemovedUserPermissions are the permissions of the plugin this version
+	// no longer declares (upgrades only): marked removed, their grants kept
+	// (D6).
+	RemovedUserPermissions []ReviewRemovedPerm `json:"removed_user_permissions"`
+	// NewRoleGrants are the (role, scope) pairs the permissions this
+	// version creates go to without overrides (manifest defaults and the
+	// holders of their inheritFrom keys now), marked as the viewer would
+	// consent; RoleGrantsNeedConsent is set when one of them needs
+	// consent, so an upgrade is not carried over (rolegrants.go).
 	NewRoleGrants         []RoleGrant `json:"new_role_grants"`
 	RoleGrantsNeedConsent bool        `json:"role_grants_need_consent"`
 	// NeedsDBSchemaUnconfined: granting the db.schema this version asks for
@@ -128,18 +141,60 @@ type ReviewSlot struct {
 }
 
 type ReviewUserPerm struct {
-	Key         string             `json:"key"`
-	Label       core.LocalizedText `json:"label"`
-	Description core.LocalizedText `json:"description,omitempty"`
-	Sensitive   bool               `json:"sensitive"`
-	// DefaultRoles are the roles the permission goes to when first created
-	// unless the consent overrides them (roleGrants: the manifest
-	// defaultRoles, none for a rename which only inherits from InheritFrom).
-	DefaultRoles []string `json:"default_roles"`
-	InheritFrom  []string `json:"inherit_from,omitempty"`
+	Key         string                    `json:"key"` // local
+	Label       core.LocalizedText        `json:"label"`
+	Description core.LocalizedText        `json:"description,omitempty"`
+	Risk        string                    `json:"risk"`
+	Group       string                    `json:"group,omitempty"`
+	Requires    []string                  `json:"requires,omitempty"` // local keys
+	Scope       *manifest.PermissionScope `json:"scope,omitempty"`    // Resource = ResourceName(), as GET /permissions
+	// Defaults are the manifest's suggestion (DefaultGrants): role ->
+	// canonical suffixes, as Cells' Grant.
+	Defaults    map[string][]string `json:"defaults"`
+	InheritFrom []string            `json:"inherit_from,omitempty"`
 	// New: the catalog has no such permission yet; the consent creates it,
-	// and only then do its roles (new_permission_roles) apply.
+	// and only then do its grants (new_permission_roles) apply.
 	New bool `json:"new"`
+	// Revived: removed earlier and declared again, its grants come back as
+	// they were (D6).
+	Revived bool `json:"revived"`
+	// Renamed: it inherits from a key the catalog has, so it gets no
+	// defaults, only that key's holders.
+	Renamed bool `json:"renamed"`
+	// Cells cover every role of Review.RoleColumns.
+	Cells map[string]ReviewCell `json:"cells"`
+}
+
+// ReviewCell is one (permission, role) of the consent matrix, for the viewer.
+type ReviewCell struct {
+	// Grant is what a consent without override gives (canonical suffixes;
+	// [] none, [""] every row). For a revived key, the grants it revives
+	// with; for any other existing key, []. Absent on a revived or renamed
+	// row for a viewer without role:read: it tells who holds the old key
+	// (C4).
+	Grant    []string `json:"grant,omitzero"`
+	Nameable bool     `json:"nameable"`
+	Reason   string   `json:"reason,omitempty"` // role_define|critical|superuser_role|not_editable|not_assignable|held
+	Withheld bool     `json:"withheld"`         // Grant goes to review instead (D2)
+}
+
+// ReviewRoleColumn is one role of the consent matrix, for the viewer.
+type ReviewRoleColumn struct {
+	Key       string             `json:"key"`
+	Name      core.LocalizedText `json:"name"`
+	Builtin   bool               `json:"builtin"`
+	Superuser bool               `json:"superuser"`
+	Nameable  bool               `json:"nameable"`
+	Reason    string             `json:"reason,omitempty"`
+}
+
+// ReviewRemovedPerm is a permission an upgrade no longer declares.
+type ReviewRemovedPerm struct {
+	Key   string             `json:"key"` // local
+	Label core.LocalizedText `json:"label"`
+	// Holders are the role keys holding it, super admins aside; absent for
+	// a viewer without role:read (C4).
+	Holders []string `json:"holders,omitzero"`
 }
 
 type ReviewDatabase struct {
@@ -215,14 +270,21 @@ func riskOf(id string) string {
 
 // LoadGrants reads all grant rows of a plugin: what its active version is
 // granted.
-func LoadGrants(ctx context.Context, q store.Querier, key string) (map[string]Grant, error) {
-	return loadGrants(ctx, q, `SELECT permission, scope, status, plugin_version, granted_by, granted_at
-		FROM plugin_permission_grants WHERE plugin_key = $1`, key)
+func LoadGrants(ctx context.Context, q *gorm.DB, key string) (map[string]Grant, error) {
+	return loadGrants(pluginGrants(store.G(ctx, q), key))
+}
+
+// grantColumns are the columns of a grant row a Grant shows.
+const grantColumns = "permission, scope, status, plugin_version, granted_by, granted_at"
+
+// pluginGrants selects the grant rows of plugin key (LoadGrants).
+func pluginGrants(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.PluginPermissionGrant{}).Select(grantColumns).Where("plugin_key = ?", key)
 }
 
 // loadPriorGrants reads what an upgrade is reviewed and decided against:
 // the plugin's grants and its revoked host permissions (grants.Revoked).
-func loadPriorGrants(ctx context.Context, q store.Querier, key string) (map[string]Grant, map[string]bool, error) {
+func loadPriorGrants(ctx context.Context, q *gorm.DB, key string) (map[string]Grant, map[string]bool, error) {
 	current, err := LoadGrants(ctx, q, key)
 	if err != nil {
 		return nil, nil, err
@@ -233,29 +295,34 @@ func loadPriorGrants(ctx context.Context, q store.Querier, key string) (map[stri
 
 // LoadVersionGrants reads the grant rows key@version runs with: the set
 // staged for it while it is not active, else the plugin's grants.
-func LoadVersionGrants(ctx context.Context, q store.Querier, key, version string) (map[string]Grant, error) {
-	return loadGrants(ctx, q, `SELECT permission, scope, status, plugin_version, granted_by, granted_at FROM `+grants.VersionRows, key, version)
+func LoadVersionGrants(ctx context.Context, q *gorm.DB, key, version string) (map[string]Grant, error) {
+	return loadGrants(grants.VersionGrantsQuery(store.G(ctx, q), key, version))
 }
 
-func loadGrants(ctx context.Context, q store.Querier, sql string, args ...any) (map[string]Grant, error) {
-	rows, err := q.Query(ctx, sql, args...)
-	if err != nil {
+// grantRow is a grant row as a Grant shows it.
+type grantRow struct {
+	Permission    string          `gorm:"column:permission"`
+	Scope         json.RawMessage `gorm:"column:scope"`
+	Status        string          `gorm:"column:status"`
+	PluginVersion string          `gorm:"column:plugin_version"`
+	GrantedBy     *int64          `gorm:"column:granted_by"`
+	GrantedAt     time.Time       `gorm:"column:granted_at"`
+}
+
+// loadGrants reads the grant rows q selects, by permission.
+func loadGrants(q *gorm.DB) (map[string]Grant, error) {
+	var rows []grantRow
+	if err := q.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]Grant{}
-	for rows.Next() {
-		var g Grant
-		var scope []byte
-		if err := rows.Scan(&g.Permission, &scope, &g.Status, &g.PluginVersion, &g.GrantedBy, &g.GrantedAt); err != nil {
-			return nil, err
-		}
-		g.Scope = map[string]any{}
-		_ = json.Unmarshal(scope, &g.Scope)
-		g.Risk = riskOf(g.Permission)
+	out := make(map[string]Grant, len(rows))
+	for _, r := range rows {
+		g := Grant{Permission: r.Permission, Risk: riskOf(r.Permission), Scope: map[string]any{}, Status: r.Status,
+			PluginVersion: r.PluginVersion, GrantedBy: r.GrantedBy, GrantedAt: r.GrantedAt}
+		_ = json.Unmarshal(r.Scope, &g.Scope)
 		out[g.Permission] = g
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // SortedGrants returns grants ordered by permission id.
@@ -271,29 +338,32 @@ func SortedGrants(m map[string]Grant) []Grant {
 // buildReview renders the review. current is nil for first installs.
 func buildReview(m *manifest.Manifest, files map[string][]byte, ver *pkg.Verification, hostVersion string, current map[string]Grant) *Review {
 	r := &Review{
-		PluginKey:        m.Key,
-		Version:          m.Version,
-		Name:             core.LocalizedText(m.Name),
-		Description:      core.LocalizedText(m.Description),
-		Icon:             m.Icon,
-		Publisher:        ver.Publisher,
-		Trust:            ver.Trust,
-		SignatureStatus:  ver.SignatureStatus,
-		KeyID:            ver.KeyID,
-		HostCompat:       m.HostCompat,
-		Capabilities:     []string{},
-		GatewayEndpoints: []ReviewEndpoint{},
-		Platforms:        []ReviewPlatform{},
-		AccountTypes:     []ReviewAccountType{},
-		Hooks:            []ReviewHook{},
-		Jobs:             []ReviewJob{},
-		Events:           []string{},
-		Routes:           []ReviewRoute{},
-		Menus:            []ReviewMenu{},
-		Slots:            []ReviewSlot{},
-		UserPermissions:  []ReviewUserPerm{},
-		ExternalServices: append([]string{}, m.ExternalServices...),
-		HostPermissions:  []ReviewHostPerm{},
+		PluginKey:              m.Key,
+		Version:                m.Version,
+		Name:                   core.LocalizedText(m.Name),
+		Description:            core.LocalizedText(m.Description),
+		Icon:                   m.Icon,
+		Publisher:              ver.Publisher,
+		Trust:                  ver.Trust,
+		SignatureStatus:        ver.SignatureStatus,
+		KeyID:                  ver.KeyID,
+		HostCompat:             m.HostCompat,
+		Capabilities:           []string{},
+		GatewayEndpoints:       []ReviewEndpoint{},
+		Platforms:              []ReviewPlatform{},
+		AccountTypes:           []ReviewAccountType{},
+		Hooks:                  []ReviewHook{},
+		Jobs:                   []ReviewJob{},
+		Events:                 []string{},
+		Routes:                 []ReviewRoute{},
+		Menus:                  []ReviewMenu{},
+		Slots:                  []ReviewSlot{},
+		UserPermissions:        []ReviewUserPerm{},
+		PermissionGroups:       append([]manifest.PermissionGroup{}, m.PermissionGroups...),
+		RoleColumns:            []ReviewRoleColumn{},
+		RemovedUserPermissions: []ReviewRemovedPerm{},
+		ExternalServices:       append([]string{}, m.ExternalServices...),
+		HostPermissions:        []ReviewHostPerm{},
 	}
 	r.HostCompatOK, _ = pkg.HostCompatible(m.HostCompat, hostVersion)
 	for _, c := range m.Capabilities {
@@ -346,8 +416,13 @@ func buildReview(m *manifest.Manifest, files map[string][]byte, ver *pkg.Verific
 		}
 	}
 	for _, up := range m.UserPermissions {
+		defaults := up.DefaultGrants()
+		if defaults == nil {
+			defaults = map[string][]string{}
+		}
 		r.UserPermissions = append(r.UserPermissions, ReviewUserPerm{Key: up.Key, Label: core.LocalizedText(up.Label),
-			Description: core.LocalizedText(up.Description), Sensitive: up.Sensitive, InheritFrom: up.InheritFrom})
+			Description: core.LocalizedText(up.Description), Risk: up.RiskLevel(), Group: up.Group, Requires: up.Requires,
+			Scope: core.StoredPluginScope(up.Scope), Defaults: defaults, InheritFrom: up.InheritFrom, Cells: map[string]ReviewCell{}})
 	}
 	if m.Database != nil {
 		r.Database = &ReviewDatabase{Schema: m.Database.Schema, Migrations: pkg.MigrationFiles(files, m.Database.Migrations)}
@@ -402,27 +477,195 @@ func diffGrants(m *manifest.Manifest, current map[string]Grant) *ReviewDiff {
 	return d
 }
 
-// resolveDefaultRoles sets each user permission's DefaultRoles to what a
-// consent naming no roles grants it given the catalog now (roleGrants), and
-// the role grants that consent makes (planRoleGrants).
-func (r *Review) resolveDefaultRoles(ctx context.Context, q store.Querier, m *manifest.Manifest) error {
-	existing, err := catalogKeys(ctx, q, m)
+// resolveRoleGrants fills in the consent matrix for the viewer actorID, as
+// a consent without overrides by it would settle given the catalog now
+// (markPlan in the viewer's mode: a system viewer, a built-in plugin's
+// upload, may name every role): the role columns, each permission's cells
+// and flags, the role grants (roleGrants, planRoleGrants) and, on an
+// upgrade (r.Diff set), the permissions this version no longer declares.
+// Who holds an existing key is role:read's to see (C4): without it the
+// viewer gets no cell grants of revived or renamed rows, no inherited role
+// grants and no holders of removed keys.
+func (s *Service) resolveRoleGrants(ctx context.Context, r *Review, m *manifest.Manifest, actorID int64) error {
+	mode := consentModeOf(ctx, false)
+	seeHolders, err := s.seesHolders(ctx, actorID)
 	if err != nil {
 		return err
 	}
-	grants := roleGrants(m, ConsentRequest{}, existing)
-	for i := range r.UserPermissions {
-		up := &r.UserPermissions[i]
-		up.DefaultRoles = grants[up.Key]
-		up.New = !existing[manifest.PermissionKey(m.Key, up.Key)]
+	return s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+		cat, err := s.catalog()
+		if err != nil {
+			return err
+		}
+		existing, err := loadCatalogPerms(ctx, cat, tx, m.Key)
+		if err != nil {
+			return err
+		}
+		x := consentMatrix{roles: roleGrants(m, nil, existing)}
+		if x.plan, _, err = s.planRoleGrants(ctx, tx, m, existing, x.roles, nil, r.Diff != nil); err != nil {
+			return err
+		}
+		if x.gs, x.canDefine, err = s.noteRoleColumns(ctx, tx, r, actorID, mode); err != nil {
+			return err
+		}
+		markPlan(x.plan, x.gs, x.canDefine, mode)
+		r.RoleGrantsNeedConsent = needConsent(x.plan)
+		r.NewRoleGrants = slices.DeleteFunc(slices.Clone(x.plan), func(g RoleGrant) bool { return !seeHolders && g.Via == viaInherit })
+		if r.NewRoleGrants == nil {
+			r.NewRoleGrants = []RoleGrant{}
+		}
+		var revivedKeys []string
+		for _, up := range m.UserPermissions {
+			if key := manifest.PermissionKey(m.Key, up.Key); existing.removed(key) {
+				revivedKeys = append(revivedKeys, key)
+			}
+		}
+		if len(revivedKeys) > 0 {
+			if x.held, err = cat.PermissionHolders(ctx, tx, revivedKeys); err != nil {
+				return err
+			}
+		}
+		for i := range r.UserPermissions {
+			up := &r.UserPermissions[i]
+			key := manifest.PermissionKey(m.Key, up.Key)
+			decl, _ := m.FindUserPermission(up.Key)
+			up.New, up.Revived, up.Renamed = !existing.has(key), existing.removed(key), renamed(m, decl, existing)
+			for _, col := range r.RoleColumns {
+				c := x.cell(key, up, col)
+				if !seeHolders && (up.Revived || up.Renamed) {
+					// Both come from the old key's holders (C4).
+					c.Grant, c.Withheld = nil, false
+				}
+				up.Cells[col.Key] = c
+			}
+		}
+		if r.Diff == nil {
+			return nil
+		}
+		return s.noteRemovedPerms(ctx, tx, r, m, seeHolders)
+	})
+}
+
+// consentMatrix is what the consent matrix's cells are read from: the
+// viewer's rights (nameable), the grants a consent without overrides plans
+// (roleGrants, planRoleGrants) and the grants of the revived keys.
+type consentMatrix struct {
+	gs        core.PluginGrantees
+	canDefine bool
+	roles     map[string]map[string][]string
+	plan      []RoleGrant
+	held      map[string][]core.PermissionHolder
+}
+
+// cell is the consent matrix cell of permission key (up) and role column
+// col. A new key's grant is its roles and the scopes plan inherits for the
+// role, withheld when the viewer may not name it; a revived key's grant is
+// what it gives the role back; any other existing key's none.
+func (x *consentMatrix) cell(key string, up *ReviewUserPerm, col ReviewRoleColumn) ReviewCell {
+	c := ReviewCell{Grant: []string{}, Reason: col.Reason}
+	if col.Superuser {
+		return c
 	}
-	plan, err := planRoleGrants(ctx, q, m, existing, grants)
+	c.Nameable, c.Reason = nameable(x.gs, x.canDefine, col.Key, up.Risk)
+	var grant []string
+	switch {
+	case up.Revived:
+		for _, h := range x.held[key] {
+			if h.Role == col.Key {
+				grant = append(grant, h.Scope)
+			}
+		}
+	case up.New:
+		grant = slices.Clone(x.roles[up.Key][col.Key])
+		for _, g := range x.plan {
+			if g.Permission == key && g.Role == col.Key && g.Via == viaInherit {
+				grant = append(grant, g.Scope)
+			}
+		}
+		c.Withheld = len(grant) > 0 && !c.Nameable
+	}
+	if grant = manifest.CanonicalSuffixes(grant); grant != nil {
+		c.Grant = grant
+	}
+	return c
+}
+
+// noteRoleColumns sets the consent matrix's columns: every role, super
+// admins first (they hold every permission, so nothing is written to them),
+// then built-in ones, as the viewer actorID may name them for a permission
+// of low risk. It returns what it read of the viewer (grantees).
+func (s *Service) noteRoleColumns(ctx context.Context, tx *gorm.DB, r *Review, actorID int64, mode consentMode) (core.PluginGrantees, bool, error) {
+	var roles []roleColumnRow
+	if err := roleColumns(store.G(ctx, tx)).Find(&roles).Error; err != nil {
+		return core.PluginGrantees{}, false, err
+	}
+	cols := make([]ReviewRoleColumn, len(roles))
+	for i, r := range roles {
+		cols[i] = ReviewRoleColumn{Key: r.Key, Name: r.Name.V, Builtin: r.Builtin, Superuser: r.Superuser}
+	}
+	var keys []string
+	for _, c := range cols {
+		if !c.Superuser {
+			keys = append(keys, c.Key)
+		}
+	}
+	gs, canDefine, err := s.grantees(ctx, tx, actorID, keys, mode)
+	if err != nil {
+		return core.PluginGrantees{}, false, err
+	}
+	for i := range cols {
+		c := &cols[i]
+		if c.Superuser {
+			c.Reason = core.GrantDenySuperuserRole
+			continue
+		}
+		c.Nameable, c.Reason = nameable(gs, canDefine, c.Key, manifest.RiskLow)
+	}
+	r.RoleColumns = append([]ReviewRoleColumn{}, cols...)
+	return gs, canDefine, nil
+}
+
+// noteRemovedPerms lists the permissions of the plugin the catalog has but
+// m no longer declares (still active or disabled: SyncPlugin's removal
+// rule), with the roles holding them when seeHolders.
+func (s *Service) noteRemovedPerms(ctx context.Context, tx *gorm.DB, r *Review, m *manifest.Manifest, seeHolders bool) error {
+	cat, err := s.catalog()
 	if err != nil {
 		return err
 	}
-	r.NewRoleGrants, r.RoleGrantsNeedConsent = plan, needConsent(plan)
-	if r.NewRoleGrants == nil {
-		r.NewRoleGrants = []RoleGrant{}
+	perms, err := cat.PluginPermissions(ctx, tx, m.Key)
+	if err != nil {
+		return err
+	}
+	var gone []core.PluginPermission
+	for _, p := range perms {
+		local, _ := manifest.LocalPermission(m.Key, p.Key)
+		if _, declared := m.FindUserPermission(local); !declared && p.Status != permStatusRemoved {
+			gone = append(gone, p)
+		}
+	}
+	var held map[string][]core.PermissionHolder
+	if seeHolders && len(gone) > 0 {
+		keys := make([]string, len(gone))
+		for i, p := range gone {
+			keys[i] = p.Key
+		}
+		if held, err = cat.PermissionHolders(ctx, tx, keys); err != nil {
+			return err
+		}
+	}
+	for _, p := range gone {
+		rp := ReviewRemovedPerm{Label: p.Label}
+		rp.Key, _ = manifest.LocalPermission(m.Key, p.Key)
+		if seeHolders {
+			rp.Holders = []string{}
+		}
+		for _, h := range held[p.Key] {
+			if !slices.Contains(rp.Holders, h.Role) {
+				rp.Holders = append(rp.Holders, h.Role)
+			}
+		}
+		r.RemovedUserPermissions = append(r.RemovedUserPermissions, rp)
 	}
 	return nil
 }
@@ -435,8 +678,9 @@ func (s *Service) noteDBSchema(r *Review, m *manifest.Manifest) {
 	r.NeedsDBSchemaUnconfined = asks && s.dbSchemaUnconfined(r.Trust == pkg.TrustOfficial)
 }
 
-// Review returns the review of a stored version (for the consent page).
-func (s *Service) Review(ctx context.Context, key, version string) (*Review, error) {
+// Review returns the review of a stored version (for the consent page), its
+// consent matrix as actorID may name the roles.
+func (s *Service) Review(ctx context.Context, key, version string, actorID int64) (*Review, error) {
 	var (
 		status, consent, sigStatus string
 		keyID                      *string
@@ -445,14 +689,8 @@ func (s *Service) Review(ctx context.Context, key, version string) (*Review, err
 		sha                        string
 		uploadedAt                 time.Time
 	)
-	err := s.d.DB.Pool.QueryRow(ctx, `
-		SELECT p.status, v.consent_status, v.signature_status, v.key_id, pub.name, pub.trust_level,
-		       v.package_size, v.package_sha256, v.uploaded_at
-		FROM plugin_versions v
-		JOIN plugins p ON p.key = v.plugin_key
-		LEFT JOIN publishers pub ON pub.id = v.publisher_id
-		WHERE v.plugin_key = $1 AND v.version = $2`, key, version).
-		Scan(&status, &consent, &sigStatus, &keyID, &pubName, &trust, &size, &sha, &uploadedAt)
+	err := reviewedVersion(store.G(ctx, s.d.DB.Gorm), key, version).
+		Row().Scan(&status, &consent, &sigStatus, &keyID, &pubName, &trust, &size, &sha, &uploadedAt)
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
@@ -476,14 +714,14 @@ func (s *Service) Review(ctx context.Context, key, version string) (*Review, err
 	)
 	upgradeFrom := ""
 	if status != StatusAwaitingConsent {
-		if current, revoked, err = loadPriorGrants(ctx, s.d.DB.Pool, key); err != nil {
+		if current, revoked, err = loadPriorGrants(ctx, s.d.DB.Gorm, key); err != nil {
 			return nil, err
 		}
-		upgradeFrom, _ = s.runningVersion(ctx, s.d.DB.Pool, key, version)
+		upgradeFrom, _ = s.runningVersion(ctx, s.d.DB.Gorm, key, version)
 	}
 	r := buildReview(p.Manifest, p.Files, ver, s.opt.HostVersion, current)
 	r.noteRevoked(revoked)
-	if err := r.resolveDefaultRoles(ctx, s.d.DB.Pool, p.Manifest); err != nil {
+	if err := s.resolveRoleGrants(ctx, r, p.Manifest, actorID); err != nil {
 		return nil, err
 	}
 	s.noteDBSchema(r, p.Manifest)
@@ -495,12 +733,40 @@ func (s *Service) Review(ctx context.Context, key, version string) (*Review, err
 
 // runningVersion is the version an upgrade to target replaces: the active
 // version, else the newest approved version other than target.
-func (s *Service) runningVersion(ctx context.Context, q store.Querier, key, target string) (string, error) {
+func (s *Service) runningVersion(ctx context.Context, q *gorm.DB, key, target string) (string, error) {
 	var v string
-	err := q.QueryRow(ctx, `
-		SELECT COALESCE(p.active_version,
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved' AND version <> $2
-		     ORDER BY uploaded_at DESC LIMIT 1), '')
-		FROM plugins p WHERE p.key = $1`, key, target).Scan(&v)
+	err := runningVersion(store.G(ctx, q), key, target).Row().Scan(&v)
 	return v, err
+}
+
+// runningVersion is the statement of Service.runningVersion.
+func runningVersion(db *gorm.DB, key, target string) *gorm.DB {
+	newest := db.Model(&model.PluginVersion{}).Select("version").
+		Where("plugin_key = p.key AND consent_status = 'approved' AND version <> ?", target).Order("uploaded_at DESC").Limit(1)
+	return db.Table("plugins AS p").Select("COALESCE(p.active_version, (?), '')", newest).Where("p.key = ?", key)
+}
+
+// roleColumnRow is a roles row as a consent matrix column shows it.
+type roleColumnRow struct {
+	Key       string                         `gorm:"column:key"`
+	Name      store.JSON[core.LocalizedText] `gorm:"column:name"`
+	Builtin   bool                           `gorm:"column:builtin"`
+	Superuser bool                           `gorm:"column:superuser"`
+}
+
+// roleColumns selects the consent matrix's roles: super admins first, then
+// built-in ones.
+func roleColumns(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.Role{}).Select("key, name, builtin, superuser").Order("superuser DESC, builtin DESC, id")
+}
+
+// reviewedVersion selects what the review of key@version shows of the
+// plugin, the version and its publisher.
+func reviewedVersion(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Table("plugin_versions AS v").
+		Select(`p.status, v.consent_status, v.signature_status, v.key_id, pub.name, pub.trust_level,
+			v.package_size, v.package_sha256, v.uploaded_at`).
+		Joins("JOIN plugins p ON p.key = v.plugin_key").
+		Joins("LEFT JOIN publishers pub ON pub.id = v.publisher_id").
+		Where("v.plugin_key = ? AND v.version = ?", key, version)
 }

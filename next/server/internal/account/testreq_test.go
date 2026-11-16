@@ -3,23 +3,19 @@ package account
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
 
-	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/requestfailure"
 	"github.com/tidwall/gjson"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 )
 
 // anthropicUsage mirrors the JSON usage rules of the built-in anthropic
@@ -176,39 +172,11 @@ func TestAccountTestResultDetails(t *testing.T) {
 	}
 }
 
-func TestAccountTestPreservesErrorOriginAndCode(t *testing.T) {
-	t.Run("core blocks before upstream", func(t *testing.T) {
-		e := setup(t)
-		var calls atomic.Int32
-		e.withCCGateway(true, func(w http.ResponseWriter, _ *http.Request) { calls.Add(1); w.WriteHeader(500) })
-		e.plat.testURL = ccgateway.VirtualURL
-		const reason = "The bound proxy no longer exists or has an unsupported protocol; choose another proxy."
-		e.plat.classify = &pluginv1.ClassifyErrorResponse{Reason: "transport error: " + reason}
-		// A disabled account is still tested; an unusable proxy is blocked
-		// before the runtime (the schema permits any protocol).
-		id := e.mkRawAccount("ccgateway", "managed", "disabled", "unused", false)
-		pid := e.exec1(`INSERT INTO proxies(name,protocol,host,port) VALUES('bad','','proxy.example',3128) RETURNING id`)
-		if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET proxy_id=$2 WHERE id=$1`, id, pid); err != nil {
-			t.Fatal(err)
-		}
-		_, raw := e.doRaw(e.uid, "POST", "/accounts/"+itoa(id)+"/test", nil)
-		d := gjson.GetBytes(raw, "data")
-		// The core answers its own refusal as a marked 503 (audit A6): the
-		// diagnostic keeps the reason as its code and names the core.
-		if d.Get("ok").Bool() || d.Get("status").Int() != 503 || d.Get("error_code").String() != "proxy_unavailable" || d.Get("error_source").String() != "core" || calls.Load() != 0 {
-			t.Fatalf("blocked diagnostic: %s calls=%d", raw, calls.Load())
-		}
-		_, raw = e.doRaw(e.uid, "GET", "/accounts/"+itoa(id), nil)
-		last := gjson.GetBytes(raw, "data.last_test")
-		if !last.Get("status").Exists() || last.Get("status").Int() != 503 || last.Get("error_code").String() != "proxy_unavailable" || last.Get("error_source").String() != "core" || strings.Count(last.Get("message").String(), reason) != 1 {
-			t.Fatalf("persisted diagnostic: %s", raw)
-		}
-	})
+func TestAccountTestPreservesUpstreamErrorCode(t *testing.T) {
 	t.Run("actual upstream 401", func(t *testing.T) {
 		e := setup(t)
 		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set(requestfailure.SourceHeader, "transport") // an ordinary provider cannot assert a CLI source
 			w.WriteHeader(401)
 			_, _ = w.Write([]byte(`{"error":{"type":"authentication_error","code":"token_revoked","message":"token revoked"}}`))
 		}))
@@ -225,65 +193,6 @@ func TestAccountTestPreservesErrorOriginAndCode(t *testing.T) {
 			t.Fatalf("persisted upstream diagnostic: %s", raw)
 		}
 	})
-}
-
-func TestAccountTestPreservesManagedCLIErrorWithoutInference(t *testing.T) {
-	for _, source := range []string{"http", "transport", "timeout", "input", "interrupted", "internal"} {
-		t.Run(source, func(t *testing.T) {
-			e := setup(t)
-			const body = `{"type":"error","error":{"type":"api_error","code":"ECONNRESET","message":"read ECONNRESET"}}`
-			var calls atomic.Int32
-			ccg := e.withCCGateway(false, func(w http.ResponseWriter, r *http.Request) {
-				calls.Add(1)
-				if r.URL.Path != "/v1/ccgateway/probe" {
-					t.Error(r.URL.Path)
-				}
-				w.Header().Set(requestfailure.SourceHeader, source)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(502)
-				_, _ = w.Write([]byte(body))
-			})
-			// Configure the legacy local Worker transport used by this fixture.
-			cfg, err := ccg.Load(context.Background())
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.APIKey = "worker-secret"
-			plain, _ := json.Marshal(cfg)
-			enc, err := e.svc.d.Cipher.Encrypt(plain, []byte("system:ccgateway:v1"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			envelope, _ := json.Marshal(map[string]any{"cipher": enc})
-			if _, err := e.db.Pool.Exec(context.Background(), `UPDATE settings SET value=$1 WHERE key='ccgateway_remote'`, envelope); err != nil {
-				t.Fatal(err)
-			}
-			e.plat.testURL = ccgateway.VirtualTestURL
-			e.plat.classify = &pluginv1.ClassifyErrorResponse{Reason: "inferred proxy failure", LocalFailure: true, AccountEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE}
-			id := e.mkRawAccount("ccgateway", "managed", "active", "unused", false)
-			_, raw := e.doRaw(e.uid, "POST", "/accounts/"+itoa(id)+"/test", nil)
-			d := gjson.GetBytes(raw, "data")
-			wantSource := source
-			if source == "http" {
-				wantSource = "response"
-			}
-			if d.Get("status").Int() != 502 || d.Get("error_code").String() != "ECONNRESET" || d.Get("error_source").String() != wantSource || d.Get("message").String() != body || d.Get("body").String() != body {
-				t.Fatal(string(raw))
-			}
-			if d.Get("reason").Exists() || d.Get("effect").Exists() || calls.Load() != 1 {
-				t.Fatal("added inference or extra request", string(raw), calls.Load())
-			}
-			// The test is resolved with the global policy only (audit A10).
-			if d.Get("policy_scope").String() != ccgateway.ModelPolicyScope {
-				t.Fatal("policy scope not reported", string(raw))
-			}
-			_, saved := e.doRaw(e.uid, "GET", "/accounts/"+itoa(id), nil)
-			last := gjson.GetBytes(saved, "data.last_test")
-			if last.Get("message").String() != body || last.Get("error_source").String() != wantSource {
-				t.Fatal(string(saved))
-			}
-		})
-	}
 }
 
 func TestAccountTestPreserves429WithoutInferredReason(t *testing.T) {
@@ -316,9 +225,6 @@ func TestAccountTestPreserves429WithoutInferredReason(t *testing.T) {
 			}
 			if d.Get("reason").Exists() || d.Get("effect").Exists() || d.Get("body").String() != tc.body {
 				t.Fatal("test must report the response without inferred causes", string(raw))
-			}
-			if d.Get("policy_scope").Exists() {
-				t.Fatal("policy_scope is only for CCGateway accounts", string(raw))
 			}
 			_, saved := e.doRaw(e.uid, "GET", "/accounts/"+itoa(id), nil)
 			if gjson.GetBytes(saved, "data.last_test.message").String() != d.Get("message").String() {
@@ -375,7 +281,7 @@ func TestAccountTestFailureIsClassifiedButHarmless(t *testing.T) {
 
 	// The account is untouched: still active, no cooldown, no status event.
 	var status, reason string
-	if err := e.db.Pool.QueryRow(ctx,
+	if err := e.db.SQL.QueryRowContext(ctx,
 		`SELECT status, status_reason FROM accounts WHERE id = $1`, id).Scan(&status, &reason); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +358,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 		t.Fatalf("untested account: %s", lt.Raw)
 	}
 	var updated time.Time
-	if err := e.db.Pool.QueryRow(ctx, `SELECT updated_at FROM accounts WHERE id = $1`, id).Scan(&updated); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT updated_at FROM accounts WHERE id = $1`, id).Scan(&updated); err != nil {
 		t.Fatal(err)
 	}
 
@@ -483,7 +389,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 	}
 	var ok bool
 	var msg string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT last_test_ok, last_test_message FROM accounts WHERE id = $1`, bad).Scan(&ok, &msg); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT last_test_ok, last_test_message FROM accounts WHERE id = $1`, bad).Scan(&ok, &msg); err != nil {
 		t.Fatal(err)
 	}
 	if ok || len(msg) > maxLastTestMessage || !utf8.ValidString(msg) || msg != gjson.GetBytes(raw, "data.message").String() {
@@ -492,7 +398,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 	// A short classification reason must not be prepended either.
 	e.plat.classify = &pluginv1.ClassifyErrorResponse{Reason: "bad key"}
 	_, _ = e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", bad), nil)
-	if err := e.db.Pool.QueryRow(ctx, `SELECT last_test_message FROM accounts WHERE id = $1`, bad).Scan(&msg); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT last_test_message FROM accounts WHERE id = $1`, bad).Scan(&msg); err != nil {
 		t.Fatal(err)
 	}
 	if strings.HasPrefix(msg, "bad key: ") || !strings.Contains(msg, "invalid x-api-key") {
@@ -501,7 +407,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 	// Without a reason the upstream message is kept.
 	e.plat.classify = nil
 	_, _ = e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", bad), nil)
-	if err := e.db.Pool.QueryRow(ctx, `SELECT last_test_message FROM accounts WHERE id = $1`, bad).Scan(&msg); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT last_test_message FROM accounts WHERE id = $1`, bad).Scan(&msg); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(msg, "invalid x-api-key") {
@@ -509,7 +415,7 @@ func TestAccountTestRecordsLastTest(t *testing.T) {
 	}
 
 	var after time.Time
-	if err := e.db.Pool.QueryRow(ctx, `SELECT updated_at FROM accounts WHERE id = $1`, id).Scan(&after); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT updated_at FROM accounts WHERE id = $1`, id).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
 	if !after.Equal(updated) {

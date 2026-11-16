@@ -62,24 +62,21 @@ func (s *Service) myPrices(c *gin.Context) {
 	httpapi.OK(c, out)
 }
 
-// usableBy selects the active groups a user may use; user is the placeholder
-// of the user's id.
-func usableBy(user string) string {
-	return ` WHERE ` + segment.UsableGroupSQL("g", user)
-}
+// usableBy selects the active groups a user may use; it takes the user's id.
+const usableBy = segment.UsableGroup
 
 // pricesOfGroups lists every model with a global price, at that price, with
 // the groups of the user that provide it.
 func (s *Service) pricesOfGroups(ctx context.Context, uid int64) (*MyPrices, error) {
-	groups, err := loadGroups(ctx, s.db.Pool, usableBy("$1")+` ORDER BY g.id`, uid)
+	groups, err := loadGroups(ctx, s.db.Gorm, usableBy, uid)
 	if err != nil {
 		return nil, err
 	}
-	prices, err := loadCatalog(ctx, s.db.Pool)
+	prices, err := loadCatalog(ctx, s.db.Gorm)
 	if err != nil {
 		return nil, err
 	}
-	offered, err := offeredModels(ctx, s.db.Pool, groups, prices)
+	offered, err := offeredModels(ctx, s.db.Gorm, groups, prices)
 	if err != nil {
 		return nil, err
 	}
@@ -99,11 +96,11 @@ func (s *Service) pricesOfGroups(ctx context.Context, uid int64) (*MyPrices, err
 // pricesInGroup lists the models one of the user's groups provides and can
 // bill, at the list price and the rate the user gets there.
 func (s *Service) pricesInGroup(ctx context.Context, uid, groupID int64) (*MyPrices, error) {
-	gp, err := loadGroupPrices(ctx, s.db.Pool, usableBy("$1")+` AND g.id = $2`, uid, groupID)
+	gp, err := loadGroupPrices(ctx, s.db.Gorm, usableBy+" AND g.id = ?", uid, groupID)
 	if err != nil {
 		return nil, err
 	}
-	terms, err := segment.UserTerms(ctx, s.db.Pool, uid, []int64{groupID})
+	terms, err := segment.UserTerms(ctx, s.db.Gorm, uid, []int64{groupID})
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +110,7 @@ func (s *Service) pricesInGroup(ctx context.Context, uid, groupID int64) (*MyPri
 	}
 	group := gp.group.ref()
 	out := &MyPrices{Group: &group, RateMultiplier: t.Rate, RateSource: t.RateSource, Prices: []MyPriceRow{}}
-	err = eachPrice(ctx, s.db.Pool, gp.prices, gp.models, gp.group.ID, t.SegmentID, func(model string, base PriceDef, levels ruleLevels) {
+	err = eachPrice(ctx, s.db.Gorm, gp.prices, gp.models, gp.group.ID, t.SegmentID, func(model string, base PriceDef, levels ruleLevels) {
 		price, source := levels.listPrice(base)
 		out.Prices = append(out.Prices, MyPriceRow{Model: model, PriceDef: price, Source: source})
 	})

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 )
@@ -19,7 +20,7 @@ func TestEnsureBuiltinInstallsEnablesAndBlocksUninstall(t *testing.T) {
 	dir := t.TempDir()
 	m := pkgtest.Guard("guard", "0.1.0", "sub2api")
 	for i := range m.UserPermissions {
-		m.UserPermissions[i].DefaultRoles = []string{"operator", "user"}
+		m.UserPermissions[i].Defaults = map[string]manifest.RoleDefault{"operator": {Unscoped: true}, "user": {Unscoped: true}}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "guard-0.1.0.s2plugin"), pkgtest.Build(m, e.root), 0o644); err != nil {
 		t.Fatal(err)
@@ -32,7 +33,7 @@ func TestEnsureBuiltinInstallsEnablesAndBlocksUninstall(t *testing.T) {
 	var status string
 	var builtin bool
 	var active *string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT status, builtin, active_version FROM plugins WHERE key = 'guard'`).
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT status, builtin, active_version FROM plugins WHERE key = 'guard'`).
 		Scan(&status, &builtin, &active); err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +42,8 @@ func TestEnsureBuiltinInstallsEnablesAndBlocksUninstall(t *testing.T) {
 	}
 	// Every requested host permission is granted, including critical ones,
 	// without an operator; new plugin permissions went to their manifest
-	// defaultRoles (admin when omitted), not to a role the start names.
-	grants, err := LoadGrants(ctx, e.db.Pool, "guard")
+	// defaults, not to a role the start names.
+	grants, err := LoadGrants(ctx, e.db.Gorm, "guard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestEnsureBuiltinInstallsEnablesAndBlocksUninstall(t *testing.T) {
 	if err := e.svc.EnsureBuiltin(ctx, dir, log); err != nil {
 		t.Fatal(err)
 	}
-	_ = e.db.Pool.QueryRow(ctx, `SELECT status FROM plugins WHERE key = 'guard'`).Scan(&status)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT status FROM plugins WHERE key = 'guard'`).Scan(&status)
 	if status != StatusDisabled || len(e.rollout.enabled) != 1 || len(e.schemas.dropped) != 0 {
 		t.Fatalf("after restart: status=%s enabled=%v dropped=%v", status, e.rollout.enabled, e.schemas.dropped)
 	}
@@ -128,7 +129,7 @@ func TestEnsureBuiltinInstallOnlyStaysDisabledUntilAnOperatorEnablesIt(t *testin
 		var status string
 		var builtin bool
 		var active *string
-		if err := e.db.Pool.QueryRow(ctx, `SELECT status, builtin, active_version FROM plugins WHERE key = $1`, key).
+		if err := e.db.SQL.QueryRowContext(ctx, `SELECT status, builtin, active_version FROM plugins WHERE key = $1`, key).
 			Scan(&status, &builtin, &active); err != nil {
 			t.Fatalf("%s: %v", key, err)
 		}
@@ -152,7 +153,7 @@ func TestEnsureBuiltinInstallOnlyStaysDisabledUntilAnOperatorEnablesIt(t *testin
 	}
 	// Installed means ready to enable: the host permissions are already
 	// granted, so the operator's enable needs no consent step.
-	grants, err := LoadGrants(ctx, e.db.Pool, "guard")
+	grants, err := LoadGrants(ctx, e.db.Gorm, "guard")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +197,7 @@ func TestEnsureBuiltinUnreadableInstallOnlyInstallsNothing(t *testing.T) {
 		t.Fatal("EnsureBuiltin accepted an unreadable " + InstallOnlyFile)
 	}
 	var n int
-	if err := e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM plugins WHERE key = 'guard'`).Scan(&n); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugins WHERE key = 'guard'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 || len(e.rollout.enabled) != 0 {
@@ -221,14 +222,14 @@ func TestEnsureBuiltinInstallsRuntimeNonePackage(t *testing.T) {
 	var status string
 	var builtin bool
 	var active *string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT status, builtin, active_version FROM plugins WHERE key = 'openai'`).
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT status, builtin, active_version FROM plugins WHERE key = 'openai'`).
 		Scan(&status, &builtin, &active); err != nil {
 		t.Fatal(err)
 	}
 	if !builtin || status != StatusEnabled || active == nil || *active != "0.4.0" || len(e.rollout.enabled) != 1 {
 		t.Fatalf("after ensure: status=%s builtin=%v active=%v enabled=%v", status, builtin, active, e.rollout.enabled)
 	}
-	grants, err := LoadGrants(ctx, e.db.Pool, "openai")
+	grants, err := LoadGrants(ctx, e.db.Gorm, "openai")
 	if err != nil {
 		t.Fatal(err)
 	}

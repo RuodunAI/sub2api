@@ -1,0 +1,4 @@
+-- sql
+SELECT DISTINCT ON (job_id) id, job_id, scope, node_id, scheduled_at, started_at, finished_at, status, manual, message FROM "plugin_job_runs" WHERE plugin_key = $1 ORDER BY job_id, id DESC
+-- vars
+$1 string "demo"

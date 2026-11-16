@@ -7,10 +7,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // ResultOpen marks a connection that is still open (its row is updated
@@ -72,14 +73,15 @@ type logStore interface {
 	// resetOpen marks rows of nodeID still 'open' and started before
 	// before as reset (left behind by an earlier run of this node).
 	resetOpen(ctx context.Context, nodeID string, before time.Time) (int64, error)
-	// insertOpen inserts result='open' rows and returns their ids in order.
+	// insertOpen inserts result='open' rows and returns their ids in order,
+	// all or none (no ids with an error).
 	insertOpen(ctx context.Context, rows []logEntry) ([]int64, error)
 	insertDone(ctx context.Context, rows []logEntry) error
 	closeRows(ctx context.Context, rows []closedRow) error
 	prune(ctx context.Context, before time.Time) error
 	// upsertDomains adds connection counts per host. onNew is called in the
 	// same transaction with the deltas whose row was created.
-	upsertDomains(ctx context.Context, ds []domainDelta, onNew func(ctx context.Context, tx pgx.Tx, news []domainDelta) error) error
+	upsertDomains(ctx context.Context, ds []domainDelta, onNew func(ctx context.Context, tx *gorm.DB, news []domainDelta) error) error
 }
 
 // logWriter batches log rows and domain updates on one goroutine.
@@ -286,13 +288,12 @@ func (w *logWriter) write(ctx context.Context, items []logItem) error {
 		for i, c := range opens {
 			rows[i] = c.entry
 		}
-		ids, err := w.st.insertOpen(ctx, rows)
-		if err != nil {
+		// The rows are inserted all or none: after a failure no open row
+		// has an id, and their closes below write whole rows.
+		if ids, err := w.st.insertOpen(ctx, rows); err != nil {
 			firstErr = err
-		}
-		// On a partial failure the rows inserted so far keep their ids.
-		for i, c := range opens {
-			if i < len(ids) && ids[i] > 0 {
+		} else {
+			for i, c := range opens {
 				c.id = ids[i]
 				w.openIDs[c.id] = true
 			}
@@ -361,7 +362,7 @@ func (w *logWriter) flushDomains(force bool) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err := w.st.upsertDomains(ctx, ds, func(ctx context.Context, tx pgx.Tx, news []domainDelta) error {
+	err := w.st.upsertDomains(ctx, ds, func(ctx context.Context, tx *gorm.DB, news []domainDelta) error {
 		evs := make([]core.Event, 0, len(news))
 		for _, d := range news {
 			w.log.Warn("plugin connected to a new external host",
@@ -443,45 +444,50 @@ type LogRecord struct {
 }
 
 // Summary groups a plugin's egress in [from, to) by host (busiest first).
-func Summary(ctx context.Context, q store.Querier, pluginKey string, from, to time.Time) ([]HostSummary, error) {
-	rows, err := q.Query(ctx, `
-SELECT host, count(*),
-       count(*) FILTER (WHERE result = 'denied'),
-       count(*) FILTER (WHERE result IN ('dial_error', 'reset')),
-       coalesce(sum(bytes_in), 0)::bigint, coalesce(sum(bytes_out), 0)::bigint,
-       min(started_at), max(started_at)
-FROM plugin_egress_logs
-WHERE plugin_key = $1 AND started_at >= $2 AND started_at < $3
-GROUP BY host
-ORDER BY count(*) DESC, host`, pluginKey, from, to)
-	if err != nil {
+func Summary(ctx context.Context, q *gorm.DB, pluginKey string, from, to time.Time) ([]HostSummary, error) {
+	out := []HostSummary{}
+	if err := summaryQuery(store.G(ctx, q), pluginKey, from, to).Scan(&out).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (HostSummary, error) {
-		var s HostSummary
-		err := r.Scan(&s.Host, &s.Connections, &s.Denied, &s.Errors, &s.BytesIn, &s.BytesOut, &s.FirstSeen, &s.LastSeen)
-		return s, err
-	})
+	return out, nil
+}
+
+// summaryQuery aggregates the rows by host into HostSummary columns.
+func summaryQuery(g *gorm.DB, pluginKey string, from, to time.Time) *gorm.DB {
+	return g.Model(&model.PluginEgressLog{}).Select(`host, count(*) AS connections,
+		count(*) FILTER (WHERE result = 'denied') AS denied,
+		count(*) FILTER (WHERE result IN ('dial_error', 'reset')) AS errors,
+		coalesce(sum(bytes_in), 0)::bigint AS bytes_in, coalesce(sum(bytes_out), 0)::bigint AS bytes_out,
+		min(started_at) AS first_seen, max(started_at) AS last_seen`).
+		Where("plugin_key = ? AND started_at >= ? AND started_at < ?", pluginKey, from, to).
+		Group("host").Order("count(*) DESC, host")
 }
 
 // List returns a plugin's most recent egress rows in [from, to).
-func List(ctx context.Context, q store.Querier, pluginKey string, from, to time.Time, limit int) ([]LogRecord, error) {
+func List(ctx context.Context, q *gorm.DB, pluginKey string, from, to time.Time, limit int) ([]LogRecord, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := q.Query(ctx, `
-SELECT id, node_id, network, host, port, started_at, closed_at, duration_ms, bytes_in, bytes_out, result, error
-FROM plugin_egress_logs
-WHERE plugin_key = $1 AND started_at >= $2 AND started_at < $3
-ORDER BY started_at DESC, id DESC
-LIMIT $4`, pluginKey, from, to, limit)
-	if err != nil {
+	var rows []model.PluginEgressLog
+	if err := listQuery(store.G(ctx, q), pluginKey, from, to, limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (LogRecord, error) {
-		var l LogRecord
-		err := r.Scan(&l.ID, &l.NodeID, &l.Network, &l.Host, &l.Port, &l.StartedAt, &l.ClosedAt, &l.DurationMS,
-			&l.BytesIn, &l.BytesOut, &l.Result, &l.Error)
-		return l, err
-	})
+	out := make([]LogRecord, len(rows))
+	for i, r := range rows {
+		out[i] = LogRecord{
+			ID: r.ID, NodeID: r.NodeID, Network: r.Network, Host: r.Host, Port: r.Port,
+			StartedAt: r.StartedAt, ClosedAt: r.ClosedAt, DurationMS: r.DurationMs,
+			BytesIn: r.BytesIn, BytesOut: r.BytesOut, Result: r.Result, Error: r.Error,
+		}
+	}
+	return out, nil
+}
+
+// listQuery selects the LogRecord columns of a plugin's rows, newest first.
+func listQuery(g *gorm.DB, pluginKey string, from, to time.Time, limit int) *gorm.DB {
+	return g.Model(&model.PluginEgressLog{}).
+		Select("id, node_id, network, host, port, started_at, closed_at, duration_ms, bytes_in, bytes_out, result, error").
+		Where("plugin_key = ? AND started_at >= ? AND started_at < ?", pluginKey, from, to).
+		Order("started_at DESC, id DESC").
+		Limit(limit)
 }

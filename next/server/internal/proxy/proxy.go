@@ -19,7 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -28,6 +28,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // DefaultProbeURL is requested through a proxy by POST /proxies/:id/test.
@@ -50,6 +51,9 @@ type Options struct {
 	// loopback/private/link-local addresses (config AllowPrivateUpstream,
 	// SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM). Test setups only.
 	AllowPrivate bool
+	// ScopeGrants clears the scoped grants naming a deleted proxy (CONTRACTS
+	// §21); needed to delete proxies.
+	ScopeGrants core.ScopeGrantClearer
 }
 
 // Service serves the proxy endpoints and implements core.ProxyDirectory.
@@ -296,8 +300,9 @@ func (s *Service) HTTPClient(ctx context.Context, proxyID *int64) (*http.Client,
 		return e.result()
 	}
 	var r row
-	err := s.db.Pool.QueryRow(ctx, `SELECT protocol, host, port, username, password_enc, status, allow_private, updated_at
-		FROM proxies WHERE id = $1`, id).Scan(&r.Protocol, &r.Host, &r.Port, &r.Username, &r.PasswordEnc, &r.Status, &r.AllowPrivate, &r.UpdatedAt)
+	err := store.G(ctx, s.db.Gorm).Model(&model.Proxy{}).
+		Select("protocol, host, port, username, password_enc, status, allow_private, updated_at").
+		Where("id = ?", id).Take(&r).Error
 	if store.IsNoRows(err) {
 		s.Invalidate(id)
 		return nil, core.ErrNotFound.WithMessage("proxy not found")
@@ -364,23 +369,25 @@ type Proxy struct {
 	RealIPUpdatedAt *time.Time `json:"real_ip_updated_at,omitempty"`
 }
 
-// selectProxy lists the proxy columns; account_count only counts accounts of
-// enabled plugins (keys is the parameter holding core.ActivePluginKeys, NULL =
-// no filter).
-func selectProxy(keys string) string {
-	return `SELECT p.id, p.name, p.protocol, p.host, p.port, p.username, p.password_enc IS NOT NULL,
+// proxyColumns are the columns of Proxy; account_count only counts accounts
+// of enabled plugins (both placeholders take the same pluginKeys value).
+const proxyColumns = `p.id, p.name, p.protocol, p.host, p.port, p.username, p.password_enc IS NOT NULL AS has_password,
 	p.status, (SELECT count(*) FROM accounts a WHERE a.proxy_id = p.id AND a.deleted_at IS NULL
-	  AND (` + keys + `::text[] IS NULL OR a.plugin_key = ANY(` + keys + `))),
-	p.created_by, u.email, p.created_at, p.updated_at, p.real_ip, p.real_ip_updated_at
-	FROM proxies p LEFT JOIN users u ON u.id = p.created_by`
+	  AND (?::text[] IS NULL OR a.plugin_key = ANY(?))) AS account_count,
+	p.created_by, u.email AS created_by_email, p.created_at, p.updated_at, p.real_ip, p.real_ip_updated_at`
+
+// proxyView selects Proxy rows of proxies p, counting the accounts of the
+// plugins keys (core.ActivePluginKeys; nil counts every account).
+func proxyView(db *gorm.DB, keys []string) *gorm.DB {
+	arg := store.NullStrings(keys)
+	return db.Table("proxies p").Select(proxyColumns, arg, arg).Joins("LEFT JOIN users u ON u.id = p.created_by")
 }
 
-func scanProxy(r pgx.Row) (*Proxy, error) {
-	var p Proxy
-	err := r.Scan(&p.ID, &p.Name, &p.Protocol, &p.Host, &p.Port, &p.Username, &p.HasPassword,
-		&p.Status, &p.AccountCount, &p.CreatedBy, &p.CreatedByEmail, &p.CreatedAt, &p.UpdatedAt,
-		&p.RealIP, &p.RealIPUpdatedAt)
-	return &p, err
+func (s *Service) pluginKeys() []string { return core.ActivePluginKeys(s.opts.Registry) }
+
+// scoped narrows proxies p to row id within scope.
+func scoped(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
+	return db.Table("proxies p").Where("p.id = ?", id).Scopes(core.ProxyRows().Scope(scope))
 }
 
 func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh) }
@@ -391,12 +398,15 @@ func notFound(ctx context.Context) error {
 
 // load returns one proxy in scope; others are 404.
 func (s *Service) load(ctx context.Context, id int64, scope core.DataScope) (*Proxy, error) {
-	p, err := scanProxy(s.db.Pool.QueryRow(ctx, selectProxy("$2")+` WHERE p.id = $1 AND `+core.ProxyRows.SQL(3),
-		append([]any{id, core.ActivePluginKeys(s.opts.Registry)}, core.ProxyRows.Args(scope)...)...))
+	var p Proxy
+	err := proxyView(scoped(store.G(ctx, s.db.Gorm), id, scope), s.pluginKeys()).Take(&p).Error
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
-	return p, err
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 func (s *Service) list(c *gin.Context) {
@@ -424,35 +434,37 @@ func (s *Service) list(c *gin.Context) {
 		}
 		creator = &id
 	}
-	where := ` WHERE ($1 = '' OR p.name ILIKE '%' || $1 || '%' OR p.host ILIKE '%' || $1 || '%') AND ($2 = '' OR p.status = $2)
-		AND ($3::bigint IS NULL OR p.created_by = $3) AND ` + core.ProxyRows.SQL(4)
-	args := append([]any{q, status, creator}, core.ProxyRows.Args(s.scopeOf(ctx, perm.ProxyRead))...)
+	filter := listFilter(q, status, creator, s.scopeOf(ctx, perm.ProxyRead))
+	g := store.G(ctx, s.db.Gorm)
 	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM proxies p`+where, args...).Scan(&total); err != nil {
+	if err := g.Table("proxies p").Scopes(filter).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := s.db.Pool.Query(ctx, selectProxy("$9")+where+` ORDER BY p.id LIMIT $7 OFFSET $8`,
-		append(args, size, (page-1)*size, core.ActivePluginKeys(s.opts.Registry))...)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	defer rows.Close()
 	items := []*Proxy{}
-	for rows.Next() {
-		p, err := scanProxy(rows)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, p)
-	}
-	if err := rows.Err(); err != nil {
+	if err := proxyView(g, s.pluginKeys()).Scopes(filter).Order("p.id").Limit(size).Offset((page - 1) * size).
+		Find(&items).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
+}
+
+// listFilter is the WHERE clause of GET /proxies over proxies p: q matches
+// within the name or host (a % or _ in q stays a wildcard, as it was),
+// status and creator narrow when set, all within scope.
+func listFilter(q, status string, creator *int64, scope core.DataScope) func(*gorm.DB) *gorm.DB {
+	var f store.Conds
+	if q != "" {
+		f.And("(p.name ILIKE ? OR p.host ILIKE ?)", "%"+q+"%", "%"+q+"%")
+	}
+	if status != "" {
+		f.And("p.status = ?", status)
+	}
+	if creator != nil {
+		f.And("p.created_by = ?", *creator)
+	}
+	return append(f, core.ProxyRows().Scope(scope)).Scope()
 }
 
 func (s *Service) get(c *gin.Context) {
@@ -555,11 +567,15 @@ func (s *Service) connectionChanged(in *input, cur *row) bool {
 // of other users go through (details.account_count).
 var errInUse = core.NewError(http.StatusConflict, "proxy_in_use", "proxy in use")
 
+// connectionColumns are the columns of proxies p that say how the proxy is
+// reached.
+const connectionColumns = "p.protocol, p.host, p.port, p.username, p.password_enc"
+
 // inUseByOthers counts the live accounts on proxy id that uid did not create
 // (uid 0: every account).
-func inUseByOthers(ctx context.Context, q store.Querier, id, uid int64) (n int64, err error) {
-	err = q.QueryRow(ctx, `SELECT count(*) FROM accounts
-		WHERE proxy_id = $1 AND deleted_at IS NULL AND created_by IS DISTINCT FROM $2`, id, uid).Scan(&n)
+func inUseByOthers(ctx context.Context, q *gorm.DB, id, uid int64) (n int64, err error) {
+	err = store.G(ctx, q).Model(&model.Account{}).
+		Where("proxy_id = ? AND deleted_at IS NULL AND created_by IS DISTINCT FROM ?", id, uid).Count(&n).Error
 	return n, err
 }
 
@@ -572,6 +588,25 @@ func (s *Service) encryptPassword(pw *string) ([]byte, error) {
 		return nil, nil
 	}
 	return s.cipher.Encrypt([]byte(*pw), passwordAAD)
+}
+
+// changes are the columns a PATCH writes: the fields present (enc is the
+// encrypted password, nil clearing it), allow_private when set, and always
+// updated_at, the version of the cached client (Service.HTTPClient), at
+// clock_timestamp() as the raw SQL had it.
+func (in *input) changes(enc []byte, allowPrivate *bool) map[string]any {
+	set := map[string]any{"updated_at": gorm.Expr("clock_timestamp()")}
+	store.SetIf(set, "name", in.Name)
+	store.SetIf(set, "protocol", in.Protocol)
+	store.SetIf(set, "host", in.Host)
+	store.SetIf(set, "port", in.Port)
+	store.SetIf(set, "username", in.Username)
+	if in.Password != nil {
+		set["password_enc"] = enc
+	}
+	store.SetIf(set, "status", in.Status)
+	store.SetIf(set, "allow_private", allowPrivate)
+	return set
 }
 
 // changedFields lists the input fields present in a PATCH (audit detail:
@@ -634,12 +669,12 @@ func (s *Service) create(c *gin.Context) {
 	}
 	uid, _ := core.UserID(ctx)
 	var id int64
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `INSERT INTO proxies (name, protocol, host, port, username, password_enc, status, allow_private, created_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-			*in.Name, *in.Protocol, *in.Host, *in.Port, user, enc, status, allowPriv, uid).Scan(&id); err != nil {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
+		p := newProxy(*in.Name, *in.Protocol, *in.Host, *in.Port, user, enc, status, allowPriv, uid)
+		if err := store.G(ctx, tx).Create(p).Error; err != nil {
 			return err
 		}
+		id = p.ID
 		return audit.Audit(ctx, tx, uid, "proxy.create", "proxy", strconv.FormatInt(id, 10), map[string]any{
 			"auto": false, "name": *in.Name, "protocol": *in.Protocol, "host": *in.Host, "port": *in.Port,
 		})
@@ -654,6 +689,15 @@ func (s *Service) create(c *gin.Context) {
 		return
 	}
 	httpapi.Created(c, p)
+}
+
+// newProxy is a proxies row to insert. GORM leaves a zero username or
+// allow_private out of the INSERT (both columns have a default); those
+// defaults, the empty string and false, are those zero values, so the row
+// is as given.
+func newProxy(name, protocol, host string, port int, username string, enc []byte, status string, allowPrivate bool, owner int64) *model.Proxy {
+	return &model.Proxy{Name: name, Protocol: protocol, Host: host, Port: port, Username: username,
+		PasswordEnc: enc, Status: &status, AllowPrivate: allowPrivate, CreatedBy: &owner}
 }
 
 func (s *Service) update(c *gin.Context) {
@@ -677,13 +721,11 @@ func (s *Service) update(c *gin.Context) {
 	}
 	scope := s.scopeOf(ctx, perm.ProxyManage)
 	uid, _ := core.UserID(ctx)
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		// Visibility first (404 outside the caller's range); the lock keeps
 		// what the checks below read true until the commit.
 		var cur row
-		err := tx.QueryRow(ctx, `SELECT p.protocol, p.host, p.port, p.username, p.password_enc FROM proxies p
-			WHERE p.id = $1 AND `+core.ProxyRows.SQL(2)+` FOR UPDATE`, append([]any{id}, core.ProxyRows.Args(scope)...)...).
-			Scan(&cur.Protocol, &cur.Host, &cur.Port, &cur.Username, &cur.PasswordEnc)
+		err := scoped(store.G(ctx, tx), id, scope).Select(connectionColumns).Clauses(store.ForUpdate()).Take(&cur).Error
 		if store.IsNoRows(err) {
 			return notFound(ctx)
 		}
@@ -728,18 +770,8 @@ func (s *Service) update(c *gin.Context) {
 					WithDetails(map[string]any{"account_count": n})
 			}
 		}
-		if _, err := tx.Exec(ctx, `UPDATE proxies SET
-			name = COALESCE($2, name),
-			protocol = COALESCE($3, protocol),
-			host = COALESCE($4, host),
-			port = COALESCE($5, port),
-			username = COALESCE($6, username),
-			password_enc = CASE WHEN $7 THEN $8 ELSE password_enc END,
-			status = COALESCE($9, status),
-			allow_private = COALESCE($10, allow_private),
-			updated_at = clock_timestamp()
-			WHERE id = $1`,
-			id, in.Name, in.Protocol, in.Host, in.Port, in.Username, in.Password != nil, enc, in.Status, allowPriv); err != nil {
+		if err := store.G(ctx, tx).Model(&model.Proxy{}).Where("id = ?", id).
+			Updates(in.changes(enc, allowPriv)).Error; err != nil {
 			return err
 		}
 		if err := s.notifyAccountProxyChange(ctx, tx, id, "proxy"); err != nil {
@@ -769,13 +801,11 @@ func (s *Service) delete(c *gin.Context) {
 	}
 	scope := s.scopeOf(ctx, perm.ProxyManage)
 	uid, _ := core.UserID(ctx)
-	var authzVersion int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		// Visibility first: a proxy outside the caller's range is 404 even
 		// when it is in use.
 		var name string
-		err := tx.QueryRow(ctx, `SELECT p.name FROM proxies p WHERE p.id = $1 AND `+core.ProxyRows.SQL(2)+` FOR UPDATE`,
-			append([]any{id}, core.ProxyRows.Args(scope)...)...).Scan(&name)
+		err := scoped(store.G(ctx, tx), id, scope).Select("p.name").Clauses(store.ForUpdate()).Take(&name).Error
 		if store.IsNoRows(err) {
 			return notFound(ctx)
 		}
@@ -793,10 +823,10 @@ func (s *Service) delete(c *gin.Context) {
 				"the proxy is used by accounts; reassign them first",
 				"该代理仍被账号使用，请先修改这些账号的代理")).WithDetails(map[string]any{"account_count": n})
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM proxies WHERE id = $1`, id); err != nil {
+		if err := store.G(ctx, tx).Where("id = ?", id).Delete(&model.Proxy{}).Error; err != nil {
 			return err
 		}
-		if authzVersion, err = core.ClearScopeGrants(ctx, tx, uid, core.ScopeRefProxy, []int64{id}); err != nil {
+		if _, err = s.opts.ScopeGrants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefProxy, []int64{id}); err != nil {
 			return err
 		}
 		return audit.Audit(ctx, tx, uid, "proxy.delete", "proxy", strconv.FormatInt(id, 10), map[string]any{"name": name})
@@ -805,7 +835,6 @@ func (s *Service) delete(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	core.AnnounceAuthzChanged(ctx, s.bus, authzVersion)
 	s.changed(ctx, id)
 	httpapi.NoContent(c)
 }
@@ -821,9 +850,7 @@ func (s *Service) revealURL(c *gin.Context) {
 		return
 	}
 	var r row
-	err := s.db.Pool.QueryRow(ctx, `SELECT p.protocol, p.host, p.port, p.username, p.password_enc FROM proxies p
-		WHERE p.id = $1 AND `+core.ProxyRows.SQL(2), append([]any{id}, core.ProxyRows.Args(s.scopeOf(ctx, perm.ProxyManage))...)...).
-		Scan(&r.Protocol, &r.Host, &r.Port, &r.Username, &r.PasswordEnc)
+	err := scoped(store.G(ctx, s.db.Gorm), id, s.scopeOf(ctx, perm.ProxyManage)).Select(connectionColumns).Take(&r).Error
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, notFound(ctx))
 		return
@@ -838,7 +865,7 @@ func (s *Service) revealURL(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := audit.Audit(ctx, s.db.Pool, uid, "proxy.url.reveal", "proxy", strconv.FormatInt(id, 10), nil); err != nil {
+	if err := audit.Audit(ctx, s.db.Gorm, uid, "proxy.url.reveal", "proxy", strconv.FormatInt(id, 10), nil); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -861,9 +888,8 @@ func (s *Service) test(c *gin.Context) {
 		return
 	}
 	var r row
-	err := s.db.Pool.QueryRow(ctx, `SELECT p.protocol, p.host, p.port, p.username, p.password_enc, p.allow_private FROM proxies p
-		WHERE p.id = $1 AND `+core.ProxyRows.SQL(2), append([]any{id}, core.ProxyRows.Args(s.scopeOf(ctx, perm.ProxyManage))...)...).
-		Scan(&r.Protocol, &r.Host, &r.Port, &r.Username, &r.PasswordEnc, &r.AllowPrivate)
+	err := scoped(store.G(ctx, s.db.Gorm), id, s.scopeOf(ctx, perm.ProxyManage)).
+		Select(connectionColumns + ", p.allow_private").Take(&r).Error
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, notFound(ctx))
 		return
@@ -894,12 +920,17 @@ func (s *Service) test(c *gin.Context) {
 }
 
 func (s *Service) recordObservedIP(ctx context.Context, id int64, ip string) error {
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
 		var previous string
-		if err := tx.QueryRow(ctx, `SELECT COALESCE(real_ip,'') FROM proxies WHERE id=$1 FOR UPDATE`, id).Scan(&previous); err != nil {
+		if err := g.Model(&model.Proxy{}).Select("COALESCE(real_ip, '')").Where("id = ?", id).Clauses(store.ForUpdate()).
+			Take(&previous).Error; err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE proxies SET real_ip=$2,real_ip_updated_at=now() WHERE id=$1`, id, ip); err != nil {
+		// updated_at stays: it versions the cached client (HTTPClient), which
+		// a probe leaves as it is.
+		if err := g.Model(&model.Proxy{}).Where("id = ?", id).
+			Updates(map[string]any{"real_ip": ip, "real_ip_updated_at": gorm.Expr("now()")}).Error; err != nil {
 			return err
 		}
 		if previous == ip {
@@ -909,41 +940,19 @@ func (s *Service) recordObservedIP(ctx context.Context, id int64, ip string) err
 	})
 }
 
-func (s *Service) notifyAccountProxyChange(ctx context.Context, tx pgx.Tx, id int64, field string) error {
+func (s *Service) notifyAccountProxyChange(ctx context.Context, tx *gorm.DB, id int64, field string) error {
 	if s.opts.Events == nil {
 		return nil
 	}
-	rows, err := tx.Query(ctx, `SELECT id,plugin_key,type,name FROM accounts WHERE proxy_id=$1 AND deleted_at IS NULL ORDER BY id`, id)
-	if err != nil {
+	g := store.G(ctx, tx)
+	var accounts []model.Account
+	if err := g.Model(&model.Account{}).Select("id, plugin_key, type, name").
+		Where("proxy_id = ? AND deleted_at IS NULL", id).Order("id").Find(&accounts).Error; err != nil {
 		return err
 	}
-	defer rows.Close()
 	var events []core.Event
-	var syncIDs []int64
-	for rows.Next() {
-		var accountID int64
-		var plugin, kind, name string
-		if err := rows.Scan(&accountID, &plugin, &kind, &name); err != nil {
-			return err
-		}
-		events = append(events, core.Event{Type: core.EventAccountUpdated, Payload: map[string]any{"account_id": accountID, "plugin_key": plugin, "type": kind, "name": name, "changed_fields": []string{field}}})
-		if s.opts.Registry != nil && s.opts.Registry.Current() != nil {
-			if binding, ok := s.opts.Registry.Current().AccountType(plugin, kind); ok && binding.Type.Lifecycle != nil {
-				syncIDs = append(syncIDs, accountID)
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	rows.Close()
-	if len(syncIDs) > 0 {
-		if _, err := tx.Exec(ctx, `INSERT INTO account_lifecycle_sync(account_id,status) SELECT unnest($1::bigint[]),'pending' ON CONFLICT (account_id) DO UPDATE SET status='pending',code='',generation=account_lifecycle_sync.generation+1,updated_at=now()`, syncIDs); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `INSERT INTO plugin_event_cursors(plugin_key,last_event_id) SELECT DISTINCT plugin_key,(SELECT COALESCE(max(id),0) FROM events) FROM accounts WHERE id=ANY($1) ON CONFLICT (plugin_key) DO NOTHING`, syncIDs); err != nil {
-			return err
-		}
+	for _, a := range accounts {
+		events = append(events, core.Event{Type: core.EventAccountUpdated, Payload: map[string]any{"account_id": a.ID, "plugin_key": a.PluginKey, "type": a.Type, "name": a.Name, "changed_fields": []string{field}}})
 	}
 	return s.opts.Events.Emit(ctx, tx, events...)
 }

@@ -35,7 +35,6 @@ export default {
     plugin_grant: 'Grant plugin permissions',
     publisher_manage: 'Manage publishers',
     system_update: 'Core upgrade',
-    host_install: 'Install or connect a remote host',
     self_access_key_write: 'Create or change an access key',
     superadmin_identity: 'Change the super admin account'
   }

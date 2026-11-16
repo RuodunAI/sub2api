@@ -3,6 +3,8 @@ package check
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
@@ -67,24 +69,46 @@ func TestRouteAccounts(t *testing.T) {
 	}
 }
 
-// An older core ignores routes[].accounts and forwards with no account
-// check, so hostCompat must keep it out.
-func TestRouteAccountsCoreFloor(t *testing.T) {
+// routes[i].scopeFrom names, in the accounts.from DSL, the id an admin or
+// user route acts on; its permission must declare a scope to check it
+// against, and public/webhook routes carry no caller to check. A route of a
+// scoped permission other than GET must name it.
+func TestRouteScopeFrom(t *testing.T) {
 	good := manifest.AccountAction{ID: "reset", Label: manifest.LocalizedText{"en": "Reset"},
 		Permission: "assets:manage", Route: "POST /assets/reset"}
-	for _, tc := range []struct {
-		hostCompat string
-		accounts   *manifest.RouteAccounts
-		floor      bool
+	// withAccountAction routes: [3] POST /assets/:id/reset (admin), [5]
+	// POST /assets/ping (public); assets:edit is scoped, assets:manage not.
+	scoped := func() *manifest.Manifest {
+		m := withAccountAction(">=0.1.290 <0.2.0", good)
+		m.UserPermissions = append(m.UserPermissions, manifest.UserPermission{Key: "assets:edit", Label: manifest.LocalizedText{"en": "Edit"},
+			Scope: &manifest.PermissionScope{Resource: "asset", Own: true}})
+		m.Routes[3].Permission = "assets:edit"
+		return m
+	}
+	for _, from := range []string{"path:id", "query:asset_id", "body:asset_ids"} {
+		m := scoped()
+		m.Routes[3].ScopeFrom = from
+		assert.Empty(t, uiCodes(m), from)
+	}
+	// A GET route (a list, filtered by the plugin) need not name a row.
+	m := scoped()
+	m.Routes[3].Method = "GET"
+	assert.Empty(t, uiCodes(m))
+	cases := []struct {
+		name, from, perm string
+		route            int
+		field, code      string
 	}{
-		{">=0.1.285 <0.2.0", &manifest.RouteAccounts{Action: "read"}, true},
-		{">=0.1.286 <0.2.0", &manifest.RouteAccounts{Action: "read"}, false},
-		{">=0.1.256 <0.2.0", nil, false},
-	} {
-		m := withAccountAction(tc.hostCompat, good)
-		m.Routes[3].Accounts = tc.accounts
-		if got := uiCodes(m)["hostCompat"] == "below_feature_core"; got != tc.floor {
-			t.Errorf("%s accounts=%v: below_feature_core = %v, want %v", tc.hostCompat, tc.accounts != nil, got, tc.floor)
-		}
+		{"public route", "query:id", "", 5, "routes[5].scopeFrom", "unsupported"},
+		{"unscoped permission", "path:id", "assets:manage", 3, "routes[3].scopeFrom", "unsupported"},
+		{"unknown prefix", "header:x-id", "assets:edit", 3, "routes[3].scopeFrom", "invalid"},
+		{"not a param", "path:asset_id", "assets:edit", 3, "routes[3].scopeFrom", "unknown_param"},
+		{"scoped POST route naming nothing", "", "assets:edit", 3, "routes[3].scopeFrom", "required"},
+		{"unscoped POST route naming nothing", "", "assets:manage", 3, "routes[3].scopeFrom", ""},
+	}
+	for _, tc := range cases {
+		m := scoped()
+		m.Routes[tc.route].ScopeFrom, m.Routes[tc.route].Permission = tc.from, tc.perm
+		assert.Equal(t, tc.code, uiCodes(m)[tc.field], tc.name)
 	}
 }

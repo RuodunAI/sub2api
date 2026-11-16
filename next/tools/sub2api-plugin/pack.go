@@ -14,21 +14,13 @@ import (
 	"strings"
 	"time"
 
+	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pkgsig"
 )
 
 // PackageExt is the plugin package file extension.
 const PackageExt = ".s2plugin"
-
-// Package limits, the same the core applies to an installed package
-// (CONTRACTS §53.10): 1 GiB compressed, 2 GiB unpacked. maxPackageFiles is
-// the core's default file count limit.
-const (
-	maxPackageBytes  int64 = 1 << 30
-	maxUnpackedBytes int64 = 2 << 30
-	maxPackageFiles        = 2000
-)
 
 // zipEpoch is the fixed modification time of package entries, so packing the
 // same inputs yields the same bytes.
@@ -46,16 +38,12 @@ func cmdPack(args []string, stdout, stderr io.Writer) error {
 	runtimesDir := fs.String("runtimes", "", "directory containing runtimes/ (default: --dir)")
 	overlay := fs.String("overlay", "", "overlay directory: manifest override plus extra/replacement files")
 	allowMissingUI := fs.Bool("allow-missing-ui", false, "pack even when ui/native/dist is missing")
-	images := fs.String("images", "", "directory with images.json and the container image archives it lists (packed as images/, archives stored uncompressed)")
-	imageRoles := fs.String("image-roles", "", "comma separated roles images.json must list exactly (requires --images)")
+	skipDBCheck := fs.Bool("skip-db-check", false, "do not compare the GORM models with migrations/ (where no PostgreSQL is at hand)")
 	if _, err := parseInterspersed(fs, args); err != nil {
 		return err
 	}
 	if (*out == "") == (*outDir == "") {
 		return fmt.Errorf("exactly one of --out or --out-dir is required")
-	}
-	if *imageRoles != "" && *images == "" {
-		return fmt.Errorf("--image-roles requires --images")
 	}
 	ov, err := resolveOverlay(*dir, *overlay)
 	if err != nil {
@@ -69,20 +57,16 @@ func cmdPack(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if !*skipDBCheck {
+		// A plugin without GORM models (no internal/model) or without a
+		// database has nothing to check. The overlay's migrations are packed,
+		// so they are checked too.
+		if err := dbCheck(*dir, ov, stderr); err != nil && !nothingToCheck(err) {
+			return fmt.Errorf("db check: %w", err)
+		}
+	}
 	for _, w := range warnings {
 		fmt.Fprintln(stderr, "warning:", w)
-	}
-	if *images != "" {
-		bundled, err := collectImages(*images, m, splitList(*imageRoles))
-		if err != nil {
-			return err
-		}
-		for p, b := range bundled {
-			if _, dup := files[p]; dup {
-				return fmt.Errorf("images: %s is also provided by the plugin directory or overlay", p)
-			}
-			files[p] = b
-		}
 	}
 	dest := *out
 	if dest == "" {
@@ -297,21 +281,21 @@ func writePackage(dest string, files map[string][]byte) error {
 }
 
 func writePackageMode(dest string, files map[string][]byte, exclusive bool) error {
-	if len(files) > maxPackageFiles {
-		return fmt.Errorf("package has %d files, the limit is %d", len(files), maxPackageFiles)
+	if len(files) > runtimecontract.PluginPackageMaxFiles {
+		return fmt.Errorf("package has %d files, the limit is %d", len(files), runtimecontract.PluginPackageMaxFiles)
 	}
 	var total int64
 	for _, b := range files {
 		total += int64(len(b))
 	}
-	if total > maxUnpackedBytes {
-		return fmt.Errorf("package files total %d bytes, the unpacked limit is %d", total, maxUnpackedBytes)
+	if total > runtimecontract.PluginUnpackedMaxBytes {
+		return fmt.Errorf("package files total %d bytes, the unpacked limit is %d", total, runtimecontract.PluginUnpackedMaxBytes)
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	// The archive is streamed to its file (a package with bundled images is
-	// close to a gigabyte; it is not buffered a second time in memory).
+	// The archive is streamed to its file (a package may be up to a
+	// gigabyte; it is not buffered a second time in memory).
 	var f *os.File
 	var err error
 	if exclusive {
@@ -326,7 +310,7 @@ func writePackageMode(dest string, files map[string][]byte, exclusive bool) erro
 		return err
 	}
 	name := f.Name()
-	writeErr := writeZip(&limitedWriter{w: f, left: maxPackageBytes}, files)
+	writeErr := writeZip(&limitedWriter{w: f, left: runtimecontract.PluginPackageMaxBytes}, files)
 	if writeErr == nil && !exclusive {
 		writeErr = f.Chmod(0o644)
 	}
@@ -355,11 +339,7 @@ func writeZip(w io.Writer, files map[string][]byte) error {
 	// manifest.json first for readers that stream the archive.
 	sort.SliceStable(paths, func(i, j int) bool { return paths[i] == pkgsig.ManifestFile && paths[j] != pkgsig.ManifestFile })
 	for _, p := range paths {
-		method := zip.Deflate
-		if storedEntry(p) {
-			method = zip.Store
-		}
-		h := &zip.FileHeader{Name: p, Method: method, Modified: zipEpoch}
+		h := &zip.FileHeader{Name: p, Method: zip.Deflate, Modified: zipEpoch}
 		h.SetMode(fileMode(p))
 		fw, err := zw.CreateHeader(h)
 		if err != nil {
@@ -380,7 +360,7 @@ type limitedWriter struct {
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
 	if int64(len(p)) > l.left {
-		return 0, fmt.Errorf("package exceeds the %d byte limit", maxPackageBytes)
+		return 0, fmt.Errorf("package exceeds the %d byte limit", runtimecontract.PluginPackageMaxBytes)
 	}
 	l.left -= int64(len(p))
 	return l.w.Write(p)
@@ -440,8 +420,8 @@ func readPackage(src string) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if st.Size() > maxPackageBytes {
-		return nil, fmt.Errorf("%s is %d bytes, the package limit is %d", src, st.Size(), maxPackageBytes)
+	if st.Size() > runtimecontract.PluginPackageMaxBytes {
+		return nil, fmt.Errorf("%s is %d bytes, the package limit is %d", src, st.Size(), runtimecontract.PluginPackageMaxBytes)
 	}
 	zr, err := zip.OpenReader(src)
 	if err != nil {
@@ -461,22 +441,22 @@ func readPackage(src string) (map[string][]byte, error) {
 		if _, dup := files[name]; dup {
 			return nil, fmt.Errorf("duplicate entry %q in package", name)
 		}
-		if len(files) >= maxPackageFiles {
-			return nil, fmt.Errorf("%s has more than %d files", src, maxPackageFiles)
+		if len(files) >= runtimecontract.PluginPackageMaxFiles {
+			return nil, fmt.Errorf("%s has more than %d files", src, runtimecontract.PluginPackageMaxFiles)
 		}
 		rc, err := f.Open()
 		if err != nil {
 			return nil, err
 		}
 		// Never trust the declared size: read one byte past the limit.
-		b, err := io.ReadAll(io.LimitReader(rc, maxUnpackedBytes-total+1))
+		b, err := io.ReadAll(io.LimitReader(rc, runtimecontract.PluginUnpackedMaxBytes-total+1))
 		rc.Close()
 		if err != nil {
 			return nil, err
 		}
 		total += int64(len(b))
-		if total > maxUnpackedBytes {
-			return nil, fmt.Errorf("%s unpacks to more than %d bytes", src, maxUnpackedBytes)
+		if total > runtimecontract.PluginUnpackedMaxBytes {
+			return nil, fmt.Errorf("%s unpacks to more than %d bytes", src, runtimecontract.PluginUnpackedMaxBytes)
 		}
 		files[name] = b
 	}

@@ -1,0 +1,6 @@
+-- sql
+SELECT p.status, v.consent_status, v.signature_status, v.key_id, pub.name, pub.trust_level,
+			v.package_size, v.package_sha256, v.uploaded_at FROM plugin_versions AS v JOIN plugins p ON p.key = v.plugin_key LEFT JOIN publishers pub ON pub.id = v.publisher_id WHERE v.plugin_key = $1 AND v.version = $2
+-- vars
+$1 string "demo"
+$2 string "1.2.0"

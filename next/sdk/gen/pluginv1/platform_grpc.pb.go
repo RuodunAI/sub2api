@@ -22,18 +22,17 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type PlatformServiceClient interface {
-	OnAccountLifecycle(ctx context.Context, in *AccountLifecycleRequest, opts ...grpc.CallOption) (*AccountLifecycleResponse, error)
 	// Pre-upstream metering estimate. The host checks endpoint billing types
 	// first and prices the report itself; plugins never specify an amount.
 	EstimateUsage(ctx context.Context, in *EstimateUsageRequest, opts ...grpc.CallOption) (*UsageReport, error)
 	// Plugin-driven request execution. The host selected the account and owns
 	// the request body. The plugin builds and forwards it through the scoped
 	// host API, then records usage or atomically reserves and registers a task.
-	// Requires platform.execute.v1 and host API 4.
+	// Requires platform.execute.v1.
 	Execute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
 	// One scheduled observation, completed by ReportTaskProgress. Scheduling,
 	// fencing, snapshots and financial transactions remain host-owned.
-	// Requires platform.monitor.v1 and host API 4.
+	// Requires platform.monitor.v1.
 	Monitor(ctx context.Context, in *PollRequest, opts ...grpc.CallOption) (*MonitorResponse, error)
 	ValidateCredentials(ctx context.Context, in *ValidateCredentialsRequest, opts ...grpc.CallOption) (*ValidateCredentialsResponse, error)
 	// Hot path: called once per upstream attempt. Keep it fast (< 2s timeout).
@@ -109,7 +108,7 @@ type PlatformServiceClient interface {
 	// Executes one observation. The host owns scheduling, account selection,
 	// leases and persistence; the plugin initiates its HTTP request through
 	// HostService.ExecuteHTTP using the invocation's short-lived permission.
-	// Requires platform.poll.v1 and host API 3. No plugin timer or net grant.
+	// Requires platform.poll.v1. No plugin timer or net grant.
 	Poll(ctx context.Context, in *PollRequest, opts ...grpc.CallOption) (*ReconcileResult, error)
 	// Builds the request that observes a pre-charged entry or a host-managed
 	// asynchronous task. Legacy endpoints arm it through Reservation; task
@@ -126,6 +125,7 @@ type PlatformServiceClient interface {
 	//   - no "app.jobs.v1" timer of its own: the host drives the schedule,
 	//     with the backoff, the deadline and the multi-node locking that a
 	//     plugin would otherwise each have to reinvent.
+	//
 	// Legacy compatibility path. New plugins use Poll and the host's scoped
 	// ExecuteHTTP callback, which preserves these account/network constraints.
 	//
@@ -204,15 +204,6 @@ type platformServiceClient struct {
 
 func NewPlatformServiceClient(cc grpc.ClientConnInterface) PlatformServiceClient {
 	return &platformServiceClient{cc}
-}
-
-func (c *platformServiceClient) OnAccountLifecycle(ctx context.Context, in *AccountLifecycleRequest, opts ...grpc.CallOption) (*AccountLifecycleResponse, error) {
-	out := new(AccountLifecycleResponse)
-	err := c.cc.Invoke(ctx, "/sub2api.plugin.v1.PlatformService/OnAccountLifecycle", in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 func (c *platformServiceClient) EstimateUsage(ctx context.Context, in *EstimateUsageRequest, opts ...grpc.CallOption) (*UsageReport, error) {
@@ -408,18 +399,17 @@ func (c *platformServiceClient) ParseBalanceResponse(ctx context.Context, in *Pa
 // All implementations must embed UnimplementedPlatformServiceServer
 // for forward compatibility
 type PlatformServiceServer interface {
-	OnAccountLifecycle(context.Context, *AccountLifecycleRequest) (*AccountLifecycleResponse, error)
 	// Pre-upstream metering estimate. The host checks endpoint billing types
 	// first and prices the report itself; plugins never specify an amount.
 	EstimateUsage(context.Context, *EstimateUsageRequest) (*UsageReport, error)
 	// Plugin-driven request execution. The host selected the account and owns
 	// the request body. The plugin builds and forwards it through the scoped
 	// host API, then records usage or atomically reserves and registers a task.
-	// Requires platform.execute.v1 and host API 4.
+	// Requires platform.execute.v1.
 	Execute(context.Context, *ExecuteRequest) (*ExecuteResponse, error)
 	// One scheduled observation, completed by ReportTaskProgress. Scheduling,
 	// fencing, snapshots and financial transactions remain host-owned.
-	// Requires platform.monitor.v1 and host API 4.
+	// Requires platform.monitor.v1.
 	Monitor(context.Context, *PollRequest) (*MonitorResponse, error)
 	ValidateCredentials(context.Context, *ValidateCredentialsRequest) (*ValidateCredentialsResponse, error)
 	// Hot path: called once per upstream attempt. Keep it fast (< 2s timeout).
@@ -495,7 +485,7 @@ type PlatformServiceServer interface {
 	// Executes one observation. The host owns scheduling, account selection,
 	// leases and persistence; the plugin initiates its HTTP request through
 	// HostService.ExecuteHTTP using the invocation's short-lived permission.
-	// Requires platform.poll.v1 and host API 3. No plugin timer or net grant.
+	// Requires platform.poll.v1. No plugin timer or net grant.
 	Poll(context.Context, *PollRequest) (*ReconcileResult, error)
 	// Builds the request that observes a pre-charged entry or a host-managed
 	// asynchronous task. Legacy endpoints arm it through Reservation; task
@@ -512,6 +502,7 @@ type PlatformServiceServer interface {
 	//   - no "app.jobs.v1" timer of its own: the host drives the schedule,
 	//     with the backoff, the deadline and the multi-node locking that a
 	//     plugin would otherwise each have to reinvent.
+	//
 	// Legacy compatibility path. New plugins use Poll and the host's scoped
 	// ExecuteHTTP callback, which preserves these account/network constraints.
 	//
@@ -589,9 +580,6 @@ type PlatformServiceServer interface {
 type UnimplementedPlatformServiceServer struct {
 }
 
-func (UnimplementedPlatformServiceServer) OnAccountLifecycle(context.Context, *AccountLifecycleRequest) (*AccountLifecycleResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method OnAccountLifecycle not implemented")
-}
 func (UnimplementedPlatformServiceServer) EstimateUsage(context.Context, *EstimateUsageRequest) (*UsageReport, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method EstimateUsage not implemented")
 }
@@ -666,24 +654,6 @@ type UnsafePlatformServiceServer interface {
 
 func RegisterPlatformServiceServer(s grpc.ServiceRegistrar, srv PlatformServiceServer) {
 	s.RegisterService(&PlatformService_ServiceDesc, srv)
-}
-
-func _PlatformService_OnAccountLifecycle_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AccountLifecycleRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(PlatformServiceServer).OnAccountLifecycle(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/sub2api.plugin.v1.PlatformService/OnAccountLifecycle",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(PlatformServiceServer).OnAccountLifecycle(ctx, req.(*AccountLifecycleRequest))
-	}
-	return interceptor(ctx, in, info, handler)
 }
 
 func _PlatformService_EstimateUsage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -1071,10 +1041,6 @@ var PlatformService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "sub2api.plugin.v1.PlatformService",
 	HandlerType: (*PlatformServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
-		{
-			MethodName: "OnAccountLifecycle",
-			Handler:    _PlatformService_OnAccountLifecycle_Handler,
-		},
 		{
 			MethodName: "EstimateUsage",
 			Handler:    _PlatformService_EstimateUsage_Handler,

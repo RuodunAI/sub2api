@@ -1,0 +1,5 @@
+-- sql
+SELECT NULL::bigint, statement_timestamp(), q.account_id, q.windows, COALESCE(q.source, ''), COALESCE(q.error, ''),
+		q.updated_at, q.last_passive_at, q.last_active_at, COALESCE(q.revision,0), q.next_check_at, COALESCE(q.refresh_status,'pending'), COALESCE(q.generation,0) FROM (SELECT statement_timestamp()) AS t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY($1)
+-- vars
+$1 store.Int64s [11 12]

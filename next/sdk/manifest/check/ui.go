@@ -152,7 +152,6 @@ func (v *validator) ui() {
 	v.uiSlots(u)
 	v.uiAccountActions(u)
 	v.uiNative(u)
-	v.uiCoreFloor(u)
 	if u.Settings != nil {
 		v.form("ui.settings", *u.Settings, true)
 	}
@@ -425,6 +424,10 @@ func (v *validator) uiAccountActions(u *manifest.UI) {
 			v.add(f+".permission", "required", "permission is required")
 		} else if !v.userPerm(act.Permission) {
 			v.add(f+".permission", "unknown", "permission %q is not declared in userPermissions", act.Permission)
+		} else if v.m.UserPermissionScope(act.Permission) != nil {
+			// The core checks an account action on routes[].accounts and
+			// account:* alone, so a plugin scope would mean nothing there.
+			v.add(f+".permission", "unsupported", "permission %q declares a scope; account actions take an unscoped permission", act.Permission)
 		}
 		switch act.VisibleFor {
 		case "", "editable", "all":
@@ -444,9 +447,7 @@ func (v *validator) uiAccountActions(u *manifest.UI) {
 		case r.Permission != act.Permission:
 			v.add(f+".route", "permission_mismatch", "route %s %s requires permission %q, the action %q",
 				r.Method, r.Path, r.Permission, act.Permission)
-		case slices.ContainsFunc(strings.Split(r.Path, "/"), func(s string) bool {
-			return strings.HasPrefix(s, ":") || strings.HasPrefix(s, "*")
-		}):
+		case hasPathParam(r.Path):
 			// The console posts {"account_ids": [...]} to the path as
 			// declared; it has nothing to fill a :param or *wildcard with.
 			v.add(f+".route", "parameterized_route", "route %s %s has a path parameter; the console posts {\"account_ids\":[...]} and cannot fill it", r.Method, r.Path)
@@ -456,6 +457,13 @@ func (v *validator) uiAccountActions(u *manifest.UI) {
 			v.add(f+".route", "accounts_mismatch", "route %s %s declares accounts without %q, which the console posts", r.Method, r.Path, manifest.AccountActionIDs)
 		}
 	}
+}
+
+// hasPathParam reports a :param or *wildcard segment in a route path.
+func hasPathParam(path string) bool {
+	return slices.ContainsFunc(strings.Split(path, "/"), func(s string) bool {
+		return strings.HasPrefix(s, ":") || strings.HasPrefix(s, "*")
+	})
 }
 
 // uiNative validates ui.native and hostUICompat.
@@ -479,90 +487,6 @@ func (v *validator) uiNative(u *manifest.UI) {
 	} else if _, err := semver.NewConstraint(v.m.HostUICompat); err != nil {
 		v.add("hostUICompat", "invalid_constraint", "hostUICompat: %v", err)
 	}
-}
-
-// uiFloor is one UI SDK minor that raised the core a plugin must
-// require: the first core shipping it, the last core before it and that
-// core's UI. uses says which declarations of a manifest need this UI even
-// without ui.native (the console of an older core ignores them silently).
-type uiFloor struct {
-	minor                       uint64
-	lastUI, lastCore, firstCore string
-	uses                        func(*manifest.UI) bool
-}
-
-// uiFloors, newest first. Core 0.1.228 is the last that ships UI 3.3
-// (3.4 starts at 0.1.229); 0.1.255 is the last with UI 3.5 (3.6 starts at
-// 0.1.256); 0.1.261 is the last with UI 3.6 (3.7 starts at 0.1.262);
-// 0.1.268 is the last with UI 3.7 (3.8 starts at 0.1.269); 0.1.276 is the
-// last with UI 3.9 (3.10 starts at 0.1.277); 0.1.278 is the last with UI
-// 3.10 (3.11 starts at 0.1.279); 0.1.279 is the last with UI 3.11 (3.12
-// starts at 0.1.280); 0.1.280 is the last with UI 3.12 (3.13 starts at
-// 0.1.281); 0.1.283 is the last with UI 3.13 (3.14 starts at 0.1.284);
-// 0.1.285 is the last with UI 3.14 (3.15 starts at 0.1.286).
-// 3.10 to 3.13 add components and props, no manifest declaration, so only
-// hostUICompat asks for them. 3.14 adds ui.pages.<page>.nav, but it needs
-// no floor of its own either: an older console ignores nav and the page
-// keeps its in-page section switcher, so the plugin still works there.
-// 3.15 adds the optional permissions.hasAction and scope (resource scopes).
-var uiFloors = []uiFloor{
-	{minor: 15, lastUI: "3.14.0", lastCore: "0.1.285", firstCore: "0.1.286"},
-	{minor: 14, lastUI: "3.13.0", lastCore: "0.1.283", firstCore: "0.1.284"},
-	{minor: 13, lastUI: "3.12.0", lastCore: "0.1.280", firstCore: "0.1.281"},
-	{minor: 12, lastUI: "3.11.0", lastCore: "0.1.279", firstCore: "0.1.280"},
-	{minor: 11, lastUI: "3.10.0", lastCore: "0.1.278", firstCore: "0.1.279"},
-	{minor: 10, lastUI: "3.9.0", lastCore: "0.1.276", firstCore: "0.1.277"},
-	{minor: 8, lastUI: "3.7.0", lastCore: "0.1.268", firstCore: "0.1.269", uses: usesUI38},
-	{minor: 7, lastUI: "3.6.0", lastCore: "0.1.261", firstCore: CommonControlsFirstCore, uses: func(u *manifest.UI) bool {
-		return slices.ContainsFunc(u.Slots, func(s manifest.Slot) bool { return s.Slot == manifest.SlotAccountEditorSection })
-	}},
-	{minor: 6, lastUI: "3.5.0", lastCore: "0.1.255", firstCore: "0.1.256", uses: func(u *manifest.UI) bool {
-		return len(u.AccountActions) > 0 ||
-			slices.ContainsFunc(u.Slots, func(s manifest.Slot) bool { return s.Slot == "account.list.toolbar" })
-	}},
-	{minor: 4, lastUI: "3.3.0", lastCore: "0.1.228", firstCore: "0.1.229"},
-}
-
-// usesUI38 reports a UI 3.8 declaration: an account.list.quota slot, which
-// an older console never renders, or a detail tab or an account action
-// limited to some account types, which it would offer on every account.
-func usesUI38(u *manifest.UI) bool {
-	return slices.ContainsFunc(u.Slots, func(s manifest.Slot) bool {
-		return s.Slot == manifest.SlotAccountListQuota || (s.Slot == manifest.SlotAccountDetailTabs && len(s.AccountTypes) > 0)
-	}) || slices.ContainsFunc(u.AccountActions, func(a manifest.AccountAction) bool { return len(a.AccountTypes) > 0 })
-}
-
-// uiCoreFloor checks hostCompat against the newest UI floor the manifest
-// needs. The core installs a plugin on hostCompat alone and the console then
-// refuses a native UI whose hostUICompat its UI does not satisfy, so a plugin
-// that needs UI 3.4 or later must also keep out the cores that ship 3.3, and
-// one using a UI 3.6 declaration the cores that ship 3.5.
-func (v *validator) uiCoreFloor(u *manifest.UI) {
-	c, _ := semver.NewConstraint(v.m.HostUICompat) // invalid or empty: nil, reported by uiNative
-	for _, fl := range uiFloors {
-		if fl.needs(c) || (fl.uses != nil && fl.uses(u)) {
-			if ok, err := HostCompatible(v.m.HostCompat, fl.lastCore); err == nil && ok {
-				v.add("hostCompat", "below_ui_core", "hostCompat %q admits core %s, whose UI %s is below the UI 3.%d this manifest needs (UI 3.%d starts at core %s)",
-					v.m.HostCompat, fl.lastCore, fl.lastUI, fl.minor, fl.minor, fl.firstCore)
-			}
-			return
-		}
-	}
-}
-
-// needs reports whether c rejects the UI of fl.lastCore but accepts a 3.x
-// release from fl.minor on (^3.4, ~3.4.2, >=3.5 ...); a nil c or a range
-// that never matches a 3.x UI is wrong in other ways and left alone.
-func (fl uiFloor) needs(c *semver.Constraints) bool {
-	if c == nil || c.Check(semver.MustParse(fl.lastUI)) {
-		return false
-	}
-	for minor := fl.minor; minor <= 30; minor++ {
-		if c.Check(semver.New(3, minor, 0, "", "")) || c.Check(semver.New(3, minor, 99, "", "")) {
-			return true
-		}
-	}
-	return false
 }
 
 // firstText returns the "en" text or any non-empty value.

@@ -1,8 +1,7 @@
-# sub2api-next 架构设计（初始版本）
+# sub2api-next 架构设计
 
-> 状态：草案，待确认
+> 状态：现行，随代码维护（生产运行中，核心 0.1.x）。与代码冲突时以代码为准并改正本文；接口与行为约定以 [CONTRACTS.md](CONTRACTS.md) 为准。§1、§17 记录的是初始版本的范围与实施计划，§18 是决策记录，现状以 §2–§16 为准。
 > 目标：基于"用户 / 角色 / 权限 + 插件"的架构，重写一个全新的服务。旧代码保留，仅作参考。
-> 平台方面，初始版本只实现 Anthropic Messages 协议的 API Key 转发；插件体系的各项能力在本期全部落地。
 
 ---
 
@@ -38,7 +37,7 @@
 
 | 类别 | 模块 | 内容 |
 |---|---|---|
-| 核心数据 | 用户 | 管理员创建用户、登录（JWT）、启用/禁用；首次启动通过环境变量创建超级管理员 |
+| 核心数据 | 用户 | 管理员创建用户、登录（Valkey 会话令牌 `s2s_`，CONTRACTS §100）、启用/禁用；首次启动通过环境变量创建超级管理员 |
 | | 角色 / 权限 | 自定义角色、权限目录（核心权限 + 插件注册的权限）、给角色授权、给用户分配角色；后端鉴权；前端按权限显示菜单和按钮 |
 | | API Key | 用户创建、查看、删除自己的 Key，每个 Key 绑定一个分组；只保存哈希 |
 | | 分组 | 分组包含哪些账号、倍率、模型白名单、哪些用户可用 |
@@ -73,33 +72,47 @@
 flowchart LR
   client["客户端<br/>Claude Code / SDK / curl"]
   admin["管理员浏览器<br/>控制台"]
-  lb["Caddy 负载均衡<br/>TLS · 健康检查 · 流式透传"]
+  rp["外层反向代理（可选）<br/>TLS 终止 · 按节点分流 · 检查 /readyz"]
 
-  subgraph cluster["sub2api-next 集群（所有节点对等，没有主节点）"]
-    n1["node-1<br/>核心进程 + 插件进程"]
-    n2["node-2<br/>核心进程 + 插件进程"]
+  subgraph cluster["sub2api-next 集群（处理请求时节点对等；升级由配置的主节点协调）"]
+    subgraph n1["node-1"]
+      g1["sub2api-gateway<br/>公网入口 · supervisor · 托管升级"]
+      c1["核心 sub2api（只听回环）<br/>+ 插件进程"]
+    end
+    subgraph n2["node-2"]
+      g2["sub2api-gateway"]
+      c2["核心 + 插件进程"]
+    end
     nN["node-N ..."]
   end
 
-  pg[("PostgreSQL<br/>public：核心表<br/>plg_*：各插件的 schema")]
-  redis[("Redis<br/>节点注册 · 并发槽位 · 冷却 · 余额缓存<br/>分布式锁 · 广播")]
+  pg[("PostgreSQL<br/>public：核心表<br/>plg_*：各插件的 schema<br/>updater：升级计划")]
+  redis[("Redis / Valkey<br/>会话 · 节点注册 · 并发槽位 · 冷却 · 余额缓存<br/>分布式锁 · 广播 · 节点密钥登记")]
+  rel["核心发布源<br/>签名的清单与发布包（HTTPS）"]
   market["插件市场索引<br/>签名的静态 JSON"]
-  up["上游<br/>api.anthropic.com"]
+  up["上游<br/>api.anthropic.com 等"]
   ext["插件访问的外部服务<br/>（经出口隧道）"]
 
-  client --> lb
-  admin --> lb
-  lb --> n1 & n2 & nN
-  n1 & n2 & nN --> pg
-  n1 & n2 & nN --> redis
-  n1 & n2 & nN -->|"按账号绑定的代理"| up
-  n1 & n2 & nN -->|"出口隧道"| ext
-  n1 & n2 & nN -.->|"浏览 / 下载插件"| market
+  client --> rp
+  admin --> rp
+  rp --> g1 & g2 & nN
+  g1 --> c1
+  g2 --> c2
+  g1 <-->|"节点间 HTTPS（维护时转发、插件包同步）"| g2
+  g1 & g2 -.->|"下载核心发布"| rel
+  c1 & c2 & nN --> pg
+  c1 & c2 & nN --> redis
+  g1 & g2 --> pg & redis
+  c1 & c2 & nN -->|"按账号绑定的代理"| up
+  c1 & c2 & nN -->|"出口隧道"| ext
+  c1 & c2 & nN -.->|"浏览 / 下载插件"| market
 ```
+
+每个节点的公网入口是网关外壳 `sub2api-gateway`（`next/gateway`）：它监听对外端口、启停并监督本机核心进程（核心只监听回环地址）、执行托管升级，本机核心不可用或维护中时把请求转给其他节点（CONTRACTS §33、§34、§39）。外层反向代理只做 TLS 终止和按节点分流，可以没有。部署入口见 [`deploy/gateway`](../deploy/gateway/README.md)；不经网关、只跑核心的单机栈见 [`deploy/single`](../deploy/single/README.md)，e2e 栈（两个节点前面一个 Caddy）见 [`deploy/e2e`](../deploy/e2e/README.md)。
 
 要点：
 
-- **节点对等**：任何节点都能处理网关请求和管理请求
+- **节点对等**：任何节点都能处理网关请求和管理请求；只有升级时由配置的主节点协调（`primary-first-v1`：从节点先转发到主节点并停止，主节点停机、迁移、启动，再逐个恢复从节点；不改库的版本可走 `rolling-v1` 逐个节点滚动，见 GATEWAY-MANAGED-UPDATES.md、CONTRACTS §34、§82）
 - **PostgreSQL 是期望状态和账本的唯一依据**
 - **Redis 保存实时状态**，数据丢失后几秒内自动恢复；余额缓存丢失时回源 PG。本文的"Redis"指任何 Redis 协议的服务，默认部署用 Valkey（Redis 7.2 的分支，协议、命令、Lua 均兼容），Redis 7+ 同样可用；`SUB2API_REDIS_URL` 接受 `redis://`、`rediss://`、`valkey://`、`valkeys://`、`unix://`
 - **插件进程运行在每个节点本地**，通过本机 unix socket 与核心通信，所有对外连接经核心的出口隧道
@@ -202,7 +215,7 @@ flowchart LR
 
 | 模块 | 职责 | 属于 |
 |---|---|---|
-| `iam` / `authz` | 用户、登录、JWT；权限目录、角色、鉴权、缓存与失效 | 核心 |
+| `iam` / `authz` | 用户、登录会话；权限目录、角色、鉴权、缓存与失效 | 核心 |
 | `apikey` / `group` | API Key；分组、账号归属、倍率、模型白名单、可用用户 | 核心 |
 | `proxy` / `account` | 代理；通用账号表、凭证加密、状态与冷却 | 核心 |
 | `billing` | 模型价格、余额、账本、余额检查、结算 | 核心 |
@@ -226,10 +239,9 @@ flowchart LR
 
 ```mermaid
 erDiagram
-  users ||--o{ user_roles : has
-  roles ||--o{ user_roles : assigned
-  roles ||--o{ role_permissions : grants
-  permissions ||--o{ role_permissions : granted
+  users ||--o{ casbin_rule : "g u:id"
+  roles ||--o{ casbin_rule : "p and g r:key"
+  permissions ||--o{ casbin_rule : "p action"
   plugins ||--o{ permissions : registers
   users ||--|| user_balances : owns
   users ||--o{ balance_ledger : entries
@@ -388,7 +400,9 @@ erDiagram
   }
 ```
 
-`roles`、`user_roles`、`role_permissions`、`proxies`、`account_groups`、`segments`、`segment_groups`、`price_rules`、`plugin_permission_grants`、`plugin_migrations`、`plugin_rollouts`、`events`、`plugin_event_cursors`、`plugin_event_deadletters`、`plugin_job_runs`、`plugin_egress_logs` 的字段见各章节。
+`roles`、`casbin_rule`、`proxies`、`account_groups`、`segments`、`segment_groups`、`price_rules`、`plugin_permission_grants`、`plugin_migrations`、`plugin_rollouts`、`events`、`plugin_event_cursors`、`plugin_event_deadletters`、`plugin_job_runs`、`plugin_egress_logs` 的字段见各章节。
+
+授予与角色指派只存在 `casbin_rule`（0.1.290 起，迁移 0100，CONTRACTS §99.1）：p 行是角色的授予，g 行是用户的角色；它没有外键，按角色 key、权限 key、用户 id 引用，上图的连线是这些引用而不是外键。原来的 `user_roles`、`role_permissions`、`role_permission_scopes` 已由 0100 转换后删除。
 
 用户组三张表（`segments`、`segment_groups`、`price_rules`）和 `users.segment_id` 是 2026-11-12 加的（迁移 0095，7.1、7.3，CONTRACTS §97）：每个用户属于一个用户组，私有分组授权给用户组，用户组在分组里可以有专属倍率和专属价。原来的“用户 ↔ 分组”授权表 `user_groups` 由它们取代，表还在，但不再读写。
 
@@ -479,10 +493,11 @@ guard-0.1.0.s2plugin
 
   "database": { "schema": "plg_guard", "migrations": "migrations/" },
 
-  "userPermissions": [
-    { "key": "rules:read",   "label": { "zh": "查看拦截规则" } },
-    { "key": "rules:manage", "label": { "zh": "管理拦截规则" } },
-    { "key": "stats:read",   "label": { "zh": "查看拦截统计" } }
+  "userPermissions": [                          // 登记为 plugin.guard:<key>；risk/defaults 等需核心 >=0.1.290（CONTRACTS §4）
+    { "key": "rules:read",   "label": { "zh": "查看拦截规则" }, "defaults": { "admin": true, "operator": true } },
+    { "key": "rules:manage", "label": { "zh": "管理拦截规则" }, "risk": "sensitive",  // low（默认）/ sensitive / critical
+      "requires": ["rules:read"], "defaults": { "admin": true } },              // defaults：首次登记时建议授予的内置角色
+    { "key": "stats:read",   "label": { "zh": "查看拦截统计" } }                     // 不写 defaults 不授予任何角色
   ],
 
   "routes": [                                   // 挂在 /api/plugins/guard/ 下，核心先鉴权再转发
@@ -1208,7 +1223,7 @@ sequenceDiagram
 
 ```
 插件进程                                            核心进程
-http.Get / pgx / redis …
+http.Get / GORM（Host.DB）/ redis …
   → SDK 替换过的 DefaultTransport / Dialer / DefaultResolver
   → EgressService.Dial（在已有的 gRPC 连接上开一个流）══════►  确认插件身份 → 检查出口策略
                                                                → 解析 DNS → 建立连接 → 双向转发
@@ -1390,8 +1405,8 @@ flowchart TD
   role -- 否 --> deny
 ```
 
-- 权限集合缓存在节点内存，带全局版本号；变更时广播 `authz:changed`，**收回立即生效**
-- JWT 只放用户 ID
+- 权限判断由每个节点的 Casbin enforcer 作出（`SyncedCachedEnforcer`，内存里有 active 权限的授予、超管行，用户的角色在第一次被问到时按需读入、有上限，CONTRACTS §99.3）：`Can` 是 `Enforce`（经决策缓存），用户的授予列表是 `GetImplicitPermissionsForUser`。变更时广播 `authz:changed`，**收回立即生效**：只改某个用户角色或状态的写入只让各节点在内存里换掉这个用户的角色、作废他的决策；改授予、权限状态、角色定义的写入推进策略版本，各节点重新装入授予，保留已读入的用户（CONTRACTS §99.4）
+- 会话只记用户 ID 与 `token_version` 盖章，不带权限（CONTRACTS §100.1）
 - `sensitive` 只是高危标记（角色编辑器提示用）；**已取消二次验证**（2026-10-05 用户决定，CONTRACTS §3.3），任何操作只看登录态和权限
 
 ### 13.3 内置角色与核心权限
@@ -1537,41 +1552,56 @@ anthropic 平台及其端点、用量规则、默认粘性规则由**核心内�
 ### 16.1 旧代码备份与新代码位置
 
 - 备份：打 tag `legacy/v0.2.8`，创建分支 `legacy/main`，旧代码原样保留
-- 新代码：新分支 `feat/next-platform`，新建 `next/` 目录，与旧代码并存
+- 新代码：`next/` 目录，与仓库根目录的旧代码（`backend/`、`frontend/`）并存。开发分支是 `develop`（早期的 `feat/next-platform` 已不再使用），新工作从 `develop` 开分支，完成后合回 `develop`
 
 ### 16.2 目录结构
 
 ```
 next/
-├── go.work                        # Go 工作区：server、sdk、plugins、tools
-├── server/                        # 核心服务（独立 Go module）
-│   ├── cmd/sub2api/main.go        # 含隐藏子命令 plugin-exec（启动器）
+├── go.work                        # Go 工作区：下列每个 Go module（CONTRACTS §2）
+├── server/                        # 核心服务 sub2api（独立 Go module）
+│   ├── cmd/
+│   │   ├── sub2api/main.go        # 含 dev 子命令与隐藏子命令 plugin-exec（启动器）
+│   │   ├── gen-models/            # 由迁移生成 GORM 模型（store/model）
+│   │   └── convert-record/        # 协议转换黄金样例录制工具（手动运行）
 │   ├── internal/
-│   │   ├── app/  config/  store/  migrations/  cluster/
-│   │   ├── iam/  authz/  apikey/  group/  proxy/  account/
-│   │   ├── billing/  usage/  event/  job/
-│   │   ├── gateway/               # 流水线、调度、钩子执行、用量提取
+│   │   ├── app/  config/  core/  store/  migrations/  cluster/  task/  job/  event/
+│   │   ├── iam/  authz/  apikey/  group/  proxy/  account/  billing/  usage/  ...
+│   │   ├── gateway/               # 流水线、调度、钩子执行、用量提取；convert/ 是协议转换
 │   │   ├── plugin/                # 包、签名与信任、manifest、授权、迁移、注册表、发布、市场
 │   │   │   ├── grpcruntime/       # 唯一允许引用 go-plugin 的包；HostService、EgressService
 │   │   │   └── sandbox/           # seccomp、rlimit、oom_score_adj、nice、看门狗（//go:build linux）
 │   │   └── httpapi/               # gin 路由、handler、中间件
-│   └── web/                       # 嵌入前端构建产物
-├── sdk/                           # 插件 SDK（独立 Go module，插件只依赖它）
+│   └── web/                       # 嵌入前端构建产物（dist/index.html 是被跟踪的占位文件）
+├── gateway/                       # 节点外壳（独立 Go module）
+│   ├── cmd/sub2api-gateway/       # 公网入口、本机核心的 supervisor、托管升级、节点间转发
+│   ├── cmd/sub2api-release/       # 核心发布包的密钥、打包与签名
+│   └── internal/                  # control、supervisor、proxy、peer、release、pluginblob、sqlguard ...
+├── runtime-contract/              # 外壳与核心的协议；gormpg（共用的数据库层与 sqlcheck）、sqlpool、locklease
+├── sdk/                           # 插件 SDK（独立 Go module，插件只依赖它和 runtime-contract）
 │   ├── proto/sub2api/plugin/v1/*.proto
-│   ├── gen/
-│   └── pluginsdk/                 # Serve()、Host 客户端、出口隧道 Transport/Dialer/Resolver、测试工具
-├── plugins/
-│   ├── anthropic/                 # 独立 Go module
-│   └── guard/                     # 独立 Go module，含 ui/native 前端工程
+│   ├── gen/  manifest/  protocol/  pkgsig/
+│   ├── pluginsdk/                 # Serve()、Host 客户端、出口隧道 Transport/Dialer/Resolver、测试工具
+│   ├── pgdb/                      # 插件的 GORM 句柄、组合器、TestNoRawSQL/TestNoPgxImports
+│   └── testpg/                    # 测试用 PostgreSQL（TEST_DATABASE_URL 或本机 embedded-postgres）
+├── plugins/                       # 官方插件，每个是独立 Go module；released.json 记录线上版本
+│   ├── anthropic/  openai/  gemini/  volcengine/  custom/  relay/  claude-oauth/
+│   ├── codex/                     # 含 ui/native
+│   ├── dynweight/  growth/  guard/  moderation/   # 含 ui/native
+│   └── mailer/  payment/
+├── protocol-codec/                # 早期的协议转换库；next/ 内无人引用，只剩旧版 backend/ 依赖
 ├── tools/
-│   └── sub2api-plugin/            # keygen / build / pack / sign / verify / index
+│   └── sub2api-plugin/            # keygen / build / pack / sign / verify / index / db diff|check / dev
+├── e2e/                           # 验收测试（需要部署好的 e2e 栈；CI 只编译）
 ├── web/                           # 控制台（Vue 3）
 │   ├── src/
 │   └── packages/
 │       ├── ui/                    # @sub2api/ui 组件库（共享给原生插件）
 │       ├── host/                  # @sub2api/host 宿主 API
 │       └── vite-preset/           # 插件前端构建预设
-├── deploy/                        # docker-compose、Caddyfile
+├── deploy/                        # 镜像构建脚本（docker/）、网关托管部署（gateway/）、单机栈（single/）、
+│                                  # e2e 栈（e2e/）、mock-upstream、发布与回退手册（rollback/）
+├── Dockerfile                     # 核心、插件与控制台的镜像构建
 └── docs/
 ```
 
@@ -1581,16 +1611,17 @@ next/
 |---|---|
 | 语言 | Go 1.27 |
 | HTTP | gin |
-| 数据库 | PostgreSQL 16 + pgx v5，手写 SQL |
+| 数据库 | PostgreSQL 16 + GORM（驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`；打开连接、GORM 没有形式的薄组合器（`EXISTS`、`INSERT ... SELECT`、`nextval`、`to_regclass`、事务级 advisory 锁）和 SQL 文本检查器 `gormpg/sqlcheck` 由 `runtime-contract/gormpg` 一处实现，核心、网关、插件 SDK 共用）；语句由 GORM 的模型与查询构造器生成，值只走 `?` 参数，`Raw`/`Exec` 只组合已生成的查询；整条手写的只剩账本的 data-modifying CTE、网关心跳的 CTE 与 schema 脚本，以及锁、DDL、序列、系统目录的小助手（核心 gormguard、SDK 的 `TestNoRawSQL`、网关 `sqlguard` 用同一个 `sqlcheck` 检查，CONTRACTS §2、§39）。表结构以 SQL 迁移为准：核心的模型由迁移生成（`store/modelgen`），插件的模型由 `sub2api-plugin db check` 对照迁移；运行时不跑 AutoMigrate。插件只拿到 `Host.DB` 的 `*gorm.DB`（CONTRACTS §2） |
+| 权限判断 | Casbin v3（策略存 `casbin_rule`，gorm-adapter 的列布局，adapter 只用来读入；每个节点一个 `SyncedCachedEnforcer`，带 Casbin 的角色管理器与决策缓存；装入时只读授予，用户的角色在第一次判断时按需读入、有上限；策略版本变化时原地重载授予或换一个新的 enforcer，只改用户角色或状态时只换该用户，CONTRACTS §99.3–99.4） |
 | 迁移 | 嵌入式 SQL + 自研执行器（核心和插件共用，参考旧项目 `migrations_runner.go`） |
-| 缓存 / 实时状态 | Redis 7 + go-redis v9 |
+| 缓存 / 实时状态 | Valkey（或 Redis 7+）+ go-redis v9；控制台会话 `s2s_` 也只存在这里（CONTRACTS §100） |
 | 插件 | hashicorp/go-plugin + gRPC + protobuf |
 | seccomp | elastic/go-seccomp-bpf（纯 Go，不需要 cgo） |
 | 签名 | crypto/ed25519 |
 | JSON | gjson / sjson；santhosh-tekuri/jsonschema 做 schema 校验 |
 | 金额 | numeric(20,8) + shopspring/decimal |
 | 计费表达式 | expr-lang/expr（MIT）；设计参考 new-api 的 billingexpr，代码自行实现（new-api 是 AGPL-3.0，不能直接复制） |
-| 定时任务 | robfig/cron v3（只负责计算触发时间） |
+| 定时任务 | 定时任务框架（CONTRACTS §77）：`node` 任务用 gocron v2，`cluster` 任务用 River（`database/sql` 驱动，只轮询，新任务最多等 1 秒被取走）；robfig/cron v3 只负责解析 cron 表达式 |
 | 日志 | log/slog |
 | 前端 | Vue 3 + Vite + TypeScript + Pinia + Vue Router + Tailwind；图表用 ECharts |
 | 依赖注入 | 手写组装 |

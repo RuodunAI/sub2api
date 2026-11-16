@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"log/slog"
 	"maps"
 	"slices"
 
@@ -10,22 +9,17 @@ import (
 )
 
 // Can asks az whether the caller (UserID) holds k; the request's access key
-// narrows the answer as usual. A nil az, no caller and errors (logged) count
-// as "no".
-func Can(ctx context.Context, az Authorizer, k perm.Key) bool {
+// narrows the answer as usual. A nil az or no caller is "no"; a check that
+// cannot be decided returns az's error (503 unavailable), never "no".
+func Can(ctx context.Context, az Authorizer, k perm.Key) (bool, error) {
 	if az == nil {
-		return false
+		return false, nil
 	}
 	uid, ok := UserID(ctx)
 	if !ok {
-		return false
+		return false, nil
 	}
-	granted, err := az.Can(ctx, uid, string(k))
-	if err != nil {
-		slog.WarnContext(ctx, "permission check", "permission", k, "err", err)
-		return false
-	}
-	return granted
+	return az.Can(ctx, uid, string(k))
 }
 
 type scopesCtxKey struct{}

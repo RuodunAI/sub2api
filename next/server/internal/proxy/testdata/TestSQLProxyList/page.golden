@@ -1,0 +1,17 @@
+-- sql
+SELECT p.id, p.name, p.protocol, p.host, p.port, p.username, p.password_enc IS NOT NULL AS has_password,
+	p.status, (SELECT count(*) FROM accounts a WHERE a.proxy_id = p.id AND a.deleted_at IS NULL
+	  AND ($1::text[] IS NULL OR a.plugin_key = ANY($2))) AS account_count,
+	p.created_by, u.email AS created_by_email, p.created_at, p.updated_at, p.real_ip, p.real_ip_updated_at FROM proxies p LEFT JOIN users u ON u.id = p.created_by WHERE ((p.name ILIKE $3 OR p.host ILIKE $4)) AND p.status = $5 AND p.created_by = $6 AND (($7::boolean OR COALESCE(p.created_by = $8::bigint, false) OR p.id = ANY($9::bigint[]))) ORDER BY p.id LIMIT $10 OFFSET $11
+-- vars
+$1 nil
+$2 nil
+$3 string "%eu%"
+$4 string "%eu%"
+$5 string "active"
+$6 int64 9
+$7 bool false
+$8 int64 7
+$9 core.int64s [3 4]
+$10 int 20
+$11 int 40

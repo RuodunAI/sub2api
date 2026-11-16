@@ -13,7 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
+	"gorm.io/gorm"
 )
 
 // Broadcast topics: the other nodes reload at once (best effort; every
@@ -335,44 +336,32 @@ func (p *Plugin) loadSnapshot(ctx context.Context) (*snapshot, error) {
 		return nil, err
 	}
 	s := emptySnapshot()
-	if err := db.QueryRow(ctx, `SELECT config_version, cache_epoch FROM config_state WHERE id = 1`).Scan(&s.version, &s.cacheEpoch); err != nil {
+	var st model.ConfigState
+	if err := configState(db).Select("config_version, cache_epoch").Take(&st).Error; err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `SELECT id, type, protocol, name, base_url, api_key_enc, proxy_enc, model, billing_model, timeout_ms FROM channels
-		WHERE deleted_at IS NULL AND enabled`)
+	s.version, s.cacheEpoch = st.ConfigVersion, st.CacheEpoch
+	var chRows []model.Channel
+	err = db.Select("id, type, protocol, name, base_url, api_key_enc, proxy_enc, model, billing_model, timeout_ms").
+		Where("deleted_at IS NULL AND enabled").Find(&chRows).Error
 	if err != nil {
-		return nil, err
-	}
-	type chRow struct {
-		id                         int64
-		typ, protocol, base, model string
-		name, billing              string
-		keyEnc, proxyEnc           []byte
-		timeout                    int
-	}
-	var chRows []chRow
-	var r chRow
-	if _, err := pgx.ForEachRow(rows, []any{&r.id, &r.typ, &r.protocol, &r.name, &r.base, &r.keyEnc, &r.proxyEnc, &r.model, &r.billing, &r.timeout}, func() error {
-		chRows = append(chRows, r)
-		return nil
-	}); err != nil {
 		return nil, err
 	}
 	proxies := map[string]bool{}
 	for _, r := range chRows {
-		ch := &liveChannel{ID: r.id, Name: r.name, Type: r.typ, Protocol: r.protocol, BaseURL: r.base, Model: r.model, BillingModel: r.billing,
-			Timeout: time.Duration(r.timeout) * time.Millisecond, client: p.httpClient, ttft: p.ttftTimeout}
-		if len(r.keyEnc) > 0 {
-			key, err := p.host.OpenSecret(ctx, secretContext(r.id, "key"), r.keyEnc)
+		ch := &liveChannel{ID: r.ID, Name: r.Name, Type: r.Type, Protocol: r.Protocol, BaseURL: r.BaseURL, Model: r.Model, BillingModel: r.BillingModel,
+			Timeout: time.Duration(r.TimeoutMs) * time.Millisecond, client: p.httpClient, ttft: p.ttftTimeout}
+		if len(r.APIKeyEnc) > 0 {
+			key, err := p.host.OpenSecret(ctx, secretContext(r.ID, "key"), r.APIKeyEnc)
 			if err != nil {
-				p.log.Warn("moderation: channel key does not open", "channel_id", r.id, "error", err.Error())
+				p.log.Warn("moderation: channel key does not open", "channel_id", r.ID, "error", err.Error())
 				continue
 			}
 			ch.Key = string(key)
 		}
-		client, proxy, err := p.channelClient(ctx, r.id, r.proxyEnc)
+		client, proxy, err := p.channelClient(ctx, r.ID, r.ProxyEnc)
 		if err != nil {
-			p.log.Warn("moderation: channel proxy is not usable", "channel_id", r.id, "error", err.Error())
+			p.log.Warn("moderation: channel proxy is not usable", "channel_id", r.ID, "error", err.Error())
 			continue
 		}
 		ch.client, proxies[proxy] = client, true
@@ -386,102 +375,78 @@ func (p *Plugin) loadSnapshot(ctx context.Context) (*snapshot, error) {
 		s.channels[ch.ID] = ch
 	}
 	c := p.cfg.Load()
-	rows, err = db.Query(ctx, `SELECT id, name, type, channel_id, config FROM auditors WHERE deleted_at IS NULL`)
-	if err != nil {
+	var auditors []model.Auditor
+	if err := db.Select("id, name, type, channel_id, config").Where("deleted_at IS NULL").Find(&auditors).Error; err != nil {
 		return nil, err
 	}
-	var (
-		aid, chID int64
-		name, typ string
-		cfgJSON   []byte
-	)
 	stored := map[int64]storedAuditor{}
-	if _, err := pgx.ForEachRow(rows, []any{&aid, &name, &typ, &chID, &cfgJSON}, func() error {
-		row := storedAuditor{typ: typ, channel: chID, config: slices.Clone(cfgJSON)}
-		defer func() { stored[aid] = row }()
+	for _, r := range auditors {
+		row := storedAuditor{typ: r.Type, channel: r.ChannelID, config: r.Config}
 		var cfg AuditorConfig
-		if err := json.Unmarshal(cfgJSON, &cfg); err != nil {
-			p.log.Warn("moderation: auditor config is invalid", "auditor_id", aid, "error", err.Error())
-			return nil
+		if err := json.Unmarshal(r.Config, &cfg); err != nil {
+			p.log.Warn("moderation: auditor config is invalid", "auditor_id", r.ID, "error", err.Error())
+			stored[r.ID] = row
+			continue
 		}
-		a, err := compileAuditor(aid, name, typ, chID, cfg, s.channels[chID], &c.jevDefault)
+		a, err := compileAuditor(r.ID, r.Name, r.Type, r.ChannelID, cfg, s.channels[r.ChannelID], &c.jevDefault)
 		if err != nil {
-			p.log.Warn("moderation: auditor config is invalid", "auditor_id", aid, "error", err.Error())
-			return nil
+			p.log.Warn("moderation: auditor config is invalid", "auditor_id", r.ID, "error", err.Error())
+			stored[r.ID] = row
+			continue
 		}
-		row.defaultSet = (typ == AuditorTypeSafe || typ == AuditorLLMQuestions) && cfg.Questions == nil
-		s.auditors[aid] = a
-		return nil
-	}); err != nil {
-		return nil, err
+		row.defaultSet = (r.Type == AuditorTypeSafe || r.Type == AuditorLLMQuestions) && cfg.Questions == nil
+		stored[r.ID] = row
+		s.auditors[r.ID] = a
 	}
 	// Every flow: the live ones run, the others are why a binding does not
 	// apply (dead).
-	rows, err = db.Query(ctx, `SELECT id, name, version, published, scope, deleted_at IS NOT NULL, enabled FROM flows`)
-	if err != nil {
+	var flows []model.Flow
+	if err := db.Select("id, name, version, published, scope, deleted_at, enabled").Find(&flows).Error; err != nil {
 		return nil, err
 	}
-	var (
-		fid              int64
-		fname            string
-		version          int
-		pub              []byte
-		scope            *string
-		deleted, enabled bool
-	)
-	if _, err := pgx.ForEachRow(rows, []any{&fid, &fname, &version, &pub, &scope, &deleted, &enabled}, func() error {
+	for _, r := range flows {
+		fid := r.ID
 		switch {
-		case deleted:
+		case r.DeletedAt != nil:
 			s.dead[fid] = FallbackDeleted
-		case !enabled:
+		case !r.Enabled:
 			s.dead[fid] = FallbackDisabled
-		case pub == nil:
+		case r.Published == nil:
 			s.dead[fid] = FallbackUnpublished
 		}
 		if s.dead[fid] != "" {
-			return nil
+			continue
 		}
-		spec, err := ParseSpec(pub)
+		spec, err := ParseSpec(r.Published)
 		if err != nil {
 			p.log.Warn("moderation: published flow is invalid", "flow_id", fid, "error", err.Error())
 			s.dead[fid] = FallbackInvalid
-			return nil
+			continue
 		}
-		f := &liveFlow{ID: fid, Name: fname, Version: version, Spec: spec, scope: auditScope(scope)}
+		f := &liveFlow{ID: fid, Name: r.Name, Version: r.Version, Spec: spec, scope: auditScope(r.Scope)}
 		f.timeout = time.Duration(spec.TotalTimeoutMs) * time.Millisecond
 		if f.timeout <= 0 {
 			f.timeout = maxTotalTimeoutMs * time.Millisecond
 		}
 		s.flows[fid] = f
-		return nil
-	}); err != nil {
-		return nil, err
 	}
 	defaultSet, _ := json.Marshal(c.jevDefault)
 	for _, f := range s.flows {
 		f.fp = fingerprint(f.Spec, f.scope, stored, s.channels, defaultSet)
 	}
-	rows, err = db.Query(ctx, `SELECT group_id, flow_id FROM flow_groups ORDER BY group_id`)
-	if err != nil {
+	var groups []model.FlowGroup
+	if err := db.Order("group_id").Find(&groups).Error; err != nil {
 		return nil, err
 	}
-	var gid int64
-	if _, err := pgx.ForEachRow(rows, []any{&gid, &fid}, func() error {
-		s.bindGroup(gid, fid)
-		return nil
-	}); err != nil {
+	for _, g := range groups {
+		s.bindGroup(g.GroupID, g.FlowID)
+	}
+	var accounts []model.FlowAccount
+	if err := db.Find(&accounts).Error; err != nil {
 		return nil, err
 	}
-	rows, err = db.Query(ctx, `SELECT group_id, account_id, flow_id FROM flow_accounts`)
-	if err != nil {
-		return nil, err
-	}
-	var acct int64
-	if _, err := pgx.ForEachRow(rows, []any{&gid, &acct, &fid}, func() error {
-		s.bindAccount(accountKey{gid, acct}, fid)
-		return nil
-	}); err != nil {
-		return nil, err
+	for _, a := range accounts {
+		s.bindAccount(accountKey{a.GroupID, a.AccountID}, a.FlowID)
 	}
 	p.proxies.retain(proxies)
 	return s, nil
@@ -585,33 +550,25 @@ func (p *Plugin) reloadWatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var version int64
-	if err := db.QueryRow(ctx, `SELECT watch_version FROM config_state WHERE id = 1`).Scan(&version); err != nil {
+	var st model.ConfigState
+	if err := configState(db).Select("watch_version").Take(&st).Error; err != nil {
 		return err
 	}
-	rows, err := db.Query(ctx, `SELECT user_id, level, expires_at, locked FROM watchlist WHERE expires_at IS NULL OR expires_at > $1`, p.now().UTC())
+	var rows []model.Watch
+	err = db.Select("user_id, level, expires_at, locked").Where("expires_at IS NULL OR expires_at > ?", p.now().UTC()).Find(&rows).Error
 	if err != nil {
 		return err
 	}
-	m := map[int64]watchEntry{}
-	var (
-		uid    int64
-		level  string
-		exp    *time.Time
-		locked bool
-	)
-	if _, err := pgx.ForEachRow(rows, []any{&uid, &level, &exp, &locked}, func() error {
-		e := watchEntry{Level: level, Locked: locked}
-		if exp != nil {
-			e.Expires = *exp
+	m := make(map[int64]watchEntry, len(rows))
+	for _, w := range rows {
+		e := watchEntry{Level: w.Level, Locked: w.Locked}
+		if w.ExpiresAt != nil {
+			e.Expires = *w.ExpiresAt
 		}
-		m[uid] = e
-		return nil
-	}); err != nil {
-		return err
+		m[w.UserID] = e
 	}
 	p.watch.Store(&m)
-	p.watchVersion.Store(version)
+	p.watchVersion.Store(st.WatchVersion)
 	return nil
 }
 
@@ -637,10 +594,11 @@ func (p *Plugin) pollVersions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var cv, wv int64
-	if err := db.QueryRow(ctx, `SELECT config_version, watch_version FROM config_state WHERE id = 1`).Scan(&cv, &wv); err != nil {
+	var st model.ConfigState
+	if err := configState(db).Select("config_version, watch_version").Take(&st).Error; err != nil {
 		return err
 	}
+	cv, wv := st.ConfigVersion, st.WatchVersion
 	var errs []error
 	if cv != p.snap.Load().version {
 		errs = append(errs, p.reloadConfig(ctx))
@@ -652,15 +610,13 @@ func (p *Plugin) pollVersions(ctx context.Context) error {
 }
 
 // bumpConfig increments config_version inside tx (every configuration write).
-func bumpConfig(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `UPDATE config_state SET config_version = config_version + 1 WHERE id = 1`)
-	return err
+func bumpConfig(tx *gorm.DB) error {
+	return configState(tx).Update("config_version", gorm.Expr("config_version + 1")).Error
 }
 
 // bumpWatch increments watch_version inside tx (every watch list write).
-func bumpWatch(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `UPDATE config_state SET watch_version = watch_version + 1 WHERE id = 1`)
-	return err
+func bumpWatch(tx *gorm.DB) error {
+	return configState(tx).Update("watch_version", gorm.Expr("watch_version + 1")).Error
 }
 
 // configChanged reloads this node and tells the others.

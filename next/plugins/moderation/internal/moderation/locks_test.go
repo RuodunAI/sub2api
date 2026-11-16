@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -29,7 +27,7 @@ func TestLockAPI(t *testing.T) {
 		t.Helper()
 		db, err := p.db(context.Background())
 		if err == nil {
-			err = db.QueryRow(context.Background(), `SELECT watch_version FROM config_state WHERE id = 1`).Scan(&v)
+			err = db.Raw(`SELECT watch_version FROM config_state WHERE id = 1`).Row().Scan(&v)
 		}
 		if err != nil {
 			t.Fatal(err)
@@ -106,8 +104,8 @@ func TestWatchListStaff(t *testing.T) {
 	ctx := context.Background()
 	db, err := p.db(ctx)
 	if err == nil {
-		_, err = db.Exec(ctx, `INSERT INTO watchlist (user_id, level, source, since_at, violation_epoch, locked, updated_at)
-			VALUES (6, 'observe', 'manual', now(), 1, true, now())`)
+		err = db.Exec(`INSERT INTO watchlist (user_id, level, source, since_at, violation_epoch, locked, updated_at)
+			VALUES (6, 'observe', 'manual', now(), 1, true, now())`).Error
 	}
 	if err != nil {
 		t.Fatal(err)
@@ -135,12 +133,7 @@ func TestWatchListStaff(t *testing.T) {
 // read.
 func TestListsImport(t *testing.T) {
 	fh := newDBHost(t)
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, fh.DSNValue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(ctx)
+	conn := connect(t, fh.DSNValue)
 	now := time.Now().UTC()
 	// What 0.10.0 left, and entries changed since (the lists below).
 	for _, e := range []struct {
@@ -156,9 +149,8 @@ func TestListsImport(t *testing.T) {
 		{12, LevelEnforce, nil, true},                     // on neither list: unlocked
 		{13, LevelObserve, nil, false},                    // on neither list, not locked
 	} {
-		if _, err := conn.Exec(ctx, `INSERT INTO `+pgx.Identifier{fh.SchemaValue, "watchlist"}.Sanitize()+`
-			(user_id, level, source, since_at, expires_at, violation_epoch, locked, updated_at) VALUES ($1, $2, 'manual', $3, $4, 1, $5, $3)`,
-			e.uid, e.level, now, e.expires, e.locked); err != nil {
+		if err := conn.Exec(`INSERT INTO `+ident(fh.SchemaValue, "watchlist")+`
+			(user_id, level, source, since_at, expires_at, violation_epoch, locked, updated_at) VALUES (?, ?, 'manual', ?, ?, 1, ?, ?)`, e.uid, e.level, now, e.expires, e.locked, now).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -216,7 +208,7 @@ func TestListsImport(t *testing.T) {
 	if !listsImported() {
 		t.Fatal("status: lists_imported = false after the import")
 	}
-	if _, err := conn.Exec(ctx, `UPDATE `+pgx.Identifier{fh.SchemaValue, "config_state"}.Sanitize()+` SET lists_imported = false`); err != nil {
+	if err := conn.Exec(`UPDATE ` + ident(fh.SchemaValue, "config_state") + ` SET lists_imported = false`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if listsImported() {

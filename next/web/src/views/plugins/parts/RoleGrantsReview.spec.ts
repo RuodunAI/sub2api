@@ -17,7 +17,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (k: string) => !mo
 import { ApiError } from '@sub2api/host'
 import RoleGrantsReview from './RoleGrantsReview.vue'
 
-const grant = (version: string, role: string, needs = true): PluginRoleGrant => ({ version, permission: 'plugin.mod:mod:read', role, sensitive: needs, via: 'default', needs_consent: needs })
+const grant = (version: string, role: string, needs = true): PluginRoleGrant => ({ version, permission: 'plugin.mod:mod:read', role, risk: needs ? 'sensitive' : 'low', via: 'default', needs_consent: needs })
 const all = [grant('0.2.0', 'user'), grant('0.3.0', 'lead'), grant('0.3.0', 'admin', false)]
 const render = async (grants = all) => {
   const w = mount(RoleGrantsReview, { props: { pluginKey: 'mod', grants }, global: { plugins: [i18n] } })
@@ -43,6 +43,15 @@ describe('RoleGrantsReview', () => {
     await flushPromises()
     expect(mocks.post.mock.calls.map((c) => (c as unknown[])[0])).toEqual(['/plugins/mod/versions/0.2.0/role-grants/confirm', '/plugins/mod/versions/0.3.0/role-grants/confirm'])
     expect(w.emitted('changed')).toHaveLength(1)
+  })
+
+  it('names the scope and risk of each grant', async () => {
+    const w = await render([{ ...grant('0.3.0', 'lead'), permission: 'plugin.mod:flow:manage', scope: 'own' }, grant('0.3.0', 'admin', false)])
+    const items = w.findAll('li')
+    expect(items[0].text()).toContain('plugin.mod:flow:manage:own')
+    expect(items[0].find('[data-risk="sensitive"]').exists()).toBe(true)
+    expect(items[1].text()).toContain('plugin.mod:mod:read')
+    expect(items[1].find('[data-risk]').exists()).toBe(false)
   })
 
   it('rejects them all', async () => {

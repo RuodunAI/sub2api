@@ -9,8 +9,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
@@ -26,50 +27,45 @@ func (p *Plugin) flowVersionView(ctx context.Context, flowID int64, version int,
 	if err != nil {
 		return nil, err
 	}
-	var name string
-	var cur int
-	var published []byte
-	var publishedAt *time.Time
-	var deleted bool
-	err = db.QueryRow(ctx, `SELECT name, version, published, published_at, deleted_at IS NOT NULL FROM flows WHERE id = $1`, flowID).
-		Scan(&name, &cur, &published, &publishedAt, &deleted)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && deleted {
+	var row model.Flow
+	err = db.Select("name, version, published, published_at, deleted_at").Where("id = ?", flowID).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) || err == nil && row.DeletedAt != nil {
 		return &FlowVersionView{FlowID: flowID, Version: version, Deleted: true, Note: NoteFlowDeleted, Stages: []StageView{}}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	name, cur := row.Name, row.Version
 	if cur == 0 {
 		return nil, errNotFound
 	}
 	if version <= 0 || version == cur {
 		f := s.flows[flowID]
 		if f == nil || f.Version != cur {
-			spec, err := ParseSpec(published)
+			spec, err := ParseSpec(row.Published)
 			if err != nil {
 				return nil, err
 			}
 			f = &liveFlow{ID: flowID, Name: name, Version: cur, Spec: spec}
 		}
 		v := currentFlowView(f, s.auditors, s.groupsOf(flowID))
-		v.PublishedAt = rfc3339(publishedAt)
+		v.PublishedAt = rfc3339(row.PublishedAt)
 		return v, nil
 	}
-	var raw []byte
-	var at time.Time
-	err = db.QueryRow(ctx, `SELECT spec, published_at FROM flow_versions WHERE flow_id = $1 AND version = $2`, flowID, version).Scan(&raw, &at)
-	if errors.Is(err, pgx.ErrNoRows) {
+	var fv model.FlowVersion
+	err = db.Select("spec, published_at").Where("flow_id = ? AND version = ?", flowID, version).Take(&fv).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, errNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	spec, err := ParseSpec(raw)
+	spec, err := ParseSpec(fv.Spec)
 	if err != nil {
 		return nil, err
 	}
 	return &FlowVersionView{FlowID: flowID, Name: name, Version: version, CurrentVersion: cur, Historical: true, Note: NoteHistorical,
-		PublishedAt: rfc3339(&at), Spec: spec, Stages: stageStructure(spec, s.auditors)}, nil
+		PublishedAt: rfc3339(&fv.PublishedAt), Spec: spec, Stages: stageStructure(spec, s.auditors)}, nil
 }
 
 func rfc3339(t *time.Time) string {
@@ -97,28 +93,20 @@ func (p *Plugin) listFlowVersions(ctx context.Context, req *pluginv1.HTTPRequest
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
 	var cur int
-	err = db.QueryRow(ctx, `SELECT version FROM flows WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&cur)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err = db.Model(&model.Flow{}).Select("version").Where("id = ? AND deleted_at IS NULL", id).Take(&cur).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("flow"), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `SELECT version, published_at, published_by FROM flow_versions WHERE flow_id = $1 ORDER BY version DESC`, id)
-	if err != nil {
+	var versions []model.FlowVersion
+	if err := db.Select("version, published_at, published_by").Where("flow_id = ?", id).Order("version DESC").Find(&versions).Error; err != nil {
 		return nil, err
 	}
-	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (FlowVersionItem, error) {
-		var it FlowVersionItem
-		err := r.Scan(&it.Version, &it.PublishedAt, &it.PublishedBy)
-		it.PublishedAt, it.Current = it.PublishedAt.UTC(), it.Version == cur
-		return it, err
-	})
-	if err != nil {
-		return nil, err
-	}
-	if items == nil {
-		items = []FlowVersionItem{}
+	items := make([]FlowVersionItem, len(versions))
+	for i, v := range versions {
+		items[i] = FlowVersionItem{Version: v.Version, PublishedAt: v.PublishedAt.UTC(), PublishedBy: v.PublishedBy, Current: v.Version == cur}
 	}
 	return pluginsdk.DataResponse(map[string]any{"current_version": cur, "items": items}), nil
 }
@@ -162,10 +150,10 @@ func (p *Plugin) rollbackFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 			pluginsdk.FieldErrors{}.Add("version", "required", "version and expected_version are required / 请指定要回滚到的版本和当前版本号")), nil
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		var cur int
-		err := tx.QueryRow(ctx, `SELECT version FROM flows WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&cur)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err := tx.Model(&model.Flow{}).Select("version").Where("id = ? AND deleted_at IS NULL", id).Clauses(forUpdate()).Take(&cur).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			resp = notFound("flow")
 			return errRollback
 		}
@@ -177,17 +165,16 @@ func (p *Plugin) rollbackFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 				fmt.Sprintf("the flow is at version %d / 流程已被他人发布到版本 %d，请刷新", cur, cur))
 			return errRollback
 		}
-		var raw []byte
-		var auto bool
-		err = tx.QueryRow(ctx, `SELECT spec, auto_timeout FROM flow_versions WHERE flow_id = $1 AND version = $2`, id, in.Version).Scan(&raw, &auto)
-		if errors.Is(err, pgx.ErrNoRows) {
+		var fv model.FlowVersion
+		err = tx.Select("spec, auto_timeout").Where("flow_id = ? AND version = ?", id, in.Version).Take(&fv).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			resp = pluginsdk.ErrorResponse(http.StatusNotFound, "not_found", "flow version not found / 流程版本不存在")
 			return errRollback
 		}
 		if err != nil {
 			return err
 		}
-		spec, err := checkDraft(ctx, tx, raw)
+		spec, err := checkDraft(tx, fv.Spec)
 		var missing *MissingAuditorsError
 		if errors.As(err, &missing) {
 			resp = errorWithDetails(http.StatusBadRequest, "missing_auditors", "the version uses deleted auditors / 该版本使用了已删除的审核器",
@@ -198,10 +185,10 @@ func (p *Plugin) rollbackFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 			resp = pluginsdk.FieldErrorResponse("invalid flow / 流程参数无效", pluginsdk.FieldErrors{}.Add("version", "invalid", err.Error()))
 			return errRollback
 		}
-		if auto {
+		if fv.AutoTimeout {
 			spec.TotalTimeoutMs = 0
 		}
-		return publishSpec(ctx, tx, id, cur+1, spec, p.now().UTC(), callerID(req))
+		return publishSpec(tx, id, cur+1, spec, p.now().UTC(), callerID(req))
 	})
 	if resp != nil {
 		return resp, nil
@@ -252,19 +239,19 @@ func (p *Plugin) simulateFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	}
 	var chunks []*chunk
 	if sel.EventID > 0 {
-		var text *string
-		err := db.QueryRow(ctx, `SELECT text FROM events WHERE id = $1`, sel.EventID).Scan(&text)
-		if errors.Is(err, pgx.ErrNoRows) {
+		var e model.Event
+		err := db.Select("text").Where("id = ?", sel.EventID).Take(&e).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return notFound("event"), nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		if text == nil || *text == "" {
+		if e.Text == nil || *e.Text == "" {
 			return pluginsdk.ErrorResponse(http.StatusBadRequest, "no_text", "the record has no saved text / 该记录没有保存原文"), nil
 		}
 		var bad *pluginv1.HTTPResponse
-		if chunks, bad = (testBody{Text: *text}).chunks(c); bad != nil {
+		if chunks, bad = (testBody{Text: *e.Text}).chunks(c); bad != nil {
 			return bad, nil
 		}
 	} else {
@@ -273,33 +260,32 @@ func (p *Plugin) simulateFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 			return bad, nil
 		}
 	}
-	var name string
-	var cur int
-	var draft, published []byte
-	err = db.QueryRow(ctx, `SELECT name, version, draft, published FROM flows WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&name, &cur, &draft, &published)
-	if errors.Is(err, pgx.ErrNoRows) {
+	var fl model.Flow
+	err = db.Select("name, version, draft, published").Where("id = ? AND deleted_at IS NULL", id).Take(&fl).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("flow"), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	raw, version := draft, 0
+	raw, version := []byte(fl.Draft), 0
 	switch sel.Source {
 	case "", "draft":
 	case "published":
-		if published == nil {
+		if fl.Published == nil {
 			return pluginsdk.ErrorResponse(http.StatusBadRequest, "not_published", "the flow is not published / 流程还没有发布"), nil
 		}
-		raw, version = published, cur
+		raw, version = fl.Published, fl.Version
 	case "version":
-		err := db.QueryRow(ctx, `SELECT spec FROM flow_versions WHERE flow_id = $1 AND version = $2`, id, sel.Version).Scan(&raw)
-		if errors.Is(err, pgx.ErrNoRows) {
+		var fv model.FlowVersion
+		err := db.Select("spec").Where("flow_id = ? AND version = ?", id, sel.Version).Take(&fv).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return pluginsdk.ErrorResponse(http.StatusNotFound, "not_found", "flow version not found / 流程版本不存在"), nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		version = sel.Version
+		raw, version = fv.Spec, sel.Version
 	default:
 		return pluginsdk.FieldErrorResponse("invalid simulate / 模拟参数无效",
 			pluginsdk.FieldErrors{}.Add("source", "enum", "source must be draft, published or version / source 取值为 draft、published、version")), nil
@@ -308,10 +294,10 @@ func (p *Plugin) simulateFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	if err != nil || len(spec.Stages) == 0 {
 		return pluginsdk.ErrorResponse(http.StatusBadRequest, "invalid_flow", "the flow spec has no stages / 流程没有审核级"), nil
 	}
-	if err := fillAutoTimeout(ctx, db, spec); err != nil {
+	if err := fillAutoTimeout(db, spec); err != nil {
 		return nil, err
 	}
-	f := &liveFlow{ID: id, Name: name, Version: version, Spec: spec, timeout: time.Duration(spec.TotalTimeoutMs) * time.Millisecond}
+	f := &liveFlow{ID: id, Name: fl.Name, Version: version, Spec: spec, timeout: time.Duration(spec.TotalTimeoutMs) * time.Millisecond}
 	m := &moderation{cfg: c, flow: f, snap: p.snap.Load(), chunks: chunks, timing: timing, source: SourceSimulate}
 	out := p.testResult(ctx, m)
 	out.Timing, out.Refused = timing, timing == TimingPre && out.Result == ResultHit

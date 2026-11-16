@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // Role grants a built-in plugin's automatic upgrade held back for review
-// (role_grants_to_review, CONTRACTS P4C): listed with what they need; who may
-// name every role listed (plugin:install, and each role nameable as on the
-// consent page: useNameableRoles, the server's checkRolesGrantable) confirms
+// (role_grants_to_review, CONTRACTS P4C): listed with their scope, risk and
+// what they need; who may name every role listed (plugin:install, and each
+// role nameable: canName, the server's checkRolesGrantable) confirms
 // them or rejects them all, per version.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -10,16 +10,27 @@ import { api, isApiError } from '@sub2api/host'
 import { SButton, confirm, toast } from '@sub2api/ui'
 import type { PluginRoleGrant } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useAssignableRoles } from '@/composables/useAssignableRoles'
 import { notifyError } from '@/utils/errors'
 import NewRoleGrants from '../consent/NewRoleGrants.vue'
-import { useNameableRoles } from '../consent/newPermissionRoles'
 
 const props = defineProps<{ pluginKey: string; grants: PluginRoleGrant[] }>()
 const emit = defineEmits<{ (e: 'changed'): void }>()
 const { t } = useI18n()
 const auth = useAuthStore()
 
-const { canName } = useNameableRoles()
+const managed = useAssignableRoles()
+/**
+ * The caller may hand plugin permissions to role (install
+ * checkRolesGrantable: role:define, then CanGrantToRoles): the super admin
+ * any role, others only roles on their managed list, within them, that they
+ * do not hold themselves (built-in roles alike).
+ */
+function canName(role: string): boolean {
+  if (!auth.has('role:define')) return false
+  const r = managed.roles.value.find((x) => x.key === role)
+  return !!r && (!!auth.me?.superuser || (r.grantable && !auth.me?.roles.includes(role)))
+}
 const canReview = computed(() => auth.has('plugin:install') && props.grants.every((g) => canName(g.role)))
 const versions = computed(() => [...new Set(props.grants.map((g) => g.version || ''))].filter(Boolean))
 const busy = ref<'' | 'confirm' | 'reject'>('')

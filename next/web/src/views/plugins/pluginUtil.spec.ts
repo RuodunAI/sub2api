@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import en from '@/i18n/locales/en/plugins'
 import zh from '@/i18n/locales/zh/plugins'
-import { CCGATEWAY_PAGE, HOST_PERMISSION_RISK, accountTypesOf, consoleSettings, consoleSettingsPath, endpointText, hpKey, isPluginKey, nativeSettingsPath, platformsOf, pluginSettingsPath, pluginStatusTone, settingsFieldErrors } from './pluginUtil'
+import { HOST_PERMISSION_RISK, accountTypesOf, consoleSettings, consoleSettingsPath, endpointText, hpKey, isPluginKey, nativeSettingsPath, platformsOf, pluginSettingsPath, pluginStatusTone, settingsFieldErrors } from './pluginUtil'
 
 describe('plugin endpoint declarations', () => {
   it('preserves the same subset in manifests and installation reviews', () => {
@@ -82,23 +82,13 @@ describe('settings modes (§75.5)', () => {
 })
 
 describe('where the installed plugins list opens settings', () => {
-  const all = () => true
   it('is the settings tab of the detail page for a plugin with a form', () => {
-    expect(consoleSettingsPath({ key: 'mailer', has_settings: true }, all)).toBe('/plugins/mailer?tab=settings')
-    expect(consoleSettingsPath({ key: 'relay' }, all)).toBeUndefined()
-  })
-  it("is ccgateway's own page, for settings:read, whatever its manifest says", () => {
-    expect(consoleSettingsPath({ key: 'ccgateway', has_settings: true }, all)).toBe(CCGATEWAY_PAGE)
-    expect(consoleSettingsPath({ key: 'ccgateway', has_settings: true }, perm => perm !== 'settings:read')).toBeUndefined()
+    expect(consoleSettingsPath({ key: 'mailer', has_settings: true })).toBe('/plugins/mailer?tab=settings')
+    expect(consoleSettingsPath({ key: 'relay' })).toBeUndefined()
   })
 })
 
 describe('console addresses', () => {
-  it("keeps the CCGateway page under a segment the SDK reserves for the console", () => {
-    const reserved = readFileSync('../sdk/manifest/routes.go', 'utf8').match(/var ConsoleSegments = \[\]string\{([^}]*)\}/)?.[1] ?? ''
-    expect(CCGATEWAY_PAGE).toBe('/system/ccgateway')
-    expect([...reserved.matchAll(/"([^"]+)"/g)].map(m => m[1])).toContain(CCGATEWAY_PAGE.split('/')[1])
-  })
   it("gives a plugin's settings form a page of its own", () => {
     expect(pluginSettingsPath('mailer')).toBe('/plugins/mailer/settings')
   })

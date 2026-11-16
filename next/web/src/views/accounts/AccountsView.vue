@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, MAX_ACCOUNT_BATCH } from '@sub2api/host'
 import { SAutoRefresh, SBadge, SBulkBar, SButton, SChip, SCode, SCopyButton, SDescItem, SDescriptions, SDropdown, SHint, SIcon, SInput, SLink, SModal, SPageHeader, SPagination, SSectionTitle, SSelect, SSpinner, SSwitch, STable, STabs, STooltip, confirm, toast, useAutoRefresh, type SelectOption, type TableColumn } from '@sub2api/ui'
-import type { Account, AccountAction, AccountLastTest, AccountType } from '@/api/types'
+import type { Account, AccountLastTest, AccountType } from '@/api/types'
 import { activeFilterCount, useList } from '@/composables/useList'
 import { useGroupsLookup } from '@/composables/lookups'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
@@ -45,11 +45,9 @@ import { useBulkRun } from '@/composables/useBulkRun'
 import { bulkToast } from '@/composables/bulkToast'
 import AccountBulkEditDialog from './AccountBulkEditDialog.vue'
 import AccountBulkDeleteDialog from './AccountBulkDeleteDialog.vue'
-import { subscriptionLabel } from './subscription'
 import { hasBalance, hasQuota, refreshAccountCredentials, resetAccountStatus, useBalanceRefresh, useQuotaRefresh } from './accountQuota'
-import { reasonOf } from '@/views/ccgateway/ccgAuthFlow'
 
-const { t, te } = useI18n()
+const { t } = useI18n()
 const auth = useAuthStore()
 const plugins = usePluginStore()
 const scope = useScope()
@@ -149,7 +147,7 @@ const columns = computed<TableColumn[]>(() => [
   { key: 'success_rate', label: t('accounts.successRate.column'), mobile: 'meta' },
   // The core's usage record (CONTRACTS §73), every account type.
   { key: 'usage', label: t('accounts.usage.column'), mobile: 'meta' },
-  // What the upstream says is left: plan windows (Claude Code), balance and
+  // What the upstream says is left: plan windows, balance and
   // plugin decorations (account.list.quota), only when a row of this page has one.
   ...(list.items.value.some(hasQuotaCell) ? [{ key: 'quota', label: t('accounts.balance.column') }] : []),
   { key: 'last_test', label: t('accounts.lastTest.column') },
@@ -163,8 +161,6 @@ function groupName(id: number, refs?: Array<{ id: number; name: string }>) {
 function groupNames(ids: number[] | undefined, refs?: Array<{ id: number; name: string }>) {
   return ids?.length ? ids.map((id) => groupName(id, refs)).join(', ') : '—'
 }
-/** Read-only plugin facts of a row, without the ones repeating its name (e.g. a login email used as the name). */
-const rowFacts = (a: Account) => accountTypes.pluginFacts(a.plugin_key, a.type, a.settings).filter((fact) => fact.value !== a.name)
 const groupTags = (a: Account) => (a.group_ids || []).map((id) => ({ id, name: groupName(id, a.groups), platforms: lookupGroup(id)?.platforms }))
 /** Platforms the account's type serves now: their marks lead its type line. */
 const rowPlatforms = (a: Account) => (typeOf(a)?.platforms ?? []).filter((p) => p.available !== false).map((p) => p.id)
@@ -202,10 +198,6 @@ function statusOf(a: Account): StatusView {
     view.detail = view.detail ? `${view.detail}\n${release}` : release
   }
   if (cooling) view.note = t('accounts.cooldownUntil', { time: formatTime(a.cooldown_until) })
-  if (a.runtime_parked) {
-    const parked = t('accounts.runtimeParked')
-    view.detail = view.detail ? `${view.detail}\n${parked}` : parked
-  }
   return view
 }
 
@@ -255,21 +247,12 @@ async function openEdit(a: Pick<Account, 'id'>) {
   }
 }
 
-function onSaved(saved?: Account) {
+function onSaved() {
   list.reload()
-  // A new Claude Code (CCGateway) account was authorized before it was saved:
-  // it closes like any other. A saved one that had no proxy (its container was
-  // blocked) stays open on the saved account: the container restarts with the
-  // proxy just picked and can be authorized right away.
-  const ccg = !!saved?.id && saved.plugin_key === 'ccgateway' && saved.type === 'managed'
-  if (ccg && editing.value && editing.value.proxy_id == null) {
-    editing.value = saved!
-    return
-  }
   editorOpen.value = false
 }
 
-// Deep link (/accounts?edit=<id>, e.g. from the CCGateway container list): opens the editor.
+// Deep link (/accounts?edit=<id>): opens the editor.
 const route = useRoute()
 const router = useRouter()
 watch(
@@ -376,7 +359,6 @@ function onBulkDeleted(ids: number[]) {
   selection.drop(ids)
   list.reload()
 }
-const retentionOf = (a: Account) => typeOf(a)?.lifecycle?.deletion?.retentionDays ?? 0
 /** The selected rows a declared bulk action targets: the same rows its row-menu entry shows on (CONTRACTS §23.3). */
 const declaredTargets = (x: PluginAccountActionEntry) => selection.rows.value.filter((a) => actionAppliesTo(x, a, canUpdate))
 const moreBulkActions = computed(() => [
@@ -437,15 +419,10 @@ async function openDetail(a: Account) {
 
 // ---------------------------------------------------------------- quota refresh / reset status
 // The snapshot of every row arrives with the list; "refresh" asks the upstream
-// for one account (force), with duplicate in-flight clicks coalesced. An
-// account that cannot be queried yet (409 details.reason) is named in the toast.
+// for one account (force), with duplicate in-flight clicks coalesced.
 const quotaRefresh = useQuotaRefresh({
   onSnapshot: (id, quota) => patchAccount(id, { quota }),
-  onError: (_id, e) => {
-    const key = `accounts.quota.refreshBlocked.${reasonOf(e)}`
-    if (reasonOf(e) && te(key)) toast(t(key), 'error')
-    else notifyError(e)
-  }
+  onError: (_id, e) => notifyError(e)
 })
 
 // ---------------------------------------------------------------- balance refresh
@@ -542,39 +519,9 @@ const canDisable = (a: Account) => toggleable(a) && a.status !== 'disabled' && !
 // ---------------------------------------------------------------- row actions
 const deleteOpen = ref(false)
 const deleteTarget = ref<Account | null>(null)
-const deleteRetentionDays = computed(() => typeOf(deleteTarget.value)?.lifecycle?.deletion?.retentionDays ?? 0)
 function remove(a: Account) {
   deleteTarget.value = a
   deleteOpen.value = true
-}
-
-// Plugin-registered actions (CONTRACTS §52). An action that starts a
-// re-authorization answers the draft key: it continues in the editor. A token
-// refresh answers refreshed / expires_at.
-const runningActions = ref(new Set<number>())
-async function runPluginAction(a: Account, action: AccountAction) {
-  if (runningActions.value.has(a.id)) return
-  runningActions.value.add(a.id)
-  const name = lt(action.label) || action.id
-  toast(t('accounts.pluginActions.running', { name }), 'info')
-  try {
-    const out = await api.post<Record<string, unknown> | null>(`/accounts/${a.id}/actions/${encodeURIComponent(action.plugin_key)}/${encodeURIComponent(action.id)}`, {}, { signal: AbortSignal.timeout(95000) })
-    if (typeof out?.key === 'string') {
-      void openEdit(a)
-    } else if (typeof out?.refreshed === 'boolean') {
-      const time = typeof out.expires_at === 'string' ? formatDateTime(out.expires_at) : ''
-      toast(t(out.refreshed ? 'accounts.pluginActions.tokenRefreshed' : 'accounts.pluginActions.tokenValid', { time }), 'success')
-      if (hasQuota(a.quota)) void quotaRefresh.refresh(a.id)
-    } else {
-      toast(t('accounts.pluginActions.done', { name }), 'success')
-    }
-  } catch (e) {
-    const key = `accounts.pluginActions.reason.${reasonOf(e)}`
-    if (reasonOf(e) && te(key)) toast(t(key), 'error')
-    else notifyError(e)
-  } finally {
-    runningActions.value.delete(a.id)
-  }
 }
 
 const rowActionDeps: RowActionDeps = {
@@ -584,14 +531,12 @@ const rowActionDeps: RowActionDeps = {
   canRefreshCreds,
   canUpdate,
   canDelete,
-  running: (a) => runningActions.value.has(a.id),
   openDetail,
   reveal,
   resetStatus,
   disable: (a) => toggleEnabled(a, false),
   refreshCreds,
   remove,
-  runPluginAction,
   // Read on each menu build: the plugin list may change after a refresh.
   get declaredActions() {
     return plugins.accountActions
@@ -703,8 +648,7 @@ function resetFilters() {
       <template #cell-name="{ row }">
         <div class="min-w-56 max-w-[17rem] space-y-0.5">
           <div class="flex items-center gap-2"><span class="shrink-0 font-mono text-xxs text-fg-subtle">#{{ row.id }}</span><SLink as="button" class="min-w-0 truncate font-semibold" :title="row.name" @click="openDetail(row)">{{ row.name }}</SLink></div>
-          <div class="flex items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted"><span v-if="rowPlatforms(row).length" class="inline-flex shrink-0 items-center gap-0.5" data-testid="account-platforms"><PlatformIcon v-for="p in rowPlatforms(row)" :id="p" :key="p" /></span><span :title="row.plugin_key">{{ accountTypes.pluginName(row.plugin_key) }}</span><span aria-hidden="true">/</span><span class="truncate" :title="accountTypes.typeLabel(row.plugin_key, row.type, row.type_label)">{{ accountTypes.typeLabel(row.plugin_key, row.type, row.type_label) }}</span><SBadge v-if="row.subscription_type" size="xs" tone="purple" class="shrink-0" :title="t('accounts.subscriptionHint')" data-testid="account-subscription">{{ subscriptionLabel(row.subscription_type) }}</SBadge><span v-if="row.last_used_at" class="shrink-0 text-xxs text-fg-subtle">· {{ formatRelative(row.last_used_at, t) }}</span></div>
-          <div v-for="fact in rowFacts(row)" :key="fact.key" class="truncate text-xs text-fg-muted" :title="`${fact.label}: ${fact.value}`" :data-testid="'account-fact-' + fact.key">{{ fact.label }} <span class="text-fg">{{ fact.value }}</span></div>
+          <div class="flex items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted"><span v-if="rowPlatforms(row).length" class="inline-flex shrink-0 items-center gap-0.5" data-testid="account-platforms"><PlatformIcon v-for="p in rowPlatforms(row)" :id="p" :key="p" /></span><span :title="row.plugin_key">{{ accountTypes.pluginName(row.plugin_key) }}</span><span aria-hidden="true">/</span><span class="truncate" :title="accountTypes.typeLabel(row.plugin_key, row.type, row.type_label)">{{ accountTypes.typeLabel(row.plugin_key, row.type, row.type_label) }}</span><span v-if="row.last_used_at" class="shrink-0 text-xxs text-fg-subtle">· {{ formatRelative(row.last_used_at, t) }}</span></div>
         </div>
       </template>
       <template #cell-groups="{ row }"><AccountGroupsCell :groups="groupTags(row)" /></template>
@@ -789,7 +733,6 @@ function resetFilters() {
         :account="editing"
         @change-type="pickedType = $event"
         @saved="onSaved"
-        @reauthorized="list.reload()"
         @cancel="editorOpen = false"
         @back="step = 1"
         @test="openTest"
@@ -799,8 +742,8 @@ function resetFilters() {
     <!-- test -->
     <AccountModelTest v-model:open="testOpen" :account="testTarget" :account-type="testTargetType" @tested="onTested" @updated="onTestUpdated" />
     <AccountBulkEditDialog v-model:open="bulkEditOpen" :accounts="picked.edit" :type-of="typeOf" @saved="onBulkSaved" />
-    <AccountBulkDeleteDialog v-model:open="bulkDeleteOpen" :accounts="picked.remove" :retention-of="retentionOf" @deleted="onBulkDeleted" />
-    <AccountDeleteDialog v-model:open="deleteOpen" :account="deleteTarget" :retention-days="deleteRetentionDays" @deleted="list.reload" />
+    <AccountBulkDeleteDialog v-model:open="bulkDeleteOpen" :accounts="picked.remove" @deleted="onBulkDeleted" />
+    <AccountDeleteDialog v-model:open="deleteOpen" :account="deleteTarget" @deleted="list.reload" />
 
     <!-- reveal -->
     <SModal v-model:open="revealOpen" :title="t('accounts.revealCredentials')" width="lg" @close="revealed = null">
@@ -823,11 +766,6 @@ function resetFilters() {
                 {{ accountTypes.typeLabel(detail.plugin_key, detail.type, detail.type_label) }}
                 <SHint inline size="xs">· {{ accountTypes.pluginName(detail.plugin_key) }} <span class="font-mono">({{ detail.plugin_key }}/{{ detail.type }})</span></SHint>
               </SDescItem>
-              <SDescItem v-if="detail.subscription_type" :label="t('accounts.subscription')">
-                <SBadge tone="purple" :title="t('accounts.subscriptionHint')">{{ detail.subscription_type }}</SBadge>
-                <SHint v-if="detail.rate_limit_tier" inline size="xs" class="ml-1.5 font-mono" data-testid="account-rate-limit-tier">· {{ detail.rate_limit_tier }}</SHint>
-              </SDescItem>
-              <SDescItem v-for="fact in accountTypes.pluginFacts(detail.plugin_key, detail.type, detail.settings)" :key="fact.key" :label="fact.label" :data-testid="'account-detail-fact-' + fact.key">{{ fact.value }}</SDescItem>
               <SDescItem v-if="detailType" :label="t('platforms.supported')"><AccountTypePlatforms :items="detailType.platforms" /></SDescItem>
               <SDescItem :label="t('accounts.servesEndpoints')">
                 <AccountTypeEndpoints v-if="detailType" :endpoints="detailType.endpoints" />

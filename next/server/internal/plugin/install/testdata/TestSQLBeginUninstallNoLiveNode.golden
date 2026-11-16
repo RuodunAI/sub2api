@@ -1,0 +1,7 @@
+-- sql
+INSERT INTO "plugin_uninstalls" ("plugin_key","epoch","target_boot_ids") VALUES ($1,$2,ARRAY(SELECT DISTINCT unnest($3::text[] || ARRAY(SELECT "boot_id" FROM "plugin_runtime_nodes" WHERE plugin_key = $4 AND NOT stopped)))) ON CONFLICT DO NOTHING
+-- vars
+$1 string "demo"
+$2 int64 5
+$3 store.Strings []
+$4 string "demo"

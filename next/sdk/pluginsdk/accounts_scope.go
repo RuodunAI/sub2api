@@ -42,9 +42,7 @@ import (
 // request the plugin is serving: call these inside the HTTP handler, with its
 // request, not from a job or after the handler returned. Otherwise the call
 // is codes.PermissionDenied, which RequireAccounts turns into a 403 like a
-// user holding account:<action> at no scope. Hosts before this call answer
-// codes.Unimplemented, which fails closed here; a plugin relying on it
-// declares the matching hostCompat.
+// user holding account:<action> at no scope.
 
 // AccountScope is what a console user may do to a set of accounts.
 type AccountScope struct {

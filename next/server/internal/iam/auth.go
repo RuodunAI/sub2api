@@ -4,27 +4,28 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"log/slog"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// TokenPair is the response of login and refresh. When the account has
-// two-factor authentication, a correct password answers with only
-// TwoFactorRequired and FlowToken; POST /auth/login/2fa gives the tokens.
-type TokenPair struct {
+// LoginResult is the response of a login: the session token (s2s_). When the
+// account has two-factor authentication, a correct password answers with
+// only TwoFactorRequired and FlowToken; POST /auth/login/2fa gives the
+// token. A session has nothing to renew it with: it lives while it is used
+// (CONTRACTS §100), and the console takes a 401 for its end.
+type LoginResult struct {
 	AccessToken       string `json:"access_token,omitempty"`
-	RefreshToken      string `json:"refresh_token,omitempty"`
-	ExpiresIn         int64  `json:"expires_in,omitempty"` // access token lifetime, seconds
+	ExpiresIn         int64  `json:"expires_in,omitempty"` // the session's idle timeout (a flow's lifetime), seconds
 	User              *User  `json:"user,omitempty"`
 	TwoFactorRequired bool   `json:"two_factor_required,omitempty"`
 	FlowToken         string `json:"flow_token,omitempty"`
@@ -33,20 +34,20 @@ type TokenPair struct {
 var (
 	errBadCredentials = core.ErrUnauthenticated.WithMessage("invalid email or password")
 	errUserDisabled   = core.ErrPermissionDenied.WithMessage("this account is disabled")
-	errBadRefresh     = core.ErrUnauthenticated.WithMessage("invalid or expired refresh token")
+	// errNoUser: the user of a session change is gone (lockUserRow).
+	errNoUser = core.ErrUnauthenticated.WithMessage("user not found")
 )
 
 // Login checks the password and issues tokens. Disabled users are rejected.
 // ip is the client address used by the failed-login rate limit (CONTRACTS
 // §14.2); while email+IP or IP is locked out the password is not checked.
-func (s *Service) Login(ctx context.Context, email, password, ip string) (*TokenPair, error) {
+func (s *Service) Login(ctx context.Context, email, password, ip string) (*LoginResult, error) {
 	if wait := s.limiter.check(ctx, email, ip); wait > 0 {
 		return nil, rateLimitedError(ctx, wait)
 	}
 	var id int64
 	var hash, status string
-	err := s.db.Pool.QueryRow(ctx, `SELECT id, password_hash, status FROM users WHERE lower(email) = lower($1) AND deleted_at IS NULL`,
-		strings.ToLower(strings.TrimSpace(email))).Scan(&id, &hash, &status)
+	err := userByEmail(store.G(ctx, s.db.Gorm), strings.ToLower(strings.TrimSpace(email)), "id, password_hash, status").Row().Scan(&id, &hash, &status)
 	if store.IsNoRows(err) {
 		// Burn comparable time so response timing does not reveal accounts.
 		_ = bcrypt.CompareHashAndPassword(s.dummyHash, []byte(password))
@@ -64,42 +65,73 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 	if status != StatusActive {
 		return nil, errUserDisabled
 	}
-	var twoFactor bool
-	if err := s.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_totp WHERE user_id = $1)`, id).Scan(&twoFactor); err != nil {
+	twoFactor, err := hasTwoFactor(store.G(ctx, s.db.Gorm), id)
+	if err != nil {
 		return nil, err
 	}
 	if twoFactor {
-		token, err := s.createFlow(ctx, flowLogin2FA, id, login2FAPayload{Email: limiterEmail(email), Password: hashToken(hash)})
+		token, err := s.createFlow(ctx, flowLogin2FA, id, login2FAPayload{Email: limiterEmail(email), Password: tokenstore.Hash(hash)})
 		if err != nil {
 			return nil, err
 		}
-		return &TokenPair{TwoFactorRequired: true, FlowToken: token, ExpiresIn: flowTTLSeconds}, nil
+		return &LoginResult{TwoFactorRequired: true, FlowToken: token, ExpiresIn: flowTTLSeconds}, nil
 	}
-	var pair *TokenPair
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		// The user row is the parent lock for every refresh-token family.
-		// Recheck the password snapshot after acquiring it: a password change
-		// may have committed while bcrypt was running above.
-		var currentHash, currentStatus string
-		if err := tx.QueryRow(ctx, `SELECT password_hash, status FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&currentHash, &currentStatus); err != nil {
+	// A password change may have committed while bcrypt was running above:
+	// the hash is checked again under the lock.
+	return s.signIn(ctx, id, login{gone: errBadCredentials, disabled: errUserDisabled, check: func(_ *gorm.DB, current string) error {
+		if current != hash {
+			return errBadCredentials
+		}
+		return nil
+	}})
+}
+
+// login is what a login path adds to signIn: the errors it answers a user
+// gone since it began, or not active, with; check, its own checks (the
+// password snapshot, the second factor, the passkey's use), given the
+// password hash read under the lock; and done (optional), the last step,
+// after the session is issued.
+type login struct {
+	gone, disabled error
+	check          func(g *gorm.DB, passwordHash string) error
+	done           func() error
+}
+
+// signIn ends every login path: in one transaction holding the user's row
+// lock (the parent lock of every session change), the user must still be
+// there and active and l.check pass; then the login is recorded, a session
+// issued (issueTx) and l.done run. ctx carries how it started
+// (withLoginMethod).
+func (s *Service) signIn(ctx context.Context, userID int64, l login) (*LoginResult, error) {
+	var result *LoginResult
+	err := s.issueTx(ctx, func(is *issuer) error {
+		g := store.G(ctx, is.tx)
+		var hash, status string
+		if err := lockLiveUser(g, userID, "password_hash, status").Row().Scan(&hash, &status); err != nil {
 			if store.IsNoRows(err) {
-				return errBadCredentials
+				return l.gone
 			}
 			return err
 		}
-		if currentHash != hash {
-			return errBadCredentials
+		if status != StatusActive {
+			return l.disabled
 		}
-		if currentStatus != StatusActive {
-			return errUserDisabled
-		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, id); err != nil {
+		if err := l.check(g, hash); err != nil {
 			return err
 		}
-		pair, err = s.issueTokens(ctx, tx, id, "")
-		return err
+		if err := touchLastLogin(g, userID).Error; err != nil {
+			return err
+		}
+		var err error
+		if result, err = is.issue(ctx, userID); err != nil || l.done == nil {
+			return err
+		}
+		return l.done()
 	})
-	return pair, err
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // login2FAPayload is what a correct password leaves for the second step: the
@@ -112,52 +144,30 @@ type login2FAPayload struct {
 // LoginSecondFactor finishes a password login with a TOTP or backup code. The
 // flow survives a wrong code, under the per-user lockout and the login rate
 // limit, and ends with the first correct one.
-func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip string) (*TokenPair, error) {
+func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip string) (*LoginResult, error) {
 	var payload login2FAPayload
-	var raw []byte
-	var userID int64
-	err := s.db.Pool.QueryRow(ctx, `SELECT payload, user_id FROM auth_flows WHERE token_hash = $1 AND purpose = $2 AND expires_at > now()`,
-		hashToken(flowToken), flowLogin2FA).Scan(&raw, &userID)
-	if store.IsNoRows(err) {
-		return nil, errFlowExpired
-	}
+	userID, err := s.peekFlow(ctx, flowToken, flowLogin2FA, 0, &payload)
 	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil, err
 	}
 	if wait := s.limiter.check(ctx, payload.Email, ip); wait > 0 {
 		return nil, rateLimitedError(ctx, wait)
 	}
-	var pair *TokenPair
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		var hash, status string
-		if err := tx.QueryRow(ctx, `SELECT password_hash, status FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, userID).Scan(&hash, &status); err != nil {
-			if store.IsNoRows(err) {
-				return errBadCredentials
+	result, err := s.signIn(withLoginMethod(ctx, loginMethodTwoFactor), userID, login{
+		gone: errBadCredentials, disabled: errUserDisabled,
+		check: func(g *gorm.DB, hash string) error {
+			if tokenstore.Hash(hash) != payload.Password {
+				return errFlowExpired
 			}
+			return s.checkSecondFactor(ctx, g, userID, code)
+		},
+		// Taken last: a failure before leaves the flow for another try (a
+		// flow in Valkey does not come back with a rollback).
+		done: func() error {
+			var used login2FAPayload
+			_, err := s.takeFlow(ctx, flowToken, flowLogin2FA, userID, &used)
 			return err
-		}
-		if hashToken(hash) != payload.Password {
-			return errFlowExpired
-		}
-		if status != StatusActive {
-			return errUserDisabled
-		}
-		if err := s.checkSecondFactor(ctx, tx, userID, code); err != nil {
-			return err
-		}
-		var used login2FAPayload
-		if _, err := s.takeFlow(ctx, tx, flowToken, flowLogin2FA, userID, &used); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id = $1`, userID); err != nil {
-			return err
-		}
-		var err error
-		pair, err = s.issueTokens(withLoginMethod(ctx, loginMethodTwoFactor), tx, userID, "")
-		return err
+		},
 	})
 	if isBadSecondFactor(err) {
 		s.limiter.fail(ctx, payload.Email, ip)
@@ -169,11 +179,11 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 		return nil, err
 	}
 	s.limiter.reset(ctx, payload.Email, ip)
-	return pair, nil
+	return result, nil
 }
 
-// newFamilyID returns a random refresh token family id.
-func newFamilyID() (string, error) {
+// newSessionID returns a random session id.
+func newSessionID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
@@ -181,204 +191,96 @@ func newFamilyID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// issueTokens issues an access token and a refresh token in familyID (a new
-// family when empty, i.e. on login, which is audited for a superuser).
-func (s *Service) issueTokens(ctx context.Context, tx pgx.Tx, userID int64, familyID string) (*TokenPair, error) {
-	var tokenVersion int
-	if err := tx.QueryRow(ctx, `SELECT token_version FROM users WHERE id = $1`, userID).Scan(&tokenVersion); err != nil {
-		return nil, err
-	}
-	refresh, err := randomToken()
-	if err != nil {
-		return nil, err
-	}
-	newFamily := familyID == ""
-	if newFamily {
-		if familyID, err = newFamilyID(); err != nil {
-			return nil, err
-		}
-		if err := s.auditSuperuserLogin(ctx, tx, userID); err != nil {
-			return nil, err
-		}
-	}
-	access, err := s.issueAccessToken(userID, tokenVersion, familyID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.touchLoginSession(ctx, tx, userID, familyID, newFamily); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO refresh_tokens (user_id, token_hash, expires_at, family_id) VALUES ($1, $2, $3, $4)`,
-		userID, hashToken(refresh), time.Now().Add(s.cfg.RefreshTokenTTL), familyID); err != nil {
-		return nil, err
-	}
-	u, err := s.getUser(ctx, tx, userID)
-	if err != nil {
-		return nil, err
-	}
-	u.Balance = nil
-	u.Segment = core.SegmentRef{}
-	return &TokenPair{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(s.cfg.AccessTokenTTL / time.Second), User: u}, nil
+// issuer issues sessions in one transaction (issueTx).
+type issuer struct {
+	s  *Service
+	tx *gorm.DB
+	// stored is the session issued, which issueTx ends when the
+	// transaction fails.
+	stored *tokenstore.Session
 }
 
-// refreshVerdict is the outcome of presenting a stored refresh token.
-type refreshVerdict int
-
-const (
-	refreshValid    refreshVerdict = iota
-	refreshExpired                 // past expires_at, never used: plain 401
-	refreshReplayed                // already rotated or revoked: revoke the family
-)
-
-// classifyRefresh decides what presenting a stored refresh token means. A
-// token that was rotated (replaced_at) or revoked (revoked_at) must never be
-// presented again; seeing it means it leaked, so the whole family is revoked
-// even when the token has expired since.
-func classifyRefresh(revokedAt, replacedAt *time.Time, expiresAt, now time.Time) refreshVerdict {
-	if revokedAt != nil || replacedAt != nil {
-		return refreshReplayed
-	}
-	if !expiresAt.After(now) {
-		return refreshExpired
-	}
-	return refreshValid
-}
-
-// refreshReuseGrace is how long a rotated refresh token is still accepted
-// (CONTRACTS §14.2): a console that never received the rotation's response
-// presents the old token again moments later.
-const refreshReuseGrace = time.Minute
-
-// rotatedJustNow reports a token that was rotated (not logged out or revoked
-// as a family) less than refreshReuseGrace ago.
-func rotatedJustNow(revokedAt, replacedAt *time.Time, now time.Time) bool {
-	return replacedAt != nil && revokedAt != nil && now.Sub(*replacedAt) < refreshReuseGrace
-}
-
-// Refresh rotates a refresh token: the presented one is marked revoked and
-// replaced, and a new pair is issued in the same family. Presenting a token
-// that was already rotated or revoked revokes every token of its family
-// (CONTRACTS §14.2) and fails with 401.
-func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair, error) {
-	if refreshToken == "" {
-		return nil, errBadRefresh
-	}
-	var pair *TokenPair
-	var replayUser int64
-	var replayFamily string
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
-		var id, uid int64
-		// Discover the parent without locking a child first. All issuers and
-		// revokers serialize on the user, then read a fresh token snapshot.
-		if err := tx.QueryRow(ctx, `SELECT user_id FROM refresh_tokens WHERE token_hash=$1`, hashToken(refreshToken)).Scan(&uid); err != nil {
-			if store.IsNoRows(err) {
-				return errBadRefresh
-			}
-			return err
-		}
-		if err := lockRefreshUser(ctx, tx, uid); err != nil {
-			return err
-		}
-		var family string
-		var revokedAt, replacedAt *time.Time
-		var expiresAt time.Time
-		err := tx.QueryRow(ctx, `SELECT id, user_id, family_id, revoked_at, replaced_at, expires_at
-			FROM refresh_tokens WHERE token_hash = $1 FOR UPDATE`, hashToken(refreshToken)).
-			Scan(&id, &uid, &family, &revokedAt, &replacedAt, &expiresAt)
-		if store.IsNoRows(err) {
-			return errBadRefresh
-		}
-		if err != nil {
-			return err
-		}
-		verdict := classifyRefresh(revokedAt, replacedAt, expiresAt, time.Now())
-		if verdict == refreshReplayed && family != "" && rotatedJustNow(revokedAt, replacedAt, time.Now()) {
-			// The console lost the response of the rotation it just made
-			// (network, closed tab, two tabs without a shared lock): while
-			// the family is still alive, answer with another pair of the
-			// same family instead of signing the user out.
-			var live bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM refresh_tokens
-				WHERE family_id = $1 AND revoked_at IS NULL AND expires_at > now())`, family).Scan(&live); err != nil {
-				return err
-			}
-			if live {
-				verdict = refreshValid
-			}
-		}
-		switch verdict {
-		case refreshReplayed:
-			// Commit the family revocation; the 401 is returned after the tx.
-			// A row without a family (never written by this code) only
-			// revokes itself.
-			if family == "" {
-				family = "token:" + strconv.FormatInt(id, 10)
-				_, err = tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`, id)
-			} else {
-				_, err = tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = now()
-					WHERE family_id = $1 AND revoked_at IS NULL`, family)
-			}
-			if err != nil {
-				return err
-			}
-			replayUser, replayFamily = uid, family
-			return nil
-		case refreshExpired:
-			return errBadRefresh
-		}
-		if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = coalesce(revoked_at, now()),
-			replaced_at = coalesce(replaced_at, now()) WHERE id = $1`, id); err != nil {
-			return err
-		}
-		var status string
-		err = tx.QueryRow(ctx, `SELECT status FROM users WHERE id = $1 AND deleted_at IS NULL`, uid).Scan(&status)
-		if store.IsNoRows(err) {
-			return errBadRefresh
-		}
-		if err != nil {
-			return err
-		}
-		if status != StatusActive {
-			return errUserDisabled
-		}
-		pair, err = s.issueTokens(ctx, tx, uid, family)
-		return err
+// issueTx runs fn in a transaction, in which it issues sessions through
+// the issuer it gets. A session lives in Valkey, which does not roll back
+// with PostgreSQL: when the transaction fails after storing one, it is
+// ended, so no session nobody holds stays on the user's list.
+func (s *Service) issueTx(ctx context.Context, fn func(is *issuer) error) error {
+	is := &issuer{s: s}
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		is.tx = tx
+		return fn(is)
 	})
+	if err == nil || is.stored == nil {
+		return err
+	}
+	uid := is.stored.UserID
+	if rerr := s.sessions.Revoke(context.WithoutCancel(ctx), uid, tokenstore.Selection{Only: is.stored.ID}, tokenstore.Bump{}); rerr != nil {
+		slog.WarnContext(ctx, "iam: ending a session of a failed login failed", "user_id", uid, "err", rerr)
+	}
+	return err
+}
+
+// issue signs userID in: a new session, stamped with the token_version
+// read under the user's row lock, which the caller holds, so a revocation
+// cannot slip in between. A superuser's login is audited. The session,
+// stored in Valkey, is the last thing done before the commit.
+func (is *issuer) issue(ctx context.Context, userID int64) (*LoginResult, error) {
+	s, g := is.s, store.G(ctx, is.tx)
+	if s.sessions == nil {
+		return nil, tokenstore.ErrUnavailable
+	}
+	var tokenVersion int
+	if err := userTokenVersion(g, userID).Row().Scan(&tokenVersion); err != nil {
+		return nil, err
+	}
+	id, err := newSessionID()
 	if err != nil {
 		return nil, err
 	}
-	if replayFamily != "" {
-		slog.WarnContext(ctx, "iam: refresh token reuse detected, token family revoked",
-			"user_id", replayUser, "family_id", replayFamily)
-		return nil, errBadRefresh
+	if err := s.auditSuperuserLogin(ctx, is.tx, userID); err != nil {
+		return nil, err
 	}
-	return pair, nil
+	user, err := s.loginUser(ctx, is.tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	meta, _ := ctx.Value(sessionMetaKey{}).(sessionMeta)
+	sess := tokenstore.Session{ID: id, UserID: userID, Method: meta.method, IP: meta.ip, UserAgent: meta.userAgent, TokenVersion: tokenVersion}
+	token, err := s.sessions.Create(ctx, sess)
+	if err != nil {
+		return nil, err
+	}
+	is.stored = &sess
+	return &LoginResult{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second), User: user}, nil
 }
 
-// Logout ends the session refreshToken belongs to, if it is a live token of
-// userID; an empty token ends every session of the user.
-func (s *Service) Logout(ctx context.Context, userID int64, refreshToken string) error {
-	which := allSessions
-	if refreshToken != "" {
-		var family string
-		err := s.db.Pool.QueryRow(ctx, `SELECT family_id FROM refresh_tokens
-			WHERE token_hash = $1 AND user_id = $2 AND revoked_at IS NULL AND family_id <> ''`, hashToken(refreshToken), userID).Scan(&family)
-		if store.IsNoRows(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		which = oneSession(family)
+// loginUser is the user a login answers with: no balance or segment.
+func (s *Service) loginUser(ctx context.Context, tx *gorm.DB, userID int64) (*User, error) {
+	user, err := s.getUser(ctx, tx, userID)
+	if err != nil {
+		return nil, err
 	}
-	return s.changeSessions(ctx, userID, which, nil)
+	user.Balance = nil
+	user.Segment = core.SegmentRef{}
+	return user, nil
+}
+
+// userTokenVersion reads the token_version of userID, deleted or not.
+func userTokenVersion(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.User{}).Select("token_version").Where("id = ?", userID)
+}
+
+// Logout ends the caller's own session (the route takes sessions only),
+// whether or not it is still there.
+func (s *Service) Logout(ctx context.Context, userID int64) error {
+	return s.changeSessions(ctx, userID, oneSession(core.Session(ctx)), nil)
 }
 
 // ChangePassword changes the caller's password and ends every other session
-// at once; keepFamily, the caller's own ("" through an access key: none),
-// renews on its next 401. The route has verified the caller (step-up
-// self.password.change: the password and a second factor).
-func (s *Service) ChangePassword(ctx context.Context, userID int64, keepFamily, newPassword string) error {
+// at once but keepSession, the caller's own ("" through an access key:
+// none). The route has verified the caller (step-up self.password.change:
+// the password and a second factor).
+func (s *Service) ChangePassword(ctx context.Context, userID int64, keepSession, newPassword string) error {
 	if f := validatePassword("new_password", newPassword); f != nil {
 		return core.InvalidFields(*f)
 	}
@@ -386,13 +288,19 @@ func (s *Service) ChangePassword(ctx context.Context, userID int64, keepFamily, 
 	if err != nil {
 		return err
 	}
-	return s.changeSessions(ctx, userID, otherSessions(keepFamily), func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL`, userID, string(newHash))
-		if err == nil && tag.RowsAffected() == 0 {
-			err = core.ErrUnauthenticated
+	return s.changeSessions(ctx, userID, otherSessions(keepSession), func(tx *gorm.DB) error {
+		res := setLivePassword(store.G(ctx, tx), userID, string(newHash))
+		if res.Error == nil && res.RowsAffected == 0 {
+			return core.ErrUnauthenticated
 		}
-		return err
+		return res.Error
 	})
+}
+
+// setLivePassword changes the password hash of the undeleted user userID.
+func setLivePassword(db *gorm.DB, userID int64, hash string) *gorm.DB {
+	return liveUsers(db).Where("id = ?", userID).
+		Updates(map[string]any{"password_hash": hash, "updated_at": gorm.Expr("now()")})
 }
 
 // Me is the response of GET /me.

@@ -1,0 +1,4 @@
+-- sql
+SELECT "id","key","superuser","assign_custom","defaults_rev" FROM "roles" WHERE key = ANY($1) AND builtin ORDER BY id
+-- vars
+$1 store.Strings [super_admin admin operator supplier user]

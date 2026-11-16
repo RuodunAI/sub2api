@@ -281,7 +281,7 @@ func TestPreDenyDoesNotWaitForDatabase(t *testing.T) {
 	full.Send(eventRec{})
 	p.eventWriter = full
 	db, _ := p.db(ctx)
-	if _, err := db.Exec(ctx, `ALTER TABLE events RENAME TO events_away`); err != nil {
+	if err := db.Exec(`ALTER TABLE events RENAME TO events_away`).Error; err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
@@ -292,7 +292,7 @@ func TestPreDenyDoesNotWaitForDatabase(t *testing.T) {
 		t.Fatalf("the refusal waited %s for the database", d)
 	}
 	time.Sleep(300 * time.Millisecond)
-	if _, err := db.Exec(ctx, `ALTER TABLE events_away RENAME TO events`); err != nil {
+	if err := db.Exec(`ALTER TABLE events_away RENAME TO events`).Error; err != nil {
 		t.Fatal(err)
 	}
 	waitEvents(t, h, map[string]string{"request_id": "db-down", "result": "block"}, 1)
@@ -346,7 +346,7 @@ func TestErrorRecordsKeepShortText(t *testing.T) {
 	waitEvents(t, h, map[string]string{"request_id": "err", "result": "error"}, 1)
 	db, _ := p.db(context.Background())
 	var n int
-	if err := db.QueryRow(context.Background(), `SELECT char_length(text) FROM events WHERE request_id = 'err'`).Scan(&n); err != nil || n != 100 {
+	if err := db.Raw(`SELECT char_length(text) FROM events WHERE request_id = 'err'`).Row().Scan(&n); err != nil || n != 100 {
 		t.Fatalf("error text = %d %v", n, err)
 	}
 }
@@ -409,7 +409,7 @@ func TestInputMessageKeptPerSetting(t *testing.T) {
 			}
 			var msg, text *string
 			var size int
-			if err := db.QueryRow(context.Background(), `SELECT input_message::text, input_message_size, text FROM events WHERE id = $1`, ev.ID).Scan(&msg, &size, &text); err != nil {
+			if err := db.Raw(`SELECT input_message::text, input_message_size, text FROM events WHERE id = ?`, ev.ID).Row().Scan(&msg, &size, &text); err != nil {
 				t.Fatal(err)
 			}
 			if kept := msg != nil; kept != tc.kept || (size > 0) != tc.kept || (ev.InputMessageSize > 0) != tc.kept {
@@ -444,14 +444,14 @@ func TestCleanupExpiresBeforePurge(t *testing.T) {
 	db, _ := p.db(ctx)
 	defer func(b int, d time.Duration) { purgeBatch, purgePause = b, d }(purgeBatch, purgePause)
 	purgeBatch, purgePause = 1, 400*time.Millisecond
-	if _, err := db.Exec(ctx, `INSERT INTO events (user_id, mode, verdict, action, result, keep_until)
-		SELECT 1, 'observe', 'pass', 'allow', 'pass', now() - interval '1 hour' FROM generate_series(1, 20)`); err != nil {
+	if err := db.Exec(`INSERT INTO events (user_id, mode, verdict, action, result, keep_until)
+		SELECT 1, 'observe', 'pass', 'allow', 'pass', now() - interval '1 hour' FROM generate_series(1, 20)`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(ctx, `INSERT INTO watchlist (user_id, level, source, expires_at) VALUES (5,'observe','auto', now() - interval '1 minute')`); err != nil {
+	if err := db.Exec(`INSERT INTO watchlist (user_id, level, source, expires_at) VALUES (5,'observe','auto', now() - interval '1 minute')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(ctx, `INSERT INTO blocks (user_id, reason, violations, source, created_at, expires_at) VALUES (6, 'r', 1, 'auto', now() - interval '2 hours', now() - interval '1 hour')`); err != nil {
+	if err := db.Exec(`INSERT INTO blocks (user_id, reason, violations, source, created_at, expires_at) VALUES (6, 'r', 1, 'auto', now() - interval '2 hours', now() - interval '1 hour')`).Error; err != nil {
 		t.Fatal(err)
 	}
 	jctx, cancel := context.WithTimeout(ctx, 2*time.Second)

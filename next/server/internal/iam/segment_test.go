@@ -47,7 +47,7 @@ func (c *console) login(email, password string) (int64, string) {
 func (c *console) one(sql string, args ...any) int64 {
 	c.t.Helper()
 	var id int64
-	require.NoError(c.t, c.svc.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id))
+	require.NoError(c.t, c.svc.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id))
 	return id
 }
 

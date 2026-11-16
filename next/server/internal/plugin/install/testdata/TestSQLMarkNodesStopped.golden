@@ -1,0 +1,6 @@
+-- sql
+UPDATE "plugin_runtime_nodes" SET "stopped"=$1,"updated_at"=now() WHERE plugin_key = $2 AND boot_id = ANY($3::text[])
+-- vars
+$1 bool true
+$2 string "demo"
+$3 store.Strings [boot-a boot-b]

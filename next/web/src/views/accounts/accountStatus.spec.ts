@@ -10,7 +10,6 @@ describe('accountStatus', () => {
     [{ status: 'auto_disabled', schedulable: true, auto_disabled_until: '2026-11-03T00:00:00Z' }, 'auto_disabled', 'warning'],
     [{ status: 'auto_disabled', schedulable: true, auto_disabled_until: null }, 'auto_disabled', 'danger'],
     [{ status: 'auto_disabled', schedulable: true }, 'auto_disabled', 'danger'],
-    [{ status: 'error', schedulable: true }, 'auto_disabled', 'danger'],
     // Taken out of scheduling by hand: filed under auto-disabled, red like a manual disable.
     [{ status: 'active', schedulable: false }, 'auto_disabled', 'danger']
   ])('maps %o to %s', (a, key, tone) => {

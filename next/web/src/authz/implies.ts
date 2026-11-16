@@ -5,12 +5,15 @@
 //   scope = "*" | "own" | path
 //   path  = account actions: "group/" seg [ "/account/" seg ] | "account/" id
 //           proxy actions:   "proxy/" id
+//           plugin actions:  resource "/" value
 //   seg   = id | "*"
 //
 // A missing scope is "*": every row. The last segment of a key is a scope
-// only when it is "*", "own" or holds a "/". Both copies run the shared
-// vectors of next/sdk/permvectors/vectors.json (implies.spec.ts), so they
-// cannot drift. Pure: no Vue, no store (the mock server imports it too).
+// only when it is "*", "own" or holds a "/". A plugin action ("plugin.…")
+// takes its scope by syntax alone, with no catalog: which resource, own or
+// values it accepts is the server's to check when a grant is written. Both
+// copies run the shared vectors of next/sdk/permvectors/vectors.json
+// (implies.spec.ts), so they cannot drift. Pure: no Vue, no store (the mock server imports it too).
 // Relative: the mock server (tsconfig.node) imports this module without the @ alias.
 import { SCOPE_TYPE, type ScopableKey } from '../generated/permissions'
 
@@ -28,15 +31,17 @@ export const WILDCARD = -1
 
 /**
  * A parsed, canonical scope. At most one of all and own is set, and then
- * group and id are 0. Otherwise group > 0 is group/<group>, WILDCARD is
- * group/*, 0 no group part; id > 0 is the row (account/<id>, proxy/<id>, or
- * after a group part group/<g>/account/<id>).
+ * group and id are 0. A plugin scope sets ref only. Otherwise group > 0 is
+ * group/<group>, WILDCARD is group/*, 0 no group part; id > 0 is the row
+ * (account/<id>, proxy/<id>, or after a group part group/<g>/account/<id>).
  */
 export interface Scope {
   all: boolean
   own: boolean
   group: number
   id: number
+  /** A plugin scope "<resource>/<value>" ("flow/3", "value/input"); never set on a core scope. */
+  ref?: string
 }
 
 /** A canonical key split into action and scope; unscoped keys have scope.all. */
@@ -48,6 +53,11 @@ export interface Pattern {
 export const ALL_SCOPE: Scope = Object.freeze({ all: true, own: false, group: 0, id: 0 })
 export const OWN_SCOPE: Scope = Object.freeze({ all: false, own: true, group: 0, id: 0 })
 const MAX_ID = 9223372036854775807n
+/** perm.scopeResourceRe "/" perm.scopeValueRe. */
+const PLUGIN_REF = /^[a-z][a-z0-9_]{0,29}\/[A-Za-z0-9_.-]{1,64}$/
+
+/** The plugin scope "<resource>/<value>". */
+export const refScope = (ref: string): Scope => ({ all: false, own: false, group: 0, id: 0, ref })
 
 /** Reads a key, trailing wildcards included, into its canonical pattern; null when it does not parse. */
 export function parsePermission(k: string): Pattern | null {
@@ -55,6 +65,7 @@ export function parsePermission(k: string): Pattern | null {
   const last = k.slice(i + 1)
   if (i < 0 || (last !== '*' && last !== 'own' && !last.includes('/'))) return { action: k, scope: ALL_SCOPE }
   const action = k.slice(0, i)
+  if (action.startsWith('plugin.')) return pluginPattern(action, last)
   const resource = SCOPABLE[action]
   const scope = resource && parseScope(resource, !takesRowIds(action), last)
   return scope ? { action, scope } : null
@@ -64,6 +75,13 @@ export function parsePermission(k: string): Pattern | null {
 export function canonicalPermission(key: string): string | null {
   const p = parsePermission(key)
   return p && patternKey(p)
+}
+
+/** A plugin action takes "*", "own" or "<resource>/<value>", nothing else (no trailing wildcard). */
+function pluginPattern(action: string, last: string): Pattern | null {
+  if (last === '*') return { action, scope: ALL_SCOPE }
+  if (last === 'own') return { action, scope: OWN_SCOPE }
+  return PLUGIN_REF.test(last) ? { action, scope: refScope(last) } : null
 }
 
 function parseScope(resource: ScopeResource, create: boolean, raw: string): Scope | null {
@@ -117,6 +135,7 @@ function parseId(raw: string, wildcard: boolean): number | null {
 export function scopeSuffix(action: string, s: Scope): string {
   if (s.all) return ''
   if (s.own) return 'own'
+  if (s.ref) return s.ref
   const seg = (n: number) => (n === WILDCARD ? '*' : String(n))
   const row = s.id ? `${SCOPABLE[action]}/${seg(s.id)}` : ''
   if (!s.group) return row
@@ -138,6 +157,7 @@ export function scopeImplies(h: Scope, w: Scope): boolean {
   if (h.all) return true
   if (w.all) return false
   if (h.own || w.own) return h.own && w.own
+  if (h.ref || w.ref) return h.ref === w.ref
   if (!h.group) return h.id === w.id // account/X or proxy/X: that row, with or without a group
   if (!w.group) return false // a group range never covers an ungrouped id
   if (h.group !== WILDCARD && h.group !== w.group) return false
@@ -161,6 +181,7 @@ export function scopeAllowsRow(s: Scope, row: ScopedRow | null | undefined, me: 
   if (s.all) return true
   if (!row) return false
   if (s.own) return me !== undefined && row.created_by != null && row.created_by === me
+  if (s.ref) return false // the plugin judges its own rows
   if (s.id && row.id !== s.id) return false
   if (!s.group) return !!s.id
   const groups = row.group_ids ?? []

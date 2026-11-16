@@ -12,6 +12,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -142,6 +148,46 @@ func TestCatalogFlaggedSets(t *testing.T) {
 	}
 }
 
+// A core permission's risk: superOnly ones are critical, other sensitive
+// ones sensitive, the rest low; the core sync stores it with the soft
+// dependencies.
+func TestCatalogRisk(t *testing.T) {
+	t.Parallel()
+	for _, m := range slices.Concat(coreModules, []coreModule{selfModule}) {
+		for _, p := range m.perms {
+			want := manifest.RiskLow
+			switch {
+			case p.superOnly:
+				want = manifest.RiskCritical
+			case p.sensitive:
+				want = manifest.RiskSensitive
+			}
+			if got := p.risk(); got != want {
+				t.Errorf("%s risk = %s, want %s", p.key, got, want)
+			}
+		}
+	}
+	db := testutil.DB(t)
+	newService(t, db, newMemBus(), nil)
+	for key, want := range map[string]struct {
+		risk     string
+		requires []string
+	}{
+		"balance:adjust:any": {manifest.RiskCritical, []string{"balance:adjust"}},
+		"role:define":        {manifest.RiskSensitive, []string{"role:read"}},
+		"user:read":          {manifest.RiskLow, []string{}},
+	} {
+		var risk string
+		var requires []string
+		if err := db.SQL.QueryRowContext(context.Background(), `SELECT risk, requires FROM permissions WHERE key = $1`, key).Scan(&risk, &requires); err != nil {
+			t.Fatal(err)
+		}
+		if risk != want.risk || !slices.Equal(requires, want.requires) {
+			t.Errorf("%s stored %s %v", key, risk, requires)
+		}
+	}
+}
+
 // Not parallel: it extends the package catalog while it runs. A new core
 // permission reaches the built-in roles accepting it by default, once, and
 // every such grant to an existing role is audited; other roles do not get it.
@@ -151,7 +197,7 @@ func TestSyncCoreAuditsGrants(t *testing.T) {
 	ctx := context.Background()
 	exec := func(sql string, args ...any) {
 		t.Helper()
-		if _, err := db.Pool.Exec(ctx, sql, args...); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, sql, args...); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -171,7 +217,7 @@ func TestSyncCoreAuditsGrants(t *testing.T) {
 	}
 	audited := func() map[grant]int {
 		t.Helper()
-		rows, err := db.Pool.Query(ctx, `SELECT target_id::bigint, detail->>'via' FROM audit_logs
+		rows, err := db.SQL.QueryContext(ctx, `SELECT target_id::bigint, detail->>'via' FROM audit_logs
 WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL AND detail->>'key' = 'role:probe'`)
 		if err != nil {
 			t.Fatal(err)
@@ -211,9 +257,8 @@ WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL A
 			}
 		}
 	}
-	var held bool
-	if err := db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id WHERE rp.role_id = $1 AND p.key = 'role:probe')`, custom).Scan(&held); err != nil || held {
-		t.Fatalf("a custom role got a new core permission: %v, %v", held, err)
+	if held := rolePermissionKeys(t, s, custom); slices.Contains(held, "role:probe") {
+		t.Fatalf("a custom role got a new core permission: %v", held)
 	}
 
 	mods, err := s.ListPermissions(ctx)
@@ -233,17 +278,23 @@ WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL A
 
 // A custom role holding a built-in role key stops the sync (decision D5): it
 // is neither turned into the built-in role nor skipped, and the error names
-// the row and how to rename it. Once renamed, the sync creates the built-in
-// role. The first sync runs before the service starts here, as on an upgrade
+// the row and how to rename it, with its grants and holders (casbin_rule
+// names a role by key). Once renamed, the sync creates the built-in role. The first sync runs before the service starts here, as on an upgrade
 // that brings the supplier role to a database with a custom one of that key.
 func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	ctx := context.Background()
 	const key = RoleSupplier
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}')`, key); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}')`, key); err != nil {
 		t.Fatal(err)
 	}
+	holder := testutil.InsertUser(t, db, "holder@x.com")
+	testutil.AssignRoles(t, db, holder, key)
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO permissions (key, module, label, source) VALUES ('probe:read', 'probe', '{}', 'core')`); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Grant(t, db, key, "probe:read", "own")
 	s := New(Deps{DB: db})
 	id := roleID(t, s, key)
 	v1, err := s.currentVersion(ctx)
@@ -252,30 +303,41 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	}
 
 	err = s.Start(ctx)
-	fix := fmt.Sprintf("UPDATE roles SET key = 'supplier_custom' WHERE id = %d;", id)
+	fix := casbinrule.RenameRoleSQL(id, key, "supplier_custom")
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("role id %d key %q", id, key)) || !strings.Contains(err.Error(), fix) {
 		t.Fatalf("start with a custom role on a built-in key: %v", err)
 	}
 	var builtin bool
-	if err := db.Pool.QueryRow(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
 		t.Fatalf("custom role became built-in: %v, %v", builtin, err)
 	}
 	if v2, err := s.currentVersion(ctx); err != nil || v2 != v1 {
 		t.Fatalf("a refused sync bumped the version: %d -> %d", v1, v2)
 	}
 
-	if _, err := db.Pool.Exec(ctx, fix); err != nil {
+	// The fix moves the version itself, so that running nodes drop what
+	// they cached of the old key.
+	if _, err := db.SQL.ExecContext(ctx, fix); err != nil {
 		t.Fatal(err)
+	}
+	if v2, err := s.currentVersion(ctx); err != nil || v2 != v1+1 {
+		t.Fatalf("the rename moved the version %d -> %d, %v", v1, v2, err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var keys []string
-	if err := db.Pool.QueryRow(ctx, `SELECT array_agg(key ORDER BY key) FROM roles WHERE key LIKE 'supplier%' AND builtin`).Scan(&keys); err != nil || !slices.Equal(keys, []string{key}) {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT array_agg(key ORDER BY key) FROM roles WHERE key LIKE 'supplier%' AND builtin`).Scan(&keys); err != nil || !slices.Equal(keys, []string{key}) {
 		t.Fatalf("built-in roles after the rename: %v, %v", keys, err)
 	}
-	if err := db.Pool.QueryRow(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {
 		t.Fatalf("renamed custom role: built-in %v, %v", builtin, err)
+	}
+	if got := testutil.GrantKeys(t, db, "supplier_custom"); !slices.Equal(got, []string{"probe:read:own"}) {
+		t.Fatalf("renamed role's grants: %v", got)
+	}
+	if got := testutil.RoleKeys(t, db, holder); !slices.Equal(got, []string{"supplier_custom"}) {
+		t.Fatalf("renamed role's holder: %v", got)
 	}
 }
 
@@ -353,7 +415,7 @@ func TestSyncCoreWritesDescriptions(t *testing.T) {
 	ctx := context.Background()
 	s := newService(t, db, newMemBus(), nil) // Start runs the first sync.
 	// A database synced by a core without descriptions.
-	if _, err := db.Pool.Exec(ctx, `UPDATE permissions SET description = '{}' WHERE source = 'core'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE permissions SET description = '{}' WHERE source = 'core'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
@@ -362,7 +424,7 @@ func TestSyncCoreWritesDescriptions(t *testing.T) {
 	// Synced once, the descriptions change nothing more.
 	version := func() (v int64) {
 		t.Helper()
-		if err := db.Pool.QueryRow(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
 		return v
@@ -388,17 +450,71 @@ func TestSyncCoreWritesDescriptions(t *testing.T) {
 	if !strings.Contains(upd.Description.Get("en"), "scope") || upd.Description.Get("zh") == "" {
 		t.Fatalf("account:update description = %v", upd.Description)
 	}
-	if !slices.Equal(upd.Requires, []string{"account:read"}) || read.Requires != nil || upd.ScopeType != "account" {
+	if !slices.Equal(upd.Requires, []string{"account:read"}) || len(read.Requires) != 0 || upd.ScopeType != "account" {
 		t.Fatalf("account:update = %+v, account:read requires %v", upd, read.Requires)
 	}
 	if usage := items["usage:all:read"].Description.Get("en"); !strings.Contains(usage, "email") {
 		t.Fatalf("usage:all:read description = %q", usage)
 	}
-	if del := items["user:delete"]; !del.StepUp || !del.Sensitive || del.ScopeType != "" {
+	if del := items["user:delete"]; !del.StepUp || del.Risk != manifest.RiskSensitive || del.ScopeType != "" {
 		t.Fatalf("user:delete = %+v", del)
 	}
 	raw, err := json.Marshal(read)
 	if err != nil || strings.Contains(string(raw), "requires") {
 		t.Fatalf("requires is omitted when empty: %s, %v", raw, err)
 	}
+}
+
+// GET /permissions lists a plugin's catalog metadata as stored: groups in
+// their order, each permission's group, scope (resource without the
+// "plugin:" prefix), requires and defaults expanded to full keys; a core
+// permission's risk and requires come from its columns.
+func TestListPermissionsPluginMeta(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	flows, actions := lt("Flows", "流程"), lt("Actions", "处置")
+	require.NoError(t, syncer(t, s, "mod")(
+		core.PermissionDef{Key: "exempt", Risk: manifest.RiskCritical, Group: "action", GroupLabel: actions, GroupSort: 30},
+		core.PermissionDef{Key: "flow:manage", ScopeType: "plugin:flow", Scope: &manifest.PermissionScope{Resource: "flow", Own: true, Options: "/scopes/flow"},
+			Risk: manifest.RiskSensitive, Group: "flow", GroupLabel: flows, GroupSort: 10, Sort: 2, Requires: []string{"plugin.mod:flow:read"},
+			Defaults: map[string][]string{RoleAdmin: {""}, RoleOperator: {"own", "flow/3"}}},
+		core.PermissionDef{Key: "flow:read", Group: "flow", GroupLabel: flows, GroupSort: 10, Sort: 1}))
+	mods, err := s.ListPermissions(context.Background())
+	require.NoError(t, err)
+	items := map[string]PermissionItem{}
+	var mod *PermissionModule
+	for _, m := range mods {
+		if m.Module == "plugin.mod" {
+			mod = m
+		}
+		for _, p := range m.Permissions {
+			items[p.Key] = p
+		}
+	}
+	require.NotNil(t, mod)
+	assert.Equal(t, []PermissionGroup{{Key: "flow", Label: flows, Sort: 10}, {Key: "action", Label: actions, Sort: 30}}, mod.Groups)
+	keys := make([]string, 0, len(mod.Permissions))
+	for _, p := range mod.Permissions {
+		keys = append(keys, p.Key)
+	}
+	assert.Equal(t, []string{"plugin.mod:flow:read", "plugin.mod:flow:manage", "plugin.mod:exempt"}, keys)
+
+	manage := items["plugin.mod:flow:manage"]
+	assert.Equal(t, manifest.RiskSensitive, manage.Risk)
+	assert.Equal(t, "plugin:flow", manage.ScopeType)
+	assert.Equal(t, &manifest.PermissionScope{Resource: "flow", Own: true, Options: "/scopes/flow"}, manage.Scope)
+	assert.Equal(t, "flow", manage.Group)
+	assert.Equal(t, []string{"plugin.mod:flow:read"}, manage.Requires)
+	assert.Equal(t, map[string][]string{RoleAdmin: {"plugin.mod:flow:manage"},
+		RoleOperator: {"plugin.mod:flow:manage:own", "plugin.mod:flow:manage:flow/3"}}, manage.Defaults)
+	exempt := items["plugin.mod:exempt"]
+	assert.Equal(t, manifest.RiskCritical, exempt.Risk)
+	assert.Nil(t, exempt.Scope)
+	assert.Nil(t, exempt.Defaults)
+
+	adjust := items["balance:adjust:any"]
+	assert.Equal(t, manifest.RiskCritical, adjust.Risk)
+	assert.Equal(t, []string{"balance:adjust"}, adjust.Requires)
+	assert.Nil(t, items["account:read"].Scope, "a core scope type carries no plugin scope")
 }

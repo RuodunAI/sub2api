@@ -23,19 +23,17 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/background"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/cluster"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/environment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/event"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/event/delivery"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/fallbackcredits"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/group"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/lookup"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
@@ -53,7 +51,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rollout"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/routes"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/sandbox"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/providerresources"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/proxy"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ratelimit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
@@ -95,6 +92,11 @@ func (b *boot) openStorage() error {
 	}
 	b.rdb = rdb
 	b.stopper.add("redis", func(context.Context) { _ = rdb.Close() })
+	// The console sessions get their own client, which fails fast: every
+	// console request waits on it.
+	sessRdb := tokenstore.NewClient(rdb.Options())
+	b.sessRdb = sessRdb
+	b.stopper.add("session redis", func(context.Context) { _ = sessRdb.Close() })
 
 	cipher, err := secret.New(b.cfg.MasterKey)
 	if err != nil {
@@ -106,7 +108,7 @@ func (b *boot) openStorage() error {
 
 // startCluster joins the node registry and heartbeat.
 func (b *boot) startCluster() error {
-	b.cl = cluster.New(b.rdb, b.db.Pool, cluster.Options{NodeID: b.cfg.NodeID, Addr: b.cfg.PublicURL, HostVersion: b.version, Logger: b.log, Managed: b.cfg.Managed.Enabled, CoreBootID: b.cfg.Managed.BootID})
+	b.cl = cluster.New(b.rdb, b.db, cluster.Options{NodeID: b.cfg.NodeID, Addr: b.cfg.PublicURL, HostVersion: b.version, Logger: b.log, Managed: b.cfg.Managed.Enabled, CoreBootID: b.cfg.Managed.BootID})
 	if err := b.cl.Start(b.ctx); err != nil {
 		return fmt.Errorf("cluster: %w", err)
 	}
@@ -115,8 +117,8 @@ func (b *boot) startCluster() error {
 }
 
 // buildCoreServices builds and starts the modules the request path depends on:
-// billing, usage settlement, authz/iam, the account and proxy directories and
-// the ccgateway controller. The trust store is returned for the plugin runtime
+// billing, usage settlement, authz/iam and the account and proxy
+// directories. The trust store is returned for the plugin runtime
 // phase instead of being kept on the boot.
 func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	cfg := b.cfg
@@ -138,9 +140,8 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		packageStore = blobs.NewShell(cfg.Managed.UpdaterSocket, cfg.Managed.UpdaterToken, cfg.Plugins.MaxPackageBytes)
 	}
 	b.marketClient = &http.Client{Timeout: 60 * time.Second}
-	// Packages may be 1 GiB (CONTRACTS §53.10): downloads get more time than
-	// index requests.
-	packageHTTP := &http.Client{Timeout: market.PackageDownloadTimeout}
+	// Package downloads get more time than index requests.
+	packageHTTP := &http.Client{Timeout: runtimecontract.PluginPackageTransferTimeout}
 	b.packageSrc = &blobs.Source{Store: packageStore, MaxBytes: cfg.Plugins.MaxPackageBytes,
 		Download: func(ctx context.Context, url string, limit int64) ([]byte, error) {
 			return market.Fetch(ctx, packageHTTP, url, limit)
@@ -148,7 +149,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	// Nodes re-verify package signatures before unpacking, so revoked keys
 	// and publishers stop loading everywhere.
 	pkgs := registry.NewPackages(b.db, cfg.Plugins.DataDir, registry.WithSource(b.packageSrc), registry.WithVerifier(
-		registry.TrustVerifier(trust, b.db.Pool, pkg.Limits{MaxPackageBytes: cfg.Plugins.MaxPackageBytes})))
+		registry.TrustVerifier(trust, b.db.Gorm, pkg.Limits{MaxPackageBytes: cfg.Plugins.MaxPackageBytes})))
 	b.pkgs = pkgs
 	b.stopper.add("packages", func(context.Context) { pkgs.Close() })
 
@@ -192,20 +193,21 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	b.settler.Authz = az
 	b.bill.Authz = az
 	b.bill.Users = az
-	b.idm = iam.New(iam.Deps{DB: b.db, Redis: b.rdb, Config: cfg, Events: b.events, Authz: az, Bus: b.cl.Bus, Cipher: b.cipher, PriceRulesChanged: b.bill.PriceRulesChanged})
+	b.idm = iam.New(iam.Deps{DB: b.db, Redis: b.rdb, SessionRedis: b.sessRdb, Config: cfg, Events: b.events, Authz: az, Bus: b.cl.Bus,
+		Cipher: b.cipher, PriceRulesChanged: b.bill.PriceRulesChanged})
 	if b.managed == nil || b.managed.prepare.Bootstrap {
 		if err := b.idm.Bootstrap(b.ctx); err != nil {
 			return nil, fmt.Errorf("bootstrap admin: %w", err)
 		}
 	}
 
-	b.grp = group.New(b.db, b.rdb, b.cl.Bus, b.reg)
+	b.grp = group.New(b.db, b.rdb, b.cl.Bus, b.reg, az)
 	b.keys = apikey.New(b.db, b.rdb, az, b.reg)
 	b.keys.Cipher = b.cipher
 	// Per-key caps the owners set (CONTRACTS §60): minute windows and slots.
 	b.keys.Windows, b.keys.Slots = ratelimit.NewMinute(b.rdb, "apikey"), b.cl.Slots
 	b.keys.Balances = b.bill
-	b.prx = proxy.New(b.db, b.cipher, b.cl.Bus, proxy.Options{AllowPrivate: cfg.AllowPrivateUpstream, Registry: b.reg, Events: b.events})
+	b.prx = proxy.New(b.db, b.cipher, b.cl.Bus, proxy.Options{AllowPrivate: cfg.AllowPrivateUpstream, Registry: b.reg, Events: b.events, ScopeGrants: az})
 	// One converter registry for the gateway (conversion) and the account
 	// module (endpoints an account type can serve), ARCHITECTURE 6.6.
 	b.converters = convert.Default()
@@ -214,37 +216,17 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	b.stats = account.NewStats(b.rdb, b.db, b.cl.Slots, b.cl.Bus)
 	b.stats.Start()
 	b.stopper.add("account-stats", b.stats.Close)
-	b.ccg = ccgateway.New(b.db, b.cipher)
-	// Draft proxy visibility and the one-node draft sweep (CONTRACTS §49).
-	b.ccg.Authorizer, b.ccg.Locker = az, b.cl.Locker
-	// Account, proxy and configuration changes reach the request cache and
-	// the reconciler of every node.
-	b.ccg.Bus = b.cl.Bus
-	// The runtime images ship inside the active ccgateway package (§53.10).
-	b.ccg.Bundle = func() (ccgateway.BundlePackage, bool) {
-		p := b.reg.Package("ccgateway")
-		if p == nil {
-			return ccgateway.BundlePackage{}, false
-		}
-		return ccgateway.BundlePackage{Version: p.Version, File: p.File(), FS: p.FS()}, true
-	}
 	b.acc = account.New(account.Deps{
-		CCGateway:          b.ccg,
-		LifecycleResources: map[string]core.AccountLifecycleResource{"ccgateway": b.ccg},
-		DB:                 b.db, Redis: b.rdb, Cipher: b.cipher, Registry: b.reg, Proxies: b.prx, Events: b.events,
+		DB: b.db, Redis: b.rdb, Cipher: b.cipher, Registry: b.reg, Proxies: b.prx, Events: b.events,
 		Slots: b.cl.Slots, Limiter: b.limiter, Stats: b.stats, Bus: b.cl.Bus, AllowPrivateUpstream: cfg.AllowPrivateUpstream, Converters: b.converters,
 		// Ownership checks and proxy_url resolution (CONTRACTS §21).
-		Authorizer: az, Resolver: b.prx,
+		Authorizer: az, Resolver: b.prx, ScopeGrants: az,
 		// Credential refresh: one renewal per account cluster-wide, one
 		// sweeping node, only once admitted (CONTRACTS §48).
 		Locker: b.cl.Locker, CanWork: b.canWork,
 	})
 	// Register balance providers (CONTRACTS §51).
 	b.acc.RegisterClaudeOAuthBalanceProvider()
-	// A changed subscription type recomputes automatic model lists (§59);
-	// account already imports ccgateway, so the hook is wired here.
-	b.ccg.FactsObserved = b.acc.FactsObserved
-	b.ccg.Accounts = b.acc
 	// Price sync sources (upstream API keys encrypted) and GET /key/prices for
 	// downstream sup2api instances (CONTRACTS §17).
 	b.bill.SetSyncDeps(billing.SyncDeps{Cipher: b.cipher, Keys: b.keys})
@@ -254,10 +236,6 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		return nil, fmt.Errorf("account tasks: %w", err)
 	}
 	go b.acc.Run(b.ctx)
-	if err := b.ccg.RegisterTasks(b.tasks); err != nil {
-		return nil, fmt.Errorf("ccgateway tasks: %w", err)
-	}
-	go b.ccg.Run(b.ctx)
 
 	// The reconcile loop closes pre-charged usage rows (CONTRACTS §25.4). It
 	// starts here rather than next to settler.Start because it needs the
@@ -323,20 +301,10 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 	if b.managed != nil {
 		b.gate.stop()
 	}
-	resources := providerresources.New(b.db, providerresources.Options{})
-	helpers := helperhistory.New(b.db, b.cipher, helperhistory.Options{})
-	for _, spec := range []core.TaskSpec{helperUsageReplaySpec(b.settler, helpers), helperPayloadExpirySpec(helpers)} {
-		if err := b.tasks.Register(spec); err != nil {
-			return fmt.Errorf("helper history task: %w", err)
-		}
-	}
 	observations := observer.New(b.reg, b.stats, observer.Consumer{Namespace: observation.CoreNamespace, AllAccounts: true,
 		Phases: []string{observation.UsageFinalized, observation.AttemptFinished}, Metrics: observation.CoreMetrics, Client: account.StatsConsumer{}})
 	b.stopper.add("observations", observations.Close)
 	b.gw = gateway.New(gateway.Deps{
-		CCGateway:     b.ccg,
-		HelperHistory: helpers, EnableHelperHistory: true,
-		Resources: resources, Skills: resources, Credits: fallbackcredits.New(b.db, 4096), ResourceTransport: b.ccg.ResourceTransport(),
 		DB: b.db, Redis: b.rdb, Bus: b.cl.Bus, Node: b.cl.Registry, Registry: b.reg,
 		Auth: b.keys, Pricer: b.bill, Balance: b.bill, Slots: b.cl.Slots,
 		Environment: b.env,
@@ -412,7 +380,7 @@ func (b *boot) startBuiltins() error {
 			}
 			check, cancel := context.WithTimeout(b.ctx, 5*time.Second)
 			defer cancel()
-			busy, err := cluster.CoreUpdateBusy(check, b.db.Pool)
+			busy, err := cluster.CoreUpdateBusy(check, b.db.Gorm)
 			return err == nil && !busy
 		}
 		b.stopper.add("builtin", startBuiltinUpgrade(b.ctx, b.inst, b.cl.Locker, cfg.Plugins.BuiltinDir, allowed, log))
@@ -451,7 +419,7 @@ func (b *boot) buildBackground() {
 	}
 	b.jobBridge()
 	b.stopper.add("jobs", func(c context.Context) { _ = b.jobs.Stop(c) })
-	b.dlv = delivery.New(b.db, b.cl.Locker, b.cl.Bus, b.reg, b.log, b.cfg.NodeID, delivery.Options{CanRun: b.canWork, Subscriptions: b.acc.LifecycleSubscriptions})
+	b.dlv = delivery.New(b.db, b.cl.Locker, b.cl.Bus, b.reg, b.log, b.cfg.NodeID, delivery.Options{CanRun: b.canWork})
 	if b.tasks != nil {
 		for _, spec := range []core.TaskSpec{b.jobs.RetentionTaskSpec(), b.dlv.RetentionTaskSpec()} {
 			if err := b.tasks.Register(spec); err != nil {
@@ -510,7 +478,6 @@ func (b *boot) registerRoutes(r *httpapi.Router) {
 	cfg := b.cfg
 	r.AuthedRead("/system/version", systemVersionHandler(b.version, cfg.Managed.Enabled, cfg.NodeID, b.cl.Registry.BootID()))
 	updater.RegisterRoutes(r, cfg.Managed.UpdaterSocket, cfg.Managed.UpdaterToken, b.db)
-	b.ccg.RegisterRoutes(r)
 	audit.RegisterRoutes(r, b.db)
 	b.idm.RegisterRoutes(r)
 	b.az.RegisterRoutes(r)

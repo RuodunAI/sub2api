@@ -5,7 +5,11 @@ import (
 	"math"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const retentionChunk = 5000
@@ -37,19 +41,23 @@ func (s *Service) RetentionTaskSpec() core.TaskSpec {
 func (s *Service) PurgeEvents(ctx context.Context) (int64, error) {
 	var total int64
 	for {
-		tag, err := s.db.Pool.Exec(ctx, `
-			DELETE FROM events WHERE id IN (
-				SELECT id FROM events
-				WHERE occurred_at < now() - make_interval(secs => $1)
-				  AND id <= (SELECT COALESCE(min(last_event_id), $2) FROM plugin_event_cursors)
-				ORDER BY id LIMIT $3)`,
-			s.opts.RetentionAge.Seconds(), int64(math.MaxInt64), retentionChunk)
-		if err != nil {
-			return total, err
+		res := purgeChunk(store.G(ctx, s.db.Gorm), s.opts.RetentionAge)
+		if res.Error != nil {
+			return total, res.Error
 		}
-		total += tag.RowsAffected()
-		if tag.RowsAffected() < retentionChunk {
+		total += res.RowsAffected
+		if res.RowsAffected < retentionChunk {
 			return total, nil
 		}
 	}
+}
+
+// purgeChunk deletes up to retentionChunk events older than age that every
+// plugin cursor has passed: a DELETE bounded by a LIMIT subquery.
+func purgeChunk(g *gorm.DB, age time.Duration) *gorm.DB {
+	passed := g.Model(&model.PluginEventCursor{}).Select("COALESCE(min(last_event_id), ?)", int64(math.MaxInt64))
+	chunk := g.Model(&model.Event{}).Select("id").
+		Where("occurred_at < now() - make_interval(secs => ?)", age.Seconds()).
+		Where("id <= (?)", passed).Order("id").Limit(retentionChunk)
+	return g.Where("id IN (?)", chunk).Delete(&model.Event{})
 }

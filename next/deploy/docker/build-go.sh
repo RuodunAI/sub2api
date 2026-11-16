@@ -31,44 +31,8 @@ if [ "${REQUIRE_EXISTING_DEV_KEY:-0}" = 1 ]; then
     exit 1
   }
 fi
-# CCGateway runtime images bundled in the ccgateway package (CONTRACTS
-# §53.10). deploy/docker/build-ccgateway-images.sh writes them, on a host with
-# Docker, to plugins/ccgateway/images/ (git-ignored, but part of the Docker
-# build context) before the core is built; sub2api-plugin pack checks every
-# archive's sha256 and size, that the ccgateway-* refs carry the manifest
-# version and that exactly these roles are listed.
-#   REQUIRE_CCGATEWAY_IMAGES=1  (releases) no images.json -> the build fails
-#   otherwise                   warn and pack ccgateway without images
-CCG_IMAGE_ROLES=app,egress,controller,gateway
-case "${REQUIRE_CCGATEWAY_IMAGES:-0}" in
-  0|1|'') ;;
-  *) echo 'REQUIRE_CCGATEWAY_IMAGES must be 0 or 1' >&2; exit 1 ;;
-esac
-ccg_images=
-ccg_packaged=
-if [ -f "$SRC/plugins/ccgateway/manifest.json" ]; then
-  case " ${PLUGINS:-ccgateway} " in *" ccgateway "*) ccg_packaged=1 ;; esac
-fi
-if [ -n "$ccg_packaged" ]; then
-  if [ -f "$SRC/plugins/ccgateway/images/images.json" ]; then
-    ccg_images=1
-  elif [ "${REQUIRE_CCGATEWAY_IMAGES:-0}" = 1 ]; then
-    echo '::error::REQUIRE_CCGATEWAY_IMAGES=1 but plugins/ccgateway/images/images.json is missing; run deploy/docker/build-ccgateway-images.sh <ccgateway version> plugins/ccgateway/images on a Docker host first' >&2
-    exit 1
-  else
-    echo '::warning::plugins/ccgateway/images/images.json not found: the ccgateway package is built WITHOUT runtime images (fine for development, not for a release)' >&2
-  fi
-fi
 mkdir -p "$OUT/bin" "$OUT/market" "$OUT/builtin"
 cd "$SRC"
-# The core Docker context excludes CCGateway companion container modules.
-# Retain the workspace dependency graph used by the server and plugins.
-if [ -f go.work ]; then
-  sed '/^[[:space:]]*\.\/plugins\/ccgateway\/companions[[:space:]]*$/d; /^[[:space:]]*\.\/plugins\/ccgateway\/companions\/worker[[:space:]]*$/d' go.work > go.build.work
-  if [ -f go.work.sum ]; then cp go.work.sum go.build.work.sum; fi
-  export GOWORK="$PWD/go.build.work"
-fi
-
 echo "==> go version: $(go version)"
 echo "==> building server $VERSION"
 (cd server && go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o "$OUT/bin/sub2api" ./cmd/sub2api)
@@ -102,12 +66,6 @@ manifest_version() {
   sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n1
 }
 
-if [ -n "$ccg_images" ]; then
-  echo "==> ccgateway: bundling plugins/ccgateway/images ($CCG_IMAGE_ROLES)"
-  PACK_IMAGES="${PACK_IMAGES:+$PACK_IMAGES }ccgateway=$CCG_IMAGE_ROLES"
-  export PACK_IMAGES
-fi
-
 if [ -f tools/sub2api-plugin/scripts/build-demo.sh ]; then
   # Owned by the SDK team: builds, packs and signs one package per
   # plugins/<name>/manifest.json (the list is discovered there, so a new plugin
@@ -116,7 +74,9 @@ if [ -f tools/sub2api-plugin/scripts/build-demo.sh ]; then
   # Everything packaged here is in the market; only BUILTIN_PLUGINS below is
   # built into the image.
   echo "==> tools/sub2api-plugin/scripts/build-demo.sh"
-  sh tools/sub2api-plugin/scripts/build-demo.sh "$OUT/market" "$KEYS" "$KEY_ID"
+  # No PostgreSQL in the image build (initdb refuses root): the GORM models
+  # are compared with migrations/ by TestDBCheck in CI instead.
+  SKIP_DB_CHECK=1 sh tools/sub2api-plugin/scripts/build-demo.sh "$OUT/market" "$KEYS" "$KEY_ID"
 else
   # Generic fallback: one package per plugins/<name>/manifest.json.
   TMP=$(mktemp -d)
@@ -128,12 +88,11 @@ else
     ver=$(manifest_version "$dir/manifest.json")
     echo "==> packaging $name $ver"
     "$CLI" build --dir "$dir" --out "$TMP/$name"
-    extra=""
+    # No PostgreSQL in the image build: the GORM models are compared with
+    # migrations/ by the sub2api-plugin tests (TestDBCheck) in CI instead.
+    extra="--skip-db-check"
     if grep -q '"native"' "$dir/manifest.json" && [ ! -d "$dir/ui/native/dist" ]; then
-      extra="--allow-missing-ui"
-    fi
-    if [ "$name" = ccgateway ] && [ -n "$ccg_images" ]; then
-      extra="$extra --images $dir/images --image-roles $CCG_IMAGE_ROLES"
+      extra="$extra --allow-missing-ui"
     fi
     # shellcheck disable=SC2086
     "$CLI" pack --dir "$dir" --runtimes "$TMP/$name" --out "$OUT/market/$name-$ver.s2plugin" $extra
@@ -193,8 +152,6 @@ ls -l "$OUT/market"
 # volcengine is install-only: it does nothing until an operator adds an Ark
 # account (per-deployment credentials and base URL), so it ships with every
 # image but is enabled on purpose.
-# ccgateway is also install-only: the operator first configures and authorizes
-# a local/SSH Claude Code gateway, then enables its managed account type.
 # mailer is install-only: it provides the "email" notification channel
 # (CONTRACTS §74.4) and does nothing until an operator sets its SMTP server.
 # dynweight is install-only: once enabled it is called on every scheduled
@@ -203,7 +160,7 @@ ls -l "$OUT/market"
 # Intentionally NOT built in: relay (a market-only account type), guard (an
 # optional gateway hook).
 BUILTIN_PLUGINS=${BUILTIN_PLUGINS:-anthropic openai gemini moderation codex custom}
-BUILTIN_PLUGINS_INSTALL_ONLY=${BUILTIN_PLUGINS_INSTALL_ONLY:-volcengine ccgateway mailer dynweight}
+BUILTIN_PLUGINS_INSTALL_ONLY=${BUILTIN_PLUGINS_INSTALL_ONLY:-volcengine mailer dynweight}
 for name in $BUILTIN_PLUGINS_INSTALL_ONLY; do
   case " $BUILTIN_PLUGINS " in
     *" $name "*)

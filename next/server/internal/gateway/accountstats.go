@@ -92,7 +92,6 @@ func (c *call) observeAttemptResult(ref *core.AccountRef, result attemptResult) 
 		rec.Success, rec.StatusCode, rec.ErrorType = false, result.err.Status, result.err.RecordType
 		flagged = result.err.LocalFailure
 	}
-	// A done attempt can still have failed locally (forward's credit storage).
 	c.publishObservation(observation.AttemptFinished, &rec, !rec.Success && isLocalFailure(flagged, rec.ErrorType))
 }
 

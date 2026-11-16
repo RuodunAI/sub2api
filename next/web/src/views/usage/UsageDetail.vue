@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
-import { SAlert, SBadge, SButton, SCard, SCode, SCopyButton, SDescItem, SDescriptions, SDisclosure, SGrid, SHint, SIcon, SIPAddress, SSpinner } from '@sub2api/ui'
+import { SAlert, SBadge, SCard, SCode, SCopyButton, SDescItem, SDescriptions, SDisclosure, SGrid, SHint, SIcon, SIPAddress, SSpinner } from '@sub2api/ui'
 import { useAuthStore } from '@/stores/auth'
 import { ACCOUNT_ACTIONS } from '@/composables/useScope'
 import { formatMoney } from '@/utils/format'
@@ -24,7 +24,6 @@ import CacheWriteFacts from './CacheWriteFacts.vue'
 import { componentCacheWriteMetrics, otherUsageMetrics } from './cacheWriteEvidence'
 import FailureDecisionDetails from '@/views/settings/FailureDecisionDetails.vue'
 import type { FailureDecision } from '@/views/settings/failurePolicy'
-import RequestLogViewer from '@/views/ccgateway/RequestLogViewer.vue'
 
 // Expanded usage record: billing detail (A.14), request info, tokens, hooks, sticky.
 // `mine`: the caller's own records, whose attempts show no accounts.
@@ -61,12 +60,6 @@ const knownRounds = computed(() => knownUsageRounds(u.value))
 const otherMetrics = computed(() => otherUsageMetrics(u.value.metrics))
 const componentCacheFacts = computed(() => componentCacheWriteMetrics(u.value.billing_detail).filter((item) => !knownRounds.value.length || item.kind !== 'replacement'))
 const hooks = computed(() => u.value.hook_decisions || [])
-// A CCGateway request's Worker log is named by this request ID (REQUEST-LOG-VIEWER-DESIGN.md §3)
-// and filed under its account. The server sends that account as request_log_account_id to
-// whoever may read the log (settings:read or account:read), also when account_id is hidden.
-const requestLogAccount = computed(() => u.value.request_log_account_id)
-const canRequestLog = computed(() => u.value.plugin_key === 'ccgateway' && !!requestLogAccount.value && !!u.value.request_id)
-const requestLogOpen = ref(false)
 const failureDecisions = computed<FailureDecision[]>(() => {
   try {
     const value: unknown = JSON.parse(u.value.anomalies?.failure_policy || '[]')
@@ -148,7 +141,6 @@ const schedulingHint = computed(() => u.value.error_type === 'no_account' && !!s
         <SDescItem :label="t('usage.request.id')"><div class="flex items-center gap-1">
           <SCode inline class="min-w-0 break-all" :text="u.request_id" />
           <SCopyButton :text="u.request_id" icon-only class="shrink-0" />
-          <SButton v-if="canRequestLog" size="sm" variant="ghost" icon="list" class="shrink-0" data-testid="usage-request-log" @click="requestLogOpen = true">{{ t('usage.request.log') }}</SButton>
         </div></SDescItem>
         <SDescItem :label="t('usage.request.clientId')"><div class="flex min-w-0 items-center gap-1" data-testid="detail-client-request-id">
           <template v-if="u.client_request_id">
@@ -228,6 +220,5 @@ const schedulingHint = computed(() => u.value.error_type === 'no_account' && !!s
       </SDisclosure>
     </SCard>
     <SHint v-if="!u.success && u.billing_status === 'free'" size="xs">{{ t('usage.billing.freeNote') }}</SHint>
-    <RequestLogViewer v-if="requestLogOpen && requestLogAccount" v-model:open="requestLogOpen" :account-id="requestLogAccount" :account-name="u.account_name" :request-id="u.request_id" />
   </div>
 </template>

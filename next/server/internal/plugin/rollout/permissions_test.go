@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
@@ -29,7 +29,7 @@ func TestPermissionCatalogFollowsRollouts(t *testing.T) {
 	status := func(local string) string {
 		t.Helper()
 		var s string
-		err := h.db.Pool.QueryRow(ctx, `SELECT COALESCE((SELECT status FROM permissions WHERE key = $1), '')`,
+		err := h.db.SQL.QueryRowContext(ctx, `SELECT COALESCE((SELECT status FROM permissions WHERE key = $1), '')`,
 			manifest.PermissionKey(h.key, local)).Scan(&s)
 		if err != nil {
 			t.Fatal(err)
@@ -53,7 +53,7 @@ func TestPermissionCatalogFollowsRollouts(t *testing.T) {
 		for _, m := range ms {
 			defs = append(defs, install.PermissionDefs(m, nil)...)
 		}
-		if err := h.db.Tx(ctx, func(tx pgx.Tx) error { return az.SyncPlugin(ctx, tx, h.key, defs) }); err != nil {
+		if err := h.db.Tx(ctx, func(tx *gorm.DB) error { return az.SyncPlugin(ctx, tx, h.key, defs) }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -103,11 +103,12 @@ func TestPermissionCatalogFollowsRollouts(t *testing.T) {
 		t.Fatalf("after failed upgrade: audit:read %q, want it kept", got)
 	}
 
-	// Activating another version syncs the catalog with its manifest.
+	// Activating another version syncs the catalog with its manifest: the
+	// key it no longer declares is removed.
 	m3, p3 := version("3.0.0", "rules:read")
 	registrytest.AddVersion(t, h.db, m3, p3)
 	upgrade(n, "3.0.0", rollout.PhaseActive)
-	if a, r := status("audit:read"), status("rules:read"); a != "" || r != "active" {
+	if a, r := status("audit:read"), status("rules:read"); a != "removed" || r != "active" {
 		t.Fatalf("after the next activation: audit:read %q, rules:read %q", a, r)
 	}
 
@@ -141,11 +142,11 @@ func TestPermissionCatalogFollowsRollouts(t *testing.T) {
 	// version turns it on.
 	m5, p5 := version("5.0.0", "rules:read", "stats:read", "export:run")
 	registrytest.AddVersion(t, h.db, m5, p5)
-	if _, err := h.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabling' WHERE key = $1`, h.key); err != nil {
+	if _, err := h.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'enabling' WHERE key = $1`, h.key); err != nil {
 		t.Fatal(err)
 	}
 	sync(m3, m5)
-	if _, err := h.db.Pool.Exec(ctx, `UPDATE plugins SET status = 'enabled' WHERE key = $1`, h.key); err != nil {
+	if _, err := h.db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'enabled' WHERE key = $1`, h.key); err != nil {
 		t.Fatal(err)
 	}
 	if got := status("export:run"); got != "disabled" {

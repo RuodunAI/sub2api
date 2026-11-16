@@ -1,0 +1,51 @@
+-- sql
+SELECT u.k AS k, COALESCE(max(u.e), ''), COALESCE(sum(u.requests), 0), COALESCE(sum(u.success), 0), COALESCE(sum(u.input_tokens), 0), COALESCE(sum(u.output_tokens), 0), COALESCE(sum(u.cache_read_tokens), 0), COALESCE(sum(u.cache_write_tokens), 0), CASE WHEN COALESCE(sum(u.requests), 0) = COALESCE(sum(u.prompt_rows), 0) THEN sum(u.prompt_tokens) END, COALESCE(sum(u.total_cost), 0), COALESCE(sum(u.standard_cost), 0), COALESCE(round((sum(u.latency_sum))::numeric / NULLIF(sum(u.latency_rows), 0)), 0)::bigint, COALESCE(round((sum(u.first_token_sum))::numeric / NULLIF(sum(u.first_token_rows), 0)), 0)::bigint, COALESCE(sum(u.anomalous_rows), 0), COALESCE(sum(u.estimated_rows), 0), COALESCE(sum(u.estimated_cost), 0), NULL::timestamptz FROM (SELECT to_char(u.created_at AT TIME ZONE $1::text, 'YYYY-MM-DD') AS k, '' AS e, u.created_at AS at, 1 AS requests, CASE WHEN u.success THEN 1 ELSE 0 END AS success, u.input_tokens AS input_tokens, u.output_tokens AS output_tokens, u.cache_read_tokens AS cache_read_tokens, u.cache_creation_tokens + u.cache_creation_1h_tokens AS cache_write_tokens, u.total_cost AS total_cost, COALESCE(u.base_cost, CASE WHEN u.rate_multiplier > 0 THEN u.total_cost / u.rate_multiplier ELSE u.total_cost END) AS standard_cost, CASE WHEN (CASE
+		WHEN u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens = 0 THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' = 'inclusive' THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' IN ('exclusive', '') THEN
+			u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens
+		END) IS NOT NULL THEN 1 ELSE 0 END AS prompt_rows, COALESCE(CASE
+		WHEN u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens = 0 THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' = 'inclusive' THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' IN ('exclusive', '') THEN
+			u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens
+		END, 0) AS prompt_tokens, CASE WHEN ((u.anomalies - 'usage_extract' - 'failure_policy' - 'availability' - 'scheduling' - 'attempts') <> '{}'::jsonb OR (jsonb_exists(u.anomalies, 'usage_extract') AND u.anomalies->>'usage_extract' <> 'plugin')) THEN 1 ELSE 0 END AS anomalous_rows, CASE WHEN u.anomalies->>'reconcile' IN ('abandoned', 'estimated') THEN 1 ELSE 0 END AS estimated_rows, CASE WHEN u.anomalies->>'reconcile' IN ('abandoned', 'estimated') THEN u.total_cost ELSE 0 END AS estimated_cost, CASE WHEN u.success AND u.latency_ms > 0 THEN u.latency_ms ELSE 0 END AS latency_sum, CASE WHEN u.success AND u.latency_ms > 0 THEN 1 ELSE 0 END AS latency_rows, CASE WHEN u.success AND u.first_token_ms > 0 THEN u.first_token_ms ELSE 0 END AS first_token_sum, CASE WHEN u.success AND u.first_token_ms > 0 THEN 1 ELSE 0 END AS first_token_rows FROM usage_logs u WHERE u.group_id = $2 AND u.created_at >= $3 AND u.created_at < $4 UNION ALL SELECT to_char(u.created_at AT TIME ZONE $5::text, 'YYYY-MM-DD') AS k, '' AS e, u.created_at AS at, u.requests, u.success, u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens, u.total_cost, u.standard_cost, u.prompt_rows, u.prompt_tokens, u.anomalous_rows, u.estimated_rows, u.estimated_cost, u.latency_sum, u.latency_rows, u.first_token_sum, u.first_token_rows FROM usage_hourly u WHERE u.group_id = $6 AND u.created_at >= $7 AND (u.created_at >= $8 AND u.created_at < $9 AND NOT EXISTS (SELECT 1 FROM usage_hourly_dirty d WHERE d.hour = u.created_at)) UNION ALL SELECT to_char(u.created_at AT TIME ZONE $10::text, 'YYYY-MM-DD') AS k, '' AS e, u.created_at AS at, 1 AS requests, CASE WHEN u.success THEN 1 ELSE 0 END AS success, u.input_tokens AS input_tokens, u.output_tokens AS output_tokens, u.cache_read_tokens AS cache_read_tokens, u.cache_creation_tokens + u.cache_creation_1h_tokens AS cache_write_tokens, u.total_cost AS total_cost, COALESCE(u.base_cost, CASE WHEN u.rate_multiplier > 0 THEN u.total_cost / u.rate_multiplier ELSE u.total_cost END) AS standard_cost, CASE WHEN (CASE
+		WHEN u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens = 0 THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' = 'inclusive' THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' IN ('exclusive', '') THEN
+			u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens
+		END) IS NOT NULL THEN 1 ELSE 0 END AS prompt_rows, COALESCE(CASE
+		WHEN u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens = 0 THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' = 'inclusive' THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' IN ('exclusive', '') THEN
+			u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens
+		END, 0) AS prompt_tokens, CASE WHEN ((u.anomalies - 'usage_extract' - 'failure_policy' - 'availability' - 'scheduling' - 'attempts') <> '{}'::jsonb OR (jsonb_exists(u.anomalies, 'usage_extract') AND u.anomalies->>'usage_extract' <> 'plugin')) THEN 1 ELSE 0 END AS anomalous_rows, CASE WHEN u.anomalies->>'reconcile' IN ('abandoned', 'estimated') THEN 1 ELSE 0 END AS estimated_rows, CASE WHEN u.anomalies->>'reconcile' IN ('abandoned', 'estimated') THEN u.total_cost ELSE 0 END AS estimated_cost, CASE WHEN u.success AND u.latency_ms > 0 THEN u.latency_ms ELSE 0 END AS latency_sum, CASE WHEN u.success AND u.latency_ms > 0 THEN 1 ELSE 0 END AS latency_rows, CASE WHEN u.success AND u.first_token_ms > 0 THEN u.first_token_ms ELSE 0 END AS first_token_sum, CASE WHEN u.success AND u.first_token_ms > 0 THEN 1 ELSE 0 END AS first_token_rows FROM (SELECT DISTINCT hour FROM usage_hourly_dirty WHERE hour >= $11 AND hour < $12) d JOIN usage_logs u ON u.created_at >= d.hour AND u.created_at < d.hour + interval '1 hour' WHERE u.group_id = $13 AND u.created_at >= $14 UNION ALL SELECT to_char(u.created_at AT TIME ZONE $15::text, 'YYYY-MM-DD') AS k, '' AS e, u.created_at AS at, 1 AS requests, CASE WHEN u.success THEN 1 ELSE 0 END AS success, u.input_tokens AS input_tokens, u.output_tokens AS output_tokens, u.cache_read_tokens AS cache_read_tokens, u.cache_creation_tokens + u.cache_creation_1h_tokens AS cache_write_tokens, u.total_cost AS total_cost, COALESCE(u.base_cost, CASE WHEN u.rate_multiplier > 0 THEN u.total_cost / u.rate_multiplier ELSE u.total_cost END) AS standard_cost, CASE WHEN (CASE
+		WHEN u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens = 0 THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' = 'inclusive' THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' IN ('exclusive', '') THEN
+			u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens
+		END) IS NOT NULL THEN 1 ELSE 0 END AS prompt_rows, COALESCE(CASE
+		WHEN u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens = 0 THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' = 'inclusive' THEN u.input_tokens
+		WHEN u.billing_detail->'inputs'->>'semantics' IN ('exclusive', '') THEN
+			u.input_tokens + u.cache_read_tokens + u.cache_creation_tokens + u.cache_creation_1h_tokens
+		END, 0) AS prompt_tokens, CASE WHEN ((u.anomalies - 'usage_extract' - 'failure_policy' - 'availability' - 'scheduling' - 'attempts') <> '{}'::jsonb OR (jsonb_exists(u.anomalies, 'usage_extract') AND u.anomalies->>'usage_extract' <> 'plugin')) THEN 1 ELSE 0 END AS anomalous_rows, CASE WHEN u.anomalies->>'reconcile' IN ('abandoned', 'estimated') THEN 1 ELSE 0 END AS estimated_rows, CASE WHEN u.anomalies->>'reconcile' IN ('abandoned', 'estimated') THEN u.total_cost ELSE 0 END AS estimated_cost, CASE WHEN u.success AND u.latency_ms > 0 THEN u.latency_ms ELSE 0 END AS latency_sum, CASE WHEN u.success AND u.latency_ms > 0 THEN 1 ELSE 0 END AS latency_rows, CASE WHEN u.success AND u.first_token_ms > 0 THEN u.first_token_ms ELSE 0 END AS first_token_sum, CASE WHEN u.success AND u.first_token_ms > 0 THEN 1 ELSE 0 END AS first_token_rows FROM usage_logs u WHERE u.group_id = $16 AND u.created_at >= $17 AND u.created_at >= $18) u GROUP BY "k" ORDER BY k
+-- vars
+$1 string "Asia/Shanghai"
+$2 int64 3
+$3 time.Time 2026-10-16 00:00:00 +0000 UTC
+$4 time.Time 2026-10-16 00:00:00 +0000 UTC
+$5 string "Asia/Shanghai"
+$6 int64 3
+$7 time.Time 2026-10-16 00:00:00 +0000 UTC
+$8 time.Time 2026-10-16 00:00:00 +0000 UTC
+$9 time.Time 2026-11-15 06:00:00 +0000 UTC
+$10 string "Asia/Shanghai"
+$11 time.Time 2026-10-16 00:00:00 +0000 UTC
+$12 time.Time 2026-11-15 06:00:00 +0000 UTC
+$13 int64 3
+$14 time.Time 2026-10-16 00:00:00 +0000 UTC
+$15 string "Asia/Shanghai"
+$16 int64 3
+$17 time.Time 2026-10-16 00:00:00 +0000 UTC
+$18 time.Time 2026-11-15 06:00:00 +0000 UTC

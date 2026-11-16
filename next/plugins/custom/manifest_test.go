@@ -31,7 +31,7 @@ var types = map[string]string{
 // key, the preset's default body filter and an account layer.
 func TestManifest(t *testing.T) {
 	m := load(t)
-	if m.Key != "custom" || m.Version != "0.1.0" || m.Publisher != "sub2api" || m.Runtime != manifest.RuntimeNone {
+	if m.Key != "custom" || m.Version != "0.1.1" || m.Publisher != "sub2api" || m.Runtime != manifest.RuntimeNone {
 		t.Fatalf("identity = %s %s %s %s", m.Key, m.Version, m.Publisher, m.Runtime)
 	}
 	if len(m.Platforms) != 0 || len(m.AccountTypes) != len(types) {

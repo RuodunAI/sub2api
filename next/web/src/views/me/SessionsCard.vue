@@ -2,7 +2,7 @@
 // Where the caller is signed in, and ending those sessions.
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api } from '@sub2api/host'
+import { api, session } from '@sub2api/host'
 import { SBadge, SButton, SCard, SDateTime, STable, confirm, toast, type TableColumn } from '@sub2api/ui'
 import { notifyError } from '@/utils/errors'
 
@@ -31,8 +31,9 @@ async function load() {
 }
 onMounted(load)
 
-const hasOthers = computed(() => rows.value.some((r) => !r.current))
-const canRevokeOthers = computed(() => hasOthers.value && rows.value.some((r) => r.current))
+// Also with no other row: the caller's session gets a new token, which ends
+// a copy of its token in use elsewhere (that copy is listed as this device).
+const canRevokeOthers = computed(() => rows.value.some((r) => r.current))
 
 async function revoke(row: Session) {
   if (!(await confirm({ title: t('me.sessions.revoke'), message: t('me.sessions.revokeConfirm'), danger: true }))) return
@@ -45,9 +46,12 @@ async function revoke(row: Session) {
   }
 }
 async function revokeOthers() {
-  if (!(await confirm({ title: t('me.sessions.revokeOthers'), message: t('me.sessions.revokeConfirm'), danger: true }))) return
+  if (!(await confirm({ title: t('me.sessions.revokeOthers'), message: t('me.sessions.revokeOthersConfirm'), danger: true }))) return
   try {
-    await api.post('/me/sessions/revoke-others', {})
+    let sentWith: string | undefined
+    const r = await api.post<{ access_token?: string } | null>('/me/sessions/revoke-others', {}, { onSentWith: (token) => (sentWith = token) })
+    // This session's new token (CONTRACTS §100.4) in place of the one the request went with: that one, and any copy of it, ends shortly.
+    if (r?.access_token) session.adoptRotated(sentWith, r.access_token)
     toast(t('me.sessions.revoked'), 'success')
     await load()
   } catch (e) {

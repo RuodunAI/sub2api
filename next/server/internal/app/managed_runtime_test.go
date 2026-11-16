@@ -15,12 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+
 	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"github.com/alicebob/miniredis/v2"
 )
 
 // This exercises the actual app.Run and its private control listener with a
@@ -34,9 +36,20 @@ func TestManagedRuntimeMigrationDoesNotBootstrap(t *testing.T) {
 	testManagedRuntime(t, true)
 }
 
+// managedRuntimeDB is a migrated database; through 0099 when the run
+// replays migrations: 0100 drops the role tables the migrations before it
+// write, so they replay on the schema before it (0100 then runs for the
+// first time).
+func managedRuntimeDB(t *testing.T, migrate bool) *store.DB {
+	if migrate {
+		return testutil.DBThrough(t, "0099_plugin_permission_meta.sql")
+	}
+	return testutil.DB(t)
+}
+
 func testManagedRuntime(t *testing.T, migrate bool) {
 	t.Helper()
-	db := testutil.DB(t)
+	db := managedRuntimeDB(t, migrate)
 	mr := miniredis.RunT(t)
 	dir, err := os.MkdirTemp("", "s2core-")
 	if err != nil {
@@ -54,7 +67,7 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 		// This must run the embedded migration without importing the deliberately
 		// invalid bundled plugin or creating the configured bootstrap account.
 		const rewindFrom = migrations.FirstIdempotentMigration
-		_, err = db.Pool.Exec(context.Background(), `DELETE FROM schema_migrations WHERE id >= $1`, rewindFrom)
+		_, err = db.SQL.ExecContext(context.Background(), `DELETE FROM schema_migrations WHERE id >= $1`, rewindFrom)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -80,7 +93,7 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 	}
 	addr := port.Addr().String()
 	port.Close()
-	cfg := &config.Config{HTTPAddr: addr, NodeID: "managed-runtime-test", DatabaseURL: db.Pool.Config().ConnString(), RedisURL: "redis://" + mr.Addr(), MasterKey: bytes.Repeat([]byte{1}, 32), JWTSecret: bytes.Repeat([]byte{2}, 32), BootstrapAdminEmail: "must-not-bootstrap@example.com", BootstrapAdminPassword: "must-not-bootstrap-password",
+	cfg := &config.Config{HTTPAddr: addr, NodeID: "managed-runtime-test", DatabaseURL: testutil.DSN(db), RedisURL: "redis://" + mr.Addr(), MasterKey: bytes.Repeat([]byte{1}, 32), BootstrapAdminEmail: "must-not-bootstrap@example.com", BootstrapAdminPassword: "must-not-bootstrap-password",
 		// A drained core must not wait this out (the shell already moved its traffic).
 		ShutdownDelay: 5 * time.Second,
 		Managed:       config.ManagedConfig{Enabled: true, Socket: filepath.Join(dir, "control.sock"), Token: strings.Repeat("t", 32), ReleaseDigest: "release", BootID: "boot"},
@@ -149,7 +162,7 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 		t.Fatalf("reported capabilities differ from compiled runtime: %+v", hello)
 	}
 	var users int
-	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&users); err != nil || users != 0 {
+	if err = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&users); err != nil || users != 0 {
 		t.Fatalf("candidate bootstrapped users: %d %v", users, err)
 	}
 	if conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
@@ -160,7 +173,7 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 		t.Fatalf("prepare: %d %s %v", code, b, err)
 	}
 	s := waitStatus("prepared")
-	if err = verifyCoreSchema(ctx, db); err != nil {
+	if err = VerifyCoreSchema(ctx, db); err != nil {
 		t.Fatalf("embedded schema not prepared: %v", err)
 	}
 	if s.Ready {
@@ -174,10 +187,10 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 	if resp.StatusCode != 503 {
 		t.Fatal("prepared HTTP readiness", resp.StatusCode)
 	}
-	if err = db.Pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&users); err != nil || users != 0 {
+	if err = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&users); err != nil || users != 0 {
 		t.Fatalf("prepare bootstrapped users: %d %v", users, err)
 	}
-	_, err = db.Pool.Exec(ctx, `CREATE SCHEMA updater;CREATE TABLE updater.node_admissions(node_id text PRIMARY KEY,core_boot_id text,release_digest text,revision bigint,serve_http bool,claim_background bool,coordinate_plugins bool);
+	_, err = db.SQL.ExecContext(ctx, `CREATE SCHEMA updater;CREATE TABLE updater.node_admissions(node_id text PRIMARY KEY,core_boot_id text,release_digest text,revision bigint,serve_http bool,claim_background bool,coordinate_plugins bool);
 		INSERT INTO updater.node_admissions VALUES('managed-runtime-test','boot','release',1,true,true,true)`)
 	if err != nil {
 		t.Fatal(err)
@@ -198,16 +211,16 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 		t.Fatal("admitted HTTP readiness", resp.StatusCode)
 	}
 	// Every module registered its cluster tasks (TASK-FRAMEWORK-DESIGN §14.1).
-	wantTasks := []string{"core.account.automatic_recovery", "core.account.credential_refresh", "core.account.lifecycle_status", "core.account.preparation_cleanup", "core.account.usage_limits",
-		"core.audit.plugin_writes_purge", "core.ccgateway.draft_sweep", "core.ccgateway.park_runtimes", "core.ccgateway.runtime_sync", "core.egress.logs_prune",
-		"core.events.retention", "core.helper.payload_expiry", "core.helper.usage_replay", "core.jobs.retention", "core.notify.purge", "core.task.housekeeping", "core.usage.reconcile", "core.usage.rollup"}
+	wantTasks := []string{"core.account.automatic_recovery", "core.account.credential_refresh", "core.account.usage_limits",
+		"core.audit.plugin_writes_purge", "core.egress.logs_prune",
+		"core.events.retention", "core.jobs.retention", "core.notify.purge", "core.task.housekeeping", "core.usage.reconcile", "core.usage.rollup"}
 	var gotTasks []string
-	if err = db.Pool.QueryRow(ctx, `SELECT coalesce(array_agg(name ORDER BY name), '{}') FROM scheduled_tasks WHERE source = 'core'`).Scan(&gotTasks); err != nil || !slices.Equal(gotTasks, wantTasks) {
+	if err = db.SQL.QueryRowContext(ctx, `SELECT coalesce(array_agg(name ORDER BY name), '{}') FROM scheduled_tasks WHERE source = 'core'`).Scan(&gotTasks); err != nil || !slices.Equal(gotTasks, wantTasks) {
 		t.Fatalf("cluster tasks: %v %v", gotTasks, err)
 	}
 	// Revoking the persisted permit changes nothing in the core: it keeps
 	// serving until the shell drains it (2026-11-08, CONTRACTS §29.1).
-	_, err = db.Pool.Exec(ctx, `DELETE FROM updater.node_admissions`)
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM updater.node_admissions`)
 	if err != nil {
 		t.Fatal(err)
 	}

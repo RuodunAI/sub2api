@@ -1,0 +1,80 @@
+-- sql
+WITH existing AS (
+    SELECT id, balance_after, user_id, delta, kind FROM balance_ledger
+    WHERE $1::boolean AND idempotency_key = $2::varchar
+), reservation AS (
+    SELECT 1 FROM request_precharges WHERE request_id = $3::varchar AND user_id = $4::bigint
+), locked AS (
+    SELECT balance FROM user_balances
+    WHERE user_id = $5::bigint AND (EXISTS (SELECT 1 FROM reservation) OR ($6::boolean AND NOT EXISTS (SELECT 1 FROM existing)))
+    FOR UPDATE
+), released AS (
+    DELETE FROM request_precharges p USING locked
+    WHERE p.request_id = $7::varchar AND p.user_id = $8::bigint
+    RETURNING p.amount
+), refund AS (
+    INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
+        idempotency_key, operator_id, plugin_key, note)
+    SELECT $9::bigint, r.amount, l.balance + r.amount, 'refund', 'precharge', $10::varchar,
+        $11::varchar, NULL, NULL, $12::text
+    FROM released r, locked l
+    WHERE NOT EXISTS (SELECT 1 FROM balance_ledger WHERE idempotency_key = $13::varchar)
+    ON CONFLICT (idempotency_key) DO NOTHING
+    RETURNING id, balance_after
+), charge AS (
+    INSERT INTO balance_ledger (user_id, delta, balance_after, kind, ref_type, ref_id,
+        idempotency_key, operator_id, plugin_key, note)
+    SELECT $14::bigint, $15::numeric, COALESCE(r.balance_after, l.balance) + $16::numeric, $17::text, $18::text,
+        $19::text, $20::varchar, $21::bigint, NULLIF($22::text, ''), $23::text
+    FROM locked l LEFT JOIN refund r ON true
+    WHERE $24::boolean AND NOT EXISTS (SELECT 1 FROM existing)
+    ON CONFLICT (idempotency_key) DO NOTHING
+    RETURNING id, balance_after
+), applied AS (
+    UPDATE user_balances SET balance = COALESCE(c.balance_after, r.balance_after), updated_at = now()
+    FROM (SELECT 1) one LEFT JOIN refund r ON true LEFT JOIN charge c ON true
+    WHERE user_balances.user_id = $25::bigint AND (r.id IS NOT NULL OR c.id IS NOT NULL)
+    RETURNING r.id AS refund_id, r.balance_after AS refund_after, c.id AS charge_id, c.balance_after AS charge_after
+)
+SELECT COALESCE((SELECT refund_id FROM applied), 0),
+       COALESCE((SELECT refund_after FROM applied), 0),
+       EXISTS (SELECT 1 FROM released),
+       COALESCE((SELECT amount FROM released), 0),
+       COALESCE((SELECT charge_id FROM applied), 0),
+       COALESCE((SELECT charge_after FROM applied), 0),
+       EXISTS (SELECT 1 FROM existing),
+       COALESCE((SELECT id FROM existing), 0),
+       COALESCE((SELECT balance_after FROM existing), 0),
+       COALESCE((SELECT user_id FROM existing), 0),
+       COALESCE((SELECT delta FROM existing), 0),
+       COALESCE((SELECT kind FROM existing), ''),
+       EXISTS (SELECT 1 FROM locked)
+           OR (NOT (EXISTS (SELECT 1 FROM reservation) OR ($26::boolean AND NOT EXISTS (SELECT 1 FROM existing))) AND EXISTS (SELECT 1 FROM user_balances WHERE user_id = $27::bigint))
+-- vars
+$1 bool true
+$2 string "usage:req-1"
+$3 string "req-1"
+$4 int64 7
+$5 int64 7
+$6 bool true
+$7 string "req-1"
+$8 int64 7
+$9 int64 7
+$10 string "req-1"
+$11 string "precharge_release:req-1"
+$12 string "release request precharge"
+$13 string "precharge_release:req-1"
+$14 int64 7
+$15 decimal.Decimal -0.5
+$16 decimal.Decimal -0.5
+$17 string "usage"
+$18 string "usage"
+$19 string "req-1"
+$20 string "usage:req-1"
+$21 *int64 nil
+$22 string ""
+$23 string "note"
+$24 bool true
+$25 int64 7
+$26 bool true
+$27 int64 7

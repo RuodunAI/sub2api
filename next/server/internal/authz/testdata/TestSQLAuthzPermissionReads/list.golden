@@ -1,0 +1,5 @@
+-- sql
+SELECT p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.risk, p.requires, p.status,
+    p.scope_type, p.scope, p.group_key, p.group_label, p.group_sort, p.defaults, pl.name FROM permissions p LEFT JOIN plugins pl ON pl.key = p.plugin_key WHERE p.status <> 'staged' AND p.plugin_key = $1 ORDER BY p.source, p.module, p.group_sort, p.sort, p.key
+-- vars
+$1 string "demo"

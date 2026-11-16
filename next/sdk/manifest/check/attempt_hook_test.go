@@ -16,10 +16,10 @@ func hookManifest(hostCompat string, points []any, hooks ...manifest.Hook) *mani
 	return m
 }
 
-// gateway.attempt is a hook point of its own: it must be in scope.points,
-// and hostCompat must keep out the cores that do not run it (CONTRACTS §85).
+// gateway.attempt is a hook point of its own: it must be in scope.points
+// (CONTRACTS §85).
 func TestAttemptHookPoint(t *testing.T) {
-	floor := ">=" + AttemptHookFirstCore + " <0.2.0"
+	floor := ">=0.1.290 <0.2.0"
 	attempt := manifest.Hook{ID: "a", Point: manifest.HookPointAttempt, Needs: []string{"model"}}
 	request := manifest.Hook{ID: "r", Point: manifest.HookPointRequest, Needs: []string{"model"}}
 	both := []any{manifest.HookPointRequest, manifest.HookPointAttempt}
@@ -29,8 +29,7 @@ func TestAttemptHookPoint(t *testing.T) {
 		want map[string]string
 	}{
 		{"attempt", hookManifest(floor, both, request, attempt), nil},
-		{"request on an old core", hookManifest(">=0.1.0 <0.2.0", []any{manifest.HookPointRequest}, request), nil},
-		{"attempt below the floor", hookManifest(">=0.1.0 <0.2.0", both, attempt), map[string]string{"hostCompat": "below_feature_core"}},
+		{"request", hookManifest(floor, []any{manifest.HookPointRequest}, request), nil},
 		{"attempt outside scope", hookManifest(floor, []any{manifest.HookPointRequest}, attempt), map[string]string{"hooks[0].point": "exceeds_scope"}},
 		{"unknown point", hookManifest(floor, []any{"gateway.response"}, manifest.Hook{Point: "gateway.response"}), map[string]string{"hooks[0].point": "unsupported"}},
 	} {

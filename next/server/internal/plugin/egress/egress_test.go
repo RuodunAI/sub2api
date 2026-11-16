@@ -454,7 +454,7 @@ func TestEgressLogsWritten(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		_ = e.p.Flush(ctx)
-		sum, err = Summary(ctx, db.Pool, "demo", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+		sum, err = Summary(ctx, db.Gorm, "demo", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -478,7 +478,7 @@ func TestEgressLogsWritten(t *testing.T) {
 	if by["blocked.test"].Denied != 1 {
 		t.Fatalf("blocked summary %+v", by["blocked.test"])
 	}
-	rows, err := List(ctx, db.Pool, "demo", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 10)
+	rows, err := List(ctx, db.Gorm, "demo", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestEgressLogsWritten(t *testing.T) {
 			t.Fatalf("finished row without closed_at: %+v", r)
 		}
 	}
-	doms, err := Domains(ctx, db.Pool, "demo")
+	doms, err := Domains(ctx, db.Gorm, "demo")
 	if err != nil {
 		t.Fatal(err)
 	}

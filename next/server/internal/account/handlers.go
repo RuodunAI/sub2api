@@ -3,6 +3,7 @@ package account
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,18 +15,20 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -73,11 +76,6 @@ type row struct {
 	LastTestStatus      *int
 	LastTestErrorCode   *string
 	LastTestErrorSource *string
-	// SubscriptionType is the plan the runtime reported (CONTRACTS §59); nil while unknown.
-	SubscriptionType *string
-	// RateLimitTier is the tier the runtime reported, as the upstream names it.
-	RateLimitTier *string
-	AutoModels    *bool
 	// AutoDisabledSource says who wrote an automatic disable (0070):
 	// usageLimitSource or '' (plugins and failure policies).
 	AutoDisabledSource string
@@ -86,24 +84,34 @@ type row struct {
 	AdminLocked bool
 }
 
-// selectRow joins the creator's email (also for soft-deleted users); every
-// statement built on it must qualify account columns with "a.".
-const selectRow = `SELECT a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.settings, a.proxy_id,
+// rowColumns are the columns of a row, in scanRow's order. Every statement
+// reading them joins the creator's email (also for soft-deleted users) and
+// must qualify account columns with "a.".
+const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.settings, a.proxy_id,
 	a.status, a.status_reason, a.schedulable, a.auto_disable, a.priority, a.weight, a.max_concurrency,
 	a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment, a.last_used_at,
 	a.created_by, u.email, a.created_at, a.updated_at,
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
-	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.rate_limit_tier,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked
-	FROM accounts a LEFT JOIN users u ON u.id = a.created_by`
+	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
 
-func scanRow(r pgx.Row) (*row, error) {
+// selectRows reads rowColumns, for scanRow over its Row().
+func selectRows(db *gorm.DB) *gorm.DB {
+	return db.Table("accounts a").Select(rowColumns).Joins("LEFT JOIN users u ON u.id = a.created_by")
+}
+
+// scanRow reads one row of rowColumns, from GORM's Row() or Rows() (a
+// *sql.Row or *sql.Rows). The arrays and the environment go through store
+// types: database/sql hands arrays over as text and jsonb as its document.
+func scanRow(r interface{ Scan(dest ...any) error }) (*row, error) {
 	var a row
+	var env store.JSON[core.EnvironmentValues]
 	err := r.Scan(&a.ID, &a.Name, &a.PluginKey, &a.Type, &a.CredEnc, &a.Settings, &a.ProxyID,
 		&a.Status, &a.StatusReason, &a.Schedulable, &a.AutoDisable, &a.Priority, &a.Weight, &a.MaxConcurrency,
-		&a.Models, &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &a.Environment, &a.LastUsedAt,
+		(*store.Strings)(&a.Models), &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &env, &a.LastUsedAt,
 		&a.CreatedBy, &a.CreatedByEmail, &a.CreatedAt, &a.UpdatedAt,
 		&a.LastTestAt, &a.LastTestOK, &a.LastTestLatencyMs, &a.LastTestModel, &a.LastTestMessage, &a.AutoDisabledUntil,
-		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.SubscriptionType, &a.RateLimitTier, &a.AutoModels, &a.AutoDisabledSource, &a.HeaderPassthrough, &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
+		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
+	a.Environment = env.V
 	return &a, err
 }
 
@@ -145,13 +153,42 @@ func (a *row) mapping() map[string]string {
 
 func (a *row) modelLimits() []core.ModelLimit { return parseModelLimits(a.ModelLimits) }
 
+// coreAccount is the account with the given plaintext credentials, as the
+// gateway sees it.
+func (a *row) coreAccount(plain []byte) core.Account {
+	settings := a.Settings
+	if len(settings) == 0 {
+		settings = []byte("{}")
+	}
+	return core.Account{
+		AccountRef: core.AccountRef{ID: a.ID, Name: a.Name, PluginKey: a.PluginKey, Type: a.Type,
+			Priority: a.Priority, Weight: a.Weight, MaxConcurrency: a.MaxConcurrency, ProxyID: a.ProxyID,
+			Models: a.Models, ModelMapping: a.mapping(), RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(),
+			Environment: a.Environment, ConversionLossPolicy: core.ValueOr(a.LossPolicy, "")},
+		Status:            a.Status,
+		Schedulable:       a.Schedulable,
+		AutoDisable:       a.AutoDisable,
+		Credentials:       json.RawMessage(plain),
+		Settings:          json.RawMessage(settings),
+		HeaderPassthrough: a.HeaderPassthrough,
+		ParamOverride:     core.LoadParamOverride(a.ParamOverride),
+	}
+}
+
+// pluginAccount is the account as a plugin sees it, with the given plaintext
+// credentials.
+func (a *row) pluginAccount(credentials []byte) *pluginv1.Account {
+	acc := a.coreAccount(credentials)
+	return acc.PluginAccount("")
+}
+
 func notFound(ctx context.Context) error {
 	return core.ErrNotFound.WithMessage(t(ctx, "account not found", "账号不存在"))
 }
 
 // scopeOf is the accounts the caller reaches with action (core.Scope,
 // CONTRACTS §21); an error reaches none (logged). Every scoped statement
-// carries core.AccountRows with it.
+// carries core.AccountRows() with it.
 func (s *Service) scopeOf(ctx context.Context, action perm.Key) core.DataScope {
 	scope, err := core.Scope(ctx, s.d.Authorizer, action)
 	if err != nil {
@@ -162,24 +199,30 @@ func (s *Service) scopeOf(ctx context.Context, action perm.Key) core.DataScope {
 
 // inScope reports whether account id is in scope now, its groups as they
 // are in q (a transaction's included).
-func inScope(ctx context.Context, q store.Querier, id int64, scope core.DataScope) (bool, error) {
+func inScope(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope) (bool, error) {
 	if scope.All {
 		return true, nil
 	}
-	var ok bool
-	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM accounts a WHERE a.id = $1 AND `+core.AccountRows.SQL(2)+`)`,
-		append([]any{id}, core.AccountRows.Args(scope)...)...).Scan(&ok)
-	return ok, err
+	db := store.G(ctx, q)
+	return gormpg.Exists(db, scopedAccount(db, id, scope))
+}
+
+// scopedAccount is account id (live or not) if it is in scope.
+func scopedAccount(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
+	return db.Table("accounts a").Where("a.id = ?", id).Scopes(core.AccountRows().Scope(scope))
 }
 
 // loadRow returns one live account in scope; rows outside the scope are
 // 404 like missing ones.
-func (s *Service) loadRow(ctx context.Context, q store.Querier, id int64, scope core.DataScope, lock bool) (*row, error) {
-	sql := selectRow + ` WHERE a.id = $1 AND a.deleted_at IS NULL AND ` + core.AccountRows.SQL(2)
+func (s *Service) loadRow(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope, lock bool) (*row, error) {
+	db := selectRows(store.G(ctx, q)).Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows().Scope(scope))
 	if lock {
-		sql += ` FOR UPDATE OF a`
+		if err := store.RequireTx(q); err != nil {
+			return nil, err
+		}
+		db = db.Clauses(store.ForUpdate().Of("a")) // the accounts row (alias a) of the join
 	}
-	a, err := scanRow(q.QueryRow(ctx, sql, append([]any{id}, core.AccountRows.Args(scope)...)...))
+	a, err := scanRow(db.Row())
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
@@ -194,11 +237,10 @@ type GroupRef struct {
 
 // View is the API representation of an account.
 type View struct {
-	CCFeaturePolicy *ccgateway.AccountFeaturePolicy `json:"cc_feature_policy,omitempty"`
-	ID              int64                           `json:"id"`
-	Name            string                          `json:"name"`
-	PluginKey       string                          `json:"plugin_key"`
-	Type            string                          `json:"type"`
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	PluginKey string `json:"plugin_key"`
+	Type      string `json:"type"`
 	// TypeLabel is the account type label; null when the type is no longer
 	// registered (plugin disabled or uninstalled).
 	TypeLabel    manifest.LocalizedText `json:"type_label"`
@@ -221,7 +263,6 @@ type View struct {
 	// Models the account serves (empty = all) and the client → upstream
 	// model mapping (CONTRACTS §18).
 	Models       []string          `json:"models"`
-	AutoModels   *bool             `json:"auto_models"`
 	ModelMapping map[string]string `json:"model_mapping"`
 	RPMLimit     int               `json:"rpm_limit"`
 	TPMLimit     int64             `json:"tpm_limit"`
@@ -267,22 +308,10 @@ type View struct {
 	limitDisabled bool
 	// LastTest is the last console test (CONTRACTS §50); null until tested.
 	LastTest *LastTest `json:"last_test"`
-	// RuntimeParked (CCGateway accounts only): the account stayed red for
-	// the configured hours and its container is stopped; testing or
-	// re-authorizing it starts it again.
-	RuntimeParked *bool `json:"runtime_parked,omitempty"`
-	// SubscriptionType is the plan the account's runtime reported ("max",
-	// "pro" ...), CONTRACTS §59; null while unknown.
-	SubscriptionType *string `json:"subscription_type"`
-	// RateLimitTier is the tier the runtime reported, as the upstream names it.
-	RateLimitTier *string `json:"rate_limit_tier"`
 	// Orphaned is true when the plugin declaring the account type is not
 	// enabled (disabled or uninstalled).
-	Orphaned      bool                         `json:"orphaned"`
-	Settings      json.RawMessage              `json:"settings"`
-	LifecycleSync *core.AccountSynchronization `json:"lifecycle_sync,omitempty"`
-	// Actions are the plugin-registered custom actions available for this account (CONTRACTS §52).
-	Actions []AccountAction `json:"actions,omitempty"`
+	Orphaned bool            `json:"orphaned"`
+	Settings json.RawMessage `json:"settings"`
 	// Credentials (settings + secret fields, sensitive ones masked) is only
 	// present on single-account responses.
 	Credentials json.RawMessage `json:"credentials,omitempty"`
@@ -320,16 +349,14 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 			ID: a.ID, Name: a.Name, PluginKey: a.PluginKey, Type: a.Type, TypeLabel: s.typeLabel(a.PluginKey, a.Type),
 			GroupIDs: []int64{}, Groups: []GroupRef{}, ProxyID: a.ProxyID, Status: a.Status,
 			StatusReason: a.StatusReason, AdminLocked: a.AdminLocked, AutoDisabledUntil: a.AutoDisabledUntil, Schedulable: a.Schedulable, AutoDisable: a.AutoDisable, Priority: a.Priority, Weight: a.Weight,
-			MaxConcurrency: a.MaxConcurrency, Models: models, AutoModels: a.AutoModels, ModelMapping: a.mapping(),
+			MaxConcurrency: a.MaxConcurrency, Models: models, ModelMapping: a.mapping(),
 			RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(), Environment: a.Environment,
 			HeaderPassthrough: passthrough, ParamOverride: a.ParamOverride, ConversionLossPolicy: a.LossPolicy,
 			Orphaned: !s.pluginActive(a.PluginKey), Settings: st,
 			CreatedBy: a.CreatedBy, CreatedByEmail: a.CreatedByEmail,
 			LastUsedAt: a.LastUsedAt, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
-			LastTest:         a.lastTest(),
-			SubscriptionType: a.SubscriptionType,
-			RateLimitTier:    a.RateLimitTier,
-			limitDisabled:    limitDisabled(a.Status, a.AutoDisabledSource),
+			LastTest:      a.lastTest(),
+			limitDisabled: limitDisabled(a.Status, a.AutoDisabledSource),
 		}
 		out[i], ids[i], byID[a.ID] = v, a.ID, v
 	}
@@ -339,9 +366,9 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 	// Every read below fills its own View fields from read-only inputs (rows,
 	// ids, byID and the fields set above), so they run concurrently: the page
 	// waits for the slowest read instead of the sum of all round trips. Only
-	// the group and lifecycle reads fail the request, as before; the others
-	// log and leave their column empty.
-	var groupsErr, lifecycleErr error
+	// the group read fails the request; the others log and leave their
+	// column empty.
+	var groupsErr error
 	tasks := []func(){
 		func() { s.fillCooldowns(ctx, ids, out) },
 		func() {
@@ -380,21 +407,12 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 		},
 		func() { s.fillUsage(ctx, out) },
 		func() { s.fillRefresh(ctx, rows, out) },
-		func() { s.fillRuntimeParked(ctx, out) },
-		func() {
-			lifecycleErr = errViewPanicked
-			lifecycleErr = s.fillLifecycleStatus(ctx, out)
-		},
 	}
 	tasks = append(tasks, func() { runParallel(ctx, viewsPGParallel, pgTasks...) })
 	runParallel(ctx, 0, tasks...)
 	if groupsErr != nil {
 		return nil, groupsErr
 	}
-	if lifecycleErr != nil {
-		return nil, lifecycleErr
-	}
-	s.fillActions(ctx, rows, out)
 	return out, nil
 }
 
@@ -404,23 +422,25 @@ var errViewPanicked = errors.New("account: list read failed")
 
 // fillGroups sets GroupIDs and Groups (ordered by group id).
 func (s *Service) fillGroups(ctx context.Context, ids []int64, byID map[int64]*View) error {
-	gr, err := s.d.DB.Pool.Query(ctx, `SELECT ag.account_id, g.id, g.name FROM account_groups ag
-		JOIN groups g ON g.id = ag.group_id WHERE ag.account_id = ANY($1) ORDER BY g.id`, ids)
-	if err != nil {
+	var refs []accountGroupRef
+	if err := store.G(ctx, s.d.DB.Gorm).Table("account_groups ag").Select("ag.account_id, g.id, g.name").
+		Joins("JOIN groups g ON g.id = ag.group_id").Where("ag.account_id = ANY(?)", store.Int64s(ids)).
+		Order("g.id").Scan(&refs).Error; err != nil {
 		return err
 	}
-	defer gr.Close()
-	for gr.Next() {
-		var aid int64
-		var g GroupRef
-		if err := gr.Scan(&aid, &g.ID, &g.Name); err != nil {
-			return err
-		}
-		v := byID[aid]
-		v.GroupIDs = append(v.GroupIDs, g.ID)
-		v.Groups = append(v.Groups, g)
+	for _, r := range refs {
+		v := byID[r.AccountID]
+		v.GroupIDs = append(v.GroupIDs, r.ID)
+		v.Groups = append(v.Groups, GroupRef{ID: r.ID, Name: r.Name})
 	}
-	return gr.Err()
+	return nil
+}
+
+// accountGroupRef is one group of an account, as fillGroups reads it.
+type accountGroupRef struct {
+	AccountID int64
+	ID        int64
+	Name      string
 }
 
 // fillCooldowns sets CooldownUntil and CooldownReason from Redis.
@@ -496,7 +516,7 @@ func (s *Service) credentialView(a *row) (json.RawMessage, error) {
 // fullView is the single-account view (with credentials) of an account
 // visible in scope.
 func (s *Service) fullView(ctx context.Context, id int64, scope core.DataScope) (*View, error) {
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, scope, false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
 	if err != nil {
 		return nil, err
 	}
@@ -507,13 +527,6 @@ func (s *Service) fullView(ctx context.Context, id int64, scope core.DataScope) 
 	if vs[0].Credentials, err = s.credentialView(a); err != nil {
 		return nil, err
 	}
-	if a.PluginKey == "ccgateway" && (a.Type == "managed" || a.Type == "apikey") {
-		p, err := ccgateway.LoadAccountFeaturePolicy(ctx, s.d.DB.Pool, id)
-		if err != nil {
-			return nil, err
-		}
-		vs[0].CCFeaturePolicy = &p
-	}
 	return vs[0], nil
 }
 
@@ -522,15 +535,15 @@ func (s *Service) fullView(ctx context.Context, id int64, scope core.DataScope) 
 func (s *Service) list(c *gin.Context) {
 	ctx := c.Request.Context()
 	page, size := httpapi.Pagination(c)
-	var filter store.Filter
-	filter.And("a.deleted_at IS NULL")
+	var conds store.Conds
+	conds.And("a.deleted_at IS NULL")
 	// Visible range: the caller's account:read scope (CONTRACTS §21);
 	// mine=true narrows to own rows and created_by=<id> to that creator's,
 	// both within it.
-	filter.And(core.AccountRows.Cond(), core.AccountRows.Args(s.scopeOf(ctx, perm.AccountRead))...)
+	conds = append(conds, core.AccountRows().Scope(s.scopeOf(ctx, perm.AccountRead)))
 	if mine, _ := strconv.ParseBool(c.Query("mine")); mine {
 		uid, _ := core.UserID(ctx)
-		filter.And("a.created_by = ?", uid)
+		conds.And("a.created_by = ?", uid)
 	}
 	if v := c.Query("created_by"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
@@ -539,17 +552,17 @@ func (s *Service) list(c *gin.Context) {
 				Message: t(ctx, "created_by must be a user id", "created_by 必须是用户 ID")}))
 			return
 		}
-		filter.And("a.created_by = ?", id)
+		conds.And("a.created_by = ?", id)
 	}
 	// Accounts of a disabled or uninstalled plugin are hidden by default
 	// (their rows stay); orphaned=true lists only them, orphaned=all both.
 	if keys := s.activePluginKeys(); keys != nil {
 		switch c.Query("orphaned") {
 		case "true":
-			filter.And("NOT (a.plugin_key = ANY(?))", keys)
+			conds.And("NOT (a.plugin_key = ANY(?))", store.Strings(keys))
 		case "all":
 		default:
-			filter.And("a.plugin_key = ANY(?)", keys)
+			conds.And("a.plugin_key = ANY(?)", store.Strings(keys))
 		}
 	}
 	// An account type is identified by (plugin key, type id): two plugins
@@ -560,19 +573,19 @@ func (s *Service) list(c *gin.Context) {
 		return
 	}
 	if v := c.Query("plugin_key"); v != "" {
-		filter.And("a.plugin_key = ?", v)
+		conds.And("a.plugin_key = ?", v)
 	}
 	if v := c.Query("type"); v != "" {
-		filter.And("a.type = ?", v)
+		conds.And("a.type = ?", v)
 	}
 	if v := c.Query("status"); v != "" {
 		switch v {
 		case "active":
-			filter.And("(a.status = ? AND a.schedulable)", v)
-		case "auto_disabled": // the console's three statuses: a legacy "error" reads as auto-disabled
-			filter.And("(a.status IN (?, 'error') OR (a.status = 'active' AND NOT a.schedulable))", v)
+			conds.And("(a.status = ? AND a.schedulable)", v)
+		case "auto_disabled": // the console's three statuses: an active account out of scheduling reads as auto-disabled
+			conds.And("(a.status = ? OR (a.status = 'active' AND NOT a.schedulable))", v)
 		default:
-			filter.And("a.status = ?", v)
+			conds.And("a.status = ?", v)
 		}
 	}
 	if v := c.Query("group_id"); v != "" {
@@ -581,7 +594,7 @@ func (s *Service) list(c *gin.Context) {
 			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("invalid group_id"))
 			return
 		}
-		filter.And("EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = ?)", gid)
+		conds.And("EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = ?)", gid)
 	}
 	// ids=1,2,3 narrows to the given accounts (a plugin toolbar slot hands
 	// the console a set to show); at most as many as one bulk request takes.
@@ -600,16 +613,15 @@ func (s *Service) list(c *gin.Context) {
 			}
 			ids = append(ids, id)
 		}
-		filter.And("a.id = ANY(?)", ids)
+		conds.And("a.id = ANY(?)", store.Int64s(ids))
 	}
 	if v := strings.TrimSpace(c.Query("q")); v != "" {
-		filter.And("a.name ILIKE '%' || ? || '%'", v)
+		conds.And("a.name ILIKE '%' || ? || '%'", v)
 	}
 	if v := strings.TrimSpace(c.Query("model")); v != "" {
-		filter.And("(a.models = '{}' OR ? = ANY(a.models))", v)
+		conds.And("(a.models = '{}' OR ? = ANY(a.models))", v)
 	}
-	where, args := filter.Cond(), filter.Args()
-	total, rows, err := s.listPage(ctx, where, args, page, size)
+	total, rows, err := s.listPage(ctx, conds, page, size)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -622,36 +634,53 @@ func (s *Service) list(c *gin.Context) {
 	httpapi.List(c, vs, httpapi.Page{Page: page, PageSize: size, Total: total})
 }
 
-// listSelectRow is selectRow without the encrypted credentials, which no list
-// column needs: CredEnc stays nil on rows read with it, so such rows must not
-// be decrypted or written back (fullView and every write path use loadRow).
-var listSelectRow = strings.Replace(selectRow, "a.credentials_enc", "NULL::bytea", 1)
+// listRowColumns are rowColumns without the encrypted credentials, which no
+// list column needs: CredEnc stays nil on rows read with them, so such rows
+// must not be decrypted or written back (fullView and every write path use
+// loadRow).
+var listRowColumns = strings.Replace(rowColumns, "a.credentials_enc", "NULL::bytea", 1)
 
-// listPage reads the total and one page of the filtered accounts in a single
-// round trip (one batch, two statements, unchanged SQL). Newest accounts
-// come first; editing priority or weight never moves a row, so the console's
-// auto-refresh keeps every account in place.
-func (s *Service) listPage(ctx context.Context, where string, args []any, page, size int) (int64, []*row, error) {
-	n := len(args)
-	batch := &pgx.Batch{}
-	batch.Queue(`SELECT count(*) FROM accounts a`+where, args...)
-	batch.Queue(listSelectRow+where+fmt.Sprintf(` ORDER BY a.created_at DESC, a.id DESC LIMIT $%d OFFSET $%d`, n+1, n+2),
-		append(slices.Clip(args), size, (page-1)*size)...)
-	br := s.d.DB.Pool.SendBatch(ctx, batch)
-	defer br.Close()
+// listPage reads the total and one page of the accounts conds keep, in one
+// statement: each row of the page carries the total (listRows). A page past
+// the end has no row to carry it, so only then is it counted on its own (on
+// the first page no row means none). Newest accounts come first; editing
+// priority or weight never moves a row, so the console's auto-refresh
+// keeps every account in place.
+func (s *Service) listPage(ctx context.Context, conds store.Conds, page, size int) (int64, []*row, error) {
+	db := store.G(ctx, s.d.DB.Gorm)
 	var total int64
-	if err := br.QueryRow().Scan(&total); err != nil {
-		return 0, nil, err
-	}
-	rs, err := br.Query()
+	rows, err := store.CollectRows(listRows(db, conds, page, size), func(rs *sql.Rows) (*row, error) {
+		return scanRow(withTotal{rs, &total})
+	})
 	if err != nil {
 		return 0, nil, err
 	}
-	rows, err := pgx.CollectRows(rs, func(r pgx.CollectableRow) (*row, error) { return scanRow(r) })
-	if err != nil {
-		return 0, nil, err
+	if len(rows) == 0 && page > 1 {
+		err = listCount(db, conds).Count(&total).Error
 	}
-	return total, rows, br.Close()
+	return total, rows, err
+}
+
+// withTotal scans a row of listRows: scanRow's columns, then the total.
+type withTotal struct {
+	rs    *sql.Rows
+	total *int64
+}
+
+func (w withTotal) Scan(dest ...any) error { return w.rs.Scan(append(dest, w.total)...) }
+
+// listCount counts the accounts conds keep.
+func listCount(db *gorm.DB, conds store.Conds) *gorm.DB {
+	return db.Table("accounts a").Scopes(conds.Scope())
+}
+
+// listRows selects one page of the accounts conds keep, in listRowColumns,
+// each row followed by the number of accounts conds keep (listCount as a
+// subquery, which PostgreSQL runs once, in the page's snapshot).
+func listRows(db *gorm.DB, conds store.Conds, page, size int) *gorm.DB {
+	total := listCount(db.Session(&gorm.Session{NewDB: true}), conds).Select("count(*)")
+	return db.Table("accounts a").Select(listRowColumns+", (?)", total).Joins("LEFT JOIN users u ON u.id = a.created_by").
+		Scopes(conds.Scope()).Order("a.created_at DESC, a.id DESC").Limit(size).Offset((page - 1) * size)
 }
 
 func (s *Service) get(c *gin.Context) {
@@ -688,12 +717,11 @@ func (n *nullable[T]) UnmarshalJSON(b []byte) error {
 }
 
 type input struct {
-	CCFeaturePolicy *ccgateway.AccountFeaturePolicy `json:"cc_feature_policy"`
-	Name            *string                         `json:"name"`
-	PluginKey       string                          `json:"plugin_key"`
-	Type            string                          `json:"type"`
-	GroupIDs        *[]int64                        `json:"group_ids"`
-	ProxyID         nullable[int64]                 `json:"proxy_id"`
+	Name      *string         `json:"name"`
+	PluginKey string          `json:"plugin_key"`
+	Type      string          `json:"type"`
+	GroupIDs  *[]int64        `json:"group_ids"`
+	ProxyID   nullable[int64] `json:"proxy_id"`
 	// ProxyURL names a proxy by address instead of id (CONTRACTS §21.4); it
 	// is looked up or created when the account is saved. Blank means absent.
 	ProxyURL       *string            `json:"proxy_url"`
@@ -704,7 +732,6 @@ type input struct {
 	AutoDisable    *bool              `json:"auto_disable"`
 	Status         *string            `json:"status"`
 	Models         *[]string          `json:"models"`
-	AutoModels     *bool              `json:"auto_models"`
 	ModelMapping   *map[string]string `json:"model_mapping"`
 	RPMLimit       *int               `json:"rpm_limit"`
 	TPMLimit       *int64             `json:"tpm_limit"`
@@ -724,10 +751,6 @@ type input struct {
 	ConversionLossPolicy core.LossPolicyInput `json:"conversion_loss_policy"`
 	Credentials          json.RawMessage      `json:"credentials"`
 	Settings             json.RawMessage      `json:"settings"`
-	PreparationKey       *string              `json:"preparation_key"`
-	// CCGatewayRuntime is the draft runtime key a new ccgateway/managed
-	// account adopts (CONTRACTS §49.10); create only. Blank means absent.
-	CCGatewayRuntime *string `json:"ccgateway_runtime"`
 }
 
 // hasCredentials reports whether the request carries a credentials object
@@ -745,6 +768,52 @@ func (in *input) paramOverride() *string {
 	}
 	s := string(in.ParamOverride)
 	return &s
+}
+
+// columns are the account columns a PATCH writes: the fields present (false
+// and 0 included) and what the update derived from them (the settings, the
+// status reason, the JSON documents, admin_locked), with updated_at. A
+// present list that is nil keeps the column. proxy_id and credentials_enc
+// are the caller's to add.
+func (in *input) columns(settings, reason, mapping, limits *string, adminLocked *bool) map[string]any {
+	set := map[string]any{"updated_at": gorm.Expr("clock_timestamp()")}
+	store.SetIf(set, "name", in.Name)
+	store.SetIf(set, "priority", in.Priority)
+	store.SetIf(set, "max_concurrency", in.MaxConcurrency)
+	store.SetIf(set, "schedulable", in.Schedulable)
+	if in.Status != nil {
+		set["status"], set["auto_disabled_until"] = *in.Status, nil
+	}
+	store.SetIf(set, "status_reason", reason)
+	store.SetIf(set, "settings", settings)
+	store.SetIf(set, "weight", in.Weight)
+	setList(set, "models", in.Models)
+	store.SetIf(set, "model_mapping", mapping)
+	store.SetIf(set, "rpm_limit", in.RPMLimit)
+	store.SetIf(set, "tpm_limit", in.TPMLimit)
+	store.SetIf(set, "auto_disable", in.AutoDisable)
+	store.SetIf(set, "model_limits", limits)
+	store.SetIf(set, "spm_limit", in.SPMLimit)
+	if in.Environment != nil && *in.Environment != nil {
+		set["environment"] = store.JSON[core.EnvironmentValues]{V: *in.Environment}
+	}
+	setList(set, "header_passthrough", in.HeaderPassthrough)
+	if len(in.ParamOverride) > 0 {
+		set["param_override"] = in.paramOverride()
+	}
+	if in.ConversionLossPolicy.Set {
+		set["conversion_loss_policy"] = in.ConversionLossPolicy.Stored()
+	}
+	store.SetIf(set, "spm_window_seconds", in.SPMWindowSeconds)
+	store.SetIf(set, "admin_locked", adminLocked)
+	return set
+}
+
+// setList puts the text[] *v into set unless v or *v is nil.
+func setList(set map[string]any, column string, v *[]string) {
+	if v != nil && *v != nil {
+		set[column] = store.Strings(*v)
+	}
 }
 
 // changedFields lists the request fields present in a PATCH for the audit
@@ -767,7 +836,6 @@ func (in *input) changedFields() []string {
 	set("auto_disable", in.AutoDisable != nil)
 	set("status", in.Status != nil)
 	set("models", in.Models != nil)
-	set("auto_models", in.AutoModels != nil)
 	set("model_mapping", in.ModelMapping != nil)
 	set("rpm_limit", in.RPMLimit != nil)
 	set("tpm_limit", in.TPMLimit != nil)
@@ -780,7 +848,6 @@ func (in *input) changedFields() []string {
 	set("conversion_loss_policy", in.ConversionLossPolicy.Set)
 	set("credentials", in.hasCredentials())
 	set("settings", len(in.Settings) > 0)
-	set("cc_feature_policy", in.CCFeaturePolicy != nil)
 	return out
 }
 
@@ -855,37 +922,14 @@ func (in *input) validate(ctx context.Context, create bool) []core.FieldError {
 			}
 		}
 	}
-	if in.CCFeaturePolicy != nil {
-		if create {
-			add("cc_feature_policy", "invalid", "configure CC features after account creation", "请在账号创建后配置 CC 特性")
-		} else if err := in.CCFeaturePolicy.Validate(); err != nil {
-			add("cc_feature_policy", "invalid", err.Error(), "CC 特性配置无效")
-		}
-	}
 	if create && len(in.Credentials) == 0 {
 		add("credentials", "required", "credentials are required", "凭证必填")
-	}
-	if in.PreparationKey != nil && (!create || len(*in.PreparationKey) == 0 || len(*in.PreparationKey) > 64) {
-		add("preparation_key", "invalid", "preparation_key is only accepted when creating an account", "preparation_key 只能在创建账号时提供")
-	}
-	if in.CCGatewayRuntime != nil {
-		k := strings.TrimSpace(*in.CCGatewayRuntime)
-		switch {
-		case k == "":
-			in.CCGatewayRuntime = nil
-		case !create:
-			add("ccgateway_runtime", "invalid", "ccgateway_runtime is only accepted when creating an account", "ccgateway_runtime 只能在新建账号时提供")
-		case in.PluginKey != "ccgateway" || in.Type != "managed":
-			add("ccgateway_runtime", "invalid", "ccgateway_runtime is only for ccgateway managed accounts", "ccgateway_runtime 只用于 ccgateway managed 账号")
-		default:
-			in.CCGatewayRuntime = &k
-		}
 	}
 	return fe
 }
 
 // validateScheduling checks the scheduling and limit fields present in the
-// input, also those a plugin sets through account_patch (CONTRACTS §68).
+// input (CONTRACTS §68).
 func (in *input) validateScheduling(ctx context.Context) []core.FieldError {
 	var fe []core.FieldError
 	add := func(field, code, en, zh string) {
@@ -986,13 +1030,13 @@ func normalizeMapping(ctx context.Context, in map[string]string) (map[string]str
 
 // checkRefs verifies that the proxy exists within the caller's proxy range.
 // A proxy outside the range is reported as not found, like a missing one.
-func checkRefs(ctx context.Context, q store.Querier, proxyID *int64, refs core.DataScope) error {
+func checkRefs(ctx context.Context, q *gorm.DB, proxyID *int64, refs core.DataScope) error {
 	if proxyID == nil {
 		return nil
 	}
 	var ok bool
-	err := q.QueryRow(ctx, `SELECT true FROM proxies p WHERE p.id = $1 AND `+core.ProxyRows.SQL(2),
-		append([]any{*proxyID}, core.ProxyRows.Args(refs)...)...).Scan(&ok)
+	err := store.G(ctx, q).Table("proxies p").Select("true").Where("p.id = ?", *proxyID).
+		Scopes(core.ProxyRows().Scope(refs)).Take(&ok).Error
 	if store.IsNoRows(err) {
 		return core.InvalidFields(core.FieldError{Field: "proxy_id", Code: "not_found",
 			Message: t(ctx, "proxy not found", "代理不存在")})
@@ -1002,6 +1046,14 @@ func checkRefs(ctx context.Context, q store.Querier, proxyID *int64, refs core.D
 
 // groupDiff is how a write changes an account's groups.
 type groupDiff struct{ added, removed, unbindable []int64 }
+
+// groupBinding is one group loadGroupDiff reads: whether the account is in
+// it, and whether the caller may bind it.
+type groupBinding struct {
+	ID       int64
+	Bound    bool
+	Bindable bool
+}
 
 func (d groupDiff) changed() bool { return len(d.added)+len(d.removed) > 0 }
 
@@ -1036,7 +1088,7 @@ var errWouldLeaveScope = core.NewError(403, "would_leave_scope", "")
 
 // stillInScope fails, inside the update's transaction, when the account
 // left the caller's scope.
-func stillInScope(ctx context.Context, tx pgx.Tx, id int64, scope core.DataScope) error {
+func stillInScope(ctx context.Context, tx *gorm.DB, id int64, scope core.DataScope) error {
 	ok, err := inScope(ctx, tx, id, scope)
 	if err == nil && !ok {
 		err = errWouldLeaveScope.WithMessage(t(ctx, "the change would move the account out of your range", "修改后账号将不在你的管理范围内"))
@@ -1046,41 +1098,38 @@ func stillInScope(ctx context.Context, tx pgx.Tx, id int64, scope core.DataScope
 
 // loadGroupDiff compares want (deduplicated; nil = not sent) with the groups
 // of accountID (0 on create) and marks the added groups uid may not bind
-// (segment.UsableGroupSQL). Groups of want that do not exist fail group_ids
+// (segment.UsableGroup). Groups of want that do not exist fail group_ids
 // not_found.
-func loadGroupDiff(ctx context.Context, q store.Querier, accountID int64, want []int64, uid int64) (groupDiff, error) {
+func loadGroupDiff(ctx context.Context, q *gorm.DB, accountID int64, want []int64, uid int64) (groupDiff, error) {
 	var d groupDiff
 	if want == nil {
 		return d, nil
 	}
-	rows, err := q.Query(ctx, `SELECT g.id, ag.account_id IS NOT NULL, `+segment.UsableGroupSQL("g", "$3")+`
-		FROM groups g LEFT JOIN account_groups ag ON ag.group_id = g.id AND ag.account_id = $1
-		WHERE g.id = ANY($2) OR ag.account_id IS NOT NULL`, accountID, want, uid)
-	if err != nil {
+	var groups []groupBinding
+	if err := store.G(ctx, q).Table("groups g").Select("g.id, ag.account_id IS NOT NULL AS bound, "+segment.UsableGroup+" AS bindable", uid).
+		Joins("LEFT JOIN account_groups ag ON ag.group_id = g.id AND ag.account_id = ?", accountID).
+		Where("g.id = ANY(?) OR ag.account_id IS NOT NULL", store.Int64s(want)).Scan(&groups).Error; err != nil {
 		return d, err
 	}
-	var id int64
-	var bound, bindable bool
 	found := 0
-	_, err = pgx.ForEachRow(rows, []any{&id, &bound, &bindable}, func() error {
+	for _, g := range groups {
 		switch {
-		case !slices.Contains(want, id): // bound, not wanted
-			d.removed = append(d.removed, id)
-			return nil
-		case !bound:
-			d.added = append(d.added, id)
-			if !bindable {
-				d.unbindable = append(d.unbindable, id)
+		case !slices.Contains(want, g.ID): // bound, not wanted
+			d.removed = append(d.removed, g.ID)
+			continue
+		case !g.Bound:
+			d.added = append(d.added, g.ID)
+			if !g.Bindable {
+				d.unbindable = append(d.unbindable, g.ID)
 			}
 		}
 		found++
-		return nil
-	})
-	if err == nil && found != len(want) {
-		err = core.InvalidFields(core.FieldError{Field: "group_ids", Code: "not_found",
+	}
+	if found != len(want) {
+		return d, core.InvalidFields(core.FieldError{Field: "group_ids", Code: "not_found",
 			Message: t(ctx, "some groups do not exist", "部分分组不存在")})
 	}
-	return d, err
+	return d, nil
 }
 
 // ownChange is what a write by an own-level caller changes; cur is nil on
@@ -1164,10 +1213,17 @@ func disabledReason(scope core.DataScope) string {
 // with group:manage, or with account:group:bind when every added group is
 // one the caller can use.
 func (s *Service) checkGroupBind(ctx context.Context, d groupDiff) error {
-	if !d.changed() || core.Can(ctx, s.d.Authorizer, "group:manage") {
+	if !d.changed() {
 		return nil
 	}
-	if !core.Can(ctx, s.d.Authorizer, "account:group:bind") {
+	if manage, err := core.Can(ctx, s.d.Authorizer, "group:manage"); manage || err != nil {
+		return err
+	}
+	bind, err := core.Can(ctx, s.d.Authorizer, "account:group:bind")
+	if err != nil {
+		return err
+	}
+	if !bind {
 		return core.ErrPermissionDenied.WithMessage(t(ctx,
 			"changing the groups of an account requires group:manage or account:group:bind permission",
 			"修改账号的分组需要 group:manage 或 account:group:bind 权限")).
@@ -1183,8 +1239,11 @@ func (s *Service) checkGroupBind(ctx context.Context, d groupDiff) error {
 // checkCustomUpstream refuses an own-level caller without account:relay a
 // type whose upstream address can be set freely (G2).
 func (s *Service) checkCustomUpstream(ctx context.Context, scope core.DataScope, bt core.AccountTypeBinding) error {
-	if !scope.Restricted() || !bt.Type.CustomUpstream() || core.Can(ctx, s.d.Authorizer, "account:relay") {
+	if !scope.Restricted() || !bt.Type.CustomUpstream() {
 		return nil
+	}
+	if relay, err := core.Can(ctx, s.d.Authorizer, "account:relay"); relay || err != nil {
+		return err
 	}
 	return core.ErrPermissionDenied.WithMessage(t(ctx,
 		"accounts with a custom upstream address require account:relay permission",
@@ -1194,13 +1253,57 @@ func (s *Service) checkCustomUpstream(ctx context.Context, scope core.DataScope,
 
 func uniqueIDs(in []int64) []int64 { return x.Unique(in) }
 
-func setGroups(ctx context.Context, tx pgx.Tx, id int64, groupIDs []int64) error {
-	if _, err := tx.Exec(ctx, `DELETE FROM account_groups WHERE account_id = $1 AND NOT (group_id = ANY($2))`, id, groupIDs); err != nil {
+func setGroups(ctx context.Context, tx *gorm.DB, id int64, groupIDs []int64) error {
+	g := store.G(ctx, tx)
+	if err := g.Where("account_id = ? AND NOT (group_id = ANY(?))", id, store.Int64s(groupIDs)).
+		Delete(&model.AccountGroup{}).Error; err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) SELECT $1, unnest($2::bigint[])
-		ON CONFLICT DO NOTHING`, id, groupIDs)
-	return err
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	rows := make([]model.AccountGroup, len(groupIDs))
+	for i, gid := range groupIDs {
+		rows[i] = model.AccountGroup{AccountID: id, GroupID: gid}
+	}
+	return g.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+}
+
+// accountInsertColumns are the columns a create writes; the others take
+// their defaults. Those with a non-zero default (status, schedulable,
+// priority, max_concurrency, weight, auto_disable, spm_window_seconds) are
+// pointers in model.Account, always set by the create, so a false or 0 the
+// caller chose is written as such.
+var accountInsertColumns = []string{"name", "plugin_key", "type", "credentials_enc", "settings",
+	"proxy_id", "status", "schedulable", "priority", "max_concurrency", "created_by",
+	"weight", "models", "model_mapping", "rpm_limit", "tpm_limit", "auto_disable", "model_limits", "spm_limit", "environment", "header_passthrough", "param_override",
+	"conversion_loss_policy", "spm_window_seconds"}
+
+// nonZero is &v, or nil (NULL) for the zero value: NULLIF(v, zero).
+func nonZero[T comparable](v T) *T {
+	var zero T
+	if v == zero {
+		return nil
+	}
+	return &v
+}
+
+// rawJSON is the jsonb value of a document, nil (NULL) for none.
+func rawJSON(doc *string) json.RawMessage {
+	if doc == nil {
+		return nil
+	}
+	return json.RawMessage(*doc)
+}
+
+// environmentJSON is the environment column of v; nil is the empty object,
+// the column's default.
+func environmentJSON(v core.EnvironmentValues) json.RawMessage {
+	if v == nil {
+		return json.RawMessage(`{}`)
+	}
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // basicPayload is the payload of account.created/updated/deleted (CONTRACTS §12).
@@ -1245,7 +1348,7 @@ func (s *Service) parseProxyURL(ctx context.Context, raw string) (*proxyByURL, e
 
 // resolveProxy runs FindOrCreate for a proxy_url inside the account's
 // transaction; the returned id becomes the account's proxy_id.
-func (s *Service) resolveProxy(ctx context.Context, tx pgx.Tx, p *proxyByURL, uid int64) (id int64, created bool, err error) {
+func (s *Service) resolveProxy(ctx context.Context, tx *gorm.DB, p *proxyByURL, uid int64) (id int64, created bool, err error) {
 	return s.d.Resolver.FindOrCreate(ctx, tx, p.spec, uid, p.scope)
 }
 
@@ -1253,7 +1356,7 @@ func (s *Service) resolveProxy(ctx context.Context, tx pgx.Tx, p *proxyByURL, ui
 // (same transaction). AuditAutoCreate also broadcasts config:changed for the
 // new proxy; nothing else is needed after the commit (no node can have
 // cached a proxy that did not exist before this request).
-func (s *Service) auditProxy(ctx context.Context, tx pgx.Tx, created bool, proxyID, uid, accountID int64) error {
+func (s *Service) auditProxy(ctx context.Context, tx *gorm.DB, created bool, proxyID, uid, accountID int64) error {
 	if !created {
 		return nil
 	}
@@ -1272,7 +1375,7 @@ func (s *Service) resolveWriteRefs(ctx context.Context, in *input, action perm.K
 		proxyID = &in.ProxyID.V
 	}
 	// A restricted caller references only proxies it can see (§21.2).
-	if err = checkRefs(ctx, s.d.DB.Pool, proxyID, s.proxyRefs(ctx, action)); err != nil {
+	if err = checkRefs(ctx, s.d.DB.Gorm, proxyID, s.proxyRefs(ctx, action)); err != nil {
 		return nil, nil, nil, err
 	}
 	if in.ProxyURL != nil {
@@ -1318,7 +1421,7 @@ func (s *Service) create(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	groups, err := loadGroupDiff(ctx, s.d.DB.Pool, 0, groupIDs, uid)
+	groups, err := loadGroupDiff(ctx, s.d.DB.Gorm, 0, groupIDs, uid)
 	if err == nil {
 		err = createInScope(ctx, scope, groupIDs)
 	}
@@ -1331,7 +1434,7 @@ func (s *Service) create(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if p.settings, err = s.mergeExtensions(ctx, bt, p.settings, in.Settings); err != nil {
+	if p.settings, err = s.mergeExtensions(bt, p.settings, in.Settings); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -1339,20 +1442,6 @@ func (s *Service) create(c *gin.Context) {
 	if err := s.checkOwnChange(ctx, scope, ownChange{bt: bt, in: &in, groups: groups}); err != nil {
 		httpapi.Fail(c, err)
 		return
-	}
-	preparation, facts, err := s.checkPreparationForCreate(ctx, bt, &in, p.settings)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	// A Claude Code account authorized before saving adopts its draft
-	// runtime in the insert transaction (CONTRACTS §49.10).
-	var draftScope *int64
-	if in.CCGatewayRuntime != nil {
-		if draftScope, facts, err = s.checkCCGatewayRuntime(ctx, *in.CCGatewayRuntime); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
 	}
 	// Declared defaults apply after the own-level restrictions: the
 	// declaration, not the caller, chose them.
@@ -1364,35 +1453,9 @@ func (s *Service) create(c *gin.Context) {
 	mapping := *in.ModelMapping
 	rpm, tpm, spm, spmWindow := *in.RPMLimit, *in.TPMLimit, *in.SPMLimit, *in.SPMWindowSeconds
 	modelLimits, environment, headerPassthrough := *in.ModelLimits, *in.Environment, *in.HeaderPassthrough
-	before, err := s.accountLifecycle(ctx, bt, &pluginv1.AccountLifecycleRequest{Phase: "before_create", Caller: &pluginv1.Caller{UserId: uid}, ResourceFactsJson: factsJSON(facts), Account: &pluginv1.Account{
-		Name: *in.Name, Type: bt.Type.ID, SettingsJson: string(p.settings), Properties: &pluginv1.AccountProperties{
-			Status: status, Schedulable: sched, AutoDisable: autoDisable, Priority: int32(prio), Weight: int32(weight), MaxConcurrency: int32(maxc),
-			RpmLimit: int32(rpm), TpmLimit: tpm, SpmLimit: int32(spm), ProxyId: proxyID, Models: models, AutoModels: in.AutoModels, ModelMapping: mapping,
-			ModelLimits: core.PluginModelLimits(modelLimits),
-		},
-	}})
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	// The plugin may adjust the account before it is saved (CONTRACTS §59),
-	// and set its read-only extensions from the observed facts.
-	patched, err := applyAccountPatch(ctx, before, controls.guardPatch(patchTarget{Models: &models, Mapping: &mapping,
-		Priority: &prio, Weight: &weight, MaxConcurrency: &maxc, RPMLimit: &rpm, TPMLimit: &tpm, SPMLimit: &spm, ModelLimits: &modelLimits}))
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	if settings, changed, err := s.applyExtensionsPatch(bt, p.settings, before); err != nil {
-		httpapi.Fail(c, err)
-		return
-	} else if changed {
-		p.settings = settings
-		patched = append(patched, "settings")
-	}
 	var id int64
 	proxyCreated := false
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		if byURL != nil {
 			// The proxy row must exist before the account references it.
 			pid, created, err := s.resolveProxy(ctx, tx, byURL, uid)
@@ -1401,18 +1464,17 @@ func (s *Service) create(c *gin.Context) {
 			}
 			proxyID, proxyCreated = &pid, created
 		}
-		if err := tx.QueryRow(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, settings,
-			proxy_id, status, schedulable, priority, max_concurrency, created_by,
-			weight, models, model_mapping, rpm_limit, tpm_limit, auto_disable, subscription_type, auto_models, model_limits, spm_limit, environment, header_passthrough, param_override,
-			conversion_loss_policy, spm_window_seconds)
-			VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, NULLIF($11::bigint, 0),
-			$12, $13, $14::jsonb, $15, $16, $17, NULLIF($18, ''), $19, $20::jsonb, $21, $22, $23::text[], $24::jsonb, $25, $26) RETURNING id`,
-			*in.Name, bt.Plugin.Key, bt.Type.ID, p.enc, string(p.settings),
-			proxyID, status, sched, prio, maxc, uid,
-			weight, models, mappingJSON(mapping), rpm, tpm, autoDisable, facts.SubscriptionType, in.AutoModels, modelLimitsJSON(modelLimits), spm, environment, headerPassthrough, in.paramOverride(),
-			in.ConversionLossPolicy.Stored(), spmWindow).Scan(&id); err != nil {
+		created := model.Account{Name: *in.Name, PluginKey: bt.Plugin.Key, Type: bt.Type.ID, CredentialsEnc: p.enc,
+			Settings: json.RawMessage(p.settings), ProxyID: proxyID, Status: &status, Schedulable: &sched, Priority: &prio,
+			MaxConcurrency: &maxc, CreatedBy: nonZero(uid), Weight: &weight, Models: store.Strings(models),
+			ModelMapping: json.RawMessage(mappingJSON(mapping)), RpmLimit: rpm, TpmLimit: tpm, AutoDisable: &autoDisable,
+			ModelLimits: json.RawMessage(modelLimitsJSON(modelLimits)), SpmLimit: spm, Environment: environmentJSON(environment),
+			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(in.paramOverride()),
+			ConversionLossPolicy: in.ConversionLossPolicy.Stored(), SpmWindowSeconds: &spmWindow}
+		if err := store.G(ctx, tx).Select(accountInsertColumns).Create(&created).Error; err != nil {
 			return err
 		}
+		id = created.ID
 		if err := setGroups(ctx, tx, id, groupIDs); err != nil {
 			return err
 		}
@@ -1424,29 +1486,14 @@ func (s *Service) create(c *gin.Context) {
 		if _, err := s.initializeQuota(ctx, tx, id, bt); err != nil {
 			return err
 		}
-		if preparation != nil {
-			if err := s.adoptPreparation(ctx, tx, *preparation, id); err != nil {
-				return err
-			}
-		}
-		if in.CCGatewayRuntime != nil {
-			if err := ccgateway.AdoptDraft(ctx, tx, *in.CCGatewayRuntime, id, draftScope); err != nil {
-				return err
-			}
-		}
 		if proxyID != nil {
 			if err := s.auditProxy(ctx, tx, proxyCreated, *proxyID, uid, id); err != nil {
 				return err
 			}
 		}
 		if err := audit.Audit(ctx, tx, uid, "account.create", "account", itoa(id),
-			createAudit(*in.Name, bt, facts, patched)); err != nil {
+			map[string]any{"name": *in.Name, "plugin_key": bt.Plugin.Key, "type": bt.Type.ID}); err != nil {
 			return err
-		}
-		if bt.Type.Lifecycle != nil {
-			if err := markLifecyclePending(ctx, tx, id); err != nil {
-				return err
-			}
 		}
 		return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountCreated,
 			Payload: basicPayload(id, bt.Plugin.Key, bt.Type.ID, *in.Name)})
@@ -1456,7 +1503,6 @@ func (s *Service) create(c *gin.Context) {
 		return
 	}
 	s.changed(ctx, id)
-	s.kickCCGateway(id, bt.Plugin.Key, bt.Type.ID)
 	// The row was just created by the caller: no scope needed.
 	v, err := s.fullView(ctx, id, core.AllScope)
 	if err != nil {
@@ -1488,16 +1534,11 @@ func (s *Service) update(c *gin.Context) {
 		in.Schedulable = &enabled
 	}
 	scope := s.scopeOf(ctx, perm.AccountUpdate)
-	cur, err := s.loadRow(ctx, s.d.DB.Pool, id, scope, false)
+	cur, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	if in.CCFeaturePolicy != nil && (cur.PluginKey != "ccgateway" || (cur.Type != "managed" && cur.Type != "apikey")) {
-		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "cc_feature_policy", Code: "invalid", Message: "CC features are only available for CCGateway accounts."}))
-		return
-	}
-	featureOnly := in.CCFeaturePolicy != nil && len(in.changedFields()) == 1
 	groupIDs, proxyID, byURL, err := s.resolveWriteRefs(ctx, &in, perm.AccountUpdate)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -1523,8 +1564,7 @@ func (s *Service) update(c *gin.Context) {
 			return
 		}
 		// Unchanged credentials keep their ciphertext: a fresh nonce would
-		// look like a credential change to whatever compares the stored bytes
-		// (CCGateway reapplies the account runtime on it).
+		// look like a credential change to whatever compares the stored bytes.
 		if stored, err := parseObject(base.secret); err == nil && bytes.Equal(mustJSON(stored), p.secret) {
 			p.enc = cur.CredEnc
 		}
@@ -1535,8 +1575,8 @@ func (s *Service) update(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	// The controls judge what the caller asked for, before the plugin's
-	// account_patch is merged into in.
+	// The controls judge what the caller asked for, before converge fills
+	// in the locked fields.
 	requested := in
 	var extensionSettings *string
 	if len(in.Settings) > 0 {
@@ -1544,7 +1584,7 @@ func (s *Service) update(c *gin.Context) {
 		if p != nil {
 			base = p.settings
 		}
-		merged, err := s.mergeExtensions(ctx, bt, base, in.Settings)
+		merged, err := s.mergeExtensions(bt, base, in.Settings)
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
@@ -1553,70 +1593,9 @@ func (s *Service) update(c *gin.Context) {
 		extensionSettings = &value
 	}
 	controls.converge(&in, cur)
-	lifecycleSettings := extensionSettings
-	if lifecycleSettings == nil && p != nil {
-		value := string(p.settings)
-		lifecycleSettings = &value
-	}
-	actorID, _ := core.UserID(ctx)
-	snapshot := in.lifecycleSnapshot(cur, lifecycleSettings)
-	facts := core.AccountPreparationFacts{SubscriptionType: core.ValueOr(cur.SubscriptionType, "")}
-	before, err := s.accountLifecycle(ctx, bt, &pluginv1.AccountLifecycleRequest{
-		Phase: "before_update", Caller: &pluginv1.Caller{UserId: actorID}, Account: snapshot,
-		ResourceFactsJson: factsJSON(facts), ChangedFields: in.changedFields(),
-	})
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	props := snapshot.GetProperties()
-	target := patchTarget{Models: new(props.GetModels()), Mapping: new(props.GetModelMapping()),
-		Priority: new(int(props.GetPriority())), Weight: new(int(props.GetWeight())), MaxConcurrency: new(int(props.GetMaxConcurrency())),
-		RPMLimit: new(int(props.GetRpmLimit())), TPMLimit: new(props.GetTpmLimit()), SPMLimit: new(int(props.GetSpmLimit())),
-		ModelLimits: new(core.ValueOr(in.ModelLimits, cur.modelLimits()))}
-	patched, err := applyAccountPatch(ctx, before, controls.guardPatch(target))
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	for _, field := range patched {
-		switch field {
-		case "models":
-			in.Models = target.Models
-		case "model_mapping":
-			in.ModelMapping = target.Mapping
-		case "priority":
-			in.Priority = target.Priority
-		case "weight":
-			in.Weight = target.Weight
-		case "max_concurrency":
-			in.MaxConcurrency = target.MaxConcurrency
-		case "rpm_limit":
-			in.RPMLimit = target.RPMLimit
-		case "tpm_limit":
-			in.TPMLimit = target.TPMLimit
-		case "spm_limit":
-			in.SPMLimit = target.SPMLimit
-		case "model_limits":
-			in.ModelLimits = target.ModelLimits
-		}
-	}
-	saving := cur.Settings
-	if extensionSettings != nil {
-		saving = []byte(*extensionSettings)
-	} else if p != nil {
-		saving = p.settings
-	}
-	if settings, changed, err := s.applyExtensionsPatch(bt, saving, before); err != nil {
-		httpapi.Fail(c, err)
-		return
-	} else if changed {
-		value := string(settings)
-		extensionSettings = &value
-	}
 	uid, _ := core.UserID(ctx)
 	setProxy, proxyCreated, usageLimitConverged := in.ProxyID.Set, false, false
-	err = s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		locked, err := s.loadRow(ctx, tx, id, scope, true)
 		if err != nil {
 			return err
@@ -1638,7 +1617,7 @@ func (s *Service) update(c *gin.Context) {
 		if usageLimitConverged, err = controls.convergeUsageLimit(ctx, tx, id); err != nil {
 			return err
 		}
-		if (p != nil || extensionSettings != nil || bt.Type.Lifecycle != nil) && !locked.UpdatedAt.Equal(cur.UpdatedAt) {
+		if (p != nil || extensionSettings != nil) && !locked.UpdatedAt.Equal(cur.UpdatedAt) {
 			return core.ErrConflict.WithMessage(t(ctx, "the account was modified concurrently, please retry",
 				"账号已被其他操作修改，请重试"))
 		}
@@ -1685,37 +1664,14 @@ func (s *Service) update(c *gin.Context) {
 			l := modelLimitsJSON(*in.ModelLimits)
 			limits = &l
 		}
-		if _, err := tx.Exec(ctx, `UPDATE accounts a SET
-			name = COALESCE($2, name),
-			proxy_id = CASE WHEN $3 THEN $4 ELSE proxy_id END,
-			priority = COALESCE($5, priority),
-			max_concurrency = COALESCE($6, max_concurrency),
-			schedulable = COALESCE($7, schedulable),
-			status = COALESCE($8, status),
-			auto_disabled_until = CASE WHEN $8::text IS NOT NULL THEN NULL ELSE auto_disabled_until END,
-			status_reason = COALESCE($9, status_reason),
-			credentials_enc = COALESCE($10, credentials_enc),
-			settings = COALESCE($11::jsonb, settings),
-			weight = COALESCE($12, weight),
-			models = COALESCE($13::text[], models),
-			model_mapping = COALESCE($14::jsonb, model_mapping),
-			rpm_limit = COALESCE($15, rpm_limit),
-			tpm_limit = COALESCE($16, tpm_limit),
-			auto_disable = COALESCE($17, auto_disable),
-			auto_models = COALESCE($18, auto_models),
-			model_limits = COALESCE($19::jsonb, model_limits),
-			spm_limit = COALESCE($20, spm_limit),
-			environment = COALESCE($21, environment),
-			header_passthrough = COALESCE($22::text[], header_passthrough),
-			param_override = CASE WHEN $23 THEN $24::jsonb ELSE param_override END,
-			conversion_loss_policy = CASE WHEN $25 THEN $26 ELSE conversion_loss_policy END,
-			spm_window_seconds = COALESCE($27, spm_window_seconds),
-			admin_locked = COALESCE($28, admin_locked),
-			updated_at = clock_timestamp()
-			WHERE a.id = $1 AND `+core.AccountRows.SQL(29), append([]any{id, in.Name, setProxy, proxyID, in.Priority, in.MaxConcurrency, in.Schedulable,
-			in.Status, reason, enc, settings, in.Weight, in.Models, mapping, in.RPMLimit, in.TPMLimit,
-			in.AutoDisable, in.AutoModels, limits, in.SPMLimit, in.Environment, in.HeaderPassthrough,
-			len(in.ParamOverride) > 0, in.paramOverride(), in.ConversionLossPolicy.Set, in.ConversionLossPolicy.Stored(), in.SPMWindowSeconds, adminLocked}, core.AccountRows.Args(scope)...)...); err != nil {
+		set := in.columns(settings, reason, mapping, limits, adminLocked)
+		if setProxy {
+			set["proxy_id"] = proxyID
+		}
+		if enc != nil {
+			set["credentials_enc"] = enc
+		}
+		if err := scopedAccount(store.G(ctx, tx), id, scope).Updates(set).Error; err != nil {
 			return err
 		}
 		if statusChanged && *in.Status == "active" && limitDisabled(locked.Status, locked.AutoDisabledSource) {
@@ -1731,31 +1687,18 @@ func (s *Service) update(c *gin.Context) {
 				return err
 			}
 		}
-		if in.CCFeaturePolicy != nil {
-			if s.d.CCGateway == nil {
-				return core.ErrUnavailable.WithMessage("CC feature configuration unavailable.")
-			}
-			if err := s.d.CCGateway.SaveAccountFeatures(ctx, tx, id, *in.CCFeaturePolicy); err != nil {
-				return err
-			}
-		}
 		if proxyID != nil {
 			if err := s.auditProxy(ctx, tx, proxyCreated, *proxyID, uid, id); err != nil {
 				return err
 			}
 		}
 		if err := audit.Audit(ctx, tx, uid, "account.update", "account", itoa(id),
-			map[string]any{"fields": in.changedFields(), "plugin_changed": patched}); err != nil {
+			map[string]any{"fields": in.changedFields()}); err != nil {
 			return err
 		}
 		name := locked.Name
 		if in.Name != nil {
 			name = *in.Name
-		}
-		if bt.Type.Lifecycle != nil && !featureOnly {
-			if err := markLifecyclePending(ctx, tx, id); err != nil {
-				return err
-			}
 		}
 		payload := basicPayload(id, locked.PluginKey, locked.Type, name)
 		payload["changed_fields"] = in.changedFields()
@@ -1780,9 +1723,6 @@ func (s *Service) update(c *gin.Context) {
 		}
 	}
 	s.changed(ctx, id)
-	if !featureOnly {
-		s.kickCCGateway(id, cur.PluginKey, cur.Type)
-	}
 	v, err := s.fullView(ctx, id, scope)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -1800,7 +1740,6 @@ func (s *Service) update(c *gin.Context) {
 // active again, while the administrator's schedulable switch is preserved.
 // The quota snapshot remains an upstream observation, and credentials,
 // configured limits and live concurrency leases are never reset here.
-// CCGateway runtimes reconcile immediately after the committed change.
 func (s *Service) resetStatus(c *gin.Context) {
 	ctx := audit.Context(c)
 	id, ok := httpapi.PathID(c, "id")
@@ -1810,7 +1749,7 @@ func (s *Service) resetStatus(c *gin.Context) {
 	scope := s.scopeOf(ctx, perm.AccountUpdate)
 	uid, _ := core.UserID(ctx)
 	var a *row
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		loaded, err := s.loadRow(ctx, tx, id, scope, true)
 		if err != nil {
 			return err
@@ -1830,9 +1769,7 @@ func (s *Service) resetStatus(c *gin.Context) {
 		if statusReset {
 			// A reset unlocks (an own-level reset of a locked account was
 			// refused above).
-			if _, err := tx.Exec(ctx, `UPDATE accounts SET status = 'active', status_reason = '', auto_disabled_until = NULL,
-				admin_locked = false, updated_at = clock_timestamp()
-				WHERE id = $1`, id); err != nil {
+			if err := resetStatus(store.G(ctx, tx), id).Error; err != nil {
 				return err
 			}
 			// Brought back by hand: the usage limit leaves it running for
@@ -1862,13 +1799,18 @@ func (s *Service) resetStatus(c *gin.Context) {
 	s.evictQuotaCache(ctx, id)
 	s.evictBalanceCache(ctx, id)
 	s.changed(ctx, id)
-	s.kickCCGateway(id, a.PluginKey, a.Type)
 	v, err := s.fullView(ctx, id, scope)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	httpapi.OK(c, v)
+}
+
+// resetStatus brings account id back to active, unlocked.
+func resetStatus(db *gorm.DB, id int64) *gorm.DB {
+	return db.Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{"status": "active", "status_reason": "",
+		"auto_disabled_until": nil, "admin_locked": false, "updated_at": gorm.Expr("clock_timestamp()")})
 }
 
 // clearCooldown deletes the account's runtime scheduling block (the Redis
@@ -1890,39 +1832,28 @@ func (s *Service) delete(c *gin.Context) {
 	if !ok {
 		return
 	}
-	retain, ok := parseRetain(c)
-	if !ok {
-		return
-	}
 	scope := s.scopeOf(ctx, perm.AccountDelete)
 	uid, _ := core.UserID(ctx)
-	var authzVersion int64
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		var pk, typ, name string
-		err := tx.QueryRow(ctx, `UPDATE accounts a SET deleted_at = now(), updated_at = now()
-			WHERE a.id = $1 AND a.deleted_at IS NULL AND `+core.AccountRows.SQL(2)+` RETURNING plugin_key, type, name`,
-			append([]any{id}, core.AccountRows.Args(scope)...)...).Scan(&pk, &typ, &name)
-		if store.IsNoRows(err) {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+		var deleted model.Account
+		res := store.G(ctx, tx).Model(&deleted).Table("accounts a").
+			Clauses(clause.Returning{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "type"}, {Name: "name"}}}).
+			Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows().Scope(scope)).
+			Updates(map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()")})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
 			return notFound(ctx)
 		}
-		if err != nil {
+		pk, typ, name := deleted.PluginKey, deleted.Type, deleted.Name
+		if err := store.G(ctx, tx).Where("account_id = ?", id).Delete(&model.AccountGroup{}).Error; err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM account_groups WHERE account_id = $1`, id); err != nil {
+		if _, err := s.d.ScopeGrants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefAccount, []int64{id}); err != nil {
 			return err
 		}
-		if authzVersion, err = core.ClearScopeGrants(ctx, tx, uid, core.ScopeRefAccount, []int64{id}); err != nil {
-			return err
-		}
-		retainUntil, err := s.markResourcesDeleted(ctx, tx, id, pk, typ, retain)
-		if err != nil {
-			return err
-		}
-		detail := map[string]any{"name": name}
-		if retainUntil != nil {
-			detail["retain_until"] = retainUntil.UTC().Format(time.RFC3339)
-		}
-		if err := audit.Audit(ctx, tx, uid, "account.delete", "account", itoa(id), detail); err != nil {
+		if err := audit.Audit(ctx, tx, uid, "account.delete", "account", itoa(id), map[string]any{"name": name}); err != nil {
 			return err
 		}
 		return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountDeleted, Payload: basicPayload(id, pk, typ, name)})
@@ -1931,7 +1862,6 @@ func (s *Service) delete(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	core.AnnounceAuthzChanged(ctx, s.d.Bus, authzVersion)
 	if s.d.Redis != nil {
 		_ = s.d.Redis.Del(ctx, cooldownKey(id)).Err()
 	}
@@ -1939,21 +1869,6 @@ func (s *Service) delete(c *gin.Context) {
 	s.evictBalanceCache(ctx, id)
 	s.changed(ctx, id)
 	httpapi.NoContent(c)
-}
-
-// parseRetain reads retain_resources: 1 keeps the account's resources
-// (stopped) for the retention days its type declares
-// (lifecycle.deletion.retentionDays); omitted deletes them at once. Anything
-// else is answered as invalid (ok false).
-func parseRetain(c *gin.Context) (retain, ok bool) {
-	switch c.Query("retain_resources") {
-	case "":
-		return false, true
-	case "1":
-		return true, true
-	}
-	httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("retain_resources must be 1 or omitted."))
-	return false, false
 }
 
 // ---------------------------------------------------------------- reveal
@@ -1964,7 +1879,7 @@ func (s *Service) reveal(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountCredentialView), false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountCredentialView), false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -1980,7 +1895,7 @@ func (s *Service) reveal(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := audit.Audit(ctx, s.d.DB.Pool, uid, "account.credentials.reveal", "account", itoa(id), nil); err != nil {
+	if err := audit.Audit(ctx, s.d.DB.Gorm, uid, "account.credentials.reveal", "account", itoa(id), nil); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

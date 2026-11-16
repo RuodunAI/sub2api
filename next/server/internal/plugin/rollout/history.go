@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type historyState struct {
@@ -23,9 +28,8 @@ func (c *Controller) recordNodeHistory(ctx context.Context, key string, s NodePl
 		return
 	}
 	message, _ := json.Marshal(map[string]string{"standby": s.Standby, "fallback": s.Fallback, "error": s.Error, "rollout": s.Rollout})
-	_, err := c.o.DB.Pool.Exec(ctx, `INSERT INTO plugin_history(plugin_key,rollout_id,node_id,boot_id,state,version,message)
-        VALUES($1,NULLIF($2,0),$3,$4,$5,$6,$7)`, key, s.RolloutID, c.o.Node.NodeID(), c.o.Node.BootID(), s.State, s.Serving, string(message))
-	if err != nil {
+	row := historyRow(key, s, c.o.Node.NodeID(), c.o.Node.BootID(), string(message))
+	if err := store.G(ctx, c.o.DB.Gorm).Create(row).Error; err != nil {
 		c.log.Warn("persist plugin node history failed", "plugin", key, "err", err)
 		return
 	}
@@ -35,14 +39,29 @@ func (c *Controller) recordNodeHistory(ctx context.Context, key string, s NodePl
 	c.history[key] = signature
 }
 
+// historyRow is the plugin_history row of a node state; rollout 0 is none
+// (NULL).
+func historyRow(key string, s NodePluginState, nodeID, bootID, message string) *model.PluginHistory {
+	row := &model.PluginHistory{PluginKey: key, NodeID: nodeID, BootID: bootID, State: s.State, Version: s.Serving, Message: message}
+	if s.RolloutID != 0 {
+		row.RolloutID = &s.RolloutID
+	}
+	return row
+}
+
+// pruneHistory deletes the oldest history rows past the 30 days.
+func pruneHistory(g *gorm.DB) *gorm.DB {
+	// Bounded deletion avoids long transactions on busy clusters.
+	return g.Where("id IN (?)", g.Model(&model.PluginHistory{}).Select("id").
+		Where("created_at < now() - interval '30 days'").Order("created_at").Limit(10000)).
+		Delete(&model.PluginHistory{})
+}
+
 func (c *Controller) cleanHistory(ctx context.Context) {
 	if time.Since(c.historyCleaned) < time.Hour {
 		return
 	}
-	// Bounded deletion avoids long transactions on busy clusters.
-	_, err := c.o.DB.Pool.Exec(ctx, `DELETE FROM plugin_history WHERE id IN
-        (SELECT id FROM plugin_history WHERE created_at < now() - interval '30 days' ORDER BY created_at LIMIT 10000)`)
-	if err != nil {
+	if err := pruneHistory(store.G(ctx, c.o.DB.Gorm)).Error; err != nil {
 		c.log.Warn("clean plugin history failed", "err", err)
 		return
 	}

@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/tidwall/gjson"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
@@ -57,17 +56,14 @@ func TestMigration0011Rolling(t *testing.T) {
 	dsn, schema := pluginsdktest.NewSchema(t, "plg_moderation_t")
 	pluginsdktest.ApplyMigrations(t, dsn, schema, migrationDir(t, func(n string) bool { return n < "0011" }))
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(ctx)
+	db := connect(t, dsn)
+	conn := sqlOf(t, db) // the 0.9.3 statements, verbatim
 	now := time.Now().UTC()
 	spec := `{"model_filter":{"type":"all","models":[]},"sample_rate":100,"total_timeout_ms":5000,"stages":[]}`
 	write := func(name string) int64 {
 		t.Helper()
 		var id int64
-		if err := conn.QueryRow(ctx, v093InsertFlow, name, spec, now).Scan(&id); err != nil {
+		if err := conn.QueryRowContext(ctx, v093InsertFlow, name, spec, now).Scan(&id); err != nil {
 			t.Fatalf("0.9.3 insert flow: %v", err)
 		}
 		for _, step := range []struct {
@@ -82,7 +78,7 @@ func TestMigration0011Rolling(t *testing.T) {
 				ResultBlock, TimingPre, id, 1, "sexual", 0.99, []string{"sexual"}, []byte(`{}`),
 				"anthropic.messages", nil, 0, 0, now.Add(time.Hour), 0, "/v1/messages", "", false}},
 		} {
-			if _, err := conn.Exec(ctx, step.sql, step.args...); err != nil {
+			if _, err := conn.ExecContext(ctx, step.sql, step.args...); err != nil {
 				t.Fatalf("0.9.3 statement %.40q: %v", step.sql, err)
 			}
 		}
@@ -91,25 +87,16 @@ func TestMigration0011Rolling(t *testing.T) {
 	read := func() {
 		t.Helper()
 		for _, q := range []string{v093LiveFlows, v093FlowViews} {
-			rows, err := conn.Query(ctx, q)
-			if err == nil {
-				_, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (int, error) { return 0, nil })
-			}
-			if err != nil {
+			if err := drain(conn.QueryContext(ctx, q)); err != nil {
 				t.Fatalf("0.9.3 query %.40q: %v", q, err)
 			}
 		}
-		rows, _ := conn.Query(ctx, `SELECT id FROM events`)
-		ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-		if err != nil {
+		var ids []int64
+		if err := db.Raw(`SELECT id FROM events`).Scan(&ids).Error; err != nil {
 			t.Fatal(err)
 		}
 		for _, id := range ids {
-			rows, err := conn.Query(ctx, v093GetEvent, id)
-			if err == nil {
-				_, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (int, error) { return 0, nil })
-			}
-			if err != nil {
+			if err := drain(conn.QueryContext(ctx, v093GetEvent, id)); err != nil {
 				t.Fatalf("0.9.3 getEvent: %v", err)
 			}
 		}

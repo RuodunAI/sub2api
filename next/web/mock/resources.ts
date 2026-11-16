@@ -1,8 +1,8 @@
 // Mock handlers: users, roles, permissions, API keys, groups, proxies, nodes,
 // publishers. (Accounts and account types live in their own mock module.)
-import { SCOPABLE, canonicalPermission, parsePermission } from '../src/authz/implies'
+import { SCOPABLE, canonicalPermission, parsePermission, permissionIndex } from '../src/authz/implies'
 import { fail, nextId, noContent, now, on, paginate, type MockRequest } from './router'
-import { ALL_PERMISSIONS, caller, filterOwned, hasPerm, inScope, moderatorUser, ownerScope, pricerUser, readonlyUser, stepUp, userEmail, vendorUser } from './core'
+import { ALL_PERMISSIONS, MANAGER_PLUGIN_KEYS, SUPER_ONLY_KEYS, caller, filterOwned, hasPerm, inScope, moderatorUser, ownerScope, pricerUser, readonlyUser, stepUp, stepUpRequired, userEmail, vendorUser, type Identity } from './core'
 import { accounts, groupAccountCount, groupPlatforms, proxyAccountCount } from './accounts'
 import { pricedModels } from './billing'
 import { accessOf, findSegment, forgetGroup, forgetUser, groupAccess, moveUser, rateOf, rulesWhere, segmentOfUser, segmentRef, type RuleRow } from './pricingStore'
@@ -22,11 +22,26 @@ export function invalid(field: string, message: string, code = 'invalid') {
 
 // ------------------------------------------------------------------ permissions
 
+type Risk = 'low' | 'sensitive' | 'critical'
+/** A plugin permission's manifest scope (manifest.PermissionScope; resource "value" for an enum). */
+interface ScopeDecl {
+  resource: string
+  own?: boolean
+  options?: string
+  values?: Array<{ key: string; label: L }>
+}
 interface PermDef {
   key: string
   label: L
-  sensitive?: boolean
+  /** Core keys: the super-only ones are critical whatever this says (corePerm.risk). */
+  risk?: Risk
   status?: string
+  // Plugin keys (UI 3.16).
+  group?: string
+  requires?: string[]
+  scope?: ScopeDecl
+  /** Built-in role → full canonical keys, as GET /permissions sends them. */
+  defaults?: Record<string, string[]>
 }
 interface ModuleDef {
   module: string
@@ -34,78 +49,122 @@ interface ModuleDef {
   source: 'core' | 'plugin'
   plugin_key?: string | null
   status: string
+  groups?: Array<{ key: string; label: L; sort: number }>
   permissions: PermDef[]
 }
 
 const MODULES: ModuleDef[] = [
   { module: 'user', label: L('Users', '用户'), source: 'core', status: 'active', permissions: [
     { key: 'user:read', label: L('View', '查看') }, { key: 'user:create', label: L('Create', '新建') },
-    { key: 'user:update', label: L('Edit', '编辑') }, { key: 'user:delete', label: L('Delete', '删除'), sensitive: true },
-    { key: 'user:password:reset', label: L('Reset passwords and 2FA', '重置密码与两步验证'), sensitive: true }] },
+    { key: 'user:update', label: L('Edit', '编辑') }, { key: 'user:delete', label: L('Delete', '删除'), risk: 'sensitive' },
+    { key: 'user:password:reset', label: L('Reset passwords and 2FA', '重置密码与两步验证'), risk: 'sensitive' }] },
   { module: 'segment', label: L('User groups', '用户组'), source: 'core', status: 'active', permissions: [
     { key: 'segment:read', label: L('View', '查看') }, { key: 'segment:manage', label: L('Manage', '管理') }] },
   { module: 'role', label: L('Roles', '角色'), source: 'core', status: 'active', permissions: [
-    { key: 'role:read', label: L('View', '查看') }, { key: 'role:define', label: L('Define', '定义'), sensitive: true },
-    { key: 'role:assign', label: L('Assign', '分配'), sensitive: true }] },
+    { key: 'role:read', label: L('View', '查看') }, { key: 'role:define', label: L('Define', '定义'), risk: 'sensitive' },
+    { key: 'role:assign', label: L('Assign', '分配'), risk: 'sensitive' }] },
   { module: 'apikey', label: L('API keys', 'API Key'), source: 'core', status: 'active', permissions: [
     { key: 'apikey:self:manage', label: L('Manage own', '管理自己的') }] },
   { module: 'group', label: L('Groups', '分组'), source: 'core', status: 'active', permissions: [
     { key: 'group:read', label: L('View', '查看') }, { key: 'group:manage', label: L('Manage', '管理') }] },
   { module: 'account', label: L('Accounts', '账号'), source: 'core', status: 'active', permissions: [
     { key: 'account:read', label: L('View', '查看') }, { key: 'account:create', label: L('Create', '新建') },
-    { key: 'account:update', label: L('Edit', '编辑') }, { key: 'account:delete', label: L('Delete', '删除'), sensitive: true },
-    { key: 'account:test', label: L('Test', '测试') }, { key: 'account:credential:view', label: L('View credentials', '查看凭证'), sensitive: true },
+    { key: 'account:update', label: L('Edit', '编辑') }, { key: 'account:delete', label: L('Delete', '删除'), risk: 'sensitive' },
+    { key: 'account:test', label: L('Test', '测试') }, { key: 'account:credential:view', label: L('View credentials', '查看凭证'), risk: 'sensitive' },
     { key: 'account:settings:custom', label: L('Custom restricted settings', '自定义受限设置') },
     { key: 'account:group:bind', label: L('Bind accounts to groups (own level)', '将账号绑定到分组（own 级）') },
-    { key: 'account:relay', label: L('Create relay-type accounts with custom upstream', '创建自定义上游的 relay 类账号'), sensitive: true }] },
+    { key: 'account:relay', label: L('Create relay-type accounts with custom upstream', '创建自定义上游的 relay 类账号'), risk: 'sensitive' }] },
   { module: 'proxy', label: L('Proxies', '代理'), source: 'core', status: 'active', permissions: [
     { key: 'proxy:read', label: L('View', '查看') }, { key: 'proxy:manage', label: L('Manage', '管理') }] },
   { module: 'price', label: L('Prices', '价格'), source: 'core', status: 'active', permissions: [
     { key: 'price:read', label: L('View', '查看') }, { key: 'price:manage', label: L('Manage', '管理') }] },
   { module: 'balance', label: L('Balance', '余额'), source: 'core', status: 'active', permissions: [
     { key: 'balance:self:read', label: L('View own', '查看自己的') }, { key: 'balance:all:read', label: L('View all', '查看全部') },
-    { key: 'balance:adjust', label: L('Adjust plain users', '调整普通用户'), sensitive: true },
-    { key: 'balance:adjust:any', label: L('Adjust any managed user', '调整任意可管理用户'), sensitive: true }] },
+    { key: 'balance:adjust', label: L('Adjust plain users', '调整普通用户'), risk: 'sensitive' },
+    { key: 'balance:adjust:any', label: L('Adjust any managed user', '调整任意可管理用户'), risk: 'sensitive' }] },
   { module: 'usage', label: L('Usage', '使用记录'), source: 'core', status: 'active', permissions: [
     { key: 'usage:self:read', label: L('View own', '查看自己的') }, { key: 'usage:all:read', label: L('View all', '查看全部') },
-    { key: 'usage:settle', label: L('Settle usage', '结算用量'), sensitive: true }] },
+    { key: 'usage:settle', label: L('Settle usage', '结算用量'), risk: 'sensitive' }] },
   { module: 'sticky', label: L('Sticky sessions', '粘性会话'), source: 'core', status: 'active', permissions: [
     { key: 'sticky:read', label: L('View', '查看') }, { key: 'sticky:manage', label: L('Manage', '管理') }] },
   { module: 'plugin', label: L('Plugins', '插件管理'), source: 'core', status: 'active', permissions: [
-    { key: 'plugin:read', label: L('View', '查看') }, { key: 'plugin:install', label: L('Install', '安装'), sensitive: true },
-    { key: 'plugin:manage', label: L('Manage', '管理') }, { key: 'plugin:uninstall', label: L('Uninstall', '卸载'), sensitive: true },
+    { key: 'plugin:read', label: L('View', '查看') }, { key: 'plugin:install', label: L('Install', '安装'), risk: 'sensitive' },
+    { key: 'plugin:manage', label: L('Manage', '管理') }, { key: 'plugin:uninstall', label: L('Uninstall', '卸载'), risk: 'sensitive' },
     { key: 'plugin:grant:high', label: L('Grant high risk', '授予高风险权限') },
-    { key: 'plugin:grant:critical', label: L('Grant critical risk', '授予极高风险权限'), sensitive: true },
-    { key: 'plugin:grant:db_schema_unconfined', label: L('Grant db.schema without role isolation', '无角色隔离时授予 db.schema'), sensitive: true },
+    { key: 'plugin:grant:critical', label: L('Grant critical risk', '授予极高风险权限'), risk: 'sensitive' },
+    { key: 'plugin:grant:db_schema_unconfined', label: L('Grant db.schema without role isolation', '无角色隔离时授予 db.schema'), risk: 'sensitive' },
     { key: 'plugin:egress:read', label: L('View egress', '查看出口流量') }, { key: 'plugin:market:read', label: L('Browse market', '浏览市场') }] },
   { module: 'publisher', label: L('Publishers', '发布者'), source: 'core', status: 'active', permissions: [
-    { key: 'publisher:read', label: L('View', '查看') }, { key: 'publisher:manage', label: L('Manage', '管理'), sensitive: true }] },
+    { key: 'publisher:read', label: L('View', '查看') }, { key: 'publisher:manage', label: L('Manage', '管理'), risk: 'sensitive' }] },
   { module: 'node', label: L('Cluster', '集群'), source: 'core', status: 'active', permissions: [{ key: 'node:read', label: L('View nodes', '查看节点') }] },
   { module: 'audit', label: L('Audit logs', '审计日志'), source: 'core', status: 'active', permissions: [{ key: 'audit:read', label: L('View audit logs', '查看审计日志') }] },
-  { module: 'task', label: L('Scheduled tasks', '定时任务'), source: 'core', status: 'active', permissions: [{ key: 'task:read', label: L('View scheduled tasks', '查看定时任务') }, { key: 'task:run', label: L('Run scheduled tasks manually', '手动运行定时任务') }, { key: 'task:manage', label: L('Manage scheduled tasks', '管理定时任务'), sensitive: true }] },
+  { module: 'task', label: L('Scheduled tasks', '定时任务'), source: 'core', status: 'active', permissions: [{ key: 'task:read', label: L('View scheduled tasks', '查看定时任务') }, { key: 'task:run', label: L('Run scheduled tasks manually', '手动运行定时任务') }, { key: 'task:manage', label: L('Manage scheduled tasks', '管理定时任务'), risk: 'sensitive' }] },
   { module: 'gateway', label: L('Gateway', '网关'), source: 'core', status: 'active', permissions: [{ key: 'gateway:use', label: L('Call gateway', '调用网关') }] },
   { module: 'settings', label: L('Settings', '系统设置'), source: 'core', status: 'active', permissions: [
     { key: 'settings:read', label: L('View', '查看') }, { key: 'settings:manage', label: L('Manage', '管理') }] },
   { module: 'system', label: L('Core updates', '核心升级'), source: 'core', status: 'active', permissions: [
-    { key: 'system:update:read', label: L('View', '查看') }, { key: 'system:update:execute', label: L('Upgrade', '升级'), sensitive: true },
-    { key: 'system:update:recover', label: L('Recover', '恢复'), sensitive: true }] },
+    { key: 'system:update:read', label: L('View', '查看') }, { key: 'system:update:execute', label: L('Upgrade', '升级'), risk: 'sensitive' },
+    { key: 'system:update:recover', label: L('Recover', '恢复'), risk: 'sensitive' }] },
   { module: 'plugin.anthropic', label: L('Anthropic', 'Anthropic'), source: 'plugin', plugin_key: 'anthropic', status: 'active', permissions: [
     { key: 'plugin.anthropic:model_catalog:read', label: L('View model catalog', '查看模型目录') }] },
-  { module: 'plugin.guard', label: L('Guard', 'Guard'), source: 'plugin', plugin_key: 'guard', status: 'active', permissions: [
-    { key: 'plugin.guard:stats:read', label: L('View stats', '查看统计') }, { key: 'plugin.guard:rules:read', label: L('View rules', '查看规则') },
-    { key: 'plugin.guard:rules:manage', label: L('Manage rules', '管理规则'), sensitive: true }] },
+  // Groups, a resource scope, an enum scope and a critical key: the permission matrix (UI 3.16).
+  { module: 'plugin.guard', label: L('Guard', 'Guard'), source: 'plugin', plugin_key: 'guard', status: 'active',
+    groups: [{ key: 'rules', label: L('Rules', '拦截规则'), sort: 10 }, { key: 'ops', label: L('Operations', '运行'), sort: 20 }], permissions: [
+      { key: 'plugin.guard:rules:read', label: L('View rules', '查看规则'), group: 'rules',
+        defaults: { admin: ['plugin.guard:rules:read'], operator: ['plugin.guard:rules:read'] } },
+      { key: 'plugin.guard:rules:manage', label: L('Manage rules', '管理规则'), risk: 'sensitive', group: 'rules', requires: ['plugin.guard:rules:read'],
+        scope: { resource: 'ruleset', own: true, options: '/scopes/ruleset' },
+        defaults: { admin: ['plugin.guard:rules:manage'], operator: ['plugin.guard:rules:manage:own'] } },
+      // No longer declared by the running version (0.2.0 brings it back): kept on the roles holding it until taken off.
+      { key: 'plugin.guard:rules:test', label: L('Dry-run rules', '试运行规则'), group: 'rules', status: 'removed' },
+      { key: 'plugin.guard:stats:read', label: L('View stats', '查看统计'), group: 'ops',
+        defaults: { admin: ['plugin.guard:stats:read'], operator: ['plugin.guard:stats:read'], supplier: ['plugin.guard:stats:read'] } },
+      { key: 'plugin.guard:alerts:mute', label: L('Mute alerts', '静音告警'), group: 'ops',
+        scope: { resource: 'value', values: [{ key: 'webhook', label: L('Webhook', 'Webhook') }, { key: 'email', label: L('Email', '邮件') }] },
+        defaults: { admin: ['plugin.guard:alerts:mute'] } },
+      { key: 'plugin.guard:bypass', label: L('Bypass the rules', '免于拦截'), risk: 'critical', group: 'ops' }] },
   { module: 'plugin.foo', label: L('Foo Platform', 'Foo 平台'), source: 'plugin', plugin_key: 'foo', status: 'disabled', permissions: [
     { key: 'plugin.foo:dashboard:read', label: L('View dashboard', '查看面板'), status: 'disabled' }] }
 ]
 
-on('GET', '/permissions', () =>
-  MODULES.map((m) => ({
+function moduleOut(m: ModuleDef) {
+  return {
     ...m,
     plugin_key: m.plugin_key ?? null,
-    // scope_type: the account and proxy actions take a scope (CONTRACTS §21).
-    permissions: m.permissions.map((p) => ({ key: p.key, label: p.label, sensitive: !!p.sensitive, scope_type: SCOPABLE[p.key] ?? '', status: p.status || m.status }))
-  }))
-)
+    // A staged key (a version approved, not running yet) is no editor's business.
+    permissions: m.permissions.filter((p) => p.status !== 'staged').map((p) => ({
+      ...p,
+      risk: SUPER_ONLY_KEYS.has(p.key) ? 'critical' : (p.risk ?? 'low'),
+      // The account and proxy actions take a scope (CONTRACTS §21); a plugin's scoped key ranges over "plugin:<resource>".
+      scope_type: SCOPABLE[p.key] ?? (p.scope ? `plugin:${p.scope.resource}` : ''),
+      status: p.status || m.status
+    }))
+  }
+}
+
+on('GET', '/permissions', () => MODULES.map(moduleOut))
+
+/** The catalog entry of a key's action, if the key names one. */
+const permDef = (key: string) => {
+  const action = parsePermission(key)?.action
+  return MODULES.flatMap((m) => m.permissions).find((p) => p.key === action)
+}
+
+/**
+ * Whether the scope of a valid key is one its permission accepts (authz
+ * pluginScope.fits): a plugin key only the resource, own and enum values its
+ * manifest declares; core scopes are checked by the parser already.
+ */
+function scopeFits(key: string): boolean {
+  const p = parsePermission(key)
+  const def = permDef(key)
+  if (!p || !def) return false
+  if (!key.startsWith('plugin.') || p.scope.all) return true
+  if (p.scope.own) return !!def.scope?.own
+  const [res, value] = (p.scope.ref ?? '').split('/')
+  if (!def.scope || res !== def.scope.resource) return false
+  return !def.scope.values || def.scope.values.some((v) => v.key === value)
+}
 
 // ------------------------------------------------------------------ roles
 
@@ -121,12 +180,13 @@ interface MockRole {
   assign_custom: boolean
   created_at: string
   updated_at: string
+  /** Moved by every change to the role (roles.revision, C1). */
+  revision?: number
 }
 
 const CORE_KEYS = ALL_PERMISSIONS.filter((k) => !k.startsWith('plugin.'))
 // Built-in defaults (CONTRACTS §4, authz/catalog.go): admin has every core
 // permission but the super-only ones; operator and supplier are explicit lists.
-const SUPER_ONLY = ['balance:adjust:any', 'plugin:grant:critical', 'plugin:grant:db_schema_unconfined', 'publisher:manage', 'system:update:execute', 'system:update:recover']
 const USER_KEYS = ['apikey:self:manage', 'balance:self:read', 'usage:self:read', 'gateway:use']
 const SUPPLIER_KEYS = ['account:read:own', 'account:create:own', 'account:update:own', 'account:delete:own', 'account:test:own', 'account:credential:view:own', 'proxy:read:own', 'proxy:manage:own', 'usage:self:read']
 const OPERATOR_KEYS = [
@@ -134,7 +194,7 @@ const OPERATOR_KEYS = [
   'account:read', 'account:create', 'account:update', 'account:delete', 'account:test', 'proxy:read', 'proxy:manage', 'price:read',
   'balance:all:read', 'usage:all:read', 'node:read', 'audit:read', 'task:read', 'task:run', ...SUPPLIER_KEYS.filter((k) => !USER_KEYS.includes(k)), ...USER_KEYS
 ]
-const ADMIN_KEYS = CORE_KEYS.filter((k) => !SUPER_ONLY.includes(k))
+const ADMIN_KEYS = CORE_KEYS.filter((k) => !SUPER_ONLY_KEYS.has(k))
 const BUILTIN_DEFAULTS: Record<string, { name: L; description: string; keys: string[]; assignable: string[]; assignCustom: boolean }> = {
   admin: { name: L('Admin', '管理员'), description: 'Every core permission except the super-only ones', keys: ADMIN_KEYS, assignable: ['operator', 'supplier', 'user'], assignCustom: true },
   operator: { name: L('Operator', '运维'), description: 'Users, accounts, proxies and operations', keys: OPERATOR_KEYS, assignable: ['supplier', 'user'], assignCustom: false },
@@ -151,9 +211,10 @@ const canonicalSet = (keys: string[]) => [...new Set(keys.map(canonicalPermissio
 const custom = (id: number, key: string, name: L, description: string, keys: string[]): MockRole => ({ id, key, name, description, builtin: false, superuser: false, permission_keys: canonicalSet(keys), assignable_role_keys: [], assign_custom: false, created_at: at(5), updated_at: at(1) })
 const roles: MockRole[] = [
   { id: 1, key: 'super_admin', name: L('Super admin', '超级管理员'), description: 'Has every permission', builtin: true, superuser: true, permission_keys: [], assignable_role_keys: [], assign_custom: false, created_at: at(90), updated_at: at(90) },
-  builtin(2, 'admin'),
+  // The manager's role: some guard keys (rules:manage at the own scope) and the disabled foo plugin's key.
+  builtin(2, 'admin', [...MANAGER_PLUGIN_KEYS, 'plugin.foo:dashboard:read']),
   builtin(3, 'user'),
-  builtin(4, 'operator', ['plugin.anthropic:model_catalog:read', 'plugin.guard:stats:read']),
+  builtin(4, 'operator', ['plugin.anthropic:model_catalog:read', 'plugin.guard:stats:read', 'plugin.guard:rules:test']),
   builtin(9, 'supplier'),
   // CONTRACTS §21.1 typical roles: vendor (own-level only, no settings:custom) and read-only.
   custom(5, 'vendor', L('Vendor', '供应商（自定义）'), 'Maintains only the accounts and proxies it created', vendorUser.permissions),
@@ -168,11 +229,76 @@ const roles: MockRole[] = [
   ])
 ]
 
+/** The global authz version (authz_meta): every role or grant write bumps it. */
+export let authzVersion = 1
+export function bumpAuthz() {
+  authzVersion++
+}
+/**
+ * A role's revision (roles.revision, C1): every change to the role moves
+ * it; roles and each role of the plugin matrix carry it, and a write given
+ * another one fails with 409 version_conflict (without one it is not
+ * checked).
+ */
+function revisionConflict(r: MockRole, rev: unknown) {
+  if (rev === undefined || rev === (r.revision ?? 0)) return null
+  return fail(409, 'version_conflict', 'the role changed since it was read', { revision: r.revision ?? 0 })
+}
+function revise(r: MockRole) {
+  r.revision = (r.revision ?? 0) + 1
+  r.updated_at = now()
+}
+
+/** The roles the caller manages (CONTRACTS §43.6): all but super_admin for the super admin; else what its roles may assign, the custom ones with assign_custom. */
+function managedRoles(who: Identity): MockRole[] {
+  if (who.superuser) return roles.filter((r) => !r.superuser)
+  const mine = roles.filter((r) => who.roles.includes(r.key))
+  const keys = new Set(mine.flatMap((r) => r.assignable_role_keys))
+  const anyCustom = mine.some((r) => r.assign_custom)
+  return roles.filter((r) => !r.superuser && (keys.has(r.key) || (anyCustom && !r.builtin)))
+}
+export const managesRole = (who: Identity, key: string) => managedRoles(who).some((r) => r.key === key)
+
+const removedAction = (key: string) => {
+  const action = parsePermission(key)?.action
+  return MODULES.some((m) => m.permissions.some((p) => p.key === action && (p.status || m.status) === 'removed'))
+}
+/**
+ * What the caller may grant (the grant view): its own keys and its roles'
+ * keys, a disabled plugin's included, a removed permission's left out.
+ */
+export function mayGrant(who: Identity, key: string): boolean {
+  if (who.superuser) return true
+  const keys = [...who.permissions, ...roles.filter((r) => who.roles.includes(r.key)).flatMap((r) => r.permission_keys)].filter((k) => !removedAction(k))
+  return permissionIndex(keys).has(key)
+}
+/** Whether the caller may change the role (editableRole): managed, and nothing it holds beyond the caller (§43.6). */
+function editableBy(who: Identity, r: MockRole): boolean {
+  return managesRole(who, r.key) && r.permission_keys.every((k) => removedAction(k) || mayGrant(who, k))
+}
+/** The keys of next that newly grant a critical plugin permission: a write with one asks for step-up (C3). */
+function newCritical(held: string[], next: string[]): string[] {
+  const had = permissionIndex(held)
+  return next.filter((k) => k.startsWith('plugin.') && permDef(k)?.risk === 'critical' && !had.has(k))
+}
+
+/** Adds keys to a role (a confirmed review of held role grants). */
+export function addRoleKeys(roleKey: string, keys: string[]) {
+  const r = roles.find((x) => x.key === roleKey)
+  if (!r) return
+  r.permission_keys = canonicalSet([...r.permission_keys, ...keys])
+  revise(r)
+}
+
 function roleOut(r: MockRole) {
-  return { ...r, user_count: users.filter((u) => u.roles.includes(r.key)).length }
+  return { ...r, user_count: users.filter((u) => u.roles.includes(r.key)).length, revision: r.revision ?? 0 }
 }
 
 on('GET', '/roles', (req) => paginate(roles.map(roleOut), req.query))
+on('GET', '/roles/:id', (req) => {
+  const r = roles.find((x) => x.id === Number(req.params.id))
+  return r ? roleOut(r) : fail(404, 'not_found', 'role not found')
+})
 on('POST', '/roles', (req) => {
   const b = req.body || {}
   if (!/^[a-z][a-z0-9_]{1,49}$/.test(b.key || '')) return invalid('key', 'invalid role key')
@@ -180,15 +306,19 @@ on('POST', '/roles', (req) => {
   if (roles.some((r) => r.key === b.key)) return fail(409, 'conflict', 'role key already exists')
   const r: MockRole = { id: nextId(), key: b.key, name: b.name || L(b.key, b.key), description: b.description || '', builtin: false, superuser: false, permission_keys: [], assignable_role_keys: [], assign_custom: false, created_at: now(), updated_at: now() }
   roles.push(r)
+  bumpAuthz()
   return roleOut(r)
 })
 on('PATCH', '/roles/:id', (req) => {
   const r = roles.find((x) => x.id === Number(req.params.id))
   if (!r) return fail(404, 'not_found', 'role not found')
   if (r.superuser) return fail(403, 'permission_denied', 'superuser role cannot be edited')
+  const conflict = revisionConflict(r, req.body?.revision)
+  if (conflict) return conflict
   if (req.body?.name) r.name = req.body.name
   if (req.body?.description !== undefined) r.description = req.body.description
-  r.updated_at = now()
+  revise(r)
+  bumpAuthz()
   return roleOut(r)
 })
 on('DELETE', '/roles/:id', (req) => {
@@ -197,49 +327,170 @@ on('DELETE', '/roles/:id', (req) => {
   if (r.builtin) return fail(409, 'conflict', 'built-in roles cannot be deleted')
   roles.splice(roles.indexOf(r), 1)
   users.forEach((u) => (u.roles = u.roles.filter((k) => k !== r.key)))
+  bumpAuthz()
   return noContent()
 })
 on('PUT', '/roles/:id/permissions', (req) => {
   const r = roles.find((x) => x.id === Number(req.params.id))
   if (!r) return fail(404, 'not_found', 'role not found')
   if (r.superuser) return fail(403, 'permission_denied', 'superuser role cannot be edited')
-  const known = new Set(MODULES.flatMap((m) => m.permissions.map((p) => p.key)))
+  const who = caller(req)
+  if (!editableBy(who, r)) return fail(403, 'permission_denied', 'you cannot change this role', { role: r.key })
+  const conflict = revisionConflict(r, req.body?.revision)
+  if (conflict) return conflict
   const keys: string[] = Array.isArray(req.body?.permission_keys) ? req.body.permission_keys : []
-  // Any spelling (aliases, trailing /*) is taken and stored canonical; the actions must be in the catalog.
-  const bad = keys.find((k) => !known.has(parsePermission(k)?.action ?? ''))
+  // Any spelling (aliases, trailing /*) is taken and stored canonical; the actions must be in the catalog, at a scope they take.
+  const bad = keys.find((k) => !scopeFits(k))
   if (bad) return invalid('permission_keys', `invalid permission key ${bad}`)
   const canonical = canonicalSet(keys)
-  // Only keys the editor's own imply can be granted (Missing: the canonical keys refused).
-  const missing = canonical.filter((k) => !hasPerm(caller(req), k))
+  // Only keys the editor's grant view implies can be added (Missing: the canonical keys refused); what the role's own keys imply is no addition (notImplied).
+  const had = permissionIndex(r.permission_keys)
+  const missing = canonical.filter((k) => !had.has(k) && !mayGrant(who, k))
   if (missing.length) return fail(403, 'permission_denied', 'you can only grant permissions you hold', { missing })
+  if (newCritical(r.permission_keys, canonical).length) {
+    const verify = stepUpRequired(req, 'plugin.grant')
+    if (verify) return verify
+  }
   r.permission_keys = canonical
-  r.updated_at = now()
+  revise(r)
+  bumpAuthz()
   return roleOut(r)
 })
 on('PUT', '/roles/:id/assignable', (req) => {
   const r = roles.find((x) => x.id === Number(req.params.id))
   if (!r) return fail(404, 'not_found', 'role not found')
   if (r.superuser) return fail(409, 'conflict', 'superuser role cannot be edited')
+  const conflict = revisionConflict(r, req.body?.revision)
+  if (conflict) return conflict
   const keys: string[] = Array.isArray(req.body?.role_keys) ? req.body.role_keys : []
   const bad = keys.find((k) => !roles.some((x) => x.key === k && !x.superuser))
   if (bad) return invalid('role_keys', `unknown role ${bad}`, 'unknown')
   r.assignable_role_keys = [...new Set(keys)].sort()
   r.assign_custom = !!req.body?.assign_custom
-  r.updated_at = now()
+  revise(r)
+  bumpAuthz()
   return roleOut(r)
 })
-// The caller's managed roles (CONTRACTS §43.6): every role but super_admin for the super admin, none for the other mock identities.
-on('GET', '/me/assignable-roles', (req) =>
-  (caller(req).superuser ? roles : [])
-    .filter((r) => !r.superuser)
+// A plugin's permissions × roles (GET/PUT /permissions/plugins/:plugin, UI 3.16):
+// the roles the caller manages are editable, the others read-only; each with
+// the revision the PUT checks (C1).
+function pluginRoleMatrix(req: MockRequest, m: ModuleDef) {
+  const prefix = `${m.module}:`
+  const who = caller(req)
+  return {
+    plugin_key: m.plugin_key,
+    module: moduleOut(m),
+    roles: roles.map((r) => {
+      const editable = !r.superuser && editableBy(who, r)
+      return {
+        id: r.id,
+        key: r.key,
+        name: r.name,
+        builtin: r.builtin,
+        superuser: r.superuser,
+        editable,
+        denied: r.superuser ? 'superuser_role' : editable ? undefined : 'not_assignable',
+        revision: r.revision ?? 0,
+        permission_keys: r.permission_keys.filter((k) => k.startsWith(prefix))
+      }
+    })
+  }
+}
+const pluginModule = (plugin: string) => MODULES.find((m) => m.source === 'plugin' && m.plugin_key === plugin)
+
+on('GET', '/permissions/plugins/:plugin', (req) => {
+  const m = pluginModule(req.params.plugin)
+  return m ? pluginRoleMatrix(req, m) : fail(404, 'not_found', 'plugin not found')
+})
+on('PUT', '/permissions/plugins/:plugin', (req) => {
+  const m = pluginModule(req.params.plugin)
+  if (!m) return fail(404, 'not_found', 'plugin not found')
+  const who = caller(req)
+  const revisions: Record<string, number> = req.body?.revisions ?? {}
+  const removed = new Set(m.permissions.filter((p) => (p.status || m.status) === 'removed').map((p) => p.key))
+  const body: Record<string, string[]> = req.body?.roles ?? {}
+  // Every role is checked before any is written: one refusal leaves them all as they were.
+  const writes: Array<[MockRole, string[]]> = []
+  let critical = false
+  for (const key of Object.keys(body).sort()) {
+    const r = roles.find((x) => x.key === key)
+    if (!r) return invalid(`roles.${key}`, `unknown role ${key}`, 'unknown')
+    if (r.superuser || !editableBy(who, r)) return fail(403, 'permission_denied', 'you cannot change this role', { role: key })
+    const conflict = revisionConflict(r, revisions[key])
+    if (conflict) return conflict
+    const keys = Array.isArray(body[key]) ? body[key] : []
+    const foreign = keys.find((k) => !k.startsWith(`${m.module}:`))
+    if (foreign) return invalid(`roles.${key}`, `${foreign} is not a permission of ${m.plugin_key}`, 'foreign')
+    const bad = keys.find((k) => !scopeFits(k))
+    if (bad) return invalid(`roles.${key}`, `invalid permission key ${bad}`)
+    const held = r.permission_keys.filter((k) => k.startsWith(`${m.module}:`))
+    // A removed key stays while kept and goes when left out; a new one is dropped.
+    const next = canonicalSet(keys).filter((k) => held.includes(k) || !removed.has(parsePermission(k)!.action))
+    const had = permissionIndex(held)
+    const missing = next.filter((k) => !had.has(k) && !mayGrant(who, k))
+    if (missing.length) return fail(403, 'permission_denied', 'you can only grant permissions you hold', { missing, role: key })
+    critical ||= newCritical(held, next).length > 0
+    writes.push([r, next])
+  }
+  if (critical) {
+    const verify = stepUpRequired(req, 'plugin.grant')
+    if (verify) return verify
+  }
+  for (const [r, next] of writes) {
+    r.permission_keys = [...r.permission_keys.filter((k) => !k.startsWith(`${m.module}:`)), ...next].sort()
+    revise(r)
+  }
+  if (writes.length) bumpAuthz()
+  return pluginRoleMatrix(req, m)
+})
+
+// The rows of plugin resources the scope pickers offer (GET /plugins/:key/scope-options), by "<plugin>:<resource>".
+const PLUGIN_SCOPE_ROWS: Record<string, Array<{ id: string; name: string; hint?: string }>> = {
+  'guard:ruleset': [
+    { id: '1', name: 'Default rules', hint: '12 rules' },
+    { id: '2', name: 'Prompt injection', hint: '5 rules' },
+    { id: '3', name: 'PII', hint: '8 rules' }
+  ]
+}
+on('GET', '/plugins/:key/scope-options', (req) => {
+  const who = caller(req)
+  if (!hasPerm(who, ['role:read', 'plugin:read'])) return fail(403, 'permission_denied', 'role:read or plugin:read required')
+  const m = pluginModule(req.params.key)
+  const action = `plugin.${req.params.key}:${req.query.permission ?? ''}`
+  const def = m?.permissions.find((p) => p.key === action)
+  if (!m || !def?.scope) return fail(404, 'not_found', 'no scoped permission of that key')
+  const { resource, values } = def.scope
+  // An enum is answered from the manifest; a resource asks the plugin, which must be running.
+  if (!values && m.status !== 'active') return fail(503, 'plugin_unavailable', 'the plugin is not running')
+  const rows = values ? values.map((v) => ({ id: v.key, name: v.label.en })) : (PLUGIN_SCOPE_ROWS[`${req.params.key}:${resource}`] ?? [])
+  // Only the values the caller may grant: its own scopes of the action.
+  const mine = rows.filter((x) => hasPerm(who, `${action}:${resource}/${x.id}`))
+  if (req.query.ids) {
+    const ids = req.query.ids.split(',')
+    return { items: mine.filter((x) => ids.includes(x.id)), more: false }
+  }
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50)
+  const found = mine.filter((x) => match(req.query.q, x.name, x.id))
+  return { items: found.slice(0, limit), more: found.length > limit }
+})
+
+// The caller's managed roles (CONTRACTS §43.6), each saying what of it the caller could not grant.
+on('GET', '/me/assignable-roles', (req) => {
+  const who = caller(req)
+  return managedRoles(who)
     .sort((a, b) => Number(b.builtin) - Number(a.builtin))
-    .map((r) => ({ key: r.key, name: r.name, builtin: r.builtin, grantable: true, missing: [], missing_assignable: [], missing_assign_custom: false }))
-)
+    .map((r) => {
+      const missing = r.permission_keys.filter((k) => !removedAction(k) && !mayGrant(who, k))
+      return { key: r.key, name: r.name, builtin: r.builtin, grantable: !missing.length, missing, missing_assignable: [], missing_assign_custom: false }
+    })
+})
 on('POST', '/roles/:id/reset', (req) => {
   const r = roles.find((x) => x.id === Number(req.params.id))
   if (!r) return fail(404, 'not_found', 'role not found')
   const d = BUILTIN_DEFAULTS[r.key]
   if (!r.builtin || (!d && !r.superuser)) return fail(409, 'conflict', 'only built-in roles can be reset')
+  const conflict = revisionConflict(r, req.body?.revision)
+  if (conflict) return conflict
   if (d) {
     // Plugin permissions on the role are kept.
     r.permission_keys = [...d.keys, ...r.permission_keys.filter((k) => k.startsWith('plugin.'))]
@@ -248,7 +499,8 @@ on('POST', '/roles/:id/reset', (req) => {
     r.name = d.name
     r.description = d.description
   }
-  r.updated_at = now()
+  revise(r)
+  bumpAuthz()
   return roleOut(r)
 })
 
@@ -697,11 +949,6 @@ export const proxies: MockProxy[] = [
 ]
 
 // CONTRACTS §15.4: the password is never returned, only has_password.
-/** Status of a mock proxy (active / disabled), undefined when it does not exist (for the CCGateway drafts). */
-export function mockProxyStatus(id: number): string | undefined {
-  return proxies.find((p) => p.id === id)?.status
-}
-
 function proxyOut(p: MockProxy) {
   const { password, ...rest } = p
   return { ...rest, has_password: !!password, created_by_email: userEmail(p.created_by), account_count: proxyAccountCount(p.id) }

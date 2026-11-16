@@ -1,36 +1,25 @@
 <script setup lang="ts">
 // "What the plugin provides" of the consent page: platforms, gateway endpoints,
-// account types, hooks, events, jobs, routes, menus, user permissions, the
+// account types, hooks, events, jobs, routes, menus, how many user
+// permissions (listed in the matrix and the upgrade's changes), the
 // database, resources and external services. Each entry renders only when the
 // review declares it; the whole card only when at least one is present.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SBadge, SCard, SCheckbox, SDisclosure, SHint, SIcon } from '@sub2api/ui'
+import { SBadge, SCard, SDisclosure, SHint } from '@sub2api/ui'
 import type { PluginReview } from '@/api/types'
-import { useAssignableRoles } from '@/composables/useAssignableRoles'
 import { lt } from '@/i18n'
 import { formatBytes } from '@/utils/format'
 import { useOptionalT } from '@/composables/optionalText'
 import { accountTypesOf, asArray, display, endpointText, formatDuration, hpKey, pick, platformsOf } from '../pluginUtil'
 import PluginGatewayDecl from '../parts/PluginGatewayDecl.vue'
 import { useConsentLabels } from './hostPermission'
-import type { useNewPermissionRoles } from './newPermissionRoles'
 
-const props = defineProps<{
-  review: PluginReview
-  /** The roles the caller may give each new permission (ConsentView). */
-  permissionRoles: ReturnType<typeof useNewPermissionRoles>
-}>()
-const managed = useAssignableRoles()
+const props = defineProps<{ review: PluginReview }>()
 const { t } = useI18n()
 const tr = useOptionalT()
 const { colon } = useConsentLabels()
 const listSep = computed(() => t('plugins.listSep'))
-
-/** A role's display name when it is on the caller's managed list, else its key. */
-function roleName(key: string): string {
-  return lt(managed.get(key)?.name) || key
-}
 
 const reviewPlatforms = computed(() => platformsOf(props.review))
 const reviewAccountTypes = computed(() => accountTypesOf(props.review))
@@ -199,37 +188,10 @@ const hasProvides = computed(() => {
         <span class="text-xs">{{ review.menus.map(menuText).join(listSep) }}</span>
       </li>
 
-      <li v-if="review.user_permissions?.length">
-        <div class="font-medium">{{ t('plugins.consent.userPermissions') }}</div>
-        <ul class="mt-1 space-y-2 pl-4">
-          <li v-for="p in review.user_permissions" :key="p.key" :data-permission="p.key">
-            <SBadge :tone="p.sensitive ? 'warning' : 'gray'" :title="lt(p.description)">
-              {{ lt(p.label) || p.key }}
-              <span class="font-mono opacity-70">({{ p.key }})</span>
-              <SIcon v-if="p.sensitive" name="lock" class="h-3 w-3" />
-            </SBadge>
-            <SHint v-if="!p.new" inline size="xs" class="ml-2">{{ t('plugins.consent.permissionExists') }}</SHint>
-            <template v-else>
-              <SHint v-if="p.default_roles?.length" inline size="xs" class="ml-2">{{ t('plugins.consent.defaultRoles', { roles: p.default_roles.map(roleName).join(listSep) }) }}</SHint>
-              <SHint v-else inline size="xs" class="ml-2">{{ t('plugins.consent.noDefaultRoles') }}</SHint>
-            </template>
-            <SHint v-if="p.inherit_from?.length" inline size="xs" class="ml-2">{{ t('plugins.consent.inheritFrom', { keys: p.inherit_from.join(listSep) }) }}</SHint>
-            <div v-if="p.new && permissionRoles.choices.value.length" class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1" data-testid="permission-roles">
-              <SHint inline size="xs">{{ t('plugins.consent.grantToRoles') }}</SHint>
-              <SCheckbox
-                v-for="r in permissionRoles.choices.value"
-                :key="r.key"
-                size="xs"
-                :data-role="r.key"
-                :model-value="permissionRoles.selected(p).includes(r.key)"
-                @update:model-value="permissionRoles.toggle(p, r.key, !!$event)"
-              >
-                {{ lt(r.name) || r.key }}
-              </SCheckbox>
-              <SHint v-if="permissionRoles.dropsDefaults(p)" inline size="xs" tone="warning">{{ t('plugins.consent.replacesDefaults') }}</SHint>
-            </div>
-          </li>
-        </ul>
+      <!-- The permissions themselves are the matrix's and the upgrade changes' below: listed once, there. -->
+      <li v-if="review.user_permissions?.length" data-testid="provides-user-permissions">
+        <span class="font-medium">{{ t('plugins.permissions.userTitle') }}{{ colon }}</span>
+        <span class="text-xs">{{ t('plugins.consent.userPermissionsBelow', { n: review.user_permissions.length }, review.user_permissions.length) }}</span>
       </li>
 
       <li v-if="review.database">

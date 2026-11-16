@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // A plugin key stays with its publisher after an uninstall (audit 2026-10-09
@@ -32,32 +35,57 @@ type PluginKVPurger interface {
 
 // retireKey records the plugin's key and publisher; the caller holds the
 // plugin row in tx and deletes it afterwards.
-func retireKey(ctx context.Context, tx pgx.Tx, key string, actorID int64) error {
-	_, err := tx.Exec(ctx, `INSERT INTO plugin_key_retirements (plugin_key, publisher_id, retired_by)
-		SELECT key, publisher_id, $2 FROM plugins WHERE key = $1
-		ON CONFLICT (plugin_key) DO UPDATE SET publisher_id = EXCLUDED.publisher_id, retired_at = now(), retired_by = EXCLUDED.retired_by`,
-		key, nullID(actorID))
-	return err
+func retireKey(ctx context.Context, tx *gorm.DB, key string, actorID int64) error {
+	return retire(store.G(ctx, tx), key, actorID).Error
+}
+
+// retire is the statement of retireKey.
+func retire(db *gorm.DB, key string, actorID int64) *gorm.DB {
+	publisher := db.Model(&model.Plugin{}).Select("publisher_id").Where("key = ?", key)
+	return db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "plugin_key"}},
+		DoUpdates: append(clause.AssignmentColumns([]string{"publisher_id", "retired_by"}),
+			clause.Assignment{Column: clause.Column{Name: "retired_at"}, Value: gorm.Expr("now()")}),
+	}).Create(&retiredKey{PluginKey: key, PublisherID: store.ExprValue{Expr: gorm.Expr("(?)", publisher)}, RetiredBy: nullID(actorID)})
+}
+
+// retiredKey is a plugin_key_retirements row: the key, its plugin's
+// publisher (NULL without one) and who retired it; retired_at is the
+// default, and nothing is read back.
+type retiredKey struct {
+	PluginKey   string          `gorm:"column:plugin_key"`
+	PublisherID store.ExprValue `gorm:"column:publisher_id"`
+	RetiredBy   *int64          `gorm:"column:retired_by"`
+}
+
+func (retiredKey) TableName() string { return model.PluginKeyRetirement{}.TableName() }
+
+// retirement is the plugin_key_retirements row of key.
+func retirement(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.PluginKeyRetirement{}).Where("plugin_key = ?", key)
 }
 
 // claimRetiredKey lets a new install of key by publisher proceed when the key
 // was never retired or was retired by the same publisher. A built-in plugin
 // takes its key back: the image decides (the reservation list keeps other
 // publishers off first-party keys).
-func claimRetiredKey(ctx context.Context, tx pgx.Tx, key string, publisher *int64, source string) error {
-	var owner *int64
-	err := tx.QueryRow(ctx, `SELECT publisher_id FROM plugin_key_retirements WHERE plugin_key = $1 FOR UPDATE`, key).Scan(&owner)
+func claimRetiredKey(ctx context.Context, tx *gorm.DB, key string, publisher *int64, source string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
+	g := store.G(ctx, tx)
+	var r model.PluginKeyRetirement
+	err := retirement(g, key).Select("publisher_id").Clauses(store.ForUpdate()).Take(&r).Error
 	switch {
 	case store.IsNoRows(err):
 		return nil
 	case err != nil:
 		return err
-	case sameID(owner, publisher):
+	case sameID(r.PublisherID, publisher):
 		return nil
 	case source == "builtin":
 		slog.WarnContext(ctx, "builtin plugin takes back a key retired by another publisher", "plugin", key)
-		_, err = tx.Exec(ctx, `DELETE FROM plugin_key_retirements WHERE plugin_key = $1`, key)
-		return err
+		return retirement(g, key).Delete(&model.PluginKeyRetirement{}).Error
 	}
 	return ErrKeyRetired.WithMessage(fmt.Sprintf("plugin key %q belonged to an uninstalled plugin of another publisher; "+
 		"an administrator must release it first (POST /api/v1/plugins/retired-keys/%s/release), which can delete the accounts and data it left behind", key, key))
@@ -78,26 +106,37 @@ type RetiredKey struct {
 
 // ListRetiredKeys lists the retired keys.
 func (s *Service) ListRetiredKeys(ctx context.Context) ([]RetiredKey, error) {
-	rows, err := s.d.DB.Pool.Query(ctx, `
-		SELECT r.plugin_key, COALESCE(pub.name, ''), r.retired_at,
-		  EXISTS (SELECT 1 FROM plugins p WHERE p.key = r.plugin_key),
-		  (SELECT count(*) FROM accounts a WHERE a.plugin_key = r.plugin_key AND a.deleted_at IS NULL),
-		  EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = 'plg_' || r.plugin_key)
-		FROM plugin_key_retirements r LEFT JOIN publishers pub ON pub.id = r.publisher_id
-		ORDER BY r.retired_at DESC`)
-	if err != nil {
+	var rows []retiredKeyRow
+	if err := retiredKeys(store.G(ctx, s.d.DB.Gorm)).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []RetiredKey{}
-	for rows.Next() {
-		var k RetiredKey
-		if err := rows.Scan(&k.Key, &k.Publisher, &k.RetiredAt, &k.Installed, &k.Accounts, &k.Schema); err != nil {
-			return nil, err
-		}
-		out = append(out, k)
+	out := make([]RetiredKey, len(rows))
+	for i, r := range rows {
+		out[i] = RetiredKey(r)
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// retiredKeyRow is a row of retiredKeys.
+type retiredKeyRow struct {
+	Key       string    `gorm:"column:key"`
+	Publisher string    `gorm:"column:publisher"`
+	RetiredAt time.Time `gorm:"column:retired_at"`
+	Installed bool      `gorm:"column:installed"`
+	Accounts  int       `gorm:"column:accounts"`
+	Schema    bool      `gorm:"column:schema"`
+}
+
+// retiredKeys selects the retired keys with what each plugin left, newest
+// first.
+func retiredKeys(db *gorm.DB) *gorm.DB {
+	return db.Table("plugin_key_retirements AS r").
+		Select("r.plugin_key AS key, COALESCE(pub.name, '') AS publisher, r.retired_at, EXISTS (?) AS installed, (?) AS accounts, EXISTS (?) AS schema",
+			db.Table("plugins AS p").Select("1").Where("p.key = r.plugin_key"),
+			db.Table("accounts AS a").Select("count(*)").Where("a.plugin_key = r.plugin_key AND a.deleted_at IS NULL"),
+			db.Table("pg_namespace AS n").Select("1").Where("n.nspname = 'plg_' || r.plugin_key")).
+		Joins("LEFT JOIN publishers pub ON pub.id = r.publisher_id").
+		Order("r.retired_at DESC")
 }
 
 // ReleaseOptions select what a release deletes besides the retirement.
@@ -126,9 +165,10 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 		return res, guardErr
 	}
 	defer release()
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.purgeTx(ctx, opt.PurgeAccounts, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
 		var one int
-		err := tx.QueryRow(ctx, `SELECT 1 FROM plugin_key_retirements WHERE plugin_key = $1 FOR UPDATE`, key).Scan(&one)
+		err := retirement(g, key).Select("1").Clauses(store.ForUpdate()).Take(&one).Error
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("the plugin key is not retired")
 		}
@@ -136,13 +176,14 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 			return err
 		}
 		var installed bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM plugins WHERE key = $1)`, key).Scan(&installed); err != nil {
+		if err := gormpg.ExistsQuery(g, pluginRow(g, key)).Scan(&installed).Error; err != nil {
 			return err
 		}
 		if installed {
 			return core.ErrConflict.WithMessage("the plugin key is installed again; uninstall it first")
 		}
 		if opt.PurgeAccounts {
+			// A transaction of its own, under the retirement's lock (purgeTx).
 			n, err := s.d.Accounts.PurgePluginAccounts(ctx, key)
 			res.AccountsDeleted = n
 			if err != nil {
@@ -154,7 +195,7 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 				return fmt.Errorf("drop plugin schema: %w", err)
 			}
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM plugin_key_retirements WHERE plugin_key = $1`, key); err != nil {
+		if err := retirement(g, key).Delete(&model.PluginKeyRetirement{}).Error; err != nil {
 			return err
 		}
 		return audit.Audit(ctx, tx, actorID, "plugin.key.release", "plugin", key, map[string]any{

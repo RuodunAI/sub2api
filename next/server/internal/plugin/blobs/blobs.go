@@ -16,7 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
+
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
 // ErrNotFound reports that no reachable store holds the package.
@@ -120,17 +121,9 @@ type Shell struct {
 	max    int64
 }
 
-// shellTimeout bounds one transfer through the shell, which may fetch the
-// package from the primary first (1 GiB packages, CONTRACTS §53.10).
-const shellTimeout = 30 * time.Minute
-
-// defaultShellMax applies when NewShell or Source gets no limit (pkg's
-// default).
-const defaultShellMax = 1 << 30
-
 // NewShell talks to the shell's management socket. token (config
 // Managed.UpdaterToken) is sent as "Authorization: Bearer <token>"; empty
-// sends none (older shells).
+// sends none (the gateway 0.1.133 shell, see config.ManagedConfig.UpdaterToken).
 func NewShell(socket, token string, maxBytes int64) *Shell {
 	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
@@ -142,9 +135,9 @@ func NewShell(socket, token string, maxBytes int64) *Shell {
 
 func newShell(dial func(ctx context.Context, network, addr string) (net.Conn, error), token string, maxBytes int64) *Shell {
 	if maxBytes <= 0 {
-		maxBytes = defaultShellMax
+		maxBytes = rc.PluginPackageMaxBytes
 	}
-	return &Shell{token: token, max: maxBytes, client: &http.Client{Timeout: shellTimeout, Transport: &http.Transport{DialContext: dial}}}
+	return &Shell{token: token, max: maxBytes, client: &http.Client{Timeout: rc.PluginPackageTransferTimeout, Transport: &http.Transport{DialContext: dial}}}
 }
 
 func (s *Shell) url(sum string) string { return "http://shell/system/plugin-blobs/" + sum }
@@ -256,7 +249,7 @@ func (s *Source) Fetch(ctx context.Context, sum, url string) ([]byte, error) {
 	if url != "" && s.Download != nil {
 		limit := s.MaxBytes
 		if limit <= 0 {
-			limit = defaultShellMax
+			limit = rc.PluginPackageMaxBytes
 		}
 		if data, err := s.Download(ctx, url, limit); err == nil && check(sum, data) == nil {
 			return data, nil

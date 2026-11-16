@@ -1,0 +1,3 @@
+-- sql
+SELECT COALESCE(sum(size),0), count(*), (SELECT count(*) FROM web_asset_builds) FROM "web_assets"
+-- vars

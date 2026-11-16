@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -18,7 +19,7 @@ import (
 // system).
 func RegisterRoutes(r *httpapi.Router, db *store.DB) {
 	r.Perm("GET", "/audit-logs", "audit:read", func(c *gin.Context) {
-		var f store.Filter
+		var f store.Conds
 		for _, x := range []struct{ q, cond string }{{"action", "a.action = ?"}, {"target_type", "a.target_type = ?"}, {"target_id", "a.target_id = ?"}} {
 			if v := c.Query(x.q); v != "" {
 				f.And(x.cond, v)
@@ -45,35 +46,29 @@ func RegisterRoutes(r *httpapi.Router, db *store.DB) {
 			f.And(x.cond, t)
 		}
 		page, size := httpapi.Pagination(c)
-		ctx := c.Request.Context()
-		where, args := f.Cond(), f.Args()
+		g := store.G(c.Request.Context(), db.Gorm)
 		var total int64
-		if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs a`+where, args...).Scan(&total); err != nil {
+		if err := logs(g, f).Count(&total).Error; err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		n := len(args)
-		rows, err := db.Pool.Query(ctx, `SELECT to_jsonb(a) || jsonb_build_object('user_email', u.email, 'user_name', u.display_name)
-			FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id`+where+
-			` ORDER BY a.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2), append(args, size, (page-1)*size)...)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		defer rows.Close()
 		items := []json.RawMessage{}
-		for rows.Next() {
-			var item json.RawMessage
-			if err := rows.Scan(&item); err != nil {
-				httpapi.Fail(c, err)
-				return
-			}
-			items = append(items, item)
-		}
-		if err := rows.Err(); err != nil {
+		if err := logPage(g, f, size, (page-1)*size, &items).Error; err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
 		httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
 	})
+}
+
+// logs is the rows of audit_logs a that f keeps.
+func logs(db *gorm.DB, f store.Conds) *gorm.DB {
+	return db.Table("audit_logs a").Scopes(f.Scope())
+}
+
+// logPage reads into dst one page of the rows f keeps, newest first, each
+// row as JSON with the e-mail and name of its actor.
+func logPage(db *gorm.DB, f store.Conds, limit, offset int, dst *[]json.RawMessage) *gorm.DB {
+	return logs(db, f).Joins("LEFT JOIN users u ON u.id = a.user_id").Order("a.id DESC").
+		Limit(limit).Offset(offset).Pluck("to_jsonb(a) || jsonb_build_object('user_email', u.email, 'user_name', u.display_name)", dst)
 }

@@ -21,11 +21,8 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
-
-// DefaultMaxBytes matches the core's plugin package limit: the ccgateway
-// package carries its runtime images (CONTRACTS §53.10).
-const DefaultMaxBytes = 1 << 30
 
 func validSum(s string) bool {
 	if len(s) != 64 {
@@ -59,7 +56,7 @@ func (s *Store) max() int64 {
 	if s.MaxBytes > 0 {
 		return s.MaxBytes
 	}
-	return DefaultMaxBytes
+	return rc.PluginPackageMaxBytes
 }
 func (s *Store) maxTotal() int64 {
 	if s.MaxTotalBytes > 0 {

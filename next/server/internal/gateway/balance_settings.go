@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -15,10 +15,8 @@ import (
 
 const settingsKeyScheduling = "scheduling"
 
-// Values of SchedulingSettings.Mode and SchedulingSettings.Metric (CONTRACTS §89).
+// Values of SchedulingSettings.Metric (CONTRACTS §89).
 const (
-	balanceModeTraffic = "traffic"
-
 	balanceMetricRPM         = "rpm"
 	balanceMetricConcurrency = "concurrency"
 	balanceMetricTPM         = "tpm"
@@ -31,9 +29,6 @@ var balanceMetrics = []string{balanceMetricRPM, balanceMetricConcurrency, balanc
 // core balances new sessions inside one (priority, route grade) tier
 // (CONTRACTS §89). The traffic balance is always on.
 type SchedulingSettings struct {
-	// Mode is always "traffic": the field stays for the cores before
-	// 2026-11-12, which balance by traffic only when it says so.
-	Mode   string `json:"mode"`
 	Metric string `json:"metric"`
 	// LimitLoad lowers an account's weight as Metric nears its limit.
 	LimitLoad bool `json:"limit_load"`
@@ -44,33 +39,25 @@ type SchedulingSettings struct {
 }
 
 func defaultSchedulingSettings() SchedulingSettings {
-	return SchedulingSettings{Mode: balanceModeTraffic, Metric: balanceMetricSessions}
+	return SchedulingSettings{Metric: balanceMetricSessions}
 }
 
-// normalized turns a stored row into the settings the core runs. A row of the
-// former "default" mode (or any other) with the limit load off had the metric
-// and model limits greyed out, not chosen: they take the defaults. Otherwise
-// they are kept, an unknown metric becoming the default.
+// normalized turns a stored row into the settings the core runs: an unknown
+// metric becomes the default.
 func (s SchedulingSettings) normalized() SchedulingSettings {
-	d := defaultSchedulingSettings()
-	if s.Mode != balanceModeTraffic && !s.LimitLoad {
-		s.Metric, s.ModelLimits = d.Metric, d.ModelLimits
-	}
 	if !slices.Contains(balanceMetrics, s.Metric) {
-		s.Metric = d.Metric
+		s.Metric = defaultSchedulingSettings().Metric
 	}
-	s.Mode = d.Mode
 	return s
 }
 
-func loadSchedulingSettings(ctx context.Context, q store.Querier) (SchedulingSettings, error) {
+func loadSchedulingSettings(ctx context.Context, q *gorm.DB) (SchedulingSettings, error) {
 	v := defaultSchedulingSettings()
 	err := loadSettingsRow(ctx, q, settingsKeyScheduling, &v)
 	return v.normalized(), err
 }
 
-// validate checks the metric (the mode is not checked: it is always stored
-// as "traffic"); messages follow the request locale.
+// validate checks the metric; messages follow the request locale.
 func (s SchedulingSettings) validate(ctx context.Context) []core.FieldError {
 	msg := "invalid value"
 	if core.Locale(ctx) == "zh" {
@@ -89,7 +76,7 @@ func (g *Gateway) getSchedulingHandler(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	v, err := loadSchedulingSettings(c.Request.Context(), db.Pool)
+	v, err := loadSchedulingSettings(c.Request.Context(), db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -97,9 +84,8 @@ func (g *Gateway) getSchedulingHandler(c *gin.Context) {
 	httpapi.OK(c, v)
 }
 
-// putSchedulingHandler replaces the row (absent fields take their defaults;
-// the mode sent is ignored and "traffic" stored), then invalidates the local
-// settings cache and broadcasts config:changed.
+// putSchedulingHandler replaces the row (absent fields take their defaults),
+// then invalidates the local settings cache and broadcasts config:changed.
 func (g *Gateway) putSchedulingHandler(c *gin.Context) {
 	ctx := c.Request.Context()
 	db, err := g.db()
@@ -111,13 +97,12 @@ func (g *Gateway) putSchedulingHandler(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	in.Mode = balanceModeTraffic
 	if fe := in.validate(ctx); len(fe) > 0 {
 		httpapi.Fail(c, core.InvalidFields(fe...))
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyScheduling, nullID(uid), func(json.RawMessage) (json.RawMessage, error) {
 			return json.Marshal(in)
 		})

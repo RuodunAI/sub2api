@@ -1,0 +1,5 @@
+-- sql
+UPDATE "plugin_runtime_nodes" SET "stopped"=$1,"updated_at"=now() WHERE boot_id = $2
+-- vars
+$1 bool true
+$2 string "boot-a"

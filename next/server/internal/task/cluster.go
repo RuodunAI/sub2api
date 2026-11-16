@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,14 +12,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/riverdriver/riverdatabasesql"
 	"github.com/riverqueue/river/rivertype"
+	"golang.org/x/sync/semaphore"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/background"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // River settings (TASK-FRAMEWORK-DESIGN §7).
@@ -36,8 +40,14 @@ const (
 	leaseGrace        = time.Minute
 	executorGroupSize = 4
 	executorQueue     = 16
-	// fetchPoll is how often a node polls for runs besides the insert
-	// notifications (River's default; snooze spreads put-offs over it).
+	// fetchPoll is how often a node polls for runs (River's default; snooze
+	// spreads put-offs over it). River runs poll-only on database/sql (no
+	// LISTEN). A run inserted outside a transaction (Enqueue without one,
+	// Trigger, a continuation) on a node whose River client is started wakes
+	// that node's producer and is fetched at once; every other run - inserted
+	// in a transaction (EnqueueTx: InsertTx wakes nothing), on another node,
+	// or on a node that has not started River - waits up to fetchPoll for a
+	// node that runs River to poll.
 	fetchPoll = time.Second
 )
 
@@ -117,7 +127,16 @@ type clusterBackend struct {
 	group       *background.Group
 	pluginGroup *background.Group
 
-	client *river.Client[pgx.Tx]
+	client *river.Client[*sql.Tx]
+	// starting keeps an Insert outside a transaction from overlapping
+	// client.Start. Without a listener (database/sql), River has such an
+	// Insert wake the producer of its queue, which reads state that Start
+	// writes without a lock (river v0.49.0, producer.fetchLimiter): Start
+	// holds all of it, Insert one share. InsertTx wakes nothing. A
+	// semaphore rather than a sync.RWMutex: Start can take a while (each
+	// producer's ProducerInit has 10 seconds), and an Insert on a request
+	// path waits for it only as long as its context allows.
+	starting *semaphore.Weighted
 
 	mu       sync.Mutex
 	periodic map[string]bool
@@ -132,7 +151,7 @@ type clusterBackend struct {
 func newClusterBackend(ctx context.Context, log *slog.Logger, db *store.DB, reg *Registry, nodeID, clientID, version string,
 	canWork func() bool, exec *background.Executor) (*clusterBackend, error) {
 	b := &clusterBackend{log: log, db: db, reg: reg, nodeID: nodeID, clientID: clientID, version: version, canWork: canWork,
-		periodic: map[string]bool{}, stop: make(chan struct{}), done: make(chan struct{})}
+		starting: semaphore.NewWeighted(startShares), periodic: map[string]bool{}, stop: make(chan struct{}), done: make(chan struct{})}
 	b.runCtx, b.cancel = context.WithCancel(context.WithoutCancel(ctx))
 	if exec != nil {
 		b.group = exec.Group(b.runCtx, executorGroupSize, executorQueue)
@@ -143,13 +162,14 @@ func newClusterBackend(ctx context.Context, log *slog.Logger, db *store.DB, reg 
 		return nil, err
 	}
 	queues := map[string]river.QueueConfig{queueCore: {MaxWorkers: queueCoreWorkers}, queuePlugin: {MaxWorkers: queuePluginWorkers}}
-	client, err := river.NewClient(riverpgxv5.New(db.Pool), &river.Config{
+	client, err := river.NewClient(riverdatabasesql.New(db.SQL), &river.Config{
 		ID:                          clientID,
 		Logger:                      log.With("subsystem", "river"),
 		Workers:                     workers,
 		Queues:                      queues,
 		MaxAttempts:                 5,
 		FetchPollInterval:           fetchPoll,
+		PollOnly:                    true, // the database/sql driver has no listener (see fetchPoll)
 		RescueStuckJobsAfter:        rescueStuckAfter,
 		CompletedJobRetentionPeriod: completedRetain,
 		CancelledJobRetentionPeriod: failedRetain,
@@ -221,13 +241,41 @@ func (b *clusterBackend) upsert(ctx context.Context, t *Task) error {
 	if t.PluginKey != "" {
 		pluginKey = &t.PluginKey
 	}
-	_, err := b.db.Pool.Exec(ctx, `INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
-		ON CONFLICT (name) DO UPDATE SET source = EXCLUDED.source, plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
-			timeout_ms = EXCLUDED.timeout_ms, max_attempts = EXCLUDED.max_attempts, seen_version = EXCLUDED.seen_version,
-			seen_at = now(), updated_at = now()`,
-		t.Name, string(t.Source), pluginKey, t.ScheduleText, t.Timeout.Milliseconds(), t.Attempts(), b.version)
-	return err
+	return UpsertRow(store.G(ctx, b.db.Gorm), map[string]any{"name": t.Name, "source": string(t.Source), "plugin_key": pluginKey,
+		"schedule": t.ScheduleText, "timeout_ms": t.Timeout.Milliseconds(), "max_attempts": t.Attempts(), "seen_version": b.version},
+		[]string{"source", "plugin_key", "schedule", "timeout_ms", "max_attempts", "seen_version"}).Error
+}
+
+// UpsertRow writes the scheduled_tasks row of cols (column: value), seen
+// now(). On a name conflict the row takes the new values of the columns of
+// update, and seen_at and updated_at now(), where every condition of only
+// holds (an expression of scheduled_tasks and EXCLUDED); RowsAffected is 0
+// when one does not. The values are a column map: VALUES and the conflict
+// branch set the times to the database's now(), which a model's time.Time
+// cannot carry.
+func UpsertRow(g *gorm.DB, cols map[string]any, update []string, only ...clause.Expression) *gorm.DB {
+	cols["seen_at"] = gorm.Expr("now()")
+	set := append(clause.AssignmentColumns(update),
+		clause.Assignment{Column: clause.Column{Name: "seen_at"}, Value: gorm.Expr("now()")},
+		clause.Assignment{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")})
+	return g.Table(model.ScheduledTask{}.TableName()).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "name"}}, DoUpdates: set, Where: clause.Where{Exprs: only},
+	}).Create(cols)
+}
+
+// taskRowExists reports whether name has a scheduled_tasks row.
+func taskRowExists(ctx context.Context, q *gorm.DB, name string) (bool, error) {
+	var n int64
+	err := store.G(ctx, q).Model(&model.ScheduledTask{}).Where("name = ?", name).Count(&n).Error
+	return n > 0, err
+}
+
+// releaseLeases frees the leases of the tasks the conditions of db pick and
+// sets updated_at to at, now() or clock_timestamp() as the raw statement
+// each caller replaced had it.
+func releaseLeases(db *gorm.DB, at clause.Expr) *gorm.DB {
+	return db.Model(&model.ScheduledTask{}).
+		Updates(map[string]any{"lease_job_id": nil, "lease_node": nil, "lease_until": nil, "updated_at": at})
 }
 
 // watchAdmission starts River while this node may do background work and
@@ -255,7 +303,12 @@ func (b *clusterBackend) converge() {
 	case stopped || want == running:
 		return
 	case want:
-		if err := b.client.Start(b.runCtx); err != nil {
+		err := b.starting.Acquire(b.runCtx, startShares)
+		if err == nil {
+			err = b.client.Start(b.runCtx)
+			b.starting.Release(startShares)
+		}
+		if err != nil {
 			b.log.Warn("task: start River", "err", err)
 			return
 		}
@@ -275,7 +328,7 @@ func (b *clusterBackend) converge() {
 }
 
 // enqueue inserts one run of a cluster task (tx nil: outside a transaction).
-func (b *clusterBackend) enqueue(ctx context.Context, tx pgx.Tx, name string, args any, opts core.EnqueueOpts) error {
+func (b *clusterBackend) enqueue(ctx context.Context, tx *gorm.DB, name string, args any, opts core.EnqueueOpts) error {
 	t, ok := b.reg.Get(name)
 	if !ok || t.Scope != core.TaskCluster {
 		return core.ErrTaskUnknown
@@ -295,12 +348,29 @@ func (b *clusterBackend) enqueue(ctx context.Context, tx pgx.Tx, name string, ar
 		insert.UniqueOpts = river.UniqueOpts{ByArgs: true, ByState: unfinishedStates}
 	}
 	job := taskArgs{Name: name, Key: opts.UniqueKey, Args: raw}
-	var err error
-	if tx != nil {
-		_, err = b.client.InsertTx(ctx, tx, job, insert)
-	} else {
-		_, err = b.client.Insert(ctx, job, insert)
+	if tx == nil {
+		return b.insert(ctx, job, insert)
 	}
+	sqlTx := store.SQLTx(tx)
+	if sqlTx == nil {
+		return fmt.Errorf("task %s: enqueue in a handle that is no transaction", name)
+	}
+	_, err := b.client.InsertTx(ctx, sqlTx, job, insert)
+	return err
+}
+
+// startShares is the weight of starting that client.Start takes: all of
+// it. Each Insert takes one, so this many can run at once.
+const startShares = 1 << 30
+
+// insert inserts a run outside a transaction once no client.Start is
+// running (see starting), or fails with ctx's error.
+func (b *clusterBackend) insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) error {
+	if err := b.starting.Acquire(ctx, 1); err != nil {
+		return err
+	}
+	defer b.starting.Release(1)
+	_, err := b.client.Insert(ctx, args, opts)
 	return err
 }
 
@@ -310,9 +380,8 @@ func (b *clusterBackend) trigger(ctx context.Context, name string) error {
 	if !ok || t.Scope != core.TaskCluster {
 		return core.ErrTaskUnknown
 	}
-	_, err := b.client.Insert(ctx, taskArgs{Name: name, Key: manualKey, Manual: true}, &river.InsertOpts{
+	return b.insert(ctx, taskArgs{Name: name, Key: manualKey, Manual: true}, &river.InsertOpts{
 		Queue: t.queue(), MaxAttempts: 1, UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: unfinishedStates}})
-	return err
 }
 
 // shutdown stops the admission watcher and River (soft stop, then cancel).
@@ -470,7 +539,7 @@ func (b *clusterBackend) work(ctx context.Context, t *Task, job *river.Job[taskA
 // not make two; the lease keeps it from overlapping a scheduled run. A
 // failed insert leaves the work to the next scheduled run.
 func (b *clusterBackend) continueRun(ctx context.Context, t *Task, job *river.Job[taskArgs], delay time.Duration) {
-	_, err := b.client.Insert(ctx, taskArgs{Name: t.Name, Key: continueKey + strconv.FormatInt(job.ID, 10), Args: job.Args.Args},
+	err := b.insert(ctx, taskArgs{Name: t.Name, Key: continueKey + strconv.FormatInt(job.ID, 10), Args: job.Args.Args},
 		&river.InsertOpts{Queue: t.queue(), MaxAttempts: t.Attempts(), ScheduledAt: time.Now().Add(delay),
 			UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: unfinishedStates}})
 	if err != nil {
@@ -484,20 +553,23 @@ var errTaskRemoved = errors.New("task: removed")
 // takeLease claims the task's lease for job (§7.4); false when another run
 // holds it.
 func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (bool, error) {
-	tag, err := b.db.Pool.Exec(ctx, `UPDATE scheduled_tasks
-		SET lease_job_id = $2, lease_node = $3, lease_until = clock_timestamp() + $4::interval,
-			last_started_at = clock_timestamp(), updated_at = clock_timestamp()
-		WHERE name = $1 AND (lease_until IS NULL OR lease_until < clock_timestamp() OR lease_job_id = $2)`,
-		t.Name, jobID, b.nodeID, (t.Timeout + leaseGrace).String())
-	if err != nil {
-		return false, err
+	// The lease is a compare-and-set on the row, timed by clock_timestamp().
+	res := store.G(ctx, b.db.Gorm).Model(&model.ScheduledTask{}).
+		Where("name = ? AND (lease_until IS NULL OR lease_until < clock_timestamp() OR lease_job_id = ?)", t.Name, jobID).
+		Updates(map[string]any{
+			"lease_job_id": jobID, "lease_node": b.nodeID,
+			"lease_until":     gorm.Expr("clock_timestamp() + ?::interval", (t.Timeout + leaseGrace).String()),
+			"last_started_at": gorm.Expr("clock_timestamp()"), "updated_at": gorm.Expr("clock_timestamp()"),
+		})
+	if res.Error != nil {
+		return false, res.Error
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		// A task registered on this node but missing its row: a core task's
 		// row was pruned, record it and try once more; a plugin task's row
 		// is gone because the task was removed.
-		var exists bool
-		if err := b.db.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM scheduled_tasks WHERE name = $1)`, t.Name).Scan(&exists); err != nil {
+		exists, err := taskRowExists(ctx, b.db.Gorm, t.Name)
+		if err != nil {
 			return false, err
 		}
 		if !exists && t.Source != SourceCore {
@@ -517,10 +589,9 @@ func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (b
 // finish releases the lease of job and, unless the run was only put off,
 // records it as the task's latest run.
 func (b *clusterBackend) finish(ctx context.Context, t *Task, jobID int64, o runOutput, putOff bool) error {
+	g := store.G(ctx, b.db.Gorm)
 	if putOff {
-		_, err := b.db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET lease_job_id = NULL, lease_node = NULL, lease_until = NULL,
-			updated_at = clock_timestamp() WHERE name = $1 AND lease_job_id = $2`, t.Name, jobID)
-		return err
+		return releaseLeases(g.Where("name = ? AND lease_job_id = ?", t.Name, jobID), gorm.Expr("clock_timestamp()")).Error
 	}
 	// scheduled_tasks.last_status keeps the 0.1.235 values (its CHECK
 	// constraint): a continued run is a success there; its run record keeps
@@ -529,16 +600,32 @@ func (b *clusterBackend) finish(ctx context.Context, t *Task, jobID int64, o run
 	if status == StatusContinued {
 		status = StatusSucceeded
 	}
-	_, err := b.db.Pool.Exec(ctx, `UPDATE scheduled_tasks SET
-			lease_job_id = CASE WHEN lease_job_id = $2 THEN NULL ELSE lease_job_id END,
-			lease_node = CASE WHEN lease_job_id = $2 THEN NULL ELSE lease_node END,
-			lease_until = CASE WHEN lease_job_id = $2 THEN NULL ELSE lease_until END,
-			last_job_id = $2, last_node = $3, last_finished_at = clock_timestamp(), last_status = $4,
-			last_count = $5, last_message = NULLIF($6, ''), last_error = NULLIF($7, ''),
-			last_success_at = CASE WHEN $4 = 'succeeded' THEN clock_timestamp() ELSE last_success_at END,
-			consecutive_failures = CASE WHEN $4 = 'succeeded' THEN 0 WHEN $4 = 'skipped' THEN consecutive_failures
-				ELSE consecutive_failures + 1 END,
-			updated_at = clock_timestamp()
-		WHERE name = $1`, t.Name, jobID, b.nodeID, status, o.Count, o.Message, o.Error)
-	return err
+	return recordRun(g, t.Name, jobID, b.nodeID, status, o).Error
+}
+
+// recordRun makes job the task's latest run, recorded with status (a
+// last_status value) and o, and releases the lease if job still holds it,
+// in one statement: every expression reads the row as it was.
+func recordRun(g *gorm.DB, name string, jobID int64, nodeID, status string, o runOutput) *gorm.DB {
+	set := map[string]any{
+		"lease_job_id":     gorm.Expr("CASE WHEN lease_job_id = ? THEN NULL ELSE lease_job_id END", jobID),
+		"lease_node":       gorm.Expr("CASE WHEN lease_job_id = ? THEN NULL ELSE lease_node END", jobID),
+		"lease_until":      gorm.Expr("CASE WHEN lease_job_id = ? THEN NULL ELSE lease_until END", jobID),
+		"last_job_id":      jobID,
+		"last_node":        nodeID,
+		"last_finished_at": gorm.Expr("clock_timestamp()"),
+		"last_status":      status,
+		"last_count":       o.Count,
+		"last_message":     gorm.Expr("NULLIF(?, '')", o.Message),
+		"last_error":       gorm.Expr("NULLIF(?, '')", o.Error),
+		"updated_at":       gorm.Expr("clock_timestamp()"),
+	}
+	switch status {
+	case StatusSucceeded:
+		set["last_success_at"], set["consecutive_failures"] = gorm.Expr("clock_timestamp()"), 0
+	case StatusSkipped:
+	default:
+		set["consecutive_failures"] = gorm.Expr("consecutive_failures + 1")
+	}
+	return g.Model(&model.ScheduledTask{}).Where("name = ?", name).Updates(set)
 }

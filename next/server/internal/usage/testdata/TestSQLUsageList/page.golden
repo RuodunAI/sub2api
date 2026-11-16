@@ -1,0 +1,20 @@
+-- sql
+SELECT u.id, u.request_id, u.client_request_id, u.created_at, u.user_id, COALESCE(us.email, ''), u.api_key_id,
+	COALESCE(k.name, ''), u.group_id, COALESCE(g.name, ''), u.account_id, COALESCE(a.name, ''), u.plugin_key,
+	u.platform, u.protocol, u.account_type, u.upstream_protocol, u.endpoint, u.model, u.upstream_model, u.stream,
+	u.status_code, u.success,
+	u.error_type, u.error_message, u.attempts, u.input_tokens, u.output_tokens, u.cache_read_tokens,
+	u.cache_creation_tokens, u.cache_creation_1h_tokens, u.total_cost, u.rate_multiplier, u.billing_status,
+	u.billing_mode, u.matched_tier, u.latency_ms, u.first_token_ms, u.upload_ms, u.sticky_hit, u.client_ip, u.conversion,
+	CASE WHEN u.attempts > 1 THEN u.anomalies->>'attempts' END, COALESCE(u.base_cost, CASE WHEN u.rate_multiplier > 0 THEN u.total_cost / u.rate_multiplier ELSE u.total_cost END) FROM usage_logs u LEFT JOIN users us ON us.id = u.user_id
+	LEFT JOIN api_keys k ON k.id = u.api_key_id
+	LEFT JOIN groups g ON g.id = u.group_id
+	LEFT JOIN accounts a ON a.id = u.account_id WHERE u.model = $1 AND u.success = $2 AND (EXISTS (SELECT 1 FROM api_keys fk WHERE fk.id=u.api_key_id AND fk.name ILIKE $3 ESCAPE E'\\')) AND u.created_at >= $4 AND u.created_at < $5 ORDER BY u.created_at DESC, u.id DESC LIMIT $6 OFFSET $7
+-- vars
+$1 string "claude"
+$2 bool true
+$3 string "%ci\\_\\%%"
+$4 time.Time 2026-11-01 00:00:00 +0000 UTC
+$5 time.Time 2026-11-15 00:00:00 +0000 UTC
+$6 int 20
+$7 int 40

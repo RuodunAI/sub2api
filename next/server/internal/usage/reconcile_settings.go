@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -175,6 +176,14 @@ func (r resolved) clampDelay(want time.Duration, attempts int) time.Duration {
 // the module uses for settings; on a read error the defaults stand, which
 // keeps the loop running rather than stalling every entry.
 func (s *Service) reconcileSettings(ctx context.Context) resolved {
+	return s.reconcileSettingsIn(ctx, s.db.Gorm)
+}
+
+// reconcileSettingsIn is reconcileSettings with a cache miss read through
+// q: a caller in a transaction passes it, so that the read takes no second
+// connection. The transaction does not write the settings, so it reads what
+// the pool would.
+func (s *Service) reconcileSettingsIn(ctx context.Context, q *gorm.DB) resolved {
 	s.mu.Lock()
 	snap, at := s.reconcileCfg, s.reconcileCfgAt
 	epoch := s.reconcileEpoch
@@ -182,7 +191,7 @@ func (s *Service) reconcileSettings(ctx context.Context) resolved {
 	if snap != nil && time.Since(at) < reconcileSettingsTTL {
 		return *snap
 	}
-	v, err := loadReconcileSettings(ctx, s.db.Pool)
+	v, err := loadReconcileSettings(ctx, q)
 	if err != nil {
 		return DefaultReconcileSettings().resolve()
 	}
@@ -197,10 +206,9 @@ func (s *Service) reconcileSettings(ctx context.Context) resolved {
 
 const reconcileSettingsTTL = 10 * time.Second
 
-func loadReconcileSettings(ctx context.Context, q store.Querier) (ReconcileSettings, error) {
+func loadReconcileSettings(ctx context.Context, q *gorm.DB) (ReconcileSettings, error) {
 	v := DefaultReconcileSettings()
-	var raw []byte
-	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, settingsKeyReconcile).Scan(&raw)
+	raw, err := store.SettingValue(store.G(ctx, q), settingsKeyReconcile)
 	if store.IsNoRows(err) {
 		return v, nil
 	}
@@ -233,7 +241,7 @@ func loadReconcileSettings(ctx context.Context, q store.Querier) (ReconcileSetti
 }
 
 func (s *Service) getReconcileSettings(c *gin.Context) {
-	v, err := loadReconcileSettings(c.Request.Context(), s.db.Pool)
+	v, err := loadReconcileSettings(c.Request.Context(), s.db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -20,6 +21,9 @@ const (
 	// the authz hardening.
 	lastReleased = "0096_usage_base_cost.sql"
 	hardening    = "0097_authz_hardening.sql"
+	// production is the last core migration of 0.1.288, the release 0.1.290
+	// upgrades.
+	production = "0098_plugin_staged_grants.sql"
 )
 
 // hardeningDB is a database as core 0.1.285 leaves it, with the authz data
@@ -38,18 +42,27 @@ func newHardeningDB(t *testing.T) *hardeningDB {
 
 func (h *hardeningDB) exec(sql string, args ...any) {
 	h.t.Helper()
-	_, err := h.db.Pool.Exec(h.ctx, sql, args...)
+	_, err := h.db.SQL.ExecContext(h.ctx, sql, args...)
 	require.NoError(h.t, err)
 }
 
 func (h *hardeningDB) text(sql string, args ...any) (v string) {
 	h.t.Helper()
-	require.NoError(h.t, h.db.Pool.QueryRow(h.ctx, sql, args...).Scan(&v))
+	require.NoError(h.t, h.db.SQL.QueryRowContext(h.ctx, sql, args...).Scan(&v))
 	return v
 }
 
 func (h *hardeningDB) migrate() error {
 	_, err := store.Migrate(h.ctx, h.db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+	return err
+}
+
+// migrateThrough applies the core migrations up to last and no further:
+// the release whose rollback script a test runs (0100 has none: its way
+// back is a backup).
+func (h *hardeningDB) migrateThrough(last string) error {
+	h.t.Helper()
+	_, err := store.Migrate(h.ctx, h.db, testutil.MigrationsThrough(h.t, last), store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 	return err
 }
 
@@ -95,9 +108,12 @@ SELECT u.id, u.email, md5(u.email), '0000', k.perms FROM users u JOIN (VALUES
 }
 
 // grants lists "<role> <grant>" for every grant (scoped ones as
-// <action>:<scope>), sorted.
+// <action>:<scope>), sorted: from casbin_rule once 0100 made it the store.
 func (h *hardeningDB) grants() string {
 	h.t.Helper()
+	if h.text(`SELECT (to_regclass('casbin_rule') IS NOT NULL)::text`) == "true" {
+		return h.text(`SELECT COALESCE(string_agg(role || ' ' || key, ', ' ORDER BY role || ' ' || key), '') FROM (` + casbinrule.Grants + `) g`)
+	}
 	scoped := ""
 	if h.text(`SELECT (to_regclass('role_permission_scopes') IS NOT NULL)::text`) == "true" {
 		scoped = `UNION ALL SELECT r.key || ' ' || p.key || ':' || rs.scope FROM role_permission_scopes rs
@@ -154,13 +170,22 @@ func (h *hardeningDB) schema() string {
 	h.t.Helper()
 	return h.text(`SELECT string_agg(d, E'\n' ORDER BY d) FROM (
     SELECT 'table ' || relname || ' ' || relkind::text AS d FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'v', 'm', 'S', 'p')
-    UNION ALL SELECT 'column ' || table_name || '.' || column_name || ' ' || data_type || ' ' || is_nullable || ' ' || COALESCE(column_default, '')
+    UNION ALL SELECT 'column ' || table_name || '.' || column_name || ' ' || data_type || COALESCE('(' || character_maximum_length || ')', '') || ' ' || is_nullable || ' ' || COALESCE(column_default, '')
         FROM information_schema.columns WHERE table_schema = 'public'
     UNION ALL SELECT 'index ' || indexdef FROM pg_indexes WHERE schemaname = 'public'
     UNION ALL SELECT 'constraint ' || conrelid::regclass || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint WHERE connamespace = 'public'::regnamespace
     UNION ALL SELECT 'trigger ' || pg_get_triggerdef(oid) FROM pg_trigger WHERE NOT tgisinternal
     UNION ALL SELECT 'function ' || oid::regprocedure || ' ' || md5(pg_get_functiondef(oid)) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND prokind IN ('f', 'p')
 ) s`)
+}
+
+// down runs the rollback script deploy/rollback/<name>.
+func (h *hardeningDB) down(name string) error {
+	h.t.Helper()
+	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "rollback", name))
+	require.NoError(h.t, err)
+	_, err = h.db.SQL.ExecContext(h.ctx, string(sql))
+	return err
 }
 
 func (h *hardeningDB) syncCore() {
@@ -183,7 +208,7 @@ func (h *hardeningDB) syncCore() {
 func TestAuthzHardeningMigration(t *testing.T) {
 	h := newHardeningDB(t)
 	version := h.text(`SELECT version::text FROM authz_meta`)
-	require.NoError(t, h.migrate())
+	require.NoError(t, h.migrateThrough(beforeCasbin))
 
 	require.Equal(t, "", h.text(`SELECT COALESCE(string_agg(key, ','), '') FROM permissions WHERE key LIKE '%:own:%' OR key = 'role:manage'`))
 	require.Equal(t, "seller account:credential:view:own, seller account:read:own, seller account:update:own, seller proxy:manage:own", h.roleGrants("seller"))
@@ -210,8 +235,11 @@ func TestAuthzHardeningMigration(t *testing.T) {
 	// Again (only a forgotten migration row does that): nothing changes.
 	migrated := h.state()
 	h.exec(`DELETE FROM schema_migrations WHERE id = $1`, hardening)
-	require.NoError(t, h.migrate())
+	require.NoError(t, h.migrateThrough(beforeCasbin))
 	require.Equal(t, migrated, h.state())
+	// 0100 turns the grants into casbin_rule rows, unchanged.
+	require.NoError(t, h.migrate())
+	require.Equal(t, strings.SplitN(migrated, "\n", 2)[0], h.grants())
 
 	lastSeeded := h.text(`SELECT max(id)::text FROM permissions`)
 	// The core sync creates the supplier role, resets the admin and the
@@ -253,8 +281,8 @@ func TestAuthzHardeningMigration(t *testing.T) {
 
 	// A restart neither fills nor resets again: what an administrator
 	// removes stays removed.
-	h.exec(`DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE key IN ('user', 'admin'))
-        AND permission_id IN (SELECT id FROM permissions WHERE key IN ('balance:self:read', 'role:define'))`)
+	testutil.Revoke(t, h.db, "user", "balance:self:read")
+	testutil.Revoke(t, h.db, "admin", "role:define")
 	synced := h.state()
 	h.syncCore()
 	require.Equal(t, synced, h.state())
@@ -296,18 +324,15 @@ func TestAuthzHardeningNeedsOneSuperAdmin(t *testing.T) {
 // the schema of a database migrated through 0096, the former grants of
 // every role and access key (own scopes, the redundant ones the migration
 // only audited, role:manage, the super-only permissions taken back), with
-// group scopes written since dropped and audited. What the core sync's
-// first pass changed on a built-in role stays: what it filled in (here the
-// user role's balance:self:read, one of its 0.1.285 defaults too) and what
-// a reset took from a role nobody held (here the operator's
-// account:credential:view and system:update:read). Upgrading again then
-// gives the same grants as the first upgrade.
+// group scopes written since dropped and audited. Upgrading again then
+// gives the same grants as the first upgrade. The upgrade stops at 0.1.288
+// (0098): 0.1.290's 0100 is one way, and this tree's core sync writes
+// casbin_rule, so what a sync of 0.1.286-0.1.288 changed is not part of it.
 func TestAuthzHardeningRollback(t *testing.T) {
 	h := newHardeningDB(t)
 	schema, grants, keys := h.schema(), h.grants(), h.accessKeys()
 
-	require.NoError(t, h.migrate())
-	h.syncCore()
+	require.NoError(t, h.migrateThrough(production))
 	upgraded := h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater")
 	// Written after the upgrade: a group scope, which 0.1.285 cannot express.
 	h.exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope)
@@ -320,27 +345,21 @@ func TestAuthzHardeningRollback(t *testing.T) {
         VALUES ('stg', '1.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved'), ('stg', '2.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved')`)
 	h.exec(`INSERT INTO plugin_staged_grants (plugin_key, version, permission, status, manifest_hash) VALUES ('stg', '2.0.0', 'lock', 'granted', 'h')`)
 
-	down, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "rollback", "0.1.286-authz-down.sql"))
-	require.NoError(t, err)
-	h.exec(string(down))
+	require.NoError(t, h.down("0.1.286-authz-down.sql"))
 
 	require.Equal(t, schema, h.schema())
 	// 0.1.285 grants nothing for the permissions only 0.1.286 has (its sync
-	// marks them removed); the supplier role is new and left alone.
-	want := strings.NewReplacer("user apikey:self:manage", "user apikey:self:manage, user balance:self:read",
-		"operator account:credential:view, ", "", "operator system:update:read, ", "").Replace(grants)
-	require.Equal(t, want,
+	// marks them removed).
+	require.Equal(t, grants,
 		filterGrants(h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater", "super_admin"), grants))
 	require.Equal(t, keys, h.accessKeys())
 	require.Equal(t, "1", h.text(`SELECT count(*)::text FROM audit_logs WHERE detail->>'via' = 'rollback 0.1.286' AND detail->>'dropped' = 'account:test:group/12'`))
 	require.Equal(t, "1.0.0 approved, 2.0.0 awaiting_consent", h.text(`SELECT string_agg(version || ' ' || consent_status, ', ' ORDER BY version) FROM plugin_versions WHERE plugin_key = 'stg'`))
 	require.Equal(t, `["lock"]`, h.text(`SELECT (detail->'permissions')::text FROM audit_logs WHERE action = 'plugin.grants.withdraw' AND target_id = 'stg' AND detail->>'version' = '2.0.0'`))
 
-	_, err = h.db.Pool.Exec(h.ctx, string(down))
-	require.ErrorContains(t, err, "nothing to roll back")
+	require.ErrorContains(t, h.down("0.1.286-authz-down.sql"), "nothing to roll back")
 
-	require.NoError(t, h.migrate())
-	h.syncCore()
+	require.NoError(t, h.migrateThrough(production))
 	require.Equal(t, upgraded, h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater"))
 }
 

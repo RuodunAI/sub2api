@@ -40,7 +40,7 @@ func baseURL(b json.RawMessage) string {
 
 func (e *env) auditRows(action string) []map[string]any {
 	e.t.Helper()
-	rows, err := e.db.Pool.Query(context.Background(),
+	rows, err := e.db.SQL.QueryContext(context.Background(),
 		`SELECT user_id, target_type, target_id, detail FROM audit_logs WHERE action = $1 ORDER BY id`, action)
 	if err != nil {
 		e.t.Fatal(err)
@@ -180,7 +180,7 @@ func TestReadPluginAccountCredentials(t *testing.T) {
 	}
 
 	// A soft-deleted account is gone for the plugin too.
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at = now() WHERE id = $1`, mine); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at = now() WHERE id = $1`, mine); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.svc.ReadPluginAccountCredentials(ctx, "anthropic", mine); core.AsError(err).Code != "not_found" {

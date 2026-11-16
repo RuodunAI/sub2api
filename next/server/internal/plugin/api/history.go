@@ -1,13 +1,17 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"strconv"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
-	"github.com/gin-gonic/gin"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // listRollouts serves both the per-plugin and cross-plugin history. Completed
@@ -24,35 +28,20 @@ func (a *API) listRollouts(c *gin.Context) {
 		since = &value
 	}
 	page, size := httpapi.Pagination(c)
-	where := ` WHERE ($1='' OR plugin_key=$1) AND ($2::timestamptz IS NULL OR created_at >= $2)`
+	g := store.G(ctx(c), a.d.DB.Gorm)
 	var total int64
-	if err := a.d.DB.Pool.QueryRow(ctx(c), `SELECT count(*) FROM plugin_rollouts`+where, key, since).Scan(&total); err != nil {
+	if err := rollouts(g, key, since).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := a.d.DB.Pool.Query(ctx(c), `SELECT to_jsonb(r) || jsonb_build_object('coordinator',r.coordinator_node_id,'nodes',
-        COALESCE((SELECT jsonb_agg(to_jsonb(n) ORDER BY n.node_id,n.boot_id) FROM plugin_rollout_nodes n WHERE n.rollout_id=r.id),'[]'::jsonb))
-        FROM plugin_rollouts r`+where+` ORDER BY id DESC LIMIT $3 OFFSET $4`, key, since, size, (page-1)*size)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	items := []map[string]any{}
-	for rows.Next() {
+	items, err := store.CollectRows(rolloutPage(g, key, since, size, (page-1)*size), func(rows *sql.Rows) (map[string]any, error) {
 		var raw []byte
-		if err = rows.Scan(&raw); err != nil {
-			break
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
 		}
 		var item map[string]any
-		if err = json.Unmarshal(raw, &item); err != nil {
-			break
-		}
-		items = append(items, item)
-	}
-	rows.Close()
-	if err == nil {
-		err = rows.Err()
-	}
+		return item, json.Unmarshal(raw, &item)
+	})
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -75,6 +64,38 @@ func (a *API) listRollouts(c *gin.Context) {
 	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
 }
 
+// rollouts selects the rollouts (as r) of a plugin key ("": all) created at
+// or after since (nil: any time).
+func rollouts(db *gorm.DB, key string, since *time.Time) *gorm.DB {
+	q := db.Table("plugin_rollouts AS r")
+	if key != "" {
+		q = q.Where("r.plugin_key = ?", key)
+	}
+	if since != nil {
+		q = q.Where("r.created_at >= ?", *since)
+	}
+	return q
+}
+
+// rolloutPage selects a page of the rollouts, newest first, each one a JSON
+// document with its coordinator and node results.
+func rolloutPage(db *gorm.DB, key string, since *time.Time, limit, offset int) *gorm.DB {
+	nodes := db.Table("plugin_rollout_nodes AS n").Select("jsonb_agg(to_jsonb(n) ORDER BY n.node_id, n.boot_id)").Where("n.rollout_id = r.id")
+	return rollouts(db, key, since).
+		Select("to_jsonb(r) || jsonb_build_object('coordinator', r.coordinator_node_id, 'nodes', COALESCE((?), '[]'::jsonb))", nodes).
+		Order("r.id DESC").Limit(limit).Offset(offset)
+}
+
+// history selects the history (as h) of a plugin key, of rollout id (0:
+// any).
+func history(db *gorm.DB, key string, rolloutID int64) *gorm.DB {
+	q := db.Table("plugin_history AS h").Where("h.plugin_key = ?", key)
+	if rolloutID != 0 {
+		q = q.Where("h.rollout_id = ?", rolloutID)
+	}
+	return q
+}
+
 func (a *API) pluginHistory(c *gin.Context) {
 	var rolloutID int64
 	if raw := c.Query("rollout_id"); raw != "" {
@@ -86,28 +107,20 @@ func (a *API) pluginHistory(c *gin.Context) {
 		}
 	}
 	page, size := httpapi.Pagination(c)
-	where := ` WHERE plugin_key=$1 AND ($2::bigint=0 OR rollout_id=$2)`
+	key := c.Param("key")
+	g := store.G(ctx(c), a.d.DB.Gorm)
 	var total int64
-	if err := a.d.DB.Pool.QueryRow(ctx(c), `SELECT count(*) FROM plugin_history`+where, c.Param("key"), rolloutID).Scan(&total); err != nil {
+	if err := history(g, key, rolloutID).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := a.d.DB.Pool.Query(ctx(c), `SELECT to_jsonb(h) FROM plugin_history h`+where+` ORDER BY id DESC LIMIT $3 OFFSET $4`, c.Param("key"), rolloutID, size, (page-1)*size)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	defer rows.Close()
-	items := []json.RawMessage{}
-	for rows.Next() {
+	docs := history(g, key, rolloutID).Select("to_jsonb(h)").Order("h.id DESC").Limit(size).Offset((page - 1) * size)
+	items, err := store.CollectRows(docs, func(rows *sql.Rows) (json.RawMessage, error) {
 		var item json.RawMessage
-		if err := rows.Scan(&item); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
+		err := rows.Scan(&item)
+		return item, err
+	})
+	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

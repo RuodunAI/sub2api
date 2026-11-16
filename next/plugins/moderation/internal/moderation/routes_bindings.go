@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
@@ -69,7 +71,7 @@ func (p *Plugin) listBindings(ctx context.Context, _ *pluginv1.HTTPRequest) (*pl
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	list, err := loadBindings(ctx, db, p.snap.Load())
+	list, err := loadBindings(db, p.snap.Load())
 	if err != nil {
 		return nil, err
 	}
@@ -82,26 +84,19 @@ func (p *Plugin) listBindings(ctx context.Context, _ *pluginv1.HTTPRequest) (*pl
 // wider binding (bindGroup, bindAccount: staleReason), so a published and
 // enabled flow whose spec was dropped from the snapshot is not reported as
 // applying.
-func loadBindings(ctx context.Context, q querier, snap *snapshot) ([]Binding, error) {
-	rows, err := q.Query(ctx, `SELECT b.group_id, b.account_id, b.flow_id
-		FROM (
-			SELECT group_id, account_id, flow_id FROM flow_accounts
-			UNION ALL SELECT group_id, 0, flow_id FROM flow_groups) b
-		ORDER BY b.account_id = 0, b.account_id, b.group_id`)
-	if err != nil {
-		return nil, err
-	}
-	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Binding, error) {
-		var b Binding
-		err := r.Scan(&b.GroupID, &b.AccountID, &b.FlowID)
+func loadBindings(db *gorm.DB, snap *snapshot) ([]Binding, error) {
+	var rows []model.FlowAccount
+	both := db.Raw("(?) UNION ALL (?)", db.Model(&model.FlowAccount{}).Select("group_id, account_id, flow_id"),
+		db.Model(&model.FlowGroup{}).Select("group_id, 0 AS account_id, flow_id"))
+	err := db.Table("(?) AS b", both).Order("b.account_id = 0, b.account_id, b.group_id").Scan(&rows).Error
+	list := make([]Binding, len(rows))
+	for i, r := range rows {
+		b := Binding{GroupID: r.GroupID, AccountID: r.AccountID, FlowID: r.FlowID}
 		b.Kind = bindingKind(b.GroupID, b.AccountID)
 		b.FallbackReason = snap.staleReason(b.FlowID)
 		b.Inactive = b.FallbackReason != ""
 		b.EffectiveFlowID = snap.effectiveFlow(b.GroupID, b.AccountID)
-		return b, err
-	})
-	if list == nil {
-		list = []Binding{}
+		list[i] = b
 	}
 	return list, err
 }
@@ -132,10 +127,10 @@ func (p *Plugin) putBinding(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 		return pluginsdk.FieldErrorResponse("invalid binding / 绑定无效", errs), nil
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		if in.FlowID > 0 {
-			var exists bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM flows WHERE id = $1 AND deleted_at IS NULL)`, in.FlowID).Scan(&exists); err != nil {
+			exists, err := flowExists(tx, in.FlowID)
+			if err != nil {
 				return err
 			}
 			if !exists {
@@ -143,7 +138,7 @@ func (p *Plugin) putBinding(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 				return errRollback
 			}
 		}
-		current, found, err := bindingFlow(ctx, tx, in.GroupID, in.AccountID)
+		current, found, err := bindingFlow(tx, in.GroupID, in.AccountID)
 		if err != nil {
 			return err
 		}
@@ -153,13 +148,11 @@ func (p *Plugin) putBinding(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 			return errRollback
 		}
 		if in.AccountID == 0 {
-			_, err = tx.Exec(ctx, `INSERT INTO flow_groups (group_id, flow_id) VALUES ($1, $2)
-				ON CONFLICT (group_id) DO UPDATE SET flow_id = EXCLUDED.flow_id`, in.GroupID, in.FlowID)
-		} else {
-			_, err = tx.Exec(ctx, `INSERT INTO flow_accounts (group_id, account_id, flow_id) VALUES ($1, $2, $3)
-				ON CONFLICT (group_id, account_id) DO UPDATE SET flow_id = EXCLUDED.flow_id`, in.GroupID, in.AccountID, in.FlowID)
+			return tx.Clauses(clause.OnConflict{Columns: columns("group_id"), DoUpdates: clause.AssignmentColumns([]string{"flow_id"})}).
+				Create(&model.FlowGroup{GroupID: in.GroupID, FlowID: in.FlowID}).Error
 		}
-		return err
+		return tx.Clauses(clause.OnConflict{Columns: columns("group_id", "account_id"), DoUpdates: clause.AssignmentColumns([]string{"flow_id"})}).
+			Create(&model.FlowAccount{GroupID: in.GroupID, AccountID: in.AccountID, FlowID: in.FlowID}).Error
 	})
 	if resp != nil {
 		return resp, nil
@@ -171,15 +164,15 @@ func (p *Plugin) putBinding(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 }
 
 // bindingFlow reads the flow of one binding.
-func bindingFlow(ctx context.Context, tx pgx.Tx, group, account int64) (int64, bool, error) {
+func bindingFlow(tx *gorm.DB, group, account int64) (int64, bool, error) {
 	var flow int64
 	var err error
 	if account == 0 {
-		err = tx.QueryRow(ctx, `SELECT flow_id FROM flow_groups WHERE group_id = $1`, group).Scan(&flow)
+		err = tx.Model(&model.FlowGroup{}).Select("flow_id").Where("group_id = ?", group).Take(&flow).Error
 	} else {
-		err = tx.QueryRow(ctx, `SELECT flow_id FROM flow_accounts WHERE group_id = $1 AND account_id = $2`, group, account).Scan(&flow)
+		err = tx.Model(&model.FlowAccount{}).Select("flow_id").Where("group_id = ? AND account_id = ?", group, account).Take(&flow).Error
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, false, nil
 	}
 	return flow, err == nil, err
@@ -192,18 +185,18 @@ func (p *Plugin) deleteBinding(ctx context.Context, req *pluginv1.HTTPRequest) (
 		return pluginsdk.ErrorResponse(http.StatusBadRequest, "invalid_argument", "group_id and account_id must be integers >= 0 / group_id 和 account_id 必须是 >= 0 的整数"), nil
 	}
 	var resp *pluginv1.HTTPResponse
-	err := p.configTx(ctx, func(tx pgx.Tx) error {
-		sql := `DELETE FROM flow_accounts WHERE group_id = $1 AND account_id = $2`
-		args := []any{group, account}
+	err := p.configTx(ctx, func(tx *gorm.DB) error {
+		var res *gorm.DB
 		if account == 0 {
-			sql, args = `DELETE FROM flow_groups WHERE group_id = $1`, args[:1]
+			res = tx.Where("group_id = ?", group).Delete(&model.FlowGroup{})
+		} else {
+			res = tx.Where("group_id = ? AND account_id = ?", group, account).Delete(&model.FlowAccount{})
 		}
-		tag, err := tx.Exec(ctx, sql, args...)
-		if err == nil && tag.RowsAffected() == 0 {
+		if res.Error == nil && res.RowsAffected == 0 {
 			resp = pluginsdk.ErrorResponse(http.StatusNotFound, "not_found", "binding not found / 绑定不存在")
 			return errRollback
 		}
-		return err
+		return res.Error
 	})
 	if resp != nil {
 		return resp, nil

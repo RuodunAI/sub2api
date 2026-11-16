@@ -7,9 +7,10 @@ import (
 	"maps"
 	"slices"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Common account controls (CONTRACTS §87): an account type declares per
@@ -263,7 +264,7 @@ func (p controlPlan) converge(in *input, current *row) {
 
 // convergeUsageLimit stores a locked usage limit on an account holding
 // another one, reporting whether it did.
-func (p controlPlan) convergeUsageLimit(ctx context.Context, q store.Querier, id int64) (bool, error) {
+func (p controlPlan) convergeUsageLimit(ctx context.Context, q *gorm.DB, id int64) (bool, error) {
 	if !p.usageLimitLocked || p.usageLimit == nil {
 		return false, nil
 	}
@@ -352,26 +353,6 @@ func (in *input) leavesNoProxy(current *row) bool {
 		return false
 	}
 	return current == nil || in.ProxyID.Set
-}
-
-// patchFields drop the field of a control from an account_patch target.
-var patchFields = map[string]func(*patchTarget){
-	"model_mapping": func(t *patchTarget) { t.Mapping = nil }, "priority": func(t *patchTarget) { t.Priority = nil },
-	"weight": func(t *patchTarget) { t.Weight = nil }, "max_concurrency": func(t *patchTarget) { t.MaxConcurrency = nil },
-	"rpm_limit": func(t *patchTarget) { t.RPMLimit = nil }, "tpm_limit": func(t *patchTarget) { t.TPMLimit = nil },
-	"spm_limit": func(t *patchTarget) { t.SPMLimit = nil }, "model_limits": func(t *patchTarget) { t.ModelLimits = nil },
-}
-
-// guardPatch keeps the plugin's account_patch off the fixed controls: their
-// fields leave the target, so a locked or non-configurable field keeps the
-// value the caller was held to.
-func (p controlPlan) guardPatch(t patchTarget) patchTarget {
-	for _, c := range p.fields {
-		if drop, ok := patchFields[c.name]; ok && c.decl.Fixed() {
-			drop(&t)
-		}
-	}
-	return t
 }
 
 // controlsView is the declarations as GET /account-types serves them, each

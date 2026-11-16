@@ -10,9 +10,11 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func assetBuild(name, body string) fstest.MapFS {
@@ -129,22 +131,22 @@ func TestSharedAssetCollectionProtectsLeasesRetentionAndRecentBuilds(t *testing.
 		if id == "active" {
 			lease = 120
 		}
-		_, err = db.Pool.Exec(ctx, `INSERT INTO web_asset_builds(build_id,published_at,last_seen,lease_until)
+		_, err = db.SQL.ExecContext(ctx, `INSERT INTO web_asset_builds(build_id,published_at,last_seen,lease_until)
 			VALUES($1,clock_timestamp()-make_interval(days=>$2),clock_timestamp()-make_interval(days=>$2),clock_timestamp()+make_interval(secs=>$3));
 			`, id, age, lease)
 		if err != nil {
 			t.Fatal(err)
 		}
 		name := "assets/" + id + "-abcdefgh.js"
-		if _, err = db.Pool.Exec(ctx, `INSERT INTO web_assets(path,sha256,body,size)VALUES($1,'hash','x',1);`, name); err != nil {
+		if _, err = db.SQL.ExecContext(ctx, `INSERT INTO web_assets(path,sha256,body,size)VALUES($1,'hash','x',1);`, name); err != nil {
 			t.Fatal(err)
 		}
-		if _, err = db.Pool.Exec(ctx, `INSERT INTO web_asset_build_files(build_id,path)VALUES($1,$2)`, id, name); err != nil {
+		if _, err = db.SQL.ExecContext(ctx, `INSERT INTO web_asset_build_files(build_id,path)VALUES($1,$2)`, id, name); err != nil {
 			t.Fatal(err)
 		}
 	}
-	err = db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, assetLockKey); err != nil {
+	err = db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := store.XactLock(ctx, tx, assetLock); err != nil {
 			return err
 		}
 		return s.collect(ctx, tx)
@@ -153,7 +155,7 @@ func TestSharedAssetCollectionProtectsLeasesRetentionAndRecentBuilds(t *testing.
 		t.Fatal(err)
 	}
 	var builds, files int
-	if err = db.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM web_asset_builds),(SELECT count(*) FROM web_assets)`).Scan(&builds, &files); err != nil || builds != 5 || files != 5 {
+	if err = db.SQL.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM web_asset_builds),(SELECT count(*) FROM web_assets)`).Scan(&builds, &files); err != nil || builds != 5 || files != 5 {
 		t.Fatal("GC lost protected references or retained orphan", builds, files, err)
 	}
 	if _, err = s.Read(ctx, "assets/expired-abcdefgh.js"); !errors.Is(err, fs.ErrNotExist) {

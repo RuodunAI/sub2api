@@ -168,13 +168,11 @@ func TestPluginEnvHasNoCoreSecrets(t *testing.T) {
 		"SUB2API_DATABASE_URL":             "postgres://core:pw@pg/sub2api",
 		"SUB2API_REDIS_URL":                "redis://:pw@redis:6379/0",
 		"SUB2API_MASTER_KEY":               "bWFzdGVyLWtleQ==",
-		"SUB2API_JWT_SECRET":               strings.Repeat("j", 40),
 		"SUB2API_BOOTSTRAP_ADMIN_PASSWORD": "pw",
 		"SUB2API_CONTROL_TOKEN":            strings.Repeat("t", 40),
 		"SUB2API_CONTROL_SOCKET":           "/run/control.sock",
 		"UPDATER_SOCKET":                   "/run/updater.sock",
-		"CCG_ADMIN_KEY":                    "admin",
-		"CCG_API_KEY":                      "api",
+		"ANTHROPIC_API_KEY":                "api",
 		"AWS_SECRET_ACCESS_KEY":            "aws",
 	}
 	for k, v := range secrets {

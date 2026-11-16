@@ -1,36 +1,35 @@
-// Package iam implements console identity: users, login with JWT access
-// tokens and rotating refresh tokens and the super
-// admin bootstrap. It implements core.TokenVerifier.
+// Package iam implements console identity: users, login with sessions
+// kept in Valkey (s2s_, CONTRACTS §100), and the super admin
+// bootstrap. It implements core.TokenVerifier.
 package iam
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// statusCacheTTL bounds how long a disabled user's access token keeps
-// working on a node that missed the authz:changed or iam:user:changed
-// broadcast.
+// statusCacheTTL bounds how long a disabled user's session keeps working
+// on a node that missed the authz:changed or iam:user:changed broadcast.
 const statusCacheTTL = 30 * time.Second
 
 // Deps are the dependencies of Service.
@@ -51,6 +50,9 @@ type Deps struct {
 	// (billing.Service.PriceRulesChanged): deleting a user deletes those of
 	// their personal segment. Optional.
 	PriceRulesChanged func(ctx context.Context)
+	// SessionRedis keeps the sessions and the flows (tokenstore.NewClient
+	// on Redis's server); Redis when nil.
+	SessionRedis redis.Cmdable
 }
 
 // Service is the iam module.
@@ -68,6 +70,13 @@ type Service struct {
 
 	limiter *loginLimiter
 
+	// sessions and flows are in Valkey (nil without Redis: the server
+	// CLI, which signs nobody in); sessionIdle is the idle timeout of a
+	// session.
+	sessions    tokenstore.SessionStore
+	flows       tokenstore.FlowStore
+	sessionIdle time.Duration
+
 	dummyHash []byte
 
 	mu          sync.Mutex
@@ -83,10 +92,8 @@ type statusEntry struct {
 
 var (
 	_ core.TokenVerifier     = (*Service)(nil)
-	_ core.SessionVerifier   = (*Service)(nil)
 	_ core.AccessKeyVerifier = (*Service)(nil)
 	_ core.StepUpVerifier    = (*Service)(nil)
-	_ core.StepUpSessions    = (*Service)(nil)
 )
 
 // New creates the service. The authz service must be started before
@@ -101,6 +108,18 @@ func New(d Deps) *Service {
 	s := &Service{db: d.DB, rdb: d.Redis, cfg: d.Config, events: d.Events, authz: d.Authz, bus: d.Bus, cipher: d.Cipher, cost: d.BcryptCost, status: map[int64]statusEntry{},
 		priceRulesChanged: d.PriceRulesChanged, limiter: newLoginLimiter(d.Redis)}
 	s.dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing"), s.cost)
+	if d.Redis != nil {
+		var o tokenstore.Options
+		if d.Config != nil {
+			o.Idle, o.Max = d.Config.SessionIdleTTL, d.Config.SessionMaxTTL
+		}
+		rdb := d.SessionRedis
+		if rdb == nil {
+			rdb = d.Redis
+		}
+		v := tokenstore.NewValkey(rdb, o)
+		s.sessions, s.flows, s.sessionIdle = v, v, v.Idle()
+	}
 	if d.Authz != nil {
 		d.Authz.UseStepUp(s)
 		// Status changes (disable/delete) bump the authz version.
@@ -142,80 +161,90 @@ func (s *Service) forgetStatus(userID int64) {
 	s.mu.Unlock()
 }
 
-// ------------------------------------------------------------ tokens
+// ------------------------------------------------------------ sessions
 
-type accessClaims struct {
-	jwt.RegisteredClaims
-	TokenVersion int `json:"tv,omitempty"` // token_version from users table (SEC-M1)
-	// Family is the login session, so the console can tell which one is its own.
-	Family string `json:"fam,omitempty"`
-}
-
-func (s *Service) issueAccessToken(userID int64, tokenVersion int, family string) (string, error) {
-	now := time.Now()
-	claims := accessClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   strconv.FormatInt(userID, 10),
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(s.cfg.AccessTokenTTL)),
-		},
-		TokenVersion: tokenVersion,
-		Family:       family,
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(s.cfg.JWTSecret)
-}
-
-// VerifyAccessToken implements core.TokenVerifier: checks signature and
-// expiry, then that the user still exists, is active, and token_version matches.
-func (s *Service) VerifyAccessToken(ctx context.Context, token string) (int64, error) {
-	uid, _, err := s.VerifySession(ctx, token)
-	return uid, err
-}
-
-// VerifySession implements core.SessionVerifier: VerifyAccessToken that also
-// returns the token's login session.
+// VerifySession implements core.TokenVerifier: the user and the session
+// id of an s2s_ token. Valkey down fails with 503 (tokenstore.ErrUnavailable);
+// there is no fallback. A session from before a token_version bump that did
+// not reach Valkey (ending every session, the server CLI) is dropped on
+// sight; a token a rotation left in its grace drops only itself, never the
+// session's current token.
+//
+// The user's status is read through the cache whatever the session's
+// stamp: a stamp ahead of the row (a survivor of a bump not committed yet,
+// or rolled back) is accepted, and a stale cache can only be behind a newer
+// session, which it accepts too.
+//
+// A use is recorded with where it came from (Touch): the sessions list
+// shows where a session is in use. Recording it is not authenticating: a
+// failure (Valkey out of memory refuses writes, not reads) is logged by the
+// store and the request goes on; the session then idles out on its old
+// timeout at worst.
 func (s *Service) VerifySession(ctx context.Context, token string) (int64, string, error) {
-	var claims accessClaims
-	_, err := jwt.ParseWithClaims(token, &claims, func(*jwt.Token) (any, error) { return s.cfg.JWTSecret, nil },
-		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
-	if err != nil {
-		return 0, "", core.ErrUnauthenticated.WithCause(err)
+	if s.sessions == nil || !strings.HasPrefix(token, tokenstore.SessionPrefix) {
+		return 0, "", core.ErrUnauthenticated
 	}
-	uid, err := strconv.ParseInt(claims.Subject, 10, 64)
-	if err != nil || uid <= 0 {
-		return 0, "", core.ErrUnauthenticated.WithMessage("invalid token subject")
+	sess, err := s.sessions.Lookup(ctx, token)
+	if errors.Is(err, tokenstore.ErrNotFound) {
+		return 0, "", core.ErrUnauthenticated.WithMessage("session has ended")
 	}
-	active, currentVersion, err := s.isActiveWithVersion(ctx, uid, claims.TokenVersion)
 	if err != nil {
 		return 0, "", err
 	}
-	if !active {
-		return 0, "", core.ErrUnauthenticated.WithMessage("user is disabled or deleted")
+	ok, err := s.sessionAccepted(ctx, token, sess)
+	if err != nil {
+		return 0, "", err
 	}
-	// SEC-M1: reject tokens from before password change / logout-all / disable
-	if claims.TokenVersion != currentVersion {
-		return 0, "", core.ErrUnauthenticated.WithMessage("token has been invalidated")
+	if !ok {
+		return 0, "", core.ErrUnauthenticated.WithMessage("session has been invalidated")
 	}
-	return uid, claims.Family, nil
+	sess.IP, sess.UserAgent = usedFrom(ctx, sess)
+	_ = s.sessions.Touch(ctx, token, sess)
+	return sess.UserID, sess.ID, nil
 }
 
-// isActiveWithVersion reads the user's status through the cache. seen is the
-// token_version a signed token carries: a cached entry older than that missed
-// a change this node was not told about (the server CLI has no bus), so it is
-// read again instead of rejecting the new login for up to statusCacheTTL. A
-// deleted user is cached with the highest version, since no token can be
-// newer than that: their leftover tokens do not read the row on every request.
-func (s *Service) isActiveWithVersion(ctx context.Context, uid int64, seen int) (bool, int, error) {
+// sessionAccepted reports whether sess, found by token, is still valid.
+// One stamped below the user's token_version was ended by a bump and is
+// dropped, unless the store finds it stamped at the version by now: a bump
+// that kept it restamped it after it was read (the stamp is checked again
+// in the script that would drop it). A session stamped current of a user
+// the cache holds inactive is checked against the row afresh: the cache
+// may have missed the user's re-enabling, which the session signed in
+// after. The status alone drops nothing: the bump that disables a user
+// leaves every session of theirs stamped below the row.
+func (s *Service) sessionAccepted(ctx context.Context, token string, sess tokenstore.Session) (bool, error) {
+	active, version, err := s.isActiveWithVersion(ctx, sess.UserID)
+	if err == nil && !active && sess.TokenVersion >= version {
+		s.forgetStatus(sess.UserID)
+		active, version, err = s.isActiveWithVersion(ctx, sess.UserID)
+	}
+	if err != nil {
+		return false, err
+	}
+	if sess.TokenVersion < version {
+		dropped, err := s.sessions.Drop(ctx, token, sess, version)
+		if err != nil || dropped {
+			return false, err
+		}
+	}
+	return active, nil
+}
+
+// isActiveWithVersion reads the user's status through the cache. A deleted
+// user is cached with the highest version, since no session can be stamped
+// newer than that: their leftover sessions do not read the row on every
+// request.
+func (s *Service) isActiveWithVersion(ctx context.Context, uid int64) (bool, int, error) {
 	s.mu.Lock()
 	e, ok := s.status[uid]
 	epoch := s.statusEpoch
 	s.mu.Unlock()
-	if ok && time.Since(e.at) < statusCacheTTL && e.tokenVersion >= seen {
+	if ok && time.Since(e.at) < statusCacheTTL {
 		return e.active, e.tokenVersion, nil
 	}
 	var active bool
 	var version int
-	err := s.db.Pool.QueryRow(ctx, `SELECT status = 'active', token_version FROM users WHERE id = $1 AND deleted_at IS NULL`, uid).Scan(&active, &version)
+	err := userStatus(store.G(ctx, s.db.Gorm), uid).Row().Scan(&active, &version)
 	if store.IsNoRows(err) {
 		active, version, err = false, math.MaxInt, nil
 	}
@@ -230,20 +259,18 @@ func (s *Service) isActiveWithVersion(ctx context.Context, uid int64, seen int) 
 	return active, version, nil
 }
 
-func randomToken() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b[:]), nil
-}
-
-func hashToken(t string) string {
-	h := sha256.Sum256([]byte(t))
-	return hex.EncodeToString(h[:])
+// userStatus is the statement of isActiveWithVersion, scanned through Row
+// (the fewest allocations): a request reads it on a cache miss.
+func userStatus(db *gorm.DB, uid int64) *gorm.DB {
+	return db.Model(&model.User{}).Select("status = 'active', token_version").Where("id = ? AND deleted_at IS NULL", uid)
 }
 
 // ------------------------------------------------------------ bootstrap
+
+// liveUsers are the users not deleted.
+func liveUsers(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.User{}).Where("deleted_at IS NULL")
+}
 
 // Bootstrap creates the first super admin from config when the database has
 // no users. Without configured credentials it only logs a warning.
@@ -251,12 +278,14 @@ func (s *Service) Bootstrap(ctx context.Context) error {
 	email, password := s.cfg.BootstrapAdminEmail, s.cfg.BootstrapAdminPassword
 	var created *User
 	var version int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('sub2api:iam:bootstrap'))`); err != nil {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		// One bootstrap at a time across the nodes.
+		if err := store.XactLock(ctx, tx, "sub2api:iam:bootstrap"); err != nil {
 			return err
 		}
-		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE deleted_at IS NULL)`).Scan(&exists); err != nil {
+		g := store.G(ctx, tx)
+		exists, err := gormpg.Exists(g, liveUsers(g))
+		if err != nil {
 			return err
 		}
 		if exists {

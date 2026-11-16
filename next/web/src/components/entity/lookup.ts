@@ -1,10 +1,11 @@
-// The entity lookup (GET /lookup/{kind}, CONTRACTS "lookup") and what the
+// The entity lookup (GET /lookup/{kind}, CONTRACTS "lookup"; a plugin's scope
+// candidates, GET /plugins/:key/scope-options, answer alike) and what the
 // console learnt from it this session: the names of the entities it saw, and
 // the lookups the core refused. Shared by every EntityPicker and by the pages
 // that print "name #id" (useEntityNames).
 import { reactive, toValue, type MaybeRefOrGetter } from 'vue'
 import { api, isApiError, session, type Query } from '@sub2api/host'
-import { ENTITIES, isEntityId, type EntityKind } from './entities'
+import { entityOf, takesId, type EntityKind } from './entities'
 
 export interface EntityItem {
   /** A number; the name itself for models. */
@@ -35,7 +36,11 @@ export interface LookupQuery {
 
 /** Ids per request (the server's cap). */
 const MAX_IDS = 100
-/** A caller without the permission (403) and a core without the route or the kind (404, during a rolling update). */
+/**
+ * A caller without the permission (403) and a core without the route or the
+ * kind (404, during a rolling update). Not a plugin that is not running (503):
+ * it may start later in the session.
+ */
 const UNAVAILABLE = new Set([403, 404])
 
 // A `mine` lookup answers differently (own rows only, its own permission), so it is a realm of its own.
@@ -90,10 +95,11 @@ export function lookupUnavailable(kind: EntityKind, mine = false): boolean {
 export async function lookupEntities(kind: EntityKind, { q, ids, limit, mine = false, scope }: LookupQuery = {}): Promise<LookupResult> {
   bindToSession()
   const realm = realmOf(kind, mine)
-  const query: Query = { ...scope, q: q || undefined, ids: ids?.join(','), limit, mine: mine || undefined }
+  const entity = entityOf(kind)
+  const query: Query = { ...entity.query, ...scope, q: q || undefined, ids: ids?.join(','), limit, mine: mine || undefined }
   const from = era
   try {
-    const result = await api.get<LookupResult | null>(`/lookup/${ENTITIES[kind].path}`, query)
+    const result = await api.get<LookupResult | null>(entity.url ?? `/lookup/${entity.path}`, query)
     const items = result?.items ?? []
     if (from === era) for (const item of items) known.set(keyOf(realm, item.id), item)
     return { items, more: !!result?.more }
@@ -149,17 +155,19 @@ export function useEntityNames(options: { mine?: MaybeRefOrGetter<boolean | unde
   function name(kind: EntityKind, id: string | number | null | undefined): string | undefined {
     const text = String(id ?? '')
     if (!text) return undefined
-    if (!ENTITIES[kind].numeric) return text
+    const entity = entityOf(kind)
+    if (!entity.numeric && !entity.opaqueIds) return text
     const mine = !!toValue(options.mine)
     const key = keyOf(realmOf(kind, mine), text)
-    if (!known.has(key) && isEntityId(text)) ask(kind, mine, text)
+    if (!known.has(key) && takesId(entity, text)) ask(kind, mine, text)
     return known.get(key)?.name ?? toValue(options.extra)?.find((item) => String(item.id) === text)?.name
   }
-  /** "name #id"; "#id" while the name is unknown; the bare name for a kind whose id is its name; '' for no id. */
+  /** "name #id"; "#id" while the name is unknown; the bare name for a kind whose id is its name; an opaque id's name, else the id; '' for no id. */
   function label(kind: EntityKind, id: string | number | null | undefined): string {
     const text = String(id ?? '')
     if (!text) return ''
-    if (!ENTITIES[kind].numeric) return text
+    const entity = entityOf(kind)
+    if (!entity.numeric) return (entity.opaqueIds && name(kind, text)) || text
     const found = name(kind, text)
     return found ? `${found} #${text}` : `#${text}`
   }

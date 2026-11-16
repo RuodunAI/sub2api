@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 // The vectors the server's perm package runs too (CONTRACTS §21).
 import vectors from '../../../sdk/permvectors/vectors.json'
-import { canonicalPermission, implies, parsePermission, permissionIndex, reduceScopes, scopeAllowsRow, type Scope, type ScopedRow } from './implies'
+import { ALL_SCOPE, OWN_SCOPE, canonicalPermission, implies, parsePermission, permissionIndex, reduceScopes, scopeAllowsRow, scopeImplies, type Scope, type ScopedRow } from './implies'
 
 interface CanonicalVector { in: string; out?: string; invalid?: boolean }
 interface ImpliesVector { have: string; want: string; ok: boolean }
@@ -83,5 +83,28 @@ describe('scopeAllowsRow', () => {
     expect(scopeAllowsRow(s('account/125'), ungrouped, 7)).toBe(true)
     expect(scopeAllowsRow(s('own'), ungrouped, undefined)).toBe(false)
     expect(scopeAllowsRow(s('own'), null, 7)).toBe(false)
+  })
+})
+
+describe('plugin scopes', () => {
+  it('parses plugin scoped keys by syntax without a catalog', () => {
+    expect(parsePermission('plugin.m:flow:manage:flow/3')).toEqual({ action: 'plugin.m:flow:manage', scope: { all: false, own: false, group: 0, id: 0, ref: 'flow/3' } })
+    expect(parsePermission('plugin.m:flow:manage:*')).toEqual(parsePermission('plugin.m:flow:manage'))
+    expect(parsePermission('plugin.m:k:value/input')?.scope.ref).toBe('value/input')
+    expect(parsePermission('plugin.m:x:Flow/3')).toBeNull()
+  })
+
+  it('plugin refs imply only themselves; all implies refs', () => {
+    const ref = (k: string) => parsePermission(`plugin.m:f:m:${k}`)!.scope
+    expect(scopeImplies(ALL_SCOPE, ref('flow/3'))).toBe(true)
+    expect(scopeImplies(ref('flow/3'), ref('flow/3'))).toBe(true)
+    expect(scopeImplies(ref('flow/3'), ref('flow/4'))).toBe(false)
+    expect(scopeImplies(ref('flow/3'), ALL_SCOPE)).toBe(false)
+    expect(scopeImplies(OWN_SCOPE, ref('flow/3'))).toBe(false)
+    expect(scopeImplies(ref('flow/3'), OWN_SCOPE)).toBe(false)
+  })
+
+  it('reaches no row in the console', () => {
+    expect(scopeAllowsRow(parsePermission('plugin.m:f:m:flow/3')!.scope, { id: 3, created_by: 7 }, 7)).toBe(false)
   })
 })

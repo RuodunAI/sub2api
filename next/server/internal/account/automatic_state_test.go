@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -63,7 +62,7 @@ func TestManualEnableRestoresScheduling(t *testing.T) {
 	ctx := t.Context()
 	id := e.mkRawAccount("anthropic", "apikey", "manual-enable", "sk-good-key-123", true)
 	group := e.exec1(`INSERT INTO groups(name) VALUES('manual-enable') RETURNING id`)
-	_, err := e.db.Pool.Exec(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, id, group)
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES($1,$2)`, id, group)
 	require.NoError(t, err)
 	path := "/accounts/" + itoa(id)
 
@@ -113,13 +112,6 @@ func TestManualEnableRestoresScheduling(t *testing.T) {
 	code, result = e.do("GET", "/accounts?status=auto_disabled", nil)
 	require.Equal(t, 200, code)
 	assert.Empty(t, result["data"])
-
-	// A legacy "error" reads as auto-disabled.
-	_, err = e.db.Pool.Exec(ctx, `UPDATE accounts SET status='error' WHERE id=$1`, id)
-	require.NoError(t, err)
-	code, result = e.do("GET", "/accounts?status=auto_disabled", nil)
-	require.Equal(t, 200, code)
-	require.Len(t, result["data"].([]any), 1)
 }
 
 func TestAccountAutoDisablePolicy(t *testing.T) {
@@ -142,64 +134,12 @@ func TestAccountAutoDisablePolicy(t *testing.T) {
 		{`{"enabled":true}`, true},
 		{`{}`, true},
 	} {
-		_, err := e.db.Pool.Exec(t.Context(), `INSERT INTO settings(key,value) VALUES('auto_disable',$1::jsonb) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, tc.value)
+		_, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO settings(key,value) VALUES('auto_disable',$1::jsonb) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, tc.value)
 		require.NoError(t, err)
 		status, result := e.do("GET", path, nil)
 		require.Equal(t, 200, status)
 		require.Equal(t, map[string]any{"enabled": tc.enabled}, data(result))
 	}
-}
-
-func TestReauthorizationClearsOnlyAutomaticAccountBlocks(t *testing.T) {
-	e := setup(t)
-	for _, state := range []string{"error", "auto_disabled", "disabled"} {
-		id := e.mkRawAccount("ccgateway", "managed", "reauth-"+state, "unused", true)
-		if _, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET status=$2,status_reason='blocked',schedulable=false,auto_disabled_until=clock_timestamp()+interval '1 hour' WHERE id=$1`, id, state); err != nil {
-			t.Fatal(err)
-		}
-		err := e.db.Tx(t.Context(), func(tx pgx.Tx) error {
-			changed, err := e.svc.resetForReauth(t.Context(), tx, &row{ID: id, Status: state})
-			if changed != (state != "disabled") {
-				t.Fatalf("reauth changed=%t for %s", changed, state)
-			}
-			return err
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var status, reason string
-		var schedulable bool
-		var until *time.Time
-		if err := e.db.Pool.QueryRow(t.Context(), `SELECT status,status_reason,schedulable,auto_disabled_until FROM accounts WHERE id=$1`, id).Scan(&status, &reason, &schedulable, &until); err != nil {
-			t.Fatal(err)
-		}
-		if schedulable || until != nil {
-			t.Fatal("reauth changed manual scheduling or retained the deadline")
-		}
-		if state == "disabled" {
-			if status != state || reason != "blocked" {
-				t.Fatal("reauth overrode manual disable")
-			}
-		} else if status != "active" || reason != "" {
-			t.Fatal("reauth retained the automatic block")
-		}
-	}
-
-	// New credentials do not lower the usage: the usage limit's disable stays.
-	id := e.mkRawAccount("ccgateway", "managed", "reauth-usage-limit", "unused", true)
-	_, err := e.db.Pool.Exec(t.Context(), `UPDATE accounts SET status='auto_disabled',status_reason='usage limit reached',auto_disabled_source='usage_limit',
-		auto_disabled_until=clock_timestamp()+interval '1 hour' WHERE id=$1`, id)
-	require.NoError(t, err)
-	require.NoError(t, e.db.Tx(t.Context(), func(tx pgx.Tx) error {
-		changed, err := e.svc.resetForReauth(t.Context(), tx, &row{ID: id, Status: "auto_disabled", AutoDisabledSource: usageLimitSource})
-		assert.False(t, changed)
-		return err
-	}))
-	var status string
-	var until *time.Time
-	require.NoError(t, e.db.Pool.QueryRow(t.Context(), `SELECT status,auto_disabled_until FROM accounts WHERE id=$1`, id).Scan(&status, &until))
-	assert.Equal(t, "auto_disabled", status)
-	assert.NotNil(t, until, "released when its period ends")
 }
 
 func TestAutomaticStateActionsAndTimeForms(t *testing.T) {
@@ -252,7 +192,7 @@ func TestAutomaticStateNeverChangesManualDisableOrOwner(t *testing.T) {
 	e := setup(t)
 	ctx := t.Context()
 	id := e.mkRawAccount("anthropic", "apikey", "manual", "sk-good-key-123", false)
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET status_reason='disabled by administrator' WHERE id=$1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status_reason='disabled by administrator' WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	for _, action := range []pluginv1.AccountAutomaticState_Action{pluginv1.AccountAutomaticState_ACTION_DISABLE, pluginv1.AccountAutomaticState_ACTION_CLEAR} {
@@ -289,7 +229,7 @@ func TestAutomaticStateRecoveryIsClusterSafe(t *testing.T) {
 	ids := make([]int64, len(states))
 	for i, state := range states {
 		ids[i] = e.mkRawAccount("anthropic", "apikey", "candidate-"+itoa(int64(i)), "sk-good-key-123", true)
-		if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET status=$2,schedulable=$3,auto_disabled_until=`+state.until+` WHERE id=$1`, ids[i], state.status, state.schedulable); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status=$2,schedulable=$3,auto_disabled_until=`+state.until+` WHERE id=$1`, ids[i], state.status, state.schedulable); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -314,7 +254,7 @@ func TestAutomaticStateRecoveryIsClusterSafe(t *testing.T) {
 	for i, state := range states {
 		var status string
 		var schedulable bool
-		if err := e.db.Pool.QueryRow(ctx, `SELECT status,schedulable FROM accounts WHERE id=$1`, ids[i]).Scan(&status, &schedulable); err != nil || status != state.expected || schedulable != state.schedulable {
+		if err := e.db.SQL.QueryRowContext(ctx, `SELECT status,schedulable FROM accounts WHERE id=$1`, ids[i]).Scan(&status, &schedulable); err != nil || status != state.expected || schedulable != state.schedulable {
 			t.Fatalf("state %d: %s %t %v", i, status, schedulable, err)
 		}
 	}
@@ -343,16 +283,16 @@ func TestAutomaticStateOptOutAndInvalidTime(t *testing.T) {
 		}
 	}
 	disable := &pluginv1.AccountAutomaticState{Action: pluginv1.AccountAutomaticState_ACTION_DISABLE, Reason: "quota"}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET auto_disable=false WHERE id=$1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET auto_disable=false WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := e.svc.ApplyPluginAccountAutomaticState(ctx, "anthropic", id, disable); err != nil || out.GetChanged() || out.GetStatus() != "active" {
 		t.Fatalf("opt-out: %v %v", out, err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET auto_disable=true WHERE id=$1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET auto_disable=true WHERE id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO settings(key,value) VALUES('auto_disable','{"enabled":false}')`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES('auto_disable','{"enabled":false}')`); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := e.svc.ApplyPluginAccountAutomaticState(ctx, "anthropic", id, disable); err != nil || out.GetChanged() || out.GetStatus() != "active" {

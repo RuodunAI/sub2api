@@ -9,7 +9,6 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -92,23 +91,6 @@ func TestExecuteHTTPRequiresPollContext(t *testing.T) {
 	_, err = (platformServer{impl: ordinaryTestPlatform{}}).Poll(context.Background(), &pluginv1.PollRequest{})
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("ordinary plugin unexpectedly supports Poll: %v", err)
-	}
-}
-
-func TestPollRequiresNewHostEvenAfterInitialization(t *testing.T) {
-	for _, inited := range []bool{false, true} {
-		for _, version := range []int32{0, 1, 2} {
-			rt := &runtime{capabilities: []string{manifest.CapPlatformPoll}, inited: inited}
-			_, err := rt.InitHost(context.Background(), &pluginv1.InitHostRequest{HostApiVersion: version})
-			if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "polling requires host API version 3 or newer" {
-				t.Fatalf("old host %d passed polling gate (inited %v): %v", version, inited, err)
-			}
-		}
-	}
-	rt := &runtime{capabilities: []string{manifest.CapPlatformPoll}}
-	_, err := rt.InitHost(context.Background(), &pluginv1.InitHostRequest{HostApiVersion: protocol.HostAPIVersion})
-	if status.Convert(err).Message() != "no host dialer" {
-		t.Fatalf("current host did not reach ordinary initialization: %v", err)
 	}
 }
 

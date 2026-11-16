@@ -1,0 +1,4 @@
+-- sql
+SELECT "id","key","superuser" FROM "roles" WHERE key = ANY($1) AND (builtin AND NOT superuser) ORDER BY key
+-- vars
+$1 store.Strings [operator user]

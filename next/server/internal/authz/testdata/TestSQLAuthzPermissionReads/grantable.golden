@@ -1,0 +1,4 @@
+-- sql
+SELECT key, status = 'removed', risk, scope_type, scope FROM "permissions" WHERE key = ANY($1) AND status <> 'staged'
+-- vars
+$1 store.Strings [account:read]

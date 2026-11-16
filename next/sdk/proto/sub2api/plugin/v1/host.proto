@@ -72,10 +72,6 @@ service HostService {
   //     written, otherwise every item is written with its own ttl in one
   //     atomic step. ttl_seconds is 0 (no expiry) up to 9223372036.
   //   * The script is the host's own. Plugins cannot submit scripts.
-  //
-  // Hosts before core 0.1.273 answer UNIMPLEMENTED (the Host API version is
-  // not raised); the SDK (pluginsdk.KVGetMany, KVSetMany, KVDeleteMany)
-  // then does the batch with the single calls.
   rpc KVGetMany(KVGetManyRequest) returns (KVGetManyResponse);
   rpc KVSetMany(KVSetManyRequest) returns (KVSetManyResponse);
   rpc KVDeleteMany(KVDeleteManyRequest) returns (KVDeleteManyResponse);
@@ -119,7 +115,7 @@ service HostService {
   // effort, e.g. "rules changed, reload". Payload at most 64 KiB.
   rpc Publish(PublishRequest) returns (PublishResponse);
 
-  // jobs (grant "jobs", Host API 9): runtime tasks, the plugin's own
+  // jobs (grant "jobs"): runtime tasks, the plugin's own
   // scheduled tasks besides manifest jobs[] (CONTRACTS §77.8). Each is the
   // cluster task plugin.<key>.<id>; a run calls AppService.RunJob with its
   // id, scope "cluster" and the task's args. Only the instance of the
@@ -236,7 +232,7 @@ service HostService {
   // the answer body is capped at 64 KiB (truncated set). A transport failure
   // is not an RPC error: it comes back in transport_error with status 0.
   // Audited on every call (account, method, host and path; never headers or
-  // bodies). Hosts before core 0.1.269 answer UNIMPLEMENTED.
+  // bodies).
   rpc SendAccountRequest(SendAccountRequestRequest) returns (ExecutionHTTPResponse);
 }
 
@@ -624,7 +620,8 @@ message GetDSNResponse {
 message AuthzCheckRequest {
   int64 user_id = 1;
   // Plugin-local key ("rules:manage") or fully qualified key. The plugin's
-  // own keys need no grant; a core key or another plugin's key needs
+  // own keys need no grant, with or without a scope ("flow:manage:own",
+  // "flow:manage:flow/3"); a core key or another plugin's key needs
   // "authz.read".
   string permission = 2;
 }

@@ -10,13 +10,16 @@ import (
 	"sort"
 	"strings"
 
+	"gorm.io/gorm"
+
 	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type coreMigration struct {
@@ -36,8 +39,7 @@ func migrationInventory(fsys fs.FS) ([]coreMigration, error) {
 		if err != nil {
 			return nil, err
 		}
-		sum := sha256.Sum256(b)
-		out = append(out, coreMigration{name: name, checksum: hex.EncodeToString(sum[:]), body: b})
+		out = append(out, coreMigration{name: name, checksum: store.MigrationChecksum(b), body: b})
 	}
 	return out, nil
 }
@@ -89,7 +91,7 @@ func validateMigrationPermit(inventory []coreMigration, applied map[string]strin
 		return fmt.Errorf("non-bootstrap migration requires expected_schema_before")
 	}
 	before := -1
-	for i := 0; i <= len(inventory); i++ {
+	for i := range len(inventory) + 1 {
 		if inventoryContract(inventory[:i]) == p.ExpectedSchemaBefore {
 			before = i
 			break
@@ -110,7 +112,7 @@ type permittedCoreTracker struct {
 	permit    runtimecontract.PrepareRequest
 }
 
-func (t permittedCoreTracker) Applied(ctx context.Context, q store.Querier) (map[string]string, error) {
+func (t permittedCoreTracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, error) {
 	applied, err := t.CoreTracker.Applied(ctx, q)
 	if err != nil {
 		return nil, err
@@ -132,12 +134,11 @@ func prepareCoreSchema(ctx context.Context, db *store.DB, p runtimecontract.Prep
 		return nil, fmt.Errorf("target schema differs from embedded migrations")
 	}
 	if !p.AllowMigration {
-		return nil, verifyCoreSchema(ctx, db)
+		return nil, VerifyCoreSchema(ctx, db)
 	}
-	applied, err := (store.CoreTracker{}).Applied(ctx, db.Pool)
+	applied, err := (store.CoreTracker{}).Applied(ctx, db.Gorm)
 	if err != nil {
-		var pgerr *pgconn.PgError
-		if !p.Bootstrap || !errors.As(err, &pgerr) || pgerr.Code != "42P01" {
+		if !p.Bootstrap || store.SQLState(err) != "42P01" { // undefined_table
 			return nil, err
 		}
 		applied = map[string]string{}
@@ -150,7 +151,7 @@ func prepareCoreSchema(ctx context.Context, db *store.DB, p runtimecontract.Prep
 	if err != nil {
 		return names, err
 	}
-	return names, verifyCoreSchema(ctx, db)
+	return names, VerifyCoreSchema(ctx, db)
 }
 
 // SchemaContract identifies the exact embedded migration inventory. It is
@@ -163,11 +164,12 @@ func SchemaContract() (string, error) {
 	return inventoryContract(inventory), nil
 }
 
-// verifyCoreSchema never creates a tracker or runs SQL migrations. A prepared
-// candidate requires exactly its known migrations. Once a maintenance upgrade
-// changes the database, an older binary cannot safely infer compatibility.
-func verifyCoreSchema(ctx context.Context, db *store.DB) error {
-	applied, err := (store.CoreTracker{}).Applied(ctx, db.Pool)
+// VerifyCoreSchema fails unless the database holds exactly this core's
+// migrations; it never creates a tracker or runs SQL migrations. A prepared
+// candidate and the server CLI need it. Once a maintenance upgrade changes
+// the database, an older binary cannot safely infer compatibility.
+func VerifyCoreSchema(ctx context.Context, db *store.DB) error {
+	applied, err := (store.CoreTracker{}).Applied(ctx, db.Gorm)
 	if err != nil {
 		return err
 	}
@@ -190,10 +192,12 @@ func verifyCoreSchema(ctx context.Context, db *store.DB) error {
 var errAdmissionRevoked = errors.New("node admission revoked")
 
 func verifyAdmission(ctx context.Context, db *store.DB, node string, a runtimecontract.Admission) error {
-	var approved bool
-	err := db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM updater.node_admissions
-		WHERE node_id=$1 AND core_boot_id=$2 AND release_digest=$3 AND revision=$4
-		AND serve_http=$5 AND claim_background=$6 AND coordinate_plugins=$7)`, node, a.BootID, a.ReleaseDigest, a.Revision, a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins).Scan(&approved)
+	// Whether the updater approved this boot of node with these roles (the
+	// managed shell's table, outside the core schema).
+	g := store.G(ctx, db.Gorm)
+	approved, err := gormpg.Exists(g, g.Table("updater.node_admissions").
+		Where("node_id = ? AND core_boot_id = ? AND release_digest = ? AND revision = ?", node, a.BootID, a.ReleaseDigest, a.Revision).
+		Where("serve_http = ? AND claim_background = ? AND coordinate_plugins = ?", a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins))
 	if err != nil {
 		return err
 	}
@@ -203,75 +207,75 @@ func verifyAdmission(ctx context.Context, db *store.DB, node string, a runtimeco
 	return nil
 }
 
+// pluginState is a plugin row with the versions of a live rollout ("" when
+// none).
+type pluginState struct {
+	Key, Status string
+	Active      string `gorm:"column:active"`
+	From        string `gorm:"column:from_version"`
+	Target      string `gorm:"column:target_version"`
+	Revision    int64  `gorm:"column:row_version"`
+}
+
+// pluginStates selects every plugin as a pluginState, by key.
+func pluginStates(db *gorm.DB) *gorm.DB {
+	return db.Table("plugins p").
+		Select("p.key, p.status, COALESCE(p.active_version,'') AS active, p.row_version, COALESCE(r.from_version,'') AS from_version, COALESCE(r.target_version,'') AS target_version").
+		Joins("LEFT JOIN plugin_rollouts r ON r.plugin_key=p.key AND r.phase IN ('preparing','activating')").
+		Order("p.key")
+}
+
 // Readiness follows the actual approved plugin catalog, including third-party
 // plugins. Bundled versions do not impose a minimum or resurrect removed rows.
 // During a live rollout either approved generation is allowed to keep serving.
 func approvedPluginsReady(ctx context.Context, db *store.DB, reg core.PluginRegistry, hostVersion string) (string, error) {
 	gen := reg.Current()
-	rows, err := db.Pool.Query(ctx, `SELECT p.key,p.status,COALESCE(p.active_version,''),p.row_version,
-		COALESCE(r.from_version,''),COALESCE(r.target_version,'')
-		FROM plugins p LEFT JOIN plugin_rollouts r ON r.plugin_key=p.key AND r.phase IN ('preparing','activating') ORDER BY p.key`)
-	if err != nil {
-		return "", err
-	}
-	type row struct {
-		key, status, active, from, target string
-		revision                          int64
-	}
-	var plugins []row
-	for rows.Next() {
-		var p row
-		if err = rows.Scan(&p.key, &p.status, &p.active, &p.revision, &p.from, &p.target); err != nil {
-			rows.Close()
-			return "", err
-		}
-		plugins = append(plugins, p)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+	g := store.G(ctx, db.Gorm)
+	var plugins []pluginState
+	if err := pluginStates(g).Find(&plugins).Error; err != nil {
 		return "", err
 	}
 	var evidence []string
 	for _, p := range plugins {
-		evidence = append(evidence, fmt.Sprintf("%s:%d", p.key, p.revision))
-		if p.status != "enabled" && p.status != "upgrading" {
+		evidence = append(evidence, fmt.Sprintf("%s:%d", p.Key, p.Revision))
+		if p.Status != "enabled" && p.Status != "upgrading" {
 			continue
 		}
 		if gen == nil {
-			return "", fmt.Errorf("plugin %s has not loaded", p.key)
+			return "", fmt.Errorf("plugin %s has not loaded", p.Key)
 		}
-		local, ok := gen.Plugin(p.key)
-		if !ok || (local.Version != p.active && local.Version != p.from && local.Version != p.target) {
-			return "", fmt.Errorf("plugin %s has not converged to an approved version", p.key)
+		local, ok := gen.Plugin(p.Key)
+		if !ok || (local.Version != p.Active && local.Version != p.From && local.Version != p.Target) {
+			return "", fmt.Errorf("plugin %s has not converged to an approved version", p.Key)
 		}
-		var approved bool
-		if err = db.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM plugin_versions WHERE plugin_key=$1 AND version=$2 AND consent_status='approved')`, p.key, local.Version).Scan(&approved); err != nil {
+		approved, err := gormpg.Exists(g, g.Model(&model.PluginVersion{}).
+			Where("plugin_key = ? AND version = ? AND consent_status = 'approved'", p.Key, local.Version))
+		if err != nil {
 			return "", err
 		}
 		if !approved {
-			return "", fmt.Errorf("plugin %s approval is missing", p.key)
+			return "", fmt.Errorf("plugin %s approval is missing", p.Key)
 		}
 		if local.Manifest == nil {
-			return "", fmt.Errorf("plugin %s manifest is missing", p.key)
+			return "", fmt.Errorf("plugin %s manifest is missing", p.Key)
 		}
-		granted, err := grants.Granted(ctx, db.Pool, p.key, local.Version, local.Manifest.HostPermissions)
+		granted, err := grants.Granted(ctx, db.Gorm, p.Key, local.Version, local.Manifest.HostPermissions)
 		if err != nil {
 			return "", err
 		}
 		for _, permission := range local.GrantedPermissions {
 			if _, ok := granted[permission]; !ok {
-				return "", fmt.Errorf("plugin %s permission revocation has not converged", p.key)
+				return "", fmt.Errorf("plugin %s permission revocation has not converged", p.Key)
 			}
 		}
 		for _, permission := range local.Manifest.HostPermissions {
 			if _, ok := granted[permission.ID]; !ok && !permission.Optional {
-				return "", fmt.Errorf("plugin %s required permission %s is not granted", p.key, permission.ID)
+				return "", fmt.Errorf("plugin %s required permission %s is not granted", p.Key, permission.ID)
 			}
 		}
 		compatible, err := check.HostCompatible(local.Manifest.HostCompat, hostVersion)
 		if err != nil || !compatible {
-			return "", fmt.Errorf("plugin %s is incompatible with core %s", p.key, hostVersion)
+			return "", fmt.Errorf("plugin %s is incompatible with core %s", p.Key, hostVersion)
 		}
 	}
 	sort.Strings(evidence)

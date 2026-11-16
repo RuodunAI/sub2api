@@ -1,0 +1,6 @@
+-- sql
+UPDATE "plugins" SET "desired_version"=$1,"row_version"=row_version + 1,"status"=CASE WHEN active_version IS NULL THEN 'installed' ELSE 'disabled' END,"status_reason"=$2,"updated_at"=now() WHERE key = $3
+-- vars
+$1 nil
+$2 string "why"
+$3 string "demo"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,9 +18,11 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Rule sources: the core's defaults of the built-in platforms and the
@@ -225,7 +228,7 @@ func (c *ruleCache) get(ctx context.Context) []*stickyRule {
 	}
 	var list []*stickyRule
 	ttl := rulesTTL
-	if all, err := listRules(ctx, c.db.Pool); err != nil {
+	if all, err := listRules(ctx, c.db.Gorm); err != nil {
 		if ctx.Err() != nil {
 			return nil // this request went away; the database may be fine
 		}
@@ -276,9 +279,16 @@ func scanRule(row interface{ Scan(...any) error }) (*stickyRule, error) {
 	var r stickyRule
 	var match, sources, includes []byte
 	if err := row.Scan(&r.ID, &r.Name, &r.Source, &r.Enabled, &r.Priority, &match, &sources,
-		&r.ValueRegex, &r.TTLSeconds, &includes, &r.OnFailure, &r.UpdatedBy, &r.UpdatedAt, &r.Customized, &r.PassHeaders); err != nil {
+		&r.ValueRegex, &r.TTLSeconds, &includes, &r.OnFailure, &r.UpdatedBy, &r.UpdatedAt, &r.Customized, (*store.Strings)(&r.PassHeaders)); err != nil {
 		return nil, err
 	}
+	r.decodeDocuments(match, sources, includes)
+	return &r, nil
+}
+
+// decodeDocuments reads the jsonb columns of the rule's row; a malformed
+// document reads as empty rather than failing the rule list.
+func (r *stickyRule) decodeDocuments(match, sources, includes []byte) {
 	if len(match) > 0 {
 		_ = json.Unmarshal(match, &r.Match)
 	}
@@ -288,24 +298,13 @@ func scanRule(row interface{ Scan(...any) error }) (*stickyRule, error) {
 	if len(includes) > 0 {
 		_ = json.Unmarshal(includes, &r.KeyIncludes)
 	}
-	return &r, nil
 }
 
-func listRules(ctx context.Context, q store.Querier) ([]*stickyRule, error) {
-	rows, err := q.Query(ctx, `SELECT `+ruleColumns+` FROM sticky_rules ORDER BY priority, id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*stickyRule
-	for rows.Next() {
-		r, err := scanRule(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+// listRules reads every rule in rank order. The rules cache reloads it on
+// the request path: the columns scanned row by row (scanRule).
+func listRules(ctx context.Context, q *gorm.DB) ([]*stickyRule, error) {
+	return store.CollectRows(store.G(ctx, q).Model(&model.StickyRule{}).Select(ruleColumns).Order("priority, id"),
+		func(rows *sql.Rows) (*stickyRule, error) { return scanRule(rows) })
 }
 
 // ---------------------------------------------------------------- per-request state

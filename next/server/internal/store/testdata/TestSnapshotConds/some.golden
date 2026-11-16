@@ -1,0 +1,6 @@
+-- sql
+SELECT "widgets"."id","widgets"."name","widgets"."owner","widgets"."tag","widgets"."tags","widgets"."refs" FROM "widgets" WHERE name ILIKE $1 AND owner = $2 AND refs && $3
+-- vars
+$1 string "%a%"
+$2 int 7
+$3 store.Int64s [1 2]

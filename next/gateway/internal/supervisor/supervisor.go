@@ -183,8 +183,8 @@ var inheritedEnv = []string{
 	"GOMEMLIMIT", "GOMAXPROCS", "GOGC", "GODEBUG", "GOTRACEBACK",
 	// Core configuration (CONTRACTS, server/internal/config).
 	"SUB2API_PUBLIC_URL", "SUB2API_LOG_LEVEL",
-	"SUB2API_MASTER_KEY", "SUB2API_JWT_SECRET",
-	"SUB2API_ACCESS_TOKEN_TTL", "SUB2API_REFRESH_TOKEN_TTL", "SUB2API_SHUTDOWN_DELAY",
+	"SUB2API_MASTER_KEY", "SUB2API_SHUTDOWN_DELAY",
+	"SUB2API_SESSION_IDLE_TTL", "SUB2API_SESSION_MAX_TTL",
 	"SUB2API_WEBAUTHN_RP_ID",
 	"SUB2API_BOOTSTRAP_ADMIN_EMAIL", "SUB2API_BOOTSTRAP_ADMIN_PASSWORD",
 	"SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM", "SUB2API_TRUSTED_PROXIES", "SUB2API_PG_MAX_CONNS",
@@ -193,9 +193,6 @@ var inheritedEnv = []string{
 	"SUB2API_PLUGIN_STRICT_NETWORK", "SUB2API_PLUGIN_SECCOMP", "SUB2API_PLUGIN_LANDLOCK",
 	"SUB2API_PLUGIN_DB_ROLE_ISOLATION", "SUB2API_PLUGIN_MAX_PACKAGE_BYTES", "SUB2API_PLUGIN_MAX_MEMORY_MB",
 	"SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE", "SUB2API_PLUGIN_RUN_DIR", "SUB2API_MARKET_SOURCES",
-	// Legacy CCGateway connection fallbacks and the local Docker client.
-	"CCGATEWAY_URL", "CCG_ADMIN_KEY", "CCG_API_KEY",
-	"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
 }
 
 // coreEnvironment builds a core's environment: the allowlisted part of the
@@ -263,20 +260,12 @@ func (m *Manager) Wait(ctx context.Context) error {
 }
 
 // DrainStop drains the core and, once it reports DrainComplete, shuts it
-// down. graceful says new requests already go elsewhere, so a core that
-// advertises CapabilityGracefulDrain may let requests in flight finish
-// within the deadline; an older core gets the plain request it understands.
+// down. graceful says new requests already go elsewhere, so the core may let
+// requests in flight finish within the deadline.
 func (m *Manager) DrainStop(ctx context.Context, control Control, operation string, graceful bool) error {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		return errors.New("drain requires a deadline")
-	}
-	if graceful {
-		st, err := control.Status(ctx)
-		if err != nil {
-			return err
-		}
-		graceful = st.Has(rc.CapabilityGracefulDrain)
 	}
 	if err := control.Drain(ctx, rc.DrainRequest{OperationID: operation, Deadline: deadline, Graceful: graceful}); err != nil {
 		return err

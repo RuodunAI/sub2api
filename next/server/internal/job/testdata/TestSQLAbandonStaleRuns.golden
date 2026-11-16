@@ -1,0 +1,7 @@
+-- sql
+UPDATE "plugin_job_runs" SET "finished_at"=now(),"message"=$1,"status"=$2 WHERE status = $3 AND started_at < now() - make_interval(secs => $4)
+-- vars
+$1 string "abandoned: the node running it went away"
+$2 string "failed"
+$3 string "running"
+$4 float64 7200

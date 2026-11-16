@@ -1,0 +1,5 @@
+-- sql
+SELECT "id","key","superuser" FROM "roles" WHERE key IN (SELECT DISTINCT substr(v1, 3) FROM "casbin_rule" WHERE ptype = $1 AND v0 = ANY($2) ORDER BY 1) ORDER BY key
+-- vars
+$1 string "g"
+$2 store.Strings [u:7]

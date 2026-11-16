@@ -1,0 +1,4 @@
+-- sql
+SELECT "key","label","status","risk","scope_type","scope" FROM "permissions" WHERE plugin_key = $1 ORDER BY sort, key
+-- vars
+$1 string "demo"

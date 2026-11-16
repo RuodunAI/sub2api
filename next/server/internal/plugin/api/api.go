@@ -95,6 +95,11 @@ func (a *API) RegisterRoutes(r *httpapi.Router) {
 	r.Self(http.MethodPut, "/plugins/:key/settings", PermSelfUI, a.putSettings).Uses(PermManage).UsesPluginKeys()
 	r.Perm(http.MethodGet, "/plugins/:key/grants", PermRead, a.listGrants)
 	r.Perm(http.MethodDelete, "/plugins/:key/grants/:permission", PermManage, a.revokeGrant)
+	// Narrowing takes plugin:manage only, granting again what a consent
+	// takes: plugin:install and the grant rights (install.SetGrant); one
+	// route, so both spend the consent's step-up.
+	grant.Perm(http.MethodPut, "/plugins/:key/grants/:permission", PermManage, a.setGrant).
+		Uses(perm.PluginInstall, perm.PluginGrantHigh, perm.PluginGrantCritical, perm.PluginGrantDBSchemaUnconfined)
 	r.Perm(http.MethodPut, "/plugins/:key/resources", PermManage, a.putResources)
 	r.Perm(http.MethodPut, "/plugins/:key/egress-policy", PermManage, a.putEgressPolicy)
 	r.Perm(http.MethodGet, "/plugins/:key/egress", PermEgressRead, a.egress)
@@ -103,6 +108,9 @@ func (a *API) RegisterRoutes(r *httpapi.Router) {
 	// POST /system/tasks/:name/run.
 	r.Perm(http.MethodPost, "/plugins/:key/jobs/:job_id/run", task.PermRun, a.runJob)
 	r.Perm(http.MethodGet, "/plugins/:key/events", PermRead, a.events)
+	// Candidates are kept to the caller's own scope, and names show on read
+	// only role and plugin pages too: either read key will do.
+	r.PermAny(http.MethodGet, "/plugins/:key/scope-options", a.scopeOptions, perm.RoleRead, perm.PluginRead)
 
 	r.Self(http.MethodGet, "/ui/plugins", PermSelfUI, a.uiPlugins)
 	r.Perm(http.MethodGet, "/nodes", PermNodeRead, a.nodes)
@@ -129,13 +137,12 @@ func actor(c *gin.Context) int64 {
 
 // audit writes an audit row outside a transaction (after controller calls).
 func (a *API) audit(c *gin.Context, action, key string, detail any) {
-	_ = audit.Audit(ctx(c), a.d.DB.Pool, actor(c), action, "plugin", key, detail)
+	_ = audit.Audit(ctx(c), a.d.DB.Gorm, actor(c), action, "plugin", key, detail)
 }
 
 // pluginExists returns the plugin status or renders not_found.
 func (a *API) pluginStatus(c *gin.Context, key string) (string, bool) {
-	var st string
-	err := a.d.DB.Pool.QueryRow(c.Request.Context(), `SELECT status FROM plugins WHERE key = $1`, key).Scan(&st)
+	st, err := a.pluginStatusValue(c.Request.Context(), key)
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin not found"))
 		return "", false

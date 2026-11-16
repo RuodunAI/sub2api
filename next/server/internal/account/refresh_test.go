@@ -87,7 +87,7 @@ func (e *env) mkAccountCreds(name string, creds map[string]any) int64 {
 func (e *env) creds(id int64) map[string]any {
 	e.t.Helper()
 	var enc []byte
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT credentials_enc FROM accounts WHERE id = $1`, id).Scan(&enc); err != nil {
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT credentials_enc FROM accounts WHERE id = $1`, id).Scan(&enc); err != nil {
 		e.t.Fatal(err)
 	}
 	plain, err := e.svc.d.Cipher.Decrypt(enc, aad("anthropic"))
@@ -103,7 +103,7 @@ func (e *env) setCreds(id int64, creds map[string]any) {
 	e.t.Helper()
 	b, _ := json.Marshal(creds)
 	enc, _ := e.svc.d.Cipher.Encrypt(b, aad("anthropic"))
-	if _, err := e.db.Pool.Exec(context.Background(), `UPDATE accounts SET credentials_enc = $2 WHERE id = $1`, id, enc); err != nil {
+	if _, err := e.db.SQL.ExecContext(context.Background(), `UPDATE accounts SET credentials_enc = $2 WHERE id = $1`, id, enc); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -128,7 +128,7 @@ func TestCredentialRefresh(t *testing.T) {
 	e.gen.types[0].Type.Refresh = &manifest.AccountRefresh{} // 30 minutes ahead
 	// A disabled account is only kept out of scheduling: its credentials are
 	// renewed like any other's.
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET status = 'disabled', schedulable = false WHERE id = $1`, due); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status = 'disabled', schedulable = false WHERE id = $1`, due); err != nil {
 		t.Fatal(err)
 	}
 
@@ -138,7 +138,7 @@ func TestCredentialRefresh(t *testing.T) {
 	if err != nil || n != 1 || up.calls.Load() != 1 {
 		t.Fatalf("sweep: renewed %d, err %v, upstream calls %d", n, err, up.calls.Load())
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE accounts SET status = 'active', schedulable = true WHERE id = $1`, due); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status = 'active', schedulable = true WHERE id = $1`, due); err != nil {
 		t.Fatal(err)
 	}
 	c := e.creds(due)
@@ -229,7 +229,7 @@ func TestCredentialRefresh(t *testing.T) {
 		t.Fatalf("rejected credentials tried again: calls %d", up.calls.Load())
 	}
 	var status string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT status FROM accounts WHERE id = $1`, due).Scan(&status)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT status FROM accounts WHERE id = $1`, due).Scan(&status)
 	if status != "active" {
 		t.Fatalf("a refused refresh changed the account status: %s", status)
 	}

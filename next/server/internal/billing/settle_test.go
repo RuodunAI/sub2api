@@ -5,11 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/event"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func (e *env) seed(uid int64, amount string) {
@@ -22,7 +24,7 @@ func (e *env) seed(uid int64, amount string) {
 func (e *env) balance(uid int64) decimal.Decimal {
 	e.t.Helper()
 	var bal decimal.Decimal
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT balance FROM user_balances WHERE user_id = $1`, uid).Scan(&bal); err != nil {
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT balance FROM user_balances WHERE user_id = $1`, uid).Scan(&bal); err != nil {
 		e.t.Fatal(err)
 	}
 	return bal
@@ -31,7 +33,7 @@ func (e *env) balance(uid int64) decimal.Decimal {
 func (e *env) count(sql string, args ...any) int {
 	e.t.Helper()
 	var n int
-	if err := e.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+	if err := e.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&n); err != nil {
 		e.t.Fatal(err)
 	}
 	return n
@@ -44,7 +46,7 @@ func (e *env) settle(uid int64, requestID string, total string) (*core.LedgerRes
 		charge = &core.LedgerChange{UserID: uid, Amount: decimal.RequireFromString(total), Kind: KindUsage, RefType: "usage", RefID: requestID, IdempotencyKey: "usage:" + requestID}
 	}
 	var res *core.LedgerResult
-	err := e.db.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := e.db.Tx(context.Background(), func(tx *gorm.DB) error {
 		var err error
 		res, err = e.svc.SettleTx(context.Background(), tx, uid, requestID, charge)
 		return err
@@ -80,10 +82,10 @@ func TestSettleReleasesAndCharges(t *testing.T) {
 		t.Fatal("reservation kept")
 	}
 	var refundDelta, usageDelta decimal.Decimal
-	if err := e.db.Pool.QueryRow(ctx, `SELECT delta FROM balance_ledger WHERE idempotency_key='precharge_release:r1'`).Scan(&refundDelta); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT delta FROM balance_ledger WHERE idempotency_key='precharge_release:r1'`).Scan(&refundDelta); err != nil {
 		t.Fatal("no refund row:", err)
 	}
-	if err := e.db.Pool.QueryRow(ctx, `SELECT delta FROM balance_ledger WHERE idempotency_key='usage:r1'`).Scan(&usageDelta); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT delta FROM balance_ledger WHERE idempotency_key='usage:r1'`).Scan(&usageDelta); err != nil {
 		t.Fatal("no usage row:", err)
 	}
 	if !refundDelta.Equal(decimal.NewFromInt(2)) || !usageDelta.Equal(decimal.RequireFromString("-1.5")) {
@@ -94,7 +96,7 @@ func TestSettleReleasesAndCharges(t *testing.T) {
 		t.Fatalf("events %d", n)
 	}
 	var kinds []string
-	rows, err := e.db.Pool.Query(ctx, `SELECT payload->>'kind' FROM events WHERE type='balance.changed' AND payload->>'user_id'=$1 ORDER BY id DESC LIMIT 2`, itoa(uid))
+	rows, err := e.db.SQL.QueryContext(ctx, `SELECT payload->>'kind' FROM events WHERE type='balance.changed' AND payload->>'user_id'=$1 ORDER BY id DESC LIMIT 2`, itoa(uid))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,15 +163,15 @@ func TestSettleWithoutReservationOrCharge(t *testing.T) {
 	}
 }
 
-// One settlement is BEGIN, one batch (balance row, release, charge), one
-// event batch, COMMIT: four flushes, two of them under the user's lock.
+// One settlement is BEGIN, settleSQL (release and charge), the event,
+// COMMIT: four flushes; only the event and COMMIT follow the statement
+// under the user's lock.
 func TestSettleRoundTrips(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
 	uid := e.user("settle-round-trips@test.invalid")
 	e.seed(uid, "10")
-	trace := &roundTrips{}
-	db := tracedStore(t, e.db, trace)
+	db, trace := testutil.Traced(e.db)
 	svc := New(db, e.rdb, e.bus, event.NewPublisher(db), nil)
 	for _, id := range []string{"warmup", "measured"} {
 		if err := e.svc.Precharge(ctx, usageRecord(uid, id, "flat(1)")); err != nil {
@@ -178,7 +180,7 @@ func TestSettleRoundTrips(t *testing.T) {
 	}
 	settle := func(id string) {
 		t.Helper()
-		err := db.Tx(ctx, func(tx pgx.Tx) error {
+		err := db.Tx(ctx, func(tx *gorm.DB) error {
 			_, err := svc.SettleTx(ctx, tx, uid, id, &core.LedgerChange{UserID: uid, Amount: decimal.RequireFromString("0.5"), Kind: KindUsage, RefType: "usage", RefID: id, IdempotencyKey: "usage:" + id})
 			return err
 		})
@@ -187,20 +189,14 @@ func TestSettleRoundTrips(t *testing.T) {
 		}
 	}
 	settle("warmup")
-	trace.reset()
+	trace.Take()
 	settle("measured")
-	if trace.flushes > 4 || trace.begins != 1 || trace.commits != 1 || trace.batches != 2 {
-		t.Fatalf("%d round trips (%d statements, %d batches, %d begin, %d commit) for one settlement; want 4\n%v",
-			trace.flushes, len(trace.statements), trace.batches, trace.begins, trace.commits, trace.statements)
-	}
-	// ApplyTx on its own: BEGIN, one batch, the event, COMMIT.
-	trace.reset()
+	oneTx(t, "one settlement", trace.Take(), 4)
+	// ApplyTx on its own: BEGIN, the change (applySQL), the event, COMMIT.
 	if _, err := svc.Apply(ctx, core.LedgerChange{UserID: uid, Amount: decimal.NewFromInt(1), Credit: true, Kind: KindAdminAdjust, IdempotencyKey: "apply-measured"}); err != nil {
 		t.Fatal(err)
 	}
-	if trace.flushes > 4 || trace.batches != 2 {
-		t.Fatalf("%d round trips (%d batches) for one Apply; want 4\n%v", trace.flushes, trace.batches, trace.statements)
-	}
+	oneTx(t, "one Apply", trace.Take(), 4)
 }
 
 // A precharge queueing behind a held balance lock gives up after
@@ -211,12 +207,12 @@ func TestPrechargeFailsFastWhenBusy(t *testing.T) {
 	ctx := context.Background()
 	uid := e.user("busy@test.invalid")
 	e.seed(uid, "10")
-	tx, err := e.db.Pool.Begin(ctx)
+	tx, err := testutil.Begin(ctx, e.db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT balance FROM user_balances WHERE user_id=$1 FOR UPDATE`, uid); err != nil {
+	defer tx.Rollback()
+	if _, err := store.SQLTx(tx).ExecContext(ctx, `SELECT balance FROM user_balances WHERE user_id=$1 FOR UPDATE`, uid); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
@@ -230,7 +226,7 @@ func TestPrechargeFailsFastWhenBusy(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM request_precharges WHERE request_id='blocked'`); n != 0 {
 		t.Fatal("blocked precharge reserved")
 	}
-	_ = tx.Rollback(ctx)
+	_ = tx.Rollback().Error
 
 	// Slots: with every slot taken the request path answers 503 too.
 	e.svc.slotsOnce.Do(func() {})

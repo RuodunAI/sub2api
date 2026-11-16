@@ -6,12 +6,12 @@
     "en": "Referral rewards and daily check-in. Invitees' usage/recharge triggers commission credited to the inviter's balance. Daily check-in awards random quota.",
     "zh": "邀请返利与每日签到。被邀请人消费或充值后按比例返利给邀请人；每日签到获得随机额度奖励。"
   },
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "sub2api",
   "icon": "text:G",
   "runtime": "grpc",
   "entry": { "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" } },
-  "hostCompat": ">=0.1.286 <0.2.0",
+  "hostCompat": ">=0.1.290 <0.2.0",
   "hostUICompat": "^3.4",
 
   "capabilities": [
@@ -34,18 +34,18 @@
   "userPermissions": [
     {
       "key": "growth:use",
-      "defaultRoles": ["user", "supplier", "operator", "admin"],
+      "defaults": { "user": true, "supplier": true, "operator": true, "admin": true },
       "inheritFrom": ["growth:read"],
       "label": { "en": "Use referrals and check-in", "zh": "使用邀请与签到" },
       "description": { "en": "Own referral link, referral records and daily check-in", "zh": "自己的邀请链接、邀请记录与每日签到" }
     },
     {
       "key": "growth:stats:read",
-      "defaultRoles": ["admin"],
+      "risk": "sensitive",
+      "defaults": { "admin": true },
       "inheritFrom": ["growth:manage"],
       "label": { "en": "View the growth dashboard", "zh": "查看增长后台" },
-      "description": { "en": "All users' referrals, commissions, check-ins and stats", "zh": "所有用户的邀请、返利、签到记录与统计" },
-      "sensitive": true
+      "description": { "en": "All users' referrals, commissions, check-ins and stats", "zh": "所有用户的邀请、返利、签到记录与统计" }
     }
   ],
 

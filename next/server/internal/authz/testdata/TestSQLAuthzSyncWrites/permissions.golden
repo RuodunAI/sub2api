@@ -1,0 +1,19 @@
+-- sql
+SELECT "permissions"."id","permissions"."key","permissions"."module","permissions"."label","permissions"."description","permissions"."source","permissions"."plugin_key","permissions"."status","permissions"."sort","permissions"."created_at","permissions"."scope_type","permissions"."risk","permissions"."requires","permissions"."group_key","permissions"."group_label","permissions"."group_sort","permissions"."scope","permissions"."defaults" FROM "permissions" WHERE key = ANY($1)
+-- vars
+$1 store.Strings [account:read]
+
+-- sql
+INSERT INTO "permissions" ("key","module","label","source","plugin_key","description","status","sort","scope_type","risk","requires") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING "id","description","status","sort","created_at","scope_type","risk","requires","group_key","group_label","group_sort","scope","defaults"
+-- vars
+$1 string "account:read"
+$2 string "account"
+$3 jsontext.Value {"en":"Read"}
+$4 string "core"
+$5 *string nil
+$6 jsontext.Value {}
+$7 *string "active"
+$8 int 1
+$9 string "account"
+$10 *string "low"
+$11 store.Strings []

@@ -1,0 +1,4 @@
+-- sql
+SELECT password_hash, status FROM "users" WHERE deleted_at IS NULL AND id = $1 FOR UPDATE
+-- vars
+$1 int64 7

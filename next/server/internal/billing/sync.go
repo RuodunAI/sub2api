@@ -15,16 +15,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -95,25 +97,35 @@ type sourceOptions struct {
 
 const sourceColumns = `ps.id, ps.name, ps.kind, ps.url, ps.api_key_enc, ps.options, ps.enabled,
 	ps.last_synced_at, ps.last_error, ps.created_at, ps.updated_at,
-	(SELECT count(*) FROM model_prices mp WHERE mp.sync_source_id = ps.id)`
+	(SELECT count(*) FROM model_prices mp WHERE mp.sync_source_id = ps.id) AS price_count`
 
-func scanSource(row pgx.Row) (*PriceSource, error) {
-	p := &PriceSource{}
-	err := row.Scan(&p.ID, &p.Name, &p.Kind, &p.URL, &p.apiKeyEnc, &p.Options, &p.Enabled,
-		&p.LastSyncedAt, &p.LastError, &p.CreatedAt, &p.UpdatedAt, &p.PriceCount)
-	if err != nil {
-		return nil, err
-	}
-	p.HasAPIKey = len(p.apiKeyEnc) > 0
-	return p, nil
+// sources selects sourceColumns of the price sources (alias ps).
+func sources(db *gorm.DB) *gorm.DB {
+	return db.Table("price_sync_sources ps").Select(sourceColumns)
 }
 
-func (s *Service) getSource(ctx context.Context, q store.Querier, id int64) (*PriceSource, error) {
-	p, err := scanSource(q.QueryRow(ctx, `SELECT `+sourceColumns+` FROM price_sync_sources ps WHERE ps.id = $1`, id))
+// sourceRow is a row of sources.
+type sourceRow struct {
+	model.PriceSyncSource
+	PriceCount int64
+}
+
+func (r *sourceRow) source() *PriceSource {
+	return &PriceSource{ID: r.ID, Name: r.Name, Kind: r.Kind, URL: r.URL, HasAPIKey: len(r.APIKeyEnc) > 0,
+		Options: r.Options, Enabled: core.ValueOr(r.Enabled, false), LastSyncedAt: r.LastSyncedAt, LastError: r.LastError,
+		PriceCount: r.PriceCount, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, apiKeyEnc: r.APIKeyEnc}
+}
+
+func (s *Service) getSource(ctx context.Context, q *gorm.DB, id int64) (*PriceSource, error) {
+	var row sourceRow
+	err := sources(store.G(ctx, q)).Where("ps.id = ?", id).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("price source not found")
 	}
-	return p, err
+	if err != nil {
+		return nil, err
+	}
+	return row.source(), nil
 }
 
 func (s *Service) registerSyncRoutes(r *httpapi.Router) {
@@ -130,24 +142,14 @@ func (s *Service) registerSyncRoutes(r *httpapi.Router) {
 
 func (s *Service) listSources(c *gin.Context) {
 	ctx := c.Request.Context()
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+sourceColumns+` FROM price_sync_sources ps ORDER BY ps.id`)
-	if err != nil {
+	var rows []sourceRow
+	if err := sources(store.G(ctx, s.db.Gorm)).Order("ps.id").Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	defer rows.Close()
-	out := []*PriceSource{}
-	for rows.Next() {
-		p, err := scanSource(rows)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		httpapi.Fail(c, err)
-		return
+	out := make([]*PriceSource, 0, len(rows))
+	for i := range rows {
+		out = append(out, rows[i].source())
 	}
 	httpapi.OK(c, out)
 }
@@ -242,11 +244,11 @@ func (s *Service) createSource(c *gin.Context) {
 		}
 	}
 	enabled := in.Enabled == nil || *in.Enabled
-	var id int64
-	err = s.db.Pool.QueryRow(ctx, `
-		INSERT INTO price_sync_sources (name, kind, url, api_key_enc, options, enabled)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		strings.TrimSpace(*in.Name), *in.Kind, strings.TrimSpace(*in.URL), enc, opts, enabled).Scan(&id)
+	// Every column the INSERT names is written: a nil key is NULL, enabled
+	// false is false.
+	row := model.PriceSyncSource{Name: strings.TrimSpace(*in.Name), Kind: *in.Kind, URL: strings.TrimSpace(*in.URL),
+		APIKeyEnc: enc, Options: opts, Enabled: &enabled}
+	err = store.G(ctx, s.db.Gorm).Create(&row).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("a price source with this name already exists"))
 		return
@@ -255,7 +257,7 @@ func (s *Service) createSource(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	p, err := s.getSource(ctx, s.db.Pool, id)
+	p, err := s.getSource(ctx, s.db.Gorm, row.ID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -273,7 +275,7 @@ func (s *Service) updateSource(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	cur, err := s.getSource(ctx, s.db.Pool, id)
+	cur, err := s.getSource(ctx, s.db.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -307,9 +309,10 @@ func (s *Service) updateSource(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	_, err = s.db.Pool.Exec(ctx, `
-		UPDATE price_sync_sources SET name = $2, kind = $3, url = $4, api_key_enc = $5, options = $6,
-			enabled = $7, updated_at = now() WHERE id = $1`, id, name, kind, u, enc, opts, enabled)
+	err = store.G(ctx, s.db.Gorm).Model(&model.PriceSyncSource{}).Where("id = ?", id).Updates(map[string]any{
+		"name": name, "kind": kind, "url": u, "api_key_enc": enc, "options": opts, "enabled": enabled,
+		"updated_at": gorm.Expr("now()"),
+	}).Error
 	if store.IsUniqueViolation(err, "") {
 		httpapi.Fail(c, core.ErrConflict.WithMessage("a price source with this name already exists"))
 		return
@@ -318,7 +321,7 @@ func (s *Service) updateSource(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	p, err := s.getSource(ctx, s.db.Pool, id)
+	p, err := s.getSource(ctx, s.db.Gorm, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -334,18 +337,44 @@ func (s *Service) deleteSource(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tag, err := s.db.Pool.Exec(ctx, `DELETE FROM price_sync_sources WHERE id = $1`, id)
-	if err != nil {
-		httpapi.Fail(c, err)
+	res := store.G(ctx, s.db.Gorm).Where("id = ?", id).Delete(&model.PriceSyncSource{})
+	if res.Error != nil {
+		httpapi.Fail(c, res.Error)
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("price source not found"))
 		return
 	}
 	s.changed(ctx, "prices")
 	httpapi.NoContent(c)
 }
+
+// setSourceStatus records the outcome of a fetch or an import on the source
+// id; its updated_at stays, an edit is not.
+func setSourceStatus(db *gorm.DB, id int64, set map[string]any) *gorm.DB {
+	return db.Model(&model.PriceSyncSource{}).Where("id = ?", id).Updates(set)
+}
+
+// syncedPrice is the model_prices row of a price a sync imports: every
+// column written as given, synced_at the database's now(), and nothing read
+// back.
+type syncedPrice struct {
+	Model        string          `gorm:"column:model"`
+	Mode         string          `gorm:"column:mode"`
+	Config       json.RawMessage `gorm:"column:config"`
+	Expression   string          `gorm:"column:expression"`
+	ExprVersion  int             `gorm:"column:expr_version"`
+	ExprHash     string          `gorm:"column:expr_hash"`
+	Source       string          `gorm:"column:source"`
+	SyncSourceID int64           `gorm:"column:sync_source_id"`
+	SyncedAt     store.DBNow     `gorm:"column:synced_at"`
+	Enabled      bool            `gorm:"column:enabled"`
+	Note         string          `gorm:"column:note"`
+	UpdatedBy    *int64          `gorm:"column:updated_by"`
+}
+
+func (syncedPrice) TableName() string { return model.ModelPrice{}.TableName() }
 
 // ---------------------------------------------------------------- fetch and parse
 
@@ -884,35 +913,32 @@ type SyncPreview struct {
 }
 
 func (s *Service) loadAndFetch(ctx context.Context, id int64) (*PriceSource, *fetched, error) {
-	src, err := s.getSource(ctx, s.db.Pool, id)
+	src, err := s.getSource(ctx, s.db.Gorm, id)
 	if err != nil {
 		return nil, nil, err
 	}
 	f, err := s.fetchSource(ctx, src)
 	if err != nil {
 		msg := truncate(err.Error(), 500)
-		_, _ = s.db.Pool.Exec(context.WithoutCancel(ctx), `UPDATE price_sync_sources SET last_error = $2 WHERE id = $1`, id, msg)
+		_ = setSourceStatus(store.G(context.WithoutCancel(ctx), s.db.Gorm), id, map[string]any{"last_error": msg}).Error
 		return src, nil, core.ErrUnavailable.WithMessage("fetch price source: " + msg)
 	}
 	return src, f, nil
 }
 
-func (s *Service) currentPrices(ctx context.Context, q store.Querier) (map[string]*SyncCurrent, error) {
-	rows, err := q.Query(ctx, `SELECT id, model, mode, config, expression, expr_hash, source, sync_source_id, enabled FROM model_prices`)
+func (s *Service) currentPrices(ctx context.Context, q *gorm.DB) (map[string]*SyncCurrent, error) {
+	var rows []model.ModelPrice
+	err := store.G(ctx, q).Select("id", "model", "mode", "config", "expression", "expr_hash", "source", "sync_source_id", "enabled").
+		Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]*SyncCurrent{}
-	for rows.Next() {
-		var c SyncCurrent
-		var model string
-		if err := rows.Scan(&c.ID, &model, &c.Mode, &c.Config, &c.Expression, &c.hash, &c.Source, &c.SyncSourceID, &c.Enabled); err != nil {
-			return nil, err
-		}
-		out[model] = &c
+	out := make(map[string]*SyncCurrent, len(rows))
+	for _, r := range rows {
+		out[r.Model] = &SyncCurrent{ID: r.ID, Mode: r.Mode, Config: r.Config, Expression: r.Expression, Source: r.Source,
+			SyncSourceID: r.SyncSourceID, Enabled: core.ValueOr(r.Enabled, false), hash: r.ExprHash}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func syncAction(in *syncPrice, cur *SyncCurrent) string {
@@ -938,7 +964,7 @@ func (s *Service) previewSync(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	cur, err := s.currentPrices(ctx, s.db.Pool)
+	cur, err := s.currentPrices(ctx, s.db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -990,63 +1016,59 @@ func (s *Service) applySync(c *gin.Context) {
 	}
 	uid, _ := core.UserID(ctx)
 	res := &SyncResult{Skipped: []SyncSkip{}}
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		cur, err := s.currentPrices(ctx, tx)
 		if err != nil {
 			return err
 		}
 		seen := map[string]bool{}
-		for _, model := range in.Models {
-			if seen[model] {
+		for _, name := range in.Models {
+			if seen[name] {
 				continue
 			}
-			seen[model] = true
-			p := f.prices[model]
+			seen[name] = true
+			p := f.prices[name]
 			if p == nil {
-				res.Skipped = append(res.Skipped, SyncSkip{Model: model, Reason: "not_in_source"})
+				res.Skipped = append(res.Skipped, SyncSkip{Model: name, Reason: "not_in_source"})
 				continue
 			}
-			c := cur[model]
+			c := cur[name]
 			if syncAction(p, c) == "unchanged" {
 				res.Unchanged++
 				continue
 			}
 			prog, err := expr.CompileCached(p.Expression)
 			if err != nil {
-				res.Skipped = append(res.Skipped, SyncSkip{Model: model, Reason: "invalid_expression"})
+				res.Skipped = append(res.Skipped, SyncSkip{Model: name, Reason: "invalid_expression"})
 				continue
 			}
 			if err := recordHistory(ctx, tx, prog); err != nil {
 				return err
 			}
+			g := store.G(ctx, tx)
 			if c == nil {
-				_, err = tx.Exec(ctx, `
-					INSERT INTO model_prices (model, mode, config, expression, expr_version, expr_hash,
-						source, sync_source_id, synced_at, enabled, note, updated_by)
-					VALUES ($1, $2, $3, $4, $5, $6, 'sync', $7, now(), true, '', $8)`,
-					model, p.Mode, p.Config, p.Expression, p.version, p.hash, id, nullID(uid))
+				err = g.Create(&syncedPrice{Model: name, Mode: p.Mode, Config: p.Config, Expression: p.Expression,
+					ExprVersion: p.version, ExprHash: p.hash, Source: SourceSync, SyncSourceID: id, Enabled: true,
+					UpdatedBy: nullID(uid)}).Error
 				res.Created++
 			} else {
-				_, err = tx.Exec(ctx, `
-					UPDATE model_prices SET mode = $2, config = $3, expression = $4, expr_version = $5,
-						expr_hash = $6, source = 'sync', sync_source_id = $7, synced_at = now(),
-						updated_by = $8, updated_at = now()
-					WHERE id = $1`,
-					c.ID, p.Mode, p.Config, p.Expression, p.version, p.hash, id, nullID(uid))
+				err = updatePriceRow(g, c.ID, map[string]any{
+					"mode": p.Mode, "config": p.Config, "expression": p.Expression, "expr_version": p.version,
+					"expr_hash": p.hash, "source": SourceSync, "sync_source_id": id, "synced_at": gorm.Expr("now()"),
+					"updated_by": nullID(uid),
+				}).Error
 				res.Updated++
 			}
 			if err != nil {
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, `UPDATE price_sync_sources SET last_synced_at = now(), last_error = '' WHERE id = $1`, id); err != nil {
+		g := store.G(ctx, tx)
+		if err := setSourceStatus(g, id, map[string]any{"last_synced_at": gorm.Expr("now()"), "last_error": ""}).Error; err != nil {
 			return err
 		}
-		detail, _ := json.Marshal(map[string]any{"created": res.Created, "updated": res.Updated,
-			"unchanged": res.Unchanged, "skipped": len(res.Skipped)})
-		_, err = tx.Exec(ctx, `INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
-			VALUES (NULLIF($1::bigint, 0), 'price.sync', 'price_source', $2, $3)`, uid, fmt.Sprint(id), detail)
-		return err
+		return audit.Audit(ctx, g, uid, "price.sync", "price_source", fmt.Sprint(id), map[string]any{"created": res.Created,
+			"updated": res.Updated, "unchanged": res.Unchanged, "skipped": len(res.Skipped)})
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -1081,7 +1103,7 @@ func (s *Service) keyPrices(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	prices, err := loadCatalog(ctx, s.db.Pool)
+	prices, err := loadCatalog(ctx, s.db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -1089,7 +1111,7 @@ func (s *Service) keyPrices(c *gin.Context) {
 	models := slices.DeleteFunc(prices.models(), func(model string) bool { return !pr.Group.AllowsModel(model) })
 	out := KeyPrices{Prices: []syncPrice{}, RateMultiplier: pr.Group.RateMultiplier}
 	out.Group.ID, out.Group.Name = pr.Group.ID, pr.Group.Name
-	err = eachPrice(ctx, s.db.Pool, prices, models, pr.Group.ID, pr.SegmentID, func(model string, base PriceDef, levels ruleLevels) {
+	err = eachPrice(ctx, s.db.Gorm, prices, models, pr.Group.ID, pr.SegmentID, func(model string, base PriceDef, levels ruleLevels) {
 		p, err := exportPrice(model, base, levels)
 		if err != nil {
 			// Left out rather than listed at a price that is not the owner's.

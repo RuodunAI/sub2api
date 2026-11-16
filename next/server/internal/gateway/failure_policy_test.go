@@ -394,7 +394,7 @@ func TestFailurePolicyAPI(t *testing.T) {
 	require.Equal(t, 200, code)
 	require.Equal(t, int64(1), v.Get("data.policies.0.revision").Int())
 	require.False(t, e.gw.settings.get(t.Context()).failurePolicy.RetryEnabled)
-	_, err := e.db.Pool.Exec(t.Context(), `UPDATE settings SET value='{"revision":3,"schema_version":99}' WHERE key='failure_policy'`)
+	_, err := e.db.SQL.ExecContext(t.Context(), `UPDATE settings SET value='{"revision":3,"schema_version":99}' WHERE key='failure_policy'`)
 	require.NoError(t, err)
 	e.gw.settings.invalidate()
 	require.Error(t, e.gw.settings.get(t.Context()).failurePolicyErr)
@@ -502,7 +502,6 @@ func TestDefaultRetryRulesOnlyRetryUsefulRateLimits(t *testing.T) {
 		rule   string
 	}{
 		{"quota", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_1"}`, "rate-limit"},
-		{"concurrency", 429, `{"error":{"message":"Gateway concurrency limit reached","type":"rate_limit_error"},"type":"error"}`, "rate-limit"},
 		{"long context", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"Usage credits are required for long context requests."}}`, ""},
 		{"any other 429", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"some refusal"}}`, ""},
 		{"timeout", 408, ``, "http-transient"},

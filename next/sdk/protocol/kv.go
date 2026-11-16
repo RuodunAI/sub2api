@@ -13,8 +13,8 @@ import (
 // Plugin KV rules (HostService.KVGet / KVSet / KVDelete / KVList and the
 // batch calls KVGetMany / KVSetMany / KVDeleteMany, CONTRACTS §93). They are
 // written once, here: the host enforces them with the Check functions below,
-// the SDK applies them before it sends a batch (so that a batch it has to
-// replace by single calls on an older host follows the same rules) and the
+// the SDK applies them before it sends a batch (so that a batch it serves
+// with single calls, for a KV without batch calls, follows the same rules) and the
 // fake host of pluginsdktest answers like the host.
 const (
 	// KVMaxNamespaceBytes, KVMaxKeyBytes and KVMaxValueBytes bound one

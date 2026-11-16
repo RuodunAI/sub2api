@@ -5,15 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
@@ -57,10 +56,14 @@ type Host interface {
 
 	// DSN returns the restricted database DSN (grant "db.schema").
 	DSN(ctx context.Context) (*DSNInfo, error)
-	// DB returns a shared pgx pool for the plugin schema, created on first
-	// use from DSN. When the egress tunnel is installed (strict network mode)
-	// connections are dialled through it (DialFunc = egress.DialContext).
-	DB(ctx context.Context) (*pgxpool.Pool, error)
+	// DB returns the plugin's GORM handle on its schema, bound to ctx: use
+	// it for the call at hand and ask again for the next one (cheap: the
+	// connections are shared, opened on first use from DSN). search_path is
+	// the plugin schema, and with the egress tunnel installed (strict
+	// network mode) connections are dialled through it. The tables are
+	// those of migrations/*.sql, which the host runs: never AutoMigrate here
+	// (see "Database" in the package documentation).
+	DB(ctx context.Context) (*gorm.DB, error)
 
 	// AuthzCheck asks whether a console user holds a permission (plugin-local
 	// key like "rules:manage" or a fully qualified key). The plugin's own keys
@@ -86,8 +89,7 @@ type Host interface {
 	// the guarded work must still be idempotent. See Locks.
 	Locks() Locks
 	// Tasks manages the plugin's runtime tasks, scheduled tasks it registers
-	// while running besides manifest jobs[] (grant "jobs", Host API 9; on an
-	// older core every call returns ErrTasksUnimplemented). See Tasks.
+	// while running besides manifest jobs[] (grant "jobs"). See Tasks.
 	Tasks() Tasks
 	// ListAccounts returns one page of the accounts of THIS plugin's own
 	// account types (grant "accounts.read"), ordered by id and never
@@ -227,12 +229,8 @@ type host struct {
 	logger    *slog.Logger
 	poolSize  int32
 
-	// kvNoBatch is set once the host answered UNIMPLEMENTED to a batch KV
-	// call: a host before core 0.1.273 (KVBatch).
-	kvNoBatch atomic.Bool
-
-	mu   sync.Mutex
-	pool *pgxpool.Pool
+	mu sync.Mutex
+	db *gorm.DB
 }
 
 func newHost(info HostInfo, c pluginv1.HostServiceClient, e pluginv1.EgressServiceClient, installed bool, poolSize int32) *host {
@@ -243,7 +241,7 @@ func newHost(info HostInfo, c pluginv1.HostServiceClient, e pluginv1.EgressServi
 
 func (h *host) Info() HostInfo                       { return h.info }
 func (h *host) Logger() *slog.Logger                 { return h.logger }
-func (h *host) KV() KV                               { return hostKV{c: h.client, noBatch: &h.kvNoBatch} }
+func (h *host) KV() KV                               { return hostKV{c: h.client} }
 func (h *host) Client() pluginv1.HostServiceClient   { return h.client }
 func (h *host) Egress() pluginv1.EgressServiceClient { return h.egress }
 func (h *host) EgressInstalled() bool                { return h.installed }
@@ -274,51 +272,67 @@ func (h *host) DSN(ctx context.Context) (*DSNInfo, error) {
 	return &DSNInfo{DSN: r.GetDsn(), Schema: r.GetSchema(), RoleIsolated: r.GetRoleIsolated()}, nil
 }
 
-func (h *host) DB(ctx context.Context) (*pgxpool.Pool, error) {
+func (h *host) DB(ctx context.Context) (*gorm.DB, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.pool != nil {
-		return h.pool, nil
-	}
-	info, err := h.DSN(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("pluginsdk: get dsn: %w", err)
-	}
-	cfg, err := pgxpool.ParseConfig(info.DSN)
-	if err != nil {
-		return nil, fmt.Errorf("pluginsdk: parse dsn: %w", err)
-	}
-	if h.poolSize > 0 {
-		cfg.MaxConns = h.poolSize
-	}
-	if h.installed {
-		// Let the host resolve the database host name: pass it through
-		// unresolved and dial via the tunnel.
-		cfg.ConnConfig.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
-		cfg.ConnConfig.DialFunc = egress.DialContext
-	} else {
-		d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-		cfg.ConnConfig.DialFunc = d.DialContext
-	}
-	if info.Schema != "" {
-		if _, ok := cfg.ConnConfig.RuntimeParams["search_path"]; !ok {
-			cfg.ConnConfig.RuntimeParams["search_path"] = info.Schema
+	if h.db == nil {
+		info, err := h.DSN(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("pluginsdk: get dsn: %w", err)
 		}
+		o := pgdb.Options{SearchPath: info.Schema, MaxConns: int(h.poolSize)}
+		if h.installed {
+			// The host resolves the database host name at the tunnel's end.
+			o.Dial, o.DialByName = egress.DialContext, true
+		}
+		db, err := pgdb.Open(info.DSN, o)
+		if err != nil {
+			return nil, fmt.Errorf("pluginsdk: %w", err)
+		}
+		if err := guardContext(db); err != nil {
+			_ = pgdb.Close(db)
+			return nil, fmt.Errorf("pluginsdk: %w", err)
+		}
+		h.db = db
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("pluginsdk: open pool: %w", err)
-	}
-	h.pool = pool
-	return pool, nil
+	return h.db.WithContext(ctx), nil
 }
 
-func (h *host) closePool() {
+// guardContext stops a statement whose context is done before it runs,
+// with the context's error (errors.Is context.Canceled or
+// DeadlineExceeded) and the one cause the context cannot tell from a
+// cancellation or a timeout: Host.DB binds the handle to the context it was
+// asked with, so one kept past it (from Init, for a goroutine) fails like
+// this on every call.
+func guardContext(db *gorm.DB) error {
+	check := func(tx *gorm.DB) {
+		if err := tx.Statement.Context.Err(); err != nil {
+			_ = tx.AddError(fmt.Errorf("pluginsdk: statement not run, its context is done (%w); "+
+				"a handle kept from an earlier Host.DB call fails like this: ask Host.DB again for each call", err))
+		}
+	}
+	cb := db.Callback()
+	for name, r := range map[string]func(string, func(*gorm.DB)) error{
+		"create": cb.Create().Before("*").Register,
+		"query":  cb.Query().Before("*").Register,
+		"update": cb.Update().Before("*").Register,
+		"delete": cb.Delete().Before("*").Register,
+		"row":    cb.Row().Before("*").Register,
+		"raw":    cb.Raw().Before("*").Register,
+	} {
+		if err := r("pluginsdk:context:"+name, check); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *host) closeDB() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.pool != nil {
-		h.pool.Close()
-		h.pool = nil
+	if h.db != nil {
+		_ = pgdb.Close(h.db)
+		h.db = nil
 	}
 }
 
@@ -410,12 +424,8 @@ func ledgerResult(r *pluginv1.LedgerChangeResponse, err error) (*LedgerResult, e
 	return &LedgerResult{LedgerID: r.GetLedgerId(), BalanceAfter: r.GetBalanceAfter(), Duplicate: r.GetDuplicate()}, nil
 }
 
-// hostKV is the KV of Host.KV. It also implements KVBatch (kvbatch.go);
-// noBatch is the host's kvNoBatch.
-type hostKV struct {
-	c       pluginv1.HostServiceClient
-	noBatch *atomic.Bool
-}
+// hostKV is the KV of Host.KV. It also implements KVBatch (kvbatch.go).
+type hostKV struct{ c pluginv1.HostServiceClient }
 
 func (k hostKV) Get(ctx context.Context, ns, key string) ([]byte, bool, error) {
 	r, err := k.c.KVGet(ctx, &pluginv1.KVGetRequest{Namespace: ns, Key: key})

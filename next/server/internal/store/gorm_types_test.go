@@ -1,0 +1,148 @@
+package store
+
+import (
+	"database/sql/driver"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+
+	"gorm.io/gorm/schema"
+)
+
+// Bools is a column to GORM's schema parser rather than a relation (its
+// Value: TestArrayValuesArePlainSlices).
+func TestBools(t *testing.T) {
+	type row struct {
+		ID    int64
+		Flags Bools
+	}
+	s, err := schema.Parse(&row{}, &sync.Map{}, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := s.LookUpField("flags")
+	if f == nil || f.DataType != "boolean[]" || len(s.Relationships.Relations) > 0 {
+		t.Errorf("Bools parses as %+v (relations %v), want a boolean[] column", f, s.Relationships.Relations)
+	}
+}
+
+func TestJSONScanValue(t *testing.T) {
+	j := JSON[[]string]{V: []string{"stale"}}
+	for _, src := range []any{nil, []byte(`null`), "null"} {
+		if err := j.Scan(src); err != nil || j.V != nil {
+			t.Errorf("Scan(%#v) = %#v, %v; want the zero value", src, j.V, err)
+		}
+	}
+	if err := j.Scan([]byte(`["a"]`)); err != nil || !reflect.DeepEqual(j.V, []string{"a"}) {
+		t.Errorf("Scan = %#v, %v", j.V, err)
+	}
+	if err := j.Scan(`{"a":1}`); err == nil {
+		t.Error("Scan of an object into []string: no error")
+	}
+	if err := j.Scan(1); err == nil || !strings.Contains(err.Error(), "cannot scan int") {
+		t.Errorf("Scan(1) error = %v", err)
+	}
+	v, err := JSON[map[string]int]{V: map[string]int{"n": 1}}.Value()
+	if err != nil || v != `{"n":1}` {
+		t.Errorf("Value() = %#v, %v", v, err)
+	}
+	if _, err := (JSON[func()]{}).Value(); err == nil {
+		t.Error("Value of a func: no error")
+	}
+}
+
+func TestBytesValueScan(t *testing.T) {
+	for _, c := range []struct {
+		in   Bytes
+		want driver.Value
+	}{{nil, nil}, {Bytes{}, []byte{}}, {Bytes("ab"), []byte("ab")}} {
+		v, err := c.in.Value()
+		if err != nil || !reflect.DeepEqual(v, c.want) {
+			t.Errorf("Bytes(%#v).Value() = %#v, %v; want %#v", c.in, v, err, c.want)
+		}
+	}
+	src := []byte("ab")
+	var b Bytes
+	if err := b.Scan(src); err != nil || string(b) != "ab" {
+		t.Fatalf("Scan = %#v, %v", b, err)
+	}
+	src[0] = 'x'
+	if string(b) != "ab" {
+		t.Error("Scan kept the source buffer")
+	}
+	if err := b.Scan("cd"); err != nil || string(b) != "cd" {
+		t.Errorf("Scan(string) = %#v, %v", b, err)
+	}
+	if err := b.Scan(nil); err != nil || b != nil {
+		t.Errorf("Scan(nil) = %#v, %v; want nil", b, err)
+	}
+	if err := b.Scan(1); err == nil {
+		t.Error("Scan(1): no error")
+	}
+}
+
+func TestInt64sScan(t *testing.T) {
+	cases := []struct {
+		src  any
+		want Int64s
+		err  string
+	}{
+		{nil, nil, ""},
+		{"{4,-5}", Int64s{4, -5}, ""},
+		{[]byte("{6}"), Int64s{6}, ""},
+		{"{}", Int64s{}, ""},
+		{"{{1,2},{3,4}}", Int64s{1, 2, 3, 4}, ""},
+		{"[0:1]={7,8}", Int64s{7, 8}, ""},
+		{"{9223372036854775807}", Int64s{9223372036854775807}, ""},
+		{"{1,NULL}", nil, "NULL"},
+		{"{9223372036854775808}", nil, "out of range"},
+		{[]int64{1}, nil, "cannot scan"},
+		{"{a}", nil, "invalid"},
+		{int64(1), nil, "cannot scan int64"},
+	}
+	for _, c := range cases {
+		var got Int64s
+		err := got.Scan(c.src)
+		if c.err != "" {
+			if err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Errorf("Scan(%#v) error = %v, want %q", c.src, err, c.err)
+			}
+			continue
+		}
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("Scan(%#v) = %#v, %v; want %#v", c.src, got, err, c.want)
+		}
+	}
+}
+
+func TestStringsScan(t *testing.T) {
+	cases := []struct {
+		src  any
+		want Strings
+		err  string
+	}{
+		{nil, nil, ""},
+		{`{a,"b,c","d\"e",""}`, Strings{"a", "b,c", `d"e`, ""}, ""},
+		{[]byte(`{x}`), Strings{"x"}, ""},
+		{"{}", Strings{}, ""},
+		{`{"NULL",null_ish,"\\\\",{nested}}`, Strings{"NULL", "null_ish", `\\`, "nested"}, ""},
+		{"{a,NULL}", nil, "NULL"},
+		{"{a,null}", nil, "NULL"},
+		{[]string{"a"}, nil, "cannot scan"},
+		{true, nil, "cannot scan bool"},
+	}
+	for _, c := range cases {
+		var got Strings
+		err := got.Scan(c.src)
+		if c.err != "" {
+			if err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Errorf("Scan(%#v) error = %v, want %q", c.src, err, c.err)
+			}
+			continue
+		}
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("Scan(%#v) = %#v, %v; want %#v", c.src, got, err, c.want)
+		}
+	}
+}

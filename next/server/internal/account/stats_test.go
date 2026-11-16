@@ -238,7 +238,7 @@ func TestAccountStatsRoutesAndSettings(t *testing.T) {
 	require.EqualValues(t, 60, data(out)["window_seconds"])
 	ctx := context.Background()
 	var pluginKey string
-	require.NoError(t, e.db.Pool.QueryRow(ctx, `SELECT plugin_key FROM accounts WHERE id=$1`, id1).Scan(&pluginKey))
+	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT plugin_key FROM accounts WHERE id=$1`, id1).Scan(&pluginKey))
 	query := &pluginv1.ReadObservationMetricsRequest{Namespace: "core", AccountIds: []int64{id1, id2}, Metrics: []string{observation.SuccessRequests, observation.SuccessTokens}, WindowSeconds: 60}
 	own, err := e.svc.ReadPluginObservationMetrics(ctx, pluginKey, false, query)
 	require.NoError(t, err)

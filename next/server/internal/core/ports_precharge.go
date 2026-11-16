@@ -3,7 +3,7 @@ package core
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // RequestPrecharger owns money reserved before any upstream traffic.
@@ -15,6 +15,6 @@ type RequestPrecharger interface {
 // PrechargeReleaser is implemented by the ledger. Release and final billing
 // share the usage transaction, so final settlement never charges twice.
 type PrechargeReleaser interface {
-	ReleasePrechargeTx(context.Context, pgx.Tx, int64, string) (*LedgerResult, error)
+	ReleasePrechargeTx(context.Context, *gorm.DB, int64, string) (*LedgerResult, error)
 	ReleaseExpiredPrecharges(context.Context) error
 }

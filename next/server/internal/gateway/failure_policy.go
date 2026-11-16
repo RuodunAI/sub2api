@@ -114,11 +114,12 @@ func defaultFailurePolicy() FailurePolicy {
 		RetryRules: []FailureRule{}, AccountRules: []FailureRule{}}
 }
 
-// loginAccountRules disable an account on a login failure the provider,
-// Claude Code or the Worker names (401) and on an account the provider holds
-// (403). Migrations 0072 and 0074 write the same rules into a published
-// policy in place of the migrated rule; 0075 appends the keywords added
-// after them (storedLoginKeywords).
+// loginAccountRules disable an account on a login failure the provider
+// names (401) and on an account the provider holds (403). Migrations 0072
+// and 0074 wrote these rules into a published policy in place of the
+// migrated rule, with keywords only CCGateway produced besides (its Worker's
+// codes and Claude Code's own messages), which 0075 extended and 0102 took
+// out again.
 func loginAccountRules() []FailureRule {
 	rule := func(id, name, status string, keywords ...string) FailureRule {
 		return FailureRule{ID: id, Name: name, Enabled: true, Action: "disable",
@@ -128,47 +129,26 @@ func loginAccountRules() []FailureRule {
 		rule("login-invalid", "Login invalid (401)", "401",
 			"oauth access token has been revoked",
 			"oauth token has been revoked",
-			"oauth refresh token is no longer valid",
-			"oauth_refresh_dead",
-			"not_logged_in",
-			"has cleared its stored login",
 			"invalid x-api-key",
 			"invalid bearer token",
 			"the security token included in the request is invalid",
-			"your account is not authorized",
-			storedLoginKeywords["login-invalid"]),
+			"your account is not authorized"),
 		rule("account-on-hold", "Account on hold (403)", "403",
-			"oauth_account_on_hold",
-			"oauth authentication is currently not allowed for this organization",
-			storedLoginKeywords["account-on-hold"]),
+			"oauth authentication is currently not allowed for this organization"),
 	}
 }
 
-// storedLoginKeywords are the codes Claude Code 2.1.316's
-// StoredLoginHeldBackError is answered with (cli-mods request-error.js,
-// 2026-11-02): a login Claude Code holds back until a restart, which only a
-// new authorization fixes (401), and one the organization's settings refuse
-// (403). The third kind, settings that did not load, stays a retryable 5xx.
-// Migration 0075 appends each to its rule in a published policy, by rule id.
-var storedLoginKeywords = map[string]string{
-	"login-invalid":   "stored_login_refused_restart_needed",
-	"account-on-hold": "stored_login_refused_admin",
-}
-
-// rateLimitRetryKeywords are the 429s another account can help with: an account
-// out of quota and a Worker at its concurrency limit. Any other 429, such as a
-// request that needs usage credits, would get the same answer from every
-// account, so it goes back to the client.
-var rateLimitRetryKeywords = []string{"exceed your account's rate limit", "gateway concurrency limit reached"}
-
-// defaultRetryRules are the retry rules of a new policy.
+// defaultRetryRules are the retry rules of a new policy. A 429 is retried
+// only when another account can help: an account out of quota. Any other 429,
+// such as a request that needs usage credits, would get the same answer from
+// every account, so it goes back to the client.
 func defaultRetryRules() []FailureRule {
 	return []FailureRule{
 		{ID: "http-transient", Name: "HTTP transient errors", Enabled: true,
 			Match:  FailureMatch{Source: "upstream", StatusCodes: "408,500-599", Mode: "all"},
 			Action: failureRetry},
-		{ID: "rate-limit", Name: "Account quota and gateway concurrency (429)", Enabled: true,
-			Match:  FailureMatch{Source: "upstream", StatusCodes: "429", Keywords: slices.Clone(rateLimitRetryKeywords), Mode: "all"},
+		{ID: "rate-limit", Name: "Account quota (429)", Enabled: true,
+			Match:  FailureMatch{Source: "upstream", StatusCodes: "429", Keywords: []string{"exceed your account's rate limit"}, Mode: "all"},
 			Action: failureRetry},
 	}
 }

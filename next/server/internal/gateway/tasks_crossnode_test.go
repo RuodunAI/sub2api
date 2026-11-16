@@ -188,7 +188,7 @@ func TestTaskGatewayNeverResubmitsAfterSending(t *testing.T) {
 			}
 			var state string
 			var response []byte
-			if err := db.Pool.QueryRow(context.Background(), `SELECT state,response_body FROM task_submission_receipts WHERE request_id=$1`, rec.RequestID).
+			if err := db.SQL.QueryRowContext(context.Background(), `SELECT state,response_body FROM task_submission_receipts WHERE request_id=$1`, rec.RequestID).
 				Scan(&state, &response); err != nil || state != "uncertain" || (mode == "parser_failure" && len(response) == 0) {
 				t.Fatalf("uncertain receipt lost: state=%q body=%s err=%v", state, response, err)
 			}

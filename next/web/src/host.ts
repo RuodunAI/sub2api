@@ -1,6 +1,6 @@
 import { computed } from 'vue'
 import type { Router } from 'vue-router'
-import { api, configureHttp, provideHost, session, startKeepAlive, HOST_UI_VERSION, type HostContext } from '@sub2api/host'
+import { api, configureHttp, provideHost, session, HOST_UI_VERSION, type HostContext } from '@sub2api/host'
 import { confirm, toast } from '@sub2api/ui'
 import { addMessages, currentLocale, i18n, lt } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
@@ -19,8 +19,8 @@ export function setupHost(router: Router) {
     // baseURL stays at @sub2api/host's API_BASE; see packages/host/src/routes.ts.
     locale: () => currentLocale(),
     onUnauthenticated: reason => {
-      // "expired": the refresh token was rejected (expired, revoked or reused);
-      // the login page then asks the user to sign in again.
+      // "expired": the server no longer accepts the session (idled out, too
+      // old or revoked); the login page then asks the user to sign in again.
       if (reason === 'expired') auth.sessionExpired = true
       const cur = router.currentRoute.value
       if (!cur.meta.public) router.replace({ path: '/login', query: { redirect: cur.fullPath } })
@@ -29,10 +29,8 @@ export function setupHost(router: Router) {
     // High-risk operations answer 403 verification_required: verify, then replay with the proof.
     onVerificationRequired: requestStepUp
   })
-  // Signed out (or the session could not be renewed): no verification is left to ask for.
+  // Signed out (here or in another tab) or the session ended: no verification is left to ask for.
   session.onChange((s) => !s && cancelStepUps())
-  // A login lasts while it is used: renew the access token before it expires.
-  startKeepAlive()
 
   const ctx: HostContext = {
     version: HOST_UI_VERSION,

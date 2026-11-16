@@ -1,0 +1,5 @@
+-- sql
+UPDATE "stamp_rows" SET "name"=$1 WHERE "id" = $2
+-- vars
+$1 string "b"
+$2 int64 1

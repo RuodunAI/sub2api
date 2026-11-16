@@ -12,7 +12,7 @@
 |---|---|---|
 | `sdk/proto`、`sdk/gen`、`sdk/manifest`、`sdk/protocol`（go-plugin 握手）、`sdk/pkgsig`（包签名格式） | 主控 | 契约 |
 | `server/internal/core`、`config`、`store`、`httpapi`、`testutil`、`migrations`、`secret`（AES-GCM）、`deps`、`platforms`（内置平台定义，任何模块可 import）、`cmd/sub2api/main.go`、`internal/app` | 主控 | 共享基础、组装 |
-| `server/internal/iam`、`authz`（含 `/me/menus`） | A1 identity | 用户、登录、JWT、RBAC、权限目录 |
+| `server/internal/iam`、`authz`（含 `/me/menus`） | A1 identity | 用户、登录会话（§100）、RBAC、权限目录 |
 | `server/internal/apikey`、`group`、`proxy`、`account` | A2 resources | API Key、分组、代理、账号、账号类型接口 |
 | `server/internal/billing`（含 `billing/expr`）、`usage`、`event`（Emit 写入端） | B billing | |
 | `server/internal/plugin/pkg`（解包、manifest 校验、签名与信任）、`plugin/install`（上传、审查、授权确认、卸载）、`plugin/market`、`plugin/api`（`/plugins`、`/publishers`、`/market`、`/nodes`、`/ui/plugins` 接口） | C1 plugin-lifecycle | |
@@ -28,22 +28,23 @@
 
 ## 2. 构建与测试
 
-- Go 1.27；`next/go.work` 包含 `sdk`、`server`；新增的 Go module（插件、工具）加入 `go.work`，并在自己的 `go.mod` 里 `replace github.com/Sub2API-Devs/sup2api/next/sdk => ../../sdk`（按相对路径）
+- Go 1.27；`next/go.work` 包含 `server`、`gateway`、`runtime-contract`、`sdk`、`tools/sub2api-plugin`、`e2e`、`deploy/mock-upstream`、`protocol-codec`（`next/` 里已没有模块 import 它，只剩根目录旧版 `backend/` 经 `replace` 依赖它）、每个 `plugins/<name>`；新增的 Go module（插件、工具）加入 `go.work`，并在自己的 `go.mod` 里 `replace github.com/Sub2API-Devs/sup2api/next/sdk => ../../sdk` 和 `replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => ../../runtime-contract`（按相对路径；SDK 从 0.1.290 起依赖 runtime-contract，`GOWORK=off` 构建缺了后一条会找不到它）
 - 下载依赖：`GOPROXY=https://goproxy.cn,direct`（只在命令里临时设置）；整理依赖用 `GOWORK=off go mod tidy`
 - 重新生成 proto：`cd sdk && buf generate`（工具在 `go env GOBIN`）
-- 每个模块完成时必须通过：`go vet ./...`、`GOOS=linux go build ./...`、本模块的 `go test ./...`
+- 每个模块完成时必须通过：`gofmt -l .` 无输出、`go vet ./...`、`go build ./...`、本模块的 `go test ./...`（工作区模式，不设 `GOWORK`）。CI（`.github/workflows/next-ci.yml`）对每个模块跑的就是这四条，脚本是 `.github/next-ci/next-check-module.sh`，可在仓库根本地执行（`sh .github/next-ci/next-check-module.sh next/server`）；`e2e` 只编译不运行（`--no-test`）。核心另在 CI 里交叉编译 `GOOS=linux/windows/darwin go build ./...`，并跑 `go test -race ./gateway/... ./runtime-contract/... ./server/internal/app/... ./server/internal/background/...`（在 `next/` 下）；`next-sums-clean.sh` 检查 `go.sum`/`go.work.sum` 没有未提交的改动
+- **插件数据库**（2026-11-15，2026-11-16 改为目录比对、共用 `runtime-contract/gormpg`；插件 SDK 0.2.0）：插件用 `Host.DB` 返回的 `*gorm.DB`（`sdk/pgdb`），插件、SDK、网关和工具都不 import pgx（`sdk/pgdb` 的 `TestNoPgxImports` 检查，测试文件也算；核心是 gormguard `[pgx-import]`）。连接的打开由 `runtime-contract/gormpg` 一处实现，核心、网关、SDK 共用：pgx 解析 DSN（URL 或 key=value），连接池大小由调用方给定（`gormpg.Settings`：核心默认 20 个、`SUB2API_PG_MAX_CONNS` 可改，网关默认 8 个、`SUB2API_GATEWAY_POOL_MAX_CONNS` 可改，插件按 `pgdb.Options`），DSN 不带 `pool_*` 参数（带了 `gormpg.ParseConfig` 启动即报错，只列参数名，见 §101.2），固定 `datestyle=ISO`、`intervalstyle=postgres`，`stdlib.OpenDB` 交给 database/sql 池，GORM 跑在 `sqlpool` 上；拨号钩子（严格网络模式的出口隧道）装在它解析出的驱动配置上；数组参数类型 `gormpg.Array`（`pgdb.Array`、`store.Array` 是它的别名）和 PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`IsForeignKeyViolation`、`IsDeadlock`、`SQLState`、`ConstraintName`、`Hint`，核心经 `store` 的同名函数）也在这里，它是唯一 import pgx 的包。句柄绑定调用时的 ctx，每次调用重新取（连接共享，开销很小），不要缓存（例如在 Init 里取了交给后台任务）：ctx 结束后缓存的句柄每条语句都报错，语句不执行，错误包装 ctx 的错误（`context.Canceled` 或 `context.DeadlineExceeded`），并提示缓存的句柄是可能的原因（正常的取消、超时也是这条错误，提示写成条件句）。连接池默认每节点每插件 4 个（`pgdb.DefaultMaxConns`，`pluginsdk.WithDBPoolSize` 可改），插件角色 `CONNECTION LIMIT 20` 含宿主迁移的那 1 个，4 个节点以内不会超限。表结构以插件 `internal/model` 包的 GORM 模型为唯一描述（导出 `func All() []any`；迁移里有模型描述不了的函数、视图、序列、触发器、类型时再导出 `func Unmanaged() []string`，如 `"function touch()"`、`"trigger t.t_touch"`、`"view v"`），宿主仍只执行 `migrations/*.sql`，运行时不跑 AutoMigrate。`sub2api-plugin db diff|check` 在比对库的一个事务里完成全部工作，结束时回滚（中断也不留下 schema 或角色，见 `sdk/pgdb/pgdbtool`）：以一个只拥有临时 schema 的临时角色执行迁移（与宿主用插件角色执行一致，需要更多权限的迁移在这里同样失败；建到 schema 之外的对象列为差异），在另一个空 schema 上对模型跑 AutoMigrate，比较两边的系统目录：表；每列的 `format_type`、NOT NULL、默认值（按值比较，`0` 与 `'0'::numeric` 相同）；主键；索引与约束按定义（`pg_get_indexdef`、`pg_get_constraintdef`，与名字无关，唯一约束与同列唯一索引视为相同）。模型的 `TableName` 不得带 schema。`db diff` 把 AutoMigrate 在迁移 schema 上执行的 DDL（改写成可重复执行）写成下一个编号的迁移（编号位数沿用已有文件），写之前在临时 schema 上把它连跑两次并确认再无差异；无变化时提示；改列类型、删除、`SET NOT NULL`、无默认值的 `NOT NULL` 新列、给已有表加 CHECK/唯一/外键约束或唯一索引（标 `!`），AutoMigrate 不处理的差异（给已有列加 NOT NULL、改主键、同名索引或约束改定义），以及库里有而模型里没有的表、列、索引、约束、未声明为 Unmanaged 的视图、序列、函数、触发器、类型只打印、不生成。`db check` 有任何差异就失败，`pack` 自动执行（含 `--overlay` 的迁移；插件没有 `internal/model` 或 manifest 没有 `database` 时跳过；没设 `TEST_DATABASE_URL` 时启动本机 testpg 服务器，由它启动且没有其他程序在用时在结束时停掉；`--skip-db-check` 关闭，镜像构建用它，CI 由 `tools/sub2api-plugin` 的 `TestDBCheck` 检查所有带模型的内置插件）。说明见 `sdk/pluginsdk/doc.go` 的 Database 一节。插件和 SDK 的语句（2026-11-16 起）全部由 GORM 按模型生成（`Model`/`Table`、`Where`、`Select`、`Create`、`Updates`、`Delete`、`clause.OnConflict`、`clause.Returning`），不手写整条 SQL：`Raw`/`Exec` 只组合已生成的查询（`(?) UNION ALL (?)`、`pgdb.Exists`、`pgdb.InsertSelect`），序列和锁走 `pgdb.NextIDs`、`pgdb.LockTable`、`pgdb.TryXactLock`（键为 `hashtextextended(名字 || ':' || current_schema(), 0)`）；`Exists`、`InsertSelect`、`NextIDs`、`TryXactLock` 是 `runtime-contract/gormpg` 同名组合器的转交，核心和网关用的是同一份。SQL 文本的规则与核心相同（见下条“核心的 SQL”，同一个检查器 `runtime-contract/gormpg/sqlcheck`）：必须是常量或只由常量拼成，值只走 `?` 参数，请求选择的列和排序经固定白名单进 `clause.Column`/`clause.OrderByColumn`；`pgdb.SQL` 标记交给辅助函数的 SQL 片段（只有常量能隐式转换）。`sdk/pgdb` 的 `TestNoRawSQL` 检查 SDK、仓库里全部插件和 `tools` 的非测试代码（`[raw-sql]`、`[sql-const]`，以及不经 gorm 的 `ConnPool` 或 `(*gorm.DB).DB()` 拿连接、`*sql.DB` 执行语句的 `[gorm-instance]`；GORM 的泛型 API `gorm.G` 不许用，它的方法检查器看不到），例外按声明（`包.函数`）登记原因，目前只有 `pgdbtool` 的系统目录读取、迁移执行与 DDL（标识符经 `clause.Table` 引用）和 `pgdb.LockTable`，连接池上只有 `pgdb.Close` 和 testpg 的探测
+- **核心的 SQL**（raw-SQL 策略，2026-11-16，0.1.290；gormguard `[raw-sql]`、`[sql-const]`，规则在 `runtime-contract/gormpg/sqlcheck`，允许列表在 `server/internal/store/gormguard/rawsql_test.go`）：核心的语句一律由 GORM 的模型与查询构造器生成（`Create`、`Updates`、`clause.OnConflict`、`clause.Returning`、`store.ForUpdate()`，统计用 `Select`/`Group` 里的表达式，子查询与 `UNION ALL` 用 `(?)` 组合构造器查询），多行插入一次 `Create` 一个切片，需要按顺序拿 id 时先 `gormpg.NextIDs`，行数随批次变化的写入按 `store.InsertChunk` 行一条（`CreateInBatches`，满条的文本相同）。插入的行用类型化的行结构体（带 `TableName`，只含要写的列，没有默认值标签，所以不读回；数据库时钟的列用 `store.DBNow`，值是其他 SQL 表达式（子查询、时钟加间隔）的列用 `store.ExprValue`），行从查询里来的用 `gormpg.InsertSelect`；不用没有 `Model` 的列映射（GORM 每次把映射当模型解析，失败后把整个映射格式化进丢弃的错误）。整条手写的语句只留在允许列表里按名字（`包.函数`）登记、写明理由的地方：账本的 data-modifying CTE（预扣、结算、释放、退款）、`store/system.go` 里非数据语句的小助手（事务级 advisory 锁 `XactLock`/`TryXactLock`（按名字，`hashtextextended`）与 `XactLockID`（按 id，只用于要与同 id 的迁移会话锁互斥的插件迁移锁）、`SetLocal`（`set_config(名, 值, true)`，只在事务里）、`ClockTimestamp`、`CurrentSnapshot`、`CurrentDatabase`）、`DDL`、迁移执行器、开发工具 `modelgen`，以及插件迁移记录的 SECURITY DEFINER 函数调用；核心、网关、SDK 共用的组合器 `runtime-contract/gormpg` 的 `ExistsQuery`/`Exists`、`InsertSelect`、`NextIDs`（核对取到的个数）、`RelationExists`、`TryXactLock` 在那个模块登记；只由 `(?)`（或 `?`）与集合运算组成的组合文本自动放行。交给 GORM 的 SQL 文本必须由常量构成，值只走 `?` 参数：`Raw`、`Exec`、`Where`、`Not`、`Or`、`Having`、`Order`、`Group`、`Joins`、`InnerJoins`、`Table`、`Pluck` 的第一个参数，`Select`/`Distinct` 的全部参数（字符串或 `[]string`），`Find`/`First`/`Take`/`Last`/`Delete`/`FirstOrInit`/`FirstOrCreate`/`Preload` 的内联条件，`gorm.Expr`、`clause.Expr`/`NamedExpr` 的 SQL（含给 `.SQL` 字段赋值），`Raw: true` 的 `clause.Column`/`clause.Table` 的名字（字面量之外给 `Name`/`Table`/`Alias` 赋值一律要常量，`Raw` 只能在字面量里设），经 `WriteString`/`WriteByte` 等直接写进语句的文本（`gorm.Statement`、它的 `SQL`、`clause.Builder`/`Writer`），放进 `any` 参数的字符串，登记为 SQL 文本的函数（`store.Conds.And`、`UpdateFrom`、`NewNumbered`，`DDL` 按签名取第一个字符串参数即格式串）；经接口、方法值或方法表达式调用的同名方法同样检查，把这些方法当值用（不调用）直接失败。常量跟踪是保守的，只认：常量及其 `+`、`strings.Join`/`fmt.Sprintf`/`Repeat`/修剪、`append`/`slices.Concat`；本包里每个取值（声明、赋值、`range`、`v, ok := m[k]`）都是常量、没有被取地址或交给可能改写它的函数的局部变量、未导出的包变量和未导出字段；本包未导出、无接收者、只被直接调用的函数的参数（每个调用都传常量）；本包函数的返回值（多返回值也算）。其余一律当未知：导出的包变量（别的包能改）、导出函数和方法的参数、接收者、函数字面量的参数、type switch 的绑定。GORM 的泛型 API `gorm.G` 不许用（`[raw-sql]`）；gorm 的 `ConnPool`（读或写）和 `(*gorm.DB).DB()` 只在允许列表 `Pool` 登记的声明里出现（`[gorm-instance]`，核心是 `store` 的 `WithConn`、`SQLTx`、`InTx`、迁移执行器和测试设施）；运行时选的列名经固定映射变成 `clause.Column`/`clause.OrderByColumn`，不拼进文本；检查跟不出的（如账本 CTE 的拼接、统计的度量表）在允许列表 `Dynamic` 里登记理由。允许列表（`Raw`、`Dynamic`、`Quoting` 等）里没有命中的条目也算失败（名字写错、函数已删除都会报）。规则实现在 `runtime-contract/gormpg/sqlcheck`，核心、网关（§39）、SDK 与插件共用，各模块只保留自己的允许列表（核心是 `server/internal/store/gormguard/rawsql_test.go` 的 `sqlPolicy`）。
 - **数据库测试**：核心用 `testutil.DB(t)`，插件用 `pluginsdktest.NewSchema(t, …)`，两者都从 `sdk/testpg` 拿库：
   - 设置了 `TEST_DATABASE_URL`（超级用户 DSN，如 CI）就用它；
   - 没设置时由 Go 启动本机的真实 PostgreSQL 16（embedded-postgres）。首次运行从 Maven Central 下载约 25 MB（需要代理时设 `HTTPS_PROXY`），之后使用缓存。
   - 并行的测试进程通过文件锁共用一个服务器，跑完继续常驻，下次约 1 秒就能用上。停掉：`go run ./sdk/testpg/cmd/testpg stop`（另有 `start`、`status`）。
   - 环境里有 HTTP 代理变量时要加 `NO_PROXY=127.0.0.1,localhost`。
   - `SUB2API_TESTPG=off` 时跳过数据库测试（例如首次下载前离线）。正常情况下数据库测试**不应跳过**；报告"测试通过"前确认没有一堆 SKIP。
-- **Redis 测试**：单元测试用 `github.com/alicebob/miniredis/v2`；集成测试可用 `TEST_REDIS_URL=redis://127.0.0.1:36379/0`
+- **Redis 测试**：单元测试用 `github.com/alicebob/miniredis/v2`；集成测试可设 `TEST_REDIS_URL`（如 `redis://127.0.0.1:6379/0`，CI 的 `server` job 就是这样）
 - Linux 专有代码用 `//go:build linux`，并提供非 Linux 的空实现，保证 Windows 上也能编译
 - **测试不许假设「某个端口是空闲的」**。CI 的 `server` job 把 postgres / redis 用 `ports: 5432:5432` / `6379:6379` 发布到 runner 的 `127.0.0.1`（GH runner 上 job 不在容器里，必须如此），所以任何「连这个端口应当失败」的断言都会在那里翻转。要证明「连不上」就用 `net.Listen(":0")` 拿端口再立刻 `Close()`，要证明「连得上」就起自己的监听。见 §26.7
-- **CI 红先看日志，不要先猜**：`actions/jobs/{id}/logs` 对非 admin 返回 403，但本机 git credential helper 里有 GitHub Desktop 的 token（`git credential fill` 可读）能下载 job 日志
-- **所有测试组件一律用 docker compose 启动，禁止在服务器上直接安装或运行任何服务/进程**。测试服务器 ovh 上：测试库为 compose 项目 `sub2api-next-testdb`（目录 `~/sub2api-next-test/testdb`）；需要在 Linux 上运行的 Go 测试（seccomp、/proc 等）用 `next/deploy/ci/compose.yml` 的 `gotest` 服务：把代码同步到 `~/sub2api-next-test/ci/<agent代号>/`，在该目录执行 `docker compose -f next/deploy/ci/compose.yml run --rm gotest go test ...`，用完删除同步目录。不要触碰服务器上的其他 compose 项目和容器
-- 前端：Node 24，npm；`web/` 下 `npm ci && npm run build`，产物输出到 `server/web/dist`（由 `server/web` 用 `embed` 嵌入）。**`server/web/dist/index.html` 是被 git 跟踪的占位文件**（占位页给 `embed` 兜底，镜像的 `ui` stage 自己 build），`assets/` 则被忽略——`npm run build` 会把它覆盖成引用不存在文件的真页面，**提交前 `git checkout` 还原它**。`web/` 只有 `typecheck` 和 `build`，没有 lint 脚本
+- **CI 红先看 job 日志，不要先猜**
+- 前端：Node 24，npm；`web/` 下 `npm ci && npm run build`，产物输出到 `server/web/dist`（由 `server/web` 用 `embed` 嵌入）。**`server/web/dist/index.html` 是被 git 跟踪的占位文件**（占位页给 `embed` 兜底，镜像的 `ui` stage 自己 build），`assets/` 则被忽略——`npm run build` 会把它覆盖成引用不存在文件的真页面，**提交前 `git checkout` 还原它**。`web/` 的脚本：`typecheck`（`vue-tsc -b`）、`test`（`vitest run`）、`lint`（`eslint .`，`lint:fix` 自动修）、`format`/`format:check`（prettier）、`check`（依次 `typecheck`、`lint`、`test`）、`build`（`vue-tsc -b && vite build`）。CI 的 `web console` job 只跑 `npm ci`、`npm run typecheck`、`npm test`，不跑 `lint`，提交前在本地跑 `npm run check`
 
 ## 3. 通用约定
 
@@ -56,7 +57,7 @@
 | 失败 | HTTP 状态码 + `{"error": {"code": "...", "message": "...", "details": {...}}}` |
 | 字段校验失败 | `invalid_argument`，`details.fields = [{"field","code","message"}]` |
 
-错误码（`core/errors.go`）：`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`verification_required` 403（缺少或无效的二次验证 proof，`details {scope, context, methods, password_required}`，§80.2，2026-11-13）、`verification_expired` 403（延续的二次验证会话已过期或属于别的用户、会话或密钥，`details {scope}`，重新开始这次操作，§80.2）、`not_found` 404、`conflict` 409、`insufficient_balance` 402、`model_price_not_configured` 403、`model_not_allowed` 403、`group_deleted` / `group_disabled` / `group_not_allowed` 403（API Key 所属分组已删除 / 已停用 / 不再对其所有者开放，§15.1）、`rate_limited` 429、`too_many_drafts` 429（未完成的账号草稿或预备容器达到单用户上限，§49.9）、`no_available_account` 503（网关 `anthropic` 格式渲染为 529 `overloaded_error`，§11.6）、`plugin_unavailable` 503、`package_gone` 410（插件版本记录在、安装包已不在任何节点上，§5.7）、`unavailable` 503、`internal` 500。（原 `step_up_required` 已随 2026-10 的二次验证一起删除，§3.3；2026-11-13 的新二次验证用 `verification_required`，§80.2。）
+错误码（`core/errors.go`）：`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`verification_required` 403（缺少或无效的二次验证 proof，`details {scope, context, methods, password_required}`，§80.2，2026-11-13）、`not_found` 404、`conflict` 409、`insufficient_balance` 402、`model_price_not_configured` 403、`model_not_allowed` 403、`group_deleted` / `group_disabled` / `group_not_allowed` 403（API Key 所属分组已删除 / 已停用 / 不再对其所有者开放，§15.1）、`rate_limited` 429、`no_available_account` 503（网关 `anthropic` 格式渲染为 529 `overloaded_error`，§11.6）、`plugin_unavailable` 503、`package_gone` 410（插件版本记录在、安装包已不在任何节点上，§5.7）、`unavailable` 503、`internal` 500。（原 `step_up_required` 已随 2026-10 的二次验证一起删除，§3.3；2026-11-13 的新二次验证用 `verification_required`，§80.2。）
 
 ### 3.2 数据格式
 
@@ -68,7 +69,7 @@
 
 ### 3.3 鉴权
 
-- 控制台：`Authorization: Bearer <access_token>`（JWT，HS256，`sub` 为用户 ID，默认 2 小时有效）
+- 控制台：`Authorization: Bearer <access_token>`，会话令牌 `s2s_…`（存 Valkey，用着就续期，空闲 7 天或登录 30 天后结束，§100；2026-11-16 起不再有 JWT）
 - **已取消二次验证（2026-10-05 用户决定）**：不再有密码确认（step-up）。`POST /auth/step-up`、`X-Step-Up-Token` 请求头、`step_up_required` 错误码、`core.StepUpVerifier`、`Authorizer.IsSensitive`、`Router.PermStepUp` 全部删除；任何操作（调整余额、删除用户/账号、查看凭证、角色授权、插件安装/卸载、系统更新等）只看登录态 + RBAC 权限。旧前端仍发送 `X-Step-Up-Token` 时核心直接忽略。
 - **二次验证重新引入（2026-11-13，权限加固期 4，用户决定照 new-api）**：只用于少数高危操作，按 scope 换短时一次性 proof（`X-Verify-Proof`），会话与访问密钥同一套，见 §80.2。上面这条只说明旧的 step-up 机制已删除。
 - 路由注册：`r.Public` / `r.Self` / `r.Perm(method, path, permission, handler)` / `r.PermAny(method, path, handler, keys...)`（任一 key 即可）/ `r.PermScoped(method, path, handler, actions...)`（任一动作的任意范围，handler 用 `core.Scope` 取范围，§21.0）
@@ -76,7 +77,7 @@
 - 前端权限目录（期 4 T69）：`web/src/generated/permissions.ts` 由核心目录生成，内容包括：
   - `P`：每个核心与 `self` 权限一个常量，名字由 key 转成驼峰。
   - `SCOPE_TYPE`：可带范围的动作及其资源。
-  - `PERMISSIONS`：每个 key 的 module、sensitive、stepUp、requires 和中英 description。
+  - `PERMISSIONS`：每个 key 的 module、risk（0.1.290起取代 sensitive）、stepUp、requires 和中英 description。
   - `ROLE_KEY_PATTERN`。
   - 类型 `PermKey`、`ScopedPermKey`、`PluginPermKey`、`PermRef`。
 
@@ -87,7 +88,7 @@
 
 ## 4. 权限清单（核心）
 
-模块、key、是否敏感（🔐）。由 A 在 `authz` 中注册为 core 权限，启动时同步到 `permissions` 表。🔐（`sensitive`）现在只是**展示用的高危标记**（`GET /permissions` 返回，角色编辑器据此提示），不再触发任何额外验证（§3.3），也与访问密钥无关；口径是凭证、资金、信任根、代码执行、身份与授权（2026-11-12）。🔑（`step_up`，2026-11-13 期 4 起，取代此前的 `session_only`“只认会话”）表示使用它的部分高危接口每次要先完成二次验证（§80.2），会话与访问密钥一样；仅为展示标记，`GET /permissions` 返回 `step_up`，规则以路由为准。另有 `self` 虚拟权限模块（§80.1），不在本表和角色编辑器里。👑（`superOnly`，2026-11-12，决策 D2）表示超管专属：不在任何内置角色的默认权限里（新库、新增权限的自动授予、恢复默认都不给），默认只有超级管理员持有；授予检查只要求操作者自己持有（§43.6），所以委派总是从超级管理员开始（超管把它授给某个角色后，该角色的持有者若有 `role:define`、`role:assign` 也能继续授出，全程审计）；`GET /permissions` 不返回这个标记。存量库里内置 `admin`、`operator` 角色上的 5 个旧超管专属权限（`plugin:grant:critical` `plugin:grant:db_schema_unconfined` `publisher:manage` `system:update:execute` `system:update:recover`；`balance:adjust:any` 是 0.1.286 新增的，存量库里没有）由迁移 `0097_authz_hardening.sql` 回收一次（每条写审计 `authz.reclaim.super_only`，actor 为系统，`detail {via, role, key}`；自定义角色不动），之后超管可再显式授回。
+模块、key、是否敏感（🔐）。由 A 在 `authz` 中注册为 core 权限，启动时同步到 `permissions` 表。🔐（`sensitive`）现在只是**展示用的高危标记**（`GET /permissions` 以 `risk: "sensitive"` 返回，角色编辑器据此提示；0.1.290起 `risk` 取代布尔字段 `sensitive`，见下文“风险等级”），不再触发任何额外验证（§3.3），也与访问密钥无关；口径是凭证、资金、信任根、代码执行、身份与授权（2026-11-12）。🔑（`step_up`，2026-11-13 期 4 起，取代此前的 `session_only`“只认会话”）表示使用它的部分高危接口每次要先完成二次验证（§80.2），会话与访问密钥一样；仅为展示标记，`GET /permissions` 返回 `step_up`，规则以路由为准。另有 `self` 虚拟权限模块（§80.1），不在本表和角色编辑器里。👑（`superOnly`，2026-11-12，决策 D2）表示超管专属：不在任何内置角色的默认权限里（新库、新增权限的自动授予、恢复默认都不给），默认只有超级管理员持有；授予检查只要求操作者自己持有（§43.6），所以委派总是从超级管理员开始（超管把它授给某个角色后，该角色的持有者若有 `role:define`、`role:assign` 也能继续授出，全程审计）；`GET /permissions` 以 `risk: "critical"` 返回（0.1.290起，此前不返回）。存量库里内置 `admin`、`operator` 角色上的 5 个旧超管专属权限（`plugin:grant:critical` `plugin:grant:db_schema_unconfined` `publisher:manage` `system:update:execute` `system:update:recover`；`balance:adjust:any` 是 0.1.286 新增的，存量库里没有）由迁移 `0097_authz_hardening.sql` 回收一次（每条写审计 `authz.reclaim.super_only`，actor 为系统，`detail {via, role, key}`；自定义角色不动），之后超管可再显式授回。
 
 | 模块 | 权限 |
 |---|---|
@@ -110,7 +111,18 @@
 | settings | `settings:read` `settings:manage`🔐🔑 |
 | system_update | `system:update:read` `system:update:execute`🔐🔑👑 `system:update:recover`🔐🔑👑 |
 
-内置角色：`super_admin`（superuser，等同 `*`，含以后新增的权限，名称、描述、权限都不可编辑，不可重置或删除）、`admin`（除超管专属 👑 以外的全部核心权限）、`operator`（运维，2026-11-12 起为显式白名单，决策 D3：`user:read` `user:create` `user:update`、`role:read` `role:assign`、`group:read` `group:manage`、`segment:read` `segment:manage`、`account:read` `account:create` `account:update` `account:delete` `account:test`、`proxy:read` `proxy:manage`、`price:read`、`balance:all:read`、`usage:all:read`、`node:read`、`audit:read`、`task:read` `task:run`，加上 `account:credential:view:own` 与 `user` 角色的默认权限（全量 key 蕴含 own 范围，因此能授出 supplier）；不含 `role:define`、`balance:adjust`、`usage:settle`、`user:delete`、`user:password:reset`、`account:credential:view`、`account:settings:custom`、`account:group:bind`、`account:relay`、`price:manage`、`task:manage` 以及 sticky、settings、plugin、publisher、system_update 各模块；以后新增的核心权限不会自动进入，要加进白名单）、`supplier`（供应商，2026-11-12；`account:read:own` `account:create:own` `account:update:own` `account:delete:own` `account:test:own` `account:credential:view:own` `proxy:read:own` `proxy:manage:own`，2026-11-13 加 `usage:self:read`（看自己的用量），核心默认权限只有这些（插件权限按 manifest `defaultRoles` 授予，payment 的 `recharge:use`、growth 的 `growth:use` 列了 supplier），暂不含 `account:group:bind`；附加型角色，供应商用户同时持有 `user` 与 `supplier`，控制台新建用户勾选 supplier 时自动勾上 user，§21）、`user`（`apikey:self:manage` `balance:self:read` `usage:self:read` `gateway:use`）。五个内置角色开箱即有，默认权限与可分配清单只在代码里定义一处（`authz/catalog.go` `builtinRoles`），新库由启动同步 `SyncCore` 直接写入，升级时的重置、补缺与恢复默认都用它（2026-11-13，用户要求“新系统自带的角色，可以进行修改、重置”）。除 `super_admin` 外，内置角色的名称、描述、权限、可分配清单可以修改：有 `role:define`、角色在操作者的可分配清单内、且角色当前的授予不超出操作者（与有持有者的自定义角色同一口径，§43.6 角色写入口），新增部分仍须在操作者之内；按默认清单 admin 能改 operator、supplier、user，不能改 admin（超管都能改）。内置角色不能删除（409），key 不能改（没有改 key 的接口，PATCH `/roles/:id` 带不同的 `key` 400 `immutable`，§15.7）。`POST /roles/:id/reset` 恢复默认（§15.7，权限检查同修改，另须覆盖全部默认值）。新增的核心权限只自动授予默认集合包含它的内置角色。**默认值在升级时只应用一次**（`roles.defaults_rev`，迁移 0097 加列，存量为 0）：内置角色（`super_admin` 除外）的 `defaults_rev` 落后于代码里该角色的 `rev`（升级到 0.1.286，或以后某个已有权限、角色加入了默认值、代码提升了 `rev`）时，`SyncCore` 按角色有没有持有者（`user_roles` 里未软删除的用户，即角色的 `user_count`）处理：**无人持有**的整体重置为默认值，与恢复默认同一套写入：核心权限（含范围权限）、可分配清单与 `assign_custom` 按默认值写入，默认值以外的核心授予删除，角色上的插件权限不动，名称、描述不改，审计一条 `role.reset`（系统操作者，`detail.via = "sync"`、`defaults_rev`、`before`、`after`）；**有人持有**的只补缺不覆盖：把默认值里缺的权限（含范围默认值，已有同动作全量 key 时不补 own 范围）、可分配角色与 `assign_custom` 补上，不删除角色上已有的其他授予，每项写审计 `authz.sync.grant`（`detail.defaults_rev`）。两种都把 `defaults_rev` 置为 `rev`；之后重启不再处理，管理员之后的修改（含删掉的默认权限）不会被改回来。恢复默认同样把 `defaults_rev` 置为当前 `rev`。新用户默认分配 `user` 角色。插件权限的 key 为 `plugin.<插件key>:<插件内 key>`，模块为 `plugin.<插件key>`。插件权限的状态跟随插件：新登记的权限在插件运行中（`plugins.status` 为 `enabled`、`upgrading`）时为 `active`，否则为 `disabled`，每次激活（启用或升级提交）整体置为 `active`、禁用时整体置为 `disabled`；已有的行在同步时不改状态（2026-11-12 权限加固 W4-P8）。升级失败时，同意新版本时登记的新权限保留到激活另一个版本时再按其 manifest 清理（W4-P9）。新登记的插件权限授予 manifest `userPermissions[].defaultRoles` 列出的内置角色（`admin`、`operator`、`supplier`、`user`，即 `manifest.BuiltinRoleKeys`；省略或 `null` 时为 `admin`，显式 `[]` 表示不授予任何角色；超管角色本来拥有全部权限，不写入），以及持有本插件 `inheritFrom` 所列旧 key 的角色（改名、拆分不丢授权，先授予再删除不再声明的旧 key）。声明了 `inheritFrom` 且目录里已有其中某个旧 key 时视为改名或拆分，只按继承授予、不叠加 `defaultRoles`；全新安装没有旧 key，才按 `defaultRoles`；每一条都写 `authz.sync.grant` 审计（`detail.via` 为 `default` 或 `inherit`）。同意请求可以显式覆盖：`new_permission_roles: {<本地 key>: [角色 key]}` 优先（空数组表示不授予任何角色，`inheritFrom` 照常生效），其次旧字段 `role_keys_for_new_permissions`（非空时作用于其余全部新权限），都没有时按 manifest 默认；已存在的权限不受影响（2026-11-12 权限加固 T58）。manifest 默认属于系统目录默认，同意时不要求操作者的任何权限（审计操作者为系统）；显式指定的角色要求操作者持有 `role:define`，且每个角色都必须是操作者能修改的角色（与 `PUT /roles/:id/permissions` 的 `editableRole` 同一判断：角色的现有权限须在操作者权限之内，内置角色还须在操作者的可分配清单内；2026-11-13 前内置角色只有超管），并且必须在操作者的可分配清单内（与 `PUT /users/:id/roles` 的可分配判断相同，访问密钥没有可分配清单；不在清单内 403，`details.role`），非超管也不能指定自己持有的角色（即使清单按名字列出了它，403，`details.role`），超管角色一律 403，未知角色 400（字段为请求里的字段：`new_permission_roles.<本地 key>` 或 `role_keys_for_new_permissions`，`code: unknown`；`new_permission_roles` 为目录已有的权限写的未知角色同样 400，不再静默忽略，期 4 P4F4）；新权限本身不要求操作者持有（这一点与 PUT `/roles/:id/permissions` 不同，那里新增的权限须在操作者之内），但因为不能指定自己持有的角色，操作者无法借此给自己新增权限。只有本次真正新建的权限才检查，升级不新增权限时带了角色也不需要 `role:define`（T59）。
+内置角色：`super_admin`（superuser，等同 `*`，含以后新增的权限，名称、描述、权限都不可编辑，不可重置或删除；0.1.290 起是唯一能带 superuser 标志的角色，授予存为 `casbin_rule` 的 `p, r:super_admin, *, *`，§99.1）、`admin`（除超管专属 👑 以外的全部核心权限）、`operator`（运维，2026-11-12 起为显式白名单，决策 D3：`user:read` `user:create` `user:update`、`role:read` `role:assign`、`group:read` `group:manage`、`segment:read` `segment:manage`、`account:read` `account:create` `account:update` `account:delete` `account:test`、`proxy:read` `proxy:manage`、`price:read`、`balance:all:read`、`usage:all:read`、`node:read`、`audit:read`、`task:read` `task:run`，加上 `account:credential:view:own` 与 `user` 角色的默认权限（全量 key 蕴含 own 范围，因此能授出 supplier）；不含 `role:define`、`balance:adjust`、`usage:settle`、`user:delete`、`user:password:reset`、`account:credential:view`、`account:settings:custom`、`account:group:bind`、`account:relay`、`price:manage`、`task:manage` 以及 sticky、settings、plugin、publisher、system_update 各模块；以后新增的核心权限不会自动进入，要加进白名单）、`supplier`（供应商，2026-11-12；`account:read:own` `account:create:own` `account:update:own` `account:delete:own` `account:test:own` `account:credential:view:own` `proxy:read:own` `proxy:manage:own`，2026-11-13 加 `usage:self:read`（看自己的用量），核心默认权限只有这些（插件权限按 manifest `defaults` 授予，payment 的 `recharge:use`、growth 的 `growth:use` 列了 supplier），暂不含 `account:group:bind`；附加型角色，供应商用户同时持有 `user` 与 `supplier`，控制台新建用户勾选 supplier 时自动勾上 user，§21）、`user`（`apikey:self:manage` `balance:self:read` `usage:self:read` `gateway:use`）。五个内置角色开箱即有，默认权限与可分配清单只在代码里定义一处（`authz/catalog.go` `builtinRoles`），新库由启动同步 `SyncCore` 直接写入，升级时的重置、补缺与恢复默认都用它（2026-11-13，用户要求“新系统自带的角色，可以进行修改、重置”）。除 `super_admin` 外，内置角色的名称、描述、权限、可分配清单可以修改：有 `role:define`、角色在操作者的可分配清单内、且角色当前的授予不超出操作者（与有持有者的自定义角色同一口径，§43.6 角色写入口），新增部分仍须在操作者之内；按默认清单 admin 能改 operator、supplier、user，不能改 admin（超管都能改）。内置角色不能删除（409），key 不能改（没有改 key 的接口，PATCH `/roles/:id` 带不同的 `key` 400 `immutable`，§15.7）。`POST /roles/:id/reset` 恢复默认（§15.7，权限检查同修改，另须覆盖全部默认值）。新增的核心权限只自动授予默认集合包含它的内置角色。**默认值在升级时只应用一次**（`roles.defaults_rev`，迁移 0097 加列，存量为 0）：内置角色（`super_admin` 除外）的 `defaults_rev` 落后于代码里该角色的 `rev`（升级到 0.1.286，或以后某个已有权限、角色加入了默认值、代码提升了 `rev`）时，`SyncCore` 按角色有没有持有者（`casbin_rule` 里有该角色的 g 行、且未软删除的用户，即角色的 `user_count`）处理：**无人持有**的整体重置为默认值，与恢复默认同一套写入：核心权限（含范围权限）、可分配清单与 `assign_custom` 按默认值写入，默认值以外的核心授予删除，角色上的插件权限不动，名称、描述不改，审计一条 `role.reset`（系统操作者，`detail.via = "sync"`、`defaults_rev`、`before`、`after`）；**有人持有**的只补缺不覆盖：把默认值里缺的权限（含范围默认值，已有同动作全量 key 时不补 own 范围）、可分配角色与 `assign_custom` 补上，不删除角色上已有的其他授予，每项写审计 `authz.sync.grant`（`detail.defaults_rev`）。两种都把 `defaults_rev` 置为 `rev`；之后重启不再处理，管理员之后的修改（含删掉的默认权限）不会被改回来。恢复默认同样把 `defaults_rev` 置为当前 `rev`。新用户默认分配 `user` 角色。插件权限的 key 为 `plugin.<插件key>:<插件内 key>`，模块为 `plugin.<插件key>`。插件权限的状态跟随插件：新登记的权限在插件运行中（`plugins.status` 为 `enabled`、`upgrading`）时为 `active`，否则为 `disabled`，每次激活（启用或升级提交）整体置为 `active`、禁用时整体置为 `disabled`；已有的行在同步时不改状态（2026-11-12 权限加固 W4-P8）。升级失败时，同意新版本时登记的新权限保留到激活另一个版本时再按其 manifest 清理（W4-P9）。新登记的权限授予哪些角色、移除与复活、风险等级见下文“插件权限”。
+
+插件权限（2026-11-15 0.1.290，设计 `docs/plugin-permissions/`；manifest 字段见 §5.8 与 §21.0“插件资源范围”）：
+
+- **目录字段**（迁移 `0099_plugin_permission_meta.sql`）：`permissions` 加 `risk`（`low`/`sensitive`/`critical`，约束 `permissions_risk_check`）、`requires`（软依赖，完整 key）、`group_key`/`group_label`/`group_sort`（插件 `permissionGroups[]`）、`scope`（插件范围声明，`resource` 为 `ResourceName()`，枚举为 `value`）、`defaults`（插件建议：角色 → 规范后缀，`""` 为全部行；只供展示和控制台“恢复插件建议”，本身不授予），`scope_type` 加宽到 `varchar(40)`（插件为 `plugin:<资源>`）。核心权限的 `risk` 由代码给出：👑 为 `critical`，🔐 为 `sensitive`，其余 `low`。0099 按旧的 `sensitive` 列回填 `risk`，0100 删除 `sensitive`（§99.2）。0099 随 0.1.290 与 0100、0101 一起发布，0.1.289 没有单独发布，回退只能从备份恢复（`deploy/rollback/0.1.290-release.md`）。
+- **风险等级**：插件 `userPermissions[].risk`（省略为 `low`，取代 `sensitive`）。`critical` 等同核心 👑：不能写 `defaults`；安装、升级同意时只有超管能把它授给角色（`CanGrantToRoles(…, risk)` 取本次授予里最高的风险，critical 对非超管 403 `permission_denied`，`details {reason: "critical", superuser: true, permissions: [本地 key]}`）；角色编辑（POST `/roles`、PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）：新增的 key 须在操作者之内，而 critical 初始只有超管持有，所以只有持有者能授出，与 👑 的委派相同（D3）；**新增** critical 插件 key 时另须二次验证 `plugin.grant`（与同意、复核确认相同，403 `verification_required`；在写入事务里消耗，被拒时什么都不写、`version` 不变，验证后重试即可；保留或撤销不需要；二审 C3）。
+- **移除（D6）**：插件新版本不再声明的 key 标 `status = 'removed'`（此前删除），授予保留但不生效（有效权限只算 `active`），`SetPluginActive` 不改 removed 行；重新声明时原样复活（状态跟随插件，授予原样回来，不套 `defaults`）。卸载插件、拒绝 consent 删掉插件行、作废 staged key 时，权限连同它的授予一起删除（`casbin_rule` 没有外键，由删除方显式清理，§99.1），以后同 key 再登记不会继承旧授予。角色写入（PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）列出角色已持有的 removed key 时保留、不列出即删除（编辑器可以取消勾选，§15.7），未持有的 removed key 忽略、从不写入；POST `/roles/:id/reset` 保留 removed 核心授予。待复核授予、`GrantPluginPermission` 跳过 removed。标记 removed 和复活各写一条系统审计 `authz.sync.remove` / `authz.sync.revive`（目标是插件，`detail {keys, holders: {key: [角色]}}`）。key 的范围声明改变时，新声明不再接受的范围授予删除（`authz.sync.revoke`，`detail {via: "scope_changed", key}`）；暂存升级（另一版本仍在运行）的同意不裁剪：新旧都声明的 key 的范围（`scope_type`、`scope`）与 `defaults` 沿用运行版本，风险取两者较高的（旧格式清单读不出风险，不因此降级），其余元数据取新版本；只有新版本声明的 key 建成 `status = 'staged'`（不生效，`SetPluginActive` 停用、启用都不碰它，所以停用再启用运行版本不会打开它），新版本重新声明的 removed key 不复活、范围授予也不裁剪（`PermissionDef.Staged`）；到激活时才按被激活版本的声明裁剪、标记 removed、复活与启用，它声明的 staged key 随插件状态启用、保留同意时的授予，不声明的 staged key 原样不动。staged key 不出现在任何编辑入口：GET `/permissions`、GET `/permissions/plugins/:plugin`（`module` 与各角色的 `permission_keys`）、角色对象的 `permission_keys` 都不列出，授予视图（`RolesPermissions`：covers、`editDenial`、`PluginGrantees`）不计；角色写入（POST `/roles`、PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）列出它 400 `permission_keys` `unknown`，也不删除它已有的授予（那是其版本同意时结算的）；只有安装审查 `review` 照常把它显示为新 key（二审 logic #4、N3；此前同意时就复活、新 key 直接 active，升级放弃后一直如此）。卸载仍删除权限与授予（D5）。
+- **新建权限的角色授予**：新登记的插件权限按同意时结算的计划授予（`install.planRoleGrants`，每条 `authz.sync.grant`，`detail.via = default`）：manifest `userPermissions[].defaults`（`{内置角色: true | [范围]}`，角色限 `manifest.BuiltinRoleKeys` 即 `admin`、`operator`、`supplier`、`user`；**省略即不授予任何角色**，此前 `defaultRoles` 省略时为 `admin`；超管角色本来拥有全部权限，不写入），同意请求的 `new_permission_roles` 覆盖（§5.7），以及 `inheritFrom` 所列旧 key 此刻的持有者（改名、拆分不丢授权；带范围的授予只在新旧 key 的 `scope_type` 相同、且新声明接受这个范围（own 仍允许、值仍在 values 里）时保留，critical 只从 critical 继承，跳过的来源记在审计 `inherit_skipped`，`reason` 为 `scope_type`、`scope` 或 `risk`）。目录里已有某个 `inheritFrom` 旧 key（含 removed）时视为改名或拆分，只继承、不套 `defaults`。同意请求的 `new_permission_roles` 列出某个本地 key 时对继承同样生效（二审 C2）：同意者能指定的角色以覆盖为准（缺省或 `[]` 即不授予，继承来的也不授予），不能指定的角色上的继承照常挂起；清单检查要求 `inheritFrom` 只指向本清单已不再声明的 key（否则 `invalid_value`，仍声明的 key 的持有者会无声地多拿到新权限），旧 key 的风险在同意时按目录判。继承在同意时一次算好，`SyncPlugin` 自己不再继承；激活时才新建的权限（同意之后才出现的）不授予任何角色。暂存升级在同意之后、激活之前旧 key 新增的持有者，激活时不自动授予（没有人同意过），记入系统审计 `plugin.role_grants.carry`（`detail {version, pending: [RoleGrant]}`，同意计划过的、同意覆盖了的本地 key 与角色已持有的除外），进 `role_grants_to_review` 待复核（二审 logic #5，此前激活后静默失权）。只有本次激活才停用的旧 key（激活前不是 removed）才补录：此前某次激活已经停用的旧 key 不再补录，所以后续版本保留 `inheritFrom` 也不会把有意撤销、拒绝过的继承授予重新提出来（二审 N1）。“同意计划过的”读该版本最新 `plugin.consent` 审计的 `role_grants`（同意计划的全部授予，含挂起的），每种同意（操作者、上传沿用、系统）都写（二审 N2；此前沿用与系统同意只写在 `plugin.consent.auto` 里，读回为空）。
+- **暂存键的作废**（二审 N3）：每次同意（`decideAndApply`，暂存与否）先作废该插件现有的 staged key 及其授予（`PermissionCatalog.DiscardStaged`，系统审计 `authz.sync.discard`，`detail {keys, holders}`）：它们属于此前同意、从未激活的版本，被这次同意取代；这次同意把它们当新 key，按自己的 `defaults`、覆盖与继承重新结算，`review` 也显示为 `new`（读取时 staged key 不算目录已有）。被取代的那个版本以后若仍被激活，这些 key 按新建处理、没有角色授予。
+- **停用插件的授予**（二审 logic #3 取舍，保持现状）：插件停用期间它的权限不进生效集（`/me`、请求鉴权只算 `active`），授予视图照常计入（`RolesPermissions`：角色写入口的 covers、`editDenial`、`PluginGrantees`），所以持有者停用期间仍能在矩阵、角色页授出和修改这些权限，与启用时相同；控制台对停用插件的权限按“授予也算持有”处理，不锁成未持有。
+- **能否指定角色（D2）**：同意者能指定某个角色 = 有 `role:define`，角色可修改（`editableRole`）、在其可分配清单内、非超管时不是自己持有的角色、不是超管角色，critical 还须是超管（`PermissionCatalog.PluginGrantees`，拒绝理由 `role_define`、`critical`、`superuser_role`、`not_editable`、`not_assignable`、`held`）。操作者同意时，默认与继承授予给了不能指定的角色就不授予，挂起待复核（`withheld`，进插件的 `role_grants_to_review`，由有资格的人经 `role-grants/confirm` 写入，§5.7），首装与升级相同（此前升级时 403）；`new_permission_roles` 显式指定的角色不能指定时仍 403（`details.role`；critical 为 `details.reason = critical`），未知角色 400（`new_permission_roles.<本地 key>`，`code: unknown`，目录已有的权限也检查）。系统同意（内置插件）全部可指定，需同意的授予挂起（§5.7）。新权限本身不要求操作者持有，但不能指定自己持有的角色，所以无法借此给自己加权限。只有本次真正新建的权限才检查，升级不新增权限时带了覆盖也不需要 `role:define`（T59）。
+- **内置插件的版本**（0.1.290）：声明了用户权限的 9 个插件改用 `risk`/`defaults`，`hostCompat >=0.1.290`：anthropic 0.3.3、claude-oauth 0.2.4、codex 0.1.5、dynweight 0.5.10、growth 0.2.1、guard 0.2.10、moderation 0.12.1、payment 0.1.2、volcengine 0.12.8；除 codex、claude-oauth 外同时改用 GORM（§2“插件数据库”），功能不变。线上 0.1.288 跑的是 0.1.286 打的包（`hostCompat >=0.1.286`），新版本不能单独装到 0.1.288 上，随核心 0.1.290 一起发布。其余内置插件 mailer 0.1.3、openai 0.4.1、gemini 0.3.1、custom 0.1.1 同样改为 `hostCompat >=0.1.290`、用 SDK 0.2.0 重新编译（§101）。同一版本号、内容不同的包，内置同步只记 WARN 并保留旧包，所以清单一变就必须升版本号。
 
 ## 5. REST API（`/api/v1`）
 
@@ -120,9 +132,8 @@
 
 | 方法 路径 | 权限 | 说明 |
 |---|---|---|
-| POST `/auth/login` | - | `{email, password}` → `{access_token, refresh_token, expires_in, user}`；`user` 是 `/users` 列表项的形状（§15.2），但不带 `balance` 和 `segment`（用户组，§97.6） |
-| POST `/auth/refresh` | - | `{refresh_token}` → 同上（轮换 refresh token） |
-| POST `/auth/logout` | auth | 请求体 `{refresh_token?}` 可选；结束该 refresh token 所在的会话（整个家族），不带时结束全部会话；立即生效（§43.2） |
+| POST `/auth/login` | - | `{email, password}` → `{access_token, expires_in, user}`（`access_token` 是会话令牌，`expires_in` 是空闲超时的秒数，§100）；`user` 是 `/users` 列表项的形状（§15.2），但不带 `balance` 和 `segment`（用户组，§97.6） |
+| POST `/auth/logout` | auth（只限会话） | 无请求体；结束调用者自己的会话，立即生效（§100.4） |
 | GET `/me` | auth | `{id, email, display_name, roles:[key], permissions:[key], superuser, authz_version}`。`authz_version` 是读取 `permissions` 时的 authz 版本。控制台 API 每个通过认证的响应（含 403，含插件 admin/user 路由 `/api/v1/p/:key/*`）带响应头 `X-Authz-Version`：本节点已知的最新 authz 版本（`core.AuthzVersioner`，不查库；角色、授权、权限目录的变更，以及创建、删除用户和改用户状态都会推进它；登出、撤销会话、改密码走 `iam:user:changed`，不推进）。头是认证那一刻的版本，变更请求自身的响应不反映该变更。头的值大于手里 `/me` 的 `authz_version` 时权限可能已变，应重新取 `/me`；头可能短暂落后或领先于取 `/me` 的节点（广播未到、多节点），所以同一个头值至多触发一次重取：记 `seen = max(me.authz_version, 上次触发重取的头值)`，只在头大于 `seen` 时重取。401 与插件代理路由不带这个头 |
 | GET `/me/assignable-roles` | auth | 可分配角色：`[{key, name:{en,zh}, builtin, grantable, missing:[key], missing_assignable:[key], missing_assign_custom}]`，只含调用者可分配清单内的角色（超管为全部），不含 `super_admin`，内置在前；`grantable=false` 表示角色所含权限或可分配角色超出调用者，`missing*` 同 403 的 details（前端置灰提示）；不列默认角色 `user` 对无角色用户的豁免；访问密钥下为 `[]`（§80） |
 | GET `/me/menus` | auth | 侧边栏：`[{section, label:{en,zh}, items:[{id, label, icon, path, plugin_key?}]}]`；section 为 `overview/gateway/security/finance/users/plugins/system/me` 或插件自己的区 `<插件key>:<id>`（核心菜单按权限过滤，加上插件菜单；§22） |
@@ -145,10 +156,14 @@
 | GET `/segments/:id/groups`，PUT `/segments/:id/groups` `{items:[{group_id, granted?, rate_override?}]}` | `segment:read` / `segment:manage`；用户组在各分组的授权与专属倍率 |
 | POST `/users/:id/personal-segment` `{copy}`，DELETE `/users/:id/personal-segment`（`?to=`） | `segment:manage`；设为个人专属 / 移回命名用户组；目标用户须是操作者可管理的用户（可管理目标，§43.6） |
 | GET `/roles` / GET `/roles/:id` / POST `/roles` / PATCH `/roles/:id` / DELETE `/roles/:id` | `role:read` / `role:define`；POST 授予的 permission_keys 必须是操作者持有权限的子集，可分配清单必须在操作者可分配范围内 |
-| PUT `/roles/:id/permissions` `{permission_keys[]}` | `role:define`；新增的 permission_keys 必须是操作者持有权限的子集，角色当前的权限也不能超出操作者（§43.6） |
+| PUT `/roles/:id/permissions` `{permission_keys[], version?}` | `role:define`；新增的 permission_keys 必须是操作者持有权限的子集，角色当前的权限也不能超出操作者（§43.6）；新增 critical 插件 key 须二次验证 `plugin.grant`（§4）；`version` 见下文“并发写入” |
 | PUT `/roles/:id/assignable` `{role_keys[], assign_custom}` | `role:define`；新增的可分配角色必须在操作者可分配范围内，角色当前的清单也不能超出操作者（§43.6） |
 | POST `/roles/:id/reset` | `role:define`；内置角色（超管角色除外）恢复默认（§15.7）；能修改该角色的人才能重置，且须覆盖全部默认值 |
-| GET `/permissions` | `role:read`；按 module 分组：`[{module, label, source, plugin_key, status, permissions:[{key,label,description,sensitive,step_up,scope_type,requires?,status}]}]`（`step_up`：部分接口使用时需二次验证，展示用，§80.2；2026-11-13 取代 `session_only`。`description`：核心权限的中英说明（目录 `desc`，启动同步写入 `permissions.description`），插件权限为 `{}`。`scope_type`：范围的资源（`account`/`proxy`，§21），无范围为 `""`。`requires`：软依赖，没有它们这个权限基本用不上（例如 `account:update` 依赖同范围的 `account:read`），只给编辑器提示，不参与授权；没有时省略，只有核心权限有；期 4 T67）；不含 `self` 虚拟模块 |
+| GET `/permissions` | `role:read`；按 module 分组：`[{module, label, source, plugin_key, status, groups?, permissions:[{key,label,description,risk,step_up,scope_type,scope?,group?,requires?,defaults?,status}]}]`（`risk`：`low`/`sensitive`/`critical`，0.1.290起取代 `sensitive`，§4“插件权限”。`step_up`：部分接口使用时需二次验证，展示用，§80.2；2026-11-13 取代 `session_only`。`description`：核心权限的中英说明（目录 `desc`，启动同步写入 `permissions.description`），插件权限为 `{}`。`scope_type`：范围的资源（`account`/`proxy`，§21；插件为 `plugin:<资源>`，§21.0），无范围为 `""`。`scope`：插件范围声明 `{resource, own?, options?, values?:[{key,label}]}`，只有带范围的插件权限有。`requires`：软依赖，没有它们这个权限基本用不上（例如 `account:update` 依赖同范围的 `account:read`），只给编辑器提示，不参与授权；没有时省略，核心（期 4 T67）与插件（manifest `requires`）都有。`group`、模块的 `groups:[{key,label,sort}]`：插件权限分组。`defaults`：插件建议，内置角色 → 完整规范 key（可直接与角色的 `permission_keys` 比较）。`status` 含 `removed`，§4）；不含 `self` 虚拟模块 |
+| GET `/permissions/plugins/:plugin` | `role:read`；一个插件的角色矩阵 `{plugin_key, module, roles:[{id,key,name,builtin,superuser,editable,denied?,revision,permission_keys}]}`：`module` 同 GET `/permissions` 的该插件模块，`roles` 为全部角色，`permission_keys` 是角色在该插件上的授予（含 removed），`editable`/`denied` 为调用者能否修改该角色（`editDenial`：`superuser_role`、`not_editable`、`not_assignable`）；`roles` 在同一快照读出，`revision` 是该角色的修订号（§5.2“并发写入”）；插件在目录里没有权限 404（0.1.290） |
+| PUT `/permissions/plugins/:plugin` `{roles:{<角色 key>:[完整 key]}, revisions?:{<角色 key>:修订号}}` | `role:define`；只替换列出的角色在该插件上的授予，其他角色、角色的其他授予不动；每个角色按 PUT `/roles/:id/permissions` 的规则（角色写入口、新增 key 须在操作者之内、新增 critical 须二次验证、removed 语义见 §4），按角色 key 顺序、全部成功或全部不写；其他插件或核心的 key 400 `roles.<角色>` `foreign`，未知角色 400 `unknown`，拒绝的 403 带 `details.role`；返回同 GET；审计 `role.permissions`（`detail.plugin`、`via: "plugin_matrix"`、该插件上的 `before`/`after`）（0.1.290） |
+
+**并发写入**（0.1.290，二审 C1；三审 C2 把开发中按全局授权版本比较的做法改为按角色的修订号）：角色对象（GET `/roles` 各项、GET `/roles/:id`，以及 POST/PATCH/PUT 与 reset 的返回）与 GET `/permissions/plugins/:plugin` 的每个角色带 `revision`，即该角色的修订号 `roles.revision`：角色的任何改动都加一（名称描述、授予、可分配清单、重置、插件目录同步与范围授予清理对它授予的增删；核心同步 `SyncCore` 给它补默认可分配角色、打开 `assign_custom`、重置无人持有的内置角色、修正超管标志；删除角色时清单里列了它的角色），别的角色或用户的写入不动它（`TestRoleRevisionFollowsSyncAndDelete`）。PATCH `/roles/:id`、PUT `/roles/:id/permissions`、PUT `/roles/:id/assignable`、POST `/roles/:id/reset`（可选请求体 `{revision}`）的请求体可带读到的 `revision`，PUT `/permissions/plugins/:plugin` 可带 `revisions`（角色 key → 修订号，只检查列出的角色）：与当前不一致时 409 `version_conflict`，`details.revision` 为当前修订号，什么都不写；不带不检查。检查与加一在锁住角色行之后进行，所以同一角色的并发保存只有一个成功（`TestRoleWritesRevisionConcurrent`）。写入的返回（角色对象、插件矩阵）在写入事务里、写完之后读出，`revision` 就是这次写入的结果，不会含提交之后别人的改动（二审 A5）。控制台分段保存时把每段返回的 `revision` 带进下一段；收到 409 后重读，逐部分处理（权限、名称、描述、可分配清单）：本地没改的部分取最新值；本地改了、别人也改了的部分把本地改动合并到最新数据上（权限按格子，可分配清单按角色，名称描述保留本地的），提示再保存并列出双方都改了的项；本地改了的部分别人都没动（409 来自别的部分，或本次保存前面几段已经写入）才自动用新修订号重发（二审 A2）。
 
 原来的 GET / PUT `/users/:id/groups`（给单个用户分配分组）已删除：私有分组改为授权给用户组，每个用户只属于一个用户组（§97）。
 
@@ -173,7 +188,7 @@
 | GET `/account-types` | `account:read` | `[{plugin_key, plugin_name, plugin_version, asset_base, platform, type, label, description, form:{mode, page?, component?}, sensitive_fields, guarded_settings:[{field, allowed[]}], custom_upstream}]`（`guarded_settings` 来自 manifest `guardedSettings`，§21.3；未声明时为 `[]`；`custom_upstream` 见 §21.3） |
 | GET `/account-types/:platform/:type/form` | `account:read` | `{schema, ui_schema}` |
 | GET `/accounts`（`?plugin_key=&type=&group_id=&status=&q=&model=&created_by=&mine=&orphaned=`） | `account:read` | 列表含 `in_use`（实时并发）、`cooldown_until`、`orphaned`、`rate_usage`（§18）、`created_by`、`created_by_email`（§21）。**默认不列出孤立账号**（所属插件已禁用/卸载，数据仍在）；`orphaned=true` 只列孤立的，`orphaned=all` 都列；详情 `GET /accounts/:id` 不受影响 |
-| GET `/accounts/summary` | `account:read` 的任意范围 | 调用者 `account:read` 范围内未删除账号的状态计数 `{total, available, auto_disabled, disabled}`，口径同 `GET /usage/overview` 的 `accounts`（`available` = active 且可调度；`auto_disabled` 含旧 `error` 与 active 但不可调度；不区分孤立账号）；供应商仪表盘账号状态卡片（T81，2026-11-13 权限加固期 4 P4F5） |
+| GET `/accounts/summary` | `account:read` 的任意范围 | 调用者 `account:read` 范围内未删除账号的状态计数 `{total, available, auto_disabled, disabled}`，口径同 `GET /usage/overview` 的 `accounts`（`available` = active 且可调度；`auto_disabled` 含 active 但不可调度；不区分孤立账号）；供应商仪表盘账号状态卡片（T81，2026-11-13 权限加固期 4 P4F5） |
 | POST `/accounts` | `account:create` | `{name, plugin_key, type, group_ids[], proxy_id \| proxy_url, priority, weight, max_concurrency, schedulable, auto_disable, models[], model_mapping{}, rpm_limit, tpm_limit, credentials:{...}}`（§18、§21.4、§42.3）；响应另带 `proxy_created` |
 | GET/PATCH `/accounts/:id` | `account:read` / `account:update` | 凭证中的敏感字段返回 `"******"`；PATCH 时敏感字段传 `"******"` 表示不修改 |
 | DELETE `/accounts/:id` | `account:delete` | |
@@ -224,7 +239,7 @@
 | POST `/plugins/upload`（multipart `file`） | `plugin:install` | → 安装审查信息 `review`（见下） |
 | POST `/plugins/install-from-market` `{source_id, key, version}` | `plugin:install` | → `review` |
 | GET `/plugins/:key/versions/:version/review` | `plugin:read` | 重新获取待确认版本的 `review`；版本不存在 404 `not_found`；版本记录在、但没有节点还持有它的安装包（例如升级失败后包被清理）410 `package_gone`（此前 500 `internal`），重新上传或从市场安装该版本即可（2026-11-14 0.1.286 候选）。之前读过、在进程内缓存了解包结果的版本也一样：每次先确认包存储里还有这个包（`blobs.Store.Has`：本地目录看文件，托管部署向外壳要第 1 个字节），没有就丢掉该版本的缓存、按未缓存重新取包（市场版本可再从市场下载），取不到即 410，不必等核心重启（此前一直返回缓存的 200，2026-11-14 0.1.287 候选） |
-| POST `/plugins/:key/versions/:version/consent` `{grants:[{permission, scope?}], denied:[permission], new_permission_roles?:{<本地 key>:[role]}, role_keys_for_new_permissions:[]}`（新权限的角色，省略按 manifest `defaultRoles`，§4） | `plugin:install` + 按风险 `plugin:grant:high`/`plugin:grant:critical`（升级时沿用的已授予宿主权限不要）；升级时 `new_role_grants` 里需要同意的授予（`needs_consent`），另需与 `role-grants/confirm` 相同的资格（`role:define` + `CanGrantToRoles` 覆盖这些授予的每个角色，2026-11-13 权限加固期 4 收尾） | 确认授权。版本的安装包已不在（判断与 review 相同）时 410 `package_gone`，不批准一个取不到的包，且先于版本状态检查（已批准、已拒绝的版本包不在时也是 410 而不是 409，2026-11-14 0.1.287 候选；此前同意只读数据库里的 manifest，包不在也能批准） |
+| POST `/plugins/:key/versions/:version/consent` `{grants:[{permission, scope?}], denied:[permission], new_permission_roles?:{<本地 key>:{<角色 key>: true \| [范围]}}}`（新权限的角色覆盖，0.1.290起取代旧的数组写法（现在 400 `invalid_argument`）与 `role_keys_for_new_permissions`（不再读取）：`true` 为全部行，`false`/`[]` 为不授予；范围接受清单写法 `*`、`own`、枚举 key，也接受规范后缀 `value/<k>`、`<资源>/<id>`；出现的本地 key 对同意者能指定的角色整体替换默认值（未列出的这些角色不授予，`{}` 一个也不授予），不能指定的角色上的默认值照常挂起；没出现的 key 按 manifest `defaults` 与 `inheritFrom`；出现的 key 对能指定的角色同样替换继承（0.1.290二审 C2，此前继承一律照常）；只对本次新建的权限生效。未声明的本地 key 400 `new_permission_roles.<本地 key>` `unknown`，权限不接受的范围 400 `new_permission_roles.<本地 key>.<角色>` `invalid`；§4“插件权限”） | `plugin:install` + 按风险 `plugin:grant:high`/`plugin:grant:critical`（升级时沿用的已授予宿主权限不要）；升级时 `new_role_grants` 里需要同意的授予（`needs_consent`），另需与 `role-grants/confirm` 相同的资格（`role:define` + `CanGrantToRoles` 覆盖这些授予的每个角色，2026-11-13 权限加固期 4 收尾） | 确认授权。版本的安装包已不在（判断与 review 相同）时 410 `package_gone`，不批准一个取不到的包，且先于版本状态检查（已批准、已拒绝的版本包不在时也是 410 而不是 409，2026-11-14 0.1.287 候选；此前同意只读数据库里的 manifest，包不在也能批准） |
 | POST `/plugins/:key/versions/:version/reject` | `plugin:install` | |
 | POST `/plugins/:key/versions/:version/role-grants/confirm`、`/role-grants/reject` | `plugin:install`，另需与同意页显式指定角色相同的资格（`role:define` + `CanGrantToRoles`）；confirm 每次二次验证 `plugin.grant`（与同意页相同，期 4 整合审查），reject 不需要 | 确认（写入）或全部拒绝内置插件自动升级暂缓的角色授予 → `{grants:[RoleGrant], confirmed}`；该版本没有待确认项 404；拒绝的每个 (permission, role) 也清除此前其他版本暂缓的同一授予（2026-11-13 权限加固期 4 P4C、P4CFIX） |
 | POST `/plugins/:key/enable`、`/disable` | `plugin:manage` | 发起发布 → `rollout` |
@@ -233,6 +248,8 @@
 | DELETE `/plugins/:key?purge=true` | `plugin:uninstall` | |
 | GET/PUT `/plugins/:key/settings` | `self:plugin_ui`（§80.1），处理函数里再要 `plugin:read` / `plugin:manage` 或插件的设置权限（§75.1） | |
 | GET `/plugins/:key/grants`，DELETE `/plugins/:key/grants/:permission` | `plugin:read` / `plugin:manage` | |
+| PUT `/plugins/:key/grants/:permission` `{scope?}` | `plugin:manage`，每次二次验证 `plugin.grant`（与同意相同）；重新授予另须 `plugin:install`（与同意相同，二审 security #2；否则 403 `details.permission`），并按同意的检查（`checkGrantRights`：按风险 `plugin:grant:high`/`plugin:grant:critical`，db.schema 可能还要 `plugin:grant:db_schema_unconfined`） | 设置激活版本对一个宿主权限的授予，返回该授予（`Grant`）（0.1.290，A7）。`scope` 省略为清单申请的范围（请求体总是读取，不看 `Content-Length`，分块传输的收窄请求不会被当成省略）；比申请的宽 400 `invalid_argument` `details.fields[{field:"scope", code:"scope_too_wide"}]`；当前版本清单不申请该权限 404；插件还在 `awaiting_consent` 409。当前已授予且新范围在现有范围之内是**收窄**：只要 `plugin:manage`，各版本待生效授予里更宽的同一权限一并收窄，审计 `plugin.grant.narrow`；其余（已撤销、被拒、放宽）是**重新授予**：各版本待生效授予里该权限的撤销在其版本申请的范围不窄于它时解除，审计 `plugin.grant.regrant`。审计 `detail {permission, version, scope, previous?: {status, scope}}`。控制台只对数组型范围提供收窄 |
+| GET `/plugins/:key/scope-options?permission=<本地 key>&q=&ids=&limit=` | `role:read` 或 `plugin:read`（A1） | 带范围的插件权限的候选（角色编辑器、矩阵选范围用，0.1.290）：形状同 GET `/lookup`（§96，参数与上限相同）但 id 为字符串，`{items:[{id, name, hint?, status?}], more}`；只列调用者自己在该权限上能达到的（全部、列出的值；own 时由插件按自己的 `created_by` 过滤）。枚举（`scope.values`）由核心按当前版本清单回答，插件没运行也可用，`name` 为当前语言的 label；资源（`scope.options`）转发给运行中插件的 options 路由（§21.0），插件没运行、路由不存在、回非 200 或格式不对 503 `plugin_unavailable`，核心再过滤一遍（id 须是合法范围值且在调用者范围内、`name` 非空，文本截断）。权限未声明 404，不带范围 400 |
 | PUT `/plugins/:key/resources` `{memory_mb, cpu, max_threads, max_open_files}` | `plugin:manage` | |
 | PUT `/plugins/:key/egress-policy` `{policy}` | `plugin:manage` | |
 | GET `/plugins/:key/egress`（`?from=&to=`） | `plugin:egress:read` | 按域名汇总 + 明细 |
@@ -250,20 +267,23 @@
 - 市场源 `url` 可以指向 `index.json`，也可以是以 `/` 结尾的目录（自动补 `index.json`）
 - 插件详情中的钩子统计来自 `core.HookStatsSource`（G），手动执行任务通过 `core.JobTrigger`（H）
 - 发布行为（C2）：Disable 立即提交，返回时状态已是 `disabled`；Enable 优先启用 `active_version`，否则取最新的已批准版本；`plugins` 行删除后，各节点在一次对账内停止实例
-- **内置插件**（`plugins.builtin=true`，本期为 anthropic）：随镜像提供（`SUB2API_BUILTIN_PLUGIN_DIR`，默认 `/opt/sub2api/builtin`），核心启动时在一个节点上（锁 `plugins:builtin`）自动上传、授予全部宿主权限（新插件权限授予 `admin` 角色）、首次安装后启用（**只安装**类的除外，见 §26.8），镜像带新版本时自动升级；管理员禁用后保持禁用。签名密钥由入口脚本通过 `SUB2API_BUILTIN_TRUST_KEY` 始终信任。`DELETE /plugins/:key` 对内置插件返回 403，`details.reason = "builtin"`；列表与详情返回 `builtin` 字段
+- **内置插件**（`plugins.builtin=true`，本期为 anthropic）：随镜像提供（`SUB2API_BUILTIN_PLUGIN_DIR`，默认 `/opt/sub2api/builtin`），核心启动时在一个节点上（锁 `plugins:builtin`）自动上传、授予全部宿主权限（新插件权限按 manifest `defaults` 授予角色，§4）、首次安装后启用（**只安装**类的除外，见 §26.8），镜像带新版本时自动升级；管理员禁用后保持禁用。签名密钥由入口脚本通过 `SUB2API_BUILTIN_TRUST_KEY` 始终信任。`DELETE /plugins/:key` 对内置插件返回 403，`details.reason = "builtin"`；列表与详情返回 `builtin` 字段
 - 升级同意时，当前授予已覆盖本次范围的宿主权限沿用原授权（`decide` 标 `carried`，审计 `plugin.consent` 的 `decisions[].carried`），请求里列不列都一样，不需要按风险的 `plugin:grant:high`/`plugin:grant:critical`；只有新增、扩大的才按新授予检查。`review.host_permissions[]` 在升级时带 `current_status`、`current_scope`；同意页把这类权限标为“已授予，沿用”，不当作新授予提交（可选的取消勾选即拒绝），缺少 `plugin:grant:critical` 的非超管 admin 不再被已有的 `ui.native` 等授予挡住（2026-11-13 发布前）。
 - **待生效授予**（2026-11-14 0.1.286 候选，迁移 `0098_plugin_staged_grants.sql`）：`plugin_permission_grants` 是激活版本的授予。插件有激活版本（`active_version` 非空，运行中或已禁用）或正在启用某个版本（从未启用过、`enable` 发布准备中，`desired_version`）时，对另一个版本的同意不写这张表，整套决定（该版本申请的每个宿主权限，授予或拒绝）写进 `plugin_staged_grants(plugin_key, version, permission, scope, status, manifest_hash, granted_by, granted_at)`；两者都没有（首次安装、从未启用且没有在启用）时照旧直接写 `plugin_permission_grants`。`DELETE /plugins/:key/grants/:permission` 先锁插件行再改授予行，与同意、发布提交同一顺序。一个版本的实例运行时拿到的授予（`grants.Granted`；HostService 每次调用的复核 `grants.Holds` 同一来源）= 该版本有待生效授予时用它，否则用 `plugin_permission_grants`，再只留该版本 manifest 声明了的宿主权限：旧版本在新版本同意后重启，拿不到新版本才申请的权限，也不受新版本对范围、可选权限的改动影响；此前已写进授予表的别的版本的权限同样被挡掉（声明过滤）。发布提交（`activating`）时把目标版本的待生效授予移入 `plugin_permission_grants`（`grants.Promote`，随后照旧 `ApplyDefaults` 删掉新版本不再申请的）；升级失败或取消（`plugin_rollouts.phase` 为 `failed`/`cancelled`）时删掉目标版本的待生效授予、把该版本退回 `awaiting_consent`（要再升级须重新同意），系统写 `plugin.grants.withdraw` 审计（`detail`：`version`、`reason`（`failed`/`cancelled`）、`permissions`（撤回的已授予权限））；版本没有待生效授予（例如不申请宿主权限）时不撤回、仍是 `approved`。发布前 db.schema 检查、托管就绪检查都按目标/本地版本取授予。`DELETE /plugins/:key/grants/:permission` 同时撤销各版本待生效授予里的同一权限（紧急撤销不会随下次激活回来）。同意的返回 `grants` 是该版本的授予（待生效时即待生效的那套）。“沿用”（`carried`、上传即沿用）始终相对激活版本的授予判断：另一个未激活版本的同意不算已授予。
 - **撤销过的宿主权限不自动恢复**（2026-11-14 0.1.287 候选，无迁移）：`DELETE /plugins/:key/grants/:permission` 撤销的权限，此后的同意（`decide`）不再按“低风险默认授予”给回，也不算沿用；只有同意请求的 `grants` 里显式列出才恢复（低风险不要授予权限，高风险、极高风险照旧按风险要 `plugin:grant:high`/`plugin:grant:critical`）。必需的未列出 400 `consent_required`（`permission %q was revoked and must be granted explicitly`），列在 `denied` 400 `required`（不变）；可选的未列出或列在 `denied` 时记为 `revoked`（不是 `denied`），撤销一直保持到有人显式授予。“撤销过”由 `grants.Revoked` 判断：插件授予表与各版本待生效授予里，该权限最新（`granted_at` 最大，相同时撤销优先）的一行是 `revoked`；所以一次显式授予（写在待生效授予里也算）之后，旧的待生效集合里残留的 `revoked` 不再生效。为让撤销跨版本保留：激活一个不再申请该权限的版本时 `ApplyDefaults` 不删 `revoked` 行（其他照旧删除）；升级失败或取消撤回待生效授予（`grants.Withdraw`）时，集合里 `revoked` 的行在插件授予表没有该权限的行时移入插件授予表。因此插件详情与 `GET /plugins/:key/grants` 可能列出当前版本不再申请、状态为 `revoked` 的权限（不授予任何实例：实例只拿 manifest 声明的、`granted` 的权限）。申请了撤销过的权限的升级包不会上传即沿用（diff 里它算新增），`review.host_permissions[].revoked` 为 `true`（上传返回的 review 与 GET review 都带）；同意页把这类低风险权限从“自动”改为默认不勾选、标“已撤销，勾选才重新授予”，必需的必须勾选才能提交。审计不变：`plugin.consent` 的 `decisions[]` 如实记录 `granted`/`revoked` 与 `carried`。内置插件随镜像升级时系统同意照旧显式授予全部宿主权限（见上面“内置插件”），不受此限。
-- 升级包的宿主权限没有新增或扩大时，上传即沿用原授权（版本直接为 `approved`）；否则进入 `awaiting_consent`，旧版本继续运行。另一个例外（2026-11-13 权限加固期 4 P4C）：新版本新建的插件权限经 `defaultRoles` 或 `inheritFrom` 授予角色时，只要其中有 `sensitive` 权限，或授予对象不是内置 `admin`、`operator`、`supplier`（如 `user`、自定义角色），就不沿用，留在 `awaiting_consent` 由有资格的人在同意页确认（同意者须能修改这些需同意授予的每个目标角色：`role:define` + `CanGrantToRoles`，内置角色须在操作者的可分配清单内且在操作者之内（2026-11-13 前只有超管能改），与确认内置插件暂缓授予同一规则；否则 403，版本仍为 `awaiting_consent`；控制台只对能指定全部这些角色的人允许提交，期 4 收尾）；否则沿用并写 `plugin.consent.auto` 审计（`detail`：`version`、`granted`、`pending: []`、`review_required: false`；每条授予照常有 `authz.sync.grant`）。`review` 增加 `new_role_grants: [RoleGrant]`（不覆盖角色时这次同意会做的授予）与 `role_grants_need_consent`；另有 `needs_db_schema_unconfined`（同意会授予 db.schema 且需要 `plugin:grant:db_schema_unconfined`：未启用角色隔离、不是官方发布者，与同意时的检查同一函数）和 `user_permissions[].new`（目录里还没有、这次同意才登记的权限；`new_permission_roles` 只对它们生效）（期 4 T82）。`RoleGrant` = `{version?, permission（完整 key）, role, sensitive, via: default|inherit, needs_consent}`
-- 内置插件自动升级（系统同意，节点就绪与托管升级提交需要版本 `approved`）同样判断，但需要同意的授予不写入，记在 `plugin.consent.auto` 审计的 `pending` 里（`review_required: true`），其余照常写入；插件列表与详情的 `role_grants_to_review: [RoleGrant]` 列出各版本仍待确认的授予（权限与角色仍存在、角色尚未持有，且该版本之后没有 `plugin.role_grants.confirm`/`plugin.role_grants.reject` 审计），由上面的 confirm/reject 处理（两者要求相同资格；只计插件本次安装之后的审计）；自动同意时新建权限一律按计划按名字授予、不走 `inheritFrom`，激活时才新建的权限不授予任何角色（也不继承）；confirm 经权限目录 `GrantPluginPermission` 写入，`authz.sync.grant` 的 `via` 为 `review`
+- 升级包的宿主权限没有新增或扩大时，上传即沿用原授权（版本直接为 `approved`）；否则进入 `awaiting_consent`，旧版本继续运行。另一个例外（2026-11-13 权限加固期 4 P4C）：新版本新建的插件权限经 `defaults` 或 `inheritFrom` 授予角色时，只要其中有风险不是 `low` 的权限，或授予对象不是内置 `admin`、`operator`、`supplier`（如 `user`、自定义角色），就不沿用，留在 `awaiting_consent` 由人在同意页确认；同意者不能指定的角色（§4“能否指定角色”）上的这些授予挂起待复核（D2，0.1.290起，此前 403），其余照常写入；沿用时上传者不能指定的角色上的授予同样挂起；否则沿用并写 `plugin.consent.auto` 审计（`detail`：`version`、`granted`、`pending: []`、`review_required: false`；每条授予照常有 `authz.sync.grant`）。`review` 增加 `new_role_grants: [RoleGrant]`（不覆盖角色时这次同意会做的授予，按查看者标 `nameable`、`withheld`）与 `role_grants_need_consent`；另有 `needs_db_schema_unconfined`（同意会授予 db.schema 且需要 `plugin:grant:db_schema_unconfined`：未启用角色隔离、不是官方发布者，与同意时的检查同一函数）和 `user_permissions[].new`（目录里还没有、这次同意才登记的权限；`new_permission_roles` 只对它们生效）（期 4 T82）。`RoleGrant` = `{version?, permission（完整 key）, role, scope（规范后缀，`""` 为全部行）, risk, via: default|override|inherit, needs_consent, nameable（同意者能指定该角色）, withheld（挂起待复核）}`（0.1.290起，去掉 `sensitive`）。同意返回 `ConsentResult` 另含 `withheld: [RoleGrant]`（本次挂起的授予）。操作者同意的 `plugin.consent` 审计另记 `role_grants`（计划）、`pending`（挂起）、`inherit_skipped`；系统与沿用的同意写 `plugin.consent.auto`（`granted`、`pending`、`review_required`、`inherit_skipped`）
+- 内置插件自动升级（系统同意，节点就绪与托管升级提交需要版本 `approved`）同样判断，但需要同意的授予不写入，记在 `plugin.consent.auto` 审计的 `pending` 里（`review_required: true`），其余照常写入；插件列表与详情的 `role_grants_to_review: [RoleGrant]` 列出各版本仍待确认的授予（读 `plugin.consent.auto`、`plugin.consent` 与 `plugin.role_grants.carry`（§4 改名继承）的 `pending`，按 (permission, role, scope) 去重，`risk` 取目录；权限仍是本插件的、存在且不是 removed、当前声明仍接受该范围、角色仍存在且尚未持有该范围，且该版本之后没有 `plugin.role_grants.confirm`/`plugin.role_grants.reject` 审计），由上面的 confirm/reject 处理（两者要求相同资格；只计插件本次安装之后的审计）；继承与默认值一样在同意时按计划算好（§4），激活时才新建的权限不授予任何角色（也不继承）；confirm 经权限目录 `GrantPluginPermission` 写入（带范围，critical 只有超管能确认），`authz.sync.grant` 的 `via` 为 `review`
 - 插件设置：GET `/plugins/:key/settings` → `{mode, schema, ui_schema, values, page, component, secret_fields}`（`schema` 在非 schema 模式为 `null`）；PUT 请求体 `{values:{...}}`，整体替换（§15.8）
 - `/ui/plugins` 每项另含 `name`、`host_ui_compat`
 
-`review` 结构：`{plugin_key, version, name, publisher, trust, signature_status, host_compat_ok, capabilities[], gateway_endpoints:[{id, platform, method, path, protocol, billing}], platforms:[{id, label, endpoints:[{method, path, protocol, billing}], sticky_rules}], account_types:[{id, label, platforms, form_mode}], hooks[], jobs[], events[], routes[], menus[], user_permissions[], database:{schema, migrations[]}, resources, external_services[], host_permissions:[{id, risk, scope, reason, optional, requires:"plugin:grant:high|critical", current_status?, current_scope?, revoked}], diff?:{added[], widened[], removed[]}}`；`diff` 的每项为 `{id, risk, scope?, previous_scope?}`（`previous_scope` 只在 widened、removed）。
+`review` 结构：`{plugin_key, version, name, publisher, trust, signature_status, host_compat_ok, capabilities[], gateway_endpoints:[{id, platform, method, path, protocol, billing}], platforms:[{id, label, endpoints:[{method, path, protocol, billing}], sticky_rules}], account_types:[{id, label, platforms, form_mode}], hooks[], jobs[], events[], routes[], menus[], user_permissions[], permission_groups[], role_columns[], removed_user_permissions[], database:{schema, migrations[]}, resources, external_services[], host_permissions:[{id, risk, scope, reason, optional, requires:"plugin:grant:high|critical", current_status?, current_scope?, revoked}], diff?:{added[], widened[], removed[]}}`；`diff` 的每项为 `{id, risk, scope?, previous_scope?}`（`previous_scope` 只在 widened、removed）。
+
+`review` 的权限矩阵（0.1.290）：`review` **按查看者计算**（GET review、上传返回、插件详情的 `manifest` 都是），同一 URL 不同的人看到的 `role_columns`、`cells`、`new_role_grants` 不同。`user_permissions[]` = `{key（本地）, label, description?, risk, group?, requires?（本地 key）, scope?（同 GET `/permissions`）, defaults（角色 → 规范后缀）, inherit_from?, new, revived（removed 后重新声明，授予原样回来）, renamed（继承目录里已有的旧 key，不套 defaults）, cells:{<角色>: {grant（不覆盖时会授予的规范后缀，`[]` 无、`[""]` 全部行；revived 为复活的授予）, nameable, reason?, withheld}}}`（去掉 `sensitive`、`default_roles`）；`permission_groups[]` 为清单的 `{key, label}`；`role_columns[]` = `{key, name, builtin, superuser, nameable, reason?}`，覆盖全部角色，`reason` 同 §4 的拒绝理由；`removed_user_permissions[]` = `{key, label, holders?:[角色 key]}`，本版本不再声明、将标 removed 的权限（只在升级时）。查看者没有 `role:read` 时不透露旧 key 的持有者（二审 C4；系统同意不受限）：`holders` 省略，revived、renamed 行的 `cells.<角色>.grant` 省略，`new_role_grants` 不含 `via: inherit` 的条目，revived、renamed 行的 `cells.<角色>.withheld` 一律为 false（它由旧 key 的持有者推出，二审 N4）；插件列表、详情的 `role_grants_to_review` 不含 `via: inherit` 的条目（同意时继承的与激活时补录的，`install.RoleGrantsToReview`）；其余照常。
 
 ### 5.8 插件自己的接口与静态资源（C）
 
-- `ANY /api/v1/p/:key/*path`：按 manifest `routes` 匹配；`scope=admin|user` 需要登录（会话或访问密钥）并检查 `plugin.<key>:<permission>`（访问密钥按其权限收窄，须勾选该插件权限，2026-11-13 期 4 S4；此前访问密钥一律 403；插件拿到的仍是用户 id，不知道经由密钥；未声明 permission 的路由对所有人 403，2026-11-12 权限加固 W5-A1/W1-F15）；`webhook` 和 `public` 不鉴权；转发给插件 `HTTPService.HandleHTTP`。admin/user 路由可声明 `accounts: {action: read|update|test, from?: ["path:<参数>"|"query:<名>"|"body:<顶层字段>"]}`（`manifest.RouteAccounts`，只有这三种前缀，`path:` 必须是该路由的参数）声明它作用的账号；被 `ui.accountActions` 指向的路由未声明时推断为 `{update（指向它的操作都是 visibleFor=all 时 read）, ["body:account_ids"]}`，显式声明则必须含 `body:account_ids`（校验码 `accounts_mismatch`），见 `manifest.EffectiveRouteAccounts`。核心转发前按 `core.AuthorizeAccounts` 检查：全部范围的 `account:<action>` 放行；只有更窄的范围（own、分组、指定账号，§21.0）时请求须带账号 id 且全部落在范围内（否则 404，不带 id 403）；任何范围都没有 403。旧核心解析 manifest 时忽略 `accounts`、不检查账号就转发，所以声明了 `accounts` 的插件 `hostCompat` 下限须 ≥0.1.286（`check.RouteAccountsFirstCore`，低了报 `below_feature_core`）；由 `ui.accountActions` 推断的检查没有字段可查，靠插件自己的 `hostCompat`。id 取自 from 指向的 path 参数、query 参数（全部取值）或 JSON 顶层字段（字段名大小写不敏感），可以是数字、数字数组或逗号分隔字符串，格式不对 400，去重后超过 `MaxAccountBatch` 400；未接入账号检查的节点对这些路由一律 503（2026-11-12 权限加固 M1）。manifest 说不出账号 id 的路由（id 在请求体深处、来自插件自己的表）由插件自己问核心：`HostService.AccountScopeCheck{user_id, action, account_ids≤500}` → `{all, allowed_ids}`（需要宿主授权 `accounts.read`，且 `user_id` 必须是该插件此刻正在处理的某个 `HandleHTTP` 请求的 `Caller.user_id`——宿主在转发请求期间按实例记下调用者，请求结束即失效，所以只能在处理请求的过程中调用，不能在后台任务里或替别的用户问；两条任一不满足 `PERMISSION_DENIED`，不进入账号模块。通过后转给 `core.AccountAccess`，错误码与其他核心错误同一映射：任何范围都没有 `PERMISSION_DENIED`，未知 action `INVALID_ARGUMENT`）；SDK `pluginsdk.ResolveAccountScope`（得到 `AccountScope`，`Allows`/`Filter`，用于列表过滤）与 `pluginsdk.RequireAccounts`（与核心同样的回答：无登录 401，任何范围都没有 403，只有窄范围时不带 id 403，含范围外的账号 404；未知 action 或非正数 id 400，宿主答不了 503）。插件没有 `accounts.read` 或请求已结束时 `RequireAccounts` 同样回 403（失败收紧）。另有 `pluginsdk.RequirePermission(host, perm, next)` 给单个路由追加权限检查（401/403/503）（2026-11-12 权限加固 M1-b）。`webhook`/`public` 路由不带调用者，声明 `permission` 或 `accounts` 打包校验报 `unsupported`（2026-11-12 权限加固 W5-C6）
+- `ANY /api/v1/p/:key/*path`：按 manifest `routes` 匹配；`scope=admin|user` 需要登录（会话或访问密钥）并检查 `plugin.<key>:<permission>`（访问密钥按其权限收窄，须勾选该插件权限，2026-11-13 期 4 S4；此前访问密钥一律 403；插件拿到的仍是用户 id，不知道经由密钥；未声明 permission 的路由对所有人 403，2026-11-12 权限加固 W5-A1/W1-F15）；`webhook` 和 `public` 不鉴权；转发给插件 `HTTPService.HandleHTTP`。admin/user 路由可声明 `accounts: {action: read|update|test, from?: ["path:<参数>"|"query:<名>"|"body:<顶层字段>"]}`（`manifest.RouteAccounts`，只有这三种前缀，`path:` 必须是该路由的参数）声明它作用的账号；被 `ui.accountActions` 指向的路由未声明时推断为 `{update（指向它的操作都是 visibleFor=all 时 read）, ["body:account_ids"]}`，显式声明则必须含 `body:account_ids`（校验码 `accounts_mismatch`），见 `manifest.EffectiveRouteAccounts`。核心转发前按 `core.AuthorizeAccounts` 检查：全部范围的 `account:<action>` 放行；只有更窄的范围（own、分组、指定账号，§21.0）时请求须带账号 id 且全部落在范围内（否则 404，不带 id 403）；任何范围都没有 403。（核心 0.1.286 起）。id 取自 from 指向的 path 参数、query 参数（全部取值）或 JSON 顶层字段（字段名大小写不敏感），可以是数字、数字数组或逗号分隔字符串，格式不对 400，去重后超过 `MaxAccountBatch` 400；未接入账号检查的节点对这些路由一律 503（2026-11-12 权限加固 M1）。manifest 说不出账号 id 的路由（id 在请求体深处、来自插件自己的表）由插件自己问核心：`HostService.AccountScopeCheck{user_id, action, account_ids≤500}` → `{all, allowed_ids}`（需要宿主授权 `accounts.read`，且 `user_id` 必须是该插件此刻正在处理的某个 `HandleHTTP` 请求的 `Caller.user_id`——宿主在转发请求期间按实例记下调用者，请求结束即失效，所以只能在处理请求的过程中调用，不能在后台任务里或替别的用户问；两条任一不满足 `PERMISSION_DENIED`，不进入账号模块。通过后转给 `core.AccountAccess`，错误码与其他核心错误同一映射：任何范围都没有 `PERMISSION_DENIED`，未知 action `INVALID_ARGUMENT`）；SDK `pluginsdk.ResolveAccountScope`（得到 `AccountScope`，`Allows`/`Filter`，用于列表过滤）与 `pluginsdk.RequireAccounts`（与核心同样的回答：无登录 401，任何范围都没有 403，只有窄范围时不带 id 403，含范围外的账号 404；未知 action 或非正数 id 400，宿主答不了 503）。插件没有 `accounts.read` 或请求已结束时 `RequireAccounts` 同样回 403（失败收紧）。另有 `pluginsdk.RequirePermission(host, perm, next)` 给单个路由追加权限检查（401/403/503）（2026-11-12 权限加固 M1-b）。`webhook`/`public` 路由不带调用者，声明 `permission` 或 `accounts` 打包校验报 `unsupported`（2026-11-12 权限加固 W5-C6）
+- **插件资源范围**（0.1.290，§21.0“插件资源范围”）：路由的 `permission` 若声明了 `scope`，持有它的**任意范围**即放行（`PermissionSet.HasSome`；全部范围照旧记入 `Granted`），核心把调用者在该权限上的范围随请求交给插件（`HTTPRequest.action_scope`）。admin/user 路由可声明 `scopeFrom: "path:<参数>"|"query:<名>"|"body:<顶层字段>"`（与 `accounts.from` 同一写法，`manifest.ParseAccountsFrom`；只能用在 permission 声明了 scope 的路由上，否则 `unsupported`；`path:` 必须是该路由的参数，否则 `unknown_param`；webhook/public 路由声明报 `unsupported`），核心转发前按 `core.AuthorizePluginScope` 判它指向的值：全部范围放行；否则请求须带值（不带 403 `details.permission`），持有 own 时一律放行、由插件按 `created_by` 判，只有列出的值时每个值都须在其中（否则 404）。值可以是字符串、数字、它们的数组或逗号分隔串；query 参数名与 body 顶层字段名都不分大小写匹配（与插件用 encoding/json 解码一致），query 的每个值都校验，body 同名字段（不分大小写）出现多次 400 `duplicate`（`accounts.from` 同样，二审 security #1/#3）；每个须是合法范围值（`[A-Za-z0-9_.-]{1,64}`，否则 400），去重后至多 `MaxAccountBatch` 个。不带值就只有全部范围能过，所以**列表路由不要声明 `scopeFrom`**，应读 `action_scope` 自己过滤（check 不猜哪些是列表路由）。反过来，permission 声明了 scope 的非 GET 路由必须写 `scopeFrom`（check 报 `required`）：任意范围都能进来，不写就只能靠插件拦住只持有一行的人改所有行；不针对具体行的写路由（如新建）改用不带 scope 的权限。这些声明（`userPermissions[].group/risk/requires/scope/defaults`、`permissionGroups`、`routes[].scopeFrom`）与 UI 3.16、3.17 都随核心 0.1.290 发布（0.1.289 没有发布）
 - `GET /plugin-ui/:key/:version_hash/*path`：插件包内 `ui/`、`forms/`、`i18n/` 下的文件；带长缓存头
 
 ### 5.9 网关端点（G）
@@ -310,7 +330,7 @@
 | `rl:apikey:{id}:rpmb`、`rl:apikey:{id}:tpmb` | HASH API Key 近 60 秒窗口的分段计数，格式同账号（§60.3、§68.3）；API Key 没有会话上限 | A |
 | `slot:account-model:{key}:{id}` | ZSET 账号某个模型列表的并发槽位，格式同 `slot:{kind}:{id}`（§68.2） | D |
 
-广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
+广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`authz:changed` payload：JSON `{"v":授权版本,"p":策略版本?,"u":[用户 id]?}`（0.1.290）：`u` 是只改了这些用户的角色或状态的写入，`p` 是策略写入后的策略版本（§99.4）；不是这个格式的 payload 不当作变化，节点改为读一次版本。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
 
 节点插件状态（`node:plugins:{boot_id}` 每个插件一个 JSON，C2 写、C1 与控制台读）：`{state, serving, standby?, rollout_id?, rollout?, error?, instances:[{version, state, error?, restarts}]}`。`state` 汇总本节点：有进行中的发布时等于 `rollout`（`pending|ready|active|failed`），否则按在服务的实例为 `active|pending|failed`，没有在服务的版本为 `stopped`。
 
@@ -376,7 +396,9 @@ func Install(client pluginv1.EgressServiceClient) error
 func DialContext(ctx context.Context, network, address string) (net.Conn, error)
 ```
 
-插件的 PostgreSQL 连接（受限 DSN）必须使用 `DialContext`（pgx: `cfg.DialFunc = egress.DialContext`）。
+插件的 PostgreSQL 连接（受限 DSN）必须使用 `DialContext`。`Host.DB` 返回的 GORM 句柄已经这样拨号（`sdk/pgdb`，2026-11-15 起），插件用它就不必自己连库。
+
+**插件 SDK 0.2.0 的不兼容改动**（`pluginsdk.SDKVersion`，随 `GetInfoResponse.sdk_version` 上报）：`Host.DB(ctx)` 从返回 `*pgxpool.Pool` 改为返回绑定 ctx 的 `*gorm.DB`。第三方插件把 `next/sdk` 升到 0.2.0 后，`h.DB(ctx)` 的调用点和自己实现的 `pluginsdk.Host` 测试替身编译不过：改用 GORM 的模型与查询构建器（§2“插件数据库”，数组参数与数组列用 `pgdb.Array`），测试替身用 `pgdb.Open` 返回句柄；句柄每次调用重新取，不要跨调用缓存（见上文“插件数据库”）。已编译的旧插件不受影响：gRPC 协议没变。
 
 ### 11.3 插件主进程启动（C2 调 D）
 
@@ -397,11 +419,10 @@ Anthropic 的 `cache_creation_input_tokens` 是总量（含 1 小时缓存）。
 - 错误格式：`plain` 即核心 REST 格式 `{"error":{code,message}}`；`anthropic` 格式在 `error` 中额外带 `code`（如钩子拒绝时的 `guard_blocked`）
 - 所有尝试都失败时：最后一次是上游错误则返回该错误（按 ClassifyError 的状态码与类型）；是插件或账号问题返回 503 `no_available_account`；有账号但并发槽位全满返回 429
 - **`anthropic` 格式下没有可用账号按官方"过载"返回**（2026-10-10）：HTTP 529，`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded","code":"no_available_account"}}`，与官方 API 的过载一致，Claude Code 与 SDK 会退避重试（`gateway/errors.go` `clientError`）。使用记录的 `status_code` 为 529，`error_type` 仍为 `no_account`，`error_message` 保留核心原因（如 `no available account`）。其他格式（`openai`、`gemini`、`plain`）仍是 503；上游原样透传的错误体不受影响。
-- **模型名不合法时返回 400**（2026-11-02）：从请求取到的模型名含空白或控制字符、超过 256 字节或不是合法 UTF-8 时，在选号前返回 400 `invalid_request_error`，使用记录 `error_type` 为 `invalid_request`。此前只靠 CCGateway 的可用性检查（`invalid_candidate`）拦截，返回 503；可用性检查改为放行 `UNKNOWN` 后移到核心（§44.7）。
+- **模型名不合法时返回 400**（2026-11-02）：从请求取到的模型名含空白或控制字符、超过 256 字节或不是合法 UTF-8 时，在选号前返回 400 `invalid_request_error`，使用记录 `error_type` 为 `invalid_request`。此前只靠插件的可用性检查拦截，返回 503（§44.7）。
 - **分组里根本没有能服务该端点的账号时返回 404**（2026-10-11，用户决定）：没有任何已启用的账号类型声明该端点，或调用方分组里没有这些类型的账号（不论账号状态，已删除的除外；`AccountDirectory.GroupHasType`），返回 404 `not_found_error`「no account in this group serves this endpoint」，`code` 为 `not_found`。客户端不会重试 404。使用记录的 `error_type` 为 `no_account`，`status_code` 为 404。分组里有这种账号、只是全部被禁用、冷却或占满时，仍按上一条返回 529/503。例：一个只有不声明 `count_tokens` 的账号类型的分组，调计数接口会得到 404（CCGateway 2026-11-04 起声明）。
 
-**token 计数不占资源**（2026-11-04，用户决定，取代 2026-10-11 的“CCGateway 不提供计数”）：`*.count_tokens` 不占 API Key 和账号的并发，不计 Key 和账号的 RPM、TPM，不扣额度也不查余额。计数失败可以换账号，但不改变账号状态：不冷却、不自动禁用、不观测额度，失败策略规则也不参与。仍要通过鉴权，已冷却或禁用的账号不会被选中，使用记录照常写一条不计费的记录。粘性会话：计数与粘性无关，按权重随机选账号，不读也不写绑定（2026-11-04，用户决定）。CCGateway 账号的计数由 Worker 运行 CLI 的 `request --count`：客户端的字节原样发到上游计数端点，认证由 CC 原生客户端完成，不加计费头、身份、会话和注入，也不带 CC 特性策略，只带请求日志级别。核心发送前检查能力 `request_count_tokens_v1`，Worker/CLI 不具备时核心自己回 503（来源 `core`），换下一个账号，不影响该账号。其余映射：参数错误 400 `invalid_request_error`（上游 4xx 原样透传，不冷却账号）、鉴权 401/403、真正的上游故障 5xx
-- **只属于本请求的网关错误不冷却账号**（2026-10-10）：CCGateway worker 拒绝本次请求（`cannot prepare the upstream request: …`，历史或特性无法原样承载）时响应头带 `X-Ccgateway-Error-Scope: request`；ccgateway 插件的 `ClassifyError` 见此头返回 `RETURN_TO_CLIENT`、不设账号效果（不冷却、不切换），同组其他会话不受影响。上游 API 的响应头里出现该头会被 worker 删掉，上游无法冒用
+**token 计数不占资源**（2026-11-04，用户决定）：`*.count_tokens` 不占 API Key 和账号的并发，不计 Key 和账号的 RPM、TPM，不扣额度也不查余额。计数失败可以换账号，但不改变账号状态：不冷却、不自动禁用、不观测额度，失败策略规则也不参与。仍要通过鉴权，已冷却或禁用的账号不会被选中，使用记录照常写一条不计费的记录。粘性会话：计数与粘性无关，按权重随机选账号，不读也不写绑定（2026-11-04，用户决定）。映射：参数错误 400 `invalid_request_error`（上游 4xx 原样透传，不冷却账号）、鉴权 401/403、真正的上游故障 5xx
 - `usage_logs.error_type` 取值另含 `model_not_allowed`、`price_not_configured`、`rate_limited`、`invalid_request`、`plugin_unavailable`、`blocked_by_hook`
 - 钩子熔断按节点计数：同一钩子在本节点连续失败 10 次后熔断 30 秒
 - 测试环境的市场地址为内网 `http://caddy:3120/market/index.json`（市场客户端目前不过滤内网地址；市场源只有 `publisher:manage` 能配置）
@@ -456,7 +477,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 
 ## 13. 平台声明端点、账号类型声明平台、内置平台（2026-09-25，ARCHITECTURE 6.6）
 
-**平台内端点子集（2026-10-08）**：`accountTypes[].platforms[]` 可声明 `endpoints: ["messages", "count_tokens"]`，每项引用所属 `platform` 的端点 ID，不是路径或协议名；不能引用其他平台的端点。省略字段兼容旧插件，表示支持该平台全部端点；显式空数组、重复 ID 和不存在的端点均拒绝。CCGateway 两种账号类型声明 Anthropic 的 `messages` 和 `count_tokens`（0.1.36 到 0.1.127 不声明计数，0.1.128 起恢复，2026-11-04 用户决定，见 §11.6）。安装时根据内置、本插件及其他已安装插件的平台校验；离线打包无法解析外部平台时延后到安装校验。网关原生路由与协议转换目标都受子集约束，账号类型 API 的可服务端点保持一致。安装预览保留 `platforms` ID 数组并新增 `platform_declarations`，控制台按账号类型 → 平台 → 端点展示；平台 API 的端点新增 `id` 用于解析引用。端点子集依赖支持本字段的宿主执行，旧宿主会忽略该约束。
+**平台内端点子集（2026-10-08）**：`accountTypes[].platforms[]` 可声明 `endpoints: ["messages", "count_tokens"]`，每项引用所属 `platform` 的端点 ID，不是路径或协议名；不能引用其他平台的端点。省略字段兼容旧插件，表示支持该平台全部端点；显式空数组、重复 ID 和不存在的端点均拒绝。安装时根据内置、本插件及其他已安装插件的平台校验；离线打包无法解析外部平台时延后到安装校验。网关原生路由与协议转换目标都受子集约束，账号类型 API 的可服务端点保持一致。安装预览保留 `platforms` ID 数组并新增 `platform_declarations`，控制台按账号类型 → 平台 → 端点展示；平台 API 的端点新增 `id` 用于解析引用。端点子集依赖支持本字段的宿主执行，旧宿主会忽略该约束。
 
 本节优先于 §12 及前文中冲突的描述。§12 中"全局定价""凭证授权""转换失败""插件未启用 404"等仍然有效。
 
@@ -496,8 +517,8 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 ### 14.2 安全加固
 
 - **登录限速**：同一邮箱在同一 IP 15 分钟内失败 5 次、或同一 IP 15 分钟内失败 20 次后，登录返回 429 `rate_limited`，`details.retry_after_seconds`；成功登录清除该邮箱+IP 的计数。Redis key `login:fail:e:{sha256(email|ip)}`、`login:fail:ip:{ip}`（带 TTL）。 客户端 IP 取 `c.ClientIP()`：只有来自 `SUB2API_TRUSTED_PROXIES`（逗号分隔的 IP/CIDR，默认空 = 不信任任何代理）的请求才采用 `X-Forwarded-For`。
-- **refresh token 重放检测**：refresh token 属于一个家族（`refresh_tokens.family_id`，登录时新建）；轮换时旧 token 标记 `replaced_at`；再次出示已轮换或已吊销的 token 时吊销整个家族并返回 401。**例外（2026-10-05）**：轮换后 60 秒内再次出示同一个 token、且家族里还有有效 token 时，视为客户端没收到上次的响应（断网、关页、两个标签页同时刷新），再发一对同家族的新 token，不吊销。登出或已整体吊销的 token 没有这个宽限。
-- **登录时长（2026-10-05 用户要求）**：登录随使用自动延长，闲置最长 30 天。access token 2 小时（`SUB2API_ACCESS_TOKEN_TTL`），refresh token 每次轮换都重新给满 `SUB2API_REFRESH_TOKEN_TTL`（默认 720h = 30 天）。控制台除 401 后刷新外，页面可见时每分钟检查、切回页面或获得焦点时也检查，access token 剩余不足 5 分钟就主动刷新（`@sub2api/host` 的 `startKeepAlive`）。所以连续使用就一直保持登录；30 天没打开过控制台才需要重新登录。改密码、被禁用、被删除、登出仍立即失效。
+- **refresh token 重放检测**：2026-11-16 随 JWT 一起删除：会话令牌不换发，没有 refresh token（§100）。
+- **登录时长（2026-10-05 用户要求）**：登录随使用自动延长。2026-11-16 起由服务端给会话续期（§100.2：空闲 `SUB2API_SESSION_IDLE_TTL` 默认 168h = 7 天，登录后最长 `SUB2API_SESSION_MAX_TTL` 默认 720h = 30 天），控制台不再刷新令牌。改密码、被禁用、被删除、登出仍立即失效。
 - **SSRF 拨号时校验**：`proxy` 模块给**直连**（不经代理）的上游 HTTP 客户端设置拨号检查，拒绝回环、私有、链路本地、未指定地址，防 DNS 重绑定；`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行（`proxy.Options.AllowPrivate`）。经代理的连接不检查（由代理解析）。
 - **插件新外部域名告警**：出口隧道每次连接 upsert `plugin_egress_domains`；首次出现的 host 记 WARN 日志并写事件 `plugin.egress_new_domain`。`GET /plugins/:key/egress` 增加 `domains:[{host, first_seen_at, last_seen_at, connections, new}]`（`new` = 24 小时内首次出现）。
 - **出口日志长连接**：连接建立时即写一行（`result='open'`），关闭时更新 `result/duration_ms/bytes/closed_at`，控制台立即可见。
@@ -562,7 +583,7 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 
 - `PATCH /me/api-keys/:id`（2026-10-26 起）修改自己 Key 的名称、分组、IP 白名单、过期时间与限额，字段见本文 2026-10-26 的说明；分组被删除的 Key 选新分组即恢复。
 - 修改或删除后立即清除该 Key 的 Redis 缓存（`apikey:{sha256}`），网关侧立即生效。
-- 分组可用性按用户组判断（§97，取代原来按用户逐个分配的 `user_groups`）：分组是公开的（`visibility=public`），或是私有的（`visibility=restricted`）且已授权给 Key 所有者所在的用户组。创建 / 修改 Key 时的 `group_id` 校验、列表的 `group_status` 和网关鉴权用的是同一个条件（`segment.OpenToUserSQL`，§97.9）。授权每次请求从库里读，不经缓存：改授权、把用户移到另一个用户组，下一个请求就生效，已有的 Key 不用重建。
+- 分组可用性按用户组判断（§97，取代原来按用户逐个分配的 `user_groups`）：分组是公开的（`visibility=public`），或是私有的（`visibility=restricted`）且已授权给 Key 所有者所在的用户组。创建 / 修改 Key 时的 `group_id` 校验、列表的 `group_status` 和网关鉴权用的是同一个条件（`segment.OpenToUser` / `OpenToKeyOwner`，§97.9）。授权每次请求从库里读，不经缓存：改授权、把用户移到另一个用户组，下一个请求就生效，已有的 Key 不用重建。
 
 ### 15.2 列表接口的筛选与排序
 
@@ -587,7 +608,7 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 | GET `/plugins/:key/egress` | 明细分页 | `from`、`to`（默认最近 24 小时） | 汇总按连接数倒序（最多 200 条）；明细按 `started_at` 倒序 | `plugin/api/ops.go` |
 
 响应字段补充：
-- `/usage`、`/me/usage` 列表项：`id, request_id, created_at, user_id, user_email?, api_key_id, api_key_name?, group_id, group_name?, account_id, account_name?, plugin_key, platform, protocol, account_type, upstream_protocol, endpoint, model, upstream_model, stream, status_code, success, error_type, error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, total_cost, rate_multiplier, billing_status, billing_mode, matched_tier, latency_ms, first_token_ms, sticky_hit, client_ip`（`?` 为空串时省略）。`/me/usage`（列表与详情）把 `account_id` 置 `null`，`account_name`、`account_type`、`upstream_protocol`、`upstream_model`（账号的模型映射）置空，详情另把 `node_id` 置空；`error_message` 原样返回，5xx 也不清空（2026-11-02，用户规则：自助视图只隐藏字段，不改字段值；此前按审计 SEC-L3 清空 5xx 消息）。`/usage`（列表、详情、导出）对没有 `account:read` 的管理员同样把 `account_id` 置 `null`、`account_name` 置空，导出不含"账号 ID""账号"两列；这样的调用者带 `account_id` 或 `account_name` 筛选（列表、汇总、导出）返回 403 `permission_denied`（2026-11-02，用户决定：没有账号查看权限的管理员看不到使用记录里的账号）。控制台同样只对有 `account:read` 的管理员显示账号列和账号筛选。详情里结算条目的 `settlement.account_id`、`POST /usage/:id/reconcile` 返回的结算条目的 `account_id` 同样置 `null`。CCGateway 行的详情另有 `request_log_account_id`：调用者有 `settings:read` 或 `account:read`（请求日志接口 `GET /system/ccgateway/accounts/:id/request-logs/...` 的权限）时给出这行所在的账号 id，供控制台打开请求日志，`account_id` 被隐藏时也给；两项权限都没有时省略。详情的 `anomalies`（2026-11-02）：`/me/usage` 不返回；没有 `account:read` 的管理员，`anomalies.availability` 的样例与执行前检查记录、`anomalies.failure_policy[]` 都去掉 `account_id`（此前 `failure_policy` 的账号 id 会漏给这类管理员）；有 `account:read` 时 `availability` 样例补上 `account_name`。
+- `/usage`、`/me/usage` 列表项：`id, request_id, created_at, user_id, user_email?, api_key_id, api_key_name?, group_id, group_name?, account_id, account_name?, plugin_key, platform, protocol, account_type, upstream_protocol, endpoint, model, upstream_model, stream, status_code, success, error_type, error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, total_cost, rate_multiplier, billing_status, billing_mode, matched_tier, latency_ms, first_token_ms, sticky_hit, client_ip`（`?` 为空串时省略）。`/me/usage`（列表与详情）把 `account_id` 置 `null`，`account_name`、`account_type`、`upstream_protocol`、`upstream_model`（账号的模型映射）置空，详情另把 `node_id` 置空；`error_message` 原样返回，5xx 也不清空（2026-11-02，用户规则：自助视图只隐藏字段，不改字段值；此前按审计 SEC-L3 清空 5xx 消息）。`/usage`（列表、详情、导出）对没有 `account:read` 的管理员同样把 `account_id` 置 `null`、`account_name` 置空，导出不含"账号 ID""账号"两列；这样的调用者带 `account_id` 或 `account_name` 筛选（列表、汇总、导出）返回 403 `permission_denied`（2026-11-02，用户决定：没有账号查看权限的管理员看不到使用记录里的账号）。控制台同样只对有 `account:read` 的管理员显示账号列和账号筛选。详情里结算条目的 `settlement.account_id`、`POST /usage/:id/reconcile` 返回的结算条目的 `account_id` 同样置 `null`。已删除插件（如 0.1.290 删除的 CCGateway）的行照常读出，`plugin_key` 保持写入时的值。详情的 `anomalies`（2026-11-02）：`/me/usage` 不返回；没有 `account:read` 的管理员，`anomalies.availability` 的样例与执行前检查记录、`anomalies.failure_policy[]` 都去掉 `account_id`（此前 `failure_policy` 的账号 id 会漏给这类管理员）；有 `account:read` 时 `availability` 样例补上 `account_name`。
 - `/usage/:id`、`/me/usage/:id` 详情另含：`plugin_version, metrics, sticky_rule, hook_decisions, price_id, price?:{id, model, source, plugin_key}, expr_hash, billing_detail, ledger_id, client_ip, user_agent, node_id`。`/me/usage/:id` 访问他人记录返回 404。`/me/usage/:id` 是本人视图（`Detail.redactForSelf`，2026-11-12）：除列表已隐藏的上游字段外，`plugin_version`、`sticky_rule`、`expr_hash`、`node_id` 为空，`plugin_detail`、`anomalies`、`settlement`、`request_log_account_id` 不返回；`metrics`（计价用的用量事实）、`hook_decisions`、`price_id`/`price`、`billing_detail`、`ledger_id` 照常返回，但 `billing_detail` 里的计价表达式与哈希去掉（`inputs.pricing.base.{expression,expr_hash}`、`additional[]/replacement[].expression_hash`、`inputs.additional[]/replacement[].Price`；`base` 保留为空对象，金额、档位、参数与各组件的 token 不动）。`hook_decisions` 各项的 `account_id`（`gateway.attempt` 钩子的尝试账号，§85）只给有 `account:read` 的 `/usage/:id`：本人视图和没有 `account:read` 的运营视图里都去掉（`Detail.hideAccounts`，与记录的 `account_id`、`settlement.account_id` 一起）。§97 起，倍率不是分组默认倍率或命中了定价规则的记录，`billing_detail` 多出 `inputs.pricing`（97.4），命中规则时另有 `list_cost`（97.5）；列表与详情的 `rate_multiplier` 是这次请求实际生效的倍率，不含规则倍数。
 - `usage_logs` 还有一列 `sched_decisions`（jsonb，迁移 0011，记录 `scheduler.rank` 插件对本次调度的改写，格式与语义见 §24.5），**接口不返回它**：它不在上面的详情字段里，`hook_decisions` 暴露而它不暴露是当前有意的取舍，排查请直接查库。
 - `/usage/summary` 每项：`{key, user_email?, requests, success, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, prompt_tokens, total_cost}`；`group_by=day` 时 `key` 为 UTC 日期 `YYYY-MM-DD`，`user` 时为用户 id 字符串并带 `user_email`；`ip` 时为调用 IP（没记录到 IP 的请求归入空串）并带该 IP 最近一次请求的时间 `last_at`；`cache_creation_tokens` 为 5 分钟与 1 小时缓存写入之和。`prompt_tokens` 按各请求保存的 usage semantics 归一化：inclusive 使用原始输入，exclusive 将输入、缓存读和两类缓存写入相加，再汇总；缓存命中率为 `cache_read_tokens / prompt_tokens`。历史记录若有缓存用量但缺少 semantics，所在汇总项的 `prompt_tokens` 返回 `null`，界面显示“—”，不按客户端协议猜测。新免费记录也保存 semantics，但不额外保存定价请求头或参数。
@@ -710,12 +731,12 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 |---|---|---|---|
 | GET `/roles` | `role:read` | | 不分页，内置在前 |
 | GET `/roles/:id` | `role:read` | | 不存在 404 |
-| POST `/roles` | `role:define` | `{key, name, description?, permission_keys?, assignable_role_keys?, assign_custom?}` | `key` 匹配 `^[a-z][a-z0-9_]{1,49}$`，且不能是内置角色保留的 key（`super_admin`、`admin`、`operator`、`user`、`supplier`；400 `details.fields[{field:"key", code:"reserved"}]`）；`name.en` 必填；key 重复 409；未知权限 `details.fields[{field:"permission_keys", code:"unknown"}]`；已移除的权限忽略；操作者须持有全部 `permission_keys`（同 PUT `/roles/:id/permissions`，否则 403 `details.missing`）；可分配清单同 PUT `/roles/:id/assignable` 校验（字段错误记在 `role_keys` 下） |
-| PATCH `/roles/:id` | `role:define` | `{key?, name?, description?}` | 内置角色也可改名称和描述（能修改它的人，§43.6 角色写入口）；给了 `name` 时 `name.en` 不能为空；**key 创建后不可修改**：请求体带了 `key` 且与角色现有 key 不同时 400 `invalid_argument`（message 按请求语言：`a role's key cannot be changed after creation` / `角色标识创建后不可修改`，`details.fields[{field:"key", code:"immutable"}]`，权限检查之后、不写入任何字段），与现有 key 相同则忽略（2026-11-14 0.1.287 候选，无迁移；此前未知字段 `key` 被静默忽略）。控制台把 key 显示为置灰禁用的“标识”，名称、描述各只有一个输入框，保存时把同一个值同时写进 `en` 与 `zh`（只发改动过的字段，未改名的内置角色仍按界面语言显示默认中/英名称） |
+| POST `/roles` | `role:define` | `{key, name, description?, permission_keys?, assignable_role_keys?, assign_custom?}` | `key` 匹配 `^[a-z][a-z0-9_]{1,49}$`，且不能是内置角色保留的 key（`super_admin`、`admin`、`operator`、`user`、`supplier`；400 `details.fields[{field:"key", code:"reserved"}]`）；`name.en` 必填；key 重复 409；未知权限 `details.fields[{field:"permission_keys", code:"unknown"}]`；已移除的权限忽略；操作者须持有全部 `permission_keys`（同 PUT `/roles/:id/permissions`，否则 403 `details.missing`），含 critical 插件 key 时须二次验证 `plugin.grant`；可分配清单同 PUT `/roles/:id/assignable` 校验（字段错误记在 `role_keys` 下） |
+| PATCH `/roles/:id` | `role:define` | `{key?, name?, description?, revision?}` | 内置角色也可改名称和描述（能修改它的人，§43.6 角色写入口）；给了 `name` 时 `name.en` 不能为空；**key 创建后不可修改**：请求体带了 `key` 且与角色现有 key 不同时 400 `invalid_argument`（message 按请求语言：`a role's key cannot be changed after creation` / `角色标识创建后不可修改`，`details.fields[{field:"key", code:"immutable"}]`，权限检查之后、不写入任何字段），与现有 key 相同则忽略（2026-11-14 0.1.287 候选，无迁移；此前未知字段 `key` 被静默忽略）。控制台把 key 显示为置灰禁用的“标识”，名称、描述各只有一个输入框，保存时把同一个值同时写进 `en` 与 `zh`（只发改动过的字段，未改名的内置角色仍按界面语言显示默认中/英名称） |
 | DELETE `/roles/:id` | `role:define` | | 内置角色：不能修改它的人 403，能修改的人（含超管）409；用户的该角色随之删除，所以角色仍有持有者时它须在操作者的可分配清单内（否则 403 `details.role`；PATCH、PUT `permissions`、PUT `assignable` 同样如此，§43.6 角色写入口） |
-| PUT `/roles/:id/permissions` | `role:define` | `{permission_keys}` | 整体替换；操作者须持有**新增**的权限（否则 403 `details.missing`）；已移除（`status=removed`）的权限忽略，角色上已有的授权行保留（原样保存不报错）；完全不存在的 key 仍按未知报错 |
-| PUT `/roles/:id/assignable` | `role:define` | `{role_keys, assign_custom}` | 整体替换可分配清单；未知角色 400 `details.fields[{field:"role_keys", code:"unknown"}]`，含 `super_admin` 400（`code:"superuser"`）；操作者须能分配**新增**的角色，新开 `assign_custom` 时自己也须有它（否则 403 `details.missing_assignable` / `missing_assign_custom`） |
-| POST `/roles/:id/reset` | `role:define` | | 内置角色恢复默认：名称、描述、核心权限（§4）和默认可分配清单（admin = operator、supplier、user 与全部自定义角色；operator = supplier、user；supplier、user 为空；尚未建出的内置角色跳过），`defaults_rev` 置为当前值；角色上的插件权限不动；自定义角色 409；能修改该角色的人才能重置，且须持有全部默认权限并能分配默认清单（否则 403 `details.missing` / `missing_assignable`）；审计 `role.reset` 的 detail 为 `key`、`before`、`after`（各含 `permission_keys`（含角色上的插件权限）、`assignable_role_keys`、`assign_custom`；启动同步对无人持有的内置角色做的同一重置另带 `via: "sync"`、`defaults_rev`，§4）。不要二次验证（与其他角色写入一致：`role:define` 不带 stepUp），控制台“恢复默认”按钮先弹危险确认框 |
+| PUT `/roles/:id/permissions` | `role:define` | `{permission_keys, revision?}` | 整体替换；操作者须持有**新增**的权限（否则 403 `details.missing`）；新增 critical 插件 key 须二次验证 `plugin.grant`（403 `verification_required`）；`revision` 与角色当前修订号不一致 409 `version_conflict`（§5.2“并发写入”）；审计 `role.permissions` 的 `detail` 有 `permission_keys`、`added`、`removed`（删掉的 key，含 removed 的插件 key）；已移除（`status=removed`）的权限：角色已持有的列出即保留（原样保存不报错），不列出即删除（0.1.290起，此前一律保留），角色未持有的忽略、不写入；插件 key 的范围须是该权限接受的（§21.0，否则 400 `invalid`）；完全不存在的 key 仍按未知报错 |
+| PUT `/roles/:id/assignable` | `role:define` | `{role_keys, assign_custom, revision?}` | 整体替换可分配清单；未知角色 400 `details.fields[{field:"role_keys", code:"unknown"}]`，含 `super_admin` 400（`code:"superuser"`）；操作者须能分配**新增**的角色，新开 `assign_custom` 时自己也须有它（否则 403 `details.missing_assignable` / `missing_assign_custom`） |
+| POST `/roles/:id/reset` | `role:define` | `{revision?}`（可不带请求体） | 内置角色恢复默认：名称、描述、核心权限（§4）和默认可分配清单（admin = operator、supplier、user 与全部自定义角色；operator = supplier、user；supplier、user 为空；尚未建出的内置角色跳过），`defaults_rev` 置为当前值；角色上的插件权限不动；自定义角色 409；能修改该角色的人才能重置，且须持有全部默认权限并能分配默认清单（否则 403 `details.missing` / `missing_assignable`）；审计 `role.reset` 的 detail 为 `key`、`before`、`after`（各含 `permission_keys`（含角色上的插件权限）、`assignable_role_keys`、`assign_custom`；启动同步对无人持有的内置角色做的同一重置另带 `via: "sync"`、`defaults_rev`，§4）。不要二次验证（与其他角色写入一致：`role:define` 不带 stepUp），控制台“恢复默认”按钮先弹危险确认框 |
 
 以上 PATCH、DELETE、PUT permissions、PUT assignable、reset 共用一个入口（§43.6 角色写入口）：超级管理员角色一律 409；内置角色须在操作者的可分配清单内（否则 403 `details.role`；2026-11-13 前只有超级管理员能改，决策 6 已放宽）；角色当前授予的权限或可分配角色超出操作者时 403。每次写入记一条审计（`role.create`、`role.update`、`role.delete`、`role.permissions`、`role.assignable`、`role.reset`，目标为该角色）。
 
@@ -957,7 +978,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 能力：`gateway.hook.v1`、`app.jobs.v1`、`app.broadcast.v1`、`http.routes.v1`；数据库 schema `plg_moderation`。
 - 钩子：`{id:"moderation", point:"gateway.request", order:200, match:{protocols:["anthropic.messages","openai.chat","openai.responses","gemini.generate","gemini.stream_generate"]}, needs:["model", "messages|@reverse|#(role==\"user\")", "input|@reverse|#(role==\"user\")", "[input]|#(%\"*\")", "contents|@reverse|#(role==\"user\")"], timeoutMs:30000, failure:"open"}`。order 200 让 guard（100）的关键词规则先跑，命中关键词就不再花 LLM 调用。
 - 任务：`cleanup`（`0 4 * * *`，按 `retention_days` 删旧记录、删已过期的封禁）。
-- 权限 `userPermissions`：`moderation:read`（查看概览、记录、封禁列表）、`moderation:manage`（删除记录、封禁/解封、在线测试）；下表"read/manage"即指这两个。另有 `moderation:exempt`（免于审核观察与封禁，不守任何路由或菜单，`defaultRoles: []`、`inheritFrom: [moderation:read]`，只靠继承，2026-11-12 权限加固 T60），工作人员判定看它。
+- 权限 `userPermissions`：`moderation:read`（查看概览、记录、封禁列表）、`moderation:manage`（删除记录、封禁/解封、在线测试）；下表"read/manage"即指这两个。另有 `moderation:exempt`（免于审核观察与封禁，不守任何路由或菜单，2026-11-12 权限加固 T60），工作人员判定看它。0.1.290起它是 `risk: "critical"`（A4）：不写 `defaults`、去掉 `inheritFrom`，新部署只有超管持有，由超管授给角色（§4“插件权限”）；线上已有的持有者保留（同步只更新 `risk` 列，不撤销）。同时 `moderation:read`（能看到被审核的原文）提为 `sensitive`；默认角色不变（read、manage 给 admin）。
 - 宿主权限：`kv`、`db.schema`、`gateway.hook`（上面的 fields）、`jobs`、`broadcast`、`routes.admin`、`ui.menu`、`ui.native`、`net`（`domains:["*"]`，optional）。
 - 界面：菜单"提示词审核"（section `plugins`，icon `shield`，permission `moderation:read`），native 页面 `ModerationDashboard`；设置用 schema 表单（插件详情"设置"页）。
 - 内置：`deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS` 默认加 `moderation`；首次安装即启用，但 `mode` 默认 `off`，不配置时钩子直接放行。
@@ -1081,23 +1102,22 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 - **规范形式**（`perm.Canonical`，唯一入口）：全部范围不带后缀（存量 key 一字不改）；结尾的 `/*` 只在跟着本资源的行类型或单独出现时去掉（`group/12/*` → `group/12`，`group/12/account/*` → `group/12`，`account/*` → 全部；`group/*` 保留）。8 个旧 key `account:own:<x>`、`proxy:own:<x>` 不是别名：它们只是不存在的无范围 key，角色写入 400 `unknown`，访问密钥 403 `missing`。不合法的 key 400 `permission_keys`（或 `permissions`）`invalid`。
 - **蕴含**（`perm.Implies`，纯语法，不按账号当前所在分组推导）：全部 ⊇ 一切；own 只蕴含 own；`group/*` ⊇ 任何 `group/…`；`group/G` ⊇ `group/G/account/X`；`account/X` ⊇ `group/…/account/X`；`group/*/account/X` ⊇ `group/G/account/X`。共享测试向量 `next/sdk/permvectors/vectors.json`（Go 与控制台 TS 共用）。
 - **匹配**：`PermissionSet.Has(k)` = 持有的某个模式蕴含 k，所以只持有 `account:read:own` 时 `Has("account:read")` 为 false（“全量才能做”的判断保持全量语义）；`HasAction(a)` = 持有 a 的任意范围。路由 `Router.PermScoped(method, path, h, actions...)` 要求任一动作的任意范围，并把每个动作的 `core.DataScope` 放进 ctx（`core.Scope(ctx, az, action)` 取用）；全部范围的动作也记入 `Granted`。
-- **数据范围**：`core.DataScope{All, Owner, Groups, IDs, PairG, PairID}` 由用户在该动作上的全部模式编译（`Compile`），谓词 `core.AccountRows` / `core.ProxyRows` 的 `SQL(n)` / `Cond()` / `Args(scope)`：文本固定，id 只是数组参数；分组成员关系实时读 `account_groups`（任一分组匹配即在范围内），不进缓存。
-- **存储**：`permissions.scope_type`（`''`/`account`/`proxy`）；全部范围的授予在 `role_permissions`，带范围的在 `role_permission_scopes(role_id, permission_id, scope)`。访问密钥仍是 `text[]`，存规范 key。
+- **数据范围**：`core.DataScope{All, Owner, Groups, IDs, PairG, PairID}` 由用户在该动作上的全部模式编译（`Compile`），谓词 `core.AccountRows()` / `core.ProxyRows()` 的 `Cond()` / `Args(scope)`：文本固定，id 只是数组参数；列名是 `core.ScopeTable` 的未导出字段，只有这两个函数能设，别的包改不了条件的文本；分组成员关系实时读 `account_groups`（任一分组匹配即在范围内），不进缓存。
+- **存储**：`permissions.scope_type`（`''`/`account`/`proxy`）；授予是 `casbin_rule` 的 p 行（§99.1）：全部范围的范围列为 `*`，带范围的为规范后缀（0.1.290 之前分别在 `role_permissions` 与 `role_permission_scopes`，迁移 0100 转换后删除）。已移除、已停用的权限的授予保留，只是不生效。访问密钥仍是 `text[]`，存规范 key。
 - **迁移 `0097_authz_hardening.sql`**（0.1.286，停服发布，单事务，见 DESIGN-2026-11-12-AUTHZ-HARDENING 发布说明）：建表加列；每个旧 own 授予改写为 `(动作, 'own')`，角色已持有对应全量 key 时只记审计（`redundant: true`）；访问密钥里的旧写法换成 `<动作>:own`（`role:manage` 换成 `role:define` + `role:assign`）；然后删除旧 key 的 permission 行。审计 `authz.grant.migrate`（`via: migration 0097`、`from`、`key`、`redundant`）、`user.access_key.migrate`（before/after）；有写入才推进 authz 版本；可重复执行。`GET /permissions` 每项带 `scope_type`；`GET /me` 只输出规范 key。回滚脚本 `deploy/rollback/0.1.286-authz-down.sql` 把 own 范围与审计里的冗余授予改回旧 key、分组与 id 范围删除（写审计）。
 - **访问密钥取交集**：创建/修改时每个 key 须被用户蕴含；运行时 `Restrict` 逐模式取较窄者（存量不带后缀的 key 遇到只有 own 的用户收窄为 own），不可比（如 `group/12` 与 `own`）丢弃。
 - **内置角色默认**：supplier = 8 个 `…:own` + `usage:self:read`（2026-11-13）；operator 去掉冗余 own key，加 `account:credential:view:own`。
 - **账号（期 4 R3）**：列表、详情、写、删、测试、凭证、统计、汇总、动作、`AccountsInScope`（插件账号路由与宿主 RPC）都按调用者在对应动作上的范围过滤，越权一律 404。`mine=true`、`created_by=<id>` 在范围内再收窄（此前 own 级忽略 `created_by`）。受限档（范围不是全部）沿用 own 级的全部限制（并发默认与上限、管理员锁、受限设置、relay、绑定分组）。
   - 新建：范围不含 own、只有分组时，`group_ids` 必须含其中一个分组，否则 400 `fields[{group_ids, not_in_scope}]`。
   - 改分组：绑定或解绑自己范围内的分组（`group/G`、`group/*`）不需要 `account:group:bind`；写入后账号必须仍在调用者的 update 范围内，否则 403 `would_leave_scope`（整笔回滚）。
-  - 删除账号、删除分组时，清除点名它们的带范围授予（`core.ClearScopeGrants`，按角色审计 `authz.scope.clear`，推进 authz 版本并返回新版本；调用方提交后经 `core.AnnounceAuthzChanged` 广播 `authz:changed`，与其他授权写入一样立即作废各节点的权限缓存，广播丢失时由版本轮询兜底）。
+  - 删除账号、分组、代理时，在删除的同一事务里清除点名它们的带范围授予（`core.ScopeGrantClearer`，由 `authz.Service` 实现、`app` 注入 account、group、proxy，三者不 import authz；范围的匹配式在 authz，按角色审计 `authz.scope.clear`，推进 authz 版本与策略版本、角色的修订号，并返回新版本；清理先锁 `authz_meta`，所以同时提交的授予不会漏删；`authz.Service` 自己在调用方的事务提交后（轮询到新版本时）广播 `authz:changed`，与其他授权写入一样作废各节点的权限缓存，广播丢失时由版本轮询兜底，调用方不再自己广播，`core.AnnounceAuthzChanged` 已删除）。带范围的授予只能点名存在的行：角色写入（创建、改授予、插件矩阵）新增的范围 `group/G`、`account/X`、`group/G/account/X`、`proxy/X` 指向不存在（账号含已软删除）的行时 400 `invalid_argument`，`details.fields[{field:"permission_keys", code:"unknown_scope"}]`，否则删除路径清不到它，日后同 id 的行会继承这个授予（三审 C3）。
 - **代理与引用（期 4 R4）**：
   - 代理的列表、详情、位置、改、删、测试、回显都按 `proxy:read` / `proxy:manage` 的范围过滤，`mine`、`created_by` 在范围内收窄。
   - 新建代理（POST `/proxies`、`/proxies/probe`、保存账号时经 `proxy_url` 自动建）要求 `proxy:manage` 的范围是全部或 own；只有 `proxy/X` 时 403，`details.permission = proxy:manage:own`。
   - 受限档不能保存私网地址；连接设置被他人账号使用时 409 `proxy_in_use`。
   - 删除代理时清除 `proxy/X` 授予。
-  - 账号表单（POST/PATCH `/accounts`、预备容器、类型 models/fetch、ccgateway 草稿）可引用的代理统一为 `core.ProxyRefScope`：账号动作是全部时为全部代理，否则为 `proxy:read` 与 `proxy:manage` 范围的并集。
+  - 账号表单（POST/PATCH `/accounts`、类型 models/fetch）可引用的代理统一为 `core.ProxyRefScope`：账号动作是全部时为全部代理，否则为 `proxy:read` 与 `proxy:manage` 范围的并集。
   - 不持有任何 `proxy:manage` 时 `proxy_url` 返回 403，`details.permission` 为 `proxy:manage:own`（此前为 `proxy:own:manage`）。
-  - ccgateway 账号运行时路由的 PUT（请求日志）改为 `Perm(account:update)`，仍只对全量开放。
   - `/proxies/probe` 不论是否保存，都要求能新建代理（全部或 own）。
   - `FindOrCreate` 只在新建时检查私网地址；范围内已有的代理按地址匹配，不受这条限制。
 - **防提权与访问密钥（期 4 R6，机制在 R2a 生效）**：
@@ -1112,8 +1132,14 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 - **插件与 lookup（期 4 R5）**：
   - 插件账号路由（manifest `accounts`）与宿主 RPC `AccountScopeCheck` 都经 `AccountsInScope`，自动跟随范围。`all` 表示全部；否则 `allowed_ids` 是落在调用者范围内的 id。proto 与 SDK 注释已更新，接口形状不变。
   - `GET /lookup/accounts`、`/lookup/proxies` 按调用者 `account:read` / `proxy:read` 的范围过滤（任意范围都可调用），`mine=true` 在范围内再收窄。`/lookup/groups` 不变。
-  - 插件 manifest 的 `userPermissions[].key`（及 `inheritFrom`）最后一段不能是 `own`，否则 400 `invalid_format`（会被读成范围）。
+  - 插件 manifest 的 `userPermissions[].key`（及 `inheritFrom`）最后一段不能是 `own`，否则 400 `invalid_format`（会被读成范围）；key 里也不会有 `*`、`/`。插件自己的数据范围见下一条。
   - `GET /me` 的 `permissions` 只有规范 key。插件页面用宿主的 `hasAction(动作)`（任意范围）或 `has(规范 key)` 判断，不能再检查 `account:own:read`。
+- **插件资源范围**（2026-11-15 0.1.290，设计 `docs/plugin-permissions/` 第 1、4 章）：
+  - **声明**：`userPermissions[].scope` 为 `{resource, options?, own?}`（插件自己的资源：`resource` 匹配 `^[a-z][a-z0-9_]{0,29}$` 且不是保留名 `account`、`proxy`、`group`、`value`（插件作用于账号用路由 `accounts`，D4）；`options` 是本插件一条无路径参数的 GET admin 路由，给出候选 id；`own` 表示可授“自己创建的”；至少有 `options` 或 `own` 之一）或 `{values:[{key, label}]}`（固定枚举，key 匹配 `[A-Za-z0-9_.-]{1,64}`，至多 50 个，与前三者互斥）。`ui.settings`、`ui.accountActions` 引用的权限不能带 scope（`unsupported`）。
+  - **语法**：插件动作（`plugin.` 前缀）按语法接受范围 `*`（= 全部，规范形式不带后缀）、`own`、`<资源>/<值>`，枚举的资源名固定为 `value`（`plugin.x:rule:apply:value/input`），资源 id 是字符串（`plugin.m:flow:manage:flow/3`）。不接受 `flow/*`、多段路径。蕴含：全部 ⊇ 一切；own 只蕴含 own；`<资源>/<值>` 只蕴含自己。`perm` 只管语法；资源对不对、可不可以 own、值在不在枚举里由 authz 写入授予时对照目录检查（`pluginScope.fits`，不合 400 `permission_keys` `invalid`），options 资源的 id 不校验是否存在。共享向量同上（`vectors.json` 增加插件范围用例）。存储：`scope_type = "plugin:<资源>"`，带范围的授予是 `casbin_rule` 的 p 行，范围列为 `own` 或 `<资源>/<值>`（§99.1；0.1.290 之前在 `role_permission_scopes`）。通配 `a:*` 只是编辑器的勾选快捷方式，保存时展开为具体 key，目录里没有通配 key（D1）。
+  - **运行时**：插件路由、菜单、页面、slot 都按“任意范围持有”（§5.8、§22）；`scopeFrom` 的判定见 §5.8。`HTTPRequest.action_scope`（`ActionScope{permission（不带范围的完整 key）, all, own, values（`<值>`，排序去重）}`）在路由权限声明了 scope 时总是带上（已按访问密钥收窄；不升 Host API：声明 scope 的清单本来就只能装在新核心上）。插件**必须**自己按 `created_by` 判 own（核心不知道行的创建者）并按 `action_scope` 过滤列表；SDK：`pluginsdk.RequestScope(req)`（没带时为零值，什么都达不到）、`Scope.Allows(value, createdBy)`、`RequireScope(req, value, createdBy)`（无用户 401，范围外 404）。`AuthzCheck` 问带范围的本地 key（`rules:read:own`）也算本插件自己的 key，不需要 `authz.read`。
+  - **候选**：`GET /plugins/:key/scope-options`（§5.7）。options 路由由核心直接调用：query `q`、`limit`、`ids`（逗号分隔），`action_scope` 为调用者在被配置的权限上的范围；响应 `{data:{items:[{id（字符串）, name, hint?, status?}], more}}`。SDK `pluginsdk.ScopeOptions(fn)` 封装解析与回答（`fn` 按 `q.Scope` 过滤）。
+  - **控制台**（UI 3.16）：`auth.has`/`hasAction` 与 `implies.ts` 按同一语法解析插件 key；宿主 `permissions.has` 要全量、`hasAction` 任意范围、`scope` 列出插件范围 key（§23.2），依赖插件范围的原生页面声明 `hostUICompat ^3.16`。iframe 桥 `permissions.check`（§23.2）对不带范围的本地 key 只要持有任一范围即为 true（与服务端 `HasSome` 相同），带范围的 key（如 `flow:read:value/a`）按蕴含判断：持有的范围蕴含它（如持有全部）即为 true，与服务端 `Has` 相同（二审 logic #6；此前要求精确持有，持有全部范围反而为 false）。
 - **相关章节**：目录里哪些动作可带范围（`scope_type`）见 §4；授出范围与可管理目标的防提权按蕴含比较见 §43.6；访问密钥的交集与二次验证见 §80、§80.2。
 
 ### 21.1 权限（§4 表同步更新）
@@ -1133,7 +1159,7 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 - admin 角色按 `SyncCore` 规则自动获得全部新 key（含 `account:settings:custom`）；`user` 角色不变；已有自定义角色需要管理员手工勾选。
 - 典型角色：**供应商** = 六个 `account:<x>:own` + `proxy:read:own` + `proxy:manage:own`，没有 `account:settings:custom`（2026-11-12 起即内置角色 `supplier` 的默认权限，§4；没有 `account:relay` 与 `account:group:bind`，所以不能新建可自定义上游的账号、不能绑定分组）；**只读** = `account:read` + `proxy:read`，没有任何 `credential:view`。
 
-路由绑定（期 4 R2a 起）：`httpapi.Router.PermScoped(method, path, handler, actions...)` 要求任一动作的任意范围（`PermissionSet.HasAction`），把每个动作的 `core.DataScope`（未持有时为空）放进 request ctx，全部范围的动作也记入 `core.Granted`；都不持有返回 403 `permission_denied`，`details.permission` 为第一个动作。handler 用 `core.Scope(ctx, az, action)` 取范围，条件落在 SQL 里（`core.AccountRows` / `core.ProxyRows` 的 `SQL(n)` / `Cond()` / `Args(scope)`），越权访问一律 404（不区分“不存在”和“不在范围内”）。`Router.PermAny` 保留给多个无范围 key 的路由；`core.OwnerScope`、`OwnerScopeOf`、`ScopeOf`、`Allows`、`AccountScope`、`perm.Scoped/Pair` 已在 R7 删除。
+路由绑定（期 4 R2a 起）：`httpapi.Router.PermScoped(method, path, handler, actions...)` 要求任一动作的任意范围（`PermissionSet.HasAction`），把每个动作的 `core.DataScope`（未持有时为空）放进 request ctx，全部范围的动作也记入 `core.Granted`；都不持有返回 403 `permission_denied`，`details.permission` 为第一个动作。handler 用 `core.Scope(ctx, az, action)` 取范围，条件落在 SQL 里（`core.AccountRows()` / `core.ProxyRows()` 的 `Cond()` / `Args(scope)`），越权访问一律 404（不区分“不存在”和“不在范围内”）。`Router.PermAny` 保留给多个无范围 key 的路由；`core.OwnerScope`、`OwnerScopeOf`、`ScopeOf`、`Allows`、`AccountScope`、`perm.Scoped/Pair` 已在 R7 删除。
 
 所有权只约束控制台 API；网关调度、`AccountDirectory`、分组的 `account_count`、代理的 `account_count` 仍按全部统计。
 
@@ -1197,20 +1223,20 @@ POST/PATCH `/accounts` 新增 `proxy_url`（字符串，可选；去首尾空白
 
 解析（`core.ParseProxyURL(raw string) (core.ProxySpec, error)`，`ProxySpec{Protocol, Host, Port, Username, Password}`；解析器放在 core，账号模块不 import 代理模块；`proxy.ParseURL` 是它的别名）：去首尾空白；`url.Parse`；scheme 小写后必须是 `http` / `https` / `socks5` / `socks5h`（`socks5h` 记为 `socks5`）；host 取 `Hostname()` **小写**（IPv6 去方括号）、非空；port 必填 1–65535；用户名/密码取 `User.Username()`/`User.Password()`（已 URL 解码；`url.Parse` 按最后一个 `@` 切分，密码里未转义的 `@` 因此被接受）；opaque 形式（`http:host:1080`）、带 path（`/` 以外）、query（含空 `?`）、fragment 拒绝；结果再过 §15.4 的字段校验（host 不含 `/ ? # @` 与空白、≤255；username ≤255；password ≤1024）。任何错误返回 400 `invalid_argument`，`fields[{field:"proxy_url", code:"invalid", message:"invalid proxy URL: <原因>"}]`，**message 不回显原串**（可能含密码；`url.Error` 会引用整串，所以也不透传）。
 
-查找或创建（新端口 `core.ProxyResolver`，由 `proxy.Service` 实现，通过 `account.Deps` 注入；`tx` 用 `pgx.Tx`，与 `core.PermissionCatalog` 一致）：
+查找或创建（新端口 `core.ProxyResolver`，由 `proxy.Service` 实现，通过 `account.Deps` 注入；`tx` 是调用方事务里的 `*gorm.DB`，与 `core.PermissionCatalog` 一致；`scope` 是调用者 `proxy:manage` 编译出的 `core.DataScope`，§21.0）：
 
 ```go
 type ProxyResolver interface {
-    FindOrCreate(ctx context.Context, tx pgx.Tx, spec ProxySpec, ownerID int64, scope *int64) (id int64, created bool, err error)
-    AuditAutoCreate(ctx context.Context, tx pgx.Tx, proxyID, ownerID, accountID int64) error
+    FindOrCreate(ctx context.Context, tx *gorm.DB, spec ProxySpec, ownerID int64, scope DataScope) (id int64, created bool, err error)
+    AuditAutoCreate(ctx context.Context, tx *gorm.DB, proxyID, ownerID, accountID int64) error
 }
 ```
 
 - 权限：调用者须有 `proxy:manage` 或 `proxy:own:manage`，否则 403 `permission_denied`（`details.permission = "proxy:own:manage"`）。由账号模块按 `proxy:manage` 的范围判断（期 4 R4 起 `details.permission = "proxy:manage:own"`；`FindOrCreate` 只在新建时要求全部或 own 范围）；权限、解析都在调用插件校验凭证之前做，`account.Deps.Resolver` 为空时 `proxy_url` 返回 501 `unsupported`。
-- 匹配范围 `scope`：代理的**写范围**（2026-11-12 权限加固 T30 起；此前按读范围）：有 `proxy:manage` 为全部（`nil`），只有 `proxy:own:manage` 为自己创建的（传 `&uid`）。由账号模块用 `core.ScopeOf` 与权限判断一次算好传入；`POST /proxies/probe` 带 `save` 时同样传写范围。新建的行 `allow_private = (scope == nil)`（§43.3）。校验 `proxy_id` 用的是另一套可见范围（自己级账号 key 时）：有 `proxy:read` 为全部，`proxy:own:read` 或 `proxy:own:manage` 为自己创建的；没有任何代理 key 的调用者给出任何 `proxy_id` 都是 `proxy_id/not_found`；全部级账号 key（`account:create` / `account:update`）的调用者 `proxy_id` 只要存在即可。
+- 匹配范围 `scope`：代理的**写范围**（2026-11-12 权限加固 T30 起；此前按读范围）：是调用者 `proxy:manage` 的 `core.DataScope`：全部为 `All`，自己创建的为 `Owner`，另有分组、单个 id 等范围（§21.0）。由账号模块用 `core.Scope` 一次算好传入；`POST /proxies/probe` 带 `save` 时同样传写范围。只有全部或自己创建的范围能新建；新建的行 `allow_private = !scope.Restricted()`（§43.3）。校验 `proxy_id` 用的是另一套可见范围（自己级账号 key 时）：有 `proxy:read` 为全部，`proxy:own:read` 或 `proxy:own:manage` 为自己创建的；没有任何代理 key 的调用者给出任何 `proxy_id` 都是 `proxy_id/not_found`；全部级账号 key（`account:create` / `account:update`）的调用者 `proxy_id` 只要存在即可。
 - 匹配键 = `protocol, host（小写）, port, username, password` 全等；`name`、`status` 不参与。SQL 按 `protocol = $1 AND lower(host) = $2 AND port = $3 AND username = $4` 加 `(password_enc IS NULL) = <输入密码是否为空>` 与范围条件预筛，`ORDER BY id`，候选逐条解密后 `subtle.ConstantTimeCompare` 比密码（解不开的行跳过）。**跳过 `status=disabled` 的代理**。命中多条取 id 最小的。
 - 未命中则新建：`name` = `<protocol>://<host>:<port>`（IPv6 host 带方括号；超长按 rune 截断到 100），`status=active`，`created_by` = `ownerID`。
-- 查找 + 创建与账号写入在**同一事务**，`FindOrCreate` 先 `SELECT pg_advisory_xact_lock(hashtext(protocol||'|'||host||'|'||port||'|'||username))`（不含密码）防并发重复。
+- 查找 + 创建与账号写入在**同一事务**，`FindOrCreate` 先取事务级 advisory 锁 `store.XactLock(protocol|host|port|username)`（不含密码）防并发重复。
 - 审计与广播拆到 `AuditAutoCreate`：`FindOrCreate` **不写审计、不广播**——POST `/accounts` 时代理必须先于账号行存在（外键），而审计 detail 要 `account_id`，所以由账号模块在账号行写入、拿到 id 之后、**同一事务内**对 `created == true` 的结果调 `AuditAutoCreate(ctx, tx, proxyID, uid, accountID)`：它写 `proxy.create {auto:true, account_id}`（IP 取 `audit.WithClientIP`，所以 ctx 用 `audit.Context(c)`）并广播 `config:changed {"type":"proxy","id"}`（广播可能先于提交：新代理不可能已被任何节点缓存，监听者只是丢弃空缓存，无害）。`created == false` 不调。
 - spec 不合法（未经 `ParseURL`）时 `FindOrCreate` / `HTTPClientFor` 返回 `invalid_argument`，不碰数据库。
 
@@ -1269,7 +1295,7 @@ type ProxyResolver interface {
 
 **表格页的"新建"按钮**：manifest `ui.pages.<id>.create: {page, permission?}` 只能写在 `type:"table"` 的页面上，`page` 必须是同一插件的 `type:"form"` 页面，`permission` 是 `userPermissions` 里的 key。控制台在表格上方画一个主按钮，文字取目标页的 `title`，点击打开 `/p/<插件>/<page>`。`GET /ui/plugins` 对没有该权限的调用者去掉 `create`，表单页如果没有可见菜单指向它也一并去掉；表格页本身因菜单权限对调用者不可见时，它的 `create` 链接同样不算可用，只靠这条链接到达的表单页也去掉（即使链接不要求权限）。校验错误：`ui.pages.<id>.create` invalid（非表格页）、`.create.page` unknown / invalid（不存在 / 不是表单）、`.create.permission` unknown。volcengine 0.12.6 用它替代了"新建素材组""新建素材"两个菜单项，需要核心 0.1.229。
 
-**控制台布局**：路由 `meta.parent` 指向上级页面，顶栏在标题前显示面包屑（价格详情、价格同步源、同步预览、插件详情、发布进度、安装授权、插件设置）。设置页改为左侧二级导航（网关 / 计费 / 通知 / 系统 / 插件设置），页面仍用 `?tab=` 选择；"插件设置"列出已启用且有设置表单的插件（以及 ccgateway），选中为 `?tab=plugin:<key>`，内容即插件设置页。（§90 起二级导航改为侧栏的系统设置视图；插件设置不在其中，从已安装插件列表的“设置”按钮打开，`?tab=plugin:<key>` 跳到 `/plugins/<key>/settings`，见 90.2、90.4。）
+**控制台布局**：路由 `meta.parent` 指向上级页面，顶栏在标题前显示面包屑（价格详情、价格同步源、同步预览、插件详情、发布进度、安装授权、插件设置）。设置页改为左侧二级导航（网关 / 计费 / 通知 / 系统 / 插件设置），页面仍用 `?tab=` 选择；"插件设置"列出已启用且有设置表单的插件，选中为 `?tab=plugin:<key>`，内容即插件设置页。（§90 起二级导航改为侧栏的系统设置视图；插件设置不在其中，从已安装插件列表的“设置”按钮打开，`?tab=plugin:<key>` 跳到 `/plugins/<key>/settings`，见 90.2、90.4。）
 
 ## 23. 原生插件 UI 的共享库：`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset`（2026-09-27，用户要求）
 
@@ -1277,7 +1303,7 @@ type ProxyResolver interface {
 
 ### 23.1 加载方式与 import map
 
-- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.15.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。所以 `hostUICompat` 需要 3.4 或更高的插件，`hostCompat` 下限必须至少是 0.1.229，否则 `sdk/manifest` 校验报 `hostCompat / below_ui_core`（dynweight 0.4.1、growth 0.1.6 的下限因此提到 0.1.229）。
+- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.17.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
 - `entry.js` 的形状是 `NativePluginModule`：`register(host: PluginHost): void | Promise<void>`、`unregister?(): void | Promise<void>`。`register` 里用 `host.registerComponent(name, comp)` 注册 manifest `ui.pages[].component`、`ui.slots[].component` 引用的组件名，用 `host.addMessages({en, zh})` 注册文案；`unregister` 释放模块级状态（moderation 的 `entry.ts` 是最小样例）。
 - **import map**：控制台 `index.html` 注入 `<script type="importmap">`，把 `vue`、`vue-router`、`pinia`、`vue-i18n`、`@sub2api/ui`、`@sub2api/host` 映射到控制台自己构建出的 chunk（`web/vite.config.ts` 的 `SHARED`，`preserveEntrySignatures: 'strict'`，所有导出都保留；dev 下映射到源码，复用同样的预打包依赖）。插件用 `@sub2api/vite-preset` 构建时这些模块（`SHARED_MODULES`，前缀匹配 `vue/*` 之类的子路径）全部 external，**不得打进插件包**，否则页面里会出现第二份 Vue 运行时和第二套组件/状态：`toast`、`confirm`、i18n、路由、`theme` 都不再与控制台共享，组件的 `provide/inject` 也会失效。
 - 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（官方插件 growth、guard 用 `^3.4`，因为它们用到 3.4 的 `lazyPage`；dynweight 0.5.7、moderation 0.9.1 起用 `^3.11`，因为它们用到 `host.components.EntityPicker`（§96.6）；moderation 0.9.2 起用 `^3.12`（§96.7）；`sdk/manifest`：声明了 `ui.native` 时必填）。
@@ -1294,7 +1320,7 @@ type ProxyResolver interface {
 | `pluginApi` | `ApiClient`，根为 `/api/v1/p/<key>`（插件自己的 `routes`，§5.8） |
 | `router` | vue-router `Router`（控制台实例；如 `router.push({path:'/plugins/'+plugin.key, query:{tab:'settings'}})` 跳插件设置页） |
 | `i18n` | `HostI18n`：`locale: Ref<string>`（`zh`/`en`）、`t(key, params?)`（全局 key）、`text(LocalizedText)`（从 `{en,zh}` 或字符串取当前语言，回退 en）、`addMessages(namespace, {en:{…},zh:{…}})`、`formatNumber(n, digits?)`、`formatMoney(v, digits?)`、`formatDateTime(v)` |
-| `permissions` | `HostPermissions`：`superuser()`、`has(key)`、`any(...keys)`；key 是核心权限（§4），如 `plugin:manage`；`has` 按蕴含判断（§21.0，`has('account:read')` 只对全量为真）。可选（期 4 R8 起的控制台，先检测再用）：`hasAction(action)` 任意范围持有该动作，`scope(action)` 持有的规范 key 列表（全量为 `[action]`） |
+| `permissions` | `HostPermissions`：`superuser()`、`has(key)`、`any(...keys)`；key 是核心权限（§4），如 `plugin:manage`；`has` 按蕴含判断（§21.0，`has('account:read')` 只对全量为真）。可选（期 4 R8 起的控制台，先检测再用）：`hasAction(action)` 任意范围持有该动作，`scope(action)` 持有的规范 key 列表（全量为 `[action]`）。UI 3.16 起插件 key 也按范围解析：`has('plugin.p:flow:manage')` 要全量，`hasAction` 任意范围，`scope` 列出 `…:own`、`…:flow/2`；3.15 的控制台不解析插件范围，依赖它的页面声明 `hostUICompat ^3.16` |
 | `theme` | `Ref<'light' \| 'dark'>`，随控制台主题切换 |
 | `toast(message, kind?)` | `kind`：`success` `error` `info` `warning`，默认 `info` |
 | `confirm(opts)` | `ConfirmOptions {title?, message, confirmText?, cancelText?, danger?}` → `Promise<boolean>` |
@@ -1303,7 +1329,7 @@ type ProxyResolver interface {
 | `asset(path)` | 包内文件的绝对 URL（`assetBase + '/' + path`，如 `asset('ui/native/logo.svg')`） |
 | `t(key, params?)` | 插件本地文案：查 `plugin.<key>.<key>` |
 | `addMessages({en:{…}, zh:{…}})` | 注册到命名空间 `plugin.<key>` |
-| `can(permission)` | 插件本地权限：`can('stats:read')` → `permissions.has('plugin.<key>:stats:read')`（manifest `userPermissions`） |
+| `can(permission)` | 插件本地权限：`can('stats:read')` → `permissions.has('plugin.<key>:stats:read')`（manifest `userPermissions`；全量语义，带范围的权限要任意范围时用 `permissions.hasAction`） |
 
 `ApiClient`（`http.ts`）：
 
@@ -1317,10 +1343,12 @@ type ProxyResolver interface {
 | `request<T>(method, path, opts?)` | 通用 |
 
 - `path` 相对客户端根；`query` 中 `undefined`/`null`/`''` 省略，数组按重复键展开。`opts: {query?, body?, headers?, signal?, anonymous?}`（`noStepUp` 已删除，§3.3）。
-- 自动带 `Authorization`、`Accept-Language`；401 自动刷新一次并重试（多标签页串行，§14.2）；204 返回 `null`。（原 403 `step_up_required` 弹密码确认重试的逻辑与 `noStepUp` 选项随二次验证删除，§3.3。）
+- 自动带 `Authorization`、`Accept-Language`；401 表示会话已结束，清会话回登录页（发出请求后会话已换了令牌时用新令牌重发一次，§100.8），5xx 不登出；204 返回 `null`。（原 403 `step_up_required` 弹密码确认重试的逻辑与 `noStepUp` 选项随二次验证删除，§3.3。）
 - 失败抛 `ApiError {status, code, message, details, fields}`：`fields` 是 `details.fields[]` 折平后的 `{field: message}`（`invalid_argument`，§3.1；message 为 `{en,zh}` 时按当前语言取），用 `isApiError(e)` 判断。响应没有 `error.code` 时按 HTTP 状态映射（400 `invalid_argument`、401 `unauthenticated`、403 `permission_denied`、404 `not_found`、409 `conflict`、429 `rate_limited`、503 `unavailable`，其余 `internal`）。
 - `listAll<T>(client, path, {query?, max?})`（UI 3.3）：按核心最大页长 200 逐页读完一个分页列表（`page`、`page_size` 由它填，`query` 是其余筛选），读到短页、`page.total` 或 `max` 条（缺省不限）为止；任何一页失败都整体 reject，不返回半截列表。插件读核心分组等整表时用它（moderation、dynweight）。
-- 其他导出：`createClient(prefix)`、`api`（= `/api/v1` 客户端）、`session`、`configureHttp`（控制台用，插件不要调）、`satisfiesRange`、`bridge-protocol.ts`（iframe 插件的 postMessage 协议，与原生 UI 无关；2026-11-13 T83 增加请求 `permissions.check` `{keys}` → `{[key]: boolean}`：只认本插件的本地 key，至多 `BRIDGE_MAX_PERMISSION_KEYS` = 50 个，超出或不是数组 `invalid_argument`；带 `plugin.` 前缀的 key（含本插件自己的）一律 false；判断看 `/me` 的权限列表本身而不走超管捷径（超管的列表是全部有效权限），所以未声明的 key 对超管也是 false，iframe 无从得知调用者是否超管；老核心回 `not_found`）。
+- `fetchWithSession(path, init?)`（UI 3.17）：JSON 客户端带不了的请求（原始字节上传、流、文件下载）用它发；`path` 与 `api` 同样相对 `/api/v1`，`init` 是 `fetch` 的参数（`headers` 为普通对象）；带会话令牌、401 规则与 `api` 相同，返回的 `Response` 不论成败交给调用方读（§100.8）。用到它的插件声明 `hostUICompat ^3.17`，`hostCompat` 要求核心 `>=0.1.290`。
+- `session.adoptRotated(sentWith, next)`（UI 3.17）：会话轮换后（二次验证、撤销其他会话，§100.4）采用新令牌 `next`，前提是会话当前仍是发请求时用的令牌 `sentWith`。`sentWith` 取请求选项 `onSentWith(token)` 报回的令牌（UI 3.17）：最后一次成功发送实际带的令牌，401 后改用别的标签页存的令牌重发时是重发用的那个；不能取发请求前的 `session.get()`，否则重发换出的令牌会被丢掉、存储里的令牌进入宽限期后整个控制台登出（二审 A7）；其他标签页已经存了更新的令牌（自己的轮换、重新登录）就保留那个，返回 `false`。先读一次存储，不等存储事件。`session.fromTokenResponse` 只用于登录响应。
+- 其他导出：`createClient(prefix)`、`api`（= `/api/v1` 客户端）、`session`、`configureHttp`（控制台用，插件不要调）、`satisfiesRange`、`bridge-protocol.ts`（iframe 插件的 postMessage 协议，与原生 UI 无关；2026-11-13 T83 增加请求 `permissions.check` `{keys}` → `{[key]: boolean}`：只认本插件的本地 key，至多 `BRIDGE_MAX_PERMISSION_KEYS` = 50 个，超出或不是数组 `invalid_argument`；带 `plugin.` 前缀的 key（含本插件自己的）一律 false；判断看 `/me` 的权限列表本身而不走超管捷径（超管的列表是全部有效权限），所以未声明的 key 对超管也是 false，iframe 无从得知调用者是否超管；老核心回 `not_found`；UI 3.16 起不带范围的本地 key 只要持有它的任一范围即为 true（持有 `flow:manage:own` 时 `flow:manage` 为 true），带范围的 key 须精确在列表里，§21.0）。
 
 `useList`（`useList.ts`，分页列表状态，控制台的列表页和插件的列表页共用）：
 
@@ -1453,11 +1481,13 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 
 **UI 3.5 手机形态（2026-11-07）。** 窄于 768px 时组件换成手机形态，宽屏渲染不变（`web/packages/ui/README.md`“手机形态”）。新增：`useViewport()` / `provideViewport()` 与类型 `Viewport`（`compact`、`touch`）；`TableColumn` 的 `mobile`（`title`/`subtitle`/`status`/`meta`/`detail`/`hidden`）、`mobileSpan`，`STable` 的 `mobile`（`card` 默认 / `scroll`）、`#card` 插槽与单元格插槽的 `layout`；`SFilterBar` 的 `#primary`、`activeCount`、`@done`，`SPageHeader` 的 `#filters-primary`、`filtersActiveCount`；`SButton` 的 `fab`；`SDrawer` 的 `side="bottom"`（底部抽屉）；`SSteps` 的 `direction` 默认 `auto`（手机竖排、宽屏横排）；`SModal` / `SFormModal` 的 `mobile`（类型 `ModalMobile`：`auto`/`sheet`/`fullscreen`/`center`），`SDropdown` 的 `mobile`（`sheet`/`popover`）；`SAutoRefresh` 的 `@refresh`；`SGrid` 的 `variant="stats"`；`dismissTopLayer()`（控制台路由在浏览器“返回”时关闭手机或触屏上打开的非持久最上层弹层，其余情况照常导航）。原生插件使用这些新增属性应声明 `hostUICompat: "^3.5"`；`sdk/manifest` 的核心下限检查仍按 UI 3.4 判断（3.6 起见下段）。
 
-**UI 3.6 账号界面扩展点（2026-11-07）。** 核心账号页开出两个通用扩展点（核心不认识任何具体插件；老插件一字不改照常运行），`HOST_UI_VERSION` 升到 `3.6.0`，`@sub2api/ui` / `@sub2api/host` 版本 3.6.0；用到其中任一项的插件声明 `hostUICompat: "^3.6"`，`sdk/manifest` 对 `ui.accountActions` 或 `account.list.toolbar` 的核心下限按 3.6 要求 `>=0.1.256`（0.1.255 是最后一个带 UI 3.5 的核心）。（1）**声明式账号操作 `ui.accountActions`**：manifest 条目 `{id, label, icon?, permission, route: "POST <path>", bulk?, confirm?, danger?, visibleFor?}`（`route` 必须是已声明的 admin 作用域 POST 路由且 permission 一致，路径不得含 `:参数` 或 `*通配` 段——核心只会发 `{"account_ids":[…]}`，填不了路径参数，校验码 `parameterized_route`；`visibleFor` 决定哪些行显示这条操作（2026-11-08 决定：行操作的可见性由插件声明）：`"editable"`（缺省）只在调用者有 `account:update` 权限的行显示，`"all"` 在调用者能看到的每一行都显示，两种取值下孤儿账号都不显示；非空且不是这两个值的校验码 `invalid`（field `ui.accountActions[i].visibleFor`）；每批大小固定为 `manifest.MaxAccountBatch`，不是可声明字段（2026-11-08 决定去掉原先的批大小字段）；见 `sdk/manifest/check/ui.go` `uiAccountActions`；UI 3.8 起条目还可带 `accountTypes`，只对本插件这些账号类型的行显示，批量栏同样只算这些行，见 §91b）；`GET /ui/plugins` 以 `account_actions` 按权限过滤、字段原样下发（`visibleFor` 缺省不补）；控制台把每条渲染进每行操作菜单（key `declared:<plugin>:<id>`，按 `visibleFor` 决定显隐、孤儿账号一律隐藏，`danger` 透传红色），`bulk: true` 的还追加进批量栏「更多」菜单，作用的行与行菜单一致：`visibleFor` 缺省时为所选可编辑账号，`all` 时为所选全部非孤儿账号，菜单计数同；`setIds` 收到的 id 列表先去重并只留正整数再记入。点击时有 `confirm` 先确认（`{n}` 替换为账号数），然后 `POST /api/v1/p/<key><path>`，body 一律 `{"account_ids": [...]}`（2026-11-08 决定：单行也是一个元素的数组，没有 `{"account_id": 7}` 这种形状），每批固定 `manifest.MaxAccountBatch`（500，前端常量 `MAX_ACCOUNT_BATCH`）个、超过分批顺序发送，每个请求带 95 秒超时（`AbortSignal.timeout`，与账号类型插件动作 `runPluginAction` 一致）；响应任意 JSON，核心只看状态码，成功后 `list.reload()`，失败按批量操作口径提示。行与批量共用 `web/src/views/accounts/usePluginAccountActions.ts`（`route` 经 `parseRouteRef(entry.route, 'POST')` 解析，解析失败不发请求）。（2）**工具栏插槽 `account.list.toolbar`**：挂在账号列表 `SPageHeader #filters-primary`（搜索框之后，手机上也始终可见；`#title-extra` 会让页面说明留在页内，不用）；props `{ ids: number[] | null, setIds(ids: number[] | null, label: string) }`。多个插件可以同时设筛选（2026-11-08 决定）：核心按插件分别记一组 id（`PluginSlot` 的 `props` 可以是 `(entry) => Record<string, any>` 函数，按插件取值），每个插件的 `props.ids` 只是它自己那组（没设过为 `null`），`setIds` 只改自己那组（`null` 与空数组都是清除，核心不截它这组）；列表的 `ids` 筛选（`GET /accounts?ids=1,2`，与其他筛选 AND）取所有组的交集，超过 500 个截到前 500 个（第一枚芯片的文案加「（前 500 个）」后缀，i18n `accounts.listUi.idsTruncated`，参数 `{label, n}`），交集为空时核心以 `ids=0` 请求（0 不是账号 id，后端解析通过、匹配不到行）、列表为空；每个插件一个可关闭芯片显示自己的 `label`，关闭只清自己那组，「清除筛选」清全部；筛选变化照常清空勾选，跨页全选也带 `ids`。`account.form.widgets` 插槽不参与账号保存（2026-11-08 决定：插件代码不进核心保存流程，账号级的插件配置在插件自己的页面改）。上面的 500 是同一个常量：Go `manifest.MaxAccountBatch`（`sdk/manifest`；声明式账号操作每批的大小、`GET /accounts?ids=` 一次的上限、dynweight 的 `/reset` `/weights` `/degraded` 都引用它），前端 `MAX_ACCOUNT_BATCH`（`@sub2api/host`；`ui-contract.spec.ts` 锁定两边相等）。
+**UI 3.6 账号界面扩展点（2026-11-07）。** 核心账号页开出两个通用扩展点（核心不认识任何具体插件；老插件一字不改照常运行），`HOST_UI_VERSION` 升到 `3.6.0`，`@sub2api/ui` / `@sub2api/host` 版本 3.6.0；用到其中任一项的插件声明 `hostUICompat: "^3.6"`，`sdk/manifest` 对 `ui.accountActions` 或 `account.list.toolbar` 的核心下限按 3.6 要求 `>=0.1.256`（0.1.255 是最后一个带 UI 3.5 的核心）。（1）**声明式账号操作 `ui.accountActions`**：manifest 条目 `{id, label, icon?, permission, route: "POST <path>", bulk?, confirm?, danger?, visibleFor?}`（`route` 必须是已声明的 admin 作用域 POST 路由且 permission 一致，路径不得含 `:参数` 或 `*通配` 段——核心只会发 `{"account_ids":[…]}`，填不了路径参数，校验码 `parameterized_route`；`visibleFor` 决定哪些行显示这条操作（2026-11-08 决定：行操作的可见性由插件声明）：`"editable"`（缺省）只在调用者有 `account:update` 权限的行显示，`"all"` 在调用者能看到的每一行都显示，两种取值下孤儿账号都不显示；非空且不是这两个值的校验码 `invalid`（field `ui.accountActions[i].visibleFor`）；每批大小固定为 `manifest.MaxAccountBatch`，不是可声明字段（2026-11-08 决定去掉原先的批大小字段）；见 `sdk/manifest/check/ui.go` `uiAccountActions`；UI 3.8 起条目还可带 `accountTypes`，只对本插件这些账号类型的行显示，批量栏同样只算这些行，见 §91b）；`GET /ui/plugins` 以 `account_actions` 按权限过滤、字段原样下发（`visibleFor` 缺省不补）；控制台把每条渲染进每行操作菜单（key `declared:<plugin>:<id>`，按 `visibleFor` 决定显隐、孤儿账号一律隐藏，`danger` 透传红色），`bulk: true` 的还追加进批量栏「更多」菜单，作用的行与行菜单一致：`visibleFor` 缺省时为所选可编辑账号，`all` 时为所选全部非孤儿账号，菜单计数同；`setIds` 收到的 id 列表先去重并只留正整数再记入。点击时有 `confirm` 先确认（`{n}` 替换为账号数），然后 `POST /api/v1/p/<key><path>`，body 一律 `{"account_ids": [...]}`（2026-11-08 决定：单行也是一个元素的数组，没有 `{"account_id": 7}` 这种形状），每批固定 `manifest.MaxAccountBatch`（500，前端常量 `MAX_ACCOUNT_BATCH`）个、超过分批顺序发送，每个请求带 95 秒超时（`AbortSignal.timeout`）；响应任意 JSON，核心只看状态码，成功后 `list.reload()`，失败按批量操作口径提示。行与批量共用 `web/src/views/accounts/usePluginAccountActions.ts`（`route` 经 `parseRouteRef(entry.route, 'POST')` 解析，解析失败不发请求）。（2）**工具栏插槽 `account.list.toolbar`**：挂在账号列表 `SPageHeader #filters-primary`（搜索框之后，手机上也始终可见；`#title-extra` 会让页面说明留在页内，不用）；props `{ ids: number[] | null, setIds(ids: number[] | null, label: string) }`。多个插件可以同时设筛选（2026-11-08 决定）：核心按插件分别记一组 id（`PluginSlot` 的 `props` 可以是 `(entry) => Record<string, any>` 函数，按插件取值），每个插件的 `props.ids` 只是它自己那组（没设过为 `null`），`setIds` 只改自己那组（`null` 与空数组都是清除，核心不截它这组）；列表的 `ids` 筛选（`GET /accounts?ids=1,2`，与其他筛选 AND）取所有组的交集，超过 500 个截到前 500 个（第一枚芯片的文案加「（前 500 个）」后缀，i18n `accounts.listUi.idsTruncated`，参数 `{label, n}`），交集为空时核心以 `ids=0` 请求（0 不是账号 id，后端解析通过、匹配不到行）、列表为空；每个插件一个可关闭芯片显示自己的 `label`，关闭只清自己那组，「清除筛选」清全部；筛选变化照常清空勾选，跨页全选也带 `ids`。`account.form.widgets` 插槽不参与账号保存（2026-11-08 决定：插件代码不进核心保存流程，账号级的插件配置在插件自己的页面改）。上面的 500 是同一个常量：Go `manifest.MaxAccountBatch`（`sdk/manifest`；声明式账号操作每批的大小、`GET /accounts?ids=` 一次的上限、dynweight 的 `/reset` `/weights` `/degraded` 都引用它），前端 `MAX_ACCOUNT_BATCH`（`@sub2api/host`；`ui-contract.spec.ts` 锁定两边相等）。
 
 账号页的扩展点（含今后再开的）按三条判据验收（2026-11-08 决定）：① **核心不被插件阻断**——核心的保存、删除、测试、列表加载等流程里没有同步等待插件返回值的点，插件请求失败只影响插件自己那块界面；② **插件不写核心数据**——插件只读写自己的接口，需要核心数据时由核心以 props 传入，或按公开接口只读；③ **插件输入进核心必有上限与钳制**——插件交给核心的数据（`setIds` 的 id 列表、声明里的文案与路由）由核心校验、截断或拒绝。
 
 控制台账号列表用它做批量操作：勾选在翻页后保留，改筛选条件清空；「选择全部 N 项」按当前筛选以每页 200 条拉取全部账号。批量编辑（优先级、权重、并发、TPM、RPM、分组〔替换／追加／移除〕、代理、允许自动禁用，只改勾选的字段）、启用／停用、重置状态、删除、测试都对每个账号调用现有单条接口（`PATCH /accounts/:id`、`POST /accounts/:id/reset-status`、`DELETE /accounts/:id`、`POST /accounts/:id/test`），最多 4 个（测试 3 个）同时进行，可中途停止；权限、插件生命周期钩子、审计与单条操作完全相同，没有新增服务端接口。每项操作只作用于所选账号中适用的那部分（按钮显示数量）；与账号现值相同的字段不发送，没有变化的账号不发请求；类型固定了「自动禁用」的账号跳过该项；删除时「保留资源」只对声明了保留天数的类型生效。
+
+**UI 3.16 插件权限范围（0.1.290）。** 新导出 `useScrollClip(scroller, content): Ref<boolean>`：`scroller` 是 `overflow-x: auto` 的容器、`content` 是其中的表格（都是 `Ref<HTMLElement | undefined>`），内容被裁到右侧之外时为 `true`（随尺寸变化与滚动更新，挂载前为 `false`），用来在可横向滚动的表格右缘画渐隐或“还有列”的提示；核心的 `STable` 与权限矩阵用的就是它（`web/packages/ui/README.md`“插件权限的范围（UI SDK 3.16）”，`ui-contract.spec.ts` 锁定导出）。用到它的插件声明 `hostUICompat: "^3.16"`。
 
 ### 23.4 约定
 
@@ -1471,7 +1501,7 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 - 需要感知暗色时读 `host.theme`（`Ref<'light'|'dark'>`），不要自己查 `document.documentElement.classList`；组件本身已自动适配。
 - 插件私有样式（类名、CSS 变量、keyframes）一律以插件 key 为前缀，避免与控制台和其他插件冲突：moderation 的 `ui/native/src/moderation.css` 全部用 `mod-` 前缀（`.mod-toolbar` `.mod-num` `.mod-prewrap` `.mod-hint` …），新插件照此（如 `guard-`）。不写全局选择器（`body`、`.card`、`input` …）。
 - 权限：核心权限用 `host.permissions.has/any/superuser`，插件自己的 `userPermissions` 用 `host.can`；菜单已按权限过滤，页面内的按钮仍要自己判断。
-- 接口：插件自己的 `routes` 走 `host.pluginApi`（相对路径，如 `pluginApi.list('/events', {page})`），核心接口走 `host.api`；不要自己 `fetch`（会丢掉 token 刷新）。
+- 接口：插件自己的 `routes` 走 `host.pluginApi`（相对路径，如 `pluginApi.list('/events', {page})`），核心接口走 `host.api`。JSON 客户端带不了的请求（原始字节的上传、流、文件下载）用 `@sub2api/host` 导出的 `fetchWithSession(path, init)`（`path` 是相对 `/api/v1` 的接口路径，插件自己的路由写 `/p/<key>/…`），不要自己 `fetch`：它带上会话令牌和 `Accept-Language`，上报响应里的授权版本，并沿用客户端的 401 处理（另一个标签页刚换了令牌时用新令牌重发一次，否则结束会话、回到登录页，§100）；自己 `fetch` 既没有令牌，401 时会话也不会结束。
 
 ### 23.5 原生账号表单（`form.mode = native`）收到的 props 与 expose
 
@@ -1610,7 +1640,7 @@ message RankedAccount {
 | `model_not_served` | 账号模型列表不含请求的模型 | 模型名 |
 | `referenced_model_not_served` | 请求引用了第二个模型（`fallbacks`、advisor 工具，§13 `modelReferences`），账号模型列表不含它 | 模型名 |
 | `usage_unsupported` | 账号类型无法计量请求要求的用量 | `additional` / `attempts` / 引用的用量种类 |
-| `bound_elsewhere` | 请求的文件资源、辅助历史或回退额度凭证属于另一个账号 | `resource` / `helper_history` / `fallback_credit` |
+| `bound_elsewhere` | 请求的文件资源、辅助历史或回退额度凭证属于另一个账号（只出现在 0.1.290 之前的记录里，随 CCGateway 删除） | `resource` / `helper_history` / `fallback_credit` |
 | `availability_blocked` | 被模型可用性预检拦截（细节在 `anomalies.availability`） | — |
 | `failure_policy` | 失败策略把重试限定在别的账号 | `same_account` / `proxy_changed` / `egress` |
 | `rank_excluded` | `scheduler.rank` 插件给了权重 0 | — |
@@ -1798,7 +1828,7 @@ message RankedAccount {
 
 #### 1. `ClassifyErrorResponse.client_error_code`
 
-**2026-10-19 更新（Core 0.1.168）：以下插件错误码规则只用于本系统生成的错误结构。收到真实上游 HTTP 错误时，最终响应的状态、Content-Type 和正文原样传给客户端，不新增/替换 code，不因插件分类或协议转换重新包装 JSON；空正文、HTML、文本、非 UTF-8 和超长正文同样保留。分类仍用于重试及账号效果。Core 的 64 KiB 限制现在仅用于分类/诊断前缀，完整大错误体写私有临时文件，调用结束清理；读取不完整等本地转发失败才生成自己的错误。用量日志独立提取真实 message，不用调度原因替代它；数据库不接受的字节只在诊断中转义。CCGateway 的 CLI/Worker 侧同样按 [302 v10 协议](../plugins/ccgateway/docs/CLAUDE-CODE-2.1.302-ANALYSIS-AND-CHANGES.md) 保留错误正文。**
+**2026-10-19 更新（Core 0.1.168）：以下插件错误码规则只用于本系统生成的错误结构。收到真实上游 HTTP 错误时，最终响应的状态、Content-Type 和正文原样传给客户端，不新增/替换 code，不因插件分类或协议转换重新包装 JSON；空正文、HTML、文本、非 UTF-8 和超长正文同样保留。分类仍用于重试及账号效果。Core 的 64 KiB 限制现在仅用于分类/诊断前缀，完整大错误体写私有临时文件，调用结束清理；读取不完整等本地转发失败才生成自己的错误。用量日志独立提取真实 message，不用调度原因替代它；数据库不接受的字节只在诊断中转义。**
 
 网关原来把客户端错误码**硬编码**成 `"upstream_error"`，插件已经分类出来的信息在最后一步被抹掉——Ark 的 `InputTextSensitiveContentDetected`（内容审核拦截）和普通参数错误，到 OpenAI SDK 手里都是 `400 + invalid_request_error + code="upstream_error"`，客户端分不出「换个 prompt」和「改参数」。
 
@@ -2194,7 +2224,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 | 列表 | 默认值 | 含义 |
 |---|---|---|
 | `BUILTIN_PLUGINS` | `anthropic openai gemini moderation codex custom` | 安装，首次安装即启用 |
-| `BUILTIN_PLUGINS_INSTALL_ONLY` | `volcengine ccgateway mailer dynweight` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
+| `BUILTIN_PLUGINS_INSTALL_ONLY` | `volcengine mailer dynweight` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
 
 （默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，`custom`（自定义上游，runtime none）见 docs/UPSTREAM-DECLARATIVE.md §5，其余只安装插件见各自章节。）
 
@@ -2217,8 +2247,8 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 - **实现**：`github.com/go-redsync/redsync/v4`。Redis 是单实例（§7 末尾），Redlock 法定数为 1，等价于 `SET lock:{key} <token> NX PX <ttl>` + 比对 token 删除 + 比对 token `PEXPIRE`。每次 Redis 调用的超时为 TTL 的 5%，但不低于 500 毫秒、不高于 TTL 的一半（`cluster/locker.go` 的 `timeoutFactor`）。
 - **删除了 PostgreSQL advisory lock 兜底**。原来 Redis 报错时改拿 PG 锁，但那是**第二个锁命名空间**：某节点自己的 Redis 连接出错时去拿 PG 锁，另一节点此时仍持有 Redis 锁，两边都以为独占。连不上 Redis 的节点本来就不能服务网关（并发槽 fail-closed），现在它干脆不拿锁——拿不到锁的后果只是「这一轮别的节点做或者没人做」，而两个节点同时做才是锁要防的事。
-- **不受影响**（各自独立的 PG advisory lock，与 `core.Locker` 无关）：核心迁移 `store/migrate.go`（`pg_advisory_lock`）、插件 schema 与迁移 `plugin/dbschema/dbschema.go`、IAM 引导 `iam/service.go`（`pg_advisory_xact_lock(hashtext('sub2api:iam:bootstrap'))`）、保存账号时自动关联代理 `proxy/resolve.go`（§21.4）。
-- **不用 `WithSetNXOnExtend`**：Redis 不开持久化，重启会清空所有锁。续期时发现 key 没了，说明中间可能已有别的节点拿过这把锁，必须**如实报告丢锁**，不能悄悄重建。
+- **不受影响**（各自独立的 PG advisory lock，与 `core.Locker` 无关）：核心迁移 `store/migrate.go`（`pg_advisory_lock`）、插件 schema 与迁移 `plugin/dbschema/dbschema.go`、IAM 引导 `iam/service.go`（`store.XactLock("sub2api:iam:bootstrap")`）、保存账号时自动关联代理 `proxy/resolve.go`（§21.4）。
+- **不用 `WithSetNXOnExtend`**：Redis 重启会清空所有锁（没有持久化时全部丢失；`deploy/single` 开了 AOF，最后一秒的写入也可能丢失）。续期时发现 key 没了，说明中间可能已有别的节点拿过这把锁，必须**如实报告丢锁**，不能悄悄重建。
 
 接口：
 
@@ -2370,7 +2400,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 | 结果与账务 | 快照终态和账务在同一事务校验执行权、锁行并提交；账本保留幂等键。客户端查询不会重复请求上游，也不会重复扣款 |
 | 截止 | 核心停止观测不是上游失败，不伪造 `failed`、不自动退款。未确认终态的任务到期查询返回 410；已确认终态的快照继续可读，包括人工重试后再次终止观测的情况。管理员仍可按既有机制核查账务 |
 
-首次查询旧裸任务 ID 时，只能从核心 `pending_settlements` 与 `usage_logs` 中恢复可信归属；匹配不唯一或属于别的用户即拒绝。旧插件任务表曾允许裸 ID 覆盖，不作为授权依据。旧任务沿用原截止时间，不因导入重新开启观测窗口；尚在期限内且没有完整快照时由核心轮询补齐，期间返回 `task_snapshot_pending`，已过期则返回 410，不为兼容而恢复直通上游。
+任务只按 `s2task_` 公开 ID 查询。0.1.290 起不再把任务框架之前的裸上游 ID 导入为托管任务（标记列 `async_tasks.legacy_imported` 由迁移 0102 删除，§101.4）。
 
 ### 28.3 故障边界与插件作者须知
 
@@ -2399,7 +2429,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 受管核心被外壳排空时不等 `SUB2API_SHUTDOWN_DELAY`（外壳已经不再往这个核心送新请求）。进行中的请求等不等，由外壳的排空请求决定（2026-11-08 修订，取代 2026-10-28 的“一律立即取消”）：
 - **已导流的排空**：外壳此时把本节点公网入口的新请求转发给就绪对端（路由 `forward-only` 且对端就绪，`proxy.Router.Diverted()`，即从节点 `redirect` 之后的 `stop`、恢复流程里先转发再停的情形），`DrainRequest.graceful=true`。核心关闸拒新、让在途请求跑完再报 `DrainComplete`，等待上限取外壳截止时间减 15 秒与 5 分钟（`maxDrainGrace`）的较小者，到点仍未结束的才取消。导流后多等只影响这个节点的停止时长，不影响任何新请求。
 - **其他排空**（主节点 `maintenance` 后的 `stop`、候选重启、身份撤销）没有人承接流量，进行中的请求立即取消，和原来一样。
-- 兼容：核心在 `Hello.capabilities` 列出 `drain.graceful` 才收 `graceful` 字段（控制请求拒绝未知字段，外壳只对声明了的核心发），旧核心收到的仍是原请求、立即取消；新核心收到没有该字段的请求也立即取消。被取消的请求照常写用量、结算或退还预扣：处理器结束后才关闭用量队列，账不会丢。SIGTERM 仍按上一段执行。
+- 兼容：核心在 `Hello.capabilities` 列出 `drain.graceful`；0.1.288 时的外壳只对声明了它的核心发 `graceful`（控制请求拒绝未知字段），0.1.290 起的外壳只运行 0.1.290 及以后的核心，不再检查。核心收到没有该字段的请求立即取消。被取消的请求照常写用量、结算或退还预扣：处理器结束后才关闭用量队列，账不会丢。SIGTERM 仍按上一段执行。
 
 核心没有准入看门狗（2026-11-08 起）。PG 的 `updater.node_admissions` 只在外壳向核心发 `/v1/admission` 时核对一次（`verifyAdmission`）；之后停核心只由外壳发起，撤销准入的每条路（升级 `stop` 步骤、禁用节点、身份撤销）都由外壳直接向核心发排空，不依赖核心自己发现；外壳死了，Caddy 的 `/readyz` 把流量切走。历史：此前核心每秒查一次该行、1 秒超时、失败一次就停内核且不留日志，2026-11-08 使 sup2api-ccp 一天自停 16 次（见 `deploy/gateway/clicodeplus/README.md`）；同日先改为只报告不自停，随后按用户决定整个去掉（连同它的专用连接 `store.OpenSingle` 与 `verifyLiveAdmission`）。外壳侧同日补齐：`Work`/`Coordinate` 的错误不再丢弃（同一错误 5 分钟记一次 WARN，恢复记 INFO），`Work` 因本机核心不就绪而走 `Recover` 重拉时记 WARN 并带核心的 mode、boot 与 blockers。
 
@@ -2542,9 +2572,9 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 **插件互斥。** 核心计划与插件安装/批准/启用/升级/停用/卸载通过 Redis 锁 `system:cluster-change` 串行提交（25 秒提交上下文），running/paused 计划存在时插件变更被拒绝；紧急撤权例外。大包解包与哈希在取锁前完成。rollout 进入终态后，每个可能仍有旧实例的 boot 在 `plugin_rollout_cleanup`（迁移 0021）记录清理屏障 `cleanup_pending → cleaned`，`plugin_rollout_nodes` 保留各节点 active/failed 结果；未清理完成会阻止新核心计划；运行中的核心在本机旧实例排空后自行确认，已退出核心的 boot 只有网关确认进程组退出后才标为 `cleaned`，存活过期不算证据。
 
-**插件包分发（2026-10-02 补充）。** 插件包字节不再存 PG：迁移 0022 删除 `plugin_versions.package`，新增 `package_url`。市场版本由每个节点按 `package_url` 自行下载；上传和首装的包由主节点网关保存，从节点经节点网络拉取。核心通过 `blobs.Source` 取包（市场优先，失败或摘要不符时回退到存储），存储在网关托管下是本机管理 socket 上的 `/system/plugin-blobs/<sha256>`，没有网关时是本机目录（只支持单节点）。节点间新增两个范围：`plugin-upload`（`PUT /internal/plugin-blobs/`，从节点→主节点）与 `plugin-artifact`（`GET /internal/plugin-blobs/`，摘要须被某个版本引用）。所有写入校验 sha256 与大小上限（网关 `plugin_max_bytes`，默认 1 GiB，2026-10-09 起，见 §53.10）；上传在主节点确认保存后才写入版本行。细节见 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md)。
+**插件包分发（2026-10-02 补充）。** 插件包字节不再存 PG：迁移 0022 删除 `plugin_versions.package`，新增 `package_url`。市场版本由每个节点按 `package_url` 自行下载；上传和首装的包由主节点网关保存，从节点经节点网络拉取。核心通过 `blobs.Source` 取包（市场优先，失败或摘要不符时回退到存储），存储在网关托管下是本机管理 socket 上的 `/system/plugin-blobs/<sha256>`，没有网关时是本机目录（只支持单节点）。节点间新增两个范围：`plugin-upload`（`PUT /internal/plugin-blobs/`，从节点→主节点）与 `plugin-artifact`（`GET /internal/plugin-blobs/`，摘要须被某个版本引用）。所有写入校验 sha256 与大小上限（网关 `plugin_max_bytes` / 核心 `SUB2API_PLUGIN_MAX_PACKAGE_BYTES`，默认 64 MiB；解包另限 256 MiB、2000 个文件，打包工具同样执行。三者统一定义在 `runtime-contract`（`PluginPackageMaxBytes` 等），0.1.290 起按当时最大的内置插件包（moderation，压缩约 16 MiB、解包约 45 MiB）约 4 倍取整，此前为 1 GiB / 2 GiB；包下载、经外壳的传输与外壳从其他节点拉包的超时都是 10 分钟（`PluginPackageTransferTimeout`））；上传在主节点确认保存后才写入版本行。细节见 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md)。
 
-**CPU 保护（2026-10-02 补充）。** 管理员在系统设置的“CPU 保护”页开关并设定阈值（`GET/PUT /api/v1/system/offload`，`settings:read` / `settings:manage`，经核心转给本机网关；未托管节点返回 503 `updater_unavailable`）。设置存于 `updater.clusters.offload_enabled/offload_cpu_percent`，默认关闭、阈值 80，取值 50–95。每个网关每秒采样 CPU，取本节点 cgroup（相对其可用 CPU）与整机两者较高者，按最近 10 秒平均；实时心跳保存到 Redis，混合旧网关期间兼容写入 `updater.nodes.cpu_percent`（最新规则见 CONTRACTS §39）（未测得为 NULL）。本地服务的节点平均值达到阈值后，把新的公网请求轮流交给其他节点：目标须启用、本地服务就绪、同一核心版本、心跳 20 秒内、自身未在转移且 CPU 低于阈值减 10；没有目标就留在本节点。低于阈值减 10 才停止。网关先在 PG 写入 `offloading=true` 再开始转移，先停止转移再清除标记；接收端只接受带标记的来源的 `forward`，因此转移可以从主节点到从节点。转移不续期 10 秒后自动失效。转移的请求走现有 `/internal/forward`，接收端只交给本地核心，不再转发；进行中的请求不迁移，业务请求不重放，目标路由变化时该请求得到 503。细节见 [规约 §5.1](MULTINODE-SYNC-PROTOCOL.md)。
+**CPU 保护（2026-10-02 补充）。** 管理员在系统设置的“CPU 保护”页开关并设定阈值（`GET/PUT /api/v1/system/offload`，`settings:read` / `settings:manage`，经核心转给本机网关；未托管节点返回 503 `updater_unavailable`）。设置存于 `updater.clusters.offload_enabled/offload_cpu_percent`，默认关闭、阈值 80，取值 50–95。每个网关每秒采样 CPU，取本节点 cgroup（相对其可用 CPU）与整机两者较高者，按最近 10 秒平均；实时心跳保存到 Redis，（最新规则见 CONTRACTS §39；未测得为未知）。本地服务的节点平均值达到阈值后，把新的公网请求轮流交给其他节点：目标须启用、本地服务就绪、同一核心版本、心跳 20 秒内、自身未在转移且 CPU 低于阈值减 10；没有目标就留在本节点。低于阈值减 10 才停止。网关先在 PG 写入 `offloading=true` 再开始转移，先停止转移再清除标记；接收端只接受带标记的来源的 `forward`，因此转移可以从主节点到从节点。转移不续期 10 秒后自动失效。转移的请求走现有 `/internal/forward`，接收端只交给本地核心，不再转发；进行中的请求不迁移，业务请求不重放，目标路由变化时该请求得到 503。细节见 [规约 §5.1](MULTINODE-SYNC-PROTOCOL.md)。
 
 ## 35. OpenAI Responses WebSocket 模式（2026-10-02）
 
@@ -2597,10 +2627,11 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 - 仍共用现有 PG/Redis，不拆数据库。PG 保存批准版本、计划、步骤、节点启禁与启动身份、准入、停止确认和事件；`mode/ready/stopped/core_boot_id/release_digest/route_revision/offloading` 仍为安全控制快照，只有变化时更新节点行。CPU 转移授权仍先持久标记再转流，Redis 心跳过期绝不是停止证明。
 - 网关节点心跳、CPU 和当前错误观察写入 Redis，key 为 `updater:telemetry:<sha256(cluster_id\x00node_id\x00shell_boot_id)>`，最长有效期 20 秒。写前获取 Redis TIME 形成固定截止时间，并扣除本地单调时钟测得的 PG 等待及请求耗时；Lua 拒绝过期和迟到序号，只设置剩余 TTL，拒绝结果返回错误以阻止陈旧 CPU 决策。读取通过 Lua 原子取得 GET/PTTL，折算为读取节点本地单调时间，不比较不同主机壁钟。报告须与 PG 当前启动身份及全部控制快照匹配；不匹配、缺失、过期或 Redis 不可用时，`last_seen` 为零时间、CPU 为 NULL，不以旧 PG 快照冒充新鲜状态。节点不会因丢失遥测直接重启或排空。
-- 网关 schema 增加 `telemetry_boot_id`，与当前 `shell_boot_id` 相等才启用 Redis 新鲜度。旧网关及回退后的新 boot 继续使用 PG 心跳；集群仍有启用的旧 boot 时，新网关每隔至少 5 秒保留 PG 心跳和 CPU 兼容刷新。全部切换后一次清理兼容 CPU 值，稳态遥测不再改写 PG 行；PG 身份与控制状态检查仍然存在，不声称不再访问 PG。
+- 网关 schema 增加 `telemetry_boot_id`，与当前 `shell_boot_id` 相等才启用 Redis 新鲜度；注册后还没报告过的 boot 用注册写下的 PG 心跳。稳态遥测不改写 PG 行；PG 身份与控制状态检查仍然存在，不声称不再访问 PG。0.1.290 起的外壳不再为没有遥测的旧外壳刷新 PG 心跳和 `cpu_percent`（该列不再写入，§101）。
 - `updater:wakeup:<cluster_id>` Pub/Sub 仅发送提交后的唤醒提示，不承载可执行命令或可靠事件。计划创建、操作、启禁及升级状态变更在 PG 提交后通知；节点步骤完成先提交结果并刷新状态，再通知。通知丢失依靠轮询补查（有 running/paused 计划时 1 秒，空闲 30 秒，2026-11-08 起见 §82.4），重复通知合并，不重放已完成步骤；Redis 断连恢复后重新订阅。
 - 每轮最多连续推进 16 次，每次重新取得 Redis 执行锁并读取 PG，空提交不算进展；提示驱动的外循环有 50 ms 让出，避免内部自激忙循环。独立 3 秒心跳在长下载或排空时继续运行。PG 事务内的计划与准入校验、租约丢失取消语义不变。
 - 此变化属于网关二进制，单发核心安装包不会生效；需在无 running/paused 核心计划时逐个更换网关，从节点先、主节点最后，保留状态卷与旧镜像。核心版本无需仅为此变更而升级。控制台仍按既有轮询周期刷新，本次不新增浏览器推送。
+- 网关控制器（`gateway/internal/control`）的 PG 语句由 GORM 的模型与查询构造器生成（2026-11-16，0.1.290）：谓词、行锁、`ON CONFLICT`、`RETURNING` 与往返次数不变。整条手写的只剩 schema 脚本（`execLocked`，内嵌的 `schema.sql`）和心跳的 data-modifying CTE（`Store.Heartbeat`，条件更新与身份检查一次往返）；`to_regclass` 查询与 `SELECT EXISTS` 组合器用 `runtime-contract/gormpg` 的 `RelationExists`、`ExistsQuery`。`gateway/internal/sqlguard` 的测试用与核心相同的检查器（`runtime-contract/gormpg/sqlcheck`，规则见 §2“核心的 SQL”）按允许列表（`包.函数` + 理由）检查 `Raw`/`Exec`（`[raw-sql]`）、交给 GORM 的 SQL 文本（`[sql-const]`）和 gorm 连接池的使用（`[gorm-instance]`，只有 `main` 关闭连接池和记录池大小的两处）。
 
 ## 40. 核心版本提示、GitHub 更新源及拓扑视角（2026-10-03）
 
@@ -2638,22 +2669,21 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 |---|---|---|
 | `defaultModels` | `string[]` | 预设模型列表。每项是完整模型 ID（§16，`manifest.ValidModelID`），不重复，最多 `manifest.MaxDefaultModels`（500，与账号上限一致） |
 | `defaultModelMapping` | `{from: to}` | 预设模型映射。两侧都是完整模型 ID，最多 500 条；`defaultModels` 非空时每个 `from` 都必须在其中（否则账号永远不会因该模型被调度） |
-| `defaultModelsBySubscription` | `{订阅类型: string[]}` | 按订阅类型（§59.1，键须匹配 `^[a-z][a-z0-9_]{0,31}$`，最多 32 个）替换 `defaultModels` 的预设，规则同 `defaultModels`。只供控制台预填与展示；保存时真正生效的列表由插件的 `before_create` / `before_update` 决定（§59.3） |
 
-校验（`sdk/manifest/check` 的 `defaultModels`）字段错误：`accountTypes[i].defaultModels`（`too_many`）、`accountTypes[i].defaultModels[j]`（`invalid` / `duplicate`）、`accountTypes[i].defaultModelMapping`（`too_many`）、`accountTypes[i].defaultModelMapping.<from>`（`invalid` / `not_in_models`）；`accountTypes[i].defaultModelsBySubscription`（`too_many`，或键名 `invalid`）、`accountTypes[i].defaultModelsBySubscription.<订阅>.defaultModels[...]`（同 `defaultModels`）。旧宿主忽略这些字段，`hostCompat` 不需要提高。
+校验（`sdk/manifest/check` 的 `defaultModels`）字段错误：`accountTypes[i].defaultModels`（`too_many`）、`accountTypes[i].defaultModels[j]`（`invalid` / `duplicate`）、`accountTypes[i].defaultModelMapping`（`too_many`）、`accountTypes[i].defaultModelMapping.<from>`（`invalid` / `not_in_models`）。`defaultModelsBySubscription` 随账号生命周期契约在 0.1.290 删除（§59）。旧宿主忽略这些字段，`hostCompat` 不需要提高。
 
 核心**不会**自动把预设写进账号：经 API 创建、不带 `models` 的账号仍是"空 = 所有模型"。
 
 ### 41.2 接口
 
-`GET /account-types` 每项新增 `default_models: string[]`、`default_model_mapping: {from: to}`；未声明时为 `[]` / `{}`，不为 null。声明了 `defaultModelsBySubscription` 时另有 `default_models_by_subscription: {订阅: string[]}`（未声明时省略）；控制台按账号的 `subscription_type` 取对应预设，没有对应项时用 `default_models`。
+`GET /account-types` 每项新增 `default_models: string[]`、`default_model_mapping: {from: to}`；未声明时为 `[]` / `{}`，不为 null。
 
 ### 41.3 控制台
 
 - 新建账号进入第 2 步时，用所选账号类型的预设填充模型列表与映射，并提示"已按插件预设填入 N 个模型与 M 条映射"。同一 `creationGroup` 内切换认证方式时，若模型与映射仍与上一类型的预设完全相同（用户没改过），换成新类型的预设；改过则保留。编辑已有账号不预填。
 - 模型区按钮："填入预设模型（N）"（合并，已有的保留）、"从上游获取"（§19）、复制（逗号分隔）、清空（= 所有模型）。配置了映射的模型标签用紫色标出，悬停显示目标模型。
 - 映射区：表格编辑（请求模型 → 上游模型，输入时提示已知模型 ID）或 JSON 编辑；"填入预设映射（N）"合并映射（已有的请求模型不覆盖），模型列表非空时同时把这些请求模型加入列表。模型列表非空、而映射的请求模型不在其中时给出警告和"加入模型列表"。
-- 编辑器仍分"接入配置 / 模型配置 / 调度与限流"三块。左侧导航显示每块摘要（名称；模型与映射数量；优先级 · 权重 · 并发）和错误标记，上方展示账号类型（图标、插件与版本、平台）。同一 `creationGroup` 的认证方式改为单选卡片；限流输入框带单位；没有凭证字段的类型（如 ccgateway `managed`）显示说明，不留空白。切换分块时回到顶部。
+- 编辑器仍分"接入配置 / 模型配置 / 调度与限流"三块。左侧导航显示每块摘要（名称；模型与映射数量；优先级 · 权重 · 并发）和错误标记，上方展示账号类型（图标、插件与版本、平台）。同一 `creationGroup` 的认证方式改为单选卡片；限流输入框带单位；没有凭证字段的类型显示说明，不留空白。切换分块时回到顶部。
 - `SchemaForm` 新增 uiSchema 关键字 `ui:section`：值为 LocalizedText，或 `{title, description?, collapsed?}`。从该字段开始到下一个带 `ui:section` 的字段为一组，组前画标题；`collapsed: true` 的组默认折叠，组内任一字段有值或有错误时自动展开。只认带 `ui:` 前缀的写法（不带前缀的 `section` 可能是同名子字段）。旧控制台忽略该关键字，字段照常显示。
 
 ### 41.4 内置插件预设
@@ -2664,7 +2694,6 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 |---|---|---|---|
 | anthropic 0.2.5 | `apikey` | Claude 现行与仍可用的模型（别名与带日期 ID），不含已退役模型 | 无 |
 | claude-oauth 0.2.1 | `claude_oauth`、`claude_setup_token` | 同 anthropic | 无 |
-| ccgateway 0.1.68 | `managed`、`apikey` | `claude-fable-5`、`claude-opus-5`、`claude-opus-4-8`、`claude-opus-4-7`、`claude-opus-4-6`、`claude-sonnet-5`、`claude-sonnet-4-6`、`claude-haiku-4-5-20251001`、`claude-fable-5-1`、`claude-opus-5-5`、`claude-sonnet-5-5`；Pro 订阅账号保存时去掉两个 Fable 模型（§59）；0.1.69 起 `defaultModelsBySubscription.pro` 为去掉 Fable 后的 9 个，账号默认自动配置模型（§59.4） | 无 |
 | relay 0.2.2 | `relay_key` | 同 anthropic | 无（由中转站自己决定模型） |
 | openai 0.3.4 | `apikey` | new-api OpenAI 列表中走 chat / responses / embeddings 的模型（不含本平台没有端点的音频、图片、实时、视频模型，也不含 `gpt-4.5-preview*`、`o1-preview`、`o1-mini` 等已退役模型） | 无 |
 | gemini 0.2.4 | `apikey` | new-api Gemini 列表中走 generateContent 的模型（不含 imagen、veo、TTS、原生音频，也不含 `gemini-1.5-*` 与旧 2.5 预览版） | 无 |
@@ -2675,10 +2704,6 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 volcengine 0.12.2 的两个表单同时用 `ui:section` 把素材库字段归入"素材库（可选）"，`relay` 的旧前缀字段归入默认折叠的"兼容配置"。
 
 计费、分组白名单、粘性会话仍按**映射前**的请求模型（§18）：客户端使用映射里的别名时，需要为别名配置价格。
-
-### 41.5 Claude Code 连接为账号
-
-（`POST /system/ccgateway/connect` 已在 2026-11-12 删除，见 §49.6；以下为历史。）`POST /system/ccgateway/connect` 新增可选 `model_mapping: {from: to}`，与 `models` 一起原样交给创建账号（校验同 §18）；请求体上限由 8 KiB 提高到 512 KiB，以容纳 500 个模型与 500 条映射。控制台的连接表单在加载时用 ccgateway `managed` 类型的预设填充模型列表（预设映射现为空，§41.4），两者都可增删。每账号容器模式下的行为见 §49.6。
 
 ## 42. 账号自动禁用：全局开关、管理员规则、账号级开关（2026-10-04，用户要求）
 
@@ -2717,7 +2742,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 
 账号编辑器通过 `GET /accounts/auto-disable` 读取全局开关投影，仅返回 `{enabled}`；需 `account:create` / `account:own:create` / `account:update` / `account:own:update` 任一权限，不开放管理员的状态码和关键词规则。全局关闭、读取中或读取失败时，账号级开关不可操作并提示原因，原有偏好不清除；重新打开、窗口获得焦点及保存前重新读取。保存时仅在全局已确认开启时提交 `auto_disable`，否则省略该字段，保留创建默认值或已保存的账号设置。
 
-插件可在 `accountTypes[].commonControls` 按核心字段名声明 `auto_disable`、`schedulable`，每项接受可选布尔值 `configurable` 和 `default`；省略条目或属性均按 `true` 处理，兼容旧插件。其他字段名安装时拒绝。账号类型接口以 `common_controls` 返回声明；编辑器与列表开关统一按声明禁用编辑并提示原因。新账号省略字段时由核心应用默认值；不可配置字段只接受其创建默认值，更新已有账号时只接受原值，校验在锁定账号行后执行，不能绕过 UI 修改。插件升级不会重写已有账号的偏好，也不影响管理员手动停用状态。自动禁用仍受全局总开关约束。声明新能力的插件应将 `hostCompat` 下限设为 `0.1.114`，CCGateway 已显式声明这两个开关均可配置、默认开启。
+插件可在 `accountTypes[].commonControls` 按核心字段名声明 `auto_disable`、`schedulable`，每项接受可选布尔值 `configurable` 和 `default`；省略条目或属性均按 `true` 处理，兼容旧插件。其他字段名安装时拒绝。账号类型接口以 `common_controls` 返回声明；编辑器与列表开关统一按声明禁用编辑并提示原因。新账号省略字段时由核心应用默认值；不可配置字段只接受其创建默认值，更新已有账号时只接受原值，校验在锁定账号行后执行，不能绕过 UI 修改。插件升级不会重写已有账号的偏好，也不影响管理员手动停用状态。自动禁用仍受全局总开关约束。声明新能力的插件应将 `hostCompat` 下限设为 `0.1.114`。
 
 ### 42.5 插件自动状态与定时恢复（2026-10-11，用户要求）
 
@@ -2729,9 +2754,8 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 - 惰性过期（与旧版 `temp_unschedulable_until` 一致）：调度选号（`Candidates`）把 `auto_disabled_until` 已过的 `auto_disabled` 账号直接当作可用，不依赖任何任务先把状态改回。状态回写由核心低频巡检完成：启动时先跑一轮（补上停机期间到期的），之后每分钟按数据库时间处理最多 200 条到期记录，写审计与 `account.status_changed`，托管节点只有获准工作后才巡检。事务内 `FOR UPDATE SKIP LOCKED` 保证多节点只恢复一次；只处理当前仍是 `auto_disabled` 且当前解除时间已到的记录。期限只存在数据库里，重启、Redis 丢键或插件退出都不会遗失。
 - 管理员 `disabled` 状态永远不被插件或到期扫描解除；`schedulable=false` 永远保留。未指定期限的自动禁用不会被随后到来的定时建议降级，需先显式解除。插件状态变更和到期恢复分别审计 `account.automatic_state` / `account.automatic_recovery`，状态事件与数据库更新同事务提交。
 - 手工“重置状态”同时清除自动解除时间；管理员显式修改 `status` 时取消旧期限。成功重新授权会恢复 `error/auto_disabled`，但不恢复管理员 `disabled`，也不改变调度开关。
-- CCGateway 0.1.37：托管 OAuth 账号收到上游 429 后，插件声明到期自动禁用建议；2026-10-12 起核心仅在命中管理员禁用规则时执行，未配置 429 且关键词未命中时只冷却。取所有已耗尽窗口中最晚的 reset，与 Retry-After 同时存在时取较晚值；没有这两类信息时用未标明耗尽窗口的最近 reset，再无时间信息时使用 60 秒。旧 Worker relay 曾隐藏订阅额度明细并把耗尽窗口 reset 转为 Retry-After，这是归档行为；当前 native-only 从 CLI rate_limit_event 的有效重置时间生成有界提示，不再观察原始模型 HTTP 限额头（§53.14）。Worker 满载的 `Gateway concurrency limit reached` 保留短冷却，不标记配额耗尽；401/403 不附解除时间。自动禁用不关闭 Worker，额度查询、重新授权仍可用，模型调度继续被核心阻断。
 - 到期解除表示恢复调度资格，不等于已向上游验证额度；不发送收费模型探活。上游仍限流时，插件可再次指定新期限；插件观察到额度提前恢复时可主动 `ACTION_CLEAR`。
-- 新接口要求 Host API 6；CCGateway 在初始化时拒绝旧 Host API，避免旧核心忽略新字段而造成永久禁用。发布必须同步 SDK、核心与外壳 Host API 声明。账号列表区分自动禁用并展示解除时间。
+- 新接口随 Host API 6 发布（0.1.290 起插件不再在初始化时检查 Host API，§101）。账号列表区分自动禁用并展示解除时间。
 
 ## 43. 第一轮审计合并：插件调用分级并发、令牌失效与越权加固（2026-10-04 合并，2026-10-05 补记）
 
@@ -2753,8 +2777,8 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 ### 43.2 改密、禁用后旧令牌失效
 
 - 迁移 0027：`users.token_version bigint NOT NULL DEFAULT 0`。
-- 修改密码（本人或管理员重置）、把用户禁用、删除用户、登出、撤销会话时 `token_version + 1`（2026-11-12 权限加固 M8，`iam.invalidateSessions`），同时按场景吊销 refresh token 家族：本人改密码保留当前会话，撤销会话、登出只吊销对应家族，其余吊销全部。
-- access token 里带 `tv`（签发时的 `token_version`）；校验时与库里的值不一致即 401 `token has been invalidated`。refresh token 未被吊销的会话在下一次 401 后静默续期（控制台自动 `/auth/refresh`），被吊销的会话立即下线。
+- 修改密码（本人或管理员重置）、把用户禁用、删除用户、登出、撤销会话时结束会话（2026-11-12 权限加固 M8；做法与 `token_version` 的步长见 §100.4：`iam.endAllSessions` / `endSomeSessions`）：本人改密码保留当前会话，撤销会话、登出只结束对应的会话，其余结束全部。
+- 会话里存 `tv`（盖章：签发时的 `token_version`）；鉴权时小于用户当前的 `token_version` 即 401 `session has been invalidated`，被结束的会话立即下线（§100.1）。
 - 校验结果在节点内缓存 30 秒。上述操作提交后在本节点清掉该用户的缓存，并在 `iam:user:changed`（载荷为用户 id）上广播，其他节点立即清掉；总线重连时整表清空，广播丢失时以 30 秒过期兜底。这个频道与权限版本无关：登出、撤销会话、改密码不推进 `authz:changed`。
 
 ### 43.3 代理的私网地址
@@ -2791,7 +2815,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 - 把账号绑定到分组需要 `group:manage` 或 `account:group:bind`；
 - `priority` 只能 0–100，`weight` 只能 1–100，`max_concurrency` 只能 1–1000，超出返回字段错误 `restricted`；
 - 管理员禁用的账号（`admin_locked`，§15.9、§21.3.1）不能自行启用或重置状态，403 `account_locked_by_admin`；
-- 账号类型**没有声明 `guardedSettings`** 时（relay、ccgateway 这类可以自填上游地址的类型；核心内置类型同样算），创建或修改需要 `account:relay`，否则 403，`details.required_permission = "account:relay"`。注意判断条件是"没有声明受限设置"，不是"类型叫 relay"：上游地址固定、不需要受限设置的类型（如 `claude_oauth`）目前也要求这个权限。
+- 账号类型**没有声明 `guardedSettings`** 时（relay 这类可以自填上游地址的类型；核心内置类型同样算），创建或修改需要 `account:relay`，否则 403，`details.required_permission = "account:relay"`。注意判断条件是"没有声明受限设置"，不是"类型叫 relay"：上游地址固定、不需要受限设置的类型（如 `claude_oauth`）目前也要求这个权限。
 
 ### 43.6 授予与操作他人的权限检查
 
@@ -2810,14 +2834,14 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 - 两类检查也比较可分配角色（2026-11-12，决策 4、5）：角色可以带一份可分配角色清单（`role_assignable_roles`，永不含超管角色）和“以及全部自定义角色”标志（`roles.assign_custom`）。新增角色或目标用户的角色能分配的角色必须在操作者的可分配范围内，否则 403，`details.missing_assignable` 列出缺的角色、`details.missing_assign_custom = true` 表示缺“全部自定义角色”，与 `details.missing` 分开。因此能分配 admin 的委派者不会被 admin 改动。`assign_custom` 在比较时展开为现有的全部自定义角色，但不含持有者自己持有的角色（按名字列在清单里的除外）：操作者一侧，它不覆盖操作者自己的角色；新建或修改角色时交出的 `assign_custom` 展开为除该角色外的全部自定义角色，所以带 `assign_custom` 的操作者若持有自定义角色，交出通配会因缺自己的角色 403 `details.missing_assignable`，同理不能作用于持有另一个带 `assign_custom` 角色的用户。访问密钥收窄后没有可分配角色（只影响授予与分配；可管理目标按操作者的角色计算，FU6）。内置默认清单（决策 5）：admin = operator、supplier、user 与全部自定义角色；operator = supplier、user；supplier、user 没有。存量库由迁移 `0097_authz_hardening.sql` 改写（0.1.286）：持有 `role:manage` 的角色得到 `role:define` + `role:assign`（内置 operator 只得到 `role:assign`，D3），其中自定义角色得到可分配清单（全部内置角色中除超管与 admin 外的 + `assign_custom`）；内置角色的清单不由迁移写，而由随后的 `SyncCore` 首次补缺按 `builtinRoles` 补上（§4，默认值只在代码里定义一处）；每项写审计（`authz.grant.migrate`、`role.assignable`，actor 为系统，`detail.via = "migration 0097"`），然后删除 `role:manage`。启动同步不再有 `role:manage` 的继承授予。升级时新建出的内置角色（如 supplier）由 `SyncCore` 追加到默认清单含它的已有内置角色上（审计 `authz.sync.grant`，via=`assignable`），已有清单的其他项不动。`SyncCore` 新建内置角色时（新库或升级带来的 supplier），它自己的默认权限与可分配清单每一项也写 `authz.sync.grant`（`detail.via` 为 `default`/`assignable`，另带 `role_created: true`；2026-11-13 期 4 P4F3，此前不审计）。
 - 角色写入口（`editableRole`，2026-11-12 修正 M5）：改名称描述、改权限、改可分配清单、重置、删除角色前，先在同一事务里锁住角色行；超级管理员角色对任何人（含超管和系统）都 409；其余内置角色（`admin`、`operator`、`supplier`、`user`）2026-11-13 起与有持有者的自定义角色同一口径：须在操作者的可分配清单内（不论有没有持有者，否则 403 `you cannot assign or revoke this role`，`details.role`），且当前授予在操作者之内（2026-11-12 决策 6 的“只有超级管理员能改”已放宽，用户要求内置角色可以修改、重置）；按默认清单 admin 能改 operator、supplier、user，不能改 admin，operator 没有 `role:define`；角色（内置或自定义）当前授予的权限（授予视角，不含已移除的）与可分配角色必须在操作者之内，否则 403 `you cannot change a role with permissions you don't have`；角色有未删除的持有者时，它还必须在操作者的可分配清单内（改角色就是改它的持有者，与可管理目标同一口径，`assign_custom` 不含操作者自己持有的角色），否则 403 `you cannot assign or revoke this role`（`details.role`），所以带 `assign_custom` 的角色的持有者不能经改名、改权限、改可分配清单或删除去动同角色的其他持有者（2026-11-13 发布审查）；这一判断按操作者的授予视角（经访问密钥时收窄），访问密钥收窄后没有可分配清单，所以访问密钥（超管的也一样）只能改、删没有持有者的自定义角色。此前持 `role:manage` 的人可以先把权限比自己大的角色削到自己以下，再对持有该角色的用户改密码、禁用，接管账号。改权限、改可分配清单（PUT `/roles/:id/assignable`）因此只需检查新增部分（现有部分已在操作者之内）；重置删掉的权限与可分配角色同样已在操作者之内（C-L2）。
 - 分配角色（PUT `/users/:id/roles`、POST `/users`，2026-11-12，决策 1、4）：只比较新增与撤销的角色，无变化直接成功。`super_admin` 任何人（含超管本人、超管的访问密钥）都不能授予或撤销，403 `the super admin role cannot be assigned or revoked; transfer it instead`；系统（actor 0）只能授予初始超管（引导），不能撤销。其余每个新增或撤销的角色都必须在操作者的可分配清单内（超管可分配全部），否则 403 `details.role`；唯一例外是给当前没有任何角色的用户授予默认角色 `user`，所以只有 `user:create` 的人仍能建默认用户。然后检查操作者能作用于目标（可管理目标，本人也按此判断，FU6），再检查新增角色所含权限与可分配角色都在操作者之内（`Missing`）。访问密钥没有可分配角色，不能分配任何角色。
-- 超管移交（POST `/system/super-admin/transfer`，2026-11-12，决策 1）：`super_admin` 换人的唯一路径，`authz.TransferSuperAdmin` 一处实现，控制台与服务器 CLI 共用。`Bump` 之后锁住超管持有行，操作者须是当前持有者（系统 actor 0 = CLI 不受此限，同时修复无超管或多超管）；目标须未删除、启用中、不是操作者本人；其余持有者先删超管行，未删除的补 `admin`（已软删除的不补，恢复该用户不会带回管理权限），再给目标加超管行；记 `superadmin.transfer` 审计（`via` 为 `console` 或 `cli`）。iam 在同一事务里让降级者与目标的全部会话失效，提交后广播。是否要求目标已开启两步验证：不强制，只由前端提示。
-- 服务器 CLI 恢复（`sub2api admin recover-superadmin --email <已有用户> [--reset-password] [--reset-2fa]`，2026-11-12，决策 2）：在服务器上直连配置的数据库，不跑迁移、不连 Redis、不广播，没有对应的 HTTP 入口。`iam.RecoverSuperAdmin` 只组合系统（actor 0）路径：目标被禁用时先启用，再经 `authz.TransferSuperAdmin(actor 0)` 成为唯一超管（其余未删除的持有者降为 `admin`，已软删除的只去掉超管角色，双方会话失效），`--reset-password` 设 24 位随机密码并只在 stdout 打印一次，`--reset-2fa` 清除两步验证与通行密钥；审计 actor 为 0。其他节点最长 30 秒后经版本轮询与状态缓存 TTL 生效（旧会话的访问令牌在此之前仍可能被接受）；重新登录立即可用：令牌携带的 `token_version` 比节点状态缓存里的新时，该缓存项视为过期、当场重读，不会出现登录成功后下一个请求 401。只读写 `roles`、`user_roles`、`users`、`refresh_tokens`、`login_sessions`、`user_totp`、`user_passkeys`、`audit_logs`，因此超管唯一迁移因多超管失败、服务起不来时可用它处理。
-- 超管全局唯一（迁移 `0097_authz_hardening.sql`，2026-11-12，决策 1、2）：`roles_one_superuser` 部分唯一索引保证最多一个超管角色；`user_roles` 上的延迟约束触发器 `user_roles_one_superuser` 在提交时检查最多一个持有者（advisory 锁串行化并发），违反时 23505。迁移先删掉软删除用户的超管行；库里有用户（升级而非新装）时未删除的持有者（不论启用、禁用）必须恰好一个：没有时报 `no super admin`，多于一个时报 `several super admins` 并只列出 user id（不含邮箱，错误会进启动日志；期 4 P4F2），整个迁移回滚、服务不启动，用上面的 CLI 指定或保留一个后重启。除超管本人的登录会话外没人能改超管：PATCH/DELETE `/users/:id`、DELETE `/users/:id/security`、PUT `/users/:id/roles` 对超管目标只经 `CanActOnUser` 判断，非超管缺超管标志，403 `you cannot modify a superuser`（`details.superuser = true`）；超管本人经访问密钥做这些身份类操作时，密钥要带路由的权限，还要二次验证（本请求已消耗过的 proof，或 `superadmin.identity`，见上文“超管账号本身”，期 4 S3 取代 FU6 的 403 `session_only`）。DELETE `/users/:id/security` 自期 4 起是 `StepUp(user.security.reset)` + `user:password:reset`，会话与带该权限的访问密钥一样可用（§80.2）。（期 1 的“`CanActOnUser` 只对本人的登录会话免检作用于自己、超管密钥按收窄后的权限比较”已由 FU6 取代：本人按同一规则判断，操作者一侧不被密钥收窄。）
-- 内置角色的 key 是保留的（2026-11-12，决策 D5）：POST `/roles` 用它们 400 `reserved`（§15.7）。启动时 `SyncCore` 发现自定义角色占用了内置角色的 key（升级带来新内置角色时才可能出现）就报错、服务不启动，错误信息列出角色 id、key 和改名 SQL（`UPDATE roles SET key = '<key>_custom' WHERE id = <id>;`）；它不会把该自定义角色变成内置角色（持有者会凭空得到内置角色的默认权限），也不会跳过不建。
+- 超管移交（POST `/system/super-admin/transfer`，2026-11-12，决策 1）：`super_admin` 换人的唯一路径，`authz.TransferSuperAdmin` 一处实现，控制台与服务器 CLI 共用。`Bump` 之后锁住超管持有行，操作者须是当前持有者（系统 actor 0 = CLI 不受此限，同时修复无超管）；目标须未删除、启用中、不是操作者本人；其余持有者先删超管行，未删除的补 `admin`（已软删除的不补，恢复该用户不会带回管理权限），再给目标加超管行；记 `superadmin.transfer` 审计（`via` 为 `console` 或 `cli`）。iam 在同一事务里让降级者与目标的全部会话失效，提交后广播。是否要求目标已开启两步验证：不强制，只由前端提示。
+- 服务器 CLI 恢复（`sub2api admin recover-superadmin --email <已有用户> [--reset-password] [--reset-2fa]`，2026-11-12，决策 2）：在服务器上直连配置的数据库，不跑迁移、不连 Redis、不广播，没有对应的 HTTP 入口；库的迁移必须恰好是这个版本的（`app.VerifyCoreSchema`），否则退出。`iam.RecoverSuperAdmin` 只组合系统（actor 0）路径：目标被禁用时先启用，再经 `authz.TransferSuperAdmin(actor 0)` 成为唯一超管（其余未删除的持有者降为 `admin`，已软删除的只去掉超管角色，双方会话失效），`--reset-password` 设 24 位随机密码并只在 stdout 打印一次，`--reset-2fa` 清除两步验证与通行密钥；审计 actor 为 0。其他节点最长 30 秒后经版本轮询与状态缓存 TTL 生效（旧会话在此之前仍可能被接受）；重新登录立即可用：新会话的盖章不低于节点状态缓存里的旧版本，照常放行（§100.1），不会出现登录成功后下一个请求 401。只读写 `roles`、`casbin_rule`、`users`、`user_totp`、`user_passkeys`、`audit_logs`。升级停在 0100 之前（0100 因多超管被拒）时用 0.1.288 的同一命令处理（§99.2）。
+- 超管全局唯一（迁移 `0097_authz_hardening.sql`，2026-11-12，决策 1、2）：`roles_one_superuser` 部分唯一索引保证最多一个超管角色；`user_roles` 上的延迟约束触发器 `user_roles_one_superuser` 在提交时检查最多一个持有者（advisory 锁串行化并发），违反时 23505。0.1.290 起（迁移 0100）超管角色只能是 `super_admin`（`roles_superuser_key`），持有者唯一由 `casbin_rule_one_superuser` 部分唯一索引保证（不可延迟，移交先撤后授，§99.1）。迁移 0097 先删掉软删除用户的超管行；库里有用户（升级而非新装）时未删除的持有者（不论启用、禁用）必须恰好一个：没有时报 `no super admin`，多于一个时报 `several super admins` 并只列出 user id（不含邮箱，错误会进启动日志；期 4 P4F2），整个迁移回滚、服务不启动，用上面的 CLI 指定或保留一个后重启。0100 转换前若 `user_roles` 里超管持有者多于一个（绕过触发器修过库；0100 不删软删除用户的超管行，已软删除的也算），同样报 `several super admins` 并只列 user id，HINT 指向 0.1.288 的同一 CLI（这时库还是 0.1.288 的角色表，§99.2）。除超管本人的登录会话外没人能改超管：PATCH/DELETE `/users/:id`、DELETE `/users/:id/security`、PUT `/users/:id/roles` 对超管目标只经 `CanActOnUser` 判断，非超管缺超管标志，403 `you cannot modify a superuser`（`details.superuser = true`）；超管本人经访问密钥做这些身份类操作时，密钥要带路由的权限，还要二次验证（本请求已消耗过的 proof，或 `superadmin.identity`，见上文“超管账号本身”，期 4 S3 取代 FU6 的 403 `session_only`）。DELETE `/users/:id/security` 自期 4 起是 `StepUp(user.security.reset)` + `user:password:reset`，会话与带该权限的访问密钥一样可用（§80.2）。（期 1 的“`CanActOnUser` 只对本人的登录会话免检作用于自己、超管密钥按收窄后的权限比较”已由 FU6 取代：本人按同一规则判断，操作者一侧不被密钥收窄。）
+- 内置角色的 key 是保留的（2026-11-12，决策 D5）：POST `/roles` 用它们 400 `reserved`（§15.7）。启动时 `SyncCore` 发现自定义角色占用了内置角色的 key（升级带来新内置角色时才可能出现）就报错、服务不启动，错误信息列出角色 id、key 和改名 SQL（`casbinrule.RenameRoleSQL`：一个事务，先锁住并推进 authz 版本，再把角色改成 `<key>_custom`，连同 `casbin_rule` 里它的授予与指派行，§99.1）；它不会把该自定义角色变成内置角色（持有者会凭空得到内置角色的默认权限），也不会跳过不建。
 - 所有授权写操作（角色写入、POST `/roles`、PUT `/users/:id/roles`）的授权检查都放在同一事务的 `Bump` 之后、用该事务读库：`Bump` 串行化了授权变更，检查看到的是最新且不会被并发改动的状态，不读本节点可能落后的缓存。
 - 持 `*` 的超级用户和系统自身（actor 0：内置插件安装、引导管理员等）不受这些检查限制（超级管理员角色冻结除外）。2026-10-05 修正：之前系统也被当成没有权限的用户拦下。
-- 插件安装、升级的授权确认（consent）：只有插件声明的权限里**有核心还没有的新权限**时，才需要 `role:define` 并对这些新权限做 `CanGrant`。升级不新增权限时只需要插件管理权限。2026-10-05 修正：之前每次安装、升级都要求 `role:manage`。
-- **相关章节**（期 4 汇总）：带范围的 key 在 `Missing`、`CanGrant`、`editableRole`、可管理目标里都按蕴含比较（§21.0，`TestScopedGrantsAndManagement`）；“能不能做”经访问密钥时 = 用户权限 ∩ 密钥权限，“能对谁做”按用户本身的角色（§80）；作用于超管本人身份的操作经访问密钥时要 `superadmin.identity` proof（§80.2）；目录的 `sensitive`、`step_up`、`scope_type` 见 §4。
+- 插件安装、升级的授权确认（consent）：只有插件声明的权限里**有核心还没有的新权限**时，才需要 `role:define` 并对这些新权限做 `CanGrant`。升级不新增权限时只需要插件管理权限。2026-10-05 修正：之前每次安装、升级都要求 `role:manage`。0.1.290起只有显式指定角色（`new_permission_roles`）才要求，默认与继承授予给了同意者不能指定的角色时挂起待复核（§4“插件权限”，D2）。
+- **相关章节**（期 4 汇总）：带范围的 key 在 `Missing`、`CanGrant`、`editableRole`、可管理目标里都按蕴含比较（§21.0，`TestScopedGrantsAndManagement`）；“能不能做”经访问密钥时 = 用户权限 ∩ 密钥权限，“能对谁做”按用户本身的角色（§80）；作用于超管本人身份的操作经访问密钥时要 `superadmin.identity` proof（§80.2）；目录的 `risk`、`step_up`、`scope_type` 见 §4。
 
 ### 43.7 迁移从 0026 起必须可重跑
 
@@ -2826,7 +2850,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 - `CREATE … IF NOT EXISTS`、`ADD COLUMN IF NOT EXISTS`；
 - 带数据回填的用 `DO $$ … IF NOT EXISTS … $$` 守卫，回填只发生一次。
 
-迁移按文件在一个事务里执行，所以不能用 `CREATE INDEX CONCURRENTLY`、`VACUUM` 这类不能放进事务的语句。`migrations_test.go` 检查这两条规则：不需要数据库；文件编号也不能重复。`migrations_db_test.go` 在真实 PG 上把 0026 起的迁移各跑两遍。
+迁移按文件在一个事务里执行，所以不能用 `CREATE INDEX CONCURRENTLY`、`VACUUM` 这类不能放进事务的语句。`migrations_test.go` 检查这两条规则：不需要数据库；文件编号也不能重复。`migrations_db_test.go` 在真实 PG 上把 0026 起的迁移各跑两遍：0100 之前的在 0100 之前的 schema 上（0100 删掉了它们写的角色表；每个迁移与它的记录同一事务提交，0100 之后不会再跑到它们，§99.2），0100 起的在完整 schema 上。
 
 已部署的 `0046_proxy_real_ip.sql` 遗漏了 `ADD COLUMN IF NOT EXISTS`，不能通过修改历史文件或数据库校验和来修复，否则会破坏托管升级的 schema contract。核心 `CoreTracker` 仅在文件名和原始 SHA-256 `1b0719bb3a07caa74ca6ad5d92e8c605e9c4f0ebea3097b96a1226ef99c4897f` 同时匹配时，把执行语句中的两个 `ADD COLUMN` 转为 `ADD COLUMN IF NOT EXISTS`。校验、迁移记录和 schema contract 仍使用原文件字节；该兼容不作用于插件、其他文件或其他校验和。直接手工执行旧 SQL 不受此兼容保护；新迁移仍必须原生幂等。
 
@@ -2847,7 +2871,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
   | CA 证书、`/usr/share/zoneinfo`、`/etc/localtime`、`/etc/resolv.conf`、`/etc/hosts`、`/etc/nsswitch.conf`、`/etc/services`、`/dev/urandom` | 只读，存在时才放行 |
 
 - **默认关闭的原因**：还没有在真实插件上跑过。原稿只放行二进制和工作目录，打开后每个插件都会启动失败（go-plugin 要在 `/tmp` 建文件），也读不到证书和时区。要打开，先在 Linux 上让全部内置插件（含出网和时区相关功能）在开启状态下跑通。
-- **2026-10-29 线上两节点已打开**（同时打开插件签名校验，见 `deploy/gateway/ovh/README.md`）。6 个线上插件在 `plugin-exec --landlock --seccomp --strict-network` 下启动、握手正常；ccgateway 账号请求经两个节点都返回 200。代码默认值仍为 false。
+- **2026-10-29 线上两节点已打开**（同时打开插件签名校验，见 `deploy/gateway/ovh/README.md`）。6 个线上插件在 `plugin-exec --landlock --seccomp --strict-network` 下启动、握手正常；账号请求经两个节点都返回 200。代码默认值仍为 false。
 
 ## 44. 订阅账号套餐额度：被动采样、主动查询与重置状态（2026-10-05，用户要求）
 
@@ -2915,7 +2939,7 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 
 - 类型不支持额度：`{supported: false, source: "", updated_at: null, error: "", windows: []}`，不访问上游。
 - 是否主动查询（仅 `quota.query` 类型）：非强制请求距 `last_active_at` 不足 30 分钟时直接返回快照；有 `next_check_at` 则在满足该下限后按调度时间决定。没有调度时间时，快照 `updated_at` 不足 30 分钟（被动或主动都算）也直接返回；失败重试同样等待 30 分钟。手动 `force=true` 跳过这些新鲜度、负缓存、调度时间与时间间隔限制，完成后可立即再次刷新；前端同样没有刷新冷却。同一节点同一账号正在进行的查询经 singleflight 合并；跨节点由 `LeaseAccountQuota` 的有效租约阻止并发查询，抢不到的直接返回当前快照。后台候选筛选和实际领取租约使用相同的 30 分钟下限，旧的提前调度记录也不能绕过；强制刷新仍不绕过有效租约。
-- 上游或插件失败不让接口失败：返回 200 与旧窗口，`error` 说明原因。账号此刻不能查询时（2026-10-20）不再静默返回旧快照，而是 409 `conflict`，`details.reason` 为 `runtime_not_ready`（生命周期运行环境未同步，见 §44.7），控制台按原因码提示。原因码 `account_not_active` 于 2026-10-22 取消：停用的账号照常查询额度（见 §49 末条）。
+- 上游或插件失败不让接口失败：返回 200 与旧窗口，`error` 说明原因。原因码 `account_not_active` 于 2026-10-22 取消：停用的账号照常查询额度（见 §49 末条）。生命周期运行环境未同步时的 409 `runtime_not_ready`（2026-10-20）随账号生命周期契约在 0.1.290 删除（§101.5）。
 - 窗口顺序、名称与短标签由插件的 `quota.windows` 声明；未声明的窗口按通用回退规则展示 key。`resets_at` 已过仅表示等待核验，返回 `expired: true`，保留上次实际观测的使用率、重置时间和状态；不得把时间经过伪装成上游已确认恢复。窗口可附 `label`、`short_label` 本地化文本，快照附 `next_check_at` 与 `refresh_status`（`pending` / `ready` / `error`）。
 - 控制台配额窗口始终竖排（包括紧凑列表），显示最近观测时间，不显示下次查询时间或独立刷新按钮。点击配额区域立即强制刷新；键盘 Enter/空格同样可用，进行中显示状态并阻止重复点击。列表和账号详情复用同一组件。
 
@@ -2927,7 +2951,7 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 2. 将账号 `status` 恢复为 `active`，清空 `status_reason`，包括 §42 自动禁用、管理员禁用及错误状态；**保留 `schedulable` 开关**，不会把手动关闭调度的账号重新放入请求池；
 3. 写审计 `account.reset_status`（`detail.cooldown_cleared`、`status_reset`、`previous_status`）；
 4. 状态、原因或冷却有变化时发 `account.status_changed`（`status = active`、`reason = "status reset by administrator"`），已正常且无冷却时重复重置仅审计、不重复发状态事件；
-5. 提交后失效额度／余额缓存，广播 `account:changed`，立即触发 CCGateway runtime reconcile，让此前因账号禁用而阻断的运行环境重新同步。
+5. 提交后失效额度／余额缓存，广播 `account:changed`。
 
 不修改凭证、额度快照、计费用量、限流配置或正在执行的并发租约。重置只恢复核心状态，不代表上游授权或额度已恢复；上游仍拒绝请求时，账号可再次按现有规则自动禁用／冷却。账号列表在禁用、错误或冷却状态下直接展示重置入口，并立即应用接口返回的新状态。
 
@@ -2944,19 +2968,16 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 
 - `accountTypes[].modelAvailability` 是可选准入声明。核心在粘性命中及排序前调用账号类型所属插件的 `CheckModelAvailability`；HTTP 换号、映射后的模型以及 WebSocket 已有连接的新轮次同样受约束。不声明能力的旧插件不增加额外限制。2026-11-02 起（用户决定，原规则「已经声明而超时、返回空结果、缺少结果、重复或越界结果时不能放行」作废）：只有插件明确返回 `UNAVAILABLE` 才拦截；快照读取失败或缺失、插件超时、调用出错（含插件不可用、`Unimplemented`）、返回空结果、缺少结果、重复或越界结果，以及 `UNKNOWN`（含漏填 state），一律放行并记 WARN，账号照常参与选号。分批调用时坏掉的那一批整批放行，已完成且合法的批次照常生效。全部候选被拦只可能是全部 `UNAVAILABLE`，返回 429 `model_quota_exhausted`；预检本身不再产生 503。读快照与调插件各有时限（500 ms、1 s，后者为一次预检的所有分组与批次共用；此前两者共用 200 ms，sup2api-ccp 新建数据库连接约 430 ms 即超时，高峰每小时数个到二十余个 503）。节点级熔断：某插件的可用性调用失败后 10 s 内，本节点对它直接按失败放行、不发调用，之后放一个请求试探。同一请求里已经失败放行过的，执行前检查不再调用插件。客户端已断开时预检不放行，直接按取消结束。设计与取舍见 `MODEL-AVAILABILITY-PRECHECK-DESIGN.md`。
 - 请求按插件批量携带 `ModelAvailabilityCandidate{account_id, account_type, model, client_model, quota}` 与 `now_unix`。`model` 为上游模型，`quota` 为持久化快照，不携带凭据或任意账号配置。结果逐账号、逐模型返回 `AVAILABLE`、`UNAVAILABLE` 或 `UNKNOWN`，可附原因及可信重试时间。核心不认识供应商模型前缀、套餐窗口和耗尽阈值。
-- SDK 提供可选 `ModelAvailabilityChecker`；启用模型准入或自动配额查询的插件需要 Host API 7。wire protocol 仍为 1，旧插件不需要实现新接口。新插件必须在不支持能力的旧核心上拒绝初始化，不能静默忽略准入限制。
+- SDK 提供可选 `ModelAvailabilityChecker`；随 Host API 7 发布。wire protocol 仍为 1，插件不需要实现新接口。
 - 权重、优先级及粘性规则保持原有行为。有效粘性绑定不参加权重抽选，也不累计分配补偿；模型不可用是硬准入，不可用 `scheduler.rank` 的权重 0 代替，不可被排序插件 fail-open 恢复。（「硬准入」只针对插件明确返回的 `UNAVAILABLE`；核心侧检查本身失败时放行，见上一条。）
-- `quota.autoRefresh` 依赖 `quota.query`。录入事务记录待查询状态，提交并且账号生命周期资源就绪后执行首次查询；网络请求不在账号事务内。「就绪」指 `account_lifecycle_sync` 为 `applied`，或为 `pending` 且 `code = environment_requires_new_runtime`（只有新语言／时区等新容器生效，现有容器照常服务，2026-10-20；ccgateway 0.1.69 起控制器经 Worker `PUT /admin/environment` 原地生效，只有旧 Worker 或要清空容器创建时写入的值才停在这个状态）；其余 `pending`／`failed` 后台跳过、手动刷新回 409 `runtime_not_ready`。这个状态不只由事件投递写入：非 `applied` 且 30 秒内未更新的行，核心每分钟经资源的 `AccountSynchronization` 重读一次并写回（每页 50 行、最旧的先读；读取失败保持原状；按 generation 与账号 `updated_at` 防止覆盖更新的变更，2026-10-21）。此前投递时运行环境未就绪的账号会一直停在 `pending`／`failed`，即使后续对账已让它就绪。后台正常复查默认 30 分钟；插件可建议更早的复查（窗口重置），失败后按 1、2、4、8、16 分钟退避，之后每 30 分钟；任何非强制查询之间至少隔 1 分钟（PG 中执行，只防突发），较晚的调度时间仍保留（最多 24 小时）。此前下限为 30 分钟，窗口重置后的复查和失败重试都被推迟到 30 分钟后，期间账号不可调度（2026-10-21）；手动强制刷新跳过时间限制，但共用租约。失败保留账号及调度开关并记录错误；不得为额度查询启用停用账号、注销或刷新 OAuth 授权（停用账号的运行时照常运行，见 §49.22，但额度查询仍只针对启用的账号）。
-- `QuotaResult.next_check_at_unix` 由插件建议，核心限定调用频率并维护持久化检查计划。查询完成必须校验租约、身份代次和快照版本，旧任务不能覆盖重新授权后的身份或新收到的限额事实。没有首次成功快照时插件可返回 `UNKNOWN`，不得伪造 0% 或默认为已确认可用。（2026-11-02 起核心对 `UNKNOWN` 放行：它表示插件无法判断，插件要拦截必须返回 `UNAVAILABLE`。）例外（2026-10-14）：快照错误为 `transient: token_expired: …`（CCGateway 容器报访问令牌过期且存有刷新令牌）时 CCGateway 插件返回 `AVAILABLE`（原因 `quota_auth_refresh_on_request`）——容器内 Claude Code 只在模型请求时刷新令牌，按 UNKNOWN 拦截会让空闲超过令牌有效期的账号永远不可调度；已知耗尽窗口仍拦截、无效快照仍为 `UNKNOWN`。真的未登录（`auth_rejected: not_logged_in: …`）与令牌被拒且无法续期（`auth_rejected: token_revoked: …`）返回 `UNKNOWN`（原因 `authorization_required`），重新授权后恢复。（CCGateway 部分为历史，0.1.112 起见本节「用量窗口不再拦截」一条。）
-- `BuildQuotaRequestResponse.runtime_operation` 与普通 HTTP URL 目标区分。运行时请求通过已注册的 `AccountQuotaRuntime`、当前账号与受限只读操作执行；不接受插件指定任意运行时 URL，也不向插件暴露 Worker 管理密钥或容器 OAuth token。配额解析仍统一由插件的 `ParseQuotaResponse` 完成。
-- CCGateway 的托管账号声明运行时 `usage` 查询。插件解析共享窗口与模型专属窗口，用映射后模型的 `claude-fable-` 前缀识别 Fable；共享耗尽优先限制全部模型，Fable 专属耗尽只影响 Fable。缺失窗口、失败查询和仅仅到达 reset 时间都不能清除已知耗尽事实。（准入部分为历史，0.1.112 起见下面「用量窗口不再拦截」一条；窗口解析与界面展示不变。）
-- **CCGateway 0.1.112 起（2026-10-30，用户要求）：用量窗口不再拦截调度。** 托管账号的快照无论什么状态——共享窗口（`5h`/`7d`）`rejected`、从未观测、快照过期、查询失败、`utilization_unknown`、无效快照、`auth_rejected: not_logged_in|token_revoked`——`CheckModelAvailability` 一律返回 `AVAILABLE`（原因 `quota_not_enforced`），不再有 `quota_unobserved`、`quota_stale`、`quota_refresh_failed`、`quota_unknown:*`、`invalid_quota_snapshot`、`authorization_required`、`quota_auth_refresh_on_request` 这些结果，65 分钟快照有效期也随之取消。原因：窗口只有在下一次 `/usage` 查询成功后才解除，查询一直失败账号就永远挂住（核心回 503/429）。真正的额度耗尽交给请求本身：上游 429 由插件 `ClassifyError` 设冷却并自动停用到重置时刻（`cooldown_until_unix` 与 `automatic_state.release`，时刻与释放都由插件决定，核心照做，到点自动恢复）；令牌被吊销时上游回 401，由系统设置的自动禁用规则（默认 `401`）停用账号。核心自身只执行系统设置的自动禁用。唯一例外是模型专属窗口（`7d_fable`/`7d_sonnet`）：它的 429 只换号、不冷却整个账号（其他模型照常可用），所以窗口为 `rejected` 且 `resets_at` 在未来时只对该模型族返回 `UNAVAILABLE`（原因 `quota_rejected:<key>`，`retry_at_unix` 为重置时刻），到 `resets_at` 自动放行，不等查询确认；没有重置时刻（或已过）的专属窗口不拦截，对应的 429 按普通 429 处理（冷却并自动停用整个账号，到 `retry-after` 或其他限额头给出的重置时刻，都没有时 60 秒）。`invalid_candidate`、`duplicate_candidate`、`unsupported_account_type` 与 API Key 账号（`subscription_not_required`）不变。已知局限：容器内未登录时若 CLI 在本地失败而不发到上游，请求得到的是网关本地错误，只短暂冷却、不触发自动禁用。（原先还有一条"发布了故障策略时核心不调用插件 `ClassifyError`、429 只按策略冷却"，已由 §69 解决。）
-- CCGateway 0.1.69 的快照有效期同步为 30 分钟；本轮核心查询周期变更需配合该插件版本发布，不能留下旧插件 3 分钟的过期判断。插件仍可报告窗口重置后的提前核验建议，核心按上述 30 分钟下限调度；手动强制查询不受影响。（历史，2026-10-21 起见下一条。）
-- 2026-10-21 起：快照（最近一次成功查询）有效期为 65 分钟，大于两个查询周期；有效期内查询失败（`transient: …`）不再判 `UNKNOWN`，仍按上次成功的窗口判断，过期后为 `quota_refresh_failed`。未耗尽窗口到达 reset 时间直接视为可用（只会多出额度），不再判 `quota_reset_unconfirmed`；已知耗尽窗口仍按上条规则等重置后的查询确认，核心按插件建议在重置后约 1 分钟内复查。核心与插件需一起发布：只升级插件时，旧核心的 30 分钟下限仍会推迟这次复查。（准入部分为历史，CCGateway 0.1.112 起快照有效期不再影响准入，见上面「用量窗口不再拦截」一条；查询周期与复查计划不变。）
+- `quota.autoRefresh` 依赖 `quota.query`。录入事务记录待查询状态，提交后执行首次查询；网络请求不在账号事务内（0.1.290 之前还要等账号生命周期资源就绪，随该契约删除，§101.5）。后台正常复查默认 30 分钟；插件可建议更早的复查（窗口重置），失败后按 1、2、4、8、16 分钟退避，之后每 30 分钟；任何非强制查询之间至少隔 1 分钟（PG 中执行，只防突发），较晚的调度时间仍保留（最多 24 小时）。此前下限为 30 分钟，窗口重置后的复查和失败重试都被推迟到 30 分钟后，期间账号不可调度（2026-10-21）；手动强制刷新跳过时间限制，但共用租约。失败保留账号及调度开关并记录错误；不得为额度查询启用停用账号、注销或刷新 OAuth 授权（额度查询只针对启用的账号）。
+- `QuotaResult.next_check_at_unix` 由插件建议，核心限定调用频率并维护持久化检查计划。查询完成必须校验租约、身份代次和快照版本，旧任务不能覆盖重新授权后的身份或新收到的限额事实。没有首次成功快照时插件可返回 `UNKNOWN`，不得伪造 0% 或默认为已确认可用。（2026-11-02 起核心对 `UNKNOWN` 放行：它表示插件无法判断，插件要拦截必须返回 `UNAVAILABLE`。）
+- 额度查询只有普通 HTTP 目标（`BuildQuotaRequestResponse.url`）；运行时目标 `runtime_operation`（字段 5，`AccountQuotaRuntime`）在 0.1.290 随 CCGateway 删除，字段号保留不用。配额解析统一由插件的 `ParseQuotaResponse` 完成。
+- 2026-10-21 起：快照（最近一次成功查询）有效期为 65 分钟，大于两个查询周期；有效期内查询失败（`transient: …`）不再判 `UNKNOWN`，仍按上次成功的窗口判断，过期后为 `quota_refresh_failed`。未耗尽窗口到达 reset 时间直接视为可用（只会多出额度），不再判 `quota_reset_unconfirmed`；已知耗尽窗口仍按上条规则等重置后的查询确认，核心按插件建议在重置后约 1 分钟内复查。核心与插件需一起发布：只升级插件时，旧核心的 30 分钟下限仍会推迟这次复查。
 - `ClassifyErrorResponse.quota` 承载插件确认的配额观测，核心只校验及存储。观测保存使用准入时由核心捕获的 `AccountQuotaSnapshot.generation`，不得信任插件指定的身份代次；重新授权前的迟到拒绝或恢复不能覆盖新身份。revision 已变化的旧查询不能延后更新的复查计划或覆盖失败计数。2026-11-02 起：插件失败放行的账号，准入仍记录核心读到的快照（含 generation），观测照常保存；准入时没有快照的账号（generation 0）不保存观测，HTTP 请求在执行前检查读到快照后补上准入，WebSocket 会话整个连接期间都不保存。执行前检查只在准入与当前两边 generation 都大于 0 且不同（重新授权等换代）时换号；准入用的是旧值或没有快照时，以执行前读到的为准；执行前读不到快照时沿用准入快照、不等待。执行前检查的结论（含换号）不交给故障策略（§69），不冷却、不停用账号。
 - `QuotaWindow.utilization_unknown` 默认为 false，兼容旧插件的数值语义。只有状态、没有数值的 CLI 观测设为 true，且 utilization、used、limit 必须都为 0；这三个默认值不表示真实使用量。API 保留未知标记，界面显示未知而非 0%，后续明确的真实 0 才作为已知数值展示。
 - 可信 CLI 事件明确指出模型专属限额且带未来重置时刻时，CC 插件不附整账号冷却（0.1.112 起没有重置时刻的按普通 429 处理）；未知范围仍采用保守分类，不能只凭请求模型猜测范围。管理员自动禁用规则与人工状态始终独立有效。配额查询与模型准入不发送收费模型探针，不重新引入模型 HTTP/TLS 中继。
-- **快照读取（2026-11-02 起）**：预检与执行前检查读的是每个节点的额度快照内存镜像（`account/quota_mirror.go`），请求路径不查 PG。镜像按账号失效：写额度的节点立即失效本机，其他节点收到 `account:changed` 后失效（额度写入发 `{"account_id":id,"kind":"quota"}`，只失效镜像，不清分组快照与 CCGateway 请求缓存；不带 `account_id` 的消息全部失效），总线重连、插件代次切换时全部失效。失效后保留旧值并在后台回填（独立 3 s 时限，不受请求时限影响）；请求遇到旧值最多等 40 ms，之后用旧值（标为旧值，见上一条的执行前检查规则）；没有任何值时等到读快照时限，之后按「快照缺失」放行。数据库出错时旧值最多再用 10 分钟。每 60 s 全量重载一次作为兜底，节点启动时预热。单行无效只跳过这一个账号。§51.3 的 Redis 缓存只服务控制台。
+- **快照读取（2026-11-02 起）**：预检与执行前检查读的是每个节点的额度快照内存镜像（`account/quota_mirror.go`），请求路径不查 PG。镜像按账号失效：写额度的节点立即失效本机，其他节点收到 `account:changed` 后失效（额度写入发 `{"account_id":id,"kind":"quota"}`，只失效镜像，不清分组快照；不带 `account_id` 的消息全部失效），总线重连、插件代次切换时全部失效。失效后保留旧值并在后台回填（独立 3 s 时限，不受请求时限影响）；请求遇到旧值最多等 40 ms，之后用旧值（标为旧值，见上一条的执行前检查规则）；没有任何值时等到读快照时限，之后按「快照缺失」放行。数据库出错时旧值最多再用 10 分钟。每 60 s 全量重载一次作为兜底，节点启动时预热。单行无效只跳过这一个账号。§51.3 的 Redis 缓存只服务控制台。
 - **可观测性（2026-11-02 起）**：有账号被拦或检查失败放行时，使用记录的 `anomalies.availability`（JSON 字符串，与 `failure_policy` 同构）记下结论：`outcome`（`blocked_all`/`partial`/`fail_open`）、候选数、放行数、按原因计数、最早可重试时刻、最多 20 个账号样例（账号、模型、拦截或放行、原因码、重试时刻）及执行前检查的拦截。全部放行时不记。全部候选被拦时 `account_id` 仍为空（它表示服务或尝试过的账号），账号在样例里。日志：全部被拦与失败放行记 WARN，按原因每 60 s 合并一行并带被压掉的条数；部分拦截记 DEBUG。汇总统计不把 `availability` 算作异常。
 
 ## 45. 增长插件 growth：邀请返利与每日签到（0.1.0，2026-10-04 合并，2026-10-05 按代码补记）
@@ -2969,7 +2990,7 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 - 订阅事件：`user.created`、`usage.recorded`、`balance.changed`，每批 50 条。
 - 任务：`cleanup`，`0 3 * * *`，删除 90 天前的签到记录。
 - 数据库：`plg_growth`，迁移 `migrations/0001_init.sql`（全部 `IF NOT EXISTS`）。
-- 用户权限（2026-11-12 权限加固 T60 改名，`inheritFrom` 保留存量授权）：`growth:use`（我的邀请、签到；`defaultRoles` user/supplier/operator/admin，继承 `growth:read`），`growth:stats:read`（“查看增长后台”，`sensitive`；继承 `growth:manage`）。旧的 `growth:read`、`growth:manage` 在同步后删除。
+- 用户权限（2026-11-12 权限加固 T60 改名，`inheritFrom` 保留存量授权）：`growth:use`（我的邀请、签到；`defaults` user/supplier/operator/admin，继承 `growth:read`），`growth:stats:read`（“查看增长后台”，`risk: "sensitive"`；继承 `growth:manage`）。旧的 `growth:read`、`growth:manage` 在同步后删除（0.1.290起改为标 removed，授予保留不生效，§4）。
 - host 权限：`db.schema`、`events`（scope 同上三种事件）、`jobs`、`routes.user`、`routes.admin`、`ui.menu`、`ui.native`、`ledger.credit`（`{"maxPerTx": "10", "maxPerDay": "100"}`）。
 - 菜单：`me` 区的"我的邀请""每日签到"（`growth:use`），插件自己的 `growth` 区里的"增长管理"（`growth:stats:read`）。
 
@@ -3035,7 +3056,7 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 
 1. **授权上限偏小**：`ledger.credit` 只有单笔 $10、整个插件每天 $100（UTC 日，所有用户合计），超出的返利和签到都不发。用户多了很快就会触顶。需要按运营规模调大 scope，或者把大额返利拆成多笔。
 2. **注册归因**：没有"注册时带邀请码"的入口。任何已登录用户随时都能绑定一次邀请人，不限于新用户。
-3. **默认可见性**：2026-11-12 起新装时 `growth:use` 默认授予 user、supplier、operator、admin（manifest `defaultRoles`）；此前普通用户角色默认没有 `growth:read`，需要管理员授予后才能看到菜单。升级到带 `growth:use` 的版本时它是 `growth:read` 的改名：只授予存量 `growth:read` 的持有者，不叠加 `defaultRoles`（§4）。
+3. **默认可见性**：2026-11-12 起新装时 `growth:use` 默认授予 user、supplier、operator、admin（manifest `defaults`，此前为 `defaultRoles`）；此前普通用户角色默认没有 `growth:read`，需要管理员授予后才能看到菜单。升级到带 `growth:use` 的版本时它是 `growth:read` 的改名：只授予存量 `growth:read` 的持有者，不叠加 `defaults`（§4）。
 4. 原生 UI 的 `dist/` 不在仓库里，打包前要先构建 `ui/native`。
 
 ## 46. 充值支付与兑换码插件 payment（0.1.0，2026-10-04 起草，2026-10-05 按合并后实现修正）
@@ -3086,7 +3107,7 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 | GET / POST | `/promo-codes` | admin / `config:manage` | 真实 |
 | PATCH / DELETE | `/promo-codes/:id` | admin / `config:manage` | 真实 |
 
-- 用户权限有两个：`recharge:use` 和 `config:manage`。`config:manage` 标了 `sensitive`（仅展示标记，admin 调用无需二次验证，§3.3）。
+- 用户权限有两个：`recharge:use` 和 `config:manage`。`config:manage` 标了 `risk: "sensitive"`（仅展示标记，admin 调用无需二次验证，§3.3）。
 - **修正**：原稿的 `GET /payment-methods` 和 `POST /promo` 都没有 handler，已从 manifest 和本节删掉。优惠码目前**没有任何用户入口**（见 46.6）。
 
 ### 46.4 在线充值流程（目标设计；带 ⚠ 的步骤尚未实现）
@@ -3177,7 +3198,7 @@ sub2api dev [--addr 127.0.0.1:8080] [--state <dir>] [--builtin-dir <dir>] [--res
 - **PostgreSQL**：`sdk/testpg` 的本机服务器（§2，与测试共用一个进程），库名 `sub2api_dev`。指定了非默认的 `--state` 时，库名是 `sub2api_dev_<状态目录哈希>`：状态目录里的主密钥必须和它加密的数据配套。
 - **Redis**：进程内的 miniredis，退出即清空。插件 KV、限流计数、冷却等不会跨重启保留，PG 里的数据会。
 - **状态目录**：默认 `<用户缓存目录>/sub2api-dev`，存这些内容：
-  - `secrets.json`：主密钥、JWT 密钥、管理员密码，首次运行生成，权限 0600；
+  - `secrets.json`：主密钥、管理员密码，首次运行生成，权限 0600；
   - `plugins/`：插件数据；
   - `builtin/`：默认的内建插件目录。
 - **管理员**：`admin@sub2api.localhost`，启动时打印密码。
@@ -3307,394 +3328,9 @@ claude-oauth 插件原来有个每 30 分钟跑一次的 `refresh_tokens` 任务
 - 网关请求路径上不做同步续期。sub2api 在请求时剩余不到 3 分钟会先刷新再转发；这里靠 30 分钟提前量的定时扫描兜住，未做同步续期。
 - `net` 权限保留，只用于授权时用授权码换令牌。
 
-## 49. CCGateway 账号：录入时启动容器、授权后再保存（2026-10-05，用户要求）
+## 49. CCGateway 账号（已删除）
 
-前提：CCGateway 设置里开启了 `account_runtimes`（每个运行环境一组容器，由远端 `tools/ccgateway/runtime/manager.py` 控制器管理）。~~控制器约定**没有直连兜底**~~（2026-10-14 用户要求改为允许不绑代理，见 §49.20）：代理被禁用或账号被禁用时，控制器停掉该运行环境的容器（blocked）；没有绑定代理时直连出网。
-
-用户决定（同日第二版，取代下面 §49.1–§49.6 的"先保存、再授权"）：Claude Code（`ccgateway/managed`）账号在**录入时**就启动容器、完成授权，授权成功才能保存；失败、取消或放弃的容器由定时清理删除。所有机器可读的状态和错误一律是英文代码，控制台做中英文转换。三条线（容器/控制器、核心、控制台）的共同约定原在 `docs/CCGATEWAY-DRAFT-RUNTIMES.md`，已并入本节 §49.7–§49.15。旧的"先保存再授权"流程仍然可用（编辑已保存账号的重新授权也走它）。
-
-### 49.1 流程（第一版：先保存、再授权；仍适用于已保存账号）
-
-授权在**账号管理 → 新建 / 编辑 CCGateway 账号**里完成；CCGateway 插件页只显示容器状态并跳转到账号页。
-
-1. 控制台保存 ccgateway `managed`（或 `apikey`）账号。不绑定代理时容器直连出网（§49.20）。
-2. 核心在账号创建、修改成功后调 `ccgateway.Service.Kick(key)`（`key` 为账号 id 或运行环境 key，账号 id 会解析成该账号的运行环境 key，§49.7）：非阻塞投递到本节点的 kick 队列（容量 64，满了直接丢，每分钟一轮的扫描仍会覆盖），由 `Run` 里单独的 goroutine 立即 `Reconcile`，不排在全量扫描后面；失败时每 5 秒再 kick 一次，最多 12 次，之后交给扫描（§49.18）。未开启 `account_runtimes` 时忽略。
-3. 控制台同时可以调 `POST /system/ccgateway/accounts/:id/sync`（同步执行一次 `Reconcile`，最长 90 秒），然后轮询 `GET .../status` / `GET .../health`。
-4. `status = ready` 后调 `POST .../start` 取授权链接，用户登录 Claude 后把 `code#state` 粘贴回来调 `POST .../complete {session_id?, code}`，容器里的 Claude Code 完成授权。页面刷新后先调 `GET .../session` 恢复未完成的授权（49.4）。
-
-### 49.2 接口（`/api/v1/system/ccgateway/accounts/:id/:action`；权限见 49.5）
-
-| 方法 action | 说明 |
-|---|---|
-| GET `status` | `{account_id, key, container, status, revision}`，`status` 为 `ready` / `pending` / `blocked`，`key` 为运行环境 key（§49.7）。只有已删除账号的运行环境被阻断，此时直接返回 `{account_id, key, container: "", status: "blocked", revision: "", reason: "account_deleted"}`，不访问控制器（§49.22） |
-| GET `health` | 容器内 Claude Code 授权状态 `{healthy, logged_in, auth_method}` |
-| GET `session` | 透传业务容器 `GET /admin/auth/session`：`{session_id, url, expires_at}`，没有时 `data: null`；容器镜像较旧、没有该端点（404）时也是 `null` |
-| POST `sync` | 立即同步。成功 `{synced: true}`；被阻断时 `{synced: true, status: "blocked", reason}`。失败 503，`details.reason` 为 `sync_failed`（容器创建或代理连通性检查未通过）或 `not_configured` |
-| POST `start` | 取授权链接 `{session_id, url, expires_at}`。控制器刚 ready 时可能先回 409（修订号还没记录）或 503（容器里的 HTTP 服务还没监听），这两种都没到达 CLI，核心在 30 秒内每 2 秒重试；其他回答立即返回。容器里已有未过期的登录时容器返回同一个会话（幂等） |
-| POST `complete` | `{session_id?, code}`，`code` 为 `code#state`；`session_id` 可省略（容器用当前的登录） |
-| POST `cancel` | `{session_id?}`，幂等 |
-| POST `logout` | 退出容器里的 Claude Code 授权（只有账号有，草稿没有） |
-
-`start`/`complete`/`cancel`/`logout` 只对 `managed` 可用（`apikey` 账号 400，`reason: api_key_account`）。运行环境被阻断时，除 `status`/`sync` 外的动作直接 400，`reason` 为阻断原因。错误一律英文 message + `details.reason`（§49.12），不再返回容器的中文原文。
-
-### 49.3 已知限制
-
-- 多节点：`sync` / kick 落到任意节点都能工作（每个节点用同一份 SSH 配置连控制器；`Reconcile` 用 PG advisory 锁 `ccg-account:<key>` 串行——数字 key 与旧版的 `ccg-account:<id>` 相同，控制器内部也按 key 加锁）。拿不到锁时 `sync` 立即返回 `synced: true`（另一处正在同步），所以控制台必须以轮询 `status` 为准。
-- `Reconcile` 在整个远程调用期间（最长 90 秒）占着一个数据库连接和事务；每 60 秒（2026-10-11 前为 3 秒）对每个运行环境（账号 + 未认领草稿）发一次 `GET status`：0.1.236 起是全集群任务 `core.ccgateway.runtime_sync`，一个节点跑、一轮并发 4 个（之前是每个节点各扫一遍，§77.7）；代理变更时立即手动运行一次（§49.18）。
-- ~~49.4 依赖业务容器的报错文字~~：已取消。核心不再匹配任何报错文字，只认业务容器 / 控制器的英文错误代码（§49.12）。
-
-### 49.4 授权会话（已改）
-
-第一版核心把 `start` 返回的会话存在 Redis `ccgateway:auth:<accountID>`，靠容器的中文报错判断"已有待完成的授权"。**已删除**：业务容器现在自己提供 `GET /admin/auth/session`，`start` 幂等（有未过期登录时返回同一个会话），`complete` / `cancel` 的 `session_id` 可省略，核心只做透传。升级后 Redis 里残留的 `ccgateway:auth:*` 键会自然过期，无需清理。
-
-### 49.5 权限
-
-| 路由 | 接受任一权限 |
-|---|---|
-| GET `status` / `health` / `session` / `features` / `request-logs` / `cc-features` | `account:read`、`account:own:read` |
-| POST `sync` / `start` / `complete` / `cancel` / `logout` / `cc-features/preview`、`reauthorize`、`reauthorize/:key/commit`（§49.17） | `account:update`、`account:own:update` |
-| PUT `request-logs`（§65） | `account:update` |
-
-用 `Router.PermAny` 注册（§21.1），key 来自 `ccgateway.RuntimeScope(method)`。只命中 `account:own:*` 时只能操作 `created_by` = 调用者的账号，其余（含不存在、已删除）一律 404，与账号接口的所有权规则一致；归属由 `core.AccountAccess`（账号模块）判断，未注入时这些接口 503。**2026-11-12 权限加固 T38（D15）起不再接受 `settings:read` / `settings:manage`**：按账号的运行环境跟随账号本身的权限，settings 管理员只保留控制器、镜像、默认规则等全局设置（`remote-config`、`remote-*`、`runtime/*`、`runtimes/*`、`cli/:id`、`features`），请求日志查看接口（§64）不变。
-
-### 49.6 `POST /system/ccgateway/connect`（已删除）
-
-2026-11-12 权限加固 T39（D7）删除了这条接口（现在 404）：控制台早已不调用它，而它以 `settings:manage` 注册、再在请求上下文里补一个 `account:create` 去走创建账号的流程，等于伪造路由命中的权限。CCGateway 账号统一用 `POST /accounts` 创建，权限与范围按 §21：`managed` 类型要求先准备运行环境（manifest `lifecycle.preparation.required`），即先走草稿流程（§49.9、§49.10：`POST /system/ccgateway/drafts` → 授权 → `POST /accounts` 带 `ccgateway_runtime`）或账号预备（§59 的 `preparation_key`）。connect 两者都不带，对真实的 `managed` 类型早已只会返回 400。共享容器模式的“先检查共享容器已授权”随接口一并删除。
-
-### 49.7 运行环境 key
-
-一个运行环境 = 远端 Docker 主机上的 app 容器 + egress 容器 + 内部网络 + 数据卷，命名 `ccg-<key>-<role>`。
-
-- 已有账号：key = 账号 id（`^[1-9][0-9]{0,17}$`），不变。
-- 草稿（编辑器在账号存在前创建）：key = `d` + 16 位小写十六进制（`^d[0-9a-f]{16}$`），随机。
-- 保存账号时认领草稿：账号此后一直用草稿的 key（容器不改名，OAuth 登录在数据卷里）。
-
-迁移 `0032_ccgateway_runtimes.sql`（只加表，旧核心不读它）：
-
-```sql
-CREATE TABLE IF NOT EXISTS ccgateway_runtimes (
-  key          text PRIMARY KEY,
-  account_id   bigint UNIQUE REFERENCES accounts(id),
-  proxy_id     bigint,
-  created_by   bigint,
-  created_at   timestamptz NOT NULL DEFAULT now(),
-  last_seen_at timestamptz NOT NULL DEFAULT now(),
-  adopted_at   timestamptz
-);
-```
-
-账号的运行环境 key = `ccgateway_runtimes.key`（`account_id` = 该账号），否则账号 id。核心内所有按运行环境的操作都以 key 为单位：`desired`、`Reconcile`（`Reconcile(ctx, key)`，传账号 id 时先解析成该账号的 key）、控制器请求路径 `/accounts/<key>/...`、模型请求 `/accounts/<key>/v1/messages`、`Run` 的定时扫描（每个 ccgateway 账号一个 key + 每个未认领草稿）、`Kick(key)`。
-
-草稿的期望状态：代理取草稿行的 `proxy_id`；`enabled` 恒为 true（代理停用不影响；代理记录不存在或协议不受支持时不重写配置，见 §49.22）；`auth = {"mode":"oauth"}`；修订号 = sha256(`draft|key|proxy_id|proxy.updated_at`)，任何节点都能算出同一个值。认领后改用账号的期望状态（账号的代理与草稿不同时以账号为准，下一次 reconcile 换出口）。
-
-### 49.8 流程（新建 `ccgateway/managed` 账号）
-
-1. 选代理（必选）→ `POST /system/ccgateway/drafts {proxy_id}` 建草稿，核心立即 Kick。
-2. 轮询 `GET drafts/:key/status` 到 `ready`（可先 `POST drafts/:key/sync`）。
-3. `POST drafts/:key/start` 取授权链接（或 `GET drafts/:key/session` 取已有的），用户粘贴 `code#state` → `POST drafts/:key/complete`。
-4. `GET drafts/:key/health` 报 `logged_in: true` 后保存按钮才可用；保存时 `POST /accounts` 带 `ccgateway_runtime: "<key>"`（§49.10）。
-5. 关闭编辑器、切换账号类型或失败时 `DELETE drafts/:key`（尽力而为，剩下的由清理任务处理，§49.13）。草稿存在期间改代理调 `PUT drafts/:key`。页面刷新会丢掉草稿（由清理任务删除）。
-
-编辑已保存的账号沿用 §49.1/§49.2 的按账号流程（状态、重新授权）。
-
-### 49.9 草稿接口
-
-权限：`settings:manage`、`account:create`、`account:own:create` 任一（`Router.PermAny`）；五条草稿路由同一组 key（2026-11-12 权限加固 T37：重新授权已改为在账号现有运行环境上原地进行，不再建草稿，按 key 的草稿接口不再接受 `account:update`、`account:own:update`）。草稿只对创建者可见；持有 `settings:manage` 的调用者看得到所有草稿；其他人（以及已认领、已删除、不存在的 key、数字 key）一律 404，`details.reason: draft_not_found`。**每次草稿调用（含 GET status/health/session）都更新 `last_seen_at`**——控制台在草稿存在期间每 60 秒发一次 `GET status` 作心跳，用户在授权后填写其他字段时草稿不会被当作闲置清理。
-
-| 方法 | 路径 | 请求 → 结果 |
-|---|---|---|
-| POST | `/system/ccgateway/drafts` | `{proxy_id}` → 201 `{key}`；立即 Kick。每个用户最多 3 个未完成的草稿（`account_id`、`retired_at` 都为空），超出返回 429 `too_many_drafts`；持有 `settings:manage` 不受限。计数与插入在同一事务里、先取按用户的 advisory 事务锁，并发请求也不会超出（2026-11-12 权限加固 W1-F13，2026-11-13 期 3 审查加锁）。预备容器 `POST /account-types/:plugin_key/:type/preparations` 同理：每个用户最多 3 个未完成的（未被账号采用、`state` 为 `pending`/`ready`、未过期），重复的 `idempotency_key` 不算新的，首次准备就失败的不占名额（核心随即撤销并删行），全量 `account:create` 不受限。两个上限各算各的：ccgateway 的预备容器在 `ccgateway_runtimes` 里也有一行，会占草稿名额，反过来草稿不占预备容器名额 |
-| PUT | `/system/ccgateway/drafts/:key` | `{proxy_id}` → `{key}`；重新 Kick |
-| DELETE | `/system/ccgateway/drafts/:key` | → 204；在控制器上删除运行环境并删行。控制器删不掉时行保留并标记为过期（`last_seen_at` 提前一天），返回 503 + reason，清理任务下一分钟重试 |
-| GET | `/system/ccgateway/drafts/:key/status` | `{key, status: creating\|ready\|blocked, reason?, container}` |
-| GET | `/system/ccgateway/drafts/:key/health` | `{healthy, logged_in, auth_method}` |
-| GET | `/system/ccgateway/drafts/:key/session` | `{session_id, url, expires_at}` 或 `null` |
-| POST | `/system/ccgateway/drafts/:key/{sync,start,complete,cancel}` | 同账号接口（§49.2）；草稿没有 `logout` |
-
-`proxy_id` 校验（POST / PUT）：缺少或 null → 直连（§49.20）；≤0、不存在或调用者不可见 → 400 `proxy_not_found`；已停用 → 400 `proxy_disabled`。可见性与 `POST /accounts` 相同（§21.4）：持有 `account:create` 时任何存在的代理都行；否则 `proxy:read` 看全部，`proxy:own:read` / `proxy:own:manage` 只看自己建的，都没有则看不到任何代理。草稿只接受 `proxy_id`，不支持 `proxy_url`。未开启 `account_runtimes` 时 `POST drafts` 返回 503 `not_configured`，不建行。
-
-### 49.10 `POST /accounts` 的 `ccgateway_runtime`
-
-`POST /accounts` 接受 `"ccgateway_runtime": "<draft key>"`（空串等于不传），只用于 `plugin_key=ccgateway, type=managed`，否则 400 字段错误（`field: ccgateway_runtime`）；`PATCH` 带它一律 400。要求：草稿存在、是调用者建的（或调用者持有 `settings:manage`）、未被认领，且其容器 `GET admin/status` 报 `logged_in=true`。否则 400 `invalid_argument`，`details.reason` = `draft_not_found`（不存在 / 不是调用者的 / 已认领 / 已删除）或 `draft_not_authorized`（未登录，或无法确认：容器未就绪、运行环境关闭、控制器不可达、代理停用）。插入账号与认领（`account_id`、`adopted_at`）在同一个事务里提交；事务内认领失败（并发清理或重复认领）整个创建回滚并返回 `draft_not_found`。创建成功后 Kick 该账号（解析为草稿 key）。不带该字段时旧流程（先保存、再在编辑器里授权）照常可用。
-
-### 49.11 状态
-
-- 账号 `status`：`ready` / `pending` / `blocked`（§49.2，不变）。
-- 草稿 `status`：`creating`（控制器尚未按当前修订号就绪，含控制器还没有这个运行环境）/ `ready` （草稿不会被阻断，§49.22）。注意账号与草稿对"未就绪"用了不同的词（`pending` 与 `creating`），这是本契约的原样定义。
-- `sync`：`{synced: true}` 或 `{synced: true, status: "blocked", reason}`。
-
-### 49.12 错误
-
-所有 ccgateway 运行环境接口（账号、草稿、`POST /accounts` 的草稿校验）由核心自己产生的错误都是英文 message，原因放 `details.reason`：
-
-```json
-{"error":{"code":"invalid_argument","message":"<English sentence>","details":{"reason":"<code>"}}}
-```
-
-| reason | HTTP | 含义 |
-|---|---|---|
-| `not_configured` | 503 | 未开启 `account_runtimes`、读不到配置，或连不上控制器（SSH / Docker 主机） |
-| `not_synchronized` | 503 | 运行环境尚未按当前修订号就绪（控制器 409） |
-| `sync_failed` | 503 | `sync` 失败：容器创建或代理连通性检查未通过 |
-| `runtime_unavailable` | 503 | 控制器 / 容器的其他失败（含控制器没给出代码的 5xx） |
-| `account_deleted` | 400 | 账号已删除，运行环境已停止（§49.22） |
-| `proxy_unavailable` | 400 / 503 | 绑定的代理记录不存在或协议不受支持；运行环境保持原样，请求失败而不改为直连（§49.22） |
-| `proxy_disabled` | 400 | 草稿 POST/PUT 选择了已停用的代理（只校验新选择，不影响已运行的容器） |
-| `proxy_not_found` | 400 | 草稿的 `proxy_id` 不存在或调用者不可见（契约草案没有这个代码，实现时补的） |
-| `api_key_account` | 400 | `apikey` 账号不做 OAuth 授权 |
-| `draft_not_found` | 404 / 400 | 草稿接口 404；`POST /accounts` 400 |
-| `draft_not_authorized` | 400 | `POST /accounts` 时草稿未登录或无法确认 |
-| `resource_in_use` | 503 | 删除运行环境时控制器回 409：运行环境之外的容器仍连在它的网络上或挂着它的数据卷，或有外部同名资源占用运行环境的名字，控制器什么都没删；核心之后自动重试（§49.14、§49.23）。出现在草稿 `DELETE`、已删除账号的 `sync`，以及账号生命周期同步状态的 `code` |
-| `runtime_cleanup_failed` | 503 | 控制器删除运行环境的其他失败；核心之后自动重试。2026-10-24 之前的控制器遇到同名资源不属于该运行环境时回 503，核心看到的也是这个 |
-| `runtime_not_retained` | 409 | `POST /system/ccgateway/runtimes/:key/purge`：该 key 不是待清除的已删除账号运行环境（账号未删除或已清除，§49.23） |
-
-透传规则：
-
-- 业务容器或控制器回 400：其错误代码（业务容器 `{"type":"error","error":{"type":"<code>","message":"..."}}`，或控制器 `{"error":"<code>"}`）原样放进 `details.reason`（**未知代码也原样透传**），message 用容器给的英文（去控制字符、最多 200 字；没有时用核心的英文说明）。不是小写标识符的代码（旧镜像发的是句子）丢弃，只返回 400 和通用英文 message。业务容器的代码见 §49.14。
-- 控制器 409 → 503 `not_synchronized`（代码为 `api_key_account` 时 400 `api_key_account`）。删除运行环境（`DELETE /accounts/<key>`）例外：409 `resource_in_use` → 503 `resource_in_use`，其他非 200（404 视为已删除的情形除外）→ 503 `runtime_cleanup_failed`，`details.status` 为控制器的 HTTP 状态。
-- 其他非 200 → 503，`details.reason` 为控制器给出的代码（例如 `image_pull_failed`、`runtime_unavailable`、`unauthorized`），没有代码时 `runtime_unavailable`。
-- `GET session` 遇到 404（旧镜像没有该端点）返回 `null`。
-- 通用账号准备接口（`/account-preparations/:key/:action`，ccgateway 的 `AccountPreparationAction`）与草稿、账号接口共用同一套实现与错误（2026-10-24 起，审核 K1）：`sync` 失败时 `details.reason` 与账号的 `sync` 一致，优先用控制器给的 reason，没有就是 `sync_failed`，连不上控制器为 `not_configured`（以前兜底是 `runtime_unavailable`）；`health`/`session` 等动作的答复无法解析时为 503 `runtime_unavailable`（以前可能是 500）；`status` 与 `GET drafts/:key/status` 用同一个算法。
-
-核心不再在 Redis 里存登录会话，也不再匹配任何报错文字。CCGateway 其他接口（`remote-*`、共享容器的 `auth/*`、`proxy`、`connect`）的 message 也改成了英文。
-
-### 49.13 清理任务
-
-每分钟一次，只在 `account_runtimes` 开启时运行。0.1.235 起由全集群任务 `core.ccgateway.draft_sweep`（§77）执行：同一时段只有一个可工作节点在扫，锁 `ccgateway:drafts:sweep` 不再使用。
-
-1. `account_id IS NULL` 且（`last_seen_at` 早于 15 分钟前，或 `created_at` 早于 2 小时前）的草稿：在一个事务里拿该 key 的 advisory 锁（`pg_try_advisory_xact_lock`，与 `Reconcile` 同一把；拿不到就跳过，下一轮再试）→ `DELETE ... WHERE key=$1 AND account_id IS NULL` → 控制器 `DELETE /accounts/<key>` → 成功才提交。这样正在 reconcile 的运行环境不会被删到一半又被重建；同时进行的 `POST /accounts` 认领要等这一行的锁，之后找不到草稿而返回 `draft_not_found`；反过来认领先提交时清理的 DELETE 删不到行，也就不碰控制器。控制器失败则回滚，行保留。控制器回 404 视为已删除（没有该端点的旧控制器也不可能建过草稿运行环境）。
-2. 孤儿：先读控制器 `GET /accounts`，再查表；控制器列出的草稿 key（只认 `^d[0-9a-f]{16}$`）在表里**没有任何行**（已认领的也算有）、且 `created_at` 早于 15 分钟前的，在同一把 advisory 锁下再确认一次没有行后删除。`created_at` 解析不了的跳过。控制器没有 `GET /accounts`（404/405）时跳过这一步。
-3. 数字 key 和已认领的运行环境**绝不**被清理任务删除（控制器对不带 `X-CCG-Delete-Account` 的数字 key `DELETE` 也返回 405）。例外：重新授权后**已退役**、不再属于任何账号（`account_id IS NULL`）的运行环境（含数字 key）在退役 70 分钟后删除（`retiredGrace`，长于模型请求一小时的期限；本节原写 10 分钟，与代码不符），见 §49.17。
-4. 已删除账号的运行环境不归清理任务删除，由 `Reconcile` 清除（§49.22、§49.23）：删除时选择立即清除的（`purge_after` 为删除时间）在删除事件或下一轮扫描时清除；选择保留的保留到 `purge_after`，到期后的扫描清除；清除成功后写 `purged_at`，之后不再处理。设置页的孤立资源清理（`POST /system/ccgateway/runtime/cleanup`）的保留名单也包含保留期内（`purged_at` 为空且 `purge_after > now()`）的这些 key，以及退役 70 分钟内的运行环境。
-
-### 49.14 业务容器管理接口（`tools/ccgateway/auth.go`）与控制器接口（`runtime/manager.py`）
-
-业务容器（Bearer 管理密钥）：
-
-- `GET /admin/status` → `{healthy, logged_in, auth_method}`。
-- `GET /admin/auth/session` → `{"session":{session_id,url,expires_at}}` 或 `{"session":null}`。
-- `POST /admin/auth/start` → `{session_id,url,expires_at}`；有未过期登录时返回同一个会话（幂等）。
-- `POST /admin/auth/complete {code, session_id?}` → `{success:true}`。带错 `session_id` 时返回 `session_not_found`，但保留当前会话。
-- `POST /admin/auth/cancel {session_id?}` → `{success:true}`，幂等；带错 `session_id` 也返回成功且不取消当前会话。
-- `POST /admin/auth/logout` → `{success:true}`。
-- `POST /admin/auth/refresh` → `{refreshed, expires_at}`：让容器里的 Claude Code 自己续期 OAuth 令牌（§49.21）。
-- `GET /admin/usage` → `{"windows":[{window,utilization,resets_at?,status?,used?,limit?}]}`。读容器凭证文件的 OAuth access token，调 Anthropic 用量接口（OAuth 模式的订阅限额，与 `claude-oauth` 插件查询同一端点），经容器的账号出口（Proxy SwitchyOmega 代理）。响应体格式：`window` 为窗口 key（如 `5h`、`7d`、`7d_fable`）；`utilization` 为百分比 0–100（供应商返回 0–1，转百分比）；`resets_at` 为 RFC3339 timestamp 或 null（未知）；`status` 为 `allowed`/`allowed_warning`/`rejected` 或空；`used`/`limit` 可选（与控制台"已用 / 总量"显示对应）。未登录 → 400 `not_logged_in`；令牌过期 → 400 `token_expired`（可先尝试用 CLI 刷新令牌再重试一次，不确定就别做）；上游失败 → 502 `upstream_error`。
-- 错误 `{"type":"error","error":{"type":"<code>","message":"<English>"}}`：`invalid_request`、`session_not_found`（会话随之没有）、`invalid_code`（会话保留，可重贴）、`auth_rejected`、`auth_process_failed`、`invalid_auth_url`（这三个之后会话结束）、`status_unavailable`、`logout_failed`、`not_logged_in`、`token_expired`、`token_revoked`、`auth_in_progress`、`refresh_failed`、`upstream_error`；401 为 `authentication_error`，未知端点 404 为 `not_found_error`。
-
-控制器（`127.0.0.1:8787`）：
-
-- 所有接受账号 id 的地方都接受 key `^(?:[1-9][0-9]{0,17}|d[0-9a-f]{16})$`，路径仍是 `/accounts/<key>/...`；透传增加 `GET /accounts/<key>/admin/auth/session`、`GET /accounts/<key>/admin/usage` 和 `POST /accounts/<key>/admin/auth/refresh`（控制器 ccgateway 0.1.53 起）。
-- `DELETE /accounts/<key>`：完整删除一个运行环境，幂等，什么都没有时也 `200`。应答 `{"deleted":true,"removed":{"containers":[<名字>...],"networks":[<名字>...],"volume":bool}}`，列出这次实际删掉的资源。
-  - **归属**：运行环境的容器 = 带标签 `io.sup2api.ccgateway.account=<key>`、且名字为 `<控制器前缀>-<key>-app|egress[-<后缀>]` 的全部容器（停止的也算），包括人工迁移留下的 `-app-rollback-<tag>` 副本；另一个控制器实例（不同前缀、同一 key）的容器不算。网络 `<前缀>-<key>-net|uplink` 与卷 `<前缀>-<key>-data` 按精确名字查找并核对同一标签；同名但标签不符的资源 → 409 `resource_in_use`，什么都不删，不打堆栈（2026-10-24 起，审核 P4；以前是 503 `runtime_unavailable`）。只有 `DELETE` 这样答；`PUT config` 等其他账号接口遇到同名外部资源仍是 503 `runtime_unavailable`。
-  - **先检查、再删除**：运行环境之外的容器仍连在它的网络上，或（要删卷时）仍挂着它的卷 → 409 `resource_in_use`，什么都不删；外来容器的名字只写进控制器日志，应答体只有 `{"error":"resource_in_use"}`。共享出口网关不算外来。本控制器遗留的、已结束（`created`/`exited`/`dead`）的 one-shot 助手（名字为 `<前缀>-oneshot-*`）一并删除，并且排在其他容器之前：挂着它的卷的；加入它某个容器网络命名空间的（`HostConfig.NetworkMode` 为 `container:<该运行环境容器的 id>`）；挂载了运行目录本身或目录下文件的（按目录精确匹配或 `目录/` 前缀，`/root/210` 不算 `/root/21`）（2026-10-24 起，审核 P11，以前只回收挂着卷的）。运行中的命名空间或目录助手不动，也不挡住删除；别的运行环境的助手和外来容器都不动。网络在删除途中已经消失时跳过，不报错（审核 P10）。
-  - **顺序**：解除共享出口绑定 → 清掉内存中的就绪记录 → 容器 → 网络（先断开共享出口网关）→ 数据卷（按下述请求头）→ 状态目录（`state.json`、`sing-box.json`、`firewall.nft` 等）→ 恢复备份。子网与 app/egress/网关地址由控制器按现存 Docker 网络分配，网络删除即释放。
-  - **请求头**：草稿 key 直接删，卷一并删除。数字 key 只在 `X-CCG-Delete-Account: <同一 key>` 时删除，否则 405 `method_not_allowed`。`X-CCG-Delete-Data: 1` 同时删除数据卷和恢复备份，必须与 `X-CCG-Delete-Account` 一起出现，否则 400 `invalid_request`；只带 `X-CCG-Delete-Account` 时保留数据卷，并把状态写入 `backups/<key>.json` 供人工恢复。核心清除已删除账号和退役运行环境时都带两个头（§49.23）。
-  - `/health` 的 `features` 含 `runtime-purge-v2` 表示控制器支持以上语义（按标签加名字前缀找容器、409 `resource_in_use`、`removed`）。核心只要求 `runtime-cleanup-v1`，不按 `runtime-purge-v2` 门控；旧控制器删不掉回滚副本或被外来容器占用的卷时，核心看到的是 `runtime_cleanup_failed`。
-- `GET /accounts` → `{"runtimes":[{key,status,created_at}]}`，每个状态目录一项（`status` 为 `ready`/`pending`/`blocked`；`created_at` 为首次 provision 时间，旧状态和 provision 中途失败的目录用目录 mtime）。
-- 孤立资源清理 `GET /runtime/cleanup` → `{"runtimes":[{key,identity}]}`（`identity` 为该运行环境资源快照的摘要），`POST /runtime/cleanup {keep_keys,candidates}` 只删除快照仍等于 `identity` 的候选，结果 `status` 为 `kept`/`absent`/`changed`/`deleted`/`failed`。某个运行环境的快照读不出来时（例如同名外部资源），清单不再整份失败（2026-10-24 起，审核 P4）：控制器记一行 WARN，照样列出这个 key，但给一个不会和任何快照相等的 identity，所以它永远不会被删除；POST 时快照仍读不出则显示为 `failed`，原因是 `resource_in_use`（同名外部资源或外来容器占用，以前是 `resource_cleanup_failed`）或 `resource_cleanup_failed`（其他失败），之后能读出则显示为 `changed`。
-- app 镜像变化时重建 app 容器（标签指纹包含镜像 id），数据卷与登录保留。
-- 错误 `{"error":"<code>"}`：`unauthorized`、`not_found`、`invalid_request`（400）、`not_synchronized` / `resource_in_use`（409）、`api_key_account`、`image_pull_failed` / `runtime_unavailable`（503）、`method_not_allowed`。
-- 账号接口（`/accounts/<key>/...`）的请求体：`Content-Length` 缺省按 0；有的话必须是纯十进制数字（至多 12 位，且不超过该接口的上限，一般账号接口为 32 MiB），并且不能带 `Transfer-Encoding`，否则 400 `invalid_request` 并关闭连接（2026-10-24 起，审核 P14；以前用 `int()` 解析，会接受 `+5`、` 5`、`1_000`）。
-
-### 49.15 已知问题与部署顺序
-
-- **先升级控制器，再升级核心。** 旧控制器只认数字 key：草稿运行环境建不起来（草稿一直 `creating`），清理时 `DELETE` 得到 404 被视为已删除（行被删，正确，因为旧控制器不可能建过）。
-- **混合版本集群**：旧核心节点不知道 `ccgateway_runtimes`，会按账号 id 为已认领草稿 key 的账号再建一套数字 key 运行环境（未授权、不会被清理），并且把这些账号的模型请求发到 `/accounts/<id>`。滚动升级期间应尽快完成全部节点升级；升级后多出来的 `ccg-<id>-*` 需要管理员手工删除。
-- 已认领的账号被删除（软删除）后，其草稿 key 运行环境与数字 key 一样处理，不会被清理任务删除；2026-10-24 起由 `Reconcile` 立即清除或保留到期后清除（§49.23）。
-
-### 49.16 运行环境安装 / 升级（2026-10-05，用户要求）
-
-用户决定：容器镜像与控制器发布到 GHCR（`.github/workflows/ccgateway-images.yml`），由核心经已保存的 SSH 连接在 Docker 主机上直接拉取并启动，不再在主机上构建。GHCR 包暂时不能公开期间，可以在主机上手动构建镜像，再用配置里的 `images` 指向这些本地标签，同样用"一键升级"切换。
-
-**镜像引用。** `server/internal/ccgateway/images.go` 固定三个引用 `ghcr.io/sub2api-devs/ccgateway-{app,egress,controller}@sha256:<64 hex>`（测试保证格式）。更新方法：`tools/ccgateway` 的改动推送后，从 "CCGateway images" workflow 的 summary 取三个 digest 替换。CCGateway 远程配置（`ccgateway_remote`）可选字段 `images: {app, egress, controller}`：经 `PUT /system/ccgateway/remote-config` 保存、`GET` 原样返回（未覆盖的为空串）；某一项为空时用固定引用。非空值必须匹配 `^[a-z0-9][a-z0-9._/-]{0,127}(:[A-Za-z0-9._-]{1,128})?(@sha256:[0-9a-f]{64})?$` 或本地镜像 id `^sha256:[0-9a-f]{64}$`，否则保存失败（400）。PUT 不带 `images` 时保留已保存的值，带 `{}`（全空）时恢复固定引用；`mode: disabled` 清空全部配置。生效引用 = 覆盖值 ∪ 固定引用。（2026-11-01，§76.8：另有固定的 `GuardImage` 与可选覆盖值 `images.guard`，只在 compose 路径写进主机的 `/opt/ccgateway/.env`。）
-
-**`GET /system/ccgateway/runtime`**（`settings:read`）→
-
-```json
-{"expected":{"app","egress","controller"},
- "installed":{"controller_image","app_image","egress_image","version"} | null,
- "up_to_date":bool, "reason"?: "<code>"}
-```
-
-- `expected` 是生效引用。经 SSH 执行固定命令 `docker inspect --type container ccg-controller`，模板只输出 `Config.Image` 和环境变量，**在主机上**用 `grep` 只留 `CCG_APP_IMAGE=` / `CCG_EGRESS_IMAGE=` 两行——同一环境里的 `CCG_CONTROLLER_KEY` 不离开主机，核心既不返回也不记日志。再经 SSH 隧道调控制器 `GET /health`（Bearer 管理密钥）→ `{version, app_image, egress_image}`，以它报告的镜像为准。
-- `up_to_date` = 控制器镜像、app、egress 三者都等于 `expected`（且 health 成功）。
-- `reason`：`ssh_not_configured`（不是 SSH 模式）、`ssh_failed`（SSH 连接 / 认证 / 命令失败）、`controller_unhealthy`（容器在但 `/health` 不通，`installed` 只有 inspect 得到的镜像）。没有 `ccg-controller` 容器时 `installed: null` 且**没有** `reason`（控制台把"`installed: null` + 有 reason"当作状态未知，把"`installed: null` + 无 reason"当作未安装）。主机报告的镜像 / 版本字符串不符合引用格式时显示为 `unknown`。
-
-**`POST /system/ccgateway/runtime/install`**（`settings:manage`，审计 `ccgateway.runtime.install`）。只在 SSH 模式可用（否则 400 `ssh_not_configured`）；同一时刻集群里只有一个安装（`Locker` 锁 `ccgateway:runtime:install`，无 Locker 时本节点互斥），否则 409 `install_in_progress`。安装不随调用方断开而中止（中途中断会让主机没有控制器），整体上限约 18 分钟。步骤：
-
-1. 控制器密钥：配置里已有管理密钥（`admin_key`）就沿用；否则生成 32 字节随机数（hex）先加密存进配置（审计 `ccgateway.config.update`，`fields: ["admin_key"]`；并发时以先保存者为准）。
-2. 经 SSH 执行**固定脚本**：只拼接常量和通过上面正则的镜像引用（单引号包裹，正则排除了引号、空白和 shell 字符），绝不拼接其他输入；脚本作为 `sh -c '<script>'` 的单个参数执行。脚本对三个镜像各先 `docker image inspect`，本地已有就不拉，没有才 `docker pull`（失败 → `image_pull_failed`）；`mkdir -p /opt/ccgateway-runtime && chmod 700`；从 **stdin** 写 `/opt/ccgateway-runtime.env`（先写 `.tmp`、`chmod 600`、再 `mv`），内容为 `CCG_RUNTIME_ROOT=/opt/ccgateway-runtime`、`CCG_APP_IMAGE`、`CCG_EGRESS_IMAGE`、`CCG_CONTROLLER_KEY`、`CCG_CONTROLLER_PORT=8787`（版本已由镜像内置，不写 `CCG_CONTROLLER_VERSION`）——**密钥只走 stdin**，不出现在脚本、命令行或日志里；上次安装若在改名后中断（只剩 `ccg-controller-prev`）先改回原名；旧容器改名 `ccg-controller-prev` 并停止；按原参数启动新容器 `docker run -d --name ccg-controller --restart unless-stopped --network host --env-file /opt/ccgateway-runtime.env -v /var/run/docker.sock:/var/run/docker.sock -v /opt/ccgateway-runtime:/opt/ccgateway-runtime --log-opt max-size=20m --log-opt max-file=3 <controller>`（启动失败时脚本自己删新容器、把 prev 改回并启动，→ `controller_unhealthy`）。脚本结果用标准输出最后一行 `CCG_RESULT=<code>` 报告；stderr 丢弃。
-3. 经 SSH 隧道轮询 `GET /health`，最多 60 秒（每 2 秒），直到报告的 `app_image` / `egress_image` 等于生效引用。成功 → 固定脚本删除 `ccg-controller-prev`；失败 → 回滚脚本删除新容器并把 prev 改回原名启动，返回 503 `controller_unhealthy`，`details.rollback` 为 `restored` / `removed`（之前没有控制器）/ `restore_failed` / `rollback_failed`。
-4. 成功后对所有运行环境（账号 + 未认领草稿）各 Kick 一次，只是重新同步：已有 app 容器**不会**因目标镜像变化而重建（`provision` 只在凭据指纹或网络策略变化时重建，2026-10-09 核对代码更正），新镜像只用于新建的容器；现有容器的 worker 用 §53.7 原地更新。返回 200 与 `GET runtime` 相同的结构。
-
-安装错误（`details.reason`）：`ssh_not_configured`（400）、`install_in_progress`（409）、`ssh_failed` / `image_pull_failed` / `controller_unhealthy` / `install_failed`（其他脚本失败、密钥保存失败）（503）。
-
-> 2026-11-01（核心 0.1.227，§76.2）：第 2 步的固定脚本按控制器镜像标签 `io.sup2api.ccgateway.guard-api` 分两条路径。不是 `1` 时执行上面的 docker run 路径（文本与 0.1.226 逐字相同，只在已由 compose 管理的主机上返回 409 `legacy_blocked`）；是 `1` 时执行 compose 路径（§76.4）。新增对外错误码 `compose_unavailable`、`guard_unavailable`（503）与 `legacy_blocked`（409）；compose 路径的其他失败对外为 `install_failed`。失败的 compose 安装自己回滚时，`details.rollback` 同样给出结果。控制面板模式（`controller`）的"一键升级"仍是控制器自升级，不执行安装脚本。
-
-`remotedocker.RunScript(ctx, cfg, script, stdin, limit)` 是新增的"带 stdin 执行固定脚本"能力：返回 stdout（有上限，SSH 凭据被替换为 `[REDACTED]`）和退出码；只有连不上 / 认证失败 / 会话失败才返回 error（→ `ssh_failed`）。调用方负责只传固定脚本。
-
-已知限制：安装是同步请求，首次拉取几百 MB 的 app 镜像可能要几分钟；核心不设写超时，但前面的反向代理（Caddy / nginx）若有 60–100 秒的超时，浏览器会先看到网关错误——安装仍会在核心里跑完，之后刷新 `GET runtime` 看结果即可。
-
-### 49.17 已保存账号重新授权：换新运行环境并清空历史（2026-10-05，用户要求）
-
-> **2026-10-19 行为修订（已随 Core 0.1.159 / ccgateway 0.1.59 部署）：** 用户改为要求原容器重新授权、保留数据；删除账号才完整删除专属容器、网络和数据卷，并由设置页清理历史孤立资源。以下替换容器流程为旧版历史记录，新的接口、持久化清理标记与并发边界以 [CCGateway 账号生命周期](../plugins/ccgateway/docs/ACCOUNT-RUNTIME-LIFECYCLE.md) 为准。
-
-用户决定："现在是创建账号时就完成授权，然后创建账号后还能重新授权（需要清空所有历史状态）"。原契约文件 `docs/CCGATEWAY-REAUTH.md` 已并入本节，以本节为准。
-
-**做法：先建替换用的运行环境，授权成功后再交换。** 重新授权期间账号继续用旧运行环境服务；取消（删除草稿）什么都不改变。
-
-迁移 `0033_ccgateway_reauth.sql`（只加可空列）：
-
-```sql
-ALTER TABLE ccgateway_runtimes ADD COLUMN IF NOT EXISTS for_account bigint;      -- 该账号的重新授权草稿
-ALTER TABLE ccgateway_runtimes ADD COLUMN IF NOT EXISTS retired_at  timestamptz; -- 被重新授权替换下来的时间
-```
-
-`account_id` 仍 UNIQUE：只有账号当前使用的运行环境带它。行的四种状态：未认领草稿（`account_id`、`retired_at` 为空；`for_account` 为空 = 新建账号的草稿，非空 = 该账号的重新授权草稿）、已认领（`account_id` 非空）、已退役（`account_id` 为空、`retired_at` 非空）。
-
-**接口**（由 account 模块注册，与 ccgateway 模块的 `/system/ccgateway/accounts/:id/:action` 并存）。权限 `account:update`、`account:own:update` 任一（T38 起不再接受 `settings:manage`）；后者只能操作自己创建的账号（§49.5 规则），别人的账号 404。账号必须是未删除的 `ccgateway` 账号（否则 404）。
-
-| 方法 | 路径 | 结果 |
-|---|---|---|
-| POST | `/system/ccgateway/accounts/:id/reauthorize` | 新建 → 201 `{key}`；已有未过期的重新授权草稿 → 200 `{key}`（同一个） |
-| POST | `/system/ccgateway/accounts/:id/reauthorize/:key/commit` | 200 + 账号视图（同 `GET /accounts/:id`） |
-
-`reauthorize`：
-- 未开启 `account_runtimes` → 503 `not_configured`；`apikey` 账号 → 400 `api_key_account`；账号已删除 → 400 `account_deleted`；绑定的代理不可用 → 400 `proxy_unavailable`。账号停用、代理停用都不影响重新授权（§49.22）。
-- 草稿 key 同 §49.9（`d` + 16 hex），`proxy_id` = 账号当前代理，`created_by` = 调用者，`for_account` = 账号 id；建好立即 Kick。审计 `account.ccgateway_reauthorize_start`（只在新建时）。
-- 每个账号最多一个未过期的重新授权草稿（按账号的 PG advisory 锁串行）。已有时返回它，并刷新 `last_seen_at`、把 `proxy_id` 改成账号当前代理。**调用者看不到它时（不是创建者、也没有 `settings:manage`）把 `created_by` 改成调用者（接管）**：能更新这个账号的人总能继续流程，原创建者之后对该草稿得到 `draft_not_found`（控制台按"重新开始"处理，再调 `reauthorize` 会接管回来）。闲置超过 15 分钟或存在超过 2 小时的草稿不再复用（留给清理任务），新建一个。
-- （历史：换新运行环境的流程，已被原地重新授权取代。现在没有重新授权草稿，用账号的运行环境接口 `/system/ccgateway/accounts/:id/:action` 驱动，取消 = `POST accounts/:id/cancel`；T37 起按 key 的草稿接口不再接受 `account:update`、`account:own:update`。以下两条只描述旧流程。）草稿用 §49.9 的草稿接口驱动（`status/health/session/sync/start/complete/cancel`、`DELETE`），可见性规则不变（创建者或 `settings:manage`）。重新授权草稿**不能** `PUT drafts/:key` 改代理（404 `draft_not_found`），也**不能**在 `POST /accounts` 的 `ccgateway_runtime` 里使用（400 `draft_not_found`）。
-- 取消 = `DELETE /system/ccgateway/drafts/:key`（§49.9 原接口），账号不受影响。
-
-`commit`：
-- 草稿必须是**该账号**的、未认领、未退役、调用者可见的重新授权草稿，否则 400 `draft_not_found`（含别的账号的重新授权草稿、新建账号用的草稿、数字 key、已提交过的）；容器 `GET admin/status` 必须报 `logged_in=true`，否则 400 `draft_not_authorized`。
-- 在草稿运行环境的 advisory 锁下、**一个事务**里：
-  1. 账号当前运行环境退役：其行 `account_id = NULL, retired_at = now()`；账号还在用数字 key（没有行）时插入 `key = <id>, retired_at = now()`。
-  2. 草稿行 `account_id = id, adopted_at = now()`。
-  3. 清空账号核心状态：`status` 为 `error` 或 `auto_disabled` 时改回 `active` 并清空 `status_reason`，清除 `auto_disabled_until`；`disabled` 保持不变，由管理员显式启用或重置（2026-10-11 自动状态与管理员停用分离）；此时新运行环境处于 blocked，登录保存在数据卷里，启用后即用新登录；`last_test_*` 全部置 NULL；删除 `account_quota_snapshots`、`account_credential_refresh` 的行；删除 Redis 冷却键（与 `POST /accounts/:id/reset-status` 同一段代码 `clearCooldown`）。本节点未写入的被动配额样本丢弃。
-  4. 审计 `account.ccgateway_reauthorize`（`detail: {runtime, retired, status_reset, cooldown_cleared}`）；事件 `account.updated`，状态或冷却有变化时另发 `account.status_changed`（`reason: "re-authorized"`）。
-  5. 在事务内读出账号的期望状态（此时已指向新 key），**提交前**对新 key `PUT config`：网关在提交那一刻改走新 key 时，新运行环境已按账号修订号就绪，不会有 409 窗口。控制器失败则整个事务回滚：503 `sync_failed`（连不上控制器为 `not_configured`）。账号已停用 / 代理停用时跳过这一步，由提交后的 Kick 阻断。
-- 提交后：Kick 账号、广播 `account:changed`，返回账号视图。网关新请求立即走新 key；已在旧运行环境上的请求可以继续跑完（旧运行环境 10 分钟后才删）。
-
-**核心对已退役运行环境：** 不在 `Run` 的定时扫描里（`runtimeKeys` 排除 `retired_at`），`Reconcile`/`desired`/草稿期望状态都不会解析到它（账号 id → key 只取 `account_id` 匹配的行；草稿期望状态要求 `retired_at IS NULL`），草稿接口对它 404。
-
-**清理任务（§49.13 扩展）：**
-- `retired_at` 早于 10 分钟前的退役运行环境：advisory 锁下删行 → 控制器 `DELETE /accounts/<key>`（数字 key 带请求头 `X-CCG-Delete-Account: <key>`）→ 成功才提交；控制器失败则行保留下一轮重试（404 视为已删除）。
-- 绝不删账号正在用的运行环境：草稿 key 的退役行没有 `account_id`，不可能在用；数字 key 只有在该账号已有别的行（`account_id = id`）或账号不存在时才删，否则跳过并记 WARN。
-- 重新授权草稿按草稿规则清理（闲置 15 分钟、最长 2 小时），草稿清理不碰退役行。
-
-**与原契约文件的偏差：**
-- 原文写 "`error_message` empty"：`accounts` 没有 `error_message` 列，实现清的是 `status_reason`。2026-10-11 起成功重新授权恢复 `error/auto_disabled`，管理员停用与来源不明的旧 `disabled` 记录仍需显式启用或重置，见 §42.5。
-- 原文没处理"已有草稿属于别人"的情况：实现为接管（见上）。
-- 原文让账号只有 `account:update` 的人用草稿接口，但草稿接口原权限只有 `settings:manage` / `account:create` / `account:own:create`：实现为按 key 的草稿接口加上两个 update 权限。（T37 起已撤销，见 §49.9。）
-- 提交前预先 `PUT config`（原文只说提交后 Kick）：避免提交后几秒内网关拿到控制器 409。
-
-**部署：** 控制器须先升级到支持 `X-CCG-Delete-Account` 的版本，否则退役数字 key 的删除每分钟失败一次（行保留、记 WARN），升级后自动删掉。旧核心节点不读新列，会把退役行当成未认领草稿（reconcile 它、草稿 key 的退役行会被旧节点的草稿清理提前删掉）：全部节点升级后再使用重新授权。
-
-### 49.18 模型请求不再逐次读配置、问控制器（2026-10-11，用户要求）
-
-配置只在改动时同步；转发请求不再每次读库、问控制器。
-
-- **缓存的内容**（每个节点内存，`request_cache.go`）：
-  - CCGateway 配置；
-  - 账号的期望状态（不含凭据，只用于算修订号）；
-  - 每个运行环境 key 的"路由"：该修订号下的 `app_ip`、Worker key 和一个复用隧道连接的 HTTP 客户端。
-- **失效**：
-  - 保存配置（PUT 远程配置、安装/升级写配置、生成管理 key）后，本节点清空，并在 `config:changed` 发 `{"type":"ccgateway"}`，其他节点清空。
-  - `account:changed` 带 `account_id` 时只清该账号，不带时清所有账号；`config:changed` 的 `{"type":"proxy"}` 清所有账号并立即扫描一轮。
-  - 总线是尽力而为，所以配置和期望状态另有 30 秒过期。
-  - 清掉的路由会关闭空闲隧道；请求还在用的连接在请求结束时关闭。
-- **一致性**：
-  - 连接只按核心期望的修订号向控制器要；每条新隧道握手时控制器都会核对修订号，不一致回 409。
-  - 来自缓存的修订号被拒（409）时，清掉该账号后用新读的修订号重试一次；请求体能重放时重试，不能重放则按未同步回答。
-  - 新读的修订号仍被拒，就是运行环境确实没同步，立即 kick 该运行环境。
-  - 未同步对模型请求的回答（2026-10-21 起）：503 Anthropic 错误 `{"type":"error","error":{"type":"api_error","message":"The account runtime is not ready yet; try again shortly."}}`。插件按 5xx 切换到其他账号并对本账号短冷却（10 秒）；没有其他账号时客户端收到这个官方格式的错误。此前是 409 `{"error":"not_synchronized"}`，没有 `error.type`，插件按客户端错误原样返回，不切换账号。
-  - Worker 回 401 或连接失败时清掉该账号的路由，下一个请求重新问控制器。
-- **空闲连接**保持 30 秒，比 Worker 的 60 秒空闲超时短。
-- **请求策略**（`X-CCGateway-Request-Policy`）仍随每个请求发送，Worker 保持无状态。
-- **账号策略与 Worker 能力也缓存，路由有最长使用时间**（2026-10-24 补充，审核 01 §5 第 6 条、A4/A7；**依据未提交的工作树** `request_cache.go`、`runtime_features.go`、`feature_policy.go`，提交前需复核）：
-  - 账号 CC 特性策略：上面写"转发请求不再每次读库"，但 A7 之前账号策略是例外——请求带分组且该分组允许账号覆盖（未配置或未启用的分组也算允许，`allowsAccountFeatures`）时，每个请求都 `LoadAccountFeaturePolicy` 查一次 `ccgateway_account_feature_policies`。现在由 `requestAccountFeatures` 按账号缓存，与期望状态同样 30 秒过期，`account:changed` 与本节点保存账号时（`AccountChanged`）清掉。
-  - Worker 能力：`/v1/messages` 与 `/v1/ccgateway/probe` 发送前的 `/healthz` 核对（§53.18）原先每请求一次、不缓存；现在挂在路由上缓存 30 秒（`routeHealth`），Worker 原地更新后本节点丢弃该路由并发 `account:changed`（`workerChanged`）。缓存期间的旧答复只会推迟核心的拒绝，Worker 自己仍拒绝 CLI 做不到的策略。
-  - 路由：A4 之前路由只按（运行环境 key, 修订号）缓存、**没有过期时间**，上面"30 秒过期"不包括它——漏掉总线消息的节点在控制器地址或密钥变化后仍连旧路由，直到 Worker 401、连接失败或修订号被拒。现在路由还记下取得它的控制器（模式、地址、根证书、管理密钥的摘要，`controllerEndpoint`），配置换了控制器就不再复用；并且最长使用 5 分钟（`routeMaxAge`），之后重新问控制器，答复不变时保留原路由和它的隧道。
-- **定时扫描**：每 60 秒一轮（0.1.236 起是全集群任务 `core.ccgateway.runtime_sync`，§77.7），只用来发现控制器那边的意外变化（容器重启、被删）和漏掉的总线消息。kick 失败每 5 秒重试，最多 12 次。
-- **已阻断的运行环境不再反复写配置**（2026-10-21 起只有已删除账号会被阻断，§49.22）：控制器对已阻断的运行环境 `GET status` 报 `pending`，所以以前每个节点每轮都对停用账号 `PUT config`（线上 4 节点 × 每 3 秒 = 每分钟 80 次）。现在节点阻断成功后记下修订号，10 分钟内同一修订号不再阻断；任何 kick、账号/代理/配置变更都会清掉这个记录。0.1.236 起记录也写进 `ccgateway_runtimes.blocked_revision`/`blocked_at`（在运行环境的 advisory 锁内读写），所以换一个节点也不会重发；节点收到变更后，早于变更时刻的记录在本节点不再算数（§77.7）。
-
-### 49.20 不绑代理即直连（2026-10-14，用户要求）
-
-起因：#21（API Key 账号）绑定的代理凭据失效（上游代理 407），控制器连通性检查失败，运行环境一直 pending，模型请求回 409 `not_synchronized`。用户决定代理可以为空，为空时直连。
-
-- **核心**：账号或草稿没有绑定代理（含代理被删除）时不再阻断，期望配置为 `{"proxy": null, "direct": true, ...}`；不再产生 `no_proxy`（错误码保留，兼容旧前端）。代理停用与账号停用的处理见 §49.22（2026-10-21 起都不再阻断），**任何情况都不回退直连**。修订号含 `proxy_id`，切换代理或改直连都会重新同步。
-- **草稿与重新授权**：`POST/PUT /system/ccgateway/drafts` 的 `proxy_id` 可省略或为 null，`proxy_id <= 0` 为 `proxy_not_found`。重新授权沿用账号当前的代理，账号没有代理时草稿也直连。账号准备按 `proxy_id IS NOT DISTINCT FROM` 比对；插件 `prepare` 阶段不再要求代理。
-- **控制器**：只有 `direct` 为 `true` 且没有 `proxy` 时才直连；不带 `direct` 的旧核心发来空代理仍阻断。直连时 sing-box 出站为 `direct`（DNS 仍走 DoH 1.1.1.1，但不写 `detour`：sing-box 拒绝 detour 到空的 direct 出站而启动失败，`sing-box check` 却不报错；0.1.46 因此直连失败，0.1.47 修复），egress 的 output 链丢弃私有、回环、链路本地、组播与保留地址，只放行公网 IPv4 TCP；业务容器规则不变。连通性检查照常要求能访问探测地址。
-- **兼容顺序**：新核心 + 旧控制器时，无代理账号保持阻断（与以前一致）；先升控制器再依赖直连。
-- **控制台**：代理不再必填，提示直连使用服务器自身 IP；授权步骤中未选代理显示「直连（不使用代理）」。
-
-### 49.21 刷新令牌（2026-10-15，用户要求）
-
-起因：#29 额度查询失败（`token_expired`），容器里的 CLI 只在模型请求时续期令牌，账号闲置时令牌一直是过期状态。用户要求界面上由插件提供"刷新令牌"。
-
-- **只由 CLI 自己续期**：Worker `POST /admin/auth/refresh` 不调用令牌端点，也不动刷新锁；它启动 CLI（`-p --input-format stream-json`，与资源管理相同的 initialize 握手，没有模型请求），等 CLI 续期并写回凭证后关闭。CLI 只续期已过期或 5 分钟内到期的令牌；离到期还远的令牌原样保留，此时 `refreshed` 为 `false`。不再按 Claude Code 版本放行（2026-10-22 删除版本表：线上 2.1.304 曾因只认 2.1.292/2.1.296 而刷新令牌与资源身份全部失败），由初始化握手本身的检查决定成败。
-- 应答：200 `{"refreshed": bool, "expires_at": RFC3339}`；400 `not_logged_in`（没有令牌）、`token_revoked`（没有刷新令牌）、`auth_in_progress`（有未结束的授权会话）、`refresh_failed`（CLI 没能续期，含 30 秒超时；反复失败需重新授权）。在登录锁内执行，与授权流程互斥。
-- **控制器**：放行 `POST /accounts/<key>/admin/auth/refresh`；API Key 账号 409 `api_key_account`。
-- **核心**：manifest `lifecycle.actions` 增加 `refresh_token`（"刷新令牌"，排在 `refresh_auth` "重新授权"之前），经 `POST /accounts/:id/actions/ccgateway/refresh_token` 调用（权限 `account:update`，审计 `account.action`），只支持一账号一容器模式；结果原样为 `{refreshed, expires_at}`，容器错误码放在 `details.reason`。
-- **控制台**：账号列表的行菜单列出插件声明的全部动作（读取账号 JSON 的 `actions`）；返回 `key` 的动作（重新授权草稿）打开编辑器继续，返回 `refreshed` 的动作提示新的到期时间并刷新额度，已知错误码显示中文说明。
-
-### 49.22 只有删除账号才停止运行环境（2026-10-21，用户要求）
-
-起因：账号 #33 停用后控制台测试一律失败（`account_disabled`，请求没有发出），而其他平台的账号停用后照样能测试。用户决定：停用只影响调度，运行环境照常；代理停用、不可用也不停止；只有删除账号才删除容器。
-
-- **期望状态**（`desired` / `draftDesired`）：`enabled` = 账号未删除（草稿恒为 true）。账号 `status`、代理 `status` 不再参与 `enabled`，也不再参与修订号，所以停用、启用账号或代理不会重写或重启容器。
-- **停用的代理**：照常作为出口写入期望配置，容器继续经它出网。只有新选择代理（草稿 POST/PUT）时仍拒绝已停用的代理（`proxy_disabled`）。
-- **不可用的代理**（绑定的记录不存在——草稿没有外键——或协议不是 http/https/socks5）：不重写配置，容器保持原样；需要运行环境的操作（模型请求与测试、授权、重新授权、刷新令牌、额度、请求日志、CLI 管理）回 `proxy_unavailable`。**任何情况都不回退直连**。
-- **删除的账号**：原因 `account_deleted`，`status` 为 `blocked`。2026-10-24 起删除时二选一（§49.23）：立即清除运行环境的全部资源（默认），或在插件声明了保留天数时保留到 `purge_after`——保留期内运行环境停止，到期后清除。
-- 原因码 `account_disabled` 取消；`no_proxy` 早已不再产生，控制台一并删除。
-- 调度不变：只使用 `status='active'` 且可调度的账号。
-- 2026-10-22 用户决定：**账号停用只限制调度，其他全部不限制**。停用的账号照常：手动与后台额度查询（后台刷新仍按“可调度或从未查询过”）、被动额度采样、CCGateway 用量查询、凭证刷新（含后台）、异步任务结算。
-
-### 49.23 删除账号时保留运行资源（2026-10-24，用户要求）
-
-用户要求：删除账号时，把它的容器、目录、IP 分配等全部删掉，不留残留；另外可以选择让控制器把这些资源保留 3 天再删，这项能力由插件声明。代码：SDK `manifest.go`、`check/validate.go`，核心 `account/handlers.go`、`account/purge.go`、`ccgateway/cleanup.go`、`ccgateway/accounts.go`、迁移 `0057`，控制器 `manager.py`、`cleanup.py`，控制台 `AccountDeleteDialog.vue`、`RetainedRuntimes.vue`。
-
-**删除的内容。** 清除一个已删除账号的运行环境就是控制器 `DELETE /accounts/<key>`，带 `X-CCG-Delete-Account: <key>` 与 `X-CCG-Delete-Data: 1`（§49.14）：该运行环境的全部容器（app、egress 和人工迁移留下的副本）、`net` / `uplink` 网络（连同子网和地址分配）、数据卷（授权、会话历史、日志）、状态目录和恢复备份；共享出口只解除该账号的绑定。核心只检查控制器的 `runtime-cleanup-v1`。
-
-**manifest。** 账号类型可选声明 `lifecycle.deletion: {"retentionDays": N}`（SDK `manifest.AccountDeletion`）。N 必须在 1 到 30 之间（`manifest.MaxRetentionDays`），否则 manifest 校验报 `lifecycle.deletion.retentionDays` `invalid`；核心运行时再检查一次，超出范围按未声明处理。天数只来自 manifest，操作者每次删除只能选"立即清除"或"保留 N 天"。账号类型 JSON 的 `lifecycle` 原样带出这个字段。ccgateway 0.1.87 对 `managed` 与 `apikey` 都声明 3 天。
-
-**删除账号：`DELETE /accounts/:id`。**
-
-- 不带 `retain_resources`（或值为空）：立即清除。`?retain_resources=1`：保留。成功都是 204。
-- 其他值 → 400 `invalid_argument`，message `retain_resources must be 1 or omitted.`；账号类型没有声明保留，或插件没有删除资源 → 400 `invalid_argument`，message `This account type does not keep resources after deletion; delete without retain_resources.`。两种情况都没有 `details.reason`，在删除事务里拒绝，账号不被删除。
-- 删除事务里调用 `AccountDeletionResource.MarkAccountDeleted(ctx, tx, id, AccountDeletionOptions{RetainUntil})`：`ccgateway_runtimes` 行写 `retired_at = now()`、`purge_after = RetainUntil`（立即清除时为 `now()`）、`purged_at = NULL`；旧式数字 key 没有行时补建。保留时 `RetainUntil = now() + N 天`，按数据库时间在同一事务里计算；审计 `account.delete` 的 detail 多一个 `retain_until`（RFC3339 UTC）。写入失败时账号删除一起回滚。
-- 卸载插件（`PurgePluginAccounts`）也为每个账号写清理意图，一律立即清除，不保留。此前卸载插件不写清理意图，资源一直留着。
-- 迁移 `0057_ccgateway_runtime_retention.sql` 只加两个可空列：`purge_after`（核心清除的时间）和 `purged_at`（已经清除，任何节点都不再清除）。
-
-**清除时机。** `Reconcile` 先处理已删除账号，阻断标记和不可用的代理都不影响清除：
-
-- 已清除（`purged_at` 非空）：跳过；定时扫描的运行环境列表也不再包含它。
-- `retired_at` 非空且不在保留期（`purge_after` 已到，或为空——旧核心写的行）：清除。控制器成功后在同一事务里写 `purged_at`。
-- 保留期内：照旧阻断。
-
-删除事件和每 60 秒一轮的扫描都会触发 `Reconcile`，保留到期后由下一轮扫描清除。清除失败（例如控制器 409 → `resource_in_use`）时行保留，下一轮重试，节点记 WARN。删除事件的投递不再因清除失败而失败：账号生命周期同步状态记为 `failed`，`code` 为失败原因（如 `resource_in_use`，没有原因时为 `runtime_sync_failed`），插件的其他生命周期事件不再被挡住。
-
-**保留期间。** 账号已软删除，不接收请求，运行环境接口回 `account_deleted`。运行环境被阻断：控制器停止 app 和 egress 容器（不删除），共享出口的绑定置为停用；网络（连同子网和地址分配）、数据卷、状态目录都保留。孤立资源清理的保留名单包含保留期内的 key（§49.13）。
-
-**保留列表与提前清除。**
-
-- `GET /system/ccgateway/runtimes/retained`（`settings:read`，`Cache-Control: no-store`）→ `{"runtimes":[{key, account_id, account_name, account_type, deleted_at, purge_after, due}]}`。列出还没清除（`purged_at` 为空）的已删除账号运行环境：保留期内的 `due=false`；已到期、正在清除或清除一直失败的 `due=true`（包括删除时选择立即清除的，清除成功后离开列表），所以清除失败不会从列表里消失。旧核心写的行没有 `purge_after`，用 `retired_at` 代替。按 `purge_after` 排序；时间为 RFC3339 UTC。
-- `POST /system/ccgateway/runtimes/:key/purge`（`settings:manage`，审计 `ccgateway.runtime.purge`，detail `{key, account_id}`）：在该 key 的 advisory 锁下把还在保留期的 `purge_after` 改为 `now()`（已到期的不改），然后让本节点 Kick 它，所以对 `due` 的运行环境就是立即重试清除。应答：
-  - 202 `{"data":{"accepted":true,"key":"<key>","account_id":<id>}}`：清除本身在后台进行，失败照常重试；
-  - 404 `not_found`：key 格式不对，或没有这条运行环境；
-  - 409 `runtime_not_retained`：账号未删除，或已经清除。
-
-**控制台。**
-
-- 账号删除对话框：账号类型声明了 `retentionDays` 时，在"立即删除全部运行资源"（默认）与"保留 N 天后自动清理"之间选择，并显示对应说明；没有声明时只有确认。
-- CCGateway 设置的账号容器列表下方有"待清理（已删除账号）"，有 `settings:read` 且列表非空时显示：账号、删除时间、自动清理时间；`due` 的行显示"清理中"。有 `settings:manage` 时，保留中的行有"立即清理"（确认后调用 purge 接口），清理中的行有"重试清理"（不再确认）。
-
-**限制与部署。**
-
-- 保留期内**不能恢复**已删除的账号，没有恢复接口；保留只用于人工取回数据或排查。
-- **全部核心节点升级后才能使用保留。** 旧核心节点不认 `purge_after` 和 `purged_at`：它会把保留中的运行环境当作待清除立即删掉，清除之后每轮再发一次 `DELETE`（控制器幂等，回 200）；它执行孤立资源清理时，保留名单也不含保留中的 key。
-- 清除一直失败时列表只显示"清理中"，失败原因（如 `resource_in_use`）只在节点日志里。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 50. 账号测试：记录最近一次结果、requested_model（2026-10-05，用户要求；参考 new-api 渠道测试）
 
@@ -3707,88 +3343,15 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
   - 写入不改 `updated_at`、不发 `account:changed` / 事件、不影响调度；写入失败只记日志，不影响测试响应。
 - 账号 JSON（`GET /accounts` 列表与 `GET /accounts/:id`、创建/修改的响应）新增 `last_test`：从未测试时为 `null`，否则 `{at, ok, latency_ms, model, message}`（`at` 为 RFC 3339）。
 - TestResult 新增 `requested_model`（映射前用户选的模型；未给时为空串，字段总在），`model` 仍为实际请求的模型。
-- 2026-10-11 错误诊断：TestResult 返回 `error_code` 与 `error_source`（`gateway` 网关/运行环境、`transport` 传输失败、`response` 实际 HTTP 响应、`plugin` 插件构建失败）。`status` 始终保留实际收到的 HTTP 状态，未收到响应为 0，不把本地拒绝伪造为上游 401。响应体的 `error.code` 优先，其次 `error.type` / `code`，没有机器码时用 `http_<status>`；CCGateway 运行环境的本地拒绝保留各自的原因码（现为 `account_deleted` / `proxy_unavailable`，§49.22），不再合并成 `account egress unavailable`。
+- 2026-10-11 错误诊断：TestResult 返回 `error_code` 与 `error_source`（`gateway` 网关/运行环境、`transport` 传输失败、`response` 实际 HTTP 响应、`plugin` 插件构建失败）。`status` 始终保留实际收到的 HTTP 状态，未收到响应为 0，不把本地拒绝伪造为上游 401。响应体的 `error.code` 优先，其次 `error.type` / `code`，没有机器码时用 `http_<status>`。
 - 迁移 `0050_account_test_diagnostics.sql` 新增可空的 `last_test_status/last_test_error_code/last_test_error_source`，新测试保存上述诊断并通过 `last_test` 返回。旧记录不猜测 HTTP 状态；完整原因已包含返回消息时不重复拼接。界面直接显示错误代码与来源，HTTP 0 显示无响应提示，重新授权清空整组最近测试字段。
 - "测试全部模型""批量测试账号"由控制台并发调用单模型测试实现，后端不提供批量接口；同一账号并发测试时 `last_test` 为最后写入的那次。
 - 控制台（前端实现）：账号的"测试"打开模型测试弹窗，可选一个模型测试，也可"测试全部 / 所选"模型（逐个模型并发调用本接口，显示每个模型的结果、延迟与失败原因）；账号列表可勾选多个账号"批量测试"（每个账号测默认模型）。列表显示 `last_test`（上次测试时间、结果、延迟）。测试不改变账号状态。
 - 流式测试本轮不做：`BuildTestRequest` 没有 stream 参数，加参数要改 proto 并动所有插件。
 
-## 51. CCGateway 订阅用量与配额快照 Redis 缓存（2026-10-05）
+## 51. CCGateway 订阅用量（已删除）
 
-用户要求："oauth 账号应该能展示 7d 5h 7d fable 三者使用量才行，然后还要 redis 缓存下来。现在插件不支持在账号列表中展示这些吗？能想办法定制化吗"——指的是 CCGateway（Claude Code）`managed`（OAuth）账号在账号列表里没有订阅用量（5h / 7d / 7d_fable）。Claude OAuth 插件账号（`claude-oauth`）已经有（§44）。
-
-### 51.1 CCGateway 容器 `GET /admin/usage` 接口
-
-CC 账号的 OAuth 令牌在容器凭证文件里（`$CLAUDE_CONFIG_DIR/.credentials.json`，`claudeAiOauth.accessToken`），核心拿不到；模型请求由容器里的 CLI 发出，核心看不到响应头。因此新增容器管理端点（同样的 admin key 鉴权）让核心主动查询。
-
-**容器**（`tools/ccgateway/auth.go`）：`GET /admin/usage` 读凭证文件的 OAuth access token，调 Anthropic 的 OAuth 用量接口（同 `claude-oauth` 插件 §44.6 的 `GET https://api.anthropic.com/api/oauth/usage`，请求头与响应格式完全一致），经容器本身的账号出口（Proxy SwitchyOmega 代理，不设代理环境变量）。返回原始 JSON（与 claude-oauth 响应一致的窗口数组）：
-
-```json
-{"windows":[
-  {"window":"5h","utilization":42.0,"resets_at":"2026-10-05T18:00:00Z","status":"allowed","used":84,"limit":200},
-  {"window":"7d","utilization":15.5,"resets_at":"2026-10-12T00:00:00Z"},
-  {"window":"7d_fable","utilization":10.0}
-]}
-```
-
-- `window` 为窗口 key（`5h`、`7d`、`7d_sonnet`、`7d_fable`）；
-- `utilization` 为百分比 0–100（供应商返回 0–1，转百分比；核心存储的都是百分比）；
-- `resets_at` 为 RFC3339 timestamp 或省略（未知）；
-- `status` 为 `allowed` / `allowed_warning` / `rejected` 或省略；
-- `used` / `limit` 可选（与控制台"已用 / 总量"显示对应）。
-
-错误格式 `{"type":"error","error":{"type":"<code>","message":"<English>"}}`（§49.14）：
-- 未登录（没有存储的 OAuth 访问令牌）→ 400 `not_logged_in`；
-- Anthropic 401 且访问令牌已过期（本地 `expiresAt` 已到或上游说 expired）、存有刷新令牌、上游未说 revoked → 400 `token_expired`（CLI 下一次模型请求时续期）；
-- 其他无法续期的情况 → 400 `token_revoked`：上游说 revoked、未过期却被 401、没有刷新令牌，或本进程中已有模型请求用当前存储的这个访问令牌认证失败（CLI 类别 `authentication_failed` 或观测到上游 401，说明 CLI 续期也失败；令牌一变即失效，此时不再请求上游）；
-- 上游失败 → 502 `upstream_error`。
-
-**2026-10-29 起（ccgateway 0.1.110）由 CLI 自带的 `/usage` 查询**，上面的直连读法与 `token_expired` 作废：
-- 容器运行 `claude -p /usage --output-format json`（不带工具、MCP、钩子、claude.ai 连接器、设置文件，不存会话）。CC 把用量查询算作非必要流量，所以只对这个进程去掉 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`，其余遥测开关不变。
-- CC 按自己的逻辑查询：访问令牌已过期或快过期先续期，遇到 401 续期后重发一次。成功后 CC 把上游 JSON 原样存进全局配置 `.claude.json` 的 `cachedUsageUtilization`（含 `fetchedAtMs`、`accountUuid`）。容器读这份 JSON 原样返回 200；只认当前登录账号的、本次运行开始前 60 秒以内（CC 自己在这个时间内直接用存的结果，不再请求）取得的结果，超过 64 KiB 不收。
-- 没有新结果时：凭证文件里的访问令牌已被 CC 清空（上游拒绝且续期失败时 CC 会清掉登录）→ 400 `token_revoked`；否则 → 502 `upstream_error`（附命令输出或失败原因）。
-- 未登录 → 400 `not_logged_in`、已有模型请求用当前令牌认证失败 → 400 `token_revoked`，这两种照旧不启动 CLI。不再返回 `token_expired`（插件仍认得旧容器返回的这个码）。
-
-**控制器**（`tools/ccgateway/runtime/manager.py`）：透传路由正则增加 `admin/usage`（GET），代理到业务容器 `GET /admin/usage`。
-
-### 51.2 核心：CCGateway 账号类型支持配额
-
-`ccgateway/managed` 账号的 View.quota 为 supported，窗口 `5h` / `7d` / `7d_fable`（以及上游返回的 `7d_sonnet`），主动查询经现有的 runtime 透传（`/system/ccgateway/accounts/:id/*` 按 account_runtimes 模式走控制器 `GET /accounts/<key>/admin/usage`，按共享容器模式直接走容器 `GET /admin/usage`）。
-
-**quota provider 扩展点**（`server/internal/account/quota_provider.go`）：核心的配额模块不直接判断 `pluginKey == "ccgateway"`，而是定义 `QuotaProvider` 接口（`QueryQuota(ctx, accountID) ([]store.QuotaWindow, error)`），由 ccgateway 模块实现并注册到 account 模块。查询时按插件 key 查表，命中就用 provider，否则走插件 RPC（§44.4）。
-
-ccgateway 的实现（`server/internal/ccgateway/usage.go`）：
-- 只对 `managed` 类型可用，`apikey` 账号返回 `api_key_account`；
-- account_runtimes 模式：`runtimeRequest(ctx, key, "GET", "admin/usage", nil, revision)` → 控制器 `/accounts/<key>/admin/usage`；
-- 共享容器模式：`s.open(ctx, cfg)` → `GET <base>/admin/usage`，`Authorization: Bearer <adminKey>`；
-- 响应体上限 64 KiB，解析成 `[]UsageWindow{Key, Utilization, ResetsAt, Status, Used, Limit}`；
-- 错误映射：容器的 `not_logged_in` / `token_revoked` → `auth_rejected`，`token_expired` → `transient`（§44.4、§44.7；额度错误本身不改账号状态）；`upstream_error` / 其他 → `transient`；transport 失败（连不上容器）→ `transient`；旧容器 404 → `unsupported`（提示升级）；账号 409 `not_synchronized` → `transient`；账号 409 `api_key_account` → `api_key_account`。
-
-**manifest 变更**（可选）：`next/plugins/ccgateway/manifest.json` 若需声明 `quota`（让核心识别该类型支持配额），可以只声明空的 `quota: {}`（不声明 headers，不声明 query）——核心通过 provider 扩展点查询，不走 manifest 声明的 RPC。若不改 manifest（保持版本 0.1.6），核心按"插件未实现 quota RPC"处理，provider 注册后同样生效。实际采用第二种：manifest 不变，核心按 provider 优先。
-
-沿用 §44 的 PG 快照逻辑；非强制查询的新鲜度、错误间隔、每账号查询下限均为 30 分钟（跨节点 PG 原子保证，核心也会限制插件的提前查询建议）。手动 `force=true` 无时间间隔限制，但仍受进行中查询的租约保护。账号列表加载时批量读取 quota 快照，显示在列表里（前端 `AccountsView.vue` 已经渲染 `quota`，CC 账号同样显示）。
-
-### 51.3 配额快照 Redis 缓存
-
-在 PG 快照（`account_quota_snapshots`）之上加一层 Redis 读缓存，只服务控制台的账号列表与详情（`fillQuota` → `cachedAccountQuotas`，几十个账号一次批量 MGET）。网关的模型可用性预检不读它，读的是节点内存镜像（§44.7「快照读取」，2026-11-02 起）。（2026-11-02 按代码更正：原文写的"写 PG 时同时 SET、mtime 为 PG `updated_at` 纳秒"与实现不符。）
-
-**读取**（`server/internal/account/quota_cache.go` `cachedAccountQuotas`）：先批量 MGET `account:quota:{<id>}`。值为 `{"mtime":<微秒>,"snap":<QuotaSnapshot>}`，`mtime` 超过 10 分钟的当作未命中。未命中的 id 用一条语句查 PG（`AccountQuotasAt`，同时取 `statement_timestamp()`），以这个数据库时间为 `mtime` 回填 Redis（TTL 10 分钟）。回填用 Lua：`mtime` 不晚于该 id 的 fence，或已有值更新时不写。Redis 不可用时退回 PG，不报错（日志 WARN）。
-
-**写入**：写 PG 快照的地方不写 Redis，只调用 `evictQuotaCache`：取 PG `clock_timestamp()` 作为 fence，Lua 里 fence 不倒退时写入 `account:quota:{<id>}:fence`（TTL 10 分钟）并 DEL 缓存键。fence 保证写入之前开始的读取不会把旧值回填进去。被动采样、主动查询、观测写回、重新授权、重置状态、删除账号都会走到这里。
-
-**多节点**：所有节点共用这一份 Redis，fence 与 `mtime` 都取自数据库时钟，与节点时钟无关。
-
-**测试**：`server/internal/account/quota_cache_test.go`。
-
-### 51.4 manifest 路由保留段调整
-
-原来 `next/sdk/manifest/routes.go` 把整个首段 `api` 保留给核心（`reservedFirstSegments`），导致插件网关端点不能用火山方舟官方的 `/api/v3/...`。核心控制台 API 实际只在 `/api/v1`。
-
-**调整**：只保留 `/api/v1`（以及 `/api` 本身），`/api/v3` 等允许作为插件网关端点。`CoreRouteOf(path)` 返回核心保留的首段（`/api/v1`）或空串（不保留）；`manifest/check` 用它判断网关端点是否冲突；`server/internal/app/app.go` 的插件路由挂载、`server/internal/webui/webui.go` 的 SPA fallback 与 JSON 404 都用它过滤（未匹配核心路由时才交给插件或返回 404）。
-
-网关外壳（`next/gateway`）对 `/api/v1/...` 的特殊处理（转发到核心 API）不受影响：`gateway/internal/server/routes.go` 仍然只识别 `/api/v1`。
-
-**测试**（`next/sdk/manifest/routes_test.go`、`manifest/check` 的测试）：验证 `/api/v3/chat` 不再被拒、`/api/v1/test` 仍被保留。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 52. 账号余额展示与刷新（2026-10-05）
 
@@ -3977,15 +3540,9 @@ CREATE INDEX IF NOT EXISTS idx_account_balances_updated_at ON account_balances(u
 - **claude-oauth**：`balance_test.go`（解析响应、错误情况）。
 - **集成**：PG 表迁移幂等性（`0034_account_balances.sql`）、账号列表/详情返回 balance。
 
-### 49.17 CCGateway 容器地址池（2026-10-05 补充）
+### 49.17 CCGateway 容器地址池（已删除）
 
-`GET/PUT /system/ccgateway/remote-config` 的 `network` 为 `{pool, allocation}`；默认 `10.0.0.0/8`、`random`，`allocation` 也可为 `sequential`。省略保留已存配置，空对象恢复默认。地址池须为 RFC1918 IPv4 CIDR（前缀不大于 /24），规范化后保存。插件配置页允许指定其他私有地址池及顺序分配。
-
-每个账号保留独立业务网络，并使用独立出口 uplink 网络。默认随机选取无冲突子网及应用、出口 IP；顺序模式选取最低可用子网和主机地址。排除 Docker 已占用网段和主机非默认路由；分配过程串行，修改前先检查新池容量。网络配置参与账号及草稿 revision，保存后触发各运行实例重新同步。重建只替换容器和网络，保留同名数据卷、OAuth 登录、历史和管理密钥；正常重启及镜像升级保留现有 IP。正在进行的请求可能中断。此处配置容器内网地址，公网出口仍由账号代理决定。
-
-控制器 `/health` 报告 `network_policy_version: 1`，运行实例状态包含 `network`、`app_ip`、`gateway_ip`、`uplink_ip`。此功能需要安装支持网络策略的控制器镜像。
-
-API Key 隔离：仅 `/me/api-keys` 自有接口有效；所有全局 `/api-keys` 接口移除，旧前端 `/api-keys` 路径跳转到 `/me/api-keys`。移除全局权限及已存角色授权，列表忽略请求传入的 user_id，始终按会话身份查询。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ### 分组模型名单模式
 
@@ -3995,514 +3552,16 @@ API Key 隔离：仅 `/me/api-keys` 自有接口有效；所有全局 `/api-keys
 
 GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的显式请求模型 ID 去重排序，以及 `unrestricted_accounts` 数量；不返回凭证或账号详情。分组名单使用此目录，可快捷合并填充名单；账号未限制模型时提示无法完整枚举。编辑界面当前账号选择会更新候选列表。
 
-## 53. CCGateway 控制面板模式：SSH 只用于首次安装，之后经 Caddy HTTPS 连接控制器（2026-10-09，用户要求）
+## 53. CCGateway 控制面板（已删除）
 
-用户决定：配置 CCGateway 时用 SSH 在 Docker 主机上装好控制器，同时装一个 Caddy 容器作为对外 HTTPS 网关（自动证书），反向代理到只监听本机回环的控制器。安装成功后配置切换为"控制面板模式"，**不再保存 SSH 凭据**，只保存控制面板地址、端口、管理密钥（以及 IP 地址时固定信任的根证书）。之后出口代理（egress）、业务容器（app，即 ccgateway-worker）乃至控制器自身的镜像，都经控制面板上传或切换。替代 2026-10-09 提交 6f2d1399c 的"http 模式"骨架（该骨架未完成：无界面、控制器只听回环且无 TLS、安装后不切换配置、账号流量无通路、`manager.py` 语法错误、Dockerfile 漏拷 `images.py`），骨架里的 `mode: "http"`、`controller_installed`、`controller_url`、`/controller/status`、`/images/upload`、`/images/load/*` 全部删除，不做兼容（线上从未保存过该模式）。SSH 模式（§49.16）保持不变，仍可使用。
-
-### 53.1 拓扑
-
-```
-核心 ──HTTPS(TLS 校验)──▶ Caddy 容器 ccg-gateway（--network host，监听 <port>）
-                              └─ reverse_proxy 127.0.0.1:8787 ─▶ 控制器 ccg-controller（仍只听 127.0.0.1:8787）
-                                                                  └─ 账号容器 10.x:8787（私网）
-```
-
-控制器的每个接口仍要求 `Authorization: Bearer <管理密钥>`（常量时间比较）。Caddy 只做 TLS 终止和转发，不加其他鉴权；`admin off`。
-
-### 53.2 配置（`ccgateway_remote`）
-
-- `mode` 取值：`disabled` / `local` / `ssh` / `controller`。
-- `controller` 模式字段：`host`（域名，或 IPv4 / IPv6 字面量）、`port`（HTTPS 端口，1–65535，缺省 443）、`admin_key`（必填，控制器密钥）、`controller_ca`（可选 PEM，一个或多个 `CERTIFICATE` 块，≤ 64 KiB；非空时**只**信任这些根证书，空则用系统根证书）。`account_runtimes` 必须为 `true`（控制面板模式只服务一账号一容器）。SSH 字段（`user`、`auth_mode`、`password`、`private_key`、`passphrase`、`host_key_fingerprint`）一律清空。
-- 保存规则（`PUT remote-config`）：`admin_key` 为空时，只有旧模式也是 `controller` 且 `host`、`port`、`controller_ca`（规范化后）都不变才沿用旧值；手动从其他模式切换、改地址 / 端口、换根证书都必须重新填写（控制面板对公网开放、管理密钥能直达账号容器，否则有设置权限的人改一次地址就能让核心把密钥发到别处）；最终仍为空 → 400。安装接口（§53.3）在核心内部直接写入密钥，不受此限。`controller_ca` 为空时，若 `host`、`port` 未变则沿用旧值，否则为空；非空必须能解析出至少一个证书。
-- `GET remote-config` 公开视图新增 `has_controller_ca`、`controller_ca_fingerprint`（首个证书 DER 的 SHA-256，小写 hex），不返回 PEM。
-- `setupProblems`（前端）把 `controller` 视为已配置的 Docker 连接。
-
-### 53.3 安装：`POST /system/ccgateway/controller/install`
-
-权限 `settings:manage`，审计 `ccgateway.controller.install`。请求体 `{"host"?: string, "port"?: int, "email"?: string}`：`host` 缺省为已保存的 SSH 主机，`port` 缺省 443，`email` 可选（ACME 账号邮箱，须匹配 `^[^@\s]{1,64}@[A-Za-z0-9.-]{1,190}$`）。`host` 必须是 IP 字面量或 DNS 名（`^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$` 风格，不允许下划线、通配符），否则 400 `invalid_host`。
-
-前置：已保存 `mode: ssh` 且 `account_runtimes: true`，否则 400，`details.reason` 为 `ssh_not_configured` / `runtimes_disabled`。与 §49.16 共用安装锁（409 `install_in_progress`），不随调用方断开中止，整体上限约 20 分钟。控制器镜像带 `guard-api=1` 标签（Go 控制器，2026-11-01 起）时，Docker 主机还需要 `docker compose` v2；安装会创建 compose 项目 `ccgateway` 和 `ccg-control` 网络，并先启动 guard（§76）。
-
-1. 控制器：调用 §49.16 的安装流程（密钥、固定脚本、健康检查、回滚、清理 prev），区别是只有控制器镜像必须存在或可拉取，app / egress 镜像本地没有且拉不到时不报错（之后经控制面板上传，§53.6）。环境文件新增一行 `CCG_CONTROLLER_IMAGE=<控制器镜像引用>`（同一固定写法，经 stdin）。若当前 `GET runtime` 已是 `up_to_date` 且健康报告含 `features` 中的 `tunnel`，跳过替换。
-2. 网关：经 SSH 执行固定脚本（只拼接通过镜像正则的 Caddy 镜像引用，缺省 `caddy:2-alpine`，可用 `images.gateway` 覆盖），从 stdin 写 `/opt/ccgateway-gateway/Caddyfile`（目录 700，文件 644），镜像本地没有才 `docker pull`（失败 → `image_pull_failed`），删除旧 `ccg-gateway` 后启动：`docker run -d --name ccg-gateway --restart unless-stopped --network host -v /opt/ccgateway-gateway/Caddyfile:/etc/caddy/Caddyfile:ro -v ccg-gateway-data:/data -v ccg-gateway-config:/config --log-opt max-size=20m --log-opt max-file=3 <caddy>`；启动失败 → `gateway_failed`。Caddyfile 由核心按校验过的输入生成：
-
-   ```
-   {
-   	admin off
-   	auto_https disable_redirects
-   	skip_install_trust
-   	email <email>            # 仅当提供
-   	default_sni <ip>         # 仅 IP 模式
-   }
-   <站点> {
-   	tls internal             # 仅 IP 模式
-   	reverse_proxy 127.0.0.1:8787 {
-   		flush_interval -1
-   	}
-   }
-   ```
-
-   站点：域名 → `<domain>:<port>`（Caddy 自动向 Let's Encrypt / ZeroSSL 申请证书，需要 DNS 指向该主机，且 80 端口可达或 `port` 为 443）；IP → `https://<ip>:<port>`（IPv6 加方括号），用 Caddy 内置 CA 签发。
-3. 仅 IP 模式：经 SSH 固定脚本读取 `docker exec ccg-gateway cat /data/caddy/pki/authorities/local/root.crt`（最多重试 30 秒），解析出证书 → 作为 `controller_ca`；失败 → `ca_unavailable`。
-4. 核心直接经 HTTPS（按第 2/3 步的信任方式校验证书）调 `GET https://<host>:<port>/health`，最多 120 秒（每 3 秒）直到成功且 `features` 含 `tunnel`。失败 → 503 `gateway_unreachable`，`details.stage` 为 `connect` / `tls` / `http`；**配置不变**（仍为 SSH 模式），已启动的网关保留，便于排查防火墙 / DNS 后重试。
-5. 原子保存配置：`mode: controller`、`host`、`port`、`controller_ca`，`admin_key` 不变，清空 SSH 字段（审计 `ccgateway.config.update`，`fields: ["mode","host","port","controller_ca","ssh"]`）。并发保存时若已不是 SSH 模式 → 409 `config_changed`。返回 200 与 `GET remote-config` 相同的公开视图，然后 Kick 所有运行环境。
-
-错误码（`details.reason`）：`ssh_not_configured`、`runtimes_disabled`、`invalid_host`、`invalid_email`（400）；`install_in_progress`、`config_changed`（409）；`ssh_failed`、`image_pull_failed`、`controller_unhealthy`、`install_failed`、`gateway_failed`、`ca_unavailable`、`gateway_unreachable`（503）。2026-11-01 起另有 `legacy_blocked`（409）、`compose_unavailable`、`guard_unavailable`（503），见 §76.7。
-
-需要重新安装（换主机、修复网关）时，把连接方式改回 SSH 并重新填写 SSH 凭据即可。
-
-### 53.4 核心连接控制器（`controller` 模式）
-
-- 管理请求（`open`）：`https://<host>:<port>`（`net.JoinHostPort`），`http.Transport` 不走代理、只用 HTTP/1.1、TLS ≥ 1.2、`RootCAs` 为 `controller_ca` 证书池（为空用系统根证书）、不跟随重定向，拨号与 TLS 握手各 10 秒上限。其余调用与 SSH 隧道下完全相同（Bearer 管理密钥、同样的路径）。
-- 账号模型 / 资源流量（`openAccountModel`）：先照旧 `GET /accounts/<key>/connection`（`X-CCG-Revision`）取得 `app_ip`、`api_key` 并做同样的校验；再建立**隧道**：TLS 连接网关后发送
-
-  ```
-  GET /accounts/<key>/tunnel HTTP/1.1
-  Host: <host:port>
-  Authorization: Bearer <admin_key>
-  X-CCG-Revision: <revision>
-  Connection: Upgrade
-  Upgrade: ccg-tunnel
-  ```
-
-  只接受 `101` 且 `Upgrade: ccg-tunnel`；`409` → 按 `not_synchronized` 处理，其他 → 连接失败。101 之后该 TLS 连接即为到 `app_ip:8787` 的原始 TCP 字节流，核心在其上照原样跑 HTTP/1.1（`http://<app_ip>:8787/...`，请求头与 SSH direct-tcpip 路径逐字节一致）。`http.Transport.DialContext` 只允许拨这一个目标，每次拨号新建一条隧道。隧道上的 HTTP 客户端与 local 路由一样不跟随重定向：Worker 回 3xx 时作为普通响应交回调用方（2026-10-24 起，审核 K13；以前隧道上的 3xx 被当作传输错误）。
-- `remote-test`：控制面板模式下调用 `GET /health`，输出 `controller <version>`、三个镜像引用和 `features`；`remote-action` → 400。
-
-### 53.5 控制器接口变化
-
-- `GET /health` 增加 `controller_image`（环境变量 `CCG_CONTROLLER_IMAGE`，未设置为空串）与 `features: ["tunnel", "uploads", "runtime-images", "self-upgrade"]`。
-- **隧道** `GET /accounts/<key>/tunnel`：要求 `Upgrade: ccg-tunnel`（大小写不敏感）且 `Connection` 含 `upgrade`，否则 400。持账号锁检查状态存在且 `X-CCG-Revision` 等于当前在线版本（同 `connection`），否则 409 `not_synchronized`；释放锁后 5 秒内连接 `app_ip:8787`，失败 503 `runtime_unavailable`。回 `101 Switching Protocols`（`Connection: Upgrade`、`Upgrade: ccg-tunnel`），随后双向转发字节直到两侧都关闭（一侧 EOF 时对另一侧 `shutdown(SHUT_WR)`），两侧 socket 各有 3700 秒读超时，任一方向超时或出错即拆掉整条隧道（长流式响应期间客户端→账号方向空闲，所以单条隧道最长约 1 小时，与模型执行上限一致）。不记录内容。
-- **分块上传**（替代旧 `/images/upload`、`/images/load/*`；上传目录 `<root>/uploads`，700）：
-  - `POST /images/uploads` `{"size": 1..4GiB, "sha256"?: "<64 hex>"}` → `{"upload_id": "<22 字符 [A-Za-z0-9_-]>", "offset": 0, "size": n}`。同时最多 4 个未完成上传（超出 409 `too_many_uploads`）；每次创建时清理 1 小时未改动的上传。
-  - `PUT /images/uploads/<id>`：头 `X-CCG-Offset`，原始字节体，`Content-Length` 1..64 MiB（不接受 `Transfer-Encoding`）。偏移不等于当前已收字节 → 409 `{"error":"offset_mismatch","offset":<当前>}`；超过声明大小 → 400 `invalid_request`。成功 → `{"offset": n, "size": total}`。
-  - `GET /images/uploads/<id>` → `{"offset", "size"}`；`DELETE` → `{"deleted": true}`；不存在 → 404 `not_found`。
-  - `POST /images/uploads/<id>/load`：必须已收齐（否则 409 `incomplete`）；计算 SHA-256，声明过且不符 → 400 `checksum_mismatch`；`docker load`（tar 或 gzip tar）→ `{"sha256": "...", "images": [{"id": "sha256:...", "tags": [...]}]}`；加载失败 → 400 `load_failed`。`docker load` 用单独的 1800 秒超时客户端（大镜像加载期间 daemon 可能长时间无输出）。除 409 `incomplete` 外，无论成败都删除上传文件。上传 / 目标镜像 / 自升级接口出错时响应带 `Connection: close`（请求体可能未读完）；请求格式不对统一 400 `invalid_request`，JSON 体上限 64 KiB；PUT 中途断开时丢弃这一块，偏移不前进。
-- **目标镜像** `GET /runtime/images` → `{"app", "egress", "controller"}`。`PUT /runtime/images` `{"app"?, "egress"?}`：引用必须匹配 §49.16 的镜像正则；本地没有则拉取（失败 503 `image_pull_failed`）；app 镜像同 `provision` 一样拒绝带凭据 / 代理环境变量的镜像（400 `invalid_image`）。持久化到 `<root>/runtime.json`（原子写，0600），同时记录保存时进程环境变量里的 `CCG_APP_IMAGE` / `CCG_EGRESS_IMAGE` 原值；启动时只有当前环境变量与记录一致才用它覆盖（不一致说明 SSH 重装改过环境文件，覆盖作废——否则回到 SSH 模式重装会被旧覆盖顶掉而判为不健康并回滚）。`{}` 不落盘。更新内存目标并清掉 30 秒镜像 id 缓存。返回 `/health` 内容。已有账号容器不会因此被替换（同 §49.16，重新授权时用新镜像）。
-- **控制器自升级** `POST /runtime/controller` `{"image": ref}`：确保镜像在本地（同上拉取规则），然后用**该新镜像**启动一次性辅助容器 `<name>-upgrade`（`<name>` 取环境变量 `CCG_CONTROLLER_NAME`，缺省 `ccg-controller`，须匹配 `^[a-z][a-z0-9-]{0,40}$`，prev 为 `<name>-prev`；同一主机上的隔离测试实例因此不会碰到线上控制器；`--rm`、host 网络、挂 Docker socket 与环境文件 `CCG_RUNTIME_ENV_FILE`（缺省 `/opt/ccgateway-runtime.env`）**所在目录**（读写；对单文件 bind mount 做 rename 会 EBUSY，所以挂目录以便原子替换）。新控制器容器的环境里强制写入 `CCG_CONTROLLER_NAME` 与 `CCG_CONTROLLER_PORT`，避免下次自升级找错容器），执行 `python upgrade.py <image>` 后回 202 `{"accepted": true}`（辅助容器可能在 202 写完前就停掉旧控制器，核心把请求发出后的连接中断也当作已受理，继续轮询 `/health`）；辅助容器已在运行 → 409 `upgrade_in_progress`。`upgrade.py` 等价于 §49.16 的安装脚本（名字、端口、环境文件、`CCG_RUNTIME_ROOT` 挂载都取自上述配置，不写死）：环境文件写入 `CCG_CONTROLLER_IMAGE=<image>`（原子替换）→ 删除残留 prev → 旧控制器改名 `ccg-controller-prev` 并停止 → 按原参数创建并启动新控制器 → 60 秒内 `GET http://127.0.0.1:<port>/health` 报告的 `controller_image` 等于 `<image>` 即删除 prev；否则删除新容器、把 prev 改回原名启动、恢复环境文件。
-- ~~旧的模型转发路径保留（SSH 模式不用）~~（2026-10-24 更正，审核 02 §5 第 1 条）：这条保留理由不成立。核心在任何模式下都先 `GET /accounts/<key>/connection`，再经隧道（或本机直连）把模型请求发到账号 Worker 的 `app_ip:8787`，从不调用控制器的 `/accounts/<key>/v1/messages`；SSH 也只剩安装方式（§53.9）。控制器里这段转发代码还在（`manager.py` `handle_request` 的 `v1/messages` 分支，转发改为收到多少写多少 `iter_content(chunk_size=None)`），但没有调用方（审核 B5），不是可用的模型路径。
-- 修正：`self.boots = {}`；Dockerfile 拷贝 `images.py`、`upgrade.py`。
-
-> 2026-11-01（ccgateway 0.1.119，§76）：Go 控制器的 `/health.features` 增加 `guard-api-v1`。`POST /runtime/controller` 不再使用辅助容器和 `upgrade.py`：控制器把请求交给 guard，guard 只改 `/opt/ccgateway/.env` 的 `CCG_CONTROLLER_IMAGE` 一行，执行 `compose up -d --no-deps controller`，等新容器的 Docker 健康状态变成 `healthy` 且镜像正确，失败就改回原镜像（只接受带 `guard-api=1` 与 `shared-egress=1` 标签的镜像）。核心经 Caddy 访问 `127.0.0.1:8787`，`/health` 的地址不变。Python 0.1.118 控制器被要求自升级到 Go 镜像时，辅助容器因为镜像里没有 `python` 而起不来，返回 503 `runtime_unavailable`，旧控制器不受影响；核心在这之前就会返回 `controller_adopt_required`（§76.6）。
-
-### 53.6 核心的镜像上传与升级接口（只在 `controller` 模式；其他模式 400 `controller_not_configured`）
-
-全部 `settings:manage`，转发给控制器对应接口，状态码和 `error` 映射为 `details.reason`：
-
-- `POST /system/ccgateway/runtime/uploads` → 控制器 `POST /images/uploads`。创建要二次验证 `host.install`，同一上传的其余接口凭上传 id 延续这次验证（§80.2 二次验证会话），其他用户、会话或密钥 403 `verification_expired`。
-- `PUT /system/ccgateway/runtime/uploads/:id`（头 `X-CCG-Offset`，请求体 ≤ 64 MiB，流式转发不落盘）→ 控制器 `PUT`；409 时 `details.offset` 为控制器当前偏移。
-- `GET` / `DELETE /system/ccgateway/runtime/uploads/:id`。
-- `POST /system/ccgateway/runtime/uploads/:id/load` `{"role": "app"|"egress"|"controller", "apply": bool}`：控制器加载后取第一个镜像的第一个标签作为引用，没有标签用镜像 id。`apply` 为真时：先把 `images.<role>` 写进配置（审计 `ccgateway.config.update`，`fields: ["images"]`），app / egress 再调 `PUT /runtime/images`；controller 调 `POST /runtime/controller` 并最多等 90 秒健康检查报告新 `controller_image`（失败 503 `controller_unhealthy`，辅助容器已自行回滚）。成功后 Kick 所有运行环境。审计 `ccgateway.runtime.upload`。返回 `{"sha256", "images", "ref", "runtime": <GET runtime 结构>}`。
-- `GET /system/ccgateway/runtime`（控制面板模式）：`installed` 取自 `/health`（`controller_image`、`app_image`、`egress_image`、`version`），健康检查失败 → `installed: null` + `reason: controller_unhealthy`。
-- `POST /system/ccgateway/runtime/install`（控制面板模式的"一键升级"）：`PUT /runtime/images` 设为生效引用（控制器本地没有会尝试拉取），控制器镜像不同再走自升级并等待；成功后 Kick 所有运行环境；返回同 `GET runtime`。
-
-上传在浏览器端按 16 MiB 分块顺序发送（可续传：409 时按返回的偏移继续；网络错误 / 408 / 429 / 5xx 每块最多重试 3 次；取消或失败时 DELETE），每块单独经过核心转发，所以任何一个核心节点都能接收，也不受 Cloudflare 一类 100 MB 单请求上限影响（但前置 nginx 需把 `client_max_body_size` 调到 ≥ 17 MiB）。分块 PUT 用 `fetch` 携带与 `api` 相同的会话令牌（`api` 会把非 FormData 体序列化成 JSON）。创建时前端不发 `sha256`（WebCrypto 不支持增量摘要），以 load 返回的 `sha256` 供人工核对。`load`（含 apply）与 `controller/install` 在核心里不随调用方断开取消（`context.WithoutCancel`，load 上限 25 分钟）：前置代理超时后浏览器重读配置 / 运行状态即可看到结果。
-
-### 53.7 Worker 原地更新：不重建账号容器（2026-10-09，用户要求）
-
-用户要求：账号容器（尤其 #21 / #22）**永远不因 worker 更新而重建**；更新 worker 就是把新程序放进现有容器、只重启该容器。容器 ID、镜像标签、挂载、标签、数据卷、授权都不变。这把此前人工执行的 `update-account.sh` 流程（确认无活动 CLI → 备份旧程序 → 同目录临时文件 → 校验哈希 / 0755 → 再确认无活动 CLI → 原子 mv → 只重启原容器 → 健康检查）做成控制器接口。核对过：控制器的 `provision` 只在凭据指纹或网络策略变化时重建 app 容器，目标镜像变化从不重建（§49.16 安装后"重建 app 容器"的说法是错的，已有容器继续用原镜像）。
-
-> 2026-10-24 补充（审核 02 §5 第 4 条，以 `manager.py` `provision` 为准）：现在 `PUT config` 对已有 app 容器有三种结果——
-> 1. **凭据指纹、网络策略、CLI 都没变**：不重建；只有 `locale`/`timezone` 变化时记为待推送，由 Worker 原地应用。
-> 2. **凭据指纹和网络策略没变，但 CLI 版本变了**（或请求模式在 build/direct 之外变化），以及容器就是在线配对激活记录里的那个、而 CLI 版本不同时：不重建，回 409 `cli_profile_unavailable`（`InvalidCLIProfile`）。换 CLI 版本必须走配对原地更新（`POST /system/ccgateway/runtime/workers` 带 `components: ["worker","cli"]` 与 `cli_version`），核心对账在此期间看到的是该运行环境 pending。
-> 3. **凭据指纹或网络策略变了**：重建 app 容器，沿用原容器的镜像；但 CLI 版本同时变化（且不是 2 的激活情形）或旧容器是退役模式（native 等）时，换成控制器当前的目标 app 镜像——这与代码注释"凭据/网络变化不应顺带升级镜像"相左，是迁移退役模式的有意例外。
-
-**控制器** `POST /accounts/<key>/worker` `{"image": ref}`（ref 匹配镜像正则，本地没有则按 `ensure_image` 拉取，失败 503 `image_pull_failed`）：
-
-1. 从 `image` 取新程序：以该镜像创建一个不启动的临时容器，`get_archive('/usr/local/bin/worker')` 取出唯一的常规文件（≤ 256 MiB），删除临时容器；算 SHA-256。取不到 → 400 `invalid_image`。
-2. 持账号锁；容器必须属于该账号（`owned(aid,'app')`），不存在 → 404 `not_found`；未运行 → 200 `{"status": "not_running"}`（不改动）。
-3. 目标路径：容器 `Path` 与 `Args` 里第一个为裸名 `worker` / `ccgateway` 或 `/usr/local/bin/worker` / `/usr/local/bin/ccgateway` 的条目，映射为 `/usr/local/bin/<基名>`（新镜像 `ENTRYPOINT /usr/local/bin/worker`；旧容器 `docker-entrypoint.sh ccgateway`）；其他路径（如 `/opt/x/worker`）或目标文件读不到 → 409 `unsupported_container`。
-4. 容器内当前程序的 SHA-256（`exec` 以 root 执行 `sha256sum`）。与新程序相同 → 200 `{"status": "unchanged", "sha256"}`，不重启。
-5. 空闲检查：`top` 里除 `docker-init` 和目标程序基名外没有其他进程（有就是正在执行的 CLI 请求）。每 2 秒重查，最多 120 秒；仍忙 → 200 `{"status": "busy"}`（不改动，可稍后重试）。
-6. 备份旧程序到 `<root>/<key>/worker-backups/<UTC 时间>-<旧 sha 前 12 位>`（0600，最多保留 5 份）。
-7. `put_archive` 把新程序以 `<目标>.next-<随机>`（root、0755）放进同目录；`exec` 校验其 SHA-256；再做一次空闲检查（忙 → 删除临时文件，`busy`）；`exec -u 0 mv -f` 原子替换；`restart(timeout=30)` 只重启原容器。
-8. 30 秒内容器 `State.StartedAt` 已变化（确实重启过；否则旧进程仍会答健康）且在容器里 `GET http://127.0.0.1:8787/health` 返回 200 → 继续第 9 步；否则回滚：容器在运行时用备份同样经临时文件 + mv 放回；新程序启动即退出、容器已停止时不能 exec，直接 `put_archive` 覆盖目标文件并 `get_archive` 读回核对哈希，再启动；之后同样等健康，返回 200 `{"status": "rolled_back", "reason": "unhealthy", "online": bool}`（回滚后仍不健康 → `"reason": "rollback_unhealthy"`，`online: false`；回滚本身出错 → 503 `runtime_unavailable`，容器里可能留着新程序）。回滚后原本在线的同样按第 9 步重新激活。
-9. 重启使账号网络命名空间重建（防火墙规则与默认路由丢失）：立即按 `apply` 的同一步骤重新下发业务防火墙与默认路由、等 egress 就绪、经业务命名空间探测连通性；成功则按原 revision 恢复在线（`online` / `boots`），失败则只清掉在线状态（核心下一次对账会再下发，不重建）。
-10. 返回 200 `{"status": "updated", "previous_sha256", "sha256", "path", "online": bool}`。全程校验容器 `Id`、`Image`、`Config.Image`、`Config.User`、`Config.Labels`、`Mounts`、`Path`、`Args` 与开始时相同（人工脚本核对的并集），任何一步发现不同即停止并 503 `container_changed`。容器以 `cap_drop ALL` 运行，容器内 root 靠文件属主为 uid 0 完成 chmod / mv，结果用 `stat` 核对为 `0:0:755`。
-
-控制器 `/health` 的 `features` 增加 `worker-update`；核心调用前先查，没有 → 503 `controller_outdated`（旧控制器对未知路由的 404 与"容器不存在"无法区分），不触碰任何容器。
-
-已知限制：全程持账号锁，最长约 120 秒空闲等待加两轮重启 / 健康检查期间，该账号新的 `connection` / 隧道建立会等待；已建立隧道上的 keep-alive 连接不需要锁，仍可能在第二次空闲检查与 mv 之间开始新的 CLI 请求并被重启打断（窗口很小，不能消除）。worker 镜像的 `HEALTHCHECK`（`sh -c curl`）会短暂出现在进程表里，第二次空闲检查撞上时返回 `busy`，重试即可。单个账号最坏约 260–290 秒，接近核心每个 5 分钟的上限；25 分钟总上限在最坏情况下只能保证约 5 个账号，超出的记为 `failed` + `timeout`，可再点一次更新（已更新的返回 `unchanged`）。
-
-**核心** `POST /system/ccgateway/runtime/workers` `{"image"?: ref}`（`settings:manage`，SSH 与控制面板两种模式都可用；审计 `ccgateway.runtime.workers`；与安装共用锁，409 `install_in_progress`；不随调用方断开取消，上限 25 分钟）：`image` 缺省为生效的 app 镜像；按控制器 `GET /accounts` 的运行环境逐个、串行调用上面的接口（每个上限 5 分钟），返回 `{"image", "results": [{"key", "account_id"?, "status", "sha256"?, "previous_sha256"?, "reason"?}]}`；单个失败不影响其他，`status: "failed"` + `reason`（控制器 error 码；连不上 `unreachable`；超时或总上限用完 `timeout`；200 但无法识别 `invalid_response`）。前置错误：未开启一账号一容器 400 `runtimes_disabled`；列不出运行环境 503 `controller_unhealthy`；控制器不支持 503 `controller_outdated`。状态为 `updated` / `rolled_back` 的账号随后 Kick 一次。load+apply 里列表失败或控制器过旧不让整个请求失败，`workers` 为 `{"image", "results": [], "reason"}`。
-
-`POST .../runtime/uploads/:id/load` 的 `role: "app"` 且 `apply: true`：设置目标镜像；只有同时带 `update_existing: true` 时才对所有现有运行环境做原地更新，结果放在返回的 `workers` 字段（2026-11-02 起，见下）。界面在部署页显示每个账号的结果，并提供"更新现有账号的 worker"按钮（即 `runtime/workers`，用于手动更新全部账号，或重试 `busy` / `not_running`）。
-
-> **2026-11-02 更新（用户要求：新 worker 只自动用于新建账号，旧账号手动更新）**：
-> - 启用新的 app 镜像（`uploads/:id/load` 的 `apply`、`runtime/bundled`）**默认只设置控制器的目标镜像**：之后新建的账号容器用新镜像，现有账号容器与其中的 worker 不变，也不会因此被 Kick 以外的任何动作改动。请求体新增可选的 `update_existing`（布尔，缺省 `false`）：为 `true` 时才在切换后按上文对所有现有运行环境原地更新并返回 `workers`。`uploads/:id/load` 只接受 `role: "app"` 且 `apply: true` 时带 `update_existing: true`，否则 400 `invalid_request`；`runtime/bundled` 的请求体为 `{"roles"?: [...], "update_existing"?: bool}`。两者的审计详情记录 `update_existing`。
-> - 新接口 **`POST /system/ccgateway/runtimes/:key/worker`**（`settings:manage`；请求体与 `runtime/workers` 相同：`{"image"?, "components"?, "cli_version"?}`；与安装共用锁，409 `install_in_progress`；不随调用方断开取消，上限约 6 分钟）：只对这一个运行环境（账号 id 键或草稿键，其他键 404）调用控制器 `POST /accounts/<key>/worker`。前置检查同 `runtime/workers`（`controller_unhealthy` / `controller_outdated` / `runtimes_disabled` 等，均不触碰任何容器）；返回 `{"image", "key", "results": [<该运行环境的一条结果>]}`，容器不存在等是该条结果的 `failed` + `reason`，不是请求错误。`updated` / `rolled_back` 之后同样清掉请求路由缓存并 Kick 该运行环境；审计 `ccgateway.runtime.workers`，详情带 `key`。
-> - 界面：上传与推送内置镜像各加一个默认不勾选的"同时更新现有账号的 worker"；账号编辑页（`settings:manage`）在当前容器镜像旁提供"更新此账号的 Worker"，镜像与新建容器镜像不同时高亮。`GET .../accounts/:id/status` 返回的 `key` 就是该接口的 `:key`。
-> - 控制器行为不变：`PUT /runtime/images` 本来就只影响新建容器；`PUT config` 对已有容器的三种结果见本节开头的 2026-10-24 补充（CLI 版本单独变化回 409，不重建）。
->
-> **2026-11-02 再更新（用户要求：CLI 版本由镜像决定，核心不再指定）**：上一条只对"CLI 不变的新 Worker"成立；新镜像换了 CLI 时，旧规则下新建账号会因核心指定的全局版本不在新镜像里而 409。现在：
-> - **控制器**（新特性 `cli-from-image-v1`，`CCG_DEFAULT_CLI_VERSION` 删除）：`PUT config` 不带 `cli` 时由镜像决定。新运行环境（或旧的退役模式）跑目标镜像打包的那**唯一**一个 CLI（镜像 `/opt/ccgateway/cli/manifest.json` 里带 build 模式的版本必须恰好一个，否则 409 `cli_profile_unavailable`，容器不建）；`state.cli` 记下它。已有运行环境保持正在跑的 CLI（本容器的配对激活记录 `active_runtime.version`，否则 `state.cli.version`），重建时依次在 `state.runtime_image`、原容器镜像、目标镜像中找第一个打包了该版本的镜像；两者都没有的老容器原样沿用原镜像。`state.runtime_image`（镜像 ID）在创建容器、Worker 原地更新成功或 `unchanged`、配对激活提交时写入。带 `cli` 的 `PUT config`（旧核心）按原规则处理。
-> - **配对更新** `POST /accounts/<key>/worker` 可以不带 `cli_version`：`{"image", "components": ["worker","cli"]}` 激活该镜像唯一的 CLI；容器已经在跑这个 CLI（sha256 相同）时只更新 Worker，回答同样带 `cli_version` / `cli_patch` / `cli_sha256`。
-> - **核心**：账号的目标配置不再带 `cli`，`cli_version` 不再参与运行环境 revision（升级后各账号对账一次，凭据、网络、CLI 都没变，控制器不重建容器）；只有控制器缺 `cli-from-image-v1`（仍有 `cli-profile-v1`）时才按旧逻辑发已保存的 `request_policy.cli_version`。请求策略头不再带 `cli_version`（Worker 遇到空值本来就不核对），请求前也不再比较 Worker 的 CLI 版本，只核对策略需要的能力。保存远程配置不再询问各账号跑的版本（`cli_version_unavailable` 不再出现）。`runtime/workers` 与 `runtimes/:key/worker` 的 `components: ["worker","cli"]` 可省略 `cli_version`，此时要求控制器有 `cli-from-image-v1`（否则 503 `controller_outdated`），结果里的 `cli_version` 取控制器回答。
-> - **界面**：部署页"升级 Worker + CLI"不再带版本号，激活新建容器镜像里的 CLI；账号编辑页在"更新此账号的 Worker"旁加"更新此账号的 Worker + CLI"。
-> - 发布顺序：先升控制器（插件 ccgateway），再升核心。旧控制器配新核心时核心照旧发 `cli`，行为同以前。
-
-### 53.8 已知限制
-
-- 控制面板端口对公网开放，安全性依赖 TLS 与 32 字节随机管理密钥；没有来源 IP 白名单。
-- 域名模式要求 80 端口可达（或端口就是 443）以完成 ACME 验证；IP 模式依赖安装时取回并固定的 Caddy 内置根证书（10 年有效），网关数据卷删除后需要重新安装。
-- Caddy 本身的升级需要回到 SSH 模式重新安装。
-- 同一地址和端口下无法单独清除已固定的根证书（留空即保留）；需要改用系统根证书时先改地址或端口保存一次，或重新安装。
-- 加载 / 安装是同步请求，没有异步任务与结果查询接口；前置代理先断开时只能事后重读状态判断结果。
-
-### 53.9 连接与安装分离：只有一种连接方式，安装是可选前置步骤（2026-10-09，用户要求）
-
-用户纠正：不是"本地 / SSH / 控制面板"三种连接方式。**连接方式只有一种：连控制器端点，协议 HTTPS（默认）或 HTTP**；**安装方式有两种：本机 Docker、远程 SSH**，安装是可选的前置步骤（已有控制器可以不装、直接填连接信息）。安装完成后自动改为连接该端点，SSH 凭据只在安装那一次请求里使用，**从不保存**。
-
-**配置（`ccgateway_remote`）**：
-- `mode` 对一账号一容器只剩 `controller`（已连接）与 `disabled`（未配置）。新增 `scheme`：`"https"`（缺省，空串视同 https）或 `"http"`。`http` 时 `controller_ca` 清空，不做 TLS；`scheme` 改变与改地址 / 端口同样要求重新填写管理密钥（§53.2）。公开视图返回 `scheme`。
-- 旧值兼容：已保存的 `ssh` / `local` 仍能解码，账号流量的旧运行路径暂时保留（不破坏未迁移的部署），界面把它们显示为"旧连接方式"，提示安装控制面板完成迁移；`PUT remote-config` 只接受 `controller` / `disabled`。**一账号一容器是唯一模式**（用户 2026-10-09 确认）：`account_runtimes` 保存时恒为 `true`，界面去掉该复选框；旧"共享容器"模式（关闭一账号一容器时的单容器、`/system/ccgateway/status|proxy|auth/*`、`remote-action`）删除，`remote-test` 只用于控制面板连接。
-
-**连接（`controller` 模式）**：§53.4 不变，只是 `scheme: http` 时管理请求与隧道都走明文 TCP（拨号上限同 10 秒，`stage` 只有 `connect` / `http`），基址 `http://host:port`。
-
-**安装：`POST /system/ccgateway/controller/install`**（权限、审计、锁、不随断开取消同 §53.3）：
-
-```json
-{"method": "ssh" | "local",
- "ssh": {"host", "port", "user", "auth_mode", "password"?, "private_key"?, "passphrase"?, "host_key_fingerprint"},
- "scheme": "https" | "http",
- "host": "<连接地址>", "port": 0 | 1..65535, "email"?: "<ACME>"}
-```
-
-- `method: "ssh"`：`ssh` 必填，按 `remotedocker.Validate` 校验（失败 400 `invalid_ssh`），只用于本次请求的脚本执行，不写配置、不进日志与审计。`host` 缺省为 `ssh.host`。
-- `method: "local"`：在核心所在机器上直接执行同样的固定脚本（`sh -c`，脚本经 stdin 传数据）；要求核心进程能使用 `docker` 命令且有权写 `/opt`，否则脚本报 `docker_not_installed` / `docker_not_running` / `install_failed`（400 / 503）。控制器镜像带 `guard-api=1` 标签时，还要求核心所在环境里有 `docker compose` v2，否则报 `compose_unavailable`（§76）。`host` 缺省 `127.0.0.1`（核心与控制器同机）。核心跑在容器里且没有挂 Docker socket 时本机安装不可用，应改用 SSH。
-- 兼容：请求不带 `method` 且已保存 `mode: ssh` 时，用已保存的 SSH 连接（旧流程），成功后同样清除 SSH 凭据。
-- `port`：`0` 或省略 → 自动选择空闲端口：`https` 从 18443 起、`http` 从 18080 起各试 100 个；指定端口时检查是否被占用（属于当前 `ccg-gateway` 的端口视为可用）。占用检查读 `/proc/net/tcp` 与 `/proc/net/tcp6` 的 LISTEN 项，结果用 `CCG_PORT=<n>` 行报告；指定端口被占 → 409 `port_in_use`，自动范围内都被占 → 409 `no_free_port`。
-- `scheme: http` 的 Caddyfile：
-
-  ```
-  {
-  	admin off
-  	auto_https off
-  }
-  http://:<port> {
-  	reverse_proxy 127.0.0.1:8787 {
-  		flush_interval -1
-  	}
-  }
-  ```
-  不取根证书；健康检查走 HTTP。`https` 同 §53.3（域名自动证书 / IP 用内置 CA 并固定根证书）。
-- **域名自动证书（用户 2026-10-09 确认要保留）**：`scheme: https` 且连接地址是域名时，Caddy 自动向 Let's Encrypt / ZeroSSL 申请并续期证书，核心用系统根证书校验，`controller_ca` 为空，什么证书都不保存。ACME 验证需要该主机的 80 端口（HTTP-01）或 443 端口（TLS-ALPN-01）能被 Caddy 监听并从公网访问；控制面板本身可以在任意端口（如 18443）。因此安装脚本在域名 + https 时额外检查 80 与 443 是否空闲（属于当前 `ccg-gateway` 的视为空闲），两个都被占 → 409 `acme_ports_unavailable`（提示改用 IP、改用 http，或在已有的反向代理上为该域名配置转发）；核心还会解析域名，所有 A/AAAA 记录都不是 SSH 主机地址 / 连接地址时只在返回里给 `warnings: ["dns_mismatch"]`，不拒绝（可能有 CDN / NAT）。域名证书签发失败时健康检查以 `stage: tls` 报 `gateway_unreachable`。DNS-01 验证（需要 DNS 服务商令牌与带插件的 Caddy 镜像）暂不支持。
-- 其余步骤与错误码同 §53.3（控制器安装、网关、取证书、健康检查 120 秒、原子保存）。保存时：`mode: controller`、`scheme`、`host`、`port`、`controller_ca`（https 且 IP）、管理密钥；SSH 字段全部清空。并发保存冲突 409 `config_changed` 的判断改为"配置自读取后被别人改过"（比较 `updated_at` / 行版本），不再要求原模式是 ssh。返回公开视图，含实际使用的 `port`。
-
-**界面**（设置 → 连接与授权，一账号一容器开启时）：
-1. "控制器连接"：**一个端点输入框**（`https://host[:port][/前缀]` 或 `http://host[:port][/前缀]`，端口可写可不写，不写按协议默认 https 443 / http 80；可带路径前缀，用于控制器挂在反向代理子路径下、由代理去掉前缀转发的情况；不允许查询、片段、用户信息；前端解析为 `scheme` / `host` / `port` / `base_path` 保存，显示时拼回 URL）。核心以 `scheme://host:port` + `base_path` 为所有控制器请求（含隧道 `GET <base_path>/accounts/<key>/tunnel`）的基址；`base_path` 为空或 1–8 段 `[A-Za-z0-9._~-]+`，变化同样要求重填管理密钥；安装生成的端点不带前缀。下面是访问密钥；http 时提示密钥明文传输、只用于可信内网；https 时根证书放在默认折叠的"高级：自签名根证书（可选）"（域名正式证书留空）；"测试连接"；"保存"即直接连接已有控制器。顶部显示当前状态（已连接 + 控制器版本 / 未配置 / 旧连接方式）。
-2. "安装控制器"（未配置或旧连接方式时默认展开，已连接时折叠为"重新安装 / 安装到其他主机"）：安装方式（本机 Docker / 远程 SSH）；SSH 时填主机、端口、用户、认证、私钥 / 密码、主机指纹（含探测），这些只随安装请求发送，不保存；端口（留空自动选择）、协议、对外连接地址（SSH 缺省为 SSH 主机，本机缺省 127.0.0.1）、ACME 邮箱（HTTPS + 域名时）。"安装并连接"成功后用返回的配置刷新第 1 部分。
-3. 没有"启用一账号一容器"复选框，也没有共享容器设置（该模式已删除）。
-
-### 53.10 运行环境镜像随插件包分发（2026-10-09，用户要求）
-
-用户决定：构建项目时同时构建 CCGateway 运行环境所需的全部镜像，**直接打进 `ccgateway` 插件包（`.s2plugin`）**，插件包大小限制相应放开；以后安装控制器、升级、上传都用包里的镜像，不再依赖 GHCR（私有，拉不到）或手工 `docker save`。
-
-**包内布局**（zip 内，镜像文件用 Store 方式不再压缩）：
-
-```
-images/images.json
-images/app.tar.gz          # 业务容器（worker），docker save | gzip
-images/egress.tar.gz       # 出口代理（sing-box）
-images/controller.tar.gz   # 控制器
-images/gateway.tar.gz      # Caddy 网关
-```
-
-`images/images.json`：`{"version": 1, "images": {"app": {"ref", "file"（images/ 下的裸文件名，如 `app.tar.gz`）, "sha256", "size"}, "egress": {…}, "controller": {…}, "gateway": {…}}}`。`ref` 是镜像加载后的标签：`ccgateway-app:<插件版本>`、`ccgateway-egress:<插件版本>`、`ccgateway-controller:<插件版本>`、`caddy:<固定版本>-alpine`（构建脚本里固定，不用 `latest` / `2-alpine` 浮动标签）；`sha256` 是 `file` 的 SHA-256；整个包由插件签名覆盖。四个角色缺一不可。`egress` 角色自 2026-11-01（ccgateway 0.1.118）起是共享 Xray 出口网关的镜像（`companions/xray-egress`，带 `io.sup2api.ccgateway.shared-egress=1` 标签），不再是每账号 sing-box 出口；镜像名 `ccgateway-egress:<插件版本>` 不变，核心照旧处理（§57）。
-
-2026-11-01（ccgateway 0.1.119，§76）：
-- 条目可以带可选字段 `"labels": {"io.sup2api.ccgateway.guard-api": "1"}`。构建脚本只给控制器写这一项；核心据此拦截接管前的自升级（§76.6），旧核心用非严格 JSON 解析，会忽略它。
-- `controller` 角色改为 Go 控制器（`companions/controller-go`）。构建脚本要求它带 `guard-api=1` 和 `shared-egress=1` 两个标签，缺一个就失败。
-- 插件 `hostCompat` 为 `>=0.1.227`。
-- guard **不是**包内角色，仍然只有四个角色。
-
-**构建**：
-- 新脚本 `next/deploy/docker/build-ccgateway-images.sh <插件版本> <输出目录>` 在**有 Docker 的主机上**运行（Dockerfile 的 build 阶段没有 Docker 守护进程）：用 `companions/worker/Dockerfile`、`egress/Dockerfile`、`controller/Dockerfile` 构建三个镜像（构建参数带源码提交号），拉取固定版本的 Caddy，各自 `docker save | gzip -6` 到输出目录并写 `images.json`。输出目录约定为 `next/plugins/ccgateway/images/`（git 忽略，但要进入核心 Docker 构建上下文）。
-- `deploy/docker/build-go.sh` 打包 ccgateway 时，若 `plugins/ccgateway/images/images.json` 存在就把 `images/` 整个放进包（校验 sha256 与 ref 里的版本等于插件版本）；不存在时：`REQUIRE_CCGATEWAY_IMAGES=1`（正式发布）构建失败，否则打一个不带镜像的包并打印警告（本地开发）。
-- OVH 的 `~/sup2api-managed/build-core.sh` 在 `docker build` 核心之前先跑镜像脚本；CI 的发布流程同样（或明确说明不支持）。
-- 插件版本号随镜像内容变化而升（ccgateway 0.1.16 起）。
-
-**限制放开**：插件包压缩大小上限 1 GiB、解包总大小 2 GiB；涉及插件包的上传请求体、节点间 / 主节点存储（blobs）读取、市场下载、核心发布包里的内置插件等上限一起调整到不小于此。仍然整包读入内存（用户接受）；ccgateway 包每次处理约占 1 GB 内存。外壳侧：插件存储 `pluginblob.DefaultMaxBytes` 256 MiB → 1 GiB（`plugin_max_bytes` 显式配置的节点需同步调大）；`sub2api-release` 发布包总大小上限 2 GiB → 4 GiB。**外壳的这两处变化要等外壳镜像本身升级后才生效**（核心升级不会换外壳镜像）。
-
-**核心使用包内镜像**（`next/server/internal/ccgateway`）：
-- 核心从本节点当前启用的 ccgateway 插件包读取 `images/images.json` 与镜像文件（实现自定：已解包目录或插件存储），按 sha256 校验后流式发送，不整份读进内存（如插件存储只提供整包字节，可接受一次读取）。
-- 生效镜像（`EffectiveImages`）：配置覆盖值 > 包内 ref > 旧的固定 GHCR 引用。
-- **安装**（§53.9，本机或 SSH）：脚本里对每个角色先 `docker image inspect <ref>`，主机上没有就把包内对应文件经 stdin 流给 `docker load`（SSH 用会话 stdin，本机用进程 stdin）；之后照常启动控制器与网关。没有包内镜像时退回原逻辑（`docker pull`）。
-- **已连接后**：新接口 `POST /system/ccgateway/runtime/bundled`（`settings:manage`，审计 `ccgateway.runtime.bundled`，共用安装锁，不随断开取消，上限 25 分钟），请求 `{"roles"?: ["app","egress","controller"]}`（缺省三者，`gateway` 不经面板推送），对每个角色：控制器上已有该 ref（`GET /runtime/images` / `/health` 判断）则跳过，否则经 §53.6 的分块上传接口把文件传给控制器、`load`，再按 §53.6 / §53.7 的 apply 逻辑启用（app 默认只作为新建容器的镜像，请求带 `update_existing: true` 时才对现有账号做 worker 原地更新，见 §53.7 的 2026-11-02 更新；controller 走自升级）。返回 `{"results": [{"role","ref","status": "loaded"|"present"|"failed","reason"?}], "workers"?: …, "runtime": <GET runtime>}`。
-- `GET /system/ccgateway/runtime` 增加 `bundled: {"version", "images": {role: ref}} | null`。
-- 一键升级（`POST runtime/install`）在控制器缺少目标镜像时先自动推送包内镜像。
-
-**界面**：部署与运行页显示"插件内置镜像（版本 X）"与各角色是否已在控制器上；按钮"推送并启用内置镜像"（确认框说明 worker 会原地更新、不重建容器）。手动上传保留为高级选项。
-
-**§53.10 实现补充（2026-10-09）**：
-- 镜像构建不可复现，**同一插件版本只构建一次**：`prepare-core-release.sh` 把镜像缓存在发布主机 `~/sup2api-managed/ccgateway-images/<插件版本>/`，已存在就直接复用；在别的机器重建同一版本会得到不同的包（核心保留先存入的那个）。改镜像内容必须升插件版本。
-- Caddy 固定 `caddy:2.11.7-alpine`（构建脚本常量，可用 `CCG_CADDY_IMAGE` 覆盖为其他 x.y.z 标签；核心兜底 `GatewayImage` 同值）。
-- 推送内置镜像（`runtime/bundled`）启用时**清除**该角色的配置覆盖值（不是写入 ref），让以后插件升级带来的新镜像自动生效；手动上传仍写入覆盖值。处理顺序 controller → egress → app（先让控制器升到支持 worker 原地更新的版本）。"已有"只按控制器当前目标判断。
-- 新错误码：安装 `image_load_failed`（503）；`runtime/bundled` 的 `no_bundled_images`（400），结果 `reason`：`bundle_invalid`、`upload_failed`、`image_ref_missing`。
-- 一键升级遇到控制器 `image_pull_failed` 且目标正是包内 ref 时，先推送包内镜像再重试。
-- 超过 64 MiB 的插件包不进核心的解包缓存；外壳节点间拉包超时 30 分钟；插件 rollout 的 PrepareTimeout 仍是 120 秒，慢节点会在提交后自行重试。
-- 核心 Docker 镜像（final 阶段）的 market 与 builtin 各有一份 ccgateway 包；OVH 发布包只带 builtin。
-
-### 53.11 设置页精简（2026-10-09，用户要求）
-
-> 2026-10-23（§53.18）：本节的 `thinking_disabled_compat`、`unknown_field`、`tool_search`、`custom_tool_prefix` 以及 `allow_fast`/`allow_effort`、`betas` 都是 native 执行路径的设置；native 已从 Worker 删除（§53.21），这些字段**只保留在存储里**，设置页不再编辑，核心不下发，Worker 收不到——包括线上曾开的 `thinking_disabled_compat=omit`，它在 build/direct 下从未生效。下文是历史记录；现行策略线形见 §53.18，执行方式见 §53.21。
-
-以下设置页布局沿革不代表所有旧开关仍影响执行：native-only 已取消 relay 模式/灰度名单/直返错误选路，附件表达也不再使用旧 relay 来源策略，beta 固定规则不是转发白名单。（当时"现行策略见 §53.13 与 `CCGATEWAY-REQUEST-POLICY.md`"——两者描述的 native 策略也已失效。）
-
-- 子标签只剩：连接与授权、网络配置、CC 特性、部署与运行。"账号容器"并入"部署与运行"（运行环境与镜像卡片之后）；账号列表显示容器内 Claude Code 版本（`GET /system/ccgateway/accounts/:id/health` 新增可选只读字段 `cli_version`，核心并行读 Worker `admin/features`，3 秒超时，取不到不返回）；请求调试日志一列只放开关，说明悬停/聚焦显示。
-- 删除"通用 API 特性"：官方 API 支持的功能不再是设置。`allow_fast`、`allow_effort` 在发给 Worker 的策略与设置读取中恒为 `true`，保存的 `false` 被忽略（默认值同步改为 true）。
-- "CC 特性"包含"查看处理机制与证据"（CC 范围的特性目录，2026-10-10 按用户要求恢复：`GET /system/ccgateway/features` 中 `scope: "cc"` 的条目，如 F-ADD-DIR 额外目录访问 / F-SAFEGUARDS，展开时才读取，含"查看账号 Worker 能力"只读查询；目录里不再有 fast/effort 开关）、"工具与错误处理"（直接展开）、"附件默认来源"（2026-10-10 按用户要求恢复：默认来源 client / gateway / both、按附件类型覆盖、环境字段 workingDirectory / platform 覆盖（workingDirectory 含客户端 `--add-dir` 的 "Additional working directories" 及其子项，ccgateway 0.1.22 起）、未知客户端/容器附件放行或忽略）和"不支持的请求如何处理"（unknown_beta / unknown_field）。（2026-10-24：旧的特性目录 `features.Catalog()` 已删除，该接口现在返回请求模式的能力目录 `features.RequestCatalog("request_build")`，控制台不调用它。）
-- "工具与错误处理"中的兼容开关 `thinking_disabled_compat`（旧版本演进见归档；当前用于 native 请求表达，不建立模型中继）：
-  - 取值 `"pass"`（默认）或 `"omit"`。核心与 Worker 都校验取值，旧配置缺省按 `pass` 处理。字段可选、旧 Worker 忽略它，所以 `schema_version` 不升（仍为 1）。
-  - `omit` 只在三个条件同时满足时生效：
-    1. 客户端 `thinking.type` 为 `"disabled"`；
-    2. 模型在"不支持 disabled"的已验证清单里，目前是 `claude-opus-5-5` 和 `claude-fable-5-1`；2026-10-10 真实上游实测两者都对 disabled 返回 400 "thinking.type.disabled is not supported for this model"；
-    3. 开关为 `omit`。
-  - 生效时的处理：
-    - Worker 不把该 thinking 对象放入 `CLAUDE_CODE_EXTRA_BODY`，CLI 使用 `--thinking disabled`，由 CLI 按模型行为省略字段，不再通过 apiGeneration/HTTP relay 删除；
-    - 不改成 adaptive；仍服从 CLI 原生构造及能力恢复行为，不能由旧逐字段对照测试推定当前所有组合等价；
-    - 改写记录在 `feature-decisions.json`（`action: omit_unsupported_disabled`）、请求日志元数据 `thinking_compat: omit_disabled` 和诊断事件 `thinking_disabled_omitted`。
-  - CLI 输出的 thinking 块与签名按原生事件承载，不承诺原始 HTTP 响应逐字节透传。旧 `max_tokens:64` 的账号实测仅属历史证据，不代表当前部署验收。
-  - `pass` 时保留客户端 disabled；失败按 CLI 可观察事实规范化返回（§53.14），不承诺原始上游 400 正文，也不阻止 CLI 自身特性恢复重发。
-  - 典型场景：cc-switch 把 `claude-opus-5` 改写成 `claude-opus-5-5`，客户端 auto 模式分类器和标题等请求仍发 disabled。见 `ccgateway-feature-support/SUBAGENT-DESIGN.md` 第 7 节。
-
-### 53.12 Worker 会话：客户端会话 ID 不变则内部会话 ID 不变（2026-10-09，用户要求）
-
-> 2026-10-25：本节的会话分支、规范文件与会话索引属于已删除的 native 路径（§53.21），整节只作历史。现在的会话规则：build 按账号把 `metadata.user_id` 的 session 映射成同会话稳定的值，direct 原样用客户端的，出口 `x-claude-code-session-id` 与出口 metadata 一致（BUILD-REQUEST-COMPONENTS-DESIGN §7）。插件原先给 Worker 加的 `x-ccgateway-session-scope` 头已无读取方，2026-10-25 起插件不再发送（随下一个插件版本生效）。
-
-**历史演进记录**：本节逐次记录旧方案。出站中继改写 session/metadata、restoreCacheSystem、Sonnet 续接引导及旧客户端 session 头兼容只说明当时实现，不是当前 native-only 功能。当前会话仍按最后的 v2 规则选分支，但由原生私有记录以 U 运行、CLI 自身设置 U/A′；无 HTTP relay 还原。现行执行与限制以 §53.13–§53.14 为准，旧实现见 `archive/ccgateway-relay-0.1.41@4b0e0967c`。
-
-背景（实测，CLI 2.1.292）：原生 CC 同一 sessionId 下主线、子代理、分类器、标题请求都带同一个 `X-Claude-Code-Session-Id` 与 `metadata.user_id.session_id`，子代理另带 `x-claude-code-agent-id`；主线写 `<S>.jsonl`、每个子代理写独立文件，均只追加，回退表现为同文件内分支。`--session-id S` 对已存在会话报错 `already in use`；`--resume S` 追加同一文件；两个 `--resume S` 并发都成功、同文件出现分支点、不损坏；不指定节点时下次续接沿最后写入的分支。旧实现每次 fork / rebuild 都换随机内部会话 ID，且所有请求共用 logical `auto`。
-
-**会话 ID（S）**：
-1. 请求体 `metadata.user_id` 是 JSON 且 `session_id` 为 UUID → S = 该值（与主请求 body 一致）；
-2. 否则 `metadata.user_id` 为非空字符串 → S = `sha256("ccgateway-session-v1" + user_id)` 前 16 字节按 UUID v4 设置版本/变体位；
-3. 否则若有 `X-CCGateway-Session-ID` 头 → 用它（兼容旧调用方）；
-4. 都没有 → **新会话**：随机内部 ID、整段重建、不查也不写会话索引（用户要求"没有会话 id 就当成新会话"）。
-
-**分支与文件**：分支键 `(作用域 X-CCGateway-Session-Scope, S, agentId)`，agentId 取客户端 `x-claude-code-agent-id`（主线为空）。内部 CLI 会话 ID = 由 `sha256("ccgateway-native-v1", 作用域, S, agentId)` 生成的 UUID（确定值；不同作用域不会共用文件）。每个分支一个规范文件 `native/<内部ID>.jsonl`，只追加、按 uuid 去重。会话索引（指纹 → 文件与节点 uuid）的 logical 由分支键得出，取代原来的 `auto`。
-
-**每个请求**：
-- 用客户端历史指纹在该分支索引中找最长的、以 assistant 结尾的已登记前缀 → 得到节点 uuid；
-- 把规范文件复制成本请求私有副本，`--resume <副本> --resume-session-at <节点>` 运行（**不再使用 `--fork-session`**），会话 ID 不变；客户端回退 / 编辑就是从更早节点长出分支；
-- 找不到节点（换账号、过期、容器重建、首次）→ 用同一个确定 ID 把客户端历史写成原生记录后续接（重建），ID 仍不变；
-- 运行结束后在该分支的锁内把新增记录按 uuid 合并回规范文件（原子替换），再登记"本次回复指纹 → 节点"。CLI 运行期间不加锁，同一分支的并发请求互不等待，各自写私有副本，合并后成为同文件内的兄弟分支。
-
-**发往上游**：出站中继把 `X-Claude-Code-Session-Id` 统一改为 S；客户端带了 `x-claude-code-agent-id` 时原样设置。ccgateway 插件透传 `x-claude-code-agent-id`（manifest passHeaders 与插件头白名单），插件 0.1.17。
-
-**清理**：规范文件在没有任何索引条目引用时按原有规则清除；索引仍 24 小时有效。升级后旧快照（logical `auto`）自然过期，首次请求重建一次。
-
-**修复（同版本）**：CC auto 权限模式分类器请求的 system 形如 `[计费头, 大段提示*, 未缓存尾块]`，CLI 发出 `[计费头, SDK 身份块*, 大段提示 + "\n\n" + 尾块 + 请求标记]`，`restoreCacheSystem` 之前无法还原而返回 502（`cached client system boundaries cannot be restored`）。现在按客户端原始分块还原，客户端结构不变（§ 尽量不改客户端结构）。
-
-**上游会话 ID 与 metadata（2026-10-10，用户要求，替换上文"发往上游"一段）**：客户端 `metadata.user_id` 只用于推导 S，**不透传给上游**。发往上游的会话 ID U = UUID(sha256("ccgateway-upstream-v1", 作用域, S))，与客户端 session_id 不同但对同一 S 固定；主线分支的内部 CLI 会话 ID 直接取 U，子代理分支内部 ID 仍按 (作用域, S, agentId) 派生。出站中继对所有上游模型请求：`X-Claude-Code-Session-Id` = U；body `metadata.user_id` 用容器内 CLI 自己生成的那份（容器自己的 device_id / account_uuid），只把 session_id 换成 U；客户端显式 metadata 不再覆盖主请求。没有会话 ID 的请求 U 为每请求随机值。
-（2026-10-10 补充）不再支持客户端 `X-CCGateway-Session-ID` 头：会话 ID 只来自 `metadata.user_id`，没有就是新会话；插件不再透传该头，worker 收到也忽略。`x-claude-code-agent-id`（CC 原生头）与插件按认证身份生成的 `X-CCGateway-Session-Scope` 保留。
-（2026-10-10 补充，子代理）客户端 `x-claude-code-agent-id`（A）只用于内部分支键，不原样发给上游；上游带派生值 A' = 由 sha256("ccgateway-agent-v1", 作用域, S, A) 生成、格式同原生 agentId，主线不带。同一分支内客户端历史与文件公共前缀为 0（内容完全不同的对话、旧客户端不带 agent-id 的子代理）时，作为新根追加进同一规范文件，不覆盖已有分支。
-
-**（2026-10-10 修订，以本段为准）会话部分不再使用作用域**：分支键为 `(S, agentId)`；内部 CLI 会话 ID、索引 logical、上游会话 ID U = 由 sha256("ccgateway-upstream-v2", S) 生成的 UUID（选项 1：哈希而非原样，客户端标识与 metadata 不发往上游）、上游 agent-id A' = 由 (S, A) 派生，摘要前缀均升为 v2（旧快照作废，首次请求重建一次）。理由：续接依赖历史指纹逐字一致，不同用户撞会话 ID 只会在同一文件各成分支，不串话、不泄露；客户端乱发固定 `metadata.user_id` 的后果由客户端承担；同一用户换 Key 也能续接。`X-CCGateway-Session-Scope` 仍由插件按认证身份写入，**只用于消息与资源归属**（message_ownership）。**文件超限拆分**：单个规范文件超过 64 MiB 或 1000 个分支点时不再合并，新请求另起确定 ID 的新文件（摘要带序号），索引记录节点所在文件，超限前已登记的节点仍从旧文件续接。
-
-**实现说明（2026-10-10，ccgateway 0.1.17，以本段为准）**：
-- **私有副本不是整份规范文件**：只含本次要续接的那条链（从根到节点）与无 uuid 的簿记记录，去掉 `last-prompt`。实测 2.1.292 一个文件只加载最后写入的那段对话，对其他根上的节点 `--resume-session-at` 会报 `No message found` 或混入别的分支。
-- **首轮也走 `--resume`**（私有副本里只有一条本地 meta 根记录，实测不发往 API），不用 `--session-id`：同一会话已有并发运行时它会报 `already in use`。原同会话并发的 409 互斥已删除。
-- 续接 Sonnet 引导前缀、把旧代文件记录复制进新一代文件时，会改写记录的 `sessionId` 字段（不发往 API）。
-- 上游 `metadata.user_id` 用 CLI 自己的值，只把 `session_id` 换成 U（其余字节不变）；旧格式 `…_session_<uuid>` 只换会话段；都认不出时按 CLI 字段顺序生成 `{"device_id":"","account_uuid":"","session_id":U}`。A' 的格式为 `a` + 16 位小写十六进制（与 CLI 自己的子代理 ID 同形）。主线请求删除 agent-id 头。
-- 已知：客户端计费头是占位值（如 `cch=00000`）时 CLI 会重算，开头 system 块仍无法还原（改动前即如此）。
-
-### 53.13 固定 native 请求策略与原生表达（历史，已由 §53.21 取代）
-
-> 2026-10-25：本节描述的 native 执行路径已于 2026-10-24 删除（§53.21），Worker 只运行 CLI 的 `request --build|--direct`，下文的准入拒绝清单、EXTRA_BODY、私有原生历史都不再执行；fallback credit 现在由请求命令回执（REQUEST-MODES §1.5）。count_tokens 一条也已由 §11.6 取代（2026-11-04）。现行契约见 `plugins/ccgateway/docs/REQUEST-MODES.md` 与 BUILD-REQUEST-COMPONENTS-DESIGN。
-
-旧 relay 仅保留在 `archive/ccgateway-relay-0.1.41@4b0e0967c`；当前工作树已物理删除旧主体与 `mod/search`。本文描述 native-only 代码合同，**测试及资源授权仍在验收中，不代表已发布、已部署或全部验证通过**。逐项设计见 `ccgateway-feature-support/PASSTHROUGH-DESIGN.md`，策略细节见 `CCGATEWAY-REQUEST-POLICY.md`。
-
-**固定策略**（`schema_version` 仍为 1）：
-- `relay_mode` 仅保留固定值 `native` 作为 wire guard，不再是选路开关。历史配置读取时核心归一为 native；保存 API 和 Worker 拒绝显式 `legacy` / `passthrough`，缺省/空值按 native。
-- `relay_passthrough_accounts`、`relay_native_accounts` 两个灰度名单与 `pass_upstream_errors` 已不再参与执行；旧 JSON 残留不能恢复旧能力。核心和设置页也不再保存/下发 `unknown_beta`、附件来源、环境来源与未知附件策略字段。`Config.WorkerRequestPolicy(accountID)` 对所有账号下发相同有效执行模式。
-- 当前 Worker 仅声明 `execution_modes: ["native"]`，不再声明 helper history transport/payload 能力，相关路由已摘除。核心/共享 contracts 保留的托管历史概念不是当前 Worker 的能力；CLI 内部 ToolSearch 不等于 helper history 托管。
-
-**保留的原生请求表达**：
-- 共享 parser（文件仍名为 `engine/passthrough.go`）、主 Mod、WebSearch、CLI 参数及每轮 `CLAUDE_CODE_EXTRA_BODY` 保留；passthrough 命名不表示仍有可运行的 HTTP relay 模式。
-- `model` → `--model`；max_tokens、thinking、采样/停止参数、service_tier、inference_geo、output_config（format/effort/task_budget）、output_format、safeguards、diagnostics 通过受控 EXTRA_BODY 表达；tool_choice 只在第 0 轮，工具名映射为内层名。thinking 缺省用 `--thinking disabled`，effort 缺省 high，speed 用请求级 fastMode 与生成字段。两份 EXTRA_BODY 以 JSON 字符串穿过 Mod，避免网关额外数值转换；最终接受 CLI 的 JSON 数值语义，不保证任意大整数保真。CLI 2.1.296 隔离实测 `9007199254740993` 出站为 `9007199254740992`，同内容字符串保持不变。请求倍数上限与 usage/cache 严格计量校验不因此放宽。
-- beta 按客户端顺序去重交给 `ANTHROPIC_BETAS`，CLI 可附加自身 beta；固定 BetaRules 用于 CLI 设置，不是 native 转发白名单。缓存保留 TTL，但断点/context_management/compaction 由 CLI 决定；system 与内嵌 effort 按 CLI 构造，客户端 metadata 只选会话。
-- 私有原生历史以 U 运行，子代理 A′ 由 CLI 自身头配置表达；不在 HTTP relay 改写。图片拆分、CLI 原生预处理与工具命名差异必须保留说明，不能标成逐字节等价。
-- count_tokens 不提供：插件不声明端点，核心不调度到 CCGateway（历史；2026-11-04 起见 §11.6）。
-- 准入拒绝：assistant prefill、非流式 max_tokens:0 预热、fallback_credit_token、container/container skills、mcp_servers、code_execution/web_fetch/API tool_search/advisor 等服务端工具、typed 工具集、inline 工具定义、图片 transformations、non-direct caller/toolset_name 与未支持的对应历史块。direct caller 不能误写为一概拒绝；WebSearch 仅接受可还原的网关结果历史，user_location 等未支持参数仍拒绝。
-
-旧 legacy 默认、两名单灰度、首次 HTTP 错误原样直返、非流 warmup 桥接、出站还原与 helper history 的旧测试/上线记录均属于归档历史，不是当前功能或回滚选项。原生错误、搜索、fallback 及独立资源边界以 §53.14 为准。
-
-### 53.14 原生 CLI 模型出站（native-only，0.1.121 / 0.1.42 已发布）
-
-用户选择原生 Claude Code 语义，不再要求 legacy 的 HTTP 字节还原、原始错误正文/全部响应头，以及首次错误后绝不兼容重发。模型 HTTP relay 主体已从当前工作树删除；Worker、主 Mod 控制面、账号隔离、sing-box 和 `127.0.0.1:8787` 本地放行保留，`NO_PROXY` 仍包含 `127.0.0.1,localhost`。不使用 uTLS、生产 CA 或 hosts 重定向。旧 `legacy` / `passthrough` 仅在归档，不是当前兼容回滚或失败重试路径。
-
-- 固定 native 策略见 §53.13。读取实际 Worker `execution_modes` 和 `cli_version`；缺字段不能推定 native 支持，能力声明仍不等于运行验证，不能从镜像标签或旧部署记录推定当前构建已验收。
-- 主模型和一次性搜索进程都由 CLI 直接连接真实 provider。保留合法账号 Base URL，不覆盖成本地 relay；Mod 只交换配置和事件。initialize 成功且 Mod ready 后才提交用户输入，失败或取消不发送输入。Windows 环境变量查询与 CLI 环境标准化使用一致的大小写规则。
-- native 复用 §53.13 的 CLI 参数、每轮 EXTRA_BODY、U/A′、私有原生历史分支、工具交接和图片承载；system、beta、缓存断点、图片预处理遵循 CLI 原生构造，不保证逐字节恢复。客户端工具仍不得在 Worker 本地执行。§53.13 已明确拒绝的 prefill、服务端 MCP、PTC/container、图片 transformations、credit/helper 等未原生覆盖功能继续在准入层明确拒绝，不能视为已迁移；独立管理/资源接口不因此宣称已改为原生 CLI。
-- 会话内指令按语义保留，不复原 HTTP 元数据：clear_at:next_user_message 遇到后续任何 user（含纯 tool_result）失效；inline effort 在新输入 user 后生效，纯工具结果后设置则等下一条新输入。CLI 缓存附件无法在原进程直接重渲染，内部 ToolSearch/WebSearch 因此在下次模型调用前暂停，以真实原生工具结果同模型恢复一次。只清除已核验 UUID/来源/位置的自有附件中的临时文本，保留持久指令、同名正文、历史与用量；不重放已执行搜索、首轮 tool_choice 或模型 fallback。Mod 协议 ccgateway-v3 在输入前确认，旧协议、证据缺失与取消失败关闭。credit 跟踪的单次模型生成限制涵盖 ToolSearch/WebSearch，组合在生成前拒绝，不为临时指令开放敏感会话持久化。
-- 原生错误采用 assistant.error、assistant.request_id、result.api_error_status；`subtype=success` 仍须检查 `is_error`。控制协议 request_id 不是上游请求 ID。缺少真实状态时保守返回请求级 502，不猜测认证失败或禁用账号。可观察到的真实状态沿用账号分类；规范化 `billing_error` 通过 Worker 私有来源/类别头交给插件识别。订阅限额头仍不外传；rate_limit_event 的有效重置时间可生成有界 Retry-After，这是规范化提示，不是原响应头副本。
-- SSE 增量通常早于带上游 request_id 的完整 assistant 帧；已经提交的流响应头保留网关请求 ID，不承诺回填上游 ID。已观察到的上游 ID用于后续事件事实和诊断，非流式/提交前错误可返回它。原始 HTTP 请求/响应报文在 native 中不可见，配置与 CLI 事件日志不能冒充原始线上报文。
-- CLI 2.1.292 的离线探针证明：`CLAUDE_CODE_MAX_RETRIES=0` 与 `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1` 不禁止全部能力恢复。通用 400 可按特性移除 thinking display / beta 重发，effort rejection 可删除 effort 重发；这些重发可能没有 api_retry，且在同一个 turn.step 内完成。按原生行为验收，不用 Mod 事后 abort 假装做到网络闸门。
-- `fallbacks` 由 Worker 在当前进程终止后协调，只对真实 429/500/502/503/504/529、没有观察到任何主模型输出、没有请求级失败且未取消时尝试。每次从最初请求重新准入并建立私有历史副本，不继承失败尝试的运行态；显式 null 删除对应覆盖字段（max_tokens:null 保留主限制），speed 可逐尝试重新配置。禁止在已输出、内部搜索已执行或计量失败后重放整轮。
-- native 搜索使用正常单轮 CLI 模型流，EXTRA_BODY 声明唯一 server web_search，使用 auto 而非强制 tool/any；快捷入口仅接收省略/auto 的 tool_choice，保留 auto 的并行控制选项，none/显式强制选择走普通执行路径，不改变用户原意。经确认，仅一次性 native 搜索子进程设置官方 DISABLE_PROMPT_CACHING=1，避免服务端搜索循环增加写入总数却不更新 TTL 分项的原生事件缺口；主会话缓存不变，不在事后把缓存用量清零。若上游仍报告缓存写入，仍须具备一致的真实 5m/1h 分项，否则请求级失败，不因此冷却账号或换号重放。搜索进程不强制关闭 thinking，保留已有 effort，由 CLI 处理模型原生思考语义；thinking/redacted_thinking 保留在原生响应中，不拼入搜索结果文本或引用载荷。主 Mod 限制轮次、禁本地工具，模型使用该请求明确选择的模型。保留 domain filters、max_uses、结果/引用、多组错误块和 ccgws1 历史。用实际 SSE usage 计量，包括输入/输出、缓存读取、缓存写入总数及 5m/1h 分项、实际搜索次数；不从美元或累计 modelUsage 反推。HTTP/进程失败或账务事实缺失仍终止整个请求；未执行搜索返回明确工具错误并保留已发生用量，不把普通文本或网址当搜索结果。实际搜索的空结果与工具错误分开处理，错误可以带零次搜索计数，不能凭空增加费用或丢弃已有模型用量。
-- 主流使用原始 stream_event 的 usage 与现有内部轮合并；不将重复 assistant 块及累计 result.modelUsage 再加一次。普通输出、工具交接、原生历史恢复及图片续接须按当前 native 路径分别验收；旧 native/relay 差分证据只作历史参考。
-- Files/Skills 使用独立的非模型管理 HTTP，只放行资源操作白名单与必要身份查询，不恢复模型 relay。授权结合唯一受支持凭据来源、provider/配置目录及前后指纹绑定，profile 返回后再次检查；后续 IO 使用同一核验身份。API key/env OAuth 使用 `auth status --json`；stored OAuth 只运行无用户输入的原生初始化，不追加可能再次触发刷新竞态的短命 status 进程。stored OAuth 初始化不再按版本放行（2026-10-22 用户决定）：握手必须成功、来源为 claude.ai、配置目录一致、凭据稳定或正确轮换，否则失败；断网 35 场景（`TestResourceManagementLinuxOfflineNetNone`，可按镜像/CLI/版本参数化）作为升级 CLI 时的回归测试，官方 2.1.304 两轮通过。2026-10-22 起：核验过的身份按凭据指纹缓存 10 分钟（凭据变化即重新核验）；只有 API key、没有托管 issuer 时立即回 `resource_identity_unsupported`，不先跑 CLI。
-- **`diagnostics` 原样转发（2026-10-22 用户决定）**：它是 Claude Code 每轮主线程/子代理请求都带的缓存未命中询问（`previous_message_id` 为上一条回复的 ID，需 `cache-diagnosis-2026-04-07` beta），不影响回答与计费。原先的归属机制整体删除：核心不再登记消息 ID（`provider_diagnostic_messages` 表不再使用）、不再按 ID 钉账号（也不再因此禁止换号重试和账号状态记录）、不再加跟踪头或要求 Worker 回 `X-CCGateway-Diagnostics-Ready`；Worker 删除本地消息归属索引和跟踪核验。字段照常随请求到达上游，换了账号时上游自己回“找不到上一条”。已知：重建的 CLI（2.1.302 v11、2.1.304 v18）`auth status` 不退出，API key / env OAuth 的资源选择因此超时。OAuth 刷新只允许 CLI 自身执行，Go 管理 HTTP 不自行刷新、不发模型探针、不清锁；必要时等待旋转落盘，并在进程退出后重读凭据。接受门限为超过 30 秒有效期，来源不明、刷新未完成或身份变化时失败关闭。37 场景在 Windows 2.1.296 和断网隔离 Linux 2.1.292 各连续两轮通过，实现已随 0.1.42 发布，但真实账号的 Files/Skills 资源资格没有因此被验证；Files/Skills 资源操作不代表 container skills/code execution 模型能力已支持。
-
-离线门禁使用 `CCG_REAL_CLI` 指向精确 CLI，独立 HOME/config、假 key、回环 Mock 和禁止外部代理连接。`TestRealCLINativeProbe`、`TestRealCLINativeGateway`、`TestRealCLINativePassthroughCompatibility`、`TestRealCLINativeWebSearch*` 分别覆盖协议恢复、TLS、参数/历史与搜索计量等检查，但列出用例不代表当前全部通过。contracts tests、engine 测试、平台 CLI 探针、资源授权与真实账号验收须分别记录，不能互相替代。当前构建的独立验证、Core 0.1.121 / Worker 0.1.42 原地发布和本地 CC 实测见 `ccgateway-feature-support/ENVIRONMENT-RUNBOOK.md`：#22 的文本、Read、图片和 WebSearch 通过，#24 仅通过运行版本/哈希门禁，#26 因 OAuth 过期且刷新失败未通过模型验收，按用户选择保持停调。原生错误缺少真实 HTTP 状态时仍返回 502，不借此猜测 401 或由插件自动停用；旧历史证据不改写。
-
-### 53.15 擦除客户端附件（`erase_client_attachments`，2026-10-14，用户要求）
-
-> 2026-10-23（§53.18）：**已下线**。native 路径已从 Worker 删除（§53.21），此字段只保留在存储里，核心不下发，Worker 收不到；附件按 §53.17 的 `build_attachment_sources`（`erase` 值，等级低及以上）处理。下文是历史记录。
-
-native 下客户端附件原样上送、容器 CC 自身的附件不加（§53.13）；本节只增加"按类型擦除客户端附件"，不恢复旧附件来源策略。
-- 策略字段 `erase_client_attachments`：字符串数组，可选值 `environment`（环境与环境更新）、`model`（模型说明）、`date`（日期与日期变更）、`total_tokens_reminder`、`session_context`（CLAUDE.md、git 状态、邮箱等会话上下文提醒）。词表在 `contracts/features/attachments.go`，核心保存与 Worker 解析都用它校验，未知或重复类型拒绝。缺省／空数组＝不擦除；字段可选、`omitempty`，旧配置下发给 Worker 的策略与升级前相同，旧 Worker 忽略它，`schema_version` 不升（仍为 1）。
-- Worker 在准入前（`parsePassthroughRequest`）处理顶层 `system` 与 `user`／`system` 消息的文本块，之后的历史、计划原始请求与 fallback 看到同一份擦除结果；没有匹配时不重新序列化，原始请求逐字节不变。
-- 只按 Claude Code 2.1.288–2.1.296 渲染的整段／整行识别，正文中的提及不动；图片、工具结果等非文本块不处理；擦除后为空的文本块删除、只剩附件的 system 消息删除，但 user 消息不会被擦空（整条保留，决策记为 `keep_whole_message`）。规则只取决于策略，每轮擦除相同文本，提示缓存前缀稳定。
-- 决策记录 `AttachmentDecisions`（`decision: erase`，含类型、位置、次数与原文摘要）。其他 CLI 版本或被代理改写格式的客户端可能不匹配，结果是不擦除而非报错。
-- 设置页"CC 特性 → 运行设置"按类型选择（见 §53.16）；特性目录 `F-CLIENT-ATTACHMENT-ERASE`（2026-10-24 随旧目录删除，现行目录项为 `F-BUILD-ATTACHMENTS`）。
-
-### 53.16 客户端附件换成网关渲染（`replace_client_attachments`，2026-10-14，用户要求）
-
-> 2026-10-23（§53.18）：**已下线**。同 §53.15：native 路径已删除（§53.21），字段只保留在存储里，核心不下发，Worker 收不到；"服务端"按 §53.17 的 `build_attachment_sources`（`worker` 值，由 CLI 用原生渲染取值）处理。下文（含 0.1.56、0.1.57 的子项）是历史记录。
-
-"保留服务端"在透传下的含义：客户端附件留在原位置，文字换成该 Worker 上 Claude Code 自己渲染的同类附件。旧的 `attachment_source: gateway/both` 在透传下不起作用（Worker 强制 client），不恢复。
-- 策略字段 `replace_client_attachments`：字符串数组，可选 `environment`、`model`、`total_tokens_reminder`，ccgateway 0.1.54 起另加 `date`、`session_context`（`features.ReplaceableClientAttachments`，即全部可擦除类型；旧 Worker 收到新类型会拒绝整个策略，须先更新 Worker 再保存）。每类一次、不得与 `erase_client_attachments` 重叠，核心保存与 Worker 解析都用 `features.ValidateReplaceClientAttachments` 校验。缺省／空＝不替换；`omitempty`，旧 Worker 忽略，`schema_version` 仍为 1。优先级：擦除 > 替换 > 保留。
-- 网关文字来自 Mod：Worker 用与实际执行相同的 CLI、工作目录（`cache/workspace`）、基础环境与 Mod，按 `--model`、`--add-dir`（`additional_directories`）、1M 上下文（`context-1m-2025-08-07`）跑一次"渲染运行"；`ANTHROPIC_BASE_URL` 指向 Worker 自己的回环端点 `/ccg-attachment-render/<id>/`（仅回环、仅登记过的 id），不访问上游、不计用量。Mod 配置 `report_attachments: true` 时在 `prompt.attachment` 里把 origin `engine` 的上述类型渲染结果以 `gateway_attachment` 事件上报（类型须在词表内、非空、≤64 KiB）。日期不经 `prompt.attachment`：Worker 从渲染运行发往回环端点的第一个模型请求里按日期识别规则取出 Claude Code 写入的那一行（如 `Today's date is 2026-10-15.`）。
-- 渲染结果按（CLI 版本、模型、额外目录、1M 上下文；选了 `date` 或 `session_context` 时再加 Worker 当天日期）缓存，Worker 进程内首次结果一直使用，每轮相同文字，提示缓存前缀稳定，日期类次日重新渲染；渲染失败不缓存，本次请求该类型保留客户端原文（诊断 `gateway_attachments_unavailable`），下次请求重试。渲染成功但 Worker 的 Claude Code 没有产生某个选中类型（如没有 CLAUDE.md、git、账号邮箱时的会话上下文）时，客户端的该类附件被去掉（服务端没有这段）。没有请求替换时不运行、不取 CLI 版本。
-- 替换与擦除在同一次遍历（§53.15 的识别规则）中原位进行：只替换匹配的整段，保留其后的换行与前后文字；`environment` 只替换"# Environment"段，客户端的"# Environment update"（切换目录）没有对应的网关文字，一并擦除；`date` 同理只替换"Today's date is …"一行，"The date has changed…"一并擦除。决策记录 `decision: replace_gateway`。
-- 设置页每类一个选择：客户端／服务端／擦除（2026-10-15 用户要求五类都三选一，原"保留客户端／使用网关"改称"客户端／服务端"）。特性目录 `F-CLIENT-ATTACHMENT-REPLACE`（2026-10-24 随旧目录删除，现行目录项为 `F-BUILD-ATTACHMENTS`）。需 ccgateway 插件 0.1.49 起。
-
-- ccgateway **0.1.56** 起，环境在设置页分为 `working_directory`（主目录、额外目录及 git 仓库标记）、`platform`（Platform、Shell、OS Version）、`environment_update`（Environment update 消息），分别选择客户端／服务端／擦除。前两项只匹配标准 Environment 区块中的对应字段，未知字段保留；服务端值从同一次 CLI 环境渲染拆出，保留客户端字段位置与换行，不改真实容器目录或操作系统。环境更新独立处理；服务端初始渲染没有更新消息时移除客户端更新。
-- 已保存的 `environment` 仍保持整组行为；编辑器加载时展开成三个相同选项，保存时只写细分类型。整组与细分跨擦除／替换列表视为冲突并拒绝。新词表仍为策略 schema 1，**必须先更新 Worker 至 0.1.56 再保存细分策略**；旧 Worker 不支持新类型会返回策略错误。没有配置的字段继续保留客户端原文。
-
-- ccgateway **0.1.57** 起，CC 附件聚合项统一为可展开子列表：工作目录（`primary_directory`、`additional_directories`、`git_repository`）、平台（`platform_name`、`shell`、`os_version`）、模型说明（`model_name`、`model_id`、`knowledge_cutoff`、`model_other`）、日期（`current_date`、`date_change`）、会话上下文（`claude_md`、`git_status`、`user_email`、`session_other`）。环境更新、剩余 token 为单项。父项统一配置整组；展开后子项各自三选一，混合状态显示“分别配置”。父项操作与展开按钮分离，收起不丢配置；公共 `SDisclosure` section 增加独立 `actions` 插槽。
-- 保存仍使用 erase/replace 两个数组。父项选择保留原组键；第一次改子项时，编辑器把该父项物化为各子项，保留兄弟项原选择。核心/Worker 共享 `AttachmentChildren` 校验祖先与后代的跨列表冲突，旧整组配置继续有效。子项需要先更新 Worker 到 0.1.57，schema 仍为 1。配置仅影响附件文字，不更改 API model、实际系统、目录或仓库。
-- Worker 共用分段替换器：环境只识别标准 Environment 区块的字段；模型说明按 CC 标准句式拆分，未知形式留在其他模型说明；会话上下文只识别 `# claudeMd`、`# gitStatus`、`# userEmail`、`# currentDate` 标记，其他普通 Markdown 标题及代码围栏中的标记仍属于原段。其他上下文含旧版 currentDate。服务端子项从同一次 CC 渲染提取，不重新拼造内容。日期子项仍每天更新缓存；整组选择保留原处理顺序与行为。已识别客户端格式边界与“不会擦空用户消息”的限制仍适用。
-
-### 53.17 build 附件来源（2026-10-20）
-
-> 2026-10-23 更新：键集合已扩为 `contracts/features/attachments.go` 的 `BuildAttachmentFields`（platform_name、os_version、shell、primary_directory、additional_directories、git_repository、worktree、scratchpad_directory、github_cli、agent_proxy），值为 `client`（默认）、`worker`、`erase`；按注入等级低及以上才下发（§53.18）。下面第一条的"两个键、两个值"是 2026-10-20 的状态。
->
-> 2026-10-24 更新（§53.21）：下面第二、三条描述的是 Worker 侧 v1 改写（Worker 在组件提取前用本机 `uname`/`ver` 改写环境段），已随 native 清理删除。现在 Worker 只把客户端的块原样交给 CLI，CLI 未声明 `build_content_preservation_v1` 时 build 409；`worker` 值由 CLI 用原生环境渲染（`zkt`）取得，识别、擦除与拒绝规则见 `plugins/ccgateway/docs/BUILD-REQUEST-COMPONENTS-DESIGN.md` 第 5 节。第五条也已不成立：注入等级 0（direct）同样经过核心的能力预检（`request_levels_v1` 总是要求），附件来源在 direct 下不下发。
-
-- 插件设置“CC 特性 → 附件转换”保存 `request_policy.build_attachment_sources`。对象仅允许 `platform_name`、`os_version` 两个键，值为 `client`（默认）或 `worker`；缺失/空对象保留客户端。核心和 Worker 共享 `features.BuildAttachmentSources` 校验。沿用远程配置加密存储、读取和请求策略下发，不新增数据库表。它与旧 native 的擦除/替换数组独立，升级不激活旧规则。
-- build 模式在消息组件提取前原位替换已识别环境文本中的平台/系统版本。支持顶层 system、role=system 的直接 text 和完整 user 环境 reminder；模板包括 `# Environment`、固定引导行和唯一平台字段。代码围栏、混合用户正文、嵌套/不平衡包裹、重复字段和未知模板保留。工具结果不递归转换；cwd、额外目录、Git/worktree、Shell、CLAUDE.md、媒体、工具参数、签名、缓存标记和 system 生命周期保持。
-- 平台来自实际 Worker 的 OS（Windows 为 `win32`）；Unix 系统版本使用本机 `uname -sr`（与 CC 302 的 os.type/release 口径一致），Windows 使用 `cmd.exe /d /c ver`。结果在 Worker 进程内缓存；采集失败返回 503，不删除或伪造内容。不启动 CC 渲染循环、不访问客户端目录、不调用额外模型。
-- build Worker 的 `/healthz.capabilities` 包含 `build_attachment_sources_v1`；`/admin/features` 目录增加 `F-BUILD-ATTACHMENTS`。选择 Worker 来源时，核心每次通过实际账号路由在模型发送前读取 `/healthz`，核对能力和配置的 CLI 版本；不支持、版本不符或无法确认时拒绝发送。能力不跨请求缓存，以覆盖原地更新/降级。该探测是本地管理读取，不是模型生成。
-- direct 正文不变且不执行能力探测；设置保留，界面禁用并说明切回 build 后生效。业务 direct 下的账号 build 连通性 probe 也不应用转换。`build_attachment_transform` 诊断只增加选择、改动数量、位置和前后摘要。
-- 不承诺从 HTTP 渲染文本逆推出所有 CC 内部 attachment。302 的默认渲染器显式识别 131 类，其中 43 类不直接输出正文；库存、可复现脚本与本地验证边界见 `plugins/ccgateway/docs/BUILD-ATTACHMENT-TRANSFORM-DESIGN.md`。
-
-### 53.18 核心→Worker 的策略线形 `WorkerPolicy`（2026-10-23，审核 A1/C4）
-
-核心发给 Worker 的请求策略（请求头 `X-CCGateway-Request-Policy`）有唯一的线形类型 `contracts/features.WorkerPolicy`（`wire.go`），核心的 `workerPolicy()` 构造它、Worker 的 `features.ParseWorkerPolicy` 读它；两边不再共用存储结构体。
-
-- **线上只有 7 个键**：`schema_version`（1）、`relay_mode`（build/direct，由等级推出）、`cli_version`、`build_billing_sources`、`build_billing_entrypoint`、`build_attachment_sources`、`build_injection`。来源为 `client` 的项、默认入口 `sdk-cli` 不下发；附件来源只在等级低及以上下发；`build_injection` 只含该等级加上的项（`LevelInjection`，只有 true）。`level` 本身不下发。2026-11-02 起低注入也可下发 `system_prompt`，`tools` 可含 `InjectionToolsV2`，且只发给声明 `build_injection_tools_v2` 的 Worker/CLI（§53.22）。2026-11-03 起另有 `first_party_shape`，只发给声明 `build_first_party_shape_v1` 的 Worker（§53.23）。
-- **不再下发**：`build_identity_lines`、`request_identity_sources`（身份行由 CLI 按计费头入口自适应、身份固定映射，2026-10-21/23）以及 §53.11/§53.15/§53.16 的全部 native 设置。它们在 `RequestPolicy`（存储形）里标为"stored only"，旧配置照常解码，设置页不编辑。
-- **Worker 对未知键宽容**：发布顺序是先插件后核心，新 Worker 会先收到旧核心带多余键的策略，所以 `ParseWorkerPolicy` 忽略未知键，只严格校验认识的键；Worker 不再解析 `request_identity_sources`/`build_identity_lines`，也不再因它们返回 409。核心实际下发什么由夹具固定（下一条）。
-- **跨层夹具**：`contracts/testdata/core-worker-policies.json` 由核心测试（`server/internal/ccgateway/contract_fixture_test.go`，编辑器 16 例的线形）生成，`CCG_UPDATE_CONTRACT_FIXTURES=1` 重生成；engine 测试（`core_policy_fixture_test.go`）读同一份字节，要求每条都被 Worker 接受并原样成为 CLI 信封的 `requestPolicy`（`WorkerPolicy.CLI()`，contract 2，键：`contract_version`、`build_attachment_sources`、`build_billing_sources`、`build_billing_entrypoint`、`build_injection`）。Worker→CLI 夹具 `worker-cli-requests.json` 同时覆盖 replace/client/worker 三种身份模式（Claude 登录、API Key、无邮箱）。
-- 核心的能力预检（`requestPolicyCapabilities`）只看线形：`request_levels_v1` 总是要求；设了入口要求 `build_identity_line_v1`（direct 为 `direct_billing_v1`）；来源用 worker/erase 要求对应能力；有注入要求 `build_injection_v1`。注入含 `InjectionToolsV2` 时还要求 `build_injection_tools_v2`，但核心在预检前已按 Worker 的能力去掉这些工具，所以这一项只会对绕过核心的策略生效（§53.22）。
-
-### 53.19 已存策略对词表收窄的宽容（2026-10-23，审核 A3）
-
-CC 特性策略的词表会收窄（注入工具 20→7 等）。此前 `FeatureOverrides.UnmarshalJSON` 在解码时就跑 `Validate`，一条含旧工具名的分组覆盖会让整份加密 `Config` 解码失败——所有 CCGateway 页面与请求一起失效；账号覆盖同理让该账号的详情与每个请求失败。现在三处分工：
-
-- **解码只看结构**：对象、不允许 null、不允许未知键（键从不删除，所以结构稳定）；值的词表不在解码时检查。全局 `RequestPolicy` 本就如此。
-- **解析时按层丢弃**：`ResolveFeaturePolicy` 对全局生效策略、分组覆盖、账号覆盖各做一次 `sanitizePolicy`/`sanitizeOverrides`（`feature_policy_sanitize.go`）：等级、入口、附件/计费/身份/身份行来源的每个条目、注入的每个附件与工具，凡当前词表不认的就丢掉，其余照常生效；存储值不改（复制后丢弃）；每个（层, 条目）组合在进程内只记一条 Warn（`CCGateway: a stored CC feature setting is no longer a choice and is ignored`），因为策略每个请求都解析一次。
-- **保存时严格**：远程配置 PUT（`mergeConfig` 对分组覆盖与全局策略）、账号 PATCH（`SaveAccountFeaturePolicyTx`）、预览都调 `Validate`，旧值原样保存会被拒绝——界面重新保存一次即可清掉。
-
-测试 `TestStalePolicyVocabularyStillLoads`：含未知工具、附件、入口、身份行、身份来源的全局/分组/账号三层都能解码、解析出的策略通过校验、线形不含未知项、存储值不变、保存被拒。
-
-### 53.20 错误来源与原因：网关自己的拒绝不算上游的判决（2026-10-23，审核 B1/C2/A5/A6）
-
-CCGateway 请求链路上的错误答复分三类来源，由 `contracts/requestfailure` 的两个头标记，`httpfacts.Apply` 保证上游答复永远带不上它们：
-
-| `X-CCGateway-Error-Source` | 谁写 | 含义 |
-|---|---|---|
-| `http` | Worker（CLI 帧） | 上游 HTTP 错误原字节透传 |
-| `input` / `transport` / `timeout` / `interrupted` / `internal` | Worker（CLI 帧） | CLI 在到达上游前/途中失败 |
-| `gateway` | Worker 自己（`apiError`） | Worker 在运行 CLI 前拒绝：密钥、策略、请求体、并发（401/400/404/405/413/429/409/503） |
-| `core` | 核心自己（`coreRefusal`） | 核心在问任何 Worker 前拒绝：账号状态（`account_deleted`、`proxy_unavailable`…）、未配置、策略无效、Worker 不具备能力（`configuration_error`，消息写明缺哪个能力或版本不符）、`not_synchronized` |
-
-`X-CCGateway-Error-Reason` 随 `gateway`/`core` 一起给出小写标识（`unauthorized`、`configuration_error`、`concurrency_limit`、`invalid_request`、`request_too_large`、`unavailable`、`not_synchronized`、`invalid_request_policy`、各账号原因）。正文仍是官方 Anthropic 错误类型，供客户端原样阅读。
-
-- **插件分类**（`classify.go`）：`requestfailure.Local(source)` 为真时一律 `LocalFailure`；429 按并发限制短冷却；401/403/409/5xx 短冷却并切换，理由写 `gateway refused the request (<reason>: <message>)`，**不再因 Worker 401 停用账号**；其余 4xx 原样回客户端。之前核心的配置类失败以 error 返回，被当作传输错误（10 秒冷却 + 客户端 502 "upstream connection failed"），能力细节只剩一句话。
-- **账号测试**（`account/testreq.go`）：本地来源的 `error_code` 取 Reason 头，`error_source` 为 `core`/`gateway`。
-- **保存配置**（`save`）：`mergeConfig` 的校验文案原样返回（400 `invalid_argument`），版本冲突保留自己的码；存储或加密失败，以及已存配置无法读取（例如无法解密），是服务端故障，为 500 `internal`（笼统文案，原因记日志）。2026-10-24 起（审核 K4）：以前这些情形是 400 `invalid_argument`；带 `cli_version` 保存时，校验版本前读不到已存配置也直接报这个 500，不再放行到事务里被说成 409 `config_changed`。分组被删除后残留的 `cc_feature_groups` 键在下一次保存时自动清掉（`pruneFeatureGroups`）。
-- **PUT config 的原因**（`putConfig`）：控制器的错误码（`cli_profile_unavailable`、`disk_quota_unavailable`、`image_pull_failed`，激活失败的 `proxy_check_failed`/`egress_not_ready`…）经 `syncError` 成为 `details.reason`，`POST …/sync` 与对账日志都带它；控制器自己每个失败请求在 stderr 记一行（方法、key、路径、异常类型与消息、回给核心的码；未命名异常带堆栈），不记请求体与头。
-
-### 53.21 Worker 只运行 CLI 的请求命令（2026-10-24，审核 C1/C5）
-
-native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历史缓存、Mod 回环、托管安装官方 CLI）从 engine 删除；§53.11、§53.14–53.16 描述的 Worker 行为随之失效，只作历史。现在：
-
-- **唯一答复方式**：`/v1/messages` 与 `/v1/ccgateway/probe` 每次运行一次打包 CLI 的 `request --build|--direct`。请求模式的默认值（build）只在 Worker 读配置（`config.Load`）时设一次，配置校验、`NewRuntime` 都拒绝空模式，所以 Worker 不会以空模式启动；`Gateway.ServeHTTP` 鉴权后直接进入请求命令，原先空模式时回 500 `Worker has no request mode` 的分支已删除（2026-10-24，审核 W13）。
-- **就绪**：只取决于启动时的 `--version`、`--ccgateway-info` 与固定版本/补丁/哈希校验；不再在启动时与每 10 分钟跑 7 次 `claude -p` 工具目录探针，`/v1/messages` 不再因探针失败 503（C1）。`/admin/cli` 的 `sync` 改为重新读取 CLI 版本：与启动时不同或读不到时，业务请求 503 并在 `catalog.error` 说明，恢复后自动放行。读不到 `--ccgateway-info` 的 CLI 不会启动可服务的 Worker：固定版本的本来就启动失败，2026-10-24 起（审核 W3）未固定版本的也启动失败（以前会照常启动并报健康，之后每个请求 409）；唯一的例外是未固定版本的维护专用 Worker（`MaintenanceOnly`），它照常启动，能力为空。配置的请求模式只在这一处核对：CLI 没有声明 `request_<模式>` 时启动失败（维护专用 Worker 不核对）。
-- **`/admin/cli` 视图**：字段形状不变（核心 `cliCatalogState` 与控制台按此解析）；`catalog` 由版本检查填写，`catalog_version` 等于已装版本，`tool_count`/`variant_count` 恒为 0，`updating` 恒为 false。`begin-install`/`validate-install`/`finish-install` 和其他未知动作一样回 400 `invalid_request_error`（`Unknown CLI action`）（2026-10-24 起，审核 W20；以前是 409 `configuration_error`；核心只转发 `check`/`sync`，控制器只透传，与 core 0.1.185 兼容）；`check` 仍查询发布渠道的最新版本。固定版本的 Worker 只在内存里关闭自动检查，不再每次启动都重写 `cli-update.json`。`/admin/cli/catalog` 已删除。
-- **模式切换**：策略头的 `relay_mode` 与容器模式不同时，要求 CLI 声明 `request_<mode>`；`cli_version` 与 Worker 的 CLI 不同 409。两项都在请求命令唯一一次解析策略头时检查（不再在 `Gateway.ServeHTTP` 预解析一次，C8）。
-- **build 只走内容保留（v2）**：CLI 未声明 `build_content_preservation_v1` 时 build 409；Worker 不再自己抽取 reminder、不再用本机事实改写环境段（v1）。客户端的块原样进入信封，环境段来源由 CLI 的内容适配器处理（`build_attachment_sources_v2`）。
-- **`build_attachment_sources_v1` 只是 v2 的别名**：Worker 只在 CLI 声明 `build_attachment_sources_v2` 时才在 `/healthz.capabilities` 里同时报 v1，给按 v1 预检 worker 来源的核心看；build 闸门仍要求 v2，所以"报了 v1"与"闸门放行"一致（2026-10-24 起，审核 W2；以前条件是"没有内容保留或支持 v2"，没有内容保留、根本做不了 build 的 CLI 也会报 v1）。生产 CLI 两项都有，`/healthz` 输出不变。
-- **CC 上下文头表只有一份**：转发给 Worker、再交给 CLI 的 CC 上下文头（请求类别、agent/父 agent ID、agent 类型、prompt ID、上一轮工具耗时、四个压缩标记头）及各自的格式定义在 `contracts/features.AgentContextHeaders`，客户端 CC 形状的 User-Agent 为 `features.ClientUserAgent`，请求 ID 格式为 `features.RequestIDPattern`（`agent_context.go`）。插件按这张表（小写头名）转发，engine 按同一张表读取，插件的 manifest 头测试也读它（2026-10-24 起，审核 W1；以前插件与 engine 各写一份）。头的内容与格式没有变化，manifest 不用改。
-- **HTTP 错误只认帧**：CLI 的上游 HTTP 错误只以 stderr 错误帧交回；旧 CLI 的"exit 2 + meta + stdout"契约删除。
-- **令牌被拒**：CLI 帧报告上游 HTTP 401 时，Worker 记下存储的访问令牌（`noteAuthenticationRefused`），用量查询据此报告该令牌不可用直到它改变。此前这只在 native 路径写入，请求模式自 2026-10-19 起一直缺失。
-- **Worker 配置**：`WORKER_PLUGIN_PATH`、`CCG_NATIVE_TOOLS`、`CACHE_DIR`、`MAX_CACHE_SIZE`、`HISTORY_RETENTION` 不再读取；`engine.Options` 去掉 `Plugin`、`CacheDir`、`CacheLimit`、`NativeTools`、`InternalBaseURL`。独立入口 `companions/main.go` 与根 Dockerfile 删除，账号部署只用 `worker/Dockerfile`。2026-10-24 起（审核 W12）`LOG_LEVEL`、`HEALTH_TIMEOUT` 也删除（以前读入后没有任何地方使用）。
-- **CLI v23**：请求命令用不到的 Mod 工具执行链（`kind: "native"` 工具注册、工具池合并、响应规范化与 `tool.call` 分发）从补丁里删除，`--ccgateway-info` 不再声明 `native_tools`、`mods_dispatch` 两项能力（核心与 Worker 从不检查它们）；`claude -p` 等普通 CLI 路径恢复官方行为。当前能力列表只在 `cli-mods/profiles/linux-x64-2.1.304.json`，含义见 `cli-mods/README.md` 与 BUILD-REQUEST-COMPONENTS-DESIGN §10（2026-10-24，审核 J1）。
-
-### 53.22 低注入可补内置提示词；高注入可选 2.1.316 首轮的其余工具（2026-11-02，用户要求）
-
-用户原话："低注入可以注入这两块固定提示词，改一改，高注入额外可选工具注入"；"工具注入不代表我们需要实现 只是带上定义而已"；"改动不要影响现在的服务"。对 (a)(b) 两种边界情况，用户的回复是"不管他"。
-
-**等级语义**（`contracts/features/levels.go`，前端 `requestPolicy.ts` 同一套）：
-
-| 等级 | 之前 | 之后 |
-|---|---|---|
-| none / micro | 不补提示词、不补工具 | 不变 |
-| low | 只补首轮附件；`system_prompt`、`tools` 一律不下发 | 首轮附件照旧；`system_prompt` 可选，**默认关**，显式 `true` 才下发；`tools` 仍不下发 |
-| high | `system_prompt` 默认开；工具默认 Bash/Read/Edit/Write | 不变；工具候选多 6 个，默认关 |
-
-- `LevelHasPromptAndTools` 拆成 `LevelHasPrompt`（低及以上）和 `LevelHasTools`（高）。`LevelInjection` 在 low 只认显式的 `system_prompt`；没有选择时，low 不补、high 补。存档里显式的值仍然优先：high 下显式 `false` 照旧压过默认值。
-- 迁移结果不变：`keepLegacyInjection` 只在 high 下把没补的提示词写成 `false`。升级前的策略迁到 low 时，从来不会带 `system_prompt: true`（带了就会迁到 high）。
-- Worker 和 CLI 不用为提示词改动：CLI 的 `injectLayers`（`cli-mods/request-build.js`）只看 `injectionChoices(...).systemPrompt`，不看等级（CLI 本来就收不到等级），所以 2.1.312 v41 也能在 low 补提示词。补提示词时，身份行按 CLI 原有规则走 `official_cli_sdk`（有追加提示词）。
-- **已接受的行为变化**：以下两种情况，存储值本身不变，但生效的注入会多出提示词。其余已存策略的下发内容不变（`server/internal/ccgateway/level_prompt_tools_test.go` 的 `TestPromptAtLowChangesOnlyAnExplicitTrueAtLow` 枚举了全局、分组、账号三层以及旧版全局策略）：
-  - (a) 在 high 下"自定义"过提示词与工具层（会写入 `system_prompt: true`），之后把等级降到 low：现在会补提示词。
-  - (b) 分组在 high 下写了 `system_prompt: true`，其下账号把等级降到 low：账号现在会补提示词。
-  - 生产核对（2026-11-02，主控）：账号覆盖只有 1 行，既没有 level，也没有 build_injection。全局和分组配置是加密存储，没有逐条核对。
-- 控制台：low 起"提示词与工具"卡片展开。系统提示词开关可编辑，说明写明补的是哪两块。说明还提示部分模型的提示词（"# Using your tools"）会提到 Read/Edit/Write 等工具，而低注入不补工具。工具行在 high 以下锁定，显示"提升到高注入后生效"。从 low 起，注入等级行的"提示词与工具"标为包含。分组或账号在 low 下"自定义"这一层时，`system_prompt` 写成 `false`（low 的默认值）。
-
-**工具候选**（`InjectionTools`，控制台顺序）：Bash、Read、Edit、Write、Agent，然后是 `InjectionToolsV2`（ListAgents、ReportFindings、ScheduleWakeup、Skill、ToolSearch、Workflow，即官方 2.1.316 首轮带完整定义发出的其余工具，按官方顺序），最后是 WebSearch、NotebookEdit。
-
-- `DefaultInjectionTools` 仍是 Bash/Read/Edit/Write。新增的 6 个默认关，所以没有任何已存的 high 策略会多发工具。
-- 注入只带定义：模型调用这些工具时，调用照常交回客户端执行。可用代理类型清单、技能清单、延迟工具清单这些会话状态不补。
-- 定义由 CLI 从原生工具池渲染，只发选中的工具（实测，cli-mods 负责）：
-  - 选了 ToolSearch 时，带上原生的延迟占位工具 `DeferredToolPlaceholder`；WebSearch、NotebookEdit 按原生规则改为延迟加载，不发送（官方首轮也不发）。所以这两个工具的勾选只在不选 ToolSearch 时生效。
-  - ListAgents 的说明文字取决于工具池里有没有 SendMessage。
-  - Bash 的后台超时默认值按原生 -p 会话。
-  - Agent 的说明里没有代理类型清单（与原来一致）。
-- `DeferredToolPlaceholder` 不是可选项：`Validate` 拒绝它。
-
-**混合 CLI 的账号**：旧账号一直跑 2.1.312 v41，这个 CLI 会拒绝它不认识的工具名。新能力 `build_injection_tools_v2`（`features.BuildInjectionToolsV2Capability`）由新 CLI 在 `--ccgateway-info` 里声明（cli-mods profile 负责），Worker 只在 CLI 声明时才在 `/healthz.capabilities` 里报（`engine/cli_pinned.go` `requestCapabilities`）。
-
-- 核心：`attachPolicy` 在能力预检时按 Worker 的能力处理策略（`withConfirmedTools`，`runtime_features.go`）。缺这项能力时，从注入里去掉 `InjectionToolsV2`，提示词、附件和其余工具不变，请求照常发出，**从不因此拒绝请求**。只有 `/v1/messages` 与 `/v1/ccgateway/probe` 会预检；其他路径一律去掉这些工具。
-- Worker（第二道防线）：`requestCapabilityGates` 中，build 策略带了 `InjectionToolsV2` 里任何一项为 true，而 CLI 没有这项能力时，回 409 `configuration_error`（`unsupportedContent`）。只有不经过核心的策略才会走到这里。
-- 测试：`TestNewInjectionToolsOnlyReachACLIThatHasThem`（核心：无能力的 Worker 收不到新工具、请求 200；有能力的照常收到）；`TestInjectionPolicyNeedsTheCapability`（engine：无能力 409；声明后原样进入 CLI 信封，且不在 `/healthz` 冒报）；`TestToolCandidatesCoverTheOfficialFirstTurn`、`TestWithoutToolsV2KeepsTheRest`（contracts）。
-- 回滚：2026-11-02 之前的核心在保存时会拒绝新工具名；读取时按 §53.19 丢弃并记告警，不会解码失败。
-
-**夹具**：`contracts/testdata/web-policy-payloads.json` 新增 `global-low-prompt`（low + 提示词）、`global-lowered-from-high`（情况 a）和 `global-high-v2-tools`（high + Skill/ToolSearch）。`group-level` 和 `account-prompt` 两个用例在"自定义"时会把新增的 6 个工具写成 `false`。`core-worker-policies.json` 只新增这三条线形，原有线形逐字不变；low 默认用例（`global-default`）仍然没有 `system_prompt`。
-
-
-### 53.23 官方客户端第三方形状转换为第一方形状（`first_party_shape`，2026-11-03，用户决定）
-
-背景见 `artifacts/cc-thirdparty/REPORT.md`、`code-and-prod.md`：官方 Claude Code 通过自定义 `ANTHROPIC_BASE_URL` 接入时发的是"第三方形状"（计费头少 `cch`、`cc_prompt_id`、`cc_turn_origin` 等字段，system 3 块而非 4 块，没有 `diagnostics`，部分 CC 请求头缺失或取值不同）；直连 `api.anthropic.com` 时发的是"第一方形状"。2026-11-03 用户决定：网关把这类请求转换成第一方形状，**默认开**。
-
-- **开关**：请求策略新增 `first_party_shape`（布尔）。全局 `RequestPolicy.FirstPartyShape`、分组/账号 `FeatureOverrides.FirstPartyShape`，按 全局 → 分组 → 账号 继承，与其它特性策略字段一样：省略即继承，`null` 拒绝；`FeatureResolution.Sources["first_party_shape"]` 标出来源。全局未设（含 2026-11-03 之前保存的策略）读作开（`EffectiveRequestPolicy` 补 `true`）；保存时请求体不带该键则保留已存值（`mergeStoredPolicy`）。所有等级（含 none/direct）都适用。
-- **控制台**：在"计费头"卡片里，"已有时"下面一行开关"转换为第一方形状"，提示写明适用对象（通过自定义 base URL 接入的 Claude Code 客户端）、转换内容（计费头字段、system 分块、CC 请求头和 diagnostics），以及需要账号 CLI 为 2.1.316 v45 或更新。它属于计费头层：分组/账号"自定义"这一层时把继承值写成显式值，"跟随"时删掉。
-- **线形**：`WorkerPolicy.FirstPartyShape *bool`（`first_party_shape,omitempty`），`nil` 读作开（`FirstPartyShapeEnabled`）。核心的 `workerPolicy()` 总是写显式的 `true`/`false`。`CLIPolicy`（CLI 信封，contract 2）不带这个字段，Worker 怎样交给 CLI 由插件决定。
-- **能力闸门**：新能力 `build_first_party_shape_v1`（`features.FirstPartyShapeCapability`），由 CLI 2.1.316 v45 及以后和新 Worker 声明。核心在能力预检时（`withConfirmedShape`，与 `withConfirmedTools` 一起组成 `withConfirmedCapabilities`，`runtime_features.go`），只对 `/healthz.capabilities` 声明了这项能力的 Worker 保留这个字段，其它 Worker 一律去掉。这项能力**不是**必需能力（不在 `requestPolicyCapabilities` 里），所以旧账号（按用户规则永远停在 CLI 2.1.312 v41 和旧 Worker）既收不到这个字段，也不会因此被拒，行为完全不变。不经预检的路径（`/v1/messages`、`/v1/ccgateway/probe` 以外）同样不带这个字段，已声明能力的 Worker 把"没有这个字段"读作开。
-- **推翻的既有规则（只限于这次转换）**：2026-10-30 的"客户端自带计费头原样保留、一个字段都不加"（BILLING 文档 §0/§2.1/§5.1，`billing-header-gates-injection`），在开关打开、Worker/CLI 声明了能力时，对这类请求不再适用：计费头按第一方形状补齐字段，system 按第一方形状分块，CC 请求头和 `diagnostics` 也按第一方形状补齐。开关关闭，或 Worker/CLI 没有这项能力时，原规则照旧。其它场合（我们自己写的计费头、非 CC 请求的注入）不受影响。具体怎样转换（哪些字段可以推出、哪些需要会话记忆、`cch` 的处理）由 Worker 和 CLI 实现，写在 cli-mods/engine 的文档里。
-- **夹具**：`web-policy-payloads.json` 新增 `global-first-party-shape-default`（2026-11-03 之前保存的策略，原样提交，读作开）、`global-first-party-shape-off`、`group-first-party-shape-on`（全局关、分组 level none 时打开）、`account-first-party-shape-off`；`group-layers` 和 `account-billing` 在"自定义"计费头层时多写一个 `first_party_shape: true`。`core-worker-policies.json` 记录的是发给声明了全部能力的 Worker 的线形，所以每条都多了 `"first_party_shape":true`（或 `false`）；名字含 `first-party-shape` 的用例还多一条 `…/worker-without-capability`，内容是同一策略发给没有这项能力的 Worker 时的线形（不带这个字段）。
-- **测试**：`TestFirstPartyShapeResolvesAndInherits`、`TestFirstPartyShapeGlobalSaveKeepsOmitted`、`TestFirstPartyShapeOnlyReachesAWorkerThatDeclaresIt`（核心：没有能力的 Worker 收不到字段、请求 200；有能力的按设置收到 `true`/`false`）；`TestWorkerPolicyFirstPartyShape`（contracts）；`requestPolicy.spec.ts`、`contractFixtures.spec.ts`（控制台）。
-- **回滚**：2026-11-03 之前的核心解码分组/账号覆盖时用 `DisallowUnknownFields`，带 `first_party_shape` 的覆盖会解码失败：分组覆盖在加密的 `Config` 里，失败会让整份配置读不出来，所有 CCGateway 页面和请求一起失效（§53.19 的问题）；账号覆盖失败只影响该账号。所以回滚核心前，必须先去掉分组/账号覆盖里的这个键（把计费头层改回"跟随"）。全局 `RequestPolicy` 解码时忽略未知键，不受影响。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 54. 插件隔离加固 P0（2026-10-10，审查 `docs/audits/2026-10-09-plugin-resources.md` 的 P0）
 
 插件与核心、外壳仍是同一 UID（独立 UID 另行排期），以下措施让同 UID 的插件拿不到核心/外壳的秘密，也连不上别人的接口：
 
 - **私有 run 目录 + 双向 TLS**：每个插件进程一个 `<SUB2API_PLUGIN_RUN_DIR>/<key>-<随机>/`（0700，默认 `<插件数据目录>/.run`；路径对 unix socket 过长时退回 `/tmp/sub2api-<uid>`，须是本用户 0700 的真目录），go-plugin 的两个 socket 和插件的 `TMPDIR` 都在里面，进程结束即删除。核心与插件之间所有连接（插件服务端、核心 broker 上的 HostService/EgressService）都是 go-plugin AutoMTLS，一次性证书，其他进程无法连入或冒充该插件。
-- **核心**：读完配置后从进程环境删除秘密（`DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、`SUB2API_JWT_SECRET`、引导管理员密码、控制令牌、`CCG_ADMIN_KEY`/`CCG_API_KEY` 等，并清空 `/proc/<pid>/environ` 的初始块），Linux 上 `PR_SET_DUMPABLE=0`。外壳同样 `PR_SET_DUMPABLE=0`。
+- **核心**：读完配置后从进程环境删除秘密（`DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、引导管理员密码、控制令牌等，并清空 `/proc/<pid>/environ` 的初始块），Linux 上 `PR_SET_DUMPABLE=0`。外壳同样 `PR_SET_DUMPABLE=0`。
 - **出站隧道**：没有 `net` 授权的插件什么都连不了，只有声明了 `database` 且获授 `db.schema` 的插件可按配置的名字连 PostgreSQL。任何策略（含 `allow_all`）都拒绝私网/回环/链路本地等非公网地址与核心的 Redis/PostgreSQL（按解析后的地址比对，按检查过的地址拨号防 DNS 重绑定）；`dns.sub2api` 不返回非公网地址。`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true` 只用于测试/开发，Redis/PG 仍拒绝。没有 `net` 也没有数据库的插件不注册隧道服务。
 - **数据库角色隔离不再降级**：开启隔离（默认）但核心角色没有 CREATEROLE 时，授予 `db.schema` 与 `Ensure` 都失败，`409 plugin_db_isolation_unavailable`（运维可显式 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false`）；已存在且不是本库为该插件建的同名角色不接管，`409 plugin_db_role_conflict`。角色加注释 `sub2api plugin role; database=<库>; plugin=<key>` 作归属标记，删除插件时只删自己的角色。
 - **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；未设置该变量时不带（兼容旧外壳）。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
@@ -4556,27 +3615,9 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - 插件：`pluginsdk.ReadObservationMetrics(ctx, host, request)` / `HostService.ReadObservationMetrics`。`namespace` 必须为 `core` 或 `plugin`，分别读取内置指标或调用插件已声明的自定义指标；不能选择其他插件命名空间。账号范围仍按获批 `types` 过滤，返回中含实时 `in_use`。查询至多 200 个账号、16 个指标，账号数乘指标数不能超过 600。
 - 新观测能力需要 Host API 5；SDK 和 `runtime-contract` 的版本及发布工具默认值同步。原有插件的能力协议不变，观测插件拒绝 Host API 4 及更早版本；升级仍遵守既有发布兼容性检查。
 
-## 57. CCGateway 共享 Xray 出口
+## 57. CCGateway 共享 Xray 出口（已删除）
 
-> 2026-11-01（ccgateway 0.1.118）起共享 Xray 是唯一出口，每账号 sing-box 出口（`per_account_singbox`）、迁移/回迁接口和 `migrate_egress.py` 全部删除（用户决定；ovh 的 11 个运行环境已于 10-31/11-01 迁完）。下面是现行规则；原迁移与回迁规则见 git 历史与 [迁移方案](CCGATEWAY-XRAY-MIGRATION.md)。
-
-- 控制器能力 `shared-egress-v1`。每个账号（新建的也一样）都经宿主机唯一的共享网关 `<prefix>-shared-egress` 出网；没有 per-account egress 容器和 uplink 网络。核心配置下发、账号生命周期、Worker 协议不变。
-- 网关镜像就是插件包的 `egress` 角色镜像（`CCG_EGRESS_IMAGE` / `PUT /runtime/images` 的 `egress`）；`CCG_XRAY_IMAGE` 可另行固定（自建镜像的宿主机）。`PUT /runtime/images` 拒绝不带 `io.sup2api.ccgateway.shared-egress=1` 标签的 egress 镜像（`invalid_image`），旧 sing-box 镜像因此进不来。运行中的网关不因镜像变化而重建，只有之后新建的网关才用新镜像；重建网关会中断所有账号的连接，属于维护操作。
-- 控制器私有 `GET /accounts/<key>/egress` 返回 `{"backend":"shared_xray","ready"}`；`POST` 已删除（405）。沿用控制器 Bearer 鉴权，不向业务网络开放。
-- 网关接入各账号独立内部网，自己另有一张网络 `<prefix>-d0000000000000000-xray-uplink`；源 IP 与入口接口共同约束来源。默认拒绝未知来源、普通转发和 IPv6；直连仅限明确配置。Xray 版本固定为 26.3.27，管理 API 和 DNS 专用 SOCKS 入口仅监听 loopback。
-- 核心 0.1.142 起，已绑定代理的记录缺失或协议异常必须返回 `proxy_unavailable`，不得把 LEFT JOIN 的空字段视为显式直连（2026-10-21 起不再停止容器，只让请求失败，§49.22）。共享网关防火墙表缺失时仍关闭普通转发，控制器须能重新创建该表。
-- 代理修改复用原配置事件；控制器按不可变出站 tag 合成全量路由，串行更新 Xray、DNS 和防火墙，网关不重启。新 TCP 连接切换出口，已有连接保留；HTTP/2 新流仍可复用旧连接。不提供 Worker 每请求出口版本保证。
-- DNS 转发组件不缓存，按来源选择对应本地 SOCKS 入口，通过账号出站访问固定 DoH 地址，验证 TLS；无宿主机 DNS 兜底。UDP/TCP 53 均受来源限制。
-- 控制器在私有目录保存共享状态；ready 绑定 app/Xray 启动身份和账号 revision。控制器或 Xray 重启逐账号恢复；失败的新配置由核心既有重试链处理，不能假报旧 revision 已成功。
-- 修改网络池时，控制器先让网关离开账号的旧内部网，再重建网络和容器并重新绑定；数据卷与授权保留。
-- 旧宿主机上 sing-box 时代的遗留（账号的 `-egress` 容器、`-uplink` 网络、`sing-box.json`/`firewall.nft`、状态里的 `uplink_ip`/`legacy_gateway_ip`/`egress_migration`）由控制器后台按归属标签自动清理，每个进程每个运行环境一次；失败只记日志、下一轮再试，不让账号下线。网关自己的 `xray-uplink` 网络不在清理范围。删除账号、运行环境清理（§53）同样会删掉这些遗留。
-- 单账号删除只撤销自己的共享绑定。无引用旧出站在整个共享出口无 established TCP 时保守回收；至多保留 256 个出站，达到上限拒绝继续增加而非无限增长。
-- 控制器自升级拒绝降级到不声明共享网关（镜像无上述标签）的控制器镜像。控制器仍在账号状态里写 `egress_backend: shared_xray`（只有 0.1.117 及更早的控制器读它）：插件回滚到这些版本时，旧控制器把已绑定共享网关的账号照常当共享账号处理；新建账号会回到 sing-box，因此回滚只作应急。
-- 部署是否完成以环境运行记录为准。
-- 2026-11-01（ccgateway 0.1.119，§76）：
-  - 网关容器的参数由 guard 写死，控制器只能请求"确保存在"。
-  - 控制器的共享状态（含所有账号的代理凭证）搬到 `/opt/ccgateway-controller/shared-egress-state.json`（容器内 `/data/shared-egress-state.json`），网关挂载的 `shared-egress/` 目录里不再有它。
-  - 网关纳入 compose 之后，只能经 compose 维护操作（`--profile egress up -d --no-deps egress`）重建；在此之前，`recreate` 一律拒绝。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 58. 核心通用失败处理
 
@@ -4588,63 +3629,11 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - 换号支持同一代理、仅代理账号或各账号原配置三种出口约束；默认同一代理，后续规则不能放宽已生效限制。没有合格账号即失败，不修改代理或增加直连兜底。
 - 响应已提交、WebSocket 已升级、任务/辅助操作不可重放、传输结果不确定、账号资源硬绑定、预算或期限耗尽时不自动重放。内层 SDK/CLI 请求不属于核心尝试计数。
 - 决策记录保存到 `usage_logs.anomalies.failure_policy`，用量详情显示，统计时不把该过程记录本身算作异常。界面复用公共设置卡片、保存条、表格、菜单、弹窗和描述组件。详见 [设计与实现](GATEWAY-FAILURE-POLICY-DESIGN.md)。
-- 默认账号规则（`loginAccountRules`，迁移草稿与迁移 0072/0074 写入的同一组）：`login-invalid` = 401 + 登录失效关键词，`account-on-hold` = 403 + 账号被暂停关键词，动作都是自动禁用。插件把 401/403 判为禁用，但没有命中关键词时核心只冷却（§42、§69），所以 CLI 新增的登录错误码必须同时加进这两条规则。**2026-11-02（用户要求，配合 CLI v44（ccgateway 0.1.123）把 2.1.316 的 `StoredLoginHeldBackError` 按 `errorClass` 映射）**：`login-invalid` 加 `stored_login_refused_restart_needed`（CC 要求重启才能完成登录；每个请求都是新进程，只能重新授权，401），`account-on-hold` 加 `stored_login_refused_admin`（组织的受管设置不允许这个登录，403）；`stored_login_refused_settings_unloaded`（设置没加载到，提示检查网络）仍是可重试的 5xx，不进任何账号规则，由 `http-transient` 换号重试。已发布的策略由迁移 0075 补上：按规则 id 找到这两条（位置不限），只在规则还在、已有关键词（只按状态码匹配的规则加关键词会变窄，不动）、关键词少于 100 条、且还没有这个关键词（不分大小写）时追加；有改动才把旧策略写进历史并让 revision +1，重复执行不变。
+- 默认账号规则（`loginAccountRules`，迁移草稿用同一组）：`login-invalid` = 401 + 登录失效关键词（Anthropic API 的 `oauth access token has been revoked`、`oauth token has been revoked`、`invalid x-api-key`、`invalid bearer token`，new-api 关键词里的 `the security token included in the request is invalid`、`your account is not authorized`），`account-on-hold` = 403 + Anthropic API 的 `oauth authentication is currently not allowed for this organization`，动作都是自动禁用。插件把 401/403 判为禁用，但没有命中关键词时核心只冷却（§42、§69），所以上游新的登录失败文字必须同时加进这两条规则。已发布的策略由迁移 0072/0074 写入这两条，当时还带着只有 CCGateway 会回的关键词（CLI/Worker 错误码 `oauth_refresh_dead`、`not_logged_in`、`oauth_account_on_hold`，引擎消息 `has cleared its stored login`，CC 客户端自己的 `oauth refresh token is no longer valid`），迁移 0075（2026-11-02，CLI v44）又给两条各追加了 `stored_login_refused_restart_needed`、`stored_login_refused_admin`。0.1.290 删除 CCGateway：代码默认值去掉这些关键词，迁移 0102 从已发布的策略里去掉（条件见 §101.5）。
 
-## 59. 账号订阅类型与保存前插件调整（2026-10-19，用户要求）
+## 59. 账号订阅类型与保存前插件调整（已删除）
 
-新建 Claude Code 订阅账号时按订阅类型自动调整模型列表：Max 保留全部内置模型，Pro 去掉 `claude-fable-5`、`claude-fable-5-1`；账号上记录订阅类型并在控制台展示。核心只提供通用能力，Fable / Pro 的规则写在 ccgateway 插件里。
-
-### 59.1 订阅类型从哪里来
-
-- Claude Code 自己的订阅类型来自凭证 `claudeAiOauth.subscriptionType`（CLI 登录和刷新令牌时写入；`claude auth status` 报告的就是这个字段，CLI 内部函数先读它）。Worker 的 `GET /admin/status` 仍是本地快照、不启动 CLI（`TestAuthSnapshotNeverSpawnsCLIOrClaimsOnlineValidity`），存在 Claude 账号凭证时把该字段作为 `subscription_type` 返回。
-- 不直接执行 `claude auth status --json`：2026-10-19 在线上账号容器里实测（2.1.302/v11，含或不含 TTY、干净环境）都不退出，150 秒后被超时杀掉，没有输出。
-- 值必须匹配 `^[a-z][a-z0-9_]{0,31}$`（目前为 `max` / `pro` / `team` / `enterprise`），否则视为未知。Worker 与核心各校验一次。
-
-### 59.2 核心
-
-- 迁移 0054：`accounts.subscription_type text`（NULL = 未知）。账号视图新增 `subscription_type: string | null`。
-- 迁移 0086（2026-11-04）：`accounts.rate_limit_tier text`（NULL = 未知），来自凭证 `claudeAiOauth.rateLimitTier`，Worker 随 `subscription_type` 上报（ccgateway 0.1.129 起），账号视图 `rate_limit_tier` 原样返回，控制台详情页和订阅类型一起原样显示（如 `max · default_claude_max_20x`），不加倍率，不起新名字。
-- `core.AccountLifecycleResource.CheckAccountPreparation` 改为返回 `core.AccountPreparationFacts{SubscriptionType}`；ccgateway 实现从准备容器的 `admin/status` 读取。旧的 `ccgateway_runtime` 创建路径同样取得。
-- `POST /accounts` 保存前：把事实写入 `subscription_type`，并作为 `resource_facts_json`（JSON 对象，未知时为空串）随 `before_create` 交给插件。
-- 已有账号：控制台查看凭证状态（`GET …/health`）与重新授权提交时，Worker 报告了订阅类型就更新账号；报告为空不清除已有值（旧 Worker 不报告）。
-- 迁移 0055：`accounts.auto_models boolean`（NULL = 按插件默认，即自动；`false` = 用户手动维护模型列表）。账号视图与 `POST /accounts`、`PATCH /accounts/:id` 增加 `auto_models: boolean | null`，并作为 `AccountProperties.auto_models`（字段 12，optional）随生命周期请求交给插件。
-- 订阅类型确实改变后（`UPDATE … IS DISTINCT FROM` 影响了行；重新授权在事务提交之后），ccgateway 服务调用 `SubscriptionChanged` 回调（由 `app` 注入账号服务，ccgateway 包不反向依赖 account）：`auto_models` 不为 `false` 的账号用 `before_update`（`changed_fields = ["subscription_type"]`，`resource_facts_json` 为当前订阅）重新询问插件，补丁改变了模型时写回、审计 `account.models.auto`（`detail` 含 `subscription_type`、`plugin_changed`、`models`），并照常发 `account.updated`、标记生命周期待同步、失效账号缓存。只在账号行未被并发修改（`updated_at` 不变）且仍为自动模式时写入。失败只记日志，下次保存或订阅变化时再算。
-
-### 59.3 插件协议：`before_create` / `before_update` 可以修改账号
-
-- `AccountLifecycleRequest.resource_facts_json`（字段 7）：准备阶段观察到的事实，目前只有 `subscription_type`。
-- `AccountLifecycleResponse.account_patch`（字段 4，`AccountPatch`）：`models`（`ModelList.ids`）与 `model_mapping`（`ModelMappingValue.entries`），未给的字段不改，给了就整体替换；在 `before_create` 与 `before_update` 生效（核心 0.1.172 起；`before_update` 同样带 `resource_facts_json`，取账号已记录的订阅类型）。
-- 核心按调用方输入的同一规则校验（完整模型 ID、去重、最多 500 个），不合规返回插件不可用错误、账号不保存。审计 `account.create` 的 `detail` 增加 `subscription_type` 与 `plugin_changed`（被插件改过的字段）；`account.update` 的 `detail` 增加 `plugin_changed`。
-- 旧插件不返回补丁，行为不变，不需要 manifest 开关；旧核心忽略补丁，新插件的 `hostCompat` 不需要提高。
-
-### 59.4 ccgateway 0.1.68 的规则
-
-`managed` 账号、`subscription_type == "pro"`、提交的模型列表与内置列表元素相同（不计顺序）时，返回去掉两个 Fable 模型的列表；Max、team、enterprise、未知订阅、用户改过的列表和 `apikey` 账号都不改。内置列表定义在 `internal/ccgateway/models.go` 的 `DefaultModels`，测试保证与 manifest 一致。
-
-**0.1.69 修订（自动配置模型，`hostCompat >=0.1.172`）：** `before_create` 与 `before_update` 中，`auto_models` 不为 `false`（含未设置）时总是返回内置列表：`pro` 去掉两个 Fable 模型（9 个，`DefaultModelsForSubscription`），其他与未知订阅为全部 11 个，`apikey` 账号没有订阅类型、按全部处理；用户提交的列表被覆盖。`auto_models == false` 时不返回补丁，用户的列表（包括空 = 所有模型）原样保存。manifest 的 `defaultModelsBySubscription.pro` 与该规则一致（测试保证）。
-
-### 59.6 插件只读扩展字段与上游登录邮箱（2026-10-25，用户要求）
-
-插件专属的账号事实存放在通用的扩展字段（`accounts.settings`，按账号类型 `extensionsSchema` 校验）里，不给核心加专用列。第一个用例是 ccgateway 记录 Claude Code 实际登录的邮箱。
-
-- **只读扩展**：`extensionsSchema` 里 `"readOnly": true` 的属性归插件所有。管理员通过 `settings` 写这些键返回 400，字段错误码为 `read_only`。管理员编辑自己的扩展时，插件的值保持不变。插件 `validate` 阶段只收到管理员可编辑的扩展。可选的 `"x-label": {en, zh}` 是控制台显示的标签。
-- **写入**：`AccountPatch.extensions_json`（字段 3）是 JSON 对象，只能包含该类型声明的只读键，值为 `null` 表示删除，空串表示不改。核心按 `extensionsSchema` 校验后合并进 `settings`；不合规按插件不可用处理，账号不保存。`before_create`、`before_update` 都生效。
-- **观测事实**：`resource_facts_json` 增加 `account_email`（上游登录邮箱，未知时不带），核心字段为 `core.AccountPreparationFacts.AccountEmail`。ccgateway 的事实来自 Worker `GET /admin/status` 的 `account_email`：Worker 从本地 `.claude.json` 的 `oauthAccount.emailAddress` 读取，只在存有 Claude 登录时报告，不联网、不读令牌；Worker 与核心各校验一次是否为单个地址（不超过 320 字符、不含空白、恰好一个 `@`）。
-- **更新时机**：
-  - 授权后创建账号：事实随 `before_create` 交给插件。
-  - 重新授权提交、控制台查看凭证状态（`GET …/health`）：ccgateway 服务调用 `FactsObserved` 回调（取代原 `SubscriptionChanged`），每次观测都调用。账号服务用 `before_update` 把事实交给插件：订阅变化时 `changed_fields = ["subscription_type"]`，其余为 `["resource_facts"]`。
-  - 只写真正改变的内容：模型只在自动模式下改，只读扩展不受自动模式影响。只读扩展的修改审计为 `account.extensions.plugin`，`detail` 只记改动的键、不记值。邮箱未知时不清除已有值。
-  - 请求、账号测试、令牌刷新都不更新。
-- **ccgateway 0.1.96**：`managed` 类型声明 `account_email`（字符串、最多 320 字符、只读，标签「登录邮箱」）；`before_create` / `before_update` 收到 `account_email` 时返回 `extensions_json: {"account_email": …}`。`apikey` 类型不声明、不写。插件读取设置时先去掉这个键，再规范化容器语言与时区。
-- **只读扩展不是运行环境**（0.1.96 事故后，插件 0.1.97 / 核心 0.1.191）：插件在每一处读设置的地方（模型请求与账号测试的 `validateAccount`、`ValidateCredentials`、生命周期）都先去掉 `account_email`，再做容器语言与时区校验。0.1.96 只在生命周期里去掉了，结果 2026-10-25 记下邮箱后，33、34 号的账号测试报 500 `Invalid CCGateway account credentials`，模型请求也会同样失败；当时立即从这两个账号的设置里删掉邮箱止损。核心计算运行环境版本时排除 `account_email`，记录或更换邮箱不会让控制器重新下发配置；当时记录邮箱曾使 34 号的出口容器重建一次。
-- **控制台**：账号列表在类型行下方、详情页在「订阅」之后，显示所有有值的只读扩展（标签取 `x-label`，没有就显示键名）。编辑器不提交这些键。
-- **发布顺序**：先插件后核心、先核心后插件都行。旧核心忽略 `extensions_json`；新核心面对旧插件时，旧插件不返回该字段，旧 Worker 也不报告邮箱。已有账号在下一次查看凭证状态或重新授权时补上。
-
-### 59.5 控制台
-
-- 账号列表在类型后显示订阅徽标（Max / Pro …），详情增加"订阅"一行。
-- 新建 Claude Code 订阅账号的模型区提示保存时会按订阅类型调整；保存结果与提交的列表不同时提示"已按 Pro 订阅调整模型列表（N 个模型）"。保存后照常编辑。
-- Claude Code 账号的模型区顶部有"自动配置模型"开关，默认打开（账号 `auto_models` 为 null 或 true）：模型列表只读，显示按订阅取的预设（41.2；新建时用授权面板报告的订阅），填入预设、获取、清空等按钮隐藏，保存时提交该预设与 `auto_models: true`。关闭时先填入当前预设，之后可随意增删，保存 `auto_models: false`，插件不再改动。模型映射不受开关影响。
+0.1.290 随账号生命周期契约一起删除（§101.5，CHANGELOG 0.1.290，迁移 0102）：订阅类型 `accounts.subscription_type`、自动模型开关 `accounts.auto_models`（视图、`POST/PATCH /accounts` 与 `AccountProperties` 字段 12 都已删除）、`before_create`/`before_update` 的 `AccountPatch` 与 `resource_facts_json`、插件只读扩展（`extensionsSchema` 的 `"readOnly": true` 不再有特殊含义，管理员可写全部扩展键）。账号的扩展字段（`accounts.settings`，按账号类型 `extensionsSchema` 校验）保留。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 60. API Key 的限速（2026-10-26，用户要求：由创建 Key 的人自己设置）
 
@@ -4704,27 +3693,26 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 
 托管核心（`SUB2API_MANAGED`）只在回环地址上被它的外壳访问，外壳删去客户端带来的转发头、把它看到的对端写进 `X-Forwarded-For`。托管核心因此在 `SUB2API_TRUSTED_PROXIES` 之外信任 `127.0.0.1`、`::1`：用量与审计记录的 IP、API Key 的 IP 白名单、登录限流都按真实客户端 IP（此前一律为 127.0.0.1，白名单写真实 IP 时所有请求都被拒）。非托管部署不变。
 
-### 63.4 资源身份保温（CCGateway Worker）
+### 63.4 资源身份保温（已删除）
 
-带 fallback-credit 的被跟踪请求先由核心取账号的资源身份；Worker 缓存核验过的身份 10 分钟（凭证变化即重新核验），缓存过期时要启动 CLI 调 `/api/oauth/profile`，约 1.6 秒算在请求的首 token 里。Worker 的维护循环每分钟检查一次：身份已核验满 8 分钟、且账号在最近 30 分钟内服务过请求时，在后台重新核验并刷新缓存（`keepIdentityWarm`）。后台核验从不等待：授权变更进行中（授权写锁被占）、没有空闲并发槽、已有核验在进行时跳过这一轮；失败只记日志，已缓存的身份照常到期。缓存有效期与凭证校验不变；空闲账号不再刷新，到期后由下一次请求核验。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
-### 63.5 CLI 编译为字节码（v30 `bytecode`）
+### 63.5 CLI 编译为字节码（已删除）
 
-官方 2.1.304 的每个模块都编成了 Bun 字节码，我们重编的 CLI 没有，每次启动都要解析整个包：`claude --version` 0.8 秒、请求命令到读输入 0.9 秒（Worker 每个请求启动一次 CLI）。`cli-mods/build.sh` 改为 `--compile --bytecode --format=esm`（恢复出的模块是 ESM，单用 `--bytecode` 默认 CJS 会失败）：同一份补丁源码，`--version` 0.04 秒、请求命令 0.1 秒，常驻内存 139 MiB（原 135 MiB），ELF 从 157 MB 增至 293 MB（官方 288 MB）。Bun 编译不可逐字节复现，发布照旧按产物哈希固定。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
-### 63.6 Worker 的 GOMAXPROCS
+### 63.6 Worker 的 GOMAXPROCS（已删除）
 
-账号容器限 2 核（控制器 `nano_cpus`），宿主机有 384 核；Worker 模块的 go.mod 是 1.24，Go 1.25 起按容器配额设 GOMAXPROCS 的默认行为没有生效，GOMAXPROCS 为 384，进程有上百个线程，GC 的并行标记一下用完配额，容器被限流（生产 34 号容器启动以来 17 次、累计 6.3 秒）。`worker/cmd/worker/main.go` 用 `//go:debug containermaxprocs=1`、`updatemaxprocs=1` 只打开这一项（不改 go 版本，其余 GODEBUG 默认不变）：同一镜像、`--cpus 2` 下 GOMAXPROCS 由 384 变为 2。CLI（Bun）在 2 核容器里只开 8 个线程，不需要调整。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ### 63.7 核心请求路径的往返与重复扫描
 
-一次约 1 MB 的 Anthropic 请求在核心里从读完请求体到交给 CCGateway 约 0.2–0.35 秒，其中大部分是串行的数据库往返和同一份请求体的反复扫描。本节记录把这些工作并行化、去重、并成一次往返的改动；发往上游的字节、对外响应与错误码、计费金额语义、幂等键与审计一律不变。
+一次约 1 MB 的 Anthropic 请求在核心里从读完请求体到交给插件约 0.2–0.35 秒，其中大部分是串行的数据库往返和同一份请求体的反复扫描。本节记录把这些工作并行化、去重、并成一次往返的改动；发往上游的字节、对外响应与错误码、计费金额语义、幂等键与审计一律不变。
 
-- **本地 token 估算与其它工作重叠**（`gateway/prompt_count.go`，`pipeline.go` 的 `run`）。请求体从 hooks 之后不再改变，`run` 在 `discoverHelperHistory` 与余额检查之前启动 `startPromptCount`：一个 goroutine 做 `extractPromptText` + `tokenizer.Count`，`precharge` 在需要本地估算时 join 它（`localPromptEstimate`）。goroutine 只拿到 body 切片、promptTextPaths 与当时的 `bodyVersion`，从不读 `call` 的其它字段；`run` 用 `defer joinPromptCount()` 在每条退出路径上等待它结束，因此不会有 goroutine 活过处理函数（`submit` 释放 body 的时机因此未变）。估算值逐值相同：同一个函数、同一份文本、同一个上限（`tokenizer.MaxTextBytes`）。只在“一定会走本地路径”的地方启动：内置平台（`Platform.Client == nil`）、计费端点非 free、非 task.submit。平台插件（`EstimateUsage`）完全不受影响，它的请求按原样构造并发送；插件返回 `Unimplemented` 的回退路径仍在请求路径上自己计数。若将来某条路径在启动后替换了 body，版本号不匹配时会退回同步计数（现在没有这样的路径）。
-- **hooks 没改 body 时复用第一次 `checkModel` 的结果**（`pipeline.go` 的 `checkModel`）。`checkModel` 仍在 hooks 前后各跑一次（模型、分组白名单必须按最终 body 判断），但模型引用、资源引用与 fallback-credit 三项检查以 `bodyVersion` 为版本缓存：hooks 只能通过 `setBody` 换 body，而 `setBody` 会递增 `bodyVersion`，所以版本未变就说明三项检查的输入完全一致（hooks 不改 header），第二次直接返回。版本变化时三项重跑，与原来一致。
+- **本地 token 估算与其它工作重叠**（`gateway/prompt_count.go`，`pipeline.go` 的 `run`）。请求体从 hooks 之后不再改变，`run` 在余额检查之前启动 `startPromptCount`：一个 goroutine 做 `extractPromptText` + `tokenizer.Count`，`precharge` 在需要本地估算时 join 它（`localPromptEstimate`）。goroutine 只拿到 body 切片、promptTextPaths 与当时的 `bodyVersion`，从不读 `call` 的其它字段；`run` 用 `defer joinPromptCount()` 在每条退出路径上等待它结束，因此不会有 goroutine 活过处理函数（`submit` 释放 body 的时机因此未变）。估算值逐值相同：同一个函数、同一份文本、同一个上限（`tokenizer.MaxTextBytes`）。只在“一定会走本地路径”的地方启动：内置平台（`Platform.Client == nil`）、计费端点非 free、非 task.submit。平台插件（`EstimateUsage`）完全不受影响，它的请求按原样构造并发送；插件返回 `Unimplemented` 的回退路径仍在请求路径上自己计数。若将来某条路径在启动后替换了 body，版本号不匹配时会退回同步计数（现在没有这样的路径）。
+- **hooks 没改 body 时复用第一次 `checkModel` 的结果**（`pipeline.go` 的 `checkModel`）。`checkModel` 仍在 hooks 前后各跑一次（模型、分组白名单必须按最终 body 判断），但扫描整份 body 的模型引用检查以 `bodyVersion` 为版本缓存：hooks 只能通过 `setBody` 换 body，而 `setBody` 会递增 `bodyVersion`，所以版本未变就说明检查的输入完全一致（hooks 不改 header），第二次直接返回。版本变化时重跑，与原来一致。（资源引用与 fallback-credit 检查随 CCGateway 在 0.1.290 删除。）
 - **请求体解析与摘要每版本只做一次**（`gateway/body_state.go`）。`gjson` 解析会把整份文档复制成字符串：`ParseBytes` 一次约 1 MB 分配，而模型引用扫描每条规则、hook 前后、每次补丁对比都会调一次。现在 `call.bodyRoot()` 每个 `bodyVersion` 解析一次，`modelReferenceLocationsIn` / `modelReferenceSnapshotIn` / `modelReferencePatches` 接收已解析的根；`setBody` 与 `submit` 的 `releaseBodies` 都会丢弃它。同理 `call.bodyDigest()` 每版本只算一次 SHA-256，资源扫描缓存新增 `inspectDigest` 接受调用方已有的摘要。不是当前请求体的字节（转换后的、打好补丁的副本）仍按需解析/哈希（`rootFor` / `digestFor` 只在切片是同一个时复用缓存）。安全语义不变：没有引入任何基于字面量的预筛（`\u` 转义可以绕过），命中的永远是完整解析出的结构。
 - **插件没有打补丁时跳过补丁校验**（`gateway/dispatch.go` 的 `validatePatches`）。`applyPatches` 在补丁为空时原样返回 `upBody`，此时三项“前后对比”是同一份字节与自身比较，必然通过却要付四次扫描与两次哈希。现在先比较 `bytes.Equal(upBody, body)`，只在确实不同时才跑资源引用、端点模型引用与上游模型引用三项守卫；用量规则（`routeHasRequiredPrimaryUsage` / `routeHasRequiredAttempts`）无论如何照旧运行。比较的是字节而不是子串，无法被转义绕过；比较为假只意味着多跑一次守卫，不会少跑。
-- **helper history 先做一次不加锁的只读探测**（`helperhistory/lookup.go`）。绝大多数 Anthropic 请求的公开前缀没有任何记录，答案必然是 Unknown，却要付 BEGIN → `pg_advisory_xact_lock` → `SELECT DISTINCT` → COMMIT 四次往返（还会排在同用户写入后面）。现在先执行一次不加锁的 `SELECT EXISTS(... user_id/group_id/public_prefix_digest = ANY)`: 为假就直接返回 Unknown（一次往返），为真才走原来的加锁事务。并发语义：写入方在 `helper-history:{user}:{group}` 的 advisory lock 下提交链（`Commit`），因此探测与“提交那一瞬间”交错时最多让本次请求把一条刚提交的链当作未知——它按普通请求转发（已知链缺失的请求本来就应转向），后续请求看到链；不会凭空产生命中：KnownReady / KnownUnrestorable 仍只在加锁事务里按同样的查询与 `resolve` 判定；也不会越权：查询带 `user_id` 与 `group_id`，同一个 `EXISTS` 只是 `discoverPrefixes` 条件的前缀。`helperBudgetRequested` 改为 `gjson` 只读 `output_config.task_budget`，不再为每个 Anthropic 请求整体 `json.Unmarshal` 一遍（`Exists() && != Null` 与原来“存在且不是 null”逐例等价）。
 - **预扣事务的往返从约 12 次降到 4 次**（`billing/precharge.go`）。一个事务现在只有：BEGIN、一个 `pgx.Batch`（建 `user_balances` 行 → `FOR UPDATE` 锁住该行 → 一条 CTE 语句写 `balance_ledger`、`request_precharges` 并更新余额）、`balance.changed` 事件、COMMIT。被合并掉的正是原 `ApplyTx` 重复的语句（又一次插入余额行、又一次 `FOR UPDATE`、又一次幂等查询），余额是否足够的判断（`balance - amount > min_balance`）与幂等键是否已存在都表达在同一条 SQL 里：任何一条不满足就一行都不写，客户端据返回的 `duplicate` / `sufficient` 得到与原来相同的“成功且不扣费”或 `insufficient_balance`。锁顺序未变（仍然先锁 `user_balances` 的那一行再动流水与预留，释放路径 `ReleasePrechargeTx` 同样先锁该行）；幂等键仍是 `precharge:{request_id}`，仍是 `balance_ledger` 的唯一键；写入的值不变（`delta = -round(amount,8)`、`balance_after = balance + delta`、kind/ref_type/ref_id/note 相同，`validateChange` 在事务前先做，因此 8 位小数之外的值仍在写库前被拒）。旧的 `user_balances` 行在余额不足导致回滚时也不会留下（整条语句随事务回滚）。若幂等键恰好在本语句快照之后被其它事务插入，语句不写任何行，此时回落到 `ApplyTx` 原来的做法：加锁事务内 `findLedger` 读回该行并比较 user/amount/kind，一致则视为重复成功，不一致为 `idempotency key reused...` 冲突。`Precharge` 仍在任何上游请求之前完成（`prepareBilling` 的顺序未变），`usage` 侧的 `ApplyTx` 未改。回归测试 `TestPrechargeRoundTrips` 用 pgx tracer 计数：同一请求重跑时为 4 次 flush（1 BEGIN、2 batch、1 COMMIT），旧实现为 12 次。
 - **结算与账本在用户余额锁下只剩两次往返；预扣快速失败并限额**（2026-11-08，`billing/settle.go`、`billing/ledger.go`、`billing/precharge.go`、`usage/settler.go`）。背景：一个用户的所有计费都串在 `user_balances` 那一行的 `FOR UPDATE` 上，锁一直持有到 COMMIT，持锁期间每一次客户端往返都由排在后面的同用户请求一起买单；newapi 的全部流量在核心里是同一个用户，结算（释放预扣 + 扣费）原来在锁下要走约 15 次往返，而且结算 worker 一个事务里批量结算多条记录，锁从第一条持到提交。连接池被等锁的请求占满后，账号选择、插件宿主调用等不相干查询也排不到连接（2026-11-08 ccp 抖动的来源，见 §29.1 看门狗一段）。现在：
   - `ApplyTx` 是一个 `pgx.Batch`：建余额行（单独一条语句，因为数据修改 CTE 的结果对同一语句不可见）+ `applySQL`（一条 CTE：按幂等键找已有流水；没有才 `FOR UPDATE` 锁余额行、写流水、改余额），然后一次 `balance.changed` 事件。锁下两次往返（原来六次）。幂等语义不变：键已存在返回 `Duplicate` 并校验用户、金额、kind 一致（不一致 409）；语句快照之后被并发插入的键（`ON CONFLICT DO NOTHING` 没写也没找到）由客户端重查一次；未知用户仍是 404（余额行的外键）。
@@ -4733,113 +3721,18 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
   - 预扣（请求路径）加两道快速失败：批处理首条 `SET LOCAL lock_timeout = '3s'`（`prechargeLockTimeout`，仍是一次冲刷，`TestPrechargeRoundTrips` 的 4 次不变），等锁超过 3 秒 PostgreSQL 报 `55P03`，`Precharge` 返回 503 `unavailable`（"billing is busy"）而不是吊着连接；并发限额 `acquirePrechargeSlot`：同时进行的预扣事务不超过连接池上限的一半（至少 4），等槽位超过 3 秒同样 503。结算不设 `lock_timeout`（必须最终完成，且由 4 个 worker 自然限流）。客户端对 503 的重试照旧。
   - 余额的权威仍在 PostgreSQL（2026-11-08 用户决定：余额扣减不走 Valkey）。
 - **额度快照没有合并**（此项未做）。`guardAvailability` 重新读取一次快照是为了在“已准入、即将发送”这一刻发现额度/配额代际变化（`generation`、窗口、`now` 都参与比较），复用它前面的 `filterAvailability` 快照会让这次发送前的检查退化为对旧值的重复确认，等于删掉了一处安全检查；无法在保持语义的前提下省掉这次读取，因此只保留原有的一次过滤查询与每次尝试前的一次确认查询。
-- **CCGateway 请求缓存与隧道**（`ccgateway/request_cache.go`）。配置、账号 desired、特性策略的 TTL 从 30 秒放宽到 5 分钟，仅作为事件总线的兜底：所有变更来源都已覆盖——配置保存、控制器安装/升级、运行时更新走 `config:changed`（`configChanged`），账号保存走 `account:changed`（保存节点直接调用 `AccountChanged`，其它节点收消息），代理保存走 `config:changed` 的类型 `"proxy"`，特性策略保存走 `ccgateway_features`。Worker `/healthz` 的答案仍按原来的 30 秒过期（新增 `healthCacheTTL`），放宽兜底不会延长能力结论的可信期。隧道空闲超时 `routeIdleTimeout` 从 30 秒提到 110 秒：Worker 侧的空闲超时是 `http.Server.IdleTimeout`（`next/plugins/ccgateway/companions/worker/internal/server/server.go`，当前 60 秒，另一处改动会提到 ≥180 秒），核心必须短于对端——在被对端关闭的连接上发出的 POST 不会被重试；控制器中继的空闲超时（`TUNNEL_IDLE_SECONDS = 3700`）不是约束。核心的 110 秒因此依赖 Worker 的 ≥180 秒：先升 Worker，再升核心。
 
-### 63.8 Worker 的单次解析与空闲连接
+### 63.8 Worker 的单次解析与空闲连接（已删除）
 
-容器里 `request_command` 事件比请求体到达晚约 0.23 秒（1 MB 请求体、2 核容器）。原因是 `prepareRequest` 对同一个请求体做了约 4 次完整 JSON 解析：`prepareSecrets` 无条件解成树找 `authorization_token`/`fallback_credit_token`；`readClientIdentity` 用 `json.Decoder` 逐成员扫全文只为取 `metadata.user_id`；`d.request` 再解一次做摘要（摘要级别也做）；`messagesBuildComponents` 又解消息、解析两次 tools、最后整包 `json.Marshal`。此外每分钟的日志清理同步跑在请求 goroutine 上，`.claude.json` 与凭证文件每请求读两遍。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
-改动：
+## 64. CCGateway 请求日志查看（已删除）
 
-- `engine/request_body.go` 新增 `requestBody`：`json.Unmarshal` 到 `map[string]json.RawMessage` 一次得到全部顶层成员（各成员保持客户端原始字节），并顺带得出三个事实：`valid`（凭证扫描能否读这份体）、`escaped`（字节里有 `\u` 转义）、`metadataTwice`（`metadata` 出现多次）。`prepareRequest` 里解析一次，凭证检测、身份读取、请求摘要、build 信封全部读这一份。
-- 凭证检测只在可能命中时走树：`\u` 存在（键可能被转义写成别的拼法）或字节里出现不区分大小写的两个键名之一时，才做与原来完全相同的 `json.Unmarshal(&any)` + 递归；否则跳过。`valid` 不是 `json.Valid` 而是凭证扫描自己的判断：扫描解的是 float64 树，`1e999` 这类 float64 放不下的数字会让它失败，所以这种体本来就被当成 malformed（永不保留原始体）。`hasUnrepresentableNumber` 只在数字接近该量级时才真正转换。
-- 身份读取从已解析的 `metadata` 成员取值；`escaped` 或 `metadataTwice` 或体不可解析时退回原来的字节级读取器（它的 `metadata`/`user_id` 重复键拒绝、转义拼写规则与错误文本都不变，`request_identity_unreadable` 事件的 detail 也一样）。
-- 请求摘要的字段计算移到后台 goroutine（`describeRequest` / `summarizeRequest`），`request_received` 事件仍由 `request` 同步写在原位置；`finish` 在写 `metadata.json` 前等待它结束，所以事件文件与 metadata 的字段和值不变。没有日志（或日志关闭）的请求不启动这个 goroutine。
-- 每分钟的清理改为请求只向 store 的非阻塞缓冲通道发一次请求（`pruneDue`，容量 1，天然单飞），由 `Runtime.maintain` 这个随 Worker 关闭而退出的循环执行。
-- `requestPlan.mapping`（`requestKey`）在请求作用域内缓存账号映射键：身份与 agent 上下文共用一次读取（凭证文件 + `.claude.json`）；不跨请求缓存凭证。
-- `messagesBuildComponents` 用已解析的成员，参数表在旁边单独构造（不再原地删除顶层键），tools 只解析一次目录并逐项读取定义；`renameJSONKey` 的逐字节保真不变。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
-不变式：
+## 65. CCGateway 请求日志级别（已删除）
 
-- 发往 CLI 的 stdin 字节、发往上游的请求、对核心的响应与请求日志的对外内容（summary/full 两级里每个字段与值）与改动前相同；`body_sha256`、`body_bytes`、`request.body` 仍取自客户端原始字节。
-- 日志语义的时序不变：`request_received` 仍在读体后立即写；`metadata.json` 仍包含全部摘要字段，只是在 `finish` 时才落盘。
-- 日志清理仍在请求要求后才发生（最多每分钟一次），只是不在请求 goroutine 上。
-
-空闲连接（同一轮改动）：
-
-- 核心侧每条到 Worker 的隧道空闲 30 s 关闭，本轮由核心侧改为 110 s；因此 Worker 一侧所有会先于它断开连接的超时必须 **≥ 180 s**。`worker/internal/server/server.go` 的 `http.Server.IdleTimeout` 由 `time.Minute`（60 s）改为 `idleTimeout = 180 * time.Second`（`ReadHeaderTimeout` 10 s、`ReadTimeout` 30 s 不变，它们只约束请求本身）。
-- 控制器侧隧道已经是 `http_api.Handler.splice` 的 `TUNNEL_IDLE_SECONDS = 3700`（两端 socket 都设），远大于 180 s，不需要改；`Handler.setup` 的 240 s 只作用于普通 HTTP 请求（升级前），隧道建立后即被 3700 s 覆盖。
-- 约束：**核心隧道空闲 110 s < 对端 180 s**。对端若先关闭，核心会把一个已被关闭的连接拿去用，请求直接失败而不是重连。`worker/internal/server/timeouts_test.go` 用这个数字守护该关系，改变任一侧时必须同时确认另一侧。
-
-## 64. 请求日志查看：上游请求与搜索字段的核心转发（2026-10-26，用户要求）
-
-设计：[REQUEST-LOG-UPSTREAM-CAPTURE-DESIGN.md](ccgateway-feature-support/REQUEST-LOG-UPSTREAM-CAPTURE-DESIGN.md) §4。**核心不记录任何东西**：不新增落盘、数据库写入或日志；只扩展查看接口的校验与转发（`server/internal/ccgateway/request_log_viewer.go`、`request_logs.go`）。
-
-### 64.1 列表 `GET /system/ccgateway/accounts/:id/request-logs/requests`
-
-新增查询参数（空值等于没给；只在给出时转发到 Worker `admin/request-logs/query` 的查询体；其他未知参数仍 400）：
-
-| 参数 | 校验 | 转发给 Worker |
-|---|---|---|
-| `mode` | `direct` 或 `build`（区分大小写） | 字符串 |
-| `session_id` | `^[A-Za-z0-9_-]{1,128}$` | 字符串（匹配客户端或上游会话任一，由 Worker 判断） |
-| `sha256` | 64 位十六进制，大小写都收，**转小写**后转发 | 字符串 |
-| `changed` | `true` 或 `false`（小写） | **JSON 布尔** |
-
-列表项新增字段（逐项校验；**形状不对的值置空/省略，不让整页失败**——它们只是搜索辅助；JSON 类型错误仍按原规则整页 503）：`mode`（只留 `direct`/`build`）、`client_session_id`、`upstream_session_id`（同上会话形状）、`body_sha256`、`upstream_body_sha256`（转小写后须为 64 位小写十六进制）、`body_changed`（`*bool`，没有就省略）、`upstream_captured`（布尔，总是输出）。
-
-兼容：旧 Worker 的查询解码 `DisallowUnknownFields`，收到新键回 400。核心已按 Worker 的规则校验过，所以**带了新筛选而 Worker 回 400** 时核心答 503、`details.reason = request_log_search_unsupported`（提示升级插件）；不带新筛选的 400 照旧。核心不为此先查一次状态（不加往返）；界面应只在状态有 `viewer_search` 时显示新筛选。
-
-### 64.2 详情 `GET …/requests/:log`
-
-- 新字段 `upstream_request`（对象，可省略）= Worker 返回的 `upstream-request.json` 内容，原样透传，只对其中 `headers` 再遮蔽一次：名字（不区分大小写）在 `requestLogSecretHeaders`（`authorization`、`proxy-authorization`、`x-api-key`、`cookie`、`set-cookie`、`x-ccg-revision`）里的值改成 `"[REDACTED]"`（字符串值直接替换，数组逐项替换，其他类型整体替换）；`headers` 不是对象时删掉该键。`upstream_request` 不是对象时整个详情 503（与其他字段一致）。
-- `metadata` 按白名单投影（2026-11-12 权限加固 T43，D22）：调用者命中 `settings:manage`（即 `content: true`）时原样返回；否则只保留 `requestLogSummaryKeys` 里的摘要字段（请求标识、状态与阶段、模型、耗时、`http_status`、`error_type` / `error_code` / `error_source`、日志级别与用量、正文大小与摘要值、会话标识、上游请求类别与 betas、响应捕获状态等），其余一律删除，包括上游错误原文 `error`、`messages`、`log_directory`，可能出现的身份字段（如 `device_id`、`account_uuid`），以及 Worker 以后新增的任何字段（默认只给 `settings:manage`，要放开须加入白名单）；白名单内的值必须是标量或字符串数组，否则同样删除。列表（§64.1）每行的 `error` 同理：只有命中 `settings:manage` 时给出，其余调用者为空（`error_type` 保留）；为此列表路由的 key 增加 `settings:manage`。
-- `events`、`upstream_request`、`request_headers` / `response_headers` 同样按白名单投影（2026-11-12 权限加固 FU3，补齐 D22），未命中 `settings:manage` 时（`settings:manage` 原样，只遮蔽密钥头）：
-  - `events` 每条只留 `time`、`event`；`detail` 是对象时只留 `requestLogEventDetailKeys` 的摘要字段（状态、阶段、错误码与来源、原因码、模式、计数与字节数、耗时 `ms`、摘要值 `sha256`、方法、存储后端与操作、各类布尔状态等），错误原文 `error`、路径 `path`、查询串 `query`、客户端头 `client_headers`、上传的 `parts`（文件名）、资源身份（如 `principal_id`）与以后新增的字段一律删除；`detail` 不是对象时删去，不是对象的事件整条删去。
-  - `upstream_request` 只留 `requestLogUpstreamKeys`（`schema`、`mode`、`attempts`、`method`、`host`、`sent_at`、`body_encoding`、`body_bytes`、`body_sha256`、`content_sha256`、`model`、`stream`）；`url` 删除，改给其中的 `host`；`headers` 只留 `requestLogSummaryHeaders` 里的头名。
-  - 请求、响应头只留 `requestLogSummaryHeaders`（不分大小写）：`content-type`、`content-length`、`content-encoding`、`transfer-encoding`、`accept`、`accept-encoding`、`cache-control`、`date`、`retry-after`、`request-id`、`x-request-id`、`anthropic-version`、`anthropic-beta`、`x-claude-code-session-id`、`x-claude-code-request-class`、`x-ccgateway-error-source`、`x-ccgateway-error-reason`。
-  - 白名单内的值都必须是标量或字符串数组。投影只有 `keepSummary` 一个函数（`metadata` 也用它），默认拒绝：要放开新字段须加入相应白名单。事件 detail 的 `code`（`cli_error`）与 `error_code` 一样可能取自上游响应（≤512 字符），按 T43 的口径保留。控制台的“上游请求”在只有 `host` 时显示 `host`，事件与上游请求的提示改为“只显示摘要字段”。
-- `upstream-request.json` 加入摘要文件集合：不出现在 `files`，`…/files/upstream-request.json` 读取一律 400。`upstream-request.body` 是正文文件，照常出现在 `files`、仅 `settings:manage` 可读并审计。
-
-### 64.3 状态 `GET …/request-logs`
-
-状态是逐字段挑选（不是整段透传）；分级状态新增布尔 `viewer_search`，取自 Worker 同名字段（缺省 `false`，非布尔整段 503）。旧版无 `levels` 的状态形状不带此字段。
-
-> §65 起，这份状态只出现在 `GET/PUT …/request-logs` 回答的 `worker` 子对象里（见 §65.4）。
-
-## 65. 请求日志级别：默认规则 + 账号设置，由核心随请求下发（2026-10-26，用户要求）
-
-设计：[REQUEST-LOG-POLICY-DESIGN.md](ccgateway-feature-support/REQUEST-LOG-POLICY-DESIGN.md)。**核心不记录任何日志**：只保存级别设置、组装策略头、提供设置接口；请求内容不在核心落盘、不写数据库。日志仍由每个账号的 Worker 记录与保存。
-
-### 65.1 规则
-
-- 默认规则：CCGateway 配置 `request_logs.level`（`Config.RequestLogs`），可为 `off`、`summary` 或 `full`；缺省（旧配置、未保存过）= `off`（2026-10-27 用户要求，此前为 `summary`）。默认为 `full` 时长期有效、没有时长或到期时间（2026-10-27，REQUEST-LOG-ASYNC-DESIGN §6），只受 Worker 完整级别的保留期（24 小时）与预算（512 MiB）约束，超出按最旧清理；所有跟随默认的账号都会保存请求与响应正文。存储里出现未知值时按 `off`。
-- 账号设置：表 `ccgateway_account_request_logs`（迁移 0061）。无行 = 跟随默认；`off`、`summary`；`full` 必带 `full_until`（保存时 = 当前时间截到秒 + 1/4/24 小时）。
-- 生效级别 = 账号设置（`full` 且当前时间不早于 `full_until` 视为无设置）否则默认规则（可能是 `full`）。账号自己的 `off`/`summary` 优先于默认的 `full`。`off` 只停止记录，不删除已有日志。不做分组层。
-
-### 65.2 存储（迁移 0061，可重跑）
-
-`ccgateway_account_request_logs(account_id bigint PK REFERENCES accounts(id) ON DELETE CASCADE, level text CHECK IN ('off','summary','full'), full_until timestamptz, updated_at, updated_by bigint)`，约束 `(level='full') = (full_until IS NOT NULL)`。只新增表：旧核心忽略它，所有 Worker 按本地级别。账号在本系统是软删除（`deleted_at`），行只在账号行被真正删除时级联删除；已软删除账号的行保留但不再生效（账号不再被调度），接口对已删除账号的 PUT 回 400 `account_deleted`。
-
-### 65.3 下发
-
-- 模型请求与账号测试（probe）：`attachPolicy` 在 `X-CCGateway-Request-Policy` 里加 `request_log` = 生效级别（`features.WorkerPolicy.RequestLog`）。无账号的请求用默认规则。
-- 供应商资源请求（`resourceTransport`，此前不带策略头）：策略头只有 `{"request_log":"<级别>"}`，不带 `schema_version`/`relay_mode` 等（缺省字段 Worker 视为用自己的；`schema_version` 写 0 会被 Worker 拒绝，所以不能直接序列化 `WorkerPolicy`）。Worker 的资源处理只在日志 capture 中读它。
-- `request_log_policy_v1` **不是**必需能力：旧 Worker 忽略未知键，按本地级别记录。
-- 账号设置走请求路径缓存（`requestCache.requestLogs`，与 `features` 同一 `readThrough`）；`full_until` 在组装策略头时与当前时间比较，不依赖缓存刷新。保存后本节点立即丢弃该账号的缓存，并在 `config:changed` 上发 `{"type":"ccgateway_request_log","account_id":N}`，其他节点只丢该账号的缓存（旧核心忽略此类型，最迟 `requestCacheTTL` 后读到）。`account:changed` 与全量失效同样丢弃它。
-- 默认规则随配置缓存：保存配置时它不算运行环境变化（`sameRuntimeConfig` 忽略），走 `featureConfigChanged`（丢配置缓存、发 `ccgateway_features`），不触发任何 runtime 同步。
-
-### 65.4 接口
-
-默认规则：`GET /system/ccgateway/remote-config`（`settings:read`）返回 `"request_logs":{"level":"summary"}`（总是给出生效的默认值，可为 `full`）；`PUT …/remote-config`（`settings:manage`）可带 `"request_logs":{"level":"off"|"summary"|"full"}`，省略保持原值；空串、其他值或未知键（含 `full_for_hours`/`full_until`：默认的 `full` 不带时长）400。
-
-账号：`GET/PUT /system/ccgateway/accounts/:id/request-logs`（GET `account:read`/本人 `account:own:read`；PUT 只认 `account:update`，不接受 `account:own:update`（2026-11-12 权限加固 T36；此前本人级可改自己账号的），T38 起两者都不再接受 `settings:*`；GET 的本人级只能到自己创建的账号，否则 404）。GET 与 PUT 成功都返回同一形状：
-
-```json
-{"setting":{"level":"full","full_until":"2026-10-26T16:00:00Z"},
- "default":"summary","effective":"full",
- "worker":{"enabled":true,"level":"summary","full_until":null,"levels":["off","summary","full"],"limits":{…},"usage":{…},"viewer":true,"viewer_search":true}}
-```
-
-- `setting.level`：`follow|off|summary|full`；过期的 `full` 显示为 `follow`（`full_until` 为 null）。`default` 为 `off|summary|full`。`effective` 是此刻随请求下发的级别；跟随默认 `full` 时 `effective` = `full` 且 `setting.full_until` 为 null（默认没有到期时间）。
-- `worker`：Worker 状态，按 REQUEST-LOG-LEVELS-DESIGN 与 §64.3 的规则逐字段挑选（旧 Worker 为只有 `enabled` 等字段的旧形状）。**其中 `level`/`enabled`/`full_until` 只是 Worker 无策略头时的本地级别，不是生效级别**，界面只用 `setting`/`effective`。Worker 不可达、回错、形状不对，或账号的运行环境不可用（已删除、代理不可用）时为 `null`，其余照常返回（问 Worker 最多 10 秒）。
-- PUT 只接受下列之一（多键、未知键、旧开关 `{"enabled":…}` 一律 400）：
-  - `{"level":"follow"}`（删行）、`{"level":"off"}`、`{"level":"summary"}`、`{"level":"full","full_for_hours":1|4|24}`：只写核心表（同一事务写审计），**不转发 Worker**；写后丢缓存并广播（65.3）。
-  - `{"clear_full":true}`、`{"clear_all":true}`：按规范形式转发 Worker `PUT admin/request-logs`，`worker` = Worker 回答；Worker 失败按原规则报错（运行环境不可用 400，其他 503/400）。不改任何级别。旧 Worker 不认识 `clear_all`，会 400。
-- 审计：动作 `ccgateway.account.<id>.request-logs`，详情只含枚举与时间：级别变更 `{"change":"level","level":…,"previous":…,"full_for_hours":…,"full_until":…}`；清除 `{"change":"clear_full"|"clear_all"}`。
-
-兼容：旧核心的 PUT `{"enabled":bool}` 与 `{"level":…}` 转发给 Worker、改其本地级别；新核心不再转发级别，因此**升级核心前 Worker 必须已是带 `request_log_policy_v1` 的版本**（发布顺序先插件后核心），否则旧 Worker 继续按升级前的本地级别记录，界面设置对它不生效。默认 `full`（2026-10-27）不需要新表或迁移；回退到旧核心时，旧核心把存储里的默认 `full` 当 `summary`（旧 `DefaultRequestLog` 只认 `off`），但旧核心保存配置时若原样带回 `full` 会 400，需先改回 `off`/`summary`。
-
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 66. 统计接口：时区、小时粒度、合计行与概览（2026-10-27，用户要求参照 sub2api 重做统计界面）
 
@@ -4961,7 +3854,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 
 **刷新**：集群任务 `core.usage.rollup`，每分钟一次，每条语句最长 60 秒，每个事务都持有 advisory 锁 `usage_hourly`。`usage_hourly_state` 记录已汇总的小时范围 [low, high)。每次运行做下面三件事，三步互相独立，一步出错不影响另外两步：
 
-1. 往前补，每个事务最多 6 小时。可汇总的边界按数据库时钟算（`sealedSQL`），取两者中更早的那个：
+1. 往前补，每个事务最多 6 小时。可汇总的边界按数据库时钟算（`sealedHours`），取两者中更早的那个：
    - 小时结束满 30 分钟；
    - 本角色在本库里还没结束的写事务中，最早的开始时间往前推 15 分钟。
 
@@ -5000,7 +3893,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 | 1–99 | weight 成比例缩减；调度仍可选此账号，但概率降低 |
 | 100 | 最小权重 1：仍可能被选，额度用完由可用性预检和 429 处理（2026-11-04 改） |
 
-`RankCandidate.quota`（2026-11-04 新增）带核心内存里该账号最近的额度快照，供插件算负载；不额外查询上游。ccgateway（`scheduler.rank` order 200，排在 dynweight 之后）的负载：Fable 模型用 `7d_fable` 窗口，其他模型用 `7d`；Fable 窗口缺失或已过重置时间时用 `7d`，都没有时负载为 0。粘性命中不走排序。
+`RankCandidate.quota`（2026-11-04 新增）带核心内存里该账号最近的额度快照，供插件算负载；不额外查询上游。粘性命中不走排序。
 
 插件对**所有候选账号**返回 load=100 时，它们的有效权重都是 1，等于均匀选择。
 
@@ -5059,7 +3952,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 
 ### 68.5 插件设置这些字段
 
-- **运行时**：`before_create` / `before_update` 的 `AccountPatch` 新增 `optional int32 priority = 4`、`optional int32 weight = 5`、`optional int32 max_concurrency = 6`、`optional int32 rpm_limit = 7`、`optional int64 tpm_limit = 8`、`ModelLimitList model_limits = 9`（`items` 为空表示清空）。没给的字段不变；给了的按管理员输入的规则校验，不合法时整次保存失败（`plugin_unavailable`，details 带字段错误），和 `models` 补丁一致。改了哪些字段记在审计的 `plugin_changed` 里。运行时事实触发的 `before_update`（§59 `FactsObserved`）只采纳模型列表和映射，不改调度字段。
+- **运行时**：`before_create` / `before_update` 的 `AccountPatch` 曾可改这些字段，0.1.290 随账号生命周期契约删除（§59、§101.5）；插件只能经下面的预设建议。
 - 插件看到的 `AccountProperties` 新增 `repeated ModelLimit model_limits = 13`。
 - **预设**：manifest `accountTypes[].defaultLimits`：`{priority, weight, maxConcurrency, rpmLimit, tpmLimit, modelLimits: [{models, maxConcurrency, rpmLimit, tpmLimit}]}`，字段都可选。和 `defaultModels` 一样只是建议：控制台新建账号时预填，`GET /account-types` 以 `default_limits`（字段名同账号）返回；核心不会自己套用到账号上。`sdk/manifest/check` 按账号字段的范围校验（`accountTypes[i].defaultLimits.<字段>`）。
 
@@ -5089,7 +3982,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 
 用户要求：CC 账号遇到 429 时，插件给出重置时刻，核心据此自动禁用账号，到点自动恢复；打开自动重试后，核心重试时已经选不到这个账号，粘性会话也一样。
 
-问题：线上发布了故障策略（§ 自动重试与禁用的 `failure_policy`）。原先有策略时核心完全不调用插件 `ClassifyError`，CCGateway 给 429 设的"禁用到重置时刻"根本没执行；策略里 429 的冷却为 0，额度用满的账号每个请求都会被先试一次（CCGateway 0.1.112 去掉用量窗口拦截后尤其明显）。
+问题：线上发布了故障策略（§ 自动重试与禁用的 `failure_policy`）。原先有策略时核心完全不调用插件 `ClassifyError`，插件给 429 设的"禁用到重置时刻"根本没执行；策略里 429 的冷却为 0，额度用满的账号每个请求都会被先试一次。
 
 规则：
 - 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类），并执行其中两项：
@@ -5101,24 +3994,12 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - 使用记录 `failure_policy` 事件里该次尝试的 `account_result` 为 `disabled_by_plugin`。
 - 没有故障策略时（旧路径）：带解除时间的 `automatic_state` 现在也按"禁用到解除时间"执行（以前只当作冷却），没有解除时间的仍是冷却，永久禁用仍只由管理员规则决定（§42）。
 - 实现：`gateway/dispatch.go` 的 `pluginAutoDisable`、`applyPluginAccountState`；`core.AccountDirectory.AutoDisableUntil`（`account/directory.go`，走 `ApplyAccountAutomaticState`）。
-- CCGateway 已经这样分类 429（`classifyRateLimit`：托管账号禁用到 `anthropic-ratelimit-unified-reset` / `retry-after` 给出的时刻，没有时 60 秒），插件不用改；只要升级核心。
-- CCGateway 0.1.127 起（2026-11-04，用户要求）：托管账号的上游 429 只有额度真满才自动禁用，其他 429 原路返回客户端，不冷却、不禁用、不把窗口记为 rejected。判断依据是这次响应自带的头（`quotaExhausted`）：`5h` 或 `7d` 的 utilization ≥ 1 或状态 `rejected`，或 `representative-claim` 指向模型专属窗口或未知的限额，或指向共享窗口却读不到该窗口的用量，算满；reset 和 `Retry-After` 单独出现不算。依据是 2026-11-04 对线上 7 天请求日志的扫描：447 条额度 429 都带 claim、窗口用量和 `Retry-After`，且 `rejected` 与 utilization ≥ 1 完全一致，`anthropic-ratelimit-unified-reset` 与 `Retry-After` 相差不超过 3 秒；11 条 `Usage credits are required for long context requests.` 没有窗口头、claim 和 `Retry-After`，`x-should-retry` 为 false，`anthropic-ratelimit-unified-reset` 是账期结束（2026-12-01），之前的 7 天禁用就是它被截断到 `maxCooldown` 的结果。Worker 自身的并发 429（来源不是 `http`）仍短冷却并换号。发布了故障策略时，是否重试、换号仍由策略决定。
-- 默认重试规则同日改为两条（`defaultRetryRules`，用户要求），线上已发布的策略也手工改成同样两条：`http-transient` = 上游 408、500–599；`rate-limit` = 上游 429 且包含关键词 `exceed your account's rate limit` 或 `gateway concurrency limit reached`。其他 429（如 long context）不匹配任何规则，直接返回客户端，换号也不会有不同结果。代价：上游若改了额度满的提示文字，这种 429 不换号，但账号仍按响应头禁用，下一个请求会选别的账号。
+- 默认重试规则同日改为两条（`defaultRetryRules`，用户要求），线上已发布的策略也手工改成同样两条：`http-transient` = 上游 408、500–599；`rate-limit` = 上游 429 且包含关键词 `exceed your account's rate limit`（当时还有 CCGateway 引擎的 `gateway concurrency limit reached`，0.1.290 随 CCGateway 删除，规则名改为 `Account quota (429)`，迁移 0102 同步改已发布的策略，§101.5）。其他 429（如 long context）不匹配任何规则，直接返回客户端，换号也不会有不同结果。代价：上游若改了额度满的提示文字，这种 429 不换号，但账号仍按响应头禁用，下一个请求会选别的账号。
 - 重试规则可单独关闭“原账号重试”（2026-11-04，用户要求；`no_same_account_retry`，默认缺省即开启，只对统一计划 schema ≥ 2 的重试规则有效，禁用规则和旧版 v1 规则上会被清除）。开启时按 `retries_per_account` 重试；关闭时该规则命中的错误不在原账号重试，直接进入计划的下一步（换号），没开切换账号时不再重试。`max_retries` 仍是总上限。
 
-## 70. CCGateway 用量改为读响应头：请求时懒刷新、手动才主动查询（2026-10-30，用户要求）
+## 70. CCGateway 用量读响应头（已删除）
 
-用户要求：上游每个响应（包括 429）都带用量头，直接用它刷新用量，并据此设置自动禁用和自动恢复的时间；没有请求时，除非用户手动刷新，不得调用 CLI 查询用量，避免频繁调用。客户端真实调用期间懒刷新，用户手动刷新时主动查询。
-
-- **CCGateway 0.1.113 manifest**：`quota.autoRefresh` 去掉（为 false），新增 `quota.headers`：
-  - `5h` 读 `anthropic-ratelimit-unified-5h-{utilization,reset,status}`；
-  - `7d` 读 `anthropic-ratelimit-unified-7d-{utilization,reset,status}`。
-  - utilization 是比例（1.03 = 103%），reset 是 Unix 秒。`quota.query` 保留，只供手动刷新。
-- **懒刷新**：核心对 2xx、101、429 响应按 `quota.headers` 被动采样（§44，`ObserveQuotaHeaders`）。每个账号每节点最多 30 秒写一次，窗口状态变化（allowed ↔ rejected）立即写，`source = passive`，并清除上次的查询错误。Worker 原样转回这些头。
-- **不再后台查询**：`autoRefresh` 为 false 的类型不进核心的后台查询清扫，新账号也不建自动查询计划。`GET /accounts/:id/quota` 不带 `force=true` 时只返回已存的快照，不调用插件（核心 0.1.217 起对所有不自动刷新的类型生效，claude-oauth 同样适用）。控制台点击用量单元格会带 `force=true`，这时才经 CLI 的 `/usage` 主动查询。
-- **429**：插件 `ClassifyError` 给 429 的配额观测（代表窗口 `rejected`）现在带上该窗口头里的真实 utilization，不再是"未知"；自动禁用到重置时刻、到点自动恢复的规则不变（§69）。
-- 控制台没有任何数据时显示"暂无用量，下次请求后更新，或点击刷新"。
-- 用量窗口不参与调度准入（§44.7「用量窗口不再拦截」），所以只靠响应头更新的快照即使变旧，也不会挡住账号。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 71. 每分钟会话数 SPM（2026-10-30，用户要求参照 new-api；2026-11-11 起周期可设，用户要求）
 
@@ -5135,7 +4016,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 | `rate_usage.sessions`、`rate_usage.models[].sessions` | 只读 | 该层会话周期内被准入过的会话数（20 段计数，见 71.2；不等于进行中的会话，§78.1） |
 
 - POST / PATCH `/accounts` 可带 `spm_limit`、`spm_window_seconds`；字段错误 `spm_limit: invalid`、`spm_window_seconds: invalid`、`model_limits[i].spm_limit: invalid`、`model_limits[i].spm_window_seconds: invalid`。
-- `spm_window_seconds` 也是通用配置项（§87，`manifest.CommonControlSpecs`，int 60–86400，核心默认 60），账号类型可声明默认值或锁定。插件 proto（`AccountProperties`、`ModelLimit`、`AccountPatch`）和 manifest `defaultLimits` **不带**这个字段：插件建的账号是 60；插件经 `account_patch` 改 `model_limits` 时，模型相同的列表（按去空格、去重后的模型比较）保留管理员设的周期（`keepSPMWindows`），新列表为 60。`GET /account-types` 的 `default_limits.model_limits[]` 带 `spm_window_seconds: 60`。`commonControls.model_limits.default` 是账号接口的形状，各列表可带 `spm_window_seconds`（`manifest.ModelLimitValue`，check 按 60–86400 校验，0 或缺省 = 60；与 `defaultLimits` 比冲突时 60 与缺省相同）。声明 `commonControls.spm_window_seconds` 或带周期的 `model_limits` 默认值的插件，`hostCompat` 下限须 ≥0.1.276（`check.SPMWindowFirstCore`，否则 `below_feature_core`）：更早的核心安装时不认识它们、拒绝安装。
+- `spm_window_seconds` 也是通用配置项（§87，`manifest.CommonControlSpecs`，int 60–86400，核心默认 60），账号类型可声明默认值或锁定。插件 proto（`AccountProperties`、`ModelLimit`）和 manifest `defaultLimits` **不带**这个字段：插件建的账号是 60。`GET /account-types` 的 `default_limits.model_limits[]` 带 `spm_window_seconds: 60`。`commonControls.model_limits.default` 是账号接口的形状，各列表可带 `spm_window_seconds`（`manifest.ModelLimitValue`，check 按 60–86400 校验，0 或缺省 = 60；与 `defaultLimits` 比冲突时 60 与缺省相同）（核心 0.1.276 起）。
 - 迁移 0094：`ADD COLUMN IF NOT EXISTS spm_window_seconds int NOT NULL DEFAULT 60`，约束先 DROP IF EXISTS 再 ADD；已有账号仍按 60 秒计。旧核心忽略该列、按 60 秒计。
 - 迁移 0063：列在 0009 就存在（早期 SPM 的残留），首次执行时清零旧值，避免它们突然变成生效的上限；之后用列注释 `CONTRACTS §71` 标记已执行，重跑不会清掉管理员新设的值。加约束 `accounts_spm_limit_chk`（0–10000000，先 DROP IF EXISTS 再 ADD）。旧核心忽略该列。
 
@@ -5163,7 +4044,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 
 ### 71.4 插件
 
-- `AccountProperties.spm_limit = 14`、`ModelLimit.spm_limit = 5`、`AccountPatch.optional int32 spm_limit = 10`；规则同 §68.5（按管理员输入校验，`plugin_changed` 记入审计；`FactsObserved` 触发的 `before_update` 不采纳）。
+- `AccountProperties.spm_limit = 14`、`ModelLimit.spm_limit = 5`（`AccountPatch` 的字段 10 在 0.1.290 随它删除，§59）。
 - manifest `accountTypes[].defaultLimits.spmLimit`、`defaultLimits.modelLimits[].spmLimit`，`GET /account-types` 以 `default_limits.spm_limit` 返回；`sdk/manifest/check` 校验 0–10000000。`spm_limit` 也加入扩展字段的保留名。
 
 ### 71.5 控制台
@@ -5314,6 +4195,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - **0.9.3（2026-11-12）**：`block_message` 的默认值改为英文 `Your request was blocked by content moderation. Please revise your input and try again.`（`settings.go` 的 `DefaultBlockMessage`，`forms/settings.schema.json` 的 `default` 与它一致，有测试比对）。只影响没有保存过 `block_message` 的安装；已保存的值（包括以前的中文默认）原样使用，不做迁移。`hostCompat`、`hostUICompat`、接口、能力、宿主权限、迁移都不变。
 - **0.11.1**：版本 0.11.1，无迁移。没设范围的流程按 `input` 审、LLM 理由上限 2000 字（超出以“…”结尾）、逐级审核的理由整段显示，见 72 节开头"0.11.1"。封禁用户表的原因从单元格展开行，用到 UI 3.13，**`hostUICompat` 改为 `^3.13`，`hostCompat` 抬到 `>=0.1.281 <0.2.0`**。接口、能力、宿主权限、设置 schema 都不变，升级不需要管理员重新批准。
 - **0.11.2**：版本 0.11.2，无迁移。审核器编辑直接显示默认内容并可查看、恢复，内置 Jev 题集换成线上 9 题，失败调用的 trace 带脱敏错误摘要 `err_detail`，连接阶段网络错误重试一次，见 72 节开头"0.11.2"。没有用到新的平台能力，`hostCompat`、`hostUICompat`、接口、能力、宿主权限、设置 schema 都不变，升级不需要管理员重新批准。
+- **0.12.1（2026-11-15）**：插件 SDK 改用 GORM，功能不变。表结构以 `internal/model` 的 GORM 模型为唯一描述（`model.All()`，16 张表），与 `migrations/0001`–`0013` 建出的表完全一致（`sub2api-plugin db check` 通过，2026-11-16 起按系统目录比对列类型、NOT NULL、默认值、主键和索引、约束定义）；全部 pgx 调用改为 GORM（`Host.DB` 返回 `*gorm.DB`），语句的条件、锁、`ON CONFLICT`、`RETURNING` 都不变：占位符从 `$n` 换成 `?`，重复的参数按出现次数传（只在类型推断会变的地方加 `::bigint`），引用审核器的 JSON path 改为参数传入（GORM 会把其中的 `?`、`@` 当占位符），数组参数按 `pgdb.Array` 传。原来 `pgx.Batch` 的两处批量写入改为一个事务里的多行 `INSERT`（每条至多 1000 行，仍按键排序，全成或全不成）：审核记录按模型写入并只 `RETURNING id`，统计（`stats_hourly`、`costs`、`user_daily`）的累加改为 `INSERT … ON CONFLICT DO UPDATE` 的同一组累加表达式；保留期清理的 advisory 锁仍是事务级的 `pg_try_advisory_xact_lock`（2026-11-16 起经 `pgdb.TryXactLock` 取，键不变，新旧节点混跑时仍互斥）。2026-11-16 起语句全部由 GORM 按模型生成（§2“插件数据库”），去掉了模仿 pgx 的 `queryRow`/`collect`/`eachRow` 等封装；到期封禁的“删除并记为解封”从一条数据修改 CTE 改为同一事务里的 `DELETE … RETURNING` 加 `INSERT … ON CONFLICT`（用户已先加锁，结果相同），批量清理按 `ctid` 的子查询由 GORM 生成。能力、授权、接口、设置 schema 都不变，没有新迁移；`hostUICompat` 不变（`^3.15`）。线上跑的 0.12.0 是 0.1.286 打的包（`hostCompat >=0.1.286`），develop 上的 0.12.0 之后又改了清单（`risk`/`defaults`，§4“插件权限”，`hostCompat >=0.1.289`），0.12.1 把 `hostCompat` 改为 `>=0.1.290 <0.2.0`（0.1.289 不单独发布）：**不能在线上的 0.1.288 上单独升级**，随核心 0.1.290 一起发布。
 
 ### 72.4 抽取
 
@@ -5766,7 +4648,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - 宿主调用 `PriceUsage`（权限 `prices`，风险 low，插件升级时自动授予）：请求 `{model, semantics: inclusive|exclusive, input, output, cache_read, cache_creation, cache_creation_1h}`，响应 `{priced, cost, reason}`。
   - `cost` 是十进制字符串（美元，8 位小数），按核心模型价格表（`model_prices`，只看完整模型名）和网关结算同一套表达式计算，不乘分组倍率。
   - `reason` 取值：`no_price`（没有启用的价格；与"缺价格时按免费"的全局设置无关）、`video_only`（视频价格不能按 token 计）、`eval_error`。`priced=false` 时 `cost` 为空。
-  - 只读，不扣费、不写用量记录。SDK：`Host.PriceUsage`；`FakeHost` 用可注入的价格表实现。旧核心返回 Unimplemented，插件把它当作未定价。
+  - 只读，不扣费、不写用量记录。SDK：`Host.PriceUsage`；`FakeHost` 用可注入的价格表实现。
 - 内置插件目录换成 moderation 0.3.0。
 
 **72.13.2 三种 LLM 协议**
@@ -5787,7 +4669,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
   - 来源：`audit`（钩子的 pre/post）、`analysis`、`test`、`try`、`simulate`。
   - 没有价格的调用不计金额，只计次数和 token（`unpriced_calls` / `unpriced_tokens`），页面提示"有 N 次调用未定价"。
 - 单次费用只出现在以下响应里：渠道测试、审核器试跑（`cost`）、`/test` 和流程模拟（`cost`，所有调用之和），以及单次分析（`user_analyses.cost`，字符串或 null，另有 `unpriced_calls`）。审核记录上不保存单次费用。
-  - 前四者的 `cost` 是对象 `{mode: priced|unpriced|free, cost?, reason?, billing_model, tokens_in, tokens_out}`。`mode=unpriced` 时 `reason` 取 `no_price`、`video_only`、`eval_error`、`host_too_old`（核心没有 PriceUsage）或 `unavailable`。
+  - 前四者的 `cost` 是对象 `{mode: priced|unpriced|free, cost?, reason?, billing_model, tokens_in, tokens_out}`。`mode=unpriced` 时 `reason` 取 `no_price`、`video_only`、`eval_error` 或 `unavailable`。
 - 接口：
   - `GET /costs?range=24h|7d|30d`（read）→ `{range, from, to, bucket, totals, by_channel:[{channel_id, name, type, model, billing_model, deleted, summary}], by_source:[{source, summary}], trend:[{bucket, cost}]}`。
   - `summary` = `{cost, calls, priced_calls, unpriced_calls, unpriced_tokens, free_calls, tokens_in, tokens_out}`，其中 `cost` 是字符串。
@@ -6136,7 +5018,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 - 流程取决于账号的分组改在调度后审核。pre（同步）审核期间占着该账号的并发名额；在发往账号之前就失败的请求（没有可用账号、余额不足）不会被这类分组审核。
 - 封禁检查仍在请求钩子里，与以前一样在调度前执行。
 
-**发布**：先发含 §85 的核心（`hostCompat >=0.1.258`，`check.AttemptHookFirstCore`），再发插件 0.7.0。
+**发布**：先发含 §85 的核心（0.1.258），再发插件 0.7.0。
 
 测试：`account_binding_test.go`（`TestFlowForAccount` 与界面的 `bindingOps.spec.ts` 用同一组用例；还有 `TestAttemptRuns`、`TestAttemptHookGranted`、`TestUpgradeKeepsGroupBindings`、`TestAccountBindingsModerateEachAttempt`，0.8.0 加 `TestInactiveAccountBindingDoesNotDeferToAttempt` 和 `TestBindingInactiveFollowsSnapshot`）、`manifest_test.go`。
 
@@ -6148,7 +5030,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 
 - 核心观测消费者 `core.account` 同时订阅 `usage_finalized` 和 `attempt_finished`，新增指标 `failed_requests`（`sdk/observation.FailedRequests`）。
 - 失败与 dynweight 计数（§74.5）用同一条规则 `sdk/observation.AttemptOutcome` / `AccountFailure`：一次结束的尝试 `!success && !canceled && !local_failure`，按 `upstream_status_code` 判断，核心豁免 400（请求本身有误）。客户端取消和本地失败（§74.1，不怪账号；网关自身限流的 `error_type` 不是 `upstream_error`，所以总是本地失败）都不算。只看上游自己的状态码：没有上游响应（连接失败、超时，`upstream_status_code` 为 0）的失败总是计入，不退回客户端看到的 `status_code`（插件可能改写过，改写成 400 时会被误豁免）。其余每次失败的上游尝试计一次。成功侧仍是 `success_requests`（成功请求数）。
-- 已知取舍：400 一律豁免，所以账号自身问题却回 400 的上游错误不计失败，例如 Anthropic 余额不足（`400 invalid_request_error`，"Your credit balance is too low…"）。核心的观测里没有上游错误正文（`RequestObservation` 只有状态码和网关自己的 `error_type`），核心按正文识别做不到；这类错误由平台插件的 `ClassifyError` 处理（anthropic/ccgateway 插件对它返回 FAILOVER + 禁用账号），账号会被自动禁用，成功率只是少算这几次。要计入，需要网关在观测里带上插件的判定（例如一个"插件判为账号故障"的布尔字段，`ClassifyError` 给了 `ACCOUNT_EFFECT_COOLDOWN/DISABLE` 时为 true），核心再对它不做 400 豁免；这是网关与 SDK 的改动，本节暂不做。
+- 已知取舍：400 一律豁免，所以账号自身问题却回 400 的上游错误不计失败，例如 Anthropic 余额不足（`400 invalid_request_error`，"Your credit balance is too low…"）。核心的观测里没有上游错误正文（`RequestObservation` 只有状态码和网关自己的 `error_type`），核心按正文识别做不到；这类错误由平台插件的 `ClassifyError` 处理（anthropic 插件对它返回 FAILOVER + 禁用账号），账号会被自动禁用，成功率只是少算这几次。要计入，需要网关在观测里带上插件的判定（例如一个"插件判为账号故障"的布尔字段，`ClassifyError` 给了 `ACCOUNT_EFFECT_COOLDOWN/DISABLE` 时为 true），核心再对它不做 400 豁免；这是网关与 SDK 的改动，本节暂不做。
 - 账号列表视图新增 `outcomes: {success, failed}`（近 60 秒，与统计设置的窗口无关；Redis 不可用时为 null）。成功率 = success ÷ (success + failed)，无请求显示「—」；≥99% 绿、≥95% 黄、其余红。
 - `GET /accounts/stats` 的 `AccountStatsView` 新增 `failed_requests`；插件读核心指标的白名单同步加入 `failed_requests`。一次读取的 账号×指标 上限改为 800（200 个账号 × 4 个核心指标，核心与插件读取同一上限；核心指标列表为 `observation.CoreMetrics`）。
 
@@ -6185,13 +5067,12 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 ### 73.4 人工恢复与豁免
 
 - 「重置状态」或把状态改回「启用」恢复一个被用量限制禁用的账号时，在同一事务里记下造成这次禁用的周期（`waived_window`，即包含 `auto_disabled_until` 前一刻的周期，不是当前周期：周期已结束、巡检还没解除时放行的账号，在新周期超限照样禁用），该周期内不再禁用；总额度模式下一直有效。保存用量限制配置会清除这一豁免。`usage.limit` / 明细的 `limit` 新增 `waived`（当前周期已人工放行），控制台显示「本周期已人工放行」。人工恢复同时清除被暂缓的插件/失败策略禁用（73.3），账号直接回到 `active`。
-- CCGateway 重新授权（§49.17）解除错误和其它自动禁用，但不解除用量限制的禁用：新凭据不减少用量，到周期结束由巡检解除，或人工放行。被暂缓的禁用属于"其它自动禁用"，重新授权时清除。
 - 控制台：状态栏的自动禁用为一个徽章，有自动启用时间（`auto_disabled_until`）的为黄色，没有的（要人处理）为红色（2026-11-02 用户要求；人工禁用仍为红色；启用但人工关闭调度的账号归在「自动禁用」筛选里，徽章同人工禁用为红色）。原因与「何时自动启用」放在徽章的提示框里：鼠标悬停或键盘聚焦（有原因的徽章可用 Tab 聚焦，没有原因的不进 Tab 顺序）时显示，多数移动浏览器轻触也会聚焦并显示，不用 `title` 属性；账号详情的「状态」一栏也直接列出这两项，触屏上以详情为准。用量限制的原因翻译为「用量已达上限：…」（没有限额数字时只显示「用量已达上限」）。行内操作（启用/停用、重置状态、批量编辑）的请求带浏览器 `tz`，返回的行数据里「今日」与列表一致。编辑页「调度与限流」新增「用量限制」卡片，打开该分区时加载，加载成功前不可编辑、加载失败不会提交；账号保存成功后单独提交，提交失败只提示，不影响已保存的账号。
-  - 时区：只有改了周期、周期长度或起点时才改用浏览器时区；只改其它字段时保留已保存的时区，只有时区不同不算修改。从未保存过的限额（GET 返回 `configured:false`、`timezone` 为空；旧核心没有 `configured` 而返回 `"UTC"`，这时整份配置等于默认值即视为未保存）一律从浏览器时区开始，所以第一次开启限额保存的就是浏览器时区。任何一次 `PUT` 都带合法的 IANA `timezone`（新核心必填）。
-  - 金额输入不限步长（`step="any"`），由控制台检查 0–1e9、最多 8 位小数、开启时 > 0；关闭限额时金额可以留空，提交时发上次保存的金额（没有则 `"0"`），新旧核心都能保存。
+  - 时区：只有改了周期、周期长度或起点时才改用浏览器时区；只改其它字段时保留已保存的时区，只有时区不同不算修改。从未保存过的限额（GET 返回 `configured:false`、`timezone` 为空）一律从浏览器时区开始，所以第一次开启限额保存的就是浏览器时区。任何一次 `PUT` 都带合法的 IANA `timezone`（必填）。
+  - 金额输入不限步长（`step="any"`），由控制台检查 0–1e9、最多 8 位小数、开启时 > 0；关闭限额时金额可以留空，照原样提交，核心存 0（0.1.290 之前为兼容旧核心改发上次保存的金额）。
   - 选「不重置」时周期长度行隐藏，`period_count` 置为 1 且不再检查，提交也发 1。
   - 起点按已保存的时刻原样显示（含分钟：小时周期的 UTC 整点在 Asia/Kolkata 显示为 HH:30）；新选的时间按核心的保存规则取整（小时周期取 UTC 整点，其余取浏览器时区整点）后提交。
-- 列表启用开关（2026-11-08 用户要求在列表直接启用/禁用，不新增接口）：开关在「状态」列徽章前（手机卡片在标题右侧），只给有 `account:update`（或 own 级本人账号）且非孤立的账号；只读和孤立账号只显示徽章；`commonControls.schedulable` 不可配置的类型开关置灰。开关只在「启用」（`status=active` 且 `schedulable=true`）时为开，自动禁用、旧 `error`、启用但关闭调度的账号都显示为关。打开发 `PATCH /accounts/:id {status:"active", schedulable:true}`，即人工启用：清除自动禁用、原因和自动启用时间，用量限制按本节第一条放行，恢复调度，不清冷却（冷却用「重置状态」）；关闭发 `{status:"disabled", schedulable:false}`。界面先显示新状态，失败时恢复原状态并提示错误。自动禁用的账号在行菜单里有「转为手动禁用」（同一请求）。批量「启用」作用于所选中未启用的账号（含自动禁用），批量「禁用」作用于未被人工禁用的账号，请求与开关相同。
+- 列表启用开关（2026-11-08 用户要求在列表直接启用/禁用，不新增接口）：开关在「状态」列徽章前（手机卡片在标题右侧），只给有 `account:update`（或 own 级本人账号）且非孤立的账号；只读和孤立账号只显示徽章；`commonControls.schedulable` 不可配置的类型开关置灰。开关只在「启用」（`status=active` 且 `schedulable=true`）时为开，自动禁用、启用但关闭调度的账号都显示为关。打开发 `PATCH /accounts/:id {status:"active", schedulable:true}`，即人工启用：清除自动禁用、原因和自动启用时间，用量限制按本节第一条放行，恢复调度，不清冷却（冷却用「重置状态」）；关闭发 `{status:"disabled", schedulable:false}`。界面先显示新状态，失败时恢复原状态并提示错误。自动禁用的账号在行菜单里有「转为手动禁用」（同一请求）。批量「启用」作用于所选中未启用的账号（含自动禁用），批量「禁用」作用于未被人工禁用的账号，请求与开关相同。
 
 ## 74. 动态权重 dynweight 与它需要的核心能力（2026-10-31，用户要求参照 new-api codingplus 的动态权重迁移）
 
@@ -6231,7 +5112,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - **值的来源**：按 账号 → 分组 → 全局设置 → 进程环境变量 的顺序取，0 或没设置就看下一层。
 - **已声明的变量**（定义见 `core/environment.go`）：
   - `relay_timeout_seconds`、`response_header_timeout_seconds`、`streaming_idle_timeout_seconds`
-  - `max_request_body_mb`：没有账号层，因为选账号之前就要用到。端点声明了 `request.maxBodyBytes` 时，生效值取两者中较大的那个（只放宽，不收紧端点自己要的上限）；端点没有声明时直接用它，所以运营方仍可把默认的 128 MB 调小。未设置：端点声明的值，否则 128 MB（2026-11-08 起，原为 32 MB；CCGateway 引擎 `readRequestBody` 不再设自己的业务上限，以核心的 max_request_body_mb 为准（调用方已用网关密钥认证为核心），只留 1024 MiB 兜底（该设置的最大值，永远不会比核心先拒）。Anthropic 官方 Messages API 仍限 32 MB）。
+  - `max_request_body_mb`：没有账号层，因为选账号之前就要用到。端点声明了 `request.maxBodyBytes` 时，生效值取两者中较大的那个（只放宽，不收紧端点自己要的上限）；端点没有声明时直接用它，所以运营方仍可把默认的 128 MB 调小。未设置：端点声明的值，否则 128 MB（2026-11-08 起，原为 32 MB；Anthropic 官方 Messages API 仍限 32 MB）。
   - `task_timeout_minutes`、`task_poll_max_failures`：只有分组层和账号层，全局层就是对账设置（§8 的 `max_reconcile_age_sec`、`max_poll_failures`），没有进程环境变量。只作用于异步任务；普通预扣条目只按对账设置。`task_timeout_minutes` 在任务登记时折算成截止时间，之后修改不影响已登记的任务；例外是管理员手动重新对账（`POST /usage/:id/reconcile`）：截止时间从重试时刻起、按任务所在分组和账号**当前**的变量重新计算。`task_poll_max_failures` 每次查询失败时重新解析。
   - 三个超时只作用于 HTTP 转发；WebSocket 会话是长连接，只用请求体上限（作为单条消息的上限）。
   - 资源请求（Files API 等，`resource_http.go`）不受 `max_request_body_mb` 和三个超时约束，用自己的上限（文件 512 MB、JSON 16 KB）和期限。
@@ -6316,6 +5197,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - **0.5.6（2026-11-11）**：线上有人改了配置没保存，以为"改了不生效"。事件和配置接口多了字段，好让事件一眼看出按哪一版配置、执行了哪些动作：评估写的权重事件带 `detail.steps`（每个改变了有效权重的策略一步）和 `detail.config_version`，`GET /config`、`PUT /config` 返回 `updated_at`，见下文"接口"；控制台的改动见 §74.6。旧前端忽略新字段照常工作。`hostCompat`、`hostUICompat`、能力、授权、配置文档格式都不变，没有新迁移，可以单独升级插件。
 - **0.5.7（2026-11-12）**：只改原生界面。自写的 `IdPicker` 删除，账号、分组、模型筛选和批量重置、分组配置、账号覆盖弹窗都改用宿主的 `EntityPicker`（§96.6）；模型是精确匹配，候选是价格表里的模型加当前页出现过的模型，不在其中的名称可以按输入原样使用。新建分组配置 / 账号覆盖时，已有配置的分组 / 账号仍会列出，选中就报错并禁止保存（原来是不列出）；非规范写法的 id（`013`）不接受。**`hostUICompat` 改为 `^3.11`，`hostCompat` 抬到 `>=0.1.279 <0.2.0`**。接口、能力、授权、配置文档格式都不变，没有新迁移。
 - **0.5.8（2026-11-13）**：线上把“首字 p95 过慢”调整项关掉后，状态表“命中规则”列仍显示它命中，被当成关掉的规则还在生效。调整项的开关只关策略，规则本身仍启用、照常判定（`last_rules`、位图照写；不再有启用的降权策略引用它，所以按宽松模式，样本不足也判定，比开着时更容易显示命中），但没有启用的策略引用它，命中不降权、不清粘性（线上核对：配置第 9 版以来 7876 条事件的 `steps` 和清粘性都不含它）。`GET /status` 的规则加 `used`（`rules.Resolved.UsedRules`，与 `FiredRules` 共用同一份引用标记）；控制台“命中规则”列只列被使用的规则，展开明细里未被使用的规则标“只观察”并说明、本窗结果用中性色；接口没有 `used`（旧节点）时按被使用处理。接口只加字段，能力、授权、配置文档格式都不变，没有新迁移，`hostCompat`、`hostUICompat` 不变。
+- **0.5.10（2026-11-15）**：插件 SDK 改用 GORM 的试点，功能不变。表结构以 `internal/model` 的 GORM 模型为唯一描述（`model.All()`），与 `migrations/0001`–`0003` 建出的表完全一致（`sub2api-plugin db check` 通过，2026-11-16 起按系统目录比对列类型、NOT NULL、默认值、主键和索引、约束定义）；`store.go` 的 pgx 代码全部改为 GORM（`Host.DB` 返回 `*gorm.DB`），语句语义不变，原来 `pgx.Batch` 的批量写入（计数、基准权重、事件）和重置标记改为一个事务里的多行 `INSERT … ON CONFLICT`（每条至多 1000 行，仍按键排序，全成或全不成）。能力、授权、接口、配置文档格式都不变，没有新迁移；`hostUICompat` 不变（`^3.15`）。线上跑的 0.5.9 是 0.1.286 打的包（`hostCompat >=0.1.286`），develop 上的 0.5.9 之后又改了清单（`risk`/`defaults`，`hostCompat >=0.1.289`），0.5.10 把 `hostCompat` 改为 `>=0.1.290 <0.2.0`（0.1.289 不单独发布）：**不能在线上的 0.1.288 上单独升级**，随核心 0.1.290 一起发布。
 - **只安装不启用**（`BUILTIN_PLUGINS_INSTALL_ONLY`）：启用后每次调度都会调用它，所以要由管理员有意打开。
 
 #### 计数
@@ -6523,7 +5405,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 用途：校验手动加入名单的用户是否存在、在界面和通知里显示用户名。
   - **插件不得把用户数据转给权限更弱的调用方**：`users.read` 是管理员授予插件的，不是授予插件的每个用户的。插件通过自己的路由返回用户信息时，要么要求足以查看用户的插件权限，要么只回答与调用方的工作相关的用户（例如只回答插件自己的记录里出现过的用户），不能让调用方借插件枚举核心用户。
 - **授权**：`users.read`（风险等级 High，原来就在授权表里，现在才有调用）。
-- **Host API**：仍是 8。Host API 8 还没有发布（§74.6），GetUsers 跟它一起发布；`protocol.UsersHostAPIVersion = 8`。
+- **Host API**：仍是 8。Host API 8 还没有发布（§74.6），GetUsers 跟它一起发布。
 - **SDK**：`pluginsdk.GetUsers(ctx, host, ids)`：先去重，再按每批 500 个分批调用，所以 ids 不限个数；测试用 `pluginsdktest.FakeHost.Users`（`map[int64]*pluginv1.UserInfo`）。
 - **核心**：`core.UserDirectory`（`iam` 实现，回答 `core.UserSummary`，由 `grpcruntime` 转成 `UserInfo`；`iam` 不依赖 proto），`grpcruntime.Options.Users`。
 
@@ -6540,151 +5422,19 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - 控制台：插件详情页只在 `mode` 为 `schema` 时显示设置标签；`/plugins/:key/settings`（只有插件权限的人用）遇到 native 设置时转到 `/p/:key/<page>?tab=settings`。插件页面自己用 `GET/PUT /plugins/:key/settings` 读写，回传 `******` 表示沿用密钥。
 - 兼容：0.1.222 及更早的核心对 native 设置不读 schema，GET 会把密钥明文返回，所以用这种写法的插件 `hostCompat` 要求 ≥ 0.1.223（moderation 0.6.1 起）。
 
-## 76. CCGateway guard 与 compose 部署（2026-11-01，用户决定；核心 0.1.227、插件 ccgateway 0.1.119）
+## 76. CCGateway guard 与 compose 部署（已删除）
 
-用户决定（2026-11-01）：控制器用 Go 重写，不再持有 `docker.sock`；新增宿主机服务 **guard** 代为执行 Docker 操作；guard、控制器和共享 Xray 网关都由 docker compose 启动，不用 systemd。设计与决定见 `docs/ccgateway-guard/`（`00-decisions.md` 优先），本节只写各方必须遵守的契约。
-
-### 76.1 拓扑
-
-- compose 项目 `ccgateway`，目录 `/opt/ccgateway`（root 0700），`compose.yml` 与 `.env` 都是 root 0600。
-- 服务：
-  - `guard`：host 网络、`pid: host`，持有 `docker.sock`，监听控制网 `172.29.255.1:8790`；
-  - `controller`：Go 控制器，在外部网络 `ccg-control`（`172.29.255.0/29`，网桥 `ccg-control0`，由安装脚本创建）上固定 `172.29.255.2`，只把 8787 映射到 `127.0.0.1:8787`（Caddy 和 SSH 转发的路径不变）；
-  - `egress`：共享网关，放在 `profiles: [egress]` 下，只在网关纳入 compose 的维护窗口里显式启用。
-- 数据根拆分：
-  - `/opt/ccgateway-controller` 挂成控制器的 `/data`，放控制器自己的状态；
-  - `/opt/ccgateway-runtime` 只放账号与网关容器的挂载源（`<key>/resolv.conf`、`<key>/app.nft`、`shared-egress/` 下的网关配置），归 guard 使用。
-- **任何时候都不对 `ccgateway` 项目执行不带服务名的 `up`、`down`、`rm`**，一律 `up -d --no-deps <服务>`：网关纳入 compose 后，不带服务名的命令会重建或删除网关，所有账号断网。
-
-### 76.2 安装路径按控制器镜像的标签选择
-
-安装脚本（§49.16，SSH 或本机）拉到控制器镜像后读标签 `io.sup2api.ccgateway.guard-api`：
-
-- 不是 `1`（Python 0.1.118 及更早）→ **docker run 路径**，与 0.1.226 逐字相同（`testdata/install-legacy-0.1.226*.sh` 守护）。唯一新增的检查：`ccg-controller` 带 `com.docker.compose.project=ccgateway` 标签，或 `/opt/ccgateway-controller/.adopted`（或 `.adopting`）存在时，返回 `legacy_blocked` 并退出。这时控制器数据已经搬走，旧控制器会看到空状态。回到 Python 只能按 release 手册（`docs/ccgateway-guard/04-migration-rollout.md` §5.3）。
-- 是 `1`（Go 控制器）→ **compose 路径**（§76.4）。
-
-插件回滚到 0.1.118 时，核心因此自动走回旧路径，不需要开关。
-
-### 76.3 compose 模板与 `.env`
-
-- 模板只有一份：`server/internal/ccgateway/compose/ccgateway.compose.yml`，`//go:embed` 嵌入核心。安装脚本用带引号的 heredoc（`<<'CCG_COMPOSE_EOF'`）原样写到 `/opt/ccgateway/compose.yml`。手工部署 guard 和隔离实例都用这份文件。
-- 实例相关的值都写成 `${VAR:-生产值}`，生产默认值由测试固定。guard 和 controller 的权限由测试断言：
-  - guard：`cap_drop: [ALL]`，只加回 `NET_ADMIN`、`SYS_ADMIN`、`SYS_PTRACE`；`no-new-privileges`，根文件系统只读；挂载全部用长语法加 `create_host_path: false`。挂载项：`docker.sock`、运行环境根、`/opt/ccgateway`、只读的 `/opt/ccgateway-runtime.env`、`/var/lib/ccgateway-guard`。不挂 `/run/xtables.lock`（决定 D6），也不挂控制器数据目录。
-  - controller：没有 `network_mode`、`pid`、`privileged`、`cap_add`，`cap_drop: [ALL]`，`no-new-privileges`，根文件系统只读；只挂 `…:/data`，不挂 `docker.sock`；端口只绑定 `127.0.0.1`；健康检查是 `/ccg-controller healthcheck`。
-  - 两个网络都是 `external`。
-- `.env` 是镜像和令牌的**唯一来源**。核心只写四个变量：`CCG_GUARD_IMAGE`、`CCG_CONTROLLER_IMAGE`、`CCG_GATEWAY_IMAGE`、`CCG_GUARD_TOKEN`。主机上已有的其他 `CCG_*` 行原样保留。
-  - `CCG_GATEWAY_IMAGE` 已有就保留，没有才写插件的 egress 镜像。
-  - 控制器的 `CCG_CONTROLLER_IMAGE` 由 `environment` 从 `.env` 取，覆盖 `env_file`（`/opt/ccgateway-runtime.env`，内容仍由 §49.16 的 `controllerEnv` 写）中的同名行；`CCG_RUNTIME_ROOT` 被覆盖为 `/data`。
-- **guard 令牌**：32 字节随机数的 hex，**只在主机上生成**（`od -An -N32 -tx1 /dev/urandom`），已有且格式正确就保留。它不在脚本文本、stdin、核心的数据库或日志里，只以环境变量交给 guard 和控制器。
-
-### 76.4 compose 路径的安装、finish、rollback
-
-CCG_RESULT 协议不变：结果只由脚本打印，以最后一行 `^CCG_RESULT=[a-z_]+$` 为准；docker 和 compose 的输出全部丢弃。失败的安装自己回滚时，在结果之前另起一行 `CCG_ROLLBACK=restored|removed|restore_failed`，核心把它放进 `details.rollback`。
-
-**安装**依次执行：
-
-1. `docker compose version`（没有 → `compose_unavailable`）。
-2. systemd `ccgateway-bridge-guard` 仍在运行 → `bridge_guard_active`。
-3. 拉 guard 镜像（失败 → `image_pull_failed`）。
-4. 建目录，并检查运行环境根和控制器数据在同一文件系统（`stat -c %d`）。
-5. 取 compose 锁 `/opt/ccgateway/.compose.lock`（`flock`，主机没有 `flock` 时不加锁），持有到脚本结束；guard 的自升级取同一把锁。
-6. 从 stdin 写环境文件，写 `compose.yml`。
-7. 写 `.env`。本次安装第一次改动前，把原文件留作 `.env.prev`。
-8. 建或核对控制网 `ccg-control`（子网不一致 → `control_network_conflict`）。
-9. `compose config -q`。
-10. **先起 guard**（`up -d --no-deps guard`），最多 30 秒轮询 `exec -T guard ccgateway-guard ready`，失败 → 恢复 `.env` 与 guard → `guard_unavailable`。
-11. 处理现有控制器：
-    - docker run 起的控制器 → 改名 `ccg-controller-prev` 并停止，写 `.transition`（过渡）；
-    - 已经是 compose 管理的控制器 → 删除上一轮未完成安装留下的 prev；
-    - 只剩 prev（上次安装在改名后中断）→ 先改回原名。
-12. **adopt** 搬数据（§76.5），失败 → release，启动 prev → `adopt_failed`（对外 `install_failed`）。
-13. `up -d --no-deps controller`。失败就内联执行与 rollback 相同的恢复 → `controller_unhealthy`。
-14. 成功打印 `started`。
-
-`started` 之后与旧路径相同：核心轮询 `/health`，成功执行 finish，失败执行 rollback。
-
-**finish**：删除 `ccg-controller-prev` 以及 `.env.prev`、`.transition`，打印 `done`。在 docker run 主机上，两个文件不存在，行为与 0.1.226 相同。
-
-**rollback**：`ccg-controller` 归 compose 管理，或者 `.env.prev`、`.transition` 存在时走 compose 分支，否则执行 0.1.226 原文（同样有逐字测试）。compose 分支：
-
-- 先 `rm -sf controller`。
-- 过渡中：release 搬回数据，恢复 `.env.prev` 并重起 guard，把 prev 改回原名并启动，结果 `restored`；没有 prev 时为 `removed`。
-- compose 主机上的重装或升级：恢复 `.env.prev`，再 `up -d --no-deps guard controller`，结果 `restored`。
-- 全新主机：`removed`。
-- 搬不回或起不来：`restore_failed`。
-
-guard 只维护网桥规则，与 host 网络的 Python 控制器互不干扰，所以过渡回滚后 guard 保持运行。
-
-只有显式执行"安装控制器 / 重新安装"（SSH 或本机）才会写入或更新 guard 镜像。guard 镜像**不进插件包**，`runtime/bundled` 和一键升级都不碰它。
-
-### 76.5 数据搬迁（adopt / release）
-
-由核心脚本在主机上执行（guard 不做），只用同一文件系统内的 `mv`，目标已存在即失败。`KEY` 是 `[1-9][0-9]*` 或 `d[0-9a-f]{16}`。
-
-| 相对 `/opt/ccgateway-runtime` | adopt |
-|---|---|
-| `.lock`、`runtime.json`、`uploads/`、`backups/` | 搬到 `/opt/ccgateway-controller/` 同名 |
-| `<KEY>/` 下除 `resolv.conf`、`app.nft` 外的所有项（含隐藏文件、`worker-backups*`、`cli-backups`、不认识的文件） | 搬到 `/opt/ccgateway-controller/<KEY>/` |
-| `<KEY>/resolv.conf`、`<KEY>/app.nft` | 留（已挂进账号容器，inode 不能变） |
-| `shared-egress/state.json` | 搬为 `/opt/ccgateway-controller/shared-egress-state.json` |
-| `shared-egress/` 下其他文件 | 留（网关配置目录；`*.tmp` 等记入清单） |
-| 不是 `KEY` 的顶层项（如 `controller-before-0.1.115/`）、符号链接 | 留，记入清单 |
-
-- 每搬一项，先在 `.adopting` 记一行 `mv <相对路径>`；不搬的项记 `keep <相对路径>`。全部完成后改名为 `.adopted`。`.adopted` 已存在时 adopt 直接成功。全新主机也写一个空的 `.adopted`。
-- release 按清单逐项搬回（目标已存在就停下，报 `restore_failed`，两边都保留）。之后再把 Go 控制器后来新建的项（新账号目录、新备份）也搬回，因为 Python 控制器也要用。最后删除清单。
-- 中断后再执行安装：已搬的项不会重复搬，清单接着写。
-
-### 76.6 接管前拦截：`controller_adopt_required`
-
-- `images.json` 的控制器条目带 `"labels": {"io.sup2api.ccgateway.guard-api": "1"}`（§53.10）。固定引用 `ControllerImage` 换成 Go 控制器后，常量 `ControllerImageGuardAPI` 改为 `true`。
-- 满足以下两条时，核心拒绝把这个控制器自升级到带标签的镜像，返回 409 `controller_adopt_required`：
-  - 目标是带标签的内置控制器，或者是声明了标签的固定引用；
-  - 当前控制器的 `/health.features` 里没有 `guard-api-v1`。
-- 拒绝发生在任何改动之前，覆盖以下入口：
-  - 一键升级（`POST runtime/install`）：整个请求 409；
-  - `runtime/bundled`：controller 一项 `failed` + `controller_adopt_required`，不上传；egress、app 照常执行；
-  - 手动上传 load + apply 的 controller：409，配置不改。
-- 核心不认识的引用（手动覆盖值）不拦截。旧控制器自己会失败：Go 镜像里没有 `python`，辅助容器起不来，返回 503 `runtime_unavailable`，旧控制器不受影响（04 §3.5）。
-- 接管只能走"安装控制器"（compose 路径的过渡）。
-
-### 76.7 结果码
-
-| 结果 | HTTP | 对外 `details.reason` |
-|---|---|---|
-| `compose_unavailable` | 503 | `compose_unavailable` |
-| `guard_unavailable` | 503 | `guard_unavailable` |
-| `legacy_blocked` | 409 | `legacy_blocked` |
-| `control_network_conflict`、`bridge_guard_active`、`data_cross_device`、`compose_locked`、`compose_config_failed`、`controller_name_taken`、`adopt_failed` 及其他未知结果 | 503 | `install_failed`（日志写原值） |
-| `controller_adopt_required`（核心，§76.6） | 409 | `controller_adopt_required` |
-
-控制台为这四个对外结果码提供中英文文案。
-
-### 76.8 镜像
-
-- `images.go` 新增 `GuardImage = ghcr.io/sub2api-devs/ccgateway-guard@sha256:<64 hex>`，由 CI（`ccgateway-images.yml` 的 `ccgateway-guard` 矩阵项）构建推送后填入。配置可选字段 `images.guard` 可以覆盖它，与 `gateway` 一样，例如在 GHCR 私有期间指向主机上本地构建的标签（`build-ccgateway-images.sh` 加 `CCG_BUILD_GUARD=1`）。插件包里没有 guard：包内引用不影响它，`runtime/bundled` 的角色里也没有它。
-- 控制器镜像（Go）：
-  - 标签：`io.sup2api.ccgateway.guard-api=1` 与 `io.sup2api.ccgateway.shared-egress=1`，构建脚本缺任一个就失败；
-  - 不含 `python`，缺 `CCG_GUARD_URL` 或 `CCG_GUARD_TOKEN` 时立即以非零码退出；
-  - `/health.features` 含 `guard-api-v1`。
-- `CCG_CONTROLLER_IMPL=python` 仍能构建旧 Python 控制器，CI 以 `-python` 后缀标签推送，用于回滚，保留到观察期结束。
-
-### 76.9 兼容与限制
-
-- 不改 Host API，没有迁移。`ccgateway_remote` 只多一个可选字段 `images.guard`。
-- `controller` 模式（ovh）的一键升级和 `runtime/bundled` 只调用控制器 API，不执行安装脚本。
-- 核心回滚到 0.1.226 期间，不得经 SSH 或本机在已过渡的主机上安装控制器：旧核心没有 `legacy_blocked` 检查。
-- 本机安装（§53.9）要求核心所在环境本身有 `docker compose` v2。
-- 控制台重装会从 stdin 重写 `/opt/ccgateway-runtime.env`，手工加的行（如 `CCG_XRAY_IMAGE`）会丢失。这是现有行为，S4 的手工接管保留原文件。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 77. 定时任务框架与红色账号停容器（2026-11-03，用户要求；核心 0.1.235）
 
-用户要求（2026-11-03）：散落在各模块的定时循环统一到一个框架，控制台能看到执行情况；CCGateway 账号红色满 3 小时停容器。设计见 `docs/TASK-FRAMEWORK-DESIGN.md`、`plugins/ccgateway/docs/ACCOUNT-RUNTIME-PARKING-DESIGN.md`，实施计划 `docs/TASK-FRAMEWORK-PLAN.md`。本节只写各方必须遵守的契约。
+用户要求（2026-11-03）：散落在各模块的定时循环统一到一个框架，控制台能看到执行情况。设计见 `docs/TASK-FRAMEWORK-DESIGN.md`，实施计划 `docs/TASK-FRAMEWORK-PLAN.md`。本节只写各方必须遵守的契约。
 
 ### 77.1 两类任务与接口
 
 - `core.Tasks`（`internal/core/ports_scheduled_tasks.go`）是唯一入口：`Register(TaskSpec)`、`Trigger`、`Enqueue`、`EnqueueTx`。业务代码不 import gocron 或 River。
 - `node` 任务：每个节点各跑一次（gocron v2.22.0，单例模式，上一次没跑完就跳过）。`RequireWork` 为真时，本节点不能做后台工作就跳过。
-- `cluster` 任务：每个时段全集群只跑一次（River v0.49.0，可工作节点执行，主节点按周期投递）。同一任务两次运行不会重叠：`scheduled_tasks` 的租约保证。
+- `cluster` 任务：每个时段全集群只跑一次（River v0.49.0，可工作节点执行，主节点按周期投递）。同一任务两次运行不会重叠：`scheduled_tasks` 的租约保证。River 跑在 `database/sql` 驱动上（2026-11-16 GORM 迁移起，`task/cluster.go`），没有 LISTEN，只轮询（`PollOnly`，间隔 1 秒）：本节点在事务外投递的运行（`Enqueue`、`Trigger`）立即被本节点取走，事务内投递（`EnqueueTx`）或别的节点投递的最多等 1 秒。
 - 名字：核心 `core.<模块>.<任务>`；第二批的插件任务 `plugin.<key>.<id>`。`Title` 必须有 `en` 和 `zh`。
 - 计划：`Every` 或 5 段 cron（UTC）。`@every` 按间隔的整数倍对齐。cluster 最短 5 秒，node 最短 1 秒。超时上限：cluster 1 小时，node 10 分钟。
 - Handler 必须幂等并遵守 ctx（超时、关停、撤销准入都会取消它）。它自己不查准入、不加锁、不 recover。返回 `core.TaskRetryAfter(d)`：cluster 任务延后重试，不算失败；node 任务记为跳过。
@@ -6701,10 +5451,7 @@ guard 只维护网桥规则，与 host 网络的 Python 控制器互不干扰，
 - node 任务状态在 Redis：
   - `tasks:node:<node_id>`：状态哈希，TTL 2 分钟，每 30 秒刷新；
   - `tasks:node:<node_id>:runs:<name>`：最近 100 次运行，TTL 24 小时。
-- 迁移 0085：
-  - `ccgateway_runtimes.parked_at`、`woken_at`；
-  - `blocked_revision`、`blocked_at`，0.1.236 起使用（§77.7）；
-  - `accounts.status_changed_at` 及其触发器：只在 status、schedulable、auto_disabled_until 变化时写。
+- 迁移 0085 给 CCGateway 停容器加的列与 `accounts.status_changed_at` 触发器已由 0102 删除。
 - 0076–0085 都是幂等迁移，只加表、索引或可空/有默认值的列。旧核心忽略它们。
 
 ### 77.3 控制台接口
@@ -6734,12 +5481,9 @@ cluster 任务：
 | 任务 | 计划 / 超时 |
 | --- | --- |
 | `core.task.housekeeping` | 1h / 1m |
-| `core.ccgateway.park_runtimes` | 1m / 50s |
-| `core.ccgateway.draft_sweep` | 1m / 50s |
 | `core.account.automatic_recovery`（接手时先跑一次） | 1m / 50s |
-| `core.account.lifecycle_status` | 1m / 50s |
-| `core.account.preparation_cleanup` | 1m / 50s |
-| `core.helper.payload_expiry` | 1m / 50s |
+| `core.account.lifecycle_status`（0.1.290 删除，§101.5） | 1m / 50s |
+| `core.account.preparation_cleanup`（0.1.290 删除，§101.5） | 1m / 50s |
 | `core.audit.plugin_writes_purge` | 1h / 5m |
 | `core.events.retention` | 1h / 5m |
 | `core.jobs.retention` | 1h / 5m |
@@ -6754,7 +5498,7 @@ node 任务：
 | `core.webui.asset_lease` | 30s / 30s | 登记时先跑一次，`/healthz` 等它 |
 | `core.account.quota_mirror` | 60s / 30s | 镜像预热成功后才登记；插件变更时触发 |
 
-不再使用的 Redis 锁：`account:lifecycle-status:sweep`、`account:preparations:sweep`、`ccgateway:drafts:sweep`、`audit:plugin-writes`、`events:retention`、`jobs:retention`、`notify:purge`。
+不再使用的 Redis 锁：`account:lifecycle-status:sweep`、`account:preparations:sweep`、`audit:plugin-writes`、`events:retention`、`jobs:retention`、`notify:purge`。
 
 0.1.236 迁入的任务见 §77.7。
 
@@ -6769,33 +5513,9 @@ node 任务：
 
 清单见设计 §14.3；0.1.236 起白名单就是这份清单。`internal/task/ticker_guard_test.go` 按文件列出允许的 `time.NewTicker`/`time.Tick` 及原因：新增一个就失败，减少了也要同步改清单。
 
-### 77.6 红色账号停容器
+### 77.6 红色账号停容器（已删除）
 
-- 红色与控制台一致（§73.4），满足其一即可：
-  - `disabled`；
-  - `auto_disabled`/`error` 且没有恢复时间；
-  - `active` 但不可调度。
-- 设置 `ccgateway_remote.park_after_hours`：整数 0–720，默认 3，0 为不停。`GET/PUT /system/ccgateway/remote-config` 带这个字段；PUT 不带时保留原值。
-- `core.ccgateway.park_runtimes`：
-  - 条件：账号红色已满设定小时数，从 `status_changed_at` 与 `woken_at` 中较晚的一个算起；
-  - 动作：写 `parked_at` 并下发一次 `enabled:false`，容器停在原地，不重建、不换镜像，卷与登录保留；
-  - 每次写审计 `account.runtime_parked`；
-  - 账号状态变化后，标记自动失效。
-- 唤醒（写 `woken_at`、审计 `account.runtime_woken`，等容器就绪，最长 60 秒）由以下操作触发：
-  - 测试账号；
-  - 重新授权；
-  - 运行环境 `POST .../sync`（控制台按钮“启动”）。
-- 原因码：
-
-| 原因码 | 出现在 | 含义 |
-| --- | --- | --- |
-| `account_parked` | `GET /system/ccgateway/accounts/:id/status` 的 `status:"blocked"` 的 `reason` | 容器因账号停机被停止 |
-| `runtime_parked` | 409 | 对停着的容器做别的运行环境操作 |
-| `runtime_parked` | 额度刷新 | 手动刷新回 409；后台刷新保留快照 |
-| `runtime_not_ready` | 503 | 唤醒后 60 秒内没有就绪 |
-
-- 账号视图有只读字段 `runtime_parked`，只有 ccgateway 账号带它。
-- 回滚到旧核心是安全的：旧核心认为这些容器都应运行，会在 60 秒内重新启动它们。
+0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ### 77.7 0.1.236 的任务（计费、凭证、同步）
 
@@ -6805,8 +5525,6 @@ cluster 任务：
 | --- | --- | --- |
 | `core.account.usage_limits` | 5s / 1m | 每节点循环，会话 advisory 锁 `account.usage_limits` |
 | `core.account.credential_refresh`（接手时先跑一次） | 5m / 15m | 每节点循环，Redis 锁 `account:refresh:sweep`；每账号锁 `account:refresh:<id>` 保留 |
-| `core.helper.usage_replay` | 5s / 45s | 每个节点都回放，没有认领 |
-| `core.ccgateway.runtime_sync` | 1m / 10m | 每个节点各扫一遍，逐个同步 |
 | `core.usage.reconcile` | 10s / 2m30s | 每节点循环，Redis 锁 `usage:reconcile` |
 
 node 任务（可工作节点各跑，`RequireWork`）：
@@ -6816,8 +5534,6 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | `core.account.quota_sweep` | 5s / 5m | 额度行在 PG 里认领，各节点分摊 |
 | `core.usage.settlement_retry` | 30s / 5m | `SKIP LOCKED` + 幂等键，各节点分摊 |
 
-- `core.ccgateway.runtime_sync`：一轮并发 4 个，每个运行环境最长 90 秒，被别的节点锁着的跳过；结果 `count` 是这一轮的运行环境数，有失败时 `message` 写失败个数。代理变更等需要立刻全量同步时，对它发一次手动运行（`Trigger`，同一时间最多排一个）。
-- 阻断去重（§49.18）：`enabled:false` 下发成功后，在运行环境的 advisory 锁内写 `blocked_revision`（修订号前 16 位十六进制右移 1 位）和 `blocked_at`。10 分钟内同一修订号、且晚于本节点最近一次变更（kick、账号/代理/配置消息）的记录，任何节点都不再下发。没有 `ccgateway_runtimes` 行的旧式运行环境只用本节点内存记录。
 - `core.usage.reconcile`：运行等本轮领取的对账全部结束才返回，`count` 是领取条数，耗时是真实的一轮。行租约、幂等键、状态机不变。
 - 不再使用的锁：Redis `account:refresh:sweep`、`usage:reconcile`；PG 会话 advisory 锁 `account.usage_limits`。
 - 滚动升级：0.1.235 节点仍跑原循环，0.1.236 节点跑任务，同一件事可能各做一次，都幂等（对账靠行租约，用量汇总靠 `SKIP LOCKED`，用量限制写入前重查，结算靠幂等键，helper 回放靠回执事务与 outbox 摘要）。不改 schema，可以自动回滚。
@@ -6833,7 +5549,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | `scope` | `cluster`（默认，不写就是它，现有插件不用重发）或 `node` |
 | `title` | 控制台显示的名称（多语言），没有时显示“插件名 · id” |
 
-- `node` 任务：每个加载了这个插件的节点各跑一次，用自己的插件实例；最多 10 个，间隔不小于 5 秒，超时不超过 600 秒；需要后台许可（`RequireWork`）。声明了 `node` 任务的插件，`hostCompat` 不能包含 0.1.236 及更早的核心（旧核心会把它当全集群任务跑），打包检查报 `below_node_jobs_core`。
+- `node` 任务：每个加载了这个插件的节点各跑一次，用自己的插件实例；最多 10 个，间隔不小于 5 秒，超时不超过 600 秒；需要后台许可（`RequireWork`）。
 - `cluster` 任务：任务名 `plugin.<key>.<id>`，`scheduled_tasks.source = 'plugin_manifest'`。行由运行着插件当前版本的节点按 manifest 写入，所有节点从行登记（River 主节点不一定装了这个插件）；执行节点本机没有这个插件时每 5 秒推迟一次，超过任务超时才记失败。插件停用或卸载时删行，换版本时按新版本改写。
 - **上限（0.1.238 起上传时检查）**：全集群任务超时不超过 3600 秒、每节点任务不超过 600 秒，不写为 60 秒；间隔不小于 5 秒（`manifest.MaxClusterJobTimeoutSec` 等常量，与框架的 `task.MaxClusterTimeout` 等由测试保持一致）。超出的新上传、市场安装返回 `jobs[i].timeoutSec`/`schedule` `out_of_range`。早先上传、已存的版本不再检查：照常加载、启用、升级、回滚，超出部分在登记任务时截断并记 WARN；内容完全相同的包重新上传（含市场重装）跳过检查。
 - 插件 API `GET /plugins/:key/jobs` 每个任务带 `effective_schedule`、`effective_timeout_sec`（核心实际使用的值）和 `adjusted`（被截断的说明，没有则省略）；插件“任务”页签显示实际超时，被调整的标“已按上限调整”。
@@ -6868,7 +5584,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 **SDK**
 
 - `pluginsdk.JobMux`：`HandleJob(id, func(ctx, JobRun) (JobResult, error))`，实现 `JobRunner`；没有处理函数的 id 返回 `NOT_FOUND`（记为失败，不会静默成功）。
-- `host.Tasks()`：`Sync`、`Upsert`、`Delete`、`List`、`Enqueue(ctx, id, args, RunAt(t), UniqueKey(k))`。核心早于 Host API 9 时返回 `ErrTasksUnimplemented`，插件应当当作非致命错误。
+- `host.Tasks()`：`Sync`、`Upsert`、`Delete`、`List`、`Enqueue(ctx, id, args, RunAt(t), UniqueKey(k))`。
 
 **控制台**
 
@@ -6952,7 +5668,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 - `POST /auth/login/2fa`（公开）：`{flow_token, code}` 返回 token。`code` 是验证器的 6 位码或备用码（大小写、连字符不限）。错码不作废流程；同一账号连错 5 次锁 5 分钟（429），也计入 §14.2 的登录限速。流程只保留 5 分钟，期间改了密码就失效。
 - `POST /auth/passkey/begin`、`/auth/passkey/finish`（公开）：可发现凭据登录，不问邮箱，要求用户验证（UV），成功后不再问二次验证，同 new-api。失败统一 401 并计入 IP 限速；`begin` 每个 IP 每分钟最多 30 次。挑战只能用一次。
 
-`auth_flows` 存这些跨请求的步骤（两个节点共用，只存 token 的哈希）。不用 Redis，这样挑战和设置中的密钥不依赖 Redis 的可用性；过期行在下次创建流程时清掉。
+这些跨请求的步骤存 Valkey（`s2a:flow:*`，各节点共用，只存 token 的哈希，5 分钟，§100.3）；Valkey 不可用时 503。（2026-11-15 前存 PostgreSQL 的 `auth_flows`，迁移 0101 删除了这张表。）
 
 ### 79.2 二次验证（`/me/two-factor`）
 
@@ -6971,8 +5687,8 @@ node 任务（可工作节点各跑，`RequireWork`）：
 
 ### 79.4 登录会话和资料
 
-- `GET /me/sessions`：每个 refresh token 家族一行，`{id, method, ip, user_agent, created_at, last_used_at, current}`。access token 增加声明 `fam`，用来标出当前会话；升级前签发的 token 没有它，这时不标当前会话，`POST /me/sessions/revoke-others` 回 409，刷新后恢复。
-- `DELETE /me/sessions/:id`、`POST /me/sessions/revoke-others`：吊销 refresh token，被撤销会话的 access token 立即失效；保留的会话下一次请求 401 后静默续期（§43.2，2026-11-12 起）。
+- `GET /me/sessions`：每个会话一行（Valkey，§100.2），`{id, method, ip, user_agent, created_at, last_used_at, current}`，按最近使用倒序；`current` 标出调用者自己的会话。`ip`、`user_agent` 是最近一次记下使用（续期，最多每 5 分钟一次）时的地址与浏览器，不只是登录时的。
+- `DELETE /me/sessions/:id`、`POST /me/sessions/revoke-others`：被撤销的会话立即失效（§100.4）。`revoke-others` 另给调用者的会话换一个新令牌，回 200 `{access_token}`（没有新令牌时为 `{}`），旧令牌再用 30 秒；`DELETE` 回 204。
 - `PUT /me {display_name}`：改自己的显示名称，回 `GET /me` 的内容。语言存在浏览器里。
 - 上面所有修改都写审计日志（`user.two_factor.*`、`user.passkey.*`、`user.session.*`、`user.profile.update`、`user.security.reset`）。
 
@@ -7005,7 +5721,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 
 ### 80.1 self 虚拟权限
 
-自助接口用虚拟权限表达，每个已认证、有效的用户隐式持有（`authz.loadPermissionSet` 一处并入，没有角色的用户也有）；不进 `permissions` 表、`role_permissions`，不出现在角色编辑器（`GET /permissions`），只出现在访问密钥选择器（排在最前，模块 `self`）。会话天然持有，访问密钥须显式勾选。路由用 `Router.Self(method, path, perm)` 注册（就是 `Perm`）。
+自助接口用虚拟权限表达，每个已认证、有效的用户隐式持有（`authz.loadPermissionSet` 一处并入，没有角色的用户也有）；不进 `permissions` 表、`casbin_rule`，不出现在角色编辑器（`GET /permissions`），只出现在访问密钥选择器（排在最前，模块 `self`）。会话天然持有，访问密钥须显式勾选。路由用 `Router.Self(method, path, perm)` 注册（就是 `Perm`）。
 
 | 权限 | 接口 |
 |---|---|
@@ -7020,8 +5736,8 @@ node 任务（可工作节点各跑，`RequireWork`）：
 - `GET /me/verify/methods?scope=<scope>&context=<METHOD path>`（`context` 可省略，控制台带上 `verification_required` 的 `details.context`，期 4 收尾 F4）→ `{scope, password_required, methods:[{method:"passkey"|"totp"|"password", available, reason?}]}`。`reason`：`not_enrolled`、`access_key`（通行密钥只用于浏览器会话）、`strong_method`（配了通行密钥或 2FA 后不再接受只用密码）。未知 scope 400。
 - **策略**：配了通行密钥或 2FA（TOTP，备份码也算）时只接受这两种；都没配才接受密码。例外 `password_required = true`（`superadmin.transfer`、`self.password.change`，以及超管本人去掉最后一个强因素：`user.security.reset` 作用于自己、`self.2fa.disable` 而没有通行密钥、`self.passkey.delete` 删唯一的通行密钥而没有 2FA，期 4 收尾 F4，`iam.lastSuperFactor`，按 scope 与操作判断，操作里的用户 id 按路由的读法解析，`/me/verify/methods`、`POST /me/verify` 与 403 的 `details` 同一处计算；proof 记下是否验过密码，消费时按当时的因素再判断一次，需要密码而签发时没验的不放行；关 2FA、删通行密钥在移除事务里锁用户行后再判断一次，防并发同时移除）：密码 + 一种第二因素；都没配只验密码。非超管不受影响。访问密钥只能用 2FA 或（无强方式时）密码。
 - `POST /me/verify/begin {scope}` → `{flow_token, expires_in, options}`：通行密钥断言（要求 UV，只列本人的通行密钥），计入登录 IP 限速与 begin 限速。
-- `POST /me/verify {scope, context, method, password?, code?, flow_token?, credential?}` → `{proof, expires_at, method, scope, context}`。`context` 是要执行的操作 `"METHOD /api/v1/path"`（就是 403 `details.context`，原样回传）。密码计入登录限速，错码计入 2FA 锁定（5 次锁 5 分钟），通行密钥失败计入 IP 限速，返回 400 `fields[{field:"credential", code:"failed"}]`（不是登录用的 401：控制台会把 401 当作会话过期去刷新）；方法不可用 400 `fields[{field:"method", code:"unavailable"}]`。写审计 `user.security_verify`（`detail {method, scope, context, via, access_key_id?}`）。
-- **proof**：5 分钟、只能用一次，绑定用户 + 本次会话（JWT `fam`）或访问密钥 id + scope + 操作上下文；存在 `auth_flows`（各节点共用，`DELETE … RETURNING` 原子消费，不依赖 Redis）。拿去用于别的 scope、别的操作、别的会话或密钥时被拒并作废；别的用户出示无效。一个请求消费过 proof 后，同一请求里同 scope 的再次检查直接通过。
+- `POST /me/verify {scope, context, method, password?, code?, flow_token?, credential?}` → `{proof, expires_at, method, scope, context}`。`context` 是要执行的操作 `"METHOD /api/v1/path"`（就是 403 `details.context`，原样回传）。密码计入登录限速，错码计入 2FA 锁定（5 次锁 5 分钟），通行密钥失败计入 IP 限速，返回 400 `fields[{field:"credential", code:"failed"}]`（不是登录用的 401：控制台会把 401 当作会话结束，送回登录页）；方法不可用 400 `fields[{field:"method", code:"unavailable"}]`。写审计 `user.security_verify`（`detail {method, scope, context, via, access_key_id?}`）。会话调用时响应多一个 `access_token`：同一会话的新令牌（防会话固定，§100.4）。
+- **proof**：5 分钟、只能用一次，绑定用户 + 本次会话（会话 id，令牌轮换不变）或访问密钥 id + scope + 操作上下文；存在 Valkey（`s2a:flow:step_up_proof:*`，各节点共用，`GETDEL` 原子消费；Valkey 不可用时 503，§100.3）。拿去用于别的 scope、别的操作、别的会话或密钥时被拒并作废；别的用户出示无效。一个请求消费过 proof 后，同一请求里同 scope 的再次检查直接通过。
 - **接口**：路由视图 `Router.StepUp(scope)` 在权限检查之后消费 proof（没有权限的调用者不会耗掉 proof）；失败 403 `verification_required`，`details {scope, context, methods, password_required}`，前端据此弹出验证并带 proof 重放一次。
 
 | scope | 接口 | 所需权限 |
@@ -7043,14 +5759,11 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | `system.update` | POST `/system/upgrades`、升级计划与节点的 recover 操作、`/system/releases/import` | `system:update:execute` / `recover` |
 | `system.update` | PUT `/system/update-source`（更新源决定下一次升级运行的代码；期 4 R0） | `settings:manage` |
 | `self.access_key.write` | POST `/me/access-keys`、PATCH `/me/access-keys/:id`（只允许登录会话；期 4 收尾 F3） | 无（登录会话） |
-| `host.install` | ccgateway：PUT `/system/ccgateway/remote-config`，POST `remote-fingerprint`、`remote-test`、`controller/install`、`runtime/install`、`runtime/uploads`（创建镜像上传，打开这次上传的二次验证会话，见下）、`runtime/bundled`、`runtime/workers`、`runtimes/:key/worker`（会让核心拨号到某台主机或在其上装载、运行代码；remote-config 的其余字段随同一请求保存，也要；`cleanup`、`purge`、`cli`、读取不要；期 4 R0）。同一上传的 PUT、GET、DELETE `runtime/uploads/:id` 与 POST `runtime/uploads/:id/load` 不再各自要 proof，凭上传 id 延续创建时打开的会话（2026-11-13 发布前） | `settings:manage` |
 | `superadmin.identity` | 超管经访问密钥修改超管账号本身（§43.6，本请求已消耗过 proof 时不再要） | 路由本身的权限 |
-
-- **二次验证会话**（一次验证覆盖一次由多个请求组成的操作，2026-11-13 发布前，用于 ccgateway 镜像上传）：挂 `StepUp(scope)` 的创建请求消耗 proof 后由处理函数打开会话（`httpapi.OpenStepUpSession(c, name)`，`name` 由操作自己命名、在操作内唯一，镜像上传是 `ccgateway.upload/<upload_id>`）；后续请求用 `Router.StepUpSession(scope, name(c))` 注册，在权限检查之后按名字延续会话，不消耗也不接受 proof。会话绑定用户 + 本次登录会话（JWT `fam`）或访问密钥 id + scope + 名字，存在 `auth_flows`（`purpose = step_up_session`，各节点共用）；每次延续把有效期顺延到 1 小时后（`core.StepUpSessionIdle`，与控制器清理一小时未动的上传一致），但不超过打开后 24 小时（`core.StepUpSessionMax`，一次验证最多覆盖一天），过期、名字不存在或换了用户、会话、密钥都 403 `verification_expired`（控制台不弹验证，只提示重新开始；控制台的上传流程据此放弃这次上传）。镜像上传：创建要 proof（控制台的创建请求经 HTTP 层弹出 StepUpDialog，不设自己的超时）；分片、续传查询、取消与装载凭上传 id 延续，所以每次装载都对应创建时的一次验证（此前是装载时验证，上传本身不验证），分片也只有同一会话能写。
 
 PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先校验新密码再消耗 proof。路由级 proof 在处理函数之前消耗，处理函数随后因请求体失败时需重新验证。proof 绑定的是 URL，不含请求体（例如超管移交的目标）。
 
-- **控制台**（期 4 S5）：`@sub2api/host` 的 HTTP 客户端遇到 403 `verification_required` 调 `HttpConfig.onVerificationRequired({scope, context, password_required})`，控制台弹出统一的 StepUpDialog（`components/stepUp/`），拿到 proof 后带 `X-Verify-Proof` 重放原请求一次；用户取消时请求以 `verification_cancelled` 失败（不提示）。重放同样经过 401 续期；请求的 `signal` 中止时验证作废，请求以 AbortError 失败，所以要二次验证的请求不用超时 signal 限时，改用 `RequestOptions.timeoutMs`（每次发送单独计时，等用户验证的时间不计入，重放重新计时；2026-11-13 发布审查）；会话结束（登出、续期失败）时排队中的验证全部取消。页面不自己收密码或验证码，原生插件经宿主 `api` 的请求同样自动处理。跨域部署时前置代理的 `Access-Control-Allow-Headers` 要含 `X-Verify-Proof`（`Access-Control-Expose-Headers` 要含 `X-Authz-Version`，§5.2），核心自己不发 CORS 头。权限树对 `step_up` 的权限显示“使用时需二次验证”。
+- **控制台**（期 4 S5）：`@sub2api/host` 的 HTTP 客户端遇到 403 `verification_required` 调 `HttpConfig.onVerificationRequired({scope, context, password_required})`，控制台弹出统一的 StepUpDialog（`components/stepUp/`），拿到 proof 后带 `X-Verify-Proof` 重放原请求一次；用户取消时请求以 `verification_cancelled` 失败（不提示）。重放带的是验证后换上的新令牌（§100.4）；请求的 `signal` 中止时验证作废，请求以 AbortError 失败，所以要二次验证的请求不用超时 signal 限时，改用 `RequestOptions.timeoutMs`（每次发送单独计时，等用户验证的时间不计入，重放重新计时；2026-11-13 发布审查）；会话结束（登出、401、其他标签页登出）时排队中的验证全部取消。页面不自己收密码或验证码，原生插件经宿主 `api` 的请求同样自动处理。跨域部署时前置代理的 `Access-Control-Allow-Headers` 要含 `X-Verify-Proof`（`Access-Control-Expose-Headers` 要含 `X-Authz-Version`，§5.2），核心自己不发 CORS 头。权限树对 `step_up` 的权限显示“使用时需二次验证”。
 
 - **接口**（访问密钥管理，只能用登录会话调用）：`GET /me/access-keys`（含 `lost`）、`GET /me/access-keys/permissions`（可选的权限：`self` 模块，然后是自己持有的有效核心与插件权限，每项带 `step_up` 展示标记：使用时需二次验证）、`POST /me/access-keys {name, permissions, expires_at}`（响应里的 `key` 只出现这一次）、`PATCH /me/access-keys/:id {name?, permissions?}`、`DELETE /me/access-keys/:id`。新建与修改（含只改名）每次二次验证 `self.access_key.write`（`SessionOnly().StepUp`，请求体不再收 `password`）；删除只会收回权限，不要 proof（期 4 收尾 F3）。每个用户最多 20 个，有效期至少 1 小时或永不过期。
 - **存储和生命周期**：只存 SHA-256 和末 4 位。过期、删除或用户被禁用后回 401。改密码不影响密钥（和 GitHub 的个人令牌一样），要作废请删除。`last_used_at`、`last_used_ip` 每分钟最多更新一次。创建、修改、删除写审计日志（`user.access_key.*`）；密钥发起的操作，审计记录的操作者是它所属的用户。
@@ -7063,7 +5776,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **字段**：`accounts.header_passthrough text[]`（默认空），接口字段 `header_passthrough`（列表、详情返回，`POST`/`PATCH /accounts` 整体替换）。规则三种：`*`（全部）、`regex:<正则>` 或 `re:<正则>`（按请求头名称匹配，不区分大小写，存成 `regex:` 前缀）、其他按名称精确匹配（存小写）。最多 32 条，每条最多 256 字符；去重、去空白。正则编译失败、名称不是合法字段名报 `invalid`，精确名称落在下面的禁止列表报 `blocked`，超过 32 条报 `too_many`。
 - **生效位置**：核心按插件构造的请求发往上游时（`forwardBuilt`，含插件经核心转发的执行请求），把匹配规则的客户端请求头补到上游请求上，所有值原样带上。**插件已设置的头优先**（例如账号自己的 `x-api-key`），核心随后设置的资源头、额度头也会覆盖它。不影响插件收到的 `InboundHeaders`（仍按平台 / 账号类型的 `passHeaders`）。
 - **禁止列表**（任何规则都不透传，`core.HeaderPassthroughBlocked`）：逐跳和分帧头（connection、keep-alive、te、trailer、transfer-encoding、upgrade、expect、host、content-length、content-encoding、accept-encoding），凭证（authorization、x-api-key、x-goog-api-key、api-key、cookie），客户端地址和代理痕迹（x-forwarded-for、x-forwarded-host、x-forwarded-proto、x-forwarded-port、x-real-ip、forwarded、via、cf-connecting-ip、true-client-ip、x-client-ip、x-cluster-client-ip），以及前缀 `proxy-`、`sec-websocket-`、`x-sub2api-`（本网关内部头）、`x-kin-`（vm2api/sakura 的控制头，例如 `x-kin-debug` 会让下游写调试日志并回传槽位和账号）。比 new-api 的跳过列表多了客户端地址和网关控制头，避免客户端伪造 IP 或操控下游。
-- 控制台：账号编辑页“高级”分区（左侧导航第 4 项，ccgateway 账号在 Claude Code 功能之前）的“请求转发”组：请求头透传（标签输入，一条一个规则）和账号层环境变量（各项超时，从“调度与限流”移来）。导航摘要如“透传 * · 超时跟随”，都没配时“全部跟随默认”；`header_passthrough`、`environment.*` 的字段错误定位到这个分区。这一组也放请求参数覆盖（§84）。
+- 控制台：账号编辑页“高级”分区（左侧导航第 4 项）的“请求转发”组：请求头透传（标签输入，一条一个规则）和账号层环境变量（各项超时，从“调度与限流”移来）。导航摘要如“透传 * · 超时跟随”，都没配时“全部跟随默认”；`header_passthrough`、`environment.*` 的字段错误定位到这个分区。这一组也放请求参数覆盖（§84）。
 - 未做：分组 / 全局层的透传、WebSocket 端点（`websocket.go`）的透传。
 - **粘性规则的透传头**（2026-11-06，迁移 0090，参考 new-api 渠道亲和规则模板里的 `pass_headers`）：`sticky_rules.pass_headers text[]`，接口字段 `pass_headers`，manifest `StickyRule.passHeaders`。规则写法、校验和禁止列表与账号透传相同（字段名 `pass_headers`）。请求命中某条粘性规则并取到会话值时（`c.sticky` 非空），核心在账号透传之后再按这条规则补上客户端请求头，同样不覆盖已设置的头；粘性会话关闭、没有命中规则、count_tokens 请求都不透传。内置规则 `claude-code-session` 默认带 `x-claude-code-session-id`、`x-claude-code-agent-id`、`x-claude-code-parent-agent-id`、`x-claude-code-request-class`、`x-claude-code-agent-type`；`pass_headers` 属于规则定义，管理员改过的内置规则升级时不被覆盖，“恢复默认”时重置。
 - **平台默认**：内置 anthropic 平台的 `passHeaders` 和 anthropic 插件（0.2.9）的默认转发同样带上这 5 个头，所以 anthropic API Key 账号不配置也会转发。
@@ -7078,7 +5791,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 节点登记新增能力标记 `updater.nodes.rolling`（本版本网关为 true，旧网关为 false，schema 幂等加列）。
 - 预检（`POST /system/upgrades/preflight`）返回 `strategy`：目标清单签 `rolling` 且不改库、全部启用节点都是 rolling 网关、且至少两个启用节点本地就绪 → `rolling-v1`；否则仍是 `primary-first-v1`。计划创建时把预检选出的策略写入 `updater.upgrades.strategy`，首条事件说明是哪种。
 - 回退（`rollback`）生成的恢复计划同样选策略，但只要求至少一个节点本地就绪：被打断计划停掉的成员让不出流量也没有流量可让，直接在基线上重启，然后承接另一个节点。
-- 两种策略的步骤、恢复、暂停/继续、准入校验（`admissionAllowed`、`planAuthorizesTx`）都接受；`legacy-rolling` 等旧策略仍只能暂停等人工处理。
+- 两种策略的步骤、恢复、暂停/继续、准入校验（`admissionAllowed`、`planAuthorizesTx`）都接受；（0.1.290 起不再识别 `legacy-rolling` 等旧策略：唯一索引保证同时最多一个未结束的计划，0.1.290 本身的计划完成之后才换外壳，那时不会有旧策略的计划未结束，§101）。
 
 ### 82.2 rolling-v1 步骤
 
@@ -7207,18 +5920,13 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 目前唯一的同平台转换器是 `openai.chat → openai.responses`：codex 账号类型（子集 `responses`、`responses_websocket`）因此服务 `/v1/chat/completions`；非流式 chat 经 83.1 走流式上游再合成 JSON、转回 chat JSON。
 - 使用记录 `protocol = openai.chat`、`upstream_protocol = openai.responses`，用量规则取上游 `openai.responses` 端点的（`usage.json` / `usage.sse` 的 `response.completed` 规则，`inclusive`），计费照常。插件 `BuildUpstreamRequest` 的 `meta.protocol` 为 `openai.responses`、`meta.client_protocol` 为 `openai.chat`。
 
-### 83.4 版本与 hostCompat 下限
+### 83.4 版本
 
-没有 proto、Host API（仍为 9）、UI SDK 变化，也没有迁移。旧核心解析 manifest 时忽略未知字段（`plugin/pkg.ParseManifest`），会装上依赖本节的插件却不执行它（非流式请求被上游拒绝、chat 不被调度）。`sdk/manifest/check/corefloor.go` 仿照 `uiFloors` 新增 `coreFloors` 表：manifest 用到表中某项时，`hostCompat` 若仍接受该项首个核心的前一个版本，报 `hostCompat` `below_feature_core`（安装和 `sub2api-plugin` 工具都检查）。目前两项，首个核心都是常量 `check.StreamOnlyFirstCore`：
-
-- 声明了任何 `streamOnly`；
-- 某个账号类型的端点子集漏掉了一个只能经同平台转换服务的端点（对照 `check.SamePlatformConversions`，目前只有 `openai.chat → openai.responses`；`convert` 包的测试保证它与 `convert.Default()` 的同平台转换器一致），例如 openai 只留 `responses`。
-
-`StreamOnlyFirstCore` 是 `0.1.257`（包含本节的核心，2026-11-09 发布）；依赖本节的插件（codex）的 `hostCompat` 下限是同一个版本。
+没有 proto、Host API（仍为 9）、UI SDK 变化，也没有迁移。第一个带本节的核心是 0.1.257（2026-11-09 发布）。
 
 ### 83.5 测试
 
-`sdk/manifest/check/streamonly_test.go`（各类合法/非法声明、hostCompat 下限）；`server/internal/gateway/convert/openai_chat_responses_test.go`（请求映射、旧式 functions、custom 工具与 allowed_tools、web_search_options、共有参数与 cache breakpoint、各类丢弃及 Dropped 列表、各类拒绝、JSON 与 SSE 响应含 custom 调用、跨部件注解、被忽略与无法表示的输出项、未知 incomplete 原因为 length、与 check 的同平台列表一致）；`server/internal/account/samplatform_test.go`（`/account-types` 的可服务端点）；`server/internal/gateway/streamonly_test.go`：Responses 非流式（上游收到 `stream:true`、JSON 正文、用量、记录 `stream=false`）、插件 patch 改回 false 被覆盖、`response.incomplete`、`output` 按 `output_index` 补齐、流式客户端不受影响、未声明 `streamOnly` 或声明了其他协议时不变、`response.failed`（502、插件分类、冷却）、带 `status` 的 `error` 事件（429）与扁平 `error` 事件、无终止事件、经转换的 chat 非流式与流式、`platform.execute.v1` 路径的成功与错误事件、SSE 帧解析与错误正文形状。；同平台转换：非流式 chat 经流式上游合成 JSON 再转回 chat（记录 `openai.chat`/`openai.responses`、用量与计费）、流式 chat（含末块 usage、`[DONE]`）、未声明 `streamOnly` 时直接转换、无法转换的字段（`n: 2`）400 不发往上游、可丢弃字段（`stop`、`seed`、罚分、冲突的 `max_tokens`、消息 `name`、未知字段）在非流式与流式下都被丢弃且返回 200、原生优先与转换范围（不转到其他平台、无转换器不服务）。
+`sdk/manifest/check/streamonly_test.go`（各类合法/非法声明）；`server/internal/gateway/convert/openai_chat_responses_test.go`（请求映射、旧式 functions、custom 工具与 allowed_tools、web_search_options、共有参数与 cache breakpoint、各类丢弃及 Dropped 列表、各类拒绝、JSON 与 SSE 响应含 custom 调用、跨部件注解、被忽略与无法表示的输出项、未知 incomplete 原因为 length）；`server/internal/account/samplatform_test.go`（`/account-types` 的可服务端点）；`server/internal/gateway/streamonly_test.go`：Responses 非流式（上游收到 `stream:true`、JSON 正文、用量、记录 `stream=false`）、插件 patch 改回 false 被覆盖、`response.incomplete`、`output` 按 `output_index` 补齐、流式客户端不受影响、未声明 `streamOnly` 或声明了其他协议时不变、`response.failed`（502、插件分类、冷却）、带 `status` 的 `error` 事件（429）与扁平 `error` 事件、无终止事件、经转换的 chat 非流式与流式、`platform.execute.v1` 路径的成功与错误事件、SSE 帧解析与错误正文形状。；同平台转换：非流式 chat 经流式上游合成 JSON 再转回 chat（记录 `openai.chat`/`openai.responses`、用量与计费）、流式 chat（含末块 usage、`[DONE]`）、未声明 `streamOnly` 时直接转换、无法转换的字段（`n: 2`）400 不发往上游、可丢弃字段（`stop`、`seed`、罚分、冲突的 `max_tokens`、消息 `name`、未知字段）在非流式与流式下都被丢弃且返回 200、原生优先与转换范围（不转到其他平台、无转换器不服务）。
 
 ### 83.6 WebSocket 每轮消息的插件 body patch（2026-11-08，用户要求兼容层兜住客户端差异；codex 插件 0.1.1）
 
@@ -7231,7 +5939,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **后续轮次**：沿用首轮的账号、连接和建连时加载的账号对象，每轮调用一次，只取 `patches`（以及 `upstream_model`，仅在本轮记录尚未有上游模型时写入记录）；URL、方法、头一律忽略，返回的 URL 与握手不同也**不**重连。
 - **性能**：插件返回空 `patches` 时消息字节不变、不解析、不复制（`applyPatches` 直接返回原切片）；只有非空且确实改变了字节时才对比模型引用。没有 `requestFields` 的路由传空 `fields`。
 - **失败**：后续轮调用失败（gRPC 错误、空响应）或任一轮的 patch 无法应用（`value_json` 非法、路径非法等，全部或全不）时，本轮回一条错误事件（503 `plugin_unavailable`，记录 `error_type = plugin_unavailable`），释放该轮的并发位与预占，连接保持，下一轮照常；首轮在建连成功之后才失败的，上游连接同样保留给下一轮。patch 改动了模型引用（端点与路由的 `modelReferences`，与 HTTP `validatePatches` 相同的检查）时本轮以模型引用错误失败。调用受 `platform_call_timeout_ms` 约束。
-- **兼容**：旧插件（WebSocket 协议返回空 `patches`，如 openai 插件 0.3.x）发往上游的消息与以前逐字节相同，只是每个后续轮多一次 `BuildUpstreamRequest` 调用（它与握手时的调用相同，确定性地成功）。没有 manifest 字段或能力变化，`sdk/manifest/check/corefloor.go` 无需登记：依赖本节的插件（codex）已因 `streamOnly` 要求 `hostCompat ≥ StreamOnlyFirstCore`，本节属于同一个核心 0.1.257。
+- **兼容**：旧插件（WebSocket 协议返回空 `patches`，如 openai 插件 0.3.x）发往上游的消息与以前逐字节相同，只是每个后续轮多一次 `BuildUpstreamRequest` 调用（它与握手时的调用相同，确定性地成功）。没有 manifest 字段或能力变化，随核心 0.1.257 发布。
 
 **`requestFields` 的取值与大小**：HTTP（`dispatch.go` `attempt`）与 WebSocket（首轮 `dial`、后续轮 `turnPatches`）都经同一个函数 `requestFieldValues`（`gateway/util.go`）读取，取值方式相同。核心对单个字段和字段总和都不设上限，只受请求体/消息大小上限（`maxBodyBytes`，默认 128 MiB，WebSocket 为单条消息）和插件 gRPC 接收上限（默认 4 MiB，`pluginsdk.WithMaxRecvMsgSize` 可调；超过时该次调用失败，HTTP 换号、WebSocket 首轮换号、后续轮报该轮错误）约束。插件应使用只返回所需信息的 gjson 查询，不要索取大字段。
 
@@ -7296,7 +6004,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
   - 拒绝时整个请求结束，不再换账号：拒绝针对的是请求，而不是账号。账号不受惩罚，粘性绑定按失败收尾。
 - **`skip_attempt_hooks`**（`GatewayRequestHookResponse` 新字段 7）：插件的 `gateway.request` 钩子放行时可以带上它，表示这个请求已经处理完，核心不再为它调用**这个插件**的任何 `gateway.attempt` 钩子，其他插件不受影响。拒绝时和在 `gateway.attempt` 里带上它都没有作用。请求钩子出错放行或被熔断跳过时没有这个标记，attempt 钩子照常调用。
 - **记录**：`usage_logs.hook_decisions` 的每一项加 `account_id`（只有 attempt 钩子有），按执行顺序与请求钩子的记录排在一起。
-- **授权与校验**：`hooks[].point` 可取 `gateway.request` 或 `gateway.attempt`（`manifest.HookPointRequest` / `HookPointAttempt`），必须列在 `gateway.hook` 的 `scope.points` 里，注册表只登记批准了的点。旧核心在安装时就拒绝这个钩子点；SDK 的版本下限 `check.AttemptHookFirstCore = "0.1.258"` 把它变成明确的 `hostCompat` 错误。
+- **授权与校验**：`hooks[].point` 可取 `gateway.request` 或 `gateway.attempt`（`manifest.HookPointRequest` / `HookPointAttempt`），必须列在 `gateway.hook` 的 `scope.points` 里，注册表只登记批准了的点。这个钩子点随核心 0.1.258 发布。
 - **其他调用里的 `meta.account_id`**：同一次尝试里核心给插件的其他调用（build、execute、classify、用量提取，`metaFor`）也带上账号 ID。选定账号之前的调用为 0。
 - **代价**：没有插件声明这个点时没有任何开销。声明了的插件每次尝试多一次 RPC，在钩子内同步执行期间占着账号的并发名额，所以插件应该尽量用 `skip_attempt_hooks` 在请求钩子里结束。
 - 测试：`gateway/attempt_hook_test.go`（每次尝试都调用并带账号、拒绝不换账号、`skip_attempt_hooks` 只跳过本插件、补丁被拒、WebSocket 每条消息）、`sdk/manifest/check/attempt_hook_test.go`。
@@ -7359,7 +6067,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 - 账号类型 id、plugin_key 不变，现有账号和数据不迁移；没声明 upstream 的插件不受影响。
 - 参数覆盖的请求体位置与 0.1.262 之前相同（插件之前）；请求头改为插件的头盖过参数覆盖的头：老插件自己构造的头（如 codex 的头、代码插件转发的客户端头）不能再被账号参数覆盖改掉，声明式类型的头仍可以。
-- 第一个带本节功能的核心是 0.1.262：声明了 `upstream` 的插件 `hostCompat` 下限须 ≥0.1.262（`check.UpstreamFirstCore`，低了报 `below_feature_core`），openai 0.4.0、gemini/relay/anthropic 0.3.0、custom 0.1.0 已定为 `>=0.1.262 <0.2.0`。旧核心会忽略 `upstream` 字段，所以这几个只有清单的插件必须随 0.1.262 一起发；内置插件在核心计划完成、所有节点都换上新核心后才升级（§37）。
+- 第一个带本节功能的核心是 0.1.262，openai 0.4.0、gemini/relay/anthropic 0.3.0、custom 0.1.0 随它一起发布；内置插件在核心计划完成、所有节点都换上新核心后才升级（§37）。
 
 ## 87. 账号通用配置项按类型声明、核心编辑器开放给插件（2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”第 2 期，规格见 [COMMON-CONTROLS.md](COMMON-CONTROLS.md)；核心 0.1.262）
 
@@ -7369,8 +6077,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 - `accountTypes[].commonControls.<名>`：`{visible?, configurable?, default?, locked?, required?}`；名称与取值类型见 `sdk/manifest/common_controls.go` 的 `CommonControlSpecs`（schedulable、auto_disable、priority、weight、max_concurrency、rpm_limit、tpm_limit、spm_limit、spm_window_seconds（0.1.276 起，§71.1）、model_limits、usage_limit、model_mapping、param_override、header_passthrough、environment、proxy）。`default` 是账号接口该字段的 JSON，范围与账号接口相同（常量在 sdk，核心、校验共用）。老的 `{"configurable":…, "default":…}` 写法照旧有效。
 - 语义：新账号缺省值取 `default`（再缺省取核心默认，自己级用户的并发默认 10 照旧，有声明时声明优先）；`configurable: false` 新建只接受默认值、更新只接受原值；`locked` 新老账号都只接受 `default`；不符报 `read_only`。值按 JSON 比较（格式、键序、数字写法、null 与空不影响）。`proxy` 只能写 `required`：新建没有代理、或更新清掉了代理时报 `proxy_id: required`，老账号没代理时其他修改照常。`visible` 只影响界面。
-- 执行点：`account/common_controls.go`，更新在锁行之后；`PUT /accounts/:id/usage-limit` 同样检查（`usage_limit: read_only`）；插件生命周期返回的 `account_patch` 不能改固定项（固定项从可改字段中移除，可改的照常）。
-- 校验（`sdk/manifest/check/common_controls.go`）：未知名称、类型或范围不符、`required` 用在 proxy 之外、proxy 写了 `required` 以外的字段、`locked` 没有 `default` 或同时写 `configurable: true`、与 `defaultLimits` 的值冲突（`conflict`）。用到新名称或 `visible`/`locked`/`required` 的插件 `hostCompat` 下限须 ≥0.1.262（`check.CommonControlsFirstCore`）。
+- 执行点：`account/common_controls.go`，更新在锁行之后；`PUT /accounts/:id/usage-limit` 同样检查（`usage_limit: read_only`）。
+- 校验（`sdk/manifest/check/common_controls.go`）：未知名称、类型或范围不符、`required` 用在 proxy 之外、proxy 写了 `required` 以外的字段、`locked` 没有 `default` 或同时写 `configurable: true`、与 `defaultLimits` 的值冲突（`conflict`）（核心 0.1.262 起）。
 - 锁定值收敛：更新账号时，请求没带锁定字段而存储值与锁定值不同，就写入锁定值（锁定的用量限制同样在更新事务里写入）；老账号在下次保存时收敛，不做后台迁移。控制台对已保存账号显示存储值，不同于锁定值时提示“保存后改为锁定值 X”。
 - 自己级用户：新建时，省略的字段或等于预填默认值（声明的、否则 `default_limits`）的字段收进自己级上限（priority 0–100、weight 1–100、并发 1–1000，0 变 10）；其他越界值仍报 `restricted`；固定项（不可改或锁定）以声明为准、不收。更新时不收。控制台预填同样的收后值。
 - `GET /account-types` 返回 `common_controls`，`default` 按核心存储的形式规范化（例如头名小写），便于和账号存储值比较。
@@ -7379,7 +6087,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 - 账号编辑页按声明渲染每个通用项（`web/src/views/accounts/commonControls.ts`）：隐藏、置灰并说明原因、新建预填（声明优先于 `default_limits`）、代理必填；只有隐藏项的分区不显示，导航摘要跳过隐藏项；保存时不发固定项。没有声明的类型与之前一致，只有两处小变化：英文调度摘要的“Weight”“Concurrency”首字母大写；切换认证方式时，没改过的 `default_limits` 值跟着换成新类型的。
 - 批量编辑：所选账号里有类型把某项固定时，该项置灰并显示数量（原来 `auto_disable` 会跳过固定的账号照样改其他账号）。
-- 编辑器不认识具体插件；ccgateway 的核心内集成（CC 授权、CC 特性、语言、自动模型）本期不动。
+- 编辑器不认识具体插件。
 
 ### 87.3 核心编辑器开放给插件（UI 3.7）
 
@@ -7447,7 +6155,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 88.7 版本与兼容
 
-- `sdk/manifest/check`：`SamePlatformConversions` 增加 `openai.responses → openai.chat`，hostCompat 下限 `ConvertMatrixFirstCore = "0.1.262"`（子集保留 chat_completions 而不含 responses 的 openai 账号类型依赖它）；原有的 chat → responses 仍为 `StreamOnlyFirstCore`。
+- 同平台转换增加 `openai.responses → openai.chat`（核心 0.1.262 起；子集保留 chat_completions 而不含 responses 的 openai 账号类型依赖它）。
 - 行为变化（发布说明）：转换“不可能”时跳过该类型而不是立即 400，都不行才 400 且不计尝试；同一优先级内原生先于转换先于 local；`/account-types` 多出转换端点、`grade`、`via`；chat → Anthropic 等原来被拒的请求改为有损成功（需要原行为的账号或分组设为 `strict`）；codex 的 chat 路径响应多出 `reasoning_content`；Responses 客户端经 Anthropic 上游不再收到 `sup2api-anthropic-thinking-v1:` 推理信封。
 
 ### 88.8 控制台
@@ -7461,30 +6169,23 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 `settings` 表新增一行 `scheduling`（缺行 = 默认值，不需要迁移）：
 
 ```json
-{"mode":"traffic","metric":"sessions","limit_load":false,"model_limits":false}
+{"metric":"sessions","limit_load":false,"model_limits":false}
 ```
 
-（2026-11-12 前的默认值是 `{"mode":"default","metric":"rpm",...}`。）
+（2026-11-12 前的默认值是 `{"mode":"default","metric":"rpm",...}`；0.1.290 起没有 `mode`，见下。）
 
 | 字段 | 取值 | 默认 | 含义 |
 |------|------|------|------|
-| `mode` | 始终 `traffic` | `traffic` | 均衡策略，只有流量（89.2）。2026-11-12 起存库和响应里始终是 `traffic`，字段只为旧核心保留（见下）；之前还有 `default`（按权重随机、不读用量），是默认值 |
 | `metric` | `rpm` / `concurrency` / `tpm` / `sessions` | `sessions` | 均衡指标，流量均衡和上限负载共用；`sessions` 是 §71 的会话数（2026-11-11 加入；2026-11-12 起是默认值，之前是 `rpm`） |
 | `limit_load` | 布尔 | `false` | 基于上限负载调度，见 89.2 |
 | `model_limits` | 布尔 | `false` | 根据模型限速（按模型调度）：流量均衡比较请求模型在各账号上自己的用量；上限负载也算请求模型所在的指定模型限速列表（§68） |
 
 读入网关设置快照（10 秒 TTL，`config:changed` 广播失效）。还不认识 `sessions` 的旧核心读到它时按 `rpm` 调度，它的 `PUT` 拒绝这个值（2026-11-11）。
 
-已存的行按下面归一（2026-11-12，不迁移，行在下次保存时才改写）：
-
-- `mode` 不是 `traffic`（旧的 `default`、空、未知）且 `limit_load` 关：当时指标和根据模型限速都是置灰的、不是用户选的，`metric` 按 `sessions`，`model_limits` 按 `false`。
-- `mode` 不是 `traffic` 但 `limit_load` 开：这两项是用户选的，保留。
-- 未知 `metric` 按 `sessions`；最后 `mode` 一律当作 `traffic`。缺 `mode` 字段的行按 `traffic` 处理。
-
-兼容与回滚（2026-11-12）：新核心存下的 `mode` 始终是 `traffic`，滚动更新期间的旧核心（0.1.282 及以前）和回滚后的旧核心读到它照样做流量均衡（0.1.281 起认识 `sessions`）。没有保存过的行（缺行，或旧的 `default` 行）在旧核心上仍是旧的默认行为：不读用量、按权重随机。滚动更新期间控制台的请求可能落到旧节点：旧节点的 `GET` 返回未归一的旧值（没保存过的行是 `default` + `rpm`），控制台把 `mode` 当作 `traffic`、指标照旧节点返回的显示，这时保存会存下 `traffic` 和那个指标（例如原来置灰的 `rpm`），之后不再归一成 `sessions`；`PUT` 落到旧节点时由旧节点写入，`mode` 也是 `traffic`。
+均衡策略 `mode` 在 2026-11-12 只剩 `traffic`（之前还有默认的 `default`：按权重随机、不读用量），之后只为旧核心存库和返回；0.1.290 删除这个字段（§101.6）：迁移 0102 把 `mode` 不是 `traffic` 且 `limit_load` 关的行（当时指标和根据模型限速都是置灰的、不是用户选的）改为 `metric = sessions`、`model_limits = false`，再删掉 `mode` 键。核心读入时未知 `metric` 按 `sessions`。
 
 - `GET /settings/scheduling`（`settings:read`）：返回生效值。
-- `PUT /settings/scheduling`（`settings:manage`）：整行替换，缺省字段取默认值；`mode` 不校验，传什么或不传都存 `traffic`，`metric` 照传入的存（2026-11-12）；非法 `metric` 400 `invalid_argument`，`details.fields[{field:"metric", code:"invalid"}]`（2026-11-12 前也校验 `mode`）；响应是存下的值；写入记 `updated_by`，广播 `config:changed`（key `settings.scheduling`）。
+- `PUT /settings/scheduling`（`settings:manage`）：整行替换，缺省字段取默认值（带 `mode` 忽略）；非法 `metric` 400 `invalid_argument`，`details.fields[{field:"metric", code:"invalid"}]`（2026-11-12 前也校验 `mode`）；响应是存下的值；写入记 `updated_by`，广播 `config:changed`（key `settings.scheduling`）。
 
 ### 89.2 计算
 
@@ -7552,7 +6253,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 | plugins 插件 | 已安装插件、插件市场、发布者；`section:"plugins"` 的插件菜单接在后面 | |
 | system 系统（标签“系统 / System”） | 集群节点、定时任务、核心升级、审计日志、系统设置 `/settings` | |
 
-- 分组（`/groups`，`group:read`）、模型价格（`/prices`，`price:read`）没有菜单项，由控制台列在系统设置视图里（90.2）；CCGateway（`/system/ccgateway`，`settings:read`）没有菜单项，从已安装插件列表里 ccgateway 一行的“设置”按钮打开；页面、地址、权限和接口不变。有 `settings:read` 而没有 `plugin:read` 的自定义角色只能凭地址或账号授权对话框里的链接打开它。
+- 分组（`/groups`，`group:read`）、模型价格（`/prices`，`price:read`）没有菜单项，由控制台列在系统设置视图里（90.2）。
 - 用户组（§97 起）：id `segments`，标签“用户组 / User groups”，图标 `publisher`，地址 `/segments`，持有 `segment:read` 才返回；排在“用户”之后、“角色与权限”之前，和它们一起进“用户”目录（90.3）。分组一侧的授权、专属倍率和分组内定价没有单独的菜单项，在分组页（系统设置视图，90.2）里。
 - 余额流水（`/ledger`，`balance:all:read`）在核心 `finance` 区有菜单项“余额流水”（2026-11-13 权限加固 T80），也可从用户列表的行操作打开；页面和接口不变。
 - 平台页取消，没有菜单项（地址见 90.4）；接口 `GET /platforms`、`GET /me/platforms` 不变，控制台的平台列表一律取 `GET /me/platforms`。
@@ -7570,7 +6271,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
   - 分组与定价：分组（`/groups`，`group:read`）、模型价格（`/prices`，`price:read`）；它们的子页（价格详情、同步源等）也显示这个视图
   - 计费与通知：计费、通知
   - 运行环境：在线更新、环境变量
-- 插件设置不在这个视图里，侧栏也没有入口；入口是已安装插件列表（`/plugins`，`plugin:read`）每行的“设置”按钮（待授权的插件没有）。有控制台设置表单的插件打开插件详情的设置标签 `/plugins/<key>?tab=settings`；ccgateway 打开 `/system/ccgateway`（要 `settings:read`）。`/system/ccgateway` 和 `/plugins/<key>/settings` 的 `meta.parent` 是 `/plugins`：侧栏是控制台视图，面包屑以“已安装插件 ›”开头；有 `plugin:read` 时“已安装插件”高亮、面包屑可点，没有时不高亮、面包屑是纯文本。插件详情的设置标签对 ccgateway 嵌的是同一个 CCGateway 页面（`/plugins/ccgateway?tab=settings`）。`/plugins/<key>/settings` 留给只持有插件设置权限、打不开插件详情的调用者，以及旧链接。
+- 插件设置不在这个视图里，侧栏也没有入口；入口是已安装插件列表（`/plugins`，`plugin:read`）每行的“设置”按钮（待授权的插件没有）。有控制台设置表单的插件打开插件详情的设置标签 `/plugins/<key>?tab=settings`。`/plugins/<key>/settings` 的 `meta.parent` 是 `/plugins`：侧栏是控制台视图，面包屑以“已安装插件 ›”开头；有 `plugin:read` 时“已安装插件”高亮、面包屑可点，没有时不高亮、面包屑是纯文本。`/plugins/<key>/settings` 留给只持有插件设置权限、打不开插件详情的调用者，以及旧链接。
 - 八个配置页的地址仍是 `/settings?tab=<key>`，权限是 `settings:read`（粘性会话是 `sticky:read`）。一个配置页都不能打开的调用者打开不带 `tab` 的 `/settings`，进入视图里他能打开的第一个页面：先 `/groups`，再 `/prices`；带 `tab` 的链接仍按该配置页的权限判断。
 - 功能页（账号、代理、角色与权限、插件管理、集群节点、定时任务、核心升级、审计日志）不在这个视图里，各自留在控制台视图的区里。
 
@@ -7591,7 +6292,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 余额流水 `/ledger` 的地址不变，上级页面是 `/users`。
 - `/platforms` 跳转到 `/accounts`。
 - `/p/anthropic/models` 随 anthropic 0.3.1 消失（插件不再声明这个页面）。
-- CCGateway 页面是 `/system/ccgateway`（0.1.264 及更早这个地址跳到插件详情的设置标签，现在就是页面本身）；`/plugins/ccgateway/settings`、`/settings?tab=plugin:ccgateway` 跳转到它。接口 `/api/v1/system/ccgateway/*` 不变。上级页面是 `/plugins`。
+- CCGateway 页面 `/system/ccgateway` 随插件在 0.1.290 删除。
 - `/settings?tab=plugin:<key>` 跳转到 `/plugins/<key>/settings`。
 
 ### 90.5 实现位置
@@ -7619,7 +6320,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 校验（SDK `check`）：只有 `type: "native"` 的页面能声明；至少一组；组和项的 `key` 符合 `^[a-z][a-z0-9_-]{0,31}$`，组 key 不重复，项 key 在整个页面内不重复（`?tab=` 不带组名）；标签不能为空；`icon` 必须是控制台图标集里的名字；`permission` 必须是 `userPermissions` 里声明的插件权限；`corePermission` 是核心权限 key，SDK 不认识核心权限，只检查不能是空白。
 - 权限过滤由核心做：`GET /ui/plugins` 返回页面前去掉调用者看不到的项。一项同时声明 `permission` 和 `corePermission` 时，持有任意一个就显示；两个都没有的项对能看到这个页面的人都显示。去掉后空的组不返回，一项都不剩时整个 `nav` 不返回。共享的清单不被改动。
 - 混跑：UI 3.13 及更早的控制台忽略 `nav`，所以插件页面自己要保留页内的分区切换（标签页等）作为回退；声明 `nav` 不提高插件要求的核心版本，`hostCompat` 不必因此改到 0.1.284 以上。UI 3.14 从核心 0.1.284 开始（0.1.283 是最后一个带 UI 3.13 的核心），`hostUICompat` 写 `^3.14` 时 `hostCompat` 要排除 0.1.283 及更早的核心。
-- 实现位置：`sdk/manifest/manifest.go`（`PageNav`、`NavGroup`、`NavItem`）、`sdk/manifest/check/ui.go`（`pageNav`、`uiFloors`）、`sdk/manifest/visible_ui.go`（`FilterUI` 的 `visibleNav`）；控制台见 `web/src/layouts/sidebarViews.ts`。
+- 实现位置：`sdk/manifest/manifest.go`（`PageNav`、`NavGroup`、`NavItem`）、`sdk/manifest/check/ui.go`（`pageNav`）、`sdk/manifest/visible_ui.go`（`FilterUI` 的 `visibleNav`）；控制台见 `web/src/layouts/sidebarViews.ts`。
 
 ## 91. 插件经账号代理发请求、CLEAR 清冷却（2026-11-10，codex 官方重置次数需要；核心 0.1.269）
 
@@ -7645,13 +6346,13 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 - CLEAR 的含义是“插件确认账号此刻可用”。除了原来的 `auto_disabled` → `active`，还要删除 Redis 冷却键 `cooldown:account:<id>`，复用 `POST /accounts/:id/reset-status`（§44.5）的 `clearCooldown`。`ApplyPluginAccountAutomaticState` 和 `ApplyAccountAutomaticState` 走同一个实现。
 - 删冷却与状态无关；状态分支保持原样：管理员停用（`disabled`）、`error`、§73 用量限制的停用都不变，只有冷却被删掉。对这些账号删冷却没有坏处：它们本来就不参与调度；等管理员启用或用量限制放开后，账号不会再被旧冷却挡一阵。
 - 先锁行、校验归属再删：别的插件的账号回 `NOT_FOUND`，冷却不动。Redis 删除失败时回 `UNAVAILABLE`，事务回滚。
-- `changed` 在状态变了或删掉了冷却键时为 `true`（proto 不变）。有变化时按状态变更的同一路径发 `account:changed` 失效缓存，并触发 CCGateway 对账。只删了冷却、状态没变时，不写 `account.automatic_state` 审计，也不发 `account.status_changed` 事件，和冷却自然到期一致。
+- `changed` 在状态变了或删掉了冷却键时为 `true`（proto 不变）。有变化时按状态变更的同一路径发 `account:changed` 失效缓存。只删了冷却、状态没变时，不写 `account.automatic_state` 审计，也不发 `account.status_changed` 事件，和冷却自然到期一致。
 - DISABLE 不动冷却。核心里 CLEAR 只有 `HostService.SetAccountAutomaticState` 一个来源：`ClassifyError` 返回的 `automatic_state` 只认 DISABLE（网关 `applyAccountEffect`、`pluginAutoDisable` 把其他动作当作没有），所以网关路径不受影响。目前也没有插件用 CLEAR。
 
 ### 91.3 兼容与版本
 
 - Host API 不升，仍是 9。升版会让 rolling-v1 滚动更新不可用：`gateway/internal/control` 要求前后两个版本的 `HostAPIVersion` 相同（§82），而这次只是加一个 RPC。
-- 旧核心对未知 RPC 回 `UNIMPLEMENTED`（`UnimplementedHostServiceServer`），旧核心的 CLEAR 也不清冷却。依赖本节的插件靠 `hostCompat: ">=0.1.269"` 保证核心版本；这不是 manifest 字段，`coreFloors` 查不到，要插件自己声明。
+- 旧核心对未知 RPC 回 `UNIMPLEMENTED`（`UnimplementedHostServiceServer`），旧核心的 CLEAR 也不清冷却。依赖本节的插件靠 `hostCompat: ">=0.1.269"` 保证核心版本。
 - 没有迁移。
 
 ## 91b. 插件标签页与行操作按账号类型显示（UI 3.8，2026-11-10，codex 官方重置次数需要；核心 0.1.269）
@@ -7680,12 +6381,12 @@ codex 插件要给 `codex_device` 账号加一个详情标签页、一个行操�
 ### 91b.4 版本与老核心
 
 - `HOST_UI_VERSION` 3.8.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.8.0（`ui-contract.spec.ts` 锁定）。
-- 用到 `account.detail.tabs` 的 `accountTypes`、`account.list.quota` 插槽，或 `ui.accountActions[].accountTypes` 的插件要声明 `hostUICompat: "^3.8"`，`hostCompat` 要求核心 `>=0.1.269`（0.1.268 是最后一个带 UI 3.7 的核心）。`sdk/manifest/check/ui.go` 的 UI 下限表 `uiFloors` 为此加了 3.8 一行（`usesUI38`）：manifest 用到其中任一项（不管 `hostUICompat` 怎么写），或 `hostUICompat` 要求 3.8 及以上时，`hostCompat` 不能包含 0.1.268，否则报 `hostCompat` `below_ui_core`。
+- 用到 `account.detail.tabs` 的 `accountTypes`、`account.list.quota` 插槽，或 `ui.accountActions[].accountTypes` 的插件要声明 `hostUICompat: "^3.8"`，`hostCompat` 要求核心 `>=0.1.269`（0.1.268 是最后一个带 UI 3.7 的核心）。
 - 下限必须提高，因为老核心会在所有行上显示：老控制台不认识 `accountTypes`，类型限定的操作出现在每个可见行的行菜单里（`ParseManifest` 不拒绝未知字段，所以老核心能装上这样的插件），批量栏也按所有所选行计数。老核心的 manifest 校验会拒绝带 `accountTypes` 的 `account.detail.tabs`（`unsupported`）和 `account.list.quota`（未知插槽，`invalid`）。只有声明式操作、没有 `ui.native` 的插件，控制台不检查它的 `hostUICompat`，真正拦住老核心的是 `hostCompat` 下限。
 
 ### 91b.5 实现位置
 
-- manifest：`sdk/manifest/manifest.go`（`Slot.AccountTypes`、`AccountAction.AccountTypes`、`SlotAccountDetailTabs`、`SlotAccountListQuota`）、`sdk/manifest/check/ui.go`（`uiSlots`、`ownAccountTypes`、`uiAccountActions`、`uiFloors`）
+- manifest：`sdk/manifest/manifest.go`（`Slot.AccountTypes`、`AccountAction.AccountTypes`、`SlotAccountDetailTabs`、`SlotAccountListQuota`）、`sdk/manifest/check/ui.go`（`uiSlots`、`ownAccountTypes`、`uiAccountActions`）
 - 服务端：`server/internal/plugin/api/ui.go`（原样下发，无代码改动；测试在 `api_test.go` `TestUIPluginsAccountActions`）
 - 控制台：`web/src/components/plugin/slots.ts`（`forAccountType`）、`web/src/views/accounts/accountRowActions.ts`（`actionAppliesTo`）、`web/src/views/accounts/AccountsView.vue`（详情标签、批量栏、额度列）、`web/src/api/types.ts`
 
@@ -7864,18 +6565,16 @@ type KVBatch interface {
 
 - 插件调用包级函数，把 `host.KV()` 传进去：`pluginsdk.KVGetMany(ctx, host.KV(), ns, keys)`。`KV` 接口没有加方法，已有的实现（测试替身、包了一层的 KV）照常编译。
 - 传进来的 `KV` 实现了 `KVBatch` 就用它，否则用这个 `KV` 的 `Get` / `Set` / `Delete` 逐个完成。所以只实现了四个单键方法的测试替身也能用，它注入的故障照样生效。这样的 `KV` 会被最多 8 个 goroutine 同时调用，必须能并发使用（`KVBatch` 和三个函数的导出注释里写了）。
-- **旧核心自动回退**：`Host.KV()` 的实现在核心回 `UNIMPLEMENTED` 时改用单键调用，并记住这个结果（记在这条宿主连接上，即一个插件进程一份）。旧核心只多付一次被拒的调用，不是每批一次。核心升级时插件进程随核心重启，标记自然重置。只有 `UNIMPLEMENTED` 触发回退，其他错误（`PERMISSION_DENIED`、`UNAVAILABLE`、`INVALID_ARGUMENT`、`RESOURCE_EXHAUSTED` 等）原样返回。
-- 回退时单键调用最多 8 个并发（`kvSinglesParallel`）；有一个失败就不再发新的，返回这个错误。同一个键在一批写里出现多次时只写最后一项，结果与批量调用一致。
-- **规则在两种核心上相同**：SDK 在发出任何调用之前用核心的那几个函数校验（`protocol.CheckKVBatchKeys`、`protocol.CheckKVBatchItems`，93.2），不合规则时回的就是核心会回的 `codes.InvalidArgument`——同一个下标、同一句话——什么都不发。回退路径上读到的值合计超过 3 MiB 时同样回 `codes.ResourceExhausted`（`protocol.CheckKVBatchAnswer`）。
+- `Host.KV()` 总是用批量 RPC，错误原样返回（0.1.290 起不再为旧核心回退到单键调用，§101）。
+- 逐个完成时单键调用最多 8 个并发（`kvSinglesParallel`）；有一个失败就不再发新的，返回这个错误。同一个键在一批写里出现多次时只写最后一项，结果与批量调用一致。
+- **规则与核心相同**：SDK 在发出任何调用之前用核心的那几个函数校验（`protocol.CheckKVBatchKeys`、`protocol.CheckKVBatchItems`，93.2），不合规则时回的就是核心会回的 `codes.InvalidArgument`——同一个下标、同一句话——什么都不发。逐个读到的值合计超过 3 MiB 时同样回 `codes.ResourceExhausted`（`protocol.CheckKVBatchAnswer`）。
 - **负的 TTL 一律拒绝，不论多小**（随核心 0.1.275 的 SDK 起；SDK 编在插件里，所以对一个插件来说是从用这版 SDK 构建的版本起，moderation 是 0.8.2）：SDK 把 TTL 换算成整秒再发，负值在 `KVSetMany` 和单键的 `KV.Set` 里都在发送之前回 `codes.InvalidArgument`（`ttl_seconds must be 0..9223372036`）。此前 -1 ns 到 -999 ms 被截成 0，也就是不过期。
-- 回退给不了两样东西：开销（仍是每个键一次授权复核加一次往返）和写的原子性（中途失败时，之前的项已经写入）。需要其中任何一样的插件声明 `hostCompat: ">=0.1.273"`。
-- 测试替身 `pluginsdktest.FakeHost` 实现了这三个 RPC，校验用的是同一组函数，所以规则、上限和错误信息与宿主相同，写入是原子的（它没有授权这一层）。它的单键调用（`KVGet` / `KVSet` / `KVDelete` / `KVList`）也用这组函数校验 namespace、key、value 和 ttl，回宿主的错误信息（0.1.275 的 SDK 起；此前单键 `KVSet` 只查值的大小，过大的 ttl 溢出后存成一个已过期的项）。`KVBatchUnimplemented`（或运行中调用 `SetKVBatchUnimplemented(true)`）让它像旧核心一样回 `UNIMPLEMENTED`；`KVCalls()` 返回每个 KV RPC 被调用的次数，用来断言“这批键只用了一次调用”。
+- 逐个完成给不了两样东西：开销（每个键一次往返）和写的原子性（中途失败时，之前的项已经写入）。
+- 测试替身 `pluginsdktest.FakeHost` 实现了这三个 RPC，校验用的是同一组函数，所以规则、上限和错误信息与宿主相同，写入是原子的（它没有授权这一层）。它的单键调用（`KVGet` / `KVSet` / `KVDelete` / `KVList`）也用这组函数校验 namespace、key、value 和 ttl，回宿主的错误信息（0.1.275 的 SDK 起；此前单键 `KVSet` 只查值的大小，过大的 ttl 溢出后存成一个已过期的项）。`KVCalls()` 返回每个 KV RPC 被调用的次数，用来断言“这批键只用了一次调用”。
 
 ### 93.7 兼容与版本
 
 - Host API 不升，仍是 9，理由同 91.3：升版会让 rolling-v1 滚动更新不可用（`gateway/internal/control` 要求前后两个版本的 `HostAPIVersion` 相同，§82），而这次只是加 RPC。
-- 旧核心对未知 RPC 回 `UNIMPLEMENTED`（`UnimplementedHostServiceServer`）。用 SDK 函数的插件在旧核心上自动回退（93.6），不需要提高 `hostCompat`；直接用生成的 gRPC 客户端的插件要自己处理 `UNIMPLEMENTED`。依赖一次往返的开销或原子写的插件声明 `hostCompat: ">=0.1.273"`。
-- 滚动更新期间新旧核心并存没有问题：两种核心读写同一批 Redis 键、同一种值，批量调用和单键调用的结果可以互相读到。
 - 版本号：这三个 RPC 进了核心 0.1.273 的构建，但 0.1.273 构建、签名之后没有导入也没有发布；2026-11-11 发布的 0.1.274 带着它的全部内容，是第一个发布的有这三个 RPC 的核心。`host.proto`、SDK 的注释和插件的 `hostCompat` 仍写 0.1.273，这仍然是对的：0.1.273 的构建确实有这些调用，而 0.1.272 和 0.1.274 之间没有发布过别的核心，所以 `>=0.1.273` 在已发布的核心里就是"0.1.274 及以后"。93.2 的规则统一、单键 TTL 上界和 `KVGetMany` 的提前拒绝是核心 0.1.275 的，不改这三个 RPC 的协议，新旧核心和新旧 SDK 可以任意搭配。
 - 没有迁移，没有新的宿主权限，manifest 不变。
 
@@ -7886,7 +6585,7 @@ type KVBatch interface {
 - SDK：`sdk/protocol/kv.go`（规则，93.2），`sdk/pluginsdk/kvbatch.go`，`sdk/pluginsdk/host.go`（`KV.Set` 的 TTL），`sdk/pluginsdk/pluginsdktest/kvbatch.go`。
 - 宿主测试 `grpcruntime/host_kv_batch_internal_test.go`：顺序与缺失的键；每项自己的 TTL；一项不合法时什么都不写；键数和数据量上限；两个插件、两个 namespace 之间互不可见；授权（含 PG 里撤销）；每次调用恰好一次授权查询和一条 Redis 命令（pgx tracer 和 go-redis hook 计数）；Redis 不可用；单键 `KVSet` 拒绝会溢出的 TTL（`TestKVSetRefusesATTLThatOverflows`）；脚本在第一次写入之前检查自己的参数（`TestKVSetManyScriptChecksItsArguments`，在 miniredis 上）。`TestKVBatchRealRedis` 在设置了 `TEST_REDIS_URL` 时对真实的 Valkey / Redis 运行（CI 设置；本地跳过）：真实 Lua 引擎上的脚本和它的参数检查、512 个键、真实过期。`grpcruntime/kv_batch_test.go` 用真实插件进程（`testdata/testplugin` 的 `/kvbatch`）走 broker 连接，并验证 4 MiB 的连接上限。
 - 规则本身的测试在 `sdk/protocol/kv_test.go`（`TestKVEntryRules`、`TestKVBatchRules`：每条规则的边界、校验顺序和错误信息）。
-- SDK 测试 `sdk/pluginsdk/kvbatch_internal_test.go`（新核心一批一次调用；旧核心回退、只被拒一次、结果相同；不吞其他错误；规则在两种核心上相同；并发上限；`KV.Set` 拒绝负的 TTL，`TestKVSetRefusesANegativeTTL`）和 `sdk/pluginsdk/pluginsdktest/kvbatch_test.go`（FakeHost 的规则、单键调用同样校验 `TestFakeHostKVSingleCallsFollowTheHostRules`、原子写、旧核心开关、经 SDK 的端到端）。
+- SDK 测试 `sdk/pluginsdk/kvbatch_internal_test.go`（一批一次调用；没有批量方法的 `KV` 逐个完成、结果相同；不吞其他错误；规则相同；并发上限；`KV.Set` 拒绝负的 TTL，`TestKVSetRefusesANegativeTTL`）和 `sdk/pluginsdk/pluginsdktest/kvbatch_test.go`（FakeHost 的规则、单键调用同样校验 `TestFakeHostKVSingleCallsFollowTheHostRules`、原子写、经 SDK 的端到端）。
 
 ## 94. 页头统一进顶栏（UI 3.9，2026-11-11，用户要求：每个页面的标题和说明都像 API 密钥页那样显示在顶栏，不在页面里另占一行；菜单名与页面标题各自独立；无迁移）
 
@@ -7916,7 +6615,7 @@ UI 3.8 及以前，`SPageHeader` 只有在自己的 `title` 与路由标题文�
 ### 95.2 版本与插件声明
 
 - `HOST_UI_VERSION` 3.10.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.10.0（`ui-contract.spec.ts` 锁定，并检查 `^3.9`、`^3.10` 的判断与新导出）。
-- 原生插件用到 95.1 任一项时声明 `hostUICompat: "^3.10"`，`hostCompat` 要求核心 `>=0.1.277`（0.1.276 是最后一个带 UI 3.9 的核心）。`sdk/manifest/check/ui.go` 的 UI 下限表 `uiFloors` 为此加了 3.10 一行（`lastUI` 3.9.0、`lastCore` 0.1.276、`firstCore` 0.1.277，无 `uses`：3.10 没有新增 manifest 字段，只按 `hostUICompat` 判断）：`hostUICompat` 要求 3.10 及以上而 `hostCompat` 包含 0.1.276 时报 `hostCompat` `below_ui_core`（`TestHostUICompatNeedsMatchingHostCompat`）。
+- 原生插件用到 95.1 任一项时声明 `hostUICompat: "^3.10"`，`hostCompat` 要求核心 `>=0.1.277`（0.1.276 是最后一个带 UI 3.9 的核心）。
 - 旧插件不受影响：`^3.0`–`^3.9` 的声明都满足 3.10；它们看到的唯一变化是 `STimeRange` 预设“全部”显示为“全部时间”。
 
 ### 95.3 控制台使用日志 / 全站日志的筛选
@@ -7982,7 +6681,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 | kind | 全量（不带 `mine`） | `mine=true` |
 |---|---|---|
 | users | `user:read` | 不支持（400） |
-| groups | `group:read`：全部分组，含已停用；只有 `account:group:bind`：调用者自己可用的分组（与 `mine=true` 同一范围，即 own 级账号可绑定的分组，`segment.UsableGroupSQL`）；两者都没有：调用者自己的权限范围里点名的分组（任一动作的 `group/G`、`group/G/account/X`，访问密钥按密钥自己的权限，`PermissionSet.ScopeGroups`，`Entity.Named`），让控制台按名称显示自己的范围，一个都没有时 403（权限加固期 4 验证修复） | 任何登录用户：`GET /me/groups` 的范围（状态 `active`，且公开或已授权给调用者所在的用户组，§97） |
+| groups | `group:read`：全部分组，含已停用；只有 `account:group:bind`：调用者自己可用的分组（与 `mine=true` 同一范围，即 own 级账号可绑定的分组，`segment.UsableGroup`）；两者都没有：调用者自己的权限范围里点名的分组（任一动作的 `group/G`、`group/G/account/X`，访问密钥按密钥自己的权限，`PermissionSet.ScopeGroups`，`Entity.Named`），让控制台按名称显示自己的范围，一个都没有时 403（权限加固期 4 验证修复） | 任何登录用户：`GET /me/groups` 的范围（状态 `active`，且公开或已授权给调用者所在的用户组，§97） |
 | api-keys | `usage:all:read`：全部用户的密钥（使用记录本来就向它展示所有密钥的 id、名称、所属用户） | `apikey:self:manage`：调用者自己的密钥 |
 | accounts | `account:read`：全部账号；只有 `account:own:read` 时自动只看自己创建的（同 `GET /accounts`，§21.2） | `account:read` 或 `account:own:read`：只看自己创建的 |
 | models | `price:read`：价格表里的全部模型，含已停用的价格 | `apikey:self:manage`：已启用的价格里，调用者任一可用分组（`/me/groups` 的范围）的模型名单放行的模型（0.1.279 时这等于 `GET /me/prices` 对每个可用分组结果的并集；§97 起 `/me/prices?group_id=` 只列分组里的账号提供的模型，所以这个范围是各可用分组 `/me/prices?group_id=` 结果并集的超集，§79.5） |
@@ -8007,8 +6706,8 @@ kind: users | groups | api-keys | accounts | models | proxies
 
 - `HOST_UI_VERSION` 3.11.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.11.0（`ui-contract.spec.ts` 锁定）。3.11 只加不改：`SSelect` 的可搜索形态新增 `icon`、`clearable`、`tinted`、`remote`（+ `search` 事件）、`loading`、`selected`、`note`、`footer`，选项新增 `hint`、`description`、`tag`、`muted`、`accent`（`web/packages/ui/README.md` 的 3.11 一节）；`SDateRange` 的 `time` 模式在任何宽度都完整显示起止时间到秒，放不下时起止各占一行；`HOST_COMPONENT_NAMES` 新增 `EntityPicker`。
 - `EntityPicker`（`web/src/components/EntityPicker.vue`，用法和行为见 `COMMON-CONTROLS.md` §6）是这条查找接口在控制台的唯一入口：`v-model:id` 加可选的 `v-model:text`（“名称包含”），选中即发 `change`；没有查找权限或接口返回 403 / 404 时自己退化成文本框。页面只描述“这是哪种实体、id 和名称各写到哪个参数”，不再各写一套“ID 或名称”的拆分。把 id 显示成名称用 `useEntityNames`（同一 kind 的反查合并成一次 `ids=` 请求，本次登录内缓存）。
-- 接入的页面：使用记录三页（模型、用户、API Key、分组、账号；选中即查询，手输的文本仍等回车或“搜索”；换用户后 API Key 不属于新用户就清掉；链接参数新增 `model`、`group_id`、`account_id`（后者只对能读账号的管理员），链接里不是正整数的 id 直接丢弃）、账号列表（分组、模型、创建人）、代理列表（创建人）、余额流水和调整余额弹窗（用户）、ccgateway 请求日志（模型）。
-- 原生插件用到 3.11 任一项时声明 `hostUICompat: "^3.11"`，`hostCompat` 要求核心 `>=0.1.279`（0.1.278 是最后一个带 UI 3.10 的核心；`sdk/manifest/check/ui.go` 的 `uiFloors`）。moderation 0.9.1、dynweight 0.5.7 是头两个使用者。
+- 接入的页面：使用记录三页（模型、用户、API Key、分组、账号；选中即查询，手输的文本仍等回车或“搜索”；换用户后 API Key 不属于新用户就清掉；链接参数新增 `model`、`group_id`、`account_id`（后者只对能读账号的管理员），链接里不是正整数的 id 直接丢弃）、账号列表（分组、模型、创建人）、代理列表（创建人）、余额流水和调整余额弹窗（用户）。
+- 原生插件用到 3.11 任一项时声明 `hostUICompat: "^3.11"`，`hostCompat` 要求核心 `>=0.1.279`（0.1.278 是最后一个带 UI 3.10 的核心）。moderation 0.9.1、dynweight 0.5.7 是头两个使用者。
 - 回滚顺序：两个插件的 `hostCompat` 都抬到了 `>=0.1.279`，核心退回 0.1.278 之前先把 moderation 退回 0.9.0、dynweight 退回 0.5.6。
 
 ### 96.7 控制台：UI 3.12，表单里的实体选择器（2026-11-12，用户要求）
@@ -8024,7 +6723,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 - `GroupPicker`、`ProxyPicker`（后者也是宿主组件）和 `group-select` / `proxy-select` 部件对外不变，内部改成上面这套：候选和名称来自查找接口，不再只取 `/groups`、`/proxies` 的前 200 条；`ProxyPicker` 的 `null` 仍是“不使用代理”（占位文案不变，点 × 清除），调用者看不到的已选代理仍显示 `#id` 并保持选中。提交给后端的字段名、类型、空值都不变。接入处：账号编辑器（分组、代理）、批量编辑账号（分组、代理）、用户的“分配分组”、价格试算的分组。删除带 API Key 的分组时“迁移到哪个分组”也改成 `EntityPicker`（排除被删的分组自己，仍提交 `move_keys_to=<数字 id>`；“有没有别的分组可迁”仍看分组列表的第一页）。
 - 查找权限：分组要 `group:read`，代理要 `proxy:read` 或 `proxy:own:read`（§96.2）。没有权限、或核心没有这条路由（滚动更新中的旧核心返回 404）时是文本框，直接输入 id；改造前这种情况下拉是空的，只能保留或清除已有值。
 - 页面改了分组或代理后（`useGroupsLookup(true)` / `useProxiesLookup(true)`），选择器缓存的这类实体名称一并作废（`forgetEntityNames`），再显示时重新反查。
-- 原生插件用到 3.12 任一项时声明 `hostUICompat: "^3.12"`，`hostCompat` 要求核心 `>=0.1.280`（0.1.279 是最后一个带 UI 3.11 的核心；`sdk/manifest/check/ui.go` 的 `uiFloors`）。moderation 0.9.2 是第一个使用者（`hostUICompat: "^3.12"`、`hostCompat: ">=0.1.280 <0.2.0"`；设置表单用到 `entity-select`，见 §72 的版本记录）。`sdk/manifest/check` 不校验 `ui:widget` 的名字；UI 3.11 及更早的控制台遇到 `entity-select` 按 schema 类型推断控件（整数 → 数字框，字符串 → 文本框，数组 → 标签输入框，后者写字符串），所以用它的插件靠 `hostCompat` 下限挡住旧核心。
+- 原生插件用到 3.12 任一项时声明 `hostUICompat: "^3.12"`，`hostCompat` 要求核心 `>=0.1.280`（0.1.279 是最后一个带 UI 3.11 的核心）。moderation 0.9.2 是第一个使用者（`hostUICompat: "^3.12"`、`hostCompat: ">=0.1.280 <0.2.0"`；设置表单用到 `entity-select`，见 §72 的版本记录）。`sdk/manifest/check` 不校验 `ui:widget` 的名字；UI 3.11 及更早的控制台遇到 `entity-select` 按 schema 类型推断控件（整数 → 数字框，字符串 → 文本框，数组 → 标签输入框，后者写字符串），所以用它的插件靠 `hostCompat` 下限挡住旧核心。
 - 回滚顺序：核心退回 0.1.279 之前先把 moderation 退回 0.9.1。
 
 
@@ -8275,7 +6974,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 | GET `/groups` | 每行加 `access: {segments: SegmentRef[], personal_count}`（私有分组授权给了哪些命名用户组，以及多少个个人专属；只统计私有分组，公开分组恒为 `{segments: [], personal_count: 0}`，留在公开分组上的授权行不计）、`price_rule_count`（分组内定价的条数）、`segment_rule_count`（本分组里各用户组专属价的条数）、`model_count`（分组提供的模型数）。两个条数只算分组**现在提供**的模型上的规则，与定价表列出的一致：分组不再提供某个模型后（账号不再声明它，或不限模型的账号所依赖的全局价被停用），那个模型上的规则留在库里但不计入，重新提供时又计入；`Segment`、`SegmentGroupSetting` 的 `price_rule_count` 同一口径（`group` 包的 `offeredRules`，97.9）；新筛选 `?model=`，只留提供该模型的分组 |
 | GET `/me/groups` | 可用性按调用者所在的用户组。每行只比原来多三项：`effective_rate`（调用者在该分组的实际倍率）、`rate_source`、`exclusive`（私有分组）。`rate_multiplier` 仍是分组默认倍率（§15.2）。某个分组读不到调用者在其中的条件时（列出分组和读条件是两次查询，中间分组被删等），这个分组从结果里略去，不报错 |
 | GET `/users`、GET `/users/:id` | 加 `segment: SegmentRef`；去掉 `group_ids`；新筛选 `segment=<用户组 id>` 或 `segment=personal`（所有个人专属的用户） |
-| POST `/auth/login`、POST `/auth/refresh` | 不变：返回的 `user` 不带 `segment`（§5.1） |
+| POST `/auth/login` | 不变：返回的 `user` 不带 `segment`（§5.1） |
 | POST `/users` | 可带 `segment_id`：必须是命名用户组（否则 400，字段 `segment_id`），带它需要 `segment:manage`；没带就进默认用户组 |
 | GET / PUT `/users/:id/groups` | 删除。私有分组授权给用户组；给单个用户授权用个人专属 |
 | DELETE `/users/:id` | 用户的个人专属随之删除，`segment_id` 改回默认用户组 |
@@ -8319,7 +7018,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 2. **旧节点对账新节点预留的行**时只改 `total_cost`，`base_cost` 停在预留时的估算值。
 3. **旧节点刷新小时汇总**（§66.8）用旧公式算 `standard_cost`，不读 `base_cost`：倍率为 0 的新记录计 0，其余的行与 `base_cost` 只有末位舍入的差别。窗口内被旧节点封存或重算过的小时，全部节点升级完之后要标脏重算（本节末的 C）。
 4. **旧节点软删除用户**时不删他的个人专属，留下一个唯一成员已软删除的个人专属。它不影响鉴权和计费（已删除的用户本来就被拒绝）。全部节点升级完之后用本节末的查询 D 找出来，逐个经 DELETE `/segments/:id` 删除（97.6）。
-5. **旧节点重启会暂时收回 `segment:*` 权限。** 第一个新节点启动时登记 `segment:read`、`segment:manage` 并授给内置角色；之后若有旧节点重启，它启动时同步核心权限（`authz` 的 `SyncCore`），把自己不认识的这两项标成 `removed`。从这时起，所有节点上非超级管理员访问用户组页面、成员列表、新建用户时指定用户组都回 403，菜单里的“用户组”也不显示，直到再有一个新节点启动（权限恢复 `active`；`role_permissions` 没被删，授权随之回来）。不影响鉴权和计费；每次新增权限都有这个现象。滚动窗口里遇到时，再启动一个新节点即可。
+5. **旧节点重启会暂时收回 `segment:*` 权限。** 第一个新节点启动时登记 `segment:read`、`segment:manage` 并授给内置角色；之后若有旧节点重启，它启动时同步核心权限（`authz` 的 `SyncCore`），把自己不认识的这两项标成 `removed`。从这时起，所有节点上非超级管理员访问用户组页面、成员列表、新建用户时指定用户组都回 403，菜单里的“用户组”也不显示，直到再有一个新节点启动（权限恢复 `active`；授予没被删（0.1.290 起是 `casbin_rule` 的行，之前是 `role_permissions`），授权随之回来）。不影响鉴权和计费；每次新增权限都有这个现象。滚动窗口里遇到时，再启动一个新节点即可。
 
 **回滚**到旧二进制不需要改库，但要知道下面几件事：
 
@@ -8332,7 +7031,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 **接口与控制台**
 
 - 接口：GET / PUT `/users/:id/groups` 和用户的 `group_ids` 已删除，仍在用它们的旧控制台（滚动窗口内）或脚本会得到 404 或读不到字段；`GET /me/prices` 不带 `group_id` 时不再返回第一个可见分组的价格（§79.5）。
-- 控制台：`STable` 的行展开（`expanded` / `toggleExpand`、`expandToggle`、`expandSingle`）计入 UI 3.13，见 `web/packages/ui/README.md`。`HOST_UI_VERSION` 3.13.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.13.0（`ui-contract.spec.ts` 锁定）。3.13 只加不改，`hostUICompat: "^3.x"` 的现有声明都满足。原生插件用到 3.13 任一项时声明 `hostUICompat: "^3.13"`，`hostCompat` 要求核心 `>=0.1.281`（0.1.280 是最后一个带 UI 3.12 的核心，3.12 见 §96.7；`sdk/manifest/check/ui.go` 的 `uiFloors`）。
+- 控制台：`STable` 的行展开（`expanded` / `toggleExpand`、`expandToggle`、`expandSingle`）计入 UI 3.13，见 `web/packages/ui/README.md`。`HOST_UI_VERSION` 3.13.0；`@sub2api/host`、`@sub2api/ui`、`@sub2api/vite-preset` 版本 3.13.0（`ui-contract.spec.ts` 锁定）。3.13 只加不改，`hostUICompat: "^3.x"` 的现有声明都满足。原生插件用到 3.13 任一项时声明 `hostUICompat: "^3.13"`，`hostCompat` 要求核心 `>=0.1.281`（0.1.280 是最后一个带 UI 3.12 的核心，3.12 见 §96.7）。
 
 **本节用到的 SQL**
 
@@ -8398,7 +7097,7 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 |---|---|---|---|
 | 实际倍率与来源 | `core.SegmentRate(groupDefault, discount decimal.Decimal, override *decimal.Decimal) (rate decimal.Decimal, source string)` | `apikey` 鉴权、`segment` 的各个 `Terms`、价格试算 | 三层替换、4 位小数取整和上限 999999.9999 都在这里（常量不导出）。`apikey` 鉴权为了一条 SQL 读完自己连表，但倍率同样只经这个函数 |
 | 倍率、折扣、规则倍数的写法 | `core.ParseRate(s string) (decimal.Decimal, bool)` | 分组默认倍率、专属倍率、全场折扣、规则倍数的保存校验 | 不小于 0、不超过 999999.9999、最多 4 位小数：保存进去的数一定原样存得进 `numeric(10,4)`。“全场折扣必须大于 0”由调用方另加 |
-| 用户能否使用分组 | `segment.OpenToUserSQL(groupAlias, userArg string) string`：一段 SQL 条件，“分组是公开的，或用户所在的用户组被授权了它” | `apikey`（创建和修改 Key 的校验、列表的 `group_status`、鉴权）、`group`（`/me/groups`）、`billing`（`/me/prices`）、`lookup`（`mine=true` 的范围） | 取代原来散在这 6 处的 `user_groups` 子查询。分组状态由调用方自己判断。鉴权那条一次读完的连表 SQL（`apikey.lookupSQL`）也嵌入这段条件，不自己写可见性（`TestLookupUsesOpenToUser` 固定） |
+| 用户能否使用分组 | `segment.OpenToUser`（用户是唯一的 `?` 参数）、`segment.OpenToKeyOwner`（用户是 API Key `k` 的所有者）：分组别名为 `g` 的 SQL 条件常量（2026-11-16 起，此前是按别名拼接的 `OpenToUserSQL`），“分组是公开的，或用户所在的用户组被授权了它” | `apikey`（创建和修改 Key 的校验、列表的 `group_status`、鉴权）、`group`（`/me/groups`）、`billing`（`/me/prices`）、`lookup`（`mine=true` 的范围） | 取代原来散在这 6 处的 `user_groups` 子查询。分组状态由调用方自己判断。鉴权那条一次读完的连表 SQL（`apikey.lookupQuery`）也嵌入这段条件，不自己写可见性（`TestLookupUsesOpenToUser` 固定） |
 | 用户组在分组里的条件 | `segment.UserTerms / SegmentTerms(ctx, q, id, groupIDs) (map[int64]segment.Terms, error)`（一个用户或一个用户组在若干分组里，按分组 id）；`segment.GroupTerms(ctx, q, groupID, segmentIDs)`（若干用户组在一个分组里，按用户组 id） | 需要成批读取的接口（各列表里的 `accessible`、`rate`、`effective_rate`，两个方向的设置列表，定价表，试算，`/me/prices`） | `Terms` 带授权、是否可用、分组默认倍率、全场折扣、专属倍率，以及由 `core.SegmentRate` 算出的实际倍率和来源。三个函数是同一条查询的三种取法 |
 | 引用一个用户组时的名称 | `segment.Ref(ctx, q, id, showUsers) (core.SegmentRef, error)`；`segment.Masked(ref, showUsers)`；`segment.ShowUsers(ctx, authz) (bool, error)` | `segment` 的各接口、定价表、试算、成员列表 | 个人专属的名称是成员的邮箱；调用者没有 `user:read`（`ShowUsers` 为假）时给 `#<user_id>`（97.6）。读名称走 `Ref`，已经读到的引用走 `Masked`；连表读用户组引用的列清单只有 `segment.RefColumns` 一份（`iam` 的用户列表也引用它）。用户组不存在的 404 是 `segment.NotFound(ctx)`（带中英文案，`Ref` 返回它，`billing` 的定价表与试算、`iam` 的成员列表都经它），字段里点名了不存在的用户组时的文案是 `segment.UnknownMessage(ctx)`（`iam` 新建用户、`billing` 保存规则） |
 | 引用一个分组 | `core.GroupRef{ID, Name}` | 各接口里的 `{id, name}`（`granted_groups`、定价表和 `/me/prices` 的 `group`、`groups`） | 同一个形状只有一个类型 |
@@ -8499,3 +7198,225 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 
 - 网关 `gateway/attempt_trail_test.go`：`TestAttemptTrail`（单次不写、换号 A→B、失败策略同号 A→A→B、全部失败）、`TestAttemptTrailBounds`（超 10 步计入 `omitted`、第 10 步仍有 `next`、`message` 截断）；`gateway/websocket_test.go` 的 `TestWebSocketHandshakeFailoverDisablesTheAccount`（握手换号的链路，最后一步取轮次结果）。
 - 使用记录 `usage/api_filter_test.go`：`TestUsageAttemptTrail`（PostgreSQL：三种视图的裁剪、详情补名而列表不带名、旧行与单次为 `null`、`retried` 在列表/汇总/导出的全站与自助视图、汇总 `anomalies` 不计、导出调用链路列的三种写法）、`TestShapeTrailDropsUnreadable`、`TestParseFilterInvalidSearch`（`retried=maybe`）。
+
+## 99. 权限判断接入 Casbin（迁移 0100；核心 0.1.290）
+
+设计见“sup2api 权限判断迁移到 Casbin：实现设计”。每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存），用户授予的完整列表是 Casbin 的 `GetImplicitPermissionsForUser`（2026-11-16 用户决定，§99.3）；DataScope、访问密钥收窄 `Restrict` 的列表运算、防提权与可分配的角色比较、超管唯一、插件复核仍由自研代码负责，其中“用户是否持有某个 key”一律问 Casbin。本期不做 team（S0）。`casbin_rule` 是授予与角色指派的唯一存储，判断只走 Casbin（2026-11-16，用户决定）。
+
+### 99.1 存储 `casbin_rule`
+
+- 表用 gorm-adapter 的列布局 `id, ptype, v0..v5`，列宽按实际内容：`v0` varchar(52)（`r:` + `roles.key`，或 `u:` + bigint），`v1` varchar(150)（权限 key、`*` 或角色主体），`v2` varchar(200)（范围、`*` 或空），`v3..v5` 不用（varchar(1)，必须为空）。加宽 `roles.key`、`permissions.key` 或范围时同时加宽这里（`TestCasbinRuleColumnWidths`）。casbinx 加载时关掉 adapter 的 AutoMigrate，表结构只由迁移决定。
+- 映射：`p, r:<角色 key>, <权限 key>, *`（整行授予）、`p, r:<角色 key>, <权限 key>, <范围>`（范围授予）、`p, r:super_admin, *, *`（超管角色）、`g, u:<用户 id>, r:<角色 key>`。self 权限不落库，加载时注入虚拟角色 `r:_self`。
+- **唯一读写者 `internal/authz/casbinrule`**：表名、`ptype`、主体前缀只在这个包里拼；调用方（authz 的角色与插件目录写入和 `ClearScopeGrants`、iam 的用户列表、casbinx 的加载器）只传角色 key、用户 id、权限 key、规范范围后缀和 `casbinrule.Filter`（写入只碰哪些授予：权限来源、所属插件、权限 key、跳过的状态、是否跳过超管角色），不拼它语句里的别名；读用它导出的 GORM 查询（`GrantRows`、`RoleKeysOf`、`RoleSubsOf`、`MembersOf`）、相关子查询片段（`Grants`、`GrantsOfRole`、`RolesOfUser`、`MembersOfRole`，常量，按其输出列使用）或函数（`Scopes`、`LockMembers`）。`core` 不依赖它：范围授予的清理与范围的匹配式在 authz（`(*authz.Service).ClearScopeGrants`），`core` 只给出行的种类（`core.ScopeRef*`）与端口 `core.ScopeGrantClearer`。写入在业务事务里用 GORM 执行，与审计同一事务，事务先锁 `authz_meta` 行并升版本（用户写入 `Bump`，策略写入同时升策略版本，§99.4）；改到某个角色的授予时同一事务里把它的 `roles.revision` 加一（`casbinrule` 的写入函数自己做，§5.2“并发写入”）；全部是 GORM 模型与查询构造器的语句，没有手写的整条 SQL：要报告“加了/删了什么”的写入（`AddGrants`、`SyncSuperusers`、核心同步、插件目录的 upsert）先读后写，结果的准确依靠事务已持有的 authz 锁，删除用 `RETURNING` 取回删掉的行；绝不经 gorm-adapter 的写入或事务 API、Casbin 的管理 API（§99.6）。源码检查 `TestOnlyThisPackageNamesTheTable`：除它和生成的模型外，生产代码的字符串字面量里不出现表名。语句的 SQL 快照在 `casbinrule/testdata`（`TestSQLCasbinRule*`）。
+- 已移除、已停用、staged 权限的授予照常保留（§21），加载时按 `permissions.status` 过滤；软删除用户的 g 行保留（与原 `user_roles` 一样，恢复用户带回角色），加载时按 `users.deleted_at`、`status` 过滤。`roles`、`permissions`、`role_assignable_roles`、`authz_meta`、`plugin_permission_grants`、`plugin_staged_grants` 仍是元数据表。超管行由 `SyncCore` 按 `roles.superuser` 对齐（`casbinrule.SyncSuperusers`）。
+- 约束（迁移 0100）：
+  - `idx_casbin_rule`：adapter 的唯一索引（同名同列），也是写入 `ON CONFLICT DO NOTHING` 的目标；`casbin_rule_v1_idx (ptype, v1)` 服务按权限找 p 行、按角色找 g 行。
+  - `casbin_rule_shape`：p 行主体是角色且不是 `r:_self`、动作和范围非空、动作为 `*` 的行（超管行）只能是 `r:super_admin` 的且范围为 `*`（三审 C4）；g 行主体是 `u:<数字>`、角色不是 `r:_self`、`v2` 为空；其他 `ptype` 拒绝。
+  - `casbin_rule_one_superuser`：`super_admin` 的 g 行最多一行（部分唯一索引，取代 0097 的 `user_roles_one_superuser` 触发器）。不可延迟，所以移交先撤后授；两个事务并发授予时，后插入的等前一个提交后报 23505（`TestCasbinRuleOneSuperuserConcurrent`）。
+  - `roles_superuser_key`：只有 `super_admin` 能是超管角色（索引按它的主体判断）；`roles_key_reserved`：角色 key 不能是 `_self`；`permissions_key_reserved`：权限 key 不能是 `*`（会被当成超管行）。
+- **没有外键**（行按 key 指向角色与权限、按 id 指向用户），删除路径在同一事务里显式清理：删角色 `casbinrule.DeleteRole`（授予与指派）；删权限（`DiscardStaged`、`DeletePlugin` 经 `deletePermissions` → `DropPermissions`）；删插件行的一方（卸载、拒绝 consent）先调 `PermissionCatalog.DeletePlugin`，因为插件行的外键只级联到 `permissions`；删分组、账号、代理时经 `core.ScopeGrantClearer`（`authz.Service`）删掉指向它们的范围授予。用户只软删除。`testutil.DB` 在每个数据库测试结束时断言没有指向不存在的用户、角色、权限的行（`testutil.PolicyOrphans`）；`TestDeletePathsClearPolicyRows` 逐条路径核对。
+- 改 key：`roles.key`、`permissions.key` 被行按值引用，改 key 必须在同一事务里改对应的行，并升 authz 版本与策略版本（先锁 `authz_meta`，与所有授权写入同序；版本一动，仍在运行的节点就丢掉还写着旧主体的快照与用户集合）。角色用 `casbinrule.RenameRoleSQL` 生成的事务（`BEGIN; UPDATE authz_meta …; UPDATE casbin_rule …; UPDATE roles …; COMMIT;`，`SyncCore` 发现自定义角色占用内置 key 时，启动报错里直接给出，§43.6；`TestSyncCoreRefusesCustomRoleOnBuiltinKey` 执行它并核对版本只升一次）；权限 key 的改名只该出现在迁移里，同样改 `casbin_rule.v1`（以及 `user_access_keys.permissions` 等引用处）。
+
+### 99.2 迁移 `0100_casbin_rule.sql`
+
+- 单事务：`lock_timeout` 10 s，先锁 `authz_meta` 行（与所有授权写入同序）；库里有 key 为 `_self` 的角色、key 为 `*` 的权限、`super_admin` 以外的超管角色，或 `user_roles` 里超管角色的持有者多于一个（已软删除的也算，它的行同样会转换）时报错停止升级，错误与 HINT 说明怎样改（多个超管：只列 user id，HINT 指向 0.1.288 的 `sub2api admin recover-superadmin`，这时库还是它的角色表，`TestCasbinRuleSeveralSuperAdmins`）；迁移失败时 HINT 跟在错误后面进启动日志（`store.Migrate`）；加上 §99.1 的检查约束；建表与索引；把旧表转成行（`UNION` 去掉两种方式都持有的授予）；删除 `user_roles`、`role_permission_scopes`、`role_permissions` 与 0097 的 `user_roles_one_superuser()`，以及 0099 的 `risk` 取代了的 `permissions.sensitive`；加 `authz_meta.policy_version`（§99.4）与 `roles.revision`（§5.2“并发写入”）两列；升 authz 版本与策略版本。
+- 可重跑：表、索引、约束都 `IF NOT EXISTS` 或跳过已有的，转换只在旧表还在时执行（`TestCasbinRuleMigration`：转换结果、旧表、函数与 `sensitive` 列已删、版本只升一次、重跑不变、一人超管索引生效）。0026 起迁移可重跑的规则（§43.7）对 0100 之前的迁移按 0100 之前的 schema 验证：0100 删掉了它们写的表和列，而每个迁移与它的记录同一事务提交，0100 之后不会再跑到它们（`TestMigrationsFromFirstIdempotentRunTwice`）。
+- **单向**，发布必须停服，迁移开始前不能有旧核心在运行：托管部署在建升级计划之前备份数据库，`primary-first-v1` 先把从节点转发到主节点并停掉，主节点最后进入维护、停机，再迁移；非托管部署先停掉全部节点（顺序不限）、备份，再启动新版本迁移。0.1.288 及更早的核心不能在这个 schema 上运行。回退只能从升级前的备份恢复（`deploy/rollback/0.1.290-release.md`、`0.1.290-casbin-down.md`）。跑过 0099–0101 任何发布前版本的开发库、预发库，新版本拒绝启动（校验和不同）：重建，或恢复到 0098 的备份再升级。
+- 停在 0100 之前的库（0100 因多个超管被拒，0099 已提交）：0.1.290 的 `sub2api admin` 只接受迁移完整的库（§43.6），用 0.1.288 的同一命令保留一个超管（0.1.288 能在 0099 的库上运行，0099 只加列），再继续升级。
+
+### 99.3 判断（`internal/authz/casbinx`）
+
+- 模型：`r = sub, obj`，`p = sub, act, scope`，`g = _, _`，matcher `g(r.sub, p.sub) && permMatch(p.act, p.scope, r.obj)`（先 g 后 permMatch，govaluate 短路），`permMatch` 就是 `perm.Implies`（act `*` 蕴含一切）；它的解析缓存属于各自的 enforcer。超管是 `p, r:super_admin, *, *` 这一行，没有别的超管判断。
+- 每个节点一个 enforcer：Casbin 的 `SyncedCachedEnforcer`，Casbin 自带的角色管理器，没有 adapter，`EnableAutoSave(false)`。装入策略（只读 RR 事务，gorm-adapter 的 `LoadFilteredPolicy` 只读 p 行，`TurnOffAutoMigrate` 后 `NewAdapterByDBUseTableName`）：两个版本、全部角色的 key 与 id、active 权限的 p 行与超管行（已停用、已移除权限的授予仍在库里，不装；库里的 `r:_self` 行也不装），加上虚拟角色 `r:_self` 的 p 行（self 权限，不落库）。**不装任何用户的 g 行**（二审 A1：此前装入全部 active 用户，10 万用户时一次重载要读 20 万行、建 0.7 s、常驻约 150 MB，重载期间所有判断都在等）：用户第一次被问到时读一条语句（`casbinrule.RoleSubsOf`，同时读出两个版本与是否 active），active 的用户连到它的角色和 `r:_self`；不 active 的用户也记下，什么都不持有，连 self 权限也没有。enforcer 最多记住 `casbinx.Options.Users` 个用户（默认 5 万，每个约 2 KB）：满了以后每读进一个用户就随机忘掉另一个，忘掉的用户下次被问到时再读。
+- 两个版本（`authz_meta`）：`version` 每次授权写入都升（控制台的 `X-Authz-Version`）；`policy_version` 只随策略内容升：授予、权限状态、角色定义（创建、删除、改名、重置、插件目录同步、范围授予清理）。给用户指派角色、改用户状态只升 `version`，并在广播里点名用户（三审 D1）。
+- 节点得知一个新版本（自己的写入提交后、`authz:changed`、版本轮询、启动）时，enforcer 在请求外按版本顺序应用：
+  - 正好是 enforcer 版本的下一个，且只点名了用户：逐个重读这些用户（`casbinrule.RoleSubsOf`，一条语句读出两个版本、是否 active 与角色，三审 D4），在内存里换掉该用户的 g 行（`GetRolesForUser` 后逐行 `RemoveGroupingPolicy`，再 `AddGroupingPolicies`，不经 adapter；不用 `RemoveFilteredGroupingPolicy`，它要扫描所有用户的 g 行，二审 S1），丢掉该用户的决策缓存与授予列表；别的用户的缓存不动，策略不重载。读到的策略版本与 enforcer 的不同（期间有策略写入提交）时改为装入策略，绝不把一个策略版本下的角色和另一个策略版本的授予拼在一起。
+  - 否则（策略写入、中间有版本没听到、轮询发现的新版本、读用户时碰到的新版本）装入策略。从 enforcer 的版本到读到的版本之间**每个版本都听到了、且知道改了什么**（策略写入，或只点名了用户的写入），并且 enforcer 记得的每个角色仍以同一个 id 存在时，就在原 enforcer 里原地换掉全部 p 行（一次过滤删除再加入，不逐行删除），保留已记住的用户，只忘掉这些版本点名的用户；决策缓存换成新的，授予列表与 matcher 的解析缓存清空。策略写入除了删除角色（连带删掉成员的 g 行）不改任何用户的 g 行，所以用户可以保留；角色被删除或删除后同名重建（id 变了）、或者有版本不知道改了什么（可能改了任何人的角色）时，改为建一个只有 p 行的新 enforcer 替换旧的，用户一律重新按需读入。两种方式都只在换上去的一刻影响判断：新 enforcer 在旁边建好后原子替换（旧 enforcer 上进行中的判断照常完成）；原地重载持写锁的时间只是换 p 行（几百行约 0.2 ms，两千行约 1.5 ms），与用户数无关。需要新版本的判断仍按下文等到它（fail closed），只是现在等的是几毫秒。
+  - 读入用户时，读到的策略版本与 enforcer 的不同、或读得比 enforcer 记下的下限（上次装入的版本、被忘掉的用户当时读到的版本，取较大者）还旧时不采用：前者先装入新策略，后者重读，避免把一次旧的读取放回一个已经变过的用户。
+- 判断：`authz.Service.Can` 是 `Enforce(u:<id>, key)`；`PermissionSet` 是 Casbin 列出的该用户授予（`GetImplicitPermissionsForUser`，`*` → `Superuser`；按用户缓存，与决策同时作废），它的 `Has` 也是 `Enforce`（`core.PermissionSet.Decided`），在当前 enforcer 上判断；当前 enforcer 已经不记得这个用户（被替换、被忘掉）时，按这个集合自己的列表（同一请求里 Casbin 给出的，版本不低于请求要求的）回答。所以 `Has` 从不读库，也不建超时 context（二审 A4：此前每次 `Has` 都 `WithTimeout` 2 s，用户需要重读而 PG 不可达时静默返回 false，调用方报 403）。判断不了（等不到版本、读不了用户）时 `Can` 与 `PermissionSet` 返回 503 `unavailable`，原因随请求记入日志（`httpapi.Fail`），不当成拒绝；Casbin 自身出错（matcher 运行失败）时 `Has` 记 `slog.Warn` 并拒绝。路由（`Perm`、`PermAny`）、`core.Can`（返回 `(bool, error)`，调用方把错误原样返回，账号的分组绑定与 `account:relay`、`account:settings:custom` 检查、用量的账号可见性、lookup 都因此 503 而不是 403 或静默收窄）、网关 `gateway:use`、`/me`、菜单、插件路由与 `AuthzCheck`、访问密钥创建时的校验都经这两个入口；`HasAction`、`DataScope`、`ScopeGroups`、`KeyList` 读 Casbin 给出的列表。只用键构造的集合（角色的授予、访问密钥的键表，`core.PermissionSetOf`）的 `Has` 只比较键，用于比较列表，不是对用户的判断。
+- 访问密钥：判断是“密钥收窄后的列表蕴含该 key”且 `Enforce(用户, key)`。收窄后的列表仍按 `Restrict` 计算（Casbin 的列表与密钥键表逐模式取较窄者，不可比的范围丢弃），所以 `Has` 与 `DataScope` 一致，不会出现“密钥 `group/12` + 用户 `account/5` → 允许 `group/12/account/5`”这种交集（`TestRestrictIsNotAMatcherIntersection`）。
+- 防提权与可分配（`grantSet`、`CanActOnUsers`、`CanGrant`、角色编辑）比较的是角色携带的授予（授予视图，含已停用的插件权限、不看用户状态），在写入事务里读（C-L4）；“操作者是否持有某个 key”经 `Missing` 落到操作者集合的 `Has`。用户自己的 PermissionSet 来自 Casbin。
+- 等待：每次判断先等 enforcer 达到本节点知道的最新版本（`minVersion`），最多 2 s，超时报 `casbinx.ErrStale`（fail closed，请求失败，503）；只有真要等时才建等待的 context，读用户时另加读取超时。装入策略或重读用户失败时按 50 ms 起翻倍、最多 1 s 的间隔重试（变更一直留在队列里，直到 enforcer 的版本越过它才删除，三审 M1），期间需要新版本的判断都失败。
+- 没有数据库的 `authz.Service`（只用于单元测试）没有 enforcer，判断报错。
+- 性能（`casbinx` 基准，10 个角色 × 40/200 个授予，记住 1 千/1 万/10 万个用户，4 个共享核）：命中决策缓存 0.2–0.4 µs（允许、拒绝、带范围相同，并行 0.2–0.3 µs）；第一次判断允许的 key 6–18 µs，拒绝或带范围的 key 要把全部 p 行跑一遍，0.2 ms（每个角色 40 个授予）到 1.1 ms（200 个）；一个用户的授予列表首次 0.04–0.34 ms，之后约 0.1–0.2 µs；建一个只有 p 行的新 enforcer 0.3 ms（440 行）、1.2–2.6 ms（2010 行）；原地重载 p 行 0.16–0.27 ms（440 行）、1.3–1.7 ms（2010 行），与记住的用户数无关；读进一个用户（内存部分）8–28 µs，换掉一个用户的 g 行 5–12 µs；每个记住的用户约 1.7 KB（加上它的决策与列表约 2.1 KB）。数值见 `casbinx/bench_test.go`。
+- 10 万用户实测（PG 本机，10 个角色 × 40 个授予，10 万 active 用户各 2 个角色，20 万条 g 行，`Options.Users` 设为 10 万）：读策略（400 条 p 行）2–8 ms，与用户数无关（此前连同 g 行 0.65–0.86 s，再建 0.72 s）；读一个用户 0.11–0.13 ms，一个用户的第一次判断（含读取）0.22–0.27 ms，之后 1.4 µs；10 万用户都记住后常驻约 215 MB（默认上限 5 万，约 110 MB；超出的部分按需重读）；一次策略写入（版本都听到）从收到到能按新版本判断约 3 ms，用户全部保留，之后每个用户第一次判断约 40 µs（缓存作废后的 matcher）、不读库；一次不知道改了什么的版本约 2–4 ms 换上新 enforcer，之后每个用户第一次被问到时重读一次（约 0.25 ms）。
+
+### 99.4 缓存与失效
+
+| 层 | 内容 | 有效性 |
+| --- | --- | --- |
+| 进程 | enforcer（p 行，被问到过的用户的 g 行，最多 `Options.Users` 个） | 版本 ≥ 判断要求的版本 |
+| 进程 | Casbin 决策缓存（按用户分组的 `cache.Cache`，每个用户最多 4096 条、总共 2^20 条，超出不再缓存） | 随该用户的变更或整体重载作废 |
+| 进程 | 每个用户的授予列表 | 同上 |
+
+Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，之后记在 enforcer 里，策略写入不把它忘掉（§99.3），只有被点名的用户才重读，请求路径上没有可以跨节点共享的读取。数据库从备份恢复后不需要清理 Valkey；授权版本回退时各节点会报“数据库版本低于已知版本”并让需要新版本的判断失败，重启核心即可。
+
+`authz:changed` 的 payload 是 `{"v","p"?,"u"?}`（§7），别的 payload 不当作变化，节点改为读一次版本。写入的节点在事务里升版本时记下这次写入点名的用户，提交后先交给本节点的 enforcer 再广播；`ClearScopeGrants` 也一样（同样经 `bumpPolicy` 升版本并登记，它自己在调用方提交后广播，三审 S2、二审 S2）。enforcer 靠这些点名判断策略重载时能否保留用户：改用户 g 行或状态的写入必须点名用户（`Bump(users…)`）或不声明范围（超管移交），策略写入（`bumpPolicy`）除删除角色外不得改用户的 g 行。所有改授予、指派、用户状态的写入都升版本；绕过服务直接改库（包括测试夹具 `testutil.Grant`、`AssignRoles` 一类）要自己升版本（`testutil.BumpAuthz` 两个版本都升，节点整体重载），否则节点按旧状态作答。
+
+### 99.5 回滚
+
+- 迁移 0100 单向，没有运行时开关，也没有反向脚本（`deploy/rollback/0.1.290-casbin-down.sql` 只报错说明这一点，什么也不改）。回到 0.1.288 的唯一途径是从升级前的备份恢复；Valkey 里没有授权的键，不用清理；升级之后写入的授予、指派会丢失。托管部署本来就不能跨 schema 回退（网关拒绝），出问题修复前进。
+- 发布顺序、备份与回退见 `deploy/rollback/0.1.290-release.md`（0099–0101 一个发布单元，从 0.1.288 升级），0100 的自检与核对 SQL 见 `deploy/rollback/0.1.290-casbin-down.md`。
+
+### 99.6 禁止事项
+
+由 `internal/store/gormguard` 的 `[casbin-api]` 检查：
+
+- Casbin 不写库：enforcer 只由 casbinx 构造，构造函数只带模型一个参数（没有 adapter），`EnableAutoSave` 只能是常量 `false`；casbinx 可以改 enforcer 内存里的策略（`Add`/`Remove[Filtered][Named][Grouping]Polic(y|ies)`，用于一个用户的 g 行；原地重载换 p 行用模型层的 `GetModel().RemoveFilteredPolicy`/`AddPolicies`，不触发 enforcer 的逐行缓存删除，决策缓存由 `SetCache` 整个换掉），别处一律不能。任何地方（casbinx 也一样）都不使用 Casbin 或 adapter 的持久化、事务、监听、自重载 API：其余的策略管理（`Update*`、角色/权限/用户形式、`Self*`）、`SavePolicy`、enforcer 的 `LoadPolicy`、adapter 的 `Transaction()`、`TransactionalEnforcer`、`DistributedEnforcer`、`SetAdapter`、`SetWatcher`、`SetDispatcher`、`StartAutoLoadPolicy`。策略只由 `casbinrule` 在业务事务里用 GORM 写。
+- Casbin 的 `Enforce*` 只在 casbinx 里调用；别的包经 `authz.Service`（`core.Authorizer`）判断。
+- gorm-adapter 只在 casbinx 里 import，API 按白名单检查（casbinx 也一样）：只许 `TurnOffAutoMigrate`、`NewAdapterByDBUseTableName` 和 `(*Adapter).LoadFilteredPolicy`（以及 `Filter` 类型）。`NewAdapterByDBUseTableName` 只能以调用的形式出现，第一个参数必须是一个变量，并且同一个函数里在它之前已经对这个变量调用过 `TurnOffAutoMigrate`（嵌套的函数字面量里调用的不算），否则构造函数会把表 AutoMigrate 成 adapter 自己的结构、把 `v1`、`v2` 收窄。其余一律禁止：别的 `New*` 与 `InitDbResolver`（AutoMigrate、自开连接池或用于写入）、`Open`（自开连接池并建库建表）、`GetDb`（交出 adapter 的句柄）、`LoadPolicy`（不在调用方的快照事务里）、`Close`、`Copy` 等。
+
+### 99.7 实现位置
+
+- 迁移：`server/internal/migrations/0100_casbin_rule.sql`；发布与回退说明 `deploy/rollback/0.1.290-casbin-down.md`（`.sql` 只报错）
+- 存储：`server/internal/authz/casbinrule/`（映射、全部读写语句、`Filter`、`RenameRoleSQL`）；模型 `server/internal/store/model/casbin_rule.gen.go`
+- 判断：`server/internal/authz/casbinx/`（`api.go` 接口、`model.go`（模型、每个 enforcer 自己的 matcher、`newEnforcer`）、`engine.go`（装入、按版本应用变更、等待、`Enforce`/`Permissions`）、`decisions.go`（按用户分组的决策缓存）、`loader.go`）；`core.PermissionSet.Decided`（`core/ports_identity.go`）
+- 接入：`server/internal/authz/service.go`（`Can`、`PermissionSet`、`invalidate`）、`grants.go`（含 `ClearScopeGrants`）、`roles.go`、`sync.go`、`plugin_catalog.go`、`superadmin.go`；`server/internal/core/scope_refs.go`（只有行的种类与 `ScopeGrantClearer`）；`server/internal/iam/users.go`、`superadmin.go`
+- 测试：迁移 `server/internal/migrations/casbin_rule_db_test.go`；孤儿检查与夹具 `server/internal/testutil/policy.go`（`DB` 在 `db.go` 里登记检查）；检查 `server/internal/store/gormguard/casbin_test.go`
+
+## 100. 控制台会话：Valkey 令牌 `s2s_`（核心 0.1.290，迁移 0101）
+
+用户决定（2026-11-15）：控制台登录会话存 Valkey；Valkey 故障按基础服务故障处理，会话鉴权和登录直接 503 并告警，不做本地兜底。用户决定（2026-11-16）：不设过渡期，同一版本删除 JWT；发布要停服，所有人重新登录（§100.7）。访问密钥 `sak_`（§80）和网关 API Key `sk-` 的鉴权不读会话，不受影响；但网关请求本身（粘性会话、账号限额等）原本就依赖 Valkey，Valkey 故障时仍会 503，这与本节无关。
+
+### 100.1 令牌与鉴权
+
+- 令牌：`s2s_` + 32 字节随机数的 base64url（共 47 个字符，`tokenstore.SessionPrefix`）。Valkey 只存 SHA-256（hex），拿到 Valkey 的内容不能登录。
+- 放在 `Authorization: Bearer`，控制台 localStorage 的字段叫 `access_token`。没有 refresh token、没有 `/auth/refresh`：会话由服务端续期，登录响应的 `expires_in` 是空闲超时的秒数。
+- 鉴权分流（`core.AuthenticateBearer`）：`sak_` 访问密钥；其余交给 `iam.VerifySession`，不以 `s2s_` 开头的直接 401，不查 Valkey。会话 id 在鉴权时写进 ctx（`core.WithSession`，读 `core.Session`）：之后 step-up 换令牌、登出、标出当前会话都只看它；访问密钥的调用者没有会话 id。
+- 每个请求读一次 Valkey（`HGETALL`），再走用户状态缓存（不论会话的 `tv`，都先用缓存）与 `token_version` 比较（§43.2）：会话的 `tv` 小于用户当前的 `token_version`，401，并删除这个令牌能打开的东西——它是会话的当前令牌就删整个会话，是轮换后留在宽限期里的旧令牌就只删它自己（旧令牌的请求不连累新令牌）；大于或等于都放行（保留下来的会话在 bump 提交前就被改成新版本，见 §100.4）。删除脚本（`Drop`）再核对一次盖章：读会话之后、读状态之前，保留型 bump 刚把它改成新版本的（撤销其他会话、改自己的密码时请求恰好落在中间），盖章已经不低于版本，不删、照常放行。
+- 用户状态为停用：盖章低于版本的按上一条删除（停用加 2，停用前的会话都低于版本）；盖章不低于版本的不删，绕过缓存重读一次用户行，仍是停用才 401。这种会话只可能出现在缓存漏了“重新启用”广播的节点上（30 秒内），重读后放行，不会把重新启用后的新登录删掉。
+- 续期（§100.2）随鉴权做，但不属于鉴权：写入失败（Valkey 内存满、`noeviction` 拒绝写入而读照常）由存储记 ERROR `tokenstore: valkey unavailable`，请求照常放行；最坏是会话按原来的空闲超时到期。
+- 鉴权路径上的 Valkey 调用（查找、续期、删除过期会话）每次最多等 1 秒；会话与流程用单独的客户端（`tokenstore.NewClient`：只重试一次，建连、读写、从连接池取连接各最多等 1 秒，遵守调用的截止时间），Valkey 卡住时控制台请求很快得到 503，而不是挂十几秒。回复丢失（服务端已执行、客户端超时或断连）时调用会被重试，所以会话的写脚本都是幂等的：新建（同 sid 先结束）、续期、撤销、清理、删除重复执行结果相同；轮换发现 sid 已经指向这次的新令牌就直接返回成功，不会再轮换一次（否则会结束旧令牌、并把新令牌缩短到 30 秒宽限）。流程的取用（`GETDEL`）重试时拿不到，按流程已过期处理，用户重新开始这一步即可。
+- 会话 id（sid）在令牌轮换时不变：step-up proof 与二次验证会话按它绑定（§80.2），`GET /me/sessions` 按它标出当前会话，`DELETE /me/sessions/:id` 按它撤销。
+
+### 100.2 Valkey 键（`s2a:` 前缀，`internal/iam/tokenstore`）
+
+| 键 | 类型 | 内容 | TTL |
+| --- | --- | --- | --- |
+| `s2a:sess:{hash}` | HASH | `uid`、`sid`、`method`、`ip`、`ua`（最近一次记下使用时的地址与浏览器，登录时为登录的）、`created_at`、`last_seen`（Unix 毫秒）、`tv`；轮换后的新令牌另有 `prev`（旧令牌的哈希） | 空闲超时，且不超过创建后的绝对超时 |
+| `s2a:sid:{sid}` | STRING | 该会话当前令牌的哈希 | 同上 |
+| `s2a:usess:{uid}` | ZSET | 成员 sid，分数最近使用时间（毫秒）；会话列表与批量撤销用 | 绝对超时，每次写入顺延 |
+| `s2a:flow:{purpose}:{hash}` | STRING | 中间流程 `{"u": 所属用户, "p": 载荷}`（§100.3） | 5 分钟 |
+
+- 每个用户最多 50 个会话（`tokenstore.DefaultMaxSessions`）：登录超出时，最久未使用的会话（连同它的旧令牌）立即结束，不报错。防止反复登录让 ZSET 无限变大、拖慢撤销脚本。
+- 在已有的 sid 上新建会话（回复丢失后的重试）先结束原来的会话，不会留下只能靠 `token_version` 结束的令牌。
+- 轮换时，上一次轮换留在宽限期里的令牌立即结束：任何时候一个会话最多一个旧令牌（`prev`）。
+- 超时：空闲 `SUB2API_SESSION_IDLE_TTL`（默认 168h = 7 天），绝对 `SUB2API_SESSION_MAX_TTL`（默认 720h = 30 天）；空闲必须为正且不大于绝对，否则启动失败。
+- 续期：`last_seen` 距今不足 5 分钟的请求只读；超过才用一个 Lua 脚本写一次（确认 `sid` 仍指向这个令牌、会话键还在，`HSET last_seen ip ua`（请求的地址与 User-Agent：`httpapi.Authenticate` 经 `core.WithClientIP`、`core.WithUserAgent` 放进 ctx；请求没有的沿用原值），两个键 `PEXPIRE` 到 min(空闲, 创建 + 绝对 − 现在)，`ZADD` 索引）。已撤销、已轮换或刚好过期的令牌不会被续期复活，也不会写出残缺的 HASH。
+- 索引残留：键自然过期后 ZSET 里会留下 sid。登录时去掉分数早于空闲超时的成员；列出、撤销时去掉键已不存在的成员。
+- 新建、撤销、清理（`Prune`）、列出、轮换、是否存在都是单个 Lua 脚本，原子执行。清理与撤销是两段脚本：清理只删盖章低于版本的会话（连同低于版本的旧令牌），不改盖章，也不看时钟，所以提交后才签发的会话怎么都不受影响；撤销的“迟到判断”（下面 §100.4）只属于撤销。撤销单个会话且不需要改 `tv` 时只读这一个会话，不扫用户的全部会话。部署是单个 Valkey（`cluster.ParseRedisURL` 不支持 Cluster 模式），脚本里访问的键不全在 `KEYS` 里；以后要上 Cluster 需改用 hash tag。
+
+### 100.3 中间流程
+
+- 两步登录、通行密钥登录与注册、TOTP 设置、step-up proof、二次验证会话（§79.1、§80.2）只存 Valkey，没有 PostgreSQL 的副本；Valkey 不可用时 503。
+- 只看不取（两步登录、TOTP 设置输错验证码可以重试）用 `GET`；取用用 `GETDEL`，只有一个请求拿得到。流程的所属用户在取出后核对，不符按流程已过期处理；取出即删除，所以知道 token 就能作废它，与其他持有者凭证一样。
+- 二次验证会话（窗口）的名字是用户、scope、会话 id 或访问密钥、操作名的哈希；打开时重新计时，延续时顺延到空闲 1 小时后，最长打开后 24 小时。
+
+### 100.4 签发、换发与撤销
+
+- 签发：密码登录、两步登录、通行密钥登录都新建一个会话（新 sid；超管登录审计不变）。在持用户行锁的事务里读 `token_version` 写进会话，撤销不会插在中间。写 Valkey 是事务里最后一步（读用户等都在它之前）；事务之后失败（包括提交失败），立即删除刚建的会话，不留下没人持有、却出现在会话列表里的会话。三条签发路径都经同一个 `iam.issueTx`，补偿只在这里。两步登录的流程在事务的最后才取用（`GETDEL`），之前任何一步失败都不消耗流程，可以重试；只有提交本身失败时 Valkey 里的流程已被取走。
+- 二次验证提权：会话调用 `POST /me/verify` 成功后给同一个会话换一个新令牌（防会话固定），响应多一个 `access_token`；sid 不变，所以刚签发的 proof 仍然绑定这个会话。旧令牌还能用 30 秒（给已经发出的请求），期间使用不续期；撤销会话时新旧两个一起删除。控制台的 StepUpDialog 收到后替换本地的 `access_token`；其他用控制台会话调 API 的客户端（脚本、e2e 客户端）也必须改用响应里的新令牌，旧令牌 30 秒后失效。访问密钥不换、不碰 Valkey。proof、审计 `user.security_verify` 与换令牌在同一个事务里，换令牌最后做：它失败（503）时审计回滚、Valkey 里的 proof 删除。
+- 换令牌从请求出示的令牌换起（`Rotate(…, presented)`）：出示的已经不是会话的当前令牌（别的标签页先完成了二次验证，把它留在宽限期里），就不再换，响应不带 `access_token`，proof 照常签发。否则后到的一次会结束先到的那次刚发出的令牌，换出一个只有自己收到的令牌；两个响应到达的顺序一反，存下来的就是 30 秒后失效的那个，所有标签页随之登出。没换的标签页从存储事件采用先到者的令牌；控制台采用新令牌时也核对（`session.adoptRotated`，§100.8），只在本地令牌仍是发请求时用的那个时才替换。
+- 撤销其他会话（`POST /me/sessions/revoke-others`）在结束其他会话、提交之后，也给调用者的会话换一个新令牌（与二次验证同一条换令牌的路径，同样从出示的令牌换起），响应 `{access_token}`，控制台的会话卡片采用它。原因：控制台令牌存在 localStorage，被 XSS、恶意扩展或本机泄露复制走的令牌与受害者共用同一个会话（sid），会话列表里只有一行，“撤销其他会话”保留的正是它。换令牌后复制走的令牌在宽限（30 秒）后失效。换令牌时 Valkey 不可用，就再结束全部会话（加 2，调用者也要重新登录），与撤销本身写不了 Valkey 时的退路一致。
+- 取舍（与 JWT 时期相比）：没有 refresh token，也就没有重放检测（被盗的刷新令牌与受害者抢着刷新时整个家族被撤销、能被察觉）；改用两件事遏制被盗令牌：二次验证与撤销其他会话都换令牌，会话列表的 `ip`、`user_agent` 随续期更新（最多每 5 分钟一次），同一会话在别处使用能看出来。仍然做不到的：攻击者与受害者交替使用时，列表只显示最近一次写入的地址；在受害者下一次二次验证或撤销其他会话之前，复制的令牌一直有效（滑动续期，最长到绝对超时 30 天）。
+- 结束会话有两条路，一个会话也可以只靠其中一条结束：从 Valkey 删掉，或 bump 用户的 `token_version` 让它的盖章（`tv`）落后（鉴权拒绝并删除，§100.1）。三种做法（`iam.endAllSessions`、`endSomeSessions` 里的 `endOneSession` 与 `keepingBump`）共用一条规则：**改盖章的 bump 加 1，没改到盖章的 bump 加 2**（`stamplessStep`）。会话的盖章最多比库里的 `token_version` 大一（下面的回滚情况：每次改盖章都改成“库里的值 + 1”），所以加 2 一定越过所有会话，任何不经 Valkey 的 bump 都结束全部会话。
+- 单个撤销（`DELETE /me/sessions/:id`、登出）：不 bump，只删这一个会话，立即失效；删的时候 Valkey 不可用，退回 bump 加 2，全部会话随之结束（偏安全），照常成功。`DELETE /me/sessions/:id` 先在 Valkey 里确认会话存在（盖章低于当前 `token_version` 的、已被 bump 结束的会话按不存在处理，404，与会话列表、鉴权一致），这一步 Valkey 不可用就 503。登出不确认：只结束调用者自己的会话（路由只限会话），会话已经不在（过期、已被撤销）也照常成功，不会退化成结束全部会话。
+- 结束全部会话（管理员改密码、禁用、删除用户、超管移交、命令行恢复超管、不保留当前会话的改密码与重置安全）：事务里只动 PostgreSQL，`token_version` **加 2**，bump 本身已让全部会话失效。提交后读一次当前的 `token_version`，只删 Valkey 里盖章低于它的会话（`Prune`）：提交之后才登录的会话不受影响。失败只记 ERROR（会话在下次出示时被删除，或空闲到期）。所以 Valkey 宕机时管理员照样能禁用被盗账号。
+- 保留一个会话（撤销其他会话、改自己的密码保留当前会话、重置自己的安全设置）：同一事务里加行锁（`FOR UPDATE`）读出 bump 前的版本 `from`（不依赖调用方是否已持锁，`from` 一定是最新已提交的版本），bump `token_version` 到 `from + 1`，再用一个 Lua 脚本删除其余会话，并结算保留的会话（连同轮换留下的旧令牌）：盖章低于 `from` 的会话是之前某次 bump 结束、还留在 Valkey 里的（清理失败、命令行），直接删除；盖章在 `from` 与 `from + 1` 之间的改成 `from + 1`；更大的不动。已经结束的会话因此不会被改盖章“复活”。这一步 Valkey 不可用时只记 Warn，bump 再加 1（共加 2）后事务照常提交：保留的会话也被结束（偏安全），回滚留下的超前盖章同样越不过。一个事务最多改一次盖章（`keepingBump` 只经 `endSomeSessions`、每个事务调用一次）：改两次的事务若回滚，盖章会超前两位，越过加 2 的兜底；以后要在一个事务里结束多个用户或多次结算，需要重新审视这条规则。
+- 保留型撤销为什么也 bump：客户端等不到回复（Valkey 卡住）后按不可用处理，走加 2 的退路；脚本之后仍可能在服务端执行（迟到的脚本）。带 bump 的撤销脚本靠盖章分辨调用之后才签发的会话，不动它们：盖章大于 `from + 1` 的（退路提交后登录的），以及盖章小于 `from + 1` 且创建时间晚于调用时刻的（变更回滚后登录的）。盖章等于 `from + 1` 的会话一律照常处理：调用之前的会话盖章都不超过 `from + 1`，节点时钟偏快时被误判为“之后”的旧会话只可能盖章低于 `from + 1`，留着不动也会被这次 bump 拒绝，所以这条规则不会放过本该结束的会话。剩下的情况（变更回滚后又有一次从同一个 `from` 起、已提交的保留型 bump，之后登录、迟到的脚本再执行）会删掉那个新会话，只影响可用性，接受。不带 bump 的单个撤销没有盖章可以佐证时钟，不做这个判断：它只删一个已存在的 sid，迟到时最多删掉同一个会话。
+- 回滚的边缘情况：保留的会话在提交前就改了 `tv`，事务若之后回滚，它的 `tv` 比库里大一，仍然放行（读状态走缓存，不会每个请求都绕过缓存查库）；之后任何没改到盖章的 bump 都加 2，一定大于它，承诺的“全部会话结束”成立；之后改盖章的 bump 把它当作仍有效的会话保留（它确实是被保留下来的）。
+- 不变量（`TestEndedSessionsStayEndedInAnyOrder` 按任意顺序检查：登录、轮换、单个撤销、登出、撤销其他、结束全部、管理员改密码/禁用/重置安全、命令行 bump、回滚、Valkey 宕机时的各条路径、迟到的撤销脚本，从 `token_version` 为 0 和已 bump 过的用户开始，每一步之后在两个节点上检查；`TestEndedSessionsStayEndedConcurrently` 是并发版本）：一次提交的变更结束的会话，它的每个令牌都不会再被接受；没有被结束的会话仍然有效。只有新建（用持锁读到的当前版本）和结算（只抬高不低于 `from` 的盖章）会写盖章，轮换复制原盖章，续期不改盖章。
+- 重置安全：`DELETE /users/:id/security`（`ResetSecurity`）结束目标用户的会话（丢失的设备上可能还登录着）；重置自己的因子时保留发起请求的会话。
+- 不经 Valkey 的 bump（命令行 `sub2api admin recover-superadmin`，没有 Redis）由 `tv` 比较生效：旧会话下次使用时被删除并 401。命令行也不发总线广播，各节点靠用户状态缓存（30 秒）发现新的 token_version，所以最多 30 秒后才失效；控制台里的管理员操作提交后广播 `iam:user:changed`，立即失效。
+- `GET /me/sessions`：Valkey 里的会话，按最近使用时间倒序；盖章低于当前 `token_version` 的（已被 bump 结束、还没从 Valkey 删掉）不列出，与鉴权的判断一致（同一个状态缓存）。地址与浏览器是最近一次记下使用时的（§100.2）。Valkey 不可用时 503。
+- 审计点不变（`user.session.revoke`、`user.session.revoke_others`、`auth.superadmin_login` 等）。
+
+### 100.5 故障
+
+- Valkey 不可用时：会话鉴权、登录与两步登录、通行密钥登录、会话列表与单个撤销、二次验证（proof 与窗口）、TOTP 设置都返回 503 `unavailable`；`httpapi.Authenticate` 遇到 5xx 原样返回，不改写成 401（否则控制台会把所有人送回登录页，而登录页此时也用不了）。每次失败记 ERROR `tokenstore: valkey unavailable`（`op` 字段），作为告警关键字。
+- PostgreSQL 出错同样是故障：鉴权在用户状态缓存未命中时读 `users`，读不到返回 500（`httpapi.Authenticate` 只把 5xx 以下的鉴权失败改写成 401），会话留在 Valkey，数据库恢复后照常可用（`TestDatabaseDownIsAnOutage`）。
+- 不本地兜底。访问密钥、网关 Key 不受影响；登录限流照旧失败放行（§14.2）。
+- 不依赖 Valkey 的：管理员改密码、禁用、删除用户、重置安全（bump 加 2，清理留到下次出示），以及保留型撤销在写不了 Valkey 时退回结束全部会话。
+- Valkey 内存满（`--maxmemory-policy noeviction`，`deploy/single` 与网关缓存、锁共用一个实例）：读照常，写被拒绝。鉴权只读，续期写失败只记 ERROR、请求照常放行（§100.1）；登录、二次验证、撤销等要写的操作 503。
+- **Valkey 重启**：会话与中间流程只在 Valkey。重启后若没有持久化，所有控制台会话、进行中的两步登录、step-up proof、TOTP 设置全部丢失，每个标签页下一次请求 401 回登录页；Valkey 重启后马上能应答，不会出现 `tokenstore: valkey unavailable`，这次全员登出没有告警（JWT 时期 refresh token 在 PostgreSQL，Valkey 重启不影响登录）。所以 `deploy/single` 的 Valkey 打开 AOF（`--appendonly yes --appendfsync everysec`，数据卷 `redisdata`）：宿主机重启、更新缓存镜像、OOM kill 后会话还在，最多丢最后一秒的写入（刚登录的会话、刚撤销的会话可能回来，后者仍被 `token_version` 拒绝，撤销单个会话的除外）。持久化不影响锁：锁本来就按“可能丢失”处理（§27.1）；恢复出来的锁（含最后一秒里已释放的）只会多占到它的 TTL 为止。托管网关（ovh、clicodeplus）用外部 Valkey，它的持久化由运维方保证；用不带持久化的 Valkey 时，重启等于全员登出。
+
+### 100.6 删除的内容（2026-11-16）
+
+- JWT 的签发与校验、`/auth/refresh`、refresh token 家族与宽限、重放检测；核心不再读取 `SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL`，网关外壳不再把它们传给核心，compose 模板与 `.env.example` 也不再有 `SUB2API_JWT_SECRET`（回退见 §100.7）。
+- 流程读 PostgreSQL 的路径；`refresh_tokens`、`login_sessions`、`auth_flows` 三张表由迁移 `0101_drop_jwt_sessions.sql` 删除。
+- 控制台的刷新、跨标签页刷新锁与 keep-alive，以及 `@sub2api/host` 里只有控制台自己用的 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS`；`Session` 只有 `access_token`（§100.8）。
+
+### 100.7 发布与回退
+
+- 单向发布，必须停服：新版本启动前旧核心全部停止（网关托管的升级计划 `primary-first-v1` 本身先停从节点、主节点最后停机后迁移，满足要求，备份在建计划之前做；非托管部署手动全停再备份）。旧节点读写被删的表，不能与新节点混跑。完整步骤见 `deploy/rollback/0.1.290-release.md`。
+- 所有人重新登录：上一版的 JWT 与 refresh token 全部作废，控制台下一次请求 401，回到登录页。
+- 没有反向脚本：回退只能从发布前的数据库备份恢复，并且连同网关外壳一起回到 0.1.288 时的版本（外壳镜像、compose 与 `.env`，`SUB2API_JWT_SECRET` 用原值），步骤见 `deploy/rollback/0.1.290-release.md`。
+- 网关外壳：升级计划在现有外壳（运行 0.1.288 的那一版）下执行，计划完成后再换上本次构建的外壳。新外壳只传核心读取的变量（`allowlist_test.go`：核心不读的 `SUB2API_` 名字报错），不再传 JWT 的三个变量，所以不运行 0.1.290 之前的核心；从备份回退时外壳也回到原来的版本。
+
+### 100.8 控制台
+
+- `@sub2api/host`：401 直接清会话、调 `onUnauthenticated('expired')` 回登录页；唯一的例外是发出请求后会话已经换了令牌（step-up 轮换，或其他标签页刚登录、存储事件还没到），这时用新令牌重试一次。清会话前再看一眼：会话已经是别的令牌（更新的登录）就不清。
+- 多标签页：会话存 localStorage，各标签页共用。一个标签页登出或遇到 401 清掉会话，其他标签页从 `storage` 事件得知，调 `onUnauthenticated('unauthenticated')` 回登录页；其他标签页换上的新令牌（step-up 轮换、重新登录）直接采用。
+- StepUpDialog：`POST /me/verify` 的响应带 `access_token` 时用 `session.adoptRotated(请求实际带的令牌（onSentWith）, 新令牌)` 替换本地令牌，重放请求与之后的请求都用新令牌；其他标签页已经存了更新的令牌（它的轮换、或登出后重新登录）就不覆盖。
+- 会话卡片（`SessionsCard`）：“结束其他会话”只要列表里有当前会话就可用（即使没有其他行：它也给本会话换令牌，结束别处复制的本会话令牌）；响应的 `access_token` 同样经 `session.adoptRotated`（令牌取自 `onSentWith`）采用。
+- 登出：`POST /auth/logout` 不带请求体。
+- 5xx 不清会话：鉴权遇到 Valkey 或 PostgreSQL 故障返回 503/500（§100.5），控制台只报错，不回登录页。
+- `fetchWithSession(path, init?)`（UI 3.17，§23.2）：JSON 客户端带不了的请求按同一套 401 规则发送；控制台的镜像分片上传、请求日志文件读取、用量导出都用它。此前三处各自“401 后先发一个 JSON 请求再重发”，那是为了触发 JWT 刷新，现在只会多一个必然 401 的请求，已删除。
+- `@sub2api/host` 不再导出 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS`，`Session` 只有 `access_token`。这几个导出只给 JWT 时期的控制台自己用，插件文档（`@sub2api/ui` README）从未提供，内置插件都没有导入，所以 UI 版本仍是 3.17，不升主版本（导入它们的第三方插件在 0.1.290 上加载失败）。
+
+### 100.9 测试
+
+- `internal/iam/tokenstore`（miniredis）：签发与查找、只存哈希、空闲与绝对超时、续期节流、单个撤销立即失效且不会被续期复活、撤销其他与全部、保留会话的 `tv` 只增不减且旧令牌一起改、ZSET 残留清理、轮换（宽限、不续期、撤销一并删除、连续两次轮换后第一个令牌立即结束）、旧令牌只删自己、每用户会话上限与同 sid 重建、续期不写残缺 HASH、单个撤销不扫全部、流程只看不取与 `GETDEL` 一次性、二次验证窗口、Valkey 宕机全部返回 503 而不是“不存在”、专用客户端在服务端不应答时约 1 秒返回 503、结算删除低于 `from` 的会话与 `Prune`、轮换的回复丢失后重试只轮换一次、带 bump 的单个撤销即使从版本 0 起也结算其他会话、`Has` 按版本判断、迟到的撤销脚本不动之后签发的会话（`TestLateRevokeLeavesLaterSessions`）、续期记下地址与浏览器（`TestTouchRecordsWhereUsed`）、从宽限期里的旧令牌轮换不生效（`TestRotateFromSupersededToken`）、`Drop` 不删已被改盖章的会话（`TestDropSparesARestampedSession`）、清理不看时钟（`TestPruneIgnoresClocks`）。
+- `internal/iam`（PostgreSQL + miniredis，`session_test.go`）：只有 `s2s_` 能登录、`/auth/refresh` 404；单个撤销不 bump、撤销其他、改密码只留当前会话、登出只结束自己；管理员改密码、重置安全、禁用、删除各自结束会话，第二个节点立即跟随；不经 Valkey 的 bump；二次验证换令牌且 proof 仍可用、换令牌失败不留审计与 proof；流程一次性且只给所属用户；二次验证窗口；Valkey 宕机时 503 而管理员照样能禁用用户；通行密钥与密码登录事务失败不留会话、两步登录流程可重试；保留会话的 bump 不连累轮换留下的旧令牌；回滚留下的 `tv` 挡不住之后的 bump；已结束的会话不被之后保留型 bump 的改盖章复活；结束全部后的清理不删提交后的新登录；保留型 bump 改盖章失败时结束超前盖章；会话列表不列已结束的会话、撤销它们 404；任意顺序与并发的性质测试（上面的不变量）；鉴权时 PostgreSQL 出错返回 500 而不是 401，会话照旧有效（`TestDatabaseDownIsAnOutage`）；`session_use_test.go`：撤销其他会话给调用者换令牌、复制的令牌宽限后失效，换令牌时 Valkey 不可用则结束全部会话，从宽限期里的旧令牌二次验证不再轮换，会话列表显示最近使用的地址与浏览器，读会话与读状态之间被保留型 bump 改了盖章的会话不被删除，缓存漏了重新启用时重读用户行，续期写失败不影响请求。
+- `internal/migrations`（`migrations_db_test.go`）：0101 之后三张表不存在，再跑一遍不改变结果（`TestMigration0101DropsJWTSessions`）。
+- 网关 `internal/supervisor`：白名单里核心不读的 `SUB2API_` 名字报错（`allowlist_test.go`）。
+- 控制台：`packages/host/src/http.spec.ts`（401 即登出、令牌已换时重试一次、不清更新的登录、跟随其他标签页登出、采用其他标签页的令牌、step-up 换令牌后重放用新令牌、5xx 不登出、`fetchWithSession` 带令牌并按同一规则处理 401、`session.adoptRotated` 只替换发请求时的令牌、重发后 `onSentWith` 报回重发用的令牌并据此采用轮换）；`StepUpDialog.spec.ts`、`SessionsCard.spec.ts`（采用轮换的令牌，不覆盖其他标签页更新的令牌；没有其他会话时也能结束其他会话）。
+
+## 101. 删除旧版本兼容（核心 0.1.290）
+
+0.1.290 单向、停服发布：迁移前旧核心全部停止，之后不会有更早的核心、网关外壳或插件宿主和它同时运行；回退只能恢复备份并把核心、外壳一起退回 0.1.288（CHANGELOG 0.1.290）。所以只为与旧版本混跑而保留的代码一并删除。本文前面各节里“旧核心”“滚动窗口内的旧核心”“回滚到旧核心”的兼容说明是当时那次发布的记录，0.1.290 起不再适用。外部协议、客户端、上游与浏览器的兼容不在此列。
+
+### 101.1 插件 SDK 与清单检查
+
+- 插件不再在 `InitHost` 检查 Host API 版本：SDK 删除各功能的 `protocol.*HostAPIVersion` 常量与对应检查（`HostAPIVersion` 只随 `InitHostRequest` 发送）。插件能装在哪些核心上只由清单的 `hostCompat` 决定。
+- `Host.KV()` 的批量函数总是调用批量 RPC，不再在 `UNIMPLEMENTED` 时回退到单键调用（93.6）；`pluginsdktest.FakeHost` 的 `KVBatchUnimplemented` / `SetKVBatchUnimplemented` 删除。`Host.Tasks()` 不再返回 `ErrTasksUnimplemented`（该错误删除）。审核插件不再把 `PriceUsage`、`GetUsers` 的 `UNIMPLEMENTED` 当作旧核心（`host_too_old` 删除）。
+- `sdk/manifest/check` 删除按功能核对核心下限的机制：`corefloor.go`（各 `*FirstCore` 常量、`SamePlatformConversions`）、`ui.go` 的 `uiFloors`，以及 `node` 任务的下限；错误码 `below_feature_core`、`below_ui_core`、`below_node_jobs_core` 不再出现。`manifest.LegacyCommonControls` 删除。
+- 全部内置插件 `hostCompat: ">=0.1.290 <0.2.0"`，版本见 CHANGELOG 0.1.290“插件版本”。
+
+### 101.2 数据库连接
+
+- `DATABASE_URL` 不再解析 pgxpool 的 `pool_*` 参数，连接池只由环境变量与默认值决定（§2“插件数据库”、§11.2）。DSN 里仍带 `pool_*` 时 `gormpg.ParseConfig` 直接报错（只报参数名，不带 DSN），核心、网关外壳与插件 `pgdb.Open` 启动即失败，不会等到第一条语句才由 PostgreSQL 报未知参数；PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`SQLState` 等）只在 `runtime-contract/gormpg`，核心不再 import pgx。
+
+### 101.3 网关外壳
+
+- 升级计划只认 `primary-first-v1` 与 `rolling-v1`：`updater_one_active_upgrade` 保证每个集群最多一个 running/paused 的计划，0.1.290 的计划在原来的外壳下执行、完成后才换外壳，所以新外壳启动时不会有旧策略（`legacy-rolling`）的计划未结束。暂停旧策略计划、拒绝继续与恢复、`legacy-plan-recovery` 的代码删除。
+- 节点心跳不再为没有 Redis 遥测的旧外壳（0.1.132 之前）刷新 PG 心跳与 `updater.nodes.cpu_percent`：CPU 只在 Redis 遥测里，PG 行只在控制快照变化时（或每 `heartbeatRewrite`）写。`cpu_percent` 列保留到下一次外壳 schema 变更，0.1.288 时的外壳在换外壳期间还会读它。
+- 停止核心时直接按调用方的要求发 `DrainRequest.Graceful`，不再看核心是否声明 `drain.graceful`；`Hello.Has` 删除。
+- 仍为 0.1.288 时的外壳（网关 0.1.133）保留、换外壳之后删除的两处：核心在 `Hello.capabilities` 里声明 `drain.graceful`（旧外壳只在核心声明时才发 `Graceful`）；核心在没有 `SUB2API_UPDATER_TOKEN_FILE` 时不带更新令牌访问管理 socket（旧外壳没有令牌）。0.1.290 的升级计划由旧外壳驱动，计划完成后才换外壳，所以这两处要等所有节点都换成 0.1.290 的外壳之后的第一个核心版本删除。
+- 插件变更阻塞检查不再看 `plugin_rollout_nodes` 的 `cleanup_pending`（迁移 0021 之前的开发版核心）。
+
+### 101.4 账号与任务
+
+- 账号状态只有 `active`、`auto_disabled`、`disabled`（`PATCH` 只接受前后两个，线上没有别的值）：列表筛选、`/accounts/summary` 不再把旧的 `error` 当作自动禁用。
+- 任务只按 `s2task_` 公开 ID 查询，删除任务框架之前裸上游 ID 的懒导入（§28.2）与为它保留的结算加锁检查（导入可能在旧的结算循环领取之后把条目转给托管任务）。没有任务的预扣（插件在非任务端点返回 `Reservation`）仍由 `pending_settlements` 的对账循环处理。只为懒导入记标记的列 `async_tasks.legacy_imported` 由迁移 0102 删除。
+- 0070 的触发器 `accounts_auto_disabled_source_reset` 是现行逻辑，不是旧核心兼容：手动改状态（`PATCH`）不声明来源，靠它清掉 `auto_disabled_source`。
+
+### 101.5 删除 CCGateway
+
+CCGateway（Claude Code 托管账号）与只为它服务的核心功能整体删除，最后的源码是 `317b0c331`。§49、§51、§53、§57、§64、§65、§70、§76 与 §49.17、§63.4–63.6、§63.8、§77.6 只留标题；§59 随账号生命周期契约整节删除，只留一段说明。
+
+- 核心模块：`internal/ccgateway`、`remotedocker`、`helperhistory`（辅助历史）、`providerresources`（文件资源与技能）、`fallbackcredits`（回退额度凭证）；`core` 里对应的接口（`ports_provider_resources`、`ports_resource_transport`、`ports_skills`、`ports_fallback_credits`、`ports_helper_history` 等），网关 `Deps` 的 `CCGateway`、`Resources`、`Skills`、`Credits`、`HelperHistory`、`ResourceTransport`。网关不再识别资源引用、辅助历史与回退额度凭证；调度原因 `bound_elsewhere` 只留在旧记录里。上游响应头的转发白名单（请求 id、重试提示、`anthropic-ratelimit-*`、`anthropic-fast-*`）是通用行为，移到 `core.ProviderHeaders`。
+- 接口：`/api/v1/system/ccgateway/*` 全部删除；`POST /accounts` 不再接受 `ccgateway_runtime`、`cc_feature_policy`，账号视图不再有 `runtime_parked`、`cc_feature_policy`、`rate_limit_tier`；使用记录详情不再有 `request_log_account_id`；账号测试结果不再有 `policy_scope`、`test_mode`。
+- 控制台：账号编辑器不再有“自动配置模型”开关与订阅提示，账号列表与详情不再显示订阅类型和插件只读扩展；插件账号操作的回包不再按 `key`（继续重新授权）或 `refreshed`（令牌刷新）特别处理，失败统一按错误信息提示。
+- 二次验证：删除 `host.install` 范围与二次验证会话（`Router.StepUpSession`、`httpapi.OpenStepUpSession`、`core.StepUpSessions`、Valkey `s2a:flow:window:*`、错误码 `verification_expired`），它们只服务 CCGateway 的安装与镜像上传。
+- 账号生命周期契约一并删除（CCGateway 是唯一的实现者，没有别的插件声明 `lifecycle`）：
+  - SDK 与清单：插件 RPC `OnAccountLifecycle` 与 `AccountLifecycleRequest/Response`、`AccountPatch`、`ModelList`、`ModelMappingValue`、`ModelLimitList`；`pluginsdk.AccountLifecycle`、能力 `account.lifecycle`；清单的 `accountTypes[].lifecycle`（准备、动作、删除保留天数）、`defaultModelsBySubscription`；`AccountProperties.auto_models`（字段 12）与 `BuildQuotaRequestResponse.runtime_operation`（字段 5）删除，字段号保留不用。扩展字段的保留名去掉 `preparation_key`、`lifecycle_sync`。
+  - 核心：`core.AccountLifecycleResource`、`AccountLifecyclePlugin`、`AccountQuotaRuntime`、错误码 `too_many_drafts`；账号预备（`POST /account-types/:plugin_key/:type/preparations`、`GET|POST /account-preparations/:key/:action`、`PUT|DELETE /account-preparations/:key`）、账号动作（`GET /accounts/:id/actions`、`POST /accounts/:id/actions/:plugin_key/:action_id`）路由；`POST /accounts` 的 `preparation_key`、`auto_models`，`PATCH /accounts/:id` 的 `auto_models`，`DELETE /accounts/:id` 与批量删除的 `retain_resources`；账号视图的 `subscription_type`、`auto_models`、`lifecycle_sync`、`actions`；账号类型视图的 `lifecycle`、`default_models_by_subscription`；额度查询的 409 `runtime_not_ready`；保存前插件改账号（§59）与插件只读扩展；定时任务 `core.account.lifecycle_status`、`core.account.preparation_cleanup`。清单 `ui.accountActions`（UI 3.6）是另一套机制，保留。
+- 数据库：迁移 0102（`0102_drop_ccgateway_and_legacy.sql`）删除它的表、`accounts.status_changed_at`（及触发器）与 `accounts.rate_limit_tier`、账号生命周期的 `account_preparations`、`account_lifecycle_sync`、`accounts.subscription_type`、`accounts.auto_models` 与两个定时任务、设置 `ccgateway_remote`、它的定时任务、插件行与权限；`plugin_key = 'ccgateway'` 的账号、使用记录、账本与审计保留，账号在控制台显示为插件已卸载。0102 还从已发布的失败策略（§58）里去掉只有 CCGateway 会回的关键词：`login-invalid`、`account-on-hold` 的关键词与迁移 0072/0074 写入的完全相同（含或不含 0075 追加的那个），或重试规则 `rate-limit` 的关键词仍是原默认值时，换成现在的默认关键词（`rate-limit` 仍叫原默认名时一并改名），结果与 `loginAccountRules`、`defaultRetryRules` 相同（`server/internal/gateway` 的 `TestMigrationDropsCCGatewayKeywords` 校验，改过的规则不动也在其中）；关键词被改过的规则不动，有改动时旧策略进 `failure_policy_history`、revision +1，重跑不变。明细与发布前的只读核对见 `deploy/rollback/0.1.290-release.md`。
+- 插件键 `ccgateway` 记入 `plugin_key_retirements`，并列入已删除插件键（`install/reserved.go` 的 `removedKeys`）：任何来源（手动上传、内置、市场）、任何签名的包都不能安装它，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.290。官方签名的 ccgateway 0.1.133 包的 `hostCompat` 落在 0.1.290 范围内，没有这一条就能装上，但核心一侧已经没有它需要的部分。
+- 插件包大小上限从 1 GiB（压缩）/ 2 GiB（解包）降到 64 MiB / 256 MiB（另限 2000 个文件），只为 CCGateway 打包的运行时镜像而设的余量不再需要；定义在 `runtime-contract` 一处，核心、网关外壳的包存储、打包工具共用（§34“插件包分发”）。
+
+### 101.6 调度设置与控制台
+
+- 均衡负载设置（§89）去掉 `mode`：`GET/PUT /settings/scheduling` 只有 `metric`、`limit_load`、`model_limits`，核心不再读写 `mode`（`PUT` 带了也忽略）。迁移 0102 把库里带 `mode` 的行归一：`mode` 不是 `traffic` 且 `limit_load` 关的行，`metric` 改为 `sessions`、`model_limits` 改为 `false`（与原来读入时的归一相同），然后删掉 `mode` 键；不带 `mode` 的行不动，重跑不变。核心读入时只剩“未知 `metric` 按 `sessions`”。
+- 控制台与核心同版本，删除只为更早核心保留的分支：均衡负载表单不再收发 `mode`；用量限制（§73.3）关闭且金额留空时照原样提交空金额（核心存 0），终身限额照原样提交周期长度（核心按 1 存），从未保存的判断只看 `configured`（不再按 `UTC` 加默认值猜）；侧栏视图不再为“菜单里没有设置入口”的旧核心退回控制台菜单；API 密钥“选择全部结果”不再在前端按筛选条件复核；卸载插件不再兼容 204 响应；插件市场版本的 `compatible` 视为必有。

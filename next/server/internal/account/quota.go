@@ -190,7 +190,7 @@ func (s *Service) getQuota(c *gin.Context) {
 		return
 	}
 	force, _ := strconv.ParseBool(c.Query("force"))
-	a, err := s.loadRow(ctx, s.d.DB.Pool, id, s.scopeOf(ctx, perm.AccountRead), false)
+	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountRead), false)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -287,22 +287,7 @@ func (s *Service) runQuotaQuery(ctx context.Context, bt core.AccountTypeBinding,
 	if err != nil || built == nil {
 		return nil, errors.New("quota request builder unavailable")
 	}
-	var in *pluginv1.ParseQuotaResponseRequest
-	if operation := built.GetRuntimeOperation(); operation != "" {
-		runtime, ok := s.d.LifecycleResources[a.PluginKey].(core.AccountQuotaRuntime)
-		if !ok || !validQuotaKey(operation) || built.GetUrl() != "" || built.GetBodyJson() != "" || len(built.GetHeaders()) != 0 || built.GetMethod() != "" {
-			return nil, errors.New("invalid quota runtime operation")
-		}
-		in, err = runtime.QueryAccountQuota(ctx, a.ID, operation)
-		if err != nil {
-			in = &pluginv1.ParseQuotaResponseRequest{TransportError: "quota runtime unavailable"}
-		}
-		if in == nil {
-			return nil, errors.New("empty quota runtime response")
-		}
-	} else {
-		in = s.sendQuotaRequest(ctx, built, a.ProxyID)
-	}
+	in := s.sendQuotaRequest(ctx, built, a.ProxyID)
 	in.Account = acct
 	res, err := bt.Client.ParseQuotaResponse(ctx, in)
 	if status.Code(err) == codes.Unimplemented {

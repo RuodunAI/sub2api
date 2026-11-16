@@ -102,9 +102,31 @@ func reviewOf(e *Env, d gjson.Result) gjson.Result {
 	return d
 }
 
-// ConsentAll approves every requested host permission and grants new plugin
-// permissions to roleKeys.
+// ConsentAll approves every requested host permission and grants every
+// row of each plugin permission the consent creates (review new=true) to
+// roleKeys instead of its manifest defaults; none keeps the defaults.
 func (e *Env) ConsentAll(admin *Session, review gjson.Result, roleKeys []string) {
+	e.T.Helper()
+	var overrides map[string]any
+	if len(roleKeys) > 0 {
+		roles := map[string]bool{}
+		for _, r := range roleKeys {
+			roles[r] = true
+		}
+		overrides = map[string]any{}
+		for _, up := range review.Get("user_permissions").Array() {
+			if up.Get("new").Bool() {
+				overrides[up.Get("key").String()] = roles
+			}
+		}
+	}
+	e.Consent(admin, review, overrides)
+}
+
+// Consent approves every requested host permission with
+// newPermissionRoles as new_permission_roles (local key -> role -> true or
+// scopes; nil keeps every manifest default).
+func (e *Env) Consent(admin *Session, review gjson.Result, newPermissionRoles map[string]any) {
 	e.T.Helper()
 	grants := []map[string]any{}
 	for _, p := range review.Get("host_permissions").Array() {
@@ -114,12 +136,12 @@ func (e *Env) ConsentAll(admin *Session, review gjson.Result, roleKeys []string)
 		}
 		grants = append(grants, g)
 	}
-	if roleKeys == nil {
-		roleKeys = []string{}
+	body := map[string]any{"grants": grants, "denied": []string{}}
+	if newPermissionRoles != nil {
+		body["new_permission_roles"] = newPermissionRoles
 	}
 	admin.OK(e.T, http.MethodPost,
-		fmt.Sprintf("/plugins/%s/versions/%s/consent", review.Get("plugin_key").String(), review.Get("version").String()),
-		map[string]any{"grants": grants, "denied": []string{}, "role_keys_for_new_permissions": roleKeys})
+		fmt.Sprintf("/plugins/%s/versions/%s/consent", review.Get("plugin_key").String(), review.Get("version").String()), body)
 }
 
 // Plugin returns GET /plugins/:key, or ok=false on 404.
@@ -133,6 +155,13 @@ func (e *Env) Plugin(admin *Session, key string) (gjson.Result, bool) {
 		e.T.Fatalf("plugin detail: %s", r)
 	}
 	return r.Data(), true
+}
+
+// PluginPermissions returns the plugin's module of GET /permissions, or
+// ok=false when the catalog holds none of its permissions.
+func (e *Env) PluginPermissions(admin *Session, key string) (gjson.Result, bool) {
+	e.T.Helper()
+	return Find(admin.OK(e.T, http.MethodGet, "/permissions", nil).Array(), "plugin_key", key)
 }
 
 // PluginNodeStates extracts node -> state from a plugin detail. It accepts

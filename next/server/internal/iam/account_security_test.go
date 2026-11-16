@@ -26,13 +26,13 @@ import (
 	"github.com/go-webauthn/webauthn/protocol/webauthncbor"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/hotp"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func setupAdmin(t *testing.T) *env {
@@ -78,7 +78,7 @@ func enableTwoFactor(t *testing.T, s *Service, userID int64) (string, []string) 
 func lastStepTime(t *testing.T, s *Service, userID int64) time.Time {
 	t.Helper()
 	var step int64
-	if err := s.db.Pool.QueryRow(context.Background(), `SELECT last_step FROM user_totp WHERE user_id = $1`, userID).Scan(&step); err != nil {
+	if err := s.db.SQL.QueryRowContext(context.Background(), `SELECT last_step FROM user_totp WHERE user_id = $1`, userID).Scan(&step); err != nil {
 		t.Fatal(err)
 	}
 	return time.Unix(step*totpPeriod, 0)
@@ -86,7 +86,7 @@ func lastStepTime(t *testing.T, s *Service, userID int64) time.Time {
 
 func clearLastStep(t *testing.T, s *Service, userID int64) {
 	t.Helper()
-	if _, err := s.db.Pool.Exec(context.Background(), `UPDATE user_totp SET last_step = 0 WHERE user_id = $1`, userID); err != nil {
+	if _, err := s.db.SQL.ExecContext(context.Background(), `UPDATE user_totp SET last_step = 0 WHERE user_id = $1`, userID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -118,7 +118,7 @@ func TestTwoFactorEnrolmentNeedsACode(t *testing.T) {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
 	var sealed []byte
-	if err := s.db.Pool.QueryRow(ctx, `SELECT secret_enc FROM user_totp WHERE user_id = $1`, id).Scan(&sealed); err != nil {
+	if err := s.db.SQL.QueryRowContext(ctx, `SELECT secret_enc FROM user_totp WHERE user_id = $1`, id).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(sealed), setupOut.Secret) {
@@ -136,7 +136,7 @@ func TestLoginAsksForTheSecondFactor(t *testing.T) {
 	secret, backup := enableTwoFactor(t, s, id)
 
 	step := mustLogin(t, s, adminEmail, adminPassword)
-	if !step.TwoFactorRequired || step.AccessToken != "" || step.RefreshToken != "" || step.User != nil || step.FlowToken == "" {
+	if !step.TwoFactorRequired || step.AccessToken != "" || step.User != nil || step.FlowToken == "" {
 		t.Fatalf("password step gave %+v", step)
 	}
 	if _, err := s.LoginSecondFactor(ctx, step.FlowToken, "000000", testIP); !isBadSecondFactor(err) {
@@ -148,11 +148,11 @@ func TestLoginAsksForTheSecondFactor(t *testing.T) {
 		t.Fatalf("replayed code: %v", err)
 	}
 	clearLastStep(t, s, id)
-	pair, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
-	if err != nil || pair.AccessToken == "" {
-		t.Fatalf("code: %+v %v", pair, err)
+	result, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
+	if err != nil || result.AccessToken == "" {
+		t.Fatalf("code: %+v %v", result, err)
 	}
-	if uid, err := s.VerifyAccessToken(ctx, pair.AccessToken); err != nil || uid != id {
+	if uid, _, err := s.VerifySession(ctx, result.AccessToken); err != nil || uid != id {
 		t.Fatalf("verify: %d %v", uid, err)
 	}
 	if _, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP); !isCode(err, "invalid_argument") || isBadSecondFactor(err) {
@@ -328,6 +328,48 @@ func TestOthersPasswordNeedsReset(t *testing.T) {
 	}
 }
 
+// A user given a role its deleter does not manage while the deletion waits
+// for the authz lock is not deleted: DeleteUser checks again after Bump,
+// which holds role changes off until it commits (as an update does).
+func TestDeleteUserChecksAgainUnderTheLock(t *testing.T) {
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	root := mustLogin(t, s, adminEmail, adminPassword).User.ID
+	admin, err := s.CreateUser(ctx, root, CreateUserInput{Email: "admin2@example.com", Password: "admin-password-1", RoleKeys: []string{authz.RoleAdmin}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := mustCreateUser(t, s, "target@example.com")
+	promoted, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- s.db.Tx(ctx, func(tx *gorm.DB) error {
+			if _, err := e.authz.SetUserRoles(ctx, tx, root, target, []string{authz.RoleUser, authz.RoleAdmin}); err != nil {
+				return err
+			}
+			close(promoted)
+			<-release
+			return nil
+		})
+	}()
+	<-promoted
+	deleted := make(chan error, 1)
+	go func() { deleted <- s.DeleteUser(ctx, admin.ID, target) }()
+	// The deletion passed its first check and waits on the authz lock.
+	for waiting := 0; waiting == 0; time.Sleep(5 * time.Millisecond) {
+		if err := s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-deleted; !isCode(err, "permission_denied") {
+		t.Fatalf("an admin deleted a user made an admin meanwhile: %v", err)
+	}
+}
+
 // SEC-H2: a disabled user is measured by what its roles grant, so a lesser
 // operator can neither set the password of a disabled admin nor re-enable
 // it, which would otherwise hand them the admin's permissions.
@@ -496,18 +538,11 @@ func TestLoginSessions(t *testing.T) {
 	if err != nil || len(list) != 2 {
 		t.Fatalf("sessions = %v, %v", list, err)
 	}
-	// The refresh keeps the session: same family, still two.
-	if _, err := s.Refresh(ctx, second.RefreshToken); err != nil {
-		t.Fatal(err)
-	}
-	if list, _ = s.Sessions(ctx, id, ""); len(list) != 2 {
-		t.Fatalf("after refresh: %v", list)
-	}
 	if err := s.RevokeSession(ctx, id+1000, list[0].ID); err == nil {
 		t.Fatal("revoked another user's session")
 	}
 	keep, other := list[0].ID, list[1].ID
-	if err := s.RevokeOtherSessions(ctx, id, keep); err != nil {
+	if _, err := s.RevokeOtherSessions(ctx, id, keep, ""); err != nil {
 		t.Fatal(err)
 	}
 	if list, _ = s.Sessions(ctx, id, keep); len(list) != 1 || list[0].ID != keep || !list[0].Current {
@@ -516,10 +551,11 @@ func TestLoginSessions(t *testing.T) {
 	if err := s.RevokeSession(ctx, id, other); !isCode(err, "not_found") {
 		t.Fatalf("already revoked: %v", err)
 	}
-	// The revoked session cannot refresh.
-	if _, err := s.Refresh(ctx, first.RefreshToken); err == nil {
-		if _, err2 := s.Refresh(ctx, second.RefreshToken); err2 == nil {
-			t.Fatal("both sessions still refresh")
+	// The revoked session's token is rejected, the kept one's is not.
+	for _, p := range []*LoginResult{first, second} {
+		_, sid, err := s.VerifySession(ctx, p.AccessToken)
+		if (sid == keep) != (err == nil) {
+			t.Fatalf("session %q after revoking the others: %v", sid, err)
 		}
 	}
 }
@@ -702,20 +738,16 @@ func TestPasskeyRegistrationAndLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	credential := a.get(t, begin)
-	pair, err := s.FinishPasskeyLogin(ctx, r, begin.FlowToken, credential, testIP)
+	result, err := s.FinishPasskeyLogin(ctx, r, begin.FlowToken, credential, testIP)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uid, err := s.VerifyAccessToken(ctx, pair.AccessToken); err != nil || uid != id {
+	if uid, _, err := s.VerifySession(ctx, result.AccessToken); err != nil || uid != id {
 		t.Fatalf("verify: %d %v", uid, err)
 	}
 	list, _ := s.Passkeys(ctx, id)
 	if len(list) != 1 || list[0].LastUsedAt == nil {
 		t.Fatalf("list = %+v", list)
-	}
-	var method string
-	if err := s.db.Pool.QueryRow(ctx, `SELECT method FROM login_sessions ORDER BY created_at DESC LIMIT 1`).Scan(&method); err != nil || method != loginMethodPasskey {
-		t.Fatalf("method = %q, %v", method, err)
 	}
 
 	// The same answer does not work twice: the challenge is single use.
@@ -766,11 +798,11 @@ func TestPasskeyLoginRejects(t *testing.T) {
 		}
 	})
 	t.Run("a disabled user", func(t *testing.T) {
-		if _, err := s.db.Pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, id); err != nil {
+		if _, err := s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, id); err != nil {
 			t.Fatal(err)
 		}
 		defer func() {
-			if _, err := s.db.Pool.Exec(ctx, `UPDATE users SET status = 'active' WHERE id = $1`, id); err != nil {
+			if _, err := s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'active' WHERE id = $1`, id); err != nil {
 				t.Fatal(err)
 			}
 		}()
@@ -908,15 +940,21 @@ func (k *keyEnv) callProof(token, proof, method, path string, body any) (int, ma
 
 // proof verifies token's caller for scope and the operation "method path"
 // (path under /api/v1) with the fields of how, and returns the proof.
-func (k *keyEnv) proof(t *testing.T, token, scope, method, path string, how map[string]any) string {
+func (k *keyEnv) proof(t *testing.T, token *string, scope, method, path string, how map[string]any) string {
 	t.Helper()
 	body := map[string]any{"scope": scope, "context": method + " /api/v1" + path}
 	maps.Copy(body, how)
-	code, out := k.call(token, "POST", "/me/verify", body)
+	code, out := k.call(*token, "POST", "/me/verify", body)
 	if code != 200 {
 		t.Fatalf("verify %s: %d %v", scope, code, out)
 	}
-	return out["data"].(map[string]any)["proof"].(string)
+	data := out["data"].(map[string]any)
+	// A session's verification rotates its token (CONTRACTS §100): carry
+	// on with the new one, as the console does.
+	if fresh, ok := data["access_token"].(string); ok {
+		*token = fresh
+	}
+	return data["proof"].(string)
 }
 
 func (k *keyEnv) createKey(t *testing.T, userID int64, perms ...string) *AccessKey {
@@ -932,7 +970,7 @@ func (k *keyEnv) grantRole(t *testing.T, userID int64, key string, perms ...stri
 	t.Helper()
 	ctx := context.Background()
 	var id int64
-	if err := k.s.db.Pool.QueryRow(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}') RETURNING id`, key).Scan(&id); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}') RETURNING id`, key).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range perms {
@@ -940,19 +978,9 @@ func (k *keyEnv) grantRole(t *testing.T, userID int64, key string, perms ...stri
 		if err != nil {
 			t.Fatal(err)
 		}
-		sql := `INSERT INTO role_permissions (role_id, permission_id) SELECT $1, id FROM permissions WHERE key = $2`
-		args := []any{id, string(pat.Action)}
-		if scope := pat.Suffix(); scope != "" {
-			sql = `INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT $1, id, $3 FROM permissions WHERE key = $2`
-			args = append(args, scope)
-		}
-		if _, err := k.s.db.Pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatal(err)
-		}
+		testutil.Grant(t, k.s.db, key, string(pat.Action), pat.Suffix())
 	}
-	if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, userID, id); err != nil {
-		t.Fatal(err)
-	}
+	testutil.AssignRoles(t, k.s.db, userID, key)
 	k.bump(t)
 	return id
 }
@@ -962,7 +990,7 @@ func (k *keyEnv) bump(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	var v int64
-	if err := k.s.db.Pool.QueryRow(ctx, `UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
 		t.Fatal(err)
 	}
 	k.authz.Committed(ctx, v)
@@ -989,7 +1017,7 @@ func TestAccessKeyIsASubsetOfItsUser(t *testing.T) {
 		t.Fatalf("key = %q", key.Key)
 	}
 	var stored string
-	if err := k.s.db.Pool.QueryRow(ctx, `SELECT token_hash FROM user_access_keys WHERE id = $1`, key.ID).Scan(&stored); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT token_hash FROM user_access_keys WHERE id = $1`, key.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if stored == key.Key || strings.Contains(stored, key.Key) {
@@ -1009,9 +1037,7 @@ func TestAccessKeyIsASubsetOfItsUser(t *testing.T) {
 	}
 
 	// When the user loses a permission, so does the key, at once, and it says so.
-	if _, err := k.s.db.Pool.Exec(ctx, `DELETE FROM role_permissions WHERE permission_id = (SELECT id FROM permissions WHERE key = 'user:read')`); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Revoke(t, k.s.db, "reader", "user:read")
 	k.bump(t)
 	if code, _ := k.call(key.Key, "GET", "/users", nil); code != 403 {
 		t.Fatalf("a permission the user lost: %d", code)
@@ -1078,13 +1104,11 @@ func TestSuperuserKeyCannotGrantSuperAdmin(t *testing.T) {
 	ctx := context.Background()
 	login := mustLogin(t, k.s, adminEmail, adminPassword)
 	key := k.createKey(t, login.User.ID, "user:create")
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE user_access_keys SET permissions = array_append(permissions, 'role:assign') WHERE id = $1`, key.ID); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE user_access_keys SET permissions = array_append(permissions, 'role:assign') WHERE id = $1`, key.ID); err != nil {
 		t.Fatal(err)
 	}
 	// A target without roles, so acting on it needs nothing.
-	if _, err := k.s.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, k.userID); err != nil {
-		t.Fatal(err)
-	}
+	testutil.UnassignRoles(t, k.s.db, k.userID)
 	k.bump(t)
 	path := "/users/" + strconv.FormatInt(k.userID, 10) + "/roles"
 	grant := map[string]any{"role_keys": []string{authz.RoleSuperAdmin}}
@@ -1100,7 +1124,7 @@ func TestSuperuserKeyCannotGrantSuperAdmin(t *testing.T) {
 	if code, out := k.call(login.AccessToken, "PUT", path, grant); code != 403 {
 		t.Fatalf("session PUT roles: %d %v", code, out)
 	}
-	if code, out := k.call(login.AccessToken, "POST", "/users", create("jwt-super@example.com")); code != 403 {
+	if code, out := k.call(login.AccessToken, "POST", "/users", create("session-super@example.com")); code != 403 {
 		t.Fatalf("session POST users: %d %v", code, out)
 	}
 }
@@ -1162,12 +1186,10 @@ func TestRoleRoutesSplitDefineAndAssign(t *testing.T) {
 	k.grantRole(t, newUser("assigner@example.com"), "assigner", "role:assign", "user:create")
 	target := newUser("target@example.com")
 	// The assigner may assign every custom role; the definer none.
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE roles SET assign_custom = true WHERE key = 'assigner'`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE roles SET assign_custom = true WHERE key = 'assigner'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.s.db.Pool.Exec(ctx, `DELETE FROM user_roles WHERE user_id = $1`, target); err != nil {
-		t.Fatal(err)
-	}
+	testutil.UnassignRoles(t, k.s.db, target)
 	k.bump(t)
 	definer := mustLogin(t, k.s, "key-user@example.com", adminPassword).AccessToken
 	assigner := mustLogin(t, k.s, "assigner@example.com", adminPassword).AccessToken
@@ -1206,9 +1228,9 @@ func TestAccessKeyCannotManageSignIn(t *testing.T) {
 	k := newKeyEnv(t)
 	root := mustLogin(t, k.s, adminEmail, adminPassword).User.ID
 	key := k.createKey(t, root, "user:read")
-	// Anything that only verifies JWTs refuses it (plugin routes refuse keys
+	// Anything that only verifies sessions refuses it (plugin routes refuse keys
 	// explicitly with 403).
-	if _, err := k.s.VerifyAccessToken(context.Background(), key.Key); err == nil {
+	if _, _, err := k.s.VerifySession(context.Background(), key.Key); err == nil {
 		t.Fatal("a key passed as a console token")
 	}
 	for _, p := range []struct{ method, path string }{
@@ -1235,7 +1257,7 @@ func TestAccessKeyLifecycle(t *testing.T) {
 		t.Fatalf("too soon: %v", err)
 	}
 	expiring := k.createKey(t, root, "user:read")
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE user_access_keys SET expires_at = now() - interval '1 second' WHERE id = $1`, expiring.ID); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE user_access_keys SET expires_at = now() - interval '1 second' WHERE id = $1`, expiring.ID); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := k.call(expiring.Key, "GET", "/users", nil); code != 401 {
@@ -1270,7 +1292,7 @@ func TestAccessKeyLifecycle(t *testing.T) {
 		t.Fatalf("another user's: %v", err)
 	}
 	limited := k.createKey(t, k.userID, "apikey:self:manage")
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, k.userID); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, k.userID); err != nil {
 		t.Fatal(err)
 	}
 	k.s.forgetStatus(k.userID)
@@ -1305,10 +1327,10 @@ func TestAccessKeyCatalogHasOnlyWhatTheUserHolds(t *testing.T) {
 		t.Fatalf("catalog = %v", seen)
 	}
 	// A plugin permission the user holds can be chosen (§80, 期 4 S4).
-	if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('demo', '{"en":"x"}', 'enabled')`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('demo', '{"en":"x"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO permissions (key, module, label, source, plugin_key, status) VALUES ('plugin.demo:read', 'plugin.demo', '{"en":"x"}', 'plugin', 'demo', 'active')`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `INSERT INTO permissions (key, module, label, source, plugin_key, status) VALUES ('plugin.demo:read', 'plugin.demo', '{"en":"x"}', 'plugin', 'demo', 'active')`); err != nil {
 		t.Fatal(err)
 	}
 	k.grantRole(t, k.userID, "demo_reader", "plugin.demo:read")
@@ -1327,7 +1349,7 @@ func TestAccessKeyCatalogHasOnlyWhatTheUserHolds(t *testing.T) {
 		t.Fatalf("verified permissions = %v, %v", id.Permissions, err)
 	}
 	// Disabled with its plugin, it is lost until the plugin is back.
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE permissions SET status = 'disabled' WHERE key = 'plugin.demo:read'`); err != nil {
+	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE permissions SET status = 'disabled' WHERE key = 'plugin.demo:read'`); err != nil {
 		t.Fatal(err)
 	}
 	k.bump(t)
@@ -1349,11 +1371,6 @@ func TestAccessKeyCatalogHasOnlyWhatTheUserHolds(t *testing.T) {
 func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 	k := newKeyEnv(t)
 	ctx := context.Background()
-	cipher, err := secret.New(make([]byte, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ccgateway.New(k.s.db, cipher).RegisterRoutes(k.r)
 	login := mustLogin(t, k.s, adminEmail, adminPassword)
 	root := login.User.ID
 	former := []string{"role:define", "role:assign", "settings:manage", "user:password:reset",
@@ -1383,18 +1400,10 @@ func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 	if list, err := k.s.AccessKeys(ctx, root); err != nil || len(list[0].Lost) != 0 {
 		t.Fatalf("lost = %+v, %v", list, err)
 	}
-	// Pointing the ccgateway at a host takes a host.install proof (R0).
-	if code, out := k.call(key.Key, "PUT", "/system/ccgateway/remote-config", map[string]any{"mode": "disabled"}); code != 403 || errCode(out) != "verification_required" {
-		t.Fatalf("key with settings:manage, no proof: %d %v", code, out)
-	}
-	hostProof := k.proof(t, key.Key, core.StepUpHostInstall, "PUT", "/system/ccgateway/remote-config", map[string]any{"method": "password", "password": adminPassword})
-	if code, out := k.callProof(key.Key, hostProof, "PUT", "/system/ccgateway/remote-config", map[string]any{"mode": "disabled"}); code != 200 {
-		t.Fatalf("key with settings:manage and a proof: %d %v", code, out)
-	}
 	if code, out := k.call(key.Key, "POST", "/plugins/upload", nil); code != 403 || errCode(out) != "verification_required" {
 		t.Fatalf("key with plugin:install, no proof: %d %v", code, out)
 	}
-	proof := k.proof(t, key.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword})
+	proof := k.proof(t, &key.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(key.Key, proof, "POST", "/plugins/upload", nil); code != 204 {
 		t.Fatalf("key with plugin:install and a proof: %d %v", code, out)
 	}
@@ -1402,77 +1411,9 @@ func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 		t.Fatalf("replayed proof: %d %v", code, out)
 	}
 	narrow := k.createKey(t, root, "settings:read")
-	if code, out := k.callProof(narrow.Key, k.proof(t, narrow.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword}), "POST", "/plugins/upload", nil); code != 403 || errCode(out) != "permission_denied" {
+	if code, out := k.callProof(narrow.Key, k.proof(t, &narrow.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword}), "POST", "/plugins/upload", nil); code != 403 || errCode(out) != "permission_denied" {
 		t.Fatalf("key without plugin:install: %d %v", code, out)
 	}
-}
-
-// One proof covers an operation of several requests (CONTRACTS §80.2, the
-// ccgateway image upload): the request that spent it opens a step-up
-// session, and only the same user through the same access key or login
-// session continues it, until it has been idle for an hour or a day has
-// passed since the proof.
-func TestStepUpSessions(t *testing.T) {
-	k := newKeyEnv(t)
-	ctx := context.Background()
-	login := mustLogin(t, k.s, adminEmail, adminPassword)
-	keyA := k.createKey(t, login.User.ID, "settings:manage")
-	keyB := k.createKey(t, login.User.ID, "settings:manage")
-	// Stand-ins for the upload routes, guarded the same way.
-	k.r.StepUp(core.StepUpHostInstall).Perm(http.MethodPost, "/x/uploads", "settings:manage", func(c *gin.Context) {
-		if err := httpapi.OpenStepUpSession(c, "x/1"); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		c.Status(http.StatusNoContent)
-	})
-	k.r.StepUpSession(core.StepUpHostInstall, func(c *gin.Context) string { return "x/" + c.Param("id") }).
-		Perm(http.MethodPut, "/x/uploads/:id", "settings:manage", func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	refused := func(token, path, want string) {
-		t.Helper()
-		if code, out := k.call(token, "PUT", path, nil); code != 403 || errCode(out) != want {
-			t.Fatalf("PUT %s: %d %v, want %s", path, code, out, want)
-		}
-	}
-	if code, out := k.call(keyA.Key, "POST", "/x/uploads", nil); code != 403 || errCode(out) != "verification_required" {
-		t.Fatalf("open without a proof: %d %v", code, out)
-	}
-	refused(keyA.Key, "/x/uploads/1", "verification_expired")
-	proof := k.proof(t, keyA.Key, core.StepUpHostInstall, "POST", "/x/uploads", map[string]any{"method": "password", "password": adminPassword})
-	if code, out := k.callProof(keyA.Key, proof, "POST", "/x/uploads", nil); code != 204 {
-		t.Fatalf("open with a proof: %d %v", code, out)
-	}
-	for range 2 {
-		if code, out := k.call(keyA.Key, "PUT", "/x/uploads/1", nil); code != 204 {
-			t.Fatalf("continued: %d %v", code, out)
-		}
-	}
-	refused(keyA.Key, "/x/uploads/2", "verification_expired")
-	refused(keyB.Key, "/x/uploads/1", "verification_expired")
-	refused(login.AccessToken, "/x/uploads/1", "verification_expired")
-	var idle bool
-	if err := k.s.db.Pool.QueryRow(ctx, `SELECT expires_at > now() + interval '59 minutes' FROM auth_flows WHERE purpose = 'step_up_session'`).Scan(&idle); err != nil || !idle {
-		t.Fatalf("the session is not kept open an hour from its last request: %v %v", idle, err)
-	}
-	// However busy, a session ends a day after its proof.
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE auth_flows SET created_at = now() - interval '23 hours 30 minutes' WHERE purpose = 'step_up_session'`); err != nil {
-		t.Fatal(err)
-	}
-	if code, out := k.call(keyA.Key, "PUT", "/x/uploads/1", nil); code != 204 {
-		t.Fatalf("continued within the day: %d %v", code, out)
-	}
-	var capped bool
-	if err := k.s.db.Pool.QueryRow(ctx, `SELECT expires_at <= created_at + interval '24 hours' FROM auth_flows WHERE purpose = 'step_up_session'`).Scan(&capped); err != nil || !capped {
-		t.Fatalf("the session is kept open past a day from its proof: %v %v", capped, err)
-	}
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE auth_flows SET created_at = now() - interval '25 hours' WHERE purpose = 'step_up_session'`); err != nil {
-		t.Fatal(err)
-	}
-	refused(keyA.Key, "/x/uploads/1", "verification_expired")
-	if _, err := k.s.db.Pool.Exec(ctx, `UPDATE auth_flows SET created_at = now(), expires_at = now() - interval '1 second' WHERE purpose = 'step_up_session'`); err != nil {
-		t.Fatal(err)
-	}
-	refused(keyA.Key, "/x/uploads/1", "verification_expired")
 }
 
 // An access key's scopes are within its user's (CONTRACTS §21.0, R6): a key
@@ -1502,7 +1443,7 @@ func TestAccessKeyScopes(t *testing.T) {
 		t.Fatalf("listed = %v", key.Permissions)
 	}
 	var stored []string
-	if err := k.s.db.Pool.QueryRow(ctx, `SELECT permissions FROM user_access_keys WHERE id = $1`, key.ID).Scan(&stored); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT permissions FROM user_access_keys WHERE id = $1`, key.ID).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
 	if fmt.Sprint(stored) != "[account:read:own proxy:manage:own]" {
@@ -1510,10 +1451,7 @@ func TestAccessKeyScopes(t *testing.T) {
 	}
 	// A group-range user's key takes a subset of its groups.
 	k.grantRole(t, k.userID, "grouped", "user:read")
-	if _, err := k.s.db.Pool.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-		SELECT r.id, p.id, 'group/12' FROM roles r, permissions p WHERE r.key = 'grouped' AND p.key = 'account:test'`); err != nil {
-		t.Fatal(err)
-	}
+	testutil.Grant(t, k.s.db, "grouped", "account:test", "group/12")
 	k.bump(t)
 	if sub := k.createKey(t, k.userID, "account:test:group/12/account/5"); fmt.Sprint(sub.Permissions) != "[account:test:group/12/account/5]" {
 		t.Fatalf("subset key = %v", sub.Permissions)
@@ -1557,7 +1495,7 @@ func TestAccessKeyWriteNeedsAProof(t *testing.T) {
 	if d := out["error"].(map[string]any)["details"].(map[string]any); d["scope"] != core.StepUpAccessKeyWrite || d["password_required"] != false {
 		t.Fatalf("challenge %v", d)
 	}
-	proof := k.proof(t, session, core.StepUpAccessKeyWrite, "POST", "/me/access-keys", pass)
+	proof := k.proof(t, &session, core.StepUpAccessKeyWrite, "POST", "/me/access-keys", pass)
 	code, out = k.callProof(session, proof, "POST", "/me/access-keys", body)
 	if code != 201 {
 		t.Fatalf("create with a proof: %d %v", code, out)
@@ -1574,7 +1512,7 @@ func TestAccessKeyWriteNeedsAProof(t *testing.T) {
 		if code, out := k.call(session, "PATCH", path, patch); code != 403 || errCode(out) != "verification_required" {
 			t.Fatalf("patch %v without a proof: %d %v", patch, code, out)
 		}
-		proof := k.proof(t, session, core.StepUpAccessKeyWrite, "PATCH", path, pass)
+		proof := k.proof(t, &session, core.StepUpAccessKeyWrite, "PATCH", path, pass)
 		if code, out := k.callProof(session, proof, "PATCH", path, patch); code != 200 {
 			t.Fatalf("patch %v with a proof: %d %v", patch, code, out)
 		}
@@ -1582,7 +1520,7 @@ func TestAccessKeyWriteNeedsAProof(t *testing.T) {
 
 	// A key is refused before any proof is looked at.
 	other := k.createKey(t, login.User.ID, "user:read").Key
-	keyProof := k.proof(t, other, core.StepUpAccessKeyWrite, "POST", "/me/access-keys", pass)
+	keyProof := k.proof(t, &other, core.StepUpAccessKeyWrite, "POST", "/me/access-keys", pass)
 	if code, out := k.callProof(other, keyProof, "POST", "/me/access-keys", body); code != 403 || errCode(out) == "verification_required" {
 		t.Fatalf("key creates a key: %d %v", code, out)
 	}

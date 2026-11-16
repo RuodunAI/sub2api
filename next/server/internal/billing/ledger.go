@@ -7,12 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -69,7 +70,7 @@ func validateChange(ch *core.LedgerChange) error {
 // balance.changed event; then the Redis cache is refreshed.
 func (s *Service) Apply(ctx context.Context, ch core.LedgerChange) (*core.LedgerResult, error) {
 	var res *core.LedgerResult
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		res, err = s.ApplyTx(ctx, tx, ch)
 		return err
@@ -87,34 +88,26 @@ func (s *Service) Apply(ctx context.Context, ch core.LedgerChange) (*core.Ledger
 // settlement to update the usage row atomically). The caller must call
 // CacheBalance after committing when the result is not a duplicate.
 //
-// One batch (create the balance row, then applySQL: find the key or lock the
-// row, write the ledger row and the balance) and one event: two round trips
-// under the user's balance lock instead of six (CONTRACTS §63.7).
-func (s *Service) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error) {
+// One statement (applySQL: find the key or lock the row, write the ledger
+// row and the balance) and one event: one round trip under the user's
+// balance lock before COMMIT instead of six (CONTRACTS §63.7). For a user
+// without a balance row the statement finds no row and writes nothing;
+// ensureBalanceSQL then creates the row and the statement runs again
+// (runLedger).
+func (s *Service) ApplyTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange) (*core.LedgerResult, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	if err := validateChange(&ch); err != nil {
 		return nil, err
 	}
 	ch.Amount = ch.Amount.Round(8)
-	b := &pgx.Batch{}
-	b.Queue(ensureBalanceSQL, ch.UserID)
-	queueApply(b, ch)
-	br := tx.SendBatch(ctx, b)
-	if _, err := br.Exec(); err != nil {
-		_ = br.Close()
-		if store.IsForeignKeyViolation(err) {
-			return nil, core.ErrNotFound.WithMessage("user not found").WithCause(err)
-		}
-		return nil, err
-	}
-	res, raced, err := scanApply(br.QueryRow(), ch)
+	a, err := applyChange(store.G(ctx, tx), ch)
 	if err != nil {
-		_ = br.Close()
 		return nil, err
 	}
-	if err := br.Close(); err != nil {
-		return nil, err
-	}
-	if res, err = resolveApply(ctx, tx, res, raced, ch); err != nil || res.Duplicate {
+	res, err := a.resolve(ctx, tx, ch)
+	if err != nil || res.Duplicate {
 		return res, err
 	}
 	if s.events != nil {
@@ -129,23 +122,18 @@ func (s *Service) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) 
 	return res, nil
 }
 
-func findLedger(ctx context.Context, q store.Querier, key string) (*core.LedgerResult, error) {
-	r := &core.LedgerResult{Duplicate: true}
-	var userID int64
-	var delta decimal.Decimal
-	var kind string
-	err := q.QueryRow(ctx, `SELECT id, balance_after, user_id, delta, kind FROM balance_ledger WHERE idempotency_key = $1`,
-		key).Scan(&r.LedgerID, &r.BalanceAfter, &userID, &delta, &kind)
+func findLedger(ctx context.Context, q *gorm.DB, key string) (*core.LedgerResult, error) {
+	var row model.BalanceLedger
+	err := store.G(ctx, q).Model(&model.BalanceLedger{}).Select("id", "balance_after", "user_id", "delta", "kind").
+		Where("idempotency_key = ?", key).Take(&row).Error
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	r.UserID = userID
-	r.Delta = delta
-	r.Kind = kind
-	return r, nil
+	return &core.LedgerResult{Duplicate: true, LedgerID: row.ID, BalanceAfter: row.BalanceAfter,
+		UserID: row.UserID, Delta: row.Delta, Kind: row.Kind}, nil
 }
 
 // CacheBalance stores a balance observed at ledgerID in Redis (best effort;
@@ -161,6 +149,15 @@ func (s *Service) CacheBalance(ctx context.Context, userID, ledgerID int64, bala
 		// A stale entry is worse than none.
 		_ = s.rdb.Del(context.WithoutCancel(ctx), balanceKey(userID)).Err()
 	}
+}
+
+// balanceSQL reads a user's balance and the ledger id it was observed at
+// (the user id twice).
+func balanceRead(db *gorm.DB, userID int64) *gorm.DB {
+	sub := db.Session(&gorm.Session{NewDB: true})
+	return store.OneRow(db).Select("COALESCE((?), 0), COALESCE((?), 0)",
+		sub.Table("user_balances").Select("balance").Where("user_id = ?", userID),
+		sub.Table("balance_ledger").Select("max(id)").Where("user_id = ?", userID))
 }
 
 // Balance returns a user's balance, served from Redis when cached.
@@ -179,9 +176,8 @@ func (s *Service) Balance(ctx context.Context, userID int64) (decimal.Decimal, e
 	}
 	var bal decimal.Decimal
 	var lastID int64
-	err := s.db.Pool.QueryRow(ctx, `
-		SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = $1), 0),
-		       COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = $1), 0)`, userID).Scan(&bal, &lastID)
+	// Behind the Redis cache: only a miss reads PostgreSQL.
+	err := balanceRead(store.G(ctx, s.db.Gorm), userID).Row().Scan(&bal, &lastID)
 	if err != nil {
 		return decimal.Zero, err
 	}

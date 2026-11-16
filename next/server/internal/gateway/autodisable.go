@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -91,7 +91,7 @@ func (s AutoDisableSettings) rule(status int, body []byte, transportErr string) 
 	return ""
 }
 
-func loadAutoDisableSettings(ctx context.Context, q store.Querier) (AutoDisableSettings, error) {
+func loadAutoDisableSettings(ctx context.Context, q *gorm.DB) (AutoDisableSettings, error) {
 	v := defaultAutoDisableSettings()
 	err := loadSettingsRow(ctx, q, settingsKeyAutoDisable, &v)
 	return v.compiled(), err
@@ -241,7 +241,7 @@ func (g *Gateway) getAutoDisableHandler(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	v, err := loadAutoDisableSettings(c.Request.Context(), db.Pool)
+	v, err := loadAutoDisableSettings(c.Request.Context(), db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -268,7 +268,7 @@ func (g *Gateway) putAutoDisableHandler(c *gin.Context) {
 	}
 	uid, _ := core.UserID(ctx)
 	cur := defaultAutoDisableSettings()
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := legacyFailureSettingGuard(ctx, tx); err != nil {
 			return err
 		}

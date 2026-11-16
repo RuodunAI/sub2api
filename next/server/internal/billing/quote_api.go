@@ -7,12 +7,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // QuoteRequest is the body of POST /pricing/quote: a sample call of a user,
@@ -128,7 +128,7 @@ func (s *Service) quotePricing(c *gin.Context) {
 
 // quoteTerms returns the terms in the group of who the quote is for: the
 // segment of the user, or the segment itself.
-func quoteTerms(ctx context.Context, q store.Querier, in QuoteRequest) (segment.Terms, error) {
+func quoteTerms(ctx context.Context, q *gorm.DB, in QuoteRequest) (segment.Terms, error) {
 	read, id, missing := segment.SegmentTerms, in.SegmentID, segment.NotFound
 	if in.UserID != nil {
 		read, id, missing = segment.UserTerms, in.UserID, segment.UserNotFound
@@ -145,11 +145,11 @@ func quoteTerms(ctx context.Context, q store.Querier, in QuoteRequest) (segment.
 }
 
 func (s *Service) quote(ctx context.Context, in QuoteRequest) (*PricingQuote, error) {
-	gp, err := loadGroupPrices(ctx, s.db.Pool, ` WHERE g.id = $1`, in.GroupID)
+	gp, err := loadGroupPrices(ctx, s.db.Gorm, "g.id = ?", in.GroupID)
 	if err != nil {
 		return nil, err
 	}
-	terms, err := quoteTerms(ctx, s.db.Pool, in)
+	terms, err := quoteTerms(ctx, s.db.Gorm, in)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func (s *Service) quote(ctx context.Context, in QuoteRequest) (*PricingQuote, er
 	if err != nil {
 		return nil, err
 	}
-	ref, err := segment.Ref(ctx, s.db.Pool, terms.SegmentID, showUsers)
+	ref, err := segment.Ref(ctx, s.db.Gorm, terms.SegmentID, showUsers)
 	if err != nil {
 		return nil, err
 	}

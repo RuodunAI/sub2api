@@ -1,0 +1,5 @@
+-- sql
+DELETE FROM "role_assignable_roles" WHERE role_id = $1 AND assignable_role_id <> ALL($2)
+-- vars
+$1 int64 3
+$2 store.Int64s [4 5]

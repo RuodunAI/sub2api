@@ -56,7 +56,7 @@ func TestPriceAPI(t *testing.T) {
 		t.Fatalf("created %v", created)
 	}
 	var hist int
-	_ = e.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM model_price_history WHERE expr_hash = $1`, created["expr_hash"]).Scan(&hist)
+	_ = e.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM model_price_history WHERE expr_hash = $1`, created["expr_hash"]).Scan(&hist)
 	if hist != 1 {
 		t.Fatal("history not recorded")
 	}
@@ -90,7 +90,7 @@ func TestPriceAPI(t *testing.T) {
 
 	// preview by id: A.6 numbers, group multiplier applied.
 	var gid int64
-	_ = e.db.Pool.QueryRow(context.Background(), `INSERT INTO groups (name, rate_multiplier) VALUES ('vip', 1.5) RETURNING id`).Scan(&gid)
+	_ = e.db.SQL.QueryRowContext(context.Background(), `INSERT INTO groups (name, rate_multiplier) VALUES ('vip', 1.5) RETURNING id`).Scan(&gid)
 	prev := data(e.mustCall(admin, 200, "POST", "/prices/preview", map[string]any{
 		"price_id": id,
 		"usage":    map[string]any{"p": 100000, "c": 2000, "cr": 80000},
@@ -134,8 +134,8 @@ func TestPriceAPI(t *testing.T) {
 
 	// A synced price that is edited becomes manual; enabling alone keeps it synced.
 	var srcID, haikuID int64
-	_ = e.db.Pool.QueryRow(context.Background(), `SELECT id FROM price_sync_sources WHERE kind = 'litellm'`).Scan(&srcID)
-	_ = e.db.Pool.QueryRow(context.Background(), `UPDATE model_prices SET source = 'sync', sync_source_id = $1, synced_at = now()
+	_ = e.db.SQL.QueryRowContext(context.Background(), `SELECT id FROM price_sync_sources WHERE kind = 'litellm'`).Scan(&srcID)
+	_ = e.db.SQL.QueryRowContext(context.Background(), `UPDATE model_prices SET source = 'sync', sync_source_id = $1, synced_at = now()
 		WHERE model = 'claude-haiku-4-5' RETURNING id`, srcID).Scan(&haikuID)
 	path := "/prices/" + itoa(haikuID)
 	if upd := data(e.mustCall(admin, 200, "PATCH", path, map[string]any{"enabled": false})); upd["enabled"] != false ||

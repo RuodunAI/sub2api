@@ -10,35 +10,33 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type cacheReloadHost struct {
 	pluginsdk.Host
-	pool *pgxpool.Pool
+	db *gorm.DB
 }
 
-func (h *cacheReloadHost) DB(context.Context) (*pgxpool.Pool, error) { return h.pool, nil }
+func (h *cacheReloadHost) DB(ctx context.Context) (*gorm.DB, error) {
+	return h.db.WithContext(ctx), nil
+}
 
-type reloadTraceKey struct{}
 type reloadBarrier struct {
 	armed            atomic.Bool
 	entered, release chan struct{}
 }
 
-func (b *reloadBarrier) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
-	if strings.Contains(d.SQL, "SELECT user_id, expires_at FROM blocks") && b.armed.CompareAndSwap(true, false) {
-		return context.WithValue(ctx, reloadTraceKey{}, true)
-	}
-	return ctx
-}
-func (b *reloadBarrier) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
-	if ctx.Value(reloadTraceKey{}) == true {
+// hold runs after the block reload's SELECT: its snapshot is taken and its
+// rows read, but the plugin has not published them.
+func (b *reloadBarrier) hold(db *gorm.DB) {
+	if strings.Contains(db.Statement.SQL.String(), `SELECT user_id, expires_at FROM "blocks"`) && b.armed.CompareAndSwap(true, false) {
 		close(b.entered)
-		<-b.release // The rows have been read, but the plugin has not published them.
+		<-b.release
 	}
 }
 
@@ -54,24 +52,22 @@ func TestBlockCacheRejectsLateReload(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 			defer cancel()
 			barrier := &reloadBarrier{entered: make(chan struct{}), release: make(chan struct{})}
-			cfg, err := pgxpool.ParseConfig(dsn)
+			db, err := pgdb.Open(dsn, pgdb.Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.ConnConfig.Tracer = barrier
-			db, err := pgxpool.NewWithConfig(ctx, cfg)
-			if err != nil {
+			defer func() { _ = pgdb.Close(db) }()
+			if err := db.Callback().Query().After("gorm:query").Register("test:reload_barrier", barrier.hold); err != nil {
 				t.Fatal(err)
 			}
-			defer db.Close()
 			var once sync.Once
 			release := func() { once.Do(func() { close(barrier.release) }) }
 			defer release()
-			if _, err := db.Exec(ctx, `INSERT INTO blocks(user_id,source) VALUES (3,'manual')`); err != nil {
+			if err := db.Exec(`INSERT INTO blocks(user_id,source) VALUES (3,'manual')`).Error; err != nil {
 				t.Fatal(err)
 			}
 			p := New()
-			p.host = &cacheReloadHost{pool: db}
+			p.host = &cacheReloadHost{db: db}
 			oldCtx, stopOld := context.WithCancel(ctx)
 			defer stopOld()
 			barrier.armed.Store(true)
@@ -85,7 +81,7 @@ func TestBlockCacheRejectsLateReload(t *testing.T) {
 			if cancelOld {
 				stopOld()
 			} else {
-				if _, err := db.Exec(ctx, `UPDATE blocks SET user_id=4 WHERE user_id=3`); err != nil {
+				if err := db.Exec(`UPDATE blocks SET user_id=4 WHERE user_id=3`).Error; err != nil {
 					t.Fatal(err)
 				}
 				if err := p.reloadBlocks(ctx); err != nil {

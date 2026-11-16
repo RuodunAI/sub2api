@@ -39,7 +39,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 
 ## 配置节点
 
-复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis、主密钥和 JWT 密钥。迁移已有集群时必须沿用原密钥及数据库。
+复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis 和主密钥。迁移已有集群时必须沿用原密钥及数据库。本版外壳不再把 `SUB2API_JWT_SECRET` 传给核心，只能运行 0.1.290 起的核心：从 0.1.288 升级时先在原来的外壳下跑完升级计划，再换本版外壳（`deploy/rollback/0.1.290-release.md`）。
 
 修改 `config/node-a.json` 和 `config/node-b.json`：
 
@@ -49,7 +49,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 - `peer_url` 必须能被另一节点访问，服务器证书DNS SAN必须包含相应主机名并允许ServerAuth。客户端验证CA及主机名，不再要求客户端证书或`allowed_peers`列表。
 - `peer_auth_key` 留空时自动生成节点密钥；也可在配置中指定至少32字节的独立随机密钥。非空的`SUB2API_PEER_AUTH_KEY`环境变量覆盖配置文件，空值视为未设置；Compose分别使用`NODE_A_PEER_AUTH_KEY`与`NODE_B_PEER_AUTH_KEY`，不要给两个节点填写同一个密钥。
 - 心跳只续期Redis登记，不更换密钥。登记丢失时自动模式生成新值，配置模式登记原值，其他节点直接读取新登记。普通缓存过期不重启核心；Redis不可用时拒绝新的节点间请求，已通过鉴权的流式请求按原有生命周期收尾。登记失败（节点被停用、同 ID 实例仍在线或 Redis 不可用）时网关不退出，保持维护态并持续重试。
-- `plugin_max_bytes`（可选，默认 1 GiB；ccgateway 插件包内含运行环境镜像，见 CONTRACTS §53.10）限制网关保存的单个插件包；`plugin_store_max_bytes`（可选，默认 16 GiB）限制整个 `plugin-blobs/` 目录，满了以后上传返回 507，直到 GC 清掉未引用的包。插件包保存在状态卷的 `plugin-blobs/`，主节点保存全部非市场插件包，从节点只缓存自己拉取过的包；节点间上传必须声明 `Content-Length`，每个来源节点最多 2 个并发上传。
+- `plugin_max_bytes`（可选，默认 64 MiB，与核心的插件包上限同一常量 `runtimecontract.PluginPackageMaxBytes`）限制网关保存的单个插件包；`plugin_store_max_bytes`（可选，默认 16 GiB）限制整个 `plugin-blobs/` 目录，满了以后上传返回 507，直到 GC 清掉未引用的包。插件包保存在状态卷的 `plugin-blobs/`，主节点保存全部非市场插件包，从节点只缓存自己拉取过的包；节点间上传必须声明 `Content-Length`，每个来源节点最多 2 个并发上传。
 - Redis 登记只保存节点密钥的 SHA-256（peer 协议 2，2026-11-05 起）。更换网关版本时集群内所有网关必须一起换，期间不要创建核心升级计划；旧网关与新网关互不接受。`REDIS_URL` 走 TCP 时必须带密码，否则网关拒绝启动（`allow_unauthenticated_redis: true` 仅供隔离测试）。
 - 网关默认为其核心设置 `SUB2API_PLUGIN_LANDLOCK=true`（Linux）：管理 socket 令牌文件对同 UID 的插件没有隔离作用，隔离来自 Landlock。`core_env` 里显式给出的值优先；`plugin_landlock_disabled: true` 关闭默认值。
 - `release_origin` 下载使用系统根证书及 `ca.crt`，可用公开证书；内容由发布签名和摘要约束，节点密钥不会发往发布源。
@@ -127,7 +127,7 @@ docker compose exec node-a sub2api-gateway enable-node -id node-b
 
 暂停在步骤边界生效，已开始的排空/替换会安全收尾。仅尚未切流的计划允许 `cancel`。失败后先修复原因再恢复同一计划；从节点更新失败时，已就绪主节点继续服务，从节点继续转发。主节点更新失败时保留维护状态，不擅自启动旧从节点。
 
-`rollback` 仅用于数据库和相关协议契约相同、当前插件仍兼容的版本，回到最近一次全部节点完成的基线。取得协调锁及全部节点操作锁后，以新的主节点优先恢复计划接替原计划，也会产生停机窗口。跨数据库契约或不兼容协议的回退被拒绝；需修复迁移或通过数据库备份恢复。不会直接改软链接、强杀写入进程或自动执行向下迁移。
+`rollback` 仅用于数据库和相关协议契约相同、当前插件仍兼容的版本，回到最近一次全部节点完成的基线。取得协调锁及全部节点操作锁后，以新的主节点优先恢复计划接替原计划，也会产生停机窗口。跨数据库契约或不兼容协议的回退被拒绝；需修复迁移或通过数据库备份恢复。不会直接改软链接、强杀写入进程或自动执行向下迁移。从数据库备份恢复后不需要清理 Valkey：核心 0.1.290 起授权策略只在各节点内存里，Valkey 里没有授权的键（CONTRACTS §99.4）。
 
 锁用 Redis 互斥并续期；失锁取消执行，不写成功结果。进程或整机重启后，重新取锁并根据 PG 步骤和本地日志恢复。发现上一进程仍存活、遗留子进程组或无法确认的启动意图时，会拒绝启动第二个核心；运维须先核对进程和日志，不能仅凭锁过期删除状态文件。
 

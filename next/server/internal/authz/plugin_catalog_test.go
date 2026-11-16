@@ -3,21 +3,25 @@ package authz
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// The roles a plugin permission may name in defaultRoles are exactly the
+// The roles a plugin permission may name in defaults are exactly the
 // built-in roles but the super admin.
 func TestManifestBuiltinRoleKeysMatchBuiltinRoles(t *testing.T) {
 	var keys []string
@@ -33,47 +37,35 @@ func TestManifestBuiltinRoleKeysMatchBuiltinRoles(t *testing.T) {
 	}
 }
 
+// permissionHolders lists the roles holding every row of key.
 func permissionHolders(t *testing.T, db *store.DB, key string) []string {
 	t.Helper()
 	var roles []string
-	if err := db.Pool.QueryRow(context.Background(), `
-SELECT COALESCE(array_agg(r.key ORDER BY r.key), '{}') FROM role_permissions rp
-JOIN roles r ON r.id = rp.role_id JOIN permissions p ON p.id = rp.permission_id WHERE p.key = $1`, key).Scan(&roles); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `
+SELECT COALESCE(array_agg(role ORDER BY role), '{}') FROM (`+casbinrule.Grants+`) g WHERE action = $1 AND scope = ''`, key).Scan(&roles))
 	return roles
 }
 
-func syncGrantAudits(t *testing.T, db *store.DB, key, via string) int {
-	t.Helper()
-	var n int
-	if err := db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs
-WHERE action = 'authz.sync.grant' AND target_type = 'role' AND user_id IS NULL AND detail->>'key' = $1 AND detail->>'via' = $2`, key, via).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 // A permission the catalog creates goes to its GrantRoles (never a super
-// admin role) and to the holders of its InheritFrom keys, each grant
-// audited; a rename inherits before the old key is deleted, and an
-// existing permission keeps its grants.
-func TestSyncPluginGrantRolesAndInheritFrom(t *testing.T) {
+// admin role), each grant audited, and nothing else: the consent resolves
+// inheritance into GrantRoles. A key no longer declared is marked removed,
+// and an existing permission keeps its grants.
+func TestSyncPluginGrantRoles(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
 	sync := func(defs ...core.PermissionDef) {
 		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, "guard", defs) }); err != nil {
+		if err := db.Tx(ctx, func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, "guard", defs) }); err != nil {
 			t.Fatal(err)
 		}
 	}
 	const read, view, manage = "plugin.guard:stats:read", "plugin.guard:stats:view", "plugin.guard:rules:manage"
-	sync(core.PermissionDef{Key: "stats:read", GrantRoles: []string{RoleAdmin, RoleSuperAdmin, RoleOperator, RoleOperator}},
+	sync(core.PermissionDef{Key: "stats:read", GrantRoles: unscoped(RoleAdmin, RoleSuperAdmin, RoleOperator, RoleOperator)},
 		core.PermissionDef{Key: "rules:manage"})
 	if got := permissionHolders(t, db, read); !slices.Equal(got, []string{RoleAdmin, RoleOperator}) {
 		t.Fatalf("holders of %s: %v", read, got)
@@ -81,76 +73,25 @@ func TestSyncPluginGrantRolesAndInheritFrom(t *testing.T) {
 	if got := permissionHolders(t, db, manage); len(got) != 0 {
 		t.Fatalf("holders of %s: %v", manage, got)
 	}
-	if n := syncGrantAudits(t, db, read, "default"); n != 2 {
+	if n := auditCount(t, db, "authz.sync.grant", read, "default"); n != 2 {
 		t.Fatalf("default grant audits: %d", n)
 	}
 
-	// stats:read is renamed stats:view, which also goes to the user role.
-	sync(core.PermissionDef{Key: "stats:view", GrantRoles: []string{RoleUser}, InheritFrom: []string{"stats:read"}},
-		core.PermissionDef{Key: "rules:manage", GrantRoles: []string{RoleAdmin}})
-	if got := permissionHolders(t, db, view); !slices.Equal(got, []string{RoleAdmin, RoleOperator, RoleUser}) {
+	// stats:read is renamed stats:view: the new key gets its GrantRoles
+	// only, the old one is removed with its grants kept.
+	sync(core.PermissionDef{Key: "stats:view", GrantRoles: unscoped(RoleUser)},
+		core.PermissionDef{Key: "rules:manage", GrantRoles: unscoped(RoleAdmin)})
+	if got := permissionHolders(t, db, view); !slices.Equal(got, []string{RoleUser}) {
 		t.Fatalf("holders of %s: %v", view, got)
 	}
 	if got := permissionHolders(t, db, manage); len(got) != 0 {
 		t.Fatalf("existing %s widened: %v", manage, got)
 	}
-	var n int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM permissions WHERE key = $1`, read).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("old key kept: %d %v", n, err)
+	if got := permissionStatus(t, db, read); got != "removed" {
+		t.Fatalf("old key %s: %s", read, got)
 	}
-	if n := syncGrantAudits(t, db, view, "inherit"); n != 2 {
-		t.Fatalf("inherit grant audits: %d", n)
-	}
-	if n := syncGrantAudits(t, db, view, "default"); n != 1 {
-		t.Fatalf("default grant audits of %s: %d", view, n)
-	}
-	var from []string
-	if err := db.Pool.QueryRow(ctx, `SELECT ARRAY(SELECT jsonb_array_elements_text(detail->'from')) FROM audit_logs
-WHERE action = 'authz.sync.grant' AND detail->>'key' = $1 AND detail->>'via' = 'inherit' LIMIT 1`, view).Scan(&from); err != nil || !slices.Equal(from, []string{read}) {
-		t.Fatalf("inherit audit from %v %v", from, err)
-	}
-}
-
-// Only grants that exist before the sync are inherited: on a first install a
-// key inheriting from another new key gets none of its defaults, and a chain
-// through a key created in the same sync is not followed (manifest
-// InheritFrom; moderation:exempt from moderation:read).
-func TestSyncPluginInheritsOnlyEarlierGrants(t *testing.T) {
-	t.Parallel()
-	db := testutil.DB(t)
-	s := newService(t, db, newMemBus(), nil)
-	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('mod', '{"en":"Mod"}', 'enabled')`); err != nil {
-		t.Fatal(err)
-	}
-	sync := func(defs ...core.PermissionDef) {
-		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, "mod", defs) }); err != nil {
-			t.Fatal(err)
-		}
-	}
-	const read, exempt, chained = "plugin.mod:read", "plugin.mod:exempt", "plugin.mod:chained"
-	// exempt is listed before and chained after what they inherit from, so
-	// neither the order nor the defaults written now matter.
-	sync(core.PermissionDef{Key: "exempt", GrantRoles: []string{}, InheritFrom: []string{"read"}},
-		core.PermissionDef{Key: "read", GrantRoles: []string{RoleAdmin}},
-		core.PermissionDef{Key: "chained", GrantRoles: []string{}, InheritFrom: []string{"exempt"}})
-	if got := permissionHolders(t, db, read); !slices.Equal(got, []string{RoleAdmin}) {
-		t.Fatalf("holders of %s: %v", read, got)
-	}
-	for _, key := range []string{exempt, chained} {
-		if got := permissionHolders(t, db, key); len(got) != 0 {
-			t.Fatalf("holders of %s on a first install: %v", key, got)
-		}
-	}
-	// An upgrade adding a key that inherits from an existing one does
-	// inherit its holders.
-	sync(core.PermissionDef{Key: "exempt", GrantRoles: []string{}, InheritFrom: []string{"read"}},
-		core.PermissionDef{Key: "read", GrantRoles: []string{RoleAdmin}},
-		core.PermissionDef{Key: "chained", GrantRoles: []string{}, InheritFrom: []string{"exempt"}},
-		core.PermissionDef{Key: "later", GrantRoles: []string{}, InheritFrom: []string{"read"}})
-	if got := permissionHolders(t, db, "plugin.mod:later"); !slices.Equal(got, []string{RoleAdmin}) {
-		t.Fatalf("holders of a key added later: %v", got)
+	if got := permissionHolders(t, db, read); !slices.Equal(got, []string{RoleAdmin, RoleOperator}) {
+		t.Fatalf("grants of the removed %s: %v", read, got)
 	}
 }
 
@@ -196,7 +137,7 @@ func TestCanGrantToRoles(t *testing.T) {
 	crew := addUser(t, s, "crew@x.com", "crew")
 	lead := addUser(t, s, "lead@x.com", "lead")
 	pair := addUser(t, s, "pair@x.com", "pair", "held")
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := s.SetUserRoles(ctx, tx, 0, root, []string{RoleSuperAdmin, "small"})
 		return err
 	}); err != nil {
@@ -205,8 +146,8 @@ func TestCanGrantToRoles(t *testing.T) {
 	can := func(actor int64, roles ...string) string {
 		t.Helper()
 		var code string
-		_ = db.Tx(ctx, func(tx pgx.Tx) error {
-			if err := s.CanGrantToRoles(ctx, tx, actor, roles); err != nil {
+		_ = db.Tx(ctx, func(tx *gorm.DB) error {
+			if err := s.CanGrantToRoles(ctx, tx, actor, roles, manifest.RiskLow); err != nil {
 				code = core.AsError(err).Code
 			}
 			return nil
@@ -244,9 +185,10 @@ func TestCanGrantToRoles(t *testing.T) {
 	}
 }
 
-// Syncing the real growth and moderation manifests over their old keys:
-// holders of growth:read get growth:use, of growth:manage growth:stats:read,
-// of moderation:read moderation:exempt (T60).
+// Syncing the real growth and moderation manifests over their old keys
+// with what a consent decided (activation: nothing): the split keys get no
+// holders from the catalog (the consent resolves inheritance), and the old
+// keys are removed with their grants kept (D6).
 func TestSyncPluginSplitsGrowthAndModeration(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
@@ -258,7 +200,7 @@ func TestSyncPluginSplitsGrowthAndModeration(t *testing.T) {
 	}
 	sync := func(key string, defs []core.PermissionDef) {
 		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, key, defs) }); err != nil {
+		if err := db.Tx(ctx, func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, key, defs) }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -275,28 +217,30 @@ func TestSyncPluginSplitsGrowthAndModeration(t *testing.T) {
 		return &m
 	}
 	for _, key := range []string{"growth", "moderation"} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
 			t.Fatal(err)
 		}
 	}
-	sync("growth", []core.PermissionDef{{Key: "growth:read", GrantRoles: []string{RoleUser, RoleAdmin}}, {Key: "growth:manage", GrantRoles: []string{RoleAdmin}}})
-	sync("moderation", []core.PermissionDef{{Key: "moderation:read", GrantRoles: []string{RoleAdmin, "moderator"}}, {Key: "moderation:manage", GrantRoles: []string{RoleAdmin}}})
+	sync("growth", []core.PermissionDef{{Key: "growth:read", GrantRoles: unscoped(RoleUser, RoleAdmin)}, {Key: "growth:manage", GrantRoles: unscoped(RoleAdmin)}})
+	sync("moderation", []core.PermissionDef{{Key: "moderation:read", GrantRoles: unscoped(RoleAdmin, "moderator")}, {Key: "moderation:manage", GrantRoles: unscoped(RoleAdmin)}})
 
-	// Without the manifest defaults (a consent naming no role) only
-	// inheritance hands the new keys out.
-	none := map[string][]string{}
-	sync("growth", install.PermissionDefs(load("growth"), none))
-	sync("moderation", install.PermissionDefs(load("moderation"), none))
+	sync("growth", install.PermissionDefs(load("growth"), nil))
+	sync("moderation", install.PermissionDefs(load("moderation"), nil))
 	for key, want := range map[string][]string{
-		"plugin.growth:growth:use":            {RoleAdmin, RoleUser},
-		"plugin.growth:growth:stats:read":     {RoleAdmin},
-		"plugin.growth:growth:read":           nil,
-		"plugin.growth:growth:manage":         nil,
-		"plugin.moderation:moderation:exempt": {RoleAdmin, "moderator"},
+		"plugin.growth:growth:use":            {},
+		"plugin.growth:growth:stats:read":     {},
+		"plugin.growth:growth:read":           {RoleAdmin, RoleUser},
+		"plugin.growth:growth:manage":         {RoleAdmin},
+		"plugin.moderation:moderation:exempt": {},
 		"plugin.moderation:moderation:read":   {RoleAdmin, "moderator"},
 	} {
 		if got := permissionHolders(t, db, key); !slices.Equal(got, want) {
 			t.Errorf("holders of %s: %v, want %v", key, got, want)
+		}
+	}
+	for _, key := range []string{"plugin.growth:growth:read", "plugin.growth:growth:manage"} {
+		if got := permissionStatus(t, db, key); got != "removed" {
+			t.Errorf("%s: %s", key, got)
 		}
 	}
 }
@@ -309,17 +253,17 @@ func TestGrantPluginPermission(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
 	const key = "plugin.guard:rules:export"
 	grant := func(key string, roles ...string) {
 		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error {
+		if err := db.Tx(ctx, func(tx *gorm.DB) error {
 			if err := s.SyncPlugin(ctx, tx, "guard", []core.PermissionDef{{Key: "rules:export"}}); err != nil {
 				return err
 			}
-			return s.GrantPluginPermission(ctx, tx, key, roles)
+			return s.GrantPluginPermission(ctx, tx, key, unscoped(roles...))
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -329,7 +273,7 @@ func TestGrantPluginPermission(t *testing.T) {
 	if got := permissionHolders(t, db, key); !slices.Equal(got, []string{RoleUser}) {
 		t.Fatalf("holders %v", got)
 	}
-	if n := syncGrantAudits(t, db, key, "review"); n != 1 {
+	if n := auditCount(t, db, "authz.sync.grant", key, "review"); n != 1 {
 		t.Fatalf("%d audits", n)
 	}
 	if s.Version() <= before {
@@ -338,5 +282,355 @@ func TestGrantPluginPermission(t *testing.T) {
 	grant("user:read", RoleUser)
 	if got := permissionHolders(t, db, "user:read"); slices.Contains(got, RoleUser) {
 		t.Fatalf("a core permission was granted: %v", got)
+	}
+
+	// Scopes the permission takes are granted; others are refused, and a
+	// removed key grants nothing.
+	const run = "plugin.guard:flow:run"
+	flowRun := core.PermissionDef{Key: "flow:run", ScopeType: "plugin:flow", Scope: &manifest.PermissionScope{Resource: "flow", Own: true}}
+	grantScoped := func(declared bool, roles map[string][]string) error {
+		defs := []core.PermissionDef{{Key: "rules:export"}}
+		if declared {
+			defs = append(defs, flowRun)
+		}
+		return db.Tx(ctx, func(tx *gorm.DB) error {
+			if err := s.SyncPlugin(ctx, tx, "guard", defs); err != nil {
+				return err
+			}
+			return s.GrantPluginPermission(ctx, tx, run, roles)
+		})
+	}
+	if err := grantScoped(true, map[string][]string{RoleOperator: {"own"}, RoleUser: {"proxy/1"}}); core.AsError(err).Code != "invalid_argument" {
+		t.Fatalf("a scope the permission does not take: %v", err)
+	}
+	if err := grantScoped(true, map[string][]string{RoleOperator: {"own", "flow/2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := scopedHolders(t, db, run); !slices.Equal(got, []string{"operator:flow/2", "operator:own"}) {
+		t.Fatalf("scoped holders %v", got)
+	}
+	if err := grantScoped(false, map[string][]string{RoleUser: {""}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := permissionHolders(t, db, run); len(got) != 0 {
+		t.Fatalf("a removed key was granted: %v", got)
+	}
+}
+
+// syncer syncs the plugin key's permissions in a transaction of its own.
+func syncer(t *testing.T, s *Service, key string) func(defs ...core.PermissionDef) error {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"P"}', 'enabled')`, key); err != nil {
+		t.Fatal(err)
+	}
+	return func(defs ...core.PermissionDef) error {
+		return s.db.Tx(ctx, func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, key, defs) })
+	}
+}
+
+// scopedHolders lists the scope grants of key as "role:scope".
+func scopedHolders(t *testing.T, db *store.DB, key string) []string {
+	t.Helper()
+	var out []string
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `
+SELECT COALESCE(array_agg(role || ':' || scope ORDER BY role, scope), '{}') FROM (`+casbinrule.Grants+`) g WHERE action = $1 AND scope <> ''`, key).Scan(&out))
+	return out
+}
+
+// auditCount counts the audits of action naming key with via.
+func auditCount(t *testing.T, db *store.DB, action, key, via string) int {
+	t.Helper()
+	var n int
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs
+WHERE action = $1 AND detail->>'key' = $2 AND detail->>'via' = $3`, action, key, via).Scan(&n))
+	return n
+}
+
+// statusAudits lists the details of the system's action audits of plugin
+// guard, oldest first.
+func statusAudits(t *testing.T, db *store.DB, action string) []string {
+	t.Helper()
+	var out []string
+	require.NoError(t, db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(array_agg(detail::text ORDER BY id), '{}') FROM audit_logs
+WHERE action = $1 AND target_type = 'plugin' AND target_id = 'guard' AND user_id IS NULL`, action).Scan(&out))
+	return out
+}
+
+// A key a plugin no longer declares is marked removed, its grants kept and
+// granting nothing; declared again it revives with the plugin's status and
+// the grants it then has, never its GrantRoles (D6). Enabling or disabling
+// the plugin leaves it removed. Both changes are audited with the roles
+// whose grants stop or start counting.
+func TestSyncPluginRemovesAndRevives(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	sync := syncer(t, s, "guard")
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	admin := addUser(t, s, "a@x.com", RoleAdmin)
+	const a, b = "plugin.guard:a:read", "plugin.guard:b:read"
+	must(sync(core.PermissionDef{Key: "a:read"}, core.PermissionDef{Key: "b:read", GrantRoles: unscoped(RoleAdmin, RoleOperator)}))
+	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, b); return ok })
+
+	must(sync(core.PermissionDef{Key: "a:read"}))
+	if got := permissionStatus(t, db, b); got != "removed" {
+		t.Fatalf("undeclared %s: %s", b, got)
+	}
+	if got := permissionHolders(t, db, b); !slices.Equal(got, []string{RoleAdmin, RoleOperator}) {
+		t.Fatalf("grants of a removed key: %v", got)
+	}
+	removed := statusAudits(t, db, "authz.sync.remove")
+	require.Len(t, removed, 1)
+	assert.JSONEq(t, `{"keys":["plugin.guard:b:read"],"holders":{"plugin.guard:b:read":["admin","operator"]}}`, removed[0])
+	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, b); return !ok })
+	if set, err := s.RolesPermissions(ctx, db.Gorm, []string{RoleAdmin}); err != nil || set.Has(b) {
+		t.Fatalf("grant view counts a removed key: %v", err)
+	}
+
+	// Enabling or disabling the plugin never brings it back.
+	for _, active := range []bool{true, false} {
+		must(db.Tx(ctx, func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", active) }))
+		if got := permissionStatus(t, db, b); got != "removed" {
+			t.Fatalf("SetPluginActive(%v): %s", active, got)
+		}
+	}
+	must(db.Tx(ctx, func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", true) }))
+
+	// Revoked while removed: stays revoked; the revival grants nothing new.
+	testutil.Revoke(t, db, RoleOperator, b)
+	must(sync(core.PermissionDef{Key: "a:read"}, core.PermissionDef{Key: "b:read", GrantRoles: unscoped(RoleUser)}))
+	if got := permissionStatus(t, db, b); got != "active" {
+		t.Fatalf("revived %s: %s", b, got)
+	}
+	if got := permissionHolders(t, db, b); !slices.Equal(got, []string{RoleAdmin}) {
+		t.Fatalf("revived grants: %v", got)
+	}
+	revived := statusAudits(t, db, "authz.sync.revive")
+	require.Len(t, revived, 1)
+	assert.JSONEq(t, `{"keys":["plugin.guard:b:read"],"holders":{"plugin.guard:b:read":["admin"]}}`, revived[0])
+	assert.Len(t, statusAudits(t, db, "authz.sync.remove"), 1, "a sync removing nothing writes nothing")
+	if n := auditCount(t, db, "authz.sync.grant", b, "default"); n != 2 {
+		t.Fatalf("default grant audits: %d", n)
+	}
+	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, b); return ok })
+
+	// Revived while the plugin is not running: disabled, as a new key.
+	must(sync(core.PermissionDef{Key: "a:read"}))
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'guard'`); err != nil {
+		t.Fatal(err)
+	}
+	must(sync(core.PermissionDef{Key: "a:read"}, core.PermissionDef{Key: "b:read"}))
+	if got := permissionStatus(t, db, b); got != "disabled" {
+		t.Fatalf("revived under a disabled plugin: %s", got)
+	}
+	if got := permissionStatus(t, db, a); got != "active" {
+		t.Fatalf("existing %s: %s", a, got)
+	}
+}
+
+// A new plugin permission stores its risk, scope, group, requires and
+// defaults, and is granted its GrantRoles scopes and all: every row as the
+// grant of scope * (making the role's other scopes redundant), the others
+// as scoped grants, audited with the scoped key. Scopes the permission
+// does not take, a risk out of the three levels and a critical permission
+// with defaults are refused.
+func TestSyncPluginScopedGrants(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	sync := syncer(t, s, "mod")
+	flow := &manifest.PermissionScope{Resource: "flow", Own: true, Options: "/scopes/flow"}
+	const key = "plugin.mod:flow:manage"
+	if err := sync(core.PermissionDef{Key: "flow:manage", ScopeType: "plugin:flow", Scope: flow, Risk: manifest.RiskSensitive,
+		Group: "flow", GroupLabel: lt("Flows", "流程"), GroupSort: 10, Requires: []string{"plugin.mod:flow:read"},
+		Defaults:   map[string][]string{RoleOperator: {"own"}},
+		GrantRoles: map[string][]string{RoleAdmin: {""}, RoleOperator: {"own", "flow/3", "own"}, RoleUser: {"own", ""}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := permissionHolders(t, db, key); !slices.Equal(got, []string{RoleAdmin, RoleUser}) {
+		t.Fatalf("holders %v", got)
+	}
+	if got := scopedHolders(t, db, key); !slices.Equal(got, []string{"operator:flow/3", "operator:own"}) {
+		t.Fatalf("scoped holders %v", got)
+	}
+	if n := auditCount(t, db, "authz.sync.grant", key+":own", "default"); n != 1 {
+		t.Fatalf("audits of the own grant: %d", n)
+	}
+	var risk, scopeType, resource, group, defaults string
+	var groupSort int
+	var requires []string
+	if err := db.SQL.QueryRowContext(ctx, `SELECT risk, scope_type, scope->>'resource', group_key, group_sort, requires, defaults::text
+FROM permissions WHERE key = $1`, key).Scan(&risk, &scopeType, &resource, &group, &groupSort, &requires, &defaults); err != nil {
+		t.Fatal(err)
+	}
+	if risk != manifest.RiskSensitive || scopeType != "plugin:flow" || resource != "flow" || group != "flow" || groupSort != 10 ||
+		!slices.Equal(requires, []string{"plugin.mod:flow:read"}) || defaults != `{"operator": ["own"]}` {
+		t.Fatalf("stored %s %s %s %s %d %v %s", risk, scopeType, resource, group, groupSort, requires, defaults)
+	}
+
+	enum := &manifest.PermissionScope{Resource: manifest.ScopeValueResource, Values: []manifest.ScopeValue{{Key: "input"}, {Key: "output"}}}
+	if err := sync(core.PermissionDef{Key: "flow:manage", ScopeType: "plugin:flow", Scope: flow},
+		core.PermissionDef{Key: "stage:run", ScopeType: "plugin:value", Scope: enum, GrantRoles: map[string][]string{RoleAdmin: {"value/input"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := scopedHolders(t, db, "plugin.mod:stage:run"); !slices.Equal(got, []string{"admin:value/input"}) {
+		t.Fatalf("enum holders %v", got)
+	}
+	for _, c := range []struct {
+		name string
+		def  core.PermissionDef
+	}{
+		{"core scope", core.PermissionDef{Key: "x:a", ScopeType: "plugin:flow", Scope: flow, GrantRoles: map[string][]string{RoleAdmin: {"proxy/3"}}}},
+		{"own not taken", core.PermissionDef{Key: "x:b", ScopeType: "plugin:flow", Scope: &manifest.PermissionScope{Resource: "flow"}, GrantRoles: map[string][]string{RoleAdmin: {"own"}}}},
+		{"value not listed", core.PermissionDef{Key: "x:c", ScopeType: "plugin:value", Scope: enum, GrantRoles: map[string][]string{RoleAdmin: {"value/x"}}}},
+		{"unscoped permission", core.PermissionDef{Key: "x:d", GrantRoles: map[string][]string{RoleAdmin: {"flow/3"}}}},
+		{"default not taken", core.PermissionDef{Key: "x:e", Defaults: map[string][]string{RoleAdmin: {"own"}}}},
+		{"unknown risk", core.PermissionDef{Key: "x:f", Risk: "high"}},
+		{"critical with defaults", core.PermissionDef{Key: "x:g", Risk: manifest.RiskCritical, Defaults: map[string][]string{RoleAdmin: {""}}}},
+	} {
+		if err := sync(c.def); core.AsError(err).Code != "invalid_argument" {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+}
+
+// Scope grants the declared scope no longer takes are deleted on the next
+// sync, each audited (via scope_changed); grants of every row stay.
+func TestSyncPluginPrunesScopesOnScopeChange(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	sync := syncer(t, s, "mod")
+	const key = "plugin.mod:flow:manage"
+	def := func(scopeType string, scope *manifest.PermissionScope) core.PermissionDef {
+		return core.PermissionDef{Key: "flow:manage", ScopeType: scopeType, Scope: scope}
+	}
+	first := def("plugin:flow", &manifest.PermissionScope{Resource: "flow", Own: true})
+	first.GrantRoles = map[string][]string{RoleAdmin: {""}, RoleOperator: {"own", "flow/3"}}
+	for _, d := range []core.PermissionDef{first, def(first.ScopeType, first.Scope)} { // unchanged: nothing goes
+		if err := sync(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := scopedHolders(t, db, key); !slices.Equal(got, []string{"operator:flow/3", "operator:own"}) {
+		t.Fatalf("scoped holders %v", got)
+	}
+	if err := sync(def("plugin:flow", &manifest.PermissionScope{Resource: "flow"})); err != nil {
+		t.Fatal(err)
+	}
+	if got := scopedHolders(t, db, key); !slices.Equal(got, []string{"operator:flow/3"}) {
+		t.Fatalf("own no longer taken: %v", got)
+	}
+	if n := auditCount(t, db, "authz.sync.revoke", key+":own", "scope_changed"); n != 1 {
+		t.Fatalf("revoke audits: %d", n)
+	}
+	if err := sync(def("plugin:ticket", &manifest.PermissionScope{Resource: "ticket"})); err != nil {
+		t.Fatal(err)
+	}
+	if got := scopedHolders(t, db, key); len(got) != 0 {
+		t.Fatalf("another resource: %v", got)
+	}
+	if got := permissionHolders(t, db, key); !slices.Equal(got, []string{RoleAdmin}) {
+		t.Fatalf("grants of every row: %v", got)
+	}
+}
+
+// PluginGrantees answers CanGrantToRoles's question per role without
+// failing or moving the authz version.
+func TestPluginGrantees(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
+	// lead may assign small and mine, and holds mine; big grants more than
+	// lead holds; other has a holder and is not on lead's list.
+	for _, in := range []CreateRoleInput{
+		{Key: "big", PermissionKeys: []string{"user:read", "balance:adjust:any"}},
+		{Key: "small", PermissionKeys: []string{"user:read"}},
+		{Key: "mine", PermissionKeys: []string{"user:read"}},
+		{Key: "other", PermissionKeys: []string{"user:read"}},
+		{Key: "lead", PermissionKeys: []string{"user:read", "role:define"}, AssignableRoleKeys: []string{"small", "mine"}},
+	} {
+		in.Name = lt(in.Key, in.Key)
+		if _, err := s.CreateRole(ctx, root, in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lead := addUser(t, s, "lead@x.com", "lead", "mine")
+	addUser(t, s, "other@x.com", "other")
+	grantees := func(actor int64, roles ...string) (core.PluginGrantees, error) {
+		var out core.PluginGrantees
+		err := db.Tx(ctx, func(tx *gorm.DB) error {
+			var err error
+			out, err = s.PluginGrantees(ctx, tx, actor, roles)
+			return err
+		})
+		return out, err
+	}
+	before := s.Version()
+	all := []string{RoleSuperAdmin, RoleAdmin, "big", "small", "mine", "other"}
+	got, err := grantees(lead, all...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{RoleSuperAdmin: "superuser_role", RoleAdmin: "not_editable", "big": "not_editable", "other": "not_assignable", "mine": "held"}
+	if got.Superuser || !maps.Equal(got.Denied, want) {
+		t.Fatalf("lead: %+v", got)
+	}
+	if got, err := grantees(root, all...); err != nil || !got.Superuser || !maps.Equal(got.Denied, map[string]string{RoleSuperAdmin: "superuser_role"}) {
+		t.Fatalf("super admin: %+v %v", got, err)
+	}
+	if _, err := grantees(lead, "nope"); core.AsError(err).Code != "invalid_argument" {
+		t.Fatalf("unknown role: %v", err)
+	}
+	if s.Version() != before {
+		t.Fatal("PluginGrantees moved the authz version")
+	}
+}
+
+// A critical plugin permission is granted by a superuser only: never by
+// another actor, nor by the super admin through an access key (D3).
+func TestCanGrantToRolesCritical(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
+	admin := addUser(t, s, "admin@x.com", RoleAdmin)
+	rootKey := core.WithAccessKey(ctx, core.AccessKeyIdentity{UserID: root, Permissions: []string{"role:define", "role:read", "user:read"}})
+	for _, c := range []struct {
+		name  string
+		ctx   context.Context
+		actor int64
+		want  string
+	}{
+		{"admin", ctx, admin, "critical"},
+		{"super admin through an access key", rootKey, root, "critical"},
+		{"super admin", ctx, root, ""},
+		{"system", ctx, 0, ""},
+	} {
+		var reason string
+		_ = db.Tx(c.ctx, func(tx *gorm.DB) error {
+			if err := s.CanGrantToRoles(c.ctx, tx, c.actor, []string{RoleOperator}, manifest.RiskCritical); err != nil {
+				reason, _ = core.AsError(err).Details["reason"].(string)
+				if reason == "" {
+					reason = err.Error()
+				}
+			}
+			return nil
+		})
+		if reason != c.want {
+			t.Errorf("%s: %q, want %q", c.name, reason, c.want)
+		}
 	}
 }

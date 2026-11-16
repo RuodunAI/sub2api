@@ -11,7 +11,7 @@ import (
 // a core that knows them.
 func controlsManifest(controls map[string]manifest.AccountCommonControl) *manifest.Manifest {
 	m := minimal()
-	m.HostCompat = ">=" + SPMWindowFirstCore + " <0.2.0"
+	m.HostCompat = ">=0.1.290 <0.2.0"
 	m.Capabilities = []manifest.Capability{{ID: manifest.CapPlatformAdapter}}
 	m.HostPermissions = []manifest.HostPermission{
 		{ID: "gateway.endpoint"}, {ID: "platform.register"},
@@ -114,49 +114,5 @@ func TestCommonControlsDefaultLimitsConflict(t *testing.T) {
 	c := controlCodes(m)
 	if c["accountTypes[0].commonControls.priority.default"] != "conflict" || c["accountTypes[0].commonControls.model_limits.default"] != "conflict" || len(c) != 2 {
 		t.Fatalf("differing defaults must conflict: %v", c)
-	}
-}
-
-// Controls an older core does not know need CommonControlsFirstCore; the
-// legacy declaration (configurable and default of schedulable and
-// auto_disable) does not.
-func TestCommonControlsCoreFloor(t *testing.T) {
-	off := false
-	for _, tc := range []struct {
-		name     string
-		controls map[string]manifest.AccountCommonControl
-		floor    bool
-	}{
-		{"legacy", map[string]manifest.AccountCommonControl{"schedulable": {Configurable: &off, Default: json.RawMessage(`true`)}}, false},
-		{"new name", map[string]manifest.AccountCommonControl{"priority": {Default: json.RawMessage(`1`)}}, true},
-		{"locked legacy name", map[string]manifest.AccountCommonControl{"schedulable": {Locked: true, Default: json.RawMessage(`true`)}}, true},
-		{"hidden legacy name", map[string]manifest.AccountCommonControl{"auto_disable": {Visible: &off}}, true},
-	} {
-		m := controlsManifest(tc.controls)
-		m.HostCompat = ">=0.1.261 <0.2.0" // the release before CommonControlsFirstCore
-		if got := controlCodes(m)["hostCompat"] == "below_feature_core"; got != tc.floor {
-			t.Errorf("%s: below_feature_core = %v, want %v", tc.name, got, tc.floor)
-		}
-	}
-}
-
-// Session windows (CONTRACTS §71.1) need SPMWindowFirstCore: the control,
-// and a model_limits default naming a window.
-func TestCommonControlsSPMWindowCoreFloor(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		controls map[string]manifest.AccountCommonControl
-		floor    bool
-	}{
-		{"other controls", map[string]manifest.AccountCommonControl{"spm_limit": {Default: json.RawMessage(`1`)},
-			"model_limits": {Default: json.RawMessage(`[{"models": ["video-2"], "spm_limit": 1}]`)}}, false},
-		{"window control", map[string]manifest.AccountCommonControl{"spm_window_seconds": {Default: json.RawMessage(`300`)}}, true},
-		{"list window", map[string]manifest.AccountCommonControl{"model_limits": {Default: json.RawMessage(`[{"models": ["video-2"], "spm_window_seconds": 300}]`)}}, true},
-	} {
-		m := controlsManifest(tc.controls)
-		m.HostCompat = ">=" + CommonControlsFirstCore + " <0.2.0"
-		if got := controlCodes(m)["hostCompat"] == "below_feature_core"; got != tc.floor {
-			t.Errorf("%s: below_feature_core = %v, want %v", tc.name, got, tc.floor)
-		}
 	}
 }

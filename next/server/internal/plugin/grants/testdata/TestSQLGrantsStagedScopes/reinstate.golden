@@ -1,0 +1,6 @@
+-- sql
+SELECT s.version, hp->'scope' AS scope FROM plugin_staged_grants AS s JOIN plugin_versions v ON v.plugin_key = s.plugin_key AND v.version = s.version CROSS JOIN LATERAL jsonb_array_elements(v.manifest->'hostPermissions') hp WHERE s.plugin_key = $1 AND s.permission = $2 AND s.status = 'revoked' AND hp->>'id' = $3 FOR UPDATE OF "s"
+-- vars
+$1 string "demo"
+$2 string "kv"
+$3 string "kv"

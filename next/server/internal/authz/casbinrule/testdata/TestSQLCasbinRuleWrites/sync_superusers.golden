@@ -1,0 +1,9 @@
+-- sql
+SELECT ('r:' || key) FROM "roles" WHERE superuser
+-- vars
+
+-- sql
+SELECT "v0" FROM "casbin_rule" WHERE ptype = $1 AND v1 = $2
+-- vars
+$1 string "p"
+$2 string "*"

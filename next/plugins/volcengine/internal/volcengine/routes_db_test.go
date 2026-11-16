@@ -23,13 +23,16 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/volcengine/internal/model"
 )
 
 // testHost implements pluginsdk.Host. The embedded interface is nil: a
@@ -38,7 +41,7 @@ import (
 type testHost struct {
 	pluginsdk.Host
 
-	pool *pgxpool.Pool
+	db *gorm.DB
 
 	mu sync.Mutex
 	// accounts of this plugin's account type, id -> (summary, credentials).
@@ -50,7 +53,7 @@ type testHost struct {
 
 func (h *testHost) Logger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-func (h *testHost) DB(context.Context) (*pgxpool.Pool, error) { return h.pool, nil }
+func (h *testHost) DB(ctx context.Context) (*gorm.DB, error) { return h.db.WithContext(ctx), nil }
 
 func (h *testHost) EgressInstalled() bool { return false }
 
@@ -101,14 +104,14 @@ func startRoutes(t *testing.T) (*Plugin, *testHost, *fakeArk) {
 	t.Helper()
 	dsn, schema := pluginsdktest.NewSchema(t, "plg_volcengine_t")
 	pluginsdktest.ApplyMigrations(t, dsn, schema, filepath.Join("..", "..", "migrations"))
-	pool, err := pgxpool.New(context.Background(), dsn)
+	db, err := pgdb.Open(dsn, pgdb.Options{})
 	if err != nil {
-		t.Fatalf("pool: %v", err)
+		t.Fatalf("db: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() { _ = pgdb.Close(db) })
 
 	f := newFakeArk(t)
-	h := &testHost{pool: pool, accounts: map[int64]pluginsdk.AccountCredentials{}, credReads: map[int64]int{}}
+	h := &testHost{db: db, accounts: map[int64]pluginsdk.AccountCredentials{}, credReads: map[int64]int{}}
 	h.accounts[1] = pluginsdk.AccountCredentials{
 		AccountSummary: pluginsdk.AccountSummary{
 			ID: 1, Name: "ark-with-assets", Type: AccountTypeAPIKey, Status: "active", Enabled: true,
@@ -561,13 +564,12 @@ func seedSearchRows(t *testing.T, p *Plugin) {
 		{"g-us", "a_c", "literal underscore"},
 	}
 	for _, r := range rows {
-		var gid int64
-		if err := db.QueryRow(ctx, `INSERT INTO asset_groups (account_id, upstream_id, name, title)
-			VALUES (1, $1, $2, $3) RETURNING id`, r.upstream, r.name, r.title).Scan(&gid); err != nil {
+		g := model.AssetGroup{AccountID: 1, UpstreamID: r.upstream, Name: r.name, Title: r.title}
+		if err := db.Create(&g).Error; err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(ctx, `INSERT INTO assets (account_id, group_id, upstream_id, name, url)
-			VALUES (1, $1, $2, $3, $4)`, gid, "a-"+r.upstream, r.name, "https://cdn.invalid/"+r.upstream+".png"); err != nil {
+		a := model.Asset{AccountID: 1, GroupID: g.ID, UpstreamID: "a-" + r.upstream, Name: r.name, URL: "https://cdn.invalid/" + r.upstream + ".png"}
+		if err := db.Create(&a).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -686,5 +688,37 @@ func TestLikeTerm(t *testing.T) {
 		if got := LikeTerm(in); got != want {
 			t.Errorf("LikeTerm(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// An id the index does not hold answers 404 on every route that locks the
+// row first, before any upstream call: the lock finds no row.
+func TestIndexRoutesUnknownRow(t *testing.T) {
+	p, _, f := startRoutes(t)
+	unknown := map[string]string{"id": "424242"}
+	for _, c := range []struct {
+		method, route string
+		body          any
+	}{
+		{"GET", "/asset-groups/:id", nil},
+		{"PATCH", "/asset-groups/:id", map[string]any{"name": "x"}},
+		{"DELETE", "/asset-groups/:id", nil},
+		{"GET", "/assets/:id", nil},
+		{"PATCH", "/assets/:id", map[string]any{"name": "x"}},
+		{"DELETE", "/assets/:id", nil},
+	} {
+		resp := do(t, p, c.method, c.route, unknown, nil, c.body)
+		if resp.GetStatus() != http.StatusNotFound || errorCode(t, resp) != "not_found" {
+			t.Fatalf("%s %s = %d %s", c.method, c.route, resp.GetStatus(), resp.GetBody())
+		}
+	}
+	resp := do(t, p, "POST", "/assets", nil, nil, map[string]any{"group_id": 424242, "url": "https://cdn.invalid/a.png"})
+	if resp.GetStatus() != http.StatusNotFound || errorCode(t, resp) != "not_found" {
+		t.Fatalf("POST /assets into an unknown group = %d %s", resp.GetStatus(), resp.GetBody())
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.requests) != 0 {
+		t.Fatalf("upstream called for rows the index does not hold: %+v", f.requests)
 	}
 }

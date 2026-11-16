@@ -13,7 +13,7 @@ func TestBrandAssetsPackWithAccountTypes(t *testing.T) {
 	for _, platform := range []string{"linux-amd64", "linux-arm64"} {
 		writeFile(t, filepath.Join(runtimes, "runtimes", platform, "plugin"), "test runtime")
 	}
-	for _, key := range []string{"anthropic", "openai", "gemini", "ccgateway", "volcengine"} {
+	for _, key := range []string{"anthropic", "openai", "gemini", "volcengine"} {
 		t.Run(key, func(t *testing.T) {
 			dir := filepath.Join("..", "..", "plugins", key)
 			args := []string{"pack", "--dir", dir, "--out-dir", t.TempDir()}

@@ -1,0 +1,4 @@
+-- sql
+SELECT key, status, active_version, desired_version, row_version,
+		EXISTS (SELECT 1 FROM plugin_uninstalls u WHERE u.plugin_key = plugins.key) AS uninstalling FROM "plugins" ORDER BY key
+-- vars

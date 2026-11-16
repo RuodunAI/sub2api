@@ -410,3 +410,15 @@ const { EntityMultiPicker } = host.components
 ## 宿主权限的范围查询（UI SDK 3.15）
 
 资源范围（CONTRACTS §21）之后，`host.permissions` 增加两个可选方法：`hasAction(action)`（任意范围持有该动作即为真，如 `hasAction('account:read')` 对只持有 `account:read:own` 或 `account:read:group/12` 的人也为真）与 `scope(action)`（返回持有的规范 key，全部范围为 `["account:read"]`，未持有为 `[]`）。`has(key)` 不变，按蕴含判断（`has('account:read')` 只在全部范围时为真）。UI 3.14 及更早的控制台没有这两个方法：用到它们的插件声明 `hostUICompat: "^3.15"`，`hostCompat` 要求核心 `>=0.1.286`（0.1.285 是最后一个带 UI 3.14 的核心）。0.1.286 起核心与控制台都只认规范写法，不再有 `account:own:read` 这类旧写法可以回退。moderation 0.12.0、dynweight 0.5.9、codex 0.1.4 起声明 `^3.15`。
+
+## 插件权限的范围（UI SDK 3.16）
+
+插件的用户权限可以在清单里声明 `scope`（`{resource, own, options}` 或枚举 `{values}`），授权 key 写作 `plugin.<key>:<权限>:own`、`…:<resource>/<值>`，枚举的资源名固定为 `value`（`…:value/input`）。3.16 的控制台按语法解析这些 key，`host.permissions` 的三个方法对插件 key 与核心 key 同一口径：`has('plugin.p:flow:manage')` 只在持有全部范围时为真，`hasAction('plugin.p:flow:manage')` 任意范围即为真（决定“编辑”按钮是否出现），`scope('plugin.p:flow:manage')` 返回持有的规范 key，如 `["plugin.p:flow:manage:own", "plugin.p:flow:manage:flow/2"]`。行级能否编辑仍建议由插件后端在列表行里返回。方法签名与 3.15 相同；UI 3.15 的控制台不解析插件范围，依赖这些语义的页面声明 `hostUICompat: "^3.16"`，`hostCompat` 要求核心 `>=0.1.290`（UI 3.16 随核心 0.1.290 发布，0.1.288 是之前最后一个核心，带 UI 3.15；0.1.289 没有发布）。声明了 `scope`、`group`、`risk` 等新字段的清单本来就要求这一版本。
+
+同一版本导出 `useScrollClip(scroller, content)`：横向滚动容器的内容被裁到右侧之外时返回 `true`（随尺寸变化与滚动更新），用来在可横向滚动的表格右缘画渐隐或提示“还有列”。核心的权限矩阵与 `STable` 用的就是它；`scroller` 是 `overflow-x: auto` 的元素，`content` 是其中的表格，两个都是 `Ref<HTMLElement | undefined>`，挂载前为 `false`。
+
+## 带会话的原始请求（UI SDK 3.17）
+
+`@sub2api/host` 新导出 `fetchWithSession(path, init?)`：JSON 客户端带不了的请求（原始字节上传、流、文件下载）用它发。`path` 与 `api` 的写法相同（相对 `/api/v1`，如 `/p/demo/export?x=1`），`init` 是 `fetch` 的参数，`headers` 写成普通对象。它带上会话令牌，401 按 `api` 的规则处理（其他标签页换了令牌就用新令牌重发一次，否则结束会话回登录页；5xx 不登出），返回的 `Response` 不论成败都交给调用方读。不要自己读 `session` 拼 `Authorization`，也不要为了“续期”先发一个 JSON 请求：会话由服务端续期（CONTRACTS §100）。用到它的插件声明 `hostUICompat: "^3.17"`，`hostCompat` 要求核心 `>=0.1.290`（UI 3.16、3.17 都随核心 0.1.290 发布）。
+
+同一版本起 `Session` 只有 `access_token`，`@sub2api/host` 也不再导出 JWT 控制台自己用的续期函数 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS`（控制台内部的导出，插件文档从未提供，内置插件都没有用到）。

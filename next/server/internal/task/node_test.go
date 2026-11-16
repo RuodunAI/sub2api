@@ -78,6 +78,18 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// idle reports whether the node task name of s has no run going. A run is
+// over only after its state is recorded, which follows the handler's return
+// (and the state's write): a trigger before then is skipped as overlapping
+// ("the previous run is still going"), so a test that triggers a task again
+// waits for this, not for a side effect of the handler or the state.
+func idle(s *Service, name string) bool {
+	s.node.mu.Lock()
+	nj := s.node.jobs[name]
+	s.node.mu.Unlock()
+	return nj != nil && !nj.running.Load()
+}
+
 func state(t *testing.T, rdb *redis.Client, node, name string) NodeTaskState {
 	t.Helper()
 	states, err := ReadNodeStates(context.Background(), rdb, node)
@@ -137,9 +149,15 @@ func TestNodeTaskDoesNotOverlapItself(t *testing.T) {
 	close(release)
 	waitFor(t, "first run finished", func() bool { return state(t, env.rdb, "n1", "core.test.slow").Status == StatusSucceeded })
 	require.EqualValues(t, 1, calls.Load())
-	runs, err := ReadNodeRuns(t.Context(), env.rdb, "n1", "core.test.slow")
-	require.NoError(t, err)
-	require.Len(t, runs, 2)
+	// State and history are written by one pipeline, not one transaction: a
+	// reader can see the new state before the run is appended.
+	var runs []NodeTaskRun
+	waitFor(t, "first run recorded", func() bool {
+		var err error
+		runs, err = ReadNodeRuns(t.Context(), env.rdb, "n1", "core.test.slow")
+		require.NoError(t, err)
+		return len(runs) == 2
+	})
 	require.Equal(t, StatusSucceeded, runs[0].Status)
 	require.Equal(t, StatusSkipped, runs[1].Status)
 	require.True(t, runs[1].Manual)
@@ -164,7 +182,9 @@ func TestNodeTaskRequireWork(t *testing.T) {
 
 	require.NoError(t, s.Trigger(t.Context(), "core.test.needs_work"))
 	require.NoError(t, s.Trigger(t.Context(), "core.test.free"))
-	waitFor(t, "skip", func() bool { return state(t, env.rdb, "n1", "core.test.needs_work").Status == StatusSkipped })
+	waitFor(t, "skip", func() bool {
+		return state(t, env.rdb, "n1", "core.test.needs_work").Status == StatusSkipped && idle(s, "core.test.needs_work")
+	})
 	waitFor(t, "free task ran", func() bool { return calls.Load() == 100 })
 	runs, _ := ReadNodeRuns(t.Context(), env.rdb, "n1", "core.test.needs_work")
 	require.Empty(t, runs, "waiting for admission is not history")
@@ -245,7 +265,7 @@ func TestNodeRunOnNodesOverBus(t *testing.T) {
 	}
 
 	require.NoError(t, s1.RunOnNodes(t.Context(), "core.test.manual", "n2"))
-	waitFor(t, "n2 ran", func() bool { return snapshot()["n2"] == 1 })
+	waitFor(t, "n2 ran", func() bool { return snapshot()["n2"] == 1 && idle(s2, "core.test.manual") })
 	require.Equal(t, 0, snapshot()["n1"])
 	require.NoError(t, s1.RunOnNodes(t.Context(), "core.test.manual", ""))
 	waitFor(t, "both ran", func() bool { s := snapshot(); return s["n1"] == 1 && s["n2"] == 2 })

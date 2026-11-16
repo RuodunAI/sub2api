@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,12 +12,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // PluginSummary is one row of GET /plugins.
@@ -55,14 +60,19 @@ type NodeSummary struct {
 	States map[string]int `json:"states"`
 }
 
-const pluginSelect = `
-	SELECT p.key, p.name, p.status, p.status_reason, p.active_version, p.desired_version,
-	       COALESCE(pub.name, ''), COALESCE(pub.trust_level, 'unsigned'), p.egress_policy, p.installed_at, p.updated_at, p.builtin,
-	       COALESCE((SELECT array_agg(version ORDER BY uploaded_at) FROM plugin_versions
-	                 WHERE plugin_key = p.key AND consent_status = 'awaiting_consent'), '{}')
-	FROM plugins p LEFT JOIN publishers pub ON pub.id = p.publisher_id`
+// pluginSummaries selects the PluginSummary columns of the plugins (as p),
+// in scanSummary's order.
+func pluginSummaries(db *gorm.DB) *gorm.DB {
+	pending := db.Model(&model.PluginVersion{}).Select("array_agg(version ORDER BY uploaded_at)").
+		Where("plugin_key = p.key AND consent_status = 'awaiting_consent'")
+	return db.Table("plugins AS p").
+		Select(`p.key, p.name, p.status, p.status_reason, p.active_version, p.desired_version,
+			COALESCE(pub.name, ''), COALESCE(pub.trust_level, 'unsigned'), p.egress_policy, p.installed_at, p.updated_at, p.builtin,
+			COALESCE((?), '{}')`, pending).
+		Joins("LEFT JOIN publishers pub ON pub.id = p.publisher_id")
+}
 
-func scanSummary(row interface{ Scan(...any) error }) (*PluginSummary, error) {
+func scanSummary(row store.RowScanner) (*PluginSummary, error) {
 	var s PluginSummary
 	var name []byte
 	if err := row.Scan(&s.Key, &name, &s.Status, &s.StatusReason, &s.ActiveVersion, &s.DesiredVersion,
@@ -84,12 +94,13 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 			}
 		}
 	}
-	pending, err := install.PendingRoleGrants(ctx, a.d.DB.Pool, s.Key, "")
+	viewer, _ := core.UserID(ctx)
+	pending, err := a.d.Install.RoleGrantsToReview(ctx, a.d.DB.Gorm, s.Key, viewer)
 	if err != nil {
 		return err
 	}
 	s.RoleGrantsToReview = append([]install.RoleGrant{}, pending...)
-	v, err := install.CurrentVersion(ctx, a.d.DB.Pool, s.Key)
+	v, err := install.CurrentVersion(ctx, a.d.DB.Gorm, s.Key)
 	if err != nil {
 		return err
 	}
@@ -97,8 +108,9 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 	if v != "" {
 		var sig string
 		var pub string
-		if err := a.d.DB.Pool.QueryRow(ctx, `SELECT signature_status, manifest->>'publisher', COALESCE(manifest->'ui'->'settings'->>'mode' = 'schema', false) FROM plugin_versions
-			WHERE plugin_key = $1 AND version = $2`, s.Key, v).Scan(&sig, &pub, &s.HasSettings); err != nil {
+		if err := store.G(ctx, a.d.DB.Gorm).Model(&model.PluginVersion{}).
+			Select("signature_status, manifest->>'publisher', COALESCE(manifest->'ui'->'settings'->>'mode' = 'schema', false)").
+			Where("plugin_key = ? AND version = ?", s.Key, v).Row().Scan(&sig, &pub, &s.HasSettings); err != nil {
 			return err
 		}
 		s.SignatureStatus = sig
@@ -112,28 +124,15 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 func (a *API) listPlugins(c *gin.Context) {
 	rc := c.Request.Context()
 	page, size := httpapi.Pagination(c)
+	g := store.G(rc, a.d.DB.Gorm)
 	var total int64
-	if err := a.d.DB.Pool.QueryRow(rc, `SELECT count(*) FROM plugins`).Scan(&total); err != nil {
+	if err := g.Model(&model.Plugin{}).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	rows, err := a.d.DB.Pool.Query(rc, pluginSelect+` ORDER BY p.key LIMIT $1 OFFSET $2`, size, (page-1)*size)
+	items, err := store.CollectRows(pluginSummaries(g).Order("p.key").Limit(size).Offset((page-1)*size),
+		func(rows *sql.Rows) (*PluginSummary, error) { return scanSummary(rows) })
 	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	var items []*PluginSummary
-	for rows.Next() {
-		s, err := scanSummary(rows)
-		if err != nil {
-			rows.Close()
-			httpapi.Fail(c, err)
-			return
-		}
-		items = append(items, s)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -214,7 +213,7 @@ type VersionInfo struct {
 func (a *API) getPlugin(c *gin.Context) {
 	rc := c.Request.Context()
 	key := c.Param("key")
-	s, err := scanSummary(a.d.DB.Pool.QueryRow(rc, pluginSelect+` WHERE p.key = $1`, key))
+	s, err := scanSummary(pluginSummaries(store.G(rc, a.d.DB.Gorm)).Where("p.key = ?", key).Row())
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin not found"))
 		return
@@ -232,11 +231,11 @@ func (a *API) getPlugin(c *gin.Context) {
 	d := PluginDetail{PluginSummary: *s, Grants: []install.Grant{}, NodeList: nodeStates(nodes, key), Hooks: []HookInfo{}, Jobs: []JobInfo{}}
 
 	if s.CurrentVersion != "" {
-		if d.Manifest, err = a.d.Install.Review(rc, key, s.CurrentVersion); err != nil {
+		if d.Manifest, err = a.d.Install.Review(rc, key, s.CurrentVersion, actor(c)); err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		m, err := install.LoadManifest(rc, a.d.DB.Pool, key, s.CurrentVersion)
+		m, err := install.LoadManifest(rc, a.d.DB.Gorm, key, s.CurrentVersion)
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
@@ -281,7 +280,7 @@ func (a *API) getPlugin(c *gin.Context) {
 			return
 		}
 	}
-	grants, err := install.LoadGrants(rc, a.d.DB.Pool, key)
+	grants, err := install.LoadGrants(rc, a.d.DB.Gorm, key)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -301,21 +300,22 @@ func (a *API) getPlugin(c *gin.Context) {
 }
 
 func (a *API) versions(ctx context.Context, key string) ([]VersionInfo, error) {
-	rows, err := a.d.DB.Pool.Query(ctx, `SELECT version, consent_status, signature_status, package_sha256, package_size, uploaded_at
-		FROM plugin_versions WHERE plugin_key = $1 ORDER BY uploaded_at DESC`, key)
-	if err != nil {
+	var rows []model.PluginVersion
+	if err := versionRows(store.G(ctx, a.d.DB.Gorm), key).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []VersionInfo{}
-	for rows.Next() {
-		var v VersionInfo
-		if err := rows.Scan(&v.Version, &v.ConsentStatus, &v.SignatureStatus, &v.PackageSHA256, &v.PackageSize, &v.UploadedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
+	out := make([]VersionInfo, len(rows))
+	for i, v := range rows {
+		out[i] = VersionInfo{Version: v.Version, ConsentStatus: core.ValueOr(v.ConsentStatus, ""), SignatureStatus: v.SignatureStatus,
+			PackageSHA256: v.PackageSha256, PackageSize: v.PackageSize, UploadedAt: v.UploadedAt}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// versionRows selects the plugin_versions rows of key, newest first.
+func versionRows(db *gorm.DB, key string) *gorm.DB {
+	return db.Select("version", "consent_status", "signature_status", "package_sha256", "package_size", "uploaded_at").
+		Where("plugin_key = ?", key).Order("uploaded_at DESC")
 }
 
 // ---------------------------------------------------------------- install flow
@@ -323,7 +323,7 @@ func (a *API) versions(ctx context.Context, key string) ([]VersionInfo, error) {
 func (a *API) upload(c *gin.Context) {
 	max := a.d.Install.Limits().MaxPackageBytes
 	if max <= 0 {
-		max = pkg.DefaultMaxPackageBytes
+		max = rc.PluginPackageMaxBytes
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, max+1<<20)
 	fh, err := c.FormFile("file")
@@ -380,7 +380,7 @@ func (a *API) installFromMarket(c *gin.Context) {
 }
 
 func (a *API) review(c *gin.Context) {
-	r, err := a.d.Install.Review(c.Request.Context(), c.Param("key"), c.Param("version"))
+	r, err := a.d.Install.Review(c.Request.Context(), c.Param("key"), c.Param("version"), actor(c))
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -448,7 +448,7 @@ func (a *API) enable(c *gin.Context) {
 	}
 	// The resources the version holds are checked again: another plugin may
 	// have been approved, or the core upgraded, while it was disabled.
-	if v, err := install.CurrentVersion(c.Request.Context(), a.d.DB.Pool, key); err != nil {
+	if v, err := install.CurrentVersion(c.Request.Context(), a.d.DB.Gorm, key); err != nil {
 		httpapi.Fail(c, err)
 		return
 	} else if v != "" {
@@ -509,9 +509,10 @@ func (a *API) upgrade(c *gin.Context) {
 		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "version", Code: "required", Message: "version is required"}))
 		return
 	}
-	var consent, sig string
-	err := a.d.DB.Pool.QueryRow(c.Request.Context(), `SELECT consent_status, signature_status FROM plugin_versions
-		WHERE plugin_key = $1 AND version = $2`, key, in.Version).Scan(&consent, &sig)
+	var row model.PluginVersion
+	err := store.G(c.Request.Context(), a.d.DB.Gorm).Select("consent_status", "signature_status").
+		Where("plugin_key = ? AND version = ?", key, in.Version).Take(&row).Error
+	consent, sig := core.ValueOr(row.ConsentStatus, ""), row.SignatureStatus
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin version not found"))
 		return
@@ -594,12 +595,33 @@ func (a *API) listGrants(c *gin.Context) {
 	if _, ok := a.pluginStatus(c, key); !ok {
 		return
 	}
-	g, err := install.LoadGrants(c.Request.Context(), a.d.DB.Pool, key)
+	g, err := install.LoadGrants(c.Request.Context(), a.d.DB.Gorm, key)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	httpapi.OK(c, install.SortedGrants(g))
+}
+
+// setGrant narrows or grants again one host permission; body {scope?}
+// (an empty body or no scope: the scope the manifest requests). It returns
+// the grant. The body is read whatever Content-Length says: a chunked
+// request carries none, and skipping its scope would turn a narrowing into
+// a grant of the whole requested scope.
+func (a *API) setGrant(c *gin.Context) {
+	var in struct {
+		Scope map[string]any `json:"scope"`
+	}
+	if err := c.ShouldBindJSON(&in); err != nil && !errors.Is(err, io.EOF) {
+		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage(err.Error()))
+		return
+	}
+	g, err := a.d.Install.SetGrant(ctx(c), c.Param("key"), c.Param("permission"), in.Scope, actor(c))
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.OK(c, g)
 }
 
 func (a *API) revokeGrant(c *gin.Context) {

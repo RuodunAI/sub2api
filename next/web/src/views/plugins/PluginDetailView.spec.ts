@@ -1,0 +1,113 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
+import { i18n } from '@/i18n'
+import PluginDetailView from './PluginDetailView.vue'
+
+const mocks = vi.hoisted(() => ({ get: vi.fn(), confirm: vi.fn(async () => false) }))
+vi.mock('@sub2api/host', async (original) => ({ ...await original<typeof import('@sub2api/host')>(), api: { get: mocks.get } }))
+vi.mock('@sub2api/ui', async (original) => ({ ...await original<object>(), confirm: mocks.confirm }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ me: { roles: [], superuser: true, permissions: [] }, has: () => true }) }))
+enableAutoUnmount(afterEach)
+
+// The real permissions tab, whose matrix has one cell to edit: its leave guards are its own.
+const READ = 'plugin.guard:rules:read'
+const matrixOf = (key: string) => ({
+  plugin_key: key,
+  module: { module: `plugin.${key}`, label: key, source: 'plugin', plugin_key: key, status: 'active', permissions: [{ key: `plugin.${key}:rules:read`, label: 'Read', risk: 'low', status: 'active' }] },
+  roles: [{ id: 2, key: 'admin', name: 'Admin', builtin: true, superuser: false, editable: true, permission_keys: [] }]
+})
+
+async function render(query = '') {
+  mocks.get.mockImplementation(async (path: string) => {
+    const matrix = path.match(/^\/permissions\/plugins\/(\w+)$/)?.[1]
+    if (matrix) return matrixOf(matrix)
+    const key = path.match(/^\/plugins\/(\w+)$/)?.[1]
+    return key ? { key, name: key, status: 'enabled', grants: [], versions: [] } : []
+  })
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/plugins/:key', component: PluginDetailView },
+      { path: '/plugins', component: { template: '<div />' } }
+    ]
+  })
+  await router.push('/plugins/guard' + query)
+  const w = mount({ template: '<router-view />' }, { global: { plugins: [i18n, router], stubs: { OverviewTab: true, NodesTab: true } } })
+  await flushPromises()
+  return { w, router }
+}
+/** Edits the permissions tab's matrix: it now holds unsaved edits. */
+const edit = (w: Awaited<ReturnType<typeof render>>['w']) => w.get(`tr[data-permission="${READ}"] td[data-role="admin"] input`).setValue(true)
+const permTab = (w: Awaited<ReturnType<typeof render>>['w']) => w.find('[data-testid="plugin-user-permissions"]')
+const tabButton = (w: Awaited<ReturnType<typeof render>>['w'], label: string) => w.findAll('[role="tab"]').find((b) => b.text().startsWith(label))!
+
+describe('plugin detail view', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    i18n.global.locale.value = 'en'
+  })
+
+  it('?tab=grants opens the permissions tab', async () => {
+    const { w, router } = await render('?tab=grants')
+    expect(permTab(w).exists()).toBe(true)
+    expect(router.currentRoute.value.query.tab).toBe('permissions')
+  })
+
+  it('switching tabs with unsaved matrix asks first', async () => {
+    const { w, router } = await render('?tab=permissions')
+    await edit(w)
+
+    // Staying keeps the tab and its edits.
+    await tabButton(w, 'Nodes').trigger('click')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(permTab(w).exists()).toBe(true)
+
+    // So does leaving the page.
+    await router.push('/plugins')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(2)
+    expect(router.currentRoute.value.path).toBe('/plugins/guard')
+
+    mocks.confirm.mockResolvedValueOnce(true)
+    await tabButton(w, 'Nodes').trigger('click')
+    await flushPromises()
+    expect(permTab(w).exists()).toBe(false)
+    expect(router.currentRoute.value.query.tab).toBe('nodes')
+  })
+
+  it('a ?tab= change from a link or the history asks first too', async () => {
+    const { w, router } = await render('?tab=permissions')
+    await edit(w)
+    await router.push('/plugins/guard?tab=nodes')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.query.tab).toBe('permissions')
+    expect(permTab(w).exists()).toBe(true)
+
+    // Other query changes keep the tab without asking.
+    await router.push('/plugins/guard?tab=permissions&consented=0.2.0')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('opening another plugin on the same page asks first, and drops the edits once given up', async () => {
+    const { w, router } = await render('?tab=permissions')
+    await edit(w)
+    await router.push('/plugins/other?tab=permissions')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.path).toBe('/plugins/guard')
+
+    mocks.confirm.mockResolvedValueOnce(true)
+    await router.push('/plugins/other?tab=permissions')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/plugins/other')
+    // Given up: leaving again does not ask.
+    await router.push('/plugins')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(2)
+    expect(router.currentRoute.value.path).toBe('/plugins')
+  })
+})

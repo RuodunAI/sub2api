@@ -11,11 +11,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -25,15 +26,13 @@ import (
 
 // Deps are the collaborators of the account service.
 type Deps struct {
-	CCGateway          *ccgateway.Service
-	LifecycleResources map[string]core.AccountLifecycleResource
-	DB                 *store.DB
-	Redis              redis.UniversalClient
-	Cipher             *secret.Cipher
-	Registry           core.PluginRegistry
-	Proxies            core.ProxyDirectory
-	Events             core.EventPublisher
-	Slots              core.Slots // optional: in_use column is 0 without it
+	DB       *store.DB
+	Redis    redis.UniversalClient
+	Cipher   *secret.Cipher
+	Registry core.PluginRegistry
+	Proxies  core.ProxyDirectory
+	Events   core.EventPublisher
+	Slots    core.Slots // optional: in_use column is 0 without it
 	// Limiter reports rpm/tpm usage (rate_usage column); optional.
 	Limiter core.AccountLimiter
 	Stats   *Stats
@@ -48,6 +47,9 @@ type Deps struct {
 	// route key (proxy visibility, account:settings:custom; CONTRACTS §21).
 	// nil denies everything it is asked.
 	Authorizer core.Authorizer
+	// ScopeGrants clears the scoped grants naming deleted accounts
+	// (CONTRACTS §21); needed to delete or purge accounts.
+	ScopeGrants core.ScopeGrantClearer
 	// Resolver finds or creates the proxy named by proxy_url when an account
 	// is saved (CONTRACTS §21.4); nil rejects proxy_url as unsupported.
 	Resolver core.ProxyResolver
@@ -144,7 +146,6 @@ func New(d Deps) *Service {
 // accepts any scope of its action (CONTRACTS §21.0); handlers narrow their
 // SQL with the caller's scope (scopeOf).
 func (s *Service) RegisterRoutes(r *httpapi.Router) {
-	s.registerPreparationRoutes(r)
 	r.Perm("GET", "/settings/account-stats", "settings:read", s.getStatsSettings)
 	r.Perm("PUT", "/settings/account-stats", "settings:manage", s.putStatsSettings)
 	r.PermScoped("GET", "/accounts/auto-disable", s.getAutoDisablePolicy, perm.AccountCreate, perm.AccountUpdate)
@@ -152,10 +153,6 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("GET", "/accounts/stats", s.getAccountStats, perm.AccountRead)
 	r.PermScoped("GET", "/accounts/summary", s.summary, perm.AccountRead)
 	r.PermScoped("GET", "/accounts/:id/stats", s.getAccountStats, perm.AccountRead)
-	// Re-authorizing a Claude Code account (CONTRACTS §49.17), next to the
-	// ccgateway module's /system/ccgateway/accounts/:id/:action.
-	r.PermScoped("POST", "/system/ccgateway/accounts/:id/reauthorize", s.reauthorizeCCGateway, perm.AccountUpdate)
-	r.PermScoped("POST", "/system/ccgateway/accounts/:id/reauthorize/:key/commit", s.commitCCGatewayReauth, perm.AccountUpdate)
 	// Browsing platforms and types: whoever reads or creates some accounts.
 	browse := []perm.Key{perm.AccountRead, perm.AccountCreate}
 	r.PermScoped("GET", "/platforms", s.listPlatforms, browse...)
@@ -166,8 +163,7 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	// Group binding, custom upstreams and guarded settings are checked per
 	// field (checkOwnChange, customSettings).
 	fieldKeys := []perm.Key{perm.GroupManage, perm.AccountGroupBind, perm.AccountRelay, perm.AccountSettingsCustom}
-	// settings:manage: a Claude Code runtime of anyone's (checkCCGatewayRuntime).
-	r.PermScoped("POST", "/accounts", s.create, perm.AccountCreate).Uses(fieldKeys...).Uses(perm.SettingsManage)
+	r.PermScoped("POST", "/accounts", s.create, perm.AccountCreate).Uses(fieldKeys...)
 	r.PermScoped("GET", "/accounts/:id", s.get, perm.AccountRead)
 	r.PermScoped("PATCH", "/accounts/:id", s.update, perm.AccountUpdate).Uses(fieldKeys...)
 	r.PermScoped("DELETE", "/accounts/:id", s.delete, perm.AccountDelete)
@@ -188,9 +184,6 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("PUT", "/accounts/:id/usage-limit", s.putUsageLimit, perm.AccountUpdate)
 	// Credential refresh (CONTRACTS §48).
 	r.PermScoped("POST", "/accounts/:id/refresh-credentials", s.refreshCredentials, perm.AccountUpdate)
-	// Account actions (CONTRACTS §52).
-	r.PermScoped("GET", "/accounts/:id/actions", s.getAccountActions, perm.AccountRead)
-	r.PermScoped("POST", "/accounts/:id/actions/:plugin_key/:action_id", s.executeAccountAction, perm.AccountUpdate)
 }
 
 // Run subscribes to account:changed, flushes last_used_at every 10 s, writes
@@ -292,7 +285,7 @@ func (s *Service) changed(ctx context.Context, id int64) {
 
 // quotaChanged follows a written quota snapshot of account id: only the
 // quota mirrors are told (account:changed of kind "quota"); the directory
-// snapshots and CCGateway's request cache hold no quota data.
+// snapshots hold no quota data.
 func (s *Service) quotaChanged(ctx context.Context, id int64) {
 	s.invalidateQuota(id)
 	if err := core.PublishAccountQuotaChanged(ctx, s.d.Bus, id); err != nil {
@@ -302,13 +295,11 @@ func (s *Service) quotaChanged(ctx context.Context, id int64) {
 
 // invalidateNode drops what this node keeps of account id (0: of every
 // account), so the node that changed it does not depend on receiving its
-// own account:changed: the directory snapshots, the mirrored quota snapshot,
-// and what CCGateway's request path read (the desired state and CC feature
-// policy).
+// own account:changed: the directory snapshots and the mirrored quota
+// snapshot.
 func (s *Service) invalidateNode(id int64) {
 	s.invalidate()
 	s.invalidateQuota(id)
-	s.d.CCGateway.AccountChanged(id)
 }
 
 func (s *Service) gen() core.Generation {
@@ -342,7 +333,7 @@ func (s *Service) activePluginKeys() []string { return core.ActivePluginKeys(s.d
 // customSettings reports whether the caller may set guarded settings to
 // values other than the official ones (account:settings:custom, CONTRACTS
 // §21.3).
-func (s *Service) customSettings(ctx context.Context) bool {
+func (s *Service) customSettings(ctx context.Context) (bool, error) {
 	return core.Can(ctx, s.d.Authorizer, "account:settings:custom")
 }
 
@@ -368,14 +359,16 @@ func (s *Service) AccountsInScope(ctx context.Context, userID int64, action stri
 	case scope.All:
 		return true, nil, nil
 	}
-	rows, err := s.d.DB.Pool.Query(ctx, `SELECT a.id FROM accounts a
-		WHERE a.id = ANY($1) AND a.deleted_at IS NULL AND `+core.AccountRows.SQL(2)+`
-		ORDER BY array_position($1, a.id)`, append([]any{ids}, core.AccountRows.Args(scope)...)...)
-	if err != nil {
-		return false, nil, err
-	}
-	allowed, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	var allowed []int64
+	err = liveInScope(store.G(ctx, s.d.DB.Gorm), ids, scope).
+		Order(clause.OrderBy{Expression: clause.Expr{SQL: "array_position(?, a.id)", Vars: []any{store.Int64s(ids)}}}).
+		Pluck("a.id", &allowed).Error
 	return false, allowed, err
+}
+
+// liveInScope is the live accounts of ids in scope.
+func liveInScope(db *gorm.DB, ids []int64, scope core.DataScope) *gorm.DB {
+	return db.Table("accounts a").Where("a.id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids)).Scopes(core.AccountRows().Scope(scope))
 }
 
 // proxyRefs is the proxies a caller writing an account under action may

@@ -17,7 +17,7 @@ func TestVersion(t *testing.T) {
 	stored := func() int64 {
 		t.Helper()
 		var v int64
-		if err := db.Pool.QueryRow(context.Background(), `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
+		if err := db.SQL.QueryRowContext(context.Background(), `SELECT version FROM authz_meta WHERE id = 1`).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
 		return v
@@ -44,4 +44,10 @@ func TestVersion(t *testing.T) {
 	if err != nil || set.Version != changed {
 		t.Fatalf("permission set version: %d %v, want %d", set.Version, err, changed)
 	}
+}
+
+// currentVersion is the authz version alone (currentVersions).
+func (s *Service) currentVersion(ctx context.Context) (int64, error) {
+	v, _, err := s.currentVersions(ctx)
+	return v, err
 }

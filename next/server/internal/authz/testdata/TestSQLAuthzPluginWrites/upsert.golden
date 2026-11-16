@@ -1,0 +1,25 @@
+-- sql
+SELECT "id","plugin_key","status" FROM "permissions" WHERE key = $1 LIMIT $2
+-- vars
+$1 string "plugin:demo:read"
+$2 int 1
+
+-- sql
+INSERT INTO "permissions" ("key","module","label","source","plugin_key","description","status","sort","scope_type","risk","requires","group_key","group_label","group_sort","scope","defaults") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING "id","description","status","sort","created_at","scope_type","risk","requires","group_key","group_label","group_sort","scope","defaults"
+-- vars
+$1 string "plugin:demo:read"
+$2 string "plugin.demo"
+$3 jsontext.Value {"en":"Read"}
+$4 string "plugin"
+$5 *string "demo"
+$6 jsontext.Value {}
+$7 *string "staged"
+$8 int 1
+$9 string "plugin:item"
+$10 *string "low"
+$11 store.Strings [plugin:demo:list]
+$12 string "g"
+$13 jsontext.Value {}
+$14 int 2
+$15 jsontext.Value {"own":true}
+$16 jsontext.Value {"admin":[""]}

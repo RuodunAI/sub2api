@@ -1,0 +1,8 @@
+-- sql
+UPDATE "plugin_rollouts" SET "phase"=$1,"row_version"=row_version + 1,"updated_at"=now() WHERE id = $2 AND row_version = $3 AND phase = $4 AND coordinator_boot_id = $5
+-- vars
+$1 string "activating"
+$2 int64 42
+$3 int64 7
+$4 string "preparing"
+$5 string "boot-a"

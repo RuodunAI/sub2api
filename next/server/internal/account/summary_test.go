@@ -25,7 +25,7 @@ func TestAccountSummaryFollowsOwnerScope(t *testing.T) {
 	insert(alice, "disabled", true, false)
 	insert(alice, "active", true, true) // deleted: not counted
 	insert(admin, "active", true, false)
-	insert(admin, "error", true, false)
+	insert(admin, "auto_disabled", true, false)
 	// Nobody's (created_by NULL): only the full range counts it.
 	e.exec1(`INSERT INTO accounts (name, plugin_key, type, credentials_enc, status) VALUES ('s', 'anthropic', 'apikey', ''::bytea, 'disabled') RETURNING id`)
 	// Holding both levels is the full range.

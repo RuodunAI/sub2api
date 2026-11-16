@@ -10,7 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 )
 
 // Statistics (CONTRACTS §72.14): every node adds up counters in memory and
@@ -586,10 +591,48 @@ func (p *Plugin) flushStats(ctx context.Context) {
 	}
 }
 
-// latAdd sums two latency arrays elementwise in an upsert.
-func latAdd(table string) string {
-	return `ARRAY(SELECT x + y FROM unnest(` + table + `.lat, EXCLUDED.lat) WITH ORDINALITY AS t(x, y, i) ORDER BY i)`
+// latAdd assigns lat the stored latency array of table plus the new one,
+// elementwise, in an upsert.
+func latAdd(table string) clause.Assignment {
+	return clause.Assignment{Column: clause.Column{Name: "lat"}, Value: gorm.Expr(
+		"ARRAY(SELECT x + y FROM unnest(?, EXCLUDED.lat) WITH ORDINALITY AS t(x, y, i) ORDER BY i)", clause.Column{Table: table, Name: "lat"})}
 }
+
+// added assigns each counter column the stored value of table plus the new
+// one in an upsert.
+func added(table string, cols ...string) clause.Set {
+	set := make(clause.Set, len(cols))
+	for i, c := range cols {
+		set[i] = clause.Assignment{Column: clause.Column{Name: c},
+			Value: gorm.Expr("? + ?", clause.Column{Table: table, Name: c}, clause.Column{Table: "excluded", Name: c})}
+	}
+	return set
+}
+
+// The upserts of the statistics: counters add up, lat elementwise.
+var (
+	statsUpsert = clause.OnConflict{
+		Columns: columns("hour", "group_id", "flow_id", "stage", "auditor_id", "timing"),
+		DoUpdates: append(added("stats_hourly", "audited", "hit", "blocked", "overturned", "errors", "cache_skipped", "calls",
+			"tokens_in", "tokens_out", "latency_ms_sum", "cost", "priced_calls", "unpriced_calls", "unpriced_tokens", "free_calls", "replayed"),
+			latAdd("stats_hourly")),
+	}
+	costsUpsert = clause.OnConflict{
+		Columns: columns("hour", "channel_id", "source"),
+		DoUpdates: append(added("costs", "calls", "errors", "latency_ms_sum", "priced_calls", "unpriced_calls", "unpriced_tokens",
+			"free_calls", "tokens_in", "tokens_out", "cost"), latAdd("costs")),
+	}
+	userDailyUpsert = clause.OnConflict{
+		Columns: columns("day", "user_id"),
+		DoUpdates: append(added("user_daily", "audited", "suspicious", "high", "errors"),
+			assign("group_id", "EXCLUDED.group_id"), assign("last_hit_at", "GREATEST(user_daily.last_hit_at, EXCLUDED.last_hit_at)")),
+	}
+)
+
+// latOf is a latency array as a column value. It is a copy: GORM reads lat
+// back (RETURNING, the column has a database default) into the value it
+// wrote, and the counters must stay as they were for a retry.
+func latOf(l Latency) pgdb.Array[int64] { return slices.Clone(l[:]) }
 
 func (p *Plugin) writeStats(ctx context.Context, rows map[statKey]*counters, chans map[costKey]*channelRow, users map[userKey]*userRow) error {
 	db, err := p.db(ctx)
@@ -598,53 +641,40 @@ func (p *Plugin) writeStats(ctx context.Context, rows map[statKey]*counters, cha
 	}
 	// Keys in a fixed order: concurrent writers (other nodes) then take row
 	// locks in the same order and cannot deadlock.
-	b := &pgx.Batch{}
+	hourly := make([]model.StatsHourly, 0, len(rows))
 	for _, k := range slices.SortedFunc(maps.Keys(rows), compareStatKey) {
 		c := rows[k]
-		b.Queue(`INSERT INTO stats_hourly (hour, group_id, flow_id, stage, auditor_id, timing, audited, hit, blocked, overturned, errors,
-				cache_skipped, calls, tokens_in, tokens_out, latency_ms_sum, lat, cost, priced_calls, unpriced_calls, unpriced_tokens, free_calls,
-				replayed)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::numeric,$19,$20,$21,$22,$23)
-			ON CONFLICT (hour, group_id, flow_id, stage, auditor_id, timing) DO UPDATE SET
-				audited = stats_hourly.audited + EXCLUDED.audited, hit = stats_hourly.hit + EXCLUDED.hit,
-				blocked = stats_hourly.blocked + EXCLUDED.blocked, overturned = stats_hourly.overturned + EXCLUDED.overturned,
-				errors = stats_hourly.errors + EXCLUDED.errors, cache_skipped = stats_hourly.cache_skipped + EXCLUDED.cache_skipped,
-				calls = stats_hourly.calls + EXCLUDED.calls, tokens_in = stats_hourly.tokens_in + EXCLUDED.tokens_in,
-				tokens_out = stats_hourly.tokens_out + EXCLUDED.tokens_out, latency_ms_sum = stats_hourly.latency_ms_sum + EXCLUDED.latency_ms_sum,
-				lat = `+latAdd("stats_hourly")+`, cost = stats_hourly.cost + EXCLUDED.cost,
-				priced_calls = stats_hourly.priced_calls + EXCLUDED.priced_calls, unpriced_calls = stats_hourly.unpriced_calls + EXCLUDED.unpriced_calls,
-				unpriced_tokens = stats_hourly.unpriced_tokens + EXCLUDED.unpriced_tokens, free_calls = stats_hourly.free_calls + EXCLUDED.free_calls,
-				replayed = stats_hourly.replayed + EXCLUDED.replayed`,
-			k.hour, k.group, k.flow, k.stage, k.auditor, k.timing, c.audited, c.hit, c.blocked, c.overturned, c.errors,
-			c.cacheSkipped, c.calls, c.tokensIn, c.tokensOut, c.latSum, c.lat[:], formatCost(c.units), c.priced, c.unpriced, c.unpricedTokens, c.free, c.replayed)
+		hourly = append(hourly, model.StatsHourly{Hour: k.hour, GroupID: k.group, FlowID: k.flow, Stage: k.stage, AuditorID: k.auditor,
+			Timing: k.timing, Audited: c.audited, Hit: c.hit, Blocked: c.blocked, Overturned: c.overturned, Errors: c.errors,
+			CacheSkipped: c.cacheSkipped, Calls: c.calls, TokensIn: c.tokensIn, TokensOut: c.tokensOut, LatencyMsSum: c.latSum,
+			Lat: latOf(c.lat), Cost: formatCost(c.units), PricedCalls: c.priced, UnpricedCalls: c.unpriced,
+			UnpricedTokens: c.unpricedTokens, FreeCalls: c.free, Replayed: c.replayed})
 	}
+	costs := make([]model.Cost, 0, len(chans))
 	for _, k := range slices.SortedFunc(maps.Keys(chans), compareCostKey) {
 		r := chans[k]
-		b.Queue(`INSERT INTO costs (hour, channel_id, source, calls, errors, latency_ms_sum, lat, priced_calls, unpriced_calls, unpriced_tokens,
-				free_calls, tokens_in, tokens_out, cost)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::numeric)
-			ON CONFLICT (hour, channel_id, source) DO UPDATE SET
-				calls = costs.calls + EXCLUDED.calls, errors = costs.errors + EXCLUDED.errors,
-				latency_ms_sum = costs.latency_ms_sum + EXCLUDED.latency_ms_sum, lat = `+latAdd("costs")+`,
-				priced_calls = costs.priced_calls + EXCLUDED.priced_calls, unpriced_calls = costs.unpriced_calls + EXCLUDED.unpriced_calls,
-				unpriced_tokens = costs.unpriced_tokens + EXCLUDED.unpriced_tokens, free_calls = costs.free_calls + EXCLUDED.free_calls,
-				tokens_in = costs.tokens_in + EXCLUDED.tokens_in, tokens_out = costs.tokens_out + EXCLUDED.tokens_out, cost = costs.cost + EXCLUDED.cost`,
-			k.hour, k.channel, k.source, r.calls, r.errors, r.latSum, r.lat[:], r.priced, r.unpriced, r.unpricedTokens, r.free, r.in, r.out, formatCost(r.units))
+		costs = append(costs, model.Cost{Hour: k.hour, ChannelID: k.channel, Source: k.source, Calls: r.calls, Errors: r.errors,
+			LatencyMsSum: r.latSum, Lat: latOf(r.lat), PricedCalls: r.priced, UnpricedCalls: r.unpriced, UnpricedTokens: r.unpricedTokens,
+			FreeCalls: r.free, TokensIn: r.in, TokensOut: r.out, Cost: formatCost(r.units)})
 	}
+	daily := make([]model.UserDaily, 0, len(users))
 	for _, k := range slices.SortedFunc(maps.Keys(users), compareUserKey) {
 		u := users[k]
 		var last *time.Time
 		if !u.lastHit.IsZero() {
 			last = &u.lastHit
 		}
-		b.Queue(`INSERT INTO user_daily (day, user_id, group_id, audited, suspicious, high, errors, last_hit_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-			ON CONFLICT (day, user_id) DO UPDATE SET group_id = EXCLUDED.group_id, audited = user_daily.audited + EXCLUDED.audited,
-				suspicious = user_daily.suspicious + EXCLUDED.suspicious, high = user_daily.high + EXCLUDED.high,
-				errors = user_daily.errors + EXCLUDED.errors, last_hit_at = GREATEST(user_daily.last_hit_at, EXCLUDED.last_hit_at)`,
-			k.day, k.user, u.group, u.audited, u.suspicious, u.high, u.errors, last)
+		daily = append(daily, model.UserDaily{Day: k.day, UserID: k.user, GroupID: u.group, Audited: u.audited,
+			Suspicious: u.suspicious, High: u.high, Errors: u.errors, LastHitAt: last})
 	}
-	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		return tx.SendBatch(ctx, b).Close()
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := pgdb.Insert(tx, hourly, statsUpsert); err != nil {
+			return err
+		}
+		if err := pgdb.Insert(tx, costs, costsUpsert); err != nil {
+			return err
+		}
+		return pgdb.Insert(tx, daily, userDailyUpsert)
 	})
 }
 

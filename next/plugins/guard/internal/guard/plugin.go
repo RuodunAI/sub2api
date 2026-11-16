@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -189,16 +189,16 @@ func (p *Plugin) Shutdown(ctx context.Context) error {
 	}
 }
 
-// db returns the plugin database pool.
-func (p *Plugin) db(ctx context.Context) (*pgxpool.Pool, error) {
+// db returns the plugin database handle, bound to ctx.
+func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if p.host == nil {
 		return nil, errors.New("guard: host not initialised")
 	}
-	pool, err := p.host.DB(ctx)
+	db, err := p.host.DB(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("guard: database unavailable: %w", err)
 	}
-	return pool, nil
+	return db, nil
 }
 
 func (p *Plugin) refreshLoop(ctx context.Context) {

@@ -2,6 +2,7 @@ package iam
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/mail"
 	"slices"
@@ -10,14 +11,19 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // User statuses.
@@ -43,18 +49,31 @@ type User struct {
 	Segment core.SegmentRef `json:"segment,omitzero"`
 }
 
-const userSelect = `
-SELECT u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
-    COALESCE((SELECT array_agg(r.key ORDER BY r.key) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id), '{}'),
+// userColumns are what scanUser reads, from usersFrom. They are read by
+// position: the segment's id has the name of the user's.
+const userColumns = `u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
+    COALESCE((SELECT array_agg(k ORDER BY k) FROM (` + casbinrule.RolesOfUser + `) ur(k)), '{}'),
     ` + segment.RefColumns + `,
-    COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text
-FROM users u JOIN segments s ON s.id = u.segment_id`
+    COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text`
 
-func scanUser(row pgx.Row) (*User, error) {
+const usersFrom = `users u JOIN segments s ON s.id = u.segment_id`
+
+// userByID is the statement of getUser, scanned through Row (the fewest
+// allocations): it loads the user of every login and GET /me.
+func userByID(db *gorm.DB, id int64) *gorm.DB {
+	return usersView(db).Where("u.id = ? AND u.deleted_at IS NULL", id)
+}
+
+// usersView selects userColumns, for ListUsers' conditions and page.
+func usersView(db *gorm.DB) *gorm.DB {
+	return db.Table(usersFrom).Select(userColumns)
+}
+
+func scanUser(row store.RowScanner) (*User, error) {
 	var u User
 	var balance string
 	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
-		&u.Roles, &u.Segment.ID, &u.Segment.Kind, &u.Segment.Name, &u.Segment.UserID, &balance)
+		(*store.Strings)(&u.Roles), &u.Segment.ID, &u.Segment.Kind, &u.Segment.Name, &u.Segment.UserID, &balance)
 	if err != nil {
 		return nil, err
 	}
@@ -64,11 +83,11 @@ func scanUser(row pgx.Row) (*User, error) {
 
 // GetUser returns a non-deleted user or ErrNotFound.
 func (s *Service) GetUser(ctx context.Context, id int64) (*User, error) {
-	return s.getUser(ctx, s.db.Pool, id)
+	return s.getUser(ctx, s.db.Gorm, id)
 }
 
-func (s *Service) getUser(ctx context.Context, q store.Querier, id int64) (*User, error) {
-	u, err := scanUser(q.QueryRow(ctx, userSelect+` WHERE u.id = $1 AND u.deleted_at IS NULL`, id))
+func (s *Service) getUser(ctx context.Context, q *gorm.DB, id int64) (*User, error) {
+	u, err := scanUser(userByID(store.G(ctx, q), id).Row())
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("user not found")
 	}
@@ -77,26 +96,26 @@ func (s *Service) getUser(ctx context.Context, q store.Querier, id int64) (*User
 
 // LookupUsers implements core.UserDirectory (HostService.GetUsers).
 func (s *Service) LookupUsers(ctx context.Context, ids []int64) ([]core.UserSummary, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT u.id, u.display_name, u.status
-		FROM unnest($1::bigint[]) WITH ORDINALITY AS q(id, n) JOIN users u ON u.id = q.id AND u.deleted_at IS NULL
-		ORDER BY q.n`, ids)
-	if err != nil {
+	var rows []core.UserSummary
+	if err := lookupUsers(store.G(ctx, s.db.Gorm), ids).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := []core.UserSummary{}
 	seen := map[int64]bool{}
-	for rows.Next() {
-		var u core.UserSummary
-		if err := rows.Scan(&u.ID, &u.DisplayName, &u.Status); err != nil {
-			return nil, err
-		}
+	for _, u := range rows {
 		if !seen[u.ID] {
 			seen[u.ID] = true
 			out = append(out, u)
 		}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// lookupUsers reads the undeleted users of ids in their order, repeats
+// included.
+func lookupUsers(db *gorm.DB, ids []int64) *gorm.DB {
+	return db.Table("unnest(?::bigint[]) WITH ORDINALITY AS q(id, n)", store.Int64s(ids)).Select("u.id, u.display_name, u.status").
+		Joins("JOIN users u ON u.id = q.id AND u.deleted_at IS NULL").Order("q.n")
 }
 
 // ListUsersFilter filters GET /users.
@@ -111,7 +130,27 @@ type ListUsersFilter struct {
 
 // ListUsers returns a page of non-deleted users ordered by id.
 func (s *Service) ListUsers(ctx context.Context, f ListUsersFilter) ([]*User, int64, error) {
-	var filter store.Filter
+	filter := usersFilter(f)
+	g := store.G(ctx, s.db.Gorm)
+	var total int64
+	if err := usersCount(g, filter).Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	out, err := store.CollectRows(usersPage(g, filter, f.Page, f.PageSize), func(rows *sql.Rows) (*User, error) { return scanUser(rows) })
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// usersCount is what ListUsers counts: the users u that filter keeps.
+func usersCount(db *gorm.DB, filter store.Conds) *gorm.DB {
+	return db.Table("users u").Scopes(filter.Scope())
+}
+
+// usersFilter are the conditions of ListUsers on the users u.
+func usersFilter(f ListUsersFilter) store.Conds {
+	var filter store.Conds
 	filter.And("u.deleted_at IS NULL")
 	if q := strings.TrimSpace(f.Query); q != "" {
 		pattern := "%" + store.Like(q) + "%"
@@ -121,7 +160,7 @@ func (s *Service) ListUsers(ctx context.Context, f ListUsersFilter) ([]*User, in
 		filter.And("u.status = ?", f.Status)
 	}
 	if f.Role != "" {
-		filter.And(`EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.key = ?)`, f.Role)
+		filter.And(`? IN (`+casbinrule.RolesOfUser+`)`, f.Role)
 	}
 	switch {
 	case f.Segment == core.SegmentPersonal:
@@ -131,26 +170,15 @@ func (s *Service) ListUsers(ctx context.Context, f ListUsersFilter) ([]*User, in
 		id, _ := strconv.ParseInt(f.Segment, 10, 64)
 		filter.And("u.segment_id = ?", id)
 	}
-	where, args := filter.Cond(), filter.Args()
-	var total int64
-	if err := s.db.Pool.QueryRow(ctx, `SELECT count(*) FROM users u`+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	args = append(args, f.PageSize, (f.Page-1)*f.PageSize)
-	rows, err := s.db.Pool.Query(ctx, userSelect+where+` ORDER BY u.id LIMIT $`+strconv.Itoa(len(args)-1)+` OFFSET $`+strconv.Itoa(len(args)), args...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	out := []*User{}
-	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, u)
-	}
-	return out, total, rows.Err()
+	return filter
+}
+
+// usersPage is the page of ListUsers, page and size kept within
+// httpapi.Pagination's bounds: GORM would leave out a size of 0 or less
+// and a negative offset, and read every user.
+func usersPage(db *gorm.DB, filter store.Conds, page, size int) *gorm.DB {
+	page, size = httpapi.PageBounds(page, size)
+	return usersView(db).Scopes(filter.Scope()).Order("u.id").Limit(size).Offset((page - 1) * size)
 }
 
 // CreateUserInput is the body of POST /users.
@@ -173,7 +201,7 @@ func IsDefaultRoles(keys []string) bool {
 func (s *Service) CreateUser(ctx context.Context, actorID int64, in CreateUserInput) (*User, error) {
 	var u *User
 	var v int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		u, v, err = s.createUserTx(ctx, tx, actorID, in)
 		return err
@@ -185,7 +213,7 @@ func (s *Service) CreateUser(ctx context.Context, actorID int64, in CreateUserIn
 	return u, nil
 }
 
-func (s *Service) createUserTx(ctx context.Context, tx pgx.Tx, actorID int64, in CreateUserInput) (*User, int64, error) {
+func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, in CreateUserInput) (*User, int64, error) {
 	email, fields := normalizeEmail(in.Email)
 	if f := validatePassword("password", in.Password); f != nil {
 		fields = append(fields, *f)
@@ -206,9 +234,7 @@ func (s *Service) createUserTx(ctx context.Context, tx pgx.Tx, actorID int64, in
 		return nil, 0, err
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO users (email, display_name, password_hash, segment_id)
-		VALUES ($1, $2, $3, COALESCE($4, default_segment_id())) RETURNING id`,
-		email, in.DisplayName, string(hash), in.SegmentID).Scan(&id)
+	err = insertUser(store.G(ctx, tx), email, in.DisplayName, string(hash), in.SegmentID).Row().Scan(&id)
 	if store.IsUniqueViolation(err, "") {
 		return nil, 0, emailTaken()
 	}
@@ -241,10 +267,18 @@ func (s *Service) createUserTx(ctx context.Context, tx pgx.Tx, actorID int64, in
 	return u, v, err
 }
 
+// insertUser creates a user in segmentID, or the default segment when nil,
+// and returns its id.
+func insertUser(db *gorm.DB, email, displayName, passwordHash string, segmentID *int64) *gorm.DB {
+	row := store.OneRow(db).Select("?, ?, ?, COALESCE(?, default_segment_id())", email, displayName, passwordHash, segmentID)
+	return gormpg.InsertSelectReturning(db, model.User{}.TableName(), []string{"email", "display_name", "password_hash", "segment_id"}, row,
+		clause.Returning{Columns: []clause.Column{{Name: "id"}}})
+}
+
 // lockNamedSegment checks that id, when given, is a named segment and keeps
 // the segment from being deleted until the transaction ends, so the user
 // about to join it cannot be left pointing at nothing.
-func lockNamedSegment(ctx context.Context, tx pgx.Tx, id *int64) error {
+func lockNamedSegment(ctx context.Context, tx *gorm.DB, id *int64) error {
 	if id == nil {
 		return nil
 	}
@@ -327,7 +361,11 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 	// step-up proof; the system (actor 0, the server CLI) holds no roles and
 	// is not checked.
 	if in.Password != nil && actorID != id && actorID != 0 {
-		if !core.Can(core.WithUserID(ctx, actorID), s.authz, "user:password:reset") {
+		reset, err := core.Can(core.WithUserID(ctx, actorID), s.authz, "user:password:reset")
+		if err != nil {
+			return nil, err
+		}
+		if !reset {
 			return nil, core.ErrPermissionDenied.WithMessage("missing permission: user:password:reset").
 				WithDetails(map[string]any{"permission": "user:password:reset"})
 		}
@@ -345,7 +383,7 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 	}
 	var v int64
 	var u *User
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		v, u, err = s.applyUpdateTx(ctx, tx, actorID, id, in, email, hash)
 		return err
@@ -353,7 +391,11 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 	if err != nil {
 		return nil, err
 	}
-	s.sessionsChanged(ctx, id)
+	if hash != nil || (in.Status != nil && *in.Status == StatusDisabled) {
+		s.sessionsEnded(ctx, id) // applyUpdateTx ended every session
+	} else {
+		s.sessionsChanged(ctx, id)
+	}
 	if v != 0 {
 		s.authz.Committed(ctx, v)
 	}
@@ -362,18 +404,18 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 
 // applyUpdateTx performs the locked read, authorization checks and the write
 // inside the caller's transaction.
-func (s *Service) applyUpdateTx(ctx context.Context, tx pgx.Tx, actorID, id int64, in UpdateUserInput, email string, hash []byte) (int64, *User, error) {
+func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id int64, in UpdateUserInput, email string, hash []byte) (int64, *User, error) {
 	var v int64
 	// Keep the established authz -> user lock order. Even an apparently
 	// unchanged status must invalidate authorization after concurrent edits.
 	if in.Status != nil {
 		var err error
-		if v, err = s.authz.Bump(ctx, tx); err != nil {
+		if v, err = s.authz.Bump(ctx, tx, id); err != nil {
 			return 0, nil, err
 		}
 	}
-	if err := lockRefreshUser(ctx, tx, id); err != nil {
-		if err == errBadRefresh {
+	if err := lockUserRow(ctx, tx, id); err != nil {
+		if err == errNoUser {
 			return 0, nil, core.ErrNotFound.WithMessage("user not found")
 		}
 		return 0, nil, err
@@ -401,14 +443,7 @@ func (s *Service) applyUpdateTx(ctx context.Context, tx pgx.Tx, actorID, id int6
 		}
 	}
 
-	_, err = tx.Exec(ctx, `
-UPDATE users SET
-    email = COALESCE($2, email),
-    display_name = COALESCE($3, display_name),
-    status = COALESCE($4, status),
-    password_hash = COALESCE($5, password_hash),
-    updated_at = now()
-WHERE id = $1`, id, nilStr(email), in.DisplayName, in.Status, nilBytes(hash))
+	err = updateUser(store.G(ctx, tx), id, userChanges(in, email, hash)).Error
 	if store.IsUniqueViolation(err, "") {
 		return 0, nil, emailTaken()
 	}
@@ -417,7 +452,7 @@ WHERE id = $1`, id, nilStr(email), in.DisplayName, in.Status, nilBytes(hash))
 	}
 	// SEC-M1: a new password or disabling ends every session
 	if hash != nil || (statusChange && *in.Status == StatusDisabled) {
-		if _, err := invalidateSessions(ctx, tx, id, allSessions); err != nil {
+		if err := s.endAllSessions(ctx, tx, id); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -449,26 +484,50 @@ WHERE id = $1`, id, nilStr(email), in.DisplayName, in.Status, nilBytes(hash))
 	return v, u, nil
 }
 
+// userChanges are the columns applyUpdateTx writes: those the update sets,
+// and updated_at.
+func userChanges(in UpdateUserInput, email string, hash []byte) map[string]any {
+	set := map[string]any{"updated_at": gorm.Expr("now()")}
+	store.SetIf(set, "email", nilStr(email))
+	store.SetIf(set, "display_name", in.DisplayName)
+	store.SetIf(set, "status", in.Status)
+	store.SetIf(set, "password_hash", nilBytes(hash))
+	return set
+}
+
+// updateUser writes set to the user id, deleted or not.
+func updateUser(db *gorm.DB, id int64, set map[string]any) *gorm.DB {
+	return db.Model(&model.User{}).Where("id = ?", id).Updates(set)
+}
+
 // DeleteUser soft-deletes a user and ends their sessions.
 func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 	if actorID == id {
 		return errSelfDisable
 	}
 
-	// SEC-H1: check authorization to delete target user
+	// SEC-H1: check authorization to delete target user (fails fast; checked
+	// again below)
 	if err := s.authz.CanActOnUser(ctx, actorID, core.ActOnIdentity, id); err != nil {
 		return err
 	}
 
 	var v int64
 	var dropped bool // a personal segment went, with its price rules
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
-		if v, err = s.authz.Bump(ctx, tx); err != nil {
+		if v, err = s.authz.Bump(ctx, tx, id); err != nil {
 			return err
 		}
+		// Checked again after Bump, which holds role changes off until
+		// commit: the target may have been given a role the actor does not
+		// manage since the check above (as applyUpdateTx does).
+		if err := s.authz.CanActOnUser(ctx, actorID, core.ActOnIdentity, id); err != nil {
+			return err
+		}
+		g := store.G(ctx, tx)
 		var email string
-		err = tx.QueryRow(ctx, `SELECT email FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&email)
+		err = lockLiveUser(g, id, "email").Row().Scan(&email)
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("user not found")
 		}
@@ -481,18 +540,18 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 		// A soft delete does not fire the cascade of segments.user_id: the
 		// user goes back to the default segment and a personal one is removed
 		// here, with its grants, rates and prices.
-		if _, err := tx.Exec(ctx, `UPDATE users SET deleted_at = now(), updated_at = now(), segment_id = default_segment_id() WHERE id = $1`, id); err != nil {
+		if err := updateUser(g, id, userDeletion()).Error; err != nil {
 			return err
 		}
 		if dropped, err = segment.DropPersonal(ctx, tx, id); err != nil {
 			return err
 		}
-		if _, err := invalidateSessions(ctx, tx, id, allSessions); err != nil {
+		if err := s.endAllSessions(ctx, tx, id); err != nil {
 			return err
 		}
 		// The user's API keys go with the user: authentication already
 		// rejects them, and left behind they would block deleting their group.
-		if _, err := tx.Exec(ctx, `UPDATE api_keys SET deleted_at = now() WHERE user_id = $1 AND deleted_at IS NULL`, id); err != nil {
+		if err := deleteUserKeys(g, id).Error; err != nil {
 			return err
 		}
 		if err := s.emit(ctx, tx, "user.updated", id, email, "deleted"); err != nil {
@@ -506,12 +565,22 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 	if err != nil {
 		return err
 	}
-	s.sessionsChanged(ctx, id)
+	s.sessionsEnded(ctx, id)
 	s.authz.Committed(ctx, v)
 	if dropped {
 		s.priceRulesChanged(ctx)
 	}
 	return nil
+}
+
+// userDeletion soft-deletes a user and moves it back to the default segment.
+func userDeletion() map[string]any {
+	return map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()"), "segment_id": gorm.Expr("default_segment_id()")}
+}
+
+// deleteUserKeys soft-deletes the live API keys of userID.
+func deleteUserKeys(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.APIKey{}).Where("user_id = ? AND deleted_at IS NULL", userID).Update("deleted_at", gorm.Expr("now()"))
 }
 
 // SetUserRoles replaces a user's roles (PUT /users/:id/roles). An access
@@ -520,7 +589,7 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 func (s *Service) SetUserRoles(ctx context.Context, actorID, id int64, roleKeys []string) (*User, error) {
 	var v int64
 	var u *User
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		cur, err := s.getUser(ctx, tx, id)
 		if err != nil {
 			return err
@@ -545,7 +614,7 @@ func (s *Service) SetUserRoles(ctx context.Context, actorID, id int64, roleKeys 
 
 // ------------------------------------------------------------ helpers
 
-func (s *Service) emit(ctx context.Context, tx pgx.Tx, typ string, userID int64, email, status string) error {
+func (s *Service) emit(ctx context.Context, tx *gorm.DB, typ string, userID int64, email, status string) error {
 	if s.events == nil {
 		return nil
 	}
@@ -579,13 +648,45 @@ func emailTaken() error {
 	})
 }
 
-func lockRefreshUser(ctx context.Context, tx pgx.Tx, userID int64) error {
+// lockUserRow locks the row of userID, deleted or not, until tx ends: the
+// parent lock of every session change and second-factor write of the user.
+// errNoUser when there is no such row.
+func lockUserRow(ctx context.Context, tx *gorm.DB, userID int64) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	var id int64
-	err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&id)
+	err := lockUser(store.G(ctx, tx), userID).Row().Scan(&id)
 	if store.IsNoRows(err) {
-		return errBadRefresh
+		return errNoUser
 	}
 	return err
+}
+
+// lockUser locks the row of userID, deleted or not, until the transaction
+// ends.
+func lockUser(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.User{}).Select("id").Where("id = ?", userID).Clauses(store.ForUpdate())
+}
+
+// liveUser selects cols of the undeleted user id.
+func liveUser(db *gorm.DB, id int64, cols string) *gorm.DB {
+	return liveUsers(db).Select(cols).Where("id = ?", id)
+}
+
+// lockLiveUser is liveUser, the row locked until the transaction ends.
+func lockLiveUser(db *gorm.DB, id int64, cols string) *gorm.DB {
+	return liveUser(db, id, cols).Clauses(store.ForUpdate())
+}
+
+// userByEmail selects cols of the undeleted user with email, in any case.
+func userByEmail(db *gorm.DB, email, cols string) *gorm.DB {
+	return liveUsers(db).Select(cols).Where("lower(email) = lower(?)", email)
+}
+
+// touchLastLogin records a login of userID.
+func touchLastLogin(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.User{}).Where("id = ?", userID).Update("last_login_at", gorm.Expr("now()"))
 }
 
 func nilStr(s string) *string {

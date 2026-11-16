@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-// Packages may be 1 GiB (the ccgateway runtime images, CONTRACTS §53.10).
-func TestLimitsDefaultToOneGiB(t *testing.T) {
+// Without a configured limit transfers take the shared plugin package limit.
+func TestLimitsDefaultToThePackageLimit(t *testing.T) {
 	s := NewShell("unused.sock", "", 0)
-	if s.max != 1<<30 || s.client.Timeout != shellTimeout || shellTimeout.Minutes() < 30 {
+	if s.max != 64<<20 || s.client.Timeout != rc.PluginPackageTransferTimeout {
 		t.Fatalf("shell: max %d, timeout %s", s.max, s.client.Timeout)
 	}
-	if s = NewShell("unused.sock", "", 2<<30); s.max != 2<<30 {
+	if s = NewShell("unused.sock", "", 300<<20); s.max != 300<<20 {
 		t.Fatalf("configured max: %d", s.max)
 	}
 	var limit int64
@@ -21,7 +23,7 @@ func TestLimitsDefaultToOneGiB(t *testing.T) {
 		return nil, errors.New("offline")
 	}}
 	_, _ = src.Fetch(context.Background(), sumOf([]byte("x")), "https://market/x")
-	if limit != 1<<30 {
+	if limit != 64<<20 {
 		t.Fatalf("download limit without MaxBytes: %d", limit)
 	}
 	src.MaxBytes = 300 << 20

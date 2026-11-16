@@ -47,9 +47,9 @@ func TestInheritedEnvCoversCoreConfiguration(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			// The dev command, test helpers and fixtures are not run by a
-			// managed core.
-			case "devenv", "testdata", "registrytest", "node_modules", "web":
+			// The dev command, the model generator, test helpers and
+			// fixtures are not run by a managed core.
+			case "devenv", "gen-models", "testdata", "registrytest", "node_modules", "web":
 				return filepath.SkipDir
 			}
 			return nil
@@ -81,5 +81,12 @@ func TestInheritedEnvCoversCoreConfiguration(t *testing.T) {
 	slices.Sort(missing)
 	if len(missing) > 0 {
 		t.Fatalf("core reads variables a managed core would not receive; add them to inheritedEnv or coreProvidedEnv:\n%s", strings.Join(missing, "\n"))
+	}
+	// The other way round: a core setting the core no longer reads leaves
+	// the allowlist.
+	for _, name := range inheritedEnv {
+		if _, current := read[name]; !current && strings.HasPrefix(name, "SUB2API_") {
+			t.Errorf("%s is no longer read by the core: drop it from inheritedEnv", name)
+		}
 	}
 }

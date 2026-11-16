@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
@@ -66,9 +67,12 @@ func TestAuthenticateSegmentTerms(t *testing.T) {
 			}
 			p, err := e.svc.Authenticate(t.Context(), e.addKey(e.user, group))
 			// Authentication and the key endpoints tell alike whether the
-			// owner may use the group: by the one rule, segment.OpenToUserSQL.
-			open, qerr := groupAvailable(t.Context(), e.db.Pool, e.user, group)
-			require.NoError(t, qerr)
+			// owner may use the group: by the one rule, segment.OpenToKeyOwner.
+			var open bool
+			require.NoError(t, e.db.Tx(t.Context(), func(tx *gorm.DB) (err error) {
+				open, err = groupAvailable(t.Context(), tx, e.user, group)
+				return err
+			}))
 			require.Equal(t, c.rate != "", open)
 			if c.rate == "" {
 				require.Equal(t, CodeGroupNotAllowed, codeOf(err))
@@ -84,8 +88,8 @@ func TestAuthenticateSegmentTerms(t *testing.T) {
 // rule every other reader uses (CONTRACTS §97.9), not a copy of it that a
 // change to the rule would leave behind.
 func TestLookupUsesOpenToUser(t *testing.T) {
-	require.Contains(t, lookupSQL, segment.OpenToUserSQL("g", "k.user_id"))
-	require.Contains(t, selectKey, segment.OpenToUserSQL("g", "k.user_id"))
+	require.Contains(t, lookupColumns, segment.OpenToKeyOwner)
+	require.Contains(t, selectKey, segment.OpenToKeyOwner)
 }
 
 // Nothing of a segment is cached: moving the owner to another segment, or

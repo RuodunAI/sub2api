@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api, isApiError } from '@sub2api/host'
+import { api } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SChip, SDropdown, SEmpty, SField, SGrid, SHint, SIcon, SInput, SLink, SFormModal, SPageHeader, SSpinner, STextarea, confirm, toast } from '@sub2api/ui'
 import type { PermissionModule, User } from '@/api/types'
 import { roleMemberCount, type RoleRow } from '@/api/admin'
@@ -12,6 +12,10 @@ import { useAssignableRoles } from '@/composables/useAssignableRoles'
 import { inAllLocales, lt } from '@/i18n'
 import { fieldErrors, notifyError } from '@/utils/errors'
 import { applyFormError } from '@/utils/formErrors'
+import { isVersionConflict, missingText } from '@/utils/permErrors'
+import { actionOf, newRiskyGrants, replayCells, sameKeys } from '@/authz/pluginGrants'
+import { useEditorGrants } from '@/components/permission/useEditorGrants'
+import { confirmRiskyGrants } from '@/components/permission/confirmRiskyGrants'
 import PermissionTree from './PermissionTree.vue'
 import RoleAssignable from './RoleAssignable.vue'
 import { ROLE_KEY_PATTERN } from '@/generated/permissions'
@@ -26,6 +30,10 @@ const modules = ref<PermissionModule[]>([])
 const loading = ref(true)
 const selectedId = ref<number | null>(null)
 const selected = computed(() => roles.value.find((r) => r.id === selectedId.value) || null)
+/** Every permission of the catalog by key. */
+const catalog = computed(() => new Map(modules.value.flatMap((m) => m.permissions.map((p) => [p.key, p]))))
+/** What the editor may grant: its keys in the grant view (a disabled plugin's included, a removed permission's not). */
+const editor = useEditorGrants(() => roles.value, (action) => catalog.value.get(action)?.status === 'removed')
 
 // ------------------------------------------------------------------ loading
 
@@ -86,15 +94,14 @@ async function selectRole(r: RoleRow, force = false) {
   if (!force && r.id === selectedId.value) return
   if (!force && dirty.value && !readOnly.value && !(await confirm({ message: t('roles.discardChanges') }))) return
   selectedId.value = r.id
-  const keys = [...(r.permission_keys || [])].sort()
-  const manages = [...(r.assignable_role_keys || [])].sort()
-  Object.assign(form, { name: lt(r.name), description: lt(r.description) })
-  perms.value = new Set(keys)
-  assignable.value = new Set(manages)
-  assignCustom.value = !!r.assign_custom
+  const parts = partsOf(r)
+  Object.assign(form, { name: parts.name, description: parts.description })
+  perms.value = new Set(parts.perms)
+  assignable.value = new Set(parts.assignable)
+  assignCustom.value = parts.assignCustom
   saveMissing.value = ''
   editErrors.value = {}
-  original.value = { ...form, perms: keys, assignable: manages, assignCustom: !!r.assign_custom }
+  original.value = parts
   loadMembers(r)
 }
 
@@ -126,7 +133,12 @@ async function loadMembers(r: RoleRow) {
 
 // ------------------------------------------------------------------ save
 
-async function save() {
+function save() {
+  return persist(false)
+}
+
+/** Saves the changed parts; resent: the save again after a 409 where nobody else changed what it saves (asked about already). */
+async function persist(resent: boolean): Promise<void> {
   const r = selected.value
   if (!r || readOnly.value) return
   editErrors.value = {}
@@ -134,12 +146,17 @@ async function save() {
     editErrors.value.name = t('common.required')
     return
   }
-  if (permsDirty.value && permsMissing.value && !(await confirm({ message: t('roles.overwriteUnknown'), danger: true }))) return
-  // Each changed part has its own endpoint; they run in order and stop at the first refusal.
+  if (!resent && permsDirty.value && permsMissing.value && !(await confirm({ message: t('roles.overwriteUnknown'), danger: true }))) return
+  if (!resent && permsDirty.value && !(await confirmRisky(r))) return
+  // Each changed part has its own endpoint; they run in order and stop at the
+  // first refusal. Each carries the role's revision (C1): the one read for
+  // the first, then the one the previous step answered with.
+  let revision = r.revision
+  const rev = () => (revision !== undefined ? { revision } : {})
   const steps = [
-    metaDirty.value && (() => api.patch(`/roles/${r.id}`, metaPatch())),
-    permsDirty.value && (() => api.put(`/roles/${r.id}/permissions`, { permission_keys: [...perms.value].sort() })),
-    assignableDirty.value && (() => api.put(`/roles/${r.id}/assignable`, { role_keys: [...assignable.value].sort(), assign_custom: assignCustom.value }))
+    permsDirty.value && (() => api.put<RoleRow>(`/roles/${r.id}/permissions`, { permission_keys: [...perms.value].sort(), ...rev() })),
+    metaDirty.value && (() => api.patch<RoleRow>(`/roles/${r.id}`, { ...metaPatch(), ...rev() })),
+    assignableDirty.value && (() => api.put<RoleRow>(`/roles/${r.id}/assignable`, { role_keys: [...assignable.value].sort(), assign_custom: assignCustom.value, ...rev() }))
   ].filter((step) => !!step)
   saving.value = true
   saveMissing.value = ''
@@ -147,18 +164,101 @@ async function save() {
   let missing = ''
   try {
     for (const step of steps) {
-      await step()
+      revision = (await step())?.revision ?? revision
       done++
     }
     toast(t('common.saved'), 'success')
   } catch (e) {
-    missing = missingText(e)
+    if (isVersionConflict(e)) {
+      saving.value = false
+      return rebase(r, resent).catch(notifyError)
+    }
+    missing = missingText(e, t)
     showSaveError(e)
   }
   // Something was written (all of it, or the parts before a refusal): show what the role now is.
   if (done) await showSaved(r, done === steps.length).catch(notifyError)
   saveMissing.value = missing
   saving.value = false
+}
+
+/** The sensitive and critical permissions this save grants the role, confirmed first. */
+function confirmRisky(r: RoleRow) {
+  const all = [...catalog.value.values()].map((p) => ({ action: p.key, risk: p.risk }))
+  const risky = newRiskyGrants({ [r.key]: original.value.perms }, { [r.key]: [...perms.value] }, all)
+  return confirmRiskyGrants(risky, (action) => catalog.value.get(action)?.label, () => lt(r.name) || r.key)
+}
+
+/**
+ * A 409 version_conflict: reads the roles again (a failed read keeps the
+ * edits for another try) and takes in each part of the role (permissions,
+ * name, description, managed roles): one the editor left as it was takes
+ * what is read; one the editor changed stays as edited, on top of what is
+ * read when someone else changed it too (the permissions cell by cell,
+ * replayCells; the managed roles role by role). When nobody else changed a
+ * part the editor changed (the role changed otherwise, or this save's
+ * earlier steps went through) it is saved again at once; else it waits for
+ * another save, naming what both changed.
+ */
+async function rebase(r: RoleRow, resent: boolean): Promise<void> {
+  const base = original.value
+  const edited = { perms: [...perms.value].sort(), assignable: [...assignable.value].sort(), assignCustom: assignCustom.value }
+  await loadRoles()
+  const fresh = roles.value.find((x) => x.id === r.id)
+  if (!fresh) return
+  const read = partsOf(fresh)
+  const clashes: string[] = []
+  let moved = false // a part the editor changed, someone else changed too
+  for (const [field, label] of [['name', t('common.name')], ['description', t('common.description')]] as const) {
+    const mine = form[field].trim()
+    if (mine === base[field]) form[field] = read[field]
+    else if (read[field] !== base[field] && read[field] !== mine) {
+      moved = true
+      clashes.push(label)
+    }
+  }
+  if (sameKeys(edited.perms, base.perms)) perms.value = new Set(read.perms)
+  else if (!sameKeys(read.perms, base.perms) && !sameKeys(read.perms, edited.perms)) {
+    moved = true
+    const actions = [...new Set([...base.perms, ...edited.perms, ...read.perms].map(actionOf))]
+    const merged = replayCells({ [r.key]: base.perms }, { [r.key]: edited.perms }, { [r.key]: read.perms }, actions, [r.key])
+    perms.value = new Set(merged.value[r.key])
+    clashes.push(...merged.clashes.map((c) => lt(catalog.value.get(c.action)?.label) || c.action))
+  }
+  const sameList = (a: Managed, b: Managed) => a.assignable.join() === b.assignable.join() && a.assignCustom === b.assignCustom
+  if (sameList(edited, base)) {
+    assignable.value = new Set(read.assignable)
+    assignCustom.value = read.assignCustom
+  } else if (!sameList(read, base) && !sameList(read, edited)) {
+    moved = true
+    // Role by role: each the editor added or took away, on what is read.
+    const next = new Set(read.assignable)
+    base.assignable.filter((k) => !edited.assignable.includes(k)).forEach((k) => next.delete(k))
+    edited.assignable.filter((k) => !base.assignable.includes(k)).forEach((k) => next.add(k))
+    assignable.value = next
+    assignCustom.value = edited.assignCustom !== base.assignCustom ? edited.assignCustom : read.assignCustom
+  }
+  original.value = read
+  if (!moved && !resent) return persist(true)
+  const list = clashes.join(t('roles.listSep'))
+  toast(list ? t('roles.roleConflictClashes', { list }) : t('roles.roleConflictMerged'), 'info')
+}
+
+/** The managed roles of a role, sorted, and its "every custom role" flag. */
+interface Managed {
+  assignable: string[]
+  assignCustom: boolean
+}
+
+/** The parts of r the editor edits, as original holds them. */
+function partsOf(r: RoleRow) {
+  return {
+    name: lt(r.name),
+    description: lt(r.description),
+    perms: [...(r.permission_keys ?? [])].sort(),
+    assignable: [...(r.assignable_role_keys ?? [])].sort(),
+    assignCustom: !!r.assign_custom
+  }
 }
 
 /**
@@ -190,20 +290,6 @@ function showSaveError(e: unknown) {
   const fields = Object.entries(fieldErrors(e, undefined, ROLE_FIELD_CODES)).filter(([k]) => EDITOR_FIELDS.includes(k))
   editErrors.value = Object.fromEntries(fields)
   if (!fields.length) notifyError(e)
-}
-
-/** The permissions and managed roles a refused save lacked, as one line. */
-function missingText(e: unknown): string {
-  if (!isApiError(e)) return ''
-  const d = e.details
-  const list = (v: unknown) => (Array.isArray(v) ? v.join(t('roles.listSep')) : '')
-  return [
-    list(d.missing) && t('roles.missingPermissions', { keys: list(d.missing) }),
-    list(d.missing_assignable) && t('roles.missingAssignable', { keys: list(d.missing_assignable) }),
-    d.missing_assign_custom ? t('roles.missingAssignCustom') : ''
-  ]
-    .filter(Boolean)
-    .join(' · ')
 }
 
 function resetEditor() {
@@ -272,7 +358,8 @@ async function restoreDefaults() {
   if (!(await confirm({ message: t('roles.restoreConfirm', { name: lt(r.name) || r.key }), danger: true }))) return
   saving.value = true
   try {
-    await api.post(`/roles/${r.id}/reset`)
+    // With the revision read, when there is one (C1).
+    await (r.revision !== undefined ? api.post(`/roles/${r.id}/reset`, { revision: r.revision }) : api.post(`/roles/${r.id}/reset`))
     toast(t('roles.restored'), 'success')
     await loadRoles()
     const fresh = roles.value.find((x) => x.id === r.id)
@@ -356,7 +443,15 @@ async function restoreDefaults() {
             </SField>
           </SGrid>
 
-          <PermissionTree v-model:granted="perms" :modules="modules" :all-granted="selected.superuser" :read-only="readOnly" :scope-limit="auth.scopes" />
+          <PermissionTree
+            v-model:granted="perms"
+            :modules="modules"
+            :all-granted="selected.superuser"
+            :read-only="readOnly"
+            :scope-limit="editor.scopes"
+            :role-key="selected.key"
+            :grantable="editor.mayGrant"
+          />
 
           <RoleAssignable v-if="!selected.superuser && Array.isArray(selected.assignable_role_keys)" v-model:keys="assignable" v-model:assign-custom="assignCustom" :roles="roles" :read-only="readOnly" />
 

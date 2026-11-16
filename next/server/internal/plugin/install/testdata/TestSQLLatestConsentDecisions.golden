@@ -1,0 +1,9 @@
+-- sql
+SELECT COALESCE((SELECT array_agg(k) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.detail->'new_permission_roles') = 'object'
+				THEN a.detail->'new_permission_roles' ELSE '{}' END) k), '{}'),
+			COALESCE(a.detail->'role_grants', '[]') FROM audit_logs AS a WHERE a.action = $1 AND a.target_type = 'plugin' AND a.target_id = $2 AND a.detail->>'version' = $3 ORDER BY a.id DESC LIMIT $4
+-- vars
+$1 string "plugin.consent"
+$2 string "demo"
+$3 string "1.2.0"
+$4 int 1

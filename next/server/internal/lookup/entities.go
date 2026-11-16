@@ -3,85 +3,86 @@ package lookup
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // entities are the kinds of GET /lookup/:kind (CONTRACTS §96). They are kept
 // together rather than one per module: each is a few lines over tables the
 // usage log already joins by name, and together they are the permission table
 // of the endpoint. A range must match the list endpoint it is named after.
-var entities = []*Entity{
+var entities = []*entity{
 	{
 		// Found by email or display name, as the q of GET /users.
-		Kind: "users", From: "users u", ID: "u.id", Name: "u.email", Hint: "u.display_name", Status: "u.status",
-		Search: []string{"u.display_name"},
-		Live:   "u.deleted_at IS NULL",
-		Read:   "user:read",
+		kind: "users", from: "users u", id: "u.id", name: "u.email", hint: "u.display_name", status: "u.status",
+		matches: []string{"u.display_name"},
+		live:    "u.deleted_at IS NULL",
+		read:    "user:read",
 	},
 	{
 		// Groups have no platform column: the platforms of a group follow
 		// from its accounts' types (CONTRACTS §13), so there is no hint.
-		Kind: "groups", From: "groups g", ID: "g.id", Name: "g.name", Status: "g.status",
+		kind: "groups", from: "groups g", id: "g.id", name: "g.name", status: "g.status",
 		// account:group:bind alone finds the groups the caller can use: the
 		// groups an "own" account holder may bind.
-		Read: "group:read", OwnRead: "account:group:bind",
+		read: "group:read", ownRead: "account:group:bind",
 		// A group-scoped grant (account:read:group/G) shows its group by
 		// name to a holder of neither.
-		Named: core.PermissionSet.ScopeGroups,
+		named: core.PermissionSet.ScopeGroups,
 		// GET /me/groups.
-		Mine: &Mine{Scope: callerIs(groupOpenTo)},
+		mine: &ownRows{scope: callerIs(groupOpenTo)},
 	},
 	{
 		// The usage log shows every key's id, name and owner to usage:all:read
 		// already; no other permission lists the keys of other users. The
 		// owner is a subquery, not a join: it is read for the rows returned
 		// only, after the limit, instead of for every key.
-		Kind: "api-keys", From: "api_keys k", ID: "k.id", Name: "k.name",
-		Hint: "(SELECT u.email FROM users u WHERE u.id = k.user_id)", Status: "k.status",
-		Live: "k.deleted_at IS NULL",
-		Read: "usage:all:read",
+		kind: "api-keys", from: "api_keys k", id: "k.id", name: "k.name",
+		hint: "(SELECT u.email FROM users u WHERE u.id = k.user_id)", status: "k.status",
+		live: "k.deleted_at IS NULL",
+		read: "usage:all:read",
 		// GET /me/api-keys. The owner is the caller, so the hint is the
 		// key's prefix instead.
-		Mine:   &Mine{Perms: []string{"apikey:self:manage"}, Scope: callerIs("k.user_id = ?"), Hint: "k.key_prefix"},
-		Narrow: []Ref{{Param: "user_id", Cond: "k.user_id = ?"}},
+		mine:   &ownRows{perms: []string{"apikey:self:manage"}, scope: callerIs("k.user_id = ?"), hint: "k.key_prefix"},
+		narrow: []ref{{param: "user_id", cond: "k.user_id = ?"}},
 	},
 	{
 		// GET /accounts, except that accounts of a disabled or uninstalled
 		// plugin are found too: the usage log still has their requests.
-		Kind: "accounts", From: "accounts a", ID: "a.id", Name: "a.name", Hint: "a.plugin_key", Status: "a.status",
-		Live: "a.deleted_at IS NULL",
-		Read: "account:read", Table: &core.AccountRows,
-		Mine:   &Mine{Scope: callerIs("a.created_by = ?")},
-		Prefer: []Ref{{Param: "prefer_group_id", Cond: "EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = ?)"}},
+		kind: "accounts", from: "accounts a", id: "a.id", name: "a.name", hint: "a.plugin_key", status: "a.status",
+		live: "a.deleted_at IS NULL",
+		read: "account:read", table: core.AccountRows,
+		mine:   &ownRows{scope: callerIs("a.created_by = ?")},
+		prefer: []ref{{param: "prefer_group_id", cond: "EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = ?)"}},
 	},
 	{
 		// The models are those of the price table (GET /prices), disabled
 		// prices included. A price is enabled or not; it has no status value.
-		Kind: "models", From: "model_prices mp", Name: "mp.model",
-		Read: "price:read",
-		Mine: &Mine{Perms: []string{"apikey:self:manage"}, Scope: usableModels},
+		kind: "models", from: "model_prices mp", name: "mp.model",
+		read: "price:read",
+		mine: &ownRows{perms: []string{"apikey:self:manage"}, scope: usableModels},
 	},
 	{
 		// GET /proxies.
-		Kind: "proxies", From: "proxies p", ID: "p.id", Name: "p.name",
-		Hint: "p.protocol || '://' || p.host || ':' || p.port", Status: "p.status",
-		Read: "proxy:read", Table: &core.ProxyRows,
-		Mine: &Mine{Scope: callerIs("p.created_by = ?")},
+		kind: "proxies", from: "proxies p", id: "p.id", name: "p.name",
+		hint: "p.protocol || '://' || p.host || ':' || p.port", status: "p.status",
+		read: "proxy:read", table: core.ProxyRows,
+		mine: &ownRows{scope: callerIs("p.created_by = ?")},
 	},
 }
 
 // groupOpenTo holds for the groups a user ("?") can use: the range of GET
 // /me/groups.
-var groupOpenTo = segment.UsableGroupSQL("g", "?")
+const groupOpenTo = segment.UsableGroup
 
 // callerIs is the Scope of a kind whose own rows one condition selects; its
 // "?" takes the caller's id.
-func callerIs(cond string) func(context.Context, store.Querier, int64, *store.Filter) error {
-	return func(_ context.Context, _ store.Querier, uid int64, f *store.Filter) error {
+func callerIs(cond string) func(context.Context, *gorm.DB, int64, *store.Conds) error {
+	return func(_ context.Context, _ *gorm.DB, uid int64, f *store.Conds) error {
 		f.And(cond, uid)
 		return nil
 	}
@@ -93,26 +94,14 @@ func callerIs(cond string) func(context.Context, store.Querier, int64, *store.Fi
 // them. GET /me/prices?group_id= lists a subset of it: of these, only the
 // models the accounts of that group provide. The group policy is a glob list
 // (core.GroupInfo.AllowsModel), evaluated here rather than rewritten in SQL.
-func usableModels(ctx context.Context, q store.Querier, uid int64, f *store.Filter) error {
-	var open store.Filter
-	open.And(groupOpenTo, uid)
-	rows, err := q.Query(ctx, `SELECT g.model_allowlist, g.model_filter_mode FROM groups g`+open.Cond(), open.Args()...)
+func usableModels(ctx context.Context, q *gorm.DB, uid int64, f *store.Conds) error {
+	db := store.G(ctx, q)
+	groups, err := modelPolicies(db, uid)
 	if err != nil {
 		return err
 	}
-	groups, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (g core.GroupInfo, err error) {
-		err = r.Scan(&g.ModelAllowlist, &g.ModelFilterMode)
-		return g, err
-	})
-	if err != nil {
-		return err
-	}
-	rows, err = q.Query(ctx, `SELECT model FROM model_prices WHERE enabled`)
-	if err != nil {
-		return err
-	}
-	models, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
+	var models []string
+	if err := db.Model(&model.ModelPrice{}).Where("enabled").Pluck("model", &models).Error; err != nil {
 		return err
 	}
 	usable := []string{}
@@ -124,6 +113,32 @@ func usableModels(ctx context.Context, q store.Querier, uid int64, f *store.Filt
 			}
 		}
 	}
-	f.And("mp.model = ANY(?)", usable)
+	f.And("mp.model = ANY(?)", store.Strings(usable))
 	return nil
+}
+
+// policyRow is the model policy of one group. SQL NULL and JSON null read
+// as no list.
+type policyRow struct {
+	ModelAllowlist  store.JSON[[]string]
+	ModelFilterMode string
+}
+
+// policyRows reads into dst the model policies of the groups user uid can
+// use.
+func policyRows(db *gorm.DB, uid int64, dst *[]policyRow) *gorm.DB {
+	return db.Table("groups g").Select("g.model_allowlist, g.model_filter_mode").Where(groupOpenTo, uid).Scan(dst)
+}
+
+// modelPolicies is policyRows as core.GroupInfo.
+func modelPolicies(db *gorm.DB, uid int64) ([]core.GroupInfo, error) {
+	var rows []policyRow
+	if err := policyRows(db, uid, &rows).Error; err != nil {
+		return nil, err
+	}
+	groups := make([]core.GroupInfo, len(rows))
+	for i, r := range rows {
+		groups[i] = core.GroupInfo{ModelAllowlist: r.ModelAllowlist.V, ModelFilterMode: r.ModelFilterMode}
+	}
+	return groups, nil
 }

@@ -1,0 +1,4 @@
+-- sql
+SELECT email, password_hash FROM "users" WHERE deleted_at IS NULL AND id = $1
+-- vars
+$1 int64 7

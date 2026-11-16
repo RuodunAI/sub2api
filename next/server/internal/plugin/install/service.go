@@ -12,12 +12,16 @@ import (
 	"slices"
 	"sync"
 
+	"gorm.io/gorm"
+
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/blobs"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Plugin statuses (plugins.status).
@@ -96,6 +100,10 @@ type Service struct {
 
 	cacheMu sync.Mutex
 	cache   []cachedPkg // tiny LRU of unpacked packages
+
+	// purgeMu admits one transaction at a time that purges a plugin's
+	// accounts in a transaction of their own (purgeTx).
+	purgeMu sync.Mutex
 }
 
 type cachedPkg struct {
@@ -107,7 +115,7 @@ const pkgCacheSize = 8
 
 // maxCachedPackage: larger packages are unpacked again on every use
 // instead of being cached.
-const maxCachedPackage = 64 << 20
+const maxCachedPackage = rc.PluginPackageMaxBytes
 
 // New builds the install service.
 func New(d Deps, opt Options) *Service {
@@ -140,7 +148,7 @@ func (s *Service) DB() *store.DB { return s.d.DB }
 // (outside the core) is fetched again, which fails with ErrPackageGone
 // unless a market download serves it (CONTRACTS §5.7).
 func (s *Service) Package(ctx context.Context, key, version string) (*pkg.Package, error) {
-	sha, url, err := packageRef(ctx, s.d.DB.Pool, key, version)
+	sha, url, err := packageRef(ctx, s.d.DB.Gorm, key, version)
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
@@ -164,8 +172,9 @@ func (s *Service) Package(ctx context.Context, key, version string) (*pkg.Packag
 		return nil, err
 	}
 	if int64(len(raw)) > maxCachedPackage {
-		// A package carrying runtime images (CONTRACTS §53.10) would keep
-		// about twice its size in memory for as long as it stays cached.
+		// A package above the default size limit (possible only with a
+		// raised SUB2API_PLUGIN_MAX_PACKAGE_BYTES) would keep about twice its
+		// size in memory for as long as it stays cached.
 		return p, nil
 	}
 	s.cacheMu.Lock()
@@ -181,7 +190,7 @@ func (s *Service) Package(ctx context.Context, key, version string) (*pkg.Packag
 // longer be had, as Package would: a consent must not approve a package no
 // node holds. A version that does not exist passes (the caller reports it).
 func (s *Service) checkPackage(ctx context.Context, key, version string) error {
-	sha, _, err := packageRef(ctx, s.d.DB.Pool, key, version)
+	sha, _, err := packageRef(ctx, s.d.DB.Gorm, key, version)
 	if store.IsNoRows(err) {
 		return nil
 	}
@@ -196,10 +205,40 @@ func (s *Service) checkPackage(ctx context.Context, key, version string) error {
 }
 
 // packageRef reads the sha256 and market URL of key@version's package.
-func packageRef(ctx context.Context, q store.Querier, key, version string) (sha, url string, err error) {
-	err = q.QueryRow(ctx, `SELECT package_sha256, package_url FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
-		key, version).Scan(&sha, &url)
-	return sha, url, err
+func packageRef(ctx context.Context, q *gorm.DB, key, version string) (sha, url string, err error) {
+	var v model.PluginVersion
+	err = versionRow(store.G(ctx, q), key, version).Select("package_sha256, package_url").Take(&v).Error
+	return v.PackageSha256, v.PackageURL, err
+}
+
+// pluginRow is the plugins row of key.
+func pluginRow(db *gorm.DB, key string) *gorm.DB {
+	return db.Model(&model.Plugin{}).Where("key = ?", key)
+}
+
+// lockedPlugin is the plugins row of key, read FOR UPDATE: the lock every
+// lifecycle change takes first (no lock-order deadlock with the grant rows).
+func lockedPlugin(db *gorm.DB, key string) *gorm.DB {
+	return pluginRow(db, key).Clauses(store.ForUpdate())
+}
+
+// lockPlugin locks the plugins row of key (lockedPlugin) and reads
+// nothing from it; NotFound when there is none.
+func lockPlugin(tx *gorm.DB, key string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
+	var locked string
+	err := lockedPlugin(tx, key).Select("key").Take(&locked).Error
+	if store.IsNoRows(err) {
+		return core.ErrNotFound.WithMessage("plugin not found")
+	}
+	return err
+}
+
+// versionRow is the plugin_versions row of key@version.
+func versionRow(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Model(&model.PluginVersion{}).Where("plugin_key = ? AND version = ?", key, version)
 }
 
 // cached returns the package unpacked for key@version with sha while the
@@ -240,25 +279,29 @@ func (s *Service) uncache(key, version string) []cachedPkg {
 // CurrentVersion returns the version that represents the plugin today:
 // active_version, else desired_version, else the newest approved version,
 // else the newest uploaded one. Empty when the plugin has no versions.
-func CurrentVersion(ctx context.Context, q store.Querier, key string) (string, error) {
+func CurrentVersion(ctx context.Context, q *gorm.DB, key string) (string, error) {
 	var v string
-	err := q.QueryRow(ctx, `
-		SELECT COALESCE(p.active_version, p.desired_version,
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved'
-		     ORDER BY uploaded_at DESC LIMIT 1),
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status <> 'rejected'
-		     ORDER BY uploaded_at DESC LIMIT 1), '')
-		FROM plugins p WHERE p.key = $1`, key).Scan(&v)
+	err := currentVersion(store.G(ctx, q), key).Row().Scan(&v)
 	if store.IsNoRows(err) {
 		return "", core.ErrNotFound.WithMessage("plugin not found")
 	}
 	return v, err
 }
 
+// currentVersion is the statement of CurrentVersion.
+func currentVersion(db *gorm.DB, key string) *gorm.DB {
+	approved := db.Model(&model.PluginVersion{}).Select("version").
+		Where("plugin_key = p.key AND consent_status = 'approved'").Order("uploaded_at DESC").Limit(1)
+	pending := db.Model(&model.PluginVersion{}).Select("version").
+		Where("plugin_key = p.key AND consent_status <> 'rejected'").Order("uploaded_at DESC").Limit(1)
+	return db.Table("plugins AS p").Select("COALESCE(p.active_version, p.desired_version, (?), (?), '')", approved, pending).
+		Where("p.key = ?", key)
+}
+
 // LoadManifest reads plugin_versions.manifest.
-func LoadManifest(ctx context.Context, q store.Querier, key, version string) (*manifest.Manifest, error) {
-	var raw []byte
-	err := q.QueryRow(ctx, `SELECT manifest FROM plugin_versions WHERE plugin_key = $1 AND version = $2`, key, version).Scan(&raw)
+func LoadManifest(ctx context.Context, q *gorm.DB, key, version string) (*manifest.Manifest, error) {
+	var v model.PluginVersion
+	err := versionRow(store.G(ctx, q), key, version).Select("manifest").Take(&v).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
@@ -266,7 +309,7 @@ func LoadManifest(ctx context.Context, q store.Querier, key, version string) (*m
 		return nil, err
 	}
 	var m manifest.Manifest
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(v.Manifest, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil

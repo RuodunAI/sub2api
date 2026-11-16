@@ -35,20 +35,6 @@ func TestJobMuxDispatches(t *testing.T) {
 	}
 }
 
-// An older core sends only job_id, scheduled_at_unix and manual.
-func TestJobMuxOldCoreRequest(t *testing.T) {
-	m := NewJobMux()
-	var got JobRun
-	m.HandleJob("cleanup", func(_ context.Context, run JobRun) (JobResult, error) { got = run; return JobResult{}, nil })
-	resp, err := m.RunJob(context.Background(), &pluginv1.RunJobRequest{JobId: "cleanup", ScheduledAtUnix: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Args != nil || got.Attempt != 0 || got.Scope != "" || resp.GetRetryAfterMs() != 0 {
-		t.Fatalf("run %+v resp %+v", got, resp)
-	}
-}
-
 func TestJobMuxErrors(t *testing.T) {
 	m := NewJobMux()
 	if _, err := m.RunJob(context.Background(), &pluginv1.RunJobRequest{JobId: "missing"}); status.Code(err) != codes.NotFound {

@@ -1,0 +1,13 @@
+-- sql
+UPDATE "scheduled_tasks" SET "consecutive_failures"=consecutive_failures + 1,"last_count"=$1,"last_error"=NULLIF($2, ''),"last_finished_at"=clock_timestamp(),"last_job_id"=$3,"last_message"=NULLIF($4, ''),"last_node"=$5,"last_status"=$6,"lease_job_id"=CASE WHEN lease_job_id = $7 THEN NULL ELSE lease_job_id END,"lease_node"=CASE WHEN lease_job_id = $8 THEN NULL ELSE lease_node END,"lease_until"=CASE WHEN lease_job_id = $9 THEN NULL ELSE lease_until END,"updated_at"=clock_timestamp() WHERE name = $10
+-- vars
+$1 int 3
+$2 string "upstream down"
+$3 int64 42
+$4 string ""
+$5 string "node-a"
+$6 string "failed"
+$7 int64 42
+$8 int64 42
+$9 int64 42
+$10 string "core.test.bad"

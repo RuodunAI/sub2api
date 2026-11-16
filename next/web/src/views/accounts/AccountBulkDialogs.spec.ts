@@ -139,17 +139,16 @@ describe('bulk account dialogs', () => {
     expect(['priority', 'weight', 'max_concurrency', 'rpm_limit', 'tpm_limit', 'spm_limit'].filter(disabled)).toEqual(['weight', 'rpm_limit'])
   })
 
-  it('deletes every selected account, keeping resources only where the type allows it', async () => {
+  it('deletes every selected account', async () => {
     mocks.del.mockResolvedValue(undefined)
     const w = mount(AccountBulkDeleteDialog, {
-      props: { open: false, accounts: [acc(1), acc(2)], retentionOf: (a: Account) => (a.id === 2 ? 7 : 0) },
+      props: { open: false, accounts: [acc(1), acc(2)] },
       global: { plugins: [i18n], stubs: { SModal } }
     })
     await w.setProps({ open: true })
-    await w.get('[data-testid="bulk-delete-resources"] input[value="retain"]').setValue(true)
     await w.get('[data-testid="bulk-delete-confirm"]').trigger('click')
     await flushPromises()
-    expect(mocks.del.mock.calls.map((c) => [c[0], c[1]])).toEqual([['/accounts/1', undefined], ['/accounts/2', { retain_resources: 1 }]])
+    expect(mocks.del.mock.calls.map((c) => [c[0], c[1]])).toEqual([['/accounts/1', undefined], ['/accounts/2', undefined]])
     expect(w.emitted('deleted')![0][0]).toEqual([1, 2])
     expect(w.emitted('update:open')![0]).toEqual([false])
   })

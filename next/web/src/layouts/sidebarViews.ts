@@ -52,24 +52,18 @@ export function useViewEntries(): ComputedRef<NavItem[]> {
 
 /**
  * The view the current page opens in: the one its route declares, else the
- * nearest page above it; none on a console page. A caller whose menu lacks the
- * view's entry keeps the console menu (an older core lists groups and model
- * prices in it and gives their readers no settings entry); until the menu
- * loads the route decides. A plugin page that declares sections always gets
- * its view: the page drops its own tabs on this console (UI 3.14), so its
- * sections must stay reachable also when it was opened by a link rather than
- * from a menu entry.
+ * nearest page above it; none on a console page. A plugin page that declares
+ * sections always gets its view: the page drops its own tabs on this console
+ * (UI 3.14), so its sections must stay reachable also when it was opened by a
+ * link rather than from a menu entry.
  */
 export function useSidebarView(): ComputedRef<SidebarView | undefined> {
-  const app = useAppStore()
   const router = useRouter()
   const lineage = useRouteLineage()
   const pluginView = usePluginPageView()
   return computed(() => {
     const key = lineage.value.map(p => router.resolve(p).meta.sidebar).find(Boolean)
-    const view = SIDEBAR_VIEWS.find(v => v.key === key)
-    if (!view) return pluginView.value
-    return !app.menusLoaded || view.entry(app.menus) ? view : undefined
+    return SIDEBAR_VIEWS.find(v => v.key === key) ?? pluginView.value
   })
 }
 

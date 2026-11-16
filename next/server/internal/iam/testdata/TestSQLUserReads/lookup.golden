@@ -1,0 +1,4 @@
+-- sql
+SELECT u.id, u.display_name, u.status FROM unnest($1::bigint[]) WITH ORDINALITY AS q(id, n) JOIN users u ON u.id = q.id AND u.deleted_at IS NULL ORDER BY q.n
+-- vars
+$1 store.Int64s [3 1 3]

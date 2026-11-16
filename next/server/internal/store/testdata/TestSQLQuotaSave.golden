@@ -1,0 +1,12 @@
+-- sql
+INSERT INTO "account_quota_snapshots" ("account_id","windows","source","error","updated_at","last_passive_at","revision","refresh_status","next_check_at") SELECT id, $1::jsonb, $2::text, '', clock_timestamp(), CASE WHEN $3::text = 'passive' THEN clock_timestamp() END, 1, 'ready', $4::timestamptz FROM "accounts" WHERE id = $5 AND deleted_at IS NULL ON CONFLICT ("account_id") DO UPDATE SET "error"=$6,"last_passive_at"=COALESCE(EXCLUDED.last_passive_at, account_quota_snapshots.last_passive_at),"next_check_at"=CASE WHEN account_quota_snapshots.auto_refresh AND $7::timestamptz IS NOT NULL THEN LEAST(account_quota_snapshots.next_check_at,$8::timestamptz) ELSE account_quota_snapshots.next_check_at END,"refresh_status"=$9,"revision"=account_quota_snapshots.revision + 1,"source"=EXCLUDED.source,"updated_at"=clock_timestamp(),"windows"=account_quota_snapshots.windows || EXCLUDED.windows
+-- vars
+$1 string "{\"5h\":{}}"
+$2 string "passive"
+$3 string "passive"
+$4 *time.Time 2026-11-15 12:00:00 +0000 UTC
+$5 int64 11
+$6 string ""
+$7 *time.Time 2026-11-15 12:00:00 +0000 UTC
+$8 *time.Time 2026-11-15 12:00:00 +0000 UTC
+$9 string "ready"

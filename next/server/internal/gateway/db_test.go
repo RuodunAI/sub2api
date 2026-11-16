@@ -11,9 +11,9 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -24,9 +24,11 @@ import (
 
 type allowAll struct{ uid int64 }
 
-func (a allowAll) VerifyAccessToken(context.Context, string) (int64, error) { return a.uid, nil }
-func (allowAll) Can(context.Context, int64, string) (bool, error)           { return true, nil }
-func (allowAll) CanGrant(context.Context, int64, []string) error            { return nil }
+func (a allowAll) VerifySession(context.Context, string) (int64, string, error) {
+	return a.uid, "", nil
+}
+func (allowAll) Can(context.Context, int64, string) (bool, error) { return true, nil }
+func (allowAll) CanGrant(context.Context, int64, []string) error  { return nil }
 func (allowAll) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
 	return core.PermissionSet{Superuser: true}, nil
 }
@@ -54,11 +56,11 @@ func newDBEnv(t *testing.T, opts ...dbEnvOpt) *dbEnv {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	e := &dbEnv{t: t, db: db}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ('admin@test', 'x') RETURNING id`).Scan(&e.uid); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, password_hash) VALUES ('admin@test', 'x') RETURNING id`).Scan(&e.uid); err != nil {
 		t.Fatal(err)
 	}
 	for _, key := range []string{"anthropic", "other"} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"x"}', 'enabled')`, key); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -236,7 +238,7 @@ func TestStickySettingsAPI(t *testing.T) {
 	}
 
 	// The gateway row is read with defaults for missing fields.
-	if _, err := e.db.Pool.Exec(context.Background(),
+	if _, err := e.db.SQL.ExecContext(context.Background(),
 		`INSERT INTO settings (key, value) VALUES ('gateway', '{"max_attempts": 5}')`); err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +268,7 @@ func TestGatewaySettingsAPIDB(t *testing.T) {
 		t.Fatalf("settings cache not refreshed: %+v", gw)
 	}
 	var by *int64
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT updated_by FROM settings WHERE key = 'gateway'`).Scan(&by); err != nil || by == nil || *by != e.uid {
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT updated_by FROM settings WHERE key = 'gateway'`).Scan(&by); err != nil || by == nil || *by != e.uid {
 		t.Fatalf("updated_by %v %v", by, err)
 	}
 }
@@ -306,7 +308,7 @@ func TestStickyRulesFromDBDriveScheduling(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
 	e.gw.rules = newRuleCache(db)
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		return syncBuiltinRules(ctx, tx, builtinPlatform(t, "anthropic").StickyRules)
 	}); err != nil {
 		t.Fatal(err)
@@ -350,7 +352,7 @@ func TestBuiltinStickyDefaults(t *testing.T) {
 	defaultTTL := r.Get("ttl_seconds").Int()
 	// A start rewrites an outdated, unedited definition as a whole: the
 	// models the rule used to carry go away (built-in rules set none).
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE sticky_rules SET match = match || '{"models":["claude-*"]}' WHERE id = $1`, id); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE sticky_rules SET match = match || '{"models":["claude-*"]}' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.gw.SyncBuiltinDefaults(ctx); err != nil {
@@ -384,7 +386,7 @@ func TestBuiltinStickyDefaults(t *testing.T) {
 
 	// A restart keeps the administrator's switches and edits and drops stale
 	// built-in rules.
-	if _, err := e.db.Pool.Exec(ctx, `INSERT INTO sticky_rules (name, source, key_sources) VALUES ('stale', 'builtin', '[]')`); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO sticky_rules (name, source, key_sources) VALUES ('stale', 'builtin', '[]')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.gw.SyncBuiltinDefaults(ctx); err != nil {
@@ -419,50 +421,37 @@ func TestBuiltinStickyDefaults(t *testing.T) {
 func TestSchedulingSettingsAPIDB(t *testing.T) {
 	e := newDBEnv(t)
 	code, res := e.api("GET", "/settings/scheduling", nil)
-	if code != 200 || res.Get("data").Raw != `{"mode":"traffic","metric":"sessions","limit_load":false,"model_limits":false}` {
+	if code != 200 || res.Get("data").Raw != `{"metric":"sessions","limit_load":false,"model_limits":false}` {
 		t.Fatalf("defaults: %d %s", code, res.Raw)
 	}
 	if sc := e.gw.settings.get(context.Background()).scheduling; sc != defaultSchedulingSettings() { // primes the cache
 		t.Fatalf("cached defaults %+v", sc)
 	}
-	// The mode is not checked: only the metric is.
-	if code, res := e.api("PUT", "/settings/scheduling", map[string]any{"mode": "least", "metric": "tokens"}); code != 400 ||
+	if code, res := e.api("PUT", "/settings/scheduling", map[string]any{"metric": "tokens"}); code != 400 ||
 		res.Get("error.code").String() != "invalid_argument" || res.Get("error.details.fields.0.code").String() != "invalid" ||
 		res.Get("error.details.fields.0.field").String() != "metric" || res.Get("error.details.fields.#").Int() != 1 {
 		t.Fatalf("invalid: %d %s", code, res.Raw)
 	}
-	// Whatever mode is sent, "traffic" is stored, and the metric is kept.
-	if code, res := e.api("PUT", "/settings/scheduling", map[string]any{"mode": "default", "metric": "rpm", "model_limits": true}); code != 200 ||
-		res.Get("data.mode").String() != "traffic" || res.Get("data.metric").String() != "rpm" {
+	if code, res := e.api("PUT", "/settings/scheduling", map[string]any{"metric": "rpm", "model_limits": true}); code != 200 ||
+		res.Get("data.metric").String() != "rpm" {
 		t.Fatalf("first put: %d %s", code, res.Raw)
 	}
-	if sc := e.gw.settings.get(context.Background()).scheduling; sc.Mode != balanceModeTraffic || sc.Metric != balanceMetricRPM || !sc.ModelLimits {
+	if sc := e.gw.settings.get(context.Background()).scheduling; sc.Metric != balanceMetricRPM || !sc.ModelLimits {
 		t.Fatalf("stored row not served: %+v", sc)
 	}
 	// The row is replaced, not merged: absent fields take their defaults.
 	code, res = e.api("PUT", "/settings/scheduling", map[string]any{"limit_load": true})
-	if code != 200 || res.Get("data.mode").String() != "traffic" || res.Get("data.metric").String() != "sessions" || !res.Get("data.limit_load").Bool() ||
-		res.Get("data.model_limits").Bool() {
+	if code != 200 || res.Get("data.metric").String() != "sessions" || !res.Get("data.limit_load").Bool() || res.Get("data.model_limits").Bool() {
 		t.Fatalf("put: %d %s", code, res.Raw)
 	}
 	sc := e.gw.settings.get(context.Background()).scheduling
-	if sc.Mode != balanceModeTraffic || sc.Metric != balanceMetricSessions || !sc.LimitLoad || sc.ModelLimits {
+	if sc.Metric != balanceMetricSessions || !sc.LimitLoad || sc.ModelLimits {
 		t.Fatalf("settings cache not refreshed: %+v", sc)
 	}
-	var mode string
+	var stored string
 	var by *int64
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT value->>'mode', updated_by FROM settings WHERE key = 'scheduling'`).Scan(&mode, &by); err != nil ||
-		mode != "traffic" || by == nil || *by != e.uid {
-		t.Fatalf("stored mode %q, updated_by %v %v", mode, by, err)
-	}
-	// A row of the former default mode with the limit load off balances by
-	// sessions, without model limits (TestSchedulingSettingsNormalized has the
-	// other rows).
-	if _, err := e.db.Pool.Exec(context.Background(), `UPDATE settings SET value = '{"mode":"default","metric":"tpm","limit_load":false,"model_limits":true}' WHERE key = 'scheduling'`); err != nil {
-		t.Fatal(err)
-	}
-	if code, res := e.api("GET", "/settings/scheduling", nil); code != 200 || res.Get("data.mode").String() != "traffic" || res.Get("data.metric").String() != "sessions" ||
-		res.Get("data.model_limits").Bool() {
-		t.Fatalf("normalized: %d %s", code, res.Raw)
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT value::text, updated_by FROM settings WHERE key = 'scheduling'`).Scan(&stored, &by); err != nil ||
+		stored != `{"metric": "sessions", "limit_load": true, "model_limits": false}` || by == nil || *by != e.uid {
+		t.Fatalf("stored %s, updated_by %v %v", stored, by, err)
 	}
 }

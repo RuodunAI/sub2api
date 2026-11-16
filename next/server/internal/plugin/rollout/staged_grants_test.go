@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
@@ -87,7 +86,7 @@ func newStagedEnv(t *testing.T) *stagedEnv {
 	defaults := install.NewDefaultsApplier(h.rec)
 	e.svc = install.New(install.Deps{DB: h.db, Trust: ts, Authz: allowAll{}, Permissions: h.rec, Defaults: defaults,
 		Packages: registrytest.Source()},
-		install.Options{HostVersion: check.UpstreamFirstCore, Plugins: config.PluginConfig{MaxPackageBytes: 10 << 20, MaxMemoryMB: 1024}})
+		install.Options{HostVersion: "0.1.290", Plugins: config.PluginConfig{MaxPackageBytes: 10 << 20, MaxMemoryMB: 1024}})
 	cipher, _ := secret.New(make([]byte, 32))
 	nd := &registrytest.Node{RDB: h.rdb, ID: "solo", Boot: "boot-solo"}
 	nd.Heartbeat(ctx)
@@ -175,7 +174,7 @@ func (e *stagedEnv) served(version string, perm string) func() bool {
 
 func (e *stagedEnv) consentStatus(version string) (status string) {
 	e.h.t.Helper()
-	if err := e.h.db.Pool.QueryRow(context.Background(), `SELECT consent_status FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
+	if err := e.h.db.SQL.QueryRowContext(context.Background(), `SELECT consent_status FROM plugin_versions WHERE plugin_key = $1 AND version = $2`,
 		e.h.key, version).Scan(&status); err != nil {
 		e.h.t.Fatal(err)
 	}
@@ -237,7 +236,7 @@ func TestAbandonedUpgradeWithdrawsItsConsent(t *testing.T) {
 			t.Fatalf("%s: 0.2.0 is %s", what, s)
 		}
 		var n int
-		if err := e.h.db.Pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'plugin.grants.withdraw'
+		if err := e.h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'plugin.grants.withdraw'
 			AND target_id = $1 AND detail->>'version' = '0.2.0' AND detail->'permissions' ? 'lock'`, e.h.key).Scan(&n); err != nil || n != want {
 			t.Fatalf("%s: withdrawal audits = %d, %v", what, n, err)
 		}

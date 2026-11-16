@@ -1,0 +1,5 @@
+-- sql
+SELECT "v1" FROM "casbin_rule" WHERE ptype = $1 AND v0 = $2 ORDER BY v1
+-- vars
+$1 string "g"
+$2 string "u:7"

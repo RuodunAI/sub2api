@@ -6,7 +6,7 @@
 // code; the password alone only when neither is set up.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api } from '@sub2api/host'
+import { api, session } from '@sub2api/host'
 import { SAlert, SField, SFormModal, SInput, SSegmented, SSkeleton } from '@sub2api/ui'
 import { errorMessage, fieldErrors } from '@/utils/errors'
 import { getPasskey, passkeyCancelled, passkeySupported } from '@/utils/webauthn'
@@ -73,7 +73,13 @@ async function submit() {
   errors.value = {}
   try {
     const body = { scope: props.scope, context: props.context, method: method.value, ...(needsPassword.value ? { password: password.value } : {}), ...(await factor()) }
-    const r = await api.post<{ proof: string }>('/me/verify', body)
+    let sentWith: string | undefined
+    const r = await api.post<{ proof: string; access_token?: string }>('/me/verify', body, { onSentWith: (token) => (sentWith = token) })
+    // A session gets a new token of the same session on verifying (CONTRACTS
+    // §100.4), in place of the one the request went with: the replay and
+    // everything after it use that one, unless another tab stored a newer
+    // one meanwhile.
+    if (r.access_token) session.adoptRotated(sentWith, r.access_token)
     emit('verified', r.proof)
   } catch (e) {
     if (passkeyCancelled(e)) return

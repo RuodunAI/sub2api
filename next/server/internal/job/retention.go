@@ -4,7 +4,11 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // RetentionTask is the cluster task that trims plugin job run history.
@@ -32,19 +36,29 @@ func (s *Bridge) RetentionTaskSpec() core.TaskSpec {
 // PurgeRuns keeps the newest KeepRuns runs per (plugin, job) and marks runs
 // stuck in "running" for longer than StaleAfter as failed.
 func (s *Bridge) PurgeRuns(ctx context.Context) (int64, error) {
-	if _, err := s.db.Pool.Exec(ctx, `UPDATE plugin_job_runs
-		SET status = $1, finished_at = now(), message = 'abandoned: the node running it went away'
-		WHERE status = $2 AND started_at < now() - make_interval(secs => $3)`,
-		StatusFailed, StatusRunning, s.opts.StaleAfter.Seconds()); err != nil {
+	g := store.G(ctx, s.db.Gorm)
+	if err := abandonStaleRuns(g, s.opts.StaleAfter).Error; err != nil {
 		return 0, err
 	}
-	tag, err := s.db.Pool.Exec(ctx, `DELETE FROM plugin_job_runs WHERE id IN (
-		SELECT id FROM (
-			SELECT id, row_number() OVER (PARTITION BY plugin_key, job_id ORDER BY id DESC) AS rn
-			FROM plugin_job_runs) r
-		WHERE rn > $1)`, s.opts.KeepRuns)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	res := trimRuns(g, s.opts.KeepRuns)
+	return res.RowsAffected, res.Error
+}
+
+// abandonStaleRuns marks runs "running" for longer than staleAfter as
+// failed.
+func abandonStaleRuns(g *gorm.DB, staleAfter time.Duration) *gorm.DB {
+	return g.Model(&model.PluginJobRun{}).
+		Where("status = ? AND started_at < now() - make_interval(secs => ?)", StatusRunning, staleAfter.Seconds()).
+		Updates(map[string]any{
+			"status": StatusFailed, "finished_at": gorm.Expr("now()"),
+			"message": "abandoned: the node running it went away",
+		})
+}
+
+// trimRuns deletes all but the newest keep runs of every (plugin, job): the
+// rank comes from a window function.
+func trimRuns(g *gorm.DB, keep int) *gorm.DB {
+	ranked := g.Model(&model.PluginJobRun{}).Select("id, row_number() OVER (PARTITION BY plugin_key, job_id ORDER BY id DESC) AS rn")
+	old := g.Table("(?) AS r", ranked).Select("id").Where("rn > ?", keep)
+	return g.Where("id IN (?)", old).Delete(&model.PluginJobRun{})
 }

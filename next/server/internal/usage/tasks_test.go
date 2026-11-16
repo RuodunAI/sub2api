@@ -7,7 +7,42 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
+
+// An empty upstream body is stored as an empty bytea, not NULL, and a nil
+// one (an oversized answer) keeps the stored body.
+func TestTaskReceiveEmptyBody(t *testing.T) {
+	s := &Service{db: testutil.DB(t)}
+	ctx := context.Background()
+	in := core.TaskIntent{RequestID: "req-empty", PluginKey: "vid", Kind: "video", UserID: 1, APIKeyID: 2, GroupID: 3, AccountID: 4, Model: "m", Protocol: "p"}
+	if _, err := s.BeginTask(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	body := func() *string {
+		t.Helper()
+		var b *string
+		if err := s.db.SQL.QueryRowContext(ctx, `SELECT encode(response_body, 'escape') FROM task_submission_receipts WHERE request_id = $1`, in.RequestID).Scan(&b); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	if err := s.ReceiveTask(ctx, in.RequestID, 204, []byte{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if b := body(); b == nil || *b != "" {
+		t.Fatalf("response_body = %v, want the empty bytea", b)
+	}
+	if err := s.ReceiveTask(ctx, in.RequestID, 200, []byte(`{"id":"up"}`), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReceiveTask(ctx, in.RequestID, 200, nil, "late"); err != nil {
+		t.Fatal(err)
+	}
+	if b := body(); b == nil || *b != `{"id":"up"}` {
+		t.Fatalf("response_body = %v, want the stored body", b)
+	}
+}
 
 func TestUsageTaskSpecs(t *testing.T) {
 	s := New(nil, nil, nil, nil, Options{})

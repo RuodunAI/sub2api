@@ -1082,17 +1082,10 @@ for (let i = 0; i < 90; i++) {
     _detail: billing.detail,
     _price: billing.status === 'billed' && price ? { id: price.id, model: price.model, source: price.source } : null
   }
-  // Two records served by a CCGateway account, whose Worker logs the viewer
-  // finds by request ID (one retried twice, one logged once).
-  if (row.account_id && (i === 1 || i === 2)) {
-    Object.assign(row, { account_id: 25, account_name: 'cc-main', plugin_key: 'ccgateway', account_type: 'managed' })
-    if (i === 1) row.request_id = 'c0ffee00c0ffee00c0ffee00'
-    row.created_at = new Date(Date.now() - i * 5 * 60000).toISOString()
-  }
   usageRows.push(row)
 }
 // Two records with a model availability trace (anomalies.availability, detail only):
-// every ccgateway candidate blocked by its 7d Fable window (429, no account), and
+// every Claude subscription candidate blocked by its 7d Fable window (429, no account), and
 // one candidate blocked while another served the request.
 {
   const at = (min: number) => new Date(Date.now() - min * 60000)
@@ -1115,26 +1108,26 @@ for (let i = 0; i < 90; i++) {
       v: 1, outcome: 'blocked_all', candidates: 3, admitted: 0, retry_at: unix(blockedAt, 134),
       counts: { 'unavailable:quota_rejected:7d_fable': 3 },
       samples: [
-        { account_id: 25, account_name: 'cc-main', model: 'claude-fable-4', decision: 'block', reason: 'unavailable:quota_rejected:7d_fable', retry_at: unix(blockedAt, 134) },
-        { account_id: 26, account_name: 'cc-backup', model: 'claude-fable-4', decision: 'block', reason: 'unavailable:quota_rejected:7d_fable', retry_at: unix(blockedAt, 391) },
-        { account_id: 27, model: 'claude-fable-4', decision: 'block', reason: 'unavailable:quota_rejected:7d_fable', retry_at: unix(blockedAt, 1450) }
+        { account_id: 21, account_name: 'claude-max-1', model: 'claude-fable-4', decision: 'block', reason: 'unavailable:quota_rejected:7d_fable', retry_at: unix(blockedAt, 134) },
+        { account_id: 22, account_name: 'claude-max-2', model: 'claude-fable-4', decision: 'block', reason: 'unavailable:quota_rejected:7d_fable', retry_at: unix(blockedAt, 391) },
+        { account_id: 24, model: 'claude-fable-4', decision: 'block', reason: 'unavailable:quota_rejected:7d_fable', retry_at: unix(blockedAt, 1450) }
       ]
     }) }
   })
   const partialAt = at(9)
   usageRows.push({
     ...base, id: 4991, request_id: 'req_availability0002', client_request_id: '', created_at: partialAt.toISOString(),
-    account_id: 26, account_name: 'cc-backup', plugin_key: 'ccgateway', account_type: 'managed', upstream_protocol: 'anthropic.messages',
+    account_id: 22, account_name: 'claude-max-2', plugin_key: 'claude_oauth', account_type: 'claude_oauth', upstream_protocol: 'anthropic.messages',
     status_code: 200, success: true, error_type: '', error_message: '',
     input_tokens: 1200, output_tokens: 300, total_cost: money(0), billing_status: 'free', latency_ms: 3200, first_token_ms: 900,
     _anomalies: { availability: JSON.stringify({
       v: 1, outcome: 'partial', candidates: 3, admitted: 2, retry_at: unix(partialAt, 72),
       counts: { 'unavailable:quota_rejected:7d_fable': 1, snapshot_unavailable: 1 },
       samples: [
-        { account_id: 25, account_name: 'cc-main', model: 'claude-fable-4', decision: 'block', reason: 'unavailable:quota_rejected:7d_fable', retry_at: unix(partialAt, 72) },
-        { account_id: 27, model: 'claude-fable-4', decision: 'fail_open', reason: 'snapshot_unavailable' }
+        { account_id: 21, account_name: 'claude-max-1', model: 'claude-fable-4', decision: 'block', reason: 'unavailable:quota_rejected:7d_fable', retry_at: unix(partialAt, 72) },
+        { account_id: 24, model: 'claude-fable-4', decision: 'fail_open', reason: 'snapshot_unavailable' }
       ],
-      guard: [{ account_id: 27, model: 'claude-fable-4', decision: 'block', reason: 'guard_models_changed', attempt: 1 }]
+      guard: [{ account_id: 24, model: 'claude-fable-4', decision: 'block', reason: 'guard_models_changed', attempt: 1 }]
     }) }
   })
 }
@@ -1670,7 +1663,7 @@ on('PUT', '/settings/gateway', (req) => {
 })
 
 // Core load balancing (CONTRACTS §89): the row is replaced, absent fields take the defaults; mode is always traffic.
-const SCHEDULING_DEFAULTS = { mode: 'traffic', metric: 'sessions', limit_load: false, model_limits: false }
+const SCHEDULING_DEFAULTS = { metric: 'sessions', limit_load: false, model_limits: false }
 const schedulingSettings = { ...SCHEDULING_DEFAULTS }
 on('GET', '/settings/scheduling', () => schedulingSettings)
 on('PUT', '/settings/scheduling', req => {

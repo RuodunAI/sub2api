@@ -1,0 +1,6 @@
+-- sql
+INSERT INTO "public"."plugin_migrations" ("plugin_key","migration_id","checksum") VALUES ($1,$2,$3) ON CONFLICT DO NOTHING
+-- vars
+$1 string "demo"
+$2 string "data:rollout-42:1.0.0->1.1.0"
+$3 string "data"

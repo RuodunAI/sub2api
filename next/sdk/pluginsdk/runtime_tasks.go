@@ -3,16 +3,14 @@ package pluginsdk
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
-// Runtime tasks (grant "jobs", Host API 9, CONTRACTS §77.8).
+// Runtime tasks (grant "jobs", CONTRACTS §77.8).
 //
 // A runtime task is a cluster task the plugin registers while it runs,
 // besides the jobs its manifest declares: the host stores it, schedules it
@@ -25,12 +23,7 @@ import (
 //
 //	tasks := host.Tasks()
 //	err := tasks.Sync(ctx, []pluginsdk.Task{{ID: "evaluate", Every: 10 * time.Second, Timeout: time.Minute}})
-//	if errors.Is(err, pluginsdk.ErrTasksUnimplemented) { /* older core: fall back */ }
 //	err = tasks.Enqueue(ctx, "review", args, pluginsdk.RunAt(t), pluginsdk.UniqueKey(id))
-
-// ErrTasksUnimplemented is returned by Tasks on a core before Host API 9
-// (core 0.1.237). Treat it as non-fatal.
-var ErrTasksUnimplemented = errors.New("pluginsdk: runtime tasks need host API 9 (core 0.1.237 or later)")
 
 // Task is one runtime task.
 type Task struct {
@@ -84,9 +77,6 @@ func (h *host) Tasks() Tasks { return hostTasks{h} }
 func (t hostTasks) client() (pluginv1.HostServiceClient, error) {
 	if t.h == nil || t.h.client == nil {
 		return nil, ErrHostNotReady
-	}
-	if t.h.info.HostAPIVersion < protocol.TasksHostAPIVersion {
-		return nil, ErrTasksUnimplemented
 	}
 	return t.h.client, nil
 }

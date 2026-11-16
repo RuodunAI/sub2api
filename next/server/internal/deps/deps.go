@@ -11,7 +11,6 @@ import (
 	_ "github.com/elastic/go-seccomp-bpf"
 	_ "github.com/expr-lang/expr"
 	_ "github.com/go-redsync/redsync/v4"
-	_ "github.com/golang-jwt/jwt/v5"
 	_ "github.com/google/uuid"
 	_ "github.com/hashicorp/go-plugin"
 	_ "github.com/redis/go-redis/v9"

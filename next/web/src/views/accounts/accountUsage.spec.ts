@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { i18n } from '@/i18n'
-import { amountDecimals, anchorFloor, defaultUsageLimit, limitLevel, loadedUsageLimit, mainCost, neverSaved, usageLimitBody, usageLimitError, usagePeriodLabel } from './accountUsage'
+import { amountDecimals, anchorFloor, defaultUsageLimit, limitLevel, loadedUsageLimit, mainCost, usageLimitBody, usageLimitError, usagePeriodLabel } from './accountUsage'
 
 const figures = { cost: '6.0', raw_cost: '5.0', requests: 1, tokens: 120 }
 const limit = (used: string, amount = '200') => ({ amount, used, period: 'week' as const, period_count: 1, window_start: null, window_end: null, waived: false })
@@ -34,8 +34,6 @@ describe('account usage', () => {
   it('has no period length to check for a lifetime limit', () => {
     expect(usageLimitError({ ...defaultUsageLimit(), period: 'none', period_count: 1001 })).toBeNull()
     expect(usageLimitError({ ...defaultUsageLimit(), period: 'none', period_count: 0 })).toBeNull()
-    expect(usageLimitBody({ ...defaultUsageLimit(), period: 'none', period_count: 13 }).period_count).toBe(1)
-    expect(usageLimitBody({ ...defaultUsageLimit(), period: 'week', period_count: 3 }).period_count).toBe(3)
   })
 
   it('takes amounts with up to 8 decimals, as the server keeps', () => {
@@ -53,26 +51,18 @@ describe('account usage', () => {
     expect(amountDecimals('abc')).toBeNaN()
   })
 
-  it('lets a switched-off limit have no amount and sends one an older core accepts', () => {
+  it('lets a switched-off limit have no amount', () => {
     const off = { ...defaultUsageLimit(), enabled: false, amount: '' }
     expect(usageLimitError(off)).toBeNull()
-    expect(usageLimitBody(off, '200').amount).toBe('200')
-    expect(usageLimitBody(off).amount).toBe('0')
-    expect(usageLimitBody({ ...off, amount: ' 5 ' }).amount).toBe('5')
     expect(usageLimitError({ ...off, enabled: true })).toBe('amount')
   })
 
   it('starts a limit that was never saved in the browser time zone', () => {
     const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
     const server = { raw_cost_accounting: false, enabled: false, amount: '0', period: 'month' as const, period_count: 1, anchor: null }
-    // A newer core: "" means never saved.
-    expect(loadedUsageLimit({ ...server, timezone: '' }).timezone).toBe(zone)
-    // An older core sends "UTC" with the defaults; a saved limit differs somewhere.
-    expect(neverSaved({ ...server, timezone: 'UTC' })).toBe(true)
-    expect(loadedUsageLimit({ ...server, timezone: 'UTC' }).timezone).toBe(zone)
-    expect(loadedUsageLimit({ ...server, enabled: true, amount: '5', timezone: 'UTC' }).timezone).toBe('UTC')
-    expect(loadedUsageLimit({ ...server, amount: '5', timezone: 'UTC' }).timezone).toBe('UTC')
-    expect(loadedUsageLimit({ ...server, timezone: 'Asia/Shanghai' }).timezone).toBe('Asia/Shanghai')
+    expect(loadedUsageLimit({ ...server, timezone: '', configured: false }).timezone).toBe(zone)
+    expect(loadedUsageLimit({ ...server, timezone: 'UTC', configured: true }).timezone).toBe('UTC')
+    expect(loadedUsageLimit({ ...server, timezone: 'Asia/Shanghai', configured: true }).timezone).toBe('Asia/Shanghai')
   })
 
   it('starts a new limit in the browser time zone', () => {

@@ -1,0 +1,5 @@
+-- sql
+UPDATE "permissions" SET "status"=$1 WHERE plugin_key = $2 AND status NOT IN ('removed', 'staged')
+-- vars
+$1 string "active"
+$2 string "demo"

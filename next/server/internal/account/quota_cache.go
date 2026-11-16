@@ -104,8 +104,8 @@ func (s *Service) evictQuotaCache(ctx context.Context, ids ...int64) {
 	if len(ids) == 0 || s.d.Redis == nil {
 		return
 	}
-	var at time.Time
-	if err := s.d.DB.Pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
+	at, err := store.ClockTimestamp(store.G(ctx, s.d.DB.Gorm))
+	if err != nil {
 		at = time.Now()
 	}
 	for _, id := range ids {

@@ -1,15 +1,13 @@
 package moderation
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
@@ -20,15 +18,6 @@ import (
 // The failed file leaves nothing behind and runs again on a retry.
 func TestMigrationsFailFastOnLock(t *testing.T) {
 	dsn, schema := pluginsdktest.NewSchema(t, "plg_moderation_t")
-	ctx := context.Background()
-	connect := func() *pgx.Conn {
-		conn, err := pgx.Connect(ctx, dsn)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { conn.Close(ctx) })
-		return conn
-	}
 	// unchanged counts what the files of a step add or drop: it is what
 	// they find while they fail.
 	for _, step := range []struct {
@@ -44,11 +33,11 @@ func TestMigrationsFailFastOnLock(t *testing.T) {
 		first := step.files[0]
 		pluginsdktest.ApplyMigrations(t, dsn, schema, migrationDir(t, func(n string) bool { return n < first }))
 		// A long query on events: its ACCESS SHARE lock conflicts with ALTER TABLE.
-		reader, err := connect().Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
+		reader := connect(t, dsn).Begin()
+		if reader.Error != nil {
+			t.Fatal(reader.Error)
 		}
-		if _, err := reader.Exec(ctx, `SELECT count(*) FROM `+pgx.Identifier{schema, "events"}.Sanitize()); err != nil {
+		if err := reader.Exec(`SELECT count(*) FROM ` + ident(schema, "events")).Error; err != nil {
 			t.Fatal(err)
 		}
 		for _, name := range step.files {
@@ -57,24 +46,23 @@ func TestMigrationsFailFastOnLock(t *testing.T) {
 				t.Fatal(err)
 			}
 			start := time.Now()
-			var pe *pgconn.PgError
-			err = pgx.BeginFunc(ctx, connect(), func(tx pgx.Tx) error {
-				if _, err := tx.Exec(ctx, "SET LOCAL search_path TO "+pgx.Identifier{schema}.Sanitize()); err != nil {
+			var pe interface{ SQLState() string }
+			err = connect(t, dsn).Transaction(func(tx *gorm.DB) error {
+				if err := tx.Exec("SET LOCAL search_path TO " + ident(schema)).Error; err != nil {
 					return err
 				}
-				_, err := tx.Exec(ctx, string(body))
-				return err
+				return tx.Exec(string(body)).Error
 			})
-			if !errors.As(err, &pe) || pe.Code != "55P03" || time.Since(start) > 15*time.Second {
+			if !errors.As(err, &pe) || pe.SQLState() != "55P03" || time.Since(start) > 15*time.Second {
 				t.Fatalf("%s behind a reader: %v after %s, want lock_not_available after 10s", name, err, time.Since(start))
 			}
 			var cols int
-			if err := connect().QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_schema = $1 AND `+step.unchanged,
-				schema).Scan(&cols); err != nil || cols != step.want {
+			if err := connect(t, dsn).Raw(`SELECT count(*) FROM information_schema.columns WHERE table_schema = ? AND `+step.unchanged,
+				schema).Row().Scan(&cols); err != nil || cols != step.want {
 				t.Fatalf("%s: %d of the columns it changes, want %d (%v)", name, cols, step.want, err)
 			}
 		}
-		if err := reader.Rollback(ctx); err != nil {
+		if err := reader.Rollback().Error; err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -5,6 +5,8 @@ import (
 	"maps"
 	"slices"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -36,15 +38,15 @@ func (s *Service) fillSummary(ctx context.Context, gs []*Group) error {
 		ids[i] = g.ID
 		policies[i] = core.GroupInfo{ID: g.ID, ModelAllowlist: g.ModelAllowlist, ModelFilterMode: g.ModelFilterMode}
 	}
-	access, err := groupAccess(ctx, s.db.Pool, ids)
+	access, err := groupAccess(ctx, s.db.Gorm, ids)
 	if err != nil {
 		return err
 	}
-	offered, err := offeredModels(ctx, s.db.Pool, policies)
+	offered, err := offeredModels(ctx, s.db.Gorm, policies)
 	if err != nil {
 		return err
 	}
-	rules, err := offeredRules(ctx, s.db.Pool, offered, `pr.group_id = ANY($1)`, ids)
+	rules, err := offeredRules(ctx, s.db.Gorm, offered, `pr.group_id = ANY(?)`, store.Int64s(ids))
 	if err != nil {
 		return err
 	}
@@ -66,38 +68,37 @@ func (s *Service) fillSummary(ctx context.Context, gs []*Group) error {
 }
 
 // groupAccess returns the access of each of the groups, by group id.
-func groupAccess(ctx context.Context, q store.Querier, ids []int64) (map[int64]Access, error) {
+func groupAccess(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]Access, error) {
 	out := make(map[int64]Access, len(ids))
 	for _, id := range ids {
 		out[id] = Access{Segments: []core.SegmentRef{}}
 	}
-	rows, err := q.Query(ctx, `SELECT sg.group_id,
-			COALESCE(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}'),
-			COALESCE(array_agg(s.name ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}'),
-			count(*) FILTER (WHERE s.kind = 'personal')
-		FROM segment_groups sg
-		JOIN segments s ON s.id = sg.segment_id
-		JOIN groups g ON g.id = sg.group_id
-		WHERE sg.group_id = ANY($1) AND sg.granted AND g.visibility = 'restricted'
-		GROUP BY sg.group_id`, ids)
-	if err != nil {
+	var rows []struct {
+		GroupID       int64         `gorm:"column:group_id"`
+		SegmentIDs    store.Int64s  `gorm:"column:segment_ids"`
+		Names         store.Strings `gorm:"column:names"`
+		PersonalCount int64         `gorm:"column:personal_count"`
+	}
+	// For each private group of ids that grants a segment: the named
+	// segments granted it (ids and names in id order) and the number of
+	// personal ones.
+	if err := store.G(ctx, q).Table("segment_groups sg").Select(`sg.group_id,
+			COALESCE(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS segment_ids,
+			COALESCE(array_agg(s.name ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS names,
+			count(*) FILTER (WHERE s.kind = 'personal') AS personal_count`).
+		Joins("JOIN segments s ON s.id = sg.segment_id").Joins("JOIN groups g ON g.id = sg.group_id").
+		Where("sg.group_id = ANY(?) AND sg.granted AND g.visibility = 'restricted'", store.Int64s(ids)).
+		Group("sg.group_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var groupID int64
-		var segmentIDs []int64
-		var names []string
-		a := Access{Segments: []core.SegmentRef{}}
-		if err := rows.Scan(&groupID, &segmentIDs, &names, &a.PersonalCount); err != nil {
-			return nil, err
+	for _, r := range rows {
+		a := Access{Segments: []core.SegmentRef{}, PersonalCount: r.PersonalCount}
+		for i, id := range r.SegmentIDs {
+			a.Segments = append(a.Segments, core.SegmentRef{ID: id, Kind: core.SegmentNamed, Name: r.Names[i]})
 		}
-		for i, id := range segmentIDs {
-			a.Segments = append(a.Segments, core.SegmentRef{ID: id, Kind: core.SegmentNamed, Name: names[i]})
-		}
-		out[groupID] = a
+		out[r.GroupID] = a
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ruleOn is what a price rule is on: a model in a group, for a segment (0 =
@@ -113,30 +114,29 @@ type ruleOn struct {
 // stays stored but is neither listed nor counted. offered are the models of
 // the groups by id when the caller has them; the groups of the rules missing
 // from it are read.
-func offeredRules(ctx context.Context, q store.Querier, offered map[int64][]string, cond string, args ...any) ([]ruleOn, error) {
-	rows, err := q.Query(ctx, `SELECT pr.group_id, COALESCE(pr.segment_id, 0), pr.model, g.model_allowlist, g.model_filter_mode
-		FROM price_rules pr JOIN groups g ON g.id = pr.group_id WHERE `+cond, args...)
-	if err != nil {
+func offeredRules(ctx context.Context, q *gorm.DB, offered map[int64][]string, cond string, args ...any) ([]ruleOn, error) {
+	var rows []struct {
+		GroupID         int64                `gorm:"column:group_id"`
+		SegmentID       int64                `gorm:"column:segment_id"`
+		Model           string               `gorm:"column:model"`
+		ModelAllowlist  store.JSON[[]string] `gorm:"column:model_allowlist"`
+		ModelFilterMode string               `gorm:"column:model_filter_mode"`
+	}
+	if err := store.G(ctx, q).Table("price_rules pr").
+		Select("pr.group_id, COALESCE(pr.segment_id, 0) AS segment_id, pr.model, g.model_allowlist, g.model_filter_mode").
+		Joins("JOIN groups g ON g.id = pr.group_id").Where(cond, args...).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var all []ruleOn
+	all := make([]ruleOn, len(rows))
 	var missing []core.GroupInfo
 	seen := map[int64]bool{}
-	for rows.Next() {
-		var r ruleOn
-		var g core.GroupInfo
-		if err := rows.Scan(&r.groupID, &r.segmentID, &r.model, &g.ModelAllowlist, &g.ModelFilterMode); err != nil {
-			return nil, err
+	for i, r := range rows {
+		all[i] = ruleOn{groupID: r.GroupID, segmentID: r.SegmentID, model: r.Model}
+		if _, ok := offered[r.GroupID]; ok || seen[r.GroupID] {
+			continue
 		}
-		all = append(all, r)
-		if _, ok := offered[r.groupID]; !ok && !seen[r.groupID] {
-			g.ID, seen[r.groupID] = r.groupID, true
-			missing = append(missing, g)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		seen[r.GroupID] = true
+		missing = append(missing, core.GroupInfo{ID: r.GroupID, ModelAllowlist: r.ModelAllowlist.V, ModelFilterMode: r.ModelFilterMode})
 	}
 	if len(missing) > 0 {
 		more, err := offeredModels(ctx, q, missing)
@@ -158,7 +158,7 @@ func offeredRules(ctx context.Context, q store.Querier, offered map[int64][]stri
 // id, on the models the groups provide now (offeredRules): what the pricing
 // table of the group lists for the segment.
 func (s *Service) SegmentRuleCounts(ctx context.Context, segmentIDs []int64) (map[int64]map[int64]int64, error) {
-	rules, err := offeredRules(ctx, s.db.Pool, nil, `pr.segment_id = ANY($1)`, segmentIDs)
+	rules, err := offeredRules(ctx, s.db.Gorm, nil, `pr.segment_id = ANY(?)`, store.Int64s(segmentIDs))
 	if err != nil {
 		return nil, err
 	}

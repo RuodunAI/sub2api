@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
-	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,7 +19,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
@@ -31,33 +29,24 @@ import (
 // tests: sticky sessions and hook breaker/stats
 // then degrade to no-ops.
 type Deps struct {
-	CCGateway *ccgateway.Service
-	DB        *store.DB
-	Redis     redis.UniversalClient
-	Bus       core.Bus
-	Node      core.Node
+	DB    *store.DB
+	Redis redis.UniversalClient
+	Bus   core.Bus
+	Node  core.Node
 	// Environment supplies the global layer of the environment variables
 	// merged over the process layer (GlobalEnvironment, CONTRACTS §74.3);
 	// nil drops both and leaves only the group and account layers.
-	Environment   core.EnvironmentResolver
-	Registry      core.PluginRegistry
-	Auth          core.APIKeyAuthenticator
-	Pricer        core.Pricer
-	Balance       core.BalanceGate
-	Slots         core.Slots
-	Accounts      core.AccountDirectory
-	Proxies       core.ProxyDirectory
-	Settler       core.Settler
-	Observations  core.ObservationPublisher
-	Tasks         core.AsyncTasks
-	Resources     core.ProviderResources
-	Skills        core.SkillResources
-	Credits       core.FallbackCredits
-	HelperHistory core.HelperHistory
-	// Candidate gate remains off in production until the complete custody path
-	// has passed integration review. Existing known chains never bypass custody.
-	EnableHelperHistory bool
-	ResourceTransport   core.ProviderResourceTransport
+	Environment  core.EnvironmentResolver
+	Registry     core.PluginRegistry
+	Auth         core.APIKeyAuthenticator
+	Pricer       core.Pricer
+	Balance      core.BalanceGate
+	Slots        core.Slots
+	Accounts     core.AccountDirectory
+	Proxies      core.ProxyDirectory
+	Settler      core.Settler
+	Observations core.ObservationPublisher
+	Tasks        core.AsyncTasks
 	// Limiter enforces per-account rpm/tpm limits (CONTRACTS §18);
 	// nil = no limits.
 	Limiter core.AccountLimiter
@@ -110,17 +99,13 @@ type Gateway struct {
 	fingerprintKey []byte
 
 	// Overridable in tests.
-	now               func() time.Time
-	lookupIP          func(ctx context.Context, host string) ([]net.IP, error)
-	headerWait        func(stream bool) time.Duration
-	helperRuntime     func(context.Context, int64, string) (helperRuntimeInfo, error)
-	helperRequirement func(context.Context, int64, *http.Request) (string, error)
+	now        func() time.Time
+	lookupIP   func(ctx context.Context, host string) ([]net.IP, error)
+	headerWait func(stream bool) time.Duration
 	// randFloat drives the weighted order inside a priority (CONTRACTS §18).
 	randFloat func() float64
 	// ws holds the WebSocket session limits (websocket.go).
 	ws wsLimits
-	// At most four measured upload spools (2 GiB worst case) per process.
-	resourceSpools chan struct{}
 
 	// Model availability precheck budgets (availability.go); zero = the
 	// package constants. Overridable in tests.
@@ -159,14 +144,13 @@ func (g *Gateway) Conversion(clientProtocol, upstreamProtocol string) (core.Conv
 // Call Close on shutdown.
 func New(d Deps) *Gateway {
 	g := &Gateway{
-		d:              d,
-		now:            time.Now,
-		lookupIP:       defaultLookupIP,
-		headerWait:     defaultHeaderWait,
-		randFloat:      rand.Float64,
-		ws:             defaultWSLimits(),
-		resourceSpools: make(chan struct{}, 4),
-		stop:           make(chan struct{}),
+		d:          d,
+		now:        time.Now,
+		lookupIP:   defaultLookupIP,
+		headerWait: defaultHeaderWait,
+		randFloat:  rand.Float64,
+		ws:         defaultWSLimits(),
+		stop:       make(chan struct{}),
 	}
 	g.readsAbandoned, g.abandonReads = context.WithCancel(context.Background())
 	g.conv = d.Converters
@@ -242,7 +226,7 @@ func (g *Gateway) Close() {
 func (g *Gateway) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		method, path := c.Request.Method, c.Request.URL.Path
-		if g.serveKeyUsage(c) || g.serveResourceHTTP(c) {
+		if g.serveKeyUsage(c) {
 			c.Abort()
 			return
 		}

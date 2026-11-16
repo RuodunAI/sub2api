@@ -1,0 +1,6 @@
+-- sql
+DELETE FROM "events" WHERE id IN (SELECT "id" FROM "events" WHERE occurred_at < now() - make_interval(secs => $1) AND id <= (SELECT COALESCE(min(last_event_id), $2) FROM "plugin_event_cursors") ORDER BY id LIMIT $3)
+-- vars
+$1 float64 604800
+$2 int64 9223372036854775807
+$3 int 5000

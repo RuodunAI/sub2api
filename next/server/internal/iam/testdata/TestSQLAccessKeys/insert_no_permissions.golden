@@ -1,0 +1,9 @@
+-- sql
+INSERT INTO "user_access_keys" ("user_id","name","token_hash","token_hint","permissions","expires_at") SELECT $1, $2, $3, $4, $5, $6 FROM (SELECT) AS one RETURNING "id","name","token_hint","permissions","expires_at","last_used_at","last_used_ip","created_at"
+-- vars
+$1 int64 7
+$2 string "ci"
+$3 string "hash"
+$4 string "abcd"
+$5 store.Strings []
+$6 *time.Time nil

@@ -17,8 +17,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
@@ -28,8 +29,8 @@ import (
 
 type fakeTokens struct{ testutil.StepUpPassed }
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(tok, "u"), 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "u")
 }
 
 // VerifyAccessKey reads "sak_<uid>" as an access key acting for uid.
@@ -104,7 +105,7 @@ func testCipher(t *testing.T) *secret.Cipher {
 func addUser(t *testing.T, db *store.DB, email string) int64 {
 	t.Helper()
 	var id int64
-	if err := db.Pool.QueryRow(context.Background(),
+	if err := db.SQL.QueryRowContext(context.Background(),
 		`INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +189,7 @@ func TestProxyCRUDTestAndDirectory(t *testing.T) {
 	ctx := context.Background()
 	bus := &fakeBus{}
 	reg := &fakeRegistry{gen: &fakeGen{keys: []string{"p"}}}
-	svc := New(db, testCipher(t), bus, Options{ProbeURL: "http://probe.example.invalid/generate_204", Registry: reg})
+	svc := New(db, testCipher(t), bus, Options{ProbeURL: "http://probe.example.invalid/generate_204", Registry: reg, ScopeGrants: authz.New(authz.Deps{})})
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go svc.Run(runCtx)
@@ -217,7 +218,7 @@ func TestProxyCRUDTestAndDirectory(t *testing.T) {
 		t.Fatalf("created_by: %v", p)
 	}
 	var enc []byte
-	_ = db.Pool.QueryRow(ctx, `SELECT password_enc FROM proxies WHERE id = $1`, id).Scan(&enc)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT password_enc FROM proxies WHERE id = $1`, id).Scan(&enc)
 	if bytes.Contains(enc, []byte("s3cret")) {
 		t.Fatal("password stored in plaintext")
 	}
@@ -300,7 +301,7 @@ func TestProxyCRUDTestAndDirectory(t *testing.T) {
 
 	// A change made elsewhere (direct DB write) is picked up after recheck.
 	svc.opts.RecheckInterval = time.Millisecond
-	if _, err := db.Pool.Exec(ctx, `UPDATE proxies SET status = 'disabled', updated_at = clock_timestamp() WHERE id = $1`, id); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE proxies SET status = 'disabled', updated_at = clock_timestamp() WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(5 * time.Millisecond)
@@ -319,7 +320,7 @@ func TestProxyCRUDTestAndDirectory(t *testing.T) {
 	}
 
 	// Delete is refused while an account uses the proxy.
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id)
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id)
 		VALUES ('a', 'p', 't', '\x00', $1)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +340,7 @@ func TestProxyCRUDTestAndDirectory(t *testing.T) {
 		t.Fatalf("delete in use by an orphaned account: %d", code)
 	}
 	reg.gen = &fakeGen{keys: []string{"p"}}
-	_, _ = db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at = now()`)
+	_, _ = db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at = now()`)
 	if code, _ = do(t, engine, admin, "DELETE", fmt.Sprintf("/proxies/%d", id), nil); code != 204 {
 		t.Fatalf("delete: %d", code)
 	}
@@ -352,7 +353,7 @@ func TestProxyCRUDTestAndDirectory(t *testing.T) {
 	}
 
 	// Audit trail of the three writes.
-	rows, err := db.Pool.Query(ctx, `SELECT action, user_id, target_type, target_id, detail FROM audit_logs ORDER BY id`)
+	rows, err := db.SQL.QueryContext(ctx, `SELECT action, user_id, target_type, target_id, detail FROM audit_logs ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +394,7 @@ func TestOwnership(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := testutil.DB(t)
 	ctx := context.Background()
-	svc := New(db, testCipher(t), nil, Options{ProbeURL: "http://probe.example.invalid/generate_204"})
+	svc := New(db, testCipher(t), nil, Options{ProbeURL: "http://probe.example.invalid/generate_204", ScopeGrants: authz.New(authz.Deps{})})
 	admin := addUser(t, db, "admin@x.com")
 	alice := addUser(t, db, "alice@x.com")
 	bob := addUser(t, db, "bob@x.com")
@@ -422,7 +423,7 @@ func TestOwnership(t *testing.T) {
 	pAlice := create(alice, "alice's")
 	pBob := create(bob, "bob's")
 	var pLegacy int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO proxies (name, protocol, host, port) VALUES ('legacy', 'http', 'h', 1) RETURNING id`).Scan(&pLegacy); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies (name, protocol, host, port) VALUES ('legacy', 'http', 'h', 1) RETURNING id`).Scan(&pLegacy); err != nil {
 		t.Fatal(err)
 	}
 
@@ -483,7 +484,7 @@ func TestOwnership(t *testing.T) {
 		}
 	}
 	var name string
-	_ = db.Pool.QueryRow(ctx, `SELECT name FROM proxies WHERE id = $1`, pBob).Scan(&name)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT name FROM proxies WHERE id = $1`, pBob).Scan(&name)
 	if name != "bob's" {
 		t.Fatalf("bob's proxy renamed: %s", name)
 	}
@@ -514,7 +515,7 @@ func TestOwnership(t *testing.T) {
 	if code != 200 || data(out)["created_by"] != nil || data(out)["created_by_email"] != nil {
 		t.Fatalf("admin get legacy: %d %v", code, out)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, bob); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, bob); err != nil {
 		t.Fatal(err)
 	}
 	code, out = do(t, engine, admin, "GET", fmt.Sprintf("/proxies/%d", pBob), nil)
@@ -527,7 +528,7 @@ func TestOwnership(t *testing.T) {
 
 	// Under the own range a proxy in use still reports the full account
 	// count, but only for the caller's own proxy.
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id, created_by)
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id, created_by)
 		VALUES ('a1', 'p', 't', '\x00', $1, $2), ('a2', 'p', 't', '\x00', $1, $3)`, pAlice, admin, bob); err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +536,7 @@ func TestOwnership(t *testing.T) {
 	if code != 409 || out["error"].(map[string]any)["details"].(map[string]any)["account_count"].(float64) != 2 {
 		t.Fatalf("alice delete in use: %d %v", code, out)
 	}
-	if _, err := db.Pool.Exec(ctx, `UPDATE accounts SET deleted_at = now()`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at = now()`); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ = do(t, engine, alice, "DELETE", fmt.Sprintf("/proxies/%d", pAlice), nil); code != 204 {
@@ -559,7 +560,7 @@ func TestFindOrCreate(t *testing.T) {
 		}
 		var id int64
 		var created bool
-		err := db.Tx(ctx, func(tx pgx.Tx) error {
+		err := db.Tx(ctx, func(tx *gorm.DB) error {
 			var err error
 			id, created, err = svc.FindOrCreate(ctx, tx, spec, owner, scope)
 			return err
@@ -571,7 +572,7 @@ func TestFindOrCreate(t *testing.T) {
 	}
 	load := func(id int64) (name, status string, createdBy *int64, hasPassword bool) {
 		t.Helper()
-		if err := db.Pool.QueryRow(ctx, `SELECT name, status, created_by, password_enc IS NOT NULL FROM proxies WHERE id = $1`, id).
+		if err := db.SQL.QueryRowContext(ctx, `SELECT name, status, created_by, password_enc IS NOT NULL FROM proxies WHERE id = $1`, id).
 			Scan(&name, &status, &createdBy, &hasPassword); err != nil {
 			t.Fatal(err)
 		}
@@ -621,7 +622,7 @@ func TestFindOrCreate(t *testing.T) {
 		t.Fatalf("all scope resolved %d created=%v", id, created)
 	}
 	// Disabled proxies are skipped.
-	if _, err := db.Pool.Exec(ctx, `UPDATE proxies SET status = 'disabled' WHERE id = $1`, p1); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE proxies SET status = 'disabled' WHERE id = $1`, p1); err != nil {
 		t.Fatal(err)
 	}
 	if id, created := resolve(spec, bob, nil); id != p4 || created {
@@ -632,14 +633,14 @@ func TestFindOrCreate(t *testing.T) {
 	}
 	// Host matching is case-insensitive against rows created by hand.
 	var mixed int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO proxies (name, protocol, host, port, created_by) VALUES ('m', 'http', 'MiXed.Example', 3128, $1) RETURNING id`, alice).Scan(&mixed); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO proxies (name, protocol, host, port, created_by) VALUES ('m', 'http', 'MiXed.Example', 3128, $1) RETURNING id`, alice).Scan(&mixed); err != nil {
 		t.Fatal(err)
 	}
 	if id, created := resolve(Spec{Protocol: "http", Host: "mixed.example", Port: 3128}, alice, &alice); id != mixed || created {
 		t.Fatalf("case-insensitive host: %d created=%v", id, created)
 	}
 	// Invalid specs are refused before touching the database.
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		_, _, err := svc.FindOrCreate(ctx, tx, Spec{Protocol: "ftp", Host: "h", Port: 1}, alice, core.AllScope)
 		return err
 	}); core.AsError(err).Code != "invalid_argument" {
@@ -647,14 +648,14 @@ func TestFindOrCreate(t *testing.T) {
 	}
 
 	// Audit for an automatic creation, in the caller's transaction.
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		return svc.AuditAutoCreate(ctx, tx, p1, alice, 42)
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var detail map[string]any
 	var uid int64
-	if err := db.Pool.QueryRow(ctx, `SELECT user_id, detail FROM audit_logs WHERE action = 'proxy.create' AND target_type = 'proxy' AND target_id = $1`,
+	if err := db.SQL.QueryRowContext(ctx, `SELECT user_id, detail FROM audit_logs WHERE action = 'proxy.create' AND target_type = 'proxy' AND target_id = $1`,
 		strconv.FormatInt(p1, 10)).Scan(&uid, &detail); err != nil {
 		t.Fatal(err)
 	}
@@ -677,7 +678,7 @@ func TestFindOrCreate(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = db.Tx(ctx, func(tx pgx.Tx) error {
+			_ = db.Tx(ctx, func(tx *gorm.DB) error {
 				id, created, err := svc.FindOrCreate(ctx, tx, fresh, alice, core.DataScope{Owner: alice})
 				if err != nil {
 					return err
@@ -697,7 +698,7 @@ func TestFindOrCreate(t *testing.T) {
 		t.Fatalf("race results %+v", results)
 	}
 	var n int
-	_ = db.Pool.QueryRow(ctx, `SELECT count(*) FROM proxies WHERE host = 'race.example'`).Scan(&n)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM proxies WHERE host = 'race.example'`).Scan(&n)
 	if n != 1 {
 		t.Fatalf("race created %d rows", n)
 	}

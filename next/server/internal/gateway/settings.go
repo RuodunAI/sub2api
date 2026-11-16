@@ -6,8 +6,11 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const (
@@ -227,26 +230,26 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 		s.at = time.Now()
 		return s
 	}
-	s.failurePolicy, s.failurePolicyErr = loadFailurePolicy(ctx, c.db.Pool)
+	s.failurePolicy, s.failurePolicyErr = loadFailurePolicy(ctx, c.db.Gorm)
 	if s.failurePolicyErr != nil {
 		return s
 	}
-	gw, err := loadGatewaySettings(ctx, c.db.Pool)
+	gw, err := loadGatewaySettings(ctx, c.db.Gorm)
 	if err != nil {
 		return s
 	}
 	s.gateway = gw.normalized()
-	st, err := loadStickySettings(ctx, c.db.Pool)
+	st, err := loadStickySettings(ctx, c.db.Gorm)
 	if err != nil {
 		return s
 	}
 	s.sticky = st
-	ad, err := loadAutoDisableSettings(ctx, c.db.Pool)
+	ad, err := loadAutoDisableSettings(ctx, c.db.Gorm)
 	if err != nil {
 		return s
 	}
 	s.autoDisable = ad
-	sc, err := loadSchedulingSettings(ctx, c.db.Pool)
+	sc, err := loadSchedulingSettings(ctx, c.db.Gorm)
 	if err != nil {
 		return s
 	}
@@ -254,26 +257,35 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 	return s
 }
 
-func loadSettingsRow(ctx context.Context, q store.Querier, key string, into any) error {
+// settingValue reads the document of settings row key, nil when there is no
+// row (the column is NOT NULL): one row read through Row. The settings
+// cache reloads it once per settingsTTL, in the request that finds the
+// cache stale.
+func settingValue(ctx context.Context, q *gorm.DB, key string) ([]byte, error) {
 	var raw []byte
-	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&raw)
+	err := store.G(ctx, q).Model(&model.Setting{}).Select("value").Where("key = ?", key).Row().Scan(&raw)
 	if store.IsNoRows(err) {
-		return nil
+		return nil, nil
 	}
-	if err != nil {
+	return raw, err
+}
+
+func loadSettingsRow(ctx context.Context, q *gorm.DB, key string, into any) error {
+	raw, err := settingValue(ctx, q, key)
+	if err != nil || raw == nil {
 		return err
 	}
 	// Fields absent from the stored document keep the defaults in into.
 	return json.Unmarshal(raw, into)
 }
 
-func loadGatewaySettings(ctx context.Context, q store.Querier) (GatewaySettings, error) {
+func loadGatewaySettings(ctx context.Context, q *gorm.DB) (GatewaySettings, error) {
 	v := defaultGatewaySettings()
 	err := loadSettingsRow(ctx, q, settingsKeyGateway, &v)
 	return v, err
 }
 
-func loadStickySettings(ctx context.Context, q store.Querier) (StickySettings, error) {
+func loadStickySettings(ctx context.Context, q *gorm.DB) (StickySettings, error) {
 	v := defaultStickySettings()
 	err := loadSettingsRow(ctx, q, settingsKeySticky, &v)
 	if v.DefaultTTLSeconds <= 0 {

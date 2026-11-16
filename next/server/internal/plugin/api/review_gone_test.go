@@ -32,7 +32,7 @@ func TestReviewOfAVersionWhosePackageIsGone(t *testing.T) {
 		t.Fatalf("review before the removal = %d %v", code, out)
 	}
 	var sum string
-	if err := h.db.Pool.QueryRow(context.Background(), `SELECT package_sha256 FROM plugin_versions WHERE plugin_key = 'guard' AND version = '0.1.0'`).Scan(&sum); err != nil {
+	if err := h.db.SQL.QueryRowContext(context.Background(), `SELECT package_sha256 FROM plugin_versions WHERE plugin_key = 'guard' AND version = '0.1.0'`).Scan(&sum); err != nil {
 		t.Fatal(err)
 	}
 	dir := string(registrytest.Source().Store.(blobs.Dir))

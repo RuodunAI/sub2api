@@ -1,8 +1,11 @@
 package routes
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"slices"
 	"strconv"
@@ -33,22 +36,20 @@ func (h *Handler) authorizeAccounts(c *gin.Context, acc *manifest.RouteAccounts,
 	return true
 }
 
-// accountIDs collects the distinct account ids the request names under from:
-// path parameters, query parameters (every value) and top-level JSON body
-// fields. Body field names match case-insensitively, as encoding/json does
-// when the plugin decodes the body. A body that is no JSON object names none.
+// accountIDs collects the distinct account ids the request names under from
+// (requestValues), each a decimal integer.
 func accountIDs(from []string, params map[string]string, query url.Values, body []byte) ([]int64, error) {
-	var fields map[string]json.RawMessage
-	_ = json.Unmarshal(body, &fields)
 	var ids []int64
 	for _, f := range from {
-		source, name, _ := manifest.ParseAccountsFrom(f)
-		more, err := sourceIDs(source, name, params, query, fields)
-		if err != nil {
-			return nil, core.InvalidFields(core.FieldError{Field: name, Code: "invalid",
-				Message: "must be an account id, a list of account ids or a comma-separated string of them"})
+		vals, err := requestValues(f, params, query, body)
+		for _, v := range vals {
+			id, perr := strconv.ParseInt(v, 10, 64)
+			err = errors.Join(err, perr)
+			ids = append(ids, id)
 		}
-		ids = append(ids, more...)
+		if err != nil {
+			return nil, valueError(f, err, "must be an account id, a list of account ids or a comma-separated string of them")
+		}
 	}
 	slices.Sort(ids)
 	if ids = slices.Compact(ids); len(ids) > manifest.MaxAccountBatch {
@@ -57,64 +58,126 @@ func accountIDs(from []string, params map[string]string, query url.Values, body 
 	return ids, nil
 }
 
-// sourceIDs reads the ids of one RouteAccounts.From entry.
-func sourceIDs(source, name string, params map[string]string, query url.Values, fields map[string]json.RawMessage) ([]int64, error) {
+// requestValues reads the values the request names under one from entry
+// (manifest.ParseAccountsFrom): a path parameter, every value of a query
+// parameter, or a top-level JSON body field. Query and body names match
+// case-insensitively, as encoding/json does when the plugin decodes the
+// body: every value a plugin could read under the name is checked. A body
+// naming the field twice is refused (fieldValues); a body that is no JSON
+// object names none. Every value may be a comma-separated string; empty
+// parts are skipped.
+func requestValues(from string, params map[string]string, query url.Values, body []byte) ([]string, error) {
+	source, name, _ := manifest.ParseAccountsFrom(from)
 	switch source {
 	case manifest.AccountsFromPath:
-		return splitIDs(params[name])
+		return splitValues(params[name]), nil
 	case manifest.AccountsFromQuery:
-		return splitIDs(query[name]...)
+		var vals []string
+		for k, vs := range query {
+			if strings.EqualFold(k, name) {
+				vals = append(vals, vs...)
+			}
+		}
+		return splitValues(vals...), nil
 	case manifest.AccountsFromBody:
-		return fieldIDs(fields, name)
+		return fieldValues(body, name)
 	}
 	return nil, nil
 }
 
-// fieldIDs reads every body field named name, in any case.
-func fieldIDs(fields map[string]json.RawMessage, name string) ([]int64, error) {
-	var ids []int64
-	for k, raw := range fields {
-		if !strings.EqualFold(k, name) {
-			continue
+// errDuplicateField: the body names the field more than once. A decoder
+// keeps one occurrence (encoding/json the last, gjson the first), so the
+// core would check one while the plugin acts on another.
+var errDuplicateField = errors.New("named more than once")
+
+// valueError is the 400 for the values under from: errDuplicateField, or
+// the given message for a value that is not one.
+func valueError(from string, err error, invalid string) error {
+	_, name, _ := manifest.ParseAccountsFrom(from)
+	fe := core.FieldError{Field: name, Code: "invalid", Message: invalid}
+	if errors.Is(err, errDuplicateField) {
+		fe.Code, fe.Message = "duplicate", "must be named once (in any case)"
+	}
+	return core.InvalidFields(fe)
+}
+
+// fieldValues reads the top-level body field named name, in any case; more
+// than one such field is errDuplicateField. The object is walked token by
+// token, each member value decoded whole, so a nested field of that name
+// counts for nothing. A body that is no JSON object names none.
+func fieldValues(body []byte, name string) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, nil
+	}
+	var found []json.RawMessage
+	for dec.More() {
+		tok, err := dec.Token()
+		var raw json.RawMessage
+		if err == nil {
+			err = dec.Decode(&raw)
 		}
-		more, err := rawIDs(raw)
 		if err != nil {
-			return nil, err
+			return nil, nil
 		}
-		ids = append(ids, more...)
+		if k, _ := tok.(string); strings.EqualFold(k, name) {
+			found = append(found, raw)
+		}
 	}
-	return ids, nil
+	// The closing brace, then nothing: trailing data is no JSON object.
+	if _, err := dec.Token(); err != nil {
+		return nil, nil
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, nil
+	}
+	switch len(found) {
+	case 0:
+		return nil, nil
+	case 1:
+		return rawValues(found[0])
+	}
+	return nil, errDuplicateField
 }
 
-// rawIDs reads a JSON number, array of numbers or comma-separated string.
-func rawIDs(raw json.RawMessage) ([]int64, error) {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return splitIDs(s)
+var errBadValue = errors.New("not a string, a number or an array of them")
+
+// rawValues reads a JSON string, number or array of them; null names none.
+func rawValues(raw json.RawMessage) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
 	}
-	var ids []int64
-	if json.Unmarshal(raw, &ids) == nil {
-		return ids, nil
+	items, isArray := v.([]any)
+	if !isArray {
+		items = []any{v}
 	}
-	var id int64
-	err := json.Unmarshal(raw, &id)
-	return []int64{id}, err
+	var out []string
+	for _, item := range items {
+		switch x := item.(type) {
+		case string:
+			out = append(out, splitValues(x)...)
+		case json.Number:
+			out = append(out, x.String())
+		case nil: // null names none
+		default:
+			return nil, errBadValue
+		}
+	}
+	return out, nil
 }
 
-// splitIDs parses comma-separated ids; empty parts are skipped.
-func splitIDs(vals ...string) ([]int64, error) {
-	var ids []int64
+// splitValues splits comma-separated values; empty parts are skipped.
+func splitValues(vals ...string) []string {
+	var out []string
 	for _, v := range vals {
 		for _, part := range strings.Split(v, ",") {
-			if part = strings.TrimSpace(part); part == "" {
-				continue
+			if part = strings.TrimSpace(part); part != "" {
+				out = append(out, part)
 			}
-			id, err := strconv.ParseInt(part, 10, 64)
-			if err != nil {
-				return nil, err
-			}
-			ids = append(ids, id)
 		}
 	}
-	return ids, nil
+	return out
 }

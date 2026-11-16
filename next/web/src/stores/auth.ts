@@ -11,9 +11,8 @@ export const useAuthStore = defineStore('auth', () => {
   const me = ref<Me | null>(null)
   const balance = ref<string | null>(null)
   const loggedIn = ref(!!session.get())
-  /** The session ended because it could not be renewed (login page shows a notice). */
+  /** The server ended the session (login page shows a notice). */
   const sessionExpired = ref(false)
-  const permSet = computed(() => new Set(me.value?.permissions || []))
   /** The held keys as patterns (CONTRACTS §21): a key is held when one of them implies it. */
   const permIndex = computed(() => permissionIndex(me.value?.permissions || []))
   /**
@@ -58,15 +57,6 @@ export const useAuthStore = defineStore('auth', () => {
   /** The scopes of action held (all of them for a superuser); [] when not held. */
   function scopes(action: string): Scope[] {
     return me.value?.superuser ? [ALL_SCOPE] : permIndex.value.scopes(action)
-  }
-
-  /**
-   * `perm` is in the /me permission list itself, with no superuser shortcut:
-   * for a superuser the list is every active permission, so a key that is
-   * not one says nothing about who the caller is (the plugin iframe bridge).
-   */
-  function holds(perm: string): boolean {
-    return permSet.value.has(perm)
   }
 
   /** Returns the flow token when the account asks for a second factor; the login is not done yet. */
@@ -137,7 +127,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout() {
     try {
-      if (session.get()) await api.post('/auth/logout', { refresh_token: session.get()?.refresh_token })
+      if (session.get()) await api.post('/auth/logout')
     } catch {
       /* ignore */
     }
@@ -155,7 +145,6 @@ export const useAuthStore = defineStore('auth', () => {
     hasDynamic,
     hasAction,
     scopes,
-    holds,
     login,
     loginSecondFactor,
     loginWithPasskey,

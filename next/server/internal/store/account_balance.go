@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Account balance snapshots (table account_balances, CONTRACTS §51).
@@ -24,10 +28,16 @@ type BalanceSnapshot struct {
 	ErrorAt      *time.Time `json:"error_at"`
 }
 
-const selectBalance = `SELECT account_id, amount_micros, currency, source, updated_at, error, error_at
-	FROM account_balances`
+// balanceColumns are the account_balances columns scanBalance reads, in
+// order.
+const balanceColumns = "account_id, amount_micros, currency, source, updated_at, error, error_at"
 
-func scanBalance(r interface{ Scan(...any) error }) (*BalanceSnapshot, error) {
+// balances selects balanceColumns of account_balances.
+func balances(db *gorm.DB) *gorm.DB { return db.Table(balanceTable).Select(balanceColumns) }
+
+const balanceTable = "account_balances"
+
+func scanBalance(r RowScanner) (*BalanceSnapshot, error) {
 	var b BalanceSnapshot
 	if err := r.Scan(&b.AccountID, &b.AmountMicros, &b.Currency, &b.Source, &b.UpdatedAt, &b.Error, &b.ErrorAt); err != nil {
 		return nil, err
@@ -37,7 +47,7 @@ func scanBalance(r interface{ Scan(...any) error }) (*BalanceSnapshot, error) {
 
 // AccountBalance returns the snapshot of one account, nil when it has none.
 func (d *DB) AccountBalance(ctx context.Context, accountID int64) (*BalanceSnapshot, error) {
-	b, err := scanBalance(d.Pool.QueryRow(ctx, selectBalance+` WHERE account_id = $1`, accountID))
+	b, err := scanBalance(balances(G(ctx, d.Gorm)).Where("account_id = ?", accountID).Row())
 	if IsNoRows(err) {
 		return nil, nil
 	}
@@ -51,39 +61,48 @@ func (d *DB) AccountBalances(ctx context.Context, accountIDs []int64) (map[int64
 	if len(accountIDs) == 0 {
 		return out, nil
 	}
-	rows, err := d.Pool.Query(ctx, selectBalance+` WHERE account_id = ANY($1)`, accountIDs)
+	err := EachRow(balances(G(ctx, d.Gorm)).Where("account_id = ANY(?)", Int64s(accountIDs)), func(rows *sql.Rows) error {
+		b, err := scanBalance(rows)
+		if err == nil {
+			out[b.AccountID] = b
+		}
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		b, err := scanBalance(rows)
-		if err != nil {
-			return nil, err
-		}
-		out[b.AccountID] = b
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // UpsertBalance writes one balance snapshot.
 func (d *DB) UpsertBalance(ctx context.Context, b *BalanceSnapshot) error {
-	_, err := d.Pool.Exec(ctx, `
-		INSERT INTO account_balances (account_id, amount_micros, currency, source, updated_at, error, error_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (account_id) DO UPDATE SET
-			amount_micros = EXCLUDED.amount_micros,
-			currency = EXCLUDED.currency,
-			source = EXCLUDED.source,
-			updated_at = EXCLUDED.updated_at,
-			error = EXCLUDED.error,
-			error_at = EXCLUDED.error_at
-	`, b.AccountID, b.AmountMicros, b.Currency, b.Source, b.UpdatedAt, b.Error, b.ErrorAt)
-	return err
+	return upsertBalance(G(ctx, d.Gorm), b).Error
 }
+
+func upsertBalance(db *gorm.DB, b *BalanceSnapshot) *gorm.DB {
+	return db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "account_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"amount_micros", "currency", "source", "updated_at", "error", "error_at"}),
+	}).Create(&balanceRow{AccountID: b.AccountID, AmountMicros: b.AmountMicros, Currency: b.Currency, Source: b.Source,
+		UpdatedAt: b.UpdatedAt, Error: b.Error, ErrorAt: b.ErrorAt})
+}
+
+// balanceRow is the account_balances row of a snapshot, every column
+// written as given. updated_at is a pointer: a time.Time updated_at would
+// be stamped (and read back) by store when zero.
+type balanceRow struct {
+	AccountID    int64      `gorm:"column:account_id"`
+	AmountMicros int64      `gorm:"column:amount_micros"`
+	Currency     string     `gorm:"column:currency"`
+	Source       string     `gorm:"column:source"`
+	UpdatedAt    *time.Time `gorm:"column:updated_at;autoUpdateTime:false"`
+	Error        string     `gorm:"column:error"`
+	ErrorAt      *time.Time `gorm:"column:error_at"`
+}
+
+func (balanceRow) TableName() string { return balanceTable }
 
 // DeleteBalance removes the balance snapshot of one account.
 func (d *DB) DeleteBalance(ctx context.Context, accountID int64) error {
-	_, err := d.Pool.Exec(ctx, `DELETE FROM account_balances WHERE account_id = $1`, accountID)
-	return err
+	return G(ctx, d.Gorm).Table(balanceTable).Where("account_id = ?", accountID).Delete(nil).Error
 }

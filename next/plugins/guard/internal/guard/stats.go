@@ -6,11 +6,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/model"
 )
 
 // TrendPoint is one bucket of the stats trend.
@@ -139,51 +141,42 @@ func (p *Plugin) getStats(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 		st.Bucket = "day"
 	}
 	// Minutely rows are kept 8 days; older windows read the hourly rollup.
-	q := statsQuery{db: db, table: "stats_minutely", col: "minute", from: from, to: to, loc: loc}
+	q := statsQuery{model: &model.StatsMinutely{}, col: clause.Column{Name: "minute"}, from: from, to: to, loc: loc}
 	if from.Before(now.Add(-7 * 24 * time.Hour)) {
-		q.table, q.col = "stats_hourly", "hour"
+		q.model, q.col = &model.StatsHourly{}, clause.Column{Name: "hour"}
 	}
-	q.bucketExpr = "date_trunc('hour', " + q.col + ", 'UTC')"
+	q.bucket = clause.Expr{SQL: "date_trunc('hour', ?, 'UTC')", Vars: []any{q.col}}
 	if st.Bucket == "day" {
-		q.bucketExpr = "date_trunc('day', " + q.col + ", $3)"
+		q.bucket = clause.Expr{SQL: "date_trunc('day', ?, ?)", Vars: []any{q.col, loc.String()}}
 	}
-	if err := q.trend(ctx, &st); err != nil {
+	if err := q.trend(db, &st); err != nil {
 		return nil, err
 	}
-	if err := statsTopRules(ctx, db, &st, from, to); err != nil {
+	if err := statsTopRules(db, &st, from, to); err != nil {
 		return nil, err
 	}
-	if err := statsRecent(ctx, db, &st, from, to); err != nil {
+	if err := statsRecent(db, &st, from, to); err != nil {
 		return nil, err
 	}
 	return pluginsdk.DataResponse(st), nil
 }
 
-// statsQuery is the trend statement's inputs. table, col and bucketExpr are
-// SQL fragments chosen from the constants in getStats (never from a request),
-// and $3 binds loc.
+// statsQuery is the trend statement's inputs. model and col, the table and
+// its time column, are chosen in getStats (never from a request); a day
+// bucket binds loc.
 type statsQuery struct {
-	db         *pgxpool.Pool
-	table      string
-	col        string
-	bucketExpr string
-	from, to   time.Time
-	loc        *time.Location
+	model    any
+	col      clause.Column
+	bucket   clause.Expr
+	from, to time.Time
+	loc      *time.Location
 }
 
 // trend fills the trend (with empty buckets) and the two totals.
-func (q statsQuery) trend(ctx context.Context, st *Stats) error {
-	rows, err := q.db.Query(ctx, `SELECT `+q.bucketExpr+` AS ts, sum(blocked)::bigint, sum(requests)::bigint
-		FROM `+q.table+` WHERE `+q.col+` >= $1 AND `+q.col+` < $2 AND $3::text IS NOT NULL
-		GROUP BY 1 ORDER BY 1`, q.from, q.to, q.loc.String())
-	if err != nil {
-		return err
-	}
-	points, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (TrendPoint, error) {
-		var tp TrendPoint
-		err := r.Scan(&tp.TS, &tp.Blocked, &tp.Total)
-		return tp, err
-	})
+func (q statsQuery) trend(db *gorm.DB, st *Stats) error {
+	var points []TrendPoint
+	err := db.Model(q.model).Select("? AS ts, sum(blocked)::bigint AS blocked, sum(requests)::bigint AS total", q.bucket).
+		Where("? >= ? AND ? < ?", q.col, q.from, q.col, q.to).Group("ts").Order("ts").Scan(&points).Error
 	if err != nil {
 		return err
 	}
@@ -204,36 +197,23 @@ func (q statsQuery) trend(ctx context.Context, st *Stats) error {
 	return nil
 }
 
+// statsTopRules and statsRecent scan into the [] getStats starts from: a
+// Scan that finds no row leaves it alone, so the JSON shows [] and not null.
+
 // statsTopRules fills the ten rules that blocked most often.
-func statsTopRules(ctx context.Context, db *pgxpool.Pool, st *Stats, from, to time.Time) error {
-	rows, err := db.Query(ctx, `SELECT b.rule_id, coalesce(r.name, max(b.rule_name)), coalesce(r.kind, ''), coalesce(r.pattern, ''), count(*)
-		FROM block_log b LEFT JOIN rules r ON r.id = b.rule_id
-		WHERE b.occurred_at >= $1 AND b.occurred_at < $2
-		GROUP BY b.rule_id, r.name, r.kind, r.pattern
-		ORDER BY count(*) DESC, b.rule_id LIMIT 10`, from, to)
-	if err != nil {
-		return err
-	}
-	st.TopRules, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (TopRule, error) {
-		var tr TopRule
-		err := r.Scan(&tr.RuleID, &tr.Name, &tr.Kind, &tr.Pattern, &tr.Hits)
-		return tr, err
-	})
-	return err
+func statsTopRules(db *gorm.DB, st *Stats, from, to time.Time) error {
+	return db.Table("block_log b").
+		Select("b.rule_id, coalesce(r.name, max(b.rule_name)) AS name, coalesce(r.kind, '') AS kind, coalesce(r.pattern, '') AS pattern, count(*) AS hits").
+		Joins("LEFT JOIN rules r ON r.id = b.rule_id").
+		Where("b.occurred_at >= ? AND b.occurred_at < ?", from, to).
+		Group("b.rule_id, r.name, r.kind, r.pattern").
+		Order("count(*) DESC, b.rule_id").Limit(10).Scan(&st.TopRules).Error
 }
 
 // statsRecent fills the twenty most recent blocks.
-func statsRecent(ctx context.Context, db *pgxpool.Pool, st *Stats, from, to time.Time) error {
-	rows, err := db.Query(ctx, `SELECT occurred_at, rule_id, rule_name, request_id, user_id, group_id, model, coalesce(snippet, '')
-		FROM block_log WHERE occurred_at >= $1 AND occurred_at < $2
-		ORDER BY occurred_at DESC, id DESC LIMIT 20`, from, to)
-	if err != nil {
-		return err
-	}
-	st.Recent, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (RecentBlock, error) {
-		var rb RecentBlock
-		err := r.Scan(&rb.OccurredAt, &rb.RuleID, &rb.RuleName, &rb.RequestID, &rb.UserID, &rb.GroupID, &rb.Model, &rb.Snippet)
-		return rb, err
-	})
-	return err
+func statsRecent(db *gorm.DB, st *Stats, from, to time.Time) error {
+	return db.Model(&model.BlockLog{}).
+		Select("occurred_at, rule_id, rule_name, request_id, user_id, group_id, model, coalesce(snippet, '') AS snippet").
+		Where("occurred_at >= ? AND occurred_at < ?", from, to).
+		Order("occurred_at DESC, id DESC").Limit(20).Scan(&st.Recent).Error
 }

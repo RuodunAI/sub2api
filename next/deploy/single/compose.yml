@@ -30,16 +30,23 @@ services:
     image: ${CACHE_IMAGE:-valkey/valkey:9}
     restart: unless-stopped
     mem_limit: 256m
-    # Real-time state only (nodes, slots, caches): PostgreSQL is the source of truth.
+    # Real-time state (nodes, slots, caches), and the console sign-ins: the
+    # login sessions and auth flows live only here (CONTRACTS §100.5), so an
+    # append-only file (fsync every second) keeps them across a restart of the
+    # cache (host reboot, image update, OOM kill); without it every console
+    # user is signed out, with no alert. Everything else is rebuilt from
+    # PostgreSQL. The file is in the redisdata volume (/data, both images).
     # Flags only: both images' entrypoints prepend their own server binary.
     # requirepass: plugins can reach the project network, so the cache must
     # not accept unauthenticated clients. REDIS_PASSWORD is hex (no URL
     # escaping in the clients' redis://:PASSWORD@redis:6379/0 URLs). The
     # server replaces its process title, so the flag does not stay visible
     # in the host's process list.
-    command: ["--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD (hex) in .env}", "--save", "", "--appendonly", "no", "--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
+    command: ["--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD (hex) in .env}", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD (hex) in .env}
+    volumes:
+      - redisdata:/data
     healthcheck:
       # The CLIs read the password from the environment, not the command line.
       test: ["CMD-SHELL", "export REDISCLI_AUTH=\"$$REDIS_PASSWORD\" VALKEYCLI_AUTH=\"$$REDIS_PASSWORD\"; (valkey-cli ping 2>/dev/null || redis-cli ping) | grep -q PONG"]
@@ -80,7 +87,6 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       SUB2API_LOG_LEVEL: ${SUP2API_LOG_LEVEL:-info}
       SUB2API_MASTER_KEY: ${SUB2API_MASTER_KEY:?set SUB2API_MASTER_KEY in .env}
-      SUB2API_JWT_SECRET: ${SUB2API_JWT_SECRET:?set SUB2API_JWT_SECRET in .env}
       SUB2API_BOOTSTRAP_ADMIN_EMAIL: ${SUB2API_BOOTSTRAP_ADMIN_EMAIL:?set SUB2API_BOOTSTRAP_ADMIN_EMAIL in .env}
       SUB2API_BOOTSTRAP_ADMIN_PASSWORD: ${SUB2API_BOOTSTRAP_ADMIN_PASSWORD:?set SUB2API_BOOTSTRAP_ADMIN_PASSWORD in .env}
       SUB2API_PLUGIN_DIR: /var/lib/sub2api/plugins
@@ -146,6 +152,7 @@ services:
 
 volumes:
   pgdata: {}
+  redisdata: {}
   appdata: {}
   appdata2: {}
   market: {}

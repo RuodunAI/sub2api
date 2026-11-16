@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/httpfacts"
 	"io"
 	"log/slog"
 	"net/http"
@@ -143,7 +142,7 @@ func clientError(format string, err *gwError) *gwError {
 func writeError(c *gin.Context, format string, err *gwError) {
 	err = clientError(format, err)
 	if !c.Writer.Written() {
-		httpfacts.Apply(c.Writer.Header(), err.Headers)
+		core.ApplyProviderHeaders(c.Writer.Header(), err.Headers)
 	}
 	status := err.Status
 	if status <= 0 {

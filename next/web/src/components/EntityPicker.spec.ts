@@ -183,6 +183,21 @@ describe('EntityPicker list', () => {
     expect(model(w)).toEqual({ id: 'my-unpriced-model', text: '' })
   })
 
+  it('a plugin scope value is picked by name, shown as it is while unknown, and typed when the plugin cannot list them', async () => {
+    mocks.get.mockRejectedValue(new ApiError(503, { code: 'plugin_unavailable', message: 'not running' }))
+    const w = picker({ kind: 'pscope:guard/rules:manage', id: 'r9' })
+    expect(shown(w)).toBe('r9')
+    await open(w)
+    expect(lookups().at(-1)).toEqual(['/plugins/guard/scope-options', { permission: 'rules:manage' }])
+    expect(w.text()).toContain(entity.failedTypeValue)
+    await type(w, 'a,b')
+    expect(rows(w)).toEqual([])
+    await type(w, 'r1')
+    expect(rows(w)).toEqual(['Use “r1”This name is not in the list; you can still use it'])
+    await w.get('input').trigger('keydown', { key: 'Enter' })
+    expect(model(w)).toEqual({ id: 'r1', text: '' })
+  })
+
   it('a typed id of a page candidate is the first row before the search answers and after: Enter picks the same either way', async () => {
     mocks.get.mockResolvedValue({ items: [{ id: 'gpt-4o', name: 'gpt-4o' }, { id: 'gpt-4o-mini', name: 'gpt-4o-mini' }], more: false })
     const w = picker({ kind: 'model', text: '', extra: [{ id: 'gpt-4o', name: 'gpt-4o' }] })

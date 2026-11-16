@@ -1,0 +1,6 @@
+-- sql
+SELECT s.id, s.kind, CASE WHEN s.user_id IS NULL THEN s.name ELSE u.email END AS name, s.user_id, mc.n AS member_count,
+	g.id AS group_id, g.name AS group_name, g.description AS group_description, g.status AS group_status,
+	g.visibility AS group_visibility FROM segments s LEFT JOIN users u ON u.id = s.user_id CROSS JOIN LATERAL (SELECT count(*) AS n FROM users m WHERE m.segment_id = s.id AND m.deleted_at IS NULL) mc CROSS JOIN groups g WHERE s.id = $1 ORDER BY g.id
+-- vars
+$1 int 3

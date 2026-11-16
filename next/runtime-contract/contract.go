@@ -13,6 +13,19 @@ const ClusterProtocolVersion = 1
 const TaskProtocolVersion = 1
 const HostAPIVersion = 9
 
+// Plugin package limits, applied by the core (unpack, upload, download), the
+// shell's package store and the pack tool alike: about four times the
+// largest built-in package (CONTRACTS §34).
+const (
+	PluginPackageMaxBytes  = 64 << 20  // compressed archive
+	PluginUnpackedMaxBytes = 256 << 20 // sum of uncompressed file sizes
+	PluginPackageMaxFiles  = 2000      // regular files
+	// PluginPackageTransferTimeout bounds one package transfer: a market
+	// download, a core's request through its shell and the shell's fetch
+	// from another node.
+	PluginPackageTransferTimeout = 10 * time.Minute
+)
+
 // ClusterChangeLock serializes core plans and plugin mutation submissions.
 const ClusterChangeLock = "system:cluster-change"
 
@@ -42,8 +55,12 @@ type Hello struct {
 	TaskProtocol    Range  `json:"task_protocol"`
 	HostAPIVersion  int    `json:"host_api_version"`
 	// Capabilities are optional behaviours of this core within Protocol 2.
-	// A shell sends a request field only when the core lists its
-	// capability: a core strictly rejects unknown control fields.
+	// The shell 0.1.288 runs under (gateway 0.1.133) sends a request field
+	// only when the core lists its capability (a core strictly rejects
+	// unknown control fields), and it still drives the 0.1.290 core through
+	// its upgrade plan; shells since ignore the list. The field and
+	// CapabilityGracefulDrain go in the first core release after every node
+	// runs the 0.1.290 shell.
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
@@ -51,16 +68,6 @@ type Hello struct {
 // it is set, lets requests in flight finish (within the deadline, capped on
 // the core side) instead of cancelling them at once.
 const CapabilityGracefulDrain = "drain.graceful"
-
-// Has reports whether the core listed capability.
-func (h Hello) Has(capability string) bool {
-	for _, c := range h.Capabilities {
-		if c == capability {
-			return true
-		}
-	}
-	return false
-}
 
 type Status struct {
 	Hello
@@ -100,7 +107,6 @@ type DrainRequest struct {
 	Deadline    time.Time `json:"deadline"`
 	// Graceful says the shell already routes new requests elsewhere, so the
 	// core may let requests in flight finish before it reports DrainComplete.
-	// Send it only to a core whose Hello has CapabilityGracefulDrain.
 	Graceful bool `json:"graceful,omitempty"`
 }
 type File struct {

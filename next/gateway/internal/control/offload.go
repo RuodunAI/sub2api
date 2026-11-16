@@ -2,11 +2,15 @@ package control
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Offload is the cluster's CPU protection setting: a serving node whose
@@ -26,7 +30,7 @@ const (
 )
 
 func (s *Store) Offload(ctx context.Context) (o Offload, err error) {
-	err = s.DB.QueryRow(ctx, `SELECT offload_enabled,offload_cpu_percent FROM updater.clusters WHERE cluster_id=$1`, s.Cluster).Scan(&o.Enabled, &o.CPUPercent)
+	err = s.clusterRow(s.db(ctx)).Select("offload_enabled,offload_cpu_percent").Row().Scan(&o.Enabled, &o.CPUPercent)
 	return
 }
 
@@ -42,9 +46,17 @@ func (s *Store) SetOffload(ctx context.Context, p OffloadPatch) (o Offload, err 
 	if p.CPUPercent != nil && (*p.CPUPercent < OffloadMinPercent || *p.CPUPercent > OffloadMaxPercent) {
 		return o, errOffloadRange
 	}
-	err = s.DB.QueryRow(ctx, `UPDATE updater.clusters SET offload_enabled=COALESCE($2,offload_enabled),offload_cpu_percent=COALESCE($3,offload_cpu_percent)
- WHERE cluster_id=$1 RETURNING offload_enabled,offload_cpu_percent`, s.Cluster, p.Enabled, p.CPUPercent).Scan(&o.Enabled, &o.CPUPercent)
-	return
+	// The cluster row's setting after the change (RETURNING).
+	var row struct {
+		OffloadEnabled    bool
+		OffloadCPUPercent int `gorm:"column:offload_cpu_percent"`
+	}
+	res := s.clusterRow(s.db(ctx)).Model(&row).Clauses(clause.Returning{Columns: columns("offload_enabled", "offload_cpu_percent")}).
+		Updates(map[string]any{"offload_enabled": gorm.Expr("COALESCE(?,offload_enabled)", p.Enabled), "offload_cpu_percent": gorm.Expr("COALESCE(?,offload_cpu_percent)", p.CPUPercent)})
+	if res.Error == nil && res.RowsAffected == 0 {
+		return o, sql.ErrNoRows
+	}
+	return Offload{Enabled: row.OffloadEnabled, CPUPercent: row.OffloadCPUPercent}, res.Error
 }
 
 // offloadTargets decides whether self sheds its new requests and to which

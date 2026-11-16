@@ -35,10 +35,6 @@ type ModelAvailabilityChecker interface {
 	CheckModelAvailability(context.Context, *pluginv1.CheckModelAvailabilityRequest) (*pluginv1.CheckModelAvailabilityResponse, error)
 }
 
-type AccountLifecycle interface {
-	OnAccountLifecycle(context.Context, *pluginv1.AccountLifecycleRequest) (*pluginv1.AccountLifecycleResponse, error)
-}
-
 // ModelLister is implemented by platforms whose upstream can list the models
 // an account may use (console "fetch models", CONTRACTS §19). Optional: a
 // Platform without it answers BuildModelsRequest with UNIMPLEMENTED.
@@ -71,7 +67,7 @@ type TaskSubmissionParser interface {
 // next-check delay; the host owns retries, leases, persistence and billing.
 // The invocation permission expires when Poll returns or its context is
 // cancelled. Never cache the context/token or start a background polling loop.
-// Requires platform.poll.v1 and host API 3.
+// Requires platform.poll.v1.
 type Poller interface {
 	Poll(context.Context, *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error)
 }

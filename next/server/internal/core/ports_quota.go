@@ -10,10 +10,6 @@ type AccountModelAvailabilityPlugin interface {
 	CheckModelAvailability(context.Context, *pluginv1.CheckModelAvailabilityRequest) (*pluginv1.CheckModelAvailabilityResponse, error)
 }
 
-type AccountQuotaRuntime interface {
-	QueryAccountQuota(context.Context, int64, string) (*pluginv1.ParseQuotaResponseRequest, error)
-}
-
 type AccountQuotaSource interface {
 	AccountQuotaSnapshots(context.Context, []int64) (map[int64]*pluginv1.AccountQuotaSnapshot, error)
 	// AccountQuotaView is the request-path read of the model availability

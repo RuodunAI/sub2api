@@ -17,10 +17,10 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
@@ -39,14 +39,14 @@ type flakyLedger struct {
 	fail atomic.Int32
 }
 
-func (f *flakyLedger) ApplyTx(ctx context.Context, tx pgx.Tx, ch core.LedgerChange) (*core.LedgerResult, error) {
+func (f *flakyLedger) ApplyTx(ctx context.Context, tx *gorm.DB, ch core.LedgerChange) (*core.LedgerResult, error) {
 	if f.fail.Add(-1) >= 0 {
 		return nil, errors.New("ledger unavailable")
 	}
 	return f.Service.ApplyTx(ctx, tx, ch)
 }
 
-func (f *flakyLedger) SettleTx(ctx context.Context, tx pgx.Tx, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error) {
+func (f *flakyLedger) SettleTx(ctx context.Context, tx *gorm.DB, userID int64, requestID string, charge *core.LedgerChange) (*core.LedgerResult, error) {
 	if charge != nil && f.fail.Add(-1) >= 0 {
 		return nil, errors.New("ledger unavailable")
 	}
@@ -68,8 +68,8 @@ type fixture struct {
 
 type allowAll struct{}
 
-func (allowAll) VerifyAccessToken(_ context.Context, token string) (int64, error) {
-	return strconv.ParseInt(token, 10, 64)
+func (allowAll) VerifySession(_ context.Context, token string) (int64, string, error) {
+	return testutil.SessionUser(token, "")
 }
 func (allowAll) Can(context.Context, int64, string) (bool, error) { return true, nil }
 
@@ -105,7 +105,7 @@ func newFixture(t *testing.T) *fixture {
 
 	for _, email := range []string{"u@example.com", "o@example.com"} {
 		var id int64
-		if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		if f.user == 0 {
@@ -114,7 +114,7 @@ func newFixture(t *testing.T) *fixture {
 			f.other = id
 		}
 	}
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO groups (name) VALUES ('default') RETURNING id`).Scan(&f.group); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO groups (name) VALUES ('default') RETURNING id`).Scan(&f.group); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := bill.Apply(ctx, core.LedgerChange{UserID: f.user, Amount: decimal.NewFromInt(10), Credit: true, Kind: "admin_adjust", IdempotencyKey: "seed"}); err != nil {
@@ -126,12 +126,12 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f.price = &core.PriceRule{Model: "claude-sonnet-4-5", Mode: "expression", Expression: a6Expr, ExprVersion: 1, ExprHash: prog.Hash()}
-	err = db.Pool.QueryRow(ctx, `INSERT INTO model_prices (model, mode, expression, expr_hash, source)
+	err = db.SQL.QueryRowContext(ctx, `INSERT INTO model_prices (model, mode, expression, expr_hash, source)
 		VALUES ('claude-sonnet-4-5', 'expression', $1, $2, 'manual') RETURNING id`, a6Expr, prog.Hash()).Scan(&f.price.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES ($1, $2, 1)`, prog.Hash(), prog.Expression()); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO model_price_history (expr_hash, expression, expr_version) VALUES ($1, $2, 1)`, prog.Hash(), prog.Expression()); err != nil {
 		t.Fatal(err)
 	}
 	gin.SetMode(gin.TestMode)
@@ -165,7 +165,7 @@ func (f *fixture) record(id string, billable bool) *core.UsageRecord {
 func (f *fixture) scalar(sql string, args ...any) string {
 	f.t.Helper()
 	var v any
-	if err := f.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&v); err != nil {
+	if err := f.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&v); err != nil {
 		f.t.Fatalf("%s: %v", sql, err)
 	}
 	switch x := v.(type) {
@@ -180,7 +180,7 @@ func (f *fixture) scalar(sql string, args ...any) string {
 
 func (f *fixture) balance() decimal.Decimal {
 	var d decimal.Decimal
-	_ = f.db.Pool.QueryRow(context.Background(), `SELECT balance FROM user_balances WHERE user_id = $1`, f.user).Scan(&d)
+	_ = f.db.SQL.QueryRowContext(context.Background(), `SELECT balance FROM user_balances WHERE user_id = $1`, f.user).Scan(&d)
 	return d
 }
 
@@ -441,8 +441,8 @@ func TestUsageAPI(t *testing.T) {
 	f.get(f.user, "/usage?from=bad", 400)
 
 	var id, otherID int64
-	_ = f.db.Pool.QueryRow(ctx, `SELECT id FROM usage_logs WHERE request_id = 'req-mine'`).Scan(&id)
-	_ = f.db.Pool.QueryRow(ctx, `SELECT id FROM usage_logs WHERE request_id = 'req-other'`).Scan(&otherID)
+	_ = f.db.SQL.QueryRowContext(ctx, `SELECT id FROM usage_logs WHERE request_id = 'req-mine'`).Scan(&id)
+	_ = f.db.SQL.QueryRowContext(ctx, `SELECT id FROM usage_logs WHERE request_id = 'req-other'`).Scan(&otherID)
 	d := f.get(f.user, "/usage/"+strconv.FormatInt(id, 10), 200)["data"].(map[string]any)
 	if d["ledger_id"] == nil || d["price"].(map[string]any)["model"] != "claude-sonnet-4-5" || d["account_id"].(float64) != 42 ||
 		d["billing_detail"].(map[string]any)["tier"] != "standard" || len(d["hook_decisions"].([]any)) != 1 ||

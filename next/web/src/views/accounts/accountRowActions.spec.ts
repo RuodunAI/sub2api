@@ -9,8 +9,8 @@ const account = { id: 7, name: 'a', orphaned: false } as Account
 function deps(over: Partial<RowActionDeps> = {}): RowActionDeps {
   const yes = () => true
   return {
-    canReveal: yes, canResetStatus: yes, canDisable: yes, canRefreshCreds: yes, canUpdate: yes, canDelete: yes, running: () => false,
-    openDetail: vi.fn(), reveal: vi.fn(), resetStatus: vi.fn(), disable: vi.fn(), refreshCreds: vi.fn(), remove: vi.fn(), runPluginAction: vi.fn(),
+    canReveal: yes, canResetStatus: yes, canDisable: yes, canRefreshCreds: yes, canUpdate: yes, canDelete: yes,
+    openDetail: vi.fn(), reveal: vi.fn(), resetStatus: vi.fn(), disable: vi.fn(), refreshCreds: vi.fn(), remove: vi.fn(),
     declaredActions: [reset], runPluginAccountAction: vi.fn(),
     ...over
   }
@@ -25,7 +25,6 @@ describe('declared plugin account actions in the row menu (CONTRACTS §23.3 UI 3
     expect(rowActions(account, d).find((x) => x.key === pluginAccountActionKey(reset))).toMatchObject({ label: '重置动态权重', icon: 'refresh', danger: true, hidden: false })
     runRowAction(account, 'declared:dynweight:reset', d)
     expect(d.runPluginAccountAction).toHaveBeenCalledWith(account, reset)
-    expect(d.runPluginAction).not.toHaveBeenCalled()
   })
 
   it('hides the entries from callers without update rights and on orphaned accounts', () => {

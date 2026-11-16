@@ -55,8 +55,8 @@ func (b *memBus) Subscribe(ch string, h func([]byte)) func() {
 // allowAll authenticates "Bearer <user id>" and grants every permission.
 type allowAll struct{}
 
-func (allowAll) VerifyAccessToken(_ context.Context, token string) (int64, error) {
-	return strconv.ParseInt(token, 10, 64)
+func (allowAll) VerifySession(_ context.Context, token string) (int64, string, error) {
+	return testutil.SessionUser(token, "")
 }
 func (allowAll) Can(context.Context, int64, string) (bool, error) { return true, nil }
 func (allowAll) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
@@ -112,7 +112,7 @@ func newEnvAs(t *testing.T, authz core.Authorizer) *env {
 
 func (e *env) exec(sql string, args ...any) {
 	e.t.Helper()
-	if _, err := e.db.Pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := e.db.SQL.ExecContext(context.Background(), sql, args...); err != nil {
 		e.t.Fatalf("%s: %v", sql, err)
 	}
 }
@@ -120,7 +120,7 @@ func (e *env) exec(sql string, args ...any) {
 func (e *env) user(email string) int64 {
 	e.t.Helper()
 	var id int64
-	err := e.db.Pool.QueryRow(context.Background(),
+	err := e.db.SQL.QueryRowContext(context.Background(),
 		`INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id)
 	if err != nil {
 		e.t.Fatal(err)

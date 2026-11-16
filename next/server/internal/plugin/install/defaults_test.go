@@ -2,87 +2,148 @@ package install
 
 import (
 	"fmt"
-	"slices"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 // Permissions sort in manifest order from 10 on: the first one is not 0,
-// which the catalog used to take for "unset".
+// which the catalog used to take for "unset"; groups likewise. The catalog
+// gets the risk, the group's label, requires as qualified keys, the scope
+// with its scope_type (the values resource for a values scope) and the
+// defaults as canonical suffixes; grants only what the consent decided.
 func TestPermissionDefsSort(t *testing.T) {
-	defs := PermissionDefs(&manifest.Manifest{Key: "guard", UserPermissions: []manifest.UserPermission{
-		{Key: "stats:read"}, {Key: "rules:manage"}, {Key: "audit:read"},
-	}}, nil)
-	if len(defs) != 3 || defs[0].Sort != 10 || defs[1].Sort != 20 || defs[2].Sort != 30 {
-		t.Fatalf("defs = %+v", defs)
+	m := &manifest.Manifest{Key: "mod",
+		PermissionGroups: []manifest.PermissionGroup{{Key: "flow", Label: manifest.LocalizedText{"en": "Flows"}}, {Key: "action"}},
+		UserPermissions: []manifest.UserPermission{
+			{Key: "flow:read", Group: "flow"},
+			{Key: "flow:manage", Group: "flow", Risk: manifest.RiskSensitive, Requires: []string{"flow:read"},
+				Scope:    &manifest.PermissionScope{Resource: "flow", Options: "/scopes/flow", Own: true},
+				Defaults: map[string]manifest.RoleDefault{"admin": {Unscoped: true}, "operator": {Scopes: []string{"own"}}}},
+			{Key: "input:check", Group: "action", Scope: &manifest.PermissionScope{Values: []manifest.ScopeValue{{Key: "input"}}}},
+			{Key: "exempt", Risk: manifest.RiskCritical},
+		}}
+	defs := PermissionDefs(m, map[string]map[string][]string{"flow:manage": {"operator": {"own"}}})
+	require.Len(t, defs, 4)
+	for i, d := range defs {
+		assert.Equal(t, (i+1)*10, d.Sort, d.Key)
+		assert.Equal(t, "plugin.mod", d.Module)
 	}
-	if defs[0].Key != "plugin.guard:stats:read" || defs[0].Module != "plugin.guard" {
-		t.Fatalf("first def = %+v", defs[0])
-	}
+	read, manage, check, exempt := defs[0], defs[1], defs[2], defs[3]
+	assert.Equal(t, "plugin.mod:flow:read", read.Key)
+	assert.Equal(t, manifest.RiskLow, read.Risk)
+	assert.Equal(t, "flow", read.Group)
+	assert.Equal(t, core.LocalizedText{"en": "Flows"}, read.GroupLabel)
+	assert.Equal(t, 10, read.GroupSort)
+	assert.Empty(t, read.ScopeType)
+	assert.Nil(t, read.Scope)
+	assert.Nil(t, read.GrantRoles)
+
+	assert.Equal(t, manifest.RiskSensitive, manage.Risk)
+	assert.Equal(t, []string{"plugin.mod:flow:read"}, manage.Requires)
+	assert.Equal(t, "plugin:flow", manage.ScopeType)
+	assert.Equal(t, &manifest.PermissionScope{Resource: "flow", Options: "/scopes/flow", Own: true}, manage.Scope)
+	assert.Equal(t, map[string][]string{"admin": {""}, "operator": {"own"}}, manage.Defaults)
+	assert.Equal(t, map[string][]string{"operator": {"own"}}, manage.GrantRoles)
+
+	assert.Equal(t, 20, check.GroupSort)
+	assert.Equal(t, "plugin:value", check.ScopeType)
+	assert.Equal(t, "value", check.Scope.Resource)
+
+	assert.Equal(t, manifest.RiskCritical, exempt.Risk)
+	assert.Empty(t, exempt.Group)
+	assert.Zero(t, exempt.GroupSort)
+	assert.Nil(t, exempt.Defaults)
 }
 
-// roleGrants: an explicit NewPermissionRoles entry beats the older
-// RoleKeysForNewPermissions, which beats a rename (inherit only), which
-// beats the manifest defaultRoles (admin when omitted, none for []);
-// PermissionDefs hands them on with inheritFrom.
+// roleGrants: nothing for a key the catalog has (removed rows included,
+// D6); none of the defaults for a rename (inherit only); else the manifest
+// defaults as canonical suffixes, the roles an override names replacing
+// theirs while the defaults of roles it leaves out stay for the settlement
+// to drop or withhold ({} included).
 func TestRoleGrantsPriority(t *testing.T) {
+	all := manifest.RoleDefault{Unscoped: true}
 	m := &manifest.Manifest{Key: "growth", UserPermissions: []manifest.UserPermission{
-		{Key: "growth:use", DefaultRoles: []string{"user", "admin"}, InheritFrom: []string{"growth:read"}},
+		{Key: "growth:use", Defaults: map[string]manifest.RoleDefault{"user": all, "admin": all}, InheritFrom: []string{"growth:read"}},
 		{Key: "growth:stats:read"},
-		{Key: "growth:manage", DefaultRoles: []string{"operator"}},
-		{Key: "growth:quiet", DefaultRoles: []string{}},
+		{Key: "flow:manage", Scope: &manifest.PermissionScope{Resource: "flow", Own: true},
+			Defaults: map[string]manifest.RoleDefault{"admin": {Scopes: []string{"*"}}, "operator": {Scopes: []string{"own"}}}},
 	}}
+	defaults := map[string]map[string][]string{
+		"growth:use": {"admin": {""}, "user": {""}}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}},
+	}
 	cases := []struct {
-		name     string
-		req      ConsentRequest
-		want     map[string][]string
-		existing map[string]bool
+		name      string
+		overrides map[string]map[string][]string
+		existing  catalogPerms
+		want      map[string]map[string][]string
 	}{
-		{"manifest", ConsentRequest{}, map[string][]string{"growth:use": {"user", "admin"}, "growth:stats:read": {"admin"}, "growth:manage": {"operator"}, "growth:quiet": {}}, nil},
-		// growth:use inherits growth:read, which the catalog has: a rename
-		// keeps the old holders only.
-		{"rename", ConsentRequest{}, map[string][]string{"growth:use": {}, "growth:stats:read": {"admin"}, "growth:manage": {"operator"}, "growth:quiet": {}},
-			map[string]bool{"plugin.growth:growth:read": true}},
-		{"legacy", ConsentRequest{RoleKeysForNewPermissions: []string{"ops"}}, map[string][]string{"growth:use": {"ops"}, "growth:stats:read": {"ops"}, "growth:manage": {"ops"}, "growth:quiet": {"ops"}},
-			map[string]bool{"plugin.growth:growth:read": true}},
-		{"explicit", ConsentRequest{RoleKeysForNewPermissions: []string{"ops"}, NewPermissionRoles: map[string][]string{"growth:use": {"auditor"}, "growth:manage": {}}},
-			map[string][]string{"growth:use": {"auditor"}, "growth:stats:read": {"ops"}, "growth:manage": {}, "growth:quiet": {"ops"}}, nil},
-		{"explicit beats rename", ConsentRequest{NewPermissionRoles: map[string][]string{"growth:use": {"auditor"}}},
-			map[string][]string{"growth:use": {"auditor"}, "growth:stats:read": {"admin"}, "growth:manage": {"operator"}, "growth:quiet": {}},
-			map[string]bool{"plugin.growth:growth:read": true}},
+		{"manifest", nil, nil, defaults},
+		// growth:use inherits growth:read, which the catalog has.
+		{"rename", nil, catalogPerms{"plugin.growth:growth:read": {}},
+			map[string]map[string][]string{"growth:use": {}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}}}},
+		{"existing and revived", nil, catalogPerms{"plugin.growth:flow:manage": {}},
+			map[string]map[string][]string{"growth:use": {"admin": {""}, "user": {""}}, "growth:stats:read": {}, "flow:manage": {}}},
+		{"override", map[string]map[string][]string{"flow:manage": {"operator": {""}, "auditor": {"flow/3"}}, "growth:stats:read": {}}, nil,
+			map[string]map[string][]string{"growth:use": {"admin": {""}, "user": {""}}, "growth:stats:read": {},
+				"flow:manage": {"admin": {""}, "operator": {""}, "auditor": {"flow/3"}}}},
+		{"override of a rename", map[string]map[string][]string{"growth:use": {"auditor": {""}}}, catalogPerms{"plugin.growth:growth:read": {}},
+			map[string]map[string][]string{"growth:use": {"auditor": {""}}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}}}},
 	}
 	for _, c := range cases {
-		got := roleGrants(m, c.req, c.existing)
-		if len(got) != len(c.want) {
-			t.Fatalf("%s: %v", c.name, got)
-		}
-		for k, w := range c.want {
-			if !slices.Equal(got[k], w) {
-				t.Errorf("%s: %s = %v, want %v", c.name, k, got[k], w)
-			}
-		}
-	}
-	defs := PermissionDefs(m, roleGrants(m, ConsentRequest{}, nil))
-	if !slices.Equal(defs[0].GrantRoles, []string{"user", "admin"}) || !slices.Equal(defs[0].InheritFrom, []string{"growth:read"}) {
-		t.Fatalf("def = %+v", defs[0])
-	}
-	// Activation (nil) grants nothing, inheritance included.
-	if defs := PermissionDefs(m, nil); defs[0].GrantRoles != nil || defs[0].InheritFrom != nil {
-		t.Fatalf("no grants: %+v", defs[0])
-	}
-	if defs := PermissionDefs(m, map[string][]string{}); defs[0].GrantRoles != nil || len(defs[0].InheritFrom) != 1 {
-		t.Fatalf("no roles: %+v", defs[0])
+		assert.Equal(t, c.want, roleGrants(m, c.overrides, c.existing), c.name)
 	}
 }
 
-// NewPermissionRoles names declared permissions only.
-func TestDecideRejectsUnknownNewPermissionRoles(t *testing.T) {
-	m := &manifest.Manifest{Key: "growth", UserPermissions: []manifest.UserPermission{{Key: "growth:use"}}}
-	_, errs := decide(m, ConsentRequest{NewPermissionRoles: map[string][]string{"growth:use": nil, "growth:nope": {"admin"}}}, nil, nil, false)
-	if len(errs) != 1 || errs[0].Field != "new_permission_roles.growth:nope" || errs[0].Code != "unknown" {
-		t.Fatalf("errs = %+v", errs)
+// overrideGrants takes the manifest spelling and the canonical suffixes
+// alike: true and "*" are every row, which makes the rest redundant; own
+// only where the scope takes it; an enum key or "value/<key>" of the
+// declared values; a runtime id of the declared resource. Anything else is
+// invalid under new_permission_roles.<local>.<role>, an undeclared key
+// unknown; false and [] grant the role nothing.
+func TestOverrideGrants(t *testing.T) {
+	m := &manifest.Manifest{Key: "mod", UserPermissions: []manifest.UserPermission{
+		{Key: "flow:manage", Scope: &manifest.PermissionScope{Resource: "flow", Own: true}},
+		{Key: "flow:read", Scope: &manifest.PermissionScope{Resource: "flow"}},
+		{Key: "input:check", Scope: &manifest.PermissionScope{Values: []manifest.ScopeValue{{Key: "input"}, {Key: "output"}}}},
+		{Key: "plain"},
+	}}
+	scopes := func(vs ...string) manifest.RoleDefault { return manifest.RoleDefault{Scopes: vs} }
+	got, errs := overrideGrants(m, map[string]map[string]manifest.RoleDefault{
+		"flow:manage": {"admin": {Unscoped: true}, "operator": scopes("*", "own"), "support": scopes("own", "flow/3", "flow/3"), "user": {}, "quiet": scopes()},
+		"input:check": {"admin": scopes("input", "value/output", "value/input")},
+		"plain":       {"admin": {Unscoped: true}},
+	})
+	require.Empty(t, errs)
+	assert.Equal(t, map[string]map[string][]string{
+		"flow:manage": {"admin": {""}, "operator": {""}, "support": {"flow/3", "own"}},
+		"input:check": {"admin": {"value/input", "value/output"}},
+		"plain":       {"admin": {""}},
+	}, got)
+
+	_, errs = overrideGrants(m, map[string]map[string]manifest.RoleDefault{
+		"flow:read":   {"own": scopes("own"), "proxy": scopes("proxy/3"), "empty": scopes("flow/")},
+		"input:check": {"other": scopes("value/x"), "bare": scopes("x")},
+		"plain":       {"scoped": scopes("own")},
+		"nope":        {"admin": {Unscoped: true}},
+	})
+	codes := map[string]string{}
+	for _, e := range errs {
+		codes[e.Field] += e.Code
 	}
+	assert.Equal(t, map[string]string{
+		"new_permission_roles.flow:read.own":     "invalid",
+		"new_permission_roles.flow:read.proxy":   "invalid",
+		"new_permission_roles.flow:read.empty":   "invalid",
+		"new_permission_roles.input:check.other": "invalid",
+		"new_permission_roles.input:check.bare":  "invalid",
+		"new_permission_roles.plain.scoped":      "invalid",
+		"new_permission_roles.nope":              "unknown",
+	}, codes)
 }
 
 // On an upgrade a grant the current one covers is carried, named again or

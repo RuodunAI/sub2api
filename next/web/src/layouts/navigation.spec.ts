@@ -255,24 +255,6 @@ describe('sidebar', () => {
       expect(current(wrapper)).toEqual(['nodes'])
     })
 
-    it('is not for a caller whose menu lacks its entry, once the menu has loaded', async () => {
-      let menus!: (v: unknown) => void
-      api.get.mockReturnValue(new Promise(r => (menus = r)))
-      const router = makeRouter()
-      await router.push('/groups')
-      const loading = useAppStore().loadMenus()
-      const wrapper = mount(AppSidebar, { global: { plugins: [i18n, router] } })
-      // Until then the route decides, so the settings view does not flash the console menu first.
-      expect(view(wrapper).exists()).toBe(true)
-      // An older core lists groups in the console menu and gives their readers no settings entry.
-      menus([overview, { section: 'gateway', items: [item('accounts', '/accounts'), item('groups', '/groups')] }])
-      await loading
-      await flushPromises()
-      expect(view(wrapper).exists()).toBe(false)
-      expect(labels(wrapper)).toEqual(['dashboard', 'accounts', 'groups'])
-      expect(current(wrapper)).toEqual(['groups'])
-    })
-
     it('leads back to the console page the view was opened from, not to an error page', async () => {
       const { wrapper, router } = await mountSidebar(operatorMenu, '/accounts?page=2')
       await router.push('/forbidden?perm=x')

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 )
 
 // Tracker records which migrations have been applied for one scope.
@@ -17,9 +17,9 @@ import (
 // backed by plugin_migrations.
 type Tracker interface {
 	// Ensure creates the tracking table if needed (runs outside the lock tx).
-	Ensure(ctx context.Context, q Querier) error
-	Applied(ctx context.Context, q Querier) (map[string]string, error) // id -> checksum
-	Record(ctx context.Context, tx pgx.Tx, id, checksum string) error
+	Ensure(ctx context.Context, q *gorm.DB) error
+	Applied(ctx context.Context, q *gorm.DB) (map[string]string, error) // id -> checksum
+	Record(ctx context.Context, tx *gorm.DB, id, checksum string) error
 }
 
 // MigrateOptions controls one migration run.
@@ -40,108 +40,111 @@ type MigrateOptions struct {
 // Migrate applies *.sql files from fsys in lexical order. Each file runs in
 // its own transaction; a file whose checksum differs from the recorded one is
 // an error (applied migrations are immutable). Returns applied file names.
-func Migrate(ctx context.Context, db *DB, fsys fs.FS, tr Tracker, opt MigrateOptions) ([]string, error) {
+//
+// A session advisory lock on one connection serializes runs across nodes;
+// the files' transactions run on that connection.
+func Migrate(ctx context.Context, db *DB, fsys fs.FS, tr Tracker, opt MigrateOptions) (done []string, err error) {
 	names, err := fs.Glob(fsys, "*.sql")
 	if err != nil {
 		return nil, err
 	}
 	sort.Strings(names)
-
-	conn, err := db.Pool.Acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", opt.LockKey); err != nil {
-		return nil, fmt.Errorf("acquire migration lock: %w", err)
-	}
-	defer conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", opt.LockKey) //nolint:errcheck
-
-	if err := tr.Ensure(ctx, conn); err != nil {
-		return nil, err
-	}
-	applied, err := tr.Applied(ctx, conn)
-	if err != nil {
-		return nil, err
-	}
-
-	var done []string
-	for _, name := range names {
-		body, err := fs.ReadFile(fsys, name)
-		if err != nil {
-			return done, err
+	err = db.WithConn(ctx, func(conn *gorm.DB) error {
+		if err := conn.Exec("SELECT pg_advisory_lock(?)", opt.LockKey).Error; err != nil {
+			return fmt.Errorf("acquire migration lock: %w", err)
 		}
-		sum := sha256.Sum256(body)
-		checksum := hex.EncodeToString(sum[:])
-		if prev, ok := applied[name]; ok {
-			if prev == checksum {
-				continue
+		defer conn.WithContext(context.WithoutCancel(ctx)).Exec("SELECT pg_advisory_unlock(?)", opt.LockKey)
+		if err := tr.Ensure(ctx, conn); err != nil {
+			return err
+		}
+		applied, err := tr.Applied(ctx, conn)
+		if err != nil {
+			return err
+		}
+		for _, name := range names {
+			ran, err := migrateFile(ctx, conn, fsys, name, applied, tr, opt)
+			if err != nil {
+				return err
 			}
-			if !opt.RerunChanged {
-				return done, fmt.Errorf("migration %s was modified after being applied", name)
+			if ran {
+				done = append(done, name)
 			}
 		}
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			return done, err
+		return nil
+	})
+	return done, err
+}
+
+// migrateFile runs file name unless it is applied with the same checksum,
+// and records it, in one transaction on conn.
+func migrateFile(ctx context.Context, conn *gorm.DB, fsys fs.FS, name string, applied map[string]string, tr Tracker, opt MigrateOptions) (bool, error) {
+	body, err := fs.ReadFile(fsys, name)
+	if err != nil {
+		return false, err
+	}
+	checksum := MigrationChecksum(body)
+	if prev, ok := applied[name]; ok {
+		if prev == checksum {
+			return false, nil
 		}
+		if !opt.RerunChanged {
+			return false, fmt.Errorf("migration %s was modified after being applied", name)
+		}
+	}
+	sqlBody := string(body)
+	if core, ok := tr.(interface {
+		migrationSQL(string, string, string) string
+	}); ok {
+		sqlBody = core.migrationSQL(name, checksum, sqlBody)
+	}
+	return true, conn.Transaction(func(tx *gorm.DB) error {
 		if opt.SearchPath != "" {
-			if _, err := tx.Exec(ctx, "SET LOCAL search_path TO "+pgx.Identifier{opt.SearchPath}.Sanitize()); err != nil {
-				_ = tx.Rollback(ctx)
-				return done, err
+			if err := tx.Exec("SET LOCAL search_path TO " + QuoteIdent(opt.SearchPath)).Error; err != nil {
+				return err
 			}
 		}
-		sqlBody := string(body)
-		if core, ok := tr.(interface {
-			migrationSQL(string, string, string) string
-		}); ok {
-			sqlBody = core.migrationSQL(name, checksum, sqlBody)
+		// The file goes to the driver as written, past GORM's placeholder
+		// parsing ("?", "@name"): without arguments pgx sends it with the
+		// simple protocol, which runs the several statements of a file.
+		// A file's HINT (how to fix what it refused) ends up in the
+		// start-up log with the message.
+		if _, err := tx.Statement.ConnPool.ExecContext(ctx, sqlBody); err != nil {
+			if hint := Hint(err); hint != "" {
+				return fmt.Errorf("migration %s: %w; hint: %s", name, err, hint)
+			}
+			return fmt.Errorf("migration %s: %w", name, err)
 		}
-		if _, err := tx.Exec(ctx, sqlBody); err != nil {
-			_ = tx.Rollback(ctx)
-			return done, fmt.Errorf("migration %s: %w", name, err)
-		}
-		if err := tr.Record(ctx, tx, name, checksum); err != nil {
-			_ = tx.Rollback(ctx)
-			return done, err
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return done, err
-		}
-		done = append(done, name)
-	}
-	return done, nil
+		return tr.Record(ctx, tx, name, checksum)
+	})
 }
 
 // CoreTracker tracks core migrations in public.schema_migrations.
 type CoreTracker struct{}
 
-func (CoreTracker) Ensure(ctx context.Context, q Querier) error {
-	_, err := q.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+func (CoreTracker) Ensure(ctx context.Context, q *gorm.DB) error {
+	return G(ctx, q).Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		id varchar(200) PRIMARY KEY,
 		checksum varchar(64) NOT NULL,
-		applied_at timestamptz NOT NULL DEFAULT now())`)
-	return err
+		applied_at timestamptz NOT NULL DEFAULT now())`).Error
 }
 
-func (CoreTracker) Applied(ctx context.Context, q Querier) (map[string]string, error) {
-	rows, err := q.Query(ctx, `SELECT id, checksum FROM schema_migrations`)
-	if err != nil {
+func (CoreTracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, error) {
+	var rows []struct{ ID, Checksum string }
+	if err := G(ctx, q).Table("schema_migrations").Select("id, checksum").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	m := map[string]string{}
-	for rows.Next() {
-		var id, sum string
-		if err := rows.Scan(&id, &sum); err != nil {
-			return nil, err
-		}
-		m[id] = sum
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	m := make(map[string]string, len(rows))
+	for _, r := range rows {
+		m[r.ID] = r.Checksum
 	}
 	return renameApplied(m), nil
+}
+
+// MigrationChecksum is the checksum schema_migrations records for a
+// migration file's content.
+func MigrationChecksum(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // renamedCoreMigrations maps the id of a core migration renamed after a build
@@ -170,10 +173,17 @@ func renameApplied(m map[string]string) map[string]string {
 	return m
 }
 
-func (CoreTracker) Record(ctx context.Context, tx pgx.Tx, id, checksum string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO schema_migrations (id, checksum) VALUES ($1, $2)`, id, checksum)
-	return err
+func (CoreTracker) Record(ctx context.Context, tx *gorm.DB, id, checksum string) error {
+	return G(ctx, tx).Create(&appliedMigration{ID: id, Checksum: checksum}).Error
 }
+
+// appliedMigration is a schema_migrations row; applied_at is the default.
+type appliedMigration struct {
+	ID       string `gorm:"column:id"`
+	Checksum string `gorm:"column:checksum"`
+}
+
+func (appliedMigration) TableName() string { return "schema_migrations" }
 
 func (CoreTracker) migrationSQL(id, checksum, body string) string {
 	if id == "0046_proxy_real_ip.sql" && checksum == "1b0719bb3a07caa74ca6ad5d92e8c605e9c4f0ebea3097b96a1226ef99c4897f" {

@@ -1,0 +1,5 @@
+-- sql
+SELECT count(*) FROM "users" WHERE id IN (SELECT substr(v0, 3)::bigint FROM "casbin_rule" WHERE ptype = $1 AND v1 IN (SELECT ('r:' || key) FROM "roles" WHERE superuser)) AND (deleted_at IS NULL AND status = 'active' AND id <> $2)
+-- vars
+$1 string "g"
+$2 int64 7

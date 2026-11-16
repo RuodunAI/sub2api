@@ -1,0 +1,4 @@
+-- sql
+INSERT INTO "plugin_event_cursors" ("plugin_key","last_event_id") SELECT $1::text, COALESCE(max(id), 0) FROM "events" ON CONFLICT ("plugin_key") DO NOTHING
+-- vars
+$1 string "demo"

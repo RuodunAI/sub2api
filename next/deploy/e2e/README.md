@@ -20,13 +20,12 @@ env_file=next/deploy/e2e/.env
     printf 'E2E_ADMIN_EMAIL=admin@sub2api.test\n'
     printf 'E2E_DB_PASSWORD=%s\n' "$(openssl rand -hex 24)"
     printf 'E2E_MASTER_KEY=%s\n' "$(openssl rand -base64 32)"
-    printf 'E2E_JWT_SECRET=%s\n' "$(openssl rand -hex 32)"
     printf 'E2E_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 24)"
   } > "$env_file"
 )
 ```
 
-也可以复制 `.env.example` 后填写四项必需密钥。数据库密码放入连接 URL，因此使用十六进制等 URL 安全字符。`E2E_APP_IMAGE`、`E2E_MOCK_IMAGE` 可指向已经构建的镜像；两个应用节点和 `market-init` 必须使用同一个应用镜像。改用其他端口时同时设置 `E2E_PORT` 和 `E2E_PUBLIC_URL`，测试端再设置对应的 `E2E_BASE_URL`。
+也可以复制 `.env.example` 后填写三项必需密钥。数据库密码放入连接 URL，因此使用十六进制等 URL 安全字符。`E2E_APP_IMAGE`、`E2E_MOCK_IMAGE` 可指向已经构建的镜像；两个应用节点和 `market-init` 必须使用同一个应用镜像。改用其他端口时同时设置 `E2E_PORT` 和 `E2E_PUBLIC_URL`，测试端再设置对应的 `E2E_BASE_URL`。
 
 ## 构建、校验和启动
 

@@ -4,7 +4,10 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -39,7 +42,7 @@ func (g *PluginMutations) Begin(ctx context.Context) (context.Context, func(), e
 	}
 	work, stop := core.KeepLock(work, lk)
 	done := func() { stop(); cancel(); lk.Release() }
-	busy, err := CoreUpdateBusy(work, g.DB.Pool)
+	busy, err := CoreUpdateBusy(work, g.DB.Gorm)
 	if err == nil && busy {
 		err = core.ErrConflict.WithMessage("core update is running or paused; finish or cancel it before changing plugins")
 	}
@@ -53,11 +56,17 @@ func (g *PluginMutations) Begin(ctx context.Context) (context.Context, func(), e
 // CoreUpdateBusy also works on installations without a managed shell.
 // Callers must fail closed on errors. The mutation gate still rechecks under
 // the shared lock: this preflight alone does not authorize a plugin change.
-func CoreUpdateBusy(ctx context.Context, q store.Querier) (bool, error) {
-	var installed, busy bool
-	if err := q.QueryRow(ctx, `SELECT to_regclass('updater.upgrades') IS NOT NULL`).Scan(&installed); err != nil || !installed {
+func CoreUpdateBusy(ctx context.Context, q *gorm.DB) (bool, error) {
+	db := store.G(ctx, q)
+	// The managed shell's updater schema is not part of the core schema.
+	installed, err := gormpg.RelationExists(db, "updater.upgrades")
+	if err != nil || !installed {
 		return false, err
 	}
-	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE status IN ('running','paused'))`).Scan(&busy)
-	return busy, err
+	return gormpg.Exists(db, upgradeActive(db))
+}
+
+// upgradeActive selects the core updates running or paused.
+func upgradeActive(db *gorm.DB) *gorm.DB {
+	return db.Table("updater.upgrades").Where("status IN ('running', 'paused')")
 }

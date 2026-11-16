@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -69,6 +70,13 @@ type settingsSnapshot struct {
 
 // Settings returns the cached billing settings.
 func (s *Service) Settings(ctx context.Context) (Settings, error) {
+	return s.settingsIn(ctx, s.db.Gorm)
+}
+
+// settingsIn is Settings with a cache miss read through q: a caller in a
+// transaction passes it, so that the read takes no second connection. The
+// transaction does not write the settings, so it reads what the pool would.
+func (s *Service) settingsIn(ctx context.Context, q *gorm.DB) (Settings, error) {
 	s.mu.Lock()
 	snap := s.settings
 	epoch := s.epoch
@@ -76,7 +84,7 @@ func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	if snap != nil && time.Since(snap.at) < s.cacheTTL {
 		return snap.v, nil
 	}
-	v, err := loadSettings(ctx, s.db.Pool)
+	v, err := loadSettings(ctx, q)
 	if err != nil {
 		return DefaultSettings(), err
 	}
@@ -88,10 +96,9 @@ func (s *Service) Settings(ctx context.Context) (Settings, error) {
 	return v, nil
 }
 
-func loadSettings(ctx context.Context, q store.Querier) (Settings, error) {
+func loadSettings(ctx context.Context, q *gorm.DB) (Settings, error) {
 	v := DefaultSettings()
-	var raw []byte
-	err := q.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, settingsKey).Scan(&raw)
+	raw, err := store.SettingValue(store.G(ctx, q), settingsKey)
 	if store.IsNoRows(err) {
 		return v, nil
 	}
@@ -142,7 +149,7 @@ func (s *Service) registerSettingsRoutes(r *httpapi.Router) {
 }
 
 func (s *Service) getSettings(c *gin.Context) {
-	v, err := loadSettings(c.Request.Context(), s.db.Pool)
+	v, err := loadSettings(c.Request.Context(), s.db.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

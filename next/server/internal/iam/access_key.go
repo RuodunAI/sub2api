@@ -8,13 +8,17 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const (
@@ -121,28 +125,47 @@ func (s *Service) lostPermissions(ctx context.Context, userID int64, keys []*Acc
 
 const accessKeyColumns = `id, name, token_hint, permissions, expires_at, last_used_at, last_used_ip, created_at`
 
-func scanAccessKey(row pgx.Row) (*AccessKey, error) {
-	k := &AccessKey{}
-	return k, row.Scan(&k.ID, &k.Name, &k.Hint, &k.Permissions, &k.ExpiresAt, &k.LastUsedAt, &k.LastUsedIP, &k.CreatedAt)
+// accessKeyReturning returns the accessKeyColumns of a key written.
+var accessKeyReturning = clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "name"}, {Name: "token_hint"}, {Name: "permissions"},
+	{Name: "expires_at"}, {Name: "last_used_at"}, {Name: "last_used_ip"}, {Name: "created_at"}}}
+
+// accessKeyRow is a row of accessKeyColumns.
+type accessKeyRow struct {
+	ID          int64         `gorm:"column:id"`
+	Name        string        `gorm:"column:name"`
+	TokenHint   string        `gorm:"column:token_hint"`
+	Permissions store.Strings `gorm:"column:permissions"`
+	ExpiresAt   *time.Time    `gorm:"column:expires_at"`
+	LastUsedAt  *time.Time    `gorm:"column:last_used_at"`
+	LastUsedIP  string        `gorm:"column:last_used_ip"`
+	CreatedAt   time.Time     `gorm:"column:created_at"`
+}
+
+func (r *accessKeyRow) key() *AccessKey {
+	return &AccessKey{ID: r.ID, Name: r.Name, Hint: r.TokenHint, Permissions: r.Permissions, ExpiresAt: r.ExpiresAt,
+		LastUsedAt: r.LastUsedAt, LastUsedIP: r.LastUsedIP, CreatedAt: r.CreatedAt}
+}
+
+// accessKeysOf are the access keys of userID.
+func accessKeysOf(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Model(&model.UserAccessKey{}).Where("user_id = ?", userID)
+}
+
+// accessKeyList selects the accessKeyColumns of the keys of userID, newest
+// first.
+func accessKeyList(db *gorm.DB, userID int64) *gorm.DB {
+	return accessKeysOf(db, userID).Select(accessKeyColumns).Order("created_at DESC")
 }
 
 // AccessKeys lists the user's keys.
 func (s *Service) AccessKeys(ctx context.Context, userID int64) ([]*AccessKey, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+accessKeyColumns+` FROM user_access_keys WHERE user_id = $1 ORDER BY created_at DESC`, userID)
-	if err != nil {
+	var rows []accessKeyRow
+	if err := accessKeyList(store.G(ctx, s.db.Gorm), userID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []*AccessKey{}
-	for rows.Next() {
-		k, err := scanAccessKey(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, k)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	out := make([]*AccessKey, 0, len(rows))
+	for i := range rows {
+		out = append(out, rows[i].key())
 	}
 	return out, s.lostPermissions(ctx, userID, out)
 }
@@ -161,28 +184,25 @@ func (s *Service) CreateAccessKey(ctx context.Context, userID int64, in CreateAc
 	if err != nil {
 		return nil, err
 	}
-	secret, err := randomToken()
-	if err != nil {
-		return nil, err
-	}
-	raw := core.AccessKeyPrefix + secret
+	raw, hash := tokenstore.NewToken(core.AccessKeyPrefix)
 	var key *AccessKey
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if err := lockRefreshUser(ctx, tx, userID); err != nil {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := lockUserRow(ctx, tx, userID); err != nil {
 			return err
 		}
-		var n int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM user_access_keys WHERE user_id = $1`, userID).Scan(&n); err != nil {
+		g := store.G(ctx, tx)
+		var n int64
+		if err := accessKeysOf(g, userID).Count(&n).Error; err != nil {
 			return err
 		}
 		if n >= accessKeyMaxPerUser {
 			return core.ErrConflict.WithMessage(t(ctx, "too many access keys", "访问密钥数量已达上限"))
 		}
-		key, err = scanAccessKey(tx.QueryRow(ctx, `INSERT INTO user_access_keys (user_id, name, token_hash, token_hint, permissions, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6) RETURNING `+accessKeyColumns, userID, name, hashToken(raw), raw[len(raw)-4:], perms, in.ExpiresAt))
-		if err != nil {
+		var row accessKeyRow
+		if err := insertAccessKey(g, userID, name, hash, raw[len(raw)-4:], perms, in.ExpiresAt).Scan(&row).Error; err != nil {
 			return err
 		}
+		key = row.key()
 		return audit.Audit(ctx, tx, userID, "user.access_key.create", "user", strconv.FormatInt(userID, 10),
 			map[string]any{"access_key_id": key.ID, "name": name, "permissions": perms})
 	})
@@ -192,6 +212,13 @@ func (s *Service) CreateAccessKey(ctx context.Context, userID int64, in CreateAc
 	key.Key = raw
 	key.Lost = []string{}
 	return key, nil
+}
+
+// insertAccessKey creates an access key and returns its accessKeyColumns.
+func insertAccessKey(db *gorm.DB, userID int64, name, hash, hint string, perms []string, expiresAt *time.Time) *gorm.DB {
+	row := store.OneRow(db).Select("?, ?, ?, ?, ?, ?", userID, name, hash, hint, store.Strings(perms), expiresAt)
+	return gormpg.InsertSelectReturning(db, model.UserAccessKey{}.TableName(),
+		[]string{"user_id", "name", "token_hash", "token_hint", "permissions", "expires_at"}, row, accessKeyReturning)
 }
 
 // UpdateAccessKey renames a key or replaces its permissions (the route
@@ -213,16 +240,16 @@ func (s *Service) UpdateAccessKey(ctx context.Context, userID, id int64, in Upda
 		}
 	}
 	var key *AccessKey
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
-		var err error
-		key, err = scanAccessKey(tx.QueryRow(ctx, `UPDATE user_access_keys SET name = COALESCE($3, name), permissions = COALESCE($4, permissions)
-			WHERE id = $1 AND user_id = $2 RETURNING `+accessKeyColumns, id, userID, name, perms))
-		if store.IsNoRows(err) {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		var row accessKeyRow
+		res := updateAccessKey(store.G(ctx, tx), id, userID, name, perms, &row)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
 			return core.ErrNotFound
 		}
-		if err != nil {
-			return err
-		}
+		key = row.key()
 		return audit.Audit(ctx, tx, userID, "user.access_key.update", "user", strconv.FormatInt(userID, 10),
 			map[string]any{"access_key_id": id, "name": key.Name, "permissions": key.Permissions})
 	})
@@ -232,18 +259,31 @@ func (s *Service) UpdateAccessKey(ctx context.Context, userID, id int64, in Upda
 	return key, s.lostPermissions(ctx, userID, []*AccessKey{key})
 }
 
+// updateAccessKey renames the key id of userID or replaces its permissions,
+// and reads the key into dst; a nil name or perms keeps what the key has.
+func updateAccessKey(db *gorm.DB, id, userID int64, name *string, perms []string, dst *accessKeyRow) *gorm.DB {
+	return db.Model(dst).Table(model.UserAccessKey{}.TableName()).Clauses(accessKeyReturning).
+		Where("id = ? AND user_id = ?", id, userID).
+		Updates(map[string]any{"name": gorm.Expr("COALESCE(?, name)", name), "permissions": gorm.Expr("COALESCE(?, permissions)", store.NullStrings(perms))})
+}
+
 // DeleteAccessKey revokes a key at once.
 func (s *Service) DeleteAccessKey(ctx context.Context, userID, id int64) error {
-	return s.db.Tx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `DELETE FROM user_access_keys WHERE id = $1 AND user_id = $2`, id, userID)
-		if err != nil {
-			return err
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
+		res := deleteAccessKey(store.G(ctx, tx), id, userID)
+		if res.Error != nil {
+			return res.Error
 		}
-		if tag.RowsAffected() == 0 {
+		if res.RowsAffected == 0 {
 			return core.ErrNotFound
 		}
 		return audit.Audit(ctx, tx, userID, "user.access_key.delete", "user", strconv.FormatInt(userID, 10), map[string]any{"access_key_id": id})
 	})
+}
+
+// deleteAccessKey removes the access key id of userID.
+func deleteAccessKey(db *gorm.DB, id, userID int64) *gorm.DB {
+	return db.Where("id = ? AND user_id = ?", id, userID).Delete(&model.UserAccessKey{})
 }
 
 // AccessKeyPermissions is the catalog a user chooses from: the self module,
@@ -282,8 +322,9 @@ func (s *Service) AccessKeyPermissions(ctx context.Context, userID int64) ([]*au
 func (s *Service) VerifyAccessKey(ctx context.Context, raw, ip string) (core.AccessKeyIdentity, error) {
 	var id core.AccessKeyIdentity
 	var expiresAt, lastUsed *time.Time
-	err := s.db.Pool.QueryRow(ctx, `SELECT id, user_id, permissions, expires_at, last_used_at FROM user_access_keys WHERE token_hash = $1`, hashToken(raw)).
-		Scan(&id.KeyID, &id.UserID, &id.Permissions, &expiresAt, &lastUsed)
+	g := store.G(ctx, s.db.Gorm)
+	err := accessKeyByHash(g, tokenstore.Hash(raw)).Row().
+		Scan(&id.KeyID, &id.UserID, (*store.Strings)(&id.Permissions), &expiresAt, &lastUsed)
 	if store.IsNoRows(err) {
 		return id, core.ErrUnauthenticated.WithMessage("invalid access key")
 	}
@@ -293,7 +334,7 @@ func (s *Service) VerifyAccessKey(ctx context.Context, raw, ip string) (core.Acc
 	if expiresAt != nil && !expiresAt.After(time.Now()) {
 		return id, core.ErrUnauthenticated.WithMessage("access key has expired")
 	}
-	active, _, err := s.isActiveWithVersion(ctx, id.UserID, 0)
+	active, _, err := s.isActiveWithVersion(ctx, id.UserID)
 	if err != nil {
 		return id, err
 	}
@@ -301,9 +342,23 @@ func (s *Service) VerifyAccessKey(ctx context.Context, raw, ip string) (core.Acc
 		return id, core.ErrUnauthenticated.WithMessage("user is disabled or deleted")
 	}
 	if lastUsed == nil || time.Since(*lastUsed) > accessKeyTouchEvery {
-		if _, err := s.db.Pool.Exec(ctx, `UPDATE user_access_keys SET last_used_at = now(), last_used_ip = $2 WHERE id = $1`, id.KeyID, ip); err != nil {
+		if err := touchAccessKey(g, id.KeyID, ip).Error; err != nil {
 			return id, err
 		}
 	}
 	return id, nil
+}
+
+// accessKeyByHash is the statement of VerifyAccessKey, scanned through Row
+// (the fewest allocations): it runs for every request made with an access
+// key.
+func accessKeyByHash(db *gorm.DB, hash string) *gorm.DB {
+	return db.Model(&model.UserAccessKey{}).Select("id, user_id, permissions, expires_at, last_used_at").Where("token_hash = ?", hash)
+}
+
+// touchAccessKey records a use of the key id, at most every
+// accessKeyTouchEvery.
+func touchAccessKey(db *gorm.DB, id int64, ip string) *gorm.DB {
+	return db.Model(&model.UserAccessKey{}).Where("id = ?", id).
+		Updates(map[string]any{"last_used_at": gorm.Expr("now()"), "last_used_ip": ip})
 }

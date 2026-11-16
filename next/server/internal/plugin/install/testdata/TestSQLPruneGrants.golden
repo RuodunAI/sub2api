@@ -1,0 +1,5 @@
+-- sql
+DELETE FROM "plugin_permission_grants" WHERE plugin_key = $1 AND NOT (permission = ANY($2)) AND status <> 'revoked'
+-- vars
+$1 string "demo"
+$2 store.Strings [http.outbound kv]

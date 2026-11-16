@@ -29,8 +29,8 @@ import (
 
 type fakeTokens struct{ testutil.StepUpPassed }
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(tok, "u"), 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "u")
 }
 
 // VerifyAccessKey reads "sak_<uid>" as an access key acting for uid.
@@ -180,7 +180,7 @@ func setup(t *testing.T) *env {
 func (e *env) exec1(sql string, args ...any) int64 {
 	e.t.Helper()
 	var id int64
-	if err := e.db.Pool.QueryRow(context.Background(), sql, args...).Scan(&id); err != nil {
+	if err := e.db.SQL.QueryRowContext(context.Background(), sql, args...).Scan(&id); err != nil {
 		e.t.Fatal(err)
 	}
 	return id
@@ -188,7 +188,7 @@ func (e *env) exec1(sql string, args ...any) int64 {
 
 func (e *env) exec(sql string, args ...any) {
 	e.t.Helper()
-	if _, err := e.db.Pool.Exec(context.Background(), sql, args...); err != nil {
+	if _, err := e.db.SQL.ExecContext(context.Background(), sql, args...); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -295,7 +295,7 @@ func TestAPIKeyIPAllowlistOwnershipAndAuthentication(t *testing.T) {
 	_, err = e.svc.Authenticate(t.Context(), raw)
 	require.NoError(t, err)
 	var audits int
-	require.NoError(t, e.db.Pool.QueryRow(t.Context(), `SELECT count(*) FROM audit_logs WHERE action='apikey.ip_allowlist' AND user_id=$1`, e.user).Scan(&audits))
+	require.NoError(t, e.db.SQL.QueryRowContext(t.Context(), `SELECT count(*) FROM audit_logs WHERE action='apikey.ip_allowlist' AND user_id=$1`, e.user).Scan(&audits))
 	require.Equal(t, 2, audits)
 }
 
@@ -365,7 +365,7 @@ func TestCopyAPIKey(t *testing.T) {
 		t.Fatal("new key is not copyable")
 	}
 	var sealed []byte
-	if err := e.db.Pool.QueryRow(context.Background(), `SELECT key_cipher FROM api_keys WHERE id=$1`, id).Scan(&sealed); err != nil {
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT key_cipher FROM api_keys WHERE id=$1`, id).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(sealed, []byte(raw)) {
@@ -424,7 +424,7 @@ func TestCopyAPIKey(t *testing.T) {
 		t.Fatalf("admin reveal: %d", code)
 	}
 	var count int
-	_ = e.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='apikey.reveal' AND target_id=$1`, strconv.FormatInt(id, 10)).Scan(&count)
+	_ = e.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM audit_logs WHERE action='apikey.reveal' AND target_id=$1`, strconv.FormatInt(id, 10)).Scan(&count)
 	if count != 2 {
 		t.Fatalf("audit count: %d", count)
 	}
@@ -489,7 +489,7 @@ func TestAPIKeyLifecycleAndAuth(t *testing.T) {
 		t.Fatalf("create view: %v", data)
 	}
 	var stored string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT key_hash FROM api_keys WHERE id = $1`, keyID).Scan(&stored)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT key_hash FROM api_keys WHERE id = $1`, keyID).Scan(&stored)
 	if stored != HashKey(raw) {
 		t.Fatal("hash mismatch")
 	}
@@ -521,14 +521,14 @@ func TestAPIKeyLifecycleAndAuth(t *testing.T) {
 	}
 
 	// Group policy changes are visible on the next authentication, without cached principals.
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE groups SET model_filter_mode='blacklist' WHERE id=$1`, pub); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE groups SET model_filter_mode='blacklist' WHERE id=$1`, pub); err != nil {
 		t.Fatal(err)
 	}
 	p, err = e.svc.Authenticate(ctx, raw)
 	if err != nil || p.Group.ModelFilterMode != "blacklist" || p.Group.AllowsModel("claude-opus-5-5") || !p.Group.AllowsModel("gpt-5") {
 		t.Fatalf("policy principal: %+v %v", p, err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE groups SET model_filter_mode='whitelist' WHERE id=$1`, pub); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE groups SET model_filter_mode='whitelist' WHERE id=$1`, pub); err != nil {
 		t.Fatal(err)
 	}
 
@@ -537,7 +537,7 @@ func TestAPIKeyLifecycleAndAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	var last *time.Time
-	_ = e.db.Pool.QueryRow(ctx, `SELECT last_used_at FROM api_keys WHERE id = $1`, keyID).Scan(&last)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT last_used_at FROM api_keys WHERE id = $1`, keyID).Scan(&last)
 	if last == nil {
 		t.Fatal("last_used_at not written")
 	}

@@ -1,0 +1,6 @@
+-- sql
+INSERT INTO "user_totp" ("user_id","secret_enc","last_step") VALUES ($1,$2,$3) ON CONFLICT ("user_id") DO NOTHING
+-- vars
+$1 int64 7
+$2 store.Bytes [1 2 3]
+$3 int64 59000000

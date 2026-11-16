@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Redis keys (docs/CONTRACTS.md §7).
@@ -95,12 +95,12 @@ var (
 	_ core.Slots         = (*Slots)(nil)
 )
 
-// New builds all cluster services. pool may be nil (no PG health tracking).
+// New builds all cluster services. db may be nil (no PG health tracking).
 // Call Start before use and Close on exit.
-func New(rdb redis.UniversalClient, pool *pgxpool.Pool, opts Options) *Cluster {
+func New(rdb redis.UniversalClient, db *store.DB, opts Options) *Cluster {
 	var pinger Pinger
-	if pool != nil {
-		pinger = pool
+	if db != nil {
+		pinger = db
 	}
 	reg := NewRegistry(rdb, pinger, RegistryOptions{
 		NodeID: opts.NodeID, Addr: opts.Addr, HostVersion: opts.HostVersion, Logger: opts.Logger, Managed: opts.Managed, CoreBootID: opts.CoreBootID,

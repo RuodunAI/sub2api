@@ -1,0 +1,70 @@
+-- sql
+INSERT INTO "model_price_history" ("expr_hash","expression","expr_version") VALUES ($1,$2,$3) ON CONFLICT ("expr_hash") DO NOTHING RETURNING "created_at"
+-- vars
+$1 string "b67b5f5938d990a59bd23264b3c82d5d9055128a6d78aab0994597de293c267c"
+$2 string "v1:tier(\"base\", flat(0))"
+$3 int 1
+
+-- sql
+SELECT "id" FROM "price_rules" WHERE ("group_id",COALESCE(segment_id, 0),"model") IN (($1,$2,$3),($4,$5,$6),($7,$8,$9),($10,$11,$12)) ORDER BY group_id, segment_id NULLS FIRST, model FOR UPDATE
+-- vars
+$1 int64 3
+$2 int64 0
+$3 string "claude-opus-4-5"
+$4 int64 3
+$5 int64 0
+$6 string "claude-sonnet-4-5"
+$7 int64 3
+$8 int64 5
+$9 string "claude-haiku-4-5"
+$10 int64 3
+$11 int64 5
+$12 string "claude-sonnet-4-5"
+
+-- sql
+DELETE FROM "price_rules" WHERE ("group_id",COALESCE(segment_id, 0),"model") IN (($1,$2,$3),($4,$5,$6))
+-- vars
+$1 int64 3
+$2 int64 0
+$3 string "claude-opus-4-5"
+$4 int64 3
+$5 int64 5
+$6 string "claude-haiku-4-5"
+
+-- sql
+INSERT INTO "price_rules" ("group_id","segment_id","model","kind","multiplier","mode","config","expression","expr_hash","updated_by") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10),($11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT ("group_id","model")  WHERE segment_id IS NULL DO UPDATE SET "kind"="excluded"."kind","multiplier"="excluded"."multiplier","mode"="excluded"."mode","config"="excluded"."config","expression"="excluded"."expression","expr_hash"="excluded"."expr_hash","updated_by"="excluded"."updated_by","updated_at"=now()
+-- vars
+$1 int64 3
+$2 *int64 nil
+$3 string "claude-opus-4-5"
+$4 string "multiplier"
+$5 *decimal.Decimal 1.25
+$6 *string nil
+$7 store.Bytes []
+$8 string ""
+$9 string ""
+$10 *int64 2
+$11 int64 3
+$12 *int64 nil
+$13 string "claude-sonnet-4-5"
+$14 string "multiplier"
+$15 *decimal.Decimal 1.25
+$16 *string nil
+$17 store.Bytes []
+$18 string ""
+$19 string ""
+$20 *int64 2
+
+-- sql
+INSERT INTO "price_rules" ("group_id","segment_id","model","kind","multiplier","mode","config","expression","expr_hash","updated_by") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT ("group_id","segment_id","model")  WHERE segment_id IS NOT NULL DO UPDATE SET "kind"="excluded"."kind","multiplier"="excluded"."multiplier","mode"="excluded"."mode","config"="excluded"."config","expression"="excluded"."expression","expr_hash"="excluded"."expr_hash","updated_by"="excluded"."updated_by","updated_at"=now()
+-- vars
+$1 int64 3
+$2 *int64 5
+$3 string "claude-sonnet-4-5"
+$4 string "custom"
+$5 *decimal.Decimal nil
+$6 *string "per_request"
+$7 store.Bytes [123 34 112 114 105 99 101 34 58 110 117 108 108 125]
+$8 string "tier(\"base\", flat(0))"
+$9 string "b67b5f5938d990a59bd23264b3c82d5d9055128a6d78aab0994597de293c267c"
+$10 *int64 2

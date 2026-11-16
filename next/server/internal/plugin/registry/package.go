@@ -18,10 +18,13 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/blobs"
 	pluginpkg "github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Package is one verified .s2plugin cached on local disk. Files are read
@@ -43,6 +46,7 @@ type Package struct {
 
 	file *os.File
 	zr   *zip.Reader
+	refs int // Acquire holds not yet done; guarded by Packages.mu
 }
 
 // Hash8 is the short package hash used in directory names and asset URLs.
@@ -56,9 +60,6 @@ func (p *Package) AssetBase() string { return "/plugin-ui/" + p.Key + "/" + p.Ve
 
 // FS exposes the package content (zip) as a read-only file system.
 func (p *Package) FS() fs.FS { return p.zr }
-
-// File is the path of the cached .s2plugin file (verified when opened).
-func (p *Package) File() string { return filepath.Join(p.Dir, "package.s2plugin") }
 
 // Has reports whether a file exists in the package.
 func (p *Package) Has(name string) bool {
@@ -206,7 +207,7 @@ func WithSource(src *blobs.Source) PackagesOption {
 // TrustVerifier verifies packages with the plugin trust store (official
 // root keys and publisher_keys read through q). lim bounds unpacking and
 // should match the upload limits.
-func TrustVerifier(trust *pluginpkg.TrustStore, q store.Querier, lim pluginpkg.Limits) PackageVerifier {
+func TrustVerifier(trust *pluginpkg.TrustStore, q *gorm.DB, lim pluginpkg.Limits) PackageVerifier {
 	return func(ctx context.Context, key, version string, data []byte) error {
 		p, err := pluginpkg.Open(data, lim)
 		if err != nil {
@@ -232,13 +233,31 @@ func NewPackages(db *store.DB, dataDir string, opts ...PackagesOption) *Packages
 func (s *Packages) DataDir() string { return s.dataDir }
 
 // Open returns the verified package of key@version, downloading it from the
-// market or the primary when it is not cached on disk yet.
+// market or the primary when it is not cached on disk yet. The package is
+// not held: Release may close it at any time, so a caller that reads its
+// files outside a running instance uses Acquire.
 func (s *Packages) Open(ctx context.Context, key, version string) (*Package, error) {
+	p, done, err := s.Acquire(ctx, key, version)
+	if err != nil {
+		return nil, err
+	}
+	done()
+	return p, nil
+}
+
+// ErrPackageInUse is returned by Release while an Acquire of the package
+// is not done yet.
+var ErrPackageInUse = errors.New("plugin package in use")
+
+// Acquire is Open that holds the package until done is called: Release
+// leaves a held package (file handle and directory) alone.
+func (s *Packages) Acquire(ctx context.Context, key, version string) (p *Package, done func(), err error) {
 	id := key + "@" + version
 	s.mu.Lock()
 	if p, ok := s.cache[id]; ok {
+		p.refs++
 		s.mu.Unlock()
-		return p, nil
+		return p, s.doneFunc(p), nil
 	}
 	lk, ok := s.fetch[id]
 	if !ok {
@@ -251,19 +270,42 @@ func (s *Packages) Open(ctx context.Context, key, version string) (*Package, err
 	defer lk.Unlock()
 	s.mu.Lock()
 	if p, ok := s.cache[id]; ok {
+		p.refs++
 		s.mu.Unlock()
-		return p, nil
+		return p, s.doneFunc(p), nil
 	}
 	s.mu.Unlock()
 
-	p, err := s.load(ctx, key, version)
-	if err != nil {
-		return nil, err
+	if p, err = s.load(ctx, key, version); err != nil {
+		return nil, nil, err
 	}
 	s.mu.Lock()
 	s.cache[id] = p
+	p.refs++
 	s.mu.Unlock()
-	return p, nil
+	return p, s.doneFunc(p), nil
+}
+
+func (s *Packages) doneFunc(p *Package) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			p.refs--
+			s.mu.Unlock()
+		})
+	}
+}
+
+// versionRecord reads what loading key@version needs: its manifest, package
+// sha256 and URL, signature status, publisher name and trust level, and
+// when the plugin was installed.
+func versionRecord(db *gorm.DB, key, version string) *gorm.DB {
+	return db.Table("plugin_versions AS v").
+		Select("v.manifest, v.package_sha256, v.package_url, v.signature_status, p.name, p.trust_level, (?)",
+			db.Model(&model.Plugin{}).Select("installed_at").Where("key = v.plugin_key")).
+		Joins("LEFT JOIN publishers p ON p.id = v.publisher_id").
+		Where("v.plugin_key = ? AND v.version = ?", key, version)
 }
 
 func (s *Packages) load(ctx context.Context, key, version string) (*Package, error) {
@@ -276,12 +318,8 @@ func (s *Packages) load(ctx context.Context, key, version string) (*Package, err
 		trust        *string
 		claimedAt    *time.Time
 	)
-	err := s.db.Pool.QueryRow(ctx, `
-		SELECT v.manifest, v.package_sha256, v.package_url, v.signature_status, p.name, p.trust_level,
-		       (SELECT installed_at FROM plugins WHERE key = v.plugin_key)
-		FROM plugin_versions v LEFT JOIN publishers p ON p.id = v.publisher_id
-		WHERE v.plugin_key = $1 AND v.version = $2`, key, version).
-		Scan(&manifestJSON, &sum, &url, &sigStatus, &publisher, &trust, &claimedAt)
+	err := versionRecord(store.G(ctx, s.db.Gorm), key, version).
+		Row().Scan(&manifestJSON, &sum, &url, &sigStatus, &publisher, &trust, &claimedAt)
 	if err != nil {
 		if store.IsNoRows(err) {
 			return nil, fmt.Errorf("plugin %s@%s: version not found", key, version)
@@ -475,7 +513,8 @@ func (s *Packages) Cached() []PackageRef {
 // Release closes the cached package key@version and deletes its directory
 // (package file and extracted binary). Call it only once no instance of
 // the version runs anymore. Without a cached package every
-// "<version>-<hash8>" directory of the version is removed.
+// "<version>-<hash8>" directory of the version is removed. A package still
+// held by Acquire is kept and ErrPackageInUse returned.
 func (s *Packages) Release(key, version string) error {
 	id := key + "@" + version
 	s.mu.Lock()
@@ -490,6 +529,10 @@ func (s *Packages) Release(key, version string) error {
 
 	s.mu.Lock()
 	p := s.cache[id]
+	if p != nil && p.refs > 0 {
+		s.mu.Unlock()
+		return ErrPackageInUse
+	}
 	delete(s.cache, id)
 	s.mu.Unlock()
 

@@ -14,17 +14,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/gin-gonic/gin"
 )
 
 // RegisterRoutes serves the console's update routes by forwarding them to
 // the shell's management socket. token (config Managed.UpdaterToken) is sent
 // as "Authorization: Bearer <token>" on every forwarded request; empty sends
-// none (older shells).
+// none (the gateway 0.1.133 shell, see config.ManagedConfig.UpdaterToken).
 func RegisterRoutes(r *httpapi.Router, socketPath, token string, db *store.DB) {
 	client := &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
@@ -102,7 +103,7 @@ func registerRoutes(r *httpapi.Router, available bool, client *http.Client, toke
 			// The gateway has committed independently. Never turn an audit-write
 			// failure into a failed action response that invites duplicate work.
 			auditCtx, cancel := context.WithTimeout(context.WithoutCancel(audit.Context(c)), 5*time.Second)
-			if err := audit.Audit(auditCtx, db.Pool, uid, action, targetType, id, details); err != nil {
+			if err := audit.Audit(auditCtx, db.Gorm, uid, action, targetType, id, details); err != nil {
 				slog.Error("audit updater action failed", "action", action, "target", id, "err", err)
 			}
 			cancel()

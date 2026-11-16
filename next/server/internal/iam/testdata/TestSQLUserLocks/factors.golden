@@ -1,0 +1,5 @@
+-- sql
+SELECT EXISTS (SELECT 1 FROM "user_totp" WHERE user_id = $1), (SELECT count(*) FROM "user_passkeys" WHERE user_id = $2) FROM (SELECT) AS one
+-- vars
+$1 int64 7
+$2 int64 7

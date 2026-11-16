@@ -26,13 +26,8 @@ type Router struct {
 	tokens core.TokenVerifier
 	authz  core.Authorizer
 	stepUp core.StepUpVerifier
-	// sessions keeps the step-up sessions of StepUpSession views.
-	sessions core.StepUpSessions
-	noKeys   bool
-	scope    string // step-up scope of the StepUp or StepUpSession view
-	// session names the step-up session a StepUpSession view's request
-	// continues; nil on other views.
-	session func(*gin.Context) string
+	noKeys bool
+	scope  string // step-up scope of the StepUp view
 	// routes records every route registered through r and its views
 	// (Routes), shared by all of them.
 	routes *[]*RouteSpec
@@ -40,20 +35,18 @@ type Router struct {
 
 // NewRouter mounts common middleware on engine and returns the /api/v1 router.
 // tokens spends the step-up proofs of StepUp routes when it implements
-// core.StepUpVerifier, and keeps the sessions of StepUpSession routes when
-// it implements core.StepUpSessions; otherwise those routes fail closed.
+// core.StepUpVerifier; otherwise those routes fail closed.
 func NewRouter(engine *gin.Engine, tokens core.TokenVerifier, authz core.Authorizer) *Router {
 	engine.Use(RequestContext(), Recover())
 	stepUp, _ := tokens.(core.StepUpVerifier)
-	sessions, _ := tokens.(core.StepUpSessions)
-	return &Router{api: engine.Group(APIPrefix), tokens: tokens, authz: authz, stepUp: stepUp, sessions: sessions, routes: new([]*RouteSpec)}
+	return &Router{api: engine.Group(APIPrefix), tokens: tokens, authz: authz, stepUp: stepUp, routes: new([]*RouteSpec)}
 }
 
-// Public registers an unauthenticated route; on a SessionOnly, StepUp or
-// StepUpSession view it panics, since it would enforce none of them.
+// Public registers an unauthenticated route; on a SessionOnly or StepUp
+// view it panics, since it would enforce neither.
 func (r *Router) Public(method, path string, h ...gin.HandlerFunc) *RouteSpec {
 	if r.noKeys || r.scope != "" {
-		panic("httpapi: Public on a SessionOnly, StepUp or StepUpSession view: " + method + " " + path)
+		panic("httpapi: Public on a SessionOnly or StepUp view: " + method + " " + path)
 	}
 	r.api.Handle(method, path, h...)
 	return r.record(method, path, ModePublic, nil)
@@ -101,22 +94,7 @@ func (r *Router) StepUp(scope string) *Router {
 		panic("httpapi: StepUp without a scope")
 	}
 	v := *r
-	v.scope, v.session = scope, nil
-	return &v
-}
-
-// StepUpSession returns a view of r whose routes continue, after their
-// permission, a step-up session opened under scope (OpenStepUpSession) by
-// a route of a StepUp view: session names it from the request. They need no
-// proof of their own; a session that is unknown, idle too long or opened by
-// another user, login session or access key answers 403
-// verification_expired. r itself is unchanged.
-func (r *Router) StepUpSession(scope string, session func(*gin.Context) string) *Router {
-	if scope == "" || session == nil {
-		panic("httpapi: StepUpSession without a scope or a session")
-	}
-	v := *r
-	v.scope, v.session = scope, session
+	v.scope = scope
 	return &v
 }
 
@@ -186,10 +164,7 @@ func (r *Router) handle(method, path string, mode Mode, keys []perm.Key, check g
 	if check != nil {
 		chain = append(chain, check)
 	}
-	switch {
-	case r.session != nil:
-		chain = append(chain, r.continueStepUp(r.scope, r.session))
-	case r.scope != "":
+	if r.scope != "" {
 		chain = append(chain, r.requireStepUp(r.scope))
 	}
 	r.api.Handle(method, path, append(chain, h...)...)
@@ -207,47 +182,8 @@ func (r *Router) requireStepUp(scope string) gin.HandlerFunc {
 			Fail(c, err)
 			return
 		}
-		c.Set(spentStepUpKey, spentStepUp{scope: scope, sessions: r.sessions})
 		c.Next()
 	}
-}
-
-// continueStepUp passes a request continuing the step-up session session
-// names under scope.
-func (r *Router) continueStepUp(scope string, session func(*gin.Context) string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if r.sessions == nil {
-			Fail(c, core.ErrInternal.WithMessage("step-up sessions are not available"))
-			return
-		}
-		if err := r.sessions.ContinueStepUpSession(c.Request.Context(), scope, session(c)); err != nil {
-			Fail(c, err)
-			return
-		}
-		c.Next()
-	}
-}
-
-// spentStepUpKey holds, in the gin context of a StepUp view's request, the
-// scope its proof was spent on (spentStepUp).
-const spentStepUpKey = "httpapi.stepUp"
-
-type spentStepUp struct {
-	scope    string
-	sessions core.StepUpSessions
-}
-
-// OpenStepUpSession lets the proof a StepUp view's request spent cover the
-// requests that continue what it started: the routes of a StepUpSession
-// view under the same scope whose request names session. It fails outside
-// a StepUp view's request.
-func OpenStepUpSession(c *gin.Context, session string) error {
-	v, _ := c.Get(spentStepUpKey)
-	spent, ok := v.(spentStepUp)
-	if !ok || spent.sessions == nil {
-		return core.ErrInternal.WithMessage("step-up sessions are not available")
-	}
-	return spent.sessions.OpenStepUpSession(c.Request.Context(), spent.scope, session)
 }
 
 // Granted returns the permission keys the route middleware matched for the
@@ -291,24 +227,36 @@ func StampAuthzVersion(c *gin.Context, authz core.Authorizer) {
 	}
 }
 
-// Authenticate resolves the request's bearer token (a JWT or an access key)
-// and stores the caller in the request context, with the step-up proof the
-// request carries (core.WithStepUp). On failure it renders unauthenticated
-// and returns false.
+// Authenticate resolves the request's bearer token (a login session or an
+// access key) and stores the caller in the request context, with the
+// step-up proof the request carries (core.WithStepUp). On failure it renders
+// unauthenticated, or the server error as it is, and returns false.
 func Authenticate(c *gin.Context, tokens core.TokenVerifier) bool {
 	token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer ")
 	if !ok || token == "" {
 		Fail(c, core.ErrUnauthenticated)
 		return false
 	}
-	ctx, _, err := core.AuthenticateBearer(c.Request.Context(), tokens, token, c.ClientIP())
+	ctx := core.WithUserAgent(c.Request.Context(), c.Request.UserAgent())
+	ctx, _, err := core.AuthenticateBearer(ctx, tokens, token, c.ClientIP())
 	if err != nil {
-		Fail(c, core.ErrUnauthenticated.WithCause(err))
+		Fail(c, authFailure(err))
 		return false
 	}
 	ctx = core.WithStepUp(ctx, c.GetHeader(core.HeaderVerifyProof), c.Request.Method+" "+c.Request.URL.Path)
 	c.Request = c.Request.WithContext(ctx)
 	return true
+}
+
+// authFailure is what a failed authentication renders. A server error (the
+// session store or the database down) is an outage, not a bad token: a 401
+// would end every console session, and the login page cannot work either
+// until it is back (CONTRACTS §100.5).
+func authFailure(err error) *core.Error {
+	if e := core.AsError(err); e.Status >= http.StatusInternalServerError {
+		return e
+	}
+	return core.ErrUnauthenticated.WithCause(err)
 }
 
 // RejectAccessKey renders permission_denied and returns false when the

@@ -8,13 +8,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 var _ core.AccountAutomaticStateController = (*Service)(nil)
@@ -27,16 +29,19 @@ const automaticStateSweepInterval = time.Minute
 const usageLimitsInterval = 5 * time.Second
 const maxAutomaticDisableDuration = 366 * 24 * time.Hour
 
-func automaticDisableEnabled(ctx context.Context, q store.Querier) (bool, error) {
+func automaticDisableEnabled(ctx context.Context, q *gorm.DB) (bool, error) {
+	g := store.G(ctx, q)
+	setting := func(flag, key string) *gorm.DB {
+		return g.Model(&model.Setting{}).Select("(value->>?)::boolean", flag).Where("key = ?", key)
+	}
 	var enabled bool
-	err := q.QueryRow(ctx, `SELECT COALESCE(
-		(SELECT (value->>'account_enabled')::boolean FROM settings WHERE key='failure_policy'),
-		(SELECT (value->>'enabled')::boolean FROM settings WHERE key='auto_disable'),true)`).Scan(&enabled)
+	err := store.OneRow(g).Select("COALESCE((?), (?), true)", setting("account_enabled", "failure_policy"), setting("enabled", "auto_disable")).
+		Row().Scan(&enabled)
 	return enabled, err
 }
 
 func (s *Service) getAutoDisablePolicy(c *gin.Context) {
-	enabled, err := automaticDisableEnabled(c.Request.Context(), s.d.DB.Pool)
+	enabled, err := automaticDisableEnabled(c.Request.Context(), s.d.DB.Gorm)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -68,15 +73,17 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 	out := &pluginv1.SetAccountAutomaticStateResponse{}
 	var name, pluginKey, typ string
 	var cooldownCleared bool
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var allowed bool
 		var until, deferredUntil *time.Time
 		var now time.Time
 		var source, deferredReason string
 		var deferred bool
-		err := tx.QueryRow(ctx, `SELECT name,plugin_key,type,status,status_reason,auto_disabled_source,auto_disable,auto_disabled_until,
-				deferred_auto_disable,deferred_auto_disable_reason,deferred_auto_disabled_until,clock_timestamp()
-			FROM accounts WHERE id=$1 AND deleted_at IS NULL AND ($2='' OR plugin_key=$2) FOR UPDATE`, id, owner).
+		// The live account, of owner's plugin (any for ""), stays locked.
+		err := store.G(ctx, tx).Model(&model.Account{}).Select(`name,plugin_key,type,status,status_reason,auto_disabled_source,auto_disable,auto_disabled_until,
+		deferred_auto_disable,deferred_auto_disable_reason,deferred_auto_disabled_until,clock_timestamp()`).
+			Where("id = ? AND deleted_at IS NULL AND (? = '' OR plugin_key = ?)", id, owner, owner).
+			Clauses(store.ForUpdate()).Row().
 			Scan(&name, &pluginKey, &typ, &out.Status, &out.Reason, &source, &allowed, &until, &deferred, &deferredReason, &deferredUntil, &now)
 		if store.IsNoRows(err) {
 			return notFound(ctx)
@@ -176,7 +183,7 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 	}
 	out.Changed = out.Changed || cooldownCleared
 	if out.Changed {
-		s.afterStatusChange(ctx, id, pluginKey, typ)
+		s.changed(ctx, id)
 	}
 	return out, nil
 }
@@ -185,9 +192,11 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 // failure policy that the usage limit holds back, on an account the caller
 // locked in tx; the status stays the limit's. The 0070 trigger drops it once
 // the account is no longer the limit's.
-func writeDeferredDisable(ctx context.Context, tx pgx.Tx, id int64, set bool, reason string, until *time.Time, detail map[string]any) error {
-	if _, err := tx.Exec(ctx, `UPDATE accounts SET deferred_auto_disable=$2,deferred_auto_disable_reason=$3,deferred_auto_disabled_until=$4 WHERE id=$1`,
-		id, set, reason, until); err != nil {
+func writeDeferredDisable(ctx context.Context, tx *gorm.DB, id int64, set bool, reason string, until *time.Time, detail map[string]any) error {
+	// updated_at stays.
+	if err := store.G(ctx, tx).Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{
+		"deferred_auto_disable": set, "deferred_auto_disable_reason": reason, "deferred_auto_disabled_until": until,
+	}).Error; err != nil {
 		return err
 	}
 	d := map[string]any{"deferred_by_usage_limit": set, "until": until}
@@ -214,16 +223,17 @@ type automaticChange struct {
 
 // writeAutomaticStatus writes an automatic change of an account the caller
 // locked in tx, with its audit row and account.status_changed event; the
-// caller runs afterStatusChange once tx commits. It declares that tx writes
+// caller runs changed once tx commits. It declares that tx writes
 // auto_disabled_source: the 0070 trigger otherwise takes a reason or release
-// time change of an automatic disable for a writer that does not know the
-// source (an older core) and clears the mark.
-func (s *Service) writeAutomaticStatus(ctx context.Context, tx pgx.Tx, action string, ch automaticChange) error {
-	if _, err := tx.Exec(ctx, `SELECT set_config('sup2api.auto_disabled_source', 'written', true)`); err != nil {
+// time change of an automatic disable for a write that does not declare the
+// source (such as a manual PATCH) and clears the mark.
+func (s *Service) writeAutomaticStatus(ctx context.Context, tx *gorm.DB, action string, ch automaticChange) error {
+	g := store.G(ctx, tx)
+	if err := store.SetLocal(ctx, tx, "sup2api.auto_disabled_source", "written"); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE accounts SET status=$2,status_reason=$3,auto_disabled_until=$4,auto_disabled_source=$5,updated_at=clock_timestamp() WHERE id=$1`,
-		ch.id, ch.to, ch.reason, ch.until, ch.source); err != nil {
+	if err := g.Model(&model.Account{}).Where("id = ?", ch.id).Updates(map[string]any{"status": ch.to, "status_reason": ch.reason,
+		"auto_disabled_until": ch.until, "auto_disabled_source": ch.source, "updated_at": gorm.Expr("clock_timestamp()")}).Error; err != nil {
 		return err
 	}
 	detail := map[string]any{"plugin_key": ch.pluginKey, "previous_status": ch.from, "status": ch.to, "until": ch.until}
@@ -238,41 +248,28 @@ func (s *Service) writeAutomaticStatus(ctx context.Context, tx pgx.Tx, action st
 	return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountStatusChanged, Payload: payload})
 }
 
-// afterStatusChange tells the routing cache and the CCGateway runtime of a
-// committed status change.
-func (s *Service) afterStatusChange(ctx context.Context, id int64, pluginKey, typ string) {
-	s.changed(ctx, id)
-	s.kickCCGateway(id, pluginKey, typ)
-}
-
+// SweepAutomaticState re-enables the accounts whose timed automatic disable
+// ended and tells the routing cache.
 func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
-	type recovered struct {
-		id                   int64
-		name, pluginKey, typ string
-	}
-	var accounts []recovered
-	err := s.d.DB.Tx(ctx, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `UPDATE accounts a SET status='active',status_reason='',auto_disabled_until=NULL,updated_at=clock_timestamp()
-			FROM (SELECT id FROM accounts WHERE deleted_at IS NULL AND status='auto_disabled' AND auto_disabled_until<=clock_timestamp()
-				ORDER BY auto_disabled_until,id LIMIT 200 FOR UPDATE SKIP LOCKED) due
-			WHERE a.id=due.id RETURNING a.id,a.name,a.plugin_key,a.type`)
-		if err != nil {
-			return err
-		}
-		accounts, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (recovered, error) {
-			var a recovered
-			err := r.Scan(&a.id, &a.name, &a.pluginKey, &a.typ)
-			return a, err
-		})
-		if err != nil {
+	var accounts []recoveredAccount
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+		// Up to 200 accounts whose timed automatic disable ended, skipping
+		// rows another sweep holds.
+		g := store.G(ctx, tx)
+		due := g.Model(&model.Account{}).Select("id").
+			Where("deleted_at IS NULL AND status = 'auto_disabled' AND auto_disabled_until <= clock_timestamp()").
+			Order("auto_disabled_until, id").Limit(200).Clauses(store.ForUpdate().SkipLocked())
+		if err := g.Model(&accounts).Table("accounts AS a").Clauses(store.UpdateFrom("(?) AS due", due), recoveredColumns).
+			Where("a.id = due.id").Updates(map[string]any{"status": "active", "status_reason": "",
+			"auto_disabled_until": nil, "updated_at": gorm.Expr("clock_timestamp()")}).Error; err != nil {
 			return err
 		}
 		for _, a := range accounts {
-			if err := audit.Audit(ctx, tx, 0, "account.automatic_recovery", "account", itoa(a.id), map[string]any{"plugin_key": a.pluginKey, "reason": "release time reached"}); err != nil {
+			if err := audit.Audit(ctx, tx, 0, "account.automatic_recovery", "account", itoa(a.ID), map[string]any{"plugin_key": a.PluginKey, "reason": "release time reached"}); err != nil {
 				return err
 			}
 			if err := s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountStatusChanged,
-				Payload: statusPayload(a.id, a.pluginKey, a.typ, a.name, "active", "automatic disable expired", nil)}); err != nil {
+				Payload: statusPayload(a.ID, a.PluginKey, a.Type, a.Name, "active", "automatic disable expired", nil)}); err != nil {
 				return err
 			}
 		}
@@ -282,8 +279,19 @@ func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for _, a := range accounts {
-		s.changed(ctx, a.id)
-		s.kickCCGateway(a.id, a.pluginKey, a.typ)
+		s.changed(ctx, a.ID)
 	}
 	return len(accounts), nil
+}
+
+// recoveredColumns returns a recoveredAccount from SweepAutomaticState's
+// update.
+var recoveredColumns = clause.Returning{Columns: []clause.Column{{Table: "a", Name: "id"}, {Table: "a", Name: "name"},
+	{Table: "a", Name: "plugin_key"}, {Table: "a", Name: "type"}}}
+
+// recoveredAccount is an account SweepAutomaticState made active again.
+type recoveredAccount struct {
+	ID              int64
+	Name, PluginKey string
+	Type            string
 }

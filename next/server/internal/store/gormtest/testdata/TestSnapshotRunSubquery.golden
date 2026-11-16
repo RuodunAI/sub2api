@@ -1,0 +1,9 @@
+-- sql
+DELETE FROM "request_precharges" WHERE user_id IN (SELECT id FROM "users" WHERE status = $1)
+-- vars
+$1 string "active"
+
+-- sql
+SELECT user_id FROM "request_precharges" WHERE user_id IN (SELECT id FROM "users" WHERE status = $1)
+-- vars
+$1 string "active"

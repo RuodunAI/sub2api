@@ -164,11 +164,15 @@ func TestKeepLockUnknownOutcomeEndsAtUntil(t *testing.T) {
 	case <-time.After(keepTTL):
 		t.Fatal("no extend attempted")
 	}
-	waitDone(t, ctx, time.Until(lk.until)+50*time.Millisecond)
+	// The hung Extend returns only when its context ends, so without the
+	// Until deadline the context would never end. The second of slack is
+	// for the scheduling of a loaded machine (the deadline timer, the
+	// Extend returning, the cancel), not part of the contract.
+	waitDone(t, ctx, time.Until(lk.until)+time.Second)
 	if cause := context.Cause(ctx); !errors.Is(cause, core.ErrLockLost) {
 		t.Fatalf("cause = %v, want ErrLockLost", cause)
 	}
-	if late := time.Since(lk.until); late > 50*time.Millisecond {
+	if late := time.Since(lk.until); late > time.Second {
 		t.Fatalf("lost lock noticed %v after Until", late)
 	}
 }

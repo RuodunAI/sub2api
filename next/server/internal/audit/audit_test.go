@@ -2,7 +2,10 @@ package audit
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -10,28 +13,65 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// recorder captures the last Exec call.
+// recorder is a connection pool for GORM that captures the last Exec
+// call; anything that reads fails.
 type recorder struct {
 	sql  string
 	args []any
 }
 
-func (r *recorder) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
-	r.sql, r.args = sql, args
-	return pgconn.CommandTag{}, nil
+var errRecorderRead = errors.New("recorder: only Exec is recorded")
+
+func (r *recorder) ExecContext(_ context.Context, query string, args ...any) (sql.Result, error) {
+	r.sql, r.args = query, args
+	return driver.RowsAffected(1), nil
 }
 
-func (r *recorder) Query(context.Context, string, ...any) (pgx.Rows, error) { return nil, nil }
-func (r *recorder) QueryRow(context.Context, string, ...any) pgx.Row        { return nil }
+func (r *recorder) PrepareContext(context.Context, string) (*sql.Stmt, error) {
+	return nil, errRecorderRead
+}
+
+func (r *recorder) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, errRecorderRead
+}
+
+func (r *recorder) QueryRowContext(context.Context, string, ...any) *sql.Row { return nil }
+
+// db is a GORM instance whose statements go to r, one per Exec (no
+// default transaction, as store.Open's instance).
+func (r *recorder) db(t *testing.T) *gorm.DB {
+	t.Helper()
+	g, err := gorm.Open(postgres.New(postgres.Config{Conn: r}), &gorm.Config{SkipDefaultTransaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// arg is the argument the recorded INSERT writes into column col.
+func (r *recorder) arg(t *testing.T, col string) any {
+	t.Helper()
+	open, end := strings.IndexByte(r.sql, '('), strings.IndexByte(r.sql, ')')
+	if open < 0 || end < open {
+		t.Fatalf("no column list in %s", r.sql)
+	}
+	for i, c := range strings.Split(r.sql[open+1:end], ",") {
+		if strings.Trim(strings.TrimSpace(c), `"`) == col && i < len(r.args) {
+			return r.args[i]
+		}
+	}
+	t.Fatalf("no column %s in %s", col, r.sql)
+	return nil
+}
 
 func TestAudit(t *testing.T) {
 	ctx := WithClientIP(context.Background(), strings.Repeat("1", 70))
@@ -39,32 +79,33 @@ func TestAudit(t *testing.T) {
 		t.Fatal("ClientIP")
 	}
 	rec := &recorder{}
-	if err := Audit(ctx, rec, 7, "proxy.update", "proxy", "12", map[string]any{"fields": []string{"name"}}); err != nil {
+	g := rec.db(t)
+	if err := Audit(ctx, g, 7, "proxy.update", "proxy", "12", map[string]any{"fields": []string{"name"}}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(rec.sql, "INSERT INTO audit_logs") || len(rec.args) != 6 {
+	if !strings.Contains(rec.sql, `INSERT INTO "audit_logs"`) || len(rec.args) != 6 {
 		t.Fatalf("exec %s %v", rec.sql, rec.args)
 	}
-	if uid := rec.args[0].(*int64); uid == nil || *uid != 7 {
-		t.Fatalf("user_id %v", rec.args[0])
+	if uid := rec.arg(t, "user_id").(*int64); uid == nil || *uid != 7 {
+		t.Fatalf("user_id %v", rec.arg(t, "user_id"))
 	}
-	if rec.args[1] != "proxy.update" || rec.args[2] != "proxy" || rec.args[3] != "12" {
-		t.Fatalf("args %v", rec.args)
+	if rec.arg(t, "action") != "proxy.update" || rec.arg(t, "target_type") != "proxy" || rec.arg(t, "target_id") != "12" {
+		t.Fatalf("args %s %v", rec.sql, rec.args)
 	}
 	var detail map[string]any
-	if err := json.Unmarshal(rec.args[4].([]byte), &detail); err != nil || detail["fields"].([]any)[0] != "name" {
-		t.Fatalf("detail %s", rec.args[4])
+	if err := json.Unmarshal(rec.arg(t, "detail").([]byte), &detail); err != nil || detail["fields"].([]any)[0] != "name" {
+		t.Fatalf("detail %s", rec.arg(t, "detail"))
 	}
-	if ip := rec.args[5].(string); len(ip) != 64 {
+	if ip := rec.arg(t, "ip").(string); len(ip) != 64 {
 		t.Fatalf("ip not truncated: %d", len(ip))
 	}
 
 	// System actor and nil detail.
-	if err := Audit(context.Background(), rec, 0, "x", "", "", nil); err != nil {
+	if err := Audit(context.Background(), g, 0, "x", "", "", nil); err != nil {
 		t.Fatal(err)
 	}
-	if rec.args[0].(*int64) != nil || string(rec.args[4].([]byte)) != "{}" || rec.args[5] != "" {
-		t.Fatalf("system row %v", rec.args)
+	if rec.arg(t, "user_id").(*int64) != nil || string(rec.arg(t, "detail").([]byte)) != "{}" || rec.arg(t, "ip") != "" {
+		t.Fatalf("system row %s %v", rec.sql, rec.args)
 	}
 }
 
@@ -128,11 +169,11 @@ func TestPluginWritesAndList(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	var uid int64
-	if err := db.Pool.QueryRow(ctx, `INSERT INTO users (email, display_name, password_hash) VALUES ('a@x', 'Ann', 'x') RETURNING id`).Scan(&uid); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, display_name, password_hash) VALUES ('a@x', 'Ann', 'x') RETURNING id`).Scan(&uid); err != nil {
 		t.Fatal(err)
 	}
 	for _, action := range []string{ActionPluginWrite, "plugin.enable"} {
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO audit_logs (action, target_type, target_id, created_at) VALUES ($1, 'plugin', 'demo', now() - interval '2 days')`, action); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO audit_logs (action, target_type, target_id, created_at) VALUES ($1, 'plugin', 'demo', now() - interval '2 days')`, action); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -149,7 +190,7 @@ func TestPluginWritesAndList(t *testing.T) {
 	if _, err := purge.Handler(ctx, core.TaskRun{Name: purge.Name}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO audit_logs (action, target_type, target_id) VALUES ('plugin.enable', 'plugin', 'other')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO audit_logs (action, target_type, target_id) VALUES ('plugin.enable', 'plugin', 'other')`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -193,15 +234,15 @@ func TestPluginWritesAndList(t *testing.T) {
 	}
 	var via string
 	var keyID int64
-	if err := db.Pool.QueryRow(ctx, `SELECT detail->>'via', (detail->>'access_key_id')::bigint FROM audit_logs WHERE detail->>'request_id' = 'req-2'`).Scan(&via, &keyID); err != nil || via != "access_key" || keyID != 42 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT detail->>'via', (detail->>'access_key_id')::bigint FROM audit_logs WHERE detail->>'request_id' = 'req-2'`).Scan(&via, &keyID); err != nil || via != "access_key" || keyID != 42 {
 		t.Fatalf("keyed write: %q %d %v", via, keyID, err)
 	}
 }
 
 type allowAll struct{}
 
-func (allowAll) VerifyAccessToken(context.Context, string) (int64, error) { return 1, nil }
-func (allowAll) Can(context.Context, int64, string) (bool, error)         { return true, nil }
+func (allowAll) VerifySession(context.Context, string) (int64, string, error) { return 1, "", nil }
+func (allowAll) Can(context.Context, int64, string) (bool, error)             { return true, nil }
 func (allowAll) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
 	return core.PermissionSet{Superuser: true}, nil
 }

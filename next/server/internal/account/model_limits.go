@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -57,35 +56,6 @@ func modelLimitsJSON(in []core.ModelLimit) string {
 	}
 	b, _ := json.Marshal(in)
 	return string(b)
-}
-
-func coreModelLimits(in []*pluginv1.ModelLimit) []core.ModelLimit {
-	out := make([]core.ModelLimit, 0, len(in))
-	for _, l := range in {
-		out = append(out, core.ModelLimit{Models: l.GetModels(), MaxConcurrency: int(l.GetMaxConcurrency()), RPMLimit: int(l.GetRpmLimit()), TPMLimit: l.GetTpmLimit(), SPMLimit: int(l.GetSpmLimit())})
-	}
-	return out
-}
-
-// keepSPMWindows gives each normalized list a plugin sent the session
-// window of the list of current with the same models: plugins do not set
-// windows (CONTRACTS §71.4), so their patch keeps the administrator's, and
-// a new list keeps the default.
-func keepSPMWindows(lists, current []core.ModelLimit) {
-	windows := make(map[string]int, len(current))
-	for i := range current {
-		windows[current[i].Key()] = current[i].SPMWindowSeconds
-	}
-	for i := range lists {
-		if w, ok := windows[lists[i].Key()]; ok {
-			lists[i].SPMWindowSeconds = w
-		}
-	}
-}
-
-func sameModelLimit(a, b core.ModelLimit) bool {
-	return slices.Equal(a.Models, b.Models) && a.MaxConcurrency == b.MaxConcurrency && a.RPMLimit == b.RPMLimit && a.TPMLimit == b.TPMLimit &&
-		a.SPMLimit == b.SPMLimit && a.SPMWindowSeconds == b.SPMWindowSeconds
 }
 
 // normalizeModelLimits trims the model lists, drops repeated models within a

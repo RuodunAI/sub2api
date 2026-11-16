@@ -9,12 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+	"gorm.io/gorm"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"google.golang.org/protobuf/proto"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type monitorOutcome struct {
@@ -26,7 +29,7 @@ type monitorOutcome struct {
 
 // outcomeTx adds the result receipt to the existing financial transaction.
 // Its advisory lock serializes retries of this claim, before task→usage→pending.
-func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(pgx.Tx) error) error {
+func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(*gorm.DB) error) error {
 	m := e.monitor
 	if m == nil {
 		return s.db.Tx(ctx, fn)
@@ -36,26 +39,26 @@ func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(pgx.Tx)
 		m.err = err
 		return err
 	}
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "plugin-monitor:"+m.id); err != nil {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
+		if err := store.XactLock(ctx, tx, "plugin-monitor:"+m.id); err != nil {
 			return err
 		}
 		var digest string
-		err := tx.QueryRow(ctx, `SELECT digest FROM plugin_monitor_receipts WHERE id=$1`, m.id).Scan(&digest)
+		err := g.Model(&model.PluginMonitorReceipt{}).Select("digest").Where("id = ?", m.id).Row().Scan(&digest)
 		if err == nil {
 			if digest != m.digest {
 				return core.ErrConflict.WithMessage("monitor result already committed")
 			}
 			return nil
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !store.IsNoRows(err) {
 			return err
 		}
 		if err = fn(tx); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO plugin_monitor_receipts(id,digest,task_id) VALUES($1,$2,$3)`, m.id, m.digest, m.taskID)
-		return err
+		return g.Create(&model.PluginMonitorReceipt{ID: m.id, Digest: m.digest, TaskID: m.taskID}).Error
 	})
 	m.err = err
 	m.done = err == nil
@@ -156,9 +159,9 @@ func (s *Service) applyMonitorResult(ctx context.Context, e *settleEntry, row *r
 		if next.After(e.deadlineAt) {
 			next = e.deadlineAt
 		}
-		return s.outcomeTx(ctx, e, func(tx pgx.Tx) error {
-			// Match legacy finance lock order and reject a row transferred to the
-			// managed task table while this callback was running.
+		return s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
+			// Lock the usage row first, as the financial paths do, and reject
+			// a row closed while this callback was running.
 			status, err := lockUsageRow(ctx, tx, e.usageLogID)
 			if err != nil {
 				return err
@@ -166,14 +169,12 @@ func (s *Service) applyMonitorResult(ctx context.Context, e *settleEntry, row *r
 			if status != StatusReserved {
 				return errNotPending
 			}
-			if err := lockLegacyOutcome(ctx, tx, e); err != nil {
-				return err
-			}
-			tag, err := tx.Exec(ctx, `UPDATE pending_settlements SET attempts=attempts+1,poll_failures=0,next_check_at=$2,last_error='' WHERE id=$1 AND state='pending'`, e.id, next)
-			if err == nil && tag.RowsAffected() != 1 {
+			res := settlementByID(store.G(ctx, tx), e.id).Where("state = 'pending'").Updates(map[string]any{
+				"attempts": gorm.Expr("attempts+1"), "poll_failures": 0, "next_check_at": next, "last_error": ""})
+			if res.Error == nil && res.RowsAffected != 1 {
 				return errNotPending
 			}
-			return err
+			return res.Error
 		})
 	}
 	switch state {

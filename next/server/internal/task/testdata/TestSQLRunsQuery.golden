@@ -1,0 +1,14 @@
+-- sql
+SELECT id, st, scheduled_at, attempted_at, finalized_at, attempt, max_attempts,
+		COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by FROM (SELECT j.*, CASE j.state
+	WHEN 'running' THEN 'running'
+	WHEN 'available' THEN 'queued' WHEN 'scheduled' THEN 'queued' WHEN 'pending' THEN 'queued'
+	WHEN 'retryable' THEN 'retrying'
+	WHEN 'cancelled' THEN 'cancelled'
+	ELSE COALESCE(j.metadata->'output'->>'status', CASE j.state WHEN 'completed' THEN 'succeeded' ELSE 'failed' END)
+	END AS st FROM river_job AS j WHERE (j.kind = 'sup2api.task' AND j.args->>'name' = ANY($1)) AND j.id < $2) AS x WHERE st = ANY($3) ORDER BY id DESC LIMIT $4
+-- vars
+$1 store.Strings [core.test.ok]
+$2 int64 120
+$3 store.Strings [failed timeout]
+$4 int 21

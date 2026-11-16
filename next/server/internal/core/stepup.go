@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"net/http"
-	"time"
 )
 
 // Step-up verification (CONTRACTS §80.2): a high-risk operation needs, besides
@@ -41,9 +40,6 @@ const (
 	StepUpPluginGrant        = "plugin.grant"
 	StepUpPublisherManage    = "publisher.manage"
 	StepUpSystemUpdate       = "system.update"
-	// StepUpHostInstall: installing or reaching code that runs on a host the
-	// core controls (the ccgateway controller and runtimes, SSH targets).
-	StepUpHostInstall = "host.install"
 	// StepUpAccessKeyWrite: creating an access key or changing one
 	// (login sessions only), which signs out a credential with the
 	// caller's rights.
@@ -63,39 +59,6 @@ type StepUpVerifier interface {
 	// checks of the same scope. Otherwise it fails with
 	// ErrVerificationRequired.
 	ConsumeStepUp(ctx context.Context, scope string) error
-}
-
-// ErrVerificationExpired: a request continuing a step-up session
-// (StepUpSessions) whose session is unknown, idle for StepUpSessionIdle,
-// older than StepUpSessionMax, or opened by another user, login session or
-// access key. The operation
-// starts again, with a new proof.
-var ErrVerificationExpired = NewError(http.StatusForbidden, "verification_expired", "this verified operation has expired or belongs to another session; start it again")
-
-// StepUpSessionIdle is how long a step-up session stays open after its last
-// request: the ccgateway controller drops an upload untouched for an hour.
-const StepUpSessionIdle = time.Hour
-
-// StepUpSessionMax bounds a step-up session however busy it is kept: one
-// proof never covers more than a day of an operation.
-const StepUpSessionMax = 24 * time.Hour
-
-// StepUpSessions lets one proof cover an operation made of several requests
-// (a ccgateway image upload: creation, chunks, load). The request that spent
-// the proof opens a session; the requests that continue it name the session
-// and need no proof of their own. iam implements it next to
-// StepUpVerifier.
-type StepUpSessions interface {
-	// OpenStepUpSession binds session, a name unique to the operation, to
-	// the request's user and its login session or access key under scope.
-	// Only a request that spent a proof on scope calls it
-	// (httpapi.OpenStepUpSession).
-	OpenStepUpSession(ctx context.Context, scope, session string) error
-	// ContinueStepUpSession passes a request of the same user, login
-	// session or access key on a session opened under scope, and keeps it
-	// open for StepUpSessionIdle from now, never past StepUpSessionMax from
-	// its opening; otherwise it fails with ErrVerificationExpired.
-	ContinueStepUpSession(ctx context.Context, scope, session string) error
 }
 
 type stepUpCtxKey struct{}
@@ -152,21 +115,15 @@ func StepUpPassword(ctx context.Context) bool {
 
 type sessionCtxKey struct{}
 
-// WithSession records the login session (refresh token family) a console
-// JWT belongs to.
-func WithSession(ctx context.Context, family string) context.Context {
-	return context.WithValue(ctx, sessionCtxKey{}, family)
+// WithSession records the login session (CONTRACTS §100) a request
+// authenticated with: step-up proofs and windows bind to it, and the
+// sessions list marks the caller's own by it.
+func WithSession(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionCtxKey{}, id)
 }
 
-// Session returns the request's login session, "" for an access key or a
-// token from before sessions had ids.
+// Session returns the request's login session, "" for an access key.
 func Session(ctx context.Context) string {
-	s, _ := ctx.Value(sessionCtxKey{}).(string)
-	return s
-}
-
-// SessionVerifier is optionally implemented by a TokenVerifier: it also
-// tells the login session of the token.
-type SessionVerifier interface {
-	VerifySession(ctx context.Context, token string) (userID int64, session string, err error)
+	id, _ := ctx.Value(sessionCtxKey{}).(string)
+	return id
 }

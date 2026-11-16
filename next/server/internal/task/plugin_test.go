@@ -15,7 +15,7 @@ import (
 // write (internal/job): the framework does not record plugin tasks itself.
 func pluginRow(t *testing.T, db *store.DB, name, key string) {
 	t.Helper()
-	_, err := db.Pool.Exec(context.Background(), `INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms)
+	_, err := db.SQL.ExecContext(context.Background(), `INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms)
 		VALUES ($1, 'plugin_manifest', $2, '', 10000)`, name, key)
 	require.NoError(t, err)
 }
@@ -53,13 +53,13 @@ func TestPluginTaskRunsOnThePluginQueue(t *testing.T) {
 	require.False(t, run.QueuedAt.IsZero())
 
 	var queue, id string
-	require.NoError(t, env.db.Pool.QueryRow(context.Background(), `SELECT queue, id::text FROM river_job
+	require.NoError(t, env.db.SQL.QueryRowContext(context.Background(), `SELECT queue, id::text FROM river_job
 		WHERE kind = 'sup2api.task' AND args->>'name' = 'plugin.demo.sync'`).Scan(&queue, &id))
 	require.Equal(t, queuePlugin, queue)
 	require.Equal(t, id, run.RunID)
 	// The framework did not take the row over.
 	var source string
-	require.NoError(t, env.db.Pool.QueryRow(context.Background(), `SELECT source FROM scheduled_tasks
+	require.NoError(t, env.db.SQL.QueryRowContext(context.Background(), `SELECT source FROM scheduled_tasks
 		WHERE name = 'plugin.demo.sync'`).Scan(&source))
 	require.Equal(t, string(SourcePluginManifest), source)
 }
@@ -80,7 +80,7 @@ func TestPluginTaskWithoutRowIsSkipped(t *testing.T) {
 	require.Zero(t, log.len())
 	require.Equal(t, "the task was removed", jobRows(t, env.db, "plugin.demo.gone")[0].Output.Message)
 	var n int
-	require.NoError(t, env.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM scheduled_tasks
+	require.NoError(t, env.db.SQL.QueryRowContext(context.Background(), `SELECT count(*) FROM scheduled_tasks
 		WHERE name = 'plugin.demo.gone'`).Scan(&n))
 	require.Zero(t, n)
 }

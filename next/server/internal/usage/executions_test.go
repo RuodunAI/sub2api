@@ -60,16 +60,16 @@ func TestExecutionCommitIsAtomicIdempotentAndRecoverable(t *testing.T) {
 	copyPrice := *bad.Price
 	copyPrice.Expression = ""
 	bad.Price = &copyPrice
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE plugin_executions SET record=$2,updated_at=now()-interval '3 minutes' WHERE id=$1`, bad.RequestID, jsonOr(bad, "{}")); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE plugin_executions SET record=$2,updated_at=now()-interval '3 minutes' WHERE id=$1`, bad.RequestID, jsonOr(bad, "{}")); err != nil {
 		t.Fatal(err)
 	}
 	// Immutable execution classification outlives independently cleaned task receipts.
 	task := prepare("task-receipt-already-cleaned", true)
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE plugin_executions SET updated_at=now()-interval '3 minutes' WHERE id=$1`, task.RequestID); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE plugin_executions SET updated_at=now()-interval '3 minutes' WHERE id=$1`, task.RequestID); err != nil {
 		t.Fatal(err)
 	}
 	recovery := prepare("recover-observation")
-	if _, err := f.db.Pool.Exec(ctx, `UPDATE plugin_executions SET updated_at=now()-interval '2 minutes' WHERE id=$1`, recovery.RequestID); err != nil {
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE plugin_executions SET updated_at=now()-interval '2 minutes' WHERE id=$1`, recovery.RequestID); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.svc.recoverExecutions(ctx); err != nil {
@@ -119,7 +119,7 @@ func TestExecutionWatchAndMonitorReceiptsCommitWithFinance(t *testing.T) {
 	if _, err = f.svc.CommitExecution(ctx, commit); err != nil || !f.balance().Equal(reserved) {
 		t.Fatal("watch retry changed debit", err)
 	}
-	if _, err = f.db.Pool.Exec(ctx, `UPDATE async_tasks SET next_check_at=now() WHERE public_id=$1`, id); err != nil {
+	if _, err = f.db.SQL.ExecContext(ctx, `UPDATE async_tasks SET next_check_at=now() WHERE public_id=$1`, id); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := f.svc.claimTasks(ctx, 1)

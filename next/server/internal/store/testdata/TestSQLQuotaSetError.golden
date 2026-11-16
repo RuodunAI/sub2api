@@ -1,0 +1,6 @@
+-- sql
+UPDATE "account_quota_snapshots" SET "error"=$1,"refresh_status"=$2,"revision"=revision+1 WHERE account_id = $3
+-- vars
+$1 string "boom"
+$2 string "error"
+$3 int64 11

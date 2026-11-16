@@ -5,11 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // Day and hour buckets follow tz (CONTRACTS §66): 00:30 in Shanghai is the
@@ -85,7 +86,15 @@ func TestMyOverview(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	loc, _ := time.LoadLocation("Asia/Shanghai")
+	// Keep clear of midnight: within minutes after it, the rows of "today"
+	// would also fall in the last 5 minutes and the row of a minute ago in
+	// yesterday. An hour before midnight is still in the past.
 	now := time.Now()
+	if d := now.Sub(overviewWindows(now, loc).today); d < 10*time.Minute {
+		now = now.Add(-d - time.Hour)
+	}
+	overviewNow = func() time.Time { return now }
+	t.Cleanup(func() { overviewNow = time.Now })
 	w := overviewWindows(now, loc)
 	at := func(id string, ts time.Time, user int64) *core.UsageRecord {
 		r := f.record(id, false)
@@ -101,25 +110,20 @@ func TestMyOverview(t *testing.T) {
 		at("ov-other", now.Add(-time.Minute), f.other),
 	})
 	for i, status := range []string{"active", "active", "disabled"} {
-		_, err := f.db.Pool.Exec(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,status) VALUES($1,$2,$3,'p',$4,$5)`,
+		_, err := f.db.SQL.ExecContext(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,status) VALUES($1,$2,$3,'p',$4,$5)`,
 			f.user, f.group, "k"+strconv.Itoa(i), "hash-ov-"+strconv.Itoa(i), status)
 		require.NoError(t, err)
 	}
-	_, err := f.db.Pool.Exec(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,expires_at) VALUES($1,$2,'expired','p','hash-ov-exp',now()-interval '1 hour')`, f.user, f.group)
+	_, err := f.db.SQL.ExecContext(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,expires_at) VALUES($1,$2,'expired','p','hash-ov-exp',now()-interval '1 hour')`, f.user, f.group)
 	require.NoError(t, err)
-	_, err = f.db.Pool.Exec(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,deleted_at) VALUES($1,$2,'gone','p','hash-ov-del',now())`, f.user, f.group)
+	_, err = f.db.SQL.ExecContext(ctx, `INSERT INTO api_keys(user_id,group_id,name,key_prefix,key_hash,deleted_at) VALUES($1,$2,'gone','p','hash-ov-del',now())`, f.user, f.group)
 	require.NoError(t, err)
 
 	ov := f.get(f.user, "/me/usage/overview?tz=Asia/Shanghai", 200)["data"].(map[string]any)
 	n := func(window, field string) float64 { return ov[window].(map[string]any)[field].(float64) }
-	// Right after midnight the row of a minute ago is yesterday's.
-	today, yesterday := float64(2), float64(1)
-	if now.Add(-time.Minute).Before(w.today) {
-		today, yesterday = 1, 2
-	}
 	require.Equal(t, "Asia/Shanghai", ov["tz"])
-	require.Equal(t, today, n("today", "requests"))
-	require.Equal(t, yesterday, n("yesterday", "requests"))
+	require.Equal(t, float64(2), n("today", "requests"))
+	require.Equal(t, float64(1), n("yesterday", "requests"))
 	require.Equal(t, float64(4), n("last_30d", "requests"))
 	require.Equal(t, float64(1), n("last_5m", "requests"))
 	require.Equal(t, float64(100000+2000+80000), n("last_5m", "tokens"))
@@ -193,13 +197,13 @@ func TestRealtime(t *testing.T) {
 func TestStatsLimits(t *testing.T) {
 	f := newFixture(t)
 	show := func(lim statsLimits) (timeout, workMem string) {
-		require.NoError(t, f.svc.statsTx(t.Context(), lim, func(tx pgx.Tx) error {
-			return tx.QueryRow(t.Context(), `SELECT current_setting('statement_timeout'), current_setting('work_mem')`).Scan(&timeout, &workMem)
+		require.NoError(t, f.svc.statsTx(t.Context(), lim, func(tx *gorm.DB) error {
+			return store.SQLTx(tx).QueryRowContext(t.Context(), `SELECT current_setting('statement_timeout'), current_setting('work_mem')`).Scan(&timeout, &workMem)
 		}))
 		return timeout, workMem
 	}
 	var defaultWorkMem string
-	require.NoError(t, f.svc.db.Pool.QueryRow(t.Context(), `SHOW work_mem`).Scan(&defaultWorkMem))
+	require.NoError(t, f.svc.db.SQL.QueryRowContext(t.Context(), `SHOW work_mem`).Scan(&defaultWorkMem))
 
 	timeout, workMem := show(statsLimitsFor(nil))
 	require.Equal(t, "25s", timeout)

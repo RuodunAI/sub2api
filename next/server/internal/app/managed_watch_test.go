@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestHandleDrainRecordsTheGraceAndAdvertisesTheCapability(t *testing.T) {
 	m.hello.Capabilities = []string{runtimecontract.CapabilityGracefulDrain}
 	h := m.handler(func(runtimecontract.PrepareRequest) { t.Fatal("unexpected prepare") })
 	var hello runtimecontract.Hello
-	if w := controlCall(h, "GET", runtimecontract.HelloPath, m.token, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &hello) != nil || !hello.Has(runtimecontract.CapabilityGracefulDrain) {
+	if w := controlCall(h, "GET", runtimecontract.HelloPath, m.token, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &hello) != nil || !slices.Contains(hello.Capabilities, runtimecontract.CapabilityGracefulDrain) {
 		t.Fatalf("hello does not advertise graceful drains: %d %s", w.Code, w.Body.String())
 	}
 	d := runtimecontract.DrainRequest{OperationID: "upgrade-3", Deadline: time.Now().Add(10 * time.Minute), Graceful: true}

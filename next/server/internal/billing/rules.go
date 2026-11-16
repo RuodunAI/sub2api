@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Rule is a model price of a group, or of a segment in a group, as the API
@@ -114,29 +117,42 @@ func (rs ruleSet) levels(q core.PriceQuery) ruleLevels {
 	return l
 }
 
-// rulesFor selects the rules that may price the models of a group ($1) for a
-// segment ($2): the segment's own and the group's.
-const rulesFor = ` WHERE group_id = $1 AND COALESCE(segment_id, $2) = $2`
+// rulesFor selects the rules that may price the models of a group for a
+// segment: the segment's own and the group's. It takes the group's id, then
+// the segment's twice.
+const rulesFor = `group_id = ? AND COALESCE(segment_id, ?) = ?`
 
-// loadRules reads the price rules cond selects.
-func loadRules(ctx context.Context, q store.Querier, cond string, args ...any) (ruleSet, error) {
-	rows, err := q.Query(ctx, `SELECT group_id, COALESCE(segment_id, 0), model, kind, multiplier, COALESCE(mode, ''),
-		config, expression, expr_hash FROM price_rules`+cond, args...)
-	if err != nil {
+// ruleRow is a row of priceRules.
+type ruleRow struct {
+	GroupID    int64
+	SegmentID  int64
+	Model      string
+	Kind       string
+	Multiplier *decimal.Decimal
+	Mode       string
+	Config     store.JSON[map[string]*float64]
+	Expression string
+	ExprHash   string
+}
+
+// loadRules reads the price rules cond selects ("" for all of them).
+func loadRules(ctx context.Context, q *gorm.DB, cond string, args ...any) (ruleSet, error) {
+	db := store.G(ctx, q).Model(&model.PriceRule{}).Select(`group_id, COALESCE(segment_id, 0) AS segment_id, model, kind, multiplier,
+		COALESCE(mode, '') AS mode, config, expression, expr_hash`)
+	if cond != "" {
+		db = db.Where(cond, args...)
+	}
+	var rows []ruleRow
+	if err := db.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := ruleSet{}
-	for rows.Next() {
-		var on core.PriceQuery
-		var multiplier decimal.NullDecimal
-		r := &storedRule{}
-		if err := rows.Scan(&on.GroupID, &on.SegmentID, &on.Model, &r.Kind, &multiplier, &r.Mode,
-			&r.Config, &r.expression, &r.exprHash); err != nil {
-			return nil, err
-		}
-		if multiplier.Valid {
-			r.setScale(multiplier.Decimal)
+	out := make(ruleSet, len(rows))
+	for _, row := range rows {
+		on := core.PriceQuery{GroupID: row.GroupID, SegmentID: row.SegmentID, Model: row.Model}
+		r := &storedRule{Rule: Rule{Kind: row.Kind, Mode: row.Mode, Config: row.Config.V},
+			expression: row.Expression, exprHash: row.ExprHash}
+		if row.Multiplier != nil {
+			r.setScale(*row.Multiplier)
 		}
 		out[on] = r
 		// Only a custom price has an expression of its own.
@@ -147,7 +163,7 @@ func loadRules(ctx context.Context, q store.Querier, cond string, args ...any) (
 			r.exprVersion = prog.Version()
 		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // customPrices are the prices a custom rule may set per mode; the first
@@ -222,33 +238,141 @@ func checkCustom(ctx context.Context, in Rule, mode string) (*storedRule, error)
 		expression: src, exprHash: prog.Hash(), exprVersion: prog.Version()}, nil
 }
 
-// queueSave queues storing the rule on on, replacing the one there. The
-// expression of a custom price also goes to model_price_history, as a global
-// price's does: a settlement retry reads it back by expr_hash on any node.
-func queueSave(b *pgx.Batch, on core.PriceQuery, r *storedRule, updatedBy int64) error {
-	if r.Kind == core.PriceRuleCustom {
-		prog, err := expr.CompileCached(r.expression)
-		if err != nil {
-			return err
-		}
-		b.Queue(recordHistorySQL, prog.Hash(), prog.Expression(), prog.Version())
+// ruleWrites are the writes of rule changes (collapseChanges), one per
+// changed rule, in the order of the changes: the expressions for the
+// history, the key of every changed rule and of those removed (a delete
+// came before the last change or is the last one), and the rows of those
+// saved (the last change saves), the group's own rules and the segments'
+// apart. A key is what ruleKeys matches: group, segment (0 = the group's
+// own) and model.
+type ruleWrites struct {
+	history          []*expr.Program
+	changed, removed []any
+	saved            [2][]ruleRecord // the group's own rules, the segments'
+}
+
+// ruleRecord is the columns of price_rules a saved rule writes: id and
+// updated_at take their defaults, and nothing is read back.
+type ruleRecord struct {
+	GroupID    int64
+	SegmentID  *int64
+	Model      string
+	Kind       string
+	Multiplier *decimal.Decimal
+	Mode       *string
+	Config     store.Bytes
+	Expression string
+	ExprHash   string
+	UpdatedBy  *int64
+}
+
+func (ruleRecord) TableName() string { return model.PriceRule{}.TableName() }
+
+// addHistory adds the expression of a custom price r to the history.
+func (w *ruleWrites) addHistory(r *storedRule) error {
+	if r.Kind != core.PriceRuleCustom {
+		return nil
 	}
-	target := `(group_id, model) WHERE segment_id IS NULL`
-	if on.SegmentID != 0 {
-		target = `(group_id, segment_id, model) WHERE segment_id IS NOT NULL`
+	prog, err := expr.CompileCached(r.expression)
+	if err != nil {
+		return err
 	}
-	b.Queue(`
-		INSERT INTO price_rules (group_id, segment_id, model, kind, multiplier, mode, config, expression, expr_hash, updated_by)
-		VALUES ($1, $2, $3, $4, $5::numeric, NULLIF($6, ''), $7, $8, $9, $10)
-		ON CONFLICT `+target+` DO UPDATE SET kind = EXCLUDED.kind, multiplier = EXCLUDED.multiplier,
-			mode = EXCLUDED.mode, config = EXCLUDED.config, expression = EXCLUDED.expression,
-			expr_hash = EXCLUDED.expr_hash, updated_by = EXCLUDED.updated_by, updated_at = now()`,
-		on.GroupID, nullID(on.SegmentID), on.Model, r.Kind, r.Multiplier, r.Mode, r.Config, r.expression, r.exprHash, nullID(updatedBy))
+	w.history = append(w.history, prog)
 	return nil
 }
 
-// queueDelete queues removing the rule on on, if there is one.
-func queueDelete(b *pgx.Batch, on core.PriceQuery) {
-	b.Queue(`DELETE FROM price_rules WHERE group_id = $1 AND model = $2
-		AND segment_id IS NOT DISTINCT FROM $3`, on.GroupID, on.Model, nullID(on.SegmentID))
+// addRule adds the rule on on: removed first when removed, then saved as r
+// by updatedBy when r is not nil.
+func (w *ruleWrites) addRule(on core.PriceQuery, removed bool, r *storedRule, updatedBy int64) error {
+	key := []any{on.GroupID, on.SegmentID, on.Model}
+	w.changed = append(w.changed, key)
+	if removed {
+		w.removed = append(w.removed, key)
+	}
+	if r == nil {
+		return nil
+	}
+	row := ruleRecord{GroupID: on.GroupID, SegmentID: nullID(on.SegmentID), Model: on.Model, Kind: r.Kind,
+		Expression: r.expression, ExprHash: r.exprHash, UpdatedBy: nullID(updatedBy)}
+	if r.Multiplier != nil {
+		row.Multiplier = &r.scale
+	}
+	if r.Mode != "" {
+		row.Mode = &r.Mode
+	}
+	if r.Config != nil {
+		doc, err := json.Marshal(r.Config)
+		if err != nil {
+			return err
+		}
+		row.Config = doc
+	}
+	level := 0
+	if on.SegmentID != 0 {
+		level = 1
+	}
+	w.saved[level] = append(w.saved[level], row)
+	return nil
+}
+
+// ruleKeys matches the rules of keys (ruleWrites).
+func ruleKeys(keys []any) clause.IN {
+	return clause.IN{Column: []clause.Column{{Name: "group_id"}, {Name: "COALESCE(segment_id, 0)", Raw: true}, {Name: "model"}}, Values: keys}
+}
+
+// ruleConflict is the upsert of the saved rules of a level (0 the group's
+// own, 1 a segment's) on the partial unique index of that level: the rule
+// over the one there, if any, by its user, updated_at moved.
+func ruleConflict(level int) clause.OnConflict {
+	target, where := []clause.Column{{Name: "group_id"}, {Name: "model"}}, "segment_id IS NULL"
+	if level == 1 {
+		target, where = []clause.Column{{Name: "group_id"}, {Name: "segment_id"}, {Name: "model"}}, "segment_id IS NOT NULL"
+	}
+	set := clause.AssignmentColumns([]string{"kind", "multiplier", "mode", "config", "expression", "expr_hash", "updated_by"})
+	return clause.OnConflict{Columns: target, TargetWhere: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: where}}},
+		DoUpdates: append(set, clause.Assignment{Column: clause.Column{Name: "updated_at"}, Value: clause.Expr{SQL: "now()"}})}
+}
+
+// writeRules writes w in tx, as the statements of each change did one after
+// the other: a rule removed is deleted where it is, a rule saved is upserted
+// on the partial unique index of its level, and the expression of a custom
+// price also goes to model_price_history, as a global price's does: a
+// settlement retry reads it back by expr_hash on any node. Deleting and then
+// inserting a rule leaves a new row.
+//
+// The history goes in the order of its hashes, and the existing rows of
+// every changed rule are locked FOR UPDATE in the order of their keys
+// before anything is deleted or saved; the saved rows go in the order of
+// the changes (that of applyChanges), the group's own before the
+// segments'. Two requests that change the same rules then lock them and
+// insert the same new ones in one order, and neither waits for the other
+// in a circle.
+func writeRules(ctx context.Context, tx *gorm.DB, w *ruleWrites) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
+	slices.SortStableFunc(w.history, func(a, b *expr.Program) int { return strings.Compare(a.Hash(), b.Hash()) })
+	if err := recordHistory(ctx, tx, w.history...); err != nil {
+		return err
+	}
+	g := store.G(ctx, tx)
+	var locked []int64
+	if err := g.Model(&model.PriceRule{}).Where(ruleKeys(w.changed)).Order("group_id, segment_id NULLS FIRST, model").
+		Clauses(store.ForUpdate()).Pluck("id", &locked).Error; err != nil {
+		return err
+	}
+	if len(w.removed) > 0 {
+		if err := g.Where(ruleKeys(w.removed)).Delete(&model.PriceRule{}).Error; err != nil {
+			return err
+		}
+	}
+	for level, rows := range w.saved {
+		if len(rows) == 0 {
+			continue
+		}
+		if err := g.Clauses(ruleConflict(level)).Create(&rows).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

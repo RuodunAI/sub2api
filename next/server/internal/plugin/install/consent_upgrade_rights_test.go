@@ -1,55 +1,62 @@
 package install
 
 import (
-	"slices"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 )
 
 // An upgrade whose new permission goes to a built-in role with consent (a
-// sensitive one to admin) is approved on the consent page only by someone
-// who may change that role (the real CanGrantToRoles: built-in roles are the
-// super admin's alone), the rule confirming withheld grants follows: a
-// non-super admin with role:define is refused and the version stays
-// awaiting consent, the super admin approves it and the grant is made.
+// sensitive one to admin) is approved on the consent page by anyone with
+// the grant rights, but the grant is made only for a consenter who may
+// change that role (the real catalog: built-in roles are the super
+// admin's alone, and a holder never names its own role): a non-super
+// admin's consent withholds it for review (D2), which the super admin then
+// confirms; the super admin's own consent makes it at once.
 func TestUpgradeConsentNeedsRightsOverTheRoles(t *testing.T) {
-	e, ctx := roleGrantsEnv(t)
-	cat := authz.New(authz.Deps{DB: e.db})
-	if err := cat.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	e.perms.canGrant = cat.CanGrantToRoles
-	for id, role := range map[int64]string{e.admin: authz.RoleSuperAdmin, e.limited: authz.RoleAdmin} {
-		if err := e.db.Tx(ctx, func(tx pgx.Tx) error {
-			_, err := cat.SetUserRoles(ctx, tx, 0, id, []string{role})
-			return err
-		}); err != nil {
-			t.Fatal(err)
+	for _, superAdmin := range []bool{false, true} {
+		e, ctx := roleGrantsEnv(t)
+		cat := authz.New(authz.Deps{DB: e.db})
+		require.NoError(t, cat.Start(ctx))
+		e.perms.canGrant = cat.CanGrantToRoles
+		e.perms.grantees = cat.PluginGrantees
+		for id, role := range map[int64]string{e.admin: authz.RoleSuperAdmin, e.limited: authz.RoleAdmin} {
+			require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) error {
+				_, err := cat.SetUserRoles(ctx, tx, 0, id, []string{role})
+				return err
+			}))
+			e.authz.perms[id]["role:define"] = true
 		}
-		e.authz.perms[id]["role:define"] = true
-	}
-	r, err := e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", newPerm("rules:export", true, "admin")), e.root), e.admin, UploadOptions{})
-	if err != nil || r.ConsentStatus != ConsentAwaiting || !r.RoleGrantsNeedConsent {
-		t.Fatalf("upload: %+v, %v", r, err)
-	}
-	consent := ConsentRequest{Grants: explicitGuardGrants()}
-	if _, err := e.svc.Consent(ctx, "guard", "0.1.1", consent, e.limited); core.AsError(err).Code != "permission_denied" {
-		t.Fatalf("non-super admin consent: %v", err)
-	}
-	var status string
-	if err := e.db.Pool.QueryRow(ctx, `SELECT consent_status FROM plugin_versions WHERE plugin_key = 'guard' AND version = '0.1.1'`).Scan(&status); err != nil || status != ConsentAwaiting {
-		t.Fatalf("after the refused consent: %s, %v", status, err)
-	}
-	if _, err := e.svc.Consent(ctx, "guard", "0.1.1", consent, e.admin); err != nil {
-		t.Fatalf("super admin consent: %v", err)
-	}
-	defs := e.perms.syncs[len(e.perms.syncs)-1].defs
-	if i := slices.IndexFunc(defs, func(d core.PermissionDef) bool { return d.Key == "plugin.guard:rules:export" }); i < 0 || !slices.Equal(defs[i].GrantRoles, []string{"admin"}) {
-		t.Fatalf("synced defs %+v", defs)
+		r, err := e.svc.Upload(ctx, pkgtest.Build(guardWith("0.1.1", newPerm("rules:export", manifest.RiskSensitive, "admin")), e.root), e.admin, UploadOptions{})
+		require.NoError(t, err)
+		require.Equal(t, ConsentAwaiting, r.ConsentStatus)
+		require.True(t, r.RoleGrantsNeedConsent)
+		consenter := e.limited
+		if superAdmin {
+			consenter = e.admin
+		}
+		res, err := e.svc.Consent(ctx, "guard", "0.1.1", ConsentRequest{Grants: explicitGuardGrants()}, consenter)
+		require.NoError(t, err)
+		export := lastDef(t, e, "plugin.guard:rules:export")
+		if superAdmin {
+			assert.Empty(t, res.Withheld)
+			assert.Equal(t, map[string][]string{"admin": {""}}, export.GrantRoles)
+			continue
+		}
+		require.Len(t, res.Withheld, 1)
+		assert.Equal(t, "admin", res.Withheld[0].Role)
+		assert.Equal(t, map[string][]string{}, export.GrantRoles)
+		addPerms(t, e, map[string]string{"rules:export": manifest.RiskSensitive})
+		_, err = e.svc.ReviewRoleGrants(ctx, "guard", "0.1.1", true, e.limited)
+		assert.Error(t, err, "the non-super admin confirms what it may not name")
+		_, err = e.svc.ReviewRoleGrants(ctx, "guard", "0.1.1", true, e.admin)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"plugin.guard:rules:export=admin"}, e.perms.granted)
 	}
 }

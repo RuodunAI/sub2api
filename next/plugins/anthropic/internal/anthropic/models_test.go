@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -39,7 +40,7 @@ func TestModelCatalogUpgrade(t *testing.T) {
 
 	fh := pluginsdktest.NewFakeHost()
 	fh.SetDSN(dsn, schema)
-	h := pluginsdktest.Start(t, New(), pluginsdktest.Options{Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithInfo("anthropic", "0.3.2")}})
+	h := pluginsdktest.Start(t, New(), pluginsdktest.Options{Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithInfo("anthropic", "0.3.3")}})
 
 	all := getModels(t, h, nil)
 	if all.Page.Total != 10 || len(all.Data) != 10 || all.Data[0]["model_id"] != "claude-fable-5-1" {
@@ -51,6 +52,9 @@ func TestModelCatalogUpgrade(t *testing.T) {
 	paged := getModels(t, h, map[string]string{"page": "2", "page_size": "3", "q": "opus"})
 	if paged.Page.Total != 5 || len(paged.Data) != 2 || paged.Page.Page != 2 {
 		t.Fatalf("paged = %+v", paged)
+	}
+	if body := string(h.Do("GET", "/models", map[string]string{"status": "legacy"}, nil).GetBody()); !strings.Contains(body, `"data":[]`) {
+		t.Fatalf("no match must list [] rather than null: %s", body)
 	}
 
 	pluginsdktest.ApplyMigrations(t, dsn, schema, filepath.Join(root, "testdata", "upgrade", "migrations"))

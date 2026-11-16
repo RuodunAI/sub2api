@@ -15,7 +15,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// Pinger is satisfied by *pgxpool.Pool.
+// Pinger is satisfied by *store.DB.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }

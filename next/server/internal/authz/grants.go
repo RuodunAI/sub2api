@@ -2,31 +2,43 @@ package authz
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// Grants of a role (CONTRACTS §21): an unscoped key is a role_permissions
-// row; a scoped one (account:read:group/12) a role_permission_scopes row of
-// the action and the scope.
+// Grants of a role (CONTRACTS §21): a p row of casbin_rule per key, an
+// unscoped one (account:read) of scope every row, a scoped one
+// (account:read:group/12) of the action and the scope (casbinrule).
 
 // grant is a resolved grant: the permission and its scope, "" for every row.
 type grant struct {
-	key   string // canonical
-	id    int64
-	scope string
+	key      string // canonical
+	action   string // the permission's key
+	scope    string
+	removed  bool // of a removed permission: kept when held, never added
+	critical bool // of a critical plugin permission (stepUpCritical)
 }
 
 // resolvePermissions canonicalizes keys, without duplicates or keys another
-// implies (canonicalKeys), and resolves them to grants, dropping removed
-// permissions. A key that does not parse, or names
-// no permission, is invalid.
-func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string, []grant, error) {
+// implies (canonicalKeys), and resolves them to grants: live lists the keys
+// of permissions not removed, grants all of them, so that a write keeps the
+// removed ones listed (writeGrants never adds one). A key that does not
+// parse, or names a plugin permission with a scope it does not take
+// (manifest.PermissionScope.Takes), is invalid; one naming no permission
+// is unknown.
+func resolvePermissions(ctx context.Context, tx *gorm.DB, keys []string) ([]string, []grant, error) {
 	var invalid, unknown []string
 	pats := make([]perm.Pattern, 0, len(keys))
 	actions := make([]string, 0, len(keys))
@@ -36,7 +48,7 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 		}
 	}
 	if len(invalid) > 0 {
-		return nil, nil, core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "invalid", Message: "invalid permission keys: " + strings.Join(invalid, ", ")})
+		return nil, nil, invalidKeys(invalid)
 	}
 	for _, k := range canonicalKeys(keys) {
 		p, _ := perm.Parse(k)
@@ -44,89 +56,122 @@ func resolvePermissions(ctx context.Context, tx pgx.Tx, keys []string) ([]string
 		actions = append(actions, string(p.Action))
 	}
 	type row struct {
-		id      int64
 		removed bool
+		risk    string
+		scope   manifest.PermissionScope
 	}
 	found := map[string]row{}
-	rows, err := tx.Query(ctx, `SELECT key, id, status = 'removed' FROM permissions WHERE key = ANY($1)`, actions)
-	if err != nil {
-		return nil, nil, err
-	}
-	for rows.Next() {
-		var k string
+	// A staged permission (core.PermissionDef.Staged) is unknown here: it
+	// belongs to a version not activated yet, whose consent alone grants it.
+	if err := store.EachRow(grantablePermissions(store.G(ctx, tx), actions), func(rows *sql.Rows) error {
+		var k, scopeType string
+		var scope store.JSON[manifest.PermissionScope]
 		var r row
-		if err := rows.Scan(&k, &r.id, &r.removed); err != nil {
-			rows.Close()
-			return nil, nil, err
+		if err := rows.Scan(&k, &r.removed, &r.risk, &scopeType, &scope); err != nil {
+			return err
 		}
+		r.scope = core.ReadPluginScope(scopeType, &scope.V)
 		found[k] = r
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		return nil
+	}); err != nil {
 		return nil, nil, err
 	}
-	kept := make([]string, 0, len(pats))
+	live := make([]string, 0, len(pats))
 	grants := make([]grant, 0, len(pats))
 	for _, p := range pats {
 		r, ok := found[string(p.Action)]
 		switch {
 		case !ok:
 			unknown = append(unknown, string(p.Key()))
-		case !r.removed:
-			kept = append(kept, string(p.Key()))
-			grants = append(grants, grant{key: string(p.Key()), id: r.id, scope: p.Suffix()})
+		case isPluginAction(p.Action) && !r.scope.Takes(p.Suffix()):
+			invalid = append(invalid, string(p.Key()))
+		default:
+			if !r.removed {
+				live = append(live, string(p.Key()))
+			}
+			critical := isPluginAction(p.Action) && r.risk == manifest.RiskCritical
+			grants = append(grants, grant{key: string(p.Key()), action: string(p.Action), scope: p.Suffix(), removed: r.removed, critical: critical})
 		}
+	}
+	if len(invalid) > 0 {
+		return nil, nil, invalidKeys(invalid)
 	}
 	if len(unknown) > 0 {
 		return nil, nil, core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "unknown", Message: "unknown permissions: " + strings.Join(unknown, ", ")})
 	}
-	return kept, grants, nil
+	return live, grants, nil
 }
 
-// writeGrants makes grants the role's live grants, its core ones only when
-// coreOnly (a reset leaves plugin permissions alone). Grants of removed
-// permissions stay: they grant nothing, and revive with the key.
-func writeGrants(ctx context.Context, tx pgx.Tx, roleID int64, grants []grant, coreOnly bool) error {
-	// Never nil: a NULL array would make "<> ALL" delete nothing.
-	ids, scopedIDs, scopes := []int64{}, []int64{}, []string{}
+// grantablePermissions selects the key, whether removed, risk, scope type
+// and scope of the permissions keys names, staged ones aside.
+func grantablePermissions(db *gorm.DB, keys []string) *gorm.DB {
+	return db.Model(&model.Permission{}).Select("key, status = 'removed', risk, scope_type, scope").
+		Where("key = ANY(?) AND status <> 'staged'", store.Strings(keys))
+}
+
+// invalidKeys is the refusal of keys that do not parse or name a scope
+// their permission does not take.
+func invalidKeys(keys []string) error {
+	return core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "invalid", Message: "invalid permission keys: " + strings.Join(keys, ", ")})
+}
+
+// isPluginAction reports whether a is a plugin permission's action, whose
+// scopes the catalog checks (core.ReadPluginScope) rather than perm.
+func isPluginAction(a perm.Key) bool { return strings.HasPrefix(string(a), perm.PluginPrefix) }
+
+// grantPart is the part of a role's grants a write replaces: all of them,
+// the core ones (a reset), or one plugin's.
+type grantPart struct {
+	coreOnly bool
+	plugin   string // a plugin key; "" for none
+}
+
+// of is the keys of keys within part, in order.
+func (part grantPart) of(keys []string) []string {
+	prefix := manifest.PermissionModule(part.plugin) + ":"
+	out := []string{}
+	for _, k := range keys {
+		if (part.plugin != "" && !strings.HasPrefix(k, prefix)) || (part.coreOnly && strings.HasPrefix(k, perm.PluginPrefix)) {
+			continue
+		}
+		out = append(out, k)
+	}
+	return out
+}
+
+// filter selects the grants a write of part replaces. A reset keeps the
+// grants of removed permissions, to come back with the key; any other
+// write drops them unless listed, so an editor can untick them. No write
+// touches the grants of a staged permission, which no editor sees: its
+// version's consent made them.
+func (part grantPart) filter() casbinrule.Filter {
+	f := casbinrule.Filter{Plugin: part.plugin, Skip: []string{"staged"}}
+	if part.coreOnly {
+		f.Source, f.Skip = "core", append(f.Skip, "removed")
+	}
+	return f
+}
+
+// writeGrants makes grants the grants of the role key within part. It never
+// adds a grant of a removed permission: listing one keeps it when the role
+// holds it, and is ignored when not (it can only be unticked). Nor of a
+// staged one (resolvePermissions refuses it as unknown first, in the same
+// transaction, after Bump: no status changes in between).
+func writeGrants(ctx context.Context, tx *gorm.DB, key string, grants []grant, part grantPart) error {
+	keep, add := make([]casbinrule.Grant, 0, len(grants)), make([]casbinrule.Grant, 0, len(grants))
 	for _, g := range grants {
-		if g.scope == "" {
-			ids = append(ids, g.id)
-		} else {
-			scopedIDs, scopes = append(scopedIDs, g.id), append(scopes, g.scope)
+		rg := casbinrule.Grant{Role: key, Action: g.action, Suffix: g.scope}
+		keep = append(keep, rg)
+		if !g.removed {
+			add = append(add, rg)
 		}
 	}
-	source := ""
-	if coreOnly {
-		source = ` AND p.source = 'core'`
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM role_permissions rp USING permissions p
-WHERE rp.role_id = $1 AND p.id = rp.permission_id AND p.status <> 'removed'`+source+` AND rp.permission_id <> ALL($2)`, roleID, ids); err != nil {
+	db := store.G(ctx, tx)
+	if err := casbinrule.DropGrants(db, key, part.filter(), keep); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO role_permissions (role_id, permission_id) SELECT $1, unnest($2::bigint[]) ON CONFLICT DO NOTHING`, roleID, ids); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM role_permission_scopes rs USING permissions p
-WHERE rs.role_id = $1 AND p.id = rs.permission_id AND p.status <> 'removed'
-  AND (rs.permission_id, rs.scope) NOT IN (SELECT * FROM unnest($2::bigint[], $3::text[]))`, roleID, scopedIDs, scopes); err != nil {
-		return err
-	}
-	_, err := tx.Exec(ctx, `INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-SELECT $1, * FROM unnest($2::bigint[], $3::text[]) ON CONFLICT DO NOTHING`, roleID, scopedIDs, scopes)
+	_, err := casbinrule.AddGrants(db, add, casbinrule.Filter{})
 	return err
-}
-
-// roleGrantsJoin joins, to each role r, g.key: the canonical grants of r
-// whose permission p passes status, an SQL condition on p.
-func roleGrantsJoin(status string) string {
-	return `
-LEFT JOIN LATERAL (
-    SELECT p.key FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id AND ` + status + ` WHERE rp.role_id = r.id
-    UNION ALL
-    SELECT p.key || ':' || rs.scope FROM role_permission_scopes rs JOIN permissions p ON p.id = rs.permission_id AND ` + status + `
-    WHERE rs.role_id = r.id
-) g ON true`
 }
 
 // canonicalKeys is keys canonical, in order, without duplicates or keys
@@ -162,9 +207,160 @@ func impliedByOther(set core.PermissionSet, k perm.Key) bool {
 	return false
 }
 
+// withSuffix is the key of the permission key at scope suffix sfx, key
+// itself for "" (every row).
+func withSuffix(key, sfx string) string {
+	if sfx == "" {
+		return key
+	}
+	return key + ":" + sfx
+}
+
 // notImplied returns the keys of want that have does not imply, in order:
 // what a write adds beyond what a role already grants.
 func notImplied(want, have []string) []string {
 	set := core.PermissionSetOf(have...)
 	return slices.DeleteFunc(slices.Clone(want), set.Has)
+}
+
+// scopeRefPatterns match the scopes naming a row of kind (CONTRACTS §21.0):
+// account/X and group/G/account/X; group/G and group/G/account/X; proxy/X.
+var scopeRefPatterns = map[string]string{
+	core.ScopeRefAccount: `(^|/)account/%d$`,
+	core.ScopeRefGroup:   `^group/%d(/|$)`,
+	core.ScopeRefProxy:   `^proxy/%d$`,
+}
+
+// scopeRefs returns the regular expressions matching the scopes that name
+// one of the rows ids of kind.
+func scopeRefs(kind string, ids []int64) ([]string, error) {
+	pattern, ok := scopeRefPatterns[kind]
+	if !ok {
+		return nil, fmt.Errorf("authz: unknown scope reference kind %q", kind)
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = fmt.Sprintf(pattern, id)
+	}
+	return out, nil
+}
+
+// ClearScopeGrants implements core.ScopeGrantClearer: it deletes, inside
+// tx, the scoped grants that name the deleted rows ids of kind
+// (core.ScopeRefAccount, ...), audited as authz.scope.clear by actorID (0 =
+// the system) per role, and moves both versions and those roles'
+// revisions when any went. A grant naming a deleted row reaches nothing
+// anyway; clearing it keeps roles readable and a reused id from being
+// reached. It returns the new authz version, 0 when nothing went, and
+// announces it itself once tx has committed (committedLater), as the
+// plugin catalog writes do.
+//
+// It takes the authz lock first, as every authz write does, and before it
+// reads: a role save that adds a grant naming one of ids holds the lock
+// until it commits, so the delete below, a statement started after the
+// lock, sees that grant (no grant naming a row deleted by tx survives).
+// Grants name existing rows only (checkScopeRefs), so none can name a
+// deleted one afterwards either.
+func (s *Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind string, ids []int64) (int64, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return 0, err
+	}
+	patterns, err := scopeRefs(kind, ids)
+	if err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	db := store.G(ctx, tx)
+	if err := lockVersion(db); err != nil {
+		return 0, err
+	}
+	gone, err := casbinrule.ClearScopes(db, patterns)
+	if err != nil || len(gone) == 0 {
+		return 0, err // none named ids: the versions stay
+	}
+	byRole := map[int64][]string{}
+	for _, g := range gone {
+		byRole[g.RoleID] = append(byRole[g.RoleID], g.Key)
+	}
+	for _, id := range slices.Sorted(maps.Keys(byRole)) {
+		keys := slices.Sorted(slices.Values(byRole[id]))
+		if err := s.audit(ctx, tx, actorID, "authz.scope.clear", "role", id, map[string]any{"kind": kind, "ids": ids, "keys": keys}); err != nil {
+			return 0, err
+		}
+	}
+	v, err := s.bumpPolicy(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
+	s.committedLater(v)
+	return v, nil
+}
+
+// scopeRefsOf returns the rows the scope of p names, by kind: its group
+// (group/G) and its account or proxy (account/X, group/G/account/X,
+// proxy/X).
+func scopeRefsOf(p perm.Pattern) map[string]int64 {
+	out := map[string]int64{}
+	if p.Scope.Group > 0 {
+		out[core.ScopeRefGroup] = p.Scope.Group
+	}
+	if p.Scope.ID > 0 {
+		out[string(perm.ScopeType(p.Action))] = p.Scope.ID
+	}
+	return out
+}
+
+// checkScopeRefs refuses keys whose scope names a row that does not exist
+// (a deleted account, group or proxy, or one never created): such a grant
+// would reach nothing now and the row of a reused id later, and the
+// clearing of a delete (ClearScopeGrants) would never see it. Only the
+// keys a write adds are checked: a grant a role holds already stays.
+func checkScopeRefs(ctx context.Context, tx *gorm.DB, keys []string) error {
+	type ref struct {
+		key, kind string
+		id        int64
+	}
+	var refs []ref
+	byKind := map[string]store.Int64s{}
+	for _, k := range keys {
+		p, err := perm.Parse(k)
+		if err != nil {
+			continue
+		}
+		for kind, id := range scopeRefsOf(p) {
+			refs = append(refs, ref{key: k, kind: kind, id: id})
+			byKind[kind] = append(byKind[kind], id)
+		}
+	}
+	db := store.G(ctx, tx)
+	found := map[string][]int64{}
+	for _, kind := range slices.Sorted(maps.Keys(byKind)) {
+		if rows, ok := scopeRefRows[kind]; ok {
+			var ids []int64
+			if err := rows(db).Where("id = ANY(?)", byKind[kind]).Pluck("id", &ids).Error; err != nil {
+				return err
+			}
+			found[kind] = ids
+		}
+	}
+	var missing []string
+	for _, r := range refs {
+		if !slices.Contains(found[r.kind], r.id) {
+			missing = append(missing, r.key)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	slices.Sort(missing)
+	return core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "unknown_scope",
+		Message: "the scope names a row that does not exist: " + strings.Join(dedupe(missing), ", ")})
+}
+
+// scopeRefRows are the rows a scope can name, by kind (scopeRefPatterns'
+// kinds): a live account, a group, a proxy. A scope naming another kind
+// names nothing.
+var scopeRefRows = map[string]func(*gorm.DB) *gorm.DB{
+	core.ScopeRefAccount: func(db *gorm.DB) *gorm.DB { return db.Model(&model.Account{}).Where("deleted_at IS NULL") },
+	core.ScopeRefGroup:   func(db *gorm.DB) *gorm.DB { return db.Model(&model.Group{}) },
+	core.ScopeRefProxy:   func(db *gorm.DB) *gorm.DB { return db.Model(&model.Proxy{}) },
 }

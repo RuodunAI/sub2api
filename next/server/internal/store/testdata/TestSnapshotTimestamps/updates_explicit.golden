@@ -1,0 +1,6 @@
+-- sql
+UPDATE "stamp_rows" SET "name"=$1,"updated_at"=$2 WHERE "id" = $3
+-- vars
+$1 string "b"
+$2 time.Time 2026-01-02 03:04:05 +0000 UTC
+$3 int64 1

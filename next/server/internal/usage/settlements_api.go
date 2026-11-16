@@ -3,15 +3,17 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The manual way out of the automatic policy (CONTRACTS §25.4).
@@ -51,13 +53,21 @@ type Settlement struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-func (s *Service) loadSettlement(ctx context.Context, q store.Querier, usageLogID int64) (*Settlement, error) {
+// settlementOf selects the settlement entry of a usage row.
+func settlementOf(db *gorm.DB, usageLogID int64) *gorm.DB {
+	return db.Model(&model.PendingSettlement{}).
+		Select("id, plugin_key, ref_id, account_id, attempts, next_check_at, deadline_at, state, last_error, created_at").
+		Where("usage_log_id = ?", usageLogID)
+}
+
+func (e *Settlement) scanTargets() []any {
+	return []any{&e.ID, &e.PluginKey, &e.RefID, &e.AccountID, &e.Attempts, &e.NextCheckAt, &e.DeadlineAt,
+		&e.State, &e.LastError, &e.CreatedAt}
+}
+
+func (s *Service) loadSettlement(ctx context.Context, q *gorm.DB, usageLogID int64) (*Settlement, error) {
 	e := &Settlement{}
-	err := q.QueryRow(ctx, `
-		SELECT id, plugin_key, ref_id, account_id, attempts, next_check_at, deadline_at, state, last_error, created_at
-		FROM pending_settlements WHERE usage_log_id = $1`, usageLogID).
-		Scan(&e.ID, &e.PluginKey, &e.RefID, &e.AccountID, &e.Attempts, &e.NextCheckAt, &e.DeadlineAt,
-			&e.State, &e.LastError, &e.CreatedAt)
+	err := settlementOf(store.G(ctx, q), usageLogID).Row().Scan(e.scanTargets()...)
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
@@ -84,8 +94,13 @@ func (s *Service) retryReconcile(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
+	accounts, err := s.seesAccounts(ctx, nil)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	var out *Settlement
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		row, entry, err := lockSettlement(ctx, tx, id)
 		if err != nil {
 			return err
@@ -100,26 +115,23 @@ func (s *Service) retryReconcile(c *gin.Context) {
 		// importantly, does not enter usage_logs_billing_pending_idx on the
 		// way - the settlement retry loop must never see a row whose money
 		// has already moved.
-		marker, _ := json.Marshal(map[string]string{core.AnomalyReconcile: "retrying"})
-		if _, err := tx.Exec(ctx, `
-			UPDATE usage_logs SET billing_status = 'reserved', anomalies = anomalies || $2::jsonb
-			WHERE id = $1`, id, marker); err != nil {
+		g := store.G(ctx, tx)
+		if err := markUsageRow(g, id, "reserved", nil, reconcileMarker("retrying")).Error; err != nil {
 			return err
 		}
 		now := time.Now()
-		if _, err := tx.Exec(ctx, `
-			UPDATE pending_settlements SET state = 'pending', attempts = 0, poll_failures = 0, next_check_at = $2,
-				deadline_at = $3, last_error = ''
-			WHERE id = $1`, entry.ID, now, now.Add(cfg.maxAge)); err != nil {
+		if err := settlementByID(g, entry.ID).Updates(map[string]any{"state": "pending", "attempts": 0, "poll_failures": 0,
+			"next_check_at": now, "deadline_at": now.Add(cfg.maxAge), "last_error": ""}).Error; err != nil {
 			return err
 		}
 		out, err = s.loadSettlement(ctx, tx, id)
-		if err == nil && !s.seesAccounts(ctx, nil) {
+		if err == nil && !accounts {
 			out.AccountID = nil // like the usage detail (seesAccounts)
 		}
 		if err == nil {
-			_, err = tx.Exec(ctx, `UPDATE async_tasks SET observation_status='pending',claim_token='',lease_until=NULL,
-			attempts=0,poll_failures=0,failure_code='',next_check_at=$2,deadline_at=$3,last_error='' WHERE usage_log_id=$1`, id, now, now.Add(cfg.maxAge))
+			err = tasksOfUsage(g, id).Updates(map[string]any{"observation_status": "pending", "claim_token": "", "lease_until": nil,
+				"attempts": 0, "poll_failures": 0, "failure_code": "", "next_check_at": now, "deadline_at": now.Add(cfg.maxAge),
+				"last_error": ""}).Error
 		}
 		return err
 	})
@@ -137,8 +149,8 @@ func (s *Service) retryConfig(ctx context.Context, usageLogID int64) (resolved, 
 	cfg := s.reconcileSettings(ctx)
 	var groupID int64
 	var accountID *int64
-	err := s.db.Pool.QueryRow(ctx, `SELECT u.group_id, u.account_id FROM usage_logs u
-		WHERE u.id = $1 AND EXISTS (SELECT 1 FROM async_tasks t WHERE t.usage_log_id = u.id)`, usageLogID).Scan(&groupID, &accountID)
+	err := store.G(ctx, s.db.Gorm).Table("usage_logs u").Select("u.group_id, u.account_id").
+		Where("u.id = ? AND EXISTS (SELECT 1 FROM async_tasks t WHERE t.usage_log_id = u.id)", usageLogID).Row().Scan(&groupID, &accountID)
 	switch {
 	case store.IsNoRows(err):
 		return cfg, nil
@@ -169,7 +181,7 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 	var ledgerRes *core.LedgerResult
 	var userID int64
 	var amount decimal.Decimal
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		row, entry, err := lockSettlement(ctx, tx, id)
 		if err != nil {
 			return err
@@ -201,18 +213,14 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		marker, _ := json.Marshal(map[string]string{core.AnomalyReconcile: "refunded"})
-		if _, err := tx.Exec(ctx, `
-			UPDATE usage_logs SET total_cost = 0, base_cost = 0, billing_status = 'free', anomalies = anomalies || $2::jsonb
-			WHERE id = $1`, id, marker); err != nil {
+		g := store.G(ctx, tx)
+		if err := markUsageRow(g, id, "free", map[string]any{"total_cost": decimal.Zero, "base_cost": decimal.Zero}, reconcileMarker("refunded")).Error; err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE async_tasks SET claim_token='',lease_until=NULL WHERE usage_log_id=$1`, id); err != nil {
+		if err = tasksOfUsage(g, id).Updates(map[string]any{"claim_token": "", "lease_until": nil}).Error; err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE pending_settlements SET last_error = $2 WHERE id = $1`,
-			entry.ID, trunc("refunded by an administrator: "+note, 2000))
-		return err
+		return settlementByID(g, entry.ID).Update("last_error", trunc("refunded by an administrator: "+note, 2000)).Error
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -224,16 +232,20 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 
 // lockSettlement loads a usage row and its settlement entry, both locked, or
 // reports why the action does not apply.
-func lockSettlement(ctx context.Context, tx pgx.Tx, usageLogID int64) (*reservedRowState, *Settlement, error) {
+func lockSettlement(ctx context.Context, tx *gorm.DB, usageLogID int64) (*reservedRowState, *Settlement, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, nil, err
+	}
 	// Shared lock order with managed reconciliation: task, usage, settlement.
-	if _, err := tx.Exec(ctx, `SELECT public_id FROM async_tasks WHERE usage_log_id=$1 FOR UPDATE`, usageLogID); err != nil {
+	g := store.G(ctx, tx)
+	var tasks []string
+	if err := g.Model(&model.AsyncTask{}).Where("usage_log_id=?", usageLogID).Clauses(store.ForUpdate()).Pluck("public_id", &tasks).Error; err != nil {
 		return nil, nil, err
 	}
 	p := &pending{}
 	st := &reservedRowState{p: p}
-	err := tx.QueryRow(ctx, `
-		SELECT request_id, user_id, billing_status, total_cost FROM usage_logs WHERE id = $1 FOR UPDATE`,
-		usageLogID).Scan(&p.RequestID, &p.UserID, &st.status, &st.totalCost)
+	err := g.Model(&model.UsageLog{}).Select("request_id, user_id, billing_status, total_cost").Where("id = ?", usageLogID).
+		Clauses(store.ForUpdate()).Row().Scan(&p.RequestID, &p.UserID, &st.status, &st.totalCost)
 	if store.IsNoRows(err) {
 		return nil, nil, core.ErrNotFound.WithMessage("usage record not found")
 	}
@@ -241,11 +253,7 @@ func lockSettlement(ctx context.Context, tx pgx.Tx, usageLogID int64) (*reserved
 		return nil, nil, err
 	}
 	e := &Settlement{}
-	err = tx.QueryRow(ctx, `
-		SELECT id, plugin_key, ref_id, account_id, attempts, next_check_at, deadline_at, state, last_error, created_at
-		FROM pending_settlements WHERE usage_log_id = $1 FOR UPDATE`, usageLogID).
-		Scan(&e.ID, &e.PluginKey, &e.RefID, &e.AccountID, &e.Attempts, &e.NextCheckAt, &e.DeadlineAt,
-			&e.State, &e.LastError, &e.CreatedAt)
+	err = settlementOf(g, usageLogID).Clauses(store.ForUpdate()).Row().Scan(e.scanTargets()...)
 	if store.IsNoRows(err) {
 		return nil, nil, core.ErrNotFound.WithMessage("this usage record was not pre-charged")
 	}
@@ -253,4 +261,30 @@ func lockSettlement(ctx context.Context, tx pgx.Tx, usageLogID int64) (*reserved
 		return nil, nil, err
 	}
 	return st, e, nil
+}
+
+// markUsageRow moves a usage row to status, with the other columns of set,
+// and merges marker into its anomalies (core.AnomalyReconcile and its
+// error): the one write of a reserved or estimated row whose anomalies say
+// why it moved.
+func markUsageRow(db *gorm.DB, id int64, status string, set map[string]any, marker map[string]string) *gorm.DB {
+	raw, _ := json.Marshal(marker)
+	cols := map[string]any{"billing_status": status, "anomalies": gorm.Expr("anomalies || ?::jsonb", raw)}
+	maps.Copy(cols, set)
+	return db.Model(&model.UsageLog{}).Where("id = ?", id).Updates(cols)
+}
+
+// reconcileMarker is the anomalies marker of a row an administrator moved.
+func reconcileMarker(state string) map[string]string {
+	return map[string]string{core.AnomalyReconcile: state}
+}
+
+// settlementByID is the pending_settlements entry id, for an UPDATE.
+func settlementByID(db *gorm.DB, id int64) *gorm.DB {
+	return db.Model(&model.PendingSettlement{}).Where("id = ?", id)
+}
+
+// tasksOfUsage are the async_tasks of a usage row, for an UPDATE.
+func tasksOfUsage(db *gorm.DB, usageLogID int64) *gorm.DB {
+	return db.Model(&model.AsyncTask{}).Where("usage_log_id = ?", usageLogID)
 }

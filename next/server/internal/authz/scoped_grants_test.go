@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -25,6 +26,7 @@ func TestScopedGrantsAndManagement(t *testing.T) {
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	role := func(key string, perms ...string) {
 		t.Helper()
+		scopeRows(t, db, perms...)
 		_, err := s.CreateRole(ctx, root, CreateRoleInput{Key: key, Name: lt(key, key), PermissionKeys: perms})
 		require.NoError(t, err)
 	}
@@ -73,10 +75,11 @@ func TestScopedGrantsAndManagement(t *testing.T) {
 	spelled, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "spelled", Name: lt("s", "s"), PermissionKeys: []string{"account:read:own", "account:update:group/12/account/*"}})
 	require.NoError(t, err)
 	var detail string
-	require.NoError(t, db.Pool.QueryRow(ctx, `SELECT detail->>'permission_keys' FROM audit_logs WHERE action = 'role.create' AND target_id = $1`, fmt.Sprint(spelled.ID)).Scan(&detail))
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT detail->>'permission_keys' FROM audit_logs WHERE action = 'role.create' AND target_id = $1`, fmt.Sprint(spelled.ID)).Scan(&detail))
 	require.JSONEq(t, `["account:read:own", "account:update:group/12"]`, detail)
 
 	// Defining a role: the same rule.
+	scopeRows(t, db, "account:read:group/12/account/7")
 	_, err = s.CreateRole(ctx, a, CreateRoleInput{Key: "a_child", Name: lt("c", "c"), PermissionKeys: []string{"account:read:group/12/account/7"}})
 	require.NoError(t, err)
 	_, err = s.CreateRole(ctx, a, CreateRoleInput{Key: "a_wide", Name: lt("w", "w"), PermissionKeys: []string{"account:read:group/13"}})
@@ -97,4 +100,53 @@ func TestScopedGrantsAndManagement(t *testing.T) {
 	require.NoError(t, s.CanActOnUsers(ctx, own, core.ActOnIdentity, z))
 	// Not a group manager, though.
 	require.True(t, isCode(s.CanActOnUsers(ctx, own, core.ActOnIdentity, x), "permission_denied"))
+}
+
+// A plugin permission's scopes are checked against its catalog entry when a
+// role is written: a scope of its resource (of its values for an enum) and
+// own where allowed are saved, anything else is invalid, a wildcard is no
+// key (D1). Covering compares plugin scopes like core ones: who holds every
+// row grants a scope, never the other way.
+func TestPluginScopedKeysResolveAndCover(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
+	sync := syncer(t, s, "m")
+	enum := &manifest.PermissionScope{Resource: manifest.ScopeValueResource, Values: []manifest.ScopeValue{{Key: "input"}}}
+	require.NoError(t, sync(
+		core.PermissionDef{Key: "flow:manage", ScopeType: "plugin:flow", Scope: &manifest.PermissionScope{Resource: "flow", Own: true}},
+		core.PermissionDef{Key: "stage:run", ScopeType: "plugin:value", Scope: enum},
+		core.PermissionDef{Key: "plain:read"}))
+	create := func(actor int64, key string, perms ...string) (*Role, error) {
+		return s.CreateRole(ctx, actor, CreateRoleInput{Key: key, Name: lt(key, key), PermissionKeys: perms})
+	}
+
+	r, err := create(root, "scoped", "plugin.m:flow:manage:flow/3", "plugin.m:flow:manage:own", "plugin.m:stage:run:value/input")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"plugin.m:flow:manage:flow/3", "plugin.m:flow:manage:own", "plugin.m:stage:run:value/input"}, r.PermissionKeys)
+	for i, key := range []string{"plugin.m:plain:read:own", "plugin.m:flow:manage:ticket/3", "plugin.m:stage:run:value/output", "plugin.m:stage:run:own"} {
+		_, err := create(root, fmt.Sprintf("bad_%d", i), key)
+		require.Equal(t, "invalid", fieldCode(err, "permission_keys"), "%s: %v", key, err)
+	}
+	_, err = create(root, "wild", "plugin.m:flow:*")
+	require.Equal(t, "unknown", fieldCode(err, "permission_keys"), "%v", err)
+
+	// Every row makes the scopes redundant.
+	r, err = create(root, "full", "plugin.m:flow:manage", "plugin.m:flow:manage:flow/3")
+	require.NoError(t, err)
+	require.Equal(t, []string{"plugin.m:flow:manage"}, r.PermissionKeys)
+
+	_, err = create(root, "lead_full", "role:define", "plugin.m:flow:manage")
+	require.NoError(t, err)
+	_, err = create(root, "lead_one", "role:define", "plugin.m:flow:manage:flow/3")
+	require.NoError(t, err)
+	full, one := addUser(t, s, "full@x.com", "lead_full"), addUser(t, s, "one@x.com", "lead_one")
+	_, err = create(full, "child_one", "plugin.m:flow:manage:flow/3")
+	require.NoError(t, err)
+	_, err = create(one, "child_full", "plugin.m:flow:manage")
+	var ce *core.Error
+	require.True(t, errors.As(err, &ce) && ce.Code == "permission_denied", "%v", err)
+	require.Equal(t, []string{"plugin.m:flow:manage"}, ce.Details["missing"])
 }

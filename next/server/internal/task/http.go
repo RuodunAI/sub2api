@@ -2,8 +2,10 @@ package task
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"sort"
@@ -12,11 +14,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Console permissions (TASK-FRAMEWORK-DESIGN §10.1).
@@ -232,18 +237,16 @@ const runStatusSQL = `CASE j.state
 
 // clusterViews reads the cluster tasks (only one when name is set).
 func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskView, error) {
-	pool := s.opts.DB.Pool
-	rows, err := pool.Query(ctx, `SELECT name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
-			lease_node, lease_until > now() AND lease_job_id IS NOT NULL,
-			last_node, last_started_at, last_finished_at, last_status, COALESCE(last_count, 0), COALESCE(last_message, ''),
-			COALESCE(last_error, ''), last_success_at, consecutive_failures
-		FROM scheduled_tasks WHERE $1 = '' OR name = $1 ORDER BY name`, name)
-	if err != nil {
-		return nil, err
-	}
-	var out []ClusterTaskView
+	g := store.G(ctx, s.opts.DB.Gorm)
 	now := time.Now()
-	for rows.Next() {
+	tasks := g.Model(&model.ScheduledTask{}).Select(`name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
+		lease_node, lease_until > now() AND lease_job_id IS NOT NULL,
+		last_node, last_started_at, last_finished_at, last_status, COALESCE(last_count, 0), COALESCE(last_message, ''),
+		COALESCE(last_error, ''), last_success_at, consecutive_failures`).Order("name")
+	if name != "" {
+		tasks = tasks.Where("name = ?", name)
+	}
+	out, err := store.CollectRows(tasks, func(rows *sql.Rows) (ClusterTaskView, error) {
 		var v ClusterTaskView
 		var lastNode, lastStatus *string
 		var running *bool
@@ -253,8 +256,7 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		if err := rows.Scan(&v.Name, &v.Source, &v.PluginKey, &v.Schedule, &v.TimeoutMS, &v.MaxAttempts, &v.Enabled,
 			&v.LeaseNode, &running, &lastNode, &started, &finished, &lastStatus, &count, &msg, &errText,
 			&v.LastSuccessAt, &v.ConsecutiveFailures); err != nil {
-			rows.Close()
-			return nil, err
+			return v, err
 		}
 		v.Running = running != nil && *running
 		if !v.Running {
@@ -278,14 +280,10 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 			}
 		}
 		v.Recent = []string{}
-		out = append(out, v)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(out) == 0 {
-		return []ClusterTaskView{}, nil
+		return v, nil
+	})
+	if err != nil || len(out) == 0 {
+		return out, err
 	}
 	names := make([]string, len(out))
 	index := make(map[string]int, len(out))
@@ -293,52 +291,46 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		names[i], index[v.Name] = v.Name, i
 	}
 
-	recent, err := pool.Query(ctx, `SELECT t.name, r.statuses FROM unnest($1::text[]) AS t(name)
-		CROSS JOIN LATERAL (SELECT COALESCE(array_agg(st ORDER BY id DESC), '{}') AS statuses FROM (
-			SELECT j.id, `+runStatusSQL+` AS st FROM river_job j
-			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = t.name ORDER BY j.id DESC LIMIT $2) x) r`,
-		names, recentRuns)
-	if err != nil {
-		return nil, err
-	}
-	for recent.Next() {
+	// The newest recentRuns runs of each task, by their rank among its runs.
+	ranked := taskRuns(g, names).Select(`j.args->>'name' AS name, j.id, ` + runStatusSQL + ` AS st,
+		row_number() OVER (PARTITION BY j.args->>'name' ORDER BY j.id DESC) AS rn`)
+	recent := g.Table("(?) AS x", ranked).Select("name, array_agg(st ORDER BY id DESC)").Where("rn <= ?", recentRuns).Group("name")
+	err = store.EachRow(recent, func(rows *sql.Rows) error {
 		var n string
-		var sts []string
-		if err := recent.Scan(&n, &sts); err != nil {
-			recent.Close()
-			return nil, err
+		var sts store.Strings
+		if err := rows.Scan(&n, &sts); err != nil {
+			return err
 		}
 		out[index[n]].Recent = sts
-	}
-	recent.Close()
-	if err := recent.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	stats, err := pool.Query(ctx, `SELECT name,
-			count(*) FILTER (WHERE st IN ('succeeded', 'continued', 'failed', 'timeout', 'skipped')),
-			count(*) FILTER (WHERE st IN ('failed', 'timeout')),
-			count(*) FILTER (WHERE st = 'skipped'),
-			COALESCE(avg(ms) FILTER (WHERE st <> 'skipped'), 0)::bigint, COALESCE(max(ms), 0),
-			count(*) FILTER (WHERE st IN ('queued', 'retrying'))
-		FROM (SELECT j.args->>'name' AS name, `+runStatusSQL+` AS st, (j.metadata->'output'->>'duration_ms')::bigint AS ms
-			FROM river_job j WHERE j.kind = 'sup2api.task' AND j.args->>'name' = ANY($1)
-				AND (j.created_at > now() - interval '24 hours' OR j.state IN ('available', 'scheduled', 'pending', 'retryable'))) x
-		GROUP BY name`, names)
-	if err != nil {
-		return nil, err
-	}
-	defer stats.Close()
-	for stats.Next() {
+	day := taskRuns(g, names).
+		Select(`j.args->>'name' AS name, ` + runStatusSQL + ` AS st, (j.metadata->'output'->>'duration_ms')::bigint AS ms`).
+		Where("j.created_at > now() - interval '24 hours' OR j.state IN ('available', 'scheduled', 'pending', 'retryable')")
+	stats := g.Table("(?) AS x", day).Select(`name,
+		count(*) FILTER (WHERE st IN ('succeeded', 'continued', 'failed', 'timeout', 'skipped')),
+		count(*) FILTER (WHERE st IN ('failed', 'timeout')),
+		count(*) FILTER (WHERE st = 'skipped'),
+		COALESCE(avg(ms) FILTER (WHERE st <> 'skipped'), 0)::bigint, COALESCE(max(ms), 0),
+		count(*) FILTER (WHERE st IN ('queued', 'retrying'))`).Group("name")
+	err = store.EachRow(stats, func(rows *sql.Rows) error {
 		var n string
 		var st Stats24h
 		var queued int
-		if err := stats.Scan(&n, &st.Runs, &st.Failed, &st.Skipped, &st.AvgMS, &st.MaxMS, &queued); err != nil {
-			return nil, err
+		if err := rows.Scan(&n, &st.Runs, &st.Failed, &st.Skipped, &st.AvgMS, &st.MaxMS, &queued); err != nil {
+			return err
 		}
 		out[index[n]].Stats24h, out[index[n]].Queued = st, queued
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, stats.Err()
+	return out, nil
 }
 
 // nodeViews reads the node task states of every live node (one node and one
@@ -423,7 +415,7 @@ func readHistories(ctx context.Context, rdb redis.UniversalClient, nodeID string
 // leader is the node whose River client leads now ("" when none does).
 func (s *Service) leader(ctx context.Context, live map[string]core.NodeStatus) string {
 	var id string
-	err := s.opts.DB.Pool.QueryRow(ctx, `SELECT leader_id FROM river_leader WHERE expires_at > now() LIMIT 1`).Scan(&id)
+	err := store.G(ctx, s.opts.DB.Gorm).Table("river_leader").Select("leader_id").Where("expires_at > now()").Limit(1).Row().Scan(&id)
 	if err != nil {
 		return ""
 	}
@@ -636,8 +628,7 @@ func (s *Service) scopeOf(ctx context.Context, name string) (core.TaskScope, boo
 	if s.opts.DB == nil {
 		return "", false
 	}
-	var exists bool
-	if err := s.opts.DB.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM scheduled_tasks WHERE name = $1)`, name).Scan(&exists); err == nil && exists {
+	if exists, err := taskRowExists(ctx, s.opts.DB.Gorm, name); err == nil && exists {
 		return core.TaskCluster, true
 	}
 	return "", false
@@ -656,41 +647,57 @@ type riverError struct {
 	Error   string    `json:"error"`
 }
 
-func (s *Service) clusterRuns(ctx context.Context, name string, statuses []string, before int64, limit int) (RunsPage, error) {
-	rows, err := s.opts.DB.Pool.Query(ctx, `SELECT id, st, scheduled_at, attempted_at, finalized_at, attempt, max_attempts,
-			COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by
-		FROM (SELECT j.*, `+runStatusSQL+` AS st FROM river_job j
-			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = $1 AND ($2 = 0 OR j.id < $2) ORDER BY j.id DESC) x
-		WHERE cardinality($3::text[]) = 0 OR st = ANY($3)
-		ORDER BY id DESC LIMIT $4`, name, before, statuses, limit+1)
-	if err != nil {
-		return RunsPage{}, err
+// riverErrors reads river_job.errors (jsonb[]), which database/sql hands
+// over as the array's text: one JSON text per element; NULL is nil.
+type riverErrors []riverError
+
+// Scan implements sql.Scanner.
+func (e *riverErrors) Scan(src any) error {
+	var elems store.Strings
+	if err := elems.Scan(src); err != nil {
+		return fmt.Errorf("task: scan river errors: %w", err)
 	}
-	defer rows.Close()
+	if elems == nil {
+		*e = nil
+		return nil
+	}
+	out := make(riverErrors, len(elems))
+	for i, b := range elems {
+		if err := json.Unmarshal([]byte(b), &out[i]); err != nil {
+			return err
+		}
+	}
+	*e = out
+	return nil
+}
+
+func (s *Service) clusterRuns(ctx context.Context, name string, statuses []string, before int64, limit int) (RunsPage, error) {
 	out := RunsPage{Runs: []RunView{}}
 	var lastID int64
-	for rows.Next() {
+	err := store.EachRow(runsQuery(store.G(ctx, s.opts.DB.Gorm), name, statuses, before, limit+1), func(rows *sql.Rows) error {
 		var v RunView
 		var id int64
 		var scheduled time.Time
 		var attempted, finalized *time.Time
-		var output *runOutput
-		var errs []riverError
-		var attemptedBy []string
+		var output store.JSON[*runOutput]
+		var errs riverErrors
+		var attemptedBy store.Strings
 		if err := rows.Scan(&id, &v.Status, &scheduled, &attempted, &finalized, &v.Attempt, &v.MaxAttempts, &v.Manual,
 			&output, &errs, &attemptedBy); err != nil {
-			return RunsPage{}, err
+			return err
 		}
 		if len(out.Runs) == limit {
+			// The row past the page (the query reads limit+1): there is a next one.
 			out.NextBeforeID = &lastID
-			break
+			return nil
 		}
 		lastID = id
 		v.ID = strconv.FormatInt(id, 10)
 		v.ScheduledAt, v.StartedAt, v.FinishedAt = &scheduled, attempted, finalized
-		if output != nil {
-			v.Node, v.DurationMS, v.Count = output.Node, output.DurationMS, output.Count
-			v.Message, v.Error = output.Message, output.Error
+		// A missing output (SQL NULL) and a JSON null both leave it nil.
+		if o := output.V; o != nil {
+			v.Node, v.DurationMS, v.Count = o.Node, o.DurationMS, o.Count
+			v.Message, v.Error = o.Message, o.Error
 		} else if len(attemptedBy) > 0 {
 			v.Node = attemptedBy[len(attemptedBy)-1]
 		}
@@ -701,8 +708,34 @@ func (s *Service) clusterRuns(ctx context.Context, name string, statuses []strin
 			v.Error = truncate(errs[len(errs)-1].Error)
 		}
 		out.Runs = append(out.Runs, v)
+		return nil
+	})
+	if err != nil {
+		return RunsPage{}, err
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// taskRuns reads the runs of the cluster tasks names from river_job, as j.
+// River's table is only read here; River's client writes it.
+func taskRuns(g *gorm.DB, names []string) *gorm.DB {
+	return g.Table("river_job AS j").Where("j.kind = 'sup2api.task' AND j.args->>'name' = ANY(?)", store.Strings(names))
+}
+
+// runsQuery selects up to limit runs of the cluster task name, newest
+// first: those before the id before (0: from the newest), with one of
+// statuses (none: any).
+func runsQuery(g *gorm.DB, name string, statuses []string, before int64, limit int) *gorm.DB {
+	runs := taskRuns(g, []string{name}).Select(`j.*, ` + runStatusSQL + ` AS st`)
+	if before != 0 {
+		runs = runs.Where("j.id < ?", before)
+	}
+	q := g.Table("(?) AS x", runs).Select(`id, st, scheduled_at, attempted_at, finalized_at, attempt, max_attempts,
+		COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by`)
+	if len(statuses) > 0 {
+		q = q.Where("st = ANY(?)", store.Strings(statuses))
+	}
+	return q.Order("id DESC").Limit(limit)
 }
 
 // ---------------------------------------------------------------- run
@@ -761,7 +794,7 @@ func (h *handlers) run(c *gin.Context) {
 		detail["node_id"] = body.NodeID
 	}
 	if h.s.opts.DB != nil {
-		if aerr := audit.Audit(ctx, h.s.opts.DB.Pool, uid, ActionRunManual, "task", name, detail); aerr != nil {
+		if aerr := audit.Audit(ctx, h.s.opts.DB.Gorm, uid, ActionRunManual, "task", name, detail); aerr != nil {
 			h.s.log.Warn("task: audit manual run", "task", name, "err", aerr)
 		}
 	}
@@ -804,11 +837,10 @@ func (h *handlers) patch(c *gin.Context) {
 		httpapi.Fail(c, errTaskNotReady)
 		return
 	}
-	var source string
-	err := h.s.opts.DB.Pool.QueryRow(ctx, `UPDATE scheduled_tasks SET enabled = $2, updated_at = now()
-		WHERE name = $1 AND source IN ($3, $4) RETURNING source`, name, *body.Enabled,
-		string(SourcePluginManifest), string(SourcePluginRuntime)).Scan(&source)
-	if store.IsNoRows(err) {
+	var row model.ScheduledTask
+	res := setPluginTaskEnabled(store.G(ctx, h.s.opts.DB.Gorm), name, *body.Enabled, &row)
+	err, source := res.Error, row.Source
+	if err == nil && res.RowsAffected == 0 {
 		if _, known := h.s.scopeOf(ctx, name); known {
 			httpapi.Fail(c, errNotEditable)
 			return
@@ -826,9 +858,17 @@ func (h *handlers) patch(c *gin.Context) {
 		}
 	}
 	uid, _ := core.UserID(ctx)
-	if aerr := audit.Audit(ctx, h.s.opts.DB.Pool, uid, ActionSetEnable, "task", name,
+	if aerr := audit.Audit(ctx, h.s.opts.DB.Gorm, uid, ActionSetEnable, "task", name,
 		map[string]any{"enabled": *body.Enabled, "source": source}); aerr != nil {
 		h.s.log.Warn("task: audit task switch", "task", name, "err", aerr)
 	}
 	httpapi.OK(c, gin.H{"name": name, "enabled": *body.Enabled})
+}
+
+// setPluginTaskEnabled switches the plugin task name on or off and returns
+// its source into row; no row is affected when name is no plugin task.
+func setPluginTaskEnabled(g *gorm.DB, name string, enabled bool, row *model.ScheduledTask) *gorm.DB {
+	return g.Model(row).Clauses(clause.Returning{Columns: []clause.Column{{Name: "source"}}}).
+		Where("name = ? AND source IN (?, ?)", name, string(SourcePluginManifest), string(SourcePluginRuntime)).
+		Updates(map[string]any{"enabled": enabled, "updated_at": gorm.Expr("now()")})
 }

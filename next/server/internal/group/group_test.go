@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -25,8 +25,8 @@ import (
 
 type fakeTokens struct{}
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(tok, "u"), 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "u")
 }
 
 type fakeAuthz struct{ admin int64 }
@@ -148,7 +148,7 @@ func TestPlatformResolver(t *testing.T) {
 
 func TestGroupPlatformsWithoutRegistry(t *testing.T) {
 	// No registry: no database access, every group gets [].
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	ps, err := s.Platforms(context.Background(), []int64{1, 2})
 	if err != nil || len(ps) != 2 || ps[1] == nil || len(ps[2]) != 0 {
 		t.Fatalf("platforms: %v %v", ps, err)
@@ -179,14 +179,14 @@ func setup(t *testing.T) *env {
 	e.user = mkUser(t, db, "user@x.com")
 	engine := gin.New()
 	r := httpapi.NewRouter(engine, fakeTokens{}, fakeAuthz{admin: e.admin})
-	New(db, rdb, e.bus, fakeRegistry{gen: testGen()}).RegisterRoutes(r)
+	New(db, rdb, e.bus, fakeRegistry{gen: testGen()}, authz.New(authz.Deps{})).RegisterRoutes(r)
 	e.h = engine
 	return e
 }
 
 func mkUser(t *testing.T, db *store.DB, email string) int64 {
 	var id int64
-	if err := db.Pool.QueryRow(context.Background(),
+	if err := db.SQL.QueryRowContext(context.Background(),
 		`INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestGroupCRUDAndVisibility(t *testing.T) {
 	}
 	// Seed a key so the cache drop path is exercised.
 	e.mr.Set("apikey:h1", "{}")
-	if _, err := e.db.Pool.Exec(context.Background(), `INSERT INTO api_keys (user_id, group_id, name, key_prefix, key_hash)
+	if _, err := e.db.SQL.ExecContext(context.Background(), `INSERT INTO api_keys (user_id, group_id, name, key_prefix, key_hash)
 		VALUES ($1, $2, 'k', 'sk-s2a-xxxxx', 'h1')`, e.user, int64(def["id"].(float64))); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestGroupCRUDAndVisibility(t *testing.T) {
 		t.Fatal("api key cache not dropped")
 	}
 	// A private group opens to the user once their segment is granted it.
-	if _, err := e.db.Pool.Exec(context.Background(), `INSERT INTO segment_groups (segment_id, group_id, granted)
+	if _, err := e.db.SQL.ExecContext(context.Background(), `INSERT INTO segment_groups (segment_id, group_id, granted)
 		SELECT segment_id, $2, true FROM users WHERE id = $1`, e.user, vipID); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestGroupCRUDAndVisibility(t *testing.T) {
 	// or leaves them unbound.
 	keyGroup := func() *int64 {
 		var g *int64
-		if err := e.db.Pool.QueryRow(context.Background(), `SELECT group_id FROM api_keys`).Scan(&g); err != nil {
+		if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT group_id FROM api_keys`).Scan(&g); err != nil {
 			t.Fatal(err)
 		}
 		return g
@@ -309,15 +309,8 @@ func TestGroupCRUDAndVisibility(t *testing.T) {
 	if code, _ = e.do(e.admin, "GET", fmt.Sprintf("/groups/%d", defID), nil); code != 404 {
 		t.Fatalf("get deleted: %d", code)
 	}
-	// Plugin traffic leaves provider_* rows keyed by the group; they must not
-	// pin it (migration 0073 dropped those foreign keys).
-	if _, err := e.db.Pool.Exec(context.Background(), `INSERT INTO provider_resources
-		(public_id, user_id, group_id, request_id, plugin_key, kind, account_id, principal_id, generation, state, operation_id, bytes, intent_hash)
-		VALUES ('res-1', $1, $2, 'req-1', 'anthropic', 'file', 1, 'p', 'g', 'ready', 'op-1', 0, 'h')`, e.user, vipID); err != nil {
-		t.Fatal(err)
-	}
 	if code, _ = e.do(e.admin, "DELETE", fmt.Sprintf("/groups/%d", vipID), nil); code != 204 {
-		t.Fatalf("delete with keys and plugin resources: %d", code)
+		t.Fatalf("delete with keys: %d", code)
 	}
 	if g := keyGroup(); g != nil {
 		t.Fatalf("key still bound to the deleted group: %v", *g)
@@ -340,12 +333,12 @@ func TestGroupPlatforms(t *testing.T) {
 	mixed, video, empty := mkGroup("mixed"), mkGroup("video"), mkGroup("empty")
 	mkAccount := func(plugin, typ string, deleted bool, groups ...int64) {
 		var id int64
-		if err := e.db.Pool.QueryRow(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, deleted_at)
+		if err := e.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, deleted_at)
 			VALUES ('a', $1, $2, '\x00'::bytea, CASE WHEN $3 THEN now() END) RETURNING id`, plugin, typ, deleted).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		for _, g := range groups {
-			if _, err := e.db.Pool.Exec(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, id, g); err != nil {
+			if _, err := e.db.SQL.ExecContext(ctx, `INSERT INTO account_groups (account_id, group_id) VALUES ($1, $2)`, id, g); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -422,11 +415,11 @@ func TestGroupModelIDs(t *testing.T) {
 	id := int64(out["data"].(map[string]any)["id"].(float64))
 	for i, models := range [][]string{{"claude-opus-5-5", "gpt-5"}, {"gpt-5"}, {}, {"deleted-model"}} {
 		var aid int64
-		err := e.db.Pool.QueryRow(ctx, `INSERT INTO accounts (name,plugin_key,type,credentials_enc,models,deleted_at) VALUES ('model-source','anthropic','apikey','\x00'::bytea,$1,CASE WHEN $2 THEN now() END) RETURNING id`, models, i == 3).Scan(&aid)
+		err := e.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts (name,plugin_key,type,credentials_enc,models,deleted_at) VALUES ('model-source','anthropic','apikey','\x00'::bytea,$1,CASE WHEN $2 THEN now() END) RETURNING id`, models, i == 3).Scan(&aid)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err = e.db.Pool.Exec(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES ($1,$2)`, aid, id); err != nil {
+		if _, err = e.db.SQL.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id) VALUES ($1,$2)`, aid, id); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -35,7 +35,6 @@ export default {
     plugin_grant: '授予插件权限',
     publisher_manage: '管理发布者',
     system_update: '核心升级',
-    host_install: '安装或连接远程主机',
     self_access_key_write: '新建或修改访问密钥',
     superadmin_identity: '修改超级管理员账号'
   }

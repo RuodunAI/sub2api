@@ -1,10 +1,15 @@
 // The entities the console picks by name (EntityPicker, GET /lookup/{kind}).
 // Each is one description: where it is looked up, how it shows, who may look
-// it up. A new entity is a new entry here; the picker does not change.
+// it up. A new entity is a new entry here; the picker does not change. A
+// plugin's scope candidates (GET /plugins/:key/scope-options) are kinds made
+// up per plugin permission, so they are described by entityOf, not listed.
 
 import { P, type PermRef, type ScopableKey } from '@/generated/permissions'
 
-export type EntityKind = 'user' | 'group' | 'api_key' | 'account' | 'model' | 'proxy'
+export type CoreEntityKind = 'user' | 'group' | 'api_key' | 'account' | 'model' | 'proxy'
+/** The values a plugin permission's scope takes: pscope:<plugin>/<local permission key>. */
+export type PluginScopeKind = `pscope:${string}/${string}`
+export type EntityKind = CoreEntityKind | PluginScopeKind
 
 export interface EntityDescriptor {
   /** The {kind} of GET /lookup/{kind}. */
@@ -26,9 +31,15 @@ export interface EntityDescriptor {
    * of the line that tells the user what the parameter did to the list.
    */
   scopes?: Record<string, { kind: EntityKind; note: string }>
+  /** The whole path looked up, instead of /lookup/{path}. */
+  url?: string
+  /** Parameters every lookup of the kind sends. */
+  query?: Record<string, string>
+  /** The id is an opaque string (a plugin's value): named through ids=, shown as it is while unknown, never as "#id". */
+  opaqueIds?: boolean
 }
 
-export const ENTITIES: Record<EntityKind, EntityDescriptor> = {
+export const ENTITIES: Record<CoreEntityKind, EntityDescriptor> = {
   user: { path: 'users', icon: 'user', label: 'entity.kind.user', numeric: true, permissions: ['user:read'] },
   group: {
     path: 'groups',
@@ -71,9 +82,48 @@ export const ENTITIES: Record<EntityKind, EntityDescriptor> = {
  */
 export const isEntityId = (v: string): boolean => /^[1-9]\d{0,17}$/.test(v)
 
+/** A plugin scope value as a key takes one (perm.scopeValueRe); the only ids an opaque kind looks up or takes typed. */
+export const isScopeValue = (v: string): boolean => /^[A-Za-z0-9_.-]{1,64}$/.test(v)
+
+/** Whether v can be an id of the entity as it stands: a numeric id, a plugin value, any text where the id is the name. */
+export const takesId = (entity: EntityDescriptor, v: string): boolean => (entity.opaqueIds ? isScopeValue(v) : !entity.numeric || isEntityId(v))
+
+const PLUGIN_SCOPE = 'pscope:'
+
+/** The kind of the values a plugin permission's scope takes. */
+export const pluginScopeKind = (plugin: string, local: string): PluginScopeKind => `${PLUGIN_SCOPE}${plugin}/${local}`
+
+/** Whether kind is a plugin scope's (pluginScopeKind) rather than a core entity. */
+export const isPluginScopeKind = (kind: EntityKind): kind is PluginScopeKind => kind.startsWith(PLUGIN_SCOPE)
+
+/** The descriptors of the plugin scope kinds seen so far: a kind gets the same object every time. */
+const pluginScopes = new Map<PluginScopeKind, EntityDescriptor>()
+
+/** The description of a kind. */
+export function entityOf(kind: EntityKind): EntityDescriptor {
+  if (!isPluginScopeKind(kind)) return ENTITIES[kind]
+  let entity = pluginScopes.get(kind)
+  if (!entity) {
+    const rest = kind.slice(PLUGIN_SCOPE.length)
+    const i = rest.indexOf('/')
+    entity = {
+      path: '',
+      url: `/plugins/${encodeURIComponent(rest.slice(0, i))}/scope-options`,
+      query: { permission: rest.slice(i + 1) },
+      icon: 'plugin',
+      label: 'entity.kind.pluginScope',
+      numeric: false,
+      opaqueIds: true,
+      permissions: ['role:read', 'plugin:read']
+    }
+    pluginScopes.set(kind, entity)
+  }
+  return entity
+}
+
 /** Whether a caller holding what `auth` answers may look `kind` up (`mine`: only its own rows). */
 export function mayLookUp(kind: EntityKind, mine: boolean, auth: { has(perm: PermRef[]): boolean; hasAction(action: string): boolean }): boolean {
-  const entity = ENTITIES[kind]
+  const entity = entityOf(kind)
   if (entity.action) return auth.hasAction(entity.action)
   return auth.has((mine && entity.minePermissions) || entity.permissions)
 }

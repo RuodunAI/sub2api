@@ -3,6 +3,7 @@ package authz
 import (
 	"slices"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
@@ -369,7 +370,7 @@ func CorePermissions() []core.PermissionDef {
 			sort += 10
 			out = append(out, core.PermissionDef{
 				Key: string(p.key), Module: m.key, Label: lt(p.en, p.zh),
-				Description: p.description(), Sensitive: p.sensitive, Sort: sort,
+				Description: p.description(), Risk: p.risk(), Requires: p.requiredKeys(), Sort: sort,
 				ScopeType: string(perm.ScopeType(p.key)),
 			})
 		}
@@ -383,6 +384,18 @@ func (p corePerm) description() core.LocalizedText {
 		return core.LocalizedText{}
 	}
 	return p.desc
+}
+
+// risk is p's level in the catalog: superOnly ones are critical (only a
+// holder grants them, first the super admin), sensitive ones sensitive.
+func (p corePerm) risk() string {
+	switch {
+	case p.superOnly:
+		return manifest.RiskCritical
+	case p.sensitive:
+		return manifest.RiskSensitive
+	}
+	return manifest.RiskLow
 }
 
 // requiredKeys is p's requires as strings, nil when none.

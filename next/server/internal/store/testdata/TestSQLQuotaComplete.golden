@@ -1,0 +1,22 @@
+-- sql
+UPDATE account_quota_snapshots AS q SET "error"=CASE WHEN revision=$1 THEN $2 ELSE error END,"failures"=CASE WHEN revision<>$3 THEN failures WHEN $4='' THEN 0 ELSE LEAST(failures+1,10) END,"lease_until"=NULL,"next_check_at"=CASE WHEN revision<>$5 THEN next_check_at ELSE $6::timestamptz END,"refresh_status"=CASE WHEN revision<>$7 THEN refresh_status WHEN $8='' THEN 'ready' ELSE 'error' END,"revision"=revision+1,"source"=CASE WHEN $9='' AND revision=$10 THEN 'active' ELSE source END,"updated_at"=CASE WHEN $11='' AND revision=$12 THEN clock_timestamp() ELSE updated_at END,"windows"=CASE WHEN $13='' AND revision=$14 THEN windows||$15::jsonb ELSE windows END WHERE account_id=$16 AND generation=$17 AND lease_token=$18 AND lease_until>clock_timestamp() AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))
+-- vars
+$1 int64 44
+$2 string "boom"
+$3 int64 44
+$4 string "boom"
+$5 int64 44
+$6 time.Time 2026-11-15 12:00:00 +0000 UTC
+$7 int64 44
+$8 string "boom"
+$9 string "boom"
+$10 int64 44
+$11 string "boom"
+$12 int64 44
+$13 string "boom"
+$14 int64 44
+$15 string "{\"5h\":{}}"
+$16 int64 11
+$17 int64 22
+$18 int64 33

@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -100,11 +101,11 @@ func addUser(t *testing.T, s *Service, email string, roles ...string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	var id int64
-	if err := s.db.Pool.QueryRow(ctx, `INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
+	if err := s.db.SQL.QueryRowContext(ctx, `INSERT INTO users (email, password_hash) VALUES ($1, 'x') RETURNING id`, email).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	var v int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		v, err = s.SetUserRoles(ctx, tx, 0, id, roles)
 		return err
@@ -123,7 +124,7 @@ func setRoles(s *Service, actor, user int64, roles ...string) error {
 // setRolesAs is setRoles in ctx, which may carry an access key.
 func setRolesAs(ctx context.Context, s *Service, actor, user int64, roles ...string) error {
 	var v int64
-	err := s.db.Tx(ctx, func(tx pgx.Tx) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		v, err = s.SetUserRoles(ctx, tx, actor, user, roles)
 		return err
@@ -137,7 +138,7 @@ func setRolesAs(ctx context.Context, s *Service, actor, user int64, roles ...str
 func roleID(t *testing.T, s *Service, key string) int64 {
 	t.Helper()
 	var id int64
-	if err := s.db.Pool.QueryRow(context.Background(), `SELECT id FROM roles WHERE key = $1`, key).Scan(&id); err != nil {
+	if err := s.db.SQL.QueryRowContext(context.Background(), `SELECT id FROM roles WHERE key = $1`, key).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -221,7 +222,7 @@ func TestSyncCoreSeedsCatalogAndRoles(t *testing.T) {
 	ctx := context.Background()
 
 	var n int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM permissions WHERE source = 'core' AND status = 'active'`).Scan(&n); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM permissions WHERE source = 'core' AND status = 'active'`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != len(CorePermissions()) {
@@ -281,17 +282,17 @@ func TestSyncCoreSeedsCatalogAndRoles(t *testing.T) {
 
 	// A core permission dropped from code is marked removed; a new one is
 	// granted to admin.
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO permissions (key, module, label, source) VALUES ('legacy:thing', 'legacy', '{"en":"x"}', 'core')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO permissions (key, module, label, source) VALUES ('legacy:thing', 'legacy', '{"en":"x"}', 'core')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Pool.Exec(ctx, `DELETE FROM permissions WHERE key = 'node:read'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM permissions WHERE key = 'node:read'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var status string
-	_ = db.Pool.QueryRow(ctx, `SELECT status FROM permissions WHERE key = 'legacy:thing'`).Scan(&status)
+	_ = db.SQL.QueryRowContext(ctx, `SELECT status FROM permissions WHERE key = 'legacy:thing'`).Scan(&status)
 	if status != "removed" {
 		t.Fatalf("legacy status = %q", status)
 	}
@@ -302,7 +303,7 @@ func TestSyncCoreSeedsCatalogAndRoles(t *testing.T) {
 	mustCan(t, s, operator, "node:read", true)
 
 	// A new settings permission reaches admin but not operator.
-	if _, err := db.Pool.Exec(ctx, `DELETE FROM permissions WHERE key = 'settings:manage'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM permissions WHERE key = 'settings:manage'`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SyncCore(ctx); err != nil {
@@ -319,10 +320,10 @@ func TestResetBuiltinRole(t *testing.T) {
 	ctx := context.Background()
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	opUser := addUser(t, s, "o@x.com", RoleOperator)
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'installed')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'installed')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		return s.SyncPlugin(ctx, tx, "guard", withRoles([]core.PermissionDef{{Key: "stats:read"}}, RoleOperator))
 	}); err != nil {
 		t.Fatal(err)
@@ -337,18 +338,18 @@ func TestResetBuiltinRole(t *testing.T) {
 	if _, err := s.UpdateRole(ctx, root, opID, UpdateRoleInput{Name: lt("Night shift", "夜班")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetRolePermissions(ctx, root, opID, []string{"user:read", "settings:manage", "plugin.guard:stats:read"}); err != nil {
+	if _, err := s.SetRolePermissions(ctx, root, opID, []string{"user:read", "settings:manage", "plugin.guard:stats:read"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	mustCan(t, s, opUser, "settings:manage", true)
 	mustCan(t, s, opUser, "account:update", false)
 
 	// The operator holds less than the admin role: it cannot reset it.
-	if _, err := s.ResetRole(ctx, opUser, roleID(t, s, RoleAdmin)); !isCode(err, "permission_denied") {
+	if _, err := s.ResetRole(ctx, opUser, roleID(t, s, RoleAdmin), nil); !isCode(err, "permission_denied") {
 		t.Fatalf("operator resets admin: %v", err)
 	}
 
-	r, err := s.ResetRole(ctx, root, opID)
+	r, err := s.ResetRole(ctx, root, opID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,10 +368,10 @@ func TestResetBuiltinRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.ResetRole(ctx, root, custom.ID); !isCode(err, "conflict") {
+	if _, err := s.ResetRole(ctx, root, custom.ID, nil); !isCode(err, "conflict") {
 		t.Fatalf("reset custom: %v", err)
 	}
-	if _, err := s.ResetRole(ctx, root, 999999); !isCode(err, "not_found") {
+	if _, err := s.ResetRole(ctx, root, 999999, nil); !isCode(err, "not_found") {
 		t.Fatalf("reset missing: %v", err)
 	}
 }
@@ -390,7 +391,7 @@ func TestAuthorizerCacheInvalidation(t *testing.T) {
 	mustCan(t, b, uid, "user:read", false) // cached on b
 
 	// Mutation on node a is visible on node b through the bus.
-	if _, err := a.SetRolePermissions(ctx, root, roleID(t, a, RoleUser), append(append([]string{}, userRolePermissions...), "user:read")); err != nil {
+	if _, err := a.SetRolePermissions(ctx, root, roleID(t, a, RoleUser), append(append([]string{}, userRolePermissions...), "user:read"), nil); err != nil {
 		t.Fatal(err)
 	}
 	mustCan(t, a, uid, "user:read", true)
@@ -399,14 +400,18 @@ func TestAuthorizerCacheInvalidation(t *testing.T) {
 	// Without a broadcast the version poll task catches up.
 	c := newService(t, db, nil, nil)
 	var poll core.TaskSpec
-	if err := c.RegisterTasks(taskRecorder(func(spec core.TaskSpec) { poll = spec })); err != nil {
+	if err := c.RegisterTasks(taskRecorder(func(spec core.TaskSpec) {
+		if spec.Name == VersionPollTask {
+			poll = spec
+		}
+	})); err != nil {
 		t.Fatal(err)
 	}
 	if poll.Name != VersionPollTask || poll.Scope != core.TaskNode || poll.RequireWork || poll.Every != 100*time.Millisecond {
 		t.Fatalf("version poll spec: %+v", poll)
 	}
 	mustCan(t, c, uid, "user:read", true)
-	if _, err := a.SetRolePermissions(ctx, root, roleID(t, a, RoleUser), userRolePermissions); err != nil {
+	if _, err := a.SetRolePermissions(ctx, root, roleID(t, a, RoleUser), userRolePermissions, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := poll.Handler(ctx, core.TaskRun{Name: poll.Name}); err != nil {
@@ -417,20 +422,24 @@ func TestAuthorizerCacheInvalidation(t *testing.T) {
 	// Disabled users have no permissions.
 	su := root
 	mustCan(t, a, su, "anything:at:all", true)
-	v := bump(t, a)
-	if _, err := db.Pool.Exec(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, su); err != nil {
-		t.Fatal(err)
-	}
-	a.Committed(ctx, v)
+	a.Committed(ctx, bumpWith(t, a, `UPDATE users SET status = 'disabled' WHERE id = ?`, su))
 	mustCan(t, a, su, "anything:at:all", false)
 }
 
-func bump(t *testing.T, s *Service) int64 {
+func bump(t *testing.T, s *Service) int64 { return bumpWith(t, s, "") }
+
+// bumpWith moves the authz version on in a transaction that also runs sql
+// (with args; "" = none): a write the version records, as the service's
+// own writes are. A raw write outside one leaves the caches stale at the
+// same version.
+func bumpWith(t *testing.T, s *Service, sql string, args ...any) int64 {
 	var v int64
-	err := s.db.Tx(context.Background(), func(tx pgx.Tx) error {
+	err := s.db.Tx(context.Background(), func(tx *gorm.DB) error {
 		var err error
-		v, err = s.Bump(context.Background(), tx)
-		return err
+		if v, err = s.Bump(context.Background(), tx); err != nil || sql == "" {
+			return err
+		}
+		return tx.Exec(sql, args...).Error
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -453,7 +462,7 @@ func TestBusReconnectRefreshesVersion(t *testing.T) {
 
 	// A change whose broadcast this node missed while disconnected.
 	var v int64
-	if err := db.Pool.QueryRow(context.Background(), `UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
+	if err := db.SQL.QueryRowContext(context.Background(), `UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
 		t.Fatal(err)
 	}
 	minVersion := func() int64 {
@@ -483,7 +492,7 @@ func TestBumpDropsStaleCache(t *testing.T) {
 	uid := addUser(t, b, "u@x.com", RoleUser)
 	root := addUser(t, b, "root@x.com", RoleSuperAdmin)
 	mustCan(t, a, uid, "user:read", false) // cached on a
-	if _, err := b.SetRolePermissions(ctx, root, roleID(t, b, RoleUser), append(slices.Clone(userRolePermissions), "user:read")); err != nil {
+	if _, err := b.SetRolePermissions(ctx, root, roleID(t, b, RoleUser), append(slices.Clone(userRolePermissions), "user:read"), nil); err != nil {
 		t.Fatal(err)
 	}
 	mustCan(t, a, uid, "user:read", false) // stale on a
@@ -491,7 +500,7 @@ func TestBumpDropsStaleCache(t *testing.T) {
 	// Under the authz lock a no longer trusts what it cached before.
 	errRollback := errors.New("rollback")
 	var got bool
-	err := db.Tx(ctx, func(tx pgx.Tx) error {
+	err := db.Tx(ctx, func(tx *gorm.DB) error {
 		if _, err := a.Bump(ctx, tx); err != nil {
 			return err
 		}
@@ -520,7 +529,7 @@ func TestRoleManagement(t *testing.T) {
 	if err := s.DeleteRole(ctx, root, roleID(t, s, RoleAdmin)); !isCode(err, "conflict") {
 		t.Fatalf("delete builtin: %v", err)
 	}
-	if _, err := s.SetRolePermissions(ctx, admin, roleID(t, s, RoleSuperAdmin), []string{"user:read"}); !isCode(err, "conflict") {
+	if _, err := s.SetRolePermissions(ctx, admin, roleID(t, s, RoleSuperAdmin), []string{"user:read"}, nil); !isCode(err, "conflict") {
 		t.Fatalf("super_admin perms: %v", err)
 	}
 	if _, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "ops", Name: lt("Ops", "运营"), PermissionKeys: []string{"nope:x"}}); !isCode(err, "invalid_argument") {
@@ -592,7 +601,7 @@ func TestRoleGrantEscalation(t *testing.T) {
 		t.Fatalf("role must not be created: %v", err)
 	}
 	var n int
-	if err := db.Pool.QueryRow(ctx, `SELECT count(*) FROM roles WHERE key = 'installer'`).Scan(&n); err != nil || n != 0 {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM roles WHERE key = 'installer'`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("installer roles = %d %v", n, err)
 	}
 	// ...but a role within its own permissions is fine.
@@ -674,7 +683,7 @@ func TestSuperAdminRules(t *testing.T) {
 	ctx := context.Background()
 
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin) // as bootstrap: actor 0
-	if su, err := s.IsSuperuser(ctx, db.Pool, root); err != nil || !su {
+	if su, err := s.IsSuperuser(ctx, db.Gorm, root); err != nil || !su {
 		t.Fatalf("bootstrap super admin: %v %v", su, err)
 	}
 	admin := addUser(t, s, "admin@x.com", RoleAdmin)
@@ -697,13 +706,13 @@ func TestSuperAdminRules(t *testing.T) {
 			t.Errorf("%s: %v", tt.name, err)
 		}
 	}
-	if su, err := s.IsSuperuser(ctx, db.Pool, admin); err != nil || su {
+	if su, err := s.IsSuperuser(ctx, db.Gorm, admin); err != nil || su {
 		t.Fatalf("admin promoted: %v %v", su, err)
 	}
 	if err := setRoles(s, 0, admin, "nope"); !isCode(err, "invalid_argument") {
 		t.Fatalf("unknown role: %v", err)
 	}
-	err := db.Tx(ctx, func(tx pgx.Tx) error {
+	err := db.Tx(ctx, func(tx *gorm.DB) error {
 		if _, err := s.Bump(ctx, tx); err != nil {
 			return err
 		}
@@ -721,27 +730,27 @@ func TestGrantViewCountsDisabledPermissions(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard","zh":"守卫"}', 'installed')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard","zh":"守卫"}', 'installed')`); err != nil {
 		t.Fatal(err)
 	}
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	admin := addUser(t, s, "admin@x.com", RoleAdmin)
 	operator := addUser(t, s, "op@x.com", RoleOperator)
 	alice := addUser(t, s, "alice@x.com", RoleUser)
-	tx := func(fn func(tx pgx.Tx) error) {
+	tx := func(fn func(tx *gorm.DB) error) {
 		t.Helper()
 		if err := db.Tx(ctx, fn); err != nil {
 			t.Fatal(err)
 		}
 	}
-	tx(func(tx pgx.Tx) error {
+	tx(func(tx *gorm.DB) error {
 		return s.SyncPlugin(ctx, tx, "guard", withRoles([]core.PermissionDef{{Key: "stats:read", Label: lt("View stats", "查看统计")}}, RoleAdmin))
 	})
 	if _, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "guardian", Name: lt("Guardian", "守卫"),
 		PermissionKeys: []string{"plugin.guard:stats:read"}}); err != nil {
 		t.Fatal(err)
 	}
-	tx(func(tx pgx.Tx) error { return s.SetPluginActive(ctx, tx, "guard", false) })
+	tx(func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", false) })
 	// Both may assign guardian, so only its permission decides.
 	letAssign(t, s, RoleOperator, "guardian")
 	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, "plugin.guard:stats:read"); return !ok })
@@ -788,7 +797,7 @@ func TestGrantChecksIgnoreStaleCache(t *testing.T) {
 	actor := addUser(t, b, "g@x.com", "granter")
 	alice := addUser(t, b, "alice@x.com")
 	mustCan(t, a, actor, "account:read", true) // cached on a
-	if _, err := b.SetRolePermissions(ctx, root, granter.ID, []string{"user:read"}); err != nil {
+	if _, err := b.SetRolePermissions(ctx, root, granter.ID, []string{"user:read"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	mustCan(t, a, actor, "account:read", true) // stale on a
@@ -808,12 +817,12 @@ func TestAuditHelper(t *testing.T) {
 	s := newService(t, db, nil, nil)
 	ctx := context.Background()
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
-	if err := s.audit(ctx, db.Pool, root, "role.test", "role", int64(42), map[string]any{"k": "v"}); err != nil {
+	if err := s.audit(ctx, db.Gorm, root, "role.test", "role", int64(42), map[string]any{"k": "v"}); err != nil {
 		t.Fatal(err)
 	}
 	var uid int64
 	var target, detail string
-	if err := db.Pool.QueryRow(ctx, `SELECT user_id, target_id, detail::text FROM audit_logs WHERE action = 'role.test' AND target_type = 'role'`).Scan(&uid, &target, &detail); err != nil {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT user_id, target_id, detail::text FROM audit_logs WHERE action = 'role.test' AND target_type = 'role'`).Scan(&uid, &target, &detail); err != nil {
 		t.Fatal(err)
 	}
 	if uid != root || target != "42" || detail != `{"k": "v"}` {
@@ -826,12 +835,12 @@ func TestPluginCatalog(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard","zh":"守卫"}', 'installed')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard","zh":"守卫"}', 'installed')`); err != nil {
 		t.Fatal(err)
 	}
 	admin := addUser(t, s, "a@x.com", RoleAdmin)
 	user := addUser(t, s, "u@x.com", RoleUser)
-	tx := func(fn func(tx pgx.Tx) error) {
+	tx := func(fn func(tx *gorm.DB) error) {
 		t.Helper()
 		if err := db.Tx(ctx, fn); err != nil {
 			t.Fatal(err)
@@ -839,17 +848,17 @@ func TestPluginCatalog(t *testing.T) {
 	}
 	defs := []core.PermissionDef{
 		{Key: "stats:read", Label: lt("View stats", "查看统计")},
-		{Key: "rules:manage", Label: lt("Manage rules", "管理规则"), Sensitive: true},
+		{Key: "rules:manage", Label: lt("Manage rules", "管理规则"), Risk: manifest.RiskSensitive},
 	}
 	// First install: the plugin is not running, so its keys start disabled
 	// and enabling turns them on.
-	tx(func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, "guard", withRoles(defs, RoleAdmin)) })
+	tx(func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, "guard", withRoles(defs, RoleAdmin)) })
 	if got := permissionStatus(t, db, "plugin.guard:stats:read"); got != "disabled" {
 		t.Fatalf("permission of an installed plugin: %s", got)
 	}
 	mustCan(t, s, admin, "plugin.guard:stats:read", false)
-	tx(func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE plugins SET status = 'enabled' WHERE key = 'guard'`); err != nil {
+	tx(func(tx *gorm.DB) error {
+		if _, err := store.SQLTx(tx).ExecContext(ctx, `UPDATE plugins SET status = 'enabled' WHERE key = 'guard'`); err != nil {
 			return err
 		}
 		return s.SetPluginActive(ctx, tx, "guard", true)
@@ -867,33 +876,31 @@ func TestPluginCatalog(t *testing.T) {
 	}
 
 	// Disable -> permission treated as absent; enable restores it.
-	tx(func(tx pgx.Tx) error { return s.SetPluginActive(ctx, tx, "guard", false) })
+	tx(func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", false) })
 	// Both may assign guardian, so only its permission decides.
 	letAssign(t, s, RoleOperator, "guardian")
 	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, "plugin.guard:stats:read"); return !ok })
-	tx(func(tx pgx.Tx) error { return s.SetPluginActive(ctx, tx, "guard", true) })
+	tx(func(tx *gorm.DB) error { return s.SetPluginActive(ctx, tx, "guard", true) })
 	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, "plugin.guard:stats:read"); return ok })
 
 	// Upgrade drops rules:manage, adds audit:read (granted to user only).
 	defs = []core.PermissionDef{{Key: "stats:read", Label: lt("View stats", "查看统计")}, {Key: "plugin.guard:audit:read"}}
-	tx(func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, "guard", withRoles(defs, RoleUser)) })
+	tx(func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, "guard", withRoles(defs, RoleUser)) })
 	eventually(t, func() bool { ok, _ := s.Can(ctx, user, "plugin.guard:audit:read"); return ok })
 	mustCan(t, s, admin, "plugin.guard:stats:read", true) // kept grant
 	mustCan(t, s, admin, "plugin.guard:audit:read", false)
-	var n int
-	_ = db.Pool.QueryRow(ctx, `SELECT count(*) FROM permissions WHERE key = 'plugin.guard:rules:manage'`).Scan(&n)
-	if n != 0 {
-		t.Fatal("undeclared permission not deleted")
+	if got := permissionStatus(t, db, "plugin.guard:rules:manage"); got != "removed" {
+		t.Fatalf("undeclared permission: %s", got)
 	}
 
-	tx(func(tx pgx.Tx) error { return s.DeletePlugin(ctx, tx, "guard") })
+	tx(func(tx *gorm.DB) error { return s.DeletePlugin(ctx, tx, "guard") })
 	eventually(t, func() bool { ok, _ := s.Can(ctx, admin, "plugin.guard:stats:read"); return !ok })
 }
 
 func permissionStatus(t *testing.T, db *store.DB, key string) string {
 	t.Helper()
 	var status string
-	if err := db.Pool.QueryRow(context.Background(), `SELECT status FROM permissions WHERE key = $1`, key).Scan(&status); err != nil {
+	if err := db.SQL.QueryRowContext(context.Background(), `SELECT status FROM permissions WHERE key = $1`, key).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	return status
@@ -910,14 +917,14 @@ func TestSyncPluginNewPermissionFollowsPluginStatus(t *testing.T) {
 	running := []string{install.StatusEnabled, install.StatusUpgrading}
 	sync := func(key string, defs ...core.PermissionDef) {
 		t.Helper()
-		if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, key, defs) }); err != nil {
+		if err := db.Tx(ctx, func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, key, defs) }); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for i, st := range []string{install.StatusAwaitingConsent, install.StatusInstalled, install.StatusEnabling,
 		install.StatusEnabled, install.StatusUpgrading, install.StatusDisabled} {
 		key := "st" + string(rune('a'+i))
-		if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"P"}', $2)`, key, st); err != nil {
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ($1, '{"en":"P"}', $2)`, key, st); err != nil {
 			t.Fatal(err)
 		}
 		sync(key, core.PermissionDef{Key: "a:read"})
@@ -932,11 +939,11 @@ func TestSyncPluginNewPermissionFollowsPluginStatus(t *testing.T) {
 
 	// A version approved while the plugin is disabled: the new key waits for
 	// the next enable, the existing one is left as it is.
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
 	sync("guard", core.PermissionDef{Key: "a:read"})
-	if _, err := db.Pool.Exec(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'guard'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'disabled' WHERE key = 'guard'`); err != nil {
 		t.Fatal(err)
 	}
 	sync("guard", core.PermissionDef{Key: "a:read"}, core.PermissionDef{Key: "b:read"})
@@ -944,7 +951,7 @@ func TestSyncPluginNewPermissionFollowsPluginStatus(t *testing.T) {
 		t.Fatalf("sync while disabled: existing %s, new %s", a, b)
 	}
 	// An upgrade of a running plugin: the new key works at once.
-	if _, err := db.Pool.Exec(ctx, `UPDATE plugins SET status = 'upgrading' WHERE key = 'guard'`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `UPDATE plugins SET status = 'upgrading' WHERE key = 'guard'`); err != nil {
 		t.Fatal(err)
 	}
 	sync("guard", core.PermissionDef{Key: "a:read"}, core.PermissionDef{Key: "b:read"}, core.PermissionDef{Key: "c:read"})
@@ -960,21 +967,21 @@ func TestSyncPluginSort(t *testing.T) {
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
 	m := &manifest.Manifest{Key: "guard", UserPermissions: []manifest.UserPermission{{Key: "stats:read"}, {Key: "rules:manage"}}}
 	sorts := func() string {
 		t.Helper()
 		var got string
-		if err := db.Pool.QueryRow(ctx, `SELECT string_agg(key || '=' || sort, ',' ORDER BY sort, key) FROM permissions WHERE plugin_key = 'guard'`).Scan(&got); err != nil {
+		if err := db.SQL.QueryRowContext(ctx, `SELECT string_agg(key || '=' || sort, ',' ORDER BY sort, key) FROM permissions WHERE plugin_key = 'guard'`).Scan(&got); err != nil {
 			t.Fatal(err)
 		}
 		return got
 	}
 	// Rows as the old numbering left them: the first permission at 0 was
 	// taken for unset and given 10, the second kept its 1.
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		return s.SyncPlugin(ctx, tx, "guard", []core.PermissionDef{{Key: "stats:read", Sort: 10}, {Key: "rules:manage", Sort: 1}})
 	}); err != nil {
 		t.Fatal(err)
@@ -982,7 +989,7 @@ func TestSyncPluginSort(t *testing.T) {
 	if got := sorts(); got != "plugin.guard:rules:manage=1,plugin.guard:stats:read=10" {
 		t.Fatalf("old numbering: %s", got)
 	}
-	if err := db.Tx(ctx, func(tx pgx.Tx) error { return s.SyncPlugin(ctx, tx, "guard", install.PermissionDefs(m, nil)) }); err != nil {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error { return s.SyncPlugin(ctx, tx, "guard", install.PermissionDefs(m, nil)) }); err != nil {
 		t.Fatal(err)
 	}
 	if got := sorts(); got != "plugin.guard:stats:read=10,plugin.guard:rules:manage=20" {
@@ -1018,10 +1025,10 @@ func TestMenus(t *testing.T) {
 	reg := &fakeRegistry{gen: fakeGen{plugins: plugins}}
 	s := newService(t, db, newMemBus(), reg)
 	ctx := context.Background()
-	if _, err := db.Pool.Exec(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled'), ('mod', '{"en":"Mod"}', 'enabled')`); err != nil {
+	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugins (key, name, status) VALUES ('guard', '{"en":"Guard"}', 'enabled'), ('mod', '{"en":"Mod"}', 'enabled')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Tx(ctx, func(tx pgx.Tx) error {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := s.SyncPlugin(ctx, tx, "guard", withRoles([]core.PermissionDef{{Key: "stats:read"}}, RoleAdmin)); err != nil {
 			return err
 		}
@@ -1122,7 +1129,7 @@ func TestMenus(t *testing.T) {
 	if got := menuPaths(byKey["overview"]); got != "/dashboard,/me/api-keys,/me/models,/me/usage/overview,/me/usage,/usage/overview,/usage" {
 		t.Fatalf("admin console = %s", got)
 	}
-	// No groups, model prices or CCGateway page: the settings view lists them.
+	// No groups or model prices: the settings view lists them.
 	if got := menuPaths(byKey["gateway"]); got != "/accounts,/proxies,/p/mod/rules" {
 		t.Fatalf("core section with plugin item = %s", got)
 	}
@@ -1255,8 +1262,8 @@ func TestOwnershipCatalog(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s missing from catalog", key)
 		}
-		if d.Sensitive != sensitive {
-			t.Fatalf("%s sensitive = %v, want %v", key, d.Sensitive, sensitive)
+		if got := d.Risk != manifest.RiskLow; got != sensitive {
+			t.Fatalf("%s risk = %s, want sensitive %v", key, d.Risk, sensitive)
 		}
 		if d.Label.Get("en") == "" || d.Label.Get("zh") == "" || d.Label.Get("en") == d.Label.Get("zh") {
 			t.Fatalf("%s label = %v", key, d.Label)
@@ -1334,15 +1341,47 @@ type taskRecorder func(core.TaskSpec)
 func (f taskRecorder) Register(spec core.TaskSpec) error                          { f(spec); return nil }
 func (taskRecorder) Trigger(context.Context, string) error                        { return nil }
 func (taskRecorder) Enqueue(context.Context, string, any, core.EnqueueOpts) error { return nil }
-func (taskRecorder) EnqueueTx(context.Context, pgx.Tx, string, any, core.EnqueueOpts) error {
+func (taskRecorder) EnqueueTx(context.Context, *gorm.DB, string, any, core.EnqueueOpts) error {
 	return nil
 }
 
-// withRoles sets the GrantRoles of every def.
+// withRoles grants every def to roles, every row.
 func withRoles(defs []core.PermissionDef, roles ...string) []core.PermissionDef {
 	out := slices.Clone(defs)
 	for i := range out {
-		out[i].GrantRoles = roles
+		out[i].GrantRoles = unscoped(roles...)
 	}
 	return out
+}
+
+// unscoped is GrantRoles granting roles every row.
+func unscoped(roles ...string) map[string][]string {
+	out := make(map[string][]string, len(roles))
+	for _, r := range roles {
+		out[r] = []string{""}
+	}
+	return out
+}
+
+// scopeRows creates the groups, accounts and proxies the scopes of keys
+// name, with those ids (checkScopeRefs refuses a grant naming a row that
+// does not exist).
+func scopeRows(t *testing.T, db *store.DB, keys ...string) {
+	t.Helper()
+	insert := map[string]string{
+		core.ScopeRefGroup:   `INSERT INTO groups (id, name) VALUES ($1::bigint, 'g' || $1::bigint) ON CONFLICT DO NOTHING`,
+		core.ScopeRefAccount: `INSERT INTO accounts (id, name, plugin_key, type, credentials_enc) VALUES ($1::bigint, 'a' || $1::bigint, 'anthropic', 'apikey', '\x00') ON CONFLICT DO NOTHING`,
+		core.ScopeRefProxy:   `INSERT INTO proxies (id, name, protocol, host, port) VALUES ($1::bigint, 'p' || $1::bigint, 'http', 'proxy.example', 3128) ON CONFLICT DO NOTHING`,
+	}
+	for _, k := range keys {
+		p, err := perm.Parse(k)
+		if err != nil {
+			t.Fatal(k, err)
+		}
+		for kind, id := range scopeRefsOf(p) {
+			if _, err := db.SQL.Exec(insert[kind], id); err != nil {
+				t.Fatal(kind, id, err)
+			}
+		}
+	}
 }

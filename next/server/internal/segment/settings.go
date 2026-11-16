@@ -9,12 +9,14 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
@@ -81,7 +83,7 @@ func (s *Service) serveSettings(c *gin.Context, of settingsOf, write bool) {
 // has in every group.
 func (s *Service) ofSegment(c *gin.Context, id int64, items []pairInput) ([]*Setting, error) {
 	ctx := c.Request.Context()
-	if _, _, err := segmentKind(ctx, s.db.Pool, id, ""); err != nil {
+	if _, _, err := segmentKind(ctx, s.db.Gorm, id, ""); err != nil {
 		return nil, err
 	}
 	for i := range items {
@@ -90,11 +92,11 @@ func (s *Service) ofSegment(c *gin.Context, id int64, items []pairInput) ([]*Set
 	if err := s.savePairs(ctx, items); err != nil {
 		return nil, err
 	}
-	rows, err := s.settingRows(ctx, `WHERE s.id = $1 ORDER BY g.id`, id)
+	rows, err := s.settingRows(ctx, func(db *gorm.DB) *gorm.DB { return db.Where("s.id = ?", id).Order("g.id") })
 	if err != nil {
 		return nil, err
 	}
-	terms, err := SegmentTerms(ctx, s.db.Pool, id, idsOf(rows, groupID))
+	terms, err := SegmentTerms(ctx, s.db.Gorm, id, idsOf(rows, groupID))
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +108,7 @@ func (s *Service) ofSegment(c *gin.Context, id int64, items []pairInput) ([]*Set
 // grant, a rate or a model price in the group or are named by ?include=.
 func (s *Service) ofGroup(c *gin.Context, id int64, items []pairInput) ([]*Setting, error) {
 	ctx := c.Request.Context()
-	if err := requireGroup(ctx, s.db.Pool, id); err != nil {
+	if err := requireGroup(ctx, s.db.Gorm, id); err != nil {
 		return nil, err
 	}
 	for i := range items {
@@ -115,23 +117,25 @@ func (s *Service) ofGroup(c *gin.Context, id int64, items []pairInput) ([]*Setti
 	if err := s.savePairs(ctx, items); err != nil {
 		return nil, err
 	}
-	rows, err := s.settingRows(ctx, `WHERE g.id = $1 AND (s.kind = 'named' OR s.id = ANY($2)
+	rows, err := s.settingRows(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where(`g.id = ? AND (s.kind = 'named' OR s.id = ANY(?)
 			OR EXISTS (SELECT 1 FROM segment_groups sg WHERE sg.segment_id = s.id AND sg.group_id = g.id)
-			OR EXISTS (SELECT 1 FROM price_rules pr WHERE pr.segment_id = s.id AND pr.group_id = g.id))
-		ORDER BY s.kind = 'personal', s.id`, id, includedIDs(c))
+			OR EXISTS (SELECT 1 FROM price_rules pr WHERE pr.segment_id = s.id AND pr.group_id = g.id))`, id, store.Int64s(includedIDs(c))).
+			Order("s.kind = 'personal', s.id")
+	})
 	if err != nil {
 		return nil, err
 	}
-	terms, err := GroupTerms(ctx, s.db.Pool, id, idsOf(rows, segmentID))
+	terms, err := GroupTerms(ctx, s.db.Gorm, id, idsOf(rows, segmentID))
 	if err != nil {
 		return nil, err
 	}
 	return s.complete(ctx, rows, func(r *Setting) Terms { return terms[r.Segment.ID] })
 }
 
-func requireGroup(ctx context.Context, q store.Querier, id int64) error {
-	var exists bool
-	err := q.QueryRow(ctx, `SELECT true FROM groups WHERE id = $1`, id).Scan(&exists)
+func requireGroup(ctx context.Context, q *gorm.DB, id int64) error {
+	var found int64
+	err := store.G(ctx, q).Model(&model.Group{}).Select("id").Where("id = ?", id).Take(&found).Error
 	if store.IsNoRows(err) {
 		return core.ErrNotFound.WithMessage(t(ctx, "group not found", "分组不存在"))
 	}
@@ -162,27 +166,43 @@ func idsOf(rows []*Setting, id func(*Setting) int64) []int64 {
 	return x.Unique(ids)
 }
 
-// settingRows reads the pairs of a segment and a group that cond picks, with
-// the member count of each; complete fills in the rest.
-func (s *Service) settingRows(ctx context.Context, cond string, args ...any) ([]*Setting, error) {
-	rows, err := s.db.Pool.Query(ctx, `SELECT `+RefColumns+`, mc.n,
-			g.id, g.name, g.description, g.status, g.visibility`+fromSegments+`
-		CROSS JOIN LATERAL (SELECT count(*) AS n FROM users m WHERE m.segment_id = s.id AND m.deleted_at IS NULL) mc
-		CROSS JOIN groups g `+cond, args...)
-	if err != nil {
+// settingRows reads the pairs of a segment and a group that narrow picks
+// (and orders), with the member count of each; complete fills in the rest.
+func (s *Service) settingRows(ctx context.Context, narrow func(*gorm.DB) *gorm.DB) ([]*Setting, error) {
+	var rows []settingRow
+	if err := settingQuery(store.G(ctx, s.db.Gorm)).Scopes(narrow).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []*Setting{}
-	for rows.Next() {
-		var r Setting
-		if err := rows.Scan(&r.Segment.ID, &r.Segment.Kind, &r.Segment.Name, &r.Segment.UserID, &r.MemberCount,
-			&r.Group.ID, &r.Group.Name, &r.Group.Description, &r.Group.Status, &r.Group.Visibility); err != nil {
-			return nil, err
-		}
-		out = append(out, &r)
+	out := make([]*Setting, len(rows))
+	for i, r := range rows {
+		out[i] = &Setting{Segment: r.SegmentRef, MemberCount: r.MemberCount, Group: SettingGroup{ID: r.GroupID, Name: r.GroupName,
+			Description: r.GroupDescription, Status: r.GroupStatus, Visibility: r.GroupVisibility}}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// settingColumns are the columns of a settingRow.
+const settingColumns = RefColumns + `, mc.n AS member_count,
+	g.id AS group_id, g.name AS group_name, g.description AS group_description, g.status AS group_status,
+	g.visibility AS group_visibility`
+
+// settingQuery reads the settingRows of every segment s and group g; the
+// caller narrows them.
+func settingQuery(db *gorm.DB) *gorm.DB {
+	return fromSegments(db).Select(settingColumns).
+		Joins("CROSS JOIN LATERAL (SELECT count(*) AS n FROM users m WHERE m.segment_id = s.id AND m.deleted_at IS NULL) mc").
+		Joins("CROSS JOIN groups g")
+}
+
+// settingRow is a row of settingQuery.
+type settingRow struct {
+	core.SegmentRef
+	MemberCount      int64  `gorm:"column:member_count"`
+	GroupID          int64  `gorm:"column:group_id"`
+	GroupName        string `gorm:"column:group_name"`
+	GroupDescription string `gorm:"column:group_description"`
+	GroupStatus      string `gorm:"column:group_status"`
+	GroupVisibility  string `gorm:"column:group_visibility"`
 }
 
 // complete fills in what the rows do not carry themselves: the terms and the
@@ -264,7 +284,7 @@ func (s *Service) savePairs(ctx context.Context, items []pairInput) error {
 	ordered := slices.SortedStableFunc(slices.Values(items), func(a, b pairInput) int {
 		return cmp.Or(cmp.Compare(a.SegmentID, b.SegmentID), cmp.Compare(a.GroupID, b.GroupID))
 	})
-	return s.tx(ctx, func(tx pgx.Tx) error {
+	return s.tx(ctx, func(tx *gorm.DB) error {
 		segments, groups, err := lockPairs(ctx, tx, items)
 		if err != nil {
 			return err
@@ -272,27 +292,48 @@ func (s *Service) savePairs(ctx context.Context, items []pairInput) error {
 		if err := GuardOwnSegments(ctx, tx, s.users, segments); err != nil {
 			return err
 		}
+		g := store.G(ctx, tx)
 		for _, it := range ordered {
-			if _, err := tx.Exec(ctx, `INSERT INTO segment_groups (segment_id, group_id, granted, rate_override)
-				VALUES ($1, $2, COALESCE($3, false), $5::numeric)
-				ON CONFLICT (segment_id, group_id) DO UPDATE SET
-					granted = COALESCE($3, segment_groups.granted),
-					rate_override = CASE WHEN $4 THEN $5::numeric ELSE segment_groups.rate_override END,
-					updated_at = now()`, it.SegmentID, it.GroupID, it.Granted, it.RateOverride.Set, it.RateOverride.Value); err != nil {
+			if err := savePair(g, it).Error; err != nil {
 				return err
 			}
 		}
 		// A pair that says nothing is not kept.
-		_, err = tx.Exec(ctx, `DELETE FROM segment_groups
-			WHERE NOT granted AND rate_override IS NULL AND segment_id = ANY($1) AND group_id = ANY($2)`, segments, groups)
-		return err
+		return g.Where("NOT granted AND rate_override IS NULL AND segment_id = ANY(?) AND group_id = ANY(?)",
+			store.Int64s(segments), store.Int64s(groups)).Delete(&model.SegmentGroup{}).Error
 	})
 }
+
+// savePair writes the item: the pair is created, or what the item sets
+// replaces what the pair has.
+func savePair(db *gorm.DB, it pairInput) *gorm.DB {
+	return db.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "segment_id"}, {Name: "group_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"granted":       gorm.Expr("COALESCE(?, segment_groups.granted)", it.Granted),
+			"rate_override": gorm.Expr("CASE WHEN ? THEN ?::numeric ELSE segment_groups.rate_override END", it.RateOverride.Set, it.RateOverride.Value),
+			"updated_at":    gorm.Expr("now()"),
+		}),
+	}).Create(&newPair{SegmentID: it.SegmentID, GroupID: it.GroupID, Granted: it.Granted != nil && *it.Granted,
+		RateOverride: it.RateOverride.Value})
+}
+
+// newPair is a segment_groups row, every column written as given (an
+// unset grant is false); updated_at is the default, and nothing is read
+// back.
+type newPair struct {
+	SegmentID    int64            `gorm:"column:segment_id"`
+	GroupID      int64            `gorm:"column:group_id"`
+	Granted      bool             `gorm:"column:granted"`
+	RateOverride *decimal.Decimal `gorm:"column:rate_override"`
+}
+
+func (newPair) TableName() string { return model.SegmentGroup{}.TableName() }
 
 // lockPairs returns the segments and the groups the items are about, locked
 // against deletion until the transaction ends. It fails with the field
 // errors of the items about a segment or a group that does not exist.
-func lockPairs(ctx context.Context, tx pgx.Tx, items []pairInput) (segments, groups []int64, err error) {
+func lockPairs(ctx context.Context, tx *gorm.DB, items []pairInput) (segments, groups []int64, err error) {
 	for _, it := range items {
 		segments, groups = append(segments, it.SegmentID), append(groups, it.GroupID)
 	}
@@ -318,19 +359,18 @@ func lockPairs(ctx context.Context, tx pgx.Tx, items []pairInput) (segments, gro
 
 // lockRows reports which of ids are rows of the table and locks those, in id
 // order, against deletion.
-func lockRows(ctx context.Context, tx pgx.Tx, table string, ids []int64) (map[int64]bool, error) {
-	rows, err := tx.Query(ctx, `SELECT id FROM `+table+` WHERE id = ANY($1) ORDER BY id FOR KEY SHARE`, ids)
-	if err != nil {
+func lockRows(ctx context.Context, tx *gorm.DB, table string, ids []int64) (map[int64]bool, error) {
+	if err := store.RequireTx(tx); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	known := map[int64]bool{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
+	var found []int64
+	if err := store.G(ctx, tx).Table(table).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
+		Clauses(store.Lock(store.LockingStrengthKeyShare)).Pluck("id", &found).Error; err != nil {
+		return nil, err
+	}
+	known := make(map[int64]bool, len(found))
+	for _, id := range found {
 		known[id] = true
 	}
-	return known, rows.Err()
+	return known, nil
 }

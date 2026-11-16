@@ -17,28 +17,26 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/procguard"
 )
 
-func setRequired(t *testing.T) (masterKey []byte, jwt string) {
+func setRequired(t *testing.T) (masterKey []byte) {
 	t.Helper()
 	masterKey = bytes.Repeat([]byte{7}, 32)
-	jwt = strings.Repeat("j", 40)
 	t.Setenv("DATABASE_URL", "postgres://core:pw@pg:5432/sub2api")
 	t.Setenv("REDIS_URL", "redis://:pw@redis:6379/0")
 	t.Setenv("SUB2API_MASTER_KEY", base64.StdEncoding.EncodeToString(masterKey))
-	t.Setenv("SUB2API_JWT_SECRET", jwt)
 	t.Setenv("SUB2API_BOOTSTRAP_ADMIN_PASSWORD", "bootstrap-pw")
 	t.Setenv("SUB2API_MANAGED", "true")
 	t.Setenv("SUB2API_CONTROL_SOCKET", "/run/control.sock")
 	t.Setenv("SUB2API_CONTROL_TOKEN", strings.Repeat("t", 40))
 	t.Setenv("SUB2API_RELEASE_DIGEST", "sha256:abc")
 	t.Setenv("SUB2API_CORE_BOOT_ID", "boot-1")
-	return masterKey, jwt
+	return masterKey
 }
 
 // Once the configuration is loaded the secret variables are removed from
 // the environment; the loaded Config keeps every value, so nothing later
 // needs the environment.
 func TestConfigSurvivesEnvScrub(t *testing.T) {
-	mk, jwt := setRequired(t)
+	mk := setRequired(t)
 	cfg, err := config.Load("linux")
 	if err != nil {
 		t.Fatal(err)
@@ -52,12 +50,12 @@ func TestConfigSurvivesEnvScrub(t *testing.T) {
 		}
 	}
 	for _, kv := range os.Environ() {
-		if strings.Contains(kv, "pw@") || strings.Contains(kv, jwt) {
+		if strings.Contains(kv, "pw@") || strings.Contains(kv, "bootstrap-pw") {
 			t.Fatalf("secret still in the environment: %s", kv)
 		}
 	}
 	if cfg.DatabaseURL != "postgres://core:pw@pg:5432/sub2api" || cfg.RedisURL != "redis://:pw@redis:6379/0" ||
-		!bytes.Equal(cfg.MasterKey, mk) || string(cfg.JWTSecret) != jwt ||
+		!bytes.Equal(cfg.MasterKey, mk) ||
 		cfg.BootstrapAdminPassword != "bootstrap-pw" || cfg.Managed.Token != strings.Repeat("t", 40) {
 		t.Fatalf("config lost values after the scrub: %+v", cfg)
 	}
@@ -70,7 +68,7 @@ func TestConfigSurvivesEnvScrub(t *testing.T) {
 
 // Every secret Load reads is in SensitiveEnv.
 func TestSensitiveEnvCoversSecrets(t *testing.T) {
-	want := []string{"DATABASE_URL", "REDIS_URL", "SUB2API_MASTER_KEY", "SUB2API_JWT_SECRET",
+	want := []string{"DATABASE_URL", "REDIS_URL", "SUB2API_MASTER_KEY",
 		"SUB2API_BOOTSTRAP_ADMIN_PASSWORD", "SUB2API_CONTROL_TOKEN"}
 	have := map[string]bool{}
 	for _, k := range config.SensitiveEnv {

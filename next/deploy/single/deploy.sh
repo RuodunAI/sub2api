@@ -7,7 +7,7 @@
 #
 # Env: SUP2API_DIR (default ~/sup2api), SUP2API_REPO, SUP2API_PORT (3130).
 set -euo pipefail
-BRANCH=${1:-feat/next-platform}
+BRANCH=${1:-develop}
 DIR=${SUP2API_DIR:-$HOME/sup2api}
 REPO=${SUP2API_REPO:-https://github.com/Sub2API-Devs/sup2api.git}
 PORT=${SUP2API_PORT:-3130}
@@ -42,7 +42,6 @@ if [ ! -f "$ENV_FILE" ]; then
 PG_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
 REDIS_PASSWORD=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 SUB2API_MASTER_KEY=$(head -c 32 /dev/urandom | base64)
-SUB2API_JWT_SECRET=$(head -c 48 /dev/urandom | base64 | tr -d '\n')
 SUB2API_BOOTSTRAP_ADMIN_EMAIL=admin@sup2api.local
 SUB2API_BOOTSTRAP_ADMIN_PASSWORD=$(head -c 18 /dev/urandom | base64 | tr -d '/+=\n')
 SUP2API_PORT=$PORT

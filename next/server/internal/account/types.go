@@ -39,15 +39,13 @@ type AccountTypeView struct {
 	CustomUpstream bool `json:"custom_upstream"`
 	// DefaultModels / DefaultModelMapping are the plugin's suggestions the
 	// console prefills into a new account (CONTRACTS §41); never null.
-	DefaultModels               []string            `json:"default_models"`
-	DefaultModelsBySubscription map[string][]string `json:"default_models_by_subscription,omitempty"`
-	DefaultModelMapping         map[string]string   `json:"default_model_mapping"`
+	DefaultModels       []string          `json:"default_models"`
+	DefaultModelMapping map[string]string `json:"default_model_mapping"`
 	// DefaultLimits are the plugin's suggested scheduling and limits of a new
 	// account (CONTRACTS §68.5); absent when the type declares none.
 	DefaultLimits    *DefaultLimitsView                       `json:"default_limits,omitempty"`
 	CommonControls   map[string]manifest.AccountCommonControl `json:"common_controls,omitempty"`
 	ExtensionsSchema json.RawMessage                          `json:"extensions_schema,omitempty"`
-	Lifecycle        *manifest.AccountLifecycle               `json:"lifecycle,omitempty"`
 	// Platforms the account type declares, in declaration order.
 	Platforms []TypePlatformView `json:"platforms"`
 	// Endpoints lists the gateway endpoints this type can serve now.
@@ -119,30 +117,28 @@ type EndpointView struct {
 
 func typeView(g core.Generation, b core.AccountTypeBinding, conv core.ProtocolConverters) AccountTypeView {
 	v := AccountTypeView{
-		PluginKey:                   b.Plugin.Key,
-		PluginVersion:               b.Plugin.Version,
-		AssetBase:                   b.Plugin.AssetBase,
-		Trust:                       b.Plugin.Trust,
-		Icon:                        b.Type.Icon,
-		Type:                        b.Type.ID,
-		Label:                       b.Type.Label,
-		Description:                 b.Type.Description,
-		CreationGroup:               b.Type.CreationGroup,
-		AuthMethodLabel:             b.Type.AuthMethodLabel,
-		Form:                        FormView{Mode: b.Type.Form.Mode, Page: b.Type.Form.Page, Component: b.Type.Form.Component},
-		SensitiveFields:             b.Type.SensitiveFields,
-		GuardedSettings:             b.Type.GuardedSettings,
-		CustomUpstream:              b.Type.CustomUpstream(),
-		DefaultModels:               b.Type.DefaultModels,
-		DefaultModelsBySubscription: b.Type.DefaultModelsBySubscription,
-		DefaultModelMapping:         b.Type.DefaultModelMapping,
-		DefaultLimits:               defaultLimitsView(b.Type.DefaultLimits),
-		CommonControls:              controlsView(b.Type.CommonControls),
-		ExtensionsSchema:            b.Type.ExtensionsSchema,
-		Lifecycle:                   b.Type.Lifecycle,
-		Platforms:                   typePlatforms(g, b),
-		Endpoints:                   servedEndpoints(g, b, conv),
-		PassHeaders:                 b.PassHeaders(g.Platform),
+		PluginKey:           b.Plugin.Key,
+		PluginVersion:       b.Plugin.Version,
+		AssetBase:           b.Plugin.AssetBase,
+		Trust:               b.Plugin.Trust,
+		Icon:                b.Type.Icon,
+		Type:                b.Type.ID,
+		Label:               b.Type.Label,
+		Description:         b.Type.Description,
+		CreationGroup:       b.Type.CreationGroup,
+		AuthMethodLabel:     b.Type.AuthMethodLabel,
+		Form:                FormView{Mode: b.Type.Form.Mode, Page: b.Type.Form.Page, Component: b.Type.Form.Component},
+		SensitiveFields:     b.Type.SensitiveFields,
+		GuardedSettings:     b.Type.GuardedSettings,
+		CustomUpstream:      b.Type.CustomUpstream(),
+		DefaultModels:       b.Type.DefaultModels,
+		DefaultModelMapping: b.Type.DefaultModelMapping,
+		DefaultLimits:       defaultLimitsView(b.Type.DefaultLimits),
+		CommonControls:      controlsView(b.Type.CommonControls),
+		ExtensionsSchema:    b.Type.ExtensionsSchema,
+		Platforms:           typePlatforms(g, b),
+		Endpoints:           servedEndpoints(g, b, conv),
+		PassHeaders:         b.PassHeaders(g.Platform),
 	}
 	if d, ok := b.Client.(core.DeclaredUpstream); ok {
 		up := d.Upstream()
@@ -242,8 +238,8 @@ func (s *Service) listTypes(c *gin.Context) {
 			out = append(out, typeView(g, b, s.d.Converters))
 		}
 	}
-	// The generation lists a plugin's types in manifest order (OAuth before
-	// API key for ccgateway); keep it within each plugin.
+	// The generation lists a plugin's types in manifest order; keep it
+	// within each plugin.
 	sort.SliceStable(out, func(i, j int) bool { return out[i].PluginKey < out[j].PluginKey })
 	httpapi.OK(c, out)
 }
@@ -363,11 +359,16 @@ func (s *Service) typeForm(c *gin.Context) {
 		return
 	}
 	schema, ui := rawOrNull(b.FormSchema), rawOrNull(b.FormUI)
-	if len(b.Type.GuardedSettings) > 0 && !s.customSettings(ctx) {
-		var err error
-		if schema, ui, err = guardForm(schema, ui, b.Type.GuardedSettings); err != nil {
-			httpapi.Fail(c, core.ErrPluginUnavailable.WithMessage(t(ctx, "the account form schema of the plugin is invalid",
-				"插件的账号表单 schema 无效")).WithCause(err))
+	if len(b.Type.GuardedSettings) > 0 {
+		custom, err := s.customSettings(ctx)
+		if err == nil && !custom {
+			if schema, ui, err = guardForm(schema, ui, b.Type.GuardedSettings); err != nil {
+				err = core.ErrPluginUnavailable.WithMessage(t(ctx, "the account form schema of the plugin is invalid",
+					"插件的账号表单 schema 无效")).WithCause(err)
+			}
+		}
+		if err != nil {
+			httpapi.Fail(c, err)
 			return
 		}
 	}

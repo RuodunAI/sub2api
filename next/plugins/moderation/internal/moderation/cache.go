@@ -16,9 +16,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
@@ -1322,14 +1325,13 @@ func (p *Plugin) clearVerdictCache(ctx context.Context, _ *pluginv1.HTTPRequest)
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	var epoch int64
-	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `UPDATE config_state SET cache_epoch = cache_epoch + 1, config_version = config_version + 1
-			WHERE id = 1 RETURNING cache_epoch`).Scan(&epoch)
-	})
+	var st model.ConfigState
+	err = db.Model(&st).Clauses(clause.Returning{Columns: columns("cache_epoch")}).Where("id = ?", model.ConfigStateID).
+		Updates(map[string]any{"cache_epoch": gorm.Expr("cache_epoch + 1"), "config_version": gorm.Expr("config_version + 1")}).Error
 	if err != nil {
 		return nil, err
 	}
+	epoch := st.CacheEpoch
 	p.cache.Store(newLRU(p.cfg.Load().CacheEntries))
 	p.configChanged(ctx)
 	return pluginsdk.DataResponse(map[string]any{"epoch": epoch}), nil
@@ -1413,41 +1415,37 @@ func (p *Plugin) reviewedHits(ctx context.Context, ids []int64, status string) [
 		fail(err)
 		return nil
 	}
-	rows, err := db.Query(ctx, `SELECT request_id, flow_id, trace FROM events
-		WHERE id = ANY($1) AND `+suspiciousResult+` AND trace IS NOT NULL ORDER BY id`, ids)
+	var rows []model.Event
+	err = db.Select("request_id, flow_id, trace").Where("id = ANY(?) AND trace IS NOT NULL", pgdb.Array[int64](ids)).
+		Where(suspiciousResult).Order("id").Find(&rows).Error
 	if err != nil {
 		fail(err)
 		return nil
 	}
 	snap := p.snap.Load()
 	at := p.now().Unix()
-	var (
-		hits   []*reviewedHit
-		byKey  = map[string]*reviewedHit{}
-		rid    string
-		flowID int64
-		raw    []byte
-	)
-	_, err = pgx.ForEachRow(rows, []any{&rid, &flowID, &raw}, func() error {
+	var hits []*reviewedHit
+	byKey := map[string]*reviewedHit{}
+	for _, r := range rows {
 		var tr Trace
-		if json.Unmarshal(raw, &tr) != nil || tr.Cache == nil || !isHexHash(tr.Cache.Key) ||
+		if json.Unmarshal(r.Trace, &tr) != nil || tr.Cache == nil || !isHexHash(tr.Cache.Key) ||
 			len(tr.Cache.Segs) == 0 || slices.ContainsFunc(tr.Cache.Segs, func(s string) bool { return !isHexHash(s) }) {
-			return nil
+			continue
 		}
-		flow := snap.flows[flowID]
+		flow := snap.flows[r.FlowID]
 		if flow == nil {
-			return nil
+			continue
 		}
 		ci, scope := tr.Cache, snap.scopeOf(flow)
 		var body []byte
 		if status == ReviewConfirmed {
 			if ci.FP != flow.fp {
-				return nil // judged under another configuration
+				continue // judged under another configuration
 			}
 			// A replayed record ran in its source request.
-			hit := newStoredHit(cmp.Or(ci.SourceRequestID, rid), ci.Segs, tr, at)
+			hit := newStoredHit(cmp.Or(ci.SourceRequestID, r.RequestID), ci.Segs, tr, at)
 			if body = encodeHit(&hit); body == nil {
-				return nil
+				continue
 			}
 		}
 		key := hitKeyOf(scope, ci.Key)
@@ -1463,10 +1461,6 @@ func (p *Plugin) reviewedHits(ctx context.Context, ids []int64, status string) [
 		for _, seg := range ci.Segs {
 			h.segs = append(h.segs, segKeyHex(scope, seg))
 		}
-		return nil
-	})
-	if err != nil {
-		fail(err)
 	}
 	return hits
 }

@@ -1,0 +1,5 @@
+-- sql
+UPDATE "plugin_rollout_cleanup" SET "state"=$1,"updated_at"=now() WHERE boot_id = $2 AND state = 'cleanup_pending'
+-- vars
+$1 string "cleaned"
+$2 string "boot-a"

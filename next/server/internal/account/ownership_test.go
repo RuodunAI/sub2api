@@ -82,7 +82,7 @@ type auditRow struct {
 
 func (e *env) audits(targetType string, targetID int64) []auditRow {
 	e.t.Helper()
-	rows, err := e.db.Pool.Query(context.Background(), `SELECT action, user_id, ip, detail FROM audit_logs
+	rows, err := e.db.SQL.QueryContext(context.Background(), `SELECT action, user_id, ip, detail FROM audit_logs
 		WHERE target_type = $1 AND target_id = $2 ORDER BY id`, targetType, strconv.FormatInt(targetID, 10))
 	if err != nil {
 		e.t.Fatal(err)
@@ -190,7 +190,7 @@ func TestOwnership(t *testing.T) {
 		}
 	}
 	var name string
-	_ = e.db.Pool.QueryRow(ctx, `SELECT name FROM accounts WHERE id = $1`, bobID).Scan(&name)
+	_ = e.db.SQL.QueryRowContext(ctx, `SELECT name FROM accounts WHERE id = $1`, bobID).Scan(&name)
 	if name != "bob's" {
 		t.Fatalf("bob's account renamed: %s", name)
 	}
@@ -233,7 +233,7 @@ func TestOwnership(t *testing.T) {
 	if code, out := e.doAs(admin, "GET", fmt.Sprintf("/accounts/%d", legacyID), nil); code != 200 || data(out)["created_by"] != nil || data(out)["created_by_email"] != nil {
 		t.Fatalf("admin get legacy: %d %v", code, out)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, bob); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, bob); err != nil {
 		t.Fatal(err)
 	}
 	if code, out := e.doAs(admin, "GET", fmt.Sprintf("/accounts/%d", bobID), nil); code != 200 || data(out)["created_by_email"] != "bob@x.com" {
@@ -329,7 +329,7 @@ func TestProxyURL(t *testing.T) {
 
 	proxies := func() int {
 		var n int
-		_ = e.db.Pool.QueryRow(ctx, `SELECT count(*) FROM proxies`).Scan(&n)
+		_ = e.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM proxies`).Scan(&n)
 		return n
 	}
 	const url1 = "socks5h://u:pw@Proxy.Example:1080"
@@ -344,7 +344,7 @@ func TestProxyURL(t *testing.T) {
 	a1ID, p1 := int64(a1["id"].(float64)), int64(a1["proxy_id"].(float64))
 	var pname, proto, host string
 	var createdBy *int64
-	if err := e.db.Pool.QueryRow(ctx, `SELECT name, protocol, host, created_by FROM proxies WHERE id = $1`, p1).Scan(&pname, &proto, &host, &createdBy); err != nil {
+	if err := e.db.SQL.QueryRowContext(ctx, `SELECT name, protocol, host, created_by FROM proxies WHERE id = $1`, p1).Scan(&pname, &proto, &host, &createdBy); err != nil {
 		t.Fatal(err)
 	}
 	if pname != "socks5://proxy.example:1080" || proto != "socks5" || host != "proxy.example" || createdBy == nil || *createdBy != alice {
@@ -393,7 +393,7 @@ func TestProxyURL(t *testing.T) {
 	}
 	allowPrivate := func(id any) (v bool) {
 		t.Helper()
-		if err := e.db.Pool.QueryRow(ctx, `SELECT allow_private FROM proxies WHERE id = $1`, int64(id.(float64))).Scan(&v); err != nil {
+		if err := e.db.SQL.QueryRowContext(ctx, `SELECT allow_private FROM proxies WHERE id = $1`, int64(id.(float64))).Scan(&v); err != nil {
 			t.Fatal(err)
 		}
 		return v
@@ -405,10 +405,10 @@ func TestProxyURL(t *testing.T) {
 	if ad2["proxy_created"] != true || !allowPrivate(ad2["proxy_id"]) {
 		t.Fatalf("proxy created under proxy:manage: %v", ad2)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `DELETE FROM accounts WHERE id = ANY($1)`, []int64{int64(d1["id"].(float64)), int64(ad2["id"].(float64))}); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `DELETE FROM accounts WHERE id = ANY($1)`, []int64{int64(d1["id"].(float64)), int64(ad2["id"].(float64))}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.db.Pool.Exec(ctx, `DELETE FROM proxies WHERE id = ANY($1)`, []int64{int64(d1["proxy_id"].(float64)), int64(ad2["proxy_id"].(float64))}); err != nil {
+	if _, err := e.db.SQL.ExecContext(ctx, `DELETE FROM proxies WHERE id = ANY($1)`, []int64{int64(d1["proxy_id"].(float64)), int64(ad2["proxy_id"].(float64))}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -910,10 +910,10 @@ func TestOwnChangeGroupsAndCaps(t *testing.T) {
 
 // TestOwnCustomUpstream: account:relay is needed by an own-level caller only
 // to create an account whose upstream address can be set freely, or to move
-// its address (G2); the same rule covers fetching models and preparations.
+// its address (G2); the same rule covers fetching models.
 func TestOwnCustomUpstream(t *testing.T) {
 	authz := fakeAuthz{keys: map[int64][]string{}}
-	e, _, _, _ := preparationFixtureWith(t, authz)
+	e := setupWith(t, authz)
 	alice := e.addUser("alice@x.com")
 	authz.keys[e.uid], authz.keys[alice] = adminKeys, supplierKeys
 	oauth := core.PluginInfo{Key: "oauth", Manifest: &manifest.Manifest{Name: manifest.LocalizedText{"en": "OAuth"}}}
@@ -938,16 +938,6 @@ func TestOwnCustomUpstream(t *testing.T) {
 	}
 	if code, out := e.doAs(alice, "POST", "/account-types/relay/relay_key/models/fetch", map[string]any{"credentials": relayCreds}); code != 403 {
 		t.Fatalf("fetch custom: %d %v", code, out)
-	}
-	// The fixture's managed type declares no address fields and no guard:
-	// custom under the legacy rule.
-	if code, out := e.doAs(alice, "POST", "/account-types/fixture/managed/preparations", map[string]any{}); code != 403 {
-		t.Fatalf("prepare custom: %d %v", code, out)
-	}
-	fixture := slices.IndexFunc(e.gen.types, func(b core.AccountTypeBinding) bool { return b.Plugin.Key == "fixture" })
-	e.gen.types[fixture].Type.UpstreamFields = []string{}
-	if code, out := e.doAs(alice, "POST", "/account-types/fixture/managed/preparations", map[string]any{}); code != 201 {
-		t.Fatalf("prepare managed: %d %v", code, out)
 	}
 
 	authz.keys[alice] = append(slices.Clone(supplierKeys), "account:relay")
@@ -982,7 +972,7 @@ func TestOwnCustomUpstream(t *testing.T) {
 // role's default on accounts and proxies (it also reads its own usage).
 func TestBuiltinSupplierRole(t *testing.T) {
 	fake := fakeAuthz{keys: map[int64][]string{}}
-	e, _, _, _ := preparationFixtureWith(t, fake)
+	e := setupWith(t, fake)
 	ctx := context.Background()
 	roles := authz.New(authz.Deps{DB: e.db})
 	if err := roles.Start(ctx); err != nil {
@@ -990,7 +980,7 @@ func TestBuiltinSupplierRole(t *testing.T) {
 	}
 	keysOf := func(roleKeys ...string) []string {
 		t.Helper()
-		set, err := roles.RolesPermissions(ctx, e.db.Pool, roleKeys)
+		set, err := roles.RolesPermissions(ctx, e.db.Gorm, roleKeys)
 		if err != nil {
 			t.Fatal(err)
 		}

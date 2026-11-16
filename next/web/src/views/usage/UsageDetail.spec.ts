@@ -28,20 +28,6 @@ function render(value = row, path?: string, mine = false) {
   } })
 }
 
-describe('CCGateway request log entry', () => {
-  it('follows request_log_account_id, not the account the caller may not see', async () => {
-    const ccg = { ...row, plugin_key: 'ccgateway', account_id: null } as unknown as UsageRow
-    get.mockResolvedValueOnce({ ...ccg, request_log_account_id: 12 })
-    const wrapper = render(ccg, '/usage/1')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="usage-request-log"]').exists()).toBe(true)
-    get.mockResolvedValueOnce({ ...ccg, account_id: 12 })
-    const hidden = render(ccg, '/usage/1')
-    await flushPromises()
-    expect(hidden.find('[data-testid="usage-request-log"]').exists()).toBe(false)
-  })
-})
-
 describe('call chain', () => {
   const steps = [{ account_id: 16, status: 502, error_type: 'upstream_error', ms: 640, next: 'switch' }, { account_id: 12, status: 200, ms: 2950 }]
   const retried = { ...row, attempts: 2, attempt_trail: { v: 1, steps } } as unknown as UsageRow

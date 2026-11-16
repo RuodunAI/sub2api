@@ -3,7 +3,6 @@ package usage
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -12,14 +11,15 @@ import (
 	_ "time/tzdata" // tz= accepts IANA names on minimal images
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/account"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Console statistics (CONTRACTS §66): the summary's day and hour buckets and
@@ -72,27 +72,22 @@ func parseTZ(c *gin.Context) (string, *time.Location, error) {
 }
 
 // statsTx runs fn in a read-only transaction under lim.
-func (s *Service) statsTx(ctx context.Context, lim statsLimits, fn func(pgx.Tx) error) error {
-	tx, err := s.db.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	set := `SET LOCAL statement_timeout = '` + lim.timeout + `'`
-	if lim.workMem != "" {
-		set += `; SET LOCAL work_mem = '` + lim.workMem + `'`
-	}
-	if _, err := tx.Exec(ctx, set); err != nil {
-		return err
-	}
-	if err := fn(tx); err != nil {
-		var pe *pgconn.PgError
-		if errors.As(err, &pe) && pe.Code == "57014" { // query_canceled
+func (s *Service) statsTx(ctx context.Context, lim statsLimits, fn func(*gorm.DB) error) error {
+	return s.db.TxOptions(ctx, store.ReadOnly(), func(tx *gorm.DB) error {
+		if err := store.SetLocal(ctx, tx, "statement_timeout", lim.timeout); err != nil {
+			return err
+		}
+		if lim.workMem != "" {
+			if err := store.SetLocal(ctx, tx, "work_mem", lim.workMem); err != nil {
+				return err
+			}
+		}
+		err := fn(tx)
+		if store.SQLState(err) == "57014" { // query_canceled
 			return core.ErrUnavailable.WithMessage("statistics query timed out; narrow the time range or filters")
 		}
 		return err
-	}
-	return tx.Commit(ctx)
+	})
 }
 
 // promptTokens matches expr.Normalize's inclusive/exclusive input
@@ -199,12 +194,16 @@ func (s *Service) overview(c *gin.Context, self *int64) {
 	if self != nil {
 		out, err = s.loadOverview(ctx, tz, loc, self, false, false)
 	} else {
-		users, accounts := core.Can(ctx, s.Authz, "user:read"), core.Can(ctx, s.Authz, "account:read")
-		var hit bool
-		out, hit, err = s.overviews.get(ctx, fmt.Sprintf("%s|%t|%t", tz, users, accounts), func(ctx context.Context) (Overview, error) {
-			return s.loadOverview(ctx, tz, loc, nil, users, accounts)
-		})
-		c.Header("X-Snapshot-Cache", snapshotHeader(hit))
+		var users, accounts, hit bool
+		if users, err = core.Can(ctx, s.Authz, "user:read"); err == nil {
+			accounts, err = s.seesAccounts(ctx, nil)
+		}
+		if err == nil {
+			out, hit, err = s.overviews.get(ctx, fmt.Sprintf("%s|%t|%t", tz, users, accounts), func(ctx context.Context) (Overview, error) {
+				return s.loadOverview(ctx, tz, loc, nil, users, accounts)
+			})
+			c.Header("X-Snapshot-Cache", snapshotHeader(hit))
+		}
 	}
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -214,31 +213,32 @@ func (s *Service) overview(c *gin.Context, self *int64) {
 }
 
 func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Location, self *int64, users, accounts bool) (Overview, error) {
-	w := overviewWindows(time.Now(), loc)
+	w := overviewWindows(overviewNow(), loc)
 	out := Overview{TZ: tz}
 	var activeToday int64
-	err := s.statsTx(ctx, statsLimitsFor(self), func(tx pgx.Tx) error {
-		var f store.Filter
+	err := s.statsTx(ctx, statsLimitsFor(self), func(tx *gorm.DB) error {
+		var f store.Conds
 		f.And("u.created_at >= ?", w.last30d)
 		if self != nil {
 			f.And("u.user_id = ?", *self)
 		}
-		args := f.Args()
 		span, err := rollupSpan(ctx, tx, w.last30d, time.Now(), loc)
 		if err != nil {
 			return err
 		}
-		yesterday, today, last5m := addArg(&args, w.yesterday), addArg(&args, w.today), addArg(&args, w.last5m)
 		targets := append(append(append(out.Today.scanTargets(), out.Yesterday.scanTargets()...), out.Last30d.scanTargets()...),
 			&out.Last5m.Requests, &out.Last5m.Tokens, &activeToday)
-		if err := tx.QueryRow(ctx, `SELECT `+
-			totalsColumns(`u.at >= `+today, false)+`, `+
-			totalsColumns(`u.at >= `+yesterday+` AND u.at < `+today, false)+`, `+
-			totalsColumns(``, false)+`, `+
-			sumOf(`u.requests`, `u.at >= `+last5m)+`, `+
-			sumOf(`u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens`, `u.at >= `+last5m)+`,
-			count(DISTINCT u.user_id) FILTER (WHERE u.at >= `+today+`)
-			FROM `+statRows(`u.created_at AS at, u.user_id`, ``, f.Cond(), span, &args), args...).Scan(targets...); err != nil {
+		g := store.G(ctx, tx)
+		// Named parameters: each window bound is used several times.
+		if err := g.Table("?", statRows(g, clause.Expr{SQL: `u.created_at AS at, u.user_id`}, ``, f, span)).Select(
+			totalsColumns(`u.at >= @today`, false)+`, `+
+				totalsColumns(`u.at >= @yesterday AND u.at < @today`, false)+`, `+
+				totalsColumns(``, false)+`, `+
+				sumOf(`u.requests`, `u.at >= @last5m`)+`, `+
+				sumOf(`u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens`, `u.at >= @last5m`)+`,
+			count(DISTINCT u.user_id) FILTER (WHERE u.at >= @today)`, map[string]any{
+				"today": w.today, "yesterday": w.yesterday, "last5m": w.last5m,
+			}).Row().Scan(targets...); err != nil {
 			return err
 		}
 		if self != nil {
@@ -246,9 +246,10 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 				Total  int64 `json:"total"`
 				Active int64 `json:"active"`
 			}{}
-			return tx.QueryRow(ctx, `SELECT count(*),
-				count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now()))
-				FROM api_keys WHERE user_id = $1 AND deleted_at IS NULL`, *self).Scan(&out.APIKeys.Total, &out.APIKeys.Active)
+			// Active ones are also unexpired.
+			return g.Model(&model.APIKey{}).
+				Select(`count(*), count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now()))`).
+				Where("user_id = ? AND deleted_at IS NULL", *self).Row().Scan(&out.APIKeys.Total, &out.APIKeys.Active)
 		}
 		if users {
 			out.Users = &struct {
@@ -257,8 +258,7 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 				ActiveToday int64 `json:"active_today"`
 			}{}
 			out.Users.ActiveToday = activeToday
-			if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE created_at >= $1)
-				FROM users WHERE deleted_at IS NULL`, w.today).Scan(&out.Users.Total, &out.Users.NewToday); err != nil {
+			if err := g.Model(&model.User{}).Select(`count(*), count(*) FILTER (WHERE created_at >= ?)`, w.today).Where("deleted_at IS NULL").Row().Scan(&out.Users.Total, &out.Users.NewToday); err != nil {
 				return err
 			}
 		}
@@ -318,7 +318,12 @@ func (s *Service) allRealtime(c *gin.Context) { s.realtime(c, nil) }
 // they need both outcomes.
 func (s *Service) realtime(c *gin.Context, self *int64) {
 	ctx := c.Request.Context()
-	f, err := parseFilter(c, self, s.seesAccounts(ctx, self))
+	accounts, err := s.seesAccounts(ctx, self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	f, err := parseFilter(c, self, accounts)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -329,11 +334,11 @@ func (s *Service) realtime(c *gin.Context, self *int64) {
 	// Token counting is free and takes no part in rate limits (§18).
 	f.And("u.protocol NOT LIKE '%.count_tokens'")
 	var out Realtime
-	err = s.statsTx(ctx, directStats, func(tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE u.success),
+	err = s.statsTx(ctx, directStats, func(tx *gorm.DB) error {
+		return store.G(ctx, tx).Table("usage_logs u").Select(`count(*) FILTER (WHERE u.success),
 			COALESCE(sum(`+realtimeTokens+`) FILTER (WHERE u.success), 0),
-			count(*) FILTER (WHERE `+realtimeFailure+`)
-			FROM usage_logs u`+f.Cond(), f.Args()...).Scan(&out.RPM, &out.TPM, &out.RecentFailures)
+			count(*) FILTER (WHERE `+realtimeFailure+`)`).Scopes(f.Scope()).
+			Row().Scan(&out.RPM, &out.TPM, &out.RecentFailures)
 	})
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -341,6 +346,10 @@ func (s *Service) realtime(c *gin.Context, self *int64) {
 	}
 	httpapi.OK(c, out)
 }
+
+// overviewNow is the clock of the overview's calendar windows; a test fixes
+// it so that a run across midnight sees the windows it seeded.
+var overviewNow = time.Now
 
 type windows struct{ today, yesterday, last30d, last5m time.Time }
 

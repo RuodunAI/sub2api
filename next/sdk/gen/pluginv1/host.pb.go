@@ -3645,7 +3645,8 @@ type AuthzCheckRequest struct {
 
 	UserId int64 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	// Plugin-local key ("rules:manage") or fully qualified key. The plugin's
-	// own keys need no grant; a core key or another plugin's key needs
+	// own keys need no grant, with or without a scope ("flow:manage:own",
+	// "flow:manage:flow/3"); a core key or another plugin's key needs
 	// "authz.read".
 	Permission string `protobuf:"bytes,2,opt,name=permission,proto3" json:"permission,omitempty"`
 }
@@ -4026,6 +4027,7 @@ type EgressFrame struct {
 	unknownFields protoimpl.UnknownFields
 
 	// Types that are assignable to Kind:
+	//
 	//	*EgressFrame_Open
 	//	*EgressFrame_Result
 	//	*EgressFrame_Data

@@ -1,0 +1,4 @@
+-- sql
+SELECT id, password_hash, status FROM "users" WHERE deleted_at IS NULL AND lower(email) = lower($1)
+-- vars
+$1 string "a@example.com"

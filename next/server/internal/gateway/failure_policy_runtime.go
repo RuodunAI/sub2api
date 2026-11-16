@@ -169,7 +169,7 @@ func (c *call) policyCandidates(ctx context.Context, original []core.AccountRef)
 	s := &c.failureState
 	var out []core.AccountRef
 	for _, ref := range refs {
-		if !c.candidateEligible(&ref) || !c.creditAccountAllowed(&ref) {
+		if !c.candidateEligible(&ref) {
 			continue
 		}
 		if !allowed[ref.ID] {
@@ -203,7 +203,7 @@ func (c *call) policyCandidates(ctx context.Context, original []core.AccountRef)
 
 // Used both for the initial pool and each refreshed account snapshot.
 func (c *call) candidateEligible(ref *core.AccountRef) bool {
-	return c.route(ref) != nil && c.servesAllModels(ref) && c.resourceAccountAllowed(ref) && c.helperAccountAllowed(ref)
+	return c.route(ref) != nil && c.servesAllModels(ref)
 }
 
 func (c *call) endFailurePolicy(reason string) {
@@ -322,7 +322,7 @@ func (c *call) retryBlocked(ctx context.Context, res attemptResult, attempts int
 	if c.c != nil && c.c.Writer.Written() {
 		return "response_committed"
 	}
-	if c.creditDispatched || c.helperWasDispatched() || c.task != nil || c.failureState.unsafeTransport {
+	if c.task != nil || c.failureState.unsafeTransport {
 		return "outcome_uncertain"
 	}
 	if c.failureState.decision.Action == failureReturn {
@@ -337,7 +337,7 @@ func (c *call) retryBlocked(ctx context.Context, res attemptResult, attempts int
 	if action == "" || action == failureReturn {
 		return "same_account_limit"
 	}
-	if action != failureRetry && (len(c.resourceRefs) > 0 || gjson.GetBytes(c.body, "previous_response_id").String() != "") {
+	if action != failureRetry && gjson.GetBytes(c.body, "previous_response_id").String() != "" {
 		return "account_bound_resource"
 	}
 	return ""

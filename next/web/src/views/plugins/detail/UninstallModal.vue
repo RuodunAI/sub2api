@@ -20,7 +20,7 @@ const purgeAccounts = computed(() => purgeChoice.value.includes('accounts'))
 const typed = ref('')
 const busy = ref(false)
 /** Set after a successful uninstall with purge_accounts: the modal shows the result. */
-const result = ref<{ accountsDeleted: number | null } | null>(null)
+const result = ref<{ accountsDeleted: number } | null>(null)
 const matches = computed(() => typed.value.trim() === props.pluginKey)
 
 const purgeOptions = computed<ChoiceOption[]>(() => [
@@ -55,15 +55,14 @@ async function submit() {
   if (!matches.value || result.value) return
   busy.value = true
   try {
-    const r = await api.del<UninstallResult | null>(`/plugins/${encodeURIComponent(props.pluginKey)}`, {
+    const r = await api.del<UninstallResult>(`/plugins/${encodeURIComponent(props.pluginKey)}`, {
       purge: purge.value,
       purge_accounts: purgeAccounts.value || undefined
     })
-    const n = r && typeof r === 'object' && r.accounts_deleted !== undefined ? Number(r.accounts_deleted) : null
     toast(t('plugins.uninstall.done', { name: props.name }), 'success')
     if (purgeAccounts.value) {
       // Keep the dialog open to show how many accounts were deleted.
-      result.value = { accountsDeleted: n }
+      result.value = { accountsDeleted: r.accounts_deleted }
       return
     }
     emit('update:open', false)
@@ -87,7 +86,7 @@ function close() {
       <p class="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-400">
         <SIcon name="check" class="h-5 w-5" />{{ t('plugins.uninstall.done', { name }) }}
       </p>
-      <p v-if="result.accountsDeleted !== null" data-testid="accounts-deleted">{{ t('plugins.uninstall.accountsDeleted', { n: result.accountsDeleted }) }}</p>
+      <p data-testid="accounts-deleted">{{ t('plugins.uninstall.accountsDeleted', { n: result.accountsDeleted }) }}</p>
     </div>
     <div v-else class="space-y-4 text-sm">
       <p>{{ t('plugins.uninstall.body') }}</p>

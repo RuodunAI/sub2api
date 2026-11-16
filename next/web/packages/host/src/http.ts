@@ -3,7 +3,13 @@
 // Contract (docs/CONTRACTS.md §3):
 //   success  -> {"data": ...}            list -> {"data": [...], "page": {...}}
 //   failure  -> {"error": {code, message, details}}
-// 401 triggers one refresh attempt (POST /auth/refresh) and a retry.
+// 401 means the session ended (s2s_ sessions renew on the server, CONTRACTS
+// §100): the session is cleared and onUnauthenticated sends the console to the
+// login page, unless another tab stored a different token meanwhile, which the
+// request is retried with once. A tab whose session another tab cleared (a
+// logout there, or a 401) follows it to the login page. Any other status,
+// 5xx included, leaves the session alone. fetchWithSession applies the same
+// policy to a raw fetch (an upload, a stream, a file).
 // 403 verification_required asks onVerificationRequired for a step-up proof
 // and replays the request once with X-Verify-Proof (CONTRACTS §80.2).
 
@@ -99,40 +105,63 @@ export interface RequestOptions {
   headers?: Record<string, string>
   signal?: AbortSignal
   /**
-   * Time limit in ms of each send (the first one, a resend after renewing
-   * the session, the replay with a step-up proof). Unlike a timeout signal
+   * Time limit in ms of each send (the first one, a resend with the token
+   * another tab stored, the replay with a step-up proof). Unlike a timeout signal
    * it does not run while the user verifies, so a slow verification neither
    * closes the dialog nor shortens the replay.
    */
   timeoutMs?: number
-  /** Do not attach the access token / do not try to refresh. */
+  /** Do not attach the access token, and leave a 401 to the caller. */
   anonymous?: boolean
   /** Headers from the final successful response, after auth retries. */
   onSuccessHeaders?: (headers: Headers) => void
+  /**
+   * The session token the final successful send went with (it may be one
+   * another tab stored, resent after a 401): what a rotation the response
+   * carries replaces (session.adoptRotated). UI 3.17.
+   */
+  onSentWith?: (token: string | undefined) => void
 }
 
 // ------------------------------------------------------------------ session
 
 export interface Session {
   access_token: string
-  refresh_token: string
-  /** epoch ms */
-  expires_at: number
 }
 
 const SESSION_KEY = 's2a.session'
 const listeners = new Set<(s: Session | null) => void>()
 
-function readSession(): Session | null {
+/** The stored session, raw as storage holds it; undefined when storage cannot be read. */
+function storedRaw(): string | null | undefined {
   try {
-    const raw = localStorage.getItem(SESSION_KEY)
+    return localStorage.getItem(SESSION_KEY)
+  } catch {
+    return undefined
+  }
+}
+
+function parseSession(raw: string | null | undefined): Session | null {
+  try {
     return raw ? (JSON.parse(raw) as Session) : null
   } catch {
     return null
   }
 }
 
-let current: Session | null = typeof localStorage !== 'undefined' ? readSession() : null
+let current: Session | null = typeof localStorage !== 'undefined' ? parseSession(storedRaw()) : null
+
+/**
+ * Takes up the session another tab stored (raw, as storage holds it) when
+ * its token differs, and tells the listeners. Returns whether it changed.
+ */
+function adoptStored(raw: string | null): boolean {
+  const stored = parseSession(raw)
+  if (stored?.access_token === current?.access_token) return false
+  current = stored
+  listeners.forEach((fn) => fn(current))
+  return true
+}
 
 export const session = {
   get(): Session | null {
@@ -148,13 +177,26 @@ export const session = {
     }
     listeners.forEach((fn) => fn(s))
   },
-  /** Store a login/refresh response ({access_token, refresh_token, expires_in}). */
-  fromTokenResponse(r: { access_token: string; refresh_token: string; expires_in: number }) {
-    session.set({
-      access_token: r.access_token,
-      refresh_token: r.refresh_token,
-      expires_at: Date.now() + (r.expires_in || 7200) * 1000
-    })
+  /** Store a login response carrying a new access token. */
+  fromTokenResponse(r: { access_token: string }) {
+    session.set({ access_token: r.access_token })
+  },
+  /**
+   * Take up the token a rotation of the session gave (a step-up, ending
+   * the other sessions: CONTRACTS §100.4) in place of sentWith, the token
+   * the request that rotated it was sent with (RequestOptions.onSentWith:
+   * not the session's token before the request, which a resend after a
+   * 401 may have replaced); only while the session
+   * still holds sentWith. Another tab may have stored a newer token
+   * meanwhile (its own rotation, or a new login): that one stays. Reads
+   * what other tabs stored first, as their storage event may not have
+   * arrived yet. Returns whether it was taken up. UI 3.17.
+   */
+  adoptRotated(sentWith: string | undefined, next: string): boolean {
+    syncSession()
+    if (!next || !current || current.access_token !== sentWith) return false
+    session.set({ ...current, access_token: next })
+    return true
   },
   clear() {
     session.set(null)
@@ -165,22 +207,12 @@ export const session = {
   }
 }
 
-// Keep tabs in sync.
-if (typeof window !== 'undefined') {
-  window.addEventListener('storage', (e) => {
-    if (e.key === SESSION_KEY) {
-      current = readSession()
-      listeners.forEach((fn) => fn(current))
-    }
-  })
-}
-
 // ------------------------------------------------------------------ config
 
 /**
- * Why the session ended: "expired" when a signed-in session could not be
- * renewed (refresh token expired, revoked or reused), "unauthenticated" when
- * there was no session.
+ * Why the session ended: "expired" when the server no longer accepts the
+ * signed-in session (it idled out, reached its maximum age or was revoked),
+ * "unauthenticated" when there was none, or another tab signed out.
  */
 export type UnauthenticatedReason = 'expired' | 'unauthenticated'
 
@@ -197,7 +229,7 @@ export const VERIFICATION_CANCELLED = 'verification_cancelled'
 
 export interface HttpConfig {
   baseURL: string
-  /** Called when the session is gone (refresh failed). */
+  /** Called when the session is gone. */
   onUnauthenticated?: (reason: UnauthenticatedReason) => void
   /**
    * Called on 403 verification_required: resolves the proof the request is
@@ -225,6 +257,16 @@ export function configureHttp(c: Partial<HttpConfig>) {
   Object.assign(config, c)
 }
 
+// Keep tabs in sync: a tab follows another that signed out, or whose session
+// ended, to the login page (both share the one session in localStorage).
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== SESSION_KEY) return
+    const had = !!current
+    if (adoptStored(storedRaw() ?? null) && had && !current) config.onUnauthenticated?.('unauthenticated')
+  })
+}
+
 /**
  * The console API base every request is built on. Use it instead of writing
  * "/api/v1" again: it is the one place that can change.
@@ -232,8 +274,6 @@ export function configureHttp(c: Partial<HttpConfig>) {
 export function apiBase(): string {
   return config.baseURL
 }
-
-let refreshing: Promise<RefreshOutcome> | null = null
 
 function buildURL(path: string, query?: Query): string {
   const base = /^https?:\/\//.test(path) || path.startsWith(config.baseURL + '/') ? '' : config.baseURL
@@ -251,209 +291,89 @@ function buildURL(path: string, query?: Query): string {
   return url
 }
 
-// ------------------------------------------------------------------ token refresh
-//
-// The server rotates refresh tokens and treats a rotated token presented again
-// as theft: it revokes the whole login (CONTRACTS §14.2). So a refresh token
-// must be sent at most once, even with several tabs or parallel 401s:
-//   - in a tab, concurrent callers share one in-flight refresh;
-//   - across tabs, refreshes are serialized by a Web Lock (localStorage lock
-//     as fallback) and, once holding the lock, a tab first re-reads the
-//     session: when another tab already refreshed, it adopts that session
-//     instead of presenting the (now rotated) token again;
-//   - a request that failed with an access token that is no longer current
-//     (someone refreshed meanwhile) is simply retried.
-
-/** ok: session renewed; invalid: refresh token rejected; error: network / server error. */
-type RefreshOutcome = 'ok' | 'invalid' | 'error'
-
-const REFRESH_LOCK = 's2a.refresh'
-const STORAGE_LOCK_KEY = 's2a.refresh.lock'
-const STORAGE_LOCK_TTL_MS = 10_000
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
-
 /** Re-reads the session written by other tabs (the storage event may not have fired yet). */
 function syncSession(): Session | null {
-  if (typeof localStorage === 'undefined') return current
-  let raw: string | null
-  try {
-    raw = localStorage.getItem(SESSION_KEY)
-  } catch {
-    return current // storage unavailable: keep the in-memory session
-  }
-  const stored = raw ? readSession() : null
-  if (stored?.access_token !== current?.access_token) {
-    current = stored
-    listeners.forEach((fn) => fn(current))
-  }
+  const raw = typeof localStorage === 'undefined' ? undefined : storedRaw()
+  if (raw !== undefined) adoptStored(raw) // storage unavailable: keep the in-memory session
   return current
 }
 
-/** Best-effort cross-tab mutex in localStorage (browsers without Web Locks, e.g. plain http). */
-async function withStorageLock<T>(fn: () => Promise<T>): Promise<T> {
-  const me = Math.random().toString(36).slice(2) + Date.now().toString(36)
-  const owner = () => {
-    try {
-      return (JSON.parse(localStorage.getItem(STORAGE_LOCK_KEY) || 'null') as { owner: string; until: number } | null) || null
-    } catch {
-      return null
-    }
-  }
-  const deadline = Date.now() + STORAGE_LOCK_TTL_MS
-  try {
-    while (Date.now() < deadline) {
-      const held = owner()
-      if (!held || held.until < Date.now()) {
-        localStorage.setItem(STORAGE_LOCK_KEY, JSON.stringify({ owner: me, until: Date.now() + STORAGE_LOCK_TTL_MS }))
-        await sleep(25) // let a concurrent writer win or lose
-        if (owner()?.owner === me) break
-      }
-      await sleep(80)
-    }
-  } catch {
-    /* storage unavailable: run unlocked */
-  }
-  try {
-    return await fn()
-  } finally {
-    try {
-      if (owner()?.owner === me) localStorage.removeItem(STORAGE_LOCK_KEY)
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
-  const locks = typeof navigator !== 'undefined' ? (navigator as Navigator & { locks?: LockManager }).locks : undefined
-  if (locks?.request) return locks.request(REFRESH_LOCK, { mode: 'exclusive' }, fn) as Promise<T>
-  if (typeof localStorage !== 'undefined') return withStorageLock(fn)
-  return fn()
-}
-
-async function doRefresh(stale: string | undefined): Promise<RefreshOutcome> {
-  // Another tab may have refreshed while this one waited for the lock.
-  const s = syncSession()
-  if (!s?.refresh_token) return 'invalid'
-  if (stale && s.access_token !== stale) return 'ok'
-  try {
-    const res = await fetch(buildURL('/auth/refresh'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ refresh_token: s.refresh_token })
-    })
-    if (res.status === 400 || res.status === 401 || res.status === 403) return 'invalid'
-    if (!res.ok) return 'error'
-    const json = await safeJSON(res)
-    if (!json?.data?.access_token) return 'error'
-    session.fromTokenResponse(json.data)
-    return 'ok'
-  } catch {
-    return 'error'
-  }
-}
-
 /**
- * Renews the session after a 401. `stale` is the access token the failed
- * request carried; when the session already holds a different one, the
- * request is just retried.
+ * Ends the session after a 401 of a request sent with token, unless the
+ * session holds another token by now (a newer login): that one stays.
  */
-function refreshSession(stale: string | undefined): Promise<RefreshOutcome> {
+function sessionEnded(token: string | undefined) {
   const s = session.get()
-  if (s && stale && s.access_token !== stale) return Promise.resolve('ok')
-  if (!refreshing) {
-    refreshing = withRefreshLock(() => doRefresh(stale)).finally(() => {
-      refreshing = null
-    })
-  }
-  return refreshing
+  if (s && s.access_token !== token) return
+  if (s) session.clear()
+  config.onUnauthenticated?.(s ? 'expired' : 'unauthenticated')
 }
 
-// ------------------------------------------------------------------ keep-alive
-//
-// A login lasts while it is used (CONTRACTS §14.2): every refresh issues a
-// refresh token valid for the full refresh TTL (30 days by default). Besides
-// the refresh after a 401, a visible page renews the access token shortly
-// before it expires, so a page in use never meets an expired token.
+/** A fetch init whose headers are a plain record. */
+export type SessionFetchInit = Omit<RequestInit, 'headers'> & { headers?: Record<string, string> }
 
-/** Renew this long before the access token expires. */
-export const RENEW_BEFORE_MS = 5 * 60_000
-const KEEPALIVE_INTERVAL_MS = 60_000
-
-/** Whether the session's access token is due for renewal at `now`. */
-export function renewalDue(s: Session | null, now: number): boolean {
-  return !!s?.refresh_token && !!s.expires_at && s.expires_at - now <= RENEW_BEFORE_MS
-}
-
-async function keepAlive() {
-  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-  const s = syncSession()
-  if (!renewalDue(s, Date.now())) return
-  const outcome = await refreshSession(s!.access_token)
-  if (outcome === 'invalid' && session.get()?.refresh_token === s!.refresh_token) {
-    session.clear()
-    config.onUnauthenticated?.('expired')
-  }
+/** fetch with the console's headers (token when given, locale); reports the authz version. */
+async function fetchAs(url: string, init: SessionFetchInit, token: string | undefined): Promise<Response> {
+  const headers = { ...init.headers }
+  if (token) headers.Authorization = 'Bearer ' + token
+  const loc = config.locale?.()
+  if (loc) headers['Accept-Language'] = loc
+  const res = await fetch(url, { ...init, headers })
+  const version = Number(res.headers.get(AUTHZ_VERSION_HEADER) || NaN)
+  if (Number.isFinite(version)) config.onAuthzVersion?.(version)
+  return res
 }
 
 /**
- * Starts renewing the session in the background (the console calls it once);
- * returns a function that stops it.
+ * Sends with the session's token. A 401 is sent once more when another tab
+ * stored a different token meanwhile (its storage event may not have arrived
+ * yet); a 401 of the session's token ends the session.
  */
-export function startKeepAlive(): () => void {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return () => {}
-  const run = () => void keepAlive()
-  const timer = setInterval(run, KEEPALIVE_INTERVAL_MS)
-  document.addEventListener('visibilitychange', run)
-  window.addEventListener('focus', run)
-  return () => {
-    clearInterval(timer)
-    document.removeEventListener('visibilitychange', run)
-    window.removeEventListener('focus', run)
+async function sendWithSession(send: (token: string | undefined) => Promise<Response>): Promise<Response> {
+  let token = session.get()?.access_token
+  let res = await send(token)
+  if (res.status !== 401) return res
+  const s = syncSession()
+  if (s && s.access_token !== token) {
+    token = s.access_token
+    res = await send(token)
   }
+  if (res.status === 401) sessionEnded(token)
+  return res
+}
+
+/**
+ * fetch of a console API path (as request takes it) with the session token,
+ * for what the JSON client cannot carry: a raw body, a stream, a file. A 401
+ * follows the client's policy (resent once with a token another tab stored,
+ * otherwise the session ends). The response, a failed one included, is the
+ * caller's to read.
+ */
+export function fetchWithSession(path: string, init: SessionFetchInit = {}): Promise<Response> {
+  const url = buildURL(path)
+  return sendWithSession((token) => fetchAs(url, init, token))
 }
 
 /** Low-level request returning the parsed JSON envelope (or null for 204). */
 export async function requestRaw(method: string, path: string, opts: RequestOptions = {}): Promise<any> {
-  /** Access token carried by the last attempt. */
-  let sentToken: string | undefined
-  const doFetch = async (extra?: Record<string, string>): Promise<Response> => {
-    const headers: Record<string, string> = { Accept: 'application/json', ...(opts.headers || {}), ...extra }
-    const isForm = typeof FormData !== 'undefined' && opts.body instanceof FormData
-    let body: BodyInit | undefined
-    if (opts.body !== undefined) {
-      if (isForm) body = opts.body as FormData
-      else {
-        headers['Content-Type'] = 'application/json'
-        body = JSON.stringify(opts.body)
-      }
-    }
-    const s = session.get()
-    sentToken = !opts.anonymous ? s?.access_token : undefined
-    if (sentToken) headers['Authorization'] = 'Bearer ' + sentToken
-    const loc = config.locale?.()
-    if (loc) headers['Accept-Language'] = loc
-    const res = await fetch(buildURL(path, opts.query), { method, headers, body, signal: sendSignal(opts) })
-    const version = Number(res.headers.get(AUTHZ_VERSION_HEADER) || NaN)
-    if (Number.isFinite(version)) config.onAuthzVersion?.(version)
-    return res
+  const headers: Record<string, string> = { Accept: 'application/json', ...opts.headers }
+  let body: BodyInit | undefined
+  if (typeof FormData !== 'undefined' && opts.body instanceof FormData) body = opts.body
+  else if (opts.body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+    body = JSON.stringify(opts.body)
   }
-
-  /** One attempt, renewing the session once on 401. */
-  const send = async (extra?: Record<string, string>): Promise<Response> => {
-    let res = await doFetch(extra)
-    if (res.status !== 401 || opts.anonymous) return res
-    const hadSession = !!session.get()
-    const outcome: RefreshOutcome = hadSession ? await refreshSession(sentToken) : 'invalid'
-    if (outcome === 'ok') res = await doFetch(extra)
-    // A network / server error while refreshing keeps the session: the next
-    // request tries again instead of signing the user out.
-    if (res.status === 401 && outcome !== 'error') {
-      session.clear()
-      config.onUnauthenticated?.(hadSession ? 'expired' : 'unauthenticated')
-    }
-    return res
+  const url = buildURL(path, opts.query)
+  /** The token of the last send. */
+  let sentWith: string | undefined
+  /** One attempt, with extra headers (a step-up proof); each has its own time limit. */
+  const send = (extra?: Record<string, string>): Promise<Response> => {
+    const init = () => ({ method, headers: { ...headers, ...extra }, body, signal: sendSignal(opts) })
+    return opts.anonymous ? fetchAs(url, init(), undefined) : sendWithSession((token) => fetchAs(url, init(), (sentWith = token)))
+  }
+  const succeeded = () => {
+    opts.onSuccessHeaders?.(new Headers(res.headers))
+    opts.onSentWith?.(sentWith)
   }
 
   let res = await send()
@@ -466,14 +386,14 @@ export async function requestRaw(method: string, path: string, opts: RequestOpti
     res = await send({ 'X-Verify-Proof': proof })
     json = await safeJSON(res)
   }
-  if (res.status === 204) { opts.onSuccessHeaders?.(new Headers(res.headers)); return null }
+  if (res.status === 204) { succeeded(); return null }
   if (!res.ok) {
     const body: ApiErrorBody = json?.error || { code: statusCode(res.status), message: res.statusText || 'request failed' }
     const err = new ApiError(res.status, body)
     if (res.status === 403) config.onForbidden?.(err)
     throw err
   }
-  opts.onSuccessHeaders?.(new Headers(res.headers))
+  succeeded()
   return json
 }
 

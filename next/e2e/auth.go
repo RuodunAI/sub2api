@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +16,6 @@ type Session struct {
 	Email    string
 	Password string
 	UserID   int64
-	Refresh  string
 }
 
 // Login performs POST /auth/login and returns a session. Fails the test on
@@ -28,11 +28,13 @@ func (e *Env) Login(email, password string) *Session {
 		e.T.Fatalf("login %s: %s", email, r)
 	}
 	d := r.Data()
-	if d.Get("access_token").String() == "" || d.Get("refresh_token").String() == "" || d.Get("expires_in").Int() <= 0 {
-		e.T.Fatalf("login response incomplete: %s", r)
+	// A console session token (CONTRACTS §100), and no refresh token.
+	if !strings.HasPrefix(d.Get("access_token").String(), "s2s_") || d.Get("refresh_token").Exists() || d.Get("expires_in").Int() <= 0 {
+		e.T.Fatalf("login response not a session: %s", r)
 	}
 	c.Token = d.Get("access_token").String()
-	return &Session{Client: c, Email: email, Password: password, UserID: d.Get("user.id").Int(), Refresh: d.Get("refresh_token").String()}
+	c.Password = password
+	return &Session{Client: c, Email: email, Password: password, UserID: d.Get("user.id").Int()}
 }
 
 // TryLogin returns the raw login response (for negative tests).
@@ -64,6 +66,12 @@ func (e *Env) Admin() *Session {
 func (s *Session) Me(t testing.TB) gjson.Result {
 	t.Helper()
 	return s.OK(t, http.MethodGet, "/me", nil)
+}
+
+// Permissions returns the permission keys of GET /me as a set.
+func (s *Session) Permissions(t testing.TB) map[string]bool {
+	t.Helper()
+	return Set(s.Me(t).Get("permissions"))
 }
 
 // Menus returns GET /me/menus flattened to items (each with its section).

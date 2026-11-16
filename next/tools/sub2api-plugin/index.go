@@ -138,8 +138,8 @@ func buildIndex(dir, baseURL string, now time.Time, stderr io.Writer) (*marketIn
 		if err != nil {
 			return nil, err
 		}
-		// Only the manifest is needed: a package with bundled images is not
-		// read into memory just to be listed.
+		// Only the manifest is needed: a large package is not read into
+		// memory just to be listed.
 		files, err := readPackageMeta(p)
 		if err != nil {
 			return nil, err

@@ -1,0 +1,8 @@
+-- sql
+SELECT r.id AS role_id, r.key AS role, p.key AS action, cr.v2 AS scope FROM roles r JOIN permissions p ON p.key = ANY($1) LEFT JOIN casbin_rule cr ON cr.ptype = $2 AND cr.v0 = ('r:' || r.key) AND cr.v1 = p.key WHERE r.key = ANY($3) AND p.source = $4 AND p.status <> ALL($5) AND NOT r.superuser
+-- vars
+$1 store.Strings [account:read account:read]
+$2 string "p"
+$3 store.Strings [admin operator]
+$4 string "plugin"
+$5 store.Strings [removed]

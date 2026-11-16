@@ -5,13 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The hourly rollup of usage_logs (CONTRACTS §66.8, migration 0092). The
@@ -62,7 +65,9 @@ var (
 	// not answer) still counts. The failure policy, availability, scheduling
 	// and attempt traces describe how the request was routed, not the
 	// record: they never count.
-	anomalousRow = fmt.Sprintf(`((u.anomalies - '%[1]s' - 'failure_policy' - '%[2]s' - '%[4]s' - '%[5]s') <> '{}'::jsonb OR (u.anomalies ? '%[1]s' AND u.anomalies->>'%[1]s' <> '%[3]s'))`,
+	// jsonb_exists is jsonb's ? operator, which GORM would read as a
+	// placeholder.
+	anomalousRow = fmt.Sprintf(`((u.anomalies - '%[1]s' - 'failure_policy' - '%[2]s' - '%[4]s' - '%[5]s') <> '{}'::jsonb OR (jsonb_exists(u.anomalies, '%[1]s') AND u.anomalies->>'%[1]s' <> '%[3]s'))`,
 		core.AnomalyUsageExtract, core.AnomalyAvailability, core.UsageExtractPlugin, core.AnomalyScheduling, core.AnomalyAttempts)
 	timedRow      = `u.success AND u.latency_ms > 0`
 	firstTokenRow = `u.success AND u.first_token_ms > 0`
@@ -104,8 +109,8 @@ type hourSpan struct{ from, to time.Time }
 
 // readRollupState reads the hours [low, high) the rollup holds (nil before
 // the first refresh).
-func readRollupState(ctx context.Context, tx pgx.Tx) (low, high *time.Time, err error) {
-	err = tx.QueryRow(ctx, `SELECT low, high FROM usage_hourly_state`).Scan(&low, &high)
+func readRollupState(ctx context.Context, tx *gorm.DB) (low, high *time.Time, err error) {
+	err = store.G(ctx, tx).Model(&model.UsageHourlyState{}).Select("low, high").Row().Scan(&low, &high)
 	return low, high, err
 }
 
@@ -113,7 +118,7 @@ func readRollupState(ctx context.Context, tx pgx.Tx) (low, high *time.Time, err 
 // holds none of it. With a time zone (day and hour buckets, the overview's
 // days) it is nil unless the zone is whole hours from UTC all along the
 // range, so that its buckets are made of whole UTC hours.
-func rollupSpan(ctx context.Context, tx pgx.Tx, from, end time.Time, loc *time.Location) (*hourSpan, error) {
+func rollupSpan(ctx context.Context, tx *gorm.DB, from, end time.Time, loc *time.Location) (*hourSpan, error) {
 	if loc != nil && !hourAligned(loc, from, end) {
 		return nil, nil
 	}
@@ -158,43 +163,35 @@ func hourAligned(loc *time.Location, from, end time.Time) bool {
 	return true
 }
 
-// statRows is a FROM item named u: the usage_logs rows matching where, each
-// measure being the row's share, and with span the rollup rows of span, each
-// measure being its hour's sum. Hours of span marked dirty, not recomputed
-// yet, are read from usage_logs too, in the same snapshot as their marks.
-// cols are the other output columns, expressions over u that hold on both
-// tables; args takes the span's bounds. Each usage_logs part is a plain
-// range of the created_at index.
-func statRows(cols, joins, where string, span *hourSpan, args *[]any) string {
-	live := func(from string) string {
-		return `SELECT ` + cols + `, ` + measureList(func(m statMeasure) string { return m.row + ` AS ` + m.name }) + ` FROM ` + from + joins
+// statRows is a FROM item named u: the usage_logs rows f keeps, each
+// measure being the row's share, and with span the rollup rows of span f
+// keeps, each measure being its hour's sum. Hours of span marked dirty, not
+// recomputed yet, are read from usage_logs too, in the same snapshot as
+// their marks. cols are the other output columns, expressions over u that
+// hold on both tables, and joins joins more tables to u. Each usage_logs
+// part is a plain range of the created_at index.
+func statRows(db *gorm.DB, cols clause.Expr, joins string, f store.Conds, span *hourSpan) clause.Expr {
+	part := func(from string, measure func(statMeasure) string, fromVars ...any) *gorm.DB {
+		return db.Table(from, fromVars...).Select(cols.SQL+`, `+measureList(measure), cols.Vars...)
 	}
+	filtered := func(q *gorm.DB) *gorm.DB {
+		if joins != "" {
+			q = q.Joins(joins)
+		}
+		return f.Scope()(q)
+	}
+	row := func(m statMeasure) string { return m.row + ` AS ` + m.name }
+	live := func() *gorm.DB { return filtered(part(`usage_logs u`, row)) }
 	if span == nil {
-		return `(` + live(`usage_logs u`) + where + `) u`
+		return clause.Expr{SQL: `(?) u`, Vars: []any{live()}}
 	}
-	from, to := addArg(args, span.from), addArg(args, span.to)
-	rolled := `SELECT ` + cols + `, ` + measureList(func(m statMeasure) string { return `u.` + m.name }) + ` FROM usage_hourly u` + joins
-	dirty := `(SELECT DISTINCT hour FROM usage_hourly_dirty WHERE hour >= ` + from + ` AND hour < ` + to + `) d
-		JOIN usage_logs u ON u.created_at >= d.hour AND u.created_at < d.hour + interval '1 hour'`
-	return `(` + live(`usage_logs u`) + andWhere(where, `u.created_at < `+from) +
-		` UNION ALL ` + rolled + andWhere(where, `u.created_at >= `+from+` AND u.created_at < `+to+
-		` AND NOT EXISTS (SELECT 1 FROM usage_hourly_dirty d WHERE d.hour = u.created_at)`) +
-		` UNION ALL ` + live(dirty) + where +
-		` UNION ALL ` + live(`usage_logs u`) + andWhere(where, `u.created_at >= `+to) + `) u`
-}
-
-// addArg appends v and returns its placeholder.
-func addArg(args *[]any, v any) string {
-	*args = append(*args, v)
-	return fmt.Sprintf("$%d", len(*args))
-}
-
-// andWhere adds cond to a " WHERE ..." clause (or "").
-func andWhere(where, cond string) string {
-	if where == "" {
-		return ` WHERE ` + cond
-	}
-	return where + ` AND ` + cond
+	rolled := filtered(part(`usage_hourly u`, func(m statMeasure) string { return `u.` + m.name })).
+		Where(`u.created_at >= ? AND u.created_at < ? AND NOT EXISTS (SELECT 1 FROM usage_hourly_dirty d WHERE d.hour = u.created_at)`, span.from, span.to)
+	dirty := filtered(part(`(SELECT DISTINCT hour FROM usage_hourly_dirty WHERE hour >= ? AND hour < ?) d`, row, span.from, span.to).
+		Joins(`JOIN usage_logs u ON u.created_at >= d.hour AND u.created_at < d.hour + interval '1 hour'`))
+	return clause.Expr{SQL: `(? UNION ALL ? UNION ALL ? UNION ALL ?) u`, Vars: []any{
+		live().Where(`u.created_at < ?`, span.from), rolled, dirty, live().Where(`u.created_at >= ?`, span.to),
+	}}
 }
 
 // sumOf is the sum of a measure over the rows matching cond ("": all), 0
@@ -241,7 +238,7 @@ type rollupState struct{ low, high *time.Time }
 
 // rollupStep does one transaction's share of a refresh stage and says
 // whether more is left.
-type rollupStep func(context.Context, pgx.Tx, *rollupState) (hours int, more bool, err error)
+type rollupStep func(context.Context, *gorm.DB, *rollupState) (hours int, more bool, err error)
 
 // refreshRollup brings the rollup up to date: it rolls up the sealed hours,
 // recomputes the marked ones, then fills in one chunk of the history. Each
@@ -253,7 +250,7 @@ func (s *Service) refreshRollup(ctx context.Context) (int, error) {
 		for {
 			var n int
 			var more bool
-			err := s.rollupTx(ctx, func(tx pgx.Tx, st *rollupState) (err error) {
+			err := s.rollupTx(ctx, func(tx *gorm.DB, st *rollupState) (err error) {
 				n, more, err = step(ctx, tx, st)
 				return err
 			})
@@ -273,9 +270,12 @@ func (s *Service) refreshRollup(ctx context.Context) (int, error) {
 }
 
 // rollupTx runs fn under the rollup's lock with its state, saved after fn.
-func (s *Service) rollupTx(ctx context.Context, fn func(pgx.Tx, *rollupState) error) error {
-	return pgx.BeginFunc(ctx, s.db.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('usage_hourly')); SET LOCAL statement_timeout = '`+rollupStatementTimeout+`'`); err != nil {
+func (s *Service) rollupTx(ctx context.Context, fn func(*gorm.DB, *rollupState) error) error {
+	return s.db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := store.XactLock(ctx, tx, "usage_hourly"); err != nil {
+			return err
+		}
+		if err := store.SetLocal(ctx, tx, "statement_timeout", rollupStatementTimeout); err != nil {
 			return err
 		}
 		var st rollupState
@@ -286,23 +286,27 @@ func (s *Service) rollupTx(ctx context.Context, fn func(pgx.Tx, *rollupState) er
 		if err := fn(tx, &st); err != nil {
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE usage_hourly_state SET low = $1, high = $2`, st.low, st.high)
-		return err
+		// The table holds one row: the condition only says so, as GORM
+		// refuses an UPDATE without WHERE.
+		return store.G(ctx, tx).Model(&model.UsageHourlyState{}).Where("true").
+			Updates(map[string]any{"low": st.low, "high": st.high}).Error
 	})
 }
 
-// sealedSQL is the end of the hours that may be rolled up, by the database's
+// sealedHours is the end of the hours that may be rolled up, by the database's
 // clock: rollupSeal after an hour ends, and none a write transaction of ours
 // still open may have written without marking (it marks rows of hours that
 // ended 15 minutes before its statement; it started before that).
-var sealedSQL = `SELECT date_trunc('hour', LEAST(now() - interval '` + strconv.Itoa(int(rollupSeal/time.Minute)) + ` minutes',
+func sealedHours(db *gorm.DB) *gorm.DB {
+	return store.OneRow(db).Select(`date_trunc('hour', LEAST(now() - make_interval(secs => ?),
 	COALESCE((SELECT min(xact_start) FROM pg_stat_activity WHERE datname = current_database() AND usename = current_user
-		AND backend_xid IS NOT NULL AND pid <> pg_backend_pid()), 'infinity') - interval '15 minutes'), 'UTC')`
+		AND backend_xid IS NOT NULL AND pid <> pg_backend_pid()), 'infinity') - interval '15 minutes'), 'UTC')`, rollupSeal.Seconds())
+}
 
 // rollupForward rolls up a chunk of the sealed hours after the held ones.
-func rollupForward(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, error) {
+func rollupForward(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool, error) {
 	var sealed time.Time
-	if err := tx.QueryRow(ctx, sealedSQL).Scan(&sealed); err != nil {
+	if err := sealedHours(store.G(ctx, tx)).Row().Scan(&sealed); err != nil {
 		return 0, false, err
 	}
 	if st.high == nil {
@@ -323,12 +327,13 @@ func rollupForward(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, 
 // rollupDirty recomputes the first marked hours and clears the marks read
 // for them; marks outside the held hours are cleared alone, those hours
 // being rolled up from scratch when they are reached.
-func rollupDirty(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, error) {
-	var ids []int64
-	var hours []time.Time
-	if err := tx.QueryRow(ctx, `WITH h AS (SELECT DISTINCT hour FROM usage_hourly_dirty ORDER BY hour LIMIT $1)
-		SELECT COALESCE(array_agg(d.id), '{}'), COALESCE(array_agg(DISTINCT d.hour), '{}')
-		FROM usage_hourly_dirty d JOIN h ON h.hour = d.hour`, rollupDirtyHours).Scan(&ids, &hours); err != nil {
+func rollupDirty(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool, error) {
+	var ids store.Int64s
+	var hours store.Times
+	g := store.G(ctx, tx)
+	first := g.Model(&model.UsageHourlyDirty{}).Distinct("hour").Order("hour").Limit(rollupDirtyHours)
+	if err := g.Table("usage_hourly_dirty d").Select("COALESCE(array_agg(d.id), '{}'), COALESCE(array_agg(DISTINCT d.hour), '{}')").
+		Joins("JOIN (?) h ON h.hour = d.hour", first).Row().Scan(&ids, &hours); err != nil {
 		return 0, false, err
 	}
 	n := 0
@@ -342,18 +347,18 @@ func rollupDirty(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, er
 		}
 		n += k
 	}
-	_, err := tx.Exec(ctx, `DELETE FROM usage_hourly_dirty WHERE id = ANY($1)`, ids)
+	err := store.G(ctx, tx).Where("id = ANY(?)", ids).Delete(&model.UsageHourlyDirty{}).Error
 	return n, len(hours) == rollupDirtyHours, err
 }
 
 // rollupBackfill rolls up the chunk of history below the held hours, down to
 // the hour of the oldest usage row.
-func rollupBackfill(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool, error) {
+func rollupBackfill(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool, error) {
 	if st.low == nil {
 		return 0, false, nil
 	}
 	var oldest *time.Time
-	if err := tx.QueryRow(ctx, `SELECT min(created_at) FROM usage_logs`).Scan(&oldest); err != nil {
+	if err := store.G(ctx, tx).Model(&model.UsageLog{}).Select("min(created_at)").Row().Scan(&oldest); err != nil {
 		return 0, false, err
 	}
 	if oldest == nil || !oldest.Truncate(time.Hour).Before(*st.low) {
@@ -370,15 +375,20 @@ func rollupBackfill(ctx context.Context, tx pgx.Tx, st *rollupState) (int, bool,
 
 // rollupHours recomputes the rollup of the hours [from, to) from usage_logs
 // and returns how many hours that was.
-func rollupHours(ctx context.Context, tx pgx.Tx, from, to time.Time) (int, error) {
-	if _, err := tx.Exec(ctx, `DELETE FROM usage_hourly WHERE created_at >= $1 AND created_at < $2`, from, to); err != nil {
+func rollupHours(ctx context.Context, tx *gorm.DB, from, to time.Time) (int, error) {
+	if err := store.G(ctx, tx).Where("created_at >= ? AND created_at < ?", from, to).Delete(&model.UsageHourly{}).Error; err != nil {
 		return 0, err
 	}
+	g := store.G(ctx, tx)
 	dims := strings.Join(rollupDims, ", ")
-	if _, err := tx.Exec(ctx, `INSERT INTO usage_hourly (created_at, `+dims+`, `+measureList(func(m statMeasure) string { return m.name })+`)
-		SELECT date_trunc('hour', u.created_at, 'UTC'), `+dims+`, `+measureList(func(m statMeasure) string { return `sum(` + m.row + `)` })+`
-		FROM usage_logs u WHERE u.created_at >= $1 AND u.created_at < $2
-		GROUP BY 1, `+dims, from, to); err != nil {
+	hours := g.Session(&gorm.Session{NewDB: true}).Table("usage_logs u").
+		Select("date_trunc('hour', u.created_at, 'UTC'), "+dims+", "+measureList(func(m statMeasure) string { return `sum(` + m.row + `)` })).
+		Where("u.created_at >= ? AND u.created_at < ?", from, to).Group("1, " + dims)
+	columns := append([]string{"created_at"}, rollupDims...)
+	for _, m := range statMeasures {
+		columns = append(columns, m.name)
+	}
+	if err := gormpg.InsertSelect(g, "usage_hourly", columns, hours).Error; err != nil {
 		return 0, err
 	}
 	return int(to.Sub(from) / time.Hour), nil

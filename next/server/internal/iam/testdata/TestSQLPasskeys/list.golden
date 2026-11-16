@@ -1,0 +1,4 @@
+-- sql
+SELECT id, name, rp_id, created_at, last_used_at FROM "user_passkeys" WHERE user_id = $1 ORDER BY created_at DESC
+-- vars
+$1 int64 7

@@ -6,6 +6,7 @@ require github.com/Sub2API-Devs/sup2api/next/sdk v0.0.0
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
+	github.com/Sub2API-Devs/sup2api/next/runtime-contract v0.0.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
@@ -15,6 +16,8 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.11.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/mattn/go-colorable v0.1.12 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/oklog/run v1.1.0 // indirect
@@ -30,6 +33,10 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
 	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
+	gorm.io/driver/postgres v1.6.3 // indirect
+	gorm.io/gorm v1.31.2 // indirect
 )
 
 replace github.com/Sub2API-Devs/sup2api/next/sdk => ../../sdk
+
+replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => ../../runtime-contract

@@ -5,14 +5,13 @@ import (
 	"context"
 	"net/http"
 	"slices"
-	"strconv"
-	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
@@ -57,20 +56,21 @@ type WatchItem struct {
 	TopOther        int64           `json:"top_other"`
 }
 
-// watchFilter builds the WHERE clause over watchlist w.
-func watchFilter(req *pluginv1.HTTPRequest, now time.Time) (string, []any, pluginsdk.FieldErrors) {
-	f := &sqlFilter{conds: []string{"(w.expires_at IS NULL OR w.expires_at > $1)"}, args: []any{now}}
+// watchFilter builds the conditions over watchlist w.
+func watchFilter(req *pluginv1.HTTPRequest, now time.Time) *sqlFilter {
+	f := &sqlFilter{}
+	f.add("(w.expires_at IS NULL OR w.expires_at > ?)", now)
 	if v := pluginsdk.Query(req, "level"); v != "" {
 		if v != LevelObserve && v != LevelEnforce {
 			f.errs = f.errs.Add("level", "enum", "level must be observe or enforce / level 取值为 observe、enforce")
 		} else {
-			f.conds = append(f.conds, "w.level = "+f.arg(v))
+			f.eq("w.level", v)
 		}
 	}
 	switch pluginsdk.Query(req, "new_only") {
 	case "", "0", "false":
 	case "1", "true":
-		f.conds = append(f.conds, "w.hits_since_seen > 0")
+		f.add("w.hits_since_seen > 0")
 	default:
 		f.errs = f.errs.Add("new_only", "enum", "new_only must be true or false / new_only 取值为 true、false")
 	}
@@ -80,35 +80,29 @@ func watchFilter(req *pluginv1.HTTPRequest, now time.Time) (string, []any, plugi
 			f.errs = f.errs.Add("category", "invalid", "category is invalid / 分类格式无效")
 		} else {
 			// By the record's highest category, like the row's top categories.
-			f.conds = append(f.conds, "EXISTS (SELECT 1 FROM events e WHERE e.user_id = w.user_id AND e."+suspiciousResult+" AND e.highest_category = "+f.arg(v)+")")
+			f.add("EXISTS (SELECT 1 FROM events e WHERE e.user_id = w.user_id AND e."+suspiciousResult+" AND e.highest_category = ?)", v)
 		}
 	}
-	if id, ok := f.queryID(req, "user_id"); ok {
-		f.conds = append(f.conds, "w.user_id = "+f.arg(id))
-	}
+	f.id(req, "user_id", "w.user_id")
 	f.idList(req, "user_ids", "w.user_id")
-	return f.where(), f.args, f.errs
+	return f
 }
 
 func (p *Plugin) listWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
 	page, size, errs := pagination(req)
 	now := p.now().UTC()
-	where, args, ferrs := watchFilter(req, now)
-	errs = append(errs, ferrs...)
-	order := "w.hits_since_seen DESC, w.last_hit_at DESC NULLS LAST, w.user_id"
-	join := ""
-	switch pluginsdk.Query(req, "sort") {
+	f := watchFilter(req, now)
+	errs = append(errs, f.errs...)
+	var order pgdb.SQL = "w.hits_since_seen DESC, w.last_hit_at DESC NULLS LAST, w.user_id"
+	severity := false
+	switch sort := pluginsdk.Query(req, "sort"); sort {
 	case "", "new":
 	case "last_hit":
 		order = "w.last_hit_at DESC NULLS LAST, w.user_id"
-	case "severity", "total":
-		join = ` LEFT JOIN (SELECT user_id, ` + severityCounts + ` FROM events
-			WHERE ` + suspiciousResult + ` AND user_id IN (SELECT w.user_id FROM watchlist w WHERE ` + where + `)
-			GROUP BY user_id) r ON r.user_id = w.user_id`
-		order = "coalesce(r.high, 0) DESC, coalesce(r.medium, 0) DESC, w.user_id"
-		if pluginsdk.Query(req, "sort") == "total" {
-			order = "coalesce(r.total, 0) DESC, w.user_id"
-		}
+	case "severity":
+		order, severity = "coalesce(r.high, 0) DESC, coalesce(r.medium, 0) DESC, w.user_id", true
+	case "total":
+		order, severity = "coalesce(r.total, 0) DESC, w.user_id", true
 	default:
 		errs = errs.Add("sort", "enum", "sort must be new, last_hit, severity or total / sort 取值为 new、last_hit、severity、total")
 	}
@@ -119,27 +113,30 @@ func (p *Plugin) listWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*plu
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
+	watched := func() *gorm.DB { return db.Table("watchlist w").Scopes(f.scope) }
 	var total int64
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM watchlist w WHERE `+where, args...).Scan(&total); err != nil {
+	if err := watched().Count(&total).Error; err != nil {
 		return nil, err
 	}
-	n := len(args)
-	args = append(args, size, (page-1)*size)
-	cols := "w." + strings.ReplaceAll(watchColumns, ", ", ", w.")
-	rows, err := db.Query(ctx, `SELECT `+cols+` FROM watchlist w`+join+` WHERE `+where+
-		` ORDER BY `+order+` LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2), args...)
-	if err != nil {
+	q := watched()
+	if severity {
+		// The suspicious records of the listed users, counted by severity.
+		q = q.Joins("LEFT JOIN (?) r ON r.user_id = w.user_id", db.Model(&model.Event{}).Select("user_id, "+severityCounts).
+			Where(suspiciousResult).Where("user_id IN (?)", watched().Select("w.user_id")).Group("user_id"))
+	}
+	var rows []model.Watch
+	if err := q.Select("w.*").Order(string(order)).Limit(size).Offset((page - 1) * size).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	list, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Watch, error) { return scanWatch(r) })
-	if err != nil {
-		return nil, err
+	list := make([]Watch, len(rows))
+	for i, m := range rows {
+		list[i] = watchOf(m)
 	}
 	items, err := p.watchItems(ctx, db, list, now)
 	if err != nil {
 		return nil, err
 	}
-	counts, err := p.watchCounts(ctx, db)
+	counts, err := p.watchCounts(db)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +159,7 @@ type watchRows struct {
 
 // watchItems adds the aggregates of each entry's suspicious records, its
 // recent groups and the flow of its current group.
-func (p *Plugin) watchItems(ctx context.Context, db *pgxpool.Pool, list []Watch, now time.Time) ([]WatchItem, error) {
+func (p *Plugin) watchItems(ctx context.Context, db *gorm.DB, list []Watch, now time.Time) ([]WatchItem, error) {
 	items := make([]WatchItem, len(list))
 	if len(list) == 0 {
 		return items, nil
@@ -174,7 +171,7 @@ func (p *Plugin) watchItems(ctx context.Context, db *pgxpool.Pool, list []Watch,
 		r.ids = append(r.ids, w.UserID)
 		r.byID[w.UserID] = &items[i]
 	}
-	for _, load := range []func(context.Context, *pgxpool.Pool, *watchRows, time.Time) error{
+	for _, load := range []func(context.Context, *gorm.DB, *watchRows, time.Time) error{
 		loadWatchRecords, loadWatchGroups,
 	} {
 		if err := load(ctx, db, r, now); err != nil {
@@ -214,18 +211,19 @@ func topCategories(counts map[string]int64, total int64, labels map[string]strin
 
 // loadWatchRecords counts the suspicious records by severity and highest
 // category.
-func loadWatchRecords(ctx context.Context, db *pgxpool.Pool, r *watchRows, _ time.Time) error {
-	rows, err := db.Query(ctx, `SELECT user_id, highest_category, severity, count(*) FROM events
-		WHERE `+suspiciousResult+` AND user_id = ANY($1) GROUP BY 1, 2, 3`, r.ids)
-	if err != nil {
-		return err
+func loadWatchRecords(ctx context.Context, db *gorm.DB, r *watchRows, _ time.Time) error {
+	var rows []struct {
+		UserID                    int64
+		HighestCategory, Severity string
+		N                         int64
 	}
-	var uid, n int64
-	var cat, severity string
-	_, err = pgx.ForEachRow(rows, []any{&uid, &cat, &severity, &n}, func() error {
+	err := db.Model(&model.Event{}).Select("user_id, highest_category, severity, count(*) AS n").
+		Where(suspiciousResult+" AND user_id = ANY(?)", pgdb.Array[int64](r.ids)).Group("1, 2, 3").Scan(&rows).Error
+	for _, row := range rows {
+		uid, n := row.UserID, row.N
 		it := r.byID[uid]
 		it.SuspiciousTotal += n
-		switch severity {
+		switch row.Severity {
 		case "high":
 			it.BySeverity.High += n
 		case "medium":
@@ -233,36 +231,30 @@ func loadWatchRecords(ctx context.Context, db *pgxpool.Pool, r *watchRows, _ tim
 		case "low":
 			it.BySeverity.Low += n
 		}
-		if cat != "" {
+		if cat := row.HighestCategory; cat != "" {
 			if r.categories[uid] == nil {
 				r.categories[uid] = map[string]int64{}
 			}
 			r.categories[uid][cat] += n
 		}
-		return nil
-	})
+	}
 	return err
 }
 
 // loadWatchGroups reads the groups of the last recentDays, newest first: the
 // first is the current one.
-func loadWatchGroups(ctx context.Context, db *pgxpool.Pool, r *watchRows, now time.Time) error {
-	rows, err := db.Query(ctx, `SELECT user_id, group_id, max(created_at) FROM events WHERE user_id = ANY($1) AND created_at >= $2
-		GROUP BY user_id, group_id ORDER BY user_id, max(created_at) DESC`, r.ids, now.Add(-recentDays*24*time.Hour))
-	if err != nil {
-		return err
-	}
-	var uid, group int64
-	var last time.Time
-	_, err = pgx.ForEachRow(rows, []any{&uid, &group, &last}, func() error {
-		it := r.byID[uid]
-		if !r.grouped[uid] {
-			r.grouped[uid], it.GroupID = true, group
+func loadWatchGroups(ctx context.Context, db *gorm.DB, r *watchRows, now time.Time) error {
+	var rows []model.Event
+	err := db.Select("user_id, group_id").Where("user_id = ANY(?) AND created_at >= ?", pgdb.Array[int64](r.ids), now.Add(-recentDays*24*time.Hour)).
+		Group("user_id, group_id").Order("user_id, max(created_at) DESC").Find(&rows).Error
+	for _, row := range rows {
+		it := r.byID[row.UserID]
+		if !r.grouped[row.UserID] {
+			r.grouped[row.UserID], it.GroupID = true, row.GroupID
 		} else {
-			it.OtherGroups = append(it.OtherGroups, group)
+			it.OtherGroups = append(it.OtherGroups, row.GroupID)
 		}
-		return nil
-	})
+	}
 	return err
 }
 
@@ -276,11 +268,11 @@ func (p *Plugin) markWatchSeen(ctx context.Context, req *pluginv1.HTTPRequest) (
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	tag, err := db.Exec(ctx, `UPDATE watchlist SET hits_since_seen = 0 WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > $2)`, uid, p.now().UTC())
-	if err != nil {
-		return nil, err
+	res := db.Model(&model.Watch{}).Where("user_id = ? AND (expires_at IS NULL OR expires_at > ?)", uid, p.now().UTC()).Update("hits_since_seen", 0)
+	if res.Error != nil {
+		return nil, res.Error
 	}
-	if tag.RowsAffected() == 0 {
+	if res.RowsAffected == 0 {
 		return pluginsdk.ErrorResponse(http.StatusNotFound, "not_found", "user is not on the watch list / 该用户不在观察名单中"), nil
 	}
 	return pluginsdk.DataResponse(map[string]any{"user_id": uid, "hits_since_seen": 0}), nil

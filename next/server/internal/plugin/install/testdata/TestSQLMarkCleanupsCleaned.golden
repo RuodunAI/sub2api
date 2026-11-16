@@ -1,0 +1,6 @@
+-- sql
+UPDATE "plugin_rollout_cleanup" SET "state"=$1,"updated_at"=now() WHERE rollout_id IN (SELECT "id" FROM "plugin_rollouts" WHERE plugin_key = $2) AND boot_id = ANY($3::text[]) AND state = 'cleanup_pending'
+-- vars
+$1 string "cleaned"
+$2 string "demo"
+$3 store.Strings [boot-a]

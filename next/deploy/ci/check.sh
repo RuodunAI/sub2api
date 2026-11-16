@@ -63,6 +63,11 @@ mutation() {
 # Signed test packages for the bundled-plugin bootstrap (anthropic, volcengine).
 plugins() {
   set -e
+  # pack compares the GORM models of every plugin with internal/model
+  # (anthropic, volcengine, guard) with its migrations, on PostgreSQL: the pg
+  # service of isolated-compose.yml, whose DSN the gotest container has. The
+  # embedded fallback cannot run here (initdb refuses root).
+  : "${TEST_DATABASE_URL:?pack runs sub2api-plugin db check: run this phase in the gotest container of isolated-compose.yml}"
   checks=/src/checks
   mkdir -p "$checks/builtin"
   CGO_ENABLED=0 go build -o "$checks/sub2api-plugin" ./tools/sub2api-plugin
@@ -75,11 +80,12 @@ plugins() {
     pkg=$("$checks/sub2api-plugin" pack --dir "plugins/$p" --runtimes "$checks/$p-runtime" --out-dir "$dest")
     "$checks/sub2api-plugin" sign --key "$checks/keys/managed-test.key" --key-id managed-test --publisher sub2api "$pkg" >> "$out/plugin-build-$p.log"
   done
-  # R2 alone bundles a newer anthropic (the 0.3.3-test overlay, which adds a
+  # R2 alone bundles a newer anthropic (the 0.3.4-test overlay, which adds a
   # migration), so updating the core must update it.
   mkdir -p "$checks/builtin-next"
   "$checks/sub2api-plugin" build --dir plugins/anthropic --overlay testdata/upgrade --out "$checks/anthropic-next-runtime" >> "$out/plugin-build-anthropic.log"
-  pkg=$("$checks/sub2api-plugin" pack --dir plugins/anthropic --runtimes "$checks/anthropic-next-runtime" --overlay testdata/upgrade --out-dir "$checks/builtin-next")
+  # The overlay's migration has no model on purpose: no db check for it.
+  pkg=$("$checks/sub2api-plugin" pack --dir plugins/anthropic --runtimes "$checks/anthropic-next-runtime" --overlay testdata/upgrade --skip-db-check --out-dir "$checks/builtin-next")
   "$checks/sub2api-plugin" sign --key "$checks/keys/managed-test.key" --key-id managed-test --publisher sub2api "$pkg" >> "$out/plugin-build-anthropic.log"
   "$checks/sub2api-plugin" index --dir "$checks/market" --key "$checks/keys/managed-test.key" > "$out/plugin-market-index.log"
   ls "$checks/builtin" "$checks/builtin-next" "$checks/upload" "$checks/market"

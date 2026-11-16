@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
 import { SchemaForm, SHint, toast } from '@sub2api/ui'
 import SettingsSaveBar from '@/components/SettingsSaveBar.vue'
+import StickyActionBar from '@/components/StickyActionBar.vue'
 import { fieldErrors, notifyError } from '@/utils/errors'
 import { useAuthStore } from '@/stores/auth'
 import { settingsFieldErrors, type PluginSettings } from '../pluginUtil'
@@ -90,9 +91,9 @@ async function save() {
       :disabled="!canManage"
       layout="settings"
     />
-    <div v-if="canManage" class="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-3 rounded-xl border border-gray-200 bg-white/95 px-4 py-3 shadow-sm backdrop-blur dark:border-dark-700 dark:bg-dark-800/95">
-      <SHint v-if="dirty" size="xs" tone="warning" class="mr-auto" data-testid="plugin-settings-dirty">{{ t('plugins.settings.unsaved') }}</SHint>
-      <SettingsSaveBar :dirty="dirty" :saving="saving" @save="save" @reset="reset" />
-    </div>
+    <StickyActionBar v-if="canManage">
+      <SHint v-if="dirty" size="xs" tone="warning" data-testid="plugin-settings-dirty">{{ t('plugins.settings.unsaved') }}</SHint>
+      <template #actions><SettingsSaveBar :dirty="dirty" :saving="saving" @save="save" @reset="reset" /></template>
+    </StickyActionBar>
   </div>
 </template>

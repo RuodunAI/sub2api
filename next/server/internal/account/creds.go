@@ -304,7 +304,7 @@ func (s *Service) credBase(ctx context.Context, a *row) (*credBase, error) {
 	if err != nil {
 		return nil, err
 	}
-	reveal, err := inScope(ctx, s.d.DB.Pool, a.ID, s.scopeOf(ctx, perm.AccountCredentialView))
+	reveal, err := inScope(ctx, s.d.DB.Gorm, a.ID, s.scopeOf(ctx, perm.AccountCredentialView))
 	if err != nil {
 		return nil, err
 	}
@@ -391,7 +391,11 @@ func (s *Service) prepare(ctx context.Context, bt core.AccountTypeBinding, raw j
 			secJSON, stJSON = mustJSON(sec), mustJSON(st)
 		}
 	}
-	if !s.customSettings(ctx) {
+	custom, err := s.customSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !custom {
 		if err := checkGuarded(ctx, bt.Type.GuardedSettings, st, old); err != nil {
 			return nil, err
 		}

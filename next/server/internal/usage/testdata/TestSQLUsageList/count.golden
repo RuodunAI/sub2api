@@ -1,0 +1,8 @@
+-- sql
+SELECT count(*) FROM usage_logs u WHERE u.model = $1 AND u.success = $2 AND (EXISTS (SELECT 1 FROM api_keys fk WHERE fk.id=u.api_key_id AND fk.name ILIKE $3 ESCAPE E'\\')) AND u.created_at >= $4 AND u.created_at < $5
+-- vars
+$1 string "claude"
+$2 bool true
+$3 string "%ci\\_\\%%"
+$4 time.Time 2026-11-01 00:00:00 +0000 UTC
+$5 time.Time 2026-11-15 00:00:00 +0000 UTC

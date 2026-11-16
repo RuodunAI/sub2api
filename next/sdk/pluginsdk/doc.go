@@ -62,6 +62,117 @@
 //     record lost after a successful call means it runs again; both must
 //     be idempotent (CONTRACTS §11.7, §36). So must migrations/*.sql.
 //
+// # Database
+//
+// A plugin with a database (manifest "database", grant "db.schema") owns one
+// schema, plg_<key>. Host.DB returns a GORM handle on it (package pgdb:
+// search_path on the schema, the egress tunnel in strict network mode), at
+// most 4 connections per node unless WithDBPoolSize says otherwise; the
+// plugin's role allows 20 in all, the host's migration connection included.
+// The handle is bound to the context Host.DB was called with: ask again for
+// each call (it is cheap, the connections are shared) and never keep one,
+// e.g. from Init for a goroutine; a kept handle fails every statement once
+// its context is done, with an error that names this as a possible cause
+// (an ordinary cancellation or timeout gets the same error). Plugin code
+// does not import pgx.
+//
+// Statements are built by GORM on the models (Model/Table, Where, Select,
+// Create, Updates, Delete, clause.OnConflict, clause.Returning), not
+// written out: Raw and Exec only combine built queries ("(?) UNION ALL
+// (?)", pgdb.Exists, pgdb.InsertSelect), and pgdb.NextIDs, LockTable and
+// TryXactLock cover sequences and locks. SQL text (of Raw, Exec, Where,
+// Select, Order, Joins, Table, gorm.Expr, clause.Expr ...) is a constant:
+// values go in as ? parameters, and a column a request picks through a
+// fixed whitelist into clause.Column or clause.OrderByColumn. TestNoRawSQL
+// in package pgdb checks the SDK and the plugins of the repository.
+//
+// Array parameters and columns are pgdb.Array; a test double of Host
+// returns a *gorm.DB (pgdb.Open). Errors wrap the driver's. Those of Exec,
+// Create, Save, Find, Scan and the like are translated too: a unique
+// violation also matches gorm.ErrDuplicatedKey (foreign key and check
+// violations gorm.ErrForeignKeyViolated and gorm.ErrCheckConstraintViolated),
+// and First/Take report a missing row as gorm.ErrRecordNotFound. Those of
+// Raw(...).Row() and Rows() are not: test for a duplicate key with
+// pgdb.IsUniqueViolation, which holds on either path.
+//
+// The tables are described twice, and the two must agree:
+//
+//   - The GORM models of the plugin's internal/model package are the one
+//     description to edit. The package exports every model:
+//
+//     func All() []any { return []any{&Order{}, &Item{}} }
+//
+//     Each model names its table (TableName) and spells every column out
+//     as it is in the database: `gorm:"type:jsonb;not null;default:'{}'"`,
+//     a PostgreSQL array as a pgdb.Array[T] with its type (type:text[]),
+//     an index, check or foreign key constraint by its name
+//     (index:<name>, check:<name>,<expr>, constraint:<name>,). A unique
+//     column is `unique`: GORM names a constraint it creates
+//     uni_<table>_<column>, and takes any unique constraint on just that
+//     column for it. Name a new one so in the migration too, or declare
+//     uniqueIndex:<name>: a model that drops `unique` from a column whose
+//     constraint has another name cannot be diffed (check lists the
+//     constraint; drop it by hand). Turn GORM's automatic
+//     created_at/updated_at off (autoCreateTime:false, autoUpdateTime:false)
+//     where the database default fills them.
+//
+//   - migrations/*.sql are what the host runs: in file name order, each in
+//     its own transaction with search_path on the schema, and idempotent.
+//     The plugin never runs AutoMigrate.
+//
+// The sub2api-plugin command keeps the two together:
+//
+//	sub2api-plugin db diff --dir <plugin> [--name add_score]  # writes migrations/NNNN_add_score.sql
+//	sub2api-plugin db check --dir <plugin>                    # fails while they disagree; pack runs it
+//
+// Both compare on the test PostgreSQL (TEST_DATABASE_URL, or the local
+// server of package testpg), in one transaction they roll back
+// (pgdbtool.Drift). They run migrations/ in a scratch schema as a scratch
+// role that owns that schema and nothing else, as the host runs them with
+// the plugin's role: a migration that needs more (CREATE EXTENSION, a table
+// in public, ALTER ROLE) fails here as it would on install. They let
+// AutoMigrate build All() in a second, empty schema and compare the two
+// catalogs: the tables; each column's type, NOT NULL and default (by value:
+// '{}' and '{}'::jsonb, 0 and '0'::numeric are the same); primary keys; and
+// indexes and constraints by definition (pg_get_indexdef,
+// pg_get_constraintdef), so that an index of other columns, a uniqueIndex
+// turned plain, another CHECK expression or ON DELETE is a difference even
+// under the same name, while the names GORM gives unique constraints
+// (uni_<table>_<column>), foreign keys and checks need not be the
+// migrations'. A model's TableName must not name a schema. To reach
+// internal/model they generate a main package in the plugin module and go
+// run it (pgdbtool.DriftMain).
+//
+// diff writes the DDL AutoMigrate runs on the migrated schema, made
+// idempotent, as the next migration, numbered with as many digits as the
+// existing ones (the host runs them in file name order), after running it
+// twice on a scratch schema and finding no difference left; or says nothing
+// is to do. It writes nothing, and prints what is left for a hand-written
+// migration, when a change can lose data or fail on the rows of a live
+// table (a column type, a drop, SET NOT NULL, a NOT NULL column without a
+// default, a CHECK, UNIQUE or foreign key on a table that already exists:
+// marked "!"), when the schemas differ in what AutoMigrate does not change
+// (it never adds NOT NULL to an existing column, changes a primary key or
+// redefines an index or constraint it finds by name), or when the schema
+// has what no model maps: a table, column, index or constraint (a field
+// removed from the code). Views, sequences, functions, triggers and types
+// that no model can describe are declared by the model package:
+//
+//	func Unmanaged() []string { return []string{"function touch_updated_at()", "trigger orders.orders_touch", "view order_totals"} }
+//
+// (kinds: function with its argument types, view, materialized view,
+// sequence, trigger as table.trigger, type); check fails on any other and
+// on a declared one the migrations do not create. Their definitions are not
+// compared. check fails on any difference; pack runs it with the overlay's
+// migrations.
+//
+// The test PostgreSQL is TEST_DATABASE_URL when set. Otherwise diff, check
+// and pack start the local server of package testpg (downloaded once) and
+// stop it again when they started it and no other program (another pack,
+// a test) uses it.
+//
+// Tests run the real migrations: pluginsdktest.NewSchema and ApplyMigrations.
+//
 // The pluginsdktest sub-package runs a plugin in-process over bufconn with a
 // fake host, for unit tests.
 package pluginsdk

@@ -108,23 +108,14 @@ func TestAllowsRowVectors(t *testing.T) {
 	}
 }
 
-// The predicate text is fixed per table (one plan whatever the ids) and
-// numbered from the given placeholder.
-func TestScopeTableSQL(t *testing.T) {
+// Args holds one value per placeholder of Cond (whose text the scope's SQL
+// snapshot pins), a group wildcard being a flag of its own.
+func TestScopeTableArgs(t *testing.T) {
 	t.Parallel()
-	if got, want := ProxyRows.SQL(2), "($2::boolean OR COALESCE(p.created_by = $3::bigint, false) OR p.id = ANY($4::bigint[]))"; got != want {
-		t.Fatalf("proxy SQL = %s", got)
-	}
-	want := "($3::boolean OR COALESCE(a.created_by = $4::bigint, false) OR a.id = ANY($5::bigint[])" +
-		" OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ($6::boolean OR ag.group_id = ANY($7::bigint[])))" +
-		" OR EXISTS (SELECT 1 FROM account_groups ag JOIN unnest($8::bigint[], $9::bigint[]) sp(g, x) ON sp.x = ag.account_id AND (sp.g = 0 OR sp.g = ag.group_id) WHERE ag.account_id = a.id))"
-	if got := AccountRows.SQL(3); got != want {
-		t.Fatalf("account SQL =\n%s\nwant\n%s", got, want)
-	}
-	if args := AccountRows.Args(DataScope{Groups: []int64{0, 12}}); len(args) != 7 || args[3] != true || len(args[4].([]int64)) != 1 {
+	if args := AccountRows().Args(DataScope{Groups: []int64{0, 12}}); len(args) != 7 || args[3] != true || len(args[4].([]int64)) != 1 {
 		t.Fatalf("account args = %#v", args)
 	}
-	if args := ProxyRows.Args(DataScope{}); len(args) != 3 || args[2] == nil {
+	if args := ProxyRows().Args(DataScope{}); len(args) != 3 || args[2] == nil {
 		t.Fatalf("proxy args = %#v", args)
 	}
 }

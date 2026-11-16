@@ -220,9 +220,7 @@ jobs:
         run: sh .github/next-ci/next-sums-clean.sh
 
   # -------------------------------------------------------------------- web
-  # The console: types and unit tests, including the editor half of the
-  # editor → core contract fixture (plugins/ccgateway/companions/contracts/
-  # testdata), whose core half runs in the server job.
+  # The console: types and unit tests.
   web:
     name: web console
     runs-on: ubuntu-latest

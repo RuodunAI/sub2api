@@ -43,7 +43,6 @@ type Client struct {
 var (
 	_ core.PlatformPlugin                 = (*Client)(nil)
 	_ core.DeclaredUpstream               = (*Client)(nil)
-	_ core.AccountLifecyclePlugin         = (*Client)(nil)
 	_ core.AccountModelAvailabilityPlugin = (*Client)(nil)
 )
 
@@ -64,18 +63,9 @@ func New(profile *upstream.Profile, plugin core.PlatformPlugin) *Client {
 	return c
 }
 
-// OnAccountLifecycle goes to the plugin like the other entry points the
-// declaration does not cover: the core calls it only for a type declaring
-// lifecycle. Unimplemented when the plugin has no such hook.
-func (c *Client) OnAccountLifecycle(ctx context.Context, in *pluginv1.AccountLifecycleRequest) (*pluginv1.AccountLifecycleResponse, error) {
-	if p, ok := c.platform.(core.AccountLifecyclePlugin); ok {
-		return p.OnAccountLifecycle(ctx, in)
-	}
-	return nil, status.Error(codes.Unimplemented, "the plugin has no account lifecycle hook")
-}
-
-// CheckModelAvailability goes to the plugin as OnAccountLifecycle does (a
-// type declaring modelAvailability).
+// CheckModelAvailability goes to the plugin like the other entry points the
+// declaration does not cover (a type declaring modelAvailability).
+// Unimplemented when the plugin has no such check.
 func (c *Client) CheckModelAvailability(ctx context.Context, in *pluginv1.CheckModelAvailabilityRequest) (*pluginv1.CheckModelAvailabilityResponse, error) {
 	if p, ok := c.platform.(core.AccountModelAvailabilityPlugin); ok {
 		return p.CheckModelAvailability(ctx, in)

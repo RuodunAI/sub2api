@@ -14,23 +14,10 @@ import (
 // the plugin reads credentials of its own account types (ARCHITECTURE 6.6).
 var credentialsScopeOwn = map[string]any{"types": "own"}
 
-func (v *validator) accountLifecycle(field string, at manifest.AccountType) {
-	if lifecycle := at.Lifecycle; lifecycle != nil {
-		v.needCap(field+".lifecycle", manifest.CapAccountLifecycle)
-		if lifecycle.Required && !lifecycle.Preparation {
-			v.add(field+".lifecycle.required", "invalid", "required needs preparation")
-		}
-		seen := map[string]bool{}
-		for _, action := range lifecycle.Actions {
-			if !accountTypeIDRe.MatchString(action.ID) || seen[action.ID] || strings.TrimSpace(action.Label["en"]) == "" {
-				v.add(field+".lifecycle.actions", "invalid", "actions need unique identifiers and English labels")
-			}
-			seen[action.ID] = true
-		}
-		if d := lifecycle.Deletion; d != nil && (d.RetentionDays < 1 || d.RetentionDays > manifest.MaxRetentionDays) {
-			v.add(field+".lifecycle.deletion.retentionDays", "invalid", "retention must be 1 to %d days", manifest.MaxRetentionDays)
-		}
-	}
+// accountExtensions validates accountTypes[].extensionsSchema: a bounded,
+// closed object schema whose properties do not shadow core, credential or
+// settings fields.
+func (v *validator) accountExtensions(field string, at manifest.AccountType) {
 	if len(at.ExtensionsSchema) == 0 {
 		return
 	}
@@ -44,7 +31,7 @@ func (v *validator) accountLifecycle(field string, at manifest.AccountType) {
 		v.add(field+".extensionsSchema.properties", "invalid", "at most 64 extension fields are allowed")
 		return
 	}
-	reserved := []string{"id", "name", "plugin_key", "type", "status", "schedulable", "auto_disable", "priority", "weight", "max_concurrency", "rpm_limit", "tpm_limit", "spm_limit", "proxy_id", "proxy_url", "models", "model_mapping", "credentials", "created_by", "group_ids", "status_reason", "auto_disabled_until", "created_at", "updated_at", "preparation_key", "lifecycle_sync"}
+	reserved := []string{"id", "name", "plugin_key", "type", "status", "schedulable", "auto_disable", "priority", "weight", "max_concurrency", "rpm_limit", "tpm_limit", "spm_limit", "proxy_id", "proxy_url", "models", "model_mapping", "credentials", "created_by", "group_ids", "status_reason", "auto_disabled_until", "created_at", "updated_at"}
 	for name := range properties {
 		if slices.Contains(reserved, name) || slices.Contains(at.SensitiveFields, name) || slices.Contains(at.SettingsFields, name) {
 			v.add(field+".extensionsSchema.properties."+name, "conflict", "extensions cannot duplicate core, credential or existing settings fields")
@@ -104,7 +91,7 @@ func (v *validator) accountTypes() {
 		v.form(f+".form", at.Form, false)
 		v.guardedSettings(f, at)
 		v.upstreamFields(f, at)
-		v.accountLifecycle(f, at)
+		v.accountExtensions(f, at)
 		v.defaultModels(f, at)
 		v.defaultLimits(f+".defaultLimits", at.DefaultLimits)
 		v.commonControls(f, at)
@@ -355,16 +342,6 @@ func (v *validator) defaultLimits(f string, d *manifest.AccountDefaultLimits) {
 // manifest.MaxDefaultModels each. A mapping key missing from a non-empty
 // defaultModels is rejected too: the account would never be scheduled for it.
 func (v *validator) defaultModels(f string, at manifest.AccountType) {
-	if len(at.DefaultModelsBySubscription) > 32 {
-		v.add(f+".defaultModelsBySubscription", "too_many", "at most 32 subscription presets")
-	}
-	for _, plan := range sortedKeys(at.DefaultModelsBySubscription) {
-		if !subscriptionRe.MatchString(plan) {
-			v.add(f+".defaultModelsBySubscription", "invalid", "invalid subscription type %q", plan)
-		}
-		// Reuse the same bounded complete-id validation for each preset.
-		v.defaultModels(f+".defaultModelsBySubscription."+plan, manifest.AccountType{DefaultModels: at.DefaultModelsBySubscription[plan]})
-	}
 	if len(at.DefaultModels) > manifest.MaxDefaultModels {
 		v.add(f+".defaultModels", "too_many", "at most %d default models", manifest.MaxDefaultModels)
 	}

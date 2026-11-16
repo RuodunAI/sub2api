@@ -11,6 +11,8 @@ import (
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/growth/internal/model"
 )
 
 // OnEvents implements pluginsdk.EventHandler.
@@ -132,11 +134,11 @@ func (p *Plugin) runCleanup(ctx context.Context) (*pluginv1.RunJobResponse, erro
 	}
 	// Delete check-in records older than 90 days.
 	cutoff := time.Now().AddDate(0, 0, -90).Format("2006-01-02")
-	tag, err := db.Exec(ctx, `DELETE FROM checkins WHERE checkin_date < $1`, cutoff)
-	if err != nil {
-		return nil, err
+	res := db.Where("checkin_date < ?", cutoff).Delete(&model.Checkin{})
+	if res.Error != nil {
+		return nil, res.Error
 	}
-	return &pluginv1.RunJobResponse{Message: "cleaned " + strconv.FormatInt(tag.RowsAffected(), 10) + " old check-in records"}, nil
+	return &pluginv1.RunJobResponse{Message: "cleaned " + strconv.FormatInt(res.RowsAffected, 10) + " old check-in records"}, nil
 }
 
 // refused reports a ledger refusal that a retry cannot fix.

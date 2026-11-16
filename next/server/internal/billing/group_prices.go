@@ -9,8 +9,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5"
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/group"
@@ -18,6 +18,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 func (s *Service) registerPricingRoutes(r *httpapi.Router) {
@@ -34,38 +35,49 @@ type pricedGroup struct {
 
 func (g pricedGroup) ref() core.GroupRef { return core.GroupRef{ID: g.ID, Name: g.Name} }
 
-// loadGroups reads the groups cond selects.
-func loadGroups(ctx context.Context, q store.Querier, cond string, args ...any) ([]pricedGroup, error) {
-	rows, err := q.Query(ctx, `SELECT g.id, g.name, g.rate_multiplier, g.model_allowlist, g.model_filter_mode,
-		g.visibility = 'public' FROM groups g`+cond, args...)
-	if err != nil {
+// pricedGroupRow is a row of pricedGroups.
+type pricedGroupRow struct {
+	ID              int64
+	Name            string
+	RateMultiplier  decimal.Decimal
+	ModelAllowlist  store.JSON[[]string]
+	ModelFilterMode string
+	Public          bool
+}
+
+// loadGroups reads the groups (alias g) cond selects, by id.
+func loadGroups(ctx context.Context, q *gorm.DB, cond string, args ...any) ([]pricedGroup, error) {
+	var rows []pricedGroupRow
+	if err := store.G(ctx, q).Table("groups g").Select(`g.id, g.name, g.rate_multiplier, g.model_allowlist, g.model_filter_mode,
+		g.visibility = 'public' AS public`).Where(cond, args...).Order("g.id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (g pricedGroup, err error) {
-		err = row.Scan(&g.ID, &g.Name, &g.RateMultiplier, &g.ModelAllowlist, &g.ModelFilterMode, &g.public)
-		return g, err
-	})
+	out := make([]pricedGroup, len(rows))
+	for i, r := range rows {
+		out[i] = pricedGroup{public: r.Public, GroupInfo: core.GroupInfo{ID: r.ID, Name: r.Name, RateMultiplier: r.RateMultiplier,
+			ModelAllowlist: r.ModelAllowlist.V, ModelFilterMode: r.ModelFilterMode}}
+	}
+	return out, nil
 }
 
 // catalog is the enabled global prices by model.
 type catalog map[string]PriceDef
 
-func loadCatalog(ctx context.Context, q store.Querier) (catalog, error) {
-	rows, err := q.Query(ctx, `SELECT model, mode, config, expression FROM model_prices WHERE enabled`)
-	if err != nil {
+func loadCatalog(ctx context.Context, q *gorm.DB) (catalog, error) {
+	var rows []model.ModelPrice
+	if err := enabledPrices(store.G(ctx, q), "model", "mode", "config", "expression").Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := catalog{}
-	for rows.Next() {
-		var model string
-		var p PriceDef
-		if err := rows.Scan(&model, &p.Mode, &p.Config, &p.Expression); err != nil {
-			return nil, err
-		}
-		out[model] = p
+	out := make(catalog, len(rows))
+	for _, r := range rows {
+		out[r.Model] = PriceDef{Mode: r.Mode, Config: r.Config, Expression: r.Expression}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// enabledPrices selects columns of the enabled global prices.
+func enabledPrices(db *gorm.DB, columns ...string) *gorm.DB {
+	return db.Model(&model.ModelPrice{}).Select(columns).Where("enabled")
 }
 
 // models returns the priced models, sorted.
@@ -82,7 +94,7 @@ func (c catalog) base(model string) *PriceDef {
 
 // offeredModels returns the models each of the groups provides
 // (group.OfferedModels), by group id.
-func offeredModels(ctx context.Context, q store.Querier, groups []pricedGroup, prices catalog) (map[int64][]string, error) {
+func offeredModels(ctx context.Context, q *gorm.DB, groups []pricedGroup, prices catalog) (map[int64][]string, error) {
 	infos := make([]core.GroupInfo, len(groups))
 	for i, g := range groups {
 		infos[i] = g.GroupInfo
@@ -99,7 +111,7 @@ type groupPrices struct {
 }
 
 // loadGroupPrices reads the one group cond selects; not_found without one.
-func loadGroupPrices(ctx context.Context, q store.Querier, cond string, args ...any) (*groupPrices, error) {
+func loadGroupPrices(ctx context.Context, q *gorm.DB, cond string, args ...any) (*groupPrices, error) {
 	groups, err := loadGroups(ctx, q, cond, args...)
 	if err != nil {
 		return nil, err
@@ -123,9 +135,9 @@ func loadGroupPrices(ctx context.Context, q store.Querier, cond string, args ...
 // and the rules that price it for segmentID (0 = none) in groupID. It is the
 // one place the list prices of a group's models for one segment are read;
 // the caller says which models and what to make of each.
-func eachPrice(ctx context.Context, q store.Querier, prices catalog, models []string, groupID, segmentID int64, add func(model string, base PriceDef, levels ruleLevels)) error {
+func eachPrice(ctx context.Context, q *gorm.DB, prices catalog, models []string, groupID, segmentID int64, add func(model string, base PriceDef, levels ruleLevels)) error {
 	on := core.PriceQuery{GroupID: groupID, SegmentID: segmentID}
-	rules, err := loadRules(ctx, q, rulesFor, on.GroupID, on.SegmentID)
+	rules, err := loadRules(ctx, q, rulesFor, on.GroupID, on.SegmentID, on.SegmentID)
 	if err != nil {
 		return err
 	}
@@ -182,7 +194,7 @@ type GroupModelPrices struct {
 
 // scope starts the answer on the group's model prices: the group, the
 // segment asked for (0 = none) and the rate that applies.
-func (gp *groupPrices) scope(ctx context.Context, q store.Querier, segmentID int64, showUsers bool) (*GroupModelPrices, error) {
+func (gp *groupPrices) scope(ctx context.Context, q *gorm.DB, segmentID int64, showUsers bool) (*GroupModelPrices, error) {
 	g := gp.group
 	out := &GroupModelPrices{Group: g.ref()}
 	if segmentID == 0 {
@@ -209,8 +221,8 @@ func (gp *groupPrices) scope(ctx context.Context, q store.Querier, segmentID int
 
 // fill adds a row for every model the group provides, priced for the segment
 // of out.
-func (gp *groupPrices) fill(ctx context.Context, q store.Querier, out *GroupModelPrices) error {
-	rules, err := loadRules(ctx, q, ` WHERE group_id = $1`, gp.group.ID)
+func (gp *groupPrices) fill(ctx context.Context, q *gorm.DB, out *GroupModelPrices) error {
+	rules, err := loadRules(ctx, q, "group_id = ?", gp.group.ID)
 	if err != nil {
 		return err
 	}
@@ -271,14 +283,14 @@ func (s *Service) showGroupPrices(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	gp, err := loadGroupPrices(ctx, s.db.Pool, ` WHERE g.id = $1`, groupID)
+	gp, err := loadGroupPrices(ctx, s.db.Gorm, "g.id = ?", groupID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	out, err := gp.scope(ctx, s.db.Pool, segmentID, showUsers)
+	out, err := gp.scope(ctx, s.db.Gorm, segmentID, showUsers)
 	if err == nil {
-		err = gp.fill(ctx, s.db.Pool, out)
+		err = gp.fill(ctx, s.db.Gorm, out)
 	}
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -303,17 +315,14 @@ type ruleChange struct {
 
 // check validates the items of a PUT, all or none: an item that cannot be
 // saved is a field error on items.<index>. Removing a rule always can.
-func (gp *groupPrices) check(ctx context.Context, q store.Querier, items []rulePatch) ([]ruleChange, error) {
+func (gp *groupPrices) check(ctx context.Context, q *gorm.DB, items []rulePatch) ([]ruleChange, error) {
 	segmentIDs := []int64{}
 	for _, item := range items {
 		segmentIDs = append(segmentIDs, deref(item.SegmentID))
 	}
-	rows, err := q.Query(ctx, `SELECT id FROM segments WHERE id = ANY($1)`, segmentIDs)
-	if err != nil {
-		return nil, err
-	}
-	known, err := pgx.CollectRows(rows, pgx.RowTo[int64])
-	if err != nil {
+	var known []int64
+	if err := store.G(ctx, q).Model(&model.Segment{}).Where("id = ANY(?)", store.Int64s(segmentIDs)).
+		Pluck("id", &known).Error; err != nil {
 		return nil, err
 	}
 	changes := make([]ruleChange, 0, len(items))
@@ -363,8 +372,8 @@ func (s *Service) saveGroupPrices(c *gin.Context) {
 		return
 	}
 	var out *GroupModelPrices
-	err = s.db.Tx(ctx, func(tx pgx.Tx) error {
-		gp, err := loadGroupPrices(ctx, tx, ` WHERE g.id = $1`, groupID)
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
+		gp, err := loadGroupPrices(ctx, tx, "g.id = ?", groupID)
 		if err != nil {
 			return err
 		}
@@ -407,23 +416,48 @@ func segmentsOf(changes []ruleChange) []int64 {
 	return ids
 }
 
-// applyChanges writes the changes in one round trip. They go in the order of
-// what they are on, whatever order the request gave them in: two requests
-// that change the same rules then lock them in the same order, and neither
-// waits for the other in a circle.
-func applyChanges(ctx context.Context, tx pgx.Tx, changes []ruleChange, updatedBy int64) error {
-	slices.SortStableFunc(changes, func(a, b ruleChange) int {
-		return cmp.Or(cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
-	})
-	b := &pgx.Batch{}
-	for _, ch := range changes {
-		if ch.rule == nil {
-			queueDelete(b, ch.on)
-			continue
-		}
-		if err := queueSave(b, ch.on, ch.rule, updatedBy); err != nil {
-			return err
-		}
+// applyChanges writes the changes in tx (writeRules). They go in the order
+// of what they are on, whatever order the request gave them in: two
+// requests that change the same rules then save them in the same order.
+func applyChanges(ctx context.Context, tx *gorm.DB, changes []ruleChange, updatedBy int64) error {
+	if len(changes) == 0 {
+		return nil
 	}
-	return tx.SendBatch(ctx, b).Close()
+	slices.SortStableFunc(changes, func(a, b ruleChange) int {
+		return cmp.Or(cmp.Compare(a.on.GroupID, b.on.GroupID), cmp.Compare(a.on.SegmentID, b.on.SegmentID), cmp.Compare(a.on.Model, b.on.Model))
+	})
+	w, err := collapseChanges(changes, updatedBy)
+	if err != nil {
+		return err
+	}
+	return writeRules(ctx, tx, w)
+}
+
+// collapseChanges turns sorted changes into writeRules' writes by
+// updatedBy, one per rule, leaving what the changes of the rule (adjacent
+// once sorted) left one after the other: the rule removed when any of them removes it, saved
+// as the last one when that saves it (removed then saved: a new row), and
+// the expression of every custom price in the history.
+func collapseChanges(changes []ruleChange, updatedBy int64) (*ruleWrites, error) {
+	w := &ruleWrites{}
+	for len(changes) > 0 {
+		n := 1
+		for n < len(changes) && changes[n].on == changes[0].on {
+			n++
+		}
+		removed := false
+		for _, ch := range changes[:n] {
+			if ch.rule == nil {
+				removed = true
+			} else if err := w.addHistory(ch.rule); err != nil {
+				return nil, err
+			}
+		}
+		last := changes[n-1]
+		if err := w.addRule(last.on, removed, last.rule, updatedBy); err != nil {
+			return nil, err
+		}
+		changes = changes[n:]
+	}
+	return w, nil
 }

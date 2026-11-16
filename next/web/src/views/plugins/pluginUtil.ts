@@ -4,7 +4,6 @@
 import type { LText, PluginRoleGrant, PluginSummary, Trust, ResourceConflict } from '@/api/types'
 import type { Tone } from '@sub2api/ui'
 import { useOptionalT } from '@/composables/optionalText'
-import { P, type PermRef } from '@/generated/permissions'
 
 export type Risk = 'low' | 'medium' | 'high' | 'critical'
 
@@ -413,31 +412,14 @@ export interface PluginDetail {
   versions?: PluginVersion[]
 }
 
-/** ccgateway keeps its settings in a core view (settings:read), not in a plugin settings form. */
-const CORE_SETTINGS_KEY = 'ccgateway'
-
-/**
- * The page of that core view, opened from the installed plugins (CONTRACTS
- * §90). Its first segment is one the SDK reserves for the console
- * (manifest.ConsoleSegments), so no plugin endpoint can take the address.
- */
-export const CCGATEWAY_PAGE = '/system/ccgateway'
-
-/** Whether the plugin's settings are that core view and the caller may open it. */
-export function hasCoreSettings(key: string, has: (perm: PermRef) => boolean): boolean {
-  return key === CORE_SETTINGS_KEY && has(P.SettingsRead)
-}
-
 /**
  * Where the installed plugins list opens a plugin's settings; neither the
- * sidebar nor system settings lists them (CONTRACTS §90). The page of the
- * core view, or the settings tab of the detail page for the form the console
- * renders (has_settings is false for native settings, §75.5); undefined
- * without either.
+ * sidebar nor system settings lists them (CONTRACTS §90): the settings tab of
+ * the detail page for the form the console renders (has_settings is false for
+ * native settings, §75.5); undefined without one.
  */
-export function consoleSettingsPath(p: Pick<PluginSummary, 'key' | 'has_settings'>, has: (perm: PermRef) => boolean): string | undefined {
-  if (hasCoreSettings(p.key, has)) return CCGATEWAY_PAGE
-  return p.has_settings && p.key !== CORE_SETTINGS_KEY ? `/plugins/${encodeURIComponent(p.key)}?tab=settings` : undefined
+export function consoleSettingsPath(p: Pick<PluginSummary, 'key' | 'has_settings'>): string | undefined {
+  return p.has_settings ? `/plugins/${encodeURIComponent(p.key)}?tab=settings` : undefined
 }
 
 export interface PluginSettings {
@@ -474,3 +456,9 @@ export function nativeSettingsPath(key: string, s: PluginSettings | null | undef
   if (!s || s.mode !== 'native' || !s.page) return null
   return `/p/${encodeURIComponent(key)}/${encodeURIComponent(s.page)}?tab=settings`
 }
+
+/** Plugin detail tabs merged into another; old links still open them (the grants are the permissions tab's first part). */
+const TAB_ALIASES: Record<string, string> = { grants: 'permissions' }
+
+/** The plugin detail tab a ?tab= value opens (overview when none). */
+export const tabOf = (q: unknown) => (typeof q === 'string' ? (TAB_ALIASES[q] ?? q) : 'overview')
