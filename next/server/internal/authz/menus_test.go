@@ -101,7 +101,7 @@ func TestPluginMenusScopedPermission(t *testing.T) {
 
 // The account-side usage pages show to holders of usage:account:read at any
 // scope and hide behind the site-wide ones (hideWith usage:all:read); the
-// users page shows to a team holder of user:read (CONTRACTS §102.5, §22).
+// users page shows to a team holder of user:read (CONTRACTS §103.5, §22).
 func TestAccountUsageMenus(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)

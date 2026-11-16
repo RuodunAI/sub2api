@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Changes the owner (所属) of an account: PUT /accounts/:id/owner
-// (account:owner:update, CONTRACTS §102.4). The owner decides who reaches the
+// (account:owner:update, CONTRACTS §103.4). The owner decides who reaches the
 // account by an own or team scope; its creator stays as it was.
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'

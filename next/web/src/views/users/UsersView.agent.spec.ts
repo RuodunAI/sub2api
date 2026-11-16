@@ -1,4 +1,4 @@
-// A supplier agent signed in to the dev mock (CONTRACTS §102.1): the users
+// A supplier agent signed in to the dev mock (CONTRACTS §103.1): the users
 // page, talking to the mock as it talks to the core, offers the agent the edit
 // and role actions on a user below it, and the roles and changes it makes go
 // through.

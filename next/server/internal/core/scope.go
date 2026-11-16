@@ -61,7 +61,7 @@ func Scope(ctx context.Context, az Authorizer, action perm.Key) (DataScope, erro
 }
 
 // MaxTeamDepth is how many levels of owners a user may have above it: a
-// team spans at most that many below its holder (CONTRACTS §102).
+// team spans at most that many below its holder (CONTRACTS §103).
 const MaxTeamDepth = 8
 
 // UserTree is the users by owner (users.owner_id, with users.owner_path;

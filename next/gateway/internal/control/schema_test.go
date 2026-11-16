@@ -87,6 +87,41 @@ func TestSchemaLockSpansScript(t *testing.T) {
 	})
 }
 
+// TestEnsureSchemaIsIdempotent applies the schema again over the cluster row
+// of an older shell and checks the update-source defaults it fills in.
+func TestEnsureSchemaIsIdempotent(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	if err := s.InitCluster(ctx, "a", "base"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.clusterRow(s.db(ctx)).Update("update_repository", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.EnsureSchema(ctx); err != nil {
+			t.Fatalf("apply %d: %v", i, err)
+		}
+	}
+	row, err := s.readSource(s.clusterRow(s.db(ctx)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !row.enabled || row.kind != "github" || row.repo != "Sub2API-Devs/sup2api" || row.url != "" || row.secret != nil {
+		t.Fatalf("update-source defaults: %+v", row)
+	}
+	// A url source keeps the repository it was given, and its revision.
+	if err = s.clusterRow(s.db(ctx)).Updates(map[string]any{"update_source_kind": "url", "update_url": "https://r.example.com/", "update_repository": ""}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = s.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.readSource(s.clusterRow(s.db(ctx))); err != nil || again.repo != "" || again.revision != row.revision {
+		t.Fatalf("url source after a restart: %+v %v", again, err)
+	}
+}
+
 // EnsureSchema drops updater.nodes.cpu_percent, which only shells before
 // 0.1.134 used.
 func TestSchemaDropsNodeCPUPercent(t *testing.T) {

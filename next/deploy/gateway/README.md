@@ -10,10 +10,12 @@
 
 ## 构建与发布
 
-从 `next/` 构建网关镜像：
+正式发布由 GitHub Actions 完成：推 tag `core-v<X.Y.Z>` 或 `gateway-v<X.Y.Z>`，流水线构建、签名并发布 GitHub Release，节点经更新源检测并一键更新（见 [github/README.md](github/README.md) 与下文“更新源与一键更新”）。本节其余内容是不经 GitHub 的离线、手工发布。
+
+从 `next/` 构建网关镜像（`--build-arg VERSION=<X.Y.Z>` 写入网关版本，不传时为 `0.0.0-dev`）：
 
 ```sh
-docker build -f deploy/gateway/Dockerfile -t sup2api-gateway:local .
+docker build -f deploy/gateway/Dockerfile --build-arg VERSION=X.Y.Z -t sup2api-gateway:local .
 ```
 
 网关镜像不包含业务核心。现有 `next/Dockerfile` 的 `build` 阶段继续用于构建带控制台的核心和插件；取出 `/out/bin/` 和需要随首装提供的 `/out/builtin/`，组成独立的暂存目录。不要把市场缓存、私钥或构建目录放入暂存目录。
@@ -35,7 +37,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 
 不提供 `SOURCE_SCHEMA` 表示数据库契约不变；若与实际集群不符，预检会拒绝升级。直接使用 `sub2api-release pack` 时，对应参数是 `--schema-before` 和 `--schema`。发布前备份数据库；数据库迁移开始后不能通过切回旧二进制撤销。
 
-`linux-static-v1` 要求核心及插件使用兼容的 Linux 静态二进制；发布机和运行机架构须一致。跨架构构建时直接调用 `pack --os linux --arch ... --schema ...`，schema 必须来自该源版本的实际核心，不能填写任意标签。
+`linux-static-v1` 要求核心及插件使用兼容的 Linux 静态二进制；发布机和运行机架构须一致。跨架构构建时直接调用 `pack --os linux --arch ... --schema ...`，多个平台用可重复的 `--platform linux/<arch>=<stage>` 签进同一个清单；schema 必须来自该源版本的实际核心，不能填写任意标签。
 
 ## 配置节点
 
@@ -44,7 +46,8 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 修改 `config/node-a.json` 和 `config/node-b.json`：
 
 - 两节点使用相同的 `cluster_id`、`primary_node`、发布源和可信公钥。
-- 公钥为 `release.pub` 文件中的 base64 内容；公钥 ID 与打包参数一致。
+- 公钥为 `release.pub` 文件中的 base64 内容；公钥 ID 与打包参数一致。从 GitHub Release 更新时，`trusted_keys` 要有发布流水线的签名公钥（id 即仓库变量 `SUB2API_RELEASE_KEY_ID`），除非网关二进制已内置它（`gateway/internal/release/trusted/<id>.pub`）；否则检测报 `release is signed by untrusted key`。
+- `allow_private_update_sources`（可选，默认 false）：`url` 类型的更新源允许解析到内网地址，用于集群内网的发布镜像。GitHub 来源始终只连公网。
 - 节点 ID、状态卷、TLS 私钥各自独立。示例把 `node-a` 指定为升级协调节点。
 - `peer_url` 必须能被另一节点访问，服务器证书DNS SAN必须包含相应主机名并允许ServerAuth。客户端验证CA及主机名，不再要求客户端证书或`allowed_peers`列表。
 - `peer_auth_key` 留空时自动生成节点密钥；也可在配置中指定至少32字节的独立随机密钥。非空的`SUB2API_PEER_AUTH_KEY`环境变量覆盖配置文件，空值视为未设置；Compose分别使用`NODE_A_PEER_AUTH_KEY`与`NODE_B_PEER_AUTH_KEY`，不要给两个节点填写同一个密钥。
@@ -89,15 +92,53 @@ docker compose up -d node-b
 
 先确认主节点完成首装，再启动从节点。从节点从主节点拉取已校验制品；插件依据共享数据库中的安装状态自行同步，全部就绪后才能准入。
 
+## 更新源与一键更新
+
+网关的升级主节点每 6 小时从更新源检测核心与网关两条线的新稳定版（启动约 1 分钟后第一次，保存设置后立即一次）。有 `system:update:read` 的管理员在控制台左上角版本号打开“版本与更新”看结果，有 `system:update:execute` 的可以点“一键更新”：网关导入验签过的发布、预检、建升级计划，进度在“核心升级”页。不会自动升级。契约见 [CONTRACTS §102](../../docs/CONTRACTS.md)。
+
+**更新源**在控制台“设置 → 在线更新”（`settings:manage`，保存要二次验证）：
+
+- **GitHub**：填 `owner/repo`，默认 `Sub2API-Devs/sup2api`。公开仓库不用令牌。私有仓库打开“私有仓库”，填只读的细粒度令牌（Contents: Read）。只读最新 50 个 Release，只认 `core-v*`、`gateway-v*` tag 的稳定版。
+- **自定义 URL**：填 HTTPS 发布目录（其下有 `releases.json`，格式 `sub2api-releases-v1`）。需要鉴权时打开“需要访问密钥”，填 Bearer 密钥。目录在内网时各节点配置 `allow_private_update_sources: true`；否则只允许公网地址。
+
+令牌和密钥只写不读，用 `SUB2API_MASTER_KEY` 加密存在 PG（网关取 `core_env` 里的值，没有再取自己的环境变量；各节点必须相同），只发给 `api.github.com` 或该目录的源站，不随跨源跳转发出。网关没有主密钥时保存密钥会失败（`master_key_missing`），公开来源不受影响。改了来源类型、仓库或地址而没重新填密钥时，旧密钥被清除。更换更新源不改变信任的公钥：Release 必须由节点信任的密钥签名（上文 `trusted_keys`）。
+
+**内网镜像**：节点不能直连 GitHub，或想把发布固定在自己的服务器上时，用 `sub2api-release mirror` 把 Release 原样（不重签）转存成 `url` 来源的目录，用任意 HTTPS 服务器发布，控制台填目录 URL：
+
+```sh
+cd next/gateway && go build -o /usr/local/bin/sub2api-release ./cmd/sub2api-release
+# 私有仓库：令牌放在环境变量里，用 --token-env 传变量名，不写在命令行上
+sub2api-release mirror --github owner/repo --token-env GITHUB_TOKEN --latest 3 --out /srv/sub2api-releases
+sub2api-release mirror --github owner/repo --tags core-v0.1.291,gateway-v0.1.136 --out /srv/sub2api-releases
+```
+
+再次运行只补新的版本、合并 `releases.json`。目录的源站需要鉴权时，在控制台给 `url` 来源填同一个 Bearer 密钥。
+
+**核心一键更新**：不改库的版本走 `rolling-v1`，直接建计划；要停服的 `primary-first-v1` 先弹出原因，确认后才建计划。主节点经更新源下载核心包，从节点照旧从主节点拉取。
+
+**网关一键更新**：只有每个启用节点都报告了网关版本且能自更新（Linux，`<root>/gateway` 可写）时出现；否则面板提示用清单里的镜像手动换（见下文“升级和恢复”最后一段）。计划 `gateway-rolling-v1`：各节点先各自经更新源下载并校验新网关，然后从节点在前、主节点最后，每个节点让出流量（`/readyz` 503，入口切走）、停核心、换网关二进制、重新拉起原版本核心、确认新网关登记、收回流量。核心版本不变；停用的节点不参与，保留原网关。只有一个节点时没有节点承接流量，中断约 10 秒，控制台要求确认。暂停的网关计划可以 `rollback`（`gateway-rollback-v1`，把每个已切换的节点换回上一版本）。
+
+自更新的文件都在状态卷（`root`，Compose 里是 `/var/lib/sub2api`）的 `gateway/` 下：
+
+| 路径 | 内容 |
+|---|---|
+| `gateway/<版本>/sub2api-gateway` | 已安装的网关（签名摘要校验过，0755） |
+| `gateway/current` | JSON：启动哪个版本（`version`、`digest`），以及切换前的版本（`previous`，回滚用；镜像自带的记为 `bundled`） |
+| `gateway/handoff` | 启动交接的失败计数 |
+
+容器每次启动先运行镜像自带的网关：`current` 指向更高的已安装版本时，它校验该二进制的 sha256 后 exec 过去（环境变量 `SUB2API_GATEWAY_HANDOFF` 记被交接的版本）。`current` 损坏、摘要不符、版本不比镜像新、或该版本连续 3 次启动都没走到服务时，记 WARN 并用镜像自带的网关服务。确认新网关后只保留 `current` 与 `previous` 两个版本。`sub2api-gateway yield-status` 显示在跑的 `gateway_version` 与镜像自带的 `bundled_version`；`sub2api-gateway version` 打印二进制版本。
+
+**发布签名密钥**只放在 GitHub 仓库的环境 `release` 里：Secrets `SUB2API_RELEASE_SIGNING_KEY`、`SUB2API_PLUGIN_SIGNING_KEY`，Variables `SUB2API_RELEASE_KEY_ID`、`SUB2API_PLUGIN_KEY_ID`（配置方法见 [github/README.md](github/README.md)）。私钥不进仓库、不上节点，不要在终端、日志或工单里输出；节点只需要公钥（`trusted_keys`）。
+
 ## 升级和恢复
 
-导入目标版本后，在控制台“系统 → 核心升级”选择版本，执行预检并创建计划：
+常规做法是控制台“版本与更新”里的“一键更新”（见上一节）。离线发布先导入，再在控制台“核心升级”页选择版本、执行预检并创建计划：
 
 ```sh
 docker compose exec node-a sub2api-gateway import -manifest https://releases.example.com/sup2api/NEXT_MANIFEST_DIGEST.json
 ```
 
-执行顺序：
+改库的版本走主节点优先（`primary-first-v1`），执行顺序如下；不改库且签为 `rolling` 的版本在至少两个节点就绪时走 `rolling-v1`，逐个节点让出流量后重启，服务不中断（CONTRACTS §82）。主节点优先的顺序：
 
 1. 所有节点预下载并验证发布包。
 2. 所有从节点将入口转发到主节点，排空并停止核心及插件；必须收到真实停止确认，不能把失联当作停止。
@@ -131,7 +172,7 @@ docker compose exec node-a sub2api-gateway enable-node -id node-b
 
 锁用 Redis 互斥并续期；失锁取消执行，不写成功结果。进程或整机重启后，重新取锁并根据 PG 步骤和本地日志恢复。发现上一进程仍存活、遗留子进程组或无法确认的启动意图时，会拒绝启动第二个核心；运维须先核对进程和日志，不能仅凭锁过期删除状态文件。
 
-网关自身和 OS 依赖升级仍通过容器镜像发布。更换网关前先从负载均衡摘除该节点并等待请求排空，再更新容器；不要让新旧网关同时访问同一节点状态卷。
+网关二进制可以一键更新（上一节）；基础镜像与系统依赖仍通过容器镜像更新：先 `sub2api-gateway yield` 让出并排空，等 `/readyz` 变 503 且进行中的请求降到 0，再重建容器（CONTRACTS §82.3）。新镜像自带的网关版本高于 `<root>/gateway/current` 里的已安装版本时直接用镜像自带的。核心处于 running/paused 计划时不要换网关；不要让新旧网关同时访问同一节点状态卷。
 
 ## 自动验证入口
 

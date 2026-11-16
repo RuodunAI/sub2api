@@ -269,7 +269,7 @@ func TestUsageLimitOwnsItsDisable(t *testing.T) {
 
 // An account's usage shows what users were charged (cost) next to the raw
 // cost to anyone who reads the account, its owner included, in the list
-// and in GET /accounts/:id/usage (CONTRACTS §102.4): only the account-side
+// and in GET /accounts/:id/usage (CONTRACTS §103.4): only the account-side
 // usage records (/account-usage) keep to the standard cost (D1).
 func TestUsageCostForAccountReaders(t *testing.T) {
 	az := fakeAuthz{keys: map[int64][]string{}}

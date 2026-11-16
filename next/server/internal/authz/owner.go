@@ -17,7 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// SetOwner implements core.OwnerGuard (CONTRACTS §102.3): the one writer
+// SetOwner implements core.OwnerGuard (CONTRACTS §103.3): the one writer
 // of users.owner_id and owner_path, which core.UserTree moves together
 // with the paths below the user. It takes the authz lock (lockVersion), so
 // the owners it reads cannot move under it and role writes judge owners
@@ -155,7 +155,7 @@ func (s *Service) ownerManages(ctx context.Context, q *gorm.DB, owner int64, tar
 // ownersKeepManaging is ownerManages after a write to what role key grants
 // or may assign, refused on field, the write's: every live user with a
 // live owner, either of them holding key, must still be one its owner
-// manages (CONTRACTS §102.3). Users compare by their roles, so each pair of
+// manages (CONTRACTS §103.3). Users compare by their roles, so each pair of
 // role sets is judged once; details.user_id names a user of a pair that
 // fails.
 func (s *Service) ownersKeepManaging(ctx context.Context, q *gorm.DB, key, field string) error {

@@ -1,4 +1,4 @@
--- Supplier agents and 所属 (CONTRACTS §102, core 0.1.291).
+-- Supplier agents and 所属 (CONTRACTS §103, core 0.1.292).
 --
 -- users.owner_id is the user a user belongs to: a team scope
 -- (account:read:team, user:read:team …) reaches the holder's rows and those
@@ -39,10 +39,10 @@ EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 CREATE INDEX IF NOT EXISTS users_owner_idx ON users (owner_id) WHERE owner_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS users_owner_path_idx ON users USING gin (owner_path);
-COMMENT ON COLUMN users.owner_id IS 'the user this user belongs to (team scopes, CONTRACTS §102); NULL for none';
-COMMENT ON COLUMN users.owner_path IS 'the owners above this user, the top of its chain first and owner_id last (CONTRACTS §102); written with owner_id';
+COMMENT ON COLUMN users.owner_id IS 'the user this user belongs to (team scopes, CONTRACTS §103); NULL for none';
+COMMENT ON COLUMN users.owner_path IS 'the owners above this user, the top of its chain first and owner_id last (CONTRACTS §103); written with owner_id';
 
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS owner_id bigint CONSTRAINT accounts_owner_fk REFERENCES users(id) ON DELETE SET NULL;
 UPDATE accounts SET owner_id = created_by WHERE owner_id IS NULL AND created_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS accounts_owner_idx ON accounts (owner_id) WHERE deleted_at IS NULL;
-COMMENT ON COLUMN accounts.owner_id IS '所属: whose account it is for own and team scopes (CONTRACTS §102); starts as created_by, an administrator may move it';
+COMMENT ON COLUMN accounts.owner_id IS '所属: whose account it is for own and team scopes (CONTRACTS §103); starts as created_by, an administrator may move it';

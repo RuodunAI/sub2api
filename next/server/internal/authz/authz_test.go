@@ -260,7 +260,7 @@ func TestSyncCoreSeedsCatalogAndRoles(t *testing.T) {
 		len(sup.AssignableRoleKeys) != 0 || sup.AssignCustom {
 		t.Fatalf("supplier: %+v", sup)
 	}
-	// The supplier agent (CONTRACTS §102): the user's and the supplier's,
+	// The supplier agent (CONTRACTS §103): the user's and the supplier's,
 	// its own reads widened to its team's accounts and account usage, and
 	// its team's users (D8); suppliers and agents to assign (D2).
 	agent := byKey[RoleSupplierAgent]

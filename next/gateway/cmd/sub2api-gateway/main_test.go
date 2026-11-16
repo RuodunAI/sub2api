@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -423,5 +425,37 @@ func TestOpenPoolExecDoesNotWaitForRowLocks(t *testing.T) {
 	}
 	if err := <-waiter; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMasterCipherFollowsTheCoreEnvironment(t *testing.T) {
+	key := func(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+	t.Setenv(masterKeyEnv, "")
+	if c, err := (config{}).masterCipher(); c != nil || err != nil {
+		t.Fatalf("no key: %v %v", c, err)
+	}
+	t.Setenv(masterKeyEnv, key(1))
+	fromEnv, err := (config{}).masterCipher()
+	if err != nil || fromEnv == nil {
+		t.Fatal(err)
+	}
+	sealed, _ := fromEnv.Encrypt([]byte("x"), nil)
+	// core_env wins over the gateway's environment, as for the core.
+	fromCoreEnv, err := (config{CoreEnv: []string{masterKeyEnv + "=" + key(2)}}).masterCipher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fromCoreEnv.Decrypt(sealed, nil); err == nil {
+		t.Fatal("core_env key ignored")
+	}
+	if _, err = (config{CoreEnv: []string{masterKeyEnv + "=short"}}).masterCipher(); err == nil {
+		t.Fatal("malformed master key accepted")
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	opts, err := parseCLI([]string{"version"})
+	if err != nil || opts.command != "version" || Version == "" {
+		t.Fatalf("%+v %v %q", opts, err, Version)
 	}
 }

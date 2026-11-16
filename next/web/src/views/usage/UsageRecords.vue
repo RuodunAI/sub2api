@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Usage records of the `view`: all users' (an operator's), the caller's, or
-// those of the accounts in the caller's reach (`account`, CONTRACTS §102.5: the
+// those of the accounts in the caller's reach (`account`, CONTRACTS §103.5: the
 // account's facts only, no client IPs): the search bar with the live
 // statistics, and below it what the log type asks for - the request list, the
 // failed requests (that list with success=false), the client IPs (not in the

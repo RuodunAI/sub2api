@@ -371,7 +371,7 @@ type UserGuard interface {
 	// assign, and what the targets' roles grant is within the actor's (a
 	// superuser manages everyone). An actor whose roles reach users by a
 	// team alone (user:read, user:create, user:update, none of them for
-	// every user) manages only the users below it (CONTRACTS §102). For
+	// every user) manages only the users below it (CONTRACTS §103). For
 	// ActOnIdentity a superuser target
 	// through an access key needs a step-up proof; for ActOnBalance a target
 	// holding a role besides user needs balance:adjust:any, which an access
@@ -380,7 +380,7 @@ type UserGuard interface {
 }
 
 // OwnerGuard decides and writes the owner of a user (users.owner_id and
-// users.owner_path, UserTree; CONTRACTS §102.3): authz implements it, the
+// users.owner_path, UserTree; CONTRACTS §103.3): authz implements it, the
 // one writer of both; iam calls it inside the transaction that creates or
 // updates the user, on a create once the user is inserted (without an
 // owner). SetOwner takes the authz lock itself, so the owners it reads

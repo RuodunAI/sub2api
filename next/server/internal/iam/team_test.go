@@ -70,7 +70,7 @@ func equalIDs(t *testing.T, what string, got []int64, want ...int64) {
 }
 
 // A holder of user:read:team sees the users below it and no other, itself
-// included, through every filter and per-user route (CONTRACTS §102.3).
+// included, through every filter and per-user route (CONTRACTS §103.3).
 func TestUsersTeamScope(t *testing.T) {
 	t.Parallel()
 	e := newTeamEnv(t)
@@ -145,7 +145,7 @@ func TestUsersTeamScope(t *testing.T) {
 
 // The owner of a new or updated user is the one SetOwner judges and
 // writes in the same transaction; a team-only creator owns what it creates
-// (CONTRACTS §102.3).
+// (CONTRACTS §103.3).
 func TestUserOwner(t *testing.T) {
 	t.Parallel()
 	e := newTeamEnv(t)

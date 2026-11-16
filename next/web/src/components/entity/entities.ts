@@ -40,7 +40,7 @@ export interface EntityDescriptor {
 }
 
 export const ENTITIES: Record<CoreEntityKind, EntityDescriptor> = {
-  // user:read takes the team scope (CONTRACTS §102.3): the lookup lists the users in reach.
+  // user:read takes the team scope (CONTRACTS §103.3): the lookup lists the users in reach.
   user: { path: 'users', icon: 'user', label: 'entity.kind.user', numeric: true, permissions: [], action: P.UserRead },
   group: {
     path: 'groups',

@@ -188,3 +188,102 @@ func TestReleaseStrategyFollowsTheSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestPackSignsEveryPlatformInOneManifest(t *testing.T) {
+	root := t.TempDir()
+	keys := filepath.Join(root, "keys")
+	if err := run([]string{"keygen", "--out", keys}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"pack", "--out", filepath.Join(root, "publish"), "--key", filepath.Join(keys, "release.key"), "--key-id", "test", "--release-id", "core-v0.2.0", "--core-version", "0.2.0", "--source-commit", "c", "--schema", "s"}
+	for _, arch := range []string{"amd64", "arm64"} {
+		stage := filepath.Join(root, "stage-"+arch)
+		if err := os.MkdirAll(filepath.Join(stage, "bin"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stage, "bin", "sub2api"), []byte("core "+arch), 0755); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "--platform", "linux/"+arch+"="+stage)
+	}
+	var out bytes.Buffer
+	if err := run(args, &out); err != nil {
+		t.Fatal(err)
+	}
+	paths, _ := filepath.Glob(filepath.Join(root, "publish", "*.json"))
+	if len(paths) != 1 {
+		t.Fatalf("want one manifest, got %v", paths)
+	}
+	raw, _ := os.ReadFile(paths[0])
+	var signed rc.SignedManifest
+	if err := json.Unmarshal(raw, &signed); err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := release.Verify(signed, map[string]ed25519.PublicKey{"test": readPub(t, filepath.Join(keys, "release.pub"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Platforms) != 2 || m.Platforms[0].Arch != "amd64" || m.Platforms[1].Arch != "arm64" || m.Platforms[0].BundleDigest == m.Platforms[1].BundleDigest {
+		t.Fatalf("platforms: %+v", m.Platforms)
+	}
+	for _, p := range m.Platforms {
+		if p.OS != "linux" || p.RuntimeABI != "linux-static-v1" {
+			t.Fatalf("platform %+v", p)
+		}
+		digest, size, err := fileDigest(filepath.Join(root, "publish", p.BundleDigest+".tar.gz"))
+		if err != nil || digest != p.BundleDigest || size != p.BundleBytes {
+			t.Fatalf("bundle %s: %v", p.Arch, err)
+		}
+		if !strings.Contains(out.String(), "bundle_digest="+p.BundleDigest+"\n") {
+			t.Fatalf("output does not name bundle %s: %s", p.BundleDigest, out.String())
+		}
+	}
+	dup := append(args[:len(args):len(args)], "--platform", "linux/amd64="+root)
+	if err := run(dup, io.Discard); err == nil {
+		t.Fatal("accepted a platform twice")
+	}
+}
+
+func TestPubkeyReadsReleaseAndPluginKeys(t *testing.T) {
+	root := t.TempDir()
+	if err := run([]string{"keygen", "--out", root}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run([]string{"pubkey", "--key", filepath.Join(root, "release.key")}, &out); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := os.ReadFile(filepath.Join(root, "release.pub"))
+	if out.String() != string(want) {
+		t.Fatalf("pubkey %q, want %q", out.String(), want)
+	}
+	// sub2api-plugin keygen stores the 32-byte seed.
+	priv, _ := loadKey(filepath.Join(root, "release.key"))
+	seed := filepath.Join(root, "plugin.key")
+	if err := os.WriteFile(seed, []byte(base64.StdEncoding.EncodeToString(priv.Seed())+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := run([]string{"pubkey", "--key", seed}, &out); err != nil || out.String() != string(want) {
+		t.Fatalf("seed pubkey %q: %v", out.String(), err)
+	}
+	if err := os.WriteFile(seed, []byte("bm90IGEga2V5\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"pubkey", "--key", seed}, io.Discard); err == nil {
+		t.Fatal("accepted an invalid key")
+	}
+}
+
+func readPub(t *testing.T, path string) ed25519.PublicKey {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
+}

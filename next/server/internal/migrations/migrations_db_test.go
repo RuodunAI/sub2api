@@ -543,7 +543,7 @@ func TestMigration0102DropsCCGatewayAndLegacy(t *testing.T) {
 	require.Equal(t, `{"metric": "rpm", "limit_load": false, "model_limits": true}`, read(scheduling), "a rerun reset a saved row")
 }
 
-// 0103 adds the owners of CONTRACTS §102: an account's owner starts as its
+// 0103 adds the owners of CONTRACTS §103: an account's owner starts as its
 // creator, a user cannot own itself or a missing user, its owner path ends
 // with its owner and is computed from owner_id (again on a rerun), a user
 // that owns others is not hard-deleted, a hard delete of an account's

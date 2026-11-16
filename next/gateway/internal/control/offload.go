@@ -131,11 +131,20 @@ func (s *Store) offloadHandlers(mux *http.ServeMux, reply func(http.ResponseWrit
 
 // invalid answers in the console's invalid_argument shape.
 func invalid(w http.ResponseWriter, field, message string) {
-	body := map[string]any{"code": "invalid_argument", "message": message}
+	var details map[string]any
 	if field != "" {
-		body["details"] = map[string]any{"fields": []map[string]string{{"field": field, "code": "out_of_range", "message": message}}}
+		details = map[string]any{"fields": []map[string]string{{"field": field, "code": "out_of_range", "message": message}}}
+	}
+	writeError(w, http.StatusBadRequest, "invalid_argument", message, details)
+}
+
+// writeError answers in the console's error shape; details may be nil.
+func writeError(w http.ResponseWriter, status int, code, message string, details map[string]any) {
+	body := map[string]any{"code": code, "message": message}
+	if details != nil {
+		body["details"] = details
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadRequest)
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": body})
 }

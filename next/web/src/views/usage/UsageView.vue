@@ -5,7 +5,7 @@ import { SButton, SPageHeader } from '@sub2api/ui'
 import UsageRecords from './UsageRecords.vue'
 
 // Every request (`all`, /usage), or those the accounts in the caller's reach
-// served (`account`, /account-usage, CONTRACTS §102.5).
+// served (`account`, /account-usage, CONTRACTS §103.5).
 const props = withDefaults(defineProps<{ view?: 'all' | 'account' }>(), { view: 'all' })
 const { t } = useI18n()
 const base = props.view === 'account' ? '/account-usage' : '/usage'

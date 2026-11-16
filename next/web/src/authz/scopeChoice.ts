@@ -1,6 +1,6 @@
 // The scopes of one scoped action as the permission editors show them
 // (CONTRACTS §21): every row, the caller's own, the caller's and its team's
-// (CONTRACTS §102.2), chosen groups, chosen rows, rows within a chosen
+// (CONTRACTS §103.2), chosen groups, chosen rows, rows within a chosen
 // group, chosen plugin scopes; scopes the editors do not offer (group/*,
 // group/*/account/X) are kept as they are. Pure;
 // PermissionTree / ScopePicker render it.

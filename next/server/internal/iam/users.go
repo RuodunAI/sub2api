@@ -42,7 +42,7 @@ type User struct {
 	LastLoginAt *time.Time `json:"last_login_at"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
-	// OwnerID is the user's owner (CONTRACTS §102.3): the user is in the
+	// OwnerID is the user's owner (CONTRACTS §103.3): the user is in the
 	// team of it and of the users above it; nil for none. OwnerEmail is
 	// kept when the owner is soft-deleted.
 	OwnerID    *int64  `json:"owner_id"`
@@ -228,7 +228,7 @@ type CreateUserInput struct {
 	SegmentID *int64 `json:"segment_id"`
 	// OwnerID is the user's owner, 0 for none; nil for none too, but for a
 	// creator of users for its team only, which is the owner (CONTRACTS
-	// §102.3, core.OwnerGuard).
+	// §103.3, core.OwnerGuard).
 	OwnerID *int64 `json:"owner_id"`
 }
 
@@ -290,7 +290,7 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 	case err != nil:
 		return nil, 0, err
 	}
-	// The one place the owner is decided and written (CONTRACTS §102.3);
+	// The one place the owner is decided and written (CONTRACTS §103.3);
 	// whether the actor may name it comes before anything about it is read.
 	if _, err := s.owners.SetOwner(ctx, tx, actorID, id, true, in.OwnerID); err != nil {
 		return nil, 0, err

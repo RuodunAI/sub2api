@@ -150,7 +150,7 @@ describe('UsersView managed users (T78)', () => {
   })
 })
 
-describe('UsersView owners (CONTRACTS §102.3)', () => {
+describe('UsersView owners (CONTRACTS §103.3)', () => {
   const edit = async (w: Awaited<ReturnType<typeof render>>, id: number) => {
     await row(w, id).get('[data-action="edit"]').trigger('click')
     await flushPromises()

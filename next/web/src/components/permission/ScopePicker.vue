@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // The scopes of one scoped action (CONTRACTS §21), stacked: every row, the
-// holder's own rows, its own and its team's (CONTRACTS §102.2), chosen
+// holder's own rows, its own and its team's (CONTRACTS §103.2), chosen
 // groups, chosen accounts or proxies, and accounts within a chosen group.
 // "All" includes the rest, the team the own rows (greyed out). Only
 // what the editor's own scopes imply is offered (`offer`); granted scopes

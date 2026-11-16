@@ -21,7 +21,7 @@ type UserSpec struct {
 	Password    string
 	DisplayName string
 	Roles       []string
-	OwnerID     *int64 // owner_id (CONTRACTS §102.3); nil leaves it to the server
+	OwnerID     *int64 // owner_id (CONTRACTS §103.3); nil leaves it to the server
 }
 
 // CreateUser creates a user with POST /users and logs in as that user.

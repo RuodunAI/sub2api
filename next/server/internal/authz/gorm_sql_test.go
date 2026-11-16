@@ -222,7 +222,7 @@ func TestSQLAuthzSyncWrites(t *testing.T) {
 	})
 }
 
-// The owner graph (CONTRACTS §102): whether users are below a team holder
+// The owner graph (CONTRACTS §103): whether users are below a team holder
 // (core.UserTree's subquery; refused under DryRun, which counts none), the
 // owner of a user, the live owner SetOwner names (refused under DryRun,
 // which finds none), and the role sets of owners and their users a role

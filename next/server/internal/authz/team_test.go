@@ -78,7 +78,7 @@ func TestTeam(t *testing.T) {
 // core.Scope (and Router.PermScoped) give a team scope its holder, as an
 // owner and as the top of a team: accounts owned by the holder or a user
 // below it, users below it (not itself), never anyone else's; an access
-// key narrows team to own (CONTRACTS §102.2).
+// key narrows team to own (CONTRACTS §103.2).
 func TestTeamScope(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)

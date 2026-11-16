@@ -60,7 +60,7 @@ accountTypes.load()
 const typeOf = (a?: Pick<Account, 'plugin_key' | 'type'> | null) => (a ? accountTypes.find(a.plugin_key, a.type) : undefined)
 const { groups } = useGroupsLookup()
 
-// Scopes (CONTRACTS §21, §102.4): account:read sees every account, a narrower scope
+// Scopes (CONTRACTS §21, §103.4): account:read sees every account, a narrower scope
 // only the accounts in it (the server filters; row actions follow the same rule).
 // The owner (所属) shows to a caller reaching more than its own accounts (every
 // account, or its team's), the creator, shown only, to one reaching every account.
@@ -531,7 +531,7 @@ function remove(a: Account) {
   deleteOpen.value = true
 }
 
-// The owner (所属, CONTRACTS §102.4): account:owner:update moves an account to another user.
+// The owner (所属, CONTRACTS §103.4): account:owner:update moves an account to another user.
 const ownerOpen = ref(false)
 const ownerTarget = ref<Account | null>(null)
 function changeOwner(a: Account) {

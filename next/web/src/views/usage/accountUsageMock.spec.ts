@@ -1,6 +1,6 @@
 // @vitest-environment node
 // The account usage endpoints of the dev mock hold to what the server answers
-// (CONTRACTS §102.5): the records of the accounts in reach, whitelisted fields,
+// (CONTRACTS §103.5): the records of the accounts in reach, whitelisted fields,
 // and a 400 for any other parameter.
 import { beforeAll, describe, expect, it } from 'vitest'
 import { mockServer, type MockServer } from '@/testing/mockServer'

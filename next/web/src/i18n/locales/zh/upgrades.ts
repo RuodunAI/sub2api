@@ -16,5 +16,22 @@ export default {
   history: '升级任务', noPlans: '暂无升级任务。', status: '状态', step: '步骤', pause: '暂停', resume: '继续', rollback: '恢复到升级前版本', cancel: '取消未执行任务',
   states: { running: '进行中', paused: '已暂停', failed: '失败', completed: '已完成', cancelled: '已取消', superseded: '已由恢复任务接替', pending: '等待执行', done: '已完成' },
   actions: { prepare: '下载并验证发布包', redirect: '转发到主节点', stop: '排空并停止核心', maintenance: '进入集群维护窗口', 'start-primary': '更新主节点并迁移数据库', start: '启动从节点目标核心', admit: '检查插件与服务准入', local: '恢复本地服务' },
-  modes: { local: '本地服务', 'local-serving': '本地服务', forward: '转发到其他节点', 'forward-only': '转发到其他节点', candidate: '候选版本', maintenance: '维护', stopped: '已停止' }
+  modes: { local: '本地服务', 'local-serving': '本地服务', forward: '转发到其他节点', 'forward-only': '转发到其他节点', candidate: '候选版本', maintenance: '维护', stopped: '已停止' },
+  issues: {
+    release_incompatible: '此版本不能接在已安装的版本之后：{message}',
+    plugin_incompatible: '有已启用的插件不支持目标核心：{message}',
+    plugins_changing: '有插件正在安装、升级或卸载：{message}',
+    core_unmanaged: '有不受网关管理的核心正在服务：{message}',
+    no_nodes: '没有已启用的注册节点',
+    already_current: '所有已启用的节点都已运行目标网关版本',
+    primary_unregistered: '主节点没有注册',
+    upgrade_active: '已有未完成的升级任务',
+    node_not_ready: '节点 {node} 没有在本地提供服务',
+    node_off_baseline: '节点 {node} 没有运行已批准的基线版本',
+    node_unsupported: '节点 {node} 无法执行此次升级：{message}',
+    maintenance_release: '此版本按维护更新签发，不能滚动更新',
+    schema_change: '此版本改动数据库结构，不能滚动更新',
+    too_few_serving: '提供服务的节点少于 {min} 个，没有节点能接管其他节点的流量，不能滚动更新',
+    single_node: '只有一个节点：重启网关时没有其他节点接管流量，服务会中断约 {seconds} 秒'
+  }
 }

@@ -20,7 +20,7 @@ import (
 )
 
 // Usage export (CONTRACTS §66.5): GET /me/usage/export, GET /usage/export
-// and GET /account-usage/export (§102.5) take the list's filters plus tz=
+// and GET /account-usage/export (§103.5) take the list's filters plus tz=
 // (the time column's zone) and lang=zh|en (the header row), and stream CSV
 // newest first, keyset-paged so a long export never runs one large query. At most exportMaxRows rows; a longer
 // result ends with a note row. Cells a spreadsheet would read as a formula
@@ -159,7 +159,7 @@ func (s *Service) export(c *gin.Context, self *int64) {
 }
 
 // accountExportColumns are the columns of the account side's export
-// (CONTRACTS §102.5), by their en header: the allowlisted fields alone.
+// (CONTRACTS §103.5), by their en header: the allowlisted fields alone.
 var accountExportColumns = []string{"Time", "Request ID", "Account ID", "Account", "Model", "Upstream model", "Endpoint",
 	"Protocol", "Stream", "Status", "Success", "Error type", "Input tokens", "Output tokens", "Cache read tokens",
 	"Cache write tokens", "Base price", "First token (ms)", "Duration (ms)"}

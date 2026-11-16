@@ -10,7 +10,7 @@
 // picker also offers `modelOptions`. A picker that is set carries data-set,
 // for a layout that gives it the room to show its name. Without `textSearch`
 // an entity is picked only, never searched by name (the account view,
-// CONTRACTS §102.5).
+// CONTRACTS §103.5).
 import { computed } from 'vue'
 import { SInput, SSelect } from '@sub2api/ui'
 import EntityPicker from '@/components/EntityPicker.vue'

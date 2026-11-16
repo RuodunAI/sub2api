@@ -4,6 +4,8 @@
 
 > 2026-10-02：已由允许停机的主节点优先流程与 Redis 节点密钥鉴权取代，依据为 [多节点同步与节点鉴权规约](MULTINODE-SYNC-PROTOCOL.md)，验收见 [验证记录](audits/2026-10-02/MULTINODE-VALIDATION.md)。本文以下保留10月1日的滚动方案与 mTLS 实现历史，不是当前行为。
 
+> 2026-11-17：每个节点都运行能自更新的网关后，网关也能在控制台一键更新（`gateway-rolling-v1`，见 [CONTRACTS §102](CONTRACTS.md)；第一次换上这样的网关仍要手动换镜像）。下文“网关自身仍由运维更新”是当时的边界。
+
 状态：兼容滚动升级 v1 已实现，完整设计中的维护迁移与跨协议转换尚未实现。日期：2026-10-01。
 
 本设计基于当前 `feat/next-platform` 工作树，包括尚未提交的 Execute/Monitor、多节点治理及双节点验收改动。本文保留完整目标设计；当前实现边界见下文与 CONTRACTS §33，部署入口见 [`deploy/gateway`](../deploy/gateway/README.md)。此前相同核心版本的双节点验收不构成本方案的跨版本验证结果。

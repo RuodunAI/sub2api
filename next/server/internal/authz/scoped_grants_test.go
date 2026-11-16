@@ -151,7 +151,7 @@ func TestPluginScopedKeysResolveAndCover(t *testing.T) {
 	require.Equal(t, []string{"plugin.m:flow:manage"}, ce.Details["missing"])
 }
 
-// team is a scope like own, one level wider (CONTRACTS §102.2): a role
+// team is a scope like own, one level wider (CONTRACTS §103.2): a role
 // saves it for the actions that take it (users: every user or team only),
 // its holder grants team and own but not every row, and an own holder does
 // not grant team.

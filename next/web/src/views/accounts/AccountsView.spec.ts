@@ -809,7 +809,7 @@ describe('account list filters', () => {
     expect(Object.values(list.filters).filter(Boolean)).toEqual([])
   })
 
-  it('gives a team reader the owner filter and its team switch, and no creator filter (CONTRACTS §102.4)', async () => {
+  it('gives a team reader the owner filter and its team switch, and no creator filter (CONTRACTS §103.4)', async () => {
     mocks.scope = 'team'
     try {
       const w = renderFilters()

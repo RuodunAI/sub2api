@@ -67,7 +67,7 @@ describe('declared plugin account actions limited to account types (CONTRACTS §
   })
 })
 
-describe('changing the owner (CONTRACTS §102.4)', () => {
+describe('changing the owner (CONTRACTS §103.4)', () => {
   it('is offered with account:owner:update only, and runs the view handler', () => {
     const hidden = (d: RowActionDeps) => rowActions(account, d).find((x) => x.key === 'owner')?.hidden
     expect(hidden(deps({ canChangeOwner: () => false }))).toBe(true)

@@ -6,7 +6,7 @@ import UsageOverview from './UsageOverview.vue'
 import type { UsageView } from './view'
 
 // The overview menu items: all users' statistics, the caller's, or those of
-// the accounts in the caller's reach (`account`, CONTRACTS §102.5).
+// the accounts in the caller's reach (`account`, CONTRACTS §103.5).
 const props = withDefaults(defineProps<{ view?: UsageView }>(), { view: 'self' })
 const { t } = useI18n()
 const revision = ref(0)

@@ -21,7 +21,7 @@ import { useNamedSegments } from './userSegments'
 // caller who lists and manages segments also says which one the user joins
 // (`segment_id`); left out, the server puts the user in the default segment.
 // A caller holding user:create over every user may name the user's owner
-// (`owner_id`, CONTRACTS §102.3); a team holder's new users are its own.
+// (`owner_id`, CONTRACTS §103.3); a team holder's new users are its own.
 const props = defineProps<{ open: boolean; roles: Role[] }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'created'): void }>()
 const { t } = useI18n()
@@ -40,7 +40,7 @@ const form = reactive({ email: '', display_name: '', password: '', role_keys: []
 /**
  * The roles a new user starts with, sent explicitly: the default role where
  * the caller may give it (roleSelectable's rule); a team holder (a supplier
- * agent, CONTRACTS §102.1) makes suppliers, so supplier too where it may
+ * agent, CONTRACTS §103.1) makes suppliers, so supplier too where it may
  * assign it. Never another role by fallback.
  */
 function startingRoles(): string[] {
