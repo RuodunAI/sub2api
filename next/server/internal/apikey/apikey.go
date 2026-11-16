@@ -271,17 +271,20 @@ const lookupColumns = `k.id, k.user_id, k.status, k.expires_at,
 		k.rpm_limit, k.tpm_limit, k.max_concurrency, k.quota_limit, k.quota_used, COALESCE(g.conversion_loss_policy, ''),
 		s.id, s.discount, sg.rate_override`
 
+// lookupFrom is lookupQuery's FROM: the joins as one text, which renders
+// as Joins would and allocates less on this path.
+const lookupFrom = "api_keys k" +
+	" JOIN users u ON u.id = k.user_id" +
+	" JOIN segments s ON s.id = u.segment_id" +
+	" LEFT JOIN groups g ON g.id = k.group_id" +
+	" LEFT JOIN segment_groups sg ON sg.segment_id = s.id AND sg.group_id = g.id"
+
 // lookupQuery reads lookupColumns of the key hash in one statement. It runs
 // on every gateway request: its row is scanned through Row into local
 // variables, the GORM form that allocates least (BenchmarkHotKeyLookup;
 // internal/store/gormtest/BASELINE.md).
 func lookupQuery(db *gorm.DB, hash string) *gorm.DB {
-	return db.Table("api_keys k").Select(lookupColumns).
-		Joins("JOIN users u ON u.id = k.user_id").
-		Joins("JOIN segments s ON s.id = u.segment_id").
-		Joins("LEFT JOIN groups g ON g.id = k.group_id").
-		Joins("LEFT JOIN segment_groups sg ON sg.segment_id = s.id AND sg.group_id = g.id").
-		Where("k.key_hash = ? AND k.deleted_at IS NULL", hash)
+	return db.Table(lookupFrom).Select(lookupColumns).Where("k.key_hash = ? AND k.deleted_at IS NULL", hash)
 }
 
 func (s *Service) lookup(ctx context.Context, hash string) (*cached, error) {
