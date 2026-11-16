@@ -1,8 +1,0 @@
--- sql
-UPDATE "accounts" SET "admin_locked"=$1,"auto_disabled_until"=$2,"status"=$3,"status_reason"=$4,"updated_at"=clock_timestamp() WHERE id = $5
--- vars
-$1 bool false
-$2 nil
-$3 string "active"
-$4 string ""
-$5 int64 5

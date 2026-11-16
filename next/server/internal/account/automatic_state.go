@@ -75,7 +75,11 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 		var now time.Time
 		var source, deferredReason string
 		var deferred bool
-		err := lockAutomaticState(store.G(ctx, tx), id, owner).Row().
+		// The live account, of owner's plugin (any for ""), stays locked.
+		err := store.G(ctx, tx).Model(&model.Account{}).Select(`name,plugin_key,type,status,status_reason,auto_disabled_source,auto_disable,auto_disabled_until,
+		deferred_auto_disable,deferred_auto_disable_reason,deferred_auto_disabled_until,clock_timestamp()`).
+			Where("id = ? AND deleted_at IS NULL AND (? = '' OR plugin_key = ?)", id, owner, owner).
+			Clauses(store.ForUpdate).Row().
 			Scan(&name, &pluginKey, &typ, &out.Status, &out.Reason, &source, &allowed, &until, &deferred, &deferredReason, &deferredUntil, &now)
 		if store.IsNoRows(err) {
 			return notFound(ctx)
@@ -185,20 +189,15 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 // locked in tx; the status stays the limit's. The 0070 trigger drops it once
 // the account is no longer the limit's.
 func writeDeferredDisable(ctx context.Context, tx *gorm.DB, id int64, set bool, reason string, until *time.Time, detail map[string]any) error {
-	if err := deferDisable(store.G(ctx, tx), id, set, reason, until).Error; err != nil {
+	// updated_at stays.
+	if err := store.G(ctx, tx).Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{
+		"deferred_auto_disable": set, "deferred_auto_disable_reason": reason, "deferred_auto_disabled_until": until,
+	}).Error; err != nil {
 		return err
 	}
 	d := map[string]any{"deferred_by_usage_limit": set, "until": until}
 	maps.Copy(d, detail)
 	return audit.Audit(ctx, tx, 0, "account.automatic_state", "account", itoa(id), d)
-}
-
-// deferDisable records or drops the held-back disable of account id,
-// leaving updated_at alone.
-func deferDisable(db *gorm.DB, id int64, set bool, reason string, until *time.Time) *gorm.DB {
-	return db.Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{
-		"deferred_auto_disable": set, "deferred_auto_disable_reason": reason, "deferred_auto_disabled_until": until,
-	})
 }
 
 // automaticChange is one automatic status change of an account.
@@ -229,7 +228,8 @@ func (s *Service) writeAutomaticStatus(ctx context.Context, tx *gorm.DB, action 
 	if err := g.Exec(`SELECT set_config('sup2api.auto_disabled_source', 'written', true)`).Error; err != nil {
 		return err
 	}
-	if err := ch.write(g).Error; err != nil {
+	if err := g.Model(&model.Account{}).Where("id = ?", ch.id).Updates(map[string]any{"status": ch.to, "status_reason": ch.reason,
+		"auto_disabled_until": ch.until, "auto_disabled_source": ch.source, "updated_at": gorm.Expr("clock_timestamp()")}).Error; err != nil {
 		return err
 	}
 	detail := map[string]any{"plugin_key": ch.pluginKey, "previous_status": ch.from, "status": ch.to, "until": ch.until}
@@ -244,21 +244,6 @@ func (s *Service) writeAutomaticStatus(ctx context.Context, tx *gorm.DB, action 
 	return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountStatusChanged, Payload: payload})
 }
 
-// write updates the account to the change, moving updated_at.
-func (ch automaticChange) write(db *gorm.DB) *gorm.DB {
-	return db.Model(&model.Account{}).Where("id = ?", ch.id).Updates(map[string]any{"status": ch.to, "status_reason": ch.reason,
-		"auto_disabled_until": ch.until, "auto_disabled_source": ch.source, "updated_at": gorm.Expr("clock_timestamp()")})
-}
-
-// lockAutomaticState locks live account id (of owner's plugin, any for "")
-// and reads what an automatic state change decides on, with the time.
-func lockAutomaticState(db *gorm.DB, id int64, owner string) *gorm.DB {
-	return db.Model(&model.Account{}).Select(`name,plugin_key,type,status,status_reason,auto_disabled_source,auto_disable,auto_disabled_until,
-		deferred_auto_disable,deferred_auto_disable_reason,deferred_auto_disabled_until,clock_timestamp()`).
-		Where("id = ? AND deleted_at IS NULL AND (? = '' OR plugin_key = ?)", id, owner, owner).
-		Clauses(store.ForUpdate)
-}
-
 // afterStatusChange tells the routing cache and the CCGateway runtime of a
 // committed status change.
 func (s *Service) afterStatusChange(ctx context.Context, id int64, pluginKey, typ string) {
@@ -269,7 +254,12 @@ func (s *Service) afterStatusChange(ctx context.Context, id int64, pluginKey, ty
 func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
 	var accounts []recoveredAccount
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
-		if err := recoverExpired(store.G(ctx, tx)).Scan(&accounts).Error; err != nil {
+		// Up to 200 accounts whose timed automatic disable ended, skipping
+		// rows another sweep holds.
+		if err := store.G(ctx, tx).Raw(`UPDATE accounts a SET status='active',status_reason='',auto_disabled_until=NULL,updated_at=clock_timestamp()
+			FROM (SELECT id FROM accounts WHERE deleted_at IS NULL AND status='auto_disabled' AND auto_disabled_until<=clock_timestamp()
+				ORDER BY auto_disabled_until,id LIMIT 200 FOR UPDATE SKIP LOCKED) due
+			WHERE a.id=due.id RETURNING a.id,a.name,a.plugin_key,a.type`).Scan(&accounts).Error; err != nil {
 			return err
 		}
 		for _, a := range accounts {
@@ -291,15 +281,6 @@ func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
 		s.kickCCGateway(a.ID, a.PluginKey, a.Type)
 	}
 	return len(accounts), nil
-}
-
-// recoverExpired makes up to 200 accounts whose timed automatic disable
-// ended active again, skipping rows another sweep holds, and returns them.
-func recoverExpired(db *gorm.DB) *gorm.DB {
-	return db.Raw(`UPDATE accounts a SET status='active',status_reason='',auto_disabled_until=NULL,updated_at=clock_timestamp()
-			FROM (SELECT id FROM accounts WHERE deleted_at IS NULL AND status='auto_disabled' AND auto_disabled_until<=clock_timestamp()
-				ORDER BY auto_disabled_until,id LIMIT 200 FOR UPDATE SKIP LOCKED) due
-			WHERE a.id=due.id RETURNING a.id,a.name,a.plugin_key,a.type`)
 }
 
 // recoveredAccount is an account SweepAutomaticState made active again.

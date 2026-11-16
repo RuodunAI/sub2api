@@ -14,29 +14,20 @@ import (
 
 func markLifecyclePending(ctx context.Context, q *gorm.DB, id int64) error {
 	g := store.G(ctx, q)
-	if err := lifecyclePending(g, id).Error; err != nil {
+	// A new generation of the account's synchronization, pending.
+	if err := g.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "account_id"}}, DoUpdates: clause.Assignments(map[string]any{
+		"status": "pending", "code": "", "generation": gorm.Expr("account_lifecycle_sync.generation+1"), "updated_at": gorm.Expr("now()"),
+	})}).Create(&model.AccountLifecycleSync{AccountID: id, Status: "pending"}).Error; err != nil {
 		return err
 	}
 	return g.Exec(`INSERT INTO plugin_event_cursors(plugin_key,last_event_id) SELECT plugin_key,(SELECT COALESCE(max(id),0) FROM events) FROM accounts WHERE id=? ON CONFLICT (plugin_key) DO NOTHING`, id).Error
 }
 
-// lifecyclePending marks the synchronization of account id pending, a new
-// generation of it.
-func lifecyclePending(db *gorm.DB, id int64) *gorm.DB {
-	return db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "account_id"}}, DoUpdates: clause.Assignments(map[string]any{
-		"status": "pending", "code": "", "generation": gorm.Expr("account_lifecycle_sync.generation+1"), "updated_at": gorm.Expr("now()"),
-	})}).Create(&model.AccountLifecycleSync{AccountID: id, Status: "pending"})
-}
-
+// saveLifecycleStatus records state for the account version and generation
+// that it was read for: a newer save or pending mark wins.
 func (s *Service) saveLifecycleStatus(ctx context.Context, id int64, version time.Time, generation int64, state core.AccountSynchronization) error {
-	return saveLifecycle(store.G(ctx, s.d.DB.Gorm), id, version, generation, state).Error
-}
-
-// saveLifecycle records state for the account version and generation that
-// it was read for: a newer save or pending mark wins.
-func saveLifecycle(db *gorm.DB, id int64, version time.Time, generation int64, state core.AccountSynchronization) *gorm.DB {
-	return db.Exec(`INSERT INTO account_lifecycle_sync(account_id,status,code) SELECT id,?,? FROM accounts WHERE id=? AND updated_at=? ON CONFLICT (account_id) DO UPDATE SET status=EXCLUDED.status,code=EXCLUDED.code,updated_at=now() WHERE account_lifecycle_sync.generation=?`,
-		state.Status, state.Code, id, version, generation)
+	return store.G(ctx, s.d.DB.Gorm).Exec(`INSERT INTO account_lifecycle_sync(account_id,status,code) SELECT id,?,? FROM accounts WHERE id=? AND updated_at=? ON CONFLICT (account_id) DO UPDATE SET status=EXCLUDED.status,code=EXCLUDED.code,updated_at=now() WHERE account_lifecycle_sync.generation=?`,
+		state.Status, state.Code, id, version, generation).Error
 }
 
 func (s *Service) fillLifecycleStatus(ctx context.Context, views []*View) error {

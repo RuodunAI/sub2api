@@ -1,5 +1,0 @@
--- sql
-UPDATE "account_preparations" SET "last_seen_at"=now() WHERE key = $1 AND created_by = $2 AND account_id IS NULL AND state IN ('pending','ready') AND expires_at > now() RETURNING "key","plugin_key","account_type","proxy_id","settings","created_by"
--- vars
-$1 string "k"
-$2 int64 7

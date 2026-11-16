@@ -28,16 +28,11 @@ type Counts struct {
 // usage overview), for GET /accounts/summary.
 func CountAccounts(ctx context.Context, q *gorm.DB, scope core.DataScope) (Counts, error) {
 	var c Counts
-	err := countAccounts(store.G(ctx, q), scope).Scan(&c).Error
-	return c, err
-}
-
-// countAccounts selects Counts over the live accounts in scope.
-func countAccounts(db *gorm.DB, scope core.DataScope) *gorm.DB {
-	return db.Table("accounts a").Select(`count(*) AS total, count(*) FILTER (WHERE a.status = 'active' AND a.schedulable) AS available,
+	err := store.G(ctx, q).Table("accounts a").Select(`count(*) AS total, count(*) FILTER (WHERE a.status = 'active' AND a.schedulable) AS available,
 		count(*) FILTER (WHERE a.status IN ('auto_disabled', 'error') OR (a.status = 'active' AND NOT a.schedulable)) AS auto_disabled,
 		count(*) FILTER (WHERE a.status = 'disabled') AS disabled`).
-		Where("a.deleted_at IS NULL").Scopes(core.AccountRows.Scope(scope))
+		Where("a.deleted_at IS NULL").Scopes(core.AccountRows.Scope(scope)).Scan(&c).Error
+	return c, err
 }
 
 // summary is GET /accounts/summary: the caller's account counts, over the

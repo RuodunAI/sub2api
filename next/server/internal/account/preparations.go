@@ -120,7 +120,7 @@ func (s *Service) createPreparation(c *gin.Context) {
 				return err
 			}
 		}
-		// The arguments repeat where the statement reuses one ($n on pgx).
+		// The arguments repeat where the statement reuses one.
 		err := store.G(ctx, tx).Raw(`INSERT INTO account_preparations(key,plugin_key,account_type,proxy_id,settings,created_by,idempotency_key)
 			SELECT ?,?::text,?::text,?,?::jsonb,?::bigint,NULLIF(?::text,'')
 			WHERE ?::int = 0
@@ -182,7 +182,10 @@ func (s *Service) createPreparation(c *gin.Context) {
 func (s *Service) loadPreparation(ctx context.Context, key string) (core.AccountPreparation, error) {
 	var p model.AccountPreparation
 	uid, _ := core.UserID(ctx)
-	res := touchPreparation(store.G(ctx, s.d.DB.Gorm), &p, key, uid)
+	// Marks the open preparation seen, reading it into p.
+	res := openPreparation(store.G(ctx, s.d.DB.Gorm).Model(&p), key, uid).
+		Clauses(clause.Returning{Columns: []clause.Column{{Name: "key"}, {Name: "plugin_key"}, {Name: "account_type"}, {Name: "proxy_id"}, {Name: "settings"}, {Name: "created_by"}}}).
+		Update("last_seen_at", gorm.Expr("now()"))
 	if res.Error == nil && res.RowsAffected == 0 {
 		return core.AccountPreparation{}, core.ErrNotFound
 	}
@@ -201,14 +204,6 @@ func preparationOf(p model.AccountPreparation) core.AccountPreparation {
 // pending or ready, and not expired.
 func openPreparation(db *gorm.DB, key string, uid int64) *gorm.DB {
 	return db.Where("key = ? AND created_by = ? AND account_id IS NULL AND state IN ('pending','ready') AND expires_at > now()", key, uid)
-}
-
-// touchPreparation marks open preparation key of uid seen, reading it into
-// into.
-func touchPreparation(db *gorm.DB, into *model.AccountPreparation, key string, uid int64) *gorm.DB {
-	return openPreparation(db.Model(into), key, uid).
-		Clauses(clause.Returning{Columns: []clause.Column{{Name: "key"}, {Name: "plugin_key"}, {Name: "account_type"}, {Name: "proxy_id"}, {Name: "settings"}, {Name: "created_by"}}}).
-		Update("last_seen_at", gorm.Expr("now()"))
 }
 
 func (s *Service) preparationAction(c *gin.Context) {

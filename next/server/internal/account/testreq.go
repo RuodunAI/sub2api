@@ -192,18 +192,14 @@ func (s *Service) recordTest(ctx context.Context, id int64, res TestResult) {
 	}
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTestTimeout)
 	defer cancel()
-	if err := writeLastTest(store.G(wctx, s.d.DB.Gorm), id, res, msg).Error; err != nil {
-		slog.WarnContext(ctx, "account: record last test", "account_id", id, "err", err)
-	}
-}
-
-// writeLastTest writes the last test of account id, leaving updated_at alone.
-func writeLastTest(db *gorm.DB, id int64, res TestResult, msg string) *gorm.DB {
-	return db.Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{
+	// updated_at stays.
+	if err := store.G(wctx, s.d.DB.Gorm).Model(&model.Account{}).Where("id = ?", id).Updates(map[string]any{
 		"last_test_at": gorm.Expr("now()"), "last_test_ok": res.OK, "last_test_latency_ms": min(res.LatencyMs, math.MaxInt32),
 		"last_test_model": res.Model, "last_test_message": msg, "last_test_status": res.Status,
 		"last_test_error_code": cutBytes(res.ErrorCode, 128), "last_test_error_source": res.ErrorSource,
-	})
+	}).Error; err != nil {
+		slog.WarnContext(ctx, "account: record last test", "account_id", id, "err", err)
+	}
 }
 
 // cutBytes returns at most n bytes of s, cut at a rune boundary.

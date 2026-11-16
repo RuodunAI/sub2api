@@ -13,9 +13,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
-
-	"database/sql/driver"
-
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -314,20 +311,12 @@ const usageInSQL = `SELECT w.i, coalesce(sum(h.cost),0), coalesce(sum(h.raw_cost
 		GROUP BY w.i`
 
 func usageInArgs(windows []usageWindow) []any {
-	ids, since, until := make(store.Int64s, len(windows)), make(store.Times, len(windows)), make(windowEnds, len(windows))
+	ids, since, until := make(store.Int64s, len(windows)), make(store.Times, len(windows)), make(store.Array[*time.Time], len(windows))
 	for i, w := range windows {
 		ids[i], since[i], until[i] = w.account, w.since, w.until
 	}
 	return []any{ids, since, until}
 }
-
-// windowEnds is the timestamptz[] of the windows' ends, a nil end (now)
-// being a NULL element: one array parameter, as store.Times is (which has
-// no NULL).
-type windowEnds []*time.Time
-
-// Value implements driver.Valuer; pgx encodes the slice itself.
-func (e windowEnds) Value() (driver.Value, error) { return []*time.Time(e), nil }
 
 func usageTotals(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]UsageFigures, error) {
 	out := make(map[int64]UsageFigures, len(ids))
@@ -664,18 +653,12 @@ func (l UsageLimit) same(o UsageLimit) bool {
 // saveUsageLimit stores the configuration of an account, clearing an early
 // release.
 func saveUsageLimit(ctx context.Context, q *gorm.DB, id int64, l UsageLimit) error {
-	return usageLimitWriteError(ctx, upsertUsageLimit(store.G(ctx, q), id, l).Error)
-}
-
-// upsertUsageLimit writes the configuration of account id, clearing an
-// early release.
-func upsertUsageLimit(db *gorm.DB, id int64, l UsageLimit) *gorm.DB {
-	return db.Exec(`INSERT INTO account_usage_limits (account_id, `+usageLimitColumns+`, updated_at)
+	return usageLimitWriteError(ctx, store.G(ctx, q).Exec(`INSERT INTO account_usage_limits (account_id, `+usageLimitColumns+`, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, clock_timestamp())
 		ON CONFLICT (account_id) DO UPDATE SET raw_cost = EXCLUDED.raw_cost, enabled = EXCLUDED.enabled, amount = EXCLUDED.amount,
 			period = EXCLUDED.period, period_count = EXCLUDED.period_count, anchor = EXCLUDED.anchor, timezone = EXCLUDED.timezone,
 			waived_window = NULL, updated_at = clock_timestamp()`,
-		id, l.RawCost, l.Enabled, l.Amount, l.Period, l.PeriodCount, l.Anchor, l.Timezone)
+		id, l.RawCost, l.Enabled, l.Amount, l.Period, l.PeriodCount, l.Anchor, l.Timezone).Error)
 }
 
 // checkUsageLimitControl refuses a configuration the account type's
@@ -784,13 +767,9 @@ func waiveUsageLimit(ctx context.Context, q *gorm.DB, id int64, until *time.Time
 		return err
 	}
 	start, _ := l.window(at)
-	return waive(store.G(ctx, q), id, start).Error
-}
-
-// waive records the early release of account id for the period starting at
-// start, leaving updated_at, the configuration's version, alone.
-func waive(db *gorm.DB, id int64, start time.Time) *gorm.DB {
-	return db.Model(&model.AccountUsageLimit{}).Where("account_id = ?", id).Update("waived_window", start)
+	// The early release of the period starting at start leaves updated_at,
+	// the configuration's version, alone.
+	return store.G(ctx, q).Model(&model.AccountUsageLimit{}).Where("account_id = ?", id).Update("waived_window", start).Error
 }
 
 // dbClock is the database's clock_timestamp().
