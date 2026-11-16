@@ -45,3 +45,9 @@ func TestVersion(t *testing.T) {
 		t.Fatalf("permission set version: %d %v, want %d", set.Version, err, changed)
 	}
 }
+
+// currentVersion is the authz version alone (currentVersions).
+func (s *Service) currentVersion(ctx context.Context) (int64, error) {
+	v, _, err := s.currentVersions(ctx)
+	return v, err
+}

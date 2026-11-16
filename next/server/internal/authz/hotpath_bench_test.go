@@ -11,9 +11,10 @@ import (
 
 // The reads behind every authorization check: a request whose user's
 // permission set is not cached at the current authz version (any authz
-// change drops the cache) loads it (loadPermissionSet, after the catalog,
-// ensureCatalog), and the version poll and committedLater read the version
-// (currentVersion). Measured against a real PostgreSQL (TEST_DATABASE_URL),
+// policy change, or a change of that user, drops it) loads it
+// (loadPermissionSet), a superuser's /me reads the active permissions
+// (ActivePermissionKeys), and the version poll and committedLater read the
+// versions (currentVersions). Measured against a real PostgreSQL (TEST_DATABASE_URL),
 // as recorded in internal/store/gormtest/BASELINE.md:
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/authz/
@@ -40,20 +41,18 @@ func BenchmarkHotAuthz(b *testing.B) {
 	}{
 		// An admin, through the Casbin resolver (its snapshot and role cache warm).
 		{"permission_set", func() error {
-			set, err := s.loadPermissionSet(ctx, uid)
+			set, err := s.loadPermissionSet(ctx, uid, s.Version())
 			if err == nil && len(set.Keys) == 0 {
 				b.Fatal("empty permission set")
 			}
 			return err
 		}},
-		{"catalog", func() error {
-			s.mu.Lock()
-			s.catalog = nil
-			s.mu.Unlock()
-			return s.ensureCatalog(ctx)
+		{"active_permissions", func() error {
+			_, err := s.ActivePermissionKeys(ctx)
+			return err
 		}},
 		{"version", func() error {
-			_, err := s.currentVersion(ctx)
+			_, _, err := s.currentVersions(ctx)
 			return err
 		}},
 	} {

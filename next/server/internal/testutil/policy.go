@@ -110,7 +110,7 @@ func PolicyOrphans(tb testing.TB, db *store.DB) []string {
 // the caches read again what a fixture changed.
 func BumpAuthz(tb testing.TB, db *store.DB) {
 	tb.Helper()
-	if err := db.Gorm.Exec(`UPDATE authz_meta SET version = version + 1 WHERE id = 1`).Error; err != nil {
+	if err := db.Gorm.Exec(`UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1`).Error; err != nil {
 		tb.Fatal(err)
 	}
 }

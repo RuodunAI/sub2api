@@ -32,7 +32,7 @@ func newResolver(l Loader, rc RoleCache, self []string, o snapshotOptions) *reso
 }
 
 // Grants is uid's effective set at version min or newer; its Version is the
-// one both the policy and the roles were read at.
+// one the roles were read at, under the snapshot's policy version.
 func (r *resolver) Grants(ctx context.Context, uid, min int64) (core.PermissionSet, error) {
 	s, ur, err := r.resolve(ctx, uid, min)
 	if err != nil {
@@ -41,10 +41,11 @@ func (r *resolver) Grants(ctx context.Context, uid, min int64) (core.PermissionS
 	return s.grants(ur)
 }
 
-func (r *resolver) Prewarm(min int64) { r.snaps.prewarm(min) }
+func (r *resolver) Prewarm(policy int64) { r.snaps.prewarm(policy) }
 
 // Pauses between two reads of a resolution whose halves met different
-// versions (resolve): the first retry is at once, the next ones back off.
+// policy versions (resolve): the first retry is at once, the next ones
+// back off.
 const (
 	skewPauseFirst = 2 * time.Millisecond
 	skewPauseMax   = 100 * time.Millisecond
@@ -54,55 +55,49 @@ func nextSkewPause(p time.Duration) time.Duration {
 	return max(skewPauseFirst, min(2*p, skewPauseMax))
 }
 
-// resolve returns a snapshot and uid's roles read at one version, min or
-// newer. The two reads may land on different versions: a write committed
-// between them, or the role cache holds a read newer than the snapshot.
-// Combining them would make a set no version ever held (a role revoked and
-// granted something new in one write: the old link with the new grant), so
-// both are read again at the newer of the two, with a growing pause between
-// rounds, until they meet: under a burst of writes (a bulk import bumps the
-// version at each user) a round lands between two of them sooner or later.
-// Only past the snapshot wait (snapshotOptions.Wait), or ctx's end, does it
-// give up, with ErrSkew: a set it cannot read at one version is refused
-// (fail closed), as a snapshot it cannot have in time is.
+// resolve returns uid's roles read at version min or newer and the
+// snapshot of the policy version they were read under. The roles come
+// first, then the snapshot of their policy version (the current one, or one
+// built for it). A snapshot newer than the roles' policy (a policy write
+// committed between the two reads, or a rebuild that read later) means the
+// roles were read before it: they are read again at once, at the
+// snapshot's authz version or newer, which matches unless yet another
+// policy write landed in between; then, after a growing pause, the round
+// starts over. Combining a snapshot and roles of different policy versions
+// would make a set no version ever held (a role revoked and granted
+// something new in one write: the old link with the new grant). Only
+// policy writes move the policy version, so a round rarely misses. Past
+// the snapshot wait (snapshotOptions.Wait), or ctx's end, it gives up with
+// ErrSkew: a set it cannot read under one policy is refused (fail closed),
+// as a snapshot it cannot have in time is.
 func (r *resolver) resolve(ctx context.Context, uid, min int64) (*snapshot, UserRoles, error) {
-	deadline := time.Now().Add(r.snaps.o.Wait)
-	s, ur, err := r.read(ctx, uid, min)
-	if err != nil || ur.Version == s.version {
-		return s, ur, err
-	}
-	wctx, cancel := context.WithDeadline(ctx, deadline)
+	wctx, cancel := context.WithTimeout(ctx, r.snaps.o.Wait)
 	defer cancel()
-	for pause := time.Duration(0); ; pause = nextSkewPause(pause) {
-		skew := fmt.Errorf("%w: user %d: policy at version %d, roles at %d", ErrSkew, uid, s.version, ur.Version)
-		min = max(s.version, ur.Version)
-		select {
-		case <-time.After(pause):
-		case <-wctx.Done():
-			if ctx.Err() != nil {
-				return nil, UserRoles{}, ctx.Err()
-			}
-			return nil, UserRoles{}, skew
-		}
-		s, ur, err = r.read(wctx, uid, min)
-		switch {
-		case err != nil && wctx.Err() != nil && ctx.Err() == nil:
-			return nil, UserRoles{}, skew // the wait ran out while skewed
-		case err != nil:
-			return nil, UserRoles{}, err
-		case ur.Version == s.version:
-			return s, ur, nil
-		}
-	}
-}
-
-// read ensures a snapshot of version min or newer and warms uid's roles at
-// its version.
-func (r *resolver) read(ctx context.Context, uid, min int64) (*snapshot, UserRoles, error) {
-	s, err := r.snaps.Ensure(ctx, min)
+	// The first read runs on ctx: a snapshot wait ending is ErrStale's.
+	ur, err := r.rc.Warm(ctx, uid, min)
 	if err != nil {
 		return nil, UserRoles{}, err
 	}
-	ur, err := r.rc.Warm(ctx, uid, s.version)
-	return s, ur, err
+	for pause := time.Duration(0); ; pause = nextSkewPause(pause) {
+		s, err := r.snaps.Ensure(ctx, ur.PolicyVersion)
+		if err != nil || s.policy == ur.PolicyVersion {
+			return s, ur, err
+		}
+		skew := fmt.Errorf("%w: user %d: policy snapshot at %d, roles read under %d", ErrSkew, uid, s.policy, ur.PolicyVersion)
+		if ur, err = r.rc.Warm(wctx, uid, max(min, s.version)); err == nil && ur.PolicyVersion == s.policy {
+			return s, ur, nil
+		}
+		select {
+		case <-time.After(pause):
+		case <-wctx.Done():
+		}
+		switch {
+		case ctx.Err() != nil:
+			return nil, UserRoles{}, ctx.Err()
+		case wctx.Err() != nil:
+			return nil, UserRoles{}, skew // the wait ran out while skewed
+		case err != nil:
+			return nil, UserRoles{}, err
+		}
+	}
 }

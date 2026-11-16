@@ -23,16 +23,10 @@ func TestSQLCasbinRuleReads(t *testing.T) {
 	var dest []map[string]any
 	assertRuns(t, map[string]func(*gorm.DB) error{
 		"role_keys_of": func(db *gorm.DB) error { return RoleKeysOf(db, []int64{7, 8}).Scan(&dest).Error },
-		"user_role_subs": func(db *gorm.DB) error {
-			_, err := UserRoleSubs(db, 7)
-			return err
-		},
+		"role_subs_of": func(db *gorm.DB) error { return db.Raw(RoleSubsOf("?"), 7).Scan(&dest).Error },
 		"lock_members": func(db *gorm.DB) error {
 			_, err := LockMembers(db, "super_admin")
 			return err
-		},
-		"scoped_grants": func(db *gorm.DB) error {
-			return ScopedGrants(db, []string{`^group:5(:|$)`}).Find(&dest).Error
 		},
 		"grants_of": func(db *gorm.DB) error { return db.Raw(GrantsOf("?"), "admin").Scan(&dest).Error },
 		"roles_of":  func(db *gorm.DB) error { return db.Raw(RolesOf("?"), 7).Scan(&dest).Error },

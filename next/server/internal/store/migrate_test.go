@@ -115,3 +115,28 @@ func TestRenamedCoreMigrationIsKnownUnderItsNewID(t *testing.T) {
 		t.Fatalf("%s not reported", cur)
 	}
 }
+
+// A database that applied 0099 before its COMMENT named the staged status
+// (b5b2fb564, on develop for a night) is not refused as modified: 0100 sets
+// the comment again. Any other checksum still is.
+func TestSupersededCoreMigrationIsAccepted(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	const id = "0099_plugin_permission_meta.sql"
+	run := func(sum string) error {
+		if _, err := db.SQL.ExecContext(ctx, `UPDATE schema_migrations SET checksum = $1 WHERE id = $2`, sum, id); err != nil {
+			t.Fatal(err)
+		}
+		again, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		if err == nil && len(again) != 0 {
+			t.Fatalf("applied %v, want nothing", again)
+		}
+		return err
+	}
+	if err := run("213799f5dda8b6dfc88e1edcf287626dd55f39a17ec6c1fabc87d58d017eed15"); err != nil {
+		t.Fatalf("first form of 0099 refused: %v", err)
+	}
+	if err := run(strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "modified after being applied") {
+		t.Fatalf("another checksum accepted: %v", err)
+	}
+}

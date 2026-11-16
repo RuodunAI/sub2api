@@ -137,8 +137,9 @@ async function save(resent = false) {
   saving.value = true
   saveMissing.value = ''
   try {
-    const version = data.value?.version
-    const body = { roles: Object.fromEntries(changed.map((k) => [k, matrix.value.value[k] ?? []])), ...(version !== undefined && { version }) }
+    // Each role with the revision the matrix showed (C1).
+    const revisions = Object.fromEntries((data.value?.roles ?? []).filter((r) => changed.includes(r.key) && r.revision !== undefined).map((r) => [r.key, r.revision]))
+    const body = { roles: Object.fromEntries(changed.map((k) => [k, matrix.value.value[k] ?? []])), ...(Object.keys(revisions).length && { revisions }) }
     data.value = await api.put<PluginRoleMatrix>(`/permissions/plugins/${encodeURIComponent(props.detail.key)}`, body)
     toast(t('plugins.matrix.saved'), 'success')
     if (changed.some((k) => auth.me?.roles.includes(k))) auth.refreshPermissions().catch(() => undefined)

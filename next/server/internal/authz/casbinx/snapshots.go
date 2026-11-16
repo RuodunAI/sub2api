@@ -72,12 +72,12 @@ func newSnapshots(build func(context.Context) (*snapshot, error), o snapshotOpti
 	return &snapshots{build: build, o: o.withDefaults()}
 }
 
-// swap installs s unless a snapshot of the same or a newer version is in
-// place: two rebuilds racing, the older one loses.
+// swap installs s unless a snapshot of the same or a newer policy version
+// is in place: two rebuilds racing, the older one loses.
 func (g *snapshots) swap(s *snapshot) bool {
 	for {
 		old := g.cur.Load()
-		if old != nil && old.version >= s.version {
+		if old != nil && old.policy >= s.policy {
 			return false
 		}
 		if g.cur.CompareAndSwap(old, s) {
@@ -86,14 +86,14 @@ func (g *snapshots) swap(s *snapshot) bool {
 	}
 }
 
-// Ensure returns a snapshot of version min or newer: the current one, or
-// one it rebuilds for it. min is a committed version, so a rebuild that
+// Ensure returns a snapshot of policy version min or newer: the current
+// one, or one it rebuilds for it. min is a committed policy version, so a rebuild that
 // starts after the caller learnt of it reads min or newer; one that was
 // already running may not, and Ensure then waits for one more. It fails
 // with ErrStale when that one is still older, the rebuild's error when it
 // fails, and ErrStale or ctx's error when Wait or ctx ends first.
 func (g *snapshots) Ensure(ctx context.Context, min int64) (*snapshot, error) {
-	if s := g.cur.Load(); s != nil && s.version >= min {
+	if s := g.cur.Load(); s != nil && s.policy >= min {
 		return s, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, g.o.Wait)
@@ -103,32 +103,33 @@ func (g *snapshots) Ensure(ctx context.Context, min int64) (*snapshot, error) {
 		select {
 		case <-f.done:
 		case <-ctx.Done():
-			return nil, fmt.Errorf("%w: waiting for version %d: %w", ErrStale, min, ctx.Err())
+			return nil, fmt.Errorf("%w: waiting for policy version %d: %w", ErrStale, min, ctx.Err())
 		}
 		if f.err != nil {
 			return nil, f.err
 		}
-		if s := g.cur.Load(); s != nil && s.version >= min {
+		if s := g.cur.Load(); s != nil && s.policy >= min {
 			return s, nil
 		}
 	}
-	return nil, fmt.Errorf("%w: version %d not reached", ErrStale, min)
+	return nil, fmt.Errorf("%w: policy version %d not reached", ErrStale, min)
 }
 
 // prewarm starts, off the caller, what Ensure(min) would wait for: the node
-// learnt of version min (its own write, a broadcast, the poll, start-up),
+// learnt of policy version min (its own write, a broadcast, the poll,
+// start-up),
 // and the requests that follow should find the snapshot built rather than
 // wait for it. Ensure bounds the goroutine (Wait); its failure is left to
 // the request that needs the snapshot to report.
 func (g *snapshots) prewarm(min int64) {
-	if s := g.cur.Load(); s != nil && s.version >= min {
+	if s := g.cur.Load(); s != nil && s.policy >= min {
 		return
 	}
 	go func() { _, _ = g.Ensure(context.Background(), min) }()
 }
 
 // rebuild joins the rebuild in progress, or starts one unless a snapshot
-// of version min is in place by now: a caller that found none may reach
+// of policy version min is in place by now: a caller that found none may reach
 // here only after a rebuild it could have joined has ended (run swaps
 // before it clears g.flight under mu), and must not read the policy again
 // for it.
@@ -138,7 +139,7 @@ func (g *snapshots) rebuild(min int64) *flight {
 	if g.flight != nil {
 		return g.flight
 	}
-	if s := g.cur.Load(); s != nil && s.version >= min {
+	if s := g.cur.Load(); s != nil && s.policy >= min {
 		return doneFlight
 	}
 	f := &flight{done: make(chan struct{})}

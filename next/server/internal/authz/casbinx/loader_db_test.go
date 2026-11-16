@@ -173,7 +173,7 @@ func TestLoaderAdapterReadOnly(t *testing.T) {
 		got := log.Take()
 		want := []*regexp.Regexp{
 			regexp.MustCompile(`^begin$`),
-			regexp.MustCompile(`^SELECT version FROM authz_meta`),
+			regexp.MustCompile(`^SELECT version, policy_version FROM authz_meta`),
 			regexp.MustCompile(`^SELECT key FROM permissions WHERE status = 'active'$`),
 			regexp.MustCompile(`^SELECT .* FROM "casbin_rule" WHERE ptype in \(\$1\) ORDER BY ID$`),
 			regexp.MustCompile(`^commit$`),

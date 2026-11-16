@@ -3,13 +3,16 @@
 //
 // casbin_rule is the one store of the grants and the users' roles; its
 // writes are package casbinrule's, in the business transactions. This
-// package only reads it: one immutable enforcer per authz version
-// (snapshot), built from the p rows of active permissions and no g row; a
-// user's roles come from the two-level user-role cache (RoleCache) at the
-// snapshot's version, and the read-only role manager links each role
-// subject to itself only. Nothing here writes policy, opens a transaction
-// of its own or calls the gorm-adapter / Casbin management APIs (AddPolicy,
-// SavePolicy, Transaction, TransactionalEnforcer): gormguard rejects them.
+// package only reads it: one immutable enforcer per policy version
+// (snapshot; authz_meta.policy_version, which only the writes of grants,
+// permission statuses and role definitions move), built from the p rows of
+// active permissions and no g row. A user's roles come with each call,
+// read together with the policy version they were read under (RoleCache).
+// A write of one user's roles or status moves the authz version only: no
+// snapshot is rebuilt for it. Nothing here writes policy, opens a
+// transaction of its own or calls the gorm-adapter / Casbin management APIs
+// (AddPolicy, SavePolicy, Transaction, TransactionalEnforcer): gormguard
+// rejects them.
 //
 // Requests read the PermissionSet Grants returns and test it with
 // PermissionSet.Has (perm.Implies, the same function permMatch registers);
@@ -43,11 +46,11 @@ const (
 // subject, role subject, ""); v3..v5 are unused.
 type Rule struct{ Ptype, V0, V1, V2 string }
 
-// Policy is one consistent read of the policy: the authz version, the
-// status of every catalog action and the p rows, all from one read-only
-// repeatable-read transaction.
+// Policy is one consistent read of the policy: the authz and policy
+// versions, the status of every catalog action and the p rows, all from
+// one read-only repeatable-read transaction.
 type Policy struct {
-	Version int64
+	Version, PolicyVersion int64
 	// Active holds the actions whose permission is active; p rows of other
 	// actions (disabled or removed plugin permissions) stay stored but are
 	// not loaded. SuperKey rows are always loaded.
@@ -55,49 +58,54 @@ type Policy struct {
 	Rules  []Rule
 }
 
-// UserRoles is one user's g rows as read at Version: role subjects, and
-// whether the user is active (not deleted, status active). An inactive user
-// holds nothing, not even the self permissions.
+// UserRoles is one user's g rows as read at Version, under PolicyVersion
+// (both of the same read): role subjects, and whether the user is active
+// (not deleted, status active). An inactive user holds nothing, not even
+// the self permissions.
 type UserRoles struct {
-	Version int64
-	Active  bool
-	Roles   []string
+	Version, PolicyVersion int64
+	Active                 bool
+	Roles                  []string
 }
 
-// Loader reads the policy from PostgreSQL. Both reads see one snapshot
-// (read-only repeatable read) and report its authz version.
+// Loader reads the policy from PostgreSQL. Each read sees one snapshot of
+// the database and reports its versions.
 type Loader interface {
 	Policy(ctx context.Context) (Policy, error)
 	UserRoles(ctx context.Context, uid int64) (UserRoles, error)
 }
 
-// RoleCache is the two-level user-role cache: the process (L1) and Valkey
-// (L2, shared by the nodes; optional). Warm returns uid's roles read at a
-// version >= min: from L1, from L2 when its entry is at exactly min, or
-// from the Loader. A Valkey error skips L2 (PostgreSQL is the truth).
+// RoleCache reads the users' roles, through Valkey when configured (shared
+// by the nodes) and merging the concurrent reads of one user: Warm returns
+// uid's roles read at a version >= min, from Valkey when its entry is at
+// exactly min, else from the Loader. A Valkey error skips it (PostgreSQL
+// is the truth). The process keeps the resolved sets (authz.Service), not
+// the roles.
 //
 // The snapshots never read the cache themselves: a resolution hands the
-// roles Warm returned to the snapshot of the same version, so the two
-// halves of a set cannot come from different versions.
+// roles Warm returned to the snapshot of their policy version, so the two
+// halves of a set cannot come from different policies.
 type RoleCache interface {
 	Warm(ctx context.Context, uid, min int64) (UserRoles, error)
 }
 
 // Resolver is what authz.Service calls. Grants is uid's effective
-// permission set as Casbin resolves it at a version >= min: the policy
-// snapshot (built if needed, blocking, failing closed after a timeout) and
-// the user's roles, both read at the set's Version. When they cannot be
-// had at one version it fails with ErrSkew.
+// permission set as Casbin resolves it at an authz version >= min (the
+// set's Version): the user's roles read at that version, and the policy
+// snapshot of the policy version they were read under (built if needed,
+// blocking, failing closed after a timeout). When the two cannot be had
+// under one policy version it fails with ErrSkew.
 type Resolver interface {
 	Grants(ctx context.Context, uid, min int64) (core.PermissionSet, error)
-	// Prewarm starts building the snapshot of version min, off the caller,
-	// when the current one is older: the node learnt of a new version, and
-	// the requests that follow should find it built.
-	Prewarm(min int64)
+	// Prewarm starts building the snapshot of policy version policy, off
+	// the caller, when the current one is older: the node learnt of a
+	// policy write, and the requests that follow should find it built.
+	Prewarm(policy int64)
 }
 
-// ErrSkew is the error of a resolution whose snapshot and roles were read
-// at different versions in every round until the snapshot wait ran out:
-// writes kept landing in between. The caller must not combine them (casbin
-// fails closed).
-var ErrSkew = errors.New("casbinx: the policy and the user's roles were read at different versions")
+// ErrSkew is the error of a resolution whose roles and snapshot were read
+// under different policy versions in every round until the snapshot wait
+// ran out: policy writes kept landing in between. The caller must not
+// combine them (casbin fails closed). A write of a user's roles or status
+// does not move the policy version, so it never causes one.
+var ErrSkew = errors.New("casbinx: the policy and the user's roles were read under different policy versions")

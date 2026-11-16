@@ -2030,7 +2030,6 @@ func (s *Service) delete(c *gin.Context) {
 	}
 	scope := s.scopeOf(ctx, perm.AccountDelete)
 	uid, _ := core.UserID(ctx)
-	var authzVersion int64
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var deleted model.Account
 		res := softDelete(store.G(ctx, tx), &deleted, id, scope)
@@ -2044,8 +2043,7 @@ func (s *Service) delete(c *gin.Context) {
 		if err := store.G(ctx, tx).Where("account_id = ?", id).Delete(&model.AccountGroup{}).Error; err != nil {
 			return err
 		}
-		var err error
-		if authzVersion, err = s.d.ScopeGrants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefAccount, []int64{id}); err != nil {
+		if _, err := s.d.ScopeGrants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefAccount, []int64{id}); err != nil {
 			return err
 		}
 		retainUntil, err := s.markResourcesDeleted(ctx, tx, id, pk, typ, retain)
@@ -2065,7 +2063,6 @@ func (s *Service) delete(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	core.AnnounceAuthzChanged(ctx, s.d.Bus, authzVersion)
 	if s.d.Redis != nil {
 		_ = s.d.Redis.Del(ctx, cooldownKey(id)).Err()
 	}

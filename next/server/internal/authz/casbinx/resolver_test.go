@@ -65,13 +65,13 @@ func (d *fakeDB) bump() {
 func (d *fakeDB) Policy(context.Context) (Policy, error) {
 	time.Sleep(d.policyDelay)
 	v, st := d.read()
-	return Policy{Version: v, Active: activeOf(st.rules), Rules: st.rules}, nil
+	return Policy{Version: v, PolicyVersion: v, Active: activeOf(st.rules), Rules: st.rules}, nil
 }
 
 func (d *fakeDB) UserRoles(_ context.Context, uid int64) (UserRoles, error) {
 	v, st := d.read()
 	ur := st.users[uid]
-	ur.Version = v
+	ur.Version, ur.PolicyVersion = v, v // every write of the fake is a policy write
 	return ur, nil
 }
 
@@ -117,9 +117,11 @@ func TestResolverGrants(t *testing.T) {
 	if ok, _, err := r.enforce(ctx, 2, "self:profile", 3); ok || err != nil {
 		t.Fatalf("Enforce of an inactive user = %v, %v", ok, err)
 	}
-	// A snapshot below min, never reaching it: fail closed.
-	if _, err := r.Grants(ctx, 1, 5); !errors.Is(err, ErrStale) {
-		t.Fatalf("snapshot below min: %v", err)
+	// The database below min (a version bumped by a transaction not
+	// committed yet): the newest committed state, labelled with its
+	// version, which the caller does not cache.
+	if set, err := r.Grants(ctx, 1, 5); err != nil || set.Version != 4 {
+		t.Fatalf("database below min: %+v, %v", set, err)
 	}
 }
 

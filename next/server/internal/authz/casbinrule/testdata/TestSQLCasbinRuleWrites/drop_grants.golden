@@ -1,7 +1,10 @@
 -- sql
-DELETE FROM casbin_rule cr USING permissions p, roles r
-WHERE cr.ptype = $1 AND cr.v0 = $2 AND p.key = cr.v1 AND r.key = $3 AND p.plugin_key = $4 AND p.key = $5 AND p.status <> ALL($6)
-  AND (cr.v1, cr.v2) NOT IN (SELECT * FROM unnest($7::text[], $8::text[]))
+WITH gone AS (
+    DELETE FROM casbin_rule cr USING permissions p, roles r
+    WHERE cr.ptype = $1 AND cr.v0 = $2 AND p.key = cr.v1 AND r.key = $3 AND p.plugin_key = $4 AND p.key = $5 AND p.status <> ALL($6)
+      AND (cr.v1, cr.v2) NOT IN (SELECT * FROM unnest($7::text[], $8::text[]))
+    RETURNING r.id AS role_id)
+UPDATE roles SET revision = revision + 1 WHERE id IN (SELECT role_id FROM gone)
 -- vars
 $1 string "p"
 $2 string "r:admin"

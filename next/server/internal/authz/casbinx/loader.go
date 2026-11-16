@@ -22,14 +22,14 @@ type pgLoader struct{ db *store.DB }
 // NewLoader returns the Loader over db.
 func NewLoader(db *store.DB) Loader { return &pgLoader{db: db} }
 
-// Policy reads the authz version, the active actions and the p rows in one
-// snapshot.
+// Policy reads the authz and policy versions, the active actions and the
+// p rows in one snapshot.
 func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 	var p Policy
 	err := l.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		q := store.G(ctx, tx)
 		var err error
-		if p.Version, err = store.AuthzVersion(q); err != nil {
+		if p.Version, p.PolicyVersion, err = store.AuthzVersions(q); err != nil {
 			return err
 		}
 		var active []string
@@ -88,30 +88,28 @@ func loadPolicyRows(tx *gorm.DB) ([]Rule, error) {
 	return out, nil
 }
 
-// UserRoles reads uid's role subjects (its g rows) and whether it is
-// active (not deleted, status active), at the version of the same
-// snapshot. An inactive user's roles are not read: it holds nothing, even
-// while its g rows stay (a disabled user's, a soft-deleted user's).
+// UserRoles reads uid's role subjects (its g rows), whether it is active
+// (not deleted, status active) and the versions, in one statement (one
+// snapshot, one round trip). An inactive user holds nothing, even while
+// its g rows stay (a disabled user's, a soft-deleted user's).
 func (l *pgLoader) UserRoles(ctx context.Context, uid int64) (UserRoles, error) {
 	var ur UserRoles
-	err := l.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
-		q := store.G(ctx, tx)
-		var err error
-		if ur.Version, err = store.AuthzVersion(q); err != nil {
-			return err
-		}
-		if err := q.Raw(`SELECT EXISTS (SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL AND status = 'active')`,
-			uid).Row().Scan(&ur.Active); err != nil {
-			return err
-		}
-		if !ur.Active {
-			return nil
-		}
-		ur.Roles, err = casbinrule.UserRoleSubs(q, uid)
-		return err
-	})
+	var roles store.Strings
+	err := userRoles(store.G(ctx, l.db.Gorm), uid).Row().Scan(&ur.Version, &ur.PolicyVersion, &ur.Active, &roles)
 	if err != nil {
 		return UserRoles{}, fmt.Errorf("casbinx: read the roles of user %d: %w", uid, err)
 	}
+	if ur.Active {
+		ur.Roles = roles
+	}
 	return ur, nil
+}
+
+// userRoles selects the versions, whether uid is active and its role
+// subjects, sorted.
+func userRoles(db *gorm.DB, uid int64) *gorm.DB {
+	return db.Raw(`SELECT m.version, m.policy_version,
+    EXISTS (SELECT 1 FROM users u WHERE u.id = @uid AND u.deleted_at IS NULL AND u.status = 'active'),
+    ARRAY(`+casbinrule.RoleSubsOf("CAST(@uid AS bigint)")+` ORDER BY 1)
+FROM authz_meta m WHERE m.id = 1`, map[string]any{"uid": uid})
 }

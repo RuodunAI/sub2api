@@ -2,11 +2,11 @@ package store
 
 import "gorm.io/gorm"
 
-// AuthzVersion reads the authz version (authz_meta, bumped by every authz
-// write); read in a snapshot, it is the version the snapshot shows. The
-// legacy loader and Casbin's both label what they read with it.
-func AuthzVersion(db *gorm.DB) (int64, error) {
-	var v int64
-	err := db.Raw(`SELECT version FROM authz_meta WHERE id = 1`).Row().Scan(&v)
-	return v, err
+// AuthzVersions reads the authz version (authz_meta.version, moved by every
+// authz write) and the policy version (authz_meta.policy_version, moved only
+// by the writes of grants, permission statuses and role definitions) in one
+// statement; read in a snapshot, they are the versions the snapshot shows.
+func AuthzVersions(db *gorm.DB) (version, policy int64, err error) {
+	err = db.Raw(`SELECT version, policy_version FROM authz_meta WHERE id = 1`).Row().Scan(&version, &policy)
+	return version, policy, err
 }

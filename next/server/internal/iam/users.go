@@ -404,7 +404,7 @@ func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id in
 	// unchanged status must invalidate authorization after concurrent edits.
 	if in.Status != nil {
 		var err error
-		if v, err = s.authz.Bump(ctx, tx); err != nil {
+		if v, err = s.authz.Bump(ctx, tx, id); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -509,7 +509,7 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 	var dropped bool // a personal segment went, with its price rules
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
-		if v, err = s.authz.Bump(ctx, tx); err != nil {
+		if v, err = s.authz.Bump(ctx, tx, id); err != nil {
 			return err
 		}
 		g := store.G(ctx, tx)

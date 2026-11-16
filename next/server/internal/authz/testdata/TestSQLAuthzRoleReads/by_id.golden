@@ -7,7 +7,7 @@ FROM casbin_rule cr WHERE cr.ptype = 'p' AND cr.v1 <> '*' AND cr.v0 = ('r:' || r
         JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser WHERE ra.role_id = r.id), '{}'),
     r.assign_custom,
     (SELECT count(*) FROM users u WHERE u.id IN (SELECT substr(cr.v0, 3)::bigint FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v1 = ('r:' || r.key)) AND u.deleted_at IS NULL),
-    (SELECT version FROM authz_meta WHERE id = 1)
+    r.revision
 FROM roles r WHERE r.id = $1
 -- vars
 $1 int64 3

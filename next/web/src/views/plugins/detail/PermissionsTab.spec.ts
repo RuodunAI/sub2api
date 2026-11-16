@@ -24,6 +24,9 @@ const READ = 'plugin.guard:flow:read'
 const EXPORT = 'plugin.guard:record:export'
 const OLD = 'plugin.guard:alerts:mute'
 const row = (key: string, name: string, over: object = {}) => ({ id: 0, key, name, builtin: true, superuser: false, editable: true, permission_keys: [] as string[], ...over })
+/** m with every role at revision rev (a copy). */
+const atRevision = (m: PluginRoleMatrix, rev: number): PluginRoleMatrix => ({ ...structuredClone(m), roles: m.roles.map((r) => ({ ...structuredClone(r), revision: rev })) })
+
 const MATRIX: PluginRoleMatrix = {
   plugin_key: 'guard',
   module: {
@@ -74,8 +77,8 @@ describe('plugin permissions tab', () => {
     expect(w.find('[data-testid="matrix-save"]').exists()).toBe(false)
   })
 
-  it('saves only changed roles with PUT /permissions/plugins/:plugin, carrying the version read', async () => {
-    const w = await render({}, { ...MATRIX, version: 41 })
+  it('saves only changed roles with PUT /permissions/plugins/:plugin, carrying the revision read of each saved role', async () => {
+    const w = await render({}, atRevision(MATRIX, 41))
     await box(w, EXPORT, 'operator').setValue(true)
     expect(w.get('[data-testid="matrix-save"]').text()).toContain('1 unsaved change')
     expect(w.get('[data-testid="matrix-save-first"]').text()).toBe('Operator · Export records: Not granted → Granted')
@@ -86,7 +89,7 @@ describe('plugin permissions tab', () => {
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
     // The role's every key of the plugin, the removed one it keeps included; other roles left out.
-    expect(mocks.put).toHaveBeenCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] }, version: 41 })
+    expect(mocks.put).toHaveBeenCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] }, revisions: { operator: 41 } })
     expect(mocks.toast).toHaveBeenCalledWith('Role grants saved', 'success')
     expect(w.find('[data-testid="matrix-save"]').exists()).toBe(false)
     expect(mocks.refresh).not.toHaveBeenCalled()
@@ -183,17 +186,17 @@ describe('plugin permissions tab', () => {
     expect(w.get('[data-testid="matrix-save-all"]').text()).toContain('Admin · Read flows: Granted → Not granted')
   })
 
-  /** The matrix as read again after a 409, version 42, changed by over. */
+  /** The matrix as read again after a 409, every role at revision 42, changed by over. */
   function readAgain(over: (m: PluginRoleMatrix) => void) {
-    const fresh = structuredClone({ ...MATRIX, version: 42 })
+    const fresh = atRevision(MATRIX, 42)
     over(fresh)
     mocks.get.mockImplementation(async (path: string) => (path.startsWith('/permissions/plugins/') ? structuredClone(fresh) : []))
-    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { version: 42 } }))
+    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 42 } }))
     return fresh
   }
 
-  it('a version conflict that left the saved roles as they were sends again at once with the new version (N2)', async () => {
-    const w = await render({}, { ...MATRIX, version: 41 })
+  it('a version conflict that left the saved roles as they were sends again at once with the new revisions (N2)', async () => {
+    const w = await render({}, atRevision(MATRIX, 41))
     await box(w, EXPORT, 'operator').setValue(true)
     // Meanwhile someone granted the lead's read: not a role this save touches.
     const fresh = readAgain((m) => (m.roles[3].permission_keys = [READ]))
@@ -201,7 +204,7 @@ describe('plugin permissions tab', () => {
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
     expect(mocks.put).toHaveBeenCalledTimes(2)
-    expect(mocks.put).toHaveBeenLastCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] }, version: 42 })
+    expect(mocks.put).toHaveBeenLastCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, READ, EXPORT] }, revisions: { operator: 42 } })
     // Asked about once only, and nothing to tell but the save.
     expect(mocks.confirm).toHaveBeenCalledTimes(1)
     expect(mocks.toast).not.toHaveBeenCalledWith(i18n.global.t('roles.conflictMerged'), 'info')
@@ -209,7 +212,7 @@ describe('plugin permissions tab', () => {
   })
 
   it('a version conflict on a saved role reads it again with the local cells on top, naming a cell both changed, to save once more (N2)', async () => {
-    const w = await render({}, { ...MATRIX, version: 41 })
+    const w = await render({}, atRevision(MATRIX, 41))
     await box(w, EXPORT, 'operator').setValue(true)
     await box(w, EXPORT, 'admin').setValue(false)
     // Meanwhile someone dropped the operator's read and gave the admin's export a second thought too (took it away).
@@ -226,11 +229,11 @@ describe('plugin permissions tab', () => {
     mocks.put.mockResolvedValueOnce(fresh)
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
-    expect(mocks.put).toHaveBeenLastCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, EXPORT] }, version: 42 })
+    expect(mocks.put).toHaveBeenLastCalledWith('/permissions/plugins/guard', { roles: { operator: [OLD, EXPORT] }, revisions: { operator: 42 } })
   })
 
   it('an edit a new lock refuses on reading again is dropped and told (N4)', async () => {
-    const w = await render({}, { ...MATRIX, version: 41 })
+    const w = await render({}, atRevision(MATRIX, 41))
     await box(w, EXPORT, 'operator').setValue(true)
     // Meanwhile the operator stopped being the editor's to change.
     readAgain((m) => {
@@ -244,13 +247,13 @@ describe('plugin permissions tab', () => {
   })
 
   it('a failed read after a conflict keeps the edits to save again (N4)', async () => {
-    const w = await render({}, { ...MATRIX, version: 41 })
+    const w = await render({}, atRevision(MATRIX, 41))
     await box(w, EXPORT, 'operator').setValue(true)
     mocks.get.mockImplementation(async (path: string) => {
       if (path.startsWith('/permissions/plugins/')) throw new ApiError(503, { code: 'unavailable', message: 'down' })
       return []
     })
-    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { version: 42 } }))
+    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 42 } }))
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
     expect(box(w, EXPORT, 'operator').element.checked).toBe(true)

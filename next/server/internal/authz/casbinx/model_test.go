@@ -137,37 +137,39 @@ func TestImpliesVectorsViaCasbin(t *testing.T) {
 // calls it (the columns of the stored grant).
 func TestPermMatchIsImplies(t *testing.T) {
 	t.Parallel()
+	m := new(matcher)
 	for _, c := range loadVectors(t).Implies {
 		have, err := perm.Parse(c.Have)
 		if err != nil {
 			t.Fatal(c.Have, err)
 		}
-		if got := permMatch(string(have.Action), scopeOf(have), c.Want); got != c.OK {
+		if got := m.permMatch(string(have.Action), scopeOf(have), c.Want); got != c.OK {
 			t.Errorf("permMatch(%q, %q) = %v, want %v", c.Have, c.Want, got, c.OK)
 		}
 	}
-	if !permMatch(SuperKey, AllRows, "plugin.later:x:y:flow/3") {
+	if !m.permMatch(SuperKey, AllRows, "plugin.later:x:y:flow/3") {
 		t.Fatal("SuperKey does not match a future key")
 	}
-	if permMatch("account:read", AllRows, "account:read:bogus/") {
+	if m.permMatch("account:read", AllRows, "account:read:bogus/") {
 		t.Fatal("an unparsable key matched")
 	}
-	if _, err := permMatchFunc("a", "b"); err == nil {
+	if _, err := m.fn("a", "b"); err == nil {
 		t.Fatal("permMatch took 2 arguments")
 	}
 }
 
 // The parse cache stops growing at its limit and keeps answering.
 func TestParseCacheBounded(t *testing.T) {
+	m := new(matcher)
 	for i := range parseCacheLimit + 100 {
-		if _, ok := parsed("account:read:group/" + strconv.Itoa(i+1)); !ok {
+		if _, ok := m.parsed("account:read:group/" + strconv.Itoa(i+1)); !ok {
 			t.Fatal("parse failed")
 		}
 	}
-	if n := parseCacheSize.Load(); n > parseCacheLimit {
+	if n := m.size.Load(); n > parseCacheLimit {
 		t.Fatalf("cache holds %d keys, limit %d", n, parseCacheLimit)
 	}
-	if p, ok := parsed("account:read:group/999999"); !ok || p.Scope.Group != 999999 {
+	if p, ok := m.parsed("account:read:group/999999"); !ok || p.Scope.Group != 999999 {
 		t.Fatalf("past the limit: %+v %v", p, ok)
 	}
 }

@@ -20,9 +20,6 @@ type roleCacheOptions struct {
 	// TTL is the lifetime of a Valkey entry (default 15 min). The version
 	// check decides whether an entry is usable; the TTL only bounds memory.
 	TTL time.Duration
-	// Capacity bounds the users held in the process (default 200 000,
-	// about 100 B each).
-	Capacity int
 	// L2Timeout bounds each Valkey call (default 100 ms): L2 only saves a
 	// PostgreSQL read, so waiting longer than that read takes is a loss.
 	L2Timeout time.Duration
@@ -36,9 +33,6 @@ func (o roleCacheOptions) withDefaults() roleCacheOptions {
 	if o.TTL <= 0 {
 		o.TTL = roleCacheTTL
 	}
-	if o.Capacity <= 0 {
-		o.Capacity = roleCacheCapacity
-	}
 	if o.L2Timeout <= 0 {
 		o.L2Timeout = roleCacheL2Timeout
 	}
@@ -50,7 +44,6 @@ func (o roleCacheOptions) withDefaults() roleCacheOptions {
 
 const (
 	roleCacheTTL       = 15 * time.Minute
-	roleCacheCapacity  = 200_000
 	roleCacheL2Timeout = 100 * time.Millisecond
 	roleCacheL2Backoff = 10 * time.Second
 	// roleCacheLoadTimeout bounds one shared load: it runs detached from
@@ -68,31 +61,10 @@ const (
 	roleCacheWarnEvery = time.Minute
 )
 
-// roleEntry is one user's roles at version v. It is immutable once stored
-// except for used, the cache's clock at its last Warm, which picks the
-// victims of a full cache.
-type roleEntry struct {
-	v      int64
-	active bool
-	roles  []string // the g rows as read; none when inactive
-	used   atomic.Uint64
-}
-
-func newRoleEntry(ur UserRoles) *roleEntry {
-	e := &roleEntry{v: ur.Version, active: ur.Active}
-	if ur.Active {
-		e.roles = append([]string(nil), ur.Roles...)
-	}
-	return e
-}
-
-func (e *roleEntry) userRoles() UserRoles {
-	return UserRoles{Version: e.v, Active: e.active, Roles: append([]string(nil), e.roles...)}
-}
-
-// roleWire is the Valkey value: {"v":123,"a":true,"r":["r:user"]}.
+// roleWire is the Valkey value: {"v":123,"p":45,"a":true,"r":["r:user"]}.
 type roleWire struct {
 	V int64    `json:"v"`
+	P int64    `json:"p"`
 	A bool     `json:"a"`
 	R []string `json:"r"`
 }
@@ -101,13 +73,6 @@ type roleCache struct {
 	load Loader
 	rdb  redis.UniversalClient
 	o    roleCacheOptions
-
-	mu    sync.RWMutex
-	users map[int64]*roleEntry
-	// newest is the highest version stored, clock the counter behind
-	// roleEntry.used; both guide eviction.
-	newest int64
-	clock  atomic.Uint64
 
 	flight   singleflight.Group
 	l2Until  atomic.Int64 // unix nanos before which L2 is skipped
@@ -120,37 +85,21 @@ type roleCache struct {
 
 var _ RoleCache = (*roleCache)(nil)
 
-// NewRoleCache returns the two-level user-role cache over l. rdb may be nil:
-// the cache then has the process level only.
+// NewRoleCache returns the user-role cache over l. rdb may be nil: every
+// read then goes to l.
 func NewRoleCache(l Loader, rdb redis.UniversalClient) RoleCache {
 	return newRoleCache(l, rdb, roleCacheOptions{})
 }
 
 func newRoleCache(l Loader, rdb redis.UniversalClient, o roleCacheOptions) *roleCache {
-	return &roleCache{load: l, rdb: rdb, o: o.withDefaults(), users: map[int64]*roleEntry{},
-		l2Writes: make(chan struct{}, roleCacheL2Writes)}
+	return &roleCache{load: l, rdb: rdb, o: o.withDefaults(), l2Writes: make(chan struct{}, roleCacheL2Writes)}
 }
 
-// Warm returns uid's roles read at a version >= min, and keeps them in the
-// process. A read that is still older (the Loader saw an older snapshot) is
-// returned as is, for the caller to judge by its Version.
+// Warm returns uid's roles read at a version >= min. A read that is still
+// older (the Loader saw an older snapshot) is returned as is, for the
+// caller to judge by its Version.
 func (c *roleCache) Warm(ctx context.Context, uid, min int64) (UserRoles, error) {
-	if ur, ok := c.fresh(uid, min); ok {
-		return ur, nil
-	}
 	return c.shared(ctx, uid, min)
-}
-
-// fresh returns uid's process entry when it is at a version >= min.
-func (c *roleCache) fresh(uid, min int64) (UserRoles, bool) {
-	c.mu.RLock()
-	e := c.users[uid]
-	c.mu.RUnlock()
-	if e == nil || e.v < min {
-		return UserRoles{}, false
-	}
-	e.used.Store(c.clock.Add(1))
-	return e.userRoles(), true
 }
 
 // shared merges the concurrent loads of one user at one min: a load for a
@@ -176,61 +125,17 @@ func (c *roleCache) shared(ctx context.Context, uid, min int64) (UserRoles, erro
 }
 
 // fill reads uid's roles from L2 or, when L2 has none at version min, from
-// the Loader (writing them back to L2 off the caller), and stores them in
-// L1.
+// the Loader, writing them back to L2 off the caller.
 func (c *roleCache) fill(ctx context.Context, uid, min int64) (UserRoles, error) {
-	ur, l2ok := c.getL2(ctx, uid, min)
-	if !l2ok {
-		var err error
-		if ur, err = c.load.UserRoles(ctx, uid); err != nil {
-			return UserRoles{}, err
-		}
-		c.setL2(uid, ur)
+	if ur, ok := c.getL2(ctx, uid, min); ok {
+		return ur, nil
 	}
-	return c.store(uid, ur), nil
-}
-
-// store keeps ur in L1 unless L1 already holds a newer read, and returns
-// what L1 holds for uid afterwards.
-func (c *roleCache) store(uid int64, ur UserRoles) UserRoles {
-	e := newRoleEntry(ur)
-	e.used.Store(c.clock.Add(1))
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if cur := c.users[uid]; cur != nil && cur.v > e.v {
-		return cur.userRoles()
+	ur, err := c.load.UserRoles(ctx, uid)
+	if err != nil {
+		return UserRoles{}, err
 	}
-	if _, ok := c.users[uid]; !ok && len(c.users) >= c.o.Capacity {
-		c.evictLocked()
-	}
-	c.users[uid] = e
-	c.newest = max(c.newest, e.v)
-	return e.userRoles()
-}
-
-// evictLocked frees an eighth of the capacity in one sweep, so the O(n)
-// sweep runs once per Capacity/8 new users. Entries of an older version go
-// first: the authz version is global, so the next Warm reloads them anyway.
-// When that is not enough (all current), the least recently warmed go.
-func (c *roleCache) evictLocked() {
-	keep := c.o.Capacity - max(c.o.Capacity/8, 1)
-	for uid, e := range c.users {
-		if e.v < c.newest {
-			delete(c.users, uid)
-		}
-	}
-	if len(c.users) <= keep {
-		return
-	}
-	// Each entry's used is a distinct tick, so at most keep entries were
-	// warmed within the last keep ticks. Every entry took a tick, so the
-	// clock is past keep here.
-	cut := c.clock.Load() - uint64(keep)
-	for uid, e := range c.users {
-		if e.used.Load() <= cut {
-			delete(c.users, uid)
-		}
-	}
+	c.setL2(uid, ur)
+	return ur, nil
 }
 
 func roleCacheKey(uid int64) string { return roleCacheKeyPrefix + strconv.FormatInt(uid, 10) }
@@ -272,7 +177,7 @@ func (c *roleCache) getL2(ctx context.Context, uid, min int64) (UserRoles, bool)
 	if err := json.Unmarshal(raw, &w); err != nil || w.V != min {
 		return UserRoles{}, false
 	}
-	return UserRoles{Version: w.V, Active: w.A, Roles: w.R}, true
+	return UserRoles{Version: w.V, PolicyVersion: w.P, Active: w.A, Roles: w.R}, true
 }
 
 // setL2 shares a PostgreSQL read with the other nodes, off the caller and
@@ -290,7 +195,7 @@ func (c *roleCache) setL2(uid int64, ur UserRoles) {
 	default:
 		return
 	}
-	w := roleWire{V: ur.Version, A: ur.Active, R: ur.Roles}
+	w := roleWire{V: ur.Version, P: ur.PolicyVersion, A: ur.Active, R: ur.Roles}
 	if !w.A || w.R == nil {
 		w.R = []string{} // an inactive user holds nothing; "r":[] not null
 	}

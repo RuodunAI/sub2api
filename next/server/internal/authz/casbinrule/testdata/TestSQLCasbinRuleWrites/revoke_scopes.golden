@@ -1,7 +1,10 @@
 -- sql
-DELETE FROM casbin_rule cr USING roles r
-WHERE cr.ptype = $1 AND cr.v1 = $2 AND cr.v2 = ANY($3) AND r.key = substr(cr.v0, 3)
-RETURNING r.id AS role_id, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
+WITH gone AS (
+    DELETE FROM casbin_rule cr USING roles r
+    WHERE cr.ptype = $1 AND cr.v1 = $2 AND cr.v2 = ANY($3) AND r.key = substr(cr.v0, 3)
+    RETURNING r.id AS role_id, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key),
+revised AS (UPDATE roles SET revision = revision + 1 WHERE id IN (SELECT role_id FROM gone))
+SELECT role_id, key FROM gone
 -- vars
 $1 string "p"
 $2 string "plugin:demo:read"

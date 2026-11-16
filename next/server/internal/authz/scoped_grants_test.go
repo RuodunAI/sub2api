@@ -26,6 +26,7 @@ func TestScopedGrantsAndManagement(t *testing.T) {
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	role := func(key string, perms ...string) {
 		t.Helper()
+		scopeRows(t, db, perms...)
 		_, err := s.CreateRole(ctx, root, CreateRoleInput{Key: key, Name: lt(key, key), PermissionKeys: perms})
 		require.NoError(t, err)
 	}
@@ -78,6 +79,7 @@ func TestScopedGrantsAndManagement(t *testing.T) {
 	require.JSONEq(t, `["account:read:own", "account:update:group/12"]`, detail)
 
 	// Defining a role: the same rule.
+	scopeRows(t, db, "account:read:group/12/account/7")
 	_, err = s.CreateRole(ctx, a, CreateRoleInput{Key: "a_child", Name: lt("c", "c"), PermissionKeys: []string{"account:read:group/12/account/7"}})
 	require.NoError(t, err)
 	_, err = s.CreateRole(ctx, a, CreateRoleInput{Key: "a_wide", Name: lt("w", "w"), PermissionKeys: []string{"account:read:group/13"}})

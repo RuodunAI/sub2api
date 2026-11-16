@@ -43,7 +43,7 @@ func (s *Service) SyncPlugin(ctx context.Context, tx *gorm.DB, pluginKey string,
 	if pluginKey == "" {
 		return core.ErrInvalidArgument.WithMessage("plugin key is required")
 	}
-	v, err := s.Bump(ctx, tx)
+	v, err := s.bumpPolicy(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -296,7 +296,7 @@ func (s *Service) CanGrantToRoles(ctx context.Context, tx *gorm.DB, actorID int6
 	if roleKeys = dedupe(roleKeys); len(roleKeys) == 0 {
 		return nil
 	}
-	if _, err := s.Bump(ctx, tx); err != nil {
+	if _, err := s.bumpPolicy(ctx, tx); err != nil {
 		return err
 	}
 	roles, err := resolveRoles(ctx, tx, roleKeys)
@@ -318,7 +318,7 @@ func (s *Service) CanGrantToRoles(ctx context.Context, tx *gorm.DB, actorID int6
 				"the super admin role holds every permission and is not granted plugin permissions",
 				"超级管理员角色本来拥有全部权限，不能授予插件权限")).WithDetails(map[string]any{"role": r.key})
 		}
-		if _, err := s.editableRole(ctx, tx, actorID, r.id); err != nil {
+		if _, err := s.editableRole(ctx, tx, actorID, r.id, nil); err != nil {
 			return err
 		}
 		if err := pluginGrantee(ctx, actor, held, r.key); err != nil {
@@ -416,7 +416,7 @@ func (s *Service) GrantPluginPermission(ctx context.Context, tx *gorm.DB, key st
 	if err := checkScopes(key, core.ReadPluginScope(scopeType, &scope.V), roles); err != nil {
 		return err
 	}
-	v, err := s.Bump(ctx, tx)
+	v, err := s.bumpPolicy(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -519,7 +519,7 @@ ORDER BY 1, 2, 3`, store.Strings(keys))
 
 // SetPluginActive implements core.PermissionCatalog.
 func (s *Service) SetPluginActive(ctx context.Context, tx *gorm.DB, pluginKey string, active bool) error {
-	v, err := s.Bump(ctx, tx)
+	v, err := s.bumpPolicy(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -549,7 +549,7 @@ func (s *Service) DiscardStaged(ctx context.Context, tx *gorm.DB, pluginKey stri
 	if err := lockStaged(db, pluginKey).Pluck("key", &keys).Error; err != nil || len(keys) == 0 {
 		return err
 	}
-	v, err := s.Bump(ctx, tx)
+	v, err := s.bumpPolicy(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -582,7 +582,7 @@ func deletePermissions(db *gorm.DB, keys []string) error {
 // go with their grants. Whoever deletes the plugin's row calls it first:
 // the row's foreign key cascades to permissions, not to casbin_rule.
 func (s *Service) DeletePlugin(ctx context.Context, tx *gorm.DB, pluginKey string) error {
-	v, err := s.Bump(ctx, tx)
+	v, err := s.bumpPolicy(ctx, tx)
 	if err != nil {
 		return err
 	}

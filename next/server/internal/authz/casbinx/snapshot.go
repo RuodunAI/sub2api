@@ -11,11 +11,12 @@ import (
 )
 
 // snapshot is one immutable enforcer, built from one consistent read of the
-// policy. Nothing mutates it after build, so concurrent grants need no
-// lock; a newer version replaces it whole (snapshots).
+// policy at authz version version and policy version policy. Nothing
+// mutates it after build, so concurrent grants need no lock; a newer
+// policy version replaces it whole (snapshots).
 type snapshot struct {
-	version int64
-	e       *casbin.Enforcer
+	version, policy int64
+	e               *casbin.Enforcer
 }
 
 // build makes the snapshot of policy. It loads the p rows of active actions
@@ -49,7 +50,7 @@ func build(policy Policy, self []string) (*snapshot, error) {
 	if err := e.BuildRoleLinks(); err != nil {
 		return nil, err
 	}
-	return &snapshot{version: policy.Version, e: e}, nil
+	return &snapshot{version: policy.Version, policy: policy.PolicyVersion, e: e}, nil
 }
 
 // loadable reports whether r is a p row the snapshot holds: a superuser row,
@@ -84,11 +85,11 @@ func subjects(ur UserRoles) []string {
 	return append(slices.Clone(ur.Roles), SelfRole)
 }
 
-// grants is the effective permission set of a user holding ur (read at the
-// snapshot's version, which labels the set): the p rows of its subjects; a
-// SuperKey row sets Superuser.
+// grants is the effective permission set of a user holding ur (read under
+// the snapshot's policy version; ur's version labels the set): the p rows
+// of its subjects; a SuperKey row sets Superuser.
 func (s *snapshot) grants(ur UserRoles) (core.PermissionSet, error) {
-	set := core.PermissionSet{Keys: map[string]struct{}{}, Version: s.version}
+	set := core.PermissionSet{Keys: map[string]struct{}{}, Version: ur.Version}
 	for _, sub := range subjects(ur) {
 		rows, err := s.e.GetPermissionsForUser(sub)
 		if err != nil {

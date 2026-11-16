@@ -121,13 +121,13 @@ func (s *Service) handleSetRolePermissions(c *gin.Context) {
 	}
 	var in struct {
 		PermissionKeys []string `json:"permission_keys"`
-		Version        *int64   `json:"version"`
+		Revision       *int64   `json:"revision"`
 	}
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
 	actorID, _ := core.UserID(c.Request.Context())
-	role, err := s.SetRolePermissions(c.Request.Context(), actorID, id, in.PermissionKeys, in.Version)
+	role, err := s.SetRolePermissions(c.Request.Context(), actorID, id, in.PermissionKeys, in.Revision)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -158,8 +158,15 @@ func (s *Service) handleResetRole(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// The body is optional: {"revision": n} makes the reset conditional.
+	var in struct {
+		Revision *int64 `json:"revision"`
+	}
+	if c.Request.ContentLength != 0 && !httpapi.BindJSON(c, &in) {
+		return
+	}
 	actorID, _ := core.UserID(c.Request.Context())
-	role, err := s.ResetRole(c.Request.Context(), actorID, id)
+	role, err := s.ResetRole(c.Request.Context(), actorID, id, in.Revision)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -188,14 +195,15 @@ func (s *Service) handlePluginRoleGrants(c *gin.Context) {
 
 func (s *Service) handleSetPluginRoleGrants(c *gin.Context) {
 	var in struct {
-		Roles   map[string][]string `json:"roles"`
-		Version *int64              `json:"version"`
+		Roles map[string][]string `json:"roles"`
+		// Revisions holds, per role, the revision the matrix showed.
+		Revisions map[string]int64 `json:"revisions"`
 	}
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
 	actorID, _ := core.UserID(c.Request.Context())
-	m, err := s.SetPluginRoleGrants(c.Request.Context(), actorID, c.Param("plugin"), in.Roles, in.Version)
+	m, err := s.SetPluginRoleGrants(c.Request.Context(), actorID, c.Param("plugin"), in.Roles, in.Revisions)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

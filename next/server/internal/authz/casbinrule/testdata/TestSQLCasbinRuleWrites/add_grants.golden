@@ -11,10 +11,12 @@ ins AS (
     WHERE v2 = '*' OR NOT EXISTS (SELECT 1 FROM casbin_rule f
         WHERE f.ptype = 'p' AND f.v0 = g.v0 AND f.v1 = g.v1 AND f.v2 = '*')
     ON CONFLICT (ptype, v0, v1, v2, v3, v4, v5) DO NOTHING
-    RETURNING v0, v1, v2)
-SELECT g.role_id, CASE g.v2 WHEN '*' THEN g.v1 ELSE g.v1 || ':' || g.v2 END AS key
-FROM ins JOIN g ON g.v0 = ins.v0 AND g.v1 = ins.v1 AND g.v2 = ins.v2
-ORDER BY 1, 2
+    RETURNING v0, v1, v2),
+added AS (
+    SELECT g.role_id, CASE g.v2 WHEN '*' THEN g.v1 ELSE g.v1 || ':' || g.v2 END AS key
+    FROM ins JOIN g ON g.v0 = ins.v0 AND g.v1 = ins.v1 AND g.v2 = ins.v2),
+revised AS (UPDATE roles SET revision = revision + 1 WHERE id IN (SELECT role_id FROM added))
+SELECT role_id, key FROM added ORDER BY 1, 2
 -- vars
 $1 store.Strings [admin operator]
 $2 store.Strings [account:read account:read]

@@ -73,10 +73,8 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 		return 0, core.ErrInvalidArgument.WithMessage("plugin key is required")
 	}
 	var ids []int64
-	var authzVersion int64
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		ids = ids[:0]
-		authzVersion = 0
 		g := store.G(ctx, tx)
 		var purged []model.Account
 		if err := purgeAccounts(g, &purged, pluginKey).Error; err != nil {
@@ -93,8 +91,7 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 		if err := g.Where("account_id = ANY(?)", store.Int64s(ids)).Delete(&model.AccountGroup{}).Error; err != nil {
 			return err
 		}
-		var err error
-		if authzVersion, err = s.d.ScopeGrants.ClearScopeGrants(ctx, tx, 0, core.ScopeRefAccount, ids); err != nil {
+		if _, err := s.d.ScopeGrants.ClearScopeGrants(ctx, tx, 0, core.ScopeRefAccount, ids); err != nil {
 			return err
 		}
 		if deletion := s.deletionResource(pluginKey); deletion != nil {
@@ -112,7 +109,6 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	core.AnnounceAuthzChanged(ctx, s.d.Bus, authzVersion)
 	if s.d.Redis != nil {
 		keys := make([]string, len(ids))
 		for i, id := range ids {

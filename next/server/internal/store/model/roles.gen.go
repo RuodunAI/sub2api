@@ -19,6 +19,8 @@ type Role struct {
 	UpdatedAt    time.Time       `gorm:"column:updated_at;default:(-);autoUpdateTime:false"` // timestamp with time zone default now()
 	AssignCustom bool            `gorm:"column:assign_custom;default:(-)"`                   // boolean default false
 	DefaultsRev  int             `gorm:"column:defaults_rev;default:(-)"`                    // integer default 0
+	// moved by every change to the role; its editors send it back (optimistic concurrency, CONTRACTS §99.4)
+	Revision int64 `gorm:"column:revision;default:(-)"` // bigint default 0
 }
 
 // TableName implements gorm's schema.Tabler.

@@ -8,6 +8,7 @@ package authz
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -45,27 +46,22 @@ type Service struct {
 	plugins core.PluginRegistry
 	poll    time.Duration
 
-	mu         sync.RWMutex
-	minVersion int64 // cached entries older than this are stale
+	mu sync.RWMutex
+	// minVersion is the newest authz version this node knows of; every set
+	// in users holds at it (invalidate drops the others).
+	minVersion int64
 	users      map[int64]core.PermissionSet
-	catalog    *catalogSnapshot
-	listeners  []func()
-	stepUp     core.StepUpVerifier
+	// pending holds what each version this node bumped changed, until
+	// Committed announces it.
+	pending   map[int64]authzChange
+	listeners []func()
+	stepUp    core.StepUpVerifier
 	// menuKeys are the permissions of each core menu item (BindMenuRoutes).
 	menuKeys map[string][]string
 
 	// casbin resolves permission sets (nil without a database: tests that
 	// seed users and are answered from it).
 	casbin casbinx.Resolver
-}
-
-type permMeta struct {
-	status string
-}
-
-type catalogSnapshot struct {
-	version int64
-	perms   map[string]permMeta
 }
 
 var (
@@ -80,7 +76,8 @@ func New(d Deps) *Service {
 	if d.PollInterval <= 0 {
 		d.PollInterval = 30 * time.Second
 	}
-	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, users: map[int64]core.PermissionSet{}}
+	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval,
+		users: map[int64]core.PermissionSet{}, pending: map[int64]authzChange{}}
 	if d.DB != nil {
 		loader := casbinx.NewLoader(d.DB)
 		s.casbin = casbinx.NewResolver(loader, casbinx.NewRoleCache(loader, d.Redis), SelfPermissionKeys())
@@ -97,17 +94,16 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 	// Version answers from the first request on, not from the first change.
 	s.refreshVersion(ctx)
-	s.prewarm(s.Version())
 	if s.bus == nil {
 		return nil
 	}
 	cancels := []func(){s.bus.Subscribe(core.ChannelAuthzChanged, func(payload []byte) {
-		v, err := strconv.ParseInt(string(payload), 10, 64)
-		if err != nil {
+		c, ok := parseChange(payload)
+		if !ok {
 			s.refreshVersion(context.Background())
 			return
 		}
-		s.invalidate(v)
+		s.invalidate(c)
 	})}
 	if r, ok := s.bus.(core.BusReconnects); ok {
 		// Broadcasts sent while disconnected are lost: read the version again
@@ -141,11 +137,9 @@ func (s *Service) RegisterTasks(tasks core.Tasks) error {
 		Every:   s.poll,
 		Timeout: 10 * time.Second,
 		Handler: func(ctx context.Context, _ core.TaskRun) (core.TaskResult, error) {
-			v, err := s.currentVersion(ctx)
-			if err != nil {
+			if err := s.readVersion(ctx); err != nil {
 				return core.TaskResult{}, err
 			}
-			s.invalidate(v)
 			return core.TaskResult{}, nil
 		},
 	})
@@ -161,41 +155,124 @@ func (s *Service) OnChange(fn func()) {
 
 // ------------------------------------------------------------ versioning
 
-// Bump increments the authz version inside tx and returns the new value. It
-// also takes the authz_meta row lock, serializing all authz mutations.
-// Holding the lock, v-1 is the latest committed version, so entries this node
-// cached before it are dropped: checks made inside tx never trust a cache
-// that missed a broadcast.
-func (s *Service) Bump(ctx context.Context, tx *gorm.DB) (int64, error) {
+// Two counters in authz_meta (CONTRACTS §99.4): version, which every authz
+// write moves, and policy_version, which only the writes of what the
+// Casbin policy snapshot holds move (grants, permission statuses, role
+// definitions). A write of a user's roles or status moves version alone
+// and names the users: every node then drops those users' sets only, and
+// no snapshot is rebuilt.
+
+// authzChange is what one authz version changed, as authz:changed carries
+// it (JSON).
+type authzChange struct {
+	Version int64 `json:"v"`
+	// Policy is the policy version a policy write moved to; 0 when the
+	// write changed users only.
+	Policy int64 `json:"p,omitempty"`
+	// Users are the users whose roles or status a user write changed; none
+	// means every user (a write that does not say).
+	Users []int64 `json:"u,omitempty"`
+}
+
+// only reports whether c is known to change the users c.Users alone.
+func (c authzChange) only() bool { return c.Policy == 0 && len(c.Users) > 0 }
+
+// parseChange reads an authz:changed payload: a change, or a bare version
+// (a change of everything).
+func parseChange(payload []byte) (authzChange, bool) {
+	var c authzChange
+	if json.Unmarshal(payload, &c) == nil && c.Version > 0 {
+		return c, true
+	}
+	v, err := strconv.ParseInt(string(payload), 10, 64)
+	return authzChange{Version: v}, err == nil
+}
+
+// Bump increments the authz version inside tx, for a write of the roles or
+// status of users (none: of users it does not name, every user's set then
+// drops), and returns the new value. It also takes the authz_meta row
+// lock, serializing all authz mutations. Holding the lock, v-1 is the
+// latest committed version, so entries this node cached before it are
+// dropped: checks made inside tx never trust a cache that missed a
+// broadcast. It works on a database before 0100 (policy_version), as the
+// legacy super admin transfer needs.
+func (s *Service) Bump(ctx context.Context, tx *gorm.DB, users ...int64) (int64, error) {
+	return s.bump(ctx, tx, bumpVersion, users)
+}
+
+// bumpPolicy is Bump for a write of what the policy snapshot holds: both
+// versions move, and every node rebuilds its snapshot.
+func (s *Service) bumpPolicy(ctx context.Context, tx *gorm.DB) (int64, error) {
+	return s.bump(ctx, tx, bumpPolicyVersion, nil)
+}
+
+func (s *Service) bump(ctx context.Context, tx *gorm.DB, stmt func(*gorm.DB) *gorm.DB, users []int64) (int64, error) {
 	if err := store.RequireTx(tx); err != nil {
 		return 0, err
 	}
-	var v int64
-	if err := bumpVersion(store.G(ctx, tx)).Row().Scan(&v); err != nil {
+	c := authzChange{Users: slices.Clone(users)}
+	if err := stmt(store.G(ctx, tx)).Row().Scan(&c.Version, &c.Policy); err != nil {
 		return 0, err
 	}
-	s.invalidate(v - 1)
-	return v, nil
+	s.invalidate(authzChange{Version: c.Version - 1})
+	s.mu.Lock()
+	s.pending[c.Version] = c
+	s.mu.Unlock()
+	return c.Version, nil
 }
 
 // bumpVersion increments the authz version, locking its row, and returns
-// the new value.
+// the new value and 0 (no policy version moved).
 func bumpVersion(db *gorm.DB) *gorm.DB {
-	return db.Raw(`UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`)
+	return db.Raw(`UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version, 0`)
+}
+
+// bumpPolicyVersion increments both versions, locking their row, and
+// returns them.
+func bumpPolicyVersion(db *gorm.DB) *gorm.DB {
+	return db.Raw(`UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 RETURNING version, policy_version`)
 }
 
 // Committed must be called after a transaction that called Bump has
-// committed: it invalidates local caches and broadcasts authz:changed.
+// committed: it invalidates local caches and broadcasts authz:changed with
+// what the version changed (the users of a user write, or the policy).
 func (s *Service) Committed(ctx context.Context, version int64) {
-	s.invalidate(version)
-	core.AnnounceAuthzChanged(ctx, s.bus, version)
+	if version == 0 {
+		return
+	}
+	s.mu.Lock()
+	c, ok := s.pending[version]
+	delete(s.pending, version)
+	s.mu.Unlock()
+	if !ok {
+		c = authzChange{Version: version}
+	}
+	s.invalidate(c)
+	s.announce(ctx, c)
+}
+
+// announce tells every node, this one included, of c (authz:changed). A
+// failure is logged, not returned: the version poll catches a lost
+// message.
+func (s *Service) announce(ctx context.Context, c authzChange) {
+	if s.bus == nil {
+		return
+	}
+	payload, _ := json.Marshal(c)
+	if err := s.bus.Publish(ctx, core.ChannelAuthzChanged, payload); err != nil {
+		slog.WarnContext(ctx, "authz: publish authz:changed failed", "err", err)
+	}
 }
 
 // committedLater is used when the transaction belongs to the caller: it waits
 // until the bumped version is visible, then notifies. If the transaction
 // rolls back the wait times out and nothing is published (the poller keeps
-// caches correct either way).
+// caches correct either way). A service without a database (tests) has
+// nothing to wait on.
 func (s *Service) committedLater(version int64) {
+	if s.db == nil {
+		return
+	}
 	go func() {
 		ctx := context.Background()
 		deadline := time.Now().Add(2 * time.Minute)
@@ -205,41 +282,24 @@ func (s *Service) committedLater(version int64) {
 			if delay < time.Second {
 				delay *= 2
 			}
-			v, err := s.currentVersion(ctx)
+			v, _, err := s.currentVersions(ctx)
 			if err == nil && v >= version {
-				s.Committed(ctx, v)
+				s.Committed(ctx, version)
 				return
 			}
 		}
 	}()
 }
 
-// mutate runs fn in a transaction after bumping the version, then notifies.
+// mutate runs fn in a transaction after bumping both versions (every
+// write through it changes what the policy holds: grants, role
+// definitions), then notifies.
 func (s *Service) mutate(ctx context.Context, fn func(tx *gorm.DB) error) error {
-	return s.mutateAt(ctx, nil, fn)
-}
-
-// errVersionConflict is the refusal of a write made against an authz
-// version other than the current one (expected, CONTRACTS C1): the editor
-// read before someone else's change, which the write would undo.
-func errVersionConflict(ctx context.Context, current int64) error {
-	return core.NewError(http.StatusConflict, "version_conflict", t(ctx,
-		"permissions changed since you loaded them; reload and save again",
-		"权限在你打开之后已被修改，请重新加载后再保存")).WithDetails(map[string]any{"version": current})
-}
-
-// mutateAt is mutate failing with errVersionConflict, before fn runs, when
-// expected is set and is not the authz version the write starts from (the
-// Bump serializes the comparison with every other authz write).
-func (s *Service) mutateAt(ctx context.Context, expected *int64, fn func(tx *gorm.DB) error) error {
 	var v int64
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
-		if v, err = s.Bump(ctx, tx); err != nil {
+		if v, err = s.bumpPolicy(ctx, tx); err != nil {
 			return err
-		}
-		if expected != nil && *expected != v-1 {
-			return errVersionConflict(ctx, v-1)
 		}
 		return fn(tx)
 	})
@@ -250,19 +310,37 @@ func (s *Service) mutateAt(ctx context.Context, expected *int64, fn func(tx *gor
 	return nil
 }
 
-func (s *Service) currentVersion(ctx context.Context) (int64, error) {
-	return store.AuthzVersion(store.G(ctx, s.db.Gorm))
+// errVersionConflict is the refusal of a role write made against a role
+// revision other than the current one (expected, CONTRACTS C1): the editor
+// read before someone else's change to the role, which the write would
+// undo.
+func errVersionConflict(ctx context.Context, current int64) error {
+	return core.NewError(http.StatusConflict, "version_conflict", t(ctx,
+		"the role changed since you loaded it; reload and save again",
+		"角色在你打开之后已被修改，请重新加载后再保存")).WithDetails(map[string]any{"revision": current})
+}
+
+// currentVersions reads the authz and policy versions.
+func (s *Service) currentVersions(ctx context.Context) (int64, int64, error) {
+	return store.AuthzVersions(store.G(ctx, s.db.Gorm))
+}
+
+// readVersion reads the versions and takes them in: what this node may
+// have missed is dropped, and the snapshot of the policy version is built.
+func (s *Service) readVersion(ctx context.Context) error {
+	v, p, err := s.currentVersions(ctx)
+	if err != nil {
+		return err
+	}
+	s.invalidate(authzChange{Version: v})
+	s.prewarm(p)
+	return nil
 }
 
 func (s *Service) refreshVersion(ctx context.Context) {
-	v, err := s.currentVersion(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			slog.WarnContext(ctx, "authz: version check failed", "err", err)
-		}
-		return
+	if err := s.readVersion(ctx); err != nil && ctx.Err() == nil {
+		slog.WarnContext(ctx, "authz: version check failed", "err", err)
 	}
-	s.invalidate(v)
 }
 
 // Version implements core.AuthzVersioner: the newest authz version this node
@@ -275,17 +353,32 @@ func (s *Service) Version() int64 {
 	return s.minVersion
 }
 
-// invalidate drops cache entries older than version.
-func (s *Service) invalidate(version int64) {
+// usersCapacity bounds the sets a node keeps; past it an eighth goes, in
+// the map's order.
+const usersCapacity = 200_000
+
+// invalidate takes in that version c.Version changed what c says. The
+// version next to the newest known one, of a user write naming its users,
+// drops those users' sets only; anything else (a policy write, a version
+// skipped or missed, a change that does not say) drops every set. The sets
+// left hold at c.Version.
+func (s *Service) invalidate(c authzChange) {
 	s.mu.Lock()
-	if version <= s.minVersion {
+	if c.Version <= s.minVersion {
 		s.mu.Unlock()
 		return
 	}
-	s.minVersion = version
-	for id, set := range s.users {
-		if set.Version < version {
+	if c.Version == s.minVersion+1 && c.only() {
+		for _, id := range c.Users {
 			delete(s.users, id)
+		}
+	} else {
+		clear(s.users)
+	}
+	s.minVersion = c.Version
+	for v := range s.pending {
+		if v <= c.Version {
+			delete(s.pending, v)
 		}
 	}
 	listeners := append([]func(){}, s.listeners...)
@@ -293,15 +386,36 @@ func (s *Service) invalidate(version int64) {
 	for _, fn := range listeners {
 		go fn()
 	}
-	s.prewarm(version)
+	if c.Policy > 0 {
+		s.prewarm(c.Policy)
+	}
 }
 
-// prewarm has Casbin build the snapshot of version off the request: the
-// first requests after a change then find it built instead of waiting for
-// it, or failing past its timeout.
-func (s *Service) prewarm(version int64) {
+// keep caches set as userID's unless it was read before the newest version
+// this node knows of (which may have changed it), making room past
+// usersCapacity. Called with s.mu held.
+func (s *Service) keep(userID int64, set core.PermissionSet) {
+	if set.Version < s.minVersion {
+		return
+	}
+	if _, ok := s.users[userID]; !ok && len(s.users) >= usersCapacity {
+		n := usersCapacity / 8
+		for id := range s.users {
+			if n--; n < 0 {
+				break
+			}
+			delete(s.users, id)
+		}
+	}
+	s.users[userID] = set
+}
+
+// prewarm has Casbin build the snapshot of policy version policy off the
+// request: the first requests after a policy write then find it built
+// instead of waiting for it, or failing past its timeout.
+func (s *Service) prewarm(policy int64) {
 	if s.casbin != nil {
-		s.casbin.Prewarm(version)
+		s.casbin.Prewarm(policy)
 	}
 }
 
@@ -325,58 +439,41 @@ func (s *Service) PermissionSet(ctx context.Context, userID int64) (core.Permiss
 	return core.RestrictToAccessKey(ctx, userID, set), nil
 }
 
+// userPermissionSet is userID's set at this node's version: the cached
+// one, which holds at that version (invalidate), labelled with it; else
+// one Casbin resolves.
 func (s *Service) userPermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
-	if err := s.ensureCatalog(ctx); err != nil {
-		return core.PermissionSet{}, err
-	}
 	s.mu.RLock()
 	set, ok := s.users[userID]
 	min := s.minVersion
 	s.mu.RUnlock()
-	if ok && set.Version >= min {
+	if ok {
+		set.Version = max(set.Version, min)
 		return set, nil
 	}
-	set, err := s.loadPermissionSet(ctx, userID)
+	set, err := s.loadPermissionSet(ctx, userID, min)
 	if err != nil {
 		return core.PermissionSet{}, err
 	}
 	s.mu.Lock()
-	if set.Version >= s.minVersion {
-		s.users[userID] = set
-	}
+	s.keep(userID, set)
 	s.mu.Unlock()
 	return set, nil
-}
-
-// readSnapshot runs fn in a read-only repeatable-read transaction and returns
-// the authz version seen by that snapshot.
-func (s *Service) readSnapshot(ctx context.Context, fn func(tx *gorm.DB) error) (int64, error) {
-	var v int64
-	err := s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) (err error) {
-		if v, err = store.AuthzVersion(store.G(ctx, tx)); err != nil {
-			return err
-		}
-		return fn(tx)
-	})
-	if err != nil {
-		return 0, err
-	}
-	return v, nil
 }
 
 // errNoResolver is the answer of a service without a database for a user
 // its tests did not seed.
 var errNoResolver = errors.New("authz: no database to resolve permissions with")
 
-// loadPermissionSet resolves userID's set with Casbin at this node's version
-// or newer: the snapshot of the policy and the user's roles, both read at
-// the set's version, failing closed (casbinx.ErrSkew, a snapshot not had in
-// time) rather than answering from either alone.
-func (s *Service) loadPermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
+// loadPermissionSet resolves userID's set with Casbin at version min or
+// newer: the user's roles read at the set's version and the snapshot of
+// the policy they were read under, failing closed (casbinx.ErrSkew, a
+// snapshot not had in time) rather than answering from either alone.
+func (s *Service) loadPermissionSet(ctx context.Context, userID, min int64) (core.PermissionSet, error) {
 	if s.casbin == nil {
 		return core.PermissionSet{}, errNoResolver
 	}
-	return s.casbin.Grants(ctx, userID, s.Version())
+	return s.casbin.Grants(ctx, userID, min)
 }
 
 // RolesPermissions returns the union of all permissions granted by the given
@@ -475,7 +572,11 @@ func readRoleGrants(ctx context.Context, q *gorm.DB, roleKeys []string) (map[str
 		if err := rows.Scan(&role, &assignable); err != nil {
 			return err
 		}
-		out[role].assignable = append(out[role].assignable, assignable)
+		// The two reads may see different snapshots (q a pool): a role
+		// created between them has no grant row read.
+		if r := out[role]; r != nil {
+			r.assignable = append(r.assignable, assignable)
+		}
 		return nil
 	}); err != nil {
 		return nil, nil, err
@@ -530,54 +631,17 @@ func addCustoms(assignable map[string]struct{}, customs, except []string) {
 }
 
 // ActivePermissionKeys lists every active permission, the self ones
-// included (used for superusers in /me).
+// included (used for superusers in /me), read when asked: no request path
+// needs the catalog.
 func (s *Service) ActivePermissionKeys(ctx context.Context) ([]string, error) {
-	if err := s.ensureCatalog(ctx); err != nil {
+	var keys []string
+	if err := activePermissions(store.G(ctx, s.db.Gorm)).Scan(&keys).Error; err != nil {
 		return nil, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := SelfPermissionKeys()
-	for k, m := range s.catalog.perms {
-		if m.status == "active" {
-			out = append(out, k)
-		}
-	}
-	return out, nil
+	return append(SelfPermissionKeys(), keys...), nil
 }
 
-func (s *Service) ensureCatalog(ctx context.Context) error {
-	s.mu.RLock()
-	fresh := s.catalog != nil && s.catalog.version >= s.minVersion
-	s.mu.RUnlock()
-	if fresh {
-		return nil
-	}
-	snap := &catalogSnapshot{perms: map[string]permMeta{}}
-	v, err := s.readSnapshot(ctx, func(tx *gorm.DB) error {
-		return store.EachRow(catalogRows(store.G(ctx, tx)), func(rows *sql.Rows) error {
-			var k string
-			var m permMeta
-			if err := rows.Scan(&k, &m.status); err != nil {
-				return err
-			}
-			snap.perms[k] = m
-			return nil
-		})
-	})
-	if err != nil {
-		return err
-	}
-	snap.version = v
-	s.mu.Lock()
-	if s.catalog == nil || s.catalog.version < v {
-		s.catalog = snap
-	}
-	s.mu.Unlock()
-	return nil
-}
-
-// catalogRows selects the key and status of every permission.
-func catalogRows(db *gorm.DB) *gorm.DB {
-	return db.Raw(`SELECT key, status FROM permissions`)
+// activePermissions selects the key of every active permission.
+func activePermissions(db *gorm.DB) *gorm.DB {
+	return db.Raw(`SELECT key FROM permissions WHERE status = 'active'`)
 }

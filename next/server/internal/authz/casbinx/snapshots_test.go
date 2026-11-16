@@ -43,7 +43,7 @@ func (f *fakeLoader) Policy(ctx context.Context) (Policy, error) {
 		v = f.next(n)
 	}
 	rules := []Rule{grant("r:t", "account:read")}
-	return Policy{Version: v, Active: activeOf(rules), Rules: rules}, nil
+	return Policy{Version: v, PolicyVersion: v, Active: activeOf(rules), Rules: rules}, nil
 }
 
 func (f *fakeLoader) UserRoles(_ context.Context, uid int64) (UserRoles, error) {
@@ -130,7 +130,7 @@ func TestEnsureTimeoutFailsClosed(t *testing.T) {
 	l := &fakeLoader{next: fixed(1)}
 	eng := testEngine(l, snapshotOptions{Wait: 50 * time.Millisecond})
 	// Version 1 in place without a rebuild, which Wait would bound too.
-	eng.swap(snapOf(t, Policy{Version: 1}))
+	eng.swap(snapOf(t, Policy{Version: 1, PolicyVersion: 1}))
 	l.block = make(chan struct{})
 	defer close(l.block)
 	start := time.Now()

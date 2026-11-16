@@ -159,10 +159,10 @@
 | PUT `/roles/:id/assignable` `{role_keys[], assign_custom}` | `role:define`；新增的可分配角色必须在操作者可分配范围内，角色当前的清单也不能超出操作者（§43.6） |
 | POST `/roles/:id/reset` | `role:define`；内置角色（超管角色除外）恢复默认（§15.7）；能修改该角色的人才能重置，且须覆盖全部默认值 |
 | GET `/permissions` | `role:read`；按 module 分组：`[{module, label, source, plugin_key, status, groups?, permissions:[{key,label,description,risk,step_up,scope_type,scope?,group?,requires?,defaults?,status}]}]`（`risk`：`low`/`sensitive`/`critical`，0.1.289 候选起取代 `sensitive`，§4“插件权限”。`step_up`：部分接口使用时需二次验证，展示用，§80.2；2026-11-13 取代 `session_only`。`description`：核心权限的中英说明（目录 `desc`，启动同步写入 `permissions.description`），插件权限为 `{}`。`scope_type`：范围的资源（`account`/`proxy`，§21；插件为 `plugin:<资源>`，§21.0），无范围为 `""`。`scope`：插件范围声明 `{resource, own?, options?, values?:[{key,label}]}`，只有带范围的插件权限有。`requires`：软依赖，没有它们这个权限基本用不上（例如 `account:update` 依赖同范围的 `account:read`），只给编辑器提示，不参与授权；没有时省略，核心（期 4 T67）与插件（manifest `requires`）都有。`group`、模块的 `groups:[{key,label,sort}]`：插件权限分组。`defaults`：插件建议，内置角色 → 完整规范 key（可直接与角色的 `permission_keys` 比较）。`status` 含 `removed`，§4）；不含 `self` 虚拟模块 |
-| GET `/permissions/plugins/:plugin` | `role:read`；一个插件的角色矩阵 `{plugin_key, module, version, roles:[{id,key,name,builtin,superuser,editable,denied?,permission_keys}]}`：`module` 同 GET `/permissions` 的该插件模块，`roles` 为全部角色，`permission_keys` 是角色在该插件上的授予（含 removed），`editable`/`denied` 为调用者能否修改该角色（`editDenial`：`superuser_role`、`not_editable`、`not_assignable`）；`version` 是全局授权版本（`authz_meta.version`，与 `roles` 在同一快照读出）；插件在目录里没有权限 404（0.1.289 候选） |
-| PUT `/permissions/plugins/:plugin` `{roles:{<角色 key>:[完整 key]}, version?}` | `role:define`；只替换列出的角色在该插件上的授予，其他角色、角色的其他授予不动；每个角色按 PUT `/roles/:id/permissions` 的规则（角色写入口、新增 key 须在操作者之内、新增 critical 须二次验证、removed 语义见 §4），按角色 key 顺序、全部成功或全部不写；其他插件或核心的 key 400 `roles.<角色>` `foreign`，未知角色 400 `unknown`，拒绝的 403 带 `details.role`；返回同 GET；审计 `role.permissions`（`detail.plugin`、`via: "plugin_matrix"`、该插件上的 `before`/`after`）（0.1.289 候选） |
+| GET `/permissions/plugins/:plugin` | `role:read`；一个插件的角色矩阵 `{plugin_key, module, roles:[{id,key,name,builtin,superuser,editable,denied?,revision,permission_keys}]}`：`module` 同 GET `/permissions` 的该插件模块，`roles` 为全部角色，`permission_keys` 是角色在该插件上的授予（含 removed），`editable`/`denied` 为调用者能否修改该角色（`editDenial`：`superuser_role`、`not_editable`、`not_assignable`）；`roles` 在同一快照读出，`revision` 是该角色的修订号（§5.2“并发写入”）；插件在目录里没有权限 404（0.1.289 候选） |
+| PUT `/permissions/plugins/:plugin` `{roles:{<角色 key>:[完整 key]}, revisions?:{<角色 key>:修订号}}` | `role:define`；只替换列出的角色在该插件上的授予，其他角色、角色的其他授予不动；每个角色按 PUT `/roles/:id/permissions` 的规则（角色写入口、新增 key 须在操作者之内、新增 critical 须二次验证、removed 语义见 §4），按角色 key 顺序、全部成功或全部不写；其他插件或核心的 key 400 `roles.<角色>` `foreign`，未知角色 400 `unknown`，拒绝的 403 带 `details.role`；返回同 GET；审计 `role.permissions`（`detail.plugin`、`via: "plugin_matrix"`、该插件上的 `before`/`after`）（0.1.289 候选） |
 
-**并发写入**（0.1.289 候选，二审 C1）：角色对象（GET `/roles` 各项、GET `/roles/:id`，以及 POST/PATCH/PUT 与 reset 的返回）与 GET/PUT `/permissions/plugins/:plugin` 带 `version`，即全局授权版本 `authz_meta.version`（任一授权写入都会加一）。PUT `/roles/:id/permissions` 与 PUT `/permissions/plugins/:plugin` 的请求体可带读到的 `version`：与当前不一致时 409 `version_conflict`，`details.version` 为当前版本，什么都不写；不带不检查。控制台收到 409 后重读，把本地按格子的改动合并到最新数据上，提示再保存。
+**并发写入**（0.1.290 候选，三审 C2；取代 0.1.289 候选按全局授权版本比较的做法）：角色对象（GET `/roles` 各项、GET `/roles/:id`，以及 POST/PATCH/PUT 与 reset 的返回）与 GET `/permissions/plugins/:plugin` 的每个角色带 `revision`，即该角色的修订号 `roles.revision`：角色的任何改动都加一（名称描述、授予、可分配清单、重置、插件目录同步与范围授予清理对它授予的增删），别的角色或用户的写入不动它。PATCH `/roles/:id`、PUT `/roles/:id/permissions`、PUT `/roles/:id/assignable`、POST `/roles/:id/reset`（可选请求体 `{revision}`）的请求体可带读到的 `revision`，PUT `/permissions/plugins/:plugin` 可带 `revisions`（角色 key → 修订号，只检查列出的角色）：与当前不一致时 409 `version_conflict`，`details.revision` 为当前修订号，什么都不写；不带不检查。检查与加一在锁住角色行之后进行，所以同一角色的并发保存只有一个成功（`TestRoleWritesRevisionConcurrent`）。控制台分段保存时把每段返回的 `revision` 带进下一段；收到 409 后重读，把本地按格子的改动合并到最新数据上，提示再保存。
 
 原来的 GET / PUT `/users/:id/groups`（给单个用户分配分组）已删除：私有分组改为授权给用户组，每个用户只属于一个用户组（§97）。
 
@@ -328,9 +328,9 @@
 | `rl:account:{id}:spms:{秒}`、`rl:account:{id}:m:{key}:spms:{秒}`、`rl:account:{id}:md:{model}:spms:{秒}` | ZSET 同一周期内出现过的粘性会话：member = 粘性会话键（WebSocket 连接没有粘性键时为 `conn:{首轮请求 ID}`，§71.2），score = 最后出现的段号；每次写入删除 score < 当前段 − 20 的成员，TTL 同上。`req:{请求 ID}` 不写入。周期是 key 名的一部分，改周期即换新计数。2026-11-11 前是 ZSET `…:spm`（score = 毫秒时间），不再读写 | A |
 | `rl:apikey:{id}:rpmb`、`rl:apikey:{id}:tpmb` | HASH API Key 近 60 秒窗口的分段计数，格式同账号（§60.3、§68.3）；API Key 没有会话上限 | A |
 | `slot:account-model:{key}:{id}` | ZSET 账号某个模型列表的并发槽位，格式同 `slot:{kind}:{id}`（§68.2） | D |
-| `authz:c:ur:{uid}` | STRING JSON `{"v":版本,"a":是否 active,"r":["r:<角色 key>",...]}`，Casbin 用户角色缓存的第二级，TTL 15 分钟；写入在请求外、直接覆盖（并发上限 64，满了丢弃）；只在 `v` 等于节点要求的版本时采用，Valkey 出错时跳过、直接读 PG（§99.4） | authz |
+| `authz:c:ur:{uid}` | STRING JSON `{"v":授权版本,"p":策略版本,"a":是否 active,"r":["r:<角色 key>",...]}`，Casbin 用户角色缓存（各节点共用），TTL 15 分钟；写入在请求外、直接覆盖（并发上限 64，满了丢弃）；只在 `v` 等于节点要求的版本时采用，Valkey 出错时跳过、直接读 PG（§99.4） | authz |
 
-广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
+广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`authz:changed` payload：JSON `{"v":授权版本,"p":策略版本?,"u":[用户 id]?}`（0.1.290 候选）：`u` 是只改了这些用户的角色或状态的写入，`p` 是策略写入后的策略版本；旧格式（只有版本数字）按“全部变了”处理（§99.4）。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
 
 节点插件状态（`node:plugins:{boot_id}` 每个插件一个 JSON，C2 写、C1 与控制台读）：`{state, serving, standby?, rollout_id?, rollout?, error?, instances:[{version, state, error?, restarts}]}`。`state` 汇总本节点：有进行中的发布时等于 `rollout`（`pending|ready|active|failed`），否则按在服务的实例为 `active|pending|failed`，没有在服务的版本为 `stopped`。
 
@@ -731,11 +731,11 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 | GET `/roles` | `role:read` | | 不分页，内置在前 |
 | GET `/roles/:id` | `role:read` | | 不存在 404 |
 | POST `/roles` | `role:define` | `{key, name, description?, permission_keys?, assignable_role_keys?, assign_custom?}` | `key` 匹配 `^[a-z][a-z0-9_]{1,49}$`，且不能是内置角色保留的 key（`super_admin`、`admin`、`operator`、`user`、`supplier`；400 `details.fields[{field:"key", code:"reserved"}]`）；`name.en` 必填；key 重复 409；未知权限 `details.fields[{field:"permission_keys", code:"unknown"}]`；已移除的权限忽略；操作者须持有全部 `permission_keys`（同 PUT `/roles/:id/permissions`，否则 403 `details.missing`），含 critical 插件 key 时须二次验证 `plugin.grant`；可分配清单同 PUT `/roles/:id/assignable` 校验（字段错误记在 `role_keys` 下） |
-| PATCH `/roles/:id` | `role:define` | `{key?, name?, description?}` | 内置角色也可改名称和描述（能修改它的人，§43.6 角色写入口）；给了 `name` 时 `name.en` 不能为空；**key 创建后不可修改**：请求体带了 `key` 且与角色现有 key 不同时 400 `invalid_argument`（message 按请求语言：`a role's key cannot be changed after creation` / `角色标识创建后不可修改`，`details.fields[{field:"key", code:"immutable"}]`，权限检查之后、不写入任何字段），与现有 key 相同则忽略（2026-11-14 0.1.287 候选，无迁移；此前未知字段 `key` 被静默忽略）。控制台把 key 显示为置灰禁用的“标识”，名称、描述各只有一个输入框，保存时把同一个值同时写进 `en` 与 `zh`（只发改动过的字段，未改名的内置角色仍按界面语言显示默认中/英名称） |
+| PATCH `/roles/:id` | `role:define` | `{key?, name?, description?, revision?}` | 内置角色也可改名称和描述（能修改它的人，§43.6 角色写入口）；给了 `name` 时 `name.en` 不能为空；**key 创建后不可修改**：请求体带了 `key` 且与角色现有 key 不同时 400 `invalid_argument`（message 按请求语言：`a role's key cannot be changed after creation` / `角色标识创建后不可修改`，`details.fields[{field:"key", code:"immutable"}]`，权限检查之后、不写入任何字段），与现有 key 相同则忽略（2026-11-14 0.1.287 候选，无迁移；此前未知字段 `key` 被静默忽略）。控制台把 key 显示为置灰禁用的“标识”，名称、描述各只有一个输入框，保存时把同一个值同时写进 `en` 与 `zh`（只发改动过的字段，未改名的内置角色仍按界面语言显示默认中/英名称） |
 | DELETE `/roles/:id` | `role:define` | | 内置角色：不能修改它的人 403，能修改的人（含超管）409；用户的该角色随之删除，所以角色仍有持有者时它须在操作者的可分配清单内（否则 403 `details.role`；PATCH、PUT `permissions`、PUT `assignable` 同样如此，§43.6 角色写入口） |
-| PUT `/roles/:id/permissions` | `role:define` | `{permission_keys, version?}` | 整体替换；操作者须持有**新增**的权限（否则 403 `details.missing`）；新增 critical 插件 key 须二次验证 `plugin.grant`（403 `verification_required`）；`version` 与当前授权版本不一致 409 `version_conflict`（§5.2“并发写入”）；审计 `role.permissions` 的 `detail` 有 `permission_keys`、`added`、`removed`（删掉的 key，含 removed 的插件 key）；已移除（`status=removed`）的权限：角色已持有的列出即保留（原样保存不报错），不列出即删除（0.1.289 候选起，此前一律保留），角色未持有的忽略、不写入；插件 key 的范围须是该权限接受的（§21.0，否则 400 `invalid`）；完全不存在的 key 仍按未知报错 |
-| PUT `/roles/:id/assignable` | `role:define` | `{role_keys, assign_custom}` | 整体替换可分配清单；未知角色 400 `details.fields[{field:"role_keys", code:"unknown"}]`，含 `super_admin` 400（`code:"superuser"`）；操作者须能分配**新增**的角色，新开 `assign_custom` 时自己也须有它（否则 403 `details.missing_assignable` / `missing_assign_custom`） |
-| POST `/roles/:id/reset` | `role:define` | | 内置角色恢复默认：名称、描述、核心权限（§4）和默认可分配清单（admin = operator、supplier、user 与全部自定义角色；operator = supplier、user；supplier、user 为空；尚未建出的内置角色跳过），`defaults_rev` 置为当前值；角色上的插件权限不动；自定义角色 409；能修改该角色的人才能重置，且须持有全部默认权限并能分配默认清单（否则 403 `details.missing` / `missing_assignable`）；审计 `role.reset` 的 detail 为 `key`、`before`、`after`（各含 `permission_keys`（含角色上的插件权限）、`assignable_role_keys`、`assign_custom`；启动同步对无人持有的内置角色做的同一重置另带 `via: "sync"`、`defaults_rev`，§4）。不要二次验证（与其他角色写入一致：`role:define` 不带 stepUp），控制台“恢复默认”按钮先弹危险确认框 |
+| PUT `/roles/:id/permissions` | `role:define` | `{permission_keys, revision?}` | 整体替换；操作者须持有**新增**的权限（否则 403 `details.missing`）；新增 critical 插件 key 须二次验证 `plugin.grant`（403 `verification_required`）；`revision` 与角色当前修订号不一致 409 `version_conflict`（§5.2“并发写入”）；审计 `role.permissions` 的 `detail` 有 `permission_keys`、`added`、`removed`（删掉的 key，含 removed 的插件 key）；已移除（`status=removed`）的权限：角色已持有的列出即保留（原样保存不报错），不列出即删除（0.1.289 候选起，此前一律保留），角色未持有的忽略、不写入；插件 key 的范围须是该权限接受的（§21.0，否则 400 `invalid`）；完全不存在的 key 仍按未知报错 |
+| PUT `/roles/:id/assignable` | `role:define` | `{role_keys, assign_custom, revision?}` | 整体替换可分配清单；未知角色 400 `details.fields[{field:"role_keys", code:"unknown"}]`，含 `super_admin` 400（`code:"superuser"`）；操作者须能分配**新增**的角色，新开 `assign_custom` 时自己也须有它（否则 403 `details.missing_assignable` / `missing_assign_custom`） |
+| POST `/roles/:id/reset` | `role:define` | `{revision?}`（可不带请求体） | 内置角色恢复默认：名称、描述、核心权限（§4）和默认可分配清单（admin = operator、supplier、user 与全部自定义角色；operator = supplier、user；supplier、user 为空；尚未建出的内置角色跳过），`defaults_rev` 置为当前值；角色上的插件权限不动；自定义角色 409；能修改该角色的人才能重置，且须持有全部默认权限并能分配默认清单（否则 403 `details.missing` / `missing_assignable`）；审计 `role.reset` 的 detail 为 `key`、`before`、`after`（各含 `permission_keys`（含角色上的插件权限）、`assignable_role_keys`、`assign_custom`；启动同步对无人持有的内置角色做的同一重置另带 `via: "sync"`、`defaults_rev`，§4）。不要二次验证（与其他角色写入一致：`role:define` 不带 stepUp），控制台“恢复默认”按钮先弹危险确认框 |
 
 以上 PATCH、DELETE、PUT permissions、PUT assignable、reset 共用一个入口（§43.6 角色写入口）：超级管理员角色一律 409；内置角色须在操作者的可分配清单内（否则 403 `details.role`；2026-11-13 前只有超级管理员能改，决策 6 已放宽）；角色当前授予的权限或可分配角色超出操作者时 403。每次写入记一条审计（`role.create`、`role.update`、`role.delete`、`role.permissions`、`role.assignable`、`role.reset`，目标为该角色）。
 
@@ -1109,7 +1109,7 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 - **账号（期 4 R3）**：列表、详情、写、删、测试、凭证、统计、汇总、动作、`AccountsInScope`（插件账号路由与宿主 RPC）都按调用者在对应动作上的范围过滤，越权一律 404。`mine=true`、`created_by=<id>` 在范围内再收窄（此前 own 级忽略 `created_by`）。受限档（范围不是全部）沿用 own 级的全部限制（并发默认与上限、管理员锁、受限设置、relay、绑定分组）。
   - 新建：范围不含 own、只有分组时，`group_ids` 必须含其中一个分组，否则 400 `fields[{group_ids, not_in_scope}]`。
   - 改分组：绑定或解绑自己范围内的分组（`group/G`、`group/*`）不需要 `account:group:bind`；写入后账号必须仍在调用者的 update 范围内，否则 403 `would_leave_scope`（整笔回滚）。
-  - 删除账号、分组、代理时，在删除的同一事务里清除点名它们的带范围授予（`core.ScopeGrantClearer`，由 `authz.Service` 实现、`app` 注入 account、group、proxy，三者不 import authz；范围的匹配式在 authz，按角色审计 `authz.scope.clear`，推进 authz 版本并返回新版本；调用方提交后经 `core.AnnounceAuthzChanged` 广播 `authz:changed`，与其他授权写入一样立即作废各节点的权限缓存，广播丢失时由版本轮询兜底）。
+  - 删除账号、分组、代理时，在删除的同一事务里清除点名它们的带范围授予（`core.ScopeGrantClearer`，由 `authz.Service` 实现、`app` 注入 account、group、proxy，三者不 import authz；范围的匹配式在 authz，按角色审计 `authz.scope.clear`，推进 authz 版本与策略版本、角色的修订号，并返回新版本；清理先锁 `authz_meta`，所以同时提交的授予不会漏删；`authz.Service` 自己在调用方的事务提交后（轮询到新版本时）广播 `authz:changed`，与其他授权写入一样作废各节点的权限缓存，广播丢失时由版本轮询兜底，调用方不再自己广播，`core.AnnounceAuthzChanged` 已删除）。带范围的授予只能点名存在的行：角色写入（创建、改授予、插件矩阵）新增的范围 `group/G`、`account/X`、`group/G/account/X`、`proxy/X` 指向不存在（账号含已软删除）的行时 422 `details.fields[{field:"permission_keys", code:"unknown_scope"}]`，否则删除路径清不到它，日后同 id 的行会继承这个授予（三审 C3）。
 - **代理与引用（期 4 R4）**：
   - 代理的列表、详情、位置、改、删、测试、回显都按 `proxy:read` / `proxy:manage` 的范围过滤，`mine`、`created_by` 在范围内收窄。
   - 新建代理（POST `/proxies`、`/proxies/probe`、保存账号时经 `proxy_url` 自动建）要求 `proxy:manage` 的范围是全部或 own；只有 `proxy/X` 时 403，`details.permission = proxy:manage:own`。
@@ -8539,40 +8539,46 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 
 - 表用 gorm-adapter 的列布局 `id, ptype, v0..v5`，列宽按实际内容：`v0` varchar(52)（`r:` + `roles.key`，或 `u:` + bigint），`v1` varchar(150)（权限 key、`*` 或角色主体），`v2` varchar(200)（范围、`*` 或空），`v3..v5` 不用（varchar(1)，必须为空）。加宽 `roles.key`、`permissions.key` 或范围时同时加宽这里（`TestCasbinRuleColumnWidths`）。casbinx 加载时关掉 adapter 的 AutoMigrate，表结构只由迁移决定。
 - 映射：`p, r:<角色 key>, <权限 key>, *`（整行授予）、`p, r:<角色 key>, <权限 key>, <范围>`（范围授予）、`p, r:super_admin, *, *`（超管角色）、`g, u:<用户 id>, r:<角色 key>`。self 权限不落库，加载时注入虚拟角色 `r:_self`。
-- **唯一读写者 `internal/authz/casbinrule`**：表名、`ptype`、主体前缀只在这个包里拼；调用方（authz 的角色与插件目录写入和 `ClearScopeGrants`、iam 的用户列表、casbinx 的加载器）只传角色 key、用户 id、权限 key、规范范围后缀和 `casbinrule.Filter`（写入只碰哪些授予：权限来源、所属插件、权限 key、跳过的状态、是否跳过超管角色），不拼它语句里的别名；读用它导出的子查询（`Grants`、`GrantsOf`、`RolesOf`、`MembersOf`，按其输出列使用）或函数。`core` 不依赖它：范围授予的清理与范围的匹配式在 authz（`(*authz.Service).ClearScopeGrants`），`core` 只给出行的种类（`core.ScopeRef*`）与端口 `core.ScopeGrantClearer`。写入在业务事务里用 GORM 执行，与审计同一事务，事务先 `Bump`（`authz_meta` 行锁）；绝不经 gorm-adapter 的写入或事务 API、Casbin 的管理 API（§99.6）。源码检查 `TestOnlyThisPackageNamesTheTable`：除它和生成的模型外，生产代码的字符串字面量里不出现表名。语句的 SQL 快照在 `casbinrule/testdata`（`TestSQLCasbinRule*`）。
+- **唯一读写者 `internal/authz/casbinrule`**：表名、`ptype`、主体前缀只在这个包里拼；调用方（authz 的角色与插件目录写入和 `ClearScopeGrants`、iam 的用户列表、casbinx 的加载器）只传角色 key、用户 id、权限 key、规范范围后缀和 `casbinrule.Filter`（写入只碰哪些授予：权限来源、所属插件、权限 key、跳过的状态、是否跳过超管角色），不拼它语句里的别名；读用它导出的子查询（`Grants`、`GrantsOf`、`RolesOf`、`RoleSubsOf`、`MembersOf`，按其输出列使用）或函数。`core` 不依赖它：范围授予的清理与范围的匹配式在 authz（`(*authz.Service).ClearScopeGrants`），`core` 只给出行的种类（`core.ScopeRef*`）与端口 `core.ScopeGrantClearer`。写入在业务事务里用 GORM 执行，与审计同一事务，事务先锁 `authz_meta` 行并升版本（用户写入 `Bump`，策略写入同时升策略版本，§99.4）；改到某个角色的授予时同一语句把它的 `roles.revision` 加一（`casbinrule.ReviseSQL`，§5.2“并发写入”）；绝不经 gorm-adapter 的写入或事务 API、Casbin 的管理 API（§99.6）。源码检查 `TestOnlyThisPackageNamesTheTable`：除它和生成的模型外，生产代码的字符串字面量里不出现表名。语句的 SQL 快照在 `casbinrule/testdata`（`TestSQLCasbinRule*`）。
 - 已移除、已停用、staged 权限的授予照常保留（§21），加载时按 `permissions.status` 过滤；软删除用户的 g 行保留（与原 `user_roles` 一样，恢复用户带回角色），加载时按 `users.deleted_at`、`status` 过滤。`roles`、`permissions`、`role_assignable_roles`、`authz_meta`、`plugin_permission_grants`、`plugin_staged_grants` 仍是元数据表。超管行由 `SyncCore` 按 `roles.superuser` 对齐（`casbinrule.SyncSuperusers`）。
 - 约束（迁移 0100）：
   - `idx_casbin_rule`：adapter 的唯一索引（同名同列），也是写入 `ON CONFLICT DO NOTHING` 的目标；`casbin_rule_v1_idx (ptype, v1)` 服务按权限找 p 行、按角色找 g 行。
-  - `casbin_rule_shape`：p 行主体是角色且不是 `r:_self`、动作和范围非空、超管行的范围必须是 `*`；g 行主体是 `u:<数字>`、角色不是 `r:_self`、`v2` 为空；其他 `ptype` 拒绝。
+  - `casbin_rule_shape`：p 行主体是角色且不是 `r:_self`、动作和范围非空、动作为 `*` 的行（超管行）只能是 `r:super_admin` 的且范围为 `*`（三审 C4）；g 行主体是 `u:<数字>`、角色不是 `r:_self`、`v2` 为空；其他 `ptype` 拒绝。
   - `casbin_rule_one_superuser`：`super_admin` 的 g 行最多一行（部分唯一索引，取代 0097 的 `user_roles_one_superuser` 触发器）。不可延迟，所以移交先撤后授；两个事务并发授予时，后插入的等前一个提交后报 23505（`TestCasbinRuleOneSuperuserConcurrent`）。
   - `roles_superuser_key`：只有 `super_admin` 能是超管角色（索引按它的主体判断）；`roles_key_reserved`：角色 key 不能是 `_self`；`permissions_key_reserved`：权限 key 不能是 `*`（会被当成超管行）。
 - **没有外键**（行按 key 指向角色与权限、按 id 指向用户），删除路径在同一事务里显式清理：删角色 `casbinrule.DeleteRole`（授予与指派）；删权限（`DiscardStaged`、`DeletePlugin` 经 `deletePermissions` → `DropPermissions`）；删插件行的一方（卸载、拒绝 consent）先调 `PermissionCatalog.DeletePlugin`，因为插件行的外键只级联到 `permissions`；删分组、账号、代理时经 `core.ScopeGrantClearer`（`authz.Service`）删掉指向它们的范围授予。用户只软删除。`testutil.DB` 在每个数据库测试结束时断言没有指向不存在的用户、角色、权限的行（`testutil.PolicyOrphans`）；`TestDeletePathsClearPolicyRows` 逐条路径核对。
-- 改 key：`roles.key`、`permissions.key` 被行按值引用，改 key 必须在同一事务里改对应的行，并升 authz 版本（先锁 `authz_meta`，与所有授权写入同序；版本一动，仍在运行的节点就丢掉还写着旧主体的快照与角色缓存）。角色用 `casbinrule.RenameRoleSQL` 生成的事务（`BEGIN; UPDATE authz_meta …; UPDATE casbin_rule …; UPDATE roles …; COMMIT;`，`SyncCore` 发现自定义角色占用内置 key 时，启动报错里直接给出，§43.6；`TestSyncCoreRefusesCustomRoleOnBuiltinKey` 执行它并核对版本只升一次）；权限 key 的改名只该出现在迁移里，同样改 `casbin_rule.v1`（以及 `user_access_keys.permissions` 等引用处）。
+- 改 key：`roles.key`、`permissions.key` 被行按值引用，改 key 必须在同一事务里改对应的行，并升 authz 版本与策略版本（先锁 `authz_meta`，与所有授权写入同序；版本一动，仍在运行的节点就丢掉还写着旧主体的快照与用户集合）。角色用 `casbinrule.RenameRoleSQL` 生成的事务（`BEGIN; UPDATE authz_meta …; UPDATE casbin_rule …; UPDATE roles …; COMMIT;`，`SyncCore` 发现自定义角色占用内置 key 时，启动报错里直接给出，§43.6；`TestSyncCoreRefusesCustomRoleOnBuiltinKey` 执行它并核对版本只升一次）；权限 key 的改名只该出现在迁移里，同样改 `casbin_rule.v1`（以及 `user_access_keys.permissions` 等引用处）。
 
 ### 99.2 迁移 `0100_casbin_rule.sql`
 
-- 单事务：`lock_timeout` 10 s，先锁 `authz_meta` 行（与所有授权写入同序）；库里有 key 为 `_self` 的角色、key 为 `*` 的权限、`super_admin` 以外的超管角色，或 `user_roles` 里超管角色的持有者多于一个（已软删除的也算，它的行同样会转换）时报错停止升级，错误与 HINT 说明怎样改（多个超管：只列 user id，HINT 指向 `sub2api admin recover-superadmin`，`TestCasbinRuleSeveralSuperAdmins`）；迁移失败时 HINT 跟在错误后面进启动日志（`store.Migrate`）；加上 §99.1 的检查约束；建表与索引；把旧表转成行（与原 `authz_casbin_expected` 视图同一映射，`UNION` 去掉两种方式都持有的授予）；删除 `user_roles`、`role_permission_scopes`、`role_permissions` 与 0097 的 `user_roles_one_superuser()`；升 authz 版本，避免任何节点用旧表时代的角色缓存作答。
+- 单事务：`lock_timeout` 10 s，先锁 `authz_meta` 行（与所有授权写入同序）；库里有 key 为 `_self` 的角色、key 为 `*` 的权限、`super_admin` 以外的超管角色，或 `user_roles` 里超管角色的持有者多于一个（已软删除的也算，它的行同样会转换）时报错停止升级，错误与 HINT 说明怎样改（多个超管：只列 user id，HINT 指向 `sub2api admin recover-superadmin`，`TestCasbinRuleSeveralSuperAdmins`）；迁移失败时 HINT 跟在错误后面进启动日志（`store.Migrate`）；加上 §99.1 的检查约束；建表与索引；把旧表转成行（与原 `authz_casbin_expected` 视图同一映射，`UNION` 去掉两种方式都持有的授予）；删除 `user_roles`、`role_permission_scopes`、`role_permissions` 与 0097 的 `user_roles_one_superuser()`；加 `authz_meta.policy_version`（§99.4）与 `roles.revision`（§5.2“并发写入”）两列，再写一次 0099 的 `permissions.status` COMMENT（0099 第一版没有 staged，开发库可能停在那一版，核心接受它的校验和，见回退手册）；升 authz 版本与策略版本，避免任何节点用旧表时代的角色缓存或快照作答。
 - 可重跑：表、索引、约束都 `IF NOT EXISTS` 或跳过已有的，转换只在旧表还在时执行（`TestCasbinRuleMigration`：转换结果、旧表与函数已删、版本只升一次、重跑不变、一人超管索引生效）。0026 起迁移可重跑的规则（§43.7）对 0100 之前的迁移按 0100 之前的 schema 验证：0100 删掉了它们写的表，而每个迁移与它的记录同一事务提交，0100 之后不会再跑到它们（`TestMigrationsFromFirstIdempotentRunTwice`）。
 - **单向**，发布必须停服：先停掉全部节点（主节点先停），备份数据库，再启动新版本迁移；0.1.289 及更早的核心不能在这个 schema 上运行。回退只能从升级前的备份恢复（`deploy/rollback/0.1.290-casbin-down.md`）。开发库若应用过未发布的 Mode P 版 0100（校验和不同），新版本拒绝启动：重建库，或恢复到 0099 再升级。
 - 停在 0100 之前的库：0097 因为没有或有多个超管而失败时会提示 `sub2api admin recover-superadmin`。CLI 不跑迁移，这时它只做移交（`iam.RecoverSuperAdmin` 用 `authz.LegacySchema` 判断：`schema_migrations` 里没有 `0100_casbin_rule.sql`；0100 之后残留的 `user_roles` 表不算，CLI 照常写 `casbin_rule`，选 `authz.TransferSuperAdminLegacy`，持有者在 `user_roles` 里；控制台的移交不做这个判断，总是写 `casbin_rule`），拒绝禁用的目标与 `--reset-password`、`--reset-2fa`（409 `conflict`，提示先不带这两项恢复一个启用的用户，启动核心完成迁移后再跑一次带上它们），因为其余步骤读用户时要读 `casbin_rule`（`TestRecoverSuperAdminBeforeCasbinRule`）。
 
 ### 99.3 解析（`internal/authz/casbinx`）
 
-- 模型：`r = sub, obj`，`p = sub, act, scope`，`g = _, _`，matcher `g(r.sub, p.sub) && permMatch(p.act, p.scope, r.obj)`，`permMatch` 就是 `perm.Implies`（act `*` 蕴含一切）。
-- 每个 authz 版本一份不可变快照：在只读 RR 事务里读版本、权限状态和 p 行（gorm-adapter 只读加载，`TurnOffAutoMigrate` 后 `NewAdapterByDBUseTableName`），只装 active 权限的 p 行与超管行；库里存着的 `r:_self` 行不装（约束本来也不允许）。g 行不装入：用户的角色由用户角色缓存在快照的版本上读出（`casbinrule.UserRoleSubs`）、随每次调用交给快照（按角色主体逐个求授予），只读 RoleManager 只把主体连到它自己（`EnableGFunctionCache(false)`）。`Ensure(min)`：快照版本 ≥ min 直接用，否则 single-flight 重建（50 ms 去抖），最多等 2 s，超时报错（fail closed）。本节点得知新版本（自己的写入、广播、轮询、启动）时在请求外预建快照（`Resolver.Prewarm`），请求路径上的 `Ensure` 大多直接命中。
-- `authz.loadPermissionSet` 只走 `Resolver.Grants(uid, min)`，产出 `core.PermissionSet`（`*` → `Superuser`）：先 `Ensure(min)`，再按快照版本取用户角色；两者版本不同（中间有写入提交，或缓存里的角色比快照新）时按较大的版本重读两边，第一次立即重读，之后间隔从 2 ms 起翻倍（最多 100 ms），一直重试到快照等待上限（2 s，从解析开始算）或调用方的 ctx 结束，才报 `casbinx.ErrSkew`（fail closed，请求失败）；绝不把一个版本的角色和另一个版本的策略拼在一起。批量写入（每个用户升一次版本）期间请求多等几轮，而不是返回 500。集合的 `Version` 就是两者共同的版本。路由、`core.Can`、网关的判定都读这个集合（`PermissionSet.Has`，同一个 `perm.Implies`），不调 Casbin 的 `Enforce`。matcher 把每条策略跑一遍（8–230 µs），只在 casbinx 自己的测试里用来核对集合（向量、超管与以后新增的 key、非 active 权限、g 记忆、`Restrict` 反例、并发；`TestCasbinEquivalenceRandom`），生产代码没有导出的 matcher 入口。
+- 模型：`r = sub, obj`，`p = sub, act, scope`，`g = _, _`，matcher `g(r.sub, p.sub) && permMatch(p.act, p.scope, r.obj)`，`permMatch` 就是 `perm.Implies`（act `*` 蕴含一切）；它的解析缓存属于各自的 enforcer（随快照释放，不是进程级全局状态）。
+- 两个版本（`authz_meta`）：`version` 每次授权写入都升（控制台的 `X-Authz-Version`、用户集合的有效性）；`policy_version` 只随快照里的内容升：授予、权限状态、角色定义（创建、删除、改名、重置、插件目录同步、范围授予清理）。给用户指派角色、改用户状态只升 `version`（三审 D1）。
+- 每个策略版本一份不可变快照：在只读 RR 事务里读两个版本、权限状态和 p 行（gorm-adapter 只读加载，`TurnOffAutoMigrate` 后 `NewAdapterByDBUseTableName`），只装 active 权限的 p 行与超管行；库里存着的 `r:_self` 行不装（约束本来也不允许）。g 行不装入：用户的角色由用户角色缓存读出（`casbinrule.RoleSubsOf`，一条语句同时读出两个版本、用户是否 active 和角色，三审 D4），随每次调用交给快照（按角色主体逐个求授予），只读 RoleManager 只把主体连到它自己（`EnableGFunctionCache(false)`）。`Ensure(policy)`：快照的策略版本 ≥ policy 直接用，否则 single-flight 重建（50 ms 去抖），最多等 2 s，超时报错（fail closed）。本节点得知新的策略版本（自己的写入、广播、轮询、启动）时在请求外预建快照（`Resolver.Prewarm`），请求路径上的 `Ensure` 大多直接命中。
+- `authz.loadPermissionSet` 只走 `Resolver.Grants(uid, min)`，产出 `core.PermissionSet`（`*` → `Superuser`）：先读用户角色（authz 版本 ≥ min），再取它所读的策略版本的快照；快照更新（中间有策略写入提交）时立即按快照的版本重读角色，仍对不上时间隔从 2 ms 起翻倍（最多 100 ms）重试到快照等待上限（2 s，从解析开始算）或调用方的 ctx 结束，才报 `casbinx.ErrSkew`（fail closed，请求失败）；绝不把一个策略版本下读到的角色和另一个策略版本的快照拼在一起。用户的指派与状态写入不动策略版本，所以批量指派不会造成重试；只有持续不断的策略写入才会。集合的 `Version` 是读角色时的 authz 版本。路由、`core.Can`、网关的判定都读这个集合（`PermissionSet.Has`，同一个 `perm.Implies`），不调 Casbin 的 `Enforce`。matcher 把每条策略跑一遍（8–230 µs），只在 casbinx 自己的测试里用来核对集合（向量、超管与以后新增的 key、非 active 权限、g 记忆、`Restrict` 反例、并发；`TestCasbinEquivalenceRandom`），生产代码没有导出的 matcher 入口。
+- `ActivePermissionKeys` 按需直接查 active 的权限，权限判断不再先读一遍权限目录（三审 D5）。
 - 没有数据库的 `authz.Service`（只用于单元测试）没有解析器，加载集合报错。
 
 ### 99.4 缓存
 
 | 层 | 内容 | 有效性 |
 | --- | --- | --- |
-| 进程 | 快照（`atomic.Pointer`，CAS 拒绝旧版本） | 版本 ≥ 要求的版本 |
-| 进程 | `users[uid]` 有效集合 | `set.Version ≥ minVersion`，现有失效机制 |
-| 进程 | 用户角色 `{v, active, roles}` | `v ≥` 要求的版本（解析时要求的是快照版本） |
-| Valkey | `authz:c:ur:{uid}`（§7），各节点共用 | 只认 `v ==` 要求的版本；写入在请求外、直接覆盖（并发上限 64，满了丢弃），出错跳过、读 PG |
+| 进程 | 快照（`atomic.Pointer`，CAS 拒绝旧策略版本） | 策略版本 ≥ 用户角色读出时的策略版本 |
+| 进程 | `users[uid]` 有效集合（上限 20 万，满了丢掉八分之一） | 见下 |
+| Valkey | `authz:c:ur:{uid}` 用户角色 `{v, p, a, r}`（§7），各节点共用 | 只认 `v ==` 要求的版本；写入在请求外、直接覆盖（并发上限 64，满了丢弃），出错跳过、读 PG |
 
-同一用户同一要求版本的并发加载合并为一次。所有改授予、指派、用户状态的写入都升版本；绕过服务直接改库（包括测试夹具 `testutil.Grant` 一类）要自己升版本，否则缓存按旧状态作答。
+进程里不再单独缓存用户角色（原来的第一级与 `users` 重复，三审 D3）；同一用户同一要求版本的并发加载合并为一次。
+
+**失效**：每个节点记着它知道的最新 authz 版本 `minVersion`。每次授权写入在提交后广播 `authz:changed`（§7 payload `{"v","p"?,"u"?}`）；节点收到（或轮询到、或自己写入提交）新版本 `v` 时：
+- `v` 正好是 `minVersion + 1`，并且这次写入点名了用户（`u`）且没有动策略：只丢掉这些用户的集合，其他用户的集合保留，下次取用时标为新版本（它们在这次写入前后不变）；
+- 否则（中间有版本没听到、广播丢失由轮询补上、策略写入、旧格式的 payload）：丢掉全部集合，带 `p` 时预建该策略版本的快照。
+写入的节点在事务里升版本时记下这次写入点名的用户，提交后按同一规则失效本节点并广播；`ClearScopeGrants` 也一样（它自己在调用方提交后广播，三审 S2）。读出的集合版本小于 `minVersion` 时不放进缓存。所有改授予、指派、用户状态的写入都升版本；绕过服务直接改库（包括测试夹具 `testutil.Grant` 一类）要自己升版本（改授予时连策略版本一起，`testutil.BumpAuthz`），否则缓存按旧状态作答。
 
 **数据库从备份恢复后必须清掉 Valkey 里的这些键。** authz 版本号只在同一份数据库历史里对应唯一的状态：恢复后版本回退（例如从 1000 回到 900），恢复后的写入会重新走过 901…，内容却和恢复前不同；恢复前写下、还在 TTL（15 分钟）内的条目（例如 `v=950`）会在库再次走到 950 时被精确命中，用恢复前的角色作答。“只认版本完全相同”只缩小了这个窗口，不能关掉它。所以恢复数据库之后、启动核心之前（或启动后立即）执行：
 
@@ -8582,7 +8588,7 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 
 （`redis-cli` 同样用法；集群模式对每个主节点各执行一次。）不清的话，最长 15 分钟内可能有用户按恢复前的角色得到答案。没有选用纪元（`authz_meta` 加一列编进键）：备份里带着它自己的纪元，恢复后同样要人工改一次纪元，和清键是同一个手工步骤，却要多维护一条读路径。
 
-`authz.Deps.Redis` 由 `app` 传入；为 nil（`sub2api admin` 命令）时只有进程一级。
+`authz.Deps.Redis` 由 `app` 传入；为 nil（`sub2api admin` 命令）时用户角色直接读 PG。
 
 ### 99.5 回滚
 
@@ -8601,7 +8607,7 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 
 - 迁移：`server/internal/migrations/0100_casbin_rule.sql`；发布与回退说明 `deploy/rollback/0.1.290-casbin-down.md`（`.sql` 只报错）
 - 存储：`server/internal/authz/casbinrule/`（映射、全部读写语句、`Filter`、`RenameRoleSQL`）；模型 `server/internal/store/model/casbin_rule.gen.go`
-- 解析：`server/internal/authz/casbinx/`（`api.go` 接口、`model.go`、`rolemanager.go`、`snapshot.go`、`snapshots.go`（快照持有与重建）、`loader.go`、`resolver.go`、`rolecache.go`）
+- 解析：`server/internal/authz/casbinx/`（`api.go` 接口、`model.go`（模型与每个 enforcer 自己的 matcher）、`rolemanager.go`、`snapshot.go`、`snapshots.go`（按策略版本持有与重建快照）、`loader.go`、`resolver.go`、`rolecache.go`（Valkey 与合并加载））
 - 接入：`server/internal/authz/service.go`（`loadPermissionSet`）、`grants.go`（含 `ClearScopeGrants`）、`roles.go`、`sync.go`、`plugin_catalog.go`、`superadmin.go`；`server/internal/core/scope_refs.go`（只有行的种类与 `ScopeGrantClearer`）；`server/internal/iam/users.go`、`superadmin.go`（CLI 选旧库的移交）
 - 测试：迁移 `server/internal/migrations/casbin_rule_db_test.go`；孤儿检查与夹具 `server/internal/testutil/policy.go`（`DB` 在 `db.go` 里登记检查）；检查 `server/internal/store/gormguard/casbin_test.go`
 

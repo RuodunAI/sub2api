@@ -50,7 +50,7 @@ func TestPermissionSetScopedViaCasbin(t *testing.T) {
 func TestSuperuserFutureKeys(t *testing.T) {
 	t.Parallel()
 	s := snapOf(t, Policy{Version: 3, Rules: []Rule{superRow("r:super_admin")}})
-	su := held("r:super_admin")
+	su := UserRoles{Version: 3, Active: true, Roles: []string{"r:super_admin"}}
 	for _, k := range []string{"settings:manage", "plugin.newly_installed:x:manage:flow/3", "account:read:group/*"} {
 		if !enforce(t, s, su, k) {
 			t.Errorf("superuser lacks %s", k)
@@ -167,7 +167,7 @@ func TestRestrictIsNotAMatcherIntersection(t *testing.T) {
 	s := single(t, "account:update:account/5")
 	want := "account:update:group/12/account/5"
 	userOK := enforce(t, s, held("r:t"), want)
-	keyOK := permMatch("account:update", "group/12", want)
+	keyOK := new(matcher).permMatch("account:update", "group/12", want)
 	restricted := grants(t, s, held("r:t")).Restrict([]string{"account:update:group/12"}).Has(want)
 	t.Logf("user=%v key=%v intersection=%v Restrict=%v", userOK, keyOK, userOK && keyOK, restricted)
 	if !userOK || !keyOK || restricted {
@@ -313,7 +313,7 @@ func TestConcurrentEnforceAndSwap(t *testing.T) {
 	t.Parallel()
 	eng := newSnapshots(nil, snapshotOptions{})
 	mk := func(v int64) *snapshot {
-		return snapOf(t, Policy{Version: v, Active: map[string]bool{"account:read": true},
+		return snapOf(t, Policy{Version: v, PolicyVersion: v, Active: map[string]bool{"account:read": true},
 			Rules: []Rule{grant("r:t", "account:read:own")}})
 	}
 	eng.swap(mk(1))
