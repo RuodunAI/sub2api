@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -277,13 +278,8 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 	if err != nil {
 		return nil, 0, err
 	}
-	db := store.G(ctx, tx)
-	ids, err := gormpg.NextIDs(db, model.User{}.TableName(), 1)
-	if err != nil {
-		return nil, 0, err
-	}
-	id := ids[0]
-	err = insertUser(db, id, email, in.DisplayName, string(hash), in.SegmentID).Error
+	var id int64
+	err = insertUser(store.G(ctx, tx), email, in.DisplayName, string(hash), in.SegmentID).Row().Scan(&id)
 	switch {
 	case store.IsUniqueViolation(err, ""):
 		return nil, 0, emailTaken()
@@ -323,11 +319,12 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 	return u, v, err
 }
 
-// insertUser creates user id in segmentID, or the default segment when nil,
-// without an owner (core.OwnerGuard gives it one).
-func insertUser(db *gorm.DB, id int64, email, displayName, passwordHash string, segmentID *int64) *gorm.DB {
-	row := store.OneRow(db).Select("?, ?, ?, ?, COALESCE(?, default_segment_id())", id, email, displayName, passwordHash, segmentID)
-	return gormpg.InsertSelect(db, model.User{}.TableName(), []string{"id", "email", "display_name", "password_hash", "segment_id"}, row)
+// insertUser creates a user in segmentID, or the default segment when nil,
+// without an owner (core.OwnerGuard gives it one), and returns its id.
+func insertUser(db *gorm.DB, email, displayName, passwordHash string, segmentID *int64) *gorm.DB {
+	row := store.OneRow(db).Select("?, ?, ?, COALESCE(?, default_segment_id())", email, displayName, passwordHash, segmentID)
+	return gormpg.InsertSelectReturning(db, model.User{}.TableName(), []string{"email", "display_name", "password_hash", "segment_id"}, row,
+		clause.Returning{Columns: []clause.Column{{Name: "id"}}})
 }
 
 // validateOwner refuses an owner_id that is no user id, 0 (none) aside.
