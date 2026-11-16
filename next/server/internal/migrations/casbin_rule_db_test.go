@@ -131,16 +131,6 @@ func sorted(ss ...string) []string {
 	return ss
 }
 
-// The migration is one way: the old down script only says so and changes
-// nothing (the way back is the backup taken before it).
-func TestCasbinRuleOneWay(t *testing.T) {
-	h, _, _ := casbinService(t)
-	schema, policy := h.schema(), h.policy()
-	require.ErrorContains(t, h.down("0.1.290-casbin-down.sql"), "restore the backup")
-	require.Equal(t, schema, h.schema())
-	require.Equal(t, policy, h.policy())
-}
-
 // Keys and rows that would read as reserved policy values are refused: a
 // role key _self (subject r:_self, the virtual role every active user holds
 // in casbinx), a permission key * (the action of a superuser row), a

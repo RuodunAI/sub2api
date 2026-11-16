@@ -37,17 +37,17 @@ func TestRollingStepsRestartFollowersThenPrimaryOneAtATime(t *testing.T) {
 
 func TestRollingEligibility(t *testing.T) {
 	now := time.Now()
-	serving := func(id string, rolling bool) Node {
-		return Node{ID: id, Enabled: true, Rolling: rolling, Mode: "local", Ready: true, LastSeen: now}
+	serving := func(id string) Node {
+		return Node{ID: id, Enabled: true, Mode: "local", Ready: true, LastSeen: now}
 	}
 	rel := testRelease("r")
 	maintenance := rel
 	maintenance.Manifest.Strategy = "maintenance"
 	migrating := rel
 	migrating.Manifest.SchemaAfter = "contract-2"
-	stopped := serving("b", true)
+	stopped := serving("b")
 	stopped.Ready = false
-	disabledOld := Node{ID: "c", Enabled: false}
+	disabled := Node{ID: "c", Enabled: false}
 	cases := []struct {
 		name  string
 		rel   Release
@@ -55,14 +55,13 @@ func TestRollingEligibility(t *testing.T) {
 		min   int
 		want  bool
 	}{
-		{"two rolling nodes serving", rel, []Node{serving("a", true), serving("b", true)}, 2, true},
-		{"a disabled old shell does not count", rel, []Node{serving("a", true), serving("b", true), disabledOld}, 2, true},
-		{"an old shell forces primary-first", rel, []Node{serving("a", true), serving("b", false)}, 2, false},
-		{"one node cannot roll", rel, []Node{serving("a", true)}, 2, false},
-		{"signed maintenance stays primary-first", maintenance, []Node{serving("a", true), serving("b", true)}, 2, false},
-		{"a schema change stays primary-first", migrating, []Node{serving("a", true), serving("b", true)}, 2, false},
-		{"recovery needs one serving node", rel, []Node{serving("a", true), stopped}, 1, true},
-		{"a new plan needs two", rel, []Node{serving("a", true), stopped}, 2, false},
+		{"two rolling nodes serving", rel, []Node{serving("a"), serving("b")}, 2, true},
+		{"a disabled node does not count", rel, []Node{serving("a"), serving("b"), disabled}, 2, true},
+		{"one node cannot roll", rel, []Node{serving("a")}, 2, false},
+		{"signed maintenance stays primary-first", maintenance, []Node{serving("a"), serving("b")}, 2, false},
+		{"a schema change stays primary-first", migrating, []Node{serving("a"), serving("b")}, 2, false},
+		{"recovery needs one serving node", rel, []Node{serving("a"), stopped}, 1, true},
+		{"a new plan needs two", rel, []Node{serving("a"), stopped}, 2, false},
 	}
 	for _, tc := range cases {
 		if got := rollingEligible(tc.rel, tc.nodes, tc.min); got != tc.want {

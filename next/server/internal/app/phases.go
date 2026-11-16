@@ -136,7 +136,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	// the primary and fetched over the node network; market packages are
 	// downloaded by each node. Without a shell only one node is supported.
 	packageStore := blobs.Store(blobs.Dir(filepath.Join(cfg.Plugins.DataDir, "blobs")))
-	if cfg.Managed.Enabled && cfg.Managed.UpdaterSocket != "" {
+	if cfg.Managed.UpdaterSocket != "" {
 		packageStore = blobs.NewShell(cfg.Managed.UpdaterSocket, cfg.Managed.UpdaterToken, cfg.Plugins.MaxPackageBytes)
 	}
 	b.marketClient = &http.Client{Timeout: 60 * time.Second}

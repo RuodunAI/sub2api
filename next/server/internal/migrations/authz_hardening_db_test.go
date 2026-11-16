@@ -2,8 +2,6 @@ package migrations_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -21,9 +19,6 @@ const (
 	// the authz hardening.
 	lastReleased = "0096_usage_base_cost.sql"
 	hardening    = "0097_authz_hardening.sql"
-	// production is the last core migration of 0.1.288, the release 0.1.290
-	// upgrades.
-	production = "0098_plugin_staged_grants.sql"
 )
 
 // hardeningDB is a database as core 0.1.285 leaves it, with the authz data
@@ -57,9 +52,7 @@ func (h *hardeningDB) migrate() error {
 	return err
 }
 
-// migrateThrough applies the core migrations up to last and no further:
-// the release whose rollback script a test runs (0100 has none: its way
-// back is a backup).
+// migrateThrough applies the core migrations up to last and no further.
 func (h *hardeningDB) migrateThrough(last string) error {
 	h.t.Helper()
 	_, err := store.Migrate(h.ctx, h.db, testutil.MigrationsThrough(h.t, last), store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
@@ -162,30 +155,6 @@ func (h *hardeningDB) state() string {
 		h.text(`SELECT string_agg(key, ',' ORDER BY key) FROM permissions`),
 		h.text(`SELECT count(*)::text FROM audit_logs`),
 		h.text(`SELECT version::text FROM authz_meta WHERE id = 1`)}, "\n")
-}
-
-// schema describes the public schema: tables, columns, indexes,
-// constraints, triggers and functions, sorted.
-func (h *hardeningDB) schema() string {
-	h.t.Helper()
-	return h.text(`SELECT string_agg(d, E'\n' ORDER BY d) FROM (
-    SELECT 'table ' || relname || ' ' || relkind::text AS d FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r', 'v', 'm', 'S', 'p')
-    UNION ALL SELECT 'column ' || table_name || '.' || column_name || ' ' || data_type || COALESCE('(' || character_maximum_length || ')', '') || ' ' || is_nullable || ' ' || COALESCE(column_default, '')
-        FROM information_schema.columns WHERE table_schema = 'public'
-    UNION ALL SELECT 'index ' || indexdef FROM pg_indexes WHERE schemaname = 'public'
-    UNION ALL SELECT 'constraint ' || conrelid::regclass || ' ' || conname || ' ' || pg_get_constraintdef(oid) FROM pg_constraint WHERE connamespace = 'public'::regnamespace
-    UNION ALL SELECT 'trigger ' || pg_get_triggerdef(oid) FROM pg_trigger WHERE NOT tgisinternal
-    UNION ALL SELECT 'function ' || oid::regprocedure || ' ' || md5(pg_get_functiondef(oid)) FROM pg_proc WHERE pronamespace = 'public'::regnamespace AND prokind IN ('f', 'p')
-) s`)
-}
-
-// down runs the rollback script deploy/rollback/<name>.
-func (h *hardeningDB) down(name string) error {
-	h.t.Helper()
-	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "deploy", "rollback", name))
-	require.NoError(h.t, err)
-	_, err = h.db.SQL.ExecContext(h.ctx, string(sql))
-	return err
 }
 
 func (h *hardeningDB) syncCore() {
@@ -318,64 +287,4 @@ func TestAuthzHardeningNeedsOneSuperAdmin(t *testing.T) {
 			require.Equal(t, "1", h.text(`SELECT count(*)::text FROM permissions WHERE key = 'role:manage'`))
 		})
 	}
-}
-
-// The rollback script puts the database back in the shape 0.1.285 runs on:
-// the schema of a database migrated through 0096, the former grants of
-// every role and access key (own scopes, the redundant ones the migration
-// only audited, role:manage, the super-only permissions taken back), with
-// group scopes written since dropped and audited. Upgrading again then
-// gives the same grants as the first upgrade. The upgrade stops at 0.1.288
-// (0098): 0.1.290's 0100 is one way, and this tree's core sync writes
-// casbin_rule, so what a sync of 0.1.286-0.1.288 changed is not part of it.
-func TestAuthzHardeningRollback(t *testing.T) {
-	h := newHardeningDB(t)
-	schema, grants, keys := h.schema(), h.grants(), h.accessKeys()
-
-	require.NoError(t, h.migrateThrough(production))
-	upgraded := h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater")
-	// Written after the upgrade: a group scope, which 0.1.285 cannot express.
-	h.exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope)
-        SELECT r.id, p.id, 'group/12' FROM roles r, permissions p WHERE r.key = 'seller' AND p.key = 'account:test'`)
-	h.exec(`UPDATE user_access_keys SET permissions = permissions || '{account:test:group/12}' WHERE name = 'seller@x'`)
-	// A consent staged for a version not active yet (0098): 0.1.285 has no
-	// staged grants, so that version waits for a new consent.
-	h.exec(`INSERT INTO plugins (key, name, status, active_version) VALUES ('stg', '{}', 'enabled', '1.0.0')`)
-	h.exec(`INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status, consent_status)
-        VALUES ('stg', '1.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved'), ('stg', '2.0.0', '{}', 'h', 's', 1, 'unsigned', 'approved')`)
-	h.exec(`INSERT INTO plugin_staged_grants (plugin_key, version, permission, status, manifest_hash) VALUES ('stg', '2.0.0', 'lock', 'granted', 'h')`)
-
-	require.NoError(t, h.down("0.1.286-authz-down.sql"))
-
-	require.Equal(t, schema, h.schema())
-	// 0.1.285 grants nothing for the permissions only 0.1.286 has (its sync
-	// marks them removed).
-	require.Equal(t, grants,
-		filterGrants(h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater", "super_admin"), grants))
-	require.Equal(t, keys, h.accessKeys())
-	require.Equal(t, "1", h.text(`SELECT count(*)::text FROM audit_logs WHERE detail->>'via' = 'rollback 0.1.286' AND detail->>'dropped' = 'account:test:group/12'`))
-	require.Equal(t, "1.0.0 approved, 2.0.0 awaiting_consent", h.text(`SELECT string_agg(version || ' ' || consent_status, ', ' ORDER BY version) FROM plugin_versions WHERE plugin_key = 'stg'`))
-	require.Equal(t, `["lock"]`, h.text(`SELECT (detail->'permissions')::text FROM audit_logs WHERE action = 'plugin.grants.withdraw' AND target_id = 'stg' AND detail->>'version' = '2.0.0'`))
-
-	require.ErrorContains(t, h.down("0.1.286-authz-down.sql"), "nothing to roll back")
-
-	require.NoError(t, h.migrateThrough(production))
-	require.Equal(t, upgraded, h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater"))
-}
-
-// filterGrants keeps the grants of got whose permission appears in want: the
-// permissions 0.1.285 knows.
-func filterGrants(got, want string) string {
-	known := map[string]bool{}
-	for _, g := range strings.Split(want, ", ") {
-		_, p, _ := strings.Cut(g, " ")
-		known[p] = true
-	}
-	var out []string
-	for _, g := range strings.Split(got, ", ") {
-		if _, p, _ := strings.Cut(g, " "); known[p] {
-			out = append(out, g)
-		}
-	}
-	return strings.Join(out, ", ")
 }

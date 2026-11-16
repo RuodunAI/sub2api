@@ -49,7 +49,7 @@ func TestGatewayNodeBlockers(t *testing.T) {
 	now := time.Now()
 	m := rc.GatewayManifest{GatewayVersion: "0.1.136"}
 	node := func(id string) Node {
-		return Node{ID: id, Enabled: true, Rolling: true, SelfUpdate: true, GatewayVersion: "0.1.135", ReleaseDigest: "base", Mode: "local", Ready: true, LastSeen: now}
+		return Node{ID: id, Enabled: true, SelfUpdate: true, GatewayVersion: "0.1.135", ReleaseDigest: "base", Mode: "local", Ready: true, LastSeen: now}
 	}
 	if got := gatewayNodeBlockers(m, []Node{node("a"), node("b")}, "base"); len(got) != 0 {
 		t.Fatal(got)
@@ -57,7 +57,6 @@ func TestGatewayNodeBlockers(t *testing.T) {
 	cases := map[string]func(*Node){
 		"not locally ready":          func(n *Node) { n.Ready = false },
 		"not on approved baseline":   func(n *Node) { n.ReleaseDigest = "other" },
-		"without rolling updates":    func(n *Node) { n.Rolling = false },
 		"does not report":            func(n *Node) { n.GatewayVersion = "" },
 		"already runs gateway":       func(n *Node) { n.GatewayVersion = "0.1.136" },
 		"cannot replace its gateway": func(n *Node) { n.SelfUpdate = false },

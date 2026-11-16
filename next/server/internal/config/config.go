@@ -78,23 +78,20 @@ type Config struct {
 }
 
 type ManagedConfig struct {
-	Enabled                                             bool
-	Socket, Token, ReleaseDigest, BootID, UpdaterSocket string
-	// UpdaterToken authenticates the core to the shell's management socket
-	// (UPDATER_SOCKET): read from the file SUB2API_UPDATER_TOKEN_FILE names,
-	// 64 hex characters, kept in memory only. Empty when the variable is not
-	// set: the shell 0.1.288 runs under (gateway 0.1.133) has no token, and it
-	// drives the 0.1.290 core through its upgrade plan until the shell is
-	// replaced. The empty-token path goes in the first core release after
-	// every node runs the 0.1.290 shell (CONTRACTS §101.3).
-	UpdaterToken string
+	Enabled                              bool
+	Socket, Token, ReleaseDigest, BootID string
+	// UpdaterSocket is the shell's management socket (UPDATER_SOCKET) and
+	// UpdaterToken authenticates the core to it: read from the file
+	// SUB2API_UPDATER_TOKEN_FILE names, 64 hex characters, kept in memory
+	// only. Only a managed core reads them, and it requires the token.
+	UpdaterSocket, UpdaterToken string
 }
 
-// readUpdaterToken reads SUB2API_UPDATER_TOKEN_FILE when set.
+// readUpdaterToken reads the file SUB2API_UPDATER_TOKEN_FILE names.
 func readUpdaterToken() (string, error) {
 	path := os.Getenv("SUB2API_UPDATER_TOKEN_FILE")
 	if path == "" {
-		return "", nil
+		return "", fmt.Errorf("managed core requires SUB2API_UPDATER_TOKEN_FILE")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -153,13 +150,16 @@ func Load(goos string) (*Config, error) {
 		BootstrapAdminEmail:    os.Getenv("SUB2API_BOOTSTRAP_ADMIN_EMAIL"),
 		BootstrapAdminPassword: os.Getenv("SUB2API_BOOTSTRAP_ADMIN_PASSWORD"),
 	}
-	c.Managed = ManagedConfig{Enabled: boolEnv("SUB2API_MANAGED", false), Socket: os.Getenv("SUB2API_CONTROL_SOCKET"), Token: os.Getenv("SUB2API_CONTROL_TOKEN"), ReleaseDigest: os.Getenv("SUB2API_RELEASE_DIGEST"), BootID: os.Getenv("SUB2API_CORE_BOOT_ID"), UpdaterSocket: os.Getenv("UPDATER_SOCKET")}
-	if c.Managed.Enabled && (c.Managed.Socket == "" || len(c.Managed.Token) < 32 || c.Managed.ReleaseDigest == "" || c.Managed.BootID == "") {
-		return nil, fmt.Errorf("managed core requires control socket, >=32 byte boot token, release digest and core boot ID")
-	}
+	c.Managed = ManagedConfig{Enabled: boolEnv("SUB2API_MANAGED", false), Socket: os.Getenv("SUB2API_CONTROL_SOCKET"), Token: os.Getenv("SUB2API_CONTROL_TOKEN"), ReleaseDigest: os.Getenv("SUB2API_RELEASE_DIGEST"), BootID: os.Getenv("SUB2API_CORE_BOOT_ID")}
 	var err error
-	if c.Managed.UpdaterToken, err = readUpdaterToken(); err != nil {
-		return nil, err
+	if c.Managed.Enabled {
+		if c.Managed.Socket == "" || len(c.Managed.Token) < 32 || c.Managed.ReleaseDigest == "" || c.Managed.BootID == "" {
+			return nil, fmt.Errorf("managed core requires control socket, >=32 byte boot token, release digest and core boot ID")
+		}
+		if c.Managed.UpdaterToken, err = readUpdaterToken(); err != nil {
+			return nil, err
+		}
+		c.Managed.UpdaterSocket = os.Getenv("UPDATER_SOCKET")
 	}
 	if c.NodeID == "" {
 		h, _ := os.Hostname()

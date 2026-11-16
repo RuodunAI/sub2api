@@ -489,7 +489,7 @@ func (s *serveSet) build(ctx context.Context) error {
 	if _, err = rand.Read(boot); err != nil {
 		return err
 	}
-	s.ownNode = control.Node{ID: c.NodeID, PeerURL: c.PeerURL, ShellBootID: hex.EncodeToString(boot), OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI, PeerProtocol: peer.Protocol, Strategy: control.PrimaryFirst, Rolling: true, GatewayVersion: Version, SelfUpdate: selfUpdatable(s.releases)}
+	s.ownNode = control.Node{ID: c.NodeID, PeerURL: c.PeerURL, ShellBootID: hex.EncodeToString(boot), OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI, PeerProtocol: peer.Protocol, Strategy: control.PrimaryFirst, GatewayVersion: Version, SelfUpdate: selfUpdatable(s.releases)}
 	// Configure structured logging with cluster context
 	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
 	logger := slog.New(handler).With(

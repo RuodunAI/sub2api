@@ -8,11 +8,25 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 核心 0.1.291 + 网关 0.1.135：删除为网关 0.1.133 与回退到 0.1.288 保留的代码，修正升级预检误报（无核心迁移）
+
+0.1.290 已在所有节点上线（核心 0.1.290、网关外壳 0.1.134），升级前的备份已删除，不能再回到 0.1.288。按“迁移完成后不留兼容代码”，删除只为外壳 0.1.133、核心 0.1.288 和这次回退保留的部分（CONTRACTS §101.3）。
+
+- **托管核心必须有管理 socket 令牌**：`SUB2API_MANAGED=true` 时没有 `SUB2API_UPDATER_TOKEN_FILE`、文件读不到或内容不是 64 位十六进制，核心启动失败；转发升级接口与插件包读写总是带令牌，不再有“没有令牌就不带”的分支。非托管核心既不读这个变量也不读 `UPDATER_SOCKET`：升级接口返回 503 `updater_unavailable`，插件包存本地目录。线上的外壳 0.1.134（以及之前的 0.1.133）总是传这个变量并在启动核心前写好令牌文件，不需要改配置。
+- **核心不再声明 `drain.graceful`**：`runtimecontract.Hello` 去掉 `capabilities` 与 `CapabilityGracefulDrain`，只有外壳 0.1.133 看它。`DrainRequest.graceful` 照旧：外壳 0.1.134 起按需要发送，核心照样让在途请求跑完。
+- **网关外壳 schema 删除 `updater.nodes.cpu_percent`**（`DROP COLUMN IF EXISTS`）：只有外壳 0.1.133 读写这一列，0.1.134 不读。外壳启动核心时总是传令牌文件路径，不再判断它是否为空。
+- **删除 0.1.290 的发布与回退手册**：`next/deploy/rollback/0.1.290-release.md`、`0.1.290-casbin-down.md/.sql`、`0.1.290-session-down.md`、`0.1.290-effective-permissions.sql` 只服务那次已完成的单向升级，删除（原文用 `git show 91e0c26bc:next/deploy/rollback/<文件名>` 读取）；只为它们存在的测试 `TestEffectivePermissionsScript`、`TestCasbinRuleOneWay` 与从 0.1.288 升级的 `TestManagedUpgradeFromProductionResumesWithTheSamePermit` 一并删除，后者固定的线上 schema 契约改为 0.1.290 的（迁移到 0102，`d78ba831…333c`，`TestReleasedMigrationsKeepTheProductionSchema`）。回到 0.1.285 的 `0.1.286-authz-down.md/.sql` 与 `TestAuthzHardeningRollback` 同样不再适用，一并删除，`next/deploy/rollback/` 现在为空（下一次单向发布再建）。已应用的迁移 0097、0098、0100–0102 的注释里仍写着这些文件名（迁移文件不能再改）。
+- `next/deploy/gateway/.env.example` 去掉外壳 0.1.134 起不再读取的 `SUB2API_ALLOW_TOKENLESS_MANAGEMENT`。
+- **rolling-v1 不再检查节点的 `rolling` 标记**（网关）：外壳 0.1.133 起都登记 `rolling=true`，资格只看签名策略、schema 不变与至少两个节点在服务。0.1.135 照常写 true、不再读；列保留，换外壳期间的 0.1.134 协调者还读它。
+- **升级预检不再把刚启动的托管核心当成未托管**（网关）：预检、回退到基线和迁移屏障共用的“未托管核心”检查用心跳缓存的节点目录核对 Redis 里的核心登记，而这份快照早于本节点这次心跳写入的新 `core_boot_id`，核心重启后可能要再过一个心跳才不误报 `unmanaged or unrecognized active core`。改为从 PG 读启用节点的 `core_boot_id`；核心在 Redis 登记后、外壳下一次心跳前仍会被报出，误报不超过一个心跳（外壳 0.1.132 起有这个问题）。
+- **真实核心测试 `TestRealCore*` 恢复可跑**：harness 给核心传它实际读取的 `DATABASE_URL`/`REDIS_URL`（原来是核心不读的 `SUB2API_` 前缀名）；清理测试库时一并删除核心为它建的插件数据库角色（角色属于整个 PostgreSQL 集群，留下来下一个测试装内置插件会 `plugin_db_role_conflict`）；滚动升级测试等内置插件 rollout 结束再预检；测试 API 客户端遇到 `verification_required` 用密码完成二次验证后重发；Responses WebSocket 测试按“优先级越大越先用”（2026-11-09 起）让被拒的账号先被选中；核心监听端口选在内核临时端口范围之下，避免被测试自己的出站连接占用；`next/deploy/ci/check.sh` 构建的两个测试核心改为 0.1.900/0.1.901，落在内置插件 `hostCompat`（`>=0.1.290 <0.2.0`）里。
 - 发布流水线：核心与网关改由 GitHub Actions（`.github/workflows/next-release.yml`）按 `core-v*`、`gateway-v*` tag 构建 linux/amd64 与 linux/arm64、在受保护环境 `release` 里签名、先草稿后发布 GitHub Release；网关另推多架构镜像 `ghcr.io/<owner>/sup2api-gateway`。`sub2api-release` 新增 `pack --platform`（多平台一个清单）、`pack-gateway`、`mirror`、`pubkey`；删除 `deploy/gateway/github/prepare-assets.py`。
 - 版本检测与一键更新（网关与核心同版发布；契约 CONTRACTS §102）：网关从更新源检测核心与网关两条线的新稳定版，控制台“版本与更新”面板分两条线显示，管理员点“一键更新”后导入验签过的发布、预检并建升级计划，从不自动升级。更新源在“设置 → 在线更新”：GitHub 仓库（默认 `Sub2API-Devs/sup2api`，私有仓库可填只读令牌）或带 `releases.json` 索引的 HTTPS 目录（可选 Bearer 密钥）；密钥只在把来源标为私有后填写，只写不读，用 `SUB2API_MASTER_KEY` 加密保存，只发给 `api.github.com` 或该目录的源站。网关一键更新用新计划策略 `gateway-rolling-v1`（逐个节点换网关二进制，核心不变；单节点约 10 秒中断，需确认），可回滚（`gateway-rollback-v1`）。
   - 接口：新增 `POST /system/updates/apply`（`system:update:execute` + 二次验证）；`PUT /system/update-source` 改为整体替换 `{enabled, kind, repository, url, secret?}`；`GET /system/update-check` 返回 `core`、`gateway` 两条线。删除 `POST /system/releases/import` 与审计 `system.release.import`，新增审计 `system.update.apply`。只认 `core-v*`、`gateway-v*` tag 的 Release，不再读 `v*` tag 的 `releases/latest`。
   - 网关 schema（启动时幂等追加，无核心迁移）：`updater.clusters` 加检测开关（默认打开）、来源类型、URL、加密密钥列，原来表示“关闭”的空 `update_repository` 改成默认仓库，所以换上本版网关后所有集群都开始检测，不想检测要在设置里关掉；新表 `updater.update_checks`；`updater.nodes` 加 `gateway_version`、`self_update`；`updater.releases` 加 `line`、`source_assets`、`source_revision`。
   - 网关：新子命令 `sub2api-gateway version`；新配置 `allow_private_update_sources`（`url` 来源允许内网地址）；已安装的网关放在 `<root>/gateway/<版本>/`，`<root>/gateway/current` 指定启动哪一版。第一次换上本版网关仍按镜像手动换；之后各节点都报告版本并能自更新时才出现网关的一键更新。`release_origin` 与 `import -manifest` 保留给离线发布。
+
+**发布**：两条线互不依赖，顺序不限。核心 0.1.291 没有迁移，可以在外壳 0.1.134 下走 `rolling-v1`；外壳 0.1.134 照常发 `graceful`、传令牌文件。网关 0.1.135 按部署记录逐个节点更换，它照常驱动核心 0.1.290（外壳不检查 `capabilities`，多出的字段忽略）；换外壳期间 0.1.134 重启时会把空的 `cpu_percent` 加回来，之后的 0.1.135 启动时再删掉，都不影响服务。
 
 ## 2026-11-17
 
@@ -24,9 +38,9 @@
 - 发布前在 11-16 22:10 的生产副本上完整演练（迁移 0.8 秒、0102 重跑不变、全套冒烟通过）。部署细节见 OVH 部署记录。
 
 
-一个发布单元，从线上 0.1.288（schema 0098）直接升级，四个迁移在同一次升级里依次执行。插件权限这部分开发时按 0.1.289 规划，**0.1.289 没有单独发布**。全部内置插件的 `hostCompat` 都是 `>=0.1.290 <0.2.0`；清单检查不再按用到的功能核对 `hostCompat`/`hostUICompat` 的核心下限，SDK 也不再为旧核心降级或报 `Unimplemented`（0.1.290 之前的核心不会与它同时运行）。步骤见 `next/deploy/rollback/0.1.290-release.md`。
+一个发布单元，从线上 0.1.288（schema 0098）直接升级，四个迁移在同一次升级里依次执行。插件权限这部分开发时按 0.1.289 规划，**0.1.289 没有单独发布**。全部内置插件的 `hostCompat` 都是 `>=0.1.290 <0.2.0`；清单检查不再按用到的功能核对 `hostCompat`/`hostUICompat` 的核心下限，SDK 也不再为旧核心降级或报 `Unimplemented`（0.1.290 之前的核心不会与它同时运行）。步骤见当时的发布手册（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-release.md`）。
 
-**发布**：单向，停服。发布前在生产副本上演练，用 `0.1.290-effective-permissions.sql` 逐个用户比较升级前后的有效权限，结果必须完全相同。托管部署在建升级计划**之前**备份整个数据库，然后建 `primary-first-v1` 计划：各从节点先把入口转发到主节点再停掉核心，主节点最后进入维护（停服从这里开始）、停掉旧核心，带迁移许可启动新版本，执行 0099–0102 并恢复服务（停服到这里结束），最后从节点启动新版本。计划从停从节点到迁移之间不停顿，备份之后、维护开始之前的写入在回退时会丢失。非托管部署先停掉全部节点（顺序不限），再备份，然后启动一个节点执行迁移，再启动其余节点。上一版签发的登录全部作废，所有人重新登录。事务级 advisory 锁的 id 全部换了（见下文“数据库访问改用 GORM”），新旧核心同时运行时彼此不互斥，所以只能停服升级：0.1.288 与 0.1.290 的核心任何时候都不能同时连着同一个库。
+**发布**：单向，停服。发布前在生产副本上演练，用当时的 `0.1.290-effective-permissions.sql`（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-effective-permissions.sql`）逐个用户比较升级前后的有效权限，结果必须完全相同。托管部署在建升级计划**之前**备份整个数据库，然后建 `primary-first-v1` 计划：各从节点先把入口转发到主节点再停掉核心，主节点最后进入维护（停服从这里开始）、停掉旧核心，带迁移许可启动新版本，执行 0099–0102 并恢复服务（停服到这里结束），最后从节点启动新版本。计划从停从节点到迁移之间不停顿，备份之后、维护开始之前的写入在回退时会丢失。非托管部署先停掉全部节点（顺序不限），再备份，然后启动一个节点执行迁移，再启动其余节点。上一版签发的登录全部作废，所有人重新登录。事务级 advisory 锁的 id 全部换了（见下文“数据库访问改用 GORM”），新旧核心同时运行时彼此不互斥，所以只能停服升级：0.1.288 与 0.1.290 的核心任何时候都不能同时连着同一个库。
 
 **升级停在中途**（例如 0100 因为多个超管被拒，此时 0099 已提交）：托管部署里 0.1.288 和 0.1.290 都不在这个库上提供服务，集群停在维护状态；按报错修复数据后，用同一个计划继续（`sub2api-gateway resume`），或者从备份恢复。
 
@@ -76,7 +90,7 @@
 - **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 400 `invalid_argument`（字段错误码 `unknown_scope`）；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
 - **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。`sub2api admin` 只在已迁移到本版本 schema 的库上执行；0100 因多个超管停止时，用 0.1.288 的 `sub2api admin recover-superadmin` 保留一个。
 
-迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。应用过任何发布前构建的 0099、0100 或 0101 的开发、预发库都要重建，或恢复到 0098 的备份后再升级。
+迁移前的自检、迁移后的核对 SQL 见当时的 `0.1.290-casbin-down.md`（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-casbin-down.md`）。应用过任何发布前构建的 0099、0100 或 0101 的开发、预发库都要重建，或恢复到 0098 的备份后再升级。
 
 #### 控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101）
 
@@ -93,7 +107,7 @@
 - **单机部署的 Valkey 开启 AOF**（`deploy/single`，`--appendonly yes --appendfsync everysec`，新数据卷 `redisdata`）：会话只在 Valkey，没有持久化时 Valkey 一重启所有人被登出且没有告警。从 valkey 换到 redis 镜像时先删掉这个卷。
 - **可用性修正**：Valkey 内存满拒绝写入时，续期失败不再让已经通过鉴权的请求 503；请求恰好落在“撤销其他会话/改自己的密码”中间时，不再把刚保留的当前会话删掉；节点漏收“重新启用用户”的广播时，不再删掉重新启用后的新登录。
 
-会话部分的说明见 `next/deploy/rollback/0.1.290-session-down.md`。
+会话部分的说明见当时的 `0.1.290-session-down.md`（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-session-down.md`）。
 
 #### 数据库访问改用 GORM
 
@@ -129,7 +143,7 @@
   - **保留**：`plugin_key = 'ccgateway'` 的账号（线上 104 个，都已软删除）及它们的分组关系、使用记录、余额流水和审计日志；插件的执行记录、历史与出口日志（卸载任何插件都保留）。账号在控制台显示为插件已卸载，需要时由管理员删除；使用记录照常读出。
 - **不能再安装**：`ccgateway` 列入已删除插件键，任何来源、任何签名的包都装不上（403 `plugin_key_reserved`）；官方签名的 0.1.133 包的 `hostCompat` 覆盖 0.1.290，没有这一条就能装回来，但核心一侧已经没有它需要的部分。
 - **插件包上限**：从 1 GiB（压缩）/ 2 GiB（解包）降到 64 MiB / 256 MiB（另限 2000 个文件），约为现在最大的内置插件包（moderation，压缩约 16 MiB、解包约 45 MiB）的 4 倍；核心（`SUB2API_PLUGIN_MAX_PACKAGE_BYTES` 的默认值）、网关外壳（`plugin_max_bytes` 的默认值）与打包工具共用 `runtime-contract` 里的同一组常量。包下载、经外壳的传输与外壳从其他节点拉包的超时从 30 分钟降到 10 分钟（`runtime-contract` 的 `PluginPackageTransferTimeout`）。
-- **发布前**：在生产副本上执行 `next/deploy/rollback/0.1.290-release.md` 的只读核对，记下各项行数。**发布后**（需要用户同意）：停止并删除 ovh 上的 `ccg-controller`、`ccg-guard`、`ccg-state`、`ccg-shared-egress` 容器，步骤同一文件。
+- **发布前**：在生产副本上执行发布手册（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-release.md`）的只读核对，记下各项行数。**发布后**（需要用户同意）：停止并删除 ovh 上的 `ccg-controller`、`ccg-guard`、`ccg-state`、`ccg-shared-egress` 容器，步骤同一文件。
 
 #### 删除旧版本兼容
 

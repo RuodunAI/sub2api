@@ -115,7 +115,7 @@
 
 插件权限（2026-11-15 0.1.290，设计 `docs/plugin-permissions/`；manifest 字段见 §5.8 与 §21.0“插件资源范围”）：
 
-- **目录字段**（迁移 `0099_plugin_permission_meta.sql`）：`permissions` 加 `risk`（`low`/`sensitive`/`critical`，约束 `permissions_risk_check`）、`requires`（软依赖，完整 key）、`group_key`/`group_label`/`group_sort`（插件 `permissionGroups[]`）、`scope`（插件范围声明，`resource` 为 `ResourceName()`，枚举为 `value`）、`defaults`（插件建议：角色 → 规范后缀，`""` 为全部行；只供展示和控制台“恢复插件建议”，本身不授予），`scope_type` 加宽到 `varchar(40)`（插件为 `plugin:<资源>`）。核心权限的 `risk` 由代码给出：👑 为 `critical`，🔐 为 `sensitive`，其余 `low`。0099 按旧的 `sensitive` 列回填 `risk`，0100 删除 `sensitive`（§99.2）。0099 随 0.1.290 与 0100、0101 一起发布，0.1.289 没有单独发布，回退只能从备份恢复（`deploy/rollback/0.1.290-release.md`）。
+- **目录字段**（迁移 `0099_plugin_permission_meta.sql`）：`permissions` 加 `risk`（`low`/`sensitive`/`critical`，约束 `permissions_risk_check`）、`requires`（软依赖，完整 key）、`group_key`/`group_label`/`group_sort`（插件 `permissionGroups[]`）、`scope`（插件范围声明，`resource` 为 `ResourceName()`，枚举为 `value`）、`defaults`（插件建议：角色 → 规范后缀，`""` 为全部行；只供展示和控制台“恢复插件建议”，本身不授予），`scope_type` 加宽到 `varchar(40)`（插件为 `plugin:<资源>`）。核心权限的 `risk` 由代码给出：👑 为 `critical`，🔐 为 `sensitive`，其余 `low`。0099 按旧的 `sensitive` 列回填 `risk`，0100 删除 `sensitive`（§99.2）。0099 随 0.1.290 与 0100、0101 一起发布，0.1.289 没有单独发布；发布是单向的，不能回退（§101）。
 - **风险等级**：插件 `userPermissions[].risk`（省略为 `low`，取代 `sensitive`）。`critical` 等同核心 👑：不能写 `defaults`；安装、升级同意时只有超管能把它授给角色（`CanGrantToRoles(…, risk)` 取本次授予里最高的风险，critical 对非超管 403 `permission_denied`，`details {reason: "critical", superuser: true, permissions: [本地 key]}`）；角色编辑（POST `/roles`、PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）：新增的 key 须在操作者之内，而 critical 初始只有超管持有，所以只有持有者能授出，与 👑 的委派相同（D3）；**新增** critical 插件 key 时另须二次验证 `plugin.grant`（与同意、复核确认相同，403 `verification_required`；在写入事务里消耗，被拒时什么都不写、`version` 不变，验证后重试即可；保留或撤销不需要；二审 C3）。
 - **移除（D6）**：插件新版本不再声明的 key 标 `status = 'removed'`（此前删除），授予保留但不生效（有效权限只算 `active`），`SetPluginActive` 不改 removed 行；重新声明时原样复活（状态跟随插件，授予原样回来，不套 `defaults`）。卸载插件、拒绝 consent 删掉插件行、作废 staged key 时，权限连同它的授予一起删除（`casbin_rule` 没有外键，由删除方显式清理，§99.1），以后同 key 再登记不会继承旧授予。角色写入（PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）列出角色已持有的 removed key 时保留、不列出即删除（编辑器可以取消勾选，§15.7），未持有的 removed key 忽略、从不写入；POST `/roles/:id/reset` 保留 removed 核心授予。待复核授予、`GrantPluginPermission` 跳过 removed。标记 removed 和复活各写一条系统审计 `authz.sync.remove` / `authz.sync.revive`（目标是插件，`detail {keys, holders: {key: [角色]}}`）。key 的范围声明改变时，新声明不再接受的范围授予删除（`authz.sync.revoke`，`detail {via: "scope_changed", key}`）；暂存升级（另一版本仍在运行）的同意不裁剪：新旧都声明的 key 的范围（`scope_type`、`scope`）与 `defaults` 沿用运行版本，风险取两者较高的（旧格式清单读不出风险，不因此降级），其余元数据取新版本；只有新版本声明的 key 建成 `status = 'staged'`（不生效，`SetPluginActive` 停用、启用都不碰它，所以停用再启用运行版本不会打开它），新版本重新声明的 removed key 不复活、范围授予也不裁剪（`PermissionDef.Staged`）；到激活时才按被激活版本的声明裁剪、标记 removed、复活与启用，它声明的 staged key 随插件状态启用、保留同意时的授予，不声明的 staged key 原样不动。staged key 不出现在任何编辑入口：GET `/permissions`、GET `/permissions/plugins/:plugin`（`module` 与各角色的 `permission_keys`）、角色对象的 `permission_keys` 都不列出，授予视图（`RolesPermissions`：covers、`editDenial`、`PluginGrantees`）不计；角色写入（POST `/roles`、PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）列出它 400 `permission_keys` `unknown`，也不删除它已有的授予（那是其版本同意时结算的）；只有安装审查 `review` 照常把它显示为新 key（二审 logic #4、N3；此前同意时就复活、新 key 直接 active，升级放弃后一直如此）。卸载仍删除权限与授予（D5）。
 - **新建权限的角色授予**：新登记的插件权限按同意时结算的计划授予（`install.planRoleGrants`，每条 `authz.sync.grant`，`detail.via = default`）：manifest `userPermissions[].defaults`（`{内置角色: true | [范围]}`，角色限 `manifest.BuiltinRoleKeys` 即 `admin`、`operator`、`supplier`、`user`；**省略即不授予任何角色**，此前 `defaultRoles` 省略时为 `admin`；超管角色本来拥有全部权限，不写入），同意请求的 `new_permission_roles` 覆盖（§5.7），以及 `inheritFrom` 所列旧 key 此刻的持有者（改名、拆分不丢授权；带范围的授予只在新旧 key 的 `scope_type` 相同、且新声明接受这个范围（own 仍允许、值仍在 values 里）时保留，critical 只从 critical 继承，跳过的来源记在审计 `inherit_skipped`，`reason` 为 `scope_type`、`scope` 或 `risk`）。目录里已有某个 `inheritFrom` 旧 key（含 removed）时视为改名或拆分，只继承、不套 `defaults`。同意请求的 `new_permission_roles` 列出某个本地 key 时对继承同样生效（二审 C2）：同意者能指定的角色以覆盖为准（缺省或 `[]` 即不授予，继承来的也不授予），不能指定的角色上的继承照常挂起；清单检查要求 `inheritFrom` 只指向本清单已不再声明的 key（否则 `invalid_value`，仍声明的 key 的持有者会无声地多拿到新权限），旧 key 的风险在同意时按目录判。继承在同意时一次算好，`SyncPlugin` 自己不再继承；激活时才新建的权限（同意之后才出现的）不授予任何角色。暂存升级在同意之后、激活之前旧 key 新增的持有者，激活时不自动授予（没有人同意过），记入系统审计 `plugin.role_grants.carry`（`detail {version, pending: [RoleGrant]}`，同意计划过的、同意覆盖了的本地 key 与角色已持有的除外），进 `role_grants_to_review` 待复核（二审 logic #5，此前激活后静默失权）。只有本次激活才停用的旧 key（激活前不是 removed）才补录：此前某次激活已经停用的旧 key 不再补录，所以后续版本保留 `inheritFrom` 也不会把有意撤销、拒绝过的继承授予重新提出来（二审 N1）。“同意计划过的”读该版本最新 `plugin.consent` 审计的 `role_grants`（同意计划的全部授予，含挂起的），每种同意（操作者、上传沿用、系统）都写（二审 N2；此前沿用与系统同意只写在 `plugin.consent.auto` 里，读回为空）。
@@ -1104,7 +1104,7 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 - **匹配**：`PermissionSet.Has(k)` = 持有的某个模式蕴含 k，所以只持有 `account:read:own` 时 `Has("account:read")` 为 false（“全量才能做”的判断保持全量语义）；`HasAction(a)` = 持有 a 的任意范围。路由 `Router.PermScoped(method, path, h, actions...)` 要求任一动作的任意范围，并把每个动作的 `core.DataScope` 放进 ctx（`core.Scope(ctx, az, action)` 取用）；全部范围的动作也记入 `Granted`。
 - **数据范围**：`core.DataScope{All, Owner, Groups, IDs, PairG, PairID}` 由用户在该动作上的全部模式编译（`Compile`），谓词 `core.AccountRows()` / `core.ProxyRows()` 的 `Cond()` / `Args(scope)`：文本固定，id 只是数组参数；列名是 `core.ScopeTable` 的未导出字段，只有这两个函数能设，别的包改不了条件的文本；分组成员关系实时读 `account_groups`（任一分组匹配即在范围内），不进缓存。
 - **存储**：`permissions.scope_type`（`''`/`account`/`proxy`）；授予是 `casbin_rule` 的 p 行（§99.1）：全部范围的范围列为 `*`，带范围的为规范后缀（0.1.290 之前分别在 `role_permissions` 与 `role_permission_scopes`，迁移 0100 转换后删除）。已移除、已停用的权限的授予保留，只是不生效。访问密钥仍是 `text[]`，存规范 key。
-- **迁移 `0097_authz_hardening.sql`**（0.1.286，停服发布，单事务，见 DESIGN-2026-11-12-AUTHZ-HARDENING 发布说明）：建表加列；每个旧 own 授予改写为 `(动作, 'own')`，角色已持有对应全量 key 时只记审计（`redundant: true`）；访问密钥里的旧写法换成 `<动作>:own`（`role:manage` 换成 `role:define` + `role:assign`）；然后删除旧 key 的 permission 行。审计 `authz.grant.migrate`（`via: migration 0097`、`from`、`key`、`redundant`）、`user.access_key.migrate`（before/after）；有写入才推进 authz 版本；可重复执行。`GET /permissions` 每项带 `scope_type`；`GET /me` 只输出规范 key。回滚脚本 `deploy/rollback/0.1.286-authz-down.sql` 把 own 范围与审计里的冗余授予改回旧 key、分组与 id 范围删除（写审计）。
+- **迁移 `0097_authz_hardening.sql`**（0.1.286，停服发布，单事务，见 DESIGN-2026-11-12-AUTHZ-HARDENING 发布说明）：建表加列；每个旧 own 授予改写为 `(动作, 'own')`，角色已持有对应全量 key 时只记审计（`redundant: true`）；访问密钥里的旧写法换成 `<动作>:own`（`role:manage` 换成 `role:define` + `role:assign`）；然后删除旧 key 的 permission 行。审计 `authz.grant.migrate`（`via: migration 0097`、`from`、`key`、`redundant`）、`user.access_key.migrate`（before/after）；有写入才推进 authz 版本；可重复执行。`GET /permissions` 每项带 `scope_type`；`GET /me` 只输出规范 key。当时的回滚脚本 `0.1.286-authz-down.sql`（0.1.290 起不再适用，已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.286-authz-down.sql`）把 own 范围与审计里的冗余授予改回旧 key、分组与 id 范围删除（写审计）。
 - **访问密钥取交集**：创建/修改时每个 key 须被用户蕴含；运行时 `Restrict` 逐模式取较窄者（存量不带后缀的 key 遇到只有 own 的用户收窄为 own），不可比（如 `group/12` 与 `own`）丢弃。
 - **内置角色默认**：supplier = 8 个 `…:own` + `usage:self:read`（2026-11-13）；operator 去掉冗余 own key，加 `account:credential:view:own`。
 - **账号（期 4 R3）**：列表、详情、写、删、测试、凭证、统计、汇总、动作、`AccountsInScope`（插件账号路由与宿主 RPC）都按调用者在对应动作上的范围过滤，越权一律 404。`mine=true`、`created_by=<id>` 在范围内再收窄（此前 own 级忽略 `created_by`）。受限档（范围不是全部）沿用 own 级的全部限制（并发默认与上限、管理员锁、受限设置、relay、绑定分组）。
@@ -2429,7 +2429,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 受管核心被外壳排空时不等 `SUB2API_SHUTDOWN_DELAY`（外壳已经不再往这个核心送新请求）。进行中的请求等不等，由外壳的排空请求决定（2026-11-08 修订，取代 2026-10-28 的“一律立即取消”）：
 - **已导流的排空**：外壳此时把本节点公网入口的新请求转发给就绪对端（路由 `forward-only` 且对端就绪，`proxy.Router.Diverted()`，即从节点 `redirect` 之后的 `stop`、恢复流程里先转发再停的情形），`DrainRequest.graceful=true`。核心关闸拒新、让在途请求跑完再报 `DrainComplete`，等待上限取外壳截止时间减 15 秒与 5 分钟（`maxDrainGrace`）的较小者，到点仍未结束的才取消。导流后多等只影响这个节点的停止时长，不影响任何新请求。
 - **其他排空**（主节点 `maintenance` 后的 `stop`、候选重启、身份撤销）没有人承接流量，进行中的请求立即取消，和原来一样。
-- 兼容：核心在 `Hello.capabilities` 列出 `drain.graceful`；0.1.288 时的外壳只对声明了它的核心发 `graceful`（控制请求拒绝未知字段），0.1.290 起的外壳只运行 0.1.290 及以后的核心，不再检查。核心收到没有该字段的请求立即取消。被取消的请求照常写用量、结算或退还预扣：处理器结束后才关闭用量队列，账不会丢。SIGTERM 仍按上一段执行。
+- 被取消的请求照常写用量、结算或退还预扣：处理器结束后才关闭用量队列，账不会丢。SIGTERM 仍按上一段执行。
 
 核心没有准入看门狗（2026-11-08 起）。PG 的 `updater.node_admissions` 只在外壳向核心发 `/v1/admission` 时核对一次（`verifyAdmission`）；之后停核心只由外壳发起，撤销准入的每条路（升级 `stop` 步骤、禁用节点、身份撤销）都由外壳直接向核心发排空，不依赖核心自己发现；外壳死了，Caddy 的 `/readyz` 把流量切走。历史：此前核心每秒查一次该行、1 秒超时、失败一次就停内核且不留日志，2026-11-08 使 sup2api-ccp 一天自停 16 次（见 `deploy/gateway/clicodeplus/README.md`）；同日先改为只报告不自停，随后按用户决定整个去掉（连同它的专用连接 `store.OpenSingle` 与 `verifyLiveAdmission`）。外壳侧同日补齐：`Work`/`Coordinate` 的错误不再丢弃（同一错误 5 分钟记一次 WARN，恢复记 INFO），`Work` 因本机核心不就绪而走 `Recover` 重拉时记 WARN 并带核心的 mode、boot 与 blockers。
 
@@ -2627,7 +2627,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 - 仍共用现有 PG/Redis，不拆数据库。PG 保存批准版本、计划、步骤、节点启禁与启动身份、准入、停止确认和事件；`mode/ready/stopped/core_boot_id/release_digest/route_revision/offloading` 仍为安全控制快照，只有变化时更新节点行。CPU 转移授权仍先持久标记再转流，Redis 心跳过期绝不是停止证明。
 - 网关节点心跳、CPU 和当前错误观察写入 Redis，key 为 `updater:telemetry:<sha256(cluster_id\x00node_id\x00shell_boot_id)>`，最长有效期 20 秒。写前获取 Redis TIME 形成固定截止时间，并扣除本地单调时钟测得的 PG 等待及请求耗时；Lua 拒绝过期和迟到序号，只设置剩余 TTL，拒绝结果返回错误以阻止陈旧 CPU 决策。读取通过 Lua 原子取得 GET/PTTL，折算为读取节点本地单调时间，不比较不同主机壁钟。报告须与 PG 当前启动身份及全部控制快照匹配；不匹配、缺失、过期或 Redis 不可用时，`last_seen` 为零时间、CPU 为 NULL，不以旧 PG 快照冒充新鲜状态。节点不会因丢失遥测直接重启或排空。
-- 网关 schema 增加 `telemetry_boot_id`，与当前 `shell_boot_id` 相等才启用 Redis 新鲜度；注册后还没报告过的 boot 用注册写下的 PG 心跳。稳态遥测不改写 PG 行；PG 身份与控制状态检查仍然存在，不声称不再访问 PG。0.1.290 起的外壳不再为没有遥测的旧外壳刷新 PG 心跳和 `cpu_percent`（该列不再写入，§101）。
+- 网关 schema 增加 `telemetry_boot_id`，与当前 `shell_boot_id` 相等才启用 Redis 新鲜度；注册后还没报告过的 boot 用注册写下的 PG 心跳。稳态遥测不改写 PG 行；PG 身份与控制状态检查仍然存在，不声称不再访问 PG。0.1.290 起的外壳不再为没有遥测的旧外壳刷新 PG 心跳；`updater.nodes.cpu_percent` 只有 0.1.134 之前的外壳读写，之后的外壳 schema 删除了它（§101.3）。
 - `updater:wakeup:<cluster_id>` Pub/Sub 仅发送提交后的唤醒提示，不承载可执行命令或可靠事件。计划创建、操作、启禁及升级状态变更在 PG 提交后通知；节点步骤完成先提交结果并刷新状态，再通知。通知丢失依靠轮询补查（有 running/paused 计划时 1 秒，空闲 30 秒，2026-11-08 起见 §82.4），重复通知合并，不重放已完成步骤；Redis 断连恢复后重新订阅。
 - 每轮最多连续推进 16 次，每次重新取得 Redis 执行锁并读取 PG，空提交不算进展；提示驱动的外循环有 50 ms 让出，避免内部自激忙循环。独立 3 秒心跳在长下载或排空时继续运行。PG 事务内的计划与准入校验、租约丢失取消语义不变。
 - 此变化属于网关二进制，单发核心安装包不会生效；需在无 running/paused 核心计划时逐个更换网关，从节点先、主节点最后，保留状态卷与旧镜像。核心版本无需仅为此变更而升级。控制台仍按既有轮询周期刷新，本次不新增浏览器推送。
@@ -3560,7 +3560,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - **核心**：读完配置后从进程环境删除秘密（`DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、引导管理员密码、控制令牌等，并清空 `/proc/<pid>/environ` 的初始块），Linux 上 `PR_SET_DUMPABLE=0`。外壳同样 `PR_SET_DUMPABLE=0`。
 - **出站隧道**：没有 `net` 授权的插件什么都连不了，只有声明了 `database` 且获授 `db.schema` 的插件可按配置的名字连 PostgreSQL。任何策略（含 `allow_all`）都拒绝私网/回环/链路本地等非公网地址与核心的 Redis/PostgreSQL（按解析后的地址比对，按检查过的地址拨号防 DNS 重绑定）；`dns.sub2api` 不返回非公网地址。`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true` 只用于测试/开发，Redis/PG 仍拒绝。没有 `net` 也没有数据库的插件不注册隧道服务。
 - **数据库角色隔离不再降级**：开启隔离（默认）但核心角色没有 CREATEROLE 时，授予 `db.schema` 与 `Ensure` 都失败，`409 plugin_db_isolation_unavailable`（运维可显式 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false`）；已存在且不是本库为该插件建的同名角色不接管，`409 plugin_db_role_conflict`。角色加注释 `sub2api plugin role; database=<库>; plugin=<key>` 作归属标记，删除插件时只删自己的角色。
-- **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；未设置该变量时不带（兼容旧外壳）。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
+- **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；托管核心（`SUB2API_MANAGED=true`）没有这个变量、文件读不到或内容不是 64 位十六进制时启动失败，非托管核心不读它。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
 - **核心环境白名单**：外壳只把进程基础变量与核心实际读取的配置变量（`supervisor.inheritedEnv`）传给核心，另加 `core_env_inherit` 列出的名字；`SUB2API_PEER_AUTH_KEY` 无论如何不传。
 - **部署**：Redis/Valkey 必须 `requirepass`，`REDIS_URL` 带密码（建议十六进制密码免转义）；网关容器 `no-new-privileges`、`cap_drop: [ALL]`。迁移顺序见 `deploy/gateway/ovh/README.md`。
 
@@ -5784,8 +5784,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 ### 82.1 策略选择
 
 - 签名工具按是否改库签策略：`schema_before == schema_after` 签 `rolling`，否则 `maintenance`（此前一律 `maintenance`）。
-- 节点登记新增能力标记 `updater.nodes.rolling`（本版本网关为 true，旧网关为 false，schema 幂等加列）。
-- 预检（`POST /system/upgrades/preflight`）返回 `strategy`：目标清单签 `rolling` 且不改库、全部启用节点都是 rolling 网关、且至少两个启用节点本地就绪 → `rolling-v1`；否则仍是 `primary-first-v1`。计划创建时把预检选出的策略写入 `updater.upgrades.strategy`，首条事件说明是哪种。
+- 节点登记新增能力标记 `updater.nodes.rolling`（本版本网关为 true，旧网关为 false，schema 幂等加列；0.1.135 起预检不再看它，见 §101.3）。
+- 预检（`POST /system/upgrades/preflight`）返回 `strategy`：目标清单签 `rolling` 且不改库、全部启用节点都是 rolling 网关（0.1.135 起不再检查）、且至少两个启用节点本地就绪 → `rolling-v1`；否则仍是 `primary-first-v1`。计划创建时把预检选出的策略写入 `updater.upgrades.strategy`，首条事件说明是哪种。
 - 回退（`rollback`）生成的恢复计划同样选策略，但只要求至少一个节点本地就绪：被打断计划停掉的成员让不出流量也没有流量可让，直接在基线上重启，然后承接另一个节点。
 - 两种策略的步骤、恢复、暂停/继续、准入校验（`admissionAllowed`、`planAuthorizesTx`）都接受；（0.1.290 起不再识别 `legacy-rolling` 等旧策略：唯一索引保证同时最多一个未结束的计划，0.1.290 本身的计划完成之后才换外壳，那时不会有旧策略的计划未结束，§101）。
 
@@ -7217,7 +7217,7 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 
 - 单事务：`lock_timeout` 10 s，先锁 `authz_meta` 行（与所有授权写入同序）；库里有 key 为 `_self` 的角色、key 为 `*` 的权限、`super_admin` 以外的超管角色，或 `user_roles` 里超管角色的持有者多于一个（已软删除的也算，它的行同样会转换）时报错停止升级，错误与 HINT 说明怎样改（多个超管：只列 user id，HINT 指向 0.1.288 的 `sub2api admin recover-superadmin`，这时库还是它的角色表，`TestCasbinRuleSeveralSuperAdmins`）；迁移失败时 HINT 跟在错误后面进启动日志（`store.Migrate`）；加上 §99.1 的检查约束；建表与索引；把旧表转成行（`UNION` 去掉两种方式都持有的授予）；删除 `user_roles`、`role_permission_scopes`、`role_permissions` 与 0097 的 `user_roles_one_superuser()`，以及 0099 的 `risk` 取代了的 `permissions.sensitive`；加 `authz_meta.policy_version`（§99.4）与 `roles.revision`（§5.2“并发写入”）两列；升 authz 版本与策略版本。
 - 可重跑：表、索引、约束都 `IF NOT EXISTS` 或跳过已有的，转换只在旧表还在时执行（`TestCasbinRuleMigration`：转换结果、旧表、函数与 `sensitive` 列已删、版本只升一次、重跑不变、一人超管索引生效）。0026 起迁移可重跑的规则（§43.7）对 0100 之前的迁移按 0100 之前的 schema 验证：0100 删掉了它们写的表和列，而每个迁移与它的记录同一事务提交，0100 之后不会再跑到它们（`TestMigrationsFromFirstIdempotentRunTwice`）。
-- **单向**，发布必须停服，迁移开始前不能有旧核心在运行：托管部署在建升级计划之前备份数据库，`primary-first-v1` 先把从节点转发到主节点并停掉，主节点最后进入维护、停机，再迁移；非托管部署先停掉全部节点（顺序不限）、备份，再启动新版本迁移。0.1.288 及更早的核心不能在这个 schema 上运行。回退只能从升级前的备份恢复（`deploy/rollback/0.1.290-release.md`、`0.1.290-casbin-down.md`）。跑过 0099–0101 任何发布前版本的开发库、预发库，新版本拒绝启动（校验和不同）：重建，或恢复到 0098 的备份再升级。
+- **单向**，发布必须停服，迁移开始前不能有旧核心在运行：托管部署在建升级计划之前备份数据库，`primary-first-v1` 先把从节点转发到主节点并停掉，主节点最后进入维护、停机，再迁移；非托管部署先停掉全部节点（顺序不限）、备份，再启动新版本迁移。0.1.288 及更早的核心不能在这个 schema 上运行。回退只能从升级前的备份恢复，上线后备份已删除，不能再回退（§101）。跑过 0099–0101 任何发布前版本的开发库、预发库，新版本拒绝启动（校验和不同）：重建，或恢复到 0098 的备份再升级。
 - 停在 0100 之前的库（0100 因多个超管被拒，0099 已提交）：0.1.290 的 `sub2api admin` 只接受迁移完整的库（§43.6），用 0.1.288 的同一命令保留一个超管（0.1.288 能在 0099 的库上运行，0099 只加列），再继续升级。
 
 ### 99.3 判断（`internal/authz/casbinx`）
@@ -7251,8 +7251,7 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 
 ### 99.5 回滚
 
-- 迁移 0100 单向，没有运行时开关，也没有反向脚本（`deploy/rollback/0.1.290-casbin-down.sql` 只报错说明这一点，什么也不改）。回到 0.1.288 的唯一途径是从升级前的备份恢复；Valkey 里没有授权的键，不用清理；升级之后写入的授予、指派会丢失。托管部署本来就不能跨 schema 回退（网关拒绝），出问题修复前进。
-- 发布顺序、备份与回退见 `deploy/rollback/0.1.290-release.md`（0099–0101 一个发布单元，从 0.1.288 升级），0100 的自检与核对 SQL 见 `deploy/rollback/0.1.290-casbin-down.md`。
+- 迁移 0100 单向，没有运行时开关，也没有反向脚本。回到 0.1.288 的唯一途径曾是升级前的备份，它在 0.1.290 上线后已删除，所以不能再回退（§101）；托管部署本来就不能跨 schema 回退（网关拒绝），出问题修复前进（下一个核心版本，新迁移接在 0102 之后）。
 
 ### 99.6 禁止事项
 
@@ -7264,7 +7263,7 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 
 ### 99.7 实现位置
 
-- 迁移：`server/internal/migrations/0100_casbin_rule.sql`；发布与回退说明 `deploy/rollback/0.1.290-casbin-down.md`（`.sql` 只报错）
+- 迁移：`server/internal/migrations/0100_casbin_rule.sql`
 - 存储：`server/internal/authz/casbinrule/`（映射、全部读写语句、`Filter`、`RenameRoleSQL`）；模型 `server/internal/store/model/casbin_rule.gen.go`
 - 判断：`server/internal/authz/casbinx/`（`api.go` 接口、`model.go`（模型、每个 enforcer 自己的 matcher、`newEnforcer`）、`engine.go`（装入、按版本应用变更、等待、`Enforce`/`Permissions`）、`decisions.go`（按用户分组的决策缓存）、`loader.go`）；`core.PermissionSet.Decided`（`core/ports_identity.go`）
 - 接入：`server/internal/authz/service.go`（`Can`、`PermissionSet`、`invalidate`）、`grants.go`（含 `ClearScopeGrants`）、`roles.go`、`sync.go`、`plugin_catalog.go`、`superadmin.go`；`server/internal/core/scope_refs.go`（只有行的种类与 `ScopeGrantClearer`）；`server/internal/iam/users.go`、`superadmin.go`
@@ -7344,10 +7343,10 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 
 ### 100.7 发布与回退
 
-- 单向发布，必须停服：新版本启动前旧核心全部停止（网关托管的升级计划 `primary-first-v1` 本身先停从节点、主节点最后停机后迁移，满足要求，备份在建计划之前做；非托管部署手动全停再备份）。旧节点读写被删的表，不能与新节点混跑。完整步骤见 `deploy/rollback/0.1.290-release.md`。
+- 单向发布，必须停服：新版本启动前旧核心全部停止（网关托管的升级计划 `primary-first-v1` 本身先停从节点、主节点最后停机后迁移，满足要求，备份在建计划之前做；非托管部署手动全停再备份）。旧节点读写被删的表，不能与新节点混跑。
 - 所有人重新登录：上一版的 JWT 与 refresh token 全部作废，控制台下一次请求 401，回到登录页。
-- 没有反向脚本：回退只能从发布前的数据库备份恢复，并且连同网关外壳一起回到 0.1.288 时的版本（外壳镜像、compose 与 `.env`，`SUB2API_JWT_SECRET` 用原值），步骤见 `deploy/rollback/0.1.290-release.md`。
-- 网关外壳：升级计划在现有外壳（运行 0.1.288 的那一版）下执行，计划完成后再换上本次构建的外壳。新外壳只传核心读取的变量（`allowlist_test.go`：核心不读的 `SUB2API_` 名字报错），不再传 JWT 的三个变量，所以不运行 0.1.290 之前的核心；从备份回退时外壳也回到原来的版本。
+- 没有反向脚本，不能回退：发布前的数据库备份在上线后已删除（§101）。
+- 网关外壳：升级计划在现有外壳（运行 0.1.288 的那一版）下执行，计划完成后再换上本次构建的外壳。新外壳只传核心读取的变量（`allowlist_test.go`：核心不读的 `SUB2API_` 名字报错），不再传 JWT 的三个变量，所以不运行 0.1.290 之前的核心。
 
 ### 100.8 控制台
 
@@ -7370,7 +7369,7 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 
 ## 101. 删除旧版本兼容（核心 0.1.290）
 
-0.1.290 单向、停服发布：迁移前旧核心全部停止，之后不会有更早的核心、网关外壳或插件宿主和它同时运行；回退只能恢复备份并把核心、外壳一起退回 0.1.288（CHANGELOG 0.1.290）。所以只为与旧版本混跑而保留的代码一并删除。本文前面各节里“旧核心”“滚动窗口内的旧核心”“回滚到旧核心”的兼容说明是当时那次发布的记录，0.1.290 起不再适用。外部协议、客户端、上游与浏览器的兼容不在此列。
+0.1.290 单向、停服发布：迁移前旧核心全部停止，之后不会有更早的核心、网关外壳或插件宿主和它同时运行。2026-11-17 上线后所有节点运行核心 0.1.290 与外壳 0.1.134，升级前的备份已删除，不能再回到 0.1.288（CHANGELOG 0.1.290）。所以只为与旧版本混跑或回退而保留的代码一并删除；只服务那次升级的手册与脚本（`deploy/rollback/0.1.290-*`：发布与回退、0100 的自检与核对、会话、有效权限导出）以及回到 0.1.285 的 `0.1.286-authz-down.md/.sql` 也已删除，原文用 `git show 91e0c26bc:next/deploy/rollback/<文件名>` 读取。本文前面各节里“旧核心”“滚动窗口内的旧核心”“回滚到旧核心”的兼容说明是当时那次发布的记录，0.1.290 起不再适用。外部协议、客户端、上游与浏览器的兼容不在此列。
 
 ### 101.1 插件 SDK 与清单检查
 
@@ -7386,10 +7385,13 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 ### 101.3 网关外壳
 
 - 升级计划只认 `primary-first-v1` 与 `rolling-v1`：`updater_one_active_upgrade` 保证每个集群最多一个 running/paused 的计划，0.1.290 的计划在原来的外壳下执行、完成后才换外壳，所以新外壳启动时不会有旧策略（`legacy-rolling`）的计划未结束。暂停旧策略计划、拒绝继续与恢复、`legacy-plan-recovery` 的代码删除。
-- 节点心跳不再为没有 Redis 遥测的旧外壳（0.1.132 之前）刷新 PG 心跳与 `updater.nodes.cpu_percent`：CPU 只在 Redis 遥测里，PG 行只在控制快照变化时（或每 `heartbeatRewrite`）写。`cpu_percent` 列保留到下一次外壳 schema 变更，0.1.288 时的外壳在换外壳期间还会读它。
+- 节点心跳不再为没有 Redis 遥测的旧外壳（0.1.132 之前）刷新 PG 心跳与 `updater.nodes.cpu_percent`：CPU 只在 Redis 遥测里，PG 行只在控制快照变化时（或每 `heartbeatRewrite`）写。`cpu_percent` 只有外壳 0.1.133 还读写，0.1.134 之后的外壳版本在 schema 里删除它（`DROP COLUMN IF EXISTS`）；0.1.134 不读这一列，换外壳期间它重启时会把空列加回来，下一个新外壳启动时再删掉。
 - 停止核心时直接按调用方的要求发 `DrainRequest.Graceful`，不再看核心是否声明 `drain.graceful`；`Hello.Has` 删除。
-- 仍为 0.1.288 时的外壳（网关 0.1.133）保留、换外壳之后删除的两处：核心在 `Hello.capabilities` 里声明 `drain.graceful`（旧外壳只在核心声明时才发 `Graceful`）；核心在没有 `SUB2API_UPDATER_TOKEN_FILE` 时不带更新令牌访问管理 socket（旧外壳没有令牌）。0.1.290 的升级计划由旧外壳驱动，计划完成后才换外壳，所以这两处要等所有节点都换成 0.1.290 的外壳之后的第一个核心版本删除。
+- 0.1.290 时为外壳 0.1.133 保留的两处，在所有节点换上外壳 0.1.134 之后的核心版本删除（CHANGELOG“未发布”）：
+  - `Hello.capabilities` 与 `drain.graceful`：0.1.133 只对声明了它的核心发 `Graceful`，0.1.134 起不看声明。`DrainRequest.Graceful` 本身保留。
+  - 不带更新令牌访问管理 socket：托管核心没有 `SUB2API_UPDATER_TOKEN_FILE`（或文件不合格）时启动失败。外壳 0.1.133 与 0.1.134 本来就总是传这个变量（配置 `management_token_file` 缺省为管理 socket 旁的 `shell.token`，每次启动先写好令牌再启动核心），0.1.290 时说“旧外壳没有令牌”是误记；外壳启动核心时也不再判断路径是否为空。非托管核心既不读令牌也不读 `UPDATER_SOCKET`：升级接口返回 503 `updater_unavailable`，插件包只存本地目录。
 - 插件变更阻塞检查不再看 `plugin_rollout_nodes` 的 `cleanup_pending`（迁移 0021 之前的开发版核心）。
+- rolling-v1 的资格不再要求每个启用节点都登记 `updater.nodes.rolling`（外壳 0.1.133 起都是 true，只有更早的外壳为 false）；外壳 0.1.135 照常写 true、不再读，这一列保留，因为换外壳期间仍在运行的 0.1.134 协调者还读它。
 
 ### 101.4 账号与任务
 
@@ -7408,7 +7410,7 @@ CCGateway（Claude Code 托管账号）与只为它服务的核心功能整体�
 - 账号生命周期契约一并删除（CCGateway 是唯一的实现者，没有别的插件声明 `lifecycle`）：
   - SDK 与清单：插件 RPC `OnAccountLifecycle` 与 `AccountLifecycleRequest/Response`、`AccountPatch`、`ModelList`、`ModelMappingValue`、`ModelLimitList`；`pluginsdk.AccountLifecycle`、能力 `account.lifecycle`；清单的 `accountTypes[].lifecycle`（准备、动作、删除保留天数）、`defaultModelsBySubscription`；`AccountProperties.auto_models`（字段 12）与 `BuildQuotaRequestResponse.runtime_operation`（字段 5）删除，字段号保留不用。扩展字段的保留名去掉 `preparation_key`、`lifecycle_sync`。
   - 核心：`core.AccountLifecycleResource`、`AccountLifecyclePlugin`、`AccountQuotaRuntime`、错误码 `too_many_drafts`；账号预备（`POST /account-types/:plugin_key/:type/preparations`、`GET|POST /account-preparations/:key/:action`、`PUT|DELETE /account-preparations/:key`）、账号动作（`GET /accounts/:id/actions`、`POST /accounts/:id/actions/:plugin_key/:action_id`）路由；`POST /accounts` 的 `preparation_key`、`auto_models`，`PATCH /accounts/:id` 的 `auto_models`，`DELETE /accounts/:id` 与批量删除的 `retain_resources`；账号视图的 `subscription_type`、`auto_models`、`lifecycle_sync`、`actions`；账号类型视图的 `lifecycle`、`default_models_by_subscription`；额度查询的 409 `runtime_not_ready`；保存前插件改账号（§59）与插件只读扩展；定时任务 `core.account.lifecycle_status`、`core.account.preparation_cleanup`。清单 `ui.accountActions`（UI 3.6）是另一套机制，保留。
-- 数据库：迁移 0102（`0102_drop_ccgateway_and_legacy.sql`）删除它的表、`accounts.status_changed_at`（及触发器）与 `accounts.rate_limit_tier`、账号生命周期的 `account_preparations`、`account_lifecycle_sync`、`accounts.subscription_type`、`accounts.auto_models` 与两个定时任务、设置 `ccgateway_remote`、它的定时任务、插件行与权限；`plugin_key = 'ccgateway'` 的账号、使用记录、账本与审计保留，账号在控制台显示为插件已卸载。0102 还从已发布的失败策略（§58）里去掉只有 CCGateway 会回的关键词：`login-invalid`、`account-on-hold` 的关键词与迁移 0072/0074 写入的完全相同（含或不含 0075 追加的那个），或重试规则 `rate-limit` 的关键词仍是原默认值时，换成现在的默认关键词（`rate-limit` 仍叫原默认名时一并改名），结果与 `loginAccountRules`、`defaultRetryRules` 相同（`server/internal/gateway` 的 `TestMigrationDropsCCGatewayKeywords` 校验，改过的规则不动也在其中）；关键词被改过的规则不动，有改动时旧策略进 `failure_policy_history`、revision +1，重跑不变。明细与发布前的只读核对见 `deploy/rollback/0.1.290-release.md`。
+- 数据库：迁移 0102（`0102_drop_ccgateway_and_legacy.sql`）删除它的表、`accounts.status_changed_at`（及触发器）与 `accounts.rate_limit_tier`、账号生命周期的 `account_preparations`、`account_lifecycle_sync`、`accounts.subscription_type`、`accounts.auto_models` 与两个定时任务、设置 `ccgateway_remote`、它的定时任务、插件行与权限；`plugin_key = 'ccgateway'` 的账号、使用记录、账本与审计保留，账号在控制台显示为插件已卸载。0102 还从已发布的失败策略（§58）里去掉只有 CCGateway 会回的关键词：`login-invalid`、`account-on-hold` 的关键词与迁移 0072/0074 写入的完全相同（含或不含 0075 追加的那个），或重试规则 `rate-limit` 的关键词仍是原默认值时，换成现在的默认关键词（`rate-limit` 仍叫原默认名时一并改名），结果与 `loginAccountRules`、`defaultRetryRules` 相同（`server/internal/gateway` 的 `TestMigrationDropsCCGatewayKeywords` 校验，改过的规则不动也在其中）；关键词被改过的规则不动，有改动时旧策略进 `failure_policy_history`、revision +1，重跑不变。发布前的只读核对与删除明细在已删除的发布手册里（§101）。
 - 插件键 `ccgateway` 记入 `plugin_key_retirements`，并列入已删除插件键（`install/reserved.go` 的 `removedKeys`）：任何来源（手动上传、内置、市场）、任何签名的包都不能安装它，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.290。官方签名的 ccgateway 0.1.133 包的 `hostCompat` 落在 0.1.290 范围内，没有这一条就能装上，但核心一侧已经没有它需要的部分。
 - 插件包大小上限从 1 GiB（压缩）/ 2 GiB（解包）降到 64 MiB / 256 MiB（另限 2000 个文件），只为 CCGateway 打包的运行时镜像而设的余量不再需要；定义在 `runtime-contract` 一处，核心、网关外壳的包存储、打包工具共用（§34“插件包分发”）。
 

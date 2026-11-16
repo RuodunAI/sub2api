@@ -24,12 +24,12 @@
 | `next/plugins/*` | 官方插件，每个是独立 Go 模块；`plugins/released.json` 记录线上版本 |
 | `next/tools/sub2api-plugin` | 插件 CLI：keygen、build、pack、sign、verify、index、`db diff/check`、`dev` |
 | `next/web` | 控制台（Vue 3 + Vite + TS + Pinia + Tailwind），`packages/` 下是共享给插件的 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` |
-| `next/deploy` | 镜像构建脚本、网关托管部署（`gateway/`）、单机栈（`single/`）、e2e 栈、发布与回退手册（`rollback/`） |
+| `next/deploy` | 镜像构建脚本、网关托管部署（`gateway/`）、单机栈（`single/`）、e2e 栈、单向发布进行中的发布与回退手册（`rollback/`，发布完成、不能再回退后删除，现在没有） |
 | `next/e2e` | 验收测试，需要部署好的栈；CI 只编译不运行 |
 | `next/protocol-codec` | 早期为 ccgateway 引入的协议转换库。`next/` 里没有模块 import 它，next CI 也不检查；但根目录旧版 `backend/` 经 `replace` 依赖它（根目录 `Dockerfile` 也复制它），所以暂不能删（CONVERT-MATRIX.md 开头）。不要在新代码里引用 |
 | `next/docs` | 契约、架构、设计稿、交接、审计记录 |
 
-CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse`、核心里的 `internal/ccgateway` 和只为它服务的 helper history、provider resources、fallback credits）已在 0.1.290 删除，只留在 Git 历史里：最后的源码是 `317b0c331`（`git show 317b0c331:next/plugins/ccgateway/manifest.json`）。迁移 0102 删掉了它的表和插件行，见 `deploy/rollback/0.1.290-release.md`。
+CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse`、核心里的 `internal/ccgateway` 和只为它服务的 helper history、provider resources、fallback credits）已在 0.1.290 删除，只留在 Git 历史里：最后的源码是 `317b0c331`（`git show 317b0c331:next/plugins/ccgateway/manifest.json`）。迁移 0102 删掉了它的表和插件行（CONTRACTS §101.5）。
 
 **仓库根目录的 `backend/`、`frontend/` 是旧版 Sub2API**（Ent ORM + Gin，前端用 pnpm），连同根目录的 `Dockerfile`、`Makefile`、`deploy/`、`docs/`、`openspec/`、`DEV_GUIDE.md` 以及 `.github/workflows/backend-ci.yml`、`release.yml`。它们只作参考保留（ARCHITECTURE §16.1）：`next/` 不引用它们，`go.work` 不包含它们，2026-11-05 导入以来没有提交改动过它们。除非用户明确要求，不要改动、不要在它们上面开发新功能。`DEV_GUIDE.md` 描述的就是这套旧代码。
 
@@ -102,7 +102,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
    - 接口、表结构、行为约定 → `next/docs/CONTRACTS.md` 对应章节（新约定加新的一节）；
    - 架构变化 → `next/docs/ARCHITECTURE.md`；
    - 用户能看到的变化、版本、迁移 → `CHANGELOG.md` 的“未发布”一节；
-   - 发布、回退步骤 → `next/deploy/rollback/` 和 `next/deploy/gateway/*/README.md` 的手册。
+   - 发布、回退步骤 → `next/deploy/rollback/`（单向发布完成、不能再回退后删除）和 `next/deploy/gateway/*/README.md` 的手册。
 4. 插件改了内容就升版本（见上文 `released.json`）；manifest 用到新核心能力时同时提高 `hostCompat` 下限。
 5. 新增 Go 模块要加进 `next/go.work`，并在 `go.mod` 里按相对路径 `replace` `next/sdk` 和 `next/runtime-contract`（CONTRACTS §2）。整理依赖用 `GOWORK=off go mod tidy`，然后 `cd next && go work sync`，提交 `go.sum`/`go.work.sum` 的变化（CI 检查它们没有未提交的改动）。
 6. Linux 专有代码用 `//go:build linux`，并提供非 Linux 的空实现。

@@ -2,7 +2,7 @@
 
 > 基于 `/home/claude/sup2api-dev` develop @ dae6ba57。下文 `path:line` 以 `next/server/internal/` 为根（另注明的除外），都是在代码里核对过的；标“推测”的是没有核实的判断。
 >
-> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。版本号也是当时的推测：这部分随 0.1.290 与 Casbin、会话一起发布，0.1.289 没有单独发布，`PluginPermissionsFirstCore`、UI 3.16 的核心下限和内置插件的 `hostCompat` 都是 0.1.290；`0.1.289-plugin-perm-down` 已删除，停在 0099 的开发库重建或恢复到 0098 的备份；线上的升级与回退见 `deploy/rollback/0.1.290-release.md`。
+> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。版本号也是当时的推测：这部分随 0.1.290 与 Casbin、会话一起发布，0.1.289 没有单独发布，`PluginPermissionsFirstCore`、UI 3.16 的核心下限和内置插件的 `hostCompat` 都是 0.1.290；`0.1.289-plugin-perm-down` 已删除，停在 0099 的开发库重建或恢复到 0098 的备份；线上的升级见 CHANGELOG 0.1.290（发布手册已删除，CONTRACTS §101）。
 
 ## 2.1 本章范围
 
@@ -28,7 +28,7 @@
 - `permissions` 表见 `migrations/0001_core.sql:164-178`：`key, module, label, description, source, plugin_key (ON DELETE CASCADE), sensitive bool, status varchar(10), sort`。status 的注释写的是 “active | disabled | removed (core permission dropped from code)”。
 - `scope_type varchar(20)` 和 `role_permission_scopes(role_id, permission_id, scope varchar(200))` 由 `migrations/0097_authz_hardening.sql:109-118` 加入。
 - 迁移目录是 `migrations/*.sql`，由 `migrations/embed.go:6` 嵌入，文件名格式 `NNNN_name.sql`，编号不能重复（`migrations/migrations_test.go:39`）。当前最新编号是 `0098_plugin_staged_grants.sql`。
-- 迁移只有 up：每个文件在一个事务里执行（`store/migrate.go:80-110`）；从 `0026` 起必须能重复执行（`migrations/embed.go:15`）。回滚用 `next/deploy/rollback/<版本>-*-down.sql` 加一份 `.md` 说明，参考 `0.1.286-authz-down.sql`。
+- 迁移只有 up：每个文件在一个事务里执行（`store/migrate.go:80-110`）；从 `0026` 起必须能重复执行（`migrations/embed.go:15`）。回滚用 `next/deploy/rollback/<版本>-*-down.sql` 加一份 `.md` 说明，参考 `0.1.286-authz-down.sql`（0.1.290 后已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.286-authz-down.sql`）。
 - 数据库只有 PostgreSQL（pgx）。
 
 ### 核心目录
@@ -185,7 +185,7 @@ COMMENT ON COLUMN permissions.status IS
 - `ALTER COLUMN ... TYPE varchar(40)` 在 PostgreSQL 里加宽 varchar 只改元数据，重复执行也安全。
 - 不需要推进 authz 版本：新列都只用于展示，下次 `SyncCore` 或 `SyncPlugin` 写入时会 Bump。
 
-**回滚**：新增 `next/deploy/rollback/0.1.289-plugin-perm-down.sql` 及 `.md`（版本号随第 1 章 `PluginPermissionsFirstCore`，推测值，发布时定）。和 `0.1.286-authz-down` 一样，只用于不经网关的环境：网关不允许跨 schema 回退（`deploy/gateway/ovh/README.md:31`），线上出问题按“修复前进或从备份恢复”处理。
+**回滚**：新增 `next/deploy/rollback/0.1.289-plugin-perm-down.sql` 及 `.md`（版本号随第 1 章 `PluginPermissionsFirstCore`，推测值，发布时定）。和 `0.1.286-authz-down`（已删除）一样，只用于不经网关的环境：网关不允许跨 schema 回退（`deploy/gateway/ovh/README.md:31`），线上出问题按“修复前进或从备份恢复”处理。
 
 1. `DELETE FROM permissions WHERE source='plugin' AND status='removed'`，并写审计 `via "rollback 0.1.289"`。旧核心的 `SetPluginActive` 会把 removed 复活，所以必须先删，这也和旧语义“删除”一致。
 2. `DELETE FROM role_permission_scopes rs USING permissions p WHERE p.id = rs.permission_id AND p.source='plugin'`：旧 perm 解析不了这些行，它们本来就不起作用。
@@ -749,7 +749,7 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 
 - `authz/tsgen_test.go`：更新 golden。
 - `migrations/migrations_db_test.go`：`TestPluginPermissionMetaMigration`，断言 `sensitive=true` 的行回填为 `risk='sensitive'`、scope_type 能写 40 个字符、约束拒绝 `risk='high'`。重复执行由现有的 `TestMigrationsFromFirstIdempotentRunTwice` 覆盖。
-- 回滚 DB 测试，仿照 `TestAuthzHardeningRollback`：先迁移 0099，造一个 removed 插件行和一条插件范围行，跑回滚脚本，断言行被删、列被删、0098 及以前的结构完整。
+- 回滚 DB 测试，仿照 `TestAuthzHardeningRollback`（已删除）：先迁移 0099，造一个 removed 插件行和一条插件范围行，跑回滚脚本，断言行被删、列被删、0098 及以前的结构完整。
 - e2e `next/e2e/ac02_rbac_test.go` 加一个用例：通过 API 安装测试插件，然后 PUT 矩阵，再 GET `/me`，断言权限可见；升级到去掉某个 key 的版本后断言该 key 不生效；再升级回来，断言授权原样恢复。
 
 ## 2.6 风险与未决问题

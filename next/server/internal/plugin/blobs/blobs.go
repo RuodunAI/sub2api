@@ -116,14 +116,13 @@ func (d Dir) Has(_ context.Context, sum string) (bool, error) {
 // authenticated node network.
 type Shell struct {
 	socket string
-	token  string // management socket token; "" sends none
+	token  string // management socket token
 	client *http.Client
 	max    int64
 }
 
 // NewShell talks to the shell's management socket. token (config
-// Managed.UpdaterToken) is sent as "Authorization: Bearer <token>"; empty
-// sends none (the gateway 0.1.133 shell, see config.ManagedConfig.UpdaterToken).
+// Managed.UpdaterToken) is sent as "Authorization: Bearer <token>".
 func NewShell(socket, token string, maxBytes int64) *Shell {
 	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
@@ -143,9 +142,7 @@ func newShell(dial func(ctx context.Context, network, addr string) (net.Conn, er
 func (s *Shell) url(sum string) string { return "http://shell/system/plugin-blobs/" + sum }
 
 func (s *Shell) authorize(req *http.Request) {
-	if s.token != "" {
-		req.Header.Set("Authorization", "Bearer "+s.token)
-	}
+	req.Header.Set("Authorization", "Bearer "+s.token)
 }
 
 func (s *Shell) Put(ctx context.Context, sum string, data []byte) error {

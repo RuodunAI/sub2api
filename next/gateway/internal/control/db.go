@@ -50,16 +50,18 @@ func (releaseRecord) TableName() string { return "updater.releases" }
 
 // nodeRecord is the updater.nodes row a shell registers.
 type nodeRecord struct {
-	NodeID         string
-	ClusterID      string
-	PeerURL        string
-	ShellBootID    string
-	OS             string `gorm:"column:os"`
-	Arch           string
-	RuntimeABI     string `gorm:"column:runtime_abi"`
-	PeerProtocol   int
-	Strategy       string
-	JoiningPlan    string
+	NodeID       string
+	ClusterID    string
+	PeerURL      string
+	ShellBootID  string
+	OS           string `gorm:"column:os"`
+	Arch         string
+	RuntimeABI   string `gorm:"column:runtime_abi"`
+	PeerProtocol int
+	Strategy     string
+	JoiningPlan  string
+	// Rolling is always true: shells 0.1.134 still read it to choose
+	// rolling-v1 while the gateways are replaced one at a time.
 	Rolling        bool
 	GatewayVersion string
 	SelfUpdate     bool

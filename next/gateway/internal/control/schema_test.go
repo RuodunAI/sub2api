@@ -111,3 +111,20 @@ func TestEnsureSchemaIsIdempotent(t *testing.T) {
 		t.Fatalf("update-source defaults: %+v", row)
 	}
 }
+
+// EnsureSchema drops updater.nodes.cpu_percent, which only shells before
+// 0.1.134 used.
+func TestSchemaDropsNodeCPUPercent(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	if err := s.db(ctx).Exec("ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS cpu_percent real").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var left int64
+	if err := s.db(ctx).Raw("SELECT count(*) FROM information_schema.columns WHERE table_schema='updater' AND table_name='nodes' AND column_name='cpu_percent'").Row().Scan(&left); err != nil || left != 0 {
+		t.Fatalf("cpu_percent left: %d %v", left, err)
+	}
+}

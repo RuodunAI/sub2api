@@ -105,7 +105,8 @@ func TestRealCoreResponsesWebSocket(t *testing.T) {
 			"credentials": map[string]any{"api_key": key, "base_url": mockURL},
 		}).id("data.id")
 	}
-	badID, goodID := account("ws-bad-"+suffix, badKey, 1), account("ws-good-"+suffix, goodKey, 5)
+	// The larger priority is tried first (CONTRACTS §18.2).
+	badID, goodID := account("ws-bad-"+suffix, badKey, 5), account("ws-good-"+suffix, goodKey, 1)
 	email, password := "ws-"+suffix+"@real.test", "Real-ws-pass!"
 	userID := admin.ok(http.MethodPost, "/users", map[string]any{"email": email, "display_name": email, "password": password, "role_keys": []string{"user"}}).id("data.id")
 	admin.grantGroup(userID, group)

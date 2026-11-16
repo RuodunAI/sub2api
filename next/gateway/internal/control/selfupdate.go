@@ -77,9 +77,6 @@ func gatewayNodeBlockers(m rc.GatewayManifest, nodes []Node, baseline string) []
 		if n.ReleaseDigest != baseline {
 			out = append(out, "node not on approved baseline: "+n.ID)
 		}
-		if !n.Rolling {
-			out = append(out, "node "+n.ID+" runs a gateway without rolling updates")
-		}
 		if v, err := semver.NewVersion(n.GatewayVersion); err != nil {
 			out = append(out, "node "+n.ID+" does not report its gateway version")
 		} else if !target.GreaterThan(v) {
