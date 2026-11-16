@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -142,9 +141,14 @@ func (s *Service) tx(ctx context.Context, fn func(tx *gorm.DB) error) error {
 // segmentKind returns the kind of a segment and whether it is the default
 // one, locking the row with the lock strength ("" = not at all).
 func segmentKind(ctx context.Context, q *gorm.DB, id int64, lock string) (kind string, isDefault bool, err error) {
+	if lock != "" {
+		if err := store.RequireTx(q); err != nil {
+			return "", false, err
+		}
+	}
 	db := store.G(ctx, q).Model(&model.Segment{}).Select("kind", "is_default").Where("id = ?", id)
 	if lock != "" {
-		db = db.Clauses(clause.Locking{Strength: lock})
+		db = db.Clauses(store.Lock(lock))
 	}
 	var row model.Segment
 	err = db.Take(&row).Error

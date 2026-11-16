@@ -349,7 +349,7 @@ func (s *Service) ReviewRoleGrants(ctx context.Context, key, version string, con
 	defer release()
 	var gs []RoleGrant
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
-		if err := store.G(ctx, tx).Exec(`SELECT 1 FROM plugins WHERE key = ? FOR UPDATE`, key).Error; err != nil {
+		if err := lockPlugin(store.G(ctx, tx), key); err != nil {
 			return err
 		}
 		var err error

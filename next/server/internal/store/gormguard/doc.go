@@ -22,7 +22,13 @@
 //     a ConnPool (a Statement's or the configuration's, read or written):
 //     every handle shares store.Open's one instance, so such a change
 //     would reach every statement of the process, and a statement run on
-//     the ConnPool under a handle bypasses GORM and the rules here;
+//     the ConnPool under a handle bypasses GORM and the rules here. Nor
+//     (*DB).Debug, or a gorm.Session that sets (in a literal or by
+//     assignment) PrepareStmt, AllowGlobalUpdate, Logger,
+//     SkipDefaultTransaction or DryRun: such a session overrides that
+//     configuration for its statements - prepared statements run on the
+//     pool past sqlpool's result reading, an UPDATE or DELETE without
+//     WHERE goes through, the SQL is logged with its values;
 //   - [gorm-slice] no slice or array argument that GORM expands into a
 //     list: any element type but byte, unless the type is a driver.Valuer
 //     (store.Int64s, store.Strings and store.Times are one array parameter
@@ -76,9 +82,24 @@
 //     what a called function does with the pool is not followed, so a
 //     function that may run inside a transaction takes the handle (q
 //     *gorm.DB) instead of reading s.db itself;
+//   - [tx-lock] a function (not a test's) that takes a *gorm.DB and runs
+//     a statement with a lock held until the transaction ends - a row lock
+//     (store.ForUpdate, store.Lock, a clause.Locking literal), SQL text
+//     with FOR UPDATE / NO KEY UPDATE / SHARE / KEY SHARE or an
+//     *_xact_lock call, or a call of a lock builder of its package (a
+//     function that returns such a *gorm.DB) - calls store.RequireTx: on
+//     the pool the lock would end with its statement. The handle's type no
+//     longer says "transaction" as pgx.Tx did, so the check stands in for
+//     it. A function that returns a *gorm.DB only builds the statement and
+//     is not reported; its caller is. A check under the condition that
+//     takes the lock (if lock { RequireTx }) counts;
 //   - [testutil-import] no Go file but the test files and internal/testutil
 //     itself imports internal/testutil: it is an owner because it is test
 //     infrastructure, which production code never reaches;
+//   - [core-store] no Go file of internal/core but its test files
+//     imports internal/store (or a package under it): core is the contract
+//     the modules share and store one implementation of it, so the GORM
+//     glue a port needs lives in store (store.XactLock) or the caller;
 //   - [pgx-import] no Go file of the module, test files and files left out
 //     by build constraints included, imports pgx (any package of its
 //     module) but internal/store/pgerror.go (pgxFiles), which reads the

@@ -3,6 +3,7 @@ package pgdb_test
 import (
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,35 +11,43 @@ import (
 	"testing"
 )
 
-// pgxFile is the one Go file of the SDK and the plugins that imports pgx
-// (CONTRACTS §2, "插件数据库"): the plugins speak GORM through Host.DB.
-const pgxFile = "sdk/pgdb/pgdb.go"
+// pgxModule is spelt in two pieces so that a search of the sources for pgx
+// imports does not find this file.
+const pgxModule = "github.com/jackc/" + "pgx"
 
-// Every Go file under next/sdk and next/plugins, test files, testdata and
-// overlays included, imports no pgx package but pgxFile. The server has
-// its own rule ([pgx-import] in internal/store/gormguard).
-func TestOnlyPgdbImportsPgx(t *testing.T) {
+// pgxDir is the one package outside the core that imports pgx: the driver's
+// configuration (where the dial hook of strict network mode's egress tunnel
+// goes) and the array type come from there for the core, the gateway and
+// the SDK alike.
+const pgxDir = "runtime-contract/gormpg/"
+
+// No Go file of the SDK, the plugins, the gateway, the tools, the end-to-end
+// tests, protocol-codec or runtime-contract imports pgx but those of pgxDir,
+// test files, testdata and overlays included (CONTRACTS §2, "插件数据库"):
+// plugins speak GORM through Host.DB. The core has its own rule
+// ([pgx-import] in internal/store/gormguard). The sibling directories are
+// checked when the SDK sits in the repository; alone, the SDK is checked by
+// itself.
+func TestNoPgxImports(t *testing.T) {
 	next, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)
 	}
-	roots := []string{"sdk"}
-	if _, err := os.Stat(filepath.Join(next, "plugins")); err == nil {
-		roots = append(roots, "plugins")
-	} else {
-		t.Log("no next/plugins next to the SDK: checking the SDK alone")
-	}
 	fset := token.NewFileSet()
-	seen := 0
-	for _, root := range roots {
-		err := filepath.WalkDir(filepath.Join(next, root), func(path string, d os.DirEntry, err error) error {
-			if err != nil {
+	seen, roots := 0, 0
+	for _, dir := range []string{"sdk", "plugins", "gateway", "tools", "e2e", "protocol-codec", "runtime-contract"} {
+		root := filepath.Join(next, dir)
+		if _, err := os.Stat(root); err != nil {
+			continue
+		}
+		roots++
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			switch {
+			case err != nil:
 				return err
-			}
-			if d.IsDir() && d.Name() == "node_modules" {
+			case d.IsDir() && (d.Name() == "node_modules" || d.Name() == "vendor"):
 				return filepath.SkipDir
-			}
-			if d.IsDir() || !strings.HasSuffix(path, ".go") {
+			case d.IsDir() || !strings.HasSuffix(path, ".go"):
 				return nil
 			}
 			f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
@@ -50,8 +59,8 @@ func TestOnlyPgdbImportsPgx(t *testing.T) {
 			seen++
 			for _, imp := range f.Imports {
 				p, _ := strconv.Unquote(imp.Path.Value)
-				if strings.HasPrefix(p, "github.com/jackc/pgx") && rel != pgxFile {
-					t.Errorf("%s imports %s: only %s may import pgx; use the *gorm.DB of Host.DB (sdk/pgdb)", rel, p, pgxFile)
+				if (p == pgxModule || strings.HasPrefix(p, pgxModule+"/")) && !strings.HasPrefix(rel, pgxDir) {
+					t.Errorf("%s imports %s: use the *gorm.DB of Host.DB (sdk/pgdb), and %s for what needs the driver", rel, p, pgxDir)
 				}
 			}
 			return nil
@@ -60,7 +69,10 @@ func TestOnlyPgdbImportsPgx(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if seen < 100 {
-		t.Fatalf("only %d Go files under %v: the walk missed the tree", seen, roots)
+	switch {
+	case seen == 0:
+		t.Fatal("no Go file found")
+	case roots > 1 && seen < 100:
+		t.Fatalf("only %d Go files under next: the walk missed the tree", seen)
 	}
 }

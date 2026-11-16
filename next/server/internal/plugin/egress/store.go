@@ -2,7 +2,7 @@ package egress
 
 import (
 	"context"
-	"slices"
+	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,10 +13,6 @@ import (
 
 // pgStore is the PostgreSQL logStore.
 type pgStore struct{ db *store.DB }
-
-// logBatch is the most rows one INSERT of log rows carries: PostgreSQL
-// takes at most 65535 parameters, and a row has up to 12.
-const logBatch = 65535 / 12
 
 func (s pgStore) resetOpen(ctx context.Context, nodeID string, before time.Time) (int64, error) {
 	res := resetOpenLogs(store.G(ctx, s.db.Gorm), nodeID, before)
@@ -36,56 +32,79 @@ func resetOpenLogs(g *gorm.DB, nodeID string, before time.Time) *gorm.DB {
 // insertOpen inserts result='open' rows and returns their ids in order, all
 // rows or none (on an error no id is returned, nothing was written).
 func (s pgStore) insertOpen(ctx context.Context, rows []logEntry) ([]int64, error) {
-	logs := make([]model.PluginEgressLog, len(rows))
+	open := make([]logEntry, len(rows))
 	for i, r := range rows {
-		logs[i] = model.PluginEgressLog{PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network, Host: r.Host,
-			Port: r.Port, StartedAt: r.StartedAt, Result: "open"}
+		open[i] = logEntry{PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network, Host: r.Host,
+			Port: r.Port, StartedAt: r.StartedAt, Result: ResultOpen}
 	}
-	if err := s.insertLogs(ctx, logs); err != nil {
+	ids := make([]int64, 0, len(rows))
+	if err := insertOpenRows(store.G(ctx, s.db.Gorm), open).Scan(&ids).Error; err != nil {
 		return nil, err
 	}
-	ids := make([]int64, len(logs))
-	for i := range logs {
-		ids[i] = logs[i].ID
+	if len(ids) != len(rows) {
+		return nil, fmt.Errorf("egress: %d log rows inserted, %d ids returned", len(rows), len(ids))
 	}
 	return ids, nil
 }
 
 // insertDone inserts finished rows whole, all or none.
 func (s pgStore) insertDone(ctx context.Context, rows []logEntry) error {
-	logs := make([]model.PluginEgressLog, len(rows))
+	return insertDoneRows(store.G(ctx, s.db.Gorm), rows).Error
+}
+
+// logColumns are the columns a log row is inserted with, each one array
+// parameter of logArrays (in this order).
+const logColumns = `plugin_key, node_id, network, host, port, started_at, duration_ms, bytes_in, bytes_out, result, error, closed_at`
+
+// logRowsSQL turns the twelve arrays back into rows, numbered in the
+// arrays' order (WITH ORDINALITY): one statement text however many rows,
+// so a connection prepares it once, and twelve parameters, far below
+// PostgreSQL's 65535.
+const logRowsSQL = `unnest(?::text[], ?::text[], ?::text[], ?::text[], ?::int[], ?::timestamptz[], ?::int[], ?::bigint[], ?::bigint[], ?::text[], ?::text[], ?::timestamptz[])
+		WITH ORDINALITY AS u(` + logColumns + `, ord)`
+
+// insertOpenSQL inserts the rows and returns their ids in the order of the
+// arrays. PostgreSQL does not promise that RETURNING follows the rows of a
+// multi-row insert, so the ids are drawn first, next to each row's ordinal
+// (MATERIALIZED: once), and read back by it.
+const insertOpenSQL = `WITH r AS MATERIALIZED (SELECT nextval('plugin_egress_logs_id_seq') AS id, u.* FROM ` + logRowsSQL + `),
+	ins AS (INSERT INTO plugin_egress_logs (id, ` + logColumns + `) SELECT id, ` + logColumns + ` FROM r)
+	SELECT id FROM r ORDER BY ord`
+
+// insertDoneSQL inserts the rows; nothing reads them back.
+const insertDoneSQL = `INSERT INTO plugin_egress_logs (` + logColumns + `) SELECT ` + logColumns + ` FROM ` + logRowsSQL
+
+// insertOpenRows is the insert of open rows, which returns their ids in
+// order (insertOpenSQL), not yet run.
+func insertOpenRows(g *gorm.DB, rows []logEntry) *gorm.DB {
+	return g.Raw(insertOpenSQL, logArrays(rows)...)
+}
+
+// insertDoneRows inserts finished rows in one statement.
+func insertDoneRows(g *gorm.DB, rows []logEntry) *gorm.DB {
+	return g.Exec(insertDoneSQL, logArrays(rows)...)
+}
+
+// logArrays are the columns of rows (logColumns), one array each. A
+// finished row's closed_at is its start plus its duration; an open one has
+// none.
+func logArrays(rows []logEntry) []any {
+	n := len(rows)
+	keys, nodes, networks, hosts := make(store.Strings, n), make(store.Strings, n), make(store.Strings, n), make(store.Strings, n)
+	ports, durations := make(store.Int64s, n), make(store.Int64s, n) // int values, as the int columns; ::int[] narrows the arrays
+	started, closed := make(store.Times, n), make(store.Array[*time.Time], n)
+	in, out := make(store.Int64s, n), make(store.Int64s, n)
+	results, errs := make(store.Strings, n), make(store.Strings, n)
 	for i, r := range rows {
-		closed := r.StartedAt.Add(time.Duration(r.DurationMS) * time.Millisecond)
-		logs[i] = model.PluginEgressLog{PluginKey: r.PluginKey, NodeID: r.NodeID, Network: r.Network, Host: r.Host,
-			Port: r.Port, StartedAt: r.StartedAt, DurationMs: r.DurationMS, BytesIn: r.BytesIn, BytesOut: r.BytesOut,
-			Result: r.Result, Error: r.Error, ClosedAt: &closed}
-	}
-	return s.insertLogs(ctx, logs)
-}
-
-// insertLogs inserts logs all or none, in multi-row INSERTs of at most
-// logBatch rows (a transaction holds them when there are several), and sets
-// their ids.
-func (s pgStore) insertLogs(ctx context.Context, logs []model.PluginEgressLog) error {
-	if len(logs) <= logBatch {
-		return insertLogRows(store.G(ctx, s.db.Gorm), logs).Error
-	}
-	return s.db.Tx(ctx, func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
-		for chunk := range slices.Chunk(logs, logBatch) {
-			if err := insertLogRows(g, chunk).Error; err != nil {
-				return err
-			}
+		keys[i], nodes[i], networks[i], hosts[i] = r.PluginKey, r.NodeID, r.Network, r.Host
+		ports[i], durations[i], started[i] = int64(r.Port), int64(int32(r.DurationMS)), r.StartedAt
+		in[i], out[i], results[i], errs[i] = r.BytesIn, r.BytesOut, r.Result, r.Error
+		if r.Result != ResultOpen {
+			at := r.StartedAt.Add(time.Duration(r.DurationMS) * time.Millisecond)
+			closed[i] = &at
 		}
-		return nil
-	})
-}
-
-// insertLogRows inserts logs in one statement and sets their ids (RETURNING
-// id, in row order). A zero bytes_in, bytes_out or error is written as the
-// column's DEFAULT, which is that zero value.
-func insertLogRows(g *gorm.DB, logs []model.PluginEgressLog) *gorm.DB {
-	return g.Create(&logs)
+	}
+	return []any{keys, nodes, networks, hosts, ports, started, durations, in, out, results, errs, closed}
 }
 
 func (s pgStore) closeRows(ctx context.Context, rows []closedRow) error {

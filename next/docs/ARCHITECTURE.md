@@ -1583,7 +1583,7 @@ next/
 |---|---|
 | 语言 | Go 1.27 |
 | HTTP | gin |
-| 数据库 | PostgreSQL 16 + GORM（驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`）；语义要求精确的语句仍写 SQL（`Raw`/`Exec`）。表结构以 SQL 迁移为准：核心的模型由迁移生成（`store/modelgen`），插件的模型由 `sub2api-plugin db check` 对照迁移；运行时不跑 AutoMigrate。插件只拿到 `Host.DB` 的 `*gorm.DB`（CONTRACTS §2） |
+| 数据库 | PostgreSQL 16 + GORM（驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`；打开连接由 `runtime-contract/gormpg` 一处实现，核心、网关、插件 SDK 共用）；语义要求精确的语句仍写 SQL（`Raw`/`Exec`）。表结构以 SQL 迁移为准：核心的模型由迁移生成（`store/modelgen`），插件的模型由 `sub2api-plugin db check` 对照迁移；运行时不跑 AutoMigrate。插件只拿到 `Host.DB` 的 `*gorm.DB`（CONTRACTS §2） |
 | 权限判断 | Casbin v3（策略存 `casbin_rule`，gorm-adapter 的列布局；只读加载成快照，CONTRACTS §99） |
 | 迁移 | 嵌入式 SQL + 自研执行器（核心和插件共用，参考旧项目 `migrations_runner.go`） |
 | 缓存 / 实时状态 | Valkey（或 Redis 7+）+ go-redis v9；控制台会话 `s2s_` 也只存在这里（CONTRACTS §100） |

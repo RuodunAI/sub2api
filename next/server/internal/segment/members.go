@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -105,6 +104,9 @@ const movingUsers = `id = ANY(?) AND deleted_at IS NULL AND segment_id <> ?
 // another writer replaced one meanwhile, queues on it behind the key-share
 // holders (inserts that refer to the user), which can close a cycle.
 func lockUsers(ctx context.Context, tx *gorm.DB, cond string, args ...any) ([]int64, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	var ids []int64
 	err := lockUsersQuery(store.G(ctx, tx), cond, args...).Pluck("id", &ids).Error
 	return ids, err
@@ -112,7 +114,7 @@ func lockUsers(ctx context.Context, tx *gorm.DB, cond string, args ...any) ([]in
 
 // lockUsersQuery selects the users cond picks, locked in id order (lockUsers).
 func lockUsersQuery(db *gorm.DB, cond string, args ...any) *gorm.DB {
-	return db.Model(&model.User{}).Where(cond, args...).Order("id").Clauses(clause.Locking{Strength: store.LockingStrengthNoKeyUpdate})
+	return db.Model(&model.User{}).Where(cond, args...).Order("id").Clauses(store.Lock(store.LockingStrengthNoKeyUpdate))
 }
 
 // setUserSegment puts the users cond picks into segment (an id, or an

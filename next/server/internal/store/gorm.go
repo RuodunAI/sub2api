@@ -18,7 +18,10 @@
 //     Begin, Transaction, Commit and the other transaction methods, and the
 //     Migrator, are refused by gormguard elsewhere, and so is a handle of
 //     another instance (gorm.Open). A function that needs the transaction
-//     it is handed checks it with RequireTx.
+//     it is handed checks it with RequireTx; gormguard [tx-lock] holds a
+//     function that locks to it.
+//   - Row locks are RowLock values: ForUpdate(), Lock(strength) and their
+//     Of and SkipLocked, never a shared clause.Locking variable.
 //   - Array parameters and columns are Int64s / Strings / Times; GORM
 //     expands a plain slice into one placeholder per element. A bytea or
 //     document parameter ([]byte, json.RawMessage) right after "(" is a

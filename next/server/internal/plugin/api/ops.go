@@ -17,6 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/task"
@@ -501,7 +502,7 @@ func (a *API) pluginStatusValue(ctx context.Context, key string) (string, error)
 // updatePlugin sets column of plugin key to value, as a settings change:
 // updated_at and row_version move with it.
 func updatePlugin(db *gorm.DB, key, column string, value any) *gorm.DB {
-	return db.Model(&model.Plugin{}).Where("key = ?", key).Updates(model.PluginChange(map[string]any{column: value}))
+	return db.Model(&model.Plugin{}).Where("key = ?", key).Updates(rows.Change(map[string]any{column: value}))
 }
 
 func (a *API) putEgressPolicy(c *gin.Context) {

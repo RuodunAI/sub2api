@@ -42,7 +42,7 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 			return e
 		}
 		var old string
-		e := g.Model(&model.ProviderHelperUsageReceipt{}).Select("digest").Where("request_id = ?", rec.RequestID).Clauses(store.ForUpdate).Row().Scan(&old)
+		e := g.Model(&model.ProviderHelperUsageReceipt{}).Select("digest").Where("request_id = ?", rec.RequestID).Clauses(store.ForUpdate()).Row().Scan(&old)
 		if e != nil && !store.IsNoRows(e) {
 			return e
 		}
@@ -51,7 +51,7 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 			return fmt.Errorf("durable usage receipt conflict")
 		}
 		var usageID int64
-		e = g.Model(&model.UsageLog{}).Select("id").Where("request_id = ?", rec.RequestID).Clauses(store.ForUpdate).Row().Scan(&usageID)
+		e = g.Model(&model.UsageLog{}).Select("id").Where("request_id = ?", rec.RequestID).Clauses(store.ForUpdate()).Row().Scan(&usageID)
 		if e != nil && !store.IsNoRows(e) {
 			return e
 		}

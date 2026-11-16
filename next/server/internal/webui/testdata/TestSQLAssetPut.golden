@@ -10,5 +10,5 @@ SELECT path FROM put
 -- vars
 $1 store.Strings [assets/a.js assets/b.css]
 $2 store.Strings [h i]
-$3 store.Array[github.com/Sub2API-Devs/sup2api/next/server/internal/store.Bytes] [x ]
+$3 gormpg.Array[github.com/Sub2API-Devs/sup2api/next/server/internal/store.Bytes] [x ]
 $4 string "b1"

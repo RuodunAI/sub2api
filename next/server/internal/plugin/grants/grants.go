@@ -236,6 +236,9 @@ func revoke(db *gorm.DB, key, permission string, by *int64) *gorm.DB {
 // A set granting a scope neither wider nor within scope keeps it: it is that
 // version's own decision, on another request.
 func Narrow(ctx context.Context, tx *gorm.DB, key, permission string, scope map[string]any, by *int64) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	granted, err := stagedScopes(ctx, tx, narrowedSQL, key, permission)
 	if err != nil {
 		return err
@@ -259,6 +262,9 @@ const narrowedSQL = `SELECT version, scope FROM plugin_staged_grants
 // administrator's grant, the counterpart of Revoke. A set whose version
 // requests less stays revoked, so that version still runs without it.
 func Reinstate(ctx context.Context, tx *gorm.DB, key, permission string, scope map[string]any, by *int64) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	requested, err := stagedScopes(ctx, tx, reinstatedSQL, key, permission)
 	if err != nil {
 		return err

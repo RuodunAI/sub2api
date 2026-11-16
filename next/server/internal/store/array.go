@@ -1,11 +1,6 @@
 package store
 
-import (
-	"database/sql/driver"
-	"fmt"
-	"reflect"
-	"strings"
-)
+import "github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 
 // Array is one array parameter for GORM, which would expand a plain slice
 // into a list, for the element types that Int64s and its kind do not cover:
@@ -14,42 +9,8 @@ import (
 // each document as its text. The SQL casts the parameter to its array type
 // (?::jsonb[]), from which pgx takes the element type. Like Int64s, its
 // Value is the plain slice and relies on pgx's database/sql driver taking
-// it (TestArrayParametersRelyOnPgxStdlib).
-type Array[T any] []T
-
-// Value implements driver.Valuer.
-func (a Array[T]) Value() (driver.Value, error) { return []T(a), nil }
-
-// String shows the values, a document as its text and a nil pointer or
-// document as NULL (gormtest snapshots).
-func (a Array[T]) String() string {
-	var b strings.Builder
-	b.WriteByte('[')
-	for i, v := range a {
-		if i > 0 {
-			b.WriteByte(' ')
-		}
-		writeElement(&b, v)
-	}
-	b.WriteByte(']')
-	return b.String()
-}
-
-func writeElement(b *strings.Builder, v any) {
-	if doc, ok := v.(Bytes); ok {
-		if doc == nil {
-			b.WriteString("NULL")
-		} else {
-			b.Write(doc)
-		}
-		return
-	}
-	if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			b.WriteString("NULL")
-			return
-		}
-		v = rv.Elem().Interface()
-	}
-	fmt.Fprint(b, v)
-}
+// it (TestArrayParametersRelyOnPgxStdlib). It is the array type the
+// gateway and the plugin SDK use as well (gormpg.Array); its String shows a
+// document as its text and a nil pointer or document as NULL (gormtest
+// snapshots).
+type Array[T any] = gormpg.Array[T]

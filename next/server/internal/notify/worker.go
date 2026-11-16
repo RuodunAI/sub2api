@@ -134,7 +134,7 @@ func (s *Service) claim(db *gorm.DB, dst *model.Notification) *gorm.DB {
 	next := db.Model(&model.Notification{}).Select("id").
 		Where("status IN ('pending', 'sending') AND next_attempt_at <= now() AND attempts < ?", s.opts.MaxAttempts).
 		Order("next_attempt_at, id").Limit(1).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Options: clause.LockingOptionsSkipLocked})
+		Clauses(store.ForUpdate().SkipLocked())
 	return db.Model(dst).Clauses(clause.Returning{Columns: claimedColumns}).Where("id = (?)", next).Updates(map[string]any{
 		"status":          "sending",
 		"attempts":        gorm.Expr("attempts + 1"),

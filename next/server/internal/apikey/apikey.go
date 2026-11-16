@@ -538,7 +538,7 @@ func searchedPrefix(q string) string {
 
 func (s *Service) loadKey(ctx context.Context, id, ownerID int64) (*APIKey, error) {
 	var r keyRow
-	err := keyView(store.G(ctx, s.db.Gorm)).Where("k.id = ? AND k.user_id = ? AND k.deleted_at IS NULL", id, ownerID).Take(&r).Error
+	err := keyView(store.G(ctx, s.db.Gorm)).Scopes(ownedKey("k", id, ownerID)).Take(&r).Error
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
@@ -557,6 +557,9 @@ func (s *Service) loadKey(ctx context.Context, id, ownerID int64) (*APIKey, erro
 // waits for the key write (and then unbinds it) instead of turning it into a
 // foreign key violation.
 func groupAvailable(ctx context.Context, q *gorm.DB, userID, groupID int64) (bool, error) {
+	if err := store.RequireTx(q); err != nil {
+		return false, err
+	}
 	var ok bool
 	err := usableGroup(store.G(ctx, q), userID, groupID).Take(&ok).Error
 	if store.IsNoRows(err) {
@@ -571,7 +574,7 @@ func usableGroup(db *gorm.DB, userID, groupID int64) *gorm.DB {
 	return db.Table("groups g").Select("true").
 		Where("g.id = ?", groupID).
 		Where(segment.UsableGroupSQL("g", "?"), userID).
-		Clauses(clause.Locking{Strength: store.LockingStrengthKeyShare, Table: clause.Table{Name: "g"}})
+		Clauses(store.Lock(store.LockingStrengthKeyShare).Of("g"))
 }
 
 // requireGroup fails with a group_id field error unless the group is usable by user.
@@ -786,8 +789,7 @@ func updateOwned(ctx context.Context, q *gorm.DB, id, ownerID int64, set map[str
 // ownedUpdate writes set to the owner's live key id, returning its hash into
 // k.
 func ownedUpdate(db *gorm.DB, k *model.APIKey, id, ownerID int64, set map[string]any) *gorm.DB {
-	return db.Model(k).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).
-		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, ownerID).Updates(set)
+	return owned(db, id, ownerID).Model(k).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).Updates(set)
 }
 
 // normalize checks the fields given and puts the name and allowlist in their
@@ -900,7 +902,7 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 	var oldHash string
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
-		if err := owned(g, id, ownerID).Select("key_hash").Clauses(store.ForUpdate).Take(&oldHash).Error; err != nil {
+		if err := owned(g, id, ownerID).Select("key_hash").Clauses(store.ForUpdate()).Take(&oldHash).Error; err != nil {
 			if store.IsNoRows(err) {
 				return notFound(ctx)
 			}
@@ -931,7 +933,15 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 
 // owned narrows api_keys to the owner's live key id.
 func owned(db *gorm.DB, id, ownerID int64) *gorm.DB {
-	return db.Model(&model.APIKey{}).Where("id = ? AND deleted_at IS NULL AND user_id = ?", id, ownerID)
+	return db.Model(&model.APIKey{}).Scopes(ownedKey("api_keys", id, ownerID))
+}
+
+// ownedKey narrows the api_keys rows named table (the table itself, or
+// keyView's "k") to the owner's live key id.
+func ownedKey(table string, id, ownerID int64) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where(table+".id = ? AND "+table+".user_id = ? AND "+table+".deleted_at IS NULL", id, ownerID)
+	}
 }
 
 func (s *Service) reveal(c *gin.Context, ownerID int64) {

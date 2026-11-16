@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
@@ -67,8 +68,11 @@ func TestAuthenticateSegmentTerms(t *testing.T) {
 			p, err := e.svc.Authenticate(t.Context(), e.addKey(e.user, group))
 			// Authentication and the key endpoints tell alike whether the
 			// owner may use the group: by the one rule, segment.OpenToUserSQL.
-			open, qerr := groupAvailable(t.Context(), e.db.Gorm, e.user, group)
-			require.NoError(t, qerr)
+			var open bool
+			require.NoError(t, e.db.Tx(t.Context(), func(tx *gorm.DB) (err error) {
+				open, err = groupAvailable(t.Context(), tx, e.user, group)
+				return err
+			}))
 			require.Equal(t, c.rate != "", open)
 			if c.rate == "" {
 				require.Equal(t, CodeGroupNotAllowed, codeOf(err))

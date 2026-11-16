@@ -16,6 +16,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -234,6 +235,9 @@ func grantDecisions(ds []decision) []grants.Decision {
 // barrier an approval must pass: uninstall in progress, consent status,
 // signature revocation, publisher revocation and exclusive resources.
 func (s *Service) loadConsentable(ctx context.Context, tx *gorm.DB, key, version string) (*consentable, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	g := store.G(ctx, tx)
 	var p consentablePlugin
 	err := lockedPlugin(g, key).Select(consentablePluginColumns).Take(&p).Error
@@ -249,7 +253,7 @@ func (s *Service) loadConsentable(ctx context.Context, tx *gorm.DB, key, version
 		return nil, err
 	}
 	var v model.PluginVersion
-	err = versionRow(g, key, version).Select("consent_status, signature_status, manifest_hash").Clauses(store.ForUpdate).Take(&v).Error
+	err = versionRow(g, key, version).Select("consent_status, signature_status, manifest_hash").Clauses(store.ForUpdate()).Take(&v).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}
@@ -881,7 +885,7 @@ const consentablePluginColumns = "status, active_version, COALESCE(active_versio
 // markInstalled moves a first install's plugin row to installed, recording
 // its name and who installed it (unless already recorded).
 func markInstalled(db *gorm.DB, key string, name []byte, actorID int64) *gorm.DB {
-	return pluginRow(db, key).Updates(model.PluginChange(map[string]any{
+	return pluginRow(db, key).Updates(rows.Change(map[string]any{
 		"status":       StatusInstalled,
 		"name":         name,
 		"installed_by": gorm.Expr("COALESCE(installed_by, ?)", nullID(actorID)),
@@ -892,5 +896,5 @@ func markInstalled(db *gorm.DB, key string, name []byte, actorID int64) *gorm.DB
 // bumpPlugin moves the plugin row's version, which also locks it: the
 // first write of a grant change.
 func bumpPlugin(db *gorm.DB, key string) *gorm.DB {
-	return pluginRow(db, key).Updates(model.PluginChange(map[string]any{}))
+	return pluginRow(db, key).Updates(rows.Change(map[string]any{}))
 }

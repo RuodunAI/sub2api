@@ -14,11 +14,14 @@ import (
 // lock and must return a complete validated JSON object. Callers broadcast only
 // after their transaction commits.
 func UpdateSettingJSONTx(ctx context.Context, tx *gorm.DB, key string, updatedBy *int64, update func(json.RawMessage) (json.RawMessage, error)) (json.RawMessage, error) {
+	if err := RequireTx(tx); err != nil {
+		return nil, err
+	}
 	db := G(ctx, tx)
 	if err := db.Exec(`INSERT INTO settings(key,value) VALUES(?,'{}') ON CONFLICT(key) DO NOTHING`, key).Error; err != nil {
 		return nil, err
 	}
-	raw, err := SettingValue(db, key, ForUpdate)
+	raw, err := SettingValue(db, key, ForUpdate())
 	if err != nil {
 		return nil, err
 	}

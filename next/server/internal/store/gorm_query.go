@@ -45,9 +45,33 @@ const (
 	LockingStrengthKeyShare    = "KEY SHARE"
 )
 
-// ForUpdate locks the rows a query reads until the transaction ends (FOR
-// UPDATE), for db.Clauses.
-var ForUpdate = clause.Locking{Strength: clause.LockingStrengthUpdate}
+// RowLock locks the rows a query reads until the transaction ends, for
+// db.Clauses: Lock or ForUpdate builds one, Of and SkipLocked refine it.
+// Each returns a new value, so no package can change the lock another one
+// takes (a shared clause.Locking variable could be rewritten for the whole
+// process with one assignment).
+type RowLock struct{ clause.Locking }
+
+// Lock is a row lock of strength: clause.LockingStrengthUpdate or Share,
+// LockingStrengthNoKeyUpdate or KeyShare.
+func Lock(strength string) RowLock { return RowLock{clause.Locking{Strength: strength}} }
+
+// ForUpdate is Lock(clause.LockingStrengthUpdate): FOR UPDATE.
+func ForUpdate() RowLock { return Lock(clause.LockingStrengthUpdate) }
+
+// Of limits l to the rows of one table of a join, by its name or alias:
+// FOR UPDATE OF a.
+func (l RowLock) Of(table string) RowLock {
+	l.Table = clause.Table{Name: table}
+	return l
+}
+
+// SkipLocked makes l skip the rows another transaction holds instead of
+// waiting for them: FOR UPDATE SKIP LOCKED.
+func (l RowLock) SkipLocked() RowLock {
+	l.Options = clause.LockingOptionsSkipLocked
+	return l
+}
 
 // ExistsQuery selects whether sub, a query built on db, finds a row, in one
 // SELECT EXISTS round trip; sub's select list becomes 1.

@@ -1,4 +1,0 @@
--- sql
-SELECT pg_advisory_xact_lock(hashtextextended('open-drafts:' || $1::bigint::text, 0))
--- vars
-$1 int64 7

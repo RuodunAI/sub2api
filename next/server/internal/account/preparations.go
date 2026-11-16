@@ -116,7 +116,7 @@ func (s *Service) createPreparation(c *gin.Context) {
 		// The count and the insert run under the user's lock. A repeated
 		// idempotency key is not a new preparation and passes.
 		if limit > 0 {
-			if err := core.LockOpenDrafts(ctx, tx, uid); err != nil {
+			if err := store.XactLock(ctx, tx, core.OpenDraftsLock(uid)); err != nil {
 				return err
 			}
 		}

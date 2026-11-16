@@ -7,4 +7,4 @@ $3 string "active"
 $4 int64 9
 $5 bool false
 $6 int64 7
-$7 store.Int64s [3 4]
+$7 core.int64s [3 4]

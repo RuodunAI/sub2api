@@ -191,15 +191,15 @@ func scopedAccount(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
 	return db.Table("accounts a").Where("a.id = ?", id).Scopes(core.AccountRows.Scope(scope))
 }
 
-// lockAccountRow locks the accounts row (alias a) of a joined read.
-var lockAccountRow = clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "a"}}
-
 // loadRow returns one live account in scope; rows outside the scope are
 // 404 like missing ones.
 func (s *Service) loadRow(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope, lock bool) (*row, error) {
 	db := selectRows(store.G(ctx, q)).Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope))
 	if lock {
-		db = db.Clauses(lockAccountRow)
+		if err := store.RequireTx(q); err != nil {
+			return nil, err
+		}
+		db = db.Clauses(store.ForUpdate().Of("a")) // the accounts row (alias a) of the join
 	}
 	a, err := scanRow(db.Row())
 	if store.IsNoRows(err) {

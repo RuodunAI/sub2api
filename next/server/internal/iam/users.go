@@ -639,6 +639,9 @@ func emailTaken() error {
 // parent lock of every session change and second-factor write of the user.
 // errNoUser when there is no such row.
 func lockUserRow(ctx context.Context, tx *gorm.DB, userID int64) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	var id int64
 	err := lockUser(store.G(ctx, tx), userID).Row().Scan(&id)
 	if store.IsNoRows(err) {
@@ -650,7 +653,7 @@ func lockUserRow(ctx context.Context, tx *gorm.DB, userID int64) error {
 // lockUser locks the row of userID, deleted or not, until the transaction
 // ends.
 func lockUser(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Model(&model.User{}).Select("id").Where("id = ?", userID).Clauses(store.ForUpdate)
+	return db.Model(&model.User{}).Select("id").Where("id = ?", userID).Clauses(store.ForUpdate())
 }
 
 // liveUser selects cols of the undeleted user id.
@@ -660,7 +663,7 @@ func liveUser(db *gorm.DB, id int64, cols string) *gorm.DB {
 
 // lockLiveUser is liveUser, the row locked until the transaction ends.
 func lockLiveUser(db *gorm.DB, id int64, cols string) *gorm.DB {
-	return liveUser(db, id, cols).Clauses(store.ForUpdate)
+	return liveUser(db, id, cols).Clauses(store.ForUpdate())
 }
 
 // userByEmail selects cols of the undeleted user with email, in any case.

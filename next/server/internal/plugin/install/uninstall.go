@@ -10,6 +10,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -66,7 +67,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 			return core.ErrConflict.WithMessage("the plugin was re-enabled concurrently")
 		}
 		var stopped bool
-		if err := uninstallRow(g, key).Select("target_boot_ids <@ stopped_boot_ids").Clauses(store.ForUpdate).Take(&stopped).Error; err != nil {
+		if err := uninstallRow(g, key).Select("target_boot_ids <@ stopped_boot_ids").Clauses(store.ForUpdate()).Take(&stopped).Error; err != nil {
 			return err
 		}
 		if !stopped {
@@ -241,7 +242,7 @@ func beginUninstall(db *gorm.DB, key string, epoch int64, boots []string) *gorm.
 // disableForUninstall disables key and clears its desired version while
 // its uninstall waits for the nodes to stop.
 func disableForUninstall(db *gorm.DB, key string) *gorm.DB {
-	return pluginRow(db, key).Updates(model.PluginChange(map[string]any{
+	return pluginRow(db, key).Updates(rows.Change(map[string]any{
 		"status":          StatusDisabled,
 		"desired_version": nil,
 		"status_reason":   "uninstalling",

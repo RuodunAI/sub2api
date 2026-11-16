@@ -146,6 +146,9 @@ func (s *Service) reconcileTask(ctx context.Context, e *settleEntry) bool {
 // update and the billing outcome share one transaction, so stale workers can
 // neither publish a terminal snapshot nor touch money after lease takeover.
 func (s *Service) lockTaskOutcome(ctx context.Context, tx *gorm.DB, e *settleEntry, observation string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	if e.task == nil {
 		return nil
 	}
@@ -197,12 +200,15 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx *gorm.DB, e *settleEnt
 // A legacy worker may have claimed this row before lazy import transferred
 // polling to async_tasks. Financial callers already hold the usage row here.
 func lockLegacyOutcome(ctx context.Context, tx *gorm.DB, e *settleEntry) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	if e.task != nil {
 		return nil
 	}
 	var managed *string
 	if err := store.G(ctx, tx).Model(&model.PendingSettlement{}).Select("task_public_id").Where("id = ?", e.id).
-		Clauses(store.ForUpdate).Row().Scan(&managed); err != nil {
+		Clauses(store.ForUpdate()).Row().Scan(&managed); err != nil {
 		return err
 	}
 	if managed != nil {

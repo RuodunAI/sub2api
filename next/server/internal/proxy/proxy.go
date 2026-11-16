@@ -725,7 +725,7 @@ func (s *Service) update(c *gin.Context) {
 		// Visibility first (404 outside the caller's range); the lock keeps
 		// what the checks below read true until the commit.
 		var cur row
-		err := scoped(store.G(ctx, tx), id, scope).Select(connectionColumns).Clauses(store.ForUpdate).Take(&cur).Error
+		err := scoped(store.G(ctx, tx), id, scope).Select(connectionColumns).Clauses(store.ForUpdate()).Take(&cur).Error
 		if store.IsNoRows(err) {
 			return notFound(ctx)
 		}
@@ -806,7 +806,7 @@ func (s *Service) delete(c *gin.Context) {
 		// Visibility first: a proxy outside the caller's range is 404 even
 		// when it is in use.
 		var name string
-		err := scoped(store.G(ctx, tx), id, scope).Select("p.name").Clauses(store.ForUpdate).Take(&name).Error
+		err := scoped(store.G(ctx, tx), id, scope).Select("p.name").Clauses(store.ForUpdate()).Take(&name).Error
 		if store.IsNoRows(err) {
 			return notFound(ctx)
 		}
@@ -925,7 +925,7 @@ func (s *Service) recordObservedIP(ctx context.Context, id int64, ip string) err
 	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var previous string
-		if err := g.Model(&model.Proxy{}).Select("COALESCE(real_ip, '')").Where("id = ?", id).Clauses(store.ForUpdate).
+		if err := g.Model(&model.Proxy{}).Select("COALESCE(real_ip, '')").Where("id = ?", id).Clauses(store.ForUpdate()).
 			Take(&previous).Error; err != nil {
 			return err
 		}

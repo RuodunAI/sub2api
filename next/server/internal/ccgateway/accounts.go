@@ -369,6 +369,9 @@ func (s *Service) Reconcile(ctx context.Context, key string) error {
 // reconcileLocked is Reconcile in tx: nothing when another node holds the
 // runtime's lock.
 func (s *Service) reconcileLocked(ctx context.Context, tx *gorm.DB, key string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	var locked bool
 	if e := store.G(ctx, tx).Raw(tryLockSQL, key).Row().Scan(&locked); e != nil || !locked {
 		return e

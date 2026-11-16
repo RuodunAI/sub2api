@@ -544,6 +544,9 @@ func setPluginStatus(db *gorm.DB, pluginKey, status string) *gorm.DB {
 // and their grants go, audited as authz.sync.discard with the roles that
 // held them; nothing happens without any.
 func (s *Service) DiscardStaged(ctx context.Context, tx *gorm.DB, pluginKey string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	db := store.G(ctx, tx)
 	var keys []string
 	if err := lockStaged(db, pluginKey).Pluck("key", &keys).Error; err != nil || len(keys) == 0 {
@@ -566,7 +569,7 @@ func (s *Service) DiscardStaged(ctx context.Context, tx *gorm.DB, pluginKey stri
 // lockStaged selects the staged permissions of the plugin, by key, and
 // locks them.
 func lockStaged(db *gorm.DB, pluginKey string) *gorm.DB {
-	return db.Model(&model.Permission{}).Where("plugin_key = ? AND status = 'staged'", pluginKey).Order("key").Clauses(store.ForUpdate)
+	return db.Model(&model.Permission{}).Where("plugin_key = ? AND status = 'staged'", pluginKey).Order("key").Clauses(store.ForUpdate())
 }
 
 // deletePermissions deletes the permissions keys with their grants (no

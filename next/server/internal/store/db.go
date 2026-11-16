@@ -6,19 +6,14 @@ package store
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
-	"sync"
 
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/pgdsn"
-	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/sqlpool"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 )
 
 // DB is the core's connection pool.
@@ -35,21 +30,14 @@ type DB struct {
 // Open connects to dsn. The pool is sized by SUB2API_PG_MAX_CONNS, else the
 // DSN's pool_* parameters (see pool.go), else the defaults.
 func Open(ctx context.Context, dsn string) (*DB, error) {
-	dsn, pool, err := pgdsn.Split(dsn)
-	if err != nil {
-		return nil, err
-	}
-	maxConns := poolMaxConns(os.Getenv("SUB2API_PG_MAX_CONNS"), pool.MaxConns)
-	pool.MaxConns = &maxConns
-	db, err := open(ctx, dsn, pool)
+	db, s, err := open(ctx, dsn, func(p *gormpg.Pool) { p.OverrideMaxConns(os.Getenv("SUB2API_PG_MAX_CONNS")) })
 	if err != nil {
 		return nil, err
 	}
 	// No min_conns: database/sql keeps no minimum, and Apply logs a
 	// pool_min_conns of the DSN as ignored.
-	slog.Info("database pool opened", "max_conns", maxConns,
-		"max_conn_lifetime", valueOr(pool.MaxConnLifetime, poolDefaults.MaxConnLifetime),
-		"max_conn_idle_time", valueOr(pool.MaxConnIdleTime, poolDefaults.MaxConnIdleTime))
+	slog.Info("database pool opened", "max_conns", s.MaxConns,
+		"max_conn_lifetime", s.MaxConnLifetime, "max_conn_idle_time", s.MaxConnIdleTime)
 	return db, nil
 }
 
@@ -57,49 +45,29 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 // whatever the DSN or the environment say: a pool for one job, such as
 // running a plugin's migrations as its own role.
 func OpenSized(ctx context.Context, dsn string, maxConns int) (*DB, error) {
-	dsn, pool, err := pgdsn.Split(dsn)
-	if err != nil {
-		return nil, err
-	}
-	pool.MaxConns = &maxConns
-	return open(ctx, dsn, pool)
+	db, _, err := open(ctx, dsn, func(p *gormpg.Pool) { p.MaxConns = &maxConns })
+	return db, err
 }
 
-// open connects to dsn, which holds no pool_* parameter, and sizes the pool
-// from pool over poolDefaults.
-func open(ctx context.Context, dsn string, pool pgdsn.Pool) (*DB, error) {
-	// database/sql hands array columns over as their text, which Times
-	// parses in DateStyle ISO's format (pgtext.go). The session's DateStyle
-	// is pinned to it, over the DSN's (a datestyle parameter, or -c in
-	// options) and the role's, database's or server's default, which could
-	// print 'SQL, DMY' or German dates.
-	dsn, err := pgdsn.Set(dsn, "datestyle", "ISO")
+// open connects to dsn and pings it. The pool is sized from the DSN's
+// pool_* parameters, as size changes them, over poolDefaults; s is what it
+// got. gormpg.ParseConfig pins DateStyle ISO, the format Times parses
+// array text in (pgtext.go).
+func open(ctx context.Context, dsn string, size func(*gormpg.Pool)) (_ *DB, s gormpg.Settings, _ error) {
+	cfg, pool, err := gormpg.ParseConfig(dsn)
 	if err != nil {
-		return nil, err
+		return nil, s, err
 	}
-	g, err := gorm.Open(postgres.New(postgres.Config{DSN: dsn}), gormConfig())
+	size(&pool)
+	g, sqlDB, err := gormpg.Open(cfg, gormpg.Options{Pool: pool, Defaults: poolDefaults, Gorm: gormConfig(), Setup: registerTimestamps})
 	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
+		return nil, s, err
 	}
-	if err := registerTimestamps(g); err != nil {
-		return nil, err
-	}
-	sqlDB, err := g.DB()
-	if err != nil {
-		return nil, err
-	}
-	pool.Apply(sqlDB, poolDefaults, nil)
-	// GORM reads an Exec's RowsAffected after database/sql has given the
-	// connection back, under a mutex that the connection's next statement
-	// holds: sqlpool reads it first (see there). Transactions and WithConn
-	// keep their connection and need no wrapper.
-	g.ConnPool = sqlpool.New(sqlDB)
-	g.Statement.ConnPool = g.ConnPool
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("ping database: %w", err)
+		return nil, s, fmt.Errorf("ping database: %w", err)
 	}
-	return &DB{Gorm: g, SQL: sqlDB}, nil
+	return &DB{Gorm: g, SQL: sqlDB}, pool.Over(poolDefaults), nil
 }
 
 // Close closes the pool.
@@ -172,38 +140,7 @@ func SQLTx(tx *gorm.DB) *sql.Tx {
 // IsNoRows reports a read that found no row: GORM's
 // gorm.ErrRecordNotFound (First, Take, Last) and database/sql's
 // sql.ErrNoRows (Row().Scan).
-func IsNoRows(err error) bool {
-	return errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, sql.ErrNoRows)
-}
-
-// DryRun is a DryRun session of a GORM instance configured as Open's
-// (callbacks, clause builders), on a pool that never connects: it builds
-// statements without a database, and one that escaped DryRun would fail
-// instead of reaching a server. Package gormtest snapshots its SQL.
-func DryRun() *gorm.DB { return dryRun().Session(&gorm.Session{DryRun: true, NewDB: true}) }
-
-// ErrOffline is what a statement of DryRun's instance that is no DryRun
-// gets: there is no database behind it.
-var ErrOffline = errors.New("store: the DryRun instance has no database")
-
-var dryRun = sync.OnceValue(func() *gorm.DB {
-	g, err := gorm.Open(postgres.New(postgres.Config{Conn: sql.OpenDB(offline{})}), gormConfig())
-	if err == nil {
-		err = registerTimestamps(g)
-	}
-	if err != nil {
-		panic("store: open the DryRun instance: " + err.Error()) // no I/O: only a programming error gets here
-	}
-	return g
-})
-
-// offline is a database/sql connector and driver whose connections all
-// fail to open.
-type offline struct{}
-
-func (offline) Connect(context.Context) (driver.Conn, error) { return nil, ErrOffline }
-func (offline) Driver() driver.Driver                        { return offline{} }
-func (offline) Open(string) (driver.Conn, error)             { return nil, ErrOffline }
+func IsNoRows(err error) bool { return gormpg.IsNoRows(err) }
 
 // QuoteIdent quotes a (qualified) identifier for SQL text, for DDL, which
 // takes no parameters: QuoteIdent("s", "t") is "s"."t".

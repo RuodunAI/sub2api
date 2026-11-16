@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"gorm.io/gorm"
@@ -29,7 +30,7 @@ type BalanceSnapshot struct {
 const selectBalance = `SELECT account_id, amount_micros, currency, source, updated_at, error, error_at
 	FROM account_balances`
 
-func scanBalance(r interface{ Scan(...any) error }) (*BalanceSnapshot, error) {
+func scanBalance(r RowScanner) (*BalanceSnapshot, error) {
 	var b BalanceSnapshot
 	if err := r.Scan(&b.AccountID, &b.AmountMicros, &b.Currency, &b.Source, &b.UpdatedAt, &b.Error, &b.ErrorAt); err != nil {
 		return nil, err
@@ -53,19 +54,17 @@ func (d *DB) AccountBalances(ctx context.Context, accountIDs []int64) (map[int64
 	if len(accountIDs) == 0 {
 		return out, nil
 	}
-	rows, err := G(ctx, d.Gorm).Raw(selectBalance+` WHERE account_id = ANY(?)`, Int64s(accountIDs)).Rows()
+	err := EachRow(G(ctx, d.Gorm).Raw(selectBalance+` WHERE account_id = ANY(?)`, Int64s(accountIDs)), func(rows *sql.Rows) error {
+		b, err := scanBalance(rows)
+		if err == nil {
+			out[b.AccountID] = b
+		}
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		b, err := scanBalance(rows)
-		if err != nil {
-			return nil, err
-		}
-		out[b.AccountID] = b
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // UpsertBalance writes one balance snapshot.

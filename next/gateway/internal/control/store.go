@@ -10,15 +10,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Masterminds/semver/v3"
-	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
-	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Masterminds/semver/v3"
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -147,18 +149,24 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 func (s *Store) Heartbeat(ctx context.Context, n Node) error {
 	observedLocally := time.Now()
 	var accepted bool
+	// Named parameters: each value is written once however often the
+	// statement uses it. GORM ends a name only at a blank, comma, quote,
+	// parenthesis or semicolon, so a typed one is CAST(@x AS t), not @x::t.
 	err := s.db(ctx).Raw(`WITH changed AS (
- UPDATE updater.nodes SET release_digest=?,core_boot_id=?,mode=?,ready=?,
- last_seen=now(),route_revision=?,stopped=?,offloading=?,telemetry_boot_id=?,
- cpu_percent=CASE WHEN EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=? AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id) THEN ?::double precision ELSE NULL END,error=''
- WHERE node_id=? AND cluster_id=? AND shell_boot_id=? AND enabled AND (
+ UPDATE updater.nodes SET release_digest=@release,core_boot_id=@core,mode=@mode,ready=@ready,
+ last_seen=now(),route_revision=@route,stopped=@stopped,offloading=@offloading,telemetry_boot_id=@boot,
+ cpu_percent=CASE WHEN EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id) THEN CAST(@cpu AS double precision) ELSE NULL END,error=''
+ WHERE node_id=@node AND cluster_id=@cluster AND shell_boot_id=@boot AND enabled AND (
  (release_digest,core_boot_id,mode,ready,route_revision,stopped,offloading,telemetry_boot_id)
- IS DISTINCT FROM (?::text,?::text,?::text,?::boolean,?::bigint,?::boolean,?::boolean,?::text)
- OR (cpu_percent IS NOT NULL AND NOT EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=? AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id))
+ IS DISTINCT FROM (CAST(@release AS text),CAST(@core AS text),CAST(@mode AS text),CAST(@ready AS boolean),CAST(@route AS bigint),CAST(@stopped AS boolean),CAST(@offloading AS boolean),CAST(@boot AS text))
+ OR (cpu_percent IS NOT NULL AND NOT EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id))
  OR (last_seen<now()-interval '5 seconds' AND EXISTS (
- SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=? AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id)))
+ SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id)))
  RETURNING node_id)
- SELECT EXISTS(SELECT 1 FROM changed) OR EXISTS(SELECT 1 FROM updater.nodes WHERE node_id=? AND cluster_id=? AND shell_boot_id=? AND enabled)`, n.ReleaseDigest, n.CoreBootID, n.Mode, n.Ready, n.RouteRevision, n.Stopped, n.Offloading, n.ShellBootID, s.Cluster, n.CPUPercent, n.ID, s.Cluster, n.ShellBootID, n.ReleaseDigest, n.CoreBootID, n.Mode, n.Ready, n.RouteRevision, n.Stopped, n.Offloading, n.ShellBootID, s.Cluster, s.Cluster, n.ID, s.Cluster, n.ShellBootID).Row().Scan(&accepted)
+ SELECT EXISTS(SELECT 1 FROM changed) OR EXISTS(SELECT 1 FROM updater.nodes WHERE node_id=@node AND cluster_id=@cluster AND shell_boot_id=@boot AND enabled)`, map[string]any{
+		"release": n.ReleaseDigest, "core": n.CoreBootID, "mode": n.Mode, "ready": n.Ready, "route": n.RouteRevision,
+		"stopped": n.Stopped, "offloading": n.Offloading, "boot": n.ShellBootID, "cluster": s.Cluster, "cpu": n.CPUPercent, "node": n.ID,
+	}).Row().Scan(&accepted)
 	if err != nil {
 		return err
 	}
@@ -441,7 +449,7 @@ func (s *Store) createLocked(ctx context.Context, digest string, revision int64,
 		}
 		return s.Plan(ctx, id)
 	}
-	if !isNoRows(err) {
+	if !gormpg.IsNoRows(err) {
 		return empty, err
 	}
 	pf, err := s.Preflight(ctx, digest)
@@ -931,7 +939,7 @@ func (s *Store) DisableNode(ctx context.Context, node string) error {
 func (s *Store) AuthorizePeer(ctx context.Context, source, boot, target, scope, digest string) error {
 	var offloading bool
 	err := s.nodeRow(s.db(ctx), source).Where("shell_boot_id = ? AND enabled AND peer_protocol = ? AND strategy = ?", boot, PeerProtocol, PrimaryFirst).Select("offloading").Row().Scan(&offloading)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		return peer.ErrUnauthorized
 	}
 	if err != nil {
@@ -1100,7 +1108,7 @@ func (s *Store) RecordStop(ctx context.Context, n Node) error {
 	var id string
 	var raw []byte
 	err := s.activeUpgrade(s.db(ctx)).Select("id,nodes").Row().Scan(&id, &raw)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		return nil
 	}
 	if err != nil {
@@ -1120,7 +1128,7 @@ func (s *Store) RecordStop(ctx context.Context, n Node) error {
 	if member {
 		var x int
 		err = s.db(ctx).Table("updater.steps").Select("step_id").Where("upgrade_id = ? AND node_id = ? AND action = 'stop'", id, n.ID).Order("step_id DESC").Limit(1).Row().Scan(&x)
-		if isNoRows(err) {
+		if gormpg.IsNoRows(err) {
 			return nil
 		}
 		if err != nil {
@@ -1284,7 +1292,7 @@ func (s *Store) SetPrimary(ctx context.Context, node string) error {
 			var enabled bool
 			var digest string
 			if err = s.nodeRow(tx, node).Select("enabled,release_digest").Row().Scan(&enabled, &digest); err != nil {
-				if isNoRows(err) {
+				if gormpg.IsNoRows(err) {
 					return fmt.Errorf("node %q is not registered", node)
 				}
 				return err
@@ -1316,7 +1324,7 @@ func (s *Store) RemoveNode(ctx context.Context, node string) error {
 			var enabled, stopped bool
 			var lastSeen time.Time
 			if err := s.nodeRow(tx, node).Select("enabled,stopped,last_seen").Row().Scan(&enabled, &stopped, &lastSeen); err != nil {
-				if isNoRows(err) {
+				if gormpg.IsNoRows(err) {
 					return fmt.Errorf("node %q is not registered", node)
 				}
 				return err
@@ -1354,7 +1362,7 @@ func (s *Store) RemoveNode(ctx context.Context, node string) error {
 // PlanStatus returns the current upgrade plan status including blocked reason.
 func (s *Store) PlanStatus(ctx context.Context) (id, status, blockedReason string, err error) {
 	err = s.activeUpgrade(s.db(ctx)).Select("id,status,blocked_reason").Limit(1).Row().Scan(&id, &status, &blockedReason)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		return "", "", "", nil
 	}
 	return

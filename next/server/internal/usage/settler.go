@@ -421,7 +421,7 @@ func lockUsageRow(ctx context.Context, tx *gorm.DB, id int64) (string, error) {
 	}
 	var status string
 	err := store.G(ctx, tx).Model(&model.UsageLog{}).Select("billing_status").Where("id = ?", id).
-		Clauses(store.ForUpdate).Row().Scan(&status)
+		Clauses(store.ForUpdate()).Row().Scan(&status)
 	return status, err
 }
 
@@ -1168,6 +1168,9 @@ func (s *Service) RetryPending(ctx context.Context) (int, error) {
 }
 
 func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLocked bool) (*core.LedgerResult, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	cost, detail, exprHash, err := s.priceOf(ctx, p)
 	if err != nil {
 		return nil, err

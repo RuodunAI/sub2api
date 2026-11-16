@@ -23,6 +23,11 @@ type UninstallState struct {
 }
 
 func readUninstallState(ctx context.Context, q *gorm.DB, key string, lock bool) (*UninstallState, error) {
+	if lock {
+		if err := store.RequireTx(q); err != nil {
+			return nil, err
+		}
+	}
 	var row model.PluginUninstall
 	err := uninstallState(store.G(ctx, q), key, lock).Take(&row).Error
 	if store.IsNoRows(err) {
@@ -52,7 +57,7 @@ func readUninstallState(ctx context.Context, q *gorm.DB, key string, lock bool) 
 func uninstallState(db *gorm.DB, key string, lock bool) *gorm.DB {
 	db = uninstallRow(db, key).Select("epoch, target_boot_ids, stopped_boot_ids, requested_at")
 	if lock {
-		db = db.Clauses(store.ForUpdate)
+		db = db.Clauses(store.ForUpdate())
 	}
 	return db
 }
@@ -88,11 +93,7 @@ func (s *Service) ConfirmUninstallStopped(ctx context.Context, key string, in Co
 	var out *UninstallState
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
-		var keyLocked string
-		if err := lockedPlugin(g, key).Select("key").Take(&keyLocked).Error; err != nil {
-			if store.IsNoRows(err) {
-				return core.ErrNotFound.WithMessage("plugin not found")
-			}
+		if err := lockPlugin(g, key); err != nil {
 			return err
 		}
 		state, err := readUninstallState(ctx, tx, key, true)

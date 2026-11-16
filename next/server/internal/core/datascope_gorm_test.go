@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"context"
+	"database/sql/driver"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,7 +35,11 @@ func TestScopeTableScopeSQL(t *testing.T) {
 		require.Len(t, vars, len(want))
 		for i, v := range vars {
 			if ids, ok := want[i].([]int64); ok {
-				assert.Equal(t, store.Int64s(ids), v, "arg %d is one array parameter", i)
+				valuer, isValuer := v.(driver.Valuer)
+				require.True(t, isValuer, "arg %d is one array parameter, not %T", i, v)
+				got, err := valuer.Value()
+				require.NoError(t, err)
+				assert.Equal(t, ids, got, "arg %d", i)
 			} else {
 				assert.Equal(t, want[i], v, "arg %d", i)
 			}

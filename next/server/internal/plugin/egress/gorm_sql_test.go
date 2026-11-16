@@ -21,17 +21,30 @@ func TestSQLResetOpenLogs(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return resetOpenLogs(tx, "node-1", sqlFrom) })
 }
 
-// The log rows go in as one multi-row INSERT that returns their ids: an
-// open row and a finished one, whose zero bytes and error take the column
-// defaults (0 and the empty string).
+// The log rows go in as one statement of twelve array parameters, numbered
+// by their position: the open ones return their ids by it, the finished
+// ones (whose closed_at is their start plus duration) return nothing.
 func TestSQLInsertLogRows(t *testing.T) {
-	closed := sqlTo
-	logs := []model.PluginEgressLog{
-		{PluginKey: "demo", NodeID: "node-1", Network: "tcp", Host: "api.example.com", Port: 443, StartedAt: sqlFrom, Result: "open"},
+	rows := []logEntry{
+		{PluginKey: "demo", NodeID: "node-1", Network: "tcp", Host: "api.example.com", Port: 443, StartedAt: sqlFrom, Result: ResultOpen},
 		{PluginKey: "demo", NodeID: "node-1", Network: "tcp", Host: "api.example.com", Port: 443, StartedAt: sqlFrom,
-			DurationMs: 1500, BytesIn: 10, Result: ResultOK, ClosedAt: &closed},
+			DurationMS: 1500, BytesIn: 10, Result: ResultOK},
 	}
-	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return insertLogRows(tx, logs) })
+	t.Run("open", func(t *testing.T) {
+		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return insertOpenRows(tx, rows[:1]).Scan(&[]int64{}) })
+	})
+	t.Run("done", func(t *testing.T) {
+		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return insertDoneRows(tx, rows) })
+	})
+	// The text does not depend on how many rows there are.
+	one, _, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB { return insertDoneRows(tx, rows[:1]) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, _, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB { return insertDoneRows(tx, rows) })
+	if err != nil || one != two {
+		t.Fatalf("the statement changes with the batch: %q, %q, %v", one, two, err)
+	}
 }
 
 // The int32 wrap of a duration happens in Go, before the array is built.

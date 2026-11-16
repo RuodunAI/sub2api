@@ -217,7 +217,21 @@ func pluginRow(db *gorm.DB, key string) *gorm.DB {
 // lockedPlugin is the plugins row of key, read FOR UPDATE: the lock every
 // lifecycle change takes first (no lock-order deadlock with the grant rows).
 func lockedPlugin(db *gorm.DB, key string) *gorm.DB {
-	return pluginRow(db, key).Clauses(store.ForUpdate)
+	return pluginRow(db, key).Clauses(store.ForUpdate())
+}
+
+// lockPlugin locks the plugins row of key (lockedPlugin) and reads
+// nothing from it; NotFound when there is none.
+func lockPlugin(tx *gorm.DB, key string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
+	var locked string
+	err := lockedPlugin(tx, key).Select("key").Take(&locked).Error
+	if store.IsNoRows(err) {
+		return core.ErrNotFound.WithMessage("plugin not found")
+	}
+	return err
 }
 
 // versionRow is the plugin_versions row of key@version.

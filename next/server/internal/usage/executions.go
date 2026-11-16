@@ -51,6 +51,10 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 	}
 	out := &pluginv1.ExecutionReceipt{}
 	before := func(tx *gorm.DB) error {
+		// The execution row stays locked to the end of the transaction.
+		if err := store.RequireTx(tx); err != nil {
+			return err
+		}
 		var x struct {
 			state, op, digest, taskID, requestID, pluginKey string
 			accountID                                       int64

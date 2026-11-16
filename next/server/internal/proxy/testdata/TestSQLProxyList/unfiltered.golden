@@ -3,4 +3,4 @@ SELECT count(*) FROM proxies p WHERE ($1::boolean OR COALESCE(p.created_by = $2:
 -- vars
 $1 bool true
 $2 int64 0
-$3 store.Int64s []
+$3 core.int64s []

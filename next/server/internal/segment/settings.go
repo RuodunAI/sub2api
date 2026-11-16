@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -346,9 +345,12 @@ func lockPairs(ctx context.Context, tx *gorm.DB, items []pairInput) (segments, g
 // lockRows reports which of ids are rows of the table and locks those, in id
 // order, against deletion.
 func lockRows(ctx context.Context, tx *gorm.DB, table string, ids []int64) (map[int64]bool, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	var found []int64
 	if err := store.G(ctx, tx).Table(table).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
-		Clauses(clause.Locking{Strength: store.LockingStrengthKeyShare}).Pluck("id", &found).Error; err != nil {
+		Clauses(store.Lock(store.LockingStrengthKeyShare)).Pluck("id", &found).Error; err != nil {
 		return nil, err
 	}
 	known := make(map[int64]bool, len(found))

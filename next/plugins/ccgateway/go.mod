@@ -13,6 +13,7 @@ require (
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
+	github.com/Sub2API-Devs/sup2api/next/runtime-contract v0.0.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/fergusstrange/embedded-postgres v1.34.0 // indirect
@@ -49,3 +50,5 @@ require (
 replace github.com/Sub2API-Devs/sup2api/next/sdk => ../../sdk
 
 replace github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts => ./companions/contracts
+
+replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => ../../runtime-contract

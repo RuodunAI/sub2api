@@ -12,6 +12,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 )
 
 // SQLState is the SQLSTATE code of a PostgreSQL error in err's chain, ""
@@ -41,10 +43,10 @@ func Hint(err error) string {
 	return ""
 }
 
-// IsUniqueViolation reports a 23505 error (optionally on a named constraint).
+// IsUniqueViolation reports a 23505 error (optionally on a named
+// constraint), as the gateway and the plugin SDK do.
 func IsUniqueViolation(err error, constraint string) bool {
-	pg := pgError(err)
-	return pg != nil && pg.Code == "23505" && (constraint == "" || pg.ConstraintName == constraint)
+	return gormpg.IsUniqueViolation(err, constraint)
 }
 
 // IsForeignKeyViolation reports a write that refers to a row that is not

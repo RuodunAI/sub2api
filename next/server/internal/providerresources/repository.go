@@ -1,6 +1,8 @@
 package providerresources
 
 import (
+	"maps"
+
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -38,8 +40,9 @@ const (
 
 // update writes set to the row of public ID id in table (resourcesTable or
 // versionsTable) and moves its updated_at to now(), as every state change
-// of these tables does.
+// of these tables does. set itself is left as it is.
 func update(db *gorm.DB, table, id string, set map[string]any) *gorm.DB {
+	set = maps.Clone(set)
 	set["updated_at"] = gorm.Expr("now()")
 	return db.Table(table).Where("public_id = ?", id).Updates(set)
 }

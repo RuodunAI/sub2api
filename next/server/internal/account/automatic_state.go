@@ -79,7 +79,7 @@ func (s *Service) applyAutomaticState(ctx context.Context, owner string, id int6
 		err := store.G(ctx, tx).Model(&model.Account{}).Select(`name,plugin_key,type,status,status_reason,auto_disabled_source,auto_disable,auto_disabled_until,
 		deferred_auto_disable,deferred_auto_disable_reason,deferred_auto_disabled_until,clock_timestamp()`).
 			Where("id = ? AND deleted_at IS NULL AND (? = '' OR plugin_key = ?)", id, owner, owner).
-			Clauses(store.ForUpdate).Row().
+			Clauses(store.ForUpdate()).Row().
 			Scan(&name, &pluginKey, &typ, &out.Status, &out.Reason, &source, &allowed, &until, &deferred, &deferredReason, &deferredUntil, &now)
 		if store.IsNoRows(err) {
 			return notFound(ctx)

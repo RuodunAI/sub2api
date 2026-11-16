@@ -3,6 +3,7 @@ package rollout
 import (
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
@@ -30,9 +31,9 @@ func openRollouts(g *gorm.DB, key string) *gorm.DB {
 }
 
 // updatePlugin writes set to the plugin row, as a change of it
-// (model.PluginChange).
+// (rows.Change).
 func updatePlugin(g *gorm.DB, key string, set map[string]any) *gorm.DB {
-	return g.Model(&model.Plugin{}).Where("key = ?", key).Updates(model.PluginChange(set))
+	return g.Model(&model.Plugin{}).Where("key = ?", key).Updates(rows.Change(set))
 }
 
 // rolloutCols are the plugin_rollouts columns of a rolloutRow, read into a

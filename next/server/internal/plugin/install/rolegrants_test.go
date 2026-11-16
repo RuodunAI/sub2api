@@ -245,6 +245,9 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	if _, err := e.svc.ReviewRoleGrants(ctx, "guard", "0.1.0", true, e.admin); core.AsError(err).Code != "not_found" {
 		t.Fatalf("a version with nothing to review: %v", err)
 	}
+	if _, err := e.svc.ReviewRoleGrants(ctx, "absent", "0.1.1", true, e.admin); core.AsError(err).Message != "plugin not found" {
+		t.Fatalf("a plugin that does not exist: %v", err)
+	}
 	_, err = e.svc.ReviewRoleGrants(ctx, "guard", "0.1.1", true, e.admin)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"plugin.guard:rules:edit=auditor", "plugin.guard:rules:export=admin", "plugin.guard:rules:view=user"}, e.perms.granted)

@@ -3,4 +3,4 @@ INSERT INTO events (type, payload)
 	SELECT t, p FROM unnest($1::varchar[], $2::jsonb[]) WITH ORDINALITY AS e(t, p, o) ORDER BY o
 -- vars
 $1 store.Strings [balance.changed user.updated]
-$2 store.Array[github.com/Sub2API-Devs/sup2api/next/server/internal/store.Bytes] [{"user_id":7} {}]
+$2 gormpg.Array[github.com/Sub2API-Devs/sup2api/next/server/internal/store.Bytes] [{"user_id":7} {}]

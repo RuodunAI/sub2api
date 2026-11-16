@@ -83,10 +83,13 @@
 
 核心、网关和插件的数据库访问从 pgx 改为 GORM，驱动仍是 pgx，经 `database/sql` 连接池。语句的条件、锁、`ON CONFLICT`、`RETURNING` 不变，用户看到的功能不变。对外可见的变化：
 
-- **插件 SDK 0.2.0 不兼容**：`Host.DB(ctx)` 返回 `*gorm.DB`（以前是 `*pgxpool.Pool`），第三方插件把 SDK 升到这一版后，用到它的代码和自实现的 `Host` 测试替身要改写。返回的句柄绑定这次调用的 ctx，ctx 结束后再用会报错，不要跨调用缓存；仍用 pgx 的插件可以用 `Host.DSN` 加 `egress.DialContext` 自己建池（CONTRACTS §11.2）。已编译的旧插件二进制不受影响（gRPC 协议没变）。插件代码不再 import pgx，SDK 里只有 `sdk/pgdb/pgdb.go` 用 pgx（`TestOnlyPgdbImportsPgx` 检查）。
+- **插件 SDK 0.2.0 不兼容**：`Host.DB(ctx)` 返回 `*gorm.DB`（以前是 `*pgxpool.Pool`），第三方插件把 SDK 升到这一版后，用到它的代码和自实现的 `Host` 测试替身要改写。返回的句柄绑定这次调用的 ctx，ctx 结束后再用会报错，不要跨调用缓存；仍用 pgx 的插件可以用 `Host.DSN` 加 `egress.DialContext` 自己建池（CONTRACTS §11.2）。已编译的旧插件二进制不受影响（gRPC 协议没变）。SDK 0.2.0 依赖 `runtime-contract`：插件的 `go.mod` 要加 `replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => ../../runtime-contract`（CONTRACTS §2），内置插件已加。插件、SDK、网关、工具都不再 import pgx，驱动配置与数组类型来自 `runtime-contract/gormpg`（`TestNoPgxImports` 检查）。
 - **`sub2api-plugin pack` 默认执行 `db check`**：有 `internal/model` 和 `database` 声明的插件，打包前会在临时 schema 上核对 GORM 模型与迁移是否一致（按系统目录比对列类型、NOT NULL、默认值、主键、索引和约束定义；迁移以受限角色执行；迁移里的函数、视图、序列等要在模型包的 `Unmanaged()` 里声明），这一步需要 PostgreSQL（`TEST_DATABASE_URL`；没设置时启动本机 testpg）。`--skip-db-check` 可以关闭。`sub2api-plugin db diff` 可以从模型生成下一个迁移（CONTRACTS §2）。
 - **River 只轮询**：集群任务改由 `database/sql` 驱动的 River 执行，没有 LISTEN。事务里投递的运行、其他节点投递的运行，最多晚 1 秒被取走（CONTRACTS §77.1）。
-- **DSN 里的连接池参数**：`pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效（核心的 `SUB2API_PG_MAX_CONNS` 仍然优先）。`pool_min_conns`、`pool_min_idle_conns`、`pool_health_check_period`、`pool_max_conn_lifetime_jitter` 不再生效，启动时记一条 WARN `database DSN pool parameters ignored`。核心和网关都是这样。
+- **连接与 DSN 里的连接池参数**：核心、网关、插件 SDK 用同一份 `runtime-contract/gormpg` 打开数据库，DSN 由 pgx 解析（取代手写的 `runtime-contract/pgdsn`）。`pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效（核心的 `SUB2API_PG_MAX_CONNS`、网关的 `SUB2API_GATEWAY_POOL_MAX_CONNS` 仍然优先）。`pool_min_conns`、`pool_min_idle_conns`、`pool_health_check_period`、`pool_max_conn_lifetime_jitter` 不再生效，启动时记一条 WARN `database DSN pool parameters ignored`。核心和网关都是这样；插件的连接池只按 SDK 的选项（`pluginsdk.WithDBPoolSize`）确定，DSN 里的 `pool_*` 一律去掉。所有连接固定 `DateStyle=ISO`、`IntervalStyle=postgres`（数组列按这两种格式解析）。
+- **出口日志**：插件出口连接的日志行一次插入后按行序（`WITH ORDINALITY`）取回 id；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。
+- **网关**：升级协调的一步（Coordinate）和节点准入各在一个事务里完成，进度在提交后才计。
+- **开发约束**（核心）：需要事务的函数（行锁、事务级 advisory 锁）在连接池上调用直接返回错误（`store.RequireTx`，gormguard `[tx-lock]` 检查）；`store.ForUpdate()` 改为函数，返回不可变的行锁（`.Of`、`.SkipLocked`），共享锁用 `store.Lock`；禁止 `Debug()` 与覆盖会话配置的 `Session`；`core` 不再 import `store`（`[core-store]`）。
 
 #### 插件版本
 

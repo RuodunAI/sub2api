@@ -474,7 +474,7 @@ func (s *Service) delete(c *gin.Context) {
 		g := store.G(ctx, tx)
 		var locked []int64
 		if err := g.Model(&model.Group{}).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
-			Clauses(store.ForUpdate).Pluck("id", &locked).Error; err != nil {
+			Clauses(store.ForUpdate()).Pluck("id", &locked).Error; err != nil {
 			return err
 		}
 		if !slices.Contains(locked, id) {

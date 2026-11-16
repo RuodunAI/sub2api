@@ -11,7 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -308,7 +307,7 @@ func (s *Service) runtimePurge(c *gin.Context) {
 		err := g.Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").
 			Select("a.id, "+sqlPendingPurge+" AS retained").
 			Where("r.key = ? AND a.plugin_key = 'ccgateway'", key).
-			Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "r"}}).
+			Clauses(store.ForUpdate().Of("r")).
 			Take(&r).Error
 		if store.IsNoRows(err) {
 			return nil

@@ -319,16 +319,18 @@ func EnsureAccountQuota(ctx context.Context, q *gorm.DB, id int64, pluginRevisio
 	return res.RowsAffected > 0, nil
 }
 
-func ensureAccountQuota(db *gorm.DB, id int64, rev string, auto bool) *gorm.DB {
-	return db.Exec(`INSERT INTO account_quota_snapshots(account_id,plugin_revision,auto_refresh,next_check_at)
-		SELECT id,?,?,CASE WHEN ? THEN now() END FROM accounts WHERE id=? AND deleted_at IS NULL
-		ON CONFLICT(account_id) DO UPDATE SET plugin_revision=?,auto_refresh=?,
-		generation=CASE WHEN account_quota_snapshots.plugin_revision<>? THEN nextval('account_quota_generation_seq') ELSE account_quota_snapshots.generation END,
-		lease_until=CASE WHEN account_quota_snapshots.plugin_revision<>? THEN NULL ELSE account_quota_snapshots.lease_until END,
+// ensureAccountQuotaSQL names each value once however often it is used.
+var ensureAccountQuotaSQL = NewNumbered(`INSERT INTO account_quota_snapshots(account_id,plugin_revision,auto_refresh,next_check_at)
+		SELECT id,$rev,$auto,CASE WHEN $auto THEN now() END FROM accounts WHERE id=$id AND deleted_at IS NULL
+		ON CONFLICT(account_id) DO UPDATE SET plugin_revision=$rev,auto_refresh=$auto,
+		generation=CASE WHEN account_quota_snapshots.plugin_revision<>$rev THEN nextval('account_quota_generation_seq') ELSE account_quota_snapshots.generation END,
+		lease_until=CASE WHEN account_quota_snapshots.plugin_revision<>$rev THEN NULL ELSE account_quota_snapshots.lease_until END,
 		revision=account_quota_snapshots.revision+1,
-		next_check_at=CASE WHEN NOT ? THEN NULL WHEN account_quota_snapshots.plugin_revision<>? THEN now() ELSE COALESCE(account_quota_snapshots.next_check_at,now()) END
-		WHERE account_quota_snapshots.plugin_revision<>? OR account_quota_snapshots.auto_refresh<>?`,
-		rev, auto, auto, id, rev, auto, rev, rev, auto, rev, rev, auto)
+		next_check_at=CASE WHEN NOT $auto THEN NULL WHEN account_quota_snapshots.plugin_revision<>$rev THEN now() ELSE COALESCE(account_quota_snapshots.next_check_at,now()) END
+		WHERE account_quota_snapshots.plugin_revision<>$rev OR account_quota_snapshots.auto_refresh<>$auto`, "id", "rev", "auto")
+
+func ensureAccountQuota(db *gorm.DB, id int64, rev string, auto bool) *gorm.DB {
+	return ensureAccountQuotaSQL.Exec(db, id, rev, auto)
 }
 
 func ResetAccountQuota(ctx context.Context, q *gorm.DB, id int64) error {
@@ -400,20 +402,20 @@ func (d *DB) CompleteAccountQuota(ctx context.Context, c *QuotaClaim, windows ma
 	return res.Error == nil && res.RowsAffected == 1, res.Error
 }
 
-// completeAccountQuota repeats msg and the claim's revision for each of
-// their uses: GORM's placeholders are positional.
-func completeAccountQuota(db *gorm.DB, c *QuotaClaim, windows, msg string, next time.Time) *gorm.DB {
-	rev := c.Revision
-	return db.Exec(`UPDATE account_quota_snapshots q SET
-		windows=CASE WHEN ?='' AND revision=? THEN windows||?::jsonb ELSE windows END,
-		source=CASE WHEN ?='' AND revision=? THEN 'active' ELSE source END,
-		updated_at=CASE WHEN ?='' AND revision=? THEN clock_timestamp() ELSE updated_at END,
-		error=CASE WHEN revision=? THEN ? ELSE error END,
-		refresh_status=CASE WHEN revision<>? THEN refresh_status WHEN ?='' THEN 'ready' ELSE 'error' END,
-		failures=CASE WHEN revision<>? THEN failures WHEN ?='' THEN 0 ELSE LEAST(failures+1,10) END,
-		next_check_at=CASE WHEN revision<>? THEN next_check_at ELSE ?::timestamptz END,lease_until=NULL,revision=revision+1
-		WHERE account_id=? AND generation=? AND lease_token=? AND lease_until>clock_timestamp()
+// completeAccountQuotaSQL names each value once however often it is used:
+// msg and the claim's revision appear six and seven times.
+var completeAccountQuotaSQL = NewNumbered(`UPDATE account_quota_snapshots q SET
+		windows=CASE WHEN $msg='' AND revision=$rev THEN windows||$windows::jsonb ELSE windows END,
+		source=CASE WHEN $msg='' AND revision=$rev THEN 'active' ELSE source END,
+		updated_at=CASE WHEN $msg='' AND revision=$rev THEN clock_timestamp() ELSE updated_at END,
+		error=CASE WHEN revision=$rev THEN $msg ELSE error END,
+		refresh_status=CASE WHEN revision<>$rev THEN refresh_status WHEN $msg='' THEN 'ready' ELSE 'error' END,
+		failures=CASE WHEN revision<>$rev THEN failures WHEN $msg='' THEN 0 ELSE LEAST(failures+1,10) END,
+		next_check_at=CASE WHEN revision<>$rev THEN next_check_at ELSE $next::timestamptz END,lease_until=NULL,revision=revision+1
+		WHERE account_id=$account AND generation=$generation AND lease_token=$token AND lease_until>clock_timestamp()
 		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`,
-		msg, rev, windows, msg, rev, msg, rev, rev, msg, rev, msg, rev, msg, rev, next, c.AccountID, c.Generation, c.Token)
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`, "msg", "rev", "windows", "next", "account", "generation", "token")
+
+func completeAccountQuota(db *gorm.DB, c *QuotaClaim, windows, msg string, next time.Time) *gorm.DB {
+	return completeAccountQuotaSQL.Exec(db, msg, c.Revision, windows, next, c.AccountID, c.Generation, c.Token)
 }
