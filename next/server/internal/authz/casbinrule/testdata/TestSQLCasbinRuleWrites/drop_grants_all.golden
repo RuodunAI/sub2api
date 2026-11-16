@@ -1,11 +1,4 @@
 -- sql
-SELECT p.key FROM permissions p JOIN roles r ON r.key = $3
--- vars
-$1 string "p"
-$2 string "r:admin"
-$3 string "admin"
-
--- sql
 DELETE FROM "casbin_rule" WHERE (ptype = $1 AND v0 = $2) AND v1 IN (SELECT p.key FROM permissions p JOIN roles r ON r.key = $3)
 -- vars
 $1 string "p"

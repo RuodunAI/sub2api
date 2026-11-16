@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -83,7 +84,7 @@ func Assert(t testing.TB, build func(*gorm.DB) *gorm.DB) {
 func AssertRun(t testing.TB, run func(*gorm.DB) error) {
 	t.Helper()
 	rec := &recorder{}
-	s := DB().Session(&gorm.Session{NewDB: true, Context: context.WithValue(context.Background(), recorderKey{}, rec)})
+	s := DB().Session(&gorm.Session{NewDB: true, Context: context.WithValue(context.Background(), recorderKey{}, rec), Logger: runLogger})
 	s.Statement.ConnPool = dryTx{s.Statement.ConnPool}
 	err := run(s)
 	if err != nil && !errors.Is(err, gorm.ErrDryRunModeUnsupported) {
@@ -107,13 +108,18 @@ type recorder struct{ stmts []string }
 
 type recorderKey struct{}
 
+// runLogger is AssertRun's logger: silent as store.Open's, but not
+// logger.Discard, which is the logger GORM renders a subquery with. The
+// subquery's SELECT is then no statement of its own.
+var runLogger = logger.Discard.LogMode(logger.Silent)
+
 // init adds a callback after each finisher of the DryRun instance that
-// appends the statement to the recorder of its context; a session without
-// one (Assert's) is untouched. At init, since registering recompiles the
+// appends the statement to the recorder of its context, but for a
+// subquery's; a session without one (Assert's) is untouched. At init, since registering recompiles the
 // callback chains other (parallel) tests run.
 func init() {
 	record := func(db *gorm.DB) {
-		if rec, ok := db.Statement.Context.Value(recorderKey{}).(*recorder); ok && db.Statement.SQL.Len() > 0 {
+		if rec, ok := db.Statement.Context.Value(recorderKey{}).(*recorder); ok && db.Logger != logger.Discard && db.Statement.SQL.Len() > 0 {
 			rec.stmts = append(rec.stmts, Render(db.Statement.SQL.String(), db.Statement.Vars))
 		}
 	}

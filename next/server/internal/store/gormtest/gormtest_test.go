@@ -66,6 +66,20 @@ func TestSnapshotForUpdateSkipLocked(t *testing.T) {
 	})
 }
 
+// AssertRun records the statements a function runs, and a subquery only
+// inside its statement: GORM renders the subquery through the query
+// callbacks too.
+func TestSnapshotRunSubquery(t *testing.T) {
+	AssertRun(t, func(tx *gorm.DB) error {
+		live := tx.Table("users").Select("id").Where("status = ?", "active")
+		if err := tx.Table("request_precharges").Where("user_id IN (?)", live).Delete(&precharge{}).Error; err != nil {
+			return err
+		}
+		var ids []int64
+		return tx.Table("request_precharges").Select("user_id").Where("user_id IN (?)", live).Scan(&ids).Error
+	})
+}
+
 // Why store.Int64s exists (and the guard in package gormguard forbids plain
 // slices): GORM expands a []int64 argument into one placeholder per element.
 func TestPlainSliceIsExpanded(t *testing.T) {
