@@ -139,8 +139,13 @@ func (r *Router) requireScoped(actions []perm.Key) gin.HandlerFunc {
 		var granted []string
 		held := false
 		for _, a := range actions {
-			// Every action gets its scope, empty when not held.
-			scope := set.DataScope(uid, a)
+			// Every action gets its scope, empty when not held, its team
+			// resolved.
+			scope, err := core.ResolveScope(ctx, r.authz, set.DataScope(uid, a), set.Version)
+			if err != nil {
+				Fail(c, err)
+				return
+			}
 			ctx = core.WithScope(ctx, a, scope)
 			held = held || !scope.Empty()
 			if scope.All {

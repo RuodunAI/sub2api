@@ -56,7 +56,7 @@ var entities = []*entity{
 		kind: "accounts", from: "accounts a", id: "a.id", name: "a.name", hint: "a.plugin_key", status: "a.status",
 		live: "a.deleted_at IS NULL",
 		read: "account:read", table: core.AccountRows,
-		mine:   &ownRows{scope: callerIs("a.created_by = ?")},
+		mine:   &ownRows{scope: callerIs("a.owner_id = ?")},
 		prefer: []ref{{param: "prefer_group_id", cond: "EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = ?)"}},
 	},
 	{

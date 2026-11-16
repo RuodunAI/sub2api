@@ -118,14 +118,14 @@ func TestCatalogFlaggedSets(t *testing.T) {
 		}
 	}
 	wantSensitive := []string{
-		"account:credential:view", "account:delete", "account:relay",
+		"account:credential:view", "account:delete", "account:owner:update", "account:relay",
 		"apikey:self:manage", "balance:adjust", "balance:adjust:any", "group:manage",
 		"plugin:grant:critical", "plugin:grant:db_schema_unconfined", "plugin:grant:high",
 		"plugin:install", "plugin:manage", "plugin:uninstall",
 		"price:manage", "proxy:manage", "publisher:manage",
 		"role:assign", "role:define", "settings:manage",
 		"system:update:execute", "system:update:recover",
-		"task:manage", "task:run", "usage:settle", "user:delete", "user:password:reset",
+		"task:manage", "task:run", "usage:account:read", "usage:settle", "user:delete", "user:password:reset",
 	}
 	wantStepUp := []string{
 		"account:credential:view", "apikey:self:manage",
@@ -327,7 +327,7 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	var keys []string
-	if err := db.SQL.QueryRowContext(ctx, `SELECT array_agg(key ORDER BY key) FROM roles WHERE key LIKE 'supplier%' AND builtin`).Scan(&keys); err != nil || !slices.Equal(keys, []string{key}) {
+	if err := db.SQL.QueryRowContext(ctx, `SELECT array_agg(key ORDER BY key) FROM roles WHERE key IN ('supplier', 'supplier_custom') AND builtin`).Scan(&keys); err != nil || !slices.Equal(keys, []string{key}) {
 		t.Fatalf("built-in roles after the rename: %v, %v", keys, err)
 	}
 	if err := db.SQL.QueryRowContext(ctx, `SELECT builtin FROM roles WHERE id = $1`, id).Scan(&builtin); err != nil || builtin {

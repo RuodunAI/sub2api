@@ -1,10 +1,10 @@
 -- sql
 SELECT "id","key","superuser" FROM "roles" WHERE key = ANY($1)
 -- vars
-$1 store.Strings [super_admin admin operator supplier user]
+$1 store.Strings [super_admin admin operator supplier supplier_agent user]
 
 -- sql
-INSERT INTO "roles" ("key","name","description","builtin","superuser","assign_custom","defaults_rev") VALUES ($1,$2,$3,$4,$5,DEFAULT,$6),($7,$8,$9,$10,DEFAULT,$11,$12),($13,$14,$15,$16,DEFAULT,DEFAULT,$17),($18,$19,$20,$21,DEFAULT,DEFAULT,$22),($23,$24,$25,$26,DEFAULT,DEFAULT,$27) RETURNING "id","description","builtin","superuser","created_at","updated_at","assign_custom","defaults_rev","revision"
+INSERT INTO "roles" ("key","name","description","builtin","superuser","assign_custom","defaults_rev") VALUES ($1,$2,$3,$4,$5,DEFAULT,$6),($7,$8,$9,$10,DEFAULT,$11,$12),($13,$14,$15,$16,DEFAULT,DEFAULT,$17),($18,$19,$20,$21,DEFAULT,DEFAULT,$22),($23,$24,$25,$26,DEFAULT,DEFAULT,$27),($28,$29,$30,$31,DEFAULT,DEFAULT,$32) RETURNING "id","description","builtin","superuser","created_at","updated_at","assign_custom","defaults_rev","revision"
 -- vars
 $1 string "super_admin"
 $2 jsontext.Value {"en":"Super admin","zh":"超级管理员"}
@@ -25,11 +25,16 @@ $16 bool true
 $17 int 1
 $18 string "supplier"
 $19 jsontext.Value {"en":"Supplier","zh":"供应商"}
-$20 jsontext.Value {"en":"Add-on role: own accounts and proxies, own usage","zh":"附加角色：管理自己创建的账号和代理，查看自己的用量"}
+$20 jsontext.Value {"en":"Add-on role: own accounts and proxies, own usage","zh":"附加角色：管理自己的账号和代理，查看自己的用量"}
 $21 bool true
-$22 int 1
-$23 string "user"
-$24 jsontext.Value {"en":"User","zh":"普通用户"}
-$25 jsontext.Value {"en":"Own API keys, usage and balance; gateway access","zh":"管理自己的 API Key、查看自己的用量和余额、调用网关"}
+$22 int 2
+$23 string "supplier_agent"
+$24 jsontext.Value {"en":"Supplier agent","zh":"代理供应商"}
+$25 jsontext.Value {"en":"Add-on role: a supplier who also manages the users below it and reads their accounts and usage","zh":"附加角色：拥有供应商的全部权限，并管理下级用户、查看下级的账号和用量"}
 $26 bool true
 $27 int 1
+$28 string "user"
+$29 jsontext.Value {"en":"User","zh":"普通用户"}
+$30 jsontext.Value {"en":"Own API keys, usage and balance; gateway access","zh":"管理自己的 API Key、查看自己的用量和余额、调用网关"}
+$31 bool true
+$32 int 1

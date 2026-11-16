@@ -370,7 +370,11 @@ func (fakeTokens) VerifyAccessKey(_ context.Context, raw, _ string) (core.Access
 type fakeAuthz struct {
 	keys      map[int64][]string
 	undecided map[string]bool
+	// teams resolves team scopes (core.TeamResolver): the users below each.
+	teams map[int64][]int64
 }
+
+func (a fakeAuthz) Team(_ context.Context, uid, _ int64) ([]int64, error) { return a.teams[uid], nil }
 
 func (a fakeAuthz) Can(ctx context.Context, uid int64, key string) (bool, error) {
 	if a.undecided[key] {

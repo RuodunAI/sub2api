@@ -10,7 +10,12 @@ import (
 // BuiltinRoleKeys are the built-in roles a plugin permission may name in
 // defaults (the core's built-in roles but the super admin; a core test
 // keeps the lists in step).
-var BuiltinRoleKeys = []string{"admin", "operator", "supplier", "user"}
+var BuiltinRoleKeys = []string{"admin", "operator", "supplier", "supplier_agent", "user"}
+
+// RoleDefaultsFrom maps a built-in role to the one whose defaults it also
+// takes when a manifest does not name it: a supplier agent has everything
+// a supplier has (DefaultGrants).
+var RoleDefaultsFrom = map[string]string{"supplier_agent": "supplier"}
 
 // UserPermissionRisks are the risks a user permission may declare.
 var UserPermissionRisks = []string{RiskLow, RiskSensitive, RiskCritical}
@@ -29,7 +34,7 @@ const (
 // ReservedScopeResources may not be a plugin scope resource: the core's own
 // scope resources (a plugin scopes accounts through routes[].accounts) and
 // the values resource.
-var ReservedScopeResources = []string{"account", "proxy", "group", ScopeValueResource}
+var ReservedScopeResources = []string{"account", "proxy", "group", "user", ScopeValueResource}
 
 // RoleDefault is one value of UserPermission.Defaults: JSON true (Unscoped)
 // or an array of scopes. JSON false decodes to the zero value, which check
@@ -152,8 +157,10 @@ func CanonicalSuffixes(suffixes []string) []string {
 }
 
 // DefaultGrants maps each role of up.Defaults to its canonical suffixes
-// (GrantSuffix, CanonicalSuffixes). nil for a critical permission. Entries check
-// rejects are skipped, so callers of a checked manifest need no errors.
+// (GrantSuffix, CanonicalSuffixes), and each role of RoleDefaultsFrom the
+// manifest does not name to those of the role it follows. nil for a
+// critical permission. Entries check rejects are skipped, so callers of a
+// checked manifest need no errors.
 func (up UserPermission) DefaultGrants() map[string][]string {
 	if len(up.Defaults) == 0 || up.RiskLevel() == RiskCritical {
 		return nil
@@ -166,6 +173,11 @@ func (up UserPermission) DefaultGrants() map[string][]string {
 	for role, d := range up.Defaults {
 		if suffixes, _ := d.Suffixes(scope.GrantSuffix); suffixes != nil {
 			out[role] = suffixes
+		}
+	}
+	for role, from := range RoleDefaultsFrom {
+		if _, named := up.Defaults[role]; !named && out[from] != nil {
+			out[role] = out[from]
 		}
 	}
 	return out

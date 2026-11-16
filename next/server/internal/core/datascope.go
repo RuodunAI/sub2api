@@ -13,12 +13,18 @@ import (
 // is never compiled in: a group range is checked against account_groups as
 // it is now, so binding or unbinding an account takes effect at once.
 type DataScope struct {
-	All    bool
-	Owner  int64   // own: rows created by Owner; 0 = none
+	All bool
+	// Owners: rows owned by one of them (the owner column of ScopeTable),
+	// sorted; own gives the holder, team the holder and, once resolved
+	// (ResolveScope), every user below it (CONTRACTS §102).
+	Owners []int64
 	Groups []int64 // group/G; 0 = group/* (bound to any group)
 	IDs    []int64 // account/X or proxy/X
 	PairG  []int64 // group/G/account/X: G, 0 for group/*; PairID holds X
 	PairID []int64
+	// team is the holder of a team scope ResolveScope has not resolved
+	// yet, 0 for none.
+	team int64
 }
 
 // AllScope reaches every row (a superuser, an unscoped grant).
@@ -35,7 +41,9 @@ func Compile(uid int64, scopes []perm.Scope) DataScope {
 		case sc.All:
 			return AllScope
 		case sc.Own:
-			s.Owner = uid
+			s.Owners = []int64{uid}
+		case sc.Team:
+			s.Owners, s.team = []int64{uid}, uid
 		case sc.Res != "":
 			// A plugin scope reaches no account or proxy row; the plugin
 			// judges its own rows.
@@ -71,7 +79,8 @@ func (s DataScope) Union(o DataScope) DataScope {
 		return AllScope
 	}
 	type pair struct{ g, x int64 }
-	u := DataScope{Owner: max(s.Owner, o.Owner), Groups: sortedSet(slices.Concat(s.Groups, o.Groups)), IDs: sortedSet(slices.Concat(s.IDs, o.IDs))}
+	u := DataScope{Owners: sortedSet(slices.Concat(s.Owners, o.Owners)), Groups: sortedSet(slices.Concat(s.Groups, o.Groups)),
+		IDs: sortedSet(slices.Concat(s.IDs, o.IDs)), team: max(s.team, o.team)}
 	var pairs []pair
 	for i := range s.PairID {
 		pairs = append(pairs, pair{s.PairG[i], s.PairID[i]})
@@ -88,8 +97,12 @@ func (s DataScope) Union(o DataScope) DataScope {
 
 // Empty reports whether s reaches no row.
 func (s DataScope) Empty() bool {
-	return !s.All && s.Owner == 0 && len(s.Groups) == 0 && len(s.IDs) == 0 && len(s.PairID) == 0
+	return !s.All && len(s.Owners) == 0 && len(s.Groups) == 0 && len(s.IDs) == 0 && len(s.PairID) == 0
 }
+
+// Owned reports whether s reaches rows by their owner (own or team): a row
+// the holder creates is in s.
+func (s DataScope) Owned() bool { return len(s.Owners) > 0 }
 
 // Restricted reports whether s is short of every row: the restricted tier,
 // which keeps every limit of the former own level (administrator lock,
@@ -105,11 +118,12 @@ func (s DataScope) HasGroup(g int64) bool {
 	return s.All || slices.Contains(s.Groups, 0) || slices.Contains(s.Groups, g)
 }
 
-// AllowsRow reports whether the row id, created by createdBy and bound to
-// groups (its current account_groups; nil for proxies), is in s.
-func (s DataScope) AllowsRow(id int64, createdBy *int64, groups []int64) bool {
+// AllowsRow reports whether the row id, owned by owner (its owner column,
+// ScopeTable) and bound to groups (its current account_groups; nil for
+// proxies), is in s.
+func (s DataScope) AllowsRow(id int64, owner *int64, groups []int64) bool {
 	switch {
-	case s.All, s.Owner != 0 && createdBy != nil && *createdBy == s.Owner, slices.Contains(s.IDs, id):
+	case s.All, owner != nil && slices.Contains(s.Owners, *owner), slices.Contains(s.IDs, id):
 		return true
 	case len(groups) == 0:
 		return false
@@ -124,28 +138,34 @@ func (s DataScope) AllowsRow(id int64, createdBy *int64, groups []int64) bool {
 	return false
 }
 
-// ScopeTable is how a DataScope reads a table: its row id and creator
+// ScopeTable is how a DataScope reads a table: its row id and owner
 // columns, and whether its rows belong to groups (account_groups).
-// Its columns are SQL text: unexported, set by AccountRows and ProxyRows
-// alone, so that no package can change the text of another's condition.
+// Its columns are SQL text: unexported, set by AccountRows, ProxyRows and
+// UserRows alone, so that no package can change the text of another's
+// condition.
 type ScopeTable struct {
 	id, owner string
 	grouped   bool
 }
 
-// AccountRows is accounts aliased a.
-func AccountRows() ScopeTable { return ScopeTable{id: "a.id", owner: "a.created_by", grouped: true} }
+// AccountRows is accounts aliased a, owned by owner_id (所属, which an
+// administrator may move away from created_by; CONTRACTS §102).
+func AccountRows() ScopeTable { return ScopeTable{id: "a.id", owner: "a.owner_id", grouped: true} }
 
-// ProxyRows is proxies aliased p.
+// ProxyRows is proxies aliased p, owned by their creator.
 func ProxyRows() ScopeTable { return ScopeTable{id: "p.id", owner: "p.created_by"} }
 
+// UserRows is users aliased u, owned by owner_id: a team scope (the only
+// one of user actions besides every row) reaches the users below the
+// holder, not the holder itself.
+func UserRows() ScopeTable { return ScopeTable{id: "u.id", owner: "u.owner_id"} }
+
 // Cond is the predicate of t with ? placeholders, one per Args value (see
-// Scope). It is never NULL (a NULL creator is no match), so it
-// also reads right under NOT or as a selected flag; an Owner of 0 matches
-// no row, creators being user ids. Its text does not depend on the scope, so the plan of
-// a query is reused whatever ids the scope holds.
+// Scope). It is never NULL (a NULL owner is no match), so it also reads
+// right under NOT or as a selected flag. Its text does not depend on the
+// scope, so the plan of a query is reused whatever ids the scope holds.
 func (t ScopeTable) Cond() string {
-	c := "(?::boolean OR COALESCE(" + t.owner + " = ?::bigint, false) OR " + t.id + " = ANY(?::bigint[])"
+	c := "(?::boolean OR COALESCE(" + t.owner + " = ANY(?::bigint[]), false) OR " + t.id + " = ANY(?::bigint[])"
 	if t.grouped {
 		// group/* is a flag of its own so that the group ids reach
 		// account_groups_group_idx (an "= 0 OR =" join would not).
@@ -163,7 +183,7 @@ func (t ScopeTable) Args(s DataScope) []any {
 		}
 		return v
 	}
-	args := []any{s.All, s.Owner, ids(s.IDs)}
+	args := []any{s.All, ids(s.Owners), ids(s.IDs)}
 	if t.grouped {
 		anyGroup := slices.Contains(s.Groups, 0)
 		groups := slices.DeleteFunc(slices.Clone(ids(s.Groups)), func(g int64) bool { return g == 0 })

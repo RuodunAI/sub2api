@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -359,7 +361,7 @@ func TestPermScoped(t *testing.T) {
 	if code, v, _ := call(1); code != 200 || !v.Read.All || strings.Join(v.Granted, ",") != "account:read" || !v.Update.Empty() {
 		t.Fatalf("all: %d %+v", code, v)
 	}
-	if code, v, _ := call(2); code != 200 || v.Read.Owner != 2 || v.Read.All || len(v.Granted) != 0 || v.Update.Groups[0] != 12 {
+	if code, v, _ := call(2); code != 200 || !slices.Equal(v.Read.Owners, []int64{2}) || v.Read.All || len(v.Granted) != 0 || v.Update.Groups[0] != 12 {
 		t.Fatalf("own: %d %+v", code, v)
 	}
 	// A group scope only: an empty scope for the action not held.
@@ -369,4 +371,51 @@ func TestPermScoped(t *testing.T) {
 	if code, _, e := call(4); code != http.StatusForbidden || e["details"].(map[string]any)["permission"] != "account:read" {
 		t.Fatalf("denied: %d %v", code, e)
 	}
+}
+
+// teamAuthz resolves teams (core.TeamResolver): fixed ones, an error for
+// any other holder.
+type teamAuthz struct {
+	fakeAuthz
+	teams map[int64][]int64
+}
+
+func (a teamAuthz) Team(_ context.Context, uid, _ int64) ([]int64, error) {
+	if team, ok := a.teams[uid]; ok {
+		return team, nil
+	}
+	return nil, core.ErrUnavailable
+}
+
+// PermScoped hands the handler a team scope resolved, and fails the request
+// when the team cannot be read rather than narrowing it.
+func TestPermScopedResolvesTeam(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	r := NewRouter(engine, fakeTokens{}, teamAuthz{fakeAuthz{keys: map[int64][]string{
+		5: {"account:read:team", "account:update:own"},
+		6: {"account:read:team"},
+	}}, map[int64][]int64{5: {9, 8}}})
+	r.PermScoped("GET", "/accounts", func(c *gin.Context) {
+		ctx := c.Request.Context()
+		read, _ := core.Scope(ctx, nil, perm.AccountRead)
+		update, _ := core.Scope(ctx, nil, perm.AccountUpdate)
+		OK(c, [][]int64{read.Owners, update.Owners})
+	}, perm.AccountRead, perm.AccountUpdate)
+	call := func(uid int64) (int, [][]int64) {
+		req := httptest.NewRequest("GET", "/api/v1/accounts", nil)
+		req.Header.Set("Authorization", "Bearer u"+strconv.FormatInt(uid, 10))
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		var out struct {
+			Data [][]int64 `json:"data"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out.Data
+	}
+	code, owners := call(5)
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, [][]int64{{5, 8, 9}, {5}}, owners, "the team joins the holder; own stays own")
+	code, _ = call(6)
+	require.Equal(t, http.StatusServiceUnavailable, code)
 }

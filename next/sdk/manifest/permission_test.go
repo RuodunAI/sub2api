@@ -84,6 +84,10 @@ func TestDefaultGrants(t *testing.T) {
 		{"own", UserPermission{Scope: resource, Defaults: map[string]RoleDefault{"operator": {Scopes: []string{"own"}}}}, map[string][]string{"operator": {"own"}}},
 		{"values sorted and deduplicated", UserPermission{Scope: values, Defaults: map[string]RoleDefault{"admin": {Scopes: []string{"output", "input", "input"}}}}, map[string][]string{"admin": {"value/input", "value/output"}}},
 		{"invalid entries skipped", UserPermission{Scope: values, Defaults: map[string]RoleDefault{"admin": {Scopes: []string{"other"}}, "user": {Scopes: []string{"input", "own"}}}}, map[string][]string{"user": {"value/input"}}},
+		{"supplier agents follow suppliers", UserPermission{Scope: resource, Defaults: map[string]RoleDefault{"supplier": {Scopes: []string{"own"}}}},
+			map[string][]string{"supplier": {"own"}, "supplier_agent": {"own"}}},
+		{"unless named", UserPermission{Defaults: map[string]RoleDefault{"supplier": {Unscoped: true}, "supplier_agent": {Scopes: []string{"x"}}}},
+			map[string][]string{"supplier": {""}}},
 		{"critical", UserPermission{Risk: RiskCritical, Defaults: map[string]RoleDefault{"admin": {Unscoped: true}}}, nil},
 		{"no defaults", UserPermission{}, nil},
 	}

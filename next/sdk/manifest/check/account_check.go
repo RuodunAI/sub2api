@@ -31,7 +31,7 @@ func (v *validator) accountExtensions(field string, at manifest.AccountType) {
 		v.add(field+".extensionsSchema.properties", "invalid", "at most 64 extension fields are allowed")
 		return
 	}
-	reserved := []string{"id", "name", "plugin_key", "type", "status", "schedulable", "auto_disable", "priority", "weight", "max_concurrency", "rpm_limit", "tpm_limit", "spm_limit", "proxy_id", "proxy_url", "models", "model_mapping", "credentials", "created_by", "group_ids", "status_reason", "auto_disabled_until", "created_at", "updated_at"}
+	reserved := []string{"id", "name", "plugin_key", "type", "status", "schedulable", "auto_disable", "priority", "weight", "max_concurrency", "rpm_limit", "tpm_limit", "spm_limit", "proxy_id", "proxy_url", "models", "model_mapping", "credentials", "created_by", "owner_id", "group_ids", "status_reason", "auto_disabled_until", "created_at", "updated_at"}
 	for name := range properties {
 		if slices.Contains(reserved, name) || slices.Contains(at.SensitiveFields, name) || slices.Contains(at.SettingsFields, name) {
 			v.add(field+".extensionsSchema.properties."+name, "conflict", "extensions cannot duplicate core, credential or existing settings fields")

@@ -242,7 +242,7 @@ func TestAuthzHardeningMigration(t *testing.T) {
 	require.Equal(t, strings.SplitN(migrated, "\n", 2)[0], h.grants())
 
 	lastSeeded := h.text(`SELECT max(id)::text FROM permissions`)
-	// The core sync creates the supplier role, resets the admin and the
+	// The core sync creates the supplier roles, resets the admin and the
 	// operator to their defaults: what a new database gets (the operator
 	// loses account:credential:view and system:update:read, gets the own
 	// scope instead), and fills the user role in. None of the retired keys,
@@ -252,9 +252,11 @@ func TestAuthzHardeningMigration(t *testing.T) {
 	fresh := &hardeningDB{t: t, db: testutil.DB(t), ctx: h.ctx}
 	fresh.syncCore()
 	require.Equal(t, fresh.roleGrants("admin", "operator"), h.roleGrants("admin", "operator"), "admin and operator are not their defaults")
-	require.Equal(t, "admin=true:operator,supplier,user delegator=true:operator,user operator=false:supplier,user", h.assignable())
+	require.Equal(t, "admin=true:operator,supplier,supplier_agent,user delegator=true:operator,user operator=false:supplier,user "+
+		"supplier_agent=false:supplier,supplier_agent", h.assignable())
 	require.Equal(t, "supplier account:create:own, supplier account:credential:view:own, supplier account:delete:own, supplier account:read:own, "+
-		"supplier account:test:own, supplier account:update:own, supplier proxy:manage:own, supplier proxy:read:own, supplier usage:self:read", h.roleGrants("supplier"))
+		"supplier account:test:own, supplier account:update:own, supplier proxy:manage:own, supplier proxy:read:own, supplier usage:account:read:own, "+
+		"supplier usage:self:read", h.roleGrants("supplier"))
 	require.Equal(t, "", h.text(`SELECT COALESCE(string_agg(key, ','), '') FROM permissions WHERE key LIKE '%:own:%' OR key = 'role:manage'`))
 	opGrants := h.roleGrants("operator")
 	require.NotContains(t, opGrants, "operator account:credential:view,")

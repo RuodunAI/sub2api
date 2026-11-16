@@ -254,7 +254,7 @@ func (s *Service) scopeOf(ctx context.Context, action perm.Key) core.DataScope {
 // canCreate fails unless scope may create proxies: every row, or own (a new
 // proxy is the caller's). proxy:manage:proxy/X reaches those proxies only.
 func canCreate(ctx context.Context, scope core.DataScope) error {
-	if scope.All || scope.Owner != 0 {
+	if scope.All || scope.Owned() {
 		return nil
 	}
 	return core.ErrPermissionDenied.WithMessage(t(ctx,
@@ -571,11 +571,11 @@ var errInUse = core.NewError(http.StatusConflict, "proxy_in_use", "proxy in use"
 // reached.
 const connectionColumns = "p.protocol, p.host, p.port, p.username, p.password_enc"
 
-// inUseByOthers counts the live accounts on proxy id that uid did not create
-// (uid 0: every account).
+// inUseByOthers counts the live accounts on proxy id that uid does not own
+// (accounts.owner_id; uid 0: every account).
 func inUseByOthers(ctx context.Context, q *gorm.DB, id, uid int64) (n int64, err error) {
 	err = store.G(ctx, q).Model(&model.Account{}).
-		Where("proxy_id = ? AND deleted_at IS NULL AND created_by IS DISTINCT FROM ?", id, uid).Count(&n).Error
+		Where("proxy_id = ? AND deleted_at IS NULL AND owner_id IS DISTINCT FROM ?", id, uid).Count(&n).Error
 	return n, err
 }
 

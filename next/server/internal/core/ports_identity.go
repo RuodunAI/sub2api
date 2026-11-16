@@ -376,6 +376,25 @@ type UserGuard interface {
 	CanActOnUsers(ctx context.Context, actorID int64, action UserAction, targetIDs ...int64) error
 }
 
+// OwnerGuard decides the owner of a user (users.owner_id, CONTRACTS §102);
+// authz implements it, iam calls it inside the transaction that creates or
+// updates the user, before writing the owner it returns.
+type OwnerGuard interface {
+	// CheckOwner returns the owner actorID gives userID (0: none). owner is
+	// the requested owner_id: nil when not given (on a create: the actor
+	// when it creates users for its team only, else none; on an update:
+	// the current owner), 0 for none. Naming an owner, or none, needs
+	// user:create (create) or user:update (update) for every user; a team
+	// holder may name only itself. It takes the authz lock first (Bump
+	// naming userID), then refuses an owner that is userID or below it,
+	// would put userID, or a user below it, more than MaxTeamDepth levels
+	// below the top of its chain, is deleted, or may not
+	// manage userID by its roles, and an actor that may not act on userID
+	// and on the old and new owner (ActOnIdentity); a change is audited as
+	// user.owner (from, to).
+	CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, owner *int64) (int64, error)
+}
+
 // GuardOrDeny is g, or a guard refusing everything with ErrInternal when g
 // is nil (not wired): failing closed instead of panicking.
 func GuardOrDeny(g UserGuard) UserGuard {

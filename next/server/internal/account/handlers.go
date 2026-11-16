@@ -65,6 +65,8 @@ type row struct {
 	LastUsedAt        *time.Time
 	CreatedBy         *int64
 	CreatedByEmail    *string
+	OwnerID           *int64
+	OwnerEmail        *string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 	// Last console test (CONTRACTS §50); all NULL until the first test.
@@ -79,24 +81,28 @@ type row struct {
 	// AutoDisabledSource says who wrote an automatic disable (0070):
 	// usageLimitSource or '' (plugins and failure policies).
 	AutoDisabledSource string
-	// AdminLocked: disabled by a caller with the full scope who did not
-	// create the account (migration 0097); see checkAdminLock.
+	// AdminLocked: disabled by a caller with the full scope who does not
+	// own the account (migration 0097); see checkAdminLock.
 	AdminLocked bool
 }
 
 // rowColumns are the columns of a row, in scanRow's order. Every statement
-// reading them joins the creator's email (also for soft-deleted users) and
-// must qualify account columns with "a.".
+// reading them joins the creator's and the owner's email (rowJoins, also for
+// soft-deleted users) and must qualify account columns with "a.".
 const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.settings, a.proxy_id,
 	a.status, a.status_reason, a.schedulable, a.auto_disable, a.priority, a.weight, a.max_concurrency,
 	a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment, a.last_used_at,
-	a.created_by, u.email, a.created_at, a.updated_at,
+	a.created_by, u.email, a.owner_id, o.email, a.created_at, a.updated_at,
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
 	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
 
+// rowJoins join the users whose emails rowColumns read: u the creator, o
+// the owner.
+const rowJoins = "LEFT JOIN users u ON u.id = a.created_by LEFT JOIN users o ON o.id = a.owner_id"
+
 // selectRows reads rowColumns, for scanRow over its Row().
 func selectRows(db *gorm.DB) *gorm.DB {
-	return db.Table("accounts a").Select(rowColumns).Joins("LEFT JOIN users u ON u.id = a.created_by")
+	return db.Table("accounts a").Select(rowColumns).Joins(rowJoins)
 }
 
 // scanRow reads one row of rowColumns, from GORM's Row() or Rows() (a
@@ -108,7 +114,7 @@ func scanRow(r interface{ Scan(dest ...any) error }) (*row, error) {
 	err := r.Scan(&a.ID, &a.Name, &a.PluginKey, &a.Type, &a.CredEnc, &a.Settings, &a.ProxyID,
 		&a.Status, &a.StatusReason, &a.Schedulable, &a.AutoDisable, &a.Priority, &a.Weight, &a.MaxConcurrency,
 		(*store.Strings)(&a.Models), &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &env, &a.LastUsedAt,
-		&a.CreatedBy, &a.CreatedByEmail, &a.CreatedAt, &a.UpdatedAt,
+		&a.CreatedBy, &a.CreatedByEmail, &a.OwnerID, &a.OwnerEmail, &a.CreatedAt, &a.UpdatedAt,
 		&a.LastTestAt, &a.LastTestOK, &a.LastTestLatencyMs, &a.LastTestModel, &a.LastTestMessage, &a.AutoDisabledUntil,
 		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
 	a.Environment = env.V
@@ -249,7 +255,7 @@ type View struct {
 	ProxyID      *int64                 `json:"proxy_id"`
 	Status       string                 `json:"status"`
 	StatusReason string                 `json:"status_reason"`
-	// AdminLocked: an administrator disabled the account; its creator cannot
+	// AdminLocked: an administrator disabled the account; its owner cannot
 	// enable it or reset its status until an administrator does.
 	AdminLocked       bool       `json:"admin_locked"`
 	AutoDisabledUntil *time.Time `json:"auto_disabled_until"`
@@ -319,6 +325,11 @@ type View struct {
 	// existed or by the system); CreatedByEmail is kept for soft-deleted users.
 	CreatedBy      *int64  `json:"created_by"`
 	CreatedByEmail *string `json:"created_by_email"`
+	// OwnerID is the account's 所属, whose own and team scopes reach it
+	// (CONTRACTS §102): the creator unless an administrator moved it; null
+	// as created_by. OwnerEmail is kept for soft-deleted users.
+	OwnerID    *int64  `json:"owner_id"`
+	OwnerEmail *string `json:"owner_email"`
 	// ProxyCreated is only present on the create/update responses: whether
 	// proxy_url led to a new proxy row (CONTRACTS §21.4).
 	ProxyCreated *bool      `json:"proxy_created,omitempty"`
@@ -353,7 +364,7 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 			RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(), Environment: a.Environment,
 			HeaderPassthrough: passthrough, ParamOverride: a.ParamOverride, ConversionLossPolicy: a.LossPolicy,
 			Orphaned: !s.pluginActive(a.PluginKey), Settings: st,
-			CreatedBy: a.CreatedBy, CreatedByEmail: a.CreatedByEmail,
+			CreatedBy: a.CreatedBy, CreatedByEmail: a.CreatedByEmail, OwnerID: a.OwnerID, OwnerEmail: a.OwnerEmail,
 			LastUsedAt: a.LastUsedAt, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 			LastTest:      a.lastTest(),
 			limitDisabled: limitDisabled(a.Status, a.AutoDisabledSource),
@@ -537,22 +548,33 @@ func (s *Service) list(c *gin.Context) {
 	page, size := httpapi.Pagination(c)
 	var conds store.Conds
 	conds.And("a.deleted_at IS NULL")
-	// Visible range: the caller's account:read scope (CONTRACTS §21);
-	// mine=true narrows to own rows and created_by=<id> to that creator's,
-	// both within it.
-	conds = append(conds, core.AccountRows().Scope(s.scopeOf(ctx, perm.AccountRead)))
+	// Visible range: the caller's account:read scope (CONTRACTS §21), its
+	// team resolved (§102); within it mine=true narrows to the caller's own
+	// accounts, subordinates=true to those of the users below it (none
+	// without a team scope), owner_id=<id> and created_by=<id> to that
+	// owner's and that creator's.
+	scope := s.scopeOf(ctx, perm.AccountRead)
+	conds = append(conds, core.AccountRows().Scope(scope))
+	uid, _ := core.UserID(ctx)
 	if mine, _ := strconv.ParseBool(c.Query("mine")); mine {
-		uid, _ := core.UserID(ctx)
-		conds.And("a.created_by = ?", uid)
+		conds.And("a.owner_id = ?", uid)
 	}
-	if v := c.Query("created_by"); v != "" {
-		id, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || id <= 0 {
-			httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "created_by", Code: "invalid",
-				Message: t(ctx, "created_by must be a user id", "created_by 必须是用户 ID")}))
-			return
-		}
-		conds.And("a.created_by = ?", id)
+	if sub, _ := strconv.ParseBool(c.Query("subordinates")); sub {
+		conds.And("a.owner_id = ANY(?) AND a.owner_id <> ?", store.Int64s(scope.Owners), uid)
+	}
+	createdBy, ok := userIDQuery(c, "created_by")
+	if !ok {
+		return
+	}
+	if createdBy != 0 {
+		conds.And("a.created_by = ?", createdBy)
+	}
+	ownerID, ok := userIDQuery(c, "owner_id")
+	if !ok {
+		return
+	}
+	if ownerID != 0 {
+		conds.And("a.owner_id = ?", ownerID)
 	}
 	// Accounts of a disabled or uninstalled plugin are hidden by default
 	// (their rows stay); orphaned=true lists only them, orphaned=all both.
@@ -634,6 +656,23 @@ func (s *Service) list(c *gin.Context) {
 	httpapi.List(c, vs, httpapi.Page{Page: page, PageSize: size, Total: total})
 }
 
+// userIDQuery reads the user id of query parameter name, 0 when absent; a
+// value that is no user id fails the request (false).
+func userIDQuery(c *gin.Context, name string) (int64, bool) {
+	v := c.Query(name)
+	if v == "" {
+		return 0, true
+	}
+	id, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || id <= 0 {
+		ctx := c.Request.Context()
+		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: name, Code: "invalid",
+			Message: t(ctx, name+" must be a user id", name+" 必须是用户 ID")}))
+		return 0, false
+	}
+	return id, true
+}
+
 // listRowColumns are rowColumns without the encrypted credentials, which no
 // list column needs: CredEnc stays nil on rows read with them, so such rows
 // must not be decrypted or written back (fullView and every write path use
@@ -679,7 +718,7 @@ func listCount(db *gorm.DB, conds store.Conds) *gorm.DB {
 // subquery, which PostgreSQL runs once, in the page's snapshot).
 func listRows(db *gorm.DB, conds store.Conds, page, size int) *gorm.DB {
 	total := listCount(db.Session(&gorm.Session{NewDB: true}), conds).Select("count(*)")
-	return db.Table("accounts a").Select(listRowColumns+", (?)", total).Joins("LEFT JOIN users u ON u.id = a.created_by").
+	return db.Table("accounts a").Select(listRowColumns+", (?)", total).Joins(rowJoins).
 		Scopes(conds.Scope()).Order("a.created_at DESC, a.id DESC").Limit(size).Offset((page - 1) * size)
 }
 
@@ -1076,7 +1115,7 @@ func errNotInScope(ctx context.Context) error {
 // createInScope fails unless a new account bound to groupIDs is in scope:
 // every row, own (the caller creates it), or one of its groups.
 func createInScope(ctx context.Context, scope core.DataScope, groupIDs []int64) error {
-	if !scope.Restricted() || scope.Owner != 0 || slices.ContainsFunc(groupIDs, scope.HasGroup) {
+	if !scope.Restricted() || scope.Owned() || slices.ContainsFunc(groupIDs, scope.HasGroup) {
 		return nil
 	}
 	return errNotInScope(ctx)
@@ -1187,7 +1226,7 @@ func checkAdminLock(ctx context.Context, cur *row, status *string) error {
 
 // adminLockAfter is what a requested status does to the lock, nil for no
 // change: the full scope locks when it disables an account somebody else
-// created and unlocks when it enables. A restricted caller never changes
+// owns and unlocks when it enables. A restricted caller never changes
 // it (checkAdminLock already refused enabling a locked account).
 func adminLockAfter(scope core.DataScope, uid int64, cur *row, status string) *bool {
 	switch {
@@ -1195,7 +1234,7 @@ func adminLockAfter(scope core.DataScope, uid int64, cur *row, status string) *b
 		return nil
 	case status == "active":
 		return new(false)
-	case status == "disabled" && (cur.CreatedBy == nil || *cur.CreatedBy != uid):
+	case status == "disabled" && (cur.OwnerID == nil || *cur.OwnerID != uid):
 		return new(true)
 	}
 	return nil
@@ -1275,7 +1314,7 @@ func setGroups(ctx context.Context, tx *gorm.DB, id int64, groupIDs []int64) err
 // pointers in model.Account, always set by the create, so a false or 0 the
 // caller chose is written as such.
 var accountInsertColumns = []string{"name", "plugin_key", "type", "credentials_enc", "settings",
-	"proxy_id", "status", "schedulable", "priority", "max_concurrency", "created_by",
+	"proxy_id", "status", "schedulable", "priority", "max_concurrency", "created_by", "owner_id",
 	"weight", "models", "model_mapping", "rpm_limit", "tpm_limit", "auto_disable", "model_limits", "spm_limit", "environment", "header_passthrough", "param_override",
 	"conversion_loss_policy", "spm_window_seconds"}
 
@@ -1466,7 +1505,7 @@ func (s *Service) create(c *gin.Context) {
 		}
 		created := model.Account{Name: *in.Name, PluginKey: bt.Plugin.Key, Type: bt.Type.ID, CredentialsEnc: p.enc,
 			Settings: json.RawMessage(p.settings), ProxyID: proxyID, Status: &status, Schedulable: &sched, Priority: &prio,
-			MaxConcurrency: &maxc, CreatedBy: nonZero(uid), Weight: &weight, Models: store.Strings(models),
+			MaxConcurrency: &maxc, CreatedBy: nonZero(uid), OwnerID: nonZero(uid), Weight: &weight, Models: store.Strings(models),
 			ModelMapping: json.RawMessage(mappingJSON(mapping)), RpmLimit: rpm, TpmLimit: tpm, AutoDisable: &autoDisable,
 			ModelLimits: json.RawMessage(modelLimitsJSON(modelLimits)), SpmLimit: spm, Environment: environmentJSON(environment),
 			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(in.paramOverride()),
@@ -1869,6 +1908,66 @@ func (s *Service) delete(c *gin.Context) {
 	s.evictBalanceCache(ctx, id)
 	s.changed(ctx, id)
 	httpapi.NoContent(c)
+}
+
+// ---------------------------------------------------------------- owner
+
+// ownerInput is the body of PUT /accounts/:id/owner.
+type ownerInput struct {
+	OwnerID int64 `json:"owner_id" binding:"required,gt=0"`
+}
+
+// OwnerView answers PUT /accounts/:id/owner: the account's owner now.
+type OwnerView struct {
+	ID         int64  `json:"id"`
+	OwnerID    int64  `json:"owner_id"`
+	OwnerEmail string `json:"owner_email"`
+}
+
+// putOwner moves an account to another owner (所属, CONTRACTS §102): a
+// user that exists and is not deleted. The owner is row data, as
+// created_by is: no authz version moves. A move is audited as
+// account.owner (from, to); naming the current owner changes nothing.
+func (s *Service) putOwner(c *gin.Context) {
+	ctx := audit.Context(c)
+	id, ok := httpapi.PathID(c, "id")
+	if !ok {
+		return
+	}
+	var in ownerInput
+	if !httpapi.BindJSON(c, &in) {
+		return
+	}
+	uid, _ := core.UserID(ctx)
+	out := OwnerView{ID: id, OwnerID: in.OwnerID}
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+		cur, err := s.loadRow(ctx, tx, id, core.AllScope, true)
+		if err != nil {
+			return err
+		}
+		db := store.G(ctx, tx)
+		err = db.Model(&model.User{}).Select("email").Where("id = ? AND deleted_at IS NULL", in.OwnerID).Take(&out.OwnerEmail).Error
+		switch {
+		case store.IsNoRows(err):
+			return core.InvalidFields(core.FieldError{Field: "owner_id", Code: "not_found",
+				Message: t(ctx, "owner_id must be a user that is not deleted", "owner_id 必须是未删除的用户")})
+		case err != nil:
+			return err
+		case cur.OwnerID != nil && *cur.OwnerID == in.OwnerID:
+			return nil
+		}
+		err = db.Model(&model.Account{}).Where("id = ?", id).
+			Updates(map[string]any{"owner_id": in.OwnerID, "updated_at": gorm.Expr("now()")}).Error
+		if err != nil {
+			return err
+		}
+		return audit.Audit(ctx, tx, uid, "account.owner", "account", itoa(id), map[string]any{"from": cur.OwnerID, "to": in.OwnerID})
+	})
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.OK(c, out)
 }
 
 // ---------------------------------------------------------------- reveal

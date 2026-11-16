@@ -2,14 +2,17 @@
 // copy of server/internal/perm/pattern.go: an action key may end in a scope,
 // "<action>:<scope>", that limits the rows it reaches:
 //
-//   scope = "*" | "own" | path
+//   scope = "*" | "own" | "team" | path
 //   path  = account actions: "group/" seg [ "/account/" seg ] | "account/" id
 //           proxy actions:   "proxy/" id
 //           plugin actions:  resource "/" value
 //   seg   = id | "*"
 //
+// "team" (CONTRACTS §102) is the caller's rows and those of the users below
+// it; only core actions take it, and user actions no other scope but "*".
 // A missing scope is "*": every row. The last segment of a key is a scope
-// only when it is "*", "own" or holds a "/". A plugin action ("plugin.…")
+// only when it is "*", "own", holds a "/", or is "team" after a scopable
+// core action. A plugin action ("plugin.…")
 // takes its scope by syntax alone, with no catalog: which resource, own or
 // values it accepts is the server's to check when a grant is written. Both
 // copies run the shared vectors of next/sdk/permvectors/vectors.json
@@ -30,14 +33,16 @@ export const takesRowIds = (action: string) => action !== 'account:create'
 export const WILDCARD = -1
 
 /**
- * A parsed, canonical scope. At most one of all and own is set, and then
- * group and id are 0. A plugin scope sets ref only. Otherwise group > 0 is
+ * A parsed, canonical scope. At most one of all, own and team is set, and
+ * then group and id are 0. A plugin scope sets ref only. Otherwise group > 0 is
  * group/<group>, WILDCARD is group/*, 0 no group part; id > 0 is the row
  * (account/<id>, proxy/<id>, or after a group part group/<g>/account/<id>).
  */
 export interface Scope {
   all: boolean
   own: boolean
+  /** The holder's rows and those of the users below it (users.owner_id). */
+  team?: boolean
   group: number
   id: number
   /** A plugin scope "<resource>/<value>" ("flow/3", "value/input"); never set on a core scope. */
@@ -52,6 +57,7 @@ export interface Pattern {
 
 export const ALL_SCOPE: Scope = Object.freeze({ all: true, own: false, group: 0, id: 0 })
 export const OWN_SCOPE: Scope = Object.freeze({ all: false, own: true, group: 0, id: 0 })
+export const TEAM_SCOPE: Scope = Object.freeze({ all: false, own: false, team: true, group: 0, id: 0 })
 const MAX_ID = 9223372036854775807n
 /** perm.scopeResourceRe "/" perm.scopeValueRe. */
 const PLUGIN_REF = /^[a-z][a-z0-9_]{0,29}\/[A-Za-z0-9_.-]{1,64}$/
@@ -63,10 +69,10 @@ export const refScope = (ref: string): Scope => ({ all: false, own: false, group
 export function parsePermission(k: string): Pattern | null {
   const i = k.lastIndexOf(':')
   const last = k.slice(i + 1)
-  if (i < 0 || (last !== '*' && last !== 'own' && !last.includes('/'))) return { action: k, scope: ALL_SCOPE }
   const action = k.slice(0, i)
-  if (action.startsWith('plugin.')) return pluginPattern(action, last)
   const resource = SCOPABLE[action]
+  if (i < 0 || (last !== '*' && last !== 'own' && !last.includes('/') && (last !== 'team' || !resource))) return { action: k, scope: ALL_SCOPE }
+  if (action.startsWith('plugin.')) return pluginPattern(action, last)
   const scope = resource && parseScope(resource, !takesRowIds(action), last)
   return scope ? { action, scope } : null
 }
@@ -86,7 +92,10 @@ function pluginPattern(action: string, last: string): Pattern | null {
 
 function parseScope(resource: ScopeResource, create: boolean, raw: string): Scope | null {
   if (raw === '*') return ALL_SCOPE
-  if (raw === 'own') return OWN_SCOPE
+  // A new row is always the creator's own; a user is owned by another.
+  if (raw === 'team') return create ? null : TEAM_SCOPE
+  if (raw === 'own') return resource === 'user' ? null : OWN_SCOPE
+  if (resource === 'user') return null
   const parts = trimWildcards(resource, raw.split('/'))
   if (parts.length === 0) return ALL_SCOPE
   let group = 0
@@ -135,6 +144,7 @@ function parseId(raw: string, wildcard: boolean): number | null {
 export function scopeSuffix(action: string, s: Scope): string {
   if (s.all) return ''
   if (s.own) return 'own'
+  if (s.team) return 'team'
   if (s.ref) return s.ref
   const seg = (n: number) => (n === WILDCARD ? '*' : String(n))
   const row = s.id ? `${SCOPABLE[action]}/${seg(s.id)}` : ''
@@ -156,6 +166,8 @@ export function patternKey(p: Pattern): string {
 export function scopeImplies(h: Scope, w: Scope): boolean {
   if (h.all) return true
   if (w.all) return false
+  if (h.team) return !!w.team || w.own
+  if (w.team) return false
   if (h.own || w.own) return h.own && w.own
   if (h.ref || w.ref) return h.ref === w.ref
   if (!h.group) return h.id === w.id // account/X or proxy/X: that row, with or without a group
@@ -169,18 +181,22 @@ export function implies(have: Pattern, want: Pattern): boolean {
   return have.action === want.action && scopeImplies(have.scope, want.scope)
 }
 
-/** A row a scope is judged against: its id, creator and (accounts) groups. */
+/** A row a scope is judged against: its id, owner and (accounts) groups. */
 export interface ScopedRow {
   id?: number | null
+  /** The owner own and team check: a proxy's creator, an account's owner_id (CONTRACTS §102). */
   created_by?: number | null
   group_ids?: readonly number[] | null
 }
 
-/** Whether a scope reaches row for the caller me (core.DataScope.AllowsRow). */
+/**
+ * Whether a scope reaches row for the caller me (core.DataScope.AllowsRow).
+ * Only the server knows a team (core.ResolveScope): here it reaches what own does.
+ */
 export function scopeAllowsRow(s: Scope, row: ScopedRow | null | undefined, me: number | undefined): boolean {
   if (s.all) return true
   if (!row) return false
-  if (s.own) return me !== undefined && row.created_by != null && row.created_by === me
+  if (s.own || s.team) return me !== undefined && row.created_by != null && row.created_by === me
   if (s.ref) return false // the plugin judges its own rows
   if (s.id && row.id !== s.id) return false
   if (!s.group) return !!s.id

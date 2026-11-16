@@ -105,8 +105,8 @@ func newFixture(t *testing.T) *fixture {
 	f.insert(key, f.alice, "lk key two", "sk-s2a-cccc", "2026-01-01T00:00:00Z")
 	f.keyBob = f.insert(key, f.bob, "lk key bob", "sk-s2a-bbbb", nil)
 
-	account := `INSERT INTO accounts (name, plugin_key, type, credentials_enc, status, created_by, deleted_at)
-		VALUES ($1, 'anthropic', 'apikey', ''::bytea, $2, $3, $4::timestamptz) RETURNING id`
+	account := `INSERT INTO accounts (name, plugin_key, type, credentials_enc, status, created_by, owner_id, deleted_at)
+		VALUES ($1, 'anthropic', 'apikey', ''::bytea, $2, $3, $3, $4::timestamptz) RETURNING id`
 	f.acctA = f.insert(account, "lk acct a", "active", f.alice, nil)
 	f.acctB = f.insert(account, "lk acct b", "active", f.admin, nil)
 	f.acctC = f.insert(account, "lk acct c", "disabled", nil, nil)

@@ -986,7 +986,7 @@ func TestBuiltinSupplierRole(t *testing.T) {
 		}
 		return set.KeyList()
 	}
-	if got := keysOf(authz.RoleSupplier); !slices.Equal(got, slices.Sorted(slices.Values(append(slices.Clone(supplierKeys), "usage:self:read")))) {
+	if got := keysOf(authz.RoleSupplier); !slices.Equal(got, slices.Sorted(slices.Values(append(slices.Clone(supplierKeys), "usage:self:read", "usage:account:read:own")))) {
 		t.Fatalf("supplier role grants %v, want %v", got, supplierKeys)
 	}
 	alice := e.addUser("alice@x.com")

@@ -20,6 +20,8 @@ type User struct {
 	DeletedAt      *time.Time `gorm:"column:deleted_at"`                                  // timestamp with time zone
 	TokenVersion   int64      `gorm:"column:token_version;default:(-)"`                   // bigint default 0
 	SegmentID      int64      `gorm:"column:segment_id;default:(-)"`                      // bigint default default_segment_id()
+	// the user this user belongs to (team scopes, CONTRACTS §102); NULL for none
+	OwnerID *int64 `gorm:"column:owner_id"` // bigint
 }
 
 // TableName implements gorm's schema.Tabler.

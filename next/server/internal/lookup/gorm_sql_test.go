@@ -37,7 +37,7 @@ func TestSQLQueryAccountsScoped(t *testing.T) {
 	e := kind(t, "accounts")
 	var f store.Conds
 	f.And(e.live)
-	f = append(f, e.table().Scope(core.DataScope{Owner: 7, Groups: []int64{0, 3}, IDs: []int64{5}}))
+	f = append(f, e.table().Scope(core.DataScope{Owners: []int64{7}, Groups: []int64{0, 3}, IDs: []int64{5}}))
 	p := &params{limit: 10, refs: map[string]int64{"prefer_group_id": 3}}
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return e.query(db, p, f, false, &[]itemRow{}) })
 }

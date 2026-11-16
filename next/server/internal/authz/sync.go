@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -118,6 +119,11 @@ func (s *Service) SyncCore(ctx context.Context) error {
 			if err := s.grantDefaults(ctx, tx, r.key, fill, r.assignable,
 				func(k string) bool { return newRoles[k] }, "assignable", grantDefaultAssignable); err != nil {
 				return err
+			}
+			if newRoles[r.key] {
+				if err := s.grantPluginDefaults(ctx, tx, r.key, fill); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -467,6 +473,39 @@ func (s *Service) grantScopedDefaults(ctx context.Context, tx *gorm.DB, roleKey 
 		return err
 	}
 	return s.syncGrant(ctx, tx, withVia(fill, "default"), added)
+}
+
+// grantPluginDefaults grants roleKey, a built-in role created now, the
+// defaults of the plugin permissions created before it existed: those their
+// stored defaults (DefaultGrants when created) give it or, not naming it,
+// the role it follows (manifest.RoleDefaultsFrom), so that a supplier agent
+// gets what installed plugins gave suppliers. Audited as authz.sync.grant
+// (via plugin_default).
+func (s *Service) grantPluginDefaults(ctx context.Context, tx *gorm.DB, roleKey string, fill map[string]any) error {
+	db := store.G(ctx, tx)
+	var perms []model.Permission
+	if err := db.Select("key", "defaults").Where("source = 'plugin'").Order("key").Find(&perms).Error; err != nil {
+		return err
+	}
+	var grants []casbinrule.Grant
+	for _, p := range perms {
+		var defaults map[string][]string
+		if err := json.Unmarshal(p.Defaults, &defaults); err != nil {
+			return fmt.Errorf("authz: defaults of %s: %w", p.Key, err)
+		}
+		suffixes, named := defaults[roleKey]
+		if !named {
+			suffixes = defaults[manifest.RoleDefaultsFrom[roleKey]]
+		}
+		for _, sfx := range suffixes {
+			grants = append(grants, casbinrule.Grant{Role: roleKey, Action: p.Key, Suffix: sfx})
+		}
+	}
+	added, err := casbinrule.AddGrants(db, grants, casbinrule.Filter{Source: "plugin", Skip: []string{"staged", "removed"}})
+	if err != nil {
+		return err
+	}
+	return s.syncGrant(ctx, tx, withVia(fill, "plugin_default"), added)
 }
 
 // syncGrant audits each automatic grant of added (by role id, of a

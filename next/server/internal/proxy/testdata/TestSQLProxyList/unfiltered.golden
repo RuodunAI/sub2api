@@ -1,6 +1,6 @@
 -- sql
-SELECT count(*) FROM proxies p WHERE ($1::boolean OR COALESCE(p.created_by = $2::bigint, false) OR p.id = ANY($3::bigint[]))
+SELECT count(*) FROM proxies p WHERE ($1::boolean OR COALESCE(p.created_by = ANY($2::bigint[]), false) OR p.id = ANY($3::bigint[]))
 -- vars
 $1 bool true
-$2 int64 0
+$2 core.int64s []
 $3 core.int64s []

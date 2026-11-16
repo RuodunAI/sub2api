@@ -12,7 +12,7 @@ import (
 // The SQL of the proxy list filter, assembled per request (see package
 // gormtest).
 
-var snapshotScope = core.DataScope{Owner: 7, IDs: []int64{3, 4}}
+var snapshotScope = core.DataScope{Owners: []int64{7}, IDs: []int64{3, 4}}
 
 func TestSQLProxyList(t *testing.T) {
 	creator := int64(9)

@@ -26,6 +26,7 @@ export const P = {
   AccountSettingsCustom: 'account:settings:custom',
   AccountGroupBind: 'account:group:bind',
   AccountRelay: 'account:relay',
+  AccountOwnerUpdate: 'account:owner:update',
   ProxyRead: 'proxy:read',
   ProxyManage: 'proxy:manage',
   PriceRead: 'price:read',
@@ -36,6 +37,7 @@ export const P = {
   BalanceAdjustAny: 'balance:adjust:any',
   UsageSelfRead: 'usage:self:read',
   UsageAllRead: 'usage:all:read',
+  UsageAccountRead: 'usage:account:read',
   UsageSettle: 'usage:settle',
   StickyRead: 'sticky:read',
   StickyManage: 'sticky:manage',
@@ -70,6 +72,9 @@ export type PermKey = (typeof P)[keyof typeof P]
 
 /** The scopable actions and the resource their scope ranges over (CONTRACTS §21). */
 export const SCOPE_TYPE = {
+  'user:read': 'user',
+  'user:create': 'user',
+  'user:update': 'user',
   'account:read': 'account',
   'account:create': 'account',
   'account:update': 'account',
@@ -77,7 +82,8 @@ export const SCOPE_TYPE = {
   'account:test': 'account',
   'account:credential:view': 'account',
   'proxy:read': 'proxy',
-  'proxy:manage': 'proxy'
+  'proxy:manage': 'proxy',
+  'usage:account:read': 'account'
 } as const
 
 export type ScopableKey = keyof typeof SCOPE_TYPE
@@ -237,8 +243,8 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
     stepUp: false,
     requires: [],
     description: {
-      en: 'View upstream accounts within the scope granted (all, own, a group or one account).',
-      zh: '查看授权范围内的上游账号（全部、自己创建、某分组或单个账号）。'
+      en: 'View upstream accounts within the scope granted (all, own, own and the users below, a group or one account).',
+      zh: '查看授权范围内的上游账号（全部、自己的、自己及下级、某分组或单个账号）。'
     }
   },
   'account:create': {
@@ -319,6 +325,16 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
     description: {
       en: 'Create accounts whose upstream address is free (relay) or re-point it; only matters to callers with a restricted account scope (own, group or account).',
       zh: '创建或改动可自定义上游地址的账号（relay）；只对账号范围受限（仅自己、某分组或单个账号）的人生效。'
+    }
+  },
+  'account:owner:update': {
+    module: 'account',
+    risk: 'sensitive',
+    stepUp: false,
+    requires: ['account:read'],
+    description: {
+      en: 'Move an account to another user, its owner: whose own and team account scopes reach it.',
+      zh: '把账号的所属改为其他用户；所属决定哪些人的“自己的”“自己及下级”账号范围能看到它。'
     }
   },
   'proxy:read': {
@@ -419,6 +435,16 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
     description: {
       en: 'View site-wide usage logs and statistics, user emails included.',
       zh: '查看全站使用日志与统计，包含用户邮箱。'
+    }
+  },
+  'usage:account:read': {
+    module: 'usage',
+    risk: 'sensitive',
+    stepUp: false,
+    requires: ['account:read'],
+    description: {
+      en: 'View the usage logs and statistics of accounts within the scope granted, without users, API keys or billed amounts.',
+      zh: '查看授权范围内账号的使用记录与统计，不含用户、API Key 与计费金额。'
     }
   },
   'usage:settle': {

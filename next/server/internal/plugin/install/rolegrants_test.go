@@ -128,7 +128,7 @@ func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 			[]RoleGrant{grant("plugin.guard:rules:edit", "auditor", manifest.RiskLow, viaInherit, true)}},
 		{"0.1.4", newPerm("rules:export", "", "admin", "operator", "supplier"), ConsentApproved,
 			[]RoleGrant{grant(export, "admin", manifest.RiskLow, viaDefault, false), grant(export, "operator", manifest.RiskLow, viaDefault, false),
-				grant(export, "supplier", manifest.RiskLow, viaDefault, false)}},
+				grant(export, "supplier", manifest.RiskLow, viaDefault, false), grant(export, "supplier_agent", manifest.RiskLow, viaDefault, false)}},
 	} {
 		r, err := e.svc.Upload(ctx, pkgtest.Build(guardWith(tc.version, tc.up), e.root), e.admin, UploadOptions{})
 		require.NoError(t, err, tc.version)
@@ -148,7 +148,7 @@ func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 		assert.Contains(t, detail, want)
 	}
 	// Even the carried-over grants go through the catalog's locking check.
-	assert.Equal(t, [][]string{{"admin", "operator", "supplier"}}, e.perms.checked)
+	assert.Equal(t, [][]string{{"admin", "operator", "supplier", "supplier_agent"}}, e.perms.checked)
 	e.perms.checked = nil
 
 	// Without role:define nothing is nameable: the consent goes through,

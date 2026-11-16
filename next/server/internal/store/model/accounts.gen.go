@@ -57,6 +57,8 @@ type Account struct {
 	ConversionLossPolicy      *string         `gorm:"column:conversion_loss_policy"`                   // character varying(10)
 	SpmWindowSeconds          *int            `gorm:"column:spm_window_seconds;default:(-)"`           // integer default 60
 	AdminLocked               bool            `gorm:"column:admin_locked;default:(-)"`                 // boolean default false
+	// 所属: whose account it is for own and team scopes (CONTRACTS §102); starts as created_by, an administrator may move it
+	OwnerID *int64 `gorm:"column:owner_id"` // bigint
 }
 
 // TableName implements gorm's schema.Tabler.

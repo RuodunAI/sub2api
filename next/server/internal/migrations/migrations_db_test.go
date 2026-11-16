@@ -544,6 +544,52 @@ func TestMigration0102DropsCCGatewayAndLegacy(t *testing.T) {
 	require.Equal(t, `{"metric": "rpm", "limit_load": false, "model_limits": true}`, read(scheduling), "a rerun reset a saved row")
 }
 
+// 0103 adds the owners of CONTRACTS §102: an account's owner starts as its
+// creator, a user cannot own itself or a missing user, a hard delete of an
+// owner clears what it owned, and a rerun keeps an owner moved since.
+func TestMigration0103UserAndAccountOwners(t *testing.T) {
+	const id = "0103_user_owner.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) error {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		return err
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	require.NoError(t, exec(`INSERT INTO users (email, password_hash) VALUES ('a@x', ''), ('b@x', '');
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc, created_by) SELECT 'mine', 'p', 't', '', id FROM users WHERE email = 'a@x';
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('nobody', 'p', 't', '')`))
+	owners := `SELECT string_agg(a.name || '=' || COALESCE(u.email, '-'), ' ' ORDER BY a.name) FROM accounts a LEFT JOIN users u ON u.id = a.owner_id`
+
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, "mine=a@x nobody=-", read(owners))
+	require.Equal(t, "2", read(`SELECT count(*)::text FROM pg_indexes WHERE indexname IN ('users_owner_idx', 'accounts_owner_idx')`))
+	require.ErrorContains(t, exec(`UPDATE users SET owner_id = id WHERE email = 'a@x'`), "users_owner_not_self")
+	require.ErrorContains(t, exec(`UPDATE users SET owner_id = 999999 WHERE email = 'a@x'`), "users_owner_fk")
+	require.ErrorContains(t, exec(`UPDATE accounts SET owner_id = 999999`), "accounts_owner_fk")
+
+	require.NoError(t, exec(`UPDATE accounts SET owner_id = (SELECT id FROM users WHERE email = 'b@x') WHERE name = 'mine';
+		UPDATE users SET owner_id = (SELECT id FROM users WHERE email = 'a@x') WHERE email = 'b@x';
+		DELETE FROM schema_migrations WHERE id = '`+id+`'`))
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, "mine=b@x nobody=-", read(owners), "a rerun moved an owner back")
+
+	require.NoError(t, exec(`DELETE FROM users WHERE email = 'b@x'`))
+	require.Equal(t, "mine=- nobody=-", read(owners))
+	require.Equal(t, "0", read(`SELECT count(*)::text FROM users WHERE owner_id IS NOT NULL`))
+}
+
 // 0064 and 0068 sum an account's usage (CONTRACTS §73): existing rows are
 // backfilled once, then the trigger journals settlement, reconcile, refunds
 // and a moved account, and account_usage_fold sums the journal; deleting

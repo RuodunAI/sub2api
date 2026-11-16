@@ -23,15 +23,16 @@ import (
 // Each grant goes to review instead (withheld) when the consenting actor may
 // not name its role (nameable), and on an upgrade nobody consented to when
 // it needs consent: an upgrade is approved without anyone only when every
-// such grant is of a low risk permission to the built-in admin, operator
-// or supplier role (autoGrantRoles); otherwise someone decides on the
-// consent page. Built-in plugins upgrade with the core and are approved by
-// the system all the same (node readiness needs it), so their grants that
-// need consent are withheld and listed for review instead.
+// such grant is of a low risk permission to the built-in admin, operator,
+// supplier or supplier_agent role (autoGrantRoles); otherwise someone
+// decides on the consent page. Built-in plugins upgrade with the core and
+// are approved by the system all the same (node readiness needs it), so
+// their grants that need consent are withheld and listed for review
+// instead.
 
 // autoGrantRoles are the built-in roles an upgrade may hand low risk new
 // permissions without consent.
-var autoGrantRoles = []string{"admin", "operator", "supplier"}
+var autoGrantRoles = []string{"admin", "operator", "supplier", "supplier_agent"}
 
 // Audit actions of consents and the role grants they withheld.
 const (

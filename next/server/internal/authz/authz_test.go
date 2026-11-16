@@ -206,7 +206,7 @@ var operatorDefaults = []string{
 	"proxy:read", "proxy:manage",
 	"price:read",
 	"balance:self:read", "balance:all:read",
-	"usage:self:read", "usage:all:read",
+	"usage:self:read", "usage:all:read", "usage:account:read",
 	"node:read",
 	"audit:read",
 	"task:read", "task:run",
@@ -248,18 +248,32 @@ func TestSyncCoreSeedsCatalogAndRoles(t *testing.T) {
 	if len(byKey[RoleUser].PermissionKeys) != len(userRolePermissions) {
 		t.Fatalf("user perms = %v", byKey[RoleUser].PermissionKeys)
 	}
-	// The supplier role: its own accounts, proxies and usage, nothing of
-	// plugins, no group binding (decision 7), and nothing to assign.
+	// The supplier role: its own accounts, proxies and usage and that of
+	// its accounts, nothing of plugins, no group binding (decision 7), and
+	// nothing to assign.
 	sup := byKey[RoleSupplier]
 	wantSup := []string{
 		"account:create:own", "account:credential:view:own", "account:delete:own", "account:read:own", "account:test:own", "account:update:own",
-		"proxy:manage:own", "proxy:read:own", "usage:self:read",
+		"proxy:manage:own", "proxy:read:own", "usage:account:read:own", "usage:self:read",
 	}
 	if sup == nil || !sup.Builtin || sup.Superuser || !slices.Equal(slices.Sorted(slices.Values(sup.PermissionKeys)), wantSup) ||
 		len(sup.AssignableRoleKeys) != 0 || sup.AssignCustom {
 		t.Fatalf("supplier: %+v", sup)
 	}
-	for role, want := range map[string][]string{RoleAdmin: {RoleOperator, RoleSupplier, RoleUser}, RoleOperator: {RoleSupplier, RoleUser}} {
+	// The supplier agent (CONTRACTS §102): the supplier's, its own reads
+	// widened to its team's accounts and account usage, and its team's
+	// users (D8); suppliers and agents to assign (D2).
+	agent := byKey[RoleSupplierAgent]
+	wantAgent := slices.Sorted(slices.Values(append(slices.DeleteFunc(slices.Clone(wantSup), func(k string) bool {
+		return k == "account:read:own" || k == "usage:account:read:own"
+	}), "account:read:team", "usage:account:read:team", "user:read:team", "user:create:team", "user:update:team", "role:read", "role:assign")))
+	if agent == nil || !agent.Builtin || agent.Superuser || !slices.Equal(slices.Sorted(slices.Values(agent.PermissionKeys)), wantAgent) || agent.AssignCustom {
+		t.Fatalf("supplier agent: %+v", agent)
+	}
+	for role, want := range map[string][]string{
+		RoleAdmin: {RoleOperator, RoleSupplier, RoleSupplierAgent, RoleUser}, RoleOperator: {RoleSupplier, RoleUser},
+		RoleSupplierAgent: {RoleSupplier, RoleSupplierAgent},
+	} {
 		if got := byKey[role].AssignableRoleKeys; !slices.Equal(got, want) {
 			t.Fatalf("%s assigns %v, want %v", role, got, want)
 		}

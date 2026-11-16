@@ -556,7 +556,7 @@ func TestFindOrCreate(t *testing.T) {
 		t.Helper()
 		scope := core.AllScope
 		if creator != nil {
-			scope = core.DataScope{Owner: *creator}
+			scope = core.DataScope{Owners: []int64{*creator}}
 		}
 		var id int64
 		var created bool
@@ -679,7 +679,7 @@ func TestFindOrCreate(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_ = db.Tx(ctx, func(tx *gorm.DB) error {
-				id, created, err := svc.FindOrCreate(ctx, tx, fresh, alice, core.DataScope{Owner: alice})
+				id, created, err := svc.FindOrCreate(ctx, tx, fresh, alice, core.DataScope{Owners: []int64{alice}})
 				if err != nil {
 					return err
 				}
