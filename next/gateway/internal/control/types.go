@@ -3,8 +3,10 @@ package control
 
 import (
 	"context"
-	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/updatesource"
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
 type Node struct {
@@ -27,6 +29,9 @@ type Node struct {
 	Arch            string    `json:"arch"`
 	RuntimeABI      string    `json:"runtime_abi"`
 	RouteRevision   int64     `json:"route_revision"`
+	// GatewayVersion is the version of the node's gateway binary, written at
+	// registration; empty for a gateway that predates it.
+	GatewayVersion string `json:"gateway_version"`
 	// CPUPercent is the node's averaged CPU load; nil when it is not measured.
 	CPUPercent *float64 `json:"cpu_percent"`
 	// Offloading is set before the node sends its new requests elsewhere and
@@ -64,6 +69,11 @@ type Release struct {
 	Manifest   rc.Manifest       `json:"manifest"`
 	Signed     rc.SignedManifest `json:"-"`
 	BundleBase string            `json:"-"`
+	// SourceAssets are the assets, by file name, of a release imported from
+	// the update source at SourceRevision; its bundles are downloaded through
+	// that source and BundleBase is empty.
+	SourceAssets   map[string]updatesource.Asset `json:"-"`
+	SourceRevision int64                         `json:"-"`
 }
 type Plan struct {
 	Strategy      string    `json:"strategy"`

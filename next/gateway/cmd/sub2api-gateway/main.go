@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -36,6 +35,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/supervisor"
 	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -85,7 +85,14 @@ type config struct {
 	// TCP. Every reader of that cache can verify node identities and alter
 	// locks and registrations, so this is for isolated test setups only.
 	AllowUnauthenticatedRedis bool `json:"allow_unauthenticated_redis"`
+	// AllowPrivateUpdateSources lets a url update source resolve to private
+	// addresses, for a release mirror inside the cluster's network.
+	AllowPrivateUpdateSources bool `json:"allow_private_update_sources"`
 }
+
+// Version is the gateway's release version, set at build time with
+// -ldflags "-X main.Version=<version>".
+var Version = "0.0.0-dev"
 
 func main() {
 	if err := run(); err != nil {
@@ -109,7 +116,7 @@ type cliOptions struct {
 // parseCLI parses argv into the command and its flags.
 func parseCLI(args []string) (cliOptions, error) {
 	if len(args) < 1 {
-		return cliOptions{}, errors.New("usage: sub2api-gateway init|import|serve|status|pause|resume|cancel|rollback|enable-node|disable-node|yield|unyield|yield-status|set-primary|remove-node")
+		return cliOptions{}, errors.New("usage: sub2api-gateway version|init|import|serve|status|pause|resume|cancel|rollback|enable-node|disable-node|yield|unyield|yield-status|set-primary|remove-node")
 	}
 	command := args[0]
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -139,6 +146,10 @@ func run() error {
 	opts, err := parseCLI(os.Args[1:])
 	if err != nil {
 		return err
+	}
+	if opts.command == "version" {
+		fmt.Println(Version)
+		return nil
 	}
 	done, err := dispatchConfigCommand(opts)
 	if err != nil || done {
@@ -282,17 +293,18 @@ func newShell(ctx context.Context, c config, command string) (*shell, error) {
 		slog.Info("gateway database pool", "max_conns", sqlDB.Stats().MaxOpenConnections)
 	}
 	s.store = &control.Store{DB: db, Cluster: c.ClusterID}
-	keys := map[string]ed25519.PublicKey{}
-	for id, b64 := range c.TrustedKeys {
-		b, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil || len(b) != ed25519.PublicKeySize {
-			s.close()
-			return nil, fmt.Errorf("invalid trusted public key %q", id)
-		}
-		keys[id] = ed25519.PublicKey(b)
+	keys, err := release.TrustedKeys(c.TrustedKeys)
+	if err != nil {
+		s.close()
+		return nil, err
+	}
+	cipher, err := c.masterCipher()
+	if err != nil {
+		s.close()
+		return nil, err
 	}
 	s.releases = &release.Manager{Root: c.Root, TrustedKeys: keys, OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI}
-	s.store.Updates = control.NewUpdateService(s.releases)
+	s.store.Updates = control.NewUpdateService(s.releases, cipher, c.AllowPrivateUpdateSources)
 	// The publisher is usually served with a public certificate, but may use
 	// the cluster CA; signatures, not the transport, authorize its content.
 	// init/import and serve share this client. It never carries node keys.
@@ -458,7 +470,7 @@ func (s *serveSet) build(ctx context.Context) error {
 	if _, err = rand.Read(boot); err != nil {
 		return err
 	}
-	s.ownNode = control.Node{ID: c.NodeID, PeerURL: c.PeerURL, ShellBootID: hex.EncodeToString(boot), OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI, PeerProtocol: peer.Protocol, Strategy: control.PrimaryFirst, Rolling: true}
+	s.ownNode = control.Node{ID: c.NodeID, PeerURL: c.PeerURL, ShellBootID: hex.EncodeToString(boot), OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI, PeerProtocol: peer.Protocol, Strategy: control.PrimaryFirst, Rolling: true, GatewayVersion: Version}
 	// Configure structured logging with cluster context
 	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
 	logger := slog.New(handler).With(
@@ -556,6 +568,7 @@ func (s *serveSet) buildRuntime(ctx context.Context, peerManager *peer.Manager, 
 		return s.store.ConfirmStoppedCore(ctx, c.NodeID, s.ownNode.ShellBootID, coreBoot)
 	}
 	rt.Peer = peerManager
+	rt.SourceAsset = s.store.OpenSourceAsset
 	rt.PeerArtifactClient = peer.NewClient(peerTransport, 30*time.Minute)
 	// Package fetches may reach any enabled node (the old primary after a
 	// primary change among them); only that client is authorized this way.
@@ -643,6 +656,7 @@ func (s *serveSet) serve(ctx context.Context, cancel context.CancelFunc, bootstr
 		slog.Error("startup reconciliation paused", "error", err)
 	}
 	go func() { _ = s.engine.Run(ctx) }()
+	go s.store.RunUpdateChecks(ctx, c.NodeID)
 	select {
 	case <-ctx.Done():
 	case err = <-errs:
@@ -790,6 +804,28 @@ func (c config) coreEnvironment() []string {
 }
 
 const pluginLandlockEnv = "SUB2API_PLUGIN_LANDLOCK"
+
+// masterCipher seals update-source secrets with the cluster master key the
+// core gets: core_env wins over the gateway's own environment, as in the
+// supervisor. Without a key it is nil, and only secretless sources work.
+func (c config) masterCipher() (*secret.Cipher, error) {
+	key := os.Getenv(masterKeyEnv)
+	for _, kv := range c.CoreEnv {
+		if v, ok := strings.CutPrefix(kv, masterKeyEnv+"="); ok {
+			key = v
+		}
+	}
+	if key == "" {
+		return nil, nil
+	}
+	b, err := base64.StdEncoding.DecodeString(key)
+	if err != nil || len(b) != 32 {
+		return nil, errors.New(masterKeyEnv + " must be base64 of exactly 32 bytes")
+	}
+	return secret.New(b)
+}
+
+const masterKeyEnv = "SUB2API_MASTER_KEY"
 
 func hasEnv(env []string, key string) bool {
 	for _, kv := range env {

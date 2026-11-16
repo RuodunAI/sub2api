@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -35,6 +36,9 @@ type LocalRuntime struct {
 	AuthorizePeer                                       func(context.Context, peer.Identity, string, string) error
 	// PluginBlobs serves /internal/plugin-blobs/ to authorized followers.
 	PluginBlobs http.Handler
+	// SourceAsset opens an asset of a release imported from the update
+	// source (Store.OpenSourceAsset).
+	SourceAsset func(ctx context.Context, r Release, name string, max int64) (io.ReadCloser, error)
 	Args, Env   []string
 	mu          sync.RWMutex
 	routeMu     sync.Mutex
@@ -54,24 +58,34 @@ func (r *LocalRuntime) Prepare(ctx context.Context, v Release, base string) erro
 	if digest != v.Digest {
 		return errors.New("stored signed manifest digest mismatch")
 	}
-	var bundle string
+	var platform rc.Platform
 	for _, p := range v.Manifest.Platforms {
 		if p.OS == r.Releases.OS && p.Arch == r.Releases.Arch && p.RuntimeABI == r.Releases.RuntimeABI {
-			bundle = p.BundleDigest
+			platform = p
 		}
 	}
+	bundle := platform.BundleDigest
 	if bundle == "" {
 		return errors.New("release has no matching platform")
 	}
 	bundleURL, fromPeer := bundleLocation(base, bundle)
 	var p release.Prepared
 	var err error
-	if fromPeer {
+	switch {
+	case base == "":
+		// Imported from the update source: download through it.
+		if r.SourceAsset == nil {
+			return errors.New("update source downloads are not configured")
+		}
+		p, err = r.Releases.PrepareFrom(ctx, v.Signed, func(ctx context.Context) (io.ReadCloser, error) {
+			return r.SourceAsset(ctx, v, bundle+".tar.gz", platform.BundleBytes)
+		})
+	case fromPeer:
 		if r.PeerArtifactClient == nil {
 			return errors.New("peer artifact client not configured")
 		}
 		p, err = r.Releases.PrepareWithClient(ctx, v.Signed, bundleURL, r.PeerArtifactClient)
-	} else {
+	default:
 		p, err = r.Releases.Prepare(ctx, v.Signed, bundleURL)
 	}
 	if err != nil {

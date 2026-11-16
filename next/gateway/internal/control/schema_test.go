@@ -86,3 +86,28 @@ func TestSchemaLockSpansScript(t *testing.T) {
 		}
 	})
 }
+
+// TestEnsureSchemaIsIdempotent applies the schema again over the cluster row
+// of an older shell and checks the update-source defaults it fills in.
+func TestEnsureSchemaIsIdempotent(t *testing.T) {
+	s := integrationStore(t)
+	ctx := context.Background()
+	if err := s.InitCluster(ctx, "a", "base"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.clusterRow(s.db(ctx)).Update("update_repository", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.EnsureSchema(ctx); err != nil {
+			t.Fatalf("apply %d: %v", i, err)
+		}
+	}
+	row, err := s.readSource(s.clusterRow(s.db(ctx)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !row.enabled || row.kind != "github" || row.repo != "Sub2API-Devs/sup2api" || row.url != "" || row.secret != nil {
+		t.Fatalf("update-source defaults: %+v", row)
+	}
+}

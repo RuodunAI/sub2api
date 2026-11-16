@@ -179,6 +179,7 @@ func integrationStore(t *testing.T) *Store {
 			`DELETE FROM updater.steps WHERE upgrade_id IN (SELECT id FROM updater.upgrades WHERE cluster_id=?)`,
 			`DELETE FROM updater.upgrades WHERE cluster_id=?`,
 			`DELETE FROM updater.node_admissions WHERE cluster_id=?`,
+			`DELETE FROM updater.update_checks WHERE cluster_id=?`,
 			`DELETE FROM updater.nodes WHERE cluster_id=?`,
 			`DELETE FROM updater.clusters WHERE cluster_id=?`,
 		} {

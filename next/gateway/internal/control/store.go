@@ -85,21 +85,32 @@ func (s *Store) PutRelease(ctx context.Context, r Release) error {
 // createRelease stores r unless a release of its digest is stored already
 // (RowsAffected 0).
 func createRelease(db *gorm.DB, r Release) *gorm.DB {
+	return db.Clauses(clause.OnConflict{Columns: columns("digest"), DoNothing: true}).Create(newReleaseRecord(r))
+}
+
+func newReleaseRecord(r Release) *releaseRecord {
 	m, _ := json.Marshal(r.Manifest)
 	signed, _ := json.Marshal(r.Signed)
-	return db.Clauses(clause.OnConflict{Columns: columns("digest"), DoNothing: true}).
-		Create(&releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, BundleBase: r.BundleBase})
+	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, BundleBase: r.BundleBase}
+	if r.SourceAssets != nil {
+		rec.SourceAssets, _ = json.Marshal(r.SourceAssets)
+		rec.SourceRevision = &r.SourceRevision
+	}
+	return rec
 }
 func (s *Store) Release(ctx context.Context, digest string) (r Release, err error) {
-	var m, b []byte
+	var m, b, assets []byte
 	r.Digest = digest
-	err = releaseRow(s.db(ctx), digest).Select("manifest,signed_manifest,bundle_base").Row().Scan(&m, &b, &r.BundleBase)
+	err = releaseRow(s.db(ctx), digest).Select("manifest,signed_manifest,bundle_base,source_assets,COALESCE(source_revision,0)").Row().Scan(&m, &b, &r.BundleBase, &assets, &r.SourceRevision)
 	if err != nil {
 		return
 	}
 	err = json.Unmarshal(m, &r.Manifest)
 	if err == nil {
 		err = json.Unmarshal(b, &r.Signed)
+	}
+	if err == nil && assets != nil {
+		err = json.Unmarshal(assets, &r.SourceAssets)
 	}
 	return
 }
@@ -133,7 +144,7 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 	// stopped, in maintenance, not offloading, joining the plan
 	// the registration found); under the same boot it keeps that state.
 	const sameBoot = "CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes."
-	set := clause.AssignmentColumns([]string{"peer_url", "shell_boot_id", "rolling", "os", "arch", "runtime_abi", "peer_protocol", "strategy"})
+	set := clause.AssignmentColumns([]string{"peer_url", "shell_boot_id", "rolling", "os", "arch", "runtime_abi", "peer_protocol", "strategy", "gateway_version"})
 	set = append(set, clause.Assignments(map[string]any{
 		"ready":        gorm.Expr(sameBoot + "ready ELSE false END"),
 		"stopped":      gorm.Expr(sameBoot + "stopped ELSE false END"),
@@ -152,7 +163,7 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 				return err
 			}
 			res := tx.Clauses(conflict).Create(&nodeRecord{NodeID: n.ID, ClusterID: s.Cluster, PeerURL: n.PeerURL, ShellBootID: n.ShellBootID,
-				OS: n.OS, Arch: n.Arch, RuntimeABI: n.RuntimeABI, PeerProtocol: n.PeerProtocol, Strategy: n.Strategy, JoiningPlan: plan, Rolling: n.Rolling})
+				OS: n.OS, Arch: n.Arch, RuntimeABI: n.RuntimeABI, PeerProtocol: n.PeerProtocol, Strategy: n.Strategy, JoiningPlan: plan, Rolling: n.Rolling, GatewayVersion: n.GatewayVersion})
 			if res.Error != nil {
 				return res.Error
 			}
@@ -189,7 +200,7 @@ func (s *Store) Heartbeat(ctx context.Context, n Node) error {
 	return s.reportTelemetry(ctx, n, observedLocally)
 }
 func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.nodes(s.db(ctx)).Select("node_id,peer_url,shell_boot_id,release_digest,core_boot_id,mode,ready,last_seen,error,os,arch,runtime_abi,route_revision,stopped,enabled,peer_protocol,strategy,joining_plan,offloading,telemetry_boot_id,rolling").Order("node_id").Rows()
+	rows, err := s.nodes(s.db(ctx)).Select("node_id,peer_url,shell_boot_id,release_digest,core_boot_id,mode,ready,last_seen,error,os,arch,runtime_abi,route_revision,stopped,enabled,peer_protocol,strategy,joining_plan,offloading,telemetry_boot_id,rolling,gateway_version").Order("node_id").Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +208,7 @@ func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
 	out := []Node{}
 	for rows.Next() {
 		var n Node
-		if err = rows.Scan(&n.ID, &n.PeerURL, &n.ShellBootID, &n.ReleaseDigest, &n.CoreBootID, &n.Mode, &n.Ready, &n.LastSeen, &n.Error, &n.OS, &n.Arch, &n.RuntimeABI, &n.RouteRevision, &n.Stopped, &n.Enabled, &n.PeerProtocol, &n.Strategy, &n.JoiningPlan, &n.Offloading, &n.TelemetryBootID, &n.Rolling); err != nil {
+		if err = rows.Scan(&n.ID, &n.PeerURL, &n.ShellBootID, &n.ReleaseDigest, &n.CoreBootID, &n.Mode, &n.Ready, &n.LastSeen, &n.Error, &n.OS, &n.Arch, &n.RuntimeABI, &n.RouteRevision, &n.Stopped, &n.Enabled, &n.PeerProtocol, &n.Strategy, &n.JoiningPlan, &n.Offloading, &n.TelemetryBootID, &n.Rolling, &n.GatewayVersion); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -330,9 +341,18 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 // of them serving so that one can take the other's traffic. Anything else
 // upgrades primary-first, as before.
 func rollingEligible(target Release, nodes []Node, minServing int) bool {
+	return len(rollingBlockers(target, nodes, minServing)) == 0
+}
+
+// rollingBlockers are the reasons rollingEligible rejects a rolling plan.
+func rollingBlockers(target Release, nodes []Node, minServing int) []string {
 	m := target.Manifest
-	if m.Strategy != "rolling" || m.SchemaBefore == "" || m.SchemaBefore != m.SchemaAfter {
-		return false
+	var out []string
+	if m.Strategy != "rolling" {
+		out = append(out, "the release is signed for a maintenance update")
+	}
+	if m.SchemaBefore == "" || m.SchemaBefore != m.SchemaAfter {
+		out = append(out, "the release changes the database schema")
 	}
 	serving := 0
 	for _, n := range nodes {
@@ -340,13 +360,16 @@ func rollingEligible(target Release, nodes []Node, minServing int) bool {
 			continue
 		}
 		if !n.Rolling {
-			return false
+			out = append(out, "node "+n.ID+" runs a gateway without rolling updates")
 		}
 		if n.ServingLocal(time.Now()) {
 			serving++
 		}
 	}
-	return serving >= minServing
+	if serving < minServing {
+		out = append(out, fmt.Sprintf("fewer than %d nodes serve, so no node can take over another's traffic", minServing))
+	}
+	return out
 }
 
 // Compatibility validates the signed migration start and executable protocols.

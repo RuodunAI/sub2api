@@ -39,7 +39,6 @@ type Manager struct {
 	TrustedKeys          map[string]ed25519.PublicKey
 	OS, Arch, RuntimeABI string
 	Client               *http.Client
-	GitHubClient         *http.Client
 	// AllowHTTP is intended for explicitly configured development repositories.
 	AllowHTTP bool
 	// ManifestTimeout bounds a whole manifest request. HeaderTimeout bounds a
@@ -73,11 +72,10 @@ func ValidDigest(s string) bool {
 func Digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 func Verify(s rc.SignedManifest, keys map[string]ed25519.PublicKey) (rc.Manifest, string, error) {
 	var m rc.Manifest
-	key := keys[s.KeyID]
-	if len(s.Payload) > MaxManifestBytes || len(key) != ed25519.PublicKeySize || !ed25519.Verify(key, s.Payload, s.Signature) {
-		return m, "", errors.New("invalid release signature")
+	if err := verifySignature(s, keys); err != nil {
+		return m, "", err
 	}
-	if err := json.Unmarshal(s.Payload, &m); err != nil {
+	if err := decodeStrict(s.Payload, &m); err != nil {
 		return m, "", err
 	}
 	if m.ManifestVersion != 1 || m.ReleaseID == "" || m.BuildID == "" || !m.ShellProtocol.Contains(rc.Protocol) || !m.CoreControlProtocol.Contains(rc.Protocol) {
@@ -87,6 +85,19 @@ func Verify(s rc.SignedManifest, keys map[string]ed25519.PublicKey) (rc.Manifest
 		return m, "", errors.New("invalid release strategy")
 	}
 	return m, Digest(s.Payload), nil
+}
+
+// verifySignature checks s against keys; an unknown key is named, so an
+// operator can tell a release of another publisher from a forged one.
+func verifySignature(s rc.SignedManifest, keys map[string]ed25519.PublicKey) error {
+	key, known := keys[s.KeyID]
+	if !known {
+		return fmt.Errorf("release is signed by untrusted key %.64q", s.KeyID)
+	}
+	if len(s.Payload) > MaxManifestBytes || len(key) != ed25519.PublicKeySize || !ed25519.Verify(key, s.Payload, s.Signature) {
+		return errors.New("invalid release signature")
+	}
+	return nil
 }
 func (m *Manager) selectPlatform(v rc.Manifest) (rc.Platform, error) {
 	for _, p := range v.Platforms {
@@ -114,7 +125,7 @@ func (m *Manager) FetchManifest(ctx context.Context, rawURL string) (rc.SignedMa
 	var s rc.SignedManifest
 	ctx, cancel := context.WithTimeout(ctx, orDefault(m.ManifestTimeout, DefaultManifestTimeout))
 	defer cancel()
-	r, err := m.getUsing(ctx, rawURL, m.Client, m.GitHubClient)
+	r, err := m.getUsing(ctx, rawURL, m.Client)
 	if err != nil {
 		return s, err
 	}
@@ -129,10 +140,7 @@ func (m *Manager) FetchManifest(ctx context.Context, rawURL string) (rc.SignedMa
 	err = json.Unmarshal(b, &s)
 	return s, err
 }
-func (m *Manager) getUsing(ctx context.Context, raw string, client, github *http.Client) (*http.Response, error) {
-	if IsGitHubAssetURL(raw) {
-		return GitHubGet(ctx, github, raw)
-	}
+func (m *Manager) getUsing(ctx context.Context, raw string, client *http.Client) (*http.Response, error) {
 	u, e := url.Parse(raw)
 	if e != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(m.AllowHTTP && u.Scheme == "http")) {
 		return nil, errors.New("invalid release source URL")
@@ -165,18 +173,29 @@ var (
 	errStalled    = errors.New("release download stalled")
 )
 
+// Opener opens a bundle's bytes. Its request lives as long as ctx, which the
+// download cancels when the response or the bytes stop arriving.
+type Opener func(ctx context.Context) (io.ReadCloser, error)
+
+// urlOpener opens the bundle at raw through client, without its total deadline.
+func (m *Manager) urlOpener(raw string, client *http.Client) Opener {
+	return func(ctx context.Context) (io.ReadCloser, error) {
+		r, err := m.getUsing(ctx, raw, untimed(client))
+		if err != nil {
+			return nil, err
+		}
+		return r.Body, nil
+	}
+}
+
 // download opens a bundle without a total deadline: a slow link may take as
 // long as it needs, but the request fails once the response headers or body
 // bytes stop arriving for the configured window.
-func (m *Manager) download(ctx context.Context, raw string, client *http.Client) (io.ReadCloser, error) {
-	github := m.GitHubClient
-	if github == nil {
-		github = GitHubClient()
-	}
+func (m *Manager) download(ctx context.Context, open Opener) (io.ReadCloser, error) {
 	header, idle := orDefault(m.HeaderTimeout, DefaultHeaderTimeout), orDefault(m.IdleTimeout, DefaultIdleTimeout)
 	ctx, cancel := context.WithCancelCause(ctx)
 	wait := time.AfterFunc(header, func() { cancel(fmt.Errorf("%w within %s", errNoResponse, header)) })
-	r, e := m.getUsing(ctx, raw, untimed(client), untimed(github))
+	body, e := open(ctx)
 	wait.Stop()
 	if e != nil {
 		if cause := context.Cause(ctx); errors.Is(cause, errNoResponse) {
@@ -185,7 +204,7 @@ func (m *Manager) download(ctx context.Context, raw string, client *http.Client)
 		cancel(nil)
 		return nil, e
 	}
-	b := &idleBody{body: r.Body, ctx: ctx, cancel: cancel, idle: idle}
+	b := &idleBody{body: body, ctx: ctx, cancel: cancel, idle: idle}
 	b.timer = time.AfterFunc(idle, func() { cancel(fmt.Errorf("%w: no data for %s", errStalled, idle)) })
 	return b, nil
 }
@@ -240,14 +259,20 @@ func (m *Manager) ValidatePlatform(v rc.Manifest) (rc.Platform, error) { return 
 // Prepare verifies the signed manifest before downloading the exact bundleURL.
 // It never changes current and is safe while the old core serves traffic.
 func (m *Manager) Prepare(ctx context.Context, s rc.SignedManifest, bundleURL string) (Prepared, error) {
-	return m.prepare(ctx, s, bundleURL, m.Client)
+	return m.prepare(ctx, s, m.urlOpener(bundleURL, m.Client))
 }
 
 // PrepareWithClient isolates the authenticated cluster transport from publishers.
 func (m *Manager) PrepareWithClient(ctx context.Context, s rc.SignedManifest, bundleURL string, client *http.Client) (Prepared, error) {
-	return m.prepare(ctx, s, bundleURL, client)
+	return m.prepare(ctx, s, m.urlOpener(bundleURL, client))
 }
-func (m *Manager) prepare(ctx context.Context, s rc.SignedManifest, bundleURL string, client *http.Client) (Prepared, error) {
+
+// PrepareFrom is Prepare with the bundle opened by open, e.g. from an update
+// source; size and digest are verified all the same.
+func (m *Manager) PrepareFrom(ctx context.Context, s rc.SignedManifest, open Opener) (Prepared, error) {
+	return m.prepare(ctx, s, open)
+}
+func (m *Manager) prepare(ctx context.Context, s rc.SignedManifest, open Opener) (Prepared, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	v, d, e := Verify(s, m.TrustedKeys)
@@ -286,7 +311,7 @@ func (m *Manager) prepare(ctx context.Context, s rc.SignedManifest, bundleURL st
 	if e != nil {
 		return out, e
 	}
-	r, e := m.download(ctx, bundleURL, client)
+	r, e := m.download(ctx, open)
 	if e != nil {
 		f.Close()
 		return out, e
