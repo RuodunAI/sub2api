@@ -142,7 +142,7 @@ func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*as
 func TestRepositoryFollowsGORMRules(t *testing.T) {
 	root, module := moduleRoot(t)
 	r := rules{module: module, owners: instanceOwners, sqlOwners: sqlOwners, pgxFiles: pgxFiles,
-		casbinOwners: casbinOwners}
+		casbinOwners: casbinOwners, sql: newSQLPolicy()}
 	known := map[string]bool{} // packages and their files, relative to the module
 	var targets []listed
 	for _, p := range goList(t, root, "./...") {
@@ -189,6 +189,7 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 			t.Error(finding)
 		}
 	}
+	r.sql.verify(t, known)
 }
 
 // scanImports checks the imports of every Go file under root, whatever its

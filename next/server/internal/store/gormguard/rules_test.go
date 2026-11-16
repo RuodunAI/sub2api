@@ -90,6 +90,9 @@ type rules struct {
 	// casbinOwners may import gorm-adapter and call Casbin's Enforce
 	// (casbin_test.go).
 	casbinOwners map[string]string
+	// sql holds [raw-sql] and [sql-const]'s allowlists (rawsql_test.go);
+	// nil leaves both rules off.
+	sql *sqlPolicy
 }
 
 // check returns the findings of one type-checked package as
@@ -101,7 +104,7 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 	_, owner := r.owners[rel]
 	_, sqlOwner := r.sqlOwners[rel]
 	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/" + storePkg,
-		casbinOwner: listedWithin(r.casbinOwners, rel)}
+		casbinOwner: listedWithin(r.casbinOwners, rel), module: r.module, rel: rel, sql: r.sql}
 	c.index(files)
 	for _, f := range files {
 		name := filepath.Base(fset.Position(f.Package).Filename)
@@ -110,6 +113,7 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 		c.test = test
 		ast.Inspect(f, c.visit)
 	}
+	c.sqlFiles(files)
 	return c.out
 }
 
@@ -183,6 +187,12 @@ type checker struct {
 	// passed adapterTurnedOff.
 	bodies        []*ast.BlockStmt
 	adapterVetted map[*ast.SelectorExpr]bool
+
+	// [raw-sql] and [sql-const] (rawsql_test.go): the module, the package
+	// relative to it, the policy and what constSQL follows.
+	module, rel string
+	sql         *sqlPolicy
+	sqlx        *sqlIndex
 }
 
 // assignment is a value given to a local variable as of position at: rhs,
