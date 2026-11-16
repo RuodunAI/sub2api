@@ -94,7 +94,9 @@ plugins() {
 realcore() {
   set -e
   checks=/src/checks
-  CGO_ENABLED=0 go build -ldflags '-X main.Version=0.1.0' -o "$checks/core-r1" ./server/cmd/sub2api
+  # Both versions must satisfy the bundled plugins' hostCompat (>=0.1.290
+  # <0.2.0), or the cores refuse them.
+  CGO_ENABLED=0 go build -ldflags '-X main.Version=0.1.900' -o "$checks/core-r1" ./server/cmd/sub2api
   # R2 is built from a separate copy with one test-only SQL migration. It is
   # never added to the application's migration inventory.
   target="$checks/target-next"
@@ -106,7 +108,7 @@ CREATE TABLE managed_upgrade_probe (id integer PRIMARY KEY, migrated_at timestam
 SELECT pg_sleep(4);
 INSERT INTO managed_upgrade_probe(id) VALUES (1);
 SQL
-  (cd "$target" && CGO_ENABLED=0 go build -ldflags '-X main.Version=0.1.1' -o "$checks/core-r2" ./server/cmd/sub2api)
+  (cd "$target" && CGO_ENABLED=0 go build -ldflags '-X main.Version=0.1.901' -o "$checks/core-r2" ./server/cmd/sub2api)
   "$checks/core-r1" schema-contract > "$out/schema-r1.txt"
   "$checks/core-r2" schema-contract > "$out/schema-r2.txt"
   sha256sum "$checks/core-r1" "$checks/core-r2" "$checks"/builtin/*.s2plugin "$checks"/upload/*.s2plugin "$checks"/market/*.s2plugin > "$out/artifact-digests.txt"

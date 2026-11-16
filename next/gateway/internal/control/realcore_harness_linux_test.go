@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	mrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -154,6 +155,14 @@ func newRealCluster(t *testing.T, ctx context.Context, options realOptions) *rea
 		cleanup, done := context.WithTimeout(context.Background(), 20*time.Second)
 		defer done()
 		admin.WithContext(cleanup).Exec("DROP DATABASE " + quoted + " WITH (FORCE)")
+		// Plugin roles are cluster-wide and marked with the database that
+		// created them; left behind, the next cluster's core refuses the
+		// same plugin keys with plugin_db_role_conflict.
+		var roles []string
+		admin.WithContext(cleanup).Raw("SELECT rolname FROM pg_roles WHERE starts_with(shobj_description(oid, 'pg_authid'), ?)", "sub2api plugin role; database="+c.dbname+";").Scan(&roles)
+		for _, role := range roles {
+			admin.WithContext(cleanup).Exec("DROP ROLE IF EXISTS " + quoteIdent(role))
+		}
 	})
 	c.coreDSN = dsn + " dbname=" + c.dbname
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
@@ -364,7 +373,7 @@ func (c *realCluster) startShell(id string) *realNode {
 	coreAddr := freeAddress(t)
 	rm := &release.Manager{Root: root, TrustedKeys: map[string]ed25519.PublicKey{"test": c.pub}, OS: "linux", Arch: runtime.GOARCH, RuntimeABI: "test", Client: c.artifactClient}
 	env := []string{
-		"SUB2API_DATABASE_URL=" + c.coreDSN, "SUB2API_REDIS_URL=" + c.redisURL, "SUB2API_MASTER_KEY=" + base64.StdEncoding.EncodeToString(make([]byte, 32)), "SUB2API_PLUGIN_DIR=" + filepath.Join(root, "plugins"), "SUB2API_LOG_LEVEL=error",
+		"DATABASE_URL=" + c.coreDSN, "REDIS_URL=" + c.redisURL, "SUB2API_MASTER_KEY=" + base64.StdEncoding.EncodeToString(make([]byte, 32)), "SUB2API_PLUGIN_DIR=" + filepath.Join(root, "plugins"), "SUB2API_LOG_LEVEL=error",
 	}
 	if key := os.Getenv("TEST_BUILTIN_KEY"); key != "" {
 		env = append(env, "SUB2API_BUILTIN_TRUST_KEY="+key)
@@ -609,15 +618,30 @@ func (r *observedPrimaryFirstRuntime) Start(ctx context.Context, digest string, 
 	return r.LocalRuntime.Start(ctx, digest, options)
 }
 
+// handedOut holds the ports freeAddress returned in this process.
+var handedOut sync.Map
+
+// freeAddress returns a loopback address a core listens on later. The port
+// lies below the kernel's ephemeral range (Linux starts at 32768): a port
+// from 127.0.0.1:0 is free only until one of the test's many outgoing
+// connections takes it as its local port, and the core then fails to bind.
 func freeAddress(t *testing.T) string {
 	t.Helper()
-	l, e := net.Listen("tcp", "127.0.0.1:0")
-	if e != nil {
-		t.Fatal(e)
+	for range 1000 {
+		port := 20000 + mrand.IntN(12000)
+		if _, taken := handedOut.LoadOrStore(port, true); taken {
+			continue
+		}
+		l, e := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if e != nil {
+			continue
+		}
+		addr := l.Addr().String()
+		_ = l.Close()
+		return addr
 	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return addr
+	t.Fatal("no free loopback port below the ephemeral range")
+	return ""
 }
 func realTestCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {
 	t.Helper()

@@ -1076,6 +1076,9 @@ func (s *Store) AuthorizeAnyNodeTarget(ctx context.Context, self string, u *url.
 
 // UnmanagedBlockers reads the existing core registry. A healthy old core that
 // never registered a managed identity must not survive the migration barrier.
+// The core boot ids come from PG, not from the heartbeat's NodeDirectory: that
+// snapshot predates the boot a node's own last heartbeat wrote, so it calls a
+// freshly started managed core unrecognized.
 func (s *Store) UnmanagedBlockers(ctx context.Context) ([]string, error) {
 	if s.Redis == nil {
 		return nil, errors.New("core registry verification unavailable")
@@ -1084,12 +1087,9 @@ func (s *Store) UnmanagedBlockers(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodes := s.NodeDirectory()
-	if nodes == nil {
-		nodes, err = s.Nodes(ctx)
-		if err != nil {
-			return nil, err
-		}
+	nodes, err := s.Nodes(ctx)
+	if err != nil {
+		return nil, err
 	}
 	known := map[string]string{}
 	for _, n := range nodes {

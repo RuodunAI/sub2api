@@ -22,7 +22,9 @@ type apiClient struct {
 	t     *testing.T
 	base  string
 	token string
-	http  *http.Client
+	// password answers step-up refusals (send); set by login.
+	password string
+	http     *http.Client
 }
 
 type apiResponse struct {
@@ -72,20 +74,55 @@ func newAPIClient(t *testing.T, base string) *apiClient {
 
 func (c *apiClient) do(method, path string, body any, headers map[string]string) apiResponse {
 	c.t.Helper()
+	if body == nil {
+		return c.send(method, path, nil, "", headers)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	return c.send(method, path, raw, "application/json", headers)
+}
+
+// send sends a request. A step-up refusal (403 verification_required) is
+// answered with the login password (POST /me/verify, CONTRACTS §80.2), and
+// the request goes again with the proof; the session's token rotates.
+func (c *apiClient) send(method, path string, payload []byte, contentType string, headers map[string]string) apiResponse {
+	c.t.Helper()
+	r := c.roundTrip(method, path, payload, contentType, headers)
+	if r.status != http.StatusForbidden || r.str("error.code") != "verification_required" || c.password == "" {
+		return r
+	}
+	verify, err := json.Marshal(map[string]string{"scope": r.str("error.details.scope"), "context": r.str("error.details.context"), "method": "password", "password": c.password})
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	v := c.roundTrip(http.MethodPost, "/api/v1/me/verify", verify, "application/json", nil)
+	if v.status != http.StatusOK {
+		c.t.Fatalf("step-up for %s %s: %s", method, path, v)
+	}
+	if fresh := v.str("data.access_token"); fresh != "" {
+		c.token = fresh
+	}
+	withProof := map[string]string{"X-Verify-Proof": v.str("data.proof")}
+	for k, val := range headers {
+		withProof[k] = val
+	}
+	return c.roundTrip(method, path, payload, contentType, withProof)
+}
+
+func (c *apiClient) roundTrip(method, path string, payload []byte, contentType string, headers map[string]string) apiResponse {
+	c.t.Helper()
 	var reader io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			c.t.Fatal(err)
-		}
-		reader = bytes.NewReader(raw)
+	if payload != nil {
+		reader = bytes.NewReader(payload)
 	}
 	req, err := http.NewRequest(method, c.base+path, reader)
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
@@ -135,7 +172,7 @@ func (c *apiClient) login(email, password string) *apiClient {
 	c.t.Helper()
 	s := newAPIClient(c.t, c.base)
 	r := s.ok(http.MethodPost, "/auth/login", map[string]any{"email": email, "password": password})
-	s.token = r.str("data.access_token")
+	s.token, s.password = r.str("data.access_token"), password
 	if s.token == "" {
 		c.t.Fatalf("login %s: %s", email, r)
 	}
@@ -257,22 +294,7 @@ func (c *apiClient) upload(path, filename string, data []byte, headers map[strin
 	}
 	_, _ = fw.Write(data)
 	_ = mw.Close()
-	req, err := http.NewRequest(http.MethodPost, c.base+"/api/v1"+path, &buf)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	res, err := c.http.Do(req)
-	if err != nil {
-		c.t.Fatal(err)
-	}
-	defer res.Body.Close()
-	raw, _ := io.ReadAll(res.Body)
-	return apiResponse{status: res.StatusCode, header: res.Header, body: raw}
+	return c.send(http.MethodPost, "/api/v1"+path, buf.Bytes(), mw.FormDataContentType(), headers)
 }
 
 // consentAll approves every host permission a review requests.
