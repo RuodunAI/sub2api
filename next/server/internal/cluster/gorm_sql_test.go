@@ -5,18 +5,14 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
 
-// The SQL snapshots of the cluster statements (testdata/*.golden): those of
-// CoreUpdateBusy, the only ones of the package.
-
-func TestSQLUpdaterInstalled(t *testing.T) {
-	var installed bool
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return updaterInstalled(db, &installed) })
-}
+// The SQL snapshots of the cluster statements (testdata/*.golden): that of
+// CoreUpdateBusy, the only one of the package.
 
 func TestSQLUpgradeActive(t *testing.T) {
 	var busy bool
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return upgradeActive(db, &busy) })
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return store.ExistsQuery(db, upgradeActive(db)).Scan(&busy) })
 }

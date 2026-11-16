@@ -24,3 +24,19 @@ func CurrentSnapshot(db *gorm.DB) (xmin, xmax uint64, err error) {
 	xmax, err = strconv.ParseUint(b, 10, 64)
 	return xmin, xmax, err
 }
+
+// CurrentDatabase returns the name of the database db is connected to.
+func CurrentDatabase(db *gorm.DB) (string, error) {
+	var name string
+	err := db.Raw(`SELECT current_database()`).Row().Scan(&name)
+	return name, err
+}
+
+// RelationExists reports whether name (schema-qualified or on the
+// search_path) is a table, view or other relation (to_regclass): for a
+// table outside the core schema, such as another program's.
+func RelationExists(db *gorm.DB, name string) (bool, error) {
+	var ok bool
+	err := db.Raw(`SELECT to_regclass(?) IS NOT NULL`, name).Row().Scan(&ok)
+	return ok, err
+}

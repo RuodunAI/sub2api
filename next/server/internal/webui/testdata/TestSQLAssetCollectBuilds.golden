@@ -1,5 +1,0 @@
--- sql
-DELETE FROM "web_asset_builds" WHERE (lease_until <= clock_timestamp() AND last_seen < clock_timestamp() - make_interval(secs => $1)) AND build_id NOT IN (SELECT "build_id" FROM "web_asset_builds" ORDER BY published_at DESC, build_id DESC LIMIT $2)
--- vars
-$1 float64 604800
-$2 int 3

@@ -143,29 +143,16 @@ func (s *SharedAssets) markReady(start time.Time) {
 // three builds independently protect references; only unreferenced blobs go.
 func (s *SharedAssets) collect(ctx context.Context, tx *gorm.DB) error {
 	g := store.G(ctx, tx)
-	if err := collectBuilds(g, s.opts.Retention.Seconds(), s.opts.KeepBuilds).Error; err != nil {
+	// The builds past their lease and their retention that are not among the
+	// newest kept ones.
+	newest := g.Model(&model.WebAssetBuild{}).Select("build_id").Order("published_at DESC, build_id DESC").Limit(s.opts.KeepBuilds)
+	if err := g.Where("lease_until <= clock_timestamp() AND last_seen < clock_timestamp() - make_interval(secs => ?)", s.opts.Retention.Seconds()).
+		Where("build_id NOT IN (?)", newest).Delete(&model.WebAssetBuild{}).Error; err != nil {
 		return err
 	}
 	// The blobs no build refers to.
 	listed := g.Model(&model.WebAssetBuildFile{}).Select("1").Where("web_asset_build_files.path = web_assets.path")
 	return g.Where("NOT EXISTS (?)", listed).Delete(&model.WebAsset{}).Error
-}
-
-// collectBuilds drops the builds past their lease and their retention
-// (seconds) that are not among the newest keep ones.
-func collectBuilds(g *gorm.DB, retention float64, keep int) *gorm.DB {
-	newest := g.Model(&model.WebAssetBuild{}).Select("build_id").Order("published_at DESC, build_id DESC").Limit(keep)
-	return g.Where("lease_until <= clock_timestamp() AND last_seen < clock_timestamp() - make_interval(secs => ?)", retention).
-		Where("build_id NOT IN (?)", newest).Delete(&model.WebAssetBuild{})
-}
-
-// publishBuild registers build with a lease of secs seconds, or renews it.
-func publishBuild(g *gorm.DB, build string, secs float64) *gorm.DB {
-	renew := append(clause.AssignmentColumns([]string{"lease_until"}),
-		clause.Assignment{Column: clause.Column{Name: "last_seen"}, Value: gorm.Expr("clock_timestamp()")})
-	return g.Table(model.WebAssetBuild{}.TableName()).
-		Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "build_id"}}, DoUpdates: renew}).
-		Create(map[string]any{"build_id": build, "lease_until": gorm.Expr("clock_timestamp() + make_interval(secs => ?)", secs)})
 }
 
 // renewBuild extends the lease of build by secs seconds.
@@ -234,7 +221,12 @@ func (s *SharedAssets) Publish(ctx context.Context) error {
 			return err
 		}
 		g := store.G(ctx, tx)
-		if err := publishBuild(g, s.buildID, s.opts.Lease.Seconds()).Error; err != nil {
+		// Register the build with its lease, or renew it.
+		renew := append(clause.AssignmentColumns([]string{"lease_until"}),
+			clause.Assignment{Column: clause.Column{Name: "last_seen"}, Value: gorm.Expr("clock_timestamp()")})
+		if err := g.Table(model.WebAssetBuild{}.TableName()).
+			Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "build_id"}}, DoUpdates: renew}).
+			Create(map[string]any{"build_id": s.buildID, "lease_until": gorm.Expr("clock_timestamp() + make_interval(secs => ?)", s.opts.Lease.Seconds())}).Error; err != nil {
 			return err
 		}
 		if err := putAssets(g, s.buildID, s.files); err != nil {

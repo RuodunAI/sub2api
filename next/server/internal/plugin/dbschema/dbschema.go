@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -65,27 +66,14 @@ func (m *Manager) RolePassword(pluginKey string) string {
 // canCreateRole reports whether the current connection may create roles.
 func (m *Manager) canCreateRole(ctx context.Context) (bool, error) {
 	var ok bool
-	err := store.G(ctx, m.db.Gorm).Raw(`SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname = current_user`).Row().Scan(&ok)
+	err := store.G(ctx, m.db.Gorm).Table("pg_roles").Select("rolcreaterole OR rolsuper").Where("rolname = current_user").Row().Scan(&ok)
 	return ok, err
 }
 
-// The statements below read the system catalogs and change roles and
-// schemas, which no model maps: they are raw SQL on store.G. A one-value
-// read uses Row().Scan, which, like pgx's QueryRow, fails on no row.
-//
-// DDL takes no parameters, so identifiers are quoted with store.QuoteIdent
-// and literals with quoteLiteral, as before. GORM passes the text of a
-// statement without arguments through unchanged: a "?" or "@name" in a
-// literal stays text.
-
-// xactLock takes a transaction-scoped advisory lock. It returns void, so it
-// runs with Exec (see package store).
-func xactLock(g *gorm.DB, key int64) error {
-	if err := store.RequireTx(g); err != nil {
-		return err
-	}
-	return g.Exec(`SELECT pg_advisory_xact_lock(?)`, key).Error
-}
+// The statements below read the system catalogs (pg_roles and the other
+// views, by the builder) and change roles and schemas (store.DDL, which
+// quotes the names and literals into the text). A one-value read uses
+// Row().Scan, which, like pgx's QueryRow, fails on no row.
 
 // Error codes of the database isolation (audit 2026-10-09 P1-7). Role
 // isolation is never downgraded silently: a plugin that needs db.schema is
@@ -124,8 +112,8 @@ func (m *Manager) CheckIsolation(ctx context.Context) error {
 // database: another database (another deployment) using the same plugin key
 // does not own the role.
 func roleMarker(ctx context.Context, q *gorm.DB, pluginKey string) (string, error) {
-	var dbname string
-	if err := store.G(ctx, q).Raw(`SELECT current_database()`).Row().Scan(&dbname); err != nil {
+	dbname, err := store.CurrentDatabase(store.G(ctx, q))
+	if err != nil {
 		return "", err
 	}
 	return "sub2api plugin role; database=" + dbname + "; plugin=" + pluginKey, nil
@@ -144,45 +132,45 @@ func roleOwned(ctx context.Context, q *gorm.DB, role, schema, marker string) (bo
 }
 
 func roleOwnedQuery(g *gorm.DB, role, schema, marker string) *gorm.DB {
-	return g.Raw(`
-SELECT COALESCE(shobj_description(r.oid, 'pg_authid') = ?, false)
-    OR EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = ? AND n.nspowner = r.oid)
-FROM pg_roles r WHERE r.rolname = ?`, marker, schema, role)
+	ownsSchema := g.Table("pg_namespace AS n").Select("1").Where("n.nspname = ? AND n.nspowner = r.oid", schema)
+	return g.Table("pg_roles AS r").
+		Select("COALESCE(shobj_description(r.oid, 'pg_authid') = ?, false) OR EXISTS (?)", marker, ownsSchema).
+		Where("r.rolname = ?", role)
 }
 
-// migrationFuncs are the core functions a plugin role runs for its own
-// migration bookkeeping (0003 migration).
-const migrationFuncs = "public.plugin_migrations_applied(varchar), public.plugin_migration_record(varchar, varchar, varchar)"
+// grantMigrationFuncsSQL lets a role run the core functions a plugin role
+// runs for its own migration bookkeeping (0003 migration).
+const grantMigrationFuncsSQL = "GRANT EXECUTE ON FUNCTION public.plugin_migrations_applied(varchar), public.plugin_migration_record(varchar, varchar, varchar) TO %s"
 
-// sharedACLLockKey serializes changes to the ACL of migrationFuncs. Every
-// plugin role is granted on the same two pg_proc rows, so two plugins'
-// Ensure (or Drop) at once - every node starts its plugins together - would
-// otherwise fail with "tuple concurrently updated". It is always taken after
-// a plugin's own lock, never before.
+// sharedACLLockKey serializes changes to the ACL of the migration functions
+// (grantMigrationFuncsSQL). Every plugin role is granted on the same two
+// pg_proc rows, so two plugins' Ensure (or Drop) at once - every node starts
+// its plugins together - would otherwise fail with "tuple concurrently
+// updated". It is always taken after a plugin's own lock, never before.
 var sharedACLLockKey = store.PluginMigrationLockKey("*shared-migration-function-acl*")
 
-// grantMigrationFuncs lets role run migrationFuncs. Most Ensure calls find
-// the grant in place and write nothing.
+// grantMigrationFuncs lets role run the migration functions. Most Ensure
+// calls find the grant in place and write nothing.
 func grantMigrationFuncs(ctx context.Context, tx *gorm.DB, role string) error {
 	g := store.G(ctx, tx)
 	granted := func() (bool, error) {
 		var ok bool
-		err := g.Raw(`SELECT has_function_privilege(?, 'public.plugin_migrations_applied(varchar)', 'EXECUTE')
-			AND has_function_privilege(?, 'public.plugin_migration_record(varchar, varchar, varchar)', 'EXECUTE')`, role, role).Row().Scan(&ok)
+		err := g.Table("pg_roles").Select(`has_function_privilege(oid, 'public.plugin_migrations_applied(varchar)', 'EXECUTE')
+			AND has_function_privilege(oid, 'public.plugin_migration_record(varchar, varchar, varchar)', 'EXECUTE')`).
+			Where("rolname = ?", role).Row().Scan(&ok)
 		return ok, err
 	}
 	if ok, err := granted(); err != nil || ok {
 		return err
 	}
-	if err := xactLock(g, sharedACLLockKey); err != nil {
+	if err := store.XactLockID(ctx, tx, sharedACLLockKey); err != nil {
 		return err
 	}
 	if ok, err := granted(); err != nil || ok {
 		return err
 	}
-	s := "GRANT EXECUTE ON FUNCTION " + migrationFuncs + " TO " + store.QuoteIdent(role)
-	if err := g.Exec(s).Error; err != nil {
-		return fmt.Errorf("%s: %w", s, err)
+	if err := store.DDL(g, grantMigrationFuncsSQL, store.Ident(role)); err != nil {
+		return fmt.Errorf("grant the migration functions to %s: %w", role, err)
 	}
 	return nil
 }
@@ -202,26 +190,26 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 		return st, err
 	}
 	isolate := m.roleIsolation
-	sid := store.QuoteIdent(schema)
+	sid := store.Ident(schema)
 	lockKey := store.PluginMigrationLockKey(pluginKey)
 	err := m.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		// Serialize with migrations and other nodes ensuring the same schema.
-		if err := xactLock(g, lockKey^0x5a5a); err != nil {
+		if err := store.XactLockID(ctx, tx, lockKey^0x5a5a); err != nil {
 			return err
 		}
 		if !isolate {
-			return g.Exec("CREATE SCHEMA IF NOT EXISTS " + sid).Error
+			return store.DDL(g, "CREATE SCHEMA IF NOT EXISTS %s", sid)
 		}
 		role := schema
-		rid := store.QuoteIdent(role)
-		pw := quoteLiteral(m.RolePassword(pluginKey))
+		rid := store.Ident(role)
+		pw := store.Literal(m.RolePassword(pluginKey))
 		marker, err := roleMarker(ctx, tx, pluginKey)
 		if err != nil {
 			return err
 		}
-		var exists bool
-		if err := g.Raw(`SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ?)`, role).Row().Scan(&exists); err != nil {
+		exists, err := store.Exists(g, g.Table("pg_roles").Where("rolname = ?", role))
+		if err != nil {
 			return err
 		}
 		if exists {
@@ -233,7 +221,7 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 				return ErrRoleConflict
 			}
 		}
-		if err := g.Exec("CREATE SCHEMA IF NOT EXISTS " + sid).Error; err != nil {
+		if err := store.DDL(g, "CREATE SCHEMA IF NOT EXISTS %s", sid); err != nil {
 			return err
 		}
 		if exists {
@@ -242,35 +230,41 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			// may not mention SUPERUSER, REPLICATION or BYPASSRLS at all,
 			// not even to restate NO.
 			var super, repl, bypass, createdb, createrole bool
-			if err := g.Raw(`SELECT rolsuper, rolreplication, rolbypassrls, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = ?`, role).
-				Row().Scan(&super, &repl, &bypass, &createdb, &createrole); err != nil {
+			if err := g.Table("pg_roles").Select("rolsuper, rolreplication, rolbypassrls, rolcreatedb, rolcreaterole").
+				Where("rolname = ?", role).Row().Scan(&super, &repl, &bypass, &createdb, &createrole); err != nil {
 				return err
 			}
-			attrs := "LOGIN"
-			for _, a := range []struct {
-				set  bool
-				name string
-			}{{super, "NOSUPERUSER"}, {createdb, "NOCREATEDB"}, {createrole, "NOCREATEROLE"}, {repl, "NOREPLICATION"}, {bypass, "NOBYPASSRLS"}} {
-				if a.set {
-					attrs += " " + a.name
-				}
-			}
-			if err := g.Exec("ALTER ROLE " + rid + " WITH " + attrs + " CONNECTION LIMIT 20 PASSWORD " + pw).Error; err != nil {
+			if err := store.DDL(g, "ALTER ROLE %s WITH LOGIN CONNECTION LIMIT 20 PASSWORD %s", rid, pw); err != nil {
 				return fmt.Errorf("alter role %s: %w", role, err)
 			}
+			for _, a := range []struct {
+				set   bool
+				alter string
+			}{
+				{super, "ALTER ROLE %s WITH NOSUPERUSER"}, {createdb, "ALTER ROLE %s WITH NOCREATEDB"},
+				{createrole, "ALTER ROLE %s WITH NOCREATEROLE"}, {repl, "ALTER ROLE %s WITH NOREPLICATION"},
+				{bypass, "ALTER ROLE %s WITH NOBYPASSRLS"},
+			} {
+				if !a.set {
+					continue
+				}
+				if err := store.DDL(g, a.alter, rid); err != nil {
+					return fmt.Errorf("alter role %s: %w", role, err)
+				}
+			}
 		} else {
-			if err := g.Exec("CREATE ROLE " + rid + " WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 20 PASSWORD " + pw).Error; err != nil {
+			if err := store.DDL(g, "CREATE ROLE %s WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 20 PASSWORD %s", rid, pw); err != nil {
 				return err
 			}
 		}
-		if err := g.Exec("COMMENT ON ROLE " + rid + " IS " + quoteLiteral(marker)).Error; err != nil {
+		if err := store.DDL(g, "COMMENT ON ROLE %s IS %s", rid, store.Literal(marker)); err != nil {
 			return err
 		}
 		// Host membership lets a non-superuser host hand the schema to the role
 		// and DROP OWNED BY it on purge (PG16+ does not grant SET on created
 		// roles by default). Migrations never use SET ROLE.
 		var verNum int
-		if err := g.Raw(`SELECT current_setting('server_version_num')::int`).Row().Scan(&verNum); err != nil {
+		if err := g.Table("pg_settings").Select("setting::int").Where("name = 'server_version_num'").Row().Scan(&verNum); err != nil {
 			return err
 		}
 		priv := "MEMBER"
@@ -278,23 +272,25 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			priv = "SET"
 		}
 		var member bool
-		if err := g.Raw(`SELECT pg_has_role(current_user, ?, '`+priv+`')`, role).Row().Scan(&member); err != nil {
+		if err := g.Table("pg_roles").Select("pg_has_role(current_user, oid, ?)", priv).Where("rolname = ?", role).Row().Scan(&member); err != nil {
 			return err
 		}
 		if !member {
-			if err := g.Exec("GRANT " + rid + " TO CURRENT_USER").Error; err != nil {
+			if err := store.DDL(g, "GRANT %s TO CURRENT_USER", rid); err != nil {
 				return err
 			}
 		}
-		stmts := []string{
-			"ALTER SCHEMA " + sid + " OWNER TO " + rid,
-			"REVOKE ALL ON SCHEMA " + sid + " FROM PUBLIC",
-			"GRANT USAGE, CREATE ON SCHEMA " + sid + " TO " + rid,
-			"ALTER ROLE " + rid + " SET search_path TO " + sid,
-		}
-		for _, s := range stmts {
-			if err := g.Exec(s).Error; err != nil {
-				return fmt.Errorf("%s: %w", s, err)
+		for _, s := range []struct {
+			ddl  string
+			args []store.DDLArg
+		}{
+			{"ALTER SCHEMA %s OWNER TO %s", []store.DDLArg{sid, rid}},
+			{"REVOKE ALL ON SCHEMA %s FROM PUBLIC", []store.DDLArg{sid}},
+			{"GRANT USAGE, CREATE ON SCHEMA %s TO %s", []store.DDLArg{sid, rid}},
+			{"ALTER ROLE %s SET search_path TO %s", []store.DDLArg{rid, sid}},
+		} {
+			if err := store.DDL(g, s.ddl, s.args...); err != nil {
+				return fmt.Errorf("%s (schema %s): %w", s.ddl, schema, err)
 			}
 		}
 		if err := grantMigrationFuncs(ctx, tx, role); err != nil {
@@ -405,13 +401,13 @@ func (m *Manager) DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) err
 		return fmt.Errorf("invalid plugin key %q", pluginKey)
 	}
 	schema := SchemaName(pluginKey)
-	sid := store.QuoteIdent(schema)
+	sid := store.Ident(schema)
 	g := store.G(ctx, tx)
 	err := func() error {
-		if err := xactLock(g, store.PluginMigrationLockKey(pluginKey)^0x5a5a); err != nil {
+		if err := store.XactLockID(ctx, tx, store.PluginMigrationLockKey(pluginKey)^0x5a5a); err != nil {
 			return err
 		}
-		if err := xactLock(g, store.PluginMigrationLockKey(pluginKey)); err != nil {
+		if err := store.XactLockID(ctx, tx, store.PluginMigrationLockKey(pluginKey)); err != nil {
 			return err
 		}
 		// Decide before the schema goes: a role that owns it is ours.
@@ -423,7 +419,7 @@ func (m *Manager) DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) err
 		if err != nil {
 			return err
 		}
-		if err := g.Exec("DROP SCHEMA IF EXISTS " + sid + " CASCADE").Error; err != nil {
+		if err := store.DDL(g, "DROP SCHEMA IF EXISTS %s CASCADE", sid); err != nil {
 			return err
 		}
 		if err := dropMigrationRecords(g, pluginKey).Error; err != nil {
@@ -432,15 +428,14 @@ func (m *Manager) DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) err
 		// A same-named role this core did not create (another database of
 		// the cluster, an operator's role) is left alone.
 		if owned {
-			rid := store.QuoteIdent(schema)
-			// DROP OWNED revokes the role's grant on migrationFuncs.
-			if err := xactLock(g, sharedACLLockKey); err != nil {
+			// DROP OWNED revokes the role's grant on the migration functions.
+			if err := store.XactLockID(ctx, tx, sharedACLLockKey); err != nil {
 				return err
 			}
-			if err := g.Exec("DROP OWNED BY " + rid).Error; err != nil {
+			if err := store.DDL(g, "DROP OWNED BY %s", sid); err != nil {
 				return err
 			}
-			if err := g.Exec("DROP ROLE " + rid).Error; err != nil {
+			if err := store.DDL(g, "DROP ROLE %s", sid); err != nil {
 				return err
 			}
 		}
@@ -488,9 +483,9 @@ func (t Tracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, er
 // read them through the definer function.
 func (t Tracker) appliedQuery(g *gorm.DB) *gorm.DB {
 	if t.AsPluginRole {
-		return g.Raw(`SELECT migration_id, checksum FROM public.plugin_migrations_applied(?)`, t.PluginKey)
+		return g.Table("public.plugin_migrations_applied(?) AS m", t.PluginKey).Select("migration_id, checksum")
 	}
-	return g.Raw(`SELECT migration_id, checksum FROM public.plugin_migrations WHERE plugin_key = ?`, t.PluginKey)
+	return g.Table("public.plugin_migrations").Select("migration_id, checksum").Where("plugin_key = ?", t.PluginKey)
 }
 
 func (t Tracker) Record(ctx context.Context, tx *gorm.DB, id, checksum string) error {
@@ -503,9 +498,11 @@ func (t Tracker) recordQuery(g *gorm.DB, id, checksum string) *gorm.DB {
 	if t.AsPluginRole {
 		return g.Exec(`SELECT public.plugin_migration_record(?, ?, ?)`, t.PluginKey, id, checksum)
 	}
-	return g.Exec(`INSERT INTO public.plugin_migrations (plugin_key, migration_id, checksum) VALUES (?, ?, ?)
-		ON CONFLICT (plugin_key, migration_id) DO UPDATE SET checksum = EXCLUDED.checksum, applied_at = now()`,
-		t.PluginKey, id, checksum)
+	return g.Table("public.plugin_migrations").Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "plugin_key"}, {Name: "migration_id"}},
+		DoUpdates: append(clause.AssignmentColumns([]string{"checksum"}),
+			clause.Assignment{Column: clause.Column{Name: "applied_at"}, Value: gorm.Expr("now()")}),
+	}).Create(map[string]any{"plugin_key": t.PluginKey, "migration_id": id, "checksum": checksum})
 }
 
 // rewriteDSN replaces the credentials of dsn (URL or key=value form) and pins
@@ -542,8 +539,4 @@ func rewriteDSN(dsn, user, pass, schema string) (string, error) {
 
 func kvQuote(s string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"
-}
-
-func quoteLiteral(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }

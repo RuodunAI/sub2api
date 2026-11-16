@@ -35,14 +35,6 @@ func TestSQLAssetRenewBuild(t *testing.T) {
 	})
 }
 
-func TestSQLAssetPublishBuild(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return publishBuild(db, "b1", 90) })
-}
-
-func TestSQLAssetCollectBuilds(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return collectBuilds(db, 604800, 3) })
-}
-
 func TestSQLAssetStoreUsage(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var usage struct{ Size, Files, Builds int64 }
