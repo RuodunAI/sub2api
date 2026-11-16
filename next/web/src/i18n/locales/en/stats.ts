@@ -23,6 +23,7 @@ export default {
   modelDist: 'By model',
   keyDist: 'By API key',
   groupDist: 'By group',
+  accountDist: 'By account',
   byTokens: 'Tokens',
   byCost: 'Cost',
   share: 'Share',

@@ -31,19 +31,22 @@ export const conversionFilterLabel = (v: string) =>
 const QUERY_FILTERS = ['user_id', 'group_id', 'group_name', 'model', 'model_contains', 'api_key_id', 'account_id', 'retried', 'from', 'to'] as const
 /** Link filters of an operator only: a user cannot preset another user. */
 const OPERATOR_QUERY_FILTERS: readonly string[] = ['user_id', 'group_name', 'account_id']
+/** The link filters of the account view (CONTRACTS §102.5), which refuses the rest. */
+const ACCOUNT_QUERY_FILTERS: readonly string[] = ['model', 'account_id', 'retried', 'from', 'to']
 
 /**
  * The filters a link presets (?user_id=…&from=…&to=…). `accounts`: the
  * operator may read accounts (the API refuses the account filter to any
- * other). An id that is not one (?user_id=abc), or a retried= other than
- * true / false, is dropped rather than sent to the list and the lookup.
+ * other); `accountView`: the account view's own. An id that is not one
+ * (?user_id=abc), or a retried= other than true / false, is dropped rather
+ * than sent to the list and the lookup.
  */
-export function queryUsageFilters(query: LocationQuery, admin: boolean, accounts = false): Record<string, string> {
+export function queryUsageFilters(query: LocationQuery, admin: boolean, accounts = false, accountView = false): Record<string, string> {
   const out: Record<string, string> = {}
   for (const k of QUERY_FILTERS) {
     const v = query[k]
     if (typeof v !== 'string' || v === '') continue
-    if (OPERATOR_QUERY_FILTERS.includes(k) && !admin) continue
+    if (accountView ? !ACCOUNT_QUERY_FILTERS.includes(k) : OPERATOR_QUERY_FILTERS.includes(k) && !admin) continue
     if (k === 'account_id' && !accounts) continue
     if (NUMERIC_ID_PARAMS.has(k) && !isEntityId(v)) continue
     if (k === 'retried' && v !== 'true' && v !== 'false') continue
@@ -112,6 +115,8 @@ export interface UsageSearchContext {
   admin: boolean
   /** An operator who may read accounts gets the account filter. */
   accounts: boolean
+  /** The account view (CONTRACTS §102.5): the account's facts only, no user, key, group, IP or billing. */
+  accountView?: boolean
   /** The failed requests log type: the status is settled, the HTTP status and error type join. */
   errors: boolean
 }
@@ -119,6 +124,7 @@ export interface UsageSearchContext {
 /** Parameters the search keeps without a field of its own: set by a link or a table action, shown as removable chips. */
 const HIDDEN = ['group_name', 'success', 'status_code', 'error_type', 'client_request_id', 'platform', 'endpoint', 'stream']
 const ADMIN_HIDDEN = ['plugin_key', 'account_type', 'node_id', 'upstream_model', 'upstream_protocol']
+const ACCOUNT_HIDDEN = ['success', 'status_code', 'error_type', 'platform', 'endpoint', 'stream', 'plugin_key', 'account_type']
 
 /**
  * The usage search, after new-api's log filters: the common fields on the
@@ -128,6 +134,9 @@ const ADMIN_HIDDEN = ['plugin_key', 'account_type', 'node_id', 'upstream_model',
  * first row's, and the status the failed requests type sets itself).
  */
 export function usageSearchLayout(c: UsageSearchContext) {
+  const outcome = [...(c.errors ? [] : ['success']), 'retried']
+  const failure = c.errors ? ['status_code', 'error_type'] : []
+  if (c.accountView) return searchLayout(['model', 'account'], ['request_id', 'protocol', ...outcome, ...failure], ACCOUNT_HIDDEN, c.errors)
   const primary = ['model', c.admin ? 'user' : 'group', 'api_key']
   const advanced = [
     ...(c.admin ? ['group', 'request_id'] : ['request_id']),
@@ -135,13 +144,16 @@ export function usageSearchLayout(c: UsageSearchContext) {
     'client_ip',
     'protocol',
     ...(c.admin ? ['conversion'] : []),
-    ...(c.errors ? [] : ['success']),
-    'retried',
+    ...outcome,
     'billing_status',
-    ...(c.errors ? ['status_code', 'error_type'] : [])
+    ...failure
   ]
-  const params = [...new Set([...primary, ...advanced, ...HIDDEN, ...(c.admin ? ADMIN_HIDDEN : [])].flatMap(fieldParams))]
-  const untagged = [...primary.flatMap(fieldParams), ...(c.errors ? ['success'] : [])]
+  return searchLayout(primary, advanced, [...HIDDEN, ...(c.admin ? ADMIN_HIDDEN : [])], c.errors)
+}
+
+function searchLayout(primary: string[], advanced: string[], hidden: string[], errors: boolean) {
+  const params = [...new Set([...primary, ...advanced, ...hidden].flatMap(fieldParams))]
+  const untagged = [...primary.flatMap(fieldParams), ...(errors ? ['success'] : [])]
   return { primary, advanced, params, tagged: params.filter(p => !untagged.includes(p)) }
 }
 

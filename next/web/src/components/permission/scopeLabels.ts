@@ -20,6 +20,7 @@ export function useScopeLabels() {
     const row = SCOPABLE[action]
     if (s.all) return t('roles.scope.all')
     if (s.own) return t('roles.scope.own')
+    if (s.team) return t('roles.scope.team')
     if (s.group > 0 && s.id) return `${rowLabel('group', s.group)} / ${rowLabel(row, s.id)}`
     if (s.group > 0) return rowLabel('group', s.group)
     if (s.id && !s.group) return rowLabel(row, s.id)

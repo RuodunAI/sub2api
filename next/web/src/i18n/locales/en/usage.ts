@@ -7,6 +7,10 @@ export default {
   overviewDescription: 'Requests, tokens and cost across the gateway.',
   myOverviewTitle: 'Usage overview',
   myOverviewDescription: 'Your requests, tokens and cost.',
+  accountTitle: 'Account usage logs',
+  accountDescription: 'The requests the accounts in your reach served, the account’s side only: no users, keys, IPs or billing; costs at the list price.',
+  accountOverviewTitle: 'Account usage overview',
+  accountOverviewDescription: 'Requests, tokens and list-price cost of the accounts in your reach.',
   live: {
     cost: 'Usage',
     standard: 'Base quota',

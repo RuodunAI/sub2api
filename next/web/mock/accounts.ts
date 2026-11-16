@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { fail, nextId, noContent, now, on, paginate, type MockRequest } from './router'
 import { activePlatforms, platformById, platformLabel } from './platforms'
-import { caller, filterOwned, hasAction, hasPerm, inScope, ownerScope, stepUp, userEmail, type Identity } from './core'
+import { agentUser, caller, filterOwned, hasAction, hasPerm, inScope, ownerScope, stepUp, userEmail, type Identity } from './core'
 import { resolveProxyURL, validateProxyURL } from './resources'
 import { codexAccountTypes, codexCredentialErrors } from './codex'
 import { customAccountTypes, customCredentialErrors, customForm } from './custom'
@@ -362,7 +362,13 @@ export const accounts: any[] = [
   // Its plugin was uninstalled without purge_accounts: kept as an orphaned account.
   { id: 15, name: 'legacy-vendor', plugin_key: 'legacy_vendor', type: 'apikey', created_by: null, type_label: { en: 'API key', zh: 'API Key' }, group_ids: [], proxy_id: null, priority: 10, weight: 1, max_concurrency: 5, schedulable: false, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, orphaned: true, created_at: now(-86400 * 90) }
 ]
-for (const a of accounts) a.type_label ??= typeLabel(a.plugin_key, a.type)
+for (const a of accounts) {
+  a.type_label ??= typeLabel(a.plugin_key, a.type)
+  // The owner (所属, CONTRACTS §102.4) starts as the creator, as migration 0103 fills it.
+  a.owner_id ??= a.created_by
+}
+// One account an administrator gave the agent (agent@example.com), so its creator is not its owner.
+accounts.find((a) => a.id === 17).owner_id = agentUser.id
 // Latest tests (last_test): fast, slow, failed; the others were never tested.
 const seedTest = (id: number, ok: boolean, latency: number, model: string, message: string, ago: number) => {
   const a = accounts.find((x) => x.id === id)
@@ -531,6 +537,8 @@ const withGroups = (a: any) => ({
   header_passthrough: a.header_passthrough ?? [],
   param_override: a.param_override ?? null,
   weight: a.weight ?? 1,
+  owner_id: a.owner_id ?? null,
+  owner_email: userEmail(a.owner_id),
   created_by: a.created_by ?? null,
   created_by_email: userEmail(a.created_by),
   rate_usage: rateUsage(a),
@@ -823,6 +831,7 @@ on('POST', '/accounts', (req) => {
     spm_window_seconds: 60,
     ...fields,
     proxy_id: proxy.proxy_id ?? null,
+    owner_id: who.id,
     created_by: who.id,
     type_label: at.label,
     credentials: masked
@@ -853,7 +862,7 @@ on('PATCH', '/accounts/:id', (req) => {
   if (scope?.level === 'own' && a.admin_locked && rest.status === 'active' && a.status !== 'active') return adminLocked()
   if (rest.status !== undefined && rest.status !== a.status) Object.assign(a, { auto_disabled_until: null, status_reason: rest.status !== 'disabled' ? '' : scope?.level === 'own' ? 'disabled by owner' : 'disabled by administrator' })
   if (scope?.level === 'all' && rest.status === 'active') a.admin_locked = false
-  if (scope?.level === 'all' && rest.status === 'disabled' && a.created_by !== who.id) Object.assign(a, { admin_locked: true, status_reason: 'disabled by administrator' })
+  if (scope?.level === 'all' && rest.status === 'disabled' && a.owner_id !== who.id) Object.assign(a, { admin_locked: true, status_reason: 'disabled by administrator' })
   // `models` and `model_mapping` are replaced as a whole (§18.3).
   Object.assign(a, rest)
   if (proxy.proxy_id !== undefined) a.proxy_id = proxy.proxy_id
@@ -865,6 +874,18 @@ on('PATCH', '/accounts/:id', (req) => {
     for (const [k, v] of Object.entries(credentials)) if (v !== '******') a.credentials[k] = k === 'api_key' || k === 'token' || (sensitive.includes(k) && v) ? '******' : v
   }
   return { ...withGroups(a), proxy_created: !!proxy.proxy_created }
+})
+// PUT /accounts/:id/owner (CONTRACTS §102.4): moves the account to another user.
+on('PUT', '/accounts/:id/owner', (req) => {
+  if (!hasPerm(caller(req), 'account:owner:update')) return fail(403, 'permission_denied', 'account:owner:update is required', { permission: 'account:owner:update' })
+  const a = accounts.find((x) => x.id === Number(req.params.id))
+  if (!a) return fail(404, 'not_found', 'account not found')
+  const owner = Number(req.body?.owner_id)
+  if (!Number.isInteger(owner) || owner <= 0) return fail(400, 'invalid_argument', 'owner_id must be a positive integer', { fields: [{ field: 'owner_id', code: 'invalid', message: 'a positive integer' }] })
+  const email = userEmail(owner)
+  if (!email) return fail(400, 'invalid_argument', 'no such user', { fields: [{ field: 'owner_id', code: 'not_found', message: 'no such user' }] })
+  a.owner_id = owner
+  return { id: a.id, owner_id: owner, owner_email: email }
 })
 on('DELETE', '/accounts/:id', (req) => {
   const { who, scope } = accountScope(req, 'delete')

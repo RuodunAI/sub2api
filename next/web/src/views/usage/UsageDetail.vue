@@ -27,7 +27,9 @@ import type { FailureDecision } from '@/views/settings/failurePolicy'
 
 // Expanded usage record: billing detail (A.14), request info, tokens, hooks, sticky.
 // `mine`: the caller's own records, whose attempts show no accounts.
-const props = defineProps<{ row: UsageRow; path?: string; mine?: boolean }>()
+// `accountView`: the account's facts only (CONTRACTS §102.5): no billing, no
+// group, key, client or user agent; the cost at the list price.
+const props = defineProps<{ row: UsageRow; path?: string; mine?: boolean; accountView?: boolean }>()
 const { t } = useI18n()
 const auth = useAuthStore()
 const accountTypes = useAccountTypes()
@@ -51,7 +53,7 @@ onMounted(async () => {
 
 const u = computed<UsageRow>(() => ({ ...props.row, ...(detail.value || {}) }))
 const summary = computed(() => [
-  { label: t('usage.cols.cost'), value: u.value.billing_status === 'free' ? t('usage.free') : formatMoney(u.value.total_cost, 8) },
+  { label: t('usage.cols.cost'), value: u.value.billing_status === 'free' ? t('usage.free') : formatMoney(props.accountView ? u.value.standard_cost : u.value.total_cost, 8) },
   { label: t('usage.request.latency'), value: seconds(u.value.latency_ms) },
   { label: t('usage.request.firstToken'), value: u.value.stream && u.value.first_token_ms != null ? seconds(u.value.first_token_ms) : '—' },
   { label: t('usage.request.upload'), value: u.value.upload_ms ? seconds(u.value.upload_ms) : '—' }
@@ -101,8 +103,8 @@ const schedulingHint = computed(() => u.value.error_type === 'no_account' && !!s
       <p v-if="schedulingHint" class="mt-1 text-sm" data-testid="usage-scheduling-hint">{{ t('usage.scheduling.seeBelow') }}</p>
     </SAlert>
 
-    <SGrid :cols="1" :lg-cols="knownRounds.length ? 1 : 2" :gap="4" class="items-start" data-testid="usage-detail-primary">
-      <UsageBillingFacts :u="u" />
+    <SGrid :cols="1" :lg-cols="knownRounds.length || accountView ? 1 : 2" :gap="4" class="items-start" data-testid="usage-detail-primary">
+      <UsageBillingFacts v-if="!accountView" :u="u" />
       <SCard variant="flat" :title="t('usage.tokens.title')" class="min-w-0" data-testid="usage-token-facts">
         <div v-if="knownRounds.length" class="space-y-3" data-testid="known-usage-rounds">
           <SHint tone="warning">{{ t('usage.tokens.incompleteRounds') }}</SHint>
@@ -132,17 +134,17 @@ const schedulingHint = computed(() => u.value.error_type === 'no_account' && !!s
 
     <SCard variant="flat" :title="t('usage.request.title')" data-testid="usage-request-facts">
       <SDescriptions dense :columns="2" label-width="6rem">
-        <SDescItem :label="t('common.group')">{{ u.group_name || (u.group_id ? '#' + u.group_id : '—') }}</SDescItem>
+        <SDescItem v-if="!accountView" :label="t('common.group')">{{ u.group_name || (u.group_id ? '#' + u.group_id : '—') }}</SDescItem>
         <SDescItem v-if="u.account_id || u.account_name" :label="t('common.account')"><span class="inline-flex items-center gap-1" data-testid="detail-account">
           <UsageAccountMark :row="u" />{{ accountLabel(u) }}
         </span></SDescItem>
         <SDescItem v-if="u.api_key_name || u.api_key_id" :label="t('usage.request.apiKey')">{{ u.api_key_name || '#' + u.api_key_id }}</SDescItem>
-        <SDescItem :label="t('usage.request.clientIP')"><SIPAddress :value="u.client_ip" data-testid="detail-client-ip" /></SDescItem>
+        <SDescItem v-if="!accountView" :label="t('usage.request.clientIP')"><SIPAddress :value="u.client_ip" data-testid="detail-client-ip" /></SDescItem>
         <SDescItem :label="t('usage.request.id')"><div class="flex items-center gap-1">
           <SCode inline class="min-w-0 break-all" :text="u.request_id" />
           <SCopyButton :text="u.request_id" icon-only class="shrink-0" />
         </div></SDescItem>
-        <SDescItem :label="t('usage.request.clientId')"><div class="flex min-w-0 items-center gap-1" data-testid="detail-client-request-id">
+        <SDescItem v-if="!accountView" :label="t('usage.request.clientId')"><div class="flex min-w-0 items-center gap-1" data-testid="detail-client-request-id">
           <template v-if="u.client_request_id">
             <SCode inline class="break-all" :text="u.client_request_id" />
             <SCopyButton :text="u.client_request_id" icon-only class="shrink-0" />
@@ -168,7 +170,7 @@ const schedulingHint = computed(() => u.value.error_type === 'no_account' && !!s
         <SDescItem v-if="u.upstream_model && u.upstream_model !== u.model" :label="t('usage.request.upstreamModel')"><ModelBadge :model="u.upstream_model" plain /></SDescItem>
         <SDescItem v-if="u.node_id" :label="t('usage.request.node')"><span class="font-mono text-xs">{{ u.node_id }}</span></SDescItem>
         <SDescItem v-if="u.attempts !== undefined" :label="t('usage.request.attempts')">{{ u.attempts }}</SDescItem>
-        <SDescItem :label="t('usage.request.userAgent')" full><span class="break-all text-xs">{{ u.user_agent || '—' }}</span></SDescItem>
+        <SDescItem v-if="!accountView" :label="t('usage.request.userAgent')" full><span class="break-all text-xs">{{ u.user_agent || '—' }}</span></SDescItem>
       </SDescriptions>
     </SCard>
 

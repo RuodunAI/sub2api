@@ -9,14 +9,14 @@ import UserCreateDialog from './UserCreateDialog.vue'
 const mocks = vi.hoisted(() => ({ post: vi.fn(), get: vi.fn(), denied: new Set<string>(), epoch: 0 }))
 vi.mock('@sub2api/host', async (original) => ({ ...(await original<object>()), api: { post: mocks.post, get: mocks.get } }))
 // A new epoch per test: the managed roles are cached per permissions reload.
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (key: string) => !mocks.denied.has(key), me: { id: 1, superuser: false }, permissionsEpoch: mocks.epoch }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (key: string) => !mocks.denied.has(key), hasAction: (a: string) => !mocks.denied.has(a), me: { id: 1, superuser: false }, permissionsEpoch: mocks.epoch }) }))
 const managed = (key: string, grantable = true) => ({ key, name: { en: key }, builtin: true, grantable, missing: grantable ? [] : ['x:y'] })
 const segments = ref([{ id: 1, name: 'Default', is_default: true, discount: '1' }, { id: 2, name: 'VIP', is_default: false, discount: '0.9' }] as Segment[])
 vi.mock('@/components/pricing/segmentLookup', () => ({ useSegmentsLookup: () => ({ segments }) }))
 enableAutoUnmount(afterEach)
 
 async function render(roles: Role[] = []) {
-  const w = mount(UserCreateDialog, { props: { open: false, roles }, global: { plugins: [i18n], stubs: { Teleport: true } } })
+  const w = mount(UserCreateDialog, { props: { open: false, roles }, global: { plugins: [i18n], stubs: { Teleport: true, EntityPicker: { props: ['id'], emits: ['update:id'], template: '<input @change="$emit(\'update:id\', $event.target.value)" />' } } } })
   await w.setProps({ open: true })
   await flushPromises()
   await w.get('input[type="email"]').setValue(' amy@example.com ')
@@ -86,5 +86,30 @@ describe('user create dialog', () => {
     const { w } = await render()
     expect(w.find('input[data-role="user"]').attributes('disabled')).toBeUndefined()
     expect(w.find('input[data-role="supplier"]').attributes('disabled')).toBeDefined()
+  })
+
+  it.each([
+    ['the default role first', [managed('user'), managed('supplier')], ['user']],
+    ['supplier where the default role is not on the list', [managed('supplier'), managed('supplier_agent')], ['supplier']],
+    ['the first grantable role otherwise', [managed('supplier', false), managed('operator')], ['operator']],
+    ['none, leaving the default to the server', [managed('supplier', false)], []]
+  ])('sends the roles explicitly, preselecting %s', async (_, list, keys) => {
+    mocks.get.mockResolvedValue(list)
+    const { submit } = await render()
+    await submit()
+    expect(mocks.post.mock.calls[0][1].role_keys).toEqual(keys)
+  })
+
+  it('names the owner only for a caller holding user:create over every user', async () => {
+    const { w, submit } = await render()
+    await w.get('[data-testid="user-create-owner"]').setValue('7')
+    await submit()
+    expect(mocks.post.mock.calls[0][1].owner_id).toBe(7)
+
+    mocks.denied.add('user:create')
+    const team = await render()
+    expect(team.w.find('[data-testid="user-create-owner"]').exists()).toBe(false)
+    await team.submit()
+    expect(mocks.post.mock.calls[1][1].owner_id).toBeUndefined()
   })
 })

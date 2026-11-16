@@ -29,6 +29,9 @@ export const SCOPABLE: Readonly<Record<string, ScopeResource>> = SCOPE_TYPE
 /** Whether the scope of action may name rows (an id range means nothing for creating a row). */
 export const takesRowIds = (action: string) => action !== 'account:create'
 
+/** Whether action takes the team scope: a core scoped action, but account:create (a new row is always the creator's own). */
+export const takesTeam = (action: string) => !!SCOPABLE[action] && takesRowIds(action)
+
 /** A group segment of "*": any group. */
 export const WILDCARD = -1
 
@@ -184,10 +187,15 @@ export function implies(have: Pattern, want: Pattern): boolean {
 /** A row a scope is judged against: its id, owner and (accounts) groups. */
 export interface ScopedRow {
   id?: number | null
-  /** The owner own and team check: a proxy's creator, an account's owner_id (CONTRACTS §102). */
+  /** The creator: the owner own and team check on a row without owner_id (a proxy). */
   created_by?: number | null
+  /** The owner of a row that has one apart from its creator (an account, CONTRACTS §102.4). */
+  owner_id?: number | null
   group_ids?: readonly number[] | null
 }
+
+/** The user own and team check row against: its owner_id where it has one, else its creator. */
+export const rowOwner = (row: ScopedRow): number | null | undefined => (row.owner_id !== undefined ? row.owner_id : row.created_by)
 
 /**
  * Whether a scope reaches row for the caller me (core.DataScope.AllowsRow).
@@ -196,7 +204,7 @@ export interface ScopedRow {
 export function scopeAllowsRow(s: Scope, row: ScopedRow | null | undefined, me: number | undefined): boolean {
   if (s.all) return true
   if (!row) return false
-  if (s.own || s.team) return me !== undefined && row.created_by != null && row.created_by === me
+  if (s.own || s.team) return me !== undefined && rowOwner(row) === me
   if (s.ref) return false // the plugin judges its own rows
   if (s.id && row.id !== s.id) return false
   if (!s.group) return !!s.id
