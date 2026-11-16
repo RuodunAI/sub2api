@@ -60,7 +60,7 @@ func Scope(ctx context.Context, az Authorizer, action perm.Key) (DataScope, erro
 }
 
 // MaxTeamDepth is how many levels of users.owner_id a team spans below its
-// holder, and the deepest an owner chain may grow (CONTRACTS §102).
+// holder, and the deepest an owner chain may grow (CONTRACTS §103).
 const MaxTeamDepth = 8
 
 // TeamResolver is optionally implemented by an Authorizer, like

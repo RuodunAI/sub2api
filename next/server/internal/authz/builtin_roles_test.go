@@ -17,7 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// The built-in roles of a new database are pinned (CONTRACTS §4, §102.1):
+// The built-in roles of a new database are pinned (CONTRACTS §4, §103.1):
 // the permissions SyncCore stores for each, its assignable list and the
 // core menus a holder of it alone sees. A difference is a change of what
 // users may do: make it on purpose, then UPDATE_GOLDEN=1 go test

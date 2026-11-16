@@ -222,7 +222,7 @@ func TestSQLAuthzSyncWrites(t *testing.T) {
 	})
 }
 
-// The owner graph (CONTRACTS §102): a level of a team (one per level, the
+// The owner graph (CONTRACTS §103): a level of a team (one per level, the
 // first only under DryRun), the owner of a user (one per level up), the
 // live owner CheckOwner names (refused under DryRun, which finds none), and
 // the role sets of owners and their users a role write rechecks.

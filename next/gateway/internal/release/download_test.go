@@ -38,7 +38,7 @@ func TestBundleDownloadOutlivesClientTimeoutWhileBytesArrive(t *testing.T) {
 	client := &http.Client{Timeout: 150 * time.Millisecond}
 	m := Manager{AllowHTTP: true, HeaderTimeout: time.Second, IdleTimeout: 300 * time.Millisecond}
 	start := time.Now()
-	r, err := m.download(context.Background(), server.URL, client)
+	r, err := m.download(context.Background(), m.urlOpener(server.URL, client))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestBundleDownloadFailsWithoutResponseHeaders(t *testing.T) {
 	defer server.Close()
 	m := Manager{AllowHTTP: true, HeaderTimeout: 150 * time.Millisecond}
 	start := time.Now()
-	if _, err := m.download(context.Background(), server.URL, nil); !errors.Is(err, errNoResponse) {
+	if _, err := m.download(context.Background(), m.urlOpener(server.URL, nil)); !errors.Is(err, errNoResponse) {
 		t.Fatalf("silent server returned %v", err)
 	}
 	if took := time.Since(start); took > 3*time.Second {

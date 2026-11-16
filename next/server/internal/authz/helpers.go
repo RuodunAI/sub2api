@@ -172,7 +172,7 @@ func (s *Service) CanActOnUser(ctx context.Context, actorID int64, action core.U
 // assignable list still serves plain users), and what the targets' roles
 // grant must be within the actor's (SEC-H2). A superuser manages everyone,
 // itself included. An actor reaching users by a team alone acts only on
-// the users below it (withinTeam, CONTRACTS §102). The target's side is
+// the users below it (withinTeam, CONTRACTS §103). The target's side is
 // what its ROLES grant, not what it can do right now: a disabled user can
 // do nothing, and comparing against that would let anyone with user:update
 // re-enable a disabled admin and take the account over. The actor's side is its roles too: an access key narrows

@@ -92,16 +92,16 @@
 
 | 模块 | 权限 |
 |---|---|
-| user | `user:read` `user:create` `user:update`（三者可带范围 `:team`，§102） `user:delete`🔐🔑 `user:password:reset`🔐🔑 |
+| user | `user:read` `user:create` `user:update`（三者可带范围 `:team`，§103） `user:delete`🔐🔑 `user:password:reset`🔐🔑 |
 | role | `role:read` `role:define`🔐 `role:assign`🔐（2026-11-12 由 `role:manage` 拆分：定义角色 / 给用户分配角色。迁移 `0097_authz_hardening.sql` 把存量 `role:manage` 授予改写为两者（内置 operator 只得 `role:assign`，决策 D3），然后删除 `role:manage`） |
 | apikey | `apikey:self:manage`🔐🔑（查看明文每次二次验证 `apikey.reveal`，期 4 收尾 F2） |
 | group | `group:read` `group:manage`🔐 |
 | segment | `segment:read` `segment:manage`（用户组，§97.7） |
-| account | `account:read` `account:create` `account:update` `account:delete`🔐 `account:test` `account:credential:view`🔐🔑，均可带范围（`:own`、`:team`、`:group/<g>`、`:group/<g>/account/<a>`、`:account/<a>`；create 不接受 id 与 team，§21.0、§102；旧 key `account:own:<x>` 已由迁移改写为 `account:<x>:own` 并删除，不再接受）；`account:settings:custom`（§21）`account:group:bind` `account:relay`🔐 `account:owner:update`🔐（改账号所属，§102.4） |
+| account | `account:read` `account:create` `account:update` `account:delete`🔐 `account:test` `account:credential:view`🔐🔑，均可带范围（`:own`、`:team`、`:group/<g>`、`:group/<g>/account/<a>`、`:account/<a>`；create 不接受 id 与 team，§21.0、§103；旧 key `account:own:<x>` 已由迁移改写为 `account:<x>:own` 并删除，不再接受）；`account:settings:custom`（§21）`account:group:bind` `account:relay`🔐 `account:owner:update`🔐（改账号所属，§103.4） |
 | proxy | `proxy:read` `proxy:manage`🔐🔑，可带范围 `:own`、`:team`、`:proxy/<id>`（§21.0；旧 key `proxy:own:<x>` 已改写并删除） |
 | price | `price:read` `price:manage`🔐 |
 | balance | `balance:self:read` `balance:all:read` `balance:adjust`🔐 `balance:adjust:any`🔐👑（2026-11-13：`balance:adjust` 只能给可管理用户里的普通用户调余额，即只持有默认角色 `user` 或没有角色的用户；给持有其他角色的可管理用户调还要 `balance:adjust:any`，超管专属，默认只有超管有，超管可以把它授给某个角色。见 §43.6 可管理目标） |
-| usage | `usage:self:read` `usage:all:read` `usage:settle`🔐 `usage:account:read`🔐（范围内账号的使用记录，范围同账号，§102.5） |
+| usage | `usage:self:read` `usage:all:read` `usage:settle`🔐 `usage:account:read`🔐（范围内账号的使用记录，范围同账号，§103.5） |
 | sticky | `sticky:read` `sticky:manage` |
 | plugin | `plugin:read` `plugin:install`🔐🔑 `plugin:manage`🔐 `plugin:uninstall`🔐 `plugin:grant:high`🔐🔑 `plugin:grant:critical`🔐🔑👑 `plugin:grant:db_schema_unconfined`🔐🔑👑 `plugin:egress:read` `plugin:market:read` |
 | publisher | `publisher:read` `publisher:manage`🔐🔑👑 |
@@ -111,14 +111,14 @@
 | settings | `settings:read` `settings:manage`🔐🔑 |
 | system_update | `system:update:read` `system:update:execute`🔐🔑👑 `system:update:recover`🔐🔑👑 |
 
-内置角色：`super_admin`（superuser，等同 `*`，含以后新增的权限，名称、描述、权限都不可编辑，不可重置或删除；0.1.290 起是唯一能带 superuser 标志的角色，授予存为 `casbin_rule` 的 `p, r:super_admin, *, *`，§99.1）、`admin`（除超管专属 👑 以外的全部核心权限）、`operator`（运维，2026-11-12 起为显式白名单，决策 D3：`user:read` `user:create` `user:update`、`role:read` `role:assign`、`group:read` `group:manage`、`segment:read` `segment:manage`、`account:read` `account:create` `account:update` `account:delete` `account:test`、`proxy:read` `proxy:manage`、`price:read`、`balance:all:read`、`usage:all:read`、`usage:account:read`（0.1.291）、`node:read`、`audit:read`、`task:read` `task:run`，加上 `account:credential:view:own` 与 `user` 角色的默认权限（全量 key 蕴含 own 范围，因此能授出 supplier）；不含 `role:define`、`balance:adjust`、`usage:settle`、`user:delete`、`user:password:reset`、`account:credential:view`、`account:settings:custom`、`account:group:bind`、`account:relay`、`price:manage`、`task:manage` 以及 sticky、settings、plugin、publisher、system_update 各模块；以后新增的核心权限不会自动进入，要加进白名单）、`supplier`（供应商，2026-11-12；`account:read:own` `account:create:own` `account:update:own` `account:delete:own` `account:test:own` `account:credential:view:own` `proxy:read:own` `proxy:manage:own`，2026-11-13 加 `usage:self:read`（看自己的用量），0.1.291 加 `usage:account:read:own`（自己账号的使用记录，`rev` 2），核心默认权限只有这些（插件权限按 manifest `defaults` 授予，payment 的 `recharge:use`、growth 的 `growth:use` 列了 supplier），暂不含 `account:group:bind`；附加型角色，供应商用户同时持有 `user` 与 `supplier`，控制台新建用户勾选 supplier 时自动勾上 user，§21）、`supplier_agent`（代理供应商，0.1.291：user 与 supplier 的默认权限加下级的账号与使用记录只读、下级用户的读建改与角色分配，可分配 supplier、supplier_agent，§102.1）、`user`（`apikey:self:manage` `balance:self:read` `usage:self:read` `gateway:use`）。六个内置角色开箱即有，默认权限与可分配清单只在代码里定义一处（`authz/catalog.go` `builtinRoles`），新库同步后的结果（各角色存下的权限、可分配清单、单独持有时可见的核心菜单）由 `authz/testdata/builtin_roles.golden` 固定（`TestBuiltinRolesGolden`；有意改动后 `UPDATE_GOLDEN=1` 重写，并同步本段与 §102.1），新库由启动同步 `SyncCore` 直接写入，升级时的重置、补缺与恢复默认都用它（2026-11-13，用户要求“新系统自带的角色，可以进行修改、重置”）。除 `super_admin` 外，内置角色的名称、描述、权限、可分配清单可以修改：有 `role:define`、角色在操作者的可分配清单内、且角色当前的授予不超出操作者（与有持有者的自定义角色同一口径，§43.6 角色写入口），新增部分仍须在操作者之内；按默认清单 admin 能改 operator、supplier、supplier_agent、user，不能改 admin（超管都能改）。内置角色不能删除（409），key 不能改（没有改 key 的接口，PATCH `/roles/:id` 带不同的 `key` 400 `immutable`，§15.7）。`POST /roles/:id/reset` 恢复默认（§15.7，权限检查同修改，另须覆盖全部默认值）。新增的核心权限只自动授予默认集合包含它的内置角色。**默认值在升级时只应用一次**（`roles.defaults_rev`，迁移 0097 加列，存量为 0）：内置角色（`super_admin` 除外）的 `defaults_rev` 落后于代码里该角色的 `rev`（升级到 0.1.286，或以后某个已有权限、角色加入了默认值、代码提升了 `rev`）时，`SyncCore` 按角色有没有持有者（`casbin_rule` 里有该角色的 g 行、且未软删除的用户，即角色的 `user_count`）处理：**无人持有**的整体重置为默认值，与恢复默认同一套写入：核心权限（含范围权限）、可分配清单与 `assign_custom` 按默认值写入，默认值以外的核心授予删除，角色上的插件权限不动，名称、描述不改，审计一条 `role.reset`（系统操作者，`detail.via = "sync"`、`defaults_rev`、`before`、`after`）；**有人持有**的只补缺不覆盖：把默认值里缺的权限（含范围默认值，已有同动作全量 key 时不补 own 范围）、可分配角色与 `assign_custom` 补上，不删除角色上已有的其他授予，每项写审计 `authz.sync.grant`（`detail.defaults_rev`）。两种都把 `defaults_rev` 置为 `rev`；之后重启不再处理，管理员之后的修改（含删掉的默认权限）不会被改回来。恢复默认同样把 `defaults_rev` 置为当前 `rev`。新用户默认分配 `user` 角色。插件权限的 key 为 `plugin.<插件key>:<插件内 key>`，模块为 `plugin.<插件key>`。插件权限的状态跟随插件：新登记的权限在插件运行中（`plugins.status` 为 `enabled`、`upgrading`）时为 `active`，否则为 `disabled`，每次激活（启用或升级提交）整体置为 `active`、禁用时整体置为 `disabled`；已有的行在同步时不改状态（2026-11-12 权限加固 W4-P8）。升级失败时，同意新版本时登记的新权限保留到激活另一个版本时再按其 manifest 清理（W4-P9）。新登记的权限授予哪些角色、移除与复活、风险等级见下文“插件权限”。
+内置角色：`super_admin`（superuser，等同 `*`，含以后新增的权限，名称、描述、权限都不可编辑，不可重置或删除；0.1.290 起是唯一能带 superuser 标志的角色，授予存为 `casbin_rule` 的 `p, r:super_admin, *, *`，§99.1）、`admin`（除超管专属 👑 以外的全部核心权限）、`operator`（运维，2026-11-12 起为显式白名单，决策 D3：`user:read` `user:create` `user:update`、`role:read` `role:assign`、`group:read` `group:manage`、`segment:read` `segment:manage`、`account:read` `account:create` `account:update` `account:delete` `account:test`、`proxy:read` `proxy:manage`、`price:read`、`balance:all:read`、`usage:all:read`、`usage:account:read`（0.1.292）、`node:read`、`audit:read`、`task:read` `task:run`，加上 `account:credential:view:own` 与 `user` 角色的默认权限（全量 key 蕴含 own 范围，因此能授出 supplier）；不含 `role:define`、`balance:adjust`、`usage:settle`、`user:delete`、`user:password:reset`、`account:credential:view`、`account:settings:custom`、`account:group:bind`、`account:relay`、`price:manage`、`task:manage` 以及 sticky、settings、plugin、publisher、system_update 各模块；以后新增的核心权限不会自动进入，要加进白名单）、`supplier`（供应商，2026-11-12；`account:read:own` `account:create:own` `account:update:own` `account:delete:own` `account:test:own` `account:credential:view:own` `proxy:read:own` `proxy:manage:own`，2026-11-13 加 `usage:self:read`（看自己的用量），0.1.292 加 `usage:account:read:own`（自己账号的使用记录，`rev` 2），核心默认权限只有这些（插件权限按 manifest `defaults` 授予，payment 的 `recharge:use`、growth 的 `growth:use` 列了 supplier），暂不含 `account:group:bind`；附加型角色，供应商用户同时持有 `user` 与 `supplier`，控制台新建用户勾选 supplier 时自动勾上 user，§21）、`supplier_agent`（代理供应商，0.1.292：user 与 supplier 的默认权限加下级的账号与使用记录只读、下级用户的读建改与角色分配，可分配 supplier、supplier_agent，§103.1）、`user`（`apikey:self:manage` `balance:self:read` `usage:self:read` `gateway:use`）。六个内置角色开箱即有，默认权限与可分配清单只在代码里定义一处（`authz/catalog.go` `builtinRoles`），新库同步后的结果（各角色存下的权限、可分配清单、单独持有时可见的核心菜单）由 `authz/testdata/builtin_roles.golden` 固定（`TestBuiltinRolesGolden`；有意改动后 `UPDATE_GOLDEN=1` 重写，并同步本段与 §103.1），新库由启动同步 `SyncCore` 直接写入，升级时的重置、补缺与恢复默认都用它（2026-11-13，用户要求“新系统自带的角色，可以进行修改、重置”）。除 `super_admin` 外，内置角色的名称、描述、权限、可分配清单可以修改：有 `role:define`、角色在操作者的可分配清单内、且角色当前的授予不超出操作者（与有持有者的自定义角色同一口径，§43.6 角色写入口），新增部分仍须在操作者之内；按默认清单 admin 能改 operator、supplier、supplier_agent、user，不能改 admin（超管都能改）。内置角色不能删除（409），key 不能改（没有改 key 的接口，PATCH `/roles/:id` 带不同的 `key` 400 `immutable`，§15.7）。`POST /roles/:id/reset` 恢复默认（§15.7，权限检查同修改，另须覆盖全部默认值）。新增的核心权限只自动授予默认集合包含它的内置角色。**默认值在升级时只应用一次**（`roles.defaults_rev`，迁移 0097 加列，存量为 0）：内置角色（`super_admin` 除外）的 `defaults_rev` 落后于代码里该角色的 `rev`（升级到 0.1.286，或以后某个已有权限、角色加入了默认值、代码提升了 `rev`）时，`SyncCore` 按角色有没有持有者（`casbin_rule` 里有该角色的 g 行、且未软删除的用户，即角色的 `user_count`）处理：**无人持有**的整体重置为默认值，与恢复默认同一套写入：核心权限（含范围权限）、可分配清单与 `assign_custom` 按默认值写入，默认值以外的核心授予删除，角色上的插件权限不动，名称、描述不改，审计一条 `role.reset`（系统操作者，`detail.via = "sync"`、`defaults_rev`、`before`、`after`）；**有人持有**的只补缺不覆盖：把默认值里缺的权限（含范围默认值，已有同动作全量 key 时不补 own 范围）、可分配角色与 `assign_custom` 补上，不删除角色上已有的其他授予，每项写审计 `authz.sync.grant`（`detail.defaults_rev`）。两种都把 `defaults_rev` 置为 `rev`；之后重启不再处理，管理员之后的修改（含删掉的默认权限）不会被改回来。恢复默认同样把 `defaults_rev` 置为当前 `rev`。新用户默认分配 `user` 角色。插件权限的 key 为 `plugin.<插件key>:<插件内 key>`，模块为 `plugin.<插件key>`。插件权限的状态跟随插件：新登记的权限在插件运行中（`plugins.status` 为 `enabled`、`upgrading`）时为 `active`，否则为 `disabled`，每次激活（启用或升级提交）整体置为 `active`、禁用时整体置为 `disabled`；已有的行在同步时不改状态（2026-11-12 权限加固 W4-P8）。升级失败时，同意新版本时登记的新权限保留到激活另一个版本时再按其 manifest 清理（W4-P9）。新登记的权限授予哪些角色、移除与复活、风险等级见下文“插件权限”。
 
 插件权限（2026-11-15 0.1.290，设计 `docs/plugin-permissions/`；manifest 字段见 §5.8 与 §21.0“插件资源范围”）：
 
 - **目录字段**（迁移 `0099_plugin_permission_meta.sql`）：`permissions` 加 `risk`（`low`/`sensitive`/`critical`，约束 `permissions_risk_check`）、`requires`（软依赖，完整 key）、`group_key`/`group_label`/`group_sort`（插件 `permissionGroups[]`）、`scope`（插件范围声明，`resource` 为 `ResourceName()`，枚举为 `value`）、`defaults`（插件建议：角色 → 规范后缀，`""` 为全部行；只供展示和控制台“恢复插件建议”，本身不授予），`scope_type` 加宽到 `varchar(40)`（插件为 `plugin:<资源>`）。核心权限的 `risk` 由代码给出：👑 为 `critical`，🔐 为 `sensitive`，其余 `low`。0099 按旧的 `sensitive` 列回填 `risk`，0100 删除 `sensitive`（§99.2）。0099 随 0.1.290 与 0100、0101 一起发布，0.1.289 没有单独发布；发布是单向的，不能回退（§101）。
 - **风险等级**：插件 `userPermissions[].risk`（省略为 `low`，取代 `sensitive`）。`critical` 等同核心 👑：不能写 `defaults`；安装、升级同意时只有超管能把它授给角色（`CanGrantToRoles(…, risk)` 取本次授予里最高的风险，critical 对非超管 403 `permission_denied`，`details {reason: "critical", superuser: true, permissions: [本地 key]}`）；角色编辑（POST `/roles`、PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）：新增的 key 须在操作者之内，而 critical 初始只有超管持有，所以只有持有者能授出，与 👑 的委派相同（D3）；**新增** critical 插件 key 时另须二次验证 `plugin.grant`（与同意、复核确认相同，403 `verification_required`；在写入事务里消耗，被拒时什么都不写、`version` 不变，验证后重试即可；保留或撤销不需要；二审 C3）。
 - **移除（D6）**：插件新版本不再声明的 key 标 `status = 'removed'`（此前删除），授予保留但不生效（有效权限只算 `active`），`SetPluginActive` 不改 removed 行；重新声明时原样复活（状态跟随插件，授予原样回来，不套 `defaults`）。卸载插件、拒绝 consent 删掉插件行、作废 staged key 时，权限连同它的授予一起删除（`casbin_rule` 没有外键，由删除方显式清理，§99.1），以后同 key 再登记不会继承旧授予。角色写入（PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）列出角色已持有的 removed key 时保留、不列出即删除（编辑器可以取消勾选，§15.7），未持有的 removed key 忽略、从不写入；POST `/roles/:id/reset` 保留 removed 核心授予。待复核授予、`GrantPluginPermission` 跳过 removed。标记 removed 和复活各写一条系统审计 `authz.sync.remove` / `authz.sync.revive`（目标是插件，`detail {keys, holders: {key: [角色]}}`）。key 的范围声明改变时，新声明不再接受的范围授予删除（`authz.sync.revoke`，`detail {via: "scope_changed", key}`）；暂存升级（另一版本仍在运行）的同意不裁剪：新旧都声明的 key 的范围（`scope_type`、`scope`）与 `defaults` 沿用运行版本，风险取两者较高的（旧格式清单读不出风险，不因此降级），其余元数据取新版本；只有新版本声明的 key 建成 `status = 'staged'`（不生效，`SetPluginActive` 停用、启用都不碰它，所以停用再启用运行版本不会打开它），新版本重新声明的 removed key 不复活、范围授予也不裁剪（`PermissionDef.Staged`）；到激活时才按被激活版本的声明裁剪、标记 removed、复活与启用，它声明的 staged key 随插件状态启用、保留同意时的授予，不声明的 staged key 原样不动。staged key 不出现在任何编辑入口：GET `/permissions`、GET `/permissions/plugins/:plugin`（`module` 与各角色的 `permission_keys`）、角色对象的 `permission_keys` 都不列出，授予视图（`RolesPermissions`：covers、`editDenial`、`PluginGrantees`）不计；角色写入（POST `/roles`、PUT `/roles/:id/permissions`、PUT `/permissions/plugins/:plugin`）列出它 400 `permission_keys` `unknown`，也不删除它已有的授予（那是其版本同意时结算的）；只有安装审查 `review` 照常把它显示为新 key（二审 logic #4、N3；此前同意时就复活、新 key 直接 active，升级放弃后一直如此）。卸载仍删除权限与授予（D5）。
-- **新建权限的角色授予**：新登记的插件权限按同意时结算的计划授予（`install.planRoleGrants`，每条 `authz.sync.grant`，`detail.via = default`）：manifest `userPermissions[].defaults`（`{内置角色: true | [范围]}`，角色限 `manifest.BuiltinRoleKeys` 即 `admin`、`operator`、`supplier`、`supplier_agent`、`user`（没有点名 `supplier_agent` 时取给 user 与 supplier 的两项之并，`manifest.FollowedDefaults`，§102.1）；**省略即不授予任何角色**，此前 `defaultRoles` 省略时为 `admin`；超管角色本来拥有全部权限，不写入），同意请求的 `new_permission_roles` 覆盖（§5.7），以及 `inheritFrom` 所列旧 key 此刻的持有者（改名、拆分不丢授权；带范围的授予只在新旧 key 的 `scope_type` 相同、且新声明接受这个范围（own 仍允许、值仍在 values 里）时保留，critical 只从 critical 继承，跳过的来源记在审计 `inherit_skipped`，`reason` 为 `scope_type`、`scope` 或 `risk`）。目录里已有某个 `inheritFrom` 旧 key（含 removed）时视为改名或拆分，只继承、不套 `defaults`。同意请求的 `new_permission_roles` 列出某个本地 key 时对继承同样生效（二审 C2）：同意者能指定的角色以覆盖为准（缺省或 `[]` 即不授予，继承来的也不授予），不能指定的角色上的继承照常挂起；清单检查要求 `inheritFrom` 只指向本清单已不再声明的 key（否则 `invalid_value`，仍声明的 key 的持有者会无声地多拿到新权限），旧 key 的风险在同意时按目录判。继承在同意时一次算好，`SyncPlugin` 自己不再继承；激活时才新建的权限（同意之后才出现的）不授予任何角色。暂存升级在同意之后、激活之前旧 key 新增的持有者，激活时不自动授予（没有人同意过），记入系统审计 `plugin.role_grants.carry`（`detail {version, pending: [RoleGrant]}`，同意计划过的、同意覆盖了的本地 key 与角色已持有的除外），进 `role_grants_to_review` 待复核（二审 logic #5，此前激活后静默失权）。只有本次激活才停用的旧 key（激活前不是 removed）才补录：此前某次激活已经停用的旧 key 不再补录，所以后续版本保留 `inheritFrom` 也不会把有意撤销、拒绝过的继承授予重新提出来（二审 N1）。“同意计划过的”读该版本最新 `plugin.consent` 审计的 `role_grants`（同意计划的全部授予，含挂起的），每种同意（操作者、上传沿用、系统）都写（二审 N2；此前沿用与系统同意只写在 `plugin.consent.auto` 里，读回为空）。
+- **新建权限的角色授予**：新登记的插件权限按同意时结算的计划授予（`install.planRoleGrants`，每条 `authz.sync.grant`，`detail.via = default`）：manifest `userPermissions[].defaults`（`{内置角色: true | [范围]}`，角色限 `manifest.BuiltinRoleKeys` 即 `admin`、`operator`、`supplier`、`supplier_agent`、`user`（没有点名 `supplier_agent` 时取给 user 与 supplier 的两项之并，`manifest.FollowedDefaults`，§103.1）；**省略即不授予任何角色**，此前 `defaultRoles` 省略时为 `admin`；超管角色本来拥有全部权限，不写入），同意请求的 `new_permission_roles` 覆盖（§5.7），以及 `inheritFrom` 所列旧 key 此刻的持有者（改名、拆分不丢授权；带范围的授予只在新旧 key 的 `scope_type` 相同、且新声明接受这个范围（own 仍允许、值仍在 values 里）时保留，critical 只从 critical 继承，跳过的来源记在审计 `inherit_skipped`，`reason` 为 `scope_type`、`scope` 或 `risk`）。目录里已有某个 `inheritFrom` 旧 key（含 removed）时视为改名或拆分，只继承、不套 `defaults`。同意请求的 `new_permission_roles` 列出某个本地 key 时对继承同样生效（二审 C2）：同意者能指定的角色以覆盖为准（缺省或 `[]` 即不授予，继承来的也不授予），不能指定的角色上的继承照常挂起；清单检查要求 `inheritFrom` 只指向本清单已不再声明的 key（否则 `invalid_value`，仍声明的 key 的持有者会无声地多拿到新权限），旧 key 的风险在同意时按目录判。继承在同意时一次算好，`SyncPlugin` 自己不再继承；激活时才新建的权限（同意之后才出现的）不授予任何角色。暂存升级在同意之后、激活之前旧 key 新增的持有者，激活时不自动授予（没有人同意过），记入系统审计 `plugin.role_grants.carry`（`detail {version, pending: [RoleGrant]}`，同意计划过的、同意覆盖了的本地 key 与角色已持有的除外），进 `role_grants_to_review` 待复核（二审 logic #5，此前激活后静默失权）。只有本次激活才停用的旧 key（激活前不是 removed）才补录：此前某次激活已经停用的旧 key 不再补录，所以后续版本保留 `inheritFrom` 也不会把有意撤销、拒绝过的继承授予重新提出来（二审 N1）。“同意计划过的”读该版本最新 `plugin.consent` 审计的 `role_grants`（同意计划的全部授予，含挂起的），每种同意（操作者、上传沿用、系统）都写（二审 N2；此前沿用与系统同意只写在 `plugin.consent.auto` 里，读回为空）。
 - **暂存键的作废**（二审 N3）：每次同意（`decideAndApply`，暂存与否）先作废该插件现有的 staged key 及其授予（`PermissionCatalog.DiscardStaged`，系统审计 `authz.sync.discard`，`detail {keys, holders}`）：它们属于此前同意、从未激活的版本，被这次同意取代；这次同意把它们当新 key，按自己的 `defaults`、覆盖与继承重新结算，`review` 也显示为 `new`（读取时 staged key 不算目录已有）。被取代的那个版本以后若仍被激活，这些 key 按新建处理、没有角色授予。
 - **停用插件的授予**（二审 logic #3 取舍，保持现状）：插件停用期间它的权限不进生效集（`/me`、请求鉴权只算 `active`），授予视图照常计入（`RolesPermissions`：角色写入口的 covers、`editDenial`、`PluginGrantees`），所以持有者停用期间仍能在矩阵、角色页授出和修改这些权限，与启用时相同；控制台对停用插件的权限按“授予也算持有”处理，不锁成未持有。
 - **能否指定角色（D2）**：同意者能指定某个角色 = 有 `role:define`，角色可修改（`editableRole`）、在其可分配清单内、非超管时不是自己持有的角色、不是超管角色，critical 还须是超管（`PermissionCatalog.PluginGrantees`，拒绝理由 `role_define`、`critical`、`superuser_role`、`not_editable`、`not_assignable`、`held`）。操作者同意时，默认与继承授予给了不能指定的角色就不授予，挂起待复核（`withheld`，进插件的 `role_grants_to_review`，由有资格的人经 `role-grants/confirm` 写入，§5.7），首装与升级相同（此前升级时 403）；`new_permission_roles` 显式指定的角色不能指定时仍 403（`details.role`；critical 为 `details.reason = critical`），未知角色 400（`new_permission_roles.<本地 key>`，`code: unknown`，目录已有的权限也检查）。系统同意（内置插件）全部可指定，需同意的授予挂起（§5.7）。新权限本身不要求操作者持有，但不能指定自己持有的角色，所以无法借此给自己加权限。只有本次真正新建的权限才检查，升级不新增权限时带了覆盖也不需要 `role:define`（T59）。
@@ -589,11 +589,11 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 
 | 接口 | 分页 | 筛选参数 | 排序 | 代码 |
 |---|---|---|---|---|
-| GET `/users` | 分页 | `q`（邮箱或显示名 ILIKE）、`status`（`active`\|`disabled`）、`role`（角色 key）、`segment`（用户组 id，或 `personal` 表示所有个人专属的用户，§97.6）、`owner_id`（用户 id 或 `none`）、`direct`（§102.3） | `id` 升序 | `iam/users.go` |
+| GET `/users` | 分页 | `q`（邮箱或显示名 ILIKE）、`status`（`active`\|`disabled`）、`role`（角色 key）、`segment`（用户组 id，或 `personal` 表示所有个人专属的用户，§97.6）、`owner_id`（用户 id 或 `none`）、`direct`（§103.3） | `id` 升序 | `iam/users.go` |
 | GET `/groups` | 分页 | `q`（名称 ILIKE）、`status`、`model`（只留提供该模型的分组，§97.6） | `id` 升序 | `group/group.go` |
 | GET `/me/groups` | 不分页 | 无（只返回 `active` 且对当前用户可用的分组，可用性按调用者所在的用户组，§97；字段 `{id, name, description, rate_multiplier, model_allowlist, model_filter_mode, platforms, effective_rate, rate_source, exclusive}`，后三项见 §97.6，`rate_multiplier` 仍是分组默认倍率） | `id` 升序 | `group/group.go` |
 | GET `/me/api-keys` | 分页 | 限定当前用户；`q`（名称 ILIKE；以 `sk-s2a-` 开头时也按 `key_prefix` 开头匹配）、`status`（`active`\|`disabled`\|`expired`，按状态与过期时间推导）、`group_id`（正整数）；见 §92.1 | `id` 倒序 | `apikey/apikey.go` |
-| GET `/accounts` | 分页 | `plugin_key`、`type`、`status`、`group_id`（整数）、`q`（名称 ILIKE）、`mine`、`created_by`、`owner_id`、`subordinates`（§102.4） | `created_at` 倒序，再 `id` 倒序（§18.3；与调度顺序无关） | `account/handlers.go` |
+| GET `/accounts` | 分页 | `plugin_key`、`type`、`status`、`group_id`（整数）、`q`（名称 ILIKE）、`mine`、`created_by`、`owner_id`、`subordinates`（§103.4） | `created_at` 倒序，再 `id` 倒序（§18.3；与调度顺序无关） | `account/handlers.go` |
 | GET `/proxies` | 分页 | `q`（名称或主机 ILIKE）、`status` | `id` 升序 | `proxy/proxy.go` |
 | GET `/prices` | 分页 | `mode`（`per_request`\|`per_token`\|`expression`）、`source`（`admin`\|`plugin_default`）、`plugin_key`、`enabled`、`q`（`model` 或 `note` ILIKE） | `model`、`source`、`plugin_key`（NULL 在前）、`id` | `billing/prices.go` |
 | GET `/usage` | 分页 | `user_id`、`api_key_id`、`group_id`、`account_id`（整数）；`model`、`platform`、`billing_status`、`client_request_id`、`account_type`（精确匹配）；`request_id`（我方请求 ID 或客户端请求 ID，精确匹配，§14.4）；`success`；`from`、`to` | `created_at` 倒序，再 `id` 倒序 | `usage/api.go` |
@@ -1092,22 +1092,22 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 
 ## 21. 账号与代理的所有权授权、受限设置（base_url）、保存账号时自动关联代理（2026-09-25，用户要求）
 
-> 期 4 R1–R7 起，所有权改为带范围的权限 key（§21.0）。本节及全文其他位置的 `account:own:<x>`、`proxy:own:<x>` 均读作 `account:<x>:own`、`proxy:<x>:own`（旧写法 0.1.286 起由迁移改写并删除，不再接受），“全部级 / 自己级”读作“全部范围 / 受限范围”，`PermAny(all, own)` 与 `core.OwnerScope` 读作 `PermScoped(动作)` 与 `core.Scope`。0.1.291 起账号的“自己的”指所属 `accounts.owner_id`（§102.4），不再是 `created_by`；代理仍按 `created_by`。
+> 期 4 R1–R7 起，所有权改为带范围的权限 key（§21.0）。本节及全文其他位置的 `account:own:<x>`、`proxy:own:<x>` 均读作 `account:<x>:own`、`proxy:<x>:own`（旧写法 0.1.286 起由迁移改写并删除，不再接受），“全部级 / 自己级”读作“全部范围 / 受限范围”，`PermAny(all, own)` 与 `core.OwnerScope` 读作 `PermScoped(动作)` 与 `core.Scope`。0.1.292 起账号的“自己的”指所属 `accounts.owner_id`（§103.4），不再是 `created_by`；代理仍按 `created_by`。
 
 背景：需要"供应商"角色只维护自己创建的账号和代理、不能改 base_url（只能用官方地址）；"只读"角色能看全部账号但不能改、看不到密钥；保存账号时能直接填代理串，后端自动解析并复用已有代理或新建再关联。旧 sub2api 没有所有者模型，本节为新设计。
 
 ### 21.0 带范围的权限 key（期 4 R1–R7，取代下文的 own/all 成对 key；0.1.286 发布前去掉旧写法）
 
-- **语法**：`<动作>[:<范围>]`，范围 = `*` | `own` | `team`（0.1.291，§102.2） | 路径。账号动作（`account:read/create/update/delete/test/credential:view`）的路径为 `group/<g>`、`group/<g>/account/<a>`、`account/<a>`（`<g>` 可为 `*`，表示绑定在任意分组下）；代理动作（`proxy:read/manage`）为 `proxy/<id>`。id 为不带前导 0 的正整数。省略范围 = `*` = 全部行；其余动作不接受范围。`account:create` 只接受 `*`、`own`、`group/…`（不接受 id）。最后一段是 `*`、`own`、含 `/`，或可带范围的动作后跟 `team` 时才视为范围。
+- **语法**：`<动作>[:<范围>]`，范围 = `*` | `own` | `team`（0.1.292，§103.2） | 路径。账号动作（`account:read/create/update/delete/test/credential:view`）的路径为 `group/<g>`、`group/<g>/account/<a>`、`account/<a>`（`<g>` 可为 `*`，表示绑定在任意分组下）；代理动作（`proxy:read/manage`）为 `proxy/<id>`。id 为不带前导 0 的正整数。省略范围 = `*` = 全部行；其余动作不接受范围。`account:create` 只接受 `*`、`own`、`group/…`（不接受 id）。最后一段是 `*`、`own`、含 `/`，或可带范围的动作后跟 `team` 时才视为范围。
 - **规范形式**（`perm.Canonical`，唯一入口）：全部范围不带后缀（存量 key 一字不改）；结尾的 `/*` 只在跟着本资源的行类型或单独出现时去掉（`group/12/*` → `group/12`，`group/12/account/*` → `group/12`，`account/*` → 全部；`group/*` 保留）。8 个旧 key `account:own:<x>`、`proxy:own:<x>` 不是别名：它们只是不存在的无范围 key，角色写入 400 `unknown`，访问密钥 403 `missing`。不合法的 key 400 `permission_keys`（或 `permissions`）`invalid`。
 - **蕴含**（`perm.Implies`，纯语法，不按账号当前所在分组推导）：全部 ⊇ 一切；team ⊇ own，team 只蕴含 team 与 own；own 只蕴含 own；`group/*` ⊇ 任何 `group/…`；`group/G` ⊇ `group/G/account/X`；`account/X` ⊇ `group/…/account/X`；`group/*/account/X` ⊇ `group/G/account/X`。共享测试向量 `next/sdk/permvectors/vectors.json`（Go 与控制台 TS 共用）。
 - **匹配**：`PermissionSet.Has(k)` = 持有的某个模式蕴含 k，所以只持有 `account:read:own` 时 `Has("account:read")` 为 false（“全量才能做”的判断保持全量语义）；`HasAction(a)` = 持有 a 的任意范围。路由 `Router.PermScoped(method, path, h, actions...)` 要求任一动作的任意范围，并把每个动作的 `core.DataScope` 放进 ctx（`core.Scope(ctx, az, action)` 取用）；全部范围的动作也记入 `Granted`。
-- **数据范围**：`core.DataScope{All, Owners, Groups, IDs, PairG, PairID}`（0.1.291 `Owner` 改为 `Owners`，own 与 team 共用，team 经 `core.ResolveScope` 展开，§102.2） 由用户在该动作上的全部模式编译（`Compile`），谓词 `core.AccountRows()` / `core.ProxyRows()` / `core.UserRows()`（0.1.291）的 `Cond()` / `Args(scope)`：文本固定，id 只是数组参数；列名是 `core.ScopeTable` 的未导出字段，只有这几个函数能设，别的包改不了条件的文本；分组成员关系实时读 `account_groups`（任一分组匹配即在范围内），不进缓存。
+- **数据范围**：`core.DataScope{All, Owners, Groups, IDs, PairG, PairID}`（0.1.292 `Owner` 改为 `Owners`，own 与 team 共用，team 经 `core.ResolveScope` 展开，§103.2） 由用户在该动作上的全部模式编译（`Compile`），谓词 `core.AccountRows()` / `core.ProxyRows()` / `core.UserRows()`（0.1.292）的 `Cond()` / `Args(scope)`：文本固定，id 只是数组参数；列名是 `core.ScopeTable` 的未导出字段，只有这几个函数能设，别的包改不了条件的文本；分组成员关系实时读 `account_groups`（任一分组匹配即在范围内），不进缓存。
 - **存储**：`permissions.scope_type`（`''`/`account`/`proxy`）；授予是 `casbin_rule` 的 p 行（§99.1）：全部范围的范围列为 `*`，带范围的为规范后缀（0.1.290 之前分别在 `role_permissions` 与 `role_permission_scopes`，迁移 0100 转换后删除）。已移除、已停用的权限的授予保留，只是不生效。访问密钥仍是 `text[]`，存规范 key。
 - **迁移 `0097_authz_hardening.sql`**（0.1.286，停服发布，单事务，见 DESIGN-2026-11-12-AUTHZ-HARDENING 发布说明）：建表加列；每个旧 own 授予改写为 `(动作, 'own')`，角色已持有对应全量 key 时只记审计（`redundant: true`）；访问密钥里的旧写法换成 `<动作>:own`（`role:manage` 换成 `role:define` + `role:assign`）；然后删除旧 key 的 permission 行。审计 `authz.grant.migrate`（`via: migration 0097`、`from`、`key`、`redundant`）、`user.access_key.migrate`（before/after）；有写入才推进 authz 版本；可重复执行。`GET /permissions` 每项带 `scope_type`；`GET /me` 只输出规范 key。当时的回滚脚本 `0.1.286-authz-down.sql`（0.1.290 起不再适用，已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.286-authz-down.sql`）把 own 范围与审计里的冗余授予改回旧 key、分组与 id 范围删除（写审计）。
 - **访问密钥取交集**：创建/修改时每个 key 须被用户蕴含；运行时 `Restrict` 逐模式取较窄者（存量不带后缀的 key 遇到只有 own 的用户收窄为 own），不可比（如 `group/12` 与 `own`）丢弃。
-- **内置角色默认**：supplier = 8 个 `…:own` + `usage:self:read`（2026-11-13）+ `usage:account:read:own`（0.1.291）；supplier_agent 见 §102.1；operator 去掉冗余 own key，加 `account:credential:view:own`。
-- **账号（期 4 R3）**：列表、详情、写、删、测试、凭证、统计、汇总、动作、`AccountsInScope`（插件账号路由与宿主 RPC）都按调用者在对应动作上的范围过滤，越权一律 404。`mine=true`、`created_by=<id>` 在范围内再收窄（此前 own 级忽略 `created_by`）；0.1.291 起 own 与 `mine` 看所属 `owner_id`，另有 `owner_id=`、`subordinates=true`（§102.4）。受限档（范围不是全部）沿用 own 级的全部限制（并发默认与上限、管理员锁、受限设置、relay、绑定分组）。
+- **内置角色默认**：supplier = 8 个 `…:own` + `usage:self:read`（2026-11-13）+ `usage:account:read:own`（0.1.292）；supplier_agent 见 §103.1；operator 去掉冗余 own key，加 `account:credential:view:own`。
+- **账号（期 4 R3）**：列表、详情、写、删、测试、凭证、统计、汇总、动作、`AccountsInScope`（插件账号路由与宿主 RPC）都按调用者在对应动作上的范围过滤，越权一律 404。`mine=true`、`created_by=<id>` 在范围内再收窄（此前 own 级忽略 `created_by`）；0.1.292 起 own 与 `mine` 看所属 `owner_id`，另有 `owner_id=`、`subordinates=true`（§103.4）。受限档（范围不是全部）沿用 own 级的全部限制（并发默认与上限、管理员锁、受限设置、relay、绑定分组）。
   - 新建：范围不含 own、只有分组时，`group_ids` 必须含其中一个分组，否则 400 `fields[{group_ids, not_in_scope}]`。
   - 改分组：绑定或解绑自己范围内的分组（`group/G`、`group/*`）不需要 `account:group:bind`；写入后账号必须仍在调用者的 update 范围内，否则 403 `would_leave_scope`（整笔回滚）。
   - 删除账号、分组、代理时，在删除的同一事务里清除点名它们的带范围授予（`core.ScopeGrantClearer`，由 `authz.Service` 实现、`app` 注入 account、group、proxy，三者不 import authz；范围的匹配式在 authz，按角色审计 `authz.scope.clear`，推进 authz 版本与策略版本、角色的修订号，并返回新版本；清理先锁 `authz_meta`，所以同时提交的授予不会漏删；`authz.Service` 自己在调用方的事务提交后（轮询到新版本时）广播 `authz:changed`，与其他授权写入一样作废各节点的权限缓存，广播丢失时由版本轮询兜底，调用方不再自己广播，`core.AnnounceAuthzChanged` 已删除）。带范围的授予只能点名存在的行：角色写入（创建、改授予、插件矩阵）新增的范围 `group/G`、`account/X`、`group/G/account/X`、`proxy/X` 指向不存在（账号含已软删除）的行时 400 `invalid_argument`，`details.fields[{field:"permission_keys", code:"unknown_scope"}]`，否则删除路径清不到它，日后同 id 的行会继承这个授予（三审 C3）。
@@ -1135,7 +1135,7 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
   - 插件 manifest 的 `userPermissions[].key`（及 `inheritFrom`）最后一段不能是 `own`，否则 400 `invalid_format`（会被读成范围）；key 里也不会有 `*`、`/`。插件自己的数据范围见下一条。
   - `GET /me` 的 `permissions` 只有规范 key。插件页面用宿主的 `hasAction(动作)`（任意范围）或 `has(规范 key)` 判断，不能再检查 `account:own:read`。
 - **插件资源范围**（2026-11-15 0.1.290，设计 `docs/plugin-permissions/` 第 1、4 章）：
-  - **声明**：`userPermissions[].scope` 为 `{resource, options?, own?}`（插件自己的资源：`resource` 匹配 `^[a-z][a-z0-9_]{0,29}$` 且不是保留名 `account`、`proxy`、`group`、`value`、`user`（0.1.291）（插件作用于账号用路由 `accounts`，D4）；`options` 是本插件一条无路径参数的 GET admin 路由，给出候选 id；`own` 表示可授“自己创建的”；至少有 `options` 或 `own` 之一）或 `{values:[{key, label}]}`（固定枚举，key 匹配 `[A-Za-z0-9_.-]{1,64}`，至多 50 个，与前三者互斥）。`ui.settings`、`ui.accountActions` 引用的权限不能带 scope（`unsupported`）。
+  - **声明**：`userPermissions[].scope` 为 `{resource, options?, own?}`（插件自己的资源：`resource` 匹配 `^[a-z][a-z0-9_]{0,29}$` 且不是保留名 `account`、`proxy`、`group`、`value`、`user`（0.1.292）（插件作用于账号用路由 `accounts`，D4）；`options` 是本插件一条无路径参数的 GET admin 路由，给出候选 id；`own` 表示可授“自己创建的”；至少有 `options` 或 `own` 之一）或 `{values:[{key, label}]}`（固定枚举，key 匹配 `[A-Za-z0-9_.-]{1,64}`，至多 50 个，与前三者互斥）。`ui.settings`、`ui.accountActions` 引用的权限不能带 scope（`unsupported`）。
   - **语法**：插件动作（`plugin.` 前缀）按语法接受范围 `*`（= 全部，规范形式不带后缀）、`own`、`<资源>/<值>`，枚举的资源名固定为 `value`（`plugin.x:rule:apply:value/input`），资源 id 是字符串（`plugin.m:flow:manage:flow/3`）。不接受 `flow/*`、多段路径。蕴含：全部 ⊇ 一切；own 只蕴含 own；`<资源>/<值>` 只蕴含自己。`perm` 只管语法；资源对不对、可不可以 own、值在不在枚举里由 authz 写入授予时对照目录检查（`pluginScope.fits`，不合 400 `permission_keys` `invalid`），options 资源的 id 不校验是否存在。共享向量同上（`vectors.json` 增加插件范围用例）。存储：`scope_type = "plugin:<资源>"`，带范围的授予是 `casbin_rule` 的 p 行，范围列为 `own` 或 `<资源>/<值>`（§99.1；0.1.290 之前在 `role_permission_scopes`）。通配 `a:*` 只是编辑器的勾选快捷方式，保存时展开为具体 key，目录里没有通配 key（D1）。
   - **运行时**：插件路由、菜单、页面、slot 都按“任意范围持有”（§5.8、§22）；`scopeFrom` 的判定见 §5.8。`HTTPRequest.action_scope`（`ActionScope{permission（不带范围的完整 key）, all, own, values（`<值>`，排序去重）}`）在路由权限声明了 scope 时总是带上（已按访问密钥收窄；不升 Host API：声明 scope 的清单本来就只能装在新核心上）。插件**必须**自己按 `created_by` 判 own（核心不知道行的创建者）并按 `action_scope` 过滤列表；SDK：`pluginsdk.RequestScope(req)`（没带时为零值，什么都达不到）、`Scope.Allows(value, createdBy)`、`RequireScope(req, value, createdBy)`（无用户 401，范围外 404）。`AuthzCheck` 问带范围的本地 key（`rules:read:own`）也算本插件自己的 key，不需要 `authz.read`。
   - **候选**：`GET /plugins/:key/scope-options`（§5.7）。options 路由由核心直接调用：query `q`、`limit`、`ids`（逗号分隔），`action_scope` 为调用者在被配置的权限上的范围；响应 `{data:{items:[{id（字符串）, name, hint?, status?}], more}}`。SDK `pluginsdk.ScopeOptions(fn)` 封装解析与回答（`fn` 按 `q.Scope` 过滤）。
@@ -1277,7 +1277,7 @@ type ProxyResolver interface {
 
 | 区 | order | 核心项 | 内置插件菜单 |
 | --- | --- | --- | --- |
-| overview 概览（§90 起叫“控制台”） | 100 | 仪表盘（§90 起还有 API 密钥、模型与价格、用量概览、使用日志、全站概览、全站日志；§102 起还有账号用量概览、账号日志） | |
+| overview 概览（§90 起叫“控制台”） | 100 | 仪表盘（§90 起还有 API 密钥、模型与价格、用量概览、使用日志、全站概览、全站日志；§103 起还有账号用量概览、账号日志） | |
 | gateway 网关 | 200 | 分组、账号、平台、代理、模型价格（§90 起使用记录移到控制台；§90 第四版起只剩账号、代理） | 模型目录（anthropic 0.2.9–0.3.0，0.3.1 删除）、动态权重（dynweight；只有 0.5.4 在 `system` 区） |
 | security 安全 | 300 | 无（空区不返回） | 请求守卫（guard 0.2.7）、提示词审核（moderation 0.6.2） |
 | finance 财务 | 400 | 余额流水 `/ledger`（`balance:all:read`；§90 第四版取消、2026-11-13 T80 恢复） | 增长管理（growth 0.1.5，去掉了自己的 growth 区） |
@@ -2540,7 +2540,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 > 本节记录10月1日的已验证方案。10月2日起由 §34 主节点优先流程与 Redis 节点密钥鉴权取代：本节的滚动顺序与 mTLS 节点身份不再是当前行为，其余发布单元、核心状态和管理接口约定仍适用。
 
-独立 Go 模块 `runtime-contract` 定义协议，`gateway` 实现 Linux 网关。网关保持公共 HTTP 入口、私网 mTLS 入口和本机管理 Unix socket；核心仅监听回环 HTTP 和令牌认证的控制 Unix socket。网关自身不经该协议在线替换。部署与发布步骤见 [`deploy/gateway`](../deploy/gateway/README.md)。
+独立 Go 模块 `runtime-contract` 定义协议，`gateway` 实现 Linux 网关。网关保持公共 HTTP 入口、私网 mTLS 入口和本机管理 Unix socket；核心仅监听回环 HTTP 和令牌认证的控制 Unix socket。网关自身不经该协议在线替换，由网关升级计划换二进制（§102.9）。部署与发布步骤见 [`deploy/gateway`](../deploy/gateway/README.md)。
 
 **发布单元。** Ed25519 签名覆盖清单的精确 Payload 字节，清单摘要与压缩包摘要分离；清单包含源提交、构建标识、实际核心版本、目标 OS/架构/运行 ABI、逐文件摘要/大小/权限及协议范围。核心 `version`、`schema-contract` 命令不依赖配置或数据库。后者是嵌入迁移库存的确定性摘要；候选报告的版本及摘要必须等于签名声明。下载来源固定且不跟随重定向，解包拒绝逃逸、链接、特殊文件、未声明内容及超限体积。发布私钥不进入运行节点。
 
@@ -2556,9 +2556,9 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 **插件。** 内建与第三方插件均使用自身发布生命周期。核心升级预检当前启用及 rollout 中插件的 `hostCompat`；准备、准入和运行就绪检查本机是否加载已批准且兼容的插件。随包内建插件仅是首次安装来源，不覆盖已安装版本、不复活已删除插件。任务轮询、调度和记账仍由现有核心机制负责，更新主节点不独占业务任务。
 
-**管理接口。** `/api/v1/system/releases`、`/system/upgrades` 与计划的详情/事件接口需要 `system:update:read`；创建需要 `system:update:execute`，暂停/恢复/取消需要 `system:update:recover`，沿用核心 RBAC；execute、recover 与 `releases/import` 每次要二次验证 `system.update`（§80.2，2026-11-13 起；此前只认登录会话），会话与带权限的访问密钥一样。创建携带 `release_digest`、预检取得的 `expected_revision` 和 `idempotency_key`，过期预检或同幂等键不同请求被拒绝。核心仅转发认证后的操作到 mode 0600 本机 socket。
+**管理接口。** `/api/v1/system/releases`、`/system/upgrades` 与计划的详情/事件接口需要 `system:update:read`；创建需要 `system:update:execute`，暂停/恢复/取消需要 `system:update:recover`，沿用核心 RBAC；execute、recover、`PUT /system/update-source` 与 `POST /system/updates/apply` 每次要二次验证 `system.update`（§80.2，2026-11-13 起；此前只认登录会话），会话与带权限的访问密钥一样。创建携带 `release_digest`、预检取得的 `expected_revision` 和 `idempotency_key`，过期预检或同幂等键不同请求被拒绝。核心仅转发认证后的操作到 mode 0600 本机 socket。
 
-当前 v1 仅支持 schema/cluster/task/Host API 契约保持不变的滚动更新。维护迁移、跨协议转换、自动主节点选举、未经校验的任意目标强制回滚、网关自身更新不在此协议实现范围内。不能用新签名或更改声明绕过这些检查。
+当前 v1 仅支持 schema/cluster/task/Host API 契约保持不变的滚动更新。维护迁移、跨协议转换、自动主节点选举、未经校验的任意目标强制回滚不在此协议实现范围内；网关自身更新见 §102.9。不能用新签名或更改声明绕过这些检查。
 
 ## 34. 主节点优先升级与 Redis 节点密钥（2026-10-02）
 
@@ -2633,14 +2633,10 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 - 此变化属于网关二进制，单发核心安装包不会生效；需在无 running/paused 核心计划时逐个更换网关，从节点先、主节点最后，保留状态卷与旧镜像。核心版本无需仅为此变更而升级。控制台仍按既有轮询周期刷新，本次不新增浏览器推送。
 - 网关控制器（`gateway/internal/control`）的 PG 语句由 GORM 的模型与查询构造器生成（2026-11-16，0.1.290）：谓词、行锁、`ON CONFLICT`、`RETURNING` 与往返次数不变。整条手写的只剩 schema 脚本（`execLocked`，内嵌的 `schema.sql`）和心跳的 data-modifying CTE（`Store.Heartbeat`，条件更新与身份检查一次往返）；`to_regclass` 查询与 `SELECT EXISTS` 组合器用 `runtime-contract/gormpg` 的 `RelationExists`、`ExistsQuery`。`gateway/internal/sqlguard` 的测试用与核心相同的检查器（`runtime-contract/gormpg/sqlcheck`，规则见 §2“核心的 SQL”）按允许列表（`包.函数` + 理由）检查 `Raw`/`Exec`（`[raw-sql]`）、交给 GORM 的 SQL 文本（`[sql-const]`）和 gorm 连接池的使用（`[gorm-instance]`，只有 `main` 关闭连接池和记录池大小的两处）。
 
-## 40. 核心版本提示、GitHub 更新源及拓扑视角（2026-10-03）
+## 40. 核心版本提示与拓扑视角（2026-10-03；更新检测与一键更新 2026-11-17 改写，见 §102）
 
-- 左上角品牌旁显示当前核心版本，基础 `GET /system/version` 仅要求登录（访问密钥也可调用，§80），返回 `version/managed`。托管模式下有 `system:update:read` 权限的用户可以打开更新面板，查看稳定版与发布说明、手动检测；其他用户不获得更新源读取或导入权限。
-- 更新源在 PG `updater.clusters.update_repository` 持久保存。`GET /system/update-source` 要求 `settings:read`，`PUT` 要求 `settings:manage` 并显式二次认证。接受 GitHub.com 公开仓库的 `owner/repo` 或完整 HTTPS 仓库地址，空值关闭。此设置不改变网关信任密钥、不支持任意 URL、私人 token 或预发布版本。
-- `GET /system/update-check?force=true` 使用固定 GitHub API 查询 latest stable Release。响应包含当前/最新版本、是否有更新、兼容性、阻断原因、tag、发布说明、检查时间和缓存标记。检测不仅看 tag，还验证 `next-core-manifest.json` 的签名、语义版本绑定、当前平台和摘要包资产，并检查当前基线的 schema/协议兼容性。网络失败或不兼容不能冒充已经最新。
-- `POST /system/releases/import` 要求 `system:update:execute` 及既有二次认证，输入当前规范化 `repository` 与 `tag`。网关重新获取并验签，在 PG 事务持有集群行共享锁时复核来源，登记后仍走原有预检与升级计划。相同摘要已存在于其他来源时不静默改写下载地址，不影响已执行中的计划。核心桥记录 `system.update_source.update` 和 `system.release.import` 审计。
-- GitHub 下载使用独立 HTTPS 策略，仅允许 Release 资产路径与指定的 GitHub 资产 CDN 跳转；禁止非公开目标 IP，跳转不携带认证信息。原发布源继续禁止重定向，节点认证传输与发布下载隔离。完整 bundle 大小、摘要、解包文件清单和运行平台仍由现有 release manager 验证。
-- 更新检测结果属于临时状态，按来源及基线缓存；改变来源或集群基线后不得复用旧结果。前端也用请求代次防止过期响应覆盖新设置。发布包格式与导出工具见 `next/deploy/gateway/github/README.md`；已有旧版 backend Release 不是 next 核心包。
+- 左上角品牌旁显示当前核心版本，基础 `GET /system/version` 仅要求登录（访问密钥也可调用，§80），返回 `version/managed`。托管模式下有 `system:update:read` 权限的用户可以打开“版本与更新”面板：核心、网关两条版本线各显示当前版本、最新稳定版、检测时间、发布说明与发布页，可手动检测；另有 `system:update:execute` 时显示“一键更新”。更新源、检测与一键更新的契约见 §102。
+- 检测失败、来源没有该线的稳定版或结果与当前集群不兼容时，面板显示“检测失败”或“检测结果需要处理”，不显示成“已是最新”。前端用请求代次防止过期响应覆盖新设置。
 - 节点视图提供“图表 / 拓扑图”切换，默认拓扑。拓扑展示节点分组及网关—核心—插件连接，灰线仅表示归属；紫色箭头表示转发至主节点，橙色虚线表示 CPU 可接收候选，非流量追踪。保留详情图表，支持缩放与滚动；核心自身心跳过期时不因为网关在线而标成运行。
 
 ### 40.1 交互节点图
@@ -2831,7 +2827,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
   - **安全约束（不是权限规则，不并入可管理目标）**：任何人（含超管）不能禁用或删除自己（409 `you cannot disable or delete yourself`，防止把自己锁在外面）；超级管理员角色不能撤销（含超管本人），只能移交（§43.7）。
   - 用户自助接口（`/me/*`）不经 `UserGuard`，不受影响。
 - 两类检查都比较超管标志（`core.PermissionSet.Missing`）：缺超管标志时 403 带 `details.superuser = true`。访问密钥收窄后的权限集永远不是超管，所以超管的访问密钥不能授予 `super_admin`（2026-11-12 修正 H1：之前授予检查只比权限 key，超管角色不含 key，带 `role:manage` 的超管密钥可以授予 `super_admin`）。
-- 两类检查也比较可分配角色（2026-11-12，决策 4、5）：角色可以带一份可分配角色清单（`role_assignable_roles`，永不含超管角色）和“以及全部自定义角色”标志（`roles.assign_custom`）。新增角色或目标用户的角色能分配的角色必须在操作者的可分配范围内，否则 403，`details.missing_assignable` 列出缺的角色、`details.missing_assign_custom = true` 表示缺“全部自定义角色”，与 `details.missing` 分开。因此能分配 admin 的委派者不会被 admin 改动。`assign_custom` 在比较时展开为现有的全部自定义角色，但不含持有者自己持有的角色（按名字列在清单里的除外）：操作者一侧，它不覆盖操作者自己的角色；新建或修改角色时交出的 `assign_custom` 展开为除该角色外的全部自定义角色，所以带 `assign_custom` 的操作者若持有自定义角色，交出通配会因缺自己的角色 403 `details.missing_assignable`，同理不能作用于持有另一个带 `assign_custom` 角色的用户。访问密钥收窄后没有可分配角色（只影响授予与分配；可管理目标按操作者的角色计算，FU6）。内置默认清单（决策 5）：admin = operator、supplier、supplier_agent、user 与全部自定义角色；operator = supplier、user；supplier_agent = supplier、supplier_agent（§102.1）；supplier、user 没有。存量库由迁移 `0097_authz_hardening.sql` 改写（0.1.286）：持有 `role:manage` 的角色得到 `role:define` + `role:assign`（内置 operator 只得到 `role:assign`，D3），其中自定义角色得到可分配清单（全部内置角色中除超管与 admin 外的 + `assign_custom`）；内置角色的清单不由迁移写，而由随后的 `SyncCore` 首次补缺按 `builtinRoles` 补上（§4，默认值只在代码里定义一处）；每项写审计（`authz.grant.migrate`、`role.assignable`，actor 为系统，`detail.via = "migration 0097"`），然后删除 `role:manage`。启动同步不再有 `role:manage` 的继承授予。升级时新建出的内置角色（如 supplier）由 `SyncCore` 追加到默认清单含它的已有内置角色上（审计 `authz.sync.grant`，via=`assignable`），已有清单的其他项不动。`SyncCore` 新建内置角色时（新库或升级带来的 supplier），它自己的默认权限与可分配清单每一项也写 `authz.sync.grant`（`detail.via` 为 `default`/`assignable`，另带 `role_created: true`；2026-11-13 期 4 P4F3，此前不审计）。
+- 两类检查也比较可分配角色（2026-11-12，决策 4、5）：角色可以带一份可分配角色清单（`role_assignable_roles`，永不含超管角色）和“以及全部自定义角色”标志（`roles.assign_custom`）。新增角色或目标用户的角色能分配的角色必须在操作者的可分配范围内，否则 403，`details.missing_assignable` 列出缺的角色、`details.missing_assign_custom = true` 表示缺“全部自定义角色”，与 `details.missing` 分开。因此能分配 admin 的委派者不会被 admin 改动。`assign_custom` 在比较时展开为现有的全部自定义角色，但不含持有者自己持有的角色（按名字列在清单里的除外）：操作者一侧，它不覆盖操作者自己的角色；新建或修改角色时交出的 `assign_custom` 展开为除该角色外的全部自定义角色，所以带 `assign_custom` 的操作者若持有自定义角色，交出通配会因缺自己的角色 403 `details.missing_assignable`，同理不能作用于持有另一个带 `assign_custom` 角色的用户。访问密钥收窄后没有可分配角色（只影响授予与分配；可管理目标按操作者的角色计算，FU6）。内置默认清单（决策 5）：admin = operator、supplier、supplier_agent、user 与全部自定义角色；operator = supplier、user；supplier_agent = supplier、supplier_agent（§103.1）；supplier、user 没有。存量库由迁移 `0097_authz_hardening.sql` 改写（0.1.286）：持有 `role:manage` 的角色得到 `role:define` + `role:assign`（内置 operator 只得到 `role:assign`，D3），其中自定义角色得到可分配清单（全部内置角色中除超管与 admin 外的 + `assign_custom`）；内置角色的清单不由迁移写，而由随后的 `SyncCore` 首次补缺按 `builtinRoles` 补上（§4，默认值只在代码里定义一处）；每项写审计（`authz.grant.migrate`、`role.assignable`，actor 为系统，`detail.via = "migration 0097"`），然后删除 `role:manage`。启动同步不再有 `role:manage` 的继承授予。升级时新建出的内置角色（如 supplier）由 `SyncCore` 追加到默认清单含它的已有内置角色上（审计 `authz.sync.grant`，via=`assignable`），已有清单的其他项不动。`SyncCore` 新建内置角色时（新库或升级带来的 supplier），它自己的默认权限与可分配清单每一项也写 `authz.sync.grant`（`detail.via` 为 `default`/`assignable`，另带 `role_created: true`；2026-11-13 期 4 P4F3，此前不审计）。
 - 角色写入口（`editableRole`，2026-11-12 修正 M5）：改名称描述、改权限、改可分配清单、重置、删除角色前，先在同一事务里锁住角色行；超级管理员角色对任何人（含超管和系统）都 409；其余内置角色（`admin`、`operator`、`supplier`、`supplier_agent`、`user`）2026-11-13 起与有持有者的自定义角色同一口径：须在操作者的可分配清单内（不论有没有持有者，否则 403 `you cannot assign or revoke this role`，`details.role`），且当前授予在操作者之内（2026-11-12 决策 6 的“只有超级管理员能改”已放宽，用户要求内置角色可以修改、重置）；按默认清单 admin 能改 operator、supplier、supplier_agent、user，不能改 admin，operator 没有 `role:define`；角色（内置或自定义）当前授予的权限（授予视角，不含已移除的）与可分配角色必须在操作者之内，否则 403 `you cannot change a role with permissions you don't have`；角色有未删除的持有者时，它还必须在操作者的可分配清单内（改角色就是改它的持有者，与可管理目标同一口径，`assign_custom` 不含操作者自己持有的角色），否则 403 `you cannot assign or revoke this role`（`details.role`），所以带 `assign_custom` 的角色的持有者不能经改名、改权限、改可分配清单或删除去动同角色的其他持有者（2026-11-13 发布审查）；这一判断按操作者的授予视角（经访问密钥时收窄），访问密钥收窄后没有可分配清单，所以访问密钥（超管的也一样）只能改、删没有持有者的自定义角色。此前持 `role:manage` 的人可以先把权限比自己大的角色削到自己以下，再对持有该角色的用户改密码、禁用，接管账号。改权限、改可分配清单（PUT `/roles/:id/assignable`）因此只需检查新增部分（现有部分已在操作者之内）；重置删掉的权限与可分配角色同样已在操作者之内（C-L2）。
 - 分配角色（PUT `/users/:id/roles`、POST `/users`，2026-11-12，决策 1、4）：只比较新增与撤销的角色，无变化直接成功。`super_admin` 任何人（含超管本人、超管的访问密钥）都不能授予或撤销，403 `the super admin role cannot be assigned or revoked; transfer it instead`；系统（actor 0）只能授予初始超管（引导），不能撤销。其余每个新增或撤销的角色都必须在操作者的可分配清单内（超管可分配全部），否则 403 `details.role`；唯一例外是给当前没有任何角色的用户授予默认角色 `user`，所以只有 `user:create` 的人仍能建默认用户。然后检查操作者能作用于目标（可管理目标，本人也按此判断，FU6），再检查新增角色所含权限与可分配角色都在操作者之内（`Missing`）。访问密钥没有可分配角色，不能分配任何角色。
 - 超管移交（POST `/system/super-admin/transfer`，2026-11-12，决策 1）：`super_admin` 换人的唯一路径，`authz.TransferSuperAdmin` 一处实现，控制台与服务器 CLI 共用。`Bump` 之后锁住超管持有行，操作者须是当前持有者（系统 actor 0 = CLI 不受此限，同时修复无超管）；目标须未删除、启用中、不是操作者本人；其余持有者先删超管行，未删除的补 `admin`（已软删除的不补，恢复该用户不会带回管理权限），再给目标加超管行；记 `superadmin.transfer` 审计（`via` 为 `console` 或 `cli`）。iam 在同一事务里让降级者与目标的全部会话失效，提交后广播。是否要求目标已开启两步验证：不强制，只由前端提示。
@@ -5041,7 +5037,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - 口径与 §61 API Key 额度一致：`billed`/`reserved` 的行计入费用，转为 `free`/`failed` 时退回；`cost` 为计费后费用，`raw_cost` 为分组倍率前的费用（取 `billing_detail.cost`，须为非负数，任意位小数，四舍五入到 8 位；缺失或为负数时 `total_cost / rate_multiplier`，倍率 ≤ 0 时取 `total_cost`。负数会抵扣限额，所以不采用）。注意：使用记录统计页的「原价」(`standard_cost`) 在迁移 0096 之前的行上一律是 `total_cost / rate_multiplier`，两者在 `billing_detail.cost` 与之不一致或倍率为 0 时会不同；0096 起的行取 `usage_logs.base_cost`（§66.1、§97.5），与 `billing_detail.cost` 同为全局价口径。§97 起有了分组内定价和专属价，`billing_detail.cost` 仍是**全局价口径**（全局价 × 用量，不含定价规则，也不含倍率）：账号的原始费用度量的是账号消耗了多少上游额度，不随某个分组或用户组的售价变化，`account_usage_raw_cost` 不用改，历史也不用重算；`requests` 为成功行数；`tokens` 为五类 token 之和。行换账号时从旧账号扣回。删除历史日志不回退累计值。
 - 两张表不引用 `accounts`（触发器在结算事务里执行，已清除的账号不能让写入失败）。小时桶按 UTC 整点；半小时时区的日/周/月周期边界落在 UTC 半点，按所在小时桶近似（偏差半小时）；按小时的周期对齐 UTC 整点（73.3），不近似。
 - 迁移 `0070_account_usage_limit_source.sql`：`accounts.auto_disabled_source` 与被用量限制暂缓的自动禁用（73.3）。
-- 账号视图新增 `usage: {raw_cost_accounting, total, today, limit}`；`today` 从请求 `tz=<IANA 时区>` 的当日零点起（缺省 UTC；`httpapi.RequestContext` 读入 `core.TimeZone`）；`usage.limit_disabled` 表示账号正被用量限制自动禁用，控制台据此本地化原因，不解析原因字符串。`GET /accounts/:id/usage`（`account:read` / `account:own:read`）返回 `today`、`last_7_days`、`last_30_days`、`total` 和 `limit`。读得到账号的人都看到 `cost` 与 `raw_cost`（team 范围的上级代理也一样，§102.4）。
+- 账号视图新增 `usage: {raw_cost_accounting, total, today, limit}`；`today` 从请求 `tz=<IANA 时区>` 的当日零点起（缺省 UTC；`httpapi.RequestContext` 读入 `core.TimeZone`）；`usage.limit_disabled` 表示账号正被用量限制自动禁用，控制台据此本地化原因，不解析原因字符串。`GET /accounts/:id/usage`（`account:read` / `account:own:read`）返回 `today`、`last_7_days`、`last_30_days`、`total` 和 `limit`。读得到账号的人都看到 `cost` 与 `raw_cost`（team 范围的上级代理也一样，§103.4）。
 
 ### 73.3 原始倍率计费与用量限制
 
@@ -5756,7 +5752,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | `plugin.install` | POST `/plugins/upload`、`/plugins/install-from-market` | `plugin:install` |
 | `plugin.grant` | POST `/plugins/:key/versions/:version/consent`、`/role-grants/confirm` | `plugin:install`（及授出所需的 `plugin:grant:*`） |
 | `publisher.manage` | 发布者与公钥的写操作 | `publisher:manage` |
-| `system.update` | POST `/system/upgrades`、升级计划与节点的 recover 操作、`/system/releases/import` | `system:update:execute` / `recover` |
+| `system.update` | POST `/system/upgrades`、`/system/updates/apply`（§102.6）、升级计划与节点的 recover 操作 | `system:update:execute` / `recover` |
 | `system.update` | PUT `/system/update-source`（更新源决定下一次升级运行的代码；期 4 R0） | `settings:manage` |
 | `self.access_key.write` | POST `/me/access-keys`、PATCH `/me/access-keys/:id`（只允许登录会话；期 4 收尾 F3） | 无（登录会话） |
 | `superadmin.identity` | 超管经访问密钥修改超管账号本身（§43.6，本请求已消耗过 proof 时不再要） | 路由本身的权限 |
@@ -6238,7 +6234,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 | 组 | 来自哪个区 | 内容 |
 | --- | --- | --- |
-| 控制台 | `overview`（标签“控制台 / Console”） | 仪表盘、API 密钥、模型与价格、用量概览（`/me/usage/overview`）、使用日志（`/me/usage`），以及有 `usage:all:read` 才有的全站概览（`/usage/overview`）、全站日志（`/usage`）；有 `usage:account:read`（任意范围）而没有不带范围的 `usage:all:read` 才有的账号用量概览（`/account-usage/overview`）、账号日志（`/account-usage`）（§102.5，`menus.go` 的 `hideWith`：持有其中任一不带范围的 key 就隐藏，超管同样隐藏） |
+| 控制台 | `overview`（标签“控制台 / Console”） | 仪表盘、API 密钥、模型与价格、用量概览（`/me/usage/overview`）、使用日志（`/me/usage`），以及有 `usage:all:read` 才有的全站概览（`/usage/overview`）、全站日志（`/usage`）；有 `usage:account:read`（任意范围）而没有不带范围的 `usage:all:read` 才有的账号用量概览（`/account-usage/overview`）、账号日志（`/account-usage`）（§103.5，`menus.go` 的 `hideWith`：持有其中任一不带范围的 key 就隐藏，超管同样隐藏） |
 | 个人中心 | `me`（标签“个人中心 / Personal”） | 钱包、个人设置（`/me/profile`）；`section:"me"` 的插件菜单（我的邀请、每日签到）接在后面 |
 | 管理员 | 其余所有区，按服务端顺序 | `gateway`、`security`、`finance` 的项平铺、不画区标题；`users`、`plugins`、`system`（不含 `/settings`）和插件自己的区（`<插件>:<id>`）折叠成目录，见 90.3；最后一项是“系统设置”（`system` 区的 `/settings`） |
 
@@ -6249,7 +6245,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 | gateway 网关 | 账号、代理 | 动态权重（dynweight；只有 0.5.4 在 `system` 区） |
 | security 安全 | 无 | 请求守卫、提示词审核 |
 | finance 财务 | 余额流水（`balance:all:read`，T80） | 增长管理 |
-| users 用户（标签“用户 / Users”） | 用户（`user:read` 的任意范围，代理供应商的 team 也显示，§102.3）、用户组（§97 起）、角色与权限 | |
+| users 用户（标签“用户 / Users”） | 用户（`user:read` 的任意范围，代理供应商的 team 也显示，§103.3）、用户组（§97 起）、角色与权限 | |
 | plugins 插件 | 已安装插件、插件市场、发布者；`section:"plugins"` 的插件菜单接在后面 | |
 | system 系统（标签“系统 / System”） | 集群节点、定时任务、核心升级、审计日志、系统设置 `/settings` | |
 
@@ -6680,7 +6676,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 
 | kind | 全量（不带 `mine`） | `mine=true` |
 |---|---|---|
-| users | `user:read`：全部用户；`user:read:team`：调用者的下级（同 `GET /users`，§102.3） | 不支持（400） |
+| users | `user:read`：全部用户；`user:read:team`：调用者的下级（同 `GET /users`，§103.3） | 不支持（400） |
 | groups | `group:read`：全部分组，含已停用；只有 `account:group:bind`：调用者自己可用的分组（与 `mine=true` 同一范围，即 own 级账号可绑定的分组，`segment.UsableGroup`）；两者都没有：调用者自己的权限范围里点名的分组（任一动作的 `group/G`、`group/G/account/X`，访问密钥按密钥自己的权限，`PermissionSet.ScopeGroups`，`Entity.Named`），让控制台按名称显示自己的范围，一个都没有时 403（权限加固期 4 验证修复） | 任何登录用户：`GET /me/groups` 的范围（状态 `active`，且公开或已授权给调用者所在的用户组，§97） |
 | api-keys | `usage:all:read`：全部用户的密钥（使用记录本来就向它展示所有密钥的 id、名称、所属用户） | `apikey:self:manage`：调用者自己的密钥 |
 | accounts | `account:read`：全部账号；只有 `account:own:read` 时自动只看自己创建的（同 `GET /accounts`，§21.2） | `account:read` 或 `account:own:read`：只看自己创建的 |
@@ -7201,7 +7197,7 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 
 ## 99. 权限判断接入 Casbin（迁移 0100；核心 0.1.290）
 
-设计见“sup2api 权限判断迁移到 Casbin：实现设计”。每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存），用户授予的完整列表是 Casbin 的 `GetImplicitPermissionsForUser`（2026-11-16 用户决定，§99.3）；DataScope、访问密钥收窄 `Restrict` 的列表运算、防提权与可分配的角色比较、超管唯一、插件复核仍由自研代码负责，其中“用户是否持有某个 key”一律问 Casbin。team 范围在 0.1.291 加入，Enforce 之后由 `core.ResolveScope` 展开（§102.2）。`casbin_rule` 是授予与角色指派的唯一存储，判断只走 Casbin（2026-11-16，用户决定）。
+设计见“sup2api 权限判断迁移到 Casbin：实现设计”。每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存），用户授予的完整列表是 Casbin 的 `GetImplicitPermissionsForUser`（2026-11-16 用户决定，§99.3）；DataScope、访问密钥收窄 `Restrict` 的列表运算、防提权与可分配的角色比较、超管唯一、插件复核仍由自研代码负责，其中“用户是否持有某个 key”一律问 Casbin。team 范围在 0.1.292 加入，Enforce 之后由 `core.ResolveScope` 展开（§103.2）。`casbin_rule` 是授予与角色指派的唯一存储，判断只走 Casbin（2026-11-16，用户决定）。
 
 ### 99.1 存储 `casbin_rule`
 
@@ -7248,7 +7244,7 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 | 进程 | enforcer（p 行，被问到过的用户的 g 行，最多 `Options.Users` 个） | 版本 ≥ 判断要求的版本 |
 | 进程 | Casbin 决策缓存（按用户分组的 `cache.Cache`，每个用户最多 4096 条、总共 2^20 条，超出不再缓存） | 随该用户的变更或整体重载作废 |
 | 进程 | 每个用户的授予列表 | 同上 |
-| 进程 | team 持有者的下级（`authz.Service.Team`，最多 50000 个持有者，满了随机丢一个；§102.2） | 读取时的版本 ≥ 请求的 `PermissionSet.Version`；版本前进时丢弃更旧的 |
+| 进程 | team 持有者的下级（`authz.Service.Team`，最多 50000 个持有者，满了随机丢一个；§103.2） | 读取时的版本 ≥ 请求的 `PermissionSet.Version`；版本前进时丢弃更旧的 |
 
 Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，之后记在 enforcer 里，策略写入不把它忘掉（§99.3），只有被点名的用户才重读，请求路径上没有可以跨节点共享的读取。数据库从备份恢复后不需要清理 Valkey；授权版本回退时各节点会报“数据库版本低于已知版本”并让需要新版本的判断失败，重启核心即可。
 
@@ -7424,20 +7420,189 @@ CCGateway（Claude Code 托管账号）与只为它服务的核心功能整体�
 - 均衡负载设置（§89）去掉 `mode`：`GET/PUT /settings/scheduling` 只有 `metric`、`limit_load`、`model_limits`，核心不再读写 `mode`（`PUT` 带了也忽略）。迁移 0102 把库里带 `mode` 的行归一：`mode` 不是 `traffic` 且 `limit_load` 关的行，`metric` 改为 `sessions`、`model_limits` 改为 `false`（与原来读入时的归一相同），然后删掉 `mode` 键；不带 `mode` 的行不动，重跑不变。核心读入时只剩“未知 `metric` 按 `sessions`”。
 - 控制台与核心同版本，删除只为更早核心保留的分支：均衡负载表单不再收发 `mode`；用量限制（§73.3）关闭且金额留空时照原样提交空金额（核心存 0），终身限额照原样提交周期长度（核心按 1 存），从未保存的判断只看 `configured`（不再按 `UTC` 加默认值猜）；侧栏视图不再为“菜单里没有设置入口”的旧核心退回控制台菜单；API 密钥“选择全部结果”不再在前端按筛选条件复核；卸载插件不再兼容 204 响应；插件市场版本的 `compatible` 视为必有。
 
-## 102. 代理供应商与 team 范围（迁移 0103；核心 0.1.291）
+## 102. 更新源、版本检测与核心/网关一键更新（2026-11-17，用户要求；网关二进制变更，核心桥同版）
+
+核心与网关两条版本线都由 GitHub Actions 构建、签名并发布成 GitHub Release，以 Release 里的签名清单为准。网关从集群配置的更新源检测两条线的新稳定版；管理员在控制台点“一键更新”才执行：导入验签过的发布、预检、创建升级计划。从不自动升级，不发邮件，只在控制台提示。`release_origin` 与 CLI `init/import -manifest` 保留，供离线与手工发布（§33、`deploy/gateway/README.md`）。代码：网关 `internal/updatesource`（来源）、`internal/control/updates.go`（存储、检测、接口、导入）、`internal/control/selfupdate.go` 与 `internal/release/selfupdate.go`（网关自更新）、`cmd/sub2api-gateway/handoff*.go`（启动交接），核心 `internal/updater/http.go`（转发与审计），控制台 `views/settings/UpdateSourceCard.vue`、`components/VersionBadge.vue`。
+
+### 102.1 版本线、tag 与发布产物
+
+| 版本线 `line` | tag | 签名清单资产 | 安装物资产 |
+|---|---|---|---|
+| `core` | `core-v<X.Y.Z>` | `next-core-manifest.json`（`rc.SignedManifest`，payload `rc.Manifest`） | 每个平台一个 `<bundle_digest>.tar.gz` |
+| `gateway` | `gateway-v<X.Y.Z>` | `next-gateway-manifest.json`（`rc.SignedManifest`，payload `rc.GatewayManifest`） | 每个平台一个 `sub2api-gateway_<X.Y.Z>_<os>_<arch>.tar.gz`；另推镜像 `ghcr.io/<owner 小写>/sup2api-gateway:<X.Y.Z>` |
+
+- 只认严格语义化版本（`semver.StrictNewVersion`），不带预发布后缀；草稿、prerelease 和其他 tag 忽略。签名清单里的版本必须等于 tag 去掉前缀后的版本（核心 `core_version` 去掉可选的 `v`，网关 `gateway_version`），否则检测与导入都失败。
+- 流水线 `.github/workflows/next-release.yml`（tag 推送，或对已有 tag 的 `workflow_dispatch`，后者默认演练）：校验 tag，版本必须大于同一条线已发布的最新 Release；跑与 next-ci 相同的门禁；构建 linux/amd64 与 linux/arm64（构建任务不接触密钥；网关版本由 `deploy/gateway/Dockerfile` 的 `ARG VERSION` 经 `-ldflags "-X main.Version=…"` 注入）；只在受保护环境 `release` 里签名；先建草稿 Release、上传全部资产再发布，检测方不会看到半个 Release。核心的 `schema_before` 取上一个 `core-v*` 清单的 `schema_after`，没有上一版时等于本版（策略记为 `rolling`）。发布说明取 `CHANGELOG.md` 里写着“核心 X.Y.Z”或“网关 X.Y.Z”的 `###` 小节。操作手册见 `deploy/gateway/github/README.md`。
+- 签名密钥只放在 GitHub 环境 `release`：Secrets `SUB2API_RELEASE_SIGNING_KEY`（签核心与网关清单）、`SUB2API_PLUGIN_SIGNING_KEY`（签内置插件），Variables `SUB2API_RELEASE_KEY_ID`、`SUB2API_PLUGIN_KEY_ID`。缺任何一项 sign 任务失败并列出缺的名字，不打印值。
+
+### 102.2 网关签名清单（`runtime-contract/gateway_manifest.go`）
+
+```go
+const GatewayManifestKind = "sub2api-gateway-release-v1"
+
+type GatewayManifest struct {
+    Kind            string            `json:"kind"`             // == GatewayManifestKind
+    GatewayVersion  string            `json:"gateway_version"`
+    ReleaseID       string            `json:"release_id"`       // 流水线里是 tag
+    SourceCommit    string            `json:"source_commit"`
+    BuildID         string            `json:"build_id"`
+    CreatedAt       time.Time         `json:"created_at"`
+    PeerProtocol    int               `json:"peer_protocol"`    // 构建的 control.PeerProtocol
+    RuntimeProtocol int               `json:"runtime_protocol"` // 构建的 rc.Protocol，须在核心清单 shell_protocol 范围内
+    Platforms       []GatewayPlatform `json:"platforms"`        // os, arch, archive, archive_digest, archive_bytes, binary_digest
+    Images          []GatewayImage    `json:"images,omitempty"` // ref, digest；仅供参考
+}
+```
+
+- 与核心清单同一个签名信封、同一组信任公钥。`release.VerifyGateway`：签名、解码（只许一个 JSON 文档，之后有内容即拒绝；未知字段忽略，这样加了可选字段的新版本仍能装到它之前部署的网关上，包括教会它们这个字段的那次自更新）、`kind` 正确、`gateway_version` 是严格语义化版本、`release_id`/`build_id` 非空、至少一个平台、`os/arch` 不重复、归档名是普通文件名、两个摘要是小写 sha256、`archive_bytes` 在 1 字节到 1 GiB 之间。`release.Verify`（核心）同样解码；两种清单靠 `kind` 与契约字段分开：网关 payload 没有 `manifest_version` 等核心字段，验不成核心清单，核心 payload 没有 `kind`，验不成网关清单。
+- 归档是 tar.gz，只含一个可执行的常规文件 `sub2api-gateway`，不超过 512 MiB（`release.MaxGatewayBinaryBytes`）。`sub2api-release pack-gateway --archive os/arch=FILE … [--image REF@sha256:…]` 生成清单，打包时用安装时的同一个检查（`release.CopyGatewayBinary`）检查归档内容并计算二进制摘要，所以签出来的发布都能安装。
+
+### 102.3 更新源（`gateway/internal/updatesource`）
+
+两种来源，集群只配一个（`kind`）：
+
+- **`github`**：`repository` 为 `owner/repo`（也接受 `https://github.com/owner/repo[.git]`，保存时规范化），默认 `Sub2API-Devs/sup2api`，可选只读令牌。列表 `GET https://api.github.com/repos/<repo>/releases?per_page=50&page=N`，从第 1 页读到某页不满 50 个或读满 10 页为止（最新 `MaxGitHubReleases` = 500 个 Release，翻页期间挪到下一页的同一 tag 只算一次）；页的 URL 由网关拼出，不跟随 `Link` 头；资产 `GET https://api.github.com/repos/<repo>/releases/assets/<id>`，`Accept: application/octet-stream`。令牌以 `Authorization: Bearer` 只发给 `api.github.com`；资产跳转只跟随到 `release-assets.githubusercontent.com`、`objects.githubusercontent.com`（HTTPS、默认端口、最多 3 跳），跳转请求的头整体换掉，不带令牌。发布页固定为 `https://github.com/<repo>/releases/tag/<tag>`。
+- **`url`**：`url` 为 HTTPS 发布目录（不含账号密码、query、fragment，保存时补结尾 `/`），可选 Bearer 密钥。读 `<url>releases.json`：
+
+```json
+{"schema": "sub2api-releases-v1",
+ "releases": [{"line": "core", "version": "0.1.291", "published_at": "2026-11-20T08:00:00Z",
+               "notes": "…", "page": "https://…",
+               "assets": {"next-core-manifest.json": {"path": "core/0.1.291/next-core-manifest.json", "size": 1234}}}]}
+```
+
+  `schema` 不对、同一 `line`+`version` 重复、资产名不是普通文件名、`size` ≤ 0 或路径不合法，都使整个索引无效；其他 `line`、预发布版本的条目直接跳过；`page` 只保留 HTTPS 链接。资产路径必须相对、不含空段、`.`、`..`、`\`、`?`、`#`，解析后与目录同源且在目录之下。请求只跟随同源（scheme + host）跳转，跨源跳转直接失败；密钥只发给这个源站。`sub2api-release mirror` 生成这种目录（§102.10）。
+- **网络**：不用环境代理；连接时自己解析域名并只连解析出的地址。`github` 只允许公网地址；`url` 默认也只允许公网地址，网关配置 `allow_private_update_sources: true` 时允许内网（内网镜像）。非公网指非全局单播、私有、回环、链路本地，以及 `0.0.0.0/8`、`100.64.0.0/10`、`192.0.0.0/24`、文档网段、`198.18.0.0/15`、`240.0.0.0/4`。携带 IPv4 的 IPv6 地址按其中的 IPv4 判断：知名 NAT64 `64:ff9b::/96`（只有 IPv6 的节点经它访问只有 IPv4 的 GitHub）取末 32 位，6to4 `2002::/16` 取第 3–6 字节；看不出去向的本地 NAT64 `64:ff9b:1::/48` 与 Teredo `2001::/32` 一律拒绝。一次列表（GitHub 的全部分页在一起）30 秒超时，签名清单下载 1 分钟（`release.DefaultManifestTimeout`）。大小上限：索引与 GitHub 的每一页列表 2 MiB，签名清单 8 MiB，安装物不超过签名声明的大小。请求带 `User-Agent: sub2api-gateway-updater`、`Accept-Encoding: identity`。
+- **错误**：错误信息不含 URL（跳转目标可能带签名 query）和密钥。429，或 403 且 `X-RateLimit-Remaining: 0`：限流，提示稍后再试或配置令牌；401/403：来源拒绝了凭据；404：未找到（私有来源需要令牌）。
+- 来源只搬运字节：清单签名、版本、摘要全部由调用方验证。
+
+### 102.4 来源密钥
+
+- 存在 `updater.clusters.update_secret_enc`：AES-256-GCM（`runtime-contract/secret`，与核心加密凭据同一实现），主密钥是 `SUB2API_MASTER_KEY`（base64 的 32 字节；配置 `core_env` 里的值优先于网关自己的环境，与 supervisor 传给核心的一致），AAD `updater:source-secret:<kind>:<repository 或 url>`，密文不能挪到别的来源用。主密钥格式不对时网关拒绝启动；没有主密钥时设置密钥返回 400 `master_key_missing`，不带密钥的来源照常工作；已存的密钥解不开时检测与下载报错，不退回匿名访问。
+- 只写不读：`GET` 只返回 `has_secret`；密钥不进响应、日志、错误信息和审计。只发给 `api.github.com`（`github`）或配置的源站（`url`），从不随跨源跳转发出。
+- 取值为 1–4096 个可打印 ASCII 字符，不含空格。
+- 各节点必须用同一个主密钥：网关一键更新时每个节点自己经来源下载（§102.9）。
+
+### 102.5 存储（网关 `control/schema.sql`，幂等追加）
+
+- `updater.clusters`：`update_check_enabled boolean NOT NULL DEFAULT true`、`update_source_kind text NOT NULL DEFAULT 'github'`、`update_repository`（默认改为 `'Sub2API-Devs/sup2api'`，原来的空值一并改成它；关闭检测用开关，不再用空仓库）、`update_url text NOT NULL DEFAULT ''`、`update_secret_enc bytea`（NULL = 未设置）。已有的 `update_source_revision` 在开关、`kind`、`repository`、`url` 或密钥任一变化时 +1（PUT 什么都没改时不变），旧的检测结果随之作废。导入的资产引用不看 revision，看来源定位（见 `updater.releases`）。
+- `updater.update_checks`：每集群每条线一行，主键 `(cluster_id, line)`，`source_revision`、`baseline`（检测时的集群基线摘要）、`result jsonb`、`checked_at`、`last_success_at`。
+- `updater.nodes`：`gateway_version text NOT NULL DEFAULT ''`、`self_update boolean NOT NULL DEFAULT false`，节点登记时写入（心跳不写）；节点 JSON 带同名字段。
+- `updater.releases`：`line text NOT NULL DEFAULT 'core'`、`source_assets jsonb`（资产名 → `{name, size, ref}`，`ref` 是 GitHub 资产 id 或索引里的相对路径）、`source_locator text NOT NULL DEFAULT ''`（导入时的来源定位 `<kind>:<repository 或 url>`，与密钥 AAD 用同一个定位）。下载资产时来源定位必须仍等于它，否则失败并提示重新 apply：改 `kind`、`repository` 或 `url` 后，之前导入的发布不能再经来源下载；开关检测、设置新密钥或重存同一个密钥不影响进行中的计划。经更新源导入的发布 `bundle_base` 为空，安装物经来源下载；`bundle_base` 只给 `release_origin` 导入的发布用。`GET /system/releases` 只列核心发布。
+- 同一集群任何时刻最多一个 running/paused 计划（`updater_one_active_upgrade`），核心计划和网关计划共用这条约束。
+
+### 102.6 接口（网关管理 socket；核心经 `server/internal/updater` 原样转发，前缀 `/api/v1`）
+
+| 方法 路径 | 核心权限 | 二次验证 | 说明 |
+|---|---|---|---|
+| `GET /system/update-source` | `settings:read` | 否 | `{enabled, kind, repository, url, has_secret, default_repository, revision}` |
+| `PUT /system/update-source` | `settings:manage` | `system.update` | 整体替换：`{enabled, kind, repository, url, secret?}`，响应是 GET 的字段加 `changed`、`secret_change` |
+| `GET /system/update-check[?force=true]` | `system:update:read` | 否 | 读保存的检测结果；`force=true` 时先同步检测一次 |
+| `POST /system/updates/apply` | `system:update:execute` | `system.update` | `{line, version, confirm?, idempotency_key?}` |
+
+- **PUT**：未知字段 400。`kind` 必须是 `github` 或 `url`；所选 `kind` 的定位必须有效（`github` 要 `repository`，`url` 要 `url`），另一个可空，给了也校验并保存。`secret` 省略 = 不变，`""` = 清除，非空 = 设置；`kind`、`repository`、`url` 任一变化而没给新 `secret` 时清除旧密钥。响应的 `secret_change` 是 `set`（给了非空 `secret`，同一个值也算）、`cleared`（清除了已存的密钥）或 `unchanged`；`changed` 表示开关、`kind`、`repository`、`url` 或密钥有变化，为 false 时什么都不写、revision 不变。有变化且开关打开时，处理请求的节点在后台立即检测一次。
+- **update-check** 响应：
+
+```json
+{"enabled": true,
+ "source": {"kind": "github", "repository": "Sub2API-Devs/sup2api", "url": ""},
+ "core": {"current_version": "0.1.290", "latest_version": "0.1.291", "has_update": true,
+          "compatible": true, "reason": "", "strategy": "rolling", "tag": "core-v0.1.291",
+          "notes": "…", "page": "https://…", "published_at": "…",
+          "checked_at": "…", "last_success_at": "…", "error": ""},
+ "gateway": {"nodes": [{"node_id": "node-a", "version": "0.1.135"}],
+             "latest_version": "0.1.136", "has_update": true, "compatible": true, "reason": "",
+             "self_update": true, "image": "ghcr.io/…/sup2api-gateway:0.1.136@sha256:…", "tag": "gateway-v0.1.136",
+             "notes": "…", "page": "…", "published_at": "…",
+             "checked_at": "…", "last_success_at": "…", "error": ""}}
+```
+
+  - 只返回当前来源 revision 与当前基线的结果；没有时该线 `checked_at` 为 null、`latest_version` 为空。`error` 非空表示最近一次检测失败，其余字段保留同一来源、同一基线下最近一次成功的结果；从未成功时 `latest_version` 为空。来源没有该线的稳定版时 `latest_version` 为空、`reason` 说明原因。
+  - `has_update`、`self_update` 按读取时的节点计算：核心比较基线核心版本；网关只要有一个启用节点的 `gateway_version` 低于最新版（没报版本的节点算作更低）即为 true。`self_update` = 至少一个启用节点，且每个启用节点都报了 `gateway_version` 并且 `self_update` 为 true。`image` 取清单 `images[0]` 的 `ref@digest`，只供参考（不能一键更新时控制台提示用它手动换网关）。
+  - `force=true` 时只有两条线的结果有一条早于 30 秒才真的检测；别的节点正在检测时直接返回已有结果。
+- **apply**：`line` 必须是 `core`/`gateway`，`version` 是不带预发布后缀的严格语义化版本，否则 400 字段错误。返回 `{status: "started", plan_id}` 或 `{status: "needs_confirmation", reasons: […], reason_codes: […], preflight: {…}}`；带 `confirm: true` 重发即创建计划。`idempotency_key` 可选：同一个键已建过计划时，同一发布返回原计划（`started`），不同发布 409；不给时用 `apply:<digest>:<expected_revision>`。
+- **错误**（网关的错误体 `{"error": {code, message, details?}}`，核心原样返回）：
+
+| 状态 | `code` | 场景 |
+|---|---|---|
+| 400 | `invalid_argument` | 请求体解析失败或有未知字段；`kind`、`repository`、`url`、`secret`、`line`、`version` 不合法（`details.fields`） |
+| 400 | `master_key_missing` | 设置密钥而网关没有 `SUB2API_MASTER_KEY` |
+| 404 | `release_not_found` | 来源没有这条线的这个稳定版 |
+| 409 | `preflight_blocked` | 预检有阻断项，`details.blockers`、`details.blocker_codes`、`details.preflight` |
+| 409 | `updater_conflict` | 其他失败：来源在列出与登记之间变了、幂等键已用于别的发布、下载或验签失败、检测出错等（查不到行时为 404） |
+| 503 | `updater_unavailable` | 核心不受网关托管，或连不上本机网关 |
+
+- **审计**（核心桥，只在网关返回 2xx 后写；写失败只记 ERROR，不改响应）：`system.update_source.update`，details 只有 `kind`、`repository`、`url` 与 `secret: "set" | "cleared" | "unchanged"`（取网关响应的 `secret_change`，所以换来源时连带清除的密钥记为 `cleared`），从不记密钥；响应 `changed: false` 时不写；`system.update.apply`，target 为 `plan_id`，details `line`、`version`、`plan_id`，只在 `status = "started"` 时写。转发的请求体最多 32 KiB。
+- **超时**：核心桥等网关 60 秒；`GET /system/update-check`（强制与否）与 `POST /system/updates/apply` 等 4 分钟（`slowBridgeTimeout`），比网关自己的预算长：强制检测在集群锁下最多 3 分钟（§102.7），apply 的导入与预检最多 2 分钟（`applyBudget`），之后建计划不受调用方取消影响，跑完为止（最多等 30 秒的集群变更锁）。非 GET 请求转发时与控制台的连接解绑（`context.WithoutCancel`）：控制台离开后网关已提交的变更照样返回并写审计。
+- **阻断项与确认原因**：预检响应与 409 `preflight_blocked` 的 `blocker_codes`、apply `needs_confirmation` 的 `reason_codes` 与英文的 `blockers`、`reasons` 一一对应、顺序相同，每项是 `{code, params?, message}`（网关 `control.Issue`）。控制台按 `code` 与 `params` 显示本地化文字（`upgrades.issues.<code>`），不认识的 `code` 显示 `message`。
+
+| `code` | `params` | 含义 |
+|---|---|---|
+| `release_incompatible` | — | 签名发布不能接在已安装的版本之后（`message` 说明哪项检查） |
+| `plugin_incompatible` | — | 有启用的插件不支持目标核心（`message` 指明插件） |
+| `plugins_changing` | — | 有插件正在安装、升级或卸载 |
+| `core_unmanaged` | — | 有网关不管理的核心在服务 |
+| `no_nodes` | — | 没有启用的注册节点 |
+| `already_current` | — | 每个启用节点都已运行目标网关版本 |
+| `primary_unregistered` | — | 升级主节点不是已注册（网关计划：已启用）的节点 |
+| `upgrade_active` | — | 已有活动计划 |
+| `node_not_ready` | `node` | 节点没有在本地服务 |
+| `node_off_baseline` | `node` | 节点没有运行集群基线核心 |
+| `node_unsupported` | `node` | 节点不能执行这个计划：网关的对等协议或升级策略旧、平台不在发布里、没报网关版本、已运行更新的网关、不能自更新（`message` 说明哪一种） |
+| `maintenance_release` | — | 确认原因：发布按维护更新签发 |
+| `schema_change` | — | 确认原因：发布改动数据库结构 |
+| `too_few_serving` | `min` | 确认原因：服务中的节点少于 `min` 个，没有节点能接管流量 |
+| `single_node` | `seconds` | 确认原因：只有一个节点，重启网关时约中断 `seconds` 秒 |
+
+### 102.7 检测
+
+- 后台：每个节点每分钟看一次，只有升级主节点执行；当前来源 revision 与基线的结果缺失或早于 6 小时才检测，所以启动约 1 分钟后跑第一次。保存来源后另触发一次（§102.6）。一次检测在 Redis 锁 `system:update-check:<cluster_id>` 下进行（拿不到锁直接返回，预算 3 分钟）。
+- 一次检测 = 一次列表 + 每条线最多一次签名清单下载与验签。检测完再读一次来源 revision 与基线，期间变了就丢弃结果（新状态另有检测）。成功写入整份结果与 `last_success_at`；失败只写 `error` 与 `checked_at`，同一来源与基线下保留上次成功的字段。列表失败时两条线记同一个错误。
+- 核心：取最新稳定版，验签（未知 key id 时错误里带出 `key_id`），`core_version` 等于 tag，本节点平台存在，清单里每个平台的 `<bundle_digest>.tar.gz` 资产都存在且大小等于签名值（异构集群也能安装）。`strategy` 取自清单。摘要等于当前基线时兼容；版本号相同而签名身份不同时给出原因；否则按 `Compatibility` 给出阻断原因。
+- 网关：取最新稳定版，验签与 `kind`，`gateway_version` 等于 tag，清单里每个平台的归档资产都存在且大小等于签名值。兼容条件：`peer_protocol` 等于集群的 `PeerProtocol`；`runtime_protocol` 在当前基线核心清单的 `shell_protocol` 范围内；每个启用节点的 `os/arch` 都有归档。
+
+### 102.8 核心一键更新
+
+`apply {line: "core"}`：在来源里找这个版本 → 重新验签（与检测相同的检查）→ 在事务里以 `FOR SHARE` 复核集群行的来源 revision 未变后登记到 `updater.releases`（写 `source_assets`、`source_locator`；同一摘要以前经更新源导入的改用这次的资产引用与定位，由 `release_origin` 导入的保持原样）→ 预检（§34、§82）→ 有阻断返回 409；预检选中 `rolling-v1` 时直接建计划；否则是 `primary-first-v1`（停服），没带 `confirm` 时返回 `needs_confirmation`，`reasons` 是不能滚动的原因（`maintenance_release`、`schema_change`、`too_few_serving`）。计划的 `prepare` 步骤：主节点经更新源下载摘要包（`release.Manager.PrepareFrom`，大小、sha256、文件清单照常验证），从节点照旧从主节点拉取。来源定位在导入之后变了，下载失败并提示重新 apply（§102.5）。
+
+### 102.9 网关一键更新
+
+- **能力**：Linux 上能在 `<root>/gateway` 下建文件的网关登记 `self_update=true`（非 Linux 或目录不可写为 false）；`gateway_version` 是二进制自己的版本。
+- **预检**（`gatewayPreflight`，策略 `gateway-rolling-v1`）：§102.7 的兼容条件，计划只含还没运行目标版本的启用节点，每个都须本地服务就绪、运行集群基线核心、报了 `gateway_version` 且低于目标版本（已运行更新版本的节点是 `node_unsupported` 阻断）、`self_update` 为 true；没有要更新的节点时阻断 `already_current`。另有插件变更与未托管核心的阻断、已有活动计划、主节点必须启用。停用的节点和已是目标版本的节点不进计划，保留原网关，计划期间照常服务（不按“计划之外”转发或恢复）。节点的 `rolling` 标记不再读（只为换网关期间仍在跑的 0.1.134 照常写 true，§101.3）。
+- **确认**：只有一个启用节点时无处让流量，`apply` 返回 `needs_confirmation`（`single_node`，`single node: about 10 s interruption`），确认后照常执行。
+- **步骤**：全部节点先 `gw-prepare`；然后从节点在前、主节点最后，每个节点依次 `yield → stop → gw-swap → start → admit → local → gw-confirm → resume`。`start/admit/local` 的目标是集群基线核心（计划的 `source_digest`），核心版本不变。
+  - `gw-prepare`：每个节点自己经更新源下载本平台归档（`release.Manager.InstallGateway`）：先验签，再按签名大小与 sha256 下载，解出唯一的常规文件 `sub2api-gateway`（≤ 512 MiB），校验二进制摘要，以空环境运行 `<binary> version`（10 秒）必须输出签名版本，最后一次 rename 成 `<root>/gateway/<version>/sub2api-gateway`（0755）。已完好安装的版本不重下。
+  - `yield`：同 §82.2，另外让 `/readyz` 返回 503，带健康检查的入口先切走；单节点计划让不出去也继续。
+  - `gw-swap`：先停本机核心，再校验已安装二进制的摘要，原子写 `<root>/gateway/current`（JSON `{version, digest, previous}`；`previous` 记切换前在跑的版本：上一个已安装版本，或镜像自带的 `{version, bundled: true}`）。步骤结果记入 PG 后网关关闭监听（让出期间继续转发给承接节点）、释放锁，exec 镜像自带的二进制，由它的启动交接 exec 新版本；新进程恢复计划、拉起核心。exec 失败时用原二进制继续服务，`gw-confirm` 失败使计划暂停。
+  - `gw-confirm`：本进程版本与 PG 里本次登记的 `gateway_version` 都等于 `current` 所选版本；然后删除 `<root>/gateway` 下 `current` 与 `previous` 之外的已安装版本和中断留下的暂存目录。
+  - 完成条件：全部成员本地服务基线核心、心跳新鲜且 `gateway_version` 等于目标；然后集群 revision +1（基线摘要不变）。
+- **回滚**：暂停的 `gateway-rolling-v1` 计划可 `rollback`，生成 `gateway-rollback-v1` 计划（没有 prepare），每个节点 `yield → stop → gw-revert → start → admit → local → gw-confirm → resume`；`gw-revert` 把 `current` 改回 `previous`（已安装的上一版本须仍通过摘要校验），尚未切换的节点不动。`gateway-rollback-v1` 本身不能再回滚，修复原因后继续。
+- **启动交接**（`serve` 最先执行）：`current` 指向的已安装版本高于本二进制时，经打开的文件描述符校验 sha256 后 exec 它（`/proc/self/fd/N`），带环境变量 `SUB2API_GATEWAY_HANDOFF=<版本>`、`SUB2API_GATEWAY_BUNDLED=<镜像自带二进制路径>`、`SUB2API_GATEWAY_BUNDLED_VERSION=<其版本>`。已安装版本低于本二进制时（换了更新的镜像，镜像版本优先，直到下次切换）记 INFO（`release.ErrStaleGateway`）、用本二进制继续服务。以下情况记 WARN、同样用本二进制继续服务：`current` 损坏；摘要不符；exec 失败；被 exec 的二进制报出的版本与 `SUB2API_GATEWAY_HANDOFF` 不同；该版本已连续 3 次启动都没走到服务（计数在 `<root>/gateway/handoff`，走完启动恢复即清零，重写 `current` 时重新计数）。没有 `current` 或选的是镜像自带版本时不交接。
+- `POST /system/upgrades/preflight` 与 `POST /system/upgrades` 也接受网关发布摘要（按发布的 `line` 分派预检）；单节点确认只在 `apply` 里。
+
+### 102.10 版本号、信任公钥、安全规则与镜像源
+
+- 网关版本：`main.Version`（默认 `0.0.0-dev`），构建时 `-X main.Version=<版本>`；`sub2api-gateway version` 只打印版本，不读配置。
+- 信任公钥：编进网关的 `gateway/internal/release/trusted/<key id>.pub`（`go:embed`，内容为 base64 公钥）与配置 `trusted_keys` 合并，核心与网关清单都用合并后的集合验签；同一 key id 两处公钥不同或文件格式不对时网关拒绝启动。控制台不能添加或更改信任公钥，更换更新源也不改变信任的密钥。
+- 验签在前：签名清单验签通过之前不下载任何摘要包或归档；之后每个安装物都按签名大小与 sha256 校验。
+- 来源密钥只写不读、AES-GCM 加密存储，只发往 `api.github.com` 或配置的源站，从不随跨源跳转发出（§102.3、§102.4）。
+- 发布签名私钥只在 GitHub 环境 `release` 的 Secrets 里（§102.1），不进仓库、节点和日志。
+- `sub2api-release mirror --github owner/repo | --url <目录> [--token-env VAR] (--tags … | --latest N) --out DIR`：用网关同一套来源实现，把若干稳定版原样（清单不重签）下载成 `<line>/<version>/<资产>` 加 `releases.json`；再次运行合并索引、跳过已完整的资产。这是运维工具，允许内网来源。其他子命令：`pack`（`--platform os/arch=DIR` 可重复，多平台一个清单）、`pack-gateway`、`pubkey`（打印私钥对应的 base64 公钥）、`keygen`。
+
+## 103. 代理供应商与 team 范围（迁移 0103；核心 0.1.292）
 
 设计见 `plan-0.1.291.md`（用户决定 D1–D9，2026-11-16）。代理供应商（`supplier_agent`）在供应商的能力之外，能管理挂在自己名下的用户（下级，多层），只读下级的账号与账号侧的使用记录。归属用两列表示：`users.owner_id`（用户属于谁，决定 team）与 `accounts.owner_id`（账号的“所属”，决定 own 与 team 覆盖哪些账号）。本节先写定各单元共用的契约（U0），用户接口与控制台由后续单元按此实现。
 
-### 102.1 角色
+### 103.1 角色
 
 - 内置角色 `supplier_agent`（代理供应商，`authz.RoleSupplierAgent`，`rev` 1）：默认权限 = user 与 supplier 的全部默认权限 + `account:read:team` `usage:account:read:team` `user:read:team` `user:create:team` `user:update:team` `role:read` `role:assign`（D8，一个角色就够，不必再勾 user 或 supplier；存下的授予里被 team 蕴含的 `account:read:own`、`usage:account:read:own` 不单列）。含 user 的权限是因为管理下级要过 SEC-H2 的比较（`within`）：代理的授予必须覆盖它建的、管的普通用户（默认持有 `user`）的授予。不含删除用户、重置密码、余额、用户组、分组绑定、定义角色，以及对下级账号的写、测试、凭证和下级的代理（D4、D5；经授权器检查：`TestSupplierAgentStopsAtItsTeam`）。可分配清单 `[supplier, supplier_agent]`（D2，多层）。
 - supplier 加 `usage:account:read:own`（D3），`rev` 升到 2：有人持有的补缺、无人持有的重置（§4“默认值在升级时只应用一次”）。
 - admin 的可分配清单加 `supplier_agent`（D6；super_admin 本来都能分配）。operator 不能分配它（不在 operator 的清单里，D6），因此也管不了持有它的用户（改资料、停用、改角色、改上级，§43.6 可管理目标）；operator 加 `usage:account:read`（全量蕴含 own，operator 仍覆盖 supplier、仍能分配 supplier）。
 - `role:read` 保留（D9）。
-- 插件默认授予：`manifest.BuiltinRoleKeys` 加 `supplier_agent`；`manifest.RoleDefaultsFrom = {"supplier_agent": ["user", "supplier"]}`：插件 `userPermissions[].defaults` 没有点名 `supplier_agent` 时取给 user 与 supplier 的两项之并（`manifest.FollowedDefaults`，规范化：有全部就只留全部），点名了以它为准（`DefaultGrants`）。`SyncCore` 新建 `supplier_agent` 角色（升级到 0.1.291）的那一次，把 user 与 supplier 角色当时实际持有的插件授予合并（规范化同上）给它，不看 manifest 的建议默认值：安装时同意页去掉的、留待复核的都不给（跳过 `staged`、`removed` 的权限，`authz.sync.grant`，`detail.via = plugin_default`）；免同意升级的自动授予（`install` 的 `autoGrantRoles`）也包括它，从 user 沿用来的那份同样免同意（user 那份照旧要同意或被扣留），这样代理始终覆盖它管的用户可能拿到的插件权限。
-- 已有自定义角色的 key 是 `supplier_agent` 时，`SyncCore` 照旧以 `builtinKeyConflict` 停止启动（§4），整个同步不写任何东西（supplier 仍是 `rev` 1、新权限未登记、版本不动），先按错误里的 SQL 改名再启动。升级时有人持有的 supplier 按 §4 补回缺少的全部默认值（含管理员删掉的），多出的授予保留；user、supplier 多出代理没有的授予时，代理管不了这些持有者（`within`，403 `missing`），预检与处理见 CHANGELOG 0.1.291“发布”（`TestSyncCoreUpgradeTo0291`）。
+- 插件默认授予：`manifest.BuiltinRoleKeys` 加 `supplier_agent`；`manifest.RoleDefaultsFrom = {"supplier_agent": ["user", "supplier"]}`：插件 `userPermissions[].defaults` 没有点名 `supplier_agent` 时取给 user 与 supplier 的两项之并（`manifest.FollowedDefaults`，规范化：有全部就只留全部），点名了以它为准（`DefaultGrants`）。`SyncCore` 新建 `supplier_agent` 角色（升级到 0.1.292）的那一次，把 user 与 supplier 角色当时实际持有的插件授予合并（规范化同上）给它，不看 manifest 的建议默认值：安装时同意页去掉的、留待复核的都不给（跳过 `staged`、`removed` 的权限，`authz.sync.grant`，`detail.via = plugin_default`）；免同意升级的自动授予（`install` 的 `autoGrantRoles`）也包括它，从 user 沿用来的那份同样免同意（user 那份照旧要同意或被扣留），这样代理始终覆盖它管的用户可能拿到的插件权限。
+- 已有自定义角色的 key 是 `supplier_agent` 时，`SyncCore` 照旧以 `builtinKeyConflict` 停止启动（§4），整个同步不写任何东西（supplier 仍是 `rev` 1、新权限未登记、版本不动），先按错误里的 SQL 改名再启动。升级时有人持有的 supplier 按 §4 补回缺少的全部默认值（含管理员删掉的），多出的授予保留；user、supplier 多出代理没有的授予时，代理管不了这些持有者（`within`，403 `missing`），预检与处理见 CHANGELOG 0.1.292“发布”（`TestSyncCoreUpgradeTo0292`）。
 
-### 102.2 范围 `team`
+### 103.2 范围 `team`
 
 - 语法：`<动作>:team`，只用于可带范围的动作，`account:create` 不接受（新行总是创建者自己的）。新的可带范围动作：`usage:account:read`（资源 account，范围与账号相同）、`user:read` `user:create` `user:update`（资源 user，`perm.ResourceUser`，只接受全部与 `team`：`own`、路径都 400 `invalid`，用户不属于自己）。`plugin.x:y:team` 不是范围，是普通的插件 key 写法（插件资源不支持 team）；保留资源名加 `user`（`manifest.ReservedScopeResources`）。
 - 蕴含：全部 ⊇ team ⊇ own；team 不蕴含任何路径，路径也不蕴含 team。共享向量 `sdk/permvectors/vectors.json` 已加（Go 与控制台 `web/src/authz/implies.ts` 共用）。访问密钥 `Restrict` 照常逐模式取较窄者：密钥 `account:read:team` + 持有者 own 得 own；密钥 `user:read` + 持有者 team 得 team。
@@ -7468,7 +7633,7 @@ type OwnerGuard interface { CheckOwner(ctx context.Context, tx *gorm.DB, actorID
 - 解析（`authz/team.go`）：逐层 BFS，每层一条构造器语句 `owner_id = ANY(?)`（走 `users_owner_idx`），最多 8 层，带已访问集合，不用递归 CTE。未命中时在只读 RR 事务（`store.Snapshot()`）里同时读 `authz_meta.version` 与 BFS 结果；读到的版本低于 `atLeast` 时 503。结果按持有者缓存在进程内（§99.4 的 team 一行），条目只在读取版本 ≥ `atLeast` 时使用，`invalidate` 在版本前进时丢弃更旧的条目；Valkey 不存 team。
 - 访问密钥先收窄再展开（`Restrict` 在 `PermissionSet` 里，`ResolveScope` 在其后）：密钥 `account:read:own` + 持有者 team 得 own，不展开。
 
-### 102.3 用户的 owner（`users.owner_id`）
+### 103.3 用户的 owner（`users.owner_id`）
 
 - 列：`users.owner_id bigint NULL REFERENCES users(id) ON DELETE SET NULL`，`CHECK (owner_id <> id)`，部分索引 `users_owner_idx (owner_id) WHERE owner_id IS NOT NULL`。环与深度由核心在 authz 锁下检查（`OwnerGuard`），数据库不查。
 - 用户 JSON（`/users` 列表与详情、`/auth/login` 的 `user` 同形）加：`owner_id`（int|null）、`owner_email`（string|null，owner 已软删除时仍显示其邮箱）。
@@ -7484,7 +7649,7 @@ type OwnerGuard interface { CheckOwner(ctx context.Context, tx *gorm.DB, actorID
 - 只持有 `supplier_agent` 就能管理持有 `user`（及 `supplier`、`supplier_agent`）的下级：它的授予含 user 与 supplier 的核心默认权限和插件默认授予（102.1），角色比较照常通过；下级被另外授予了代理没有的权限时照常拒绝。
 - GET `/users`：改为 `PermScoped(user:read)`，按 `core.UserRows()` 过滤；新增筛选 `owner_id=<id>`（直属该用户的）或 `owner_id=none`（没有 owner 的），`direct=true`（`owner_id = 调用者`，与 team 叠加）；`owner_id` 既不是正整数也不是 `none`、`direct` 不是布尔值时 400 `fields[{owner_id|direct, invalid}]`。GET、PATCH `/users/:id` 目标不在范围内 404（team 持有者对自己也是 404）：PATCH 先解析路径 id、请求体并校验字段（这些 400 照常在前），范围检查在其后、先于其余检查（二次验证、`CanActOnUsers`、密码重置权限、`owner_id`）；POST `/users` 与 PATCH 按 `user:create` / `user:update` 的范围。DELETE、`/users/:id/roles`、`/users/:id/security` 仍是不带范围的权限（team 持有者分配角色经 `CanActOnUsers` 的 team 步骤，见上）。
 
-### 102.4 账号的所属（`accounts.owner_id`）
+### 103.4 账号的所属（`accounts.owner_id`）
 
 用户要求（2026-11-16）：账号管理加一列“所属”，表示账号属于哪个用户；默认是创建者，管理员可以改成别的用户，改后就不等于创建者。
 
@@ -7507,7 +7672,7 @@ type OwnerGuard interface { CheckOwner(ctx context.Context, tx *gorm.DB, actorID
 - `owner_id` 是账号扩展字段的保留名（插件 `accountTypes[].fields` 不能用）。
 - 共享向量 `allows` 里行的 `created_by` 指行的 owner 列：账号为 `owner_id`，代理为 `created_by`；控制台按账号判断时传账号的 `owner_id`。
 
-### 102.5 账号侧使用记录 `/account-usage/*`
+### 103.5 账号侧使用记录 `/account-usage/*`
 
 持有 `usage:account:read`（任意范围）的人看“自己范围内的账号”服务过的请求，字段只给白名单（D1），与 `/usage`（`usage:all:read`，全站、全部字段）分开；`/usage` 不变。admin 同时持有两者，控制台菜单按 `hideWith: usage:all:read` 只显示一套。
 
@@ -7525,6 +7690,6 @@ type OwnerGuard interface { CheckOwner(ctx context.Context, tx *gorm.DB, actorID
 - export：列只有 时间、请求 ID、账号 ID、账号、模型、上游模型、端点、协议、流式、状态码、成功、错误类型、四类 token（缓存写入合一列）、原价（`standard_cost`）、首 token、耗时（`usage.accountExportColumns`），最后是调用链路（范围内的账号写 `#id`，范围外的写“账号n”）。审计 `usage.export`，`detail.view = "account"`。
 - 索引：`usage_hourly` 不加 `(account_id, created_at)` 索引（计划 §7.11）。合成表 175 万行（一年、每小时 200 个组合、300 个账号，491 MB）上实测：30 天的范围读走 `usage_hourly_created_idx`，供应商（3 个账号）26 ms、代理（90 个账号）34 ms；加上索引（建 1.1 s、45 MB）后，范围条件是 `IN (子查询)`，规划器估计命中一半账号，仍走时间索引，耗时不变；即使直接给账号 id 用上新索引也是 31 ms（命中的行分散在按时间排列的堆页里）。概览与 summary 还按范围缓存 15–30 秒。明细列表走已有的 `usage_logs_account_idx`。
 
-### 102.6 端到端安全测试
+### 103.6 端到端安全测试
 
 `next/e2e/ac28_supplier_agent_test.go`（`TestAC28_SupplierAgentTeam`）在真实核心上搭 admin → 代理 A → 代理 B → 供应商 C，另有无关的代理 X 与普通用户 U，逐项验证计划 §5.1–5.6：用户、账号、代理、`/account-usage`、`/lookup` 越出 team 一律 404（403 用于不带范围的入口）；角色指派（不在可分配清单、team 外、对自己、角色不变的重放）、`owner_cannot_manage`、operator 不能分配或管理代理（D6）；owner 的 self、cycle（含两个并发移动）、`too_deep`（8 层链）；访问密钥先收窄再展开；dynweight 的账号路由（read 看 team，update 只能自己的）；删除用户后 team 照旧（D7）；管理员改账号所属后可见性立即跟随。单节点即可跑：`sub2api-plugin dev`（anthropic、dynweight 内置）加本机 `deploy/mock-upstream`，`E2E_NODE_URLS` 指向同一节点。同样的单节点也能跑 AC02、AC04、AC07、AC23 与网关的故障转移、冷却测试（冷却靠 dev 内存 Redis 按时过期，§47）；用到 `/market/` 的（AC02 插件矩阵、AC27）要在核心前面放一个提供签名市场目录（`sub2api-plugin pack`/`sign`/`index` 生成）、其余请求转发给核心的服务，`E2E_BASE_URL` 指向它，e2e 栈里这是 Caddy。

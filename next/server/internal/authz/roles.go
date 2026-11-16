@@ -731,7 +731,7 @@ func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID
 	}
 	added, removed := diffRoles(want, cur), diffRoles(cur, want)
 	if len(added)+len(removed) == 0 {
-		// A team holder reads no user past its team (CONTRACTS §102.3).
+		// A team holder reads no user past its team (CONTRACTS §103.3).
 		actor, err := s.usersRoleSet(ctx, tx, []int64{actorID})
 		if err == nil {
 			err = withinTeam(ctx, tx, actorID, actor, []int64{userID})
@@ -757,7 +757,7 @@ func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID
 // be able to act on the user; and the added roles, with what they may assign
 // in turn, must be within the actor's grantSet; a user with an owner keeps
 // one that manages it by its roles, want (owner_cannot_manage, CONTRACTS
-// §102.3). The system (actor 0) may grant the initial super admin, never
+// §103.3). The system (actor 0) may grant the initial super admin, never
 // revoke one.
 func (s *Service) checkAssignment(ctx context.Context, q *gorm.DB, actorID, userID int64, roleless bool, want, added, removed []roleRef) error {
 	if actorID == 0 {

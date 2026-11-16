@@ -23,7 +23,7 @@ import type { UsageView } from './view'
 // client request ID or (operators) the upstream account asks the page to
 // filter by it. The `view` says whose records they are: the caller's own
 // (`self`) show no accounts in a retried request's attempts; the account view
-// (`account`, CONTRACTS §102.5) has the account's facts only: no API key or
+// (`account`, CONTRACTS §103.5) has the account's facts only: no API key or
 // client IP, the cost at the list price.
 const props = withDefaults(
   defineProps<{

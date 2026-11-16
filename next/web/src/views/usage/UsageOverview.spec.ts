@@ -67,7 +67,7 @@ describe('usage overview page', () => {
     expect(summaries[0].filters.from).toBe('2026-10-01T00:00:00.000Z')
   })
 
-  it('breaks an account view down by account, and narrows only by what it may send (CONTRACTS §102.5)', async () => {
+  it('breaks an account view down by account, and narrows only by what it may send (CONTRACTS §103.5)', async () => {
     query = { account_id: '12', user_id: '3', model_contains: 'op' }
     const w = render('account')
     expect(summaries[0].filters).toMatchObject({ account_id: '12' })

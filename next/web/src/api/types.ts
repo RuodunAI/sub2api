@@ -57,7 +57,7 @@ export interface User {
   balance?: Money // assumed
   /** The user group the user is priced by (api/pricing.ts). */
   segment?: SegmentRef
-  /** The user above this one (users.owner_id, CONTRACTS §102.3): its team covers this user; null for none. */
+  /** The user above this one (users.owner_id, CONTRACTS §103.3): its team covers this user; null for none. */
   owner_id?: number | null
   /** Email of the owner, kept after the user was deleted. */
   owner_email?: string | null
@@ -747,7 +747,7 @@ export interface Account {
   cooldown_until?: string | null
   cooldown_reason?: string // assumed
   orphaned?: boolean
-  /** The user the account belongs to (所属, CONTRACTS §102.4): own and team scopes go by it; null for a system account. */
+  /** The user the account belongs to (所属, CONTRACTS §103.4): own and team scopes go by it; null for a system account. */
   owner_id?: number | null
   /** Email of the owner, kept after the user was deleted. */
   owner_email?: string | null
@@ -1097,7 +1097,7 @@ export interface UsageSummaryRow {
   last_at?: string
   /** group_by=user: the user's email. */
   user_email?: string
-  /** group_by=account in the account view (CONTRACTS §102.5): the account's name. */
+  /** group_by=account in the account view (CONTRACTS §103.5): the account's name. */
   account_name?: string
   /** Rows carrying an observability marker (CONTRACTS §25.4). */
   anomalies?: number

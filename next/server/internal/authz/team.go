@@ -13,7 +13,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// Teams (CONTRACTS §102.2): the users below a holder along users.owner_id,
+// Teams (CONTRACTS §103.2): the users below a holder along users.owner_id,
 // core.MaxTeamDepth levels at most, soft-deleted users included (D7). Read
 // level by level through the query builder, one indexed query a level
 // (users_owner_idx), never a recursive CTE (plan 7.3).

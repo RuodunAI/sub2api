@@ -16,7 +16,7 @@ type DataScope struct {
 	All bool
 	// Owners: rows owned by one of them (the owner column of ScopeTable),
 	// sorted; own gives the holder, team the holder and, once resolved
-	// (ResolveScope), every user below it (CONTRACTS §102).
+	// (ResolveScope), every user below it (CONTRACTS §103).
 	Owners []int64
 	Groups []int64 // group/G; 0 = group/* (bound to any group)
 	IDs    []int64 // account/X or proxy/X
@@ -149,7 +149,7 @@ type ScopeTable struct {
 }
 
 // AccountRows is accounts aliased a, owned by owner_id (所属, which an
-// administrator may move away from created_by; CONTRACTS §102).
+// administrator may move away from created_by; CONTRACTS §103).
 func AccountRows() ScopeTable { return ScopeTable{id: "a.id", owner: "a.owner_id", grouped: true} }
 
 // ProxyRows is proxies aliased p, owned by their creator.

@@ -27,9 +27,9 @@ func (a updateRouteAuth) VerifySession(context.Context, string) (int64, string, 
 func (a updateRouteAuth) Can(context.Context, int64, string) (bool, error) { return a.allowed, nil }
 func (a updateRouteAuth) CanGrant(context.Context, int64, []string) error  { return nil }
 
-// Update source and release import need the permission only; password
+// Update source and apply need the permission only; password
 // confirmation was removed (CONTRACTS §3.3).
-func TestUpdateSourceAndImportRequireAuthorization(t *testing.T) {
+func TestUpdateSourceAndApplyRequireAuthorization(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, tc := range []struct {
 		method, path    string
@@ -39,8 +39,12 @@ func TestUpdateSourceAndImportRequireAuthorization(t *testing.T) {
 		{"PUT", "/system/update-source", true, true, 503},
 		{"PUT", "/system/update-source", false, true, 403},
 		{"PUT", "/system/update-source", true, false, 401},
-		{"POST", "/system/releases/import", true, true, 503},
-		{"POST", "/system/releases/import", false, true, 403},
+		{"POST", "/system/updates/apply", true, true, 503},
+		{"POST", "/system/updates/apply", false, true, 403},
+		{"POST", "/system/updates/apply", true, false, 401},
+		{"POST", "/system/releases/import", true, true, 404},
+		{"GET", "/system/update-source", true, true, 503},
+		{"GET", "/system/update-source", false, true, 403},
 		{"GET", "/system/update-check", true, false, 401},
 		{"GET", "/system/update-check", false, true, 403},
 		{"GET", "/system/update-check", true, true, 503},
@@ -82,9 +86,11 @@ func TestCoreUpdateRoutesStepUp(t *testing.T) {
 		{"POST", "/system/upgrades/1/pause", true},
 		{"POST", "/system/upgrades/1/rollback", true},
 		{"POST", "/system/nodes/1/disable", true},
-		{"POST", "/system/releases/import", true},
+		{"POST", "/system/updates/apply", true},
 		{"POST", "/system/upgrades/preflight", false},
 		{"PUT", "/system/update-source", true},
+		{"GET", "/system/update-source", false},
+		{"GET", "/system/update-check", false},
 		{"GET", "/system/upgrades", false},
 	} {
 		req := httptest.NewRequest(tc.method, "/api/v1"+tc.path, nil)

@@ -69,7 +69,7 @@ var coreMenus = []coreMenuSection{
 		{"usage-overview", lt("Site overview", "全站概览"), "chart", "/usage/overview", []string{"GET /usage/overview"}},
 		{"usage", lt("Site usage logs", "全站日志"), "usage", "/usage", []string{"GET /usage"}},
 		// The usage of the accounts in the caller's scope (CONTRACTS
-		// §102.5), for those who do not see the whole site's (hideWith).
+		// §103.5), for those who do not see the whole site's (hideWith).
 		{"account-usage-overview", lt("Account usage overview", "账号用量概览"), "chart", "/account-usage/overview", []string{"GET /account-usage/overview"}},
 		{"account-usage", lt("Account usage logs", "账号日志"), "usage", "/account-usage", []string{"GET /account-usage"}},
 	}},

@@ -1,0 +1,387 @@
+name: next release
+
+# Builds, signs and publishes a next/ release from a tag
+# (next/docs/CONTRACTS.md §102.1, §102.2, §102.10):
+#
+#   core-vX.Y.Z     next-core-manifest.json + <bundle_digest>.tar.gz per platform
+#   gateway-vX.Y.Z  next-gateway-manifest.json + sub2api-gateway_X.Y.Z_linux_<arch>.tar.gz,
+#                   image ghcr.io/<owner>/sup2api-gateway:X.Y.Z
+#
+# meta (tag, previous release, CHANGELOG notes) -> gate (next CI) -> build
+# (no secrets) -> sign (environment `release`, the only job with signing keys)
+# -> publish (tag the image pushed by digest, draft, upload every asset, then
+# publish, so update checks never see half a release). Operator guide:
+# next/deploy/gateway/github/README.md.
+#
+# Release builds use no Actions caches. Untrusted values reach `run:` only
+# through env.
+
+on:
+  push:
+    tags:
+      - 'core-v*'
+      - 'gateway-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release (core-vX.Y.Z or gateway-vX.Y.Z)
+        required: true
+        type: string
+      dry_run:
+        description: Build and sign only (no image push, no GitHub Release)
+        type: boolean
+        default: true
+      schema_before:
+        description: First core-v release only, which has no previous manifest to read it from; the schema-contract of the core it upgrades
+        type: string
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: next-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  GOFLAGS: -buildvcs=false
+  CGO_ENABLED: '0'
+  BUILD_ID: github-actions-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  meta:
+    name: validate tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      dry_run: ${{ steps.tag.outputs.dry_run }}
+      sha: ${{ steps.sha.outputs.sha }}
+      go_version: ${{ steps.go.outputs.version }}
+      line: ${{ steps.meta.outputs.line }}
+      version: ${{ steps.meta.outputs.version }}
+      schema_before: ${{ steps.meta.outputs.schema_before }}
+      prev_trust_sha256: ${{ steps.meta.outputs.prev_trust_sha256 }}
+    steps:
+      - id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+        run: |
+          case $TAG in
+            core-v*|gateway-v*) ;;
+            *) echo "::error::not a release tag: $TAG"; exit 1 ;;
+          esac
+          case $TAG in *[!a-z0-9.-]*) echo "::error::invalid tag: $TAG"; exit 1 ;; esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # The version must exceed the newest published release of its line.
+      - id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          SCHEMA_BEFORE: ${{ inputs.schema_before }}
+        run: sh .github/next-release/release-meta.sh "$TAG"
+      - name: Release notes from CHANGELOG.md
+        env:
+          LINE: ${{ steps.meta.outputs.line }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: sh .github/next-release/changelog-notes.sh "$LINE" "$VERSION" CHANGELOG.md "$RUNNER_TEMP/notes"
+      # The compiler of next/Dockerfile (GO_IMAGE) builds released binaries.
+      - id: go
+        run: |
+          v=$(sed -n 's/^ARG GO_IMAGE=golang:\([0-9][0-9.]*\)-.*/\1/p' next/Dockerfile)
+          [ -n "$v" ] || { echo "::error::cannot read the Go version of GO_IMAGE in next/Dockerfile"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/notes/
+          if-no-files-found: error
+          retention-days: 7
+
+  gate:
+    name: gate
+    needs: meta
+    permissions:
+      contents: read
+    uses: ./.github/workflows/next-ci.yml
+    with:
+      ref: ${{ needs.meta.outputs.sha }}
+
+  core-build:
+    name: build core
+    needs: [meta, gate]
+    if: needs.meta.outputs.line == 'core'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Plugins are packed with the GORM model check (sub2api-plugin db check).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: sub2api
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://postgres:sub2api@127.0.0.1:5432/postgres?sslmode=disable
+      VERSION: ${{ needs.meta.outputs.version }}
+    outputs:
+      schema: ${{ steps.core.outputs.schema }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ needs.meta.outputs.go_version }}
+          cache: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          # next/Dockerfile NODE_IMAGE
+          node-version: '24'
+      - name: Console and native plugin UIs
+        run: sh next/deploy/docker/build-ui.sh "$PWD/next" "$RUNNER_TEMP/ui"
+      # Same script and builtin set as the image build. It signs with a key it
+      # generates here; the sign job re-signs builtin/ with the release key.
+      - name: Core, plugin CLI and plugins (linux/amd64)
+        env:
+          REQUIRE_UI: '1'
+          SKIP_DB_CHECK: '0'
+        run: sh next/deploy/docker/build-go.sh "$PWD/next" "$RUNNER_TEMP/out/amd64" "$RUNNER_TEMP/throwaway-key"
+      - name: Core and plugin CLI (linux/arm64)
+        env:
+          GOARCH: arm64
+          GO_BINARIES_ONLY: '1'
+        run: sh next/deploy/docker/build-go.sh "$PWD/next" "$RUNNER_TEMP/out/arm64" "$RUNNER_TEMP/throwaway-key"
+      - id: core
+        name: Core version and schema contract
+        run: |
+          set -eu
+          core=$RUNNER_TEMP/out/amd64/bin/sub2api
+          built=$("$core" version)
+          [ "$built" = "$VERSION" ] || { echo "::error::the core reports $built, the tag $VERSION"; exit 1; }
+          schema=$("$core" schema-contract)
+          [ -n "$schema" ] || { echo "::error::the core reported no schema contract"; exit 1; }
+          echo "schema=$schema" >> "$GITHUB_OUTPUT"
+      # tar keeps the file modes that artifacts drop.
+      - name: Stage
+        run: |
+          set -eu
+          s=$RUNNER_TEMP/stage
+          mkdir -p "$s" "$RUNNER_TEMP/build"
+          cp -a "$RUNNER_TEMP/out/amd64/bin" "$s/bin-amd64"
+          cp -a "$RUNNER_TEMP/out/arm64/bin" "$s/bin-arm64"
+          cp -a "$RUNNER_TEMP/out/amd64/builtin" "$s/builtin"
+          rm "$s/builtin/trust.pub" "$s/builtin/trust.keyid"
+          tar -C "$s" -cf "$RUNNER_TEMP/build/core-stage.tar" .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build
+          path: ${{ runner.temp }}/build/
+          if-no-files-found: error
+          retention-days: 7
+
+  gateway-build:
+    name: build gateway
+    needs: [meta, gate]
+    if: needs.meta.outputs.line == 'gateway'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+      SOURCE_COMMIT: ${{ needs.meta.outputs.sha }}
+      DRY_RUN: ${{ needs.meta.outputs.dry_run }}
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # The Dockerfile cross-compiles; the image build below reuses this stage.
+      - name: Gateway binaries
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION="$VERSION" \
+            --target binaries --output "type=local,dest=$RUNNER_TEMP/bin" -f next/deploy/gateway/Dockerfile next
+      - name: Archives
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/build"
+          epoch=$(git log -1 --format=%ct)
+          for arch in amd64 arm64; do
+            tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime="@$epoch" \
+              -C "$RUNNER_TEMP/bin/linux_$arch" -cf - sub2api-gateway |
+              gzip -9n > "$RUNNER_TEMP/build/sub2api-gateway_${VERSION}_linux_${arch}.tar.gz"
+          done
+          ls -l "$RUNNER_TEMP/build"
+      # Pushed by digest only; publish adds the version tag after approval.
+      - id: image
+        name: Push the image
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          repo=ghcr.io/$owner/sup2api-gateway
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION="$VERSION" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
+            --metadata-file "$RUNNER_TEMP/image.json" \
+            --output "type=image,name=$repo,push-by-digest=true,name-canonical=true,push=true" \
+            -f next/deploy/gateway/Dockerfile next
+          docker logout ghcr.io
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image.json")
+          printf '%s\n' "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "::error::no image digest"; exit 1; }
+          echo "image=$repo:$VERSION@$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build
+          path: ${{ runner.temp }}/build/
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: sign
+    needs: [meta, core-build, gateway-build]
+    if: ${{ !cancelled() && (needs.core-build.result == 'success' || needs.gateway-build.result == 'success') }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    env:
+      LINE: ${{ needs.meta.outputs.line }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      SOURCE_COMMIT: ${{ needs.meta.outputs.sha }}
+      SCHEMA: ${{ needs.core-build.outputs.schema }}
+      SCHEMA_BEFORE: ${{ needs.meta.outputs.schema_before }}
+      PREV_TRUST_SHA256: ${{ needs.meta.outputs.prev_trust_sha256 }}
+      IMAGE: ${{ needs.gateway-build.outputs.image }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ needs.meta.outputs.go_version }}
+          cache: false
+      # Signing tools are built here from the checked-out commit; nothing from
+      # the build artifact is ever executed next to the keys.
+      - name: sub2api-release
+        working-directory: next/gateway
+        run: |
+          go build -trimpath -o "$RUNNER_TEMP/tools/sub2api-release" ./cmd/sub2api-release
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: sub2api-plugin
+        if: env.LINE == 'core'
+        working-directory: next/tools/sub2api-plugin
+        run: go build -trimpath -o "$RUNNER_TEMP/tools/sub2api-plugin" .
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build
+          path: ${{ runner.temp }}/build
+      - name: Signing keys
+        env:
+          SUB2API_RELEASE_SIGNING_KEY: ${{ secrets.SUB2API_RELEASE_SIGNING_KEY }}
+          SUB2API_RELEASE_KEY_ID: ${{ vars.SUB2API_RELEASE_KEY_ID }}
+          SUB2API_PLUGIN_SIGNING_KEY: ${{ secrets.SUB2API_PLUGIN_SIGNING_KEY }}
+          SUB2API_PLUGIN_KEY_ID: ${{ vars.SUB2API_PLUGIN_KEY_ID }}
+        run: |
+          set -- release
+          if [ "$LINE" = core ]; then set -- release plugin; fi
+          sh .github/next-release/signing-keys.sh "$RUNNER_TEMP/keys" "$@"
+      - name: Sign
+        run: sh ".github/next-release/sign-$LINE.sh" "$RUNNER_TEMP/build" "$RUNNER_TEMP/keys" "$RUNNER_TEMP/assets"
+      - name: Remove signing keys
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/keys"
+      - name: Summary
+        run: |
+          {
+            echo "### $TAG assets"
+            echo '```'
+            (cd "$RUNNER_TEMP/assets" && sha256sum -- *)
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/assets/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: [meta, gateway-build, sign]
+    if: ${{ !cancelled() && needs.sign.result == 'success' && needs.meta.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      IMAGE: ${{ needs.gateway-build.outputs.image }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/assets
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/notes
+      # A draft left by an earlier failed attempt is replaced; a published
+      # release (and so its image tag) is never touched.
+      - name: Replace drafts
+        run: |
+          set -eu
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"" > "$RUNNER_TEMP/existing"
+          while read -r id draft; do
+            [ "$draft" = true ] || { echo "::error::release $TAG is already published"; exit 1; }
+            gh api -X DELETE "repos/$GH_REPO/releases/$id"
+          done < "$RUNNER_TEMP/existing"
+      # IMAGE is REF:VERSION@DIGEST, as the signed manifest names it.
+      - name: Tag the image
+        if: env.IMAGE != ''
+        run: |
+          set -eu
+          tag=${IMAGE%@*}
+          digest=${IMAGE#*@}
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create -t "$tag" "${tag%:*}@$digest"
+          got=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$tag")
+          docker logout ghcr.io
+          [ "$got" = "$digest" ] || { echo "::error::$tag is $got, not $digest"; exit 1; }
+      - name: Draft, upload, publish
+        run: |
+          set -eu
+          gh release create "$TAG" --draft --verify-tag \
+            --title "$(cat "$RUNNER_TEMP/notes/title.txt")" --notes-file "$RUNNER_TEMP/notes/notes.md"
+          gh release upload "$TAG" "$RUNNER_TEMP"/assets/*
+          gh release edit "$TAG" --draft=false

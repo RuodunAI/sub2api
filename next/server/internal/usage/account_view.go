@@ -19,7 +19,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-// The account side of the usage records (CONTRACTS §102.5): a holder of
+// The account side of the usage records (CONTRACTS §103.5): a holder of
 // usage:account:read, at any scope, reads the requests the accounts of its
 // scope served. Its answers are types of their own that list the fields it
 // may see (D1), so a field added to Record does not reach it.

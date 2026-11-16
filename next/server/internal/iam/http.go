@@ -24,7 +24,7 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	// passes validation, so a rejected one does not spend the proof.
 	r.Self(http.MethodPut, "/me/password", selfSecurity, s.handleChangePassword)
 
-	// Every user or the team (CONTRACTS §102.3): a user out of the scope is
+	// Every user or the team (CONTRACTS §103.3): a user out of the scope is
 	// not found. Deleting a user, resetting its password and the other
 	// per-user routes below take the unscoped keys.
 	r.PermScoped(http.MethodGet, "/users", s.handleListUsers, perm.UserRead)

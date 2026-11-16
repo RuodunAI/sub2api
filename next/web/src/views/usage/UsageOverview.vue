@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The usage statistics of the `view`: all users' (an operator's), the
 // caller's, or those of the accounts in the caller's reach (`account`,
-// CONTRACTS §102.5: by account instead of by group or key, costs at the list
+// CONTRACTS §103.5: by account instead of by group or key, costs at the list
 // price): the search bar (time range, granularity, filters), the four totals
 // and the charts.
 // Every part follows the same filters, which a link may preset (?user_id=,

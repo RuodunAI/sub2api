@@ -130,7 +130,7 @@ func keysOf(m any) []string {
 func sortedStrings(v ...string) []string { return slices.Sorted(slices.Values(v)) }
 
 // accountRecordKeys are the fields of the account side's records (CONTRACTS
-// §102.5), exactly.
+// §103.5), exactly.
 var accountRecordKeys = sortedStrings("id", "request_id", "created_at", "account_id", "account_name", "plugin_key", "platform",
 	"account_type", "protocol", "endpoint", "model", "upstream_model", "stream", "status_code", "success", "error_type", "attempts",
 	"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "cache_creation_1h_tokens", "standard_cost",

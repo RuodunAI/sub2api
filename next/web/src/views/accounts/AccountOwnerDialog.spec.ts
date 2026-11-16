@@ -21,7 +21,7 @@ async function render(account: Partial<Account>) {
   return { w, submit }
 }
 
-describe('changing the owner of an account (CONTRACTS §102.4)', () => {
+describe('changing the owner of an account (CONTRACTS §103.4)', () => {
   beforeEach(() => {
     mocks.put.mockReset().mockResolvedValue({ id: 7, owner_id: 9, owner_email: 'nine@x' })
     i18n.global.locale.value = 'zh'

@@ -87,7 +87,7 @@ func ownerAudits(t *testing.T, s *Service, user int64) []string {
 	return out
 }
 
-// The owner of a user (CONTRACTS §102.3, plan 5.3, 5.4): any live user an
+// The owner of a user (CONTRACTS §103.3, plan 5.3, 5.4): any live user an
 // unscoped holder names, in a chain of core.MaxTeamDepth levels at most,
 // never the user itself or one below it, and one that manages the user by
 // its roles, also after later role changes; a team holder names itself
@@ -243,7 +243,7 @@ func TestCheckOwnerConcurrentCycle(t *testing.T) {
 
 // A move changes the teams of every user above the old and the new owner:
 // the actor must manage each of them, but for itself and those above it
-// (CONTRACTS §102.3). An operator may move a plain user into or out of an
+// (CONTRACTS §103.3). An operator may move a plain user into or out of an
 // agent's team neither directly nor through a supplier of that team (D6);
 // a sub-agent still owns the users it creates though its own owner is
 // above it.
@@ -287,7 +287,7 @@ func TestCheckOwnerChains(t *testing.T) {
 }
 
 // A role write that leaves an owner unable to manage one of its live users
-// by their roles is refused, on the write's field (CONTRACTS §102.3):
+// by their roles is refused, on the write's field (CONTRACTS §103.3):
 // more for the users' role, less for the owner's, a reset of either. Users
 // without an owner, and deleted ones, do not count.
 func TestRoleWritesKeepOwners(t *testing.T) {

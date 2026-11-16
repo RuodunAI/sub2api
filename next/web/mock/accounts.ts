@@ -364,7 +364,7 @@ export const accounts: any[] = [
 ]
 for (const a of accounts) {
   a.type_label ??= typeLabel(a.plugin_key, a.type)
-  // The owner (所属, CONTRACTS §102.4) starts as the creator, as migration 0103 fills it.
+  // The owner (所属, CONTRACTS §103.4) starts as the creator, as migration 0103 fills it.
   a.owner_id ??= a.created_by
 }
 // One account an administrator gave the agent (agent@example.com), so its creator is not its owner.
@@ -875,7 +875,7 @@ on('PATCH', '/accounts/:id', (req) => {
   }
   return { ...withGroups(a), proxy_created: !!proxy.proxy_created }
 })
-// PUT /accounts/:id/owner (CONTRACTS §102.4): moves the account to another user.
+// PUT /accounts/:id/owner (CONTRACTS §103.4): moves the account to another user.
 on('PUT', '/accounts/:id/owner', (req) => {
   if (!hasPerm(caller(req), 'account:owner:update')) return fail(403, 'permission_denied', 'account:owner:update is required', { permission: 'account:owner:update' })
   const a = accounts.find((x) => x.id === Number(req.params.id))

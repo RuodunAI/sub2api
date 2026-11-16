@@ -13,6 +13,10 @@ export default {
   autoRefresh: '每 5 秒自动刷新',
   online: '在线节点',
   pluginIssues: '插件异常',
-  hostVersions: '主程序版本数',
+  hostVersions: '版本数',
+  coreVersion: '核心版本',
+  gatewayVersion: '网关版本',
+  unknownVersion: '未知',
+  versionCounts: '核心 {core} · 网关 {gateway}',
   mixedVersions: '各节点版本不一致'
 }

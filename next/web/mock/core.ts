@@ -37,7 +37,7 @@ export interface Identity {
 }
 
 // The built-in roles' defaults (authz/catalog.go): the user role's, the
-// supplier's, and the supplier agent's (CONTRACTS §102.1): both of those and
+// supplier's, and the supplier agent's (CONTRACTS §103.1): both of those and
 // its team's.
 export const USER_KEYS = ['apikey:self:manage', 'balance:self:read', 'usage:self:read', 'gateway:use']
 export const SUPPLIER_KEYS = [
@@ -89,7 +89,7 @@ export const vendorUser: Identity = {
 
 /**
  * Sign in as agent@example.com (password admin): the built-in supplier_agent
- * role (CONTRACTS §102.1), a user's and a supplier's keys plus its team's:
+ * role (CONTRACTS §103.1), a user's and a supplier's keys plus its team's:
  * reads, creates, edits and assigns roles to the users below it
  * (vendor@example.com among them), reads their accounts and those accounts'
  * usage, never their credentials or proxies.
@@ -206,7 +206,7 @@ export function ownerScope(who: Identity, action: string): Reach | null {
   return scopes.length ? { level: 'own', scopes } : null
 }
 
-/** The users below uid, every level (users.owner_id, CONTRACTS §102.2); resources.ts, which holds the users, answers it. */
+/** The users below uid, every level (users.owner_id, CONTRACTS §103.2); resources.ts, which holds the users, answers it. */
 let teamOf: (uid: number) => number[] = () => []
 export const resolveTeams = (resolve: (uid: number) => number[]) => {
   teamOf = resolve

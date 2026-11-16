@@ -17,7 +17,7 @@ const (
 	// and brings its own accounts and proxies (CONTRACTS §21).
 	RoleSupplier = "supplier"
 	// RoleSupplierAgent is an add-on role: a supplier that also manages the
-	// users below it (CONTRACTS §102).
+	// users below it (CONTRACTS §103).
 	RoleSupplierAgent = "supplier_agent"
 	RoleUser          = "user"
 )
@@ -121,7 +121,7 @@ var coreModules = []coreModule{
 		{key: perm.AccountRelay, en: "Create relay-type accounts with custom upstream", zh: "创建自定义上游的 relay 类账号", sensitive: true,
 			desc: lt("Create accounts whose upstream address is free (relay) or re-point it; only matters to callers with a restricted account scope (own, group or account).", "创建或改动可自定义上游地址的账号（relay）；只对账号范围受限（仅自己、某分组或单个账号）的人生效。"), requires: req(perm.AccountCreate)},
 		// 所属 (accounts.owner_id) decides whose own and team scopes reach
-		// an account (CONTRACTS §102).
+		// an account (CONTRACTS §103).
 		{key: perm.AccountOwnerUpdate, en: "Change account owners", zh: "修改账号所属", sensitive: true,
 			desc: lt("Move an account to another user, its owner: whose own and team account scopes reach it.", "把账号的所属改为其他用户；所属决定哪些人的“自己的”“自己及下级”账号范围能看到它。"), requires: req(perm.AccountRead)},
 	}},
@@ -157,7 +157,7 @@ var coreModules = []coreModule{
 			desc: lt("View site-wide usage logs and statistics, user emails included.", "查看全站使用日志与统计，包含用户邮箱。")},
 		// Scopable like account:read: the requests served by the accounts
 		// of the scope, through the account-side view (/account-usage,
-		// CONTRACTS §102), which shows no user, API key or billed amount.
+		// CONTRACTS §103), which shows no user, API key or billed amount.
 		{key: perm.UsageAccountRead, en: "View account usage", zh: "查看账号的使用记录", sensitive: true,
 			desc: lt("View the usage logs and statistics of accounts within the scope granted, without users, API keys or billed amounts.", "查看授权范围内账号的使用记录与统计，不含用户、API Key 与计费金额。"), requires: req(perm.AccountRead)},
 		// Reconcile again, or refund, a pre-charged request the core gave up
@@ -248,7 +248,7 @@ var supplierPermissions = []string{
 }
 
 // supplierAgentPermissions are granted to the built-in "supplier_agent"
-// role (CONTRACTS §102.1): a user's and a supplier's, so that the role
+// role (CONTRACTS §103.1): a user's and a supplier's, so that the role
 // alone is enough (D8) and covers the users it manages, and for the users
 // below it (team) reading their accounts and the usage of those, and
 // reading, creating, editing and assigning roles to those users. Left out

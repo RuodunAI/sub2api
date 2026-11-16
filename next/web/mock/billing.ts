@@ -1524,7 +1524,7 @@ on('GET', '/me/usage/:id', (req) => {
 
 // ------------------------------------------------------------------ account usage
 
-// GET /account-usage/* (CONTRACTS §102.5): the records of the accounts in the
+// GET /account-usage/* (CONTRACTS §103.5): the records of the accounts in the
 // caller's reach of usage:account:read (deleted ones' records stay out of the
 // mock: it forgets a deleted account), whitelisted fields only.
 const ACCOUNT_USAGE_FILTERS = [

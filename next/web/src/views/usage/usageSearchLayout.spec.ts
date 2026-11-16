@@ -128,7 +128,7 @@ describe('usageSearchLayout', () => {
     expect(new Set(params).size).toBe(params.length)
   })
 
-  it('gives the account view the account\'s facts only: no user, key, group, IP, conversion or billing (CONTRACTS §102.5)', () => {
+  it('gives the account view the account\'s facts only: no user, key, group, IP, conversion or billing (CONTRACTS §103.5)', () => {
     const view = { ...self, view: 'account' as const }
     const { primary, advanced, params } = usageSearchLayout(view)
     expect(primary).toEqual(['model', 'account'])

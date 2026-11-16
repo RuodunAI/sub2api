@@ -659,7 +659,7 @@ export interface MockUser {
   status: string
   roles: string[]
   balance: string
-  /** The user above (CONTRACTS §102.3). */
+  /** The user above (CONTRACTS §103.3). */
   owner_id: number | null
   last_login_at: string | null
   created_at: string
@@ -673,7 +673,7 @@ export const users: MockUser[] = [
   { id: 4, email: 'dev@acme.io', display_name: 'Acme Dev', status: 'active', roles: ['user'], balance: '250.00000000', owner_id: null, last_login_at: now(-600), created_at: now(-86400 * 10), updated_at: now(-86400) },
   { id: 5, email: 'old@example.com', display_name: 'Former user', status: 'disabled', roles: ['user'], balance: '0.00000000', owner_id: null, last_login_at: null, created_at: now(-86400 * 80), updated_at: now(-86400 * 30) },
   { id: agentUser.id, email: agentUser.email, display_name: agentUser.display_name, status: 'active', roles: ['supplier_agent'], balance: '0.00000000', owner_id: null, last_login_at: now(-1800), created_at: now(-86400 * 6), updated_at: now(-86400) },
-  // The vendor and the first two generated users are the agent's team (CONTRACTS §102).
+  // The vendor and the first two generated users are the agent's team (CONTRACTS §103).
   { id: vendorUser.id, email: vendorUser.email, display_name: vendorUser.display_name, status: 'active', roles: ['vendor'], balance: '0.00000000', owner_id: agentUser.id, last_login_at: now(-7200), created_at: now(-86400 * 5), updated_at: now(-86400) },
   { id: readonlyUser.id, email: readonlyUser.email, display_name: readonlyUser.display_name, status: 'active', roles: ['readonly'], balance: '0.00000000', owner_id: null, last_login_at: now(-86400), created_at: now(-86400 * 5), updated_at: now(-86400) },
   { id: pricerUser.id, email: pricerUser.email, display_name: pricerUser.display_name, status: 'active', roles: ['pricer'], balance: '0.00000000', owner_id: null, last_login_at: now(-86400), created_at: now(-86400 * 5), updated_at: now(-86400) },
@@ -687,7 +687,7 @@ function findUser(req: MockRequest) {
   return users.find((u) => u.id === Number(req.params.id))
 }
 
-/** The users below uid, at most 8 levels (users.owner_id, CONTRACTS §102.2). */
+/** The users below uid, at most 8 levels (users.owner_id, CONTRACTS §103.2). */
 function teamOf(uid: number): number[] {
   const out: number[] = []
   let frontier = [uid]
@@ -699,7 +699,7 @@ function teamOf(uid: number): number[] {
 }
 resolveTeams(teamOf)
 
-/** The users a user action reaches (CONTRACTS §102.3): every user (null), the caller's team, or none (undefined). */
+/** The users a user action reaches (CONTRACTS §103.3): every user (null), the caller's team, or none (undefined). */
 function userReach(who: Identity, action: string): number[] | null | undefined {
   if (hasPerm(who, action)) return null
   return hasPerm(who, `${action}:team`) ? teamOf(who.id) : undefined

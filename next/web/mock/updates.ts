@@ -1,21 +1,35 @@
-import { fail, now, on } from './router'
+import { now, on } from './router'
 import { stepUp } from './core'
 
-let repository = 'example/sub2api'
-let imported = false
-on('GET', '/system/version', () => ({ version: '0.1.8', managed: true }))
-on('GET', '/system/update-source', () => ({ repository }))
+const DEFAULT_REPOSITORY = 'Sub2API-Devs/sup2api'
+const source = { enabled: true, kind: 'github', repository: DEFAULT_REPOSITORY, url: '', has_secret: false, revision: 1 }
+const view = () => ({ ...source, default_repository: DEFAULT_REPOSITORY })
+on('GET', '/system/version', () => ({ version: '0.1.290', managed: true }))
+on('GET', '/system/update-source', view)
 on('PUT', '/system/update-source', stepUp('system.update', req => {
-  repository = String(req.body?.repository || '').replace(/^https:\/\/github.com\//, '').replace(/\/$/, '')
-  return { repository }
+  const b = req.body || {}
+  const moved = b.kind !== source.kind || b.repository !== source.repository || b.url !== source.url
+  Object.assign(source, { enabled: !!b.enabled, kind: b.kind, repository: String(b.repository || '').replace(/^https:\/\/github.com\//, '').replace(/\/$/, ''), url: b.url, revision: source.revision + 1 })
+  if (b.secret !== undefined) source.has_secret = b.secret !== ''
+  else if (moved) source.has_secret = false
+  return view()
 }))
-on('GET', '/system/update-check', () => ({ repository, current_version: '0.1.8', latest_version: repository ? '0.1.9' : '', has_update: !!repository, compatible: !!repository, tag: 'v0.1.9', release_url: `https://github.com/${repository}/releases/tag/v0.1.9`, notes: '改进网关状态展示与在线更新检测。\nGateway state visibility and online update checks.', manifest_asset: 'manifest.json', checked_at: now(), published_at: now(-3600), cached: false }))
-on('POST', '/system/releases/import', stepUp('system.update', req => {
-  if (req.body?.repository !== repository) return fail(409, 'conflict', 'Update source changed')
-  imported = true
-  return { digest: 'release-online', manifest: { release_id: 'v0.1.9', build_id: 'online', source_commit: 'demo', created_at: now() } }
+const line = (version: string, latest: string, page: string) => ({
+  latest_version: latest, has_update: latest !== version, compatible: true, reason: '', notes: '改进网关状态展示与在线更新检测。\nGateway state visibility and online update checks.',
+  page, published_at: now(-3600), checked_at: now(-60), last_success_at: now(-60), error: ''
+})
+on('GET', '/system/update-check', () => ({
+  enabled: source.enabled,
+  source: { kind: source.kind, repository: source.repository, url: source.url },
+  core: { ...line('0.1.290', '0.1.291', `https://github.com/${source.repository}/releases/tag/core-v0.1.291`), current_version: '0.1.290', strategy: 'primary-first', tag: 'core-v0.1.291' },
+  gateway: {
+    ...line('0.1.135', '0.1.136', `https://github.com/${source.repository}/releases/tag/gateway-v0.1.136`),
+    nodes: [{ node_id: 'node-1', version: '0.1.135' }, { node_id: 'node-2', version: '0.1.135' }, { node_id: 'node-3', version: '' }],
+    self_update: false, image: 'ghcr.io/sub2api-devs/sup2api-gateway@sha256:4f1c0e2b9a7d', tag: 'gateway-v0.1.136'
+  }
 }))
-on('GET', '/system/releases', () => ({ releases: [
-  ...['old','new'].map((v,i) => ({ digest:`release-${v}`,manifest:{ release_id:`0.1.${7+i}`,build_id:v,source_commit:'demo',created_at:now(-100) } })),
-  ...(imported ? [{ digest: 'release-online', manifest: { release_id: 'v0.1.9', build_id: 'online', source_commit: 'demo', created_at: now() } }] : [])
-] }))
+on('POST', '/system/updates/apply', stepUp('system.update', req => {
+  if (req.body?.line === 'core' && !req.body?.confirm) return { status: 'needs_confirmation', reason_codes: [{ code: 'schema_change', message: 'the release changes the database schema' }], preflight: {} }
+  return { status: 'started', plan_id: 'plan-1' }
+}))
+on('GET', '/system/releases', () => ({ releases: ['old', 'new'].map((v, i) => ({ digest: `release-${v}`, manifest: { release_id: `0.1.${7 + i}`, build_id: v, source_commit: 'demo', created_at: now(-100) } })) }))

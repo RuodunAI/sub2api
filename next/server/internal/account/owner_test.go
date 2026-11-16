@@ -9,7 +9,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// 所属 (CONTRACTS §102): a new account is owned by its creator; own scopes,
+// 所属 (CONTRACTS §103): a new account is owned by its creator; own scopes,
 // mine and owner_id follow the owner, created_by the creator. Only
 // account:owner:update moves the owner (PUT /accounts/:id/owner), to a user
 // that is not deleted, audited as account.owner; the account goes with it.

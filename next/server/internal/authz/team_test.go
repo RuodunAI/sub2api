@@ -91,7 +91,7 @@ func TestTeam(t *testing.T) {
 // core.Scope (and Router.PermScoped, through the same ResolveScope) reach
 // the rows of the holder's team with a team scope: accounts owned by a user
 // below it, users below it (not itself), never anyone else's; an access
-// key narrows team to own before it is resolved (CONTRACTS §102.2).
+// key narrows team to own before it is resolved (CONTRACTS §103.2).
 func TestTeamScope(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)

@@ -20,7 +20,7 @@ import (
 //	        plugin actions:  resource "/" value
 //	seg   = id | "*"
 //
-// "team" (CONTRACTS §102) is the caller's rows and those of every user
+// "team" (CONTRACTS §103) is the caller's rows and those of every user
 // below it (users.owner_id); only core actions take it, and of the user
 // actions it is the only scope besides "*". A missing scope is "*": every
 // row, so every unscoped key keeps its meaning. The last segment of a key

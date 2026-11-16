@@ -2,7 +2,7 @@ import { useAuthStore } from '@/stores/auth'
 import { scopeAllowsRow, type ScopedRow } from '@/authz/implies'
 import { P, type ScopableKey, type ScopedPermKey } from '@/generated/permissions'
 
-// Resource scopes (CONTRACTS §21, §102.2): an action key reaches every row
+// Resource scopes (CONTRACTS §21, §103.2): an action key reaches every row
 // (account:update), or the rows of its scope: own (the caller's: an account
 // it owns, a proxy it created), team (the caller's and those of the users
 // below it), group/<g> (accounts bound to the group), account/<id>,

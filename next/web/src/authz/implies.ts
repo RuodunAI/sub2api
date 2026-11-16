@@ -8,7 +8,7 @@
 //           plugin actions:  resource "/" value
 //   seg   = id | "*"
 //
-// "team" (CONTRACTS §102) is the caller's rows and those of the users below
+// "team" (CONTRACTS §103) is the caller's rows and those of the users below
 // it; only core actions take it, and user actions no other scope but "*".
 // A missing scope is "*": every row. The last segment of a key is a scope
 // only when it is "*", "own", holds a "/", or is "team" after a scopable
@@ -189,7 +189,7 @@ export interface ScopedRow {
   id?: number | null
   /** The creator: the owner own and team check on a row without owner_id (a proxy). */
   created_by?: number | null
-  /** The owner of a row that has one apart from its creator (an account, CONTRACTS §102.4). */
+  /** The owner of a row that has one apart from its creator (an account, CONTRACTS §103.4). */
   owner_id?: number | null
   group_ids?: readonly number[] | null
 }

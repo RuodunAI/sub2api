@@ -16,5 +16,22 @@ export default {
   history: 'Update history', noPlans: 'No updates yet.', status: 'Status', step: 'Step', pause: 'Pause', resume: 'Resume', rollback: 'Restore previous release', cancel: 'Cancel unstarted update',
   states: { running: 'Running', paused: 'Paused', failed: 'Failed', completed: 'Completed', cancelled: 'Cancelled', superseded: 'Replaced by recovery', pending: 'Pending', done: 'Completed' },
   actions: { prepare: 'Download and verify', redirect: 'Forward to primary', stop: 'Drain and stop core', maintenance: 'Enter cluster maintenance', 'start-primary': 'Update primary and migrate database', start: 'Start target follower core', admit: 'Check plugins and admission', local: 'Resume local service' },
-  modes: { local: 'Local service', 'local-serving': 'Local service', forward: 'Forward to peer', 'forward-only': 'Forward to peer', candidate: 'Candidate', maintenance: 'Maintenance', stopped: 'Stopped' }
+  modes: { local: 'Local service', 'local-serving': 'Local service', forward: 'Forward to peer', 'forward-only': 'Forward to peer', candidate: 'Candidate', maintenance: 'Maintenance', stopped: 'Stopped' },
+  issues: {
+    release_incompatible: 'The release cannot follow the installed one: {message}',
+    plugin_incompatible: 'An active plugin does not support the target core: {message}',
+    plugins_changing: 'A plugin install, upgrade or removal is in progress: {message}',
+    core_unmanaged: 'A core the gateway does not manage is serving: {message}',
+    no_nodes: 'No enabled node is registered',
+    already_current: 'Every enabled node already runs the target gateway',
+    primary_unregistered: 'The primary node is not registered',
+    upgrade_active: 'Another upgrade is unfinished',
+    node_not_ready: 'Node {node} is not serving locally',
+    node_off_baseline: 'Node {node} does not run the approved baseline',
+    node_unsupported: 'Node {node} cannot run this upgrade: {message}',
+    maintenance_release: 'The release is signed for a maintenance update, so it cannot roll',
+    schema_change: 'The release changes the database schema, so it cannot roll',
+    too_few_serving: 'Fewer than {min} nodes serve, so none can take over another node\'s traffic and the update cannot roll',
+    single_node: 'Only one node: nobody takes its traffic while its gateway restarts, an interruption of about {seconds} s'
+  }
 }

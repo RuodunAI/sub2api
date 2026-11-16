@@ -59,7 +59,7 @@ const router = useRouter()
 /** A filter the address bar may set: other pages link here with ?role= or ?segment=. */
 const fromQuery = (key: string) => (typeof route.query[key] === 'string' ? route.query[key] : '')
 const scope = useScope()
-// The users in reach of user:read (CONTRACTS §102.3): every user, or the
+// The users in reach of user:read (CONTRACTS §103.3): every user, or the
 // caller's team; owner_id narrows to those directly under a user, direct to
 // those directly under the caller.
 const list = useList<User>('/users', { q: '', status: '', role: fromQuery('role'), segment: fromQuery('segment'), owner_id: '', direct: '' })
@@ -146,7 +146,7 @@ function rowActions(u: User): MenuAction[] {
   const may = (perm: PermRef) => auth.has(perm) && manageable
   return [
     // user:update at any scope: the list holds only the users in reach. The
-    // password and delete need the unscoped keys, never the team's (CONTRACTS §102.1).
+    // password and delete need the unscoped keys, never the team's (CONTRACTS §103.1).
     { key: 'edit', label: t('common.edit'), hidden: !(manageable && auth.hasAction(P.UserUpdate)) },
     { key: 'roles', label: t('users.assignRoles'), hidden: !may('role:assign') },
     { key: 'pricing', label: t('users.pricing.action'), hidden: !auth.has('segment:read') },

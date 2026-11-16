@@ -332,7 +332,7 @@ type View struct {
 	CreatedBy      *int64  `json:"created_by"`
 	CreatedByEmail *string `json:"created_by_email"`
 	// OwnerID is the account's 所属, whose own and team scopes reach it
-	// (CONTRACTS §102): the creator unless an administrator moved it; null
+	// (CONTRACTS §103): the creator unless an administrator moved it; null
 	// as created_by. OwnerEmail is kept for soft-deleted users.
 	OwnerID    *int64  `json:"owner_id"`
 	OwnerEmail *string `json:"owner_email"`
@@ -555,7 +555,7 @@ func (s *Service) list(c *gin.Context) {
 	var conds store.Conds
 	conds.And("a.deleted_at IS NULL")
 	// Visible range: the caller's account:read scope (CONTRACTS §21), its
-	// team resolved (§102); within it mine=true narrows to the caller's own
+	// team resolved (§103); within it mine=true narrows to the caller's own
 	// accounts, subordinates=true to those of the users below it (none
 	// without a team scope), owner_id=<id> and created_by=<id> to that
 	// owner's and that creator's.
@@ -1956,7 +1956,7 @@ type OwnerView struct {
 	OwnerEmail string `json:"owner_email"`
 }
 
-// putOwner moves an account to another owner (所属, CONTRACTS §102): a
+// putOwner moves an account to another owner (所属, CONTRACTS §103): a
 // user that exists and is not deleted. The owner is row data, as
 // created_by is: no authz version moves. A move is audited as
 // account.owner (from, to); naming the current owner changes nothing.

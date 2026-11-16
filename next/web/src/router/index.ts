@@ -67,7 +67,7 @@ const children: RouteRecordRaw[] = [
   { path: 'prices/:id', component: () => import('@/views/prices/PriceEditView.vue'), meta: { perm: 'price:read', title: 'prices.editTitleShort', parent: '/prices' } },
   { path: 'usage/overview', component: () => import('@/views/usage/UsageOverviewView.vue'), props: { view: 'all' }, meta: { perm: 'usage:all:read', title: 'nav.items.usageOverview' } },
   { path: 'usage', component: () => import('@/views/usage/UsageView.vue'), meta: { perm: 'usage:all:read', title: 'nav.items.usage' } },
-  // The usage of the accounts in reach, with the account's facts only (CONTRACTS §102.5).
+  // The usage of the accounts in reach, with the account's facts only (CONTRACTS §103.5).
   { path: 'account-usage/overview', component: () => import('@/views/usage/UsageOverviewView.vue'), props: { view: 'account' }, meta: { action: P.UsageAccountRead, title: 'nav.items.accountUsageOverview' } },
   { path: 'account-usage', component: () => import('@/views/usage/UsageView.vue'), props: { view: 'account' }, meta: { action: P.UsageAccountRead, title: 'nav.items.accountUsage' } },
   { path: 'me/models', component: () => import('@/views/me/MyModelsView.vue'), meta: { perm: 'apikey:self:manage', title: 'nav.items.myModels' } },

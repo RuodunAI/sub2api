@@ -17,10 +17,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
@@ -167,7 +167,7 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("GET", "/accounts/:id", s.get, perm.AccountRead)
 	r.PermScoped("PATCH", "/accounts/:id", s.update, perm.AccountUpdate).Uses(fieldKeys...)
 	r.PermScoped("DELETE", "/accounts/:id", s.delete, perm.AccountDelete)
-	// 所属: an administrator moves an account to another owner (CONTRACTS §102).
+	// 所属: an administrator moves an account to another owner (CONTRACTS §103).
 	r.Perm("PUT", "/accounts/:id/owner", perm.AccountOwnerUpdate, s.putOwner)
 	r.PermScoped("POST", "/accounts/:id/test", s.test, perm.AccountTest)
 	r.PermScoped("POST", "/accounts/:id/models/fetch", s.fetchAccountModels, perm.AccountTest).Uses(perm.AccountRelay)

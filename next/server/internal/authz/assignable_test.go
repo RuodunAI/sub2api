@@ -38,7 +38,7 @@ func assignableOf(t *testing.T, s *Service, roleKeys ...string) ([]string, bool)
 // A new database seeds the default lists of decision 5: admin assigns
 // operator, supplier, supplier agent, user and every custom role; operator
 // assigns supplier and user; a supplier agent suppliers and agents
-// (CONTRACTS §102); nobody else anything. Each seeded entry is audited once, as
+// (CONTRACTS §103); nobody else anything. Each seeded entry is audited once, as
 // part of a role created now (P4F3).
 func TestBuiltinAssignableDefaults(t *testing.T) {
 	t.Parallel()

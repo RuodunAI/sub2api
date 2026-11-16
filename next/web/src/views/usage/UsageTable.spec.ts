@@ -128,7 +128,7 @@ describe('usage records layout', () => {
     expect(w.find('[data-testid="model-badge"]').exists()).toBe(true)
     expect(w.find('[data-platform]').exists()).toBe(false)
   })
-  it('shows the account view no API key or client, and the cost at the list price (CONTRACTS §102.5)', () => {
+  it('shows the account view no API key or client, and the cost at the list price (CONTRACTS §103.5)', () => {
     const w = mount(UsageTable, { props: { rows: [{ ...row, success: true, billing_status: undefined, total_cost: '777', standard_cost: '1.5' } as unknown as UsageRow], showUser: false, view: 'account' }, global })
     expect(w.text()).not.toContain(i18n.global.t('usage.request.apiKey'))
     expect(w.find('[data-testid="ip-address-filter"]').exists()).toBe(false)

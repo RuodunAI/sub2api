@@ -3,7 +3,7 @@ import { api } from '@sub2api/host'
 import type { Money, UsageSummaryRow } from '@/api/types'
 import { browserTZ } from '@/components/stats/stats'
 
-/** A row as answered: the account view's (CONTRACTS §102.5) has no billed cost. */
+/** A row as answered: the account view's (CONTRACTS §103.5) has no billed cost. */
 type SummaryAnswer = Omit<UsageSummaryRow, 'total_cost'> & { total_cost?: Money }
 /** The row's cost: billed, or the list price where nothing billed is shown. */
 const withCost = ({ total_cost, ...r }: SummaryAnswer): UsageSummaryRow => ({ ...r, total_cost: total_cost ?? r.standard_cost ?? '0' })

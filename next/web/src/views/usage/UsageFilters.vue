@@ -13,7 +13,7 @@
 // type does; it applies at once like any pick. A type these fields do not
 // search (`searchable` = false) brings its own in #filters. The `view` says
 // whose usage is searched: an operator's search, the caller's own entities,
-// or (`account`, CONTRACTS §102.5) the accounts in the caller's reach by their
+// or (`account`, CONTRACTS §103.5) the accounts in the caller's reach by their
 // facts only, entities picked, never named.
 // The filters sit in an SFilterBar: on a phone the range sits above it, the
 // log type and the first-row fields stay in sight beside its Filters button

@@ -15,7 +15,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// CheckOwner implements core.OwnerGuard (CONTRACTS §102.3). It takes the
+// CheckOwner implements core.OwnerGuard (CONTRACTS §103.3). It takes the
 // authz lock (lockVersion), so the owner graph it reads cannot move under
 // it; the caller's Bump naming userID tells every node's teams of the move.
 // Whether the actor may name the owner is settled before anything about
@@ -153,7 +153,7 @@ func (s *Service) ownerManages(ctx context.Context, q *gorm.DB, owner int64, tar
 // ownersKeepManaging is ownerManages after a write to what role key grants
 // or may assign, refused on field, the write's: every live user with a
 // live owner, either of them holding key, must still be one its owner
-// manages (CONTRACTS §102.3). Users compare by their roles, so each pair of
+// manages (CONTRACTS §103.3). Users compare by their roles, so each pair of
 // role sets is judged once; details.user_id names a user of a pair that
 // fails.
 func (s *Service) ownersKeepManaging(ctx context.Context, q *gorm.DB, key, field string) error {

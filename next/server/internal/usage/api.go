@@ -136,7 +136,7 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.Perm("GET", "/usage/export", "usage:all:read", s.allExport)
 	r.Perm("GET", "/me/usage/export", "usage:self:read", s.myExport)
 	r.Perm("GET", "/usage/:id", "usage:all:read", s.usageDetail)
-	// The account side (CONTRACTS §102.5): the records of the accounts in
+	// The account side (CONTRACTS §103.5): the records of the accounts in
 	// the caller's usage:account:read scope, allowlisted fields only.
 	r.PermScoped("GET", "/account-usage", s.accountUsage, perm.UsageAccountRead)
 	r.PermScoped("GET", "/account-usage/summary", s.accountSummary, perm.UsageAccountRead)
@@ -220,7 +220,7 @@ const (
 	trailAccounts trailView = iota // an operator with account:read: as stored
 	trailRefs                      // an operator without: account_ref instead of account_id
 	trailSelf                      // the request's owner: each attempt's outcome and time
-	// trailScoped is the account side (CONTRACTS §102.5): the outcome, time
+	// trailScoped is the account side (CONTRACTS §103.5): the outcome, time
 	// and next step of each attempt, its account as stored and named when
 	// the caller's scope reaches it, else as account_ref.
 	trailScoped

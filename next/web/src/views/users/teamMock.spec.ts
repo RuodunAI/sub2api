@@ -1,6 +1,6 @@
 // @vitest-environment node
 // The users and account owners of the dev mock hold to what the server
-// answers (CONTRACTS §102.3, §102.4): a supplier agent reaches its team, names
+// answers (CONTRACTS §103.3, §103.4): a supplier agent reaches its team, names
 // no owner but itself, and an administrator moves users and accounts.
 import { beforeAll, describe, expect, it } from 'vitest'
 import { mockServer, type MockServer } from '@/testing/mockServer'

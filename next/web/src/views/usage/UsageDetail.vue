@@ -28,7 +28,7 @@ import type { FailureDecision } from '@/views/settings/failurePolicy'
 
 // Expanded usage record: billing detail (A.14), request info, tokens, hooks, sticky.
 // `view` `self`: the caller's own records, whose attempts show no accounts;
-// `account`: the account's facts only (CONTRACTS §102.5): no billing, no
+// `account`: the account's facts only (CONTRACTS §103.5): no billing, no
 // group, key, client or user agent; the cost at the list price.
 const props = defineProps<{ row: UsageRow; path?: string; view: UsageView }>()
 const accountView = computed(() => props.view === 'account')

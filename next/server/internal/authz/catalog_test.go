@@ -341,7 +341,7 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	}
 }
 
-// The upgrade to 0.1.291 (CONTRACTS §102.1) on a database a 0.1.290 sync
+// The upgrade to 0.1.292 (CONTRACTS §103.1) on a database a 0.1.291 sync
 // left behind, rewound here from a current one: no supplier_agent, supplier
 // at rev 1, no usage:account:read or account:owner:update; and as in
 // production after edits, a custom role on the key supplier_agent, a held
@@ -351,7 +351,7 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 // rev 2 (the default an administrator removed comes back, the extra one
 // stays), the new keys granted, and a supplier holder past what the agent
 // role carries is one agents do not manage. A second sync changes nothing.
-func TestSyncCoreUpgradeTo0291(t *testing.T) {
+func TestSyncCoreUpgradeTo0292(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	fresh := testutil.DB(t)

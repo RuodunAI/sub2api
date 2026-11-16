@@ -32,7 +32,7 @@ export const conversionFilterLabel = (v: string) =>
 const QUERY_FILTERS = ['user_id', 'group_id', 'group_name', 'model', 'model_contains', 'api_key_id', 'account_id', 'retried', 'from', 'to'] as const
 /** Link filters of an operator only: a user cannot preset another user. */
 const OPERATOR_QUERY_FILTERS: readonly string[] = ['user_id', 'group_name', 'account_id']
-/** The link filters of the account view (CONTRACTS §102.5), which refuses the rest. */
+/** The link filters of the account view (CONTRACTS §103.5), which refuses the rest. */
 const ACCOUNT_QUERY_FILTERS: readonly string[] = ['model', 'account_id', 'retried', 'from', 'to']
 
 /**

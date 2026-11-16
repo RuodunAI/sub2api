@@ -17,7 +17,7 @@ export interface RowActionDeps {
   canRefreshCreds: (a: Account) => boolean
   canUpdate: (a: Account) => boolean
   canDelete: (a: Account) => boolean
-  /** account:owner:update (CONTRACTS §102.4). */
+  /** account:owner:update (CONTRACTS §103.4). */
   canChangeOwner: (a: Account) => boolean
   openDetail: (a: Account) => unknown
   reveal: (a: Account) => unknown

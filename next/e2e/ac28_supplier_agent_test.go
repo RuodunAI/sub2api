@@ -11,7 +11,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// AC 28: supplier agents and team scopes (CONTRACTS §102, plan 0.1.291
+// AC 28: supplier agents and team scopes (CONTRACTS §103, plan 0.1.291
 // §5.1–5.6). The tree is admin → agent A → agent B → supplier C, beside an
 // unrelated agent X and a plain user U. Every check is a way out of the
 // team: reading or changing users, accounts, usage and plugin routes past
@@ -516,7 +516,7 @@ func TestAC28_SupplierAgentTeam(t *testing.T) {
 		X.OK(t, http.MethodGet, userPath(E), nil)
 	})
 
-	// D7 and §102.4: a deleted user stays in the team; moving an account
+	// D7 and §103.4: a deleted user stays in the team; moving an account
 	// moves who sees it at once.
 	t.Run("deleted users and moved accounts", func(t *testing.T) {
 		e := e.With(t)
