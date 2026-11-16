@@ -10,9 +10,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
-	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 )
 
 func TestHostSecrets(t *testing.T) {
