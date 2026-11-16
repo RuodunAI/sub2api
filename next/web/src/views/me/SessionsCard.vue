@@ -48,9 +48,9 @@ async function revoke(row: Session) {
 async function revokeOthers() {
   if (!(await confirm({ title: t('me.sessions.revokeOthers'), message: t('me.sessions.revokeOthersConfirm'), danger: true }))) return
   try {
-    const sentWith = session.get()?.access_token
-    const r = await api.post<{ access_token?: string } | null>('/me/sessions/revoke-others', {})
-    // This session's new token (CONTRACTS §100.4): the old one, and any copy of it, ends shortly.
+    let sentWith: string | undefined
+    const r = await api.post<{ access_token?: string } | null>('/me/sessions/revoke-others', {}, { onSentWith: (token) => (sentWith = token) })
+    // This session's new token (CONTRACTS §100.4) in place of the one the request went with: that one, and any copy of it, ends shortly.
     if (r?.access_token) session.adoptRotated(sentWith, r.access_token)
     toast(t('me.sessions.revoked'), 'success')
     await load()

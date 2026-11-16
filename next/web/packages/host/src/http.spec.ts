@@ -291,6 +291,18 @@ describe('session.adoptRotated', () => {
     expect(JSON.parse(localStorage.getItem('s2a.session')!)).toEqual({ access_token: 's2s_other' })
   })
 
+  it('takes up a rotation of a request resent with the token another tab stored (onSentWith)', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_old' })
+    // Another tab rotated the session; this one, its storage event not in yet, sends the old token.
+    localStorage.setItem('s2a.session', JSON.stringify({ access_token: 's2s_other' }))
+    stubFetch((_url, init) => (init.headers.Authorization === 'Bearer s2s_other' ? json({ access_token: 's2s_rotated' }) : json({ code: 'unauthenticated' }, 401)))
+    let sentWith: string | undefined
+    const r = await http.api.post<{ access_token: string }>('/me/verify', {}, { onSentWith: (token) => (sentWith = token) })
+    expect(sentWith).toBe('s2s_other')
+    expect(http.session.adoptRotated(sentWith, r.access_token)).toBe(true)
+    expect(http.session.get()?.access_token).toBe('s2s_rotated')
+  })
+
   it('does not sign a signed-out or newly signed-in console back into the old session', () => {
     expect(http.session.adoptRotated('s2s_a', 's2s_b')).toBe(false)
     expect(http.session.get()).toBeNull()

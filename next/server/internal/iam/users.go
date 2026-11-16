@@ -501,7 +501,8 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 		return errSelfDisable
 	}
 
-	// SEC-H1: check authorization to delete target user
+	// SEC-H1: check authorization to delete target user (fails fast; checked
+	// again below)
 	if err := s.authz.CanActOnUser(ctx, actorID, core.ActOnIdentity, id); err != nil {
 		return err
 	}
@@ -511,6 +512,12 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
 		if v, err = s.authz.Bump(ctx, tx, id); err != nil {
+			return err
+		}
+		// Checked again after Bump, which holds role changes off until
+		// commit: the target may have been given a role the actor does not
+		// manage since the check above (as applyUpdateTx does).
+		if err := s.authz.CanActOnUser(ctx, actorID, core.ActOnIdentity, id); err != nil {
 			return err
 		}
 		g := store.G(ctx, tx)

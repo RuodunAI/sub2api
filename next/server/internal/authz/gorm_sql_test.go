@@ -156,6 +156,7 @@ func TestSQLAuthzRoleWrites(t *testing.T) {
 		{"defaults_rev", func(db *gorm.DB) *gorm.DB { return setDefaultsRev(db, 3, 4) }},
 		{"touch", func(db *gorm.DB) *gorm.DB { return touchRole(db, 3) }},
 		{"revise", func(db *gorm.DB) *gorm.DB { return reviseRole(db, 3) }},
+		{"revise_listing", func(db *gorm.DB) *gorm.DB { return reviseListing(db, 3) }},
 		{"drop_assignable", func(db *gorm.DB) *gorm.DB { return dropAssignable(db, 3, store.Int64s{4, 5}) }},
 		{"assign_custom", func(db *gorm.DB) *gorm.DB { return setAssignCustom(db, 3, false) }},
 	})

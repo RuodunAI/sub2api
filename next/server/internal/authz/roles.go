@@ -279,49 +279,44 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 	if in.Description == nil {
 		in.Description = core.LocalizedText{}
 	}
-	var id int64
-	err := s.mutate(ctx, func(tx *gorm.DB) error {
+	return s.mutateRole(ctx, func(tx *gorm.DB) (int64, error) {
 		keys, grants, err := resolvePermissions(ctx, tx, in.PermissionKeys)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		assign, err := assignableRoles(ctx, tx, in.AssignableRoleKeys)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		grant, err := grantOf(ctx, tx, in.Key, keys, roleKeysOf(assign), in.AssignCustom)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if err := s.covers(ctx, tx, actorID, grant, cannotGrant(ctx)); err != nil {
-			return err
+			return 0, err
 		}
 		if err := s.stepUpCritical(ctx, grants, keys); err != nil {
-			return err
+			return 0, err
 		}
 		if err := checkScopeRefs(ctx, tx, keys); err != nil {
-			return err
+			return 0, err
 		}
-		id, err = insertRole(store.G(ctx, tx), in)
+		id, err := insertRole(store.G(ctx, tx), in)
 		if store.IsUniqueViolation(err, "") {
-			return core.ErrConflict.WithMessage("role key already exists")
+			return 0, core.ErrConflict.WithMessage("role key already exists")
 		}
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if err := writeGrants(ctx, tx, in.Key, grants, grantPart{}); err != nil {
-			return err
+			return 0, err
 		}
 		if err := setRoleAssignable(ctx, tx, id, assign, in.AssignCustom); err != nil {
-			return err
+			return 0, err
 		}
-		return s.audit(ctx, tx, actorID, "role.create", "role", id, map[string]any{"key": in.Key, "permission_keys": keys,
+		return id, s.audit(ctx, tx, actorID, "role.create", "role", id, map[string]any{"key": in.Key, "permission_keys": keys,
 			"assignable_role_keys": roleKeysOf(assign), "assign_custom": in.AssignCustom})
 	})
-	if err != nil {
-		return nil, err
-	}
-	return s.GetRole(ctx, id)
 }
 
 // insertRole inserts the custom role of in (its key, name and
@@ -359,23 +354,19 @@ func (s *Service) UpdateRole(ctx context.Context, actorID, id int64, in UpdateRo
 	if in.Name != nil && in.Name.Get("en") == "" {
 		return nil, core.InvalidFields(core.FieldError{Field: "name", Code: "required", Message: "name is required"})
 	}
-	err := s.mutate(ctx, func(tx *gorm.DB) error {
+	return s.mutateRole(ctx, func(tx *gorm.DB) (int64, error) {
 		r, err := s.editableRole(ctx, tx, actorID, id, in.Revision)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if in.Key != nil && *in.Key != r.Key {
-			return errRoleKeyImmutable(ctx)
+			return 0, errRoleKeyImmutable(ctx)
 		}
 		if err := updateRole(store.G(ctx, tx), id, in).Error; err != nil {
-			return err
+			return 0, err
 		}
-		return s.audit(ctx, tx, actorID, "role.update", "role", id, in)
+		return id, s.audit(ctx, tx, actorID, "role.update", "role", id, in)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return s.GetRole(ctx, id)
 }
 
 // updateRole writes the name and description of in to role id, each kept
@@ -410,11 +401,22 @@ func (s *Service) DeleteRole(ctx context.Context, actorID, id int64) error {
 		if err := casbinrule.DeleteRole(store.G(ctx, tx), r.Key); err != nil {
 			return err
 		}
+		if err := reviseListing(store.G(ctx, tx), id).Error; err != nil {
+			return err
+		}
 		if err := deleteRole(store.G(ctx, tx), id).Error; err != nil {
 			return err
 		}
 		return s.audit(ctx, tx, actorID, "role.delete", "role", id, map[string]any{"key": r.Key})
 	})
+}
+
+// reviseListing moves the revision of the roles whose assignable list
+// names role id: deleting it takes it off those lists (the cascade of
+// role_assignable_roles), a change to each of those roles.
+func reviseListing(db *gorm.DB, id int64) *gorm.DB {
+	return db.Model(&model.Role{}).Where("id IN (?)", db.Model(&model.RoleAssignableRole{}).Select("role_id").Where("assignable_role_id = ?", id)).
+		Update("revision", gorm.Expr("revision + 1"))
 }
 
 // deleteRole deletes role id; its assignable lists cascade (its grants and
@@ -430,24 +432,20 @@ func deleteRole(db *gorm.DB, id int64) *gorm.DB {
 // (editableRole), so it cannot weaken a role above the actor (C-L2). rev,
 // when set, must be the role's revision, else version_conflict.
 func (s *Service) ResetRole(ctx context.Context, actorID, id int64, rev *int64) (*Role, error) {
-	err := s.mutate(ctx, func(tx *gorm.DB) error {
+	return s.mutateRole(ctx, func(tx *gorm.DB) (int64, error) {
 		r, err := s.editableRole(ctx, tx, actorID, id, rev)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		def, ok := builtinRoleByKey(r.Key)
 		if !r.Builtin || !ok {
-			return errNotBuiltinRole
+			return 0, errNotBuiltinRole
 		}
 		if err := resetRoleText(store.G(ctx, tx), id, def).Error; err != nil {
-			return err
+			return 0, err
 		}
-		return s.resetDefaults(ctx, tx, actorID, r, def, map[string]any{})
+		return id, s.resetDefaults(ctx, tx, actorID, r, def, map[string]any{})
 	})
-	if err != nil {
-		return nil, err
-	}
-	return s.GetRole(ctx, id)
 }
 
 // resetRoleText writes the name and description of def to role id;
@@ -513,17 +511,13 @@ func roleDetail(r *Role) map[string]any {
 // (editableRole), as setRolePart does. rev, when set, must be the role's
 // revision the editor read (Role.Revision), else version_conflict.
 func (s *Service) SetRolePermissions(ctx context.Context, actorID, id int64, keys []string, rev *int64) (*Role, error) {
-	err := s.mutate(ctx, func(tx *gorm.DB) error {
+	return s.mutateRole(ctx, func(tx *gorm.DB) (int64, error) {
 		r, err := s.editableRole(ctx, tx, actorID, id, rev)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		return s.setRolePart(ctx, tx, actorID, r, keys, grantPart{}, map[string]any{})
+		return id, s.setRolePart(ctx, tx, actorID, r, keys, grantPart{}, map[string]any{})
 	})
-	if err != nil {
-		return nil, err
-	}
-	return s.GetRole(ctx, id)
 }
 
 // setRolePart makes keys the grants of r (locked by editableRole) within
@@ -602,33 +596,29 @@ type AssignableInput struct {
 // "every custom role" flag included); what the role keeps is within it
 // already.
 func (s *Service) SetRoleAssignable(ctx context.Context, actorID, id int64, in AssignableInput) (*Role, error) {
-	err := s.mutate(ctx, func(tx *gorm.DB) error {
+	return s.mutateRole(ctx, func(tx *gorm.DB) (int64, error) {
 		r, err := s.editableRole(ctx, tx, actorID, id, in.Revision)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		assign, err := assignableRoles(ctx, tx, in.RoleKeys)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		keys := roleKeysOf(assign)
 		added := keysNotIn(keys, r.AssignableRoleKeys)
 		grant, err := grantOf(ctx, tx, r.Key, nil, added, in.AssignCustom && !r.AssignCustom)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if err := s.covers(ctx, tx, actorID, grant, cannotGrant(ctx)); err != nil {
-			return err
+			return 0, err
 		}
 		if err := setRoleAssignable(ctx, tx, id, assign, in.AssignCustom); err != nil {
-			return err
+			return 0, err
 		}
-		return s.audit(ctx, tx, actorID, "role.assignable", "role", id, map[string]any{"role_keys": keys, "assign_custom": in.AssignCustom, "added": added})
+		return id, s.audit(ctx, tx, actorID, "role.assignable", "role", id, map[string]any{"role_keys": keys, "assign_custom": in.AssignCustom, "added": added})
 	})
-	if err != nil {
-		return nil, err
-	}
-	return s.GetRole(ctx, id)
 }
 
 // assignableRoles resolves keys for an assignable list: each must exist and
@@ -1212,6 +1202,7 @@ func (s *Service) pluginRoleGrants(ctx context.Context, q *gorm.DB, actorID int6
 // when set, must be role k's revision (PluginRoleRow.Revision), else
 // version_conflict.
 func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, pluginKey string, roles map[string][]string, revs map[string]int64) (*PluginRoleMatrix, error) {
+	var out *PluginRoleMatrix
 	err := s.mutate(ctx, func(tx *gorm.DB) error {
 		db := store.G(ctx, tx)
 		found, err := store.Exists(db, permissionsOfPlugin(db, pluginKey))
@@ -1243,12 +1234,15 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 				return err
 			}
 		}
-		return nil
+		// Read in the write's transaction, as mutateRole does: the
+		// revisions it answers with are the ones it made.
+		out, err = s.pluginRoleGrants(ctx, tx, actorID, pluginKey)
+		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return s.PluginRoleGrants(ctx, actorID, pluginKey)
+	return out, nil
 }
 
 // setPluginRole makes keys, which must all be permissions of plugin

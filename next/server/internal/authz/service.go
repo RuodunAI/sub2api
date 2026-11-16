@@ -310,6 +310,26 @@ func (s *Service) mutate(ctx context.Context, fn func(tx *gorm.DB) error) error 
 	return nil
 }
 
+// mutateRole is mutate for a write of one role, whose id fn returns: the
+// role is read back in the same transaction, after fn, so that what the
+// write answers (its revision above all, which the console sends with its
+// next write) is what this write made, never someone else's change
+// committed after it.
+func (s *Service) mutateRole(ctx context.Context, fn func(tx *gorm.DB) (int64, error)) (*Role, error) {
+	var r *Role
+	err := s.mutate(ctx, func(tx *gorm.DB) error {
+		id, err := fn(tx)
+		if err == nil {
+			r, err = s.getRole(ctx, tx, id)
+		}
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // errVersionConflict is the refusal of a role write made against a role
 // revision other than the current one (expected, CONTRACTS C1): the editor
 // read before someone else's change to the role, which the write would
@@ -388,7 +408,8 @@ var errNoEnforcer = errors.New("authz: no database to decide permissions with")
 
 // Can is Casbin's decision: Enforce of permission for userID, through its
 // decision cache, at this node's version; under an access key, of the key's
-// narrowed set (PermissionSet).
+// narrowed set (PermissionSet). A decision the enforcer could not make is
+// an error (unavailable), never a denial.
 func (s *Service) Can(ctx context.Context, userID int64, permission string) (bool, error) {
 	if core.ByAccessKey(ctx, userID) {
 		set, err := s.PermissionSet(ctx, userID)
@@ -397,22 +418,34 @@ func (s *Service) Can(ctx context.Context, userID int64, permission string) (boo
 	if s.casbin == nil {
 		return false, errNoEnforcer
 	}
-	return s.casbin.Enforce(ctx, userID, s.Version(), permission)
+	ok, err := s.casbin.Enforce(ctx, userID, s.Version(), permission)
+	return ok, unavailable(err)
 }
 
 // PermissionSet returns what userID may do in this request, at this node's
-// version: Casbin's lists of the user's grants, its Has Casbin's Enforce;
-// under an access key the key's permissions, and never more than the
-// user's.
+// version: Casbin's lists of the user's grants, its Has Casbin's Enforce
+// (which reads nothing more: casbinx); under an access key the key's
+// permissions, and never more than the user's.
 func (s *Service) PermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
 	if s.casbin == nil {
 		return core.PermissionSet{}, errNoEnforcer
 	}
 	set, err := s.casbin.Permissions(ctx, userID, s.Version())
 	if err != nil {
-		return core.PermissionSet{}, err
+		return core.PermissionSet{}, unavailable(err)
 	}
 	return core.RestrictToAccessKey(ctx, userID, set), nil
+}
+
+// unavailable is the error of a decision the enforcer could not make: it
+// did not reach the version this node knows of in time (casbinx.ErrStale),
+// or could not read the user. 503, its cause logged with the request
+// (httpapi.Fail), so that a database fault never reads as a denial.
+func unavailable(err error) error {
+	if err == nil {
+		return nil
+	}
+	return core.ErrUnavailable.WithCause(err)
 }
 
 // RolesPermissions returns the union of all permissions granted by the given

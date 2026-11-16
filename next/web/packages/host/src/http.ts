@@ -115,6 +115,12 @@ export interface RequestOptions {
   anonymous?: boolean
   /** Headers from the final successful response, after auth retries. */
   onSuccessHeaders?: (headers: Headers) => void
+  /**
+   * The session token the final successful send went with (it may be one
+   * another tab stored, resent after a 401): what a rotation the response
+   * carries replaces (session.adoptRotated). UI 3.17.
+   */
+  onSentWith?: (token: string | undefined) => void
 }
 
 // ------------------------------------------------------------------ session
@@ -182,7 +188,9 @@ export const session = {
   /**
    * Take up the token a rotation of the session gave (a step-up, ending
    * the other sessions: CONTRACTS §100.4) in place of sentWith, the token
-   * the request that rotated it was sent with; only while the session
+   * the request that rotated it was sent with (RequestOptions.onSentWith:
+   * not the session's token before the request, which a resend after a
+   * 401 may have replaced); only while the session
    * still holds sentWith. Another tab may have stored a newer token
    * meanwhile (its own rotation, or a new login): that one stays. Reads
    * what other tabs stored first, as their storage event may not have
@@ -360,10 +368,16 @@ export async function requestRaw(method: string, path: string, opts: RequestOpti
     body = JSON.stringify(opts.body)
   }
   const url = buildURL(path, opts.query)
+  /** The token of the last send. */
+  let sentWith: string | undefined
   /** One attempt, with extra headers (a step-up proof); each has its own time limit. */
   const send = (extra?: Record<string, string>): Promise<Response> => {
     const init = () => ({ method, headers: { ...headers, ...extra }, body, signal: sendSignal(opts) })
-    return opts.anonymous ? fetchAs(url, init(), undefined) : sendWithSession((token) => fetchAs(url, init(), token))
+    return opts.anonymous ? fetchAs(url, init(), undefined) : sendWithSession((token) => fetchAs(url, init(), (sentWith = token)))
+  }
+  const succeeded = () => {
+    opts.onSuccessHeaders?.(new Headers(res.headers))
+    opts.onSentWith?.(sentWith)
   }
 
   let res = await send()
@@ -376,14 +390,14 @@ export async function requestRaw(method: string, path: string, opts: RequestOpti
     res = await send({ 'X-Verify-Proof': proof })
     json = await safeJSON(res)
   }
-  if (res.status === 204) { opts.onSuccessHeaders?.(new Headers(res.headers)); return null }
+  if (res.status === 204) { succeeded(); return null }
   if (!res.ok) {
     const body: ApiErrorBody = json?.error || { code: statusCode(res.status), message: res.statusText || 'request failed' }
     const err = new ApiError(res.status, body)
     if (res.status === 403) config.onForbidden?.(err)
     throw err
   }
-  opts.onSuccessHeaders?.(new Headers(res.headers))
+  succeeded()
   return json
 }
 

@@ -696,6 +696,51 @@ func TestRoleWritesCheckRevision(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// Every change to a role moves its revision (CONTRACTS §5.2, C1), those
+// SyncCore makes included: a default assignable role added to a held
+// role, assign_custom turned on, an unheld role reset, a superuser flag
+// fixed; and deleting a role, which takes it off the assignable lists of
+// the roles naming it. An editor holding the revision read before is
+// refused rather than undo them.
+func TestRoleRevisionFollowsSyncAndDelete(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
+	addUser(t, s, "op@x.com", RoleOperator)
+	addUser(t, s, "admin@x.com", RoleAdmin)
+	rev := func(key string) int64 {
+		t.Helper()
+		r, err := s.GetRole(ctx, roleID(t, s, key))
+		require.NoError(t, err)
+		return r.Revision
+	}
+
+	ops, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "ops", Name: lt("Ops", "运营")})
+	require.NoError(t, err)
+	lead, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "lead", Name: lt("Lead", "组长"), AssignableRoleKeys: []string{"ops"}})
+	require.NoError(t, err)
+	require.NoError(t, s.DeleteRole(ctx, root, ops.ID))
+	require.Greater(t, rev("lead"), lead.Revision, "a role deleted off the list")
+
+	_, err = s.SetRoleAssignable(ctx, root, roleID(t, s, RoleOperator), AssignableInput{RoleKeys: []string{RoleUser}})
+	require.NoError(t, err)
+	_, err = s.SetRoleAssignable(ctx, root, roleID(t, s, RoleAdmin), AssignableInput{RoleKeys: []string{RoleOperator, RoleSupplier, RoleUser}})
+	require.NoError(t, err)
+	_, err = db.SQL.ExecContext(ctx, `UPDATE roles SET defaults_rev = 0, superuser = false WHERE builtin`)
+	require.NoError(t, err)
+	before := map[string]int64{}
+	for _, k := range []string{RoleSuperAdmin, RoleAdmin, RoleOperator, RoleSupplier} {
+		before[k] = rev(k)
+	}
+	require.NoError(t, s.SyncCore(ctx))
+	for k, was := range map[string]string{RoleSuperAdmin: "superuser flag fixed", RoleAdmin: "assign_custom turned on",
+		RoleOperator: "default assignable role added", RoleSupplier: "reset, nobody holding it"} {
+		assert.Greater(t, rev(k), before[k], "%s: %s", k, was)
+	}
+}
+
 // Editors saving one role at the same revision concurrently: one write
 // goes through, every other one is refused with version_conflict (the
 // revision is compared under the role's row lock), whichever path each

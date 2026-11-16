@@ -48,8 +48,9 @@ func grantKey(act, scope string) string {
 }
 
 // matcher is permMatch with its perm.Parse cache: one per enforcer
-// (newEnforcer), so that no parse outlives the enforcer that needed it and
-// the package holds no state of its own.
+// (newEnforcer), started over when the enforcer reloads its policy (reset),
+// so that no parse outlives the policy that needed it and the package
+// holds no state of its own.
 type matcher struct {
 	cache sync.Map // key -> parseResult
 	size  atomic.Int64
@@ -88,6 +89,13 @@ func (m *matcher) fn(args ...any) (any, error) {
 	return m.permMatch(act, scope, want), nil
 }
 
+// reset drops every parse cached: a reload in place (state.reload) starts
+// the cache over, as a new enforcer would.
+func (m *matcher) reset() {
+	m.cache.Clear()
+	m.size.Store(0)
+}
+
 // parseCacheLimit bounds a matcher's perm.Parse cache. Keys come from code
 // constants, the catalog and the grants, a bounded set; past the limit a key
 // is still parsed, just not kept (go-admin's keyMatch2Cached does the same
@@ -120,26 +128,26 @@ func (m *matcher) parsed(k string) (perm.Pattern, bool) {
 func newModel() (model.Model, error) { return model.NewModelFromString(modelText) }
 
 // newEnforcer is the one constructor of an enforcer (go-admin's
-// newEnforcer): Casbin's synced cached enforcer on modelText, with
+// newEnforcer): Casbin's synced cached enforcer on modelText, with m's
 // permMatch registered before its first Enforce compiles the matcher,
 // Casbin's own role manager, and dc as its decision cache.
-//   - No adapter, and AutoSave off: the policy is put in memory by load
-//     and setUser, and nothing may write through the enforcer.
+//   - No adapter, and AutoSave off: the policy is put in memory by build,
+//     reload and setUser, and nothing may write through the enforcer.
 //   - The g function cache stays on: Casbin drops it with the compiled
 //     matcher whenever a g row changes (BuildIncrementalRoleLinks).
 //   - No logger, watcher or dispatcher is set, so Casbin logs, notifies
 //     and reloads nothing by itself.
-func newEnforcer(dc *decisions) (*casbin.SyncedCachedEnforcer, error) {
-	m, err := newModel()
+func newEnforcer(dc *decisions, m *matcher) (*casbin.SyncedCachedEnforcer, error) {
+	md, err := newModel()
 	if err != nil {
 		return nil, err
 	}
-	e, err := casbin.NewSyncedCachedEnforcer(m)
+	e, err := casbin.NewSyncedCachedEnforcer(md)
 	if err != nil {
 		return nil, err
 	}
 	e.EnableAutoSave(false)
-	e.AddFunction(permMatchName, new(matcher).fn)
+	e.AddFunction(permMatchName, m.fn)
 	e.SetCache(dc)
 	return e, nil
 }

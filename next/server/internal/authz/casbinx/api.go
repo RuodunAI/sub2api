@@ -3,20 +3,22 @@
 // casbin_rule is the one store of the grants and the users' roles; its
 // writes are package casbinrule's, in the business transactions. This
 // package only reads it, into one Casbin enforcer per node: the p rows of
-// active permissions and the superuser row, the g rows of the active users,
-// and the virtual role SelfRole linked to every active user. Every decision
-// is the enforcer's Enforce through its decision cache, and every list of a
-// user's grants its GetImplicitPermissionsForUser.
+// active permissions and the superuser row, the virtual role SelfRole's,
+// and the g rows of the users asked about, each read when first asked
+// about (one statement) and linked to SelfRole when active, up to a bound.
+// Every decision is the enforcer's Enforce through its decision cache, and
+// every list of a user's grants its GetImplicitPermissionsForUser.
 //
 // The enforcer follows the authz versions (authz_meta): a policy write
 // (grants, permission statuses, role definitions; policy_version moves)
-// makes the node load a new enforcer and drop every decision; a write of
-// one user's roles or status (version alone moves, naming the user) makes
-// it read that user again, replace the user's g rows in memory and drop
-// the user's decisions only. Casbin never writes: the enforcer has no
-// adapter and auto-save off, and nothing here calls a Casbin API that
-// persists, opens a transaction, watches or reloads by itself (gormguard
-// [casbin-api]).
+// makes the node load the p rows again and drop every decision, keeping
+// the users read unless a version it cannot account for, or a role
+// deleted, may have changed their roles; a write of one user's roles or
+// status (version alone moves, naming the user) makes it read that user
+// again, replace the user's g rows in memory and drop the user's decisions
+// only. Casbin never writes: the enforcer has no adapter and auto-save
+// off, and nothing here calls a Casbin API that persists, opens a
+// transaction, watches or reloads by itself (gormguard [casbin-api]).
 package casbinx
 
 import (
@@ -41,13 +43,13 @@ const (
 	SelfRole = casbinrule.SelfRole
 )
 
-// Rule is one casbin_rule row: p (role subject, action, scope) or g (user
-// subject, role subject, ""); v3..v5 are unused.
+// Rule is one p row of casbin_rule: role subject, action, scope; v3..v5
+// are unused.
 type Rule struct{ Ptype, V0, V1, V2 string }
 
 // Policy is one consistent read of the policy: the authz and policy
-// versions, the status of every catalog action, the p and g rows and the
-// active users, all from one read-only repeatable-read transaction.
+// versions, the status of every catalog action, the roles and the p rows,
+// all from one read-only repeatable-read transaction.
 type Policy struct {
 	Version, PolicyVersion int64
 	// Active holds the actions whose permission is active; p rows of other
@@ -55,9 +57,9 @@ type Policy struct {
 	// not loaded. SuperKey rows are always loaded.
 	Active map[string]bool
 	Rules  []Rule
-	// Users are the active users (not deleted, status active): only their
-	// g rows are loaded, and each is linked to SelfRole.
-	Users []int64
+	// Roles are the role ids by key: a role deleted, or deleted and created
+	// again under its key, no longer has the id a previous read gave it.
+	Roles map[string]int64
 }
 
 // UserRoles is one user's g rows as read at Version, under PolicyVersion

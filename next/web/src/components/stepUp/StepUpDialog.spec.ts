@@ -48,7 +48,7 @@ describe('StepUpDialog', () => {
     expect(field(w, 'step-up-password').exists()).toBe(false)
     await submit(w)
     expect(api.post).toHaveBeenCalledWith('/me/verify/begin', { scope: 'user.delete' })
-    expect(api.post).toHaveBeenLastCalledWith('/me/verify', { scope: 'user.delete', context: CONTEXT, method: 'passkey', flow_token: 'ft', credential: { id: 'cred' } })
+    expect(api.post).toHaveBeenLastCalledWith('/me/verify', { scope: 'user.delete', context: CONTEXT, method: 'passkey', flow_token: 'ft', credential: { id: 'cred' } }, expect.anything())
     expect(w.emitted('verified')).toEqual([['P']])
   })
 
@@ -60,7 +60,7 @@ describe('StepUpDialog', () => {
     await choose(w, 'totp')
     await field(w, 'step-up-code').setValue(' 123456 ')
     await submit(w)
-    expect(api.post).toHaveBeenCalledWith('/me/verify', { scope: 'user.delete', context: CONTEXT, method: 'totp', code: '123456' })
+    expect(api.post).toHaveBeenCalledWith('/me/verify', { scope: 'user.delete', context: CONTEXT, method: 'totp', code: '123456' }, expect.anything())
     expect(w.emitted('verified')).toEqual([['P']])
   })
 
@@ -83,7 +83,7 @@ describe('StepUpDialog', () => {
     await field(w, 'step-up-password').setValue('pw')
     await field(w, 'step-up-code').setValue('123456')
     await submit(w)
-    expect(api.post).toHaveBeenCalledWith('/me/verify', { scope: 'self.password.change', context: CONTEXT, method: 'totp', password: 'pw', code: '123456' })
+    expect(api.post).toHaveBeenCalledWith('/me/verify', { scope: 'self.password.change', context: CONTEXT, method: 'totp', password: 'pw', code: '123456' }, expect.anything())
   })
 
   it('falls back to the password alone when no strong method is set up', async () => {
@@ -94,7 +94,7 @@ describe('StepUpDialog', () => {
     expect(field(w, 'step-up-code').exists()).toBe(false)
     await field(w, 'step-up-password').setValue('pw')
     await submit(w)
-    expect(api.post).toHaveBeenCalledWith('/me/verify', { scope: 'user.delete', context: CONTEXT, method: 'password', password: 'pw' })
+    expect(api.post).toHaveBeenCalledWith('/me/verify', { scope: 'user.delete', context: CONTEXT, method: 'password', password: 'pw' }, expect.anything())
   })
 
   it('shows a wrong code next to the field and stays open', async () => {
@@ -131,7 +131,7 @@ describe('StepUpDialog', () => {
     await flushPromises()
     await field(w, 'step-up-password').setValue('pw')
     await submit(w)
-    expect(api.post).toHaveBeenLastCalledWith('/me/verify', { scope: 'superadmin.transfer', context: CONTEXT, method: 'passkey', password: 'pw', flow_token: 'ft', credential: { id: 'cred' } })
+    expect(api.post).toHaveBeenLastCalledWith('/me/verify', { scope: 'superadmin.transfer', context: CONTEXT, method: 'passkey', password: 'pw', flow_token: 'ft', credential: { id: 'cred' } }, expect.anything())
   })
 
   it('says so when only passkeys are set up and the browser cannot use them', async () => {
@@ -157,7 +157,12 @@ describe('StepUpDialog', () => {
     const { session } = await import('@sub2api/host')
     session.fromTokenResponse({ access_token: 's2s_a' })
     api.get.mockResolvedValue(methods(['password']))
-    api.post.mockResolvedValue({ proof: 'P', access_token: 's2s_b' })
+    // The request goes with the session's token, which the client reports (onSentWith).
+    const sent = (r: object) => async (_path: string, _body: unknown, opts?: { onSentWith?: (token?: string) => void }) => {
+      opts?.onSentWith?.(session.get()?.access_token)
+      return r
+    }
+    api.post.mockImplementation(sent({ proof: 'P', access_token: 's2s_b' }))
     const verify = async () => {
       const w = render()
       await flushPromises()
@@ -168,9 +173,10 @@ describe('StepUpDialog', () => {
     await verify()
     expect(session.get()?.access_token).toBe('s2s_b')
     // Another tab stores a newer token (its own rotation, a new login) while this one verifies.
-    api.post.mockImplementation(async () => {
+    api.post.mockImplementation(async (path: string, body: unknown, opts?: { onSentWith?: (token?: string) => void }) => {
+      const r = await sent({ proof: 'P', access_token: 's2s_late' })(path, body, opts)
       session.fromTokenResponse({ access_token: 's2s_other' })
-      return { proof: 'P', access_token: 's2s_late' }
+      return r
     })
     await verify()
     expect(session.get()?.access_token).toBe('s2s_other')

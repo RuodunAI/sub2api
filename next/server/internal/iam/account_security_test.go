@@ -26,6 +26,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol/webauthncbor"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/hotp"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
@@ -326,6 +327,48 @@ func TestOthersPasswordNeedsReset(t *testing.T) {
 	var ce *core.Error
 	if !errors.As(err, &ce) || ce.Code != "permission_denied" || ce.Details["permission"] != "user:password:reset" {
 		t.Fatalf("editor set a password: %v", err)
+	}
+}
+
+// A user given a role its deleter does not manage while the deletion waits
+// for the authz lock is not deleted: DeleteUser checks again after Bump,
+// which holds role changes off until it commits (as an update does).
+func TestDeleteUserChecksAgainUnderTheLock(t *testing.T) {
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	root := mustLogin(t, s, adminEmail, adminPassword).User.ID
+	admin, err := s.CreateUser(ctx, root, CreateUserInput{Email: "admin2@example.com", Password: "admin-password-1", RoleKeys: []string{authz.RoleAdmin}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := mustCreateUser(t, s, "target@example.com")
+	promoted, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- s.db.Tx(ctx, func(tx *gorm.DB) error {
+			if _, err := e.authz.SetUserRoles(ctx, tx, root, target, []string{authz.RoleUser, authz.RoleAdmin}); err != nil {
+				return err
+			}
+			close(promoted)
+			<-release
+			return nil
+		})
+	}()
+	<-promoted
+	deleted := make(chan error, 1)
+	go func() { deleted <- s.DeleteUser(ctx, admin.ID, target) }()
+	// The deletion passed its first check and waits on the authz lock.
+	for waiting := 0; waiting == 0; time.Sleep(5 * time.Millisecond) {
+		if err := s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-deleted; !isCode(err, "permission_denied") {
+		t.Fatalf("an admin deleted a user made an admin meanwhile: %v", err)
 	}
 }
 

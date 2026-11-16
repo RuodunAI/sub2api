@@ -36,7 +36,7 @@
 - 角色编辑页禁用编辑者自己没有的权限，核心权限也一样（以前能勾选，保存时才被拒）。插件停用期间它的权限不生效，但授予照常算持有：持有者仍可在矩阵、角色页授出和修改。
 - 插件菜单、页面、slot 按“任意范围持有”显示；iframe 桥 `permissions.check(本地 key)` 对不带范围的 key 只要持有任一范围即为 true，带范围的 key 按蕴含判断（持有全部范围也为 true，与服务端一致）。
 - 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。没有 `role:read` 的查看者看不到旧 key 由哪些角色持有（`removed_user_permissions[].holders`、复活和改名行的格子初值与“会挂起”标记、继承来的 `new_role_grants`、插件列表与详情里继承来的待复核授予都省略）。
-- **并发保存不再互相覆盖**：角色对象和插件权限矩阵带每个角色的修订号 `revision`；保存时带上读到的修订号，期间别人改过这个角色就返回 409 `version_conflict`，不写入；不带不检查。控制台收到后自动重读、合并本地改动，再提示保存。细节见下文 Casbin 一节的“并发保存角色”。
+- **并发保存不再互相覆盖**：角色对象和插件权限矩阵带每个角色的修订号 `revision`；保存时带上读到的修订号，期间别人改过这个角色就返回 409 `version_conflict`，不写入；不带不检查。控制台收到后自动重读，只把自己改过的部分（名称、描述、权限、可分配清单逐项）合并到别人的版本上；别人也改了同一项时不覆盖，提示核对后再保存。细节见下文 Casbin 一节的“并发保存角色”。
 - 通过角色编辑（新建角色、改角色权限、插件权限矩阵）**新授出关键（critical）插件权限**要二次验证，与安装同意、复核确认一致；只保留或撤销不需要。
 - 角色权限保存的审计（`role.permissions`）记下删掉的权限（`removed`，含已移除的插件权限），插件矩阵保存另记该插件上的 `before`/`after`。
 - 同意请求的 `new_permission_roles` 列出的权限，对改名继承同样生效：列出的角色以覆盖为准，没列的角色不继承（以前继承一律照常）；确认页上继承来的格子可以逐格修改。
@@ -56,13 +56,13 @@
 契约见 CONTRACTS §99。用户可见的权限不变：同样的角色、授予得到同样的结果。
 
 - **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
-- **判断**：每个节点一个 Casbin enforcer（`SyncedCachedEnforcer`，Casbin 自带的角色管理器），装入 active 权限的授予、超管行和 active 用户的角色；每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存，命中约 0.2–0.4 µs），`/me`、菜单、访问密钥收窄用到的授予列表来自 Casbin（`GetImplicitPermissionsForUser`）。改授予、权限状态、角色定义（`authz_meta.policy_version` 随之变化）时各节点重新装入；给用户指派角色、改用户状态时各节点只在内存里换掉这个用户的角色、作废这个用户的决策缓存。`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`（只有版本数字的旧格式按全部变化处理）。不再使用 Valkey 缓存用户角色（原 `authz:c:ur:{uid}`），从备份恢复数据库后也不用清 Valkey。
+- **判断**：每个节点一个 Casbin enforcer（`SyncedCachedEnforcer`，Casbin 自带的角色管理器），装入 active 权限的授予与超管行，用户的角色在第一次被问到时按需读入（最多记住 5 万个用户，10 万用户的库重载一次只要几毫秒）；每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存，命中约 0.2–0.4 µs），读库出错时返回 503 并记日志，不当作无权限，`/me`、菜单、访问密钥收窄用到的授予列表来自 Casbin（`GetImplicitPermissionsForUser`）。改授予、权限状态、角色定义（`authz_meta.policy_version` 随之变化）时各节点原地换掉授予、保留已读入的用户（删除角色或版本缺失时换一个新的 enforcer）；给用户指派角色、改用户状态时各节点只在内存里换掉这个用户的角色、作废这个用户的决策缓存。`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`（只有版本数字的旧格式按全部变化处理）。不再使用 Valkey 缓存用户角色（原 `authz:c:ur:{uid}`），从备份恢复数据库后也不用清 Valkey。
 - **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
-- **并发保存角色**：角色与插件角色矩阵带每个角色自己的修订号 `revision`（`roles.revision`，取代开发中按全局授权版本 `version` 比较的做法），PATCH、PUT permissions、PUT assignable、reset、插件矩阵都可带回读到的修订号，不一致 409 `version_conflict`（`details.revision`）；别的角色或用户的写入不会造成 409（CONTRACTS §5.2）。
+- **并发保存角色**：角色与插件角色矩阵带每个角色自己的修订号 `revision`（`roles.revision`，取代开发中按全局授权版本 `version` 比较的做法），PATCH、PUT permissions、PUT assignable、reset、插件矩阵都可带回读到的修订号，不一致 409 `version_conflict`（`details.revision`）；写入返回的是本次写入的修订号；启动同步、删除角色（从别的角色的可分配清单移除）对角色的改动同样推进修订号；别的角色或用户的写入不会造成 409（CONTRACTS §5.2）。
 - **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 422 `unknown_scope`；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
 - **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。停在 0097 的库上 `sub2api admin recover-superadmin` 只做移交（目标须已启用，不接受 `--reset-password`、`--reset-2fa`），迁移完成后再跑一次带上它们。
 
-迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099（0099 在 develop 上的两种内容核心都接受，经网关升级时也接受第一版构建的 schema 契约作为源）。
+迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。应用过任何发布前版本 0100 的开发、预发库（Mode P 版及之后的五次修改）都要重建，或恢复到 0099 的备份后再升级（0099 在 develop 上的两种内容核心都接受，0100 的不接受；经网关升级时也接受 0099 第一版构建的 schema 契约作为迁移许可的源）。
 
 #### 控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101）
 
@@ -75,7 +75,7 @@
 - **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。`POST /auth/logout` 不带请求体，只结束调用者自己的会话（以前不带 refresh token 时结束全部）。结束全部会话时 `token_version` 一次加 2。
 - **API 调用方注意**：用会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
 - **控制台**：401 直接回登录页（不再刷新令牌，删除跨标签页刷新锁与 keep-alive）；一个标签页登出或会话失效，其他标签页也回登录页。控制台 UI 3.17：`@sub2api/host` 新增 `fetchWithSession`（原始字节、流、下载类请求带会话发送），用到它的插件声明 `hostUICompat ^3.17`、`hostCompat >=0.1.290`；`startKeepAlive` 等刷新相关导出留作弃用的空实现，到 UI 4.0 删除。
-- **被盗令牌的遏制**（取代 JWT 时期的重放检测，CONTRACTS §100.4）：“结束其他会话”同时给当前会话换令牌（`POST /me/sessions/revoke-others` 回 200 `{access_token}`），复制走的当前令牌 30 秒后失效；没有其他会话时这个按钮也可用。会话列表的 IP 与浏览器随续期更新为最近一次使用的（以前是登录时的）。两个标签页同时二次验证不再互相顶掉令牌：从宽限期里的旧令牌验证不再轮换，控制台只替换发请求时用的令牌（`@sub2api/host` 的 `session.adoptRotated`，UI 3.17）。
+- **被盗令牌的遏制**（取代 JWT 时期的重放检测，CONTRACTS §100.4）：“结束其他会话”同时给当前会话换令牌（`POST /me/sessions/revoke-others` 回 200 `{access_token}`），复制走的当前令牌 30 秒后失效；没有其他会话时这个按钮也可用。会话列表的 IP 与浏览器随续期更新为最近一次使用的（以前是登录时的）。两个标签页同时二次验证不再互相顶掉令牌：从宽限期里的旧令牌验证不再轮换，控制台只替换发请求时用的令牌（`@sub2api/host` 的 `session.adoptRotated`，UI 3.17；401 后改用别的标签页的令牌重发时，以实际发出的那个为准，`RequestOptions.onSentWith`）。
 - **单机部署的 Valkey 开启 AOF**（`deploy/single`，`--appendonly yes --appendfsync everysec`，新数据卷 `redisdata`）：会话只在 Valkey，没有持久化时 Valkey 一重启所有人被登出且没有告警。从 valkey 换到 redis 镜像时先删掉这个卷。
 - **可用性修正**：Valkey 内存满拒绝写入时，续期失败不再让已经通过鉴权的请求 503；请求恰好落在“撤销其他会话/改自己的密码”中间时，不再把刚保留的当前会话删掉；节点漏收“重新启用用户”的广播时，不再删掉重新启用后的新登录。
 

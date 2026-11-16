@@ -28,6 +28,10 @@ type Options struct {
 	// A load serves every waiter, so it runs on its own context rather
 	// than a caller's.
 	LoadTimeout time.Duration
+	// Users bounds the users whose g rows the enforcer holds (default
+	// 50,000, about 2 KB each): past it, a user read in makes one other
+	// user forgotten, read again when next asked about.
+	Users int
 }
 
 func (o Options) withDefaults() Options {
@@ -37,12 +41,11 @@ func (o Options) withDefaults() Options {
 	if o.LoadTimeout <= 0 {
 		o.LoadTimeout = 10 * time.Second
 	}
+	if o.Users <= 0 {
+		o.Users = 50_000
+	}
 	return o
 }
-
-// listsCapacity bounds the users whose grants a state keeps listed; past
-// it a user's list is made on each call.
-const listsCapacity = 100_000
 
 // engine is the Enforcer: the current state, and the changes the node
 // heard of that it has not applied yet, applied by one goroutine at a time
@@ -72,31 +75,43 @@ func newEngine(l Loader, self []string, o Options) *engine {
 	return &engine{l: l, self: self, o: o.withDefaults(), moved: make(chan struct{})}
 }
 
-// state is one enforcer and what it holds: the policy of one policy
+// state is one enforcer and what it holds: the p rows of one policy
 // version, and the g rows of the users it knows, each read at some authz
-// version; version is the authz version every change up to which it holds.
-// A policy change replaces the state whole; a user change edits it
-// (setUser).
+// version and learnt when first asked about; version is the authz version
+// every change up to which it holds. A policy change reloads the p rows
+// in place, keeping the users, when it is known to change no user's g
+// rows (engine.kept), and replaces the state, users and all, otherwise; a
+// user change edits it (setUser).
 type state struct {
-	policy  int64
-	version atomic.Int64
-	e       *casbin.SyncedCachedEnforcer
-	dc      *decisions
-	// lists caches each user's grants (listOf), as dc caches decisions,
-	// up to listsCapacity users.
-	lists  sync.Map // uid -> core.PermissionSet
-	nLists atomic.Int64
+	e  *casbin.SyncedCachedEnforcer
+	m  *matcher
+	dc *decisions // replaced under mu by a reload
+	// lists caches each known user's grants (listOf), as dc caches
+	// decisions; it holds no user that users does not.
+	lists sync.Map // uid -> core.PermissionSet
 
-	// mu orders the changes of a user's g rows against what is read from
-	// them: decisions and lists are made, and kept, under mu shared, and
-	// setUser holds it alone, so no decision or list made before a change
-	// is kept after it.
+	version atomic.Int64
+
+	// mu orders every change of the enforcer (its p rows, a user's g rows)
+	// against what is read from it: decisions and lists are made, and
+	// kept, under mu shared, and a change holds it alone, so no decision
+	// or list made before a change is kept after it. The fields below are
+	// mu's.
 	mu sync.RWMutex
+	// policy is the policy version of the p rows held, roles the role ids
+	// by key it read with them: a role deleted, or created again under its
+	// key, shows there.
+	policy int64
+	roles  map[string]int64
 	// users holds the authz version each known user's g rows were read
-	// at. The policy load reads every active user; another (inactive, or
-	// written without a version, as test fixtures are) is read when first
-	// asked about (learn).
-	users map[int64]int64
+	// at, up to capacity users.
+	users    map[int64]int64
+	capacity int
+	// floor is the oldest read of a user taken in: a user forgotten since
+	// (a reload, one evicted) may have changed after a read older than
+	// the load or its own last read, which another read must not bring
+	// back.
+	floor int64
 }
 
 // ------------------------------------------------------------ Enforcer
@@ -123,34 +138,42 @@ func (e *engine) Permissions(ctx context.Context, uid, min int64) (core.Permissi
 	err = e.withUser(ctx, st, uid, func(st *state, sub string) error {
 		if v, ok := st.lists.Load(uid); ok {
 			set = v.(core.PermissionSet)
-			return nil
-		}
-		rows, err := st.e.GetImplicitPermissionsForUser(sub)
-		if err != nil {
-			return err
-		}
-		set = listOf(rows)
-		if st.nLists.Load() < listsCapacity {
-			if _, loaded := st.lists.LoadOrStore(uid, set); !loaded {
-				st.nLists.Add(1)
+		} else {
+			rows, err := st.e.GetImplicitPermissionsForUser(sub)
+			if err != nil {
+				return err
 			}
+			set = listOf(rows)
+			st.lists.Store(uid, set)
 		}
+		set.Version = st.version.Load()
 		return nil
 	})
 	if err != nil {
 		return core.PermissionSet{}, err
 	}
-	set.Version = st.version.Load()
-	return set.Decided(func(k string) bool { return e.decide(uid, k) }), nil
+	listed := set
+	return set.Decided(func(k string) bool { return e.decide(uid, k, listed.Has) }), nil
 }
 
 // decide is the Has of a set Permissions returned: Enforce on the current
-// state, never older than the set's (states only move forward), failing
-// closed.
-func (e *engine) decide(uid int64, key string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), e.o.Wait)
-	defer cancel()
-	ok, err := e.Enforce(ctx, uid, 0, key)
+// state (never older than the set's: states only move forward) while it
+// knows uid, else listed, the set's own lists (Casbin's, of the state the
+// set was made on, at the version the request asked for). It never reads
+// the database, so it cannot take a failed read for a denial; Permissions
+// read what it needed first, and fails (503) when it cannot. An error of
+// the enforcer itself (a matcher that cannot run) is logged and denies.
+func (e *engine) decide(uid int64, key string, listed func(string) bool) bool {
+	st := e.cur.Load()
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	if _, ok := st.users[uid]; !ok {
+		return listed(key)
+	}
+	ok, err := st.e.Enforce(casbinrule.UserSub(uid), key)
+	if err != nil {
+		slog.Warn("casbinx: a decision failed", "user", uid, "key", key, "err", err)
+	}
 	return ok && err == nil
 }
 
@@ -230,19 +253,21 @@ func (e *engine) withUser(ctx context.Context, st *state, uid int64, fn func(st 
 // learn reads uid into st, or, when the read met a newer policy than st's,
 // has that policy loaded and returns the state that holds it.
 func (e *engine) learn(ctx context.Context, st *state, uid int64) (*state, error) {
-	ctx, cancel := context.WithTimeout(ctx, e.o.LoadTimeout)
+	rctx, cancel := context.WithTimeout(ctx, e.o.LoadTimeout)
 	defer cancel()
-	ur, err := e.l.UserRoles(ctx, uid)
+	ur, err := e.l.UserRoles(rctx, uid)
 	if err != nil {
 		return nil, err
 	}
-	if ur.PolicyVersion == st.policy {
-		return st, st.setUser(uid, ur)
+	if ok, err := st.setUser(uid, ur); ok || err != nil {
+		return st, err
 	}
 	// Never the roles of one policy with the grants of another (a role
 	// deleted and created again under its key would bring its old grants
-	// back): the policy is loaded again, and uid read anew under it.
-	e.Changed(Change{Version: ur.Version, Policy: ur.PolicyVersion})
+	// back), nor a read older than what st took in since: a newer policy
+	// is loaded, and uid read anew. What the version read changed is not
+	// known (it need not be the policy write).
+	e.Changed(Change{Version: ur.Version})
 	return e.await(ctx, ur.Version)
 }
 
@@ -329,12 +354,16 @@ func boolRank(b bool) int {
 }
 
 // run does s: a change of users is applied to the state when each user's
-// read meets its policy; otherwise (or for a load) the policy is loaded.
+// read meets its policy; otherwise (or for a load) the policy is loaded,
+// into the current state when its users may stay (kept), else into a new
+// state that replaces it, its users then learnt again as they are asked
+// about. Either way the load reads the p rows alone and decisions go on
+// on the current state meanwhile.
 func (e *engine) run(s step) error {
 	ctx, cancel := context.WithTimeout(context.Background(), e.o.LoadTimeout)
 	defer cancel()
+	st := e.cur.Load()
 	if !s.load {
-		st := e.cur.Load()
 		done, err := e.setUsers(ctx, st, s.users)
 		if err != nil || done {
 			if err == nil {
@@ -347,11 +376,13 @@ func (e *engine) run(s step) error {
 	if err != nil {
 		return err
 	}
-	st, err := build(p, e.self)
-	if err != nil {
-		return err
+	if drop, ok := e.kept(st, p); !ok || st.reload(p, e.self, drop) != nil {
+		next, err := build(p, e.self, e.o.Users)
+		if err != nil {
+			return err
+		}
+		e.cur.Store(next)
 	}
-	e.cur.Store(st)
 	if p.Version < s.version {
 		// The database is behind a version heard of: restored from a
 		// backup, the versions start over (CONTRACTS §99.4). Calls needing
@@ -359,6 +390,41 @@ func (e *engine) run(s step) error {
 		return fmt.Errorf("casbinx: the database is at authz version %d, below %d heard of", p.Version, s.version)
 	}
 	return nil
+}
+
+// kept reports whether the load of p may keep the users of st, reloading
+// it in place, and which of them to drop: when every version from st's to
+// p's was heard of with what it changed, a policy write or a write of the
+// users it names (those are dropped), and no role st holds was deleted or
+// created again under its key. A policy write changes the g rows of no
+// user but by deleting a role, which removes its members' links; a
+// version of unknown extent (a poll, a broadcast missed, a version a read
+// met) may have changed anyone's. Called by apply alone: st.roles and the
+// queue entries past st's version are its own.
+func (e *engine) kept(st *state, p Policy) ([]int64, bool) {
+	if st == nil {
+		return nil, false
+	}
+	v := st.version.Load()
+	if p.Version < v {
+		return nil, false
+	}
+	for k, id := range st.roles {
+		if p.Roles[k] != id {
+			return nil, false
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	heard := map[int64]bool{}
+	var drop []int64
+	for _, c := range e.queue {
+		if c.Version > v && c.Version <= p.Version && (c.Policy != 0 || c.UsersOnly()) {
+			heard[c.Version] = true
+			drop = append(drop, c.Users...)
+		}
+	}
+	return drop, int64(len(heard)) == p.Version-v
 }
 
 // setUsers reads each of uids and sets it in st; false when a read met a
@@ -370,10 +436,7 @@ func (e *engine) setUsers(ctx context.Context, st *state, uids []int64) (bool, e
 		if err != nil {
 			return false, err
 		}
-		if ur.PolicyVersion != st.policy {
-			return false, nil
-		}
-		if err := st.setUser(uid, ur); err != nil {
+		if ok, err := st.setUser(uid, ur); !ok || err != nil {
 			return false, err
 		}
 	}
@@ -382,42 +445,65 @@ func (e *engine) setUsers(ctx context.Context, st *state, uids []int64) (bool, e
 
 // ------------------------------------------------------------ the state
 
-// build loads p into a new enforcer: the p rows of active actions and
-// every SuperKey row, the self permissions (self, the keys of
-// authz.SelfPermissionKeys: this package cannot import authz) as
-// SelfRole's p rows, and the g rows of the active users, each also linked
-// to SelfRole.
-func build(p Policy, self []string) (*state, error) {
+// build loads p into a new enforcer holding no user: the p rows (policyRows)
+// alone. Users are read in as they are asked about (setUser), at most
+// capacity of them.
+func build(p Policy, self []string, capacity int) (*state, error) {
 	ps, err := policyRows(p, self)
 	if err != nil {
 		return nil, err
 	}
-	gs, users := linkRows(p)
-	dc := &decisions{}
-	e, err := newEnforcer(dc)
+	dc, m := &decisions{}, new(matcher)
+	e, err := newEnforcer(dc, m)
 	if err != nil {
 		return nil, err
 	}
-	m := e.GetModel()
-	if len(ps) > 0 {
-		if err := m.AddPolicies("p", "p", ps); err != nil {
-			return nil, err
-		}
-	}
-	if len(gs) > 0 {
-		if err := m.AddPolicies("g", "g", gs); err != nil {
-			return nil, err
-		}
-	}
-	if err := e.BuildRoleLinks(); err != nil {
+	if err := e.GetModel().AddPolicies("p", "p", ps); err != nil {
 		return nil, err
 	}
-	st := &state{policy: p.PolicyVersion, e: e, dc: dc, users: users}
+	st := &state{e: e, m: m, dc: dc, policy: p.PolicyVersion, roles: p.Roles, users: map[int64]int64{}, capacity: capacity, floor: p.Version}
 	st.version.Store(p.Version)
 	return st, nil
 }
 
-// policyRows are the p rows build loads: those loadable, and SelfRole's.
+// reload makes st hold p in place, keeping its users but those of drop
+// (engine.kept): p's rows replace st's, and every decision, list and parse
+// made on the old ones goes. A failure leaves st to be replaced (run).
+func (st *state) reload(p Policy, self []string, drop []int64) error {
+	ps, err := policyRows(p, self)
+	if err != nil {
+		return err
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	// Every p row out at once (a filter of no value), not row by row: a
+	// single removal shifts every row after it.
+	m := st.e.GetModel()
+	if _, _, err := m.RemoveFilteredPolicy("p", "p", 0); err != nil {
+		return err
+	}
+	if err := m.AddPolicies("p", "p", ps); err != nil {
+		return err
+	}
+	for _, uid := range drop {
+		if err := st.forget(uid); err != nil {
+			return err
+		}
+	}
+	st.policy, st.roles, st.floor = p.PolicyVersion, p.Roles, max(st.floor, p.Version)
+	// A new decision cache rather than Clear, which drops one user at a
+	// time while every decision waits.
+	st.dc = &decisions{}
+	st.e.SetCache(st.dc)
+	st.lists.Clear()
+	st.m.reset()
+	st.version.Store(p.Version)
+	return nil
+}
+
+// policyRows are the p rows a state holds: those loadable, and SelfRole's
+// (self, the keys of authz.SelfPermissionKeys: this package cannot import
+// authz).
 func policyRows(p Policy, self []string) ([][]string, error) {
 	ps := make([][]string, 0, len(p.Rules)+len(self))
 	for _, r := range p.Rules {
@@ -433,26 +519,6 @@ func policyRows(p Policy, self []string) ([][]string, error) {
 		ps = append(ps, []string{SelfRole, string(sp.Action), scopeOf(sp)})
 	}
 	return ps, nil
-}
-
-// linkRows are the g rows build loads, and the users they are of: every
-// active user, linked to its roles and to SelfRole. A g row of an inactive
-// user is not loaded: such a user holds nothing.
-func linkRows(p Policy) ([][]string, map[int64]int64) {
-	users := make(map[int64]int64, len(p.Users))
-	gs := make([][]string, 0, 2*len(p.Users))
-	for _, id := range p.Users {
-		users[id] = p.Version
-		gs = append(gs, []string{casbinrule.UserSub(id), SelfRole})
-	}
-	for _, r := range p.Rules {
-		if id, ok := casbinrule.UserOf(r.V0); ok && r.Ptype == "g" && linkable(r.V1) {
-			if _, active := users[id]; active {
-				gs = append(gs, []string{r.V0, r.V1})
-			}
-		}
-	}
-	return gs, users
 }
 
 // linkable reports whether role is a role subject a g row may link a user
@@ -484,13 +550,66 @@ func scopeOf(p perm.Pattern) string {
 
 // setUser replaces uid's g rows in the enforcer with those of ur (none for
 // an inactive user; SelfRole's link for an active one) and drops what was
-// read from the old ones, unless a newer read of uid is in.
-func (st *state) setUser(uid int64, ur UserRoles) error {
+// read from the old ones, forgetting another user when st is full. It
+// reports false, changing nothing, when ur was read under another policy
+// than st's or before st's floor; true when a newer read of uid is in.
+func (st *state) setUser(uid int64, ur UserRoles) (bool, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if v, ok := st.users[uid]; ok && v > ur.Version {
+	if ur.PolicyVersion != st.policy || ur.Version < st.floor {
+		return false, nil
+	}
+	v, known := st.users[uid]
+	if known && v > ur.Version {
+		return true, nil
+	}
+	if known {
+		if err := st.unlink(uid); err != nil {
+			return false, err
+		}
+	} else if len(st.users) >= st.capacity {
+		for other := range st.users {
+			if err := st.forget(other); err != nil {
+				return false, err
+			}
+			break
+		}
+	}
+	if ur.Active {
+		sub := casbinrule.UserSub(uid)
+		links := [][]string{{sub, SelfRole}}
+		for _, r := range ur.Roles {
+			if linkable(r) {
+				links = append(links, []string{sub, r})
+			}
+		}
+		if _, err := st.e.AddGroupingPolicies(links); err != nil {
+			return false, err
+		}
+	}
+	st.users[uid] = ur.Version
+	return true, nil
+}
+
+// forget makes st not know uid (unlink): uid is read again when next
+// asked about, by a read no older than the one forgotten (floor). Called
+// with st.mu held alone.
+func (st *state) forget(uid int64) error {
+	v, ok := st.users[uid]
+	if !ok {
 		return nil
 	}
+	if err := st.unlink(uid); err != nil {
+		return err
+	}
+	delete(st.users, uid)
+	st.floor = max(st.floor, v)
+	return nil
+}
+
+// unlink removes uid's g rows from the enforcer, and the decisions and
+// list made from them. Called with st.mu held alone.
+func (st *state) unlink(uid int64) error {
 	sub := casbinrule.UserSub(uid)
 	// The user's own links, one by one: Casbin removes a single row in
 	// place, where a filtered removal scans every g row of every user.
@@ -503,22 +622,8 @@ func (st *state) setUser(uid int64, ur UserRoles) error {
 			return err
 		}
 	}
-	if ur.Active {
-		links := [][]string{{sub, SelfRole}}
-		for _, r := range ur.Roles {
-			if linkable(r) {
-				links = append(links, []string{sub, r})
-			}
-		}
-		if _, err := st.e.AddGroupingPolicies(links); err != nil {
-			return err
-		}
-	}
-	st.users[uid] = ur.Version
 	st.dc.dropSubject(sub)
-	if _, ok := st.lists.LoadAndDelete(uid); ok {
-		st.nLists.Add(-1)
-	}
+	st.lists.Delete(uid)
 	return nil
 }
 

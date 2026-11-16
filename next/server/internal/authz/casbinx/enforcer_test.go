@@ -69,8 +69,8 @@ func TestSuperuserFutureKeys(t *testing.T) {
 
 // Grants of actions that are not active (plugin disabled, permission
 // removed) stay stored but are not loaded; rows of no catalog action, rows
-// with an empty column and the g rows of users not active are not loaded
-// either, nor a stored row of SelfRole: every active user would hold it.
+// with an empty column, a g row among the rules, and a stored row of
+// SelfRole (every active user would hold it) are not loaded either.
 func TestInactivePermissionsNotLoaded(t *testing.T) {
 	t.Parallel()
 	rules := []Rule{
@@ -108,7 +108,7 @@ func TestSelfPermissions(t *testing.T) {
 	if enforce(t, s, inactive, "self:profile") || !enforce(t, s, held(), "self:profile") {
 		t.Fatal("self permission held by the wrong user")
 	}
-	if _, err := build(Policy{}, []string{"self:x:own"}); err == nil {
+	if _, err := build(Policy{}, []string{"self:x:own"}, 1); err == nil {
 		t.Fatal("an invalid self key was taken")
 	}
 }
@@ -199,8 +199,8 @@ func TestPluginScopesViaCasbin(t *testing.T) {
 }
 
 // Equivalence with core's sets, offline: random roles over the vector keys
-// and random users, loaded as a node loads them (p and g rows, the active
-// users; an inactive one read when first asked about). For every key
+// and random users, loaded as a node loads them (the p rows, then each
+// user, active or not, read when first asked about). For every key
 // Casbin's Enforce must answer as the set built directly from the user's
 // roles (core's PermissionSet.Has), and Permissions must list the same keys
 // and superuser flag.
@@ -236,15 +236,13 @@ func TestCasbinEquivalenceRandom(t *testing.T) {
 		want := map[int64]core.PermissionSet{}
 		for uid := int64(1); uid <= 5; uid++ {
 			set := core.PermissionSet{Keys: map[string]struct{}{}}
-			active := r.IntN(8) != 0
-			var roles []string
+			ur := UserRoles{Active: r.IntN(8) != 0}
 			for _, role := range []string{"r:a", "r:b", "r:c", "r:d", "r:su"} {
 				if r.IntN(3) != 0 {
 					continue
 				}
-				roles = append(roles, role)
-				rules = append(rules, Rule{"g", casbinrule.UserSub(uid), role, ""})
-				if !active {
+				ur.Roles = append(ur.Roles, role)
+				if !ur.Active {
 					continue
 				}
 				set.Superuser = set.Superuser || (role == "r:su" && superRole)
@@ -252,17 +250,15 @@ func TestCasbinEquivalenceRandom(t *testing.T) {
 					set.Add(k)
 				}
 			}
-			if active {
+			if ur.Active {
 				for _, k := range self {
 					set.Add(k)
 				}
-				l.policy.Users = append(l.policy.Users, uid)
-			} else {
-				l.users[uid] = UserRoles{Version: 1}
 			}
+			l.users[uid] = ur
 			want[uid] = set
 		}
-		l.policy = Policy{Version: 1, Active: activeOf(rules), Rules: rules, Users: l.policy.Users}
+		l.policy = Policy{Version: 1, Active: activeOf(rules), Rules: rules}
 		e := newEngine(l, self, Options{})
 		for uid, set := range want {
 			for _, q := range queries {
@@ -294,8 +290,8 @@ func TestCasbinEquivalenceRandom(t *testing.T) {
 func TestConcurrentEnforceAndChange(t *testing.T) {
 	t.Parallel()
 	l := &fakeLoader{policy: Policy{Version: 1, PolicyVersion: 1, Active: map[string]bool{"account:read": true, "proxy:read": true},
-		Rules: []Rule{grant("r:t", "account:read:own"), grant("r:p", "proxy:read"), {"g", "u:1", "r:t", ""}, {"g", "u:2", "r:t", ""}},
-		Users: []int64{1, 2}}}
+		Rules: []Rule{grant("r:t", "account:read:own"), grant("r:p", "proxy:read")}},
+		users: map[int64]UserRoles{1: active("r:t"), 2: active("r:t")}}
 	e := newEngine(l, nil, Options{})
 	ctx := context.Background()
 	if _, err := e.Enforce(ctx, 1, 1, "account:read:own"); err != nil {
@@ -328,8 +324,8 @@ func TestConcurrentEnforceAndChange(t *testing.T) {
 		if i%2 == 0 {
 			roles = append(roles, "r:p")
 		}
-		if err := st.setUser(2, UserRoles{Version: int64(i + 2), PolicyVersion: 1, Active: true, Roles: roles}); err != nil {
-			t.Fatal(err)
+		if ok, err := st.setUser(2, UserRoles{Version: int64(i + 2), PolicyVersion: 1, Active: true, Roles: roles}); !ok || err != nil {
+			t.Fatal("not set", err)
 		}
 	}
 	close(stop)

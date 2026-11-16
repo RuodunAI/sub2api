@@ -13,6 +13,11 @@ enableAutoUnmount(afterEach)
 const row = (id: string, current: boolean) => ({ id, method: 'password', ip: '198.51.100.9', user_agent: 'Firefox/1', created_at: '2026-11-16T00:00:00Z', last_used_at: '2026-11-16T01:00:00Z', current })
 const render = () => mount(SessionsCard, { global: { plugins: [i18n], stubs: { teleport: true } }, attachTo: document.body })
 const revokeOthers = (w: ReturnType<typeof render>) => w.get('[data-testid="sessions-revoke-others"]')
+/** A post answering r, sent with the session's token, as the client reports it (onSentWith). */
+const sent = (r: object | null) => async (_path: string, _body: unknown, opts?: { onSentWith?: (token?: string) => void }) => {
+  opts?.onSentWith?.(session.get()?.access_token)
+  return r
+}
 
 describe('sessions card', () => {
   beforeEach(() => {
@@ -25,23 +30,24 @@ describe('sessions card', () => {
 
   it('ends the other sessions even with none listed, and takes up the new token of this one', async () => {
     api.get.mockResolvedValue([row('mine', true)])
-    api.post.mockResolvedValue({ access_token: 's2s_b' })
+    api.post.mockImplementation(sent({ access_token: 's2s_b' }))
     const w = render()
     await flushPromises()
     expect(w.text()).toContain('198.51.100.9')
     expect(revokeOthers(w).attributes('disabled')).toBeUndefined()
     await revokeOthers(w).trigger('click')
     await flushPromises()
-    expect(api.post).toHaveBeenCalledWith('/me/sessions/revoke-others', {})
+    expect(api.post).toHaveBeenCalledWith('/me/sessions/revoke-others', {}, expect.anything())
     expect(session.get()?.access_token).toBe('s2s_b')
     expect(api.get).toHaveBeenCalledTimes(2)
   })
 
   it('keeps a newer token another tab stored meanwhile, and copes with no new token', async () => {
     api.get.mockResolvedValue([row('mine', true), row('other', false)])
-    api.post.mockImplementation(async () => {
+    api.post.mockImplementation(async (path: string, body: unknown, opts?: { onSentWith?: (token?: string) => void }) => {
+      const r = await sent({ access_token: 's2s_late' })(path, body, opts)
       session.fromTokenResponse({ access_token: 's2s_other' })
-      return { access_token: 's2s_late' }
+      return r
     })
     const w = render()
     await flushPromises()
@@ -49,7 +55,7 @@ describe('sessions card', () => {
     await flushPromises()
     expect(session.get()?.access_token).toBe('s2s_other')
 
-    api.post.mockReset().mockResolvedValue(null)
+    api.post.mockReset().mockImplementation(sent(null))
     await revokeOthers(w).trigger('click')
     await flushPromises()
     expect(session.get()?.access_token).toBe('s2s_other')

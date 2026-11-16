@@ -1392,7 +1392,7 @@ flowchart TD
   role -- 否 --> deny
 ```
 
-- 权限判断由每个节点的 Casbin enforcer 作出（`SyncedCachedEnforcer`，内存里有 active 权限的授予、超管行和 active 用户的角色，CONTRACTS §99.3）：`Can` 是 `Enforce`（经决策缓存），用户的授予列表是 `GetImplicitPermissionsForUser`。变更时广播 `authz:changed`，**收回立即生效**：只改某个用户角色或状态的写入只让各节点在内存里换掉这个用户的角色、作废他的决策；改授予、权限状态、角色定义的写入推进策略版本，各节点重新装入 enforcer（CONTRACTS §99.4）
+- 权限判断由每个节点的 Casbin enforcer 作出（`SyncedCachedEnforcer`，内存里有 active 权限的授予、超管行，用户的角色在第一次被问到时按需读入、有上限，CONTRACTS §99.3）：`Can` 是 `Enforce`（经决策缓存），用户的授予列表是 `GetImplicitPermissionsForUser`。变更时广播 `authz:changed`，**收回立即生效**：只改某个用户角色或状态的写入只让各节点在内存里换掉这个用户的角色、作废他的决策；改授予、权限状态、角色定义的写入推进策略版本，各节点重新装入授予，保留已读入的用户（CONTRACTS §99.4）
 - 会话只记用户 ID 与 `token_version` 盖章，不带权限（CONTRACTS §100.1）
 - `sensitive` 只是高危标记（角色编辑器提示用）；**已取消二次验证**（2026-10-05 用户决定，CONTRACTS §3.3），任何操作只看登录态和权限
 
@@ -1584,7 +1584,7 @@ next/
 | 语言 | Go 1.27 |
 | HTTP | gin |
 | 数据库 | PostgreSQL 16 + GORM（驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`；打开连接由 `runtime-contract/gormpg` 一处实现，核心、网关、插件 SDK 共用）；语句由 GORM 的模型与查询构造器生成，值只走 `?` 参数，`Raw`/`Exec` 只组合已生成的查询；整条手写的只剩账本的 data-modifying CTE、网关心跳的 CTE 与 schema 脚本，以及锁、DDL、序列、系统目录的小助手（核心 gormguard `[raw-sql]`/`[sql-const]`、SDK 的 `TestNoRawSQL`、网关 `sqlguard` 检查，CONTRACTS §2、§39）。表结构以 SQL 迁移为准：核心的模型由迁移生成（`store/modelgen`），插件的模型由 `sub2api-plugin db check` 对照迁移；运行时不跑 AutoMigrate。插件只拿到 `Host.DB` 的 `*gorm.DB`（CONTRACTS §2） |
-| 权限判断 | Casbin v3（策略存 `casbin_rule`，gorm-adapter 的列布局，adapter 只用来读入；每个节点一个 `SyncedCachedEnforcer`，带 Casbin 的角色管理器与决策缓存：策略版本变化时整体重新装入，只改用户角色或状态时在内存里换掉该用户的角色，CONTRACTS §99.3–99.4） |
+| 权限判断 | Casbin v3（策略存 `casbin_rule`，gorm-adapter 的列布局，adapter 只用来读入；每个节点一个 `SyncedCachedEnforcer`，带 Casbin 的角色管理器与决策缓存；装入时只读授予，用户的角色在第一次判断时按需读入、有上限；策略版本变化时原地重载授予或换一个新的 enforcer，只改用户角色或状态时只换该用户，CONTRACTS §99.3–99.4） |
 | 迁移 | 嵌入式 SQL + 自研执行器（核心和插件共用，参考旧项目 `migrations_runner.go`） |
 | 缓存 / 实时状态 | Valkey（或 Redis 7+）+ go-redis v9；控制台会话 `s2s_` 也只存在这里（CONTRACTS §100） |
 | 插件 | hashicorp/go-plugin + gRPC + protobuf |
