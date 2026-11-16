@@ -156,5 +156,5 @@ func UpdateFrom(sql string, vars ...any) clause.Interface {
 
 type updateFrom struct{ clause.Expr }
 
-func (updateFrom) Name() string                  { return "FROM" }
+func (updateFrom) Name() string                   { return "FROM" }
 func (f updateFrom) MergeClause(c *clause.Clause) { c.Expression = f.Expr }

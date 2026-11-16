@@ -162,5 +162,8 @@ func markNodesStopped(db *gorm.DB, key string, boots store.Strings) *gorm.DB {
 // markCleanupsCleaned marks the pending cleanups of key's rollouts on boots
 // done: the boots stopped, so nothing is left to clean there.
 func markCleanupsCleaned(db *gorm.DB, key string, boots store.Strings) *gorm.DB {
-	return db.Exec(`UPDATE plugin_rollout_cleanup n SET state='cleaned',updated_at=now() FROM plugin_rollouts r WHERE r.id=n.rollout_id AND r.plugin_key=? AND n.boot_id=ANY(?::text[]) AND n.state='cleanup_pending'`, key, boots)
+	rollouts := db.Model(&model.PluginRollout{}).Select("id").Where("plugin_key = ?", key)
+	return db.Model(&model.PluginRolloutCleanup{}).
+		Where("rollout_id IN (?) AND boot_id = ANY(?::text[]) AND state = 'cleanup_pending'", rollouts, boots).
+		Updates(map[string]any{"state": "cleaned", "updated_at": gorm.Expr("now()")})
 }

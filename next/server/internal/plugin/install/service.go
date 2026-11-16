@@ -288,13 +288,12 @@ func CurrentVersion(ctx context.Context, q *gorm.DB, key string) (string, error)
 
 // currentVersion is the statement of CurrentVersion.
 func currentVersion(db *gorm.DB, key string) *gorm.DB {
-	return db.Raw(`
-		SELECT COALESCE(p.active_version, p.desired_version,
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved'
-		     ORDER BY uploaded_at DESC LIMIT 1),
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status <> 'rejected'
-		     ORDER BY uploaded_at DESC LIMIT 1), '')
-		FROM plugins p WHERE p.key = ?`, key)
+	approved := db.Model(&model.PluginVersion{}).Select("version").
+		Where("plugin_key = p.key AND consent_status = 'approved'").Order("uploaded_at DESC").Limit(1)
+	pending := db.Model(&model.PluginVersion{}).Select("version").
+		Where("plugin_key = p.key AND consent_status <> 'rejected'").Order("uploaded_at DESC").Limit(1)
+	return db.Table("plugins AS p").Select("COALESCE(p.active_version, p.desired_version, (?), (?), '')", approved, pending).
+		Where("p.key = ?", key)
 }
 
 // LoadManifest reads plugin_versions.manifest.

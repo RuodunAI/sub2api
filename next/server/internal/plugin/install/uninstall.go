@@ -1,12 +1,14 @@
 package install
 
 import (
+	"database/sql"
 	"context"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -208,14 +210,17 @@ func (s *Service) quiesce(ctx context.Context, key string, actorID int64) error 
 		if err != nil {
 			return err
 		}
-		var stopped bool
+		var targets uninstallTargets
 		// Include nodes that joined while the marker was being committed. A
 		// node starting after it can only read the disabled desired state.
-		err = addUninstallTargets(store.G(waitCtx, s.d.DB.Gorm), key, ids).Row().Scan(&stopped)
-		if err != nil {
-			return err
+		res := addUninstallTargets(store.G(waitCtx, s.d.DB.Gorm), key, ids, &targets)
+		if res.Error == nil && res.RowsAffected == 0 {
+			res.Error = sql.ErrNoRows
 		}
-		if stopped {
+		if res.Error != nil {
+			return res.Error
+		}
+		if targets.Stopped {
 			return nil
 		}
 		select {
@@ -234,9 +239,11 @@ func uninstallRow(db *gorm.DB, key string) *gorm.DB {
 // beginUninstall leaves the uninstall barrier of key, unless one is up,
 // targeting the live boots and the nodes still running the plugin.
 func beginUninstall(db *gorm.DB, key string, epoch int64, boots []string) *gorm.DB {
-	return db.Exec(`INSERT INTO plugin_uninstalls(plugin_key,epoch,target_boot_ids)
-			VALUES(?::text,?,ARRAY(SELECT DISTINCT unnest(?::text[] || ARRAY(SELECT boot_id FROM plugin_runtime_nodes WHERE plugin_key=?::text AND NOT stopped)))) ON CONFLICT DO NOTHING`,
-		key, epoch, store.Strings(boots), key)
+	running := db.Model(&model.PluginRuntimeNode{}).Select("boot_id").Where("plugin_key = ? AND NOT stopped", key)
+	return db.Table(model.PluginUninstall{}.TableName()).Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{
+		"plugin_key": key, "epoch": epoch,
+		"target_boot_ids": gorm.Expr("ARRAY(SELECT DISTINCT unnest(?::text[] || ARRAY(?)))", store.Strings(boots), running),
+	})
 }
 
 // disableForUninstall disables key and clears its desired version while
@@ -249,11 +256,21 @@ func disableForUninstall(db *gorm.DB, key string) *gorm.DB {
 	}))
 }
 
+// uninstallTargets is what addUninstallTargets returns of the uninstall
+// barrier: whether every target has stopped.
+type uninstallTargets struct {
+	Stopped bool `gorm:"column:stopped;->"`
+}
+
+func (uninstallTargets) TableName() string { return model.PluginUninstall{}.TableName() }
+
 // addUninstallTargets adds boots to the targets of key's uninstall and
-// selects whether every target has stopped.
-func addUninstallTargets(db *gorm.DB, key string, boots []string) *gorm.DB {
-	return db.Raw(`UPDATE plugin_uninstalls SET target_boot_ids=ARRAY(SELECT DISTINCT unnest(target_boot_ids || ?::text[]))
-			WHERE plugin_key=? RETURNING target_boot_ids <@ stopped_boot_ids`, store.Strings(boots), key)
+// reads into dst whether every target has stopped (RowsAffected 0: no
+// barrier).
+func addUninstallTargets(db *gorm.DB, key string, boots []string, dst *uninstallTargets) *gorm.DB {
+	return db.Model(dst).Clauses(clause.Returning{Columns: []clause.Column{{Name: "target_boot_ids <@ stopped_boot_ids AS stopped", Raw: true}}}).
+		Where("plugin_key = ?", key).
+		Update("target_boot_ids", gorm.Expr("ARRAY(SELECT DISTINCT unnest(target_boot_ids || ?::text[]))", store.Strings(boots)))
 }
 
 // disableRevoked disables running plugins after a revocation (best effort).

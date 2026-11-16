@@ -24,6 +24,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/blobs"
 	pluginpkg "github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Package is one verified .s2plugin cached on local disk. Files are read
@@ -303,11 +304,11 @@ func (s *Packages) doneFunc(p *Package) func() {
 // sha256 and URL, signature status, publisher name and trust level, and
 // when the plugin was installed.
 func versionRecord(db *gorm.DB, key, version string) *gorm.DB {
-	return db.Raw(`
-		SELECT v.manifest, v.package_sha256, v.package_url, v.signature_status, p.name, p.trust_level,
-		       (SELECT installed_at FROM plugins WHERE key = v.plugin_key)
-		FROM plugin_versions v LEFT JOIN publishers p ON p.id = v.publisher_id
-		WHERE v.plugin_key = ? AND v.version = ?`, key, version)
+	return db.Table("plugin_versions AS v").
+		Select("v.manifest, v.package_sha256, v.package_url, v.signature_status, p.name, p.trust_level, (?)",
+			db.Model(&model.Plugin{}).Select("installed_at").Where("key = v.plugin_key")).
+		Joins("LEFT JOIN publishers p ON p.id = v.publisher_id").
+		Where("v.plugin_key = ? AND v.version = ?", key, version)
 }
 
 func (s *Packages) load(ctx context.Context, key, version string) (*Package, error) {

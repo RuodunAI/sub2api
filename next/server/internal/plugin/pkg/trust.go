@@ -171,10 +171,9 @@ func (t *TrustStore) verify(ctx context.Context, q *gorm.DB, p *Package, checkVa
 
 // signingKey reads the signing key keyID and its publisher.
 func signingKey(db *gorm.DB, keyID string) *gorm.DB {
-	return db.Raw(`
-		SELECT k.public_key, k.status, k.not_before, k.not_after, p.id, p.name, p.trust_level, p.status
-		FROM publisher_keys k JOIN publishers p ON p.id = k.publisher_id
-		WHERE k.key_id = ?`, keyID)
+	return db.Table("publisher_keys AS k").
+		Select("k.public_key, k.status, k.not_before, k.not_after, p.id, p.name, p.trust_level, p.status").
+		Joins("JOIN publishers p ON p.id = k.publisher_id").Where("k.key_id = ?", keyID)
 }
 
 func (t *TrustStore) check(p *Package, sig *pkgsig.Signature, pub ed25519.PublicKey) error {

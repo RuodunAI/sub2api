@@ -741,11 +741,9 @@ func (s *Service) runningVersion(ctx context.Context, q *gorm.DB, key, target st
 
 // runningVersion is the statement of Service.runningVersion.
 func runningVersion(db *gorm.DB, key, target string) *gorm.DB {
-	return db.Raw(`
-		SELECT COALESCE(p.active_version,
-		  (SELECT version FROM plugin_versions WHERE plugin_key = p.key AND consent_status = 'approved' AND version <> ?
-		     ORDER BY uploaded_at DESC LIMIT 1), '')
-		FROM plugins p WHERE p.key = ?`, target, key)
+	newest := db.Model(&model.PluginVersion{}).Select("version").
+		Where("plugin_key = p.key AND consent_status = 'approved' AND version <> ?", target).Order("uploaded_at DESC").Limit(1)
+	return db.Table("plugins AS p").Select("COALESCE(p.active_version, (?), '')", newest).Where("p.key = ?", key)
 }
 
 // roleColumnRow is a roles row as a consent matrix column shows it.
@@ -765,11 +763,10 @@ func roleColumns(db *gorm.DB) *gorm.DB {
 // reviewedVersion selects what the review of key@version shows of the
 // plugin, the version and its publisher.
 func reviewedVersion(db *gorm.DB, key, version string) *gorm.DB {
-	return db.Raw(`
-		SELECT p.status, v.consent_status, v.signature_status, v.key_id, pub.name, pub.trust_level,
-		       v.package_size, v.package_sha256, v.uploaded_at
-		FROM plugin_versions v
-		JOIN plugins p ON p.key = v.plugin_key
-		LEFT JOIN publishers pub ON pub.id = v.publisher_id
-		WHERE v.plugin_key = ? AND v.version = ?`, key, version)
+	return db.Table("plugin_versions AS v").
+		Select(`p.status, v.consent_status, v.signature_status, v.key_id, pub.name, pub.trust_level,
+			v.package_size, v.package_sha256, v.uploaded_at`).
+		Joins("JOIN plugins p ON p.key = v.plugin_key").
+		Joins("LEFT JOIN publishers pub ON pub.id = v.publisher_id").
+		Where("v.plugin_key = ? AND v.version = ?", key, version)
 }
