@@ -21,16 +21,15 @@ var _ core.AsyncTasks = (*Service)(nil)
 
 // The statements of the task endpoints are on the request path: BeginTask,
 // ReceiveTask and registerTask run for every task submission, FindTask for
-// every poll of a client. They are Raw/Exec statements.
+// every poll of a client.
 
 func (s *Service) BeginTask(ctx context.Context, in core.TaskIntent) (string, error) {
 	// The dispatch identity of the submission; the database fills its
 	// state, expiry and timestamps.
 	id := "s2task_" + uuid.NewString()
-	return id, store.G(ctx, s.db.Gorm).Exec(`INSERT INTO task_submission_receipts
-		(request_id, public_id, plugin_key, kind, user_id, api_key_id, group_id, account_id, model, protocol)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`, in.RequestID, id, in.PluginKey, in.Kind,
-		in.UserID, in.APIKeyID, in.GroupID, in.AccountID, in.Model, in.Protocol).Error
+	return id, store.G(ctx, s.db.Gorm).Create(&model.TaskSubmissionReceipt{RequestID: in.RequestID, PublicID: id,
+		PluginKey: in.PluginKey, Kind: in.Kind, UserID: in.UserID, APIKeyID: in.APIKeyID, GroupID: in.GroupID,
+		AccountID: in.AccountID, Model: in.Model, Protocol: in.Protocol}).Error
 }
 
 func (s *Service) ReceiveTask(ctx context.Context, requestID string, status int, body []byte, reason string) error {
@@ -44,9 +43,10 @@ func (s *Service) ReceiveTask(ctx context.Context, requestID string, status int,
 	}
 	// For a submission not yet registered. A nil body keeps the stored one;
 	// an empty one is stored.
-	return store.G(ctx, s.db.Gorm).Exec(`UPDATE task_submission_receipts SET state=?, response_status=?,
-		response_body=COALESCE(?,response_body), last_error=? WHERE request_id=? AND state <> 'registered'`,
-		state, status, store.Bytes(body), trunc(reason, 2000), requestID).Error
+	return receipt(store.G(ctx, s.db.Gorm), requestID).Where("state <> 'registered'").Updates(map[string]any{
+		"state": state, "response_status": status, "response_body": gorm.Expr("COALESCE(?,response_body)", store.Bytes(body)),
+		"last_error": trunc(reason, 2000),
+	}).Error
 }
 
 // RegisterTask commits identity, initial observation, usage and optional debit
@@ -111,28 +111,31 @@ func recordTask(ctx context.Context, tx *gorm.DB, in core.TaskRegistration, uid 
 	// The receipt is the trusted dispatch identity; parsing cannot substitute it.
 	g := store.G(ctx, tx)
 	var valid bool
-	if err := g.Raw(`SELECT public_id=? AND plugin_key=? AND kind=? AND user_id=?
-		AND api_key_id=? AND group_id=? AND account_id=? AND model=? AND protocol=?
-		FROM task_submission_receipts WHERE request_id=? AND state='received' FOR UPDATE`,
-		in.PublicID, r.PluginKey, in.Kind, r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, r.RequestID).Row().Scan(&valid); err != nil {
+	if err := receipt(g, r.RequestID).Select(`public_id=? AND plugin_key=? AND kind=? AND user_id=?
+		AND api_key_id=? AND group_id=? AND account_id=? AND model=? AND protocol=?`,
+		in.PublicID, r.PluginKey, in.Kind, r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol).
+		Where("state='received'").Clauses(store.ForUpdate()).Row().Scan(&valid); err != nil {
 		return err
 	}
 	if !valid {
 		return errors.New("task receipt identity mismatch")
 	}
-	err := g.Exec(`INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,
-		group_id,account_id,model,protocol,usage_log_id,snapshot,snapshot_id_paths,next_check_at,deadline_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, in.PublicID, r.PluginKey, in.Kind, in.UpstreamID,
-		r.UserID, r.APIKeyID, r.GroupID, *r.AccountID, r.Model, r.Protocol, uid, store.Bytes(in.Snapshot),
-		store.Bytes(jsonOr(in.IDPaths, "[]")), next, deadline).Error
+	err := g.Create(&model.AsyncTask{PublicID: in.PublicID, PluginKey: r.PluginKey, Kind: in.Kind, UpstreamRefID: in.UpstreamID,
+		UserID: r.UserID, APIKeyID: r.APIKeyID, GroupID: r.GroupID, AccountID: *r.AccountID, Model: r.Model, Protocol: r.Protocol,
+		UsageLogID: uid, Snapshot: in.Snapshot, SnapshotIDPaths: jsonOr(in.IDPaths, "[]"), NextCheckAt: next, DeadlineAt: deadline}).Error
 	if err != nil {
 		return err
 	} // Identity collisions must never overwrite ownership.
-	if err = g.Exec(`UPDATE pending_settlements SET task_public_id=? WHERE usage_log_id=?`, in.PublicID, uid).Error; err != nil {
+	if err = g.Model(&model.PendingSettlement{}).Where("usage_log_id=?", uid).Update("task_public_id", in.PublicID).Error; err != nil {
 		return err
 	}
-	return g.Exec(`UPDATE task_submission_receipts SET state='registered',response_body=NULL,last_error='',
-		expires_at=LEAST(expires_at,?) WHERE request_id=?`, deadline, r.RequestID).Error
+	return receipt(g, r.RequestID).Updates(map[string]any{"state": "registered", "response_body": gorm.Expr("NULL"),
+		"last_error": "", "expires_at": gorm.Expr("LEAST(expires_at,?)", deadline)}).Error
+}
+
+// receipt is the task_submission_receipts row of a request.
+func receipt(db *gorm.DB, requestID string) *gorm.DB {
+	return db.Model(&model.TaskSubmissionReceipt{}).Where("request_id=?", requestID)
 }
 
 func (s *Service) FindTask(ctx context.Context, q core.TaskQuery) (*core.TaskSnapshot, error) {
@@ -152,12 +155,13 @@ func (s *Service) FindTask(ctx context.Context, q core.TaskQuery) (*core.TaskSna
 // of an imported legacy task. None is sql.ErrNoRows, two matches are no
 // match.
 func readTask(ctx context.Context, db *gorm.DB, q core.TaskQuery) (*core.TaskSnapshot, error) {
-	rows, err := store.G(ctx, db).Raw(`SELECT public_id,upstream_ref_id,model,state,
+	rows, err := store.G(ctx, db).Model(&model.AsyncTask{}).Select(`public_id,upstream_ref_id,model,state,
 		CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
-		snapshot,snapshot_id_paths,failure_code,last_error
-		FROM async_tasks WHERE plugin_key=? AND kind=? AND user_id=? AND group_id=?
-		AND (public_id=? OR (legacy_imported AND upstream_ref_id=? AND NOT starts_with(?,'s2task_')))
-		ORDER BY public_id LIMIT 2`, q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID, q.ID, q.ID).Rows()
+		snapshot,snapshot_id_paths,failure_code,last_error`).
+		Where(`plugin_key=? AND kind=? AND user_id=? AND group_id=?
+		AND (public_id=? OR (legacy_imported AND upstream_ref_id=? AND NOT starts_with(?,'s2task_')))`,
+			q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID, q.ID, q.ID).
+		Order("public_id").Limit(2).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -222,16 +226,17 @@ func (s *Service) importLegacyTask(ctx context.Context, q core.TaskQuery) error 
 		}
 		id := "s2task_" + uuid.NewString()
 		// Already settled legacy rows still need an observation, without another debit.
-		if err = g.Exec(`INSERT INTO async_tasks(public_id,plugin_key,kind,upstream_ref_id,user_id,api_key_id,group_id,
-		account_id,model,protocol,usage_log_id,snapshot_id_paths,legacy_imported,next_check_at,deadline_at,created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,true,?,?,?)`, id, q.PluginKey, q.Kind, q.ID, q.UserID, e.apiKeyID, q.GroupID,
-			*e.accountID, e.model, q.SubmitProtocol, e.usageLogID, jsonOr(q.IDPaths, "[]"), e.next, e.deadline, e.created).Error; err != nil {
+		if err = g.Create(&model.AsyncTask{PublicID: id, PluginKey: q.PluginKey, Kind: q.Kind, UpstreamRefID: q.ID, UserID: q.UserID,
+			APIKeyID: e.apiKeyID, GroupID: q.GroupID, AccountID: *e.accountID, Model: e.model, Protocol: q.SubmitProtocol,
+			UsageLogID: e.usageLogID, SnapshotIDPaths: jsonOr(q.IDPaths, "[]"), LegacyImported: true, NextCheckAt: e.next,
+			DeadlineAt: e.deadline, CreatedAt: e.created}).Error; err != nil {
 			return err
 		}
 		// Importing into the managed scheduler must not reset query failures;
 		// updated_at keeps the insert's value.
-		if err = g.Exec(`UPDATE async_tasks SET poll_failures=p.poll_failures,attempts=p.attempts
-		FROM pending_settlements p WHERE async_tasks.public_id=? AND p.id=?`, id, e.id).Error; err != nil {
+		if err = g.Model(&model.AsyncTask{}).Clauses(store.UpdateFrom("pending_settlements p")).
+			Where("async_tasks.public_id=? AND p.id=?", id, e.id).
+			Updates(map[string]any{"poll_failures": gorm.Expr("p.poll_failures"), "attempts": gorm.Expr("p.attempts")}).Error; err != nil {
 			return err
 		}
 		return g.Model(&model.PendingSettlement{}).Where("id = ?", e.id).Update("task_public_id", id).Error
@@ -256,14 +261,16 @@ const legacyEntryColumns = `p.id,p.usage_log_id,p.account_id,u.model,u.api_key_i
 // the task q names, joined with their usage rows (u), locking the rows of
 // lockOf.
 func legacyTaskEntries(db *gorm.DB, q core.TaskQuery, cols, lockOf string) *gorm.DB {
-	return db.Raw(`SELECT `+cols+` FROM pending_settlements p JOIN usage_logs u ON u.id=p.usage_log_id
-		WHERE p.plugin_key=? AND p.ref_id=? AND u.user_id=? AND u.group_id=? AND u.protocol=? FOR UPDATE OF `+lockOf,
-		q.PluginKey, q.ID, q.UserID, q.GroupID, q.SubmitProtocol)
+	return db.Table("pending_settlements p").Select(cols).Joins("JOIN usage_logs u ON u.id=p.usage_log_id").
+		Where("p.plugin_key=? AND p.ref_id=? AND u.user_id=? AND u.group_id=? AND u.protocol=?",
+			q.PluginKey, q.ID, q.UserID, q.GroupID, q.SubmitProtocol).
+		Clauses(store.ForUpdate().Of(lockOf))
 }
 
 func (s *Service) cleanTaskReceipts(ctx context.Context) {
-	err := store.G(ctx, s.db.Gorm).Exec(`DELETE FROM task_submission_receipts WHERE request_id IN
-		(SELECT request_id FROM task_submission_receipts WHERE expires_at <= now() ORDER BY expires_at LIMIT 200)`).Error
+	g := store.G(ctx, s.db.Gorm)
+	expired := g.Model(&model.TaskSubmissionReceipt{}).Select("request_id").Where("expires_at <= now()").Order("expires_at").Limit(200)
+	err := g.Where("request_id IN (?)", expired).Delete(&model.TaskSubmissionReceipt{}).Error
 	if err != nil {
 		s.rec.log.Warn("task receipt cleanup failed", "err", err)
 	}

@@ -186,7 +186,7 @@ func TestRollupMatchesLive(t *testing.T) {
 	// The hour of the oldest row, which in the first minutes of an hour is not the hour of 40 days ago.
 	require.Equal(t, now.Add(-rows[len(rows)-1].age).Truncate(time.Hour), low)
 	var sealed time.Time
-	require.NoError(t, f.db.SQL.QueryRowContext(ctx, sealedSQL).Scan(&sealed))
+	require.NoError(t, sealedHours(store.G(ctx, f.db.Gorm)).Row().Scan(&sealed))
 	require.Equal(t, sealed, high)
 
 	// Changes to rolled-up hours mark them; the next refresh recomputes them.
@@ -240,7 +240,7 @@ func TestRollupSealWaitsForOpenWrites(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	var free time.Time
-	require.NoError(t, f.db.SQL.QueryRowContext(ctx, sealedSQL).Scan(&free))
+	require.NoError(t, sealedHours(store.G(ctx, f.db.Gorm)).Row().Scan(&free))
 	require.Equal(t, time.Now().Add(-rollupSeal).Truncate(time.Hour), free.Truncate(time.Hour))
 
 	tx, err := testutil.Begin(ctx, f.db)
@@ -251,7 +251,7 @@ func TestRollupSealWaitsForOpenWrites(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.SQLTx(tx).QueryRowContext(ctx, `SELECT xact_start FROM pg_stat_activity WHERE pid = pg_backend_pid()`).Scan(&started))
 	var held time.Time
-	require.NoError(t, f.db.SQL.QueryRowContext(ctx, sealedSQL).Scan(&held))
+	require.NoError(t, sealedHours(store.G(ctx, f.db.Gorm)).Row().Scan(&held))
 	// The bound is the earlier of the usual seal and the open transaction's
 	// start (less its 15 minute grace), both truncated to the hour.
 	want := started.Add(-15 * time.Minute)

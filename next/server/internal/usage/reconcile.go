@@ -2,7 +2,6 @@ package usage
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -212,33 +212,22 @@ func (s *Service) reconcileSweep(ctx context.Context) int {
 // dies halfway through a sweep loses a lease rather than wedging an entry,
 // and a second node cannot pick up what this one is already holding.
 func (s *Service) claimDue(ctx context.Context, limit int) ([]*settleEntry, error) {
-	rows, err := store.G(ctx, s.db.Gorm).Raw(`
-		UPDATE pending_settlements p
-		SET next_check_at = now() + make_interval(secs => ?)
-		FROM (
-			SELECT id FROM pending_settlements
-			WHERE state = 'pending' AND next_check_at <= now() AND task_public_id IS NULL
-			ORDER BY next_check_at
-			LIMIT ?
-			FOR UPDATE SKIP LOCKED
-		) due
-		WHERE p.id = due.id
-		RETURNING p.id, p.plugin_key, p.ref_id, p.usage_log_id, p.account_id, p.attempts, p.poll_failures, p.created_at, p.deadline_at`,
-		reconcileLease.Seconds(), limit).Rows()
+	g := store.G(ctx, s.db.Gorm)
+	due := g.Model(&model.PendingSettlement{}).Select("id").
+		Where("state = 'pending' AND next_check_at <= now() AND task_public_id IS NULL").
+		Order("next_check_at").Limit(limit).Clauses(store.ForUpdate().SkipLocked())
+	var rows []model.PendingSettlement
+	err := g.Model(&rows).Clauses(claimedEntry).Where("id IN (?)", due).
+		Updates(map[string]any{"next_check_at": gorm.Expr("now() + make_interval(secs => ?)", reconcileLease.Seconds())}).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*settleEntry
-	for rows.Next() {
-		e := &settleEntry{}
-		if err := rows.Scan(&e.id, &e.pluginKey, &e.refID, &e.usageLogID, &e.accountID, &e.attempts, &e.pollFailures,
-			&e.createdAt, &e.deadlineAt); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+	out := make([]*settleEntry, len(rows))
+	for i, r := range rows {
+		out[i] = &settleEntry{id: r.ID, pluginKey: r.PluginKey, refID: r.RefID, usageLogID: r.UsageLogID, accountID: r.AccountID,
+			attempts: r.Attempts, pollFailures: r.PollFailures, createdAt: r.CreatedAt, deadlineAt: r.DeadlineAt}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // interleaveByPlugin round-robins the entries across their plugins. With
@@ -584,10 +573,10 @@ func (s *Service) rescheduleAttempt(ctx context.Context, e *settleEntry, cfg res
 		if err := lockLegacyOutcome(ctx, tx, e); err != nil {
 			return err
 		}
-		res := store.G(ctx, tx).Exec(`
-		UPDATE pending_settlements SET attempts = attempts + ?, next_check_at = ?, last_error = ?,
-		poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END
-		WHERE id = ? AND state = 'pending' AND task_public_id IS NULL`, increment, next, trunc(lastErr, 2000), e.pollFailed, e.pollObserved, e.id)
+		res := entryRow(store.G(ctx, tx), e.id).Where("state = 'pending' AND task_public_id IS NULL").Updates(map[string]any{
+			"attempts": gorm.Expr("attempts + ?", increment), "next_check_at": next, "last_error": trunc(lastErr, 2000),
+			"poll_failures": pollFailures(e),
+		})
 		if res.Error == nil && res.RowsAffected != 1 {
 			return errNotPending
 		}
@@ -679,18 +668,18 @@ func (s *Service) settleReconciled(ctx context.Context, e *settleEntry, row *res
 		}
 		// The real usage and its price make the row an ordinary billed one.
 		g, tk := store.G(ctx, tx), p.Tokens
-		if err := g.Exec(`
-			UPDATE usage_logs SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-				cache_creation_tokens = ?, cache_creation_1h_tokens = ?, metrics = ?,
-				total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?, expr_hash = ?,
-				base_cost = ?
-			WHERE id = ?`,
-			tk.Input, tk.Output, tk.CacheRead, tk.CacheCreation, tk.CacheCreation1h,
-			jsonOr(p.Metrics, "{}"), cost.total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, cost.base, e.usageLogID).Error; err != nil {
+		if err := g.Model(&usageLogRow{}).Where("id = ?", e.usageLogID).Updates(map[string]any{
+			"input_tokens": tk.Input, "output_tokens": tk.Output, "cache_read_tokens": tk.CacheRead,
+			"cache_creation_tokens": tk.CacheCreation, "cache_creation_1h_tokens": tk.CacheCreation1h,
+			"metrics": store.Bytes(jsonOr(p.Metrics, "{}")), "total_cost": cost.total, "billing_status": StatusBilled,
+			"billing_detail": store.Bytes(jsonOr(detail, "{}")), "matched_tier": trunc(detail.Tier, 100), "expr_hash": exprHash,
+			"base_cost": cost.base,
+		}).Error; err != nil {
 			return err
 		}
-		if err := g.Exec(`UPDATE pending_settlements SET state = ?, attempts = attempts + 1, last_error = ''
-			WHERE id = ?`, SettleStateSettled, e.id).Error; err != nil {
+		if err := entryRow(g, e.id).Updates(map[string]any{
+			"state": SettleStateSettled, "attempts": gorm.Expr("attempts + 1"), "last_error": "",
+		}).Error; err != nil {
 			return err
 		}
 		if s.events != nil {
@@ -746,15 +735,16 @@ func (s *Service) refundFailed(ctx context.Context, e *settleEntry, row *reserve
 		// owed. It is also not in usage_logs_billing_pending_idx, so the
 		// settlement retry loop will not pick the row up and bill it again.
 		g := store.G(ctx, tx)
-		if err := g.Exec(`
-			UPDATE usage_logs SET total_cost = 0, base_cost = 0, billing_status = 'free', success = false,
-				error_type = ?, error_message = ?
-			WHERE id = ?`, trunc(reason, 50), trunc(reason, 1000), e.usageLogID).Error; err != nil {
+		if err := g.Model(&usageLogRow{}).Where("id = ?", e.usageLogID).Updates(map[string]any{
+			"total_cost": 0, "base_cost": 0, "billing_status": StatusFree, "success": false,
+			"error_type": trunc(reason, 50), "error_message": trunc(reason, 1000),
+		}).Error; err != nil {
 			return err
 		}
-		if err := g.Exec(`UPDATE pending_settlements SET state = ?, attempts = attempts + 1, last_error = ?,
-			poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END
-			WHERE id = ?`, SettleStateFailed, trunc(reason, 2000), e.pollFailed, e.pollObserved, e.id).Error; err != nil {
+		if err := entryRow(g, e.id).Updates(map[string]any{
+			"state": SettleStateFailed, "attempts": gorm.Expr("attempts + 1"), "last_error": trunc(reason, 2000),
+			"poll_failures": pollFailures(e),
+		}).Error; err != nil {
 			return err
 		}
 		p.Success, p.ErrorType = false, trunc(reason, 50)
@@ -882,12 +872,13 @@ func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reserve
 		if err := markUsageRow(g, e.usageLogID, StatusBilled, nil, marker).Error; err != nil {
 			return err
 		}
-		attempts := "attempts"
+		attempts := 0
 		if countAttempt {
-			attempts = "attempts + 1"
+			attempts = 1
 		}
-		if err := g.Exec(`UPDATE pending_settlements SET state = ?, last_error = ?, attempts = `+attempts+`
-			WHERE id = ?`, entryState, trunc(note, 2000), e.id).Error; err != nil {
+		if err := entryRow(g, e.id).Updates(map[string]any{
+			"state": entryState, "last_error": trunc(note, 2000), "attempts": gorm.Expr("attempts + ?", attempts),
+		}).Error; err != nil {
 			return err
 		}
 		if s.events != nil {
@@ -912,27 +903,10 @@ func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reserve
 func (s *Service) loadReserved(ctx context.Context, usageLogID int64) (*reservedRowState, error) {
 	p := &pending{}
 	st := &reservedRowState{p: p}
-	var metrics, detail []byte
-	err := store.G(ctx, s.db.Gorm).Raw(`
-		SELECT u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
-		       u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
-		       u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens,
-		       u.cache_creation_1h_tokens, u.metrics, u.latency_ms, u.created_at, u.rate_multiplier,
-		       COALESCE(u.price_id, 0), u.billing_mode, u.billing_detail, u.billing_status, u.total_cost,
-		       COALESCE(h.expression, mp.expression, '')`+frozenPriceJoins+`
-		WHERE u.id = ?`, usageLogID).Row().
-		Scan(&p.RequestID, &p.UserID, &p.APIKeyID, &p.GroupID, &p.AccountID, &p.PluginKey, &p.Platform,
-			&p.Protocol, &p.AccountType, &p.UpstreamProtocol, &p.Model, &p.Success, &p.StatusCode, &p.ErrorType,
-			&p.Tokens.Input, &p.Tokens.Output, &p.Tokens.CacheRead, &p.Tokens.CacheCreation,
-			&p.Tokens.CacheCreation1h, &metrics, &p.LatencyMs, &p.CreatedAt, &p.Rate,
-			&p.PriceID, &p.Mode, &detail, &st.status, &st.totalCost, &p.Expression)
-	if err != nil {
+	row := frozenPrice(store.G(ctx, s.db.Gorm), ", u.billing_status, u.total_cost").Where("u.id = ?", usageLogID).Row()
+	if err := scanPending(row, p, &st.status, &st.totalCost); err != nil {
 		return nil, err
 	}
-	_ = json.Unmarshal(metrics, &p.Metrics)
-	var pd pendingDetail
-	_ = json.Unmarshal(detail, &pd)
-	p.Inputs, p.Attempts = pd.Inputs, pd.Attempts
 	return st, nil
 }
 
@@ -1002,4 +976,19 @@ func (s *Service) usageRulesFor(p *pending) (manifest.UsageRules, bool) {
 		}
 	}
 	return usagerules.For(ap, ep, &pb.Platform, p.UpstreamProtocol), true
+}
+
+// claimedEntry returns the columns of a settleEntry from a claim.
+var claimedEntry = clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "plugin_key"}, {Name: "ref_id"},
+	{Name: "usage_log_id"}, {Name: "account_id"}, {Name: "attempts"}, {Name: "poll_failures"}, {Name: "created_at"}, {Name: "deadline_at"}}}
+
+// entryRow is the pending_settlements row id.
+func entryRow(db *gorm.DB, id int64) *gorm.DB {
+	return db.Model(&model.PendingSettlement{}).Where("id = ?", id)
+}
+
+// pollFailures counts e's poll: one more failure in a row, or none after
+// an observation.
+func pollFailures(e *settleEntry) clause.Expr {
+	return gorm.Expr("CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END", e.pollFailed, e.pollObserved)
 }

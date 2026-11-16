@@ -631,10 +631,9 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 		&d.PriceID, &d.ExprHash, (*store.Bytes)(&d.BillingDetail), &d.UserAgent, &d.NodeID, (*store.Bytes)(&d.PluginDetail), (*store.Bytes)(&d.Anomalies))
 	g := store.G(ctx, s.db.Gorm)
 	// The list's columns and the detail's own.
-	err := g.Raw(`SELECT `+recordColumns+`, u.plugin_version, u.metrics, u.sticky_rule,
+	err := g.Table("usage_logs u").Select(recordColumns+`, u.plugin_version, u.metrics, u.sticky_rule,
 		u.hook_decisions, u.price_id, u.expr_hash, u.billing_detail, u.user_agent, u.node_id,
-		u.plugin_detail, u.anomalies FROM usage_logs u
-	`+recordJoins+` WHERE u.id = ?`, id).Row().Scan(targets...)
+		u.plugin_detail, u.anomalies`).Joins(recordJoins).Where("u.id = ?", id).Row().Scan(targets...)
 	if store.IsNoRows(err) || (err == nil && self != nil && d.UserID != *self) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("usage record not found"))
 		return
@@ -962,21 +961,18 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	// rollup must be aligned with it.
 	var keyVars []any
 	var spanTZ *time.Location
-	inTZ := func() string {
-		spanTZ, keyVars = loc, []any{tz}
-		return `u.created_at AT TIME ZONE ?::text`
-	}
+	const inTZ = `u.created_at AT TIME ZONE ?::text`
 	var key, join, extra string
-	order, lastAt, groupBy := ` ORDER BY k`, `NULL::timestamptz`, ` GROUP BY k`
+	order, lastAt, groupBy, limit := `k`, `NULL::timestamptz`, `k`, 0
 	switch groupKey {
 	case "day":
-		key = `to_char(` + inTZ() + `, 'YYYY-MM-DD')`
+		key, spanTZ, keyVars = `to_char(`+inTZ+`, 'YYYY-MM-DD')`, loc, []any{tz}
 	case "hour":
 		if end.Sub(from) > maxHourSpan {
 			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("group_by=hour covers at most 31 days"))
 			return
 		}
-		key = `to_char(date_trunc('hour', ` + inTZ() + `), 'YYYY-MM-DD HH24:00')`
+		key, spanTZ, keyVars = `to_char(date_trunc('hour', `+inTZ+`), 'YYYY-MM-DD HH24:00')`, loc, []any{tz}
 	case "none":
 		key, groupBy = `''`, ``
 	case "model":
@@ -997,7 +993,7 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	case "ip":
 		key = `u.client_ip`
 		lastAt = `max(u.at)`
-		order = ` ORDER BY sum(u.requests) DESC, k LIMIT ` + strconv.Itoa(maxIPGroups)
+		order, limit = `sum(u.requests) DESC, k`, maxIPGroups
 	case "user":
 		if self != nil {
 			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("group_by must be day, hour, none, model, api_key, group, endpoint, platform, protocol or ip"))
@@ -1037,7 +1033,8 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 					return err
 				}
 			}
-			sh := summaryShape{outKey: outKey, key: clause.Expr{SQL: key, Vars: keyVars}, extra: extra, join: join, lastAt: lastAt, groupBy: groupBy, order: order}
+			sh := summaryShape{outKey: outKey, key: clause.Expr{SQL: key, Vars: keyVars}, extra: extra, join: join, lastAt: lastAt,
+				groupBy: groupBy, order: order, limit: limit}
 			rows, err := summaryQuery(store.G(ctx, tx), sh, f, span).Rows()
 			if err != nil {
 				return err
@@ -1080,20 +1077,29 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 
 // summaryShape is what the group_by of a summary makes of its query: the
 // output key and the per-row key, extra column and join under statRows, the
-// last-request column, and the GROUP BY and ORDER BY tails.
+// last-request column, the GROUP BY ("" for none) and ORDER BY, and the
+// LIMIT (0 for none).
 type summaryShape struct {
 	key                                         clause.Expr
 	outKey, extra, join, lastAt, groupBy, order string
+	limit                                       int
 }
 
 // summaryQuery selects the summary rows of the records f keeps through
 // statRows, which reads span from the rollup.
 func summaryQuery(db *gorm.DB, sh summaryShape, f store.Conds, span *hourSpan) *gorm.DB {
 	cols := clause.Expr{SQL: sh.key.SQL + ` AS k, ` + sh.extra + ` AS e, u.created_at AS at`, Vars: sh.key.Vars}
-	return db.Raw(`
-				SELECT `+sh.outKey+` AS k, COALESCE(max(u.e), ''), `+totalsColumns("", true)+`,
-				       `+sumOf("u.anomalous_rows", "")+`, `+sumOf("u.estimated_rows", "")+`, `+sumOf("u.estimated_cost", "")+`, `+sh.lastAt+`
-				FROM ?`+sh.groupBy+sh.order, statRows(db, cols, sh.join, f, span))
+	q := db.Table("?", statRows(db, cols, sh.join, f, span)).
+		Select(sh.outKey + ` AS k, COALESCE(max(u.e), ''), ` + totalsColumns("", true) + `, ` +
+			sumOf("u.anomalous_rows", "") + `, ` + sumOf("u.estimated_rows", "") + `, ` + sumOf("u.estimated_cost", "") + `, ` + sh.lastAt).
+		Order(sh.order)
+	if sh.groupBy != "" {
+		q = q.Group(sh.groupBy)
+	}
+	if sh.limit > 0 {
+		q = q.Limit(sh.limit)
+	}
+	return q
 }
 
 // summaryRange is the summary's range: from (default 30 days ago) to to

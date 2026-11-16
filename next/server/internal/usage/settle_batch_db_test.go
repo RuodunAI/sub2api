@@ -18,8 +18,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// The usage_logs insert of a settler batch is one statement (insertUsageSQL,
-// one array per column). A batch of 203 records holds a request id already
+// The usage_logs insert of a settler batch is one INSERT of its rows, with
+// ids reserved before it (insertUsageRows). A batch of 203 records holds a request id already
 // stored, a repeat next to its first record, a repeat far from it and two
 // ids that differ only past the 64 characters the column keeps: each of
 // them is skipped, the first record of an id is the one inserted, and each
@@ -146,7 +146,7 @@ func TestSettleConcurrentSameRow(t *testing.T) {
 
 // valuesSQL and valuesArgs are a plain one-row VALUES insert: the statement
 // and its arguments, written out on their own, not derived from
-// usageLogColumns and appendUsageRow, which they check.
+// usageLogRow and newUsageLogRow, which they check.
 const valuesSQL = `
 	INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, plugin_key, plugin_version,
 		platform, protocol, endpoint, model, upstream_model, stream, status_code, success, error_type,
@@ -230,8 +230,8 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 		if err := f.db.SQL.QueryRowContext(ctx, valuesSQL, valuesArgs(build("values-"+name))...).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
-		batch = append(batch, build("unnest-"+name))
-		// A batch of one takes insertUsageRowSQL.
+		batch = append(batch, build("batch-"+name))
+		// A batch of one is one INSERT without reserved ids.
 		if _, err := f.svc.insert(ctx, []*core.UsageRecord{build("row-" + name)}); err != nil {
 			t.Fatal(err)
 		}
@@ -242,7 +242,7 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	const row = `SELECT (to_jsonb(u) - 'id' - 'request_id')::text FROM usage_logs u WHERE request_id = $1`
 	for name := range variants {
 		want := f.scalar(row, "values-"+name)
-		for _, form := range []string{"unnest-", "row-"} {
+		for _, form := range []string{"batch-", "row-"} {
 			if got := f.scalar(row, form+name); got != want {
 				t.Fatalf("%s%s:\n got %s\nwant %s", form, name, got, want)
 			}
@@ -250,7 +250,8 @@ func TestInsertBatchMatchesValuesInsert(t *testing.T) {
 	}
 }
 
-// Any batch, 300 records here, is one statement and one round trip.
+// Any batch, 300 records here, is two statements and round trips: its ids,
+// then one INSERT of its rows.
 func TestInsertBatchOneStatement(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -274,7 +275,7 @@ func TestInsertBatchOneStatement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(statements) != 1 {
+	if len(statements) != 2 {
 		t.Fatalf("%d statements for a batch of %d", len(statements), len(batch))
 	}
 }

@@ -41,7 +41,7 @@ func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(*gorm.D
 	}
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
-		if err := g.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, "plugin-monitor:"+m.id).Error; err != nil {
+		if err := store.XactLock(ctx, tx, "plugin-monitor:"+m.id); err != nil {
 			return err
 		}
 		var digest string

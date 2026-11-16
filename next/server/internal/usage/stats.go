@@ -73,13 +73,14 @@ func parseTZ(c *gin.Context) (string, *time.Location, error) {
 
 // statsTx runs fn in a read-only transaction under lim.
 func (s *Service) statsTx(ctx context.Context, lim statsLimits, fn func(*gorm.DB) error) error {
-	set := `SET LOCAL statement_timeout = '` + lim.timeout + `'`
-	if lim.workMem != "" {
-		set += `; SET LOCAL work_mem = '` + lim.workMem + `'`
-	}
 	return s.db.TxOptions(ctx, store.ReadOnly(), func(tx *gorm.DB) error {
-		if err := store.G(ctx, tx).Exec(set).Error; err != nil {
+		if err := store.SetLocal(ctx, tx, "statement_timeout", lim.timeout); err != nil {
 			return err
+		}
+		if lim.workMem != "" {
+			if err := store.SetLocal(ctx, tx, "work_mem", lim.workMem); err != nil {
+				return err
+			}
 		}
 		err := fn(tx)
 		if store.SQLState(err) == "57014" { // query_canceled
@@ -225,17 +226,15 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 			&out.Last5m.Requests, &out.Last5m.Tokens, &activeToday)
 		g := store.G(ctx, tx)
 		// Named parameters: each window bound is used several times.
-		if err := g.Raw(`SELECT `+
+		if err := g.Table("?", statRows(g, clause.Expr{SQL: `u.created_at AS at, u.user_id`}, ``, f, span)).Select(
 			totalsColumns(`u.at >= @today`, false)+`, `+
-			totalsColumns(`u.at >= @yesterday AND u.at < @today`, false)+`, `+
-			totalsColumns(``, false)+`, `+
-			sumOf(`u.requests`, `u.at >= @last5m`)+`, `+
-			sumOf(`u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens`, `u.at >= @last5m`)+`,
-			count(DISTINCT u.user_id) FILTER (WHERE u.at >= @today)
-			FROM @rows`, map[string]any{
-			"today": w.today, "yesterday": w.yesterday, "last5m": w.last5m,
-			"rows": statRows(g, clause.Expr{SQL: `u.created_at AS at, u.user_id`}, ``, f, span),
-		}).Row().Scan(targets...); err != nil {
+				totalsColumns(`u.at >= @yesterday AND u.at < @today`, false)+`, `+
+				totalsColumns(``, false)+`, `+
+				sumOf(`u.requests`, `u.at >= @last5m`)+`, `+
+				sumOf(`u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens`, `u.at >= @last5m`)+`,
+			count(DISTINCT u.user_id) FILTER (WHERE u.at >= @today)`, map[string]any{
+				"today": w.today, "yesterday": w.yesterday, "last5m": w.last5m,
+			}).Row().Scan(targets...); err != nil {
 			return err
 		}
 		if self != nil {

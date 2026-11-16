@@ -4,17 +4,19 @@ package usage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -528,168 +530,115 @@ func (s *Service) insertAtomic(ctx context.Context, batch []*core.UsageRecord, b
 	return inserted, err
 }
 
-// usageLogColumns are the usage_logs columns insertUsageRows writes, in the
-// order of appendUsageRow's values, with the element type of the array
-// parameter that carries each: the column's type without its length or
-// scale, the type a VALUES parameter of the column took.
-var usageLogColumns = [...][2]string{
-	{"request_id", "varchar"}, {"user_id", "bigint"}, {"api_key_id", "bigint"}, {"group_id", "bigint"},
-	{"account_id", "bigint"}, {"plugin_key", "varchar"}, {"plugin_version", "varchar"}, {"platform", "varchar"},
-	{"protocol", "varchar"}, {"endpoint", "varchar"}, {"model", "varchar"}, {"upstream_model", "varchar"},
-	{"stream", "boolean"}, {"status_code", "integer"}, {"success", "boolean"}, {"error_type", "varchar"},
-	{"error_message", "text"}, {"attempts", "integer"}, {"input_tokens", "bigint"}, {"output_tokens", "bigint"},
-	{"cache_read_tokens", "bigint"}, {"cache_creation_tokens", "bigint"}, {"cache_creation_1h_tokens", "bigint"},
-	{"metrics", "jsonb"}, {"sticky_rule", "varchar"}, {"sticky_hit", "boolean"}, {"hook_decisions", "jsonb"},
-	{"rate_multiplier", "numeric"}, {"price_id", "bigint"}, {"expr_hash", "varchar"}, {"billing_mode", "varchar"},
-	{"billing_detail", "jsonb"}, {"billing_status", "varchar"}, {"latency_ms", "integer"},
-	{"first_token_ms", "integer"}, {"client_ip", "varchar"}, {"user_agent", "varchar"}, {"node_id", "varchar"},
-	{"created_at", "timestamptz"}, {"account_type", "varchar"}, {"upstream_protocol", "varchar"},
-	{"client_request_id", "varchar"}, {"sched_decisions", "jsonb"}, {"plugin_detail", "jsonb"},
-	{"anomalies", "jsonb"}, {"upload_ms", "integer"}, {"conversion", "jsonb"},
+// usageLogRow is the usage_logs row the settler inserts: every column it
+// writes, each always written (no database default fills one in), so the
+// INSERT has one text per batch size whatever the values.
+type usageLogRow struct {
+	ID                    int64           `gorm:"column:id;primaryKey;autoIncrement:false"`
+	RequestID             string          `gorm:"column:request_id"`
+	UserID                int64           `gorm:"column:user_id"`
+	APIKeyID              int64           `gorm:"column:api_key_id"`
+	GroupID               int64           `gorm:"column:group_id"`
+	AccountID             *int64          `gorm:"column:account_id"`
+	PluginKey             string          `gorm:"column:plugin_key"`
+	PluginVersion         string          `gorm:"column:plugin_version"`
+	Platform              string          `gorm:"column:platform"`
+	Protocol              string          `gorm:"column:protocol"`
+	Endpoint              string          `gorm:"column:endpoint"`
+	Model                 string          `gorm:"column:model"`
+	UpstreamModel         string          `gorm:"column:upstream_model"`
+	Stream                bool            `gorm:"column:stream"`
+	StatusCode            int             `gorm:"column:status_code"`
+	Success               bool            `gorm:"column:success"`
+	ErrorType             string          `gorm:"column:error_type"`
+	ErrorMessage          string          `gorm:"column:error_message"`
+	Attempts              int             `gorm:"column:attempts"`
+	InputTokens           int64           `gorm:"column:input_tokens"`
+	OutputTokens          int64           `gorm:"column:output_tokens"`
+	CacheReadTokens       int64           `gorm:"column:cache_read_tokens"`
+	CacheCreationTokens   int64           `gorm:"column:cache_creation_tokens"`
+	CacheCreation1hTokens int64           `gorm:"column:cache_creation_1h_tokens"`
+	Metrics               store.Bytes     `gorm:"column:metrics"`
+	StickyRule            string          `gorm:"column:sticky_rule"`
+	StickyHit             bool            `gorm:"column:sticky_hit"`
+	HookDecisions         store.Bytes     `gorm:"column:hook_decisions"`
+	RateMultiplier        decimal.Decimal `gorm:"column:rate_multiplier"`
+	PriceID               *int64          `gorm:"column:price_id"`
+	ExprHash              string          `gorm:"column:expr_hash"`
+	BillingMode           string          `gorm:"column:billing_mode"`
+	BillingDetail         store.Bytes     `gorm:"column:billing_detail"`
+	BillingStatus         string          `gorm:"column:billing_status"`
+	LatencyMs             int             `gorm:"column:latency_ms"`
+	FirstTokenMs          int             `gorm:"column:first_token_ms"`
+	ClientIP              string          `gorm:"column:client_ip"`
+	UserAgent             string          `gorm:"column:user_agent"`
+	NodeID                string          `gorm:"column:node_id"`
+	// Created is a pointer, never nil: store stamps (and reads back) a
+	// zero time.Time created_at, which this row never holds.
+	Created          *time.Time  `gorm:"column:created_at"`
+	AccountType      string      `gorm:"column:account_type"`
+	UpstreamProtocol string      `gorm:"column:upstream_protocol"`
+	ClientRequestID  string      `gorm:"column:client_request_id"`
+	SchedDecisions   store.Bytes `gorm:"column:sched_decisions"`
+	PluginDetail     store.Bytes `gorm:"column:plugin_detail"`
+	Anomalies        store.Bytes `gorm:"column:anomalies"`
+	UploadMs         int         `gorm:"column:upload_ms"`
+	Conversion       store.Bytes `gorm:"column:conversion"`
 }
 
-// usageLogNames is the list of usageLogColumns' names.
-var usageLogNames = func() string {
-	names := make([]string, len(usageLogColumns))
-	for i, c := range usageLogColumns {
-		names[i] = c[0]
-	}
-	return strings.Join(names, ", ")
-}()
+func (usageLogRow) TableName() string { return "usage_logs" }
 
-// usageLogValues is the number of usageLogColumns.
-const usageLogValues = len(usageLogColumns)
-
-// insertUsageSQL inserts any number of usage rows in one statement and one
-// round trip, skipping a request id that is already there, and returns the
-// id and request id of each row it inserted. Each column's values are one
-// array parameter (47 whatever the batch size, far below PostgreSQL's 65535,
-// and one text for every batch, so a connection prepares it once), which
-// unnest turns back into rows, in batch order: WITH ORDINALITY numbers them
-// and the insert takes them in that order, so a request id repeated in the
-// batch keeps its first record's row and the ids follow the batch. Each
-// value is the one a VALUES parameter of the column binds (the driver
-// encodes an array's elements as it encodes the scalar, nil as NULL), converted to the
-// column by the same assignment (length check, numeric scale).
-var insertUsageSQL = func() string {
-	arrays := make([]string, len(usageLogColumns))
-	for i, c := range usageLogColumns {
-		arrays[i] = "?::" + c[1] + "[]"
-	}
-	return `INSERT INTO usage_logs (` + usageLogNames + `)
-			SELECT ` + usageLogNames + `
-			FROM unnest(` + strings.Join(arrays, ", ") + `) WITH ORDINALITY AS r(` + usageLogNames + `, ord)
-			ORDER BY ord
-			ON CONFLICT (request_id) DO NOTHING
-			RETURNING id, request_id`
-}()
-
-// insertUsageRowSQL inserts a batch of one, the settler's usual batch when
-// it is not busy, with the values bound as they are: also one round trip,
-// and cheaper than 47 arrays of one element each.
-// Same columns, conflict and result as insertUsageSQL.
-var insertUsageRowSQL = `INSERT INTO usage_logs (` + usageLogNames + `)
-			VALUES (` + strings.Repeat("?, ", usageLogValues-1) + `?)
-			ON CONFLICT (request_id) DO NOTHING
-			RETURNING id, request_id`
-
-// insertUsageStmt is the insert of batch on db, not yet run:
-// insertUsageRowSQL for one record, insertUsageSQL for more.
-func insertUsageStmt(db *gorm.DB, batch []*core.UsageRecord) *gorm.DB {
-	vals := make([]any, 0, len(batch)*usageLogValues)
-	for _, rec := range batch {
-		vals = appendUsageRow(vals, rec)
-	}
-	if len(batch) == 1 {
-		return db.Raw(insertUsageRowSQL, vals...)
-	}
-	return db.Raw(insertUsageSQL, usageArrays(vals, len(batch))...)
-}
+// skipLoggedRequest skips a row whose request id is there already, or taken
+// by an earlier row of the same INSERT.
+var skipLoggedRequest = clause.OnConflict{Columns: []clause.Column{{Name: "request_id"}}, DoNothing: true}
 
 // insertUsageRows inserts the rows of batch on db, in batch order, and
 // returns the id of each record's new row: 0 where its request id was
-// already there, or taken by an earlier record of the batch.
+// already there, or taken by an earlier record of the batch (the rows of an
+// INSERT go in in order, so the first record of a request id keeps it).
+//
+// A batch of one, the settler's usual one when it is not busy, is one
+// INSERT that returns the new row's id. A larger batch reserves its ids
+// first (store.NextIDs, ascending in batch order) and inserts the rows with
+// them: two round trips whatever its size. Only when some row was skipped
+// does a third read which ids made it.
 func insertUsageRows(db *gorm.DB, batch []*core.UsageRecord) ([]int64, error) {
 	if len(batch) == 0 {
 		return nil, nil
 	}
-	got, err := insertedUsageRows(insertUsageStmt(db, batch))
+	rows := make([]usageLogRow, len(batch))
+	for i, rec := range batch {
+		rows[i] = newUsageLogRow(rec)
+	}
+	if len(rows) == 1 {
+		err := db.Omit("id").Clauses(skipLoggedRequest, clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(&rows[0]).Error
+		return []int64{rows[0].ID}, err
+	}
+	ids, err := store.NextIDs(db, "usage_logs", len(rows))
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]int64, len(batch))
-	for i, rec := range batch {
-		// The first record of a request id is the one its row holds.
-		key := trunc(rec.RequestID, 64)
-		if id, ok := got[key]; ok {
-			ids[i] = id
-			delete(got, key)
+	for i := range rows {
+		rows[i].ID = ids[i]
+	}
+	res := db.Clauses(skipLoggedRequest).Create(&rows)
+	if res.Error != nil || res.RowsAffected == int64(len(rows)) {
+		return ids, res.Error
+	}
+	var written []int64
+	if err := db.Model(&usageLogRow{}).Where("id = ANY(?)", store.Int64s(ids)).Pluck("id", &written).Error; err != nil {
+		return nil, err
+	}
+	for i, id := range ids {
+		if !slices.Contains(written, id) {
+			ids[i] = 0
 		}
 	}
 	return ids, nil
 }
 
-// insertedUsageRows runs an insertUsageSQL statement and reads its rows:
-// the id of each inserted row by its request id.
-func insertedUsageRows(stmt *gorm.DB) (map[string]int64, error) {
-	rows, err := stmt.Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	got := make(map[string]int64)
-	for rows.Next() {
-		var id int64
-		var requestID string
-		if err := rows.Scan(&id, &requestID); err != nil {
-			return nil, err
-		}
-		got[requestID] = id
-	}
-	return got, rows.Err()
-}
-
-// usageArrays turns n rows of appendUsageRow values (row after row) into
-// insertUsageSQL's parameters: one array per column, of the Go type of the
-// column's values.
-func usageArrays(vals []any, n int) []any {
-	arrays := make([]any, usageLogValues)
-	for col := range arrays {
-		switch vals[col].(type) {
-		case string:
-			arrays[col] = store.Strings(columnOf[string](vals, col, n))
-		case int64:
-			arrays[col] = store.Int64s(columnOf[int64](vals, col, n))
-		case bool:
-			arrays[col] = store.Bools(columnOf[bool](vals, col, n))
-		case time.Time:
-			arrays[col] = store.Times(columnOf[time.Time](vals, col, n))
-		case int:
-			arrays[col] = store.Array[int](columnOf[int](vals, col, n))
-		case *int64:
-			arrays[col] = store.Array[*int64](columnOf[*int64](vals, col, n))
-		case decimal.Decimal:
-			arrays[col] = store.Array[decimal.Decimal](columnOf[decimal.Decimal](vals, col, n))
-		case store.Bytes:
-			arrays[col] = store.Array[store.Bytes](columnOf[store.Bytes](vals, col, n))
-		default:
-			panic(fmt.Sprintf("usage: no array for a %T usage_logs value", vals[col]))
-		}
-	}
-	return arrays
-}
-
-// columnOf is column col of n rows of usageLogValues values each.
-func columnOf[T any](vals []any, col, n int) []T {
-	out := make([]T, n)
-	for i := range out {
-		out[i] = vals[i*usageLogValues+col].(T)
-	}
-	return out
-}
-
-// appendUsageRow appends the usageLogColumns values of rec's new row.
-func appendUsageRow(vars []any, rec *core.UsageRecord) []any {
+// newUsageLogRow is rec's new row.
+func newUsageLogRow(rec *core.UsageRecord) usageLogRow {
 	status := initialStatus(rec)
 	var priceID *int64
 	var exprHash, mode string
@@ -722,18 +671,20 @@ func appendUsageRow(vars []any, rec *core.UsageRecord) []any {
 		attempts = 1
 	}
 	t := rec.Tokens
-	return append(vars,
-		trunc(rec.RequestID, 64), rec.UserID, rec.APIKeyID, rec.GroupID, rec.AccountID,
-		trunc(rec.PluginKey, 30), trunc(rec.PluginVersion, 50), trunc(rec.Platform, 50),
-		trunc(rec.Protocol, 100), trunc(rec.Endpoint, 200), trunc(rec.Model, 200), trunc(rec.UpstreamModel, 200),
-		rec.Stream, rec.StatusCode, rec.Success, trunc(rec.ErrorType, 50), rec.ErrorMessage, attempts,
-		t.Input, t.Output, t.CacheRead, t.CacheCreation, t.CacheCreation1h,
-		store.Bytes(jsonOr(rec.Metrics, "{}")), trunc(rec.StickyRule, 100), rec.StickyHit, store.Bytes(jsonOr(rec.HookDecisions, "[]")),
-		rec.RateMultiplier, priceID, exprHash, mode, store.Bytes(detail), status, rec.LatencyMs, rec.FirstTokenMs,
-		trunc(rec.ClientIP, 64), trunc(rec.UserAgent, 500), trunc(rec.NodeID, 100), created,
-		trunc(rec.AccountType, 50), trunc(rec.UpstreamProtocol, 100), trunc(rec.ClientRequestID, 128),
-		store.Bytes(jsonOr(rec.SchedDecisions, "[]")), store.Bytes(pluginDetailJSON(rec.PluginDetail)), store.Bytes(anomalies),
-		rec.UploadMs, store.Bytes(conversionJSON(rec.Conversion)))
+	return usageLogRow{
+		RequestID: trunc(rec.RequestID, 64), UserID: rec.UserID, APIKeyID: rec.APIKeyID, GroupID: rec.GroupID, AccountID: rec.AccountID,
+		PluginKey: trunc(rec.PluginKey, 30), PluginVersion: trunc(rec.PluginVersion, 50), Platform: trunc(rec.Platform, 50),
+		Protocol: trunc(rec.Protocol, 100), Endpoint: trunc(rec.Endpoint, 200), Model: trunc(rec.Model, 200), UpstreamModel: trunc(rec.UpstreamModel, 200),
+		Stream: rec.Stream, StatusCode: rec.StatusCode, Success: rec.Success, ErrorType: trunc(rec.ErrorType, 50), ErrorMessage: rec.ErrorMessage, Attempts: attempts,
+		InputTokens: t.Input, OutputTokens: t.Output, CacheReadTokens: t.CacheRead, CacheCreationTokens: t.CacheCreation, CacheCreation1hTokens: t.CacheCreation1h,
+		Metrics: jsonOr(rec.Metrics, "{}"), StickyRule: trunc(rec.StickyRule, 100), StickyHit: rec.StickyHit, HookDecisions: jsonOr(rec.HookDecisions, "[]"),
+		RateMultiplier: rec.RateMultiplier, PriceID: priceID, ExprHash: exprHash, BillingMode: mode, BillingDetail: detail, BillingStatus: status,
+		LatencyMs: rec.LatencyMs, FirstTokenMs: rec.FirstTokenMs,
+		ClientIP: trunc(rec.ClientIP, 64), UserAgent: trunc(rec.UserAgent, 500), NodeID: trunc(rec.NodeID, 100), Created: &created,
+		AccountType: trunc(rec.AccountType, 50), UpstreamProtocol: trunc(rec.UpstreamProtocol, 100), ClientRequestID: trunc(rec.ClientRequestID, 128),
+		SchedDecisions: jsonOr(rec.SchedDecisions, "[]"), PluginDetail: pluginDetailJSON(rec.PluginDetail), Anomalies: anomalies,
+		UploadMs: rec.UploadMs, Conversion: conversionJSON(rec.Conversion),
+	}
 }
 
 // reservedRow is one inserted usage row whose cost was estimated by a plugin.
@@ -772,9 +723,9 @@ func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*c
 	if total.Sign() > 0 {
 		detail.LedgerID = &res.LedgerID
 	}
-	if err := store.G(ctx, tx).Exec(`
-		UPDATE usage_logs SET total_cost = ?, base_cost = ?, billing_detail = ?, matched_tier = ?
-		WHERE id = ?`, cost.total, cost.base, jsonOr(detail, "{}"), trunc(detail.Tier, 100), r.id).Error; err != nil {
+	if err := store.G(ctx, tx).Model(&usageLogRow{}).Where("id = ?", r.id).Updates(map[string]any{
+		"total_cost": cost.total, "base_cost": cost.base, "billing_detail": store.Bytes(jsonOr(detail, "{}")), "matched_tier": trunc(detail.Tier, 100),
+	}).Error; err != nil {
 		return nil, err
 	}
 	rv := rec.Reservation
@@ -787,14 +738,12 @@ func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*c
 	}
 	// The reconcile entry of the row; no row when the plugin's ref_id is
 	// registered already.
-	var entryID int64
-	err = store.G(ctx, tx).Raw(`
-		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (plugin_key, ref_id) DO NOTHING
-		RETURNING id`,
-		trunc(rv.PluginKey, 30), trunc(rv.RefID, 200), r.id, rec.AccountID, nextAt, deadlineAt).Row().Scan(&entryID)
-	if store.IsNoRows(err) {
+	entry := model.PendingSettlement{PluginKey: trunc(rv.PluginKey, 30), RefID: trunc(rv.RefID, 200), UsageLogID: r.id,
+		AccountID: rec.AccountID, NextCheckAt: nextAt, DeadlineAt: deadlineAt}
+	ins := store.G(ctx, tx).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "ref_id"}}, DoNothing: true}).
+		Create(&entry)
+	err = ins.Error
+	if err == nil && ins.RowsAffected == 0 {
 		// The plugin reused a ref_id that is already being reconciled, so
 		// this row would never be looked at again: it would sit "reserved"
 		// forever, charged and invisible to both loops. Close it here, the
@@ -1093,17 +1042,43 @@ func (s *Service) RetryTaskSpec() core.TaskSpec {
 	}
 }
 
-// frozenPriceJoins is the FROM clause of a query that reads usage_logs u
-// back for pricing: h holds the expression the row froze, by its hash in the
-// price history, and mp the current expression of its price for a row whose
-// hash is not there. A row under a custom price rule gets no mp: its
-// price_id is the global price, not what it was priced at, so without its
-// history it has no expression and priceOne refuses it.
-const frozenPriceJoins = `
-		FROM usage_logs u
-		LEFT JOIN model_price_history h ON h.expr_hash = u.expr_hash
-		LEFT JOIN model_prices mp ON mp.id = u.price_id AND h.expr_hash IS NULL
-			AND u.billing_detail #> '{inputs,pricing,base}' IS NULL`
+// frozenPrice reads usage_logs u back for pricing, the pendingColumns and
+// more: h holds the expression the row froze, by its hash in the price
+// history, and mp the current expression of its price for a row whose hash
+// is not there. A row under a custom price rule gets no mp: its price_id is
+// the global price, not what it was priced at, so without its history it
+// has no expression and priceOne refuses it.
+func frozenPrice(db *gorm.DB, more string) *gorm.DB {
+	return db.Table("usage_logs u").Select(pendingColumns + more + ", COALESCE(h.expression, mp.expression, '')").
+		Joins("LEFT JOIN model_price_history h ON h.expr_hash = u.expr_hash").
+		Joins(`LEFT JOIN model_prices mp ON mp.id = u.price_id AND h.expr_hash IS NULL
+			AND u.billing_detail #> '{inputs,pricing,base}' IS NULL`)
+}
+
+// pendingColumns are the usage_logs u columns of a pending, in scanPending's
+// order.
+const pendingColumns = `u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
+		u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
+		u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens, u.cache_creation_1h_tokens,
+		u.metrics, u.latency_ms, u.created_at, u.rate_multiplier, COALESCE(u.price_id, 0), u.billing_mode, u.billing_detail`
+
+// scanPending reads a frozenPrice row into p: pendingColumns, then more,
+// then the expression.
+func scanPending(row store.RowScanner, p *pending, more ...any) error {
+	var metrics, detail []byte
+	dest := append([]any{&p.RequestID, &p.UserID, &p.APIKeyID, &p.GroupID, &p.AccountID, &p.PluginKey, &p.Platform,
+		&p.Protocol, &p.AccountType, &p.UpstreamProtocol, &p.Model, &p.Success, &p.StatusCode, &p.ErrorType,
+		&p.Tokens.Input, &p.Tokens.Output, &p.Tokens.CacheRead, &p.Tokens.CacheCreation, &p.Tokens.CacheCreation1h,
+		&metrics, &p.LatencyMs, &p.CreatedAt, &p.Rate, &p.PriceID, &p.Mode, &detail}, more...)
+	if err := row.Scan(append(dest, &p.Expression)...); err != nil {
+		return err
+	}
+	_ = json.Unmarshal(metrics, &p.Metrics)
+	var pd pendingDetail
+	_ = json.Unmarshal(detail, &pd)
+	p.Inputs, p.Attempts = pd.Inputs, pd.Attempts
+	return nil
+}
 
 // RetryPending settles pending/failed rows older than Options.RetryAfter
 // that have not exhausted their attempts. It returns the rows examined.
@@ -1120,40 +1095,15 @@ func (s *Service) RetryPending(ctx context.Context) (int, error) {
 	if err := s.recoverExecutions(ctx); err != nil {
 		slog.WarnContext(ctx, "usage: recover execution observations", "err", err)
 	}
-	rows, err := store.G(ctx, s.db.Gorm).Raw(`
-		SELECT u.request_id, u.user_id, u.api_key_id, u.group_id, u.account_id, u.plugin_key, u.platform,
-		       u.protocol, u.account_type, u.upstream_protocol, u.model, u.success, u.status_code, u.error_type,
-		       u.input_tokens, u.output_tokens,
-		       u.cache_read_tokens, u.cache_creation_tokens, u.cache_creation_1h_tokens, u.metrics, u.latency_ms,
-		       u.created_at, u.rate_multiplier, COALESCE(u.price_id, 0), u.billing_mode, u.billing_detail,
-		       COALESCE(h.expression, mp.expression, '')`+frozenPriceJoins+`
-		WHERE u.billing_status IN ('pending', 'failed')
+	list, err := store.CollectRows(frozenPrice(store.G(ctx, s.db.Gorm), "").
+		Where(`u.billing_status IN ('pending', 'failed')
 		  AND u.created_at < now() - make_interval(secs => ?)
-		  AND COALESCE((u.billing_detail->>'attempts')::int, 0) < ?
-		ORDER BY u.id LIMIT 500`, s.opts.RetryAfter.Seconds(), s.opts.MaxAttempts).Rows()
-	if err != nil {
-		return 0, err
-	}
-	var list []*pending
-	for rows.Next() {
+		  AND COALESCE((u.billing_detail->>'attempts')::int, 0) < ?`, s.opts.RetryAfter.Seconds(), s.opts.MaxAttempts).
+		Order("u.id").Limit(500), func(rows *sql.Rows) (*pending, error) {
 		p := &pending{}
-		var metrics, detail []byte
-		if err := rows.Scan(&p.RequestID, &p.UserID, &p.APIKeyID, &p.GroupID, &p.AccountID, &p.PluginKey, &p.Platform,
-			&p.Protocol, &p.AccountType, &p.UpstreamProtocol, &p.Model, &p.Success, &p.StatusCode, &p.ErrorType,
-			&p.Tokens.Input, &p.Tokens.Output,
-			&p.Tokens.CacheRead, &p.Tokens.CacheCreation, &p.Tokens.CacheCreation1h, &metrics, &p.LatencyMs,
-			&p.CreatedAt, &p.Rate, &p.PriceID, &p.Mode, &detail, &p.Expression); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		_ = json.Unmarshal(metrics, &p.Metrics)
-		var pd pendingDetail
-		_ = json.Unmarshal(detail, &pd)
-		p.Inputs, p.Attempts = pd.Inputs, pd.Attempts
-		list = append(list, p)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		return p, scanPending(rows, p)
+	})
+	if err != nil {
 		return 0, err
 	}
 	for _, p := range list {
@@ -1178,12 +1128,13 @@ func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLoc
 	total := cost.total
 	var ledgerRes *core.LedgerResult
 	// skipLocked passes over a row another settlement holds (no row).
-	lock := `SELECT billing_status FROM usage_logs WHERE request_id = ? FOR UPDATE`
+	lock := store.ForUpdate()
 	if skipLocked {
-		lock += ` SKIP LOCKED`
+		lock = lock.SkipLocked()
 	}
 	var status string
-	if err := store.G(ctx, tx).Raw(lock, p.RequestID).Row().Scan(&status); err != nil {
+	if err := store.G(ctx, tx).Model(&usageLogRow{}).Select("billing_status").Where("request_id = ?", p.RequestID).
+		Clauses(lock).Row().Scan(&status); err != nil {
 		if store.IsNoRows(err) {
 			return nil, errNotPending
 		}
@@ -1203,11 +1154,11 @@ func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLoc
 	if p.PriceID > 0 {
 		priceID = &p.PriceID
 	}
-	err = store.G(ctx, tx).Exec(`
-			UPDATE usage_logs SET total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?,
-				expr_hash = ?, billing_mode = ?, price_id = ?, rate_multiplier = ?, base_cost = ?
-			WHERE request_id = ?`,
-		cost.total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, p.Mode, priceID, p.Rate, cost.base, p.RequestID).Error
+	err = store.G(ctx, tx).Model(&usageLogRow{}).Where("request_id = ?", p.RequestID).Updates(map[string]any{
+		"total_cost": cost.total, "billing_status": StatusBilled, "billing_detail": store.Bytes(jsonOr(detail, "{}")),
+		"matched_tier": trunc(detail.Tier, 100), "expr_hash": exprHash, "billing_mode": p.Mode, "price_id": priceID,
+		"rate_multiplier": p.Rate, "base_cost": cost.base,
+	}).Error
 	if err != nil {
 		return nil, err
 	}

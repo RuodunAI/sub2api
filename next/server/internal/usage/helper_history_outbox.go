@@ -38,7 +38,7 @@ func (s *Service) PersistHelperUsage(ctx context.Context, rec *core.UsageRecord,
 		// The persistence of one helper usage record is serialized; its
 		// receipt and usage row are read locked.
 		g := store.G(ctx, tx)
-		if e := g.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, "helper-usage:"+rec.RequestID).Error; e != nil {
+		if e := store.XactLock(ctx, tx, "helper-usage:"+rec.RequestID); e != nil {
 			return e
 		}
 		var old string

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -272,9 +271,10 @@ func (s *Service) refreshRollup(ctx context.Context) (int, error) {
 // rollupTx runs fn under the rollup's lock with its state, saved after fn.
 func (s *Service) rollupTx(ctx context.Context, fn func(*gorm.DB, *rollupState) error) error {
 	return s.db.Tx(ctx, func(tx *gorm.DB) error {
-		// No arguments, so the driver sends both statements in one
-		// simple-protocol round trip.
-		if err := store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtext('usage_hourly')); SET LOCAL statement_timeout = '` + rollupStatementTimeout + `'`).Error; err != nil {
+		if err := store.XactLock32(ctx, tx, "usage_hourly"); err != nil {
+			return err
+		}
+		if err := store.SetLocal(ctx, tx, "statement_timeout", rollupStatementTimeout); err != nil {
 			return err
 		}
 		var st rollupState
@@ -285,24 +285,27 @@ func (s *Service) rollupTx(ctx context.Context, fn func(*gorm.DB, *rollupState) 
 		if err := fn(tx, &st); err != nil {
 			return err
 		}
-		// The table holds one row; GORM refuses an UPDATE without WHERE
-		// unless it is raw.
-		return store.G(ctx, tx).Exec(`UPDATE usage_hourly_state SET low = ?, high = ?`, st.low, st.high).Error
+		// The table holds one row: the condition only says so, as GORM
+		// refuses an UPDATE without WHERE.
+		return store.G(ctx, tx).Model(&model.UsageHourlyState{}).Where("true").
+			Updates(map[string]any{"low": st.low, "high": st.high}).Error
 	})
 }
 
-// sealedSQL is the end of the hours that may be rolled up, by the database's
+// sealedHours is the end of the hours that may be rolled up, by the database's
 // clock: rollupSeal after an hour ends, and none a write transaction of ours
 // still open may have written without marking (it marks rows of hours that
 // ended 15 minutes before its statement; it started before that).
-var sealedSQL = `SELECT date_trunc('hour', LEAST(now() - interval '` + strconv.Itoa(int(rollupSeal/time.Minute)) + ` minutes',
+func sealedHours(db *gorm.DB) *gorm.DB {
+	return store.OneRow(db).Select(`date_trunc('hour', LEAST(now() - make_interval(secs => ?),
 	COALESCE((SELECT min(xact_start) FROM pg_stat_activity WHERE datname = current_database() AND usename = current_user
-		AND backend_xid IS NOT NULL AND pid <> pg_backend_pid()), 'infinity') - interval '15 minutes'), 'UTC')`
+		AND backend_xid IS NOT NULL AND pid <> pg_backend_pid()), 'infinity') - interval '15 minutes'), 'UTC')`, rollupSeal.Seconds())
+}
 
 // rollupForward rolls up a chunk of the sealed hours after the held ones.
 func rollupForward(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool, error) {
 	var sealed time.Time
-	if err := store.G(ctx, tx).Raw(sealedSQL).Row().Scan(&sealed); err != nil {
+	if err := sealedHours(store.G(ctx, tx)).Row().Scan(&sealed); err != nil {
 		return 0, false, err
 	}
 	if st.high == nil {
@@ -326,9 +329,10 @@ func rollupForward(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool
 func rollupDirty(ctx context.Context, tx *gorm.DB, st *rollupState) (int, bool, error) {
 	var ids store.Int64s
 	var hours store.Times
-	if err := store.G(ctx, tx).Raw(`WITH h AS (SELECT DISTINCT hour FROM usage_hourly_dirty ORDER BY hour LIMIT ?)
-		SELECT COALESCE(array_agg(d.id), '{}'), COALESCE(array_agg(DISTINCT d.hour), '{}')
-		FROM usage_hourly_dirty d JOIN h ON h.hour = d.hour`, rollupDirtyHours).Row().Scan(&ids, &hours); err != nil {
+	g := store.G(ctx, tx)
+	first := g.Model(&model.UsageHourlyDirty{}).Distinct("hour").Order("hour").Limit(rollupDirtyHours)
+	if err := g.Table("usage_hourly_dirty d").Select("COALESCE(array_agg(d.id), '{}'), COALESCE(array_agg(DISTINCT d.hour), '{}')").
+		Joins("JOIN (?) h ON h.hour = d.hour", first).Row().Scan(&ids, &hours); err != nil {
 		return 0, false, err
 	}
 	n := 0
@@ -353,7 +357,7 @@ func rollupBackfill(ctx context.Context, tx *gorm.DB, st *rollupState) (int, boo
 		return 0, false, nil
 	}
 	var oldest *time.Time
-	if err := store.G(ctx, tx).Raw(`SELECT min(created_at) FROM usage_logs`).Row().Scan(&oldest); err != nil {
+	if err := store.G(ctx, tx).Model(&usageLogRow{}).Select("min(created_at)").Row().Scan(&oldest); err != nil {
 		return 0, false, err
 	}
 	if oldest == nil || !oldest.Truncate(time.Hour).Before(*st.low) {
@@ -374,11 +378,16 @@ func rollupHours(ctx context.Context, tx *gorm.DB, from, to time.Time) (int, err
 	if err := store.G(ctx, tx).Where("created_at >= ? AND created_at < ?", from, to).Delete(&model.UsageHourly{}).Error; err != nil {
 		return 0, err
 	}
+	g := store.G(ctx, tx)
 	dims := strings.Join(rollupDims, ", ")
-	if err := store.G(ctx, tx).Exec(`INSERT INTO usage_hourly (created_at, `+dims+`, `+measureList(func(m statMeasure) string { return m.name })+`)
-		SELECT date_trunc('hour', u.created_at, 'UTC'), `+dims+`, `+measureList(func(m statMeasure) string { return `sum(` + m.row + `)` })+`
-		FROM usage_logs u WHERE u.created_at >= ? AND u.created_at < ?
-		GROUP BY 1, `+dims, from, to).Error; err != nil {
+	hours := g.Session(&gorm.Session{NewDB: true}).Table("usage_logs u").
+		Select("date_trunc('hour', u.created_at, 'UTC'), "+dims+", "+measureList(func(m statMeasure) string { return `sum(` + m.row + `)` })).
+		Where("u.created_at >= ? AND u.created_at < ?", from, to).Group("1, " + dims)
+	columns := append([]string{"created_at"}, rollupDims...)
+	for _, m := range statMeasures {
+		columns = append(columns, m.name)
+	}
+	if err := store.InsertSelect(g, "usage_hourly", columns, hours).Error; err != nil {
 		return 0, err
 	}
 	return int(to.Sub(from) / time.Hour), nil

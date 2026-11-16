@@ -2,7 +2,6 @@ package usage
 
 import (
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -63,7 +62,7 @@ func TestSQLUsageList(t *testing.T) {
 func TestSQLUsageSummaryRollup(t *testing.T) {
 	f := sqlFilter(t, "group_id=3&from=2026-10-16T00:00:00Z", nil)
 	key := clause.Expr{SQL: `to_char(u.created_at AT TIME ZONE ?::text, 'YYYY-MM-DD')`, Vars: []any{"Asia/Shanghai"}}
-	sh := summaryShape{outKey: `u.k`, key: key, extra: `''`, lastAt: `NULL::timestamptz`, groupBy: ` GROUP BY k`, order: ` ORDER BY k`}
+	sh := summaryShape{outKey: `u.k`, key: key, extra: `''`, lastAt: `NULL::timestamptz`, groupBy: `k`, order: `k`}
 	span := &hourSpan{from: time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC), to: time.Date(2026, 11, 15, 6, 0, 0, 0, time.UTC)}
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		return summaryQuery(db, sh, f, span).Scan(&sqlSink)
@@ -71,11 +70,10 @@ func TestSQLUsageSummaryRollup(t *testing.T) {
 }
 
 // The usage_logs insert of a batch. One record (row): each value goes to
-// its column, the documents are one bytea parameter each, and a native
-// request's conversion is NULL. More (batch, two records): one array
-// parameter per column, typed as the column, holding the batch's values of
-// the column in order, a NULL element for the conversion; the text is the
-// same for every batch size.
+// its column, the documents are one bytea parameter each, a native
+// request's conversion is NULL, and the INSERT returns the new id. More
+// (batch, two records, with the ids NextIDs reserved): one INSERT of every
+// row, ids included, that returns nothing.
 func TestSQLInsertUsageRow(t *testing.T) {
 	account := int64(7)
 	rec := &core.UsageRecord{RequestID: "req-1", UserID: 3, APIKeyID: 4, GroupID: 5, AccountID: &account, PluginKey: "anthropic",
@@ -85,14 +83,15 @@ func TestSQLInsertUsageRow(t *testing.T) {
 		Price: &core.PriceRule{ID: 9, Mode: "expression", ExprHash: "hash"}, CreatedAt: snapshotTime}
 	second := *rec
 	second.RequestID, second.AccountID, second.Price = "req-2", nil, nil
-	for name, batch := range map[string][]*core.UsageRecord{"row": {rec}, "batch": {rec, &second}} {
-		t.Run(name, func(t *testing.T) {
-			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return insertUsageStmt(db, batch).Scan(&sqlSink) })
+	t.Run("row", func(t *testing.T) {
+		gormtest.AssertRun(t, func(db *gorm.DB) error {
+			_, err := insertUsageRows(db, []*core.UsageRecord{rec})
+			return err
 		})
-	}
-	for _, text := range []string{insertUsageRowSQL, insertUsageSQL} {
-		if n := strings.Count(text, "?"); n != usageLogValues || len(appendUsageRow(nil, rec)) != usageLogValues {
-			t.Fatalf("%d placeholders in %s", n, text)
-		}
-	}
+	})
+	t.Run("batch", func(t *testing.T) {
+		rows := []usageLogRow{newUsageLogRow(rec), newUsageLogRow(&second)}
+		rows[0].ID, rows[1].ID = 101, 102
+		gormtest.AssertRun(t, func(db *gorm.DB) error { return db.Clauses(skipLoggedRequest).Create(&rows).Error })
+	})
 }

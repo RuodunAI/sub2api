@@ -144,8 +144,8 @@ func (s *Service) retryConfig(ctx context.Context, usageLogID int64) (resolved, 
 	cfg := s.reconcileSettings(ctx)
 	var groupID int64
 	var accountID *int64
-	err := store.G(ctx, s.db.Gorm).Raw(`SELECT u.group_id, u.account_id FROM usage_logs u
-		WHERE u.id = ? AND EXISTS (SELECT 1 FROM async_tasks t WHERE t.usage_log_id = u.id)`, usageLogID).Row().Scan(&groupID, &accountID)
+	err := store.G(ctx, s.db.Gorm).Table("usage_logs u").Select("u.group_id, u.account_id").
+		Where("u.id = ? AND EXISTS (SELECT 1 FROM async_tasks t WHERE t.usage_log_id = u.id)", usageLogID).Row().Scan(&groupID, &accountID)
 	switch {
 	case store.IsNoRows(err):
 		return cfg, nil
@@ -232,9 +232,9 @@ func lockSettlement(ctx context.Context, tx *gorm.DB, usageLogID int64) (*reserv
 		return nil, nil, err
 	}
 	// Shared lock order with managed reconciliation: task, usage, settlement.
-	// Exec: the task rows are locked, not read.
 	g := store.G(ctx, tx)
-	if err := g.Exec(`SELECT public_id FROM async_tasks WHERE usage_log_id=? FOR UPDATE`, usageLogID).Error; err != nil {
+	var tasks []string
+	if err := g.Model(&model.AsyncTask{}).Where("usage_log_id=?", usageLogID).Clauses(store.ForUpdate()).Pluck("public_id", &tasks).Error; err != nil {
 		return nil, nil, err
 	}
 	p := &pending{}

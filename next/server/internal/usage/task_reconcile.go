@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
@@ -29,28 +30,37 @@ var errTaskDeferred = errors.New("original task account is unavailable or busy")
 func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, error) {
 	// The due task observations are leased to a new token (leaving
 	// updated_at alone) and read with their legacy entry, if any.
-	rows, err := store.G(ctx, s.db.Gorm).Raw(`WITH claimed AS (
-		UPDATE async_tasks t SET claim_token=?,lease_until=now()+make_interval(secs=>?)
-		FROM (SELECT public_id FROM async_tasks WHERE observation_status='pending' AND next_check_at<=now()
-			AND (lease_until IS NULL OR lease_until<=now()) ORDER BY next_check_at,public_id FOR UPDATE SKIP LOCKED LIMIT ?) due
-		WHERE t.public_id=due.public_id RETURNING t.*)
-		SELECT t.public_id,t.claim_token,t.kind,t.state,t.plugin_key,t.upstream_ref_id,t.usage_log_id,t.account_id,
-			t.attempts,t.poll_failures,t.created_at,t.deadline_at,COALESCE(p.id,0),t.group_id
-		FROM claimed t LEFT JOIN pending_settlements p ON p.task_public_id=t.public_id`, uuid.NewString(), int(reconcileLease/time.Second), limit).Rows()
-	if err != nil {
+	g := store.G(ctx, s.db.Gorm)
+	due := g.Model(&model.AsyncTask{}).Select("public_id").
+		Where("observation_status='pending' AND next_check_at<=now() AND (lease_until IS NULL OR lease_until<=now())").
+		Order("next_check_at, public_id").Limit(limit).Clauses(store.ForUpdate().SkipLocked())
+	var claimed []model.AsyncTask
+	if err := g.Model(&claimed).Clauses(clause.Returning{}).Where("public_id IN (?)", due).Updates(map[string]any{
+		"claim_token": uuid.NewString(), "lease_until": gorm.Expr("now()+make_interval(secs=>?)", int(reconcileLease/time.Second)),
+	}).Error; err != nil || len(claimed) == 0 {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*settleEntry
-	for rows.Next() {
-		e := &settleEntry{task: &taskClaim{}}
-		if err := rows.Scan(&e.task.id, &e.task.token, &e.task.kind, &e.task.state, &e.pluginKey, &e.refID, &e.usageLogID, &e.accountID,
-			&e.attempts, &e.pollFailures, &e.createdAt, &e.deadlineAt, &e.id, &e.task.groupID); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+	// The legacy settlement entry of each task, if any.
+	ids := make([]string, len(claimed))
+	for i, t := range claimed {
+		ids[i] = t.PublicID
 	}
-	return out, rows.Err()
+	var entries []model.PendingSettlement
+	if err := g.Select("id, task_public_id").Where("task_public_id = ANY(?)", store.Strings(ids)).Find(&entries).Error; err != nil {
+		return nil, err
+	}
+	entryOf := make(map[string]int64, len(entries))
+	for _, p := range entries {
+		entryOf[*p.TaskPublicID] = p.ID
+	}
+	out := make([]*settleEntry, len(claimed))
+	for i, t := range claimed {
+		accountID := t.AccountID
+		out[i] = &settleEntry{task: &taskClaim{id: t.PublicID, token: t.ClaimToken, kind: t.Kind, state: core.ValueOr(t.State, ""), groupID: t.GroupID},
+			pluginKey: t.PluginKey, refID: t.UpstreamRefID, usageLogID: t.UsageLogID, accountID: &accountID,
+			attempts: t.Attempts, pollFailures: t.PollFailures, createdAt: t.CreatedAt, deadlineAt: t.DeadlineAt, id: entryOf[t.PublicID]}
+	}
+	return out, nil
 }
 
 func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (context.Context, *pluginv1.Account, *int64, func(), error) {
@@ -155,8 +165,8 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx *gorm.DB, e *settleEnt
 	t := e.task
 	g := store.G(ctx, tx)
 	var current string
-	err := g.Raw(`SELECT state FROM async_tasks WHERE public_id=? AND claim_token=?
-		AND observation_status='pending' AND lease_until>clock_timestamp() FOR UPDATE`, t.id, t.token).Row().Scan(&current)
+	err := asyncTask(g, t.id).Select("state").Where("claim_token=? AND observation_status='pending' AND lease_until>clock_timestamp()", t.token).
+		Clauses(store.ForUpdate()).Row().Scan(&current)
 	if store.IsNoRows(err) {
 		return errNotPending
 	}
@@ -166,7 +176,7 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx *gorm.DB, e *settleEnt
 	// Recheck after a row-lock wait: the statement's original visibility test
 	// may have run before the lease expired while waiting for the lock.
 	var valid bool
-	if err := g.Raw(`SELECT lease_until>clock_timestamp() FROM async_tasks WHERE public_id=?`, t.id).Row().Scan(&valid); err != nil {
+	if err := asyncTask(g, t.id).Select("lease_until>clock_timestamp()").Row().Scan(&valid); err != nil {
 		return err
 	}
 	if !valid {
@@ -183,18 +193,25 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx *gorm.DB, e *settleEnt
 		}
 		state = current
 	}
-	// The observation is written and the claim given up. Arguments are
-	// positional, repeated where the statement reuses one; an empty snapshot
+	// The observation is written and the claim given up. An empty snapshot
 	// stays an empty bytea (store.Bytes), a nil one keeps the stored one.
-	return g.Exec(`UPDATE async_tasks SET state=?,observation_status=?,
-		snapshot=COALESCE(?,snapshot),snapshot_id_paths=CASE WHEN ?::bytea IS NULL THEN snapshot_id_paths ELSE ?::jsonb END,
-		claim_token='',lease_until=NULL,attempts=attempts+CASE WHEN ?='closed' THEN 1 ELSE 0 END,
-		failure_code=CASE WHEN ?='closed' THEN ? ELSE failure_code END,
-		last_error=CASE WHEN ?='closed' THEN ? ELSE last_error END,
-		poll_failures=CASE WHEN ?='closed' AND ? THEN poll_failures+1 WHEN ?='closed' AND ? THEN 0 ELSE poll_failures END,
-		updated_at=now() WHERE public_id=?`,
-		state, observation, store.Bytes(snapshot), store.Bytes(snapshot), paths, observation, observation, t.failureCode, observation, t.failureReason,
-		observation, e.pollFailed, observation, e.pollObserved, t.id).Error
+	return asyncTask(g, t.id).Updates(map[string]any{
+		"state": state, "observation_status": observation,
+		"snapshot":          gorm.Expr("COALESCE(?,snapshot)", store.Bytes(snapshot)),
+		"snapshot_id_paths": gorm.Expr("CASE WHEN ?::bytea IS NULL THEN snapshot_id_paths ELSE ?::jsonb END", store.Bytes(snapshot), store.Bytes(paths)),
+		"claim_token":       "", "lease_until": gorm.Expr("NULL"),
+		"attempts":     gorm.Expr("attempts+CASE WHEN ?='closed' THEN 1 ELSE 0 END", observation),
+		"failure_code": gorm.Expr("CASE WHEN ?='closed' THEN ? ELSE failure_code END", observation, t.failureCode),
+		"last_error":   gorm.Expr("CASE WHEN ?='closed' THEN ? ELSE last_error END", observation, t.failureReason),
+		"poll_failures": gorm.Expr("CASE WHEN ?='closed' AND ? THEN poll_failures+1 WHEN ?='closed' AND ? THEN 0 ELSE poll_failures END",
+			observation, e.pollFailed, observation, e.pollObserved),
+		"updated_at": gorm.Expr("now()"),
+	}).Error
+}
+
+// asyncTask is the async_tasks row id.
+func asyncTask(db *gorm.DB, id string) *gorm.DB {
+	return db.Model(&model.AsyncTask{}).Where("public_id=?", id)
 }
 
 // A legacy worker may have claimed this row before lazy import transferred
@@ -261,9 +278,9 @@ func (s *Service) rescheduleTask(ctx context.Context, e *settleEntry, cfg resolv
 // or its pending_settlements entry, keyed by column) and counts the attempt.
 // It leaves updated_at alone, as the task's other bookkeeping writes do.
 func rescheduleRow(db *gorm.DB, table, key string, id any, e *settleEntry, n int, next time.Time, reason string) *gorm.DB {
-	return db.Exec(`UPDATE `+table+` SET attempts=attempts+?,next_check_at=?,last_error=?,
-		poll_failures=CASE WHEN ? THEN poll_failures+1 WHEN ? THEN 0 ELSE poll_failures END WHERE `+key+`=?`,
-		n, next, trunc(reason, 2000), e.pollFailed, e.pollObserved, id)
+	return db.Table(table).Where(key+"=?", id).Updates(map[string]any{
+		"attempts": gorm.Expr("attempts+?", n), "next_check_at": next, "last_error": trunc(reason, 2000), "poll_failures": pollFailures(e),
+	})
 }
 
 func taskPaths(gen core.Generation, e *settleEntry) ([]string, error) {

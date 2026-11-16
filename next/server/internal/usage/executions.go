@@ -22,8 +22,8 @@ func (s *Service) BeginExecution(ctx context.Context, in core.ExecutionIntent) e
 	if in.ID == "" || in.RequestID == "" || in.AccountID == 0 {
 		return errors.New("invalid execution identity")
 	}
-	return store.G(ctx, s.db.Gorm).Exec(`INSERT INTO plugin_executions(id,request_id,plugin_key,account_id,attempt,record,task_submit)
- VALUES(?,?,?,?,?,?,?)`, in.ID, in.RequestID, in.PluginKey, in.AccountID, in.Attempt, store.Bytes(jsonOr(in.Record, "{}")), in.TaskSubmit).Error
+	return store.G(ctx, s.db.Gorm).Create(&model.PluginExecution{ID: in.ID, RequestID: in.RequestID, PluginKey: in.PluginKey,
+		AccountID: in.AccountID, Attempt: in.Attempt, Record: jsonOr(in.Record, "{}"), TaskSubmit: in.TaskSubmit}).Error
 }
 
 func (s *Service) ObserveExecution(ctx context.Context, id string, rec *core.UsageRecord, observation []byte) error {
@@ -37,8 +37,9 @@ func (s *Service) ObserveExecution(ctx context.Context, id string, rec *core.Usa
 	if len(raw) > 512<<10 {
 		return errors.New("execution facts exceed limit")
 	}
-	res := store.G(ctx, s.db.Gorm).Exec(`UPDATE plugin_executions SET state='observed',record=?,observation=?,updated_at=clock_timestamp()
- WHERE id=? AND state='intent' AND request_id=? AND account_id=?`, store.Bytes(raw), store.Bytes(observation), id, rec.RequestID, rec.AccountID)
+	res := execution(store.G(ctx, s.db.Gorm), id).Where("state='intent' AND request_id=? AND account_id=?", rec.RequestID, rec.AccountID).
+		Updates(map[string]any{"state": "observed", "record": store.Bytes(raw), "observation": store.Bytes(observation),
+			"updated_at": gorm.Expr("clock_timestamp()")})
 	if res.Error == nil && res.RowsAffected != 1 {
 		return errors.New("execution identity or state mismatch")
 	}
@@ -55,26 +56,24 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 		if err := store.RequireTx(tx); err != nil {
 			return err
 		}
-		var x struct {
-			state, op, digest, taskID, requestID, pluginKey string
-			accountID                                       int64
-		}
-		err := store.G(ctx, tx).Raw(`SELECT state,operation,digest,task_id,request_id,plugin_key,account_id FROM plugin_executions WHERE id=? FOR UPDATE`, in.ID).
-			Row().Scan(&x.state, &x.op, &x.digest, &x.taskID, &x.requestID, &x.pluginKey, &x.accountID)
+		var x model.PluginExecution
+		err := execution(store.G(ctx, tx), in.ID).Select("state, operation, digest, task_id, request_id, plugin_key, account_id").
+			Clauses(store.ForUpdate()).Take(&x).Error
 		if err != nil {
 			return err
 		}
-		out.TaskId = x.taskID
-		if x.requestID != in.Record.RequestID || x.pluginKey != in.Record.PluginKey || x.accountID != *in.Record.AccountID {
+		out.TaskId = x.TaskID
+		if x.RequestID != in.Record.RequestID || x.PluginKey != in.Record.PluginKey || x.AccountID != *in.Record.AccountID {
 			return errors.New("execution identity mismatch")
 		}
-		if x.state == "committed" {
-			if x.op != in.Operation || x.digest != in.Digest {
+		state := core.ValueOr(x.State, "")
+		if state == "committed" {
+			if x.Operation != in.Operation || x.Digest != in.Digest {
 				return core.ErrConflict.WithMessage("execution facts already committed")
 			}
 			return errExecutionDone
 		}
-		if x.state != "observed" {
+		if state != "observed" {
 			return errors.New("execution has no durable observation")
 		}
 		return nil
@@ -84,8 +83,9 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 			out.TaskId = in.Task.PublicID
 		}
 		// The commit drops the execution's facts.
-		return store.G(ctx, tx).Exec(`UPDATE plugin_executions SET state='committed',operation=?,digest=?,task_id=?,record=NULL,observation=NULL,updated_at=clock_timestamp() WHERE id=?`,
-			in.Operation, in.Digest, out.TaskId, in.ID).Error
+		return execution(store.G(ctx, tx), in.ID).Updates(map[string]any{"state": "committed", "operation": in.Operation,
+			"digest": in.Digest, "task_id": out.TaskId, "record": gorm.Expr("NULL"), "observation": gorm.Expr("NULL"),
+			"updated_at": gorm.Expr("clock_timestamp()")}).Error
 	}
 	var err error
 	if in.Task != nil {
@@ -124,7 +124,9 @@ func (s *Service) recoverExecutions(ctx context.Context) error {
 		ID     string `gorm:"column:id"`
 		Record []byte `gorm:"column:record"`
 	}
-	if err := g.Raw(`SELECT id,record FROM plugin_executions WHERE state='observed' AND NOT task_submit AND NOT EXISTS(SELECT 1 FROM task_submission_receipts t WHERE t.request_id=plugin_executions.request_id) AND updated_at<clock_timestamp()-interval '1 minute' ORDER BY updated_at LIMIT 100`).Scan(&list).Error; err != nil {
+	if err := g.Model(&model.PluginExecution{}).Select("id, record").
+		Where("state='observed' AND NOT task_submit AND NOT EXISTS(SELECT 1 FROM task_submission_receipts t WHERE t.request_id=plugin_executions.request_id) AND updated_at<clock_timestamp()-interval '1 minute'").
+		Order("updated_at").Limit(100).Scan(&list).Error; err != nil {
 		return err
 	}
 	for _, i := range list {
@@ -154,7 +156,7 @@ func (s *Service) deferExecutionRecovery(ctx context.Context, id string, cause e
 	slog.ErrorContext(ctx, "usage: execution recovery deferred", "execution_id", id, "err", cause)
 	// Rotate failures behind other observations. A permanently unpriceable
 	// record must not monopolize the oldest LIMIT batch on every sweep.
-	_ = store.G(ctx, s.db.Gorm).Model(&model.PluginExecution{}).Where("id = ? AND state = 'observed'", id).
+	_ = execution(store.G(ctx, s.db.Gorm), id).Where("state = 'observed'").
 		Update("updated_at", gorm.Expr("clock_timestamp()")).Error
 }
 
@@ -171,7 +173,9 @@ func (s *Service) cleanupExecutionReceipts(ctx context.Context) error {
 				return nil
 			}
 			// Up to 1000 rows older than seven days, the oldest first.
-			res := store.G(ctx, s.db.Gorm).Exec(`DELETE FROM ` + table + ` WHERE id IN(SELECT id FROM ` + table + ` WHERE created_at<clock_timestamp()-interval '7 days' ORDER BY created_at LIMIT 1000)`)
+			g := store.G(ctx, s.db.Gorm)
+			old := g.Table(table).Select("id").Where("created_at<clock_timestamp()-interval '7 days'").Order("created_at").Limit(1000)
+			res := g.Table(table).Where("id IN (?)", old).Delete(nil)
 			if err := res.Error; err != nil {
 				if ctx.Err() != nil {
 					return nil
@@ -184,4 +188,9 @@ func (s *Service) cleanupExecutionReceipts(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// execution is the plugin_executions row id.
+func execution(db *gorm.DB, id string) *gorm.DB {
+	return db.Model(&model.PluginExecution{}).Where("id = ?", id)
 }
