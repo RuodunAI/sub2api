@@ -20,10 +20,38 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// failOnShadowMismatch fails t on every shadow mismatch s reports while t
-// runs, the comparisons still running when it ends included (its cleanup
-// waits for them, before the database goes); one reported after that is
-// left to TestMain (ShadowCheck), as t can no longer fail.
+// testObserver is a service's observer in a test: findings go to found
+// first, and on to the process (authztest.Check at the end of the
+// run) unless it handled them (a test failed or expected it); dropped
+// comparisons stay here when dropsOK.
+type testObserver struct {
+	next    ShadowObserver
+	found   func(ShadowMismatch) bool
+	dropsOK bool
+}
+
+func (o testObserver) Event(e ShadowEvent) {
+	if o.next != nil && (e != ShadowDropped || !o.dropsOK) {
+		o.next.Event(e)
+	}
+}
+
+func (o testObserver) Found(m ShadowMismatch) {
+	if !o.found(m) && o.next != nil {
+		o.next.Found(m)
+	}
+}
+
+// observe has s's findings go to found first (testObserver).
+func observe(s *Service, found func(ShadowMismatch) bool) {
+	var o ShadowObserver = testObserver{next: testShadow.Observer, found: found}
+	s.shadow.observer.Store(&o)
+}
+
+// failOnShadowMismatch fails t on every shadow mismatch or stale cache s
+// reports while t runs, the comparisons still running when it ends
+// included (its cleanup waits for them, before the database goes); one
+// reported after that is left to TestMain, as t can no longer fail.
 func failOnShadowMismatch(t *testing.T, s *Service) {
 	var mu sync.Mutex
 	done := false
@@ -33,25 +61,23 @@ func failOnShadowMismatch(t *testing.T, s *Service) {
 		mu.Unlock()
 	})
 	t.Cleanup(settle)
-	fn := func(m ShadowMismatch) bool {
+	observe(s, func(m ShadowMismatch) bool {
 		mu.Lock()
 		defer mu.Unlock()
 		if !done {
 			t.Errorf("authz shadow mismatch: %+v", m)
 		}
 		return !done
-	}
-	s.shadow.onMismatch.Store(&fn)
+	})
 }
 
 // settle waits for the comparisons and samples in flight.
-func settle() { shadowWork.wait() }
+func settle() { testSettle() }
 
-// fakeResolver answers Grants with the function given. Its matcher path is
-// the embedded nil Resolver's: casbinx.Enforce on it panics (counted as a
-// Casbin error), so the tests of Enforce use a real resolver.
+// fakeResolver answers Grants with the function given. It has no matcher
+// path: casbinx.Enforce refuses it (casbinx.ErrForeignResolver, counted as
+// a Casbin error), so the tests of Enforce use a real resolver.
 type fakeResolver struct {
-	casbinx.Resolver
 	grants func(ctx context.Context, uid, min int64) (core.PermissionSet, error)
 	calls  atomic.Int64
 	// prewarmed is the version of the last Prewarm.
@@ -90,21 +116,22 @@ func shadowFixture(t *testing.T, engine EngineMode) (*Service, *fakeResolver, in
 func since(s *Service, base ShadowStats) ShadowStats {
 	st := s.shadow.stats()
 	return ShadowStats{Compared: st.Compared - base.Compared, Skipped: st.Skipped - base.Skipped,
-		Mismatches: st.Mismatches - base.Mismatches, Errors: st.Errors - base.Errors, Dropped: st.Dropped - base.Dropped,
+		Mismatches: st.Mismatches - base.Mismatches, StaleCache: st.StaleCache - base.StaleCache,
+		Errors: st.Errors - base.Errors, Dropped: st.Dropped - base.Dropped,
 		EnforceChecked: st.EnforceChecked - base.EnforceChecked, EnforceMismatches: st.EnforceMismatches - base.EnforceMismatches}
 }
 
-// recordMismatches makes s collect its mismatches instead of failing.
+// recordMismatches makes s collect its mismatches and stale caches
+// instead of failing.
 func recordMismatches(s *Service) func() []ShadowMismatch {
 	var mu sync.Mutex
 	var got []ShadowMismatch
-	fn := func(m ShadowMismatch) bool {
+	observe(s, func(m ShadowMismatch) bool {
 		mu.Lock()
 		got = append(got, m)
 		mu.Unlock()
 		return true
-	}
-	s.shadow.onMismatch.Store(&fn)
+	})
 	return func() []ShadowMismatch {
 		mu.Lock()
 		defer mu.Unlock()
@@ -240,9 +267,12 @@ func TestShadowComparesAndAnswersLegacy(t *testing.T) {
 
 // The Casbin side never holds the request: a comparison that does not end
 // leaves the legacy answer on time, and with every slot taken the next one
-// is dropped and counted, not queued.
+// is dropped and counted, not queued (production; tests queue it, below).
 func TestShadowOffTheRequest(t *testing.T) {
 	s, f, uid := shadowFixture(t, EngineShadow)
+	s.shadow.queue = false
+	var o ShadowObserver = testObserver{next: testShadow.Observer, found: func(ShadowMismatch) bool { return false }, dropsOK: true}
+	s.shadow.observer.Store(&o)
 	release := make(chan struct{})
 	f.grants = func(ctx context.Context, uid, _ int64) (core.PermissionSet, error) {
 		<-release
@@ -262,6 +292,9 @@ func TestShadowOffTheRequest(t *testing.T) {
 	if st := since(s, base); st.Dropped != 1 || st.Compared != 0 {
 		t.Fatalf("while full: %+v", st)
 	}
+	if st := s.shadow.stats(); st.DroppedRatio <= 0 {
+		t.Fatalf("dropped ratio %+v", st)
+	}
 	for range cap(s.shadow.slots) - 1 {
 		<-s.shadow.slots
 	}
@@ -269,6 +302,31 @@ func TestShadowOffTheRequest(t *testing.T) {
 	settle()
 	if st := since(s, base); st.Compared != 1 || st.Dropped != 1 {
 		t.Fatalf("after the release: %+v", st)
+	}
+}
+
+// With Queue (the tests' authztest.Shadow), a comparison that finds every
+// slot taken waits for one off the request, and is made, not dropped.
+func TestShadowQueues(t *testing.T) {
+	s, _, uid := shadowFixture(t, EngineShadow)
+	if !s.shadow.queue {
+		t.Fatal("the test service does not queue")
+	}
+	base := s.shadow.stats()
+	for range cap(s.shadow.slots) {
+		s.shadow.slots <- struct{}{}
+	}
+	start := time.Now()
+	mustCan(t, s, uid, "gateway:use", true)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("the request waited %v for a slot", d)
+	}
+	for range cap(s.shadow.slots) {
+		<-s.shadow.slots
+	}
+	settle()
+	if st := since(s, base); st.Compared != 1 || st.Dropped != 0 {
+		t.Fatalf("queued: %+v", st)
 	}
 }
 
@@ -392,38 +450,75 @@ func (l *disableFirst) UserRoles(ctx context.Context, uid int64) (casbinx.UserRo
 	return l.Loader.UserRoles(ctx, uid)
 }
 
-// A difference a write the version does not record makes between the
-// request's read and Casbin's is checked against a fresh legacy read, not
-// reported: on the set path and on the matcher path.
-func TestShadowRereadsAfterUnrecordedWrite(t *testing.T) {
-	s, _, uid := shadowFixture(t, EngineShadow)
+// withDisableFirst gives s a real resolver over disableFirst.
+func withDisableFirst(s *Service) {
 	l := &disableFirst{Loader: casbinx.NewLoader(s.db), db: s.db}
 	s.casbin = casbinx.NewResolver(l, casbinx.NewRoleCache(l, nil), SelfPermissionKeys())
-	failOnShadowMismatch(t, s)
-	base := s.shadow.stats()
-	mustCan(t, s, uid, "self:profile", true) // the legacy set, read active
-	settle()
-	if st := since(s, base); st.Compared != 1 || st.Mismatches != 0 || st.Errors != 0 {
-		t.Fatalf("set path: %+v", st)
-	}
-	// The legacy set cached before the write still answers; Enforce reads
-	// the disabled user.
-	s.shadow.sample = func(rate float64) bool { return rate == enforceSampleRate }
-	mustCan(t, s, uid, "self:profile", true)
-	settle()
-	if st := since(s, base); st.EnforceChecked != 1 || st.EnforceMismatches != 0 || st.Errors != 0 {
-		t.Fatalf("matcher path: %+v", st)
+}
+
+// onlyStale requires got to be one stale cache of kind on side.
+func onlyStale(t *testing.T, got []ShadowMismatch, kind, side string) {
+	t.Helper()
+	if len(got) != 1 || got[0].Kind != kind || got[0].Stale != side {
+		t.Fatalf("findings %+v, want one stale %s cache on the %s side", got, kind, side)
 	}
 }
 
+// A write the version does not record, landing between the request's
+// legacy read and Casbin's, is no mismatch: both sides read again past the
+// caches agree. But it is not agreement either: it is counted and reported
+// as a stale cache (here the legacy side's, read before the write), and
+// the stale set is dropped. On the set path and on the matcher path.
+func TestShadowStaleAfterUnrecordedWrite(t *testing.T) {
+	t.Run("set", func(t *testing.T) {
+		s, _, uid := shadowFixture(t, EngineShadow)
+		withDisableFirst(s)
+		got := recordMismatches(s)
+		base := s.shadow.stats()
+		mustCan(t, s, uid, "self:profile", true) // the legacy set, read active
+		settle()
+		if st := since(s, base); st.Compared != 1 || st.Mismatches != 0 || st.StaleCache != 1 || st.Errors != 0 {
+			t.Fatalf("set path: %+v", st)
+		}
+		onlyStale(t, got(), MismatchSet, StaleLegacy)
+		mustCan(t, s, uid, "self:profile", false) // the stale set went
+	})
+	t.Run("enforce", func(t *testing.T) {
+		s, _, uid := shadowFixture(t, EngineShadow)
+		withDisableFirst(s)
+		got := recordMismatches(s)
+		// The legacy set cached before the write answers; Enforce reads the
+		// disabled user.
+		set, err := s.legacyPermissionSet(context.Background(), uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		s.users[uid] = set
+		s.mu.Unlock()
+		s.shadow.sample = func(rate float64) bool { return rate == enforceSampleRate }
+		base := s.shadow.stats()
+		mustCan(t, s, uid, "self:profile", true)
+		settle()
+		if st := since(s, base); st.EnforceChecked != 1 || st.EnforceMismatches != 0 || st.StaleCache != 1 || st.Errors != 0 {
+			t.Fatalf("matcher path: %+v", st)
+		}
+		onlyStale(t, got(), MismatchEnforce, StaleLegacy)
+		mustCan(t, s, uid, "self:profile", false)
+	})
+}
+
 // casbin: the role cache holds the user read before a raw UPDATE disabled
-// it; the sampled legacy read comes after. The difference is re-read past
-// the role cache, not reported.
-func TestCasbinSampleRereadsRoleCache(t *testing.T) {
+// it, and answers from it; the sampled legacy read comes after. Read again
+// past the role cache both agree: a stale cache on the Casbin side,
+// counted and reported, never a silent agreement. The re-read refreshes
+// the role cache and the set cached from it goes, so the next check is
+// right.
+func TestCasbinSampleFindsStaleRoleCache(t *testing.T) {
 	s, _, uid := shadowFixture(t, EngineCasbin)
 	l := casbinx.NewLoader(s.db)
 	s.casbin = casbinx.NewResolver(l, casbinx.NewRoleCache(l, nil), SelfPermissionKeys())
-	failOnShadowMismatch(t, s)
+	got := recordMismatches(s)
 	mustCan(t, s, uid, "self:profile", true) // the roles cached, active
 	if _, err := s.db.SQL.ExecContext(context.Background(), `UPDATE users SET status = 'disabled' WHERE id = $1`, uid); err != nil {
 		t.Fatal(err)
@@ -433,12 +528,11 @@ func TestCasbinSampleRereadsRoleCache(t *testing.T) {
 	base := s.shadow.stats()
 	mustCan(t, s, uid, "self:profile", true) // Casbin answers from the cache
 	settle()
-	if st := since(s, base); st.Compared != 1 || st.Mismatches != 0 || st.Errors != 0 {
+	if st := since(s, base); st.Compared != 1 || st.Mismatches != 0 || st.StaleCache != 1 || st.Errors != 0 {
 		t.Fatalf("legacy sample: %+v", st)
 	}
-	// The re-read replaced the cached entry: the next resolution sees it.
-	drop(s)
-	mustCan(t, s, uid, "self:profile", false)
+	onlyStale(t, got(), MismatchSet, StaleCasbin)
+	mustCan(t, s, uid, "self:profile", false) // the stale set went
 }
 
 // Sampled Can calls (shadow) are checked on the matcher path of a real

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -174,7 +175,7 @@ func (h *hardeningDB) down(name string) error {
 
 func (h *hardeningDB) syncCore() {
 	h.t.Helper()
-	require.NoError(h.t, authz.New(authz.Deps{DB: h.db}).SyncCore(h.ctx))
+	require.NoError(h.t, authz.New(authz.Deps{DB: h.db, Shadow: authztest.Shadow()}).SyncCore(h.ctx))
 }
 
 // The migration on a 0.1.285 database writes the final state: former

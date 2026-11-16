@@ -61,6 +61,7 @@ DROP FUNCTION IF EXISTS authz_casbin_user_sub(bigint);
 DROP FUNCTION IF EXISTS authz_casbin_role_sub(text);
 DROP FUNCTION IF EXISTS authz_casbin_super_key();
 DROP FUNCTION IF EXISTS authz_casbin_all_rows();
+DROP FUNCTION IF EXISTS authz_casbin_self_sub();
 
 -- The authz.engine setting (CONTRACTS §99.3): 0.1.289 does not read it, and
 -- left behind it would start a later upgrade on the engine chosen before,

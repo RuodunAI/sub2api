@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -213,7 +214,7 @@ func TestLoaderAdapterReadOnly(t *testing.T) {
 // those under an action held for every row included).
 func matchesLegacy(t *testing.T, db *store.DB, users map[string]int64) {
 	t.Helper()
-	az := authz.New(authz.Deps{DB: db})
+	az := authz.New(authz.Deps{DB: db, Shadow: authztest.Shadow()})
 	for name, uid := range users {
 		c, err := az.CompareEngines(context.Background(), uid)
 		switch {

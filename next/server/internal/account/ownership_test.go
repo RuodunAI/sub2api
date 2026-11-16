@@ -18,6 +18,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -984,7 +985,7 @@ func TestBuiltinSupplierRole(t *testing.T) {
 	fake := fakeAuthz{keys: map[int64][]string{}}
 	e, _, _, _ := preparationFixtureWith(t, fake)
 	ctx := context.Background()
-	roles := authz.New(authz.Deps{DB: e.db})
+	roles := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
 	if err := roles.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

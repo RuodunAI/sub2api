@@ -291,7 +291,7 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO roles (key, name) VALUES ($1, '{"en":"x"}')`, key); err != nil {
 		t.Fatal(err)
 	}
-	s := New(Deps{DB: db})
+	s := New(Deps{DB: db, Shadow: testShadow})
 	id := roleID(t, s, key)
 	v1, err := s.currentVersion(ctx)
 	if err != nil {

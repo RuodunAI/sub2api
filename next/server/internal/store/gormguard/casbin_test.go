@@ -31,8 +31,9 @@ var casbinOwners = map[string]string{
 
 // enforceOwners (packages or files) may call casbinx.Enforce: the matcher
 // path, never a request's answer. casbinx has no Enforce method to take
-// over through an interface declared elsewhere (its Resolver's is
-// unexported), so naming the function is the only way to the matcher.
+// over through an interface declared elsewhere (Enforce reaches its own
+// resolver's unexported one, and refuses any other Resolver), so naming the
+// function is the only way to the matcher.
 var enforceOwners = map[string]string{
 	casbinxPkg:                 "the resolver itself and its tests of the matcher",
 	"internal/authz/shadow.go": "the shadow comparison samples the matcher path against PermissionSet.Has",
@@ -58,20 +59,29 @@ var (
 	casbinEnforce = regexp.MustCompile(`^(Batch)?Enforce`)
 	// adapterPkg matches gorm-adapter's package.
 	adapterPkg = regexp.MustCompile(`^github\.com/casbin/gorm-adapter(/v\d+)?$`)
-	// adapterConstructor matches the gorm-adapter functions that make an
-	// adapter or a pool: all but NewAdapterByDBUseTableName (see
-	// adapterReadOnly) AutoMigrate the table to the adapter's own struct
-	// unless TurnOffAutoMigrate ran first on their handle (DDL that would
-	// narrow v1 and v2 back to varchar(100)), and those taking a driver and
-	// a DSN, or InitDbResolver, open pools of their own; the
-	// transactional ones exist to write.
-	adapterConstructor = regexp.MustCompile(`^(New|InitDbResolver$)`)
 )
+
+// adapterAllowed is all of gorm-adapter's API that may be named, a
+// whitelist: casbinx.loadPolicyRows's read-only load. The rest constructs
+// adapters that AutoMigrate the table to the adapter's own struct (DDL that
+// would narrow v1 and v2 back to varchar(100)), opens pools of its own
+// (Open, the DSN constructors, InitDbResolver), hands the adapter's handle
+// out (GetDb), loads every row (LoadPolicy: the g rows are not loaded) or
+// writes. adapterReadOnly is allowed only where adapterTurnedOff holds.
+var adapterAllowed = map[string]bool{
+	"TurnOffAutoMigrate": true, // on the handle the adapter is then made on
+	"LoadFilteredPolicy": true, // one SELECT of the p rows, inside the caller's transaction
+}
 
 // adapterReadOnly is the one gorm-adapter constructor allowed: on a handle
 // TurnOffAutoMigrate ran on, it only scopes a session of it to the table
-// (casbinx.loadPolicyRows).
-const adapterReadOnly = "NewAdapterByDBUseTableName"
+// (casbinx.loadPolicyRows). It is allowed called, with a variable as the
+// handle, in a function that called TurnOffAutoMigrate on that variable
+// before (adapterTurnedOff); as a value, or anywhere else, it is reported.
+const (
+	adapterReadOnly   = "NewAdapterByDBUseTableName"
+	adapterTurnOffFun = "TurnOffAutoMigrate"
+)
 
 // listedWithin reports whether rel is, or is under, an entry of list.
 func listedWithin(list map[string]string, rel string) bool {
@@ -110,8 +120,10 @@ func (c *checker) casbinSelector(n *ast.SelectorExpr, fn *types.Func) {
 		c.report(n, "%s Casbin %s: the policy is the role tables' projection, written by their triggers in the writer's transaction; Casbin and gorm-adapter only read it", ruleCasbin, fn.Name())
 	case casbinRootPkg.MatchString(pkg) && casbinEnforce.MatchString(fn.Name()) && !c.casbinOwner:
 		c.report(n, "%s Casbin %s outside %s: enforcers belong to the resolver", ruleCasbin, fn.Name(), casbinxPkg)
-	case adapterPkg.MatchString(pkg) && adapterConstructor.MatchString(fn.Name()) && fn.Name() != adapterReadOnly:
-		c.report(n, "%s gorm-adapter %s: only %s on a handle TurnOffAutoMigrate ran on; the others AutoMigrate the table, open pools of their own or write", ruleCasbin, fn.Name(), adapterReadOnly)
+	case adapterPkg.MatchString(pkg) && fn.Name() == adapterReadOnly && !c.adapterVetted[n]:
+		c.report(n, "%s gorm-adapter %s on a handle no earlier %s of the same function ran on: the constructor AutoMigrates the table to the adapter's struct (narrowing v1 and v2) unless it did", ruleCasbin, fn.Name(), adapterTurnOffFun)
+	case adapterPkg.MatchString(pkg) && fn.Name() != adapterReadOnly && !adapterAllowed[fn.Name()]:
+		c.report(n, "%s gorm-adapter %s: only %s, %s (after it, on the same handle) and LoadFilteredPolicy are used; the rest AutoMigrates the table, opens pools of its own, hands out the adapter's handle, loads the g rows or writes", ruleCasbin, fn.Name(), adapterTurnOffFun, adapterReadOnly)
 	case fn.Name() == "Enforce" && within(pkg, c.casbinxPkg) && !c.enforceOwner:
 		c.report(n, "%s casbinx Enforce outside the shadow comparison, casbinx and authz-verify: it runs every policy through the matcher (8-230 µs); a request asks PermissionSet.Has", ruleCasbin)
 	}
@@ -119,7 +131,12 @@ func (c *checker) casbinSelector(n *ast.SelectorExpr, fn *types.Func) {
 
 // casbinCall reports EnableAutoSave with anything but the constant false:
 // an enforcer with auto-save writes every policy change through its adapter.
+// It vets a call of adapterReadOnly for casbinSelector, which sees the
+// selector after the call (ast.Inspect visits the call first).
 func (c *checker) casbinCall(fn *types.Func, n *ast.CallExpr) {
+	if fn.Name() == adapterReadOnly && adapterPkg.MatchString(funcPkg(fn)) && c.adapterTurnedOff(n) {
+		c.adapterVetted[ast.Unparen(n.Fun).(*ast.SelectorExpr)] = true
+	}
 	if fn.Name() != "EnableAutoSave" || !casbinRootPkg.MatchString(funcPkg(fn)) || len(n.Args) != 1 {
 		return
 	}
@@ -127,6 +144,59 @@ func (c *checker) casbinCall(fn *types.Func, n *ast.CallExpr) {
 		return
 	}
 	c.report(n, "%s EnableAutoSave with anything but false: an enforcer never writes through its adapter", ruleCasbin)
+}
+
+// adapterTurnedOff reports whether the handle call (adapterReadOnly) is
+// made on is a variable TurnOffAutoMigrate ran on before, in the function
+// (or function literal) the call is in, not in one nested in it.
+func (c *checker) adapterTurnedOff(call *ast.CallExpr) bool {
+	if len(call.Args) == 0 {
+		return false
+	}
+	handle := c.identObj(call.Args[0])
+	body := c.enclosingBody(call.Pos())
+	if handle == nil || body == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.CallExpr:
+			sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr)
+			if !ok || n.End() > call.Pos() || len(n.Args) != 1 {
+				return true
+			}
+			if fn := funcOf(c.info, sel); fn != nil && fn.Name() == adapterTurnOffFun && adapterPkg.MatchString(funcPkg(fn)) &&
+				c.identObj(n.Args[0]) == handle {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// identObj is the object e names when it is a plain identifier.
+func (c *checker) identObj(e ast.Expr) types.Object {
+	id, ok := ast.Unparen(e).(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	return c.info.Uses[id]
+}
+
+// enclosingBody is the body of the innermost function or function literal
+// of the package holding pos.
+func (c *checker) enclosingBody(pos token.Pos) *ast.BlockStmt {
+	var in *ast.BlockStmt
+	for _, b := range c.bodies {
+		if b.Pos() <= pos && pos < b.End() && (in == nil || b.Pos() >= in.Pos()) {
+			in = b
+		}
+	}
+	return in
 }
 
 // --- the rule, on fixtures -------------------------------------------------
@@ -167,8 +237,9 @@ func f(ctx context.Context, x fake, r casbinx.Resolver) {
 }
 
 // No interface declared outside casbinx takes the matcher path over: the
-// Resolver has no exported Enforce, and its unexported one is casbinx's
-// alone, so a Resolver does not satisfy an interface naming either.
+// Resolver has no Enforce method, exported or not (the matcher is the
+// unexported method of casbinx's own resolver, which only casbinx.Enforce
+// reaches), so a Resolver does not satisfy an interface naming either.
 func TestCasbinxEnforceNotTakenOver(t *testing.T) {
 	for name, src := range map[string]string{
 		"exported": `
@@ -262,6 +333,38 @@ func f(db *gorm.DB) {
 	gormadapter.TurnOffAutoMigrate(db)
 	_, _ = gormadapter.NewAdapterByDBUseTableName(db, "", "casbin_rule")
 }`, want: []string{ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin}},
+		{name: "gorm-adapter is a whitelist: the read-only load alone", pkg: casbinxPkg + "/x", imports: imports, src: uses + `
+func load(tx *gorm.DB, m model.Model) error {
+	h := tx.Session(&gorm.Session{})
+	gormadapter.TurnOffAutoMigrate(h)
+	a, err := gormadapter.NewAdapterByDBUseTableName(h, "", "casbin_rule")
+	if err != nil {
+		return err
+	}
+	return a.LoadFilteredPolicy(m, gormadapter.Filter{Ptype: []string{"p"}})
+}
+
+func probes(db, other *gorm.DB, a *gormadapter.Adapter, m model.Model) {
+	_, _ = gormadapter.NewAdapterByDBUseTableName(db, "", "casbin_rule")
+	gormadapter.TurnOffAutoMigrate(other)
+	_, _ = gormadapter.NewAdapterByDBUseTableName(db, "", "casbin_rule")
+	func() { gormadapter.TurnOffAutoMigrate(db) }()
+	_, _ = gormadapter.NewAdapterByDBUseTableName(db, "", "casbin_rule")
+	_, _ = gormadapter.NewAdapterByDBUseTableName(other.Session(&gorm.Session{}), "", "casbin_rule")
+	newAdapter := gormadapter.NewAdapterByDBUseTableName
+	_ = newAdapter
+	_ = a.Open()
+	a.GetDb().Exec("DELETE FROM casbin_rule")
+	_ = a.LoadPolicy(m)
+	_ = a.Close()
+	_ = a.Copy()
+}
+
+func later(db *gorm.DB) {
+	_, _ = gormadapter.NewAdapterByDBUseTableName(db, "", "casbin_rule")
+	gormadapter.TurnOffAutoMigrate(db)
+}`, want: []string{ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin,
+			ruleCasbin, ruleCasbin}},
 		{name: "Casbin's Enforce outside casbinx", pkg: "internal/authz", file: "shadow.go", imports: imports, src: uses + `
 func f(e *casbin.Enforcer) {
 	_, _ = e.Enforce("u:1", "a")

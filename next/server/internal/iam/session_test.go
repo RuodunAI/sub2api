@@ -12,6 +12,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -118,7 +119,7 @@ func TestAdminPasswordResetBroadcasts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	az2 := authz.New(authz.Deps{DB: s.db, Bus: e.bus})
+	az2 := authz.New(authz.Deps{DB: s.db, Bus: e.bus, Shadow: authztest.Shadow()})
 	if err := az2.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

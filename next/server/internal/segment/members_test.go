@@ -1,9 +1,14 @@
 package segment
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 func TestAddMembers(t *testing.T) {
@@ -77,6 +82,65 @@ func TestSegmentDeleteRace(t *testing.T) {
 		}
 		require.Equal(t, 204, codes[0], "nothing keeps the delete from going through: %v", codes)
 		require.Zero(t, e.id(`SELECT count(*) FROM segments s JOIN users u ON u.id = s.user_id WHERE u.segment_id <> s.id`))
+	}
+}
+
+// A mover holding the users of personal segments that came from a segment
+// keeps the segment's delete waiting before it touches those segments: the
+// delete clears their origin_id, the mover deletes them (DropPersonal), and
+// without the users' locks the two took the rows in different orders and
+// deadlocked (one of them failed with 409). The mover here deletes the
+// segment the delete's cascade reaches last before the delete starts, and
+// the others once the delete waits.
+func TestSegmentDeleteWaitsForMovers(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	vip := e.segment("vip", "0.9")
+	users := []int64{e.user("a@x.com"), e.user("b@x.com"), e.user("c@x.com")}
+	e.exec(`UPDATE users SET segment_id = $1 WHERE id = ANY($2)`, vip, users)
+	for _, u := range users {
+		e.do(e.admin, "POST", path("/users/%d/personal-segment", u), map[string]any{"copy": true}).ok(201)
+	}
+	last := e.id(`SELECT user_id FROM segments WHERE origin_id = $1 ORDER BY ctid DESC LIMIT 1`, vip)
+
+	holding, waiting := make(chan struct{}), make(chan struct{})
+	moved := make(chan error, 1)
+	go func() {
+		moved <- e.db.Tx(ctx, func(tx *gorm.DB) error {
+			if _, err := lockUsers(ctx, tx, `id = ANY(?)`, store.Int64s(users)); err != nil {
+				return err
+			}
+			move := func(ids ...int64) error { // as moveUsers, past its lock
+				if err := setUserSegment(store.G(ctx, tx), gorm.Expr("default_segment_id()"), "id = ANY(?)", store.Int64s(ids)).Error; err != nil {
+					return err
+				}
+				_, err := DropPersonal(ctx, tx, ids...)
+				return err
+			}
+			if err := move(last); err != nil {
+				return err
+			}
+			close(holding)
+			<-waiting
+			return move(users...)
+		})
+	}()
+	select {
+	case <-holding:
+	case err := <-moved:
+		t.Fatalf("the mover failed: %v", err)
+	}
+	deleted := make(chan int, 1)
+	go func() { deleted <- e.do(e.admin, "DELETE", path("/segments/%d", vip), nil).code }()
+	require.Eventually(t, func() bool {
+		return e.id(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`) > 0
+	}, 10*time.Second, 5*time.Millisecond, "the delete never waited")
+	close(waiting)
+	require.NoError(t, <-moved)
+	require.Equal(t, 204, <-deleted)
+	require.Zero(t, e.id(`SELECT count(*) FROM segments WHERE id = $1 OR origin_id = $1`, vip))
+	for _, u := range users {
+		require.Equal(t, e.defaultSegment(), e.segmentOf(u))
 	}
 }
 

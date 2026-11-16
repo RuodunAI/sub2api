@@ -6,13 +6,14 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 )
 
 // The self permissions: every signed-in user holds them, roles or not; an
 // access key holds them only when chosen; the role editor does not list them.
 func TestSelfPermissions(t *testing.T) {
 	t.Parallel()
-	k := newKeyEnv(t)
+	k := newKeyEnv(t, authztest.AcceptStaleCache) // disables a user with a raw UPDATE
 	ctx := context.Background()
 	set, err := k.authz.PermissionSet(ctx, k.userID)
 	if err != nil {

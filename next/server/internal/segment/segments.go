@@ -359,13 +359,21 @@ func (s *Service) delete(c *gin.Context) {
 			return err
 		}
 		// Deleted users leave too: users.segment_id references the row.
-		// Members are locked before they are moved, as moveUsers does.
-		members, err := lockUsers(ctx, tx, `segment_id = ?`, id)
+		// Members are locked before they are moved, as moveUsers does, and
+		// with them, in the same id order, the users of the personal
+		// segments that came from it: the delete clears those segments'
+		// origin_id (ON DELETE SET NULL), and moveUsers deletes them
+		// (DropPersonal) holding their users. Taking the users first, as
+		// moveUsers does, keeps the two from taking the segment rows in
+		// different orders (a deadlock); no new one comes from it
+		// meanwhile, as its insert waits for the lock taken above. Only the
+		// members move.
+		locked, err := lockUsers(ctx, tx, `segment_id = ? OR id IN (SELECT user_id FROM segments WHERE origin_id = ?)`, id, id)
 		if err != nil {
 			return err
 		}
 		g := store.G(ctx, tx)
-		if err := setUserSegment(g, gorm.Expr("default_segment_id()"), "id = ANY(?)", store.Int64s(members)).Error; err != nil {
+		if err := setUserSegment(g, gorm.Expr("default_segment_id()"), "id = ANY(?) AND segment_id = ?", store.Int64s(locked), id).Error; err != nil {
 			return err
 		}
 		return g.Delete(&model.Segment{}, id).Error

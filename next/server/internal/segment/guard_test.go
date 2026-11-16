@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 )
 
 // Whose user group a caller may choose is authz's CanActOnUsers: the users
@@ -14,7 +15,7 @@ import (
 // both hold segment:manage; the roles decide.
 func TestMembershipActsOnOthers(t *testing.T) {
 	e := setup(t)
-	az := authz.New(authz.Deps{DB: e.db})
+	az := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
 	require.NoError(t, az.SyncCore(context.Background()))
 	e.svc.users = az
 	super := e.user("super@x.com")
@@ -61,7 +62,7 @@ func TestMembershipActsOnOthers(t *testing.T) {
 // time leaves an audit row (FU6).
 func TestSuperuserChoosesOwnSegment(t *testing.T) {
 	e := setup(t)
-	az := authz.New(authz.Deps{DB: e.db})
+	az := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
 	require.NoError(t, az.SyncCore(context.Background()))
 	e.svc.users = az
 	e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, e.admin, authz.RoleSuperAdmin)
@@ -89,7 +90,7 @@ func TestMembershipWithoutGuardIsRefused(t *testing.T) {
 // changes its own (FU2).
 func TestSettingsOfOwnSegment(t *testing.T) {
 	e := setup(t)
-	az := authz.New(authz.Deps{DB: e.db})
+	az := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
 	require.NoError(t, az.SyncCore(context.Background()))
 	e.svc.users = az
 	e.exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = $2`, e.masked, authz.RoleOperator)

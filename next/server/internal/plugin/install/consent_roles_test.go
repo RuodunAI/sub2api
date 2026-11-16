@@ -11,6 +11,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -175,7 +176,7 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 // that syncs and grants run the catalog's own checks.
 func realCatalog(t *testing.T, e *env, ctx context.Context) {
 	t.Helper()
-	cat := authz.New(authz.Deps{DB: e.db})
+	cat := authz.New(authz.Deps{DB: e.db, Shadow: authztest.Shadow()})
 	require.NoError(t, cat.Start(ctx))
 	require.NoError(t, e.db.Tx(ctx, func(tx *gorm.DB) error {
 		_, err := cat.SetUserRoles(ctx, tx, 0, e.admin, []string{authz.RoleSuperAdmin})
