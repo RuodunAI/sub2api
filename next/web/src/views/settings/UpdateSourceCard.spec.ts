@@ -34,12 +34,31 @@ const save = async (w: Awaited<ReturnType<typeof render>>) => {
 const putBody = () => api.put.mock.calls.at(-1)![1]
 
 describe('update source settings', () => {
-  it('shows a stored secret as set, never its value, and leaves it unchanged when the field is empty', async () => {
+  it('hides the secret for a public source and sends none', async () => {
+    api.get.mockImplementation((path: string) => Promise.resolve(path === '/system/update-source' ? { ...stored, has_secret: false } : check))
     const w = await render()
-    expect(w.get('[data-testid="update-source-secret-state"]').text()).toContain('已设置')
-    await w.get('input[name="repository"]').setValue('owner/other ')
+    expect(w.find('input[name="secret"]').exists()).toBe(false)
+    await w.get('input[name="repository"]').setValue('owner/public ')
     await save(w)
-    expect(putBody()).toEqual({ enabled: true, kind: 'github', repository: 'owner/other', url: '' })
+    expect(putBody()).toEqual({ enabled: true, kind: 'github', repository: 'owner/public', url: '' })
+  })
+
+  it('shows the secret field once the source is marked private and saves only with a secret', async () => {
+    api.get.mockImplementation((path: string) => Promise.resolve(path === '/system/update-source' ? { ...stored, has_secret: false } : check))
+    const w = await render()
+    await w.get('[data-testid="update-source-private"]').trigger('click')
+    expect(w.get('[data-testid="settings-save"]').attributes('disabled')).toBeDefined()
+    await w.get('input[name="secret"]').setValue(SECRET)
+    await save(w)
+    expect(putBody()).toMatchObject({ secret: SECRET })
+  })
+
+  it('shows a stored secret as private, never its value, and keeps it when the field is empty', async () => {
+    const w = await render()
+    expect((w.get('input[name="secret"]').element as HTMLInputElement).placeholder).toContain('已设置')
+    await w.get('[data-testid="update-source-enabled"]').trigger('click')
+    await save(w)
+    expect(putBody()).toEqual({ enabled: false, kind: 'github', repository: 'owner/private', url: '' })
   })
 
   it('sends a new secret once and forgets it after saving', async () => {
@@ -51,14 +70,15 @@ describe('update source settings', () => {
     expect(w.html()).not.toContain(SECRET)
   })
 
-  it('clears the secret with an empty string and can undo it', async () => {
+  it('clears the stored secret when private is turned off', async () => {
     const w = await render()
-    const clear = w.get('[data-testid="update-source-clear-secret"]')
-    await clear.trigger('click')
+    const toggle = w.get('[data-testid="update-source-private"]')
+    await toggle.trigger('click')
     expect(w.find('input[name="secret"]').exists()).toBe(false)
-    await clear.trigger('click')
+    expect(w.find('[data-testid="update-source-secret-clears"]').exists()).toBe(true)
+    await toggle.trigger('click')
     expect(w.find('[data-testid="settings-save"]').attributes('disabled')).toBeDefined()
-    await clear.trigger('click')
+    await toggle.trigger('click')
     await save(w)
     expect(putBody()).toMatchObject({ secret: '' })
   })
@@ -68,6 +88,9 @@ describe('update source settings', () => {
     expect(w.find('[data-testid="update-source-secret-dropped"]').exists()).toBe(false)
     await w.get('input[name="repository"]').setValue('owner/other')
     expect(w.find('[data-testid="update-source-secret-dropped"]').exists()).toBe(true)
+    await save(w)
+    expect(api.put).not.toHaveBeenCalled()
+    expect(w.text()).toContain('请填写密钥')
     await w.get('input[name="secret"]').setValue(SECRET)
     expect(w.find('[data-testid="update-source-secret-dropped"]').exists()).toBe(false)
   })
@@ -80,8 +103,9 @@ describe('update source settings', () => {
     expect(w.find('input[name="repository"]').exists()).toBe(false)
     await w.get('input[name="url"]').setValue('https://releases.example.com/s2a/')
     expect(w.text()).toContain('Bearer')
+    await w.get('[data-testid="update-source-private"]').trigger('click')
     await save(w)
-    expect(putBody()).toEqual({ enabled: true, kind: 'url', repository: 'Sub2API-Devs/sup2api', url: 'https://releases.example.com/s2a/' })
+    expect(putBody()).toEqual({ enabled: true, kind: 'url', repository: 'Sub2API-Devs/sup2api', url: 'https://releases.example.com/s2a/', secret: '' })
   })
 
   it('checks again after saving and shows both latest versions or the error', async () => {

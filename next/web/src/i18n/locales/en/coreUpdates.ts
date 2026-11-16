@@ -19,14 +19,15 @@ export default {
   repository: 'GitHub repository', repositoryHint: 'owner/repository or the full GitHub repository URL.',
   restoreDefault: 'Restore default',
   url: 'Release URL', urlHint: 'HTTPS release directory containing releases.json.',
-  secret: { github: 'Access token', url: 'Access key' },
-  secretHint: {
-    github: 'Not needed for public repositories. For a private one, use a read-only fine-grained token (Contents: Read).',
-    url: 'Optional; sent as a Bearer token to the release URL only.'
+  private: { github: 'Private repository', url: 'Requires an access key' },
+  privateHint: {
+    github: 'Leave off for a public repository; no token is needed. For a private one, turn it on and enter a read-only fine-grained token (Contents: Read).',
+    url: 'Turn on when the release URL requires Bearer authentication.'
   },
-  secretDetails: 'Write-only: it is never shown after saving, and leaving the field empty keeps it. It goes only to the GitHub API or the release URL itself, never along a redirect. Releases must still be signed by a key the gateway trusts; changing the source changes no trusted key and upgrades nothing by itself.',
-  secretSet: 'Set', secretWillClear: 'Cleared on save', clear: 'Clear', undo: 'Undo',
-  secretKeep: 'Leave empty to keep', secretNone: 'Not set',
+  secret: { github: 'Access token', url: 'Access key' },
+  secretDetails: 'Write-only: it is never shown after saving, and leaving the field empty keeps it; turning the switch above off clears it. It goes only to the GitHub API or the release URL itself, never along a redirect. Releases must still be signed by a key the gateway trusts; changing the source changes no trusted key and upgrades nothing by itself.',
+  secretWillClear: 'The saved secret is cleared on save',
+  secretKeep: 'Set; leave empty to keep it', secretNone: 'Required', secretRequired: 'Enter the secret, or turn the switch above off',
   secretDropped: 'Changing the source clears the saved token. Enter it again if it is still needed.',
   checkResult: 'Check result', checking: 'Checking…',
   connected: 'Connected: latest core {core}, latest gateway {gateway}'

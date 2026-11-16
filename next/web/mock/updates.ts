@@ -2,7 +2,7 @@ import { fail, now, on } from './router'
 import { stepUp } from './core'
 
 const DEFAULT_REPOSITORY = 'Sub2API-Devs/sup2api'
-const source = { enabled: true, kind: 'github', repository: DEFAULT_REPOSITORY, url: '', has_secret: true, revision: 1 }
+const source = { enabled: true, kind: 'github', repository: DEFAULT_REPOSITORY, url: '', has_secret: false, revision: 1 }
 const view = () => ({ ...source, default_repository: DEFAULT_REPOSITORY })
 on('GET', '/system/version', () => ({ version: '0.1.290', managed: true }))
 on('GET', '/system/update-source', view)

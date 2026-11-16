@@ -19,14 +19,15 @@ export default {
   repository: 'GitHub 仓库', repositoryHint: '填写 owner/repository 或完整的 GitHub 仓库地址。',
   restoreDefault: '恢复默认',
   url: '发布地址', urlHint: 'HTTPS 发布目录，其下需有 releases.json。',
-  secret: { github: '访问令牌', url: '访问密钥' },
-  secretHint: {
-    github: '公开仓库不需要。私有仓库请填只读的细粒度令牌（Contents: Read）。',
-    url: '可选，以 Bearer 方式只发给该发布地址。'
+  private: { github: '私有仓库', url: '需要访问密钥' },
+  privateHint: {
+    github: '公开仓库保持关闭，不需要令牌。私有仓库打开后填写只读的细粒度令牌（Contents: Read）。',
+    url: '发布地址需要 Bearer 鉴权时打开。'
   },
-  secretDetails: '令牌只写不读：保存后不会再显示，留空表示不变。只对 GitHub API 或发布地址本身发送，不随跳转转发。发布资产仍须带有网关信任的签名，更换更新源不会改变信任的密钥，也不会自动升级。',
-  secretSet: '已设置', secretWillClear: '保存后清除', clear: '清除', undo: '撤销',
-  secretKeep: '留空保持不变', secretNone: '未设置',
+  secret: { github: '访问令牌', url: '访问密钥' },
+  secretDetails: '令牌只写不读：保存后不会再显示，留空表示不变，关闭上方开关会清除它。只对 GitHub API 或发布地址本身发送，不随跳转转发。发布资产仍须带有网关信任的签名，更换更新源不会改变信任的密钥，也不会自动升级。',
+  secretWillClear: '保存后将清除已保存的密钥',
+  secretKeep: '已设置，留空保持不变', secretNone: '必填', secretRequired: '请填写密钥，或关闭上方开关',
   secretDropped: '更改更新源后，已保存的令牌会被清除。如仍需要，请重新填写。',
   checkResult: '检测结果', checking: '正在检测…',
   connected: '连接正常：最新核心 {core}，最新网关 {gateway}'
