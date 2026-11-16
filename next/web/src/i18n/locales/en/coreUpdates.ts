@@ -6,6 +6,11 @@ export default {
   lines: { core: 'Core', gateway: 'Gateway' },
   status: { unchecked: 'Not checked yet', disabled: 'Update checks are off', failed: 'Check failed', noRelease: 'No stable release', available: 'Update available', blocked: 'Check needs attention', upToDate: 'Up to date' },
   incompatible: 'This release is not compatible with the cluster',
+  reasons: {
+    no_release: 'The update source has no stable release of this line yet (a Release tagged core-v* / gateway-v*)',
+    version_conflict: 'The latest release has the installed version number but a different signed identity; check the release source',
+    incompatible: 'This release is not compatible with the cluster: {details}'
+  },
   apply: 'Update now',
   applyHint: 'Update now imports the verified release, runs the preflight and creates an upgrade plan; follow it on the upgrades page. Nothing updates automatically.',
   applyConfirmTitle: 'Confirm update',

@@ -11,6 +11,8 @@ export interface LineCheck {
   latest_version?: string
   has_update: boolean
   compatible: boolean
+  /** Classifies reason; see useLineReason. */
+  reason_code?: 'no_release' | 'version_conflict' | 'incompatible'
   reason?: string
   tag?: string
   notes?: string

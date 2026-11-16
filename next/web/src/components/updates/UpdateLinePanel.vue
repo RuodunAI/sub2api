@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SHint, SLink, type Tone } from '@sub2api/ui'
 import { formatDateTime } from '@/utils/format'
 import type { CoreCheck, GatewayCheck, LineStatus, UpdateLine } from '@/stores/updates'
+import { useLineReason } from './lineReason'
 
 const props = defineProps<{
   line: UpdateLine
@@ -19,6 +20,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ (e: 'apply'): void }>()
 const { t } = useI18n()
+const lineReason = useLineReason()
 
 const STATUS_TONE: Record<LineStatus, Tone> = { unchecked: 'gray', disabled: 'gray', failed: 'danger', noRelease: 'warning', available: 'warning', blocked: 'warning', upToDate: 'success' }
 const gateway = computed(() => (props.line === 'gateway' ? (props.check as GatewayCheck | undefined) : undefined))
@@ -39,7 +41,7 @@ const page = computed(() => {
 })
 const when = (v?: string) => (v ? formatDateTime(v) : '—')
 /** Why the latest release cannot be applied, or why there is none. */
-const blocker = computed(() => props.check?.reason || (props.check?.latest_version && !props.check.compatible ? t('coreUpdates.incompatible') : ''))
+const blocker = computed(() => lineReason(props.check) || (props.check?.latest_version && !props.check.compatible ? t('coreUpdates.incompatible') : ''))
 const ready = computed(() => props.canApply && props.supported && props.status === 'available' && !blocker.value)
 </script>
 

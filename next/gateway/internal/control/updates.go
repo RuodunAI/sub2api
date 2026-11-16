@@ -366,11 +366,15 @@ func (s *Store) recordCheck(ctx context.Context, o lineOutcome, revision int64, 
 type lineResult struct {
 	LatestVersion string `json:"latest_version"`
 	Compatible    bool   `json:"compatible"`
-	Reason        string `json:"reason"`
-	Tag           string `json:"tag"`
-	Notes         string `json:"notes"`
-	Page          string `json:"page"`
-	PublishedAt   string `json:"published_at"`
+	// ReasonCode classifies Reason for the console: reasonNoRelease,
+	// reasonVersionConflict or reasonIncompatible (Reason then lists the
+	// compatibility findings).
+	ReasonCode  string `json:"reason_code,omitempty"`
+	Reason      string `json:"reason"`
+	Tag         string `json:"tag"`
+	Notes       string `json:"notes"`
+	Page        string `json:"page"`
+	PublishedAt string `json:"published_at"`
 	// Error is why the latest check failed; the other fields then still
 	// describe the last successful one.
 	Error string `json:"error"`
@@ -392,6 +396,12 @@ func describe(l updatesource.Listing) lineResult {
 	}
 	return r
 }
+
+const (
+	reasonNoRelease       = "no_release"
+	reasonVersionConflict = "version_conflict"
+	reasonIncompatible    = "incompatible"
+)
 
 func (u *UpdateService) check(ctx context.Context, row sourceRow, current Release, nodes []Node) []lineOutcome {
 	src, err := u.source(row)
@@ -418,7 +428,7 @@ func (u *UpdateService) source(row sourceRow) (updatesource.Source, error) {
 func (u *UpdateService) checkCore(ctx context.Context, src updatesource.Source, ls []updatesource.Listing, current Release) (coreResult, error) {
 	l, ok := updatesource.Latest(ls, updatesource.LineCore)
 	if !ok {
-		return coreResult{lineResult: lineResult{Reason: "the update source has no stable core release"}}, nil
+		return coreResult{lineResult: lineResult{ReasonCode: reasonNoRelease, Reason: "the update source has no stable core release"}}, nil
 	}
 	target, err := u.verifyCore(ctx, src, l)
 	if err != nil {
@@ -429,9 +439,9 @@ func (u *UpdateService) checkCore(ctx context.Context, src updatesource.Source, 
 	case target.Digest == current.Digest:
 		r.Compatible = true
 	case strings.TrimPrefix(current.Manifest.CoreVersion, "v") == l.Version:
-		r.Reason = "the latest release uses the installed version number with a different signed identity"
+		r.ReasonCode, r.Reason = reasonVersionConflict, "the latest release uses the installed version number with a different signed identity"
 	case len(blockers) > 0:
-		r.Reason = strings.Join(blockers, "; ")
+		r.ReasonCode, r.Reason = reasonIncompatible, strings.Join(blockers, "; ")
 	default:
 		r.Compatible = true
 	}
@@ -468,7 +478,7 @@ func (u *UpdateService) verifyCore(ctx context.Context, src updatesource.Source,
 func (u *UpdateService) checkGateway(ctx context.Context, src updatesource.Source, ls []updatesource.Listing, current Release, nodes []Node) (gatewayResult, error) {
 	l, ok := updatesource.Latest(ls, updatesource.LineGateway)
 	if !ok {
-		return gatewayResult{lineResult: lineResult{Reason: "the update source has no stable gateway release"}}, nil
+		return gatewayResult{lineResult: lineResult{ReasonCode: reasonNoRelease, Reason: "the update source has no stable gateway release"}}, nil
 	}
 	g, err := u.verifyGateway(ctx, src, l)
 	if err != nil {
@@ -479,8 +489,11 @@ func (u *UpdateService) checkGateway(ctx context.Context, src updatesource.Sourc
 	if len(m.Images) > 0 {
 		r.Image = m.Images[0].Ref + "@" + m.Images[0].Digest
 	}
-	reasons := gatewayCompatibility(m, current, nodes)
-	r.Compatible, r.Reason = len(reasons) == 0, strings.Join(reasons, "; ")
+	if reasons := gatewayCompatibility(m, current, nodes); len(reasons) > 0 {
+		r.ReasonCode, r.Reason = reasonIncompatible, strings.Join(reasons, "; ")
+	} else {
+		r.Compatible = true
+	}
 	return r, nil
 }
 

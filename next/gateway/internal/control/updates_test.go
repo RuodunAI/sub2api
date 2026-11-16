@@ -288,7 +288,7 @@ func TestPostgresUpdateCheckPersistsAndKeepsLastSuccess(t *testing.T) {
 	if !first.Enabled || first.Source.Kind != "url" || first.Source.URL != fixtureURL {
 		t.Fatalf("source: %+v", first)
 	}
-	if c.CurrentVersion != "0.1.0-dev" || c.LatestVersion != "0.2.0" || !c.HasUpdate || !c.Compatible || c.Strategy != "rolling" || c.Tag != "core-v0.2.0" ||
+	if c.CurrentVersion != "0.1.0-dev" || c.LatestVersion != "0.2.0" || !c.HasUpdate || !c.Compatible || c.Strategy != "rolling" || c.Tag != "core-v0.2.0" || c.ReasonCode != "" ||
 		c.Error != "" || c.CheckedAt == nil || c.LastSuccessAt == nil || c.Page != "https://releases.example.com/core" || c.PublishedAt != "2026-11-20T08:00:00Z" {
 		t.Fatalf("core: %+v", c)
 	}
@@ -672,5 +672,17 @@ func TestLocalRuntimePreparesSourceReleasesThroughTheSource(t *testing.T) {
 	}
 	if err := rt.Prepare(context.Background(), r, ""); err == nil || asked != bundleDigest+".tar.gz" || max != 100 {
 		t.Fatalf("source asset %q (%d): %v", asked, max, err)
+	}
+}
+
+func TestCheckWithoutStableReleaseIsCoded(t *testing.T) {
+	u := &UpdateService{}
+	core, err := u.checkCore(context.Background(), nil, nil, Release{})
+	if err != nil || core.ReasonCode != reasonNoRelease || core.Reason == "" || core.LatestVersion != "" {
+		t.Fatalf("core: %+v %v", core, err)
+	}
+	gateway, err := u.checkGateway(context.Background(), nil, nil, Release{}, nil)
+	if err != nil || gateway.ReasonCode != reasonNoRelease || gateway.Reason == "" || gateway.LatestVersion != "" {
+		t.Fatalf("gateway: %+v %v", gateway, err)
 	}
 }
