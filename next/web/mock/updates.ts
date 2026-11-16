@@ -1,4 +1,4 @@
-import { fail, now, on } from './router'
+import { now, on } from './router'
 import { stepUp } from './core'
 
 const DEFAULT_REPOSITORY = 'Sub2API-Devs/sup2api'
@@ -29,8 +29,7 @@ on('GET', '/system/update-check', () => ({
   }
 }))
 on('POST', '/system/updates/apply', stepUp('system.update', req => {
-  if (req.body?.line === 'gateway') return fail(501, 'not_implemented', 'Gateway self-update is not available yet')
-  if (!req.body?.confirm) return { status: 'needs_confirmation', reasons: ['此版本改动数据库，按主节点优先策略升级，期间服务会短暂停止'], preflight: {} }
+  if (req.body?.line === 'core' && !req.body?.confirm) return { status: 'needs_confirmation', reasons: ['此版本改动数据库，按主节点优先策略升级，期间服务会短暂停止'], preflight: {} }
   return { status: 'started', plan_id: 'plan-1' }
 }))
 on('GET', '/system/releases', () => ({ releases: ['old', 'new'].map((v, i) => ({ digest: `release-${v}`, manifest: { release_id: `0.1.${7 + i}`, build_id: v, source_commit: 'demo', created_at: now(-100) } })) }))

@@ -119,4 +119,12 @@ describe('update source settings', () => {
     expect(result).toContain('网关: GitHub API rate limited')
     expect(result).not.toContain('连接正常')
   })
+
+  it('gives the reason of a line with no stable release, not a failure', async () => {
+    check = updateCheck({ gateway: { latest_version: '', compatible: false, reason: 'the update source has no stable gateway release' } })
+    const result = (await render()).get('[data-testid="update-source-result"]').text()
+    expect(result).toContain('网关: the update source has no stable gateway release')
+    expect(result).not.toContain('检测失败')
+    expect(result).not.toContain('连接正常')
+  })
 })
