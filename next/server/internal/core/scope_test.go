@@ -33,21 +33,24 @@ func holding(keys ...string) fakeAuthorizer {
 
 func TestCan(t *testing.T) {
 	user := WithUserID(context.Background(), 7)
+	boom := errors.New("boom")
 	tests := []struct {
-		name string
-		ctx  context.Context
-		az   Authorizer
-		want bool
+		name    string
+		ctx     context.Context
+		az      Authorizer
+		want    bool
+		wantErr error
 	}{
-		{"held", user, holding("x:a"), true},
-		{"not held", user, holding("x:b"), false},
-		{"nil authorizer", user, nil, false},
-		{"error", user, fakeAuthorizer{keys: map[string]bool{"x:a": true}, err: errors.New("boom")}, false},
-		{"no caller", context.Background(), holding("x:a"), false},
+		{"held", user, holding("x:a"), true, nil},
+		{"not held", user, holding("x:b"), false, nil},
+		{"nil authorizer", user, nil, false, nil},
+		{"undecided", user, fakeAuthorizer{keys: map[string]bool{"x:a": true}, err: boom}, true, boom},
+		{"no caller", context.Background(), holding("x:a"), false, nil},
 	}
 	for _, tt := range tests {
-		if got := Can(tt.ctx, tt.az, "x:a"); got != tt.want {
-			t.Errorf("%s: Can = %v, want %v", tt.name, got, tt.want)
+		got, err := Can(tt.ctx, tt.az, "x:a")
+		if !errors.Is(err, tt.wantErr) || (err == nil && got != tt.want) {
+			t.Errorf("%s: Can = %v, %v; want %v, %v", tt.name, got, err, tt.want, tt.wantErr)
 		}
 	}
 }

@@ -9,14 +9,18 @@ import (
 const gatewayModule = "github.com/Sub2API-Devs/sup2api/next/gateway"
 
 // policy is the gateway's: the declarations that keep a statement written
-// out ([raw-sql]) or SQL text built at run time ([sql-const]), with the
-// reason. The combinators it shares with the core (EXISTS, to_regclass) are
+// out ([raw-sql]) or reach the pool under a handle ([gorm-instance]), with
+// the reason. The combinators it shares with the core (EXISTS, to_regclass) are
 // runtime-contract/gormpg's.
 var policy = sqlcheck.Policy{
 	Module: gatewayModule,
 	Raw: map[string]string{
-		"internal/control.Store.execLocked": "DDL: the shell schema script behind its transaction-scoped advisory lock, one simple-protocol statement",
-		"internal/control.Store.Heartbeat":  "data-modifying CTE: the conditional UPDATE and the identity check in one round trip per heartbeat; GORM cannot put an UPDATE in a WITH",
+		"internal/control.execLocked":      "DDL: the shell schema script behind its transaction-scoped advisory lock, one simple-protocol statement",
+		"internal/control.Store.Heartbeat": "data-modifying CTE: the conditional UPDATE and the identity check in one round trip per heartbeat; GORM cannot put an UPDATE in a WITH",
+	},
+	Pool: map[string]string{
+		"cmd/sub2api-gateway.closePool": "closes the pool's connections at shutdown",
+		"cmd/sub2api-gateway.newShell":  "logs the pool's size at start",
 	},
 }
 

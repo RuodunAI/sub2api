@@ -3,7 +3,7 @@
 > 基于 `touwaeriol/sup2api` develop @ dae6ba57（只读）。路径相对 `next/server/internal/`，除非另写。
 > 本章只写安装侧（`plugin/install`、`plugin/api`、e2e 辅助）。authz 目录、`SyncPlugin`、`CanGrantToRoles`、`PluginGrantees`、按插件矩阵读写接口属于第 2 章；manifest 字段与校验属于第 1 章；运行时 `scopeFrom` 属于第 4 章；前端属于第 5 章。本章用到的跨章接口已经和对应章节对齐过，见 §3.8。
 >
-> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。版本号也是当时的推测：这部分随 0.1.290 与 Casbin、会话一起发布，0.1.289 没有单独发布，`PluginPermissionsFirstCore`、UI 3.16 的核心下限和内置插件的 `hostCompat` 都是 0.1.290；`0.1.289-plugin-perm-down` 只用于停在 0099 的开发库，线上的升级与回退见 `deploy/rollback/0.1.290-release.md`。
+> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。版本号也是当时的推测：这部分随 0.1.290 与 Casbin、会话一起发布，0.1.289 没有单独发布，`PluginPermissionsFirstCore`、UI 3.16 的核心下限和内置插件的 `hostCompat` 都是 0.1.290；`0.1.289-plugin-perm-down` 已删除，停在 0099 的开发库重建或恢复到 0098 的备份；线上的升级与回退见 `deploy/rollback/0.1.290-release.md`。
 
 ---
 

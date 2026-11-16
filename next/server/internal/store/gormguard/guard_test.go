@@ -378,27 +378,23 @@ func f(ctx context.Context) {
 `,
 		},
 		{
-			name: "instance/outside store: the sql.DB, callbacks, plugins and configuration",
+			name: "instance/outside store: callbacks, plugins and configuration",
 			pkg:  "internal/billing",
 			src: `
 func f(db *gorm.DB) {
-	_, _ = db.DB()
 	_ = db.Callback()
 	_ = db.Use(nil)
 	cb := db.Callback
 	_ = cb
 	db.Config = &gorm.Config{}
 	*db.Config = gorm.Config{}
-	db.ConnPool = nil
 	db.DryRun = true
 	db.ClauseBuilders["SET"] = nil
-	db.Statement.ConnPool = nil
 	cfg := &gorm.Config{}
 	cfg.Logger = nil
 }
 `,
-			want: []string{ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance,
-				ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance},
+			want: []string{ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance},
 		},
 		{
 			name:    "instance/session overrides and Debug outside store",
@@ -475,8 +471,19 @@ func (r repo) method(tx *gorm.DB) error {
 }
 
 type repo struct{}
+
+func closure(db *gorm.DB) error {
+	lock := func(g *gorm.DB) error { return g.Clauses(store.ForUpdate()).Take(&struct{}{}).Error }
+	return lock(db)
+}
+
+func each(db *gorm.DB, fn func(*gorm.DB) error) error { return fn(db) }
+
+func callback(db *gorm.DB) error {
+	return each(db, func(g *gorm.DB) error { return g.Exec("SELECT pg_advisory_xact_lock(1)").Error })
+}
 `,
-			want: []string{ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock},
+			want: []string{ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock},
 		},
 		{
 			name: "tx-lock/checked handles, builders, conditional checks and functions without a handle pass",
@@ -507,6 +514,14 @@ func run(ctx context.Context, db *store.DB) error {
 	return db.Tx(ctx, func(tx *gorm.DB) error {
 		return tx.Raw("SELECT 1 FROM t FOR UPDATE").Row().Err()
 	})
+}
+
+func lockedTx(ctx context.Context, db *store.DB, fn func(*gorm.DB) error) error {
+	return db.Tx(ctx, func(tx *gorm.DB) error { return fn(tx) })
+}
+
+func viaHelper(ctx context.Context, db *store.DB) error {
+	return lockedTx(ctx, db, func(tx *gorm.DB) error { return tx.Clauses(store.ForUpdate()).Take(&struct{}{}).Error })
 }
 
 func plain(db *gorm.DB) error {
@@ -854,31 +869,6 @@ func f(db *gorm.DB) {
 	db.Commit()
 	db.SavePoint("s")
 	_ = db.Connection(func(*gorm.DB) error { return nil })
-}
-`,
-		},
-		{
-			name:    "instance/reading a ConnPool outside store",
-			pkg:     "internal/billing",
-			imports: `import "database/sql"`,
-			src: `
-func f(ctx context.Context, db *gorm.DB, s *store.DB) {
-	_, _ = db.Statement.ConnPool.ExecContext(ctx, "UPDATE t SET a = 1")
-	_, _ = s.Gorm.Statement.ConnPool.(*sql.DB)
-	pool := db.ConnPool
-	_ = pool
-	_ = db.Config.ConnPool
-}
-`,
-			want: []string{ruleInstance, ruleInstance, ruleInstance, ruleInstance},
-		},
-		{
-			name: "instance/reading a ConnPool inside store",
-			pkg:  "internal/store",
-			src: `
-func f(ctx context.Context, db *gorm.DB) {
-	_, _ = db.Statement.ConnPool.ExecContext(ctx, "UPDATE t SET a = 1")
-	db.Statement.ConnPool = db.ConnPool
 }
 `,
 		},

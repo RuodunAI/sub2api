@@ -1254,10 +1254,17 @@ func disabledReason(scope core.DataScope) string {
 // with group:manage, or with account:group:bind when every added group is
 // one the caller can use.
 func (s *Service) checkGroupBind(ctx context.Context, d groupDiff) error {
-	if !d.changed() || core.Can(ctx, s.d.Authorizer, "group:manage") {
+	if !d.changed() {
 		return nil
 	}
-	if !core.Can(ctx, s.d.Authorizer, "account:group:bind") {
+	if manage, err := core.Can(ctx, s.d.Authorizer, "group:manage"); manage || err != nil {
+		return err
+	}
+	bind, err := core.Can(ctx, s.d.Authorizer, "account:group:bind")
+	if err != nil {
+		return err
+	}
+	if !bind {
 		return core.ErrPermissionDenied.WithMessage(t(ctx,
 			"changing the groups of an account requires group:manage or account:group:bind permission",
 			"修改账号的分组需要 group:manage 或 account:group:bind 权限")).
@@ -1273,8 +1280,11 @@ func (s *Service) checkGroupBind(ctx context.Context, d groupDiff) error {
 // checkCustomUpstream refuses an own-level caller without account:relay a
 // type whose upstream address can be set freely (G2).
 func (s *Service) checkCustomUpstream(ctx context.Context, scope core.DataScope, bt core.AccountTypeBinding) error {
-	if !scope.Restricted() || !bt.Type.CustomUpstream() || core.Can(ctx, s.d.Authorizer, "account:relay") {
+	if !scope.Restricted() || !bt.Type.CustomUpstream() {
 		return nil
+	}
+	if relay, err := core.Can(ctx, s.d.Authorizer, "account:relay"); relay || err != nil {
+		return err
 	}
 	return core.ErrPermissionDenied.WithMessage(t(ctx,
 		"accounts with a custom upstream address require account:relay permission",

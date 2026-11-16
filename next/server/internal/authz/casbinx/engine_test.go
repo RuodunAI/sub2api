@@ -392,6 +392,37 @@ func TestEngineLoadErrorRetried(t *testing.T) {
 	must(t, e, 1, 1, "account:read", true)
 }
 
+// A change of users whose read fails is tried again, not dropped: once the
+// database is back the enforcer reaches the version without another
+// change or the poll.
+func TestEngineUserReadErrorRetried(t *testing.T) {
+	t.Parallel()
+	l := twoUsers()
+	e := newEngine(l, nil, Options{})
+	must(t, e, 1, 1, "account:read", true)
+	l.set(func(p *Policy, users map[int64]UserRoles) {
+		p.Version = 2
+		users[1] = active()
+	})
+	l.mu.Lock()
+	l.err = errors.New("down")
+	l.mu.Unlock()
+	e.Changed(Change{Version: 2, Users: []int64{1}})
+	eventually(t, func() bool {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.lastErr != nil
+	})
+	l.mu.Lock()
+	l.err = nil
+	l.mu.Unlock()
+	must(t, e, 1, 2, "account:read", false)
+	must(t, e, 2, 2, "proxy:read", true)
+	if l.policies.Load() != 1 {
+		t.Fatalf("policy read %d times: the retry is the users' step", l.policies.Load())
+	}
+}
+
 // Decisions are kept per subject, dropped per subject, and bounded.
 func TestDecisionCache(t *testing.T) {
 	t.Parallel()

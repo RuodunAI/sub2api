@@ -94,6 +94,11 @@ func (s *Service) retryReconcile(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
+	accounts, err := s.seesAccounts(ctx, nil)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	var out *Settlement
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		row, entry, err := lockSettlement(ctx, tx, id)
@@ -120,7 +125,7 @@ func (s *Service) retryReconcile(c *gin.Context) {
 			return err
 		}
 		out, err = s.loadSettlement(ctx, tx, id)
-		if err == nil && !s.seesAccounts(ctx, nil) {
+		if err == nil && !accounts {
 			out.AccountID = nil // like the usage detail (seesAccounts)
 		}
 		if err == nil {

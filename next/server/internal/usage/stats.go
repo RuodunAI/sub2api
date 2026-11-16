@@ -194,12 +194,16 @@ func (s *Service) overview(c *gin.Context, self *int64) {
 	if self != nil {
 		out, err = s.loadOverview(ctx, tz, loc, self, false, false)
 	} else {
-		users, accounts := core.Can(ctx, s.Authz, "user:read"), core.Can(ctx, s.Authz, "account:read")
-		var hit bool
-		out, hit, err = s.overviews.get(ctx, fmt.Sprintf("%s|%t|%t", tz, users, accounts), func(ctx context.Context) (Overview, error) {
-			return s.loadOverview(ctx, tz, loc, nil, users, accounts)
-		})
-		c.Header("X-Snapshot-Cache", snapshotHeader(hit))
+		var users, accounts, hit bool
+		if users, err = core.Can(ctx, s.Authz, "user:read"); err == nil {
+			accounts, err = s.seesAccounts(ctx, nil)
+		}
+		if err == nil {
+			out, hit, err = s.overviews.get(ctx, fmt.Sprintf("%s|%t|%t", tz, users, accounts), func(ctx context.Context) (Overview, error) {
+				return s.loadOverview(ctx, tz, loc, nil, users, accounts)
+			})
+			c.Header("X-Snapshot-Cache", snapshotHeader(hit))
+		}
 	}
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -314,7 +318,12 @@ func (s *Service) allRealtime(c *gin.Context) { s.realtime(c, nil) }
 // they need both outcomes.
 func (s *Service) realtime(c *gin.Context, self *int64) {
 	ctx := c.Request.Context()
-	f, err := parseFilter(c, self, s.seesAccounts(ctx, self))
+	accounts, err := s.seesAccounts(ctx, self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	f, err := parseFilter(c, self, accounts)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

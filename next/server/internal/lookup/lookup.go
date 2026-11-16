@@ -180,19 +180,15 @@ func (s *Service) lookup(c *gin.Context) {
 		}
 		f = append(f, e.table().Scope(scope))
 	}
-	hint := e.hint
 	if a.own {
 		uid, _ := core.UserID(ctx)
 		if err := e.mine.scope(ctx, s.db.Gorm, uid, &f); err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		if e.mine.hint != "" {
-			hint = e.mine.hint
-		}
 	}
 	var rows []itemRow
-	if err := e.query(store.G(ctx, s.db.Gorm), p, f, hint, &rows).Error; err != nil {
+	if err := e.query(store.G(ctx, s.db.Gorm), p, f, a.own, &rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -228,8 +224,18 @@ func (s *Service) allow(c *gin.Context, e *entity, mine bool) (a access, ok bool
 		return access{own: true}, len(e.mine.perms) == 0 || httpapi.CanAny(c, s.authz, e.mine.perms...)
 	}
 	ctx := c.Request.Context()
-	if e.named != nil && !core.Can(ctx, s.authz, perm.Key(e.read)) && !core.Can(ctx, s.authz, perm.Key(e.ownRead)) {
-		return s.allowNamed(c, e)
+	if e.named != nil {
+		read, err := core.Can(ctx, s.authz, perm.Key(e.read))
+		if err == nil && !read {
+			read, err = core.Can(ctx, s.authz, perm.Key(e.ownRead))
+		}
+		if err != nil {
+			httpapi.Fail(c, err)
+			return a, false
+		}
+		if !read {
+			return s.allowNamed(c, e)
+		}
 	}
 	if !httpapi.CanAny(c, s.authz, e.read, e.ownRead) {
 		return a, false
@@ -390,9 +396,10 @@ func (e *entity) search(p *params, f *store.Conds) (string, []any) {
 }
 
 // query reads into dst the rows of one request on top of f, which holds the
-// conditions of the caller's range. Order: the row whose id is q, the rows a
-// Prefer parameter selects, then by name and id.
-func (e *entity) query(db *gorm.DB, p *params, f store.Conds, hint string, dst *[]itemRow) *gorm.DB {
+// conditions of the caller's range; own marks a request for the caller's
+// own rows (mine), which take mine's hint. Order: the row whose id is q,
+// the rows a Prefer parameter selects, then by name and id.
+func (e *entity) query(db *gorm.DB, p *params, f store.Conds, own bool, dst *[]itemRow) *gorm.DB {
 	for _, r := range e.narrow {
 		if id, ok := p.refs[r.param]; ok {
 			f.And(r.cond, id)
@@ -417,6 +424,10 @@ func (e *entity) query(db *gorm.DB, p *params, f store.Conds, hint string, dst *
 	order = append(order, e.name)
 	if e.id != "" {
 		order = append(order, e.id)
+	}
+	hint := e.hint
+	if own && e.mine.hint != "" {
+		hint = e.mine.hint
 	}
 	// The aliases are the columns of itemRow.
 	db = db.Table(e.from).Select(e.key() + " AS id, " + e.name + " AS name, " + orEmpty(hint) + " AS hint, " + orEmpty(e.status) + " AS status").

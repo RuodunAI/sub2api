@@ -56,7 +56,7 @@
 ### 权限：Casbin（CONTRACTS §99）
 
 - 授予和角色指派**只存在 `casbin_rule` 表**（gorm-adapter 的列布局），唯一读写者是 `internal/authz/casbinrule`，写入在业务事务里用 GORM 执行，不经 Casbin 的管理 API 或 adapter 的写入。
-- 每个节点一个 `SyncedCachedEnforcer`（`internal/authz/casbinx`），用 Casbin 自带的角色管理器和决策缓存；装入时只读授予，用户的角色在第一次判断时按需读入并有上限。每个权限判断都是 `Enforce`；判断不了时返回 503，不当成拒绝。
+- 每个节点一个 `SyncedCachedEnforcer`（`internal/authz/casbinx`），用 Casbin 自带的角色管理器和决策缓存；装入时只读授予，用户的角色在第一次判断时按需读入并有上限。每个权限判断都是 `Enforce`；判断不了时返回 503，不当成拒绝（`core.Can` 返回 `(bool, error)`，调用方把错误原样返回）。
 - `authz_meta` 有两个版本：`version` 每次授权写入都升，`policy_version` 只随策略内容升。写入提交后先交给本节点的 enforcer，再广播 `authz:changed`，其他节点按版本原地重载或换 enforcer。绕过服务直接改库（包括测试夹具）要自己升版本（`testutil.BumpAuthz`）。
 - 防提权、DataScope、访问密钥收窄仍是自研代码，但“用户是否持有某个 key”一律问 Casbin。
 - 插件的用户权限由插件在 manifest 里声明（`userPermissions`，带 `risk`、`defaults`、`scope`），安装时按“权限 × 角色”矩阵分配。前端权限常量 `web/src/generated/permissions.ts` 由核心目录生成（`UPDATE_GOLDEN=1 go test ./internal/authz -run TestGeneratedPermissionsTS`）。

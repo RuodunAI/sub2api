@@ -11,8 +11,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg/sqlcheck"
 )
 
-// [raw-sql] and [sql-const]: statements are built by GORM, and SQL text is
-// code, never data (CONTRACTS §2, "核心的 SQL"). The rules are
+// [raw-sql], [sql-const] and the pool's part of [gorm-instance]: statements
+// are built and run by GORM, and SQL text is code, never data (CONTRACTS
+// §2, "核心的 SQL"). The rules are
 // runtime-contract/gormpg/sqlcheck's, which the gateway, the SDK, the
 // plugins and gormpg itself run as well; sqlPolicy is the core's. Keys are
 // "package.Decl" relative to the module (a function, Type.Method, or the
@@ -63,6 +64,16 @@ var sqlPolicy = sqlcheck.Policy{
 		"internal/store/modelgen.FromMigrations": "dev tool: the scratch database's name, generated and quoted",
 		"internal/usage.statRows":                "the measure columns are joined from the constant statMeasures table by measureList, whose callback [sql-const] cannot follow",
 		"internal/usage.rollupHours":             "the measure columns are joined from the constant statMeasures table by measureList, whose callback [sql-const] cannot follow",
+	},
+	// Pool: the declarations that reach the connection under a handle
+	// ([gorm-instance]: gorm's ConnPool, (*gorm.DB).DB).
+	Pool: map[string]string{
+		"internal/store.DB.WithConn":        "points a session at the connection it took from the pool",
+		"internal/store.SQLTx":              "the database/sql transaction under a handle, for River's InsertTx",
+		"internal/store.InTx":               "whether the connection under a handle is a transaction (RequireTx)",
+		"internal/store.migrateFile":        "runs a migration file on the transaction's connection, past GORM's placeholder parsing",
+		"internal/store/gormtest.AssertRun": "a DryRun session on a connection that stands for a transaction",
+		"internal/testutil.Traced":          "a session on a connection pool that logs the statements of a test",
 	},
 	// Quoting: a quoted identifier, constant text whatever its argument.
 	Quoting: map[string]string{"internal/store.QuoteIdent": "a quoted identifier"},

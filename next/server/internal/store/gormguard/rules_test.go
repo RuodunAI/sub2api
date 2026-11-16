@@ -18,7 +18,7 @@ import (
 const (
 	ruleTx       = "[gorm-tx]"
 	ruleOpen     = "[gorm-open]"
-	ruleInstance = "[gorm-instance]"
+	ruleInstance = sqlcheck.RuleInstance
 	ruleSlice    = "[gorm-slice]"
 	ruleUnrun    = "[gorm-raw-unrun]"
 	rulePgx      = "[pgx-import]"
@@ -47,11 +47,12 @@ var (
 	gormTxMethods  = map[string]bool{"Transaction": true, "Connection": true}
 )
 
-// instanceMethods are the gorm (*DB) methods that reach or change the
-// shared instance behind every handle: its *sql.DB, callbacks and plugins.
-// Debug is a session that logs every statement with its values (Info
-// level), past the instance's logger.Discard.
-var instanceMethods = map[string]bool{"DB": true, "Callback": true, "Use": true, "Debug": true}
+// instanceMethods are the gorm (*DB) methods that change the shared
+// instance behind every handle: its callbacks and plugins. Debug is a
+// session that logs every statement with its values (Info level), past the
+// instance's logger.Discard. The pool under a handle, (*DB).DB and
+// ConnPool, is sqlcheck's (rawsql_test.go).
+var instanceMethods = map[string]bool{"Callback": true, "Use": true, "Debug": true}
 
 // sessionOverrides are the gorm.Session fields that override, for the
 // statements of a session, what the instance was configured with on
@@ -183,8 +184,9 @@ type checker struct {
 	uses    map[*types.Var][]use
 	rawFns  map[*types.Func]bool
 	// [tx-lock]: whether a function of the package is a lock builder
-	// (memoized), and the parameters of its functions and of its function
-	// literals.
+	// (memoized), the parameters of its functions and function literals,
+	// and of the literals alone, true for one passed straight to
+	// store.DB.Tx or TxOptions, which holds the transaction.
 	lockFns           map[*types.Func]bool
 	params, litParams map[*types.Var]bool
 	fieldValues       map[*types.Var][]ast.Expr // what the package writes into a field (nil: unknown)
@@ -223,11 +225,15 @@ func (c *checker) index(files []*ast.File) {
 	c.lockFns = map[*types.Func]bool{}
 	c.params, c.litParams = map[*types.Var]bool{}, map[*types.Var]bool{}
 	c.fieldValues = map[*types.Var][]ast.Expr{}
-	params := func(fields *ast.FieldList, lit bool) {
+	txLits := map[ast.Node]bool{}
+	params := func(fields *ast.FieldList, lit, tx bool) {
 		for _, f := range fields.List {
 			for _, name := range f.Names {
 				if v, ok := c.info.Defs[name].(*types.Var); ok {
-					c.params[v], c.litParams[v] = true, lit
+					c.params[v] = true
+					if lit {
+						c.litParams[v] = tx
+					}
 				}
 			}
 		}
@@ -259,10 +265,16 @@ func (c *checker) index(files []*ast.File) {
 				if n.Body != nil {
 					c.bodies = append(c.bodies, n.Body)
 				}
-				params(n.Type.Params, false)
+				params(n.Type.Params, false, false)
+			case *ast.CallExpr:
+				if fn := calledFunc(c.info, n); fn != nil && isMethodOf(fn, c.storePkg, "DB") && (fn.Name() == "Tx" || fn.Name() == "TxOptions") {
+					for _, a := range n.Args {
+						txLits[ast.Unparen(a)] = true
+					}
+				}
 			case *ast.FuncLit:
 				c.bodies = append(c.bodies, n.Body)
-				params(n.Type.Params, true)
+				params(n.Type.Params, true, txLits[n])
 			case *ast.AssignStmt:
 				assign(n.End(), n.Lhs, n.Rhs)
 				for i, l := range n.Lhs {
@@ -352,7 +364,6 @@ func (c *checker) visit(n ast.Node) bool {
 		c.unrun(n)
 		if sel := c.info.Selections[n]; sel != nil && sel.Kind() == types.FieldVal {
 			c.sqlHandle(n.Sel, sel.Obj())
-			c.connPool(n, sel.Obj())
 		}
 	case *ast.KeyValueExpr:
 		if key, ok := n.Key.(*ast.Ident); ok {
@@ -387,17 +398,6 @@ func (c *checker) selector(n *ast.SelectorExpr) {
 	default:
 		c.casbinSelector(n, fn)
 	}
-}
-
-// connPool reports a ConnPool of gorm (a Statement's, or the instance
-// configuration's) outside the owners, read or written ([gorm-instance]):
-// it is the pool, transaction or connection under a handle, and what runs
-// on it bypasses GORM and the transaction rules.
-func (c *checker) connPool(n *ast.SelectorExpr, obj types.Object) {
-	if c.owner || obj.Name() != "ConnPool" || obj.Pkg() == nil || obj.Pkg().Path() != gormPkg {
-		return
-	}
-	c.report(n, "%s gorm ConnPool outside package store: run statements through the handle (store.G), not the connection under it", ruleInstance)
 }
 
 // txCallbacks reports, in the function literals passed to store.DB's Tx,
@@ -776,7 +776,7 @@ func assignedField(info *types.Info, e ast.Expr) *types.Var {
 }
 
 // instanceField reports a field of gorm.Config (promoted into gorm.DB or
-// not) or gorm.DB's Config itself. A ConnPool is connPool's, on any use.
+// not) or gorm.DB's Config itself. A ConnPool is sqlcheck's, on any use.
 func instanceField(v *types.Var) bool {
 	if v.Pkg() == nil || v.Pkg().Path() != gormPkg {
 		return false

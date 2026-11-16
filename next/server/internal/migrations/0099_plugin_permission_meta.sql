@@ -5,8 +5,9 @@
 -- grant nothing) instead of being deleted. risk takes over from
 -- permissions.sensitive, which 0100 drops.
 --
--- Safe to run again: every change is IF NOT EXISTS or converges, and the
--- risk backfill only touches rows still at the default.
+-- Safe to run again before 0100, which drops permissions.sensitive (the
+-- risk backfill reads it): every change is IF NOT EXISTS or converges, and
+-- the backfill only touches rows still at the default.
 
 SET LOCAL lock_timeout = '10s';
 

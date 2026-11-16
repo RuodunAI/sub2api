@@ -29,7 +29,7 @@ func TestSQLQueryUsersByText(t *testing.T) {
 	var f store.Conds
 	f.And(e.live)
 	p := &params{text: "42", id: &id, limit: 20, refs: map[string]int64{}}
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return e.query(db, p, f, e.hint, &[]itemRow{}) })
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return e.query(db, p, f, false, &[]itemRow{}) })
 }
 
 // Accounts within a data scope, preferring one group's.
@@ -39,7 +39,7 @@ func TestSQLQueryAccountsScoped(t *testing.T) {
 	f.And(e.live)
 	f = append(f, e.table().Scope(core.DataScope{Owner: 7, Groups: []int64{0, 3}, IDs: []int64{5}}))
 	p := &params{limit: 10, refs: map[string]int64{"prefer_group_id": 3}}
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return e.query(db, p, f, e.hint, &[]itemRow{}) })
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return e.query(db, p, f, false, &[]itemRow{}) })
 }
 
 // Models by name: exactly these rows, no limit.
@@ -48,7 +48,7 @@ func TestSQLQueryModelsByIDs(t *testing.T) {
 	var f store.Conds
 	f.And("mp.model = ANY(?)", store.Strings{"gpt-x"})
 	p := &params{ids: store.Strings{"gpt-x", "gpt-y"}, limit: 20, refs: map[string]int64{}}
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return e.query(db, p, f, e.hint, &[]itemRow{}) })
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return e.query(db, p, f, false, &[]itemRow{}) })
 }
 
 func TestSQLPolicyRows(t *testing.T) {

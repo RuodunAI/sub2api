@@ -68,6 +68,7 @@ func fixturePolicy() Policy {
 		Module:     fixtureModule,
 		Raw:        map[string]string{"app.allowedRaw": "test"},
 		Dynamic:    map[string]string{"app.allowedText": "test"},
+		Pool:       map[string]string{"app.allowedPool": "test"},
 		Quoting:    map[string]string{"helper.Quote": "test"},
 		Text:       map[string]bool{"helper.DDL": false, "helper.Conds.And": false, "helper.NewNumbered": true},
 		ConstTypes: map[string]bool{"helper.SQL": true},
@@ -118,7 +119,7 @@ func TestRules(t *testing.T) {
 	fset := token.NewFileSet()
 	imp := newFixtureImporter(t, fset)
 	c := New(fixturePolicy())
-	const raw, cst = RuleRawSQL, RuleSQLConst
+	const raw, cst, ins = RuleRawSQL, RuleSQLConst, RuleInstance
 	cases := []struct {
 		name, file, src string
 		want            []string
@@ -191,6 +192,20 @@ type entity struct {
 
 var entities = []*entity{{name: "e.name", search: []string{"e.alias"}}}
 
+func (e *entity) key() string {
+	if e.name == "" {
+		return "id"
+	}
+	return e.name
+}
+
+// script is the zero value, or what go:embed puts there.
+var script string
+
+var filters = map[string]string{"on": "a = 1"}
+
+var built = func() string { return "a = " + cols }()
+
 type pipe struct{}
 
 func (pipe) Exec(string) error { return nil }
@@ -240,6 +255,10 @@ func f(db *gorm.DB, x int, p pipe, o helper.SQL, cond clause.Expression) {
 	db.Where(string(q))
 	db.Table(model.T{}.TableName())
 	_ = p.Exec("not gorm")
+	db.Where(script).Where(built).Order(entities[0].key())
+	if cond, ok := filters["on"]; ok {
+		db.Where(cond)
+	}
 }`},
 		{name: "sql-const/text built from values fails", src: `
 type execer interface {
@@ -290,6 +309,11 @@ func f(db *gorm.DB, col string, x int, cols []string, m map[string]string, q any
 	db.Where(en.Name+" = ?", 1)
 	_ = helper.SQL(col)
 	db.Where(helper.Quote(col) + unlisted(col))
+	a := "a"
+	b := a
+	a = b + col
+	db.Where(a)
+	db.Where(b)
 }
 
 func unlisted(s string) string { return s }`, want: []string{
@@ -304,7 +328,100 @@ func unlisted(s string) string { return s }`, want: []string{
 			cst,      // method expression
 			raw, cst, // e.Exec through an interface: a statement, and its text
 			cst, cst, cst, // the exported field, the conversion, an unlisted function
+			cst, cst, // a cycle through a value not built from constants
 		}},
+		{name: "sql-const/what the package does not give a value to is unknown", src: `
+type Q string
+
+func (q Q) apply(db *gorm.DB) { db.Where(string(q)) }
+
+func (q Q) reset(db *gorm.DB) {
+	q = "a = 1"
+	db.Where(string(q))
+}
+
+func f(db *gorm.DB, m map[string]int, ch chan string, q any, col string) {
+	for k := range m {
+		db.Order(k)
+	}
+	for s := range ch {
+		db.Order(s)
+	}
+	switch s := q.(type) {
+	case string:
+		db.Where(s)
+	}
+	fn := func(s string) {
+		if s == "" {
+			s = "a"
+		}
+		db.Where(s)
+	}
+	fn(col)
+	Q(col).apply(db)
+}`, want: []string{cst, cst, cst, cst, cst, cst}}, // apply, reset, the range key and element, the binding, the parameter
+		{name: "sql-const/a caller outside the package may pass anything", src: `
+var OrderCol = "a"
+
+func By(db *gorm.DB, col string) *gorm.DB { return db.Where(col) }
+
+type R struct{}
+
+func (R) By(db *gorm.DB, col string) *gorm.DB { return db.Order(col) }
+
+type W interface{ by(db *gorm.DB, col string) *gorm.DB }
+
+type r struct{}
+
+func (r) by(db *gorm.DB, col string) *gorm.DB { return db.Where(col) }
+
+func f(db *gorm.DB, col string) {
+	By(db, "a = 1")
+	R{}.By(db, "a")
+	r{}.by(db, "a = 1")
+	var x W = r{}
+	x.by(db, col)
+	db.Order(OrderCol)
+}`, want: []string{cst, cst, cst, cst}},
+		{name: "sql-const/text written into a statement and the names of a clause", src: `
+type expr struct{ col string }
+
+func (e expr) Build(b clause.Builder) {
+	b.WriteString("lower(")
+	b.WriteQuoted(clause.Column{Name: e.col})
+	b.WriteByte(')')
+	b.WriteString(e.col)
+}
+
+func f(db *gorm.DB, col string) {
+	db.Statement.WriteString(col)
+	db.Statement.SQL.WriteString(col)
+	db.Statement.WriteString("a")
+	db.Preload("Orders", col).Preload("Items", "state = ?", col)
+	c := clause.Column{Raw: true}
+	c.Name = col
+	c.Name = "a"
+	t := clause.Table{}
+	t.Alias = col
+	_ = expr{col: col}
+}`, want: []string{cst, cst, cst, cst, cst, cst}},
+		{name: "raw-sql/gorm's generic API", src: `
+func f(db *gorm.DB, col string) {
+	_ = gorm.G[model.T](db).Where(col)
+	g := gorm.G[int]
+	_ = g
+}`, want: []string{raw, raw}},
+		{name: "gorm-instance/the pool under a handle", src: `
+func f(db *gorm.DB) {
+	_, _ = db.DB()
+	_ = db.ConnPool
+	db.Statement.ConnPool = nil
+	_ = gorm.Config{ConnPool: nil}
+	dbFn := (*gorm.DB).DB
+	_ = dbFn
+}
+
+func allowedPool(db *gorm.DB) { db.Statement.ConnPool = db.ConnPool }`, want: []string{ins, ins, ins, ins, ins}},
 		{name: "sql-const/a function used as a value proves nothing of its parameters", src: `
 func by(db *gorm.DB, col string) *gorm.DB { return db.Where(col+" = ?", 1) }
 
@@ -367,7 +484,7 @@ func f(db *gorm.DB) { db.Table(helper.Quote("t")) }`, 0)
 		t.Fatal(findings)
 	}
 	want := []string{"ConstTypes helper.SQL", "Generated model", "Quoting app.quoteLiteral", "Text helper.Conds.And",
-		"Text helper.DDL", "Text helper.NewNumbered", RuleRawSQL + " app.allowedRaw", RuleSQLConst + " app.allowedText"}
+		"Text helper.DDL", "Text helper.NewNumbered", RuleInstance + " app.allowedPool", RuleRawSQL + " app.allowedRaw", RuleSQLConst + " app.allowedText"}
 	if got := c.Unused(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("unused %v, want %v", got, want)
 	}
