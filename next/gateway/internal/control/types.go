@@ -3,6 +3,7 @@ package control
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/updatesource"
@@ -69,20 +70,20 @@ type Release struct {
 	Signed     rc.SignedManifest `json:"-"`
 	BundleBase string            `json:"-"`
 	// SourceAssets are the assets, by file name, of a release imported from
-	// the update source at SourceRevision; its bundles are downloaded through
-	// that source and BundleBase is empty.
-	SourceAssets   map[string]updatesource.Asset `json:"-"`
-	SourceRevision int64                         `json:"-"`
+	// the update source at SourceLocator (sourceRow.locator); its bundles are
+	// downloaded through that source and BundleBase is empty.
+	SourceAssets  map[string]updatesource.Asset `json:"-"`
+	SourceLocator string                        `json:"-"`
 }
 
 // GatewayRelease is a signed gateway release imported from the update
 // source; its archives are downloaded through that source.
 type GatewayRelease struct {
-	Digest         string                        `json:"digest"`
-	Manifest       rc.GatewayManifest            `json:"manifest"`
-	Signed         rc.SignedManifest             `json:"-"`
-	SourceAssets   map[string]updatesource.Asset `json:"-"`
-	SourceRevision int64                         `json:"-"`
+	Digest        string                        `json:"digest"`
+	Manifest      rc.GatewayManifest            `json:"manifest"`
+	Signed        rc.SignedManifest             `json:"-"`
+	SourceAssets  map[string]updatesource.Asset `json:"-"`
+	SourceLocator string                        `json:"-"`
 }
 type Plan struct {
 	Strategy      string    `json:"strategy"`
@@ -113,8 +114,87 @@ type Preflight struct {
 	PrimaryNode      string   `json:"primary_node"`
 	Nodes            []string `json:"nodes"`
 	Blockers         []string `json:"blockers"`
-	Strategy         string   `json:"strategy"`
+	// BlockerCodes are the Blockers as Issues, in the same order.
+	BlockerCodes []Issue `json:"blocker_codes"`
+	Strategy     string  `json:"strategy"`
 }
+
+// block adds blockers to p.
+func (p *Preflight) block(blockers ...Issue) {
+	for _, b := range blockers {
+		p.Blockers = append(p.Blockers, b.Message)
+		p.BlockerCodes = append(p.BlockerCodes, b)
+	}
+}
+
+// Issue is a preflight blocker or an apply confirmation reason: a stable
+// code with its parameters, for the console to word, and the English
+// message. The codes, and their params:
+//
+//	release_incompatible  the signed release cannot follow the installed one
+//	plugin_incompatible   an active plugin does not support the target core
+//	plugins_changing      a plugin install, upgrade or removal is in progress
+//	core_unmanaged        a core the gateway does not manage is serving
+//	no_nodes              no enabled node is registered
+//	already_current       every enabled node already runs the target gateway
+//	primary_unregistered  the upgrade primary is not a registered node
+//	upgrade_active        another plan is active
+//	node_not_ready        {node} is not serving its own core
+//	node_off_baseline     {node} does not run the approved baseline
+//	node_unsupported      {node} cannot run this plan: an old shell, its
+//	                      platform, its gateway version, or no self-update
+//	maintenance_release   the release is signed for a maintenance update
+//	schema_change         the release changes the database schema
+//	too_few_serving       {min} fewer nodes serve than a rolling update needs
+//	single_node           {seconds} the only node restarts its gateway with
+//	                      nobody to take its traffic
+type Issue struct {
+	Code    string            `json:"code"`
+	Params  map[string]string `json:"params,omitempty"`
+	Message string            `json:"message"`
+}
+
+const (
+	issueReleaseIncompatible = "release_incompatible"
+	issuePluginIncompatible  = "plugin_incompatible"
+	issuePluginsChanging     = "plugins_changing"
+	issueCoreUnmanaged       = "core_unmanaged"
+	issueNoNodes             = "no_nodes"
+	issueAlreadyCurrent      = "already_current"
+	issuePrimaryUnregistered = "primary_unregistered"
+	issueUpgradeActive       = "upgrade_active"
+	issueNodeNotReady        = "node_not_ready"
+	issueNodeOffBaseline     = "node_off_baseline"
+	issueNodeUnsupported     = "node_unsupported"
+	issueMaintenanceRelease  = "maintenance_release"
+	issueSchemaChange        = "schema_change"
+	issueTooFewServing       = "too_few_serving"
+	issueSingleNode          = "single_node"
+)
+
+// nodeIssue is an issue of one node.
+func nodeIssue(code, node, message string) Issue {
+	return Issue{Code: code, Params: map[string]string{"node": node}, Message: message}
+}
+
+// issues gives every text the same code.
+func issues(code string, texts []string) []Issue {
+	out := make([]Issue, 0, len(texts))
+	for _, m := range texts {
+		out = append(out, Issue{Code: code, Message: m})
+	}
+	return out
+}
+
+// messages are the English messages of is.
+func messages(is []Issue) []string {
+	out := make([]string, 0, len(is))
+	for _, i := range is {
+		out = append(out, i.Message)
+	}
+	return out
+}
+
 type Event struct {
 	ID        int64     `json:"id"`
 	Kind      string    `json:"kind"`
@@ -181,6 +261,12 @@ func coreTarget(strategy, release, source string) string {
 		return source
 	}
 	return release
+}
+
+// leaves reports a node outside gateway plan p. A gateway plan keeps the
+// core baseline, so such a node serves as if no plan ran.
+func (p Plan) leaves(node string) bool {
+	return gatewayStrategy(p.Strategy) && !slices.Contains(p.Nodes, node)
 }
 
 // CoreDigest is the core release p's nodes run once it completes.

@@ -1,8 +1,6 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -18,17 +16,13 @@ import (
 	"github.com/Masterminds/semver/v3"
 
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/control"
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-const (
-	// gatewayManifestAsset is the release asset holding the signed gateway
-	// manifest.
-	gatewayManifestAsset = "next-gateway-manifest.json"
-	// gatewayBinary is the only file a gateway archive holds.
-	gatewayBinary    = "sub2api-gateway"
-	maxGatewayBinary = 1 << 30
-)
+// gatewayManifestAsset is the release asset holding the signed gateway
+// manifest.
+const gatewayManifestAsset = "next-gateway-manifest.json"
 
 var imageDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
@@ -98,8 +92,8 @@ func packGateway(args []string, out io.Writer) error {
 	return err
 }
 
-// gatewayPlatform declares one archive after checking it holds exactly one
-// regular, executable sub2api-gateway file.
+// gatewayPlatform declares one archive after checking it as an installing
+// gateway will (release.CopyGatewayBinary).
 func gatewayPlatform(a platformValue, version string) (rc.GatewayPlatform, error) {
 	p := rc.GatewayPlatform{OS: a.OS, Arch: a.Arch, Archive: fmt.Sprintf("sub2api-gateway_%s_%s_%s.tar.gz", version, a.OS, a.Arch)}
 	if filepath.Base(a.Value) != p.Archive {
@@ -114,24 +108,9 @@ func gatewayPlatform(a platformValue, version string) (rc.GatewayPlatform, error
 		return p, err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return p, err
-	}
-	tr := tar.NewReader(gz)
-	h, err := tr.Next()
-	if err != nil {
-		return p, err
-	}
-	if h.Name != gatewayBinary || h.Typeflag != tar.TypeReg || h.Mode&0111 == 0 || h.Size <= 0 || h.Size > maxGatewayBinary {
-		return p, errors.New("archive must start with an executable regular file " + gatewayBinary)
-	}
 	sum := sha256.New()
-	if _, err = io.Copy(sum, tr); err != nil {
+	if err = release.CopyGatewayBinary(f, sum); err != nil {
 		return p, err
-	}
-	if _, err = tr.Next(); err != io.EOF {
-		return p, errors.New("archive must hold only " + gatewayBinary)
 	}
 	p.BinaryDigest = hex.EncodeToString(sum.Sum(nil))
 	return p, nil

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -95,7 +96,7 @@ func newReleaseRecord(r Release) *releaseRecord {
 	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, BundleBase: r.BundleBase, Line: updatesource.LineCore}
 	if r.SourceAssets != nil {
 		rec.SourceAssets, _ = json.Marshal(r.SourceAssets)
-		rec.SourceRevision = &r.SourceRevision
+		rec.SourceLocator = r.SourceLocator
 	}
 	return rec
 }
@@ -103,7 +104,7 @@ func newReleaseRecord(r Release) *releaseRecord {
 // Release is the core release digest; a gateway release is never one.
 func (s *Store) Release(ctx context.Context, digest string) (r Release, err error) {
 	r.Digest = digest
-	err = s.scanRelease(ctx, updatesource.LineCore, digest, &r.Manifest, &r.Signed, &r.BundleBase, &r.SourceAssets, &r.SourceRevision)
+	err = s.scanRelease(ctx, updatesource.LineCore, digest, &r.Manifest, &r.Signed, &r.BundleBase, &r.SourceAssets, &r.SourceLocator)
 	return
 }
 
@@ -111,14 +112,14 @@ func (s *Store) Release(ctx context.Context, digest string) (r Release, err erro
 func (s *Store) GatewayRelease(ctx context.Context, digest string) (r GatewayRelease, err error) {
 	var base string
 	r.Digest = digest
-	err = s.scanRelease(ctx, updatesource.LineGateway, digest, &r.Manifest, &r.Signed, &base, &r.SourceAssets, &r.SourceRevision)
+	err = s.scanRelease(ctx, updatesource.LineGateway, digest, &r.Manifest, &r.Signed, &base, &r.SourceAssets, &r.SourceLocator)
 	return
 }
 
 // scanRelease reads release digest of line into its parts.
-func (s *Store) scanRelease(ctx context.Context, line, digest string, manifest any, signed *rc.SignedManifest, base *string, assets *map[string]updatesource.Asset, revision *int64) error {
+func (s *Store) scanRelease(ctx context.Context, line, digest string, manifest any, signed *rc.SignedManifest, base *string, assets *map[string]updatesource.Asset, locator *string) error {
 	var m, b, a []byte
-	err := releaseRow(s.db(ctx), line, digest).Select("manifest,signed_manifest,bundle_base,source_assets,COALESCE(source_revision,0)").Row().Scan(&m, &b, base, &a, revision)
+	err := releaseRow(s.db(ctx), line, digest).Select("manifest,signed_manifest,bundle_base,source_assets,source_locator").Row().Scan(&m, &b, base, &a, locator)
 	if err != nil {
 		return err
 	}
@@ -276,7 +277,7 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 	if gateway {
 		return s.gatewayPreflight(ctx, digest)
 	}
-	p := Preflight{ReleaseDigest: digest, Nodes: []string{}, Blockers: []string{}, Strategy: PrimaryFirst}
+	p := Preflight{ReleaseDigest: digest, Nodes: []string{}, Blockers: []string{}, BlockerCodes: []Issue{}, Strategy: PrimaryFirst}
 	primary, base, rev, err := s.ClusterState(ctx)
 	if err != nil {
 		return p, err
@@ -291,14 +292,13 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 	if err != nil {
 		return p, err
 	}
-	p.Blockers = append(p.Blockers, Compatibility(current, target)...)
+	p.block(issues(issueReleaseIncompatible, Compatibility(current, target))...)
 	pluginBlockers, err := s.PluginCompatibility(ctx, target.Manifest.CoreVersion)
 	if err != nil {
 		return p, err
 	}
-	p.Blockers = append(p.Blockers, pluginBlockers...)
-	p.Blockers, err = appendBlockers(ctx, p.Blockers, s.PluginMutationBlockers, s.UnmanagedBlockers)
-	if err != nil {
+	p.block(issues(issuePluginIncompatible, pluginBlockers)...)
+	if err = s.blockBusy(ctx, &p); err != nil {
 		return p, err
 	}
 	nodes, err := s.Nodes(ctx)
@@ -306,7 +306,7 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 		return p, err
 	}
 	if len(nodes) < 1 {
-		p.Blockers = append(p.Blockers, "upgrade requires at least one registered node")
+		p.block(Issue{Code: issueNoNodes, Message: "upgrade requires at least one registered node"})
 	}
 	for _, n := range nodes {
 		p.Nodes = append(p.Nodes, n.ID)
@@ -315,13 +315,13 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 			continue
 		}
 		if n.PeerProtocol != PeerProtocol || n.Strategy != PrimaryFirst {
-			p.Blockers = append(p.Blockers, "node lacks enabled current shell/peer capabilities: "+n.ID)
+			p.block(nodeIssue(issueNodeUnsupported, n.ID, "node lacks enabled current shell/peer capabilities: "+n.ID))
 		}
 		if !n.ServingLocal(time.Now()) {
-			p.Blockers = append(p.Blockers, "node not locally ready: "+n.ID)
+			p.block(nodeIssue(issueNodeNotReady, n.ID, "node not locally ready: "+n.ID))
 		}
 		if n.ReleaseDigest != base {
-			p.Blockers = append(p.Blockers, "node not on approved baseline: "+n.ID)
+			p.block(nodeIssue(issueNodeOffBaseline, n.ID, "node not on approved baseline: "+n.ID))
 		}
 		found := false
 		for _, plat := range target.Manifest.Platforms {
@@ -330,10 +330,12 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 			}
 		}
 		if !found {
-			p.Blockers = append(p.Blockers, "unsupported node platform: "+n.ID)
+			p.block(nodeIssue(issueNodeUnsupported, n.ID, "unsupported node platform: "+n.ID))
 		}
 	}
-	p.Blockers = orderPrimaryFirst(p.Nodes, primary, p.Blockers)
+	if !orderPrimaryFirst(p.Nodes, primary) {
+		p.block(primaryUnregistered)
+	}
 	if rollingEligible(target, nodes, 2) {
 		p.Strategy = Rolling
 	}
@@ -348,14 +350,32 @@ func (s *Store) activeBlocker(ctx context.Context, p Preflight) (Preflight, erro
 		return p, err
 	}
 	if active {
-		p.Blockers = append(p.Blockers, "another upgrade is active")
+		p.block(Issue{Code: issueUpgradeActive, Message: "another upgrade is active"})
 	}
 	return p, nil
 }
 
-// orderPrimaryFirst sorts nodes, the primary first, and adds a blocker when
-// the primary is not among them.
-func orderPrimaryFirst(nodes []string, primary string, blockers []string) []string {
+// blockBusy adds the blockers of plugin changes in progress and of cores the
+// gateway does not manage.
+func (s *Store) blockBusy(ctx context.Context, p *Preflight) error {
+	for _, c := range []struct {
+		code  string
+		check func(context.Context) ([]string, error)
+	}{{issuePluginsChanging, s.PluginMutationBlockers}, {issueCoreUnmanaged, s.UnmanagedBlockers}} {
+		blockers, err := c.check(ctx)
+		if err != nil {
+			return err
+		}
+		p.block(issues(c.code, blockers)...)
+	}
+	return nil
+}
+
+var primaryUnregistered = Issue{Code: issuePrimaryUnregistered, Message: "primary is not registered"}
+
+// orderPrimaryFirst sorts nodes, the primary first, and reports whether the
+// primary is among them.
+func orderPrimaryFirst(nodes []string, primary string) bool {
 	sort.SliceStable(nodes, func(i, j int) bool {
 		if nodes[i] == primary {
 			return nodes[j] != primary
@@ -365,10 +385,7 @@ func orderPrimaryFirst(nodes []string, primary string, blockers []string) []stri
 		}
 		return nodes[i] < nodes[j]
 	})
-	if len(nodes) == 0 || nodes[0] != primary {
-		blockers = append(blockers, "primary is not registered")
-	}
-	return blockers
+	return len(nodes) > 0 && nodes[0] == primary
 }
 
 // rollingEligible decides whether a plan for target may restart the nodes
@@ -380,14 +397,14 @@ func rollingEligible(target Release, nodes []Node, minServing int) bool {
 }
 
 // rollingBlockers are the reasons rollingEligible rejects a rolling plan.
-func rollingBlockers(target Release, nodes []Node, minServing int) []string {
+func rollingBlockers(target Release, nodes []Node, minServing int) []Issue {
 	m := target.Manifest
-	var out []string
+	var out []Issue
 	if m.Strategy != "rolling" {
-		out = append(out, "the release is signed for a maintenance update")
+		out = append(out, Issue{Code: issueMaintenanceRelease, Message: "the release is signed for a maintenance update"})
 	}
 	if m.SchemaBefore == "" || m.SchemaBefore != m.SchemaAfter {
-		out = append(out, "the release changes the database schema")
+		out = append(out, Issue{Code: issueSchemaChange, Message: "the release changes the database schema"})
 	}
 	serving := 0
 	for _, n := range nodes {
@@ -399,7 +416,8 @@ func rollingBlockers(target Release, nodes []Node, minServing int) []string {
 		}
 	}
 	if serving < minServing {
-		out = append(out, fmt.Sprintf("fewer than %d nodes serve, so no node can take over another's traffic", minServing))
+		out = append(out, Issue{Code: issueTooFewServing, Params: map[string]string{"min": strconv.Itoa(minServing)},
+			Message: fmt.Sprintf("fewer than %d nodes serve, so no node can take over another's traffic", minServing)})
 	}
 	return out
 }
@@ -844,7 +862,11 @@ func (s *Store) supersede(tx *gorm.DB, id, actor, digest string, nodes []byte, k
 	if err := s.clusterRow(tx).Update("revision", gorm.Expr("revision+1")).Error; err != nil {
 		return "", err
 	}
-	return planID, insertEvents(tx, eventRow{id, "superseded", "replaced by baseline recovery " + planID}, eventRow{planID, "recovery", "recover completed baseline from " + id + " by " + actor})
+	superseded, recovery := "replaced by baseline recovery "+planID, "recover completed baseline from "+id+" by "+actor
+	if strategy == GatewayRollback {
+		superseded, recovery = "replaced by gateway rollback "+planID, "return the nodes of "+id+" to their previous gateways, by "+actor
+	}
+	return planID, insertEvents(tx, eventRow{id, "superseded", superseded}, eventRow{planID, "recovery", recovery})
 }
 
 const clusterChangeLock = rc.ClusterChangeLock

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"strings"
@@ -24,10 +25,11 @@ type execFunc func(path, digest string, argv, env []string) error
 // startupHandoff runs first in serve: when <root>/gateway/current names an
 // installed gateway newer than this binary, it replaces the process with
 // that one. Anything else keeps this binary serving: no pointer, the
-// bundled one selected, or, with a warning, a corrupt pointer, an older
-// version, a binary that differs from its recorded digest, an exec that
-// failed or an installed gateway that never reached serving (release.Manager
-// NoteHandoff, so a crashing binary cannot loop through restarts).
+// bundled one selected, an older installed version (after an image upgrade,
+// noted at info level), or, with a warning, a corrupt pointer, a binary that
+// differs from its recorded digest, an exec that failed or an installed
+// gateway that never reached serving (release.Manager NoteHandoff, so a
+// crashing binary cannot loop through restarts).
 func startupHandoff(root string, exec execFunc) {
 	m := &release.Manager{Root: root}
 	p, err := m.ReadGatewayPointer()
@@ -40,7 +42,10 @@ func startupHandoff(root string, exec execFunc) {
 			err = exec(m.GatewayBinary(version), p.Digest, os.Args, env)
 		}
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, release.ErrStaleGateway):
+		slog.Info("installed gateway is older; serving with this binary", "version", Version, "reason", err)
+	case err != nil:
 		slog.Warn("installed gateway not started; serving with this binary", "version", Version, "error", err)
 	}
 }

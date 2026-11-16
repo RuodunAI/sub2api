@@ -129,6 +129,12 @@ func TestMirrorGitHubLatestThenTagsMerges(t *testing.T) {
 	if err != nil || string(b) != mirrorBlobs[1] {
 		t.Fatalf("manifest copy %q %v", b, err)
 	}
+	// Whatever serves the directory can read the assets as well as the index.
+	for _, p := range []string{filepath.Join("core", "0.1.291", "next-core-manifest.json"), releasesIndex} {
+		if st, err := os.Stat(filepath.Join(dest, p)); err != nil || st.Mode().Perm() != 0644 {
+			t.Fatalf("%s: %v %v", p, st.Mode(), err)
+		}
+	}
 	if _, err := mirrorReleases(context.Background(), src, dest, []string{"core-v0.1.292"}, 0); err == nil {
 		t.Fatal("mirrored a draft")
 	}

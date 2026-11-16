@@ -82,7 +82,10 @@ ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS rolling boolean NOT NULL DEFA
 ALTER TABLE updater.clusters ADD COLUMN IF NOT EXISTS update_check_enabled boolean NOT NULL DEFAULT true;
 ALTER TABLE updater.clusters ADD COLUMN IF NOT EXISTS update_source_kind text NOT NULL DEFAULT 'github';
 ALTER TABLE updater.clusters ALTER COLUMN update_repository SET DEFAULT 'Sub2API-Devs/sup2api';
-UPDATE updater.clusters SET update_repository='Sub2API-Devs/sup2api' WHERE update_repository='';
+-- A github source always names its repository, so this only ever fills in the
+-- empty repository of cluster rows written before sources had kinds; a url
+-- source keeps the repository it was given.
+UPDATE updater.clusters SET update_repository='Sub2API-Devs/sup2api' WHERE update_repository='' AND update_source_kind='github';
 ALTER TABLE updater.clusters ADD COLUMN IF NOT EXISTS update_url text NOT NULL DEFAULT '';
 ALTER TABLE updater.clusters ADD COLUMN IF NOT EXISTS update_secret_enc bytea;
 CREATE TABLE IF NOT EXISTS updater.update_checks (
@@ -94,7 +97,9 @@ CREATE TABLE IF NOT EXISTS updater.update_checks (
 ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS gateway_version text NOT NULL DEFAULT '';
 ALTER TABLE updater.releases ADD COLUMN IF NOT EXISTS line text NOT NULL DEFAULT 'core';
 ALTER TABLE updater.releases ADD COLUMN IF NOT EXISTS source_assets jsonb;
-ALTER TABLE updater.releases ADD COLUMN IF NOT EXISTS source_revision bigint;
+-- source_locator is the source (kind and repository or url) whose asset
+-- references source_assets holds.
+ALTER TABLE updater.releases ADD COLUMN IF NOT EXISTS source_locator text NOT NULL DEFAULT '';
 -- One-click gateway updates (2026-11-17): a Linux gateway that can install
 -- gateway binaries under <root>/gateway and exec them registers
 -- self_update=true; gateway releases are stored with line='gateway'.

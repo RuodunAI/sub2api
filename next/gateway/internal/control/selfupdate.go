@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -20,9 +21,11 @@ import (
 
 var errNoSelfUpdate = errors.New("this node cannot replace its gateway binary")
 
-// gatewayPreflight checks a gateway plan for the gateway release digest.
+// gatewayPreflight checks a gateway plan for the gateway release digest. The
+// plan leaves out the nodes that already run its version, the primary
+// included: it still coordinates.
 func (s *Store) gatewayPreflight(ctx context.Context, digest string) (Preflight, error) {
-	p := Preflight{ReleaseDigest: digest, Nodes: []string{}, Blockers: []string{}, Strategy: GatewayRolling}
+	p := Preflight{ReleaseDigest: digest, Nodes: []string{}, Blockers: []string{}, BlockerCodes: []Issue{}, Strategy: GatewayRolling}
 	primary, base, rev, err := s.ClusterState(ctx)
 	if err != nil {
 		return p, err
@@ -40,68 +43,75 @@ func (s *Store) gatewayPreflight(ctx context.Context, digest string) (Preflight,
 	if err != nil {
 		return p, err
 	}
-	p.Blockers = append(p.Blockers, gatewayCompatibility(target.Manifest, current, nodes)...)
-	p.Blockers = append(p.Blockers, gatewayNodeBlockers(target.Manifest, nodes, base)...)
-	if p.Blockers, err = appendBlockers(ctx, p.Blockers, s.PluginMutationBlockers, s.UnmanagedBlockers); err != nil {
+	p.block(issues(issueReleaseIncompatible, gatewayCompatibility(target.Manifest, current, nodes))...)
+	planned, blockers := gatewayNodes(target.Manifest, nodes, base)
+	p.Nodes = append(p.Nodes, planned...)
+	p.block(blockers...)
+	if err = s.blockBusy(ctx, &p); err != nil {
 		return p, err
 	}
-	// A disabled node keeps its gateway; it could not run its steps.
-	for _, n := range nodes {
-		if n.Enabled {
-			p.Nodes = append(p.Nodes, n.ID)
-		}
+	orderPrimaryFirst(p.Nodes, primary)
+	if !slices.ContainsFunc(nodes, func(n Node) bool { return n.ID == primary && n.Enabled }) {
+		p.block(primaryUnregistered)
 	}
-	p.Blockers = orderPrimaryFirst(p.Nodes, primary, p.Blockers)
 	return s.activeBlocker(ctx, p)
 }
 
-// gatewayNodeBlockers are the reasons the enabled nodes cannot switch to m:
-// each must serve the baseline core, yield as a rolling gateway, report an
-// older gateway version and be able to install and exec a gateway binary.
-func gatewayNodeBlockers(m rc.GatewayManifest, nodes []Node, baseline string) []string {
+// gatewayNodes are the enabled nodes a plan switches to m, those not on its
+// version yet, and the reasons they cannot: each must serve the baseline
+// core, report an older gateway version and be able to install and exec a
+// gateway binary. A disabled node keeps its gateway; it could not run its
+// steps.
+func gatewayNodes(m rc.GatewayManifest, nodes []Node, baseline string) ([]string, []Issue) {
 	target, err := semver.StrictNewVersion(m.GatewayVersion)
 	if err != nil {
-		return []string{"the release has no valid gateway version"}
+		return nil, []Issue{{Code: issueReleaseIncompatible, Message: "the release has no valid gateway version"}}
 	}
-	out := []string{}
-	if enabledNodes(nodes) == 0 {
-		out = append(out, "upgrade requires at least one registered node")
-	}
+	planned, out := []string{}, []Issue{}
 	for _, n := range nodes {
-		if !n.Enabled {
+		v, err := semver.NewVersion(n.GatewayVersion)
+		if !n.Enabled || (err == nil && v.Equal(target)) {
 			continue
 		}
+		planned = append(planned, n.ID)
 		if !n.ServingLocal(time.Now()) {
-			out = append(out, "node not locally ready: "+n.ID)
+			out = append(out, nodeIssue(issueNodeNotReady, n.ID, "node not locally ready: "+n.ID))
 		}
 		if n.ReleaseDigest != baseline {
-			out = append(out, "node not on approved baseline: "+n.ID)
+			out = append(out, nodeIssue(issueNodeOffBaseline, n.ID, "node not on approved baseline: "+n.ID))
 		}
-		if v, err := semver.NewVersion(n.GatewayVersion); err != nil {
-			out = append(out, "node "+n.ID+" does not report its gateway version")
-		} else if !target.GreaterThan(v) {
-			out = append(out, fmt.Sprintf("node %s already runs gateway %s", n.ID, n.GatewayVersion))
+		if err != nil {
+			out = append(out, nodeIssue(issueNodeUnsupported, n.ID, "node "+n.ID+" does not report its gateway version"))
+		} else if v.GreaterThan(target) {
+			out = append(out, nodeIssue(issueNodeUnsupported, n.ID, fmt.Sprintf("node %s already runs the newer gateway %s", n.ID, n.GatewayVersion)))
 		}
 		if !n.SelfUpdate {
-			out = append(out, "node "+n.ID+" cannot replace its gateway binary (it is not Linux, or <root>/gateway is not writable)")
+			out = append(out, nodeIssue(issueNodeUnsupported, n.ID, "node "+n.ID+" cannot replace its gateway binary (it is not Linux, or <root>/gateway is not writable)"))
 		}
 	}
-	return out
+	switch {
+	case enabledNodes(nodes) == 0:
+		out = append(out, Issue{Code: issueNoNodes, Message: "upgrade requires at least one registered node"})
+	case len(planned) == 0:
+		out = append(out, Issue{Code: issueAlreadyCurrent, Message: "every enabled node already runs gateway " + m.GatewayVersion})
+	}
+	return planned, out
 }
 
 // yieldStep hands this node's new requests to the other serving nodes
 // before its core restarts. A core that is not serving has nothing to hand
 // over; one that is must have a taker, or the plan pauses here rather than
-// go dark. A single-node gateway plan, confirmed as an interruption, has no
-// taker. A gateway plan also drains readiness, so that an ingress with a
-// health check moves on before the gateway process restarts.
+// go dark. The gateway plan of a single-node cluster, confirmed as an
+// interruption, has no taker. A gateway plan also drains readiness, so that
+// an ingress with a health check moves on before the gateway process
+// restarts.
 func (e *Engine) yieldStep(ctx context.Context, st Step) error {
 	p, err := e.Store.Plan(ctx, st.UpgradeID)
 	if err != nil {
 		return err
 	}
 	gateway := gatewayStrategy(p.Strategy)
-	if err = e.Yield(ctx, gateway); err == nil || (gateway && len(p.Nodes) == 1) {
+	if err = e.Yield(ctx, gateway); err == nil || (gateway && e.Store.singleNode(ctx)) {
 		return nil
 	}
 	if stopped, _ := e.Runtime.Stopped(ctx); stopped {
@@ -115,6 +125,12 @@ func (e *Engine) yieldStep(ctx context.Context, st Step) error {
 	return err
 }
 
+// singleNode reports a cluster of one enabled node.
+func (s *Store) singleNode(ctx context.Context) bool {
+	nodes, err := s.Nodes(ctx)
+	return err == nil && enabledNodes(nodes) == 1
+}
+
 // prepareGateway installs the gateway release digest from the update
 // source (release.Manager.InstallGateway verifies it end to end).
 func (e *Engine) prepareGateway(ctx context.Context, digest string) error {
@@ -126,7 +142,7 @@ func (e *Engine) prepareGateway(ctx context.Context, digest string) error {
 		return err
 	}
 	installed, _, err := e.Gateway.InstallGateway(ctx, r.Signed, func(ctx context.Context, archive string, size int64) (io.ReadCloser, error) {
-		return e.Store.openAsset(ctx, r.SourceAssets, r.SourceRevision, archive, size)
+		return e.Store.openAsset(ctx, r.SourceAssets, r.SourceLocator, archive, size)
 	})
 	if err == nil && installed != digest {
 		err = errors.New("stored signed gateway manifest digest mismatch")

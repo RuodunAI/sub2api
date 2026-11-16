@@ -4,6 +4,7 @@ import (
 	"maps"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAuditActions(t *testing.T) {
@@ -25,25 +26,40 @@ func TestAuditActions(t *testing.T) {
 	}
 }
 
-// The update-source audit names what happened to the secret, never the secret.
+// The update-source audit records what the gateway did to the secret (a
+// moved source drops it although the request said nothing about it), never
+// the secret, and nothing for an answer that changed nothing.
 func TestUpdateSourceAuditDetails(t *testing.T) {
-	stored := `{"data":{"enabled":true,"kind":"github","repository":"owner/repo","url":"","has_secret":true}}`
-	for _, tc := range []struct{ request, secret string }{
-		{`{"kind":"github","repository":"owner/repo"}`, "unchanged"},
-		{`{"kind":"github","repository":"owner/repo","secret":""}`, "cleared"},
-		{`{"kind":"github","repository":"owner/repo","secret":"github_pat_top-secret"}`, "set"},
-		{`not json`, "unchanged"},
-	} {
-		id, details, changed := updateSourceDetails([]byte(tc.request), []byte(stored))
-		want := map[string]any{"kind": "github", "repository": "owner/repo", "url": "", "secret": tc.secret}
+	request := []byte(`{"kind":"github","repository":"owner/other","secret":"github_pat_top-secret"}`)
+	for _, secret := range []string{"set", "cleared", "unchanged"} {
+		stored := `{"data":{"enabled":true,"kind":"github","repository":"owner/repo","url":"","has_secret":true,"changed":true,"secret_change":"` + secret + `"}}`
+		id, details, changed := updateSourceDetails(request, []byte(stored))
+		want := map[string]any{"kind": "github", "repository": "owner/repo", "url": "", "secret": secret}
 		if id != "" || !changed || !maps.Equal(details, want) {
-			t.Fatalf("%s: %q %v %v", tc.request, id, details, changed)
+			t.Fatalf("%s: %q %v %v", secret, id, details, changed)
 		}
 		for _, v := range details {
 			if strings.Contains(v.(string), "top-secret") {
 				t.Fatalf("secret in audit details: %v", details)
 			}
 		}
+	}
+	unchanged := `{"data":{"kind":"github","repository":"owner/repo","changed":false,"secret_change":"unchanged"}}`
+	if _, _, changed := updateSourceDetails(request, []byte(unchanged)); changed {
+		t.Fatal("an update that changed nothing was audited")
+	}
+}
+
+// The routes that read the update source before answering wait longer than
+// the gateway's own bound on them.
+func TestSlowRoutes(t *testing.T) {
+	for key := range slowRoutes {
+		if _, ok := map[string]bool{"GET /api/v1/system/update-check": true, "POST /api/v1/system/updates/apply": true}[key]; !ok {
+			t.Fatalf("unexpected slow route %s", key)
+		}
+	}
+	if len(slowRoutes) != 2 || slowBridgeTimeout <= 3*time.Minute || bridgeTimeout >= slowBridgeTimeout {
+		t.Fatal(slowRoutes, bridgeTimeout, slowBridgeTimeout)
 	}
 }
 
