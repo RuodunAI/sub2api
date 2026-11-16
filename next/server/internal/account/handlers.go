@@ -22,7 +22,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -2046,7 +2045,7 @@ func (s *Service) delete(c *gin.Context) {
 			return err
 		}
 		var err error
-		if authzVersion, err = authz.ClearScopeGrants(ctx, tx, uid, core.ScopeRefAccount, []int64{id}); err != nil {
+		if authzVersion, err = s.d.ScopeGrants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefAccount, []int64{id}); err != nil {
 			return err
 		}
 		retainUntil, err := s.markResourcesDeleted(ctx, tx, id, pk, typ, retain)

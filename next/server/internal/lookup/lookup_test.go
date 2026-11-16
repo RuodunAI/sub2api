@@ -134,7 +134,7 @@ func newFixture(t *testing.T) *fixture {
 	r := httpapi.NewRouter(engine, fakeTokens{}, authz)
 	New(f.db, authz).RegisterRoutes(r)
 	// The self-service lists that mine=true is defined by.
-	group.New(f.db, nil, nil, nil).RegisterRoutes(r)
+	group.New(f.db, nil, nil, nil, nil).RegisterRoutes(r)
 	billing.New(f.db, nil, nil, nil, nil).RegisterRoutes(r)
 	f.h = engine
 	return f

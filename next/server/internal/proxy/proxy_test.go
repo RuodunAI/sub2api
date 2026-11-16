@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
@@ -188,7 +189,7 @@ func TestProxyCRUDTestAndDirectory(t *testing.T) {
 	ctx := context.Background()
 	bus := &fakeBus{}
 	reg := &fakeRegistry{gen: &fakeGen{keys: []string{"p"}}}
-	svc := New(db, testCipher(t), bus, Options{ProbeURL: "http://probe.example.invalid/generate_204", Registry: reg})
+	svc := New(db, testCipher(t), bus, Options{ProbeURL: "http://probe.example.invalid/generate_204", Registry: reg, ScopeGrants: authz.New(authz.Deps{})})
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go svc.Run(runCtx)
@@ -393,7 +394,7 @@ func TestOwnership(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := testutil.DB(t)
 	ctx := context.Background()
-	svc := New(db, testCipher(t), nil, Options{ProbeURL: "http://probe.example.invalid/generate_204"})
+	svc := New(db, testCipher(t), nil, Options{ProbeURL: "http://probe.example.invalid/generate_204", ScopeGrants: authz.New(authz.Deps{})})
 	admin := addUser(t, db, "admin@x.com")
 	alice := addUser(t, db, "alice@x.com")
 	bob := addUser(t, db, "bob@x.com")

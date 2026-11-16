@@ -182,8 +182,8 @@ func ScopedGrants(db *gorm.DB, patterns []string) *gorm.DB {
 
 // DeleteScopedSQL deletes the grants whose scope matches one of the regular
 // expressions of its one parameter (text[]) and returns role_id and key
-// (canonical) of each: authz.ClearScopeGrants audits them and moves the
-// version in the same statement.
+// (canonical) of each: (*authz.Service).ClearScopeGrants audits them and
+// moves the version in the same statement.
 var DeleteScopedSQL = `DELETE FROM ` + Table + ` cr USING roles r
     WHERE cr.ptype = '` + ptypePolicy + `' AND cr.v2 ~ ANY(?) AND r.key = ` + roleKeyOf("cr.v0") + `
     RETURNING r.id AS role_id, ` + grantKeyOf("cr") + ` AS key`

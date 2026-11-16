@@ -27,6 +27,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/proxy"
@@ -703,7 +704,7 @@ func setup(t *testing.T) *env {
 // setupWith builds the harness with the given authorizer (shared by the
 // router and the service). The admin user is created first; tests add more
 // users with addUser and call as them with doAs.
-func setupWith(t *testing.T, authz fakeAuthz) *env {
+func setupWith(t *testing.T, az fakeAuthz) *env {
 	gin.SetMode(gin.TestMode)
 	db := testutil.DB(t)
 	mr := miniredis.RunT(t)
@@ -734,7 +735,7 @@ func setupWith(t *testing.T, authz fakeAuthz) *env {
 	// The real proxy service serves as directory and resolver so proxy_url
 	// tests exercise FindOrCreate / AuditAutoCreate end to end.
 	e.prx = proxy.New(db, cipher, e.bus, proxy.Options{AllowPrivate: true})
-	e.svc = New(Deps{DB: db, Redis: rdb, Cipher: cipher, Registry: e.reg, Proxies: e.prx, Resolver: e.prx, Authorizer: authz,
+	e.svc = New(Deps{DB: db, Redis: rdb, Cipher: cipher, Registry: e.reg, Proxies: e.prx, Resolver: e.prx, Authorizer: az, ScopeGrants: authz.New(authz.Deps{}),
 		Events: dbEvents{}, Slots: fakeSlots{}, Limiter: NewLimiter(rdb), Bus: e.bus, Converters: fakeConverters{}, AllowPrivateUpstream: true})
 	// Run warms the quota mirror, which reads the account types: wait for that
 	// first read so it does not race the types a test adds.
@@ -753,7 +754,7 @@ func setupWith(t *testing.T, authz fakeAuthz) *env {
 		t.Fatal("quota mirror not warmed")
 	}
 	engine := gin.New()
-	e.svc.RegisterRoutes(httpapi.NewRouter(engine, fakeTokens{}, authz))
+	e.svc.RegisterRoutes(httpapi.NewRouter(engine, fakeTokens{}, az))
 	e.h = engine
 	return e
 }

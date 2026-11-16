@@ -206,13 +206,13 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		}
 	}
 
-	b.grp = group.New(b.db, b.rdb, b.cl.Bus, b.reg)
+	b.grp = group.New(b.db, b.rdb, b.cl.Bus, b.reg, az)
 	b.keys = apikey.New(b.db, b.rdb, az, b.reg)
 	b.keys.Cipher = b.cipher
 	// Per-key caps the owners set (CONTRACTS §60): minute windows and slots.
 	b.keys.Windows, b.keys.Slots = ratelimit.NewMinute(b.rdb, "apikey"), b.cl.Slots
 	b.keys.Balances = b.bill
-	b.prx = proxy.New(b.db, b.cipher, b.cl.Bus, proxy.Options{AllowPrivate: cfg.AllowPrivateUpstream, Registry: b.reg, Events: b.events})
+	b.prx = proxy.New(b.db, b.cipher, b.cl.Bus, proxy.Options{AllowPrivate: cfg.AllowPrivateUpstream, Registry: b.reg, Events: b.events, ScopeGrants: az})
 	// One converter registry for the gateway (conversion) and the account
 	// module (endpoints an account type can serve), ARCHITECTURE 6.6.
 	b.converters = convert.Default()
@@ -241,7 +241,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		DB:                 b.db, Redis: b.rdb, Cipher: b.cipher, Registry: b.reg, Proxies: b.prx, Events: b.events,
 		Slots: b.cl.Slots, Limiter: b.limiter, Stats: b.stats, Bus: b.cl.Bus, AllowPrivateUpstream: cfg.AllowPrivateUpstream, Converters: b.converters,
 		// Ownership checks and proxy_url resolution (CONTRACTS §21).
-		Authorizer: az, Resolver: b.prx,
+		Authorizer: az, Resolver: b.prx, ScopeGrants: az,
 		// Credential refresh: one renewal per account cluster-wide, one
 		// sweeping node, only once admitted (CONTRACTS §48).
 		Locker: b.cl.Locker, CanWork: b.canWork,

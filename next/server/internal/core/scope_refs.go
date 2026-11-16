@@ -1,32 +1,24 @@
 package core
 
-import "fmt"
+import (
+	"context"
 
-// Kinds of rows a scoped grant names (authz.ClearScopeGrants).
+	"gorm.io/gorm"
+)
+
+// Kinds of rows a scoped grant names (ScopeGrantClearer).
 const (
 	ScopeRefAccount = "account"
 	ScopeRefGroup   = "group"
 	ScopeRefProxy   = "proxy"
 )
 
-// scopeRefPatterns match the scopes naming a row of kind (CONTRACTS §21.0):
-// account/X and group/G/account/X; group/G and group/G/account/X; proxy/X.
-var scopeRefPatterns = map[string]string{
-	ScopeRefAccount: `(^|/)account/%d$`,
-	ScopeRefGroup:   `^group/%d(/|$)`,
-	ScopeRefProxy:   `^proxy/%d$`,
-}
-
-// ScopeRefPatterns returns the regular expressions matching the scopes
-// that name one of the rows ids of kind.
-func ScopeRefPatterns(kind string, ids []int64) ([]string, error) {
-	pattern, ok := scopeRefPatterns[kind]
-	if !ok {
-		return nil, fmt.Errorf("core: unknown scope reference kind %q", kind)
-	}
-	out := make([]string, len(ids))
-	for i, id := range ids {
-		out[i] = fmt.Sprintf(pattern, id)
-	}
-	return out, nil
+// ScopeGrantClearer clears the scoped grants naming deleted rows (authz
+// implements it; CONTRACTS §21, §99.1).
+type ScopeGrantClearer interface {
+	// ClearScopeGrants deletes, inside tx, the scoped grants that name the
+	// deleted rows ids of kind (ScopeRef*), audited by actorID (0 = the
+	// system), and returns the new authz version, 0 when nothing went: the
+	// caller announces it after commit (AnnounceAuthzChanged).
+	ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind string, ids []int64) (int64, error)
 }

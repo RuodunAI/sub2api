@@ -72,6 +72,7 @@ var (
 	_ core.Authorizer        = (*Service)(nil)
 	_ core.PermissionCatalog = (*Service)(nil)
 	_ core.AuthzVersioner    = (*Service)(nil)
+	_ core.ScopeGrantClearer = (*Service)(nil)
 )
 
 // New creates the service. Call Start before serving requests.

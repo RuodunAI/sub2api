@@ -259,4 +259,17 @@ INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles 
 	}
 	require.Equal(t, []string{authz.RoleSuperAdmin}, testutil.RoleKeys(t, db, id("a@x")))
 	require.Equal(t, []string{authz.RoleAdmin}, testutil.RoleKeys(t, db, id("b@x")))
+
+	// Past 0100 a stray user_roles table (a single-table restore) changes
+	// nothing: the command recovers through casbin_rule, resets included,
+	// and leaves the stray table alone.
+	_, err = db.SQL.ExecContext(ctx, `CREATE TABLE public.user_roles (user_id bigint, role_id bigint)`)
+	require.NoError(t, err)
+	_, err = cli.RecoverSuperAdmin(ctx, "b@x", RecoverOptions{ResetPassword: true})
+	require.NoError(t, err)
+	require.Contains(t, testutil.RoleKeys(t, db, id("b@x")), authz.RoleSuperAdmin)
+	require.Equal(t, []string{authz.RoleAdmin}, testutil.RoleKeys(t, db, id("a@x")))
+	var stray int
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM public.user_roles`).Scan(&stray))
+	require.Zero(t, stray)
 }

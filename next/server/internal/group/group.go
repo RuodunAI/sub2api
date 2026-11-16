@@ -18,7 +18,6 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
@@ -32,12 +31,15 @@ type Service struct {
 	rdb redis.UniversalClient // optional: drops cached API key principals
 	bus core.Bus              // optional: announces membership changes
 	reg core.PluginRegistry   // optional: platforms are [] without it
+	// grants clears the scoped grants naming a deleted group (CONTRACTS §21).
+	grants core.ScopeGrantClearer
 }
 
 // New builds the group service. rdb, bus and reg may be nil; reg resolves
-// the platforms a group serves from its account types.
-func New(db *store.DB, rdb redis.UniversalClient, bus core.Bus, reg core.PluginRegistry) *Service {
-	return &Service{db: db, rdb: rdb, bus: bus, reg: reg}
+// the platforms a group serves from its account types. grants is needed to
+// delete groups.
+func New(db *store.DB, rdb redis.UniversalClient, bus core.Bus, reg core.PluginRegistry, grants core.ScopeGrantClearer) *Service {
+	return &Service{db: db, rdb: rdb, bus: bus, reg: reg, grants: grants}
 }
 
 // RegisterRoutes mounts the group endpoints.
@@ -497,7 +499,7 @@ func (s *Service) delete(c *gin.Context) {
 		}
 		uid, _ := core.UserID(ctx)
 		var err error
-		authzVersion, err = authz.ClearScopeGrants(ctx, tx, uid, core.ScopeRefGroup, []int64{id})
+		authzVersion, err = s.grants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefGroup, []int64{id})
 		return err
 	})
 	if err != nil {

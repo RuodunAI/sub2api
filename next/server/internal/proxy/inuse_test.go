@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -17,7 +18,7 @@ func TestUpdateInUseByOthers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := testutil.DB(t)
 	ctx := context.Background()
-	svc := New(db, testCipher(t), nil, Options{})
+	svc := New(db, testCipher(t), nil, Options{ScopeGrants: authz.New(authz.Deps{})})
 	admin, alice, bob := addUser(t, db, "admin@x.com"), addUser(t, db, "alice@x.com"), addUser(t, db, "bob@x.com")
 	engine := gin.New()
 	svc.RegisterRoutes(httpapi.NewRouter(engine, fakeTokens{}, fakeAuthz{keys: map[int64][]string{

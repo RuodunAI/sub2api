@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -229,16 +230,38 @@ func notImplied(want, have []string) []string {
 	return slices.DeleteFunc(slices.Clone(want), set.Has)
 }
 
-// ClearScopeGrants deletes, inside tx, the scoped grants that name the
-// deleted rows ids of kind (core.ScopeRefAccount, ...), audited as
-// authz.scope.clear by actorID (0 = the system) per role, and moves the
-// authz version when any went. A grant naming a deleted row reaches nothing
-// anyway; clearing it keeps roles readable and a reused id from being
-// reached. It returns the new authz version, 0 when nothing went: the
-// caller announces it after commit (core.AnnounceAuthzChanged), as every
-// authz write does.
-func ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind string, ids []int64) (int64, error) {
-	patterns, err := core.ScopeRefPatterns(kind, ids)
+// scopeRefPatterns match the scopes naming a row of kind (CONTRACTS §21.0):
+// account/X and group/G/account/X; group/G and group/G/account/X; proxy/X.
+var scopeRefPatterns = map[string]string{
+	core.ScopeRefAccount: `(^|/)account/%d$`,
+	core.ScopeRefGroup:   `^group/%d(/|$)`,
+	core.ScopeRefProxy:   `^proxy/%d$`,
+}
+
+// scopeRefs returns the regular expressions matching the scopes that name
+// one of the rows ids of kind.
+func scopeRefs(kind string, ids []int64) ([]string, error) {
+	pattern, ok := scopeRefPatterns[kind]
+	if !ok {
+		return nil, fmt.Errorf("authz: unknown scope reference kind %q", kind)
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = fmt.Sprintf(pattern, id)
+	}
+	return out, nil
+}
+
+// ClearScopeGrants implements core.ScopeGrantClearer: it deletes, inside
+// tx, the scoped grants that name the deleted rows ids of kind
+// (core.ScopeRefAccount, ...), audited as authz.scope.clear by actorID (0 =
+// the system) per role, and moves the authz version when any went. A grant
+// naming a deleted row reaches nothing anyway; clearing it keeps roles
+// readable and a reused id from being reached. It returns the new authz
+// version, 0 when nothing went: the caller announces it after commit
+// (core.AnnounceAuthzChanged), as every authz write does.
+func (*Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind string, ids []int64) (int64, error) {
+	patterns, err := scopeRefs(kind, ids)
 	if err != nil || len(ids) == 0 {
 		return 0, err
 	}

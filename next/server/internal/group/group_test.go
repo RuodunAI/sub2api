@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -147,7 +148,7 @@ func TestPlatformResolver(t *testing.T) {
 
 func TestGroupPlatformsWithoutRegistry(t *testing.T) {
 	// No registry: no database access, every group gets [].
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil)
 	ps, err := s.Platforms(context.Background(), []int64{1, 2})
 	if err != nil || len(ps) != 2 || ps[1] == nil || len(ps[2]) != 0 {
 		t.Fatalf("platforms: %v %v", ps, err)
@@ -178,7 +179,7 @@ func setup(t *testing.T) *env {
 	e.user = mkUser(t, db, "user@x.com")
 	engine := gin.New()
 	r := httpapi.NewRouter(engine, fakeTokens{}, fakeAuthz{admin: e.admin})
-	New(db, rdb, e.bus, fakeRegistry{gen: testGen()}).RegisterRoutes(r)
+	New(db, rdb, e.bus, fakeRegistry{gen: testGen()}, authz.New(authz.Deps{})).RegisterRoutes(r)
 	e.h = engine
 	return e
 }

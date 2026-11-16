@@ -90,7 +90,7 @@ func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts Reco
 	if err != nil {
 		return "", err
 	}
-	legacy, err := authz.LegacySchema(store.G(ctx, s.db.Gorm))
+	legacy, err := authz.LegacySchema(ctx, s.db.Gorm)
 	if err != nil {
 		return "", err
 	}

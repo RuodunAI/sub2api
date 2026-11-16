@@ -71,7 +71,7 @@ func TestDeletePathsClearPolicyRows(t *testing.T) {
 	testutil.Grant(t, db, RoleOperator, "account:read", group, group+"/account/5")
 	tx(func(tx *gorm.DB) error {
 		id, _ := strconv.ParseInt(strings.TrimPrefix(group, "group/"), 10, 64)
-		_, err := ClearScopeGrants(ctx, tx, root, core.ScopeRefGroup, []int64{id})
+		_, err := s.ClearScopeGrants(ctx, tx, root, core.ScopeRefGroup, []int64{id})
 		return err
 	})
 	require.False(t, slices.ContainsFunc(testutil.GrantKeys(t, db, RoleOperator), func(k string) bool { return strings.Contains(k, ":"+group) }))

@@ -50,6 +50,9 @@ type Deps struct {
 	// route key (proxy visibility, account:settings:custom; CONTRACTS §21).
 	// nil denies everything it is asked.
 	Authorizer core.Authorizer
+	// ScopeGrants clears the scoped grants naming deleted accounts
+	// (CONTRACTS §21); needed to delete or purge accounts.
+	ScopeGrants core.ScopeGrantClearer
 	// Resolver finds or creates the proxy named by proxy_url when an account
 	// is saved (CONTRACTS §21.4); nil rejects proxy_url as unsupported.
 	Resolver core.ProxyResolver

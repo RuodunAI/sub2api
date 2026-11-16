@@ -102,14 +102,22 @@ type holderStore interface {
 	grant(db *gorm.DB, role string, userIDs []int64) error
 }
 
+// casbinRuleMigration moves the roles from user_roles to casbin_rule.
+const casbinRuleMigration = "0100_casbin_rule.sql"
+
 // LegacySchema reports whether the database db reads is one the
-// migrations stopped before 0100 (user_roles still holds the roles): where
-// the server CLI recovers a super admin for 0097 (TransferSuperAdminLegacy),
-// and nothing else of this core runs.
-func LegacySchema(db *gorm.DB) (bool, error) {
-	var legacy bool
-	err := db.Raw(`SELECT to_regclass('public.user_roles') IS NOT NULL`).Scan(&legacy).Error
-	return legacy, err
+// migrations stopped before 0100 (schema_migrations has no
+// casbinRuleMigration, so user_roles still holds the roles): where the
+// server CLI recovers a super admin for 0097 (TransferSuperAdminLegacy),
+// and nothing else of this core runs. A user_roles table found after 0100
+// is a stray one and changes nothing.
+func LegacySchema(ctx context.Context, db *gorm.DB) (bool, error) {
+	applied, err := store.CoreTracker{}.Applied(ctx, db)
+	if err != nil {
+		return false, err
+	}
+	_, migrated := applied[casbinRuleMigration]
+	return !migrated, nil
 }
 
 // policyHolders are casbin_rule's g rows of the super admin role (the one

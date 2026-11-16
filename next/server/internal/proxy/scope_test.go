@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -24,7 +25,7 @@ func TestProxyIDScope(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := testutil.DB(t)
 	ctx := context.Background()
-	svc := New(db, testCipher(t), nil, Options{ProbeURL: "http://probe.example.invalid/generate_204"})
+	svc := New(db, testCipher(t), nil, Options{ProbeURL: "http://probe.example.invalid/generate_204", ScopeGrants: authz.New(authz.Deps{})})
 	admin, keeper := addUser(t, db, "admin@x.com"), addUser(t, db, "keeper@x.com")
 	az := fakeAuthz{keys: map[int64][]string{admin: {"proxy:read", "proxy:manage"}}}
 	engine := gin.New()
