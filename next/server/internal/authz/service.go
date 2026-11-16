@@ -36,8 +36,8 @@ type Deps struct {
 	PollInterval time.Duration
 }
 
-// Service is the authz module. It implements core.Authorizer (with
-// core.TeamResolver), core.PermissionCatalog and core.OwnerGuard.
+// Service is the authz module. It implements core.Authorizer,
+// core.PermissionCatalog and core.OwnerGuard.
 type Service struct {
 	db      *store.DB
 	bus     core.Bus
@@ -55,8 +55,6 @@ type Service struct {
 	stepUp    core.StepUpVerifier
 	// menuKeys are the permissions of each core menu item (BindMenuRoutes).
 	menuKeys map[string][]string
-	// teams are the teams Team read, by holder, none older than minVersion.
-	teams map[int64]cachedTeam
 
 	// casbin is the node's Casbin enforcer, which makes every decision (nil
 	// without a database: tests that never decide).
@@ -68,7 +66,6 @@ var (
 	_ core.PermissionCatalog = (*Service)(nil)
 	_ core.AuthzVersioner    = (*Service)(nil)
 	_ core.ScopeGrantClearer = (*Service)(nil)
-	_ core.TeamResolver      = (*Service)(nil)
 	_ core.OwnerGuard        = (*Service)(nil)
 )
 
@@ -77,7 +74,7 @@ func New(d Deps) *Service {
 	if d.PollInterval <= 0 {
 		d.PollInterval = 30 * time.Second
 	}
-	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, pending: map[int64]authzChange{}, teams: map[int64]cachedTeam{}}
+	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, pending: map[int64]authzChange{}}
 	if d.DB != nil {
 		s.casbin = casbinx.New(casbinx.NewLoader(d.DB), SelfPermissionKeys(), casbinx.Options{})
 	}
@@ -371,8 +368,7 @@ func (s *Service) Version() int64 {
 // invalidate takes in that version c.Version changed what c says: the
 // enforcer applies it (the users it names alone when it is the version
 // next to the enforcer's, else by loading the policy again), then this
-// node knows of the version, and so waits for it on every decision, and
-// drops the teams read before it.
+// node knows of the version, and so waits for it on every decision.
 func (s *Service) invalidate(c authzChange) {
 	if s.casbin != nil {
 		// Told first: a decision that reads the new version finds the
@@ -388,11 +384,6 @@ func (s *Service) invalidate(c authzChange) {
 	for v := range s.pending {
 		if v <= c.Version {
 			delete(s.pending, v)
-		}
-	}
-	for uid, team := range s.teams {
-		if team.version < c.Version {
-			delete(s.teams, uid)
 		}
 	}
 	listeners := append([]func(){}, s.listeners...)

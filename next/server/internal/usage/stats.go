@@ -230,7 +230,7 @@ type overviewOf struct {
 // scopeKey identifies the rows of s in a snapshot cache key: callers of
 // different scopes never share an answer.
 func scopeKey(s core.DataScope) string {
-	return fmt.Sprint(s.All, s.Owners, s.Groups, s.IDs, s.PairG, s.PairID)
+	return fmt.Sprint(s.All, s.Owners, s.Teams, s.Groups, s.IDs, s.PairG, s.PairID)
 }
 
 func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Location, of overviewOf) (Overview, error) {

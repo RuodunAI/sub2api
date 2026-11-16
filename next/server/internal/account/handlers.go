@@ -554,11 +554,11 @@ func (s *Service) list(c *gin.Context) {
 	page, size := httpapi.Pagination(c)
 	var conds store.Conds
 	conds.And("a.deleted_at IS NULL")
-	// Visible range: the caller's account:read scope (CONTRACTS §21), its
-	// team resolved (§102); within it mine=true narrows to the caller's own
-	// accounts, subordinates=true to those of the users below it (none
-	// without a team scope), owner_id=<id> and created_by=<id> to that
-	// owner's and that creator's.
+	// Visible range: the caller's account:read scope (CONTRACTS §21, its
+	// team §102); within it mine=true narrows to the caller's own accounts,
+	// subordinates=true to those of the users below it (none without a
+	// team scope), owner_id=<id> and created_by=<id> to that owner's and
+	// that creator's.
 	scope, err := s.scopeOf(ctx, perm.AccountRead)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -570,7 +570,7 @@ func (s *Service) list(c *gin.Context) {
 		conds.And("a.owner_id = ?", uid)
 	}
 	if sub, _ := strconv.ParseBool(c.Query("subordinates")); sub {
-		conds.And("a.owner_id = ANY(?) AND a.owner_id <> ?", store.Int64s(scope.Owners), uid)
+		conds.And("a.owner_id IN (?)", core.UserTree().Below(store.G(ctx, s.d.DB.Gorm), scope.Teams...))
 	}
 	createdBy, ok := userIDQuery(c, "created_by")
 	if !ok {

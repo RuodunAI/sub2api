@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"slices"
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -92,47 +91,5 @@ func TestProxyRefScope(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%v: %+v %v, want %+v", tc.keys, got, err, tc.want)
 		}
-	}
-}
-
-// teamAuthorizer resolves the team of user 7 at version 4 or later.
-type teamAuthorizer struct {
-	setAuthorizer
-	err error
-}
-
-func (a teamAuthorizer) Team(_ context.Context, uid, atLeast int64) ([]int64, error) {
-	if uid != 7 || atLeast < 4 {
-		return nil, errors.New("unexpected team read")
-	}
-	return []int64{9, 3}, a.err
-}
-
-// Scope resolves a team (ResolveScope) at the set's version; a scope
-// without one, or an authorizer resolving none, is left as compiled, and a
-// team that cannot be read fails the call rather than narrowing it.
-func TestScopeResolvesTeam(t *testing.T) {
-	ctx := WithUserID(context.Background(), 7)
-	set := PermissionSetOf("account:read:team", "account:update:own")
-	set.Version = 4
-	az := teamAuthorizer{setAuthorizer: setAuthorizer{set}}
-	read, err := Scope(ctx, az, perm.AccountRead)
-	if err != nil || !reflect.DeepEqual(read, DataScope{Owners: []int64{3, 7, 9}}) {
-		t.Fatalf("team = %+v, %v", read, err)
-	}
-	if update, err := Scope(ctx, az, perm.AccountUpdate); err != nil || !reflect.DeepEqual(update, DataScope{Owners: []int64{7}}) {
-		t.Fatalf("own = %+v, %v", update, err)
-	}
-	if _, err := Scope(ctx, teamAuthorizer{setAuthorizer{set}, ErrUnavailable}, perm.AccountRead); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("unreadable team: %v", err)
-	}
-	unresolved, err := Scope(ctx, setAuthorizer{set}, perm.AccountRead)
-	if err != nil || !slices.Equal(unresolved.Owners, []int64{7}) {
-		t.Fatalf("without a resolver = %+v, %v", unresolved, err)
-	}
-	// A union keeps the team to resolve.
-	u, err := ResolveScope(ctx, az, Compile(7, nil).Union(set.DataScope(7, perm.AccountRead)), 4)
-	if err != nil || !slices.Equal(u.Owners, []int64{3, 7, 9}) {
-		t.Fatalf("union = %+v, %v", u, err)
 	}
 }

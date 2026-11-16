@@ -25,44 +25,31 @@ func ownerOrNone(p *int64) int64 {
 
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 
-// moveOwner changes the owner of user as iam's update does: Bump naming
-// it, CheckOwner, the write of what it returns.
+// moveOwner changes the owner of user as iam's update does (SetOwner).
 func moveOwner(s *Service, actor, user int64, owner *int64) (int64, error) {
 	ctx := context.Background()
-	var got, v int64
+	var got int64
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
-		if v, err = s.Bump(ctx, tx, user); err != nil {
-			return err
-		}
-		if got, err = s.CheckOwner(ctx, tx, actor, user, false, owner); err != nil {
-			return err
-		}
-		return tx.Exec(`UPDATE users SET owner_id = NULLIF(?::bigint, 0) WHERE id = ?`, got, user).Error
+		got, err = s.SetOwner(ctx, tx, actor, user, false, owner)
+		return err
 	})
-	if err == nil {
-		s.Committed(ctx, v)
-	}
 	return got, err
 }
 
-// createOwned creates a user as iam's create does: its id drawn,
-// CheckOwner deciding its owner (nil: the default), inserted with it, its
-// roles set.
+// createOwned creates a user as iam's create does: inserted without an
+// owner, SetOwner giving it one (nil: the default), its roles set.
 func createOwned(s *Service, actor int64, email string, owner *int64, roles ...string) (int64, error) {
 	ctx := context.Background()
 	var id, v int64
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := tx.Raw(`SELECT nextval(pg_get_serial_sequence('users', 'id'))`).Scan(&id).Error; err != nil {
+		if err := tx.Raw(`INSERT INTO users (email, password_hash) VALUES (?, 'x') RETURNING id`, email).Scan(&id).Error; err != nil {
 			return err
 		}
-		got, err := s.CheckOwner(ctx, tx, actor, id, true, owner)
-		if err != nil {
+		if _, err := s.SetOwner(ctx, tx, actor, id, true, owner); err != nil {
 			return err
 		}
-		if err := tx.Exec(`INSERT INTO users (id, email, password_hash, owner_id) VALUES (?, ?, 'x', NULLIF(?::bigint, 0))`, id, email, got).Error; err != nil {
-			return err
-		}
+		var err error
 		v, err = s.SetUserRoles(ctx, tx, actor, id, roles)
 		return err
 	})
@@ -92,7 +79,7 @@ func ownerAudits(t *testing.T, s *Service, user int64) []string {
 // never the user itself or one below it, and one that manages the user by
 // its roles, also after later role changes; a team holder names itself
 // alone. Every change is audited.
-func TestCheckOwner(t *testing.T) {
+func TestSetOwner(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
@@ -132,7 +119,7 @@ func TestCheckOwner(t *testing.T) {
 	}
 
 	// Roles the owner does not manage are refused while it owns the user
-	// (and for a new user, whose roles come before CheckOwner).
+	// (and for a new user, whose roles come after SetOwner).
 	err = setRoles(s, admin, plain, RoleUser, RoleOperator)
 	require.Equal(t, "owner_cannot_manage", fieldCode(err, "owner_id"), "%v", err)
 	_, err = createOwned(s, admin, "new-op@x.com", ptr(agent), RoleUser, RoleOperator)
@@ -156,7 +143,7 @@ func TestCheckOwner(t *testing.T) {
 // A team holder (no user:create or user:update for every user) makes
 // itself the owner and nobody else, not even a user of its team or none;
 // it defaults to itself on a create, the unscoped holder to none.
-func TestCheckOwnerTeamHolder(t *testing.T) {
+func TestSetOwnerTeamHolder(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
@@ -202,7 +189,7 @@ func TestCheckOwnerTeamHolder(t *testing.T) {
 
 // A chain is at most core.MaxTeamDepth levels below its top: no owner
 // that would put the user, or a user below it, deeper (plan 5.3).
-func TestCheckOwnerDepth(t *testing.T) {
+func TestSetOwnerDepth(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
@@ -224,7 +211,7 @@ func TestCheckOwnerDepth(t *testing.T) {
 
 // Two moves that would make a cycle together are serialized by the authz
 // lock: one of them sees the other and is refused (plan 5.3).
-func TestCheckOwnerConcurrentCycle(t *testing.T) {
+func TestSetOwnerConcurrentCycle(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
@@ -247,7 +234,7 @@ func TestCheckOwnerConcurrentCycle(t *testing.T) {
 // agent's team neither directly nor through a supplier of that team (D6);
 // a sub-agent still owns the users it creates though its own owner is
 // above it.
-func TestCheckOwnerChains(t *testing.T) {
+func TestSetOwnerChains(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)

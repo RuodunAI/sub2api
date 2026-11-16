@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // 所属 (CONTRACTS §102): a new account is owned by its creator; own scopes,
@@ -86,18 +86,18 @@ func TestAccountOwner(t *testing.T) {
 }
 
 // subordinates=true narrows the list to the accounts of the users below the
-// caller (its account:read team, core.ResolveScope), never its own; without
-// a team scope it lists none. A team reads, but does not write, what it
+// caller (its account:read team, core.UserTree), never its own; without a
+// team scope it lists none. A team reads, but does not write, what it
 // reaches beyond its own (D4).
 func TestAccountSubordinates(t *testing.T) {
-	az := fakeAuthz{keys: map[int64][]string{}, teams: map[int64][]int64{}}
+	az := fakeAuthz{keys: map[int64][]string{}}
 	e := setupWith(t, az)
 	admin := e.uid
 	agent, sub, other := e.addUser("agent@x.com"), e.addUser("sub@x.com"), e.addUser("other@x.com")
 	az.keys[admin] = adminKeys
 	az.keys[agent] = append(slices.Clone(supplierKeys), "account:read:team")
 	az.keys[sub], az.keys[other] = supplierKeys, supplierKeys
-	az.teams[agent] = []int64{sub}
+	testutil.SetOwner(t, e.db, sub, agent)
 	ids := map[int64]string{}
 	for _, uid := range []int64{agent, sub, other} {
 		ids[uid] = strconv.FormatInt(int64(e.createAs(uid, "acct", nil)["id"].(float64)), 10)
@@ -119,20 +119,5 @@ func TestAccountSubordinates(t *testing.T) {
 	}
 	if code, out := e.doAs(agent, "PATCH", "/accounts/"+ids[sub], map[string]any{"name": "x"}); code != 404 {
 		t.Fatalf("agent writes a subordinate's account: %d %v", code, out)
-	}
-}
-
-// A scope a handler reads beyond its route's (here proxy:manage, for a
-// proxy_url) whose team cannot be read fails the request with 503: never
-// an empty scope, which would have refused it as if the caller held none.
-func TestAccountScopeUnavailable(t *testing.T) {
-	az := fakeAuthz{keys: map[int64][]string{}, teamErr: core.ErrUnavailable}
-	e := setupWith(t, az)
-	agent := e.addUser("agent@x.com")
-	az.keys[agent] = append(slices.DeleteFunc(slices.Clone(supplierKeys), func(k string) bool { return k == "proxy:manage:own" }), "proxy:manage:team")
-	body := map[string]any{"name": "a", "plugin_key": "anthropic", "type": "apikey",
-		"credentials": map[string]any{"api_key": "sk-good-key-123"}, "proxy_url": "socks5h://proxy.example:1080"}
-	if code, out := e.doAs(agent, "POST", "/accounts", body); code != 503 {
-		t.Fatalf("create with a proxy_url: %d %v", code, out)
 	}
 }

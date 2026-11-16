@@ -43,9 +43,13 @@ func TestCompile(t *testing.T) {
 	if own := Compile(7, scopesOf(t, "account:read:own")); own.Grouped() || !own.Owned() || !reflect.DeepEqual(own.Owners, []int64{7}) {
 		t.Fatalf("own = %+v", own)
 	}
-	// A team compiles to the holder, to be resolved (ResolveScope).
-	if team := Compile(7, scopesOf(t, "account:read:team", "account:read:own")); !reflect.DeepEqual(team, DataScope{Owners: []int64{7}, team: 7}) {
+	// A team compiles to the holder, as an owner and as the top of a team
+	// (the users below it read by the statement); a union keeps it.
+	if team := Compile(7, scopesOf(t, "account:read:team", "account:read:own")); !reflect.DeepEqual(team, DataScope{Owners: []int64{7}, Teams: []int64{7}}) {
 		t.Fatalf("team = %+v", team)
+	}
+	if u := Compile(7, scopesOf(t, "account:read:own")).Union(Compile(7, scopesOf(t, "account:read:team"))); !reflect.DeepEqual(u, DataScope{Owners: []int64{7}, Teams: []int64{7}}) {
+		t.Fatalf("union = %+v", u)
 	}
 	if Compile(7, scopesOf(t, "account:read:group/1")).Owned() {
 		t.Fatal("a group range is not owned")
@@ -114,17 +118,5 @@ func TestAllowsRowVectors(t *testing.T) {
 		if got := s.AllowsRow(c.Row.ID, c.Row.CreatedBy, c.Row.GroupIDs); got != c.OK {
 			t.Errorf("%v %s by %d on %+v: %v, want %v", c.Have, c.Action, c.Me, c.Row, got, c.OK)
 		}
-	}
-}
-
-// Args holds one value per placeholder of Cond (whose text the scope's SQL
-// snapshot pins), a group wildcard being a flag of its own.
-func TestScopeTableArgs(t *testing.T) {
-	t.Parallel()
-	if args := AccountRows().Args(DataScope{Groups: []int64{0, 12}}); len(args) != 7 || args[3] != true || len(args[4].([]int64)) != 1 {
-		t.Fatalf("account args = %#v", args)
-	}
-	if args := ProxyRows().Args(DataScope{}); len(args) != 3 || args[2] == nil {
-		t.Fatalf("proxy args = %#v", args)
 	}
 }

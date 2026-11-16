@@ -48,15 +48,6 @@ func (a fakeAuthz) PermissionSet(ctx context.Context, uid int64) (core.Permissio
 }
 func (fakeAuthz) CanGrant(context.Context, int64, []string) error { return nil }
 
-// teamAuthz is fakeAuthz with the team of each holder of a team scope
-// (core.TeamResolver), as authz resolves it.
-type teamAuthz struct {
-	fakeAuthz
-	teams map[int64][]int64
-}
-
-func (a teamAuthz) Team(_ context.Context, uid, _ int64) ([]int64, error) { return a.teams[uid], nil }
-
 // fixture is one database with rows of every kind. Every name holds "lk".
 //
 //	admin  reads every kind in full; owns account "lk acct b" and proxy
@@ -94,8 +85,9 @@ func newFixture(t *testing.T) *fixture {
 	f.alice = f.insert(`INSERT INTO users (email, display_name, password_hash) VALUES ('lk-alice@x.test', 'Alice', 'x') RETURNING id`)
 	f.bob = f.insert(`INSERT INTO users (email, display_name, password_hash) VALUES ('lk-bob@x.test', 'Bob_Zhang', 'x') RETURNING id`)
 	f.erin = f.insert(`INSERT INTO users (email, password_hash) VALUES ('lk-erin@x.test', 'x') RETURNING id`)
-	f.insert(`UPDATE users SET owner_id = $2 WHERE id = $1 RETURNING id`, f.bob, f.erin)
-	f.dave = f.insert(`INSERT INTO users (email, password_hash, owner_id) VALUES ('lk-dave@x.test', 'x', $1) RETURNING id`, f.bob)
+	testutil.SetOwner(t, f.db, f.bob, f.erin)
+	f.dave = f.insert(`INSERT INTO users (email, password_hash) VALUES ('lk-dave@x.test', 'x') RETURNING id`)
+	testutil.SetOwner(t, f.db, f.dave, f.bob)
 	f.insert(`INSERT INTO users (email, password_hash, deleted_at) VALUES ('lk-gone@x.test', 'x', now()) RETURNING id`)
 
 	// A group id no other fixture name contains, for the search by id.
@@ -137,14 +129,14 @@ func newFixture(t *testing.T) *fixture {
 	f.insert(price, "lk-gpt-x", true)
 
 	engine := gin.New()
-	authz := teamAuthz{fakeAuthz: fakeAuthz{
+	authz := fakeAuthz{
 		f.admin: {"user:read", "group:read", "usage:all:read", "account:read", "account:read:own", "price:read", "proxy:read", "proxy:read:own"},
 		f.alice: {"apikey:self:manage", "account:read:own", "proxy:read:own"},
 		f.carol: {"account:group:bind", fmt.Sprintf("account:read:group/%d", f.zeta)},
 		f.dave: {fmt.Sprintf("account:read:group/%d", f.hidden), fmt.Sprintf("account:update:group/%d/account/%d", f.alpha, f.acctB),
 			"account:test:group/*", "proxy:read:own"},
 		f.erin: {"user:read:team"},
-	}, teams: map[int64][]int64{f.erin: {f.bob, f.dave}}}
+	}
 	r := httpapi.NewRouter(engine, fakeTokens{}, authz)
 	New(f.db, authz).RegisterRoutes(r)
 	// The self-service lists that mine=true is defined by.

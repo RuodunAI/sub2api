@@ -80,7 +80,7 @@ func (f *fakeEvents) types() []string {
 	return out
 }
 
-// fakeOwners wraps authz's CheckOwner (tested in authz): it records the
+// fakeOwners wraps authz's SetOwner (tested in authz): it records the
 // calls and fails with err when set, else answers as guard does.
 type fakeOwners struct {
 	guard core.OwnerGuard
@@ -95,9 +95,9 @@ type ownerCall struct {
 	owner       *int64
 }
 
-func (f *fakeOwners) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
+func (f *fakeOwners) SetOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
 	if tx == nil {
-		return 0, errors.New("CheckOwner needs a transaction")
+		return 0, errors.New("SetOwner needs a transaction")
 	}
 	f.mu.Lock()
 	f.calls = append(f.calls, ownerCall{actorID, userID, create, owner})
@@ -106,7 +106,7 @@ func (f *fakeOwners) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userI
 	if err != nil {
 		return 0, err
 	}
-	return f.guard.CheckOwner(ctx, tx, actorID, userID, create, owner)
+	return f.guard.SetOwner(ctx, tx, actorID, userID, create, owner)
 }
 
 type env struct {

@@ -62,22 +62,19 @@ func TestSQLUserLocks(t *testing.T) {
 // users.updated_at moves with these writes, and only with them.
 func TestSQLUserWrites(t *testing.T) {
 	name, status := "Ann", StatusDisabled
-	segment, owner, none := int64(3), int64(5), int64(0)
+	segment := int64(3)
 	snap(t, map[string]func(*gorm.DB) *gorm.DB{
 		"insert": func(db *gorm.DB) *gorm.DB {
-			return insertUser(db, 9, "a@example.com", "Ann", "$2a$hash", &segment, &owner)
+			return insertUser(db, 9, "a@example.com", "Ann", "$2a$hash", &segment)
 		},
 		"insert_default_segment": func(db *gorm.DB) *gorm.DB {
-			return insertUser(db, 9, "a@example.com", "", "$2a$hash", nil, nil)
+			return insertUser(db, 9, "a@example.com", "", "$2a$hash", nil)
 		},
 		"update_all": func(db *gorm.DB) *gorm.DB {
-			return updateUser(db, 7, userChanges(UpdateUserInput{DisplayName: &name, Status: &status}, "b@example.com", []byte("$2a$new"), &owner))
+			return updateUser(db, 7, userChanges(UpdateUserInput{DisplayName: &name, Status: &status}, "b@example.com", []byte("$2a$new")))
 		},
 		"update_status": func(db *gorm.DB) *gorm.DB {
-			return updateUser(db, 7, userChanges(UpdateUserInput{Status: &status}, "", nil, nil))
-		},
-		"update_no_owner": func(db *gorm.DB) *gorm.DB {
-			return updateUser(db, 7, userChanges(UpdateUserInput{}, "", nil, &none))
+			return updateUser(db, 7, userChanges(UpdateUserInput{Status: &status}, "", nil))
 		},
 		"delete":          func(db *gorm.DB) *gorm.DB { return updateUser(db, 7, userDeletion()) },
 		"delete_api_keys": func(db *gorm.DB) *gorm.DB { return deleteUserKeys(db, 7) },
@@ -89,7 +86,7 @@ func TestSQLUserWrites(t *testing.T) {
 func TestSQLUserReads(t *testing.T) {
 	owner, none := int64(5), int64(0)
 	filter := usersFilter(ListUsersFilter{Query: "ann", Status: StatusActive, Role: "admin", Segment: "3", Owner: &owner, Direct: 9,
-		Scope: core.DataScope{Owners: []int64{9, 12}}})
+		Scope: core.DataScope{Owners: []int64{9}, Teams: []int64{9}}})
 	snap(t, map[string]func(*gorm.DB) *gorm.DB{
 		"list_count": func(db *gorm.DB) *gorm.DB {
 			var n int64

@@ -19,15 +19,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// scopedAuthz grants each user its keys and resolves teams
-// (core.TeamResolver): the users below each.
+// scopedAuthz grants each user its keys.
 type scopedAuthz struct {
 	allowAll
-	keys  map[int64][]string
-	teams map[int64][]int64
+	keys map[int64][]string
 }
-
-func (a scopedAuthz) Team(_ context.Context, uid, _ int64) ([]int64, error) { return a.teams[uid], nil }
 
 func (a scopedAuthz) PermissionSet(_ context.Context, uid int64) (core.PermissionSet, error) {
 	return core.PermissionSetOf(a.keys[uid]...), nil
@@ -56,10 +52,8 @@ func newAccountSide(t *testing.T) *accountSide {
 	for name, u := range map[string]*int64{"agent": &s.agent, "supplier": &s.supplier, "sub": &s.sub, "operator": &s.operator, "outsider": &s.outsider} {
 		*u = testutil.InsertUser(t, f.db, name+"@example.com")
 	}
-	_, err := f.db.SQL.ExecContext(ctx, `UPDATE users SET owner_id = $1 WHERE id = $2`, s.agent, s.supplier)
-	require.NoError(t, err)
-	_, err = f.db.SQL.ExecContext(ctx, `UPDATE users SET owner_id = $1 WHERE id = $2`, s.supplier, s.sub)
-	require.NoError(t, err)
+	testutil.SetOwner(t, f.db, s.supplier, s.agent)
+	testutil.SetOwner(t, f.db, s.sub, s.supplier)
 	account := func(name string, owner int64) int64 {
 		var id int64
 		require.NoError(t, f.db.SQL.QueryRowContext(ctx, `INSERT INTO accounts(name,plugin_key,type,credentials_enc,owner_id,created_by)
@@ -68,7 +62,7 @@ func newAccountSide(t *testing.T) *accountSide {
 	}
 	s.accAgent, s.accSup, s.accSupDel = account("Agent acc", s.agent), account("Sup acc", s.supplier), account("Sup old", s.supplier)
 	s.accSub, s.accOutsdr = account("Sub acc", s.sub), account("Outsider acc", s.outsider)
-	_, err = f.db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at = now() WHERE id = $1`, s.accSupDel)
+	_, err := f.db.SQL.ExecContext(ctx, `UPDATE accounts SET deleted_at = now() WHERE id = $1`, s.accSupDel)
 	require.NoError(t, err)
 
 	now := time.Now()
@@ -108,7 +102,6 @@ func newAccountSide(t *testing.T) *accountSide {
 			s.sub:      {"usage:account:read:own"},
 			s.operator: {"usage:account:read"},
 		},
-		teams: map[int64][]int64{s.agent: {s.supplier, s.sub}, s.supplier: {s.sub}},
 	}
 	f.h = gin.New()
 	f.svc.RegisterRoutes(httpapi.NewRouter(f.h, allowAll{}, az))

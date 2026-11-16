@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/hierarchy"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
 
@@ -41,9 +42,9 @@ func routeScopes(ctx context.Context) map[perm.Key]DataScope {
 }
 
 // Scope is the rows the caller (UserID) reaches with action in this
-// request, its access key applied and its team resolved (ResolveScope): the
-// route's (Router.PermScoped) when it computed one, otherwise asked of az.
-// No caller, or a nil az, reaches nothing.
+// request, its access key applied: the route's (Router.PermScoped) when it
+// computed one, otherwise asked of az. No caller, or a nil az, reaches
+// nothing.
 func Scope(ctx context.Context, az Authorizer, action perm.Key) (DataScope, error) {
 	if s, ok := routeScopes(ctx)[action]; ok {
 		return s, nil
@@ -56,39 +57,18 @@ func Scope(ctx context.Context, az Authorizer, action perm.Key) (DataScope, erro
 	if err != nil {
 		return DataScope{}, err
 	}
-	return ResolveScope(ctx, az, set.DataScope(uid, action), set.Version)
+	return set.DataScope(uid, action), nil
 }
 
-// MaxTeamDepth is how many levels of users.owner_id a team spans below its
-// holder, and the deepest an owner chain may grow (CONTRACTS §102).
+// MaxTeamDepth is how many levels of owners a user may have above it: a
+// team spans at most that many below its holder (CONTRACTS §102).
 const MaxTeamDepth = 8
 
-// TeamResolver is optionally implemented by an Authorizer, like
-// AuthzVersioner (authz implements it): the team of a holder of a team
-// scope.
-type TeamResolver interface {
-	// Team lists the users below uid, MaxTeamDepth levels of owner_id at
-	// most, soft-deleted users included, sorted, without uid; as of an
-	// authz version at least atLeast (the PermissionSet it expands). An
-	// error is the caller's 503, never an empty team.
-	Team(ctx context.Context, uid, atLeast int64) ([]int64, error)
-}
-
-// ResolveScope expands the team scope s may hold, of the PermissionSet at
-// version: its Owners gain the holder's team (az's TeamResolver), which
-// fails the call when it cannot be read. A scope without a team is
-// returned as is. While az resolves no team, a team reaches what own does.
-func ResolveScope(ctx context.Context, az Authorizer, s DataScope, version int64) (DataScope, error) {
-	r, ok := az.(TeamResolver)
-	if s.team == 0 || !ok {
-		return s, nil
-	}
-	team, err := r.Team(ctx, s.team, version)
-	if err != nil {
-		return DataScope{}, err
-	}
-	s.Owners, s.team = sortedSet(slices.Concat(s.Owners, team)), 0
-	return s, nil
+// UserTree is the users by owner (users.owner_id, with users.owner_path;
+// sdk/hierarchy): a team scope reaches the rows owned by a user below its
+// holder (ScopeTable), and authz moves users in it (OwnerGuard).
+func UserTree() hierarchy.Tree {
+	return hierarchy.Tree{Table: "users", ID: "id", Parent: "owner_id", Path: "owner_path", MaxDepth: MaxTeamDepth}
 }
 
 // ProxyRefScope is the proxies the caller may reference from an account

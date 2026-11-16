@@ -2,12 +2,14 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/hierarchy"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -15,13 +17,15 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// CheckOwner implements core.OwnerGuard (CONTRACTS §102.3). It takes the
-// authz lock (lockVersion), so the owner graph it reads cannot move under
-// it; the caller's Bump naming userID tells every node's teams of the move.
-// Whether the actor may name the owner is settled before anything about
-// the owner is read: a team holder learns nothing of a user outside its
-// team.
-func (s *Service) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
+// SetOwner implements core.OwnerGuard (CONTRACTS §102.3): the one writer
+// of users.owner_id and owner_path, which core.UserTree moves together
+// with the paths below the user. It takes the authz lock (lockVersion), so
+// the owners it reads cannot move under it and role writes judge owners
+// (ownersKeepManaging) one at a time with it. Whether the actor may name
+// the owner is settled before anything about the owner is read: a team
+// holder learns nothing of a user outside its team. A refusal after the
+// move fails the caller's transaction, which takes the move back.
+func (s *Service) SetOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
 	if err := store.RequireTx(tx); err != nil {
 		return 0, err
 	}
@@ -29,14 +33,23 @@ func (s *Service) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID i
 	if err := lockVersion(db); err != nil {
 		return 0, err
 	}
+	down, err := core.UserTree().Ancestors(db, userID)
+	if errors.Is(err, hierarchy.ErrNotFound) {
+		return 0, core.ErrNotFound.WithMessage(t(ctx, "user not found", "用户不存在"))
+	}
+	if err != nil {
+		return 0, err
+	}
 	var from int64
+	if len(down) > 0 {
+		from = down[len(down)-1]
+	}
+	if !create && (owner == nil || *owner == from) {
+		return from, nil
+	}
 	key := perm.UserCreate
 	if !create {
 		key = perm.UserUpdate
-		var err error
-		if from, err = ownerOf(db, userID); err != nil || owner == nil || *owner == from {
-			return from, err
-		}
 	}
 	all, team, err := s.namesOwners(ctx, actorID, key)
 	if err != nil {
@@ -55,16 +68,7 @@ func (s *Service) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID i
 	if to == from {
 		return to, nil
 	}
-	up, err := ownerChain(db, to)
-	if err != nil {
-		return 0, err
-	}
-	if to != 0 {
-		if err := s.ownerFits(ctx, db, userID, to, len(up)-1); err != nil {
-			return 0, err
-		}
-	}
-	down, err := ownerChain(db, from)
+	up, err := s.moveUser(ctx, db, userID, to)
 	if err != nil {
 		return 0, err
 	}
@@ -75,7 +79,7 @@ func (s *Service) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID i
 	var targets []int64
 	for _, c := range [][]int64{down, up} {
 		if i := slices.Index(c, actorID); i >= 0 {
-			c = c[:i]
+			c = c[i+1:]
 		}
 		targets = append(targets, c...)
 	}
@@ -87,6 +91,36 @@ func (s *Service) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID i
 		return 0, err
 	}
 	return to, s.audit(ctx, tx, actorID, "user.owner", "user", userID, map[string]any{"from": idOrNil(from), "to": idOrNil(to)})
+}
+
+// moveUser moves userID under owner (0: none) in core.UserTree and
+// returns its new chain of owners, top first. It fails, with a 400 on
+// owner_id, unless owner is another live user, not below userID, its
+// chain stays within core.MaxTeamDepth levels with userID's users below
+// it, and it manages userID by its roles.
+func (s *Service) moveUser(ctx context.Context, db *gorm.DB, userID, owner int64) ([]int64, error) {
+	if owner != 0 {
+		live, err := gormpg.Exists(db, db.Model(&model.User{}).Where("id = ? AND deleted_at IS NULL", owner))
+		if err != nil {
+			return nil, err
+		}
+		if !live {
+			return nil, badOwner(ctx, "owner_id", hierarchy.ErrNotFound.Code())
+		}
+	}
+	up, err := core.UserTree().Move(db, userID, owner)
+	var refused hierarchy.Error
+	if errors.As(err, &refused) {
+		return nil, badOwner(ctx, "owner_id", refused.Code())
+	}
+	if err != nil || owner == 0 {
+		return up, err
+	}
+	target, roles, err := s.usersRoles(ctx, db, []int64{userID})
+	if err != nil {
+		return nil, err
+	}
+	return up, s.ownerManages(ctx, db, owner, target, roles)
 }
 
 // namesOwners reports whether actorID, in this request, may name any owner
@@ -101,38 +135,6 @@ func (s *Service) namesOwners(ctx context.Context, actorID int64, key perm.Key) 
 	}
 	team, err = s.Can(ctx, actorID, string(perm.Pattern{Action: key, Scope: perm.Scope{Team: true}}.Key()))
 	return false, team, err
-}
-
-// ownerFits fails, with a 400 on owner_id, unless owner, with above
-// owners over it, may own userID: it is another live user, not below
-// userID, its chain stays within core.MaxTeamDepth levels with userID's
-// users below it, and it manages userID by its roles.
-func (s *Service) ownerFits(ctx context.Context, db *gorm.DB, userID, owner int64, above int) error {
-	if owner == userID {
-		return badOwner(ctx, "owner_id", "self")
-	}
-	live, err := gormpg.Exists(db, db.Model(&model.User{}).Where("id = ? AND deleted_at IS NULL", owner))
-	if err != nil {
-		return err
-	}
-	if !live {
-		return badOwner(ctx, "owner_id", "not_found")
-	}
-	below, levels, err := subtree(db, userID)
-	if err != nil {
-		return err
-	}
-	if _, ok := slices.BinarySearch(below, owner); ok {
-		return badOwner(ctx, "owner_id", "cycle")
-	}
-	if above+1+levels > core.MaxTeamDepth {
-		return badOwner(ctx, "owner_id", "too_deep")
-	}
-	target, roles, err := s.usersRoles(ctx, db, []int64{userID})
-	if err != nil {
-		return err
-	}
-	return s.ownerManages(ctx, db, owner, target, roles)
 }
 
 // ownerManages fails with owner_cannot_manage unless owner manages, by its
@@ -223,4 +225,13 @@ func idOrNil(id int64) any {
 		return nil
 	}
 	return id
+}
+
+// ownerOf is the owner of uid, 0 for none.
+func ownerOf(db *gorm.DB, uid int64) (int64, error) {
+	var owners []int64
+	if err := db.Model(&model.User{}).Where("id = ? AND owner_id IS NOT NULL", uid).Pluck("owner_id", &owners).Error; err != nil || len(owners) == 0 {
+		return 0, err
+	}
+	return owners[0], nil
 }

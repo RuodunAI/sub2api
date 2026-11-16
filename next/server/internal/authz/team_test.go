@@ -14,11 +14,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// setOwner makes owner (0: none) the owner of user, as a raw write the
-// version records and this node takes in.
+// setOwner makes owner (0: none) the owner of user, without authz's
+// checks (testutil.SetOwner).
 func setOwner(t *testing.T, s *Service, user, owner int64) {
 	t.Helper()
-	s.Committed(context.Background(), bumpWith(t, s, `UPDATE users SET owner_id = NULLIF(?::bigint, 0) WHERE id = ?`, owner, user))
+	testutil.SetOwner(t, s.db, user, owner)
 }
 
 // chained numbers the users chain adds.
@@ -37,61 +37,48 @@ func chain(t *testing.T, s *Service, top int64, n int, roles ...string) []int64 
 	return out
 }
 
-// A team is every user below its holder, core.MaxTeamDepth levels at most,
-// soft-deleted ones included (D7), sorted and without the holder; it is
-// cached for the authz version it was read at and read again for a newer
-// one; one that cannot be read at the version asked for is an error,
-// never empty.
+// teamOf lists the users holder reaches with user:read:team, through the
+// scope's statement.
+func teamOf(t *testing.T, s *Service, holder int64) []int64 {
+	t.Helper()
+	scope := core.PermissionSetOf("user:read:team").DataScope(holder, perm.UserRead)
+	var ids []int64
+	require.NoError(t, s.db.Gorm.Table("users u").Scopes(core.UserRows().Scope(scope)).Order("u.id").Pluck("u.id", &ids).Error)
+	return ids
+}
+
+// A team is every user below its holder, soft-deleted ones included (D7),
+// without the holder, read by each statement from the owner paths: a move
+// shows at once, on every node, with no cache to drop and no version to
+// wait for.
 func TestTeam(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
 	top := addUser(t, s, "top@x.com", RoleSupplierAgent)
-	c := chain(t, s, top, core.MaxTeamDepth+2)
+	c := chain(t, s, top, core.MaxTeamDepth)
 	side := addUser(t, s, "side@x.com", RoleSupplier)
 	setOwner(t, s, side, c[0])
 	_, err := db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, side)
 	require.NoError(t, err)
-	v := s.Version()
 
-	team, err := s.Team(ctx, top, v)
-	require.NoError(t, err)
-	want := append([]int64{side}, c[:core.MaxTeamDepth]...)
-	require.ElementsMatch(t, want, team, "eight levels, the deleted user included")
-	require.IsIncreasing(t, team)
-	team, err = s.Team(ctx, c[core.MaxTeamDepth], v)
-	require.NoError(t, err)
-	require.Equal(t, []int64{c[core.MaxTeamDepth+1]}, team)
+	require.ElementsMatch(t, append([]int64{side}, c...), teamOf(t, s, top), "eight levels, the deleted user included")
+	require.Equal(t, c[2:], teamOf(t, s, c[1]))
+	require.Empty(t, teamOf(t, s, c[core.MaxTeamDepth-1]))
 
-	// A write the version does not record is not seen at that version (the
-	// team is cached), and is once the version moves on.
 	loner := addUser(t, s, "loner@x.com", RoleSupplier)
-	v = s.Version()
-	team, err = s.Team(ctx, c[core.MaxTeamDepth+1], v)
-	require.NoError(t, err)
-	require.Empty(t, team)
-	_, err = db.SQL.ExecContext(ctx, `UPDATE users SET owner_id = $1 WHERE id = $2`, c[core.MaxTeamDepth+1], loner)
-	require.NoError(t, err)
-	team, err = s.Team(ctx, c[core.MaxTeamDepth+1], v)
-	require.NoError(t, err)
-	require.Empty(t, team, "cached at the version")
-	s.Committed(ctx, bump(t, s))
-	team, err = s.Team(ctx, c[core.MaxTeamDepth+1], s.Version())
-	require.NoError(t, err)
-	require.Equal(t, []int64{loner}, team)
-
-	// A version the database has not reached: unavailable, not empty.
-	_, err = s.Team(ctx, top, s.Version()+5)
-	require.True(t, isCode(err, core.ErrUnavailable.Code), "%v", err)
-	_, err = New(Deps{}).Team(ctx, top, 1)
-	require.Error(t, err)
+	setOwner(t, s, loner, c[core.MaxTeamDepth-2])
+	require.Contains(t, teamOf(t, s, top), loner)
+	setOwner(t, s, c[1], 0)
+	require.ElementsMatch(t, []int64{side, c[0]}, teamOf(t, s, top), "c[1] took its users along")
+	require.Contains(t, teamOf(t, s, c[1]), loner)
 }
 
-// core.Scope (and Router.PermScoped, through the same ResolveScope) reach
-// the rows of the holder's team with a team scope: accounts owned by a user
+// core.Scope (and Router.PermScoped) give a team scope its holder, as an
+// owner and as the top of a team: accounts owned by the holder or a user
 // below it, users below it (not itself), never anyone else's; an access
-// key narrows team to own before it is resolved (CONTRACTS §102.2).
+// key narrows team to own (CONTRACTS §102.2).
 func TestTeamScope(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
@@ -101,17 +88,17 @@ func TestTeamScope(t *testing.T) {
 	other := addUser(t, s, "other@x.com", RoleSupplierAgent)
 	stranger := chain(t, s, other, 1, RoleSupplier)[0]
 	ctx := core.WithUserID(context.Background(), agent)
+	team := core.DataScope{Owners: []int64{agent}, Teams: []int64{agent}}
 
 	accounts, err := core.Scope(ctx, s, perm.AccountRead)
 	require.NoError(t, err)
-	require.Equal(t, append([]int64{agent}, sub...), accounts.Owners)
-	require.False(t, accounts.All)
+	require.Equal(t, team, accounts)
 	usage, err := core.Scope(ctx, s, perm.UsageAccountRead)
 	require.NoError(t, err)
-	require.Equal(t, accounts.Owners, usage.Owners)
+	require.Equal(t, team, usage)
 	update, err := core.Scope(ctx, s, perm.AccountUpdate)
 	require.NoError(t, err)
-	require.Equal(t, []int64{agent}, update.Owners, "own stays own")
+	require.Equal(t, core.DataScope{Owners: []int64{agent}}, update, "own stays own")
 
 	users, err := core.Scope(ctx, s, perm.UserRead)
 	require.NoError(t, err)
@@ -123,10 +110,10 @@ func TestTeamScope(t *testing.T) {
 	keyed := core.WithAccessKey(ctx, core.AccessKeyIdentity{UserID: agent, Permissions: []string{"account:read:own", "user:read"}})
 	accounts, err = core.Scope(keyed, s, perm.AccountRead)
 	require.NoError(t, err)
-	require.Equal(t, []int64{agent}, accounts.Owners)
+	require.Equal(t, core.DataScope{Owners: []int64{agent}}, accounts)
 	users, err = core.Scope(keyed, s, perm.UserRead)
 	require.NoError(t, err)
-	require.Equal(t, append([]int64{agent}, sub...), users.Owners)
+	require.Equal(t, team, users)
 }
 
 // Whom a team holder acts on (plan 1.8, 5.2): the users below it alone,

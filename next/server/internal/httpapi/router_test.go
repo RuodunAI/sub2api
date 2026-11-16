@@ -373,49 +373,26 @@ func TestPermScoped(t *testing.T) {
 	}
 }
 
-// teamAuthz resolves teams (core.TeamResolver): fixed ones, an error for
-// any other holder.
-type teamAuthz struct {
-	fakeAuthz
-	teams map[int64][]int64
-}
-
-func (a teamAuthz) Team(_ context.Context, uid, _ int64) ([]int64, error) {
-	if team, ok := a.teams[uid]; ok {
-		return team, nil
-	}
-	return nil, core.ErrUnavailable
-}
-
-// PermScoped hands the handler a team scope resolved, and fails the request
-// when the team cannot be read rather than narrowing it.
-func TestPermScopedResolvesTeam(t *testing.T) {
+// PermScoped hands the handler a team scope as compiled: the holder as an
+// owner and as the top of its team, whose users the statements read.
+func TestPermScopedTeam(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	r := NewRouter(engine, fakeTokens{}, teamAuthz{fakeAuthz{keys: map[int64][]string{
-		5: {"account:read:team", "account:update:own"},
-		6: {"account:read:team"},
-	}}, map[int64][]int64{5: {9, 8}}})
+	r := NewRouter(engine, fakeTokens{}, fakeAuthz{keys: map[int64][]string{5: {"account:read:team", "account:update:own"}}})
 	r.PermScoped("GET", "/accounts", func(c *gin.Context) {
 		ctx := c.Request.Context()
 		read, _ := core.Scope(ctx, nil, perm.AccountRead)
 		update, _ := core.Scope(ctx, nil, perm.AccountUpdate)
-		OK(c, [][]int64{read.Owners, update.Owners})
+		OK(c, []core.DataScope{read, update})
 	}, perm.AccountRead, perm.AccountUpdate)
-	call := func(uid int64) (int, [][]int64) {
-		req := httptest.NewRequest("GET", "/api/v1/accounts", nil)
-		req.Header.Set("Authorization", "Bearer u"+strconv.FormatInt(uid, 10))
-		w := httptest.NewRecorder()
-		engine.ServeHTTP(w, req)
-		var out struct {
-			Data [][]int64 `json:"data"`
-		}
-		_ = json.Unmarshal(w.Body.Bytes(), &out)
-		return w.Code, out.Data
+	req := httptest.NewRequest("GET", "/api/v1/accounts", nil)
+	req.Header.Set("Authorization", "Bearer u5")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	var out struct {
+		Data []core.DataScope `json:"data"`
 	}
-	code, owners := call(5)
-	require.Equal(t, http.StatusOK, code)
-	require.Equal(t, [][]int64{{5, 8, 9}, {5}}, owners, "the team joins the holder; own stays own")
-	code, _ = call(6)
-	require.Equal(t, http.StatusServiceUnavailable, code)
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, []core.DataScope{{Owners: []int64{5}, Teams: []int64{5}}, {Owners: []int64{5}}}, out.Data, "own stays own")
 }

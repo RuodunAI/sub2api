@@ -544,8 +544,10 @@ func TestMigration0102DropsCCGatewayAndLegacy(t *testing.T) {
 }
 
 // 0103 adds the owners of CONTRACTS §102: an account's owner starts as its
-// creator, a user cannot own itself or a missing user, a hard delete of an
-// owner clears what it owned, and a rerun keeps an owner moved since.
+// creator, a user cannot own itself or a missing user, its owner path ends
+// with its owner and is computed from owner_id (again on a rerun), a user
+// that owns others is not hard-deleted, a hard delete of an account's
+// owner clears it, and a rerun keeps an account owner moved since.
 func TestMigration0103UserAndAccountOwners(t *testing.T) {
 	const id = "0103_user_owner.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
@@ -587,18 +589,32 @@ func TestMigration0103UserAndAccountOwners(t *testing.T) {
 	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
 	require.Equal(t, "limited=a@x mine=a@x nobody=-", read(owners))
 	require.Equal(t, before, read(rows), "the backfill changed an account or its quota snapshot")
-	require.Equal(t, "2", read(`SELECT count(*)::text FROM pg_indexes WHERE indexname IN ('users_owner_idx', 'accounts_owner_idx')`))
-	require.ErrorContains(t, exec(`UPDATE users SET owner_id = id WHERE email = 'a@x'`), "users_owner_not_self")
-	require.ErrorContains(t, exec(`UPDATE users SET owner_id = 999999 WHERE email = 'a@x'`), "users_owner_fk")
+	require.Equal(t, "3", read(`SELECT count(*)::text FROM pg_indexes WHERE indexname IN ('users_owner_idx', 'users_owner_path_idx', 'accounts_owner_idx')`))
+	require.ErrorContains(t, exec(`UPDATE users SET owner_id = id, owner_path = ARRAY[id] WHERE email = 'a@x'`), "users_owner_not_self")
+	require.ErrorContains(t, exec(`UPDATE users SET owner_id = 999999, owner_path = '{999999}' WHERE email = 'a@x'`), "users_owner_fk")
+	require.ErrorContains(t, exec(`UPDATE users SET owner_id = (SELECT id FROM users WHERE email = 'b@x') WHERE email = 'a@x'`), "users_owner_path_ck")
 	require.ErrorContains(t, exec(`UPDATE accounts SET owner_id = 999999`), "accounts_owner_fk")
 
-	require.NoError(t, exec(`UPDATE accounts SET owner_id = (SELECT id FROM users WHERE email = 'b@x') WHERE name = 'mine';
+	// A rerun computes every path from owner_id (here with the paths
+	// emptied and their check dropped), the same ones again.
+	paths := `SELECT string_agg(email || '=' || owner_path::text, ' ' ORDER BY email) FROM users`
+	require.NoError(t, exec(`INSERT INTO users (email, password_hash) VALUES ('c@x', '');
+		UPDATE accounts SET owner_id = (SELECT id FROM users WHERE email = 'b@x') WHERE name = 'mine';
+		ALTER TABLE users DROP CONSTRAINT users_owner_path_ck;
 		UPDATE users SET owner_id = (SELECT id FROM users WHERE email = 'a@x') WHERE email = 'b@x';
+		UPDATE users SET owner_id = (SELECT id FROM users WHERE email = 'b@x') WHERE email = 'c@x';
 		DELETE FROM schema_migrations WHERE id = '`+id+`'`))
 	require.Equal(t, []string{id}, migrate())
 	require.Equal(t, "limited=a@x mine=b@x nobody=-", read(owners), "a rerun moved an owner back")
+	want := read(`SELECT format('a@x={} b@x={%s} c@x={%s,%s}', a.id, a.id, b.id) FROM users a, users b WHERE a.email = 'a@x' AND b.email = 'b@x'`)
+	require.Equal(t, want, read(paths))
+	require.NoError(t, exec(`DELETE FROM schema_migrations WHERE id = '`+id+`'`))
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, read(paths), "a second rerun")
 
-	require.NoError(t, exec(`DELETE FROM users WHERE email = 'b@x'`))
+	// A user that owns others is not deleted: its id is in their paths.
+	require.ErrorContains(t, exec(`DELETE FROM users WHERE email = 'b@x'`), "users_owner_fk")
+	require.NoError(t, exec(`DELETE FROM users WHERE email = 'c@x'; DELETE FROM users WHERE email = 'b@x'`))
 	require.Equal(t, "limited=a@x mine=- nobody=-", read(owners))
 	require.Equal(t, "0", read(`SELECT count(*)::text FROM users WHERE owner_id IS NOT NULL`))
 }

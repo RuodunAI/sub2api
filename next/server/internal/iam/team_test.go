@@ -139,12 +139,12 @@ func TestUsersTeamScope(t *testing.T) {
 		t.Fatalf("segment members: %d %v", code, out)
 	}
 	if len(e.owners.calls) != 0 {
-		t.Fatalf("CheckOwner called without owner_id: %+v", e.owners.calls)
+		t.Fatalf("SetOwner called without owner_id: %+v", e.owners.calls)
 	}
 }
 
-// The owner of a new or updated user is the one CheckOwner gives, judged
-// in the same transaction; a team-only creator owns what it creates
+// The owner of a new or updated user is the one SetOwner judges and
+// writes in the same transaction; a team-only creator owns what it creates
 // (CONTRACTS §102.3).
 func TestUserOwner(t *testing.T) {
 	t.Parallel()
@@ -157,7 +157,7 @@ func TestUserOwner(t *testing.T) {
 	lastCall := func() ownerCall {
 		t.Helper()
 		if len(e.owners.calls) == 0 {
-			t.Fatal("CheckOwner not called")
+			t.Fatal("SetOwner not called")
 		}
 		return e.owners.calls[len(e.owners.calls)-1]
 	}
@@ -169,7 +169,7 @@ func TestUserOwner(t *testing.T) {
 	}
 	made := int64(out["data"].(map[string]any)["id"].(float64))
 	if c := lastCall(); !c.create || c.actor != e.agent || c.user != made || c.owner != nil {
-		t.Fatalf("CheckOwner on create: %+v", c)
+		t.Fatalf("SetOwner on create: %+v", c)
 	}
 	equalIDs(t, "team with the new user", e.ids(t, e.agentTok, "/users"), e.sub, made)
 
@@ -178,14 +178,14 @@ func TestUserOwner(t *testing.T) {
 		t.Fatalf("root creates: %d %v", code, out)
 	}
 	if c := lastCall(); c.owner != nil {
-		t.Fatalf("CheckOwner on a default create: %+v", c)
+		t.Fatalf("SetOwner on a default create: %+v", c)
 	}
 	code, out = e.call(e.rootTok, "POST", "/users", map[string]any{"email": "placed@example.com", "password": adminPassword, "owner_id": e.other})
 	if code != 201 || out["data"].(map[string]any)["owner_email"] != "other@example.com" {
 		t.Fatalf("root creates under other: %d %v", code, out)
 	}
 
-	// A refusal of CheckOwner rolls the create back.
+	// A refusal of SetOwner rolls the create back.
 	e.owners.err = core.ErrPermissionDenied
 	if code, out := e.call(e.agentTok, "POST", "/users", map[string]any{"email": "escape@example.com", "password": adminPassword, "role_keys": []string{authz.RoleSupplier}, "owner_id": e.other}); code != 403 {
 		t.Fatalf("refused create: %d %v", code, out)
@@ -218,7 +218,7 @@ func TestUserOwner(t *testing.T) {
 		t.Fatalf("move: %d %v", code, out)
 	}
 	if c := lastCall(); c.create || c.actor != e.root || c.user != e.outsider || *c.owner != e.agent {
-		t.Fatalf("CheckOwner on update: %+v", c)
+		t.Fatalf("SetOwner on update: %+v", c)
 	}
 	equalIDs(t, "team with the moved user", e.ids(t, e.agentTok, "/users"), e.sub, e.outsider, made)
 	if code, out := e.call(e.rootTok, "PATCH", e.path(e.outsider), map[string]any{"display_name": "Kept", "owner_id": nil}); code != 200 || ownerOf(e.outsider) != float64(e.agent) || len(e.owners.calls) != 1 {
