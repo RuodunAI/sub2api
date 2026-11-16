@@ -258,20 +258,14 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 
 // settingValue reads the document of settings row key, nil when there is no
 // row (the column is NOT NULL). The settings cache reloads it on the request
-// path, so it is Raw SQL scanned through Row, the form that allocates least
-// (BenchmarkHotSettingsRow).
+// path: Raw SQL scanned through Row.
 func settingValue(ctx context.Context, q *gorm.DB, key string) ([]byte, error) {
 	var raw []byte
-	err := settingValueQuery(store.G(ctx, q), key).Row().Scan(&raw)
+	err := store.G(ctx, q).Raw(`SELECT value FROM settings WHERE key = ?`, key).Row().Scan(&raw)
 	if store.IsNoRows(err) {
 		return nil, nil
 	}
 	return raw, err
-}
-
-// settingValueQuery selects the document of settings row key.
-func settingValueQuery(db *gorm.DB, key string) *gorm.DB {
-	return db.Raw(`SELECT value FROM settings WHERE key = ?`, key)
 }
 
 func loadSettingsRow(ctx context.Context, q *gorm.DB, key string, into any) error {

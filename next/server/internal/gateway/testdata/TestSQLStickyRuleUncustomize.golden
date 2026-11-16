@@ -1,6 +1,0 @@
--- sql
-UPDATE "sticky_rules" SET "customized"=$1,"updated_by"=$2 WHERE id = $3
--- vars
-$1 bool false
-$2 *int64 7
-$3 int64 5
