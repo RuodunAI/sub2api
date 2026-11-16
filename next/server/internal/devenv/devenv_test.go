@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -147,6 +148,30 @@ func TestPrepareCallerServers(t *testing.T) {
 		t.Fatalf("env %+v ignored the caller's servers", env)
 	}
 	checkLoads(t, env)
+}
+
+// The in-memory Redis expires keys with the wall clock, as cooldowns,
+// sessions, slots and locks need.
+func TestMemoryRedisExpires(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("DATABASE_URL", "postgres://caller@db.invalid/app")
+	env, err := Prepare(context.Background(), Options{StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer env.Close()
+	ctx := context.Background()
+	opt, _ := redis.ParseURL(env.RedisURL)
+	rdb := redis.NewClient(opt)
+	defer rdb.Close()
+	if err := rdb.Set(ctx, "ttl", "1", 200*time.Millisecond).Err(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); rdb.Exists(ctx, "ttl").Val() == 1; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("in-memory redis never expires a key")
+		}
+	}
 }
 
 func hasMarker(t *testing.T, dsn string) bool {

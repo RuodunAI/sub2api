@@ -21,6 +21,7 @@ type UserSpec struct {
 	Password    string
 	DisplayName string
 	Roles       []string
+	OwnerID     *int64 // owner_id (CONTRACTS §102.3); nil leaves it to the server
 }
 
 // CreateUser creates a user with POST /users and logs in as that user.
@@ -41,7 +42,7 @@ func (e *Env) CreateUser(admin *Session, u UserSpec) *Session {
 	// Assigning a non-default role at creation needs role:assign.
 	d := admin.OK(e.T, http.MethodPost, "/users", map[string]any{
 		"email": u.Email, "display_name": u.DisplayName, "password": u.Password,
-		"role_keys": u.Roles,
+		"role_keys": u.Roles, "owner_id": u.OwnerID,
 	})
 	id := d.Get("id").Int()
 	if id == 0 {

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
@@ -171,10 +172,11 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_type = 'role' A
 	}
 }
 
-// An upgrade creating the supplier agent role hands it what the plugins
-// installed before gave users and suppliers by default
-// (manifest.RoleDefaultsFrom), or what their defaults name for it, each audited with via
-// plugin_default; nothing of a staged version, nothing for other roles.
+// An upgrade creating the supplier agent role hands it the plugin grants
+// users and suppliers hold then (manifest.RoleDefaultsFrom), together and
+// canonical, each audited with via plugin_default: not a manifest default
+// nobody holds (removed at consent or held for review), nothing of a staged
+// version, nothing of other roles.
 func TestSyncCoreGivesNewRolePluginDefaults(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
@@ -187,27 +189,34 @@ func TestSyncCoreGivesNewRolePluginDefaults(t *testing.T) {
 INSERT INTO plugins (key, name, status) VALUES ('px', '{"en":"P"}', 'installed');
 INSERT INTO permissions (key, module, label, source, plugin_key, status, scope_type, defaults) VALUES
 	('plugin.px:use', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"supplier": [""], "user": [""]}'),
-	('plugin.px:flow', 'plugin.px', '{}', 'plugin', 'px', 'active', 'plugin:flow', '{"supplier": [""], "supplier_agent": ["own"]}'),
+	('plugin.px:flow', 'plugin.px', '{}', 'plugin', 'px', 'active', 'plugin:flow', '{"supplier": ["own"], "user": [""]}'),
+	('plugin.px:mine', 'plugin.px', '{}', 'plugin', 'px', 'active', 'plugin:flow', '{"supplier": ["own"]}'),
 	('plugin.px:self', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"user": [""]}'),
 	('plugin.px:admin', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"admin": [""]}'),
 	('plugin.px:next', 'plugin.px', '{}', 'plugin', 'px', 'staged', '', '{"supplier": [""]}')`); err != nil {
 		t.Fatal(err)
 	}
+	testutil.Grant(t, db, RoleUser, "plugin.px:use")
+	testutil.Grant(t, db, RoleSupplier, "plugin.px:use")
+	testutil.Grant(t, db, RoleUser, "plugin.px:flow")
+	testutil.Grant(t, db, RoleSupplier, "plugin.px:flow", "own")
+	testutil.Grant(t, db, RoleSupplier, "plugin.px:mine", "own")
+	testutil.Grant(t, db, RoleAdmin, "plugin.px:admin")
+	testutil.Grant(t, db, RoleSupplier, "plugin.px:next")
 	if err := s.SyncCore(ctx); err != nil {
 		t.Fatal(err)
 	}
 	id := roleID(t, s, RoleSupplierAgent)
 	plain, scoped := grantRows(t, s, id)
-	if !slices.Contains(plain, "plugin.px:use") || !slices.Contains(plain, "plugin.px:self") || !slices.Contains(scoped, "plugin.px:flow:own") ||
-		slices.ContainsFunc(append(plain, scoped...), func(k string) bool {
-			return k == "plugin.px:flow" || k == "plugin.px:admin" || k == "plugin.px:next"
-		}) {
-		t.Fatalf("supplier agent holds %v %v", plain, scoped)
+	got := slices.Sorted(slices.Values(slices.DeleteFunc(append(plain, scoped...), func(k string) bool { return !strings.HasPrefix(k, "plugin.") })))
+	want := []string{"plugin.px:flow", "plugin.px:mine:own", "plugin.px:use"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("supplier agent holds %v, want %v", got, want)
 	}
 	var keys []string
 	if err := db.SQL.QueryRowContext(ctx, `SELECT array_agg(detail->>'key' ORDER BY detail->>'key') FROM audit_logs
 WHERE action = 'authz.sync.grant' AND target_id = $1 AND detail->>'via' = 'plugin_default' AND detail->>'role_created' = 'true'`,
-		strconv.FormatInt(id, 10)).Scan(&keys); err != nil || !slices.Equal(keys, []string{"plugin.px:flow:own", "plugin.px:self", "plugin.px:use"}) {
+		strconv.FormatInt(id, 10)).Scan(&keys); err != nil || !slices.Equal(keys, want) {
 		t.Fatalf("audited %v, %v", keys, err)
 	}
 }

@@ -153,6 +153,7 @@ func TestCanActOnUsersTeam(t *testing.T) {
 	require.True(t, notInTeam(s.CanActOnUsers(ctx, agent, core.ActOnIdentity, sub, outsider)))
 	require.True(t, notInTeam(s.CanActOnUsers(ctx, agent, core.ActOnIdentity, agent)), "not itself")
 	require.True(t, notInTeam(setRoles(s, agent, outsider, RoleUser, RoleSupplier)), "assign outside the team")
+	require.True(t, notInTeam(setRoles(s, agent, outsider, RoleUser)), "the user's own roles again: no read past the team")
 	require.True(t, notInTeam(setRoles(s, agent, agent, RoleSupplierAgent, RoleSupplier)), "assign to itself")
 	require.True(t, isCode(setRoles(s, agent, sub, RoleUser, RoleOperator), "permission_denied"), "not assignable")
 	require.NoError(t, setRoles(s, agent, sub, RoleUser, RoleSupplier))

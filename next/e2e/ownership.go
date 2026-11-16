@@ -51,19 +51,16 @@ func (e *Env) NewUserWithRoles(admin *Session, roleKey string, perms []string) (
 }
 
 // OwnedAccountBody builds a POST /accounts body for an anthropic/apikey
-// account that a caller without account:settings:custom may create: no
-// base_url (the plugin normalises it to the official address) and no
-// proxy_id key. extra is merged on top (e.g. "proxy_url", "proxy_id",
+// account that a caller without account:settings:custom or
+// account:group:bind may create: no groups, no base_url (the plugin
+// normalises it to the official address) and no proxy_id key. extra is merged on top (e.g. "proxy_url", "proxy_id",
 // "credentials").
-func (e *Env) OwnedAccountBody(name string, groupIDs []int64, extra map[string]any) map[string]any {
+func (e *Env) OwnedAccountBody(name string, extra map[string]any) map[string]any {
 	if name == "" {
 		name = e.Name("own-acct")
 	}
-	if groupIDs == nil {
-		groupIDs = []int64{}
-	}
 	body := map[string]any{
-		"name": name, "plugin_key": AnthropicPlugin, "type": AnthropicAPIKey, "group_ids": groupIDs,
+		"name": name, "plugin_key": AnthropicPlugin, "type": AnthropicAPIKey, "group_ids": []int64{},
 		"priority": 10, "max_concurrency": 5, "schedulable": true,
 		"credentials": map[string]any{"api_key": "sk-ant-mock-" + e.Name("own")},
 	}

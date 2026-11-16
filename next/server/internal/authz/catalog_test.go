@@ -341,6 +341,92 @@ func TestSyncCoreRefusesCustomRoleOnBuiltinKey(t *testing.T) {
 	}
 }
 
+// The upgrade to 0.1.291 (CONTRACTS §102.1) on a database a 0.1.290 sync
+// left behind, rewound here from a current one: no supplier_agent, supplier
+// at rev 1, no usage:account:read or account:owner:update; and as in
+// production after edits, a custom role on the key supplier_agent, a held
+// supplier role that lost a default and got an extra grant. The sync stops
+// with the rename and changes nothing; after it, it is the one release
+// behaviour: the built-in role as on a new database, supplier filled to
+// rev 2 (the default an administrator removed comes back, the extra one
+// stays), the new keys granted, and a supplier holder past what the agent
+// role carries is one agents do not manage. A second sync changes nothing.
+func TestSyncCoreUpgradeTo0291(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fresh := testutil.DB(t)
+	if err := New(Deps{DB: fresh}).SyncCore(ctx); err != nil {
+		t.Fatal(err)
+	}
+	db := testutil.DB(t)
+	if err := New(Deps{DB: db}).SyncCore(ctx); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := db.SQL.ExecContext(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	newKeys := []string{string(perm.UsageAccountRead), string(perm.AccountOwnerUpdate)}
+	agent, supplier := casbinrule.RoleSub(RoleSupplierAgent), casbinrule.RoleSub(RoleSupplier)
+	exec(`DELETE FROM casbin_rule WHERE v0 = $1 OR v1 = $1 OR v1 = ANY($2)`, agent, newKeys)
+	exec(`DELETE FROM roles WHERE key = $1`, RoleSupplierAgent)
+	exec(`DELETE FROM permissions WHERE key = ANY($1)`, newKeys)
+	exec(`UPDATE roles SET defaults_rev = 1 WHERE key = $1`, RoleSupplier)
+	exec(`DELETE FROM casbin_rule WHERE ptype = 'p' AND v0 = $1 AND v1 = 'account:delete'`, supplier)
+	testutil.Grant(t, db, RoleSupplier, "account:group:bind")
+	exec(`INSERT INTO roles (key, name) VALUES ($1, '{"en":"agents"}')`, RoleSupplierAgent)
+	testutil.Grant(t, db, RoleSupplierAgent, "account:read", "own")
+	custom := testutil.InsertUser(t, db, "custom@x.com")
+	testutil.AssignRoles(t, db, custom, RoleSupplierAgent)
+	held := testutil.InsertUser(t, db, "supplier@x.com")
+	testutil.AssignRoles(t, db, held, RoleUser, RoleSupplier)
+	testutil.BumpAuthz(t, db)
+
+	s := New(Deps{DB: db})
+	id := roleID(t, s, RoleSupplierAgent)
+	v1, err := s.currentVersion(ctx)
+	require.NoError(t, err)
+	fix := casbinrule.RenameRoleSQL(id, RoleSupplierAgent, RoleSupplierAgent+"_custom")
+	err = s.Start(ctx)
+	require.ErrorContains(t, err, fix)
+	v2, err := s.currentVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, v1, v2, "a refused sync bumped the version")
+	var rev int
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT defaults_rev FROM roles WHERE key = $1`, RoleSupplier).Scan(&rev))
+	require.Equal(t, 1, rev, "a refused sync moved the supplier on")
+	var n int
+	require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM permissions WHERE key = ANY($1)`, newKeys).Scan(&n))
+	require.Zero(t, n, "a refused sync wrote permissions")
+
+	exec(fix)
+	s = newService(t, db, newMemBus(), nil)
+	require.Equal(t, testutil.GrantKeys(t, fresh, RoleSupplierAgent), testutil.GrantKeys(t, db, RoleSupplierAgent))
+	require.Equal(t, slices.Sorted(slices.Values(append(testutil.GrantKeys(t, fresh, RoleSupplier), "account:group:bind"))), testutil.GrantKeys(t, db, RoleSupplier))
+	for _, role := range []string{RoleAdmin, RoleOperator} {
+		require.Equal(t, testutil.GrantKeys(t, fresh, role), testutil.GrantKeys(t, db, role), role)
+	}
+	require.Equal(t, []string{"account:read:own"}, testutil.GrantKeys(t, db, RoleSupplierAgent+"_custom"))
+	require.Equal(t, []string{RoleSupplierAgent + "_custom"}, testutil.RoleKeys(t, db, custom))
+	got, _ := assignableOf(t, s, RoleAdmin)
+	require.Contains(t, got, RoleSupplierAgent)
+
+	agentUser := addUser(t, s, "agent@x.com", RoleSupplierAgent)
+	setOwner(t, s, held, agentUser)
+	err = s.CanActOnUsers(ctx, agentUser, core.ActOnIdentity, held)
+	require.True(t, isCode(err, "permission_denied"), "an agent manages a supplier holding more than the agent role: %v", err)
+	require.Equal(t, []string{"account:group:bind"}, detail(err, "missing"))
+
+	v3, err := s.currentVersion(ctx)
+	require.NoError(t, err)
+	require.NoError(t, s.SyncCore(ctx))
+	v4, err := s.currentVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, v3, v4, "a second sync changed something")
+}
+
 // Every catalog key (core and self modules) has its perm constant and every
 // constant names a catalog key, once each (T66).
 func TestKeyConstantsMatchCatalog(t *testing.T) {

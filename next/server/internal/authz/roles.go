@@ -702,7 +702,8 @@ func setAssignCustom(db *gorm.DB, id int64, custom bool) *gorm.DB {
 // SetUserRoles replaces a user's roles inside tx, bumping the authz version
 // (call Committed with the returned version after commit). actorID is the
 // acting user (0 = system); checkAssignment judges what the change adds and
-// removes, and a change is audited as user.roles.
+// removes, and a change is audited as user.roles. An unchanged set is only
+// held to the team step, as the caller shows the user.
 func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID int64, roleKeys []string) (int64, error) {
 	v, err := s.Bump(ctx, tx, userID)
 	if err != nil {
@@ -718,6 +719,14 @@ func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID
 	}
 	added, removed := diffRoles(want, cur), diffRoles(cur, want)
 	if len(added)+len(removed) == 0 {
+		// A team holder reads no user past its team (CONTRACTS §102.3).
+		actor, err := s.usersRoleSet(ctx, tx, []int64{actorID})
+		if err == nil {
+			err = withinTeam(ctx, tx, actorID, actor, []int64{userID})
+		}
+		if err != nil {
+			return 0, err
+		}
 		return v, nil
 	}
 	if err := s.checkAssignment(ctx, tx, actorID, userID, len(cur) == 0, want, added, removed); err != nil {

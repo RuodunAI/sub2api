@@ -569,10 +569,24 @@ func TestMigration0103UserAndAccountOwners(t *testing.T) {
 	require.NoError(t, exec(`INSERT INTO users (email, password_hash) VALUES ('a@x', ''), ('b@x', '');
 		INSERT INTO accounts (name, plugin_key, type, credentials_enc, created_by) SELECT 'mine', 'p', 't', '', id FROM users WHERE email = 'a@x';
 		INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('nobody', 'p', 't', '')`))
+	// The backfill fires the accounts triggers (0053, 0070): an account
+	// auto-disabled by a usage limit with a deferred disable, and its quota
+	// snapshot, come out as they went in, owner_id aside.
+	require.NoError(t, exec(`SET sup2api.auto_disabled_source = 'written';
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc, created_by, status, auto_disabled_source, auto_disabled_until,
+			deferred_auto_disable, deferred_auto_disable_reason, deferred_auto_disabled_until)
+		SELECT 'limited', 'p', 't', '', id, 'auto_disabled', 'usage_limit', now() + interval '1 hour', true, 'limit', now() + interval '1 hour'
+		FROM users WHERE email = 'a@x';
+		INSERT INTO account_quota_snapshots (account_id, windows, updated_at, auto_refresh) SELECT id, '{"5h": {}}', now(), true FROM accounts;
+		RESET sup2api.auto_disabled_source`))
+	rows := `SELECT md5(string_agg((to_jsonb(a) - 'owner_id')::text || to_jsonb(q)::text, '' ORDER BY a.id))
+		FROM accounts a JOIN account_quota_snapshots q ON q.account_id = a.id`
+	before := read(rows)
 	owners := `SELECT string_agg(a.name || '=' || COALESCE(u.email, '-'), ' ' ORDER BY a.name) FROM accounts a LEFT JOIN users u ON u.id = a.owner_id`
 
 	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
-	require.Equal(t, "mine=a@x nobody=-", read(owners))
+	require.Equal(t, "limited=a@x mine=a@x nobody=-", read(owners))
+	require.Equal(t, before, read(rows), "the backfill changed an account or its quota snapshot")
 	require.Equal(t, "2", read(`SELECT count(*)::text FROM pg_indexes WHERE indexname IN ('users_owner_idx', 'accounts_owner_idx')`))
 	require.ErrorContains(t, exec(`UPDATE users SET owner_id = id WHERE email = 'a@x'`), "users_owner_not_self")
 	require.ErrorContains(t, exec(`UPDATE users SET owner_id = 999999 WHERE email = 'a@x'`), "users_owner_fk")
@@ -582,10 +596,10 @@ func TestMigration0103UserAndAccountOwners(t *testing.T) {
 		UPDATE users SET owner_id = (SELECT id FROM users WHERE email = 'a@x') WHERE email = 'b@x';
 		DELETE FROM schema_migrations WHERE id = '`+id+`'`))
 	require.Equal(t, []string{id}, migrate())
-	require.Equal(t, "mine=b@x nobody=-", read(owners), "a rerun moved an owner back")
+	require.Equal(t, "limited=a@x mine=b@x nobody=-", read(owners), "a rerun moved an owner back")
 
 	require.NoError(t, exec(`DELETE FROM users WHERE email = 'b@x'`))
-	require.Equal(t, "mine=- nobody=-", read(owners))
+	require.Equal(t, "limited=a@x mine=- nobody=-", read(owners))
 	require.Equal(t, "0", read(`SELECT count(*)::text FROM users WHERE owner_id IS NOT NULL`))
 }
 

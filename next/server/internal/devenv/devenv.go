@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 
@@ -73,15 +74,43 @@ type Env struct {
 	// is lost when the process exits.
 	MemoryRedis bool
 
-	redis *miniredis.Miniredis
+	redis     *miniredis.Miniredis
+	stopClock func()
 }
 
 // Close stops what Prepare started in this process (miniredis). The local
 // PostgreSQL server keeps running, like after tests.
 func (e *Env) Close() {
 	if e.redis != nil {
+		e.stopClock()
 		e.redis.Close()
 	}
+}
+
+// clockTick is how often the in-memory Redis ages its keys.
+const clockTick = 100 * time.Millisecond
+
+// runClock ages the keys of m with the wall clock until the returned stop
+// is called: miniredis only expires keys on FastForward, and cooldowns,
+// sessions, slots and locks rely on their TTLs running out.
+func runClock(m *miniredis.Miniredis) (stop func()) {
+	done, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		t := time.NewTicker(clockTick)
+		defer t.Stop()
+		last := time.Now()
+		for {
+			select {
+			case <-done:
+				return
+			case now := <-t.C:
+				m.FastForward(now.Sub(last))
+				last = now
+			}
+		}
+	}()
+	return func() { close(done); <-stopped }
 }
 
 // secrets are generated on the first run and reused, so encrypted data
@@ -153,6 +182,7 @@ func Prepare(ctx context.Context, opt Options) (*Env, error) {
 		if err := env.redis.StartAddr("127.0.0.1:0"); err != nil {
 			return nil, fmt.Errorf("in-memory redis: %w", err)
 		}
+		env.stopClock = runClock(env.redis)
 		env.RedisURL = "redis://" + env.redis.Addr()
 		env.MemoryRedis = true
 	}
