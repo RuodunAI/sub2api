@@ -66,8 +66,8 @@ const { groups } = useGroupsLookup()
 const readLevel = computed(() => scope.level(ACCOUNT_ACTIONS.read))
 const showCreator = computed(() => readLevel.value === 'all')
 const showOwner = computed(() => readLevel.value === 'all' || readLevel.value === 'team')
-// One owner or creator on the whole page says nothing per row: its column only shows when they differ.
-const mixed = (key: 'owner_id' | 'created_by') => new Set(list.items.value.map((a) => a[key])).size > 1
+// One creator on the whole page says nothing per row: the column only shows when creators differ.
+const mixedCreators = computed(() => new Set(list.items.value.map((a) => a.created_by)).size > 1)
 const canCreate = computed(() => auth.hasAction(ACCOUNT_ACTIONS.create))
 const canUpdate = (a: Account) => scope.can(a, ACCOUNT_ACTIONS.update)
 const canTest = (a: Account) => scope.can(a, ACCOUNT_ACTIONS.test)
@@ -151,8 +151,8 @@ const hasQuotaCell = (a: Account) => hasQuota(a.quota) || hasBalance(a.balance) 
 const columns = computed<TableColumn[]>(() => [
   { key: 'name', label: t('accounts.listUi.identity'), width: '280px', mobile: 'title' },
   { key: 'groups', label: t('accounts.groups'), mobile: 'meta', mobileSpan: 2 },
-  ...(showOwner.value && mixed('owner_id') ? [{ key: 'owner', label: t('accounts.owner') }] : []),
-  ...(showCreator.value && mixed('created_by') ? [{ key: 'created_by', label: t('accounts.createdBy') }] : []),
+  ...(showOwner.value ? [{ key: 'owner', label: t('accounts.owner') }] : []),
+  ...(showCreator.value && mixedCreators.value ? [{ key: 'created_by', label: t('accounts.createdBy') }] : []),
   { key: 'status', label: t('common.status'), mobile: 'status' },
   { key: 'priority', label: t('accounts.priority'), width: '72px', mobile: 'meta' },
   // A plugin decoration (account.list.weight) sits beside the number on the same line, so the column grows when one is registered.

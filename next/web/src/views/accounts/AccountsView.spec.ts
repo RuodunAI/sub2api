@@ -739,12 +739,14 @@ describe('account list layout', () => {
     expect(renderLayout().get('[data-testid="cols"]').text()).toContain('created_by')
   })
 
-  it('shows the owner column to a reader past its own rows when the page has more than one owner, and the creator only to one over every row', () => {
-    list.items.value = [row(1, { owner_id: 7 }), row(2, { owner_id: 8, created_by: 2 })]
+  it('shows the owner column to every reader past its own rows, and the creator only to one over every row', () => {
+    list.items.value = [row(1, { owner_id: 7 }), row(2, { owner_id: 7 })]
     const cols = () => renderLayout().get('[data-testid="cols"]').text().split(',')
-    expect(cols()).toEqual(expect.arrayContaining(['owner', 'created_by']))
+    expect(cols()).toContain('owner')
+    expect(cols()).not.toContain('created_by')
     mocks.scope = 'team'
     try {
+      list.items.value = [row(1, { owner_id: 7 }), row(2, { owner_id: 8, created_by: 2 })]
       expect(cols()).toContain('owner')
       expect(cols()).not.toContain('created_by')
       mocks.scope = 'own'
