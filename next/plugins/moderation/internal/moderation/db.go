@@ -19,6 +19,11 @@ import (
 // jsonOf. The record and statistics batches are model rows (internal/model)
 // inserted with pgdb.Insert, in the order their callers sort them.
 //
+// The helpers keep the converted statements as they were; a new read scans
+// into the internal/model types instead (Find, or Raw(...).Scan(&rows)), so
+// that its columns are described once, by the model, not again by
+// position.
+//
 // The *gorm.DB a function gets carries the context its statements run
 // under (Host.DB binds it): helpers take no context of their own.
 
