@@ -86,7 +86,13 @@ func TestMyOverview(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
 	loc, _ := time.LoadLocation("Asia/Shanghai")
+	// Keep clear of midnight: within minutes after it, the rows of "today"
+	// would also fall in the last 5 minutes and the row of a minute ago in
+	// yesterday. An hour before midnight is still in the past.
 	now := time.Now()
+	if d := now.Sub(overviewWindows(now, loc).today); d < 10*time.Minute {
+		now = now.Add(-d - time.Hour)
+	}
 	overviewNow = func() time.Time { return now }
 	t.Cleanup(func() { overviewNow = time.Now })
 	w := overviewWindows(now, loc)
@@ -115,14 +121,9 @@ func TestMyOverview(t *testing.T) {
 
 	ov := f.get(f.user, "/me/usage/overview?tz=Asia/Shanghai", 200)["data"].(map[string]any)
 	n := func(window, field string) float64 { return ov[window].(map[string]any)[field].(float64) }
-	// Right after midnight the row of a minute ago is yesterday's.
-	today, yesterday := float64(2), float64(1)
-	if now.Add(-time.Minute).Before(w.today) {
-		today, yesterday = 1, 2
-	}
 	require.Equal(t, "Asia/Shanghai", ov["tz"])
-	require.Equal(t, today, n("today", "requests"))
-	require.Equal(t, yesterday, n("yesterday", "requests"))
+	require.Equal(t, float64(2), n("today", "requests"))
+	require.Equal(t, float64(1), n("yesterday", "requests"))
 	require.Equal(t, float64(4), n("last_30d", "requests"))
 	require.Equal(t, float64(1), n("last_5m", "requests"))
 	require.Equal(t, float64(100000+2000+80000), n("last_5m", "tokens"))
