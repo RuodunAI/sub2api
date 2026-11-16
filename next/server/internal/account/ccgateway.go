@@ -243,9 +243,9 @@ func (s *Service) commitCCGatewayReauth(c *gin.Context) {
 // reports whether the status changed. The quota and balance caches are
 // evicted outside this transaction.
 func (s *Service) resetForReauth(ctx context.Context, tx *gorm.DB, a *row) (bool, error) {
-	release := a.Status == "error" || a.Status == "auto_disabled" && !limitDisabled(a.Status, a.AutoDisabledSource)
+	release := a.Status == "auto_disabled" && !limitDisabled(a.Status, a.AutoDisabledSource)
 	g := store.G(ctx, tx)
-	// release brings an error or automatic disable back to active; the
+	// release brings an automatic disable back to active; the
 	// deferred disable and the last test go either way.
 	if err := g.Model(&model.Account{}).Where("id = ?", a.ID).Updates(map[string]any{
 		"status":                gorm.Expr("CASE WHEN ? THEN 'active' ELSE status END", release),

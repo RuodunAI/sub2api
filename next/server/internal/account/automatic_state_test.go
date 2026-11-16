@@ -113,13 +113,6 @@ func TestManualEnableRestoresScheduling(t *testing.T) {
 	code, result = e.do("GET", "/accounts?status=auto_disabled", nil)
 	require.Equal(t, 200, code)
 	assert.Empty(t, result["data"])
-
-	// A legacy "error" reads as auto-disabled.
-	_, err = e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status='error' WHERE id=$1`, id)
-	require.NoError(t, err)
-	code, result = e.do("GET", "/accounts?status=auto_disabled", nil)
-	require.Equal(t, 200, code)
-	require.Len(t, result["data"].([]any), 1)
 }
 
 func TestAccountAutoDisablePolicy(t *testing.T) {
@@ -152,7 +145,7 @@ func TestAccountAutoDisablePolicy(t *testing.T) {
 
 func TestReauthorizationClearsOnlyAutomaticAccountBlocks(t *testing.T) {
 	e := setup(t)
-	for _, state := range []string{"error", "auto_disabled", "disabled"} {
+	for _, state := range []string{"auto_disabled", "disabled"} {
 		id := e.mkRawAccount("ccgateway", "managed", "reauth-"+state, "unused", true)
 		if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET status=$2,status_reason='blocked',schedulable=false,auto_disabled_until=clock_timestamp()+interval '1 hour' WHERE id=$1`, id, state); err != nil {
 			t.Fatal(err)

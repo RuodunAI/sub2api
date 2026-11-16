@@ -188,7 +188,7 @@
 | GET `/account-types` | `account:read` | `[{plugin_key, plugin_name, plugin_version, asset_base, platform, type, label, description, form:{mode, page?, component?}, sensitive_fields, guarded_settings:[{field, allowed[]}], custom_upstream}]`（`guarded_settings` 来自 manifest `guardedSettings`，§21.3；未声明时为 `[]`；`custom_upstream` 见 §21.3） |
 | GET `/account-types/:platform/:type/form` | `account:read` | `{schema, ui_schema}` |
 | GET `/accounts`（`?plugin_key=&type=&group_id=&status=&q=&model=&created_by=&mine=&orphaned=`） | `account:read` | 列表含 `in_use`（实时并发）、`cooldown_until`、`orphaned`、`rate_usage`（§18）、`created_by`、`created_by_email`（§21）。**默认不列出孤立账号**（所属插件已禁用/卸载，数据仍在）；`orphaned=true` 只列孤立的，`orphaned=all` 都列；详情 `GET /accounts/:id` 不受影响 |
-| GET `/accounts/summary` | `account:read` 的任意范围 | 调用者 `account:read` 范围内未删除账号的状态计数 `{total, available, auto_disabled, disabled}`，口径同 `GET /usage/overview` 的 `accounts`（`available` = active 且可调度；`auto_disabled` 含旧 `error` 与 active 但不可调度；不区分孤立账号）；供应商仪表盘账号状态卡片（T81，2026-11-13 权限加固期 4 P4F5） |
+| GET `/accounts/summary` | `account:read` 的任意范围 | 调用者 `account:read` 范围内未删除账号的状态计数 `{total, available, auto_disabled, disabled}`，口径同 `GET /usage/overview` 的 `accounts`（`available` = active 且可调度；`auto_disabled` 含 active 但不可调度；不区分孤立账号）；供应商仪表盘账号状态卡片（T81，2026-11-13 权限加固期 4 P4F5） |
 | POST `/accounts` | `account:create` | `{name, plugin_key, type, group_ids[], proxy_id \| proxy_url, priority, weight, max_concurrency, schedulable, auto_disable, models[], model_mapping{}, rpm_limit, tpm_limit, credentials:{...}}`（§18、§21.4、§42.3）；响应另带 `proxy_created` |
 | GET/PATCH `/accounts/:id` | `account:read` / `account:update` | 凭证中的敏感字段返回 `"******"`；PATCH 时敏感字段传 `"******"` 表示不修改 |
 | DELETE `/accounts/:id` | `account:delete` | |
@@ -2402,7 +2402,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 | 结果与账务 | 快照终态和账务在同一事务校验执行权、锁行并提交；账本保留幂等键。客户端查询不会重复请求上游，也不会重复扣款 |
 | 截止 | 核心停止观测不是上游失败，不伪造 `failed`、不自动退款。未确认终态的任务到期查询返回 410；已确认终态的快照继续可读，包括人工重试后再次终止观测的情况。管理员仍可按既有机制核查账务 |
 
-首次查询旧裸任务 ID 时，只能从核心 `pending_settlements` 与 `usage_logs` 中恢复可信归属；匹配不唯一或属于别的用户即拒绝。旧插件任务表曾允许裸 ID 覆盖，不作为授权依据。旧任务沿用原截止时间，不因导入重新开启观测窗口；尚在期限内且没有完整快照时由核心轮询补齐，期间返回 `task_snapshot_pending`，已过期则返回 410，不为兼容而恢复直通上游。
+任务只按 `s2task_` 公开 ID 查询。0.1.290 起不再把任务框架之前的裸上游 ID 导入为托管任务（`async_tasks.legacy_imported` 不再读写，§101）。
 
 ### 28.3 故障边界与插件作者须知
 
@@ -6225,7 +6225,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
   - 金额输入不限步长（`step="any"`），由控制台检查 0–1e9、最多 8 位小数、开启时 > 0；关闭限额时金额可以留空，提交时发上次保存的金额（没有则 `"0"`），新旧核心都能保存。
   - 选「不重置」时周期长度行隐藏，`period_count` 置为 1 且不再检查，提交也发 1。
   - 起点按已保存的时刻原样显示（含分钟：小时周期的 UTC 整点在 Asia/Kolkata 显示为 HH:30）；新选的时间按核心的保存规则取整（小时周期取 UTC 整点，其余取浏览器时区整点）后提交。
-- 列表启用开关（2026-11-08 用户要求在列表直接启用/禁用，不新增接口）：开关在「状态」列徽章前（手机卡片在标题右侧），只给有 `account:update`（或 own 级本人账号）且非孤立的账号；只读和孤立账号只显示徽章；`commonControls.schedulable` 不可配置的类型开关置灰。开关只在「启用」（`status=active` 且 `schedulable=true`）时为开，自动禁用、旧 `error`、启用但关闭调度的账号都显示为关。打开发 `PATCH /accounts/:id {status:"active", schedulable:true}`，即人工启用：清除自动禁用、原因和自动启用时间，用量限制按本节第一条放行，恢复调度，不清冷却（冷却用「重置状态」）；关闭发 `{status:"disabled", schedulable:false}`。界面先显示新状态，失败时恢复原状态并提示错误。自动禁用的账号在行菜单里有「转为手动禁用」（同一请求）。批量「启用」作用于所选中未启用的账号（含自动禁用），批量「禁用」作用于未被人工禁用的账号，请求与开关相同。
+- 列表启用开关（2026-11-08 用户要求在列表直接启用/禁用，不新增接口）：开关在「状态」列徽章前（手机卡片在标题右侧），只给有 `account:update`（或 own 级本人账号）且非孤立的账号；只读和孤立账号只显示徽章；`commonControls.schedulable` 不可配置的类型开关置灰。开关只在「启用」（`status=active` 且 `schedulable=true`）时为开，自动禁用、启用但关闭调度的账号都显示为关。打开发 `PATCH /accounts/:id {status:"active", schedulable:true}`，即人工启用：清除自动禁用、原因和自动启用时间，用量限制按本节第一条放行，恢复调度，不清冷却（冷却用「重置状态」）；关闭发 `{status:"disabled", schedulable:false}`。界面先显示新状态，失败时恢复原状态并提示错误。自动禁用的账号在行菜单里有「转为手动禁用」（同一请求）。批量「启用」作用于所选中未启用的账号（含自动禁用），批量「禁用」作用于未被人工禁用的账号，请求与开关相同。
 
 ## 74. 动态权重 dynweight 与它需要的核心能力（2026-10-31，用户要求参照 new-api codingplus 的动态权重迁移）
 
@@ -8723,3 +8723,8 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 - 节点心跳不再为没有 Redis 遥测的旧外壳（0.1.132 之前）刷新 PG 心跳与 `updater.nodes.cpu_percent`：CPU 只在 Redis 遥测里，PG 行只在控制快照变化时（或每 `heartbeatRewrite`）写。`cpu_percent` 列保留到下一次外壳 schema 变更，0.1.288 时的外壳在换外壳期间还会读它。
 - 停止核心时直接按调用方的要求发 `DrainRequest.Graceful`，不再看核心是否声明 `drain.graceful`（核心仍声明它，给换外壳之前驱动升级计划的旧外壳看）。
 - 插件变更阻塞检查不再看 `plugin_rollout_nodes` 的 `cleanup_pending`（迁移 0021 之前的开发版核心）。
+
+### 101.4 账号与任务
+
+- 账号状态只有 `active`、`auto_disabled`、`disabled`（`PATCH` 只接受前后两个，线上没有别的值）：列表筛选、`/accounts/summary`、运行环境停放与重新授权不再把旧的 `error` 当作自动禁用。
+- 任务只按 `s2task_` 公开 ID 查询，删除任务框架之前裸上游 ID 的懒导入（§28.2）与为它保留的结算加锁检查（导入可能在旧的结算循环领取之后把条目转给托管任务）。没有任务的预扣（插件在非任务端点返回 `Reservation`）仍由 `pending_settlements` 的对账循环处理。

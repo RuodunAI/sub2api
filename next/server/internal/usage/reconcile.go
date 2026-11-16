@@ -570,9 +570,6 @@ func (s *Service) rescheduleAttempt(ctx context.Context, e *settleEntry, cfg res
 		if status != StatusReserved {
 			return errNotPending
 		}
-		if err := lockLegacyOutcome(ctx, tx, e); err != nil {
-			return err
-		}
 		res := entryRow(store.G(ctx, tx), e.id).Where("state = 'pending' AND task_public_id IS NULL").Updates(map[string]any{
 			"attempts": gorm.Expr("attempts + ?", increment), "next_check_at": next, "last_error": trunc(lastErr, 2000),
 			"poll_failures": pollFailures(e),
@@ -639,9 +636,6 @@ func (s *Service) settleReconciled(ctx context.Context, e *settleEntry, row *res
 		}
 		if status != StatusReserved {
 			return errNotPending
-		}
-		if err := lockLegacyOutcome(ctx, tx, e); err != nil {
-			return err
 		}
 		switch {
 		case diff.Sign() > 0:
@@ -716,9 +710,6 @@ func (s *Service) refundFailed(ctx context.Context, e *settleEntry, row *reserve
 		}
 		if status != StatusReserved {
 			return errNotPending
-		}
-		if err := lockLegacyOutcome(ctx, tx, e); err != nil {
-			return err
 		}
 		if row.totalCost.Sign() > 0 {
 			var err error
@@ -864,9 +855,6 @@ func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reserve
 		}
 		if status != StatusReserved {
 			return errNotPending
-		}
-		if err := lockLegacyOutcome(ctx, tx, e); err != nil {
-			return err
 		}
 		g := store.G(ctx, tx)
 		if err := markUsageRow(g, e.usageLogID, StatusBilled, nil, marker).Error; err != nil {

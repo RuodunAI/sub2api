@@ -160,17 +160,14 @@ func (s *Service) applyMonitorResult(ctx context.Context, e *settleEntry, row *r
 			next = e.deadlineAt
 		}
 		return s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
-			// Match legacy finance lock order and reject a row transferred to the
-			// managed task table while this callback was running.
+			// Lock the usage row first, as the financial paths do, and reject
+			// a row closed while this callback was running.
 			status, err := lockUsageRow(ctx, tx, e.usageLogID)
 			if err != nil {
 				return err
 			}
 			if status != StatusReserved {
 				return errNotPending
-			}
-			if err := lockLegacyOutcome(ctx, tx, e); err != nil {
-				return err
 			}
 			res := settlementByID(store.G(ctx, tx), e.id).Where("state = 'pending'").Updates(map[string]any{
 				"attempts": gorm.Expr("attempts+1"), "poll_failures": 0, "next_check_at": next, "last_error": ""})

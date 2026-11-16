@@ -56,8 +56,7 @@ const ccgatewayFeatureChange = "ccgateway_features"
 
 // ccgatewayRequestLogChange is published on config:changed with the account
 // id when an account's request log level is saved: the other nodes drop only
-// that account's cached level (an older core ignores the type and picks the
-// change up after requestCacheTTL).
+// that account's cached level.
 const ccgatewayRequestLogChange = "ccgateway_request_log"
 
 // forgetRequestLog drops account id's cached request log level on this node.

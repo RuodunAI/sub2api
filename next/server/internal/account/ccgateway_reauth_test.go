@@ -135,7 +135,7 @@ func TestCCGatewayReauthorize(t *testing.T) {
 			t.Fatalf("create: %d %v", code, out)
 		}
 		id := int64(out["data"].(map[string]any)["id"].(float64))
-		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET created_by=$2,status='error',status_reason='expired',last_test_at=now(),last_test_ok=false WHERE id=$1`, id, owner); err != nil {
+		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET created_by=$2,status='auto_disabled',status_reason='expired',last_test_at=now(),last_test_ok=false WHERE id=$1`, id, owner); err != nil {
 			t.Fatal(err)
 		}
 		return id

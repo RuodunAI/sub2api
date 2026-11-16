@@ -22,7 +22,7 @@ func TestSQLAccountList(t *testing.T) {
 	conds.And("a.deleted_at IS NULL")
 	conds = append(conds, core.AccountRows().Scope(snapshotScope))
 	conds.And("a.plugin_key = ANY(?)", store.Strings{"anthropic", "openai"})
-	conds.And("(a.status IN (?, 'error') OR (a.status = 'active' AND NOT a.schedulable))", "auto_disabled")
+	conds.And("(a.status = ? OR (a.status = 'active' AND NOT a.schedulable))", "auto_disabled")
 	conds.And("a.id = ANY(?)", store.Int64s{3, 4})
 	conds.And("a.name ILIKE '%' || ? || '%'", "prod")
 	t.Run("count", func(t *testing.T) {

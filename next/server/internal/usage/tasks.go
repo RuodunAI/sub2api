@@ -2,10 +2,8 @@ package usage
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -140,131 +138,25 @@ func receipt(db *gorm.DB, requestID string) *gorm.DB {
 
 func (s *Service) FindTask(ctx context.Context, q core.TaskQuery) (*core.TaskSnapshot, error) {
 	out, err := readTask(ctx, s.db.Gorm, q)
-	if store.IsNoRows(err) && !strings.HasPrefix(q.ID, "s2task_") {
-		if err = s.importLegacyTask(ctx, q); err == nil {
-			out, err = readTask(ctx, s.db.Gorm, q)
-		}
-	}
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("task not found")
 	}
 	return out, err
 }
 
-// readTask reads the task q names: by its public ID, or by the upstream ID
-// of an imported legacy task. None is sql.ErrNoRows, two matches are no
-// match.
+// readTask reads the task q names by its public ID; none is sql.ErrNoRows.
 func readTask(ctx context.Context, db *gorm.DB, q core.TaskQuery) (*core.TaskSnapshot, error) {
-	rows, err := store.G(ctx, db).Model(&model.AsyncTask{}).Select(`public_id,upstream_ref_id,model,state,
-		CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
-		snapshot,snapshot_id_paths,failure_code,last_error`).
-		Where(`plugin_key=? AND kind=? AND user_id=? AND group_id=?
-		AND (public_id=? OR (legacy_imported AND upstream_ref_id=? AND NOT starts_with(?,'s2task_')))`,
-			q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID, q.ID, q.ID).
-		Order("public_id").Limit(2).Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if rows.Err() != nil {
-			return nil, rows.Err()
-		}
-		return nil, sql.ErrNoRows
-	}
 	out := &core.TaskSnapshot{}
 	var paths []byte
-	err = rows.Scan(&out.PublicID, &out.UpstreamID, &out.Model, &out.State, &out.ObservationStatus, &out.Body, &paths, &out.FailureCode, &out.FailureReason)
-	if rows.Next() {
-		return nil, core.ErrNotFound.WithMessage("task not found")
-	}
-	if rows.Err() != nil {
-		return nil, rows.Err()
-	}
+	err := store.G(ctx, db).Model(&model.AsyncTask{}).Select(`public_id,upstream_ref_id,model,state,
+		CASE WHEN state='pending' AND deadline_at<=clock_timestamp() THEN 'abandoned' ELSE observation_status END,
+		snapshot,snapshot_id_paths,failure_code,last_error`).
+		Where("plugin_key=? AND kind=? AND user_id=? AND group_id=? AND public_id=?", q.PluginKey, q.Kind, q.UserID, q.GroupID, q.ID).
+		Row().Scan(&out.PublicID, &out.UpstreamID, &out.Model, &out.State, &out.ObservationStatus, &out.Body, &paths, &out.FailureCode, &out.FailureReason)
 	if err == nil {
 		err = json.Unmarshal(paths, &out.IDPaths)
 	}
 	return out, err
-}
-
-// Only core billing history establishes legacy ownership. Plugin tables may
-// contain colliding upstream IDs and are deliberately never consulted.
-func (s *Service) importLegacyTask(ctx context.Context, q core.TaskQuery) error {
-	return s.db.Tx(ctx, func(tx *gorm.DB) error {
-		// Lock the usage parent before its settlement, matching the legacy
-		// financial path. An imported row cannot be settled by an old claim.
-		g := store.G(ctx, tx)
-		var ownerUsage int64
-		if err := legacyTaskEntries(g, q, "u.id", "u").Row().Scan(&ownerUsage); err != nil {
-			return err
-		}
-		rows, err := legacyTaskEntries(g, q, legacyEntryColumns, "p").Rows()
-		if err != nil {
-			return err
-		}
-		var e legacyEntry
-		count := 0
-		for rows.Next() {
-			count++
-			err = rows.Scan(&e.id, &e.usageLogID, &e.accountID, &e.model, &e.apiKeyID, &e.next, &e.deadline, &e.created, &e.taskPublicID)
-			if err != nil {
-				break
-			}
-		}
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		if err = rows.Err(); err != nil {
-			return err
-		}
-		if count != 1 || e.accountID == nil {
-			return core.ErrNotFound.WithMessage("task not found")
-		}
-		if e.taskPublicID != nil {
-			return nil
-		}
-		id := "s2task_" + uuid.NewString()
-		// Already settled legacy rows still need an observation, without another debit.
-		if err = g.Create(&model.AsyncTask{PublicID: id, PluginKey: q.PluginKey, Kind: q.Kind, UpstreamRefID: q.ID, UserID: q.UserID,
-			APIKeyID: e.apiKeyID, GroupID: q.GroupID, AccountID: *e.accountID, Model: e.model, Protocol: q.SubmitProtocol,
-			UsageLogID: e.usageLogID, SnapshotIDPaths: jsonOr(q.IDPaths, "[]"), LegacyImported: true, NextCheckAt: e.next,
-			DeadlineAt: e.deadline, CreatedAt: e.created}).Error; err != nil {
-			return err
-		}
-		// Importing into the managed scheduler must not reset query failures;
-		// updated_at keeps the insert's value.
-		if err = g.Model(&model.AsyncTask{}).Clauses(store.UpdateFrom("pending_settlements p")).
-			Where("async_tasks.public_id=? AND p.id=?", id, e.id).
-			Updates(map[string]any{"poll_failures": gorm.Expr("p.poll_failures"), "attempts": gorm.Expr("p.attempts")}).Error; err != nil {
-			return err
-		}
-		return g.Model(&model.PendingSettlement{}).Where("id = ?", e.id).Update("task_public_id", id).Error
-	})
-}
-
-// legacyEntry is the settlement entry of a legacy task, with what importing
-// the task takes from its usage row.
-type legacyEntry struct {
-	id, usageLogID, apiKeyID int64
-	accountID                *int64
-	model                    string
-	next, deadline, created  time.Time
-	taskPublicID             *string
-}
-
-// legacyEntryColumns are the columns of a legacyEntry, in its scan order.
-const legacyEntryColumns = `p.id,p.usage_log_id,p.account_id,u.model,u.api_key_id,p.next_check_at,p.deadline_at,
-	p.created_at,p.task_public_id`
-
-// legacyTaskEntries selects cols of the legacy settlement entries (p) of
-// the task q names, joined with their usage rows (u), locking the rows of
-// lockOf.
-func legacyTaskEntries(db *gorm.DB, q core.TaskQuery, cols, lockOf string) *gorm.DB {
-	return db.Table("pending_settlements p").Select(cols).Joins("JOIN usage_logs u ON u.id=p.usage_log_id").
-		Where("p.plugin_key=? AND p.ref_id=? AND u.user_id=? AND u.group_id=? AND u.protocol=?",
-			q.PluginKey, q.ID, q.UserID, q.GroupID, q.SubmitProtocol).
-		Clauses(store.ForUpdate().Of(lockOf))
 }
 
 func (s *Service) cleanTaskReceipts(ctx context.Context) {

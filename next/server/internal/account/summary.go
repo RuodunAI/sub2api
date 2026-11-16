@@ -14,8 +14,8 @@ import (
 )
 
 // Counts are the live accounts by the console's three statuses: available
-// (active and schedulable), auto-disabled (including a legacy "error" and an
-// active account out of scheduling) and disabled. Accounts of a disabled or
+// (active and schedulable), auto-disabled (including an active account out
+// of scheduling) and disabled. Accounts of a disabled or
 // uninstalled plugin count, as in the usage overview.
 type Counts struct {
 	Total        int64 `json:"total"`
@@ -29,7 +29,7 @@ type Counts struct {
 func CountAccounts(ctx context.Context, q *gorm.DB, scope core.DataScope) (Counts, error) {
 	var c Counts
 	err := store.G(ctx, q).Table("accounts a").Select(`count(*) AS total, count(*) FILTER (WHERE a.status = 'active' AND a.schedulable) AS available,
-		count(*) FILTER (WHERE a.status IN ('auto_disabled', 'error') OR (a.status = 'active' AND NOT a.schedulable)) AS auto_disabled,
+		count(*) FILTER (WHERE a.status = 'auto_disabled' OR (a.status = 'active' AND NOT a.schedulable)) AS auto_disabled,
 		count(*) FILTER (WHERE a.status = 'disabled') AS disabled`).
 		Where("a.deleted_at IS NULL").Scopes(core.AccountRows().Scope(scope)).Scan(&c).Error
 	return c, err

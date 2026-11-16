@@ -56,7 +56,7 @@ const parkBatch = 200
 // web accountStatus.ts) over accounts a: disabled, auto-disabled without a
 // release time, or active but taken out of scheduling.
 const sqlAccountRed = `(a.status = 'disabled'
-	OR (a.status IN ('auto_disabled', 'error') AND a.auto_disabled_until IS NULL)
+	OR (a.status = 'auto_disabled' AND a.auto_disabled_until IS NULL)
 	OR (a.status = 'active' AND NOT a.schedulable))`
 
 // sqlRuntimeParked says whether the runtime r of account a is parked now: the

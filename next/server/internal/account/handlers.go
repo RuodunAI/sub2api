@@ -591,8 +591,8 @@ func (s *Service) list(c *gin.Context) {
 		switch v {
 		case "active":
 			conds.And("(a.status = ? AND a.schedulable)", v)
-		case "auto_disabled": // the console's three statuses: a legacy "error" reads as auto-disabled
-			conds.And("(a.status IN (?, 'error') OR (a.status = 'active' AND NOT a.schedulable))", v)
+		case "auto_disabled": // the console's three statuses: an active account out of scheduling reads as auto-disabled
+			conds.And("(a.status = ? OR (a.status = 'active' AND NOT a.schedulable))", v)
 		default:
 			conds.And("a.status = ?", v)
 		}

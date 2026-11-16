@@ -47,7 +47,7 @@ func TestAllOverview(t *testing.T) {
 	mine, theirs := f.record("aov-1", false), f.record("aov-2", false)
 	mine.CreatedAt, theirs.CreatedAt, theirs.UserID = now.Add(-time.Minute), now.Add(-time.Minute), f.other
 	f.svc.process(t.Context(), []*core.UsageRecord{mine, theirs})
-	_, err := f.db.SQL.ExecContext(t.Context(), `INSERT INTO accounts(name,plugin_key,type,credentials_enc,status) VALUES('ok','anthropic','apikey','','active'),('bad','anthropic','apikey','','error')`)
+	_, err := f.db.SQL.ExecContext(t.Context(), `INSERT INTO accounts(name,plugin_key,type,credentials_enc,status) VALUES('ok','anthropic','apikey','','active'),('bad','anthropic','apikey','','auto_disabled')`)
 	require.NoError(t, err)
 
 	f.svc.Authz = nil
@@ -64,7 +64,7 @@ func TestAllOverview(t *testing.T) {
 	accounts := ov["accounts"].(map[string]any)
 	require.Equal(t, float64(2), accounts["total"])
 	require.Equal(t, float64(1), accounts["available"])
-	require.Equal(t, float64(1), accounts["auto_disabled"]) // a legacy "error" reads as auto-disabled
+	require.Equal(t, float64(1), accounts["auto_disabled"])
 
 	self := f.get(f.user, "/me/usage/overview?tz=UTC", 200)["data"].(map[string]any)
 	require.Equal(t, float64(1), self["last_5m"].(map[string]any)["requests"])

@@ -162,7 +162,6 @@ func TestParkRuntimesStopsRedAccountsDueOnly(t *testing.T) {
 	cases := map[string]parkAccount{
 		"disabled 4h":                 {status: "disabled", schedul: true, redFor: 4 * time.Hour, wantParked: true},
 		"auto-disabled 4h":            {status: "auto_disabled", schedul: true, redFor: 4 * time.Hour, wantParked: true},
-		"legacy error 4h":             {status: "error", schedul: true, redFor: 4 * time.Hour, wantParked: true},
 		"out of scheduling 4h":        {status: "active", schedul: false, redFor: 4 * time.Hour, wantParked: true},
 		"yellow (release time) 4h":    {status: "auto_disabled", schedul: true, until: true, redFor: 4 * time.Hour},
 		"active 4h":                   {status: "active", schedul: true, redFor: 4 * time.Hour},

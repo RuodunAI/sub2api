@@ -30,10 +30,9 @@ func (s *Service) Candidates(ctx context.Context, groupID int64, types []core.Ac
 	now := time.Now()
 	out := make([]core.AccountRef, 0, len(snap.refs))
 	for _, r := range snap.refs {
-		// A timed automatic disable expires by itself (lazy expiry, as the
-		// legacy temp_unschedulable_until): the account serves again once its
-		// release time passes, whether or not the recovery sweep has written
-		// it back to active yet.
+		// A timed automatic disable expires by itself (lazy expiry): the
+		// account serves again once its release time passes, whether or not
+		// the recovery sweep has written it back to active yet.
 		if until, ok := snap.releases[r.ID]; ok && now.Before(until) {
 			continue
 		}

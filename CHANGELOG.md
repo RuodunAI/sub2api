@@ -97,6 +97,10 @@
 - **开发约束**（核心）：需要事务的函数（行锁、事务级 advisory 锁）在连接池上调用直接返回错误（`store.RequireTx`，gormguard `[tx-lock]` 检查加锁的那个句柄，跟到结构体字段和包变量）；`store.ForUpdate()` 改为函数，返回不可变的行锁（`.Of`、`.SkipLocked`），共享锁用 `store.Lock`；禁止 `Debug()` 与覆盖会话配置的 `Session`；`core` 不再 import `store`（`[core-store]`）。
 - **开发约束**（插件、SDK）：插件和 SDK 的语句全部由 GORM 按模型生成（`Model`/`Table`、`Where`、`Create`、`Updates`、`clause.OnConflict`、`clause.Returning`），不再手写整条 SQL；`Raw`/`Exec` 只用来组合已生成的查询（`(?) UNION ALL (?)`、`pgdb.Exists`、`pgdb.InsertSelect`），非数据语句走 `pgdb.NextIDs`、`pgdb.LockTable`、`pgdb.TryXactLock`。`Raw`、`Exec`、`Where`、`Select`、`Order`、`Joins`、`Table`、`gorm.Expr`、`clause.Expr` 等的 SQL 文本必须是常量，值只走 `?` 参数，请求选的列经白名单进 `clause.Column`/`clause.OrderByColumn`；`pgdb.List` 的列与排序参数改为 `pgdb.SQL`，`pgdb.InsertSelect` 的尾部子句改为可变参数 `clauses ...clause.Expression`（`pgdb.InsertSelect(db, t, cols, sub, &clause.OnConflict{...})` 的写法不变）。不能用 GORM 的泛型 API `gorm.G`，也不能经 gorm 的 `ConnPool` 或 `DB()` 拿连接、`*sql.DB` 执行语句。SDK 的 `TestNoRawSQL` 检查 SDK、插件和工具，规则与核心相同（例外只有 `pgdbtool` 的系统目录读取、迁移执行与 DDL、`pgdb.LockTable`，以及连接池上的 `pgdb.Close` 和 testpg 的探测，按函数写明原因）。审核插件去掉了模仿 pgx 的 `queryRow`/`collect` 等封装。
 
+#### 删除旧版本兼容
+
+0.1.290 之前的核心不会与它同时运行，只为混跑保留的代码删除（CONTRACTS §101）：插件 SDK 不再检查 Host API 版本、不再为旧核心回退或报 `Unimplemented`，清单检查不再核对功能的核心下限（`below_feature_core`、`below_ui_core`、`below_node_jobs_core` 不再出现）；网关外壳不再识别旧策略的升级计划、不再为没有遥测的旧外壳刷新 PG 心跳；账号状态不再把旧的 `error` 当作自动禁用；任务只按 `s2task_` 公开 ID 查询，任务框架之前的裸上游 ID 不再导入。
+
 #### 插件版本
 
 相对线上（0.1.288 的内置集合）：

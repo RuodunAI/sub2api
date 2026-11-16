@@ -29,8 +29,8 @@ var errTaskDeferred = errors.New("original task account is unavailable or busy")
 
 func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, error) {
 	// The due task observations are leased to a new token (leaving
-	// updated_at alone) and read back with their legacy entry, if any, in
-	// the one statement.
+	// updated_at alone) and read back with their settlement entry, if any,
+	// in the one statement.
 	g := store.G(ctx, s.db.Gorm)
 	due := g.Model(&model.AsyncTask{}).Select("public_id").
 		Where("observation_status='pending' AND next_check_at<=now() AND (lease_until IS NULL OR lease_until<=now())").
@@ -52,7 +52,7 @@ func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, er
 }
 
 // claimedTask is an async_tasks row claimTasks leased, in the columns of
-// claimedColumns, and the id of its legacy settlement entry (0: none).
+// claimedColumns, and the id of its settlement entry (0: none).
 type claimedTask struct {
 	model.AsyncTask
 	EntryID int64 `gorm:"column:entry_id;->"`
@@ -214,26 +214,6 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx *gorm.DB, e *settleEnt
 // asyncTask is the async_tasks row id.
 func asyncTask(db *gorm.DB, id string) *gorm.DB {
 	return db.Model(&model.AsyncTask{}).Where("public_id=?", id)
-}
-
-// A legacy worker may have claimed this row before lazy import transferred
-// polling to async_tasks. Financial callers already hold the usage row here.
-func lockLegacyOutcome(ctx context.Context, tx *gorm.DB, e *settleEntry) error {
-	if err := store.RequireTx(tx); err != nil {
-		return err
-	}
-	if e.task != nil {
-		return nil
-	}
-	var managed *string
-	if err := store.G(ctx, tx).Model(&model.PendingSettlement{}).Select("task_public_id").Where("id = ?", e.id).
-		Clauses(store.ForUpdate()).Row().Scan(&managed); err != nil {
-		return err
-	}
-	if managed != nil {
-		return errNotPending
-	}
-	return nil
 }
 
 func (s *Service) finishTaskOnly(ctx context.Context, e *settleEntry, observation string) {
