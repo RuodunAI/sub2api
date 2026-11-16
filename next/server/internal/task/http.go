@@ -239,11 +239,14 @@ const runStatusSQL = `CASE j.state
 func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskView, error) {
 	g := store.G(ctx, s.opts.DB.Gorm)
 	now := time.Now()
-	out, err := store.CollectRows(g.Raw(`SELECT name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
-			lease_node, lease_until > now() AND lease_job_id IS NOT NULL,
-			last_node, last_started_at, last_finished_at, last_status, COALESCE(last_count, 0), COALESCE(last_message, ''),
-			COALESCE(last_error, ''), last_success_at, consecutive_failures
-		FROM scheduled_tasks WHERE ? = '' OR name = ? ORDER BY name`, name, name), func(rows *sql.Rows) (ClusterTaskView, error) {
+	tasks := g.Model(&model.ScheduledTask{}).Select(`name, source, plugin_key, schedule, timeout_ms, max_attempts, enabled,
+		lease_node, lease_until > now() AND lease_job_id IS NOT NULL,
+		last_node, last_started_at, last_finished_at, last_status, COALESCE(last_count, 0), COALESCE(last_message, ''),
+		COALESCE(last_error, ''), last_success_at, consecutive_failures`).Order("name")
+	if name != "" {
+		tasks = tasks.Where("name = ?", name)
+	}
+	out, err := store.CollectRows(tasks, func(rows *sql.Rows) (ClusterTaskView, error) {
 		var v ClusterTaskView
 		var lastNode, lastStatus *string
 		var running *bool
@@ -288,11 +291,11 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		names[i], index[v.Name] = v.Name, i
 	}
 
-	err = store.EachRow(g.Raw(`SELECT t.name, r.statuses FROM unnest(?::text[]) AS t(name)
-		CROSS JOIN LATERAL (SELECT COALESCE(array_agg(st ORDER BY id DESC), '{}') AS statuses FROM (
-			SELECT j.id, `+runStatusSQL+` AS st FROM river_job j
-			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = t.name ORDER BY j.id DESC LIMIT ?) x) r`,
-		store.Strings(names), recentRuns), func(rows *sql.Rows) error {
+	// The newest recentRuns runs of each task, by their rank among its runs.
+	ranked := taskRuns(g, names).Select(`j.args->>'name' AS name, j.id, ` + runStatusSQL + ` AS st,
+		row_number() OVER (PARTITION BY j.args->>'name' ORDER BY j.id DESC) AS rn`)
+	recent := g.Table("(?) AS x", ranked).Select("name, array_agg(st ORDER BY id DESC)").Where("rn <= ?", recentRuns).Group("name")
+	err = store.EachRow(recent, func(rows *sql.Rows) error {
 		var n string
 		var sts store.Strings
 		if err := rows.Scan(&n, &sts); err != nil {
@@ -305,16 +308,16 @@ func (s *Service) clusterViews(ctx context.Context, name string) ([]ClusterTaskV
 		return nil, err
 	}
 
-	err = store.EachRow(g.Raw(`SELECT name,
-			count(*) FILTER (WHERE st IN ('succeeded', 'continued', 'failed', 'timeout', 'skipped')),
-			count(*) FILTER (WHERE st IN ('failed', 'timeout')),
-			count(*) FILTER (WHERE st = 'skipped'),
-			COALESCE(avg(ms) FILTER (WHERE st <> 'skipped'), 0)::bigint, COALESCE(max(ms), 0),
-			count(*) FILTER (WHERE st IN ('queued', 'retrying'))
-		FROM (SELECT j.args->>'name' AS name, `+runStatusSQL+` AS st, (j.metadata->'output'->>'duration_ms')::bigint AS ms
-			FROM river_job j WHERE j.kind = 'sup2api.task' AND j.args->>'name' = ANY(?)
-				AND (j.created_at > now() - interval '24 hours' OR j.state IN ('available', 'scheduled', 'pending', 'retryable'))) x
-		GROUP BY name`, store.Strings(names)), func(rows *sql.Rows) error {
+	day := taskRuns(g, names).
+		Select(`j.args->>'name' AS name, ` + runStatusSQL + ` AS st, (j.metadata->'output'->>'duration_ms')::bigint AS ms`).
+		Where("j.created_at > now() - interval '24 hours' OR j.state IN ('available', 'scheduled', 'pending', 'retryable')")
+	stats := g.Table("(?) AS x", day).Select(`name,
+		count(*) FILTER (WHERE st IN ('succeeded', 'continued', 'failed', 'timeout', 'skipped')),
+		count(*) FILTER (WHERE st IN ('failed', 'timeout')),
+		count(*) FILTER (WHERE st = 'skipped'),
+		COALESCE(avg(ms) FILTER (WHERE st <> 'skipped'), 0)::bigint, COALESCE(max(ms), 0),
+		count(*) FILTER (WHERE st IN ('queued', 'retrying'))`).Group("name")
+	err = store.EachRow(stats, func(rows *sql.Rows) error {
 		var n string
 		var st Stats24h
 		var queued int
@@ -412,7 +415,7 @@ func readHistories(ctx context.Context, rdb redis.UniversalClient, nodeID string
 // leader is the node whose River client leads now ("" when none does).
 func (s *Service) leader(ctx context.Context, live map[string]core.NodeStatus) string {
 	var id string
-	err := store.G(ctx, s.opts.DB.Gorm).Raw(`SELECT leader_id FROM river_leader WHERE expires_at > now() LIMIT 1`).Row().Scan(&id)
+	err := store.G(ctx, s.opts.DB.Gorm).Table("river_leader").Select("leader_id").Where("expires_at > now()").Limit(1).Row().Scan(&id)
 	if err != nil {
 		return ""
 	}
@@ -713,17 +716,26 @@ func (s *Service) clusterRuns(ctx context.Context, name string, statuses []strin
 	return out, nil
 }
 
-// runsQuery selects up to limit runs of the cluster task name from
-// river_job, newest first: those before the id before (0: from the newest),
-// with one of statuses (none: any). Raw SQL over River's table; it is only
-// read here, River's client writes it.
+// taskRuns reads the runs of the cluster tasks names from river_job, as j.
+// River's table is only read here; River's client writes it.
+func taskRuns(g *gorm.DB, names []string) *gorm.DB {
+	return g.Table("river_job AS j").Where("j.kind = 'sup2api.task' AND j.args->>'name' = ANY(?)", store.Strings(names))
+}
+
+// runsQuery selects up to limit runs of the cluster task name, newest
+// first: those before the id before (0: from the newest), with one of
+// statuses (none: any).
 func runsQuery(g *gorm.DB, name string, statuses []string, before int64, limit int) *gorm.DB {
-	return g.Raw(`SELECT id, st, scheduled_at, attempted_at, finalized_at, attempt, max_attempts,
-			COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by
-		FROM (SELECT j.*, `+runStatusSQL+` AS st FROM river_job j
-			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = ? AND (? = 0 OR j.id < ?) ORDER BY j.id DESC) x
-		WHERE cardinality(?::text[]) = 0 OR st = ANY(?)
-		ORDER BY id DESC LIMIT ?`, name, before, before, store.Strings(statuses), store.Strings(statuses), limit)
+	runs := taskRuns(g, []string{name}).Select(`j.*, ` + runStatusSQL + ` AS st`)
+	if before != 0 {
+		runs = runs.Where("j.id < ?", before)
+	}
+	q := g.Table("(?) AS x", runs).Select(`id, st, scheduled_at, attempted_at, finalized_at, attempt, max_attempts,
+		COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by`)
+	if len(statuses) > 0 {
+		q = q.Where("st = ANY(?)", store.Strings(statuses))
+	}
+	return q.Order("id DESC").Limit(limit)
 }
 
 // ---------------------------------------------------------------- run

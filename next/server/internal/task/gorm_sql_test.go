@@ -29,7 +29,8 @@ func TestSQLRemoveStaleCoreTasks(t *testing.T) {
 
 func TestSQLRunsQuery(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		return runsQuery(tx, "core.test.ok", []string{StatusFailed, StatusTimeout}, 120, 21)
+		var rows []map[string]any
+		return runsQuery(tx, "core.test.ok", []string{StatusFailed, StatusTimeout}, 120, 21).Find(&rows)
 	})
 }
 
