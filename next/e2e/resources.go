@@ -344,3 +344,17 @@ func (e *Env) Ledger(admin *Session, userID int64, kind string) []gjson.Result {
 	}
 	return admin.ListAll(e.T, "/ledger", kv...)
 }
+
+// UsageDebits returns the user's settled usage debits: the kind=usage ledger
+// rows without the request precharges (ref_type precharge, released by a
+// refund row at settlement).
+func (e *Env) UsageDebits(admin *Session, userID int64) []gjson.Result {
+	e.T.Helper()
+	var out []gjson.Result
+	for _, l := range e.Ledger(admin, userID, "usage") {
+		if l.Get("ref_type").String() == "usage" {
+			out = append(out, l)
+		}
+	}
+	return out
+}

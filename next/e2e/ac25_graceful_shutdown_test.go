@@ -143,7 +143,7 @@ func TestAC25_GracefulShutdownKeepsInflightAccounting(t *testing.T) {
 			t.Fatalf("drained stream lost final usage: %s", u.Raw)
 		}
 		AssertMoney(t, "drained stream cost", u.Get("total_cost").String(), wantCost)
-		ledger := e.Ledger(admin, tn.User.UserID, "usage")
+		ledger := e.UsageDebits(admin, tn.User.UserID)
 		if len(ledger) != 1 || ledger[0].Get("ref_id").String() != requestID {
 			t.Fatalf("drained stream must be charged exactly once: %v", ledger)
 		}
