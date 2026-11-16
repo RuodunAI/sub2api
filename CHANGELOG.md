@@ -16,7 +16,7 @@
 - **新角色“代理供应商”（`supplier_agent`）**：供应商的全部能力，加上管理挂在自己名下的用户（下级，最多 8 层，含已删除的用户）：读、建、改下级用户并给他们分配供应商或代理供应商角色，只读下级的账号（不能改、测、看凭证，看不到下级的代理）和这些账号的使用记录。不能删除用户、重置密码。admin 和超管能分配它，operator 不能。插件给供应商的默认权限也给代理供应商。
 - **新权限范围 `team`**（“自己及下级”）：`account:*`、`proxy:*`、`usage:account:read`、`user:read/create/update` 可带 `:team`（`account:create` 不行）；`user:read/create/update` 只接受全部与 team。
 - **新权限 `usage:account:read`**（敏感，看范围内账号服务过的请求，只给白名单字段）：供应商默认 `:own`（`rev` 2，有人持有的只补缺），operator 默认全部。
-- **用户的上级**（`users.owner_id`）：用户 JSON 加 `owner_id`、`owner_email`（上级已删除时仍显示邮箱）。新建、修改用户可传 `owner_id`（`0` 为无）：管理员可以指定任何人或无；代理供应商只能挂在自己名下，不传时也是自己。用户列表、详情、修改和实体查找（`/lookup/users`）都按调用者的范围：代理供应商只看得到、改得了下级，别的用户（包括自己）一律 404；列表新增筛选 `owner_id=<id>|none` 和 `direct=true`（只看直属下级）。
+- **用户的上级**（`users.owner_id`）：用户 JSON 加 `owner_id`、`owner_email`（上级已删除时仍显示邮箱）。新建、修改用户可传 `owner_id`（`0` 为无）：管理员可以指定任何人或无；代理供应商只能挂在自己名下，不传时也是自己。用户列表、详情、修改和实体查找（`/lookup/users`）都按调用者的范围：代理供应商只看得到、改得了下级，别的用户（包括自己）一律 404；列表新增筛选 `owner_id=<id>|none` 和 `direct=true`（只看直属下级）。上级不能是自己或自己的下级，链最多 8 层（含已删除的用户），上级必须按角色管得了该用户（否则 400 `owner_cannot_manage`，之后给该用户加上级管不了的角色也一样拒绝）；改上级审计 `user.owner`。
 
 **迁移 0103**（`0103_user_owner.sql`，可重跑，只加列和索引）：`users.owner_id`（外键、不能指向自己、部分索引）与 `accounts.owner_id`（外键、部分索引），`accounts.owner_id` 按 `created_by` 回填，重跑只补仍为空的行，不改已改过的所属。
 
