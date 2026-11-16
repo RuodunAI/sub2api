@@ -11,7 +11,7 @@ describe('account type plugin facts', () => {
   beforeEach(async () => {
     i18n.global.locale.value = 'zh'
     mocks.get.mockResolvedValue([{
-      plugin_key: 'ccgateway', type: 'managed', label: { en: 'Claude Code' }, form: { mode: 'schema' }, sensitive_fields: [], platforms: [], endpoints: [],
+      plugin_key: 'claude-oauth', type: 'oauth', label: { en: 'Claude OAuth' }, form: { mode: 'schema' }, sensitive_fields: [], platforms: [], endpoints: [],
       extensions_schema: { type: 'object', properties: {
         locale: { type: 'string' },
         account_email: { type: 'string', readOnly: true, 'x-label': { en: 'Login email', zh: '登录邮箱' } },
@@ -23,13 +23,13 @@ describe('account type plugin facts', () => {
 
   it('lists the read-only extensions that have a value', () => {
     const { pluginFacts } = useAccountTypes()
-    expect(pluginFacts('ccgateway', 'managed', { locale: 'en-US', account_email: 'ops@example.com', plan_note: 'x' })).toEqual([
+    expect(pluginFacts('claude-oauth', 'oauth', { locale: 'en-US', account_email: 'ops@example.com', plan_note: 'x' })).toEqual([
       { key: 'account_email', label: '登录邮箱', value: 'ops@example.com' },
       { key: 'plan_note', label: 'plan_note', value: 'x' },
     ])
-    expect(pluginFacts('ccgateway', 'managed', { locale: 'en-US', account_email: '' })).toEqual([])
-    expect(pluginFacts('ccgateway', 'managed', { account_email: { nested: true } })).toEqual([])
-    expect(pluginFacts('ccgateway', 'managed', null)).toEqual([])
-    expect(pluginFacts('other', 'managed', { account_email: 'ops@example.com' })).toEqual([])
+    expect(pluginFacts('claude-oauth', 'oauth', { locale: 'en-US', account_email: '' })).toEqual([])
+    expect(pluginFacts('claude-oauth', 'oauth', { account_email: { nested: true } })).toEqual([])
+    expect(pluginFacts('claude-oauth', 'oauth', null)).toEqual([])
+    expect(pluginFacts('other', 'oauth', { account_email: 'ops@example.com' })).toEqual([])
   })
 })

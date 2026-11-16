@@ -10,7 +10,7 @@ import { useGroupsLookup } from '@/composables/lookups'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
 import { useAuthStore } from '@/stores/auth'
 import { usePluginStore, type PluginAccountActionEntry, type SlotEntry } from '@/stores/plugins'
-import { notifyError } from '@/utils/errors'
+import { notifyError, reasonOf } from '@/utils/errors'
 import { formatDateTime, formatMoney, formatRelative, formatTime } from '@/utils/format'
 import { lt } from '@/i18n'
 import { useAccountTypes, typeKey } from './accountTypes'
@@ -47,7 +47,6 @@ import AccountBulkEditDialog from './AccountBulkEditDialog.vue'
 import AccountBulkDeleteDialog from './AccountBulkDeleteDialog.vue'
 import { subscriptionLabel } from './subscription'
 import { hasBalance, hasQuota, refreshAccountCredentials, resetAccountStatus, useBalanceRefresh, useQuotaRefresh } from './accountQuota'
-import { reasonOf } from '@/views/ccgateway/ccgAuthFlow'
 
 const { t, te } = useI18n()
 const auth = useAuthStore()
@@ -202,10 +201,6 @@ function statusOf(a: Account): StatusView {
     view.detail = view.detail ? `${view.detail}\n${release}` : release
   }
   if (cooling) view.note = t('accounts.cooldownUntil', { time: formatTime(a.cooldown_until) })
-  if (a.runtime_parked) {
-    const parked = t('accounts.runtimeParked')
-    view.detail = view.detail ? `${view.detail}\n${parked}` : parked
-  }
   return view
 }
 
@@ -255,21 +250,12 @@ async function openEdit(a: Pick<Account, 'id'>) {
   }
 }
 
-function onSaved(saved?: Account) {
+function onSaved() {
   list.reload()
-  // A new Claude Code (CCGateway) account was authorized before it was saved:
-  // it closes like any other. A saved one that had no proxy (its container was
-  // blocked) stays open on the saved account: the container restarts with the
-  // proxy just picked and can be authorized right away.
-  const ccg = !!saved?.id && saved.plugin_key === 'ccgateway' && saved.type === 'managed'
-  if (ccg && editing.value && editing.value.proxy_id == null) {
-    editing.value = saved!
-    return
-  }
   editorOpen.value = false
 }
 
-// Deep link (/accounts?edit=<id>, e.g. from the CCGateway container list): opens the editor.
+// Deep link (/accounts?edit=<id>): opens the editor.
 const route = useRoute()
 const router = useRouter()
 watch(
@@ -548,9 +534,7 @@ function remove(a: Account) {
   deleteOpen.value = true
 }
 
-// Plugin-registered actions (CONTRACTS §52). An action that starts a
-// re-authorization answers the draft key: it continues in the editor. A token
-// refresh answers refreshed / expires_at.
+// Plugin-registered actions (CONTRACTS §52).
 const runningActions = ref(new Set<number>())
 async function runPluginAction(a: Account, action: AccountAction) {
   if (runningActions.value.has(a.id)) return
@@ -558,20 +542,10 @@ async function runPluginAction(a: Account, action: AccountAction) {
   const name = lt(action.label) || action.id
   toast(t('accounts.pluginActions.running', { name }), 'info')
   try {
-    const out = await api.post<Record<string, unknown> | null>(`/accounts/${a.id}/actions/${encodeURIComponent(action.plugin_key)}/${encodeURIComponent(action.id)}`, {}, { signal: AbortSignal.timeout(95000) })
-    if (typeof out?.key === 'string') {
-      void openEdit(a)
-    } else if (typeof out?.refreshed === 'boolean') {
-      const time = typeof out.expires_at === 'string' ? formatDateTime(out.expires_at) : ''
-      toast(t(out.refreshed ? 'accounts.pluginActions.tokenRefreshed' : 'accounts.pluginActions.tokenValid', { time }), 'success')
-      if (hasQuota(a.quota)) void quotaRefresh.refresh(a.id)
-    } else {
-      toast(t('accounts.pluginActions.done', { name }), 'success')
-    }
+    await api.post(`/accounts/${a.id}/actions/${encodeURIComponent(action.plugin_key)}/${encodeURIComponent(action.id)}`, {}, { signal: AbortSignal.timeout(95000) })
+    toast(t('accounts.pluginActions.done', { name }), 'success')
   } catch (e) {
-    const key = `accounts.pluginActions.reason.${reasonOf(e)}`
-    if (reasonOf(e) && te(key)) toast(t(key), 'error')
-    else notifyError(e)
+    notifyError(e)
   } finally {
     runningActions.value.delete(a.id)
   }
@@ -789,7 +763,6 @@ function resetFilters() {
         :account="editing"
         @change-type="pickedType = $event"
         @saved="onSaved"
-        @reauthorized="list.reload()"
         @cancel="editorOpen = false"
         @back="step = 1"
         @test="openTest"
@@ -825,7 +798,6 @@ function resetFilters() {
               </SDescItem>
               <SDescItem v-if="detail.subscription_type" :label="t('accounts.subscription')">
                 <SBadge tone="purple" :title="t('accounts.subscriptionHint')">{{ detail.subscription_type }}</SBadge>
-                <SHint v-if="detail.rate_limit_tier" inline size="xs" class="ml-1.5 font-mono" data-testid="account-rate-limit-tier">· {{ detail.rate_limit_tier }}</SHint>
               </SDescItem>
               <SDescItem v-for="fact in accountTypes.pluginFacts(detail.plugin_key, detail.type, detail.settings)" :key="fact.key" :label="fact.label" :data-testid="'account-detail-fact-' + fact.key">{{ fact.value }}</SDescItem>
               <SDescItem v-if="detailType" :label="t('platforms.supported')"><AccountTypePlatforms :items="detailType.platforms" /></SDescItem>

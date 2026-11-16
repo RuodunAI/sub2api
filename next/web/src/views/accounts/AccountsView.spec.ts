@@ -8,6 +8,7 @@ import AccountsView from './AccountsView.vue'
 import AccountModelTest from './AccountModelTest.vue'
 import AccountEditor from './AccountEditor.vue'
 import AccountGroupsCell from './AccountGroupsCell.vue'
+import AccountQuotaCell from './AccountQuotaCell.vue'
 import PlatformIcon from '@/components/platform/PlatformIcon.vue'
 import EntityPicker from '@/components/EntityPicker.vue'
 import PluginSlot from '@/components/plugin/PluginSlot.vue'
@@ -19,7 +20,7 @@ const flip = (el: Omit<DOMWrapper<Element>, 'exists'>) => (el.element instanceof
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), findType: vi.fn(), confirm: vi.fn(), toast: vi.fn(), notifyError: vi.fn(), reload: vi.fn(), pluginFacts: vi.fn((): { key: string; label: string; value: string }[] => []), canUpdate: true, scope: 'all' as 'all' | 'own', slotEntries: vi.fn((_slot: string) => [] as SlotEntry[]), accountActions: [] as PluginAccountActionEntry[], groups: [] as { id: number; name: string; platforms?: string[] }[] }))
 vi.mock('@sub2api/host', async (original) => ({ ...await original<typeof import('@sub2api/host')>(), api: { get: mocks.get, post: mocks.post, patch: mocks.patch, list: async () => ({ items: [] }) } }))
 vi.mock('@sub2api/ui', async (original) => ({ ...await original<typeof import('@sub2api/ui')>(), confirm: mocks.confirm, toast: mocks.toast }))
-vi.mock('@/utils/errors', () => ({ notifyError: mocks.notifyError, errorMessage: String }))
+vi.mock('@/utils/errors', async (orig) => ({ reasonOf: (await orig<typeof import('@/utils/errors')>()).reasonOf, notifyError: mocks.notifyError, errorMessage: String }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }), useRouter: () => ({ replace: vi.fn() }) }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: () => false, hasAction: () => false }) }))
 vi.mock('@/stores/plugins', () => ({ usePluginStore: () => ({ slotEntries: mocks.slotEntries, get accountActions() { return mocks.accountActions }, plugin: () => undefined, component: () => undefined }) }))
@@ -186,7 +187,7 @@ describe('account status recovery', () => {
     mocks.findType.mockReset()
     mocks.confirm.mockResolvedValue(true)
     i18n.global.locale.value = 'zh'
-    list.items.value = [{ id: 23, name: 'cc-test', status: 'disabled', status_reason: 'credentials rejected', schedulable: true, auto_disable: true, plugin_key: 'ccgateway', type: 'managed', orphaned: false, cooldown_until: null } as Account]
+    list.items.value = [{ id: 23, name: 'cc-test', status: 'disabled', status_reason: 'credentials rejected', schedulable: true, auto_disable: true, plugin_key: 'claude-oauth', type: 'oauth', orphaned: false, cooldown_until: null } as Account]
   })
 
   it('locks the enable button according to the plugin declaration', async () => {
@@ -301,14 +302,6 @@ describe('account status recovery', () => {
     const toggle = w.get('[data-testid="account-enable-toggle"]')
     expect(toggle.text()).toBe('启用')
     expect(toggle.attributes('title')).toContain('点击即手动启用')
-  })
-
-  it('says in the status tooltip that a parked account container is stopped', () => {
-    Object.assign(list.items.value[0], { status: 'disabled', status_reason: 'credentials rejected', runtime_parked: true })
-    const w = render()
-    const [reason, parked] = statusTip(w)!.split('\n')
-    expect(reason).toBe('credentials rejected')
-    expect(parked).toContain('容器已停止')
   })
 
   it('keeps a badge without a reason out of the tab order', () => {
@@ -498,58 +491,46 @@ describe('account status recovery', () => {
 })
 
 describe('plugin account actions', () => {
-  const refreshToken = { id: 'refresh_token', label: { en: 'Refresh token', zh: '刷新令牌' }, plugin_key: 'ccgateway', account_type: 'managed' }
-  const reauthorize = { id: 'refresh_auth', label: { en: 'Refresh authorization', zh: '重新授权' }, plugin_key: 'ccgateway', account_type: 'managed' }
+  const sync = { id: 'sync', label: { en: 'Sync', zh: '同步' }, plugin_key: 'claude-oauth', account_type: 'oauth' }
+  const check = { id: 'check', label: { en: 'Check', zh: '检查' }, plugin_key: 'claude-oauth', account_type: 'oauth' }
+
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.canUpdate = true
     i18n.global.locale.value = 'zh'
-    list.items.value = [{ id: 29, name: 'cc', status: 'active', schedulable: true, plugin_key: 'ccgateway', type: 'managed', orphaned: false, actions: [refreshToken, reauthorize] } as unknown as Account]
+    list.items.value = [{ id: 29, name: 'cc', status: 'active', schedulable: true, plugin_key: 'claude-oauth', type: 'oauth', orphaned: false, actions: [sync, check] } as unknown as Account]
   })
   const dropdown = (w: ReturnType<typeof render>) => w.findComponent(SDropdown)
 
-  it('lists the plugin actions and reports a refreshed token', async () => {
-    mocks.post.mockResolvedValue({ refreshed: true, expires_at: '2026-10-15T20:04:00Z' })
+  it('lists the plugin actions and reports a completed one', async () => {
+    mocks.post.mockResolvedValue({})
     const w = render()
     const items = dropdown(w).props('actions') as Array<{ key: string; label: string; hidden?: boolean }>
-    expect(items.filter((x) => x.key.startsWith('plugin:') && !x.hidden).map((x) => x.label)).toEqual(['刷新令牌', '重新授权'])
-    dropdown(w).vm.$emit('select', 'plugin:ccgateway:refresh_token')
+    expect(items.filter((x) => x.key.startsWith('plugin:') && !x.hidden).map((x) => x.label)).toEqual(['同步', '检查'])
+    dropdown(w).vm.$emit('select', 'plugin:claude-oauth:sync')
     await flushPromises()
-    expect(mocks.post).toHaveBeenCalledWith('/accounts/29/actions/ccgateway/refresh_token', {}, expect.anything())
-    expect(mocks.toast).toHaveBeenLastCalledWith(expect.stringContaining('令牌已刷新'), 'success')
+    expect(mocks.post).toHaveBeenCalledWith('/accounts/29/actions/claude-oauth/sync', {}, expect.anything())
+    expect(mocks.toast).toHaveBeenLastCalledWith('「同步」已完成', 'success')
   })
 
-  it('translates a known refusal and hides actions from readers', async () => {
-    mocks.post.mockRejectedValue(Object.assign(new Error('refused'), { details: { reason: 'token_revoked' } }))
+  it('reports a refusal and hides actions from readers', async () => {
+    const refused = Object.assign(new Error('refused'), { details: { reason: 'token_revoked' } })
+    mocks.post.mockRejectedValue(refused)
     const w = render()
-    dropdown(w).vm.$emit('select', 'plugin:ccgateway:refresh_token')
+    dropdown(w).vm.$emit('select', 'plugin:claude-oauth:sync')
     await flushPromises()
-    expect(mocks.toast).toHaveBeenLastCalledWith('令牌已失效且无法续期，请重新授权账号', 'error')
-    expect(mocks.notifyError).not.toHaveBeenCalled()
+    expect(mocks.notifyError).toHaveBeenCalledWith(refused)
     mocks.canUpdate = false
     const reader = render()
     expect((dropdown(reader).props('actions') as Array<{ key: string; hidden?: boolean }>).filter((x) => x.key.startsWith('plugin:') && !x.hidden)).toEqual([])
   })
 
-  it.each([true, false])('requeries quota after a successful token action and replaces the stale error: refreshed=%s', async (refreshed) => {
-    list.items.value[0].quota = { supported: true, source: 'active', updated_at: '2026-10-01T00:00:00Z', error: 'transient: token_expired: expired', refresh_status: 'error', windows: [] }
-    const recovered = { supported: true, source: 'active', updated_at: new Date().toISOString(), error: '', refresh_status: 'ready', windows: [{ key: '5h', utilization: 7, status: 'allowed', resets_at: null }] }
-    mocks.post.mockResolvedValue({ refreshed, expires_at: '2026-10-15T20:04:00Z' })
-    mocks.get.mockResolvedValue(recovered)
-    const w = render()
-    dropdown(w).vm.$emit('select', 'plugin:ccgateway:refresh_token')
-    await flushPromises()
-    expect(mocks.get).toHaveBeenCalledWith('/accounts/29/quota', { force: true })
-    expect(list.items.value[0].quota).toEqual(recovered)
-  })
-
   it('names why a manual quota refresh cannot run instead of keeping the old snapshot silently', async () => {
     const stale: QuotaSnapshot = { supported: true, source: '', updated_at: null, error: '', refresh_status: 'pending', windows: [] }
     list.items.value[0].quota = stale
-    mocks.post.mockResolvedValue({ refreshed: true, expires_at: '2026-10-15T20:04:00Z' })
     mocks.get.mockRejectedValueOnce(Object.assign(new Error('conflict'), { details: { reason: 'runtime_not_ready' } }))
-    const w = render()
-    dropdown(w).vm.$emit('select', 'plugin:ccgateway:refresh_token')
+    const w = render({ STable: { props: ['rows'], template: '<div><div v-for="row in rows" :key="row.id"><slot name="cell-quota" :row="row" /></div></div>' } })
+    w.findComponent(AccountQuotaCell).vm.$emit('refresh')
     await flushPromises()
     expect(mocks.get).toHaveBeenCalledWith('/accounts/29/quota', { force: true })
     expect(mocks.toast).toHaveBeenLastCalledWith('账号运行环境尚未同步完成，暂时无法查询额度，请稍后再试', 'error')
@@ -557,7 +538,7 @@ describe('plugin account actions', () => {
     expect(list.items.value[0].quota).toEqual(stale)
     const unknown = Object.assign(new Error('conflict'), { details: { reason: 'something_else' } })
     mocks.get.mockRejectedValueOnce(unknown)
-    dropdown(w).vm.$emit('select', 'plugin:ccgateway:refresh_token')
+    w.findComponent(AccountQuotaCell).vm.$emit('refresh')
     await flushPromises()
     expect(mocks.notifyError).toHaveBeenCalledWith(unknown)
   })
@@ -800,7 +781,7 @@ describe('declared plugin account actions and the toolbar slot (CONTRACTS §23.3
 })
 
 describe('account list layout', () => {
-  const row = (id: number, over: Partial<Account> = {}) => ({ id, name: 'a@example.com', plugin_key: 'ccgateway', type: 'oauth', status: 'active', schedulable: true, created_by: 1, settings: {}, ...over }) as unknown as Account
+  const row = (id: number, over: Partial<Account> = {}) => ({ id, name: 'a@example.com', plugin_key: 'claude-oauth', type: 'oauth', status: 'active', schedulable: true, created_by: 1, settings: {}, ...over }) as unknown as Account
   const renderLayout = () => render({ STable: { props: ['rows', 'columns'], template: '<div><i data-testid="cols">{{ columns.map((c) => c.key).join() }}</i><div v-for="row in rows" :key="row.id"><slot name="cell-name" :row="row" /><slot name="cell-groups" :row="row" /></div></div>' } })
   beforeEach(() => {
     mocks.pluginFacts.mockReset().mockReturnValue([])

@@ -33,8 +33,7 @@ const taskTitle = (en: string, zh: string) => ({ en, zh })
 const recent = (fail: number) => Array.from({ length: 30 }, (_, i) => (i < fail ? 'failed' : i % 9 === 4 ? 'skipped' : 'succeeded'))
 const clusterTasks = [
   ['core.account.usage_limits', 'Account usage limits', '账号用量上限恢复', '@every 1m0s', 0],
-  ['core.ccgateway.park_runtimes', 'Park runtimes of red accounts', '停止红色账号的容器', '@every 1m0s', 2],
-  ['core.usage.retry', 'Retry usage settlement', '重试用量结算', '@every 5m0s', 0],
+  ['core.usage.retry', 'Retry usage settlement', '重试用量结算', '@every 5m0s', 2],
   ['core.task.housekeeping', 'Scheduled task housekeeping', '定时任务自身维护', '@every 1h0m0s', 0],
   ['core.audit.purge', 'Purge audit logs', '清理审计日志', '0 3 * * *', 0]
 ] as const

@@ -50,7 +50,7 @@ describe('account deletion', () => {
     for (const id of ids) expect(wrapper.find(`[id="${id}"]`).exists()).toBe(true)
     await wrapper.findAll('[data-testid="account-delete-resources"] input[type="radio"]')[1].setValue(true)
     expect(wrapper.text()).toContain('保留 3 天后自动清理')
-    expect(wrapper.text()).not.toMatch(/CCGateway|容器|数据卷/)
+    expect(wrapper.text()).not.toMatch(/容器|数据卷/)
   })
   it('cannot be closed while the request runs', async () => {
     let finish: (v: unknown) => void = () => {}

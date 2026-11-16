@@ -3,7 +3,7 @@
 import type { CommonControlName } from '@/api/types'
 
 /** The core sections and the plugin ones (`plugin:<plugin>:<component>`, account.editor.section). */
-export type EditorSection = 'connection' | 'models' | 'scheduling' | 'advanced' | 'cc_features' | `plugin:${string}`
+export type EditorSection = 'connection' | 'models' | 'scheduling' | 'advanced' | `plugin:${string}`
 export const pluginSection = (key: string): EditorSection => `plugin:${key}`
 
 /**
@@ -19,7 +19,7 @@ const SCHEDULING_CONTROLS: readonly CommonControlName[] = [...SCHEDULING_ROWS, .
  */
 export const SECTION_CONTROLS: Partial<Record<EditorSection, readonly CommonControlName[]>> = { scheduling: SCHEDULING_CONTROLS }
 
-export const CONNECTION_FIELDS = ['name', 'group_ids', 'proxy_id', 'proxy_url', 'settings', 'settings.locale', 'settings.timezone']
+export const CONNECTION_FIELDS = ['name', 'group_ids', 'proxy_id', 'proxy_url', 'settings']
 
 /** Whether the field (or a part of it: `field.x`, `field[0]`) is one of these. */
 const fieldOf = (fields: readonly string[]) => (k: string) => fields.some(p => k === p || k.startsWith(`${p}.`) || k.startsWith(`${p}[`))
@@ -60,7 +60,6 @@ export function splitFieldErrors(all: Record<string, string>): { cred: Record<st
 export function sectionOfErrors(base: Record<string, string>, cred: Record<string, string>): EditorSection | null {
   if (Object.keys(cred).length || CONNECTION_FIELDS.some(k => k in base)) return 'connection'
   if (Object.keys(base).some(isModelsField)) return 'models'
-  if (Object.keys(base).some(k => k.startsWith('cc_feature_policy'))) return 'cc_features'
   if (Object.keys(base).some(isAdvancedField) && !Object.keys(base).some(isSchedulingField)) return 'advanced'
   return Object.keys(base).length ? 'scheduling' : null
 }

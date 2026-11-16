@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
@@ -12,7 +12,7 @@ import { useAuthStore } from '@/stores/auth'
 import { refreshShell } from '@/stores/app'
 import { consentPath } from './reviewCache'
 import RoleGrantsReview from './parts/RoleGrantsReview.vue'
-import { compareVersions, conflictLines, consoleSettings, hasCoreSettings, isPendingConsent, shownStatus, tabOf, type PluginDetail, type PluginSettings } from './pluginUtil'
+import { compareVersions, conflictLines, consoleSettings, isPendingConsent, shownStatus, tabOf, type PluginDetail, type PluginSettings } from './pluginUtil'
 import TrustBadge from './parts/TrustBadge.vue'
 import OverviewTab from './detail/OverviewTab.vue'
 import PermissionsTab from './detail/PermissionsTab.vue'
@@ -30,8 +30,6 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
-const CCGatewaySettings = defineAsyncComponent(() => import('@/views/ccgateway/CCGatewayView.vue'))
-const isCCGatewaySettings = computed(() => hasCoreSettings(key.value, (p) => auth.has(p)) && status.value !== 'awaiting_consent')
 
 const key = computed(() => String(route.params.key))
 const detail = ref<PluginDetail | null>(null)
@@ -79,7 +77,7 @@ const tabs = computed<TabItem[]>(() => {
   ]
   if (auth.has(['plugin:egress:read', 'plugin:manage'])) list.push({ key: 'egress', label: t('plugins.detail.tabs.egress') })
   list.push({ key: 'resources', label: t('plugins.detail.tabs.resources') })
-  if (settings.value?.schema || isCCGatewaySettings.value) list.push({ key: 'settings', label: t('plugins.detail.tabs.settings') })
+  if (settings.value?.schema) list.push({ key: 'settings', label: t('plugins.detail.tabs.settings') })
   if (auth.has('audit:read')) list.push({ key: 'audit', label: t('plugins.detail.tabs.audit') })
   return list
 })
@@ -282,7 +280,6 @@ onMounted(load)
         <EventsTab v-else-if="tab === 'events'" :detail="detail" />
         <EgressTab v-else-if="tab === 'egress'" :detail="detail" @changed="load" />
         <ResourcesTab v-else-if="tab === 'resources'" :detail="detail" @changed="load" />
-        <CCGatewaySettings v-else-if="tab === 'settings' && isCCGatewaySettings" embedded />
         <SettingsTab v-else-if="tab === 'settings' && settings" :plugin-key="detail.key" :settings="settings" @saved="loadSettings" />
         <div v-else-if="tab === 'audit'" class="space-y-3">
           <SHint>{{ t('plugins.detail.auditHint') }}</SHint>

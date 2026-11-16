@@ -17,8 +17,8 @@ const overview = (): TasksOverview => ({
     { name: 'core.account.usage_limits', title: { en: 'Usage limits', zh: '账号用量上限' }, source: 'core', plugin_key: null, schedule: '@every 1m0s', timeout_ms: 50000, max_attempts: 1, enabled: true, registered: true, running: false, lease_node: null,
       last: { node: 'node-a', status: 'succeeded', duration_ms: 95, count: 3 }, last_success_at: '2026-11-03T00:00:00Z', consecutive_failures: 0, next_run_at: '2026-11-03T00:01:00Z',
       recent: ['succeeded', 'skipped'], stats_24h: { runs: 1440, failed: 0, skipped: 2, avg_ms: 95, max_ms: 820 }, queued: 0 },
-    { name: 'core.ccgateway.park_runtimes', title: { en: 'Park runtimes', zh: '停止红色账号的容器' }, source: 'core', plugin_key: null, schedule: '@every 1m0s', timeout_ms: 50000, max_attempts: 1, enabled: true, registered: true, running: false, lease_node: null,
-      last: { node: 'node-b', status: 'failed', duration_ms: 120, count: 0, error: 'docker down' }, last_success_at: null, consecutive_failures: 2, next_run_at: null,
+    { name: 'core.account.credential_refresh', title: { en: 'Credential refresh', zh: '刷新账号凭证' }, source: 'core', plugin_key: null, schedule: '@every 1m0s', timeout_ms: 50000, max_attempts: 1, enabled: true, registered: true, running: false, lease_node: null,
+      last: { node: 'node-b', status: 'failed', duration_ms: 120, count: 0, error: 'upstream down' }, last_success_at: null, consecutive_failures: 2, next_run_at: null,
       recent: ['failed', 'failed'], stats_24h: { runs: 10, failed: 2, skipped: 0, avg_ms: 120, max_ms: 200 }, queued: 0 },
     { name: 'plugin.dynweight.evaluate', title: { en: 'Dynamic weight · evaluate', zh: '动态权重 · evaluate' }, source: 'plugin_manifest', plugin_key: 'dynweight', schedule: '@every 10s', timeout_ms: 60000, max_attempts: 1, enabled: true, registered: true, running: false, lease_node: null,
       last: null, last_success_at: null, consecutive_failures: 0, next_run_at: null, recent: [], stats_24h: { runs: 0, failed: 0, skipped: 0, avg_ms: 0, max_ms: 0 }, queued: 0 }
@@ -57,7 +57,7 @@ describe('scheduled tasks page', () => {
     expect(wrapper.text()).toContain('当前主节点')
     expect(wrapper.text()).toContain('node-a')
     const rows = wrapper.get('[data-testid="tasks-cluster"]').findAll('tbody tr')
-    expect(rows[0].text()).toContain('停止红色账号的容器')
+    expect(rows[0].text()).toContain('刷新账号凭证')
     expect(rows[0].text()).toContain('失败')
     expect(rows[1].text()).toContain('账号用量上限')
     expect(rows[1].text()).toContain('每 1 分钟')

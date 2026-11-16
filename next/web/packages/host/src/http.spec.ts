@@ -439,7 +439,7 @@ describe('step-up verification', () => {
       }
     })
     const spy = stubFetch((_url, init) => (init.headers['X-Verify-Proof'] ? json({ ok: 1 }) : required()))
-    expect(await http.api.put('/system/ccgateway/remote-config', {}, { timeoutMs: 20 })).toEqual({ ok: 1 })
+    expect(await http.api.put('/system/settings', {}, { timeoutMs: 20 })).toEqual({ ok: 1 })
     expect(seen).toBeUndefined()
     // The replay gets a limit of its own.
     const signals = spy.mock.calls.map((c) => c[1].signal as AbortSignal)

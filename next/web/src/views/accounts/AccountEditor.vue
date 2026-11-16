@@ -4,15 +4,10 @@
 // scheduling and limits. A new account starts from the plugin's default models
 // and mapping (§41); so does an existing account saved without either (see
 // shouldPrefillOnEdit).
-// A new Claude Code (CCGateway managed) account is authorized before it is
-// saved (docs/CCGATEWAY-DRAFT-RUNTIMES.md §5): the credentials card runs the
-// draft flow and saving sends the authorized draft as `ccgateway_runtime`. A
-// saved one shows its login and can be re-authorized (docs/CCGATEWAY-REAUTH.md):
-// the swap is committed by itself and reported with `reauthorized`.
 // Every core field follows the account type's common controls (hidden, fixed,
 // a default, a required proxy: commonControls.ts); plugin sections declared
 // for the type (account.editor.section) come after the core ones.
-import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SchemaForm, SChoiceCards, SField, SHint, SIcon, SInput, SLink, SSegmented, SSelect, SSettingRow, SSettingsGroup, SSpinner, SSwitch, toast } from '@sub2api/ui'
@@ -26,10 +21,6 @@ import { forAccountType, slotKey } from '@/components/plugin/slots'
 import GroupPicker from '@/components/GroupPicker.vue'
 import ProxyPicker from '@/components/ProxyPicker.vue'
 import { lt } from '@/i18n'
-import CCGatewayAccountAuth from '@/views/ccgateway/CCGatewayAccountAuth.vue'
-import CCGatewayAccountReauth from '@/views/ccgateway/CCGatewayAccountReauth.vue'
-import AccountFeatureSettings from '@/views/ccgateway/AccountFeatureSettings.vue'
-import type { AccountFeaturePolicy } from '@/views/ccgateway/requestPolicy'
 import { assetURL, usePluginStore } from '@/stores/plugins'
 import { useEnvironmentLayer, useGroupsWith, useProxiesLookup } from '@/composables/lookups'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
@@ -53,15 +44,13 @@ import { toCards, type ModelLimitCard } from './modelLimits'
 import { SPM_WINDOW_DEFAULT } from './spmWindow'
 import { newAccountConcurrency } from './accountLimits'
 import { shouldPrefillOnEdit } from './modelDefaults'
-import { containerLocales, containerTimezones, environmentOptions } from './containerEnvironment'
-import { useContainerEnvironment } from './useContainerEnvironment'
 import { useModelEdit } from './useModelEdit'
 import { useAccountSave } from './useAccountSave'
 import { CONNECTION_FIELDS, isAdvancedField, isSchedulingField, mappingErrorText, modelsErrorText, pluginSection, RATE_LIMITS, SCHEDULING_ROWS, SECTION_CONTROLS, splitFieldErrors, type EditorSection } from './editorErrors'
 
 const props = defineProps<{ accountType: AccountType | null; accountTypeOptions?: AccountType[]; account?: Account | null }>()
-const emit = defineEmits<{ (e: 'change-type', at: AccountType): void; (e: 'saved', a: Account): void; (e: 'cancel'): void; (e: 'back'): void; (e: 'test', a: Account): void; (e: 'reauthorized', a: Account): void }>()
-const { t, locale: displayLocale } = useI18n()
+const emit = defineEmits<{ (e: 'change-type', at: AccountType): void; (e: 'saved', a: Account): void; (e: 'cancel'): void; (e: 'back'): void; (e: 'test', a: Account): void }>()
+const { t } = useI18n()
 const plugins = usePluginStore()
 const scope = useScope()
 
@@ -110,11 +99,6 @@ const errors = ref<Record<string, string>>({})
 const credErrors = ref<Record<string, string>>({})
 provide(ACCOUNT_FORM_KEY, { accountType: computed(() => props.accountType), errors: credErrors })
 const saving = ref(false)
-const ccFeaturePolicy = ref<AccountFeaturePolicy>()
-const ccFeatureSaved = ref('')
-const ccFeatureBlocked = ref(false)
-const ccFeatureDirty = computed(() => ccFeaturePolicy.value !== undefined && JSON.stringify(ccFeaturePolicy.value) !== ccFeatureSaved.value)
-function loadedFeatures(value: AccountFeaturePolicy) { ccFeatureSaved.value = JSON.stringify(value) }
 
 const schemaForm = ref<InstanceType<typeof SchemaForm>>()
 const iframe = ref<InstanceType<typeof PluginIframe>>()
@@ -178,12 +162,9 @@ const toTop = () => formEl.value?.scrollIntoView({ block: 'start' })
 onMounted(toTop)
 watch(activeSection, toTop, { flush: 'post' })
 
-const autoModels = ref(true)
-const ccgState = ref<{ key: string | null; authorized: boolean; subscription_type?: string }>({ key: null, authorized: false })
-const automaticModels = computed(() => props.accountType?.plugin_key === 'ccgateway' && autoModels.value)
 const editorModels = useModelEdit(
   () => props.accountType,
-  () => props.account?.subscription_type ?? ccgState.value.subscription_type
+  () => props.account?.subscription_type
 )
 const {
   models, mapping, prefilled, defaultModels, modelsTextMode,
@@ -191,19 +172,7 @@ const {
 } = editorModels
 /** Models a model list can hold: those the account serves, or every known model when it serves all. */
 const modelLimitOptions = computed(() => (models.value.length ? models.value : [...new Set([...defaultModels.value, ...modelOptions.value])]))
-function mergeModels(ids: string[]) {
-  if (automaticModels.value) {
-    toast(t('accounts.editorUi.autoModelsHint'), 'info')
-    return 0
-  }
-  return editorModels.mergeModels(ids)
-}
-watch(defaultModels, (next, previous) => {
-  if (props.accountType?.plugin_key !== 'ccgateway') return
-  if (automaticModels.value || (!props.account && JSON.stringify(models.value) === JSON.stringify(previous))) {
-    editorModels.setModels([...next])
-  }
-})
+const mergeModels = (ids: string[]) => editorModels.mergeModels(ids)
 /** Models and mappings of the section summary (the cards render their own counts). */
 const mappingCount = computed(() => Object.keys(mapping.value).length)
 
@@ -265,7 +234,6 @@ const editorSections = computed(() => [
     label: t('accounts.editorUi.advanced'),
     summary: forwardingSummary.value
   },
-  ...(props.accountType?.plugin_key === 'ccgateway' ? [{ key: 'cc_features' as const, icon: 'settings', label: t('ccgateway.features.ccTitle'), summary: t('ccgateway.layers.' + (ccFeaturePolicy.value?.mode === 'custom' ? 'custom' : 'follow')) }] : []),
   ...pluginSections.value.map(e => ({
     key: pluginSection(slotKey(e)),
     icon: e.icon || 'puzzle',
@@ -289,64 +257,13 @@ const sectionErrors = computed<Partial<Record<EditorSection, boolean>>>(() => ({
   connection: CONNECTION_FIELDS.some((k) => errors.value[k]) || Object.keys(credErrors.value).length > 0,
   models: !!(modelsError.value || serverModelsError.value || mappingError.value || serverMappingError.value),
   scheduling: Object.keys(errors.value).some(isSchedulingField) || Object.keys(usageLimitErrors.value).length > 0,
-  advanced: Object.keys(errors.value).some(isAdvancedField),
-  cc_features: Object.keys(errors.value).some(k => k.startsWith('cc_feature_policy'))
+  advanced: Object.keys(errors.value).some(isAdvancedField)
 }))
-
-// ---------------------------------------------------------------- Claude Code (CCGateway)
-
-// Claude Code (CCGateway) OAuth keeps its credentials in the account's own
-// container: the editor shows the authorization flow instead of fields.
-const ccgOAuth = computed(() => props.accountType?.lifecycle?.preparation ?? (props.accountType?.plugin_key === 'ccgateway' && props.accountType?.type === 'managed'))
-const preparationUrl = computed(() => props.accountType?.lifecycle?.preparation ? `/account-types/${encodeURIComponent(props.accountType.plugin_key)}/${encodeURIComponent(props.accountType.type)}/preparations` : undefined)
-/** New Claude Code account: authorized in a draft container before it is saved. */
-const ccgDraft = computed(() => ccgOAuth.value && !editing.value)
-/** Draft state reported by the authorization panel: saving waits for `authorized`. */
-const ccgAuth = ref<InstanceType<typeof CCGatewayAccountAuth>>()
-const ccgSaveBlocked = computed(() => ccgDraft.value && !ccgState.value.authorized)
-/** A prepared runtime keeps the environment it was started with. */
-const environmentFrozen = computed(() => !!(preparationUrl.value && ccgState.value.key))
-/** Changes when the saved account changes in a way the container cares about. */
-const ccgSyncKey = computed(() => (props.account ? `${props.account.proxy_id ?? ''}|${props.account.status}` : ''))
-// CCGateway account containers only reach the internet through a proxy (no
-// direct fallback): every ccgateway account (managed and apikey) needs one.
-const needsProxy = computed(() => props.accountType?.plugin_key === 'ccgateway')
-const ccgPanelEl = ref<HTMLElement>()
-const proxyFieldEl = ref<HTMLElement>()
-
-/** Shows a section and scrolls an element of it into view. */
-async function reveal(section: EditorSection, el: () => HTMLElement | undefined) {
-  activeSection.value = section
-  await nextTick()
-  el()?.scrollIntoView({ block: 'center', behavior: 'smooth' })
-}
-/** The save button explains itself: show the authorization steps. */
-const showCcgAuth = () => reveal('connection', () => ccgPanelEl.value)
-/** The authorization panel asks for a proxy: show and focus the proxy field. */
-async function focusProxy() {
-  setProxyMode('existing')
-  await reveal('connection', () => proxyFieldEl.value)
-  proxyFieldEl.value?.querySelector<HTMLElement>('select, input')?.focus()
-}
-
-// Container locale and timezone (CCGateway accounts)
-const { settings: ccgSettings, locationLoading, locationStatus, locationIP, resetEnvironment, prefillEnvironment, fillFromLocation } = useContainerEnvironment()
-const localeOptions = computed(() => environmentOptions(containerLocales, ccgSettings.locale, displayLocale.value))
-const timezoneOptions = computed(() => environmentOptions(containerTimezones, ccgSettings.timezone))
-const environmentStatus = computed(() => {
-  if (environmentFrozen.value) return t('accounts.lifecycle.preparationFrozen')
-  if (locationLoading.value) return t('ccgateway.environmentLoading')
-  if (locationStatus.value === 'filled') return t('ccgateway.environmentFilled', { ip: locationIP.value })
-  if (locationStatus.value === 'failed') return t('ccgateway.environmentFailed')
-  if (editing.value) return proxyMode.value === 'url' || basic.proxy_id !== (props.account?.proxy_id ?? null) ? t('accounts.lifecycle.environmentKept') : ''
-  return proxyMode.value === 'url' ? t('ccgateway.environmentProxyURL') : ''
-})
 
 // ---------------------------------------------------------------- proxy: pick an existing one | paste a URL (CONTRACTS §21.4)
 // "url" sends proxy_url instead of proxy_id; the server parses it, reuses a
 // matching proxy the caller can see or creates one, and answers proxy_created.
-// A new Claude Code account starts its draft container with an existing proxy
-// (POST drafts {proxy_id}): a pasted one is tested and saved first (probeProxyUrl).
+// A pasted one can also be tested and saved first (probeProxyUrl).
 type ProxyMode = 'existing' | 'url'
 const proxyMode = ref<ProxyMode>('existing')
 const proxyUrl = ref('')
@@ -378,35 +295,18 @@ const proxyUrlHint = computed(() => {
 const probed = ref<{ protocol: string; ip: string; id: number; created: boolean } | null>(null)
 const probing = ref(false)
 const showProbed = computed(() => !!probed.value && proxyMode.value === 'existing' && basic.proxy_id === probed.value.id)
-/**
- * The container environment follows the proxy only while a new account is set
- * up (unless the prepared runtime froze it). A saved account keeps its saved
- * locale and timezone when its proxy changes: its running container keeps the
- * old environment anyway, and an unasked rewrite only defers to a new runtime.
- */
-const followsProxy = () => needsProxy.value && !environmentFrozen.value && !editing.value
 
 function clearErrors(...keys: string[]) {
   if (keys.some((k) => errors.value[k])) errors.value = Object.fromEntries(Object.entries(errors.value).filter(([k]) => !keys.includes(k)))
 }
-function setProxy(value: number | null) {
-  basic.proxy_id = value
-  if (followsProxy()) void prefillEnvironment(value)
-}
 function setProxyMode(m: string) {
-  if (proxyMode.value !== m && followsProxy()) void prefillEnvironment(m === 'existing' ? basic.proxy_id : null)
   proxyMode.value = m as ProxyMode
   clearErrors('proxy_url', 'proxy_id')
 }
-// Entering a Claude Code draft goes back to the saved proxy the draft starts with.
-watch(ccgDraft, (v) => {
-  if (v) setProxyMode('existing')
-})
 
 /**
  * POST /proxies/probe {save}: tries the pasted proxy (socks5, http, then https
- * without a scheme), finds or creates the proxy that works and selects it, so a
- * Claude Code draft can start with it; its location fills locale and timezone.
+ * without a scheme), finds or creates the proxy that works and selects it.
  */
 async function probeProxyUrl() {
   const raw = proxyUrl.value.trim()
@@ -426,9 +326,6 @@ async function probeProxyUrl() {
     proxyUrl.value = ''
     proxyMode.value = 'existing'
     basic.proxy_id = r.proxy_id
-    if (!followsProxy()) return
-    if (r.location) fillFromLocation(r.location)
-    else void prefillEnvironment(r.proxy_id)
   } catch (e) {
     const fe = fieldErrors(e)
     if (fe.proxy_url) errors.value = { ...errors.value, proxy_url: fe.proxy_url }
@@ -498,10 +395,6 @@ const syncModelsTextIfNeeded = () => !modelsTextMode.value || syncModelsText()
 
 /** Fills the form from the account (or a new one) and the account type. */
 function fillForm(a: Account | null | undefined, at: AccountType | null) {
-  ccFeaturePolicy.value = undefined
-  ccFeatureSaved.value = ''
-  ccFeatureBlocked.value = false
-  autoModels.value = a?.auto_models ?? true
   basic.name = a?.name || ''
   basic.group_ids = [...(a?.group_ids || [])]
   basic.proxy_id = a?.proxy_id ?? null
@@ -509,9 +402,8 @@ function fillForm(a: Account | null | undefined, at: AccountType | null) {
   proxyMode.value = 'existing'
   proxyUrl.value = ''
   basic.conversion_loss_policy = a?.conversion_loss_policy ?? null
-  resetEnvironment(a?.settings)
   if (a) editorModels.setSaved(a.models, a.model_mapping)
-  if (!a || (at?.plugin_key === 'ccgateway' ? autoModels.value : shouldPrefillOnEdit(a, at))) editorModels.applyDefaults(at)
+  if (!a || shouldPrefillOnEdit(a, at)) editorModels.applyDefaults(at)
   applyValues(a ? savedAccountValues(a, coreValues()) : newAccountValues(at, coreValues(), ownCaller()))
 }
 
@@ -619,24 +511,9 @@ const { save } = useAccountSave({
   credErrors,
   saving,
   activeSection,
-  locationLoading,
   models: editorModels,
-  settings: ccgSettings,
-  ccg: {
-    autoModels,
-    autoDisableEnabled,
-    proxyUrlToSend,
-    featureDirty: ccFeatureDirty,
-    featureBlocked: ccFeatureBlocked,
-    featurePolicy: ccFeaturePolicy,
-    draft: ccgDraft,
-    saveBlocked: ccgSaveBlocked,
-    draftKey: computed(() => ccgState.value.key),
-    preparationUrl,
-    adopt: () => ccgAuth.value?.adopt(),
-    rejected: (reason: string) => ccgAuth.value?.rejected(reason),
-    showAuth: showCcgAuth
-  },
+  autoDisableEnabled,
+  proxyUrlToSend,
   collectCredentials,
   showCredentialErrors,
   loadAutoDisablePolicy,
@@ -661,13 +538,13 @@ const { save } = useAccountSave({
               <SField :label="t('accounts.groups')" :error="errors.group_ids" :hint="!caps.bindGroups.value ? t('accounts.groupsLocked') : basic.group_ids.length ? '' : t('accounts.editorUi.groupsHint')">
                 <GroupPicker :model-value="basic.group_ids" multiple :disabled="!caps.bindGroups.value" @update:model-value="basic.group_ids = $event as number[]" />
               </SField>
-              <div ref="proxyFieldEl" class="md:col-span-2" data-testid="proxy-field">
+              <div class="md:col-span-2" data-testid="proxy-field">
                 <div class="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                   <span class="text-sm font-medium text-fg">{{ t('accounts.proxy') }}<span v-if="controls.proxy.required" class="ml-0.5 text-red-500" aria-hidden="true">*</span></span>
                   <SSegmented v-if="proxyModeOptions.length > 1" :model-value="proxyMode" :options="proxyModeOptions" size="sm" :aria-label="t('accounts.proxy')" data-testid="proxy-mode" @update:model-value="setProxyMode(String($event))" />
                 </div>
                 <SField :error="proxyError">
-                  <ProxyPicker v-if="proxyMode === 'existing'" :model-value="basic.proxy_id" @update:model-value="setProxy" />
+                  <ProxyPicker v-if="proxyMode === 'existing'" v-model="basic.proxy_id" />
                   <div v-else class="flex gap-2">
                     <SInput
                       v-model="proxyUrl"
@@ -691,23 +568,11 @@ const { save } = useAccountSave({
                 <SHint v-if="showProbed" tone="success" size="xs" class="mt-1" role="status" data-testid="proxy-probe-result">
                   {{ t(probed!.created ? 'accounts.proxyProbeCreated' : 'accounts.proxyProbeReused', { protocol: probed!.protocol, ip: probed!.ip, id: probed!.id }) }}
                 </SHint>
-                <SHint v-if="needsProxy" size="xs" class="mt-1" data-testid="proxy-required-hint">{{ t('ccgateway.accountAuth.proxyRequiredHint') }}</SHint>
-                <SHint v-if="ccgDraft" size="xs" class="mt-1" data-testid="proxy-draft-hint">{{ t('ccgateway.accountAuth.draftProxyHint') }}</SHint>
               </div>
               <SHint v-if="account?.lifecycle_sync" size="xs" class="md:col-span-2" role="status" data-testid="account-lifecycle-status">
                 {{ t(`accounts.lifecycle.${account.lifecycle_sync.status}`) }}
                 <span v-if="account.lifecycle_sync.code === 'environment_requires_new_runtime'">{{ t('accounts.lifecycle.environmentDeferred') }}</span>
               </SHint>
-              <!-- container locale and timezone (CCGateway accounts) -->
-              <template v-if="needsProxy">
-                <SField :label="t('ccgateway.locale')" :hint="t('ccgateway.localeHint')" :error="errors['settings.locale'] || errors.settings">
-                  <SSelect :model-value="ccgSettings.locale || null" :options="localeOptions" searchable :aria-label="t('ccgateway.locale')" :placeholder="t('ccgateway.environmentDefault')" :no-results="t('ccgateway.environmentNoResults')" :disabled="locationLoading || environmentFrozen" data-testid="container-locale" @update:model-value="ccgSettings.locale = String($event ?? '')" />
-                </SField>
-                <SField :label="t('ccgateway.timezone')" :hint="t('ccgateway.timezoneHint')" :error="errors['settings.timezone']">
-                  <SSelect :model-value="ccgSettings.timezone || null" :options="timezoneOptions" searchable :aria-label="t('ccgateway.timezone')" :placeholder="t('ccgateway.environmentDefault')" :no-results="t('ccgateway.environmentNoResults')" :disabled="locationLoading || environmentFrozen" data-testid="container-timezone" @update:model-value="ccgSettings.timezone = String($event ?? '')" />
-                </SField>
-                <SHint size="xs" class="md:col-span-2" role="status" data-testid="container-location-status">{{ environmentStatus }}</SHint>
-              </template>
             </div>
           </SCard>
 
@@ -726,22 +591,7 @@ const { save } = useAccountSave({
               <SSpinner v-if="formLoading" block />
               <SHint v-else-if="formError" tone="danger">{{ formError }}</SHint>
               <SchemaForm v-else-if="schema" ref="schemaForm" v-model="credentials" :schema="schema" :ui-schema="uiSchema" :errors="credErrors" :widgets="schemaWidgets" />
-              <!-- Claude Code (CCGateway) OAuth: the credentials live in the account's own container; it is authorized right here (new accounts: before saving). -->
-              <div v-if="ccgOAuth" ref="ccgPanelEl">
-                <CCGatewayAccountAuth
-                  v-if="ccgDraft"
-                  ref="ccgAuth"
-                  draft
-                  :proxy-id="basic.proxy_id"
-                  :preparation-url="preparationUrl"
-                  :settings="ccgSettings"
-                  :configuration-ready="!locationLoading"
-                  @state="ccgState = $event"
-                  @fix-proxy="focusProxy"
-                />
-                <CCGatewayAccountReauth v-else :key="account!.id" :account-id="account!.id" :can-edit="canEditAccount" :sync-key="ccgSyncKey" @fix-proxy="focusProxy" @reauthorized="emit('reauthorized', $event)" />
-              </div>
-              <SAlert v-else-if="schema && !formLoading && !Object.keys(schema.properties || {}).length" tone="neutral">{{ t('accounts.editorUi.noCredentials') }}</SAlert>
+              <SAlert v-if="schema && !formLoading && !Object.keys(schema.properties || {}).length" tone="neutral">{{ t('accounts.editorUi.noCredentials') }}</SAlert>
             </template>
             <template v-else-if="mode === 'iframe'">
               <PluginIframe
@@ -773,12 +623,8 @@ const { save } = useAccountSave({
         <!-- ============================================================ models -->
         <div v-show="activeSection === 'models'" data-editor-section="models" class="space-y-4">
           <AccountModelsCard
-            v-model:auto-models="autoModels"
             :editor="editorModels"
-            :gateway="needsProxy"
-            :automatic="automaticModels"
             :editing="editing"
-            :draft="ccgDraft"
             :can-fetch="canFetch"
             :fetching="fetching"
             :errors="errors"
@@ -789,10 +635,6 @@ const { save } = useAccountSave({
         </div>
 
         <!-- ============================================================ scheduling and limits -->
-        <div v-if="needsProxy" v-show="activeSection === 'cc_features'" data-editor-section="cc_features" class="space-y-4">
-          <AccountFeatureSettings v-if="editing" :key="account!.id" v-model="ccFeaturePolicy" :account-id="account!.id" :can-edit="canEditAccount" :disabled="saving" :errors="errors" @loaded="loadedFeatures" @status="ccFeatureBlocked = $event" />
-          <SHint v-else>{{ t('ccgateway.layers.newAccount') }}</SHint>
-        </div>
         <div v-show="activeSection === 'scheduling'" data-editor-section="scheduling" class="space-y-4">
           <SSettingsGroup v-if="anyVisible(SCHEDULING_ROWS)" :title="t('accounts.scheduling')" :description="t('accounts.editorUi.schedulingCardHint')" data-testid="account-scheduling">
             <SSettingRow v-for="f in schedulingFields" :key="f.key" :label="f.label" :description="controls[f.key].reason || f.hint" :error="errors[f.key]">
@@ -867,12 +709,8 @@ const { save } = useAccountSave({
         <SLink v-if="activeSection !== 'models'" as="button" class="text-xs" @click="activeSection = 'models'">{{ t('accounts.editorUi.prefilledView') }}</SLink>
         <SLink as="button" class="text-xs" @click="clearPrefill">{{ t('accounts.editorUi.clearModels') }}</SLink>
       </SHint>
-      <SHint v-if="ccgSaveBlocked" inline size="xs" tone="warning" class="inline-flex flex-wrap items-center gap-x-2" data-testid="footer-ccg-blocked">
-        <SIcon name="info" class="h-3.5 w-3.5" />{{ t('ccgateway.accountAuth.saveBlocked') }}
-        <SLink as="button" class="text-xs" @click="showCcgAuth">{{ t('ccgateway.accountAuth.saveBlockedFix') }}</SLink>
-      </SHint>
       <SButton @click="emit('cancel')">{{ t('common.cancel') }}</SButton>
-      <SButton type="submit" variant="primary" :loading="saving" :disabled="formLoading || !!formError || ccgSaveBlocked || locationLoading" data-testid="account-save">{{ editing ? t('common.save') : t('accounts.editorUi.create') }}</SButton>
+      <SButton type="submit" variant="primary" :loading="saving" :disabled="formLoading || !!formError" data-testid="account-save">{{ editing ? t('common.save') : t('accounts.editorUi.create') }}</SButton>
     </div>
   </form>
 </template>

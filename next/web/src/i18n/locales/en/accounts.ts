@@ -1,9 +1,7 @@
 export default {
   lifecycle: {
     pending: 'Runtime configuration pending', applied: 'Runtime configuration synchronized', failed: 'Runtime synchronization failed; check the runtime',
-    environmentDeferred: 'Configuration saved. The existing container is unchanged. Language and timezone apply when a new runtime is created.',
-    environmentKept: 'Changing the proxy does not rewrite the saved language and timezone; select them manually to change them.',
-    preparationFrozen: 'The authorization container has been created. Language and timezone are locked; cancel this preparation to choose different values.'
+    environmentDeferred: 'Configuration saved. The running environment is unchanged; the new settings apply when a new runtime is created.'
   },
   listUi: {
     loadFailedEmpty: 'Accounts could not be loaded. Refresh to retry.',
@@ -80,7 +78,6 @@ export default {
     modelsCardHint: 'Request models the account serves; empty means no restriction', mappingCardHint: 'Rewrites request models to upstream models; billing and allowlists still use the request model', prefilled: 'Prefilled with the plugin preset: {what}. Save as is or adjust; an empty model list serves every model.',
     prefilledEdit: "This account served all models; it has been prefilled with the plugin preset ({what}), which takes effect when you save. To keep it unrestricted, click 'Clear'.", prefillWhat: '{models} models', prefillWhatMapping: '{models} models and {mapping} mappings', prefilledFooter: 'Models prefilled with the plugin preset; saved on Save', prefilledView: 'Review',
     fillDefaults: 'Add preset models ({n})', fillDefaultsHint: 'Merges the plugin preset into the list; existing entries stay', fillDefaultMapping: 'Add preset mapping ({n})', defaultsAdded: '{n} preset models added', defaultMappingAdded: '{n} preset mappings added', defaultsNothingNew: 'The preset is already in the list',
-    autoModels: 'Configure models automatically', autoModelsHint: 'When on, the built-in model list is used and adjusted to the Max / Pro subscription, applied on save. Turn it off to edit the list by hand.',
     copyModels: 'Copy', copied: '{n} models copied', clearModels: 'Clear', unrestricted: 'Unrestricted: the account serves every request model', mappedTo: 'Mapped to {model}',
     mappingEmpty: 'No mapping: request models go upstream unchanged', mappingAdd: 'Add mapping', mappingRowNotInModels: 'Not in the model list: the account is never scheduled for this model', mappingNotInModels: '{n} request models are not in the model list, so the account is never scheduled for them: {models}', mappingAddToModels: 'Add to model list',
     schedulingCardHint: 'Decides the order accounts are picked in and how many requests each handles at once', schedulableHint: 'When off the account is kept but receives no requests', autoDisableHint: 'Disable the account when the upstream reports invalid credentials, exhausted quota and similar errors (rules under Settings → Scheduling policy → Automatic disabling). When off the account is only cooled down for 60 seconds', limitsHint: 'RPM and TPM count the last 60 seconds, sessions their period: once any limit is reached the account is skipped until its usage falls back; 0 means unlimited',
@@ -103,7 +100,6 @@ export default {
   type: 'Type',
   subscription: 'Subscription',
   subscriptionHint: 'Subscription type the upstream reported after authorization',
-  modelsBySubscription: 'Saving adjusts the model list to the account subscription: Pro accounts drop the Fable models (only while the list is still the built-in one).',
   modelsAdjusted: 'Model list adjusted for the {plan} subscription ({n} models)',
   groups: 'Groups',
   proxy: 'Proxy',
@@ -428,10 +424,6 @@ export default {
   core: 'core',
   testErrorCode: 'Error code',
   testErrorSource: 'Error source',
-  testMethod: 'Test method',
-  testNativeBuild: 'CC native build probe (one request, no model fallback)',
-  testPolicy: 'CC features',
-  testPolicyGlobal: "Tested with the global CC feature policy, without group or account overrides; real requests use their group's policy.",
   testResponseHeaders: 'Upstream response information',
   testNoHTTPResponse: 'No HTTP response received',
   testErrorSources: { gateway: 'Gateway/runtime', core: 'Core (before the account runtime)', transport: 'Transport', response: 'HTTP response', plugin: 'Plugin', input: 'CC request input', timeout: 'CC request timeout', interrupted: 'CC request interrupted', internal: 'CC runtime' },
@@ -548,12 +540,10 @@ export default {
     refreshHint: 'Click quota to refresh usage now',
     refreshed: 'Usage updated',
     refreshBlocked: {
-      runtime_not_ready: 'The account runtime is not synchronized yet, so its quota cannot be queried. Try again shortly.',
-      runtime_parked: 'The account container is stopped (disabled for the configured hours), so its quota cannot be queried. Testing or re-authorizing starts it.'
+      runtime_not_ready: 'The account runtime is not synchronized yet, so its quota cannot be queried. Try again shortly.'
     }
   },
   autoReleaseAt: 'Auto-enables at {time}',
-  runtimeParked: 'Container stopped (disabled for the configured hours); testing or re-authorizing starts it',
   resetStatus: 'Reset status',
   resetStatusHint: 'Clear the disable, error reason and cooldown and restore enabled; the scheduling switch stays unchanged',
   resetStatusTitle: 'Reset account status',
@@ -561,19 +551,7 @@ export default {
   resetStatusDone: 'Account status reset',
   pluginActions: {
     running: 'Running "{name}"…',
-    done: '"{name}" completed',
-    tokenRefreshed: 'Token refreshed, valid until {time}',
-    tokenValid: 'The token is still valid (expires {time}); Claude Code renews it only close to expiry',
-    reason: {
-      not_logged_in: 'Claude Code in the container is not signed in; authorize the account again',
-      token_revoked: 'The token is no longer valid and cannot be renewed; authorize the account again',
-      refresh_failed: 'Claude Code could not renew the token; if this keeps failing, authorize the account again',
-      auth_in_progress: 'The account is being re-authorized; finish or cancel that first',
-      api_key_account: 'API key accounts have no OAuth token',
-      not_synchronized: 'The container is not ready yet; try again shortly',
-      runtime_unavailable: 'The account container is unavailable',
-      not_configured: 'The account container environment is not ready'
-    }
+    done: '"{name}" completed'
   },
   credRefresh: {
     label: 'Token',

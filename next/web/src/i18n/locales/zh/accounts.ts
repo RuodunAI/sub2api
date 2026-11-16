@@ -1,9 +1,7 @@
 export default {
   lifecycle: {
     pending: '运行配置待同步', applied: '运行配置已同步', failed: '运行配置同步失败，请检查运行环境',
-    environmentDeferred: '配置已保存，现有容器保持不变。语言和时区仅在新运行环境创建时生效。',
-    environmentKept: '更换代理不会自动改写已保存的语言和时区；如需修改，请手动选择。',
-    preparationFrozen: '授权容器已创建，语言和时区已锁定；如需修改，请取消本次准备后重新开始。'
+    environmentDeferred: '配置已保存，现有运行环境保持不变；新设置在创建新运行环境时生效。'
   },
   listUi: {
     loadFailedEmpty: '账号列表加载失败，请刷新重试',
@@ -79,7 +77,6 @@ export default {
     modelsCardHint: '账号可服务的请求模型；留空表示不限制', mappingCardHint: '把请求模型改写为上游模型；计费、白名单仍按请求模型', prefilled: '已按插件预设填入 {what}，可直接保存，也可按需增删；清空模型列表表示可服务所有模型。',
     prefilledEdit: "该账号原为不限模型，已按插件预设填充 {what}，保存后生效；如需保持不限请点'清空'。", prefillWhat: '{models} 个模型', prefillWhatMapping: '{models} 个模型与 {mapping} 条映射', prefilledFooter: '模型已按插件预设填充，保存后生效', prefilledView: '查看',
     fillDefaults: '填入预设模型（{n}）', fillDefaultsHint: '把插件预设的模型合并进列表，已有的保留', fillDefaultMapping: '填入预设映射（{n}）', defaultsAdded: '已加入 {n} 个预设模型', defaultMappingAdded: '已加入 {n} 条预设映射', defaultsNothingNew: '预设内容都已在列表中',
-    autoModels: '自动配置模型', autoModelsHint: '打开时使用内置模型列表，并按 Max / Pro 订阅自动调整，保存时生效；关闭后可手动修改。',
     copyModels: '复制', copied: '已复制 {n} 个模型', clearModels: '清空', unrestricted: '未限制：账号可服务所有请求模型', mappedTo: '映射到 {model}',
     mappingEmpty: '未配置映射：请求模型原样发往上游', mappingAdd: '添加映射', mappingRowNotInModels: '不在模型列表中，账号不会因此模型被调度', mappingNotInModels: '{n} 个请求模型不在模型列表中，账号不会因它们被调度：{models}', mappingAddToModels: '加入模型列表',
     schedulingCardHint: '决定账号被选中的先后顺序，以及同时处理的请求数', schedulableHint: '关闭后账号保留，但不再被分配请求', autoDisableHint: '上游返回凭证失效、额度耗尽等错误时自动禁用该账号（规则见 设置 → 调度策略 → 自动禁用）。关闭后只冷却 60 秒，不会禁用', limitsHint: 'RPM、TPM 按近 60 秒统计，会话按所设周期统计；达到任一上限后暂停调度该账号，用量回落后自动恢复；0 表示不限',
@@ -102,7 +99,6 @@ export default {
   type: '类型',
   subscription: '订阅',
   subscriptionHint: '账号授权后上游报告的订阅类型',
-  modelsBySubscription: '保存时会按账号订阅类型调整模型列表：Pro 账号去掉 Fable 模型（仅当列表仍是内置列表时）。',
   modelsAdjusted: '已按 {plan} 订阅调整模型列表（{n} 个模型）',
   groups: '分组',
   proxy: '代理',
@@ -426,10 +422,6 @@ export default {
   core: '核心',
   testErrorCode: '错误代码',
   testErrorSource: '错误来源',
-  testMethod: '测试方式',
-  testNativeBuild: 'CC 原生构建探测（单次请求，无模型回退）',
-  testPolicy: 'CC 特性',
-  testPolicyGlobal: '按全局 CC 特性策略测试，不含分组与账号覆盖；实际请求以所属分组的策略为准。',
   testResponseHeaders: '上游响应信息',
   testNoHTTPResponse: '未收到 HTTP 响应',
   testErrorSources: { gateway: '网关／运行环境', core: '核心（未到达账号容器）', transport: '传输链路', response: 'HTTP 响应', plugin: '插件', input: 'CC 请求输入', timeout: 'CC 请求超时', interrupted: 'CC 请求中断', internal: 'CC 运行环境' },
@@ -539,12 +531,10 @@ export default {
     refreshHint: '点击配额立即刷新用量',
     refreshed: '用量已更新',
     refreshBlocked: {
-      runtime_not_ready: '账号运行环境尚未同步完成，暂时无法查询额度，请稍后再试',
-      runtime_parked: '账号容器已停止（停机满设定时长），无法查询额度；测试或重新授权会自动启动'
+      runtime_not_ready: '账号运行环境尚未同步完成，暂时无法查询额度，请稍后再试'
     }
   },
   autoReleaseAt: '{time} 自动启用',
-  runtimeParked: '容器已停止（停机满设定时长），测试或重新授权会自动启动',
   resetStatus: '重置状态',
   resetStatusHint: '清除禁用、错误原因与冷却，恢复为启用状态；不改变允许调度开关',
   resetStatusTitle: '重置账号状态',
@@ -552,19 +542,7 @@ export default {
   resetStatusDone: '账号状态已重置',
   pluginActions: {
     running: '正在执行「{name}」…',
-    done: '「{name}」已完成',
-    tokenRefreshed: '令牌已刷新，有效期至 {time}',
-    tokenValid: '令牌仍然有效（{time} 过期），Claude Code 只在临近过期时续期',
-    reason: {
-      not_logged_in: '容器里的 Claude Code 没有登录，请重新授权账号',
-      token_revoked: '令牌已失效且无法续期，请重新授权账号',
-      refresh_failed: 'Claude Code 没能续期令牌；如果反复失败，请重新授权账号',
-      auth_in_progress: '账号正在重新授权，请完成或取消后再刷新',
-      api_key_account: 'API Key 账号没有 OAuth 令牌',
-      not_synchronized: '容器尚未就绪，请稍候再试',
-      runtime_unavailable: '账号容器不可用',
-      not_configured: '账号容器运行环境未就绪'
-    }
+    done: '「{name}」已完成'
   },
   credRefresh: {
     label: '令牌',

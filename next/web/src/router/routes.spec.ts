@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { defineComponent } from 'vue'
 import { i18n } from '@/i18n'
-import { CCGATEWAY_PAGE } from '@/views/plugins/pluginUtil'
 import { useSettingsMenu } from '@/views/settings/settingsNav'
 import { router } from './index'
 
@@ -21,7 +20,6 @@ vi.mock('@/views/prices/PricesView.vue', () => Page)
 vi.mock('@/views/accounts/AccountsView.vue', () => Page)
 vi.mock('@/views/proxies/ProxiesView.vue', () => Page)
 vi.mock('@/views/plugins/PluginSettingsView.vue', () => Page)
-vi.mock('@/views/ccgateway/CCGatewayView.vue', () => Page)
 vi.mock('@/views/errors/ForbiddenView.vue', () => Page)
 
 /** Where a link ends up. */
@@ -53,9 +51,8 @@ describe('where pages belong (CONTRACTS §90)', () => {
   })
 
   it('opens plugin settings in the console view, under the installed plugins', () => {
-    for (const path of [CCGATEWAY_PAGE, '/plugins/mailer/settings']) {
-      expect([path, metaOf(path).parent, viewOf(path)]).toEqual([path, '/plugins', undefined])
-    }
+    const path = '/plugins/mailer/settings'
+    expect([path, metaOf(path).parent, viewOf(path)]).toEqual([path, '/plugins', undefined])
   })
 
   it('declares the view once, on the settings page: the others join it as pages below', () => {
@@ -113,31 +110,6 @@ describe('the settings entry', () => {
     expect(await follow('/settings?tab=billing')).toMatch(/^\/forbidden\?perm=settings:read/)
     auth.denied.push('group:read', 'price:read')
     expect(await follow('/settings')).toMatch(/^\/forbidden\?perm=settings:read/)
-  })
-})
-
-describe('the CCGateway page', () => {
-  it('has an address of its own, for settings:read or a reader of the accounts', async () => {
-    expect(metaOf(CCGATEWAY_PAGE)).toMatchObject({ perm: 'settings:read', action: 'account:read', title: 'ccgateway.title' })
-    expect(await follow(CCGATEWAY_PAGE)).toBe(CCGATEWAY_PAGE)
-  })
-
-  it('opens for an owner of accounts without settings:read: the core checks the containers by account:*', async () => {
-    auth.denied = ['settings:read', 'account:read']
-    await follow('/forbidden')
-    expect(await follow(CCGATEWAY_PAGE)).toBe(CCGATEWAY_PAGE)
-  })
-
-  it('is not for a caller with neither', async () => {
-    auth.denied = ['settings:read', 'account:read', 'account:read:own']
-    // From another page: a link to the open page is no navigation.
-    await follow('/forbidden')
-    expect(await follow(CCGATEWAY_PAGE)).toMatch(/^\/forbidden\?perm=settings:read/)
-  })
-
-  it("takes over the plugin's settings addresses, keeping the anchor", async () => {
-    expect(await follow('/plugins/ccgateway/settings#ccgateway-runtime')).toBe(`${CCGATEWAY_PAGE}#ccgateway-runtime`)
-    expect(await follow('/settings?tab=plugin:ccgateway#ccgateway-runtime')).toBe(`${CCGATEWAY_PAGE}#ccgateway-runtime`)
   })
 })
 

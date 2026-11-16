@@ -1,7 +1,6 @@
 // DTOs of the console REST API (docs/CONTRACTS.md §5). Fields marked
 // "assumed" are not spelled out in the contract; views must tolerate their
 // absence.
-import type { AccountFeaturePolicy, FeatureGroup } from '@/views/ccgateway/requestPolicy'
 import type { GroupPricingSummary, MyGroupPricing, SegmentRef } from './pricing'
 
 export type LText = string | Record<string, string>
@@ -719,7 +718,6 @@ export interface AccountOutcomes {
 }
 
 export interface Account {
-  cc_feature_policy?: AccountFeaturePolicy
   lifecycle_sync?: { status: 'pending' | 'applied' | 'failed'; code?: string }
   id: number
   name: string
@@ -779,8 +777,6 @@ export interface Account {
   cooldown_until?: string | null
   cooldown_reason?: string // assumed
   orphaned?: boolean
-  /** CCGateway only: the account stayed red long enough and its container is stopped; testing or re-authorizing starts it. */
-  runtime_parked?: boolean
   /** Owner (CONTRACTS §21.2); null for legacy rows, which only all-level keys can see. */
   created_by?: number | null
   /** Email of the owner, kept after the user was deleted. */
@@ -806,187 +802,10 @@ export interface Account {
   last_test?: AccountLastTest | null
   /** Plan the account's runtime reported ("max", "pro" ...), CONTRACTS §59; null while unknown. */
   subscription_type?: string | null
-  /** Rate limit tier the runtime reported, as the upstream names it. */
-  rate_limit_tier?: string | null
   /** Balance of the account (CONTRACTS §52); null when the type does not support balance. */
   balance?: AccountBalance | null
   /** Plugin-registered custom actions available for this account (CONTRACTS §52). */
   actions?: AccountAction[]
-}
-
-// ---------------------------------------------------------------- CCGateway runtimes (docs/CCGATEWAY-DRAFT-RUNTIMES.md)
-
-/**
- * Extra field of POST /accounts for plugin_key=ccgateway, type=managed: the
- * key of an authorized draft runtime the new account adopts (§4). Refused
- * with 400 details.reason = draft_not_found / draft_not_authorized.
- */
-export interface CcgAccountCreateExtras {
-  ccgateway_runtime?: string
-}
-
-/** POST /system/ccgateway/drafts {proxy_id} → 201; PUT drafts/:key {proxy_id} → the same. */
-export interface CcgDraft {
-  /** `d` + 16 lowercase hex characters. */
-  key: string
-}
-
-/** GET .../status of a draft or account runtime; status and reason are English codes (ccgateway.status.* / ccgateway.reason.*). */
-export interface CcgRuntimeStatus {
-  /** Runtime key (the account id, or the draft key it adopted): POST /system/ccgateway/runtimes/:key/worker updates its worker. */
-  key?: string
-	current_image?: string
-	target_image?: string
-	image_update_available?: boolean
-	target_image_available?: boolean
-  status: 'creating' | 'ready' | 'blocked' | 'pending' | (string & {})
-  /** Why a blocked runtime is stopped: account_deleted, or account_parked (the account stayed red for park_after_hours). */
-  reason?: string
-  container?: string
-}
-
-/** GET .../health: the Claude login state inside the container. */
-export interface CcgRuntimeHealth {
-  subscription_type?: string
-  healthy: boolean
-  logged_in: boolean
-  auth_method?: string
-  status_source?: 'local_snapshot'
-  online_verified?: false
-  selection_verified?: false
-  credential_present?: boolean
-  credential_sources?: Array<'api_key_env' | 'bearer_env' | 'oauth_token_env' | 'stored_oauth' | 'managed_api_key' | 'external_credential_source' | 'credential_helper_configured'>
-  credential_source_unresolved?: boolean
-  access_token_expired?: boolean
-  /** Accounts only: the Claude Code version the Worker observed (e.g. 2.1.292); absent when unknown. */
-  cli_version?: string
-}
-
-/** POST .../start and GET .../session (null when no login is pending). */
-export interface CcgAuthSession {
-  session_id: string
-  url: string
-  expires_at: string
-}
-
-/** POST .../sync */
-export interface CcgSyncResult {
-  synced?: boolean
-  status?: string
-  reason?: string
-}
-
-/**
- * GET /system/ccgateway/runtime: the container images and controller the core
- * expects (published on GHCR) and what the Docker host runs; POST
- * .../runtime/install installs or upgrades them over SSH.
- */
-export interface CcgRuntimeImages {
-  expected: { app: string; egress: string; controller: string }
-  /** null: nothing installed yet. */
-  installed: { controller_image: string; app_image: string; egress_image: string; version?: string } | null
-  up_to_date: boolean
-  /** Why the installed state could not be read (ssh_failed, controller_unhealthy, ...). */
-  reason?: string
-  /**
-   * Images bundled in the enabled ccgateway plugin package (CONTRACTS §53.10), role -> ref;
-   * null: the package carries none. Absent from cores older than §53.10.
-   */
-  bundled?: CcgBundledImages | null
-}
-
-export type CcgBundledRole = 'app' | 'egress' | 'controller' | 'gateway'
-export interface CcgBundledImages {
-  /** ccgateway plugin version the images were built for. */
-  version: string
-  images: Partial<Record<CcgBundledRole, string>>
-}
-/** loaded: uploaded, loaded and applied; present: the controller already had the ref (skipped). */
-export type CcgBundledStatus = 'loaded' | 'present' | 'failed'
-export interface CcgBundledResult {
-  role: string
-  ref: string
-  status: CcgBundledStatus
-  reason?: string
-}
-/** POST /system/ccgateway/runtime/bundled (CONTRACTS §53.10). */
-export interface CcgBundledReport {
-  results: CcgBundledResult[]
-  /** An app image applied with update_existing: the in-place worker update of the existing runtimes (§53.7). */
-  workers?: CcgWorkersReport
-  runtime?: CcgRuntimeImages
-}
-
-/** Outcome of one runtime's in-place worker update (CONTRACTS §53.7); `failed` carries the controller's error code, `unreachable` or `timeout` as reason. */
-export type CcgWorkerStatus = 'updated' | 'unchanged' | 'busy' | 'not_running' | 'rolled_back' | 'failed'
-export interface CcgWorkerResult {
-  key: string
-  /** Absent for a draft runtime no account adopted yet. */
-  account_id?: number
-  status: CcgWorkerStatus
-  sha256?: string
-  previous_sha256?: string
-  reason?: string
-  cli_version?: string
-  cli_patch?: string
-  cli_sha256?: string
-  online?: boolean
-}
-/** POST /system/ccgateway/runtime/workers, POST .../runtimes/:key/worker (one runtime), and `workers` of an app image applied with update_existing; `reason` set (results empty) when the runtimes could not be listed. */
-export interface CcgWorkersReport {
-  image: string
-  /** Set for the update of one runtime (POST /system/ccgateway/runtimes/:key/worker). */
-  key?: string
-  results: CcgWorkerResult[]
-  reason?: string
-  components?: string[]
-  cli_version?: string
-}
-
-/** Image overrides of the CCGateway connection; '' uses the core's fixed reference. `gateway` is the Caddy image of the control panel (§53.3), `guard` the ccgateway guard of a compose install (§76). */
-export interface CcgRemoteImages {
-  app: string
-  egress: string
-  controller: string
-  gateway?: string
-  guard?: string
-}
-
-/**
- * Public view of GET/PUT /system/ccgateway/remote-config (CONTRACTS §49.16,
- * §53.2). Secrets are write-only: only has_* flags come back. In `controller`
- * mode host/port are the control panel's HTTPS address and the SSH fields are empty.
- */
-export interface CcgRemoteConfig {
-  cc_feature_groups?: Record<string, FeatureGroup>
-  feature_revision?: number
-  /** Always true for configurations saved by this console: per-account containers are the only mode. */
-  account_runtimes: boolean
-  /** Hours an account stays red before its container is stopped; 0 never stops it (default 3). */
-  park_after_hours?: number
-  /** controller: connected to a controller endpoint; ssh / local: legacy connections still honored (CONTRACTS §53.9). */
-  mode: 'disabled' | 'local' | 'ssh' | 'controller'
-  /** Controller endpoint protocol; '' or absent means https (§53.9). */
-  scheme?: '' | 'https' | 'http'
-  /** Path prefix of the controller behind a reverse proxy: '' (none) or '/seg[/seg…]' (§53.9). */
-  base_path?: string
-  host: string
-  port: number
-  user: string
-  auth_mode: 'password' | 'private_key'
-  host_key_fingerprint: string
-  has_password: boolean
-  has_private_key: boolean
-  has_passphrase: boolean
-  has_admin_key: boolean
-  has_api_key: boolean
-  /** Control panel mode: root certificates are pinned (controller_ca); the PEM itself is never returned. */
-  has_controller_ca?: boolean
-  /** SHA-256 (lowercase hex) of the DER of the first pinned certificate. */
-  controller_ca_fingerprint?: string
-  images?: Partial<CcgRemoteImages> | null
-  effective_images?: Partial<CcgRemoteImages>
-  network?: { pool: string; allocation: 'random' | 'sequential' }
 }
 
 /** Latest test of an account, kept on the account (POST /accounts/:id/test). */
@@ -1078,9 +897,6 @@ export interface AccountTestUsage {
 }
 
 export interface AccountTestResult {
-  test_mode?: 'native_build'
-  /** CCGateway: the test ran with the global CC feature policy, not the account's groups. */
-  policy_scope?: 'global'
   response_headers?: Record<string, string>
   error_code?: string
   error_source?: string
