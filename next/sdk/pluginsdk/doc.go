@@ -86,13 +86,8 @@
 // fixed whitelist into clause.Column or clause.OrderByColumn. TestNoRawSQL
 // in package pgdb checks the SDK and the plugins of the repository.
 //
-// SDK 0.2.0 changed Host.DB, which returned a *pgxpool.Pool before: a
-// plugin moving to it replaces its pgx calls with GORM (pgdb.Array for
-// array parameters and columns), and a test double of Host
-// returns a *gorm.DB (pgdb.Open). A plugin that stays on pgx keeps the
-// older SDK, or opens its own pool from Host.DSN, dialling through
-// egress.DialContext when Host.EgressInstalled: the DSN carries the
-// plugin's role and search_path, so that pool is as confined as Host.DB's. Errors wrap the driver's. Those of Exec,
+// Array parameters and columns are pgdb.Array; a test double of Host
+// returns a *gorm.DB (pgdb.Open). Errors wrap the driver's. Those of Exec,
 // Create, Save, Find, Scan and the like are translated too: a unique
 // violation also matches gorm.ErrDuplicatedKey (foreign key and check
 // violations gorm.ErrForeignKeyViolated and gorm.ErrCheckConstraintViolated),

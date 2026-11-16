@@ -20,9 +20,9 @@ func TestRewriteDSN(t *testing.T) {
 	if got != "postgres://app:secret@db/app?options=-c%20search_path%3Dplg_x" {
 		t.Fatalf("host credentials: %s", got)
 	}
-	// The host's pool parameters stay: each opener takes them out.
-	got, _ = rewriteDSN("postgres://app:secret@db/app?pool_max_conns=20", "plg_x", "pw", "plg_x")
-	if got != "postgres://plg_x:pw@db/app?options=-c%20search_path%3Dplg_x&pool_max_conns=20" {
-		t.Fatalf("pool parameters: %s", got)
+	// The other parameters stay.
+	got, _ = rewriteDSN("postgres://app:secret@db/app?sslmode=require", "plg_x", "pw", "plg_x")
+	if got != "postgres://plg_x:pw@db/app?options=-c%20search_path%3Dplg_x&sslmode=require" {
+		t.Fatalf("other parameters: %s", got)
 	}
 }

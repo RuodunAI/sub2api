@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -19,12 +20,12 @@ func config() *gorm.Config {
 // on sqlpool, the pool that reads an Exec's result before the connection
 // goes back.
 func TestOpen(t *testing.T) {
-	cfg, pool, err := ParseConfig("postgres://u:p@127.0.0.1:1/app?pool_max_conns=3")
+	cfg, err := ParseConfig("postgres://u:p@127.0.0.1:1/app")
 	if err != nil {
 		t.Fatal(err)
 	}
 	set := false
-	g, sqlDB, err := Open(cfg, Options{Pool: pool, Defaults: Settings{MaxConns: 8}, Gorm: config(),
+	g, sqlDB, err := Open(cfg, Options{Pool: Settings{MaxConns: 3, MaxConnIdleTime: time.Minute}, Gorm: config(),
 		Setup: func(*gorm.DB) error { set = true; return nil }})
 	if err != nil {
 		t.Fatal(err)
@@ -37,19 +38,19 @@ func TestOpen(t *testing.T) {
 		t.Fatalf("g.DB() = %p, %v; want the pool Open returned", fromGorm, err)
 	}
 	if n := sqlDB.Stats().MaxOpenConnections; n != 3 {
-		t.Fatalf("max open = %d, want the DSN's 3", n)
+		t.Fatalf("max open = %d, want 3", n)
 	}
 }
 
 // A Setup that fails leaves nothing open: the pool Open made is closed.
 func TestOpenClosesOnError(t *testing.T) {
-	cfg, _, err := ParseConfig("postgres://u:p@127.0.0.1:1/app")
+	cfg, err := ParseConfig("postgres://u:p@127.0.0.1:1/app")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var opened *sql.DB
 	boom := errors.New("boom")
-	_, _, err = Open(cfg, Options{Defaults: Settings{MaxConns: 1}, Gorm: config(), Setup: func(g *gorm.DB) error {
+	_, _, err = Open(cfg, Options{Pool: Settings{MaxConns: 1}, Gorm: config(), Setup: func(g *gorm.DB) error {
 		opened, _ = g.DB()
 		return boom
 	}})

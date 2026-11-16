@@ -99,7 +99,7 @@ func EachRow(db *gorm.DB, fn func(*sql.Rows) error) error {
 }
 
 // CollectRows runs db, a query, and returns what scan reads of each row, in
-// order: never nil, so that no rows is an empty list (pgx.CollectRows).
+// order: never nil, so that no rows is an empty list.
 func CollectRows[T any](db *gorm.DB, scan func(*sql.Rows) (T, error)) ([]T, error) {
 	out := []T{}
 	err := EachRow(db, func(rows *sql.Rows) error {

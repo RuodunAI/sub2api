@@ -118,7 +118,7 @@ func usableModels(ctx context.Context, q *gorm.DB, uid int64, f *store.Conds) er
 }
 
 // policyRow is the model policy of one group. SQL NULL and JSON null read
-// as no list, as when pgx decoded the jsonb column into a []string.
+// as no list.
 type policyRow struct {
 	ModelAllowlist  store.JSON[[]string]
 	ModelFilterMode string

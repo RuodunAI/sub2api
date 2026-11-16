@@ -8,7 +8,7 @@ import (
 
 // anyPrefix is the unlocked probe Lookup runs for every request that carries
 // helper prefixes, most of which it answers Unknown. Its GORM statement
-// (gorm) is measured next to the pgx statement it replaced (sql; raw database/sql since batch 6), against a
+// (gorm) is measured next to the same statement on raw database/sql (sql), against a
 // real PostgreSQL (TEST_DATABASE_URL), as recorded in
 // internal/store/gormtest/BASELINE.md:
 //

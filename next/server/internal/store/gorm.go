@@ -40,7 +40,7 @@
 //   - The schema belongs to Migrate and the .sql files: never AutoMigrate
 //     or use the Migrator.
 //   - Errors are the driver's: test codes with IsUniqueViolation and the
-//     other functions of pgerror.go, and "not found" with IsNoRows (GORM
+//     other error readers of db.go, and "not found" with IsNoRows (GORM
 //     reports it as gorm.ErrRecordNotFound, Row().Scan as sql.ErrNoRows).
 //   - An UPDATE writes exactly the columns the raw SQL wrote: updated_at
 //     only where that SQL set it, with the same expression (now(),
@@ -98,8 +98,8 @@ func gormConfig() *gorm.Config {
 		// Statements are not logged: errors go back to the caller, and the
 		// SQL text could carry values.
 		Logger: logger.Discard,
-		// TranslateError stays off so that errors remain *pgconn.PgError,
-		// which pgerror.go reads.
+		// TranslateError stays off so that errors remain the driver's,
+		// which the error readers (db.go) take apart.
 		TranslateError: false,
 	}
 }

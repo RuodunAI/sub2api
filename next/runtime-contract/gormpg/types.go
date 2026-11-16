@@ -1,17 +1,13 @@
 package gormpg
 
 import (
-	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"sync"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-	"gorm.io/gorm"
 )
 
 // Array is a PostgreSQL array (text[], bigint[], jsonb[] ...) as one query
@@ -87,18 +83,3 @@ func writeElement(b *strings.Builder, v reflect.Value) {
 // lock, so concurrent scans take one each; a pool is cheaper than a new map
 // per scan.
 var typeMaps = sync.Pool{New: func() any { return pgtype.NewMap() }}
-
-// IsNoRows reports a read that found no row: GORM's gorm.ErrRecordNotFound
-// (First, Take, Last) and database/sql's sql.ErrNoRows (Row().Scan).
-func IsNoRows(err error) bool {
-	return errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, sql.ErrNoRows)
-}
-
-// IsUniqueViolation reports a unique violation (SQLSTATE 23505) in err's
-// chain, on the constraint named constraint unless that is "". GORM's
-// translated gorm.ErrDuplicatedKey is not enough: Raw(...).Row() and Rows()
-// errors are never translated.
-func IsUniqueViolation(err error, constraint string) bool {
-	var pg *pgconn.PgError
-	return errors.As(err, &pg) && pg.Code == "23505" && (constraint == "" || pg.ConstraintName == constraint)
-}

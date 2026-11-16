@@ -23,9 +23,8 @@ import (
 
 // DefaultMaxConns is the connection limit of a handle opened without one:
 // per plugin and node, against the plugin role's CONNECTION LIMIT 20, which
-// the host's migration connection shares. The pgxpool the plugins used
-// before took max(4, number of CPUs); a fixed 4 keeps four nodes of any
-// size, with the migration connection, under the role's limit (4 x 4 + 1).
+// the host's migration connection shares. 4 keeps four nodes of any size,
+// with the migration connection, under the role's limit (4 x 4 + 1).
 // pluginsdk.WithDBPoolSize sets another.
 const DefaultMaxConns = 4
 
@@ -43,18 +42,16 @@ type Options struct {
 }
 
 // Open returns a GORM handle on dsn. It does no I/O: connections are opened
-// on first use, like the pgx pool it replaces, so a database that is down
+// on first use, so a database that is down
 // at Init does not fail the plugin's start. Its errors have the driver's
 // text (driverWording).
 func Open(dsn string, o Options) (*gorm.DB, error) {
 	// The handle is opened as the core and the gateway open theirs
-	// (runtime-contract/gormpg): pgx parses the DSN, takes out pgxpool's
-	// pool_* parameters and pins DateStyle and IntervalStyle, the formats
-	// Array.Scan parses array text in; database/sql pools the connections;
-	// GORM runs on sqlpool. The pool_* parameters are the host's (a DSN from
-	// a test, or from a host up to 0.1.288, carries them): a plugin's pool
-	// is sized by Options alone.
-	cfg, _, err := gormpg.ParseConfig(dsn)
+	// (runtime-contract/gormpg): pgx parses the DSN and pins DateStyle and
+	// IntervalStyle, the formats Array.Scan parses array text in;
+	// database/sql pools the connections, sized by Options; GORM runs on
+	// sqlpool.
+	cfg, err := gormpg.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("pgdb: parse dsn: %w", err)
 	}
@@ -75,8 +72,7 @@ func Open(dsn string, o Options) (*gorm.DB, error) {
 		conns = DefaultMaxConns
 	}
 	db, _, err := gormpg.Open(cfg, gormpg.Options{
-		// Every connection may stay idle, like pgxpool's.
-		Defaults: gormpg.Settings{MaxConns: conns, MaxConnLifetime: time.Hour, MaxConnIdleTime: 30 * time.Minute},
+		Pool: gormpg.Settings{MaxConns: conns, MaxConnLifetime: time.Hour, MaxConnIdleTime: 30 * time.Minute},
 		Gorm: &gorm.Config{
 			// The caller owns transactions; a single statement needs none.
 			SkipDefaultTransaction: true,

@@ -228,24 +228,20 @@ func (s *shell) close() {
 	s.closers = nil
 }
 
-// gatewayPool is the gateway's pool when the DSN sets none. Under pgxpool
-// the default was max(4, NumCPU), which made a gateway on a large host hold
-// as many connections as the core; the gateway only serves the control
-// plane, so it keeps the fixed 4-8 connections it was meant to have. The
-// lifetimes are pgxpool's defaults.
+// gatewayPool is the gateway's pool. The gateway only serves the control
+// plane, so it keeps a fixed 8 connections whatever the host's size.
 var gatewayPool = gormpg.Settings{MaxConns: 8, MaxConnLifetime: time.Hour, MaxConnIdleTime: 30 * time.Minute}
 
-// openPool opens the PG pool the way the core does (gormpg). The DSN is
-// shared with the core: its pool_* parameters size this pool,
-// SUB2API_GATEWAY_POOL_MAX_CONNS above them. Like pgxpool before, it
-// connects lazily: the first statement dials.
+// openPool opens the PG pool the way the core does (gormpg), sized by
+// SUB2API_GATEWAY_POOL_MAX_CONNS, else gatewayPool. It connects lazily: the
+// first statement dials.
 func openPool(c config) (*gorm.DB, error) {
-	cfg, pool, err := gormpg.ParseConfig(c.DatabaseURL)
+	cfg, err := gormpg.ParseConfig(c.DatabaseURL)
 	if err != nil {
 		return nil, err
 	}
-	pool.OverrideMaxConns(os.Getenv("SUB2API_GATEWAY_POOL_MAX_CONNS"))
-	db, _, err := gormpg.Open(cfg, gormpg.Options{Pool: pool, Defaults: gatewayPool, Gorm: &gorm.Config{
+	pool := gatewayPool.WithMaxConns(os.Getenv("SUB2API_GATEWAY_POOL_MAX_CONNS"))
+	db, _, err := gormpg.Open(cfg, gormpg.Options{Pool: pool, Gorm: &gorm.Config{
 		SkipDefaultTransaction: true, // the store opens the transactions it needs
 		DisableAutomaticPing:   true,
 		// Errors go back to the caller; logged SQL could carry values.

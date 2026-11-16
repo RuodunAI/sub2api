@@ -14,8 +14,8 @@ import (
 
 // The key lookup is the first database statement of every gateway request
 // (Gateway.serve → Authenticate) and is not cached by design (see cached).
-// Its GORM form (gorm, lookup) is measured next to the pgx statement it
-// replaced (sql; raw database/sql since batch 6), against a real PostgreSQL (TEST_DATABASE_URL), as
+// Its GORM form (gorm, lookup) is measured next to the same statement on
+// raw database/sql (sql), against a real PostgreSQL (TEST_DATABASE_URL), as
 // recorded in internal/store/gormtest/BASELINE.md:
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/apikey/
@@ -34,8 +34,8 @@ func BenchmarkHotKeyLookup(b *testing.B) {
 		b.Fatal(err)
 	}
 	svc := New(db, nil, nil, nil)
-	// pgxLookupSQL is lookupQuery's statement, as pgx ran it.
-	pgxLookupSQL, _, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB { return lookupQuery(tx, hash).Scan(&struct{}{}) })
+	// rawLookupSQL is lookupQuery's statement.
+	rawLookupSQL, _, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB { return lookupQuery(tx, hash).Scan(&struct{}{}) })
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func BenchmarkHotKeyLookup(b *testing.B) {
 			e := &cached{}
 			var groupRate, discount decimal.Decimal
 			var override *decimal.Decimal
-			err := db.SQL.QueryRowContext(ctx, pgxLookupSQL, hash).Scan(
+			err := db.SQL.QueryRowContext(ctx, rawLookupSQL, hash).Scan(
 				&e.KeyID, &e.UserID, &e.KeyStatus, &e.ExpiresAt, &e.UserActive,
 				&e.GroupID, &e.GroupName, &e.GroupStatus, &groupRate, &e.ModelAllowlist, &e.ModelFilterMode, &e.GroupEnvironment, &e.GroupAvailable, &e.AllowedIPs,
 				&e.KeyLimits.RPM, &e.KeyLimits.TPM, &e.KeyLimits.Concurrency, &e.KeyQuota.Limit, &e.KeyQuota.Used, &e.GroupLossPolicy,

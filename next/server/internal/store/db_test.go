@@ -165,13 +165,12 @@ func (s *syncTracker) Record(_ context.Context, _ *gorm.DB, id, checksum string)
 	return nil
 }
 
-// Open strips pgxpool's pool_* parameters, which PostgreSQL would reject as
-// settings, and sizes the pool with them.
-func TestOpenTakesPoolParams(t *testing.T) {
+// SUB2API_PG_MAX_CONNS sizes the pool.
+func TestOpenPoolSize(t *testing.T) {
 	db, _ := widgetDB(t)
 	ctx := context.Background()
-	t.Setenv("SUB2API_PG_MAX_CONNS", "")
-	sized, err := store.Open(ctx, testutil.DSN(db)+"&pool_max_conns=3&pool_min_conns=1&pool_max_conn_idle_time=1m")
+	t.Setenv("SUB2API_PG_MAX_CONNS", "3")
+	sized, err := store.Open(ctx, testutil.DSN(db))
 	require.NoError(t, err)
 	defer sized.Close()
 	assert.Equal(t, 3, sized.MaxConns())

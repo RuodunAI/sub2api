@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -56,35 +55,6 @@ func TestArrayRoundTrip(t *testing.T) {
 	}
 	if !slices.Equal(got.Tags, in) || !slices.Equal(got.IDs, pgdb.Array[int64]{1, 2}) || !got.Hit || got.Nil != nil {
 		t.Fatalf("got %+v", got)
-	}
-}
-
-// pgxpool's pool_* parameters are no PostgreSQL settings: Open drops them,
-// in either DSN form.
-func TestOpenIgnoresPoolParams(t *testing.T) {
-	u, err := url.Parse(testpg.URL(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	pass, _ := u.User.Password()
-	q := u.Query()
-	q.Set("pool_max_conns", "5")
-	q.Set("pool_max_conn_lifetime", "1h")
-	withQuery := *u
-	withQuery.RawQuery = q.Encode()
-	kv := fmt.Sprintf("host=%s port=%s user=%s password='%s' dbname=%s sslmode=disable pool_max_conns=5 pool_min_conns=1",
-		u.Hostname(), u.Port(), u.User.Username(), pass, strings.TrimPrefix(u.Path, "/"))
-	for _, dsn := range []string{withQuery.String(), kv} {
-		db, err := pgdb.Open(dsn, pgdb.Options{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var one int
-		err = db.Raw("SELECT 1").Scan(&one).Error
-		pgdb.Close(db) //nolint:errcheck
-		if err != nil || one != 1 {
-			t.Fatalf("query through a DSN with pool parameters: %v", err)
-		}
 	}
 }
 

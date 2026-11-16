@@ -27,47 +27,44 @@ type DB struct {
 	SQL *sql.DB
 }
 
-// Open connects to dsn. The pool is sized by SUB2API_PG_MAX_CONNS, else the
-// DSN's pool_* parameters (see pool.go), else the defaults.
+// Open connects to dsn. The pool is sized by SUB2API_PG_MAX_CONNS, else
+// the defaults (pool.go).
 func Open(ctx context.Context, dsn string) (*DB, error) {
-	db, s, err := open(ctx, dsn, func(p *gormpg.Pool) { p.OverrideMaxConns(os.Getenv("SUB2API_PG_MAX_CONNS")) })
+	s := poolDefaults.WithMaxConns(os.Getenv("SUB2API_PG_MAX_CONNS"))
+	db, err := open(ctx, dsn, s)
 	if err != nil {
 		return nil, err
 	}
-	// No min_conns: database/sql keeps no minimum, and Apply logs a
-	// pool_min_conns of the DSN as ignored.
 	slog.Info("database pool opened", "max_conns", s.MaxConns,
 		"max_conn_lifetime", s.MaxConnLifetime, "max_conn_idle_time", s.MaxConnIdleTime)
 	return db, nil
 }
 
 // OpenSized connects to dsn with a pool of at most maxConns connections,
-// whatever the DSN or the environment say: a pool for one job, such as
-// running a plugin's migrations as its own role.
+// whatever the environment says: a pool for one job, such as running a
+// plugin's migrations as its own role.
 func OpenSized(ctx context.Context, dsn string, maxConns int) (*DB, error) {
-	db, _, err := open(ctx, dsn, func(p *gormpg.Pool) { p.MaxConns = &maxConns })
-	return db, err
+	s := poolDefaults
+	s.MaxConns = maxConns
+	return open(ctx, dsn, s)
 }
 
-// open connects to dsn and pings it. The pool is sized from the DSN's
-// pool_* parameters, as size changes them, over poolDefaults; s is what it
-// got. gormpg.ParseConfig pins DateStyle ISO, the format Times parses
-// array text in (pgtext.go).
-func open(ctx context.Context, dsn string, size func(*gormpg.Pool)) (_ *DB, s gormpg.Settings, _ error) {
-	cfg, pool, err := gormpg.ParseConfig(dsn)
+// open connects to dsn with a pool of s and pings it. gormpg.ParseConfig
+// pins DateStyle ISO, the format Times parses array text in (pgtext.go).
+func open(ctx context.Context, dsn string, s gormpg.Settings) (*DB, error) {
+	cfg, err := gormpg.ParseConfig(dsn)
 	if err != nil {
-		return nil, s, err
+		return nil, err
 	}
-	size(&pool)
-	g, sqlDB, err := gormpg.Open(cfg, gormpg.Options{Pool: pool, Defaults: poolDefaults, Gorm: gormConfig(), Setup: registerTimestamps})
+	g, sqlDB, err := gormpg.Open(cfg, gormpg.Options{Pool: s, Gorm: gormConfig(), Setup: registerTimestamps})
 	if err != nil {
-		return nil, s, err
+		return nil, err
 	}
 	if err := sqlDB.PingContext(ctx); err != nil {
 		_ = sqlDB.Close()
-		return nil, s, fmt.Errorf("ping database: %w", err)
+		return nil, fmt.Errorf("ping database: %w", err)
 	}
-	return &DB{Gorm: g, SQL: sqlDB}, pool.Over(poolDefaults), nil
+	return &DB{Gorm: g, SQL: sqlDB}, nil
 }
 
 // Close closes the pool.
@@ -137,10 +134,17 @@ func SQLTx(tx *gorm.DB) *sql.Tx {
 	return t
 }
 
-// IsNoRows reports a read that found no row: GORM's
-// gorm.ErrRecordNotFound (First, Take, Last) and database/sql's
-// sql.ErrNoRows (Row().Scan).
-func IsNoRows(err error) bool { return gormpg.IsNoRows(err) }
+// The errors of a statement are the driver's; the modules read them with
+// these (gormpg's, see there).
+var (
+	IsNoRows              = gormpg.IsNoRows
+	IsUniqueViolation     = gormpg.IsUniqueViolation
+	IsForeignKeyViolation = gormpg.IsForeignKeyViolation
+	IsDeadlock            = gormpg.IsDeadlock
+	SQLState              = gormpg.SQLState
+	ConstraintName        = gormpg.ConstraintName
+	Hint                  = gormpg.Hint
+)
 
 // QuoteIdent quotes a (qualified) identifier for SQL text, for DDL, which
 // takes no parameters: QuoteIdent("s", "t") is "s"."t".

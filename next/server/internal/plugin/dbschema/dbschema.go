@@ -74,7 +74,7 @@ func (m *Manager) canCreateRole(ctx context.Context) (bool, error) {
 // The statements below read the system catalogs (pg_roles and the other
 // views, by the builder) and change roles and schemas (store.DDL, which
 // quotes the names and literals into the text). A one-value read uses
-// Row().Scan, which, like pgx's QueryRow, fails on no row.
+// Row().Scan, which fails on no row.
 
 // Error codes of the database isolation (audit 2026-10-09 P1-7). Role
 // isolation is never downgraded silently: a plugin that needs db.schema is
@@ -522,11 +522,7 @@ type AppliedMigration struct {
 func (AppliedMigration) TableName() string { return "public.plugin_migrations" }
 
 // rewriteDSN replaces the credentials of dsn (URL or key=value form) and pins
-// search_path to schema. Empty user keeps the host credentials. The host's
-// pgxpool parameters (pool_max_conns, ...) stay, as they did up to 0.1.288:
-// every opener takes them out (gormpg.ParseConfig, for the host's own
-// connections as the plugin role and the SDK's pgdb.Open, which sizes a
-// plugin's pool by its options alone).
+// search_path to schema. Empty user keeps the host credentials.
 func rewriteDSN(dsn, user, pass, schema string) (string, error) {
 	opt := "-c search_path=" + schema
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {

@@ -15,7 +15,7 @@ import (
 // and token version (isActiveWithVersion, on a status cache miss), the
 // access key of a request made with one (VerifyAccessKey, not cached), and
 // the user GET /me and a login load (getUser). Each GORM
-// statement is measured next to the pgx statement it replaced, against a
+// statement is measured next to the same statement on raw database/sql, against a
 // real PostgreSQL (TEST_DATABASE_URL), as recorded in
 // internal/store/gormtest/BASELINE.md:
 //
@@ -39,7 +39,7 @@ func hotFixture(b *testing.B) (*Service, int64, string) {
 	return New(Deps{DB: db}), user, hash
 }
 
-// benchPaths runs the raw database/sql (formerly pgx) and the GORM form of one read.
+// benchPaths runs the raw database/sql and the GORM form of one read.
 func benchPaths(b *testing.B, sqlPath, gormPath func() error) {
 	for _, p := range []struct {
 		name string
@@ -100,7 +100,7 @@ func BenchmarkHotGetUser(b *testing.B) {
 	})
 }
 
-// sqlGetUser is getUser as it was on pgx, on database/sql.
+// sqlGetUser is getUser on raw database/sql.
 func sqlGetUser(ctx context.Context, db *store.DB, id int64) (*User, error) {
 	var u User
 	var balance string
