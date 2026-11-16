@@ -12,21 +12,24 @@ import (
 )
 
 // Numbered is SQL written with pgx's numbered placeholders ($1, $2 ...),
-// as Filter numbers its conditions and as a CTE statement names each
-// parameter once however often it uses it, rewritten for GORM: each $n is
-// a ? bound to the n-th argument, again wherever $n repeats; the text is
-// sent otherwise unchanged. A $ inside a quoted literal ('...', where a
-// doubled quote is a quote, and E'...', where a backslash also escapes one)
-// is left alone, and a ? of the text (jsonb's key operator) is bound to
-// itself, since GORM would read it as a placeholder. A []byte or
+// as a CTE statement names each parameter once however often it uses it,
+// rewritten for GORM: each $n is a ? bound to the n-th argument, again
+// wherever $n repeats; the text is sent otherwise unchanged. A $ is left
+// alone inside what is no SQL code - a string literal ('...', where a
+// doubled quote is a quote, and E'...', where a backslash also escapes
+// one), a quoted identifier ("..."), a dollar-quoted string ($$...$$,
+// $tag$...$tag$), a comment (-- to the end of the line, /* ... */, which
+// nest) - and a ? anywhere (jsonb's key operator, or one of those) is bound
+// to itself, since GORM would read it as a placeholder. A []byte or
 // json.RawMessage argument is bound as a Bytes, so that it stays one
 // parameter wherever it stands (see Bytes).
 //
 // NewNumbered rewrites a statement once (a package-level statement, at
 // start-up); RawNumbered and ExecNumbered rewrite SQL assembled per call.
 // The SQL is the caller's own: a malformed placeholder, an argument a
-// placeholder names but the call does not pass, or an @ (which makes GORM
-// parse named parameters) is a programming error and panics.
+// placeholder names but the call does not pass, a literal, identifier or
+// comment left open, or an @ (which makes GORM parse named parameters) is
+// a programming error and panics.
 type Numbered struct {
 	sql   string
 	binds []int // for each ? of sql, in order, the index of the argument it binds; literalBind binds the ? itself
@@ -52,33 +55,15 @@ func NewNumbered(query string, names ...string) Numbered {
 	b.Grow(len(query))
 	var n Numbered
 	used := make([]bool, len(names))
-	// quoted is inside a string literal; escapes is that literal an E'...'
-	// one, where a backslash escapes the next byte. '' inside a literal
-	// closes and reopens it, which leaves both as they were.
-	quoted, escapes := false, false
-	for i := 0; i < len(query); i++ {
-		c := query[i]
-		switch {
-		case c == '?':
-			b.WriteByte('?')
-			n.binds = append(n.binds, literalBind)
+	for i := 0; i < len(query); {
+		if end := skipEnd(query, i); end > i {
+			n.writeText(&b, query[i:end])
+			i = end
 			continue
-		case c == '\\' && quoted && escapes:
-			b.WriteByte(c)
-			// The escaped byte cannot end the literal; a ? is still bound.
-			if i+1 < len(query) && query[i+1] != '?' {
-				i++
-				b.WriteByte(query[i])
-			}
-			continue
-		case c == '\'':
-			if !quoted && (i == 0 || query[i-1] != '\'') {
-				escapes = escapeLiteral(query, i)
-			}
-			quoted = !quoted
 		}
-		if c != '$' || quoted {
-			b.WriteByte(c)
+		if query[i] != '$' {
+			n.writeText(&b, query[i:i+1])
+			i++
 			continue
 		}
 		j := i + 1
@@ -94,7 +79,7 @@ func NewNumbered(query string, names ...string) Numbered {
 		if arg < len(used) {
 			used[arg] = true
 		}
-		i = j - 1
+		i = j
 	}
 	for i, name := range names {
 		if !used[i] {
@@ -103,6 +88,96 @@ func NewNumbered(query string, names ...string) Numbered {
 	}
 	n.sql = b.String()
 	return n
+}
+
+// writeText writes text, which holds no placeholder, binding each ? in it
+// to itself.
+func (n *Numbered) writeText(b *strings.Builder, text string) {
+	b.WriteString(text)
+	for range strings.Count(text, "?") {
+		n.binds = append(n.binds, literalBind)
+	}
+}
+
+// skipEnd is the end of the literal, quoted identifier, dollar-quoted
+// string or comment that starts at query[i], or i when none does; one left
+// open panics.
+func skipEnd(query string, i int) int {
+	rest := query[i:]
+	switch {
+	case rest[0] == '\'':
+		return i + quotedLen(rest, '\'', escapeLiteral(query, i))
+	case rest[0] == '"':
+		return i + quotedLen(rest, '"', false)
+	case strings.HasPrefix(rest, "--"):
+		if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+			return i + nl + 1
+		}
+		return len(query)
+	case strings.HasPrefix(rest, "/*"):
+		return i + blockCommentLen(rest)
+	case rest[0] == '$':
+		tag, ok := dollarTag(rest)
+		if !ok {
+			return i
+		}
+		end := strings.Index(rest[len(tag):], tag)
+		if end < 0 {
+			panic("store: unterminated dollar-quoted string in numbered SQL")
+		}
+		return i + len(tag) + end + len(tag)
+	}
+	return i
+}
+
+// quotedLen is the length of the text quoted by q at the start of s,
+// quotes included: a doubled q is one, and with escapes a backslash
+// escapes the next byte.
+func quotedLen(s string, q byte, escapes bool) int {
+	for j := 1; j < len(s); j++ {
+		switch {
+		case escapes && s[j] == '\\':
+			j++
+		case s[j] != q:
+		case j+1 < len(s) && s[j+1] == q:
+			j++
+		default:
+			return j + 1
+		}
+	}
+	panic(fmt.Sprintf("store: unterminated %c in numbered SQL", q))
+}
+
+// blockCommentLen is the length of the /* comment */ at the start of s;
+// PostgreSQL nests them.
+func blockCommentLen(s string) int {
+	depth := 0
+	for j := 0; j+1 < len(s); j++ {
+		switch s[j : j+2] {
+		case "/*":
+			depth++
+			j++
+		case "*/":
+			if depth--; depth == 0 {
+				return j + 2
+			}
+			j++
+		}
+	}
+	panic("store: unterminated /* comment in numbered SQL")
+}
+
+// dollarTag is the opening $tag$ (or $$) of a dollar-quoted string at the
+// start of s: a tag starts like an identifier, so $1 is no tag.
+func dollarTag(s string) (string, bool) {
+	j := 1
+	for j < len(s) && isWordByte(s[j]) {
+		j++
+	}
+	if j == len(s) || s[j] != '$' || j > 1 && s[1] >= '0' && s[1] <= '9' {
+		return "", false
+	}
+	return s[:j+1], true
 }
 
 // placeholderArg is the index of the argument that the placeholder $p binds

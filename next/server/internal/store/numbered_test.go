@@ -93,3 +93,43 @@ func TestRawNumberedBytes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []byte{}, empty, "an empty slice is the empty value, not NULL")
 }
+
+// What is no SQL code - a comment, a quoted identifier, a dollar-quoted
+// string - keeps its $ as text, whatever quotes it holds: an apostrophe in
+// a comment does not open a literal that would hide the placeholders after
+// it (G2 of the GORM review: "-- the user's id" left $1 unbound and both
+// placeholders took the second argument).
+func TestNumberedSkipsNonCode(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"SELECT * FROM t WHERE a = $2 -- the user's id\n AND b = $1", "SELECT * FROM t WHERE a = ? -- the user's id\n AND b = ?"},
+		{"SELECT $2, $1 -- trailing $1 '", "SELECT ?, ? -- trailing $1 '"},
+		{`SELECT $2 /* it's /* nested $1 */ still */, $1`, `SELECT ? /* it's /* nested $1 */ still */, ?`},
+		{`SELECT "it's $1", $2, $1`, `SELECT "it's $1", ?, ?`},
+		{`SELECT "a""b'$1", $2, $1`, `SELECT "a""b'$1", ?, ?`},
+		{`SELECT $$it's $1$$, $2, $1`, `SELECT $$it's $1$$, ?, ?`},
+		{`SELECT $fn$ $1 $x$ $fn$, $2, $1`, `SELECT $fn$ $1 $x$ $fn$, ?, ?`},
+		{`SELECT a-$2, $1`, `SELECT a-?, ?`},
+	} {
+		st := store.NewNumbered(c.in)
+		require.Equal(t, c.want, st.SQL(), c.in)
+		require.Equal(t, []any{"B", "A"}, st.Vars("A", "B"), c.in)
+	}
+	// A ? there is still text GORM would bind: it is bound to itself.
+	st := store.NewNumbered("SELECT $1 -- why?\n, \"q?\", $$?$$")
+	require.Equal(t, []any{"A", clause.Expr{SQL: "?"}, clause.Expr{SQL: "?"}, clause.Expr{SQL: "?"}}, st.Vars("A"))
+}
+
+// A literal, identifier, dollar-quoted string or block comment left open
+// would hide every placeholder after it: it panics like any malformed SQL.
+func TestNumberedUnterminated(t *testing.T) {
+	for _, bad := range []string{
+		`SELECT 'open, $1`,
+		`SELECT E'open\', $1`,
+		`SELECT "open, $1`,
+		`SELECT $$open, $1`,
+		`SELECT $tag$open$ta, $1`,
+		`SELECT /* open /* nested */, $1`,
+	} {
+		require.Panics(t, func() { store.NewNumbered(bad) }, bad)
+	}
+}
