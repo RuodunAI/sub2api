@@ -158,11 +158,22 @@ func (s *SharedAssets) collect(ctx context.Context, tx *gorm.DB) error {
 // renewBuild extends the lease of build by secs seconds.
 func renewBuild(g *gorm.DB, build string, secs float64) *gorm.DB {
 	return g.Model(&model.WebAssetBuild{}).Where("build_id = ?", build).
-		Updates(map[string]any{
-			"lease_until": gorm.Expr("clock_timestamp()+make_interval(secs=>?)", secs),
-			"last_seen":   gorm.Expr("clock_timestamp()"),
-		})
+		Updates(map[string]any{"lease_until": leaseEnd(secs), "last_seen": gorm.Expr("clock_timestamp()")})
 }
+
+// leaseEnd is the end of a lease of secs seconds from now.
+func leaseEnd(secs float64) clause.Expr {
+	return gorm.Expr("clock_timestamp() + make_interval(secs => ?)", secs)
+}
+
+// leasedBuild is a new web_asset_builds row; last_seen is the default, and
+// nothing is read back.
+type leasedBuild struct {
+	BuildID    string          `gorm:"column:build_id"`
+	LeaseUntil store.ExprValue `gorm:"column:lease_until"`
+}
+
+func (leasedBuild) TableName() string { return model.WebAssetBuild{}.TableName() }
 
 // putBatch is the most files one INSERT writes: four parameters each, well
 // under PostgreSQL's 65535.
@@ -224,9 +235,8 @@ func (s *SharedAssets) Publish(ctx context.Context) error {
 		// Register the build with its lease, or renew it.
 		renew := append(clause.AssignmentColumns([]string{"lease_until"}),
 			clause.Assignment{Column: clause.Column{Name: "last_seen"}, Value: gorm.Expr("clock_timestamp()")})
-		if err := g.Table(model.WebAssetBuild{}.TableName()).
-			Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "build_id"}}, DoUpdates: renew}).
-			Create(map[string]any{"build_id": s.buildID, "lease_until": gorm.Expr("clock_timestamp() + make_interval(secs => ?)", s.opts.Lease.Seconds())}).Error; err != nil {
+		if err := g.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "build_id"}}, DoUpdates: renew}).
+			Create(&leasedBuild{BuildID: s.buildID, LeaseUntil: store.ExprValue{Expr: leaseEnd(s.opts.Lease.Seconds())}}).Error; err != nil {
 			return err
 		}
 		if err := putAssets(g, s.buildID, s.files); err != nil {

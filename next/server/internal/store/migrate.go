@@ -200,8 +200,16 @@ func renameApplied(m map[string]string) map[string]string {
 }
 
 func (CoreTracker) Record(ctx context.Context, tx *gorm.DB, id, checksum string) error {
-	return G(ctx, tx).Table("schema_migrations").Create(map[string]any{"id": id, "checksum": checksum}).Error
+	return G(ctx, tx).Create(&appliedMigration{ID: id, Checksum: checksum}).Error
 }
+
+// appliedMigration is a schema_migrations row; applied_at is the default.
+type appliedMigration struct {
+	ID       string `gorm:"column:id"`
+	Checksum string `gorm:"column:checksum"`
+}
+
+func (appliedMigration) TableName() string { return "schema_migrations" }
 
 func (CoreTracker) migrationSQL(id, checksum, body string) string {
 	if id == "0046_proxy_real_ip.sql" && checksum == "1b0719bb3a07caa74ca6ad5d92e8c605e9c4f0ebea3097b96a1226ef99c4897f" {

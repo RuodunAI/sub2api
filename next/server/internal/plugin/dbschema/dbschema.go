@@ -499,12 +499,23 @@ func (t Tracker) recordQuery(g *gorm.DB, id, checksum string) *gorm.DB {
 	if t.AsPluginRole {
 		return g.Exec(`SELECT public.plugin_migration_record(?, ?, ?)`, t.PluginKey, id, checksum)
 	}
-	return g.Table("public.plugin_migrations").Clauses(clause.OnConflict{
+	return g.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "plugin_key"}, {Name: "migration_id"}},
 		DoUpdates: append(clause.AssignmentColumns([]string{"checksum"}),
 			clause.Assignment{Column: clause.Column{Name: "applied_at"}, Value: gorm.Expr("now()")}),
-	}).Create(map[string]any{"plugin_key": t.PluginKey, "migration_id": id, "checksum": checksum})
+	}).Create(&AppliedMigration{PluginKey: t.PluginKey, MigrationID: id, Checksum: checksum})
 }
+
+// AppliedMigration is a public.plugin_migrations row (store's migration
+// runner owns the table, so it has no model); applied_at is the default,
+// and nothing is read back.
+type AppliedMigration struct {
+	PluginKey   string `gorm:"column:plugin_key"`
+	MigrationID string `gorm:"column:migration_id"`
+	Checksum    string `gorm:"column:checksum"`
+}
+
+func (AppliedMigration) TableName() string { return "public.plugin_migrations" }
 
 // rewriteDSN replaces the credentials of dsn (URL or key=value form) and pins
 // search_path to schema. Empty user keeps the host credentials. The host's

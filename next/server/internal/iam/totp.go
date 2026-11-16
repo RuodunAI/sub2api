@@ -139,11 +139,19 @@ func (s *Service) issueBackupCodes(ctx context.Context, tx *gorm.DB, userID int6
 	return codes, nil
 }
 
-// insertBackupCode stores the hash of a backup code of userID: a map on the
-// bare table, which reads nothing back.
+// insertBackupCode stores the hash of a backup code of userID.
 func insertBackupCode(db *gorm.DB, userID int64, hash string) *gorm.DB {
-	return db.Table(model.UserTOTPBackupCode{}.TableName()).Create(map[string]any{"user_id": userID, "code_hash": hash})
+	return db.Create(&backupCode{UserID: userID, CodeHash: hash})
 }
+
+// backupCode is a new user_totp_backup_codes row; the other columns are
+// their defaults, and nothing is read back.
+type backupCode struct {
+	UserID   int64  `gorm:"column:user_id"`
+	CodeHash string `gorm:"column:code_hash"`
+}
+
+func (backupCode) TableName() string { return model.UserTOTPBackupCode{}.TableName() }
 
 // deleteBackupCodes removes the backup codes of userID.
 func deleteBackupCodes(db *gorm.DB, userID int64) *gorm.DB {
@@ -380,12 +388,21 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID int64, flowToken, 
 }
 
 // insertTOTP enables two-factor for userID with a sealed secret and the
-// step of the code that proved it, unless it is: a map on the bare table,
-// which reads nothing back; the secret is one bytea value.
+// step of the code that proved it, unless it is.
 func insertTOTP(db *gorm.DB, userID int64, sealed []byte, lastStep int64) *gorm.DB {
-	return db.Table(model.UserTOTP{}.TableName()).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}}, DoNothing: true}).
-		Create(map[string]any{"user_id": userID, "secret_enc": store.Bytes(sealed), "last_step": lastStep})
+	return db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}}, DoNothing: true}).
+		Create(&enabledTOTP{UserID: userID, SecretEnc: sealed, LastStep: lastStep})
 }
+
+// enabledTOTP is a new user_totp row; the other columns are their
+// defaults, and nothing is read back.
+type enabledTOTP struct {
+	UserID    int64       `gorm:"column:user_id"`
+	SecretEnc store.Bytes `gorm:"column:secret_enc"`
+	LastStep  int64       `gorm:"column:last_step"`
+}
+
+func (enabledTOTP) TableName() string { return model.UserTOTP{}.TableName() }
 
 // DisableTwoFactor turns the factor off; the route has verified the caller
 // (step-up self.2fa.disable).

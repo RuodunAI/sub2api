@@ -56,6 +56,17 @@ func (DBNow) GormDataType() string { return "timestamptz" }
 // GormValue is now().
 func (DBNow) GormValue(context.Context, *gorm.DB) clause.Expr { return dbNow }
 
+// ExprValue is a column of a typed row that the INSERT writes as the SQL
+// expression it holds (a gorm.Expr: a subquery, the clock plus an
+// interval), where DBNow is not enough.
+type ExprValue struct{ clause.Expr }
+
+// GormDataType makes the field a column for GORM's schema.
+func (ExprValue) GormDataType() string { return "expr" }
+
+// GormValue is the expression.
+func (v ExprValue) GormValue(context.Context, *gorm.DB) clause.Expr { return v.Expr }
+
 func registerTimestamps(g *gorm.DB) error {
 	g.ClauseBuilders["VALUES"] = buildValues
 	return g.Callback().Create().Before("gorm:create").Register("store:return_stamped", returnStamped)

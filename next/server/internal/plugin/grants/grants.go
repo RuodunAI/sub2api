@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -163,7 +164,7 @@ func Promote(ctx context.Context, tx *gorm.DB, key, version string) error {
 	if err != nil || len(staged) == 0 {
 		return err
 	}
-	return g.Table(model.PluginPermissionGrant{}.TableName()).Clauses(clause.OnConflict{
+	return g.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "plugin_key"}, {Name: "permission"}},
 		DoUpdates: clause.AssignmentColumns([]string{"scope", "status", "plugin_version", "manifest_hash", "granted_by", "granted_at"}),
 	}).Create(pluginGrants(staged)).Error
@@ -176,20 +177,31 @@ func takeStaged(g *gorm.DB, key, version string) ([]model.PluginStagedGrant, err
 	return rows, err
 }
 
-// pluginGrants are staged rows as plugin grant rows, every column written
-// as it was (a NULL scope stays NULL).
-func pluginGrants(staged []model.PluginStagedGrant) []map[string]any {
-	out := make([]map[string]any, len(staged))
+// pluginGrants are staged rows as plugin grant rows.
+func pluginGrants(staged []model.PluginStagedGrant) []promotedGrant {
+	out := make([]promotedGrant, len(staged))
 	for i, r := range staged {
-		var scope any
-		if r.Scope != nil {
-			scope = store.Bytes(r.Scope)
-		}
-		out[i] = map[string]any{"plugin_key": r.PluginKey, "permission": r.Permission, "scope": scope, "status": r.Status,
-			"plugin_version": r.Version, "manifest_hash": r.ManifestHash, "granted_by": r.GrantedBy, "granted_at": r.GrantedAt}
+		out[i] = promotedGrant{PluginKey: r.PluginKey, Permission: r.Permission, Scope: store.Bytes(r.Scope), Status: r.Status,
+			PluginVersion: r.Version, ManifestHash: r.ManifestHash, GrantedBy: r.GrantedBy, GrantedAt: r.GrantedAt}
 	}
 	return out
 }
+
+// promotedGrant is a plugin_permission_grants row from a staged one, every
+// column written as it was (a NULL scope stays NULL, where the model would
+// leave it to the default), and nothing read back.
+type promotedGrant struct {
+	PluginKey     string      `gorm:"column:plugin_key"`
+	Permission    string      `gorm:"column:permission"`
+	Scope         store.Bytes `gorm:"column:scope"`
+	Status        string      `gorm:"column:status"`
+	PluginVersion string      `gorm:"column:plugin_version"`
+	ManifestHash  string      `gorm:"column:manifest_hash"`
+	GrantedBy     *int64      `gorm:"column:granted_by"`
+	GrantedAt     time.Time   `gorm:"column:granted_at"`
+}
+
+func (promotedGrant) TableName() string { return model.PluginPermissionGrant{}.TableName() }
 
 // Withdraw takes back the set staged for version when its upgrade is
 // abandoned (reason: the rollout's final phase): the version waits for a

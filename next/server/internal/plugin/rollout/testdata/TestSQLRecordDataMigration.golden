@@ -1,6 +1,6 @@
 -- sql
-INSERT INTO "plugin_migrations" ("checksum","migration_id","plugin_key") VALUES ($1,$2,$3) ON CONFLICT DO NOTHING
+INSERT INTO "public"."plugin_migrations" ("plugin_key","migration_id","checksum") VALUES ($1,$2,$3) ON CONFLICT DO NOTHING
 -- vars
-$1 string "data"
+$1 string "demo"
 $2 string "data:rollout-42:1.0.0->1.1.0"
-$3 string "demo"
+$3 string "data"

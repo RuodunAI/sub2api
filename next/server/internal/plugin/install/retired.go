@@ -41,16 +41,24 @@ func retireKey(ctx context.Context, tx *gorm.DB, key string, actorID int64) erro
 
 // retire is the statement of retireKey.
 func retire(db *gorm.DB, key string, actorID int64) *gorm.DB {
-	return db.Table(model.PluginKeyRetirement{}.TableName()).Clauses(clause.OnConflict{
+	publisher := db.Model(&model.Plugin{}).Select("publisher_id").Where("key = ?", key)
+	return db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "plugin_key"}},
 		DoUpdates: append(clause.AssignmentColumns([]string{"publisher_id", "retired_by"}),
 			clause.Assignment{Column: clause.Column{Name: "retired_at"}, Value: gorm.Expr("now()")}),
-	}).Create(map[string]any{
-		"plugin_key":   key,
-		"publisher_id": gorm.Expr("(?)", db.Model(&model.Plugin{}).Select("publisher_id").Where("key = ?", key)),
-		"retired_by":   nullID(actorID),
-	})
+	}).Create(&retiredKey{PluginKey: key, PublisherID: store.ExprValue{Expr: gorm.Expr("(?)", publisher)}, RetiredBy: nullID(actorID)})
 }
+
+// retiredKey is a plugin_key_retirements row: the key, its plugin's
+// publisher (NULL without one) and who retired it; retired_at is the
+// default, and nothing is read back.
+type retiredKey struct {
+	PluginKey   string          `gorm:"column:plugin_key"`
+	PublisherID store.ExprValue `gorm:"column:publisher_id"`
+	RetiredBy   *int64          `gorm:"column:retired_by"`
+}
+
+func (retiredKey) TableName() string { return model.PluginKeyRetirement{}.TableName() }
 
 // retirement is the plugin_key_retirements row of key.
 func retirement(db *gorm.DB, key string) *gorm.DB {

@@ -241,11 +241,19 @@ func uninstallRow(db *gorm.DB, key string) *gorm.DB {
 // targeting the live boots and the nodes still running the plugin.
 func beginUninstall(db *gorm.DB, key string, epoch int64, boots []string) *gorm.DB {
 	running := db.Model(&model.PluginRuntimeNode{}).Select("boot_id").Where("plugin_key = ? AND NOT stopped", key)
-	return db.Table(model.PluginUninstall{}.TableName()).Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{
-		"plugin_key": key, "epoch": epoch,
-		"target_boot_ids": gorm.Expr("ARRAY(SELECT DISTINCT unnest(?::text[] || ARRAY(?)))", store.Strings(boots), running),
-	})
+	return db.Clauses(clause.OnConflict{DoNothing: true}).Create(&uninstallBarrier{PluginKey: key, Epoch: epoch,
+		TargetBootIDs: store.ExprValue{Expr: gorm.Expr("ARRAY(SELECT DISTINCT unnest(?::text[] || ARRAY(?)))", store.Strings(boots), running)}})
 }
+
+// uninstallBarrier is a new plugin_uninstalls row; the other columns are
+// their defaults, and nothing is read back.
+type uninstallBarrier struct {
+	PluginKey     string          `gorm:"column:plugin_key"`
+	Epoch         int64           `gorm:"column:epoch"`
+	TargetBootIDs store.ExprValue `gorm:"column:target_boot_ids"`
+}
+
+func (uninstallBarrier) TableName() string { return model.PluginUninstall{}.TableName() }
 
 // disableForUninstall disables key and clears its desired version while
 // its uninstall waits for the nodes to stop.
