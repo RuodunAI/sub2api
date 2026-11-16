@@ -91,6 +91,7 @@
 - **连接与 DSN 里的连接池参数**：核心、网关、插件 SDK 用同一份 `runtime-contract/gormpg` 打开数据库，DSN 由 pgx 解析（取代手写的 `runtime-contract/pgdsn`）。`pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效（核心的 `SUB2API_PG_MAX_CONNS`、网关的 `SUB2API_GATEWAY_POOL_MAX_CONNS` 仍然优先）。`pool_min_conns`、`pool_min_idle_conns`、`pool_health_check_period`、`pool_max_conn_lifetime_jitter` 不再生效，启动时记一条 WARN `database DSN pool parameters ignored`。核心和网关都是这样；插件的连接池只按 SDK 的选项（`pluginsdk.WithDBPoolSize`）确定，DSN 里的 `pool_*` 一律去掉。所有连接固定 `DateStyle=ISO`、`IntervalStyle=postgres`（数组列按这两种格式解析）。
 - **出口日志**：插件出口连接的日志行一次插入后按行序（`WITH ORDINALITY`）取回 id；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。
 - **网关**：升级协调的一步（Coordinate）和节点准入各在一个事务里完成，进度在提交后才计。
+- **权限（authz）**：角色、授予、指派、插件权限目录、核心同步、超管移交、范围授予清理与授权版本号的读写不再有手写的整条 SQL，全部改用 GORM 模型与查询构造器（`unnest` 批量写改为一次 `Create`，数据修改 CTE 拆成同一事务里先读后写的几条语句，准确性依靠已持有的 authz 锁）。行为不变；`authz.scope.clear` 审计现在和其他授权审计一样记下客户端 IP。
 - **开发约束**（核心）：需要事务的函数（行锁、事务级 advisory 锁）在连接池上调用直接返回错误（`store.RequireTx`，gormguard `[tx-lock]` 检查）；`store.ForUpdate()` 改为函数，返回不可变的行锁（`.Of`、`.SkipLocked`），共享锁用 `store.Lock`；禁止 `Debug()` 与覆盖会话配置的 `Session`；`core` 不再 import `store`（`[core-store]`）。
 
 #### 插件版本
