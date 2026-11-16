@@ -16,6 +16,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -884,7 +885,7 @@ const consentablePluginColumns = "status, active_version, COALESCE(active_versio
 // markInstalled moves a first install's plugin row to installed, recording
 // its name and who installed it (unless already recorded).
 func markInstalled(db *gorm.DB, key string, name []byte, actorID int64) *gorm.DB {
-	return pluginRow(db, key).Updates(model.PluginChange(map[string]any{
+	return pluginRow(db, key).Updates(rows.Change(map[string]any{
 		"status":       StatusInstalled,
 		"name":         name,
 		"installed_by": gorm.Expr("COALESCE(installed_by, ?)", nullID(actorID)),
@@ -895,5 +896,5 @@ func markInstalled(db *gorm.DB, key string, name []byte, actorID int64) *gorm.DB
 // bumpPlugin moves the plugin row's version, which also locks it: the
 // first write of a grant change.
 func bumpPlugin(db *gorm.DB, key string) *gorm.DB {
-	return pluginRow(db, key).Updates(model.PluginChange(map[string]any{}))
+	return pluginRow(db, key).Updates(rows.Change(map[string]any{}))
 }
