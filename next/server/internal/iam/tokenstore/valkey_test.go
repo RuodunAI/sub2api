@@ -1,11 +1,13 @@
 package tokenstore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -147,7 +149,7 @@ func TestRevokeOne(t *testing.T) {
 	v, c := newStore(t)
 	a, b := create(t, v, 7, "a"), create(t, v, 7, "b")
 	sa := mustLookup(t, v, a)
-	if err := v.Revoke(ctx, 7, Selection{Only: "a"}, 0); err != nil {
+	if err := v.Revoke(ctx, 7, Selection{Only: "a"}, Bump{}); err != nil {
 		t.Fatal(err)
 	}
 	gone(t, v, a)
@@ -161,7 +163,7 @@ func TestRevokeOne(t *testing.T) {
 		t.Fatal("touch recreated a revoked session")
 	}
 	// Another user's id is not theirs to end.
-	if err := v.Revoke(ctx, 8, Selection{Only: "b"}, 0); err != nil {
+	if err := v.Revoke(ctx, 8, Selection{Only: "b"}, Bump{}); err != nil {
 		t.Fatal(err)
 	}
 	mustLookup(t, v, b)
@@ -173,7 +175,7 @@ func TestRevokeOthersAndAll(t *testing.T) {
 	v, _ := newStore(t)
 	keep, x, y := create(t, v, 7, "keep"), create(t, v, 7, "x"), create(t, v, 7, "y")
 	other := create(t, v, 8, "other")
-	if err := v.Revoke(ctx, 7, Selection{Keep: "keep"}, 5); err != nil {
+	if err := v.Revoke(ctx, 7, Selection{Keep: "keep"}, Bump{From: 3, To: 5}); err != nil {
 		t.Fatal(err)
 	}
 	gone(t, v, x)
@@ -181,13 +183,13 @@ func TestRevokeOthersAndAll(t *testing.T) {
 	if s := mustLookup(t, v, keep); s.TokenVersion != 5 {
 		t.Fatalf("survivor tv %d", s.TokenVersion)
 	}
-	if err := v.Revoke(ctx, 7, Selection{Only: "nothing"}, 4); err != nil {
+	if err := v.Revoke(ctx, 7, Selection{Only: "nothing"}, Bump{From: 3, To: 4}); err != nil {
 		t.Fatal(err)
 	}
 	if s := mustLookup(t, v, keep); s.TokenVersion != 5 {
 		t.Fatalf("tv went back to %d", s.TokenVersion)
 	}
-	if err := v.Revoke(ctx, 7, Selection{}, 6); err != nil {
+	if err := v.Revoke(ctx, 7, Selection{}, Bump{From: 5, To: 6}); err != nil {
 		t.Fatal(err)
 	}
 	gone(t, v, keep)
@@ -270,7 +272,7 @@ func TestRotate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := v.Revoke(ctx, 7, Selection{Only: "fam2"}, 0); err != nil {
+	if err := v.Revoke(ctx, 7, Selection{Only: "fam2"}, Bump{}); err != nil {
 		t.Fatal(err)
 	}
 	gone(t, v, again)
@@ -364,7 +366,8 @@ func TestUnavailable(t *testing.T) {
 	check("list", err)
 	_, err = v.Has(ctx, 7, "fam")
 	check("has", err)
-	check("revoke", v.Revoke(ctx, 7, Selection{}, 1))
+	check("revoke", v.Revoke(ctx, 7, Selection{}, Bump{From: 0, To: 1}))
+	check("prune", v.Prune(ctx, 7, 1))
 	check("drop", v.Drop(ctx, tok, s))
 	_, err = v.PutFlow(ctx, "p", Flow{})
 	check("put flow", err)
@@ -388,7 +391,7 @@ func TestRotateTwiceThenRevoke(t *testing.T) {
 	require.NoError(t, err)
 	gone(t, v, t0)
 	mustLookup(t, v, t1) // in its grace
-	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "fam"}, 0))
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "fam"}, Bump{}))
 	gone(t, v, t1)
 	gone(t, v, t2)
 }
@@ -401,9 +404,40 @@ func TestRevokeStampsTheRotatedToken(t *testing.T) {
 	t1, err := v.Rotate(ctx, 7, "keep")
 	require.NoError(t, err)
 	create(t, v, 7, "other")
-	require.NoError(t, v.Revoke(ctx, 7, Selection{Keep: "keep"}, 9))
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Keep: "keep"}, Bump{From: 3, To: 9}))
 	assert.Equal(t, 9, mustLookup(t, v, t0).TokenVersion)
 	assert.Equal(t, 9, mustLookup(t, v, t1).TokenVersion)
+}
+
+// A bump settles the sessions it keeps against the version before it: one
+// stamped below was ended by an earlier bump that did not reach Valkey and
+// ends now, both tokens of a rotation, instead of being stamped back to
+// life; one stamped ahead (a rolled-back bump) stays. Prune ends those
+// below a version and leaves the later ones.
+func TestBumpEndsWhatAnEarlierBumpEnded(t *testing.T) {
+	v, _ := newStore(t)
+	stale := create(t, v, 7, "stale") // tv 3
+	staleNext, err := v.Rotate(ctx, 7, "stale")
+	require.NoError(t, err)
+	fresh, err := v.Create(ctx, Session{ID: "fresh", UserID: 7, TokenVersion: 5})
+	require.NoError(t, err)
+	ahead, err := v.Create(ctx, Session{ID: "ahead", UserID: 7, TokenVersion: 6})
+	require.NoError(t, err)
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "none"}, Bump{From: 5, To: 6}))
+	gone(t, v, stale)
+	gone(t, v, staleNext)
+	assert.Equal(t, 6, mustLookup(t, v, fresh).TokenVersion)
+	assert.Equal(t, 6, mustLookup(t, v, ahead).TokenVersion)
+
+	later, err := v.Create(ctx, Session{ID: "later", UserID: 7, TokenVersion: 8})
+	require.NoError(t, err)
+	require.NoError(t, v.Prune(ctx, 7, 8))
+	gone(t, v, fresh)
+	gone(t, v, ahead)
+	mustLookup(t, v, later)
+	l, err := v.List(ctx, 7)
+	require.NoError(t, err)
+	assert.Len(t, l, 1)
 }
 
 // Drop ends a whole session through its current token, and only itself
@@ -470,7 +504,7 @@ func TestRevokeOnlyReadsOneSession(t *testing.T) {
 	create(t, v, 7, "a")
 	_, err := c.mr.ZAdd(userKey(7), 1, "ghost")
 	require.NoError(t, err)
-	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "a"}, 0))
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "a"}, Bump{}))
 	ids, _ := c.mr.ZMembers(userKey(7))
 	assert.Equal(t, []string{"ghost"}, ids)
 }
@@ -506,4 +540,88 @@ func TestNewClientFailsFast(t *testing.T) {
 	_, err = v.Lookup(ctx, "s2s_x")
 	assert.Equal(t, http.StatusServiceUnavailable, core.AsError(err).Status)
 	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+// lossyProxy relays a client's connections to upstream. Armed, it drops the
+// connection instead of relaying the answer of the next script the server
+// ran (not a NOSCRIPT error): what a timeout after the server executed a
+// call looks like to the client, which then retries it.
+type lossyProxy struct {
+	ln       net.Listener
+	upstream string
+	armed    atomic.Bool
+}
+
+func newLossyProxy(t *testing.T, upstream string) *lossyProxy {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	p := &lossyProxy{ln: ln, upstream: upstream}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go p.relay(conn)
+		}
+	}()
+	return p
+}
+
+func (p *lossyProxy) relay(client net.Conn) {
+	server, err := net.Dial("tcp", p.upstream)
+	if err != nil {
+		_ = client.Close()
+		return
+	}
+	defer func() { _ = client.Close(); _ = server.Close() }()
+	var script atomic.Bool // a script call is waiting for its answer
+	go func() {
+		defer func() { _ = server.Close() }()
+		buf := make([]byte, 64<<10)
+		for {
+			n, err := client.Read(buf)
+			if err != nil {
+				return
+			}
+			script.Store(p.armed.Load() && bytes.Contains(bytes.ToUpper(buf[:n]), []byte("EVAL")))
+			if _, err := server.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := server.Read(buf)
+		if err != nil {
+			return
+		}
+		if script.Load() && buf[0] != '-' && p.armed.CompareAndSwap(true, false) {
+			return
+		}
+		if _, err := client.Write(buf[:n]); err != nil {
+			return
+		}
+	}
+}
+
+// A rotation the client retries after its answer was lost (NewClient
+// retries once) is not made twice: the session's previous token stays in
+// its grace and the new one lives on.
+func TestRotateRetriedIsMadeOnce(t *testing.T) {
+	mr := miniredis.RunT(t)
+	p := newLossyProxy(t, mr.Addr())
+	rdb := NewClient(&redis.Options{Addr: p.ln.Addr().String()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	v := NewValkey(rdb, Options{})
+	t0 := create(t, v, 7, "fam")
+	p.armed.Store(true)
+	t1, err := v.Rotate(ctx, 7, "fam")
+	require.NoError(t, err)
+	require.False(t, p.armed.Load(), "no answer was lost")
+	mustLookup(t, v, t0)
+	assert.Equal(t, "fam", mustLookup(t, v, t1).ID)
+	assert.Greater(t, mr.TTL(sessKey(Hash(t1))), DefaultRotateGrace)
 }

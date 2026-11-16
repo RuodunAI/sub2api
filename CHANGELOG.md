@@ -16,7 +16,7 @@
 - **开关**：`PUT /settings/session {"issue": "jwt" | "s2s"}`（`settings:manage` + 二次验证 `session.issue`，只有超管本人可以，写审计 `session.issue.set`），广播后各节点生效；环境变量 `SUB2API_SESSION_ISSUE` 优先（已加入网关传给核心的环境变量白名单，`deploy/single` 的 compose 也映射了）。还有不支持不透明会话的存活节点时，切到 `s2s` 返回 409 并列出这些节点（`GET` 的 `behind` 也列出）；切回 `jwt` 不检查。切到 `s2s` 后已登录的控制台在下次刷新时自动换成 `s2s_`，不用重新登录。控制台没有页面。
 - **中间流程**（两步登录、通行密钥、TOTP 设置、step-up）在开关为 `s2s` 时只写 Valkey、取用 `GETDEL`；读取先 Valkey 后 `auth_flows`。
 - **Valkey 故障**：不透明会话鉴权、登录返回 503 并记 ERROR `tokenstore: valkey unavailable`，不回退 JWT；会话鉴权的 503 不再被改写成 401。访问密钥和网关 Key 不受影响。
-- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。结束全部会话时 `token_version` 一次加 2。开关为 `jwt` 时 JWT 调用者不依赖 Valkey（鉴权、登录、二次验证、会话列表、登出、撤销、改密码、管理员禁用与删除用户照常）；禁用、删除用户等结束全部会话的操作在任何开关下都不依赖 Valkey。
+- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。结束全部会话、以及 Valkey 不可用时代替它的 bump，`token_version` 一次加 2（Valkey 里的不透明会话随之全部结束）。开关为 `jwt` 时 JWT 调用者不依赖 Valkey（鉴权、登录、refresh、二次验证、会话列表、登出、撤销 JWT 会话、改密码、管理员禁用与删除用户照常）；禁用、删除用户等结束全部会话的操作在任何开关下都不依赖 Valkey。仍要 Valkey 的只有不透明会话本身（鉴权、撤销一个不透明会话、二次验证后换令牌），不可用时 503。
 - **API 调用方注意**：用不透明会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
 - 控制台：登录响应没有 `refresh_token` 时，401 直接回登录页，不走刷新。
 

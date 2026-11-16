@@ -126,9 +126,18 @@ func (s *Service) Sessions(ctx context.Context, userID int64, currentFamily stri
 			return nil, err
 		}
 	}
+	// A session a bump ended may still be in Valkey (its cleanup failed,
+	// the server CLI): it is not listed, as it is not accepted.
+	_, version, err := s.isActiveWithVersion(ctx, userID, 0)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]LoginSession, 0, len(rows)+len(opaque))
 	seen := make(map[string]bool, len(opaque))
 	for _, o := range opaque {
+		if o.TokenVersion < version {
+			continue
+		}
 		seen[o.ID] = true
 		out = append(out, LoginSession{ID: o.ID, Method: o.Method, IP: o.IP, UserAgent: o.UserAgent,
 			CreatedAt: o.CreatedAt, LastUsedAt: o.LastSeen, Current: o.ID == currentFamily})
@@ -197,8 +206,8 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, userID int64, keepFam
 	})
 }
 
-// sessionsToEnd picks the refresh-token families invalidateSessions revokes:
-// only that one family, or every family but keep (empty fields select all).
+// sessionsToEnd picks the login sessions a change ends: only that one, or
+// every one but keep (empty fields select all).
 type sessionsToEnd struct{ only, keep string }
 
 var allSessions = sessionsToEnd{}
@@ -207,63 +216,104 @@ func otherSessions(keep string) sessionsToEnd { return sessionsToEnd{keep: keep}
 
 func oneSession(family string) sessionsToEnd { return sessionsToEnd{only: family} }
 
-// invalidateSessions ends the sessions `which` selects: their refresh
-// tokens, login_sessions rows and opaque sessions, and their access JWTs
-// through a token_version bump (CONTRACTS §43.2). The bump stops every JWT
-// of the user: a JWT session kept renews on its next 401, an opaque one kept
-// is stamped with the new version. Callers lock the user row first and,
-// after commit, call sessionsEnded when `which` is allSessions and
-// sessionsChanged otherwise.
-//
-// Ending every session needs no Valkey: the bump alone rejects every opaque
-// session (verifyOpaque), so Valkey being down does not stop an operator
-// from disabling a stolen account, and sessionsEnded removes them after
-// commit. This bump steps by 2: a stamp that a rolled-back bump left on a
-// kept session is at most one ahead of the row, and must not be met. Other
-// bumps step by 1 and need Valkey only to restamp the opaque sessions they
-// keep. Ending one opaque session needs no bump when no JWT of its id may
-// still be valid: then only that session is touched.
-func (s *Service) invalidateSessions(ctx context.Context, tx *gorm.DB, userID int64, which sessionsToEnd) error {
+// Ending sessions stops their access JWTs through a token_version bump
+// (CONTRACTS §43.2), and the opaque sessions through the stamp each one
+// carries (verifyOpaque rejects one below the row). A bump that restamps
+// the opaque sessions it keeps steps by 1. A bump that does not reach
+// Valkey steps by stamplessStep: a restamp whose transaction rolled back
+// leaves a stamp one ahead of the row (never more: each restamp is to the
+// row plus 1), and every opaque session must be passed. Since a restamp
+// only moves the sessions stamped at the row or above (tokenstore.Bump),
+// a session any bump ended stays ended.
+const stamplessStep = 2
+
+// endAllSessions ends every session of userID in tx, with PostgreSQL alone:
+// the refresh tokens, the login_sessions rows, and a stampless bump, which
+// rejects every opaque session. Valkey being down thus does not stop an
+// operator from disabling a stolen account. The caller holds the user row
+// lock and calls sessionsEnded after the commit, which removes the opaque
+// sessions from Valkey.
+func (s *Service) endAllSessions(ctx context.Context, tx *gorm.DB, userID int64) error {
 	g := store.G(ctx, tx)
-	if err := revokeSessions(g, userID, which).Error; err != nil {
+	if err := endFamilies(g, userID, allSessions); err != nil {
 		return err
 	}
-	if err := deleteSessions(g, userID, which).Error; err != nil {
+	return bumpTokenVersion(g, userID, stamplessStep).Error
+}
+
+// endSomeSessions ends the sessions `which` selects and keeps the others,
+// in tx: an opaque session no JWT of whose id may still be valid alone,
+// with no bump (endOpaqueSession); otherwise through a bump that keeps the
+// other opaque sessions (keepingBump). The caller holds the user row lock
+// and calls sessionsChanged after the commit.
+func (s *Service) endSomeSessions(ctx context.Context, tx *gorm.DB, userID int64, which sessionsToEnd) error {
+	g := store.G(ctx, tx)
+	if err := endFamilies(g, userID, which); err != nil {
 		return err
 	}
-	if which == allSessions {
-		return bumpTokenVersion(g, userID, 2).Error
-	}
-	bump := true
 	if which.only != "" {
 		// A JWT is issued with a refresh token of its family: none issued
 		// within the access token TTL (and a minute of clock skew) means
 		// none is valid.
-		var err error
-		if bump, err = store.Exists(g, familyIssuedSince(g, userID, which.only, time.Now().Add(-s.cfg.AccessTokenTTL-time.Minute))); err != nil {
+		jwt, err := store.Exists(g, familyIssuedSince(g, userID, which.only, time.Now().Add(-s.cfg.AccessTokenTTL-time.Minute)))
+		if err != nil {
 			return err
 		}
+		if !jwt {
+			return s.endOpaqueSession(ctx, g, userID, which.only)
+		}
 	}
-	if !bump {
-		return s.revokeOpaque(ctx, userID, which, 0)
+	return s.keepingBump(ctx, g, userID, which)
+}
+
+// endOpaqueSession ends the opaque session id of userID, and nothing else.
+// When Valkey cannot be reached, a stampless bump ends it with every other
+// opaque session (the JWT sessions renew on their next 401): the change
+// goes through, erring on the safe side.
+func (s *Service) endOpaqueSession(ctx context.Context, g *gorm.DB, userID int64, id string) error {
+	done, err := s.reviseOpaque(ctx, userID, tokenstore.Selection{Only: id}, tokenstore.Bump{})
+	if err != nil || done {
+		return err
+	}
+	return bumpTokenVersion(g, userID, stamplessStep).Error
+}
+
+// keepingBump bumps token_version by 1, which stops every JWT (a JWT
+// session kept renews on its next 401), and in the same step ends the
+// opaque sessions `which` selects and stamps the others with the new
+// version: they have no refresh token to renew with. It runs under the
+// user's lock, so no login slips a session in with the old version. When
+// Valkey cannot be reached the bump goes on to a stampless one, which ends
+// the opaque sessions kept too (a JWT caller signing out does not need
+// Valkey).
+func (s *Service) keepingBump(ctx context.Context, g *gorm.DB, userID int64, which sessionsToEnd) error {
+	var from int
+	if err := userTokenVersion(g, userID).Row().Scan(&from); err != nil {
+		return err
 	}
 	if err := bumpTokenVersion(g, userID, 1).Error; err != nil {
 		return err
 	}
-	var tv int
-	if err := userTokenVersion(g, userID).Row().Scan(&tv); err != nil {
+	done, err := s.reviseOpaque(ctx, userID, tokenstore.Selection{Only: which.only, Keep: which.keep}, tokenstore.Bump{From: from, To: from + 1})
+	if err != nil || done {
 		return err
 	}
-	// With a bump Valkey only keeps the survivors: when it is down the bump
-	// ends them too, and the change goes through (a JWT caller signing out
-	// does not need Valkey).
-	if err := s.revokeOpaque(ctx, userID, which, tv); err != nil {
-		if !tokenstore.IsUnavailable(err) {
-			return err
-		}
-		slog.WarnContext(ctx, "iam: opaque sessions not restamped, the token_version bump ends them", "user_id", userID, "err", err)
+	return bumpTokenVersion(g, userID, stamplessStep-1).Error
+}
+
+// reviseOpaque runs a tokenstore Revoke. It reports false, with no error,
+// when Valkey could not be reached (or there is no store: the server CLI):
+// the caller then makes its bump stampless instead.
+func (s *Service) reviseOpaque(ctx context.Context, userID int64, sel tokenstore.Selection, b tokenstore.Bump) (bool, error) {
+	if s.sessions == nil {
+		return false, nil
 	}
-	return nil
+	err := s.sessions.Revoke(ctx, userID, sel, b)
+	if tokenstore.IsUnavailable(err) {
+		slog.WarnContext(ctx, "iam: opaque sessions not revised, a token_version bump ends them", "user_id", userID, "err", err)
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // familyIssuedSince are the refresh tokens of the family of userID issued
@@ -272,19 +322,13 @@ func familyIssuedSince(db *gorm.DB, userID int64, familyID string, since time.Ti
 	return refreshTokens(db).Where("user_id = ? AND family_id = ? AND created_at > ?", userID, familyID, since)
 }
 
-// revokeOpaque ends the opaque sessions `which` selects and stamps the
-// others with tv, the token_version just bumped to (0: no bump): they have
-// no refresh token to renew with, so the bump that stops the JWTs must not
-// stop them. It runs in the transaction, under the user's lock, so no login
-// slips a session in with the old version; a survivor stamped ahead of a
-// rollback is still accepted (verifyOpaque rejects only older ones). Without
-// a store (the server CLI) nothing is to do: the CLI ends every session,
-// and the bump does.
-func (s *Service) revokeOpaque(ctx context.Context, userID int64, which sessionsToEnd, tv int) error {
-	if s.sessions == nil {
-		return nil
+// endFamilies revokes the live refresh tokens and removes the login_sessions
+// rows of the families of userID that `which` selects.
+func endFamilies(db *gorm.DB, userID int64, which sessionsToEnd) error {
+	if err := revokeSessions(db, userID, which).Error; err != nil {
+		return err
 	}
-	return s.sessions.Revoke(ctx, userID, tokenstore.Selection{Only: which.only, Keep: which.keep}, tv)
+	return deleteSessions(db, userID, which).Error
 }
 
 // revokeSessions revokes the live refresh tokens of the families of userID
@@ -305,17 +349,18 @@ func (which sessionsToEnd) of(db *gorm.DB) *gorm.DB {
 }
 
 // bumpTokenVersion stops every access token of userID, stepping the
-// version by step (invalidateSessions).
+// version by step.
 func bumpTokenVersion(db *gorm.DB, userID int64, step int) *gorm.DB {
 	return db.Model(&model.User{}).Where("id = ?", userID).Update("token_version", gorm.Expr("token_version + ?", step))
 }
 
-// changeSessions runs fn (optional) and invalidateSessions in one transaction
-// holding the user row lock, then announces the change (sessionsEnded or
-// sessionsChanged). It takes no authz lock; a caller that needs one opens
-// its own transaction in the authz -> user lock order and calls
-// invalidateSessions and sessionsEnded itself.
+// changeSessions runs fn (optional) and ends the sessions `which` selects
+// in one transaction holding the user row lock, then announces the change.
+// It takes no authz lock; a caller that needs one opens its own transaction
+// in the authz -> user lock order and calls endAllSessions and
+// sessionsEnded itself.
 func (s *Service) changeSessions(ctx context.Context, userID int64, which sessionsToEnd, fn func(tx *gorm.DB) error) error {
+	all := which == allSessions
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockRefreshUser(ctx, tx, userID); err != nil {
 			return err
@@ -325,12 +370,15 @@ func (s *Service) changeSessions(ctx context.Context, userID int64, which sessio
 				return err
 			}
 		}
-		return s.invalidateSessions(ctx, tx, userID, which)
+		if all {
+			return s.endAllSessions(ctx, tx, userID)
+		}
+		return s.endSomeSessions(ctx, tx, userID, which)
 	})
 	if err != nil {
 		return err
 	}
-	if which == allSessions {
+	if all {
 		s.sessionsEnded(ctx, userID)
 	} else {
 		s.sessionsChanged(ctx, userID)
@@ -338,17 +386,24 @@ func (s *Service) changeSessions(ctx context.Context, userID int64, which sessio
 	return nil
 }
 
-// sessionsEnded follows the commit of invalidateSessions(allSessions) of
-// uids: sessionsChanged, then the opaque sessions leave Valkey. The bump
-// already rejects them, so this is cleanup: a failure is logged, and the
-// sessions go when next presented, or idle out.
+// sessionsEnded follows the commit of endAllSessions of uids:
+// sessionsChanged, then the opaque sessions the bump ended leave Valkey.
+// Only those stamped below the version committed go: a login since the
+// commit stays. The bump already rejects them, so this is cleanup: a
+// failure is logged, and the sessions go when next presented, or idle out.
 func (s *Service) sessionsEnded(ctx context.Context, uids ...int64) {
 	s.sessionsChanged(ctx, uids...)
 	if s.sessions == nil {
 		return
 	}
+	ctx = context.WithoutCancel(ctx)
 	for _, uid := range uids {
-		if err := s.sessions.Revoke(context.WithoutCancel(ctx), uid, tokenstore.Selection{}, 0); err != nil {
+		var tv int
+		err := userTokenVersion(store.G(ctx, s.db.Gorm), uid).Row().Scan(&tv)
+		if err == nil {
+			err = s.sessions.Prune(ctx, uid, tv)
+		}
+		if err != nil {
 			slog.ErrorContext(ctx, "iam: removing ended opaque sessions failed, token_version rejects them", "user_id", uid, "err", err)
 		}
 	}

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"log/slog"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,9 +31,6 @@ type TokenPair struct {
 	User              *User  `json:"user,omitempty"`
 	TwoFactorRequired bool   `json:"two_factor_required,omitempty"`
 	FlowToken         string `json:"flow_token,omitempty"`
-
-	// opaqueID is the opaque session issueOpaque stored, for abandonIssued.
-	opaqueID string
 }
 
 var (
@@ -82,11 +78,11 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		return &TokenPair{TwoFactorRequired: true, FlowToken: token, ExpiresIn: flowTTLSeconds}, nil
 	}
 	var pair *TokenPair
-	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
+	err = s.issueTx(ctx, func(is *issuer) error {
 		// The user row is the parent lock for every refresh-token family.
 		// Recheck the password snapshot after acquiring it: a password change
 		// may have committed while bcrypt was running above.
-		g := store.G(ctx, tx)
+		g := store.G(ctx, is.tx)
 		var currentHash, currentStatus string
 		if err := lockLiveUser(g, id, "password_hash, status").Row().Scan(&currentHash, &currentStatus); err != nil {
 			if store.IsNoRows(err) {
@@ -103,11 +99,10 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		if err := touchLastLogin(g, id).Error; err != nil {
 			return err
 		}
-		pair, err = s.issueTokens(ctx, tx, id, "")
+		pair, err = is.issue(ctx, id, "")
 		return err
 	})
 	if err != nil {
-		s.abandonIssued(ctx, pair)
 		return nil, err
 	}
 	return pair, nil
@@ -133,8 +128,8 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 		return nil, rateLimitedError(ctx, wait)
 	}
 	var pair *TokenPair
-	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
+	err = s.issueTx(ctx, func(is *issuer) error {
+		g := store.G(ctx, is.tx)
 		var hash, status string
 		if err := lockLiveUser(g, userID, "password_hash, status").Row().Scan(&hash, &status); err != nil {
 			if store.IsNoRows(err) {
@@ -148,25 +143,22 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 		if status != StatusActive {
 			return errUserDisabled
 		}
-		if err := s.checkSecondFactor(ctx, tx, userID, code); err != nil {
+		if err := s.checkSecondFactor(ctx, is.tx, userID, code); err != nil {
 			return err
 		}
 		if err := touchLastLogin(g, userID).Error; err != nil {
 			return err
 		}
 		var err error
-		if pair, err = s.issueTokens(withLoginMethod(ctx, loginMethodTwoFactor), tx, userID, ""); err != nil {
+		if pair, err = is.issue(withLoginMethod(ctx, loginMethodTwoFactor), userID, ""); err != nil {
 			return err
 		}
 		// Taken last: a failure before leaves the flow for another try (a
 		// flow in Valkey does not come back with a rollback).
 		var used login2FAPayload
-		_, err = s.takeFlow(ctx, tx, flowToken, flowLogin2FA, userID, &used)
+		_, err = s.takeFlow(ctx, is.tx, flowToken, flowLogin2FA, userID, &used)
 		return err
 	})
-	if err != nil {
-		s.abandonIssued(ctx, pair)
-	}
 	if isBadSecondFactor(err) {
 		s.limiter.fail(ctx, payload.Email, ip)
 		if ferr := s.recordSecondFactorFailure(ctx, userID); ferr != nil {
@@ -189,12 +181,43 @@ func newFamilyID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// issueTokens issues the credentials of a login session familyID (a new
-// one when empty, i.e. on login, which is audited for a superuser): an
-// opaque session or a JWT pair, as session.issue says. The caller holds
-// the user's row lock, and calls abandonIssued when its transaction fails.
-func (s *Service) issueTokens(ctx context.Context, tx *gorm.DB, userID int64, familyID string) (*TokenPair, error) {
-	g := store.G(ctx, tx)
+// issuer issues credentials in one transaction (issueTx), in the mode
+// session.issue says when it starts: read once, so a refresh decides on
+// the exchange and issues by the same answer.
+type issuer struct {
+	s      *Service
+	tx     *gorm.DB
+	opaque bool
+	// stored is the opaque session issued, which issueTx ends when the
+	// transaction fails.
+	stored *tokenstore.Session
+}
+
+// issueTx runs fn in a transaction, in which it issues credentials through
+// the issuer it gets. An opaque session lives in Valkey, which does not
+// roll back with PostgreSQL: when the transaction fails after storing one,
+// it is ended, so no session nobody holds stays on the user's list.
+func (s *Service) issueTx(ctx context.Context, fn func(is *issuer) error) error {
+	is := &issuer{s: s, opaque: s.issuesOpaque(ctx)}
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		is.tx = tx
+		return fn(is)
+	})
+	if err == nil || is.stored == nil {
+		return err
+	}
+	uid := is.stored.UserID
+	if rerr := s.sessions.Revoke(context.WithoutCancel(ctx), uid, tokenstore.Selection{Only: is.stored.ID}, tokenstore.Bump{}); rerr != nil {
+		slog.WarnContext(ctx, "iam: ending an opaque session of a failed login failed", "user_id", uid, "err", rerr)
+	}
+	return err
+}
+
+// issue issues the credentials of a login session familyID of userID (a
+// new one when empty, i.e. on login, which is audited for a superuser): an
+// opaque session or a JWT pair. The caller holds the user's row lock.
+func (is *issuer) issue(ctx context.Context, userID int64, familyID string) (*TokenPair, error) {
+	s, g := is.s, store.G(ctx, is.tx)
 	var tokenVersion int
 	if err := userTokenVersion(g, userID).Row().Scan(&tokenVersion); err != nil {
 		return nil, err
@@ -205,19 +228,22 @@ func (s *Service) issueTokens(ctx context.Context, tx *gorm.DB, userID int64, fa
 		if familyID, err = newFamilyID(); err != nil {
 			return nil, err
 		}
-		if err := s.auditSuperuserLogin(ctx, tx, userID); err != nil {
+		if err := s.auditSuperuserLogin(ctx, is.tx, userID); err != nil {
 			return nil, err
 		}
 	}
 	// The user is read first: an opaque session, stored in Valkey, is the
 	// last thing done before the commit.
-	user, err := s.loginUser(ctx, tx, userID)
+	user, err := s.loginUser(ctx, is.tx, userID)
 	if err != nil {
 		return nil, err
 	}
 	var pair *TokenPair
-	if s.issuesOpaque(ctx) {
-		pair, err = s.issueOpaque(ctx, userID, tokenVersion, familyID)
+	if is.opaque {
+		var stored tokenstore.Session
+		if pair, stored, err = s.issueOpaque(ctx, userID, tokenVersion, familyID); err == nil {
+			is.stored = &stored
+		}
 	} else {
 		pair, err = s.issueJWT(ctx, g, userID, tokenVersion, familyID, newFamily)
 	}
@@ -238,18 +264,6 @@ func (s *Service) loginUser(ctx context.Context, tx *gorm.DB, userID int64) (*Us
 	user.Balance = nil
 	user.Segment = core.SegmentRef{}
 	return user, nil
-}
-
-// abandonIssued ends the opaque session pair carries after the transaction
-// that issued it failed: Valkey does not roll back with PostgreSQL, and a
-// session nobody holds would stay on the user's sessions list.
-func (s *Service) abandonIssued(ctx context.Context, pair *TokenPair) {
-	if pair == nil || pair.opaqueID == "" {
-		return
-	}
-	if err := s.sessions.Revoke(context.WithoutCancel(ctx), pair.User.ID, tokenstore.Selection{Only: pair.opaqueID}, 0); err != nil {
-		slog.WarnContext(ctx, "iam: ending an opaque session of a failed login failed", "user_id", pair.User.ID, "err", err)
-	}
 }
 
 // issueJWT issues an access token and a refresh token in familyID.
@@ -357,134 +371,156 @@ func rotatedJustNow(revokedAt, replacedAt *time.Time, now time.Time) bool {
 // that was already rotated or revoked revokes every token of its family
 // (CONTRACTS §14.2), and the opaque session it may have been exchanged for,
 // and fails with 401. With session.issue s2s the token is exchanged for an
-// opaque session of the same id instead: the family's tokens are spent and
-// its login_sessions row goes, the session lives on in Valkey (the step-up
-// proofs bound to the id stay valid) and the user stays signed in across
-// the switch. Within the grace, the token that was just exchanged gets the
-// session a new token: the console lost the first answer.
+// opaque session of the same id instead (retireFamily): the user stays
+// signed in across the switch, and the step-up proofs bound to the id stay
+// valid. A token presented again within the grace of its rotation is
+// answered by retryRefresh.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair, error) {
 	if refreshToken == "" {
 		return nil, errBadRefresh
 	}
 	var pair *TokenPair
-	var replayUser int64
-	var replayFamily string
-	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
-		var id, uid int64
-		// Discover the parent without locking a child first. All issuers and
-		// revokers serialize on the user, then read a fresh token snapshot.
-		if err := refreshOwner(g, tokenstore.Hash(refreshToken)).Row().Scan(&uid); err != nil {
-			if store.IsNoRows(err) {
-				return errBadRefresh
-			}
-			return err
-		}
-		if err := lockRefreshUser(ctx, tx, uid); err != nil {
-			return err
-		}
-		var family string
-		var revokedAt, replacedAt *time.Time
-		var expiresAt time.Time
-		err := lockRefreshToken(g, tokenstore.Hash(refreshToken)).Row().Scan(&id, &uid, &family, &revokedAt, &replacedAt, &expiresAt)
-		if store.IsNoRows(err) {
-			return errBadRefresh
-		}
+	var replayed *presentedRefresh
+	err := s.issueTx(ctx, func(is *issuer) error {
+		t, err := lockPresentedRefresh(ctx, is.tx, refreshToken)
 		if err != nil {
 			return err
 		}
-		verdict := classifyRefresh(revokedAt, replacedAt, expiresAt, time.Now())
-		if verdict == refreshReplayed && family != "" && rotatedJustNow(revokedAt, replacedAt, time.Now()) {
-			// The console lost the response of the rotation it just made
-			// (network, closed tab, two tabs without a shared lock): while
-			// the family is still alive, answer with another pair of the
-			// same family instead of signing the user out; when it was
-			// exchanged for an opaque session, with a new token of that
-			// session.
-			live, err := store.Exists(g, liveFamily(g, family))
-			if err != nil {
+		g := store.G(ctx, is.tx)
+		now := time.Now()
+		verdict := classifyRefresh(t.revokedAt, t.replacedAt, t.expiresAt, now)
+		if verdict == refreshReplayed && t.family != "" && rotatedJustNow(t.revokedAt, t.replacedAt, now) {
+			if verdict, pair, err = s.retryRefresh(ctx, is.tx, t); err != nil || pair != nil {
 				return err
-			}
-			if live {
-				verdict = refreshValid
-			} else if s.sessions != nil {
-				if err := activeUser(g, uid); err != nil {
-					return err
-				}
-				user, err := s.loginUser(ctx, tx, uid)
-				if err != nil {
-					return err
-				}
-				token, err := s.sessions.Rotate(ctx, uid, family)
-				if err == nil {
-					pair = &TokenPair{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second), User: user}
-					return nil
-				}
-				if !errors.Is(err, tokenstore.ErrNotFound) {
-					return err
-				}
 			}
 		}
 		switch verdict {
 		case refreshReplayed:
-			// Commit the family revocation; the 401 is returned after the tx.
-			// A row without a family (never written by this code) only
-			// revokes itself.
-			if family == "" {
-				family = "token:" + strconv.FormatInt(id, 10)
-				err = revokeToken(g, id).Error
-			} else {
-				err = revokeFamily(g, family).Error
-			}
-			if err != nil {
-				return err
-			}
-			replayUser, replayFamily = uid, family
-			return nil
+			// Committed; the 401 is returned after the transaction.
+			replayed = &t
+			return s.endReplayedFamily(ctx, g, t)
 		case refreshExpired:
 			return errBadRefresh
 		}
-		if err := rotateRefresh(g, id).Error; err != nil {
+		if err := rotateRefresh(g, t.id).Error; err != nil {
 			return err
 		}
-		if err := activeUser(g, uid); err != nil {
+		if err := activeUser(g, t.userID); err != nil {
 			return err
 		}
 		ictx := ctx
-		if s.issuesOpaque(ctx) {
-			// The exchange: the session keeps how the family started.
-			meta, _ := ctx.Value(sessionMetaKey{}).(sessionMeta)
-			if meta.method == "" {
-				if err := familyMethod(g, family).Row().Scan(&meta.method); err != nil && !store.IsNoRows(err) {
-					return err
-				}
-				ictx = withLoginMethod(ctx, meta.method)
-			}
-			if err := revokeFamily(g, family).Error; err != nil {
-				return err
-			}
-			if err := deleteSessions(g, uid, oneSession(family)).Error; err != nil {
+		if is.opaque {
+			if ictx, err = retireFamily(ctx, g, t.userID, t.family); err != nil {
 				return err
 			}
 		}
-		pair, err = s.issueTokens(ictx, tx, uid, family)
+		pair, err = is.issue(ictx, t.userID, t.family)
 		return err
 	})
 	if err != nil {
-		s.abandonIssued(ctx, pair)
 		return nil, err
 	}
-	if replayFamily != "" {
+	if replayed != nil {
 		slog.WarnContext(ctx, "iam: refresh token reuse detected, token family revoked",
-			"user_id", replayUser, "family_id", replayFamily)
-		if s.sessions != nil {
-			if err := s.sessions.Revoke(ctx, replayUser, tokenstore.Selection{Only: replayFamily}, 0); err != nil {
-				return nil, err
-			}
-		}
+			"user_id", replayed.userID, "family_id", replayed.family, "token_id", replayed.id)
 		return nil, errBadRefresh
 	}
 	return pair, nil
+}
+
+// presentedRefresh is a refresh token presented to Refresh, read locked.
+type presentedRefresh struct {
+	id, userID            int64
+	family                string
+	revokedAt, replacedAt *time.Time
+	expiresAt             time.Time
+}
+
+// lockPresentedRefresh reads refreshToken in tx under its user's row lock.
+// All issuers and revokers serialize on the user: the parent is found
+// without locking a child first, then a fresh snapshot of the token is
+// read, locked.
+func lockPresentedRefresh(ctx context.Context, tx *gorm.DB, refreshToken string) (presentedRefresh, error) {
+	g := store.G(ctx, tx)
+	hash := tokenstore.Hash(refreshToken)
+	var t presentedRefresh
+	err := refreshOwner(g, hash).Row().Scan(&t.userID)
+	if err == nil {
+		err = lockRefreshUser(ctx, tx, t.userID)
+	}
+	if err == nil {
+		err = lockRefreshToken(g, hash).Row().Scan(&t.id, &t.userID, &t.family, &t.revokedAt, &t.replacedAt, &t.expiresAt)
+	}
+	if store.IsNoRows(err) {
+		return t, errBadRefresh
+	}
+	return t, err
+}
+
+// retryRefresh answers a refresh token presented again within the grace of
+// its rotation: the console lost the answer (network, closed tab, two tabs
+// without a shared lock). While its family is alive the token counts as
+// valid, and the family gets another pair; when the family was exchanged
+// for an opaque session, that session gets a new token (pair). Otherwise,
+// or when that session is gone, it is a replay.
+func (s *Service) retryRefresh(ctx context.Context, tx *gorm.DB, t presentedRefresh) (refreshVerdict, *TokenPair, error) {
+	g := store.G(ctx, tx)
+	live, err := store.Exists(g, liveFamily(g, t.family))
+	if err != nil {
+		return 0, nil, err
+	}
+	if live {
+		return refreshValid, nil, nil
+	}
+	if s.sessions == nil {
+		return refreshReplayed, nil, nil
+	}
+	if err := activeUser(g, t.userID); err != nil {
+		return 0, nil, err
+	}
+	user, err := s.loginUser(ctx, tx, t.userID)
+	if err != nil {
+		return 0, nil, err
+	}
+	token, err := s.sessions.Rotate(ctx, t.userID, t.family)
+	if errors.Is(err, tokenstore.ErrNotFound) {
+		return refreshReplayed, nil, nil
+	}
+	if err != nil {
+		return 0, nil, err
+	}
+	return refreshValid, &TokenPair{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second), User: user}, nil
+}
+
+// endReplayedFamily revokes the refresh token family a replay was seen in,
+// and the opaque session it may have been exchanged for (endOpaqueSession:
+// Valkey down, a bump stands in). A row without a family (never written by
+// this code) only revokes itself.
+func (s *Service) endReplayedFamily(ctx context.Context, g *gorm.DB, t presentedRefresh) error {
+	if t.family == "" {
+		return revokeToken(g, t.id).Error
+	}
+	if err := revokeFamily(g, t.family).Error; err != nil {
+		return err
+	}
+	return s.endOpaqueSession(ctx, g, t.userID, t.family)
+}
+
+// retireFamily spends a refresh token family exchanged for an opaque
+// session of its id: its tokens are revoked and its login_sessions row
+// goes. The session keeps how the family started, which ctx carries on.
+func retireFamily(ctx context.Context, g *gorm.DB, userID int64, family string) (context.Context, error) {
+	meta, _ := ctx.Value(sessionMetaKey{}).(sessionMeta)
+	if meta.method == "" {
+		if err := familyMethod(g, family).Row().Scan(&meta.method); err != nil && !store.IsNoRows(err) {
+			return ctx, err
+		}
+		ctx = withLoginMethod(ctx, meta.method)
+	}
+	if err := revokeFamily(g, family).Error; err != nil {
+		return ctx, err
+	}
+	return ctx, deleteSessions(g, userID, oneSession(family)).Error
 }
 
 // activeUser checks that the undeleted user uid is active: a refresh of a

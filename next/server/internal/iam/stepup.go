@@ -282,7 +282,11 @@ func (s *Service) VerifyStepUp(ctx context.Context, r *http.Request, userID int6
 	}
 	// The proof, its audit and the new token of an opaque session go
 	// together: the session is rotated last, and when it fails neither the
-	// audit nor the proof stays.
+	// audit nor the proof stays. The price is the commit failing after the
+	// rotation: the new token is lost and the old one ends with its grace,
+	// signing the console out. Only the commit itself fails there, and
+	// signing in again is the safe outcome of a verification that left no
+	// record.
 	var token, access string
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error

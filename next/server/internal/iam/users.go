@@ -445,7 +445,7 @@ func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id in
 	}
 	// SEC-M1: a new password or disabling ends every session
 	if hash != nil || (statusChange && *in.Status == StatusDisabled) {
-		if err := s.invalidateSessions(ctx, tx, id, allSessions); err != nil {
+		if err := s.endAllSessions(ctx, tx, id); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -532,7 +532,7 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 		if dropped, err = segment.DropPersonal(ctx, tx, id); err != nil {
 			return err
 		}
-		if err := s.invalidateSessions(ctx, tx, id, allSessions); err != nil {
+		if err := s.endAllSessions(ctx, tx, id); err != nil {
 			return err
 		}
 		// The user's API keys go with the user: authentication already

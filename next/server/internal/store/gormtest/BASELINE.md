@@ -622,7 +622,7 @@ reads three statements of package iam:
 - `VerifyAccessKey` (every request with an access key, no cache): the key
   by its hash (`accessKeyByHash`), and at most once a minute per key the
   `last_used_at` write (`touchAccessKey`);
-- `getUser` (GET /me, and every login and refresh in `issueTokens`): the
+- `getUser` (GET /me, and every login and refresh in `issuer.issue`): the
   user with roles, segment and balance (`userByID`).
 
 Each is `Raw(...).Row().Scan` into local variables, the form with the

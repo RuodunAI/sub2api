@@ -112,7 +112,8 @@ func (b *boot) openStorage() error {
 
 // startCluster joins the node registry and heartbeat.
 func (b *boot) startCluster() error {
-	b.cl = cluster.New(b.rdb, b.db, cluster.Options{NodeID: b.cfg.NodeID, Addr: b.cfg.PublicURL, HostVersion: b.version, Logger: b.log, Managed: b.cfg.Managed.Enabled, CoreBootID: b.cfg.Managed.BootID})
+	b.cl = cluster.New(b.rdb, b.db, cluster.Options{NodeID: b.cfg.NodeID, Addr: b.cfg.PublicURL, HostVersion: b.version, Logger: b.log, Managed: b.cfg.Managed.Enabled, CoreBootID: b.cfg.Managed.BootID,
+		Capabilities: []string{core.CapabilityOpaqueSessions}})
 	if err := b.cl.Start(b.ctx); err != nil {
 		return fmt.Errorf("cluster: %w", err)
 	}

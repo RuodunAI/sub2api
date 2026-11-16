@@ -152,7 +152,8 @@ func (s *Service) IssueStatus(ctx context.Context) (IssueStatus, error) {
 
 // nodesBehind lists the live nodes without core.CapabilityOpaqueSessions:
 // they would answer an s2s_ token with 401 and miss the flows in Valkey.
-// Without a registry (the server CLI, tests) none is known.
+// Without a registry (the server CLI, tests) none is known. The registry
+// unreadable is Valkey down: 503, so switching to s2s waits for it.
 func (s *Service) nodesBehind(ctx context.Context) ([]BehindNode, error) {
 	out := []BehindNode{}
 	if s.nodes == nil {
@@ -160,7 +161,7 @@ func (s *Service) nodesBehind(ctx context.Context) ([]BehindNode, error) {
 	}
 	nodes, err := s.nodes.LiveNodes(ctx)
 	if err != nil {
-		return nil, err
+		return nil, core.ErrUnavailable.WithMessage("the node registry is unavailable, try again shortly").WithCause(err)
 	}
 	for _, n := range nodes {
 		if !slices.Contains(n.Capabilities, core.CapabilityOpaqueSessions) {
@@ -228,16 +229,17 @@ func (s *Service) registerIssueRoutes(r *httpapi.Router) {
 // ------------------------------------------------------------ opaque sessions
 
 // issueOpaque stores an opaque session of userID under the login session
-// familyID and returns its token. tokenVersion was read under the user's
-// lock, which the caller holds, so a revocation cannot slip in between.
-func (s *Service) issueOpaque(ctx context.Context, userID int64, tokenVersion int, familyID string) (*TokenPair, error) {
+// familyID and returns its token and the session stored. tokenVersion was
+// read under the user's lock, which the caller holds, so a revocation
+// cannot slip in between.
+func (s *Service) issueOpaque(ctx context.Context, userID int64, tokenVersion int, familyID string) (*TokenPair, tokenstore.Session, error) {
 	meta, _ := ctx.Value(sessionMetaKey{}).(sessionMeta)
-	token, err := s.sessions.Create(ctx, tokenstore.Session{ID: familyID, UserID: userID, Method: meta.method,
-		IP: meta.ip, UserAgent: meta.userAgent, TokenVersion: tokenVersion})
+	sess := tokenstore.Session{ID: familyID, UserID: userID, Method: meta.method, IP: meta.ip, UserAgent: meta.userAgent, TokenVersion: tokenVersion}
+	token, err := s.sessions.Create(ctx, sess)
 	if err != nil {
-		return nil, err
+		return nil, sess, err
 	}
-	return &TokenPair{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second), opaqueID: familyID}, nil
+	return &TokenPair{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second)}, sess, nil
 }
 
 // familyMethod reads how the login session familyID started.

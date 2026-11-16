@@ -94,14 +94,16 @@ func NewValkey(rdb redis.Cmdable, o Options) *Valkey {
 
 // NewClient is the client of the stores, on the server base names: it
 // retries once instead of three times, waits a second at most for a
-// connection or an answer, and honours the deadline of each call
-// (authTimeout), so an outage costs a console request a 503 quickly
-// instead of a long hang. The caller closes it.
+// connection (dialled or from the pool) or an answer, and honours the
+// deadline of each call (authTimeout), so an outage costs a console request
+// a 503 quickly instead of a long hang. A call is retried after its answer
+// was lost, so every write of the stores is idempotent. The caller closes
+// it.
 func NewClient(base *redis.Options) *redis.Client {
 	o := *base
 	o.Dialer = nil // base's dialer has base's timeout; this one is built from o
 	o.MaxRetries = 1
-	o.DialTimeout, o.ReadTimeout, o.WriteTimeout = time.Second, time.Second, time.Second
+	o.DialTimeout, o.ReadTimeout, o.WriteTimeout, o.PoolTimeout = time.Second, time.Second, time.Second, time.Second
 	o.ContextTimeoutEnabled = true
 	return redis.NewClient(&o)
 }
@@ -262,13 +264,16 @@ func (v *Valkey) Touch(ctx context.Context, token string, s Session) error {
 // token and points the id at it; the old token lives on for the grace (or
 // less), and the new one remembers it (prev) so a revocation ends both. A
 // token the previous rotation left in its grace ends now: only one old
-// token is ever left behind.
+// token is ever left behind. The id already at the new token is this
+// rotation retried (its answer was lost): done, and doing it again would
+// end the old token and cut the new one to the grace.
 // KEYS: sid. ARGV: prefix, uid, new hash, now ms, grace ms.
 var rotateScript = redis.NewScript(`
 local old = redis.call('GET', KEYS[1])
 if not old then return 0 end
 local oldKey = ARGV[1] .. 'sess:' .. old
 if redis.call('HGET', oldKey, 'uid') ~= ARGV[2] then return 0 end
+if old == ARGV[3] then return 1 end
 local ttl = redis.call('PTTL', oldKey)
 if ttl <= 0 then return 0 end
 local older = redis.call('HGET', oldKey, 'prev')
@@ -351,16 +356,28 @@ func (v *Valkey) Has(ctx context.Context, userID int64, id string) (bool, error)
 }
 
 // revokeScript ends the picked sessions of the user (both tokens of a
-// rotation), restamps the others' tv (both tokens too: a request still
-// carrying the old one must not find it stale), and drops the index entries
-// whose session is gone. Only is tried even when the index lost it; with no
-// stamp to give, it is the only session read. A session is ended only when
-// it is the user's.
-// KEYS: usess. ARGV: prefix, uid, only, keep, tv.
+// rotation) and settles the others against a token_version bump from..to:
+// one stamped below from was ended by an earlier bump and ends now, one
+// below to is stamped to (both tokens too: a request still carrying the
+// old one must not find it stale). Nothing stamped below from is ever
+// stamped again, so no bump revives a session an earlier one ended. The
+// index entries whose session is gone are dropped. Only is tried even when
+// the index lost it; with no bump, it is the only session read. A session
+// is ended only when it is the user's. Prune is this with nothing picked.
+// KEYS: usess. ARGV: prefix, uid, pick (1/0), only, keep, from, to.
 var revokeScript = redis.NewScript(dropLua + `
-local p, uid, only, keep, tv = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5])
+local p, uid, pick, only, keep = ARGV[1], ARGV[2], ARGV[3] == '1', ARGV[4], ARGV[5]
+local from, to = tonumber(ARGV[6]), tonumber(ARGV[7])
+-- settle stamps the session key k up to to; false when it is stamped
+-- below from, ended.
+local function settle(k)
+  local tv = tonumber(redis.call('HGET', k, 'tv')) or 0
+  if tv < from then return false end
+  if tv < to then redis.call('HSET', k, 'tv', to) end
+  return true
+end
 local ids = {}
-if only == '' or tv > 0 then ids = redis.call('ZRANGE', KEYS[1], 0, -1) end
+if only == '' or from > 0 then ids = redis.call('ZRANGE', KEYS[1], 0, -1) end
 if only ~= '' then table.insert(ids, only) end
 for _, id in ipairs(ids) do
   local sid = p .. 'sid:' .. id
@@ -368,24 +385,31 @@ for _, id in ipairs(ids) do
   local k = h and (p .. 'sess:' .. h)
   if not h or redis.call('HGET', k, 'uid') ~= uid then
     redis.call('ZREM', KEYS[1], id)
-  elseif (only == '' or id == only) and (keep == '' or id ~= keep) then
+  elseif (pick and (only == '' or id == only) and (keep == '' or id ~= keep)) or not settle(k) then
     drop(p, sid)
     redis.call('ZREM', KEYS[1], id)
-  elseif tv > 0 and (tonumber(redis.call('HGET', k, 'tv')) or 0) < tv then
-    redis.call('HSET', k, 'tv', ARGV[5])
+  else
     local prev = redis.call('HGET', k, 'prev')
-    if prev and redis.call('EXISTS', p .. 'sess:' .. prev) == 1 then
-      redis.call('HSET', p .. 'sess:' .. prev, 'tv', ARGV[5])
-    end
+    local pk = prev and (p .. 'sess:' .. prev)
+    if pk and redis.call('EXISTS', pk) == 1 and not settle(pk) then redis.call('DEL', pk) end
   end
 end
 return 1`)
 
 // Revoke implements SessionStore.
-func (v *Valkey) Revoke(ctx context.Context, userID int64, sel Selection, tokenVersion int) error {
-	err := revokeScript.Run(ctx, v.rdb, []string{userKey(userID)}, keyPrefix, userID, sel.Only, sel.Keep, tokenVersion).Err()
+func (v *Valkey) Revoke(ctx context.Context, userID int64, sel Selection, b Bump) error {
+	return v.revoke(ctx, "revoke", userID, true, sel, b)
+}
+
+// Prune implements SessionStore.
+func (v *Valkey) Prune(ctx context.Context, userID int64, tokenVersion int) error {
+	return v.revoke(ctx, "prune", userID, false, Selection{}, Bump{From: tokenVersion, To: tokenVersion})
+}
+
+func (v *Valkey) revoke(ctx context.Context, op string, userID int64, pick bool, sel Selection, b Bump) error {
+	err := revokeScript.Run(ctx, v.rdb, []string{userKey(userID)}, keyPrefix, userID, pick, sel.Only, sel.Keep, b.From, b.To).Err()
 	if err != nil {
-		return fail(ctx, "revoke", err)
+		return fail(ctx, op, err)
 	}
 	return nil
 }

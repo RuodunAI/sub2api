@@ -362,8 +362,8 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 		return nil, err
 	}
 	var pair *TokenPair
-	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
+	err = s.issueTx(ctx, func(is *issuer) error {
+		g := store.G(ctx, is.tx)
 		var status string
 		if err := lockLiveUser(g, user.id, "status").Row().Scan(&status); err != nil {
 			if store.IsNoRows(err) {
@@ -385,7 +385,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 			return err
 		}
 		var err error
-		pair, err = s.issueTokens(withLoginMethod(ctx, loginMethodPasskey), tx, user.id, "")
+		pair, err = is.issue(withLoginMethod(ctx, loginMethodPasskey), user.id, "")
 		return err
 	})
 	if err != nil {

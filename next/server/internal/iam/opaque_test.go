@@ -2,9 +2,14 @@ package iam
 
 import (
 	"context"
+	"errors"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -16,6 +21,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/cluster"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 )
@@ -500,7 +506,18 @@ func TestPasskeyLoginIssuesOpaqueSession(t *testing.T) {
 	r := consoleRequest(consoleOrigin, consoleHost)
 	a := newAuthenticator(t, consoleOrigin, consoleHost)
 	addPasskey(t, s, a, id)
+	// A login whose transaction fails leaves no session behind.
 	begin, err := s.BeginPasskeyLogin(ctx, r, testIP)
+	require.NoError(t, err)
+	restore := failAudit(t, s, "auth.superadmin_login", true)
+	_, err = s.FinishPasskeyLogin(withLoginMethod(ctx, loginMethodPasskey), r, begin.FlowToken, a.get(t, begin), testIP)
+	restore()
+	require.Error(t, err)
+	opaque, err := s.sessions.List(ctx, id)
+	require.NoError(t, err)
+	assert.Empty(t, opaque)
+
+	begin, err = s.BeginPasskeyLogin(ctx, r, testIP)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +601,7 @@ func TestOpaqueLogoutEndsOnlyItself(t *testing.T) {
 	a := opaqueLogin(t, s, adminEmail, adminPassword)
 	b := opaqueLogin(t, s, adminEmail, adminPassword)
 	idA, uid := sid(t, s, a.AccessToken), a.User.ID
-	require.NoError(t, s.sessions.Revoke(ctx, uid, tokenstore.Selection{Only: idA}, 0))
+	require.NoError(t, s.sessions.Revoke(ctx, uid, tokenstore.Selection{Only: idA}, tokenstore.Bump{}))
 	require.NoError(t, s.Logout(core.WithOpaqueSession(ctx, idA), uid, ""))
 	live(t, s, b.AccessToken)
 	require.NoError(t, s.Logout(core.WithSession(ctx, "some-family"), uid, ""))
@@ -644,7 +661,7 @@ func TestRolledBackStampDoesNotSurviveABump(t *testing.T) {
 	var tv int
 	require.NoError(t, userTokenVersion(s.db.Gorm, uid).Row().Scan(&tv))
 	// What a keep bump stamps before its commit, which then fails.
-	require.NoError(t, s.sessions.Revoke(ctx, uid, tokenstore.Selection{Only: "none"}, tv+1))
+	require.NoError(t, s.sessions.Revoke(ctx, uid, tokenstore.Selection{Only: "none"}, tokenstore.Bump{From: tv, To: tv + 1}))
 	live(t, s, a.AccessToken)
 
 	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: e.authz, BcryptCost: bcrypt.MinCost})
@@ -653,20 +670,20 @@ func TestRolledBackStampDoesNotSurviveABump(t *testing.T) {
 	ended(t, s, a.AccessToken)
 }
 
-// failSuperuserLoginAudit makes PostgreSQL fail the statements or the commit of a
-// superuser login (its audit row): what fails a login after the checks.
-func failSuperuserLoginAudit(t *testing.T, s *Service, atCommit bool) func() {
+// failAudit makes PostgreSQL fail the statements or the commit of the
+// transactions that audit action: what fails a change after its checks.
+func failAudit(t *testing.T, s *Service, action string, atCommit bool) func() {
 	t.Helper()
-	trigger := `CREATE TRIGGER fail_login BEFORE INSERT ON audit_logs FOR EACH ROW
-		WHEN (NEW.action = 'auth.superadmin_login') EXECUTE FUNCTION fail_login()`
+	trigger := `CREATE TRIGGER fail_audit BEFORE INSERT ON audit_logs FOR EACH ROW
+		WHEN (NEW.action = '` + action + `') EXECUTE FUNCTION fail_audit()`
 	if atCommit {
-		trigger = `CREATE CONSTRAINT TRIGGER fail_login AFTER INSERT ON audit_logs DEFERRABLE INITIALLY DEFERRED
-			FOR EACH ROW WHEN (NEW.action = 'auth.superadmin_login') EXECUTE FUNCTION fail_login()`
+		trigger = `CREATE CONSTRAINT TRIGGER fail_audit AFTER INSERT ON audit_logs DEFERRABLE INITIALLY DEFERRED
+			FOR EACH ROW WHEN (NEW.action = '` + action + `') EXECUTE FUNCTION fail_audit()`
 	}
-	require.NoError(t, s.db.Gorm.Exec(`CREATE OR REPLACE FUNCTION fail_login() RETURNS trigger LANGUAGE plpgsql AS
-		$$ BEGIN RAISE EXCEPTION 'login fails here'; END $$`).Error)
+	require.NoError(t, s.db.Gorm.Exec(`CREATE OR REPLACE FUNCTION fail_audit() RETURNS trigger LANGUAGE plpgsql AS
+		$$ BEGIN RAISE EXCEPTION 'the change fails here'; END $$`).Error)
 	require.NoError(t, s.db.Gorm.Exec(trigger).Error)
-	return func() { require.NoError(t, s.db.Gorm.Exec(`DROP TRIGGER fail_login ON audit_logs`).Error) }
+	return func() { require.NoError(t, s.db.Gorm.Exec(`DROP TRIGGER fail_audit ON audit_logs`).Error) }
 }
 
 // A login whose transaction fails leaves no opaque session behind, and a
@@ -678,7 +695,7 @@ func TestFailedLoginLeavesNothingBehind(t *testing.T) {
 	id := rootID(t, s)
 	issue(t, s, IssueOpaque)
 
-	restore := failSuperuserLoginAudit(t, s, true)
+	restore := failAudit(t, s, "auth.superadmin_login", true)
 	_, err := s.Login(ctx, adminEmail, adminPassword, testIP)
 	require.Error(t, err)
 	restore()
@@ -689,10 +706,10 @@ func TestFailedLoginLeavesNothingBehind(t *testing.T) {
 	secret, _ := enableTwoFactor(t, s, id)
 	step := mustLogin(t, s, adminEmail, adminPassword)
 	require.True(t, step.TwoFactorRequired)
-	restore = failSuperuserLoginAudit(t, s, false)
+	restore = failAudit(t, s, "auth.superadmin_login", false)
 	clearLastStep(t, s, id)
 	_, err = s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
-	require.ErrorContains(t, err, "login fails here")
+	require.ErrorContains(t, err, "the change fails here")
 	restore()
 	clearLastStep(t, s, id)
 	pair, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
@@ -802,21 +819,277 @@ func TestIssueWaitsForEveryNode(t *testing.T) {
 	assert.Equal(t, IssueOpaque, st.Effective)
 	assert.Empty(t, st.Behind)
 
-	// The registry unreadable: no switch to s2s, the way back still works.
-	s.nodes = nodesDown{}
+	// The registry unreadable: no switch to s2s (503), the way back still
+	// works.
+	down := miniredis.RunT(t)
+	addr := down.Addr()
+	down.Close()
+	s.nodes = cluster.NewRegistry(redis.NewClient(&redis.Options{Addr: addr, MaxRetries: -1}), nil, cluster.RegistryOptions{})
 	_, err = s.SetIssue(ctx, root, IssueJWT)
 	require.NoError(t, err)
 	_, err = s.SetIssue(ctx, root, IssueOpaque)
-	assert.Equal(t, http.StatusServiceUnavailable, core.AsError(err).Status)
+	assert.Equal(t, http.StatusServiceUnavailable, core.AsError(err).Status, "%v", err)
 	st, err = s.IssueStatus(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, IssueJWT, st.Effective)
 	assert.Nil(t, st.Behind)
 }
 
-// nodesDown is a registry Valkey does not answer for.
-type nodesDown struct{}
+// ------------------------------------------------------------ second review fixes
 
-func (nodesDown) LiveNodes(context.Context) ([]core.NodeStatus, error) {
-	return nil, tokenstore.ErrUnavailable
+// endWithoutValkey ends every session of uid the way the server CLI does: a
+// token_version bump that never reaches Valkey, which keeps the opaque
+// sessions (as when the cleanup after the commit fails).
+func endWithoutValkey(t *testing.T, e *env, uid int64, password string) {
+	t.Helper()
+	cli := New(Deps{DB: e.svc.db, Config: e.cfg, Authz: e.authz, BcryptCost: bcrypt.MinCost})
+	require.NoError(t, cli.ChangePassword(context.Background(), uid, "", password))
+	e.svc.forgetStatus(uid)
+}
+
+// outage fails the Valkey commands of the session stores it is put on
+// while it is down, as Valkey not answering does (a go-redis hook: no
+// server restart to wait for).
+type outage struct{ down atomic.Bool }
+
+// on gives s a session store on e's Valkey that fails while o is down.
+func (o *outage) on(e *env, s *Service) {
+	rdb := redis.NewClient(&redis.Options{Addr: e.redis.Addr()})
+	rdb.AddHook(o)
+	s.sessions = tokenstore.NewValkey(rdb, tokenstore.Options{})
+}
+
+// during runs fn with Valkey down.
+func (o *outage) during(fn func() error) error {
+	o.down.Store(true)
+	defer o.down.Store(false)
+	return fn()
+}
+
+func (o *outage) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (o *outage) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if o.down.Load() {
+			cmd.SetErr(errValkeyDown)
+			return errValkeyDown
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (o *outage) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if o.down.Load() {
+			return errValkeyDown
+		}
+		return next(ctx, cmds)
+	}
+}
+
+var errValkeyDown = &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+
+// A session that a bump ended, still in Valkey, stays ended through a later
+// bump that keeps sessions: neither a JWT logout with its refresh token nor
+// revoking a family just exchanged restamps it back to life.
+func TestEndedSessionStaysEnded(t *testing.T) {
+	t.Setenv(IssueEnv, "")
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	uid := rootID(t, s)
+	keeps := []struct {
+		name string
+		run  func(password string) error
+	}{
+		{"JWT logout", func(password string) error {
+			issue(t, s, IssueJWT)
+			p := mustLogin(t, s, adminEmail, password)
+			return s.Logout(ctx, uid, p.RefreshToken)
+		}},
+		{"revoking an exchanged family", func(password string) error {
+			issue(t, s, IssueJWT)
+			p := mustLogin(t, s, adminEmail, password)
+			issue(t, s, IssueOpaque)
+			x, err := s.Refresh(ctx, p.RefreshToken)
+			require.NoError(t, err)
+			return s.RevokeSession(ctx, uid, sid(t, s, x.AccessToken))
+		}},
+	}
+	password := adminPassword
+	for i, keep := range keeps {
+		issue(t, s, IssueOpaque)
+		z := opaqueLogin(t, s, adminEmail, password)
+		password = "another-password-" + strconv.Itoa(i)
+		endWithoutValkey(t, e, uid, password)
+		require.NoError(t, keep.run(password), keep.name)
+		s.forgetStatus(uid)
+		ended(t, s, z.AccessToken)
+	}
+}
+
+// Valkey down, issuing JWTs: revoking a JWT family whose access tokens have
+// all expired goes through (a bump stands in for Valkey), and so does a
+// replayed refresh token.
+func TestRevokingAnIdleFamilyWithValkeyDown(t *testing.T) {
+	t.Setenv(IssueEnv, "")
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	a := mustLogin(t, s, adminEmail, adminPassword)
+	b := mustLogin(t, s, adminEmail, adminPassword)
+	family := familyOf(t, s, b.AccessToken)
+	require.NoError(t, s.db.Gorm.Exec(`UPDATE refresh_tokens SET created_at = now() - interval '3 hours' WHERE family_id = ?`, family).Error)
+	e.redis.Close()
+	require.NoError(t, s.RevokeSession(ctx, a.User.ID, family))
+	_, err := s.Refresh(ctx, b.RefreshToken)
+	assert.True(t, isCode(err, "unauthenticated"), "%v", err)
+	_, err = s.Refresh(ctx, a.RefreshToken)
+	require.NoError(t, err)
+}
+
+// Cleaning up after ending every session leaves the sessions that signed
+// in since the commit.
+func TestCleanupKeepsLaterLogins(t *testing.T) {
+	t.Setenv(IssueEnv, "")
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	uid := rootID(t, s)
+	issue(t, s, IssueOpaque)
+	old := opaqueLogin(t, s, adminEmail, adminPassword)
+	endWithoutValkey(t, e, uid, "another-password-1")
+	fresh := opaqueLogin(t, s, adminEmail, "another-password-1")
+	s.sessionsEnded(ctx, uid)
+	live(t, s, fresh.AccessToken)
+	assert.False(t, e.redis.Exists(sessKey(old.AccessToken)))
+}
+
+// A bump that keeps a session but cannot restamp (Valkey down) also ends a
+// session that a rolled-back bump stamped one ahead.
+func TestKeepingBumpWithValkeyDownEndsAheadStamps(t *testing.T) {
+	t.Setenv(IssueEnv, "")
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	uid := rootID(t, s)
+	issue(t, s, IssueOpaque)
+	a := opaqueLogin(t, s, adminEmail, adminPassword)
+	b := opaqueLogin(t, s, adminEmail, adminPassword)
+	keep := sid(t, s, b.AccessToken)
+	var tv int
+	require.NoError(t, userTokenVersion(s.db.Gorm, uid).Row().Scan(&tv))
+	e.redis.HSet(sessKey(a.AccessToken), "tv", strconv.Itoa(tv+1))
+	var valkey outage
+	valkey.on(e, s)
+	require.NoError(t, valkey.during(func() error { return s.RevokeOtherSessions(ctx, uid, keep) }))
+	s.forgetStatus(uid)
+	ended(t, s, a.AccessToken)
+}
+
+// The sessions list leaves out the opaque sessions a bump ended that are
+// still in Valkey.
+func TestSessionsLeaveOutEndedOnes(t *testing.T) {
+	t.Setenv(IssueEnv, "")
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	uid := rootID(t, s)
+	issue(t, s, IssueOpaque)
+	opaqueLogin(t, s, adminEmail, adminPassword)
+	endWithoutValkey(t, e, uid, "another-password-1")
+	fresh := opaqueLogin(t, s, adminEmail, "another-password-1")
+	list, err := s.Sessions(ctx, uid, "")
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, sid(t, s, fresh.AccessToken), list[0].ID)
+}
+
+// Whatever the order of logins, rotations, revocations, logouts, bumps that
+// end every session or keep some, bumps rolled back and Valkey failing
+// meanwhile, a session stays ended once a committed change ended it, every
+// token of it: above all, no token issued before a change that ends every
+// session works again. The walks are fixed pseudo-random sequences; a
+// failure names the one that broke it.
+func TestEndedSessionsStayEndedInAnyOrder(t *testing.T) {
+	t.Setenv(IssueEnv, IssueOpaque)
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	root := rootID(t, s)
+	t.Setenv(IssueEnv, IssueJWT)
+	jwtNode := New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: e.authz, Bus: e.bus, BcryptCost: bcrypt.MinCost})
+	var valkey outage
+	valkey.on(e, s)
+	valkey.on(e, jwtNode)
+	jwtCaller := core.WithSession(ctx, "a-jwt-family")
+	ops := []string{"login", "rotate", "end all", "end all, cleanup fails", "revoke others", "revoke others, Valkey down",
+		"revoke others, rolled back", "revoke one", "JWT logout"}
+	type token struct{ value, sid string }
+	rng := rand.New(rand.NewPCG(100, 2))
+	for walk := range 40 {
+		email := "walk-" + strconv.Itoa(walk) + "@example.com"
+		u, err := s.CreateUser(ctx, root, CreateUserInput{Email: email, Password: adminPassword})
+		require.NoError(t, err)
+		var tokens []token
+		ended := map[string]bool{} // by session
+		var trail []string
+		for range 12 {
+			op := rng.IntN(len(ops))
+			trail = append(trail, ops[op])
+			var some token // a session to act on, if any
+			if len(tokens) > 0 {
+				some = tokens[rng.IntN(len(tokens))]
+			}
+			endsAll, keep := false, "" // the change ends every session but keep
+			switch ops[op] {
+			case "login":
+				p := opaqueLogin(t, s, email, adminPassword)
+				tokens = append(tokens, token{p.AccessToken, sid(t, s, p.AccessToken)})
+			case "rotate": // what a step-up or a refresh retried does
+				if some.sid == "" {
+					continue
+				}
+				next, err := s.sessions.Rotate(ctx, u.ID, some.sid)
+				if !errors.Is(err, tokenstore.ErrNotFound) {
+					require.NoError(t, err)
+					tokens = append(tokens, token{next, some.sid})
+				}
+			case "end all":
+				require.NoError(t, s.Logout(jwtCaller, u.ID, ""))
+				endsAll = true
+			case "end all, cleanup fails":
+				require.NoError(t, valkey.during(func() error { return s.Logout(jwtCaller, u.ID, "") }))
+				endsAll = true
+			case "revoke others":
+				require.NoError(t, s.RevokeOtherSessions(ctx, u.ID, some.sid))
+				endsAll, keep = true, some.sid
+			case "revoke others, Valkey down":
+				require.NoError(t, valkey.during(func() error { return s.RevokeOtherSessions(ctx, u.ID, some.sid) }))
+				endsAll, keep = true, some.sid
+			case "revoke others, rolled back":
+				restore := failAudit(t, s, "user.session.revoke_others", true)
+				err := s.RevokeOtherSessions(ctx, u.ID, some.sid)
+				restore()
+				require.Error(t, err)
+			case "revoke one":
+				if some.sid == "" {
+					continue
+				}
+				if err := s.RevokeSession(ctx, u.ID, some.sid); !isCode(err, "not_found") {
+					require.NoError(t, err)
+					ended[some.sid] = true
+				}
+			case "JWT logout":
+				p := mustLogin(t, jwtNode, email, adminPassword)
+				require.NoError(t, jwtNode.Logout(ctx, u.ID, p.RefreshToken))
+			}
+			for _, tk := range tokens {
+				if endsAll && tk.sid != keep {
+					ended[tk.sid] = true
+				}
+			}
+		}
+		s.forgetStatus(u.ID)
+		for _, tk := range tokens {
+			if ended[tk.sid] {
+				_, err := s.VerifyAccessToken(ctx, tk.value)
+				assert.True(t, isCode(err, "unauthenticated"), "walk %d %q: a token of an ended session works: %v", walk, trail, err)
+			}
+		}
+	}
 }

@@ -11,6 +11,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -44,6 +46,21 @@ func newRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 
 func newReg(rdb redis.UniversalClient, c *clock, node, boot string) *Registry {
 	return NewRegistry(rdb, nil, RegistryOptions{NodeID: node, BootID: boot, Addr: node + ":8080", HostVersion: "0.1.0", Now: c.Now})
+}
+
+// A node announces the capabilities its build passes to New, as they were
+// passed: the caller changing its slice later changes nothing.
+func TestNewAnnouncesTheCapabilitiesGiven(t *testing.T) {
+	ctx := context.Background()
+	_, rdb := newRedis(t)
+	caps := []string{"session.s2s"}
+	c := New(rdb, nil, Options{NodeID: "node-a", Capabilities: caps})
+	caps[0] = "changed"
+	require.NoError(t, c.Registry.Heartbeat(ctx))
+	nodes, err := c.Registry.LiveNodes(ctx)
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	assert.Equal(t, []string{"session.s2s"}, nodes[0].Capabilities)
 }
 
 func TestRegistryHeartbeatAndLiveNodes(t *testing.T) {

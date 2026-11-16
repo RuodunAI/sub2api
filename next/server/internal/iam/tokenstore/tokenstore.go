@@ -55,6 +55,13 @@ type Session struct {
 // the zero value picks them all.
 type Selection struct{ Only, Keep string }
 
+// Bump is the users.token_version bump a revocation goes with, From the
+// version before it To the one after; the zero value is none. A session
+// stamped below From was ended by an earlier bump that did not reach
+// Valkey (rejected when presented, still stored): it ends now, and is never
+// stamped back to life. One stamped From or more is kept at To or above.
+type Bump struct{ From, To int }
+
 // SessionStore keeps the opaque sessions.
 type SessionStore interface {
 	// Create stores s (CreatedAt and LastSeen are set to now) under a new
@@ -74,10 +81,13 @@ type SessionStore interface {
 	List(ctx context.Context, userID int64) ([]Session, error)
 	// Has reports whether userID has the live session id.
 	Has(ctx context.Context, userID int64, id string) (bool, error)
-	// Revoke ends the sessions of userID that sel picks at once, and stamps
-	// the others with tokenVersion when it is larger than theirs (0: no
-	// stamp; then Only touches that session alone).
-	Revoke(ctx context.Context, userID int64, sel Selection, tokenVersion int) error
+	// Revoke ends the sessions of userID that sel picks at once. With a
+	// bump it also ends the others stamped below b.From and stamps the rest
+	// below b.To with b.To; without one, Only touches that session alone.
+	Revoke(ctx context.Context, userID int64, sel Selection, b Bump) error
+	// Prune ends the sessions of userID stamped below tokenVersion: those a
+	// bump ended without reaching Valkey. Later sessions stay.
+	Prune(ctx context.Context, userID int64, tokenVersion int) error
 	// Drop ends what token, found as s, still opens: its whole session when
 	// it is the session's current token, only itself when a rotation left
 	// it behind (the session's current token is not ended by a request
