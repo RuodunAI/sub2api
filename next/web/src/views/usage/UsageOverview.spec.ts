@@ -14,15 +14,15 @@ vi.mock('./useUsageSummary', () => ({
 }))
 let query: Record<string, string> = {}
 vi.mock('vue-router', () => ({ useRoute: () => ({ query }) }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: () => false }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: () => false, hasAction: () => false }) }))
 vi.mock('@/components/stats/UsageCharts.vue', () => ({
-  default: { name: 'UsageCharts', props: ['summaryPath', 'revision', 'granularity'], emits: ['select-model', 'select-secondary'], template: '<div data-testid="charts" />' }
+  default: { name: 'UsageCharts', props: ['summaryPath', 'revision', 'granularity', 'secondary'], emits: ['select-model', 'select-secondary'], template: '<div data-testid="charts" />' }
 }))
 enableAutoUnmount(afterEach)
 
-function render(admin = false) {
+function render(admin = false, accountView = false) {
   return mount(UsageOverview, {
-    props: { summaryPath: admin ? '/usage/summary' : '/me/usage/summary', defaultRange: '7d', admin },
+    props: { summaryPath: admin ? '/usage/summary' : '/me/usage/summary', defaultRange: '7d', admin, accountView },
     global: { plugins: [i18n], stubs: { SChart: true } }
   })
 }
@@ -64,5 +64,19 @@ describe('usage overview page', () => {
     render()
     expect(summaries[0].filters.user_id).toBeUndefined()
     expect(summaries[0].filters.from).toBe('2026-10-01T00:00:00.000Z')
+  })
+
+  it('breaks an account view down by account, and narrows only by what it may send (CONTRACTS §102.5)', async () => {
+    query = { account_id: '12', user_id: '3', model_contains: 'op' }
+    const w = render(false, true)
+    expect(summaries[0].filters).toMatchObject({ account_id: '12' })
+    expect(summaries[0].filters.user_id).toBeUndefined()
+    expect(summaries[0].filters.model_contains).toBeFalsy()
+    const charts = w.findComponent({ name: 'UsageCharts' })
+    expect(charts.props('secondary')).toMatchObject({ groupBy: 'account' })
+    charts.vm.$emit('select-model', 'opus')
+    charts.vm.$emit('select-secondary', '13')
+    await flushPromises()
+    expect(summaries[0].filters).toMatchObject({ model: 'opus', model_contains: '', account_id: '13' })
   })
 })

@@ -77,5 +77,15 @@ export default {
     submit: '移交',
     done: '已移交超级管理员，请重新登录'
   },
-  roleScopes: '该角色的范围：{list}'
+  roleScopes: '该角色的范围：{list}',
+  owner: '所属',
+  ownerHint: '他属于哪个用户：该用户及其上级能按“自己及下级”的权限管理他。留空表示不属于任何人。',
+  onlyDirect: '仅直属',
+  ownerErrors: {
+    self: '不能属于自己',
+    cycle: '所选用户在他之下，会形成环',
+    too_deep: '超过 8 层',
+    not_found: '用户不存在或已删除',
+    owner_cannot_manage: '所选用户按角色管不了他，先调整他的角色或换一个用户'
+  }
 }

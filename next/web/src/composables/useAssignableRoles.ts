@@ -17,9 +17,12 @@ export function isPlainUser(roles: string[] | undefined): boolean {
   return (roles || []).every((k) => k === DEFAULT_ROLE)
 }
 
-/** Role keys with the default role added when supplier is among them. */
-export function withSupplierUser(keys: string[]): string[] {
-  return keys.includes(SUPPLIER_ROLE) && !keys.includes(DEFAULT_ROLE) ? [...keys, DEFAULT_ROLE] : keys
+/**
+ * Role keys with the default role added when supplier is among them, where
+ * the caller may grant it (`withDefault`; a supplier agent may not).
+ */
+export function withSupplierUser(keys: string[], withDefault: boolean): string[] {
+  return withDefault && keys.includes(SUPPLIER_ROLE) && !keys.includes(DEFAULT_ROLE) ? [...keys, DEFAULT_ROLE] : keys
 }
 
 // One list per signed-in user and permissions reload (auth.permissionsEpoch).

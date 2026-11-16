@@ -20,7 +20,8 @@ import { accountLabel, accountPlatform, billingTone, hashColor, type UsageRow } 
 // The usage list: one row per request, its detail (billing trace, request
 // facts) expanded under it; cards on narrow screens. Clicking a client IP, a
 // client request ID or (operators) the upstream account asks the page to
-// filter by it.
+// filter by it. The account view (`accountView`, CONTRACTS §102.5) has the
+// account's facts only: no API key or client IP, the cost at the list price.
 const props = withDefaults(
   defineProps<{
     rows: UsageRow[]
@@ -30,12 +31,13 @@ const props = withDefaults(
     showClientRequestId?: boolean
     /** The caller's own records: the attempts of a retried request show no accounts. */
     mine?: boolean
+    accountView?: boolean
     detailPath?: (id: number) => string
     columnSettingsKey?: string
     /** false when the page draws the column settings itself (from the exposed columnState), e.g. in its toolbar. */
     columnSettings?: boolean
   }>(),
-  { showUser: true, showAccount: true, showClientRequestId: false, mine: false, columnSettings: true }
+  { showUser: true, showAccount: true, showClientRequestId: false, mine: false, accountView: false, columnSettings: true }
 )
 const emit = defineEmits<{
   (e: 'filter-client-request-id', id: string): void
@@ -46,8 +48,12 @@ const { t } = useI18n()
 const columns = computed<TableColumn[]>(() => [
   { key: 'created_at', label: t('common.time'), width: '150px', hideable: false },
   ...(props.showUser ? [{ key: 'user', label: t('common.user'), width: '150px' }] : []),
-  { key: 'api_key', label: t('usage.request.apiKey'), width: '140px' },
-  { key: 'client_ip', label: t('usage.request.clientIP'), width: '170px', format: 'ip', filterable: true },
+  ...(props.accountView
+    ? []
+    : [
+        { key: 'api_key', label: t('usage.request.apiKey'), width: '140px' },
+        { key: 'client_ip', label: t('usage.request.clientIP'), width: '170px', format: 'ip' as const, filterable: true }
+      ]),
   { key: 'model', label: t('common.model'), width: '190px' },
   ...(props.showAccount ? [{ key: 'account', label: t('common.account'), width: '230px' }] : []),
   { key: 'tokens', label: t('usage.tokens.title'), width: '125px' },
@@ -66,6 +72,10 @@ function accountVars(row: UsageRow) {
   const platform = accountPlatform(row)
   return platform ? brandVars(platformBrand(platform)) : undefined
 }
+/** What the request cost: billed, or the list price in the account view, which shows no billing. */
+const cost = (row: UsageRow) => (row.billing_status === 'free' ? t('usage.free') : formatMoney(props.accountView ? row.standard_cost : row.total_cost))
+/** A billing state that is neither billed nor free, for a badge. */
+const billingNote = (row: UsageRow) => !props.accountView && row.billing_status !== 'billed' && row.billing_status !== 'free'
 /** "model → upstream model" when the account's mapping sent another model upstream. */
 const mappedModel = (row: UsageRow) => (row.upstream_model && row.upstream_model !== row.model ? `${row.model} → ${row.upstream_model}` : '')
 /** "×1.5" when the group's rate is not 1. */
@@ -162,10 +172,8 @@ function rate(row: UsageRow) {
       <template #cell-tokens="{ row }"><UsageTokens :row="row" /></template>
       <template #cell-total_cost="{ row }">
         <div class="flex flex-col items-start gap-1">
-          <span class="whitespace-nowrap font-mono text-xs font-medium" :class="row.billing_status === 'free' ? 'text-fg-subtle' : ''">{{
-            row.billing_status === 'free' ? t('usage.free') : formatMoney(row.total_cost)
-          }}</span>
-          <SBadge v-if="row.billing_status !== 'billed' && row.billing_status !== 'free'" size="xs" :tone="billingTone(row.billing_status)">{{
+          <span class="whitespace-nowrap font-mono text-xs font-medium" :class="row.billing_status === 'free' ? 'text-fg-subtle' : ''">{{ cost(row) }}</span>
+          <SBadge v-if="billingNote(row)" size="xs" :tone="billingTone(row.billing_status)">{{
             t(`usage.billing.status.${row.billing_status}`)
           }}</SBadge>
         </div>
@@ -187,7 +195,7 @@ function rate(row: UsageRow) {
           </button>
         </div>
       </template>
-      <template #expand="{ row }"><UsageDetail :row="row" :path="detailPath?.(row.id)" :mine="mine" /></template>
+      <template #expand="{ row }"><UsageDetail :row="row" :path="detailPath?.(row.id)" :mine="mine" :account-view="accountView" /></template>
       <template #card="{ row, expanded, toggleExpand }">
         <div data-testid="mobile-usage-record">
           <div class="flex items-start justify-between gap-3">
@@ -210,8 +218,8 @@ function rate(row: UsageRow) {
             </div>
             <div v-if="isVisible('total_cost')">
               <p class="mb-1 text-xxs text-fg-subtle">{{ t('usage.cols.cost') }}</p>
-              <p class="font-mono text-xs font-medium">{{ row.billing_status === 'free' ? t('usage.free') : formatMoney(row.total_cost) }}</p>
-              <SBadge v-if="row.billing_status !== 'billed' && row.billing_status !== 'free'" size="xs" class="mt-1" :tone="billingTone(row.billing_status)">{{
+              <p class="font-mono text-xs font-medium">{{ cost(row) }}</p>
+              <SBadge v-if="billingNote(row)" size="xs" class="mt-1" :tone="billingTone(row.billing_status)">{{
                 t(`usage.billing.status.${row.billing_status}`)
               }}</SBadge>
             </div>
@@ -265,7 +273,7 @@ function rate(row: UsageRow) {
           <button type="button" class="mt-3 text-xs font-medium text-primary-600" :aria-expanded="expanded" @click.stop="toggleExpand()">
             {{ expanded ? t('usage.hideDetails') : t('usage.showDetails') }}
           </button>
-          <UsageDetail v-if="expanded" :row="row" :path="detailPath?.(row.id)" :mine="mine" class="-mx-4 -mb-4 mt-3 border-t border-line" />
+          <UsageDetail v-if="expanded" :row="row" :path="detailPath?.(row.id)" :mine="mine" :account-view="accountView" class="-mx-4 -mb-4 mt-3 border-t border-line" />
         </div>
       </template>
     </STable>

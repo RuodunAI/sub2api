@@ -14,9 +14,9 @@ enableAutoUnmount(afterEach)
 const EntityPicker = { name: 'EntityPicker', props: ['kind', 'scope', 'exclude', 'id', 'placeholder', 'size'], emits: ['update:id'], template: '<i class="picker" />' }
 const sc = (action: string, suffix: string): Scope => parsePermission(suffix ? `${action}:${suffix}` : action)!.scope
 
-function render(action: string, held: string[], limit: string[], resource: 'account' | 'proxy' = 'account') {
+function render(action: string, held: string[], limit: string[], resource: 'account' | 'proxy' | 'user' = 'account') {
   return mount(ScopePicker, {
-    props: { action, target: { kind: 'core' as const, resource }, scopes: held.map((k) => sc(action, k)), offer: offerOf(limit.map((k) => sc(action, k))) },
+    props: { action, target: { kind: 'core' as const, resource }, scopes: held.map((k) => sc(action, k)), offer: offerOf(limit.map((k) => sc(action, k)), action) },
     global: { plugins: [i18n], stubs: { EntityPicker } }
   })
 }
@@ -84,8 +84,26 @@ describe('ScopePicker', () => {
     expect(w.get('[data-testid="scope-other"]').text()).toContain('group/*')
   })
 
+  it('ticks the team with the own rows greyed out in it', async () => {
+    const w = render('account:read', ['team'], ['team'])
+    expect((w.get('input[data-testid="scope-team"]').element as HTMLInputElement).checked).toBe(true)
+    const own = w.get('input[data-testid="scope-own"]').element as HTMLInputElement
+    expect([own.checked, own.disabled]).toEqual([true, true])
+    await w.get('input[data-testid="scope-team"]').setValue(false)
+    expect(emitted(w, 'account:read')).toEqual([])
+  })
+
+  it('offers a user action every user or the team, nothing else', () => {
+    const w = render('user:read', [], [''], 'user')
+    expect(w.find('[data-testid="scope-team"]').exists()).toBe(true)
+    expect(w.find('[data-testid="scope-own"]').exists()).toBe(false)
+    expect(w.find('[data-testid="scope-ids"]').exists()).toBe(false)
+    expect(w.findAllComponents(EntityPicker)).toHaveLength(0)
+  })
+
   it('names no row for account:create: groups and own only', () => {
     const w = render('account:create', [], [''])
+    expect(w.find('[data-testid="scope-team"]').exists()).toBe(false)
     expect(w.find('[data-testid="scope-ids"]').exists()).toBe(false)
     expect(w.find('[data-testid="scope-pairs"]').exists()).toBe(false)
     expect(w.findAllComponents(EntityPicker).map((p) => p.props('kind'))).toEqual(['group'])

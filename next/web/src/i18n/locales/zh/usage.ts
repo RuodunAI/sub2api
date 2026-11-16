@@ -7,6 +7,10 @@ export default {
   overviewDescription: '网关的请求量、Token 与费用统计。',
   myOverviewTitle: '概览',
   myOverviewDescription: '你的请求量、Token 与费用统计。',
+  accountTitle: '账号日志',
+  accountDescription: '你范围内的账号服务过的请求，只有账号一侧的信息：不含用户、密钥、IP 和计费，费用按标准价。',
+  accountOverviewTitle: '账号用量概览',
+  accountOverviewDescription: '你范围内的账号的请求量、Token 与标准价费用。',
   live: {
     cost: '消耗',
     standard: '基础额度',

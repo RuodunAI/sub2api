@@ -16,7 +16,7 @@ vi.mock('@sub2api/host', async (original) => {
   return { ...real, api }
 })
 vi.mock('@/composables/lookups', async (original) => ({ ...(await original<object>()), fetchFirstPage: async () => [] }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (k: string) => mocks.perms.has(k), me: mocks.me }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (k: string) => mocks.perms.has(k), hasAction: (a: string) => [...mocks.perms].some((k) => k === a || k.startsWith(`${a}:`)), me: mocks.me }) }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }), useRouter: () => ({ push: vi.fn() }) }))
 enableAutoUnmount(afterEach)
 

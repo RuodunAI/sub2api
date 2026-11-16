@@ -84,6 +84,13 @@ describe('scopeAllowsRow', () => {
     expect(scopeAllowsRow(s('own'), ungrouped, undefined)).toBe(false)
     expect(scopeAllowsRow(s('own'), null, 7)).toBe(false)
   })
+
+  it('judges own and team by owner_id where the row has one, not by its creator', () => {
+    const moved = { id: 125, created_by: 7, owner_id: 8, group_ids: [] }
+    expect(scopeAllowsRow(s('own'), moved, 7)).toBe(false)
+    expect(scopeAllowsRow(s('team'), moved, 8)).toBe(true)
+    expect(scopeAllowsRow(s('own'), { ...moved, owner_id: null }, 7)).toBe(false)
+  })
 })
 
 describe('plugin scopes', () => {

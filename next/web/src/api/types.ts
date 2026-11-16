@@ -57,6 +57,10 @@ export interface User {
   balance?: Money // assumed
   /** The user group the user is priced by (api/pricing.ts). */
   segment?: SegmentRef
+  /** The user above this one (users.owner_id, CONTRACTS §102.3): its team covers this user; null for none. */
+  owner_id?: number | null
+  /** Email of the owner, kept after the user was deleted. */
+  owner_email?: string | null
   last_login_at?: string | null
   created_at?: string
 }
@@ -743,9 +747,13 @@ export interface Account {
   cooldown_until?: string | null
   cooldown_reason?: string // assumed
   orphaned?: boolean
-  /** Owner (CONTRACTS §21.2); null for legacy rows, which only all-level keys can see. */
-  created_by?: number | null
+  /** The user the account belongs to (所属, CONTRACTS §102.4): own and team scopes go by it; null for a system account. */
+  owner_id?: number | null
   /** Email of the owner, kept after the user was deleted. */
+  owner_email?: string | null
+  /** Who created the account, shown only: never changes and decides nothing. */
+  created_by?: number | null
+  /** Email of the creator, kept after the user was deleted. */
   created_by_email?: string | null
   last_used_at?: string | null
   created_at?: string
@@ -1053,6 +1061,8 @@ export interface UsageLog {
   cache_creation_tokens: number
   cache_creation_1h_tokens?: number
   total_cost: Money
+  /** The cost at the list price, before the group's rate. */
+  standard_cost?: Money
   rate_multiplier?: string | number
   billing_status: string
   billing_mode?: string

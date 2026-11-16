@@ -45,6 +45,11 @@ describe('entity search fields', () => {
     for (const retried of ['1', 'yes', 'TRUE']) expect(queryUsageFilters({ retried }, true)).toEqual({})
   })
 
+  it('a link presets the account view with its own filters only', () => {
+    const link = { user_id: '3', group_id: '7', api_key_id: '104', account_id: '25', model: 'gpt-4o', model_contains: 'gpt', retried: 'true', client_ip: '1.2.3.4' }
+    expect(queryUsageFilters(link, false, true, true)).toEqual({ account_id: '25', model: 'gpt-4o', retried: 'true' })
+  })
+
   it.each(['abc', '0', '007', '-1', '1.5', ' 7'])('a link id that is not one (%o) is dropped; a model, being a name, is kept', id => {
     expect(queryUsageFilters({ user_id: id, group_id: id, api_key_id: id, account_id: id, model: id }, true, true)).toEqual({ model: id })
   })
@@ -121,5 +126,15 @@ describe('usageSearchLayout', () => {
       expect(tagged).not.toContain(key)
     }
     expect(new Set(params).size).toBe(params.length)
+  })
+
+  it('gives the account view the account\'s facts only: no user, key, group, IP, conversion or billing (CONTRACTS §102.5)', () => {
+    const view = { ...self, accountView: true }
+    const { primary, advanced, params } = usageSearchLayout(view)
+    expect(primary).toEqual(['model', 'account'])
+    expect(advanced).toEqual(['request_id', 'protocol', 'success', 'retried'])
+    expect(usageSearchLayout({ ...view, errors: true }).advanced).toEqual(['request_id', 'protocol', 'retried', 'status_code', 'error_type'])
+    for (const key of ['user_id', 'api_key_id', 'group_id', 'group_name', 'client_ip', 'client_request_id', 'conversion', 'billing_status', 'node_id']) expect(params).not.toContain(key)
+    for (const key of ['platform', 'endpoint', 'plugin_key', 'account_type', 'stream', 'status_code']) expect(params).toContain(key)
   })
 })

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // The scopes of one scoped action (CONTRACTS §21), stacked: every row, the
-// rows the holder created, chosen groups, chosen accounts or proxies, and
-// accounts within a chosen group. "All" includes the rest (greyed out). Only
+// holder's own rows, its own and its team's (CONTRACTS §102.2), chosen
+// groups, chosen accounts or proxies, and accounts within a chosen group.
+// "All" includes the rest, the team the own rows (greyed out). Only
 // what the editor's own scopes imply is offered (`offer`); granted scopes
 // beyond it can only be removed. Ids show by name through the lookup, a
 // deleted one as "#12 (deleted)".
@@ -111,10 +112,19 @@ function addPair(account: string) {
         @update:model-value="set({ all: !!$event })"
       />
       <SCheckbox
+        v-if="offer.team || choice.team"
+        size="xs"
+        :model-value="choice.team || choice.all"
+        :disabled="narrowOff"
+        :label="t('roles.scope.team')"
+        data-testid="scope-team"
+        @update:model-value="set({ team: !!$event })"
+      />
+      <SCheckbox
         v-if="ownOffered || choice.own"
         size="xs"
-        :model-value="choice.own || choice.all"
-        :disabled="narrowOff"
+        :model-value="choice.own || choice.team || choice.all"
+        :disabled="narrowOff || choice.team"
         :label="t('roles.scope.own')"
         data-testid="scope-own"
         @update:model-value="set({ own: !!$event })"

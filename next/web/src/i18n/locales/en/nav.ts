@@ -18,6 +18,8 @@ export default {
     prices: 'Model prices',
     usageOverview: 'Site overview',
     usage: 'Site usage logs',
+    accountUsageOverview: 'Account usage overview',
+    accountUsage: 'Account usage logs',
     ledger: 'Balance ledger',
     users: 'Users',
     segments: 'User groups',

@@ -98,6 +98,15 @@ export default {
   proxy: 'Proxy',
   proxyRequired: 'This account type needs a proxy',
   createdBy: 'Created by',
+  owner: 'Owner',
+  onlySubordinates: 'Only my team’s',
+  ownerChange: {
+    action: 'Change owner',
+    title: 'Change the owner of {name}',
+    hint: 'The owner decides who sees and manages the account by an “own” or “team” scope; the creator stays.',
+    done: 'Owner changed',
+    notFound: 'No such user, or deleted'
+  },
   proxyPickExisting: 'Pick existing',
   proxyPasteUrl: 'Paste proxy URL',
   groupsLocked: 'Changing the groups needs group:manage or account:group:bind.',

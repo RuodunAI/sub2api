@@ -1,9 +1,11 @@
 <script setup lang="ts">
-// The usage statistics, for an operator (`admin`: all users) or for the
-// caller: the search bar (time range, granularity, filters), the four totals
-// and the charts. Every part follows the same filters, which a link may preset
-// (?user_id=, ?from=, …). The page header (title, refresh) stays with the view
-// and bumps `revision`. The requests themselves are on the usage records page.
+// The usage statistics, for an operator (`admin`: all users), for the caller,
+// or of the accounts in the caller's reach (`accountView`, CONTRACTS §102.5:
+// by account instead of by group or key, costs at the list price): the search
+// bar (time range, granularity, filters), the four totals and the charts.
+// Every part follows the same filters, which a link may preset (?user_id=,
+// ?from=, …). The page header (title, refresh) stays with the view and bumps
+// `revision`. The requests themselves are on the usage records page.
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -13,6 +15,7 @@ import UsageSummaryCards from '@/components/UsageSummaryCards.vue'
 import UsageCharts from '@/components/stats/UsageCharts.vue'
 import { autoGranularity, hourAllowed, type Granularity } from '@/components/stats/stats'
 import { useAuthStore } from '@/stores/auth'
+import { useEntityNames } from '@/components/entity/lookup'
 import UsageFilters from './UsageFilters.vue'
 import { baseUsageFilters, entityPatch, queryUsageFilters } from './usageFilters'
 import { useUsageSummary } from './useUsageSummary'
@@ -22,19 +25,20 @@ const props = withDefaults(
     summaryPath: string
     defaultRange: RangeKey
     admin?: boolean
+    accountView?: boolean
     /** Bumped by the page's refresh button: reload everything (the page owns the header). */
     revision?: number
   }>(),
-  { admin: false, revision: 0 }
+  { admin: false, accountView: false, revision: 0 }
 )
 const emit = defineEmits<{ (e: 'update:loading', value: boolean): void }>()
 const { t } = useI18n()
 const route = useRoute()
 const auth = useAuthStore()
 
-const showAccount = computed(() => props.admin && auth.has('account:read'))
+const showAccount = computed(() => props.accountView || (props.admin && auth.has('account:read')))
 
-const fromQuery = queryUsageFilters(route.query, props.admin, showAccount.value)
+const fromQuery = queryUsageFilters(route.query, props.admin, showAccount.value, props.accountView)
 const range = ref<RangeKey>(fromQuery.from || fromQuery.to ? 'custom' : props.defaultRange)
 const filters = reactive<Record<string, string>>({ ...baseUsageFilters(props.defaultRange), ...fromQuery })
 
@@ -62,17 +66,24 @@ const modelOptions = computed(() => models.rows.value.map((r) => r.key).filter((
 
 // The caller's API key names for the "by API key" breakdown (keyed by id).
 const keyNames = reactive(new Map<string, string>())
-if (!props.admin && auth.has('apikey:self:manage')) {
+if (!props.admin && !props.accountView && auth.has('apikey:self:manage')) {
   api
     .list<{ id: number; name: string }>('/me/api-keys', { page_size: 200 })
     .then((res) => res.items.forEach((k) => keyNames.set(String(k.id), k.name)))
     .catch(() => {})
 }
-const secondary = computed(() =>
-  props.admin
+const names = useEntityNames()
+const secondary = computed(() => {
+  if (props.accountView) return { groupBy: 'account', title: t('stats.accountDist'), keyLabel: t('common.account'), labelOf: (k: string) => names.label('account', k) }
+  return props.admin
     ? { groupBy: 'group', title: t('stats.groupDist'), keyLabel: t('stats.group') }
     : { groupBy: 'api_key', title: t('stats.keyDist'), keyLabel: t('stats.apiKey'), labelOf: (k: string) => keyNames.get(k) || `#${k}` }
-)
+})
+/** The filter a picked slice of the second breakdown sets. */
+function secondaryFilter(k: string): Record<string, string> {
+  if (props.accountView) return entityPatch('account', { id: k })
+  return props.admin ? { group_name: k } : entityPatch('api_key', { id: k })
+}
 
 const revisionCharts = ref(0)
 watch(
@@ -93,7 +104,7 @@ function filterBy(patch: Record<string, string>) {
 
 <template>
   <div class="flex flex-col gap-4">
-    <UsageFilters class="!mb-0" :model-value="filters" :admin="admin" :accounts="showAccount" :protocol-options="protocolOptions" :model-options="modelOptions" @update:model-value="Object.assign(filters, $event)">
+    <UsageFilters class="!mb-0" :model-value="filters" :admin="admin" :accounts="showAccount" :account-view="accountView" :protocol-options="protocolOptions" :model-options="modelOptions" @update:model-value="Object.assign(filters, $event)">
       <template #range>
         <div class="flex flex-wrap items-center gap-2">
           <SDateRange v-model:range="range" v-model:from="filters.from" v-model:to="filters.to" size="sm" :label="false" />
@@ -118,10 +129,10 @@ function filterBy(patch: Record<string, string>) {
       :granularity="granularity"
       :secondary="secondary"
       :revision="revisionCharts"
-      :group="admin ? 'usage-admin' : 'usage-mine'"
+      :group="admin ? 'usage-admin' : accountView ? 'usage-account' : 'usage-mine'"
       :model-sources="admin"
-      @select-model="filterBy(entityPatch('model', { text: $event }))"
-      @select-secondary="(k: string) => filterBy(admin ? { group_name: k } : entityPatch('api_key', { id: k }))"
+      @select-model="filterBy(entityPatch('model', accountView ? { id: $event } : { text: $event }))"
+      @select-secondary="(k: string) => filterBy(secondaryFilter(k))"
     />
   </div>
 </template>

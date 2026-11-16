@@ -17,11 +17,14 @@ export interface RowActionDeps {
   canRefreshCreds: (a: Account) => boolean
   canUpdate: (a: Account) => boolean
   canDelete: (a: Account) => boolean
+  /** account:owner:update (CONTRACTS §102.4). */
+  canChangeOwner: (a: Account) => boolean
   openDetail: (a: Account) => unknown
   reveal: (a: Account) => unknown
   resetStatus: (a: Account) => unknown
   disable: (a: Account) => unknown
   refreshCreds: (a: Account) => unknown
+  changeOwner: (a: Account) => unknown
   remove: (a: Account) => unknown
   /** Declarative plugin account actions (manifest `ui.accountActions`, UI 3.6); `actionAppliesTo` says which rows offer one. */
   declaredActions: PluginAccountActionEntry[]
@@ -47,6 +50,7 @@ export function rowActions(a: Account, deps: RowActionDeps) {
     { key: 'reset-status', label: t('accounts.resetStatus'), hidden: !deps.canResetStatus(a) },
     { key: 'disable', label: t('accounts.listUi.disableByHand'), hidden: !deps.canDisable(a) },
     { key: 'refresh-credentials', label: t('accounts.credRefresh.action'), hidden: !deps.canRefreshCreds(a) },
+    { key: 'owner', label: t('accounts.ownerChange.action'), hidden: !deps.canChangeOwner(a) },
     ...deps.declaredActions.map((x) => ({ key: pluginAccountActionKey(x), label: lt(x.label) || x.id, icon: x.icon, danger: x.danger, hidden: !actionAppliesTo(x, a, deps.canUpdate) })),
     { key: 'delete', label: t('common.delete'), danger: true, hidden: !deps.canDelete(a) }
   ]
@@ -59,6 +63,7 @@ const HANDLERS: Record<string, (a: Account, deps: RowActionDeps) => unknown> = {
   'reset-status': (a, deps) => deps.resetStatus(a),
   disable: (a, deps) => deps.disable(a),
   'refresh-credentials': (a, deps) => deps.refreshCreds(a),
+  owner: (a, deps) => deps.changeOwner(a),
   delete: (a, deps) => deps.remove(a)
 }
 

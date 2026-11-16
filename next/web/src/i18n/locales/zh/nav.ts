@@ -18,6 +18,8 @@ export default {
     prices: '模型价格',
     usageOverview: '全站概览',
     usage: '全站日志',
+    accountUsageOverview: '账号用量概览',
+    accountUsage: '账号日志',
     ledger: '余额流水',
     users: '用户',
     segments: '用户组',

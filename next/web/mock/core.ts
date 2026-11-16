@@ -1,5 +1,5 @@
 import { fail, noContent, now, on, type MockHandler, type MockRequest } from './router'
-import { canonicalPermission, permissionIndex, scopeAllowsRow, type Scope, type ScopedRow } from '../src/authz/implies'
+import { canonicalPermission, permissionIndex, rowOwner, scopeAllowsRow, type Scope, type ScopedRow } from '../src/authz/implies'
 
 // auth, me, menus
 
@@ -11,11 +11,11 @@ export const ALL_PERMISSIONS = [
   'group:read', 'group:manage',
   // CONTRACTS §21: the account and proxy actions take a scope (account:read:own, account:update:group/12, ...).
   'account:read', 'account:create', 'account:update', 'account:delete', 'account:test', 'account:credential:view',
-  'account:settings:custom', 'account:group:bind', 'account:relay',
+  'account:settings:custom', 'account:group:bind', 'account:relay', 'account:owner:update',
   'proxy:read', 'proxy:manage',
   'price:read', 'price:manage',
   'balance:self:read', 'balance:all:read', 'balance:adjust', 'balance:adjust:any',
-  'usage:self:read', 'usage:all:read', 'usage:settle',
+  'usage:self:read', 'usage:all:read', 'usage:account:read', 'usage:settle',
   'sticky:read', 'sticky:manage',
   'plugin:read', 'plugin:install', 'plugin:manage', 'plugin:uninstall', 'plugin:grant:high', 'plugin:grant:critical', 'plugin:grant:db_schema_unconfined', 'plugin:egress:read', 'plugin:market:read',
   'publisher:read', 'publisher:manage',
@@ -58,8 +58,8 @@ const plainUser: Identity = {
 /**
  * Sign in as vendor@example.com (password admin): the "vendor" role of
  * CONTRACTS §21 (the own scope of the account and proxy actions, no
- * settings:custom). Sees
- * and edits only the accounts / proxies it created.
+ * settings:custom). Sees and edits only the accounts it owns and the
+ * proxies it created, and reads those accounts' usage.
  */
 export const vendorUser: Identity = {
   id: 6,
@@ -68,8 +68,26 @@ export const vendorUser: Identity = {
   roles: ['vendor'],
   permissions: [
     'account:read:own', 'account:create:own', 'account:update:own', 'account:delete:own', 'account:test:own', 'account:credential:view:own',
-    'proxy:read:own', 'proxy:manage:own',
+    'proxy:read:own', 'proxy:manage:own', 'usage:account:read:own',
     'group:read', 'gateway:use'
+  ],
+  superuser: false
+}
+
+/**
+ * Sign in as agent@example.com (password admin): the built-in supplier_agent
+ * role (CONTRACTS §102.1), the vendor's keys plus its team's: reads, creates
+ * and edits the users below it (vendor@example.com among them), reads their
+ * accounts and those accounts' usage, never their credentials or proxies.
+ */
+export const agentUser: Identity = {
+  id: 11,
+  email: 'agent@example.com',
+  display_name: 'Agent',
+  roles: ['supplier_agent'],
+  permissions: [
+    ...vendorUser.permissions.filter((k) => k !== 'account:read:own' && k !== 'usage:account:read:own'),
+    'account:read:team', 'usage:account:read:team', 'user:read:team', 'user:create:team', 'user:update:team', 'role:read', 'role:assign'
   ],
   superuser: false
 }
@@ -141,7 +159,7 @@ export const managerUser: Identity = {
   superuser: false
 }
 
-const identities = [me, plainUser, vendorUser, readonlyUser, moderatorUser, pricerUser, managerUser]
+const identities = [me, plainUser, vendorUser, agentUser, readonlyUser, moderatorUser, pricerUser, managerUser]
 
 /** Email of a (possibly deleted) user id, for created_by_email. */
 export function userEmail(id: number | null | undefined): string | null {
@@ -177,16 +195,30 @@ export function ownerScope(who: Identity, action: string): Reach | null {
   return scopes.length ? { level: 'own', scopes } : null
 }
 
+/** The users below uid, every level (users.owner_id, CONTRACTS §102.2); resources.ts, which holds the users, answers it. */
+let teamOf: (uid: number) => number[] = () => []
+export const resolveTeams = (resolve: (uid: number) => number[]) => {
+  teamOf = resolve
+}
+/** The team a held scope reaches beyond the caller's own rows (core.ResolveScope). */
+const teamReaches = (s: Scope, who: Identity, row: ScopedRow) => !!s.team && teamOf(who.id).includes(rowOwner(row) ?? 0)
+
 /** Whether `row` is in the caller's reach (core.DataScope.AllowsRow); null owners need the all level or an id or group scope. */
 export function inScope(scope: Reach | null, who: Identity, row: ScopedRow): boolean {
   if (scope?.level === 'all') return true
-  return !!scope && scope.scopes.some((s) => scopeAllowsRow(s, row, who.id))
+  return !!scope && scope.scopes.some((s) => scopeAllowsRow(s, row, who.id) || teamReaches(s, who, row))
 }
 
-/** Applies the ?mine=true and ?created_by= list filters (the latter only at the all level). */
+/**
+ * Applies the ?mine=true, ?owner_id= and ?subordinates=true list filters
+ * (the owner: an account's owner_id, a proxy's creator) and ?created_by=
+ * (only at the all level).
+ */
 export function filterOwned<T extends ScopedRow>(rows: T[], scope: Reach | null, who: Identity, q: Record<string, string>): T[] {
   let out = rows.filter((r) => inScope(scope, who, r))
-  if (q.mine === 'true') out = out.filter((r) => r.created_by === who.id)
+  if (q.mine === 'true') out = out.filter((r) => rowOwner(r) === who.id)
+  if (q.owner_id) out = out.filter((r) => rowOwner(r) === Number(q.owner_id))
+  if (q.subordinates === 'true') out = out.filter((r) => scope?.scopes.some((s) => teamReaches(s, who, r)))
   if (scope?.level === 'all' && q.created_by) out = out.filter((r) => r.created_by === Number(q.created_by))
   return out
 }
@@ -400,12 +432,19 @@ on('PUT', '/me/password', (req) =>
 )
 
 // Scoped action of a core menu path, held at any scope (CONTRACTS §21, menus.go HasAction).
-const MENU_ACTIONS: Record<string, string> = { '/accounts': 'account:read', '/proxies': 'proxy:read' }
+const MENU_ACTIONS: Record<string, string> = {
+  '/accounts': 'account:read',
+  '/proxies': 'proxy:read',
+  '/users': 'user:read',
+  '/account-usage': 'usage:account:read',
+  '/account-usage/overview': 'usage:account:read'
+}
+// Core menu paths hidden from a holder of the key (menus.go hideWith): the site's usage shows instead.
+const MENU_HIDE_WITH: Record<string, string> = { '/account-usage': 'usage:all:read', '/account-usage/overview': 'usage:all:read' }
 // Permission of each other core menu path; plugin items need their plugin permission.
 const MENU_PERMS: Record<string, string | string[]> = {
   '/usage': 'usage:all:read',
   '/usage/overview': 'usage:all:read',
-  '/users': 'user:read',
   '/segments': 'segment:read',
   '/roles': 'role:read',
   '/plugins': 'plugin:read',
@@ -428,7 +467,8 @@ const MENU_PERMS: Record<string, string | string[]> = {
 
 on('GET', '/me/menus', (req) => {
   const who = caller(req)
-  const allowed = (path: string) => (MENU_ACTIONS[path] ? hasAction(who, MENU_ACTIONS[path]) : !MENU_PERMS[path] || hasPerm(who, MENU_PERMS[path]))
+  const held = (path: string) => (MENU_ACTIONS[path] ? hasAction(who, MENU_ACTIONS[path]) : !MENU_PERMS[path] || hasPerm(who, MENU_PERMS[path]))
+  const allowed = (path: string) => held(path) && !(MENU_HIDE_WITH[path] && hasPerm(who, MENU_HIDE_WITH[path]))
   return MENUS.map((s) => ({ ...s, items: s.items.filter((i) => allowed(i.path)) })).filter((s) => s.items.length)
 })
 
@@ -446,7 +486,9 @@ const MENUS = [
       { id: 'my-usage-overview', label: L('Usage overview', '用量概览'), icon: 'chart', path: '/me/usage/overview' },
       { id: 'my-usage', label: L('Usage logs', '使用日志'), icon: 'usage', path: '/me/usage' },
       { id: 'usage-overview', label: L('Site overview', '全站概览'), icon: 'chart', path: '/usage/overview' },
-      { id: 'usage', label: L('Site usage logs', '全站日志'), icon: 'usage', path: '/usage' }
+      { id: 'usage', label: L('Site usage logs', '全站日志'), icon: 'usage', path: '/usage' },
+      { id: 'account-usage-overview', label: L('Account usage overview', '账号用量概览'), icon: 'chart', path: '/account-usage/overview' },
+      { id: 'account-usage', label: L('Account usage logs', '账号日志'), icon: 'usage', path: '/account-usage' }
     ]
   },
   {

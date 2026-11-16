@@ -23,6 +23,7 @@ export default {
   modelDist: '模型分布',
   keyDist: 'API 密钥分布',
   groupDist: '分组分布',
+  accountDist: '账号分布',
   byTokens: 'Token',
   byCost: '费用',
   share: '占比',

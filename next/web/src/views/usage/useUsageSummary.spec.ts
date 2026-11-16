@@ -45,4 +45,13 @@ describe('useUsageSummary', () => {
     expect(get).toHaveBeenCalledTimes(2)
     scope.stop()
   })
+
+  it('costs an account view row, which has no billed cost, at its list price', async () => {
+    get.mockResolvedValueOnce([{ key: '', requests: 2, standard_cost: '1.5' }, { key: 'x', requests: 1, total_cost: '3', standard_cost: '2' }])
+    const scope = effectScope()
+    const summary = scope.run(() => useUsageSummary('/account-usage/summary', reactive({}), 'none'))!
+    await vi.waitFor(() => expect(summary.rows.value).toHaveLength(2))
+    expect(summary.rows.value.map((r) => r.total_cost)).toEqual(['1.5', '3'])
+    scope.stop()
+  })
 })
