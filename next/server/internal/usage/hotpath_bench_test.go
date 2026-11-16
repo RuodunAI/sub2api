@@ -15,9 +15,8 @@ import (
 )
 
 // The per-request database work of the settler, measured against a real
-// PostgreSQL (TEST_DATABASE_URL). These are the baseline the GORM migration
-// is compared with (internal/store/gormtest/BASELINE.md): run them before
-// and after with
+// PostgreSQL (TEST_DATABASE_URL). Run them before and after a change to the
+// settler's SQL with
 //
 //	go test -run '^$' -bench Hot -benchmem -count 5 ./internal/usage/
 //

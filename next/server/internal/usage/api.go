@@ -15,6 +15,7 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -156,8 +157,7 @@ const recordColumns = `u.id, u.request_id, u.client_request_id, u.created_at, u.
 	u.billing_mode, u.matched_tier, u.latency_ms, u.first_token_ms, u.upload_ms, u.sticky_hit, u.client_ip, u.conversion,
 	CASE WHEN u.attempts > 1 THEN u.anomalies->>'` + core.AnomalyAttempts + `' END, ` + standardCost
 
-const recordJoins = ` FROM usage_logs u
-	LEFT JOIN users us ON us.id = u.user_id
+const recordJoins = `LEFT JOIN users us ON us.id = u.user_id
 	LEFT JOIN api_keys k ON k.id = u.api_key_id
 	LEFT JOIN groups g ON g.id = u.group_id
 	LEFT JOIN accounts a ON a.id = u.account_id`
@@ -169,14 +169,14 @@ func (r *Record) scanTargets() []any {
 		&r.Endpoint, &r.Model, &r.UpstreamModel, &r.Stream, &r.StatusCode, &r.Success, &r.ErrorType,
 		&r.ErrorMessage, &r.Attempts, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens,
 		&r.CacheCreationTokens, &r.CacheCreation1hTokens, &r.TotalCost, &r.RateMultiplier, &r.BillingStatus,
-		&r.BillingMode, &r.MatchedTier, &r.LatencyMs, &r.FirstTokenMs, &r.UploadMs, &r.StickyHit, &r.ClientIP, nullRaw{&r.Conversion},
-		nullRaw{&r.AttemptTrail}, &r.StandardCost}
+		&r.BillingMode, &r.MatchedTier, &r.LatencyMs, &r.FirstTokenMs, &r.UploadMs, &r.StickyHit, &r.ClientIP, (*store.Bytes)(&r.Conversion),
+		(*store.Bytes)(&r.AttemptTrail), &r.StandardCost}
 }
 
-// recordQuery selects the records matching where (store.Filter's numbered
-// conditions over args), followed by tail (ORDER BY, LIMIT ...).
-func recordQuery(db *gorm.DB, where string, args []any, tail string) *gorm.DB {
-	return store.RawNumbered(db, `SELECT `+recordColumns+recordJoins+where+tail, args...)
+// recordQuery selects the records f keeps, newest first.
+func recordQuery(db *gorm.DB, f store.Conds) *gorm.DB {
+	return db.Table("usage_logs u").Select(recordColumns).Joins(recordJoins).Scopes(f.Scope()).
+		Order("u.created_at DESC, u.id DESC")
 }
 
 // hideUpstream removes upstream account details (account, account type,
@@ -344,8 +344,8 @@ const requestLogPlugin = "ccgateway"
 
 // parseFilter reads the common query parameters. self restricts to userID;
 // accounts allows the account filters (seesAccounts).
-func parseFilter(c *gin.Context, self *int64, accounts bool) (*store.Filter, error) {
-	var f store.Filter
+func parseFilter(c *gin.Context, self *int64, accounts bool) (store.Conds, error) {
+	var f store.Conds
 	if self != nil {
 		f.And("u.user_id = ?", *self)
 	}
@@ -465,7 +465,7 @@ func parseFilter(c *gin.Context, self *int64, accounts bool) (*store.Filter, err
 	if err := addTimeRange(c, &f); err != nil {
 		return nil, err
 	}
-	return &f, nil
+	return f, nil
 }
 
 // conversionFilters are the conditions of the conversion= filter
@@ -483,7 +483,7 @@ var conversionFilters = map[string]string{
 
 // addContainsFilters adds the ILIKE filters. Each value is trimmed, capped and
 // escaped for the pattern, so a user cannot smuggle wildcards.
-func addContainsFilters(c *gin.Context, f *store.Filter, contains []struct{ q, cond string }) error {
+func addContainsFilters(c *gin.Context, f *store.Conds, contains []struct{ q, cond string }) error {
 	for _, x := range contains {
 		v := strings.TrimSpace(c.Query(x.q))
 		if v == "" {
@@ -499,7 +499,7 @@ func addContainsFilters(c *gin.Context, f *store.Filter, contains []struct{ q, c
 
 // addTimeRange adds the RFC 3339 created_at bounds, rejecting an empty or
 // inverted range.
-func addTimeRange(c *gin.Context, f *store.Filter) error {
+func addTimeRange(c *gin.Context, f *store.Conds) error {
 	var from time.Time
 	for _, x := range []struct{ q, cond string }{{"from", "u.created_at >= ?"}, {"to", "u.created_at < ?"}} {
 		v := c.Query(x.q)
@@ -542,6 +542,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 	}
 	page, size := httpapi.Pagination(c)
 	cursor, keyset := c.GetQuery("cursor")
+	g := store.G(ctx, s.db.Gorm)
 	var total int64
 	if keyset {
 		if cursor != "" {
@@ -552,7 +553,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 			}
 			f.And("(u.created_at, u.id) < (?, ?)", at, id)
 		}
-	} else if err := store.RawNumbered(store.G(ctx, s.db.Gorm), `SELECT count(*) FROM usage_logs u`+f.Cond(), f.Args()...).Row().Scan(&total); err != nil {
+	} else if err := g.Table("usage_logs u").Scopes(f.Scope()).Count(&total).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -560,10 +561,7 @@ func (s *Service) list(c *gin.Context, self *int64) {
 	if keyset {
 		limit, offset = size+1, 0 // one extra row tells whether there is more
 	}
-	n := f.Len()
-	args := append(f.Args(), limit, offset)
-	rows, err := recordQuery(store.G(ctx, s.db.Gorm), f.Cond(), args,
-		` ORDER BY u.created_at DESC, u.id DESC LIMIT $`+strconv.Itoa(n+1)+` OFFSET $`+strconv.Itoa(n+2)).Rows()
+	rows, err := recordQuery(g, f).Limit(limit).Offset(offset).Rows()
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -629,10 +627,14 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 		return
 	}
 	var d Detail
-	targets := append(d.Record.scanTargets(), &d.PluginVersion, nullRaw{&d.Metrics}, &d.StickyRule, nullRaw{&d.HookDecisions},
-		&d.PriceID, &d.ExprHash, nullRaw{&d.BillingDetail}, &d.UserAgent, &d.NodeID, nullRaw{&d.PluginDetail}, nullRaw{&d.Anomalies})
+	targets := append(d.Record.scanTargets(), &d.PluginVersion, (*store.Bytes)(&d.Metrics), &d.StickyRule, (*store.Bytes)(&d.HookDecisions),
+		&d.PriceID, &d.ExprHash, (*store.Bytes)(&d.BillingDetail), &d.UserAgent, &d.NodeID, (*store.Bytes)(&d.PluginDetail), (*store.Bytes)(&d.Anomalies))
 	g := store.G(ctx, s.db.Gorm)
-	err := detailQuery(g, id).Row().Scan(targets...)
+	// The list's columns and the detail's own.
+	err := g.Raw(`SELECT `+recordColumns+`, u.plugin_version, u.metrics, u.sticky_rule,
+		u.hook_decisions, u.price_id, u.expr_hash, u.billing_detail, u.user_agent, u.node_id,
+		u.plugin_detail, u.anomalies FROM usage_logs u
+	`+recordJoins+` WHERE u.id = ?`, id).Row().Scan(targets...)
 	if store.IsNoRows(err) || (err == nil && self != nil && d.UserID != *self) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("usage record not found"))
 		return
@@ -673,15 +675,6 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 		d.Anomalies = s.shapeAnomalies(ctx, d.Anomalies, accounts)
 	}
 	httpapi.OK(c, d)
-}
-
-// detailQuery selects the record of a detail: the list's columns and the
-// detail's own.
-func detailQuery(db *gorm.DB, id int64) *gorm.DB {
-	return db.Raw(`SELECT `+recordColumns+`, u.plugin_version, u.metrics, u.sticky_rule,
-		u.hook_decisions, u.price_id, u.expr_hash, u.billing_detail, u.user_agent, u.node_id,
-		u.plugin_detail, u.anomalies`+
-		recordJoins+` WHERE u.id = ?`, id)
 }
 
 // Keys of usage_logs.anomalies whose JSON names accounts.
@@ -965,13 +958,13 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	}
 	end := cmp.Or(to, time.Now())
 	groupKey := c.DefaultQuery("group_by", "day")
-	// The time zone of day and hour buckets is appended after the filter's
-	// own arguments; spanTZ says the rollup must be aligned with it.
-	args := f.Args()
+	// Day and hour buckets bind the time zone (keyVars); spanTZ says the
+	// rollup must be aligned with it.
+	var keyVars []any
 	var spanTZ *time.Location
 	inTZ := func() string {
-		spanTZ = loc
-		return `u.created_at AT TIME ZONE ` + addArg(&args, tz) + `::text`
+		spanTZ, keyVars = loc, []any{tz}
+		return `u.created_at AT TIME ZONE ?::text`
 	}
 	var key, join, extra string
 	order, lastAt, groupBy := ` ORDER BY k`, `NULL::timestamptz`, ` GROUP BY k`
@@ -1037,7 +1030,6 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	load := func(ctx context.Context) ([]SummaryRow, error) {
 		out := []SummaryRow{}
 		err := s.statsTx(ctx, statsLimitsFor(self), func(tx *gorm.DB) error {
-			args := slices.Clone(args)
 			var span *hourSpan
 			if rollable {
 				var err error
@@ -1045,8 +1037,8 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 					return err
 				}
 			}
-			sh := summaryShape{outKey: outKey, key: key, extra: extra, join: join, lastAt: lastAt, groupBy: groupBy, order: order}
-			rows, err := summaryQuery(store.G(ctx, tx), sh, f.Cond(), span, args).Rows()
+			sh := summaryShape{outKey: outKey, key: clause.Expr{SQL: key, Vars: keyVars}, extra: extra, join: join, lastAt: lastAt, groupBy: groupBy, order: order}
+			rows, err := summaryQuery(store.G(ctx, tx), sh, f, span).Rows()
 			if err != nil {
 				return err
 			}
@@ -1089,17 +1081,19 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 // summaryShape is what the group_by of a summary makes of its query: the
 // output key and the per-row key, extra column and join under statRows, the
 // last-request column, and the GROUP BY and ORDER BY tails.
-type summaryShape struct{ outKey, key, extra, join, lastAt, groupBy, order string }
+type summaryShape struct {
+	key                                         clause.Expr
+	outKey, extra, join, lastAt, groupBy, order string
+}
 
-// summaryQuery selects the summary rows of where (store.Filter's numbered
-// conditions over args) through statRows, which reads span from the rollup
-// and appends its bounds to args: the caller passes a slice of its own.
-func summaryQuery(db *gorm.DB, sh summaryShape, where string, span *hourSpan, args []any) *gorm.DB {
-	from := statRows(sh.key+` AS k, `+sh.extra+` AS e, u.created_at AS at`, sh.join, where, span, &args)
-	return store.RawNumbered(db, `
+// summaryQuery selects the summary rows of the records f keeps through
+// statRows, which reads span from the rollup.
+func summaryQuery(db *gorm.DB, sh summaryShape, f store.Conds, span *hourSpan) *gorm.DB {
+	cols := clause.Expr{SQL: sh.key.SQL + ` AS k, ` + sh.extra + ` AS e, u.created_at AS at`, Vars: sh.key.Vars}
+	return db.Raw(`
 				SELECT `+sh.outKey+` AS k, COALESCE(max(u.e), ''), `+totalsColumns("", true)+`,
 				       `+sumOf("u.anomalous_rows", "")+`, `+sumOf("u.estimated_rows", "")+`, `+sumOf("u.estimated_cost", "")+`, `+sh.lastAt+`
-				FROM `+from+sh.groupBy+sh.order, args...)
+				FROM ?`+sh.groupBy+sh.order, statRows(db, cols, sh.join, f, span))
 }
 
 // summaryRange is the summary's range: from (default 30 days ago) to to

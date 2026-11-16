@@ -10,8 +10,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
 
 // request_id matches our request ID or the client's X-Request-Id;
@@ -25,11 +28,11 @@ func TestParseFilterRequestIDs(t *testing.T) {
 		conds       []string
 		args        []any
 	}{
-		{"request_id", "request_id=r1&from=2026-09-01T00:00:00Z", []string{"(u.request_id = $1 OR u.client_request_id = $2)", "u.created_at >= $3"}, []any{"r1", "r1", since}},
+		{"request_id", "request_id=r1&from=2026-09-01T00:00:00Z", []string{"((u.request_id = $1 OR u.client_request_id = $2))", "u.created_at >= $3"}, []any{"r1", "r1", since}},
 		{"request_id without range", "request_id=r1", []string{"u.request_id = $1"}, []any{"r1"}},
 		{"client_request_id", "client_request_id=abc-123", []string{"u.client_request_id = $1"}, []any{"abc-123"}},
 		{"both", "client_request_id=abc-123&request_id=r1&from=2026-09-01T00:00:00Z",
-			[]string{"u.client_request_id = $1", "(u.request_id = $2 OR u.client_request_id = $3)", "u.created_at >= $4"}, []any{"abc-123", "r1", "r1", since}},
+			[]string{"u.client_request_id = $1", "((u.request_id = $2 OR u.client_request_id = $3))", "u.created_at >= $4"}, []any{"abc-123", "r1", "r1", since}},
 		{"neither", "model=m", []string{"u.model = $1"}, []any{"m"}},
 	}
 	for _, tc := range cases {
@@ -39,8 +42,9 @@ func TestParseFilterRequestIDs(t *testing.T) {
 			c.Request = httptest.NewRequest("GET", "/usage?"+tc.query, nil)
 			f, err := parseFilter(c, nil, true)
 			require.NoError(t, err)
-			require.Equal(t, " WHERE "+strings.Join(tc.conds, " AND "), f.Cond())
-			require.Equal(t, tc.args, f.Args())
+			where, args := filterSQL(t, f)
+			require.Equal(t, strings.Join(tc.conds, " AND "), where)
+			require.Equal(t, tc.args, args)
 		})
 	}
 	// A user's own search keeps its user condition first and the same match.
@@ -48,7 +52,19 @@ func TestParseFilterRequestIDs(t *testing.T) {
 	c.Request = httptest.NewRequest("GET", "/me/usage?request_id=r1&from=2026-09-01T00:00:00Z", nil)
 	f, err := parseFilter(c, new(int64), false)
 	require.NoError(t, err)
-	require.Equal(t, " WHERE u.user_id = $1 AND (u.request_id = $2 OR u.client_request_id = $3) AND u.created_at >= $4", f.Cond())
+	where, _ := filterSQL(t, f)
+	require.Equal(t, "u.user_id = $1 AND ((u.request_id = $2 OR u.client_request_id = $3)) AND u.created_at >= $4", where)
+}
+
+// filterSQL is the WHERE clause f gives a query, and its arguments.
+func filterSQL(t *testing.T, f store.Conds) (string, []any) {
+	t.Helper()
+	query, args, err := gormtest.Build(func(db *gorm.DB) *gorm.DB {
+		return db.Table("usage_logs u").Scopes(f.Scope()).Find(&[]map[string]any{})
+	})
+	require.NoError(t, err)
+	_, where, _ := strings.Cut(query, " WHERE ")
+	return where, args
 }
 
 // The usage list, summary and export find a row by either request ID; a

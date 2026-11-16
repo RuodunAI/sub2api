@@ -567,11 +567,10 @@ const usageLogValues = len(usageLogColumns)
 // and one text for every batch, so a connection prepares it once), which
 // unnest turns back into rows, in batch order: WITH ORDINALITY numbers them
 // and the insert takes them in that order, so a request id repeated in the
-// batch keeps its first record's row and the ids follow the batch, as the
-// one-INSERT-per-record pgx batch had them. Each value is the one a VALUES
-// parameter of the column bound (pgx encodes an array's elements as it
-// encodes the scalar, nil as NULL), converted to the column by the same
-// assignment (length check, numeric scale).
+// batch keeps its first record's row and the ids follow the batch. Each
+// value is the one a VALUES parameter of the column binds (the driver
+// encodes an array's elements as it encodes the scalar, nil as NULL), converted to the
+// column by the same assignment (length check, numeric scale).
 var insertUsageSQL = func() string {
 	arrays := make([]string, len(usageLogColumns))
 	for i, c := range usageLogColumns {
@@ -587,7 +586,7 @@ var insertUsageSQL = func() string {
 
 // insertUsageRowSQL inserts a batch of one, the settler's usual batch when
 // it is not busy, with the values bound as they are: also one round trip,
-// and cheaper than 47 arrays of one element each (gormtest/BASELINE.md).
+// and cheaper than 47 arrays of one element each.
 // Same columns, conflict and result as insertUsageSQL.
 var insertUsageRowSQL = `INSERT INTO usage_logs (` + usageLogNames + `)
 			VALUES (` + strings.Repeat("?, ", usageLogValues-1) + `?)
@@ -773,7 +772,9 @@ func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*c
 	if total.Sign() > 0 {
 		detail.LedgerID = &res.LedgerID
 	}
-	if err := reserveUsageRow(store.G(ctx, tx), r.id, cost, detail).Error; err != nil {
+	if err := store.G(ctx, tx).Exec(`
+		UPDATE usage_logs SET total_cost = ?, base_cost = ?, billing_detail = ?, matched_tier = ?
+		WHERE id = ?`, cost.total, cost.base, jsonOr(detail, "{}"), trunc(detail.Tier, 100), r.id).Error; err != nil {
 		return nil, err
 	}
 	rv := rec.Reservation
@@ -784,8 +785,15 @@ func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*c
 	if nextAt.After(deadlineAt) {
 		nextAt = deadlineAt
 	}
+	// The reconcile entry of the row; no row when the plugin's ref_id is
+	// registered already.
 	var entryID int64
-	err = insertSettlementEntry(store.G(ctx, tx), rv, r.id, rec.AccountID, nextAt, deadlineAt).Row().Scan(&entryID)
+	err = store.G(ctx, tx).Raw(`
+		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (plugin_key, ref_id) DO NOTHING
+		RETURNING id`,
+		trunc(rv.PluginKey, 30), trunc(rv.RefID, 200), r.id, rec.AccountID, nextAt, deadlineAt).Row().Scan(&entryID)
 	if store.IsNoRows(err) {
 		// The plugin reused a ref_id that is already being reconciled, so
 		// this row would never be looked at again: it would sit "reserved"
@@ -799,26 +807,6 @@ func (s *Service) reserveTx(ctx context.Context, tx *gorm.DB, r reservedRow) (*c
 		return nil, fmt.Errorf("register pending settlement: %w", err)
 	}
 	return res, nil
-}
-
-// insertSettlementEntry registers the reconcile entry of the reserved usage
-// row usageLogID and returns its id, or no row when the plugin's ref_id is
-// already registered (ON CONFLICT DO NOTHING).
-func insertSettlementEntry(db *gorm.DB, rv *core.UsageReservation, usageLogID int64, accountID *int64, nextAt, deadlineAt time.Time) *gorm.DB {
-	return db.Raw(`
-		INSERT INTO pending_settlements (plugin_key, ref_id, usage_log_id, account_id, next_check_at, deadline_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (plugin_key, ref_id) DO NOTHING
-		RETURNING id`,
-		trunc(rv.PluginKey, 30), trunc(rv.RefID, 200), usageLogID, accountID, nextAt, deadlineAt)
-}
-
-// reserveUsageRow writes the estimate of a reserved row, once per reserved
-// request (BenchmarkHotStmtReserveUpdate, gormtest/BASELINE.md).
-func reserveUsageRow(db *gorm.DB, id int64, cost amounts, detail BillingDetail) *gorm.DB {
-	return db.Exec(`
-		UPDATE usage_logs SET total_cost = ?, base_cost = ?, billing_detail = ?, matched_tier = ?
-		WHERE id = ?`, cost.total, cost.base, jsonOr(detail, "{}"), trunc(detail.Tier, 100), id)
 }
 
 // closeUnreconcilable turns a reserved row into a final billed one: the
@@ -1050,20 +1038,15 @@ func (s *Service) markFailed(ctx context.Context, p *pending, cause error) {
 		slog.ErrorContext(ctx, "usage: settlement gave up", "request_id", p.RequestID, "attempts", attempts, "err", cause)
 	}
 	patch := jsonOr(map[string]any{"attempts": attempts, "error": trunc(cause.Error(), 1000), "inputs": p.Inputs}, "{}")
-	if err := markUsageFailed(store.G(ctx, s.db.Gorm), p.RequestID, patch).Error; err != nil {
-		slog.ErrorContext(ctx, "usage: mark failed", "request_id", p.RequestID, "err", err)
-	}
-}
-
-// markUsageFailed sets a row that is still unsettled to failed, merging
-// patch into its billing detail.
-func markUsageFailed(db *gorm.DB, requestID string, patch []byte) *gorm.DB {
-	return db.Model(&model.UsageLog{}).
-		Where("request_id = ? AND billing_status IN ('pending', 'failed')", requestID).
+	// Only a row still unsettled; patch is merged into its billing detail.
+	if err := store.G(ctx, s.db.Gorm).Model(&model.UsageLog{}).
+		Where("request_id = ? AND billing_status IN ('pending', 'failed')", p.RequestID).
 		Updates(map[string]any{
 			"billing_status": StatusFailed,
 			"billing_detail": gorm.Expr("billing_detail || ?::jsonb", patch),
-		})
+		}).Error; err != nil {
+		slog.ErrorContext(ctx, "usage: mark failed", "request_id", p.RequestID, "err", err)
+	}
 }
 
 func recordedEvent(p *pending, total decimal.Decimal, status string) core.Event {
@@ -1191,8 +1174,13 @@ func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLoc
 	}
 	total := cost.total
 	var ledgerRes *core.LedgerResult
+	// skipLocked passes over a row another settlement holds (no row).
+	lock := `SELECT billing_status FROM usage_logs WHERE request_id = ? FOR UPDATE`
+	if skipLocked {
+		lock += ` SKIP LOCKED`
+	}
 	var status string
-	if err := lockPendingRow(store.G(ctx, tx), p.RequestID, skipLocked).Row().Scan(&status); err != nil {
+	if err := store.G(ctx, tx).Raw(lock, p.RequestID).Row().Scan(&status); err != nil {
 		if store.IsNoRows(err) {
 			return nil, errNotPending
 		}
@@ -1208,7 +1196,15 @@ func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLoc
 	if total.Sign() > 0 {
 		detail.LedgerID = &ledgerRes.LedgerID
 	}
-	err = billUsageRow(store.G(ctx, tx), p, cost, detail, exprHash).Error
+	var priceID *int64
+	if p.PriceID > 0 {
+		priceID = &p.PriceID
+	}
+	err = store.G(ctx, tx).Exec(`
+			UPDATE usage_logs SET total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?,
+				expr_hash = ?, billing_mode = ?, price_id = ?, rate_multiplier = ?, base_cost = ?
+			WHERE request_id = ?`,
+		cost.total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, p.Mode, priceID, p.Rate, cost.base, p.RequestID).Error
 	if err != nil {
 		return nil, err
 	}
@@ -1216,28 +1212,4 @@ func (s *Service) settleTx(ctx context.Context, tx *gorm.DB, p *pending, skipLoc
 		return ledgerRes, s.events.Emit(ctx, tx, recordedEvent(p, total, StatusBilled))
 	}
 	return ledgerRes, nil
-}
-
-// lockPendingRow locks the usage row of requestID for settlement and reads
-// its billing status; skipLocked passes over a row another settlement
-// holds (no row).
-func lockPendingRow(db *gorm.DB, requestID string, skipLocked bool) *gorm.DB {
-	if skipLocked {
-		return db.Raw(`SELECT billing_status FROM usage_logs WHERE request_id = ? FOR UPDATE SKIP LOCKED`, requestID)
-	}
-	return db.Raw(`SELECT billing_status FROM usage_logs WHERE request_id = ? FOR UPDATE`, requestID)
-}
-
-// billUsageRow writes a settled row's billing fields, once per billable
-// request (BenchmarkHotStmtSettleUpdate, gormtest/BASELINE.md).
-func billUsageRow(db *gorm.DB, p *pending, cost amounts, detail BillingDetail, exprHash string) *gorm.DB {
-	var priceID *int64
-	if p.PriceID > 0 {
-		priceID = &p.PriceID
-	}
-	return db.Exec(`
-			UPDATE usage_logs SET total_cost = ?, billing_status = 'billed', billing_detail = ?, matched_tier = ?,
-				expr_hash = ?, billing_mode = ?, price_id = ?, rate_multiplier = ?, base_cost = ?
-			WHERE request_id = ?`,
-		cost.total, jsonOr(detail, "{}"), trunc(detail.Tier, 100), exprHash, p.Mode, priceID, p.Rate, cost.base, p.RequestID)
 }

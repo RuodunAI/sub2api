@@ -1,4 +1,0 @@
--- sql
-SELECT "id" FROM "balance_ledger" WHERE idempotency_key = $1
--- vars
-$1 string "usage:r1"

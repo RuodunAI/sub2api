@@ -1,5 +1,0 @@
--- sql
-INSERT INTO "plugin_monitor_receipts" ("id","digest") VALUES ($1,$2) RETURNING "task_id","created_at"
--- vars
-$1 string "task:token"
-$2 string "d"

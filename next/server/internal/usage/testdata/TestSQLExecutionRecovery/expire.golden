@@ -1,3 +1,0 @@
--- sql
-DELETE FROM plugin_monitor_receipts WHERE id IN(SELECT id FROM plugin_monitor_receipts WHERE created_at<clock_timestamp()-interval '7 days' ORDER BY created_at LIMIT 1000)
--- vars

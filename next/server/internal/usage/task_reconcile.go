@@ -27,7 +27,16 @@ type taskClaim struct {
 var errTaskDeferred = errors.New("original task account is unavailable or busy")
 
 func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, error) {
-	rows, err := claimDueTasks(store.G(ctx, s.db.Gorm), limit, uuid.NewString()).Rows()
+	// The due task observations are leased to a new token (leaving
+	// updated_at alone) and read with their legacy entry, if any.
+	rows, err := store.G(ctx, s.db.Gorm).Raw(`WITH claimed AS (
+		UPDATE async_tasks t SET claim_token=?,lease_until=now()+make_interval(secs=>?)
+		FROM (SELECT public_id FROM async_tasks WHERE observation_status='pending' AND next_check_at<=now()
+			AND (lease_until IS NULL OR lease_until<=now()) ORDER BY next_check_at,public_id FOR UPDATE SKIP LOCKED LIMIT ?) due
+		WHERE t.public_id=due.public_id RETURNING t.*)
+		SELECT t.public_id,t.claim_token,t.kind,t.state,t.plugin_key,t.upstream_ref_id,t.usage_log_id,t.account_id,
+			t.attempts,t.poll_failures,t.created_at,t.deadline_at,COALESCE(p.id,0),t.group_id
+		FROM claimed t LEFT JOIN pending_settlements p ON p.task_public_id=t.public_id`, uuid.NewString(), int(reconcileLease/time.Second), limit).Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -42,20 +51,6 @@ func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, er
 		out = append(out, e)
 	}
 	return out, rows.Err()
-}
-
-// claimDueTasks leases up to limit due task observations to token (an
-// UPDATE of async_tasks that leaves updated_at alone) and reads them with
-// their legacy entry, if any.
-func claimDueTasks(db *gorm.DB, limit int, token string) *gorm.DB {
-	return db.Raw(`WITH claimed AS (
-		UPDATE async_tasks t SET claim_token=?,lease_until=now()+make_interval(secs=>?)
-		FROM (SELECT public_id FROM async_tasks WHERE observation_status='pending' AND next_check_at<=now()
-			AND (lease_until IS NULL OR lease_until<=now()) ORDER BY next_check_at,public_id FOR UPDATE SKIP LOCKED LIMIT ?) due
-		WHERE t.public_id=due.public_id RETURNING t.*)
-		SELECT t.public_id,t.claim_token,t.kind,t.state,t.plugin_key,t.upstream_ref_id,t.usage_log_id,t.account_id,
-			t.attempts,t.poll_failures,t.created_at,t.deadline_at,COALESCE(p.id,0),t.group_id
-		FROM claimed t LEFT JOIN pending_settlements p ON p.task_public_id=t.public_id`, token, int(reconcileLease/time.Second), limit)
 }
 
 func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (context.Context, *pluginv1.Account, *int64, func(), error) {
@@ -185,14 +180,10 @@ func (s *Service) lockTaskOutcome(ctx context.Context, tx *gorm.DB, e *settleEnt
 		}
 		state = current
 	}
-	return releaseTaskClaim(g, e, state, observation, snapshot, paths).Error
-}
-
-// releaseTaskClaim writes a task's observation and gives up its claim.
-// Arguments are positional, repeated where the statement reuses one.
-func releaseTaskClaim(db *gorm.DB, e *settleEntry, state, observation string, snapshot, paths []byte) *gorm.DB {
-	t := e.task
-	return db.Exec(`UPDATE async_tasks SET state=?,observation_status=?,
+	// The observation is written and the claim given up. Arguments are
+	// positional, repeated where the statement reuses one; an empty snapshot
+	// stays an empty bytea (store.Bytes), a nil one keeps the stored one.
+	return g.Exec(`UPDATE async_tasks SET state=?,observation_status=?,
 		snapshot=COALESCE(?,snapshot),snapshot_id_paths=CASE WHEN ?::bytea IS NULL THEN snapshot_id_paths ELSE ?::jsonb END,
 		claim_token='',lease_until=NULL,attempts=attempts+CASE WHEN ?='closed' THEN 1 ELSE 0 END,
 		failure_code=CASE WHEN ?='closed' THEN ? ELSE failure_code END,
@@ -200,7 +191,7 @@ func releaseTaskClaim(db *gorm.DB, e *settleEntry, state, observation string, sn
 		poll_failures=CASE WHEN ?='closed' AND ? THEN poll_failures+1 WHEN ?='closed' AND ? THEN 0 ELSE poll_failures END,
 		updated_at=now() WHERE public_id=?`,
 		state, observation, store.Bytes(snapshot), store.Bytes(snapshot), paths, observation, observation, t.failureCode, observation, t.failureReason,
-		observation, e.pollFailed, observation, e.pollObserved, t.id)
+		observation, e.pollFailed, observation, e.pollObserved, t.id).Error
 }
 
 // A legacy worker may have claimed this row before lazy import transferred

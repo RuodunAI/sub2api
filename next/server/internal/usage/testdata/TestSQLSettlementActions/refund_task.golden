@@ -1,6 +1,0 @@
--- sql
-UPDATE "async_tasks" SET "claim_token"=$1,"lease_until"=$2 WHERE usage_log_id = $3
--- vars
-$1 string ""
-$2 nil
-$3 int64 5

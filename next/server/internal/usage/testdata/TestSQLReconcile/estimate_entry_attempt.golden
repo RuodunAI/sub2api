@@ -1,7 +1,0 @@
--- sql
-UPDATE pending_settlements SET state = $1, last_error = $2, attempts = attempts + 1
-			WHERE id = $3
--- vars
-$1 string "estimated"
-$2 string "no usage"
-$3 int64 9

@@ -1,6 +1,0 @@
--- sql
-UPDATE "pending_settlements" SET "last_error"=$1,"state"=$2 WHERE id = $3 AND task_public_id IS NULL
--- vars
-$1 string "usage row left the reserved state"
-$2 string "settled"
-$3 int64 9

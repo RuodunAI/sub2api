@@ -172,7 +172,7 @@ func (s *Service) applyMonitorResult(ctx context.Context, e *settleEntry, row *r
 			if err := lockLegacyOutcome(ctx, tx, e); err != nil {
 				return err
 			}
-			res := pendingByID(store.G(ctx, tx), e.id).Updates(map[string]any{
+			res := settlementByID(store.G(ctx, tx), e.id).Where("state = 'pending'").Updates(map[string]any{
 				"attempts": gorm.Expr("attempts+1"), "poll_failures": 0, "next_check_at": next, "last_error": ""})
 			if res.Error == nil && res.RowsAffected != 1 {
 				return errNotPending
@@ -189,10 +189,4 @@ func (s *Service) applyMonitorResult(ctx context.Context, e *settleEntry, row *r
 		s.refundFailed(ctx, e, row, res.Reason)
 	}
 	return e.monitor.err
-}
-
-// pendingByID is the settlement entry id while it is still pending, for an
-// UPDATE.
-func pendingByID(db *gorm.DB, id int64) *gorm.DB {
-	return settlementByID(db, id).Where("state = 'pending'")
 }

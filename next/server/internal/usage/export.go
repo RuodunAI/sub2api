@@ -188,9 +188,8 @@ func (s *Service) export(c *gin.Context, self *int64) {
 		if cursorID != 0 {
 			page.And("(u.created_at, u.id) < (?, ?)", cursorAt, cursorID)
 		}
-		args, cond := page.Args(), page.Cond()
 		batch := min(exportBatch, exportMaxRows-rows)
-		q, err := recordQuery(store.G(ctx, s.db.Gorm), cond, args, ` ORDER BY u.created_at DESC, u.id DESC LIMIT `+strconv.Itoa(batch+1)).Rows()
+		q, err := recordQuery(store.G(ctx, s.db.Gorm), page).Limit(batch + 1).Rows()
 		if err != nil {
 			// Headers are sent: end the file with the error so it is not
 			// mistaken for a complete export.
@@ -239,12 +238,7 @@ func (s *Service) export(c *gin.Context, self *int64) {
 	w.Flush()
 	uid, _ := core.UserID(ctx)
 	detail, _ := json.Marshal(map[string]any{"rows": rows, "truncated": truncated, "self": self != nil, "query": c.Request.URL.RawQuery})
-	_ = store.G(ctx, s.db.Gorm).Create(exportAudit(uid, detail, c.ClientIP())).Error
-}
-
-// exportAudit is the audit_logs row of an export.
-func exportAudit(userID int64, detail json.RawMessage, ip string) *model.AuditLog {
-	return &model.AuditLog{UserID: &userID, Action: "usage.export", TargetType: "usage", Detail: detail, IP: ip}
+	_ = store.G(ctx, s.db.Gorm).Create(&model.AuditLog{UserID: &uid, Action: "usage.export", TargetType: "usage", Detail: detail, IP: c.ClientIP()}).Error
 }
 
 // csvCell keeps a spreadsheet from evaluating a text cell as a formula.
