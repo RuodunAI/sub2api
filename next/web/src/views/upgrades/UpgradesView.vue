@@ -35,7 +35,8 @@ const STATUS_TONE: Record<string, Tone> = { completed: 'success', done: 'success
 const tone = (status: string): Tone => STATUS_TONE[status] ?? 'gray'
 function version(digest: string) { return releases.value.find(r => r.digest === digest)?.manifest.release_id || digest.slice(0, 12) || '—' }
 watch(target, () => { preflight.value = null; requestKey = crypto.randomUUID() })
-watch(() => route.query.release, value => { if (typeof value === 'string' && value) target.value = value }, { immediate: true })
+// A plan opened from elsewhere (the version badge's one-click update) while this page is shown.
+watch(() => route.query.upgrade, value => { if (typeof value === 'string' && value && value !== selectedID.value) { selectedID.value = value; void load() } })
 async function load(manual = false) {
   if (inflight || disposed) return
   inflight = true

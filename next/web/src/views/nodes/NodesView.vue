@@ -5,6 +5,7 @@ import { api } from '@sub2api/host'
 import { SDateTime, statusTone, useAutoRefresh, SBadge, SButton, SChip, SCode, SGrid, SHint, SLink, SPageHeader, SStatCard, SStatusDot, STable, type TableColumn, type Tone, type StatusTone } from '@sub2api/ui'
 import type { NodeInfo } from '@/api/types'
 import type { NodePluginState } from '@/api/admin'
+import type { ShellNode } from '@/api/observability'
 import { notifyError } from '@/utils/errors'
 import { fetchFirstPage } from '@/composables/lookups'
 import { useAuthStore } from '@/stores/auth'
@@ -22,6 +23,9 @@ const auth = useAuthStore()
 const canReadTasks = computed(() => auth.has('task:read'))
 /** Node task states per node (System → Scheduled tasks), when readable. */
 const nodeTasks = ref<NodeTasks[]>([])
+const canReadGateways = computed(() => auth.has('system:update:read'))
+/** Gateway version per node id, from the gateways' heartbeats ('' = not reported), when readable. */
+const gatewayVersions = ref(new Map<string, string>())
 const loading = ref(true)
 const lastLoaded = ref<Date | null>(null)
 const tick = ref(Date.now())
@@ -38,6 +42,9 @@ async function load(manual = false) {
     if (canReadTasks.value) {
       // The node list stays usable when the task overview cannot be read.
       nodeTasks.value = await api.get<{ nodes: NodeTasks[] }>('/system/tasks').then((o) => o.nodes || [], () => nodeTasks.value)
+    }
+    if (canReadGateways.value) {
+      gatewayVersions.value = await api.get<{ nodes: ShellNode[] }>('/system/upgrades').then((o) => new Map((o.nodes || []).map((n) => [n.node_id, n.gateway_version || ''])), () => gatewayVersions.value)
     }
     lastLoaded.value = new Date()
     failures = 0
@@ -133,7 +140,8 @@ const badges = computed(() => new Map(nodes.value.map((n) => [n.boot_id, pluginB
 const columns = computed<TableColumn[]>(() => [
   { key: 'node_id', label: t('nodes.node'), mobile: 'title' },
   { key: 'addr', label: t('nodes.addr'), mobile: 'subtitle' },
-  { key: 'host_version', label: t('common.version'), mobile: 'meta' },
+  { key: 'host_version', label: t('nodes.coreVersion'), mobile: 'meta' },
+  ...(canReadGateways.value ? [{ key: 'gateway_version', label: t('nodes.gatewayVersion'), mobile: 'meta' } satisfies TableColumn] : []),
   { key: 'started_at', label: t('nodes.uptime'), mobile: 'meta' },
   { key: 'last_heartbeat', label: t('nodes.heartbeat'), mobile: 'meta' },
   { key: 'plugins', label: t('nodes.plugins'), mobile: 'meta', mobileSpan: 2 },
@@ -143,6 +151,9 @@ const columns = computed<TableColumn[]>(() => [
 const healthy = computed(() => nodes.value.filter((n) => !isStale(n)).length)
 const pluginIssues = computed(() => [...badges.value.values()].flat().filter((p) => p.tone === 'danger' || p.tone === 'warning').length)
 const versions = computed(() => new Set(nodes.value.map((n) => n.host_version)).size)
+const gatewayVersionCount = computed(() => new Set(gatewayVersions.value.values()).size)
+const mixedVersions = computed(() => versions.value > 1 || gatewayVersionCount.value > 1)
+const versionsText = computed(() => (gatewayVersions.value.size ? t('nodes.versionCounts', { core: versions.value, gateway: gatewayVersionCount.value }) : versions.value))
 </script>
 
 <template>
@@ -162,7 +173,7 @@ const versions = computed(() => new Set(nodes.value.map((n) => n.host_version)).
     <SGrid variant="stats" :md-cols="3" class="mb-4">
       <SStatCard :label="t('nodes.online')" :value="`${healthy}/${nodes.length}`" icon="node" :tone="healthy < nodes.length ? 'warning' : 'success'" :loading="loading" />
       <SStatCard :label="t('nodes.pluginIssues')" :value="pluginIssues" icon="plugin" :tone="pluginIssues ? 'danger' : 'primary'" :loading="loading" />
-      <SStatCard :label="t('nodes.hostVersions')" :value="versions" icon="cpu" :tone="versions > 1 ? 'warning' : 'primary'" :sub="versions > 1 ? t('nodes.mixedVersions') : undefined" :loading="loading" />
+      <SStatCard :label="t('nodes.hostVersions')" :value="versionsText" icon="cpu" :tone="mixedVersions ? 'warning' : 'primary'" :sub="mixedVersions ? t('nodes.mixedVersions') : undefined" :loading="loading" />
     </SGrid>
 
     <TopologyGraph />
@@ -179,6 +190,10 @@ const versions = computed(() => new Set(nodes.value.map((n) => n.host_version)).
       </template>
       <template #cell-host_version="{ row }">
         <SBadge tone="gray">{{ row.host_version }}</SBadge>
+      </template>
+      <template #cell-gateway_version="{ row }">
+        <SBadge v-if="gatewayVersions.get(row.node_id)" tone="gray" data-testid="node-gateway-version">{{ gatewayVersions.get(row.node_id) }}</SBadge>
+        <SHint v-else inline data-testid="node-gateway-version">{{ t('nodes.unknownVersion') }}</SHint>
       </template>
       <template #cell-started_at="{ row }">
         <SDateTime muted :value="row.started_at" mode="relative" live />

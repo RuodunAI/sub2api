@@ -5,6 +5,7 @@ package updater
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -54,8 +55,18 @@ func TestBridgeAuditsOnlySuccessfulMutations(t *testing.T) {
 		if r.Header.Get("X-Updater-Actor") != fmt.Sprint(uid) {
 			t.Error("missing actor header")
 		}
+		body, _ := io.ReadAll(r.Body)
 		w.WriteHeader(201)
-		_, _ = w.Write([]byte(`{"data":{"id":"new-plan","digest":"verified-digest","repository":"owner/repo"}}`))
+		switch {
+		case r.URL.Path == "/system/update-source":
+			_, _ = w.Write([]byte(`{"data":{"enabled":true,"kind":"github","repository":"owner/repo","url":"","has_secret":true}}`))
+		case r.URL.Path == "/system/updates/apply" && strings.Contains(string(body), `"confirm":true`):
+			_, _ = w.Write([]byte(`{"data":{"status":"started","plan_id":"applied-plan"}}`))
+		case r.URL.Path == "/system/updates/apply":
+			_, _ = w.Write([]byte(`{"data":{"status":"needs_confirmation","reasons":["single node"]}}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":{"id":"new-plan"}}`))
+		}
 	})}
 	go func() { _ = shell.Serve(listener) }()
 	t.Cleanup(func() { _ = shell.Close() })
@@ -63,23 +74,25 @@ func TestBridgeAuditsOnlySuccessfulMutations(t *testing.T) {
 	engine := gin.New()
 	auth := bridgeAuth{id: uid}
 	RegisterRoutes(httpapi.NewRouter(engine, auth, auth), socket, "", db)
-	cases := []struct{ method, path, action string }{
-		{"POST", "/system/upgrades", "system.upgrade.create"},
-		{"POST", "/system/upgrades/old-plan/pause", "system.upgrade.pause"},
-		{"POST", "/system/upgrades/old-plan/resume", "system.upgrade.resume"},
-		{"POST", "/system/upgrades/old-plan/cancel", "system.upgrade.cancel"},
-		{"POST", "/system/upgrades/old-plan/rollback", "system.upgrade.rollback"},
-		{"POST", "/system/nodes/node-1/disable", "system.node.disable"},
-		{"POST", "/system/nodes/node-1/enable", "system.node.enable"},
-		{"PUT", "/system/offload", "system.offload.update"},
-		{"PUT", "/system/update-source", "system.update_source.update"},
-		{"POST", "/system/releases/import", "system.release.import"},
-		{"POST", "/system/upgrades/preflight", ""},
-		{"GET", "/system/upgrades", ""},
-		{"POST", "/system/upgrades?fail=1", ""},
+	const secret = "github_pat_top-secret"
+	cases := []struct{ method, path, body, action string }{
+		{"POST", "/system/upgrades", `{}`, "system.upgrade.create"},
+		{"POST", "/system/upgrades/old-plan/pause", `{}`, "system.upgrade.pause"},
+		{"POST", "/system/upgrades/old-plan/resume", `{}`, "system.upgrade.resume"},
+		{"POST", "/system/upgrades/old-plan/cancel", `{}`, "system.upgrade.cancel"},
+		{"POST", "/system/upgrades/old-plan/rollback", `{}`, "system.upgrade.rollback"},
+		{"POST", "/system/nodes/node-1/disable", `{}`, "system.node.disable"},
+		{"POST", "/system/nodes/node-1/enable", `{}`, "system.node.enable"},
+		{"PUT", "/system/offload", `{}`, "system.offload.update"},
+		{"PUT", "/system/update-source", `{"enabled":true,"kind":"github","repository":"owner/repo","url":"","secret":"` + secret + `"}`, "system.update_source.update"},
+		{"POST", "/system/updates/apply", `{"line":"core","version":"0.1.291"}`, ""},
+		{"POST", "/system/updates/apply", `{"line":"core","version":"0.1.291","confirm":true}`, "system.update.apply"},
+		{"POST", "/system/upgrades/preflight", `{}`, ""},
+		{"GET", "/system/upgrades", ``, ""},
+		{"POST", "/system/upgrades?fail=1", `{}`, ""},
 	}
 	for _, tc := range cases {
-		req := httptest.NewRequest(tc.method, "/api/v1"+tc.path, strings.NewReader(`{"repository":"owner/repo","tag":"v0.2.0"}`))
+		req := httptest.NewRequest(tc.method, "/api/v1"+tc.path, strings.NewReader(tc.body))
 		req.Header.Set("Authorization", "Bearer test")
 		response := httptest.NewRecorder()
 		engine.ServeHTTP(response, req)
@@ -97,8 +110,14 @@ func TestBridgeAuditsOnlySuccessfulMutations(t *testing.T) {
 	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs`).Scan(&count); err != nil || count != 10 {
 		t.Fatal(count, err)
 	}
-	var imported bool
-	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE action='system.release.import' AND target_id='verified-digest' AND detail->>'tag'='v0.2.0' AND detail->>'repository'='owner/repo' AND detail->>'digest'='verified-digest')`).Scan(&imported); err != nil || !imported {
-		t.Fatal("missing import audit details", err)
+	var applied, source, leaked bool
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE action='system.update.apply' AND target_id='applied-plan' AND detail->>'line'='core' AND detail->>'version'='0.1.291' AND detail->>'plan_id'='applied-plan')`).Scan(&applied); err != nil || !applied {
+		t.Fatal("missing apply audit details", err)
+	}
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE action='system.update_source.update' AND detail->>'kind'='github' AND detail->>'repository'='owner/repo' AND detail->>'secret'='set')`).Scan(&source); err != nil || !source {
+		t.Fatal("missing update source audit details", err)
+	}
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE detail::text LIKE '%' || $1 || '%')`, secret).Scan(&leaked); err != nil || leaked {
+		t.Fatal("secret reached the audit log", err)
 	}
 }
