@@ -29,6 +29,11 @@ func setRequired(t *testing.T) (masterKey []byte) {
 	t.Setenv("SUB2API_CONTROL_TOKEN", strings.Repeat("t", 40))
 	t.Setenv("SUB2API_RELEASE_DIGEST", "sha256:abc")
 	t.Setenv("SUB2API_CORE_BOOT_ID", "boot-1")
+	tokenFile := filepath.Join(t.TempDir(), "shell.token")
+	if err := os.WriteFile(tokenFile, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUB2API_UPDATER_TOKEN_FILE", tokenFile)
 	return masterKey
 }
 
@@ -91,11 +96,17 @@ func TestUpdaterTokenFile(t *testing.T) {
 		}
 		return p
 	}
-	// Not set: no token (older shells).
+	// A managed core requires the token; an unmanaged one does not read it.
+	t.Setenv("SUB2API_UPDATER_TOKEN_FILE", "")
+	if _, err := config.Load("linux"); err == nil || !strings.Contains(err.Error(), "SUB2API_UPDATER_TOKEN_FILE") {
+		t.Fatalf("managed core started without the token: %v", err)
+	}
+	t.Setenv("SUB2API_MANAGED", "false")
 	cfg, err := config.Load("linux")
 	if err != nil || cfg.Managed.UpdaterToken != "" {
-		t.Fatalf("unset: %q %v", cfg.Managed.UpdaterToken, err)
+		t.Fatalf("unmanaged: %q %v", cfg.Managed.UpdaterToken, err)
 	}
+	t.Setenv("SUB2API_MANAGED", "true")
 	tok := strings.Repeat("aB", 32)
 	t.Setenv("SUB2API_UPDATER_TOKEN_FILE", write("ok", "  "+tok+"\n"))
 	if cfg, err = config.Load("linux"); err != nil || cfg.Managed.UpdaterToken != tok {

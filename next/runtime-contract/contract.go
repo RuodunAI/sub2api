@@ -54,20 +54,7 @@ type Hello struct {
 	ClusterProtocol Range  `json:"cluster_protocol"`
 	TaskProtocol    Range  `json:"task_protocol"`
 	HostAPIVersion  int    `json:"host_api_version"`
-	// Capabilities are optional behaviours of this core within Protocol 2.
-	// The shell 0.1.288 runs under (gateway 0.1.133) sends a request field
-	// only when the core lists its capability (a core strictly rejects
-	// unknown control fields), and it still drives the 0.1.290 core through
-	// its upgrade plan; shells since ignore the list. The field and
-	// CapabilityGracefulDrain go in the first core release after every node
-	// runs the 0.1.290 shell.
-	Capabilities []string `json:"capabilities,omitempty"`
 }
-
-// CapabilityGracefulDrain: the core accepts DrainRequest.Graceful and, when
-// it is set, lets requests in flight finish (within the deadline, capped on
-// the core side) instead of cancelling them at once.
-const CapabilityGracefulDrain = "drain.graceful"
 
 type Status struct {
 	Hello
@@ -106,7 +93,8 @@ type DrainRequest struct {
 	OperationID string    `json:"operation_id"`
 	Deadline    time.Time `json:"deadline"`
 	// Graceful says the shell already routes new requests elsewhere, so the
-	// core may let requests in flight finish before it reports DrainComplete.
+	// core may let requests in flight finish (within the deadline, capped on
+	// the core side) before it reports DrainComplete.
 	Graceful bool `json:"graceful,omitempty"`
 }
 type File struct {

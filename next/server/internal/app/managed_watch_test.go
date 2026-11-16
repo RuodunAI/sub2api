@@ -1,8 +1,6 @@
 package app
 
 import (
-	"encoding/json"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -42,14 +40,9 @@ func TestDrainGraceFollowsTheShellsRequest(t *testing.T) {
 	}
 }
 
-func TestHandleDrainRecordsTheGraceAndAdvertisesTheCapability(t *testing.T) {
+func TestHandleDrainRecordsTheGrace(t *testing.T) {
 	m := servingCore()
-	m.hello.Capabilities = []string{runtimecontract.CapabilityGracefulDrain}
 	h := m.handler(func(runtimecontract.PrepareRequest) { t.Fatal("unexpected prepare") })
-	var hello runtimecontract.Hello
-	if w := controlCall(h, "GET", runtimecontract.HelloPath, m.token, nil); w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &hello) != nil || !slices.Contains(hello.Capabilities, runtimecontract.CapabilityGracefulDrain) {
-		t.Fatalf("hello does not advertise graceful drains: %d %s", w.Code, w.Body.String())
-	}
 	d := runtimecontract.DrainRequest{OperationID: "upgrade-3", Deadline: time.Now().Add(10 * time.Minute), Graceful: true}
 	if w := controlCall(h, "POST", runtimecontract.DrainPath, m.token, d); w.Code != 202 {
 		t.Fatal(w.Code, w.Body.String())

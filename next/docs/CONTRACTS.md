@@ -2429,7 +2429,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 受管核心被外壳排空时不等 `SUB2API_SHUTDOWN_DELAY`（外壳已经不再往这个核心送新请求）。进行中的请求等不等，由外壳的排空请求决定（2026-11-08 修订，取代 2026-10-28 的“一律立即取消”）：
 - **已导流的排空**：外壳此时把本节点公网入口的新请求转发给就绪对端（路由 `forward-only` 且对端就绪，`proxy.Router.Diverted()`，即从节点 `redirect` 之后的 `stop`、恢复流程里先转发再停的情形），`DrainRequest.graceful=true`。核心关闸拒新、让在途请求跑完再报 `DrainComplete`，等待上限取外壳截止时间减 15 秒与 5 分钟（`maxDrainGrace`）的较小者，到点仍未结束的才取消。导流后多等只影响这个节点的停止时长，不影响任何新请求。
 - **其他排空**（主节点 `maintenance` 后的 `stop`、候选重启、身份撤销）没有人承接流量，进行中的请求立即取消，和原来一样。
-- 兼容：核心在 `Hello.capabilities` 列出 `drain.graceful`；0.1.288 时的外壳只对声明了它的核心发 `graceful`（控制请求拒绝未知字段），0.1.290 起的外壳只运行 0.1.290 及以后的核心，不再检查。核心收到没有该字段的请求立即取消。被取消的请求照常写用量、结算或退还预扣：处理器结束后才关闭用量队列，账不会丢。SIGTERM 仍按上一段执行。
+- 被取消的请求照常写用量、结算或退还预扣：处理器结束后才关闭用量队列，账不会丢。SIGTERM 仍按上一段执行。
 
 核心没有准入看门狗（2026-11-08 起）。PG 的 `updater.node_admissions` 只在外壳向核心发 `/v1/admission` 时核对一次（`verifyAdmission`）；之后停核心只由外壳发起，撤销准入的每条路（升级 `stop` 步骤、禁用节点、身份撤销）都由外壳直接向核心发排空，不依赖核心自己发现；外壳死了，Caddy 的 `/readyz` 把流量切走。历史：此前核心每秒查一次该行、1 秒超时、失败一次就停内核且不留日志，2026-11-08 使 sup2api-ccp 一天自停 16 次（见 `deploy/gateway/clicodeplus/README.md`）；同日先改为只报告不自停，随后按用户决定整个去掉（连同它的专用连接 `store.OpenSingle` 与 `verifyLiveAdmission`）。外壳侧同日补齐：`Work`/`Coordinate` 的错误不再丢弃（同一错误 5 分钟记一次 WARN，恢复记 INFO），`Work` 因本机核心不就绪而走 `Recover` 重拉时记 WARN 并带核心的 mode、boot 与 blockers。
 
@@ -2627,7 +2627,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 - 仍共用现有 PG/Redis，不拆数据库。PG 保存批准版本、计划、步骤、节点启禁与启动身份、准入、停止确认和事件；`mode/ready/stopped/core_boot_id/release_digest/route_revision/offloading` 仍为安全控制快照，只有变化时更新节点行。CPU 转移授权仍先持久标记再转流，Redis 心跳过期绝不是停止证明。
 - 网关节点心跳、CPU 和当前错误观察写入 Redis，key 为 `updater:telemetry:<sha256(cluster_id\x00node_id\x00shell_boot_id)>`，最长有效期 20 秒。写前获取 Redis TIME 形成固定截止时间，并扣除本地单调时钟测得的 PG 等待及请求耗时；Lua 拒绝过期和迟到序号，只设置剩余 TTL，拒绝结果返回错误以阻止陈旧 CPU 决策。读取通过 Lua 原子取得 GET/PTTL，折算为读取节点本地单调时间，不比较不同主机壁钟。报告须与 PG 当前启动身份及全部控制快照匹配；不匹配、缺失、过期或 Redis 不可用时，`last_seen` 为零时间、CPU 为 NULL，不以旧 PG 快照冒充新鲜状态。节点不会因丢失遥测直接重启或排空。
-- 网关 schema 增加 `telemetry_boot_id`，与当前 `shell_boot_id` 相等才启用 Redis 新鲜度；注册后还没报告过的 boot 用注册写下的 PG 心跳。稳态遥测不改写 PG 行；PG 身份与控制状态检查仍然存在，不声称不再访问 PG。0.1.290 起的外壳不再为没有遥测的旧外壳刷新 PG 心跳和 `cpu_percent`（该列不再写入，§101）。
+- 网关 schema 增加 `telemetry_boot_id`，与当前 `shell_boot_id` 相等才启用 Redis 新鲜度；注册后还没报告过的 boot 用注册写下的 PG 心跳。稳态遥测不改写 PG 行；PG 身份与控制状态检查仍然存在，不声称不再访问 PG。0.1.290 起的外壳不再为没有遥测的旧外壳刷新 PG 心跳；`updater.nodes.cpu_percent` 只有 0.1.134 之前的外壳读写，之后的外壳 schema 删除了它（§101.3）。
 - `updater:wakeup:<cluster_id>` Pub/Sub 仅发送提交后的唤醒提示，不承载可执行命令或可靠事件。计划创建、操作、启禁及升级状态变更在 PG 提交后通知；节点步骤完成先提交结果并刷新状态，再通知。通知丢失依靠轮询补查（有 running/paused 计划时 1 秒，空闲 30 秒，2026-11-08 起见 §82.4），重复通知合并，不重放已完成步骤；Redis 断连恢复后重新订阅。
 - 每轮最多连续推进 16 次，每次重新取得 Redis 执行锁并读取 PG，空提交不算进展；提示驱动的外循环有 50 ms 让出，避免内部自激忙循环。独立 3 秒心跳在长下载或排空时继续运行。PG 事务内的计划与准入校验、租约丢失取消语义不变。
 - 此变化属于网关二进制，单发核心安装包不会生效；需在无 running/paused 核心计划时逐个更换网关，从节点先、主节点最后，保留状态卷与旧镜像。核心版本无需仅为此变更而升级。控制台仍按既有轮询周期刷新，本次不新增浏览器推送。
@@ -3564,7 +3564,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - **核心**：读完配置后从进程环境删除秘密（`DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、引导管理员密码、控制令牌等，并清空 `/proc/<pid>/environ` 的初始块），Linux 上 `PR_SET_DUMPABLE=0`。外壳同样 `PR_SET_DUMPABLE=0`。
 - **出站隧道**：没有 `net` 授权的插件什么都连不了，只有声明了 `database` 且获授 `db.schema` 的插件可按配置的名字连 PostgreSQL。任何策略（含 `allow_all`）都拒绝私网/回环/链路本地等非公网地址与核心的 Redis/PostgreSQL（按解析后的地址比对，按检查过的地址拨号防 DNS 重绑定）；`dns.sub2api` 不返回非公网地址。`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true` 只用于测试/开发，Redis/PG 仍拒绝。没有 `net` 也没有数据库的插件不注册隧道服务。
 - **数据库角色隔离不再降级**：开启隔离（默认）但核心角色没有 CREATEROLE 时，授予 `db.schema` 与 `Ensure` 都失败，`409 plugin_db_isolation_unavailable`（运维可显式 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false`）；已存在且不是本库为该插件建的同名角色不接管，`409 plugin_db_role_conflict`。角色加注释 `sub2api plugin role; database=<库>; plugin=<key>` 作归属标记，删除插件时只删自己的角色。
-- **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；未设置该变量时不带（兼容旧外壳）。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
+- **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；托管核心（`SUB2API_MANAGED=true`）没有这个变量、文件读不到或内容不是 64 位十六进制时启动失败，非托管核心不读它。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
 - **核心环境白名单**：外壳只把进程基础变量与核心实际读取的配置变量（`supervisor.inheritedEnv`）传给核心，另加 `core_env_inherit` 列出的名字；`SUB2API_PEER_AUTH_KEY` 无论如何不传。
 - **部署**：Redis/Valkey 必须 `requirepass`，`REDIS_URL` 带密码（建议十六进制密码免转义）；网关容器 `no-new-privileges`、`cap_drop: [ALL]`。迁移顺序见 `deploy/gateway/ovh/README.md`。
 
@@ -7374,7 +7374,7 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 
 ## 101. 删除旧版本兼容（核心 0.1.290）
 
-0.1.290 单向、停服发布：迁移前旧核心全部停止，之后不会有更早的核心、网关外壳或插件宿主和它同时运行；回退只能恢复备份并把核心、外壳一起退回 0.1.288（CHANGELOG 0.1.290）。所以只为与旧版本混跑而保留的代码一并删除。本文前面各节里“旧核心”“滚动窗口内的旧核心”“回滚到旧核心”的兼容说明是当时那次发布的记录，0.1.290 起不再适用。外部协议、客户端、上游与浏览器的兼容不在此列。
+0.1.290 单向、停服发布：迁移前旧核心全部停止，之后不会有更早的核心、网关外壳或插件宿主和它同时运行。2026-11-17 上线后所有节点运行核心 0.1.290 与外壳 0.1.134，升级前的备份已删除，不能再回到 0.1.288（CHANGELOG 0.1.290）。所以只为与旧版本混跑或回退而保留的代码一并删除。本文前面各节里“旧核心”“滚动窗口内的旧核心”“回滚到旧核心”的兼容说明是当时那次发布的记录，0.1.290 起不再适用。外部协议、客户端、上游与浏览器的兼容不在此列。
 
 ### 101.1 插件 SDK 与清单检查
 
@@ -7390,9 +7390,11 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 ### 101.3 网关外壳
 
 - 升级计划只认 `primary-first-v1` 与 `rolling-v1`：`updater_one_active_upgrade` 保证每个集群最多一个 running/paused 的计划，0.1.290 的计划在原来的外壳下执行、完成后才换外壳，所以新外壳启动时不会有旧策略（`legacy-rolling`）的计划未结束。暂停旧策略计划、拒绝继续与恢复、`legacy-plan-recovery` 的代码删除。
-- 节点心跳不再为没有 Redis 遥测的旧外壳（0.1.132 之前）刷新 PG 心跳与 `updater.nodes.cpu_percent`：CPU 只在 Redis 遥测里，PG 行只在控制快照变化时（或每 `heartbeatRewrite`）写。`cpu_percent` 列保留到下一次外壳 schema 变更，0.1.288 时的外壳在换外壳期间还会读它。
+- 节点心跳不再为没有 Redis 遥测的旧外壳（0.1.132 之前）刷新 PG 心跳与 `updater.nodes.cpu_percent`：CPU 只在 Redis 遥测里，PG 行只在控制快照变化时（或每 `heartbeatRewrite`）写。`cpu_percent` 只有外壳 0.1.133 还读写，0.1.134 之后的外壳版本在 schema 里删除它（`DROP COLUMN IF EXISTS`）；0.1.134 不读这一列，换外壳期间它重启时会把空列加回来，下一个新外壳启动时再删掉。
 - 停止核心时直接按调用方的要求发 `DrainRequest.Graceful`，不再看核心是否声明 `drain.graceful`；`Hello.Has` 删除。
-- 仍为 0.1.288 时的外壳（网关 0.1.133）保留、换外壳之后删除的两处：核心在 `Hello.capabilities` 里声明 `drain.graceful`（旧外壳只在核心声明时才发 `Graceful`）；核心在没有 `SUB2API_UPDATER_TOKEN_FILE` 时不带更新令牌访问管理 socket（旧外壳没有令牌）。0.1.290 的升级计划由旧外壳驱动，计划完成后才换外壳，所以这两处要等所有节点都换成 0.1.290 的外壳之后的第一个核心版本删除。
+- 0.1.290 时为外壳 0.1.133 保留的两处，在所有节点换上外壳 0.1.134 之后的核心版本删除（CHANGELOG“未发布”）：
+  - `Hello.capabilities` 与 `drain.graceful`：0.1.133 只对声明了它的核心发 `Graceful`，0.1.134 起不看声明。`DrainRequest.Graceful` 本身保留。
+  - 不带更新令牌访问管理 socket：托管核心没有 `SUB2API_UPDATER_TOKEN_FILE`（或文件不合格）时启动失败。外壳 0.1.133 与 0.1.134 本来就总是传这个变量（配置 `management_token_file` 缺省为管理 socket 旁的 `shell.token`，每次启动先写好令牌再启动核心），0.1.290 时说“旧外壳没有令牌”是误记；外壳启动核心时也不再判断路径是否为空。
 - 插件变更阻塞检查不再看 `plugin_rollout_nodes` 的 `cleanup_pending`（迁移 0021 之前的开发版核心）。
 
 ### 101.4 账号与任务
