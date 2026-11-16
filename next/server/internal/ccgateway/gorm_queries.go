@@ -15,9 +15,12 @@ func runtimes(db *gorm.DB) *gorm.DB {
 }
 
 // openDraft is the row of draft key while it is neither adopted nor
-// retired.
+// retired; openDrafts are all of them.
 func openDraft(db *gorm.DB, key string) *gorm.DB {
 	return runtimes(db).Where("key = ? AND account_id IS NULL AND retired_at IS NULL", key)
+}
+func openDrafts(db *gorm.DB) *gorm.DB {
+	return runtimes(db).Where("account_id IS NULL AND retired_at IS NULL")
 }
 
 // newAccountDraft is openDraft restricted to the drafts of new accounts (not

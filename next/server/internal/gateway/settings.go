@@ -10,6 +10,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const (
@@ -258,10 +259,10 @@ func (c *settingsCache) load(ctx context.Context) settingsSnapshot {
 
 // settingValue reads the document of settings row key, nil when there is no
 // row (the column is NOT NULL). The settings cache reloads it on the request
-// path: Raw SQL scanned through Row.
+// path: one row read through Row.
 func settingValue(ctx context.Context, q *gorm.DB, key string) ([]byte, error) {
 	var raw []byte
-	err := store.G(ctx, q).Raw(`SELECT value FROM settings WHERE key = ?`, key).Row().Scan(&raw)
+	err := store.G(ctx, q).Model(&model.Setting{}).Select("value").Where("key = ?", key).Row().Scan(&raw)
 	if store.IsNoRows(err) {
 		return nil, nil
 	}

@@ -45,6 +45,17 @@ func XactLock(ctx context.Context, tx *gorm.DB, key string) error {
 	return xactLock(G(ctx, tx), key).Error
 }
 
+// TryXactLock is XactLock without the wait: it takes the lock when it is
+// free and reports whether it did; false when another transaction holds it.
+func TryXactLock(ctx context.Context, tx *gorm.DB, key string) (bool, error) {
+	if err := RequireTx(tx); err != nil {
+		return false, err
+	}
+	var locked bool
+	err := G(ctx, tx).Raw(`SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0))`, key).Row().Scan(&locked)
+	return locked, err
+}
+
 // xactLock is XactLock's statement: the lock's id is the key's
 // hashtextextended.
 func xactLock(db *gorm.DB, key string) *gorm.DB {

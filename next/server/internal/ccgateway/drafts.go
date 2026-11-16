@@ -170,17 +170,22 @@ func (s *Service) draftCreate(c *gin.Context) {
 			}
 		}
 		// The draft is inserted unless uid has limit open drafts already (0:
-		// no limit). Positional: GORM leaves a named parameter followed by a
-		// cast (@uid::bigint) unreplaced.
-		res := store.G(ctx, tx).Exec(`INSERT INTO ccgateway_runtimes(key, proxy_id, created_by)
-			SELECT ?, ?, NULLIF(?::bigint, 0)
-			WHERE ?::int = 0 OR (SELECT count(*) FROM ccgateway_runtimes
-				WHERE created_by = ? AND account_id IS NULL AND retired_at IS NULL) < ?`,
-			key, in.ProxyID, uid, limit, uid, limit)
-		if res.Error == nil && res.RowsAffected == 0 {
-			return core.ErrTooManyDrafts
+		// no limit); the lock above keeps the count until the insert.
+		g := store.G(ctx, tx)
+		if limit > 0 {
+			var open int64
+			if err := openDrafts(g).Where("created_by = ?", uid).Count(&open).Error; err != nil {
+				return err
+			}
+			if open >= int64(limit) {
+				return core.ErrTooManyDrafts
+			}
 		}
-		return res.Error
+		draft := model.CcgatewayRuntime{Key: key, ProxyID: in.ProxyID}
+		if uid != 0 {
+			draft.CreatedBy = &uid
+		}
+		return g.Select("key", "proxy_id", "created_by").Create(&draft).Error
 	})
 	if e != nil {
 		httpapi.Fail(c, e)
@@ -308,13 +313,15 @@ func (s *Service) removeDraft(ctx context.Context, key string, wait bool) (remov
 // lockedTx runs fn in a transaction holding the runtime's advisory lock and
 // commits when fn succeeds. Without wait a held lock returns nil at once.
 func (s *Service) lockedTx(ctx context.Context, key string, wait bool, fn func(*gorm.DB) error) error {
-	q := tryLockSQL
-	if wait {
-		q = lockSQL
-	}
 	return s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		var locked bool
-		if e := store.G(ctx, tx).Raw(q, key).Row().Scan(&locked); e != nil || !locked {
+		var e error
+		if wait {
+			locked, e = true, store.XactLock(ctx, tx, runtimeLock+key)
+		} else {
+			locked, e = store.TryXactLock(ctx, tx, runtimeLock+key)
+		}
+		if e != nil || !locked {
 			return e // a lock held elsewhere: nothing ran, nothing to commit
 		}
 		return fn(tx)

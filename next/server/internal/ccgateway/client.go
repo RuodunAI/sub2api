@@ -19,6 +19,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/remotedocker"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const VirtualURL = "https://ccgateway.internal/v1/messages"
@@ -305,10 +306,10 @@ func (a *attempt) resolveShared() *outcome {
 
 // sharedAccountType is the type of ccgateway account id, read for every
 // request forwarded to the shared runtime (not cached, unlike the account
-// state of per-account runtimes): Raw SQL scanned through Row.
+// state of per-account runtimes): one row read through Row.
 func (s *Service) sharedAccountType(ctx context.Context, id int64) (string, error) {
 	var kind string
-	err := store.G(ctx, s.DB.Gorm).Raw("SELECT type FROM accounts WHERE id=? AND plugin_key='ccgateway'", id).Row().Scan(&kind)
+	err := store.G(ctx, s.DB.Gorm).Model(&model.Account{}).Select("type").Where("id = ? AND plugin_key = 'ccgateway'", id).Row().Scan(&kind)
 	return kind, err
 }
 

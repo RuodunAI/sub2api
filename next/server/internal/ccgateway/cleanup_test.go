@@ -3,6 +3,7 @@ package ccgateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -109,8 +110,19 @@ func (f *runtimeFixture) markDeleted(id int64, retainDays int) {
 		if _, err := store.SQLTx(tx).ExecContext(ctx, `UPDATE accounts SET deleted_at=now() WHERE id=$1`, id); err != nil {
 			return err
 		}
-		_, err := f.s.MarkAccountDeleted(ctx, tx, id, core.AccountDeletionOptions{RetainDays: retainDays})
-		return err
+		at, err := f.s.MarkAccountDeleted(ctx, tx, id, core.AccountDeletionOptions{RetainDays: retainDays})
+		if err != nil {
+			return err
+		}
+		// It returns the purge time it stored (RETURNING).
+		var stored time.Time
+		if err := store.SQLTx(tx).QueryRowContext(ctx, `SELECT purge_after FROM ccgateway_runtimes WHERE account_id=$1`, id).Scan(&stored); err != nil {
+			return err
+		}
+		if !at.Equal(stored) {
+			return fmt.Errorf("MarkAccountDeleted returned %v, stored %v", at, stored)
+		}
+		return nil
 	}); err != nil {
 		f.t.Fatal(err)
 	}
