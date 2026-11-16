@@ -115,8 +115,9 @@ var runLogger = logger.Discard.LogMode(logger.Silent)
 
 // init adds a callback after each finisher of the DryRun instance that
 // appends the statement to the recorder of its context, but for a
-// subquery's; a session without one (Assert's) is untouched. At init, since registering recompiles the
-// callback chains other (parallel) tests run.
+// subquery's; a session without one (Assert's) is untouched. At init,
+// since registering recompiles the callback chains other (parallel) tests
+// run.
 func init() {
 	record := func(db *gorm.DB) {
 		if rec, ok := db.Statement.Context.Value(recorderKey{}).(*recorder); ok && db.Logger != logger.Discard && db.Statement.SQL.Len() > 0 {
