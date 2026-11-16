@@ -2,11 +2,13 @@
 
 记录 next 平台（`next/`）发布到线上的版本，从 2026-11-04 开始，更早的版本见部署记录。日期是北京时间。部署细节、核验和回滚方式见 [OVH 部署记录](next/deploy/gateway/ovh/README.md) 和 [clicodeplus 部署记录](next/deploy/gateway/clicodeplus/README.md)。
 
-每次发布在最前面加一节，写清版本、提交和用户能看到的变化。版本有三条线：核心、网关（外壳）、插件（如 moderation）。
+每次发布在最前面加一节，写清版本、提交和用户能看到的变化。版本有三条线：核心、网关（外壳）、插件（如 moderation）。核心与网关由 tag `core-v<版本>`、`gateway-v<版本>` 触发 GitHub Actions 发布，Release 说明取标题里写着“核心 <版本>”或“网关 <版本>”的那个 `###` 小节，所以打 tag 前先写好这一节（格式见 `next/deploy/gateway/github/README.md`）。
 
 ## 未发布
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
+
+- 发布流水线：核心与网关改由 GitHub Actions（`.github/workflows/next-release.yml`）按 `core-v*`、`gateway-v*` tag 构建 linux/amd64 与 linux/arm64、在受保护环境 `release` 里签名、先草稿后发布 GitHub Release；网关另推多架构镜像 `ghcr.io/<owner>/sup2api-gateway`。`sub2api-release` 新增 `pack --platform`（多平台一个清单）、`pack-gateway`、`mirror`、`pubkey`；删除 `deploy/gateway/github/prepare-assets.py`。
 
 ## 2026-11-17
 

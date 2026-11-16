@@ -26,12 +26,21 @@ on:
       - 'next/**'
       - '.github/workflows/next-ci.yml'
       - '.github/next-ci/next-*.sh'
+  # next-release.yml runs this workflow as its gate on the tagged commit.
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to check; empty checks the triggering commit
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
+# When called, github.* describes the caller: the workflow name and the
+# checked commit keep the gate out of a standalone run's group.
 concurrency:
-  group: next-ci-${{ github.ref }}
+  group: next-ci-${{ github.workflow }}-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -48,8 +57,10 @@ jobs:
     name: sdk, tools and e2e
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           # Read from the repository, never pinned here.
           go-version-file: next/go.work
@@ -81,8 +92,10 @@ jobs:
     name: plugins
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: next/go.work
           check-latest: false
@@ -163,8 +176,10 @@ jobs:
       TEST_DATABASE_URL: postgres://postgres:sub2api@127.0.0.1:5432/postgres?sslmode=disable
       TEST_REDIS_URL: redis://127.0.0.1:6379/0
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: next/go.work
           check-latest: false
@@ -225,8 +240,10 @@ jobs:
     name: web console
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           # The image builds the console with node:24 (next/Dockerfile NODE_IMAGE).
           node-version: '24'

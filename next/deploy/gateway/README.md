@@ -35,7 +35,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 
 不提供 `SOURCE_SCHEMA` 表示数据库契约不变；若与实际集群不符，预检会拒绝升级。直接使用 `sub2api-release pack` 时，对应参数是 `--schema-before` 和 `--schema`。发布前备份数据库；数据库迁移开始后不能通过切回旧二进制撤销。
 
-`linux-static-v1` 要求核心及插件使用兼容的 Linux 静态二进制；发布机和运行机架构须一致。跨架构构建时直接调用 `pack --os linux --arch ... --schema ...`，schema 必须来自该源版本的实际核心，不能填写任意标签。
+`linux-static-v1` 要求核心及插件使用兼容的 Linux 静态二进制；发布机和运行机架构须一致。跨架构构建时直接调用 `pack --os linux --arch ... --schema ...`，多个平台用可重复的 `--platform linux/<arch>=<stage>` 签进同一个清单；schema 必须来自该源版本的实际核心，不能填写任意标签。正式发布由 GitHub Actions 完成，见 [github/README.md](github/README.md)。
 
 ## 配置节点
 
