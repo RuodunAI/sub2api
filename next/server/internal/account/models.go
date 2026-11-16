@@ -55,7 +55,11 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 			Message: t(ctx, "unknown account type (is its plugin enabled?)", "未知的账号类型（插件是否已启用？）")}))
 		return
 	}
-	if err := s.checkCustomUpstream(ctx, s.scopeOf(ctx, perm.AccountCreate), bt); err != nil {
+	scope, err := s.scopeOf(ctx, perm.AccountCreate)
+	if err == nil {
+		err = s.checkCustomUpstream(ctx, scope, bt)
+	}
+	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -128,8 +132,11 @@ func (s *Service) fetchAccountModels(c *gin.Context) {
 			return
 		}
 	}
-	scope := s.scopeOf(ctx, perm.AccountTest)
-	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
+	scope, err := s.scopeOf(ctx, perm.AccountTest)
+	var a *row
+	if err == nil {
+		a, err = s.loadRow(ctx, s.d.DB.Gorm, id, scope, false)
+	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -80,10 +80,10 @@ func (f *fakeEvents) types() []string {
 	return out
 }
 
-// fakeOwners stands in for authz's CheckOwner (tested in authz): it gives
-// the owner asked for (none for nil), records the calls, and fails with err
-// when set.
+// fakeOwners wraps authz's CheckOwner (tested in authz): it records the
+// calls and fails with err when set, else answers as guard does.
 type fakeOwners struct {
+	guard core.OwnerGuard
 	mu    sync.Mutex
 	calls []ownerCall
 	err   error
@@ -95,17 +95,18 @@ type ownerCall struct {
 	owner       *int64
 }
 
-func (f *fakeOwners) CheckOwner(_ context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
+func (f *fakeOwners) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
 	if tx == nil {
 		return 0, errors.New("CheckOwner needs a transaction")
 	}
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, ownerCall{actorID, userID, create, owner})
-	if f.err != nil || owner == nil {
-		return 0, f.err
+	err := f.err
+	f.mu.Unlock()
+	if err != nil {
+		return 0, err
 	}
-	return *owner, nil
+	return f.guard.CheckOwner(ctx, tx, actorID, userID, create, owner)
 }
 
 type env struct {
@@ -145,7 +146,7 @@ func setup(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owners := &fakeOwners{}
+	owners := &fakeOwners{guard: az}
 	svc := New(Deps{DB: db, Redis: redis.NewClient(&redis.Options{Addr: mr.Addr()}), Config: cfg, Events: ev, Authz: az, Owners: owners, Bus: bus, Cipher: cipher, BcryptCost: bcrypt.MinCost})
 	return &env{svc: svc, bus: bus, authz: az, owners: owners, redis: mr, events: ev, cfg: cfg}
 }

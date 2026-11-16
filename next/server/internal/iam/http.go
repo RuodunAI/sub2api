@@ -231,17 +231,6 @@ func (s *Service) handleCreateUser(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	uid := actor(c)
-	// A creator of users for its team only owns those it creates unless it
-	// names an owner (CONTRACTS §102.3), which CheckOwner then judges.
-	scope, err := core.Scope(ctx, s.authz, perm.UserCreate)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	if in.OwnerID == nil && !scope.All {
-		in.OwnerID = &uid
-	}
 	// Choosing roles other than the default is a role assignment: it needs
 	// role:assign as well.
 	if !IsDefaultRoles(in.RoleKeys) && !httpapi.CanAny(c, s.authz, "role:assign") {
@@ -252,7 +241,7 @@ func (s *Service) handleCreateUser(c *gin.Context) {
 	if in.SegmentID != nil && !httpapi.CanAny(c, s.authz, "segment:manage") {
 		return
 	}
-	u, err := s.CreateUser(ctx, uid, in)
+	u, err := s.CreateUser(ctx, actor(c), in)
 	if err == nil {
 		err = s.redactBalance(c, u)
 	}

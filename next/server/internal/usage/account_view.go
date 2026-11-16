@@ -282,7 +282,7 @@ func (s *Service) accountSummary(c *gin.Context) {
 	}
 	out := make([]AccountSummaryRow, len(rows))
 	for i, r := range rows {
-		out[i] = AccountSummaryRow{Key: r.Key, AccountName: r.UserEmail, // the extra column: the account's name under group_by=account
+		out[i] = AccountSummaryRow{Key: r.Key, AccountName: r.Extra,
 			AccountTotals: AccountTotals{Requests: r.Requests, Success: r.Success, InputTokens: r.InputTokens,
 				OutputTokens: r.OutputTokens, CacheReadTokens: r.CacheReadTokens, CacheCreationTokens: r.CacheCreationTokens,
 				PromptTokens: r.PromptTokens, StandardCost: r.StandardCost, LatencyMsAvg: r.LatencyMsAvg, FirstTokenMsAvg: r.FirstTokenMsAvg},

@@ -39,7 +39,11 @@ func CountAccounts(ctx context.Context, q *gorm.DB, scope core.DataScope) (Count
 // accounts its account:read scope reaches.
 func (s *Service) summary(c *gin.Context) {
 	ctx := c.Request.Context()
-	counts, err := CountAccounts(ctx, s.d.DB.Gorm, s.scopeOf(ctx, perm.AccountRead))
+	scope, err := s.scopeOf(ctx, perm.AccountRead)
+	var counts Counts
+	if err == nil {
+		counts, err = CountAccounts(ctx, s.d.DB.Gorm, scope)
+	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

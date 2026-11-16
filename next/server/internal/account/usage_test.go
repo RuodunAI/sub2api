@@ -1,6 +1,7 @@
 package account
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -264,4 +265,36 @@ func TestUsageLimitOwnsItsDisable(t *testing.T) {
 		"anchor": "2026-10-01T00:20:00+05:30", "timezone": "Asia/Kolkata"}), "floored to the wall-clock hour, not the UTC one")
 	assert.Equal(t, "2026-10-01T02:00:00Z", anchor(map[string]any{"enabled": false, "amount": "0", "period": "hour", "period_count": 1,
 		"anchor": "2026-10-01T08:00:00+05:30", "timezone": "Asia/Kolkata"}), "hourly periods start on a UTC hour")
+}
+
+// An account's usage shows what users were charged (cost) next to the raw
+// cost to anyone who reads the account, its owner included, in the list
+// and in GET /accounts/:id/usage (CONTRACTS §102.4): only the account-side
+// usage records (/account-usage) keep to the standard cost (D1).
+func TestUsageCostForAccountReaders(t *testing.T) {
+	az := fakeAuthz{keys: map[int64][]string{}}
+	e := setupWith(t, az)
+	ctx := t.Context()
+	operator, supplier := e.uid, e.addUser("supplier@x.com")
+	az.keys[operator] = append(slices.Clone(adminKeys), "usage:all:read")
+	az.keys[supplier] = supplierKeys
+	id := int64(e.createAs(supplier, "acct", nil)["id"].(float64))
+	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, account_id, protocol, endpoint, status_code, success,
+		total_cost, billing_status, billing_detail, rate_multiplier, input_tokens, output_tokens)
+		VALUES ('u1', 1, 1, 1, $1, 'anthropic.messages', '/v1/messages', 200, true, 6, 'billed', '{"cost":"5"}', 1.2, 100, 20)`, id)
+	require.NoError(t, err)
+	require.NoError(t, foldUsage(ctx, e.db.Gorm))
+
+	for _, uid := range []int64{operator, supplier} {
+		code, out := e.doAs(uid, "GET", "/accounts/"+itoa(id)+"/usage", nil)
+		require.Equal(t, 200, code, out)
+		code, list := e.doAs(uid, "GET", "/accounts", nil)
+		require.Equal(t, 200, code, list)
+		usage := list["data"].([]any)[0].(map[string]any)["usage"].(map[string]any)
+		for name, f := range map[string]any{"detail total": data(out)["total"], "list total": usage["total"]} {
+			figures := f.(map[string]any)
+			assert.Equal(t, "6", figures["cost"], "%d %s", uid, name)
+			assert.Equal(t, "5", figures["raw_cost"], "%d %s", uid, name)
+		}
+	}
 }

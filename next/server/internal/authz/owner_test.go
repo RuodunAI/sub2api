@@ -2,6 +2,7 @@ package authz
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -45,29 +46,38 @@ func moveOwner(s *Service, actor, user int64, owner *int64) (int64, error) {
 	return got, err
 }
 
-// createOwned creates a user as iam's create does: inserted with owner
-// (nil: none), its roles set, then CheckOwner.
+// createOwned creates a user as iam's create does: its id drawn,
+// CheckOwner deciding its owner (nil: the default), inserted with it, its
+// roles set.
 func createOwned(s *Service, actor int64, email string, owner *int64, roles ...string) (int64, error) {
 	ctx := context.Background()
 	var id, v int64
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := tx.Raw(`INSERT INTO users (email, password_hash, owner_id) VALUES (?, 'x', NULLIF(?::bigint, 0)) RETURNING id`, email, ownerOrNone(owner)).Scan(&id).Error; err != nil {
-			return err
-		}
-		var err error
-		if v, err = s.SetUserRoles(ctx, tx, actor, id, roles); err != nil {
+		if err := tx.Raw(`SELECT nextval(pg_get_serial_sequence('users', 'id'))`).Scan(&id).Error; err != nil {
 			return err
 		}
 		got, err := s.CheckOwner(ctx, tx, actor, id, true, owner)
-		if err == nil && got != ownerOrNone(owner) {
-			err = tx.Exec(`UPDATE users SET owner_id = ? WHERE id = ?`, got, id).Error
+		if err != nil {
+			return err
 		}
+		if err := tx.Exec(`INSERT INTO users (id, email, password_hash, owner_id) VALUES (?, ?, 'x', NULLIF(?::bigint, 0))`, id, email, got).Error; err != nil {
+			return err
+		}
+		v, err = s.SetUserRoles(ctx, tx, actor, id, roles)
 		return err
 	})
 	if err == nil {
 		s.Committed(ctx, v)
 	}
 	return id, err
+}
+
+// ownerIn is the owner of user as stored, 0 for none.
+func ownerIn(t *testing.T, s *Service, user int64) int64 {
+	t.Helper()
+	var owner *int64
+	require.NoError(t, s.db.Gorm.Raw(`SELECT owner_id FROM users WHERE id = ?`, user).Scan(&owner).Error)
+	return ownerOrNone(owner)
 }
 
 func ownerAudits(t *testing.T, s *Service, user int64) []string {
@@ -150,7 +160,6 @@ func TestCheckOwnerTeamHolder(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
-	ctx := context.Background()
 	admin := addUser(t, s, "admin@x.com", RoleAdmin)
 	agent := addUser(t, s, "agent@x.com", RoleSupplierAgent)
 	sub := chain(t, s, agent, 1, RoleSupplierAgent)[0]
@@ -174,23 +183,20 @@ func TestCheckOwnerTeamHolder(t *testing.T) {
 	require.Equal(t, []string{`{"to": ` + itoa(agent) + `, "from": null}`}, ownerAudits(t, s, created))
 	_, err = createOwned(s, agent, "made2@x.com", ptr(sub), RoleUser)
 	require.True(t, isCode(err, "permission_denied"), "%v", err)
-	_, err = createOwned(s, agent, "made3@x.com", nil, RoleUser)
-	require.True(t, isCode(err, "permission_denied"), "outside its team before the owner: %v", err)
+	// Whether it may name the owner comes first: a user outside its team,
+	// or none at all, is refused alike.
+	for _, owner := range []int64{admin, 1 << 40} {
+		_, err = createOwned(s, agent, "made3@x.com", ptr(owner), RoleUser)
+		require.True(t, isCode(err, "permission_denied"), "%d: %v", owner, err)
+		_, err = moveOwner(s, agent, leaf, ptr(owner))
+		require.True(t, isCode(err, "permission_denied"), "%d: %v", owner, err)
+	}
 
 	// nil on a create: the team holder itself, none for the unscoped one.
 	for actor, want := range map[int64]int64{agent: agent, admin: 0} {
-		require.NoError(t, s.db.Tx(ctx, func(tx *gorm.DB) error {
-			var id int64
-			if err := tx.Raw(`INSERT INTO users (email, password_hash) VALUES (?, 'x') RETURNING id`, "nil"+itoa(actor)+"@x.com").Scan(&id).Error; err != nil {
-				return err
-			}
-			if _, err := s.Bump(ctx, tx, id); err != nil {
-				return err
-			}
-			got, err := s.CheckOwner(ctx, tx, actor, id, true, nil)
-			require.Equal(t, want, got)
-			return err
-		}))
+		id, err := createOwned(s, actor, "nil"+itoa(actor)+"@x.com", nil, RoleUser)
+		require.NoError(t, err)
+		require.Equal(t, want, ownerIn(t, s, id))
 	}
 }
 
@@ -233,4 +239,110 @@ func TestCheckOwnerConcurrentCycle(t *testing.T) {
 		codes = append(codes, fieldCode(<-errs, "owner_id"))
 	}
 	require.ElementsMatch(t, []string{"", "cycle"}, codes)
+}
+
+// A move changes the teams of every user above the old and the new owner:
+// the actor must manage each of them, but for itself and those above it
+// (CONTRACTS §102.3). An operator may move a plain user into or out of an
+// agent's team neither directly nor through a supplier of that team (D6);
+// a sub-agent still owns the users it creates though its own owner is
+// above it.
+func TestCheckOwnerChains(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	admin := addUser(t, s, "admin@x.com", RoleAdmin)
+	operator := addUser(t, s, "op@x.com", RoleOperator)
+	agent := addUser(t, s, "agent@x.com", RoleSupplierAgent)
+	supplier := chain(t, s, agent, 1, RoleUser, RoleSupplier)[0]
+	plain := addUser(t, s, "plain@x.com", RoleUser)
+	loose := addUser(t, s, "loose@x.com", RoleUser, RoleSupplier)
+
+	// The operator manages the supplier and the user, not the agent above.
+	require.NoError(t, s.CanActOnUsers(context.Background(), operator, core.ActOnIdentity, supplier, plain))
+	_, err := moveOwner(s, operator, plain, ptr(supplier))
+	require.True(t, isCode(err, "permission_denied"), "into the agent's team: %v", err)
+	_, err = createOwned(s, operator, "new@x.com", ptr(supplier), RoleUser)
+	require.True(t, isCode(err, "permission_denied"), "created into the agent's team: %v", err)
+	_, err = moveOwner(s, admin, plain, ptr(supplier))
+	require.NoError(t, err)
+	_, err = moveOwner(s, operator, plain, ptr(0))
+	require.True(t, isCode(err, "permission_denied"), "out of the agent's team: %v", err)
+	_, err = moveOwner(s, operator, plain, ptr(loose))
+	require.True(t, isCode(err, "permission_denied"), "out of the agent's team: %v", err)
+	require.Equal(t, supplier, ownerIn(t, s, plain))
+	// Outside any agent's team the operator still moves users.
+	_, err = moveOwner(s, operator, addUser(t, s, "p2@x.com", RoleUser), ptr(loose))
+	require.NoError(t, err)
+
+	// A sub-agent below the agent: what it creates and moves stays in the
+	// agent's team, which the sub-agent does not manage.
+	sub := chain(t, s, agent, 1, RoleSupplierAgent)[0]
+	made, err := createOwned(s, sub, "made@x.com", nil, RoleUser, RoleSupplier)
+	require.NoError(t, err)
+	leaf := chain(t, s, made, 1, RoleUser)[0]
+	_, err = moveOwner(s, sub, leaf, ptr(sub))
+	require.NoError(t, err)
+	require.Equal(t, sub, ownerIn(t, s, leaf))
+}
+
+// A role write that leaves an owner unable to manage one of its live users
+// by their roles is refused, on the write's field (CONTRACTS §102.3):
+// more for the users' role, less for the owner's, a reset of either. Users
+// without an owner, and deleted ones, do not count.
+func TestRoleWritesKeepOwners(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	admin := addUser(t, s, "admin@x.com", RoleAdmin)
+	agent := addUser(t, s, "agent@x.com", RoleSupplierAgent)
+	addUser(t, s, "loose@x.com", RoleUser, RoleSupplier)
+	supplierRole, agentRole := roleID(t, s, RoleSupplier), roleID(t, s, RoleSupplierAgent)
+	keysOf := func(id int64) []string {
+		t.Helper()
+		r, err := s.GetRole(ctx, id)
+		require.NoError(t, err)
+		return r.PermissionKeys
+	}
+	supplierKeys, agentKeys := keysOf(supplierRole), keysOf(agentRole)
+
+	// No owned supplier yet: the supplier role may grow beyond the agent.
+	_, err := s.SetRolePermissions(ctx, admin, supplierRole, append(slices.Clone(supplierKeys), "user:delete"), nil)
+	require.NoError(t, err)
+	_, err = s.SetRolePermissions(ctx, admin, supplierRole, supplierKeys, nil)
+	require.NoError(t, err)
+
+	sub := chain(t, s, agent, 1, RoleUser, RoleSupplier)[0]
+	_, err = s.SetRolePermissions(ctx, admin, supplierRole, append(slices.Clone(supplierKeys), "user:delete"), nil)
+	require.Equal(t, "owner_cannot_manage", fieldCode(err, "permission_keys"), "%v", err)
+	require.Equal(t, sub, err.(*core.Error).Details["user_id"])
+	_, err = s.SetRoleAssignable(ctx, admin, agentRole, AssignableInput{RoleKeys: []string{RoleSupplierAgent}})
+	require.Equal(t, "owner_cannot_manage", fieldCode(err, "role_keys"), "%v", err)
+	_, err = s.SetRolePermissions(ctx, admin, agentRole, slices.DeleteFunc(slices.Clone(agentKeys), func(k string) bool { return k == "proxy:manage:own" }), nil)
+	require.Equal(t, "owner_cannot_manage", fieldCode(err, "permission_keys"), "%v", err)
+
+	// The plugin matrix judges its roles once all are written: the
+	// supplier's grant alone is refused, with the agent's too it passes.
+	require.NoError(t, syncer(t, s, "m")(core.PermissionDef{Key: "flow:read", GrantRoles: unscoped(RoleAdmin)}))
+	_, err = s.SetPluginRoleGrants(ctx, admin, "m", map[string][]string{RoleSupplier: {"plugin.m:flow:read"}}, nil)
+	require.Equal(t, "owner_cannot_manage", fieldCode(err, "roles."+RoleSupplier), "%v", err)
+	_, err = s.SetPluginRoleGrants(ctx, admin, "m", map[string][]string{RoleSupplier: {"plugin.m:flow:read"}, RoleSupplierAgent: {"plugin.m:flow:read"}}, nil)
+	require.NoError(t, err)
+	agentKeys = keysOf(agentRole)
+
+	// Both roles gain user:delete, then a reset takes it from the agent's.
+	_, err = s.SetRolePermissions(ctx, admin, agentRole, append(slices.Clone(agentKeys), "user:delete"), nil)
+	require.NoError(t, err)
+	_, err = s.SetRolePermissions(ctx, admin, supplierRole, append(slices.Clone(supplierKeys), "user:delete"), nil)
+	require.NoError(t, err)
+	_, err = s.ResetRole(ctx, admin, agentRole, nil)
+	require.Equal(t, "owner_cannot_manage", fieldCode(err, "permission_keys"), "%v", err)
+	require.Contains(t, keysOf(agentRole), "user:delete", "the refused reset changed nothing")
+
+	// A deleted user is no one's to manage.
+	_, err = db.SQL.ExecContext(ctx, `UPDATE users SET deleted_at = now() WHERE id = $1`, sub)
+	require.NoError(t, err)
+	_, err = s.ResetRole(ctx, admin, agentRole, nil)
+	require.NoError(t, err)
 }

@@ -1,0 +1,7 @@
+-- sql
+SELECT p.owner, p.roles, min(p.id) AS user_id FROM (SELECT ARRAY(SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || o.id) ORDER BY 1) AS owner, ARRAY(SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || u.id) ORDER BY 1) AS roles, u.id FROM users u JOIN users o ON o.id = u.owner_id AND o.deleted_at IS NULL WHERE u.deleted_at IS NULL AND (u.id IN (SELECT substr(v0, 3)::bigint FROM "casbin_rule" WHERE ptype = $1 AND v1 IN (SELECT ('r:' || key) FROM "roles" WHERE key = $2)) OR o.id IN (SELECT substr(v0, 3)::bigint FROM "casbin_rule" WHERE ptype = $3 AND v1 IN (SELECT ('r:' || key) FROM "roles" WHERE key = $4)))) AS p GROUP BY p.owner, p.roles ORDER BY user_id
+-- vars
+$1 string "g"
+$2 string "supplier_agent"
+$3 string "g"
+$4 string "supplier_agent"

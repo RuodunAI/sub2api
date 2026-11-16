@@ -198,7 +198,7 @@ func (s *Service) getBalance(c *gin.Context) {
 		return
 	}
 	force, _ := strconv.ParseBool(c.Query("force"))
-	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountRead), false)
+	a, err := s.loadIn(ctx, id, perm.AccountRead)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

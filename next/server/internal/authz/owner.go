@@ -1,27 +1,34 @@
 package authz
 
 import (
-	"cmp"
 	"context"
 	"slices"
+	"strings"
 
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// CheckOwner implements core.OwnerGuard (CONTRACTS §102.3). The caller has
-// bumped naming userID in tx: the owner graph it reads cannot move under it,
-// and the bump tells every node's teams of the move.
+// CheckOwner implements core.OwnerGuard (CONTRACTS §102.3). It takes the
+// authz lock (lockVersion), so the owner graph it reads cannot move under
+// it; the caller's Bump naming userID tells every node's teams of the move.
+// Whether the actor may name the owner is settled before anything about
+// the owner is read: a team holder learns nothing of a user outside its
+// team.
 func (s *Service) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
 	if err := store.RequireTx(tx); err != nil {
 		return 0, err
 	}
 	db := store.G(ctx, tx)
+	if err := lockVersion(db); err != nil {
+		return 0, err
+	}
 	var from int64
 	key := perm.UserCreate
 	if !create {
@@ -42,22 +49,40 @@ func (s *Service) CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID i
 			"you can only make yourself the owner", "你只能把自己设为 owner"))
 	case owner != nil:
 		to = *owner
-	case team && !all:
-		to = actorID
+	case team:
+		to = actorID // a create's default
 	}
 	if to == from {
 		return to, nil
 	}
+	up, err := ownerChain(db, to)
+	if err != nil {
+		return 0, err
+	}
 	if to != 0 {
-		if err := s.ownerFits(ctx, db, userID, to); err != nil {
+		if err := s.ownerFits(ctx, db, userID, to, len(up)-1); err != nil {
 			return 0, err
 		}
 	}
-	targets := []int64{from, to}
+	down, err := ownerChain(db, from)
+	if err != nil {
+		return 0, err
+	}
+	// The user leaves the team of every user of the old chain and joins
+	// that of every user of the new one: the actor must manage them all,
+	// but for itself and those above it, whose teams hold the user either
+	// way.
+	var targets []int64
+	for _, c := range [][]int64{down, up} {
+		if i := slices.Index(c, actorID); i >= 0 {
+			c = c[:i]
+		}
+		targets = append(targets, c...)
+	}
 	if !create {
 		targets = append(targets, userID)
 	}
-	targets = slices.DeleteFunc(targets, func(id int64) bool { return id == 0 || id == actorID })
+	targets = slices.DeleteFunc(targets, func(id int64) bool { return id == actorID })
 	if err := s.canActOnUsers(ctx, tx, actorID, core.ActOnIdentity, targets...); err != nil {
 		return 0, err
 	}
@@ -78,31 +103,30 @@ func (s *Service) namesOwners(ctx context.Context, actorID int64, key perm.Key) 
 	return false, team, err
 }
 
-// ownerFits fails, with a 400 on owner_id, unless owner may own userID: it is
-// another live user, not below userID, its chain stays within
-// core.MaxTeamDepth levels with userID's users below it, and it manages
-// userID by its roles.
-func (s *Service) ownerFits(ctx context.Context, db *gorm.DB, userID, owner int64) error {
+// ownerFits fails, with a 400 on owner_id, unless owner, with above
+// owners over it, may own userID: it is another live user, not below
+// userID, its chain stays within core.MaxTeamDepth levels with userID's
+// users below it, and it manages userID by its roles.
+func (s *Service) ownerFits(ctx context.Context, db *gorm.DB, userID, owner int64, above int) error {
 	if owner == userID {
-		return badOwner(ctx, "self")
+		return badOwner(ctx, "owner_id", "self")
 	}
 	live, err := gormpg.Exists(db, db.Model(&model.User{}).Where("id = ? AND deleted_at IS NULL", owner))
-	if err != nil || !live {
-		return cmp.Or(err, badOwner(ctx, "not_found"))
+	if err != nil {
+		return err
+	}
+	if !live {
+		return badOwner(ctx, "owner_id", "not_found")
 	}
 	below, levels, err := subtree(db, userID)
 	if err != nil {
 		return err
 	}
 	if _, ok := slices.BinarySearch(below, owner); ok {
-		return badOwner(ctx, "cycle")
-	}
-	above, err := depth(db, owner)
-	if err != nil {
-		return err
+		return badOwner(ctx, "owner_id", "cycle")
 	}
 	if above+1+levels > core.MaxTeamDepth {
-		return badOwner(ctx, "too_deep")
+		return badOwner(ctx, "owner_id", "too_deep")
 	}
 	target, roles, err := s.usersRoles(ctx, db, []int64{userID})
 	if err != nil {
@@ -121,13 +145,68 @@ func (s *Service) ownerManages(ctx context.Context, q *gorm.DB, owner int64, tar
 		return err
 	}
 	if manageDenial(ctx, set, target, roles) != nil {
-		return badOwner(ctx, "owner_cannot_manage")
+		return badOwner(ctx, "owner_id", "owner_cannot_manage")
 	}
 	return nil
 }
 
-// badOwner is the 400 of an owner_id refused for code.
-func badOwner(ctx context.Context, code string) error {
+// ownersKeepManaging is ownerManages after a write to what role key grants
+// or may assign, refused on field, the write's: every live user with a
+// live owner, either of them holding key, must still be one its owner
+// manages (CONTRACTS §102.3). Users compare by their roles, so each pair of
+// role sets is judged once; details.user_id names a user of a pair that
+// fails.
+func (s *Service) ownersKeepManaging(ctx context.Context, q *gorm.DB, key, field string) error {
+	var pairs []struct {
+		Owner, Roles store.Strings
+		UserID       int64
+	}
+	if err := ownedRoleSets(store.G(ctx, q), key).Scan(&pairs).Error; err != nil {
+		return err
+	}
+	sets := map[string]core.PermissionSet{}
+	setOf := func(keys []string) (core.PermissionSet, error) {
+		k := strings.Join(keys, " ")
+		set, ok := sets[k]
+		if !ok {
+			var err error
+			if set, err = s.RolesPermissions(ctx, q, keys); err != nil {
+				return set, err
+			}
+			sets[k] = set
+		}
+		return set, nil
+	}
+	for _, p := range pairs {
+		owner, err := setOf(p.Owner)
+		if err != nil {
+			return err
+		}
+		target, err := setOf(p.Roles)
+		if err != nil {
+			return err
+		}
+		if manageDenial(ctx, owner, target, p.Roles) != nil {
+			return badOwner(ctx, field, "owner_cannot_manage").WithDetails(map[string]any{"user_id": p.UserID})
+		}
+	}
+	return nil
+}
+
+// ownedRoleSets selects the distinct pairs of the role keys (sorted) of a
+// live user with a live owner, either of them holding role key, and of its
+// owner, with the least id of the users of each pair.
+func ownedRoleSets(db *gorm.DB, key string) *gorm.DB {
+	holders := func() *gorm.DB { return casbinrule.MembersOf(db, db.Model(&model.Role{}).Where("key = ?", key)) }
+	pairs := db.Table("users u").Joins("JOIN users o ON o.id = u.owner_id AND o.deleted_at IS NULL").
+		Select(`ARRAY(`+casbinrule.RolesOfOwner+` ORDER BY 1) AS owner, ARRAY(`+casbinrule.RolesOfUser+` ORDER BY 1) AS roles, u.id`).
+		Where("u.deleted_at IS NULL AND (u.id IN (?) OR o.id IN (?))", holders(), holders())
+	return db.Table("(?) AS p", pairs).Select("p.owner, p.roles, min(p.id) AS user_id").Group("p.owner, p.roles").Order("user_id")
+}
+
+// badOwner is the 400 of an owner refused for code, on field (owner_id,
+// or the role write's for owner_cannot_manage).
+func badOwner(ctx context.Context, field, code string) *core.Error {
 	msg := map[string][2]string{
 		"self":                {"a user cannot be its own owner", "用户不能是自己的 owner"},
 		"not_found":           {"owner_id must be a user that is not deleted", "owner_id 必须是未删除的用户"},
@@ -135,7 +214,7 @@ func badOwner(ctx context.Context, code string) error {
 		"too_deep":            {"the owner chain would be more than 8 levels deep", "owner 链会超过 8 层"},
 		"owner_cannot_manage": {"the owner cannot manage this user by its roles; change the owner first", "owner 按角色管理不了该用户，请先修改 owner"},
 	}[code]
-	return core.InvalidFields(core.FieldError{Field: "owner_id", Code: code, Message: t(ctx, msg[0], msg[1])})
+	return core.InvalidFields(core.FieldError{Field: field, Code: code, Message: t(ctx, msg[0], msg[1])})
 }
 
 // idOrNil is id for an audit detail: nil for 0 (none).

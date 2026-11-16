@@ -98,18 +98,18 @@ func subtree(db *gorm.DB, root int64) ([]int64, int, error) {
 	return below, levels, nil
 }
 
-// depth is how many owners are above uid: 0 for a user without one,
-// core.MaxTeamDepth+1 for a chain longer than any allowed.
-func depth(db *gorm.DB, uid int64) (int, error) {
-	n := 0
-	for cur := uid; n <= core.MaxTeamDepth; n++ {
-		owner, err := ownerOf(db, cur)
-		if err != nil || owner == 0 {
-			return n, err
+// ownerChain is uid and the owners above it, nearest first: none for 0, at
+// most core.MaxTeamDepth+1 owners (a chain longer than any allowed).
+func ownerChain(db *gorm.DB, uid int64) ([]int64, error) {
+	var out []int64
+	for cur := uid; cur != 0 && len(out) <= core.MaxTeamDepth+1; {
+		out = append(out, cur)
+		var err error
+		if cur, err = ownerOf(db, cur); err != nil {
+			return nil, err
 		}
-		cur = owner
 	}
-	return n, nil
+	return out, nil
 }
 
 // ownerOf is the owner of uid, 0 for none.

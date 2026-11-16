@@ -381,25 +381,30 @@ type UserGuard interface {
 
 // OwnerGuard decides the owner of a user (users.owner_id, CONTRACTS §102.3);
 // authz implements it, iam calls it inside the transaction that creates or
-// updates the user, after Bump naming the user (which holds the authz lock
-// the checks rely on and announces the move); the caller writes the owner
-// it returns.
+// updates the user and writes the owner it returns: on a create before the
+// user is inserted, with the id drawn for it; on an update after Bump
+// naming the user, which announces the move. CheckOwner takes the authz
+// lock itself, so the owner graph it reads cannot move under it.
 type OwnerGuard interface {
 	// CheckOwner returns the owner actorID gives userID (0: none). owner is
-	// the requested owner_id, 0 for none. On a create (create: userID was
-	// inserted in tx, its roles set) the previous owner is none whatever
-	// the row holds, and nil is the actor when it creates users for its
-	// team only, else none; on an update nil, or the current owner, is no
-	// change and passes as is. Naming an owner, or none, needs user:create
-	// (create) or user:update (update) for every user; a holder for its
-	// team only may name only itself (403 otherwise). It refuses (400
-	// owner_id) an owner that is userID (self) or below it (cycle), would
-	// put userID, or a user below it, more than MaxTeamDepth levels below
-	// the top of its chain (too_deep), is missing or deleted (not_found),
-	// or may not manage userID by its roles (owner_cannot_manage), and an
-	// actor that may not act (ActOnIdentity) on the old and new owner and,
-	// on an update, on userID, the actor itself aside. A change is audited
-	// as user.owner (from, to). Actor 0 (the system) needs no permission.
+	// the requested owner_id, 0 for none. On a create (create: userID is
+	// the id of a user not inserted yet) the previous owner is none, and
+	// nil is the actor when it creates users for its team only, else none;
+	// on an update nil, or the current owner, is no change and passes as
+	// is. Naming an owner, or none, needs user:create (create) or
+	// user:update (update) for every user; a holder for its team only may
+	// name only itself (403 otherwise), decided before the owner is read.
+	// It refuses (400 owner_id) an owner that is userID (self) or below it
+	// (cycle), would put userID, or a user below it, more than
+	// MaxTeamDepth levels below the top of its chain (too_deep), is missing
+	// or deleted (not_found), or may not manage userID by its roles
+	// (owner_cannot_manage; on a create the roles come after, and
+	// assigning them, but for the system's, checks it), and an actor that may not act
+	// (ActOnIdentity) on every user of the old and the new owner's chains
+	// (the owner and those above it, whose teams the user leaves or joins)
+	// and, on an update, on userID; the actor itself and those above it in
+	// a chain aside. A change is audited as user.owner (from, to). Actor 0
+	// (the system) needs no permission.
 	CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error)
 }
 

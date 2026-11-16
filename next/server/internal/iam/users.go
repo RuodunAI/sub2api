@@ -13,7 +13,6 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -229,7 +228,7 @@ type CreateUserInput struct {
 	SegmentID *int64 `json:"segment_id"`
 	// OwnerID is the user's owner, 0 for none; nil for none too, but for a
 	// creator of users for its team only, which is the owner (CONTRACTS
-	// §102.3, applied by POST /users).
+	// §102.3, core.OwnerGuard).
 	OwnerID *int64 `json:"owner_id"`
 }
 
@@ -278,13 +277,23 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 	if err != nil {
 		return nil, 0, err
 	}
-	var id int64
-	err = insertUser(store.G(ctx, tx), email, in.DisplayName, string(hash), in.SegmentID, ownerColumn(in.OwnerID)).Row().Scan(&id)
+	db := store.G(ctx, tx)
+	ids, err := gormpg.NextIDs(db, model.User{}.TableName(), 1)
+	if err != nil {
+		return nil, 0, err
+	}
+	id := ids[0]
+	// The one place the owner is decided, before the user exists (CONTRACTS
+	// §102.3); whether the actor may name it comes before anything about it
+	// is read.
+	owner, err := s.owners.CheckOwner(ctx, tx, actorID, id, true, in.OwnerID)
+	if err != nil {
+		return nil, 0, err
+	}
+	err = insertUser(db, id, email, in.DisplayName, string(hash), in.SegmentID, ownerColumn(&owner)).Error
 	switch {
 	case store.IsUniqueViolation(err, ""):
 		return nil, 0, emailTaken()
-	case store.IsForeignKeyViolation(err) && store.ConstraintName(err) == "users_owner_fk":
-		return nil, 0, core.InvalidFields(core.FieldError{Field: "owner_id", Code: "not_found", Message: "no such user"})
 	case err != nil:
 		return nil, 0, err
 	}
@@ -293,15 +302,10 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 		roles = []string{authz.RoleUser}
 	}
 	// SetUserRoles checks the actor may grant the roles (SEC-H1) and act on
-	// the user, whose owner it reads, and holds the authz lock (its Bump)
-	// that CheckOwner relies on. CheckOwner then judges the owner inserted,
-	// which is the one it gives: nil only reaches it from a creator of any
-	// user, for whom it is none.
+	// the user, under its owner, and that the owner manages the user by
+	// them (owner_cannot_manage).
 	v, err := s.authz.SetUserRoles(ctx, tx, actorID, id, roles)
 	if err != nil {
-		return nil, 0, err
-	}
-	if _, err := s.owners.CheckOwner(ctx, tx, actorID, id, true, in.OwnerID); err != nil {
 		return nil, 0, err
 	}
 	if err := s.emit(ctx, tx, "user.created", id, email, StatusActive); err != nil {
@@ -321,12 +325,11 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 	return u, v, err
 }
 
-// insertUser creates a user in segmentID, or the default segment when nil,
-// owned by ownerID (nil for none), and returns its id.
-func insertUser(db *gorm.DB, email, displayName, passwordHash string, segmentID, ownerID *int64) *gorm.DB {
-	row := store.OneRow(db).Select("?, ?, ?, COALESCE(?, default_segment_id()), ?", email, displayName, passwordHash, segmentID, ownerID)
-	return gormpg.InsertSelectReturning(db, model.User{}.TableName(), []string{"email", "display_name", "password_hash", "segment_id", "owner_id"}, row,
-		clause.Returning{Columns: []clause.Column{{Name: "id"}}})
+// insertUser creates user id in segmentID, or the default segment when nil,
+// owned by ownerID (nil for none).
+func insertUser(db *gorm.DB, id int64, email, displayName, passwordHash string, segmentID, ownerID *int64) *gorm.DB {
+	row := store.OneRow(db).Select("?, ?, ?, ?, COALESCE(?, default_segment_id()), ?", id, email, displayName, passwordHash, segmentID, ownerID)
+	return gormpg.InsertSelect(db, model.User{}.TableName(), []string{"id", "email", "display_name", "password_hash", "segment_id", "owner_id"}, row)
 }
 
 // validateOwner refuses an owner_id that is no user id, 0 (none) aside.

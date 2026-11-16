@@ -97,7 +97,7 @@ func (s *Service) test(c *gin.Context) {
 			return
 		}
 	}
-	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountTest), false)
+	a, err := s.loadIn(ctx, id, perm.AccountTest)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

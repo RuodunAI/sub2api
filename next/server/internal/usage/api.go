@@ -933,8 +933,12 @@ func redactFailurePolicy(v json.RawMessage) (json.RawMessage, bool) {
 
 // SummaryRow is one group of GET /usage/summary.
 type SummaryRow struct {
-	Key                 string          `json:"key"`
-	UserEmail           string          `json:"user_email,omitempty"`
+	Key string `json:"key"`
+	// Extra is the grouping's extra column (summaryShape.extra): the user's
+	// email under group_by=user, the one grouping of /usage/summary that has
+	// one, hence its JSON name; the account side's group_by=account carries
+	// the account's name in it (AccountSummaryRow.AccountName).
+	Extra               string          `json:"user_email,omitempty"`
 	Requests            int64           `json:"requests"`
 	Success             int64           `json:"success"`
 	InputTokens         int64           `json:"input_tokens"`
@@ -1080,7 +1084,7 @@ func (s *Service) summaryRows(c *gin.Context, f store.Conds, groups groupBys, or
 			defer rows.Close()
 			for rows.Next() {
 				var r SummaryRow
-				if err := rows.Scan(&r.Key, &r.UserEmail, &r.Requests, &r.Success, &r.InputTokens, &r.OutputTokens,
+				if err := rows.Scan(&r.Key, &r.Extra, &r.Requests, &r.Success, &r.InputTokens, &r.OutputTokens,
 					&r.CacheReadTokens, &r.CacheCreationTokens, &r.PromptTokens, &r.TotalCost, &r.StandardCost, &r.LatencyMsAvg, &r.FirstTokenMsAvg,
 					&r.Anomalies, &r.Estimated, &r.EstimatedCost, &r.LastAt); err != nil {
 					return err
