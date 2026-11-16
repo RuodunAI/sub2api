@@ -17,11 +17,12 @@ import (
 // of the endpoint. A range must match the list endpoint it is named after.
 var entities = []*entity{
 	{
-		// Found by email or display name, as the q of GET /users.
+		// Found by email or display name, as the q of GET /users, in the
+		// same scope: every user or the caller's team.
 		kind: "users", from: "users u", id: "u.id", name: "u.email", hint: "u.display_name", status: "u.status",
 		matches: []string{"u.display_name"},
 		live:    "u.deleted_at IS NULL",
-		read:    "user:read",
+		read:    "user:read", table: core.UserRows,
 	},
 	{
 		// Groups have no platform column: the platforms of a group follow

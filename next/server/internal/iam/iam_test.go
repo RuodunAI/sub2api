@@ -80,10 +80,39 @@ func (f *fakeEvents) types() []string {
 	return out
 }
 
+// fakeOwners stands in for authz's CheckOwner (tested in authz): it gives
+// the owner asked for (none for nil), records the calls, and fails with err
+// when set.
+type fakeOwners struct {
+	mu    sync.Mutex
+	calls []ownerCall
+	err   error
+}
+
+type ownerCall struct {
+	actor, user int64
+	create      bool
+	owner       *int64
+}
+
+func (f *fakeOwners) CheckOwner(_ context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
+	if tx == nil {
+		return 0, errors.New("CheckOwner needs a transaction")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, ownerCall{actorID, userID, create, owner})
+	if f.err != nil || owner == nil {
+		return 0, f.err
+	}
+	return *owner, nil
+}
+
 type env struct {
 	svc    *Service
 	bus    *memBus
 	authz  *authz.Service
+	owners *fakeOwners
 	redis  *miniredis.Miniredis
 	events *fakeEvents
 	cfg    *config.Config
@@ -116,8 +145,9 @@ func setup(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := New(Deps{DB: db, Redis: redis.NewClient(&redis.Options{Addr: mr.Addr()}), Config: cfg, Events: ev, Authz: az, Bus: bus, Cipher: cipher, BcryptCost: bcrypt.MinCost})
-	return &env{svc: svc, bus: bus, authz: az, redis: mr, events: ev, cfg: cfg}
+	owners := &fakeOwners{}
+	svc := New(Deps{DB: db, Redis: redis.NewClient(&redis.Options{Addr: mr.Addr()}), Config: cfg, Events: ev, Authz: az, Owners: owners, Bus: bus, Cipher: cipher, BcryptCost: bcrypt.MinCost})
+	return &env{svc: svc, bus: bus, authz: az, owners: owners, redis: mr, events: ev, cfg: cfg}
 }
 
 func isCode(err error, code string) bool {
@@ -151,7 +181,7 @@ func TestBootstrapLoginLogout(t *testing.T) {
 	if err := s.Bootstrap(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, total, _ := s.ListUsers(ctx, ListUsersFilter{Page: 1, PageSize: 20}); total != 0 {
+	if _, total, _ := s.ListUsers(ctx, ListUsersFilter{Scope: core.AllScope, Page: 1, PageSize: 20}); total != 0 {
 		t.Fatalf("users = %d", total)
 	}
 	e.cfg.BootstrapAdminPassword = adminPassword
@@ -161,7 +191,7 @@ func TestBootstrapLoginLogout(t *testing.T) {
 	if err := s.Bootstrap(ctx); err != nil { // idempotent
 		t.Fatal(err)
 	}
-	if _, total, _ := s.ListUsers(ctx, ListUsersFilter{Page: 1, PageSize: 20}); total != 1 {
+	if _, total, _ := s.ListUsers(ctx, ListUsersFilter{Scope: core.AllScope, Page: 1, PageSize: 20}); total != 1 {
 		t.Fatalf("users after bootstrap = %d", total)
 	}
 
@@ -243,21 +273,21 @@ func TestUserLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	list, total, err := s.ListUsers(ctx, ListUsersFilter{Query: "ALICE", Page: 1, PageSize: 20})
+	list, total, err := s.ListUsers(ctx, ListUsersFilter{Scope: core.AllScope, Query: "ALICE", Page: 1, PageSize: 20})
 	if err != nil || total != 1 || list[0].ID != u.ID {
 		t.Fatalf("search: %d %v", total, err)
 	}
-	if _, total, _ = s.ListUsers(ctx, ListUsersFilter{Role: authz.RoleAdmin, Page: 1, PageSize: 20}); total != 1 {
+	if _, total, _ = s.ListUsers(ctx, ListUsersFilter{Scope: core.AllScope, Role: authz.RoleAdmin, Page: 1, PageSize: 20}); total != 1 {
 		t.Fatalf("role filter total = %d", total)
 	}
-	if list, total, _ = s.ListUsers(ctx, ListUsersFilter{Page: 2, PageSize: 2}); total != 3 || len(list) != 1 {
+	if list, total, _ = s.ListUsers(ctx, ListUsersFilter{Scope: core.AllScope, Page: 2, PageSize: 2}); total != 3 || len(list) != 1 {
 		t.Fatalf("paging: total=%d len=%d", total, len(list))
 	}
 
 	// Disable: login and access tokens stop working.
 	result := mustLogin(t, s, "alice@example.com", "password-1")
 	disabled := StatusDisabled
-	if u, err = s.UpdateUser(ctx, root, u.ID, UpdateUserInput{Status: &disabled}); err != nil || u.Status != StatusDisabled {
+	if u, err = s.UpdateUser(ctx, root, u.ID, core.AllScope, UpdateUserInput{Status: &disabled}); err != nil || u.Status != StatusDisabled {
 		t.Fatalf("disable: %+v %v", u, err)
 	}
 	if _, err := s.Login(ctx, "alice@example.com", "password-1", testIP); !isCode(err, "permission_denied") {
@@ -271,13 +301,13 @@ func TestUserLifecycle(t *testing.T) {
 	}
 	active := StatusActive
 	name := "Alice B"
-	if u, err = s.UpdateUser(ctx, root, u.ID, UpdateUserInput{Status: &active, DisplayName: &name}); err != nil || u.DisplayName != "Alice B" {
+	if u, err = s.UpdateUser(ctx, root, u.ID, core.AllScope, UpdateUserInput{Status: &active, DisplayName: &name}); err != nil || u.DisplayName != "Alice B" {
 		t.Fatalf("enable: %+v %v", u, err)
 	}
 	mustLogin(t, s, "alice@example.com", "password-1")
 
 	// Super admin protections.
-	if _, err := s.UpdateUser(ctx, root, root, UpdateUserInput{Status: &disabled}); !isCode(err, "conflict") {
+	if _, err := s.UpdateUser(ctx, root, root, core.AllScope, UpdateUserInput{Status: &disabled}); !isCode(err, "conflict") {
 		t.Fatalf("self disable: %v", err)
 	}
 	if err := s.DeleteUser(ctx, root, root); !isCode(err, "conflict") {
@@ -287,7 +317,7 @@ func TestUserLifecycle(t *testing.T) {
 		t.Fatalf("admin deletes root: %v", err)
 	}
 	pw := "hijacked-password"
-	if _, err := s.UpdateUser(ctx, admin.ID, root, UpdateUserInput{Password: &pw}); !isCode(err, "permission_denied") {
+	if _, err := s.UpdateUser(ctx, admin.ID, root, core.AllScope, UpdateUserInput{Password: &pw}); !isCode(err, "permission_denied") {
 		t.Fatalf("admin resets root password: %v", err)
 	}
 	if _, err := s.SetUserRoles(ctx, admin.ID, admin.ID, []string{authz.RoleSuperAdmin}); !isCode(err, "permission_denied") {
@@ -549,16 +579,16 @@ func TestListUsersPageBounds(t *testing.T) {
 		{-3, 2, 2},  // a page before the first: the first
 		{1, 1000, 25},
 	} {
-		list, total, err := e.svc.ListUsers(ctx, ListUsersFilter{Page: c.page, PageSize: c.size})
+		list, total, err := e.svc.ListUsers(ctx, ListUsersFilter{Scope: core.AllScope, Page: c.page, PageSize: c.size})
 		if err != nil || total != 25 || len(list) != c.want {
 			t.Errorf("page %d size %d: %d users of %d, %v; want %d of 25", c.page, c.size, len(list), total, err, c.want)
 		}
 	}
-	first, _, err := e.svc.ListUsers(ctx, ListUsersFilter{Page: 1, PageSize: 2})
+	first, _, err := e.svc.ListUsers(ctx, ListUsersFilter{Scope: core.AllScope, Page: 1, PageSize: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, _, _ := e.svc.ListUsers(ctx, ListUsersFilter{Page: -3, PageSize: 2})
+	before, _, _ := e.svc.ListUsers(ctx, ListUsersFilter{Scope: core.AllScope, Page: -3, PageSize: 2})
 	if len(before) != 2 || before[0].ID != first[0].ID || before[1].ID != first[1].ID {
 		t.Errorf("a page before the first lists %v, want the first page", before)
 	}

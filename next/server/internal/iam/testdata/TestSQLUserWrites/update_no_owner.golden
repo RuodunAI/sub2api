@@ -1,0 +1,5 @@
+-- sql
+UPDATE "users" SET "owner_id"=$1,"updated_at"=now() WHERE id = $2
+-- vars
+$1 *int64 nil
+$2 int64 7

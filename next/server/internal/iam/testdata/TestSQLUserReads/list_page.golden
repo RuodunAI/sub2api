@@ -1,13 +1,19 @@
 -- sql
 SELECT u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
+    u.owner_id, (SELECT o.email FROM users o WHERE o.id = u.owner_id),
     COALESCE((SELECT array_agg(k ORDER BY k) FROM (SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || u.id)) ur(k)), '{}'),
     s.id, s.kind, CASE WHEN s.user_id IS NULL THEN s.name ELSE u.email END AS name, s.user_id,
-    COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text FROM users u JOIN segments s ON s.id = u.segment_id WHERE u.deleted_at IS NULL AND ((u.email ILIKE $1 OR u.display_name ILIKE $2)) AND u.status = $3 AND ($4 IN (SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || u.id))) AND u.segment_id = $5 ORDER BY u.id LIMIT $6 OFFSET $7
+    COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text FROM users u JOIN segments s ON s.id = u.segment_id WHERE (($1::boolean OR COALESCE(u.owner_id = ANY($2::bigint[]), false) OR u.id = ANY($3::bigint[]))) AND u.deleted_at IS NULL AND ((u.email ILIKE $4 OR u.display_name ILIKE $5)) AND u.status = $6 AND ($7 IN (SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || u.id))) AND u.segment_id = $8 AND u.owner_id = $9 AND u.owner_id = $10 ORDER BY u.id LIMIT $11 OFFSET $12
 -- vars
-$1 string "%ann%"
-$2 string "%ann%"
-$3 string "active"
-$4 string "admin"
-$5 int64 3
-$6 int 20
-$7 int 20
+$1 bool false
+$2 core.int64s [9 12]
+$3 core.int64s []
+$4 string "%ann%"
+$5 string "%ann%"
+$6 string "active"
+$7 string "admin"
+$8 int64 3
+$9 int64 5
+$10 int64 9
+$11 int 20
+$12 int 20

@@ -1,8 +1,9 @@
 -- sql
-UPDATE "users" SET "display_name"=$1,"email"=$2,"password_hash"=$3,"status"=$4,"updated_at"=now() WHERE id = $5
+UPDATE "users" SET "display_name"=$1,"email"=$2,"owner_id"=$3,"password_hash"=$4,"status"=$5,"updated_at"=now() WHERE id = $6
 -- vars
 $1 string "Ann"
 $2 string "b@example.com"
-$3 string "$2a$new"
-$4 string "disabled"
-$5 int64 7
+$3 *int64 5
+$4 string "$2a$new"
+$5 string "disabled"
+$6 int64 7

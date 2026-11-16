@@ -39,6 +39,8 @@ type Deps struct {
 	Config *config.Config
 	Events core.EventPublisher
 	Authz  *authz.Service
+	// Owners judges the owner a user is created with or moved to (authz).
+	Owners core.OwnerGuard
 	// Bus announces ended sessions to the other nodes (iam:user:changed).
 	// Optional: without it only this node's status cache is dropped.
 	Bus core.Bus
@@ -62,6 +64,7 @@ type Service struct {
 	cfg    *config.Config
 	events core.EventPublisher
 	authz  *authz.Service
+	owners core.OwnerGuard
 	bus    core.Bus
 	cipher *secret.Cipher
 	cost   int
@@ -105,7 +108,7 @@ func New(d Deps) *Service {
 	if d.PriceRulesChanged == nil {
 		d.PriceRulesChanged = func(context.Context) {}
 	}
-	s := &Service{db: d.DB, rdb: d.Redis, cfg: d.Config, events: d.Events, authz: d.Authz, bus: d.Bus, cipher: d.Cipher, cost: d.BcryptCost, status: map[int64]statusEntry{},
+	s := &Service{db: d.DB, rdb: d.Redis, cfg: d.Config, events: d.Events, authz: d.Authz, owners: d.Owners, bus: d.Bus, cipher: d.Cipher, cost: d.BcryptCost, status: map[int64]statusEntry{},
 		priceRulesChanged: d.PriceRulesChanged, limiter: newLoginLimiter(d.Redis)}
 	s.dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing"), s.cost)
 	if d.Redis != nil {

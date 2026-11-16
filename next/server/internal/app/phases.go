@@ -193,7 +193,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	b.settler.Authz = az
 	b.bill.Authz = az
 	b.bill.Users = az
-	b.idm = iam.New(iam.Deps{DB: b.db, Redis: b.rdb, SessionRedis: b.sessRdb, Config: cfg, Events: b.events, Authz: az, Bus: b.cl.Bus,
+	b.idm = iam.New(iam.Deps{DB: b.db, Redis: b.rdb, SessionRedis: b.sessRdb, Config: cfg, Events: b.events, Authz: az, Owners: az, Bus: b.cl.Bus,
 		Cipher: b.cipher, PriceRulesChanged: b.bill.PriceRulesChanged})
 	if b.managed == nil || b.managed.prepare.Bootstrap {
 		if err := b.idm.Bootstrap(b.ctx); err != nil {

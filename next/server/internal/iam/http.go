@@ -24,10 +24,13 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	// passes validation, so a rejected one does not spend the proof.
 	r.Self(http.MethodPut, "/me/password", selfSecurity, s.handleChangePassword)
 
-	r.Perm(http.MethodGet, "/users", "user:read", s.handleListUsers)
-	r.Perm(http.MethodPost, "/users", "user:create", s.handleCreateUser).Uses(perm.RoleAssign, perm.SegmentManage)
-	r.Perm(http.MethodGet, "/users/:id", "user:read", s.handleGetUser)
-	r.Perm(http.MethodPatch, "/users/:id", "user:update", s.handleUpdateUser).Uses(perm.UserPasswordReset)
+	// Every user or the team (CONTRACTS §102.3): a user out of the scope is
+	// not found. Deleting a user, resetting its password and the other
+	// per-user routes below take the unscoped keys.
+	r.PermScoped(http.MethodGet, "/users", s.handleListUsers, perm.UserRead)
+	r.PermScoped(http.MethodPost, "/users", s.handleCreateUser, perm.UserCreate).Uses(perm.RoleAssign, perm.SegmentManage)
+	r.PermScoped(http.MethodGet, "/users/:id", s.handleGetUser, perm.UserRead)
+	r.PermScoped(http.MethodPatch, "/users/:id", s.handleUpdateUser, perm.UserUpdate).Uses(perm.UserPasswordReset)
 	r.StepUp(core.StepUpUserDelete).Perm(http.MethodDelete, "/users/:id", "user:delete", s.handleDeleteUser)
 	r.Perm(http.MethodPut, "/users/:id/roles", "role:assign", s.handleSetUserRoles)
 	r.Perm(http.MethodGet, "/segments/:id/members", "segment:read", s.handleSegmentMembers).Uses(perm.UserRead)
@@ -130,7 +133,26 @@ func (s *Service) redactBalance(c *gin.Context, users ...*User) error {
 }
 
 func (s *Service) handleListUsers(c *gin.Context) {
-	s.listUsers(c, ListUsersFilter{Query: c.Query("q"), Status: c.Query("status"), Role: c.Query("role"), Segment: c.Query("segment")})
+	f := ListUsersFilter{Query: c.Query("q"), Status: c.Query("status"), Role: c.Query("role"), Segment: c.Query("segment")}
+	if v := c.Query("owner_id"); v != "" {
+		owner, ok := ownerFilter(v)
+		if !ok {
+			httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "owner_id", Code: "invalid", Message: "must be a user id or none"}))
+			return
+		}
+		f.Owner = &owner
+	}
+	if v := c.Query("direct"); v != "" {
+		direct, err := strconv.ParseBool(v)
+		if err != nil {
+			httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "direct", Code: "invalid", Message: "must be a boolean"}))
+			return
+		}
+		if direct {
+			f.Direct = actor(c)
+		}
+	}
+	s.listUsers(c, f)
 }
 
 // handleSegmentMembers lists the members of a segment (CONTRACTS §97): the
@@ -151,10 +173,27 @@ func (s *Service) handleSegmentMembers(c *gin.Context) {
 	s.listUsers(c, ListUsersFilter{Query: c.Query("q"), Segment: c.Param("id")})
 }
 
-// listUsers responds with the page of the users f selects.
+// ownerFilter reads owner_id=<user id>|none, none as 0.
+func ownerFilter(v string) (int64, bool) {
+	if v == "none" {
+		return 0, true
+	}
+	id, err := strconv.ParseInt(v, 10, 64)
+	return id, err == nil && id > 0
+}
+
+// listUsers responds with the page of the users f selects within the
+// caller's scope of user:read.
 func (s *Service) listUsers(c *gin.Context, f ListUsersFilter) {
+	ctx := c.Request.Context()
 	f.Page, f.PageSize = httpapi.Pagination(c)
-	users, total, err := s.ListUsers(c.Request.Context(), f)
+	scope, err := core.Scope(ctx, s.authz, perm.UserRead)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	f.Scope = scope
+	users, total, err := s.ListUsers(ctx, f)
 	if err == nil {
 		err = s.redactBalance(c, users...)
 	}
@@ -170,7 +209,12 @@ func (s *Service) handleGetUser(c *gin.Context) {
 	if !ok {
 		return
 	}
-	u, err := s.GetUser(c.Request.Context(), id)
+	ctx := c.Request.Context()
+	scope, err := core.Scope(ctx, s.authz, perm.UserRead)
+	var u *User
+	if err == nil {
+		u, err = s.getUserIn(ctx, s.db.Gorm, id, scope)
+	}
 	if err == nil {
 		err = s.redactBalance(c, u)
 	}
@@ -188,6 +232,16 @@ func (s *Service) handleCreateUser(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	uid := actor(c)
+	// A creator of users for its team only owns those it creates unless it
+	// names an owner (CONTRACTS §102.3), which CheckOwner then judges.
+	scope, err := core.Scope(ctx, s.authz, perm.UserCreate)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	if in.OwnerID == nil && !scope.All {
+		in.OwnerID = &uid
+	}
 	// Choosing roles other than the default is a role assignment: it needs
 	// role:assign as well.
 	if !IsDefaultRoles(in.RoleKeys) && !httpapi.CanAny(c, s.authz, "role:assign") {
@@ -218,7 +272,12 @@ func (s *Service) handleUpdateUser(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	u, err := s.UpdateUser(audit.Context(c), actor(c), id, in)
+	ctx := audit.Context(c)
+	scope, err := core.Scope(ctx, s.authz, perm.UserUpdate)
+	var u *User
+	if err == nil {
+		u, err = s.UpdateUser(ctx, actor(c), id, scope, in)
+	}
 	if err == nil {
 		err = s.redactBalance(c, u)
 	}
