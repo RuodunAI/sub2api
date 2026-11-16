@@ -27,7 +27,7 @@
 契约见 CONTRACTS §99。用户可见的权限不变：同样的角色、授予得到同样的结果。
 
 - **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
-- **判断**：每个策略版本（`authz_meta.policy_version`，只随授予、权限状态、角色定义变化）一份 Casbin 策略快照，请求用由它算出的权限集合，不逐条跑 matcher。给用户指派角色、改用户状态只让各节点重读这个用户，不重建快照；`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`（只有版本数字的旧格式按全部变化处理）。用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。**从数据库备份恢复后要清掉这些键**（命令见 CONTRACTS §99.4）。
+- **判断**：每个节点一个 Casbin enforcer（`SyncedCachedEnforcer`，Casbin 自带的角色管理器），装入 active 权限的授予、超管行和 active 用户的角色；每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存，命中约 0.2–0.4 µs），`/me`、菜单、访问密钥收窄用到的授予列表来自 Casbin（`GetImplicitPermissionsForUser`）。改授予、权限状态、角色定义（`authz_meta.policy_version` 随之变化）时各节点重新装入；给用户指派角色、改用户状态时各节点只在内存里换掉这个用户的角色、作废这个用户的决策缓存。`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`（只有版本数字的旧格式按全部变化处理）。不再使用 Valkey 缓存用户角色（原 `authz:c:ur:{uid}`），从备份恢复数据库后也不用清 Valkey。
 - **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
 - **并发保存角色**：角色与插件角色矩阵改带每个角色自己的修订号 `revision`（`roles.revision`，取代 0.1.289 候选的全局授权版本 `version`），PATCH、PUT permissions、PUT assignable、reset、插件矩阵都可带回读到的修订号，不一致 409 `version_conflict`（`details.revision`）；别的角色或用户的写入不再造成 409（CONTRACTS §5.2）。
 - **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 422 `unknown_scope`；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
@@ -35,7 +35,7 @@
 
 **发布**：单向迁移，必须停服：停掉全部节点（主节点先停），备份数据库，启动主节点迁移，再启动其余节点；0.1.289 不能在迁移后的库上运行。核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。
 
-**回滚**：只能从升级前的备份恢复，恢复后清掉 Valkey 的 `authz:c:ur:*`；升级后的写入会丢失。没有反向脚本，也没有运行时开关。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099（0099 在 develop 上的两种内容核心都接受）。
+**回滚**：只能从升级前的备份恢复；升级后的写入会丢失。没有反向脚本，也没有运行时开关。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099（0099 在 develop 上的两种内容核心都接受）。
 
 ### 核心 0.1.289（版本号推测）+ 9 个内置插件：插件权限声明与角色分配（迁移 0099，主节点优先，短暂停服）
 

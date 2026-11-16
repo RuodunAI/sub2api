@@ -328,7 +328,6 @@
 | `rl:account:{id}:spms:{秒}`、`rl:account:{id}:m:{key}:spms:{秒}`、`rl:account:{id}:md:{model}:spms:{秒}` | ZSET 同一周期内出现过的粘性会话：member = 粘性会话键（WebSocket 连接没有粘性键时为 `conn:{首轮请求 ID}`，§71.2），score = 最后出现的段号；每次写入删除 score < 当前段 − 20 的成员，TTL 同上。`req:{请求 ID}` 不写入。周期是 key 名的一部分，改周期即换新计数。2026-11-11 前是 ZSET `…:spm`（score = 毫秒时间），不再读写 | A |
 | `rl:apikey:{id}:rpmb`、`rl:apikey:{id}:tpmb` | HASH API Key 近 60 秒窗口的分段计数，格式同账号（§60.3、§68.3）；API Key 没有会话上限 | A |
 | `slot:account-model:{key}:{id}` | ZSET 账号某个模型列表的并发槽位，格式同 `slot:{kind}:{id}`（§68.2） | D |
-| `authz:c:ur:{uid}` | STRING JSON `{"v":授权版本,"p":策略版本,"a":是否 active,"r":["r:<角色 key>",...]}`，Casbin 用户角色缓存（各节点共用），TTL 15 分钟；写入在请求外、直接覆盖（并发上限 64，满了丢弃）；只在 `v` 等于节点要求的版本时采用，Valkey 出错时跳过、直接读 PG（§99.4） | authz |
 
 广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`authz:changed` payload：JSON `{"v":授权版本,"p":策略版本?,"u":[用户 id]?}`（0.1.290 候选）：`u` 是只改了这些用户的角色或状态的写入，`p` 是策略写入后的策略版本；旧格式（只有版本数字）按“全部变了”处理（§99.4）。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
 
@@ -8533,7 +8532,7 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 
 ## 99. 权限判断接入 Casbin（迁移 0100；核心 0.1.290 候选）
 
-设计见“sup2api 权限判断迁移到 Casbin：实现设计”。Casbin 接管“用户经哪些角色持有哪些授予、某个 key 是否被蕴含”；防提权、可分配、`CanActOnUsers`、超管唯一、访问密钥交集 `Restrict`、插件复核、DataScope 仍由自研代码负责，输入是 Casbin 产出的集合。本期不做 team（S0）。0.1.290 定稿时不再有过渡：`casbin_rule` 是授予与角色指派的唯一存储，判断只走 Casbin（2026-11-16，用户决定；此前的 Mode P 影子方案——旧表加触发器投影、`authz.engine` 开关、影子比较、漂移任务、`authz-verify`——没有发布，已全部删除）。
+设计见“sup2api 权限判断迁移到 Casbin：实现设计”。每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存），用户授予的完整列表是 Casbin 的 `GetImplicitPermissionsForUser`（2026-11-16 用户决定，§99.3）；DataScope、访问密钥收窄 `Restrict` 的列表运算、防提权与可分配的角色比较、超管唯一、插件复核仍由自研代码负责，其中“用户是否持有某个 key”一律问 Casbin。本期不做 team（S0）。0.1.290 定稿时不再有过渡：`casbin_rule` 是授予与角色指派的唯一存储，判断只走 Casbin（2026-11-16，用户决定；此前的 Mode P 影子方案——旧表加触发器投影、`authz.engine` 开关、影子比较、漂移任务、`authz-verify`——没有发布，已全部删除）。
 
 ### 99.1 存储 `casbin_rule`
 
@@ -8556,59 +8555,53 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 - **单向**，发布必须停服：先停掉全部节点（主节点先停），备份数据库，再启动新版本迁移；0.1.289 及更早的核心不能在这个 schema 上运行。回退只能从升级前的备份恢复（`deploy/rollback/0.1.290-casbin-down.md`）。开发库若应用过未发布的 Mode P 版 0100（校验和不同），新版本拒绝启动：重建库，或恢复到 0099 再升级。
 - 停在 0100 之前的库：0097 因为没有或有多个超管而失败时会提示 `sub2api admin recover-superadmin`。CLI 不跑迁移，这时它只做移交（`iam.RecoverSuperAdmin` 用 `authz.LegacySchema` 判断：`schema_migrations` 里没有 `0100_casbin_rule.sql`；0100 之后残留的 `user_roles` 表不算，CLI 照常写 `casbin_rule`，选 `authz.TransferSuperAdminLegacy`，持有者在 `user_roles` 里；控制台的移交不做这个判断，总是写 `casbin_rule`），拒绝禁用的目标与 `--reset-password`、`--reset-2fa`（409 `conflict`，提示先不带这两项恢复一个启用的用户，启动核心完成迁移后再跑一次带上它们），因为其余步骤读用户时要读 `casbin_rule`（`TestRecoverSuperAdminBeforeCasbinRule`）。
 
-### 99.3 解析（`internal/authz/casbinx`）
+### 99.3 判断（`internal/authz/casbinx`）
 
-- 模型：`r = sub, obj`，`p = sub, act, scope`，`g = _, _`，matcher `g(r.sub, p.sub) && permMatch(p.act, p.scope, r.obj)`，`permMatch` 就是 `perm.Implies`（act `*` 蕴含一切）；它的解析缓存属于各自的 enforcer（随快照释放，不是进程级全局状态）。
-- 两个版本（`authz_meta`）：`version` 每次授权写入都升（控制台的 `X-Authz-Version`、用户集合的有效性）；`policy_version` 只随快照里的内容升：授予、权限状态、角色定义（创建、删除、改名、重置、插件目录同步、范围授予清理）。给用户指派角色、改用户状态只升 `version`（三审 D1）。
-- 每个策略版本一份不可变快照：在只读 RR 事务里读两个版本、权限状态和 p 行（gorm-adapter 只读加载，`TurnOffAutoMigrate` 后 `NewAdapterByDBUseTableName`），只装 active 权限的 p 行与超管行；库里存着的 `r:_self` 行不装（约束本来也不允许）。g 行不装入：用户的角色由用户角色缓存读出（`casbinrule.RoleSubsOf`，一条语句同时读出两个版本、用户是否 active 和角色，三审 D4），随每次调用交给快照（按角色主体逐个求授予），只读 RoleManager 只把主体连到它自己（`EnableGFunctionCache(false)`）。`Ensure(policy)`：快照的策略版本 ≥ policy 直接用，否则 single-flight 重建（50 ms 去抖），最多等 2 s，超时报错（fail closed）。本节点得知新的策略版本（自己的写入、广播、轮询、启动）时在请求外预建快照（`Resolver.Prewarm`），请求路径上的 `Ensure` 大多直接命中。
-- `authz.loadPermissionSet` 只走 `Resolver.Grants(uid, min)`，产出 `core.PermissionSet`（`*` → `Superuser`）：先读用户角色（authz 版本 ≥ min），再取它所读的策略版本的快照；快照更新（中间有策略写入提交）时立即按快照的版本重读角色，仍对不上时间隔从 2 ms 起翻倍（最多 100 ms）重试到快照等待上限（2 s，从解析开始算）或调用方的 ctx 结束，才报 `casbinx.ErrSkew`（fail closed，请求失败）；绝不把一个策略版本下读到的角色和另一个策略版本的快照拼在一起。用户的指派与状态写入不动策略版本，所以批量指派不会造成重试；只有持续不断的策略写入才会。集合的 `Version` 是读角色时的 authz 版本。路由、`core.Can`、网关的判定都读这个集合（`PermissionSet.Has`，同一个 `perm.Implies`），不调 Casbin 的 `Enforce`。matcher 把每条策略跑一遍（8–230 µs），只在 casbinx 自己的测试里用来核对集合（向量、超管与以后新增的 key、非 active 权限、g 记忆、`Restrict` 反例、并发；`TestCasbinEquivalenceRandom`），生产代码没有导出的 matcher 入口。
-- `ActivePermissionKeys` 按需直接查 active 的权限，权限判断不再先读一遍权限目录（三审 D5）。
-- 没有数据库的 `authz.Service`（只用于单元测试）没有解析器，加载集合报错。
+- 模型：`r = sub, obj`，`p = sub, act, scope`，`g = _, _`，matcher `g(r.sub, p.sub) && permMatch(p.act, p.scope, r.obj)`（先 g 后 permMatch，govaluate 短路），`permMatch` 就是 `perm.Implies`（act `*` 蕴含一切）；它的解析缓存属于各自的 enforcer。超管是 `p, r:super_admin, *, *` 这一行，没有别的超管判断。
+- 每个节点一个 enforcer：Casbin 的 `SyncedCachedEnforcer`，Casbin 自带的角色管理器，没有 adapter，`EnableAutoSave(false)`。装入（只读 RR 事务，gorm-adapter 的 `LoadFilteredPolicy` 读 p、g 两类行，`TurnOffAutoMigrate` 后 `NewAdapterByDBUseTableName`）：两个版本、active 权限的 p 行与超管行（已停用、已移除权限的授予仍在库里，不装；库里的 `r:_self` 行也不装）、active 且未删除用户的 g 行，再把每个 active 用户连到虚拟角色 `r:_self`（self 权限是它的 p 行，不落库）。不 active 的用户什么都不持有，连 self 权限也没有。
+- 两个版本（`authz_meta`）：`version` 每次授权写入都升（控制台的 `X-Authz-Version`）；`policy_version` 只随策略内容升：授予、权限状态、角色定义（创建、删除、改名、重置、插件目录同步、范围授予清理）。给用户指派角色、改用户状态只升 `version`，并在广播里点名用户（三审 D1）。
+- 节点得知一个新版本（自己的写入提交后、`authz:changed`、版本轮询、启动）时，enforcer 在请求外按版本顺序应用：
+  - 正好是 enforcer 版本的下一个，且只点名了用户：逐个重读这些用户（`casbinrule.RoleSubsOf`，一条语句读出两个版本、是否 active 与角色，三审 D4），在内存里换掉该用户的 g 行（`RemoveFilteredGroupingPolicy` + `AddGroupingPolicies`，不经 adapter），丢掉该用户的决策缓存与授予列表；别的用户的缓存不动，策略不重载。读到的策略版本与 enforcer 的不同（期间有策略写入提交）时改为整体重载，绝不把一个策略版本下的角色和另一个策略版本的授予拼在一起。
+  - 否则（策略写入、中间有版本没听到、旧格式广播、轮询发现的新版本）：整体重新装入一个新 enforcer，替换旧的（旧 enforcer 上进行中的判断照常完成），决策缓存随之全部作废。
+  - 不在装入结果里的用户（不 active，或测试夹具绕过服务写入）第一次被问到时读一次，之后同样在内存里。
+- 判断：`authz.Service.Can` 是 `Enforce(u:<id>, key)`；`PermissionSet` 是 Casbin 列出的该用户授予（`GetImplicitPermissionsForUser`，`*` → `Superuser`；按用户缓存，与决策同时作废），它的 `Has` 也是 `Enforce`（`core.PermissionSet.Decided`）。路由（`Perm`、`PermAny`）、`core.Can`、网关 `gateway:use`、`/me`、菜单、插件路由与 `AuthzCheck`、访问密钥创建时的校验都经这两个入口；`HasAction`、`DataScope`、`ScopeGroups`、`KeyList` 读 Casbin 给出的列表。只用键构造的集合（角色的授予、访问密钥的键表，`core.PermissionSetOf`）的 `Has` 只比较键，用于比较列表，不是对用户的判断。
+- 访问密钥：判断是“密钥收窄后的列表蕴含该 key”且 `Enforce(用户, key)`。收窄后的列表仍按 `Restrict` 计算（Casbin 的列表与密钥键表逐模式取较窄者，不可比的范围丢弃），所以 `Has` 与 `DataScope` 一致，不会出现“密钥 `group/12` + 用户 `account/5` → 允许 `group/12/account/5`”这种交集（`TestRestrictIsNotAMatcherIntersection`）。
+- 防提权与可分配（`grantSet`、`CanActOnUsers`、`CanGrant`、角色编辑）比较的是角色携带的授予（授予视图，含已停用的插件权限、不看用户状态），在写入事务里读（C-L4）；“操作者是否持有某个 key”经 `Missing` 落到操作者集合的 `Has`。用户自己的 PermissionSet 来自 Casbin。
+- 等待：每次判断先等 enforcer 达到本节点知道的最新版本（`minVersion`），最多 2 s，超时报 `casbinx.ErrStale`（fail closed，请求失败）；装入失败时按 50 ms 起翻倍、最多 1 s 的间隔重试，期间需要新版本的判断都失败。
+- 没有数据库的 `authz.Service`（只用于单元测试）没有 enforcer，判断报错。
+- 性能（`casbinx` 基准，10 个角色 × 40/200 个授予，1 千/1 万个用户，4 核）：命中决策缓存 0.2–0.4 µs（允许、拒绝、带范围相同，并行 0.2–0.3 µs）；第一次判断允许的 key 6–18 µs，拒绝或带范围的 key 要把全部 p 行跑一遍，0.2 ms（每个角色 40 个授予）到 1.1 ms（200 个）；一个用户的授予列表首次 0.04–0.34 ms，之后约 0.1–0.2 µs；整体装入 1 千用户 4–5 ms、1 万用户 35–50 ms；一个用户变更（内存里逐行换掉这个用户的 g 行，与用户数无关）约 4–7 µs。数值见 `casbinx/bench_test.go`。
 
-### 99.4 缓存
+### 99.4 缓存与失效
 
 | 层 | 内容 | 有效性 |
 | --- | --- | --- |
-| 进程 | 快照（`atomic.Pointer`，CAS 拒绝旧策略版本） | 策略版本 ≥ 用户角色读出时的策略版本 |
-| 进程 | `users[uid]` 有效集合（上限 20 万，满了丢掉八分之一） | 见下 |
-| Valkey | `authz:c:ur:{uid}` 用户角色 `{v, p, a, r}`（§7），各节点共用 | 只认 `v ==` 要求的版本；写入在请求外、直接覆盖（并发上限 64，满了丢弃），出错跳过、读 PG |
+| 进程 | enforcer（策略、active 用户的 g 行） | 版本 ≥ 判断要求的版本 |
+| 进程 | Casbin 决策缓存（按用户分组的 `cache.Cache`，每个用户最多 4096 条、总共 2^20 条，超出不再缓存） | 随该用户的变更或整体重载作废 |
+| 进程 | 每个用户的授予列表 | 同上 |
 
-进程里不再单独缓存用户角色（原来的第一级与 `users` 重复，三审 D3）；同一用户同一要求版本的并发加载合并为一次。
+不再有 Valkey 一级（原 `authz:c:ur:{uid}`）和单独的进程级用户集合缓存（`Service.users`）：每个节点在一次查询里装入全部 active 用户的角色，之后只有被点名的用户才重读一条语句，请求路径上没有可以跨节点共享的读取（三审 D3 的结论在此基础上再进一步）。数据库从备份恢复后不需要清理 Valkey；授权版本回退时各节点会报“数据库版本低于已知版本”并让需要新版本的判断失败，重启核心即可。
 
-**失效**：每个节点记着它知道的最新 authz 版本 `minVersion`。每次授权写入在提交后广播 `authz:changed`（§7 payload `{"v","p"?,"u"?}`）；节点收到（或轮询到、或自己写入提交）新版本 `v` 时：
-- `v` 正好是 `minVersion + 1`，并且这次写入点名了用户（`u`）且没有动策略：只丢掉这些用户的集合，其他用户的集合保留，下次取用时标为新版本（它们在这次写入前后不变）；
-- 否则（中间有版本没听到、广播丢失由轮询补上、策略写入、旧格式的 payload）：丢掉全部集合，带 `p` 时预建该策略版本的快照。
-写入的节点在事务里升版本时记下这次写入点名的用户，提交后按同一规则失效本节点并广播；`ClearScopeGrants` 也一样（它自己在调用方提交后广播，三审 S2）。读出的集合版本小于 `minVersion` 时不放进缓存。所有改授予、指派、用户状态的写入都升版本；绕过服务直接改库（包括测试夹具 `testutil.Grant` 一类）要自己升版本（改授予时连策略版本一起，`testutil.BumpAuthz`），否则缓存按旧状态作答。
-
-**数据库从备份恢复后必须清掉 Valkey 里的这些键。** authz 版本号只在同一份数据库历史里对应唯一的状态：恢复后版本回退（例如从 1000 回到 900），恢复后的写入会重新走过 901…，内容却和恢复前不同；恢复前写下、还在 TTL（15 分钟）内的条目（例如 `v=950`）会在库再次走到 950 时被精确命中，用恢复前的角色作答。“只认版本完全相同”只缩小了这个窗口，不能关掉它。所以恢复数据库之后、启动核心之前（或启动后立即）执行：
-
-```sh
-valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 valkey-cli -u "$REDIS_URL" UNLINK
-```
-
-（`redis-cli` 同样用法；集群模式对每个主节点各执行一次。）不清的话，最长 15 分钟内可能有用户按恢复前的角色得到答案。没有选用纪元（`authz_meta` 加一列编进键）：备份里带着它自己的纪元，恢复后同样要人工改一次纪元，和清键是同一个手工步骤，却要多维护一条读路径。
-
-`authz.Deps.Redis` 由 `app` 传入；为 nil（`sub2api admin` 命令）时用户角色直接读 PG。
+`authz:changed` 的 payload 是 `{"v","p"?,"u"?}`（§7）。写入的节点在事务里升版本时记下这次写入点名的用户，提交后先交给本节点的 enforcer 再广播；`ClearScopeGrants` 也一样（它自己在调用方提交后广播，三审 S2）。所有改授予、指派、用户状态的写入都升版本；绕过服务直接改库（包括测试夹具 `testutil.Grant`、`AssignRoles` 一类）要自己升版本（`testutil.BumpAuthz` 两个版本都升，节点整体重载），否则节点按旧状态作答。
 
 ### 99.5 回滚
 
-- 迁移 0100 单向，没有运行时开关，也没有反向脚本（`deploy/rollback/0.1.290-casbin-down.sql` 只报错说明这一点，什么也不改）。回到 0.1.289 的唯一途径是从升级前的备份恢复，恢复后按 §99.4 清掉 Valkey 里的 `authz:c:ur:*`；升级之后写入的授予、指派会丢失。托管部署本来就不能跨 schema 回退（网关拒绝），出问题修复前进。
+- 迁移 0100 单向，没有运行时开关，也没有反向脚本（`deploy/rollback/0.1.290-casbin-down.sql` 只报错说明这一点，什么也不改）。回到 0.1.289 的唯一途径是从升级前的备份恢复；Valkey 里没有授权的键，不用清理；升级之后写入的授予、指派会丢失。托管部署本来就不能跨 schema 回退（网关拒绝），出问题修复前进。
 - 发布与核对步骤见 `deploy/rollback/0.1.290-casbin-down.md`。
 
 ### 99.6 禁止事项
 
 由 `internal/store/gormguard` 的 `[casbin-api]` 检查：
 
-- 热路径（路由、网关、菜单、`core.Can`）不调用 matcher：Casbin 自己的 `Enforce*` 只能在 `internal/authz/casbinx` 里调用，casbinx 也不导出 matcher 入口（`Resolver` 只有 `Grants`、`Prewarm`）。
-- gorm-adapter 只在 casbinx 里 import，API 按白名单检查（casbinx 也一样）：只许 `TurnOffAutoMigrate`、`NewAdapterByDBUseTableName` 和 `(*Adapter).LoadFilteredPolicy`（以及 `Filter` 类型）。`NewAdapterByDBUseTableName` 只能以调用的形式出现，第一个参数必须是一个变量，并且同一个函数里在它之前已经对这个变量调用过 `TurnOffAutoMigrate`（嵌套的函数字面量里调用的不算），否则构造函数会把表 AutoMigrate 成 adapter 自己的结构、把 `v1`、`v2` 收窄。其余一律禁止：别的 `New*` 与 `InitDbResolver`（AutoMigrate、自开连接池或用于写入）、`Open`（自开连接池并建库建表）、`GetDb`（交出 adapter 的句柄）、`LoadPolicy`（会装入 g 行）、`Close`、`Copy` 等。
-- 任何地方（casbinx 也一样）不使用 Casbin 或 adapter 的写入、事务、自重载 API：`AddPolicy` 一类的策略管理、`SavePolicy`、adapter 的 `Transaction()`、`TransactionalEnforcer`、`SyncedEnforcer`、`StartAutoLoadPolicy`、`EnableAutoSave(true)`。策略只由 `casbinrule` 在业务事务里用 GORM 写；快照在内存里用 `model.Model` 构建，不经 enforcer 的管理 API。
+- Casbin 不写库：enforcer 只由 casbinx 构造，构造函数只带模型一个参数（没有 adapter），`EnableAutoSave` 只能是常量 `false`；casbinx 可以改 enforcer 内存里的策略（`Add`/`Remove[Filtered][Named][Grouping]Polic(y|ies)`，用于一个用户的 g 行），别处一律不能。任何地方（casbinx 也一样）都不使用 Casbin 或 adapter 的持久化、事务、监听、自重载 API：其余的策略管理（`Update*`、角色/权限/用户形式、`Self*`）、`SavePolicy`、enforcer 的 `LoadPolicy`、adapter 的 `Transaction()`、`TransactionalEnforcer`、`DistributedEnforcer`、`SetAdapter`、`SetWatcher`、`SetDispatcher`、`StartAutoLoadPolicy`。策略只由 `casbinrule` 在业务事务里用 GORM 写。
+- Casbin 的 `Enforce*` 只在 casbinx 里调用；别的包经 `authz.Service`（`core.Authorizer`）判断。
+- gorm-adapter 只在 casbinx 里 import，API 按白名单检查（casbinx 也一样）：只许 `TurnOffAutoMigrate`、`NewAdapterByDBUseTableName` 和 `(*Adapter).LoadFilteredPolicy`（以及 `Filter` 类型）。`NewAdapterByDBUseTableName` 只能以调用的形式出现，第一个参数必须是一个变量，并且同一个函数里在它之前已经对这个变量调用过 `TurnOffAutoMigrate`（嵌套的函数字面量里调用的不算），否则构造函数会把表 AutoMigrate 成 adapter 自己的结构、把 `v1`、`v2` 收窄。其余一律禁止：别的 `New*` 与 `InitDbResolver`（AutoMigrate、自开连接池或用于写入）、`Open`（自开连接池并建库建表）、`GetDb`（交出 adapter 的句柄）、`LoadPolicy`（不在调用方的快照事务里）、`Close`、`Copy` 等。
 
 ### 99.7 实现位置
 
 - 迁移：`server/internal/migrations/0100_casbin_rule.sql`；发布与回退说明 `deploy/rollback/0.1.290-casbin-down.md`（`.sql` 只报错）
 - 存储：`server/internal/authz/casbinrule/`（映射、全部读写语句、`Filter`、`RenameRoleSQL`）；模型 `server/internal/store/model/casbin_rule.gen.go`
-- 解析：`server/internal/authz/casbinx/`（`api.go` 接口、`model.go`（模型与每个 enforcer 自己的 matcher）、`rolemanager.go`、`snapshot.go`、`snapshots.go`（按策略版本持有与重建快照）、`loader.go`、`resolver.go`、`rolecache.go`（Valkey 与合并加载））
-- 接入：`server/internal/authz/service.go`（`loadPermissionSet`）、`grants.go`（含 `ClearScopeGrants`）、`roles.go`、`sync.go`、`plugin_catalog.go`、`superadmin.go`；`server/internal/core/scope_refs.go`（只有行的种类与 `ScopeGrantClearer`）；`server/internal/iam/users.go`、`superadmin.go`（CLI 选旧库的移交）
+- 判断：`server/internal/authz/casbinx/`（`api.go` 接口、`model.go`（模型、每个 enforcer 自己的 matcher、`newEnforcer`）、`engine.go`（装入、按版本应用变更、等待、`Enforce`/`Permissions`）、`decisions.go`（按用户分组的决策缓存）、`loader.go`）；`core.PermissionSet.Decided`（`core/ports_identity.go`）
+- 接入：`server/internal/authz/service.go`（`Can`、`PermissionSet`、`invalidate`）、`grants.go`（含 `ClearScopeGrants`）、`roles.go`、`sync.go`、`plugin_catalog.go`、`superadmin.go`；`server/internal/core/scope_refs.go`（只有行的种类与 `ScopeGrantClearer`）；`server/internal/iam/users.go`、`superadmin.go`（CLI 选旧库的移交）
 - 测试：迁移 `server/internal/migrations/casbin_rule_db_test.go`；孤儿检查与夹具 `server/internal/testutil/policy.go`（`DB` 在 `db.go` 里登记检查）；检查 `server/internal/store/gormguard/casbin_test.go`
 
 ## 100. 控制台会话：Valkey 令牌 `s2s_`（核心 0.1.290 候选，迁移 0101）

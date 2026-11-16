@@ -35,7 +35,7 @@ func grantRows(t *testing.T, s *Service, id int64) (plain, scoped []string) {
 	t.Helper()
 	err := s.db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(array_agg(key ORDER BY key) FILTER (WHERE scope = ''), '{}'),
     COALESCE(array_agg(key ORDER BY key) FILTER (WHERE scope <> ''), '{}')
-FROM (`+casbinrule.GrantsOf("(SELECT key FROM roles WHERE id = $1)")+`) g`, id).Scan(&plain, &scoped)
+FROM (`+casbinrule.Grants+`) g WHERE g.role = (SELECT key FROM roles WHERE id = $1)`, id).Scan(&plain, &scoped)
 	if err != nil {
 		t.Fatal(err)
 	}

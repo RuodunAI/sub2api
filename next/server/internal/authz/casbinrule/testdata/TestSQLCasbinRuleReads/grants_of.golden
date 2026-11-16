@@ -1,5 +1,5 @@
 -- sql
-SELECT substr(cr.v0, 3) AS role, cr.v1 AS action, CASE cr.v2 WHEN '*' THEN '' ELSE cr.v2 END AS scope, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
-FROM casbin_rule cr WHERE cr.ptype = 'p' AND cr.v1 <> '*' AND cr.v0 = ('r:' || $1)
+SELECT g.key FROM roles r, LATERAL (SELECT substr(cr.v0, 3) AS role, cr.v1 AS action, CASE cr.v2 WHEN '*' THEN '' ELSE cr.v2 END AS scope, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
+FROM casbin_rule cr WHERE cr.ptype = 'p' AND cr.v1 <> '*' AND cr.v0 = ('r:' || r.key)) g WHERE r.key = $1
 -- vars
 $1 string "admin"

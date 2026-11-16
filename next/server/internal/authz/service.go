@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -33,9 +33,6 @@ type Deps struct {
 	Plugins core.PluginRegistry
 	// PollInterval is the fallback version check period (default 30s).
 	PollInterval time.Duration
-	// Redis is the second level of the Casbin user-role cache, shared by the
-	// nodes; nil keeps it in the process only.
-	Redis redis.UniversalClient
 }
 
 // Service is the authz module. It implements core.Authorizer and
@@ -47,10 +44,9 @@ type Service struct {
 	poll    time.Duration
 
 	mu sync.RWMutex
-	// minVersion is the newest authz version this node knows of; every set
-	// in users holds at it (invalidate drops the others).
+	// minVersion is the newest authz version this node knows of: every
+	// decision waits for the enforcer to hold it.
 	minVersion int64
-	users      map[int64]core.PermissionSet
 	// pending holds what each version this node bumped changed, until
 	// Committed announces it.
 	pending   map[int64]authzChange
@@ -59,9 +55,9 @@ type Service struct {
 	// menuKeys are the permissions of each core menu item (BindMenuRoutes).
 	menuKeys map[string][]string
 
-	// casbin resolves permission sets (nil without a database: tests that
-	// seed users and are answered from it).
-	casbin casbinx.Resolver
+	// casbin is the node's Casbin enforcer, which makes every decision (nil
+	// without a database: tests that never decide).
+	casbin casbinx.Enforcer
 }
 
 var (
@@ -76,11 +72,9 @@ func New(d Deps) *Service {
 	if d.PollInterval <= 0 {
 		d.PollInterval = 30 * time.Second
 	}
-	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval,
-		users: map[int64]core.PermissionSet{}, pending: map[int64]authzChange{}}
+	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, pending: map[int64]authzChange{}}
 	if d.DB != nil {
-		loader := casbinx.NewLoader(d.DB)
-		s.casbin = casbinx.NewResolver(loader, casbinx.NewRoleCache(loader, d.Redis), SelfPermissionKeys())
+		s.casbin = casbinx.New(casbinx.NewLoader(d.DB), SelfPermissionKeys(), casbinx.Options{})
 	}
 	return s
 }
@@ -157,10 +151,10 @@ func (s *Service) OnChange(fn func()) {
 
 // Two counters in authz_meta (CONTRACTS §99.4): version, which every authz
 // write moves, and policy_version, which only the writes of what the
-// Casbin policy snapshot holds move (grants, permission statuses, role
+// Casbin policy holds move (grants, permission statuses, role
 // definitions). A write of a user's roles or status moves version alone
-// and names the users: every node then drops those users' sets only, and
-// no snapshot is rebuilt.
+// and names the users: every node then reads those users again into its
+// enforcer and drops their decisions only; the policy is not loaded again.
 
 // authzChange is what one authz version changed, as authz:changed carries
 // it (JSON).
@@ -173,9 +167,6 @@ type authzChange struct {
 	// means every user (a write that does not say).
 	Users []int64 `json:"u,omitempty"`
 }
-
-// only reports whether c is known to change the users c.Users alone.
-func (c authzChange) only() bool { return c.Policy == 0 && len(c.Users) > 0 }
 
 // parseChange reads an authz:changed payload: a change, or a bare version
 // (a change of everything).
@@ -200,8 +191,8 @@ func (s *Service) Bump(ctx context.Context, tx *gorm.DB, users ...int64) (int64,
 	return s.bump(ctx, tx, bumpVersion, users)
 }
 
-// bumpPolicy is Bump for a write of what the policy snapshot holds: both
-// versions move, and every node rebuilds its snapshot.
+// bumpPolicy is Bump for a write of what the policy holds: both versions
+// move, and every node loads the policy again.
 func (s *Service) bumpPolicy(ctx context.Context, tx *gorm.DB) (int64, error) {
 	return s.bump(ctx, tx, bumpPolicyVersion, nil)
 }
@@ -325,15 +316,14 @@ func (s *Service) currentVersions(ctx context.Context) (int64, int64, error) {
 	return store.AuthzVersions(store.G(ctx, s.db.Gorm))
 }
 
-// readVersion reads the versions and takes them in: what this node may
-// have missed is dropped, and the snapshot of the policy version is built.
+// readVersion reads the version and takes it in: a version this node
+// missed has the enforcer load the policy again.
 func (s *Service) readVersion(ctx context.Context) error {
-	v, p, err := s.currentVersions(ctx)
+	v, _, err := s.currentVersions(ctx)
 	if err != nil {
 		return err
 	}
 	s.invalidate(authzChange{Version: v})
-	s.prewarm(p)
 	return nil
 }
 
@@ -353,27 +343,20 @@ func (s *Service) Version() int64 {
 	return s.minVersion
 }
 
-// usersCapacity bounds the sets a node keeps; past it an eighth goes, in
-// the map's order.
-const usersCapacity = 200_000
-
-// invalidate takes in that version c.Version changed what c says. The
-// version next to the newest known one, of a user write naming its users,
-// drops those users' sets only; anything else (a policy write, a version
-// skipped or missed, a change that does not say) drops every set. The sets
-// left hold at c.Version.
+// invalidate takes in that version c.Version changed what c says: the
+// enforcer applies it (the users it names alone when it is the version
+// next to the enforcer's, else by loading the policy again), then this
+// node knows of the version, and so waits for it on every decision.
 func (s *Service) invalidate(c authzChange) {
+	if s.casbin != nil {
+		// Told first: a decision that reads the new version finds the
+		// enforcer told of it.
+		s.casbin.Changed(casbinx.Change(c))
+	}
 	s.mu.Lock()
 	if c.Version <= s.minVersion {
 		s.mu.Unlock()
 		return
-	}
-	if c.Version == s.minVersion+1 && c.only() {
-		for _, id := range c.Users {
-			delete(s.users, id)
-		}
-	} else {
-		clear(s.users)
 	}
 	s.minVersion = c.Version
 	for v := range s.pending {
@@ -386,94 +369,41 @@ func (s *Service) invalidate(c authzChange) {
 	for _, fn := range listeners {
 		go fn()
 	}
-	if c.Policy > 0 {
-		s.prewarm(c.Policy)
-	}
-}
-
-// keep caches set as userID's unless it was read before the newest version
-// this node knows of (which may have changed it), making room past
-// usersCapacity. Called with s.mu held.
-func (s *Service) keep(userID int64, set core.PermissionSet) {
-	if set.Version < s.minVersion {
-		return
-	}
-	if _, ok := s.users[userID]; !ok && len(s.users) >= usersCapacity {
-		n := usersCapacity / 8
-		for id := range s.users {
-			if n--; n < 0 {
-				break
-			}
-			delete(s.users, id)
-		}
-	}
-	s.users[userID] = set
-}
-
-// prewarm has Casbin build the snapshot of policy version policy off the
-// request: the first requests after a policy write then find it built
-// instead of waiting for it, or failing past its timeout.
-func (s *Service) prewarm(policy int64) {
-	if s.casbin != nil {
-		s.casbin.Prewarm(policy)
-	}
 }
 
 // ------------------------------------------------------------ core.Authorizer
 
+// errNoEnforcer is the answer of a service without a database: it has no
+// enforcer to decide with.
+var errNoEnforcer = errors.New("authz: no database to decide permissions with")
+
+// Can is Casbin's decision: Enforce of permission for userID, through its
+// decision cache, at this node's version; under an access key, of the key's
+// narrowed set (PermissionSet).
 func (s *Service) Can(ctx context.Context, userID int64, permission string) (bool, error) {
-	set, err := s.PermissionSet(ctx, userID)
-	if err != nil {
-		return false, err
+	if core.ByAccessKey(ctx, userID) {
+		set, err := s.PermissionSet(ctx, userID)
+		return err == nil && set.Has(permission), err
 	}
-	return set.Has(permission), nil
+	if s.casbin == nil {
+		return false, errNoEnforcer
+	}
+	return s.casbin.Enforce(ctx, userID, s.Version(), permission)
 }
 
-// PermissionSet returns what userID may do in this request: under an access key
-// the key's permissions, and never more than the user's.
+// PermissionSet returns what userID may do in this request, at this node's
+// version: Casbin's lists of the user's grants, its Has Casbin's Enforce;
+// under an access key the key's permissions, and never more than the
+// user's.
 func (s *Service) PermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
-	set, err := s.userPermissionSet(ctx, userID)
+	if s.casbin == nil {
+		return core.PermissionSet{}, errNoEnforcer
+	}
+	set, err := s.casbin.Permissions(ctx, userID, s.Version())
 	if err != nil {
 		return core.PermissionSet{}, err
 	}
 	return core.RestrictToAccessKey(ctx, userID, set), nil
-}
-
-// userPermissionSet is userID's set at this node's version: the cached
-// one, which holds at that version (invalidate), labelled with it; else
-// one Casbin resolves.
-func (s *Service) userPermissionSet(ctx context.Context, userID int64) (core.PermissionSet, error) {
-	s.mu.RLock()
-	set, ok := s.users[userID]
-	min := s.minVersion
-	s.mu.RUnlock()
-	if ok {
-		set.Version = max(set.Version, min)
-		return set, nil
-	}
-	set, err := s.loadPermissionSet(ctx, userID, min)
-	if err != nil {
-		return core.PermissionSet{}, err
-	}
-	s.mu.Lock()
-	s.keep(userID, set)
-	s.mu.Unlock()
-	return set, nil
-}
-
-// errNoResolver is the answer of a service without a database for a user
-// its tests did not seed.
-var errNoResolver = errors.New("authz: no database to resolve permissions with")
-
-// loadPermissionSet resolves userID's set with Casbin at version min or
-// newer: the user's roles read at the set's version and the snapshot of
-// the policy they were read under, failing closed (casbinx.ErrSkew, a
-// snapshot not had in time) rather than answering from either alone.
-func (s *Service) loadPermissionSet(ctx context.Context, userID, min int64) (core.PermissionSet, error) {
-	if s.casbin == nil {
-		return core.PermissionSet{}, errNoResolver
-	}
-	return s.casbin.Grants(ctx, userID, min)
 }
 
 // RolesPermissions returns the union of all permissions granted by the given
@@ -484,7 +414,7 @@ func (s *Service) loadPermissionSet(ctx context.Context, userID, min int64) (cor
 // holder holds (CONTRACTS §43.6): a custom role with assign_custom does not
 // manage itself or its peers, nor hand out what does; a role listed by name
 // stays assignable as listed. Used to compare what roles carry in grant
-// checks; the effective set (loadPermissionSet) counts active permissions
+// checks; the effective set (Casbin's, PermissionSet) counts active permissions
 // only.
 func (s *Service) RolesPermissions(ctx context.Context, q *gorm.DB, roleKeys []string) (core.PermissionSet, error) {
 	set := core.PermissionSet{Keys: map[string]struct{}{}, Assignable: map[string]struct{}{}}
@@ -597,7 +527,10 @@ func readRoleGrants(ctx context.Context, q *gorm.DB, roleKeys []string) (map[str
 func roleGrants(db *gorm.DB, roleKeys []string) *gorm.DB {
 	return db.Raw(`
 SELECT r.key, r.superuser, r.assign_custom, g.key
-FROM roles r`+roleGrantsJoin(`p.status NOT IN ('removed', 'staged')`)+`
+FROM roles r LEFT JOIN LATERAL (
+    SELECT rg.key FROM (`+casbinrule.GrantsOfRole+`) rg
+    JOIN permissions p ON p.key = rg.action AND p.status NOT IN ('removed', 'staged')
+) g ON true
 WHERE r.key = ANY(?)`, store.Strings(roleKeys))
 }
 

@@ -1,7 +1,7 @@
 package casbinx
 
 import (
-	"errors"
+	"context"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -11,8 +11,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// core TestPermissionSetScoped through Casbin: Enforce and the set Grants
-// returns answer each key as core's set does.
+// core TestPermissionSetScoped through Casbin: Enforce, and the lists
+// Permissions returns, answer each key as core's set does.
 func TestPermissionSetScopedViaCasbin(t *testing.T) {
 	t.Parallel()
 	keys := []string{"account:read:own", "account:update:group/12", "proxy:read"}
@@ -35,8 +35,11 @@ func TestPermissionSetScopedViaCasbin(t *testing.T) {
 		if got := enforce(t, s, held("r:t"), k); got != want {
 			t.Errorf("Enforce(%s) = %v, want %v", k, got, want)
 		}
+		if got := listsOf(set).Has(k); got != want {
+			t.Errorf("Permissions lists %s = %v, want %v", k, got, want)
+		}
 		if got := set.Has(k); got != want {
-			t.Errorf("Grants.Has(%s) = %v, want %v", k, got, want)
+			t.Errorf("Permissions.Has(%s) = %v, want %v", k, got, want)
 		}
 	}
 	if !slices.Equal(set.KeyList(), core.PermissionSetOf(keys...).KeyList()) {
@@ -44,7 +47,7 @@ func TestPermissionSetScopedViaCasbin(t *testing.T) {
 	}
 }
 
-// A superuser row holds every key, those added after the snapshot was built
+// A superuser row holds every key, those added after the policy was loaded
 // included (a plugin installed later), as core's Superuser flag does; it
 // loads whatever the catalog says.
 func TestSuperuserFutureKeys(t *testing.T) {
@@ -66,8 +69,8 @@ func TestSuperuserFutureKeys(t *testing.T) {
 
 // Grants of actions that are not active (plugin disabled, permission
 // removed) stay stored but are not loaded; rows of no catalog action, rows
-// with an empty column and g rows are not loaded either, nor a stored row
-// of SelfRole: every active user would hold it.
+// with an empty column and the g rows of users not active are not loaded
+// either, nor a stored row of SelfRole: every active user would hold it.
 func TestInactivePermissionsNotLoaded(t *testing.T) {
 	t.Parallel()
 	rules := []Rule{
@@ -110,8 +113,8 @@ func TestSelfPermissions(t *testing.T) {
 	}
 }
 
-// authz TestCanGrant / core Missing on Casbin-built sets: the
-// anti-escalation comparison stays ours, fed by Grants.
+// authz TestCanGrant / core Missing on Casbin's sets: the comparison is
+// core's, each key of it decided by Enforce.
 func TestCanGrantOnCasbinGrants(t *testing.T) {
 	t.Parallel()
 	s := snap(t, grant("r:a", "user:read"), grant("r:a", "user:update"), superRow("r:super_admin"), grant("r:b", "user:read"))
@@ -134,8 +137,8 @@ func TestCanGrantOnCasbinGrants(t *testing.T) {
 	}
 }
 
-// core TestRestrictScoped on a Casbin-built set: Restrict (access keys)
-// stays ours and answers the same.
+// core TestRestrictScoped on Casbin's set: Restrict (access keys) narrows
+// Casbin's lists and answers the same.
 func TestRestrictScopedOnCasbinGrants(t *testing.T) {
 	t.Parallel()
 	user := grants(t, single(t, "account:read:own", "account:update:group/12", "account:delete", "proxy:read:own"), held("r:t"))
@@ -158,10 +161,12 @@ func TestRestrictScopedOnCasbinGrants(t *testing.T) {
 	}
 }
 
-// Why Restrict cannot become a matcher "user may AND key allows": the user
+// Why an access key is not a matcher "user may AND key allows": the user
 // holds account/5, the access key names group/12; both imply
 // group/12/account/5, but Restrict drops scopes neither implies rather than
-// intersecting them, so the key reaches nothing there.
+// intersecting them, so the key reaches nothing there. A narrowed set's Has
+// is the narrowed lists AND Enforce: the decision stays Casbin's, and never
+// reaches past what the key's DataScope lists.
 func TestRestrictIsNotAMatcherIntersection(t *testing.T) {
 	t.Parallel()
 	s := single(t, "account:update:account/5")
@@ -169,6 +174,9 @@ func TestRestrictIsNotAMatcherIntersection(t *testing.T) {
 	userOK := enforce(t, s, held("r:t"), want)
 	keyOK := new(matcher).permMatch("account:update", "group/12", want)
 	restricted := grants(t, s, held("r:t")).Restrict([]string{"account:update:group/12"}).Has(want)
+	if !grants(t, s, held("r:t")).Has(want) {
+		t.Fatal("the user's own set lost the key")
+	}
 	t.Logf("user=%v key=%v intersection=%v Restrict=%v", userOK, keyOK, userOK && keyOK, restricted)
 	if !userOK || !keyOK || restricted {
 		t.Fatal("the counterexample no longer holds")
@@ -191,9 +199,11 @@ func TestPluginScopesViaCasbin(t *testing.T) {
 }
 
 // Equivalence with core's sets, offline: random roles over the vector keys
-// and random users. For every key the matcher must answer as the set built
-// directly from the user's roles (core's PermissionSet.Has), and Grants
-// must hold the same keys and superuser flag.
+// and random users, loaded as a node loads them (p and g rows, the active
+// users; an inactive one read when first asked about). For every key
+// Casbin's Enforce must answer as the set built directly from the user's
+// roles (core's PermissionSet.Has), and Permissions must list the same keys
+// and superuser flag.
 func TestCasbinEquivalenceRandom(t *testing.T) {
 	t.Parallel()
 	v := loadVectors(t)
@@ -205,6 +215,7 @@ func TestCasbinEquivalenceRandom(t *testing.T) {
 	queries := append(slices.Clone(pool), "bogus", "account:read:group/x", "plugin.x:y:z:flow/1", "self:profile")
 	self := []string{"self:profile"}
 	r := rand.New(rand.NewPCG(1, 2))
+	ctx := context.Background()
 	checks := 0
 	for range 300 {
 		roleKeys := map[string][]string{}
@@ -221,17 +232,21 @@ func TestCasbinEquivalenceRandom(t *testing.T) {
 		if superRole {
 			rules = append(rules, superRow("r:su"))
 		}
-		users := map[int64]UserRoles{}
+		l := &fakeLoader{users: map[int64]UserRoles{}}
 		want := map[int64]core.PermissionSet{}
 		for uid := int64(1); uid <= 5; uid++ {
 			set := core.PermissionSet{Keys: map[string]struct{}{}}
 			active := r.IntN(8) != 0
 			var roles []string
 			for _, role := range []string{"r:a", "r:b", "r:c", "r:d", "r:su"} {
-				if !active || r.IntN(3) != 0 {
+				if r.IntN(3) != 0 {
 					continue
 				}
 				roles = append(roles, role)
+				rules = append(rules, Rule{"g", casbinrule.UserSub(uid), role, ""})
+				if !active {
+					continue
+				}
 				set.Superuser = set.Superuser || (role == "r:su" && superRole)
 				for _, k := range roleKeys[role] {
 					set.Add(k)
@@ -241,103 +256,87 @@ func TestCasbinEquivalenceRandom(t *testing.T) {
 				for _, k := range self {
 					set.Add(k)
 				}
+				l.policy.Users = append(l.policy.Users, uid)
+			} else {
+				l.users[uid] = UserRoles{Version: 1}
 			}
-			users[uid] = UserRoles{Version: 1, Active: active, Roles: roles}
 			want[uid] = set
 		}
-		s := snapOf(t, Policy{Version: 1, Active: activeOf(rules), Rules: rules}, self...)
+		l.policy = Policy{Version: 1, Active: activeOf(rules), Rules: rules, Users: l.policy.Users}
+		e := newEngine(l, self, Options{})
 		for uid, set := range want {
 			for _, q := range queries {
-				if got := enforce(t, s, users[uid], q); got != set.Has(q) {
+				got, err := e.Enforce(ctx, uid, 1, q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got != set.Has(q) {
 					t.Fatalf("user %d %q: casbin %v, core %v", uid, q, got, set.Has(q))
 				}
 				checks++
 			}
-			g := grants(t, s, users[uid])
+			g, err := e.Permissions(ctx, uid, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if g.Superuser != set.Superuser || !slices.Equal(g.KeyList(), set.KeyList()) {
-				t.Fatalf("user %d grants %v (super %v), core %v (super %v)", uid, g.KeyList(), g.Superuser, set.KeyList(), set.Superuser)
+				t.Fatalf("user %d lists %v (super %v), core %v (super %v)", uid, g.KeyList(), g.Superuser, set.KeyList(), set.Superuser)
 			}
 		}
 	}
 	t.Logf("%d comparisons, 0 mismatches", checks)
 }
 
-// A user's links are the roles each call brings (read by RoleCache at the
-// snapshot's version), not something the enforcer remembers: a revoked role
-// stops at the next call, Casbin's g memo or not, and a user subject asked
-// directly links to nothing (fail closed).
-func TestRolesComeWithEachCall(t *testing.T) {
+// Readers deciding while a user's roles change back and forth and newer
+// states replace the current one (run with -race): each decision is one a
+// state held, a user's change is never undone by a decision made before
+// it, and an older state never replaces a newer one.
+func TestConcurrentEnforceAndChange(t *testing.T) {
 	t.Parallel()
-	for _, memo := range []bool{false, true} {
-		s := snap(t, grant("r:admin", "settings:manage"))
-		s.e.EnableGFunctionCache(memo)
-		if !enforce(t, s, held("r:admin"), "settings:manage") || enforce(t, s, held(), "settings:manage") {
-			t.Fatalf("memo %v: the roles of the call are not what decides", memo)
-		}
-		if ok, err := s.e.Enforce(casbinrule.UserSub(1), "settings:manage"); ok || err != nil {
-			t.Fatalf("memo %v: a user subject links to a role: %v, %v", memo, ok, err)
-		}
+	l := &fakeLoader{policy: Policy{Version: 1, PolicyVersion: 1, Active: map[string]bool{"account:read": true, "proxy:read": true},
+		Rules: []Rule{grant("r:t", "account:read:own"), grant("r:p", "proxy:read"), {"g", "u:1", "r:t", ""}, {"g", "u:2", "r:t", ""}},
+		Users: []int64{1, 2}}}
+	e := newEngine(l, nil, Options{})
+	ctx := context.Background()
+	if _, err := e.Enforce(ctx, 1, 1, "account:read:own"); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// The role manager links a subject to itself only and refuses every write.
-func TestRoleManagerReadOnly(t *testing.T) {
-	t.Parallel()
-	m := roleManager{}
-	if ok, _ := m.HasLink("r:a", "r:a"); !ok {
-		t.Fatal("HasLink of a role to itself")
-	}
-	if ok, _ := m.HasLink(casbinrule.UserSub(1), "r:a"); ok {
-		t.Fatal("a user links to a role")
-	}
-	if got, err := m.GetImplicitRoles("r:a"); err != nil || len(got) != 0 {
-		t.Fatalf("roles of a role: %v %v", got, err)
-	}
-	for name, err := range map[string]error{
-		"AddLink":    m.AddLink("u:1", "r:b"),
-		"DeleteLink": m.DeleteLink("u:1", "r:a"),
-	} {
-		if !errors.Is(err, errReadOnly) {
-			t.Errorf("%s: %v", name, err)
-		}
-	}
-	if _, err := m.GetUsers("r:a"); !errors.Is(err, errReadOnly) {
-		t.Errorf("GetUsers: %v", err)
-	}
-}
-
-// Readers of an immutable snapshot while another goroutine builds and
-// swaps newer ones (run with -race); an older snapshot never replaces a
-// newer one.
-func TestConcurrentEnforceAndSwap(t *testing.T) {
-	t.Parallel()
-	eng := newSnapshots(nil, snapshotOptions{})
-	mk := func(v int64) *snapshot {
-		return snapOf(t, Policy{Version: v, PolicyVersion: v, Active: map[string]bool{"account:read": true},
-			Rules: []Rule{grant("r:t", "account:read:own")}})
-	}
-	eng.swap(mk(1))
+	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Go(func() {
-			for range 2000 {
-				s := eng.cur.Load()
-				if ok, err := s.enforce(held("r:t"), "account:read:own"); !ok || err != nil {
-					t.Error("lost the grant", err)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if ok, err := e.Enforce(ctx, 1, 0, "account:read:own"); !ok || err != nil {
+					t.Error("user 1 lost its grant", err)
 					return
 				}
-				if set, err := s.grants(held("r:t")); err != nil || !set.Has("account:read:own") {
-					t.Error("lost the grant", err)
+				if _, err := e.Enforce(ctx, 2, 0, "proxy:read"); err != nil {
+					t.Error(err)
 					return
 				}
 			}
 		})
 	}
-	for v := int64(2); v < 50; v++ {
-		eng.swap(mk(v))
+	st := e.cur.Load()
+	for i := range 200 {
+		roles := []string{"r:t"}
+		if i%2 == 0 {
+			roles = append(roles, "r:p")
+		}
+		if err := st.setUser(2, UserRoles{Version: int64(i + 2), PolicyVersion: 1, Active: true, Roles: roles}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	close(stop)
 	wg.Wait()
-	if eng.swap(mk(10)) || eng.cur.Load().version != 49 {
-		t.Fatal("an older snapshot replaced a newer one")
+	// The last change (i = 199) took r:p away: no decision made before it
+	// may answer after it.
+	if ok, err := e.Enforce(ctx, 2, 0, "proxy:read"); ok || err != nil {
+		t.Fatalf("a decision older than user 2's last change: %v %v", ok, err)
 	}
 }

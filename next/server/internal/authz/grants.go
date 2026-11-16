@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -173,15 +172,6 @@ func writeGrants(ctx context.Context, tx *gorm.DB, key string, grants []grant, p
 	return err
 }
 
-// roleGrantsJoin joins, to each role r, g.key: the canonical grants of r
-// whose permission p passes status, an SQL condition on p.
-func roleGrantsJoin(status string) string {
-	return `
-LEFT JOIN LATERAL (
-    SELECT rg.key FROM (` + casbinrule.GrantsOf("r.key") + `) rg JOIN permissions p ON p.key = rg.action AND ` + status + `
-) g ON true`
-}
-
 // canonicalKeys is keys canonical, in order, without duplicates or keys
 // another of them implies (account:read:own next to account:read): what a
 // role editor shows and saves back.
@@ -301,26 +291,18 @@ func (s *Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int
 // per role and moves those roles' revisions and both versions, returning
 // the versions when any went.
 func clearScopeGrants(db *gorm.DB, patterns []string, actor *int64, kind string, ids []int64) *gorm.DB {
-	return db.Raw(`WITH cleared AS (
+	return db.Raw(`WITH changed AS (
     `+casbinrule.DeleteScopedSQL+`
 ), audited AS (
     INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
     SELECT ?, 'authz.scope.clear', 'role', role_id::text,
         jsonb_build_object('kind', ?::text, 'ids', to_jsonb(?::bigint[]), 'keys', to_jsonb(array_agg(key ORDER BY key)))
-    FROM cleared GROUP BY role_id
+    FROM changed GROUP BY role_id
 ), revised AS (
-    `+casbinrule.ReviseSQL("cleared")+`
+    `+casbinrule.ReviseChanged+`
 )
-UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM cleared)
+UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM changed)
 RETURNING version, policy_version`, store.Strings(patterns), actor, kind, store.Int64s(ids))
-}
-
-// scopeRefTables are the tables of the rows a scope names, by kind, with
-// the condition of a live row: what checkScopeRefs looks the ids up in.
-var scopeRefTables = map[string]string{
-	core.ScopeRefAccount: `accounts WHERE deleted_at IS NULL AND`,
-	core.ScopeRefGroup:   `groups WHERE`,
-	core.ScopeRefProxy:   `proxies WHERE`,
 }
 
 // scopeRefsOf returns the rows the scope of p names, by kind: its group
@@ -369,13 +351,13 @@ func checkScopeRefs(ctx context.Context, tx *gorm.DB, keys []string) error {
 }
 
 // missingScopeRefs selects the keys of keys whose row (kinds[i], ids[i])
-// does not exist.
+// does not exist: a live account, group or proxy (scopeRefPatterns' kinds).
 func missingScopeRefs(db *gorm.DB, keys, kinds []string, ids []int64) *gorm.DB {
-	exists := make([]string, 0, len(scopeRefTables))
-	for _, kind := range slices.Sorted(maps.Keys(scopeRefTables)) {
-		exists = append(exists, `WHEN '`+kind+`' THEN EXISTS (SELECT 1 FROM `+scopeRefTables[kind]+` id = t.id)`)
-	}
 	return db.Raw(`SELECT t.key FROM unnest(?::text[], ?::text[], ?::bigint[]) AS t(key, kind, id)
-WHERE NOT CASE t.kind `+strings.Join(exists, " ")+` ELSE false END
+WHERE NOT CASE t.kind
+    WHEN '`+core.ScopeRefAccount+`' THEN EXISTS (SELECT 1 FROM accounts WHERE deleted_at IS NULL AND id = t.id)
+    WHEN '`+core.ScopeRefGroup+`' THEN EXISTS (SELECT 1 FROM groups WHERE id = t.id)
+    WHEN '`+core.ScopeRefProxy+`' THEN EXISTS (SELECT 1 FROM proxies WHERE id = t.id)
+    ELSE false END
 ORDER BY 1`, store.Strings(keys), store.Strings(kinds), store.Int64s(ids))
 }

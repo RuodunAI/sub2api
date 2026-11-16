@@ -75,7 +75,7 @@ func RoleKeys(tb testing.TB, db *store.DB, userID int64) []string {
 func GrantKeys(tb testing.TB, db *store.DB, role string) []string {
 	tb.Helper()
 	keys := []string{}
-	if err := db.Gorm.Raw(`SELECT key FROM (`+casbinrule.GrantsOf("?")+`) g ORDER BY key`, role).Scan(&keys).Error; err != nil {
+	if err := db.Gorm.Raw(`SELECT key FROM (`+casbinrule.Grants+`) g WHERE g.role = ? ORDER BY key`, role).Scan(&keys).Error; err != nil {
 		tb.Fatal(err)
 	}
 	return keys

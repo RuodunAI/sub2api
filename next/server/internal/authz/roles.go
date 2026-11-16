@@ -61,9 +61,9 @@ func errRoleKeyImmutable(ctx context.Context) error {
 
 // roleSelect reads roles as the console shows and edits them; a grant of a
 // staged permission (core.PermissionDef.Staged) is no editor's to see.
-var roleSelect = `
+const roleSelect = `
 SELECT r.id, r.key, r.name, r.description, r.builtin, r.superuser, r.created_at, r.updated_at,
-    COALESCE((SELECT array_agg(rg.key ORDER BY p.sort, rg.key) FROM (` + casbinrule.GrantsOf("r.key") + `) rg
+    COALESCE((SELECT array_agg(rg.key ORDER BY p.sort, rg.key) FROM (` + casbinrule.GrantsOfRole + `) rg
         JOIN permissions p ON p.key = rg.action AND p.status <> 'staged'), '{}'),
     COALESCE((SELECT array_agg(ar.key ORDER BY ar.key) FROM role_assignable_roles ra
         JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser WHERE ra.role_id = r.id), '{}'),
@@ -75,35 +75,29 @@ FROM roles r`
 // roleHolders counts the holders of role r, soft-deleted users aside: the
 // roles page's user count, and what SyncCore judges a built-in role behind
 // its rev by (held: filled in; nobody: reset).
-var roleHolders = `(SELECT count(*) FROM users u WHERE u.id IN (` + casbinrule.MembersOf("r.key") + `) AND u.deleted_at IS NULL)`
-
-// selectRoles selects roleSelect followed by tail (conditions, order,
-// lock), whose placeholders take args.
-func selectRoles(db *gorm.DB, tail string, args ...any) *gorm.DB {
-	return db.Raw(roleSelect+tail, args...)
-}
+const roleHolders = `(SELECT count(*) FROM users u WHERE u.id IN (` + casbinrule.MembersOfRole + `) AND u.deleted_at IS NULL)`
 
 // listedRoles selects every role, built-in first.
 func listedRoles(db *gorm.DB) *gorm.DB {
-	return selectRoles(db, ` ORDER BY r.builtin DESC, r.id`)
+	return db.Raw(roleSelect + ` ORDER BY r.builtin DESC, r.id`)
 }
 
 // roleByID selects role id.
 func roleByID(db *gorm.DB, id int64) *gorm.DB {
-	return selectRoles(db, ` WHERE r.id = ?`, id)
+	return db.Raw(roleSelect+` WHERE r.id = ?`, id)
 }
 
 // roleByKey selects the role key.
 func roleByKey(db *gorm.DB, key string) *gorm.DB {
-	return selectRoles(db, ` WHERE r.key = ?`, key)
+	return db.Raw(roleSelect+` WHERE r.key = ?`, key)
 }
 
 // rolesByKeys selects the roles of keys, by key.
 func rolesByKeys(db *gorm.DB, keys []string) *gorm.DB {
-	return selectRoles(db, ` WHERE r.key = ANY(?) ORDER BY r.key`, store.Strings(keys))
+	return db.Raw(roleSelect+` WHERE r.key = ANY(?) ORDER BY r.key`, store.Strings(keys))
 }
 
-// readRoles reads the roles q, a selectRoles query, returns (never nil).
+// readRoles reads the roles q, a roleSelect query, returns (never nil).
 func readRoles(q *gorm.DB) ([]*Role, error) {
 	return store.CollectRows(q, scanRole)
 }
@@ -225,7 +219,7 @@ func reviseRole(db *gorm.DB, id int64) *gorm.DB {
 
 // lockRole selects role id and locks its roles row.
 func lockRole(db *gorm.DB, id int64) *gorm.DB {
-	return selectRoles(db, ` WHERE r.id = ? FOR UPDATE OF r`, id)
+	return db.Raw(roleSelect+` WHERE r.id = ? FOR UPDATE OF r`, id)
 }
 
 // editDenial is why actor (its grantSet) may not change role r, whose
@@ -862,7 +856,7 @@ func (s *Service) ensureOtherSuperuser(ctx context.Context, tx *gorm.DB, userID 
 // superuser role.
 func otherSuperusers(db *gorm.DB, userID int64) *gorm.DB {
 	return db.Raw(`SELECT count(DISTINCT u.id) FROM roles r, users u
-        WHERE r.superuser AND u.id IN (`+casbinrule.MembersOf("r.key")+`)
+        WHERE r.superuser AND u.id IN (`+casbinrule.MembersOfRole+`)
           AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> ?`, userID)
 }
 

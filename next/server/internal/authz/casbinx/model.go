@@ -120,28 +120,26 @@ func (m *matcher) parsed(k string) (perm.Pattern, bool) {
 func newModel() (model.Model, error) { return model.NewModelFromString(modelText) }
 
 // newEnforcer is the one constructor of an enforcer (go-admin's
-// newEnforcer): every enforcer gets permMatch before its first Enforce
-// compiles the matcher, has the read-only role manager, and is a read
-// replica.
-//   - AutoSave off: it has no adapter, and nothing may write through it.
-//   - The g function cache off: Casbin keeps the g memo with the compiled
-//     matcher for the enforcer's lifetime. g only links a role subject to
-//     itself today (the users' roles come with each call), so the memo
-//     could not serve a stale link; off all the same, so that no role
-//     manager answering from changing data is ever memoized.
-//   - No logger is set, so Casbin logs nothing.
-func newEnforcer() (*casbin.Enforcer, error) {
+// newEnforcer): Casbin's synced cached enforcer on modelText, with
+// permMatch registered before its first Enforce compiles the matcher,
+// Casbin's own role manager, and dc as its decision cache.
+//   - No adapter, and AutoSave off: the policy is put in memory by load
+//     and setUser, and nothing may write through the enforcer.
+//   - The g function cache stays on: Casbin drops it with the compiled
+//     matcher whenever a g row changes (BuildIncrementalRoleLinks).
+//   - No logger, watcher or dispatcher is set, so Casbin logs, notifies
+//     and reloads nothing by itself.
+func newEnforcer(dc *decisions) (*casbin.SyncedCachedEnforcer, error) {
 	m, err := newModel()
 	if err != nil {
 		return nil, err
 	}
-	e, err := casbin.NewEnforcer(m)
+	e, err := casbin.NewSyncedCachedEnforcer(m)
 	if err != nil {
 		return nil, err
 	}
 	e.EnableAutoSave(false)
 	e.AddFunction(permMatchName, new(matcher).fn)
-	e.SetRoleManager(roleManager{})
-	e.EnableGFunctionCache(false)
+	e.SetCache(dc)
 	return e, nil
 }

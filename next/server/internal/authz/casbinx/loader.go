@@ -22,8 +22,8 @@ type pgLoader struct{ db *store.DB }
 // NewLoader returns the Loader over db.
 func NewLoader(db *store.DB) Loader { return &pgLoader{db: db} }
 
-// Policy reads the authz and policy versions, the active actions and the
-// p rows in one snapshot.
+// Policy reads the authz and policy versions, the active actions, the p
+// and g rows and the active users in one snapshot.
 func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 	var p Policy
 	err := l.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
@@ -40,6 +40,9 @@ func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 		for _, k := range active {
 			p.Active[k] = true
 		}
+		if err := activeUsers(q).Scan(&p.Users).Error; err != nil {
+			return err
+		}
 		p.Rules, err = loadPolicyRows(q)
 		return err
 	})
@@ -49,8 +52,14 @@ func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 	return p, nil
 }
 
-// loadPolicyRows reads the p rows through gorm-adapter, bound to tx and
-// used for this one read only:
+// activeUsers selects the id of every active user (not deleted, status
+// active), the users whose g rows are loaded.
+func activeUsers(db *gorm.DB) *gorm.DB {
+	return db.Raw(`SELECT id FROM users WHERE deleted_at IS NULL AND status = 'active'`)
+}
+
+// loadPolicyRows reads the p and g rows through gorm-adapter, bound to tx
+// and used for this one read only:
 //   - TurnOffAutoMigrate first: otherwise the constructor AutoMigrates the
 //     table to the adapter's struct, which would retype every column to
 //     varchar(100) (and needs DDL rights);
@@ -74,18 +83,28 @@ func loadPolicyRows(tx *gorm.DB) ([]Rule, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := a.LoadFilteredPolicy(m, gormadapter.Filter{Ptype: []string{"p"}}); err != nil {
+	if err := a.LoadFilteredPolicy(m, gormadapter.Filter{Ptype: []string{"p", "g"}}); err != nil {
 		return nil, err
 	}
-	rows, err := m.GetPolicy("p", "p")
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Rule, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, Rule{Ptype: "p", V0: r[0], V1: r[1], V2: r[2]})
+	var out []Rule
+	for _, sec := range []string{"p", "g"} {
+		rows, err := m.GetPolicy(sec, sec)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			out = append(out, Rule{Ptype: sec, V0: r[0], V1: r[1], V2: at(r, 2)})
+		}
 	}
 	return out, nil
+}
+
+// at is r[i], "" past its end (gorm-adapter drops trailing empty columns).
+func at(r []string, i int) string {
+	if i < len(r) {
+		return r[i]
+	}
+	return ""
 }
 
 // UserRoles reads uid's role subjects (its g rows), whether it is active
@@ -110,6 +129,6 @@ func (l *pgLoader) UserRoles(ctx context.Context, uid int64) (UserRoles, error) 
 func userRoles(db *gorm.DB, uid int64) *gorm.DB {
 	return db.Raw(`SELECT m.version, m.policy_version,
     EXISTS (SELECT 1 FROM users u WHERE u.id = @uid AND u.deleted_at IS NULL AND u.status = 'active'),
-    ARRAY(`+casbinrule.RoleSubsOf("CAST(@uid AS bigint)")+` ORDER BY 1)
+    ARRAY(`+casbinrule.RoleSubsOfUID+` ORDER BY 1)
 FROM authz_meta m WHERE m.id = 1`, map[string]any{"uid": uid})
 }

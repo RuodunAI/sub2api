@@ -1392,7 +1392,7 @@ flowchart TD
   role -- 否 --> deny
 ```
 
-- 权限集合缓存在节点内存，带全局授权版本号；变更时广播 `authz:changed`，**收回立即生效**。只改某个用户角色或状态的写入只作废这个用户的集合；改授予、权限状态、角色定义的写入推进策略版本，各节点重建 Casbin 策略快照并作废全部集合（CONTRACTS §99.3、§99.4）
+- 权限判断由每个节点的 Casbin enforcer 作出（`SyncedCachedEnforcer`，内存里有 active 权限的授予、超管行和 active 用户的角色，CONTRACTS §99.3）：`Can` 是 `Enforce`（经决策缓存），用户的授予列表是 `GetImplicitPermissionsForUser`。变更时广播 `authz:changed`，**收回立即生效**：只改某个用户角色或状态的写入只让各节点在内存里换掉这个用户的角色、作废他的决策；改授予、权限状态、角色定义的写入推进策略版本，各节点重新装入 enforcer（CONTRACTS §99.4）
 - 会话只记用户 ID 与 `token_version` 盖章，不带权限（CONTRACTS §100.1）
 - `sensitive` 只是高危标记（角色编辑器提示用）；**已取消二次验证**（2026-10-05 用户决定，CONTRACTS §3.3），任何操作只看登录态和权限
 

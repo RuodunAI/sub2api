@@ -84,28 +84,32 @@
 //     module) but internal/store/pgerror.go (pgxFiles), which reads the
 //     SQLSTATE and constraint name of the *pgconn.PgError that GORM's
 //     driver returns;
-//   - [casbin-api] Casbin only reads the policy (CONTRACTS §99): the core
-//     writes casbin_rule with GORM in the business transaction
+//   - [casbin-api] Casbin never writes the policy (CONTRACTS §99.6): the
+//     core writes casbin_rule with GORM in the business transaction
 //     (internal/authz/casbinrule). gorm-adapter is imported by
 //     internal/authz/casbinx alone (casbinOwners; test files included).
-//     Nowhere, casbinx included, is a write, transaction or self-reloading
-//     API of Casbin's enforcers, its persist interfaces or gorm-adapter
-//     named: policy management (Add/Remove/Update/Delete of policies,
-//     grouping policies, roles, permissions and users, their Ctx, Ex and
-//     Self forms), SavePolicy, Transaction, BeginTransaction,
-//     WithTransaction, Commit, Rollback, StartAutoLoadPolicy, the synced,
-//     transactional and distributed enforcers, nor EnableAutoSave with
-//     anything but the constant false. gorm-adapter's API is a whitelist
-//     (adapterAllowed): TurnOffAutoMigrate, LoadFilteredPolicy and
-//     NewAdapterByDBUseTableName, the last only called on a variable that
-//     an earlier TurnOffAutoMigrate of the same function ran on (otherwise
-//     it AutoMigrates the table, narrowing v1 and v2); Open, GetDb,
-//     LoadPolicy, the other constructors and the rest are reported. The
-//     in-memory model (model.Model's AddPolicies, how a snapshot is built)
-//     and the role manager are not covered. Casbin's own Enforce* is called
-//     in casbinx alone: it runs every policy through the matcher, so a
-//     request answers with PermissionSet.Has. Packages that depend on
-//     Casbin are checked as well as those that depend on GORM.
+//     casbinx owns the node's enforcer: it alone calls Casbin's Enforce*,
+//     makes an enforcer (NewEnforcer, NewSyncedEnforcer,
+//     NewCachedEnforcer or NewSyncedCachedEnforcer, with the model as the
+//     one argument: no adapter) and edits its in-memory policy
+//     (Add/Remove[Filtered][Named][Grouping]Polic(y|ies), casbinMemoryAPI).
+//     Nowhere, casbinx included, is any other write, transaction, watching
+//     or reloading API of Casbin's enforcers, its persist interfaces or
+//     gorm-adapter named: the rest of policy management (Update and Delete
+//     forms, roles, permissions and users, Ctx, Ex and Self forms),
+//     SavePolicy, LoadPolicy, Transaction, BeginTransaction,
+//     WithTransaction, Commit, Rollback, StartAutoLoadPolicy, SetAdapter,
+//     SetWatcher, SetDispatcher, any other enforcer constructor or call of
+//     one, nor EnableAutoSave with anything but the constant false.
+//     gorm-adapter's API is a whitelist (adapterAllowed):
+//     TurnOffAutoMigrate, LoadFilteredPolicy and NewAdapterByDBUseTableName,
+//     the last only called on a variable that an earlier TurnOffAutoMigrate
+//     of the same function ran on (otherwise it AutoMigrates the table,
+//     narrowing v1 and v2); Open, GetDb, LoadPolicy, the other constructors
+//     and the rest are reported. The in-memory model (model.Model's
+//     AddPolicies, how a load is built) and the role manager are not
+//     covered. Packages that depend on Casbin are checked as well as those
+//     that depend on GORM.
 //
 // Why empty lists matter (gorm v1.31; gormtest's TestExpansionTraps keeps
 // the shapes): GORM turns an expanded empty list into NULL, and the result

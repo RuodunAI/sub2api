@@ -40,17 +40,19 @@ func (l *countingLoader) UserRoles(ctx context.Context, uid int64) (casbinx.User
 	return l.Loader.UserRoles(ctx, uid)
 }
 
-// counted makes s resolve through a countingLoader of uids.
+// counted makes s decide with an enforcer reading through a countingLoader
+// of uids.
 func counted(s *Service, uids ...int64) *countingLoader {
 	l := newCountingLoader(s.db, uids...)
-	s.casbin = casbinx.NewResolver(l, casbinx.NewRoleCache(l, nil), SelfPermissionKeys())
+	s.casbin = casbinx.New(l, SelfPermissionKeys(), casbinx.Options{})
 	return l
 }
 
 // D1: assigning a role (or changing a user's status) moves the authz
-// version only. The policy snapshot is not rebuilt, and on this node and on
-// every other one only that user's set is read again; a policy write (a
-// role's grants) rebuilds the snapshot and drops every set.
+// version only. The policy is not loaded again, and on this node and on
+// every other one only that user is read again into the enforcer; a policy
+// write (a role's grants) loads the policy again, every active user with
+// it.
 func TestUserWriteKeepsPolicySnapshot(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
@@ -76,7 +78,7 @@ func TestUserWriteKeepsPolicySnapshot(t *testing.T) {
 	}
 	for name := range nodes {
 		p, ua, ub := reads(name)
-		require.Equal(t, [3]int64{1, 1, 1}, [3]int64{p, ua, ub}, name)
+		require.Equal(t, [3]int64{1, 0, 0}, [3]int64{p, ua, ub}, "%s: the load reads every active user", name)
 	}
 	policyBefore := policyVersion(t, s)
 
@@ -91,7 +93,7 @@ func TestUserWriteKeepsPolicySnapshot(t *testing.T) {
 		require.Equal(t, setA.KeyList(), setB.KeyList(), "%s: b holds what an operator holds", name)
 		require.Equal(t, n.Version(), setA.Version, "%s: a's kept set is labelled with the node's version", name)
 		p, ua, ub := reads(name)
-		require.Equal(t, [3]int64{1, 1, 2}, [3]int64{p, ua, ub}, "%s: b read again, a kept, no snapshot rebuilt", name)
+		require.Equal(t, [3]int64{1, 0, 1}, [3]int64{p, ua, ub}, "%s: b read again, a kept, the policy not loaded", name)
 	}
 
 	// A status change: the same.
@@ -102,10 +104,10 @@ func TestUserWriteKeepsPolicySnapshot(t *testing.T) {
 		_, err = n.PermissionSet(ctx, b)
 		require.NoError(t, err)
 		p, ua, ub := reads(name)
-		require.Equal(t, [3]int64{1, 2, 2}, [3]int64{p, ua, ub}, "%s: a read again only", name)
+		require.Equal(t, [3]int64{1, 1, 1}, [3]int64{p, ua, ub}, "%s: a read again only", name)
 	}
 
-	// A role's grants: the snapshot is rebuilt and every set read again.
+	// A role's grants: the policy is loaded again, every user with it.
 	op := roleID(t, s, RoleOperator)
 	_, err := s.SetRolePermissions(ctx, root, op, rolePermissionKeys(t, s, op)[1:], nil)
 	require.NoError(t, err)
@@ -116,14 +118,14 @@ func TestUserWriteKeepsPolicySnapshot(t *testing.T) {
 			require.NoError(t, err)
 		}
 		p, ua, ub := reads(name)
-		require.Equal(t, [3]int64{2, 3, 3}, [3]int64{p, ua, ub}, name)
+		require.Equal(t, [3]int64{2, 1, 1}, [3]int64{p, ua, ub}, name)
 	}
 }
 
 // A broadcast a node misses (a gap in the versions it heard of) or one
-// that does not say what changed drops every set: only a version next to
-// the newest known one drops just its users.
-func TestMissedBroadcastDropsEverySet(t *testing.T) {
+// that does not say what changed loads the policy again: only a version
+// next to the enforcer's, naming its users, reads just those users.
+func TestMissedBroadcastLoadsPolicy(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, nil, nil)
@@ -138,26 +140,34 @@ func TestMissedBroadcastDropsEverySet(t *testing.T) {
 		}
 	}
 	warm()
-	v := s.Version()
+	// moves the version by n behind the service's back, as another node's
+	// writes would, and returns it.
+	moved := func(n int) int64 {
+		var v int64
+		require.NoError(t, db.Gorm.Raw(`UPDATE authz_meta SET version = version + ? WHERE id = 1 RETURNING version`, n).Row().Scan(&v))
+		return v
+	}
+	reads := func() [3]int64 { return [3]int64{l.policy.Load(), l.users[a].Load(), l.users[b].Load()} }
+	require.Equal(t, [3]int64{1, 0, 0}, reads())
 
-	s.invalidate(authzChange{Version: v + 1, Users: []int64{b}})
+	s.invalidate(authzChange{Version: moved(1), Users: []int64{b}})
 	warm()
-	require.Equal(t, [2]int64{1, 2}, [2]int64{l.users[a].Load(), l.users[b].Load()}, "next version: b only")
+	require.Equal(t, [3]int64{1, 0, 1}, reads(), "next version: b only")
 
-	s.invalidate(authzChange{Version: v + 3, Users: []int64{b}})
+	s.invalidate(authzChange{Version: moved(2), Users: []int64{b}})
 	warm()
-	require.Equal(t, [2]int64{2, 3}, [2]int64{l.users[a].Load(), l.users[b].Load()}, "a version skipped: every set")
+	require.Equal(t, [3]int64{2, 0, 1}, reads(), "a version skipped: the policy")
 
-	s.invalidate(authzChange{Version: v + 4})
+	s.invalidate(authzChange{Version: moved(1)})
 	warm()
-	require.Equal(t, [2]int64{3, 4}, [2]int64{l.users[a].Load(), l.users[b].Load()}, "a change naming nobody: every set")
+	require.Equal(t, [3]int64{3, 0, 1}, reads(), "a change naming nobody: the policy")
 
 	c, ok := parseChange([]byte("12"))
 	require.True(t, ok)
 	require.Equal(t, authzChange{Version: 12}, c, "a bare version reads as a change of everything")
 	c, ok = parseChange([]byte(`{"v":13,"u":[4]}`))
 	require.True(t, ok)
-	require.True(t, c.only())
+	require.True(t, casbinx.Change(c).UsersOnly())
 	_, ok = parseChange([]byte("nope"))
 	require.False(t, ok)
 }
