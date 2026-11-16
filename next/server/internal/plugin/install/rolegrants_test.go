@@ -122,7 +122,8 @@ func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 		{"0.1.1", newPerm("rules:export", manifest.RiskSensitive, "admin"), ConsentAwaiting,
 			[]RoleGrant{grant(export, "admin", manifest.RiskSensitive, viaDefault, true)}},
 		{"0.1.2", newPerm("rules:export", "", "admin", "user"), ConsentAwaiting,
-			[]RoleGrant{grant(export, "admin", manifest.RiskLow, viaDefault, false), grant(export, "user", manifest.RiskLow, viaDefault, true)}},
+			[]RoleGrant{grant(export, "admin", manifest.RiskLow, viaDefault, false), grant(export, "supplier_agent", manifest.RiskLow, viaDefault, false),
+				grant(export, "user", manifest.RiskLow, viaDefault, true)}},
 		{"0.1.3", inherit, ConsentAwaiting,
 			// A rename: no defaults, only the old key's holders.
 			[]RoleGrant{grant("plugin.guard:rules:edit", "auditor", manifest.RiskLow, viaInherit, true)}},
@@ -157,7 +158,7 @@ func TestUpgradeRoleGrantsNeedConsent(t *testing.T) {
 	e.authz.perms[e.limited]["role:define"] = false
 	res, err := e.svc.Consent(ctx, "guard", "0.1.2", consent, e.limited)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"admin", "user"}, rolesOf(res.Withheld))
+	assert.Equal(t, []string{"admin", "supplier_agent", "user"}, rolesOf(res.Withheld))
 	assert.Empty(t, e.perms.checked)
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, export).GrantRoles)
 
@@ -206,7 +207,7 @@ func TestBuiltinUpgradeWithholdsRoleGrants(t *testing.T) {
 	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT consent_status FROM plugin_versions WHERE plugin_key = 'guard' AND version = '0.1.1'`).Scan(&consent))
 	require.Equal(t, ConsentApproved, consent)
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:export").GrantRoles)
-	assert.Equal(t, map[string][]string{"admin": {""}}, lastDef(t, e, "plugin.guard:rules:view").GrantRoles)
+	assert.Equal(t, map[string][]string{"admin": {""}, "supplier_agent": {""}}, lastDef(t, e, "plugin.guard:rules:view").GrantRoles)
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:rules:edit").GrantRoles)
 	assert.Equal(t, 1, autoAudits(t, e, ctx))
 

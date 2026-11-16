@@ -96,7 +96,7 @@ func TestTeamScope(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
-	agent := addUser(t, s, "agent@x.com", RoleUser, RoleSupplierAgent)
+	agent := addUser(t, s, "agent@x.com", RoleSupplierAgent)
 	sub := chain(t, s, agent, 2, RoleSupplier)
 	other := addUser(t, s, "other@x.com", RoleSupplierAgent)
 	stranger := chain(t, s, other, 1, RoleSupplier)[0]
@@ -141,7 +141,7 @@ func TestCanActOnUsersTeam(t *testing.T) {
 	ctx := context.Background()
 	admin := addUser(t, s, "admin@x.com", RoleAdmin)
 	operator := addUser(t, s, "op@x.com", RoleOperator)
-	agent := addUser(t, s, "agent@x.com", RoleUser, RoleSupplierAgent)
+	agent := addUser(t, s, "agent@x.com", RoleSupplierAgent)
 	sub := chain(t, s, agent, 1, RoleUser)[0]
 	peer := chain(t, s, agent, 1, RoleUser)[0]
 	outsider := addUser(t, s, "out@x.com", RoleUser)
@@ -153,7 +153,7 @@ func TestCanActOnUsersTeam(t *testing.T) {
 	require.True(t, notInTeam(s.CanActOnUsers(ctx, agent, core.ActOnIdentity, sub, outsider)))
 	require.True(t, notInTeam(s.CanActOnUsers(ctx, agent, core.ActOnIdentity, agent)), "not itself")
 	require.True(t, notInTeam(setRoles(s, agent, outsider, RoleUser, RoleSupplier)), "assign outside the team")
-	require.True(t, notInTeam(setRoles(s, agent, agent, RoleUser, RoleSupplierAgent, RoleSupplier)), "assign to itself")
+	require.True(t, notInTeam(setRoles(s, agent, agent, RoleSupplierAgent, RoleSupplier)), "assign to itself")
 	require.True(t, isCode(setRoles(s, agent, sub, RoleUser, RoleOperator), "permission_denied"), "not assignable")
 	require.NoError(t, setRoles(s, agent, sub, RoleUser, RoleSupplier))
 

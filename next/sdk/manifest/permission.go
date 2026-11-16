@@ -12,10 +12,21 @@ import (
 // keeps the lists in step).
 var BuiltinRoleKeys = []string{"admin", "operator", "supplier", "supplier_agent", "user"}
 
-// RoleDefaultsFrom maps a built-in role to the one whose defaults it also
-// takes when a manifest does not name it: a supplier agent has everything
-// a supplier has (DefaultGrants).
-var RoleDefaultsFrom = map[string]string{"supplier_agent": "supplier"}
+// RoleDefaultsFrom maps a built-in role to those whose defaults it takes,
+// together, when a manifest does not name it: a supplier agent has
+// everything a user and a supplier have (FollowedDefaults).
+var RoleDefaultsFrom = map[string][]string{"supplier_agent": {"user", "supplier"}}
+
+// FollowedDefaults is what role takes of defaults (role key to canonical
+// suffixes) by RoleDefaultsFrom: the union of the suffixes of the roles it
+// follows, canonical (CanonicalSuffixes); nil for none.
+func FollowedDefaults(role string, defaults map[string][]string) []string {
+	var suffixes []string
+	for _, from := range RoleDefaultsFrom[role] {
+		suffixes = append(suffixes, defaults[from]...)
+	}
+	return CanonicalSuffixes(suffixes)
+}
 
 // UserPermissionRisks are the risks a user permission may declare.
 var UserPermissionRisks = []string{RiskLow, RiskSensitive, RiskCritical}
@@ -158,7 +169,8 @@ func CanonicalSuffixes(suffixes []string) []string {
 
 // DefaultGrants maps each role of up.Defaults to its canonical suffixes
 // (GrantSuffix, CanonicalSuffixes), and each role of RoleDefaultsFrom the
-// manifest does not name to those of the role it follows. nil for a
+// manifest does not name to those of the roles it follows
+// (FollowedDefaults). nil for a
 // critical permission. Entries check rejects are skipped, so callers of a
 // checked manifest need no errors.
 func (up UserPermission) DefaultGrants() map[string][]string {
@@ -175,9 +187,11 @@ func (up UserPermission) DefaultGrants() map[string][]string {
 			out[role] = suffixes
 		}
 	}
-	for role, from := range RoleDefaultsFrom {
-		if _, named := up.Defaults[role]; !named && out[from] != nil {
-			out[role] = out[from]
+	for role := range RoleDefaultsFrom {
+		if _, named := up.Defaults[role]; !named {
+			if suffixes := FollowedDefaults(role, out); suffixes != nil {
+				out[role] = suffixes
+			}
 		}
 	}
 	return out

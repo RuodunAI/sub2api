@@ -478,8 +478,8 @@ func (s *Service) grantScopedDefaults(ctx context.Context, tx *gorm.DB, roleKey 
 // grantPluginDefaults grants roleKey, a built-in role created now, the
 // defaults of the plugin permissions created before it existed: those their
 // stored defaults (DefaultGrants when created) give it or, not naming it,
-// the role it follows (manifest.RoleDefaultsFrom), so that a supplier agent
-// gets what installed plugins gave suppliers. Audited as authz.sync.grant
+// the roles it follows together (manifest.FollowedDefaults), so that a
+// supplier agent gets what installed plugins gave users and suppliers. Audited as authz.sync.grant
 // (via plugin_default).
 func (s *Service) grantPluginDefaults(ctx context.Context, tx *gorm.DB, roleKey string, fill map[string]any) error {
 	db := store.G(ctx, tx)
@@ -495,7 +495,7 @@ func (s *Service) grantPluginDefaults(ctx context.Context, tx *gorm.DB, roleKey 
 		}
 		suffixes, named := defaults[roleKey]
 		if !named {
-			suffixes = defaults[manifest.RoleDefaultsFrom[roleKey]]
+			suffixes = manifest.FollowedDefaults(roleKey, defaults)
 		}
 		for _, sfx := range suffixes {
 			grants = append(grants, casbinrule.Grant{Role: roleKey, Action: p.Key, Suffix: sfx})

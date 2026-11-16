@@ -104,7 +104,7 @@ func TestConsentRenameInheritsOnly(t *testing.T) {
 		m.UserPermissions[1].Defaults = map[string]manifest.RoleDefault{"admin": {Unscoped: true}}
 		_, err := e.svc.Upload(ctx, pkgtest.Build(m, e.root), e.admin, UploadOptions{})
 		require.NoError(t, err)
-		want := map[string][]string{"user": {"own"}}
+		want := map[string][]string{"supplier_agent": {"own"}, "user": {"own"}}
 		if old != "" {
 			_, err := e.db.SQL.ExecContext(ctx, `
 INSERT INTO permissions (key, module, label, source, plugin_key, status, scope_type)

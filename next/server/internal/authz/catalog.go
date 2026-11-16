@@ -248,13 +248,13 @@ var supplierPermissions = []string{
 }
 
 // supplierAgentPermissions are granted to the built-in "supplier_agent"
-// role (CONTRACTS §102): a supplier's, so that the role alone is enough,
-// and for the users below it (team) reading their accounts and the usage
+// role (CONTRACTS §102): a user's and a supplier's, so that the role alone
+// is enough (D8) and covers the users it makes, and for the users below it (team) reading their accounts and the usage
 // of those, and creating, editing and assigning roles to those users. Left
 // out: deleting users and resetting their passwords, balances, user groups,
 // group binding, defining roles, and writing, testing or revealing their
 // accounts or anything of their proxies.
-var supplierAgentPermissions = slices.Concat(supplierPermissions, []string{
+var supplierAgentPermissions = slices.Concat(userRolePermissions, supplierPermissions, []string{
 	"account:read:team", "usage:account:read:team",
 	"user:read:team", "user:create:team", "user:update:team",
 	"role:read", "role:assign",
@@ -343,7 +343,7 @@ var builtinRoles = []builtinRole{
 		assignable: []string{RoleSupplier, RoleUser}},
 	{key: RoleSupplier, name: lt("Supplier", "供应商"), description: lt("Add-on role: own accounts and proxies, own usage", "附加角色：管理自己的账号和代理，查看自己的用量"), rev: 2,
 		grants: oneOf(supplierPermissions), scoped: scopedOf(supplierPermissions)},
-	{key: RoleSupplierAgent, name: lt("Supplier agent", "代理供应商"), description: lt("Add-on role: a supplier who also manages the users below it and reads their accounts and usage", "附加角色：拥有供应商的全部权限，并管理下级用户、查看下级的账号和用量"), rev: 1,
+	{key: RoleSupplierAgent, name: lt("Supplier agent", "代理供应商"), description: lt("A user's and a supplier's permissions, and managing the users below it and reading their accounts and usage", "拥有普通用户和供应商的全部权限，并管理下级用户、查看下级的账号和用量"), rev: 1,
 		grants: oneOf(supplierAgentPermissions), scoped: scopedOf(supplierAgentPermissions),
 		assignable: []string{RoleSupplier, RoleSupplierAgent}},
 	{key: RoleUser, name: lt("User", "普通用户"), description: lt("Own API keys, usage and balance; gateway access", "管理自己的 API Key、查看自己的用量和余额、调用网关"), rev: 1,

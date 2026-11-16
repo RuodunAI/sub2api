@@ -31,7 +31,10 @@ import (
 // instead.
 
 // autoGrantRoles are the built-in roles an upgrade may hand low risk new
-// permissions without consent.
+// permissions without consent. A supplier agent takes the defaults of
+// users and suppliers (manifest.RoleDefaultsFrom) without consent even
+// when the users' grant waits for it, so that it keeps holding what the
+// users it manages may be given (CONTRACTS §102.1).
 var autoGrantRoles = []string{"admin", "operator", "supplier", "supplier_agent"}
 
 // Audit actions of consents and the role grants they withheld.

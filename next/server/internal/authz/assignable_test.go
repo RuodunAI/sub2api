@@ -172,8 +172,8 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_type = 'role' A
 }
 
 // An upgrade creating the supplier agent role hands it what the plugins
-// installed before gave suppliers by default (manifest.RoleDefaultsFrom),
-// or what their defaults name for it, each audited with via
+// installed before gave users and suppliers by default
+// (manifest.RoleDefaultsFrom), or what their defaults name for it, each audited with via
 // plugin_default; nothing of a staged version, nothing for other roles.
 func TestSyncCoreGivesNewRolePluginDefaults(t *testing.T) {
 	t.Parallel()
@@ -188,6 +188,7 @@ INSERT INTO plugins (key, name, status) VALUES ('px', '{"en":"P"}', 'installed')
 INSERT INTO permissions (key, module, label, source, plugin_key, status, scope_type, defaults) VALUES
 	('plugin.px:use', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"supplier": [""], "user": [""]}'),
 	('plugin.px:flow', 'plugin.px', '{}', 'plugin', 'px', 'active', 'plugin:flow', '{"supplier": [""], "supplier_agent": ["own"]}'),
+	('plugin.px:self', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"user": [""]}'),
 	('plugin.px:admin', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"admin": [""]}'),
 	('plugin.px:next', 'plugin.px', '{}', 'plugin', 'px', 'staged', '', '{"supplier": [""]}')`); err != nil {
 		t.Fatal(err)
@@ -197,7 +198,7 @@ INSERT INTO permissions (key, module, label, source, plugin_key, status, scope_t
 	}
 	id := roleID(t, s, RoleSupplierAgent)
 	plain, scoped := grantRows(t, s, id)
-	if !slices.Contains(plain, "plugin.px:use") || !slices.Contains(scoped, "plugin.px:flow:own") ||
+	if !slices.Contains(plain, "plugin.px:use") || !slices.Contains(plain, "plugin.px:self") || !slices.Contains(scoped, "plugin.px:flow:own") ||
 		slices.ContainsFunc(append(plain, scoped...), func(k string) bool {
 			return k == "plugin.px:flow" || k == "plugin.px:admin" || k == "plugin.px:next"
 		}) {
@@ -206,7 +207,7 @@ INSERT INTO permissions (key, module, label, source, plugin_key, status, scope_t
 	var keys []string
 	if err := db.SQL.QueryRowContext(ctx, `SELECT array_agg(detail->>'key' ORDER BY detail->>'key') FROM audit_logs
 WHERE action = 'authz.sync.grant' AND target_id = $1 AND detail->>'via' = 'plugin_default' AND detail->>'role_created' = 'true'`,
-		strconv.FormatInt(id, 10)).Scan(&keys); err != nil || !slices.Equal(keys, []string{"plugin.px:flow:own", "plugin.px:use"}) {
+		strconv.FormatInt(id, 10)).Scan(&keys); err != nil || !slices.Equal(keys, []string{"plugin.px:flow:own", "plugin.px:self", "plugin.px:use"}) {
 		t.Fatalf("audited %v, %v", keys, err)
 	}
 }

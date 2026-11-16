@@ -260,13 +260,14 @@ func TestSyncCoreSeedsCatalogAndRoles(t *testing.T) {
 		len(sup.AssignableRoleKeys) != 0 || sup.AssignCustom {
 		t.Fatalf("supplier: %+v", sup)
 	}
-	// The supplier agent (CONTRACTS §102): the supplier's, its own reads
-	// widened to its team's accounts and account usage, and its team's
-	// users (D8); suppliers and agents to assign (D2).
+	// The supplier agent (CONTRACTS §102): the user's and the supplier's,
+	// its own reads widened to its team's accounts and account usage, and
+	// its team's users (D8); suppliers and agents to assign (D2).
 	agent := byKey[RoleSupplierAgent]
 	wantAgent := slices.Sorted(slices.Values(append(slices.DeleteFunc(slices.Clone(wantSup), func(k string) bool {
-		return k == "account:read:own" || k == "usage:account:read:own"
-	}), "account:read:team", "usage:account:read:team", "user:read:team", "user:create:team", "user:update:team", "role:read", "role:assign")))
+		return k == "account:read:own" || k == "usage:account:read:own" || k == "usage:self:read"
+	}), "apikey:self:manage", "balance:self:read", "usage:self:read", "gateway:use",
+		"account:read:team", "usage:account:read:team", "user:read:team", "user:create:team", "user:update:team", "role:read", "role:assign")))
 	if agent == nil || !agent.Builtin || agent.Superuser || !slices.Equal(slices.Sorted(slices.Values(agent.PermissionKeys)), wantAgent) || agent.AssignCustom {
 		t.Fatalf("supplier agent: %+v", agent)
 	}

@@ -89,7 +89,7 @@ func TestCheckOwner(t *testing.T) {
 	ctx := context.Background()
 	admin := addUser(t, s, "admin@x.com", RoleAdmin)
 	operator := addUser(t, s, "op@x.com", RoleOperator)
-	agent := addUser(t, s, "agent@x.com", RoleUser, RoleSupplierAgent)
+	agent := addUser(t, s, "agent@x.com", RoleSupplierAgent)
 	plain := addUser(t, s, "plain@x.com", RoleUser)
 	staff := addUser(t, s, "staff@x.com", RoleUser, RoleOperator)
 
@@ -152,8 +152,8 @@ func TestCheckOwnerTeamHolder(t *testing.T) {
 	s := newService(t, db, newMemBus(), nil)
 	ctx := context.Background()
 	admin := addUser(t, s, "admin@x.com", RoleAdmin)
-	agent := addUser(t, s, "agent@x.com", RoleUser, RoleSupplierAgent)
-	sub := chain(t, s, agent, 1, RoleUser, RoleSupplierAgent)[0]
+	agent := addUser(t, s, "agent@x.com", RoleSupplierAgent)
+	sub := chain(t, s, agent, 1, RoleSupplierAgent)[0]
 	leaf := chain(t, s, sub, 1, RoleUser)[0]
 	peer := chain(t, s, agent, 1, RoleUser)[0]
 

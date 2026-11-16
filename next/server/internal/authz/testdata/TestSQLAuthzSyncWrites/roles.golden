@@ -30,7 +30,7 @@ $21 bool true
 $22 int 2
 $23 string "supplier_agent"
 $24 jsontext.Value {"en":"Supplier agent","zh":"代理供应商"}
-$25 jsontext.Value {"en":"Add-on role: a supplier who also manages the users below it and reads their accounts and usage","zh":"附加角色：拥有供应商的全部权限，并管理下级用户、查看下级的账号和用量"}
+$25 jsontext.Value {"en":"A user's and a supplier's permissions, and managing the users below it and reading their accounts and usage","zh":"拥有普通用户和供应商的全部权限，并管理下级用户、查看下级的账号和用量"}
 $26 bool true
 $27 int 1
 $28 string "user"
