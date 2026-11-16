@@ -1,0 +1,6 @@
+-- sql
+SELECT DISTINCT "v2" FROM "casbin_rule" WHERE ptype = $1 AND v1 = $2 AND v2 <> $3 ORDER BY v2
+-- vars
+$1 string "p"
+$2 string "plugin:demo:read"
+$3 string "*"

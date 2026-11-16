@@ -1,19 +1,19 @@
 -- sql
-INSERT INTO permissions (key, module, label, description, source, risk, sensitive, requires, status, sort, scope_type)
-SELECT k, m, l::jsonb, d::jsonb, 'core', ri, ri <> 'low', ARRAY(SELECT jsonb_array_elements_text(rq::jsonb)), 'active', so, st
-FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int[], $8::text[]) AS t(k, m, l, d, ri, rq, so, st)
-ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label, description = EXCLUDED.description,
-    risk = EXCLUDED.risk, sensitive = EXCLUDED.sensitive, requires = EXCLUDED.requires, status = 'active', sort = EXCLUDED.sort,
-    scope_type = EXCLUDED.scope_type
-    WHERE (permissions.module, permissions.label, permissions.description, permissions.risk, permissions.requires, permissions.status, permissions.sort, permissions.scope_type)
-        IS DISTINCT FROM (EXCLUDED.module, EXCLUDED.label, EXCLUDED.description, EXCLUDED.risk, EXCLUDED.requires, 'active'::varchar, EXCLUDED.sort, EXCLUDED.scope_type)
-RETURNING key, (xmax = 0)
+SELECT "permissions"."id","permissions"."key","permissions"."module","permissions"."label","permissions"."description","permissions"."source","permissions"."plugin_key","permissions"."sensitive","permissions"."status","permissions"."sort","permissions"."created_at","permissions"."scope_type","permissions"."risk","permissions"."requires","permissions"."group_key","permissions"."group_label","permissions"."group_sort","permissions"."scope","permissions"."defaults" FROM "permissions" WHERE key = ANY($1)
 -- vars
 $1 store.Strings [account:read]
-$2 store.Strings [account]
-$3 store.Strings [{"en":"Read"}]
-$4 store.Strings [{}]
-$5 store.Strings [low]
-$6 store.Strings [[]]
-$7 store.Int64s [1]
-$8 store.Strings [account]
+
+-- sql
+INSERT INTO "permissions" ("key","module","label","source","plugin_key","description","status","sort","scope_type","risk","requires") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING "id","description","sensitive","status","sort","created_at","scope_type","risk","requires","group_key","group_label","group_sort","scope","defaults"
+-- vars
+$1 string "account:read"
+$2 string "account"
+$3 jsontext.Value {"en":"Read"}
+$4 string "core"
+$5 *string nil
+$6 jsontext.Value {}
+$7 *string "active"
+$8 int 1
+$9 string "account"
+$10 *string "low"
+$11 store.Strings []

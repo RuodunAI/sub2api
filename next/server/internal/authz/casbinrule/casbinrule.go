@@ -18,7 +18,7 @@
 // know nothing of the grant checks.
 //
 // Every write of a role's p rows also moves that role's revision
-// (roles.revision, ReviseChanged) in the same statement, so that a role editor
+// (roles.revision) in the same transaction, so that a role editor
 // holding an older revision is refused (authz, version_conflict) whoever
 // changed the role's grants: an editor, a plugin consent, the core sync, a
 // scope clear.
@@ -29,7 +29,10 @@
 package casbinrule
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -123,22 +126,29 @@ var conflict = clause.OnConflict{Columns: []clause.Column{{Name: "ptype"}, {Name
 // casbin_rule_v1_idx serve the lookups, and substr(subject, keyStart) reads a
 // key or an id back out of one (keyStart is one past rolePrefix and
 // userPrefix, TestKeyStart). cr is the p or g row; the exported subqueries
-// name what they read of their outer query (r a role, u a user) or of their
-// parameters.
+// name what they read of their outer query (r a role, u a user).
 const (
-	keyStart    = "3"
-	conflictSQL = `ON CONFLICT (ptype, v0, v1, v2, v3, v4, v5) DO NOTHING`
+	keyStart = "3"
 
 	// crSuffix and crGrantKey are the canonical suffix ("" every row) and
 	// the canonical permission key of the p row cr.
 	crSuffix   = `CASE cr.v2 WHEN '` + AllRows + `' THEN '' ELSE cr.v2 END`
 	crGrantKey = `CASE cr.v2 WHEN '` + AllRows + `' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END`
 	crRoleKey  = `substr(cr.v0, ` + keyStart + `)`
-	// roleSubOfKey is the subject of the role whose key is column key.
+	// userIDOfV0 and roleKeyOfV1 read the user id and the role key out of
+	// a g row.
+	userIDOfV0  = `substr(v0, ` + keyStart + `)::bigint`
+	roleKeyOfV1 = `substr(v1, ` + keyStart + `)`
+	// roleSubOfKey and roleSubOfR are the subject of the role whose key is
+	// column key, and of the role r.
 	roleSubOfKey = `('` + rolePrefix + `' || key)`
+	roleSubOfR   = `('` + rolePrefix + `' || r.key)`
 	// ptypeIs and roleIs restrict cr to the p rows and the g rows.
 	ptypeIs = `cr.ptype = '` + ptypePolicy + `'`
 	roleIs  = `cr.ptype = '` + ptypeRole + `'`
+	// grantColumns and grantRows are Grants' select list and condition.
+	grantColumns = crRoleKey + ` AS role, cr.v1 AS action, ` + crSuffix + ` AS scope, ` + crGrantKey + ` AS key`
+	grantRows    = ptypeIs + ` AND cr.v1 <> '` + SuperKey + `'`
 )
 
 // ------------------------------------------------------------ reads as SQL
@@ -147,12 +157,11 @@ const (
 // each: role (its key), action (the permission key), scope (the canonical
 // suffix, "" every row) and key (the canonical permission key). A
 // condition on action is served by casbin_rule_v1_idx.
-const Grants = `SELECT ` + crRoleKey + ` AS role, cr.v1 AS action, ` + crSuffix + ` AS scope, ` + crGrantKey + ` AS key
-FROM ` + Table + ` cr WHERE ` + ptypeIs + ` AND cr.v1 <> '` + SuperKey + `'`
+const Grants = `SELECT ` + grantColumns + ` FROM ` + Table + ` cr WHERE ` + grantRows
 
 // GrantsOfRole is Grants of the outer query's role r (r.key), by the
 // unique index.
-const GrantsOfRole = Grants + ` AND cr.v0 = ('` + rolePrefix + `' || r.key)`
+const GrantsOfRole = Grants + ` AND cr.v0 = ` + roleSubOfR
 
 // RolesOfUser is a subquery of the keys of the roles the outer query's user
 // u (u.id) holds.
@@ -160,18 +169,40 @@ const RolesOfUser = `SELECT substr(cr.v1, ` + keyStart + `) FROM ` + Table + ` c
 
 // MembersOfRole is a subquery of the ids of the users holding the outer
 // query's role r (r.key), soft-deleted ones included.
-const MembersOfRole = `SELECT substr(cr.v0, ` + keyStart + `)::bigint FROM ` + Table + ` cr WHERE ` + roleIs + ` AND cr.v1 = ('` + rolePrefix + `' || r.key)`
-
-// RoleSubsOfUID is a subquery of the role subjects (v1, as stored) of the
-// user whose id is the named parameter @uid: what casbinx reads into its
-// enforcer when the user's roles or status change.
-const RoleSubsOfUID = `SELECT cr.v1 FROM ` + Table + ` cr WHERE ` + roleIs + ` AND cr.v0 = ('` + userPrefix + `' || CAST(@uid AS bigint))`
+const MembersOfRole = `SELECT substr(cr.v0, ` + keyStart + `)::bigint FROM ` + Table + ` cr WHERE ` + roleIs + ` AND cr.v1 = ` + roleSubOfR
 
 // ------------------------------------------------------------ reads
 
+// GrantRows is Grants as a query, for a builder's FROM or JOIN.
+func GrantRows(db *gorm.DB) *gorm.DB {
+	return db.Table(Table + ` cr`).Select(grantColumns).Where(grantRows)
+}
+
 // RoleKeysOf selects the distinct keys of the roles userIDs hold, sorted.
 func RoleKeysOf(db *gorm.DB, userIDs []int64) *gorm.DB {
-	return db.Raw(`SELECT DISTINCT substr(cr.v1, `+keyStart+`) FROM `+Table+` cr WHERE `+roleIs+` AND cr.v0 = ANY(?) ORDER BY 1`, subs(userIDs, UserSub))
+	return db.Model(&model.CasbinRule{}).Distinct(roleKeyOfV1).Where("ptype = ? AND v0 = ANY(?)", ptypeRole, subs(userIDs, UserSub)).Order("1")
+}
+
+// RoleSubsOf selects the role subjects (v1, as stored) of the user uid,
+// sorted: what casbinx reads into its enforcer when the user's roles or
+// status change.
+func RoleSubsOf(db *gorm.DB, uid int64) *gorm.DB {
+	return db.Model(&model.CasbinRule{}).Select("v1").Where("ptype = ? AND v0 = ?", ptypeRole, UserSub(uid)).Order("v1")
+}
+
+// MembersOf selects the ids of the users holding a role of roles, a query
+// of the roles table whose select list it sets; soft-deleted users
+// included.
+func MembersOf(db, roles *gorm.DB) *gorm.DB {
+	return db.Model(&model.CasbinRule{}).Select(userIDOfV0).Where("ptype = ? AND v1 IN (?)", ptypeRole, roles.Select(roleSubOfKey))
+}
+
+// Scopes returns the distinct scopes (canonical suffixes, every row aside)
+// the permission action is granted at, sorted.
+func Scopes(db *gorm.DB, action string) ([]string, error) {
+	out := []string{}
+	err := db.Model(&model.CasbinRule{}).Distinct("v2").Where("ptype = ? AND v1 = ? AND v2 <> ?", ptypePolicy, action, AllRows).Order("v2").Pluck("v2", &out).Error
+	return out, err
 }
 
 // LockMembers returns the ids of the users holding the role key, sorted,
@@ -181,22 +212,10 @@ func LockMembers(db *gorm.DB, key string) ([]int64, error) {
 		return nil, err
 	}
 	ids := []int64{}
-	err := db.Raw(`SELECT substr(cr.v0, `+keyStart+`)::bigint FROM `+Table+` cr WHERE `+roleIs+` AND cr.v1 = ? ORDER BY 1 FOR UPDATE`, RoleSub(key)).Scan(&ids).Error
+	err := db.Model(&model.CasbinRule{}).Select(userIDOfV0).Where("ptype = ? AND v1 = ?", ptypeRole, RoleSub(key)).Order("1").
+		Clauses(store.ForUpdate()).Scan(&ids).Error
 	return ids, err
 }
-
-// ReviseChanged moves the revision of the roles whose ids the CTE changed
-// returns (column role_id): appended to the CTEs of a write of p rows.
-const ReviseChanged = `UPDATE roles SET revision = revision + 1 WHERE id IN (SELECT role_id FROM changed)`
-
-// DeleteScopedSQL deletes the grants whose scope matches one of the regular
-// expressions of its one parameter (text[]) and returns role_id and key
-// (canonical) of each: (*authz.Service).ClearScopeGrants audits them and
-// moves the versions and the roles' revisions (ReviseChanged, the CTE
-// named changed) in the same statement.
-const DeleteScopedSQL = `DELETE FROM ` + Table + ` cr USING roles r
-    WHERE ` + ptypeIs + ` AND cr.v2 ~ ANY(?) AND r.key = ` + crRoleKey + `
-    RETURNING r.id AS role_id, ` + crGrantKey + ` AS key`
 
 // ------------------------------------------------------------ grants
 
@@ -213,6 +232,14 @@ type Added struct {
 	Key    string `gorm:"column:key"`
 }
 
+// grantKey is the canonical permission key of the p row (v1, v2).
+func grantKey(v1, v2 string) string {
+	if v2 == AllRows {
+		return v1
+	}
+	return v1 + ":" + v2
+}
+
 // Filter narrows a grant write to the grants of the permissions, and
 // roles, it names; the zero Filter passes every one.
 type Filter struct {
@@ -223,87 +250,130 @@ type Filter struct {
 	NoSuperuser bool     // leave the superuser role alone
 }
 
-// filterSQL is a Filter as an SQL condition on the role r and the
-// permission p of a write's statement: an empty field, or no Skip, passes
-// every row.
-const filterSQL = `(CAST(? AS text) = '' OR p.source = ?) AND (CAST(? AS text) = '' OR p.plugin_key = ?)
-    AND (CAST(? AS text) = '' OR p.key = ?) AND p.status <> ALL(COALESCE(CAST(? AS text[]), '{}'))
-    AND NOT (CAST(? AS boolean) AND r.superuser)`
-
-// cond is f as filterSQL.
-func (f Filter) cond() clause.Expr {
-	return gorm.Expr(filterSQL, f.Source, f.Source, f.Plugin, f.Plugin, f.Action, f.Action, store.Strings(f.Skip), f.NoSuperuser)
+// where narrows a query of the role r and the permission p to f, for
+// db.Scopes.
+func (f Filter) where(db *gorm.DB) *gorm.DB {
+	if f.Source != "" {
+		db = db.Where("p.source = ?", f.Source)
+	}
+	if f.Plugin != "" {
+		db = db.Where("p.plugin_key = ?", f.Plugin)
+	}
+	if f.Action != "" {
+		db = db.Where("p.key = ?", f.Action)
+	}
+	if len(f.Skip) > 0 {
+		db = db.Where("p.status <> ALL(?)", store.Strings(f.Skip))
+	}
+	if f.NoSuperuser {
+		db = db.Where("NOT r.superuser")
+	}
+	return db
 }
 
 // AddGrants adds the grants of roles and permissions that exist and pass
 // f, each unless the role holds it already or, scoped, holds the action
 // for every row (which implies it), and returns what it added by role id
-// and key; the roles it added to move their revision.
+// and key; the roles it added to move their revision. It reads what the
+// roles hold first, so what it reports rests on the authz lock its
+// transaction holds (the caller's Bump), as every grant write's does.
 func AddGrants(db *gorm.DB, grants []Grant, f Filter) ([]Added, error) {
+	added := []Added{}
 	if len(grants) == 0 {
-		return []Added{}, nil
+		return added, nil
 	}
-	roles, actions, suffixes := make(store.Strings, len(grants)), make(store.Strings, len(grants)), make([]string, len(grants))
+	roles, actions := make(store.Strings, len(grants)), make(store.Strings, len(grants))
 	for i, g := range grants {
-		roles[i], actions[i], suffixes[i] = g.Role, g.Action, g.Suffix
+		roles[i], actions[i] = g.Role, g.Action
 	}
-	return collectAdded(db.Raw(`
-WITH g AS (
-    SELECT DISTINCT r.id AS role_id, ('`+rolePrefix+`' || r.key)::text AS v0, p.key::text AS v1, t.v2
-    FROM unnest(?::text[], ?::text[], ?::text[]) AS t(role, action, v2)
-    JOIN roles r ON r.key = t.role
-    JOIN permissions p ON p.key = t.action
-    WHERE ?),
-ins AS (
-    INSERT INTO `+Table+` (ptype, v0, v1, v2)
-    SELECT '`+ptypePolicy+`', v0, v1, v2 FROM g
-    WHERE v2 = '`+AllRows+`' OR NOT EXISTS (SELECT 1 FROM `+Table+` f
-        WHERE f.ptype = '`+ptypePolicy+`' AND f.v0 = g.v0 AND f.v1 = g.v1 AND f.v2 = '`+AllRows+`')
-    `+conflictSQL+`
-    RETURNING v0, v1, v2),
-changed AS (
-    SELECT cr.role_id, `+crGrantKey+` AS key
-    FROM ins JOIN g cr ON cr.v0 = ins.v0 AND cr.v1 = ins.v1 AND cr.v2 = ins.v2),
-revised AS (`+ReviseChanged+`)
-SELECT role_id, key FROM changed ORDER BY 1, 2`, roles, actions, scopes(suffixes), f.cond()))
+	// Each role and permission of grants that exist and pass f, once per
+	// scope the role holds the permission at (once, with none, if none).
+	var held []struct {
+		RoleID       int64
+		Role, Action string
+		Scope        *string
+	}
+	err := db.Table("roles r").Select("r.id AS role_id, r.key AS role, p.key AS action, cr.v2 AS scope").
+		Joins("JOIN permissions p ON p.key = ANY(?)", actions).
+		Joins("LEFT JOIN "+Table+" cr ON cr.ptype = ? AND cr.v0 = "+roleSubOfR+" AND cr.v1 = p.key", ptypePolicy).
+		Where("r.key = ANY(?)", roles).Scopes(f.where).Scan(&held).Error
+	if err != nil {
+		return nil, err
+	}
+	type target struct {
+		roleID int64
+		scopes []string
+	}
+	found := map[Grant]*target{}
+	for _, h := range held {
+		t := found[Grant{Role: h.Role, Action: h.Action}]
+		if t == nil {
+			t = &target{roleID: h.RoleID}
+			found[Grant{Role: h.Role, Action: h.Action}] = t
+		}
+		if h.Scope != nil {
+			t.scopes = append(t.scopes, *h.Scope)
+		}
+	}
+	var rows []model.CasbinRule
+	revised := map[int64]bool{}
+	for _, g := range grants {
+		t, row := found[Grant{Role: g.Role, Action: g.Action}], model.CasbinRule{Ptype: ptypePolicy, V0: RoleSub(g.Role), V1: g.Action, V2: scope(g.Suffix)}
+		if t == nil || slices.Contains(t.scopes, row.V2) || slices.Contains(t.scopes, AllRows) || slices.Contains(rows, row) {
+			continue
+		}
+		rows = append(rows, row)
+		added = append(added, Added{RoleID: t.roleID, Key: grantKey(row.V1, row.V2)})
+		revised[t.roleID] = true
+	}
+	if len(rows) == 0 {
+		return added, nil
+	}
+	if err := insert(db, rows); err != nil {
+		return nil, err
+	}
+	ids := store.Int64s(slices.Collect(maps.Keys(revised)))
+	if err := db.Model(&model.Role{}).Where("id = ANY(?)", ids).Update("revision", gorm.Expr("revision + 1")).Error; err != nil {
+		return nil, err
+	}
+	slices.SortFunc(added, func(a, b Added) int { return cmp.Or(cmp.Compare(a.RoleID, b.RoleID), strings.Compare(a.Key, b.Key)) })
+	return added, nil
 }
 
 // DropGrants deletes the grants of the role key that pass f but those of
 // keep (grants of the role), moving its revision when any went. The
 // superuser row names no permission and stays.
 func DropGrants(db *gorm.DB, key string, f Filter, keep []Grant) error {
-	actions, suffixes := make(store.Strings, len(keep)), make([]string, len(keep))
-	for i, g := range keep {
-		actions[i], suffixes[i] = g.Action, g.Suffix
+	q := db.Where("ptype = ? AND v0 = ?", ptypePolicy, RoleSub(key)).
+		Where("v1 IN (?)", db.Table("permissions p").Select("p.key").Joins("JOIN roles r ON r.key = ?", key).Scopes(f.where))
+	if len(keep) > 0 {
+		pairs := make([]any, len(keep))
+		for i, g := range keep {
+			pairs[i] = []any{g.Action, scope(g.Suffix)}
+		}
+		q = q.Not(clause.IN{Column: []clause.Column{{Name: "v1"}, {Name: "v2"}}, Values: pairs})
 	}
-	return db.Exec(`WITH changed AS (
-    DELETE FROM `+Table+` cr USING permissions p, roles r
-    WHERE cr.ptype = ? AND cr.v0 = ? AND p.key = cr.v1 AND r.key = ? AND ?
-      AND (cr.v1, cr.v2) NOT IN (SELECT * FROM unnest(?::text[], ?::text[]))
-    RETURNING r.id AS role_id)
-`+ReviseChanged,
-		ptypePolicy, RoleSub(key), key, f.cond(), actions, scopes(suffixes)).Error
+	gone := q.Delete(&model.CasbinRule{})
+	if gone.Error != nil || gone.RowsAffected == 0 {
+		return gone.Error
+	}
+	_, err := revise(db, []string{key})
+	return err
 }
 
 // RevokeScopes deletes the grants of the permission action at the
 // canonical suffixes and returns them by role id and key; those roles move
 // their revision.
 func RevokeScopes(db *gorm.DB, action string, suffixes []string) ([]Added, error) {
-	return collectAdded(db.Raw(`WITH changed AS (
-    DELETE FROM `+Table+` cr USING roles r
-    WHERE cr.ptype = ? AND cr.v1 = ? AND cr.v2 = ANY(?) AND r.key = `+crRoleKey+`
-    RETURNING r.id AS role_id, `+crGrantKey+` AS key),
-revised AS (`+ReviseChanged+`)
-SELECT role_id, key FROM changed`, ptypePolicy, action, scopes(suffixes)))
+	return deleteGrants(db, db.Where("ptype = ? AND v1 = ? AND v2 = ANY(?)", ptypePolicy, action, scopes(suffixes)))
 }
 
-func collectAdded(q *gorm.DB) ([]Added, error) {
-	var out []Added
-	err := q.Scan(&out).Error
-	if out == nil {
-		out = []Added{}
-	}
-	return out, err
+// ClearScopes deletes the grants whose scope matches one of the regular
+// expressions patterns and returns them by role id and key; those roles
+// move their revision. (*authz.Service).ClearScopeGrants audits them and
+// moves the versions.
+func ClearScopes(db *gorm.DB, patterns []string) ([]Added, error) {
+	return deleteGrants(db, db.Where("ptype = ? AND v2 ~ ANY(?)", ptypePolicy, store.Strings(patterns)))
 }
 
 // DropPermissions deletes every grant of the permissions actions, moving
@@ -314,26 +384,77 @@ func DropPermissions(db *gorm.DB, actions []string) error {
 	if len(actions) == 0 {
 		return nil
 	}
-	return db.Exec(`WITH gone AS (
-    DELETE FROM `+Table+` WHERE ptype = ? AND v1 = ANY(?) RETURNING v0)
-UPDATE roles SET revision = revision + 1 WHERE `+roleSubOfKey+` IN (SELECT v0 FROM gone)`, ptypePolicy, store.Strings(actions)).Error
+	_, err := deleteGrants(db, db.Where("ptype = ? AND v1 = ANY(?)", ptypePolicy, store.Strings(actions)))
+	return err
+}
+
+// deleteGrants deletes the p rows q (a condition on db) selects, moves the
+// revision of their roles and returns them by role id and key, those of a
+// role that exists.
+func deleteGrants(db, q *gorm.DB) ([]Added, error) {
+	var gone []model.CasbinRule
+	if err := q.Clauses(clause.Returning{Columns: []clause.Column{{Name: "v0"}, {Name: "v1"}, {Name: "v2"}}}).Delete(&gone).Error; err != nil {
+		return nil, err
+	}
+	keys := make([]string, len(gone))
+	for i, r := range gone {
+		keys[i] = strings.TrimPrefix(r.V0, rolePrefix)
+	}
+	ids, err := revise(db, keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Added, 0, len(gone))
+	for i, r := range gone {
+		if id, ok := ids[keys[i]]; ok {
+			out = append(out, Added{RoleID: id, Key: grantKey(r.V1, r.V2)})
+		}
+	}
+	return out, nil
+}
+
+// revise moves the revision of the roles keyed keys and returns their ids
+// by key.
+func revise(db *gorm.DB, keys []string) (map[string]int64, error) {
+	ids := map[string]int64{}
+	if len(keys) == 0 {
+		return ids, nil
+	}
+	var roles []model.Role
+	err := db.Model(&roles).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "key"}}}).
+		Where("key = ANY(?)", store.Strings(keys)).Update("revision", gorm.Expr("revision + 1")).Error
+	for _, r := range roles {
+		ids[r.Key] = r.ID
+	}
+	return ids, err
 }
 
 // SyncSuperusers makes the superuser rows those of the roles flagged
-// superuser and returns how many rows it changed.
+// superuser and returns how many rows it changed. It reads them first, so
+// it rests on the authz lock its transaction holds (SyncCore's).
 func SyncSuperusers(db *gorm.DB) (int64, error) {
+	var want, have []string
+	if err := db.Model(&model.Role{}).Where("superuser").Pluck(roleSubOfKey, &want).Error; err != nil {
+		return 0, err
+	}
+	if err := db.Model(&model.CasbinRule{}).Where("ptype = ? AND v1 = ?", ptypePolicy, SuperKey).Pluck("v0", &have).Error; err != nil {
+		return 0, err
+	}
 	var n int64
-	err := db.Raw(`
-WITH want AS (SELECT ` + roleSubOfKey + `::text AS v0 FROM roles WHERE superuser),
-gone AS (
-    DELETE FROM ` + Table + ` WHERE ptype = '` + ptypePolicy + `' AND v1 = '` + SuperKey + `' AND v0 NOT IN (SELECT v0 FROM want)
-    RETURNING 1),
-added AS (
-    INSERT INTO ` + Table + ` (ptype, v0, v1, v2) SELECT '` + ptypePolicy + `', v0, '` + SuperKey + `', '` + AllRows + `' FROM want
-    ` + conflictSQL + `
-    RETURNING 1)
-SELECT (SELECT count(*) FROM gone) + (SELECT count(*) FROM added)`).Scan(&n).Error
-	return n, err
+	if stale := slices.DeleteFunc(slices.Clone(have), func(v0 string) bool { return slices.Contains(want, v0) }); len(stale) > 0 {
+		gone := db.Where("ptype = ? AND v1 = ? AND v0 = ANY(?)", ptypePolicy, SuperKey, store.Strings(stale)).Delete(&model.CasbinRule{})
+		if gone.Error != nil {
+			return 0, gone.Error
+		}
+		n = gone.RowsAffected
+	}
+	var rows []model.CasbinRule
+	for _, v0 := range want {
+		if !slices.Contains(have, v0) {
+			rows = append(rows, model.CasbinRule{Ptype: ptypePolicy, V0: v0, V1: SuperKey, V2: AllRows})
+		}
+	}
+	return n + int64(len(rows)), insert(db, rows)
 }
 
 // DeleteRole deletes the role key's grants and assignments: it is being
@@ -350,7 +471,8 @@ func DeleteRole(db *gorm.DB, key string) error {
 // follows a rename. The bump (both versions: a rename changes the policy)
 // makes running nodes load the policy again: their enforcers still name
 // the old subject. The keys are what the
-// API accepts ([a-z][a-z0-9_]*) or a built-in's: nothing to quote.
+// API accepts ([a-z][a-z0-9_]*) or a built-in's: nothing to quote. The
+// core never runs it: it is text for the operator (SyncCore's error).
 func RenameRoleSQL(id int64, from, to string) string {
 	return fmt.Sprintf(`BEGIN; UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1; `+
 		`UPDATE %[1]s SET v0 = '%[3]s' WHERE ptype = '%[5]s' AND v0 = '%[2]s'; `+

@@ -18,11 +18,13 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Deps are the dependencies of Service.
@@ -188,23 +190,24 @@ func parseChange(payload []byte) (authzChange, bool) {
 // broadcast. It works on a database before 0100 (policy_version), as the
 // legacy super admin transfer needs.
 func (s *Service) Bump(ctx context.Context, tx *gorm.DB, users ...int64) (int64, error) {
-	return s.bump(ctx, tx, bumpVersion, users)
+	return s.bump(ctx, tx, false, users)
 }
 
 // bumpPolicy is Bump for a write of what the policy holds: both versions
 // move, and every node loads the policy again.
 func (s *Service) bumpPolicy(ctx context.Context, tx *gorm.DB) (int64, error) {
-	return s.bump(ctx, tx, bumpPolicyVersion, nil)
+	return s.bump(ctx, tx, true, nil)
 }
 
-func (s *Service) bump(ctx context.Context, tx *gorm.DB, stmt func(*gorm.DB) *gorm.DB, users []int64) (int64, error) {
+func (s *Service) bump(ctx context.Context, tx *gorm.DB, policy bool, users []int64) (int64, error) {
 	if err := store.RequireTx(tx); err != nil {
 		return 0, err
 	}
-	c := authzChange{Users: slices.Clone(users)}
-	if err := stmt(store.G(ctx, tx)).Row().Scan(&c.Version, &c.Policy); err != nil {
+	m, err := bumpVersions(store.G(ctx, tx), policy)
+	if err != nil {
 		return 0, err
 	}
+	c := authzChange{Version: m.Version, Policy: m.PolicyVersion, Users: slices.Clone(users)}
 	s.invalidate(authzChange{Version: c.Version - 1})
 	s.mu.Lock()
 	s.pending[c.Version] = c
@@ -212,16 +215,22 @@ func (s *Service) bump(ctx context.Context, tx *gorm.DB, stmt func(*gorm.DB) *go
 	return c.Version, nil
 }
 
-// bumpVersion increments the authz version, locking its row, and returns
-// the new value and 0 (no policy version moved).
-func bumpVersion(db *gorm.DB) *gorm.DB {
-	return db.Raw(`UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version, 0`)
-}
-
-// bumpPolicyVersion increments both versions, locking their row, and
-// returns them.
-func bumpPolicyVersion(db *gorm.DB) *gorm.DB {
-	return db.Raw(`UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 RETURNING version, policy_version`)
+// bumpVersions increments the authz version and, for a policy write, the
+// policy version, locking their row, and returns them: the policy version
+// is 0 when it stays (a user write, which never names the column, so that
+// it runs on a database before 0100 too).
+func bumpVersions(db *gorm.DB, policy bool) (model.AuthzMeta, error) {
+	set, returning := map[string]any{"version": gorm.Expr("version + 1")}, []clause.Column{{Name: "version"}}
+	if policy {
+		set["policy_version"] = gorm.Expr("policy_version + 1")
+		returning = append(returning, clause.Column{Name: "policy_version"})
+	}
+	var m model.AuthzMeta
+	res := db.Model(&m).Clauses(clause.Returning{Columns: returning}).Where("id = 1").Updates(set)
+	if res.Error == nil && res.RowsAffected == 0 {
+		return m, sql.ErrNoRows
+	}
+	return m, res.Error
 }
 
 // Committed must be called after a transaction that called Bump has
@@ -514,8 +523,8 @@ func readRoleGrants(ctx context.Context, q *gorm.DB, roleKeys []string) (map[str
 	if !anyCustom {
 		return out, nil, nil
 	}
-	var customs store.Strings
-	if err := customRoleKeys(db).Row().Scan(&customs); err != nil {
+	customs, err := customRoleKeys(db, "")
+	if err != nil {
 		return nil, nil, err
 	}
 	return out, customs, nil
@@ -525,32 +534,25 @@ func readRoleGrants(ctx context.Context, q *gorm.DB, roleKeys []string) (map[str
 // key, flags and a canonical key of the grant view: removed and staged
 // permissions aside), one of NULL grant for a role without any.
 func roleGrants(db *gorm.DB, roleKeys []string) *gorm.DB {
-	return db.Raw(`
-SELECT r.key, r.superuser, r.assign_custom, g.key
-FROM roles r LEFT JOIN LATERAL (
-    SELECT rg.key FROM (`+casbinrule.GrantsOfRole+`) rg
-    JOIN permissions p ON p.key = rg.action AND p.status NOT IN ('removed', 'staged')
-) g ON true
-WHERE r.key = ANY(?)`, store.Strings(roleKeys))
+	grants := db.Table("(" + casbinrule.GrantsOfRole + ") rg").Select("rg.key").
+		Joins("JOIN permissions p ON p.key = rg.action AND p.status NOT IN ('removed', 'staged')")
+	return db.Table("roles r").Select("r.key, r.superuser, r.assign_custom, g.key").
+		Joins("LEFT JOIN LATERAL (?) g ON true", grants).Where("r.key = ANY(?)", store.Strings(roleKeys))
 }
 
 // roleAssignables selects the (role, assignable role) pairs of the
 // assignable lists of roleKeys, superuser roles aside.
 func roleAssignables(db *gorm.DB, roleKeys []string) *gorm.DB {
-	return db.Raw(`
-SELECT r.key, ar.key FROM role_assignable_roles ra
-JOIN roles r ON r.id = ra.role_id AND r.key = ANY(?)
-JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser`, store.Strings(roleKeys))
+	return db.Table("role_assignable_roles ra").Select("r.key, ar.key").
+		Joins("JOIN roles r ON r.id = ra.role_id AND r.key = ANY(?)", store.Strings(roleKeys)).
+		Joins("JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser")
 }
 
-// customRoleKeys selects the keys of the custom roles as one array.
-func customRoleKeys(db *gorm.DB) *gorm.DB {
-	return db.Raw(`SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin`)
-}
-
-// customRoleKeysBut is customRoleKeys without the role except.
-func customRoleKeysBut(db *gorm.DB, except string) *gorm.DB {
-	return db.Raw(`SELECT COALESCE(array_agg(key), '{}') FROM roles WHERE NOT builtin AND key <> ?`, except)
+// customRoleKeys returns the keys of the custom roles but the role but.
+func customRoleKeys(db *gorm.DB, but string) ([]string, error) {
+	keys := []string{}
+	err := db.Model(&model.Role{}).Where("NOT builtin AND key <> ?", but).Pluck("key", &keys).Error
+	return keys, err
 }
 
 // addCustoms adds to assignable every custom role but those of except: what
@@ -568,13 +570,8 @@ func addCustoms(assignable map[string]struct{}, customs, except []string) {
 // needs the catalog.
 func (s *Service) ActivePermissionKeys(ctx context.Context) ([]string, error) {
 	var keys []string
-	if err := activePermissions(store.G(ctx, s.db.Gorm)).Scan(&keys).Error; err != nil {
+	if err := store.G(ctx, s.db.Gorm).Model(&model.Permission{}).Where("status = 'active'").Pluck("key", &keys).Error; err != nil {
 		return nil, err
 	}
 	return append(SelfPermissionKeys(), keys...), nil
-}
-
-// activePermissions selects the key of every active permission.
-func activePermissions(db *gorm.DB) *gorm.DB {
-	return db.Raw(`SELECT key FROM permissions WHERE status = 'active'`)
 }

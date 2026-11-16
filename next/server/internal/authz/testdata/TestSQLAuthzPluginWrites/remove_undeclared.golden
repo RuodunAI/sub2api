@@ -1,6 +1,6 @@
 -- sql
-UPDATE permissions SET status = 'removed'
-WHERE plugin_key = $1 AND status NOT IN ('removed', 'staged') AND key <> ALL($2) RETURNING key
+UPDATE "permissions" SET "status"=$1 WHERE plugin_key = $2 AND status NOT IN ('removed', 'staged') AND key <> ALL($3) RETURNING "key"
 -- vars
-$1 string "demo"
-$2 store.Strings [plugin:demo:read]
+$1 string "removed"
+$2 string "demo"
+$3 store.Strings [plugin:demo:read]

@@ -1,4 +1,4 @@
 -- sql
-SELECT id, key, superuser FROM roles WHERE key = ANY($1) AND NOT builtin ORDER BY id
+SELECT "id","key" FROM "roles" WHERE key = ANY($1) AND NOT builtin ORDER BY id
 -- vars
-$1 store.Strings [admin]
+$1 store.Strings [super_admin admin operator supplier user]

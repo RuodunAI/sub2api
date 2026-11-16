@@ -4,11 +4,13 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"maps"
 	"slices"
 	"strings"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
@@ -84,8 +86,8 @@ func (s *Service) SyncPlugin(ctx context.Context, tx *gorm.DB, pluginKey string,
 			return err
 		}
 	}
-	removed := []string{}
-	if err := removeUndeclared(store.G(ctx, tx), pluginKey, keys).Scan(&removed).Error; err != nil {
+	removed, err := removeUndeclared(store.G(ctx, tx), pluginKey, keys)
+	if err != nil {
 		return err
 	}
 	if err := s.auditKeyStatus(ctx, tx, "authz.sync.revive", pluginKey, revived); err != nil {
@@ -100,9 +102,15 @@ func (s *Service) SyncPlugin(ctx context.Context, tx *gorm.DB, pluginKey string,
 
 // removeUndeclared marks removed the permissions of pluginKey but keys,
 // staged ones aside, and returns their keys.
-func removeUndeclared(db *gorm.DB, pluginKey string, keys []string) *gorm.DB {
-	return db.Raw(`UPDATE permissions SET status = 'removed'
-WHERE plugin_key = ? AND status NOT IN ('removed', 'staged') AND key <> ALL(?) RETURNING key`, pluginKey, store.Strings(keys))
+func removeUndeclared(db *gorm.DB, pluginKey string, keys []string) ([]string, error) {
+	var rows []model.Permission
+	err := db.Model(&rows).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key"}}}).
+		Where("plugin_key = ? AND status NOT IN ('removed', 'staged') AND key <> ALL(?)", pluginKey, store.Strings(keys)).Update("status", "removed").Error
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Key
+	}
+	return out, err
 }
 
 // auditKeyStatus records keys of pluginKey marked removed (authz.sync.remove),
@@ -175,6 +183,8 @@ func checkScopes(key string, ps manifest.PermissionScope, roles map[string][]str
 // whether it was removed before (it revives). sensitive
 // is still written (risk <> 'low') for the previous core, should it run
 // again; this one never reads it. A key of another owner is a conflict.
+// It reads the key's row first: SyncPlugin holds the authz lock (its
+// bumpPolicy), so nothing else writes the catalog in between.
 func upsertPluginPermission(ctx context.Context, tx *gorm.DB, pluginKey, local string, d core.PermissionDef) (inserted, wasRemoved bool, err error) {
 	label := d.Label
 	if label.Get("en") == "" {
@@ -184,59 +194,71 @@ func upsertPluginPermission(ctx context.Context, tx *gorm.DB, pluginKey, local s
 	if d.Scope != nil {
 		scope = *d.Scope
 	}
-	err = upsertPermission(store.G(ctx, tx), pluginPermissionRow{
-		key: d.Key, module: manifest.PermissionModule(pluginKey), label: label, description: orEmpty(d.Description),
-		pluginKey: pluginKey, risk: d.Risk, sort: d.Sort, scopeType: d.ScopeType, scope: scope, group: d.Group,
-		groupLabel: orEmpty(d.GroupLabel), groupSort: d.GroupSort, requires: d.Requires, defaults: orEmpty(d.Defaults), staged: d.Staged,
-	}).Row().Scan(&inserted, &wasRemoved)
-	if store.IsNoRows(err) {
+	want, err := pluginPermissionRow(pluginKey, label, scope, d)
+	if err != nil {
+		return false, false, err
+	}
+	db := store.G(ctx, tx)
+	var cur model.Permission
+	found := db.Select("id", "plugin_key", "status").Where("key = ?", d.Key).Limit(1).Find(&cur)
+	switch {
+	case found.Error != nil:
+		return false, false, found.Error
+	case found.RowsAffected == 0:
+		if want.Status, err = pluginPermissionStatus(db, pluginKey, d.Staged); err != nil {
+			return false, false, err
+		}
+		return true, false, db.Create(&want).Error
+	case cur.PluginKey == nil || *cur.PluginKey != pluginKey:
 		return false, false, core.ErrConflict.WithMessage("permission " + d.Key + " belongs to another owner")
 	}
-	return inserted, wasRemoved, err
+	set := map[string]any{"module": want.Module, "label": want.Label, "description": want.Description, "risk": want.Risk,
+		"sensitive": want.Sensitive, "sort": want.Sort, "scope_type": want.ScopeType, "scope": want.Scope, "group_key": want.GroupKey,
+		"group_label": want.GroupLabel, "group_sort": want.GroupSort, "requires": want.Requires, "defaults": want.Defaults}
+	// A removed key declared again revives, and a staged one turns on,
+	// with the plugin's status, unless staged still; others keep theirs.
+	was := deref(cur.Status)
+	if (was == "removed" || was == "staged") && !d.Staged {
+		if set["status"], err = pluginPermissionStatus(db, pluginKey, false); err != nil {
+			return false, false, err
+		}
+	}
+	return false, was == "removed", db.Model(&model.Permission{}).Where("id = ?", cur.ID).Updates(set).Error
 }
 
-// pluginPermissionRow is what upsertPermission writes of a plugin
-// permission.
-type pluginPermissionRow struct {
-	key, module, pluginKey, risk, scopeType, group string
-	label, description, groupLabel                 core.LocalizedText
-	sort, groupSort                                int
-	scope                                          manifest.PermissionScope
-	requires                                       []string
-	defaults                                       map[string][]string
-	staged                                         bool
+// pluginPermissionRow is the row of the plugin permission d of pluginKey,
+// its label and scope resolved, but its status (pluginPermissionStatus).
+func pluginPermissionRow(pluginKey string, label core.LocalizedText, scope manifest.PermissionScope, d core.PermissionDef) (model.Permission, error) {
+	var jsons [5]json.RawMessage
+	for i, v := range []any{label, orEmpty(d.Description), scope, orEmpty(d.GroupLabel), orEmpty(d.Defaults)} {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return model.Permission{}, err
+		}
+		jsons[i] = b
+	}
+	risk := d.Risk
+	return model.Permission{Key: d.Key, Module: manifest.PermissionModule(pluginKey), Label: jsons[0], Description: jsons[1], Source: "plugin",
+		PluginKey: &pluginKey, Risk: &risk, Sensitive: risk != manifest.RiskLow, Sort: d.Sort, ScopeType: d.ScopeType, Scope: jsons[2],
+		GroupKey: d.Group, GroupLabel: jsons[3], GroupSort: d.GroupSort, Requires: append(store.Strings{}, d.Requires...), Defaults: jsons[4]}, nil
 }
 
-// upsertPermission inserts or updates the plugin permission p unless its
-// key belongs to another owner (no row then), returning whether it was
-// inserted and whether it was removed before. prev reads the row as it was
-// before the upsert (the statement's snapshot).
-func upsertPermission(db *gorm.DB, p pluginPermissionRow) *gorm.DB {
-	return db.Raw(`
-WITH prev AS (SELECT status FROM permissions WHERE key = ?)
-INSERT INTO permissions (key, module, label, description, source, plugin_key, risk, sensitive, status, sort,
-    scope_type, scope, group_key, group_label, group_sort, requires, defaults)
-VALUES (?, ?, ?, ?, 'plugin', ?::text, ?::varchar, ?::varchar <> 'low',
-    CASE WHEN ?::bool THEN 'staged'
-         WHEN EXISTS (SELECT 1 FROM plugins WHERE key = ?::text AND status IN (`+runningPluginStatuses+`)) THEN 'active'
-         ELSE 'disabled' END,
-    ?, ?, ?, ?, ?, ?, COALESCE(?::text[], '{}'), ?)
-ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label,
-    description = EXCLUDED.description, risk = EXCLUDED.risk, sensitive = EXCLUDED.sensitive,
-    sort = EXCLUDED.sort, scope_type = EXCLUDED.scope_type, scope = EXCLUDED.scope,
-    group_key = EXCLUDED.group_key, group_label = EXCLUDED.group_label, group_sort = EXCLUDED.group_sort,
-    requires = EXCLUDED.requires, defaults = EXCLUDED.defaults,
-    -- a removed key declared again revives, and a staged one turns on, with
-    -- the plugin's status, unless staged still; others keep theirs
-    status = CASE WHEN permissions.status IN ('removed', 'staged') AND NOT ?::bool THEN EXCLUDED.status ELSE permissions.status END
-    WHERE permissions.plugin_key = EXCLUDED.plugin_key
-RETURNING (xmax = 0), COALESCE((SELECT status = 'removed' FROM prev), false)`,
-		p.key,
-		p.key, p.module, p.label, p.description, p.pluginKey, p.risk, p.risk,
-		p.staged,
-		p.pluginKey,
-		p.sort, p.scopeType, p.scope, p.group, p.groupLabel, p.groupSort, store.NullStrings(p.requires), p.defaults,
-		p.staged)
+// pluginPermissionStatus is the status a plugin permission takes when it
+// is created or revives: staged when declared by a staged version, else
+// active while the plugin runs and disabled otherwise.
+func pluginPermissionStatus(db *gorm.DB, pluginKey string, staged bool) (*string, error) {
+	status := "staged"
+	if !staged {
+		running, err := store.Exists(db, db.Model(&model.Plugin{}).Where("key = ? AND status IN ("+runningPluginStatuses+")", pluginKey))
+		if err != nil {
+			return nil, err
+		}
+		status = "disabled"
+		if running {
+			status = "active"
+		}
+	}
+	return &status, nil
 }
 
 // orEmpty is m, or an empty map for nil: a JSON object, never null.
@@ -254,8 +276,8 @@ func orEmpty[M ~map[K]V, K comparable, V any](m M) M {
 // of every row always stay.
 func (s *Service) pruneScopes(ctx context.Context, tx *gorm.DB, key string, ps manifest.PermissionScope) error {
 	db := store.G(ctx, tx)
-	var scopes store.Strings
-	if err := grantedScopes(db, key).Row().Scan(&scopes); err != nil {
+	scopes, err := casbinrule.Scopes(db, key)
+	if err != nil {
 		return err
 	}
 	stale := slices.DeleteFunc(scopes, ps.Takes)
@@ -272,12 +294,6 @@ func (s *Service) pruneScopes(ctx context.Context, tx *gorm.DB, key string, ps m
 		}
 	}
 	return nil
-}
-
-// grantedScopes selects the distinct scopes (canonical suffixes, every row
-// aside) the permission key is granted at, as one array.
-func grantedScopes(db *gorm.DB, key string) *gorm.DB {
-	return db.Raw(`SELECT COALESCE(array_agg(DISTINCT g.scope), '{}') FROM (`+casbinrule.Grants+`) g WHERE g.action = ? AND g.scope <> ''`, key)
 }
 
 // CanGrantToRoles implements core.PermissionCatalog: actorID may hand new
@@ -511,10 +527,8 @@ func (s *Service) PermissionHolders(ctx context.Context, q *gorm.DB, keys []stri
 // holderRows selects the (key, role, scope) grants of the permissions
 // keys, superuser roles aside, in that order.
 func holderRows(db *gorm.DB, keys []string) *gorm.DB {
-	return db.Raw(`
-SELECT g.action, g.role, g.scope FROM (`+casbinrule.Grants+`) g JOIN roles r ON r.key = g.role AND NOT r.superuser
-WHERE g.action = ANY(?)
-ORDER BY 1, 2, 3`, store.Strings(keys))
+	return db.Table("(?) g", casbinrule.GrantRows(db)).Select("g.action, g.role, g.scope").
+		Joins("JOIN roles r ON r.key = g.role AND NOT r.superuser").Where("g.action = ANY(?)", store.Strings(keys)).Order("1, 2, 3")
 }
 
 // SetPluginActive implements core.PermissionCatalog.

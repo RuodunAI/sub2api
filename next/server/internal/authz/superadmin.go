@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -140,22 +141,44 @@ func (policyHolders) grant(db *gorm.DB, role string, userIDs []int64) error {
 // before migration 0100 only.
 type legacyHolders struct{}
 
+// legacyUserRole is a row of user_roles, the users' roles before migration
+// 0100 (no generated model: the table is gone after it).
+type legacyUserRole struct {
+	UserID int64
+	RoleID int64
+}
+
+// TableName implements gorm's schema.Tabler.
+func (legacyUserRole) TableName() string { return "user_roles" }
+
+// superuserRoleIDs selects the ids of the superuser roles.
+func superuserRoleIDs(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.Role{}).Select("id").Where("superuser")
+}
+
 func (legacyHolders) lock(db *gorm.DB) ([]int64, error) {
 	if err := store.RequireTx(db); err != nil {
 		return nil, err
 	}
 	ids := []int64{}
-	err := db.Raw(`SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.superuser ORDER BY 1 FOR UPDATE OF ur`).Scan(&ids).Error
+	err := db.Model(&legacyUserRole{}).Where("role_id IN (?)", superuserRoleIDs(db)).Order("user_id").Clauses(store.ForUpdate()).Pluck("user_id", &ids).Error
 	return slices.Compact(ids), err
 }
 
 func (legacyHolders) revoke(db *gorm.DB, userIDs []int64) error {
-	return db.Exec(`DELETE FROM user_roles ur USING roles r WHERE r.id = ur.role_id AND r.superuser AND ur.user_id = ANY(?)`, store.Int64s(userIDs)).Error
+	return db.Where("user_id = ANY(?) AND role_id IN (?)", store.Int64s(userIDs), superuserRoleIDs(db)).Delete(&legacyUserRole{}).Error
 }
 
 func (legacyHolders) grant(db *gorm.DB, role string, userIDs []int64) error {
-	return db.Exec(`INSERT INTO user_roles (user_id, role_id) SELECT u, r.id FROM unnest(?::bigint[]) u, roles r WHERE r.key = ? ON CONFLICT DO NOTHING`,
-		store.Int64s(userIDs), role).Error
+	var ids []int64
+	if err := db.Model(&model.Role{}).Where("key = ?", role).Pluck("id", &ids).Error; err != nil || len(ids) == 0 || len(userIDs) == 0 {
+		return err
+	}
+	rows := make([]legacyUserRole, len(userIDs))
+	for i, u := range userIDs {
+		rows[i] = legacyUserRole{UserID: u, RoleID: ids[0]}
+	}
+	return db.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
 // checkTransferTarget fails unless targetID is an active, undeleted user
@@ -183,5 +206,5 @@ func checkTransferTarget(ctx context.Context, tx *gorm.DB, actorID, targetID int
 // lockTransferTarget selects whether the undeleted user userID is active
 // and locks its row.
 func lockTransferTarget(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Raw(`SELECT status = 'active' FROM users WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, userID)
+	return db.Model(&model.User{}).Select("status = 'active'").Where("id = ? AND deleted_at IS NULL", userID).Clauses(store.ForUpdate())
 }

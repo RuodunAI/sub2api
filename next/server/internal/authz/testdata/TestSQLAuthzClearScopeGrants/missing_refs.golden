@@ -1,12 +1,14 @@
 -- sql
-SELECT t.key FROM unnest($1::text[], $2::text[], $3::bigint[]) AS t(key, kind, id)
-WHERE NOT CASE t.kind
-    WHEN 'account' THEN EXISTS (SELECT 1 FROM accounts WHERE deleted_at IS NULL AND id = t.id)
-    WHEN 'group' THEN EXISTS (SELECT 1 FROM groups WHERE id = t.id)
-    WHEN 'proxy' THEN EXISTS (SELECT 1 FROM proxies WHERE id = t.id)
-    ELSE false END
-ORDER BY 1
+SELECT "id" FROM "accounts" WHERE deleted_at IS NULL AND id = ANY($1)
 -- vars
-$1 store.Strings [account:read:group/2/account/3 account:read:group/2/account/3 proxy:read:proxy/4]
-$2 store.Strings [group account proxy]
-$3 store.Int64s [2 3 4]
+$1 store.Int64s [3 3]
+
+-- sql
+SELECT "id" FROM "groups" WHERE id = ANY($1)
+-- vars
+$1 store.Int64s [2 2]
+
+-- sql
+SELECT "id" FROM "proxies" WHERE id = ANY($1)
+-- vars
+$1 store.Int64s [4]
