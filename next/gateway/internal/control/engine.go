@@ -243,16 +243,25 @@ const passErrorRepeat = 5 * time.Minute
 // knownStrategies is KnownStrategy for SQL (= ANY(?)).
 var knownStrategies = gormpg.Array[string]{PrimaryFirst, Rolling}
 
-// commitProgress never signals an uncommitted result. Every immediate next pass
-// acquires a fresh Redis lease and rereads PG; no command is resumed from memory.
-func (e *Engine) commitProgress(ctx context.Context, tx *gorm.DB) error {
-	if err := tx.Commit().Error; err != nil {
-		return err
-	}
+// progressed counts a committed coordination step and wakes the watchers.
+// It runs after the commit, so it never signals an uncommitted result: every
+// immediate next pass acquires a fresh Redis lease and rereads PG; no
+// command is resumed from memory.
+func (e *Engine) progressed(ctx context.Context) {
 	e.progress.Add(1)
 	e.Store.NotifyUpgrade(ctx)
-	return nil
 }
+
+// blocked is the error of a coordination pass that waits: its transaction
+// rolls back, releasing the plan row lock, and the reason is then recorded
+// through the pool (recordBlockedReason must not wait on that lock).
+type blocked struct {
+	upgradeID, reason string
+	err               error
+}
+
+func (b *blocked) Error() string { return b.err.Error() }
+func (b *blocked) Unwrap() error { return b.err }
 
 func (e *Engine) Heartbeat(ctx context.Context) error {
 	e.heartbeat.Lock()
@@ -405,32 +414,44 @@ func (e *Engine) Coordinate(ctx context.Context) error {
 	if err != nil || primary != e.Node.ID {
 		return err
 	}
-	tx := e.Store.db(ctx).Begin()
-	if tx.Error != nil {
-		return tx.Error
+	progress := false
+	err = e.Store.withTx(ctx, func(tx *gorm.DB) error {
+		var err error
+		progress, err = e.coordinateTx(ctx, tx, primary)
+		return err
+	})
+	var b *blocked
+	switch {
+	case errors.As(err, &b):
+		_ = e.recordBlockedReason(ctx, b.upgradeID, b.reason)
+	case err == nil && progress:
+		e.progressed(ctx)
 	}
-	defer tx.Rollback()
+	return err
+}
+
+// coordinateTx is a Coordinate pass on the running plan, locked in tx: it
+// reports whether the pass changed the plan. A pass that waits returns a
+// *blocked error.
+func (e *Engine) coordinateTx(ctx context.Context, tx *gorm.DB, primary string) (bool, error) {
 	var p Plan
 	var raw []byte
-	err = tx.Raw(`SELECT id,release_digest,nodes,cursor,strategy FROM updater.upgrades WHERE cluster_id=? AND status='running' FOR UPDATE`, e.Store.Cluster).Row().Scan(&p.ID, &p.ReleaseDigest, &raw, &p.Cursor, &p.Strategy)
+	err := tx.Raw(`SELECT id,release_digest,nodes,cursor,strategy FROM updater.upgrades WHERE cluster_id=? AND status='running' FOR UPDATE`, e.Store.Cluster).Row().Scan(&p.ID, &p.ReleaseDigest, &raw, &p.Cursor, &p.Strategy)
 	if gormpg.IsNoRows(err) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err = json.Unmarshal(raw, &p.Nodes); err != nil {
-		return err
+		return false, err
 	}
 	if !KnownStrategy(p.Strategy) {
 		err = upgradeRow(tx, p.ID).Updates(map[string]any{"status": "paused", "error": "legacy upgrade strategy requires manual reconciliation"}).Error
-		if err != nil {
-			return err
-		}
-		return e.commitProgress(ctx, tx)
+		return err == nil, err
 	}
 	if len(p.Nodes) < 1 || p.Nodes[0] != primary {
-		return errors.New("invalid stored upgrade membership")
+		return false, errors.New("invalid stored upgrade membership")
 	}
 	steps := Steps(p)
 	if p.Cursor >= len(steps) {
@@ -439,103 +460,89 @@ func (e *Engine) Coordinate(ctx context.Context) error {
 	st := steps[p.Cursor]
 	if st.Action == "maintenance" || st.Action == "start-primary" {
 		if err = e.followersStopped(ctx); err != nil {
-			// The diagnostic update must not wait on our own FOR UPDATE lock.
-			tx.Rollback()
-			_ = e.recordBlockedReason(ctx, p.ID, "waiting for followers to stop: "+err.Error())
-			return err
+			return false, &blocked{p.ID, "waiting for followers to stop: " + err.Error(), err}
 		}
 	}
-	if exists, err := e.settleExistingStep(ctx, tx, p, st); exists || err != nil {
-		return err
+	if exists, progress, err := e.settleExistingStep(ctx, tx, p, st); exists || err != nil {
+		return progress, err
 	}
-	return e.insertNextStep(ctx, tx, p, st)
+	return e.insertNextStep(tx, p, st)
 }
 
 // completePlan closes a plan whose cursor reached the end: every planned node
 // must be observed serving the target release before the baseline moves.
-func (e *Engine) completePlan(ctx context.Context, tx *gorm.DB, p Plan) error {
+func (e *Engine) completePlan(ctx context.Context, tx *gorm.DB, p Plan) (bool, error) {
 	if err := e.requireFreshNodes(ctx, p.Nodes); err != nil {
-		return err
+		return false, err
 	}
 	var verified int
 	if err := tx.Raw(`SELECT count(*) FROM updater.nodes WHERE cluster_id=? AND node_id=ANY(?) AND ready AND mode='local' AND release_digest=?`, e.Store.Cluster, gormpg.Array[string](p.Nodes), p.ReleaseDigest).Row().Scan(&verified); err != nil {
-		return err
+		return false, err
 	}
 	if verified != len(p.Nodes) {
 		reason := "waiting for all planned nodes to verify the target release"
-		// Release the plan row lock before recording diagnostics through the pool.
-		tx.Rollback()
-		_ = e.recordBlockedReason(ctx, p.ID, reason)
-		return errors.New(reason)
+		return false, &blocked{p.ID, reason, errors.New(reason)}
 	}
 	if err := e.Store.clusterRow(tx).Updates(map[string]any{"baseline": p.ReleaseDigest, "revision": gorm.Expr("revision+1")}).Error; err != nil {
-		return err
+		return false, err
 	}
 	if err := upgradeRow(tx, p.ID).Updates(map[string]any{"status": "completed", "updated_at": gorm.Expr("now()")}).Error; err != nil {
-		return err
+		return false, err
 	}
-	if err := insertEvents(tx, eventRow{p.ID, "completed", "all node steps acknowledged"}); err != nil {
-		return err
-	}
-	return e.commitProgress(ctx, tx)
+	err := insertEvents(tx, eventRow{p.ID, "completed", "all node steps acknowledged"})
+	return err == nil, err
 }
 
 // settleExistingStep handles a step row that already exists: it may be
-// acknowledged as done (advancing the cursor) or still be running, which is left
-// alone and committed. exists reports that there was a row, so the caller must
-// not create the step; the transaction is finished either way.
-func (e *Engine) settleExistingStep(ctx context.Context, tx *gorm.DB, p Plan, st Step) (exists bool, err error) {
+// acknowledged as done (advancing the cursor: progress) or still be running,
+// which is left alone. exists reports that there was a row, so the caller
+// must not create the step.
+func (e *Engine) settleExistingStep(ctx context.Context, tx *gorm.DB, p Plan, st Step) (exists, progress bool, err error) {
 	var state string
 	err = stepRow(tx, p.ID, p.Cursor).Select("status").Row().Scan(&state)
 	if gormpg.IsNoRows(err) {
-		return false, nil
+		return false, false, nil
 	}
 	if err != nil {
-		return true, err
+		return true, false, err
 	}
 	if state != "done" && st.Action == "stop" {
 		var safetyStopped bool
 		if err = tx.Raw(`SELECT EXISTS(SELECT 1 FROM updater.nodes n JOIN updater.stop_confirmations c ON c.cluster_id=n.cluster_id AND c.node_id=n.node_id AND c.shell_boot_id=n.shell_boot_id WHERE n.cluster_id=? AND n.node_id=? AND NOT n.enabled AND n.stopped AND c.upgrade_id=? AND c.step_id=?)`, e.Store.Cluster, st.NodeID, p.ID, st.ID).Row().Scan(&safetyStopped); err != nil {
-			return true, err
+			return true, false, err
 		}
 		if safetyStopped && e.requireFreshNodes(ctx, []string{st.NodeID}) == nil {
 			if err = stepRow(tx, p.ID, st.ID).Updates(map[string]any{"status": "done", "error": "", "updated_at": gorm.Expr("now()")}).Error; err != nil {
-				return true, err
+				return true, false, err
 			}
 			state = "done"
 		}
 	}
-	if state == "done" {
-		if err = upgradeRow(tx, p.ID).Updates(map[string]any{"cursor": gorm.Expr("cursor+1"), "updated_at": gorm.Expr("now()")}).Error; err != nil {
-			return true, err
-		}
-		return true, e.commitProgress(ctx, tx)
+	if state != "done" {
+		return true, false, nil
 	}
-	return true, tx.Commit().Error
+	err = upgradeRow(tx, p.ID).Updates(map[string]any{"cursor": gorm.Expr("cursor+1"), "updated_at": gorm.Expr("now()")}).Error
+	return true, err == nil, err
 }
 
 // insertNextStep creates the current step's row. A plan step aimed at a disabled
 // node pauses the whole plan instead.
-func (e *Engine) insertNextStep(ctx context.Context, tx *gorm.DB, p Plan, st Step) error {
+func (e *Engine) insertNextStep(tx *gorm.DB, p Plan, st Step) (bool, error) {
 	if st.Action != "stop" {
 		var enabled bool
 		if err := e.Store.nodeRow(tx, st.NodeID).Select("enabled").Row().Scan(&enabled); err != nil {
-			return err
+			return false, err
 		}
 		if !enabled {
-			if err := upgradeRow(tx, p.ID).Updates(map[string]any{"status": "paused", "error": "planned node is disabled: " + st.NodeID}).Error; err != nil {
-				return err
-			}
-			return e.commitProgress(ctx, tx)
+			err := upgradeRow(tx, p.ID).Updates(map[string]any{"status": "paused", "error": "planned node is disabled: " + st.NodeID}).Error
+			return err == nil, err
 		}
 	}
 	if err := tx.Exec(`INSERT INTO updater.steps(upgrade_id,step_id,node_id,action,target_digest,peer_node) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING`, p.ID, st.ID, st.NodeID, st.Action, st.TargetDigest, st.PeerNode).Error; err != nil {
-		return err
+		return false, err
 	}
-	if err := insertEvents(tx, eventRow{p.ID, "step", st.NodeID + ": " + st.Action}); err != nil {
-		return err
-	}
-	return e.commitProgress(ctx, tx)
+	err := insertEvents(tx, eventRow{p.ID, "step", st.NodeID + ": " + st.Action})
+	return err == nil, err
 }
 
 func (e *Engine) Work(ctx context.Context) error {
@@ -781,27 +788,21 @@ func (e *Engine) Admit(ctx context.Context, digest string) error {
 	if st.CoreVersion == "" || st.CoreVersion != rel.Manifest.CoreVersion {
 		return errors.New("candidate core version differs from the signed release")
 	}
-	tx := e.Store.db(ctx).Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-	defer tx.Rollback()
-	var allowed bool
-	if err = tx.Raw(`SELECT enabled AND shell_boot_id=? FROM updater.nodes WHERE cluster_id=? AND node_id=? FOR UPDATE`, e.Node.ShellBootID, e.Store.Cluster, e.Node.ID).Row().Scan(&allowed); err != nil {
-		return err
-	}
-	if !allowed {
-		return errors.New("node disabled before admission commit")
-	}
-	if err = e.planAuthorizesTx(ctx, tx, digest); err != nil {
-		return err
-	}
 	var rev int64
-	err = tx.Raw(`INSERT INTO updater.node_admissions(node_id,cluster_id,core_boot_id,release_digest,revision,serve_http,claim_background,coordinate_plugins) VALUES(?,?,?,?,1,true,true,true) ON CONFLICT(node_id) DO UPDATE SET core_boot_id=EXCLUDED.core_boot_id,release_digest=EXCLUDED.release_digest,revision=updater.node_admissions.revision+1,serve_http=true,claim_background=true,coordinate_plugins=true WHERE updater.node_admissions.cluster_id=EXCLUDED.cluster_id RETURNING revision`, e.Node.ID, e.Store.Cluster, st.BootID, digest).Row().Scan(&rev)
+	err = e.Store.withTx(ctx, func(tx *gorm.DB) error {
+		var allowed bool
+		if err := tx.Raw(`SELECT enabled AND shell_boot_id=? FROM updater.nodes WHERE cluster_id=? AND node_id=? FOR UPDATE`, e.Node.ShellBootID, e.Store.Cluster, e.Node.ID).Row().Scan(&allowed); err != nil {
+			return err
+		}
+		if !allowed {
+			return errors.New("node disabled before admission commit")
+		}
+		if err := e.planAuthorizesTx(ctx, tx, digest); err != nil {
+			return err
+		}
+		return tx.Raw(`INSERT INTO updater.node_admissions(node_id,cluster_id,core_boot_id,release_digest,revision,serve_http,claim_background,coordinate_plugins) VALUES(?,?,?,?,1,true,true,true) ON CONFLICT(node_id) DO UPDATE SET core_boot_id=EXCLUDED.core_boot_id,release_digest=EXCLUDED.release_digest,revision=updater.node_admissions.revision+1,serve_http=true,claim_background=true,coordinate_plugins=true WHERE updater.node_admissions.cluster_id=EXCLUDED.cluster_id RETURNING revision`, e.Node.ID, e.Store.Cluster, st.BootID, digest).Row().Scan(&rev)
+	})
 	if err != nil {
-		return err
-	}
-	if err = tx.Commit().Error; err != nil {
 		return err
 	}
 	out, err := e.Runtime.Admit(ctx, rc.Admission{BootID: st.BootID, ReleaseDigest: digest, Revision: rev, ServeHTTP: true, ClaimBackground: true, CoordinatePlugins: true})
