@@ -1081,14 +1081,21 @@ func normalizeMapping(ctx context.Context, in map[string]string) (map[string]str
 	return out, fe
 }
 
-// checkRefs verifies that the proxy exists within the caller's proxy range.
-// A proxy outside the range is reported as not found, like a missing one.
-func checkRefs(ctx context.Context, q *gorm.DB, proxyID *int64, refs core.DataScope) error {
+// checkProxyRef verifies that proxyID (nil: none) is a proxy the caller
+// writing an account under action may reference (core.ProxyRefScope,
+// §21.4). A proxy outside that range is reported as not found, like a
+// missing one; a range that cannot be read fails the write (503), never
+// reaching no proxy (CONTRACTS §103.2).
+func (s *Service) checkProxyRef(ctx context.Context, proxyID *int64, action perm.Key) error {
 	if proxyID == nil {
 		return nil
 	}
+	refs, err := core.ProxyRefScope(ctx, s.d.Authorizer, action)
+	if err != nil {
+		return err
+	}
 	var ok bool
-	err := store.G(ctx, q).Table("proxies p").Select("true").Where("p.id = ?", *proxyID).
+	err = store.G(ctx, s.d.DB.Gorm).Table("proxies p").Select("true").Where("p.id = ?", *proxyID).
 		Scopes(core.ProxyRows().Scope(refs)).Take(&ok).Error
 	if store.IsNoRows(err) {
 		return core.InvalidFields(core.FieldError{Field: "proxy_id", Code: "not_found",
@@ -1431,7 +1438,7 @@ func (s *Service) resolveWriteRefs(ctx context.Context, in *input, action perm.K
 		proxyID = &in.ProxyID.V
 	}
 	// A restricted caller references only proxies it can see (§21.2).
-	if err = checkRefs(ctx, s.d.DB.Gorm, proxyID, s.proxyRefs(ctx, action)); err != nil {
+	if err = s.checkProxyRef(ctx, proxyID, action); err != nil {
 		return nil, nil, nil, err
 	}
 	if in.ProxyURL != nil {

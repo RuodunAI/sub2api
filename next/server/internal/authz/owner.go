@@ -23,8 +23,12 @@ import (
 // the owners it reads cannot move under it and role writes judge owners
 // (ownersKeepManaging) one at a time with it. Whether the actor may name
 // the owner is settled before anything about the owner is read: a team
-// holder learns nothing of a user outside its team. A refusal after the
-// move fails the caller's transaction, which takes the move back.
+// holder learns nothing of a user outside its team. On an update the actor
+// must manage the user as it stands under the lock, before the move: after
+// it the user is in the team of a holder naming itself, so a check then
+// would pass whatever happened since the caller's own read. A refusal
+// after the move fails the caller's transaction, which takes the move
+// back.
 func (s *Service) SetOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) {
 	if err := store.RequireTx(tx); err != nil {
 		return 0, err
@@ -68,6 +72,11 @@ func (s *Service) SetOwner(ctx context.Context, tx *gorm.DB, actorID, userID int
 	if to == from {
 		return to, nil
 	}
+	if !create && userID != actorID {
+		if err := s.canActOnUsers(ctx, tx, actorID, core.ActOnIdentity, userID); err != nil {
+			return 0, err
+		}
+	}
 	up, err := s.moveUser(ctx, db, userID, to)
 	if err != nil {
 		return 0, err
@@ -82,9 +91,6 @@ func (s *Service) SetOwner(ctx context.Context, tx *gorm.DB, actorID, userID int
 			c = c[i+1:]
 		}
 		targets = append(targets, c...)
-	}
-	if !create {
-		targets = append(targets, userID)
 	}
 	targets = slices.DeleteFunc(targets, func(id int64) bool { return id == actorID })
 	if err := s.canActOnUsers(ctx, tx, actorID, core.ActOnIdentity, targets...); err != nil {

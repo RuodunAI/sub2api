@@ -87,15 +87,12 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 		}
 		defer hc.CloseIdleConnections()
 	default:
-		if in.ProxyID != nil {
-			// Same visibility rule as POST /accounts (§21.2).
-			if err := checkRefs(ctx, s.d.DB.Gorm, in.ProxyID, s.proxyRefs(ctx, perm.AccountCreate)); err != nil {
-				httpapi.Fail(c, err)
-				return
-			}
+		// Same visibility rule as POST /accounts (§21.2).
+		err := s.checkProxyRef(ctx, in.ProxyID, perm.AccountCreate)
+		if err == nil {
+			hc, err = s.d.Proxies.HTTPClient(ctx, in.ProxyID)
 		}
-		var err error
-		if hc, err = s.d.Proxies.HTTPClient(ctx, in.ProxyID); err != nil {
+		if err != nil {
 			httpapi.Fail(c, err)
 			return
 		}

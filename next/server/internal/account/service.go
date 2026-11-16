@@ -373,16 +373,6 @@ func liveInScope(db *gorm.DB, ids []int64, scope core.DataScope) *gorm.DB {
 	return db.Table("accounts a").Where("a.id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids)).Scopes(core.AccountRows().Scope(scope))
 }
 
-// proxyRefs is the proxies a caller writing an account under action may
-// reference (core.ProxyRefScope); an error reaches none (logged).
-func (s *Service) proxyRefs(ctx context.Context, action perm.Key) core.DataScope {
-	scope, err := core.ProxyRefScope(ctx, s.d.Authorizer, action)
-	if err != nil {
-		slog.WarnContext(ctx, "proxy reference scope", "action", action, "err", err)
-	}
-	return scope
-}
-
 func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh) }
 
 func cooldownKey(id int64) string { return "cooldown:account:" + itoa(id) }

@@ -1,6 +1,7 @@
 -- sql
-SELECT count(*) FROM proxies p WHERE ($1::boolean OR COALESCE(p.created_by = ANY($2::bigint[]), false) OR p.id = ANY($3::bigint[]))
+SELECT count(*) FROM proxies p WHERE ($1::boolean OR COALESCE(p.created_by = ANY($2::bigint[]) OR p.created_by IN (SELECT "id" FROM "users" WHERE "owner_path" && $3), false) OR p.id = ANY($4::bigint[]))
 -- vars
 $1 bool true
 $2 core.int64s []
-$3 core.int64s []
+$3 gormpg.Array[int64] []
+$4 core.int64s []
