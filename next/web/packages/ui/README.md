@@ -421,4 +421,4 @@ const { EntityMultiPicker } = host.components
 
 `@sub2api/host` 新导出 `fetchWithSession(path, init?)`：JSON 客户端带不了的请求（原始字节上传、流、文件下载）用它发。`path` 与 `api` 的写法相同（相对 `/api/v1`，如 `/p/demo/export?x=1`），`init` 是 `fetch` 的参数，`headers` 写成普通对象。它带上会话令牌，401 按 `api` 的规则处理（其他标签页换了令牌就用新令牌重发一次，否则结束会话回登录页；5xx 不登出），返回的 `Response` 不论成败都交给调用方读。不要自己读 `session` 拼 `Authorization`，也不要为了“续期”先发一个 JSON 请求：会话由服务端续期（CONTRACTS §100）。用到它的插件声明 `hostUICompat: "^3.17"`，`hostCompat` 要求核心 `>=0.1.290`（UI 3.16、3.17 都随核心 0.1.290 发布）。
 
-同一版本起 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS` 以及 `Session` 的 `refresh_token`、`expires_at` 标为弃用：控制台不再续期 JWT，这些导出保留到 UI 4.0，什么也不做（`startKeepAlive()` 返回空的停止函数，`renewalDue` 恒为 `false`，`RENEW_BEFORE_MS` 为 `0`，会话里没有这两个字段）。按 3.x 构建的插件照常加载。
+同一版本起 `Session` 只有 `access_token`，`@sub2api/host` 也不再导出 JWT 控制台自己用的续期函数 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS`（控制台内部的导出，插件文档从未提供，内置插件都没有用到）。

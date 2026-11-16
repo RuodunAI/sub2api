@@ -127,10 +127,6 @@ export interface RequestOptions {
 
 export interface Session {
   access_token: string
-  /** @deprecated Never set: sessions renew on the server (CONTRACTS §100). Removed in host UI 4.0. */
-  refresh_token?: string
-  /** @deprecated Never set: sessions renew on the server (CONTRACTS §100). Removed in host UI 4.0. */
-  expires_at?: number
 }
 
 const SESSION_KEY = 's2a.session'
@@ -523,22 +519,3 @@ export function createClient(prefix = ''): ApiClient {
 
 /** Console API client rooted at /api/v1. */
 export const api: ApiClient = createClient()
-
-// ------------------------------------------------------------------ host UI 3.x compatibility
-//
-// The console renewed JWT sessions itself until sessions moved to the server
-// (CONTRACTS §100). Plugins built against UI 3.x may still import these: they
-// stay, harmless, until host UI 4.0.
-
-/** @deprecated Sessions renew on the server; always 0. Removed in host UI 4.0. */
-export const RENEW_BEFORE_MS = 0
-
-/** @deprecated Sessions renew on the server; never due. Removed in host UI 4.0. */
-export function renewalDue(_session: Session | null, _now: number): boolean {
-  return false
-}
-
-/** @deprecated Sessions renew on the server; does nothing and returns a no-op stop. Removed in host UI 4.0. */
-export function startKeepAlive(): () => void {
-  return () => {}
-}

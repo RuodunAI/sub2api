@@ -460,15 +460,3 @@ describe('step-up verification', () => {
     expect(ask).not.toHaveBeenCalled()
   })
 })
-
-// Plugins built against UI 3.x may import the renewal API of the JWT console;
-// it stays, doing nothing, until host UI 4.0 (CONTRACTS §100.8).
-describe('host UI 3.x compatibility', () => {
-  it('keeps the renewal exports as harmless no-ops', () => {
-    expect(http.RENEW_BEFORE_MS).toBe(0)
-    expect(http.renewalDue({ access_token: 's2s_a', refresh_token: 'r', expires_at: 0 }, Date.now())).toBe(false)
-    const stop = http.startKeepAlive()
-    expect(stop).toBeTypeOf('function')
-    stop()
-  })
-})
