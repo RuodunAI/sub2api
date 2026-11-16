@@ -1583,7 +1583,7 @@ next/
 |---|---|
 | 语言 | Go 1.27 |
 | HTTP | gin |
-| 数据库 | PostgreSQL 16 + pgx v5，手写 SQL |
+| 数据库 | PostgreSQL 16；GORM（不跑 AutoMigrate），驱动是 pgx v5 的 database/sql 适配（stdlib），连接池是 database/sql 的；打开连接由 `runtime-contract/gormpg` 一处实现，核心、网关、插件 SDK 共用 |
 | 迁移 | 嵌入式 SQL + 自研执行器（核心和插件共用，参考旧项目 `migrations_runner.go`） |
 | 缓存 / 实时状态 | Redis 7 + go-redis v9 |
 | 插件 | hashicorp/go-plugin + gRPC + protobuf |

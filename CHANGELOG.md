@@ -35,6 +35,14 @@
 
 **回滚**：只能从升级前的备份恢复，恢复后清掉 Valkey 的 `authz:c:ur:*`；升级后的写入会丢失。没有反向脚本，也没有运行时开关。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099。
 
+### 核心 0.1.290（版本号推测）+ 网关：数据库连接与存储层整理（GORM 迁移审查的修复，无迁移，可滚动）
+
+- **连接**：核心、网关、插件 SDK 用同一份 `runtime-contract/gormpg` 打开数据库，DSN 由 pgx 解析（取代手写的 `pgdsn`）。DSN 里的 `pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效，`SUB2API_PG_MAX_CONNS`（网关 `SUB2API_GATEWAY_POOL_MAX_CONNS`）优先；`pool_min_conns` 等 database/sql 没有对应项的参数打一次 WARN 后忽略。核心的连接也固定 `intervalstyle=postgres`（以前只有 SDK 固定）。
+- **插件开发者**：SDK 依赖 `runtime-contract`，插件的 `go.mod` 要加 `replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => ../../runtime-contract`（CONTRACTS §2），内置插件已加；插件、SDK、网关都不再 import pgx。
+- **出口日志**：插件出口连接的日志行一次插入后按行序（`WITH ORDINALITY`）取回 id；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。
+- **网关**：升级协调的一步（Coordinate）和节点准入各在一个事务里完成，进度在提交后才计。
+- **开发约束**：需要事务的函数（行锁、事务级 advisory 锁）在池上调用直接返回错误（`store.RequireTx`，gormguard `[tx-lock]` 检查）；`store.ForUpdate` 改为函数；`core` 不再 import `store`（`[core-store]`）。
+
 ### 核心 0.1.289（版本号推测）+ 9 个内置插件：插件权限声明与角色分配（迁移 0099，主节点优先，短暂停服）
 
 设计见 `next/docs/plugin-permissions/`，契约见 CONTRACTS §4“插件权限”、§5.2、§5.7、§5.8、§21.0“插件资源范围”。

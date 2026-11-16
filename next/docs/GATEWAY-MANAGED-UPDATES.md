@@ -428,7 +428,7 @@ internal/control/        # PG 状态机、租约、步骤对账、节点准入
 internal/localapi/       # 与核心的 Unix socket 协议
 ```
 
-控制协议及发布清单定义放在独立轻量模块 `next/runtime-contract/`，由 gateway 和 server 使用，不让网关依赖 `server/internal`，也不把更新特权加入插件 SDK。版本能力检查必须跨版本测试，不能指望共享 Go 类型自动兼容未来版本。
+控制协议及发布清单定义放在独立轻量模块 `next/runtime-contract/`，由 gateway 和 server 使用，不让网关依赖 `server/internal`，也不把更新特权加入插件 SDK。（插件 SDK 从 0.1.290 起也依赖这个模块，但只用其中打开数据库连接的 `gormpg`，不碰控制协议；`gormpg` 带来 GORM 与 pgx 依赖，控制协议各包仍只依赖标准库。）版本能力检查必须跨版本测试，不能指望共享 Go 类型自动兼容未来版本。
 
 仅将现有 Redis 锁与 KeepLock 中需要共用的代码抽取为轻量包，供核心和网关使用；不为更新功能新增完整的 coordination 模块。插件继续经现有 HostService 锁接口使用宿主能力。
 

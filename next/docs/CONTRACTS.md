@@ -28,11 +28,11 @@
 
 ## 2. 构建与测试
 
-- Go 1.27；`next/go.work` 包含 `sdk`、`server`；新增的 Go module（插件、工具）加入 `go.work`，并在自己的 `go.mod` 里 `replace github.com/Sub2API-Devs/sup2api/next/sdk => ../../sdk`（按相对路径）
+- Go 1.27；`next/go.work` 包含 `sdk`、`server`；新增的 Go module（插件、工具）加入 `go.work`，并在自己的 `go.mod` 里 `replace github.com/Sub2API-Devs/sup2api/next/sdk => ../../sdk` 和 `replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => ../../runtime-contract`（按相对路径；SDK 从 0.1.290 起依赖 runtime-contract，`GOWORK=off` 构建缺了后一条会找不到它）
 - 下载依赖：`GOPROXY=https://goproxy.cn,direct`（只在命令里临时设置）；整理依赖用 `GOWORK=off go mod tidy`
 - 重新生成 proto：`cd sdk && buf generate`（工具在 `go env GOBIN`）
 - 每个模块完成时必须通过：`go vet ./...`、`GOOS=linux go build ./...`、本模块的 `go test ./...`
-- **插件数据库**（2026-11-15）：插件用 `Host.DB` 返回的 `*gorm.DB`（`sdk/pgdb`），插件代码不 import pgx；SDK 里只有 `sdk/pgdb/pgdb.go` 用 pgx（拨号钩子、数组解析）。表结构以插件 `internal/model` 包的 GORM 模型为唯一描述（导出 `func All() []any`），宿主仍只执行 `migrations/*.sql`，运行时不跑 AutoMigrate。`sub2api-plugin db diff --dir <插件> [--name <名称>]` 在临时 schema 上执行现有迁移后对模型反复跑 AutoMigrate 直到不再变化（列默认值交给 PostgreSQL 规范化后比较），把它执行的 DDL（改写成可重复执行）写成下一个编号的迁移（编号位数沿用已有文件），写之前在临时 schema 上把它连跑两次并确认再无差异；无变化时提示；改列类型、删除、`SET NOT NULL`、无默认值的 `NOT NULL` 新列、给已有表加 CHECK/唯一/外键约束或唯一索引（标 `!`），以及库里有而模型里没有的表、列、索引、约束（CHECK、外键、唯一）、视图、序列、函数只打印、不生成。`db check` 有任何差异就失败，`pack` 自动执行（含 `--overlay` 的迁移；插件没有 `internal/model` 或 manifest 没有 `database` 时跳过；没设 `TEST_DATABASE_URL` 时启动本机 testpg 服务器，由它启动的在结束时停掉；`--skip-db-check` 关闭，镜像构建用它，CI 由 `tools/sub2api-plugin` 的 `TestDBCheck` 检查所有带模型的内置插件）。说明见 `sdk/pluginsdk/doc.go` 的 Database 一节
+- **插件数据库**（2026-11-15）：插件用 `Host.DB` 返回的 `*gorm.DB`（`sdk/pgdb`），插件、SDK、网关和工具都不 import pgx（`sdk/pgdb` 的 `TestNoPgxImports` 检查，测试文件也算；核心是 gormguard `[pgx-import]`）。连接的打开由 `runtime-contract/gormpg` 一处实现，核心、网关、SDK 共用：pgx 解析 DSN（URL 或 key=value），取出全部 `pool_*` 参数（核心和网关按 `pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 设池，环境变量的连接数优先；database/sql 没有对应项的 `pool_min_conns` 等和不认识的打一次 WARN 后忽略；插件的池只按 `pgdb.Options` 定大小），固定 `datestyle=ISO`、`intervalstyle=postgres`，`stdlib.OpenDB` 交给 database/sql 池，GORM 跑在 `sqlpool` 上；数组参数类型 `gormpg.Array`（`pgdb.Array`、`store.Array` 是它的别名）、`IsNoRows`、`IsUniqueViolation` 也在这里。表结构以插件 `internal/model` 包的 GORM 模型为唯一描述（导出 `func All() []any`），宿主仍只执行 `migrations/*.sql`，运行时不跑 AutoMigrate。`sub2api-plugin db diff --dir <插件> [--name <名称>]` 在临时 schema 上执行现有迁移后对模型反复跑 AutoMigrate 直到不再变化（列默认值交给 PostgreSQL 规范化后比较），把它执行的 DDL（改写成可重复执行）写成下一个编号的迁移（编号位数沿用已有文件），写之前在临时 schema 上把它连跑两次并确认再无差异；无变化时提示；改列类型、删除、`SET NOT NULL`、无默认值的 `NOT NULL` 新列、给已有表加 CHECK/唯一/外键约束或唯一索引（标 `!`），以及库里有而模型里没有的表、列、索引、约束（CHECK、外键、唯一）、视图、序列、函数只打印、不生成。`db check` 有任何差异就失败，`pack` 自动执行（含 `--overlay` 的迁移；插件没有 `internal/model` 或 manifest 没有 `database` 时跳过；没设 `TEST_DATABASE_URL` 时启动本机 testpg 服务器，由它启动的在结束时停掉；`--skip-db-check` 关闭，镜像构建用它，CI 由 `tools/sub2api-plugin` 的 `TestDBCheck` 检查所有带模型的内置插件）。说明见 `sdk/pluginsdk/doc.go` 的 Database 一节
 - **数据库测试**：核心用 `testutil.DB(t)`，插件用 `pluginsdktest.NewSchema(t, …)`，两者都从 `sdk/testpg` 拿库：
   - 设置了 `TEST_DATABASE_URL`（超级用户 DSN，如 CI）就用它；
   - 没设置时由 Go 启动本机的真实 PostgreSQL 16（embedded-postgres）。首次运行从 Maven Central 下载约 25 MB（需要代理时设 `HTTPS_PROXY`），之后使用缓存。
@@ -1223,17 +1223,17 @@ POST/PATCH `/accounts` 新增 `proxy_url`（字符串，可选；去首尾空白
 
 解析（`core.ParseProxyURL(raw string) (core.ProxySpec, error)`，`ProxySpec{Protocol, Host, Port, Username, Password}`；解析器放在 core，账号模块不 import 代理模块；`proxy.ParseURL` 是它的别名）：去首尾空白；`url.Parse`；scheme 小写后必须是 `http` / `https` / `socks5` / `socks5h`（`socks5h` 记为 `socks5`）；host 取 `Hostname()` **小写**（IPv6 去方括号）、非空；port 必填 1–65535；用户名/密码取 `User.Username()`/`User.Password()`（已 URL 解码；`url.Parse` 按最后一个 `@` 切分，密码里未转义的 `@` 因此被接受）；opaque 形式（`http:host:1080`）、带 path（`/` 以外）、query（含空 `?`）、fragment 拒绝；结果再过 §15.4 的字段校验（host 不含 `/ ? # @` 与空白、≤255；username ≤255；password ≤1024）。任何错误返回 400 `invalid_argument`，`fields[{field:"proxy_url", code:"invalid", message:"invalid proxy URL: <原因>"}]`，**message 不回显原串**（可能含密码；`url.Error` 会引用整串，所以也不透传）。
 
-查找或创建（新端口 `core.ProxyResolver`，由 `proxy.Service` 实现，通过 `account.Deps` 注入；`tx` 用 `pgx.Tx`，与 `core.PermissionCatalog` 一致）：
+查找或创建（新端口 `core.ProxyResolver`，由 `proxy.Service` 实现，通过 `account.Deps` 注入；`tx` 是调用方事务的 `*gorm.DB`，与 `core.PermissionCatalog` 一致）：
 
 ```go
 type ProxyResolver interface {
-    FindOrCreate(ctx context.Context, tx pgx.Tx, spec ProxySpec, ownerID int64, scope *int64) (id int64, created bool, err error)
-    AuditAutoCreate(ctx context.Context, tx pgx.Tx, proxyID, ownerID, accountID int64) error
+    FindOrCreate(ctx context.Context, tx *gorm.DB, spec ProxySpec, ownerID int64, scope DataScope) (id int64, created bool, err error)
+    AuditAutoCreate(ctx context.Context, tx *gorm.DB, proxyID, ownerID, accountID int64) error
 }
 ```
 
 - 权限：调用者须有 `proxy:manage` 或 `proxy:own:manage`，否则 403 `permission_denied`（`details.permission = "proxy:own:manage"`）。由账号模块按 `proxy:manage` 的范围判断（期 4 R4 起 `details.permission = "proxy:manage:own"`；`FindOrCreate` 只在新建时要求全部或 own 范围）；权限、解析都在调用插件校验凭证之前做，`account.Deps.Resolver` 为空时 `proxy_url` 返回 501 `unsupported`。
-- 匹配范围 `scope`：代理的**写范围**（2026-11-12 权限加固 T30 起；此前按读范围）：有 `proxy:manage` 为全部（`nil`），只有 `proxy:own:manage` 为自己创建的（传 `&uid`）。由账号模块用 `core.ScopeOf` 与权限判断一次算好传入；`POST /proxies/probe` 带 `save` 时同样传写范围。新建的行 `allow_private = (scope == nil)`（§43.3）。校验 `proxy_id` 用的是另一套可见范围（自己级账号 key 时）：有 `proxy:read` 为全部，`proxy:own:read` 或 `proxy:own:manage` 为自己创建的；没有任何代理 key 的调用者给出任何 `proxy_id` 都是 `proxy_id/not_found`；全部级账号 key（`account:create` / `account:update`）的调用者 `proxy_id` 只要存在即可。
+- 匹配范围 `scope`：代理的**写范围**（2026-11-12 权限加固 T30 起；此前按读范围）：是调用者 `proxy:manage` 的 `core.DataScope`：全部为 `All`，自己创建的为 `Owner`，另有分组、单个 id 等范围（§21.0）。由账号模块用 `core.Scope` 一次算好传入；`POST /proxies/probe` 带 `save` 时同样传写范围。只有全部或自己创建的范围能新建；新建的行 `allow_private = !scope.Restricted()`（§43.3）。校验 `proxy_id` 用的是另一套可见范围（自己级账号 key 时）：有 `proxy:read` 为全部，`proxy:own:read` 或 `proxy:own:manage` 为自己创建的；没有任何代理 key 的调用者给出任何 `proxy_id` 都是 `proxy_id/not_found`；全部级账号 key（`account:create` / `account:update`）的调用者 `proxy_id` 只要存在即可。
 - 匹配键 = `protocol, host（小写）, port, username, password` 全等；`name`、`status` 不参与。SQL 按 `protocol = $1 AND lower(host) = $2 AND port = $3 AND username = $4` 加 `(password_enc IS NULL) = <输入密码是否为空>` 与范围条件预筛，`ORDER BY id`，候选逐条解密后 `subtle.ConstantTimeCompare` 比密码（解不开的行跳过）。**跳过 `status=disabled` 的代理**。命中多条取 id 最小的。
 - 未命中则新建：`name` = `<protocol>://<host>:<port>`（IPv6 host 带方括号；超长按 rune 截断到 100），`status=active`，`created_by` = `ownerID`。
 - 查找 + 创建与账号写入在**同一事务**，`FindOrCreate` 先 `SELECT pg_advisory_xact_lock(hashtext(protocol||'|'||host||'|'||port||'|'||username))`（不含密码）防并发重复。
