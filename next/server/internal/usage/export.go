@@ -4,7 +4,9 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,13 +19,14 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// Usage export (CONTRACTS §66.5): GET /me/usage/export and GET /usage/export
-// take the list's filters plus tz= (the time column's zone) and lang=zh|en
-// (the header row), and stream CSV newest first, keyset-paged so a long
-// export never runs one large query. At most exportMaxRows rows; a longer
+// Usage export (CONTRACTS §66.5): GET /me/usage/export, GET /usage/export
+// and GET /account-usage/export (§102.5) take the list's filters plus tz=
+// (the time column's zone) and lang=zh|en (the header row), and stream CSV
+// newest first, keyset-paged so a long export never runs one large query. At most exportMaxRows rows; a longer
 // result ends with a note row. Cells a spreadsheet would read as a formula
 // are prefixed with '. The self-service export has no account or upstream
-// columns, like the list. Every export is audited.
+// columns, like the list; the account side's has its allowlisted columns.
+// Every export is audited.
 
 const (
 	exportMaxRows = 100_000
@@ -127,14 +130,56 @@ func (s *Service) myExport(c *gin.Context) {
 func (s *Service) allExport(c *gin.Context) { s.export(c, nil) }
 
 func (s *Service) export(c *gin.Context, self *int64) {
+	accounts, err := s.seesAccounts(c.Request.Context(), self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	view := trailViewFor(self, accounts)
+	var cols []exportColumn
+	for _, col := range exportColumns {
+		if (!col.admin || self == nil) && (!col.account || accounts) {
+			cols = append(cols, col)
+		}
+	}
+	s.streamExport(c, csvExport{
+		filter: func() (store.Conds, error) { return parseFilter(c, self, view) },
+		cols:   cols,
+		shape: func(rs []Record) error {
+			for i := range rs {
+				if self != nil {
+					rs[i].hideUpstream()
+				}
+				rs[i].shapeTrail(view, nil)
+			}
+			return nil
+		},
+		audit: map[string]any{"self": self != nil},
+	})
+}
+
+// accountExportColumns are the columns of the account side's export
+// (CONTRACTS §102.5), by their en header: the allowlisted fields alone.
+var accountExportColumns = []string{"Time", "Request ID", "Account ID", "Account", "Model", "Upstream model", "Endpoint",
+	"Protocol", "Stream", "Status", "Success", "Error type", "Input tokens", "Output tokens", "Cache read tokens",
+	"Cache write tokens", "Base price", "First token (ms)", "Duration (ms)"}
+
+// csvExport is what one export streams: the records filter keeps (parsed
+// again for each page), the columns before the call chain, what is left of
+// each page's records (shape), and the audit detail beyond rows,
+// truncated and query.
+type csvExport struct {
+	filter func() (store.Conds, error)
+	cols   []exportColumn
+	shape  func([]Record) error
+	audit  map[string]any
+}
+
+func (s *Service) streamExport(c *gin.Context, e csvExport) {
 	ctx := c.Request.Context()
 	// Validate the filters before any byte of the file is sent; each page
 	// below parses them again and adds its keyset bound.
-	accounts, err := s.seesAccounts(ctx, self)
-	if err == nil {
-		_, err = parseFilter(c, self, accounts)
-	}
-	if err != nil {
+	if _, err := e.filter(); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -154,14 +199,8 @@ func (s *Service) export(c *gin.Context, self *int64) {
 		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("lang must be zh or en"))
 		return
 	}
-	var cols []exportColumn
-	for _, col := range exportColumns {
-		if (!col.admin || self == nil) && (!col.account || accounts) {
-			cols = append(cols, col)
-		}
-	}
 	// The call chain comes last, in the header's language.
-	cols = append(cols, exportColumn{zh: "调用链路", en: "Call chain", value: func(r *Record, _ *time.Location) string {
+	cols := append(slices.Clip(e.cols), exportColumn{zh: "调用链路", en: "Call chain", value: func(r *Record, _ *time.Location) string {
 		return attemptChain(r, lang == "zh")
 	}})
 	name := "usage_" + time.Now().In(loc).Format("20060102_150405") + ".csv"
@@ -184,7 +223,7 @@ func (s *Service) export(c *gin.Context, self *int64) {
 	var cursorAt time.Time
 	var cursorID int64
 	for rows < exportMaxRows {
-		page, err := parseFilter(c, self, accounts)
+		page, err := e.filter()
 		if err != nil {
 			break
 		}
@@ -192,41 +231,31 @@ func (s *Service) export(c *gin.Context, self *int64) {
 			page.And("(u.created_at, u.id) < (?, ?)", cursorAt, cursorID)
 		}
 		batch := min(exportBatch, exportMaxRows-rows)
-		q, err := recordQuery(store.G(ctx, s.db.Gorm), page).Limit(batch + 1).Rows()
+		records, err := scanRecords(recordQuery(store.G(ctx, s.db.Gorm), page).Limit(batch + 1))
+		more := len(records) > batch
+		if more {
+			records = records[:batch]
+		}
+		if err == nil {
+			err = e.shape(records)
+		}
 		if err != nil {
 			// Headers are sent: end the file with the error so it is not
 			// mistaken for a complete export.
 			_ = w.Write([]string{"# export failed: " + err.Error()})
 			break
 		}
-		n := 0
-		more := false
-		for q.Next() {
-			if n == batch {
-				more = true
-				break
-			}
-			var r Record
-			if err := q.Scan(r.scanTargets()...); err != nil {
-				_ = q.Close()
-				_ = w.Write([]string{"# export failed: " + err.Error()})
-				w.Flush()
-				return
-			}
-			if self != nil {
-				r.hideUpstream()
-			}
-			r.shapeTrail(trailViewFor(self, accounts))
+		for i := range records {
 			line := make([]string, len(cols))
-			for i, col := range cols {
-				line[i] = csvCell(col.value(&r, loc))
+			for j, col := range cols {
+				line[j] = csvCell(col.value(&records[i], loc))
 			}
 			_ = w.Write(line)
-			n++
-			cursorAt, cursorID = r.CreatedAt, r.ID
 		}
-		_ = q.Close()
-		rows += n
+		if n := len(records); n > 0 {
+			rows += n
+			cursorAt, cursorID = records[n-1].CreatedAt, records[n-1].ID
+		}
 		w.Flush()
 		if !more {
 			break
@@ -240,8 +269,10 @@ func (s *Service) export(c *gin.Context, self *int64) {
 	}
 	w.Flush()
 	uid, _ := core.UserID(ctx)
-	detail, _ := json.Marshal(map[string]any{"rows": rows, "truncated": truncated, "self": self != nil, "query": c.Request.URL.RawQuery})
-	_ = store.G(ctx, s.db.Gorm).Create(&model.AuditLog{UserID: &uid, Action: "usage.export", TargetType: "usage", Detail: detail, IP: c.ClientIP()}).Error
+	detail := map[string]any{"rows": rows, "truncated": truncated, "query": c.Request.URL.RawQuery}
+	maps.Copy(detail, e.audit)
+	raw, _ := json.Marshal(detail)
+	_ = store.G(ctx, s.db.Gorm).Create(&model.AuditLog{UserID: &uid, Action: "usage.export", TargetType: "usage", Detail: raw, IP: c.ClientIP()}).Error
 }
 
 // csvCell keeps a spreadsheet from evaluating a text cell as a formula.
