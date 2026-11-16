@@ -148,8 +148,7 @@ const jobRunCols = `id, job_id, scope, node_id, scheduled_at, started_at, finish
 // lastRuns selects the latest run of every job of key, as JobRun, whose
 // fields are the jobRunCols.
 func lastRuns(db *gorm.DB, key string) *gorm.DB {
-	return db.Raw(`SELECT DISTINCT ON (job_id) `+jobRunCols+`
-		FROM plugin_job_runs WHERE plugin_key = ? ORDER BY job_id, id DESC`, key)
+	return db.Model(&model.PluginJobRun{}).Select("DISTINCT ON (job_id) "+jobRunCols).Where("plugin_key = ?", key).Order("job_id, id DESC")
 }
 
 func (a *API) jobInfos(ctx context.Context, key string, m *manifest.Manifest) ([]JobInfo, error) {
@@ -349,9 +348,9 @@ func deadletters(db *gorm.DB, key string) *gorm.DB {
 // backlog counts the events after the cursor at id that the subscription
 // (exact types, LIKE patterns) matches, up to backlogCap+1.
 func backlog(db *gorm.DB, id int64, exact, like []string) *gorm.DB {
-	return db.Raw(`SELECT count(*) FROM (
-			SELECT 1 FROM events WHERE id > ? AND (type = ANY(?) OR type LIKE ANY(?)) LIMIT ?) t`,
-		id, store.Strings(exact), store.Strings(like), backlogCap+1)
+	matched := db.Model(&model.Event{}).Select("1").
+		Where("id > ? AND (type = ANY(?) OR type LIKE ANY(?))", id, store.Strings(exact), store.Strings(like)).Limit(backlogCap + 1)
+	return db.Table("(?) AS t", matched).Select("count(*)")
 }
 
 func (a *API) events(c *gin.Context) {
@@ -608,15 +607,13 @@ func (a *API) egress(c *gin.Context) {
 	}
 	rc := c.Request.Context()
 	g := store.G(rc, a.d.DB.Gorm)
-	summary, err := store.CollectRows(g.Raw(`
-		SELECT host, port, count(*),
-		       count(*) FILTER (WHERE result = 'ok'), count(*) FILTER (WHERE result = 'open'),
-		       count(*) FILTER (WHERE result = 'denied'),
-		       count(*) FILTER (WHERE result NOT IN ('ok', 'open', 'denied')),
-		       COALESCE(sum(bytes_in), 0), COALESCE(sum(bytes_out), 0), max(started_at)
-		FROM plugin_egress_logs
-		WHERE plugin_key = ? AND started_at >= ? AND started_at < ?
-		GROUP BY host, port ORDER BY count(*) DESC LIMIT 200`, key, from, to), func(rows *sql.Rows) (EgressSummary, error) {
+	byHost := egressLogs(g, key, from, to).Select(`host, port, count(*),
+		count(*) FILTER (WHERE result = 'ok'), count(*) FILTER (WHERE result = 'open'),
+		count(*) FILTER (WHERE result = 'denied'),
+		count(*) FILTER (WHERE result NOT IN ('ok', 'open', 'denied')),
+		COALESCE(sum(bytes_in), 0), COALESCE(sum(bytes_out), 0), max(started_at)`).
+		Group("host, port").Order("count(*) DESC").Limit(200)
+	summary, err := store.CollectRows(byHost, func(rows *sql.Rows) (EgressSummary, error) {
 		var s EgressSummary
 		err := rows.Scan(&s.Host, &s.Port, &s.Count, &s.OK, &s.Open, &s.Denied, &s.Errors, &s.BytesIn, &s.BytesOut, &s.LastAt)
 		return s, err

@@ -59,12 +59,17 @@ type NodeSummary struct {
 	States map[string]int `json:"states"`
 }
 
-const pluginSelect = `
-	SELECT p.key, p.name, p.status, p.status_reason, p.active_version, p.desired_version,
-	       COALESCE(pub.name, ''), COALESCE(pub.trust_level, 'unsigned'), p.egress_policy, p.installed_at, p.updated_at, p.builtin,
-	       COALESCE((SELECT array_agg(version ORDER BY uploaded_at) FROM plugin_versions
-	                 WHERE plugin_key = p.key AND consent_status = 'awaiting_consent'), '{}')
-	FROM plugins p LEFT JOIN publishers pub ON pub.id = p.publisher_id`
+// pluginSummaries selects the PluginSummary columns of the plugins (as p),
+// in scanSummary's order.
+func pluginSummaries(db *gorm.DB) *gorm.DB {
+	pending := db.Model(&model.PluginVersion{}).Select("array_agg(version ORDER BY uploaded_at)").
+		Where("plugin_key = p.key AND consent_status = 'awaiting_consent'")
+	return db.Table("plugins AS p").
+		Select(`p.key, p.name, p.status, p.status_reason, p.active_version, p.desired_version,
+			COALESCE(pub.name, ''), COALESCE(pub.trust_level, 'unsigned'), p.egress_policy, p.installed_at, p.updated_at, p.builtin,
+			COALESCE((?), '{}')`, pending).
+		Joins("LEFT JOIN publishers pub ON pub.id = p.publisher_id")
+}
 
 func scanSummary(row store.RowScanner) (*PluginSummary, error) {
 	var s PluginSummary
@@ -102,8 +107,9 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 	if v != "" {
 		var sig string
 		var pub string
-		if err := store.G(ctx, a.d.DB.Gorm).Raw(`SELECT signature_status, manifest->>'publisher', COALESCE(manifest->'ui'->'settings'->>'mode' = 'schema', false) FROM plugin_versions
-			WHERE plugin_key = ? AND version = ?`, s.Key, v).Row().Scan(&sig, &pub, &s.HasSettings); err != nil {
+		if err := store.G(ctx, a.d.DB.Gorm).Model(&model.PluginVersion{}).
+			Select("signature_status, manifest->>'publisher', COALESCE(manifest->'ui'->'settings'->>'mode' = 'schema', false)").
+			Where("plugin_key = ? AND version = ?", s.Key, v).Row().Scan(&sig, &pub, &s.HasSettings); err != nil {
 			return err
 		}
 		s.SignatureStatus = sig
@@ -123,7 +129,7 @@ func (a *API) listPlugins(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	items, err := store.CollectRows(g.Raw(pluginSelect+` ORDER BY p.key LIMIT ? OFFSET ?`, size, (page-1)*size),
+	items, err := store.CollectRows(pluginSummaries(g).Order("p.key").Limit(size).Offset((page-1)*size),
 		func(rows *sql.Rows) (*PluginSummary, error) { return scanSummary(rows) })
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -206,7 +212,7 @@ type VersionInfo struct {
 func (a *API) getPlugin(c *gin.Context) {
 	rc := c.Request.Context()
 	key := c.Param("key")
-	s, err := scanSummary(store.G(rc, a.d.DB.Gorm).Raw(pluginSelect+` WHERE p.key = ?`, key).Row())
+	s, err := scanSummary(pluginSummaries(store.G(rc, a.d.DB.Gorm)).Where("p.key = ?", key).Row())
 	if store.IsNoRows(err) {
 		httpapi.Fail(c, core.ErrNotFound.WithMessage("plugin not found"))
 		return
