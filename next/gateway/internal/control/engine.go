@@ -242,9 +242,6 @@ type passError struct {
 
 const passErrorRepeat = 5 * time.Minute
 
-// knownStrategies is KnownStrategy for SQL (= ANY(?)).
-var knownStrategies = gormpg.Array[string]{PrimaryFirst, Rolling}
-
 // progressed counts a committed coordination step and wakes the watchers.
 // It runs after the commit, so it never signals an uncommitted result: every
 // immediate next pass acquires a fresh Redis lease and rereads PG; no
@@ -326,7 +323,7 @@ func (e *Engine) Heartbeat(ctx context.Context) error {
 		e.offloading = false
 	}
 	n.Offloading = len(targets) > 0
-	if err = e.persistHeartbeat(ctx, n, nodes, nodesErr == nil); err != nil || len(targets) == 0 {
+	if err = e.persistHeartbeat(ctx, n); err != nil || len(targets) == 0 {
 		return err
 	}
 	if err = shedder.SetOffload(targets); err != nil {
@@ -363,17 +360,9 @@ func yieldTargets(self Node, nodes []Node) []Node {
 
 // persistHeartbeat writes the control snapshot to PostgreSQL when it
 // changed, or every heartbeatRewrite, and reports telemetry to Redis every
-// time. Both happen when the cluster still has a shell that reads liveness
-// from PostgreSQL (telemetry boot differs from its shell boot), or when the
-// node directory could not be read, so nothing is skipped on a guess.
-func (e *Engine) persistHeartbeat(ctx context.Context, n Node, nodes []Node, haveNodes bool) error {
-	legacy := !haveNodes
-	for _, other := range nodes {
-		if other.Enabled && other.TelemetryBootID != other.ShellBootID {
-			legacy = true
-		}
-	}
-	if !legacy && !e.lastWrittenAt.IsZero() && time.Since(e.lastWrittenAt) < heartbeatRewrite && sameControlSnapshot(e.lastWritten, n) {
+// time.
+func (e *Engine) persistHeartbeat(ctx context.Context, n Node) error {
+	if !e.lastWrittenAt.IsZero() && time.Since(e.lastWrittenAt) < heartbeatRewrite && sameControlSnapshot(e.lastWritten, n) {
 		return e.Store.ReportTelemetry(ctx, n)
 	}
 	if err := e.Store.Heartbeat(ctx, n); err != nil {
@@ -448,10 +437,6 @@ func (e *Engine) coordinateTx(ctx context.Context, tx *gorm.DB, primary string) 
 	}
 	if err = json.Unmarshal(raw, &p.Nodes); err != nil {
 		return false, err
-	}
-	if !KnownStrategy(p.Strategy) {
-		err = upgradeRow(tx, p.ID).Updates(map[string]any{"status": "paused", "error": "legacy upgrade strategy requires manual reconciliation"}).Error
-		return err == nil, err
 	}
 	if len(p.Nodes) < 1 || p.Nodes[0] != primary {
 		return false, errors.New("invalid stored upgrade membership")
@@ -567,7 +552,7 @@ func (e *Engine) Work(ctx context.Context) error {
 	// This node's step at the cursor of the running plan, when not finished.
 	err := db.Table("updater.steps s").Joins("JOIN updater.upgrades u ON u.id=s.upgrade_id").
 		Select("s.upgrade_id,s.step_id,s.node_id,s.action,s.target_digest,s.peer_node,s.status").
-		Where("u.cluster_id=? AND u.status='running' AND u.strategy=ANY(?) AND u.cursor=s.step_id AND s.node_id=? AND s.status IN ('pending','running')", e.Store.Cluster, knownStrategies, e.Node.ID).
+		Where("u.cluster_id=? AND u.status='running' AND u.cursor=s.step_id AND s.node_id=? AND s.status IN ('pending','running')", e.Store.Cluster, e.Node.ID).
 		Row().Scan(&st.UpgradeID, &st.ID, &st.NodeID, &st.Action, &st.TargetDigest, &st.PeerNode, &st.Status)
 	if gormpg.IsNoRows(err) {
 		// When there is no active command, a crashed stable core may restart
@@ -615,7 +600,7 @@ func (e *Engine) Work(ctx context.Context) error {
 	}
 	e.busy.Store(true)
 	// Running is a journal state, not an ownership lease: Redis governs execution.
-	started := cursorStep(db, st).Where("u.status='running' AND u.strategy=ANY(?)", knownStrategies).
+	started := cursorStep(db, st).Where("u.status='running'").
 		Updates(map[string]any{"status": "running", "updated_at": gorm.Expr("now()")})
 	if started.Error != nil {
 		return started.Error
@@ -987,7 +972,7 @@ func (e *Engine) start(ctx context.Context, planID, digest string, bootstrap boo
 		if err != nil {
 			return err
 		}
-		if !KnownStrategy(p.Strategy) || p.Status != "running" {
+		if p.Status != "running" {
 			return errors.New("plan is not runnable")
 		}
 		if p.Strategy == Rolling {
@@ -1070,9 +1055,6 @@ func activePlan(plans []Plan) *Plan {
 // it. Each branch either forwards to the primary, stops, or resumes stable
 // serving; the durable plan, not memory, decides which.
 func (e *Engine) recoverActivePlan(ctx context.Context, p Plan, primary string) error {
-	if !KnownStrategy(p.Strategy) {
-		return e.enterMaintenanceAndStop(ctx, "legacy-plan-recovery")
-	}
 	member := false
 	for _, id := range p.Nodes {
 		if id == e.Node.ID {
@@ -1272,7 +1254,7 @@ func (e *Engine) admissionAllowed(ctx context.Context, digest string) error {
 	if err != nil {
 		return err
 	}
-	if !KnownStrategy(strategy) || digest != target {
+	if digest != target {
 		return errors.New("active plan does not authorize this release")
 	}
 	var localDone, started bool
@@ -1331,8 +1313,8 @@ func (e *Engine) requireFreshNodes(ctx context.Context, ids []string) error {
 // the active plan row or the cluster row, so share locks on both (plan first,
 // matching Coordinate and rollback) serialize the admission write with them.
 func (e *Engine) planAuthorizesTx(ctx context.Context, tx *gorm.DB, digest string) error {
-	var id, status, target, strategy string
-	planErr := e.Store.activeUpgrade(tx).Clauses(forShare()).Select("id,status,release_digest,strategy").Row().Scan(&id, &status, &target, &strategy)
+	var id, status, target string
+	planErr := e.Store.activeUpgrade(tx).Clauses(forShare()).Select("id,status,release_digest").Row().Scan(&id, &status, &target)
 	if planErr != nil && !gormpg.IsNoRows(planErr) {
 		return planErr
 	}
@@ -1351,7 +1333,7 @@ func (e *Engine) planAuthorizesTx(ctx context.Context, tx *gorm.DB, digest strin
 		}
 		return nil
 	}
-	if !KnownStrategy(strategy) || digest != target {
+	if digest != target {
 		return ErrConflict
 	}
 	var localDone, started bool

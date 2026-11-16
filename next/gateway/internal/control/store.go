@@ -130,7 +130,7 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 	}
 	// On a conflict an enabled node of this cluster takes the new identity
 	// and platform. Under a new shell boot it starts over (not ready, not
-	// stopped, in maintenance, unmeasured, not offloading, joining the plan
+	// stopped, in maintenance, not offloading, joining the plan
 	// the registration found); under the same boot it keeps that state.
 	const sameBoot = "CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes."
 	set := clause.AssignmentColumns([]string{"peer_url", "shell_boot_id", "rolling", "os", "arch", "runtime_abi", "peer_protocol", "strategy"})
@@ -139,7 +139,6 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 		"stopped":      gorm.Expr(sameBoot + "stopped ELSE false END"),
 		"mode":         gorm.Expr(sameBoot + "mode ELSE 'maintenance' END"),
 		"joining_plan": gorm.Expr(sameBoot + "joining_plan ELSE EXCLUDED.joining_plan END"),
-		"cpu_percent":  gorm.Expr(sameBoot + "cpu_percent END"),
 		"offloading":   gorm.Expr("updater.nodes.offloading AND updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id"),
 		"last_seen":    gorm.Expr("now()"),
 	})...)
@@ -172,18 +171,14 @@ func (s *Store) Heartbeat(ctx context.Context, n Node) error {
 	// parenthesis or semicolon, so a typed one is CAST(@x AS t), not @x::t.
 	err := s.db(ctx).Raw(`WITH changed AS (
  UPDATE updater.nodes SET release_digest=@release,core_boot_id=@core,mode=@mode,ready=@ready,
- last_seen=now(),route_revision=@route,stopped=@stopped,offloading=@offloading,telemetry_boot_id=@boot,
- cpu_percent=CASE WHEN EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id) THEN CAST(@cpu AS double precision) ELSE NULL END,error=''
+ last_seen=now(),route_revision=@route,stopped=@stopped,offloading=@offloading,telemetry_boot_id=@boot,error=''
  WHERE node_id=@node AND cluster_id=@cluster AND shell_boot_id=@boot AND enabled AND (
  (release_digest,core_boot_id,mode,ready,route_revision,stopped,offloading,telemetry_boot_id)
- IS DISTINCT FROM (CAST(@release AS text),CAST(@core AS text),CAST(@mode AS text),CAST(@ready AS boolean),CAST(@route AS bigint),CAST(@stopped AS boolean),CAST(@offloading AS boolean),CAST(@boot AS text))
- OR (cpu_percent IS NOT NULL AND NOT EXISTS(SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id))
- OR (last_seen<now()-interval '5 seconds' AND EXISTS (
- SELECT 1 FROM updater.nodes legacy WHERE legacy.cluster_id=@cluster AND legacy.enabled AND legacy.telemetry_boot_id<>legacy.shell_boot_id)))
+ IS DISTINCT FROM (CAST(@release AS text),CAST(@core AS text),CAST(@mode AS text),CAST(@ready AS boolean),CAST(@route AS bigint),CAST(@stopped AS boolean),CAST(@offloading AS boolean),CAST(@boot AS text)))
  RETURNING node_id)
  SELECT EXISTS(SELECT 1 FROM changed) OR EXISTS(SELECT 1 FROM updater.nodes WHERE node_id=@node AND cluster_id=@cluster AND shell_boot_id=@boot AND enabled)`, map[string]any{
 		"release": n.ReleaseDigest, "core": n.CoreBootID, "mode": n.Mode, "ready": n.Ready, "route": n.RouteRevision,
-		"stopped": n.Stopped, "offloading": n.Offloading, "boot": n.ShellBootID, "cluster": s.Cluster, "cpu": n.CPUPercent, "node": n.ID,
+		"stopped": n.Stopped, "offloading": n.Offloading, "boot": n.ShellBootID, "cluster": s.Cluster, "node": n.ID,
 	}).Row().Scan(&accepted)
 	if err != nil {
 		return err
@@ -194,7 +189,7 @@ func (s *Store) Heartbeat(ctx context.Context, n Node) error {
 	return s.reportTelemetry(ctx, n, observedLocally)
 }
 func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.nodes(s.db(ctx)).Select("node_id,peer_url,shell_boot_id,release_digest,core_boot_id,mode,ready,last_seen,error,os,arch,runtime_abi,route_revision,stopped,enabled,peer_protocol,strategy,joining_plan,cpu_percent,offloading,telemetry_boot_id,rolling").Order("node_id").Rows()
+	rows, err := s.nodes(s.db(ctx)).Select("node_id,peer_url,shell_boot_id,release_digest,core_boot_id,mode,ready,last_seen,error,os,arch,runtime_abi,route_revision,stopped,enabled,peer_protocol,strategy,joining_plan,offloading,telemetry_boot_id,rolling").Order("node_id").Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +197,7 @@ func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
 	out := []Node{}
 	for rows.Next() {
 		var n Node
-		if err = rows.Scan(&n.ID, &n.PeerURL, &n.ShellBootID, &n.ReleaseDigest, &n.CoreBootID, &n.Mode, &n.Ready, &n.LastSeen, &n.Error, &n.OS, &n.Arch, &n.RuntimeABI, &n.RouteRevision, &n.Stopped, &n.Enabled, &n.PeerProtocol, &n.Strategy, &n.JoiningPlan, &n.CPUPercent, &n.Offloading, &n.TelemetryBootID, &n.Rolling); err != nil {
+		if err = rows.Scan(&n.ID, &n.PeerURL, &n.ShellBootID, &n.ReleaseDigest, &n.CoreBootID, &n.Mode, &n.Ready, &n.LastSeen, &n.Error, &n.OS, &n.Arch, &n.RuntimeABI, &n.RouteRevision, &n.Stopped, &n.Enabled, &n.PeerProtocol, &n.Strategy, &n.JoiningPlan, &n.Offloading, &n.TelemetryBootID, &n.Rolling); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -571,9 +566,9 @@ func (s *Store) Action(ctx context.Context, id, action, actor string) (Plan, err
 		return s.Rollback(ctx, id, actor)
 	}
 	if err := s.withTx(ctx, func(tx *gorm.DB) error {
-		var status, strategy string
+		var status string
 		var cursor int
-		if err := upgradeRow(tx, id).Where("cluster_id = ?", s.Cluster).Clauses(forUpdate()).Select("status,cursor,strategy").Row().Scan(&status, &cursor, &strategy); err != nil {
+		if err := upgradeRow(tx, id).Where("cluster_id = ?", s.Cluster).Clauses(forUpdate()).Select("status,cursor").Row().Scan(&status, &cursor); err != nil {
 			return err
 		}
 		switch action {
@@ -583,9 +578,6 @@ func (s *Store) Action(ctx context.Context, id, action, actor string) (Plan, err
 			}
 			status = "paused"
 		case "resume":
-			if !KnownStrategy(strategy) {
-				return errors.New("legacy upgrade strategy cannot resume with this controller")
-			}
 			if status != "paused" {
 				return ErrConflict
 			}
@@ -638,9 +630,6 @@ func (s *Store) rollbackWithBarrier(ctx context.Context, id, actor string) (Plan
 	p, err := s.Plan(ctx, id)
 	if err != nil {
 		return Plan{}, err
-	}
-	if !KnownStrategy(p.Strategy) {
-		return Plan{}, errors.New("legacy upgrade strategy cannot be recovered automatically")
 	}
 	if p.Status == "superseded" {
 		return s.rollbackLocked(ctx, id, actor)
@@ -1178,8 +1167,6 @@ func (s *Store) PluginMutationBlockers(ctx context.Context) ([]string, error) {
 		{"public.plugin_rollouts", db.Table("plugin_rollouts").Where("phase IN ('preparing','activating')")},
 		{"public.plugin_uninstalls", db.Table("plugin_uninstalls")},
 		{"public.plugin_rollout_cleanup", db.Table("plugin_rollout_cleanup").Where("state = 'cleanup_pending'")},
-		// Pre-0021 development cores kept the barrier in the outcome table.
-		{"public.plugin_rollout_nodes", db.Table("plugin_rollout_nodes").Where("state = 'cleanup_pending'")},
 	}
 	for _, c := range checks {
 		present, err := gormpg.RelationExists(db, c.table)

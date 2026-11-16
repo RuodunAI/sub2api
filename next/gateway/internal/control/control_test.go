@@ -637,7 +637,7 @@ func (r *fakeRuntime) Stopped(context.Context) (bool, error) {
 	return r.stopped, nil
 }
 
-func TestMaintenanceCompatibilityAndLegacyStrategy(t *testing.T) {
+func TestMaintenanceCompatibility(t *testing.T) {
 	old, target := testRelease("old"), testRelease("target")
 	target.Manifest.Strategy = "maintenance"
 	target.Manifest.SchemaAfter = "contract-2"
@@ -646,9 +646,6 @@ func TestMaintenanceCompatibilityAndLegacyStrategy(t *testing.T) {
 	}
 	if len(rollbackCompatibility(target, old)) == 0 {
 		t.Fatal("cross-schema rollback accepted")
-	}
-	if len(Steps(Plan{Nodes: []string{"a", "b"}})) != 0 {
-		t.Fatal("legacy plan was reinterpreted")
 	}
 }
 
@@ -730,27 +727,15 @@ func TestPostgresMaintenanceStopBarrierAndRecovery(t *testing.T) {
 	}
 }
 
-func TestPostgresLegacyPlanAndCrossSchemaRollbackAreRejected(t *testing.T) {
+func TestPostgresCrossSchemaRollbackIsRejected(t *testing.T) {
 	s, _, _, target := setupEngines(t)
 	ctx := context.Background()
 	pf, _ := s.Preflight(ctx, target.Digest)
-	p, err := s.Create(ctx, target.Digest, pf.ExpectedRevision, "legacy", "admin")
+	p, err := s.Create(ctx, target.Digest, pf.ExpectedRevision, "cross-schema", "admin")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.Action(ctx, p.ID, "pause", "admin"); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.db(ctx).Exec(`UPDATE updater.upgrades SET strategy='legacy-rolling' WHERE id=?`, p.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.Action(ctx, p.ID, "resume", "admin"); err == nil {
-		t.Fatal("legacy resume accepted")
-	}
-	if _, err = s.Rollback(ctx, p.ID, "admin"); err == nil {
-		t.Fatal("legacy recovery accepted")
-	}
-	if err = s.db(ctx).Exec(`UPDATE updater.upgrades SET strategy=? WHERE id=?`, PrimaryFirst, p.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err = s.db(ctx).Exec(`UPDATE updater.releases SET manifest=jsonb_set(manifest,'{schema_after}','"contract-2"') WHERE digest=?`, target.Digest).Error; err != nil {

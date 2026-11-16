@@ -62,11 +62,11 @@ func TestTelemetryExpiryBootAndControlIsolation(t *testing.T) {
 	if read(n).LastSeen.IsZero() {
 		t.Fatal("report did not recover after Redis loss")
 	}
-	legacy := n
-	legacy.TelemetryBootID = "old-boot"
-	legacy.LastSeen = time.Now()
-	if got := read(legacy); !got.LastSeen.Equal(legacy.LastSeen) {
-		t.Fatal("legacy boot heartbeat was lost")
+	pending := n
+	pending.TelemetryBootID = "old-boot"
+	pending.LastSeen = time.Now()
+	if got := read(pending); !got.LastSeen.Equal(pending.LastSeen) {
+		t.Fatal("registration liveness of a boot that has not reported was lost")
 	}
 }
 

@@ -122,7 +122,7 @@
 - **暂存键的作废**（二审 N3）：每次同意（`decideAndApply`，暂存与否）先作废该插件现有的 staged key 及其授予（`PermissionCatalog.DiscardStaged`，系统审计 `authz.sync.discard`，`detail {keys, holders}`）：它们属于此前同意、从未激活的版本，被这次同意取代；这次同意把它们当新 key，按自己的 `defaults`、覆盖与继承重新结算，`review` 也显示为 `new`（读取时 staged key 不算目录已有）。被取代的那个版本以后若仍被激活，这些 key 按新建处理、没有角色授予。
 - **停用插件的授予**（二审 logic #3 取舍，保持现状）：插件停用期间它的权限不进生效集（`/me`、请求鉴权只算 `active`），授予视图照常计入（`RolesPermissions`：角色写入口的 covers、`editDenial`、`PluginGrantees`），所以持有者停用期间仍能在矩阵、角色页授出和修改这些权限，与启用时相同；控制台对停用插件的权限按“授予也算持有”处理，不锁成未持有。
 - **能否指定角色（D2）**：同意者能指定某个角色 = 有 `role:define`，角色可修改（`editableRole`）、在其可分配清单内、非超管时不是自己持有的角色、不是超管角色，critical 还须是超管（`PermissionCatalog.PluginGrantees`，拒绝理由 `role_define`、`critical`、`superuser_role`、`not_editable`、`not_assignable`、`held`）。操作者同意时，默认与继承授予给了不能指定的角色就不授予，挂起待复核（`withheld`，进插件的 `role_grants_to_review`，由有资格的人经 `role-grants/confirm` 写入，§5.7），首装与升级相同（此前升级时 403）；`new_permission_roles` 显式指定的角色不能指定时仍 403（`details.role`；critical 为 `details.reason = critical`），未知角色 400（`new_permission_roles.<本地 key>`，`code: unknown`，目录已有的权限也检查）。系统同意（内置插件）全部可指定，需同意的授予挂起（§5.7）。新权限本身不要求操作者持有，但不能指定自己持有的角色，所以无法借此给自己加权限。只有本次真正新建的权限才检查，升级不新增权限时带了覆盖也不需要 `role:define`（T59）。
-- **内置插件的版本**（0.1.290）：声明了用户权限的 9 个插件改用 `risk`/`defaults`，`hostCompat >=0.1.290`：anthropic 0.3.3、claude-oauth 0.2.4、codex 0.1.5、dynweight 0.5.10、growth 0.2.1、guard 0.2.10、moderation 0.12.1、payment 0.1.2、volcengine 0.12.8；除 codex、claude-oauth 外同时改用 GORM（§2“插件数据库”），功能不变。线上 0.1.288 跑的是 0.1.286 打的包（`hostCompat >=0.1.286`），新版本不能单独装到 0.1.288 上，随核心 0.1.290 一起发布。版本没升的 5 个内置插件（ccgateway 0.1.133、mailer 0.1.2、openai 0.4.0、gemini 0.3.0、custom 0.1.0）源码不变（`released.json` 的摘要相同），只换了 SDK 依赖（`go.mod`/`go.sum`），用新 SDK 重新编译的包内容不同，发布一律沿用线上包的字节。同一版本号、内容不同的包，内置同步只记 WARN 并保留旧包，所以清单一变就必须升版本号。
+- **内置插件的版本**（0.1.290）：声明了用户权限的 9 个插件改用 `risk`/`defaults`，`hostCompat >=0.1.290`：anthropic 0.3.3、claude-oauth 0.2.4、codex 0.1.5、dynweight 0.5.10、growth 0.2.1、guard 0.2.10、moderation 0.12.1、payment 0.1.2、volcengine 0.12.8；除 codex、claude-oauth 外同时改用 GORM（§2“插件数据库”），功能不变。线上 0.1.288 跑的是 0.1.286 打的包（`hostCompat >=0.1.286`），新版本不能单独装到 0.1.288 上，随核心 0.1.290 一起发布。其余内置插件 ccgateway 0.1.134、mailer 0.1.3、openai 0.4.1、gemini 0.3.1、custom 0.1.1 同样改为 `hostCompat >=0.1.290`、用 SDK 0.2.0 重新编译（§101）。同一版本号、内容不同的包，内置同步只记 WARN 并保留旧包，所以清单一变就必须升版本号。
 
 ## 5. REST API（`/api/v1`）
 
@@ -2431,7 +2431,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 受管核心被外壳排空时不等 `SUB2API_SHUTDOWN_DELAY`（外壳已经不再往这个核心送新请求）。进行中的请求等不等，由外壳的排空请求决定（2026-11-08 修订，取代 2026-10-28 的“一律立即取消”）：
 - **已导流的排空**：外壳此时把本节点公网入口的新请求转发给就绪对端（路由 `forward-only` 且对端就绪，`proxy.Router.Diverted()`，即从节点 `redirect` 之后的 `stop`、恢复流程里先转发再停的情形），`DrainRequest.graceful=true`。核心关闸拒新、让在途请求跑完再报 `DrainComplete`，等待上限取外壳截止时间减 15 秒与 5 分钟（`maxDrainGrace`）的较小者，到点仍未结束的才取消。导流后多等只影响这个节点的停止时长，不影响任何新请求。
 - **其他排空**（主节点 `maintenance` 后的 `stop`、候选重启、身份撤销）没有人承接流量，进行中的请求立即取消，和原来一样。
-- 兼容：核心在 `Hello.capabilities` 列出 `drain.graceful` 才收 `graceful` 字段（控制请求拒绝未知字段，外壳只对声明了的核心发），旧核心收到的仍是原请求、立即取消；新核心收到没有该字段的请求也立即取消。被取消的请求照常写用量、结算或退还预扣：处理器结束后才关闭用量队列，账不会丢。SIGTERM 仍按上一段执行。
+- 兼容：核心在 `Hello.capabilities` 列出 `drain.graceful`；0.1.288 时的外壳只对声明了它的核心发 `graceful`（控制请求拒绝未知字段），0.1.290 起的外壳只运行 0.1.290 及以后的核心，不再检查。核心收到没有该字段的请求立即取消。被取消的请求照常写用量、结算或退还预扣：处理器结束后才关闭用量队列，账不会丢。SIGTERM 仍按上一段执行。
 
 核心没有准入看门狗（2026-11-08 起）。PG 的 `updater.node_admissions` 只在外壳向核心发 `/v1/admission` 时核对一次（`verifyAdmission`）；之后停核心只由外壳发起，撤销准入的每条路（升级 `stop` 步骤、禁用节点、身份撤销）都由外壳直接向核心发排空，不依赖核心自己发现；外壳死了，Caddy 的 `/readyz` 把流量切走。历史：此前核心每秒查一次该行、1 秒超时、失败一次就停内核且不留日志，2026-11-08 使 sup2api-ccp 一天自停 16 次（见 `deploy/gateway/clicodeplus/README.md`）；同日先改为只报告不自停，随后按用户决定整个去掉（连同它的专用连接 `store.OpenSingle` 与 `verifyLiveAdmission`）。外壳侧同日补齐：`Work`/`Coordinate` 的错误不再丢弃（同一错误 5 分钟记一次 WARN，恢复记 INFO），`Work` 因本机核心不就绪而走 `Recover` 重拉时记 WARN 并带核心的 mode、boot 与 blockers。
 
@@ -2576,7 +2576,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 **插件包分发（2026-10-02 补充）。** 插件包字节不再存 PG：迁移 0022 删除 `plugin_versions.package`，新增 `package_url`。市场版本由每个节点按 `package_url` 自行下载；上传和首装的包由主节点网关保存，从节点经节点网络拉取。核心通过 `blobs.Source` 取包（市场优先，失败或摘要不符时回退到存储），存储在网关托管下是本机管理 socket 上的 `/system/plugin-blobs/<sha256>`，没有网关时是本机目录（只支持单节点）。节点间新增两个范围：`plugin-upload`（`PUT /internal/plugin-blobs/`，从节点→主节点）与 `plugin-artifact`（`GET /internal/plugin-blobs/`，摘要须被某个版本引用）。所有写入校验 sha256 与大小上限（网关 `plugin_max_bytes`，默认 1 GiB，2026-10-09 起，见 §53.10）；上传在主节点确认保存后才写入版本行。细节见 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md)。
 
-**CPU 保护（2026-10-02 补充）。** 管理员在系统设置的“CPU 保护”页开关并设定阈值（`GET/PUT /api/v1/system/offload`，`settings:read` / `settings:manage`，经核心转给本机网关；未托管节点返回 503 `updater_unavailable`）。设置存于 `updater.clusters.offload_enabled/offload_cpu_percent`，默认关闭、阈值 80，取值 50–95。每个网关每秒采样 CPU，取本节点 cgroup（相对其可用 CPU）与整机两者较高者，按最近 10 秒平均；实时心跳保存到 Redis，混合旧网关期间兼容写入 `updater.nodes.cpu_percent`（最新规则见 CONTRACTS §39）（未测得为 NULL）。本地服务的节点平均值达到阈值后，把新的公网请求轮流交给其他节点：目标须启用、本地服务就绪、同一核心版本、心跳 20 秒内、自身未在转移且 CPU 低于阈值减 10；没有目标就留在本节点。低于阈值减 10 才停止。网关先在 PG 写入 `offloading=true` 再开始转移，先停止转移再清除标记；接收端只接受带标记的来源的 `forward`，因此转移可以从主节点到从节点。转移不续期 10 秒后自动失效。转移的请求走现有 `/internal/forward`，接收端只交给本地核心，不再转发；进行中的请求不迁移，业务请求不重放，目标路由变化时该请求得到 503。细节见 [规约 §5.1](MULTINODE-SYNC-PROTOCOL.md)。
+**CPU 保护（2026-10-02 补充）。** 管理员在系统设置的“CPU 保护”页开关并设定阈值（`GET/PUT /api/v1/system/offload`，`settings:read` / `settings:manage`，经核心转给本机网关；未托管节点返回 503 `updater_unavailable`）。设置存于 `updater.clusters.offload_enabled/offload_cpu_percent`，默认关闭、阈值 80，取值 50–95。每个网关每秒采样 CPU，取本节点 cgroup（相对其可用 CPU）与整机两者较高者，按最近 10 秒平均；实时心跳保存到 Redis，（最新规则见 CONTRACTS §39；未测得为未知）。本地服务的节点平均值达到阈值后，把新的公网请求轮流交给其他节点：目标须启用、本地服务就绪、同一核心版本、心跳 20 秒内、自身未在转移且 CPU 低于阈值减 10；没有目标就留在本节点。低于阈值减 10 才停止。网关先在 PG 写入 `offloading=true` 再开始转移，先停止转移再清除标记；接收端只接受带标记的来源的 `forward`，因此转移可以从主节点到从节点。转移不续期 10 秒后自动失效。转移的请求走现有 `/internal/forward`，接收端只交给本地核心，不再转发；进行中的请求不迁移，业务请求不重放，目标路由变化时该请求得到 503。细节见 [规约 §5.1](MULTINODE-SYNC-PROTOCOL.md)。
 
 ## 35. OpenAI Responses WebSocket 模式（2026-10-02）
 
@@ -2629,7 +2629,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 - 仍共用现有 PG/Redis，不拆数据库。PG 保存批准版本、计划、步骤、节点启禁与启动身份、准入、停止确认和事件；`mode/ready/stopped/core_boot_id/release_digest/route_revision/offloading` 仍为安全控制快照，只有变化时更新节点行。CPU 转移授权仍先持久标记再转流，Redis 心跳过期绝不是停止证明。
 - 网关节点心跳、CPU 和当前错误观察写入 Redis，key 为 `updater:telemetry:<sha256(cluster_id\x00node_id\x00shell_boot_id)>`，最长有效期 20 秒。写前获取 Redis TIME 形成固定截止时间，并扣除本地单调时钟测得的 PG 等待及请求耗时；Lua 拒绝过期和迟到序号，只设置剩余 TTL，拒绝结果返回错误以阻止陈旧 CPU 决策。读取通过 Lua 原子取得 GET/PTTL，折算为读取节点本地单调时间，不比较不同主机壁钟。报告须与 PG 当前启动身份及全部控制快照匹配；不匹配、缺失、过期或 Redis 不可用时，`last_seen` 为零时间、CPU 为 NULL，不以旧 PG 快照冒充新鲜状态。节点不会因丢失遥测直接重启或排空。
-- 网关 schema 增加 `telemetry_boot_id`，与当前 `shell_boot_id` 相等才启用 Redis 新鲜度。旧网关及回退后的新 boot 继续使用 PG 心跳；集群仍有启用的旧 boot 时，新网关每隔至少 5 秒保留 PG 心跳和 CPU 兼容刷新。全部切换后一次清理兼容 CPU 值，稳态遥测不再改写 PG 行；PG 身份与控制状态检查仍然存在，不声称不再访问 PG。
+- 网关 schema 增加 `telemetry_boot_id`，与当前 `shell_boot_id` 相等才启用 Redis 新鲜度；注册后还没报告过的 boot 用注册写下的 PG 心跳。稳态遥测不改写 PG 行；PG 身份与控制状态检查仍然存在，不声称不再访问 PG。0.1.290 起的外壳不再为没有遥测的旧外壳刷新 PG 心跳和 `cpu_percent`（该列不再写入，§101）。
 - `updater:wakeup:<cluster_id>` Pub/Sub 仅发送提交后的唤醒提示，不承载可执行命令或可靠事件。计划创建、操作、启禁及升级状态变更在 PG 提交后通知；节点步骤完成先提交结果并刷新状态，再通知。通知丢失依靠轮询补查（有 running/paused 计划时 1 秒，空闲 30 秒，2026-11-08 起见 §82.4），重复通知合并，不重放已完成步骤；Redis 断连恢复后重新订阅。
 - 每轮最多连续推进 16 次，每次重新取得 Redis 执行锁并读取 PG，空提交不算进展；提示驱动的外循环有 50 ms 让出，避免内部自激忙循环。独立 3 秒心跳在长下载或排空时继续运行。PG 事务内的计划与准入校验、租约丢失取消语义不变。
 - 此变化属于网关二进制，单发核心安装包不会生效；需在无 running/paused 核心计划时逐个更换网关，从节点先、主节点最后，保留状态卷与旧镜像。核心版本无需仅为此变更而升级。控制台仍按既有轮询周期刷新，本次不新增浏览器推送。
@@ -7113,7 +7113,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 节点登记新增能力标记 `updater.nodes.rolling`（本版本网关为 true，旧网关为 false，schema 幂等加列）。
 - 预检（`POST /system/upgrades/preflight`）返回 `strategy`：目标清单签 `rolling` 且不改库、全部启用节点都是 rolling 网关、且至少两个启用节点本地就绪 → `rolling-v1`；否则仍是 `primary-first-v1`。计划创建时把预检选出的策略写入 `updater.upgrades.strategy`，首条事件说明是哪种。
 - 回退（`rollback`）生成的恢复计划同样选策略，但只要求至少一个节点本地就绪：被打断计划停掉的成员让不出流量也没有流量可让，直接在基线上重启，然后承接另一个节点。
-- 两种策略的步骤、恢复、暂停/继续、准入校验（`admissionAllowed`、`planAuthorizesTx`）都接受；`legacy-rolling` 等旧策略仍只能暂停等人工处理。
+- 两种策略的步骤、恢复、暂停/继续、准入校验（`admissionAllowed`、`planAuthorizesTx`）都接受；（0.1.290 起不再识别 `legacy-rolling` 等旧策略：唯一索引保证同时最多一个未结束的计划，0.1.290 本身的计划完成之后才换外壳，那时不会有旧策略的计划未结束，§101）。
 
 ### 82.2 rolling-v1 步骤
 
@@ -8716,3 +8716,10 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 ### 101.2 数据库连接
 
 - `DATABASE_URL` 不再解析 pgxpool 的 `pool_*` 参数，连接池只由环境变量与默认值决定（§2“插件数据库”、§11.2）；PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`SQLState` 等）只在 `runtime-contract/gormpg`，核心不再 import pgx。
+
+### 101.3 网关外壳
+
+- 升级计划只认 `primary-first-v1` 与 `rolling-v1`：`updater_one_active_upgrade` 保证每个集群最多一个 running/paused 的计划，0.1.290 的计划在原来的外壳下执行、完成后才换外壳，所以新外壳启动时不会有旧策略（`legacy-rolling`）的计划未结束。暂停旧策略计划、拒绝继续与恢复、`legacy-plan-recovery` 的代码删除。
+- 节点心跳不再为没有 Redis 遥测的旧外壳（0.1.132 之前）刷新 PG 心跳与 `updater.nodes.cpu_percent`：CPU 只在 Redis 遥测里，PG 行只在控制快照变化时（或每 `heartbeatRewrite`）写。`cpu_percent` 列保留到下一次外壳 schema 变更，0.1.288 时的外壳在换外壳期间还会读它。
+- 停止核心时直接按调用方的要求发 `DrainRequest.Graceful`，不再看核心是否声明 `drain.graceful`（核心仍声明它，给换外壳之前驱动升级计划的旧外壳看）。
+- 插件变更阻塞检查不再看 `plugin_rollout_nodes` 的 `cleanup_pending`（迁移 0021 之前的开发版核心）。

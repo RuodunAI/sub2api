@@ -42,8 +42,9 @@ type Hello struct {
 	TaskProtocol    Range  `json:"task_protocol"`
 	HostAPIVersion  int    `json:"host_api_version"`
 	// Capabilities are optional behaviours of this core within Protocol 2.
-	// A shell sends a request field only when the core lists its
-	// capability: a core strictly rejects unknown control fields.
+	// The shells of 0.1.288 send a request field only when the core lists
+	// its capability (a core strictly rejects unknown control fields); they
+	// still drive the 0.1.290 core during its upgrade plan.
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
@@ -100,7 +101,6 @@ type DrainRequest struct {
 	Deadline    time.Time `json:"deadline"`
 	// Graceful says the shell already routes new requests elsewhere, so the
 	// core may let requests in flight finish before it reports DrainComplete.
-	// Send it only to a core whose Hello has CapabilityGracefulDrain.
 	Graceful bool `json:"graceful,omitempty"`
 }
 type File struct {

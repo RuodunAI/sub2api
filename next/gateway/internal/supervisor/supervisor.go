@@ -263,20 +263,12 @@ func (m *Manager) Wait(ctx context.Context) error {
 }
 
 // DrainStop drains the core and, once it reports DrainComplete, shuts it
-// down. graceful says new requests already go elsewhere, so a core that
-// advertises CapabilityGracefulDrain may let requests in flight finish
-// within the deadline; an older core gets the plain request it understands.
+// down. graceful says new requests already go elsewhere, so the core may let
+// requests in flight finish within the deadline.
 func (m *Manager) DrainStop(ctx context.Context, control Control, operation string, graceful bool) error {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		return errors.New("drain requires a deadline")
-	}
-	if graceful {
-		st, err := control.Status(ctx)
-		if err != nil {
-			return err
-		}
-		graceful = st.Has(rc.CapabilityGracefulDrain)
 	}
 	if err := control.Drain(ctx, rc.DrainRequest{OperationID: operation, Deadline: deadline, Graceful: graceful}); err != nil {
 		return err

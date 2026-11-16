@@ -135,17 +135,13 @@ const PrimaryFirst = "primary-first-v1"
 // shell with at least two of them serving (Preflight).
 const Rolling = "rolling-v1"
 
-// KnownStrategy reports a plan strategy this controller executes.
-func KnownStrategy(s string) bool { return s == PrimaryFirst || s == Rolling }
-
 // PeerProtocol 2: Redis registrations carry the SHA-256 of the node key
 // (peer.Protocol); every gateway of a cluster must agree.
 const PeerProtocol = 2
 
-// Steps are interpreted only for the persisted strategy. Never reinterpret a
-// pre-existing rolling plan's cursor using this stop-the-cluster algorithm.
+// Steps are the steps of p under its persisted strategy.
 func Steps(p Plan) []Step {
-	if !KnownStrategy(p.Strategy) || len(p.Nodes) == 0 {
+	if len(p.Nodes) == 0 {
 		return nil
 	}
 	out := make([]Step, 0, len(p.Nodes)*7)

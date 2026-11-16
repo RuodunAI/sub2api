@@ -61,9 +61,10 @@ CREATE TABLE IF NOT EXISTS updater.stop_confirmations (
  core_boot_id text NOT NULL DEFAULT '', confirmed_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY(cluster_id,node_id,upgrade_id)
 );
--- CPU offload (2026-10-02): the cluster setting, and each node's measured load.
--- A NULL cpu_percent is an unmeasured node or an older shell; neither takes
--- offloaded traffic.
+-- CPU offload (2026-10-02): the cluster setting. Each node's measured load is
+-- shell telemetry in Redis; nodes.cpu_percent is no longer written and stays
+-- only for the 0.1.288-era shells that run beside these during the shell swap
+-- of 0.1.290 (drop it with the next shell schema change).
 ALTER TABLE updater.clusters ADD COLUMN IF NOT EXISTS offload_enabled boolean NOT NULL DEFAULT false;
 ALTER TABLE updater.clusters ADD COLUMN IF NOT EXISTS offload_cpu_percent integer NOT NULL DEFAULT 80;
 ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS cpu_percent real;

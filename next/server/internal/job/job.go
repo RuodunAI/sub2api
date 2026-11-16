@@ -14,9 +14,8 @@
 // node running the plugin.
 //
 // Every run is also a plugin_job_runs row for the plugin page. A scheduled
-// cluster run claims its slot there (plugin_job_runs_slot_uniq), which also
-// keeps a slot from running twice while cores before 0.1.237, which still
-// schedule jobs themselves, serve next to this one.
+// cluster run claims its slot there (plugin_job_runs_slot_uniq), so a slot
+// runs at most once.
 package job
 
 import (
