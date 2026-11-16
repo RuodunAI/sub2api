@@ -2,6 +2,8 @@ package providerresources
 
 import (
 	"encoding/json"
+	"maps"
+	"reflect"
 	"testing"
 	"time"
 
@@ -113,7 +115,11 @@ func TestSQLResourcesUpdate(t *testing.T) {
 		"skill_delete_end": {versionsTable, map[string]any{"state": "deleted"}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			given := maps.Clone(c.set)
 			gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return update(db, c.table, "s2res_1", c.set) })
+			if !reflect.DeepEqual(c.set, given) {
+				t.Fatalf("update changed the caller's map: %v, was %v", c.set, given)
+			}
 		})
 	}
 }
