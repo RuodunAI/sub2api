@@ -8,22 +8,22 @@ SELECT a.id, a.name, a.plugin_key, a.type, NULL::bytea, a.settings, a.proxy_id,
 -- vars
 $1 bool false
 $2 int64 7
-$3 store.Int64s [3 4]
+$3 core.int64s [3 4]
 $4 bool false
-$5 store.Int64s [9]
-$6 store.Int64s []
-$7 store.Int64s []
+$5 core.int64s [9]
+$6 core.int64s []
+$7 core.int64s []
 $8 store.Strings [anthropic openai]
 $9 string "auto_disabled"
 $10 store.Int64s [3 4]
 $11 string "prod"
 $12 bool false
 $13 int64 7
-$14 store.Int64s [3 4]
+$14 core.int64s [3 4]
 $15 bool false
-$16 store.Int64s [9]
-$17 store.Int64s []
-$18 store.Int64s []
+$16 core.int64s [9]
+$17 core.int64s []
+$18 core.int64s []
 $19 store.Strings [anthropic openai]
 $20 string "auto_disabled"
 $21 store.Int64s [3 4]

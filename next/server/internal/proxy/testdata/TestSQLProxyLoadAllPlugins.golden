@@ -9,5 +9,5 @@ $2 nil
 $3 int64 5
 $4 bool true
 $5 int64 0
-$6 store.Int64s []
+$6 core.int64s []
 $7 int 1

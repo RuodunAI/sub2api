@@ -9,5 +9,5 @@ $2 store.Strings [openai]
 $3 int64 5
 $4 bool false
 $5 int64 7
-$6 store.Int64s [3 4]
+$6 core.int64s [3 4]
 $7 int 1

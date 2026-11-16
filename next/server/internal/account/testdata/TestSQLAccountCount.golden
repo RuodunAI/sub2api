@@ -5,8 +5,8 @@ SELECT count(*) AS total, count(*) FILTER (WHERE a.status = 'active' AND a.sched
 -- vars
 $1 bool false
 $2 int64 7
-$3 store.Int64s [3 4]
+$3 core.int64s [3 4]
 $4 bool false
-$5 store.Int64s [9]
-$6 store.Int64s []
-$7 store.Int64s []
+$5 core.int64s [9]
+$6 core.int64s []
+$7 core.int64s []

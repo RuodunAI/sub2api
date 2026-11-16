@@ -3,10 +3,10 @@ SELECT a.id AS id, a.name AS name, a.plugin_key AS hint, a.status AS status FROM
 -- vars
 $1 bool false
 $2 int64 7
-$3 store.Int64s [5]
+$3 core.int64s [5]
 $4 bool true
-$5 store.Int64s [3]
-$6 store.Int64s []
-$7 store.Int64s []
+$5 core.int64s [3]
+$6 core.int64s []
+$7 core.int64s []
 $8 int64 3
 $9 int 11

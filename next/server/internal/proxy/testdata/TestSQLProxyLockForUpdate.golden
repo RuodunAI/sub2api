@@ -4,5 +4,5 @@ SELECT p.protocol, p.host, p.port, p.username, p.password_enc FROM proxies p WHE
 $1 int64 5
 $2 bool false
 $3 int64 7
-$4 store.Int64s [3 4]
+$4 core.int64s [3 4]
 $5 int 1

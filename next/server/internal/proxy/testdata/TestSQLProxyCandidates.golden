@@ -8,4 +8,4 @@ $4 string "u"
 $5 bool false
 $6 bool false
 $7 int64 7
-$8 store.Int64s [3 4]
+$8 core.int64s [3 4]

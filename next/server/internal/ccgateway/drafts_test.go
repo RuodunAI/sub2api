@@ -423,7 +423,7 @@ func TestDraftCreateLimit(t *testing.T) {
 }
 
 // W1-F13: concurrent creates cannot pass the limit together; the count and
-// the insert run under the user's lock (core.LockOpenDrafts).
+// the insert run under the user's lock (store.XactLock on core.OpenDraftsLock).
 func TestDraftCreateLimitConcurrent(t *testing.T) {
 	ctl := newFakeController(t)
 	f := newRuntimeFixture(t, ctl.ServeHTTP)

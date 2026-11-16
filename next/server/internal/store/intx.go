@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 
 	"gorm.io/gorm"
@@ -31,4 +32,21 @@ func RequireTx(q *gorm.DB) error {
 		return nil
 	}
 	return ErrNoTx
+}
+
+// XactLock takes the transaction-scoped advisory lock named key, which
+// holds until tx ends: the transactions that take it on one key run their
+// work one after another. It needs a transaction (RequireTx), since on the
+// pool the lock would end with its own statement.
+func XactLock(ctx context.Context, tx *gorm.DB, key string) error {
+	if err := RequireTx(tx); err != nil {
+		return err
+	}
+	return xactLock(G(ctx, tx), key).Error
+}
+
+// xactLock is XactLock's statement: the lock's id is the key's
+// hashtextextended.
+func xactLock(db *gorm.DB, key string) *gorm.DB {
+	return db.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, key)
 }

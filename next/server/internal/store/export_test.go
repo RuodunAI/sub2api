@@ -20,4 +20,5 @@ var (
 	ReleaseQuotaSQL     = releaseAccountQuota
 	CompleteQuotaSQL    = completeAccountQuota
 	ApplyObservationSQL = applyQuotaObservation
+	XactLockSQL         = xactLock
 )

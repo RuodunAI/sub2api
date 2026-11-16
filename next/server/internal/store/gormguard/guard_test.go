@@ -925,6 +925,19 @@ func f(ctx context.Context, tx *gorm.DB) {
 			src:     `var _ = testutil.DB`,
 		},
 		{
+			// The fixtures import store (fixtureImports).
+			name: "core-store/a production file of core",
+			pkg:  "internal/core",
+			src:  `var _ = store.G`,
+			want: []string{ruleCore},
+		},
+		{
+			name: "core-store/a test file of core",
+			pkg:  "internal/core",
+			file: "core_test.go",
+			src:  `var _ = store.G`,
+		},
+		{
 			name: "tx-pool/the pool inside transaction and connection callbacks",
 			pkg:  "internal/billing",
 			src: `

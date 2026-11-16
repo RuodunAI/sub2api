@@ -13,8 +13,8 @@ $9 string ""
 $10 int64 5
 $11 bool false
 $12 int64 7
-$13 store.Int64s [3 4]
+$13 core.int64s [3 4]
 $14 bool false
-$15 store.Int64s [9]
-$16 store.Int64s []
-$17 store.Int64s []
+$15 core.int64s [9]
+$16 core.int64s []
+$17 core.int64s []

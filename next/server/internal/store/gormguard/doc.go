@@ -96,6 +96,10 @@
 //   - [testutil-import] no Go file but the test files and internal/testutil
 //     itself imports internal/testutil: it is an owner because it is test
 //     infrastructure, which production code never reaches;
+//   - [core-store] no Go file of internal/core but its test files
+//     imports internal/store (or a package under it): core is the contract
+//     the modules share and store one implementation of it, so the GORM
+//     glue a port needs lives in store (store.XactLock) or the caller;
 //   - [pgx-import] no Go file of the module, test files and files left out
 //     by build constraints included, imports pgx (any package of its
 //     module) but internal/store/pgerror.go (pgxFiles), which reads the

@@ -4,8 +4,8 @@ UPDATE accounts a SET "deleted_at"=now(),"updated_at"=now() WHERE (a.id = $1 AND
 $1 int64 5
 $2 bool false
 $3 int64 7
-$4 store.Int64s [3 4]
+$4 core.int64s [3 4]
 $5 bool false
-$6 store.Int64s [9]
-$7 store.Int64s []
-$8 store.Int64s []
+$6 core.int64s [9]
+$7 core.int64s []
+$8 core.int64s []

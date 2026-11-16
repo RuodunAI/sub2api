@@ -105,3 +105,10 @@ func TestSQLQuotaComplete(t *testing.T) {
 		return store.CompleteQuotaSQL(db, snapshotClaim, `{"5h":{}}`, "boom", snapshotTime)
 	})
 }
+
+// XactLock's statement: the lock's id is the key's hashtextextended, so
+// "open-drafts:7" is the lock that 0.1.288 took as
+// hashtextextended('open-drafts:' || 7::bigint::text, 0).
+func TestSQLXactLock(t *testing.T) {
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return store.XactLockSQL(db, "open-drafts:7") })
+}

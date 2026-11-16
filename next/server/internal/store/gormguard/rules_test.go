@@ -24,6 +24,7 @@ const (
 	ruleTestutil = "[testutil-import]"
 	ruleTxPool   = "[tx-pool]"
 	ruleCasbin   = "[casbin-api]"
+	ruleCore     = "[core-store]"
 )
 
 // bannedMethods are the gorm (*DB) methods that would let GORM own a
@@ -99,7 +100,7 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 	rel := strings.TrimPrefix(pkgPath, r.module+"/")
 	_, owner := r.owners[rel]
 	_, sqlOwner := r.sqlOwners[rel]
-	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/internal/store",
+	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/" + storePkg,
 		casbinOwner: listedWithin(r.casbinOwners, rel)}
 	c.index(files)
 	for _, f := range files {
@@ -132,6 +133,9 @@ func (r rules) imports(fset *token.FileSet, rel string, f *ast.File) []string {
 		case production && within(path, r.module+"/"+testutilPkg):
 			out = append(out, fmt.Sprintf("%s: %s import of %s outside the test files: it owns the GORM instance and the pool as test infrastructure only",
 				fset.Position(imp.Pos()), ruleTestutil, path))
+		case production && within(rel, corePkg) && within(path, r.module+"/"+storePkg):
+			out = append(out, fmt.Sprintf("%s: %s import of %s in core: core is the contract the modules share, store implements it; the GORM glue lives in store or the caller",
+				fset.Position(imp.Pos()), ruleCore, path))
 		case within(path, adapterModule) && !listedWithin(r.casbinOwners, rel):
 			out = append(out, fmt.Sprintf("%s: %s import of %s outside %s: Casbin reads the policy there, through the adapter's read-only load alone",
 				fset.Position(imp.Pos()), ruleCasbin, path, casbinxPkg))
@@ -140,8 +144,12 @@ func (r rules) imports(fset *token.FileSet, rel string, f *ast.File) []string {
 	return out
 }
 
-// testutilPkg is the test infrastructure package, relative to the module.
-const testutilPkg = "internal/testutil"
+// The packages that the import rules name, relative to the module.
+const (
+	testutilPkg = "internal/testutil" // test infrastructure
+	corePkg     = "internal/core"     // the modules' contract ([core-store])
+	storePkg    = "internal/store"
+)
 
 // within reports whether path is pkg or a package under it.
 func within(path, pkg string) bool { return path == pkg || strings.HasPrefix(path, pkg+"/") }

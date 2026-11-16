@@ -169,7 +169,7 @@ func (s *Service) draftCreate(c *gin.Context) {
 	}
 	e := s.DB.Tx(ctx, func(tx *gorm.DB) error {
 		if limit > 0 {
-			if err := core.LockOpenDrafts(ctx, tx, uid); err != nil {
+			if err := store.XactLock(ctx, tx, core.OpenDraftsLock(uid)); err != nil {
 				return err
 			}
 		}
