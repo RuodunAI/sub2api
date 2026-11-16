@@ -480,7 +480,7 @@ guard-0.1.0.s2plugin
 
   "database": { "schema": "plg_guard", "migrations": "migrations/" },
 
-  "userPermissions": [                          // 登记为 plugin.guard:<key>；risk/defaults 等需核心 >=0.1.289（CONTRACTS §4）
+  "userPermissions": [                          // 登记为 plugin.guard:<key>；risk/defaults 等需核心 >=0.1.290（CONTRACTS §4）
     { "key": "rules:read",   "label": { "zh": "查看拦截规则" }, "defaults": { "admin": true, "operator": true } },
     { "key": "rules:manage", "label": { "zh": "管理拦截规则" }, "risk": "sensitive",  // low（默认）/ sensitive / critical
       "requires": ["rules:read"], "defaults": { "admin": true } },              // defaults：首次登记时建议授予的内置角色
@@ -1210,7 +1210,7 @@ sequenceDiagram
 
 ```
 插件进程                                            核心进程
-http.Get / pgx / redis …
+http.Get / GORM（Host.DB）/ redis …
   → SDK 替换过的 DefaultTransport / Dialer / DefaultResolver
   → EgressService.Dial（在已有的 gRPC 连接上开一个流）══════►  确认插件身份 → 检查出口策略
                                                                → 解析 DNS → 建立连接 → 双向转发
@@ -1583,16 +1583,17 @@ next/
 |---|---|
 | 语言 | Go 1.27 |
 | HTTP | gin |
-| 数据库 | PostgreSQL 16 + pgx v5，手写 SQL |
+| 数据库 | PostgreSQL 16 + GORM（驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`）；语义要求精确的语句仍写 SQL（`Raw`/`Exec`）。表结构以 SQL 迁移为准：核心的模型由迁移生成（`store/modelgen`），插件的模型由 `sub2api-plugin db check` 对照迁移；运行时不跑 AutoMigrate。插件只拿到 `Host.DB` 的 `*gorm.DB`（CONTRACTS §2） |
+| 权限判断 | Casbin v3（策略存 `casbin_rule`，gorm-adapter 的列布局；只读加载成快照，CONTRACTS §99） |
 | 迁移 | 嵌入式 SQL + 自研执行器（核心和插件共用，参考旧项目 `migrations_runner.go`） |
-| 缓存 / 实时状态 | Redis 7 + go-redis v9 |
+| 缓存 / 实时状态 | Valkey（或 Redis 7+）+ go-redis v9；控制台会话 `s2s_` 也只存在这里（CONTRACTS §100） |
 | 插件 | hashicorp/go-plugin + gRPC + protobuf |
 | seccomp | elastic/go-seccomp-bpf（纯 Go，不需要 cgo） |
 | 签名 | crypto/ed25519 |
 | JSON | gjson / sjson；santhosh-tekuri/jsonschema 做 schema 校验 |
 | 金额 | numeric(20,8) + shopspring/decimal |
 | 计费表达式 | expr-lang/expr（MIT）；设计参考 new-api 的 billingexpr，代码自行实现（new-api 是 AGPL-3.0，不能直接复制） |
-| 定时任务 | robfig/cron v3（只负责计算触发时间） |
+| 定时任务 | 定时任务框架（CONTRACTS §77）：`node` 任务用 gocron v2，`cluster` 任务用 River（`database/sql` 驱动，只轮询，新任务最多等 1 秒被取走）；robfig/cron v3 只负责解析 cron 表达式 |
 | 日志 | log/slog |
 | 前端 | Vue 3 + Vite + TypeScript + Pinia + Vue Router + Tailwind；图表用 ECharts |
 | 依赖注入 | 手写组装 |

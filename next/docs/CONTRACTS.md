@@ -1223,12 +1223,12 @@ POST/PATCH `/accounts` 新增 `proxy_url`（字符串，可选；去首尾空白
 
 解析（`core.ParseProxyURL(raw string) (core.ProxySpec, error)`，`ProxySpec{Protocol, Host, Port, Username, Password}`；解析器放在 core，账号模块不 import 代理模块；`proxy.ParseURL` 是它的别名）：去首尾空白；`url.Parse`；scheme 小写后必须是 `http` / `https` / `socks5` / `socks5h`（`socks5h` 记为 `socks5`）；host 取 `Hostname()` **小写**（IPv6 去方括号）、非空；port 必填 1–65535；用户名/密码取 `User.Username()`/`User.Password()`（已 URL 解码；`url.Parse` 按最后一个 `@` 切分，密码里未转义的 `@` 因此被接受）；opaque 形式（`http:host:1080`）、带 path（`/` 以外）、query（含空 `?`）、fragment 拒绝；结果再过 §15.4 的字段校验（host 不含 `/ ? # @` 与空白、≤255；username ≤255；password ≤1024）。任何错误返回 400 `invalid_argument`，`fields[{field:"proxy_url", code:"invalid", message:"invalid proxy URL: <原因>"}]`，**message 不回显原串**（可能含密码；`url.Error` 会引用整串，所以也不透传）。
 
-查找或创建（新端口 `core.ProxyResolver`，由 `proxy.Service` 实现，通过 `account.Deps` 注入；`tx` 用 `pgx.Tx`，与 `core.PermissionCatalog` 一致）：
+查找或创建（新端口 `core.ProxyResolver`，由 `proxy.Service` 实现，通过 `account.Deps` 注入；`tx` 是调用方事务里的 `*gorm.DB`，与 `core.PermissionCatalog` 一致；`scope` 是调用者 `proxy:manage` 编译出的 `core.DataScope`，§21.0）：
 
 ```go
 type ProxyResolver interface {
-    FindOrCreate(ctx context.Context, tx pgx.Tx, spec ProxySpec, ownerID int64, scope *int64) (id int64, created bool, err error)
-    AuditAutoCreate(ctx context.Context, tx pgx.Tx, proxyID, ownerID, accountID int64) error
+    FindOrCreate(ctx context.Context, tx *gorm.DB, spec ProxySpec, ownerID int64, scope DataScope) (id int64, created bool, err error)
+    AuditAutoCreate(ctx context.Context, tx *gorm.DB, proxyID, ownerID, accountID int64) error
 }
 ```
 
@@ -6715,7 +6715,7 @@ guard 只维护网桥规则，与 host 网络的 Python 控制器互不干扰，
 
 - `core.Tasks`（`internal/core/ports_scheduled_tasks.go`）是唯一入口：`Register(TaskSpec)`、`Trigger`、`Enqueue`、`EnqueueTx`。业务代码不 import gocron 或 River。
 - `node` 任务：每个节点各跑一次（gocron v2.22.0，单例模式，上一次没跑完就跳过）。`RequireWork` 为真时，本节点不能做后台工作就跳过。
-- `cluster` 任务：每个时段全集群只跑一次（River v0.49.0，可工作节点执行，主节点按周期投递）。同一任务两次运行不会重叠：`scheduled_tasks` 的租约保证。
+- `cluster` 任务：每个时段全集群只跑一次（River v0.49.0，可工作节点执行，主节点按周期投递）。同一任务两次运行不会重叠：`scheduled_tasks` 的租约保证。River 跑在 `database/sql` 驱动上（2026-11-16 GORM 迁移起，`task/cluster.go`），没有 LISTEN，只轮询（`PollOnly`，间隔 1 秒）：本节点在事务外投递的运行（`Enqueue`、`Trigger`）立即被本节点取走，事务内投递（`EnqueueTx`）或别的节点投递的最多等 1 秒。
 - 名字：核心 `core.<模块>.<任务>`；第二批的插件任务 `plugin.<key>.<id>`。`Title` 必须有 `en` 和 `zh`。
 - 计划：`Every` 或 5 段 cron（UTC）。`@every` 按间隔的整数倍对齐。cluster 最短 5 秒，node 最短 1 秒。超时上限：cluster 1 小时，node 10 分钟。
 - Handler 必须幂等并遵守 ctx（超时、关停、撤销准入都会取消它）。它自己不查准入、不加锁、不 recover。返回 `core.TaskRetryAfter(d)`：cluster 任务延后重试，不算失败；node 任务记为跳过。
