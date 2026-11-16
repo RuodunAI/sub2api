@@ -181,7 +181,7 @@ func (s *Service) CreateAccessKey(ctx context.Context, userID int64, in CreateAc
 	raw, hash := tokenstore.NewToken(core.AccessKeyPrefix)
 	var key *AccessKey
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := lockRefreshUser(ctx, tx, userID); err != nil {
+		if err := lockUserRow(ctx, tx, userID); err != nil {
 			return err
 		}
 		g := store.G(ctx, tx)
@@ -326,7 +326,7 @@ func (s *Service) VerifyAccessKey(ctx context.Context, raw, ip string) (core.Acc
 	if expiresAt != nil && !expiresAt.After(time.Now()) {
 		return id, core.ErrUnauthenticated.WithMessage("access key has expired")
 	}
-	active, _, err := s.isActiveWithVersion(ctx, id.UserID, 0)
+	active, _, err := s.isActiveWithVersion(ctx, id.UserID)
 	if err != nil {
 		return id, err
 	}

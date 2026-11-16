@@ -2,12 +2,10 @@ package migrations_test
 
 import (
 	"context"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"testing/fstest"
 
 	"github.com/stretchr/testify/require"
 
@@ -61,17 +59,7 @@ func (h *hardeningDB) migrate() error {
 // back is a backup).
 func (h *hardeningDB) migrateThrough(last string) error {
 	h.t.Helper()
-	upTo := fstest.MapFS{}
-	names, err := fs.Glob(migrations.FS, "*.sql")
-	require.NoError(h.t, err)
-	for _, n := range names {
-		if n <= last {
-			b, err := fs.ReadFile(migrations.FS, n)
-			require.NoError(h.t, err)
-			upTo[n] = &fstest.MapFile{Data: b}
-		}
-	}
-	_, err = store.Migrate(h.ctx, h.db, upTo, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+	_, err := store.Migrate(h.ctx, h.db, testutil.MigrationsThrough(h.t, last), store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 	return err
 }
 

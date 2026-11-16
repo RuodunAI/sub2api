@@ -1,8 +1,6 @@
 package iam
 
 import (
-	"errors"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -16,11 +14,9 @@ import (
 )
 
 // RegisterRoutes mounts /auth/*, /me, /me/password, /users*, the members of
-// a segment, which are a users list, the super admin transfer and the
-// session.issue switch.
+// a segment, which are a users list, and the super admin transfer.
 func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.Public(http.MethodPost, "/auth/login", s.handleLogin)
-	r.Public(http.MethodPost, "/auth/refresh", s.handleRefresh)
 	r.SessionOnly().Handle(http.MethodPost, "/auth/logout", s.handleLogout)
 	r.AuthedRead("/me", s.handleMe)
 	r.Self(http.MethodPut, "/me", "self:profile", s.handleUpdateMe)
@@ -38,7 +34,6 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	// The super admin's own standing: under self:security for an access key.
 	r.StepUp(core.StepUpSuperAdminTransfer).Self(http.MethodPost, "/system/super-admin/transfer", selfSecurity, s.handleTransferSuperAdmin)
 	s.registerSecurityRoutes(r)
-	s.registerIssueRoutes(r)
 }
 
 func actor(c *gin.Context) int64 {
@@ -67,31 +62,8 @@ func (s *Service) handleLogin(c *gin.Context) {
 	httpapi.OK(c, pair)
 }
 
-func (s *Service) handleRefresh(c *gin.Context) {
-	var in struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if !httpapi.BindJSON(c, &in) {
-		return
-	}
-	pair, err := s.Refresh(sessionContext(c, ""), in.RefreshToken)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	httpapi.OK(c, pair)
-}
-
 func (s *Service) handleLogout(c *gin.Context) {
-	var in struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	// The body is optional: without a refresh token every session is revoked.
-	if err := c.ShouldBindJSON(&in); err != nil && !errors.Is(err, io.EOF) {
-		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage(err.Error()))
-		return
-	}
-	if err := s.Logout(c.Request.Context(), actor(c), in.RefreshToken); err != nil {
+	if err := s.Logout(c.Request.Context(), actor(c)); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -136,7 +108,7 @@ func (s *Service) handleChangePassword(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if err := s.ChangePassword(c.Request.Context(), actor(c), s.currentFamily(c), in.NewPassword); err != nil {
+	if err := s.ChangePassword(c.Request.Context(), actor(c), s.currentSession(c), in.NewPassword); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

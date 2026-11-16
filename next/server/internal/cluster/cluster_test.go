@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,8 +10,6 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -48,27 +45,11 @@ func newReg(rdb redis.UniversalClient, c *clock, node, boot string) *Registry {
 	return NewRegistry(rdb, nil, RegistryOptions{NodeID: node, BootID: boot, Addr: node + ":8080", HostVersion: "0.1.0", Now: c.Now})
 }
 
-// A node announces the capabilities its build passes to New, as they were
-// passed: the caller changing its slice later changes nothing.
-func TestNewAnnouncesTheCapabilitiesGiven(t *testing.T) {
-	ctx := context.Background()
-	_, rdb := newRedis(t)
-	caps := []string{"session.s2s"}
-	c := New(rdb, nil, Options{NodeID: "node-a", Capabilities: caps})
-	caps[0] = "changed"
-	require.NoError(t, c.Registry.Heartbeat(ctx))
-	nodes, err := c.Registry.LiveNodes(ctx)
-	require.NoError(t, err)
-	require.Len(t, nodes, 1)
-	assert.Equal(t, []string{"session.s2s"}, nodes[0].Capabilities)
-}
-
 func TestRegistryHeartbeatAndLiveNodes(t *testing.T) {
 	ctx := context.Background()
 	mr, rdb := newRedis(t)
 	c := newClock()
 	a := newReg(rdb, c, "node-a", "boot-a")
-	a.opts.Capabilities = []string{"session.s2s", "other"}
 	b := newReg(rdb, c, "node-b", "boot-b")
 	if a.NodeID() != "node-a" || a.BootID() != "boot-a" {
 		t.Fatal("identity")
@@ -111,12 +92,6 @@ func TestRegistryHeartbeatAndLiveNodes(t *testing.T) {
 			if n.Plugins["guard"] != `{"state":"active"}` {
 				t.Fatalf("plugins: %+v", n.Plugins)
 			}
-			// Announced next to the plugin reports, which follow them.
-			if !slices.Equal(n.Capabilities, []string{"session.s2s", "other"}) {
-				t.Fatalf("capabilities: %+v", n.Capabilities)
-			}
-		} else if n.Capabilities != nil {
-			t.Fatalf("node b announced %v", n.Capabilities)
 		}
 	}
 	// Removing a plugin report.

@@ -61,7 +61,7 @@ describe('session end', () => {
   it('drops the catalog, and a load of the old session writes nothing', async () => {
     let release: (v: unknown) => void = () => undefined
     answer = async (_m, path) => (path === '/flows' ? [{ id: 1, name: 'f', version: 1 }] : [])
-    session.set({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 3600_000 })
+    session.set({ access_token: 'a' })
     watchSession()
     const catalog = useCatalog()
     await catalog.refresh()

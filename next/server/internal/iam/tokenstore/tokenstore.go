@@ -1,8 +1,7 @@
 // Package tokenstore keeps what a console login leaves behind in Valkey
-// (CONTRACTS §100): the opaque session tokens (s2s_) that replace the JWT
-// access and refresh tokens, and the short auth flows (two-factor login,
-// passkey ceremonies, TOTP enrolment, step-up proofs and windows) that
-// replace the auth_flows table.
+// (CONTRACTS §100): the session tokens (s2s_), and the short auth flows
+// (two-factor login, passkey ceremonies, TOTP enrolment, step-up proofs and
+// windows).
 //
 // Only SHA-256 hashes of tokens are stored, so a copy of Valkey does not sign
 // anyone in. Valkey is the source of truth for both: there is no fallback when
@@ -23,9 +22,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// SessionPrefix starts every session token, so a bearer token is told from a
-// JWT and from an access key (core.AccessKeyPrefix) without a lookup.
-const SessionPrefix = core.OpaqueSessionPrefix
+// SessionPrefix starts every session token, so a bearer token is told from
+// an access key (core.AccessKeyPrefix), or anything else, without a lookup.
+const SessionPrefix = "s2s_"
 
 var (
 	// ErrNotFound: the token names no live session or flow (never issued,
@@ -39,8 +38,7 @@ var (
 // Session is one signed-in browser or device.
 type Session struct {
 	// ID is the login session (core.Session): step-up proofs bind to it and
-	// the sessions list marks the caller's own by it. A refresh token family
-	// exchanged for a session keeps its id.
+	// the sessions list marks the caller's own by it. A rotation keeps it.
 	ID           string
 	UserID       int64
 	Method       string
@@ -62,7 +60,7 @@ type Selection struct{ Only, Keep string }
 // stamped back to life. One stamped From or more is kept at To or above.
 type Bump struct{ From, To int }
 
-// SessionStore keeps the opaque sessions.
+// SessionStore keeps the sessions.
 type SessionStore interface {
 	// Create stores s (CreatedAt and LastSeen are set to now) under a new
 	// token and returns the token.
@@ -123,8 +121,8 @@ type FlowStore interface {
 }
 
 // NewToken returns a random token with prefix and the hash it is stored by
-// (Hash): 32 random bytes, base64url. The refresh tokens and the auth_flows
-// tokens are made the same way, with no prefix.
+// (Hash): 32 random bytes, base64url. Access keys and flow tokens are made
+// the same way.
 func NewToken(prefix string) (token, hash string) {
 	var b [32]byte
 	_, _ = rand.Read(b[:]) // never fails (crypto/rand since Go 1.24)
@@ -132,8 +130,8 @@ func NewToken(prefix string) (token, hash string) {
 	return token, Hash(token)
 }
 
-// Hash is the key a token is stored by: hex SHA-256, as the PostgreSQL
-// tables hash theirs, so a flow token reads the same in both.
+// Hash is the key a token is stored by: hex SHA-256, as the access keys
+// are hashed in PostgreSQL.
 func Hash(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])

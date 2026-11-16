@@ -24,10 +24,7 @@ var coreProvidedEnv = []string{
 // DATABASE_URL/REDIS_URL) and variables only `sub2api dev` or tests read.
 var coreIgnoredEnv = []string{"SUB2API_DATABASE_URL", "SUB2API_REDIS_URL"}
 
-// envRead finds a variable read where it is read, or declared as a
-// constant named ...Env that a reader is handed (iam.IssueEnv, read by a
-// run-time switch).
-var envRead = regexp.MustCompile(`(?:(?:Getenv|LookupEnv|boolEnv|durationEnv|int64Env|intEnv|\benv)\(|\b[A-Za-z]*Env\s*=\s*)"([A-Z][A-Z0-9_]*)"`)
+var envRead = regexp.MustCompile(`(?:Getenv|LookupEnv|boolEnv|durationEnv|int64Env|intEnv|\benv)\("([A-Z][A-Z0-9_]*)"`)
 
 // The allowlist follows the core: every variable the core's production code
 // reads is either inherited or provided by the shell. A new core setting

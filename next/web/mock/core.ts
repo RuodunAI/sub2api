@@ -191,36 +191,31 @@ export function filterOwned<T extends ScopedRow>(rows: T[], scope: Reach | null,
   return out
 }
 
-// Sessions (CONTRACTS §14.2). Refresh tokens belong to a family created at
-// login and rotate on every refresh; presenting a rotated (or revoked) token
-// again revokes the whole family. Access tokens carry their family, so a
-// revoked family also fails with 401 on the next request.
-interface Family {
-  current: string
+// Sessions (CONTRACTS §100): a login is a session the server renews while it
+// is used. Its token names it ("s2s_mock-<id>-..."), so a revoked session
+// (logout) fails with 401 on the next request.
+interface MockSession {
   revoked: boolean
-  seq: number
   user: Identity
 }
-const families = new Map<string, Family>()
-let familySeq = 0
+const sessions = new Map<string, MockSession>()
+let sessionSeq = 0
 
-function issue(fam: string) {
-  const f = families.get(fam)!
-  f.seq++
-  f.current = `mock-refresh-${fam}-${f.seq}`
-  return { access_token: `mock-access-${fam}-${f.seq}-${Date.now()}`, refresh_token: f.current, expires_in: 7200, user: f.user }
+function newSession(user: Identity = me) {
+  const id = `m${++sessionSeq}`
+  sessions.set(id, { revoked: false, user })
+  return { access_token: `s2s_mock-${id}-${Date.now()}`, expires_in: 604800, user }
 }
 
-function newFamily(user: Identity = me) {
-  const fam = `f${++familySeq}`
-  families.set(fam, { current: '', revoked: false, seq: 0, user })
-  return issue(fam)
+/** The session of a bearer token; undefined for one issued before a mock restart. */
+function sessionOf(auth: string | undefined): MockSession | undefined {
+  const m = /^Bearer\s+s2s_mock-(m\d+)-/i.exec(auth || '')
+  return m ? sessions.get(m[1]) : undefined
 }
 
-/** The signed-in identity of a request (admin for tokens of unknown families). */
+/** The signed-in identity of a request (admin for tokens of unknown sessions). */
 function whoAmI(auth: string | undefined): Identity {
-  const m = /^Bearer\s+mock-access-(f\d+)-/i.exec(auth || '')
-  return (m && families.get(m[1])?.user) || me
+  return sessionOf(auth)?.user || me
 }
 
 /** The signed-in identity of a mock request. */
@@ -229,18 +224,14 @@ export function caller(req: MockRequest): Identity {
 }
 
 /**
- * Checks the bearer token of a console request: "mock-access-<family>-..."
- * tokens are rejected once their family is revoked; tokens of an unknown
- * family (issued before a mock restart) stay valid; "expired" always fails.
+ * Checks the bearer token of a console request: a revoked session's token
+ * is rejected; other tokens (issued before a mock restart) stay valid;
+ * "expired" always fails.
  */
 export function accessTokenValid(auth: string | undefined): boolean {
   if (!auth) return true
-  const tok = auth.replace(/^Bearer\s+/i, '')
-  if (tok === 'expired') return false
-  const m = /^mock-access-(f\d+)-/.exec(tok)
-  if (!m) return true
-  const f = families.get(m[1])
-  return !f || !f.revoked
+  if (auth.replace(/^Bearer\s+/i, '') === 'expired') return false
+  return !sessionOf(auth)?.revoked
 }
 
 // Login rate limit (CONTRACTS §14.2, shortened for the mock): 5 failures for
@@ -264,27 +255,11 @@ on('POST', '/auth/login', (req) => {
     return fail(401, 'unauthenticated', 'invalid email or password (mock password: admin)')
   }
   loginFailures.delete(email)
-  return newFamily(identities.find((u) => u.email === email) || me)
-})
-on('POST', '/auth/refresh', (req) => {
-  const tok = String(req.body?.refresh_token || '')
-  // Legacy tokens from before this mock version: start a new family.
-  if (tok === 'mock-refresh') return newFamily()
-  const m = /^mock-refresh-(f\d+)-\d+$/.exec(tok)
-  const f = m ? families.get(m[1]) : undefined
-  if (!f) return fail(401, 'unauthenticated', 'invalid refresh token')
-  if (f.revoked) return fail(401, 'unauthenticated', 'refresh token revoked')
-  if (f.current !== tok) {
-    // Reuse of a rotated token: revoke the whole login.
-    f.revoked = true
-    return fail(401, 'unauthenticated', 'refresh token reuse detected; session revoked')
-  }
-  return issue(m![1])
+  return newSession(identities.find((u) => u.email === email) || me)
 })
 on('POST', '/auth/logout', (req) => {
-  const m = /^mock-refresh-(f\d+)-\d+$/.exec(String(req.body?.refresh_token || ''))
-  const f = m ? families.get(m[1]) : undefined
-  if (f) f.revoked = true
+  const ended = sessionOf(req.headers.authorization)
+  if (ended) ended.revoked = true
   return {}
 })
 on('GET', '/me', (req) => whoAmI(req.headers.authorization))

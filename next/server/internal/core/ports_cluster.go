@@ -25,16 +25,7 @@ type NodeStatus struct {
 	StartedAt     time.Time         `json:"started_at"`
 	LastHeartbeat time.Time         `json:"last_heartbeat"`
 	Plugins       map[string]string `json:"plugins"` // plugin key -> JSON PluginNodeState
-	// Capabilities are what the node's build supports that a cluster-wide
-	// switch waits for (cluster.Options.Capabilities of that build); none
-	// before they were announced.
-	Capabilities []string `json:"capabilities,omitempty"`
 }
-
-// CapabilityOpaqueSessions: the node accepts opaque session tokens (s2s_)
-// and reads the auth flows in Valkey (CONTRACTS §100). session.issue is
-// switched to s2s only while every live node has it.
-const CapabilityOpaqueSessions = "session.s2s"
 
 // NodeRegistry manages heartbeats and per-node plugin state.
 type NodeRegistry interface {

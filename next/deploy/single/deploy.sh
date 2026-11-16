@@ -42,7 +42,6 @@ if [ ! -f "$ENV_FILE" ]; then
 PG_PASSWORD=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
 REDIS_PASSWORD=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 SUB2API_MASTER_KEY=$(head -c 32 /dev/urandom | base64)
-SUB2API_JWT_SECRET=$(head -c 48 /dev/urandom | base64 | tr -d '\n')
 SUB2API_BOOTSTRAP_ADMIN_EMAIL=admin@sup2api.local
 SUB2API_BOOTSTRAP_ADMIN_PASSWORD=$(head -c 18 /dev/urandom | base64 | tr -d '/+=\n')
 SUP2API_PORT=$PORT

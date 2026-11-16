@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // http.ts keeps module state (session, config): every test
 // gets a fresh copy. Migrated from scripts/http-headers-test.mjs and extended
-// with refresh / error-envelope cases.
+// with session / error-envelope cases.
 type Http = typeof import('./http')
 let http: Http
 
@@ -137,148 +137,103 @@ describe('response headers', () => {
   })
 })
 
-describe('token refresh', () => {
-  it('refreshes once on 401 and retries with the new token', async () => {
-    http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
-    const f = stubFetch((url, init) => {
-      if (url.endsWith('/auth/refresh')) return json({ access_token: 'new', refresh_token: 'r2', expires_in: 3600 })
-      if (init.headers.Authorization === 'Bearer old') return json({ code: 'unauthenticated', message: 'expired' }, 401, { 'X-Sub2api-Entry-Node': 'first' })
-      return json({ ok: 1 }, 200, { 'X-Sub2api-Entry-Node': 'final' })
-    })
-    const r = await http.requestWithHeaders('GET', '/x')
-    expect(r.headers.get('x-sub2api-entry-node')).toBe('final')
-    expect(f).toHaveBeenCalledTimes(3)
-    expect(http.session.get()?.refresh_token).toBe('r2')
-  })
-
-  it('shares one refresh between parallel 401s', async () => {
-    http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
-    let refreshes = 0
-    stubFetch(async (url, init) => {
-      if (url.endsWith('/auth/refresh')) {
-        refreshes++
-        await new Promise((r) => setTimeout(r, 10))
-        return json({ access_token: 'new', refresh_token: 'r2', expires_in: 3600 })
-      }
-      return init.headers.Authorization === 'Bearer new' ? json(1) : json({ code: 'unauthenticated' }, 401)
-    })
-    await Promise.all([http.api.get('/a'), http.api.get('/b'), http.api.get('/c')])
-    expect(refreshes).toBe(1)
-  })
-
-  it('signs out when the refresh token is rejected', async () => {
-    http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
-    const onUnauthenticated = vi.fn()
-    http.configureHttp({ onUnauthenticated })
-    stubFetch((url) => (url.endsWith('/auth/refresh') ? json({ code: 'invalid' }, 401) : json({ code: 'unauthenticated' }, 401)))
-    await expect(http.api.get('/x')).rejects.toBeInstanceOf(http.ApiError)
-    expect(http.session.get()).toBeNull()
-    expect(onUnauthenticated).toHaveBeenCalledWith('expired')
-  })
-
-  it('signs out on 401 of an opaque session, without asking to refresh', async () => {
-    http.session.fromTokenResponse({ access_token: 's2s_a', expires_in: 604800 })
+describe('session', () => {
+  it('signs out on 401 at once: the server renews a session, nothing is left to try', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_a' })
     const onUnauthenticated = vi.fn()
     http.configureHttp({ onUnauthenticated })
     const f = stubFetch(() => json({ code: 'unauthenticated' }, 401))
     await expect(http.api.get('/x')).rejects.toBeInstanceOf(http.ApiError)
     expect(f).toHaveBeenCalledTimes(1)
     expect(http.session.get()).toBeNull()
+    expect(localStorage.getItem('s2a.session')).toBeNull()
     expect(onUnauthenticated).toHaveBeenCalledWith('expired')
   })
 
-  it('retries an opaque session\'s 401 when the token changed meanwhile (step-up rotation)', async () => {
-    http.session.fromTokenResponse({ access_token: 's2s_old', expires_in: 604800 })
-    const f = stubFetch((url, init) => {
-      if (init.headers.Authorization === 'Bearer s2s_old') {
-        http.session.set({ ...http.session.get()!, access_token: 's2s_new' })
-        return json({ code: 'unauthenticated' }, 401)
-      }
-      return json({ ok: 1 })
-    })
-    expect(await http.api.get('/x')).toEqual({ ok: 1 })
-    expect(f).toHaveBeenCalledTimes(2)
-  })
-
-  it('adopts the opaque session another tab exchanged the refresh token for while this one waited for the lock', async () => {
-    http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
+  it('reports a 401 without a session as unauthenticated', async () => {
     const onUnauthenticated = vi.fn()
     http.configureHttp({ onUnauthenticated })
-    // The other tab held the lock first: it exchanged r1 for an opaque
-    // session and stored it, which this tab has not seen yet.
-    vi.stubGlobal('navigator', {
-      locks: {
-        request: async (_name: string, _opts: unknown, fn: () => Promise<unknown>) => {
-          localStorage.setItem('s2a.session', JSON.stringify({ access_token: 's2s_other', expires_at: Date.now() + 604800_000 }))
-          return fn()
-        }
-      }
-    })
-    const f = stubFetch((url, init) => {
-      if (url.endsWith('/auth/refresh')) return json({ code: 'unauthenticated' }, 401)
-      return init.headers.Authorization === 'Bearer s2s_other' ? json({ ok: 1 }) : json({ code: 'unauthenticated' }, 401)
-    })
-    expect(await http.api.get('/x')).toEqual({ ok: 1 })
-    expect(f.mock.calls.some(([url]) => String(url).endsWith('/auth/refresh'))).toBe(false)
-    expect(http.session.get()?.access_token).toBe('s2s_other')
-    expect(localStorage.getItem('s2a.session')).toContain('s2s_other')
+    stubFetch(() => json({ code: 'unauthenticated' }, 401))
+    await expect(http.api.get('/x')).rejects.toBeInstanceOf(http.ApiError)
+    expect(onUnauthenticated).toHaveBeenCalledWith('unauthenticated')
+  })
+
+  it('leaves a 401 of an anonymous request to the caller', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_a' })
+    const onUnauthenticated = vi.fn()
+    http.configureHttp({ onUnauthenticated })
+    stubFetch(() => json({ code: 'unauthenticated' }, 401))
+    await expect(http.api.post('/auth/login', {}, { anonymous: true })).rejects.toMatchObject({ status: 401 })
+    expect(http.session.get()?.access_token).toBe('s2s_a')
     expect(onUnauthenticated).not.toHaveBeenCalled()
   })
 
-  it('reads what another tab stored before ending an opaque session on 401', async () => {
-    http.session.fromTokenResponse({ access_token: 's2s_old', expires_in: 604800 })
-    // Another tab rotated the token; this one, just woken, missed the storage event.
-    localStorage.setItem('s2a.session', JSON.stringify({ access_token: 's2s_new', expires_at: Date.now() + 604800_000 }))
+  it('retries a 401 when the token changed meanwhile (step-up rotation)', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_old' })
+    const f = stubFetch((_url, init) => {
+      if (init.headers.Authorization === 'Bearer s2s_old') {
+        http.session.fromTokenResponse({ access_token: 's2s_new' })
+        return json({ code: 'unauthenticated' }, 401)
+      }
+      return json({ ok: 1 }, 200, { 'X-Sub2api-Entry-Node': 'final' })
+    })
+    const r = await http.requestWithHeaders('GET', '/x')
+    expect(r.data).toEqual({ ok: 1 })
+    expect(r.headers.get('x-sub2api-entry-node')).toBe('final')
+    expect(f).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads what another tab stored before ending the session on 401', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_old' })
+    // Another tab signed in again; this one, just woken, missed the storage event.
+    localStorage.setItem('s2a.session', JSON.stringify({ access_token: 's2s_new' }))
     const onUnauthenticated = vi.fn()
     http.configureHttp({ onUnauthenticated })
-    const f = stubFetch((url, init) => (init.headers.Authorization === 'Bearer s2s_new' ? json({ ok: 1 }) : json({ code: 'unauthenticated' }, 401)))
+    const f = stubFetch((_url, init) => (init.headers.Authorization === 'Bearer s2s_new' ? json({ ok: 1 }) : json({ code: 'unauthenticated' }, 401)))
     expect(await http.api.get('/x')).toEqual({ ok: 1 })
     expect(f).toHaveBeenCalledTimes(2)
     expect(http.session.get()?.access_token).toBe('s2s_new')
     expect(onUnauthenticated).not.toHaveBeenCalled()
   })
 
-  it('keeps the session when refresh fails with a server error', async () => {
-    http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
+  it('keeps a newer login stored while a request of the ended session was out', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_old' })
     const onUnauthenticated = vi.fn()
     http.configureHttp({ onUnauthenticated })
-    stubFetch((url) => (url.endsWith('/auth/refresh') ? new Response('', { status: 502 }) : json({ code: 'unauthenticated' }, 401)))
-    await expect(http.api.get('/x')).rejects.toBeInstanceOf(http.ApiError)
-    expect(http.session.get()?.refresh_token).toBe('r1')
+    let calls = 0
+    stubFetch(() => {
+      // Another login lands while each send is out: the retry's too.
+      http.session.fromTokenResponse({ access_token: `s2s_${++calls}` })
+      return json({ code: 'unauthenticated' }, 401)
+    })
+    await expect(http.api.get('/x')).rejects.toMatchObject({ status: 401 })
+    expect(calls).toBe(2)
+    expect(http.session.get()?.access_token).toBe('s2s_2')
     expect(onUnauthenticated).not.toHaveBeenCalled()
   })
-})
 
-describe('keep-alive', () => {
-  let stop: () => void = () => {}
-  beforeEach(() => {
-    stop = http.startKeepAlive()
-  })
-  afterEach(() => stop())
-  it('is due only within the renewal window of a session with a refresh token', () => {
-    const now = 1_000_000
-    expect(http.renewalDue(null, now)).toBe(false)
-    expect(http.renewalDue({ access_token: 'a', refresh_token: 'r', expires_at: now + 10 * 60_000 }, now)).toBe(false)
-    expect(http.renewalDue({ access_token: 'a', refresh_token: 'r', expires_at: now + 60_000 }, now)).toBe(true)
-    expect(http.renewalDue({ access_token: 'a', refresh_token: '', expires_at: now }, now)).toBe(false)
+  it('follows another tab that signs out, or whose session ended, to the login page', () => {
+    http.session.fromTokenResponse({ access_token: 's2s_a' })
+    const onUnauthenticated = vi.fn()
+    http.configureHttp({ onUnauthenticated })
+    localStorage.removeItem('s2a.session')
+    window.dispatchEvent(new StorageEvent('storage', { key: 's2a.session', newValue: null }))
+    expect(http.session.get()).toBeNull()
+    expect(onUnauthenticated).toHaveBeenCalledWith('unauthenticated')
   })
 
-  it('renews a token about to expire when the page becomes visible', async () => {
-    http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
-    const spy = stubFetch(() => json({ access_token: 'new', refresh_token: 'r2', expires_in: 7200 }))
-    document.dispatchEvent(new Event('visibilitychange'))
-    await vi.waitFor(() => expect(http.session.get()?.access_token).toBe('new'))
-    expect(spy).toHaveBeenCalledTimes(1)
-    expect(spy.mock.calls[0][0]).toContain('/auth/refresh')
-    expect(http.session.get()?.refresh_token).toBe('r2')
-  })
-
-  it('leaves a fresh token alone', async () => {
-    http.session.set({ access_token: 'a', refresh_token: 'r', expires_at: Date.now() + 3600_000 })
-    const spy = stubFetch(() => json({}))
-    document.dispatchEvent(new Event('visibilitychange'))
-    await new Promise((r) => setTimeout(r, 20))
-    expect(spy).not.toHaveBeenCalled()
+  it('adopts a token another tab stored, signed out of nothing', () => {
+    const onUnauthenticated = vi.fn()
+    http.configureHttp({ onUnauthenticated })
+    const seen = vi.fn()
+    http.session.onChange(seen)
+    for (const token of ['s2s_a', 's2s_b']) {
+      localStorage.setItem('s2a.session', JSON.stringify({ access_token: token }))
+      window.dispatchEvent(new StorageEvent('storage', { key: 's2a.session' }))
+      expect(http.session.get()?.access_token).toBe(token)
+    }
+    expect(seen).toHaveBeenCalledTimes(2)
+    expect(onUnauthenticated).not.toHaveBeenCalled()
   })
 })
 
@@ -357,16 +312,17 @@ describe('step-up verification', () => {
     expect(ask).toHaveBeenCalledTimes(1)
   })
 
-  it('renews the session when the replay meets an expired token, keeping the proof', async () => {
-    http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 3600_000 })
-    http.configureHttp({ onVerificationRequired: async () => 'p' })
-    const spy = stubFetch((url, init) => {
-      if (url.includes('/auth/refresh')) return json({ access_token: 'new', refresh_token: 'r2', expires_in: 7200 })
-      if (!init.headers['X-Verify-Proof']) return required()
-      return init.headers.Authorization === 'Bearer new' ? json({ ok: 1 }) : json({ code: 'unauthenticated', message: 'expired' }, 401)
+  it('replays with the token the verification rotated (StepUpDialog stores it)', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_old' })
+    http.configureHttp({
+      onVerificationRequired: async () => {
+        http.session.fromTokenResponse({ access_token: 's2s_new' })
+        return 'p'
+      }
     })
+    const spy = stubFetch((_url, init) => (init.headers['X-Verify-Proof'] ? json({ ok: 1 }) : required()))
     expect(await http.api.del('/users/5')).toEqual({ ok: 1 })
-    expect(spy.mock.calls.at(-1)![1].headers['X-Verify-Proof']).toBe('p')
+    expect(spy.mock.calls.at(-1)![1].headers).toMatchObject({ Authorization: 'Bearer s2s_new', 'X-Verify-Proof': 'p' })
   })
 
   it('gives the hook the request signal and fails as aborted once it aborts', async () => {

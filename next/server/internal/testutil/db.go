@@ -58,6 +58,16 @@ func DB(t testing.TB) *store.DB {
 func DBThrough(t testing.TB, last string) *store.DB {
 	t.Helper()
 	base := testpg.URL(t)
+	name, err := ensureTemplate(context.Background(), base, MigrationsThrough(t, last))
+	if err != nil {
+		t.Fatalf("test template database through %s: %v", last, err)
+	}
+	return cloneTemplate(t, base, name)
+}
+
+// MigrationsThrough is the core migrations through last and no further.
+func MigrationsThrough(t testing.TB, last string) fs.FS {
+	t.Helper()
 	upTo := fstest.MapFS{}
 	names, err := fs.Glob(migrations.FS, "*.sql")
 	if err != nil {
@@ -76,11 +86,7 @@ func DBThrough(t testing.TB, last string) *store.DB {
 	if _, ok := upTo[last]; !ok {
 		t.Fatalf("no core migration %s", last)
 	}
-	name, err := ensureTemplate(context.Background(), base, upTo)
-	if err != nil {
-		t.Fatalf("test template database through %s: %v", last, err)
-	}
-	return cloneTemplate(t, base, name)
+	return upTo
 }
 
 // cloneTemplate creates a database for one test from the template tpl.

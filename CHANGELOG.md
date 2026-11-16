@@ -8,19 +8,19 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.290（版本号推测）：控制台会话改为 Valkey 不透明令牌（无迁移，开关默认不变）
+### 核心 0.1.290（版本号推测）：控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101，单向，停服发布，所有人重新登录）
 
-契约见 CONTRACTS §100。本版本同时认 JWT 与新的 `s2s_` 令牌，签发哪种由开关 `session.issue` 决定，默认仍签发 JWT，用户看不到变化。
+契约见 CONTRACTS §100。
 
-- **不透明会话**：`s2s_` 令牌存在 Valkey（只存哈希），一个令牌、滑动续期（空闲 7 天、绝对 30 天，`SUB2API_SESSION_IDLE_TTL` / `SUB2API_SESSION_MAX_TTL`），没有 refresh token。撤销单个会话立即失效（JWT 要等 access token 过期）；改密码、禁用、删除用户、撤销其他会话时批量删除，`token_version` 照旧兜底。每个用户最多 50 个会话，再登录时结束最久未用的那个。二次验证后换发同一会话的新令牌（`POST /me/verify` 响应的 `access_token`）。
-- **开关**：`PUT /settings/session {"issue": "jwt" | "s2s"}`（`settings:manage` + 二次验证 `session.issue`，只有超管本人可以，写审计 `session.issue.set`），广播后各节点生效；环境变量 `SUB2API_SESSION_ISSUE` 优先（已加入网关传给核心的环境变量白名单，`deploy/single` 的 compose 也映射了）。还有不支持不透明会话的存活节点时，切到 `s2s` 返回 409 并列出这些节点（`GET` 的 `behind` 也列出）；切回 `jwt` 不检查。切到 `s2s` 后已登录的控制台在下次刷新时自动换成 `s2s_`，不用重新登录。控制台没有页面。
-- **中间流程**（两步登录、通行密钥、TOTP 设置、step-up）在开关为 `s2s` 时只写 Valkey、取用 `GETDEL`；读取先 Valkey 后 `auth_flows`。
-- **Valkey 故障**：不透明会话鉴权、登录返回 503 并记 ERROR `tokenstore: valkey unavailable`，不回退 JWT；会话鉴权的 503 不再被改写成 401。访问密钥和网关 Key 不受影响。
-- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。结束全部会话、以及 Valkey 不可用时代替它的 bump，`token_version` 一次加 2（Valkey 里的不透明会话随之全部结束）。开关为 `jwt` 时 JWT 调用者不依赖 Valkey（鉴权、登录、refresh、二次验证、会话列表、登出、撤销 JWT 会话、改密码、管理员禁用与删除用户照常）；禁用、删除用户等结束全部会话的操作在任何开关下都不依赖 Valkey。仍要 Valkey 的只有不透明会话本身（鉴权、撤销一个不透明会话、二次验证后换令牌），不可用时 503。
-- **API 调用方注意**：用不透明会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
-- 控制台：登录响应没有 `refresh_token` 时，401 直接回登录页，不走刷新。
+- **会话令牌**：控制台登录只签发 `s2s_` 令牌，存在 Valkey（只存哈希），一个令牌、服务端滑动续期（空闲 7 天、登录后最长 30 天，`SUB2API_SESSION_IDLE_TTL` / `SUB2API_SESSION_MAX_TTL`），没有 refresh token。撤销单个会话、登出立即失效；改密码、禁用、删除用户、撤销其他会话时批量删除，`token_version` 兜底。每个用户最多 50 个会话，再登录时结束最久未用的那个。二次验证后换发同一会话的新令牌（`POST /me/verify` 响应的 `access_token`）。
+- **删除**：JWT 签发与校验、`POST /auth/refresh`（现在 404）、refresh token 与重放检测；环境变量 `SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL` 不再读取（网关也不再传给核心，留在 `.env` 里无害，可以删掉）。
+- **迁移 0101**：删除 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表。两步登录、通行密钥、TOTP 设置、二次验证的中间流程只存 Valkey。
+- **Valkey 故障**：会话鉴权、登录、二次验证返回 503 并记 ERROR `tokenstore: valkey unavailable`，不回退；会话鉴权的 503 不会被改写成 401（控制台不会被登出）。访问密钥和网关 Key 不受影响；管理员禁用、删除用户、重置密码不依赖 Valkey。
+- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。`POST /auth/logout` 不带请求体，只结束调用者自己的会话（以前不带 refresh token 时结束全部）。结束全部会话时 `token_version` 一次加 2。
+- **API 调用方注意**：用会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
+- **控制台**：401 直接回登录页（不再刷新令牌，删除跨标签页刷新锁与 keep-alive）；一个标签页登出或会话失效，其他标签页也回登录页。
 
-**发布**：全部节点升级到本版本后再 `PUT /settings/session {"issue":"s2s"}`，不需要第二次发版。**回退**：切回 `jwt` 立即恢复签发 JWT，已发的 `s2s_` 有效到过期；接口不可用时直接改 `settings` 表（30 秒内全部节点生效）或设 `SUB2API_SESSION_ISSUE=jwt` 重启节点，见 `next/deploy/rollback/0.1.290-session-down.md`。代码回滚到上一版时 `s2s_` 用户需要重新登录。JWT 代码与 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表在切换 30 天后另行清理（§100.7）。
+**发布**：单向，**先停掉全部核心节点**再启动新版本（网关升级计划本身先停全部核心，满足要求）；发布前做数据库备份。上一版签发的登录全部作废，所有人重新登录。**回退**：只能从发布前的数据库备份恢复，见 `next/deploy/rollback/0.1.290-session-down.md`。
 
 ### 核心 0.1.290（版本号推测）：权限改由 Casbin 判断，授予只存 `casbin_rule`（迁移 0100，单向，停服发布）
 

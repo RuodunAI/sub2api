@@ -20,8 +20,7 @@ import (
 
 // ============================================================ identity & authz (owner: A core-data)
 
-// TokenVerifier validates console access tokens: JWTs, and the opaque
-// session tokens (s2s_) that replace them (CONTRACTS §100).
+// TokenVerifier validates console session tokens (s2s_, CONTRACTS §100).
 type TokenVerifier interface {
 	VerifyAccessToken(ctx context.Context, token string) (userID int64, err error)
 }
@@ -155,12 +154,8 @@ func (s PermissionSet) CanAssign(roleKey string) bool {
 }
 
 // AccessKeyPrefix starts every access key, so a bearer token can be told from
-// a console JWT without parsing it.
+// a console session token without a lookup.
 const AccessKeyPrefix = "sak_"
-
-// OpaqueSessionPrefix starts every opaque session token (CONTRACTS §100), so
-// it is told from a JWT and from an access key without a lookup.
-const OpaqueSessionPrefix = "s2s_"
 
 // AccessKeyIdentity is who an access key acts for and what it was given.
 type AccessKeyIdentity struct {
@@ -175,7 +170,7 @@ type AccessKeyVerifier interface {
 }
 
 // AuthenticateBearer resolves a console bearer token to its user: a login
-// session (a JWT or an s2s_ token, both through SessionVerifier), or an
+// session (through SessionVerifier when the verifier tells its id), or an
 // access key, whose limits then travel in the returned context.
 func AuthenticateBearer(ctx context.Context, tokens TokenVerifier, token, ip string) (context.Context, int64, error) {
 	if !strings.HasPrefix(token, AccessKeyPrefix) {
@@ -183,9 +178,6 @@ func AuthenticateBearer(ctx context.Context, tokens TokenVerifier, token, ip str
 			uid, session, err := sv.VerifySession(ctx, token)
 			if err != nil {
 				return ctx, 0, err
-			}
-			if strings.HasPrefix(token, OpaqueSessionPrefix) {
-				return WithOpaqueSession(WithUserID(ctx, uid), session), uid, nil
 			}
 			return WithSession(WithUserID(ctx, uid), session), uid, nil
 		}

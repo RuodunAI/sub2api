@@ -74,8 +74,8 @@ async function submit() {
   try {
     const body = { scope: props.scope, context: props.context, method: method.value, ...(needsPassword.value ? { password: password.value } : {}), ...(await factor()) }
     const r = await api.post<{ proof: string; access_token?: string }>('/me/verify', body)
-    // An opaque session gets a new token of the same session on verifying
-    // (CONTRACTS §100): the replay and everything after it use that one.
+    // A session gets a new token of the same session on verifying (CONTRACTS
+    // §100): the replay and everything after it use that one.
     const current = session.get()
     if (r.access_token && current) session.set({ ...current, access_token: r.access_token })
     emit('verified', r.proof)

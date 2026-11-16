@@ -364,7 +364,7 @@ func (c *realCluster) startShell(id string) *realNode {
 	coreAddr := freeAddress(t)
 	rm := &release.Manager{Root: root, TrustedKeys: map[string]ed25519.PublicKey{"test": c.pub}, OS: "linux", Arch: runtime.GOARCH, RuntimeABI: "test", Client: c.artifactClient}
 	env := []string{
-		"SUB2API_DATABASE_URL=" + c.coreDSN, "SUB2API_REDIS_URL=" + c.redisURL, "SUB2API_MASTER_KEY=" + base64.StdEncoding.EncodeToString(make([]byte, 32)), "SUB2API_JWT_SECRET=" + strings.Repeat("test", 10), "SUB2API_PLUGIN_DIR=" + filepath.Join(root, "plugins"), "SUB2API_LOG_LEVEL=error",
+		"SUB2API_DATABASE_URL=" + c.coreDSN, "SUB2API_REDIS_URL=" + c.redisURL, "SUB2API_MASTER_KEY=" + base64.StdEncoding.EncodeToString(make([]byte, 32)), "SUB2API_PLUGIN_DIR=" + filepath.Join(root, "plugins"), "SUB2API_LOG_LEVEL=error",
 	}
 	if key := os.Getenv("TEST_BUILTIN_KEY"); key != "" {
 		env = append(env, "SUB2API_BUILTIN_TRUST_KEY="+key)

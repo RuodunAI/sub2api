@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"reflect"
 	"slices"
 	"testing"
@@ -253,19 +254,12 @@ func (sessionVerifier) VerifySession(context.Context, string) (int64, string, er
 	return 7, "sid", nil
 }
 
-// The kind of the token is decided when it is verified and travels with the
-// session: callers ask the context, not the session store.
-func TestAuthenticateBearerRecordsTheTokenKind(t *testing.T) {
-	for _, tc := range []struct {
-		token  string
-		opaque bool
-	}{{"s2s_abc", true}, {"eyJhbGciOiJIUzI1NiJ9.e30.x", false}} {
-		ctx, uid, err := AuthenticateBearer(context.Background(), sessionVerifier{}, tc.token, "")
-		assert.NoError(t, err)
-		assert.Equal(t, int64(7), uid)
-		assert.Equal(t, "sid", Session(ctx), tc.token)
-		assert.Equal(t, tc.opaque, OpaqueSession(ctx), tc.token)
-	}
-	assert.False(t, OpaqueSession(context.Background()))
+// A session token's id travels with the request: step-up proofs and the
+// sessions list ask the context, not the session store.
+func TestAuthenticateBearerRecordsTheSession(t *testing.T) {
+	ctx, uid, err := AuthenticateBearer(context.Background(), sessionVerifier{}, "s2s_abc", "")
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), uid)
+	assert.Equal(t, "sid", Session(ctx))
 	assert.Equal(t, "", Session(context.Background()))
 }

@@ -102,8 +102,8 @@ func (c *Client) Do(t testing.TB, method, path string, body any, opts ...ReqOpt)
 	if v.Status != http.StatusOK {
 		t.Fatalf("step-up for %s %s: %s", method, path, v)
 	}
-	// An opaque session gets a new token of the same session (CONTRACTS
-	// §100.4): the old one stops working seconds later.
+	// The session gets a new token of the same session (CONTRACTS §100.4):
+	// the old one stops working seconds later.
 	if fresh := v.Data().Get("access_token").String(); fresh != "" {
 		c.Token = fresh
 	}

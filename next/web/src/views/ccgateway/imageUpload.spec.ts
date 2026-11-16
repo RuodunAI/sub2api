@@ -210,7 +210,7 @@ describe('chunked image upload', () => {
 describe('upload transport', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    session.set({ access_token: 'tok-1', refresh_token: 'r', expires_at: Date.now() + 3600_000 })
+    session.set({ access_token: 'tok-1' })
   })
 
   const ok = (data: unknown) => new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -246,7 +246,7 @@ describe('upload transport', () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response('', { status: 401 }))
       .mockResolvedValueOnce(ok({ offset: 4, size: 4 }))
-    mocks.get.mockImplementation(async () => { session.set({ access_token: 'tok-2', refresh_token: 'r2', expires_at: Date.now() + 3600_000 }); return { offset: 0, size: 4 } })
+    mocks.get.mockImplementation(async () => { session.set({ access_token: 'tok-2' }); return { offset: 0, size: 4 } })
     const r = await createUploadTransport(fetchImpl as unknown as typeof fetch).put(ID, 0, blob(4))
     expect(r).toEqual({ offset: 4, size: 4 })
     expect(mocks.get).toHaveBeenCalledWith(`/system/ccgateway/runtime/uploads/${ID}`, undefined, expect.anything())

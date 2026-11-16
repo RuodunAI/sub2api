@@ -271,7 +271,7 @@ func (s *Service) handlePasskeyDelete(c *gin.Context) {
 }
 
 func (s *Service) handleSessions(c *gin.Context) {
-	out, err := s.Sessions(c.Request.Context(), actor(c), s.currentFamily(c))
+	out, err := s.Sessions(c.Request.Context(), actor(c), s.currentSession(c))
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -288,13 +288,7 @@ func (s *Service) handleSessionRevoke(c *gin.Context) {
 }
 
 func (s *Service) handleSessionsRevokeOthers(c *gin.Context) {
-	current := s.currentFamily(c)
-	if current == "" {
-		// A token from before sessions had ids cannot say which one to keep.
-		httpapi.Fail(c, core.ErrConflict.WithMessage("sign in again before ending other sessions"))
-		return
-	}
-	if err := s.RevokeOtherSessions(audit.Context(c), actor(c), current); err != nil {
+	if err := s.RevokeOtherSessions(audit.Context(c), actor(c), s.currentSession(c)); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

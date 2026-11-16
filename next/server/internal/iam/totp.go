@@ -309,7 +309,7 @@ func (s *Service) StartTwoFactor(ctx context.Context, userID int64) (*TwoFactorS
 	if err != nil {
 		return nil, err
 	}
-	token, err := s.createFlow(ctx, s.db.Gorm, flowTOTPSetup, userID, totpSetupPayload{Sealed: base64.StdEncoding.EncodeToString(sealed)})
+	token, err := s.createFlow(ctx, flowTOTPSetup, userID, totpSetupPayload{Sealed: base64.StdEncoding.EncodeToString(sealed)})
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +349,7 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID int64, flowToken, 
 	}
 	var codes []string
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := lockRefreshUser(ctx, tx, userID); err != nil {
+		if err := lockUserRow(ctx, tx, userID); err != nil {
 			return err
 		}
 		res := insertTOTP(store.G(ctx, tx), userID, sealed, step)
@@ -360,7 +360,7 @@ func (s *Service) EnableTwoFactor(ctx context.Context, userID int64, flowToken, 
 			return core.ErrConflict.WithMessage("two-factor authentication is already enabled")
 		}
 		var out totpSetupPayload
-		if _, err := s.takeFlow(ctx, tx, flowToken, flowTOTPSetup, userID, &out); err != nil {
+		if _, err := s.takeFlow(ctx, flowToken, flowTOTPSetup, userID, &out); err != nil {
 			return err
 		}
 		if codes, err = s.issueBackupCodes(ctx, tx, userID); err != nil {
@@ -386,7 +386,7 @@ func insertTOTP(db *gorm.DB, userID int64, sealed []byte, lastStep int64) *gorm.
 // (step-up self.2fa.disable).
 func (s *Service) DisableTwoFactor(ctx context.Context, userID int64) error {
 	return s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := lockRefreshUser(ctx, tx, userID); err != nil {
+		if err := lockUserRow(ctx, tx, userID); err != nil {
 			return err
 		}
 		if err := s.keepLastFactor(ctx, tx, userID, core.StepUpSelf2FADisable); err != nil {
@@ -407,7 +407,7 @@ func (s *Service) DisableTwoFactor(ctx context.Context, userID int64) error {
 func (s *Service) RegenerateBackupCodes(ctx context.Context, userID int64) ([]string, error) {
 	var codes []string
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		if err := lockRefreshUser(ctx, tx, userID); err != nil {
+		if err := lockUserRow(ctx, tx, userID); err != nil {
 			return err
 		}
 		if err := requireTwoFactor(ctx, tx, userID); err != nil {

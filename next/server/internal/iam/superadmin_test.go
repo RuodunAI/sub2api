@@ -38,7 +38,7 @@ func TestTransferSuperAdminHTTP(t *testing.T) {
 
 	// A user without a second factor verifies with the password alone, and
 	// is still not the super admin.
-	proof := k.proof(t, targetLogin.AccessToken, core.StepUpSuperAdminTransfer, "POST", path, map[string]any{"method": "password", "password": adminPassword})
+	proof := k.proof(t, &targetLogin.AccessToken, core.StepUpSuperAdminTransfer, "POST", path, map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(targetLogin.AccessToken, proof, "POST", path, body(target)); code != 403 || errCode(out) != "permission_denied" {
 		t.Fatalf("non-superuser: %d %v", code, out)
 	}
@@ -73,11 +73,11 @@ func TestTransferSuperAdminHTTP(t *testing.T) {
 		clearLastStep(t, s, root)
 		return map[string]any{"method": "totp", "password": adminPassword, "code": codeAt(t, secret, time.Now())}
 	}
-	proof = k.proof(t, rootLogin.AccessToken, core.StepUpSuperAdminTransfer, "POST", path, both())
+	proof = k.proof(t, &rootLogin.AccessToken, core.StepUpSuperAdminTransfer, "POST", path, both())
 	if code, out := k.callProof(rootLogin.AccessToken, proof, "POST", path, body(disabled.ID)); code != 400 {
 		t.Fatalf("disabled target: %d %v", code, out)
 	}
-	proof = k.proof(t, rootLogin.AccessToken, core.StepUpSuperAdminTransfer, "POST", path, both())
+	proof = k.proof(t, &rootLogin.AccessToken, core.StepUpSuperAdminTransfer, "POST", path, both())
 	if code, out := k.callProof(rootLogin.AccessToken, proof, "POST", path, body(target)); code != 204 {
 		t.Fatalf("transfer: %d %v", code, out)
 	}
@@ -91,8 +91,7 @@ func TestTransferSuperAdminHTTP(t *testing.T) {
 			t.Fatalf("user %d roles %v, want %v", id, got, want)
 		}
 	}
-	renews(t, s, rootLogin, false)
-	renews(t, s, targetLogin, false)
+	ended(t, s, rootLogin.AccessToken, targetLogin.AccessToken)
 	var n int
 	if err := s.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM audit_logs WHERE action = 'superadmin.transfer' AND user_id = $1 AND target_id = $2`,
 		root, strconv.FormatInt(target, 10)).Scan(&n); err != nil || n != 1 {
@@ -140,7 +139,7 @@ func TestRecoverSuperAdmin(t *testing.T) {
 			if len(password) != 24 {
 				t.Fatalf("password %q", password)
 			}
-			renews(t, s, targetLogin, false)
+			ended(t, s, targetLogin.AccessToken)
 			if _, err := s.Login(ctx, "target@example.com", adminPassword, testIP); err == nil {
 				t.Fatal("the old password still signs in")
 			}
