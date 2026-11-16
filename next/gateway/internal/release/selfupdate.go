@@ -22,8 +22,7 @@ import (
 
 // The installed gateways live under <root>/gateway: one directory per
 // version holding the binary, and the pointer file current, which names the
-// version the gateway starts (one-click gateway updates,
-// DESIGN-2026-11-17-UPDATE-SOURCES §9).
+// version the gateway starts (one-click gateway updates, CONTRACTS §102.9).
 const (
 	gatewayDir    = "gateway"
 	gatewayBinary = "sub2api-gateway"

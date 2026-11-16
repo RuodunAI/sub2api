@@ -49,8 +49,9 @@ func writeArchive(t *testing.T, path string, entries ...[2]string) string {
 	return path
 }
 
-// verifyGateway is the gateway-side check of DESIGN-2026-11-17 §3: the
-// signature over the exact payload, a strict decode and the manifest kind.
+// verifyGateway checks what pack-gateway signs (CONTRACTS §102.2): the
+// signature over the exact payload and the manifest kind, with a strict
+// decode, so that pack-gateway writes no field this gateway does not know.
 func verifyGateway(t *testing.T, raw []byte, keys map[string]ed25519.PublicKey) rc.GatewayManifest {
 	t.Helper()
 	var signed rc.SignedManifest

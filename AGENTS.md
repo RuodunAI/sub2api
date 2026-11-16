@@ -82,11 +82,11 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 - 内置插件随核心升级（CONTRACTS §37）。**插件内容变了必须升版本号**：`tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` 对照 `next/plugins/released.json`，内容变了而版本没升就失败；每次发布后按该测试的说明重写这个文件。
 - Host API 版本在 `runtime-contract.HostAPIVersion` 与 `sdk/protocol.HostAPIVersion`，两者必须相等。
 
-### 网关外壳与托管升级（CONTRACTS §33、§34、§39、§82）
+### 网关与托管升级（CONTRACTS §33、§34、§39、§82、§102）
 
 - 每个节点由 `sub2api-gateway` 监听公网入口，核心只监听回环地址；外壳的 supervisor 启停本机核心。节点之间用 HTTPS 和 Redis 里每节点一份的密钥鉴权。
 - 核心以签名发布包分发，升级计划持久化在 PG 的 `updater` schema。改库的版本走 `primary-first-v1`：从节点先转发到主节点并停止，主节点最后停机、迁移、启动，再逐个恢复从节点。不改库的版本可走 `rolling-v1`。
-- 网关二进制的变更要单独换网关，单发核心安装包不会生效。注意 `next/gateway`（外壳）与 `server/internal/gateway`（核心的业务网关流水线）是两回事。
+- 网关二进制的变更要单独更新网关，单发核心安装包不会生效。每个节点都运行能自更新的网关（0.1.135 起）后，控制台可以一键更新网关（`gateway-rolling-v1`，CONTRACTS §102）；第一次换上这样的网关仍要手动换镜像。注意 `next/gateway`（外壳）与 `server/internal/gateway`（核心的业务网关流水线）是两回事。
 
 ### 前端（`next/web`）
 

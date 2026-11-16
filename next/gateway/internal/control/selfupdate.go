@@ -14,7 +14,7 @@ import (
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-// One-click gateway updates (DESIGN-2026-11-17-UPDATE-SOURCES §9): a
+// One-click gateway updates (CONTRACTS §102.9): a
 // GatewayRolling plan installs a signed gateway release on every node and
 // then, one node at a time, swaps the node's gateway process for it while
 // its baseline core restarts; GatewayRollback swaps back.

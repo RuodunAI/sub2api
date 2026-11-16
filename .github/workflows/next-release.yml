@@ -1,7 +1,7 @@
 name: next release
 
 # Builds, signs and publishes a next/ release from a tag
-# (next/docs/DESIGN-2026-11-17-UPDATE-SOURCES.md §2, §3, §10):
+# (next/docs/CONTRACTS.md §102.1, §102.2, §102.10):
 #
 #   core-vX.Y.Z     next-core-manifest.json + <bundle_digest>.tar.gz per platform
 #   gateway-vX.Y.Z  next-gateway-manifest.json + sub2api-gateway_X.Y.Z_linux_<arch>.tar.gz,
