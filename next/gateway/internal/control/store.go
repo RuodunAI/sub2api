@@ -24,6 +24,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 //go:embed schema.sql
@@ -58,16 +59,14 @@ func (s *Store) execLocked(ctx context.Context, script string) error {
 	return s.db(ctx).Exec(schemaLock + script).Error
 }
 func (s *Store) InitCluster(ctx context.Context, primary, baseline string) error {
-	return s.db(ctx).Exec(`INSERT INTO updater.clusters(cluster_id,primary_node,baseline) VALUES(?,?,?) ON CONFLICT DO NOTHING`, s.Cluster, primary, baseline).Error
+	return s.db(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&clusterRecord{s.Cluster, primary, baseline}).Error
 }
 func (s *Store) ClusterState(ctx context.Context) (primary, baseline string, revision int64, err error) {
 	err = s.clusterRow(s.db(ctx)).Select("primary_node,baseline,revision").Row().Scan(&primary, &baseline, &revision)
 	return
 }
 func (s *Store) PutRelease(ctx context.Context, r Release) error {
-	m, _ := json.Marshal(r.Manifest)
-	signed, _ := json.Marshal(r.Signed)
-	res := s.db(ctx).Exec(`INSERT INTO updater.releases(digest,release_id,manifest,signed_manifest,bundle_base) VALUES(?,?,?,?,?) ON CONFLICT(digest) DO NOTHING`, r.Digest, r.Manifest.ReleaseID, m, signed, r.BundleBase)
+	res := createRelease(s.db(ctx), r)
 	if res.Error != nil {
 		return res.Error
 	}
@@ -81,6 +80,15 @@ func (s *Store) PutRelease(ctx context.Context, r Release) error {
 		}
 	}
 	return nil
+}
+
+// createRelease stores r unless a release of its digest is stored already
+// (RowsAffected 0).
+func createRelease(db *gorm.DB, r Release) *gorm.DB {
+	m, _ := json.Marshal(r.Manifest)
+	signed, _ := json.Marshal(r.Signed)
+	return db.Clauses(clause.OnConflict{Columns: columns("digest"), DoNothing: true}).
+		Create(&releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, BundleBase: r.BundleBase})
 }
 func (s *Store) Release(ctx context.Context, digest string) (r Release, err error) {
 	var m, b []byte
@@ -120,22 +128,32 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 	if n.ID == "" || n.ShellBootID == "" || n.PeerProtocol != PeerProtocol || n.Strategy != PrimaryFirst {
 		return errors.New("node identity or shell capabilities are unsupported")
 	}
+	// On a conflict an enabled node of this cluster takes the new identity
+	// and platform. Under a new shell boot it starts over (not ready, not
+	// stopped, in maintenance, unmeasured, not offloading, joining the plan
+	// the registration found); under the same boot it keeps that state.
+	const sameBoot = "CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes."
+	set := clause.AssignmentColumns([]string{"peer_url", "shell_boot_id", "rolling", "os", "arch", "runtime_abi", "peer_protocol", "strategy"})
+	set = append(set, clause.Assignments(map[string]any{
+		"ready":        gorm.Expr(sameBoot + "ready ELSE false END"),
+		"stopped":      gorm.Expr(sameBoot + "stopped ELSE false END"),
+		"mode":         gorm.Expr(sameBoot + "mode ELSE 'maintenance' END"),
+		"joining_plan": gorm.Expr(sameBoot + "joining_plan ELSE EXCLUDED.joining_plan END"),
+		"cpu_percent":  gorm.Expr(sameBoot + "cpu_percent END"),
+		"offloading":   gorm.Expr("updater.nodes.offloading AND updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id"),
+		"last_seen":    gorm.Expr("now()"),
+	})...)
+	conflict := clause.OnConflict{Columns: columns("node_id"), DoUpdates: set,
+		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "updater.nodes.cluster_id=EXCLUDED.cluster_id AND updater.nodes.enabled"}}}}
 	return s.withChange(ctx, func(ctx context.Context) error {
 		return s.withTx(ctx, func(tx *gorm.DB) error {
+			// A node that joins during a plan waits for it (joining_plan).
 			var plan string
-			if err := tx.Raw(`SELECT COALESCE((SELECT id FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused')),'')`, s.Cluster).Row().Scan(&plan); err != nil {
+			if err := s.activeUpgrade(tx).Select("id").Row().Scan(&plan); err != nil && !gormpg.IsNoRows(err) {
 				return err
 			}
-			res := tx.Exec(`INSERT INTO updater.nodes(node_id,cluster_id,peer_url,shell_boot_id,os,arch,runtime_abi,peer_protocol,strategy,joining_plan,rolling) VALUES(?,?,?,?,?,?,?,?,?,?,?)
- ON CONFLICT(node_id) DO UPDATE SET peer_url=EXCLUDED.peer_url,shell_boot_id=EXCLUDED.shell_boot_id,rolling=EXCLUDED.rolling,
- ready=CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes.ready ELSE false END,
- stopped=CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes.stopped ELSE false END,
- mode=CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes.mode ELSE 'maintenance' END,
- last_seen=now(),os=EXCLUDED.os,arch=EXCLUDED.arch,runtime_abi=EXCLUDED.runtime_abi,peer_protocol=EXCLUDED.peer_protocol,strategy=EXCLUDED.strategy,
- joining_plan=CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes.joining_plan ELSE EXCLUDED.joining_plan END,
- cpu_percent=CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes.cpu_percent END,
- offloading=updater.nodes.offloading AND updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id
- WHERE updater.nodes.cluster_id=EXCLUDED.cluster_id AND updater.nodes.enabled`, n.ID, s.Cluster, n.PeerURL, n.ShellBootID, n.OS, n.Arch, n.RuntimeABI, n.PeerProtocol, n.Strategy, plan, n.Rolling)
+			res := tx.Clauses(conflict).Create(&nodeRecord{NodeID: n.ID, ClusterID: s.Cluster, PeerURL: n.PeerURL, ShellBootID: n.ShellBootID,
+				OS: n.OS, Arch: n.Arch, RuntimeABI: n.RuntimeABI, PeerProtocol: n.PeerProtocol, Strategy: n.Strategy, JoiningPlan: plan, Rolling: n.Rolling})
 			if res.Error != nil {
 				return res.Error
 			}
@@ -301,8 +319,8 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 		p.Strategy = Rolling
 	}
 	var active bool
-	err = s.db(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused'))`, s.Cluster).Row().Scan(&active)
-	if err != nil {
+	db := s.db(ctx)
+	if err = existsQuery(db, s.activeUpgrade(db)).Row().Scan(&active); err != nil {
 		return p, err
 	}
 	if active {
@@ -376,15 +394,12 @@ func rollbackCompatibility(from, to Release) []string {
 // PluginCompatibility checks every currently serving or activating version,
 // including third-party plugins. Candidate admission repeats the runtime check.
 func (s *Store) PluginCompatibility(ctx context.Context, version string) ([]string, error) {
-	var present bool
-	if err := s.db(ctx).Raw(`SELECT to_regclass('public.plugins') IS NOT NULL`).Row().Scan(&present); err != nil {
-		return nil, err
+	db := s.db(ctx)
+	if present, err := relationExists(db, "public.plugins"); err != nil || !present {
+		return nil, err // shell-only bootstrap database has no plugins yet
 	}
-	if !present {
-		return nil, nil
-	} // shell-only bootstrap database has no plugins yet
 	var missing bool
-	if err := s.db(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM plugins WHERE status IN ('enabled','upgrading') AND COALESCE(active_version,'')='')`).Row().Scan(&missing); err != nil {
+	if err := existsQuery(db, db.Table("plugins").Where("status IN ('enabled','upgrading') AND COALESCE(active_version,'')=''")).Row().Scan(&missing); err != nil {
 		return nil, err
 	}
 	v, err := semver.NewVersion(version)
@@ -395,12 +410,12 @@ func (s *Store) PluginCompatibility(ctx context.Context, version string) ([]stri
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db(ctx).Raw(`SELECT DISTINCT p.key,versions.version,COALESCE(v.manifest->>'hostCompat','')
-	 FROM plugins p
-	 LEFT JOIN plugin_rollouts r ON r.plugin_key=p.key AND r.phase IN ('preparing','activating')
-	 CROSS JOIN LATERAL (SELECT p.active_version AS version UNION SELECT r.from_version UNION SELECT r.target_version) versions
-	 LEFT JOIN plugin_versions v ON v.plugin_key=p.key AND v.version=versions.version
-	 WHERE p.status IN ('enabled','upgrading') AND versions.version IS NOT NULL`).Rows()
+	// Every version a plugin serves or moves between, with its host range.
+	rows, err := db.Table("plugins p").Distinct("p.key,versions.version,COALESCE(v.manifest->>'hostCompat','')").
+		Joins("LEFT JOIN plugin_rollouts r ON r.plugin_key=p.key AND r.phase IN ('preparing','activating')").
+		Joins("CROSS JOIN LATERAL (SELECT p.active_version AS version UNION SELECT r.from_version UNION SELECT r.target_version) versions").
+		Joins("LEFT JOIN plugin_versions v ON v.plugin_key=p.key AND v.version=versions.version").
+		Where("p.status IN ('enabled','upgrading') AND versions.version IS NOT NULL").Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +491,7 @@ func (s *Store) createLocked(ctx context.Context, digest string, revision int64,
 		}
 		id = hex.EncodeToString(random)
 		nodes, _ := json.Marshal(pf.Nodes)
-		if err := tx.Exec(`INSERT INTO updater.upgrades(id,cluster_id,release_digest,nodes,actor,idempotency_key,request_hash,strategy,source_digest) VALUES(?,?,?,?,?,?,?,?,(SELECT baseline FROM updater.clusters WHERE cluster_id=?))`, id, s.Cluster, digest, nodes, actor, key, requestHash, pf.Strategy, s.Cluster).Error; err != nil {
+		if err := s.createUpgrade(tx, id, digest, nodes, actor, key, requestHash, pf.Strategy); err != nil {
 			return err
 		}
 		return insertEvents(tx, eventRow{id, "created", createdMessage(pf.Strategy)})
@@ -484,6 +499,17 @@ func (s *Store) createLocked(ctx context.Context, digest string, revision int64,
 		return empty, err
 	}
 	return s.Plan(ctx, id)
+}
+
+// createUpgrade inserts plan id (status running) for the release digest over
+// nodes, a JSON list. Its source_digest is the cluster's baseline as tx sees
+// it.
+func (s *Store) createUpgrade(tx *gorm.DB, id, digest string, nodes []byte, actor, key, requestHash, strategy string) error {
+	return tx.Table("updater.upgrades").Create(map[string]any{
+		"id": id, "cluster_id": s.Cluster, "release_digest": digest, "nodes": nodes, "actor": actor,
+		"idempotency_key": key, "request_hash": requestHash, "strategy": strategy,
+		"source_digest": gorm.Expr("(?)", s.clusterRow(tx).Select("baseline")),
+	}).Error
 }
 
 // createdMessage is the first event of a plan; the console shows it.
@@ -534,20 +560,11 @@ func (s *Store) Plans(ctx context.Context) ([]Plan, error) {
 	return out, nil
 }
 func (s *Store) Events(ctx context.Context, id string, after int64) ([]Event, error) {
-	rows, err := s.db(ctx).Raw(`SELECT e.id,e.kind,e.message,e.created_at FROM updater.events e JOIN updater.upgrades u ON u.id=e.upgrade_id WHERE e.upgrade_id=? AND u.cluster_id=? AND e.id>? ORDER BY e.id LIMIT 200`, id, s.Cluster, after).Rows()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	out := []Event{}
-	for rows.Next() {
-		var e Event
-		if err = rows.Scan(&e.ID, &e.Kind, &e.Message, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
+	err := s.db(ctx).Table("updater.events e").Joins("JOIN updater.upgrades u ON u.id=e.upgrade_id").
+		Select("e.id,e.kind,e.message,e.created_at").Where("e.upgrade_id=? AND u.cluster_id=? AND e.id>?", id, s.Cluster, after).
+		Order("e.id").Limit(200).Find(&out).Error
+	return out, err
 }
 func (s *Store) Action(ctx context.Context, id, action, actor string) (Plan, error) {
 	if action == "rollback" {
@@ -556,7 +573,7 @@ func (s *Store) Action(ctx context.Context, id, action, actor string) (Plan, err
 	if err := s.withTx(ctx, func(tx *gorm.DB) error {
 		var status, strategy string
 		var cursor int
-		if err := tx.Raw(`SELECT status,cursor,strategy FROM updater.upgrades WHERE id=? AND cluster_id=? FOR UPDATE`, id, s.Cluster).Row().Scan(&status, &cursor, &strategy); err != nil {
+		if err := upgradeRow(tx, id).Where("cluster_id = ?", s.Cluster).Clauses(forUpdate()).Select("status,cursor,strategy").Row().Scan(&status, &cursor, &strategy); err != nil {
 			return err
 		}
 		switch action {
@@ -578,7 +595,7 @@ func (s *Store) Action(ctx context.Context, id, action, actor string) (Plan, err
 			}
 		case "cancel":
 			var disruptive bool
-			if err := tx.Raw(`SELECT EXISTS(SELECT 1 FROM updater.steps WHERE upgrade_id=? AND action<>'prepare')`, id).Row().Scan(&disruptive); err != nil {
+			if err := existsQuery(tx, tx.Table("updater.steps").Where("upgrade_id = ? AND action <> 'prepare'", id)).Row().Scan(&disruptive); err != nil {
 				return err
 			}
 			if disruptive {
@@ -671,7 +688,7 @@ func (s *Store) rollbackLocked(ctx context.Context, id, actor string) (Plan, err
 	if err := s.withTx(ctx, func(tx *gorm.DB) error {
 		var status, target string
 		var raw []byte
-		if err := tx.Raw(`SELECT status,release_digest,nodes FROM updater.upgrades WHERE id=? AND cluster_id=? FOR UPDATE`, id, s.Cluster).Row().Scan(&status, &target, &raw); err != nil {
+		if err := upgradeRow(tx, id).Where("cluster_id = ?", s.Cluster).Clauses(forUpdate()).Select("status,release_digest,nodes").Row().Scan(&status, &target, &raw); err != nil {
 			return err
 		}
 		key := "rollback:" + id
@@ -687,7 +704,7 @@ func (s *Store) rollbackLocked(ctx context.Context, id, actor string) (Plan, err
 		}
 		var baseline string
 		var revision int64
-		if err := tx.Raw(`SELECT baseline,revision FROM updater.clusters WHERE cluster_id=? FOR UPDATE`, s.Cluster).Row().Scan(&baseline, &revision); err != nil {
+		if err := s.clusterRow(tx).Clauses(forUpdate()).Select("baseline,revision").Row().Scan(&baseline, &revision); err != nil {
 			return err
 		}
 		if target == baseline {
@@ -752,7 +769,7 @@ func (s *Store) rollbackLocked(ctx context.Context, id, actor string) (Plan, err
 		if err = upgradeRow(tx, id).Updates(map[string]any{"status": "superseded", "error": "", "updated_at": gorm.Expr("now()")}).Error; err != nil {
 			return err
 		}
-		if err = tx.Exec(`INSERT INTO updater.upgrades(id,cluster_id,release_digest,nodes,actor,idempotency_key,request_hash,strategy,source_digest) VALUES(?,?,?,?,?,?,?,?,(SELECT baseline FROM updater.clusters WHERE cluster_id=?))`, planID, s.Cluster, baseline, encoded, actor, key, fmt.Sprintf("%s:%d", baseline, revision), strategy, s.Cluster).Error; err != nil {
+		if err = s.createUpgrade(tx, planID, baseline, encoded, actor, key, fmt.Sprintf("%s:%d", baseline, revision), strategy); err != nil {
 			return err
 		}
 		if err = s.clusterRow(tx).Update("revision", gorm.Expr("revision+1")).Error; err != nil {
@@ -889,7 +906,8 @@ func (s *Store) ValidateNode(ctx context.Context, node, boot string) error {
 		return nil
 	}
 	var ok bool
-	err := s.db(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM updater.nodes WHERE cluster_id=? AND node_id=? AND shell_boot_id=? AND enabled AND peer_protocol=? AND strategy=?)`, s.Cluster, node, boot, PeerProtocol, PrimaryFirst).Row().Scan(&ok)
+	db := s.db(ctx)
+	err := existsQuery(db, s.nodeRow(db, node).Where("shell_boot_id = ? AND enabled AND peer_protocol = ? AND strategy = ?", boot, PeerProtocol, PrimaryFirst)).Row().Scan(&ok)
 	if err != nil {
 		return err
 	}
@@ -989,7 +1007,8 @@ func (s *Store) AuthorizePeer(ctx context.Context, source, boot, target, scope, 
 	if scope != "core-artifact" {
 		return fmt.Errorf("%w: peer scope is not permitted", peer.ErrForbidden)
 	}
-	rows, err := s.db(ctx).Raw(`SELECT digest,manifest FROM updater.releases WHERE digest=? OR digest IN (SELECT release_digest FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused'))`, baseline, s.Cluster).Rows()
+	db := s.db(ctx)
+	rows, err := db.Table("updater.releases").Select("digest,manifest").Where("digest = ? OR digest IN (?)", baseline, s.activeUpgrade(db).Select("release_digest")).Rows()
 	if err != nil {
 		return peer.ErrUnavailable
 	}
@@ -1136,33 +1155,42 @@ func (s *Store) RecordStop(ctx context.Context, n Node) error {
 		}
 		step = &x
 	}
-	res := s.db(ctx).Exec(`INSERT INTO updater.stop_confirmations(cluster_id,node_id,shell_boot_id,upgrade_id,step_id,core_boot_id) SELECT ?,?,?,?,?,core_boot_id FROM updater.nodes WHERE cluster_id=? AND node_id=? AND shell_boot_id=? AND stopped ON CONFLICT(cluster_id,node_id,upgrade_id) DO UPDATE SET shell_boot_id=EXCLUDED.shell_boot_id,step_id=EXCLUDED.step_id,core_boot_id=EXCLUDED.core_boot_id,confirmed_at=now()`, s.Cluster, n.ID, n.ShellBootID, id, step, s.Cluster, n.ID, n.ShellBootID)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected != 1 {
+	// The confirmation names the core boot the node reports for this shell
+	// boot while it is stopped; a node that restarted since confirms nothing.
+	var core string
+	err = s.nodeRow(s.db(ctx), n.ID).Where("shell_boot_id = ? AND stopped", n.ShellBootID).Select("core_boot_id").Row().Scan(&core)
+	if gormpg.IsNoRows(err) {
 		return errors.New("stop confirmation identity changed")
 	}
-	return nil
+	if err != nil {
+		return err
+	}
+	set := append(clause.AssignmentColumns([]string{"shell_boot_id", "step_id", "core_boot_id"}), clause.Assignment{Column: clause.Column{Name: "confirmed_at"}, Value: gorm.Expr("now()")})
+	return s.db(ctx).Clauses(clause.OnConflict{Columns: columns("cluster_id", "node_id", "upgrade_id"), DoUpdates: set}).
+		Create(&stopConfirmation{ClusterID: s.Cluster, NodeID: n.ID, ShellBootID: n.ShellBootID, UpgradeID: id, StepID: step, CoreBootID: core}).Error
 }
 func (s *Store) PluginMutationBlockers(ctx context.Context) ([]string, error) {
-	checks := []struct{ table, query string }{
-		{"plugin_rollouts", `SELECT EXISTS(SELECT 1 FROM plugin_rollouts WHERE phase IN ('preparing','activating'))`},
-		{"plugin_uninstalls", `SELECT EXISTS(SELECT 1 FROM plugin_uninstalls)`},
-		{"plugin_rollout_cleanup", `SELECT EXISTS(SELECT 1 FROM plugin_rollout_cleanup WHERE state='cleanup_pending')`},
+	db := s.db(ctx)
+	checks := []struct {
+		table string
+		busy  *gorm.DB
+	}{
+		{"public.plugin_rollouts", db.Table("plugin_rollouts").Where("phase IN ('preparing','activating')")},
+		{"public.plugin_uninstalls", db.Table("plugin_uninstalls")},
+		{"public.plugin_rollout_cleanup", db.Table("plugin_rollout_cleanup").Where("state = 'cleanup_pending'")},
 		// Pre-0021 development cores kept the barrier in the outcome table.
-		{"plugin_rollout_nodes", `SELECT EXISTS(SELECT 1 FROM plugin_rollout_nodes WHERE state='cleanup_pending')`},
+		{"public.plugin_rollout_nodes", db.Table("plugin_rollout_nodes").Where("state = 'cleanup_pending'")},
 	}
 	for _, c := range checks {
-		var present bool
-		if err := s.db(ctx).Raw(`SELECT to_regclass(?) IS NOT NULL`, "public."+c.table).Row().Scan(&present); err != nil {
+		present, err := relationExists(db, c.table)
+		if err != nil {
 			return nil, err
 		}
 		if !present {
 			continue
 		}
 		var busy bool
-		if err := s.db(ctx).Raw(c.query).Row().Scan(&busy); err != nil {
+		if err := existsQuery(db, c.busy).Row().Scan(&busy); err != nil {
 			return nil, err
 		}
 		if busy {
@@ -1174,7 +1202,9 @@ func (s *Store) PluginMutationBlockers(ctx context.Context) ([]string, error) {
 func (s *Store) EnableNode(ctx context.Context, node string) error {
 	return s.WithRegistration(ctx, node, func(ctx context.Context) error {
 		return s.withChange(ctx, func(ctx context.Context) error {
-			res := s.db(ctx).Exec(`UPDATE updater.nodes SET enabled=true,ready=false,stopped=false,mode='maintenance',joining_plan=COALESCE((SELECT id FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused')),'') WHERE cluster_id=? AND node_id=?`, s.Cluster, s.Cluster, node)
+			db := s.db(ctx)
+			res := s.nodeRow(db, node).Updates(map[string]any{"enabled": true, "ready": false, "stopped": false, "mode": "maintenance",
+				"joining_plan": gorm.Expr("COALESCE((?),'')", s.activeUpgrade(db).Select("id"))})
 			if res.Error != nil {
 				return res.Error
 			}
@@ -1195,23 +1225,30 @@ func (s *Store) ConfirmStoppedCore(ctx context.Context, node, shellBoot, coreBoo
 	}
 	return s.withTx(ctx, func(tx *gorm.DB) error {
 		var current bool
-		if err := tx.Raw(`SELECT shell_boot_id=? FROM updater.nodes WHERE cluster_id=? AND node_id=? FOR UPDATE`, shellBoot, s.Cluster, node).Row().Scan(&current); err != nil {
+		if err := s.nodeRow(tx, node).Clauses(forUpdate()).Select("shell_boot_id = ?", shellBoot).Row().Scan(&current); err != nil {
 			return err
 		}
 		if !current {
 			return ErrConflict
 		}
-		for _, item := range []struct{ table, sql string }{
-			{"plugin_runtime_nodes", `UPDATE plugin_runtime_nodes SET stopped=true,updated_at=now() WHERE boot_id=?`},
-			{"plugin_rollout_cleanup", `UPDATE plugin_rollout_cleanup SET state='cleaned',updated_at=now() WHERE boot_id=? AND state='cleanup_pending'`},
-			{"plugin_rollout_nodes", `UPDATE plugin_rollout_nodes SET state='cleaned',updated_at=now() WHERE boot_id=? AND state='cleanup_pending'`},
+		// The core's plugin runtime rows of its boot, in the tables its schema
+		// has: the runtimes stopped, the pending cleanups done.
+		cleaned := map[string]any{"state": "cleaned", "updated_at": gorm.Expr("now()")}
+		for _, item := range []struct {
+			table string
+			rows  *gorm.DB
+			set   map[string]any
+		}{
+			{"public.plugin_runtime_nodes", tx.Table("plugin_runtime_nodes").Where("boot_id = ?", coreBoot), map[string]any{"stopped": true, "updated_at": gorm.Expr("now()")}},
+			{"public.plugin_rollout_cleanup", tx.Table("plugin_rollout_cleanup").Where("boot_id = ? AND state = 'cleanup_pending'", coreBoot), cleaned},
+			{"public.plugin_rollout_nodes", tx.Table("plugin_rollout_nodes").Where("boot_id = ? AND state = 'cleanup_pending'", coreBoot), cleaned},
 		} {
-			var present bool
-			if err := tx.Raw(`SELECT to_regclass(?) IS NOT NULL`, "public."+item.table).Row().Scan(&present); err != nil {
+			present, err := relationExists(tx, item.table)
+			if err != nil {
 				return err
 			}
 			if present {
-				if err := tx.Exec(item.sql, coreBoot).Error; err != nil {
+				if err := item.rows.Updates(item.set).Error; err != nil {
 					return err
 				}
 			}
@@ -1221,34 +1258,30 @@ func (s *Store) ConfirmStoppedCore(ctx context.Context, node, shellBoot, coreBoo
 }
 
 func (s *Store) packageReferenced(ctx context.Context, sum string) (bool, error) {
-	var present, referenced bool
-	if err := s.db(ctx).Raw(`SELECT to_regclass('public.plugin_versions') IS NOT NULL`).Row().Scan(&present); err != nil || !present {
+	db := s.db(ctx)
+	if present, err := relationExists(db, "public.plugin_versions"); err != nil || !present {
 		return false, err
 	}
-	err := s.db(ctx).Raw(`SELECT EXISTS(SELECT 1 FROM plugin_versions WHERE package_sha256=?)`, sum).Row().Scan(&referenced)
+	var referenced bool
+	err := existsQuery(db, db.Table("plugin_versions").Where("package_sha256 = ?", sum)).Row().Scan(&referenced)
 	return referenced, err
 }
 
 // ReferencedPackages lists every plugin package digest a version names.
 func (s *Store) ReferencedPackages(ctx context.Context) (map[string]bool, error) {
 	out := map[string]bool{}
-	var present bool
-	if err := s.db(ctx).Raw(`SELECT to_regclass('public.plugin_versions') IS NOT NULL`).Row().Scan(&present); err != nil || !present {
+	db := s.db(ctx)
+	if present, err := relationExists(db, "public.plugin_versions"); err != nil || !present {
 		return out, err
 	}
-	rows, err := s.db(ctx).Raw(`SELECT DISTINCT lower(package_sha256) FROM plugin_versions`).Rows()
-	if err != nil {
+	var sums []string
+	if err := db.Table("plugin_versions").Distinct().Pluck("lower(package_sha256)", &sums).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var sum string
-		if err = rows.Scan(&sum); err != nil {
-			return nil, err
-		}
+	for _, sum := range sums {
 		out[sum] = true
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // PrimaryPeer reports whether self is the primary and the primary's peer URL.
@@ -1279,7 +1312,7 @@ func (s *Store) SetPrimary(ctx context.Context, node string) error {
 	return s.withChange(ctx, func(ctx context.Context) error {
 		if err := s.withTx(ctx, func(tx *gorm.DB) error {
 			var active bool
-			if err := tx.Raw(`SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused'))`, s.Cluster).Row().Scan(&active); err != nil {
+			if err := existsQuery(tx, s.activeUpgrade(tx)).Row().Scan(&active); err != nil {
 				return err
 			}
 			if active {
