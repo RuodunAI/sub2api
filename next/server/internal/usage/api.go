@@ -435,15 +435,15 @@ func parseFilter(c *gin.Context, self *int64, accounts bool) (store.Conds, error
 		}
 		f.And("u.client_ip = ?", ip.Unmap().String())
 	}
-	contains := []struct{ q, cond string }{
+	contains := []queryFilter{
 		{"model_contains", "u.model ILIKE ? ESCAPE E'\\\\'"},
 		{"api_key_name", "EXISTS (SELECT 1 FROM api_keys fk WHERE fk.id=u.api_key_id AND fk.name ILIKE ? ESCAPE E'\\\\')"},
 		{"group_name", "EXISTS (SELECT 1 FROM groups fg WHERE fg.id=u.group_id AND fg.name ILIKE ? ESCAPE E'\\\\')"},
 	}
 	if self == nil {
-		contains = append(contains, struct{ q, cond string }{"user_email", "EXISTS (SELECT 1 FROM users fu WHERE fu.id=u.user_id AND fu.email ILIKE ? ESCAPE E'\\\\')"})
+		contains = append(contains, queryFilter{"user_email", "EXISTS (SELECT 1 FROM users fu WHERE fu.id=u.user_id AND fu.email ILIKE ? ESCAPE E'\\\\')"})
 		if accounts {
-			contains = append(contains, struct{ q, cond string }{"account_name", "EXISTS (SELECT 1 FROM accounts fa WHERE fa.id=u.account_id AND fa.name ILIKE ? ESCAPE E'\\\\')"})
+			contains = append(contains, queryFilter{"account_name", "EXISTS (SELECT 1 FROM accounts fa WHERE fa.id=u.account_id AND fa.name ILIKE ? ESCAPE E'\\\\')"})
 		}
 		for _, name := range []string{"node_id", "upstream_model", "upstream_protocol"} {
 			if v := c.Query(name); v != "" {
@@ -481,9 +481,13 @@ var conversionFilters = map[string]string{
 	"lossy":       "(u.conversion->'lost' IS NOT NULL OR u.conversion->'response_lost' IS NOT NULL)",
 }
 
+// queryFilter is a condition the query parameter q sets: its value
+// takes the condition's ? placeholder.
+type queryFilter struct{ q, cond string }
+
 // addContainsFilters adds the ILIKE filters. Each value is trimmed, capped and
 // escaped for the pattern, so a user cannot smuggle wildcards.
-func addContainsFilters(c *gin.Context, f *store.Conds, contains []struct{ q, cond string }) error {
+func addContainsFilters(c *gin.Context, f *store.Conds, contains []queryFilter) error {
 	for _, x := range contains {
 		v := strings.TrimSpace(c.Query(x.q))
 		if v == "" {
@@ -501,7 +505,7 @@ func addContainsFilters(c *gin.Context, f *store.Conds, contains []struct{ q, co
 // inverted range.
 func addTimeRange(c *gin.Context, f *store.Conds) error {
 	var from time.Time
-	for _, x := range []struct{ q, cond string }{{"from", "u.created_at >= ?"}, {"to", "u.created_at < ?"}} {
+	for _, x := range []queryFilter{{"from", "u.created_at >= ?"}, {"to", "u.created_at < ?"}} {
 		v := c.Query(x.q)
 		if v == "" {
 			continue

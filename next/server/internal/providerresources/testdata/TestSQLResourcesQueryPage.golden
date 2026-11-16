@@ -1,5 +1,5 @@
 -- sql
-SELECT public_id,plugin_key,kind,remote_id,state,operation_id,user_id,group_id,account_id,principal_id,generation,bytes,metadata,created_at,expires_at,intent_hash FROM "provider_resources" WHERE user_id=$1 AND group_id=$2 AND plugin_key=$3 AND kind=$4 AND account_id=ANY($5::bigint[]) AND state='ready' AND (expires_at IS NULL OR expires_at>now()-($6 * interval '1 second')) AND public_id=ANY($7::text[]) AND (created_at,public_id)<($8,$9) ORDER BY created_at DESC,public_id DESC LIMIT $10
+SELECT public_id,plugin_key,kind,remote_id,state,operation_id,user_id,group_id,account_id,principal_id,generation,bytes,metadata,created_at,expires_at,intent_hash FROM "provider_resources" WHERE (user_id=$1 AND group_id=$2 AND plugin_key=$3 AND kind=$4 AND account_id=ANY($5::bigint[])) AND state='ready' AND ((expires_at IS NULL OR expires_at>now()-($6 * interval '1 second'))) AND public_id=ANY($7::text[]) AND (created_at,public_id)<($8,$9) ORDER BY "created_at" DESC,"public_id" DESC LIMIT $10
 -- vars
 $1 int64 7
 $2 int64 3

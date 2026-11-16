@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -78,11 +79,10 @@ func createPersonal(ctx context.Context, tx *gorm.DB, userID int64, copyFrom boo
 		OriginID int64 `gorm:"column:origin_id"`
 	}
 	g := store.G(ctx, tx)
-	err = g.Raw(`INSERT INTO segments (kind, user_id, origin_id, discount)
-		SELECT 'personal', u.id, s.id, CASE WHEN ? THEN s.discount ELSE 1 END
-		FROM users u JOIN segments s ON s.id = u.segment_id
-		WHERE u.id = ? AND u.deleted_at IS NULL AND s.kind = 'named'
-		RETURNING id, origin_id`, copyFrom, userID).Take(&created).Error
+	origin := g.Table("users u").Select("'personal', u.id, s.id, CASE WHEN ? THEN s.discount ELSE 1 END", copyFrom).
+		Joins("JOIN segments s ON s.id = u.segment_id").Where("u.id = ? AND u.deleted_at IS NULL AND s.kind = 'named'", userID)
+	err = store.InsertSelectReturning(g, "segments", []string{"kind", "user_id", "origin_id", "discount"}, origin,
+		clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "origin_id"}}}).Take(&created).Error
 	if store.IsNoRows(err) || store.IsUniqueViolation(err, "segments_user_uq") {
 		return 0, already
 	}
@@ -107,13 +107,14 @@ func createPersonal(ctx context.Context, tx *gorm.DB, userID int64, copyFrom boo
 // grants, rate overrides and model prices. The two are unrelated afterwards.
 func copySettings(ctx context.Context, tx *gorm.DB, from, to int64) error {
 	g := store.G(ctx, tx)
-	if err := g.Exec(`INSERT INTO segment_groups (segment_id, group_id, granted, rate_override)
-		SELECT ?::bigint, group_id, granted, rate_override FROM segment_groups WHERE segment_id = ?`, to, from).Error; err != nil {
+	pairs := g.Model(&model.SegmentGroup{}).Select("?::bigint, group_id, granted, rate_override", to).Where("segment_id = ?", from)
+	if err := store.InsertSelect(g, "segment_groups", []string{"segment_id", "group_id", "granted", "rate_override"}, pairs).Error; err != nil {
 		return err
 	}
-	return g.Exec(`INSERT INTO price_rules (group_id, segment_id, model, kind, multiplier, mode, config, expression, expr_hash, updated_by)
-		SELECT group_id, ?::bigint, model, kind, multiplier, mode, config, expression, expr_hash, updated_by
-		FROM price_rules WHERE segment_id = ?`, to, from).Error
+	rules := g.Model(&model.PriceRule{}).Select("group_id, ?::bigint, model, kind, multiplier, mode, config, expression, expr_hash, updated_by", to).
+		Where("segment_id = ?", from)
+	return store.InsertSelect(g, "price_rules", []string{"group_id", "segment_id", "model", "kind", "multiplier", "mode", "config",
+		"expression", "expr_hash", "updated_by"}, rules).Error
 }
 
 // removePersonal moves a personal user back to a named segment (?to=, the

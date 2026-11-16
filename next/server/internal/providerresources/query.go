@@ -3,10 +3,10 @@ package providerresources
 import (
 	"context"
 	"slices"
-	"strings"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -14,40 +14,39 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-func queryFilter(owner core.ResourceOwner, q core.ResourceQuery) (string, []any, error) {
+func queryFilter(owner core.ResourceOwner, q core.ResourceQuery) (store.Conds, error) {
 	if !validOwner(owner) || !bounded(q.PluginKey) || !bounded(q.Kind) || q.Limit < 1 || q.Limit > 1000 || len(q.IDs) > 100 || (q.BeforeID != "" && q.AfterID != "") {
-		return "", nil, core.ErrInvalidArgument
+		return nil, core.ErrInvalidArgument
 	}
 	for _, id := range append(slices.Clone(q.IDs), q.BeforeID, q.AfterID) {
 		if id != "" && !bounded(id) {
-			return "", nil, core.ErrInvalidArgument
+			return nil, core.ErrInvalidArgument
 		}
 	}
 	for _, id := range q.AccountIDs {
 		if id <= 0 {
-			return "", nil, core.ErrInvalidArgument
+			return nil, core.ErrInvalidArgument
 		}
 	}
-	args := []any{owner.UserID, owner.GroupID, q.PluginKey, q.Kind, store.Int64s(q.AccountIDs)}
-	where := `user_id=? AND group_id=? AND plugin_key=? AND kind=? AND account_id=ANY(?::bigint[])`
 	if q.ExpiredWithin < 0 || q.ExpiredWithin > 365*24*time.Hour || (q.UnexpiredOnly && q.ExpiredWithin > 0) {
-		return "", nil, core.ErrInvalidArgument
+		return nil, core.ErrInvalidArgument
 	}
+	var conds store.Conds
+	conds.And(`user_id=? AND group_id=? AND plugin_key=? AND kind=? AND account_id=ANY(?::bigint[])`,
+		owner.UserID, owner.GroupID, q.PluginKey, q.Kind, store.Int64s(q.AccountIDs))
 	if q.ReadyOnly {
-		where += ` AND state='ready'`
+		conds.And(`state='ready'`)
 	}
 	if q.UnexpiredOnly {
-		where += ` AND (expires_at IS NULL OR expires_at>now())`
+		conds.And(`(expires_at IS NULL OR expires_at>now())`)
 	}
 	if q.ExpiredWithin > 0 {
-		args = append(args, q.ExpiredWithin.Seconds())
-		where += ` AND (expires_at IS NULL OR expires_at>now()-(? * interval '1 second'))`
+		conds.And(`(expires_at IS NULL OR expires_at>now()-(? * interval '1 second'))`, q.ExpiredWithin.Seconds())
 	}
 	if len(q.IDs) > 0 {
-		args = append(args, store.Strings(q.IDs))
-		where += ` AND public_id=ANY(?::text[])`
+		conds.And(`public_id=ANY(?::text[])`, store.Strings(q.IDs))
 	}
-	return where, args, nil
+	return conds, nil
 }
 
 // Query filters inside SQL before pagination. A read-only repeatable snapshot
@@ -57,21 +56,18 @@ func (s *Service) Query(ctx context.Context, owner core.ResourceOwner, q core.Re
 	return s.query(ctx, owner, q, false)
 }
 func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.ResourceQuery, skillVersions bool) (out core.ResourcePage, err error) {
-	where, args, err := queryFilter(owner, q)
+	conds, err := queryFilter(owner, q)
 	if err != nil {
 		return out, err
 	}
 	if skillVersions {
-		where += ` AND EXISTS(SELECT 1 FROM provider_skill_versions v WHERE v.parent_id=provider_resources.public_id AND v.state='ready')`
+		conds.And(`EXISTS(SELECT 1 FROM provider_skill_versions v WHERE v.parent_id=provider_resources.public_id AND v.state='ready')`)
 	}
 	out.Items = []core.ProviderResource{}
 	if len(q.AccountIDs) == 0 {
 		return out, nil
 	}
-	direction := "DESC"
-	if q.BeforeID != "" {
-		direction = "ASC"
-	}
+	backwards := q.BeforeID != "" // ascending, from the cursor
 	var rows []model.ProviderResource
 	err = s.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
@@ -80,21 +76,20 @@ func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.Re
 			cursor = q.BeforeID
 		}
 		if cursor != "" {
-			r, _, e := read(g, where+` AND public_id=?`, append(slices.Clone(args), cursor)...)
+			r, _, e := read(g.Scopes(conds.Scope()), `public_id=?`, cursor)
 			if store.IsNoRows(e) {
 				return core.ErrNotFound
 			}
 			if e != nil {
 				return e
 			}
-			op := "<"
-			if q.BeforeID != "" {
-				op = ">"
+			after := `(created_at,public_id)<(?,?)`
+			if backwards {
+				after = `(created_at,public_id)>(?,?)`
 			}
-			args = append(args, r.CreatedAt, r.PublicID)
-			where += ` AND (created_at,public_id)` + op + `(?,?)`
+			conds.And(after, r.CreatedAt, r.PublicID)
 		}
-		return page(g, where, args, direction, q.Limit+1).Find(&rows).Error
+		return page(g, conds, backwards, q.Limit+1).Find(&rows).Error
 	})
 	if err != nil {
 		return out, err
@@ -104,14 +99,15 @@ func (s *Service) query(ctx context.Context, owner core.ResourceOwner, q core.Re
 	if out.HasMore {
 		out.Items = out.Items[:q.Limit]
 	}
-	if strings.EqualFold(direction, "ASC") {
+	if backwards {
 		slices.Reverse(out.Items)
 	}
 	return out, nil
 }
 
-// page selects up to limit resources that where (with args) keeps, in
-// creation order by direction (ASC or DESC), public IDs breaking ties.
-func page(db *gorm.DB, where string, args []any, direction string, limit int) *gorm.DB {
-	return resources(db).Where(where, args...).Order("created_at " + direction + ",public_id " + direction).Limit(limit)
+// page selects up to limit resources that conds keep, newest first (oldest
+// first when asc), public IDs breaking ties.
+func page(db *gorm.DB, conds store.Conds, asc bool, limit int) *gorm.DB {
+	return resources(db).Scopes(conds.Scope()).Order(clause.OrderBy{Columns: []clause.OrderByColumn{
+		{Column: clause.Column{Name: "created_at"}, Desc: !asc}, {Column: clause.Column{Name: "public_id"}, Desc: !asc}}}).Limit(limit)
 }

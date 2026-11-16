@@ -93,17 +93,9 @@ func (s *Service) normalize(in core.ResourceIntent) (core.ResourceIntent, string
 }
 
 func lockOwner(ctx context.Context, tx *gorm.DB, owner core.ResourceOwner) error {
-	if err := store.RequireTx(tx); err != nil {
-		return err
-	}
 	// A transaction-scoped lock serializes reservations/finalization for this quota.
 	raw, _ := json.Marshal(owner)
-	return advisoryLock(store.G(ctx, tx), "provider-resources:"+string(raw)).Error
-}
-
-// advisoryLock takes the transaction-scoped advisory lock of key.
-func advisoryLock(db *gorm.DB, key string) *gorm.DB {
-	return db.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, key)
+	return store.XactLock(ctx, tx, "provider-resources:"+string(raw))
 }
 
 func (s *Service) quota(ctx context.Context, tx *gorm.DB, owner core.ResourceOwner, extraCount int, extraBytes int64) error {
@@ -129,10 +121,12 @@ func (s *Service) quotaAt(ctx context.Context, tx *gorm.DB, owner core.ResourceO
 // occupied counts the resources and skill versions of owner that occupy its
 // quota at at, and sums their bytes.
 func occupied(db *gorm.DB, owner core.ResourceOwner, at time.Time) *gorm.DB {
-	return db.Raw(`SELECT count(*),COALESCE(sum(bytes),0) FROM (
- SELECT bytes FROM provider_resources WHERE user_id=@user AND group_id=@group AND state NOT IN ('deleted','failed') AND NOT(kind='container' AND expires_at IS NOT NULL AND expires_at<=@at)
- UNION ALL SELECT v.bytes FROM provider_skill_versions v JOIN provider_resources p ON p.public_id=v.parent_id WHERE p.user_id=@user AND p.group_id=@group AND p.state NOT IN ('deleted','failed') AND v.state NOT IN ('deleted','failed')
- ) occupied`, map[string]any{"user": owner.UserID, "group": owner.GroupID, "at": at})
+	resources := db.Model(&model.ProviderResource{}).Select("bytes").
+		Where("user_id = ? AND group_id = ? AND state NOT IN ('deleted','failed')", owner.UserID, owner.GroupID).
+		Where("NOT (kind = 'container' AND expires_at IS NOT NULL AND expires_at <= ?)", at)
+	versions := db.Table("provider_skill_versions v").Select("v.bytes").Joins("JOIN provider_resources p ON p.public_id = v.parent_id").
+		Where("p.user_id = ? AND p.group_id = ? AND p.state NOT IN ('deleted','failed') AND v.state NOT IN ('deleted','failed')", owner.UserID, owner.GroupID)
+	return db.Table("(?) occupied", db.Raw("(?) UNION ALL (?)", resources, versions)).Select("count(*), COALESCE(sum(bytes),0)")
 }
 
 func (s *Service) Reserve(ctx context.Context, input core.ResourceIntent) (out core.ResourceReservation, err error) {

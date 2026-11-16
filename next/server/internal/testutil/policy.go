@@ -3,6 +3,7 @@ package testutil
 import (
 	"testing"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
@@ -81,26 +82,31 @@ func GrantKeys(tb testing.TB, db *store.DB, role string) []string {
 	return keys
 }
 
-// orphansSQL selects, as "<ptype> <v0> <v1> <v2>" sorted, the casbin_rule
-// rows naming a user, role or permission that does not exist (the mapping
-// of CONTRACTS §99.1): what a delete path that does not clear its rows
-// leaves behind.
-var orphansSQL = `SELECT concat_ws(' ', cr.ptype, cr.v0, cr.v1, NULLIF(cr.v2, '')) FROM ` + casbinrule.Table + ` cr
-WHERE (cr.ptype = 'p' AND (
+// orphansSQL selects, as orphanKey sorted, the casbin_rule rows orphaned
+// selects, for a database/sql connection.
+const orphansSQL = `SELECT ` + orphanKey + ` FROM ` + casbinrule.Table + ` cr WHERE ` + orphaned + ` ORDER BY 1`
+
+// orphanKey is a casbin_rule row (cr) as "<ptype> <v0> <v1> <v2>".
+const orphanKey = `concat_ws(' ', cr.ptype, cr.v0, cr.v1, NULLIF(cr.v2, ''))`
+
+// orphaned holds for the casbin_rule rows (cr) naming a user, role or
+// permission that does not exist (the mapping of CONTRACTS §99.1): what a
+// delete path that does not clear its rows leaves behind.
+const orphaned = `(cr.ptype = 'p' AND (
         NOT EXISTS (SELECT 1 FROM roles r WHERE 'r:' || r.key = cr.v0)
         OR (cr.v1 <> '` + casbinrule.SuperKey + `' AND NOT EXISTS (SELECT 1 FROM permissions p WHERE p.key = cr.v1))))
    OR (cr.ptype = 'g' AND (
         NOT EXISTS (SELECT 1 FROM users u WHERE 'u:' || u.id = cr.v0)
-        OR NOT EXISTS (SELECT 1 FROM roles r WHERE 'r:' || r.key = cr.v1)))
-ORDER BY 1`
+        OR NOT EXISTS (SELECT 1 FROM roles r WHERE 'r:' || r.key = cr.v1)))`
 
 // PolicyOrphans returns the casbin_rule rows naming a user, role or
-// permission that does not exist (orphansSQL), sorted; DB checks it after
-// every test.
+// permission that does not exist (orphaned), as orphanKey sorted; DB
+// checks it after every test.
 func PolicyOrphans(tb testing.TB, db *store.DB) []string {
 	tb.Helper()
 	out := []string{}
-	if err := db.Gorm.Raw(orphansSQL).Scan(&out).Error; err != nil {
+	if err := db.Gorm.Table(casbinrule.Table + " cr").Select(orphanKey + " AS o").
+		Where(orphaned).Order("o").Scan(&out).Error; err != nil {
 		tb.Fatal(err)
 	}
 	return out
@@ -110,7 +116,7 @@ func PolicyOrphans(tb testing.TB, db *store.DB) []string {
 // the caches read again what a fixture changed.
 func BumpAuthz(tb testing.TB, db *store.DB) {
 	tb.Helper()
-	if err := db.Gorm.Exec(`UPDATE authz_meta SET version = version + 1 WHERE id = 1`).Error; err != nil {
+	if err := db.Gorm.Model(&model.AuthzMeta{}).Where("id = 1").Update("version", gorm.Expr("version + 1")).Error; err != nil {
 		tb.Fatal(err)
 	}
 }

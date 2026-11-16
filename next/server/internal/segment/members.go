@@ -2,6 +2,7 @@ package segment
 
 import (
 	"context"
+	"slices"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -60,18 +61,18 @@ func (s *Service) addMembers(c *gin.Context) {
 // requireUsers fails with the field error of the first id that is not a
 // user; a deleted user is none.
 func requireUsers(ctx context.Context, q *gorm.DB, ids []int64) error {
-	var unknown int64
-	err := store.G(ctx, q).Raw(`SELECT i.id FROM unnest(?::bigint[]) WITH ORDINALITY AS i(id, n)
-		WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = i.id AND u.deleted_at IS NULL)
-		ORDER BY i.n LIMIT 1`, store.Int64s(ids)).Take(&unknown).Error
-	if store.IsNoRows(err) {
-		return nil
-	}
-	if err != nil {
+	var live []int64
+	if err := store.G(ctx, q).Model(&model.User{}).Where("id = ANY(?) AND deleted_at IS NULL", store.Int64s(ids)).
+		Pluck("id", &live).Error; err != nil {
 		return err
 	}
-	id := strconv.FormatInt(unknown, 10)
-	return core.InvalidFields(fieldError(ctx, "user_ids", "not_found", "unknown user "+id, "用户 "+id+" 不存在"))
+	for _, unknown := range ids {
+		if !slices.Contains(live, unknown) {
+			id := strconv.FormatInt(unknown, 10)
+			return core.InvalidFields(fieldError(ctx, "user_ids", "not_found", "unknown user "+id, "用户 "+id+" 不存在"))
+		}
+	}
+	return nil
 }
 
 // moveUsers puts the users into the named segment to and deletes the

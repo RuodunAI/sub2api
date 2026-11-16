@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -306,13 +307,17 @@ func (s *Service) savePairs(ctx context.Context, items []pairInput) error {
 // savePair writes the item: the pair is created, or what the item sets
 // replaces what the pair has.
 func savePair(db *gorm.DB, it pairInput) *gorm.DB {
-	return db.Exec(`INSERT INTO segment_groups (segment_id, group_id, granted, rate_override)
-		VALUES (?, ?, COALESCE(?, false), ?::numeric)
-		ON CONFLICT (segment_id, group_id) DO UPDATE SET
-			granted = COALESCE(?, segment_groups.granted),
-			rate_override = CASE WHEN ? THEN ?::numeric ELSE segment_groups.rate_override END,
-			updated_at = now()`, it.SegmentID, it.GroupID, it.Granted, it.RateOverride.Value,
-		it.Granted, it.RateOverride.Set, it.RateOverride.Value)
+	// A map on the bare table: every column is written as given, and
+	// nothing is read back.
+	return db.Table(model.SegmentGroup{}.TableName()).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "segment_id"}, {Name: "group_id"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"granted":       gorm.Expr("COALESCE(?, segment_groups.granted)", it.Granted),
+			"rate_override": gorm.Expr("CASE WHEN ? THEN ?::numeric ELSE segment_groups.rate_override END", it.RateOverride.Set, it.RateOverride.Value),
+			"updated_at":    gorm.Expr("now()"),
+		}),
+	}).Create(map[string]any{"segment_id": it.SegmentID, "group_id": it.GroupID,
+		"granted": gorm.Expr("COALESCE(?, false)", it.Granted), "rate_override": gorm.Expr("?::numeric", it.RateOverride.Value)})
 }
 
 // lockPairs returns the segments and the groups the items are about, locked

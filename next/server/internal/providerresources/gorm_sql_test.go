@@ -52,22 +52,17 @@ func TestSQLResourcesContextQuota(t *testing.T) {
 	})
 }
 
-func TestSQLResourcesAdvisoryLock(t *testing.T) {
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return advisoryLock(db, "provider-resources:{}") })
-}
-
 // A page after a cursor, with every filter of queryFilter.
 func TestSQLResourcesQueryPage(t *testing.T) {
-	where, args, err := queryFilter(snapOwner, core.ResourceQuery{PluginKey: "ccgateway", Kind: "file", AccountIDs: []int64{11, 12},
+	conds, err := queryFilter(snapOwner, core.ResourceQuery{PluginKey: "ccgateway", Kind: "file", AccountIDs: []int64{11, 12},
 		IDs: []string{"s2res_1"}, Limit: 20, ReadyOnly: true, ExpiredWithin: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
-	where += ` AND (created_at,public_id)<(?,?)`
-	args = append(args, snapTime, "s2res_9")
+	conds.And(`(created_at,public_id)<(?,?)`, snapTime, "s2res_9")
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var rows []model.ProviderResource
-		return page(db, where, args, "DESC", 21).Find(&rows)
+		return page(db, conds, false, 21).Find(&rows)
 	})
 }
 

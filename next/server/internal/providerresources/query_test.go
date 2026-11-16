@@ -19,7 +19,7 @@ func TestResourceQueryValidation(t *testing.T) {
 	}
 	q.BeforeID = "one"
 	q.AfterID = "two"
-	if _, _, e := queryFilter(owner, q); e == nil {
+	if _, e := queryFilter(owner, q); e == nil {
 		t.Fatal("conflicting cursors accepted")
 	}
 }

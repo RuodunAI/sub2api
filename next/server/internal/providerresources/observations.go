@@ -28,10 +28,7 @@ func remoteKey(plugin, kind string, binding core.ResourceBinding, id string) str
 	return hex.EncodeToString(hash[:])
 }
 func lockRemote(ctx context.Context, tx *gorm.DB, plugin, kind string, binding core.ResourceBinding, id string) error {
-	if err := store.RequireTx(tx); err != nil {
-		return err
-	}
-	return advisoryLock(store.G(ctx, tx), "provider-resource-identity:"+remoteKey(plugin, kind, binding, id)).Error
+	return store.XactLock(ctx, tx, "provider-resource-identity:"+remoteKey(plugin, kind, binding, id))
 }
 func lookupRemote(ctx context.Context, q *gorm.DB, plugin, kind string, binding core.ResourceBinding, id string) ([]core.ProviderResource, error) {
 	var rows []model.ProviderResource

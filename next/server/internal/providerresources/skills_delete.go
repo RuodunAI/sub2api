@@ -63,7 +63,8 @@ func (s *Service) BeginSkillDelete(ctx context.Context, owner core.ResourceOwner
 // busyVersions reads whether a version of the skill parentID has an
 // unfinished mutation.
 func busyVersions(db *gorm.DB, parentID string) *gorm.DB {
-	return db.Raw(`SELECT EXISTS(SELECT 1 FROM provider_skill_versions WHERE parent_id=? AND state IN('pending','uncertain','deleting','delete_uncertain'))`, parentID)
+	return store.ExistsQuery(db, db.Model(&model.ProviderSkillVersion{}).
+		Where("parent_id = ? AND state IN ('pending','uncertain','deleting','delete_uncertain')", parentID))
 }
 
 func (s *Service) FinishSkillDelete(ctx context.Context, in core.SkillDeleteCompletion) error {
