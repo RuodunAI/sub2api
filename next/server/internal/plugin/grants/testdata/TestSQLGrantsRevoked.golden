@@ -1,11 +1,5 @@
 -- sql
-SELECT permission FROM (
-		SELECT DISTINCT ON (permission) permission, status FROM (
-			SELECT permission, status, granted_at FROM plugin_permission_grants WHERE plugin_key = $1
-			UNION ALL
-			SELECT permission, status, granted_at FROM plugin_staged_grants WHERE plugin_key = $2) d
-		ORDER BY permission, granted_at DESC, status = 'revoked' DESC) latest
-		WHERE status = 'revoked'
+SELECT permission FROM (SELECT DISTINCT ON (permission) permission, status FROM ((SELECT permission, status, granted_at FROM "plugin_permission_grants" WHERE plugin_key = $1) UNION ALL (SELECT permission, status, granted_at FROM "plugin_staged_grants" WHERE plugin_key = $2)) AS d ORDER BY permission, granted_at DESC, status = 'revoked' DESC) AS latest WHERE status = 'revoked'
 -- vars
 $1 string "demo"
 $2 string "demo"

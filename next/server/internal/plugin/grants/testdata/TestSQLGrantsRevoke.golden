@@ -1,13 +1,15 @@
 -- sql
-WITH active AS (UPDATE plugin_permission_grants SET status = 'revoked', granted_by = $1, granted_at = now()
-			WHERE plugin_key = $2 AND permission = $3 AND status = 'granted' RETURNING 1),
-		staged AS (UPDATE plugin_staged_grants SET status = 'revoked', granted_by = $4, granted_at = now()
-			WHERE plugin_key = $5 AND permission = $6 AND status = 'granted' RETURNING 1)
-		SELECT (SELECT count(*) FROM active) + (SELECT count(*) FROM staged)
+UPDATE "plugin_permission_grants" SET "granted_at"=now(),"granted_by"=$1,"status"=$2 WHERE plugin_key = $3 AND permission = $4 AND status = 'granted'
 -- vars
 $1 *int64 7
-$2 string "demo"
-$3 string "kv"
-$4 *int64 7
-$5 string "demo"
-$6 string "kv"
+$2 string "revoked"
+$3 string "demo"
+$4 string "kv"
+
+-- sql
+UPDATE "plugin_staged_grants" SET "granted_at"=now(),"granted_by"=$1,"status"=$2 WHERE plugin_key = $3 AND permission = $4 AND status = 'granted'
+-- vars
+$1 *int64 7
+$2 string "revoked"
+$3 string "demo"
+$4 string "kv"

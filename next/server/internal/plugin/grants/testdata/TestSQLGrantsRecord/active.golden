@@ -1,14 +1,10 @@
 -- sql
-INSERT INTO plugin_permission_grants (plugin_key, plugin_version, manifest_hash, granted_by, permission, scope, status, granted_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now())
-		ON CONFLICT (plugin_key, permission) DO UPDATE SET
-		  scope = EXCLUDED.scope, status = EXCLUDED.status, plugin_version = EXCLUDED.plugin_version,
-		  manifest_hash = EXCLUDED.manifest_hash, granted_by = EXCLUDED.granted_by, granted_at = now()
+INSERT INTO "plugin_permission_grants" ("granted_at","granted_by","manifest_hash","permission","plugin_key","plugin_version","scope","status") VALUES (now(),$1,$2,$3,$4,$5,$6,$7) ON CONFLICT ("plugin_key","permission") DO UPDATE SET "scope"="excluded"."scope","status"="excluded"."status","plugin_version"="excluded"."plugin_version","manifest_hash"="excluded"."manifest_hash","granted_by"="excluded"."granted_by","granted_at"=now()
 -- vars
-$1 string "demo"
-$2 string "1.2.0"
-$3 string "hash"
-$4 *int64 7
-$5 string "kv"
+$1 *int64 7
+$2 string "hash"
+$3 string "kv"
+$4 string "demo"
+$5 string "1.2.0"
 $6 []uint8 [123 34 112 114 101 102 105 120 34 58 34 97 34 125]
 $7 string "granted"

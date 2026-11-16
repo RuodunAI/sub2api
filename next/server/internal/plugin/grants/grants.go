@@ -10,9 +10,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"slices"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -21,29 +22,26 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// VersionRows is a FROM item (alias g) of the grant rows an instance of
-// key@version ($1, $2) runs with, in the columns of plugin_permission_grants
-// a reader needs: the set staged for that version when there is one (it is
-// complete), else the plugin's grants.
-const VersionRows = `(
-	SELECT permission, scope, status, version AS plugin_version, granted_by, granted_at
-	FROM plugin_staged_grants WHERE plugin_key = $1 AND version = $2
-	UNION ALL
-	SELECT permission, scope, status, plugin_version, granted_by, granted_at
-	FROM plugin_permission_grants WHERE plugin_key = $1
-	  AND NOT EXISTS (SELECT 1 FROM plugin_staged_grants WHERE plugin_key = $1 AND version = $2)) g`
+// versionGrants selects (as g) the grant rows an instance of key@version
+// runs with, in the columns of plugin_permission_grants a reader needs
+// (permission, scope, status, plugin_version, granted_by, granted_at): the
+// set staged for that version when there is one (it is complete), else the
+// plugin's grants.
+func versionGrants(db *gorm.DB, key, version string) *gorm.DB {
+	staged := func() *gorm.DB {
+		return db.Model(&model.PluginStagedGrant{}).Where("plugin_key = ? AND version = ?", key, version)
+	}
+	plugin := db.Model(&model.PluginPermissionGrant{}).Select("permission, scope, status, plugin_version, granted_by, granted_at").
+		Where("plugin_key = ? AND NOT EXISTS (?)", key, staged().Select("1"))
+	return db.Table("((?) UNION ALL (?)) AS g",
+		staged().Select("permission, scope, status, version AS plugin_version, granted_by, granted_at"), plugin)
+}
 
-// versionRows is VersionRows for GORM, which numbers the placeholders
-// itself: the parameters are named (@key, @version) since each appears
-// more than once. It is derived so that the two forms cannot drift apart.
-var versionRows = strings.NewReplacer("$1", "@key", "$2", "@version").Replace(VersionRows)
-
-// VersionGrantsQuery selects the grant rows key@version runs with (see
-// VersionRows), in the columns permission, scope, status, plugin_version,
-// granted_by and granted_at: the GORM form of reading VersionRows whole.
+// VersionGrantsQuery selects the grant rows key@version runs with, in the
+// columns permission, scope, status, plugin_version, granted_by and
+// granted_at.
 func VersionGrantsQuery(db *gorm.DB, key, version string) *gorm.DB {
-	return db.Raw(`SELECT permission, scope, status, plugin_version, granted_by, granted_at FROM `+versionRows,
-		map[string]any{"key": key, "version": version})
+	return versionGrants(db, key, version).Select("permission, scope, status, plugin_version, granted_by, granted_at")
 }
 
 // scopeRow is a (permission, scope) row of the grant tables.
@@ -80,36 +78,32 @@ func Granted(ctx context.Context, q *gorm.DB, key, version string, declared []ma
 // grantedRows selects the (permission, scope) rows key@version is granted among
 // the permissions ids.
 func grantedRows(db *gorm.DB, key, version string, ids []string) *gorm.DB {
-	return db.Raw(`SELECT permission, scope FROM `+versionRows+`
-		WHERE status = 'granted' AND permission = ANY(@ids)`,
-		map[string]any{"key": key, "version": version, "ids": store.Strings(ids)})
+	return versionGrants(db, key, version).Select("permission, scope").
+		Where("status = 'granted' AND permission = ANY(?)", store.Strings(ids))
 }
 
 // Holds reports whether key@version is granted permission now, with exactly
 // scope unless it is nil: the per-call check behind an instance's cached
 // grants, and the rollout's check of db.schema before migrating. Every
-// HostService call that needs a permission runs it, so it is positional Raw
-// SQL scanned through Row, the GORM form that allocates least
+// HostService call that needs a permission runs it
 // (BenchmarkHotGrantHolds, gormtest/BASELINE.md).
 func Holds(ctx context.Context, q *gorm.DB, key, version, permission string, scope []byte) (bool, error) {
-	var ok bool
-	err := holdsQuery(store.G(ctx, q), key, version, permission, scope).Row().Scan(&ok)
-	return ok, err
+	var one int
+	err := holdsQuery(store.G(ctx, q), key, version, permission, scope).Select("1").Limit(1).Row().Scan(&one)
+	if store.IsNoRows(err) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
-// holdsSQL is Holds's statement over VersionRows with positional
-// placeholders: named ones (versionRows) would cost a map and its parsing on
-// every call. Its key and version arguments therefore follow VersionRows's
-// placeholder order, $1 $2 $1 $1 $2 (TestVersionRowsPlaceholderOrder).
-var holdsSQL = `SELECT EXISTS (SELECT 1 FROM ` + strings.NewReplacer("$1", "?", "$2", "?").Replace(VersionRows) + `
-		WHERE permission = ? AND status = 'granted' AND (?::jsonb IS NULL OR scope = ?::jsonb))`
-
-// holdsQuery is Holds's statement. scope is a store.Bytes: nil is NULL (any
-// scope), and the bytes stay one parameter after "(". The repeated
-// arguments are boxed once each.
+// holdsQuery selects the grant of permission to key@version, with exactly
+// scope unless it is nil.
 func holdsQuery(db *gorm.DB, key, version, permission string, scope []byte) *gorm.DB {
-	k, v, s := any(key), any(version), any(store.Bytes(scope))
-	return db.Raw(holdsSQL, k, v, k, k, v, permission, s, s)
+	q := versionGrants(db, key, version).Where("permission = ? AND status = 'granted'", permission)
+	if scope != nil {
+		q = q.Where("scope = ?::jsonb", store.Bytes(scope))
+	}
+	return q
 }
 
 // Decision is one host permission decision of a consent.
@@ -120,50 +114,70 @@ type Decision struct {
 }
 
 // Record writes the decisions of a consent to key@version: staged while
-// another version runs, else as the plugin's grants.
+// another version runs, else as the plugin's grants. Each decision is an
+// upsert of its row, granted now.
 func Record(ctx context.Context, tx *gorm.DB, key, version, manifestHash string, by *int64, staged bool, ds []Decision) error {
-	sql := recordSQL(staged)
+	table, versionColumn := model.PluginPermissionGrant{}.TableName(), "plugin_version"
+	conflict := []clause.Column{{Name: "plugin_key"}, {Name: "permission"}}
+	set := []string{"scope", "status", "plugin_version", "manifest_hash", "granted_by"}
+	if staged {
+		table, versionColumn = model.PluginStagedGrant{}.TableName(), "version"
+		conflict = []clause.Column{{Name: "plugin_key"}, {Name: "version"}, {Name: "permission"}}
+		set = []string{"scope", "status", "manifest_hash", "granted_by"}
+	}
+	upsert := clause.OnConflict{Columns: conflict, DoUpdates: append(clause.AssignmentColumns(set),
+		clause.Assignment{Column: clause.Column{Name: "granted_at"}, Value: gorm.Expr("now()")})}
 	g := store.G(ctx, tx)
 	for _, d := range ds {
-		if err := g.Exec(sql, key, version, manifestHash, by, d.Permission, d.Scope, d.Status).Error; err != nil {
+		if err := g.Table(table).Clauses(upsert).Create(map[string]any{"plugin_key": key, versionColumn: version,
+			"manifest_hash": manifestHash, "granted_by": by, "permission": d.Permission, "scope": d.Scope,
+			"status": d.Status, "granted_at": gorm.Expr("now()")}).Error; err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// recordSQL upserts one decision (key, version, manifest hash, by,
-// permission, scope, status) into the staged set of the version or the
-// plugin's grants.
-func recordSQL(staged bool) string {
-	if staged {
-		return `INSERT INTO plugin_staged_grants (plugin_key, version, manifest_hash, granted_by, permission, scope, status, granted_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, now())
-			ON CONFLICT (plugin_key, version, permission) DO UPDATE SET
-			  scope = EXCLUDED.scope, status = EXCLUDED.status, manifest_hash = EXCLUDED.manifest_hash,
-			  granted_by = EXCLUDED.granted_by, granted_at = now()`
-	}
-	return `INSERT INTO plugin_permission_grants (plugin_key, plugin_version, manifest_hash, granted_by, permission, scope, status, granted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, now())
-		ON CONFLICT (plugin_key, permission) DO UPDATE SET
-		  scope = EXCLUDED.scope, status = EXCLUDED.status, plugin_version = EXCLUDED.plugin_version,
-		  manifest_hash = EXCLUDED.manifest_hash, granted_by = EXCLUDED.granted_by, granted_at = now()`
-}
-
 // Promote makes the set staged for version the plugin's grants; the rollout
-// commit calls it when version becomes active (nothing staged: no-op).
+// commit calls it when version becomes active (nothing staged: no-op). It
+// takes the set out and writes it over the plugin's grants, in the
+// caller's transaction.
 func Promote(ctx context.Context, tx *gorm.DB, key, version string) error {
-	return store.G(ctx, tx).Exec(promoteSQL, key, version).Error
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
+	g := store.G(ctx, tx)
+	staged, err := takeStaged(g, key, version)
+	if err != nil || len(staged) == 0 {
+		return err
+	}
+	return g.Table(model.PluginPermissionGrant{}.TableName()).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "plugin_key"}, {Name: "permission"}},
+		DoUpdates: clause.AssignmentColumns([]string{"scope", "status", "plugin_version", "manifest_hash", "granted_by", "granted_at"}),
+	}).Create(pluginGrants(staged)).Error
 }
 
-// promoteSQL moves the set staged for key@version into the plugin's grants.
-const promoteSQL = `
-		WITH staged AS (DELETE FROM plugin_staged_grants WHERE plugin_key = ? AND version = ? RETURNING *)
-		INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash, granted_by, granted_at)
-		SELECT plugin_key, permission, scope, status, version, manifest_hash, granted_by, granted_at FROM staged
-		ON CONFLICT (plugin_key, permission) DO UPDATE SET
-		  scope = EXCLUDED.scope, status = EXCLUDED.status, plugin_version = EXCLUDED.plugin_version,
-		  manifest_hash = EXCLUDED.manifest_hash, granted_by = EXCLUDED.granted_by, granted_at = EXCLUDED.granted_at`
+// takeStaged deletes the set staged for key@version and returns its rows.
+func takeStaged(g *gorm.DB, key, version string) ([]model.PluginStagedGrant, error) {
+	var rows []model.PluginStagedGrant
+	err := g.Clauses(clause.Returning{}).Where("plugin_key = ? AND version = ?", key, version).Delete(&rows).Error
+	return rows, err
+}
+
+// pluginGrants are staged rows as plugin grant rows, every column written
+// as it was (a NULL scope stays NULL).
+func pluginGrants(staged []model.PluginStagedGrant) []map[string]any {
+	out := make([]map[string]any, len(staged))
+	for i, r := range staged {
+		var scope any
+		if r.Scope != nil {
+			scope = store.Bytes(r.Scope)
+		}
+		out[i] = map[string]any{"plugin_key": r.PluginKey, "permission": r.Permission, "scope": scope, "status": r.Status,
+			"plugin_version": r.Version, "manifest_hash": r.ManifestHash, "granted_by": r.GrantedBy, "granted_at": r.GrantedAt}
+	}
+	return out
+}
 
 // Withdraw takes back the set staged for version when its upgrade is
 // abandoned (reason: the rollout's final phase): the version waits for a
@@ -173,33 +187,37 @@ const promoteSQL = `
 // revoked with it, or decided since), so it still stands (Revoked).
 // Nothing staged: no-op.
 func Withdraw(ctx context.Context, tx *gorm.DB, key, version, reason string) error {
-	var (
-		n       int
-		granted store.Strings
-	)
-	g := store.G(ctx, tx)
-	if err := withdrawn(g, key, version).Row().Scan(&n, &granted); err != nil || n == 0 {
+	if err := store.RequireTx(tx); err != nil {
 		return err
+	}
+	g := store.G(ctx, tx)
+	gone, err := takeStaged(g, key, version)
+	if err != nil || len(gone) == 0 {
+		return err
+	}
+	var kept []model.PluginStagedGrant
+	granted := []string{}
+	for _, r := range gone {
+		switch r.Status {
+		case "revoked":
+			kept = append(kept, r)
+		case "granted":
+			granted = append(granted, r.Permission)
+		}
+	}
+	slices.Sort(granted)
+	if len(kept) > 0 {
+		if err := g.Table(model.PluginPermissionGrant{}.TableName()).Clauses(clause.OnConflict{DoNothing: true}).
+			Create(pluginGrants(kept)).Error; err != nil {
+			return err
+		}
 	}
 	if err := awaitConsent(g, key, version).Error; err != nil {
 		return err
 	}
 	return audit.Audit(ctx, tx, 0, "plugin.grants.withdraw", "plugin", key, map[string]any{
-		"version": version, "reason": reason, "permissions": []string(granted),
+		"version": version, "reason": reason, "permissions": granted,
 	})
-}
-
-// withdrawn deletes the set staged for key@version, keeps its revocations
-// as plugin grant rows, and reads how many rows it held and the
-// permissions they granted.
-func withdrawn(db *gorm.DB, key, version string) *gorm.DB {
-	return db.Raw(`
-		WITH gone AS (DELETE FROM plugin_staged_grants WHERE plugin_key = ? AND version = ? RETURNING *),
-		kept AS (INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash, granted_by, granted_at)
-			SELECT plugin_key, permission, scope, status, version, manifest_hash, granted_by, granted_at FROM gone WHERE status = 'revoked'
-			ON CONFLICT (plugin_key, permission) DO NOTHING)
-		SELECT count(*), COALESCE(array_agg(permission ORDER BY permission) FILTER (WHERE status = 'granted'), '{}') FROM gone`,
-		key, version)
 }
 
 // awaitConsent sends key@version, if approved, back to awaiting consent.
@@ -213,21 +231,20 @@ func awaitConsent(db *gorm.DB, key, version string) *gorm.DB {
 // grants and every staged set (an emergency revocation must not come back
 // with the next activation). It reports whether a grant was revoked.
 func Revoke(ctx context.Context, tx *gorm.DB, key, permission string, by *int64) (bool, error) {
-	var n int
-	err := revoke(store.G(ctx, tx), key, permission, by).Row().Scan(&n)
-	return n > 0, err
-}
-
-// revoke revokes permission in the plugin's grants and the staged sets of
-// key and reads how many grants it revoked.
-func revoke(db *gorm.DB, key, permission string, by *int64) *gorm.DB {
-	return db.Raw(`
-		WITH active AS (UPDATE plugin_permission_grants SET status = 'revoked', granted_by = @by, granted_at = now()
-			WHERE plugin_key = @key AND permission = @permission AND status = 'granted' RETURNING 1),
-		staged AS (UPDATE plugin_staged_grants SET status = 'revoked', granted_by = @by, granted_at = now()
-			WHERE plugin_key = @key AND permission = @permission AND status = 'granted' RETURNING 1)
-		SELECT (SELECT count(*) FROM active) + (SELECT count(*) FROM staged)`,
-		map[string]any{"key": key, "permission": permission, "by": by})
+	if err := store.RequireTx(tx); err != nil {
+		return false, err
+	}
+	g := store.G(ctx, tx)
+	var n int64
+	for _, table := range []string{model.PluginPermissionGrant{}.TableName(), model.PluginStagedGrant{}.TableName()} {
+		res := g.Table(table).Where("plugin_key = ? AND permission = ? AND status = 'granted'", key, permission).
+			Updates(map[string]any{"status": "revoked", "granted_by": by, "granted_at": gorm.Expr("now()")})
+		if res.Error != nil {
+			return false, res.Error
+		}
+		n += res.RowsAffected
+	}
+	return n > 0, nil
 }
 
 // Narrow narrows permission to scope in every staged set of key that grants
@@ -239,7 +256,9 @@ func Narrow(ctx context.Context, tx *gorm.DB, key, permission string, scope map[
 	if err := store.RequireTx(tx); err != nil {
 		return err
 	}
-	granted, err := stagedScopes(ctx, tx, narrowedSQL, key, permission)
+	// The scopes the staged sets of key grant permission, locked.
+	granted, err := stagedScopes(store.G(ctx, tx).Model(&model.PluginStagedGrant{}).Select("version, scope").
+		Where("plugin_key = ? AND permission = ? AND status = 'granted'", key, permission).Clauses(store.ForUpdate()), key, permission)
 	if err != nil {
 		return err
 	}
@@ -252,11 +271,6 @@ func Narrow(ctx context.Context, tx *gorm.DB, key, permission string, scope map[
 	return grantVersions(ctx, tx, key, permission, scope, by, versions)
 }
 
-// narrowedSQL locks and reads the scopes the staged sets of key grant
-// permission.
-const narrowedSQL = `SELECT version, scope FROM plugin_staged_grants
-		WHERE plugin_key = @key AND permission = @permission AND status = 'granted' FOR UPDATE`
-
 // Reinstate lifts the revocation of permission, granting it scope, in every
 // staged set of key whose version requests at least scope: an
 // administrator's grant, the counterpart of Revoke. A set whose version
@@ -265,7 +279,13 @@ func Reinstate(ctx context.Context, tx *gorm.DB, key, permission string, scope m
 	if err := store.RequireTx(tx); err != nil {
 		return err
 	}
-	requested, err := stagedScopes(ctx, tx, reinstatedSQL, key, permission)
+	// The staged sets of key that revoke permission, locked, with the scope
+	// each one's version requests for it.
+	requested, err := stagedScopes(store.G(ctx, tx).Table("plugin_staged_grants AS s").Select("s.version, hp->'scope' AS scope").
+		Joins("JOIN plugin_versions v ON v.plugin_key = s.plugin_key AND v.version = s.version").
+		Joins("CROSS JOIN LATERAL jsonb_array_elements(v.manifest->'hostPermissions') hp").
+		Where("s.plugin_key = ? AND s.permission = ? AND s.status = 'revoked' AND hp->>'id' = ?", key, permission, permission).
+		Clauses(store.ForUpdate().Of("s")), key, permission)
 	if err != nil {
 		return err
 	}
@@ -278,23 +298,15 @@ func Reinstate(ctx context.Context, tx *gorm.DB, key, permission string, scope m
 	return grantVersions(ctx, tx, key, permission, scope, by, versions)
 }
 
-// reinstatedSQL locks the staged sets of key that revoke permission and
-// reads the scope each one's version requests for it.
-const reinstatedSQL = `SELECT s.version, hp->'scope' AS scope
-		FROM plugin_staged_grants s
-		JOIN plugin_versions v ON v.plugin_key = s.plugin_key AND v.version = s.version
-		CROSS JOIN LATERAL jsonb_array_elements(v.manifest->'hostPermissions') hp
-		WHERE s.plugin_key = @key AND s.permission = @permission AND s.status = 'revoked' AND hp->>'id' = @permission FOR UPDATE OF s`
-
-// stagedScopes reads version -> scope from sel's (version, scope) rows for
-// key and permission (@key, @permission); a NULL scope (a host permission
-// requesting none) is nil, a scope that is no JSON object an error.
-func stagedScopes(ctx context.Context, tx *gorm.DB, sel, key, permission string) (map[string]map[string]any, error) {
+// stagedScopes reads version -> scope from the (version, scope) rows of q;
+// a NULL scope (a host permission requesting none) is nil, a scope that is
+// no JSON object an error.
+func stagedScopes(q *gorm.DB, key, permission string) (map[string]map[string]any, error) {
 	var rows []struct {
 		Version string
 		Scope   []byte
 	}
-	if err := store.G(ctx, tx).Raw(sel, map[string]any{"key": key, "permission": permission}).Scan(&rows).Error; err != nil {
+	if err := q.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := map[string]map[string]any{}
@@ -348,13 +360,12 @@ func Revoked(ctx context.Context, q *gorm.DB, key string) (map[string]bool, erro
 }
 
 // revoked selects the permissions of key whose latest decision is a
-// revocation.
+// revocation: the latest row of each permission over the plugin's grants and
+// the staged sets.
 func revoked(db *gorm.DB, key string) *gorm.DB {
-	return db.Raw(`SELECT permission FROM (
-		SELECT DISTINCT ON (permission) permission, status FROM (
-			SELECT permission, status, granted_at FROM plugin_permission_grants WHERE plugin_key = @key
-			UNION ALL
-			SELECT permission, status, granted_at FROM plugin_staged_grants WHERE plugin_key = @key) d
-		ORDER BY permission, granted_at DESC, status = 'revoked' DESC) latest
-		WHERE status = 'revoked'`, map[string]any{"key": key})
+	latest := db.Table("((?) UNION ALL (?)) AS d",
+		db.Model(&model.PluginPermissionGrant{}).Select("permission, status, granted_at").Where("plugin_key = ?", key),
+		db.Model(&model.PluginStagedGrant{}).Select("permission, status, granted_at").Where("plugin_key = ?", key)).
+		Select("DISTINCT ON (permission) permission, status").Order("permission, granted_at DESC, status = 'revoked' DESC")
+	return db.Table("(?) AS latest", latest).Select("permission").Where("status = 'revoked'")
 }

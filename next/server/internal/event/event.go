@@ -58,18 +58,20 @@ func (p *Publisher) Emit(ctx context.Context, tx *gorm.DB, events ...core.Event)
 const insertBatch = 1000
 
 // insertEvents writes rows to the outbox, their ids ascending in their
-// order: one event takes the next id as it is written, more reserve theirs
-// first (store.NextIDs) so the ids follow the batch order whatever order
+// order. One event, the usual count, takes the next id as it is written and
+// reads nothing back (a column map: no RETURNING). More reserve theirs
+// first (store.NextIDs), so the ids follow the batch order whatever order
 // the INSERT stores the rows in.
 func insertEvents(db *gorm.DB, rows []model.Event) error {
-	if len(rows) > 1 {
-		ids, err := store.NextIDs(db, model.Event{}.TableName(), len(rows))
-		if err != nil {
-			return err
-		}
-		for i := range rows {
-			rows[i].ID = ids[i]
-		}
+	if len(rows) == 1 {
+		return db.Table(model.Event{}.TableName()).Create(map[string]any{"type": rows[0].Type, "payload": rows[0].Payload}).Error
+	}
+	ids, err := store.NextIDs(db, model.Event{}.TableName(), len(rows))
+	if err != nil {
+		return err
+	}
+	for i := range rows {
+		rows[i].ID = ids[i]
 	}
 	return db.CreateInBatches(&rows, insertBatch).Error
 }
