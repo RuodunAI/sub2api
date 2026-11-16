@@ -62,7 +62,8 @@ func runRecoverSuperAdmin(args []string) int {
 		fmt.Fprintln(os.Stderr, "sub2api admin: the database is not at this version's schema:", err)
 		return 1
 	}
-	idm := iam.New(iam.Deps{DB: db, Config: cfg, Authz: authz.New(authz.Deps{DB: db})})
+	az := authz.New(authz.Deps{DB: db})
+	idm := iam.New(iam.Deps{DB: db, Config: cfg, Authz: az, Owners: az})
 	password, err := idm.RecoverSuperAdmin(audit.WithSource(ctx, "cli"), *email,
 		iam.RecoverOptions{ResetPassword: *resetPassword, ResetTwoFactor: *resetTwoFactor})
 	if err != nil {

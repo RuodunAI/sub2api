@@ -105,7 +105,7 @@ func sqlGetUser(ctx context.Context, db *store.DB, id int64) (*User, error) {
 	var u User
 	var balance string
 	err := db.SQL.QueryRowContext(ctx, `SELECT `+userColumns+` FROM `+usersFrom+` WHERE u.id = $1 AND u.deleted_at IS NULL`, id).
-		Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+		Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt, &u.OwnerID, &u.OwnerEmail,
 			&u.Roles, &u.Segment.ID, &u.Segment.Kind, &u.Segment.Name, &u.Segment.UserID, &balance)
 	u.Balance = &balance
 	return &u, err

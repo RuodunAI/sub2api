@@ -1,7 +1,8 @@
 -- sql
-INSERT INTO "users" ("email","display_name","password_hash","segment_id") SELECT $1, $2, $3, COALESCE($4, default_segment_id()) FROM (SELECT) AS one RETURNING "id"
+INSERT INTO "users" ("email","display_name","password_hash","segment_id","owner_id") SELECT $1, $2, $3, COALESCE($4, default_segment_id()), $5 FROM (SELECT) AS one RETURNING "id"
 -- vars
 $1 string "a@example.com"
 $2 string "Ann"
 $3 string "$2a$hash"
 $4 *int64 3
+$5 *int64 5

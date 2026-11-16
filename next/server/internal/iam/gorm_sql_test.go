@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -61,19 +62,22 @@ func TestSQLUserLocks(t *testing.T) {
 // users.updated_at moves with these writes, and only with them.
 func TestSQLUserWrites(t *testing.T) {
 	name, status := "Ann", StatusDisabled
-	segment := int64(3)
+	segment, owner, none := int64(3), int64(5), int64(0)
 	snap(t, map[string]func(*gorm.DB) *gorm.DB{
 		"insert": func(db *gorm.DB) *gorm.DB {
-			return read(insertUser(db, "a@example.com", "Ann", "$2a$hash", &segment))
+			return read(insertUser(db, "a@example.com", "Ann", "$2a$hash", &segment, &owner))
 		},
 		"insert_default_segment": func(db *gorm.DB) *gorm.DB {
-			return read(insertUser(db, "a@example.com", "", "$2a$hash", nil))
+			return read(insertUser(db, "a@example.com", "", "$2a$hash", nil, nil))
 		},
 		"update_all": func(db *gorm.DB) *gorm.DB {
-			return updateUser(db, 7, userChanges(UpdateUserInput{DisplayName: &name, Status: &status}, "b@example.com", []byte("$2a$new")))
+			return updateUser(db, 7, userChanges(UpdateUserInput{DisplayName: &name, Status: &status}, "b@example.com", []byte("$2a$new"), &owner))
 		},
 		"update_status": func(db *gorm.DB) *gorm.DB {
-			return updateUser(db, 7, userChanges(UpdateUserInput{Status: &status}, "", nil))
+			return updateUser(db, 7, userChanges(UpdateUserInput{Status: &status}, "", nil, nil))
+		},
+		"update_no_owner": func(db *gorm.DB) *gorm.DB {
+			return updateUser(db, 7, userChanges(UpdateUserInput{}, "", nil, &none))
 		},
 		"delete":          func(db *gorm.DB) *gorm.DB { return updateUser(db, 7, userDeletion()) },
 		"delete_api_keys": func(db *gorm.DB) *gorm.DB { return deleteUserKeys(db, 7) },
@@ -83,7 +87,9 @@ func TestSQLUserWrites(t *testing.T) {
 }
 
 func TestSQLUserReads(t *testing.T) {
-	filter := usersFilter(ListUsersFilter{Query: "ann", Status: StatusActive, Role: "admin", Segment: "3"})
+	owner, none := int64(5), int64(0)
+	filter := usersFilter(ListUsersFilter{Query: "ann", Status: StatusActive, Role: "admin", Segment: "3", Owner: &owner, Direct: 9,
+		Scope: core.DataScope{Owners: []int64{9, 12}}})
 	snap(t, map[string]func(*gorm.DB) *gorm.DB{
 		"list_count": func(db *gorm.DB) *gorm.DB {
 			var n int64
@@ -96,7 +102,13 @@ func TestSQLUserReads(t *testing.T) {
 		"list_page_negative": func(db *gorm.DB) *gorm.DB { return read(usersPage(db, filter, -3, -5)) },
 		"list_page_too_big":  func(db *gorm.DB) *gorm.DB { return read(usersPage(db, filter, 2, 1000)) },
 		"list_personal": func(db *gorm.DB) *gorm.DB {
-			return read(usersPage(db, usersFilter(ListUsersFilter{Segment: "personal"}), 1, 20))
+			return read(usersPage(db, usersFilter(ListUsersFilter{Segment: "personal", Scope: core.AllScope}), 1, 20))
+		},
+		"list_no_owner": func(db *gorm.DB) *gorm.DB {
+			return read(usersPage(db, usersFilter(ListUsersFilter{Owner: &none, Scope: core.AllScope}), 1, 20))
+		},
+		"get_in_scope": func(db *gorm.DB) *gorm.DB {
+			return read(userInScope(db, 7, core.DataScope{Owners: []int64{9}}))
 		},
 		"lookup": func(db *gorm.DB) *gorm.DB { return read(lookupUsers(db, []int64{3, 1, 3})) },
 	})

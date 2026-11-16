@@ -43,6 +43,11 @@ type User struct {
 	LastLoginAt *time.Time `json:"last_login_at"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
+	// OwnerID is the user's owner (CONTRACTS §102.3): the user is in the
+	// team of it and of the users above it; nil for none. OwnerEmail is
+	// kept when the owner is soft-deleted.
+	OwnerID    *int64  `json:"owner_id"`
+	OwnerEmail *string `json:"owner_email"`
 	// Segment is the user group the user is priced by (CONTRACTS §97). A
 	// personal one goes by the user's own email, so there is nothing to mask.
 	// It is an administrator's label: the user's own token response omits it.
@@ -52,6 +57,7 @@ type User struct {
 // userColumns are what scanUser reads, from usersFrom. They are read by
 // position: the segment's id has the name of the user's.
 const userColumns = `u.id, u.email, u.display_name, u.status, u.last_login_at, u.created_at, u.updated_at,
+    u.owner_id, (SELECT o.email FROM users o WHERE o.id = u.owner_id),
     COALESCE((SELECT array_agg(k ORDER BY k) FROM (` + casbinrule.RolesOfUser + `) ur(k)), '{}'),
     ` + segment.RefColumns + `,
     COALESCE((SELECT b.balance FROM user_balances b WHERE b.user_id = u.id), 0)::numeric(20,8)::text`
@@ -72,7 +78,7 @@ func usersView(db *gorm.DB) *gorm.DB {
 func scanUser(row store.RowScanner) (*User, error) {
 	var u User
 	var balance string
-	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+	err := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Status, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt, &u.OwnerID, &u.OwnerEmail,
 		(*store.Strings)(&u.Roles), &u.Segment.ID, &u.Segment.Kind, &u.Segment.Name, &u.Segment.UserID, &balance)
 	if err != nil {
 		return nil, err
@@ -87,7 +93,23 @@ func (s *Service) GetUser(ctx context.Context, id int64) (*User, error) {
 }
 
 func (s *Service) getUser(ctx context.Context, q *gorm.DB, id int64) (*User, error) {
-	u, err := scanUser(userByID(store.G(ctx, q), id).Row())
+	return readUser(userByID(store.G(ctx, q), id))
+}
+
+// getUserIn is getUser within scope (of user:read or user:update,
+// core.UserRows): a user out of it is not found either.
+func (s *Service) getUserIn(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope) (*User, error) {
+	return readUser(userInScope(store.G(ctx, q), id, scope))
+}
+
+// userInScope is userByID within scope.
+func userInScope(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
+	return userByID(db, id).Scopes(core.UserRows().Scope(scope))
+}
+
+// readUser scans the one user db selects (userByID), ErrNotFound for none.
+func readUser(db *gorm.DB) (*User, error) {
+	u, err := scanUser(db.Row())
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("user not found")
 	}
@@ -120,15 +142,22 @@ func lookupUsers(db *gorm.DB, ids []int64) *gorm.DB {
 
 // ListUsersFilter filters GET /users.
 type ListUsersFilter struct {
-	Query    string // matches email or display name
-	Status   string
-	Role     string // role key
-	Segment  string // a segment id, or "personal" for the users with a personal segment
+	Query   string // matches email or display name
+	Status  string
+	Role    string // role key
+	Segment string // a segment id, or "personal" for the users with a personal segment
+	// Owner keeps the users this user owns directly, those without an
+	// owner when 0; nil keeps all.
+	Owner *int64
+	// Direct, when not 0, keeps the users it (the caller) owns directly.
+	Direct int64
+	// Scope is the caller's range of user:read (core.UserRows).
+	Scope    core.DataScope
 	Page     int
 	PageSize int
 }
 
-// ListUsers returns a page of non-deleted users ordered by id.
+// ListUsers returns a page of non-deleted users in f.Scope, ordered by id.
 func (s *Service) ListUsers(ctx context.Context, f ListUsersFilter) ([]*User, int64, error) {
 	filter := usersFilter(f)
 	g := store.G(ctx, s.db.Gorm)
@@ -150,7 +179,7 @@ func usersCount(db *gorm.DB, filter store.Conds) *gorm.DB {
 
 // usersFilter are the conditions of ListUsers on the users u.
 func usersFilter(f ListUsersFilter) store.Conds {
-	var filter store.Conds
+	filter := store.Conds{core.UserRows().Scope(f.Scope)}
 	filter.And("u.deleted_at IS NULL")
 	if q := strings.TrimSpace(f.Query); q != "" {
 		pattern := "%" + store.Like(q) + "%"
@@ -169,6 +198,15 @@ func usersFilter(f ListUsersFilter) store.Conds {
 		// A value that is not a segment id selects nobody.
 		id, _ := strconv.ParseInt(f.Segment, 10, 64)
 		filter.And("u.segment_id = ?", id)
+	}
+	switch {
+	case f.Owner != nil && *f.Owner == 0:
+		filter.And("u.owner_id IS NULL")
+	case f.Owner != nil:
+		filter.And("u.owner_id = ?", *f.Owner)
+	}
+	if f.Direct != 0 {
+		filter.And("u.owner_id = ?", f.Direct)
 	}
 	return filter
 }
@@ -189,6 +227,10 @@ type CreateUserInput struct {
 	RoleKeys    []string `json:"role_keys"`
 	// SegmentID is the named segment the user starts in; nil = the default one.
 	SegmentID *int64 `json:"segment_id"`
+	// OwnerID is the user's owner, 0 for none; nil for none too, but for a
+	// creator of users for its team only, which is the owner (CONTRACTS
+	// §102.3, applied by POST /users).
+	OwnerID *int64 `json:"owner_id"`
 }
 
 // IsDefaultRoles reports whether keys is empty or exactly the default role.
@@ -222,6 +264,9 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 	if utf8.RuneCountInString(in.DisplayName) > 100 {
 		fields = append(fields, core.FieldError{Field: "display_name", Code: "too_long", Message: "at most 100 characters"})
 	}
+	if f := validateOwner(in.OwnerID); f != nil {
+		fields = append(fields, *f)
+	}
 	if len(fields) > 0 {
 		return nil, 0, core.InvalidFields(fields...)
 	}
@@ -234,20 +279,29 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 		return nil, 0, err
 	}
 	var id int64
-	err = insertUser(store.G(ctx, tx), email, in.DisplayName, string(hash), in.SegmentID).Row().Scan(&id)
-	if store.IsUniqueViolation(err, "") {
+	err = insertUser(store.G(ctx, tx), email, in.DisplayName, string(hash), in.SegmentID, ownerColumn(in.OwnerID)).Row().Scan(&id)
+	switch {
+	case store.IsUniqueViolation(err, ""):
 		return nil, 0, emailTaken()
-	}
-	if err != nil {
+	case store.IsForeignKeyViolation(err) && store.ConstraintName(err) == "users_owner_fk":
+		return nil, 0, core.InvalidFields(core.FieldError{Field: "owner_id", Code: "not_found", Message: "no such user"})
+	case err != nil:
 		return nil, 0, err
 	}
 	roles := in.RoleKeys
 	if len(roles) == 0 {
 		roles = []string{authz.RoleUser}
 	}
-	// SetUserRoles checks the actor may grant the roles (SEC-H1).
+	// SetUserRoles checks the actor may grant the roles (SEC-H1) and act on
+	// the user, whose owner it reads, and holds the authz lock (its Bump)
+	// that CheckOwner relies on. CheckOwner then judges the owner inserted,
+	// which is the one it gives: nil only reaches it from a creator of any
+	// user, for whom it is none.
 	v, err := s.authz.SetUserRoles(ctx, tx, actorID, id, roles)
 	if err != nil {
+		return nil, 0, err
+	}
+	if _, err := s.owners.CheckOwner(ctx, tx, actorID, id, true, in.OwnerID); err != nil {
 		return nil, 0, err
 	}
 	if err := s.emit(ctx, tx, "user.created", id, email, StatusActive); err != nil {
@@ -268,11 +322,28 @@ func (s *Service) createUserTx(ctx context.Context, tx *gorm.DB, actorID int64, 
 }
 
 // insertUser creates a user in segmentID, or the default segment when nil,
-// and returns its id.
-func insertUser(db *gorm.DB, email, displayName, passwordHash string, segmentID *int64) *gorm.DB {
-	row := store.OneRow(db).Select("?, ?, ?, COALESCE(?, default_segment_id())", email, displayName, passwordHash, segmentID)
-	return gormpg.InsertSelectReturning(db, model.User{}.TableName(), []string{"email", "display_name", "password_hash", "segment_id"}, row,
+// owned by ownerID (nil for none), and returns its id.
+func insertUser(db *gorm.DB, email, displayName, passwordHash string, segmentID, ownerID *int64) *gorm.DB {
+	row := store.OneRow(db).Select("?, ?, ?, COALESCE(?, default_segment_id()), ?", email, displayName, passwordHash, segmentID, ownerID)
+	return gormpg.InsertSelectReturning(db, model.User{}.TableName(), []string{"email", "display_name", "password_hash", "segment_id", "owner_id"}, row,
 		clause.Returning{Columns: []clause.Column{{Name: "id"}}})
+}
+
+// validateOwner refuses an owner_id that is no user id, 0 (none) aside.
+func validateOwner(owner *int64) *core.FieldError {
+	if owner != nil && *owner < 0 {
+		return &core.FieldError{Field: "owner_id", Code: "invalid", Message: "must be a user id, or 0 for none"}
+	}
+	return nil
+}
+
+// ownerColumn is the users.owner_id of owner: nil (NULL) for none, given
+// as nil or 0.
+func ownerColumn(owner *int64) *int64 {
+	if owner == nil || *owner == 0 {
+		return nil
+	}
+	return owner
 }
 
 // lockNamedSegment checks that id, when given, is a named segment and keeps
@@ -295,6 +366,8 @@ type UpdateUserInput struct {
 	DisplayName *string `json:"display_name"`
 	Status      *string `json:"status"`
 	Password    *string `json:"password"`
+	// OwnerID moves the user to this owner, 0 for none; nil keeps it.
+	OwnerID *int64 `json:"owner_id"`
 }
 
 // consumeSelfChange spends the step-up proof a change of one's own sign-in
@@ -332,14 +405,23 @@ func validateUpdate(in UpdateUserInput) (email string, fields []core.FieldError)
 			fields = append(fields, *f)
 		}
 	}
+	if f := validateOwner(in.OwnerID); f != nil {
+		fields = append(fields, *f)
+	}
 	return email, fields
 }
 
-// UpdateUser applies a partial update.
-func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUserInput) (*User, error) {
+// UpdateUser applies a partial update to a user in scope (the actor's of
+// user:update, core.UserRows); one out of it is not found.
+func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, scope core.DataScope, in UpdateUserInput) (*User, error) {
 	email, fields := validateUpdate(in)
 	if len(fields) > 0 {
 		return nil, core.InvalidFields(fields...)
+	}
+	// Before any other check, so that they tell nothing of a user out of
+	// scope; checked again under the lock.
+	if _, err := s.getUserIn(ctx, s.db.Gorm, id, scope); err != nil {
+		return nil, err
 	}
 	// SEC-H3: a user's own email or password changes only with a step-up
 	// proof (the password one: the password and a second factor), as on
@@ -385,7 +467,7 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 	var u *User
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		var err error
-		v, u, err = s.applyUpdateTx(ctx, tx, actorID, id, in, email, hash)
+		v, u, err = s.applyUpdateTx(ctx, tx, actorID, id, scope, in, email, hash)
 		return err
 	})
 	if err != nil {
@@ -404,15 +486,25 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 
 // applyUpdateTx performs the locked read, authorization checks and the write
 // inside the caller's transaction.
-func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id int64, in UpdateUserInput, email string, hash []byte) (int64, *User, error) {
+func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id int64, scope core.DataScope, in UpdateUserInput, email string, hash []byte) (int64, *User, error) {
 	var v int64
 	// Keep the established authz -> user lock order. Even an apparently
-	// unchanged status must invalidate authorization after concurrent edits.
-	if in.Status != nil {
+	// unchanged status must invalidate authorization after concurrent edits;
+	// a new owner moves the user between teams, and CheckOwner checks it
+	// under this lock.
+	if in.Status != nil || in.OwnerID != nil {
 		var err error
 		if v, err = s.authz.Bump(ctx, tx, id); err != nil {
 			return 0, nil, err
 		}
+	}
+	owner := in.OwnerID
+	if owner != nil {
+		got, err := s.owners.CheckOwner(ctx, tx, actorID, id, false, owner)
+		if err != nil {
+			return 0, nil, err
+		}
+		owner = &got
 	}
 	if err := lockUserRow(ctx, tx, id); err != nil {
 		if err == errNoUser {
@@ -420,7 +512,7 @@ func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id in
 		}
 		return 0, nil, err
 	}
-	cur, err := s.getUser(ctx, tx, id)
+	cur, err := s.getUserIn(ctx, tx, id, scope)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -443,7 +535,7 @@ func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id in
 		}
 	}
 
-	err = updateUser(store.G(ctx, tx), id, userChanges(in, email, hash)).Error
+	err = updateUser(store.G(ctx, tx), id, userChanges(in, email, hash, owner)).Error
 	if store.IsUniqueViolation(err, "") {
 		return 0, nil, emailTaken()
 	}
@@ -485,13 +577,16 @@ func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id in
 }
 
 // userChanges are the columns applyUpdateTx writes: those the update sets,
-// and updated_at.
-func userChanges(in UpdateUserInput, email string, hash []byte) map[string]any {
+// the owner when not nil (0: none), and updated_at.
+func userChanges(in UpdateUserInput, email string, hash []byte, owner *int64) map[string]any {
 	set := map[string]any{"updated_at": gorm.Expr("now()")}
 	store.SetIf(set, "email", nilStr(email))
 	store.SetIf(set, "display_name", in.DisplayName)
 	store.SetIf(set, "status", in.Status)
 	store.SetIf(set, "password_hash", nilBytes(hash))
+	if owner != nil {
+		set["owner_id"] = ownerColumn(owner)
+	}
 	return set
 }
 

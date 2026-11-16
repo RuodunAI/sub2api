@@ -163,7 +163,7 @@ func TestRecoverSuperAdminNewSignInWorksOnARunningNode(t *testing.T) {
 		}
 	}
 
-	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: authz.New(authz.Deps{DB: s.db})}) // as cmd/sub2api/admin.go
+	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: authz.New(authz.Deps{DB: s.db}), Owners: &fakeOwners{}}) // as cmd/sub2api/admin.go
 	for _, email := range []string{"target@example.com", adminEmail} {
 		if _, err := cli.RecoverSuperAdmin(ctx, email, RecoverOptions{}); err != nil {
 			t.Fatal(err)
