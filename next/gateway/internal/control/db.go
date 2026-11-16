@@ -43,7 +43,7 @@ type releaseRecord struct {
 	BundleBase     string
 	Line           string // updatesource.LineCore or LineGateway
 	SourceAssets   []byte // NULL unless imported from the update source
-	SourceRevision *int64
+	SourceLocator  string
 }
 
 func (releaseRecord) TableName() string { return "updater.releases" }

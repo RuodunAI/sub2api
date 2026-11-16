@@ -110,4 +110,14 @@ func TestEnsureSchemaIsIdempotent(t *testing.T) {
 	if !row.enabled || row.kind != "github" || row.repo != "Sub2API-Devs/sup2api" || row.url != "" || row.secret != nil {
 		t.Fatalf("update-source defaults: %+v", row)
 	}
+	// A url source keeps the repository it was given, and its revision.
+	if err = s.clusterRow(s.db(ctx)).Updates(map[string]any{"update_source_kind": "url", "update_url": "https://r.example.com/", "update_repository": ""}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err = s.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.readSource(s.clusterRow(s.db(ctx))); err != nil || again.repo != "" || again.revision != row.revision {
+		t.Fatalf("url source after a restart: %+v %v", again, err)
+	}
 }

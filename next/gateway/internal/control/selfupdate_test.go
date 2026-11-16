@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,36 +46,49 @@ func TestGatewayStepsSwapFollowersThenPrimary(t *testing.T) {
 	}
 }
 
-func TestGatewayNodeBlockers(t *testing.T) {
+func TestGatewayNodes(t *testing.T) {
 	now := time.Now()
 	m := rc.GatewayManifest{GatewayVersion: "0.1.136"}
 	node := func(id string) Node {
 		return Node{ID: id, Enabled: true, Rolling: true, SelfUpdate: true, GatewayVersion: "0.1.135", ReleaseDigest: "base", Mode: "local", Ready: true, LastSeen: now}
 	}
-	if got := gatewayNodeBlockers(m, []Node{node("a"), node("b")}, "base"); len(got) != 0 {
-		t.Fatal(got)
+	if planned, got := gatewayNodes(m, []Node{node("a"), node("b")}, "base"); len(got) != 0 || !reflect.DeepEqual(planned, []string{"a", "b"}) {
+		t.Fatal(planned, got)
 	}
-	cases := map[string]func(*Node){
-		"not locally ready":          func(n *Node) { n.Ready = false },
-		"not on approved baseline":   func(n *Node) { n.ReleaseDigest = "other" },
-		"without rolling updates":    func(n *Node) { n.Rolling = false },
-		"does not report":            func(n *Node) { n.GatewayVersion = "" },
-		"already runs gateway":       func(n *Node) { n.GatewayVersion = "0.1.136" },
-		"cannot replace its gateway": func(n *Node) { n.SelfUpdate = false },
+	cases := map[string]struct {
+		code   string
+		mutate func(*Node)
+	}{
+		"not locally ready":          {issueNodeNotReady, func(n *Node) { n.Ready = false }},
+		"not on approved baseline":   {issueNodeOffBaseline, func(n *Node) { n.ReleaseDigest = "other" }},
+		"without rolling updates":    {issueNodeNotRolling, func(n *Node) { n.Rolling = false }},
+		"does not report":            {issueNodeUnsupported, func(n *Node) { n.GatewayVersion = "" }},
+		"newer gateway":              {issueNodeUnsupported, func(n *Node) { n.GatewayVersion = "0.1.137" }},
+		"cannot replace its gateway": {issueNodeUnsupported, func(n *Node) { n.SelfUpdate = false }},
 	}
-	for want, mutate := range cases {
+	for want, c := range cases {
 		b := node("b")
-		mutate(&b)
-		if got := strings.Join(gatewayNodeBlockers(m, []Node{node("a"), b}, "base"), "; "); !strings.Contains(got, want) || !strings.Contains(got, "b") {
-			t.Errorf("%s: %q", want, got)
+		c.mutate(&b)
+		_, got := gatewayNodes(m, []Node{node("a"), b}, "base")
+		if len(got) != 1 || !strings.Contains(got[0].Message, want) || got[0].Code != c.code || got[0].Params["node"] != "b" {
+			t.Errorf("%s: %+v", want, got)
 		}
+	}
+	// A node on the target version is left out of the plan, whatever its state.
+	current := node("b")
+	current.GatewayVersion, current.Ready = "0.1.136", false
+	if planned, got := gatewayNodes(m, []Node{node("a"), current}, "base"); len(got) != 0 || !reflect.DeepEqual(planned, []string{"a"}) {
+		t.Fatalf("a current node: %v %v", planned, got)
+	}
+	if planned, got := gatewayNodes(m, []Node{current}, "base"); len(planned) != 0 || len(got) != 1 || got[0].Code != issueAlreadyCurrent {
+		t.Fatalf("every node current: %v %v", planned, got)
 	}
 	disabled := node("b")
 	disabled.Enabled, disabled.SelfUpdate = false, false
-	if got := gatewayNodeBlockers(m, []Node{node("a"), disabled}, "base"); len(got) != 0 {
-		t.Fatalf("a disabled node blocks: %v", got)
+	if planned, got := gatewayNodes(m, []Node{node("a"), disabled}, "base"); len(got) != 0 || !reflect.DeepEqual(planned, []string{"a"}) {
+		t.Fatalf("a disabled node: %v %v", planned, got)
 	}
-	if got := gatewayNodeBlockers(m, []Node{disabled}, "base"); len(got) != 1 {
+	if _, got := gatewayNodes(m, []Node{disabled}, "base"); len(got) != 1 || got[0].Code != issueNoNodes {
 		t.Fatalf("no enabled node: %v", got)
 	}
 }
@@ -111,11 +125,9 @@ func gatewayCluster(t *testing.T) (*Store, *sourceFixture, []*Engine) {
 	f := newSourceFixture(t)
 	f.installableGateway(t)
 	s.Updates = f.service(t)
-	t.Cleanup(s.Updates.pending.Wait)
 	if _, err := s.SetUpdateSource(ctx, SourceRequest{Enabled: true, Kind: "url", URL: fixtureURL}); err != nil {
 		t.Fatal(err)
 	}
-	s.Updates.pending.Wait()
 	s.RevokePeer = func(context.Context, string) error { return nil }
 	engines := []*Engine{a, b}
 	for _, e := range engines {
@@ -203,7 +215,7 @@ func TestPostgresGatewayPlanSwapsEachNodeAndContinuesAfterTheHandoff(t *testing.
 		t.Fatalf("plan: %+v %v", p, err)
 	}
 	r, err := s.GatewayRelease(ctx, p.ReleaseDigest)
-	if err != nil || r.Manifest.GatewayVersion != "0.1.136" || r.SourceRevision == 0 || r.SourceAssets["real.tar.gz"].Size == 0 {
+	if err != nil || r.Manifest.GatewayVersion != "0.1.136" || r.SourceLocator != "url:"+fixtureURL || r.SourceAssets["real.tar.gz"].Size == 0 {
 		t.Fatalf("imported gateway release: %+v %v", r, err)
 	}
 	if _, err = s.Release(ctx, p.ReleaseDigest); err == nil {
@@ -311,6 +323,46 @@ func TestPostgresGatewayRollbackReturnsSwappedNodesToTheirPreviousGateway(t *tes
 	if _, err := s.Action(ctx, recovery.ID, "rollback", "admin"); err == nil {
 		t.Fatal("a completed recovery was rolled back")
 	}
+	events, err := s.Events(ctx, id, 0)
+	if err != nil || !strings.Contains(stringify(events), "replaced by gateway rollback "+recovery.ID) || strings.Contains(stringify(events), "baseline recovery") {
+		t.Fatalf("events of the rolled back plan: %v %v", events, err)
+	}
+}
+
+// TestPostgresGatewayPlanLeavesOutCurrentNodes: a primary that already runs
+// the target gateway is no member of the plan, yet coordinates it.
+func TestPostgresGatewayPlanLeavesOutCurrentNodes(t *testing.T) {
+	s, _, engines := gatewayCluster(t)
+	ctx := context.Background()
+	a, b := engines[0], engines[1]
+	a.Node.GatewayVersion = "0.1.136"
+	if err := s.nodeRow(s.db(ctx), a.Node.ID).Update("gateway_version", a.Node.GatewayVersion).Error; err != nil {
+		t.Fatal(err)
+	}
+	code, out := call(t, s, "POST", "/system/updates/apply", map[string]any{"line": "gateway", "version": "0.1.136"})
+	data, _ := out["data"].(map[string]any)
+	if code != 200 || data["status"] != "started" {
+		t.Fatalf("apply: %d %v", code, out)
+	}
+	p, err := s.Plan(ctx, data["plan_id"].(string))
+	if err != nil || !reflect.DeepEqual(p.Nodes, []string{b.Node.ID}) {
+		t.Fatalf("plan members: %+v %v", p, err)
+	}
+	primary := a.Runtime.(*rollingRuntime)
+	calls := len(primary.calls)
+	p, handoffs := drive(t, s, engines, p.ID, nil)
+	if p.Status != "completed" || !reflect.DeepEqual(handoffs, []string{b.Node.ID}) || engines[1].Node.GatewayVersion != "0.1.136" {
+		t.Fatalf("plan: %+v %v", p, handoffs)
+	}
+	// Outside the plan, the primary kept serving its core and took b's traffic.
+	if len(primary.calls) != calls || slices.ContainsFunc(primary.log, func(e string) bool { return e != "serve-local" }) {
+		t.Fatalf("the primary outside the plan: calls %v, log %v", primary.calls[calls:], primary.log)
+	}
+	// Nothing left to update.
+	code, out = call(t, s, "POST", "/system/updates/apply", map[string]any{"line": "gateway", "version": "0.1.136"})
+	if c, _ := errorCode(out); code != 409 || c != "preflight_blocked" || !strings.Contains(stringify(out), issueAlreadyCurrent) {
+		t.Fatalf("all current: %d %v", code, out)
+	}
 }
 
 func TestPostgresApplyGatewayConfirmsASingleNodeAndBlocks(t *testing.T) {
@@ -326,6 +378,11 @@ func TestPostgresApplyGatewayConfirmsASingleNodeAndBlocks(t *testing.T) {
 	if c, _ := errorCode(out); code != 409 || c != "preflight_blocked" || !strings.Contains(stringify(out), "cannot replace its gateway binary") {
 		t.Fatalf("blocked: %d %v", code, out)
 	}
+	codes := out["error"].(map[string]any)["details"].(map[string]any)["blocker_codes"]
+	if want := []any{map[string]any{"code": issueNodeUnsupported, "params": map[string]any{"node": b.ID},
+		"message": "node " + b.ID + " cannot replace its gateway binary (it is not Linux, or <root>/gateway is not writable)"}}; !reflect.DeepEqual(codes, want) {
+		t.Fatalf("blocker codes: %v", codes)
+	}
 	code, out = call(t, s, "GET", "/system/update-check", nil)
 	if gw, _ := out["data"].(map[string]any)["gateway"].(map[string]any); code != 200 || gw["self_update"] != false {
 		t.Fatalf("update check: %d %v", code, out)
@@ -338,6 +395,9 @@ func TestPostgresApplyGatewayConfirmsASingleNodeAndBlocks(t *testing.T) {
 	data, _ := out["data"].(map[string]any)
 	if code != 200 || data["status"] != "needs_confirmation" || !strings.Contains(stringify(data["reasons"]), "single node") {
 		t.Fatalf("unconfirmed: %d %v", code, out)
+	}
+	if codes := stringify(data["reason_codes"]); codes != `[{"code":"single_node","message":"single node: about 10 s interruption","params":{"seconds":"10"}}]` {
+		t.Fatalf("reason codes: %s", codes)
 	}
 	if plans, err := s.Plans(ctx); err != nil || len(plans) != 0 {
 		t.Fatalf("plan created without confirmation: %d %v", len(plans), err)

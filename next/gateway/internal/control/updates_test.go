@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/updatesource"
@@ -139,11 +140,9 @@ func updateStore(t *testing.T, rolling bool) (*Store, *sourceFixture) {
 	s, _, _, _ := setupEnginesWith(t, rolling)
 	f := newSourceFixture(t)
 	s.Updates = f.service(t)
-	t.Cleanup(s.Updates.pending.Wait)
 	if _, err := s.SetUpdateSource(context.Background(), SourceRequest{Enabled: true, Kind: "url", URL: fixtureURL}); err != nil {
 		t.Fatal(err)
 	}
-	s.Updates.pending.Wait()
 	return s, f
 }
 
@@ -178,7 +177,6 @@ func errorCode(out map[string]any) (code, field string) {
 func TestPostgresUpdateSourceSettingsAndSecret(t *testing.T) {
 	s, _, _, _ := setupEngines(t)
 	s.Updates = newSourceFixture(t).service(t)
-	t.Cleanup(s.Updates.pending.Wait)
 	ctx := context.Background()
 
 	code, out := call(t, s, "GET", "/system/update-source", nil)
@@ -216,16 +214,20 @@ func TestPostgresUpdateSourceSettingsAndSecret(t *testing.T) {
 	}
 	s.Updates.Cipher = cipher
 
-	put := func(body map[string]any) map[string]any {
+	// put stores body and checks what the answer says became of the secret.
+	put := func(body map[string]any, changed bool, secret string) map[string]any {
 		t.Helper()
 		code, out := call(t, s, "PUT", "/system/update-source", body)
-		s.Updates.pending.Wait()
 		if code != 200 || strings.Contains(stringify(out), "tok-") {
 			t.Fatalf("%v: %d %v", body, code, out)
 		}
-		return out["data"].(map[string]any)
+		data := out["data"].(map[string]any)
+		if data["changed"] != changed || data["secret_change"] != secret {
+			t.Fatalf("%v: changed %v, secret %v", body, data["changed"], data["secret_change"])
+		}
+		return data
 	}
-	data = put(map[string]any{"enabled": true, "kind": "github", "repository": "https://github.com/o/r", "secret": "tok-1"})
+	data = put(map[string]any{"enabled": true, "kind": "github", "repository": "https://github.com/o/r", "secret": "tok-1"}, true, "set")
 	if data["has_secret"] != true || data["repository"] != "o/r" || data["revision"].(float64) != rev+1 {
 		t.Fatalf("set secret: %v", data)
 	}
@@ -245,19 +247,29 @@ func TestPostgresUpdateSourceSettingsAndSecret(t *testing.T) {
 	if _, err = moved.config(cipher); err == nil {
 		t.Fatal("secret opened for another source")
 	}
-	if data = put(map[string]any{"enabled": true, "kind": "github", "repository": "o/r"}); data["has_secret"] != true || data["revision"].(float64) != rev+1 {
+	if data = put(map[string]any{"enabled": true, "kind": "github", "repository": "o/r"}, false, "unchanged"); data["has_secret"] != true || data["revision"].(float64) != rev+1 {
 		t.Fatalf("unchanged source: %v", data)
 	}
-	if data = put(map[string]any{"enabled": false, "kind": "github", "repository": "o/r"}); data["has_secret"] != true || data["revision"].(float64) != rev+2 {
+	if data = put(map[string]any{"enabled": false, "kind": "github", "repository": "o/r"}, true, "unchanged"); data["has_secret"] != true || data["revision"].(float64) != rev+2 {
 		t.Fatalf("switch off: %v", data)
 	}
-	if data = put(map[string]any{"enabled": true, "kind": "github", "repository": "o/r2"}); data["has_secret"] != false || data["revision"].(float64) != rev+3 {
+	// The url a github source does not read is no move.
+	if data = put(map[string]any{"enabled": false, "kind": "github", "repository": "o/r", "url": fixtureURL}, true, "unchanged"); data["has_secret"] != true {
+		t.Fatalf("github source with a url: %v", data)
+	}
+	// Moved without a secret field: the secret is dropped, and says so.
+	if data = put(map[string]any{"enabled": true, "kind": "github", "repository": "o/r2"}, true, "cleared"); data["has_secret"] != false || data["revision"].(float64) != rev+4 {
 		t.Fatalf("moved source kept its secret: %v", data)
 	}
-	put(map[string]any{"enabled": true, "kind": "url", "url": fixtureURL, "secret": "tok-2"})
-	if data = put(map[string]any{"enabled": true, "kind": "url", "url": fixtureURL, "secret": ""}); data["has_secret"] != false || data["url"] != fixtureURL {
+	put(map[string]any{"enabled": true, "kind": "url", "url": fixtureURL, "repository": "o/r", "secret": "tok-2"}, true, "set")
+	// The repository a url source does not read is no move either.
+	if data = put(map[string]any{"enabled": true, "kind": "url", "url": fixtureURL, "repository": ""}, true, "unchanged"); data["has_secret"] != true || data["repository"] != "" {
+		t.Fatalf("url source without its old repository: %v", data)
+	}
+	if data = put(map[string]any{"enabled": true, "kind": "url", "url": fixtureURL, "secret": ""}, true, "cleared"); data["has_secret"] != false || data["url"] != fixtureURL {
 		t.Fatalf("clear secret: %v", data)
 	}
+	put(map[string]any{"enabled": true, "kind": "url", "url": fixtureURL, "secret": ""}, false, "unchanged")
 }
 
 func stringify(v any) string { b, _ := json.Marshal(v); return string(b) }
@@ -310,7 +322,9 @@ func TestPostgresUpdateCheckPersistsAndKeepsLastSuccess(t *testing.T) {
 	if _, err = s.SetUpdateSource(ctx, SourceRequest{Enabled: true, Kind: "url", URL: "https://other.example.com/rel/"}); err != nil {
 		t.Fatal(err)
 	}
-	s.Updates.pending.Wait()
+	if err = s.CheckUpdates(ctx); err != nil {
+		t.Fatal(err)
+	}
 	other, err := s.UpdateCheck(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +340,6 @@ func TestPostgresUpdateCheckPersistsAndKeepsLastSuccess(t *testing.T) {
 	if _, err = s.SetUpdateSource(ctx, SourceRequest{Enabled: true, Kind: "url", URL: fixtureURL}); err != nil {
 		t.Fatal(err)
 	}
-	s.Updates.pending.Wait()
 	s.Updates.Manager.TrustedKeys = map[string]ed25519.PublicKey{}
 	if err = s.CheckUpdates(ctx); err != nil {
 		t.Fatal(err)
@@ -388,7 +401,7 @@ func TestPostgresApplyCoreRolling(t *testing.T) {
 		t.Fatalf("plan: %+v %v", plan, err)
 	}
 	r, err := s.Release(ctx, plan.ReleaseDigest)
-	if err != nil || r.BundleBase != "" || r.SourceAssets[bundleDigest+".tar.gz"].Size != 100 || r.SourceRevision == 0 {
+	if err != nil || r.BundleBase != "" || r.SourceAssets[bundleDigest+".tar.gz"].Size != 100 || r.SourceLocator != "url:"+fixtureURL {
 		t.Fatalf("imported release: %+v %v", r, err)
 	}
 	code, again := call(t, s, "POST", "/system/updates/apply", map[string]any{"line": "core", "version": "0.2.0", "idempotency_key": "k1"})
@@ -398,6 +411,11 @@ func TestPostgresApplyCoreRolling(t *testing.T) {
 	code, out = call(t, s, "POST", "/system/updates/apply", map[string]any{"line": "core", "version": "0.2.0"})
 	if c, _ := errorCode(out); code != 409 || c != "preflight_blocked" || !strings.Contains(stringify(out), "another upgrade is active") {
 		t.Fatalf("second plan: %d %v", code, out)
+	}
+	details := out["error"].(map[string]any)["details"].(map[string]any)
+	if codes := stringify(details["blocker_codes"]); codes != `[{"code":"upgrade_active","message":"another upgrade is active"}]` ||
+		stringify(details["preflight"].(map[string]any)["blocker_codes"]) != codes {
+		t.Fatalf("blocker codes: %v", details)
 	}
 
 	// Bundles come through the source the release was imported from.
@@ -410,12 +428,53 @@ func TestPostgresApplyCoreRolling(t *testing.T) {
 	if !bytes.Equal(got, f.files["core/"+bundleDigest+".tar.gz"]) {
 		t.Fatalf("bundle %q", got)
 	}
-	if _, err = s.SetUpdateSource(ctx, SourceRequest{Enabled: true, Kind: "url", URL: fixtureURL, Secret: ptr("tok-3")}); err != nil {
+	// A new secret or the switch leaves the running plan's downloads alone;
+	// another url does not get the release's references, nor the secret.
+	for _, q := range []SourceRequest{{Enabled: true, Kind: "url", URL: fixtureURL, Secret: ptr("tok-3")}, {Enabled: false, Kind: "url", URL: fixtureURL}} {
+		if _, err = s.SetUpdateSource(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+		body, err := s.OpenSourceAsset(ctx, r, bundleDigest+".tar.gz", 100)
+		if err != nil {
+			t.Fatalf("asset after %+v: %v", q, err)
+		}
+		body.Close()
+	}
+	if _, err = s.SetUpdateSource(ctx, SourceRequest{Enabled: true, Kind: "url", URL: "https://other.example.com/rel/"}); err != nil {
 		t.Fatal(err)
 	}
-	s.Updates.pending.Wait()
 	if _, err = s.OpenSourceAsset(ctx, r, bundleDigest+".tar.gz", 100); err == nil || !strings.Contains(err.Error(), "apply it again") {
-		t.Fatalf("asset of a changed source: %v", err)
+		t.Fatalf("asset of a moved source: %v", err)
+	}
+}
+
+// TestPostgresSourceChangeWakesTheCheckLoop: a source stored through any node
+// is checked at once by that node's RunUpdateChecks, which ends with it.
+func TestPostgresSourceChangeWakesTheCheckLoop(t *testing.T) {
+	s, _ := updateStore(t, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.RunUpdateChecks(ctx, "not-the-primary"); close(done) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	if _, err := s.SetUpdateSource(ctx, SourceRequest{Enabled: true, Kind: "url", URL: fixtureURL, Secret: ptr("tok-4")}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		c, err := s.UpdateCheck(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Core.LatestVersion == "0.2.0" && c.Gateway.LatestVersion == "0.1.136" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the new source was not checked: %+v", c)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -427,6 +486,16 @@ func TestPostgresApplyCorePrimaryFirstNeedsConfirmation(t *testing.T) {
 	data, _ := out["data"].(map[string]any)
 	if code != 200 || data["status"] != "needs_confirmation" || !strings.Contains(stringify(data["reasons"]), "without rolling updates") || data["preflight"] == nil {
 		t.Fatalf("unconfirmed: %d %v", code, out)
+	}
+	reasons, codes := data["reasons"].([]any), data["reason_codes"].([]any)
+	if len(codes) != len(reasons) || len(codes) == 0 {
+		t.Fatalf("reason codes %v for %v", codes, reasons)
+	}
+	for i, c := range codes {
+		c := c.(map[string]any)
+		if c["message"] != reasons[i] || (c["code"] == issueNodeNotRolling) != (c["params"] != nil) {
+			t.Fatalf("reason code %v for %q", c, reasons[i])
+		}
 	}
 	if plans, err := s.Plans(context.Background()); err != nil || len(plans) != 0 {
 		t.Fatalf("plan created without confirmation: %d %v", len(plans), err)

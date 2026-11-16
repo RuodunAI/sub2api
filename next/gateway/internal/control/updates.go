@@ -1,7 +1,6 @@
 package control
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,7 +10,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -37,8 +35,13 @@ const (
 	updateCheckPoll     = time.Minute
 	// updateCheckDebounce is how recent a result answers a forced check.
 	updateCheckDebounce = 30 * time.Second
-	// updateCheckBudget bounds one check under the cluster lock.
+	// updateCheckBudget bounds one check under the cluster lock, and so a
+	// forced check. applyBudget bounds an apply's import and preflight; its
+	// plan creation (at most the 30 s cluster change lock) then runs to its
+	// end even if the caller left. The core's bridge waits longer than
+	// either (server/internal/updater slowBridgeTimeout).
 	updateCheckBudget = 3 * time.Minute
+	applyBudget       = 2 * time.Minute
 )
 
 // UpdateService holds what update checks and imports need beyond the store.
@@ -47,12 +50,12 @@ type UpdateService struct {
 	// Cipher seals the source secret; nil without SUB2API_MASTER_KEY.
 	Cipher  *secret.Cipher
 	Sources updatesource.Options
-	// pending counts the checks started after a source change.
-	pending sync.WaitGroup
+	// sourceChanged wakes RunUpdateChecks after a source change.
+	sourceChanged chan struct{}
 }
 
 func NewUpdateService(m *release.Manager, cipher *secret.Cipher, allowPrivate bool) *UpdateService {
-	return &UpdateService{Manager: m, Cipher: cipher, Sources: updatesource.Options{AllowPrivate: allowPrivate}}
+	return &UpdateService{Manager: m, Cipher: cipher, Sources: updatesource.Options{AllowPrivate: allowPrivate}, sourceChanged: make(chan struct{}, 1)}
 }
 
 var (
@@ -91,14 +94,17 @@ func (r sourceRow) view() UpdateSource {
 		DefaultRepository: updatesource.DefaultRepository, Revision: r.revision}
 }
 
-// aad binds a sealed secret to the source it was given for.
-func (r sourceRow) aad() []byte {
-	locator := r.repo
+// locator names where the source's releases live: the kind and its
+// repository or url. Asset references and the secret belong to it.
+func (r sourceRow) locator() string {
 	if r.kind == string(updatesource.URL) {
-		locator = r.url
+		return r.kind + ":" + r.url
 	}
-	return []byte("updater:source-secret:" + r.kind + ":" + locator)
+	return r.kind + ":" + r.repo
 }
+
+// aad binds a sealed secret to the source it was given for.
+func (r sourceRow) aad() []byte { return []byte("updater:source-secret:" + r.locator()) }
 
 // config opens the secret; it fails when the secret cannot be read.
 func (r sourceRow) config(c *secret.Cipher) (updatesource.Config, error) {
@@ -166,10 +172,26 @@ func validSecret(s string) bool {
 	return len(s) > 0 && len(s) <= 4096
 }
 
-// SetUpdateSource stores the source. A changed kind, repository or url drops
-// a secret not given anew, and any change raises the revision, which retires
-// every stored check result.
-func (s *Store) SetUpdateSource(ctx context.Context, q SourceRequest) (out UpdateSource, err error) {
+// The secret_change of a SourceUpdate.
+const (
+	secretSet       = "set"
+	secretCleared   = "cleared"
+	secretUnchanged = "unchanged"
+)
+
+// SourceUpdate is the PUT answer: the stored source, whether the request
+// changed it, and what became of its secret (set, cleared or unchanged; a
+// moved source drops a secret not given anew), for the core's audit.
+type SourceUpdate struct {
+	UpdateSource
+	Changed      bool   `json:"changed"`
+	SecretChange string `json:"secret_change"`
+}
+
+// SetUpdateSource stores the source. A changed locator (the kind, and the
+// repository or url it reads) drops a secret not given anew, and any change
+// raises the revision, which retires every stored check result.
+func (s *Store) SetUpdateSource(ctx context.Context, q SourceRequest) (out SourceUpdate, err error) {
 	next, err := q.normalize()
 	if err != nil {
 		return out, err
@@ -178,24 +200,25 @@ func (s *Store) SetUpdateSource(ctx context.Context, q SourceRequest) (out Updat
 	if setSecret && (s.Updates == nil || s.Updates.Cipher == nil) {
 		return out, errMasterKeyMissing
 	}
-	changed := false
+	out.SecretChange = secretUnchanged
 	err = s.withTx(ctx, func(tx *gorm.DB) error {
 		row, err := s.readSource(s.clusterRow(tx).Clauses(forUpdate()))
 		if err != nil {
 			return err
 		}
 		next.secret, next.revision = row.secret, row.revision
-		moved := row.kind != next.kind || row.repo != next.repo || row.url != next.url
 		switch {
 		case setSecret:
 			if next.secret, err = s.Updates.Cipher.Encrypt([]byte(*q.Secret), next.aad()); err != nil {
 				return err
 			}
-		case q.Secret != nil || moved:
+			out.SecretChange = secretSet
+		case (q.Secret != nil || row.locator() != next.locator()) && len(row.secret) > 0:
 			next.secret = nil
+			out.SecretChange = secretCleared
 		}
-		changed = moved || row.enabled != next.enabled || !bytes.Equal(row.secret, next.secret)
-		if !changed {
+		out.Changed = out.SecretChange != secretUnchanged || row.enabled != next.enabled || row.kind != next.kind || row.repo != next.repo || row.url != next.url
+		if !out.Changed {
 			return nil
 		}
 		next.revision++
@@ -203,46 +226,43 @@ func (s *Store) SetUpdateSource(ctx context.Context, q SourceRequest) (out Updat
 			"update_repository": next.repo, "update_url": next.url, "update_secret_enc": next.secret,
 			"update_source_revision": gorm.Expr("update_source_revision+1")}).Error
 	})
-	if err == nil && changed && next.enabled && s.Updates != nil {
-		s.checkSoon()
-	}
-	return next.view(), err
-}
-
-// checkSoon checks the new source in the background, so the console shows
-// its result without waiting for the primary's next look.
-func (s *Store) checkSoon() {
-	s.Updates.pending.Add(1)
-	go func() {
-		defer s.Updates.pending.Done()
-		ctx, cancel := context.WithTimeout(context.Background(), updateCheckBudget)
-		defer cancel()
-		if err := s.CheckUpdates(ctx); err != nil {
-			slog.Warn("update check after a source change failed", "err", err)
+	if err == nil && out.Changed && next.enabled && s.Updates != nil {
+		// RunUpdateChecks checks the new source at once, so the console
+		// shows its result without waiting for the primary's next look.
+		select {
+		case s.Updates.sourceChanged <- struct{}{}:
+		default:
 		}
-	}()
+	}
+	out.UpdateSource = next.view()
+	return out, err
 }
 
 // RunUpdateChecks checks the update source on the upgrade primary: a minute
 // after start, then whenever the stored results are older than
-// updateCheckInterval or describe another source or baseline.
+// updateCheckInterval or describe another source or baseline. A source
+// changed through this node is checked here at once, primary or not.
 func (s *Store) RunUpdateChecks(ctx context.Context, node string) {
 	tick := time.NewTicker(updateCheckPoll)
 	defer tick.Stop()
+	var changed <-chan struct{}
+	if s.Updates != nil {
+		changed = s.Updates.sourceChanged
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-		}
-		primary, _, _, err := s.ClusterState(ctx)
-		if err != nil || primary != node {
-			continue
+			if primary, _, _, err := s.ClusterState(ctx); err != nil || primary != node {
+				continue
+			}
+		case <-changed:
 		}
 		if due, err := s.updateCheckDue(ctx, updateCheckInterval); err != nil || !due {
 			continue
 		}
-		if err = s.CheckUpdates(ctx); err != nil && ctx.Err() == nil {
+		if err := s.CheckUpdates(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("update check failed", "err", err)
 		}
 	}
@@ -639,10 +659,12 @@ type ApplyRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 type ApplyResult struct {
-	Status    string     `json:"status"` // started | needs_confirmation
-	PlanID    string     `json:"plan_id,omitempty"`
-	Reasons   []string   `json:"reasons,omitempty"`
-	Preflight *Preflight `json:"preflight,omitempty"`
+	Status  string   `json:"status"` // started | needs_confirmation
+	PlanID  string   `json:"plan_id,omitempty"`
+	Reasons []string `json:"reasons,omitempty"`
+	// ReasonCodes are the Reasons as Issues, in the same order.
+	ReasonCodes []Issue    `json:"reason_codes,omitempty"`
+	Preflight   *Preflight `json:"preflight,omitempty"`
 }
 
 // blockedError is a preflight with blockers.
@@ -657,7 +679,7 @@ func (e *blockedError) Error() string { return strings.Join(e.preflight.Blockers
 // to hand its traffic to.
 func (s *Store) Apply(ctx context.Context, q ApplyRequest, actor string) (ApplyResult, error) {
 	var digest string
-	var confirm func(Preflight, []Node) []string
+	var confirm func(Preflight, []Node) []Issue
 	switch q.Line {
 	case updatesource.LineCore:
 		r, err := s.importCore(ctx, q.Version)
@@ -665,7 +687,7 @@ func (s *Store) Apply(ctx context.Context, q ApplyRequest, actor string) (ApplyR
 			return ApplyResult{}, err
 		}
 		digest = r.Digest
-		confirm = func(pf Preflight, nodes []Node) []string {
+		confirm = func(pf Preflight, nodes []Node) []Issue {
 			if pf.Strategy == Rolling {
 				return nil
 			}
@@ -677,9 +699,9 @@ func (s *Store) Apply(ctx context.Context, q ApplyRequest, actor string) (ApplyR
 			return ApplyResult{}, err
 		}
 		digest = r.Digest
-		confirm = func(_ Preflight, nodes []Node) []string {
+		confirm = func(_ Preflight, nodes []Node) []Issue {
 			if enabledNodes(nodes) == 1 {
-				return []string{"single node: about 10 s interruption"}
+				return []Issue{{Code: issueSingleNode, Params: map[string]string{"seconds": "10"}, Message: "single node: about 10 s interruption"}}
 			}
 			return nil
 		}
@@ -711,13 +733,15 @@ func (s *Store) Apply(ctx context.Context, q ApplyRequest, actor string) (ApplyR
 		return ApplyResult{}, err
 	}
 	if reasons := confirm(pf, nodes); len(reasons) > 0 && !q.Confirm {
-		return ApplyResult{Status: "needs_confirmation", Reasons: reasons, Preflight: &pf}, nil
+		return ApplyResult{Status: "needs_confirmation", Reasons: messages(reasons), ReasonCodes: reasons, Preflight: &pf}, nil
 	}
 	key := q.IdempotencyKey
 	if key == "" {
 		key = "apply:" + digest + ":" + strconv.FormatInt(pf.ExpectedRevision, 10)
 	}
-	p, err := s.Create(ctx, digest, pf.ExpectedRevision, key, actor)
+	// Once started, the plan's creation outlives the request, so that its
+	// answer, and the core's audit of it, is not lost to a caller leaving.
+	p, err := s.Create(context.WithoutCancel(ctx), digest, pf.ExpectedRevision, key, actor)
 	return ApplyResult{Status: "started", PlanID: p.ID}, err
 }
 
@@ -741,7 +765,7 @@ func (s *Store) importCore(ctx context.Context, version string) (Release, error)
 	if err != nil {
 		return r, err
 	}
-	r.SourceRevision = row.revision
+	r.SourceLocator = row.locator()
 	if err = s.storeImported(ctx, row.revision, newReleaseRecord(r)); err != nil {
 		return r, err
 	}
@@ -762,7 +786,7 @@ func (s *Store) importGateway(ctx context.Context, version string) (GatewayRelea
 	signed, _ := json.Marshal(r.Signed)
 	assets, _ := json.Marshal(r.SourceAssets)
 	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, Line: updatesource.LineGateway,
-		SourceAssets: assets, SourceRevision: &row.revision}
+		SourceAssets: assets, SourceLocator: row.locator()}
 	if err = s.storeImported(ctx, row.revision, rec); err != nil {
 		return r, err
 	}
@@ -796,8 +820,8 @@ func (s *Store) sourceListing(ctx context.Context, line, version string) (update
 }
 
 // storeImported stores rec, a release verified from the source at revision,
-// unless the source changed meanwhile; a release imported before from the
-// source takes the new asset references.
+// unless the source changed meanwhile; a release imported before from a
+// source takes the new asset references and locator.
 func (s *Store) storeImported(ctx context.Context, revision int64, rec *releaseRecord) error {
 	return s.withTx(ctx, func(tx *gorm.DB) error {
 		var now int64
@@ -807,20 +831,21 @@ func (s *Store) storeImported(ctx context.Context, revision int64, rec *releaseR
 		if now != revision {
 			return ErrConflict
 		}
-		return tx.Clauses(clause.OnConflict{Columns: columns("digest"), DoUpdates: clause.AssignmentColumns([]string{"source_assets", "source_revision"}),
+		return tx.Clauses(clause.OnConflict{Columns: columns("digest"), DoUpdates: clause.AssignmentColumns([]string{"source_assets", "source_locator"}),
 			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "updater.releases.bundle_base=''"}}}}).Create(rec).Error
 	})
 }
 
 // OpenSourceAsset opens an asset of r, a release imported from the update
-// source, through the source as configured now: it must be the revision r
-// was imported at, since asset references belong to their source.
+// source, through the source as configured now: it must still read the
+// locator r was imported from, since asset references and the secret belong
+// to it. Other changes (the switch, a new secret) leave running plans alone.
 func (s *Store) OpenSourceAsset(ctx context.Context, r Release, name string, max int64) (io.ReadCloser, error) {
-	return s.openAsset(ctx, r.SourceAssets, r.SourceRevision, name, max)
+	return s.openAsset(ctx, r.SourceAssets, r.SourceLocator, name, max)
 }
 
-// openAsset opens asset name of a release imported at revision with assets.
-func (s *Store) openAsset(ctx context.Context, assets map[string]updatesource.Asset, revision int64, name string, max int64) (io.ReadCloser, error) {
+// openAsset opens asset name of a release imported from locator with assets.
+func (s *Store) openAsset(ctx context.Context, assets map[string]updatesource.Asset, locator, name string, max int64) (io.ReadCloser, error) {
 	a, ok := assets[name]
 	if !ok {
 		return nil, fmt.Errorf("release has no source asset %s", name)
@@ -832,8 +857,8 @@ func (s *Store) openAsset(ctx context.Context, assets map[string]updatesource.As
 	if err != nil {
 		return nil, err
 	}
-	if row.revision != revision {
-		return nil, errors.New("the update source changed after this release was imported; apply it again")
+	if row.locator() != locator {
+		return nil, errors.New("the update source moved after this release was imported; apply it again")
 	}
 	src, err := s.Updates.source(row)
 	if err != nil {
@@ -892,11 +917,14 @@ func (s *Store) updateHandlers(mux *http.ServeMux, reply func(http.ResponseWrite
 			invalid(w, "version", "version must be a stable semantic version")
 			return
 		}
-		v, err := s.Apply(r.Context(), q, r.Header.Get("X-Updater-Actor"))
+		ctx, cancel := context.WithTimeout(r.Context(), applyBudget)
+		defer cancel()
+		v, err := s.Apply(ctx, q, r.Header.Get("X-Updater-Actor"))
 		var blocked *blockedError
 		switch {
 		case errors.As(err, &blocked):
-			writeError(w, http.StatusConflict, "preflight_blocked", err.Error(), map[string]any{"blockers": blocked.preflight.Blockers, "preflight": blocked.preflight})
+			writeError(w, http.StatusConflict, "preflight_blocked", err.Error(), map[string]any{"blockers": blocked.preflight.Blockers,
+				"blocker_codes": blocked.preflight.BlockerCodes, "preflight": blocked.preflight})
 		case errors.Is(err, errReleaseNotFound):
 			writeError(w, http.StatusNotFound, "release_not_found", err.Error(), nil)
 		default:

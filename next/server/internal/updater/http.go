@@ -29,10 +29,26 @@ import (
 // as "Authorization: Bearer <token>" on every forwarded request; empty sends
 // none (the gateway 0.1.133 shell, see config.ManagedConfig.UpdaterToken).
 func RegisterRoutes(r *httpapi.Router, socketPath, token string, db *store.DB) {
-	client := &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	}}}
 	registerRoutes(r, socketPath != "", client, token, db)
+}
+
+// How long a forwarded request waits for the gateway. The slowRoutes (a
+// forced update check, an update apply) read the update source, listings and
+// signed manifests, first: the gateway bounds them at 3 minutes (control
+// updateCheckBudget; applyBudget plus plan creation), and slowBridgeTimeout
+// outlasts that.
+const (
+	bridgeTimeout     = time.Minute
+	slowBridgeTimeout = 4 * time.Minute
+)
+
+// slowRoutes are keyed by method and route pattern, like auditRules.
+var slowRoutes = map[string]bool{
+	"GET /api/v1/system/update-check":   true,
+	"POST /api/v1/system/updates/apply": true,
 }
 
 func registerRoutes(r *httpapi.Router, available bool, client *http.Client, token string, db *store.DB) {
@@ -47,8 +63,19 @@ func registerRoutes(r *httpapi.Router, available bool, client *http.Client, toke
 			httpapi.Fail(c, core.ErrInvalidArgument)
 			return
 		}
+		// A mutation, once forwarded, waits for its answer even when the
+		// console leaves: what the gateway committed is always audited.
+		ctx, timeout := c.Request.Context(), bridgeTimeout
+		if c.Request.Method != http.MethodGet {
+			ctx = context.WithoutCancel(ctx)
+		}
+		if slowRoutes[c.Request.Method+" "+c.FullPath()] {
+			timeout = slowBridgeTimeout
+		}
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
 		path := strings.TrimPrefix(c.Request.URL.Path, "/api/v1")
-		req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, "http://shell"+path, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, c.Request.Method, "http://shell"+path, bytes.NewReader(body))
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
@@ -158,29 +185,23 @@ func auditForwarded(c *gin.Context, db *store.DB, uid int64, request, response [
 	}
 }
 
-// updateSourceDetails records the stored source and what the request did to
-// its secret, never the secret: omitted keeps it, "" clears it, a value sets it.
-func updateSourceDetails(request, response []byte) (string, map[string]any, bool) {
-	var asked struct {
-		Secret *string `json:"secret"`
-	}
+// updateSourceDetails records the stored source and what the gateway did to
+// its secret (secret_change: set, cleared or unchanged; a moved source drops
+// the secret unasked), never the secret. An answer that changed nothing is
+// not audited.
+func updateSourceDetails(_, response []byte) (string, map[string]any, bool) {
 	var stored struct {
 		Data struct {
-			Kind       string `json:"kind"`
-			Repository string `json:"repository"`
-			URL        string `json:"url"`
+			Kind         string `json:"kind"`
+			Repository   string `json:"repository"`
+			URL          string `json:"url"`
+			Changed      bool   `json:"changed"`
+			SecretChange string `json:"secret_change"`
 		} `json:"data"`
 	}
-	_ = json.Unmarshal(request, &asked)
 	_ = json.Unmarshal(response, &stored)
-	secret := "set"
-	switch {
-	case asked.Secret == nil:
-		secret = "unchanged"
-	case *asked.Secret == "":
-		secret = "cleared"
-	}
-	return "", map[string]any{"kind": stored.Data.Kind, "repository": stored.Data.Repository, "url": stored.Data.URL, "secret": secret}, true
+	d := stored.Data
+	return "", map[string]any{"kind": d.Kind, "repository": d.Repository, "url": d.URL, "secret": d.SecretChange}, d.Changed
 }
 
 // applyDetails records a started update plan; an answer that still needs a

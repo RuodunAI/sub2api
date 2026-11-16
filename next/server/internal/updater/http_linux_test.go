@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -59,7 +60,7 @@ func TestBridgeAuditsOnlySuccessfulMutations(t *testing.T) {
 		w.WriteHeader(201)
 		switch {
 		case r.URL.Path == "/system/update-source":
-			_, _ = w.Write([]byte(`{"data":{"enabled":true,"kind":"github","repository":"owner/repo","url":"","has_secret":true}}`))
+			_, _ = w.Write([]byte(`{"data":{"enabled":true,"kind":"github","repository":"owner/repo","url":"","has_secret":true,"changed":true,"secret_change":"set"}}`))
 		case r.URL.Path == "/system/updates/apply" && strings.Contains(string(body), `"confirm":true`):
 			_, _ = w.Write([]byte(`{"data":{"status":"started","plan_id":"applied-plan"}}`))
 		case r.URL.Path == "/system/updates/apply":
@@ -119,5 +120,56 @@ func TestBridgeAuditsOnlySuccessfulMutations(t *testing.T) {
 	}
 	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE detail::text LIKE '%' || $1 || '%')`, secret).Scan(&leaked); err != nil || leaked {
 		t.Fatal("secret reached the audit log", err)
+	}
+}
+
+// A mutation the gateway is still committing when the console leaves is
+// waited for, answered and audited.
+func TestBridgeAuditsAMutationTheConsoleLeft(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	var uid int64
+	if err := db.SQL.QueryRowContext(ctx, `INSERT INTO users(email,password_hash) VALUES('updater-left@test','test') RETURNING id`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(t.TempDir(), "shell.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	shell := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		if r.Context().Err() != nil {
+			t.Error("the forwarded request was cancelled with the console's")
+		}
+		_, _ = w.Write([]byte(`{"data":{"status":"started","plan_id":"late-plan"}}`))
+	})}
+	go func() { _ = shell.Serve(listener) }()
+	t.Cleanup(func() { _ = shell.Close() })
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	auth := bridgeAuth{id: uid}
+	RegisterRoutes(httpapi.NewRouter(engine, auth, auth), socket, "", db)
+	console, leave := context.WithCancel(ctx)
+	req := httptest.NewRequest("POST", "/api/v1/system/updates/apply", strings.NewReader(`{"line":"core","version":"0.1.291","confirm":true}`)).WithContext(console)
+	req.Header.Set("Authorization", "Bearer test")
+	done := make(chan *httptest.ResponseRecorder)
+	go func() {
+		res := httptest.NewRecorder()
+		engine.ServeHTTP(res, req)
+		done <- res
+	}()
+	<-entered
+	leave()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	if res := <-done; res.Code != 200 {
+		t.Fatalf("answer after the console left: %d %s", res.Code, res.Body.String())
+	}
+	var audited bool
+	if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM audit_logs WHERE action='system.update.apply' AND target_id='late-plan' AND user_id=$1)`, uid).Scan(&audited); err != nil || !audited {
+		t.Fatal("the committed apply was not audited", err)
 	}
 }

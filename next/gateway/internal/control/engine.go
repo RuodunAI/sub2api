@@ -452,7 +452,9 @@ func (e *Engine) coordinateTx(ctx context.Context, tx *gorm.DB, primary string) 
 	if err = json.Unmarshal(raw, &p.Nodes); err != nil {
 		return false, err
 	}
-	if len(p.Nodes) < 1 || p.Nodes[0] != primary {
+	// The primary leads its plans; a gateway plan leaves it out when it
+	// already runs the plan's gateway (gatewayPreflight).
+	if len(p.Nodes) < 1 || (p.Nodes[0] != primary && !p.leaves(primary)) {
 		return false, errors.New("invalid stored upgrade membership")
 	}
 	steps := Steps(p)
@@ -581,7 +583,8 @@ func (e *Engine) Work(ctx context.Context) error {
 		// only from the persisted route/release, never from a local symlink.
 		state, _, statusErr := e.Runtime.Status(ctx)
 		var active, outside bool
-		if err := gormpg.ExistsQuery(db, e.Store.activeUpgrade(db), e.Store.activeUpgrade(db).Where("NOT jsonb_exists(nodes, ?)", e.Node.ID)).Row().Scan(&active, &outside); err != nil {
+		excluded := e.Store.activeUpgrade(db).Where("NOT jsonb_exists(nodes, ?) AND strategy NOT IN ?", e.Node.ID, []string{GatewayRolling, GatewayRollback})
+		if err := gormpg.ExistsQuery(db, e.Store.activeUpgrade(db), excluded).Row().Scan(&active, &outside); err != nil {
 			return err
 		}
 		e.busy.Store(active)
@@ -1051,7 +1054,7 @@ func (e *Engine) Recover(ctx context.Context, bootstrap bool) error {
 	if err != nil {
 		return err
 	}
-	if active := activePlan(plans); active != nil {
+	if active := activePlan(plans); active != nil && !active.leaves(e.Node.ID) {
 		return e.recoverActivePlan(ctx, *active, primary)
 	}
 	if bootstrap {
