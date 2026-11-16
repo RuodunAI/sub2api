@@ -33,6 +33,9 @@ type Deps struct {
 	// Redis is the second level of the Casbin user-role cache, shared by the
 	// nodes; nil keeps it in the process only.
 	Redis redis.UniversalClient
+	// Shadow tunes the shadow comparison of the legacy loader and Casbin;
+	// the zero value is production's (tests: authz/authztest.Shadow).
+	Shadow ShadowOptions
 }
 
 // Service is the authz module. It implements core.Authorizer and
@@ -82,7 +85,7 @@ func New(d Deps) *Service {
 	if d.PollInterval <= 0 {
 		d.PollInterval = 30 * time.Second
 	}
-	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, users: map[int64]core.PermissionSet{}, shadow: newShadow()}
+	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, users: map[int64]core.PermissionSet{}, shadow: newShadow(d.Shadow)}
 	if d.DB != nil {
 		loader := casbinx.NewLoader(d.DB)
 		s.casbin = casbinx.NewResolver(loader, casbinx.NewRoleCache(loader, d.Redis), SelfPermissionKeys())

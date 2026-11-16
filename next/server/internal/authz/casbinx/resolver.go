@@ -3,6 +3,7 @@ package casbinx
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -56,22 +57,57 @@ func (r *resolver) Reread(ctx context.Context, uid int64) error {
 	return err
 }
 
+// Pauses between two reads of a resolution whose halves met different
+// versions (resolve): the first retry is at once, the next ones back off.
+const (
+	skewPauseFirst = 2 * time.Millisecond
+	skewPauseMax   = 100 * time.Millisecond
+)
+
+func nextSkewPause(p time.Duration) time.Duration {
+	return max(skewPauseFirst, min(2*p, skewPauseMax))
+}
+
 // resolve returns a snapshot and uid's roles read at one version, min or
 // newer. The two reads may land on different versions: a write committed
 // between them, or the role cache holds a read newer than the snapshot.
 // Combining them would make a set no version ever held (a role revoked and
 // granted something new in one write: the old link with the new grant), so
-// both are read once more at the newer of the two; still apart, ErrSkew.
+// both are read again at the newer of the two, with a growing pause between
+// rounds, until they meet: under a burst of writes (a bulk import bumps the
+// version at each user) a round lands between two of them sooner or later.
+// Only past the snapshot wait (snapshotOptions.Wait), or ctx's end, does it
+// give up, with ErrSkew: a set it cannot read at one version is refused
+// (fail closed), as a snapshot it cannot have in time is.
 func (r *resolver) resolve(ctx context.Context, uid, min int64) (*snapshot, UserRoles, error) {
+	deadline := time.Now().Add(r.snaps.o.Wait)
 	s, ur, err := r.read(ctx, uid, min)
 	if err != nil || ur.Version == s.version {
 		return s, ur, err
 	}
-	s, ur, err = r.read(ctx, uid, max(s.version, ur.Version))
-	if err != nil || ur.Version == s.version {
-		return s, ur, err
+	wctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	for pause := time.Duration(0); ; pause = nextSkewPause(pause) {
+		skew := fmt.Errorf("%w: user %d: policy at version %d, roles at %d", ErrSkew, uid, s.version, ur.Version)
+		min = max(s.version, ur.Version)
+		select {
+		case <-time.After(pause):
+		case <-wctx.Done():
+			if ctx.Err() != nil {
+				return nil, UserRoles{}, ctx.Err()
+			}
+			return nil, UserRoles{}, skew
+		}
+		s, ur, err = r.read(wctx, uid, min)
+		switch {
+		case err != nil && wctx.Err() != nil && ctx.Err() == nil:
+			return nil, UserRoles{}, skew // the wait ran out while skewed
+		case err != nil:
+			return nil, UserRoles{}, err
+		case ur.Version == s.version:
+			return s, ur, nil
+		}
 	}
-	return nil, UserRoles{}, fmt.Errorf("%w: user %d: policy at version %d, roles at %d", ErrSkew, uid, s.version, ur.Version)
 }
 
 // read ensures a snapshot of version min or newer and warms uid's roles at

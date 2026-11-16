@@ -10,12 +10,13 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 func TestTransferSuperAdminHTTP(t *testing.T) {
-	k := newKeyEnv(t)
+	k := newKeyEnv(t, authztest.AcceptStaleCache) // disables a user with a raw UPDATE
 	s, ctx := k.s, context.Background()
 	const path = "/system/super-admin/transfer"
 	rootLogin := mustLogin(t, s, adminEmail, adminPassword)
@@ -101,7 +102,7 @@ func TestTransferSuperAdminHTTP(t *testing.T) {
 func TestRecoverSuperAdmin(t *testing.T) {
 	for _, holders := range []int{0, 1, 2} {
 		t.Run(strconv.Itoa(holders), func(t *testing.T) {
-			e := setupAdmin(t)
+			e := setupAdmin(t, authztest.AcceptStaleCache) // disables users with raw UPDATEs
 			s, ctx := e.svc, audit.WithSource(context.Background(), "cli")
 			root := mustLogin(t, s, adminEmail, adminPassword).User.ID
 			other := mustCreateUser(t, s, "other@example.com")
@@ -169,7 +170,7 @@ func TestRecoverSuperAdminNewSignInWorksOnARunningNode(t *testing.T) {
 		}
 	}
 
-	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: authz.New(authz.Deps{DB: s.db})}) // as cmd/sub2api/admin.go
+	cli := New(Deps{DB: s.db, Config: e.cfg, Authz: authz.New(authz.Deps{DB: s.db, Shadow: authztest.Shadow()})}) // as cmd/sub2api/admin.go
 	for _, email := range []string{"target@example.com", adminEmail} {
 		if _, err := cli.RecoverSuperAdmin(ctx, email, RecoverOptions{}); err != nil {
 			t.Fatal(err)
@@ -187,7 +188,7 @@ func TestRecoverSuperAdminNewSignInWorksOnARunningNode(t *testing.T) {
 // carries: the row is not read on every request (a token's version is above
 // anything a missing row could otherwise be cached with).
 func TestStatusCacheKeepsADeletedUser(t *testing.T) {
-	s, ctx := setupAdmin(t).svc, context.Background()
+	s, ctx := setupAdmin(t, authztest.AcceptStaleCache).svc, context.Background() // deletes the user with raw UPDATEs
 	uid := mustCreateUser(t, s, "gone@example.com")
 	exec := func(q string) {
 		t.Helper()

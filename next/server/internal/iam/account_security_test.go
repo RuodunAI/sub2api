@@ -28,6 +28,7 @@ import (
 	"github.com/pquerna/otp/hotp"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ccgateway"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -35,9 +36,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 )
 
-func setupAdmin(t *testing.T) *env {
+func setupAdmin(t *testing.T, opts ...authztest.Option) *env {
 	t.Helper()
-	e := setup(t)
+	e := setup(t, opts...)
 	if err := e.svc.Bootstrap(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -725,7 +726,7 @@ func TestPasskeyRegistrationAndLogin(t *testing.T) {
 }
 
 func TestPasskeyLoginRejects(t *testing.T) {
-	e := setupAdmin(t)
+	e := setupAdmin(t, authztest.AcceptStaleCache) // disables the user with a raw UPDATE
 	s, ctx := e.svc, context.Background()
 	id := mustLogin(t, s, adminEmail, adminPassword).User.ID
 	a := newAuthenticator(t, consoleOrigin, consoleHost)
@@ -865,9 +866,9 @@ type keyEnv struct {
 	userID int64
 }
 
-func newKeyEnv(t *testing.T) *keyEnv {
+func newKeyEnv(t *testing.T, opts ...authztest.Option) *keyEnv {
 	t.Helper()
-	e := setupAdmin(t)
+	e := setupAdmin(t, opts...)
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	r := httpapi.NewRouter(engine, e.svc, e.authz)
@@ -1225,7 +1226,7 @@ func TestAccessKeyCannotManageSignIn(t *testing.T) {
 }
 
 func TestAccessKeyLifecycle(t *testing.T) {
-	k := newKeyEnv(t)
+	k := newKeyEnv(t, authztest.AcceptStaleCache) // disables the user with a raw UPDATE
 	ctx := context.Background()
 	root := mustLogin(t, k.s, adminEmail, adminPassword).User.ID
 
@@ -1288,7 +1289,7 @@ func TestAccessKeyLifecycle(t *testing.T) {
 func ptr[T any](v T) *T { return &v }
 
 func TestAccessKeyCatalogHasOnlyWhatTheUserHolds(t *testing.T) {
-	k := newKeyEnv(t)
+	k := newKeyEnv(t, authztest.AcceptStaleCache) // disables a permission with a raw UPDATE
 	ctx := context.Background()
 	k.grantRole(t, k.userID, "reader", "user:read")
 	mods, err := k.s.AccessKeyPermissions(ctx, k.userID)

@@ -64,11 +64,9 @@ const (
 	// other keys (account:balance:<id>, sticky:stats:...); c marks a cache
 	// entry, ur the user's roles.
 	roleCacheKeyPrefix = "authz:c:ur:"
+	// roleCacheWarnEvery throttles the warnings of Valkey errors.
+	roleCacheWarnEvery = time.Minute
 )
-
-// roleCacheWarnEvery throttles the warnings of Valkey errors; a variable so
-// tests can shorten it.
-var roleCacheWarnEvery = time.Minute
 
 // roleEntry is one user's roles at version v. It is immutable once stored
 // except for used, the cache's clock at its last Warm, which picks the
@@ -258,11 +256,16 @@ func (c *roleCache) l2() bool {
 //
 // Not a newer one: a database restored from a backup goes back to an older
 // authz version, and the entries written before the restore are newer than
-// anything it holds; one version number names one state again once the
-// restored database reaches it, so an exact match is safe where "at least
-// min" would answer from before the restore. The resolver asks Warm at its
-// snapshot's version, so the entries a node can use are those of the
-// current version, the ones the other nodes write.
+// anything it holds, so "at least min" would answer from before the
+// restore at once. An exact match narrows that without closing it: a
+// version number names one state within one history of the database only,
+// and once the restored database's own writes bring it back to the version
+// of an entry written before the restore (within the TTL), that entry
+// names another state. Restoring a backup therefore deletes the keys
+// (CONTRACTS §99.4); the shadow comparison reports what one left behind
+// (stale_cache). The resolver asks Warm at its snapshot's version, so the
+// entries a node can use are those of the current version, the ones the
+// other nodes write.
 func (c *roleCache) getL2(ctx context.Context, uid, min int64) (UserRoles, bool) {
 	if !c.l2() {
 		return UserRoles{}, false
@@ -287,7 +290,9 @@ func (c *roleCache) getL2(ctx context.Context, uid, min int64) (UserRoles, bool)
 // setL2 shares a PostgreSQL read with the other nodes, off the caller and
 // best effort: a write waiting for a free slot is dropped. It replaces any
 // entry: with exact version matches (getL2), keeping a newer one would
-// gain nothing and would pin the entries of a restored database's past.
+// gain nothing and would keep the entries of a restored database's past
+// for their whole TTL. An older node's write over a newer entry costs the
+// newer version's readers a miss, never a wrong answer.
 func (c *roleCache) setL2(uid int64, ur UserRoles) {
 	if !c.l2() {
 		return

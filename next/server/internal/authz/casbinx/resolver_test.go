@@ -14,12 +14,15 @@ import (
 // fakeDB is a policy store moving through versions: Policy and UserRoles
 // read the state of the version current at the call, as the Loader's
 // snapshot transactions read PostgreSQL. With churn, every read is followed
-// by a write (the version moves on after each read).
+// by a write (the version moves on after each read); with churnLeft, the
+// next churnLeft reads are. policyDelay is how long a Policy read takes.
 type fakeDB struct {
-	mu     sync.Mutex
-	v      int64
-	states map[int64]dbState
-	churn  bool
+	mu          sync.Mutex
+	v           int64
+	states      map[int64]dbState
+	churn       bool
+	churnLeft   int
+	policyDelay time.Duration
 }
 
 // dbState is the policy and the users' roles at one version.
@@ -40,8 +43,9 @@ func (d *fakeDB) read() (int64, dbState) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	v := d.v
-	if d.churn {
+	if d.churn || d.churnLeft > 0 {
 		d.v++
+		d.churnLeft--
 	}
 	for at := v; at > 0; at-- {
 		if st, ok := d.states[at]; ok {
@@ -51,7 +55,15 @@ func (d *fakeDB) read() (int64, dbState) {
 	return v, dbState{}
 }
 
+// bump is a write: the version moves on, the state stays.
+func (d *fakeDB) bump() {
+	d.mu.Lock()
+	d.v++
+	d.mu.Unlock()
+}
+
 func (d *fakeDB) Policy(context.Context) (Policy, error) {
+	time.Sleep(d.policyDelay)
 	v, st := d.read()
 	return Policy{Version: v, Active: activeOf(st.rules), Rules: st.rules}, nil
 }
@@ -154,9 +166,8 @@ func grantsOf(ctx context.Context, r Resolver, uid, min int64) setOrErr {
 	return setOrErr{s, err}
 }
 
-// When writes keep landing between the two reads, also after the second
-// read of both, the resolution fails with ErrSkew rather than combine
-// them.
+// When writes keep landing between the two reads until the snapshot wait
+// runs out, the resolution fails with ErrSkew rather than combine them.
 func TestResolverSkewFailsClosed(t *testing.T) {
 	t.Parallel()
 	d := &fakeDB{v: 1, churn: true, states: map[int64]dbState{
@@ -176,5 +187,115 @@ func TestResolverSkewFailsClosed(t *testing.T) {
 	d.mu.Unlock()
 	if set, err := r.Grants(ctx, 1, 1); err != nil || !set.Has("account:read") {
 		t.Fatalf("Grants = %+v, %v", set, err)
+	}
+}
+
+// Writes landing between the two reads for round after round (a burst):
+// the resolution reads again, pausing longer each time, until both halves
+// meet, instead of failing the request after two rounds.
+func TestResolverRidesOutSkew(t *testing.T) {
+	t.Parallel()
+	d := &fakeDB{v: 1, churnLeft: 12, states: map[int64]dbState{
+		1: {rules: []Rule{grant("r:t", "account:read")}, users: map[int64]UserRoles{1: held("r:t")}},
+	}}
+	r, _ := testResolver(d)
+	ctx := context.Background()
+	set, err := r.Grants(ctx, 1, 1)
+	if err != nil || !set.Has("account:read") {
+		t.Fatalf("Grants = %+v, %v", set, err)
+	}
+	d.mu.Lock()
+	left := d.churnLeft
+	d.mu.Unlock()
+	if left > 6 {
+		t.Fatalf("resolved after %d skewed reads only", 12-left)
+	}
+	d.mu.Lock()
+	d.churnLeft = 12
+	d.mu.Unlock()
+	if ok, _, err := Enforce(ctx, r, 1, "account:read", set.Version); !ok || err != nil {
+		t.Fatalf("Enforce = %v, %v", ok, err)
+	}
+	// Writes without end: a caller's end still ends the wait.
+	d = &fakeDB{v: 1, churn: true, states: d.states}
+	r, _ = testResolver(d)
+	cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if _, err := r.Grants(cctx, 1, 1); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Grants past the caller's deadline = %v", err)
+	}
+}
+
+// Sustained writes, as a bulk import makes (a version bump every 2 ms,
+// reads of the policy that take 1 ms, so that a round often straddles a
+// write): every resolution made meanwhile succeeds, none fails closed.
+func TestResolverUnderSustainedWrites(t *testing.T) {
+	t.Parallel()
+	d := &fakeDB{v: 1, policyDelay: time.Millisecond, states: map[int64]dbState{
+		1: {rules: []Rule{grant("r:t", "account:read")}, users: map[int64]UserRoles{1: held("r:t"), 2: held("r:t")}},
+	}}
+	r, _ := testResolver(d)
+	ctx := context.Background()
+	stop := make(chan struct{})
+	writer := make(chan struct{})
+	go func() {
+		defer close(writer)
+		tick := time.NewTicker(2 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				d.bump()
+			}
+		}
+	}()
+	deadline := time.Now().Add(300 * time.Millisecond)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var calls int
+	var failures []error
+	for uid := range int64(4) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(deadline) {
+				d.mu.Lock()
+				min := d.v
+				d.mu.Unlock()
+				_, err := r.Grants(ctx, uid%2+1, min)
+				mu.Lock()
+				calls++
+				if err != nil {
+					failures = append(failures, err)
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	<-writer
+	if len(failures) > 0 {
+		t.Fatalf("%d of %d resolutions failed under writes, the first: %v", len(failures), calls, failures[0])
+	}
+}
+
+// foreign is a Resolver of another package's making (a test double).
+type foreign struct{}
+
+func (foreign) Grants(context.Context, int64, int64) (core.PermissionSet, error) {
+	return core.PermissionSetOf("account:read"), nil
+}
+func (foreign) Prewarm(int64)                       {}
+func (foreign) Reread(context.Context, int64) error { return nil }
+
+// Enforce refuses a Resolver it did not make, with an error rather than a
+// panic: only its own has a matcher path, and a double's Grants is not one.
+func TestEnforceForeignResolver(t *testing.T) {
+	t.Parallel()
+	if ok, _, err := Enforce(context.Background(), foreign{}, 1, "account:read", 0); ok || !errors.Is(err, ErrForeignResolver) {
+		t.Fatalf("Enforce on a foreign Resolver = %v, %v", ok, err)
 	}
 }

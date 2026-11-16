@@ -20,6 +20,7 @@ package casbinx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -100,7 +101,8 @@ type RoleCache interface {
 //
 // Its matcher path is the package function Enforce, not a method: an
 // interface declared elsewhere cannot take it over, so gormguard
-// [casbin-api] sees every call.
+// [casbin-api] sees every call. Other implementations (test doubles) are
+// welcome: Enforce refuses them with ErrForeignResolver.
 type Resolver interface {
 	Grants(ctx context.Context, uid, min int64) (core.PermissionSet, error)
 	// Prewarm starts building the snapshot of version min, off the caller,
@@ -109,18 +111,23 @@ type Resolver interface {
 	Prewarm(min int64)
 	// Reread reads uid's roles again past the role cache (Reload), for the
 	// Grants and Enforce that follow: the shadow comparison checks a
-	// difference against reads made after it, and a write the version does
-	// not record (a raw UPDATE in a test) leaves the cached entry behind.
+	// difference against reads made after it. The fresh read replaces the
+	// cached entry: one a write the version does not record left behind
+	// (a missed Bump, a restored database's L2 entry, a raw UPDATE in a
+	// test) must not go on answering; the comparison still reports it
+	// (stale_cache).
 	Reread(ctx context.Context, uid int64) error
-
-	enforce(ctx context.Context, uid int64, key string, min int64) (bool, int64, error)
 }
 
 // ErrSkew is the error of a resolution whose snapshot and roles were read
-// at different versions, also after one more read of each at the newer of
-// the two: writes keep landing in between. The caller must not combine
-// them (casbin fails closed; the shadow comparison skips).
+// at different versions in every round until the snapshot wait ran out:
+// writes kept landing in between. The caller must not combine them (casbin
+// fails closed; the shadow comparison skips).
 var ErrSkew = errors.New("casbinx: the policy and the user's roles were read at different versions")
+
+// ErrForeignResolver is Enforce's error for a Resolver NewResolver did not
+// make (a test double): only casbinx's own has a matcher path.
+var ErrForeignResolver = errors.New("casbinx: Enforce needs a Resolver of NewResolver")
 
 // Enforce runs key through the matcher for uid, at version min or newer,
 // and returns the version it decided at (the same as Grants would label
@@ -128,5 +135,9 @@ var ErrSkew = errors.New("casbinx: the policy and the user's roles were read at 
 // rows): for the shadow comparison and diagnostics only; hot paths ask
 // Grants' PermissionSet.Has.
 func Enforce(ctx context.Context, r Resolver, uid int64, key string, min int64) (ok bool, version int64, err error) {
-	return r.enforce(ctx, uid, key, min)
+	own, isOwn := r.(*resolver)
+	if !isOwn {
+		return false, 0, fmt.Errorf("%w, not %T", ErrForeignResolver, r)
+	}
+	return own.enforce(ctx, uid, key, min)
 }

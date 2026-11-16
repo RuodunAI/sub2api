@@ -151,6 +151,12 @@ type checker struct {
 	assigns map[*types.Var][]assignment
 	uses    map[*types.Var][]use
 	rawFns  map[*types.Func]bool
+
+	// [casbin-api]: the bodies of the package's functions and function
+	// literals, and the gorm-adapter constructor selectors whose call
+	// passed adapterTurnedOff.
+	bodies        []*ast.BlockStmt
+	adapterVetted map[*ast.SelectorExpr]bool
 }
 
 // assignment is a value given to a local variable as of position at: rhs,
@@ -174,6 +180,7 @@ func (c *checker) index(files []*ast.File) {
 	c.assigns = map[*types.Var][]assignment{}
 	c.uses = map[*types.Var][]use{}
 	c.rawFns = map[*types.Func]bool{}
+	c.adapterVetted = map[*ast.SelectorExpr]bool{}
 	fieldReads := map[*ast.Ident]bool{}
 	assign := func(at token.Pos, lhs []ast.Expr, rhs []ast.Expr) {
 		for i, l := range lhs {
@@ -196,6 +203,11 @@ func (c *checker) index(files []*ast.File) {
 				if fn, ok := c.info.Defs[n.Name].(*types.Func); ok {
 					c.funcs[fn] = n
 				}
+				if n.Body != nil {
+					c.bodies = append(c.bodies, n.Body)
+				}
+			case *ast.FuncLit:
+				c.bodies = append(c.bodies, n.Body)
 			case *ast.AssignStmt:
 				assign(n.End(), n.Lhs, n.Rhs)
 			case *ast.RangeStmt:

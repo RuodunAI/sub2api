@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 )
@@ -40,7 +41,7 @@ func (k keyTokens) VerifyAccessKey(_ context.Context, raw, _ string) (core.Acces
 func TestAdjustBalanceManagedUsers(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	az := authz.New(authz.Deps{DB: e.db, Bus: e.bus})
+	az := authz.New(authz.Deps{DB: e.db, Bus: e.bus, Shadow: authztest.Shadow()})
 	if err := az.SyncCore(ctx); err != nil {
 		t.Fatal(err)
 	}

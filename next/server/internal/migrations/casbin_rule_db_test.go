@@ -15,6 +15,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -72,7 +74,7 @@ func (h *hardeningDB) tx(fn func(tx *gorm.DB) error) {
 // sync wrote the catalog and the built-in roles) whose super admin is root.
 func casbinService(t *testing.T) (h *hardeningDB, s *authz.Service, root int64) {
 	h = &hardeningDB{t: t, db: testutil.DB(t), ctx: context.Background()}
-	s = authz.New(authz.Deps{DB: h.db})
+	s = authz.New(authz.Deps{DB: h.db, Shadow: authztest.Shadow()})
 	require.NoError(t, s.Start(h.ctx))
 	h.noDrift("core sync")
 	root = h.id(`INSERT INTO users (email, password_hash) VALUES ('root@x', '') RETURNING id`)
@@ -415,6 +417,21 @@ INSERT INTO role_permission_scopes (role_id, permission_id, scope) SELECT r.id, 
 
 	require.NoError(t, h.migrate())
 	require.Equal(t, policy, h.policy())
+}
+
+// The mapping functions of the migration are casbinx's constants: the
+// projection the triggers write is what the resolver reads.
+func TestCasbinRuleMappingMatchesCasbinx(t *testing.T) {
+	h := &hardeningDB{t: t, db: testutil.DB(t), ctx: context.Background()}
+	for sql, want := range map[string]string{
+		`SELECT authz_casbin_user_sub(42)`:       casbinx.UserSub(42),
+		`SELECT authz_casbin_role_sub('editor')`: casbinx.RoleSub("editor"),
+		`SELECT authz_casbin_super_key()`:        casbinx.SuperKey,
+		`SELECT authz_casbin_all_rows()`:         casbinx.AllRows,
+		`SELECT authz_casbin_self_sub()`:         casbinx.SelfRole,
+	} {
+		require.Equal(t, want, h.text(sql), sql)
+	}
 }
 
 // Keys whose rows would read as reserved policy values are refused: a role

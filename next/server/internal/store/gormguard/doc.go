@@ -94,10 +94,15 @@
 //     Self forms), SavePolicy, Transaction, BeginTransaction,
 //     WithTransaction, Commit, Rollback, StartAutoLoadPolicy, the synced,
 //     transactional and distributed enforcers, nor EnableAutoSave with
-//     anything but the constant false. The in-memory model (model.Model's
-//     AddPolicies, how a snapshot is built) and the role manager are not
-//     covered. Casbin's own Enforce* is called in casbinx alone, and the
-//     Enforce of casbinx (Resolver, Snapshot) only there, in
+//     anything but the constant false. gorm-adapter's API is a whitelist
+//     (adapterAllowed): TurnOffAutoMigrate, LoadFilteredPolicy and
+//     NewAdapterByDBUseTableName, the last only called on a variable that
+//     an earlier TurnOffAutoMigrate of the same function ran on (otherwise
+//     it AutoMigrates the table, narrowing v1 and v2); Open, GetDb,
+//     LoadPolicy, the other constructors and the rest are reported. The
+//     in-memory model (model.Model's AddPolicies, how a snapshot is built)
+//     and the role manager are not covered. Casbin's own Enforce* is called
+//     in casbinx alone, and casbinx.Enforce only there, in
 //     internal/authz/shadow.go and in cmd/sub2api (enforceOwners; test
 //     files exempt): it runs every policy through the matcher, so a request
 //     answers with PermissionSet.Has. Packages that depend on Casbin are

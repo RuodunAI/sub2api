@@ -60,8 +60,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_casbin_rule ON casbin_rule (ptype, v0, v1,
 CREATE INDEX IF NOT EXISTS casbin_rule_v1_idx ON casbin_rule (ptype, v1);
 
 -- The mapping's values, the constants of internal/authz/casbinx/api.go:
--- UserSub, RoleSub, SuperKey and AllRows. The view and every trigger build
--- rows with these alone. Plain SQL without a search_path of their own, so
+-- UserSub, RoleSub, SuperKey, AllRows and SelfRole. The view and every
+-- trigger build rows with these alone. Plain SQL without a search_path of their own, so
 -- that they inline (an index still serves v0 = authz_casbin_role_sub($1));
 -- their bodies name nothing outside pg_catalog, which is searched first.
 CREATE OR REPLACE FUNCTION authz_casbin_user_sub(user_id bigint) RETURNS text
@@ -74,6 +74,10 @@ CREATE OR REPLACE FUNCTION authz_casbin_super_key() RETURNS text
 -- The scope of an unscoped grant (every row).
 CREATE OR REPLACE FUNCTION authz_casbin_all_rows() RETURNS text
     LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT '*'::text $$;
+-- The subject of the virtual role every active user holds (the self
+-- permissions): never stored, so no role key may map to it.
+CREATE OR REPLACE FUNCTION authz_casbin_self_sub() RETURNS text
+    LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT 'r:_self'::text $$;
 
 -- The mapping: the backfill, the drift check and authz_casbin_repair read
 -- it, the triggers write the same rows with the functions above.
@@ -138,7 +142,7 @@ END $$;
 CREATE OR REPLACE FUNCTION authz_casbin_check_role_key(role_key text) RETURNS void LANGUAGE plpgsql
 SET search_path = public, pg_temp AS $$
 BEGIN
-    IF authz_casbin_role_sub(role_key) = 'r:_self' THEN
+    IF authz_casbin_role_sub(role_key) = authz_casbin_self_sub() THEN
         RAISE EXCEPTION 'roles.key % is reserved: its Casbin subject is the virtual self role', role_key
             USING ERRCODE = 'check_violation', HINT = 'rename the role (UPDATE roles SET key = ''<another key>'' WHERE id = <its id>)';
     END IF;

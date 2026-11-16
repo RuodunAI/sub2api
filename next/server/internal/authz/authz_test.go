@@ -86,7 +86,7 @@ func newService(t *testing.T, db *store.DB, bus core.Bus, reg core.PluginRegistr
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	s := New(Deps{DB: db, Bus: bus, Plugins: reg, PollInterval: 100 * time.Millisecond})
+	s := New(Deps{DB: db, Bus: bus, Plugins: reg, PollInterval: 100 * time.Millisecond, Shadow: testShadow})
 	failOnShadowMismatch(t, s)
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)
@@ -422,20 +422,24 @@ func TestAuthorizerCacheInvalidation(t *testing.T) {
 	// Disabled users have no permissions.
 	su := root
 	mustCan(t, a, su, "anything:at:all", true)
-	v := bump(t, a)
-	if _, err := db.SQL.ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = $1`, su); err != nil {
-		t.Fatal(err)
-	}
-	a.Committed(ctx, v)
+	a.Committed(ctx, bumpWith(t, a, `UPDATE users SET status = 'disabled' WHERE id = ?`, su))
 	mustCan(t, a, su, "anything:at:all", false)
 }
 
-func bump(t *testing.T, s *Service) int64 {
+func bump(t *testing.T, s *Service) int64 { return bumpWith(t, s, "") }
+
+// bumpWith moves the authz version on in a transaction that also runs sql
+// (with args; "" = none): a write the version records, as the service's
+// own writes are. A raw write outside one leaves the caches stale at the
+// same version, which the shadow comparison reports.
+func bumpWith(t *testing.T, s *Service, sql string, args ...any) int64 {
 	var v int64
 	err := s.db.Tx(context.Background(), func(tx *gorm.DB) error {
 		var err error
-		v, err = s.Bump(context.Background(), tx)
-		return err
+		if v, err = s.Bump(context.Background(), tx); err != nil || sql == "" {
+			return err
+		}
+		return tx.Exec(sql, args...).Error
 	})
 	if err != nil {
 		t.Fatal(err)
