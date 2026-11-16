@@ -32,7 +32,7 @@ func lastEventID(t *testing.T, db *store.DB) int64 {
 	return id
 }
 
-// Several events (reserved ids, one INSERT) are stored as each on its own
+// Several events (one INSERT) are stored as each on its own
 // (one row) stores it: in their order, every kind of payload as
 // the same document, nil as {} and a JSON null as a document, not NULL.
 func TestEmitManyAsOne(t *testing.T) {
@@ -73,7 +73,7 @@ func TestEmitManyAsOne(t *testing.T) {
 	require.Empty(t, storedEvents(t, db, start))
 }
 
-// More events than one INSERT could bind (three parameters each, 65535 in
+// More events than one INSERT could bind (two parameters each, 65535 in
 // all) are written in batches, the ids in event order across them.
 func TestEmitPastParameterLimit(t *testing.T) {
 	db := testutil.DB(t)

@@ -39,7 +39,7 @@ func (p *Publisher) Emit(ctx context.Context, tx *gorm.DB, events ...core.Event)
 		}
 		return p.db.Tx(ctx, func(tx *gorm.DB) error { return p.Emit(ctx, tx, events...) })
 	}
-	rows := make([]model.Event, len(events))
+	rows := make([]map[string]any, len(events))
 	for i, ev := range events {
 		if ev.Type == "" {
 			return errors.New("event: empty type")
@@ -48,32 +48,22 @@ func (p *Publisher) Emit(ctx context.Context, tx *gorm.DB, events ...core.Event)
 		if err != nil {
 			return fmt.Errorf("event %s: %w", ev.Type, err)
 		}
-		rows[i] = model.Event{Type: ev.Type, Payload: payload}
+		rows[i] = map[string]any{"type": ev.Type, "payload": payload}
 	}
 	return insertEvents(store.G(ctx, tx), rows)
 }
 
-// insertBatch is the most events one INSERT writes: three parameters each,
+// insertBatch is the most events one INSERT writes: two parameters each,
 // well under PostgreSQL's 65535.
 const insertBatch = 1000
 
-// insertEvents writes rows to the outbox, their ids ascending in their
-// order. One event, the usual count, takes the next id as it is written and
-// reads nothing back (a column map: no RETURNING). More reserve theirs
-// first (store.NextIDs), so the ids follow the batch order whatever order
-// the INSERT stores the rows in.
-func insertEvents(db *gorm.DB, rows []model.Event) error {
-	if len(rows) == 1 {
-		return db.Table(model.Event{}.TableName()).Create(map[string]any{"type": rows[0].Type, "payload": rows[0].Payload}).Error
-	}
-	ids, err := store.NextIDs(db, model.Event{}.TableName(), len(rows))
-	if err != nil {
-		return err
-	}
-	for i := range rows {
-		rows[i].ID = ids[i]
-	}
-	return db.CreateInBatches(&rows, insertBatch).Error
+// insertEvents writes rows (column maps: no RETURNING) to the outbox in one
+// INSERT per insertBatch events, inside the caller's transaction and with no
+// round trip of its own. The ids follow the batch order: each row takes the
+// next id as the VALUES list hands it over, in its order, as the rows of the
+// former unnest WITH ORDINALITY ... ORDER BY did.
+func insertEvents(db *gorm.DB, rows []map[string]any) error {
+	return db.Table(model.Event{}.TableName()).CreateInBatches(rows, insertBatch).Error
 }
 
 func marshal(v any) ([]byte, error) {
