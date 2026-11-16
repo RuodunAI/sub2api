@@ -25,7 +25,7 @@ import (
 
 // SessionPrefix starts every session token, so a bearer token is told from a
 // JWT and from an access key (core.AccessKeyPrefix) without a lookup.
-const SessionPrefix = "s2s_"
+const SessionPrefix = core.OpaqueSessionPrefix
 
 var (
 	// ErrNotFound: the token names no live session or flow (never issued,
@@ -76,8 +76,13 @@ type SessionStore interface {
 	Has(ctx context.Context, userID int64, id string) (bool, error)
 	// Revoke ends the sessions of userID that sel picks at once, and stamps
 	// the others with tokenVersion when it is larger than theirs (0: no
-	// stamp).
+	// stamp; then Only touches that session alone).
 	Revoke(ctx context.Context, userID int64, sel Selection, tokenVersion int) error
+	// Drop ends what token, found as s, still opens: its whole session when
+	// it is the session's current token, only itself when a rotation left
+	// it behind (the session's current token is not ended by a request
+	// that an old one sent).
+	Drop(ctx context.Context, token string, s Session) error
 }
 
 // Flow is a stored auth flow.
@@ -102,8 +107,10 @@ type FlowStore interface {
 	ContinueWindow(ctx context.Context, name string, idle, max time.Duration) (bool, error)
 }
 
-// newToken returns a random token with prefix and the hash it is stored by.
-func newToken(prefix string) (token, hash string) {
+// NewToken returns a random token with prefix and the hash it is stored by
+// (Hash): 32 random bytes, base64url. The refresh tokens and the auth_flows
+// tokens are made the same way, with no prefix.
+func NewToken(prefix string) (token, hash string) {
 	var b [32]byte
 	_, _ = rand.Read(b[:]) // never fails (crypto/rand since Go 1.24)
 	token = prefix + base64.RawURLEncoding.EncodeToString(b[:])
@@ -115,6 +122,12 @@ func newToken(prefix string) (token, hash string) {
 func Hash(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
+}
+
+// IsUnavailable reports whether err is Valkey not answering (ErrUnavailable).
+func IsUnavailable(err error) bool {
+	var e *core.Error
+	return errors.As(err, &e) && e.Code == ErrUnavailable.Code
 }
 
 // unavailable wraps a Valkey failure. It is logged here at error level, the

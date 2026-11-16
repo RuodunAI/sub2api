@@ -196,7 +196,7 @@ func (s *Service) BeginPasskeyRegistration(ctx context.Context, r *http.Request,
 	if err != nil {
 		return nil, err
 	}
-	token, err := s.createFlow(ctx, flowPasskeyRegister, userID, session)
+	token, err := s.createFlow(ctx, s.db.Gorm, flowPasskeyRegister, userID, session)
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +302,7 @@ func (s *Service) BeginPasskeyLogin(ctx context.Context, r *http.Request, ip str
 	if err != nil {
 		return nil, err
 	}
-	token, err := s.createFlow(ctx, flowPasskeyLogin, 0, session)
+	token, err := s.createFlow(ctx, s.db.Gorm, flowPasskeyLogin, 0, session)
 	if err != nil {
 		return nil, err
 	}

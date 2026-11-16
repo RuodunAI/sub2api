@@ -8568,7 +8568,9 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 
 - 存在 `settings` 表 `authz` 行 `{"engine": ...}`（§8）。接口 `GET /settings/authz`（`settings:read`）返回 `{engine（存的值）, effective（本节点在用的）, source: setting | env | default, shadow: 本节点计数}`；`PUT /settings/authz {"engine"}` 要 `settings:manage`、二次验证 `authz.engine`（§80.2），且只有超管本人可以（其他人 403 `permission_denied`）；只接受三个值，其他返回 400 `invalid`；与设置同一事务写审计 `authz.engine.set`（`target_type = setting`、`target_id = authz`，`detail` 含 `from`、`to`、`request_id`）。控制台没有页面。
 - 跨节点生效：`PUT` 后广播 `config:changed` `{"key":"settings.authz"}`，各节点在 10 s 超时内重读；漏掉广播的节点由 `core.authz.version_poll`（30 s）重读。存的值不认识（含大小写不同、`casbin-only`）按 `shadow`。
-- 环境变量 `SUP2API_AUTHZ_ENGINE` 优先于设置（测试与应急）：设了就固定这个节点，不读设置；值不认识按 `shadow` 并记 Warn。
+- 存的 `engine` 不是字符串（例如数字）时读取报错：节点保持当前档并记错误，不回落到 `shadow`。
+- 环境变量 `SUB2API_AUTHZ_ENGINE` 优先于设置（测试与应急）：设了就固定这个节点，不读设置；值不认识按 `shadow` 并记 Warn。变量在网关传给核心的白名单里（`supervisor.inheritedEnv`），`deploy/single` 的 compose 也映射了。
+- 应急（接口不可用，例如 `casbin` 档把超管自己判错）：直接改库 `INSERT INTO settings (key, value) VALUES ('authz', '{"engine":"legacy"}') ON CONFLICT (key) DO UPDATE SET value = settings.value || '{"engine":"legacy"}', updated_at = now();`，各节点由 `core.authz.version_poll` 在 30 s 内读到；或设环境变量重启单个节点。见 `deploy/rollback/0.1.290-casbin-down.md`。
 - 节点切换引擎时清空已缓存的集合（不升版本），并把引擎代数加一：切换前已开始、切换后才结束的加载只回答它自己的请求，不写进缓存（写回时代数不同即丢弃），所以切回 `legacy` 后不会继续用 Casbin 算出的集合。
 - 没有数据库的 `authz.Service`（只用于单元测试）始终是 `legacy`。
 
@@ -8591,7 +8593,7 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 - 不一致：`slog.Warn("authz: shadow mismatch", kind, user_id, version, key, legacy_only, casbin_only)`，按种类 + 用户 + 版本 + key 去重（最多记 4096 条，满了重新开始）后计数；不影响请求结果。Casbin 出错（含 panic，被 recover）只计数，日志每分钟最多一条；Casbin 报 `ErrSkew` 记为 `skipped_version_skew`。两边先后读取（一边在请求里、一边在请求外），中间可能落下不改版本的写（服务自己的写都升版本，测试里的原生 `UPDATE` 不升）：不一致时两边都绕过缓存重读一次（旧加载器直接读库；Casbin 的用户角色由 `Resolver.Reread` 从库里重读并替换角色缓存里同版本的条目），集合比较与 `Enforce` 抽样都以重读后的一对为准；Casbin 本身的差异重读后仍在，照常报告。
 - 不给请求加延迟：影子比较、两种抽样都在请求外的 goroutine 里执行（脱离请求的 ctx，每次 5 s 上限），每个节点同时最多 32 个，满了直接丢弃并计入 `dropped`。
 - 计数（本节点、自启动起）：`compared`、`skipped_version_skew`、`mismatches`、`errors`、`dropped`、`enforce_checked`、`enforce_mismatches`，见 `GET /settings/authz` 的 `shadow`。仓库没有指标系统，计数只在这里和日志里。
-- 测试：测试进程里抽样率为 1（每次都核对）。`authz` 测试的 `newService` 把不一致设成 `t.Errorf`，测试结束前等在途比较做完；`authz`、`authz/casbinx`、`iam`、`account`、`billing`、`segment`、`migrations`、`plugin/install`、`plugin/rollout` 的 `TestMain` 在全部测试跑完后调用 `authz.ShadowCheck()`：等全进程在途比较做完，有未被测试自己处理的不一致、或开始过集合比较却一次也没比成（全部跳过、出错或丢弃）就让整包失败。默认 `shadow`，所以这些包的 DB 测试顺带验证一致性；`SUP2API_AUTHZ_ENGINE=legacy|casbin` 跑另外两档。`casbinx` 的 `TestResolverMatchesLegacy(Random)` 用真实角色缓存和影子同一个比较函数（`CompareEngines`）在 PostgreSQL 上比对固定与随机的角色数据。
+- 测试：测试进程里抽样率为 1（每次都核对）。`authz` 测试的 `newService` 把不一致设成 `t.Errorf`，测试结束前等在途比较做完；`authz`、`authz/casbinx`、`iam`、`account`、`billing`、`segment`、`migrations`、`plugin/install`、`plugin/rollout` 的 `TestMain` 在全部测试跑完后调用 `authz.ShadowCheck()`：等全进程在途比较做完，有未被测试自己处理的不一致、或开始过集合比较却一次也没比成（全部跳过、出错或丢弃）就让整包失败。默认 `shadow`，所以这些包的 DB 测试顺带验证一致性；`SUB2API_AUTHZ_ENGINE=legacy|casbin` 跑另外两档。`casbinx` 的 `TestResolverMatchesLegacy(Random)` 用真实角色缓存和影子同一个比较函数（`CompareEngines`）在 PostgreSQL 上比对固定与随机的角色数据。
 - 从 `shadow` 切到 `casbin` 的门槛：`shadow` 至少运行 2 周；期间覆盖插件安装、升级、停用、卸载，角色编辑与重置，超管移交，用户禁用与删除，`ClearScopeGrants`（删分组、账号、代理）各至少一次；各节点 `mismatches`、`enforce_mismatches` 为 0；漂移任务一直为 0；切换前在生产备份的隔离副本上跑一次 `authz-verify --keys` 为 0。
 
 ### 99.6 漂移任务 `core.authz.casbin_drift`
@@ -8608,7 +8610,7 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 
 ### 99.8 回滚
 
-- 运行时：`PUT /settings/authz {"engine":"legacy"}`（或在节点上设 `SUP2API_AUTHZ_ENGINE=legacy` 重启），立即生效，不需要发版。旧表从未被改写，`legacy` 与接入前完全一样。
+- 运行时：`PUT /settings/authz {"engine":"legacy"}`（或在节点上设 `SUB2API_AUTHZ_ENGINE=legacy` 重启），立即生效，不需要发版。旧表从未被改写，`legacy` 与接入前完全一样。
 - 托管部署（经网关）不能跨 schema 回退：迁移 0100 只做加法，旧二进制照常运行（触发器继续维护 `casbin_rule`，没有害处），出问题修复前进加开关。
 - 非托管部署可以按 `next/deploy/rollback/0.1.290-casbin-down.md` 跑反向脚本：删触发器、函数、两个视图、`casbin_rule` 和 `schema_migrations` 的 0100 一行，恢复 `user_roles_one_superuser` 的 `search_path`，删 `settings` 里的 `authz` 行（否则再升级会直接用回滚前选的引擎、跳过 §99.5 的影子期），不丢任何授予。
 
@@ -8635,8 +8637,9 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 
 - 令牌：`s2s_` + 32 字节随机数的 base64url（共 47 个字符）。Valkey 只存 SHA-256（hex），拿到 Valkey 的内容不能登录。
 - 照旧放在 `Authorization: Bearer`，控制台 localStorage 的字段仍叫 `access_token`。没有 refresh token：登录响应不含 `refresh_token`，`expires_in` 是空闲超时的秒数。
-- 鉴权分流（`iam.VerifySession`，经 `core.AuthenticateBearer`）：`sak_` 访问密钥；`s2s_` 不透明会话；其他按 JWT。不论开关是什么，两种会话令牌都认，直到清理版本（§100.7）。
-- 不透明会话每个请求读一次 Valkey（`HGETALL`），再走现有的用户状态缓存与 `token_version` 比较（§43.2）：会话里的 `tv` 小于用户当前的 `token_version` 时删除该会话并 401；大于或等于都放行（保留下来的会话在 bump 提交前就被改成新版本，见 §100.4）。
+- 鉴权分流（`iam.VerifySession`，经 `core.AuthenticateBearer`）：`sak_` 访问密钥；`s2s_`（`core.OpaqueSessionPrefix`）不透明会话；其他按 JWT。不论开关是什么，两种会话令牌都认，直到清理版本（§100.7）。令牌类型在鉴权时随会话 id 写进 ctx（`core.WithOpaqueSession` / `core.WithSession`，读 `core.OpaqueSession`）：之后“调用者是不是不透明会话”（step-up 换令牌、登出）只看它，不再查 Valkey 推断，JWT 调用者因此不碰 Valkey。
+- 不透明会话每个请求读一次 Valkey（`HGETALL`），再走现有的用户状态缓存（不论会话的 `tv`，都先用缓存）与 `token_version` 比较（§43.2）：会话里的 `tv` 小于用户当前的 `token_version` 时 401，并删除这个令牌能打开的东西——它是会话的当前令牌就删整个会话，是轮换后留在宽限期里的旧令牌就只删它自己（旧令牌的请求不连累新令牌）；大于或等于都放行（保留下来的会话在 bump 提交前就被改成新版本，见 §100.4）。
+- 鉴权路径上的 Valkey 调用（查找、续期、删除过期会话）每次最多等 1 秒；会话与流程用单独的客户端（`tokenstore.NewClient`：只重试一次，连接、读写超时各 1 秒，遵守调用的截止时间），Valkey 卡住时控制台请求很快得到 503，而不是挂十几秒。
 - 会话 id 沿用 refresh token 家族的语义（`core.WithSession`）：step-up proof 与二次验证会话按它绑定（§80.2），`GET /me/sessions` 按它标出当前会话。refresh token 换成的不透明会话保留原家族 id。
 
 ### 100.2 Valkey 键（`s2a:` 前缀，`internal/iam/tokenstore`）
@@ -8646,51 +8649,60 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 | `s2a:sess:{hash}` | HASH | `uid`、`sid`、`method`、`ip`、`ua`、`created_at`、`last_seen`（Unix 毫秒）、`tv`；轮换后的新令牌另有 `prev`（旧令牌的哈希） | 空闲超时，且不超过创建后的绝对超时 |
 | `s2a:sid:{sid}` | STRING | 该会话当前令牌的哈希 | 同上 |
 | `s2a:usess:{uid}` | ZSET | 成员 sid，分数最近使用时间（毫秒）；会话列表与批量撤销用 | 绝对超时，每次写入顺延 |
+
+- 每个用户最多 50 个会话（`tokenstore.DefaultMaxSessions`）：登录超出时，最久未使用的会话（连同它的旧令牌）立即结束，不报错。防止反复登录让 ZSET 无限变大、拖慢撤销脚本。
+- 在已有的 sid 上新建会话（同一个 refresh token 家族再次换发）先结束原来的会话，不会留下只能靠 `token_version` 结束的令牌。
+- 轮换时，上一次轮换留在宽限期里的令牌立即结束：任何时候一个会话最多一个旧令牌（`prev`）。
 | `s2a:flow:{purpose}:{hash}` | STRING | 中间流程 `{"u": 所属用户, "p": 载荷}`（§100.3） | 5 分钟 |
 | `s2a:flow:window:{name}` | STRING | 二次验证会话打开的时间（毫秒） | 1 小时，延续时顺延，最长打开后 24 小时 |
 
 - 超时：空闲 `SUB2API_SESSION_IDLE_TTL`（默认 168h = 7 天），绝对 `SUB2API_SESSION_MAX_TTL`（默认 720h = 30 天）；空闲必须为正且不大于绝对，否则启动失败。
-- 续期：`last_seen` 距今不足 5 分钟的请求只读；超过才用一个 Lua 脚本写一次（确认 `sid` 仍指向这个令牌，`HSET last_seen`，两个键 `PEXPIRE` 到 min(空闲, 创建 + 绝对 − 现在)，`ZADD` 索引）。已撤销或已轮换的令牌不会被续期复活。
+- 续期：`last_seen` 距今不足 5 分钟的请求只读；超过才用一个 Lua 脚本写一次（确认 `sid` 仍指向这个令牌、会话键还在，`HSET last_seen`，两个键 `PEXPIRE` 到 min(空闲, 创建 + 绝对 − 现在)，`ZADD` 索引）。已撤销、已轮换或刚好过期的令牌不会被续期复活，也不会写出残缺的 HASH。
 - 索引残留：键自然过期后 ZSET 里会留下 sid。登录时去掉分数早于空闲超时的成员；列出、撤销时去掉键已不存在的成员。
-- 撤销、列出、轮换、是否存在都是单个 Lua 脚本，原子执行。部署是单个 Valkey（`cluster.ParseRedisURL` 不支持 Cluster 模式），脚本里访问的键不全在 `KEYS` 里；以后要上 Cluster 需改用 hash tag。
+- 新建、撤销、列出、轮换、是否存在都是单个 Lua 脚本，原子执行。撤销单个会话且不需要改 `tv` 时只读这一个会话，不扫用户的全部会话。部署是单个 Valkey（`cluster.ParseRedisURL` 不支持 Cluster 模式），脚本里访问的键不全在 `KEYS` 里；以后要上 Cluster 需改用 hash tag。
 
 ### 100.3 中间流程
 
 - 两步登录、通行密钥登录与注册、TOTP 设置、step-up proof、二次验证会话（§79.1、§80.2）：`session.issue = s2s` 时只写 Valkey；`jwt` 时仍写 `auth_flows`（升级过程中旧节点只读这张表）。读取一律先 Valkey、再 `auth_flows`，开关前后开始的流程都能走完。
 - 只看不取（两步登录、TOTP 设置输错验证码可以重试）用 `GET`；取用用 `GETDEL`，只有一个请求拿得到。流程 token 与 `auth_flows` 的格式相同（无前缀），两边按同一个哈希查。Valkey 里流程的所属用户在取出后核对，不符按流程已过期处理；取出即删除，所以知道 token 就能作废它，与其他持有者凭证一样。
 - 二次验证会话（窗口）按原来的名字（`auth_flows.token_hash` 的同一个值）存，打开时重新计时；延续先查 Valkey，没有再查表。
+- Valkey 不可用时，流程与窗口照样查表：表里有（开关为 `jwt` 时写的）就照常走完；表里没有才返回 Valkey 的 503（它可能在 Valkey 里）。
 
 ### 100.4 签发、换发与撤销
 
-- 签发：开关为 `s2s` 时，密码登录、两步登录、通行密钥登录都新建一个会话（新 sid；超管登录审计不变）。在持用户行锁的事务里读 `token_version` 写进会话，撤销不会插在中间。
-- `/auth/refresh`（开关为 `s2s`）：refresh token 的校验、宽限与重放检测同 §14.2；通过后这个 token 标记为已用、家族里其余 token 一并吊销，删掉该家族的 `login_sessions` 行，签发 sid = 原家族 id 的 `s2s_`（登录方式取自 `login_sessions`），响应不含 `refresh_token`。用户不用重新登录。已用的 refresh token 再次出示按重放处理：吊销家族，同 id 的不透明会话一并删除，401。（“删掉 refresh”实现为标记已用而不是物理删除，保留重放检测；表在清理版本删除。）
-- 二次验证提权：调用者是不透明会话时，`POST /me/verify` 成功后给同一个会话换一个新令牌（防会话固定），响应多一个 `access_token`；sid 不变，所以刚签发的 proof 仍然绑定这个会话。旧令牌还能用 30 秒（给已经发出的请求），期间使用不续期；撤销会话时新旧两个一起删除。控制台的 StepUpDialog 收到后替换本地的 `access_token`。JWT 会话与访问密钥不换。
-- 单个撤销（`DELETE /me/sessions/:id`、登出）：会话立即失效（此前 access JWT 要等到过期，最长 2 小时）。
-- 批量（撤销其他会话、改自己的密码保留当前会话、管理员改密码、禁用、删除用户、超管移交、重置安全）：在持用户行锁的同一事务里照旧 bump `token_version`（JWT 兜底）、吊销 refresh token、删 `login_sessions`，再用一个 Lua 脚本删除所选的不透明会话，并把保留下来的会话的 `tv` 改成新的 `token_version`（只增不减）。这样 JWT 被 bump 停掉，而没有 refresh token 的不透明会话不会被一起踢掉。事务若在这之后回滚，保留的会话 `tv` 会比库里大一，仍然放行。
+- 签发：开关为 `s2s` 时，密码登录、两步登录、通行密钥登录都新建一个会话（新 sid；超管登录审计不变）。在持用户行锁的事务里读 `token_version` 写进会话，撤销不会插在中间。写 Valkey 是事务里最后一步（读用户等都在它之前）；事务之后失败（包括提交失败），立即删除刚建的会话，不留下没人持有、却出现在会话列表里的会话。两步登录的流程在事务的最后才取用（`GETDEL`），之前任何一步失败都不消耗流程，可以重试；只有提交本身失败时 Valkey 里的流程已被取走。
+- `/auth/refresh`（开关为 `s2s`）：refresh token 的校验、宽限与重放检测同 §14.2；通过后这个 token 标记为已用、家族里其余 token 一并吊销，删掉该家族的 `login_sessions` 行，签发 sid = 原家族 id 的 `s2s_`（登录方式取自 `login_sessions`），响应不含 `refresh_token`。用户不用重新登录。换发后 1 分钟宽限期内同一个 refresh token 再次出示（控制台没收到换发的响应）：给这个会话轮换一个新令牌返回，前一个令牌照常 30 秒宽限，不当作重放。宽限期外再次出示按重放处理：吊销家族，同 id 的不透明会话一并删除，401。（“删掉 refresh”实现为标记已用而不是物理删除，保留重放检测；表在清理版本删除。）
+- 二次验证提权：调用者是不透明会话时（按 ctx 里的令牌类型），`POST /me/verify` 成功后给同一个会话换一个新令牌（防会话固定），响应多一个 `access_token`；sid 不变，所以刚签发的 proof 仍然绑定这个会话。旧令牌还能用 30 秒（给已经发出的请求），期间使用不续期；撤销会话时新旧两个一起删除。控制台的 StepUpDialog 收到后替换本地的 `access_token`；其他用控制台会话调 API 的客户端（脚本、e2e 客户端）也必须改用响应里的新令牌，旧令牌 30 秒后失效。JWT 会话（包括已换发成 `s2s_` 的家族里仍未过期的旧 JWT）与访问密钥不换、不碰 Valkey。proof、审计 `user.security_verify` 与换令牌在同一个事务里，换令牌最后做：它失败（503）时审计回滚、Valkey 里的 proof 删除。
+- 单个撤销（`DELETE /me/sessions/:id`、登出）：会话立即失效（此前 access JWT 要等到过期，最长 2 小时）。这个 id 下没有可能仍有效的 JWT（家族在 access token 有效期加 1 分钟内没签过 refresh token）时不 bump `token_version`，只删这一个会话，Valkey 不可用就 503；否则按下一条 bump。
+- 结束全部会话（管理员改密码、禁用、删除用户、超管移交、命令行恢复超管、不保留当前会话的改密码与重置安全、不带 refresh token 的 JWT 登出）：事务里只动 PostgreSQL——吊销 refresh token、删 `login_sessions`、`token_version` **加 2**；bump 本身已让全部 `s2s_` 失效（`tv` 小于即拒）。提交后再删 Valkey 里的会话，失败只记 ERROR（会话在下次出示时被删除，或空闲到期）。所以 Valkey 宕机时管理员照样能禁用被盗账号。
+- 保留部分会话（撤销其他会话、改自己的密码保留当前会话、重置自己的安全设置、带 refresh token 的 JWT 登出、撤销一个 JWT 家族）：同一事务里 bump `token_version`（加 1，JWT 兜底）、吊销 refresh token、删 `login_sessions`，再用一个 Lua 脚本删除所选的不透明会话，并把保留下来的会话的 `tv`（连同轮换留下的旧令牌）改成新的 `token_version`（只增不减）。这样 JWT 被 bump 停掉，而没有 refresh token 的不透明会话不会被一起踢掉。这一步 Valkey 不可用时只记 Warn、事务照常提交：没改到 `tv` 的会话被 bump 结束（偏安全），JWT 调用者登出、撤销其他会话不依赖 Valkey。
+- 回滚的边缘情况：保留的会话在提交前就改了 `tv`，事务若之后回滚，它的 `tv` 比库里大一，仍然放行（读状态走缓存，不会每个请求都绕过缓存查库）；之后任何不经 Valkey 改 `tv` 的 bump 都加 2（结束全部会话、命令行），一定大于它，承诺的“全部会话结束”成立。
 - **重置安全（新）**：`DELETE /users/:id/security`（`ResetSecurity`）现在也结束目标用户的会话（丢失的设备上可能还登录着）；重置自己的因子时保留发起请求的会话。此前不结束任何会话。
 - 不经 Valkey 的 bump（命令行 `sub2api admin recover-superadmin`，没有 Redis）由 `tv` 比较生效：旧会话下次使用时被删除并 401。
-- 登出：带 `refresh_token` 照旧结束那个家族；不带时，调用者是不透明会话就只结束它自己，否则照旧结束全部会话。
-- `GET /me/sessions`：合并 Valkey 里的会话与仍有有效 refresh token 的 JWT 家族，按最近使用时间倒序；同一 id 只列一次。
+- 登出：带 `refresh_token` 照旧结束那个家族；不带时，调用者是不透明会话（ctx 里的令牌类型）就只结束它自己，会话已经不在（过期、已被撤销）也一样，不会退化成结束全部会话；JWT 调用者照旧结束全部会话。
+- `GET /me/sessions`：合并 Valkey 里的会话与仍有有效 refresh token 的 JWT 家族，按最近使用时间倒序；同一 id 只列一次。开关为 `jwt` 且 Valkey 不可用时只列 JWT 家族（Valkey 里只有切换留下的会话）；开关为 `s2s` 时 503。
 - 审计点不变（`user.session.revoke`、`user.session.revoke_others`、`auth.superadmin_login` 等）。
 
 ### 100.5 开关 `session.issue`
 
 - 存在 `settings` 表 `session` 行 `{"issue": "jwt" | "s2s"}`，默认 `jwt`（没有行、空、不认识的值都按 `jwt`）。
-- `GET /settings/session`（`settings:read`）返回 `{issue（存的值）, effective（本节点在签发的）, source: setting | env | default, idle_ttl_seconds, max_ttl_seconds}`。`PUT /settings/session {"issue"}` 要 `settings:manage`、二次验证 `session.issue`（§80.2），且只有超管本人可以（其他人 403 `permission_denied`）；其他值 400 `invalid_argument`（`details.fields[0].field = issue`）；与设置同一事务写审计 `session.issue.set`（`target_type = setting`、`target_id = session`，`detail` 含 `from`、`to`、`request_id`）。控制台没有页面。
+- `GET /settings/session`（`settings:read`）返回 `{issue（存的值）, effective（本节点实际在签发的：没有会话存储的进程即使环境变量固定为 s2s 也是 jwt）, source: setting | env | default, idle_ttl_seconds, max_ttl_seconds, behind}`；`behind` 列出还不支持不透明会话的存活节点（`node_id`、`boot_id`、`host_version`），读不到节点注册表时为 `null`（切到 `s2s` 此时 503）。
+- 切到 `s2s` 前检查集群：每个存活节点的心跳都带能力标记 `session.s2s`（`core.CapabilityOpaqueSessions`，写在 `node:info:{boot}` 的 `caps` 字段，旧版本没有）才允许，否则 409 `conflict`，`details.nodes` 列出这些节点（同 `behind`）。用能力标记而不是比较 `host_version`：开发版、候选版的版本号不可比，标记由支持它的代码自己声明。切回 `jwt` 不检查。`PUT /settings/session {"issue"}` 要 `settings:manage`、二次验证 `session.issue`（§80.2），且只有超管本人可以（其他人 403 `permission_denied`）；其他值 400 `invalid_argument`（`details.fields[0].field = issue`）；与设置同一事务写审计 `session.issue.set`（`target_type = setting`、`target_id = session`，`detail` 含 `from`、`to`、`request_id`）。控制台没有页面。
 - 跨节点生效：`PUT` 后广播 `config:changed` `{"key":"settings.session"}`，各节点丢掉缓存；漏掉广播的节点最多 30 秒后重读（缓存 30 秒，总线重连时也丢掉）。
-- 环境变量 `SUP2API_SESSION_ISSUE` 优先于设置：设了就固定这个节点；值不认识按 `jwt` 并记 Warn。没有 Redis 的进程（`sub2api admin`）永远签发 JWT。
+- 环境变量 `SUB2API_SESSION_ISSUE` 优先于设置：设了就固定这个节点；值不认识按 `jwt` 并记 Warn。没有 Redis 的进程（`sub2api admin`）永远签发 JWT。变量在网关传给核心的白名单里（`supervisor.inheritedEnv`），`deploy/single` 的 compose 也映射了。
+- 应急（接口不可用时）：直接改 `settings` 表（30 秒内全部节点生效），或设环境变量重启单个节点，见 `deploy/rollback/0.1.290-session-down.md`。
 - 与 `authz.engine` 共用一套机制（`authz.Switch`：设置行 + 超管本人 + 审计 + 广播 + 环境变量优先）。
 
 ### 100.6 故障
 
 - Valkey 不可用时：不透明会话的鉴权、开关为 `s2s` 时的登录与两步登录、会话列表与撤销、需要读写 Valkey 的流程都返回 503 `unavailable`；`httpapi.Authenticate` 遇到 503 原样返回，不改写成 401（否则控制台会把所有人送回登录页，而登录页此时也用不了）。每次失败记 ERROR `tokenstore: valkey unavailable`（`op` 字段），作为告警关键字。
 - 不本地兜底，不回退 JWT。JWT 本身的鉴权不读 Valkey；访问密钥、网关 Key 不受影响；登录限流照旧失败放行（§14.2）。
-- 开关为 `jwt` 时也有几处要 Valkey：撤销、登出、改密码、禁用、删除用户、重置安全要同时结束不透明会话，Valkey 不可用时 503（整个事务回滚，`token_version` 不 bump）；两步登录、通行密钥、TOTP 设置、step-up 的流程先读 Valkey，同样 503。只用密码的 JWT 登录与 JWT 鉴权不受影响。
+- 开关为 `jwt` 时，JWT 调用者的路径不依赖 Valkey：JWT 鉴权与登录、两步登录、step-up 验证与消费、会话列表、登出、撤销其他会话、改密码、管理员禁用与删除用户在 Valkey 不可用时都照常工作（Valkey 里切换留下的不透明会话被 bump 结束，见 §100.4）。仍要 Valkey 的只有不透明会话本身：它的鉴权、撤销单个不透明会话、它的 step-up 换令牌。
 
 ### 100.7 发布、切换、回退与清理
 
 1. 发布本版本（核心 0.1.290 候选，与 Casbin 同版）：所有节点都认 `s2s_`，开关仍是 `jwt`，签发与以前一样。可与旧版本滚动混跑：新节点照旧把流程写进 `auth_flows`。
-2. 全部节点升级完成后：`PUT /settings/session {"issue":"s2s"}`（或先在单个节点上用环境变量试）。新登录拿到 `s2s_`；已登录的控制台在 access token 过期（≤ 2 小时）刷新时换成 `s2s_`，不用重新登录；切换前签发的 JWT 照常有效到过期。
+2. 全部节点升级完成后：`PUT /settings/session {"issue":"s2s"}`（或先在单个节点上用环境变量试）。还有旧节点存活时接口返回 409 并列出它们（§100.5）。新登录拿到 `s2s_`；已登录的控制台在 access token 过期（≤ 2 小时）刷新时换成 `s2s_`，不用重新登录；切换前签发的 JWT 照常有效到过期。
 3. 回退：`PUT {"issue":"jwt"}` 立即恢复签发 JWT，已发的 `s2s_` 继续有效到过期或被撤销。代码回滚到上一版本时，旧代码不认 `s2s_`，开关切过之后登录的用户要重新登录。
 4. 清理（切到 `s2s` 至少 30 天后另做，本次不做）：前提是旧 refresh token（720h）都已过期或已换发。删掉 JWT 签发与校验、`/auth/refresh`、`SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL`、开关本身，以及控制台的刷新锁、keep-alive 与 `refresh_token` 字段；读取 `auth_flows` 的回退路径。`refresh_tokens`、`login_sessions`、`auth_flows` 三张表放进下一个带迁移的版本删除（需用户同意）。
 
@@ -8701,5 +8713,5 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 
 ### 100.9 测试
 
-- `internal/iam/tokenstore`（miniredis）：签发与查找、只存哈希、空闲与绝对超时、续期节流、单个撤销立即失效且不会被续期复活、撤销其他与全部、保留会话的 `tv` 只增不减、ZSET 残留清理、轮换（宽限、不续期、撤销一并删除）、流程只看不取与 `GETDEL` 一次性、二次验证窗口、Valkey 宕机全部返回 503 而不是“不存在”。
-- `internal/iam`（PostgreSQL + miniredis）：开关（默认、非法值、只有超管、审计、第二个节点跟随广播、环境变量固定、CLI 不签发）、路由要二次验证、两种令牌在两个节点上都能用、refresh 换发（同 sid、列表只一条、旧 JWT 到期前有效、重放连带删除）、单个/其他/改密码/登出/管理员改密码/重置安全/禁用/删除各自的效果、不经 Valkey 的 bump、二次验证换令牌且 proof 仍可用、流程迁到 Valkey 后双读与一次性、二次验证窗口、Valkey 宕机时 503 而 JWT 照常。
+- `internal/iam/tokenstore`（miniredis）：签发与查找、只存哈希、空闲与绝对超时、续期节流、单个撤销立即失效且不会被续期复活、撤销其他与全部、保留会话的 `tv` 只增不减且旧令牌一起改、ZSET 残留清理、轮换（宽限、不续期、撤销一并删除、连续两次轮换后第一个令牌立即结束）、旧令牌只删自己、每用户会话上限与同 sid 重建、续期不写残缺 HASH、单个撤销不扫全部、流程只看不取与 `GETDEL` 一次性、二次验证窗口、Valkey 宕机全部返回 503 而不是“不存在”、专用客户端在服务端不应答时约 1 秒返回 503。
+- `internal/iam`（PostgreSQL + miniredis）：开关（默认、非法值、只有超管、审计、第二个节点跟随广播、环境变量固定、CLI 不签发）、路由要二次验证、两种令牌在两个节点上都能用、refresh 换发（同 sid、列表只一条、旧 JWT 到期前有效、重放连带删除）、单个/其他/改密码/登出/管理员改密码/重置安全/禁用/删除各自的效果、不经 Valkey 的 bump、二次验证换令牌且 proof 仍可用、流程迁到 Valkey 后双读与一次性、二次验证窗口、Valkey 宕机时 503 而 JWT 照常；评审修复：保留会话的 bump 不连累轮换留下的旧令牌、宽限期内重复换发、不透明会话登出只结束自己、已换发家族的旧 JWT 做 step-up 不换令牌、撤销单个不透明会话不 bump、回滚留下的 `tv` 挡不住之后的 bump、登录事务失败不留会话且两步登录流程可重试、开关为 `jwt` 时 Valkey 宕机 JWT 调用者的各条路径照常且换令牌失败不留审计与 proof、切到 `s2s` 等待全部节点。

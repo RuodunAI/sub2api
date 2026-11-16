@@ -384,7 +384,11 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 	if err != nil {
 		return nil, err
 	}
-	s.sessionsChanged(ctx, id)
+	if hash != nil || (in.Status != nil && *in.Status == StatusDisabled) {
+		s.sessionsEnded(ctx, id) // applyUpdateTx ended every session
+	} else {
+		s.sessionsChanged(ctx, id)
+	}
 	if v != 0 {
 		s.authz.Committed(ctx, v)
 	}
@@ -547,7 +551,7 @@ func (s *Service) DeleteUser(ctx context.Context, actorID, id int64) error {
 	if err != nil {
 		return err
 	}
-	s.sessionsChanged(ctx, id)
+	s.sessionsEnded(ctx, id)
 	s.authz.Committed(ctx, v)
 	if dropped {
 		s.priceRulesChanged(ctx)

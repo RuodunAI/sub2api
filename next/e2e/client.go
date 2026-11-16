@@ -102,6 +102,11 @@ func (c *Client) Do(t testing.TB, method, path string, body any, opts ...ReqOpt)
 	if v.Status != http.StatusOK {
 		t.Fatalf("step-up for %s %s: %s", method, path, v)
 	}
+	// An opaque session gets a new token of the same session (CONTRACTS
+	// §100.4): the old one stops working seconds later.
+	if fresh := v.Data().Get("access_token").String(); fresh != "" {
+		c.Token = fresh
+	}
 	opts = append(opts, Header("X-Verify-Proof", v.Data().Get("proof").String()))
 	return c.send(t, method, path, bytes.NewReader(payload), ctype, opts)
 }

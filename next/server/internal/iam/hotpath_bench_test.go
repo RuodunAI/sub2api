@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -32,7 +33,7 @@ func hotFixture(b *testing.B) (*Service, int64, string) {
 	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = 'bench'`, user); err != nil {
 		b.Fatal(err)
 	}
-	hash := hashToken("bench-key")
+	hash := tokenstore.Hash("bench-key")
 	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO user_access_keys (user_id, name, token_hash, token_hint, permissions, last_used_at)
 		VALUES ($1, 'k', $2, 'abcd', '{account:read:own,user:read:all}', now())`, user, hash); err != nil {
 		b.Fatal(err)

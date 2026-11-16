@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,7 @@ func TestRegistryHeartbeatAndLiveNodes(t *testing.T) {
 	mr, rdb := newRedis(t)
 	c := newClock()
 	a := newReg(rdb, c, "node-a", "boot-a")
+	a.opts.Capabilities = []string{"session.s2s", "other"}
 	b := newReg(rdb, c, "node-b", "boot-b")
 	if a.NodeID() != "node-a" || a.BootID() != "boot-a" {
 		t.Fatal("identity")
@@ -92,6 +94,12 @@ func TestRegistryHeartbeatAndLiveNodes(t *testing.T) {
 			if n.Plugins["guard"] != `{"state":"active"}` {
 				t.Fatalf("plugins: %+v", n.Plugins)
 			}
+			// Announced next to the plugin reports, which follow them.
+			if !slices.Equal(n.Capabilities, []string{"session.s2s", "other"}) {
+				t.Fatalf("capabilities: %+v", n.Capabilities)
+			}
+		} else if n.Capabilities != nil {
+			t.Fatalf("node b announced %v", n.Capabilities)
 		}
 	}
 	// Removing a plugin report.

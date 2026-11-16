@@ -104,6 +104,7 @@ func New(rdb redis.UniversalClient, db *store.DB, opts Options) *Cluster {
 	}
 	reg := NewRegistry(rdb, pinger, RegistryOptions{
 		NodeID: opts.NodeID, Addr: opts.Addr, HostVersion: opts.HostVersion, Logger: opts.Logger, Managed: opts.Managed, CoreBootID: opts.CoreBootID,
+		Capabilities: core.NodeCapabilities,
 	})
 	if opts.Managed {
 		reg.opts.BootID = opts.CoreBootID

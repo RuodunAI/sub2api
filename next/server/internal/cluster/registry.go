@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,10 +29,12 @@ type RegistryOptions struct {
 	BootID      string // default: random UUID
 	Addr        string
 	HostVersion string
-	Interval    time.Duration    // heartbeat interval, default 5 s
-	TTL         time.Duration    // liveness window, default 15 s
-	Now         func() time.Time // tests only: override the shared Redis clock and local health clock
-	Logger      *slog.Logger
+	// Capabilities are announced with every heartbeat (core.NodeStatus).
+	Capabilities []string
+	Interval     time.Duration    // heartbeat interval, default 5 s
+	TTL          time.Duration    // liveness window, default 15 s
+	Now          func() time.Time // tests only: override the shared Redis clock and local health clock
+	Logger       *slog.Logger
 }
 
 // Registry implements core.NodeRegistry. Heartbeats write node:live,
@@ -85,9 +88,9 @@ local ttl = tonumber(ARGV[2])
 redis.call('ZADD',KEYS[1],now,ARGV[3])
 redis.call('ZREMRANGEBYSCORE',KEYS[1],'-inf','('..tostring(now-ttl))
 redis.call('HSET',KEYS[2],'node_id',ARGV[4],'addr',ARGV[5],'host_version',ARGV[6],
-  'started_at',ARGV[7],'last_heartbeat',tostring(now),'managed',ARGV[8],'core_boot_id',ARGV[9])
+  'started_at',ARGV[7],'last_heartbeat',tostring(now),'managed',ARGV[8],'core_boot_id',ARGV[9],'caps',ARGV[10])
 redis.call('PEXPIRE',KEYS[2],ttl)
-if #ARGV > 9 then redis.call('HSET',KEYS[3],unpack(ARGV,10)) end
+if #ARGV > 10 then redis.call('HSET',KEYS[3],unpack(ARGV,11)) end
 redis.call('PEXPIRE',KEYS[3],ttl)
 return 1`)
 
@@ -139,7 +142,8 @@ func (r *Registry) Heartbeat(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 
-	args := []any{sharedClockOverride(r.opts.Now), ttl.Milliseconds(), boot, r.opts.NodeID, r.opts.Addr, r.opts.HostVersion, r.start.UTC().Format(time.RFC3339Nano), strconv.FormatBool(r.opts.Managed), r.opts.CoreBootID}
+	args := []any{sharedClockOverride(r.opts.Now), ttl.Milliseconds(), boot, r.opts.NodeID, r.opts.Addr, r.opts.HostVersion, r.start.UTC().Format(time.RFC3339Nano), strconv.FormatBool(r.opts.Managed), r.opts.CoreBootID,
+		strings.Join(r.opts.Capabilities, ",")}
 	args = append(args, plugins...)
 	_, err := heartbeatScript.Run(ctx, r.rdb, []string{keyNodeLive, infoKey, plugKey}, args...).Result()
 	if err != nil {
@@ -207,6 +211,9 @@ func (r *Registry) LiveNodes(ctx context.Context) ([]core.NodeStatus, error) {
 		}
 		if st.Plugins == nil {
 			st.Plugins = map[string]string{}
+		}
+		if caps := info["caps"]; caps != "" {
+			st.Capabilities = strings.Split(caps, ",")
 		}
 		if t, err := time.Parse(time.RFC3339Nano, info["started_at"]); err == nil {
 			st.StartedAt = t

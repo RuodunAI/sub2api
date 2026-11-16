@@ -6,10 +6,6 @@ package iam
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"math"
@@ -55,6 +51,12 @@ type Deps struct {
 	// (billing.Service.PriceRulesChanged): deleting a user deletes those of
 	// their personal segment. Optional.
 	PriceRulesChanged func(ctx context.Context)
+	// SessionRedis keeps the opaque sessions and the flows
+	// (tokenstore.NewClient on Redis's server); Redis when nil.
+	SessionRedis redis.Cmdable
+	// Nodes lists the live nodes, for the switch to s2s (SetIssue).
+	// Optional.
+	Nodes LiveNodes
 }
 
 // Service is the iam module.
@@ -79,6 +81,7 @@ type Service struct {
 	flows       tokenstore.FlowStore
 	issue       issueModeState
 	sessionIdle time.Duration
+	nodes       LiveNodes
 
 	dummyHash []byte
 
@@ -114,12 +117,17 @@ func New(d Deps) *Service {
 		priceRulesChanged: d.PriceRulesChanged, limiter: newLoginLimiter(d.Redis)}
 	s.dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password-for-timing"), s.cost)
 	s.issue.pinned, s.issue.hasPinned = issueSwitch.Pinned()
+	s.nodes = d.Nodes
 	if d.Redis != nil {
 		var o tokenstore.Options
 		if d.Config != nil {
 			o.Idle, o.Max = d.Config.SessionIdleTTL, d.Config.SessionMaxTTL
 		}
-		v := tokenstore.NewValkey(d.Redis, o)
+		rdb := d.SessionRedis
+		if rdb == nil {
+			rdb = d.Redis
+		}
+		v := tokenstore.NewValkey(rdb, o)
 		s.sessions, s.flows, s.sessionIdle = v, v, v.Idle()
 	}
 	if d.Authz != nil {
@@ -264,19 +272,6 @@ func (s *Service) isActiveWithVersion(ctx context.Context, uid int64, seen int) 
 // allocations): a request reads it on a cache miss.
 func userStatus(db *gorm.DB, uid int64) *gorm.DB {
 	return db.Raw(`SELECT status = 'active', token_version FROM users WHERE id = ? AND deleted_at IS NULL`, uid)
-}
-
-func randomToken() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b[:]), nil
-}
-
-func hashToken(t string) string {
-	h := sha256.Sum256([]byte(t))
-	return hex.EncodeToString(h[:])
 }
 
 // ------------------------------------------------------------ bootstrap

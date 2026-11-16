@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
@@ -31,7 +31,7 @@ const (
 )
 
 // IssueEnv pins session.issue on this process.
-const IssueEnv = "SUP2API_SESSION_ISSUE"
+const IssueEnv = "SUB2API_SESSION_ISSUE"
 
 // issueSwitch is session.issue: the settings row "session" holding
 // {"issue": ...}, flipped the way authz.engine is (authz.Switch).
@@ -105,6 +105,22 @@ type IssueStatus struct {
 	// IdleTTLSeconds and MaxTTLSeconds bound an opaque session.
 	IdleTTLSeconds int64 `json:"idle_ttl_seconds"`
 	MaxTTLSeconds  int64 `json:"max_ttl_seconds"`
+	// Behind are the live nodes that do not accept opaque sessions yet
+	// (core.CapabilityOpaqueSessions): s2s is refused while there are any.
+	// null when the node registry could not be read.
+	Behind []BehindNode `json:"behind"`
+}
+
+// BehindNode is a live node of an older build.
+type BehindNode struct {
+	NodeID      string `json:"node_id"`
+	BootID      string `json:"boot_id"`
+	HostVersion string `json:"host_version"`
+}
+
+// LiveNodes lists the nodes online now (cluster.Registry).
+type LiveNodes interface {
+	LiveNodes(ctx context.Context) ([]core.NodeStatus, error)
 }
 
 // IssueStatus reports session.issue as stored and as this node applies it.
@@ -113,15 +129,57 @@ func (s *Service) IssueStatus(ctx context.Context) (IssueStatus, error) {
 	if err != nil {
 		return IssueStatus{}, err
 	}
+	behind, err := s.nodesBehind(ctx)
+	if err != nil { // unknown (null): the switch back to jwt reports without it
+		slog.WarnContext(ctx, "iam: listing the live nodes failed", "err", err)
+	}
 	s.issue.cached.Store(nil)
-	return IssueStatus{Issue: v, Effective: s.issueMode(ctx), Source: issueSwitch.Source(s.issue.hasPinned, v),
-		IdleTTLSeconds: int64(s.cfg.SessionIdleTTL / time.Second), MaxTTLSeconds: int64(s.cfg.SessionMaxTTL / time.Second)}, nil
+	effective := IssueJWT
+	if s.issuesOpaque(ctx) {
+		effective = IssueOpaque
+	}
+	return IssueStatus{Issue: v, Effective: effective, Source: issueSwitch.Source(s.issue.hasPinned, v),
+		IdleTTLSeconds: int64(s.cfg.SessionIdleTTL / time.Second), MaxTTLSeconds: int64(s.cfg.SessionMaxTTL / time.Second),
+		Behind: behind}, nil
+}
+
+// nodesBehind lists the live nodes without core.CapabilityOpaqueSessions:
+// they would answer an s2s_ token with 401 and miss the flows in Valkey.
+// Without a registry (the server CLI, tests) none is known.
+func (s *Service) nodesBehind(ctx context.Context) ([]BehindNode, error) {
+	out := []BehindNode{}
+	if s.nodes == nil {
+		return out, nil
+	}
+	nodes, err := s.nodes.LiveNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, n := range nodes {
+		if !slices.Contains(n.Capabilities, core.CapabilityOpaqueSessions) {
+			out = append(out, BehindNode{NodeID: n.NodeID, BootID: n.BootID, HostVersion: n.HostVersion})
+		}
+	}
+	return out, nil
 }
 
 // SetIssue stores session.issue and tells every node (authz.SetSwitch:
-// super admin only, audited session.issue.set). IssueEnv still wins on the
+// super admin only, audited session.issue.set). Switching to s2s waits for
+// every live node to accept opaque sessions: 409 lists the ones behind.
+// Switching back to jwt is always possible. IssueEnv still wins on the
 // nodes that set it.
 func (s *Service) SetIssue(ctx context.Context, actorID int64, mode string) (IssueStatus, error) {
+	if mode == IssueOpaque {
+		behind, err := s.nodesBehind(ctx)
+		if err != nil {
+			return IssueStatus{}, err
+		}
+		if len(behind) > 0 {
+			return IssueStatus{}, core.ErrConflict.WithMessage(t(ctx,
+				"some nodes do not accept opaque sessions yet: upgrade them first",
+				"部分节点还不支持不透明会话，请先升级这些节点")).WithDetails(map[string]any{"nodes": behind})
+		}
+	}
 	if err := s.authz.SetSwitch(ctx, issueSwitch, actorID, mode); err != nil {
 		return IssueStatus{}, err
 	}
@@ -165,30 +223,14 @@ func (s *Service) registerIssueRoutes(r *httpapi.Router) {
 // issueOpaque stores an opaque session of userID under the login session
 // familyID and returns its token. tokenVersion was read under the user's
 // lock, which the caller holds, so a revocation cannot slip in between.
-// A family that is not new is a refresh token being exchanged: its tokens
-// are spent and its login_sessions row goes, the session lives on in Valkey
-// under the same id (the step-up proofs bound to it stay valid).
-func (s *Service) issueOpaque(ctx context.Context, g *gorm.DB, userID int64, tokenVersion int, familyID string, isNew bool) (*TokenPair, error) {
+func (s *Service) issueOpaque(ctx context.Context, userID int64, tokenVersion int, familyID string) (*TokenPair, error) {
 	meta, _ := ctx.Value(sessionMetaKey{}).(sessionMeta)
-	if !isNew {
-		if meta.method == "" {
-			if err := familyMethod(g, familyID).Row().Scan(&meta.method); err != nil && !store.IsNoRows(err) {
-				return nil, err
-			}
-		}
-		if err := revokeFamily(g, familyID).Error; err != nil {
-			return nil, err
-		}
-		if err := deleteSessions(g, userID, oneSession(familyID)).Error; err != nil {
-			return nil, err
-		}
-	}
 	token, err := s.sessions.Create(ctx, tokenstore.Session{ID: familyID, UserID: userID, Method: meta.method,
 		IP: meta.ip, UserAgent: meta.userAgent, TokenVersion: tokenVersion})
 	if err != nil {
 		return nil, err
 	}
-	return &TokenPair{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second)}, nil
+	return &TokenPair{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second), opaqueID: familyID}, nil
 }
 
 // familyMethod reads how the login session familyID started.
@@ -198,8 +240,14 @@ func familyMethod(db *gorm.DB, familyID string) *gorm.DB {
 
 // verifyOpaque is VerifySession for an s2s_ token. Valkey down fails with
 // 503 (tokenstore.ErrUnavailable); there is no fallback. A session from
-// before a token_version bump that did not reach Valkey (the server CLI) is
-// dropped on sight.
+// before a token_version bump that did not reach Valkey (ending every
+// session, the server CLI) is dropped on sight; a token a rotation left in
+// its grace drops only itself, never the session's current token.
+//
+// The user's status is read through the cache whatever the session's
+// stamp: a stamp ahead of the row (a survivor of a bump not committed yet,
+// or rolled back) is accepted, and a stale cache can only be behind a newer
+// session, which it accepts too.
 func (s *Service) verifyOpaque(ctx context.Context, token string) (int64, string, error) {
 	if s.sessions == nil {
 		return 0, "", core.ErrUnauthenticated
@@ -211,15 +259,12 @@ func (s *Service) verifyOpaque(ctx context.Context, token string) (int64, string
 	if err != nil {
 		return 0, "", err
 	}
-	active, version, err := s.isActiveWithVersion(ctx, sess.UserID, sess.TokenVersion)
+	active, version, err := s.isActiveWithVersion(ctx, sess.UserID, 0)
 	if err != nil {
 		return 0, "", err
 	}
-	// Survivors of a bump are stamped with the new version before it
-	// commits, so a session may be ahead of the row: only an older one is
-	// stale.
 	if !active || sess.TokenVersion < version {
-		if err := s.sessions.Revoke(ctx, sess.UserID, tokenstore.Selection{Only: sess.ID}, 0); err != nil {
+		if err := s.sessions.Drop(ctx, token, sess); err != nil {
 			return 0, "", err
 		}
 		return 0, "", core.ErrUnauthenticated.WithMessage("session has been invalidated")

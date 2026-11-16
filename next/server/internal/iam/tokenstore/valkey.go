@@ -36,7 +36,15 @@ const (
 	DefaultTouchEvery  = 5 * time.Minute
 	DefaultRotateGrace = 30 * time.Second
 	DefaultFlowTTL     = 5 * time.Minute
+	// DefaultMaxSessions bounds the sessions of a user: a login past it ends
+	// the one used least recently.
+	DefaultMaxSessions = 50
 )
+
+// authTimeout bounds each Valkey call that authenticates a request (Lookup,
+// Touch, Drop): a stuck server fails the console request with 503 within
+// it instead of holding it.
+const authTimeout = time.Second
 
 // Options tune Valkey; zero fields take the defaults.
 type Options struct {
@@ -45,6 +53,7 @@ type Options struct {
 	TouchEvery  time.Duration // a use is written only this long after the last written one
 	RotateGrace time.Duration // a rotated token keeps working this long
 	FlowTTL     time.Duration
+	MaxSessions int              // sessions a user keeps at most
 	Now         func() time.Time // tests
 }
 
@@ -59,7 +68,7 @@ var (
 	_ FlowStore    = (*Valkey)(nil)
 )
 
-// NewValkey returns the stores on rdb.
+// NewValkey returns the stores on rdb (NewClient makes the one to use).
 func NewValkey(rdb redis.Cmdable, o Options) *Valkey {
 	def := func(d *time.Duration, v time.Duration) {
 		if *d <= 0 {
@@ -71,6 +80,9 @@ func NewValkey(rdb redis.Cmdable, o Options) *Valkey {
 	def(&o.TouchEvery, DefaultTouchEvery)
 	def(&o.RotateGrace, DefaultRotateGrace)
 	def(&o.FlowTTL, DefaultFlowTTL)
+	if o.MaxSessions <= 0 {
+		o.MaxSessions = DefaultMaxSessions
+	}
 	if o.Idle > o.Max {
 		o.Idle = o.Max
 	}
@@ -80,13 +92,29 @@ func NewValkey(rdb redis.Cmdable, o Options) *Valkey {
 	return &Valkey{rdb: rdb, o: o}
 }
 
+// NewClient is the client of the stores, on the server base names: it
+// retries once instead of three times, waits a second at most for a
+// connection or an answer, and honours the deadline of each call
+// (authTimeout), so an outage costs a console request a 503 quickly
+// instead of a long hang. The caller closes it.
+func NewClient(base *redis.Options) *redis.Client {
+	o := *base
+	o.Dialer = nil // base's dialer has base's timeout; this one is built from o
+	o.MaxRetries = 1
+	o.DialTimeout, o.ReadTimeout, o.WriteTimeout = time.Second, time.Second, time.Second
+	o.ContextTimeoutEnabled = true
+	return redis.NewClient(&o)
+}
+
 // Idle is the idle timeout of a session.
 func (v *Valkey) Idle() time.Duration { return v.o.Idle }
 
 // FlowTTL is how long a flow lives.
 func (v *Valkey) FlowTTL() time.Duration { return v.o.FlowTTL }
 
-// fail maps a Valkey error: redis.Nil is a missing key.
+// fail maps a Valkey error: redis.Nil is a missing key. ctx is the caller's
+// (not a deadline of the call's own): its end is the caller leaving, not an
+// outage.
 func fail(ctx context.Context, op string, err error) error {
 	if errors.Is(err, redis.Nil) {
 		return ErrNotFound
@@ -124,23 +152,54 @@ func parseSession(f map[string]string) (Session, bool) {
 	return s, uid > 0 && s.ID != "" && created > 0
 }
 
-// Create implements SessionStore. The user's index forgets the ids idle past
-// the timeout here, so it never grows past the live sessions for long.
+// dropLua defines drop(p, sk): it ends the session whose sid key is sk, the
+// current token and the one a rotation left in its grace (prev).
+const dropLua = `
+local function drop(p, sk)
+  local h = redis.call('GET', sk)
+  if h then
+    local k = p .. 'sess:' .. h
+    local prev = redis.call('HGET', k, 'prev')
+    if prev then redis.call('DEL', p .. 'sess:' .. prev) end
+    redis.call('DEL', k)
+  end
+  redis.call('DEL', sk)
+end
+`
+
+// createScript stores a new token of a session. A session already under
+// the id (a refresh token exchanged again) ends first, so no token of it
+// is left that only a token_version bump could end. The user's index
+// forgets the ids idle past the timeout, and the sessions used least
+// recently past MaxSessions end.
+// KEYS: sess, sid, usess. ARGV: prefix, hash, sid, ttl ms, now ms, idle
+// cutoff ms, usess ttl ms, max sessions, the fields...
+var createScript = redis.NewScript(dropLua + `
+local p = ARGV[1]
+drop(p, KEYS[2])
+redis.call('HSET', KEYS[1], unpack(ARGV, 9))
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
+redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[4])
+redis.call('ZADD', KEYS[3], ARGV[5], ARGV[3])
+redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', '(' .. ARGV[6])
+redis.call('PEXPIRE', KEYS[3], ARGV[7])
+local over = redis.call('ZCARD', KEYS[3]) - tonumber(ARGV[8])
+if over > 0 then
+  for _, id in ipairs(redis.call('ZRANGE', KEYS[3], 0, over - 1)) do
+    drop(p, p .. 'sid:' .. id)
+    redis.call('ZREM', KEYS[3], id)
+  end
+end
+return 1`)
+
+// Create implements SessionStore.
 func (v *Valkey) Create(ctx context.Context, s Session) (string, error) {
-	token, h := newToken(SessionPrefix)
+	token, h := NewToken(SessionPrefix)
 	now := v.o.Now()
 	s.CreatedAt, s.LastSeen = now, now
-	ttl, uk := v.ttl(s, now), userKey(s.UserID)
-	_, err := v.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
-		p.HSet(ctx, sessKey(h), s.fields()...)
-		p.PExpire(ctx, sessKey(h), ttl)
-		p.Set(ctx, sidKey(s.ID), h, ttl)
-		p.ZAdd(ctx, uk, redis.Z{Score: float64(ms(now)), Member: s.ID})
-		p.ZRemRangeByScore(ctx, uk, "-inf", "("+strconv.FormatInt(ms(now.Add(-v.o.Idle)), 10))
-		p.PExpire(ctx, uk, v.o.Max)
-		return nil
-	})
-	if err != nil {
+	args := append([]any{keyPrefix, h, s.ID, v.ttl(s, now).Milliseconds(), ms(now), ms(now.Add(-v.o.Idle)),
+		v.o.Max.Milliseconds(), v.o.MaxSessions}, s.fields()...)
+	if err := createScript.Run(ctx, v.rdb, []string{sessKey(h), sidKey(s.ID), userKey(s.UserID)}, args...).Err(); err != nil {
 		return "", fail(ctx, "create", err)
 	}
 	return token, nil
@@ -148,7 +207,9 @@ func (v *Valkey) Create(ctx context.Context, s Session) (string, error) {
 
 // Lookup implements SessionStore.
 func (v *Valkey) Lookup(ctx context.Context, token string) (Session, error) {
-	f, err := v.rdb.HGetAll(ctx, sessKey(Hash(token))).Result()
+	c, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
+	f, err := v.rdb.HGetAll(c, sessKey(Hash(token))).Result()
 	if err != nil {
 		return Session{}, fail(ctx, "lookup", err)
 	}
@@ -163,10 +224,11 @@ func (v *Valkey) Lookup(ctx context.Context, token string) (Session, error) {
 
 // touchScript extends a session that is still its id's current token: a
 // revoked one (sid key gone) or a rotated one (sid points elsewhere) is not
-// brought back.
+// brought back, and neither is one that expired since it was read (no
+// partial HASH is written).
 // KEYS: sess, sid, usess. ARGV: hash, now ms, ttl ms, sid, usess ttl ms.
 var touchScript = redis.NewScript(`
-if redis.call('GET', KEYS[2]) ~= ARGV[1] then return 0 end
+if redis.call('GET', KEYS[2]) ~= ARGV[1] or redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
 redis.call('HSET', KEYS[1], 'last_seen', ARGV[2])
 redis.call('PEXPIRE', KEYS[1], ARGV[3])
 redis.call('PEXPIRE', KEYS[2], ARGV[3])
@@ -185,8 +247,10 @@ func (v *Valkey) Touch(ctx context.Context, token string, s Session) error {
 	if ttl <= 0 {
 		return nil
 	}
+	c, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
 	h := Hash(token)
-	err := touchScript.Run(ctx, v.rdb, []string{sessKey(h), sidKey(s.ID), userKey(s.UserID)},
+	err := touchScript.Run(c, v.rdb, []string{sessKey(h), sidKey(s.ID), userKey(s.UserID)},
 		h, ms(now), ttl.Milliseconds(), s.ID, v.o.Max.Milliseconds()).Err()
 	if err != nil {
 		return fail(ctx, "touch", err)
@@ -196,7 +260,9 @@ func (v *Valkey) Touch(ctx context.Context, token string, s Session) error {
 
 // rotateScript copies the session the id's current token names to a new
 // token and points the id at it; the old token lives on for the grace (or
-// less), and the new one remembers it (prev) so a revocation ends both.
+// less), and the new one remembers it (prev) so a revocation ends both. A
+// token the previous rotation left in its grace ends now: only one old
+// token is ever left behind.
 // KEYS: sid. ARGV: prefix, uid, new hash, now ms, grace ms.
 var rotateScript = redis.NewScript(`
 local old = redis.call('GET', KEYS[1])
@@ -205,6 +271,11 @@ local oldKey = ARGV[1] .. 'sess:' .. old
 if redis.call('HGET', oldKey, 'uid') ~= ARGV[2] then return 0 end
 local ttl = redis.call('PTTL', oldKey)
 if ttl <= 0 then return 0 end
+local older = redis.call('HGET', oldKey, 'prev')
+if older then
+  redis.call('DEL', ARGV[1] .. 'sess:' .. older)
+  redis.call('HDEL', oldKey, 'prev')
+end
 local newKey = ARGV[1] .. 'sess:' .. ARGV[3]
 redis.call('HSET', newKey, unpack(redis.call('HGETALL', oldKey)))
 redis.call('HSET', newKey, 'prev', old, 'last_seen', ARGV[4])
@@ -215,7 +286,7 @@ return 1`)
 
 // Rotate implements SessionStore.
 func (v *Valkey) Rotate(ctx context.Context, userID int64, id string) (string, error) {
-	token, h := newToken(SessionPrefix)
+	token, h := NewToken(SessionPrefix)
 	n, err := rotateScript.Run(ctx, v.rdb, []string{sidKey(id)},
 		keyPrefix, userID, h, ms(v.o.Now()), v.o.RotateGrace.Milliseconds()).Int()
 	if err != nil {
@@ -280,13 +351,16 @@ func (v *Valkey) Has(ctx context.Context, userID int64, id string) (bool, error)
 }
 
 // revokeScript ends the picked sessions of the user (both tokens of a
-// rotation), restamps the others' tv, and drops the index entries whose
-// session is gone. Only is tried even when the index lost it; a session is
-// ended only when it is the user's.
+// rotation), restamps the others' tv (both tokens too: a request still
+// carrying the old one must not find it stale), and drops the index entries
+// whose session is gone. Only is tried even when the index lost it; with no
+// stamp to give, it is the only session read. A session is ended only when
+// it is the user's.
 // KEYS: usess. ARGV: prefix, uid, only, keep, tv.
-var revokeScript = redis.NewScript(`
+var revokeScript = redis.NewScript(dropLua + `
 local p, uid, only, keep, tv = ARGV[1], ARGV[2], ARGV[3], ARGV[4], tonumber(ARGV[5])
-local ids = redis.call('ZRANGE', KEYS[1], 0, -1)
+local ids = {}
+if only == '' or tv > 0 then ids = redis.call('ZRANGE', KEYS[1], 0, -1) end
 if only ~= '' then table.insert(ids, only) end
 for _, id in ipairs(ids) do
   local sid = p .. 'sid:' .. id
@@ -295,12 +369,14 @@ for _, id in ipairs(ids) do
   if not h or redis.call('HGET', k, 'uid') ~= uid then
     redis.call('ZREM', KEYS[1], id)
   elseif (only == '' or id == only) and (keep == '' or id ~= keep) then
-    local prev = redis.call('HGET', k, 'prev')
-    if prev then redis.call('DEL', p .. 'sess:' .. prev) end
-    redis.call('DEL', k, sid)
+    drop(p, sid)
     redis.call('ZREM', KEYS[1], id)
   elseif tv > 0 and (tonumber(redis.call('HGET', k, 'tv')) or 0) < tv then
     redis.call('HSET', k, 'tv', ARGV[5])
+    local prev = redis.call('HGET', k, 'prev')
+    if prev and redis.call('EXISTS', p .. 'sess:' .. prev) == 1 then
+      redis.call('HSET', p .. 'sess:' .. prev, 'tv', ARGV[5])
+    end
   end
 end
 return 1`)
@@ -310,6 +386,29 @@ func (v *Valkey) Revoke(ctx context.Context, userID int64, sel Selection, tokenV
 	err := revokeScript.Run(ctx, v.rdb, []string{userKey(userID)}, keyPrefix, userID, sel.Only, sel.Keep, tokenVersion).Err()
 	if err != nil {
 		return fail(ctx, "revoke", err)
+	}
+	return nil
+}
+
+// dropScript ends what one token still opens (Drop).
+// KEYS: sess, sid, usess. ARGV: prefix, hash, sid.
+var dropScript = redis.NewScript(dropLua + `
+if redis.call('GET', KEYS[2]) == ARGV[2] then
+  drop(ARGV[1], KEYS[2])
+  redis.call('ZREM', KEYS[3], ARGV[3])
+else
+  redis.call('DEL', KEYS[1])
+end
+return 1`)
+
+// Drop implements SessionStore.
+func (v *Valkey) Drop(ctx context.Context, token string, s Session) error {
+	c, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
+	h := Hash(token)
+	err := dropScript.Run(c, v.rdb, []string{sessKey(h), sidKey(s.ID), userKey(s.UserID)}, keyPrefix, h, s.ID).Err()
+	if err != nil {
+		return fail(ctx, "drop", err)
 	}
 	return nil
 }
@@ -329,7 +428,7 @@ func (v *Valkey) PutFlow(ctx context.Context, purpose string, f Flow) (string, e
 	if err != nil {
 		return "", err
 	}
-	token, h := newToken("")
+	token, h := NewToken("")
 	if err := v.rdb.Set(ctx, flowKey(purpose, h), raw, v.o.FlowTTL).Err(); err != nil {
 		return "", fail(ctx, "put flow", err)
 	}

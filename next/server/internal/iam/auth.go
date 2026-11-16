@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -31,6 +32,9 @@ type TokenPair struct {
 	User              *User  `json:"user,omitempty"`
 	TwoFactorRequired bool   `json:"two_factor_required,omitempty"`
 	FlowToken         string `json:"flow_token,omitempty"`
+
+	// opaqueID is the opaque session issueOpaque stored, for abandonIssued.
+	opaqueID string
 }
 
 var (
@@ -71,7 +75,7 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		return nil, err
 	}
 	if twoFactor {
-		token, err := s.createFlow(ctx, flowLogin2FA, id, login2FAPayload{Email: limiterEmail(email), Password: hashToken(hash)})
+		token, err := s.createFlow(ctx, s.db.Gorm, flowLogin2FA, id, login2FAPayload{Email: limiterEmail(email), Password: tokenstore.Hash(hash)})
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +106,11 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Token
 		pair, err = s.issueTokens(ctx, tx, id, "")
 		return err
 	})
-	return pair, err
+	if err != nil {
+		s.abandonIssued(ctx, pair)
+		return nil, err
+	}
+	return pair, nil
 }
 
 // login2FAPayload is what a correct password leaves for the second step: the
@@ -134,7 +142,7 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 			}
 			return err
 		}
-		if hashToken(hash) != payload.Password {
+		if tokenstore.Hash(hash) != payload.Password {
 			return errFlowExpired
 		}
 		if status != StatusActive {
@@ -143,17 +151,22 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 		if err := s.checkSecondFactor(ctx, tx, userID, code); err != nil {
 			return err
 		}
-		var used login2FAPayload
-		if _, err := s.takeFlow(ctx, tx, flowToken, flowLogin2FA, userID, &used); err != nil {
-			return err
-		}
 		if err := touchLastLogin(g, userID).Error; err != nil {
 			return err
 		}
 		var err error
-		pair, err = s.issueTokens(withLoginMethod(ctx, loginMethodTwoFactor), tx, userID, "")
+		if pair, err = s.issueTokens(withLoginMethod(ctx, loginMethodTwoFactor), tx, userID, ""); err != nil {
+			return err
+		}
+		// Taken last: a failure before leaves the flow for another try (a
+		// flow in Valkey does not come back with a rollback).
+		var used login2FAPayload
+		_, err = s.takeFlow(ctx, tx, flowToken, flowLogin2FA, userID, &used)
 		return err
 	})
+	if err != nil {
+		s.abandonIssued(ctx, pair)
+	}
 	if isBadSecondFactor(err) {
 		s.limiter.fail(ctx, payload.Email, ip)
 		if ferr := s.recordSecondFactorFailure(ctx, userID); ferr != nil {
@@ -179,7 +192,7 @@ func newFamilyID() (string, error) {
 // issueTokens issues the credentials of a login session familyID (a new
 // one when empty, i.e. on login, which is audited for a superuser): an
 // opaque session or a JWT pair, as session.issue says. The caller holds
-// the user's row lock.
+// the user's row lock, and calls abandonIssued when its transaction fails.
 func (s *Service) issueTokens(ctx context.Context, tx *gorm.DB, userID int64, familyID string) (*TokenPair, error) {
 	g := store.G(ctx, tx)
 	var tokenVersion int
@@ -196,28 +209,52 @@ func (s *Service) issueTokens(ctx context.Context, tx *gorm.DB, userID int64, fa
 			return nil, err
 		}
 	}
-	issue := s.issueJWT
-	if s.issuesOpaque(ctx) {
-		issue = s.issueOpaque
-	}
-	pair, err := issue(ctx, g, userID, tokenVersion, familyID, newFamily)
+	// The user is read first: an opaque session, stored in Valkey, is the
+	// last thing done before the commit.
+	user, err := s.loginUser(ctx, tx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if pair.User, err = s.getUser(ctx, tx, userID); err != nil {
+	var pair *TokenPair
+	if s.issuesOpaque(ctx) {
+		pair, err = s.issueOpaque(ctx, userID, tokenVersion, familyID)
+	} else {
+		pair, err = s.issueJWT(ctx, g, userID, tokenVersion, familyID, newFamily)
+	}
+	if err != nil {
 		return nil, err
 	}
-	pair.User.Balance = nil
-	pair.User.Segment = core.SegmentRef{}
+	pair.User = user
 	return pair, nil
+}
+
+// loginUser is the user a login or refresh answers with: no balance or
+// segment.
+func (s *Service) loginUser(ctx context.Context, tx *gorm.DB, userID int64) (*User, error) {
+	user, err := s.getUser(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	user.Balance = nil
+	user.Segment = core.SegmentRef{}
+	return user, nil
+}
+
+// abandonIssued ends the opaque session pair carries after the transaction
+// that issued it failed: Valkey does not roll back with PostgreSQL, and a
+// session nobody holds would stay on the user's sessions list.
+func (s *Service) abandonIssued(ctx context.Context, pair *TokenPair) {
+	if pair == nil || pair.opaqueID == "" {
+		return
+	}
+	if err := s.sessions.Revoke(context.WithoutCancel(ctx), pair.User.ID, tokenstore.Selection{Only: pair.opaqueID}, 0); err != nil {
+		slog.WarnContext(ctx, "iam: ending an opaque session of a failed login failed", "user_id", pair.User.ID, "err", err)
+	}
 }
 
 // issueJWT issues an access token and a refresh token in familyID.
 func (s *Service) issueJWT(ctx context.Context, g *gorm.DB, userID int64, tokenVersion int, familyID string, isNew bool) (*TokenPair, error) {
-	refresh, err := randomToken()
-	if err != nil {
-		return nil, err
-	}
+	refresh, hash := tokenstore.NewToken("")
 	access, err := s.issueAccessToken(userID, tokenVersion, familyID)
 	if err != nil {
 		return nil, err
@@ -225,7 +262,7 @@ func (s *Service) issueJWT(ctx context.Context, g *gorm.DB, userID int64, tokenV
 	if err := s.touchLoginSession(ctx, g, userID, familyID, isNew); err != nil {
 		return nil, err
 	}
-	if err := insertRefreshToken(g, userID, hashToken(refresh), time.Now().Add(s.cfg.RefreshTokenTTL), familyID).Error; err != nil {
+	if err := insertRefreshToken(g, userID, hash, time.Now().Add(s.cfg.RefreshTokenTTL), familyID).Error; err != nil {
 		return nil, err
 	}
 	return &TokenPair{AccessToken: access, RefreshToken: refresh, ExpiresIn: int64(s.cfg.AccessTokenTTL / time.Second)}, nil
@@ -320,8 +357,11 @@ func rotatedJustNow(revokedAt, replacedAt *time.Time, now time.Time) bool {
 // that was already rotated or revoked revokes every token of its family
 // (CONTRACTS §14.2), and the opaque session it may have been exchanged for,
 // and fails with 401. With session.issue s2s the token is exchanged for an
-// opaque session of the same id instead (issueOpaque): the user stays
-// signed in across the switch.
+// opaque session of the same id instead: the family's tokens are spent and
+// its login_sessions row goes, the session lives on in Valkey (the step-up
+// proofs bound to the id stay valid) and the user stays signed in across
+// the switch. Within the grace, the token that was just exchanged gets the
+// session a new token: the console lost the first answer.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair, error) {
 	if refreshToken == "" {
 		return nil, errBadRefresh
@@ -334,7 +374,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		var id, uid int64
 		// Discover the parent without locking a child first. All issuers and
 		// revokers serialize on the user, then read a fresh token snapshot.
-		if err := refreshOwner(g, hashToken(refreshToken)).Row().Scan(&uid); err != nil {
+		if err := refreshOwner(g, tokenstore.Hash(refreshToken)).Row().Scan(&uid); err != nil {
 			if store.IsNoRows(err) {
 				return errBadRefresh
 			}
@@ -346,7 +386,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		var family string
 		var revokedAt, replacedAt *time.Time
 		var expiresAt time.Time
-		err := lockRefreshToken(g, hashToken(refreshToken)).Row().Scan(&id, &uid, &family, &revokedAt, &replacedAt, &expiresAt)
+		err := lockRefreshToken(g, tokenstore.Hash(refreshToken)).Row().Scan(&id, &uid, &family, &revokedAt, &replacedAt, &expiresAt)
 		if store.IsNoRows(err) {
 			return errBadRefresh
 		}
@@ -358,13 +398,31 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 			// The console lost the response of the rotation it just made
 			// (network, closed tab, two tabs without a shared lock): while
 			// the family is still alive, answer with another pair of the
-			// same family instead of signing the user out.
+			// same family instead of signing the user out; when it was
+			// exchanged for an opaque session, with a new token of that
+			// session.
 			live, err := store.Exists(g, liveFamily(g, family))
 			if err != nil {
 				return err
 			}
 			if live {
 				verdict = refreshValid
+			} else if s.sessions != nil {
+				if err := activeUser(g, uid); err != nil {
+					return err
+				}
+				user, err := s.loginUser(ctx, tx, uid)
+				if err != nil {
+					return err
+				}
+				token, err := s.sessions.Rotate(ctx, uid, family)
+				if err == nil {
+					pair = &TokenPair{AccessToken: token, ExpiresIn: int64(s.sessionIdle / time.Second), User: user}
+					return nil
+				}
+				if !errors.Is(err, tokenstore.ErrNotFound) {
+					return err
+				}
 			}
 		}
 		switch verdict {
@@ -389,21 +447,31 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		if err := rotateRefresh(g, id).Error; err != nil {
 			return err
 		}
-		var status string
-		err = liveUser(g, uid, "status").Row().Scan(&status)
-		if store.IsNoRows(err) {
-			return errBadRefresh
-		}
-		if err != nil {
+		if err := activeUser(g, uid); err != nil {
 			return err
 		}
-		if status != StatusActive {
-			return errUserDisabled
+		ictx := ctx
+		if s.issuesOpaque(ctx) {
+			// The exchange: the session keeps how the family started.
+			meta, _ := ctx.Value(sessionMetaKey{}).(sessionMeta)
+			if meta.method == "" {
+				if err := familyMethod(g, family).Row().Scan(&meta.method); err != nil && !store.IsNoRows(err) {
+					return err
+				}
+				ictx = withLoginMethod(ctx, meta.method)
+			}
+			if err := revokeFamily(g, family).Error; err != nil {
+				return err
+			}
+			if err := deleteSessions(g, uid, oneSession(family)).Error; err != nil {
+				return err
+			}
 		}
-		pair, err = s.issueTokens(ctx, tx, uid, family)
+		pair, err = s.issueTokens(ictx, tx, uid, family)
 		return err
 	})
 	if err != nil {
+		s.abandonIssued(ctx, pair)
 		return nil, err
 	}
 	if replayFamily != "" {
@@ -419,6 +487,23 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	return pair, nil
 }
 
+// activeUser checks that the undeleted user uid is active: a refresh of a
+// deleted one fails like a bad token, of a disabled one with 403.
+func activeUser(g *gorm.DB, uid int64) error {
+	var status string
+	err := liveUser(g, uid, "status").Row().Scan(&status)
+	if store.IsNoRows(err) {
+		return errBadRefresh
+	}
+	if err != nil {
+		return err
+	}
+	if status != StatusActive {
+		return errUserDisabled
+	}
+	return nil
+}
+
 // rotateRefresh marks the refresh token id used, keeping the first time
 // it was.
 func rotateRefresh(db *gorm.DB, id int64) *gorm.DB {
@@ -429,38 +514,26 @@ func rotateRefresh(db *gorm.DB, id int64) *gorm.DB {
 }
 
 // Logout ends the session refreshToken belongs to, if it is a live token of
-// userID. Without one, an opaque session ends itself (it has no refresh
-// token to name it by); otherwise every session of the user ends.
+// userID. Without one, a caller signed in with an opaque session ends that
+// session (it has no refresh token to name it by), whether or not it is
+// still there; any other caller ends every session of the user.
 func (s *Service) Logout(ctx context.Context, userID int64, refreshToken string) error {
-	var family string
-	var err error
-	if refreshToken == "" {
-		family, err = s.ownOpaqueSession(ctx, userID)
-	} else if err = liveFamilyOf(store.G(ctx, s.db.Gorm), hashToken(refreshToken), userID).Row().Scan(&family); store.IsNoRows(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
 	which := allSessions
-	if family != "" {
+	switch {
+	case refreshToken != "":
+		var family string
+		err := liveFamilyOf(store.G(ctx, s.db.Gorm), tokenstore.Hash(refreshToken), userID).Row().Scan(&family)
+		if store.IsNoRows(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 		which = oneSession(family)
+	case core.OpaqueSession(ctx):
+		which = oneSession(core.Session(ctx))
 	}
 	return s.changeSessions(ctx, userID, which, nil)
-}
-
-// ownOpaqueSession is the caller's login session when it is an opaque one
-// of userID, "" otherwise.
-func (s *Service) ownOpaqueSession(ctx context.Context, userID int64) (string, error) {
-	id := core.Session(ctx)
-	if id == "" || s.sessions == nil {
-		return "", nil
-	}
-	ok, err := s.sessions.Has(ctx, userID, id)
-	if !ok {
-		id = ""
-	}
-	return id, err
 }
 
 // liveFamilyOf reads the family of the live refresh token hash of userID.

@@ -36,6 +36,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/helperhistory"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/lookup"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
@@ -95,6 +96,11 @@ func (b *boot) openStorage() error {
 	}
 	b.rdb = rdb
 	b.stopper.add("redis", func(context.Context) { _ = rdb.Close() })
+	// The console sessions get their own client, which fails fast: every
+	// console request waits on it.
+	sessRdb := tokenstore.NewClient(rdb.Options())
+	b.sessRdb = sessRdb
+	b.stopper.add("session redis", func(context.Context) { _ = sessRdb.Close() })
 
 	cipher, err := secret.New(b.cfg.MasterKey)
 	if err != nil {
@@ -192,7 +198,8 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	b.settler.Authz = az
 	b.bill.Authz = az
 	b.bill.Users = az
-	b.idm = iam.New(iam.Deps{DB: b.db, Redis: b.rdb, Config: cfg, Events: b.events, Authz: az, Bus: b.cl.Bus, Cipher: b.cipher, PriceRulesChanged: b.bill.PriceRulesChanged})
+	b.idm = iam.New(iam.Deps{DB: b.db, Redis: b.rdb, SessionRedis: b.sessRdb, Nodes: b.cl.Registry, Config: cfg, Events: b.events, Authz: az, Bus: b.cl.Bus,
+		Cipher: b.cipher, PriceRulesChanged: b.bill.PriceRulesChanged})
 	if b.managed == nil || b.managed.prepare.Bootstrap {
 		if err := b.idm.Bootstrap(b.ctx); err != nil {
 			return nil, fmt.Errorf("bootstrap admin: %w", err)

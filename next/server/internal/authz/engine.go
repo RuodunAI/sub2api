@@ -41,7 +41,7 @@ const engineRefreshTimeout = 10 * time.Second
 // EngineEnv overrides the authz.engine setting on this process, for tests
 // and emergencies (a node that cannot read the setting, or must not follow
 // it).
-const EngineEnv = "SUP2API_AUTHZ_ENGINE"
+const EngineEnv = "SUB2API_AUTHZ_ENGINE"
 
 // engineSwitch is authz.engine: the settings row "authz" holding
 // {"engine": ...}, whose change config:changed announces as

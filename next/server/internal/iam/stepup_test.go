@@ -21,7 +21,7 @@ const testOperation = "TEST /op"
 func withProof(t *testing.T, s *Service, ctx context.Context, userID int64, scope string) context.Context {
 	t.Helper()
 	ctx = core.WithUserID(ctx, userID)
-	token, err := s.createFlow(ctx, flowStepUpProof, userID, proofPayload{Scope: scope, Operation: testOperation, Subject: stepUpSubject(ctx), Method: methodPassword, Password: true})
+	token, err := s.createFlow(ctx, s.db.Gorm, flowStepUpProof, userID, proofPayload{Scope: scope, Operation: testOperation, Subject: stepUpSubject(ctx), Method: methodPassword, Password: true})
 	if err != nil {
 		t.Fatal(err)
 	}

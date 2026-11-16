@@ -160,18 +160,39 @@ func StepUpPassword(ctx context.Context) bool {
 
 type sessionCtxKey struct{}
 
-// WithSession records the login session a console token belongs to: the
-// refresh token family of a JWT, the id of an opaque session (an exchanged
-// family keeps its id).
+// loginSession is the login session of a request and the kind of token it
+// authenticated with.
+type loginSession struct {
+	id     string
+	opaque bool
+}
+
+// WithSession records the login session a console JWT belongs to: its
+// refresh token family.
 func WithSession(ctx context.Context, family string) context.Context {
-	return context.WithValue(ctx, sessionCtxKey{}, family)
+	return context.WithValue(ctx, sessionCtxKey{}, loginSession{id: family})
+}
+
+// WithOpaqueSession records the opaque session (s2s_, CONTRACTS §100) a
+// request authenticated with: its id, which an exchanged refresh token
+// family keeps.
+func WithOpaqueSession(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionCtxKey{}, loginSession{id: id, opaque: true})
 }
 
 // Session returns the request's login session, "" for an access key or a
 // token from before sessions had ids.
 func Session(ctx context.Context) string {
-	s, _ := ctx.Value(sessionCtxKey{}).(string)
-	return s
+	s, _ := ctx.Value(sessionCtxKey{}).(loginSession)
+	return s.id
+}
+
+// OpaqueSession reports whether the request authenticated with an opaque
+// session token, as opposed to a JWT or an access key: what the token was,
+// decided when it was verified, not looked up again.
+func OpaqueSession(ctx context.Context) bool {
+	s, _ := ctx.Value(sessionCtxKey{}).(loginSession)
+	return s.opaque
 }
 
 // SessionVerifier is optionally implemented by a TokenVerifier: it also

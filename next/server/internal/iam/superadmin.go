@@ -55,7 +55,7 @@ func (s *Service) transferSuperAdmin(ctx context.Context, actorID, targetID int6
 		return err
 	}
 	s.authz.Committed(ctx, v)
-	s.sessionsChanged(ctx, ended...)
+	s.sessionsEnded(ctx, ended...)
 	return nil
 }
 

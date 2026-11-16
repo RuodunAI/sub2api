@@ -158,6 +158,10 @@ func (s PermissionSet) CanAssign(roleKey string) bool {
 // a console JWT without parsing it.
 const AccessKeyPrefix = "sak_"
 
+// OpaqueSessionPrefix starts every opaque session token (CONTRACTS §100), so
+// it is told from a JWT and from an access key without a lookup.
+const OpaqueSessionPrefix = "s2s_"
+
 // AccessKeyIdentity is who an access key acts for and what it was given.
 type AccessKeyIdentity struct {
 	UserID      int64
@@ -179,6 +183,9 @@ func AuthenticateBearer(ctx context.Context, tokens TokenVerifier, token, ip str
 			uid, session, err := sv.VerifySession(ctx, token)
 			if err != nil {
 				return ctx, 0, err
+			}
+			if strings.HasPrefix(token, OpaqueSessionPrefix) {
+				return WithOpaqueSession(WithUserID(ctx, uid), session), uid, nil
 			}
 			return WithSession(WithUserID(ctx, uid), session), uid, nil
 		}

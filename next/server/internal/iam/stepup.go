@@ -276,19 +276,29 @@ func (s *Service) VerifyStepUp(ctx context.Context, r *http.Request, userID int6
 	}
 	payload := proofPayload{Scope: in.Scope, Operation: in.Context, Subject: stepUpSubject(ctx), Method: in.Method,
 		Password: methods.PasswordRequired || in.Method == methodPassword}
-	token, err := s.createFlow(ctx, flowStepUpProof, userID, payload)
-	if err != nil {
-		return nil, err
-	}
 	detail := map[string]any{"method": in.Method, "scope": in.Scope, "context": in.Context, "via": "session"}
 	if k, ok := core.AccessKey(ctx); ok {
 		detail["via"], detail["access_key_id"] = "access_key", k.KeyID
 	}
-	if err := audit.Audit(ctx, s.db.Gorm, userID, "user.security_verify", "user", strconv.FormatInt(userID, 10), detail); err != nil {
-		return nil, err
-	}
-	access, err := s.rotateOwnSession(ctx, userID)
+	// The proof, its audit and the new token of an opaque session go
+	// together: the session is rotated last, and when it fails neither the
+	// audit nor the proof stays.
+	var token, access string
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
+		var err error
+		if token, err = s.createFlow(ctx, tx, flowStepUpProof, userID, payload); err != nil {
+			return err
+		}
+		if err := audit.Audit(ctx, tx, userID, "user.security_verify", "user", strconv.FormatInt(userID, 10), detail); err != nil {
+			return err
+		}
+		access, err = s.rotateOwnSession(ctx, userID)
+		return err
+	})
 	if err != nil {
+		if token != "" && s.flows != nil { // a proof in Valkey does not roll back
+			_, _ = s.flows.TakeFlow(context.WithoutCancel(ctx), flowStepUpProof, token)
+		}
 		return nil, err
 	}
 	return &StepUpProof{Proof: token, ExpiresAt: time.Now().Add(flowTTL), Method: in.Method, Scope: in.Scope, Context: in.Context,
@@ -298,13 +308,13 @@ func (s *Service) VerifyStepUp(ctx context.Context, r *http.Request, userID int6
 // rotateOwnSession gives the caller's opaque session a new token after it
 // verified, so a token taken before the verification is not the one that
 // carries on (session fixation); the session id, which proofs and step-up
-// windows are bound to, stays. "" for a JWT session or an access key.
+// windows are bound to, stays. "" for a JWT session or an access key, which
+// never reach Valkey here, and for a session that ended meanwhile.
 func (s *Service) rotateOwnSession(ctx context.Context, userID int64) (string, error) {
-	id := core.Session(ctx)
-	if _, key := core.AccessKey(ctx); key || id == "" || s.sessions == nil {
+	if !core.OpaqueSession(ctx) || s.sessions == nil {
 		return "", nil
 	}
-	token, err := s.sessions.Rotate(ctx, userID, id)
+	token, err := s.sessions.Rotate(ctx, userID, core.Session(ctx))
 	if errors.Is(err, tokenstore.ErrNotFound) {
 		return "", nil
 	}
@@ -366,7 +376,7 @@ func (s *Service) BeginStepUpPasskey(ctx context.Context, r *http.Request, userI
 	if err != nil {
 		return nil, core.ErrInvalidArgument.WithMessage("no passkey can be used here").WithCause(err)
 	}
-	token, err := s.createFlow(ctx, flowStepUpPasskey, userID, session)
+	token, err := s.createFlow(ctx, s.db.Gorm, flowStepUpPasskey, userID, session)
 	if err != nil {
 		return nil, err
 	}
@@ -452,7 +462,7 @@ func (s *Service) OpenStepUpSession(ctx context.Context, scope, session string) 
 	if uid == 0 || session == "" || core.StepUpSpent(ctx) != scope {
 		return core.ErrVerificationRequired.WithDetails(map[string]any{"scope": scope})
 	}
-	name := hashToken(stepUpSessionToken(ctx, uid, scope, session))
+	name := tokenstore.Hash(stepUpSessionToken(ctx, uid, scope, session))
 	if s.issuesOpaque(ctx) {
 		return s.flows.OpenWindow(ctx, name, core.StepUpSessionIdle)
 	}
@@ -478,7 +488,7 @@ func (s *Service) ContinueStepUpSession(ctx context.Context, scope, session stri
 	continued := false
 	if uid != 0 && session != "" {
 		var err error
-		if continued, err = s.continueStepUpWindow(ctx, hashToken(stepUpSessionToken(ctx, uid, scope, session))); err != nil {
+		if continued, err = s.continueStepUpWindow(ctx, tokenstore.Hash(stepUpSessionToken(ctx, uid, scope, session))); err != nil {
 			return err
 		}
 	}
@@ -490,15 +500,22 @@ func (s *Service) ContinueStepUpSession(ctx context.Context, scope, session stri
 }
 
 // continueStepUpWindow extends the step-up session name, in Valkey first.
+// With Valkey down a window in auth_flows (session.issue jwt) still
+// continues; one in neither fails with Valkey's error, as it may be there.
 func (s *Service) continueStepUpWindow(ctx context.Context, name string) (bool, error) {
+	var down error
 	if s.flows != nil {
 		ok, err := s.flows.ContinueWindow(ctx, name, core.StepUpSessionIdle, core.StepUpSessionMax)
-		if ok || err != nil {
-			return ok, err
+		if ok {
+			return true, nil
 		}
+		down = err
 	}
 	res := continueStepUpSession(store.G(ctx, s.db.Gorm), name, time.Now().Add(core.StepUpSessionIdle), core.StepUpSessionMax.Seconds())
-	return res.RowsAffected == 1, res.Error
+	if res.Error != nil || res.RowsAffected == 1 {
+		return res.RowsAffected == 1, res.Error
+	}
+	return false, down
 }
 
 // continueStepUpSession extends the step-up session tokenHash to idle, at

@@ -336,10 +336,12 @@ function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function doRefresh(stale: string | undefined): Promise<RefreshOutcome> {
-  // Another tab may have refreshed while this one waited for the lock.
+  // Another tab may have refreshed while this one waited for the lock: its
+  // session, an opaque one without a refresh token included, is adopted
+  // before deciding there is nothing to renew with.
   const s = syncSession()
+  if (stale && s && s.access_token !== stale) return 'ok'
   if (!s?.refresh_token) return 'invalid'
-  if (stale && s.access_token !== stale) return 'ok'
   try {
     const res = await fetch(buildURL('/auth/refresh'), {
       method: 'POST',
@@ -363,7 +365,9 @@ async function doRefresh(stale: string | undefined): Promise<RefreshOutcome> {
  * request is just retried.
  */
 function refreshSession(stale: string | undefined): Promise<RefreshOutcome> {
-  const s = session.get()
+  // Re-read what other tabs stored: a tab woken from the background may not
+  // have seen their storage events yet.
+  const s = syncSession()
   if (s && stale && s.access_token !== stale) return Promise.resolve('ok')
   // Nothing to renew an opaque session with: the 401 means it ended.
   if (!s?.refresh_token) return Promise.resolve('invalid')

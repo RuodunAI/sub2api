@@ -54,7 +54,7 @@ func TestSQLUserLocks(t *testing.T) {
 		"bootstrap_lock":       func(db *gorm.DB) *gorm.DB { return bootstrapLock(db) },
 		"bootstrap_exists":     func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, liveUsers(db))) },
 		"touch_last_login":     func(db *gorm.DB) *gorm.DB { return touchLastLogin(db, 7) },
-		"bump_tokenversion":    func(db *gorm.DB) *gorm.DB { return bumpTokenVersion(db, 7) },
+		"bump_tokenversion":    func(db *gorm.DB) *gorm.DB { return bumpTokenVersion(db, 7, 2) },
 	})
 }
 
@@ -105,15 +105,18 @@ func TestSQLUserReads(t *testing.T) {
 // Refresh token rotation, replay revocation and logout.
 func TestSQLRefreshTokens(t *testing.T) {
 	snap(t, map[string]func(*gorm.DB) *gorm.DB{
-		"insert":          func(db *gorm.DB) *gorm.DB { return insertRefreshToken(db, 7, "hash", sqlAt, "family") },
-		"owner":           func(db *gorm.DB) *gorm.DB { return read(refreshOwner(db, "hash")) },
-		"lock":            func(db *gorm.DB) *gorm.DB { return read(lockRefreshToken(db, "hash")) },
-		"live_family":     func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, liveFamily(db, "family"))) },
-		"revoke_token":    func(db *gorm.DB) *gorm.DB { return revokeToken(db, 9) },
-		"revoke_family":   func(db *gorm.DB) *gorm.DB { return revokeFamily(db, "family") },
-		"rotate":          func(db *gorm.DB) *gorm.DB { return rotateRefresh(db, 9) },
-		"logout_family":   func(db *gorm.DB) *gorm.DB { return read(liveFamilyOf(db, "hash", 7)) },
-		"session_family":  func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, userFamily(db, 7, "family"))) },
+		"insert":         func(db *gorm.DB) *gorm.DB { return insertRefreshToken(db, 7, "hash", sqlAt, "family") },
+		"owner":          func(db *gorm.DB) *gorm.DB { return read(refreshOwner(db, "hash")) },
+		"lock":           func(db *gorm.DB) *gorm.DB { return read(lockRefreshToken(db, "hash")) },
+		"live_family":    func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, liveFamily(db, "family"))) },
+		"revoke_token":   func(db *gorm.DB) *gorm.DB { return revokeToken(db, 9) },
+		"revoke_family":  func(db *gorm.DB) *gorm.DB { return revokeFamily(db, "family") },
+		"rotate":         func(db *gorm.DB) *gorm.DB { return rotateRefresh(db, 9) },
+		"logout_family":  func(db *gorm.DB) *gorm.DB { return read(liveFamilyOf(db, "hash", 7)) },
+		"session_family": func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, userFamily(db, 7, "family"))) },
+		"family_issued": func(db *gorm.DB) *gorm.DB {
+			return read(store.ExistsQuery(db, familyIssuedSince(db, 7, "family", sqlAt)))
+		},
 		"revoke_all":      func(db *gorm.DB) *gorm.DB { return revokeSessions(db, 7, allSessions) },
 		"revoke_one":      func(db *gorm.DB) *gorm.DB { return revokeSessions(db, 7, oneSession("family")) },
 		"revoke_others":   func(db *gorm.DB) *gorm.DB { return revokeSessions(db, 7, otherSessions("mine")) },

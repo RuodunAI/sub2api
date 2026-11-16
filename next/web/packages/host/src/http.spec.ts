@@ -200,6 +200,44 @@ describe('token refresh', () => {
     expect(f).toHaveBeenCalledTimes(2)
   })
 
+  it('adopts the opaque session another tab exchanged the refresh token for while this one waited for the lock', async () => {
+    http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
+    const onUnauthenticated = vi.fn()
+    http.configureHttp({ onUnauthenticated })
+    // The other tab held the lock first: it exchanged r1 for an opaque
+    // session and stored it, which this tab has not seen yet.
+    vi.stubGlobal('navigator', {
+      locks: {
+        request: async (_name: string, _opts: unknown, fn: () => Promise<unknown>) => {
+          localStorage.setItem('s2a.session', JSON.stringify({ access_token: 's2s_other', expires_at: Date.now() + 604800_000 }))
+          return fn()
+        }
+      }
+    })
+    const f = stubFetch((url, init) => {
+      if (url.endsWith('/auth/refresh')) return json({ code: 'unauthenticated' }, 401)
+      return init.headers.Authorization === 'Bearer s2s_other' ? json({ ok: 1 }) : json({ code: 'unauthenticated' }, 401)
+    })
+    expect(await http.api.get('/x')).toEqual({ ok: 1 })
+    expect(f.mock.calls.some(([url]) => String(url).endsWith('/auth/refresh'))).toBe(false)
+    expect(http.session.get()?.access_token).toBe('s2s_other')
+    expect(localStorage.getItem('s2a.session')).toContain('s2s_other')
+    expect(onUnauthenticated).not.toHaveBeenCalled()
+  })
+
+  it('reads what another tab stored before ending an opaque session on 401', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_old', expires_in: 604800 })
+    // Another tab rotated the token; this one, just woken, missed the storage event.
+    localStorage.setItem('s2a.session', JSON.stringify({ access_token: 's2s_new', expires_at: Date.now() + 604800_000 }))
+    const onUnauthenticated = vi.fn()
+    http.configureHttp({ onUnauthenticated })
+    const f = stubFetch((url, init) => (init.headers.Authorization === 'Bearer s2s_new' ? json({ ok: 1 }) : json({ code: 'unauthenticated' }, 401)))
+    expect(await http.api.get('/x')).toEqual({ ok: 1 })
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(http.session.get()?.access_token).toBe('s2s_new')
+    expect(onUnauthenticated).not.toHaveBeenCalled()
+  })
+
   it('keeps the session when refresh fails with a server error', async () => {
     http.session.set({ access_token: 'old', refresh_token: 'r1', expires_at: Date.now() + 60_000 })
     const onUnauthenticated = vi.fn()

@@ -12,14 +12,15 @@
 
 契约见 CONTRACTS §100。本版本同时认 JWT 与新的 `s2s_` 令牌，签发哪种由开关 `session.issue` 决定，默认仍签发 JWT，用户看不到变化。
 
-- **不透明会话**：`s2s_` 令牌存在 Valkey（只存哈希），一个令牌、滑动续期（空闲 7 天、绝对 30 天，`SUB2API_SESSION_IDLE_TTL` / `SUB2API_SESSION_MAX_TTL`），没有 refresh token。撤销单个会话立即失效（JWT 要等 access token 过期）；改密码、禁用、删除用户、撤销其他会话时批量删除，`token_version` 照旧兜底。二次验证后换发同一会话的新令牌（`POST /me/verify` 响应的 `access_token`）。
-- **开关**：`PUT /settings/session {"issue": "jwt" | "s2s"}`（`settings:manage` + 二次验证 `session.issue`，只有超管本人可以，写审计 `session.issue.set`），广播后各节点生效；环境变量 `SUP2API_SESSION_ISSUE` 优先。切到 `s2s` 后已登录的控制台在下次刷新时自动换成 `s2s_`，不用重新登录。控制台没有页面。
+- **不透明会话**：`s2s_` 令牌存在 Valkey（只存哈希），一个令牌、滑动续期（空闲 7 天、绝对 30 天，`SUB2API_SESSION_IDLE_TTL` / `SUB2API_SESSION_MAX_TTL`），没有 refresh token。撤销单个会话立即失效（JWT 要等 access token 过期）；改密码、禁用、删除用户、撤销其他会话时批量删除，`token_version` 照旧兜底。每个用户最多 50 个会话，再登录时结束最久未用的那个。二次验证后换发同一会话的新令牌（`POST /me/verify` 响应的 `access_token`）。
+- **开关**：`PUT /settings/session {"issue": "jwt" | "s2s"}`（`settings:manage` + 二次验证 `session.issue`，只有超管本人可以，写审计 `session.issue.set`），广播后各节点生效；环境变量 `SUB2API_SESSION_ISSUE` 优先（已加入网关传给核心的环境变量白名单，`deploy/single` 的 compose 也映射了）。还有不支持不透明会话的存活节点时，切到 `s2s` 返回 409 并列出这些节点（`GET` 的 `behind` 也列出）；切回 `jwt` 不检查。切到 `s2s` 后已登录的控制台在下次刷新时自动换成 `s2s_`，不用重新登录。控制台没有页面。
 - **中间流程**（两步登录、通行密钥、TOTP 设置、step-up）在开关为 `s2s` 时只写 Valkey、取用 `GETDEL`；读取先 Valkey 后 `auth_flows`。
 - **Valkey 故障**：不透明会话鉴权、登录返回 503 并记 ERROR `tokenstore: valkey unavailable`，不回退 JWT；会话鉴权的 503 不再被改写成 401。访问密钥和网关 Key 不受影响。
-- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。开关为 `jwt` 时，撤销会话、改密码、禁用和删除用户、两步登录在 Valkey 不可用时也返回 503。
+- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。结束全部会话时 `token_version` 一次加 2。开关为 `jwt` 时 JWT 调用者不依赖 Valkey（鉴权、登录、二次验证、会话列表、登出、撤销、改密码、管理员禁用与删除用户照常）；禁用、删除用户等结束全部会话的操作在任何开关下都不依赖 Valkey。
+- **API 调用方注意**：用不透明会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
 - 控制台：登录响应没有 `refresh_token` 时，401 直接回登录页，不走刷新。
 
-**发布**：全部节点升级到本版本后再 `PUT /settings/session {"issue":"s2s"}`，不需要第二次发版。**回退**：切回 `jwt` 立即恢复签发 JWT，已发的 `s2s_` 有效到过期；代码回滚到上一版时 `s2s_` 用户需要重新登录。JWT 代码与 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表在切换 30 天后另行清理（§100.7）。
+**发布**：全部节点升级到本版本后再 `PUT /settings/session {"issue":"s2s"}`，不需要第二次发版。**回退**：切回 `jwt` 立即恢复签发 JWT，已发的 `s2s_` 有效到过期；接口不可用时直接改 `settings` 表（30 秒内全部节点生效）或设 `SUB2API_SESSION_ISSUE=jwt` 重启节点，见 `next/deploy/rollback/0.1.290-session-down.md`。代码回滚到上一版时 `s2s_` 用户需要重新登录。JWT 代码与 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表在切换 30 天后另行清理（§100.7）。
 
 ### 核心 0.1.290（版本号推测）：权限判断接入 Casbin，影子模式（迁移 0100，可滚动）
 
@@ -27,14 +28,14 @@
 
 - **新表 `casbin_rule`**：旧角色表的投影，由触发器在同一事务里维护，迁移时回填；旧表仍是真相，写路径不变。
 - **影子比较**：每个用户每个版本首次解析权限时，Casbin 在请求外再算一遍并比较整个集合，`Can` 按 1% 抽样核对 matcher；请求不等 Casbin（每节点最多 32 个并发比较，满了丢弃计数）。不一致记 Warn `authz: shadow mismatch`。计数见新接口 `GET /settings/authz`（`settings:read`，本节点自启动以来）。
-- **开关**：`PUT /settings/authz {"engine": "legacy" | "shadow" | "casbin"}`（`settings:manage` + 二次验证 `authz.engine`，只有超管本人可以，写审计 `authz.engine.set`），广播后各节点立即生效；环境变量 `SUP2API_AUTHZ_ENGINE` 优先。控制台没有页面。
+- **开关**：`PUT /settings/authz {"engine": "legacy" | "shadow" | "casbin"}`（`settings:manage` + 二次验证 `authz.engine`，只有超管本人可以，写审计 `authz.engine.set`），广播后各节点立即生效；环境变量 `SUB2API_AUTHZ_ENGINE` 优先（已加入网关传给核心的环境变量白名单，`deploy/single` 的 compose 也映射了）。设置行里 `engine` 不是字符串时保持当前档并记错误，不回落到默认档。控制台没有页面。
 - **漂移任务** `core.authz.casbin_drift`（集群，每 10 分钟）：`casbin_rule` 与角色表不一致时告警、在权限写锁内复核后按角色表修正并升权限版本（没有可修的就不升）。
 - **离线核对** `sub2api admin authz-verify [--keys] [--key-users N]`：逐个用户比较旧加载器与 Casbin，有不一致退出码 1，有跳过（读到写入中间）退出码 3；在静止的副本上运行。
 - 用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。
 
 **发布**：迁移 0100 只做加法，可以与 0.1.289 滚动混跑（旧核心的写入同样被触发器投影）。发布后检查 `SELECT count(*) FROM authz_casbin_drift` 为 0。切到 `casbin` 的门槛见 §99.5（`shadow` 至少 2 周、不一致与漂移都为 0）。
 
-**回滚**：切 `authz.engine = legacy`，立即生效；网关不允许跨 schema 回退，旧二进制照常运行。不经网关的部署可以按 `next/deploy/rollback/0.1.290-casbin-down.md` 删掉投影，不丢授予。
+**回滚**：切 `authz.engine = legacy`，立即生效；接口不可用时直接改 `settings` 表（30 秒内全部节点生效）或设 `SUB2API_AUTHZ_ENGINE=legacy` 重启节点，见回滚文档；网关不允许跨 schema 回退，旧二进制照常运行。不经网关的部署可以按 `next/deploy/rollback/0.1.290-casbin-down.md` 删掉投影，不丢授予。
 
 ### 核心 0.1.289（版本号推测）+ 9 个内置插件：插件权限声明与角色分配（迁移 0099，主节点优先，短暂停服）
 

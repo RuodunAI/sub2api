@@ -3,6 +3,7 @@ package tokenstore
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -346,7 +349,7 @@ func TestUnavailable(t *testing.T) {
 	c.mr.Close()
 	check := func(name string, err error) {
 		t.Helper()
-		if errors.Is(err, ErrNotFound) || core.AsError(err).Status != http.StatusServiceUnavailable {
+		if errors.Is(err, ErrNotFound) || core.AsError(err).Status != http.StatusServiceUnavailable || !IsUnavailable(err) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -362,6 +365,7 @@ func TestUnavailable(t *testing.T) {
 	_, err = v.Has(ctx, 7, "fam")
 	check("has", err)
 	check("revoke", v.Revoke(ctx, 7, Selection{}, 1))
+	check("drop", v.Drop(ctx, tok, s))
 	_, err = v.PutFlow(ctx, "p", Flow{})
 	check("put flow", err)
 	_, err = v.PeekFlow(ctx, "p", "t")
@@ -371,4 +375,135 @@ func TestUnavailable(t *testing.T) {
 	check("open window", v.OpenWindow(ctx, "w", time.Hour))
 	_, err = v.ContinueWindow(ctx, "w", time.Hour, time.Hour)
 	check("continue window", err)
+}
+
+// Two rotations within the grace: the first token ends at the second, so
+// a revocation ends every token the session had at once.
+func TestRotateTwiceThenRevoke(t *testing.T) {
+	v, _ := newStore(t)
+	t0 := create(t, v, 7, "fam")
+	t1, err := v.Rotate(ctx, 7, "fam")
+	require.NoError(t, err)
+	t2, err := v.Rotate(ctx, 7, "fam")
+	require.NoError(t, err)
+	gone(t, v, t0)
+	mustLookup(t, v, t1) // in its grace
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "fam"}, 0))
+	gone(t, v, t1)
+	gone(t, v, t2)
+}
+
+// A stamp given to a kept session reaches the token a rotation left in its
+// grace: a request still carrying it is not stale.
+func TestRevokeStampsTheRotatedToken(t *testing.T) {
+	v, _ := newStore(t)
+	t0 := create(t, v, 7, "keep")
+	t1, err := v.Rotate(ctx, 7, "keep")
+	require.NoError(t, err)
+	create(t, v, 7, "other")
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Keep: "keep"}, 9))
+	assert.Equal(t, 9, mustLookup(t, v, t0).TokenVersion)
+	assert.Equal(t, 9, mustLookup(t, v, t1).TokenVersion)
+}
+
+// Drop ends a whole session through its current token, and only itself
+// through a token a rotation left behind.
+func TestDrop(t *testing.T) {
+	v, c := newStore(t)
+	t0 := create(t, v, 7, "fam")
+	t1, err := v.Rotate(ctx, 7, "fam")
+	require.NoError(t, err)
+	require.NoError(t, v.Drop(ctx, t0, mustLookup(t, v, t0)))
+	gone(t, v, t0)
+	mustLookup(t, v, t1)
+	require.NoError(t, v.Drop(ctx, t1, mustLookup(t, v, t1)))
+	gone(t, v, t1)
+	assert.False(t, c.mr.Exists(sidKey("fam")))
+	ids, _ := c.mr.ZMembers(userKey(7))
+	assert.Empty(t, ids)
+}
+
+// A user keeps MaxSessions sessions: a login past them ends the one used
+// least recently. Creating a session under an id in use ends the old one.
+func TestCreateBoundsTheSessions(t *testing.T) {
+	mr := miniredis.RunT(t)
+	c := &clock{mr: mr, now: time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)}
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = rdb.Close() })
+	v := NewValkey(rdb, Options{MaxSessions: 3, Now: c.Now})
+	a := create(t, v, 7, "a")
+	c.advance(time.Minute)
+	b := create(t, v, 7, "b")
+	c.advance(time.Minute)
+	x := create(t, v, 7, "c")
+	c.advance(10 * time.Minute)
+	require.NoError(t, v.Touch(ctx, a, mustLookup(t, v, a))) // b is now the least recent
+	d := create(t, v, 7, "d")
+	gone(t, v, b)
+	mustLookup(t, v, a)
+	mustLookup(t, v, x)
+	mustLookup(t, v, d)
+	l, err := v.List(ctx, 7)
+	require.NoError(t, err)
+	assert.Len(t, l, 3)
+
+	again := create(t, v, 7, "a")
+	gone(t, v, a)
+	assert.Equal(t, "a", mustLookup(t, v, again).ID)
+}
+
+// A touch after the session's key went does not write a partial one.
+func TestTouchDoesNotRecreate(t *testing.T) {
+	v, c := newStore(t)
+	tok := create(t, v, 7, "fam")
+	s := mustLookup(t, v, tok)
+	c.advance(time.Hour)
+	c.mr.Del(sessKey(Hash(tok)))
+	require.NoError(t, v.Touch(ctx, tok, s))
+	assert.False(t, c.mr.Exists(sessKey(Hash(tok))))
+}
+
+// Revoking one session with no stamp to give reads that session only: the
+// rest of the index is left as it is.
+func TestRevokeOnlyReadsOneSession(t *testing.T) {
+	v, c := newStore(t)
+	create(t, v, 7, "a")
+	_, err := c.mr.ZAdd(userKey(7), 1, "ghost")
+	require.NoError(t, err)
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "a"}, 0))
+	ids, _ := c.mr.ZMembers(userKey(7))
+	assert.Equal(t, []string{"ghost"}, ids)
+}
+
+// The client NewClient makes answers a 503 within about authTimeout when
+// the server accepts connections but never answers, instead of the default
+// retries and read timeouts (12 s and more).
+func TestNewClientFailsFast(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	accepted := make(chan []net.Conn, 1)
+	go func() {
+		var conns []net.Conn
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				accepted <- conns
+				return
+			}
+			conns = append(conns, conn)
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		for _, c := range <-accepted {
+			_ = c.Close()
+		}
+	})
+	rdb := NewClient(&redis.Options{Addr: ln.Addr().String()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	v := NewValkey(rdb, Options{})
+	start := time.Now()
+	_, err = v.Lookup(ctx, "s2s_x")
+	assert.Equal(t, http.StatusServiceUnavailable, core.AsError(err).Status)
+	assert.Less(t, time.Since(start), 5*time.Second)
 }

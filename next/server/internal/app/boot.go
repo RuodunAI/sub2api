@@ -55,10 +55,12 @@ type boot struct {
 	stopper *teardown
 
 	// storage and cluster
-	db     *store.DB
-	rdb    redis.UniversalClient
-	cipher *secret.Cipher
-	cl     *cluster.Cluster
+	db  *store.DB
+	rdb redis.UniversalClient
+	// sessRdb keeps the console sessions (tokenstore.NewClient).
+	sessRdb redis.Cmdable
+	cipher  *secret.Cipher
+	cl      *cluster.Cluster
 
 	// core services
 	events  *event.Publisher

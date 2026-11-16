@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -51,7 +52,7 @@ func TestAuditRefreshReplayIncludesConcurrentDescendant(t *testing.T) {
 	}
 	defer barrier.Rollback()
 	var id int64
-	if err := store.SQLTx(barrier).QueryRowContext(ctx, `SELECT id FROM refresh_tokens WHERE token_hash=$1 FOR UPDATE`, hashToken(child.RefreshToken)).Scan(&id); err != nil {
+	if err := store.SQLTx(barrier).QueryRowContext(ctx, `SELECT id FROM refresh_tokens WHERE token_hash=$1 FOR UPDATE`, tokenstore.Hash(child.RefreshToken)).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	type result struct {

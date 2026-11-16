@@ -13,6 +13,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -177,11 +178,7 @@ func (s *Service) CreateAccessKey(ctx context.Context, userID int64, in CreateAc
 	if err != nil {
 		return nil, err
 	}
-	secret, err := randomToken()
-	if err != nil {
-		return nil, err
-	}
-	raw := core.AccessKeyPrefix + secret
+	raw, hash := tokenstore.NewToken(core.AccessKeyPrefix)
 	var key *AccessKey
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockRefreshUser(ctx, tx, userID); err != nil {
@@ -196,7 +193,7 @@ func (s *Service) CreateAccessKey(ctx context.Context, userID int64, in CreateAc
 			return core.ErrConflict.WithMessage(t(ctx, "too many access keys", "访问密钥数量已达上限"))
 		}
 		var row accessKeyRow
-		if err := insertAccessKey(g, userID, name, hashToken(raw), raw[len(raw)-4:], perms, in.ExpiresAt).Scan(&row).Error; err != nil {
+		if err := insertAccessKey(g, userID, name, hash, raw[len(raw)-4:], perms, in.ExpiresAt).Scan(&row).Error; err != nil {
 			return err
 		}
 		key = row.key()
@@ -318,7 +315,7 @@ func (s *Service) VerifyAccessKey(ctx context.Context, raw, ip string) (core.Acc
 	var id core.AccessKeyIdentity
 	var expiresAt, lastUsed *time.Time
 	g := store.G(ctx, s.db.Gorm)
-	err := accessKeyByHash(g, hashToken(raw)).Row().
+	err := accessKeyByHash(g, tokenstore.Hash(raw)).Row().
 		Scan(&id.KeyID, &id.UserID, (*store.Strings)(&id.Permissions), &expiresAt, &lastUsed)
 	if store.IsNoRows(err) {
 		return id, core.ErrUnauthenticated.WithMessage("invalid access key")

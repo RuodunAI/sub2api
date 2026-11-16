@@ -15,6 +15,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 )
 
 func newTestLimiter(t *testing.T) (*loginLimiter, *miniredis.Miniredis) {
@@ -235,7 +236,7 @@ func ageRotation(t *testing.T, s *Service, token string) {
 	t.Helper()
 	if _, err := s.db.SQL.ExecContext(context.Background(), `UPDATE refresh_tokens
 		SET replaced_at = replaced_at - interval '2 minutes', revoked_at = revoked_at - interval '2 minutes'
-		WHERE token_hash = $1`, hashToken(token)); err != nil {
+		WHERE token_hash = $1`, tokenstore.Hash(token)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -314,11 +315,11 @@ func TestRefreshReuseRevokesFamily(t *testing.T) {
 	var fam1, fam3 string
 	var replaced bool
 	if err := s.db.SQL.QueryRowContext(ctx, `SELECT family_id, replaced_at IS NOT NULL FROM refresh_tokens WHERE token_hash = $1`,
-		hashToken(a1.RefreshToken)).Scan(&fam1, &replaced); err != nil {
+		tokenstore.Hash(a1.RefreshToken)).Scan(&fam1, &replaced); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.db.SQL.QueryRowContext(ctx, `SELECT family_id FROM refresh_tokens WHERE token_hash = $1`,
-		hashToken(a3.RefreshToken)).Scan(&fam3); err != nil {
+		tokenstore.Hash(a3.RefreshToken)).Scan(&fam3); err != nil {
 		t.Fatal(err)
 	}
 	if fam1 == "" || fam1 != fam3 || !replaced {

@@ -309,7 +309,7 @@ func (s *Service) StartTwoFactor(ctx context.Context, userID int64) (*TwoFactorS
 	if err != nil {
 		return nil, err
 	}
-	token, err := s.createFlow(ctx, flowTOTPSetup, userID, totpSetupPayload{Sealed: base64.StdEncoding.EncodeToString(sealed)})
+	token, err := s.createFlow(ctx, s.db.Gorm, flowTOTPSetup, userID, totpSetupPayload{Sealed: base64.StdEncoding.EncodeToString(sealed)})
 	if err != nil {
 		return nil, err
 	}

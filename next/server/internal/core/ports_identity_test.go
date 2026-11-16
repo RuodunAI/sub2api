@@ -244,3 +244,28 @@ func TestScopeGroups(t *testing.T) {
 		t.Fatalf("no group scope: %v", got)
 	}
 }
+
+// sessionVerifier answers every token with user 7 and session "sid".
+type sessionVerifier struct{}
+
+func (sessionVerifier) VerifyAccessToken(context.Context, string) (int64, error) { return 7, nil }
+func (sessionVerifier) VerifySession(context.Context, string) (int64, string, error) {
+	return 7, "sid", nil
+}
+
+// The kind of the token is decided when it is verified and travels with the
+// session: callers ask the context, not the session store.
+func TestAuthenticateBearerRecordsTheTokenKind(t *testing.T) {
+	for _, tc := range []struct {
+		token  string
+		opaque bool
+	}{{"s2s_abc", true}, {"eyJhbGciOiJIUzI1NiJ9.e30.x", false}} {
+		ctx, uid, err := AuthenticateBearer(context.Background(), sessionVerifier{}, tc.token, "")
+		assert.NoError(t, err)
+		assert.Equal(t, int64(7), uid)
+		assert.Equal(t, "sid", Session(ctx), tc.token)
+		assert.Equal(t, tc.opaque, OpaqueSession(ctx), tc.token)
+	}
+	assert.False(t, OpaqueSession(context.Background()))
+	assert.Equal(t, "", Session(context.Background()))
+}

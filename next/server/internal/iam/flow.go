@@ -40,8 +40,9 @@ var errFlowExpired = core.ErrInvalidArgument.WithMessage("this step has expired,
 
 // createFlow stores payload under a new random token and returns the token.
 // userID 0 stores no owner (a discoverable passkey login does not know it yet).
+// A table flow is written through q, the caller's transaction or the pool.
 // Expired rows are removed here, so the table never needs a cleanup job.
-func (s *Service) createFlow(ctx context.Context, purpose string, userID int64, payload any) (string, error) {
+func (s *Service) createFlow(ctx context.Context, q *gorm.DB, purpose string, userID int64, payload any) (string, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
@@ -49,19 +50,16 @@ func (s *Service) createFlow(ctx context.Context, purpose string, userID int64, 
 	if s.issuesOpaque(ctx) {
 		return s.flows.PutFlow(ctx, purpose, tokenstore.Flow{UserID: userID, Payload: raw})
 	}
-	token, err := randomToken()
-	if err != nil {
-		return "", err
-	}
+	token, hash := tokenstore.NewToken("")
 	var owner *int64
 	if userID != 0 {
 		owner = &userID
 	}
-	g := store.G(ctx, s.db.Gorm)
+	g := store.G(ctx, q)
 	if err := deleteExpiredFlows(g).Error; err != nil {
 		return "", err
 	}
-	if err := insertFlow(g, hashToken(token), purpose, owner, raw, time.Now().Add(flowTTL)).Error; err != nil {
+	if err := insertFlow(g, hash, purpose, owner, raw, time.Now().Add(flowTTL)).Error; err != nil {
 		return "", err
 	}
 	return token, nil
@@ -81,7 +79,7 @@ func insertFlow(db *gorm.DB, hash, purpose string, owner *int64, payload []byte,
 
 // liveFlow selects cols of the unexpired flow token of purpose.
 func liveFlow(db *gorm.DB, token, purpose, cols string) *gorm.DB {
-	return db.Model(&model.AuthFlow{}).Select(cols).Where("token_hash = ? AND purpose = ? AND expires_at > now()", hashToken(token), purpose)
+	return db.Model(&model.AuthFlow{}).Select(cols).Where("token_hash = ? AND purpose = ? AND expires_at > now()", tokenstore.Hash(token), purpose)
 }
 
 // ownedFlow is liveFlow of the user userID only.
@@ -115,19 +113,22 @@ func (s *Service) peekFlow(ctx context.Context, token, purpose string, userID in
 // the caller's transaction or the pool.
 func (s *Service) takeFlow(ctx context.Context, q *gorm.DB, token, purpose string, userID int64, out any) (int64, error) {
 	return s.readFlow(ctx, token, purpose, userID, out, tokenstore.FlowStore.TakeFlow, func() *gorm.DB {
-		return takeFlowQuery(store.G(ctx, q), hashToken(token), purpose, userID)
+		return takeFlowQuery(store.G(ctx, q), tokenstore.Hash(token), purpose, userID)
 	})
 }
 
 // readFlow reads a flow with fromValkey, then from the table with
 // fromTable (a statement selecting payload and owner). A Valkey flow of
 // another owner is no flow; taken, it is gone: knowing its token is enough
-// to end it, as with any other bearer.
+// to end it, as with any other bearer. With Valkey down a flow in the table
+// (session.issue jwt) still finishes; one in neither fails with Valkey's
+// error, as it may be there.
 func (s *Service) readFlow(ctx context.Context, token, purpose string, userID int64, out any,
 	fromValkey func(tokenstore.FlowStore, context.Context, string, string) (tokenstore.Flow, error), fromTable func() *gorm.DB) (int64, error) {
 	if token == "" {
 		return 0, errFlowExpired
 	}
+	var down error
 	if s.flows != nil {
 		f, err := fromValkey(s.flows, ctx, purpose, token)
 		if err == nil {
@@ -137,12 +138,15 @@ func (s *Service) readFlow(ctx context.Context, token, purpose string, userID in
 			return f.UserID, json.Unmarshal(f.Payload, out)
 		}
 		if !errors.Is(err, tokenstore.ErrNotFound) {
-			return 0, err
+			down = err
 		}
 	}
 	var raw []byte
 	var owner *int64
 	err := fromTable().Row().Scan(&raw, &owner)
+	if store.IsNoRows(err) && down != nil {
+		return 0, down
+	}
 	if store.IsNoRows(err) {
 		return 0, errFlowExpired
 	}
