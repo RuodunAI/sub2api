@@ -16,13 +16,15 @@
 //     migrations;
 //   - [gorm-open] no gorm.Open outside the owners: handles come from
 //     store.DB.Gorm and store.G;
-//   - [gorm-instance] outside the owners, no (*DB).DB, Callback or Use, no
+//   - [gorm-instance] outside the owners, no (*DB).Callback or Use, no
 //     assignment to the instance's configuration (any gorm.Config field,
-//     promoted into gorm.DB or not, DB.Config itself) and no use at all of
-//     a ConnPool (a Statement's or the configuration's, read or written):
-//     every handle shares store.Open's one instance, so such a change
-//     would reach every statement of the process, and a statement run on
-//     the ConnPool under a handle bypasses GORM and the rules here. Nor
+//     promoted into gorm.DB or not, DB.Config itself): every handle shares
+//     store.Open's one instance, so such a change would reach every
+//     statement of the process. The pool under a handle, a ConnPool (a
+//     Statement's or the configuration's, read or written) or (*DB).DB, is
+//     sqlcheck's part of the rule, which the gateway and the SDK run as
+//     well: only the declarations of sqlPolicy.Pool reach it, since a
+//     statement run there bypasses GORM and the rules here. Nor
 //     (*DB).Debug, or a gorm.Session that sets (in a literal or by
 //     assignment) PrepareStmt, AllowGlobalUpdate, Logger,
 //     SkipDefaultTransaction or DryRun: such a session overrides that
@@ -96,9 +98,12 @@
 //     field or a package variable, and RequireTx must name one of them; a
 //     check under the condition that takes the lock (if lock { RequireTx })
 //     counts. Not checked: the pool (store.DB's Gorm), on which a lock only
-//     serves its one statement, and the parameters of function literals
-//     (store.DB.Tx's callback holds a transaction; what another caller
-//     passes is not followed). A lock whose handle is not seen needs a
+//     serves its one statement, and the parameter of a function literal
+//     passed straight to store.DB.Tx or TxOptions, which holds the
+//     transaction. Any other function literal's parameter is a handle to
+//     check in a function that takes a *gorm.DB, which may hand it its own;
+//     in one that takes none, the literal's handle comes from what it is
+//     passed to (a helper over Tx), which is not followed. A lock whose handle is not seen needs a
 //     RequireTx of any handle in a function that takes a *gorm.DB. A
 //     function that returns a *gorm.DB only builds the statement and is not
 //     reported; its caller is. The handle's type no longer says

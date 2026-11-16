@@ -34,9 +34,12 @@ var lockSQL = regexp.MustCompile(`(?i)\bFOR\s+(NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SH
 // under the condition that takes the lock. Such a handle is a parameter, a
 // local, a struct field or a package variable; the pool itself (store.DB's
 // Gorm), on which a lock can only serve the one statement (UPDATE ...
-// WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)), and the parameters of
-// function literals (a store.DB.Tx callback's handle is a transaction; what
-// another caller passes is not followed) are not checked. A lock whose
+// WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)), and the parameter of a
+// function literal passed straight to store.DB.Tx or TxOptions, a
+// transaction, are not checked. Nor, in a function that takes no
+// *gorm.DB, is any other function literal's parameter: the function has no
+// handle to hand it, so the literal's comes from what it is passed to (a
+// helper of the package over store.DB.Tx), which is not followed. A lock whose
 // handle is not seen (one built into a variable and run by a function of
 // another package) needs a RequireTx of any handle, in a function that
 // takes a *gorm.DB. What functions of other packages do is not followed:
@@ -45,7 +48,7 @@ func (c *checker) txLock(fn *ast.FuncDecl) {
 	if c.test || fn.Body == nil || returnsGormDB(c.info, fn) {
 		return
 	}
-	sites, unseen := c.lockSites(fn.Body)
+	sites, unseen := c.lockSites(fn.Body, takesGormDB(c.info, fn))
 	checked := c.requireTxRoots(fn.Body)
 	ok := !unseen || !takesGormDB(c.info, fn) || len(checked) > 0
 	for _, s := range sites {
@@ -59,15 +62,20 @@ func (c *checker) txLock(fn *ast.FuncDecl) {
 // lockSites returns, for each statement of body (closures included) that
 // locks on a handle it sees, the variables the handle is built on that
 // RequireTx must check (none: a handle txLock does not check), and whether
-// body holds a lock whose handle it does not see.
-func (c *checker) lockSites(body ast.Node) (sites [][]*types.Var, unseen bool) {
+// body holds a lock whose handle it does not see. handles tells whether
+// body's function takes a *gorm.DB, which its function literals may be
+// handed.
+func (c *checker) lockSites(body ast.Node, handles bool) (sites [][]*types.Var, unseen bool) {
 	sited := map[ast.Node]bool{} // the locks of the sites
 	site := func(roots []*types.Var) {
 		if len(roots) == 0 {
 			unseen = true
 			return
 		}
-		sites = append(sites, slices.DeleteFunc(roots, func(v *types.Var) bool { return c.isPool(v) || c.litParams[v] }))
+		sites = append(sites, slices.DeleteFunc(roots, func(v *types.Var) bool {
+			tx, lit := c.litParams[v]
+			return c.isPool(v) || tx || lit && !handles
+		}))
 	}
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
