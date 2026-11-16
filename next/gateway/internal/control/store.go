@@ -10,15 +10,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Masterminds/semver/v3"
-	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
-	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Masterminds/semver/v3"
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -441,7 +443,7 @@ func (s *Store) createLocked(ctx context.Context, digest string, revision int64,
 		}
 		return s.Plan(ctx, id)
 	}
-	if !isNoRows(err) {
+	if !gormpg.IsNoRows(err) {
 		return empty, err
 	}
 	pf, err := s.Preflight(ctx, digest)
@@ -931,7 +933,7 @@ func (s *Store) DisableNode(ctx context.Context, node string) error {
 func (s *Store) AuthorizePeer(ctx context.Context, source, boot, target, scope, digest string) error {
 	var offloading bool
 	err := s.nodeRow(s.db(ctx), source).Where("shell_boot_id = ? AND enabled AND peer_protocol = ? AND strategy = ?", boot, PeerProtocol, PrimaryFirst).Select("offloading").Row().Scan(&offloading)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		return peer.ErrUnauthorized
 	}
 	if err != nil {
@@ -1100,7 +1102,7 @@ func (s *Store) RecordStop(ctx context.Context, n Node) error {
 	var id string
 	var raw []byte
 	err := s.activeUpgrade(s.db(ctx)).Select("id,nodes").Row().Scan(&id, &raw)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		return nil
 	}
 	if err != nil {
@@ -1120,7 +1122,7 @@ func (s *Store) RecordStop(ctx context.Context, n Node) error {
 	if member {
 		var x int
 		err = s.db(ctx).Table("updater.steps").Select("step_id").Where("upgrade_id = ? AND node_id = ? AND action = 'stop'", id, n.ID).Order("step_id DESC").Limit(1).Row().Scan(&x)
-		if isNoRows(err) {
+		if gormpg.IsNoRows(err) {
 			return nil
 		}
 		if err != nil {
@@ -1284,7 +1286,7 @@ func (s *Store) SetPrimary(ctx context.Context, node string) error {
 			var enabled bool
 			var digest string
 			if err = s.nodeRow(tx, node).Select("enabled,release_digest").Row().Scan(&enabled, &digest); err != nil {
-				if isNoRows(err) {
+				if gormpg.IsNoRows(err) {
 					return fmt.Errorf("node %q is not registered", node)
 				}
 				return err
@@ -1316,7 +1318,7 @@ func (s *Store) RemoveNode(ctx context.Context, node string) error {
 			var enabled, stopped bool
 			var lastSeen time.Time
 			if err := s.nodeRow(tx, node).Select("enabled,stopped,last_seen").Row().Scan(&enabled, &stopped, &lastSeen); err != nil {
-				if isNoRows(err) {
+				if gormpg.IsNoRows(err) {
 					return fmt.Errorf("node %q is not registered", node)
 				}
 				return err
@@ -1354,7 +1356,7 @@ func (s *Store) RemoveNode(ctx context.Context, node string) error {
 // PlanStatus returns the current upgrade plan status including blocked reason.
 func (s *Store) PlanStatus(ctx context.Context) (id, status, blockedReason string, err error) {
 	err = s.activeUpgrade(s.db(ctx)).Select("id,status,blocked_reason").Limit(1).Row().Scan(&id, &status, &blockedReason)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		return "", "", "", nil
 	}
 	return

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"gorm.io/gorm"
 )
 
@@ -240,7 +241,7 @@ type passError struct {
 const passErrorRepeat = 5 * time.Minute
 
 // knownStrategies is KnownStrategy for SQL (= ANY(?)).
-var knownStrategies = textArray{PrimaryFirst, Rolling}
+var knownStrategies = gormpg.Array[string]{PrimaryFirst, Rolling}
 
 // commitProgress never signals an uncommitted result. Every immediate next pass
 // acquires a fresh Redis lease and rereads PG; no command is resumed from memory.
@@ -412,7 +413,7 @@ func (e *Engine) Coordinate(ctx context.Context) error {
 	var p Plan
 	var raw []byte
 	err = tx.Raw(`SELECT id,release_digest,nodes,cursor,strategy FROM updater.upgrades WHERE cluster_id=? AND status='running' FOR UPDATE`, e.Store.Cluster).Row().Scan(&p.ID, &p.ReleaseDigest, &raw, &p.Cursor, &p.Strategy)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		return nil
 	}
 	if err != nil {
@@ -457,7 +458,7 @@ func (e *Engine) completePlan(ctx context.Context, tx *gorm.DB, p Plan) error {
 		return err
 	}
 	var verified int
-	if err := tx.Raw(`SELECT count(*) FROM updater.nodes WHERE cluster_id=? AND node_id=ANY(?) AND ready AND mode='local' AND release_digest=?`, e.Store.Cluster, textArray(p.Nodes), p.ReleaseDigest).Row().Scan(&verified); err != nil {
+	if err := tx.Raw(`SELECT count(*) FROM updater.nodes WHERE cluster_id=? AND node_id=ANY(?) AND ready AND mode='local' AND release_digest=?`, e.Store.Cluster, gormpg.Array[string](p.Nodes), p.ReleaseDigest).Row().Scan(&verified); err != nil {
 		return err
 	}
 	if verified != len(p.Nodes) {
@@ -486,7 +487,7 @@ func (e *Engine) completePlan(ctx context.Context, tx *gorm.DB, p Plan) error {
 func (e *Engine) settleExistingStep(ctx context.Context, tx *gorm.DB, p Plan, st Step) (exists bool, err error) {
 	var state string
 	err = stepRow(tx, p.ID, p.Cursor).Select("status").Row().Scan(&state)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		return false, nil
 	}
 	if err != nil {
@@ -548,7 +549,7 @@ func (e *Engine) Work(ctx context.Context) error {
 	}
 	var st Step
 	err := e.Store.db(ctx).Raw(`SELECT s.upgrade_id,s.step_id,s.node_id,s.action,s.target_digest,s.peer_node,s.status FROM updater.steps s JOIN updater.upgrades u ON u.id=s.upgrade_id WHERE u.cluster_id=? AND u.status='running' AND u.strategy=ANY(?) AND u.cursor=s.step_id AND s.node_id=? AND s.status IN ('pending','running')`, e.Store.Cluster, knownStrategies, e.Node.ID).Row().Scan(&st.UpgradeID, &st.ID, &st.NodeID, &st.Action, &st.TargetDigest, &st.PeerNode, &st.Status)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		// When there is no active command, a crashed stable core may restart
 		// only from the persisted route/release, never from a local symlink.
 		state, _, statusErr := e.Runtime.Status(ctx)
@@ -1222,7 +1223,7 @@ func (e *Engine) admissionAllowed(ctx context.Context, digest string) error {
 	}
 	var id, status, target, strategy string
 	err = e.Store.activeUpgrade(e.Store.db(ctx)).Select("id,status,release_digest,strategy").Row().Scan(&id, &status, &target, &strategy)
-	if isNoRows(err) {
+	if gormpg.IsNoRows(err) {
 		if digest != baseline {
 			return errors.New("release is not the completed baseline")
 		}
@@ -1292,14 +1293,14 @@ func (e *Engine) requireFreshNodes(ctx context.Context, ids []string) error {
 func (e *Engine) planAuthorizesTx(ctx context.Context, tx *gorm.DB, digest string) error {
 	var id, status, target, strategy string
 	planErr := tx.Raw(`SELECT id,status,release_digest,strategy FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused') FOR SHARE`, e.Store.Cluster).Row().Scan(&id, &status, &target, &strategy)
-	if planErr != nil && !isNoRows(planErr) {
+	if planErr != nil && !gormpg.IsNoRows(planErr) {
 		return planErr
 	}
 	var baseline string
 	if err := tx.Raw(`SELECT baseline FROM updater.clusters WHERE cluster_id=? FOR SHARE`, e.Store.Cluster).Row().Scan(&baseline); err != nil {
 		return err
 	}
-	if isNoRows(planErr) {
+	if gormpg.IsNoRows(planErr) {
 		// A plan created before the cluster row lock was granted is visible now.
 		var active bool
 		if err := tx.Raw(`SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE cluster_id=? AND status IN ('running','paused'))`, e.Store.Cluster).Row().Scan(&active); err != nil {

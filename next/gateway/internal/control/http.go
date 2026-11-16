@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 )
 
 // Handler is for the mode-0600 local Unix socket ONLY, behind
@@ -16,7 +18,7 @@ func (s *Store) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
 			status := http.StatusConflict
-			if isNoRows(err) {
+			if gormpg.IsNoRows(err) {
 				status = http.StatusNotFound
 			}
 			w.WriteHeader(status)

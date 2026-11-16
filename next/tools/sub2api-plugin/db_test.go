@@ -181,9 +181,12 @@ func gormPlugin(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The SDK opens its handles with runtime-contract/gormpg: a plugin
+	// module outside the workspace replaces both.
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/demo\n\ngo 1.27\n\n"+
 		"require github.com/Sub2API-Devs/sup2api/next/sdk v0.0.0\n\n"+
-		"replace github.com/Sub2API-Devs/sup2api/next/sdk => "+sdk+"\n")
+		"replace github.com/Sub2API-Devs/sup2api/next/sdk => "+sdk+"\n\n"+
+		"replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => "+filepath.Join(sdk, "..", "runtime-contract")+"\n")
 	writeFile(t, filepath.Join(dir, "go.sum"), string(sum))
 	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"), `CREATE TABLE t (id bigserial PRIMARY KEY);`)
 	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"), demoModel(""))

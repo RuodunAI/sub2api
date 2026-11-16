@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/Sub2API-Devs/sup2api/next/runtime-contract v0.0.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/fergusstrange/embedded-postgres v1.34.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
@@ -43,3 +44,5 @@ require (
 )
 
 replace github.com/Sub2API-Devs/sup2api/next/sdk => ../../sdk
+
+replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => ../../runtime-contract

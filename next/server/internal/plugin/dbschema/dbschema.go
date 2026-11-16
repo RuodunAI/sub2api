@@ -18,7 +18,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/pgdsn"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -511,13 +510,11 @@ func (t Tracker) recordQuery(g *gorm.DB, id, checksum string) *gorm.DB {
 
 // rewriteDSN replaces the credentials of dsn (URL or key=value form) and pins
 // search_path to schema. Empty user keeps the host credentials. The host's
-// pgxpool parameters (pool_max_conns, ...) are dropped: they size the host's
-// pool, and a plugin's driver would send them to PostgreSQL as settings.
+// pgxpool parameters (pool_max_conns, ...) stay, as they did up to 0.1.288:
+// every opener takes them out (gormpg.ParseConfig, for the host's own
+// connections as the plugin role and the SDK's pgdb.Open, which sizes a
+// plugin's pool by its options alone).
 func rewriteDSN(dsn, user, pass, schema string) (string, error) {
-	dsn, _, err := pgdsn.Split(dsn)
-	if err != nil {
-		return "", err
-	}
 	opt := "-c search_path=" + schema
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		u, err := url.Parse(dsn)

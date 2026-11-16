@@ -22,7 +22,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -35,10 +34,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/proxy"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/supervisor"
-	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/pgdsn"
-	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/sqlpool"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/redis/go-redis/v9"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -236,42 +233,25 @@ func (s *shell) close() {
 // as many connections as the core; the gateway only serves the control
 // plane, so it keeps the fixed 4-8 connections it was meant to have. The
 // lifetimes are pgxpool's defaults.
-var gatewayPool = pgdsn.Defaults{MaxConns: 8, MaxConnLifetime: time.Hour, MaxConnIdleTime: 30 * time.Minute}
+var gatewayPool = gormpg.Settings{MaxConns: 8, MaxConnLifetime: time.Hour, MaxConnIdleTime: 30 * time.Minute}
 
-// openPool opens the PG pool. The DSN is shared with the core, whose pgxpool
-// reads its pool_* parameters: they leave the DSN (PostgreSQL rejects them as
-// settings) and size this pool, SUB2API_GATEWAY_POOL_MAX_CONNS above them.
-// Like pgxpool before, it connects lazily: the first statement dials.
+// openPool opens the PG pool the way the core does (gormpg). The DSN is
+// shared with the core: its pool_* parameters size this pool,
+// SUB2API_GATEWAY_POOL_MAX_CONNS above them. Like pgxpool before, it
+// connects lazily: the first statement dials.
 func openPool(c config) (*gorm.DB, error) {
-	dsn, pool, err := pgdsn.Split(c.DatabaseURL)
+	cfg, pool, err := gormpg.ParseConfig(c.DatabaseURL)
 	if err != nil {
 		return nil, err
 	}
-	if v := os.Getenv("SUB2API_GATEWAY_POOL_MAX_CONNS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			pool.MaxConns = &n
-		}
-	}
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+	pool.OverrideMaxConns(os.Getenv("SUB2API_GATEWAY_POOL_MAX_CONNS"))
+	db, _, err := gormpg.Open(cfg, gormpg.Options{Pool: pool, Defaults: gatewayPool, Gorm: &gorm.Config{
 		SkipDefaultTransaction: true, // the store opens the transactions it needs
 		DisableAutomaticPing:   true,
 		// Errors go back to the caller; logged SQL could carry values.
 		Logger: logger.Discard,
-	})
-	if err != nil {
-		return nil, err
-	}
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, err
-	}
-	pool.Apply(sqlDB, gatewayPool, nil)
-	// GORM reads an Exec's RowsAffected after database/sql has given the
-	// connection back, under a mutex that the connection's next statement
-	// holds: sqlpool reads it first (see there).
-	db.ConnPool = sqlpool.New(sqlDB)
-	db.Statement.ConnPool = db.ConnPool
-	return db, nil
+	}})
+	return db, err
 }
 
 // closePool closes the pool's connections.
