@@ -81,7 +81,7 @@ func (a fixtureAccess) AccountsInScope(ctx context.Context, uid int64, action st
 	}
 	var allowed []int64
 	err = store.G(ctx, a.db.Gorm).Table("accounts a").Where("a.id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids)).
-		Scopes(core.AccountRows.Scope(scope)).Pluck("a.id", &allowed).Error
+		Scopes(core.AccountRows().Scope(scope)).Pluck("a.id", &allowed).Error
 	return false, allowed, err
 }
 

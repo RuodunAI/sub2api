@@ -6,6 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -105,7 +106,7 @@ func TestSQLAuthzRoleReads(t *testing.T) {
 			return scan(assignableBuiltinRefs(db, []string{RoleOperator, RoleUser}))
 		}},
 		{"assignable", func(db *gorm.DB) *gorm.DB { return scan(assignableRoleRows(db)) }},
-		{"is_superuser", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, superuserGrants(db, 7))) }},
+		{"is_superuser", func(db *gorm.DB) *gorm.DB { return scan(gormpg.ExistsQuery(db, superuserGrants(db, 7))) }},
 		{"other_superusers", func(db *gorm.DB) *gorm.DB { var n int64; return otherSuperusers(db, 7).Count(&n) }},
 		{"lock_transfer_target", func(db *gorm.DB) *gorm.DB { return scan(lockTransferTarget(db, 9)) }},
 	})
@@ -121,7 +122,7 @@ func TestSQLAuthzPermissionReads(t *testing.T) {
 		{"holders", func(db *gorm.DB) *gorm.DB { return scan(holderRows(db, []string{"plugin:demo:read"})) }},
 		{"plugin", func(db *gorm.DB) *gorm.DB { return scan(pluginPermissions(db, "demo")) }},
 		// SetPluginRoleGrants: whether the plugin has any permission.
-		{"plugin_exists", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, permissionsOfPlugin(db, "demo"))) }},
+		{"plugin_exists", func(db *gorm.DB) *gorm.DB { return scan(gormpg.ExistsQuery(db, permissionsOfPlugin(db, "demo"))) }},
 		// GrantPluginPermission reads it with Row: one row, no LIMIT.
 		{"plugin_scope", func(db *gorm.DB) *gorm.DB { return scan(pluginPermissionScope(db, "plugin:demo:read")) }},
 	})

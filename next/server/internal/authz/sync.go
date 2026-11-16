@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -379,7 +380,7 @@ func (s *Service) advanceDefaults(ctx context.Context, tx *gorm.DB, behind func(
 		if !held {
 			holders := db.Model(&model.User{}).Where("deleted_at IS NULL AND id IN (?)", casbinrule.MembersOf(db, db.Model(&model.Role{}).Where("id = ?", r.ID)))
 			var err error
-			if held, err = store.Exists(db, holders); err != nil {
+			if held, err = gormpg.Exists(db, holders); err != nil {
 				return err
 			}
 		}

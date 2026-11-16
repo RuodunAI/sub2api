@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -81,7 +82,7 @@ func createPersonal(ctx context.Context, tx *gorm.DB, userID int64, copyFrom boo
 	g := store.G(ctx, tx)
 	origin := g.Table("users u").Select("'personal', u.id, s.id, CASE WHEN ? THEN s.discount ELSE 1 END", copyFrom).
 		Joins("JOIN segments s ON s.id = u.segment_id").Where("u.id = ? AND u.deleted_at IS NULL AND s.kind = 'named'", userID)
-	err = store.InsertSelectReturning(g, "segments", []string{"kind", "user_id", "origin_id", "discount"}, origin,
+	err = gormpg.InsertSelectReturning(g, "segments", []string{"kind", "user_id", "origin_id", "discount"}, origin,
 		clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "origin_id"}}}).Take(&created).Error
 	if store.IsNoRows(err) || store.IsUniqueViolation(err, "segments_user_uq") {
 		return 0, already
@@ -108,12 +109,12 @@ func createPersonal(ctx context.Context, tx *gorm.DB, userID int64, copyFrom boo
 func copySettings(ctx context.Context, tx *gorm.DB, from, to int64) error {
 	g := store.G(ctx, tx)
 	pairs := g.Model(&model.SegmentGroup{}).Select("?::bigint, group_id, granted, rate_override", to).Where("segment_id = ?", from)
-	if err := store.InsertSelect(g, "segment_groups", []string{"segment_id", "group_id", "granted", "rate_override"}, pairs).Error; err != nil {
+	if err := gormpg.InsertSelect(g, "segment_groups", []string{"segment_id", "group_id", "granted", "rate_override"}, pairs).Error; err != nil {
 		return err
 	}
 	rules := g.Model(&model.PriceRule{}).Select("group_id, ?::bigint, model, kind, multiplier, mode, config, expression, expr_hash, updated_by", to).
 		Where("segment_id = ?", from)
-	return store.InsertSelect(g, "price_rules", []string{"group_id", "segment_id", "model", "kind", "multiplier", "mode", "config",
+	return gormpg.InsertSelect(g, "price_rules", []string{"group_id", "segment_id", "model", "kind", "multiplier", "mode", "config",
 		"expression", "expr_hash", "updated_by"}, rules).Error
 }
 

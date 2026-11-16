@@ -115,7 +115,7 @@ func (s *Service) checkProxy(ctx context.Context, id *int64) error {
 	}
 	var status string
 	e = store.G(ctx, s.DB.Gorm).Table("proxies p").Select("p.status").Where("p.id = ?", *id).
-		Scopes(core.ProxyRows.Scope(refs)).Take(&status).Error
+		Scopes(core.ProxyRows().Scope(refs)).Take(&status).Error
 	if store.IsNoRows(e) {
 		return reasonError(core.ErrInvalidArgument, "proxy_not_found")
 	}

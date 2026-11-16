@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
@@ -222,7 +223,7 @@ func verifyAdmission(ctx context.Context, db *store.DB, node string, a runtimeco
 	// Whether the updater approved this boot of node with these roles (the
 	// managed shell's table, outside the core schema).
 	g := store.G(ctx, db.Gorm)
-	approved, err := store.Exists(g, g.Table("updater.node_admissions").
+	approved, err := gormpg.Exists(g, g.Table("updater.node_admissions").
 		Where("node_id = ? AND core_boot_id = ? AND release_digest = ? AND revision = ?", node, a.BootID, a.ReleaseDigest, a.Revision).
 		Where("serve_http = ? AND claim_background = ? AND coordinate_plugins = ?", a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins))
 	if err != nil {
@@ -275,7 +276,7 @@ func approvedPluginsReady(ctx context.Context, db *store.DB, reg core.PluginRegi
 		if !ok || (local.Version != p.Active && local.Version != p.From && local.Version != p.Target) {
 			return "", fmt.Errorf("plugin %s has not converged to an approved version", p.Key)
 		}
-		approved, err := store.Exists(g, g.Model(&model.PluginVersion{}).
+		approved, err := gormpg.Exists(g, g.Model(&model.PluginVersion{}).
 			Where("plugin_key = ? AND version = ? AND consent_status = 'approved'", p.Key, local.Version))
 		if err != nil {
 			return "", err

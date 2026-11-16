@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -388,7 +389,7 @@ func (s *Service) pluginKeys() []string { return core.ActivePluginKeys(s.opts.Re
 
 // scoped narrows proxies p to row id within scope.
 func scoped(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
-	return db.Table("proxies p").Where("p.id = ?", id).Scopes(core.ProxyRows.Scope(scope))
+	return db.Table("proxies p").Where("p.id = ?", id).Scopes(core.ProxyRows().Scope(scope))
 }
 
 func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh) }
@@ -465,7 +466,7 @@ func listFilter(q, status string, creator *int64, scope core.DataScope) func(*go
 	if creator != nil {
 		f.And("p.created_by = ?", *creator)
 	}
-	return append(f, core.ProxyRows.Scope(scope)).Scope()
+	return append(f, core.ProxyRows().Scope(scope)).Scope()
 }
 
 func (s *Service) get(c *gin.Context) {
@@ -974,7 +975,7 @@ func (s *Service) notifyAccountProxyChange(ctx context.Context, tx *gorm.DB, id 
 		}
 		cursors := g.Model(&model.Account{}).Select("DISTINCT plugin_key, (?)", g.Model(&model.Event{}).Select("COALESCE(max(id),0)")).
 			Where("id = ANY(?)", syncIDs)
-		if err := store.InsertSelect(g, "plugin_event_cursors", []string{"plugin_key", "last_event_id"}, cursors,
+		if err := gormpg.InsertSelect(g, "plugin_event_cursors", []string{"plugin_key", "last_event_id"}, cursors,
 			clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}}, DoNothing: true}).Error; err != nil {
 			return err
 		}

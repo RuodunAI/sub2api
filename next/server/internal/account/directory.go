@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -74,7 +75,7 @@ func (s *Service) GroupHasType(ctx context.Context, groupID int64, types []core.
 		pairs[i] = []any{t.PluginKey, t.Type}
 	}
 	g := store.G(ctx, s.d.DB.Gorm)
-	return store.Exists(g, g.Table("accounts a").Joins("JOIN account_groups ag ON ag.account_id = a.id").
+	return gormpg.Exists(g, g.Table("accounts a").Joins("JOIN account_groups ag ON ag.account_id = a.id").
 		Where("ag.group_id = ? AND a.deleted_at IS NULL", groupID).Where(clause.IN{Column: []clause.Column{{Table: "a", Name: "plugin_key"}, {Table: "a", Name: "type"}}, Values: pairs}))
 }
 

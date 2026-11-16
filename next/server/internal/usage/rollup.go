@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -387,7 +388,7 @@ func rollupHours(ctx context.Context, tx *gorm.DB, from, to time.Time) (int, err
 	for _, m := range statMeasures {
 		columns = append(columns, m.name)
 	}
-	if err := store.InsertSelect(g, "usage_hourly", columns, hours).Error; err != nil {
+	if err := gormpg.InsertSelect(g, "usage_hourly", columns, hours).Error; err != nil {
 		return 0, err
 	}
 	return int(to.Sub(from) / time.Hour), nil

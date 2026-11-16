@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -167,7 +168,7 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 			return err
 		}
 		var installed bool
-		if err := store.ExistsQuery(g, pluginRow(g, key)).Scan(&installed).Error; err != nil {
+		if err := gormpg.ExistsQuery(g, pluginRow(g, key)).Scan(&installed).Error; err != nil {
 			return err
 		}
 		if installed {

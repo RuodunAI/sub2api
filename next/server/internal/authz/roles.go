@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -1205,7 +1206,7 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 	var out *PluginRoleMatrix
 	err := s.mutate(ctx, func(tx *gorm.DB) error {
 		db := store.G(ctx, tx)
-		found, err := store.Exists(db, permissionsOfPlugin(db, pluginKey))
+		found, err := gormpg.Exists(db, permissionsOfPlugin(db, pluginKey))
 		if err != nil {
 			return err
 		}
@@ -1289,7 +1290,7 @@ func dedupe(keys []string) []string {
 // the user's status.
 func (s *Service) IsSuperuser(ctx context.Context, q *gorm.DB, userID int64) (bool, error) {
 	db := store.G(ctx, q)
-	return store.Exists(db, superuserGrants(db, userID))
+	return gormpg.Exists(db, superuserGrants(db, userID))
 }
 
 // superuserGrants selects the superuser roles userID holds.

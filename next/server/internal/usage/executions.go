@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -137,7 +138,7 @@ func (s *Service) recoverExecutions(ctx context.Context) error {
 		}
 		// Tasks need their validated parser result; the durable submission
 		// receipt remains available for repair instead of inventing an ID.
-		task, err := store.Exists(g, g.Model(&model.TaskSubmissionReceipt{}).Where("request_id = ?", r.RequestID))
+		task, err := gormpg.Exists(g, g.Model(&model.TaskSubmissionReceipt{}).Where("request_id = ?", r.RequestID))
 		if err != nil {
 			return err
 		}

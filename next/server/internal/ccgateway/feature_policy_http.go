@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -77,7 +78,7 @@ func (s *Service) previewAuthorize(c *gin.Context, ctx context.Context, id int64
 		return false
 	}
 	g := store.G(ctx, s.DB.Gorm)
-	found, err := store.Exists(g, g.Model(&model.Account{}).
+	found, err := gormpg.Exists(g, g.Model(&model.Account{}).
 		Where("id = ? AND deleted_at IS NULL AND plugin_key = 'ccgateway' AND type IN ('managed', 'apikey')", id))
 	if err != nil || !found {
 		httpapi.Fail(c, core.ErrNotFound)

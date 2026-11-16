@@ -5,7 +5,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
 
@@ -14,5 +14,5 @@ import (
 
 func TestSQLUpgradeActive(t *testing.T) {
 	var busy bool
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return store.ExistsQuery(db, upgradeActive(db)).Scan(&busy) })
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return gormpg.ExistsQuery(db, upgradeActive(db)).Scan(&busy) })
 }

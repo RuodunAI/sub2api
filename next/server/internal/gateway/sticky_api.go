@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -501,7 +502,7 @@ func (g *Gateway) deleteRuleHandler(c *gin.Context) {
 func (g *Gateway) ruleNameInUse(ctx context.Context, db *store.DB, name string) bool {
 	// An error reads as not in use: the caller then drops the rule's stats.
 	gdb := store.G(ctx, db.Gorm)
-	found, _ := store.Exists(gdb, gdb.Model(&model.StickyRule{}).Where("name = ?", name))
+	found, _ := gormpg.Exists(gdb, gdb.Model(&model.StickyRule{}).Where("name = ?", name))
 	return found
 }
 

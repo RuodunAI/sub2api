@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
@@ -128,11 +129,11 @@ func TestNextIDs(t *testing.T) {
 	require.NoError(t, err)
 	g := store.G(ctx, db.Gorm)
 
-	none, err := store.NextIDs(g, "docs", 0)
+	none, err := gormpg.NextIDs(g, "docs", 0)
 	require.NoError(t, err)
 	assert.Empty(t, none)
 
-	ids, err := store.NextIDs(g, "docs", 3)
+	ids, err := gormpg.NextIDs(g, "docs", 3)
 	require.NoError(t, err)
 	require.Len(t, ids, 3)
 	assert.True(t, ids[0] < ids[1] && ids[1] < ids[2])

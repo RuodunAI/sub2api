@@ -515,7 +515,7 @@ func (e *Engine) settleExistingStep(ctx context.Context, tx *gorm.DB, p Plan, st
 		confirmed := tx.Table("updater.nodes n").
 			Joins("JOIN updater.stop_confirmations c ON c.cluster_id=n.cluster_id AND c.node_id=n.node_id AND c.shell_boot_id=n.shell_boot_id").
 			Where("n.cluster_id=? AND n.node_id=? AND NOT n.enabled AND n.stopped AND c.upgrade_id=? AND c.step_id=?", e.Store.Cluster, st.NodeID, p.ID, st.ID)
-		if err = existsQuery(tx, confirmed).Row().Scan(&safetyStopped); err != nil {
+		if err = gormpg.ExistsQuery(tx, confirmed).Row().Scan(&safetyStopped); err != nil {
 			return true, false, err
 		}
 		if safetyStopped && e.requireFreshNodes(ctx, []string{st.NodeID}) == nil {
@@ -574,7 +574,7 @@ func (e *Engine) Work(ctx context.Context) error {
 		// only from the persisted route/release, never from a local symlink.
 		state, _, statusErr := e.Runtime.Status(ctx)
 		var active, outside bool
-		if err := existsQuery(db, e.Store.activeUpgrade(db), e.Store.activeUpgrade(db).Where("NOT jsonb_exists(nodes, ?)", e.Node.ID)).Row().Scan(&active, &outside); err != nil {
+		if err := gormpg.ExistsQuery(db, e.Store.activeUpgrade(db), e.Store.activeUpgrade(db).Where("NOT jsonb_exists(nodes, ?)", e.Node.ID)).Row().Scan(&active, &outside); err != nil {
 			return err
 		}
 		e.busy.Store(active)
@@ -1047,7 +1047,7 @@ func (e *Engine) Recover(ctx context.Context, bootstrap bool) error {
 	if bootstrap {
 		var admitted bool
 		db := e.Store.db(ctx)
-		if err = existsQuery(db, db.Table("updater.node_admissions").Where("cluster_id = ?", e.Store.Cluster)).Row().Scan(&admitted); err != nil {
+		if err = gormpg.ExistsQuery(db, db.Table("updater.node_admissions").Where("cluster_id = ?", e.Store.Cluster)).Row().Scan(&admitted); err != nil {
 			return err
 		}
 		bootstrap = !admitted && e.Node.ID == primary
@@ -1343,7 +1343,7 @@ func (e *Engine) planAuthorizesTx(ctx context.Context, tx *gorm.DB, digest strin
 	if gormpg.IsNoRows(planErr) {
 		// A plan created before the cluster row lock was granted is visible now.
 		var active bool
-		if err := existsQuery(tx, e.Store.activeUpgrade(tx)).Row().Scan(&active); err != nil {
+		if err := gormpg.ExistsQuery(tx, e.Store.activeUpgrade(tx)).Row().Scan(&active); err != nil {
 			return err
 		}
 		if active || digest != baseline {
@@ -1371,7 +1371,7 @@ func (e *Engine) admissionSteps(db *gorm.DB, id string) *gorm.DB {
 	done := func() *gorm.DB {
 		return db.Table("updater.steps").Where("upgrade_id = ? AND node_id = ? AND status = 'done'", id, e.Node.ID)
 	}
-	return existsQuery(db, done().Where("action = 'local'"), done().Where("action IN ('start','start-primary')"))
+	return gormpg.ExistsQuery(db, done().Where("action = 'local'"), done().Where("action IN ('start','start-primary')"))
 }
 
 // recordBlockedReason writes waiting errors to upgrades.blocked_reason with

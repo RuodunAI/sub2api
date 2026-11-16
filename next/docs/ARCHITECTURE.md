@@ -1583,7 +1583,7 @@ next/
 |---|---|
 | 语言 | Go 1.27 |
 | HTTP | gin |
-| 数据库 | PostgreSQL 16 + GORM（驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`；打开连接由 `runtime-contract/gormpg` 一处实现，核心、网关、插件 SDK 共用）；语句由 GORM 的模型与查询构造器生成，值只走 `?` 参数，`Raw`/`Exec` 只组合已生成的查询；整条手写的只剩账本的 data-modifying CTE、网关心跳的 CTE 与 schema 脚本，以及锁、DDL、序列、系统目录的小助手（核心 gormguard `[raw-sql]`/`[sql-const]`、SDK 的 `TestNoRawSQL`、网关 `sqlguard` 检查，CONTRACTS §2、§39）。表结构以 SQL 迁移为准：核心的模型由迁移生成（`store/modelgen`），插件的模型由 `sub2api-plugin db check` 对照迁移；运行时不跑 AutoMigrate。插件只拿到 `Host.DB` 的 `*gorm.DB`（CONTRACTS §2） |
+| 数据库 | PostgreSQL 16 + GORM（驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`；打开连接、GORM 没有形式的薄组合器（`EXISTS`、`INSERT ... SELECT`、`nextval`、`to_regclass`、事务级 advisory 锁）和 SQL 文本检查器 `gormpg/sqlcheck` 由 `runtime-contract/gormpg` 一处实现，核心、网关、插件 SDK 共用）；语句由 GORM 的模型与查询构造器生成，值只走 `?` 参数，`Raw`/`Exec` 只组合已生成的查询；整条手写的只剩账本的 data-modifying CTE、网关心跳的 CTE 与 schema 脚本，以及锁、DDL、序列、系统目录的小助手（核心 gormguard、SDK 的 `TestNoRawSQL`、网关 `sqlguard` 用同一个 `sqlcheck` 检查，CONTRACTS §2、§39）。表结构以 SQL 迁移为准：核心的模型由迁移生成（`store/modelgen`），插件的模型由 `sub2api-plugin db check` 对照迁移；运行时不跑 AutoMigrate。插件只拿到 `Host.DB` 的 `*gorm.DB`（CONTRACTS §2） |
 | 权限判断 | Casbin v3（策略存 `casbin_rule`，gorm-adapter 的列布局，adapter 只用来读入；每个节点一个 `SyncedCachedEnforcer`，带 Casbin 的角色管理器与决策缓存；装入时只读授予，用户的角色在第一次判断时按需读入、有上限；策略版本变化时原地重载授予或换一个新的 enforcer，只改用户角色或状态时只换该用户，CONTRACTS §99.3–99.4） |
 | 迁移 | 嵌入式 SQL + 自研执行器（核心和插件共用，参考旧项目 `migrations_runner.go`） |
 | 缓存 / 实时状态 | Valkey（或 Redis 7+）+ go-redis v9；控制台会话 `s2s_` 也只存在这里（CONTRACTS §100） |

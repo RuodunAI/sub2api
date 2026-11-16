@@ -3,8 +3,8 @@
 // by name or id, and turns ids back into names.
 //
 // The protocol (parameters, matching, order, response) is implemented once,
-// here. A kind is an Entity: where its rows are and who may see them
-// (entities.go). A new kind is one more Entity.
+// here. A kind is an entity: where its rows are and who may see them
+// (entities.go). A new kind is one more entity.
 package lookup
 
 import (
@@ -34,61 +34,63 @@ const (
 	contains = ` ILIKE ? ESCAPE E'\\'`
 )
 
-// Entity describes one kind of row. Columns and conditions are SQL over the
-// aliases of From; conditions take "?" placeholders (store.Conds).
-type Entity struct {
-	Kind string // path segment: /lookup/<kind>
-	From string // FROM clause
-	ID   string // numeric id column; "" when the name is the id (models)
-	Name string // column q matches, returned as name
-	// Search are further columns q matches, for a kind people know by more
+// entity describes one kind of row. Columns and conditions are SQL over the
+// aliases of from; conditions take "?" placeholders (store.Conds). The
+// fields are unexported, set by the literals of entities.go alone, so that
+// the SQL check proves their text constant.
+type entity struct {
+	kind string // path segment: /lookup/<kind>
+	from string // FROM clause
+	id   string // numeric id column; "" when the name is the id (models)
+	name string // column q matches, returned as name
+	// matches are further columns q matches, for a kind people know by more
 	// than its name.
-	Search []string
-	Hint   string // optional expression: text that tells rows of one name apart
-	Status string // optional column, returned as stored
-	Live   string // optional condition leaving out soft-deleted rows
+	matches []string
+	hint    string // optional expression: text that tells rows of one name apart
+	status  string // optional column, returned as stored
+	live    string // optional condition leaving out soft-deleted rows
 
-	// Read reaches every row. OwnRead (kinds without a Table: groups, by
+	// read reaches every row. ownRead (kinds without a table: groups, by
 	// account:group:bind) reaches the caller's rows only: a holder of
-	// OwnRead alone is narrowed by Mine instead of refused.
-	Read, OwnRead string
-	// Named, when set, gives a caller holding neither Read nor OwnRead the
+	// ownRead alone is narrowed by mine instead of refused.
+	read, ownRead string
+	// named, when set, gives a caller holding neither read nor ownRead the
 	// rows its own permission set names (by id), instead of a refusal: the
 	// console shows the scopes of the caller's grants by name.
-	Named func(core.PermissionSet) []int64
-	// Table makes Read a scoped action (CONTRACTS §21.0): the caller sees
-	// the rows of its scope of Read, any scope will do, and OwnRead is
+	named func(core.PermissionSet) []int64
+	// table makes read a scoped action (CONTRACTS §21.0): the caller sees
+	// the rows of its scope of read, any scope will do, and ownRead is
 	// unused.
-	Table *core.ScopeTable
-	// Mine serves mine=true; nil when no row of the kind is the caller's own.
-	Mine *Mine
+	table func() core.ScopeTable
+	// mine serves mine=true; nil when no row of the kind is the caller's own.
+	mine *ownRows
 
-	Narrow []Ref // parameters that drop the rows not matching them
-	Prefer []Ref // parameters that list the matching rows first
+	narrow []ref // parameters that drop the rows not matching them
+	prefer []ref // parameters that list the matching rows first
 }
 
-// Mine is the part of a kind that belongs to the caller.
-type Mine struct {
-	// Perms allow mine=true, any one of them; none means every signed-in user.
-	Perms []string
-	// Scope adds the conditions that leave only the caller's rows.
-	Scope func(ctx context.Context, q *gorm.DB, uid int64, f *store.Conds) error
-	// Hint replaces Entity.Hint when set.
-	Hint string
+// ownRows is the part of a kind that belongs to the caller.
+type ownRows struct {
+	// perms allow mine=true, any one of them; none means every signed-in user.
+	perms []string
+	// scope adds the conditions that leave only the caller's rows.
+	scope func(ctx context.Context, q *gorm.DB, uid int64, f *store.Conds) error
+	// hint replaces entity.hint when set.
+	hint string
 }
 
-// Ref is a query parameter holding the id of another entity.
-type Ref struct {
-	Param string
-	Cond  string // true for the rows the id selects; one "?" takes the id
+// ref is a query parameter holding the id of another entity.
+type ref struct {
+	param string
+	cond  string // true for the rows the id selects; one "?" takes the id
 }
 
 // key is the expression of the row's id.
-func (e *Entity) key() string {
-	if e.ID == "" {
-		return e.Name
+func (e *entity) key() string {
+	if e.id == "" {
+		return e.name
 	}
-	return e.ID
+	return e.id
 }
 
 // Item is one row of the answer.
@@ -125,14 +127,14 @@ type Result struct {
 type Service struct {
 	db    *store.DB
 	authz core.Authorizer
-	kinds map[string]*Entity
+	kinds map[string]*entity
 }
 
 // New builds the service over the kinds of entities.go.
 func New(db *store.DB, authz core.Authorizer) *Service {
-	s := &Service{db: db, authz: authz, kinds: make(map[string]*Entity, len(entities))}
+	s := &Service{db: db, authz: authz, kinds: make(map[string]*entity, len(entities))}
 	for _, e := range entities {
-		s.kinds[e.Kind] = e
+		s.kinds[e.kind] = e
 	}
 	return s
 }
@@ -161,32 +163,32 @@ func (s *Service) lookup(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	var f store.Conds
-	if e.Live != "" {
-		f.And(e.Live)
+	if e.live != "" {
+		f.And(e.live)
 	}
 	if a.named != nil {
-		f.And(e.ID+" = ANY(?)", store.Int64s(a.named))
+		f.And(e.id+" = ANY(?)", store.Int64s(a.named))
 	}
-	if e.Table != nil {
-		scope, err := core.Scope(ctx, s.authz, perm.Key(e.Read))
+	if e.table != nil {
+		scope, err := core.Scope(ctx, s.authz, perm.Key(e.read))
 		if err == nil && scope.Empty() {
-			err = core.ErrPermissionDenied.WithDetails(map[string]any{"permission": e.Read})
+			err = core.ErrPermissionDenied.WithDetails(map[string]any{"permission": e.read})
 		}
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		f = append(f, e.Table.Scope(scope))
+		f = append(f, e.table().Scope(scope))
 	}
-	hint := e.Hint
+	hint := e.hint
 	if a.own {
 		uid, _ := core.UserID(ctx)
-		if err := e.Mine.Scope(ctx, s.db.Gorm, uid, &f); err != nil {
+		if err := e.mine.scope(ctx, s.db.Gorm, uid, &f); err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		if e.Mine.Hint != "" {
-			hint = e.Mine.Hint
+		if e.mine.hint != "" {
+			hint = e.mine.hint
 		}
 	}
 	var rows []itemRow
@@ -208,38 +210,38 @@ func (s *Service) lookup(c *gin.Context) {
 
 // access is the caller's range of one lookup, beyond a Table's scope.
 type access struct {
-	own   bool    // narrowed by Mine
-	named []int64 // narrowed to these ids (Entity.Named); nil: not by it
+	own   bool    // narrowed by entity.mine
+	named []int64 // narrowed to these ids (entity.named); nil: not by it
 }
 
 // allow checks the caller's permission for the kind and returns the range
 // the lookup is limited to. When ok is false the error has been rendered.
-func (s *Service) allow(c *gin.Context, e *Entity, mine bool) (a access, ok bool) {
-	if mine && e.Mine == nil {
-		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("mine is not supported for "+e.Kind))
+func (s *Service) allow(c *gin.Context, e *entity, mine bool) (a access, ok bool) {
+	if mine && e.mine == nil {
+		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("mine is not supported for "+e.kind))
 		return a, false
 	}
-	if e.Table != nil { // checked and narrowed by its scope
+	if e.table != nil { // checked and narrowed by its scope
 		return access{own: mine}, true
 	}
 	if mine {
-		return access{own: true}, len(e.Mine.Perms) == 0 || httpapi.CanAny(c, s.authz, e.Mine.Perms...)
+		return access{own: true}, len(e.mine.perms) == 0 || httpapi.CanAny(c, s.authz, e.mine.perms...)
 	}
 	ctx := c.Request.Context()
-	if e.Named != nil && !core.Can(ctx, s.authz, perm.Key(e.Read)) && !core.Can(ctx, s.authz, perm.Key(e.OwnRead)) {
+	if e.named != nil && !core.Can(ctx, s.authz, perm.Key(e.read)) && !core.Can(ctx, s.authz, perm.Key(e.ownRead)) {
 		return s.allowNamed(c, e)
 	}
-	if !httpapi.CanAny(c, s.authz, e.Read, e.OwnRead) {
+	if !httpapi.CanAny(c, s.authz, e.read, e.ownRead) {
 		return a, false
 	}
 	// CanAny recorded the keys it matched in a new request context: not ctx.
-	return access{own: !core.HasGranted(c.Request.Context(), perm.Key(e.Read))}, true
+	return access{own: !core.HasGranted(c.Request.Context(), perm.Key(e.read))}, true
 }
 
-// allowNamed limits the lookup to the rows e.Named finds in the caller's
+// allowNamed limits the lookup to the rows e.named finds in the caller's
 // permission set (its access key applied), refusing as Read would when it
 // names none.
-func (s *Service) allowNamed(c *gin.Context, e *Entity) (access, bool) {
+func (s *Service) allowNamed(c *gin.Context, e *entity) (access, bool) {
 	ctx := c.Request.Context()
 	uid, _ := core.UserID(ctx)
 	set, err := s.authz.PermissionSet(ctx, uid)
@@ -247,9 +249,9 @@ func (s *Service) allowNamed(c *gin.Context, e *Entity) (access, bool) {
 		httpapi.Fail(c, err)
 		return access{}, false
 	}
-	ids := e.Named(set)
+	ids := e.named(set)
 	if len(ids) == 0 {
-		httpapi.Fail(c, core.ErrPermissionDenied.WithDetails(map[string]any{"permission": e.Read}))
+		httpapi.Fail(c, core.ErrPermissionDenied.WithDetails(map[string]any{"permission": e.read}))
 		return access{}, false
 	}
 	return access{named: ids}, true
@@ -274,20 +276,20 @@ func validText(s string) bool {
 	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
 }
 
-func parse(c *gin.Context, e *Entity) (*params, error) {
+func parse(c *gin.Context, e *entity) (*params, error) {
 	p := &params{text: strings.TrimSpace(c.Query("q")), limit: defaultLimit, refs: map[string]int64{}}
 	if len(p.text) > maxText || !validText(p.text) {
 		return nil, invalid("q")
 	}
 	// A q of digits is also an id. One too long for an id can still be part
 	// of a name.
-	if e.ID != "" && p.text != "" && strings.Trim(p.text, "0123456789") == "" {
+	if e.id != "" && p.text != "" && strings.Trim(p.text, "0123456789") == "" {
 		if id, err := strconv.ParseInt(p.text, 10, 64); err == nil {
 			p.id = &id
 		}
 	}
 	if v := c.Query("ids"); v != "" {
-		ids, err := parseIDs(v, e.ID != "")
+		ids, err := parseIDs(v, e.id != "")
 		if err != nil {
 			return nil, err
 		}
@@ -307,16 +309,16 @@ func parse(c *gin.Context, e *Entity) (*params, error) {
 		}
 		p.mine = mine
 	}
-	for _, r := range slices.Concat(e.Narrow, e.Prefer) {
-		v := c.Query(r.Param)
+	for _, r := range slices.Concat(e.narrow, e.prefer) {
+		v := c.Query(r.param)
 		if v == "" {
 			continue
 		}
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || id <= 0 {
-			return nil, invalid(r.Param)
+			return nil, invalid(r.param)
 		}
-		p.refs[r.Param] = id
+		p.refs[r.param] = id
 	}
 	return p, nil
 }
@@ -333,7 +335,7 @@ type TextQuery struct {
 // numeric ids: the plugin scope options proxy (CONTRACTS §96.1 rules) shares
 // it.
 func ParseText(c *gin.Context) (TextQuery, error) {
-	p, err := parse(c, &Entity{})
+	p, err := parse(c, &entity{})
 	if err != nil {
 		return TextQuery{}, err
 	}
@@ -371,11 +373,11 @@ func parseIDs(v string, numeric bool) (any, error) {
 // search adds the condition of q to f: the name or a Search column contains
 // it, or it is the id. It returns the order that lists the row of that id
 // first, with its argument.
-func (e *Entity) search(p *params, f *store.Conds) (string, []any) {
+func (e *entity) search(p *params, f *store.Conds) (string, []any) {
 	pattern := "%" + store.Like(p.text) + "%"
 	var conds []string
 	var args []any
-	for _, col := range slices.Concat([]string{e.Name}, e.Search) {
+	for _, col := range slices.Concat([]string{e.name}, e.matches) {
 		conds = append(conds, col+contains)
 		args = append(args, pattern)
 	}
@@ -383,17 +385,17 @@ func (e *Entity) search(p *params, f *store.Conds) (string, []any) {
 		f.And("("+strings.Join(conds, " OR ")+")", args...)
 		return "", nil
 	}
-	f.And("("+strings.Join(append(conds, e.ID+" = ?"), " OR ")+")", append(args, *p.id)...)
-	return "(" + e.ID + " = ?) DESC", []any{*p.id}
+	f.And("("+strings.Join(append(conds, e.id+" = ?"), " OR ")+")", append(args, *p.id)...)
+	return "(" + e.id + " = ?) DESC", []any{*p.id}
 }
 
 // query reads into dst the rows of one request on top of f, which holds the
 // conditions of the caller's range. Order: the row whose id is q, the rows a
 // Prefer parameter selects, then by name and id.
-func (e *Entity) query(db *gorm.DB, p *params, f store.Conds, hint string, dst *[]itemRow) *gorm.DB {
-	for _, r := range e.Narrow {
-		if id, ok := p.refs[r.Param]; ok {
-			f.And(r.Cond, id)
+func (e *entity) query(db *gorm.DB, p *params, f store.Conds, hint string, dst *[]itemRow) *gorm.DB {
+	for _, r := range e.narrow {
+		if id, ok := p.refs[r.param]; ok {
+			f.And(r.cond, id)
 		}
 	}
 	var order []string
@@ -406,18 +408,18 @@ func (e *Entity) query(db *gorm.DB, p *params, f store.Conds, hint string, dst *
 			order, orderArgs = append(order, first), args
 		}
 	}
-	for _, r := range e.Prefer {
-		if id, ok := p.refs[r.Param]; ok {
-			order = append(order, "("+r.Cond+") DESC")
+	for _, r := range e.prefer {
+		if id, ok := p.refs[r.param]; ok {
+			order = append(order, "("+r.cond+") DESC")
 			orderArgs = append(orderArgs, id)
 		}
 	}
-	order = append(order, e.Name)
-	if e.ID != "" {
-		order = append(order, e.ID)
+	order = append(order, e.name)
+	if e.id != "" {
+		order = append(order, e.id)
 	}
 	// The aliases are the columns of itemRow.
-	db = db.Table(e.From).Select(e.key() + " AS id, " + e.Name + " AS name, " + orEmpty(hint) + " AS hint, " + orEmpty(e.Status) + " AS status").
+	db = db.Table(e.from).Select(e.key() + " AS id, " + e.name + " AS name, " + orEmpty(hint) + " AS hint, " + orEmpty(e.status) + " AS status").
 		Scopes(f.Scope()).
 		// One expression for the whole order: GORM renders an ORDER BY
 		// expression in place of the columns of other Order calls.

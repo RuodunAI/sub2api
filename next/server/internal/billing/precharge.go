@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -196,7 +197,7 @@ const prechargeLockTimeoutSQL = `set_config('lock_timeout', '` + prechargeLockTi
 // transaction's insert of the row.
 func ensurePrechargeBalance(db *gorm.DB, userID int64) *gorm.DB {
 	row := db.Session(&gorm.Session{NewDB: true}).Table("(SELECT ?::bigint AS user_id) AS u", userID).Select("user_id").Where(prechargeLockTimeoutSQL)
-	return store.InsertSelect(db, "user_balances", []string{"user_id"}, row, clause.OnConflict{DoNothing: true})
+	return gormpg.InsertSelect(db, "user_balances", []string{"user_id"}, row, clause.OnConflict{DoNothing: true})
 }
 
 // ensureBalanceRow inserts the user's balance row unless it exists.

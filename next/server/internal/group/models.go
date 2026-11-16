@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -158,7 +159,7 @@ func (s *Service) groupsProviding(ctx context.Context, name string) ([]int64, er
 	if err != nil {
 		return nil, err
 	}
-	priced, err := store.Exists(db, db.Model(&model.ModelPrice{}).Where("model = ? AND enabled", name))
+	priced, err := gormpg.Exists(db, db.Model(&model.ModelPrice{}).Where("model = ? AND enabled", name))
 	if err != nil {
 		return nil, err
 	}

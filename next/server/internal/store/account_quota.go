@@ -8,6 +8,8 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 )
 
 // Account quota snapshots (table account_quota_snapshots, CONTRACTS §44).
@@ -240,7 +242,7 @@ func saveAccountQuota(db *gorm.DB, accountID int64, source, windows string, next
 		Select(`id, ?::jsonb, ?::text, '', clock_timestamp(), CASE WHEN ?::text = 'passive' THEN clock_timestamp() END, 1, 'ready', ?::timestamptz`,
 			windows, source, source, nextAt).
 		Where("id = ? AND deleted_at IS NULL", accountID)
-	return InsertSelect(db, quotaTable, []string{"account_id", "windows", "source", "error", "updated_at", "last_passive_at", "revision", "refresh_status", "next_check_at"}, row,
+	return gormpg.InsertSelect(db, quotaTable, []string{"account_id", "windows", "source", "error", "updated_at", "last_passive_at", "revision", "refresh_status", "next_check_at"}, row,
 		clause.OnConflict{Columns: quotaKey, DoUpdates: clause.Assignments(map[string]any{
 			"windows":         gorm.Expr("account_quota_snapshots.windows || EXCLUDED.windows"),
 			"source":          gorm.Expr("EXCLUDED.source"),
@@ -320,7 +322,7 @@ func (d *DB) ClaimAccountQuotaQuery(ctx context.Context, accountID int64, floor 
 
 func claimAccountQuotaQuery(db *gorm.DB, accountID int64, floor float64) *gorm.DB {
 	row := db.Session(&gorm.Session{NewDB: true}).Table("accounts").Select("id, now()").Where("id = ?", accountID)
-	return InsertSelect(db, quotaTable, []string{"account_id", "last_active_at"}, row, clause.OnConflict{
+	return gormpg.InsertSelect(db, quotaTable, []string{"account_id", "last_active_at"}, row, clause.OnConflict{
 		Columns:   quotaKey,
 		DoUpdates: clause.Assignments(map[string]any{"last_active_at": gorm.Expr("now()")}),
 		Where: clause.Where{Exprs: []clause.Expression{gorm.Expr(`account_quota_snapshots.last_active_at IS NULL
@@ -361,7 +363,7 @@ func EnsureAccountQuota(ctx context.Context, q *gorm.DB, id int64, pluginRevisio
 func ensureAccountQuota(db *gorm.DB, id int64, rev string, auto bool) *gorm.DB {
 	row := db.Session(&gorm.Session{NewDB: true}).Table("accounts").
 		Select("id, ?, ?, CASE WHEN ? THEN now() END", rev, auto, auto).Where("id = ? AND deleted_at IS NULL", id)
-	return InsertSelect(db, quotaTable, []string{"account_id", "plugin_revision", "auto_refresh", "next_check_at"}, row, clause.OnConflict{
+	return gormpg.InsertSelect(db, quotaTable, []string{"account_id", "plugin_revision", "auto_refresh", "next_check_at"}, row, clause.OnConflict{
 		Columns: quotaKey,
 		DoUpdates: clause.Assignments(map[string]any{
 			"plugin_revision": rev,
@@ -431,7 +433,7 @@ func leaseAccountQuota(db *gorm.DB, dst *quotaLease, id int64, rev string, floor
 
 func (d *DB) AccountQuotaClaimValid(ctx context.Context, c *QuotaClaim) (bool, error) {
 	g := G(ctx, d.Gorm)
-	return Exists(g, quotaRows(g).Where("q.account_id=? AND q.generation=? AND q.lease_token=? AND q.lease_until>clock_timestamp() AND "+liveAccount,
+	return gormpg.Exists(g, quotaRows(g).Where("q.account_id=? AND q.generation=? AND q.lease_token=? AND q.lease_until>clock_timestamp() AND "+liveAccount,
 		c.AccountID, c.Generation, c.Token))
 }
 

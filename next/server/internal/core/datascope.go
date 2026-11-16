@@ -126,17 +126,18 @@ func (s DataScope) AllowsRow(id int64, createdBy *int64, groups []int64) bool {
 
 // ScopeTable is how a DataScope reads a table: its row id and creator
 // columns, and whether its rows belong to groups (account_groups).
+// Its columns are SQL text: unexported, set by AccountRows and ProxyRows
+// alone, so that no package can change the text of another's condition.
 type ScopeTable struct {
-	ID, Owner string
-	Grouped   bool
+	id, owner string
+	grouped   bool
 }
 
-var (
-	// AccountRows is accounts aliased a.
-	AccountRows = ScopeTable{ID: "a.id", Owner: "a.created_by", Grouped: true}
-	// ProxyRows is proxies aliased p.
-	ProxyRows = ScopeTable{ID: "p.id", Owner: "p.created_by"}
-)
+// AccountRows is accounts aliased a.
+func AccountRows() ScopeTable { return ScopeTable{id: "a.id", owner: "a.created_by", grouped: true} }
+
+// ProxyRows is proxies aliased p.
+func ProxyRows() ScopeTable { return ScopeTable{id: "p.id", owner: "p.created_by"} }
 
 // Cond is the predicate of t with ? placeholders, one per Args value (see
 // Scope). It is never NULL (a NULL creator is no match), so it
@@ -144,12 +145,12 @@ var (
 // no row, creators being user ids. Its text does not depend on the scope, so the plan of
 // a query is reused whatever ids the scope holds.
 func (t ScopeTable) Cond() string {
-	c := "(?::boolean OR COALESCE(" + t.Owner + " = ?::bigint, false) OR " + t.ID + " = ANY(?::bigint[])"
-	if t.Grouped {
+	c := "(?::boolean OR COALESCE(" + t.owner + " = ?::bigint, false) OR " + t.id + " = ANY(?::bigint[])"
+	if t.grouped {
 		// group/* is a flag of its own so that the group ids reach
 		// account_groups_group_idx (an "= 0 OR =" join would not).
-		c += " OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = " + t.ID + " AND (?::boolean OR ag.group_id = ANY(?::bigint[])))" +
-			" OR EXISTS (SELECT 1 FROM account_groups ag JOIN unnest(?::bigint[], ?::bigint[]) sp(g, x) ON sp.x = ag.account_id AND (sp.g = 0 OR sp.g = ag.group_id) WHERE ag.account_id = " + t.ID + ")"
+		c += " OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = " + t.id + " AND (?::boolean OR ag.group_id = ANY(?::bigint[])))" +
+			" OR EXISTS (SELECT 1 FROM account_groups ag JOIN unnest(?::bigint[], ?::bigint[]) sp(g, x) ON sp.x = ag.account_id AND (sp.g = 0 OR sp.g = ag.group_id) WHERE ag.account_id = " + t.id + ")"
 	}
 	return c + ")"
 }
@@ -163,7 +164,7 @@ func (t ScopeTable) Args(s DataScope) []any {
 		return v
 	}
 	args := []any{s.All, s.Owner, ids(s.IDs)}
-	if t.Grouped {
+	if t.grouped {
 		anyGroup := slices.Contains(s.Groups, 0)
 		groups := slices.DeleteFunc(slices.Clone(ids(s.Groups)), func(g int64) bool { return g == 0 })
 		args = append(args, anyGroup, groups, ids(s.PairG), ids(s.PairID))

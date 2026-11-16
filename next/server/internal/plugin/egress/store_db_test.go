@@ -18,7 +18,7 @@ import (
 // ids came from the order of a multi-row INSERT's RETURNING, which
 // PostgreSQL does not promise; a mismatch would close one connection's row
 // with another's figures). The ids are reserved before the INSERT
-// (store.NextIDs).
+// (gormpg.NextIDs).
 func TestInsertOpenIDsFollowTheRows(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()

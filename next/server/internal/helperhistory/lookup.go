@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 
 	wire "github.com/Sub2API-Devs/sup2api/next/plugins/ccgateway/companions/contracts/helperhistory"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -89,7 +90,7 @@ func (s *Service) anyPrefix(ctx context.Context, o core.ResourceOwner, prefixes 
 
 // prefixProbe selects whether any of prefixes belongs to a record of o.
 func prefixProbe(db *gorm.DB, o core.ResourceOwner, prefixes []string) *gorm.DB {
-	return store.ExistsQuery(db, withPrefixes(db, o, prefixes))
+	return gormpg.ExistsQuery(db, withPrefixes(db, o, prefixes))
 }
 
 // withPrefixes keeps the records of o under any of prefixes.

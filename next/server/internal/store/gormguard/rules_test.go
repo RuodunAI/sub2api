@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg/sqlcheck"
 )
 
 // Rule tags, at the start of every finding.
@@ -90,9 +92,9 @@ type rules struct {
 	// casbinOwners may import gorm-adapter and call Casbin's Enforce
 	// (casbin_test.go).
 	casbinOwners map[string]string
-	// sql holds [raw-sql] and [sql-const]'s allowlists (rawsql_test.go);
-	// nil leaves both rules off.
-	sql *sqlPolicy
+	// sql runs [raw-sql] and [sql-const] with the core's policy
+	// (rawsql_test.go); nil leaves both rules off.
+	sql *sqlcheck.Checker
 }
 
 // check returns the findings of one type-checked package as
@@ -104,7 +106,7 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 	_, owner := r.owners[rel]
 	_, sqlOwner := r.sqlOwners[rel]
 	c := &checker{fset: fset, info: info, owner: owner, storePkg: r.module + "/" + storePkg,
-		casbinOwner: listedWithin(r.casbinOwners, rel), module: r.module, rel: rel, sql: r.sql}
+		casbinOwner: listedWithin(r.casbinOwners, rel)}
 	c.index(files)
 	for _, f := range files {
 		name := filepath.Base(fset.Position(f.Package).Filename)
@@ -113,7 +115,9 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 		c.test = test
 		ast.Inspect(f, c.visit)
 	}
-	c.sqlFiles(files)
+	if r.sql != nil {
+		c.out = append(c.out, r.sql.Check(fset, pkgPath, files, info)...)
+	}
 	return c.out
 }
 
@@ -179,8 +183,11 @@ type checker struct {
 	uses    map[*types.Var][]use
 	rawFns  map[*types.Func]bool
 	// [tx-lock]: whether a function of the package is a lock builder
-	// (memoized).
-	lockFns map[*types.Func]bool
+	// (memoized), and the parameters of its functions and of its function
+	// literals.
+	lockFns           map[*types.Func]bool
+	params, litParams map[*types.Var]bool
+	fieldValues       map[*types.Var][]ast.Expr // what the package writes into a field (nil: unknown)
 
 	// [casbin-api]: the bodies of the package's functions and function
 	// literals, and the gorm-adapter constructor selectors whose call
@@ -190,12 +197,6 @@ type checker struct {
 	// casbinCtorVetted are the enforcer constructors casbinCall saw called
 	// as casbinx may call them (casbinCtor).
 	casbinCtorVetted map[*ast.SelectorExpr]bool
-
-	// [raw-sql] and [sql-const] (rawsql_test.go): the module, the package
-	// relative to it, the policy and what constSQL follows.
-	module, rel string
-	sql         *sqlPolicy
-	sqlx        *sqlIndex
 }
 
 // assignment is a value given to a local variable as of position at: rhs,
@@ -220,6 +221,17 @@ func (c *checker) index(files []*ast.File) {
 	c.uses = map[*types.Var][]use{}
 	c.rawFns = map[*types.Func]bool{}
 	c.lockFns = map[*types.Func]bool{}
+	c.params, c.litParams = map[*types.Var]bool{}, map[*types.Var]bool{}
+	c.fieldValues = map[*types.Var][]ast.Expr{}
+	params := func(fields *ast.FieldList, lit bool) {
+		for _, f := range fields.List {
+			for _, name := range f.Names {
+				if v, ok := c.info.Defs[name].(*types.Var); ok {
+					c.params[v], c.litParams[v] = true, lit
+				}
+			}
+		}
+	}
 	c.adapterVetted = map[*ast.SelectorExpr]bool{}
 	c.casbinCtorVetted = map[*ast.SelectorExpr]bool{}
 	fieldReads := map[*ast.Ident]bool{}
@@ -247,10 +259,26 @@ func (c *checker) index(files []*ast.File) {
 				if n.Body != nil {
 					c.bodies = append(c.bodies, n.Body)
 				}
+				params(n.Type.Params, false)
 			case *ast.FuncLit:
 				c.bodies = append(c.bodies, n.Body)
+				params(n.Type.Params, true)
 			case *ast.AssignStmt:
 				assign(n.End(), n.Lhs, n.Rhs)
+				for i, l := range n.Lhs {
+					if sel, ok := ast.Unparen(l).(*ast.SelectorExpr); ok {
+						if s := c.info.Selections[sel]; s != nil && s.Kind() == types.FieldVal {
+							f := s.Obj().(*types.Var)
+							if len(n.Lhs) == len(n.Rhs) {
+								c.fieldValues[f] = append(c.fieldValues[f], n.Rhs[i])
+							} else {
+								c.fieldValues[f] = append(c.fieldValues[f], nil)
+							}
+						}
+					}
+				}
+			case *ast.CompositeLit:
+				c.literalFields(n)
 			case *ast.RangeStmt:
 				assign(n.X.End(), []ast.Expr{n.Key, n.Value}, nil)
 			case *ast.ValueSpec:
@@ -272,6 +300,27 @@ func (c *checker) index(files []*ast.File) {
 	for id := range c.info.Uses {
 		if v := c.localVar(id); v != nil {
 			c.uses[v] = append(c.uses[v], use{pos: id.Pos(), fieldRead: fieldReads[id]})
+		}
+	}
+}
+
+// literalFields records the fields a struct literal sets (fieldValues).
+func (c *checker) literalFields(n *ast.CompositeLit) {
+	t := c.info.TypeOf(n)
+	if p, ok := t.Underlying().(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	st, ok := t.Underlying().(*types.Struct)
+	if !ok {
+		return
+	}
+	for i, el := range n.Elts {
+		if kv, keyed := el.(*ast.KeyValueExpr); keyed {
+			if f, ok := c.info.Uses[kv.Key.(*ast.Ident)].(*types.Var); ok {
+				c.fieldValues[f] = append(c.fieldValues[f], kv.Value)
+			}
+		} else if i < st.NumFields() {
+			c.fieldValues[st.Field(i)] = append(c.fieldValues[st.Field(i)], el)
 		}
 	}
 }

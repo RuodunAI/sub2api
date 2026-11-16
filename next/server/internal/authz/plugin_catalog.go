@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -249,7 +250,7 @@ func pluginPermissionRow(pluginKey string, label core.LocalizedText, scope manif
 func pluginPermissionStatus(db *gorm.DB, pluginKey string, staged bool) (*string, error) {
 	status := "staged"
 	if !staged {
-		running, err := store.Exists(db, db.Model(&model.Plugin{}).Where("key = ? AND status IN ("+runningPluginStatuses+")", pluginKey))
+		running, err := gormpg.Exists(db, db.Model(&model.Plugin{}).Where("key = ? AND status IN ("+runningPluginStatuses+")", pluginKey))
 		if err != nil {
 			return nil, err
 		}

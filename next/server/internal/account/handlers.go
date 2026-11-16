@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -164,7 +165,7 @@ func notFound(ctx context.Context) error {
 
 // scopeOf is the accounts the caller reaches with action (core.Scope,
 // CONTRACTS §21); an error reaches none (logged). Every scoped statement
-// carries core.AccountRows with it.
+// carries core.AccountRows() with it.
 func (s *Service) scopeOf(ctx context.Context, action perm.Key) core.DataScope {
 	scope, err := core.Scope(ctx, s.d.Authorizer, action)
 	if err != nil {
@@ -180,18 +181,18 @@ func inScope(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope) (b
 		return true, nil
 	}
 	db := store.G(ctx, q)
-	return store.Exists(db, scopedAccount(db, id, scope))
+	return gormpg.Exists(db, scopedAccount(db, id, scope))
 }
 
 // scopedAccount is account id (live or not) if it is in scope.
 func scopedAccount(db *gorm.DB, id int64, scope core.DataScope) *gorm.DB {
-	return db.Table("accounts a").Where("a.id = ?", id).Scopes(core.AccountRows.Scope(scope))
+	return db.Table("accounts a").Where("a.id = ?", id).Scopes(core.AccountRows().Scope(scope))
 }
 
 // loadRow returns one live account in scope; rows outside the scope are
 // 404 like missing ones.
 func (s *Service) loadRow(ctx context.Context, q *gorm.DB, id int64, scope core.DataScope, lock bool) (*row, error) {
-	db := selectRows(store.G(ctx, q)).Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope))
+	db := selectRows(store.G(ctx, q)).Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows().Scope(scope))
 	if lock {
 		if err := store.RequireTx(q); err != nil {
 			return nil, err
@@ -548,7 +549,7 @@ func (s *Service) list(c *gin.Context) {
 	// Visible range: the caller's account:read scope (CONTRACTS §21);
 	// mine=true narrows to own rows and created_by=<id> to that creator's,
 	// both within it.
-	conds = append(conds, core.AccountRows.Scope(s.scopeOf(ctx, perm.AccountRead)))
+	conds = append(conds, core.AccountRows().Scope(s.scopeOf(ctx, perm.AccountRead)))
 	if mine, _ := strconv.ParseBool(c.Query("mine")); mine {
 		uid, _ := core.UserID(ctx)
 		conds.And("a.created_by = ?", uid)
@@ -1076,7 +1077,7 @@ func checkRefs(ctx context.Context, q *gorm.DB, proxyID *int64, refs core.DataSc
 	}
 	var ok bool
 	err := store.G(ctx, q).Table("proxies p").Select("true").Where("p.id = ?", *proxyID).
-		Scopes(core.ProxyRows.Scope(refs)).Take(&ok).Error
+		Scopes(core.ProxyRows().Scope(refs)).Take(&ok).Error
 	if store.IsNoRows(err) {
 		return core.InvalidFields(core.FieldError{Field: "proxy_id", Code: "not_found",
 			Message: t(ctx, "proxy not found", "代理不存在")})
@@ -2014,7 +2015,7 @@ func (s *Service) delete(c *gin.Context) {
 		var deleted model.Account
 		res := store.G(ctx, tx).Model(&deleted).Table("accounts a").
 			Clauses(clause.Returning{Columns: []clause.Column{{Name: "plugin_key"}, {Name: "type"}, {Name: "name"}}}).
-			Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows.Scope(scope)).
+			Where("a.id = ? AND a.deleted_at IS NULL", id).Scopes(core.AccountRows().Scope(scope)).
 			Updates(map[string]any{"deleted_at": gorm.Expr("now()"), "updated_at": gorm.Expr("now()")})
 		if res.Error != nil {
 			return res.Error

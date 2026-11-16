@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -171,7 +172,7 @@ func deleteTOTP(db *gorm.DB, userID int64) *gorm.DB {
 
 // hasTwoFactor reports whether userID has two-factor enabled.
 func hasTwoFactor(db *gorm.DB, userID int64) (bool, error) {
-	return store.Exists(db, totpOf(db, userID))
+	return gormpg.Exists(db, totpOf(db, userID))
 }
 
 // totpPassed records a correct code: the step it was of (lastStep, a TOTP

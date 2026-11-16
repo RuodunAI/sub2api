@@ -18,6 +18,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -284,7 +285,7 @@ func (s *Service) Bootstrap(ctx context.Context) error {
 			return err
 		}
 		g := store.G(ctx, tx)
-		exists, err := store.Exists(g, liveUsers(g))
+		exists, err := gormpg.Exists(g, liveUsers(g))
 		if err != nil {
 			return err
 		}

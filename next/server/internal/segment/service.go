@@ -5,6 +5,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -96,7 +97,7 @@ func GuardOwnSegments(ctx context.Context, q *gorm.DB, users core.UserGuard, seg
 		return nil
 	}
 	g := store.G(ctx, q)
-	member, err := store.Exists(g, g.Table("users u").Joins("JOIN segments s ON s.id = u.segment_id").
+	member, err := gormpg.Exists(g, g.Table("users u").Joins("JOIN segments s ON s.id = u.segment_id").
 		Where("u.id = ? AND s.id = ANY(?) AND NOT s.is_default", actor, store.Int64s(segmentIDs)))
 	if err != nil || !member {
 		return err

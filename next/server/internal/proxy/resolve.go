@@ -88,7 +88,7 @@ func candidates(db *gorm.DB, spec Spec, scope core.DataScope) *gorm.DB {
 	return db.Table("proxies p").Select("p.id, p.password_enc").
 		Where("p.protocol = ? AND lower(p.host) = ? AND p.port = ? AND p.username = ?", spec.Protocol, spec.Host, spec.Port, spec.Username).
 		Where("(p.password_enc IS NULL) = ? AND p.status <> 'disabled'", spec.Password == "").
-		Scopes(core.ProxyRows.Scope(scope)).
+		Scopes(core.ProxyRows().Scope(scope)).
 		Order("p.id")
 }
 

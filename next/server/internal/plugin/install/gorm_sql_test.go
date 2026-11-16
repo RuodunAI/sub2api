@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
@@ -119,7 +120,7 @@ func TestSQLAddStoppedBoots(t *testing.T) {
 func TestSQLRolloutOpen(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var open bool
-		return store.ExistsQuery(db, db.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", "demo")).Scan(&open)
+		return gormpg.ExistsQuery(db, db.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", "demo")).Scan(&open)
 	})
 }
 
