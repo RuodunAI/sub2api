@@ -7516,7 +7516,7 @@ type GatewayManifest struct {
              "checked_at": "…", "last_success_at": "…", "error": ""}}
 ```
 
-  - 只返回当前来源 revision 与当前基线的结果；没有时该线 `checked_at` 为 null、`latest_version` 为空。`error` 非空表示最近一次检测失败，其余字段保留同一来源、同一基线下最近一次成功的结果；从未成功时 `latest_version` 为空。来源没有该线的稳定版时 `latest_version` 为空、`reason` 说明原因。
+  - 只返回当前来源 revision 与当前基线的结果；没有时该线 `checked_at` 为 null、`latest_version` 为空。`error` 非空表示最近一次检测失败，其余字段保留同一来源、同一基线下最近一次成功的结果；从未成功时 `latest_version` 为空。来源没有该线的稳定版时 `latest_version` 为空、`reason` 说明原因。`reason` 非空时带 `reason_code`（为空时省略）：`no_release`（来源没有该线的稳定版）、`version_conflict`（最新版与已装版本号相同但签名身份不同）、`incompatible`（`reason` 列出兼容性检查的发现，用 `; ` 连接）；控制台按代码显示本地化说明，`incompatible` 后接 `reason` 原文。
   - `has_update`、`self_update` 按读取时的节点计算：核心比较基线核心版本；网关只要有一个启用节点的 `gateway_version` 低于最新版（没报版本的节点算作更低）即为 true。`self_update` = 至少一个启用节点，且每个启用节点都报了 `gateway_version` 并且 `self_update` 为 true。`image` 取清单 `images[0]` 的 `ref@digest`，只供参考（不能一键更新时控制台提示用它手动换网关）。
   - `force=true` 时只有两条线的结果有一条早于 30 秒才真的检测；别的节点正在检测时直接返回已有结果。
 - **apply**：`line` 必须是 `core`/`gateway`，`version` 是不带预发布后缀的严格语义化版本，否则 400 字段错误。返回 `{status: "started", plan_id}` 或 `{status: "needs_confirmation", reasons: […], reason_codes: […], preflight: {…}}`；带 `confirm: true` 重发即创建计划。`idempotency_key` 可选：同一个键已建过计划时，同一发布返回原计划（`started`），不同发布 409；不给时用 `apply:<digest>:<expected_revision>`。

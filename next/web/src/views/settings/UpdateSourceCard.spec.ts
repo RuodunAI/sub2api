@@ -134,9 +134,10 @@ describe('update source settings', () => {
   })
 
   it('gives the reason of a line with no stable release, not a failure', async () => {
-    check = updateCheck({ gateway: { latest_version: '', compatible: false, reason: 'the update source has no stable gateway release' } })
+    check = updateCheck({ gateway: { latest_version: '', compatible: false, reason_code: 'no_release', reason: 'the update source has no stable gateway release' } })
     const result = (await render()).get('[data-testid="update-source-result"]').text()
-    expect(result).toContain('网关: the update source has no stable gateway release')
+    expect(result).toContain('网关: 更新源还没有这条线的稳定版本')
+    expect(result).not.toContain('the update source')
     expect(result).not.toContain('检测失败')
     expect(result).not.toContain('连接正常')
   })

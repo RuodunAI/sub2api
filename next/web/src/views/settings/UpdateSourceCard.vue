@@ -6,6 +6,7 @@ import SettingsSaveBar from '@/components/SettingsSaveBar.vue'
 import { githubTokenURL } from './githubToken'
 import { useSettingsForm } from '@/composables/useSettingsForm'
 import { useAuthStore } from '@/stores/auth'
+import { useLineReason } from '@/components/updates/lineReason'
 import { lineStatus, UPDATE_LINES, useUpdatesStore, type LineStatus, type UpdateLine } from '@/stores/updates'
 
 // Update source of both version lines (GET/PUT /system/update-source, served
@@ -19,6 +20,7 @@ interface Body { enabled: boolean; kind: Kind; repository: string; url: string; 
 interface Form { enabled: boolean; kind: Kind; repository: string; url: string; secret: string; private: boolean; hasSecret: boolean; defaultRepository: string }
 
 const { t } = useI18n()
+const lineReason = useLineReason()
 const auth = useAuthStore()
 const updates = useUpdatesStore()
 const canManage = computed(() => auth.has('settings:manage'))
@@ -58,7 +60,7 @@ const result = computed(() => {
     UPDATE_LINES.filter((_, i) => statuses[i] === status).map(line => `${t(`coreUpdates.lines.${line}`)}: ${text(line)}`)
   const failed = lines('failed', line => check[line].error || t('coreUpdates.status.failed'))
   if (failed.length) return { tone: 'danger' as const, lines: failed }
-  const none = lines('noRelease', line => check[line].reason || '')
+  const none = lines('noRelease', line => lineReason(check[line]))
   if (none.length) return { tone: 'warning' as const, lines: none }
   return { tone: 'success' as const, lines: [t('coreUpdates.connected', { core: check.core.latest_version, gateway: check.gateway.latest_version })] }
 })

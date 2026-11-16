@@ -6,6 +6,11 @@ export default {
   lines: { core: '核心', gateway: '网关' },
   status: { unchecked: '尚未检测', disabled: '更新检测已关闭', failed: '检测失败', noRelease: '没有稳定版本', available: '发现新版本', blocked: '检测结果需要处理', upToDate: '已是最新' },
   incompatible: '此版本与当前集群不兼容',
+  reasons: {
+    no_release: '更新源还没有这条线的稳定版本（core-v* / gateway-v* 标签的 Release）',
+    version_conflict: '最新版本与已安装的版本号相同，但签名身份不同，请核对发布来源',
+    incompatible: '此版本与当前集群不兼容：{details}'
+  },
   apply: '一键更新',
   applyHint: '一键更新会导入经过验签的版本、完成预检并创建升级计划，进度在升级页查看。不会自动更新。',
   applyConfirmTitle: '确认更新',

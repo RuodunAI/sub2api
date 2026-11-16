@@ -25,11 +25,11 @@ describe('lineStatus', () => {
     expect(lineStatus(updateCheck({ gateway: { checked_at: '', latest_version: '' } }), 'gateway')).toBe('unchecked')
     expect(lineStatus(updateCheck({ enabled: false }), 'gateway')).toBe('disabled')
     expect(lineStatus(updateCheck({ gateway: { has_update: true } }), 'gateway')).toBe('available')
-    expect(lineStatus(updateCheck({ core: { compatible: false, reason: 'schema' } }), 'core')).toBe('blocked')
+    expect(lineStatus(updateCheck({ core: { compatible: false, reason_code: 'incompatible', reason: 'schema' } }), 'core')).toBe('blocked')
   })
 
   it('reports a successful check that found no stable release by its reason, not as failed', () => {
-    const none = { latest_version: '', compatible: false, reason: 'the update source has no stable gateway release' }
+    const none = { latest_version: '', compatible: false, reason_code: 'no_release' as const, reason: 'the update source has no stable gateway release' }
     expect(lineStatus(updateCheck({ gateway: none }), 'gateway')).toBe('noRelease')
     expect(lineStatus(updateCheck({ gateway: { ...none, error: 'timeout' } }), 'gateway')).toBe('failed')
   })

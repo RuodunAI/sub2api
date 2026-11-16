@@ -123,10 +123,10 @@ describe('version badge', () => {
   })
 
   it('explains a line with no stable release instead of calling the check failed', async () => {
-    check = updateCheck({ core: { latest_version: '', compatible: false, reason: 'the update source has no stable core release' } })
+    check = updateCheck({ core: { latest_version: '', compatible: false, reason_code: 'no_release', reason: 'the update source has no stable core release' } })
     const w = await open()
     expect(section(w, 'core').get('[data-testid="update-line-status"]').text()).toBe('没有稳定版本')
-    expect(section(w, 'core').get('[data-testid="update-blocker"]').text()).toBe('the update source has no stable core release')
+    expect(section(w, 'core').get('[data-testid="update-blocker"]').text()).toBe('更新源还没有这条线的稳定版本（core-v* / gateway-v* 标签的 Release）')
     expect(w.get('[data-testid="version-badge"]').attributes('title')).toContain('核心: 没有稳定版本')
   })
 

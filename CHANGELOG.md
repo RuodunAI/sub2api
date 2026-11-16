@@ -22,6 +22,7 @@
 - **插件 SDK 新包 `sdk/hierarchy`**：在插件自己的表上存树（层级）：表按约定有父列和 `bigint[]` 路径列（GIN 索引），`Tree.Move` 在一个事务里检查自己、成环、找不到与最大深度并改写整棵子树的路径（锁住所涉两棵树的根行，同一棵树的移动依次进行），`Ancestors` 读路径，`Below` 是“某些节点之下的行”的子查询。核心的用户上级是它的第一个使用者；它不读核心的用户树，Host API 不变（CONTRACTS §2“插件数据库”、§103.2）。
 - **`sub2api dev` 的内存 Redis 按时过期键**：进程内 miniredis 原来从不推进时钟，带 TTL 的键（冷却、会话、并发槽位、锁）永远不到期，账号冷却后一直不被调度。现在每 100ms 按墙钟推进一次（CONTRACTS §47）。单机 e2e 的 `TestGatewayFailoverAndCooldown` 因此能等到冷却结束；它对 401 之后状态的旧断言（`disabled`/`error`）一并改为 `auto_disabled`（§42）。e2e AC23 去掉供应商建账号时传的分组（供应商没有 `account:group:bind`），own 范围下 `created_by` 的断言改为“在范围内收窄”（§21.0）。
 - **修复**：不是全部范围的人建、改、测账号带 `proxy_id` 时，读不到它可引用的代理范围（授权读库失败）原来当作没有代理，回 400 `proxy_id` `not_found`，现在回 503（CONTRACTS §103.2）。
+- 更新检测结果的原因按代码显示中文/英文：`GET /system/update-check` 每条线新增 `reason_code`（`no_release`、`version_conflict`、`incompatible`，契约 §102），控制台不再直接显示“the update source has no stable … release”之类的英文原文。网关二进制变更，随下一个网关版本生效；网关 0.1.135 不带该字段，控制台照旧显示它的英文原因。
 
 **迁移 0103**（`0103_user_owner.sql`，可重跑，只加列、约束和索引）：`users.owner_id`（外键、不能指向自己、部分索引）、`users.owner_path`（`bigint[] NOT NULL DEFAULT '{}'`，按 `owner_id` 递归算出已有行的路径，只改不同的行，重跑结果相同；最后一个必须等于 `owner_id` 的约束；GIN 索引）与 `accounts.owner_id`（外键、部分索引），`accounts.owner_id` 按 `created_by` 回填，重跑只补仍为空的行，不改已改过的所属。
 
