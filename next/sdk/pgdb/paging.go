@@ -7,17 +7,18 @@ import "gorm.io/gorm"
 // given columns (every column when empty) in order, into a []T (a struct of
 // the columns, or one column's type). q names the table (Model or Table) and
 // the filter, which both statements share. An empty page is an empty slice,
-// not nil; the total is there all the same.
-func List[T any](q *gorm.DB, columns, order string, limit, offset int) (rows []T, total int64, err error) {
+// not nil; the total is there all the same. columns and order are SQL
+// text: constants of the caller (SQL).
+func List[T any](q *gorm.DB, columns, order SQL, limit, offset int) (rows []T, total int64, err error) {
 	// A session: each statement starts from q's conditions, not from the
 	// other statement's.
 	q = q.Session(&gorm.Session{})
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, &ListError{Count: true, Err: err}
 	}
-	page := q.Order(order).Limit(limit).Offset(offset)
+	page := q.Order(string(order)).Limit(limit).Offset(offset)
 	if columns != "" {
-		page = page.Select(columns)
+		page = page.Select(string(columns))
 	}
 	rows = []T{} // Scan leaves it alone when no row comes back
 	if err := page.Scan(&rows).Error; err != nil {

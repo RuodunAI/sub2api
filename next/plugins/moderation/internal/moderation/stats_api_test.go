@@ -591,7 +591,7 @@ func TestStaffCheckFailureKeepsDailyCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	suspicious := func() (n int64) {
-		if err := queryRow(db, `SELECT coalesce(sum(suspicious), 0) FROM user_daily WHERE user_id = 61`).Scan(&n); err != nil {
+		if err := db.Raw(`SELECT coalesce(sum(suspicious), 0) FROM user_daily WHERE user_id = 61`).Row().Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n

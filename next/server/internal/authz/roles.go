@@ -3,6 +3,7 @@ package authz
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"maps"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
@@ -59,45 +61,48 @@ func errRoleKeyImmutable(ctx context.Context) error {
 	return core.InvalidFields(core.FieldError{Field: "key", Code: "immutable", Message: msg}).WithMessage(msg)
 }
 
-// roleSelect reads roles as the console shows and edits them; a grant of a
-// staged permission (core.PermissionDef.Staged) is no editor's to see.
-const roleSelect = `
-SELECT r.id, r.key, r.name, r.description, r.builtin, r.superuser, r.created_at, r.updated_at,
+// roleColumns are what scanRole reads of the role r, as the console shows
+// and edits it; a grant of a staged permission (core.PermissionDef.Staged)
+// is no editor's to see.
+const roleColumns = `r.id, r.key, r.name, r.description, r.builtin, r.superuser, r.created_at, r.updated_at,
     COALESCE((SELECT array_agg(rg.key ORDER BY p.sort, rg.key) FROM (` + casbinrule.GrantsOfRole + `) rg
         JOIN permissions p ON p.key = rg.action AND p.status <> 'staged'), '{}'),
     COALESCE((SELECT array_agg(ar.key ORDER BY ar.key) FROM role_assignable_roles ra
         JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser WHERE ra.role_id = r.id), '{}'),
     r.assign_custom,
     ` + roleHolders + `,
-    r.revision
-FROM roles r`
+    r.revision`
+
+// roleQuery selects the roles r as readRoles reads them (roleColumns).
+func roleQuery(db *gorm.DB) *gorm.DB {
+	return db.Table("roles r").Select(roleColumns)
+}
 
 // roleHolders counts the holders of role r, soft-deleted users aside: the
-// roles page's user count, and what SyncCore judges a built-in role behind
-// its rev by (held: filled in; nobody: reset).
+// roles page's user count.
 const roleHolders = `(SELECT count(*) FROM users u WHERE u.id IN (` + casbinrule.MembersOfRole + `) AND u.deleted_at IS NULL)`
 
 // listedRoles selects every role, built-in first.
 func listedRoles(db *gorm.DB) *gorm.DB {
-	return db.Raw(roleSelect + ` ORDER BY r.builtin DESC, r.id`)
+	return roleQuery(db).Order("r.builtin DESC, r.id")
 }
 
 // roleByID selects role id.
 func roleByID(db *gorm.DB, id int64) *gorm.DB {
-	return db.Raw(roleSelect+` WHERE r.id = ?`, id)
+	return roleQuery(db).Where("r.id = ?", id)
 }
 
 // roleByKey selects the role key.
 func roleByKey(db *gorm.DB, key string) *gorm.DB {
-	return db.Raw(roleSelect+` WHERE r.key = ?`, key)
+	return roleQuery(db).Where("r.key = ?", key)
 }
 
 // rolesByKeys selects the roles of keys, by key.
 func rolesByKeys(db *gorm.DB, keys []string) *gorm.DB {
-	return db.Raw(roleSelect+` WHERE r.key = ANY(?) ORDER BY r.key`, store.Strings(keys))
+	return roleQuery(db).Where("r.key = ANY(?)", store.Strings(keys)).Order("r.key")
 }
 
-// readRoles reads the roles q, a roleSelect query, returns (never nil).
+// readRoles reads the roles q, a roleQuery, returns (never nil).
 func readRoles(q *gorm.DB) ([]*Role, error) {
 	return store.CollectRows(q, scanRole)
 }
@@ -222,7 +227,7 @@ func reviseRole(db *gorm.DB, id int64) *gorm.DB {
 
 // lockRole selects role id and locks its roles row.
 func lockRole(db *gorm.DB, id int64) *gorm.DB {
-	return db.Raw(roleSelect+` WHERE r.id = ? FOR UPDATE OF r`, id)
+	return roleQuery(db).Where("r.id = ?", id).Clauses(store.ForUpdate().Of("r"))
 }
 
 // editDenial is why actor (its grantSet) may not change role r, whose
@@ -297,7 +302,7 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 		if err := checkScopeRefs(ctx, tx, keys); err != nil {
 			return err
 		}
-		err = insertRole(store.G(ctx, tx), in).Row().Scan(&id)
+		id, err = insertRole(store.G(ctx, tx), in)
 		if store.IsUniqueViolation(err, "") {
 			return core.ErrConflict.WithMessage("role key already exists")
 		}
@@ -321,8 +326,18 @@ func (s *Service) CreateRole(ctx context.Context, actorID int64, in CreateRoleIn
 
 // insertRole inserts the custom role of in (its key, name and
 // description) and returns its id.
-func insertRole(db *gorm.DB, in CreateRoleInput) *gorm.DB {
-	return db.Raw(`INSERT INTO roles (key, name, description) VALUES (?, ?, ?) RETURNING id`, in.Key, in.Name, in.Description)
+func insertRole(db *gorm.DB, in CreateRoleInput) (int64, error) {
+	name, err := json.Marshal(in.Name)
+	if err != nil {
+		return 0, err
+	}
+	desc, err := json.Marshal(in.Description)
+	if err != nil {
+		return 0, err
+	}
+	r := model.Role{Key: in.Key, Name: name, Description: desc}
+	err = db.Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(&r).Error
+	return r.ID, err
 }
 
 // UpdateRoleInput is the body of PATCH /roles/:id.
@@ -643,8 +658,8 @@ func grantOf(ctx context.Context, q *gorm.DB, roleKey string, perms, roles []str
 	if !custom {
 		return set, nil
 	}
-	var keys store.Strings
-	if err := customRoleKeysBut(store.G(ctx, q), roleKey).Row().Scan(&keys); err != nil {
+	keys, err := customRoleKeys(store.G(ctx, q), roleKey)
+	if err != nil {
 		return core.PermissionSet{}, err
 	}
 	for _, k := range keys {
@@ -661,7 +676,7 @@ func setRoleAssignable(ctx context.Context, tx *gorm.DB, roleID int64, roles []r
 	if err := dropAssignable(db, roleID, ids).Error; err != nil {
 		return err
 	}
-	if err := addAssignable(db, roleID, ids).Error; err != nil {
+	if err := addAssignable(db, roleID, ids); err != nil {
 		return err
 	}
 	return setAssignCustom(db, roleID, custom).Error
@@ -674,8 +689,15 @@ func dropAssignable(db *gorm.DB, roleID int64, ids store.Int64s) *gorm.DB {
 }
 
 // addAssignable adds the roles ids to role roleID's assignable list.
-func addAssignable(db *gorm.DB, roleID int64, ids store.Int64s) *gorm.DB {
-	return db.Exec(`INSERT INTO role_assignable_roles (role_id, assignable_role_id) SELECT ?, unnest(?::bigint[]) ON CONFLICT DO NOTHING`, roleID, ids)
+func addAssignable(db *gorm.DB, roleID int64, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows := make([]model.RoleAssignableRole, len(ids))
+	for i, id := range ids {
+		rows[i] = model.RoleAssignableRole{RoleID: roleID, AssignableRoleID: id}
+	}
+	return db.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
 // setAssignCustom sets the assign_custom flag of role id and touches its
@@ -767,14 +789,19 @@ type roleRef struct {
 	superuser bool
 }
 
+// roleRefs selects the roles as queryRoles reads them, by key.
+func roleRefs(db *gorm.DB) *gorm.DB {
+	return db.Model(&model.Role{}).Select("id", "key", "superuser").Order("key")
+}
+
 // userRoleRefs selects the roles userID holds, by key.
 func userRoleRefs(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Raw(`SELECT id, key, superuser FROM roles WHERE key IN (?) ORDER BY key`, casbinrule.RoleKeysOf(db, []int64{userID}))
+	return roleRefs(db).Where("key IN (?)", casbinrule.RoleKeysOf(db, []int64{userID}))
 }
 
 // roleRefsByKeys selects the roles of keys, by key.
 func roleRefsByKeys(db *gorm.DB, keys []string) *gorm.DB {
-	return db.Raw(`SELECT id, key, superuser FROM roles WHERE key = ANY(?) ORDER BY key`, store.Strings(keys))
+	return roleRefs(db).Where("key = ANY(?)", store.Strings(keys))
 }
 
 // queryRoles reads the roles q, a roleRefs query (id, key, superuser),
@@ -790,7 +817,7 @@ func queryRoles(q *gorm.DB) ([]roleRef, error) {
 // assignableBuiltinRefs selects the built-in roles of keys but superuser
 // ones, by key: what a reset makes assignable.
 func assignableBuiltinRefs(db *gorm.DB, keys []string) *gorm.DB {
-	return db.Raw(`SELECT id, key, superuser FROM roles WHERE key = ANY(?) AND builtin AND NOT superuser ORDER BY key`, store.Strings(keys))
+	return roleRefsByKeys(db, keys).Where("builtin AND NOT superuser")
 }
 
 // resolveRoles returns the roles of keys, failing on unknown ones.
@@ -846,7 +873,7 @@ func (s *Service) EnsureNotLastSuperAdmin(ctx context.Context, tx *gorm.DB, user
 
 func (s *Service) ensureOtherSuperuser(ctx context.Context, tx *gorm.DB, userID int64) error {
 	var n int64
-	if err := otherSuperusers(store.G(ctx, tx), userID).Row().Scan(&n); err != nil {
+	if err := otherSuperusers(store.G(ctx, tx), userID).Count(&n).Error; err != nil {
 		return err
 	}
 	if n == 0 {
@@ -855,12 +882,11 @@ func (s *Service) ensureOtherSuperuser(ctx context.Context, tx *gorm.DB, userID 
 	return nil
 }
 
-// otherSuperusers counts the active, undeleted users but userID holding a
+// otherSuperusers selects the active, undeleted users but userID holding a
 // superuser role.
 func otherSuperusers(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Raw(`SELECT count(DISTINCT u.id) FROM roles r, users u
-        WHERE r.superuser AND u.id IN (`+casbinrule.MembersOfRole+`)
-          AND u.deleted_at IS NULL AND u.status = 'active' AND u.id <> ?`, userID)
+	return db.Model(&model.User{}).Where("id IN (?)", casbinrule.MembersOf(db, db.Model(&model.Role{}).Where("superuser"))).
+		Where("deleted_at IS NULL AND status = 'active' AND id <> ?", userID)
 }
 
 // AssignableRole is one role in GET /me/assignable-roles.
@@ -1069,12 +1095,13 @@ func listPermissions(ctx context.Context, q *gorm.DB, pluginKey string) ([]*Perm
 // permissionRows selects the catalog as listPermissions reads it, staged
 // permissions aside, of the plugin pluginKey only unless it is "".
 func permissionRows(db *gorm.DB, pluginKey string) *gorm.DB {
-	return db.Raw(`
-SELECT p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.risk, p.requires, p.status, p.scope_type, p.scope,
-    p.group_key, p.group_label, p.group_sort, p.defaults, pl.name
-FROM permissions p LEFT JOIN plugins pl ON pl.key = p.plugin_key
-WHERE p.status <> 'staged' AND (? = '' OR p.plugin_key = ?)
-ORDER BY p.source, p.module, p.group_sort, p.sort, p.key`, pluginKey, pluginKey)
+	q := db.Table("permissions p").Select(`p.key, p.module, p.label, p.description, p.source, p.plugin_key, p.risk, p.requires, p.status,
+    p.scope_type, p.scope, p.group_key, p.group_label, p.group_sort, p.defaults, pl.name`).
+		Joins("LEFT JOIN plugins pl ON pl.key = p.plugin_key").Where("p.status <> 'staged'").Order("p.source, p.module, p.group_sort, p.sort, p.key")
+	if pluginKey != "" {
+		q = q.Where("p.plugin_key = ?", pluginKey)
+	}
+	return q
 }
 
 // qualifyDefaults is a plugin permission's stored defaults (role ->

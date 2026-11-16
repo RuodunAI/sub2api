@@ -1,13 +1,11 @@
 -- sql
 SELECT r.id, r.key, r.name, r.description, r.builtin, r.superuser, r.created_at, r.updated_at,
-    COALESCE((SELECT array_agg(rg.key ORDER BY p.sort, rg.key) FROM (SELECT substr(cr.v0, 3) AS role, cr.v1 AS action, CASE cr.v2 WHEN '*' THEN '' ELSE cr.v2 END AS scope, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
-FROM casbin_rule cr WHERE cr.ptype = 'p' AND cr.v1 <> '*' AND cr.v0 = ('r:' || r.key)) rg
+    COALESCE((SELECT array_agg(rg.key ORDER BY p.sort, rg.key) FROM (SELECT substr(cr.v0, 3) AS role, cr.v1 AS action, CASE cr.v2 WHEN '*' THEN '' ELSE cr.v2 END AS scope, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key FROM casbin_rule cr WHERE cr.ptype = 'p' AND cr.v1 <> '*' AND cr.v0 = ('r:' || r.key)) rg
         JOIN permissions p ON p.key = rg.action AND p.status <> 'staged'), '{}'),
     COALESCE((SELECT array_agg(ar.key ORDER BY ar.key) FROM role_assignable_roles ra
         JOIN roles ar ON ar.id = ra.assignable_role_id AND NOT ar.superuser WHERE ra.role_id = r.id), '{}'),
     r.assign_custom,
     (SELECT count(*) FROM users u WHERE u.id IN (SELECT substr(cr.v0, 3)::bigint FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v1 = ('r:' || r.key)) AND u.deleted_at IS NULL),
-    r.revision
-FROM roles r WHERE r.id = $1
+    r.revision FROM roles r WHERE r.id = $1
 -- vars
 $1 int64 3

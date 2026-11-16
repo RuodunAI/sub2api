@@ -8,29 +8,41 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-// sqlFilter accumulates a WHERE clause and its arguments from query
-// parameters; errs collects the invalid parameters. The placeholders are
-// positional (?), so args follow the order of the conditions and a query
-// that repeats the clause repeats them.
+// sqlFilter accumulates the conditions of a WHERE clause from query
+// parameters; errs collects the invalid parameters. A condition is
+// constant SQL text with ? parameters, or a clause on a column the code
+// names: never text built from the request.
 type sqlFilter struct {
-	conds []string
-	args  []any
+	conds []clause.Expression
 	errs  pluginsdk.FieldErrors
 }
 
-func (f *sqlFilter) arg(v any) string {
-	f.args = append(f.args, v)
-	return "?"
+// add adds the condition cond, its ? placeholders taking args.
+func (f *sqlFilter) add(cond pgdb.SQL, args ...any) {
+	f.conds = append(f.conds, clause.Expr{SQL: string(cond), Vars: args})
 }
 
-func (f *sqlFilter) where() string { return strings.Join(f.conds, " AND ") }
+// eq adds "column = v".
+func (f *sqlFilter) eq(column string, v any) {
+	f.conds = append(f.conds, clause.Eq{Column: clause.Column{Name: column}, Value: v})
+}
+
+// scope applies the conditions to db, for Scopes.
+func (f *sqlFilter) scope(db *gorm.DB) *gorm.DB {
+	for _, c := range f.conds {
+		db = db.Where(c)
+	}
+	return db
+}
 
 // id adds "column = ?" for a non-negative integer parameter.
 func (f *sqlFilter) id(req *pluginv1.HTTPRequest, name, column string) {
 	if v, ok := f.queryID(req, name); ok {
-		f.cond(column+" = ", v)
+		f.eq(column, v)
 	}
 }
 
@@ -76,30 +88,24 @@ func (f *sqlFilter) queryTime(req *pluginv1.HTTPRequest, name string) time.Time 
 func (f *sqlFilter) times(req *pluginv1.HTTPRequest) (from, to time.Time) {
 	from, to = f.queryTime(req, "from"), f.queryTime(req, "to")
 	if !from.IsZero() {
-		f.cond("created_at >= ", from)
+		f.add("created_at >= ?", from)
 	}
 	if !to.IsZero() {
-		f.cond("created_at < ", to)
+		f.add("created_at < ?", to)
 	}
 	return from, to
 }
 
-// flag adds cond for the parameter name = true and NOT (cond) for false.
-func (f *sqlFilter) flag(req *pluginv1.HTTPRequest, name, cond string) {
-	switch pluginsdk.Query(req, name) {
+// flag adds "column = true" for the parameter name = true and
+// "column = false" for false (column is NOT NULL).
+func (f *sqlFilter) flag(req *pluginv1.HTTPRequest, name, column string) {
+	switch v := pluginsdk.Query(req, name); v {
 	case "":
-	case "true":
-		f.conds = append(f.conds, cond)
-	case "false":
-		f.conds = append(f.conds, "NOT ("+cond+")")
+	case "true", "false":
+		f.eq(column, v == "true")
 	default:
 		f.errs = f.errs.Add(name, "enum", name+" must be true or false / "+name+" 取值为 true、false")
 	}
-}
-
-// cond adds prefix followed by the placeholder of v ("group_id = ?").
-func (f *sqlFilter) cond(prefix string, v any) {
-	f.conds = append(f.conds, prefix+f.arg(v))
 }
 
 // maxIDList caps the ids of a list parameter.
@@ -118,7 +124,7 @@ func (f *sqlFilter) idList(req *pluginv1.HTTPRequest, name, column string) {
 		f.errs = f.errs.Add(name, "invalid", name+" is a comma list of up to 500 user ids (0 = none) / "+name+" 为逗号分隔的用户 id，最多 500 个（0 表示无匹配）")
 		return
 	}
-	f.conds = append(f.conds, column+" = ANY("+f.arg(pgdb.Array[int64](ids))+")")
+	f.conds = append(f.conds, clause.Expr{SQL: "? = ANY(?)", Vars: []any{clause.Column{Name: column}, pgdb.Array[int64](ids)}})
 }
 
 // parseIDList reads a comma list of at most maxIDList ids (>= 0).

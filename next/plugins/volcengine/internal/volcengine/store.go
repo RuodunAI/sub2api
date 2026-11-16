@@ -13,9 +13,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 
@@ -81,38 +84,42 @@ func loadAsset(db *gorm.DB, id int64) (*assetRow, error) {
 // happens when a create is retried after a response that never arrived. The
 // existing row wins and its id is returned, making the route idempotent
 // instead of leaving a duplicate.
-//
-// Raw SQL: checked_at is the database's now(), which a GORM Create of a
-// model cannot write, and the no-op DO UPDATE is what makes RETURNING
-// answer the existing row's id.
 func insertGroup(db *gorm.DB, accountID int64, g UpstreamGroup) (int64, error) {
 	groupType := g.GroupType
 	if groupType == "" {
 		groupType = "AIGC"
 	}
-	var id int64
-	err := db.Raw(`
-		INSERT INTO asset_groups (account_id, upstream_id, name, title, description, group_type, index_status, checked_at)
-		VALUES (?, ?, ?, ?, ?, ?, 'ok', now())
-		ON CONFLICT (account_id, upstream_id) DO UPDATE
-		   SET upstream_id = asset_groups.upstream_id
-		RETURNING id`,
-		accountID, g.ID, g.Name, g.Title, g.Description, groupType).Row().Scan(&id)
-	return id, err
+	return insertIndexed(db, &model.AssetGroup{}, map[string]any{"account_id": accountID, "upstream_id": g.ID,
+		"name": g.Name, "title": g.Title, "description": g.Description, "group_type": groupType})
 }
 
 // insertAsset indexes an asset created upstream, with the same idempotency
 // rule as insertGroup.
 func insertAsset(db *gorm.DB, accountID, groupID int64, a UpstreamAsset) (int64, error) {
-	var id int64
-	err := db.Raw(`
-		INSERT INTO assets (account_id, group_id, upstream_id, name, asset_type, url, status, index_status, checked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'ok', now())
-		ON CONFLICT (account_id, upstream_id) DO UPDATE
-		   SET upstream_id = assets.upstream_id
-		RETURNING id`,
-		accountID, groupID, a.ID, a.Name, a.AssetType, a.URL, a.Status).Row().Scan(&id)
-	return id, err
+	return insertIndexed(db, &model.Asset{}, map[string]any{"account_id": accountID, "group_id": groupID,
+		"upstream_id": a.ID, "name": a.Name, "asset_type": a.AssetType, "url": a.URL, "status": a.Status})
+}
+
+// insertIndexed creates the index row of m from the columns of row, in step
+// and checked at the database's now() (a map, as a model cannot write
+// now()), and returns its id. On a conflict on (account_id, upstream_id)
+// the existing row wins: the no-op DO UPDATE is what makes RETURNING
+// answer its id.
+func insertIndexed(db *gorm.DB, m schema.Tabler, row map[string]any) (int64, error) {
+	row["index_status"] = IndexOK
+	row["checked_at"] = gorm.Expr("now()")
+	err := db.Model(m).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "account_id"}, {Name: "upstream_id"}},
+		DoUpdates: clause.Set{{Column: clause.Column{Name: "upstream_id"}, Value: clause.Column{Table: m.TableName(), Name: "upstream_id"}}},
+	}, clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(row).Error
+	if err != nil {
+		return 0, err
+	}
+	id, ok := row["id"].(int64)
+	if !ok {
+		return 0, fmt.Errorf("volcengine: insert into %s returned no id", m.TableName())
+	}
+	return id, nil
 }
 
 // checked is the SET of a write that finds the index row in step with
@@ -235,25 +242,25 @@ const (
 )
 
 // filter adds "column = value" unless value is the zero value (no filter).
-func filter[T comparable](db *gorm.DB, column string, value T) *gorm.DB {
+func filter[T comparable](db *gorm.DB, column clause.Column, value T) *gorm.DB {
 	var zero T
 	if value == zero {
 		return db
 	}
-	return db.Where(column+" = ?", value)
+	return db.Where(clause.Eq{Column: column, Value: value})
 }
 
 // search adds a free-text search (cond binds @q) unless q is empty.
-func search(db *gorm.DB, cond, q string) *gorm.DB {
+func search(db *gorm.DB, cond pgdb.SQL, q string) *gorm.DB {
 	if q == "" {
 		return db
 	}
-	return db.Where(cond, sql.Named("q", q))
+	return db.Where(string(cond), sql.Named("q", q))
 }
 
 // listOf counts the rows rows selects and reads a page of them as the JSON
 // items; Items is [] when the page is empty.
-func listOf(rows *gorm.DB, items, order string, limit, offset int) (*listPage, error) {
+func listOf(rows *gorm.DB, items, order pgdb.SQL, limit, offset int) (*listPage, error) {
 	page, total, err := pgdb.List[json.RawMessage](rows, items, order, limit, offset)
 	if err != nil {
 		return nil, err
@@ -266,8 +273,8 @@ func listOf(rows *gorm.DB, items, order string, limit, offset int) (*listPage, e
 // LikeTerm).
 func listGroups(db *gorm.DB, accountID int64, status, q string, limit, offset int) (*listPage, error) {
 	g := db.Table("asset_groups AS g")
-	g = filter(g, "g.account_id", accountID)
-	g = filter(g, "g.index_status", status)
+	g = filter(g, clause.Column{Table: "g", Name: "account_id"}, accountID)
+	g = filter(g, clause.Column{Table: "g", Name: "index_status"}, status)
 	g = search(g, groupSearch, q)
 	return listOf(g, `to_jsonb(g) || jsonb_build_object('asset_count',
 		(SELECT count(*) FROM assets a WHERE a.group_id = g.id))`, "g.id DESC", limit, offset)
@@ -278,9 +285,9 @@ func listGroups(db *gorm.DB, accountID int64, status, q string, limit, offset in
 // (already escaped by LikeTerm).
 func listAssets(db *gorm.DB, accountID, groupID int64, status, q string, limit, offset int) (*listPage, error) {
 	a := db.Table("assets AS a").Joins("JOIN asset_groups g ON g.id = a.group_id")
-	a = filter(a, "a.account_id", accountID)
-	a = filter(a, "a.group_id", groupID)
-	a = filter(a, "a.index_status", status)
+	a = filter(a, clause.Column{Table: "a", Name: "account_id"}, accountID)
+	a = filter(a, clause.Column{Table: "a", Name: "group_id"}, groupID)
+	a = filter(a, clause.Column{Table: "a", Name: "index_status"}, status)
 	a = search(a, assetSearch, q)
 	return listOf(a, `to_jsonb(a) || jsonb_build_object('group_name', g.name, 'group_upstream_id', g.upstream_id)`,
 		"a.id DESC", limit, offset)

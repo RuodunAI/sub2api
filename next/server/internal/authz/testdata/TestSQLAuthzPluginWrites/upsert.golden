@@ -1,39 +1,25 @@
 -- sql
-WITH prev AS (SELECT status FROM permissions WHERE key = $1)
-INSERT INTO permissions (key, module, label, description, source, plugin_key, risk, sensitive, status, sort,
-    scope_type, scope, group_key, group_label, group_sort, requires, defaults)
-VALUES ($2, $3, $4, $5, 'plugin', $6::text, $7::varchar, $8::varchar <> 'low',
-    CASE WHEN $9::bool THEN 'staged'
-         WHEN EXISTS (SELECT 1 FROM plugins WHERE key = $10::text AND status IN ('enabled','upgrading')) THEN 'active'
-         ELSE 'disabled' END,
-    $11, $12, $13, $14, $15, $16, COALESCE($17::text[], '{}'), $18)
-ON CONFLICT (key) DO UPDATE SET module = EXCLUDED.module, label = EXCLUDED.label,
-    description = EXCLUDED.description, risk = EXCLUDED.risk, sensitive = EXCLUDED.sensitive,
-    sort = EXCLUDED.sort, scope_type = EXCLUDED.scope_type, scope = EXCLUDED.scope,
-    group_key = EXCLUDED.group_key, group_label = EXCLUDED.group_label, group_sort = EXCLUDED.group_sort,
-    requires = EXCLUDED.requires, defaults = EXCLUDED.defaults,
-    -- a removed key declared again revives, and a staged one turns on, with
-    -- the plugin's status, unless staged still; others keep theirs
-    status = CASE WHEN permissions.status IN ('removed', 'staged') AND NOT $19::bool THEN EXCLUDED.status ELSE permissions.status END
-    WHERE permissions.plugin_key = EXCLUDED.plugin_key
-RETURNING (xmax = 0), COALESCE((SELECT status = 'removed' FROM prev), false)
+SELECT "id","plugin_key","status" FROM "permissions" WHERE key = $1 LIMIT $2
 -- vars
 $1 string "plugin:demo:read"
-$2 string "plugin:demo:read"
-$3 string "plugin:demo"
-$4 core.LocalizedText map[en:Read]
-$5 core.LocalizedText map[]
-$6 string "demo"
-$7 string "low"
-$8 string "low"
-$9 bool true
-$10 string "demo"
-$11 int 1
-$12 string "plugin:item"
-$13 manifest.PermissionScope {  true []}
-$14 string "g"
-$15 core.LocalizedText map[]
-$16 int 2
-$17 store.Strings [plugin:demo:list]
-$18 map[string][]string map[admin:[]]
-$19 bool true
+$2 int 1
+
+-- sql
+INSERT INTO "permissions" ("key","module","label","source","plugin_key","description","status","sort","scope_type","risk","requires","group_key","group_label","group_sort","scope","defaults") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING "id","description","sensitive","status","sort","created_at","scope_type","risk","requires","group_key","group_label","group_sort","scope","defaults"
+-- vars
+$1 string "plugin:demo:read"
+$2 string "plugin.demo"
+$3 jsontext.Value {"en":"Read"}
+$4 string "plugin"
+$5 *string "demo"
+$6 jsontext.Value {}
+$7 *string "staged"
+$8 int 1
+$9 string "plugin:item"
+$10 *string "low"
+$11 store.Strings [plugin:demo:list]
+$12 string "g"
+$13 jsontext.Value {}
+$14 int 2
+$15 jsontext.Value {"own":true}
+$16 jsontext.Value {"admin":[""]}

@@ -57,8 +57,8 @@ func TestMigrationsFailFastOnLock(t *testing.T) {
 				t.Fatalf("%s behind a reader: %v after %s, want lock_not_available after 10s", name, err, time.Since(start))
 			}
 			var cols int
-			if err := queryRow(connect(t, dsn), `SELECT count(*) FROM information_schema.columns WHERE table_schema = ? AND `+step.unchanged,
-				schema).Scan(&cols); err != nil || cols != step.want {
+			if err := connect(t, dsn).Raw(`SELECT count(*) FROM information_schema.columns WHERE table_schema = ? AND `+step.unchanged,
+				schema).Row().Scan(&cols); err != nil || cols != step.want {
 				t.Fatalf("%s: %d of the columns it changes, want %d (%v)", name, cols, step.want, err)
 			}
 		}

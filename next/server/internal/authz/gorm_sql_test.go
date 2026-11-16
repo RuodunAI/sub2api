@@ -1,6 +1,7 @@
 package authz
 
 import (
+	"errors"
 	"testing"
 
 	"gorm.io/gorm"
@@ -14,6 +15,8 @@ import (
 
 // The SQL of the authz statements built with GORM (see package gormtest):
 // every write, the version and the reads behind each authorization check.
+// A function that runs its statements is snapshot with AssertRun: DryRun
+// returns no rows, so what it writes from what it read is not reached.
 
 // sqlCase is one snapshot: a subtest name and its statement.
 type sqlCase struct {
@@ -28,32 +31,62 @@ func assertCases(t *testing.T, cases []sqlCase) {
 	}
 }
 
-// scan finishes a Raw or chained query for its snapshot.
+// runCase is one AssertRun snapshot.
+type runCase struct {
+	name string
+	run  func(*gorm.DB) error
+}
+
+func assertRuns(t *testing.T, cases []runCase) {
+	t.Helper()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) { gormtest.AssertRun(t, c.run) })
+	}
+}
+
+// scan finishes a chained query for its snapshot.
 func scan(q *gorm.DB) *gorm.DB {
 	var dest []map[string]any
 	return q.Scan(&dest)
 }
 
-// The versions: Bump locks and increments the authz version (a user
-// write), bumpPolicy both (a policy write), SyncCore locks them without a
-// bump; the readers select them with store.AuthzVersions.
+// refused is err but a refusal (a *core.Error), which a check reading no
+// rows under DryRun gives.
+func refused(err error) error {
+	if ce := (*core.Error)(nil); errors.As(err, &ce) {
+		return nil
+	}
+	return err
+}
+
+// The versions: bumpVersions increments the authz version (a user write,
+// Bump) or both (a policy write, bumpPolicy), lockVersion locks them
+// without a bump (SyncCore, ClearScopeGrants); the readers select them with
+// store.AuthzVersions.
 func TestSQLAuthzVersion(t *testing.T) {
-	assertCases(t, []sqlCase{
-		{"bump", func(db *gorm.DB) *gorm.DB { return scan(bumpVersion(db)) }},
-		{"bump_policy", func(db *gorm.DB) *gorm.DB { return scan(bumpPolicyVersion(db)) }},
+	assertRuns(t, []runCase{
+		{"bump", func(db *gorm.DB) error { _, err := bumpVersions(db, false); return noRows(err) }},
+		{"bump_policy", func(db *gorm.DB) error { _, err := bumpVersions(db, true); return noRows(err) }},
 		{"lock", lockVersion},
 	})
 }
 
-// The active permissions of a superuser's /me (ActivePermissionKeys) and
-// the reads of the grant view (RolesPermissions, usersRoles, grantOf).
+// noRows is err but sql.ErrNoRows, what an UPDATE under DryRun reports.
+func noRows(err error) error {
+	if store.IsNoRows(err) {
+		return nil
+	}
+	return err
+}
+
+// The reads of the grant view (RolesPermissions, usersRoles, grantOf).
 func TestSQLAuthzPermissionLoad(t *testing.T) {
 	assertCases(t, []sqlCase{
-		{"active", func(db *gorm.DB) *gorm.DB { return scan(activePermissions(db)) }},
 		{"role_grants", func(db *gorm.DB) *gorm.DB { return scan(roleGrants(db, []string{RoleAdmin, "custom"})) }},
 		{"role_assignables", func(db *gorm.DB) *gorm.DB { return scan(roleAssignables(db, []string{RoleAdmin})) }},
-		{"custom_roles", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeys(db)) }},
-		{"custom_roles_but", func(db *gorm.DB) *gorm.DB { return scan(customRoleKeysBut(db, "custom")) }},
+	})
+	assertRuns(t, []runCase{
+		{"custom_roles", func(db *gorm.DB) error { _, err := customRoleKeys(db, "custom"); return err }},
 	})
 }
 
@@ -68,14 +101,16 @@ func TestSQLAuthzRoleReads(t *testing.T) {
 		{"by_keys", func(db *gorm.DB) *gorm.DB { return scan(rolesByKeys(db, []string{RoleAdmin, RoleUser})) }},
 		{"user_roles", func(db *gorm.DB) *gorm.DB { return scan(userRoleRefs(db, 7)) }},
 		{"role_refs", func(db *gorm.DB) *gorm.DB { return scan(roleRefsByKeys(db, []string{RoleAdmin, "custom"})) }},
-		{"custom_role_refs", func(db *gorm.DB) *gorm.DB { return scan(customRoleRefsByKeys(db, []string{RoleAdmin})) }},
 		{"assignable_builtin_refs", func(db *gorm.DB) *gorm.DB {
 			return scan(assignableBuiltinRefs(db, []string{RoleOperator, RoleUser}))
 		}},
 		{"assignable", func(db *gorm.DB) *gorm.DB { return scan(assignableRoleRows(db)) }},
 		{"is_superuser", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, superuserGrants(db, 7))) }},
-		{"other_superusers", func(db *gorm.DB) *gorm.DB { return scan(otherSuperusers(db, 7)) }},
+		{"other_superusers", func(db *gorm.DB) *gorm.DB { var n int64; return otherSuperusers(db, 7).Count(&n) }},
 		{"lock_transfer_target", func(db *gorm.DB) *gorm.DB { return scan(lockTransferTarget(db, 9)) }},
+	})
+	assertRuns(t, []runCase{
+		{"custom_role_refs", builtinKeyConflict},
 	})
 }
 
@@ -89,22 +124,20 @@ func TestSQLAuthzPermissionReads(t *testing.T) {
 		{"plugin_exists", func(db *gorm.DB) *gorm.DB { return scan(store.ExistsQuery(db, permissionsOfPlugin(db, "demo"))) }},
 		// GrantPluginPermission reads it with Row: one row, no LIMIT.
 		{"plugin_scope", func(db *gorm.DB) *gorm.DB { return scan(pluginPermissionScope(db, "plugin:demo:read")) }},
-		{"granted_scopes", func(db *gorm.DB) *gorm.DB { return scan(grantedScopes(db, "plugin:demo:read")) }},
 	})
 }
 
-// ClearScopeGrants: the delete, its audit, the roles' revisions and the
-// versions, the patterns and ids one array parameter each; and the check
-// of a grant write that the rows its scopes name exist.
+// ClearScopeGrants: the lock and the delete (the audit, the roles'
+// revisions and the versions follow only when a row went); and the check
+// of a grant write that the rows its scopes name exist, a read per kind.
 func TestSQLAuthzClearScopeGrants(t *testing.T) {
-	patterns, actor := []string{`(^|/)account/3$`, `(^|/)account/4$`}, int64(9)
-	assertCases(t, []sqlCase{
-		{"missing_refs", func(db *gorm.DB) *gorm.DB {
-			return scan(missingScopeRefs(db, []string{"account:read:group/2/account/3", "account:read:group/2/account/3", "proxy:read:proxy/4"},
-				[]string{core.ScopeRefGroup, core.ScopeRefAccount, core.ScopeRefProxy}, []int64{2, 3, 4}))
+	assertRuns(t, []runCase{
+		{"missing_refs", func(db *gorm.DB) error {
+			return refused(checkScopeRefs(db.Statement.Context, db, []string{"account:read:group/2/account/3", "account:read:group/2/account/3", "proxy:read:proxy/4"}))
 		}},
-		{"clear", func(db *gorm.DB) *gorm.DB {
-			return scan(clearScopeGrants(db, patterns, &actor, core.ScopeRefAccount, []int64{3, 4}))
+		{"clear", func(db *gorm.DB) error {
+			_, err := new(Service).ClearScopeGrants(db.Statement.Context, db, 9, core.ScopeRefAccount, []int64{3, 4})
+			return err
 		}},
 	})
 }
@@ -113,10 +146,6 @@ func TestSQLAuthzClearScopeGrants(t *testing.T) {
 // permissions, assignable list) and nowhere else (reset text, defaults_rev).
 func TestSQLAuthzRoleWrites(t *testing.T) {
 	assertCases(t, []sqlCase{
-		{"insert", func(db *gorm.DB) *gorm.DB {
-			var id int64
-			return insertRole(db, CreateRoleInput{Key: "custom", Name: core.LocalizedText{"en": "Custom"}, Description: core.LocalizedText{}}).Scan(&id)
-		}},
 		{"update", func(db *gorm.DB) *gorm.DB {
 			return updateRole(db, 3, UpdateRoleInput{Name: core.LocalizedText{"en": "Renamed"}})
 		}},
@@ -128,24 +157,21 @@ func TestSQLAuthzRoleWrites(t *testing.T) {
 		{"touch", func(db *gorm.DB) *gorm.DB { return touchRole(db, 3) }},
 		{"revise", func(db *gorm.DB) *gorm.DB { return reviseRole(db, 3) }},
 		{"drop_assignable", func(db *gorm.DB) *gorm.DB { return dropAssignable(db, 3, store.Int64s{4, 5}) }},
-		{"add_assignable", func(db *gorm.DB) *gorm.DB { return addAssignable(db, 3, store.Int64s{4, 5}) }},
 		{"assign_custom", func(db *gorm.DB) *gorm.DB { return setAssignCustom(db, 3, false) }},
+	})
+	assertRuns(t, []runCase{
+		{"insert", func(db *gorm.DB) error {
+			_, err := insertRole(db, CreateRoleInput{Key: "custom", Name: core.LocalizedText{"en": "Custom"}, Description: core.LocalizedText{}})
+			return err
+		}},
+		{"add_assignable", func(db *gorm.DB) error { return addAssignable(db, 3, []int64{4, 5}) }},
 	})
 }
 
-// The plugin catalog writes.
+// The plugin catalog writes. The upsert reads the key's row first; under
+// DryRun there is none, so it inserts (staged: no plugin status read).
 func TestSQLAuthzPluginWrites(t *testing.T) {
 	assertCases(t, []sqlCase{
-		{"upsert", func(db *gorm.DB) *gorm.DB {
-			var row struct{ Inserted, WasRemoved bool }
-			return upsertPermission(db, pluginPermissionRow{
-				key: "plugin:demo:read", module: "plugin:demo", pluginKey: "demo", risk: manifest.RiskLow, scopeType: "plugin:item",
-				group: "g", label: core.LocalizedText{"en": "Read"}, description: core.LocalizedText{}, groupLabel: core.LocalizedText{},
-				sort: 1, groupSort: 2, scope: manifest.PermissionScope{Own: true}, requires: []string{"plugin:demo:list"},
-				defaults: map[string][]string{RoleAdmin: {""}}, staged: true,
-			}).Scan(&row)
-		}},
-		{"remove_undeclared", func(db *gorm.DB) *gorm.DB { return scan(removeUndeclared(db, "demo", []string{"plugin:demo:read"})) }},
 		{"set_status", func(db *gorm.DB) *gorm.DB { return setPluginStatus(db, "demo", "active") }},
 		{"lock_staged", func(db *gorm.DB) *gorm.DB {
 			var keys []string
@@ -155,28 +181,41 @@ func TestSQLAuthzPluginWrites(t *testing.T) {
 			return db.Where("key = ANY(?)", store.Strings{"plugin:demo:read"}).Delete(&model.Permission{})
 		}},
 	})
+	assertRuns(t, []runCase{
+		{"upsert", func(db *gorm.DB) error {
+			_, _, err := upsertPluginPermission(db.Statement.Context, db, "demo", "read", core.PermissionDef{
+				Key: "plugin:demo:read", Risk: manifest.RiskLow, ScopeType: "plugin:item", Group: "g", Label: core.LocalizedText{"en": "Read"},
+				Sort: 1, GroupSort: 2, Scope: &manifest.PermissionScope{Own: true}, Requires: []string{"plugin:demo:list"},
+				Defaults: map[string][]string{RoleAdmin: {""}}, Staged: true,
+			})
+			return err
+		}},
+		{"remove_undeclared", func(db *gorm.DB) error {
+			_, err := removeUndeclared(db, "demo", []string{"plugin:demo:read"})
+			return err
+		}},
+	})
 }
 
-// SyncCore's writes.
+// SyncCore's reads and writes; under DryRun every built-in role and the
+// one permission are missing, so they are inserted.
 func TestSQLAuthzSyncWrites(t *testing.T) {
 	assertCases(t, []sqlCase{
-		{"roles", func(db *gorm.DB) *gorm.DB {
-			return scan(syncRoles(db, store.Strings{RoleAdmin}, store.Strings{`{"en":"Admin"}`}, store.Strings{`{}`},
-				store.Bools{false}, store.Bools{true}, store.Int64s{2}))
-		}},
-		{"permissions", func(db *gorm.DB) *gorm.DB {
-			return scan(syncPermissions(db, store.Strings{"account:read"}, store.Strings{"account"}, store.Strings{`{"en":"Read"}`},
-				store.Strings{`{}`}, store.Strings{"low"}, store.Strings{`[]`}, store.Int64s{1}, store.Strings{"account"}))
-		}},
-		{"advance", func(db *gorm.DB) *gorm.DB {
-			return scan(advanceRoles(db, store.Strings{RoleAdmin}, store.Int64s{2}, store.Bools{true}))
-		}},
 		{"remove_undeclared", func(db *gorm.DB) *gorm.DB { return removeUndeclaredCore(db, store.Strings{"account:read"}) }},
 	})
-	t.Run("default_assignable", func(t *testing.T) {
-		gormtest.AssertRun(t, func(db *gorm.DB) error {
+	assertRuns(t, []runCase{
+		{"roles", func(db *gorm.DB) error { return syncRoles(db, func(string, bool) {}) }},
+		{"permissions", func(db *gorm.DB) error {
+			_, _, err := syncPermissions(db, []core.PermissionDef{{Key: "account:read", Module: "account", Label: core.LocalizedText{"en": "Read"},
+				Description: core.LocalizedText{}, Risk: manifest.RiskLow, Sort: 1, ScopeType: "account"}})
+			return err
+		}},
+		{"advance", func(db *gorm.DB) error {
+			return new(Service).advanceDefaults(db.Statement.Context, db, func(string, int32, bool) {})
+		}},
+		{"default_assignable", func(db *gorm.DB) error {
 			_, err := grantDefaultAssignable(db, RoleAdmin, []string{RoleUser})
 			return err
-		})
+		}},
 	})
 }

@@ -92,8 +92,10 @@
 - **出口日志**：插件出口连接的日志行先按条数预留 id（`store.NextIDs`，升序），写进各自的行再插入，id 与行一一对应；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。插件管理、任务、事件、控制台资源等模块的语句全部改由 GORM 构造（插件迁移记录调用 `plugin_migration_record` 的函数调用除外），DDL、advisory 锁、系统目录查询只经 `store` 的小助手（`store.DDL`、`XactLockID`、`XactLockHashtext`、`CurrentSnapshot` 等）。
 - **网关**：升级协调的一步（Coordinate）和节点准入各在一个事务里完成，进度在提交后才计。
 - **网关控制器与核心的 CCGateway、网关包不再手写整条 SQL**：改用 GORM 模型与查询构造器，生成的谓词、锁（含 `SKIP LOCKED`）、`RETURNING` 与往返次数不变；CCGateway 的运行时锁、重新授权锁和故障策略锁改用 `store.XactLock` / 新增的 `store.TryXactLock`。网关新增 `internal/sqlguard` 测试：允许列表之外的 `Raw`/`Exec`、交给 GORM 的非常量 SQL 文本都会失败（CONTRACTS §39）。
-- **核心不再手写整条 SQL**：账号、计费、使用记录、用户、API Key、用户组、代理等模块的语句改由 GORM 模型与查询构造器生成，谓词、锁、`ON CONFLICT`、`RETURNING` 与往返次数不变；使用记录的批量写入改为预留 id（`store.NextIDs`）后一次 `Create`。整条手写的只剩账本的 data-modifying CTE 与 `store` 里锁、DDL、系统函数的小助手；gormguard 新增 `[raw-sql]`、`[sql-const]`：允许列表之外的 `Raw`/`Exec`、交给 GORM 的非常量 SQL 文本都会失败（CONTRACTS §2“核心的 SQL”）。
+- **核心不再手写整条 SQL**：账号、计费、使用记录、用户、API Key、用户组、代理等模块的语句改由 GORM 模型与查询构造器生成，谓词、锁、`ON CONFLICT`、`RETURNING` 不变；使用记录的多行批量写入改为先预留 id（`store.NextIDs`，多一次往返）再一次 `Create`。整条手写的只剩账本的 data-modifying CTE 与 `store` 里锁、DDL、系统函数的小助手；gormguard 新增 `[raw-sql]`、`[sql-const]`：允许列表之外的 `Raw`/`Exec`、交给 GORM 的非常量 SQL 文本都会失败（CONTRACTS §2“核心的 SQL”）。
+- **权限（authz）**：角色、授予、指派、插件权限目录、核心同步、超管移交、范围授予清理与授权版本号的读写不再有手写的整条 SQL，全部改用 GORM 模型与查询构造器（`unnest` 批量写改为一次 `Create`，数据修改 CTE 拆成同一事务里先读后写的几条语句，准确性依靠已持有的 authz 锁）。行为不变；`authz.scope.clear` 审计现在和其他授权审计一样记下客户端 IP。
 - **开发约束**（核心）：需要事务的函数（行锁、事务级 advisory 锁）在连接池上调用直接返回错误（`store.RequireTx`，gormguard `[tx-lock]` 检查）；`store.ForUpdate()` 改为函数，返回不可变的行锁（`.Of`、`.SkipLocked`），共享锁用 `store.Lock`；禁止 `Debug()` 与覆盖会话配置的 `Session`；`core` 不再 import `store`（`[core-store]`）。
+- **开发约束**（插件、SDK）：插件和 SDK 的语句全部由 GORM 按模型生成（`Model`/`Table`、`Where`、`Create`、`Updates`、`clause.OnConflict`、`clause.Returning`），不再手写整条 SQL；`Raw`/`Exec` 只用来组合已生成的查询（`(?) UNION ALL (?)`、`pgdb.Exists`、`pgdb.InsertSelect`），非数据语句走 `pgdb.NextIDs`、`pgdb.LockTable`、`pgdb.TryXactLock`。`Raw`、`Exec`、`Where`、`Select`、`Order`、`Joins`、`Table`、`gorm.Expr`、`clause.Expr` 等的 SQL 文本必须是常量，值只走 `?` 参数，请求选的列经白名单进 `clause.Column`/`clause.OrderByColumn`；`pgdb.List` 的列与排序参数改为 `pgdb.SQL`。SDK 的 `TestNoRawSQL` 检查（例外只有 `pgdbtool` 的系统目录读取、迁移执行与 DDL，逐个文件写明原因）。审核插件去掉了模仿 pgx 的 `queryRow`/`collect` 等封装。
 
 #### 插件版本
 

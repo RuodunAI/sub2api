@@ -9,6 +9,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // table is the policy table, whose columns migration 0100 sizes to what
@@ -33,14 +34,15 @@ func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 			return err
 		}
 		var active []string
-		if err := q.Raw(`SELECT key FROM permissions WHERE status = 'active'`).Scan(&active).Error; err != nil {
+		if err := q.Model(&model.Permission{}).Where("status = 'active'").Pluck("key", &active).Error; err != nil {
 			return err
 		}
 		p.Active = make(map[string]bool, len(active))
 		for _, k := range active {
 			p.Active[k] = true
 		}
-		if err := activeUsers(q).Scan(&p.Users).Error; err != nil {
+		// The users whose g rows are loaded: not deleted, status active.
+		if err := q.Model(&model.User{}).Where("deleted_at IS NULL AND status = 'active'").Pluck("id", &p.Users).Error; err != nil {
 			return err
 		}
 		p.Rules, err = loadPolicyRows(q)
@@ -50,12 +52,6 @@ func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 		return Policy{}, fmt.Errorf("casbinx: read the policy: %w", err)
 	}
 	return p, nil
-}
-
-// activeUsers selects the id of every active user (not deleted, status
-// active), the users whose g rows are loaded.
-func activeUsers(db *gorm.DB) *gorm.DB {
-	return db.Raw(`SELECT id FROM users WHERE deleted_at IS NULL AND status = 'active'`)
 }
 
 // loadPolicyRows reads the p and g rows through gorm-adapter, bound to tx
@@ -127,8 +123,6 @@ func (l *pgLoader) UserRoles(ctx context.Context, uid int64) (UserRoles, error) 
 // userRoles selects the versions, whether uid is active and its role
 // subjects, sorted.
 func userRoles(db *gorm.DB, uid int64) *gorm.DB {
-	return db.Raw(`SELECT m.version, m.policy_version,
-    EXISTS (SELECT 1 FROM users u WHERE u.id = @uid AND u.deleted_at IS NULL AND u.status = 'active'),
-    ARRAY(`+casbinrule.RoleSubsOfUID+` ORDER BY 1)
-FROM authz_meta m WHERE m.id = 1`, map[string]any{"uid": uid})
+	active := db.Model(&model.User{}).Select("1").Where("id = ? AND deleted_at IS NULL AND status = 'active'", uid)
+	return db.Model(&model.AuthzMeta{}).Select("version, policy_version, EXISTS (?), ARRAY(?)", active, casbinrule.RoleSubsOf(db, uid)).Where("id = 1")
 }

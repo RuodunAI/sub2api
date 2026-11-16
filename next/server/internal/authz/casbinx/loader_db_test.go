@@ -185,8 +185,8 @@ func TestLoaderAdapterReadOnly(t *testing.T) {
 		want := []*regexp.Regexp{
 			regexp.MustCompile(`^begin$`),
 			regexp.MustCompile(`^SELECT version, policy_version FROM authz_meta`),
-			regexp.MustCompile(`^SELECT key FROM permissions WHERE status = 'active'$`),
-			regexp.MustCompile(`^SELECT id FROM users WHERE deleted_at IS NULL AND status = 'active'$`),
+			regexp.MustCompile(`^SELECT "key" FROM "permissions" WHERE status = 'active'$`),
+			regexp.MustCompile(`^SELECT "id" FROM "users" WHERE deleted_at IS NULL AND status = 'active'$`),
 			regexp.MustCompile(`^SELECT .* FROM "casbin_rule" WHERE ptype in \(\$1,\$2\) ORDER BY ID$`),
 			regexp.MustCompile(`^commit$`),
 		}

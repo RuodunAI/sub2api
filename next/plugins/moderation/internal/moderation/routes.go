@@ -13,7 +13,9 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -271,11 +273,27 @@ const eventColumns = `id, created_at, request_id, user_id, api_key_id, group_id,
 	counted, input_format, text_chars, image_count, input_message_size, latency_ms, queue_ms, keep_until, replayed,
 	verdict, reason, error, llm_model, flow_source, flow_fallback_id, flow_fallback_reason, level, level_source`
 
-func (e *Event) scanTargets() []any {
-	return []any{&e.ID, &e.CreatedAt, &e.RequestID, &e.UserID, &e.APIKeyID, &e.GroupID, &e.Model, &e.Protocol, &e.Endpoint, &e.SessionFp, &e.Mode, &e.Timing, &e.Result,
-		&e.FlowID, &e.FlowVersion, &e.Severity, (*pgdb.Array[string])(&e.HitCategories), &e.HighestCategory, &e.HighestScore, &e.ReviewStatus, &e.ReviewedBy, &e.ReviewedAt,
-		&e.Counted, &e.InputFormat, &e.TextChars, &e.ImageCount, &e.InputMessageSize, &e.LatencyMs, &e.QueueMs, &e.KeepUntil, &e.Replayed,
-		&e.Verdict, &e.Reason, &e.Error, &e.LLMModel, &e.FlowSource, &e.fallbackID, &e.fallbackReason, &e.Level, &e.LevelSource}
+// eventOf is the record of a stored row (the columns of eventColumns),
+// normalized.
+func eventOf(m model.Event) Event {
+	e := Event{ID: m.ID, CreatedAt: m.CreatedAt, RequestID: m.RequestID, UserID: m.UserID, APIKeyID: m.APIKeyID, GroupID: m.GroupID,
+		Model: m.Model, Protocol: m.Protocol, Endpoint: m.Endpoint, SessionFp: m.SessionFp, Mode: m.Mode, Timing: m.Timing, Result: m.Result,
+		FlowID: m.FlowID, FlowVersion: m.FlowVersion, Severity: m.Severity, HitCategories: m.HitCategories, HighestCategory: m.HighestCategory,
+		HighestScore: m.HighestScore, ReviewStatus: m.ReviewStatus, ReviewedBy: m.ReviewedBy, ReviewedAt: m.ReviewedAt, Counted: m.Counted,
+		InputFormat: m.InputFormat, TextChars: m.TextChars, ImageCount: m.ImageCount, InputMessageSize: m.InputMessageSize,
+		LatencyMs: m.LatencyMs, QueueMs: m.QueueMs, KeepUntil: m.KeepUntil, Replayed: m.Replayed, FlowSource: m.FlowSource,
+		fallbackID: m.FlowFallbackID, fallbackReason: m.FlowFallbackReason, Level: m.Level, LevelSource: m.LevelSource,
+		Verdict: m.Verdict, Reason: m.Reason, Error: m.Error, LLMModel: m.LLMModel}
+	e.normalize()
+	return e
+}
+
+// deref is *s, "" for nil.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func (e *Event) normalize() {
@@ -289,10 +307,10 @@ func (e *Event) normalize() {
 }
 
 // eventFilter builds the WHERE clause of GET /events.
-func eventFilter(req *pluginv1.HTTPRequest) (where string, args []any, errs pluginsdk.FieldErrors) {
-	f := &sqlFilter{conds: []string{"TRUE"}}
+func eventFilter(req *pluginv1.HTTPRequest) *sqlFilter {
+	f := &sqlFilter{}
 	if v := pluginsdk.Query(req, "result"); v == "suspicious" {
-		f.conds = append(f.conds, suspiciousResult)
+		f.add(suspiciousResult)
 	} else {
 		f.enum(req, "result", ResultBlock, ResultHit, ResultOverturned, ResultError, ResultPass)
 	}
@@ -304,22 +322,22 @@ func eventFilter(req *pluginv1.HTTPRequest) (where string, args []any, errs plug
 	f.enum(req, "action", ActionAllow, ActionDeny)
 	f.enum(req, "mode", ModeObserve, ModeEnforce)
 	f.ids(req)
-	f.text(req, "request_id", "request_id = ")
-	f.text(req, "endpoint", "endpoint = ")
-	f.text(req, "session_fp", "session_fp <> '' AND session_fp = ") // the partial index
+	f.text(req, "request_id", "request_id = ?")
+	f.text(req, "endpoint", "endpoint = ?")
+	f.text(req, "session_fp", "session_fp <> '' AND session_fp = ?") // the partial index
 	if v := pluginsdk.Query(req, "category"); v != "" {
 		if !jevCategoryRe.MatchString(v) && !categoryIDRe.MatchString(v) {
 			f.errs = f.errs.Add("category", "invalid", "category is invalid / 分类格式无效")
 		} else {
-			f.conds = append(f.conds, f.arg(v)+" = ANY(hit_categories)")
+			f.add("? = ANY(hit_categories)", v)
 		}
 	}
 	if v := pluginsdk.Query(req, "watch_level"); v != "" {
 		switch v {
 		case LevelObserve, LevelEnforce:
-			f.conds = append(f.conds, "user_id IN (SELECT user_id FROM watchlist WHERE level = "+f.arg(v)+")")
+			f.add("user_id IN (SELECT user_id FROM watchlist WHERE level = ?)", v)
 		case "any":
-			f.conds = append(f.conds, "user_id IN (SELECT user_id FROM watchlist)")
+			f.add("user_id IN (SELECT user_id FROM watchlist)")
 		default:
 			f.errs = f.errs.Add("watch_level", "enum", "watch_level must be observe, enforce or any / watch_level 取值为 observe、enforce、any")
 		}
@@ -329,7 +347,7 @@ func eventFilter(req *pluginv1.HTTPRequest) (where string, args []any, errs plug
 	if !from.IsZero() && !to.IsZero() && !from.Before(to) {
 		f.errs = f.errs.Add("from", "range", "from must be before to / from 必须早于 to")
 	}
-	return f.where(), f.args, f.errs
+	return f
 }
 
 func (f *sqlFilter) enum(req *pluginv1.HTTPRequest, name string, allowed ...string) {
@@ -339,7 +357,7 @@ func (f *sqlFilter) enum(req *pluginv1.HTTPRequest, name string, allowed ...stri
 	}
 	for _, a := range allowed {
 		if v == a {
-			f.conds = append(f.conds, name+" = "+f.arg(v))
+			f.eq(name, v)
 			return
 		}
 	}
@@ -353,7 +371,8 @@ func (f *sqlFilter) ids(req *pluginv1.HTTPRequest) {
 	f.idList(req, "user_ids", "user_id")
 }
 
-func (f *sqlFilter) text(req *pluginv1.HTTPRequest, name, cond string) {
+// text adds cond, whose one ? takes the parameter name.
+func (f *sqlFilter) text(req *pluginv1.HTTPRequest, name string, cond pgdb.SQL) {
 	v := strings.TrimSpace(pluginsdk.Query(req, name))
 	if v == "" {
 		return
@@ -362,7 +381,7 @@ func (f *sqlFilter) text(req *pluginv1.HTTPRequest, name, cond string) {
 		f.errs = f.errs.Add(name, "too_long", name+" is too long / "+name+" 过长")
 		return
 	}
-	f.conds = append(f.conds, cond+f.arg(v))
+	f.add(cond, v)
 }
 
 // search matches the term against request id, reason and text.
@@ -376,7 +395,7 @@ func (f *sqlFilter) search(req *pluginv1.HTTPRequest) {
 		return
 	}
 	like := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(v) + "%"
-	f.conds = append(f.conds, "(request_id ILIKE "+f.arg(like)+" OR reason ILIKE "+f.arg(like)+" OR text ILIKE "+f.arg(like)+")")
+	f.add("(request_id ILIKE ? OR reason ILIKE ? OR text ILIKE ?)", like, like, like)
 }
 
 // pagination reads page (>= 1, default 1) and page_size (1-100, default 20).
@@ -402,9 +421,9 @@ func pagination(req *pluginv1.HTTPRequest) (page, size int, errs pluginsdk.Field
 }
 
 func (p *Plugin) listEvents(ctx context.Context, req *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
-	where, args, errs := eventFilter(req)
-	page, size, perrs := pagination(req)
-	errs = append(errs, perrs...)
+	f := eventFilter(req)
+	page, size, errs := pagination(req)
+	errs = append(f.errs, errs...)
 	if len(errs) > 0 {
 		return pluginsdk.FieldErrorResponse("invalid query / 查询参数无效", errs), nil
 	}
@@ -413,23 +432,21 @@ func (p *Plugin) listEvents(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
 	var total int64
-	if err := queryRow(db, `SELECT count(*) FROM events WHERE `+where, args...).Scan(&total); err != nil {
+	if err := db.Model(&model.Event{}).Scopes(f.scope).Count(&total).Error; err != nil {
 		return nil, err
 	}
-	args = append(args, size, (page-1)*size)
-	items, err := collect(db.Raw(`SELECT `+eventColumns+`, left(coalesce(text, ''), 120), trace FROM events WHERE `+where+
-		` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, args...), func(r row) (EventListItem, error) {
-		var it EventListItem
-		var trace []byte
-		err := r.Scan(append(it.scanTargets(), &it.TextExcerpt, &trace)...)
-		if len(trace) > 0 {
-			it.Trace = trace
-		}
-		it.normalize()
-		return it, err
-	})
+	var rows []model.Event
+	err = db.Scopes(f.scope).Select(eventColumns + ", left(coalesce(text, ''), 120) AS text, trace").
+		Order("created_at DESC, id DESC").Limit(size).Offset((page - 1) * size).Find(&rows).Error
 	if err != nil {
 		return nil, err
+	}
+	items := make([]EventListItem, len(rows))
+	for i, r := range rows {
+		items[i] = EventListItem{Event: eventOf(r), TextExcerpt: deref(r.Text)}
+		if len(r.Trace) > 0 {
+			items[i].Trace = r.Trace
+		}
 	}
 	return pluginsdk.ListResponse(items, pluginsdk.Page{Page: page, PageSize: size, Total: total}), nil
 }
@@ -443,18 +460,17 @@ func (p *Plugin) getEvent(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	var d EventDetail
-	var trace []byte
-	err = queryRow(db, `SELECT `+eventColumns+`, text, trace FROM events WHERE id = ?`, id).Scan(append(d.scanTargets(), &d.Text, &trace)...)
+	var row model.Event
+	err = db.Select(eventColumns+", text, trace").Where("id = ?", id).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("event"), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	d.normalize()
-	if len(trace) > 0 {
-		d.Trace = jsonRaw(trace)
+	d := EventDetail{Event: eventOf(row), Text: row.Text}
+	if len(row.Trace) > 0 {
+		d.Trace = jsonRaw(row.Trace)
 	}
 	if err := p.eventContext(ctx, db, &d); err != nil {
 		return nil, err
@@ -485,15 +501,12 @@ func relatedEvents(ctx context.Context, db *gorm.DB, d *EventDetail) error {
 	if d.RequestID == "" {
 		return nil
 	}
-	related, err := collect(db.Raw(`SELECT id, created_at, timing, result, flow_id, flow_version, severity FROM events
-		WHERE request_id = ? AND id <> ? ORDER BY id LIMIT 20`, d.RequestID, d.ID), func(r row) (RelatedItem, error) {
-		var it RelatedItem
-		err := r.Scan(&it.ID, &it.CreatedAt, &it.Timing, &it.Result, &it.FlowID, &it.FlowVersion, &it.Severity)
-		it.CreatedAt = it.CreatedAt.UTC()
-		return it, err
-	})
-	if len(related) > 0 {
-		d.Related = related
+	var rows []model.Event
+	err := db.Select("id, created_at, timing, result, flow_id, flow_version, severity").
+		Where("request_id = ? AND id <> ?", d.RequestID, d.ID).Order("id").Limit(20).Find(&rows).Error
+	for _, r := range rows {
+		d.Related = append(d.Related, RelatedItem{ID: r.ID, CreatedAt: r.CreatedAt.UTC(), Timing: r.Timing, Result: r.Result,
+			FlowID: r.FlowID, FlowVersion: r.FlowVersion, Severity: r.Severity})
 	}
 	return err
 }
@@ -504,10 +517,12 @@ func (p *Plugin) flowContext(ctx context.Context, db *gorm.DB, d *EventDetail) e
 	if d.FlowID <= 0 {
 		return nil
 	}
-	err := queryRow(db, `SELECT name, version FROM flows WHERE id = ?`, d.FlowID).Scan(&d.FlowName, &d.FlowCurrent)
+	var f model.Flow
+	err := db.Select("name, version").Where("id = ?", d.FlowID).Take(&f).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
+	d.FlowName, d.FlowCurrent = f.Name, f.Version
 	v, err := p.flowVersionView(ctx, d.FlowID, d.FlowVersion, p.snap.Load())
 	if errors.Is(err, errNotFound) {
 		return nil
@@ -521,13 +536,13 @@ func eventExtras(ctx context.Context, db *gorm.DB, d *EventDetail) error {
 	if d.InputMessageSize == 0 {
 		return nil
 	}
-	var msg *string
-	err := queryRow(db, `SELECT input_message FROM events WHERE id = ?`, d.ID).Scan(&msg)
+	var row model.Event
+	err := db.Select("input_message").Where("id = ?", d.ID).Take(&row).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
-	if msg != nil {
-		d.InputText = MessageText(d.InputFormat, *msg)
+	if row.InputMessage != nil {
+		d.InputText = MessageText(d.InputFormat, *row.InputMessage)
 	}
 	return nil
 }
@@ -544,7 +559,7 @@ func (p *Plugin) userState(ctx context.Context, db *gorm.DB, uid int64) (UserSta
 			st.Until = &u
 		}
 	}
-	w, err := scanWatch(queryRow(db, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?)`, uid, now))
+	w, err := takeWatch(db.Where("user_id = ? AND (expires_at IS NULL OR expires_at > ?)", uid, now))
 	switch {
 	case err == nil:
 		st.Watch = &w
@@ -567,9 +582,9 @@ func (p *Plugin) getEventInput(ctx context.Context, req *pluginv1.HTTPRequest) (
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	var msg *string
-	var format string
-	err = queryRow(db, `SELECT input_message, input_format FROM events WHERE id = ?`, id).Scan(&msg, &format)
+	var row model.Event
+	err = db.Select("input_message, input_format").Where("id = ?", id).Take(&row).Error
+	msg, format := row.InputMessage, row.InputFormat
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("event"), nil
 	}
@@ -595,11 +610,11 @@ func (p *Plugin) deleteEvent(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	n, err := affected(db.Exec(`DELETE FROM events WHERE id = ?`, id))
-	if err != nil {
-		return nil, err
+	res := db.Where("id = ?", id).Delete(&model.Event{})
+	if res.Error != nil {
+		return nil, res.Error
 	}
-	if n == 0 {
+	if res.RowsAffected == 0 {
 		return notFound("event"), nil
 	}
 	return pluginsdk.DataResponse(map[string]any{"id": id, "deleted": true}), nil
@@ -646,7 +661,9 @@ func (p *Plugin) reviewEvents(ctx context.Context, req *pluginv1.HTTPRequest) (*
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
 	ids := pgdb.Array[int64](in.IDs)
-	users, err := column[int64](db.Raw(`SELECT DISTINCT user_id FROM events WHERE id = ANY(?) AND `+suspiciousResult+` ORDER BY user_id`, ids))
+	var users []int64
+	err = db.Model(&model.Event{}).Select("DISTINCT user_id").Where("id = ANY(?)", ids).Where(suspiciousResult).
+		Order("user_id").Pluck("user_id", &users).Error
 	if err != nil {
 		return nil, err
 	}
@@ -659,35 +676,41 @@ func (p *Plugin) reviewEvents(ctx context.Context, req *pluginv1.HTTPRequest) (*
 					return err
 				}
 			}
+			// The window of the user's observe entry (0: none).
 			var epoch int64
-			if err := queryRow(tx, `SELECT coalesce((SELECT violation_epoch FROM watchlist WHERE user_id = ? AND level = 'observe'), 0)`, uid).Scan(&epoch); err != nil {
-				return err
-			}
-			// Take back: counted records of the current window turning
-			// false_positive. The epoch is bound twice; the cast keeps the
-			// second one a bigint like the column of the first.
-			n, err := affected(tx.Exec(`UPDATE events SET counted = false
-				WHERE id = ANY(?) AND user_id = ? AND counted AND ? = 'false_positive' AND violation_epoch = ? AND ?::bigint <> 0`, ids, uid, in.Status, epoch, epoch))
+			err := tx.Model(&model.Watch{}).Select("violation_epoch").Where("user_id = ? AND level = ?", uid, LevelObserve).Scan(&epoch).Error
 			if err != nil {
 				return err
 			}
-			delta := -int(n)
-			// Count again: false positives of the current window turning back.
-			n, err = affected(tx.Exec(`UPDATE events SET counted = true
-				WHERE id = ANY(?) AND user_id = ? AND NOT counted AND review_status = 'false_positive' AND ? <> 'false_positive'
-				  AND violation_epoch = ? AND ?::bigint <> 0 AND `+suspiciousResult, ids, uid, in.Status, epoch, epoch))
-			if err != nil {
-				return err
+			mine := tx.Model(&model.Event{}).Where("id = ANY(?) AND user_id = ?", ids, uid)
+			delta := 0
+			if epoch != 0 {
+				var res *gorm.DB
+				if in.Status == ReviewFalsePositive {
+					// Take back: counted records of the current window
+					// turning false_positive.
+					res = mine.Session(&gorm.Session{}).Where("counted AND violation_epoch = ?", epoch).Update("counted", false)
+					delta = -int(res.RowsAffected)
+				} else {
+					// Count again: false positives of the current window
+					// turning back.
+					res = mine.Session(&gorm.Session{}).Where("NOT counted AND review_status = ? AND violation_epoch = ?", ReviewFalsePositive, epoch).
+						Where(suspiciousResult).Update("counted", true)
+					delta = int(res.RowsAffected)
+				}
+				if res.Error != nil {
+					return res.Error
+				}
 			}
-			delta += int(n)
-			n, err = affected(tx.Exec(`UPDATE events SET review_status = ?, reviewed_by = ?, reviewed_at = ?
-				WHERE id = ANY(?) AND user_id = ? AND `+suspiciousResult, in.Status, by, now, ids, uid))
-			if err != nil {
-				return err
+			res := mine.Session(&gorm.Session{}).Where(suspiciousResult).
+				Updates(map[string]any{"review_status": in.Status, "reviewed_by": by, "reviewed_at": now})
+			if res.Error != nil {
+				return res.Error
 			}
-			updated += int(n)
+			updated += int(res.RowsAffected)
 			if delta != 0 {
-				err = tx.Exec(`UPDATE watchlist SET violation_count = GREATEST(violation_count + ?, 0), updated_at = ? WHERE user_id = ?`, delta, now, uid).Error
+				err = tx.Model(&model.Watch{}).Where("user_id = ?", uid).
+					Updates(map[string]any{"violation_count": gorm.Expr("GREATEST(violation_count + ?, 0)", delta), "updated_at": now}).Error
 			}
 			return err
 		})
@@ -712,13 +735,10 @@ type Block struct {
 	CreatedBy  *int64     `json:"created_by"`
 }
 
-const blockColumns = `user_id, reason, violations, source, created_at, expires_at, created_by`
-
-func scanBlock(r row) (Block, error) {
-	var b Block
-	err := r.Scan(&b.UserID, &b.Reason, &b.Violations, &b.Source, &b.CreatedAt, &b.ExpiresAt, &b.CreatedBy)
-	b.CreatedAt, b.ExpiresAt = b.CreatedAt.UTC(), utcPtr(b.ExpiresAt)
-	return b, err
+// blockOf is the ban of a stored row, its times in UTC.
+func blockOf(m model.Block) Block {
+	return Block{UserID: m.UserID, Reason: m.Reason, Violations: m.Violations, Source: m.Source, CreatedAt: m.CreatedAt.UTC(),
+		ExpiresAt: utcPtr(m.ExpiresAt), CreatedBy: m.CreatedBy}
 }
 
 func (p *Plugin) listBlocks(ctx context.Context, _ *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
@@ -726,13 +746,13 @@ func (p *Plugin) listBlocks(ctx context.Context, _ *pluginv1.HTTPRequest) (*plug
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	list, err := collect(db.Raw(`SELECT `+blockColumns+` FROM blocks
-		WHERE expires_at IS NULL OR expires_at > ? ORDER BY created_at DESC, user_id`, p.now().UTC()), func(r row) (Block, error) { return scanBlock(r) })
-	if err != nil {
+	var rows []model.Block
+	if err := db.Where("expires_at IS NULL OR expires_at > ?", p.now().UTC()).Order("created_at DESC, user_id").Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	if list == nil {
-		list = []Block{}
+	list := make([]Block, len(rows))
+	for i, b := range rows {
+		list[i] = blockOf(b)
 	}
 	return pluginsdk.DataResponse(list), nil
 }
@@ -786,12 +806,13 @@ func (p *Plugin) createBlock(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if err := lockBlockSubject(tx, uid); err != nil {
 			return err
 		}
-		var err error
-		b, err = scanBlock(queryRow(tx, `INSERT INTO blocks (user_id, reason, violations, source, created_at, expires_at, created_by)
-		VALUES (?, ?, 0, 'manual', ?, ?, ?)
-		ON CONFLICT (user_id) DO UPDATE SET reason = EXCLUDED.reason, source = 'manual', created_at = EXCLUDED.created_at,
-			expires_at = EXCLUDED.expires_at, created_by = EXCLUDED.created_by
-		RETURNING `+blockColumns, uid, reason, now, expires, callerID(req)))
+		// A ban in place keeps its violations.
+		row := model.Block{UserID: uid, Reason: reason, Source: "manual", CreatedAt: now, ExpiresAt: expires, CreatedBy: callerID(req)}
+		err := tx.Clauses(clause.OnConflict{
+			Columns:   columns("user_id"),
+			DoUpdates: clause.AssignmentColumns([]string{"reason", "source", "created_at", "expires_at", "created_by"}),
+		}, clause.Returning{}).Create(&row).Error
+		b = blockOf(row)
 		return err
 	})
 	if err != nil {
@@ -815,15 +836,15 @@ func (p *Plugin) deleteBlock(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if err := lockBlockSubject(tx, uid); err != nil {
 			return err
 		}
-		n, err := affected(tx.Exec(`DELETE FROM blocks WHERE user_id = ?`, uid))
-		if err != nil {
-			return err
+		res := tx.Where("user_id = ?", uid).Delete(&model.Block{})
+		if res.Error != nil {
+			return res.Error
 		}
-		if found = n > 0; !found {
+		if found = res.RowsAffected > 0; !found {
 			return nil
 		}
-		return tx.Exec(`INSERT INTO unblocks (user_id, at) VALUES (?, ?)
-			ON CONFLICT (user_id) DO UPDATE SET at = EXCLUDED.at`, uid, p.now().UTC()).Error
+		return tx.Clauses(clause.OnConflict{Columns: columns("user_id"), DoUpdates: clause.AssignmentColumns([]string{"at"})}).
+			Create(&model.Unblock{UserID: uid, At: p.now().UTC()}).Error
 	})
 	if err != nil {
 		return nil, err

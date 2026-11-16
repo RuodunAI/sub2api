@@ -15,11 +15,11 @@ import (
 	"image/png"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -480,32 +480,30 @@ func jevLargestSource(t testing.TB) string {
 	return encodePNG(t, img)
 }
 
-// jevNormalizePeak redraws n copies of raw at once and returns the peak of
-// the memory the Go runtime holds from the system over the level before, in
-// bytes. The collector runs almost continuously meanwhile, so the peak is
-// what the redraws keep alive.
+// jevNormalizePeak bounds what n redraws of raw started at once keep alive
+// together, in bytes: the most one redraw keeps alive, times the redraws the
+// slots and the decoder memory admit at once - the worst overlap, whatever
+// the scheduling. The n redraws are then started together, and the test
+// fails when more of them than that are ever in the decoder at once.
 func jevNormalizePeak(t testing.TB, raw string, n int) uint64 {
-	held := func() uint64 {
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		return m.Sys - m.HeapReleased
+	cfg, format, ok := imageHeader(raw)
+	if !ok {
+		t.Fatal("no image header")
 	}
-	defer debug.SetGCPercent(debug.SetGCPercent(1))
-	debug.FreeOSMemory()
-	base := held()
-	peak := base
-	stop, sampled := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(sampled)
-		for {
-			select {
-			case <-stop:
-				return
-			case <-time.After(time.Millisecond):
-				peak = max(peak, held())
-			}
+	cost := jevDecodeCost(format, cfg, base64.NewDecoder(base64.StdEncoding, strings.NewReader(raw)))
+	admitted := min(n, cap(jevNormalizeSlots), int(jevNormalizeMemory/cost))
+	one := jevRedrawHeld(t, raw, cfg)
+
+	var inside, most atomic.Int64
+	normalize := jevNormalize
+	jevNormalize = func(data []byte) *typesafeAsset {
+		in := inside.Add(1)
+		defer inside.Add(-1)
+		for m := most.Load(); in > m && !most.CompareAndSwap(m, in); m = most.Load() {
 		}
-	}()
+		return normalize(data)
+	}
+	defer func() { jevNormalize = normalize }()
 	var wg sync.WaitGroup
 	for range n {
 		wg.Go(func() {
@@ -515,9 +513,54 @@ func jevNormalizePeak(t testing.TB, raw string, n int) uint64 {
 		})
 	}
 	wg.Wait()
-	close(stop)
-	<-sampled
-	return max(peak, held()) - base
+	if m := most.Load(); m > int64(admitted) {
+		t.Fatalf("%d redraws ran at once, the slots and the memory admit %d", m, admitted)
+	}
+	return uint64(admitted) * one
+}
+
+// jevRedrawHeld redraws raw alone and returns the most it holds at once, in
+// bytes, from what the code allocates - not from the memory the process
+// has, which also counts the garbage not collected yet and the pages not
+// returned yet, and so depends on GC and scavenger timing and on the load
+// of the machine. Everything the redraw allocates counts as held to its
+// end, but for the scaler's buffer (scaleBuffers): each band of
+// jevNormalizeImage allocates its own and drops it, so only the largest one
+// is held at a time. The least of two redraws: a goroutine an earlier test
+// left running can only add to the count.
+func jevRedrawHeld(t testing.TB, raw string, cfg image.Config) uint64 {
+	allocated := func() uint64 {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		return m.TotalAlloc
+	}
+	all := uint64(math.MaxUint64)
+	for range 2 {
+		before := allocated()
+		if jevAsset(context.Background(), raw) == nil {
+			t.Fatal("the largest image was skipped")
+		}
+		all = min(all, allocated()-before)
+	}
+	total, largest := scaleBuffers(cfg.Width, cfg.Height)
+	return all - total + largest
+}
+
+// scaleBuffers is the size of the buffers draw.BiLinear.Scale allocates
+// when jevNormalizeImage scales a w×h image, in all and the largest: one
+// [4]float64 per destination column and source row of each band.
+func scaleBuffers(w, h int) (total, largest uint64) {
+	long := max(w, h)
+	if long <= jevImageMaxSide {
+		return 0, 0
+	}
+	dw, dh := max(1, w*jevImageMaxSide/long), max(1, h*jevImageMaxSide/long)
+	for y := 0; y < dh; y += jevScaleBandRows {
+		y1 := min(y+jevScaleBandRows, dh)
+		band := uint64(dw*(y1*h/dh-y*h/dh)) * 32
+		total, largest = total+band, max(largest, band)
+	}
+	return total, largest
 }
 
 // jevNormalizeMemoryBudget is what redrawing may take of the memory (512 MB when this was sized, 1024 MB since 0.8.0) the
@@ -535,7 +578,7 @@ func TestJevNormalizeMemory(t *testing.T) {
 	check := func(name, raw string) {
 		t.Helper()
 		peak := jevNormalizePeak(t, raw, slots)
-		t.Logf("peak memory of %d concurrent redraws of %s: %d MiB", slots, name, peak>>20)
+		t.Logf("memory of %d concurrent redraws of %s: at most %d MiB", slots, name, peak>>20)
 		if peak > jevNormalizeMemoryBudget {
 			t.Fatalf("%s: redrawing takes %d MiB, over the budget of %d MiB", name, peak>>20, jevNormalizeMemoryBudget>>20)
 		}

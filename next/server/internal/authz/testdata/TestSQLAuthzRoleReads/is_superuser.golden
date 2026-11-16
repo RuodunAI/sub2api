@@ -1,4 +1,5 @@
 -- sql
-SELECT EXISTS (SELECT 1 FROM "roles" WHERE superuser AND key IN (SELECT DISTINCT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ANY($1) ORDER BY 1))
+SELECT EXISTS (SELECT 1 FROM "roles" WHERE superuser AND key IN (SELECT DISTINCT substr(v1, 3) FROM "casbin_rule" WHERE ptype = $1 AND v0 = ANY($2) ORDER BY 1))
 -- vars
-$1 store.Strings [u:7]
+$1 string "g"
+$2 store.Strings [u:7]

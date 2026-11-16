@@ -6,7 +6,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
 
@@ -24,9 +23,7 @@ func TestSQLCasbinRuleReads(t *testing.T) {
 	var dest []map[string]any
 	assertRuns(t, map[string]func(*gorm.DB) error{
 		"role_keys_of": func(db *gorm.DB) error { return RoleKeysOf(db, []int64{7, 8}).Scan(&dest).Error },
-		"role_subs_of": func(db *gorm.DB) error {
-			return db.Raw(RoleSubsOfUID, map[string]any{"uid": 7}).Scan(&dest).Error
-		},
+		"role_subs_of": func(db *gorm.DB) error { return RoleSubsOf(db, 7).Scan(&dest).Error },
 		"lock_members": func(db *gorm.DB) error {
 			_, err := LockMembers(db, "super_admin")
 			return err
@@ -40,8 +37,9 @@ func TestSQLCasbinRuleReads(t *testing.T) {
 		"members_of": func(db *gorm.DB) error {
 			return db.Raw(`SELECT m FROM roles r, LATERAL (`+MembersOfRole+`) rm(m) WHERE r.key = ?`, "admin").Scan(&dest).Error
 		},
-		"delete_scoped": func(db *gorm.DB) error {
-			return db.Raw(DeleteScopedSQL, store.Strings{`^group:5(:|$)`}).Scan(&dest).Error
+		"scopes": func(db *gorm.DB) error {
+			_, err := Scopes(db, "plugin:demo:read")
+			return err
 		},
 	})
 }
@@ -66,6 +64,10 @@ func TestSQLCasbinRuleWrites(t *testing.T) {
 			return err
 		},
 		"drop_permissions": func(db *gorm.DB) error { return DropPermissions(db, []string{"plugin:demo:read"}) },
+		"clear_scopes": func(db *gorm.DB) error {
+			_, err := ClearScopes(db, []string{`(^|/)group/5(/|$)`})
+			return err
+		},
 		"sync_superusers": func(db *gorm.DB) error {
 			_, err := SyncSuperusers(db)
 			return err

@@ -1,4 +1,5 @@
 -- sql
-SELECT substr(cr.v0, 3)::bigint FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v1 = $1 ORDER BY 1 FOR UPDATE
+SELECT substr(v0, 3)::bigint FROM "casbin_rule" WHERE ptype = $1 AND v1 = $2 ORDER BY 1 FOR UPDATE
 -- vars
-$1 string "r:super_admin"
+$1 string "g"
+$2 string "r:super_admin"

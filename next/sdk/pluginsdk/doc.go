@@ -75,9 +75,19 @@
 // its context is done, with an error that says so. Plugin code does not
 // import pgx.
 //
+// Statements are built by GORM on the models (Model/Table, Where, Select,
+// Create, Updates, Delete, clause.OnConflict, clause.Returning), not
+// written out: Raw and Exec only combine built queries ("(?) UNION ALL
+// (?)", pgdb.Exists, pgdb.InsertSelect), and pgdb.NextIDs, LockTable and
+// TryXactLock cover sequences and locks. SQL text (of Raw, Exec, Where,
+// Select, Order, Joins, Table, gorm.Expr, clause.Expr ...) is a constant:
+// values go in as ? parameters, and a column a request picks through a
+// fixed whitelist into clause.Column or clause.OrderByColumn. TestNoRawSQL
+// in package pgdb checks the SDK and the plugins of the repository.
+//
 // SDK 0.2.0 changed Host.DB, which returned a *pgxpool.Pool before: a
-// plugin moving to it replaces its pgx calls with GORM (Raw, Exec, Scan;
-// pgdb.Array for array parameters and columns), and a test double of Host
+// plugin moving to it replaces its pgx calls with GORM (pgdb.Array for
+// array parameters and columns), and a test double of Host
 // returns a *gorm.DB (pgdb.Open). A plugin that stays on pgx keeps the
 // older SDK, or opens its own pool from Host.DSN, dialling through
 // egress.DialContext when Host.EgressInstalled: the DSN carries the

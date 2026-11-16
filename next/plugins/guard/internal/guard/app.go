@@ -118,12 +118,13 @@ func (p *Plugin) RunJob(ctx context.Context, in *pluginv1.RunJobRequest) (*plugi
 	case JobRollup:
 		// Recompute the hourly rows of the last day from the minutely rows
 		// (idempotent; covers late events and the current partial hour).
-		res := db.Exec(`INSERT INTO stats_hourly (hour, group_id, model, requests, blocked)
-			SELECT date_trunc('hour', minute, 'UTC'), group_id, model, sum(requests), sum(blocked)
-			FROM stats_minutely WHERE minute >= date_trunc('hour', ?::timestamptz, 'UTC')
-			GROUP BY 1, 2, 3
-			ON CONFLICT (hour, group_id, model) DO UPDATE
-			SET requests = EXCLUDED.requests, blocked = EXCLUDED.blocked`, now.Add(-rollupLookback))
+		hours := db.Model(&model.StatsMinutely{}).
+			Select("date_trunc('hour', minute, 'UTC'), group_id, model, sum(requests), sum(blocked)").
+			Where("minute >= date_trunc('hour', ?::timestamptz, 'UTC')", now.Add(-rollupLookback)).
+			Group("1, 2, 3")
+		res := pgdb.InsertSelect(db, "stats_hourly", []string{"hour", "group_id", "model", "requests", "blocked"}, hours,
+			&clause.OnConflict{Columns: []clause.Column{{Name: "hour"}, {Name: "group_id"}, {Name: "model"}},
+				DoUpdates: clause.AssignmentColumns([]string{"requests", "blocked"})})
 		if res.Error != nil {
 			return nil, status.Errorf(codes.Internal, "rollup: %v", res.Error)
 		}
@@ -140,7 +141,7 @@ func (p *Plugin) RunJob(ctx context.Context, in *pluginv1.RunJobRequest) (*plugi
 			{&model.BlockLog{}, "occurred_at", now.Add(-longRetention)},
 			{&model.ProcessedEvent{}, "processed_at", now.Add(-longRetention)},
 		} {
-			res := db.Where(q.column+" < ?", q.before).Delete(q.model)
+			res := db.Where(clause.Lt{Column: clause.Column{Name: q.column}, Value: q.before}).Delete(q.model)
 			if res.Error != nil {
 				return nil, status.Errorf(codes.Internal, "cleanup: %v", res.Error)
 			}

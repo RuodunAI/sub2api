@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Grants of a role (CONTRACTS §21): a p row of casbin_rule per key, an
@@ -103,8 +105,8 @@ func resolvePermissions(ctx context.Context, tx *gorm.DB, keys []string) ([]stri
 // grantablePermissions selects the key, whether removed, risk, scope type
 // and scope of the permissions keys names, staged ones aside.
 func grantablePermissions(db *gorm.DB, keys []string) *gorm.DB {
-	return db.Raw(`SELECT key, status = 'removed', risk, scope_type, scope FROM permissions
-WHERE key = ANY(?) AND status <> 'staged'`, store.Strings(keys))
+	return db.Model(&model.Permission{}).Select("key, status = 'removed', risk, scope_type, scope").
+		Where("key = ANY(?) AND status <> 'staged'", store.Strings(keys))
 }
 
 // invalidKeys is the refusal of keys that do not parse or name a scope
@@ -267,45 +269,34 @@ func (s *Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int
 	if err != nil || len(ids) == 0 {
 		return 0, err
 	}
-	var actor *int64
-	if actorID > 0 {
-		actor = &actorID
-	}
 	db := store.G(ctx, tx)
-	if err := lockVersion(db).Error; err != nil {
+	if err := lockVersion(db); err != nil {
 		return 0, err
 	}
-	// No row: nothing named ids; the versions stay.
-	var c authzChange
-	if err := clearScopeGrants(db, patterns, actor, kind, ids).Row().Scan(&c.Version, &c.Policy); err != nil {
-		if store.IsNoRows(err) {
-			return 0, nil
+	gone, err := casbinrule.ClearScopes(db, patterns)
+	if err != nil || len(gone) == 0 {
+		return 0, err // none named ids: the versions stay
+	}
+	byRole := map[int64][]string{}
+	for _, g := range gone {
+		byRole[g.RoleID] = append(byRole[g.RoleID], g.Key)
+	}
+	for _, id := range slices.Sorted(maps.Keys(byRole)) {
+		keys := slices.Sorted(slices.Values(byRole[id]))
+		if err := s.audit(ctx, tx, actorID, "authz.scope.clear", "role", id, map[string]any{"kind": kind, "ids": ids, "keys": keys}); err != nil {
+			return 0, err
 		}
+	}
+	m, err := bumpVersions(db, true)
+	if err != nil {
 		return 0, err
 	}
+	c := authzChange{Version: m.Version, Policy: m.PolicyVersion}
 	s.mu.Lock()
 	s.pending[c.Version] = c
 	s.mu.Unlock()
 	s.committedLater(c.Version)
 	return c.Version, nil
-}
-
-// clearScopeGrants deletes the scoped grants matching patterns, audits them
-// per role and moves those roles' revisions and both versions, returning
-// the versions when any went.
-func clearScopeGrants(db *gorm.DB, patterns []string, actor *int64, kind string, ids []int64) *gorm.DB {
-	return db.Raw(`WITH changed AS (
-    `+casbinrule.DeleteScopedSQL+`
-), audited AS (
-    INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
-    SELECT ?, 'authz.scope.clear', 'role', role_id::text,
-        jsonb_build_object('kind', ?::text, 'ids', to_jsonb(?::bigint[]), 'keys', to_jsonb(array_agg(key ORDER BY key)))
-    FROM changed GROUP BY role_id
-), revised AS (
-    `+casbinrule.ReviseChanged+`
-)
-UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM changed)
-RETURNING version, policy_version`, store.Strings(patterns), actor, kind, store.Int64s(ids))
 }
 
 // scopeRefsOf returns the rows the scope of p names, by kind: its group
@@ -328,39 +319,52 @@ func scopeRefsOf(p perm.Pattern) map[string]int64 {
 // clearing of a delete (ClearScopeGrants) would never see it. Only the
 // keys a write adds are checked: a grant a role holds already stays.
 func checkScopeRefs(ctx context.Context, tx *gorm.DB, keys []string) error {
-	var kinds, refKeys []string
-	var ids []int64
+	type ref struct {
+		key, kind string
+		id        int64
+	}
+	var refs []ref
+	byKind := map[string]store.Int64s{}
 	for _, k := range keys {
 		p, err := perm.Parse(k)
 		if err != nil {
 			continue
 		}
 		for kind, id := range scopeRefsOf(p) {
-			kinds, ids, refKeys = append(kinds, kind), append(ids, id), append(refKeys, k)
+			refs = append(refs, ref{key: k, kind: kind, id: id})
+			byKind[kind] = append(byKind[kind], id)
 		}
 	}
-	if len(ids) == 0 {
-		return nil
+	db := store.G(ctx, tx)
+	found := map[string][]int64{}
+	for _, kind := range slices.Sorted(maps.Keys(byKind)) {
+		if rows, ok := scopeRefRows[kind]; ok {
+			var ids []int64
+			if err := rows(db).Where("id = ANY(?)", byKind[kind]).Pluck("id", &ids).Error; err != nil {
+				return err
+			}
+			found[kind] = ids
+		}
 	}
 	var missing []string
-	if err := missingScopeRefs(store.G(ctx, tx), refKeys, kinds, ids).Scan(&missing).Error; err != nil {
-		return err
+	for _, r := range refs {
+		if !slices.Contains(found[r.kind], r.id) {
+			missing = append(missing, r.key)
+		}
 	}
 	if len(missing) == 0 {
 		return nil
 	}
+	slices.Sort(missing)
 	return core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "unknown_scope",
 		Message: "the scope names a row that does not exist: " + strings.Join(dedupe(missing), ", ")})
 }
 
-// missingScopeRefs selects the keys of keys whose row (kinds[i], ids[i])
-// does not exist: a live account, group or proxy (scopeRefPatterns' kinds).
-func missingScopeRefs(db *gorm.DB, keys, kinds []string, ids []int64) *gorm.DB {
-	return db.Raw(`SELECT t.key FROM unnest(?::text[], ?::text[], ?::bigint[]) AS t(key, kind, id)
-WHERE NOT CASE t.kind
-    WHEN '`+core.ScopeRefAccount+`' THEN EXISTS (SELECT 1 FROM accounts WHERE deleted_at IS NULL AND id = t.id)
-    WHEN '`+core.ScopeRefGroup+`' THEN EXISTS (SELECT 1 FROM groups WHERE id = t.id)
-    WHEN '`+core.ScopeRefProxy+`' THEN EXISTS (SELECT 1 FROM proxies WHERE id = t.id)
-    ELSE false END
-ORDER BY 1`, store.Strings(keys), store.Strings(kinds), store.Int64s(ids))
+// scopeRefRows are the rows a scope can name, by kind (scopeRefPatterns'
+// kinds): a live account, a group, a proxy. A scope naming another kind
+// names nothing.
+var scopeRefRows = map[string]func(*gorm.DB) *gorm.DB{
+	core.ScopeRefAccount: func(db *gorm.DB) *gorm.DB { return db.Model(&model.Account{}).Where("deleted_at IS NULL") },
+	core.ScopeRefGroup:   func(db *gorm.DB) *gorm.DB { return db.Model(&model.Group{}) },
+	core.ScopeRefProxy:   func(db *gorm.DB) *gorm.DB { return db.Model(&model.Proxy{}) },
 }

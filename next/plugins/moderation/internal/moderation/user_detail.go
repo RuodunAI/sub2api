@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
@@ -90,11 +91,14 @@ func (p *Plugin) getUserDetail(ctx context.Context, req *pluginv1.HTTPRequest) (
 }
 
 func loadUserSummary(ctx context.Context, db *gorm.DB, d *UserDetail, _ time.Time) error {
-	s := &d.Summary
-	return queryRow(db, `SELECT `+severityCounts+`, count(*) FILTER (WHERE review_status = 'pending'),
-			count(*) FILTER (WHERE review_status = 'confirmed'), count(*) FILTER (WHERE review_status = 'false_positive')
-		FROM events WHERE user_id = ? AND `+suspiciousResult, d.UserID).
-		Scan(&s.Total, &s.BySeverity.High, &s.BySeverity.Medium, &s.BySeverity.Low, &s.Pending, &s.Confirmed, &s.FalsePositive)
+	var r struct{ Total, High, Medium, Low, Pending, Confirmed, FalsePositive int64 }
+	err := db.Model(&model.Event{}).Select(severityCounts+`, count(*) FILTER (WHERE review_status = 'pending') AS pending,
+			count(*) FILTER (WHERE review_status = 'confirmed') AS confirmed,
+			count(*) FILTER (WHERE review_status = 'false_positive') AS false_positive`).
+		Where("user_id = ? AND "+suspiciousResult, d.UserID).Scan(&r).Error
+	d.Summary = UserSummary{Total: r.Total, Pending: r.Pending, Confirmed: r.Confirmed, FalsePositive: r.FalsePositive,
+		BySeverity: SeverityCounts{High: r.High, Medium: r.Medium, Low: r.Low}}
+	return err
 }
 
 // loadUserContext: the group of the latest record (the plugin cannot read
@@ -103,7 +107,7 @@ func loadUserSummary(ctx context.Context, db *gorm.DB, d *UserDetail, _ time.Tim
 func (p *Plugin) loadUserContext(ctx context.Context, db *gorm.DB, d *UserDetail, now time.Time) error {
 	uc := &d.Context
 	var group int64
-	err := queryRow(db, `SELECT group_id FROM events WHERE user_id = ? ORDER BY created_at DESC LIMIT 1`, d.UserID).Scan(&group)
+	err := db.Model(&model.Event{}).Select("group_id").Where("user_id = ?", d.UserID).Order("created_at DESC").Take(&group).Error
 	switch {
 	case err == nil:
 		uc.GroupID = &group
@@ -127,18 +131,15 @@ func (p *Plugin) loadSources(db *gorm.DB, uid int64, since time.Time, group *int
 	if err != nil {
 		return nil, err
 	}
-	q := db.Raw(`SELECT group_id, flow_id, flow_version, count(*)
-		FROM events WHERE user_id = ? AND created_at >= ? AND `+suspiciousResult+`
-		GROUP BY group_id, flow_id, flow_version ORDER BY max(created_at) DESC LIMIT 50`, uid, since)
 	sources := []ContextSource{}
-	var s ContextSource
-	err = eachRow(q, []any{&s.GroupID, &s.FlowID, &s.Version, &s.Count}, func() error {
-		src := s
-		src.FlowName = names[s.FlowID]
-		src.Current = group != nil && flow != nil && s.GroupID == *group && s.FlowID == flow.FlowID && s.Version == flow.Version
-		sources = append(sources, src)
-		return nil
-	})
+	err = db.Model(&model.Event{}).Select("group_id, flow_id, flow_version AS version, count(*) AS count").
+		Where("user_id = ? AND created_at >= ? AND "+suspiciousResult, uid, since).
+		Group("group_id, flow_id, flow_version").Order("max(created_at) DESC").Limit(50).Scan(&sources).Error
+	for i := range sources {
+		s := &sources[i]
+		s.FlowName = names[s.FlowID]
+		s.Current = group != nil && flow != nil && s.GroupID == *group && s.FlowID == flow.FlowID && s.Version == flow.Version
+	}
 	return sources, err
 }
 
@@ -146,17 +147,13 @@ func (p *Plugin) loadSources(db *gorm.DB, uid int64, since time.Time, group *int
 // counts included.
 func (p *Plugin) loadUserDaily(ctx context.Context, db *gorm.DB, d *UserDetail, now time.Time) error {
 	p.flushStats(ctx)
-	var err error
-	d.Daily, err = collect(db.Raw(`SELECT day, group_id, audited, suspicious, high, errors, last_hit_at FROM user_daily
-		WHERE user_id = ? AND day >= ? ORDER BY day`, d.UserID, now.Add(-recentDays*24*time.Hour).Truncate(24*time.Hour)), func(r row) (UserDay, error) {
-		var u UserDay
-		var day time.Time
-		err := r.Scan(&day, &u.GroupID, &u.Audited, &u.Suspicious, &u.High, &u.Errors, &u.LastHitAt)
-		u.Day, u.LastHitAt = day.Format(time.DateOnly), utcPtr(u.LastHitAt)
-		return u, err
-	})
-	if d.Daily == nil {
-		d.Daily = []UserDay{}
+	var rows []model.UserDaily
+	err := db.Select("day, group_id, audited, suspicious, high, errors, last_hit_at").
+		Where("user_id = ? AND day >= ?", d.UserID, now.Add(-recentDays*24*time.Hour).Truncate(24*time.Hour)).Order("day").Find(&rows).Error
+	d.Daily = make([]UserDay, len(rows))
+	for i, r := range rows {
+		d.Daily[i] = UserDay{Day: r.Day.Format(time.DateOnly), GroupID: r.GroupID, Audited: r.Audited, Suspicious: r.Suspicious,
+			High: r.High, Errors: r.Errors, LastHitAt: utcPtr(r.LastHitAt)}
 	}
 	return err
 }

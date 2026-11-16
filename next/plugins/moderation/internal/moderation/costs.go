@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -292,13 +293,20 @@ func (p *Plugin) retainedFrom(now, from time.Time) *time.Time {
 	return nil
 }
 
-// costSums selects a CostSummary (targets) from costs rows.
-const costSums = `coalesce(round(sum(cost) * 100000000), 0)::bigint, coalesce(sum(priced_calls + unpriced_calls + free_calls), 0),
-	coalesce(sum(priced_calls), 0), coalesce(sum(unpriced_calls), 0), coalesce(sum(unpriced_tokens), 0), coalesce(sum(free_calls), 0),
-	coalesce(sum(tokens_in), 0), coalesce(sum(tokens_out), 0)`
+// costSums selects the columns of a costSumRow from costs rows.
+const costSums = `coalesce(round(sum(cost) * 100000000), 0)::bigint AS units,
+	coalesce(sum(priced_calls + unpriced_calls + free_calls), 0) AS calls, coalesce(sum(priced_calls), 0) AS priced_calls,
+	coalesce(sum(unpriced_calls), 0) AS unpriced_calls, coalesce(sum(unpriced_tokens), 0) AS unpriced_tokens,
+	coalesce(sum(free_calls), 0) AS free_calls, coalesce(sum(tokens_in), 0) AS tokens_in, coalesce(sum(tokens_out), 0) AS tokens_out`
 
-func (s *CostSummary) targets() []any {
-	return []any{&s.units, &s.Calls, &s.PricedCalls, &s.UnpricedCalls, &s.UnpricedTokens, &s.FreeCalls, &s.TokensIn, &s.TokensOut}
+// costSumRow scans costSums: CostSummary keeps its units unexported.
+type costSumRow struct {
+	Units, Calls, PricedCalls, UnpricedCalls, UnpricedTokens, FreeCalls, TokensIn, TokensOut int64
+}
+
+func (r costSumRow) summary() CostSummary {
+	return CostSummary{units: r.Units, Calls: r.Calls, PricedCalls: r.PricedCalls, UnpricedCalls: r.UnpricedCalls,
+		UnpricedTokens: r.UnpricedTokens, FreeCalls: r.FreeCalls, TokensIn: r.TokensIn, TokensOut: r.TokensOut}
 }
 
 // getCosts: day buckets start at the caller's midnight (tz_offset_minutes,
@@ -333,43 +341,55 @@ func (p *Plugin) getCosts(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 // included (a test shows up at once); the trend is bucketed by ck.
 func (p *Plugin) loadCostReport(ctx context.Context, db *gorm.DB, r *CostReport, ck clock) error {
 	p.flushStats(ctx)
-	if err := queryRow(db, `SELECT `+costSums+` FROM costs WHERE hour >= ?`, r.From).Scan(r.Totals.targets()...); err != nil {
+	costs := func() *gorm.DB { return db.Model(&model.Cost{}).Where("hour >= ?", r.From) }
+	var totals costSumRow
+	if err := costs().Select(costSums).Scan(&totals).Error; err != nil {
 		return err
 	}
-	var err error
-	r.ByChannel, err = collect(db.Raw(`SELECT k.channel_id, coalesce(c.name, ''), coalesce(c.type, ''), coalesce(c.model, ''), coalesce(c.billing_model, ''),
-			c.id IS NULL OR c.deleted_at IS NOT NULL, `+costSums+`
-		FROM costs k LEFT JOIN channels c ON c.id = k.channel_id WHERE k.hour >= ?
-		GROUP BY k.channel_id, c.id ORDER BY sum(k.cost) DESC, k.channel_id`, r.From), func(rw row) (ChannelCost, error) {
-		var c ChannelCost
-		err := rw.Scan(append([]any{&c.ChannelID, &c.Name, &c.Type, &c.Model, &c.BillingModel, &c.Deleted}, c.Summary.targets()...)...)
-		return c, err
-	})
+	r.Totals = totals.summary()
+	var channels []struct {
+		ChannelID                       int64
+		Name, Type, Model, BillingModel string
+		Deleted                         bool
+		Sum                             costSumRow `gorm:"embedded"`
+	}
+	err := db.Table("costs k").Select(`k.channel_id, coalesce(c.name, '') AS name, coalesce(c.type, '') AS type, coalesce(c.model, '') AS model,
+			coalesce(c.billing_model, '') AS billing_model, c.id IS NULL OR c.deleted_at IS NOT NULL AS deleted, `+costSums).
+		Joins("LEFT JOIN channels c ON c.id = k.channel_id").Where("k.hour >= ?", r.From).
+		Group("k.channel_id, c.id").Order("sum(k.cost) DESC, k.channel_id").Scan(&channels).Error
 	if err != nil {
 		return err
 	}
-	r.BySource, err = collect(db.Raw(`SELECT source, `+costSums+` FROM costs WHERE hour >= ? GROUP BY source ORDER BY source`, r.From), func(rw row) (SourceCost, error) {
-		var s SourceCost
-		err := rw.Scan(append([]any{&s.Source}, s.Summary.targets()...)...)
-		return s, err
-	})
-	if err != nil {
+	for _, c := range channels {
+		r.ByChannel = append(r.ByChannel, ChannelCost{ChannelID: c.ChannelID, Name: c.Name, Type: c.Type, Model: c.Model,
+			BillingModel: c.BillingModel, Deleted: c.Deleted, Summary: c.Sum.summary()})
+	}
+	var sources []struct {
+		Source string
+		Sum    costSumRow `gorm:"embedded"`
+	}
+	if err := costs().Select("source, " + costSums).Group("source").Order("source").Scan(&sources).Error; err != nil {
+		return err
+	}
+	for _, s := range sources {
+		r.BySource = append(r.BySource, SourceCost{Source: s.Source, Summary: s.Sum.summary()})
+	}
+	var hours []struct {
+		Hour  time.Time
+		Units int64
+	}
+	if err := costs().Select("hour, round(sum(cost) * 100000000)::bigint AS units").Group("hour").Scan(&hours).Error; err != nil {
 		return err
 	}
 	byBucket := map[int64]int64{}
-	var b time.Time
-	var units int64
-	if err := eachRow(db.Raw(`SELECT hour, `+costUnits("sum(cost)")+` FROM costs WHERE hour >= ? GROUP BY hour`, r.From), []any{&b, &units}, func() error {
-		byBucket[ck.bucket(b, r.Bucket).Unix()] += units
-		return nil
-	}); err != nil {
-		return err
+	for _, h := range hours {
+		byBucket[ck.bucket(h.Hour, r.Bucket).Unix()] += h.Units
 	}
 	step := 24 * time.Hour
 	if r.Bucket == "hour" {
 		step = time.Hour
 	}
-	for b = ck.bucket(r.From.Truncate(time.Hour), r.Bucket); !b.After(r.To); b = b.Add(step) {
+	for b := ck.bucket(r.From.Truncate(time.Hour), r.Bucket); !b.After(r.To); b = b.Add(step) {
 		r.Trend = append(r.Trend, CostPoint{Bucket: b, Cost: formatCost(byBucket[b.Unix()])})
 	}
 	return nil
@@ -379,12 +399,15 @@ func (p *Plugin) loadCostReport(ctx context.Context, db *gorm.DB, r *CostReport,
 // sums included.
 func (p *Plugin) channelCosts30d(ctx context.Context, db *gorm.DB, since time.Time, channels []int64) (map[int64]CostSummary, error) {
 	p.flushStats(ctx)
-	out := map[int64]CostSummary{}
-	var id int64
-	var s CostSummary
-	err := eachRow(db.Raw(`SELECT channel_id, `+costSums+` FROM costs WHERE hour >= ? AND channel_id = ANY(?) GROUP BY channel_id`, since, pgdb.Array[int64](channels)), append([]any{&id}, s.targets()...), func() error {
-		out[id] = s
-		return nil
-	})
+	var rows []struct {
+		ChannelID int64
+		Sum       costSumRow `gorm:"embedded"`
+	}
+	err := db.Model(&model.Cost{}).Select("channel_id, "+costSums).Where("hour >= ? AND channel_id = ANY(?)", since, pgdb.Array[int64](channels)).
+		Group("channel_id").Scan(&rows).Error
+	out := make(map[int64]CostSummary, len(rows))
+	for _, r := range rows {
+		out[r.ChannelID] = r.Sum.summary()
+	}
 	return out, err
 }

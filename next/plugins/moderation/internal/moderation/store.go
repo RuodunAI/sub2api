@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"time"
 
 	"gorm.io/gorm"
@@ -227,7 +226,9 @@ func (p *Plugin) writeEvents(ctx context.Context, evs []eventRec) ([]int64, erro
 	if err != nil {
 		return nil, err
 	}
-	ids, err := eventIDs(db, len(evs))
+	// Drawn ascending: a batch's records get them in order, as they did
+	// one INSERT each.
+	ids, err := pgdb.NextIDs(db, "events", len(evs))
 	if err != nil {
 		return nil, err
 	}
@@ -240,21 +241,6 @@ func (p *Plugin) writeEvents(ctx context.Context, evs []eventRec) ([]int64, erro
 	if err := pgdb.InsertAll(db, rows, returningID); err != nil {
 		return nil, err
 	}
-	return ids, nil
-}
-
-// eventIDs draws n ids from the sequence of events.id, ascending: a batch's
-// records get them in order, as they did one INSERT each.
-func eventIDs(db *gorm.DB, n int) ([]int64, error) {
-	ids := make([]int64, 0, n)
-	err := db.Raw(`SELECT nextval(pg_get_serial_sequence('events', 'id')) FROM generate_series(1, ?)`, n).Scan(&ids).Error
-	if err != nil {
-		return nil, err
-	}
-	if len(ids) != n {
-		return nil, fmt.Errorf("moderation: drew %d event ids, want %d", len(ids), n)
-	}
-	slices.Sort(ids)
 	return ids, nil
 }
 
@@ -368,8 +354,9 @@ func enterWatch(tx *gorm.DB, c *config, w Watch, found bool, uid int64, now time
 	}
 	exp := now.Add(c.watchFor)
 	w = Watch{UserID: uid, Level: c.defaultLevel, Source: "auto", SinceAt: now, ExpiresAt: &exp, ViolationEpoch: newEpoch()}
-	if err := tx.Exec(`INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, w.UserID, w.Level, w.Source, now, exp, w.ViolationEpoch, now).Error; err != nil {
+	err = tx.Create(&model.Watch{UserID: w.UserID, Level: w.Level, Source: w.Source, SinceAt: now, ExpiresAt: &exp,
+		ViolationEpoch: w.ViolationEpoch, UpdatedAt: now}).Error
+	if err != nil {
 		return w, false, false, err
 	}
 	err = watchEvent(tx, watchChange{uid: uid, action: "auto_add", to: w.Level, reason: "首次可疑记录 / first suspicious record"})
@@ -392,7 +379,9 @@ func escalates(tx *gorm.DB, c *config, w Watch, found bool, uid int64, now time.
 	}
 	since := now.Add(-c.escalateWindow)
 	var manual *time.Time
-	if err := queryRow(tx, `SELECT max(created_at) FROM watch_events WHERE user_id = ? AND (operator_id IS NOT NULL OR action IN ('lock', 'unlock'))`, uid).Scan(&manual); err != nil {
+	err = tx.Model(&model.WatchEvent{}).Select("max(created_at)").
+		Where("user_id = ? AND (operator_id IS NOT NULL OR action IN ('lock', 'unlock'))", uid).Row().Scan(&manual)
+	if err != nil {
 		return 0, false, err
 	}
 	if manual != nil && manual.After(since) {
@@ -417,10 +406,12 @@ func escalateEntry(tx *gorm.DB, c *config, w Watch, found bool, uid, n int64, no
 	}
 	exp := now.Add(c.watchFor)
 	w.UserID, w.Level, w.Source, w.SinceAt, w.ExpiresAt, w.ViolationEpoch, w.ViolationCount = uid, LevelEnforce, "auto", now, &exp, newEpoch(), 0
-	if err := tx.Exec(`INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, updated_at)
-		VALUES (?, 'enforce', 'auto', ?, ?, ?, ?)
-		ON CONFLICT (user_id) DO UPDATE SET level = 'enforce', source = 'auto', since_at = ?, expires_at = ?,
-			violation_epoch = ?, violation_count = 0, updated_at = ?`, w.UserID, now, exp, w.ViolationEpoch, now, now, exp, w.ViolationEpoch, now).Error; err != nil {
+	err := tx.Clauses(clause.OnConflict{
+		Columns:   columns("user_id"),
+		DoUpdates: clause.AssignmentColumns([]string{"level", "source", "since_at", "expires_at", "violation_epoch", "violation_count", "updated_at"}),
+	}).Create(&model.Watch{UserID: w.UserID, Level: LevelEnforce, Source: "auto", SinceAt: now, ExpiresAt: &exp,
+		ViolationEpoch: w.ViolationEpoch, UpdatedAt: now}).Error
+	if err != nil {
 		return w, err
 	}
 	return w, watchEvent(tx, watchChange{uid: w.UserID, action: "auto_escalate", from: from, to: LevelEnforce,
@@ -454,12 +445,15 @@ func windowText(sec int) (en, zh string) {
 func countWatchHit(tx *gorm.DB, c *config, w Watch, e eventRec, eventID int64, now time.Time) error {
 	counts := w.Level == LevelObserve || (c.defaultLevel == LevelEnforce && w.Level == LevelEnforce)
 	if !counts {
-		return tx.Exec(`UPDATE watchlist SET hit_count = hit_count + 1, hits_since_seen = hits_since_seen + 1, last_hit_at = ?, updated_at = ? WHERE user_id = ?`, now, now, e.UserID).Error
+		return tx.Model(&model.Watch{}).Where("user_id = ?", e.UserID).Updates(map[string]any{"hit_count": gorm.Expr("hit_count + 1"),
+			"hits_since_seen": gorm.Expr("hits_since_seen + 1"), "last_hit_at": now, "updated_at": now}).Error
 	}
 	counted := false
 	if e.RequestID != "" {
-		if err := queryRow(tx, `SELECT EXISTS(SELECT 1 FROM events WHERE user_id = ? AND request_id = ? AND counted AND id <> ?)`,
-			e.UserID, e.RequestID, eventID).Scan(&counted); err != nil {
+		var err error
+		counted, err = pgdb.Exists(tx, tx.Model(&model.Event{}).
+			Where("user_id = ? AND request_id = ? AND counted AND id <> ?", e.UserID, e.RequestID, eventID))
+		if err != nil {
 			return err
 		}
 	}
@@ -474,12 +468,15 @@ func countWatchHit(tx *gorm.DB, c *config, w Watch, e eventRec, eventID int64, n
 	inc := 0
 	if !counted {
 		inc = 1
-		if err := tx.Exec(`UPDATE events SET counted = true, violation_epoch = ? WHERE id = ?`, w.ViolationEpoch, eventID).Error; err != nil {
+		err := tx.Model(&model.Event{}).Where("id = ?", eventID).
+			Updates(map[string]any{"counted": true, "violation_epoch": w.ViolationEpoch}).Error
+		if err != nil {
 			return err
 		}
 	}
-	return tx.Exec(`UPDATE watchlist SET hit_count = hit_count + 1, hits_since_seen = hits_since_seen + 1, violation_count = violation_count + ?,
-		last_hit_at = ?, expires_at = ?, updated_at = ? WHERE user_id = ?`, inc, now, expArg, now, e.UserID).Error
+	return tx.Model(&model.Watch{}).Where("user_id = ?", e.UserID).Updates(map[string]any{"hit_count": gorm.Expr("hit_count + 1"),
+		"hits_since_seen": gorm.Expr("hits_since_seen + 1"), "violation_count": gorm.Expr("violation_count + ?", inc),
+		"last_hit_at": now, "expires_at": expArg, "updated_at": now}).Error
 }
 
 // applyBans bans the users whose suspicious requests since max(now -
@@ -513,13 +510,14 @@ func (p *Plugin) applyBans(ctx context.Context, users map[int64]bool) {
 				expires = &t
 			}
 			reason := violationsReason(n, c.BanWindowSeconds)
-			rows, err := affected(tx.Exec(`INSERT INTO blocks (user_id, reason, violations, source, created_at, expires_at, created_by)
-				VALUES (?, ?, ?, 'auto', ?, ?, NULL)
-				ON CONFLICT (user_id) DO UPDATE SET reason = EXCLUDED.reason, violations = EXCLUDED.violations,
-					source = 'auto', created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at, created_by = NULL
-				WHERE blocks.expires_at IS NOT NULL AND blocks.expires_at <= ?`, uid, reason, n, now, expires, now))
-			banned = rows > 0
-			return err
+			// An expired ban is replaced; a live one stays.
+			res := tx.Clauses(clause.OnConflict{
+				Columns:   columns("user_id"),
+				DoUpdates: clause.AssignmentColumns([]string{"reason", "violations", "source", "created_at", "expires_at", "created_by"}),
+				Where:     clause.Where{Exprs: []clause.Expression{gorm.Expr("blocks.expires_at IS NOT NULL AND blocks.expires_at <= ?", now)}},
+			}).Create(&model.Block{UserID: uid, Reason: reason, Violations: int(n), Source: "auto", CreatedAt: now, ExpiresAt: expires})
+			banned = res.RowsAffected > 0
+			return res.Error
 		})
 		if err != nil {
 			p.log.Warn("moderation: auto ban failed", "user_id", uid, "error", err.Error())
@@ -538,10 +536,10 @@ func (p *Plugin) applyBans(ctx context.Context, users map[int64]bool) {
 // lockBlockSubject must precede reading the violation baseline, modifying a
 // ban or a watch entry. The parent survives unblocking and cleanup.
 func lockBlockSubject(tx *gorm.DB, uid int64) error {
-	if err := tx.Exec(`INSERT INTO block_subjects (user_id) VALUES (?) ON CONFLICT DO NOTHING`, uid).Error; err != nil {
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.BlockSubject{UserID: uid}).Error; err != nil {
 		return err
 	}
-	return tx.Exec(`SELECT user_id FROM block_subjects WHERE user_id = ? FOR UPDATE`, uid).Error
+	return tx.Clauses(forUpdate()).Where("user_id = ?", uid).Take(&model.BlockSubject{}).Error
 }
 
 // banReached counts uid's violations of the ban window (countViolations);
@@ -560,11 +558,12 @@ func banReached(tx *gorm.DB, c *config, uid int64, now time.Time) (n int64, reac
 // the start of the user's last (expired) ban.
 func countViolations(db *gorm.DB, uid int64, since time.Time) (int64, error) {
 	var n int64
-	err := queryRow(db, `SELECT count(DISTINCT CASE WHEN request_id = '' THEN id::text ELSE request_id END) FROM events
-		WHERE user_id = ? AND `+suspiciousResult+` AND review_status <> 'false_positive' AND NOT replayed AND created_at >= ?
-		  AND NOT (verdict = 'flag' AND flow_id = 0)
-		  AND created_at > coalesce((SELECT at FROM unblocks WHERE user_id = ?), '-infinity'::timestamptz)
-		  AND created_at > coalesce((SELECT created_at FROM blocks WHERE user_id = ?), '-infinity'::timestamptz)`, uid, since, uid, uid).Scan(&n)
+	err := db.Model(&model.Event{}).Select("count(DISTINCT CASE WHEN request_id = '' THEN id::text ELSE request_id END)").
+		Where("user_id = ? AND review_status <> 'false_positive' AND NOT replayed AND created_at >= ?", uid, since).
+		Where(suspiciousResult).Where("NOT (verdict = 'flag' AND flow_id = 0)").
+		Where("created_at > coalesce((?), '-infinity'::timestamptz)", db.Model(&model.Unblock{}).Select("at").Where("user_id = ?", uid)).
+		Where("created_at > coalesce((?), '-infinity'::timestamptz)", db.Model(&model.Block{}).Select("created_at").Where("user_id = ?", uid)).
+		Row().Scan(&n)
 	return n, err
 }
 
@@ -603,20 +602,16 @@ func (p *Plugin) reloadBlocks(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	q := db.Raw(`SELECT user_id, expires_at FROM blocks WHERE expires_at IS NULL OR expires_at > ?`, p.now().UTC())
-	m := map[int64]time.Time{}
-	var uid int64
-	var exp *time.Time
-	err = eachRow(q, []any{&uid, &exp}, func() error {
-		if exp != nil {
-			m[uid] = *exp
-		} else {
-			m[uid] = time.Time{}
-		}
-		return nil
-	})
-	if err != nil {
+	var rows []model.Block
+	if err := db.Select("user_id, expires_at").Where("expires_at IS NULL OR expires_at > ?", p.now().UTC()).Find(&rows).Error; err != nil {
 		return err
+	}
+	m := make(map[int64]time.Time, len(rows))
+	for _, b := range rows {
+		m[b.UserID] = time.Time{}
+		if b.ExpiresAt != nil {
+			m[b.UserID] = *b.ExpiresAt
+		}
 	}
 	// Never put an older snapshot back over a newer reload.
 	p.blockReloadMu.Lock()
