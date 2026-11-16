@@ -130,8 +130,11 @@ func (s *Service) export(c *gin.Context, self *int64) {
 	ctx := c.Request.Context()
 	// Validate the filters before any byte of the file is sent; each page
 	// below parses them again and adds its keyset bound.
-	accounts := s.seesAccounts(ctx, self)
-	if _, err := parseFilter(c, self, accounts); err != nil {
+	accounts, err := s.seesAccounts(ctx, self)
+	if err == nil {
+		_, err = parseFilter(c, self, accounts)
+	}
+	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

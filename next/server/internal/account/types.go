@@ -363,11 +363,16 @@ func (s *Service) typeForm(c *gin.Context) {
 		return
 	}
 	schema, ui := rawOrNull(b.FormSchema), rawOrNull(b.FormUI)
-	if len(b.Type.GuardedSettings) > 0 && !s.customSettings(ctx) {
-		var err error
-		if schema, ui, err = guardForm(schema, ui, b.Type.GuardedSettings); err != nil {
-			httpapi.Fail(c, core.ErrPluginUnavailable.WithMessage(t(ctx, "the account form schema of the plugin is invalid",
-				"插件的账号表单 schema 无效")).WithCause(err))
+	if len(b.Type.GuardedSettings) > 0 {
+		custom, err := s.customSettings(ctx)
+		if err == nil && !custom {
+			if schema, ui, err = guardForm(schema, ui, b.Type.GuardedSettings); err != nil {
+				err = core.ErrPluginUnavailable.WithMessage(t(ctx, "the account form schema of the plugin is invalid",
+					"插件的账号表单 schema 无效")).WithCause(err)
+			}
+		}
+		if err != nil {
+			httpapi.Fail(c, err)
 			return
 		}
 	}

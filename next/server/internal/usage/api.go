@@ -334,8 +334,11 @@ func (d *Detail) redactForSelf() {
 // seesAccounts reports whether the caller may see the account of a usage
 // record: operator views only, and only with account:read (CONTRACTS §66.5),
 // like the accounts section of the overview.
-func (s *Service) seesAccounts(ctx context.Context, self *int64) bool {
-	return self == nil && core.Can(ctx, s.Authz, "account:read")
+func (s *Service) seesAccounts(ctx context.Context, self *int64) (bool, error) {
+	if self != nil {
+		return false, nil
+	}
+	return core.Can(ctx, s.Authz, "account:read")
 }
 
 // requestLogPlugin is the plugin whose rows have a request log in the core
@@ -538,7 +541,11 @@ func (s *Service) allUsage(c *gin.Context) { s.list(c, nil) }
 // page.next_cursor while there is more.
 func (s *Service) list(c *gin.Context, self *int64) {
 	ctx := c.Request.Context()
-	accounts := s.seesAccounts(ctx, self)
+	accounts, err := s.seesAccounts(ctx, self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	f, err := parseFilter(c, self, accounts)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -658,7 +665,11 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 	if err := g.Model(&model.BalanceLedger{}).Select("id").Where("idempotency_key = ?", "usage:"+d.RequestID).Row().Scan(&ledgerID); err == nil {
 		d.LedgerID = &ledgerID
 	}
-	accounts := s.seesAccounts(ctx, self)
+	accounts, err := s.seesAccounts(ctx, self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	if tr := d.shapeTrail(trailViewFor(self, accounts)); tr != nil && accounts {
 		s.nameTrail(ctx, tr)
 		d.AttemptTrail, _ = json.Marshal(tr)
@@ -666,8 +677,15 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 	if self != nil {
 		d.redactForSelf()
 	} else {
-		if d.PluginKey == requestLogPlugin && d.AccountID != nil && (accounts || core.Can(ctx, s.Authz, "settings:read")) {
-			d.RequestLogAccountID = d.AccountID
+		if d.PluginKey == requestLogPlugin && d.AccountID != nil {
+			settings, err := core.Can(ctx, s.Authz, "settings:read")
+			if err != nil {
+				httpapi.Fail(c, err)
+				return
+			}
+			if accounts || settings {
+				d.RequestLogAccountID = d.AccountID
+			}
 		}
 		if e, err := s.loadSettlement(ctx, s.db.Gorm, d.ID); err == nil {
 			d.Settlement = e
@@ -945,7 +963,12 @@ func (s *Service) mySummary(c *gin.Context) {
 
 func (s *Service) summarize(c *gin.Context, self *int64) {
 	ctx := c.Request.Context()
-	f, err := parseFilter(c, self, s.seesAccounts(ctx, self))
+	accounts, err := s.seesAccounts(ctx, self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	f, err := parseFilter(c, self, accounts)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

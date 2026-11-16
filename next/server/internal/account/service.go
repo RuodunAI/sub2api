@@ -347,7 +347,7 @@ func (s *Service) activePluginKeys() []string { return core.ActivePluginKeys(s.d
 // customSettings reports whether the caller may set guarded settings to
 // values other than the official ones (account:settings:custom, CONTRACTS
 // §21.3).
-func (s *Service) customSettings(ctx context.Context) bool {
+func (s *Service) customSettings(ctx context.Context) (bool, error) {
 	return core.Can(ctx, s.d.Authorizer, "account:settings:custom")
 }
 

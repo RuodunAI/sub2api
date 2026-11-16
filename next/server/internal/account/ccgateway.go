@@ -95,8 +95,12 @@ func (s *Service) checkCCGatewayRuntime(ctx context.Context, key string) (*int64
 		return nil, core.AccountPreparationFacts{}, core.ErrInvalidArgument.WithMessage("Account runtimes are not configured.").
 			WithDetails(map[string]any{"reason": "not_configured"})
 	}
+	manage, err := core.Can(ctx, s.d.Authorizer, "settings:manage")
+	if err != nil {
+		return nil, core.AccountPreparationFacts{}, err
+	}
 	var scope *int64
-	if !core.Can(ctx, s.d.Authorizer, "settings:manage") {
+	if !manage {
 		uid, _ := core.UserID(ctx)
 		scope = &uid
 	}

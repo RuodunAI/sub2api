@@ -228,8 +228,18 @@ func (s *Service) allow(c *gin.Context, e *entity, mine bool) (a access, ok bool
 		return access{own: true}, len(e.mine.perms) == 0 || httpapi.CanAny(c, s.authz, e.mine.perms...)
 	}
 	ctx := c.Request.Context()
-	if e.named != nil && !core.Can(ctx, s.authz, perm.Key(e.read)) && !core.Can(ctx, s.authz, perm.Key(e.ownRead)) {
-		return s.allowNamed(c, e)
+	if e.named != nil {
+		read, err := core.Can(ctx, s.authz, perm.Key(e.read))
+		if err == nil && !read {
+			read, err = core.Can(ctx, s.authz, perm.Key(e.ownRead))
+		}
+		if err != nil {
+			httpapi.Fail(c, err)
+			return a, false
+		}
+		if !read {
+			return s.allowNamed(c, e)
+		}
 	}
 	if !httpapi.CanAny(c, s.authz, e.read, e.ownRead) {
 		return a, false

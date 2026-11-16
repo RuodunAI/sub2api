@@ -361,7 +361,11 @@ func (s *Service) UpdateUser(ctx context.Context, actorID, id int64, in UpdateUs
 	// step-up proof; the system (actor 0, the server CLI) holds no roles and
 	// is not checked.
 	if in.Password != nil && actorID != id && actorID != 0 {
-		if !core.Can(core.WithUserID(ctx, actorID), s.authz, "user:password:reset") {
+		reset, err := core.Can(core.WithUserID(ctx, actorID), s.authz, "user:password:reset")
+		if err != nil {
+			return nil, err
+		}
+		if !reset {
 			return nil, core.ErrPermissionDenied.WithMessage("missing permission: user:password:reset").
 				WithDetails(map[string]any{"permission": "user:password:reset"})
 		}

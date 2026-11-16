@@ -21,7 +21,7 @@ import (
 // binds its own groups without account:group:bind, cannot move an account
 // out of its range, and keeps every own-level limit.
 func TestGroupScopedAccounts(t *testing.T) {
-	az := fakeAuthz{keys: map[int64][]string{}}
+	az := fakeAuthz{keys: map[int64][]string{}, undecided: map[string]bool{}}
 	e := setupWith(t, az)
 	ctx := context.Background()
 	admin := e.uid
@@ -69,6 +69,11 @@ func TestGroupScopedAccounts(t *testing.T) {
 	require.Equal(t, 200, code, out)
 	code, out = e.doAs(mgr, "PATCH", path(inG), map[string]any{"group_ids": []int64{g, h}})
 	require.Equal(t, 403, code, out)
+	// A check that cannot be decided is 503, not a refusal.
+	az.undecided["account:group:bind"] = true
+	code, out = e.doAs(mgr, "PATCH", path(inG), map[string]any{"group_ids": []int64{g, h}})
+	require.Equal(t, 503, code, out)
+	delete(az.undecided, "account:group:bind")
 	// Holding account:group:bind does not let it drop its last own group.
 	az.keys[mgr] = append(mgrKeys, "account:group:bind")
 	code, out = e.doAs(mgr, "PATCH", path(inGH), map[string]any{"group_ids": []int64{h}})

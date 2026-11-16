@@ -391,7 +391,11 @@ func (s *Service) prepare(ctx context.Context, bt core.AccountTypeBinding, raw j
 			secJSON, stJSON = mustJSON(sec), mustJSON(st)
 		}
 	}
-	if !s.customSettings(ctx) {
+	custom, err := s.customSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !custom {
 		if err := checkGuarded(ctx, bt.Type.GuardedSettings, st, old); err != nil {
 			return nil, err
 		}

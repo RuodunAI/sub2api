@@ -366,9 +366,16 @@ func (fakeTokens) VerifyAccessKey(_ context.Context, raw, _ string) (core.Access
 }
 
 // fakeAuthz grants each user a fixed key set; a nil map allows everything.
-type fakeAuthz struct{ keys map[int64][]string }
+// A check of a key in undecided cannot be decided (503).
+type fakeAuthz struct {
+	keys      map[int64][]string
+	undecided map[string]bool
+}
 
 func (a fakeAuthz) Can(ctx context.Context, uid int64, key string) (bool, error) {
+	if a.undecided[key] {
+		return false, core.ErrUnavailable
+	}
 	set, err := a.PermissionSet(ctx, uid)
 	return set.Has(key), err
 }
