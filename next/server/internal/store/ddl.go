@@ -23,10 +23,18 @@ type Ident string
 func (i Ident) ddl() string { return QuoteIdent(string(i)) }
 
 // Literal is a string constant in a DDL statement, written quoted, its
-// quotes doubled.
+// quotes doubled; one with a backslash is an escape string (E'...'), its
+// backslashes doubled too, so it reads the same whatever
+// standard_conforming_strings is.
 type Literal string
 
-func (l Literal) ddl() string { return "'" + strings.ReplaceAll(string(l), "'", "''") + "'" }
+func (l Literal) ddl() string {
+	s := strings.ReplaceAll(string(l), "'", "''")
+	if !strings.Contains(s, `\`) {
+		return "'" + s + "'"
+	}
+	return " E'" + strings.ReplaceAll(s, `\`, `\\`) + "'"
+}
 
 // DDL runs the statement of format (a constant) with its %s verbs replaced
 // by args, quoted. It runs without arguments, so GORM sends the text as it
