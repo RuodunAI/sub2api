@@ -538,7 +538,7 @@ func searchedPrefix(q string) string {
 
 func (s *Service) loadKey(ctx context.Context, id, ownerID int64) (*APIKey, error) {
 	var r keyRow
-	err := keyView(store.G(ctx, s.db.Gorm)).Where("k.id = ? AND k.user_id = ? AND k.deleted_at IS NULL", id, ownerID).Take(&r).Error
+	err := keyView(store.G(ctx, s.db.Gorm)).Scopes(ownedKey("k", id, ownerID)).Take(&r).Error
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
@@ -789,8 +789,7 @@ func updateOwned(ctx context.Context, q *gorm.DB, id, ownerID int64, set map[str
 // ownedUpdate writes set to the owner's live key id, returning its hash into
 // k.
 func ownedUpdate(db *gorm.DB, k *model.APIKey, id, ownerID int64, set map[string]any) *gorm.DB {
-	return db.Model(k).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).
-		Where("id = ? AND user_id = ? AND deleted_at IS NULL", id, ownerID).Updates(set)
+	return owned(db, id, ownerID).Model(k).Clauses(clause.Returning{Columns: []clause.Column{{Name: "key_hash"}}}).Updates(set)
 }
 
 // normalize checks the fields given and puts the name and allowlist in their
@@ -934,7 +933,15 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 
 // owned narrows api_keys to the owner's live key id.
 func owned(db *gorm.DB, id, ownerID int64) *gorm.DB {
-	return db.Model(&model.APIKey{}).Where("id = ? AND deleted_at IS NULL AND user_id = ?", id, ownerID)
+	return db.Model(&model.APIKey{}).Scopes(ownedKey("api_keys", id, ownerID))
+}
+
+// ownedKey narrows the api_keys rows named table (the table itself, or
+// keyView's "k") to the owner's live key id.
+func ownedKey(table string, id, ownerID int64) func(*gorm.DB) *gorm.DB {
+	return func(db *gorm.DB) *gorm.DB {
+		return db.Where(table+".id = ? AND "+table+".user_id = ? AND "+table+".deleted_at IS NULL", id, ownerID)
+	}
 }
 
 func (s *Service) reveal(c *gin.Context, ownerID int64) {

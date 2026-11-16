@@ -1,5 +1,5 @@
 -- sql
-UPDATE "api_keys" SET "expires_at"=$1,"group_id"=$2,"name"=$3,"quota_used"=$4 WHERE id = $5 AND user_id = $6 AND deleted_at IS NULL RETURNING "key_hash"
+UPDATE "api_keys" SET "expires_at"=$1,"group_id"=$2,"name"=$3,"quota_used"=$4 WHERE api_keys.id = $5 AND api_keys.user_id = $6 AND api_keys.deleted_at IS NULL RETURNING "key_hash"
 -- vars
 $1 *time.Time nil
 $2 int64 3
