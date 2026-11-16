@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,7 +16,6 @@ type Session struct {
 	Email    string
 	Password string
 	UserID   int64
-	Refresh  string
 }
 
 // Login performs POST /auth/login and returns a session. Fails the test on
@@ -28,12 +28,13 @@ func (e *Env) Login(email, password string) *Session {
 		e.T.Fatalf("login %s: %s", email, r)
 	}
 	d := r.Data()
-	if d.Get("access_token").String() == "" || d.Get("refresh_token").String() == "" || d.Get("expires_in").Int() <= 0 {
-		e.T.Fatalf("login response incomplete: %s", r)
+	// A console session token (CONTRACTS §100), and no refresh token.
+	if !strings.HasPrefix(d.Get("access_token").String(), "s2s_") || d.Get("refresh_token").Exists() || d.Get("expires_in").Int() <= 0 {
+		e.T.Fatalf("login response not a session: %s", r)
 	}
 	c.Token = d.Get("access_token").String()
 	c.Password = password
-	return &Session{Client: c, Email: email, Password: password, UserID: d.Get("user.id").Int(), Refresh: d.Get("refresh_token").String()}
+	return &Session{Client: c, Email: email, Password: password, UserID: d.Get("user.id").Int()}
 }
 
 // TryLogin returns the raw login response (for negative tests).

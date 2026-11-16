@@ -56,7 +56,7 @@ const userColumns = `u.id, u.email, u.display_name, u.status, u.last_login_at, u
 const usersFrom = `users u JOIN segments s ON s.id = u.segment_id`
 
 // userByID is the statement of getUser, raw (the fewest allocations): it
-// loads the user of every login, refresh and GET /me.
+// loads the user of every login and GET /me.
 func userByID(db *gorm.DB, id int64) *gorm.DB {
 	return db.Raw(`SELECT `+userColumns+` FROM `+usersFrom+` WHERE u.id = ? AND u.deleted_at IS NULL`, id)
 }
@@ -407,8 +407,8 @@ func (s *Service) applyUpdateTx(ctx context.Context, tx *gorm.DB, actorID, id in
 			return 0, nil, err
 		}
 	}
-	if err := lockRefreshUser(ctx, tx, id); err != nil {
-		if err == errBadRefresh {
+	if err := lockUserRow(ctx, tx, id); err != nil {
+		if err == errNoUser {
 			return 0, nil, core.ErrNotFound.WithMessage("user not found")
 		}
 		return 0, nil, err
@@ -634,11 +634,14 @@ func emailTaken() error {
 	})
 }
 
-func lockRefreshUser(ctx context.Context, tx *gorm.DB, userID int64) error {
+// lockUserRow locks the row of userID, deleted or not, until tx ends: the
+// parent lock of every session change and second-factor write of the user.
+// errNoUser when there is no such row.
+func lockUserRow(ctx context.Context, tx *gorm.DB, userID int64) error {
 	var id int64
 	err := lockUser(store.G(ctx, tx), userID).Row().Scan(&id)
 	if store.IsNoRows(err) {
-		return errBadRefresh
+		return errNoUser
 	}
 	return err
 }

@@ -42,7 +42,7 @@ func TestSQLRequestAuth(t *testing.T) {
 	})
 }
 
-// The user row locks and reads of logins, refreshes and step-ups.
+// The user row locks and reads of logins, session changes and step-ups.
 func TestSQLUserLocks(t *testing.T) {
 	snap(t, map[string]func(*gorm.DB) *gorm.DB{
 		"live_user":            func(db *gorm.DB) *gorm.DB { return read(liveUser(db, 7, "email, password_hash")) },
@@ -99,60 +99,6 @@ func TestSQLUserReads(t *testing.T) {
 			return read(usersPage(db, usersFilter(ListUsersFilter{Segment: "personal"}), 1, 20))
 		},
 		"lookup": func(db *gorm.DB) *gorm.DB { return read(lookupUsers(db, []int64{3, 1, 3})) },
-	})
-}
-
-// Refresh token rotation, replay revocation and logout.
-func TestSQLRefreshTokens(t *testing.T) {
-	snap(t, map[string]func(*gorm.DB) *gorm.DB{
-		"insert":         func(db *gorm.DB) *gorm.DB { return insertRefreshToken(db, 7, "hash", sqlAt, "family") },
-		"owner":          func(db *gorm.DB) *gorm.DB { return read(refreshOwner(db, "hash")) },
-		"lock":           func(db *gorm.DB) *gorm.DB { return read(lockRefreshToken(db, "hash")) },
-		"live_family":    func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, liveFamily(db, "family"))) },
-		"revoke_token":   func(db *gorm.DB) *gorm.DB { return revokeToken(db, 9) },
-		"revoke_family":  func(db *gorm.DB) *gorm.DB { return revokeFamily(db, "family") },
-		"rotate":         func(db *gorm.DB) *gorm.DB { return rotateRefresh(db, 9) },
-		"logout_family":  func(db *gorm.DB) *gorm.DB { return read(liveFamilyOf(db, "hash", 7)) },
-		"session_family": func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, userFamily(db, 7, "family"))) },
-		"family_issued": func(db *gorm.DB) *gorm.DB {
-			return read(store.ExistsQuery(db, familyIssuedSince(db, 7, "family", sqlAt)))
-		},
-		"revoke_all":      func(db *gorm.DB) *gorm.DB { return revokeSessions(db, 7, allSessions) },
-		"revoke_one":      func(db *gorm.DB) *gorm.DB { return revokeSessions(db, 7, oneSession("family")) },
-		"revoke_others":   func(db *gorm.DB) *gorm.DB { return revokeSessions(db, 7, otherSessions("mine")) },
-		"sessions_delete": func(db *gorm.DB) *gorm.DB { return deleteSessions(db, 7, otherSessions("mine")) },
-	})
-}
-
-func TestSQLLoginSessions(t *testing.T) {
-	snap(t, map[string]func(*gorm.DB) *gorm.DB{
-		"delete_stale": func(db *gorm.DB) *gorm.DB { return deleteStaleSessions(db, 7, sqlAt) },
-		"upsert": func(db *gorm.DB) *gorm.DB {
-			return upsertLoginSession(db, "family", 7, sessionMeta{method: loginMethodPassword, ip: "203.0.113.9", userAgent: "Mozilla/5.0"})
-		},
-		"list": func(db *gorm.DB) *gorm.DB { return read(liveSessions(db, 7)) },
-	})
-}
-
-func TestSQLFlows(t *testing.T) {
-	owner := int64(7)
-	snap(t, map[string]func(*gorm.DB) *gorm.DB{
-		"delete_expired": deleteExpiredFlows,
-		"insert": func(db *gorm.DB) *gorm.DB {
-			return insertFlow(db, "hash", flowLogin2FA, &owner, []byte(`{"email":"a"}`), sqlAt)
-		},
-		"insert_no_owner": func(db *gorm.DB) *gorm.DB {
-			return insertFlow(db, "hash", flowPasskeyLogin, nil, []byte(`{}`), sqlAt)
-		},
-		"live":       func(db *gorm.DB) *gorm.DB { return read(liveFlow(db, "token", flowLogin2FA, "payload, user_id")) },
-		"live_owned": func(db *gorm.DB) *gorm.DB { return read(ownedFlow(db, "token", flowTOTPSetup, 7, "payload")) },
-		// The owner is bound twice: once for the "any owner" test, once to match.
-		"take":          func(db *gorm.DB) *gorm.DB { return read(takeFlowQuery(db, "hash", flowStepUpProof, 7)) },
-		"take_any_user": func(db *gorm.DB) *gorm.DB { return read(takeFlowQuery(db, "hash", flowPasskeyLogin, 0)) },
-		"open_step_up_session": func(db *gorm.DB) *gorm.DB {
-			return openStepUpSession(db, "hash", 7, []byte(`{"scope":"x"}`), sqlAt)
-		},
-		"continue_step_up_session": func(db *gorm.DB) *gorm.DB { return continueStepUpSession(db, "hash", sqlAt, 1800) },
 	})
 }
 

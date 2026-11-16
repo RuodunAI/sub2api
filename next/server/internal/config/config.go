@@ -15,7 +15,7 @@ import (
 )
 
 // SensitiveEnv are the variables Load reads that carry secrets (database and
-// Redis credentials, the master key, the JWT secret, the bootstrap password,
+// Redis credentials, the master key, the bootstrap password,
 // the supervisor token). main removes them from the process environment once
 // the configuration is loaded (procguard.ScrubEnv): everything after that
 // reads the loaded Config, never the environment. Load does not read the
@@ -27,7 +27,6 @@ var SensitiveEnv = []string{
 	"SUB2API_DATABASE_URL",
 	"SUB2API_REDIS_URL",
 	"SUB2API_MASTER_KEY",
-	"SUB2API_JWT_SECRET",
 	"SUB2API_BOOTSTRAP_ADMIN_PASSWORD",
 	"SUB2API_CONTROL_TOKEN",
 }
@@ -44,12 +43,8 @@ type Config struct {
 	LogLevel     string // SUB2API_LOG_LEVEL: debug | info | warn | error
 
 	MasterKey []byte // SUB2API_MASTER_KEY, base64 of 32 bytes (AES-256-GCM)
-	JWTSecret []byte // SUB2API_JWT_SECRET (required, >= 32 bytes)
 
-	AccessTokenTTL  time.Duration // SUB2API_ACCESS_TOKEN_TTL, default 2h
-	RefreshTokenTTL time.Duration // SUB2API_REFRESH_TOKEN_TTL, default 720h
-
-	// An opaque session (s2s_, CONTRACTS §100) ends unused for
+	// A console session (s2s_, CONTRACTS §100) ends unused for
 	// SessionIdleTTL and SessionMaxTTL after its login, used or not.
 	SessionIdleTTL time.Duration // SUB2API_SESSION_IDLE_TTL, default 168h
 	SessionMaxTTL  time.Duration // SUB2API_SESSION_MAX_TTL, default 720h
@@ -171,12 +166,6 @@ func Load(goos string) (*Config, error) {
 		h, _ := os.Hostname()
 		c.NodeID = h
 	}
-	if c.AccessTokenTTL, err = durationEnv("SUB2API_ACCESS_TOKEN_TTL", 2*time.Hour); err != nil {
-		return nil, err
-	}
-	if c.RefreshTokenTTL, err = durationEnv("SUB2API_REFRESH_TOKEN_TTL", 720*time.Hour); err != nil {
-		return nil, err
-	}
 	if c.ShutdownDelay, err = durationEnv("SUB2API_SHUTDOWN_DELAY", 3*time.Second); err != nil {
 		return nil, err
 	}
@@ -202,10 +191,6 @@ func Load(goos string) (*Config, error) {
 	mk := os.Getenv("SUB2API_MASTER_KEY")
 	if c.MasterKey, err = base64.StdEncoding.DecodeString(mk); err != nil || len(c.MasterKey) != 32 {
 		return nil, fmt.Errorf("SUB2API_MASTER_KEY must be base64 of exactly 32 bytes")
-	}
-	c.JWTSecret = []byte(os.Getenv("SUB2API_JWT_SECRET"))
-	if len(c.JWTSecret) < 32 {
-		return nil, fmt.Errorf("SUB2API_JWT_SECRET must be at least 32 bytes")
 	}
 
 	linux := goos == "linux"

@@ -15,7 +15,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 )
 
 func newTestLimiter(t *testing.T) (*loginLimiter, *miniredis.Miniredis) {
@@ -174,31 +173,6 @@ func TestLoginLockedHTTP(t *testing.T) {
 	}
 }
 
-func TestClassifyRefresh(t *testing.T) {
-	t.Parallel()
-	now := time.Now()
-	past, future := now.Add(-time.Minute), now.Add(time.Hour)
-	cases := []struct {
-		name              string
-		revoked, replaced *time.Time
-		expires           time.Time
-		want              refreshVerdict
-	}{
-		{"valid", nil, nil, future, refreshValid},
-		{"expired", nil, nil, past, refreshExpired},
-		{"expires now", nil, nil, now, refreshExpired},
-		{"rotated", &past, &past, future, refreshReplayed},
-		{"revoked by logout", &past, nil, future, refreshReplayed},
-		{"replaced only", nil, &past, future, refreshReplayed},
-		{"rotated and expired", &past, &past, past, refreshReplayed},
-	}
-	for _, c := range cases {
-		if got := classifyRefresh(c.revoked, c.replaced, c.expires, now); got != c.want {
-			t.Errorf("%s: got %d want %d", c.name, got, c.want)
-		}
-	}
-}
-
 // ------------------------------------------------------------ database
 
 func TestLoginRateLimitDB(t *testing.T) {
@@ -228,123 +202,5 @@ func TestLoginRateLimitDB(t *testing.T) {
 	e.redis.FastForward(loginFailWindow + time.Second)
 	if _, err := s.Login(ctx, adminEmail, adminPassword, ip); err != nil {
 		t.Fatalf("after window: %v", err)
-	}
-}
-
-// ageRotation moves the rotation of token past the reuse grace.
-func ageRotation(t *testing.T, s *Service, token string) {
-	t.Helper()
-	if _, err := s.db.SQL.ExecContext(context.Background(), `UPDATE refresh_tokens
-		SET replaced_at = replaced_at - interval '2 minutes', revoked_at = revoked_at - interval '2 minutes'
-		WHERE token_hash = $1`, tokenstore.Hash(token)); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// A console that lost a rotation's response presents the old token again:
-// within the grace it gets another pair of the same family, and every live
-// token keeps working. A token that was logged out gets no grace.
-func TestRefreshReuseGraceAndSlidingExpiry(t *testing.T) {
-	t.Parallel()
-	e := setup(t)
-	s, ctx := e.svc, context.Background()
-	if err := s.Bootstrap(ctx); err != nil {
-		t.Fatal(err)
-	}
-	a1 := mustLogin(t, s, adminEmail, adminPassword)
-	a2, err := s.Refresh(ctx, a1.RefreshToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	again, err := s.Refresh(ctx, a1.RefreshToken)
-	if err != nil {
-		t.Fatalf("lost response retried within the grace: %v", err)
-	}
-	if again.RefreshToken == a2.RefreshToken {
-		t.Fatal("grace returned the same refresh token")
-	}
-	for _, tok := range []string{a2.RefreshToken, again.RefreshToken} {
-		if _, err := s.Refresh(ctx, tok); err != nil {
-			t.Fatalf("live token of the family rejected: %v", err)
-		}
-	}
-	// Every rotation slides the expiry: the newest token lives a full TTL.
-	var left time.Duration
-	var exp time.Time
-	if err := s.db.SQL.QueryRowContext(ctx, `SELECT max(expires_at) FROM refresh_tokens WHERE user_id = $1`, a1.User.ID).Scan(&exp); err != nil {
-		t.Fatal(err)
-	}
-	if left = time.Until(exp); left < s.cfg.RefreshTokenTTL-time.Minute {
-		t.Fatalf("newest refresh token expires in %v, want about %v", left, s.cfg.RefreshTokenTTL)
-	}
-
-	// Logged out, then presented again: no grace, the family is revoked.
-	b1 := mustLogin(t, s, adminEmail, adminPassword)
-	b2, err := s.Refresh(ctx, b1.RefreshToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Logout(ctx, b1.User.ID, b2.RefreshToken); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Refresh(ctx, b2.RefreshToken); !isCode(err, "unauthenticated") {
-		t.Fatalf("logged-out token: %v", err)
-	}
-	if _, err := s.Refresh(ctx, b1.RefreshToken); !isCode(err, "unauthenticated") {
-		t.Fatalf("rotated token of a logged-out family: %v", err)
-	}
-}
-
-func TestRefreshReuseRevokesFamily(t *testing.T) {
-	t.Parallel()
-	e := setup(t)
-	s, ctx := e.svc, context.Background()
-	if err := s.Bootstrap(ctx); err != nil {
-		t.Fatal(err)
-	}
-	a1 := mustLogin(t, s, adminEmail, adminPassword)
-	b1 := mustLogin(t, s, adminEmail, adminPassword) // another session: its own family
-	a2, err := s.Refresh(ctx, a1.RefreshToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a3, err := s.Refresh(ctx, a2.RefreshToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fam1, fam3 string
-	var replaced bool
-	if err := s.db.SQL.QueryRowContext(ctx, `SELECT family_id, replaced_at IS NOT NULL FROM refresh_tokens WHERE token_hash = $1`,
-		tokenstore.Hash(a1.RefreshToken)).Scan(&fam1, &replaced); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.db.SQL.QueryRowContext(ctx, `SELECT family_id FROM refresh_tokens WHERE token_hash = $1`,
-		tokenstore.Hash(a3.RefreshToken)).Scan(&fam3); err != nil {
-		t.Fatal(err)
-	}
-	if fam1 == "" || fam1 != fam3 || !replaced {
-		t.Fatalf("family %q/%q replaced=%v", fam1, fam3, replaced)
-	}
-	// Replaying a rotated token (after the reuse grace) revokes the whole
-	// family, including a3.
-	ageRotation(t, s, a1.RefreshToken)
-	if _, err := s.Refresh(ctx, a1.RefreshToken); !isCode(err, "unauthenticated") {
-		t.Fatalf("replay: %v", err)
-	}
-	if _, err := s.Refresh(ctx, a3.RefreshToken); !isCode(err, "unauthenticated") {
-		t.Fatalf("family survived replay: %v", err)
-	}
-	// Other sessions are unaffected.
-	b2, err := s.Refresh(ctx, b1.RefreshToken)
-	if err != nil {
-		t.Fatalf("other family: %v", err)
-	}
-	// Logout ends only that session.
-	c1 := mustLogin(t, s, adminEmail, adminPassword)
-	if err := s.Logout(ctx, c1.User.ID, c1.RefreshToken); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Refresh(ctx, b2.RefreshToken); err != nil {
-		t.Fatalf("logout touched another family: %v", err)
 	}
 }

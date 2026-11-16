@@ -137,7 +137,7 @@ func TestLoginAsksForTheSecondFactor(t *testing.T) {
 	secret, backup := enableTwoFactor(t, s, id)
 
 	step := mustLogin(t, s, adminEmail, adminPassword)
-	if !step.TwoFactorRequired || step.AccessToken != "" || step.RefreshToken != "" || step.User != nil || step.FlowToken == "" {
+	if !step.TwoFactorRequired || step.AccessToken != "" || step.User != nil || step.FlowToken == "" {
 		t.Fatalf("password step gave %+v", step)
 	}
 	if _, err := s.LoginSecondFactor(ctx, step.FlowToken, "000000", testIP); !isBadSecondFactor(err) {
@@ -497,13 +497,6 @@ func TestLoginSessions(t *testing.T) {
 	if err != nil || len(list) != 2 {
 		t.Fatalf("sessions = %v, %v", list, err)
 	}
-	// The refresh keeps the session: same family, still two.
-	if _, err := s.Refresh(ctx, second.RefreshToken); err != nil {
-		t.Fatal(err)
-	}
-	if list, _ = s.Sessions(ctx, id, ""); len(list) != 2 {
-		t.Fatalf("after refresh: %v", list)
-	}
 	if err := s.RevokeSession(ctx, id+1000, list[0].ID); err == nil {
 		t.Fatal("revoked another user's session")
 	}
@@ -517,10 +510,11 @@ func TestLoginSessions(t *testing.T) {
 	if err := s.RevokeSession(ctx, id, other); !isCode(err, "not_found") {
 		t.Fatalf("already revoked: %v", err)
 	}
-	// The revoked session cannot refresh.
-	if _, err := s.Refresh(ctx, first.RefreshToken); err == nil {
-		if _, err2 := s.Refresh(ctx, second.RefreshToken); err2 == nil {
-			t.Fatal("both sessions still refresh")
+	// The revoked session's token is rejected, the kept one's is not.
+	for _, p := range []*TokenPair{first, second} {
+		_, sid, err := s.VerifySession(ctx, p.AccessToken)
+		if (sid == keep) != (err == nil) {
+			t.Fatalf("session %q after revoking the others: %v", sid, err)
 		}
 	}
 }
@@ -714,10 +708,6 @@ func TestPasskeyRegistrationAndLogin(t *testing.T) {
 	if len(list) != 1 || list[0].LastUsedAt == nil {
 		t.Fatalf("list = %+v", list)
 	}
-	var method string
-	if err := s.db.SQL.QueryRowContext(ctx, `SELECT method FROM login_sessions ORDER BY created_at DESC LIMIT 1`).Scan(&method); err != nil || method != loginMethodPasskey {
-		t.Fatalf("method = %q, %v", method, err)
-	}
 
 	// The same answer does not work twice: the challenge is single use.
 	if _, err := s.FinishPasskeyLogin(ctx, r, begin.FlowToken, credential, testIP); !isCode(err, "invalid_argument") {
@@ -909,15 +899,21 @@ func (k *keyEnv) callProof(token, proof, method, path string, body any) (int, ma
 
 // proof verifies token's caller for scope and the operation "method path"
 // (path under /api/v1) with the fields of how, and returns the proof.
-func (k *keyEnv) proof(t *testing.T, token, scope, method, path string, how map[string]any) string {
+func (k *keyEnv) proof(t *testing.T, token *string, scope, method, path string, how map[string]any) string {
 	t.Helper()
 	body := map[string]any{"scope": scope, "context": method + " /api/v1" + path}
 	maps.Copy(body, how)
-	code, out := k.call(token, "POST", "/me/verify", body)
+	code, out := k.call(*token, "POST", "/me/verify", body)
 	if code != 200 {
 		t.Fatalf("verify %s: %d %v", scope, code, out)
 	}
-	return out["data"].(map[string]any)["proof"].(string)
+	data := out["data"].(map[string]any)
+	// A session's verification rotates its token (CONTRACTS §100): carry
+	// on with the new one, as the console does.
+	if fresh, ok := data["access_token"].(string); ok {
+		*token = fresh
+	}
+	return data["proof"].(string)
 }
 
 func (k *keyEnv) createKey(t *testing.T, userID int64, perms ...string) *AccessKey {
@@ -1101,7 +1097,7 @@ func TestSuperuserKeyCannotGrantSuperAdmin(t *testing.T) {
 	if code, out := k.call(login.AccessToken, "PUT", path, grant); code != 403 {
 		t.Fatalf("session PUT roles: %d %v", code, out)
 	}
-	if code, out := k.call(login.AccessToken, "POST", "/users", create("jwt-super@example.com")); code != 403 {
+	if code, out := k.call(login.AccessToken, "POST", "/users", create("session-super@example.com")); code != 403 {
 		t.Fatalf("session POST users: %d %v", code, out)
 	}
 }
@@ -1207,7 +1203,7 @@ func TestAccessKeyCannotManageSignIn(t *testing.T) {
 	k := newKeyEnv(t)
 	root := mustLogin(t, k.s, adminEmail, adminPassword).User.ID
 	key := k.createKey(t, root, "user:read")
-	// Anything that only verifies JWTs refuses it (plugin routes refuse keys
+	// Anything that only verifies sessions refuses it (plugin routes refuse keys
 	// explicitly with 403).
 	if _, err := k.s.VerifyAccessToken(context.Background(), key.Key); err == nil {
 		t.Fatal("a key passed as a console token")
@@ -1388,14 +1384,14 @@ func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 	if code, out := k.call(key.Key, "PUT", "/system/ccgateway/remote-config", map[string]any{"mode": "disabled"}); code != 403 || errCode(out) != "verification_required" {
 		t.Fatalf("key with settings:manage, no proof: %d %v", code, out)
 	}
-	hostProof := k.proof(t, key.Key, core.StepUpHostInstall, "PUT", "/system/ccgateway/remote-config", map[string]any{"method": "password", "password": adminPassword})
+	hostProof := k.proof(t, &key.Key, core.StepUpHostInstall, "PUT", "/system/ccgateway/remote-config", map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(key.Key, hostProof, "PUT", "/system/ccgateway/remote-config", map[string]any{"mode": "disabled"}); code != 200 {
 		t.Fatalf("key with settings:manage and a proof: %d %v", code, out)
 	}
 	if code, out := k.call(key.Key, "POST", "/plugins/upload", nil); code != 403 || errCode(out) != "verification_required" {
 		t.Fatalf("key with plugin:install, no proof: %d %v", code, out)
 	}
-	proof := k.proof(t, key.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword})
+	proof := k.proof(t, &key.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(key.Key, proof, "POST", "/plugins/upload", nil); code != 204 {
 		t.Fatalf("key with plugin:install and a proof: %d %v", code, out)
 	}
@@ -1403,7 +1399,7 @@ func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 		t.Fatalf("replayed proof: %d %v", code, out)
 	}
 	narrow := k.createKey(t, root, "settings:read")
-	if code, out := k.callProof(narrow.Key, k.proof(t, narrow.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword}), "POST", "/plugins/upload", nil); code != 403 || errCode(out) != "permission_denied" {
+	if code, out := k.callProof(narrow.Key, k.proof(t, &narrow.Key, core.StepUpPluginInstall, "POST", "/plugins/upload", map[string]any{"method": "password", "password": adminPassword}), "POST", "/plugins/upload", nil); code != 403 || errCode(out) != "permission_denied" {
 		t.Fatalf("key without plugin:install: %d %v", code, out)
 	}
 }
@@ -1415,7 +1411,6 @@ func TestFormerSessionOnlyPermissionsInAccessKeys(t *testing.T) {
 // passed since the proof.
 func TestStepUpSessions(t *testing.T) {
 	k := newKeyEnv(t)
-	ctx := context.Background()
 	login := mustLogin(t, k.s, adminEmail, adminPassword)
 	keyA := k.createKey(t, login.User.ID, "settings:manage")
 	keyB := k.createKey(t, login.User.ID, "settings:manage")
@@ -1439,7 +1434,7 @@ func TestStepUpSessions(t *testing.T) {
 		t.Fatalf("open without a proof: %d %v", code, out)
 	}
 	refused(keyA.Key, "/x/uploads/1", "verification_expired")
-	proof := k.proof(t, keyA.Key, core.StepUpHostInstall, "POST", "/x/uploads", map[string]any{"method": "password", "password": adminPassword})
+	proof := k.proof(t, &keyA.Key, core.StepUpHostInstall, "POST", "/x/uploads", map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(keyA.Key, proof, "POST", "/x/uploads", nil); code != 204 {
 		t.Fatalf("open with a proof: %d %v", code, out)
 	}
@@ -1451,28 +1446,13 @@ func TestStepUpSessions(t *testing.T) {
 	refused(keyA.Key, "/x/uploads/2", "verification_expired")
 	refused(keyB.Key, "/x/uploads/1", "verification_expired")
 	refused(login.AccessToken, "/x/uploads/1", "verification_expired")
-	var idle bool
-	if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT expires_at > now() + interval '59 minutes' FROM auth_flows WHERE purpose = 'step_up_session'`).Scan(&idle); err != nil || !idle {
-		t.Fatalf("the session is not kept open an hour from its last request: %v %v", idle, err)
-	}
-	// However busy, a session ends a day after its proof.
-	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE auth_flows SET created_at = now() - interval '23 hours 30 minutes' WHERE purpose = 'step_up_session'`); err != nil {
-		t.Fatal(err)
-	}
+	// A request keeps the session open StepUpSessionIdle from it (the cap a
+	// day after the proof: tokenstore TestWindow).
+	k.redis.FastForward(core.StepUpSessionIdle - time.Minute)
 	if code, out := k.call(keyA.Key, "PUT", "/x/uploads/1", nil); code != 204 {
-		t.Fatalf("continued within the day: %d %v", code, out)
+		t.Fatalf("continued within the hour: %d %v", code, out)
 	}
-	var capped bool
-	if err := k.s.db.SQL.QueryRowContext(ctx, `SELECT expires_at <= created_at + interval '24 hours' FROM auth_flows WHERE purpose = 'step_up_session'`).Scan(&capped); err != nil || !capped {
-		t.Fatalf("the session is kept open past a day from its proof: %v %v", capped, err)
-	}
-	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE auth_flows SET created_at = now() - interval '25 hours' WHERE purpose = 'step_up_session'`); err != nil {
-		t.Fatal(err)
-	}
-	refused(keyA.Key, "/x/uploads/1", "verification_expired")
-	if _, err := k.s.db.SQL.ExecContext(ctx, `UPDATE auth_flows SET created_at = now(), expires_at = now() - interval '1 second' WHERE purpose = 'step_up_session'`); err != nil {
-		t.Fatal(err)
-	}
+	k.redis.FastForward(core.StepUpSessionIdle + time.Second)
 	refused(keyA.Key, "/x/uploads/1", "verification_expired")
 }
 
@@ -1558,7 +1538,7 @@ func TestAccessKeyWriteNeedsAProof(t *testing.T) {
 	if d := out["error"].(map[string]any)["details"].(map[string]any); d["scope"] != core.StepUpAccessKeyWrite || d["password_required"] != false {
 		t.Fatalf("challenge %v", d)
 	}
-	proof := k.proof(t, session, core.StepUpAccessKeyWrite, "POST", "/me/access-keys", pass)
+	proof := k.proof(t, &session, core.StepUpAccessKeyWrite, "POST", "/me/access-keys", pass)
 	code, out = k.callProof(session, proof, "POST", "/me/access-keys", body)
 	if code != 201 {
 		t.Fatalf("create with a proof: %d %v", code, out)
@@ -1575,7 +1555,7 @@ func TestAccessKeyWriteNeedsAProof(t *testing.T) {
 		if code, out := k.call(session, "PATCH", path, patch); code != 403 || errCode(out) != "verification_required" {
 			t.Fatalf("patch %v without a proof: %d %v", patch, code, out)
 		}
-		proof := k.proof(t, session, core.StepUpAccessKeyWrite, "PATCH", path, pass)
+		proof := k.proof(t, &session, core.StepUpAccessKeyWrite, "PATCH", path, pass)
 		if code, out := k.callProof(session, proof, "PATCH", path, patch); code != 200 {
 			t.Fatalf("patch %v with a proof: %d %v", patch, code, out)
 		}
@@ -1583,7 +1563,7 @@ func TestAccessKeyWriteNeedsAProof(t *testing.T) {
 
 	// A key is refused before any proof is looked at.
 	other := k.createKey(t, login.User.ID, "user:read").Key
-	keyProof := k.proof(t, other, core.StepUpAccessKeyWrite, "POST", "/me/access-keys", pass)
+	keyProof := k.proof(t, &other, core.StepUpAccessKeyWrite, "POST", "/me/access-keys", pass)
 	if code, out := k.callProof(other, keyProof, "POST", "/me/access-keys", body); code != 403 || errCode(out) == "verification_required" {
 		t.Fatalf("key creates a key: %d %v", code, out)
 	}

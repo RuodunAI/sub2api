@@ -109,9 +109,9 @@ func TestSessionOnly(t *testing.T) {
 	r.Handle("GET", "/handle", ok)
 
 	cases := []struct {
-		path     string
-		jwt, key int
-		name     string
+		path         string
+		session, key int
+		name         string
 	}{
 		{"/strict/perm", 200, http.StatusForbidden, "SessionOnly Perm"},
 		{"/strict/any", 200, http.StatusForbidden, "SessionOnly PermAny"},
@@ -122,8 +122,8 @@ func TestSessionOnly(t *testing.T) {
 		{"/handle", 200, 200, "Handle"},
 	}
 	for _, tc := range cases {
-		if got := serve(engine, "GET", tc.path, "u1"); got != tc.jwt {
-			t.Errorf("%s with a JWT = %d, want %d", tc.name, got, tc.jwt)
+		if got := serve(engine, "GET", tc.path, "u1"); got != tc.session {
+			t.Errorf("%s with a session = %d, want %d", tc.name, got, tc.session)
 		}
 		if got := serve(engine, "GET", tc.path, core.AccessKeyPrefix+"1"); got != tc.key {
 			t.Errorf("%s with an access key = %d, want %d", tc.name, got, tc.key)
@@ -152,10 +152,10 @@ func TestAuthenticateAndRejectAccessKey(t *testing.T) {
 
 	c, _, ok := run("Bearer u5")
 	if uid, _ := core.UserID(c.Request.Context()); !ok || uid != 5 || c.IsAborted() {
-		t.Fatalf("JWT: ok=%v uid=%d aborted=%v", ok, uid, c.IsAborted())
+		t.Fatalf("session: ok=%v uid=%d aborted=%v", ok, uid, c.IsAborted())
 	}
 	if !RejectAccessKey(c) || c.IsAborted() {
-		t.Fatal("RejectAccessKey refused a JWT caller")
+		t.Fatal("RejectAccessKey refused a session caller")
 	}
 
 	c, w, ok := run("Bearer " + core.AccessKeyPrefix + "6")

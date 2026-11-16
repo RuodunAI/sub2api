@@ -63,7 +63,7 @@ func TestResetSecurityNeedsPasswordReset(t *testing.T) {
 	if code, out := k.call(withPerm.Key, "DELETE", target, nil); code != 403 || errCode(out) != "verification_required" || !enrolled() {
 		t.Fatalf("an access key with it, no proof: %d %v", code, out)
 	}
-	proof := k.proof(t, withPerm.Key, core.StepUpUserSecurityReset, "DELETE", target, map[string]any{"method": "password", "password": adminPassword})
+	proof := k.proof(t, &withPerm.Key, core.StepUpUserSecurityReset, "DELETE", target, map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(withPerm.Key, proof, "DELETE", target, nil); code != 204 || enrolled() {
 		t.Fatalf("an access key with it and a proof: %d %v", code, out)
 	}
@@ -72,7 +72,7 @@ func TestResetSecurityNeedsPasswordReset(t *testing.T) {
 	if code, out := k.call(resetter, "DELETE", target, nil); code != 403 || errCode(out) != "verification_required" {
 		t.Fatalf("holder without a proof: %d %v", code, out)
 	}
-	proof = k.proof(t, resetter, core.StepUpUserSecurityReset, "DELETE", target, map[string]any{"method": "password", "password": adminPassword})
+	proof = k.proof(t, &resetter, core.StepUpUserSecurityReset, "DELETE", target, map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(resetter, proof, "DELETE", target, nil); code != 204 {
 		t.Fatalf("holder: %d %v", code, out)
 	}

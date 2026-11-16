@@ -21,7 +21,7 @@ const testOperation = "TEST /op"
 func withProof(t *testing.T, s *Service, ctx context.Context, userID int64, scope string) context.Context {
 	t.Helper()
 	ctx = core.WithUserID(ctx, userID)
-	token, err := s.createFlow(ctx, s.db.Gorm, flowStepUpProof, userID, proofPayload{Scope: scope, Operation: testOperation, Subject: stepUpSubject(ctx), Method: methodPassword, Password: true})
+	token, err := s.createFlow(ctx, flowStepUpProof, userID, proofPayload{Scope: scope, Operation: testOperation, Subject: stepUpSubject(ctx), Method: methodPassword, Password: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestConsumeStepUpBindings(t *testing.T) {
 	consume := func(ctx context.Context, userID int64, proof, operation, scope string) error {
 		return s.ConsumeStepUp(core.WithStepUp(core.WithUserID(ctx, userID), proof, operation), scope)
 	}
-	session := core.WithSession(base, "family-1")
+	session := core.WithSession(base, "session-1")
 
 	proof := issue(session, id, core.StepUpUserDelete)
 	if err := consume(session, id, proof, testOperation, core.StepUpUserDelete); err != nil {
@@ -157,7 +157,7 @@ func TestConsumeStepUpBindings(t *testing.T) {
 		"another scope":     func(p string) error { return consume(session, id, p, testOperation, core.StepUpCredentialReveal) },
 		"another operation": func(p string) error { return consume(session, id, p, "DELETE /api/v1/users/9", core.StepUpUserDelete) },
 		"another session": func(p string) error {
-			return consume(core.WithSession(base, "family-2"), id, p, testOperation, core.StepUpUserDelete)
+			return consume(core.WithSession(base, "session-2"), id, p, testOperation, core.StepUpUserDelete)
 		},
 		"an access key": func(p string) error {
 			byKey := core.WithAccessKey(base, core.AccessKeyIdentity{UserID: id, KeyID: 7})
@@ -182,9 +182,7 @@ func TestConsumeStepUpBindings(t *testing.T) {
 	}
 	// Expired.
 	proof = issue(session, id, core.StepUpUserDelete)
-	if _, err := s.db.SQL.ExecContext(base, `UPDATE auth_flows SET expires_at = now() - interval '1 second' WHERE purpose = $1`, flowStepUpProof); err != nil {
-		t.Fatal(err)
-	}
+	e.redis.FastForward(flowTTL + time.Second)
 	if err := consume(session, id, proof, testOperation, core.StepUpUserDelete); !isVerificationRequired(err) {
 		t.Fatalf("expired: %v", err)
 	}
@@ -212,7 +210,7 @@ func TestStepUpWithPasskey(t *testing.T) {
 	e := setupAdmin(t)
 	s := e.svc
 	id := mustLogin(t, s, adminEmail, adminPassword).User.ID
-	ctx := core.WithSession(core.WithUserID(context.Background(), id), "family-1")
+	ctx := core.WithSession(core.WithUserID(context.Background(), id), "session-1")
 	r := consoleRequest(consoleOrigin, consoleHost)
 	a := newAuthenticator(t, consoleOrigin, consoleHost)
 	if _, err := s.BeginStepUpPasskey(ctx, r, id, core.StepUpUserDelete, testIP); !isCode(err, "invalid_argument") {
@@ -289,13 +287,13 @@ func TestSuperAdminKeyOnItsOwnAccountNeedsAProof(t *testing.T) {
 	if code != 403 || errCode(out) != "verification_required" || out["error"].(map[string]any)["details"].(map[string]any)["scope"] != core.StepUpSuperAdminIdentity {
 		t.Fatalf("key without a proof: %d %v", code, out)
 	}
-	proof := k.proof(t, key.Key, core.StepUpSuperAdminIdentity, "PATCH", path, map[string]any{"method": "password", "password": adminPassword})
+	proof := k.proof(t, &key.Key, core.StepUpSuperAdminIdentity, "PATCH", path, map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(key.Key, proof, "PATCH", path, body); code != 200 {
 		t.Fatalf("key with a proof: %d %v", code, out)
 	}
 	// Its own password: the password scope's proof covers the guard too.
 	pw := map[string]any{"password": "root-password-9"}
-	proof = k.proof(t, key.Key, core.StepUpSelfPassword, "PATCH", path, map[string]any{"method": "password", "password": adminPassword})
+	proof = k.proof(t, &key.Key, core.StepUpSelfPassword, "PATCH", path, map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(key.Key, proof, "PATCH", path, pw); code != 200 {
 		t.Fatalf("own password through a key with a proof: %d %v", code, out)
 	}
@@ -321,7 +319,7 @@ func TestStepUpMatrix(t *testing.T) {
 		return "/users/" + strconv.FormatInt(mustCreateUser(t, k.s, "m"+strconv.Itoa(n)+"@example.com"), 10)
 	}
 	verify := func(token, path string) string {
-		return k.proof(t, token, core.StepUpUserDelete, "DELETE", path, map[string]any{"method": "password", "password": adminPassword})
+		return k.proof(t, &token, core.StepUpUserDelete, "DELETE", path, map[string]any{"method": "password", "password": adminPassword})
 	}
 	for _, tc := range []struct {
 		name, token string
@@ -386,7 +384,7 @@ func TestTwoFactorSetupNeedsAProof(t *testing.T) {
 	if code, out := k.call(session, "POST", path, nil); code != 403 || errCode(out) != "verification_required" {
 		t.Fatalf("no proof: %d %v", code, out)
 	}
-	proof := k.proof(t, session, core.StepUpSelf2FAEnable, "POST", path, map[string]any{"method": "password", "password": adminPassword})
+	proof := k.proof(t, &session, core.StepUpSelf2FAEnable, "POST", path, map[string]any{"method": "password", "password": adminPassword})
 	if code, out := k.callProof(session, proof, "POST", path, nil); code != 200 {
 		t.Fatalf("with a proof: %d %v", code, out)
 	}

@@ -196,7 +196,7 @@ func (s *Service) BeginPasskeyRegistration(ctx context.Context, r *http.Request,
 	if err != nil {
 		return nil, err
 	}
-	token, err := s.createFlow(ctx, s.db.Gorm, flowPasskeyRegister, userID, session)
+	token, err := s.createFlow(ctx, flowPasskeyRegister, userID, session)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +210,7 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, r *http.Request
 		return nil, err
 	}
 	var session webauthn.SessionData
-	if _, err := s.takeFlow(ctx, s.db.Gorm, flowToken, flowPasskeyRegister, userID, &session); err != nil {
+	if _, err := s.takeFlow(ctx, flowToken, flowPasskeyRegister, userID, &session); err != nil {
 		return nil, err
 	}
 	wa, err := s.webAuthnFor(r, session.RelyingPartyID)
@@ -302,7 +302,7 @@ func (s *Service) BeginPasskeyLogin(ctx context.Context, r *http.Request, ip str
 	if err != nil {
 		return nil, err
 	}
-	token, err := s.createFlow(ctx, s.db.Gorm, flowPasskeyLogin, 0, session)
+	token, err := s.createFlow(ctx, flowPasskeyLogin, 0, session)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +317,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 		return nil, rateLimitedError(ctx, wait)
 	}
 	var session webauthn.SessionData
-	if _, err := s.takeFlow(ctx, s.db.Gorm, flowToken, flowPasskeyLogin, 0, &session); err != nil {
+	if _, err := s.takeFlow(ctx, flowToken, flowPasskeyLogin, 0, &session); err != nil {
 		return nil, err
 	}
 	fail := func() (*TokenPair, error) {
@@ -385,7 +385,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 			return err
 		}
 		var err error
-		pair, err = is.issue(withLoginMethod(ctx, loginMethodPasskey), user.id, "")
+		pair, err = is.issue(withLoginMethod(ctx, loginMethodPasskey), user.id)
 		return err
 	})
 	if err != nil {

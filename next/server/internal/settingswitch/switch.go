@@ -1,5 +1,5 @@
 // Package settingswitch is a site-wide mode that the super admin flips at
-// run time: authz.engine (CONTRACTS §99.3) and session.issue (§100.5).
+// run time: authz.engine (CONTRACTS §99.3).
 package settingswitch
 
 import (
@@ -30,7 +30,7 @@ type Switch struct {
 	Values  []string // the modes
 	Default string   // a missing, empty or unknown value
 	Action  string   // the audit action of a change
-	Log     string   // the log prefix of the owner ("authz", "iam")
+	Log     string   // the log prefix of the owner ("authz")
 	// Denied is the message of a change by anyone but the super admin.
 	Denied core.LocalizedText
 }

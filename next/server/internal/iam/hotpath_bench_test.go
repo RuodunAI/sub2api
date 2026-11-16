@@ -14,7 +14,7 @@ import (
 // The reads that authenticate console requests: the session user's status
 // and token version (isActiveWithVersion, on a status cache miss), the
 // access key of a request made with one (VerifyAccessKey, not cached), and
-// the user GET /me, a login and a refresh load (getUser). Each GORM
+// the user GET /me and a login load (getUser). Each GORM
 // statement is measured next to the pgx statement it replaced, against a
 // real PostgreSQL (TEST_DATABASE_URL), as recorded in
 // internal/store/gormtest/BASELINE.md:

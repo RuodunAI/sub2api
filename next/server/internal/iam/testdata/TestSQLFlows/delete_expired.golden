@@ -1,3 +1,0 @@
--- sql
-DELETE FROM "auth_flows" WHERE expires_at < now()
--- vars

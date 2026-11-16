@@ -28,7 +28,6 @@ func TestCoreEnvironmentInheritsOnlyAllowlist(t *testing.T) {
 		"PATH=/usr/bin",
 		"HOME=/var/lib/sub2api",
 		"SUB2API_MASTER_KEY=master",
-		"SUB2API_JWT_SECRET=jwt",
 		"SUB2API_PLUGIN_SECCOMP=true",
 		// Shell-only or unrelated variables.
 		"DATABASE_URL=postgres://inherited/db",
@@ -63,7 +62,7 @@ func TestCoreEnvironmentInheritsOnlyAllowlist(t *testing.T) {
 			t.Errorf("%s reached the core", name)
 		}
 	}
-	for name, want := range map[string]string{"PATH": "/usr/bin", "HOME": "/var/lib/sub2api", "SUB2API_MASTER_KEY": "master", "SUB2API_JWT_SECRET": "jwt", "SUB2API_PLUGIN_SECCOMP": "true", "EXTRA_FOR_CORE": "yes", "SUB2API_MANAGED": "true"} {
+	for name, want := range map[string]string{"PATH": "/usr/bin", "HOME": "/var/lib/sub2api", "SUB2API_MASTER_KEY": "master", "SUB2API_PLUGIN_SECCOMP": "true", "EXTRA_FOR_CORE": "yes", "SUB2API_MANAGED": "true"} {
 		if !slices.Equal(got[name], []string{want}) {
 			t.Errorf("%s = %v, want [%s]", name, got[name], want)
 		}

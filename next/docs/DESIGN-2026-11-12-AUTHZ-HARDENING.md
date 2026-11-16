@@ -364,7 +364,7 @@ FROM plugins pl LEFT JOIN publishers pub ON pub.id = pl.publisher_id WHERE pl.ke
 - 影响对象：只新增命令，已有接口行为不变。
 - 运维：多超管人工处理（T18 的超管唯一迁移检测到多个未删除的超管持有者时报错，服务不启动）：
   1. 从报错信息里的 user id 与邮箱中选出要保留的超管；
-  2. 在服务器上以与服务相同的环境变量（配置校验需要 `DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、`SUB2API_JWT_SECRET`，Redis 并不连接）执行 `sub2api admin recover-superadmin --email <要保留的人>`；容器部署可用同一镜像起一次性容器，如 `docker compose run --rm <core 服务> sub2api admin recover-superadmin --email ...`。其余持有者降为 `admin`，相关会话全部失效；
+  2. 在服务器上以与服务相同的环境变量（配置校验需要 `DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`，Redis 并不连接）执行 `sub2api admin recover-superadmin --email <要保留的人>`；容器部署可用同一镜像起一次性容器，如 `docker compose run --rm <core 服务> sub2api admin recover-superadmin --email ...`。其余持有者降为 `admin`，相关会话全部失效；
   3. 重新启动服务，迁移即可通过。
   丢失超管密码或两步验证时同样用此命令，加 `--reset-password`、`--reset-2fa`，新密码只打印一次，登录后请立即修改。
 - 回滚：revert 这个提交即可，无迁移；已执行的恢复不会回退。

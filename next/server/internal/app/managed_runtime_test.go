@@ -81,7 +81,7 @@ func testManagedRuntime(t *testing.T, migrate bool) {
 	}
 	addr := port.Addr().String()
 	port.Close()
-	cfg := &config.Config{HTTPAddr: addr, NodeID: "managed-runtime-test", DatabaseURL: testutil.DSN(db), RedisURL: "redis://" + mr.Addr(), MasterKey: bytes.Repeat([]byte{1}, 32), JWTSecret: bytes.Repeat([]byte{2}, 32), BootstrapAdminEmail: "must-not-bootstrap@example.com", BootstrapAdminPassword: "must-not-bootstrap-password",
+	cfg := &config.Config{HTTPAddr: addr, NodeID: "managed-runtime-test", DatabaseURL: testutil.DSN(db), RedisURL: "redis://" + mr.Addr(), MasterKey: bytes.Repeat([]byte{1}, 32), BootstrapAdminEmail: "must-not-bootstrap@example.com", BootstrapAdminPassword: "must-not-bootstrap-password",
 		// A drained core must not wait this out (the shell already moved its traffic).
 		ShutdownDelay: 5 * time.Second,
 		Managed:       config.ManagedConfig{Enabled: true, Socket: filepath.Join(dir, "control.sock"), Token: strings.Repeat("t", 32), ReleaseDigest: "release", BootID: "boot"},

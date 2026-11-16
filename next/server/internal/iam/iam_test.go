@@ -24,6 +24,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/iam/tokenstore"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -108,9 +109,6 @@ func setup(t *testing.T, opts ...authztest.Option) *env {
 	}
 	mr := miniredis.RunT(t)
 	cfg := &config.Config{
-		JWTSecret:              []byte("0123456789abcdef0123456789abcdef"),
-		AccessTokenTTL:         time.Hour,
-		RefreshTokenTTL:        24 * time.Hour,
 		SessionIdleTTL:         7 * 24 * time.Hour,
 		SessionMaxTTL:          30 * 24 * time.Hour,
 		BootstrapAdminEmail:    adminEmail,
@@ -130,18 +128,23 @@ func isCode(err error, code string) bool {
 	return errors.As(err, &e) && e.Code == code
 }
 
+// mustLogin signs in: a session token, or the second step of an account
+// with two-factor.
 func mustLogin(t *testing.T, s *Service, email, password string) *TokenPair {
 	t.Helper()
 	p, err := s.Login(context.Background(), email, password, testIP)
 	if err != nil {
 		t.Fatalf("login %s: %v", email, err)
 	}
+	if !p.TwoFactorRequired && !strings.HasPrefix(p.AccessToken, tokenstore.SessionPrefix) {
+		t.Fatalf("login %s gave %+v", email, p)
+	}
 	return p
 }
 
 // ------------------------------------------------------------ tests
 
-func TestBootstrapLoginRefreshLogout(t *testing.T) {
+func TestBootstrapLoginLogout(t *testing.T) {
 	t.Parallel()
 	e := setup(t)
 	s, ctx := e.svc, context.Background()
@@ -172,7 +175,7 @@ func TestBootstrapLoginRefreshLogout(t *testing.T) {
 		t.Fatalf("unknown user: %v", err)
 	}
 	p := mustLogin(t, s, "ROOT@example.com ", adminPassword)
-	if p.ExpiresIn != 3600 || p.User.Email != adminEmail || p.User.Roles[0] != authz.RoleSuperAdmin || p.User.LastLoginAt == nil {
+	if p.ExpiresIn != int64(e.cfg.SessionIdleTTL/time.Second) || p.User.Email != adminEmail || p.User.Roles[0] != authz.RoleSuperAdmin || p.User.LastLoginAt == nil {
 		t.Fatalf("pair: %+v user %+v", p, p.User)
 	}
 	uid, err := s.VerifyAccessToken(ctx, p.AccessToken)
@@ -187,23 +190,19 @@ func TestBootstrapLoginRefreshLogout(t *testing.T) {
 		t.Fatalf("me: %+v %v", me, err)
 	}
 
-	// Refresh rotates: the old refresh token stops working.
-	p2, err := s.Refresh(ctx, p.RefreshToken)
+	// Logging out ends that session.
+	_, id, err := s.VerifySession(ctx, p.AccessToken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ageRotation(t, s, p.RefreshToken)
-	if _, err := s.Refresh(ctx, p.RefreshToken); !isCode(err, "unauthenticated") {
-		t.Fatalf("reused refresh token: %v", err)
-	}
-	if err := s.Logout(ctx, uid, p2.RefreshToken); err != nil {
+	if err := s.Logout(core.WithSession(ctx, id), uid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Refresh(ctx, p2.RefreshToken); !isCode(err, "unauthenticated") {
-		t.Fatalf("refresh after logout: %v", err)
+	if _, err := s.VerifyAccessToken(ctx, p.AccessToken); !isCode(err, "unauthenticated") {
+		t.Fatalf("session after logout: %v", err)
 	}
 
-	// Password change revokes refresh tokens (the route verifies the caller).
+	// A password change ends the sessions (the route verifies the caller).
 	p3 := mustLogin(t, s, adminEmail, adminPassword)
 	if err := s.ChangePassword(ctx, uid, "", "short"); !isCode(err, "invalid_argument") {
 		t.Fatalf("short password: %v", err)
@@ -211,8 +210,8 @@ func TestBootstrapLoginRefreshLogout(t *testing.T) {
 	if err := s.ChangePassword(ctx, uid, "", "new-password-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Refresh(ctx, p3.RefreshToken); err == nil {
-		t.Fatal("refresh token survived password change")
+	if _, err := s.VerifyAccessToken(ctx, p3.AccessToken); err == nil {
+		t.Fatal("session survived password change")
 	}
 	mustLogin(t, s, adminEmail, "new-password-1")
 }
@@ -269,9 +268,6 @@ func TestUserLifecycle(t *testing.T) {
 	}
 	if _, err := s.VerifyAccessToken(ctx, pair.AccessToken); err == nil {
 		t.Fatal("disabled user's token accepted")
-	}
-	if _, err := s.Refresh(ctx, pair.RefreshToken); err == nil {
-		t.Fatal("disabled user's refresh accepted")
 	}
 	if ok, _ := e.authz.Can(ctx, u.ID, "gateway:use"); ok {
 		t.Fatal("disabled user keeps permissions")
@@ -457,7 +453,6 @@ func TestHTTP(t *testing.T) {
 	joeID := int64(out["data"].(map[string]any)["id"].(float64))
 	_, out = c.do("POST", "/auth/login", "", map[string]any{"email": "joe@example.com", "password": "password-1"})
 	joe := out["data"].(map[string]any)["access_token"].(string)
-	joeRefresh := out["data"].(map[string]any)["refresh_token"].(string)
 	if code, out = c.do("GET", "/users", joe, nil); code != 403 || errCode(out) != "permission_denied" {
 		t.Fatalf("joe lists users: %d %v", code, out)
 	}
@@ -483,9 +478,6 @@ func TestHTTP(t *testing.T) {
 	if code, _ = c.do("GET", "/me", joe, nil); code != 401 {
 		t.Fatalf("deleted user's token: %d", code)
 	}
-	if code, _ = c.do("POST", "/auth/refresh", "", map[string]any{"refresh_token": joeRefresh}); code != 401 {
-		t.Fatalf("deleted user's refresh: %d", code)
-	}
 
 	// Roles endpoints.
 	if code, out = c.do("PUT", "/users/"+strconv.FormatInt(opsID, 10)+"/roles", ops, map[string]any{"role_keys": []string{"super_admin"}}); code != 403 || errCode(out) != "permission_denied" {
@@ -498,28 +490,25 @@ func TestHTTP(t *testing.T) {
 		t.Fatalf("list roles: %d %v", code, out)
 	}
 
-	// Logout ends that session; the others renew on their next 401.
+	// A session has nothing to renew it with (CONTRACTS §100).
+	if code, _ = c.do("POST", "/auth/refresh", "", map[string]any{"refresh_token": "x"}); code != 404 {
+		t.Fatalf("refresh endpoint still mounted: %d", code)
+	}
+	// Logout ends that session only.
 	_, out = c.do("POST", "/auth/login", "", map[string]any{"email": adminEmail, "password": adminPassword})
-	rt := out["data"].(map[string]any)["refresh_token"].(string)
-	if code, _ = c.do("POST", "/auth/logout", tok, map[string]any{"refresh_token": rt}); code != 204 {
+	other := out["data"].(map[string]any)["access_token"].(string)
+	if code, _ = c.do("POST", "/auth/logout", other, nil); code != 204 {
 		t.Fatalf("logout: %d", code)
 	}
-	if code, _ = c.do("POST", "/auth/refresh", "", map[string]any{"refresh_token": rt}); code != 401 {
-		t.Fatalf("refresh after logout: %d", code)
+	if code, _ = c.do("GET", "/me", other, nil); code != 401 {
+		t.Fatalf("session after its logout: %d", code)
 	}
-	if code, _ = c.do("GET", "/me", tok, nil); code != 401 {
-		t.Fatalf("access token after another session's logout: %d", code)
+	if code, _ = c.do("GET", "/me", tok, nil); code != 200 {
+		t.Fatalf("session after another one's logout: %d", code)
 	}
-	renew := func(refresh string) (access, next string) {
-		code, out := c.do("POST", "/auth/refresh", "", map[string]any{"refresh_token": refresh})
-		if code != 200 {
-			t.Fatalf("renew: %d %v", code, out)
-		}
-		d := out["data"].(map[string]any)
-		return d["access_token"].(string), d["refresh_token"].(string)
-	}
-	tok, rt = renew(data["refresh_token"].(string))
-	// Changing the password keeps the caller's own session.
+	// Changing the password keeps the caller's own session only.
+	_, out = c.do("POST", "/auth/login", "", map[string]any{"email": adminEmail, "password": adminPassword})
+	other = out["data"].(map[string]any)["access_token"].(string)
 	if code, out = c.do("PUT", "/me/password", tok, map[string]any{"new_password": "another-pass-1"}); code != 403 || errCode(out) != "verification_required" {
 		t.Fatalf("change password without a proof: %d %v", code, out)
 	}
@@ -530,7 +519,12 @@ func TestHTTP(t *testing.T) {
 	if code, out = c.doProof("PUT", "/me/password", tok, proof, map[string]any{"new_password": "another-pass-1"}); code != 204 {
 		t.Fatalf("change password: %d %v", code, out)
 	}
-	renew(rt)
+	if code, _ = c.do("GET", "/me", other, nil); code != 401 {
+		t.Fatalf("another session after the password change: %d", code)
+	}
+	if code, _ = c.do("GET", "/me", tok, nil); code != 200 {
+		t.Fatalf("the caller's session after its password change: %d", code)
+	}
 }
 
 // sectionKeys lists the section keys of a /me/menus response, in order.

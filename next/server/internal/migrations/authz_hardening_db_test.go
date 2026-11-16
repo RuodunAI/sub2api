@@ -11,7 +11,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/authztest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -49,8 +48,11 @@ func (h *hardeningDB) text(sql string, args ...any) (v string) {
 	return v
 }
 
+// migrate applies the migrations through casbinRule: the rollback scripts
+// these tests run undo the schema through it, and 0101 after it is one way
+// (it drops the JWT session tables).
 func (h *hardeningDB) migrate() error {
-	_, err := store.Migrate(h.ctx, h.db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+	_, err := store.Migrate(h.ctx, h.db, testutil.MigrationsThrough(h.t, casbinRule), store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
 	return err
 }
 

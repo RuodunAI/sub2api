@@ -171,8 +171,8 @@ end
 `
 
 // createScript stores a new token of a session. A session already under
-// the id (a refresh token exchanged again) ends first, so no token of it
-// is left that only a token_version bump could end. The user's index
+// the id (a retry of a create whose reply was lost) ends first, so no
+// token of it is left that only a token_version bump could end. The user's index
 // forgets the ids idle past the timeout, and the sessions used least
 // recently past MaxSessions end.
 // KEYS: sess, sid, usess. ARGV: prefix, hash, sid, ttl ms, now ms, idle
@@ -466,8 +466,7 @@ type flowRecord struct {
 	Payload json.RawMessage `json:"p"`
 }
 
-// PutFlow implements FlowStore. The token has the format of the auth_flows
-// ones (no prefix), so either store can be asked for it.
+// PutFlow implements FlowStore.
 func (v *Valkey) PutFlow(ctx context.Context, purpose string, f Flow) (string, error) {
 	raw, err := json.Marshal(flowRecord{UserID: f.UserID, Payload: f.Payload})
 	if err != nil {

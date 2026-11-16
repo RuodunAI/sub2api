@@ -45,10 +45,6 @@ const (
 	// /settings/authz, CONTRACTS §99), which decides who answers every
 	// permission check of the site.
 	StepUpAuthzEngine = "authz.engine"
-	// StepUpSessionIssue: switching what a login issues, JWTs or opaque
-	// sessions (PUT /settings/session, CONTRACTS §100), which decides how
-	// every console user stays signed in.
-	StepUpSessionIssue = "session.issue"
 	// StepUpHostInstall: installing or reaching code that runs on a host the
 	// core controls (the ccgateway controller and runtimes, SSH targets).
 	StepUpHostInstall = "host.install"
@@ -160,39 +156,17 @@ func StepUpPassword(ctx context.Context) bool {
 
 type sessionCtxKey struct{}
 
-// loginSession is the login session of a request and the kind of token it
-// authenticated with.
-type loginSession struct {
-	id     string
-	opaque bool
+// WithSession records the login session (CONTRACTS §100) a request
+// authenticated with: step-up proofs and windows bind to it, and the
+// sessions list marks the caller's own by it.
+func WithSession(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, sessionCtxKey{}, id)
 }
 
-// WithSession records the login session a console JWT belongs to: its
-// refresh token family.
-func WithSession(ctx context.Context, family string) context.Context {
-	return context.WithValue(ctx, sessionCtxKey{}, loginSession{id: family})
-}
-
-// WithOpaqueSession records the opaque session (s2s_, CONTRACTS §100) a
-// request authenticated with: its id, which an exchanged refresh token
-// family keeps.
-func WithOpaqueSession(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, sessionCtxKey{}, loginSession{id: id, opaque: true})
-}
-
-// Session returns the request's login session, "" for an access key or a
-// token from before sessions had ids.
+// Session returns the request's login session, "" for an access key.
 func Session(ctx context.Context) string {
-	s, _ := ctx.Value(sessionCtxKey{}).(loginSession)
-	return s.id
-}
-
-// OpaqueSession reports whether the request authenticated with an opaque
-// session token, as opposed to a JWT or an access key: what the token was,
-// decided when it was verified, not looked up again.
-func OpaqueSession(ctx context.Context) bool {
-	s, _ := ctx.Value(sessionCtxKey{}).(loginSession)
-	return s.opaque
+	id, _ := ctx.Value(sessionCtxKey{}).(string)
+	return id
 }
 
 // SessionVerifier is optionally implemented by a TokenVerifier: it also

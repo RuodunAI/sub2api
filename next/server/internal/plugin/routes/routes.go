@@ -171,7 +171,7 @@ func (h *Handler) serveAPI(c *gin.Context) {
 	var set core.PermissionSet // the caller's, on admin and user routes
 	switch chosen.Route.Scope {
 	case "admin", "user":
-		// A JWT or an access key; the route's permission is checked as the
+		// A session or an access key; the route's permission is checked as the
 		// key narrows it (CONTRACTS §80). A route without a permission
 		// matches nothing and is denied. The plugin is not told the call
 		// came through a key: the admin write audit records it, and the

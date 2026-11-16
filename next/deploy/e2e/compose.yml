@@ -33,7 +33,6 @@ x-node: &node
     SUB2API_DATABASE_URL: postgres://sub2api:${E2E_DB_PASSWORD:?set E2E_DB_PASSWORD in the E2E .env}@pg:5432/sub2api?sslmode=disable
     SUB2API_REDIS_URL: redis://redis:6379/0
     SUB2API_MASTER_KEY: ${E2E_MASTER_KEY:?set E2E_MASTER_KEY to base64 of 32 random bytes}
-    SUB2API_JWT_SECRET: ${E2E_JWT_SECRET:?set E2E_JWT_SECRET to at least 32 random characters}
     SUB2API_BOOTSTRAP_ADMIN_EMAIL: ${E2E_ADMIN_EMAIL:-admin@sub2api.test}
     SUB2API_BOOTSTRAP_ADMIN_PASSWORD: ${E2E_ADMIN_PASSWORD:?set E2E_ADMIN_PASSWORD in the E2E .env}
     SUB2API_LOG_LEVEL: ${E2E_LOG_LEVEL:-info}

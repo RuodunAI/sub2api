@@ -39,7 +39,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 
 ## 配置节点
 
-复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis、主密钥和 JWT 密钥。迁移已有集群时必须沿用原密钥及数据库。
+复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis 和主密钥。迁移已有集群时必须沿用原密钥及数据库。
 
 修改 `config/node-a.json` 和 `config/node-b.json`：
 

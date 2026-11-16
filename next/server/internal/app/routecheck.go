@@ -20,7 +20,7 @@ var permissionlessRoutes = func() map[string]httpapi.Access {
 		}
 	}
 	// Signing in, and the public price list of an API key.
-	add(httpapi.AccessPublic, "POST /auth/login", "POST /auth/refresh", "POST /auth/login/2fa",
+	add(httpapi.AccessPublic, "POST /auth/login", "POST /auth/login/2fa",
 		"POST /auth/passkey/begin", "POST /auth/passkey/finish", "GET /key/prices")
 	// Who the caller is and what they may see, each under the caller's own
 	// limits (the handler narrows); step-up verification of the caller

@@ -15,7 +15,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,11 +83,10 @@ func (e *Env) Close() {
 	}
 }
 
-// secrets are generated on the first run and reused, so encrypted data and
-// sessions stay valid across restarts.
+// secrets are generated on the first run and reused, so encrypted data
+// stays readable across restarts.
 type secrets struct {
 	MasterKey     string `json:"master_key"`
-	JWTSecret     string `json:"jwt_secret"`
 	AdminPassword string `json:"admin_password"`
 }
 
@@ -164,7 +162,6 @@ func Prepare(ctx context.Context, opt Options) (*Env, error) {
 		{"DATABASE_URL", env.DatabaseURL},
 		{"REDIS_URL", env.RedisURL},
 		{"SUB2API_MASTER_KEY", sec.MasterKey},
-		{"SUB2API_JWT_SECRET", sec.JWTSecret},
 		{"SUB2API_BOOTSTRAP_ADMIN_EMAIL", AdminEmail},
 		{"SUB2API_BOOTSTRAP_ADMIN_PASSWORD", sec.AdminPassword},
 		{"NODE_ID", "dev"},
@@ -235,7 +232,7 @@ func loadSecrets(path string) (*secrets, error) {
 		if err := json.Unmarshal(b, &s); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
-		if mk, err := base64.StdEncoding.DecodeString(s.MasterKey); err != nil || len(mk) != 32 || len(s.JWTSecret) < 32 || s.AdminPassword == "" {
+		if mk, err := base64.StdEncoding.DecodeString(s.MasterKey); err != nil || len(mk) != 32 || s.AdminPassword == "" {
 			return nil, fmt.Errorf("%s is incomplete; delete it to generate new secrets (the dev data encrypted with the old key becomes unreadable: use --reset)", path)
 		}
 		return &s, nil
@@ -243,16 +240,14 @@ func loadSecrets(path string) (*secrets, error) {
 		return nil, err
 	}
 	mk := make([]byte, 32)
-	jwt := make([]byte, 32)
 	pw := make([]byte, 9)
-	for _, b := range [][]byte{mk, jwt, pw} {
+	for _, b := range [][]byte{mk, pw} {
 		if _, err := rand.Read(b); err != nil {
 			return nil, err
 		}
 	}
 	s = secrets{
 		MasterKey:     base64.StdEncoding.EncodeToString(mk),
-		JWTSecret:     hex.EncodeToString(jwt),
 		AdminPassword: base64.RawURLEncoding.EncodeToString(pw),
 	}
 	b, err = json.MarshalIndent(s, "", "  ")

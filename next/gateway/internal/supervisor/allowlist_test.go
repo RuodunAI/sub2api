@@ -25,8 +25,8 @@ var coreProvidedEnv = []string{
 var coreIgnoredEnv = []string{"SUB2API_DATABASE_URL", "SUB2API_REDIS_URL"}
 
 // envRead finds a variable read where it is read, or declared as a
-// constant named ...Env that a reader is handed (authz.EngineEnv,
-// iam.IssueEnv, read by a run-time switch).
+// constant named ...Env that a reader is handed (authz.EngineEnv, read by
+// a run-time switch).
 var envRead = regexp.MustCompile(`(?:(?:Getenv|LookupEnv|boolEnv|durationEnv|int64Env|intEnv|\benv)\(|\b[A-Za-z]*Env\s*=\s*)"([A-Z][A-Z0-9_]*)"`)
 
 // The allowlist follows the core: every variable the core's production code

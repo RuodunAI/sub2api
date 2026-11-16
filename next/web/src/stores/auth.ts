@@ -11,7 +11,7 @@ export const useAuthStore = defineStore('auth', () => {
   const me = ref<Me | null>(null)
   const balance = ref<string | null>(null)
   const loggedIn = ref(!!session.get())
-  /** The session ended because it could not be renewed (login page shows a notice). */
+  /** The server ended the session (login page shows a notice). */
   const sessionExpired = ref(false)
   /** The held keys as patterns (CONTRACTS §21): a key is held when one of them implies it. */
   const permIndex = computed(() => permissionIndex(me.value?.permissions || []))
@@ -127,7 +127,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout() {
     try {
-      if (session.get()) await api.post('/auth/logout', { refresh_token: session.get()?.refresh_token })
+      if (session.get()) await api.post('/auth/logout')
     } catch {
       /* ignore */
     }

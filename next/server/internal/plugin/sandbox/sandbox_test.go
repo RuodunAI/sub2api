@@ -57,7 +57,7 @@ func childMain(mode string) int {
 			PluginKey:  os.Getenv(protocol.EnvPluginKey),
 			Strict:     os.Getenv(protocol.EnvStrictNetwork),
 		}
-		_, r.HasSecret = os.LookupEnv("SUB2API_JWT_SECRET")
+		_, r.HasSecret = os.LookupEnv("SUB2API_MASTER_KEY")
 		if addr := os.Getenv("SANDBOX_TEST_ADDR"); addr != "" {
 			c, err := net.DialTimeout("tcp", addr, 2*time.Second)
 			if err != nil {
@@ -124,7 +124,7 @@ func TestBuildEnv(t *testing.T) {
 	env := buildEnv([]string{
 		"PATH=/bin",
 		"SUB2API_DATABASE_URL=postgres://secret",
-		"SUB2API_JWT_SECRET=x",
+		"SUB2API_MASTER_KEY=x",
 		"SUB2API_PLUGIN=sub2api-next-plugin-v1",
 		"SUB2API_PLUGIN_KEY=demo",
 		"SUB2API_EXTRA=keep",
@@ -170,7 +170,7 @@ func TestCommandUnwrapped(t *testing.T) {
 	if _, err := l.Command(context.Background(), core.LaunchSpec{}); err == nil {
 		t.Fatal("empty binary accepted")
 	}
-	t.Setenv("SUB2API_JWT_SECRET", "top-secret")
+	t.Setenv("SUB2API_MASTER_KEY", "top-secret")
 	cmd, err := l.Command(context.Background(), core.LaunchSpec{
 		PluginKey: "demo", Version: "1.0.0", BinaryPath: "/x/plugin", WorkDir: "/data/demo",
 		MemoryMB: 100, CPU: 1.5, StrictNetwork: true, Env: []string{"FOO=bar"},
@@ -190,7 +190,7 @@ func TestCommandUnwrapped(t *testing.T) {
 		}
 	}
 	for _, kv := range cmd.Env {
-		if strings.HasPrefix(kv, "SUB2API_JWT_SECRET") {
+		if strings.HasPrefix(kv, "SUB2API_MASTER_KEY") {
 			t.Fatal("secret leaked")
 		}
 	}
@@ -233,7 +233,7 @@ func TestRunExecPassesExitCode(t *testing.T) {
 func TestRunExecFiltersEnv(t *testing.T) {
 	exe, _ := os.Executable()
 	cmd := exec.Command(exe, SubcommandName, "--mem-mb=100", "--", exe)
-	cmd.Env = append(os.Environ(), "SANDBOX_TEST_CHILD=report", "SUB2API_JWT_SECRET=x", "SUB2API_PLUGIN_KEY=demo")
+	cmd.Env = append(os.Environ(), "SANDBOX_TEST_CHILD=report", "SUB2API_MASTER_KEY=x", "SUB2API_PLUGIN_KEY=demo")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)

@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -75,10 +74,6 @@ type Options struct {
 	Addr        string // advertised address, informational (e.g. public URL)
 	HostVersion string
 	Logger      *slog.Logger
-	// Capabilities are what this build supports that a cluster-wide switch
-	// waits for (core.NodeStatus.Capabilities), announced with every
-	// heartbeat. Copied: the caller's slice is not shared.
-	Capabilities []string
 }
 
 // Cluster bundles the four cluster services that share one Redis client.
@@ -109,7 +104,6 @@ func New(rdb redis.UniversalClient, db *store.DB, opts Options) *Cluster {
 	}
 	reg := NewRegistry(rdb, pinger, RegistryOptions{
 		NodeID: opts.NodeID, Addr: opts.Addr, HostVersion: opts.HostVersion, Logger: opts.Logger, Managed: opts.Managed, CoreBootID: opts.CoreBootID,
-		Capabilities: slices.Clone(opts.Capabilities),
 	})
 	if opts.Managed {
 		reg.opts.BootID = opts.CoreBootID

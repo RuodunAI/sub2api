@@ -12,7 +12,7 @@
 |---|---|---|
 | `sdk/proto`、`sdk/gen`、`sdk/manifest`、`sdk/protocol`（go-plugin 握手）、`sdk/pkgsig`（包签名格式） | 主控 | 契约 |
 | `server/internal/core`、`config`、`store`、`httpapi`、`testutil`、`migrations`、`secret`（AES-GCM）、`deps`、`platforms`（内置平台定义，任何模块可 import）、`cmd/sub2api/main.go`、`internal/app` | 主控 | 共享基础、组装 |
-| `server/internal/iam`、`authz`（含 `/me/menus`） | A1 identity | 用户、登录、JWT、RBAC、权限目录 |
+| `server/internal/iam`、`authz`（含 `/me/menus`） | A1 identity | 用户、登录会话（§100）、RBAC、权限目录 |
 | `server/internal/apikey`、`group`、`proxy`、`account` | A2 resources | API Key、分组、代理、账号、账号类型接口 |
 | `server/internal/billing`（含 `billing/expr`）、`usage`、`event`（Emit 写入端） | B billing | |
 | `server/internal/plugin/pkg`（解包、manifest 校验、签名与信任）、`plugin/install`（上传、审查、授权确认、卸载）、`plugin/market`、`plugin/api`（`/plugins`、`/publishers`、`/market`、`/nodes`、`/ui/plugins` 接口） | C1 plugin-lifecycle | |
@@ -69,7 +69,7 @@
 
 ### 3.3 鉴权
 
-- 控制台：`Authorization: Bearer <access_token>`（JWT，HS256，`sub` 为用户 ID，默认 2 小时有效）
+- 控制台：`Authorization: Bearer <access_token>`，会话令牌 `s2s_…`（存 Valkey，用着就续期，空闲 7 天或登录 30 天后结束，§100；2026-11-16 起不再有 JWT）
 - **已取消二次验证（2026-10-05 用户决定）**：不再有密码确认（step-up）。`POST /auth/step-up`、`X-Step-Up-Token` 请求头、`step_up_required` 错误码、`core.StepUpVerifier`、`Authorizer.IsSensitive`、`Router.PermStepUp` 全部删除；任何操作（调整余额、删除用户/账号、查看凭证、角色授权、插件安装/卸载、系统更新等）只看登录态 + RBAC 权限。旧前端仍发送 `X-Step-Up-Token` 时核心直接忽略。
 - **二次验证重新引入（2026-11-13，权限加固期 4，用户决定照 new-api）**：只用于少数高危操作，按 scope 换短时一次性 proof（`X-Verify-Proof`），会话与访问密钥同一套，见 §80.2。上面这条只说明旧的 step-up 机制已删除。
 - 路由注册：`r.Public` / `r.Self` / `r.Perm(method, path, permission, handler)` / `r.PermAny(method, path, handler, keys...)`（任一 key 即可）/ `r.PermScoped(method, path, handler, actions...)`（任一动作的任意范围，handler 用 `core.Scope` 取范围，§21.0）
@@ -131,9 +131,8 @@
 
 | 方法 路径 | 权限 | 说明 |
 |---|---|---|
-| POST `/auth/login` | - | `{email, password}` → `{access_token, refresh_token, expires_in, user}`；`user` 是 `/users` 列表项的形状（§15.2），但不带 `balance` 和 `segment`（用户组，§97.6） |
-| POST `/auth/refresh` | - | `{refresh_token}` → 同上（轮换 refresh token） |
-| POST `/auth/logout` | auth | 请求体 `{refresh_token?}` 可选；结束该 refresh token 所在的会话（整个家族），不带时结束全部会话；立即生效（§43.2） |
+| POST `/auth/login` | - | `{email, password}` → `{access_token, expires_in, user}`（`access_token` 是会话令牌，`expires_in` 是空闲超时的秒数，§100）；`user` 是 `/users` 列表项的形状（§15.2），但不带 `balance` 和 `segment`（用户组，§97.6） |
+| POST `/auth/logout` | auth（只限会话） | 无请求体；结束调用者自己的会话，立即生效（§100.4） |
 | GET `/me` | auth | `{id, email, display_name, roles:[key], permissions:[key], superuser, authz_version}`。`authz_version` 是读取 `permissions` 时的 authz 版本。控制台 API 每个通过认证的响应（含 403，含插件 admin/user 路由 `/api/v1/p/:key/*`）带响应头 `X-Authz-Version`：本节点已知的最新 authz 版本（`core.AuthzVersioner`，不查库；角色、授权、权限目录的变更，以及创建、删除用户和改用户状态都会推进它；登出、撤销会话、改密码走 `iam:user:changed`，不推进）。头是认证那一刻的版本，变更请求自身的响应不反映该变更。头的值大于手里 `/me` 的 `authz_version` 时权限可能已变，应重新取 `/me`；头可能短暂落后或领先于取 `/me` 的节点（广播未到、多节点），所以同一个头值至多触发一次重取：记 `seen = max(me.authz_version, 上次触发重取的头值)`，只在头大于 `seen` 时重取。401 与插件代理路由不带这个头 |
 | GET `/me/assignable-roles` | auth | 可分配角色：`[{key, name:{en,zh}, builtin, grantable, missing:[key], missing_assignable:[key], missing_assign_custom}]`，只含调用者可分配清单内的角色（超管为全部），不含 `super_admin`，内置在前；`grantable=false` 表示角色所含权限或可分配角色超出调用者，`missing*` 同 403 的 details（前端置灰提示）；不列默认角色 `user` 对无角色用户的豁免；访问密钥下为 `[]`（§80） |
 | GET `/me/menus` | auth | 侧边栏：`[{section, label:{en,zh}, items:[{id, label, icon, path, plugin_key?}]}]`；section 为 `overview/gateway/security/finance/users/plugins/system/me` 或插件自己的区 `<插件key>:<id>`（核心菜单按权限过滤，加上插件菜单；§22） |
@@ -518,8 +517,8 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 ### 14.2 安全加固
 
 - **登录限速**：同一邮箱在同一 IP 15 分钟内失败 5 次、或同一 IP 15 分钟内失败 20 次后，登录返回 429 `rate_limited`，`details.retry_after_seconds`；成功登录清除该邮箱+IP 的计数。Redis key `login:fail:e:{sha256(email|ip)}`、`login:fail:ip:{ip}`（带 TTL）。 客户端 IP 取 `c.ClientIP()`：只有来自 `SUB2API_TRUSTED_PROXIES`（逗号分隔的 IP/CIDR，默认空 = 不信任任何代理）的请求才采用 `X-Forwarded-For`。
-- **refresh token 重放检测**：refresh token 属于一个家族（`refresh_tokens.family_id`，登录时新建）；轮换时旧 token 标记 `replaced_at`；再次出示已轮换或已吊销的 token 时吊销整个家族并返回 401。**例外（2026-10-05）**：轮换后 60 秒内再次出示同一个 token、且家族里还有有效 token 时，视为客户端没收到上次的响应（断网、关页、两个标签页同时刷新），再发一对同家族的新 token，不吊销。登出或已整体吊销的 token 没有这个宽限。
-- **登录时长（2026-10-05 用户要求）**：登录随使用自动延长，闲置最长 30 天。access token 2 小时（`SUB2API_ACCESS_TOKEN_TTL`），refresh token 每次轮换都重新给满 `SUB2API_REFRESH_TOKEN_TTL`（默认 720h = 30 天）。控制台除 401 后刷新外，页面可见时每分钟检查、切回页面或获得焦点时也检查，access token 剩余不足 5 分钟就主动刷新（`@sub2api/host` 的 `startKeepAlive`）。所以连续使用就一直保持登录；30 天没打开过控制台才需要重新登录。改密码、被禁用、被删除、登出仍立即失效。
+- **refresh token 重放检测**：2026-11-16 随 JWT 一起删除：会话令牌不换发，没有 refresh token（§100）。
+- **登录时长（2026-10-05 用户要求）**：登录随使用自动延长。2026-11-16 起由服务端给会话续期（§100.2：空闲 `SUB2API_SESSION_IDLE_TTL` 默认 168h = 7 天，登录后最长 `SUB2API_SESSION_MAX_TTL` 默认 720h = 30 天），控制台不再刷新令牌。改密码、被禁用、被删除、登出仍立即失效。
 - **SSRF 拨号时校验**：`proxy` 模块给**直连**（不经代理）的上游 HTTP 客户端设置拨号检查，拒绝回环、私有、链路本地、未指定地址，防 DNS 重绑定；`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行（`proxy.Options.AllowPrivate`）。经代理的连接不检查（由代理解析）。
 - **插件新外部域名告警**：出口隧道每次连接 upsert `plugin_egress_domains`；首次出现的 host 记 WARN 日志并写事件 `plugin.egress_new_domain`。`GET /plugins/:key/egress` 增加 `domains:[{host, first_seen_at, last_seen_at, connections, new}]`（`new` = 24 小时内首次出现）。
 - **出口日志长连接**：连接建立时即写一行（`result='open'`），关闭时更新 `result/duration_ms/bytes/closed_at`，控制台立即可见。
@@ -2783,8 +2782,8 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 ### 43.2 改密、禁用后旧令牌失效
 
 - 迁移 0027：`users.token_version bigint NOT NULL DEFAULT 0`。
-- 修改密码（本人或管理员重置）、把用户禁用、删除用户、登出、撤销会话时 bump `token_version`（2026-11-12 权限加固 M8；步长与不透明会话的处理见 §100.4：`iam.endAllSessions` / `endSomeSessions`），同时按场景吊销 refresh token 家族：本人改密码保留当前会话，撤销会话、登出只吊销对应家族，其余吊销全部。
-- access token 里带 `tv`（签发时的 `token_version`）；校验时与库里的值不一致即 401 `token has been invalidated`。refresh token 未被吊销的会话在下一次 401 后静默续期（控制台自动 `/auth/refresh`），被吊销的会话立即下线。
+- 修改密码（本人或管理员重置）、把用户禁用、删除用户、登出、撤销会话时结束会话（2026-11-12 权限加固 M8；做法与 `token_version` 的步长见 §100.4：`iam.endAllSessions` / `endSomeSessions`）：本人改密码保留当前会话，撤销会话、登出只结束对应的会话，其余结束全部。
+- 会话里存 `tv`（盖章：签发时的 `token_version`）；鉴权时小于用户当前的 `token_version` 即 401 `session has been invalidated`，被结束的会话立即下线（§100.1）。
 - 校验结果在节点内缓存 30 秒。上述操作提交后在本节点清掉该用户的缓存，并在 `iam:user:changed`（载荷为用户 id）上广播，其他节点立即清掉；总线重连时整表清空，广播丢失时以 30 秒过期兜底。这个频道与权限版本无关：登出、撤销会话、改密码不推进 `authz:changed`。
 
 ### 43.3 代理的私网地址
@@ -2841,7 +2840,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 - 角色写入口（`editableRole`，2026-11-12 修正 M5）：改名称描述、改权限、改可分配清单、重置、删除角色前，先在同一事务里锁住角色行；超级管理员角色对任何人（含超管和系统）都 409；其余内置角色（`admin`、`operator`、`supplier`、`user`）2026-11-13 起与有持有者的自定义角色同一口径：须在操作者的可分配清单内（不论有没有持有者，否则 403 `you cannot assign or revoke this role`，`details.role`），且当前授予在操作者之内（2026-11-12 决策 6 的“只有超级管理员能改”已放宽，用户要求内置角色可以修改、重置）；按默认清单 admin 能改 operator、supplier、user，不能改 admin，operator 没有 `role:define`；角色（内置或自定义）当前授予的权限（授予视角，不含已移除的）与可分配角色必须在操作者之内，否则 403 `you cannot change a role with permissions you don't have`；角色有未删除的持有者时，它还必须在操作者的可分配清单内（改角色就是改它的持有者，与可管理目标同一口径，`assign_custom` 不含操作者自己持有的角色），否则 403 `you cannot assign or revoke this role`（`details.role`），所以带 `assign_custom` 的角色的持有者不能经改名、改权限、改可分配清单或删除去动同角色的其他持有者（2026-11-13 发布审查）；这一判断按操作者的授予视角（经访问密钥时收窄），访问密钥收窄后没有可分配清单，所以访问密钥（超管的也一样）只能改、删没有持有者的自定义角色。此前持 `role:manage` 的人可以先把权限比自己大的角色削到自己以下，再对持有该角色的用户改密码、禁用，接管账号。改权限、改可分配清单（PUT `/roles/:id/assignable`）因此只需检查新增部分（现有部分已在操作者之内）；重置删掉的权限与可分配角色同样已在操作者之内（C-L2）。
 - 分配角色（PUT `/users/:id/roles`、POST `/users`，2026-11-12，决策 1、4）：只比较新增与撤销的角色，无变化直接成功。`super_admin` 任何人（含超管本人、超管的访问密钥）都不能授予或撤销，403 `the super admin role cannot be assigned or revoked; transfer it instead`；系统（actor 0）只能授予初始超管（引导），不能撤销。其余每个新增或撤销的角色都必须在操作者的可分配清单内（超管可分配全部），否则 403 `details.role`；唯一例外是给当前没有任何角色的用户授予默认角色 `user`，所以只有 `user:create` 的人仍能建默认用户。然后检查操作者能作用于目标（可管理目标，本人也按此判断，FU6），再检查新增角色所含权限与可分配角色都在操作者之内（`Missing`）。访问密钥没有可分配角色，不能分配任何角色。
 - 超管移交（POST `/system/super-admin/transfer`，2026-11-12，决策 1）：`super_admin` 换人的唯一路径，`authz.TransferSuperAdmin` 一处实现，控制台与服务器 CLI 共用。`Bump` 之后锁住超管持有行，操作者须是当前持有者（系统 actor 0 = CLI 不受此限，同时修复无超管或多超管）；目标须未删除、启用中、不是操作者本人；其余持有者先删超管行，未删除的补 `admin`（已软删除的不补，恢复该用户不会带回管理权限），再给目标加超管行；记 `superadmin.transfer` 审计（`via` 为 `console` 或 `cli`）。iam 在同一事务里让降级者与目标的全部会话失效，提交后广播。是否要求目标已开启两步验证：不强制，只由前端提示。
-- 服务器 CLI 恢复（`sub2api admin recover-superadmin --email <已有用户> [--reset-password] [--reset-2fa]`，2026-11-12，决策 2）：在服务器上直连配置的数据库，不跑迁移、不连 Redis、不广播，没有对应的 HTTP 入口。`iam.RecoverSuperAdmin` 只组合系统（actor 0）路径：目标被禁用时先启用，再经 `authz.TransferSuperAdmin(actor 0)` 成为唯一超管（其余未删除的持有者降为 `admin`，已软删除的只去掉超管角色，双方会话失效），`--reset-password` 设 24 位随机密码并只在 stdout 打印一次，`--reset-2fa` 清除两步验证与通行密钥；审计 actor 为 0。其他节点最长 30 秒后经版本轮询与状态缓存 TTL 生效（旧会话的访问令牌在此之前仍可能被接受）；重新登录立即可用：令牌携带的 `token_version` 比节点状态缓存里的新时，该缓存项视为过期、当场重读，不会出现登录成功后下一个请求 401。只读写 `roles`、`user_roles`、`users`、`refresh_tokens`、`login_sessions`、`user_totp`、`user_passkeys`、`audit_logs`，因此超管唯一迁移因多超管失败、服务起不来时可用它处理。
+- 服务器 CLI 恢复（`sub2api admin recover-superadmin --email <已有用户> [--reset-password] [--reset-2fa]`，2026-11-12，决策 2）：在服务器上直连配置的数据库，不跑迁移、不连 Redis、不广播，没有对应的 HTTP 入口。`iam.RecoverSuperAdmin` 只组合系统（actor 0）路径：目标被禁用时先启用，再经 `authz.TransferSuperAdmin(actor 0)` 成为唯一超管（其余未删除的持有者降为 `admin`，已软删除的只去掉超管角色，双方会话失效），`--reset-password` 设 24 位随机密码并只在 stdout 打印一次，`--reset-2fa` 清除两步验证与通行密钥；审计 actor 为 0。其他节点最长 30 秒后经版本轮询与状态缓存 TTL 生效（旧会话在此之前仍可能被接受）；重新登录立即可用：新会话的盖章不低于节点状态缓存里的旧版本，照常放行（§100.1），不会出现登录成功后下一个请求 401。只读写 `roles`、`user_roles`、`users`、`user_totp`、`user_passkeys`、`audit_logs`，因此超管唯一迁移因多超管失败、服务起不来时可用它处理。
 - 超管全局唯一（迁移 `0097_authz_hardening.sql`，2026-11-12，决策 1、2）：`roles_one_superuser` 部分唯一索引保证最多一个超管角色；`user_roles` 上的延迟约束触发器 `user_roles_one_superuser` 在提交时检查最多一个持有者（advisory 锁串行化并发），违反时 23505。迁移先删掉软删除用户的超管行；库里有用户（升级而非新装）时未删除的持有者（不论启用、禁用）必须恰好一个：没有时报 `no super admin`，多于一个时报 `several super admins` 并只列出 user id（不含邮箱，错误会进启动日志；期 4 P4F2），整个迁移回滚、服务不启动，用上面的 CLI 指定或保留一个后重启。除超管本人的登录会话外没人能改超管：PATCH/DELETE `/users/:id`、DELETE `/users/:id/security`、PUT `/users/:id/roles` 对超管目标只经 `CanActOnUser` 判断，非超管缺超管标志，403 `you cannot modify a superuser`（`details.superuser = true`）；超管本人经访问密钥做这些身份类操作时，密钥要带路由的权限，还要二次验证（本请求已消耗过的 proof，或 `superadmin.identity`，见上文“超管账号本身”，期 4 S3 取代 FU6 的 403 `session_only`）。DELETE `/users/:id/security` 自期 4 起是 `StepUp(user.security.reset)` + `user:password:reset`，会话与带该权限的访问密钥一样可用（§80.2）。（期 1 的“`CanActOnUser` 只对本人的登录会话免检作用于自己、超管密钥按收窄后的权限比较”已由 FU6 取代：本人按同一规则判断，操作者一侧不被密钥收窄。）
 - 内置角色的 key 是保留的（2026-11-12，决策 D5）：POST `/roles` 用它们 400 `reserved`（§15.7）。启动时 `SyncCore` 发现自定义角色占用了内置角色的 key（升级带来新内置角色时才可能出现）就报错、服务不启动，错误信息列出角色 id、key 和改名 SQL（`UPDATE roles SET key = '<key>_custom' WHERE id = <id>;`）；它不会把该自定义角色变成内置角色（持有者会凭空得到内置角色的默认权限），也不会跳过不建。
 - 所有授权写操作（角色写入、POST `/roles`、PUT `/users/:id/roles`）的授权检查都放在同一事务的 `Bump` 之后、用该事务读库：`Bump` 串行化了授权变更，检查看到的是最新且不会被并发改动的状态，不读本节点可能落后的缓存。
@@ -3207,7 +3206,7 @@ sub2api dev [--addr 127.0.0.1:8080] [--state <dir>] [--builtin-dir <dir>] [--res
 - **PostgreSQL**：`sdk/testpg` 的本机服务器（§2，与测试共用一个进程），库名 `sub2api_dev`。指定了非默认的 `--state` 时，库名是 `sub2api_dev_<状态目录哈希>`：状态目录里的主密钥必须和它加密的数据配套。
 - **Redis**：进程内的 miniredis，退出即清空。插件 KV、限流计数、冷却等不会跨重启保留，PG 里的数据会。
 - **状态目录**：默认 `<用户缓存目录>/sub2api-dev`，存这些内容：
-  - `secrets.json`：主密钥、JWT 密钥、管理员密码，首次运行生成，权限 0600；
+  - `secrets.json`：主密钥、管理员密码，首次运行生成，权限 0600；
   - `plugins/`：插件数据；
   - `builtin/`：默认的内建插件目录。
 - **管理员**：`admin@sub2api.localhost`，启动时打印密码。
@@ -4532,7 +4531,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 插件与核心、外壳仍是同一 UID（独立 UID 另行排期），以下措施让同 UID 的插件拿不到核心/外壳的秘密，也连不上别人的接口：
 
 - **私有 run 目录 + 双向 TLS**：每个插件进程一个 `<SUB2API_PLUGIN_RUN_DIR>/<key>-<随机>/`（0700，默认 `<插件数据目录>/.run`；路径对 unix socket 过长时退回 `/tmp/sub2api-<uid>`，须是本用户 0700 的真目录），go-plugin 的两个 socket 和插件的 `TMPDIR` 都在里面，进程结束即删除。核心与插件之间所有连接（插件服务端、核心 broker 上的 HostService/EgressService）都是 go-plugin AutoMTLS，一次性证书，其他进程无法连入或冒充该插件。
-- **核心**：读完配置后从进程环境删除秘密（`DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、`SUB2API_JWT_SECRET`、引导管理员密码、控制令牌、`CCG_ADMIN_KEY`/`CCG_API_KEY` 等，并清空 `/proc/<pid>/environ` 的初始块），Linux 上 `PR_SET_DUMPABLE=0`。外壳同样 `PR_SET_DUMPABLE=0`。
+- **核心**：读完配置后从进程环境删除秘密（`DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、引导管理员密码、控制令牌、`CCG_ADMIN_KEY`/`CCG_API_KEY` 等，并清空 `/proc/<pid>/environ` 的初始块），Linux 上 `PR_SET_DUMPABLE=0`。外壳同样 `PR_SET_DUMPABLE=0`。
 - **出站隧道**：没有 `net` 授权的插件什么都连不了，只有声明了 `database` 且获授 `db.schema` 的插件可按配置的名字连 PostgreSQL。任何策略（含 `allow_all`）都拒绝私网/回环/链路本地等非公网地址与核心的 Redis/PostgreSQL（按解析后的地址比对，按检查过的地址拨号防 DNS 重绑定）；`dns.sub2api` 不返回非公网地址。`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true` 只用于测试/开发，Redis/PG 仍拒绝。没有 `net` 也没有数据库的插件不注册隧道服务。
 - **数据库角色隔离不再降级**：开启隔离（默认）但核心角色没有 CREATEROLE 时，授予 `db.schema` 与 `Ensure` 都失败，`409 plugin_db_isolation_unavailable`（运维可显式 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false`）；已存在且不是本库为该插件建的同名角色不接管，`409 plugin_db_role_conflict`。角色加注释 `sub2api plugin role; database=<库>; plugin=<key>` 作归属标记，删除插件时只删自己的角色。
 - **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；未设置该变量时不带（兼容旧外壳）。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
@@ -6985,7 +6984,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 - `POST /auth/login/2fa`（公开）：`{flow_token, code}` 返回 token。`code` 是验证器的 6 位码或备用码（大小写、连字符不限）。错码不作废流程；同一账号连错 5 次锁 5 分钟（429），也计入 §14.2 的登录限速。流程只保留 5 分钟，期间改了密码就失效。
 - `POST /auth/passkey/begin`、`/auth/passkey/finish`（公开）：可发现凭据登录，不问邮箱，要求用户验证（UV），成功后不再问二次验证，同 new-api。失败统一 401 并计入 IP 限速；`begin` 每个 IP 每分钟最多 30 次。挑战只能用一次。
 
-`auth_flows` 存这些跨请求的步骤（两个节点共用，只存 token 的哈希）。不用 Redis，这样挑战和设置中的密钥不依赖 Redis 的可用性；过期行在下次创建流程时清掉。（2026-11-15 起：`session.issue = s2s` 后新流程改存 Valkey，读取先 Valkey 后 `auth_flows`，见 §100.3。）
+这些跨请求的步骤存 Valkey（`s2a:flow:*`，各节点共用，只存 token 的哈希，5 分钟，§100.3）；Valkey 不可用时 503。（2026-11-15 前存 PostgreSQL 的 `auth_flows`，迁移 0101 删除了这张表。）
 
 ### 79.2 二次验证（`/me/two-factor`）
 
@@ -7004,8 +7003,8 @@ node 任务（可工作节点各跑，`RequireWork`）：
 
 ### 79.4 登录会话和资料
 
-- `GET /me/sessions`：每个 refresh token 家族一行，`{id, method, ip, user_agent, created_at, last_used_at, current}`。access token 增加声明 `fam`，用来标出当前会话；升级前签发的 token 没有它，这时不标当前会话，`POST /me/sessions/revoke-others` 回 409，刷新后恢复。
-- `DELETE /me/sessions/:id`、`POST /me/sessions/revoke-others`：吊销 refresh token，被撤销会话的 access token 立即失效；保留的会话下一次请求 401 后静默续期（§43.2，2026-11-12 起）。
+- `GET /me/sessions`：每个会话一行（Valkey，§100.2），`{id, method, ip, user_agent, created_at, last_used_at, current}`，按最近使用倒序；`current` 标出调用者自己的会话。
+- `DELETE /me/sessions/:id`、`POST /me/sessions/revoke-others`：被撤销的会话立即失效，保留的会话不受影响（§100.4）。
 - `PUT /me {display_name}`：改自己的显示名称，回 `GET /me` 的内容。语言存在浏览器里。
 - 上面所有修改都写审计日志（`user.two_factor.*`、`user.passkey.*`、`user.session.*`、`user.profile.update`、`user.security.reset`）。
 
@@ -7053,8 +7052,8 @@ node 任务（可工作节点各跑，`RequireWork`）：
 - `GET /me/verify/methods?scope=<scope>&context=<METHOD path>`（`context` 可省略，控制台带上 `verification_required` 的 `details.context`，期 4 收尾 F4）→ `{scope, password_required, methods:[{method:"passkey"|"totp"|"password", available, reason?}]}`。`reason`：`not_enrolled`、`access_key`（通行密钥只用于浏览器会话）、`strong_method`（配了通行密钥或 2FA 后不再接受只用密码）。未知 scope 400。
 - **策略**：配了通行密钥或 2FA（TOTP，备份码也算）时只接受这两种；都没配才接受密码。例外 `password_required = true`（`superadmin.transfer`、`self.password.change`，以及超管本人去掉最后一个强因素：`user.security.reset` 作用于自己、`self.2fa.disable` 而没有通行密钥、`self.passkey.delete` 删唯一的通行密钥而没有 2FA，期 4 收尾 F4，`iam.lastSuperFactor`，按 scope 与操作判断，操作里的用户 id 按路由的读法解析，`/me/verify/methods`、`POST /me/verify` 与 403 的 `details` 同一处计算；proof 记下是否验过密码，消费时按当时的因素再判断一次，需要密码而签发时没验的不放行；关 2FA、删通行密钥在移除事务里锁用户行后再判断一次，防并发同时移除）：密码 + 一种第二因素；都没配只验密码。非超管不受影响。访问密钥只能用 2FA 或（无强方式时）密码。
 - `POST /me/verify/begin {scope}` → `{flow_token, expires_in, options}`：通行密钥断言（要求 UV，只列本人的通行密钥），计入登录 IP 限速与 begin 限速。
-- `POST /me/verify {scope, context, method, password?, code?, flow_token?, credential?}` → `{proof, expires_at, method, scope, context}`。`context` 是要执行的操作 `"METHOD /api/v1/path"`（就是 403 `details.context`，原样回传）。密码计入登录限速，错码计入 2FA 锁定（5 次锁 5 分钟），通行密钥失败计入 IP 限速，返回 400 `fields[{field:"credential", code:"failed"}]`（不是登录用的 401：控制台会把 401 当作会话过期去刷新）；方法不可用 400 `fields[{field:"method", code:"unavailable"}]`。写审计 `user.security_verify`（`detail {method, scope, context, via, access_key_id?}`）。
-- **proof**：5 分钟、只能用一次，绑定用户 + 本次会话（JWT `fam`）或访问密钥 id + scope + 操作上下文；存在 `auth_flows`（各节点共用，`DELETE … RETURNING` 原子消费，不依赖 Redis）。拿去用于别的 scope、别的操作、别的会话或密钥时被拒并作废；别的用户出示无效。一个请求消费过 proof 后，同一请求里同 scope 的再次检查直接通过。
+- `POST /me/verify {scope, context, method, password?, code?, flow_token?, credential?}` → `{proof, expires_at, method, scope, context}`。`context` 是要执行的操作 `"METHOD /api/v1/path"`（就是 403 `details.context`，原样回传）。密码计入登录限速，错码计入 2FA 锁定（5 次锁 5 分钟），通行密钥失败计入 IP 限速，返回 400 `fields[{field:"credential", code:"failed"}]`（不是登录用的 401：控制台会把 401 当作会话结束，送回登录页）；方法不可用 400 `fields[{field:"method", code:"unavailable"}]`。写审计 `user.security_verify`（`detail {method, scope, context, via, access_key_id?}`）。会话调用时响应多一个 `access_token`：同一会话的新令牌（防会话固定，§100.4）。
+- **proof**：5 分钟、只能用一次，绑定用户 + 本次会话（会话 id，令牌轮换不变）或访问密钥 id + scope + 操作上下文；存在 Valkey（`s2a:flow:step_up_proof:*`，各节点共用，`GETDEL` 原子消费；Valkey 不可用时 503，§100.3）。拿去用于别的 scope、别的操作、别的会话或密钥时被拒并作废；别的用户出示无效。一个请求消费过 proof 后，同一请求里同 scope 的再次检查直接通过。
 - **接口**：路由视图 `Router.StepUp(scope)` 在权限检查之后消费 proof（没有权限的调用者不会耗掉 proof）；失败 403 `verification_required`，`details {scope, context, methods, password_required}`，前端据此弹出验证并带 proof 重放一次。
 
 | scope | 接口 | 所需权限 |
@@ -7076,16 +7075,15 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | `system.update` | POST `/system/upgrades`、升级计划与节点的 recover 操作、`/system/releases/import` | `system:update:execute` / `recover` |
 | `system.update` | PUT `/system/update-source`（更新源决定下一次升级运行的代码；期 4 R0） | `settings:manage` |
 | `authz.engine` | PUT `/settings/authz`（切换权限引擎，决定全站由谁回答权限判断；§99.3） | `settings:manage`，且是超管本人 |
-| `session.issue` | PUT `/settings/session`（切换登录签发 JWT 还是不透明会话，决定全站用户怎样保持登录；§100.5） | `settings:manage`，且是超管本人 |
 | `self.access_key.write` | POST `/me/access-keys`、PATCH `/me/access-keys/:id`（只允许登录会话；期 4 收尾 F3） | 无（登录会话） |
 | `host.install` | ccgateway：PUT `/system/ccgateway/remote-config`，POST `remote-fingerprint`、`remote-test`、`controller/install`、`runtime/install`、`runtime/uploads`（创建镜像上传，打开这次上传的二次验证会话，见下）、`runtime/bundled`、`runtime/workers`、`runtimes/:key/worker`（会让核心拨号到某台主机或在其上装载、运行代码；remote-config 的其余字段随同一请求保存，也要；`cleanup`、`purge`、`cli`、读取不要；期 4 R0）。同一上传的 PUT、GET、DELETE `runtime/uploads/:id` 与 POST `runtime/uploads/:id/load` 不再各自要 proof，凭上传 id 延续创建时打开的会话（2026-11-13 发布前） | `settings:manage` |
 | `superadmin.identity` | 超管经访问密钥修改超管账号本身（§43.6，本请求已消耗过 proof 时不再要） | 路由本身的权限 |
 
-- **二次验证会话**（一次验证覆盖一次由多个请求组成的操作，2026-11-13 发布前，用于 ccgateway 镜像上传）：挂 `StepUp(scope)` 的创建请求消耗 proof 后由处理函数打开会话（`httpapi.OpenStepUpSession(c, name)`，`name` 由操作自己命名、在操作内唯一，镜像上传是 `ccgateway.upload/<upload_id>`）；后续请求用 `Router.StepUpSession(scope, name(c))` 注册，在权限检查之后按名字延续会话，不消耗也不接受 proof。会话绑定用户 + 本次登录会话（JWT `fam`）或访问密钥 id + scope + 名字，存在 `auth_flows`（`purpose = step_up_session`，各节点共用）；每次延续把有效期顺延到 1 小时后（`core.StepUpSessionIdle`，与控制器清理一小时未动的上传一致），但不超过打开后 24 小时（`core.StepUpSessionMax`，一次验证最多覆盖一天），过期、名字不存在或换了用户、会话、密钥都 403 `verification_expired`（控制台不弹验证，只提示重新开始；控制台的上传流程据此放弃这次上传）。镜像上传：创建要 proof（控制台的创建请求经 HTTP 层弹出 StepUpDialog，不设自己的超时）；分片、续传查询、取消与装载凭上传 id 延续，所以每次装载都对应创建时的一次验证（此前是装载时验证，上传本身不验证），分片也只有同一会话能写。
+- **二次验证会话**（一次验证覆盖一次由多个请求组成的操作，2026-11-13 发布前，用于 ccgateway 镜像上传）：挂 `StepUp(scope)` 的创建请求消耗 proof 后由处理函数打开会话（`httpapi.OpenStepUpSession(c, name)`，`name` 由操作自己命名、在操作内唯一，镜像上传是 `ccgateway.upload/<upload_id>`）；后续请求用 `Router.StepUpSession(scope, name(c))` 注册，在权限检查之后按名字延续会话，不消耗也不接受 proof。会话绑定用户 + 本次登录会话（会话 id）或访问密钥 id + scope + 名字，存在 Valkey（`s2a:flow:window:*`，各节点共用，§100.2）；每次延续把有效期顺延到 1 小时后（`core.StepUpSessionIdle`，与控制器清理一小时未动的上传一致），但不超过打开后 24 小时（`core.StepUpSessionMax`，一次验证最多覆盖一天），过期、名字不存在或换了用户、会话、密钥都 403 `verification_expired`（控制台不弹验证，只提示重新开始；控制台的上传流程据此放弃这次上传）。镜像上传：创建要 proof（控制台的创建请求经 HTTP 层弹出 StepUpDialog，不设自己的超时）；分片、续传查询、取消与装载凭上传 id 延续，所以每次装载都对应创建时的一次验证（此前是装载时验证，上传本身不验证），分片也只有同一会话能写。
 
 PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先校验新密码再消耗 proof。路由级 proof 在处理函数之前消耗，处理函数随后因请求体失败时需重新验证。proof 绑定的是 URL，不含请求体（例如超管移交的目标）。
 
-- **控制台**（期 4 S5）：`@sub2api/host` 的 HTTP 客户端遇到 403 `verification_required` 调 `HttpConfig.onVerificationRequired({scope, context, password_required})`，控制台弹出统一的 StepUpDialog（`components/stepUp/`），拿到 proof 后带 `X-Verify-Proof` 重放原请求一次；用户取消时请求以 `verification_cancelled` 失败（不提示）。重放同样经过 401 续期；请求的 `signal` 中止时验证作废，请求以 AbortError 失败，所以要二次验证的请求不用超时 signal 限时，改用 `RequestOptions.timeoutMs`（每次发送单独计时，等用户验证的时间不计入，重放重新计时；2026-11-13 发布审查）；会话结束（登出、续期失败）时排队中的验证全部取消。页面不自己收密码或验证码，原生插件经宿主 `api` 的请求同样自动处理。跨域部署时前置代理的 `Access-Control-Allow-Headers` 要含 `X-Verify-Proof`（`Access-Control-Expose-Headers` 要含 `X-Authz-Version`，§5.2），核心自己不发 CORS 头。权限树对 `step_up` 的权限显示“使用时需二次验证”。
+- **控制台**（期 4 S5）：`@sub2api/host` 的 HTTP 客户端遇到 403 `verification_required` 调 `HttpConfig.onVerificationRequired({scope, context, password_required})`，控制台弹出统一的 StepUpDialog（`components/stepUp/`），拿到 proof 后带 `X-Verify-Proof` 重放原请求一次；用户取消时请求以 `verification_cancelled` 失败（不提示）。重放带的是验证后换上的新令牌（§100.4）；请求的 `signal` 中止时验证作废，请求以 AbortError 失败，所以要二次验证的请求不用超时 signal 限时，改用 `RequestOptions.timeoutMs`（每次发送单独计时，等用户验证的时间不计入，重放重新计时；2026-11-13 发布审查）；会话结束（登出、401、其他标签页登出）时排队中的验证全部取消。页面不自己收密码或验证码，原生插件经宿主 `api` 的请求同样自动处理。跨域部署时前置代理的 `Access-Control-Allow-Headers` 要含 `X-Verify-Proof`（`Access-Control-Expose-Headers` 要含 `X-Authz-Version`，§5.2），核心自己不发 CORS 头。权限树对 `step_up` 的权限显示“使用时需二次验证”。
 
 - **接口**（访问密钥管理，只能用登录会话调用）：`GET /me/access-keys`（含 `lost`）、`GET /me/access-keys/permissions`（可选的权限：`self` 模块，然后是自己持有的有效核心与插件权限，每项带 `step_up` 展示标记：使用时需二次验证）、`POST /me/access-keys {name, permissions, expires_at}`（响应里的 `key` 只出现这一次）、`PATCH /me/access-keys/:id {name?, permissions?}`、`DELETE /me/access-keys/:id`。新建与修改（含只改名）每次二次验证 `self.access_key.write`（`SessionOnly().StepUp`，请求体不再收 `password`）；删除只会收回权限，不要 proof（期 4 收尾 F3）。每个用户最多 20 个，有效期至少 1 小时或永不过期。
 - **存储和生命周期**：只存 SHA-256 和末 4 位。过期、删除或用户被禁用后回 401。改密码不影响密钥（和 GitHub 的个人令牌一样），要作废请删除。`last_used_at`、`last_used_ip` 每分钟最多更新一次。创建、修改、删除写审计日志（`user.access_key.*`）；密钥发起的操作，审计记录的操作者是它所属的用户。
@@ -8310,7 +8308,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 | GET `/groups` | 每行加 `access: {segments: SegmentRef[], personal_count}`（私有分组授权给了哪些命名用户组，以及多少个个人专属；只统计私有分组，公开分组恒为 `{segments: [], personal_count: 0}`，留在公开分组上的授权行不计）、`price_rule_count`（分组内定价的条数）、`segment_rule_count`（本分组里各用户组专属价的条数）、`model_count`（分组提供的模型数）。两个条数只算分组**现在提供**的模型上的规则，与定价表列出的一致：分组不再提供某个模型后（账号不再声明它，或不限模型的账号所依赖的全局价被停用），那个模型上的规则留在库里但不计入，重新提供时又计入；`Segment`、`SegmentGroupSetting` 的 `price_rule_count` 同一口径（`group` 包的 `offeredRules`，97.9）；新筛选 `?model=`，只留提供该模型的分组 |
 | GET `/me/groups` | 可用性按调用者所在的用户组。每行只比原来多三项：`effective_rate`（调用者在该分组的实际倍率）、`rate_source`、`exclusive`（私有分组）。`rate_multiplier` 仍是分组默认倍率（§15.2）。某个分组读不到调用者在其中的条件时（列出分组和读条件是两次查询，中间分组被删等），这个分组从结果里略去，不报错 |
 | GET `/users`、GET `/users/:id` | 加 `segment: SegmentRef`；去掉 `group_ids`；新筛选 `segment=<用户组 id>` 或 `segment=personal`（所有个人专属的用户） |
-| POST `/auth/login`、POST `/auth/refresh` | 不变：返回的 `user` 不带 `segment`（§5.1） |
+| POST `/auth/login` | 不变：返回的 `user` 不带 `segment`（§5.1） |
 | POST `/users` | 可带 `segment_id`：必须是命名用户组（否则 400，字段 `segment_id`），带它需要 `segment:manage`；没带就进默认用户组 |
 | GET / PUT `/users/:id/groups` | 删除。私有分组授权给用户组；给单个用户授权用个人专属 |
 | DELETE `/users/:id` | 用户的个人专属随之删除，`segment_id` 改回默认用户组 |
@@ -8640,18 +8638,18 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 - 测试辅助：`server/internal/authz/authztest/`（`Shadow`、`AcceptStaleCache`、`Check`）
 - 检查：`server/internal/store/gormguard/casbin_test.go`
 
-## 100. 会话改为 Valkey 不透明令牌（核心 0.1.290 候选，无迁移）
+## 100. 控制台会话：Valkey 令牌 `s2s_`（核心 0.1.290 候选，迁移 0101）
 
-用户决定（2026-11-15）：控制台登录会话存 Valkey；Valkey 故障按基础服务故障处理，会话鉴权和登录直接 503 并告警，不做本地兜底、不回退 JWT。访问密钥 `sak_`（§80）和网关 API Key `sk-` 的鉴权不读会话，不受影响；但网关请求本身（粘性会话、账号限额等）原本就依赖 Valkey，Valkey 故障时仍会 503，这与本节无关。发布方式：同一版本里两种令牌都认，签发哪种由运行时开关 `session.issue`（§100.5）决定，默认仍签发 JWT；全部节点升级后改开关，不需要第二次发版。
+用户决定（2026-11-15）：控制台登录会话存 Valkey；Valkey 故障按基础服务故障处理，会话鉴权和登录直接 503 并告警，不做本地兜底。用户决定（2026-11-16）：不设过渡期，同一版本删除 JWT；发布要停服，所有人重新登录（§100.7）。访问密钥 `sak_`（§80）和网关 API Key `sk-` 的鉴权不读会话，不受影响；但网关请求本身（粘性会话、账号限额等）原本就依赖 Valkey，Valkey 故障时仍会 503，这与本节无关。
 
 ### 100.1 令牌与鉴权
 
-- 令牌：`s2s_` + 32 字节随机数的 base64url（共 47 个字符）。Valkey 只存 SHA-256（hex），拿到 Valkey 的内容不能登录。
-- 照旧放在 `Authorization: Bearer`，控制台 localStorage 的字段仍叫 `access_token`。没有 refresh token：登录响应不含 `refresh_token`，`expires_in` 是空闲超时的秒数。
-- 鉴权分流（`iam.VerifySession`，经 `core.AuthenticateBearer`）：`sak_` 访问密钥；`s2s_`（`core.OpaqueSessionPrefix`）不透明会话；其他按 JWT。不论开关是什么，两种会话令牌都认，直到清理版本（§100.7）。令牌类型在鉴权时随会话 id 写进 ctx（`core.WithOpaqueSession` / `core.WithSession`，读 `core.OpaqueSession`）：之后“调用者是不是不透明会话”（step-up 换令牌、登出）只看它，不再查 Valkey 推断，JWT 调用者因此不碰 Valkey。
-- 不透明会话每个请求读一次 Valkey（`HGETALL`），再走现有的用户状态缓存（不论会话的 `tv`，都先用缓存）与 `token_version` 比较（§43.2）：会话里的 `tv` 小于用户当前的 `token_version` 时 401，并删除这个令牌能打开的东西——它是会话的当前令牌就删整个会话，是轮换后留在宽限期里的旧令牌就只删它自己（旧令牌的请求不连累新令牌）；大于或等于都放行（保留下来的会话在 bump 提交前就被改成新版本，见 §100.4）。
+- 令牌：`s2s_` + 32 字节随机数的 base64url（共 47 个字符，`tokenstore.SessionPrefix`）。Valkey 只存 SHA-256（hex），拿到 Valkey 的内容不能登录。
+- 放在 `Authorization: Bearer`，控制台 localStorage 的字段叫 `access_token`。没有 refresh token、没有 `/auth/refresh`：会话由服务端续期，登录响应的 `expires_in` 是空闲超时的秒数。
+- 鉴权分流（`core.AuthenticateBearer`）：`sak_` 访问密钥；其余交给 `iam.VerifySession`，不以 `s2s_` 开头的直接 401，不查 Valkey。会话 id 在鉴权时写进 ctx（`core.WithSession`，读 `core.Session`）：之后 step-up 换令牌、登出、标出当前会话都只看它；访问密钥的调用者没有会话 id。
+- 每个请求读一次 Valkey（`HGETALL`），再走用户状态缓存（不论会话的 `tv`，都先用缓存）与 `token_version` 比较（§43.2）：用户已停用，或会话的 `tv` 小于用户当前的 `token_version`，401，并删除这个令牌能打开的东西——它是会话的当前令牌就删整个会话，是轮换后留在宽限期里的旧令牌就只删它自己（旧令牌的请求不连累新令牌）；大于或等于都放行（保留下来的会话在 bump 提交前就被改成新版本，见 §100.4）。
 - 鉴权路径上的 Valkey 调用（查找、续期、删除过期会话）每次最多等 1 秒；会话与流程用单独的客户端（`tokenstore.NewClient`：只重试一次，建连、读写、从连接池取连接各最多等 1 秒，遵守调用的截止时间），Valkey 卡住时控制台请求很快得到 503，而不是挂十几秒。回复丢失（服务端已执行、客户端超时或断连）时调用会被重试，所以会话的写脚本都是幂等的：新建（同 sid 先结束）、续期、撤销、清理、删除重复执行结果相同；轮换发现 sid 已经指向这次的新令牌就直接返回成功，不会再轮换一次（否则会结束旧令牌、并把新令牌缩短到 30 秒宽限）。流程的取用（`GETDEL`）重试时拿不到，按流程已过期处理，用户重新开始这一步即可。
-- 会话 id 沿用 refresh token 家族的语义（`core.WithSession`）：step-up proof 与二次验证会话按它绑定（§80.2），`GET /me/sessions` 按它标出当前会话。refresh token 换成的不透明会话保留原家族 id。
+- 会话 id（sid）在令牌轮换时不变：step-up proof 与二次验证会话按它绑定（§80.2），`GET /me/sessions` 按它标出当前会话，`DELETE /me/sessions/:id` 按它撤销。
 
 ### 100.2 Valkey 键（`s2a:` 前缀，`internal/iam/tokenstore`）
 
@@ -8664,7 +8662,7 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 | `s2a:flow:window:{name}` | STRING | 二次验证会话打开的时间（毫秒） | 1 小时，延续时顺延，最长打开后 24 小时 |
 
 - 每个用户最多 50 个会话（`tokenstore.DefaultMaxSessions`）：登录超出时，最久未使用的会话（连同它的旧令牌）立即结束，不报错。防止反复登录让 ZSET 无限变大、拖慢撤销脚本。
-- 在已有的 sid 上新建会话（同一个 refresh token 家族再次换发）先结束原来的会话，不会留下只能靠 `token_version` 结束的令牌。
+- 在已有的 sid 上新建会话（回复丢失后的重试）先结束原来的会话，不会留下只能靠 `token_version` 结束的令牌。
 - 轮换时，上一次轮换留在宽限期里的令牌立即结束：任何时候一个会话最多一个旧令牌（`prev`）。
 - 超时：空闲 `SUB2API_SESSION_IDLE_TTL`（默认 168h = 7 天），绝对 `SUB2API_SESSION_MAX_TTL`（默认 720h = 30 天）；空闲必须为正且不大于绝对，否则启动失败。
 - 续期：`last_seen` 距今不足 5 分钟的请求只读；超过才用一个 Lua 脚本写一次（确认 `sid` 仍指向这个令牌、会话键还在，`HSET last_seen`，两个键 `PEXPIRE` 到 min(空闲, 创建 + 绝对 − 现在)，`ZADD` 索引）。已撤销、已轮换或刚好过期的令牌不会被续期复活，也不会写出残缺的 HASH。
@@ -8673,58 +8671,54 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 
 ### 100.3 中间流程
 
-- 两步登录、通行密钥登录与注册、TOTP 设置、step-up proof、二次验证会话（§79.1、§80.2）：`session.issue = s2s` 时只写 Valkey；`jwt` 时仍写 `auth_flows`（升级过程中旧节点只读这张表）。读取一律先 Valkey、再 `auth_flows`，开关前后开始的流程都能走完。
-- 只看不取（两步登录、TOTP 设置输错验证码可以重试）用 `GET`；取用用 `GETDEL`，只有一个请求拿得到。流程 token 与 `auth_flows` 的格式相同（无前缀），两边按同一个哈希查。Valkey 里流程的所属用户在取出后核对，不符按流程已过期处理；取出即删除，所以知道 token 就能作废它，与其他持有者凭证一样。
-- 二次验证会话（窗口）按原来的名字（`auth_flows.token_hash` 的同一个值）存，打开时重新计时；延续先查 Valkey，没有再查表。
-- Valkey 不可用时，流程与窗口照样查表：表里有（开关为 `jwt` 时写的）就照常走完；表里没有才返回 Valkey 的 503（它可能在 Valkey 里）。
+- 两步登录、通行密钥登录与注册、TOTP 设置、step-up proof、二次验证会话（§79.1、§80.2）只存 Valkey，没有 PostgreSQL 的副本；Valkey 不可用时 503。
+- 只看不取（两步登录、TOTP 设置输错验证码可以重试）用 `GET`；取用用 `GETDEL`，只有一个请求拿得到。流程的所属用户在取出后核对，不符按流程已过期处理；取出即删除，所以知道 token 就能作废它，与其他持有者凭证一样。
+- 二次验证会话（窗口）的名字是用户、scope、会话 id 或访问密钥、操作名的哈希；打开时重新计时，延续时顺延到空闲 1 小时后，最长打开后 24 小时。
 
 ### 100.4 签发、换发与撤销
 
-- 签发：开关为 `s2s` 时，密码登录、两步登录、通行密钥登录都新建一个会话（新 sid；超管登录审计不变）。在持用户行锁的事务里读 `token_version` 写进会话，撤销不会插在中间。写 Valkey 是事务里最后一步（读用户等都在它之前）；事务之后失败（包括提交失败），立即删除刚建的会话，不留下没人持有、却出现在会话列表里的会话。四条签发路径（三种登录与 `/auth/refresh`）都经同一个 `iam.issueTx`：签发方式在事务开始时读一次（refresh 是否换发与实际签发的种类一致），事务失败时的补偿也只在这里。两步登录的流程在事务的最后才取用（`GETDEL`），之前任何一步失败都不消耗流程，可以重试；只有提交本身失败时 Valkey 里的流程已被取走。
-- `/auth/refresh`（开关为 `s2s`）：refresh token 的校验、宽限与重放检测同 §14.2；通过后这个 token 标记为已用、家族里其余 token 一并吊销，删掉该家族的 `login_sessions` 行，签发 sid = 原家族 id 的 `s2s_`（登录方式取自 `login_sessions`），响应不含 `refresh_token`。用户不用重新登录。换发后 1 分钟宽限期内同一个 refresh token 再次出示（控制台没收到换发的响应）：给这个会话轮换一个新令牌返回，前一个令牌照常 30 秒宽限，不当作重放。宽限期外再次出示按重放处理：吊销家族，同 id 的不透明会话一并删除（与吊销在同一事务里；Valkey 不可用时按下面“单个撤销”的退路 bump），提交后广播 `iam:user:changed`（退路的 bump 在各节点立即生效，不等状态缓存过期），401。（“删掉 refresh”实现为标记已用而不是物理删除，保留重放检测；表在清理版本删除。）
-- 二次验证提权：调用者是不透明会话时（按 ctx 里的令牌类型），`POST /me/verify` 成功后给同一个会话换一个新令牌（防会话固定），响应多一个 `access_token`；sid 不变，所以刚签发的 proof 仍然绑定这个会话。旧令牌还能用 30 秒（给已经发出的请求），期间使用不续期；撤销会话时新旧两个一起删除。控制台的 StepUpDialog 收到后替换本地的 `access_token`；其他用控制台会话调 API 的客户端（脚本、e2e 客户端）也必须改用响应里的新令牌，旧令牌 30 秒后失效。JWT 会话（包括已换发成 `s2s_` 的家族里仍未过期的旧 JWT）与访问密钥不换、不碰 Valkey。proof、审计 `user.security_verify` 与换令牌在同一个事务里，换令牌最后做：它失败（503）时审计回滚、Valkey 里的 proof 删除。
-- 三种做法（`iam.endAllSessions`、`endSomeSessions` 里的 `endOpaqueSession` 与 `keepingBump`），共用一条规则：**改盖章（`tv`）的 bump 加 1，没改到盖章的 bump 加 2**。会话的盖章最多比库里的 `token_version` 大一（下面的回滚情况：每次改盖章都改成“库里的值 + 1”），所以加 2 一定越过所有会话，任何不经 Valkey 的 bump 都结束全部不透明会话。
-- 单个撤销（`DELETE /me/sessions/:id`、登出）：会话立即失效（此前 access JWT 要等到过期，最长 2 小时）。这个 id 下没有可能仍有效的 JWT（家族在 access token 有效期加 1 分钟内没签过 refresh token）时不 bump `token_version`，只删这一个会话；Valkey 不可用时退回 bump（加 2，所有不透明会话随之结束，JWT 会话在下次 401 时续期），撤销照常成功。否则按下面“保留部分会话”bump。撤销一个只在 Valkey 里的不透明会话时，要先在 Valkey 里确认它存在（盖章低于当前 `token_version` 的、已被 bump 结束的会话按不存在处理，404，与会话列表、鉴权一致），Valkey 不可用就 503。
-- 结束全部会话（管理员改密码、禁用、删除用户、超管移交、命令行恢复超管、不保留当前会话的改密码与重置安全、不带 refresh token 的 JWT 登出）：事务里只动 PostgreSQL——吊销 refresh token、删 `login_sessions`、`token_version` **加 2**；bump 本身已让全部 `s2s_` 失效（`tv` 小于即拒）。提交后读一次当前的 `token_version`，只删 Valkey 里盖章低于它的会话（`Prune`）：提交之后才登录的会话不受影响。失败只记 ERROR（会话在下次出示时被删除，或空闲到期）。所以 Valkey 宕机时管理员照样能禁用被盗账号。
-- 保留部分会话（撤销其他会话、改自己的密码保留当前会话、重置自己的安全设置、带 refresh token 的 JWT 登出、撤销一个 JWT 家族）：同一事务里加行锁（`FOR UPDATE`）读出 bump 前的版本 `from`（不依赖调用方是否已持锁，`from` 一定是最新已提交的版本），bump `token_version` 到 `from + 1`（JWT 兜底）、吊销 refresh token、删 `login_sessions`，再用一个 Lua 脚本删除所选的不透明会话，并结算其余会话（连同轮换留下的旧令牌）：盖章低于 `from` 的会话是之前某次 bump 结束、还留在 Valkey 里的（清理失败、命令行），直接删除；盖章在 `from` 与 `from + 1` 之间的改成 `from + 1`；更大的不动。这样 JWT 被 bump 停掉，没有 refresh token 的不透明会话不会被一起踢掉，而已经结束的会话不会被改盖章“复活”。这一步 Valkey 不可用时只记 Warn，bump 再加 1（共加 2）后事务照常提交：保留的会话也被结束（偏安全），回滚留下的超前盖章同样越不过；JWT 调用者登出、撤销其他会话不依赖 Valkey。一个事务最多改一次盖章（`keepingBump` 只经 `endSomeSessions`、每个事务调用一次）：改两次的事务若回滚，盖章会超前两位，越过加 2 的兜底；以后要在一个事务里结束多个用户或多次结算，需要重新审视这条规则。
-- 迟到的脚本：客户端等不到回复（Valkey 卡住）后按不可用处理，走加 2 的退路；脚本之后仍可能在服务端执行。带 bump 的撤销脚本因此不动调用之后才签发的会话：盖章大于 `from + 1` 的（退路提交后登录的），以及盖章小于 `from + 1` 且创建时间晚于调用时刻的（变更回滚后登录的）。盖章等于 `from + 1` 的会话一律照常处理：调用之前的会话盖章都不超过 `from + 1`，节点时钟偏快时被误判为“之后”的旧会话只可能盖章低于 `from + 1`，留着不动也会被这次 bump 拒绝，所以这条规则不会放过本该结束的会话。剩下的情况（变更回滚后又有一次从同一个 `from` 起、已提交的保留型 bump，之后登录、迟到的脚本再执行）会删掉那个新会话，只影响可用性，接受。不带 bump 的单个撤销不做这个判断（没有盖章可以佐证时钟），它的 refresh token 家族已在同一事务里吊销，不会再换出同 id 的会话。
+- 签发：密码登录、两步登录、通行密钥登录都新建一个会话（新 sid；超管登录审计不变）。在持用户行锁的事务里读 `token_version` 写进会话，撤销不会插在中间。写 Valkey 是事务里最后一步（读用户等都在它之前）；事务之后失败（包括提交失败），立即删除刚建的会话，不留下没人持有、却出现在会话列表里的会话。三条签发路径都经同一个 `iam.issueTx`，补偿只在这里。两步登录的流程在事务的最后才取用（`GETDEL`），之前任何一步失败都不消耗流程，可以重试；只有提交本身失败时 Valkey 里的流程已被取走。
+- 二次验证提权：会话调用 `POST /me/verify` 成功后给同一个会话换一个新令牌（防会话固定），响应多一个 `access_token`；sid 不变，所以刚签发的 proof 仍然绑定这个会话。旧令牌还能用 30 秒（给已经发出的请求），期间使用不续期；撤销会话时新旧两个一起删除。控制台的 StepUpDialog 收到后替换本地的 `access_token`；其他用控制台会话调 API 的客户端（脚本、e2e 客户端）也必须改用响应里的新令牌，旧令牌 30 秒后失效。访问密钥不换、不碰 Valkey。proof、审计 `user.security_verify` 与换令牌在同一个事务里，换令牌最后做：它失败（503）时审计回滚、Valkey 里的 proof 删除。
+- 结束会话有两条路，一个会话也可以只靠其中一条结束：从 Valkey 删掉，或 bump 用户的 `token_version` 让它的盖章（`tv`）落后（鉴权拒绝并删除，§100.1）。三种做法（`iam.endAllSessions`、`endSomeSessions` 里的 `endOneSession` 与 `keepingBump`）共用一条规则：**改盖章的 bump 加 1，没改到盖章的 bump 加 2**（`stamplessStep`）。会话的盖章最多比库里的 `token_version` 大一（下面的回滚情况：每次改盖章都改成“库里的值 + 1”），所以加 2 一定越过所有会话，任何不经 Valkey 的 bump 都结束全部会话。
+- 单个撤销（`DELETE /me/sessions/:id`、登出）：不 bump，只删这一个会话，立即失效；删的时候 Valkey 不可用，退回 bump 加 2，全部会话随之结束（偏安全），照常成功。`DELETE /me/sessions/:id` 先在 Valkey 里确认会话存在（盖章低于当前 `token_version` 的、已被 bump 结束的会话按不存在处理，404，与会话列表、鉴权一致），这一步 Valkey 不可用就 503。登出不确认：只结束调用者自己的会话（路由只限会话），会话已经不在（过期、已被撤销）也照常成功，不会退化成结束全部会话。
+- 结束全部会话（管理员改密码、禁用、删除用户、超管移交、命令行恢复超管、不保留当前会话的改密码与重置安全）：事务里只动 PostgreSQL，`token_version` **加 2**，bump 本身已让全部会话失效。提交后读一次当前的 `token_version`，只删 Valkey 里盖章低于它的会话（`Prune`）：提交之后才登录的会话不受影响。失败只记 ERROR（会话在下次出示时被删除，或空闲到期）。所以 Valkey 宕机时管理员照样能禁用被盗账号。
+- 保留一个会话（撤销其他会话、改自己的密码保留当前会话、重置自己的安全设置）：同一事务里加行锁（`FOR UPDATE`）读出 bump 前的版本 `from`（不依赖调用方是否已持锁，`from` 一定是最新已提交的版本），bump `token_version` 到 `from + 1`，再用一个 Lua 脚本删除其余会话，并结算保留的会话（连同轮换留下的旧令牌）：盖章低于 `from` 的会话是之前某次 bump 结束、还留在 Valkey 里的（清理失败、命令行），直接删除；盖章在 `from` 与 `from + 1` 之间的改成 `from + 1`；更大的不动。已经结束的会话因此不会被改盖章“复活”。这一步 Valkey 不可用时只记 Warn，bump 再加 1（共加 2）后事务照常提交：保留的会话也被结束（偏安全），回滚留下的超前盖章同样越不过。一个事务最多改一次盖章（`keepingBump` 只经 `endSomeSessions`、每个事务调用一次）：改两次的事务若回滚，盖章会超前两位，越过加 2 的兜底；以后要在一个事务里结束多个用户或多次结算，需要重新审视这条规则。
+- 保留型撤销为什么也 bump：客户端等不到回复（Valkey 卡住）后按不可用处理，走加 2 的退路；脚本之后仍可能在服务端执行（迟到的脚本）。带 bump 的撤销脚本靠盖章分辨调用之后才签发的会话，不动它们：盖章大于 `from + 1` 的（退路提交后登录的），以及盖章小于 `from + 1` 且创建时间晚于调用时刻的（变更回滚后登录的）。盖章等于 `from + 1` 的会话一律照常处理：调用之前的会话盖章都不超过 `from + 1`，节点时钟偏快时被误判为“之后”的旧会话只可能盖章低于 `from + 1`，留着不动也会被这次 bump 拒绝，所以这条规则不会放过本该结束的会话。剩下的情况（变更回滚后又有一次从同一个 `from` 起、已提交的保留型 bump，之后登录、迟到的脚本再执行）会删掉那个新会话，只影响可用性，接受。不带 bump 的单个撤销没有盖章可以佐证时钟，不做这个判断：它只删一个已存在的 sid，迟到时最多删掉同一个会话。
 - 回滚的边缘情况：保留的会话在提交前就改了 `tv`，事务若之后回滚，它的 `tv` 比库里大一，仍然放行（读状态走缓存，不会每个请求都绕过缓存查库）；之后任何没改到盖章的 bump 都加 2，一定大于它，承诺的“全部会话结束”成立；之后改盖章的 bump 把它当作仍有效的会话保留（它确实是被保留下来的）。
-- 不变量（`TestEndedSessionsStayEndedInAnyOrder` 按任意顺序检查：登录、轮换、refresh 换发、宽限期重试、重放、单个撤销、不透明会话登出、JWT 登出、撤销其他与结束全部、管理员改密码/禁用/重置安全、命令行 bump、回滚、Valkey 宕机时的各条路径、迟到的撤销脚本，从 `token_version` 为 0 和已 bump 过的用户开始，每一步之后在两个节点上检查；`TestEndedSessionsStayEndedConcurrently` 是并发版本）：一次提交的变更结束的会话，它的每个令牌都不会再被接受；没有被结束的会话仍然有效。只有新建（用持锁读到的当前版本）和结算（只抬高不低于 `from` 的盖章）会写盖章，轮换复制原盖章，续期不改盖章。
-- **重置安全（新）**：`DELETE /users/:id/security`（`ResetSecurity`）现在也结束目标用户的会话（丢失的设备上可能还登录着）；重置自己的因子时保留发起请求的会话。此前不结束任何会话。
-- 不经 Valkey 的 bump（命令行 `sub2api admin recover-superadmin`，没有 Redis）由 `tv` 比较生效：旧会话下次使用时被删除并 401。命令行也不发总线广播，各节点靠用户状态缓存（30 秒）发现新的 token_version，所以最多 30 秒后才失效；控制台里的管理员操作是立即失效。
-- 登出：带 `refresh_token` 照旧结束那个家族；不带时，调用者是不透明会话（ctx 里的令牌类型）就只结束它自己，会话已经不在（过期、已被撤销）也一样，不会退化成结束全部会话；JWT 调用者照旧结束全部会话。
-- `GET /me/sessions`：合并 Valkey 里的会话与仍有有效 refresh token 的 JWT 家族，按最近使用时间倒序；同一 id 只列一次。盖章低于当前 `token_version` 的不透明会话（已被 bump 结束、还没从 Valkey 删掉）不列出，与鉴权的判断一致（同一个状态缓存）。开关为 `jwt` 且 Valkey 不可用时只列 JWT 家族（Valkey 里只有切换留下的会话）；开关为 `s2s` 时 503。
+- 不变量（`TestEndedSessionsStayEndedInAnyOrder` 按任意顺序检查：登录、轮换、单个撤销、登出、撤销其他、结束全部、管理员改密码/禁用/重置安全、命令行 bump、回滚、Valkey 宕机时的各条路径、迟到的撤销脚本，从 `token_version` 为 0 和已 bump 过的用户开始，每一步之后在两个节点上检查；`TestEndedSessionsStayEndedConcurrently` 是并发版本）：一次提交的变更结束的会话，它的每个令牌都不会再被接受；没有被结束的会话仍然有效。只有新建（用持锁读到的当前版本）和结算（只抬高不低于 `from` 的盖章）会写盖章，轮换复制原盖章，续期不改盖章。
+- 重置安全：`DELETE /users/:id/security`（`ResetSecurity`）结束目标用户的会话（丢失的设备上可能还登录着）；重置自己的因子时保留发起请求的会话。
+- 不经 Valkey 的 bump（命令行 `sub2api admin recover-superadmin`，没有 Redis）由 `tv` 比较生效：旧会话下次使用时被删除并 401。命令行也不发总线广播，各节点靠用户状态缓存（30 秒）发现新的 token_version，所以最多 30 秒后才失效；控制台里的管理员操作提交后广播 `iam:user:changed`，立即失效。
+- `GET /me/sessions`：Valkey 里的会话，按最近使用时间倒序；盖章低于当前 `token_version` 的（已被 bump 结束、还没从 Valkey 删掉）不列出，与鉴权的判断一致（同一个状态缓存）。Valkey 不可用时 503。
 - 审计点不变（`user.session.revoke`、`user.session.revoke_others`、`auth.superadmin_login` 等）。
 
-### 100.5 开关 `session.issue`
+### 100.5 故障
 
-- 存在 `settings` 表 `session` 行 `{"issue": "jwt" | "s2s"}`，默认 `jwt`（没有行、空、不认识的值都按 `jwt`）。
-- `GET /settings/session`（`settings:read`）返回 `{issue（存的值）, effective（本节点实际在签发的：没有会话存储的进程即使环境变量固定为 s2s 也是 jwt）, source: setting | env | default, idle_ttl_seconds, max_ttl_seconds, behind}`；`behind` 列出还不支持不透明会话的存活节点（`node_id`、`boot_id`、`host_version`），读不到节点注册表时为 `null`（切到 `s2s` 此时 503 `unavailable`，不是 500）。
-- 切到 `s2s` 前检查集群：每个存活节点的心跳都带能力标记 `session.s2s`（`core.CapabilityOpaqueSessions`，写在 `node:info:{boot}` 的 `caps` 字段，旧版本没有）才允许，否则 409 `conflict`，`details.nodes` 列出这些节点（同 `behind`）。用能力标记而不是比较 `host_version`：开发版、候选版的版本号不可比，标记由支持它的代码自己声明。切回 `jwt` 不检查。`PUT /settings/session {"issue"}` 要 `settings:manage`、二次验证 `session.issue`（§80.2），且只有超管本人可以（其他人 403 `permission_denied`）；其他值 400 `invalid_argument`（`details.fields[0].field = issue`）；与设置同一事务写审计 `session.issue.set`（`target_type = setting`、`target_id = session`，`detail` 含 `from`、`to`、`request_id`）。控制台没有页面。
-- 跨节点生效：`PUT` 后广播 `config:changed` `{"key":"settings.session"}`，各节点丢掉缓存；漏掉广播的节点最多 30 秒后重读（缓存 30 秒，总线重连时也丢掉）。
-- 环境变量 `SUB2API_SESSION_ISSUE` 优先于设置：设了就固定这个节点；值不认识按 `jwt` 并记 Warn。没有 Redis 的进程（`sub2api admin`）永远签发 JWT。变量在网关传给核心的白名单里（`supervisor.inheritedEnv`），`deploy/single` 的 compose 也映射了。
-- 应急（接口不可用时）：直接改 `settings` 表（30 秒内全部节点生效），或设环境变量重启单个节点，见 `deploy/rollback/0.1.290-session-down.md`。
-- 与 `authz.engine` 共用一套机制（`internal/settingswitch`：设置行 + 超管本人 + 审计 + 广播 + 环境变量优先；超管检查由调用方以函数注入，日志前缀跟随调用方；设置行里该字段不是字符串时读取报错，各节点保持当前模式，不回落到默认值）。
+- Valkey 不可用时：会话鉴权、登录与两步登录、通行密钥登录、会话列表与单个撤销、二次验证（proof 与窗口）、TOTP 设置都返回 503 `unavailable`；`httpapi.Authenticate` 遇到 503 原样返回，不改写成 401（否则控制台会把所有人送回登录页，而登录页此时也用不了）。每次失败记 ERROR `tokenstore: valkey unavailable`（`op` 字段），作为告警关键字。
+- 不本地兜底。访问密钥、网关 Key 不受影响；登录限流照旧失败放行（§14.2）。
+- 不依赖 Valkey 的：管理员改密码、禁用、删除用户、重置安全（bump 加 2，清理留到下次出示），以及保留型撤销在写不了 Valkey 时退回结束全部会话。
 
-### 100.6 故障
+### 100.6 删除的内容（2026-11-16）
 
-- Valkey 不可用时：不透明会话的鉴权、开关为 `s2s` 时的登录与两步登录、会话列表与撤销、需要读写 Valkey 的流程都返回 503 `unavailable`；`httpapi.Authenticate` 遇到 503 原样返回，不改写成 401（否则控制台会把所有人送回登录页，而登录页此时也用不了）。每次失败记 ERROR `tokenstore: valkey unavailable`（`op` 字段），作为告警关键字。
-- 不本地兜底，不回退 JWT。JWT 本身的鉴权不读 Valkey；访问密钥、网关 Key 不受影响；登录限流照旧失败放行（§14.2）。
-- 开关为 `jwt` 时，JWT 调用者的路径不依赖 Valkey：JWT 鉴权与登录、两步登录、step-up 验证与消费、会话列表、登出、撤销其他会话、撤销一个 JWT 家族（包括空闲的）、refresh（包括重放检测）、改密码、管理员禁用与删除用户在 Valkey 不可用时都照常工作。需要删 Valkey 里的会话而删不了时，改为 bump 加 2（Valkey 里切换留下的不透明会话随之结束，见 §100.4）。仍要 Valkey 的只有不透明会话本身：它的鉴权、撤销一个只在 Valkey 里的不透明会话（要先确认它存在）、它的 step-up 换令牌。
+- JWT 的签发与校验、`/auth/refresh`、refresh token 家族与宽限、重放检测；`SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL` 不再读取，也不再在网关传给核心的白名单里。
+- 签发开关 `session.issue`：`settings` 的 `session` 行、`GET/PUT /settings/session`、`SUB2API_SESSION_ISSUE`、二次验证 scope `session.issue`、节点心跳的能力标记（`caps`、`session.s2s`，没有别的用途，整个机制删除）。`internal/settingswitch` 只剩 `authz.engine` 在用。
+- 流程读 PostgreSQL 的路径；`refresh_tokens`、`login_sessions`、`auth_flows` 三张表与 `session` 设置行由迁移 `0101_drop_jwt_sessions.sql` 删除。
+- 控制台的刷新、跨标签页刷新锁与 keep-alive（`startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS`），`Session` 只剩 `access_token`。
 
-### 100.7 发布、切换、回退与清理
+### 100.7 发布与回退
 
-1. 发布本版本（核心 0.1.290 候选，与 Casbin 同版）：所有节点都认 `s2s_`，开关仍是 `jwt`，签发与以前一样。可与旧版本滚动混跑：新节点照旧把流程写进 `auth_flows`。
-2. 全部节点升级完成后：`PUT /settings/session {"issue":"s2s"}`（或先在单个节点上用环境变量试）。还有旧节点存活时接口返回 409 并列出它们（§100.5）。新登录拿到 `s2s_`；已登录的控制台在 access token 过期（≤ 2 小时）刷新时换成 `s2s_`，不用重新登录；切换前签发的 JWT 照常有效到过期。
-3. 回退：`PUT {"issue":"jwt"}` 立即恢复签发 JWT，已发的 `s2s_` 继续有效到过期或被撤销。代码回滚到上一版本时，旧代码不认 `s2s_`，开关切过之后登录的用户要重新登录。
-4. 清理（切到 `s2s` 至少 30 天后另做，本次不做）：前提是旧 refresh token（720h）都已过期或已换发。删掉 JWT 签发与校验、`/auth/refresh`、`SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL`、开关本身，以及控制台的刷新锁、keep-alive 与 `refresh_token` 字段；读取 `auth_flows` 的回退路径。`refresh_tokens`、`login_sessions`、`auth_flows` 三张表放进下一个带迁移的版本删除（需用户同意）。
+- 单向发布，必须停服：先停掉全部核心节点，再启动新版本（网关托管的升级计划 `primary-first-v1` 本身先停从节点、主节点停机后迁移，满足要求；非托管部署手动全停）。旧节点读写被删的表，不能与新节点混跑。
+- 所有人重新登录：上一版的 JWT 与 refresh token 全部作废，控制台下一次请求 401，回到登录页。
+- 没有反向脚本：回退只能从发布前的数据库备份恢复（并恢复原来的 `SUB2API_JWT_SECRET`），步骤见 `deploy/rollback/0.1.290-session-down.md`。
 
 ### 100.8 控制台
 
-- `@sub2api/host`：`Session.refresh_token` 可以没有；没有时 401 不再去 `/auth/refresh`、不排跨标签页刷新锁，直接清会话回登录页（失败请求带的令牌已被换掉时照旧重试）；有 refresh token 时刷新逻辑不变。keep-alive 只对有 refresh token 的会话生效。
+- `@sub2api/host`：401 直接清会话、调 `onUnauthenticated('expired')` 回登录页；唯一的例外是发出请求后会话已经换了令牌（step-up 轮换，或其他标签页刚登录、存储事件还没到），这时用新令牌重试一次。清会话前再看一眼：会话已经是别的令牌（更新的登录）就不清。
+- 多标签页：会话存 localStorage，各标签页共用。一个标签页登出或遇到 401 清掉会话，其他标签页从 `storage` 事件得知，调 `onUnauthenticated('unauthenticated')` 回登录页；其他标签页换上的新令牌（step-up 轮换、重新登录）直接采用。
 - StepUpDialog：`POST /me/verify` 的响应带 `access_token` 时替换本地令牌，重放请求与之后的请求都用新令牌。
+- 登出：`POST /auth/logout` 不带请求体。
 
 ### 100.9 测试
 
-- `internal/iam/tokenstore`（miniredis）：签发与查找、只存哈希、空闲与绝对超时、续期节流、单个撤销立即失效且不会被续期复活、撤销其他与全部、保留会话的 `tv` 只增不减且旧令牌一起改、ZSET 残留清理、轮换（宽限、不续期、撤销一并删除、连续两次轮换后第一个令牌立即结束）、旧令牌只删自己、每用户会话上限与同 sid 重建、续期不写残缺 HASH、单个撤销不扫全部、流程只看不取与 `GETDEL` 一次性、二次验证窗口、Valkey 宕机全部返回 503 而不是“不存在”、专用客户端在服务端不应答时约 1 秒返回 503。
-- `internal/iam`（PostgreSQL + miniredis）：开关（默认、非法值、只有超管、审计、第二个节点跟随广播、环境变量固定、CLI 不签发）、路由要二次验证、两种令牌在两个节点上都能用、refresh 换发（同 sid、列表只一条、旧 JWT 到期前有效、重放连带删除）、单个/其他/改密码/登出/管理员改密码/重置安全/禁用/删除各自的效果、不经 Valkey 的 bump、二次验证换令牌且 proof 仍可用、流程迁到 Valkey 后双读与一次性、二次验证窗口、Valkey 宕机时 503 而 JWT 照常；评审修复：保留会话的 bump 不连累轮换留下的旧令牌、宽限期内重复换发、不透明会话登出只结束自己、已换发家族的旧 JWT 做 step-up 不换令牌、撤销单个不透明会话不 bump、回滚留下的 `tv` 挡不住之后的 bump、登录事务失败不留会话且两步登录流程可重试、开关为 `jwt` 时 Valkey 宕机 JWT 调用者的各条路径照常且换令牌失败不留审计与 proof、切到 `s2s` 等待全部节点；复审修复：已结束的会话不被之后保留型 bump 的改盖章复活（命令行 bump 后带 refresh 登出、清理失败后撤销刚换发的家族）、Valkey 宕机时撤销空闲 JWT 家族与重放检测照常、结束全部后的清理不删提交后的新登录、保留型 bump 改盖章失败时结束超前盖章、会话列表不列已结束的会话、通行密钥登录事务失败不留会话、读不到节点注册表时 503（真实的 go-redis 错误）、任意顺序的性质测试（`TestEndedSessionsStayEndedInAnyOrder`）；`tokenstore`：结算删除低于 `from` 的会话与 `Prune`、轮换的回复丢失后重试只轮换一次（转发时丢掉回复的代理）。第三轮复审修复：`token_version` 为 0 的用户做保留型单个撤销（带 refresh 的 JWT 登出、撤销 JWT 家族）后其他不透明会话仍有效（`TestKeepingBumpFromVersionZero`）、撤销已被 bump 结束的会话 404、Valkey 宕机时重放的 bump 立即到达其他节点、性质测试加活性检查与上面列出的全部操作并在两个节点上检查、并发版本（`TestEndedSessionsStayEndedConcurrently`）；`tokenstore`：带 bump 的单个撤销即使从版本 0 起也结算其他会话、`Has` 按版本判断、迟到的撤销脚本不动之后签发的会话（`TestLateRevokeLeavesLaterSessions`）。
+- `internal/iam/tokenstore`（miniredis）：签发与查找、只存哈希、空闲与绝对超时、续期节流、单个撤销立即失效且不会被续期复活、撤销其他与全部、保留会话的 `tv` 只增不减且旧令牌一起改、ZSET 残留清理、轮换（宽限、不续期、撤销一并删除、连续两次轮换后第一个令牌立即结束）、旧令牌只删自己、每用户会话上限与同 sid 重建、续期不写残缺 HASH、单个撤销不扫全部、流程只看不取与 `GETDEL` 一次性、二次验证窗口、Valkey 宕机全部返回 503 而不是“不存在”、专用客户端在服务端不应答时约 1 秒返回 503、结算删除低于 `from` 的会话与 `Prune`、轮换的回复丢失后重试只轮换一次、带 bump 的单个撤销即使从版本 0 起也结算其他会话、`Has` 按版本判断、迟到的撤销脚本不动之后签发的会话（`TestLateRevokeLeavesLaterSessions`）。
+- `internal/iam`（PostgreSQL + miniredis，`session_test.go`）：只有 `s2s_` 能登录、`/auth/refresh` 404；单个撤销不 bump、撤销其他、改密码只留当前会话、登出只结束自己；管理员改密码、重置安全、禁用、删除各自结束会话，第二个节点立即跟随；不经 Valkey 的 bump；二次验证换令牌且 proof 仍可用、换令牌失败不留审计与 proof；流程一次性且只给所属用户；二次验证窗口；Valkey 宕机时 503 而管理员照样能禁用用户；通行密钥与密码登录事务失败不留会话、两步登录流程可重试；保留会话的 bump 不连累轮换留下的旧令牌；回滚留下的 `tv` 挡不住之后的 bump；已结束的会话不被之后保留型 bump 的改盖章复活；结束全部后的清理不删提交后的新登录；保留型 bump 改盖章失败时结束超前盖章；会话列表不列已结束的会话、撤销它们 404；任意顺序与并发的性质测试（上面的不变量）。
+- 控制台：`packages/host/src/http.spec.ts`（401 即登出、令牌已换时重试一次、不清更新的登录、跟随其他标签页登出、采用其他标签页的令牌、step-up 换令牌后重放用新令牌）。

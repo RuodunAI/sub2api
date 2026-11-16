@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 )
 
@@ -67,7 +68,11 @@ func TestAuthzVersionInMeAndHeader(t *testing.T) {
 	// of permissions: nobody's console fetches them again for it.
 	header, me = versions()
 	p := mustLogin(t, s, "v@example.com", "password-1")
-	if err := s.Logout(ctx, u.ID, p.RefreshToken); err != nil {
+	_, id, err := s.VerifySession(ctx, p.AccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Logout(core.WithSession(ctx, id), u.ID); err != nil {
 		t.Fatal(err)
 	}
 	mustLogin(t, s, "v@example.com", "password-1")

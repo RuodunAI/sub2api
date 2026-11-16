@@ -80,7 +80,6 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       SUB2API_LOG_LEVEL: ${SUP2API_LOG_LEVEL:-info}
       SUB2API_MASTER_KEY: ${SUB2API_MASTER_KEY:?set SUB2API_MASTER_KEY in .env}
-      SUB2API_JWT_SECRET: ${SUB2API_JWT_SECRET:?set SUB2API_JWT_SECRET in .env}
       SUB2API_BOOTSTRAP_ADMIN_EMAIL: ${SUB2API_BOOTSTRAP_ADMIN_EMAIL:?set SUB2API_BOOTSTRAP_ADMIN_EMAIL in .env}
       SUB2API_BOOTSTRAP_ADMIN_PASSWORD: ${SUB2API_BOOTSTRAP_ADMIN_PASSWORD:?set SUB2API_BOOTSTRAP_ADMIN_PASSWORD in .env}
       SUB2API_PLUGIN_DIR: /var/lib/sub2api/plugins
@@ -98,10 +97,9 @@ services:
       SUB2API_PLUGIN_OFFICIAL_KEYS: ${SUB2API_PLUGIN_OFFICIAL_KEYS:-}
       SUB2API_MARKET_SOURCES: ${SUB2API_MARKET_SOURCES:-}
       SUB2API_DEV_MARKET_URL: http://market:8080/index.json
-      # Emergency pins of the run-time switches (empty = follow the
-      # setting): SUB2API_AUTHZ_ENGINE=legacy, SUB2API_SESSION_ISSUE=jwt.
+      # Emergency pin of the run-time switch (empty = follow the setting):
+      # SUB2API_AUTHZ_ENGINE=legacy.
       SUB2API_AUTHZ_ENGINE: ${SUB2API_AUTHZ_ENGINE:-}
-      SUB2API_SESSION_ISSUE: ${SUB2API_SESSION_ISSUE:-}
     volumes:
       - appdata:/var/lib/sub2api
 

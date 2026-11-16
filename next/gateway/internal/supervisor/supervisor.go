@@ -183,12 +183,11 @@ var inheritedEnv = []string{
 	"GOMEMLIMIT", "GOMAXPROCS", "GOGC", "GODEBUG", "GOTRACEBACK",
 	// Core configuration (CONTRACTS, server/internal/config).
 	"SUB2API_PUBLIC_URL", "SUB2API_LOG_LEVEL",
-	"SUB2API_MASTER_KEY", "SUB2API_JWT_SECRET",
-	"SUB2API_ACCESS_TOKEN_TTL", "SUB2API_REFRESH_TOKEN_TTL", "SUB2API_SHUTDOWN_DELAY",
+	"SUB2API_MASTER_KEY", "SUB2API_SHUTDOWN_DELAY",
 	"SUB2API_SESSION_IDLE_TTL", "SUB2API_SESSION_MAX_TTL",
-	// Run-time switches pinned on one node (iam.IssueEnv, authz.EngineEnv):
-	// the emergency way back when the switch itself cannot be reached.
-	"SUB2API_SESSION_ISSUE", "SUB2API_AUTHZ_ENGINE",
+	// The run-time switch pinned on one node (authz.EngineEnv): the
+	// emergency way back when the switch itself cannot be reached.
+	"SUB2API_AUTHZ_ENGINE",
 	"SUB2API_WEBAUTHN_RP_ID",
 	"SUB2API_BOOTSTRAP_ADMIN_EMAIL", "SUB2API_BOOTSTRAP_ADMIN_PASSWORD",
 	"SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM", "SUB2API_TRUSTED_PROXIES", "SUB2API_PG_MAX_CONNS",

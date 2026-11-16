@@ -110,7 +110,7 @@ func TestStrictNetworkSeccompBlocksDial(t *testing.T) {
 		_ = c.Close()
 	}
 	r := runReport(t, []string{"--strict-network=true", "--seccomp=true", "--mem-mb=256", "--max-open-files=64", "--nice=10"},
-		"SANDBOX_TEST_ADDR="+addr, "SUB2API_JWT_SECRET=secret", "SUB2API_PLUGIN_KEY=demo")
+		"SANDBOX_TEST_ADDR="+addr, "SUB2API_MASTER_KEY=secret", "SUB2API_PLUGIN_KEY=demo")
 	t.Logf("report: %+v", r)
 	if !strings.Contains(r.DialErr, "operation not permitted") {
 		t.Fatalf("tcp dial not blocked: %q", r.DialErr)
@@ -175,7 +175,7 @@ func TestLauncherCommandEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.Env = append(cmd.Env, "SUB2API_JWT_SECRET=leak") // as if go-plugin appended the host env
+	cmd.Env = append(cmd.Env, "SUB2API_MASTER_KEY=leak") // as if go-plugin appended the host env
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)
